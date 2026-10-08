@@ -1,0 +1,28 @@
+■ webkit · 정상
+  탐색 사건 3건: [(True, 'https://agora.godmeyou.kr/'), (False, 'about:blank'), (False, 'about:blank')]
+  틀 목록: [(True, 'https://agora.godmeyou.kr/'), (False, 'about:blank')]
+  막은 문서 요청: []
+  서브 틀 about: 탐색 = ['about:blank', 'about:blank'] · 메인 틀 밖 탐색 = []
+  #board 자식 = 2 · 페이지 오류 = []
+  판정 = PASS
+■ webkit · 확인 스크립트 막음
+  탐색 사건 2건: [(True, 'https://agora.godmeyou.kr/'), (False, 'about:blank')]
+  틀 목록: [(True, 'https://agora.godmeyou.kr/'), (False, 'about:blank')]
+  막은 문서 요청: ['https://agora.godmeyou.kr/cdn-cgi/challenge-platform/scripts/jsd/main.js']
+  서브 틀 about: 탐색 = ['about:blank'] · 메인 틀 밖 탐색 = []
+  #board 자식 = 2 · 페이지 오류 = []
+  판정 = PASS
+■ chromium · 정상
+  탐색 사건 3건: [(True, 'https://agora.godmeyou.kr/'), (False, 'about:blank'), (False, 'about:blank')]
+  틀 목록: [(True, 'https://agora.godmeyou.kr/'), (False, 'about:blank')]
+  막은 문서 요청: []
+  서브 틀 about: 탐색 = ['about:blank', 'about:blank'] · 메인 틀 밖 탐색 = []
+  #board 자식 = 2 · 페이지 오류 = []
+  판정 = PASS
+■ chromium · 확인 스크립트 막음
+  탐색 사건 2건: [(True, 'https://agora.godmeyou.kr/'), (False, 'about:blank')]
+  틀 목록: [(True, 'https://agora.godmeyou.kr/'), (False, 'about:blank')]
+  막은 문서 요청: ['https://agora.godmeyou.kr/cdn-cgi/challenge-platform/scripts/jsd/main.js']
+  서브 틀 about: 탐색 = ['about:blank'] · 메인 틀 밖 탐색 = []
+  #board 자식 = 2 · 페이지 오류 = []
+  판정 = PASS

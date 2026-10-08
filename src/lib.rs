@@ -4373,6 +4373,8 @@ mod tests {
             ("src/bin/cysd/boot_supervisor.rs", 1),
             ("src/bin/cysd/main.rs", 2),
             ("src-tauri/src/main.rs", 4),
+            // 1.1.9 T4(cysr-119-t4-app): 상담소 글 목록 = 아고라 클라이언트 `agora read` 1곳 · inject_runtime_path 봉인 + spawn_policy(Attached).
+            ("src-tauri/src/counsel.rs", 1),
         ];
 
         let mut found: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
@@ -4413,6 +4415,7 @@ mod tests {
             ("src/bin/cysd/boot_supervisor.rs", "ENV_PY_NO_BYTECODE"),
             ("src/bin/cysd/main.rs", "ENV_PY_NO_BYTECODE"),
             ("src-tauri/src/main.rs", "inject_runtime_path"),
+            ("src-tauri/src/counsel.rs", "inject_runtime_path"),
         ] {
             let src = std::fs::read_to_string(root.join(rel)).unwrap();
             assert!(
@@ -6554,6 +6557,9 @@ mod spawn_policy_tests {
     const RAW_COMMAND_NEW_FROZEN: &[(&str, usize)] = &[
         // 1.1.8 병합(T2): 원작자 U6 피드백 백엔드를 feedback::u6_local_bundle 하위 모듈로 휴면 편입 — +4 =
         //   opener_command 의 open/explorer/xdg-open(cfg 3갈래 · 끝에 no_console) + Mail `open -a`(macOS cfg · no_console).
+        // 1.1.9 T4(cysr-119-t4-app): 상담소 글 목록 `agora read`(번들 python · 맥·윈 공통) 1곳 — ⓐ윈에서 돈다 → ⓑ체인에
+        //   `spawn_policy(ChildLifetime::Attached)`(= GUI no_console 과 같은 등급) 를 단다 · 봉인 = inject_runtime_path(python 열거 핀에도 등재).
+        ("src-tauri/src/counsel.rs", 1),
         ("src-tauri/src/feedback.rs", 6),
         // v114-dept-fd: cys-dept 직접 스폰 3곳 → run_dept_tool_direct 1곳(-2) · 1.1.8 병합 +1 = 원작자
         //   open_privacy_settings `/usr/bin/open`(macOS cfg) · smart_app_control_state `reg.exe`(windows cfg · no_console).

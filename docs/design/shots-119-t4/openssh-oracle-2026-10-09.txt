@@ -1,0 +1,15 @@
+# 명부 판독 정답지 대조(2026-10-09 · TICKET=cysr-119-t4-app 3판 · codex 2R ①)
+# 방법: 새 ed25519 키로 `ssh-keygen -Y sign -n file` → 명부 한 줄(아래 주체·옵션 + 그 공개키)만 둔 allowed_signers 로
+#       `ssh-keygen -Y verify -f as -I jarvis-counsel -n file` 의 수락 여부 = OpenSSH 가 「jarvis-counsel 의 유효 키」로 보는가.
+# OpenSSH_10.3p1, LibreSSL 3.3.6
+주체·옵션 칸                          OpenSSH   counsel.rs(roster_fingerprints 가 그 id 의 키로 세는가)
+jarvis-counsel                        ACCEPT    센다
+x,"jarvis-*"                          ACCEPT    센다(strdelimw 가 따옴표를 지워 x,jarvis-*)
+"jarvis-"*                            reject    안 센다(주체 = jarvis- · 뒤 * 는 옵션 칸)
+!jarvis-counsel,*                     reject    안 센다(부정 일치 = 목록 불일치)
+jarvis-* namespaces="file"            ACCEPT    센다
+jarvis-c?unsel                        ACCEPT    센다
+jarvis-* cert-authority               reject    센다(★더 엄격 — CA 키 지문 ≠ 핀 → 상담소 판정 거짓 쪽 · 문서화된 의도)
+"x,jarvis-c*"                         ACCEPT    센다
+jarvis-*,<a×1100>                     reject    안 센다(하위 패턴 ≥1023바이트 = 목록 전체 불일치)
+판정: OpenSSH 가 수락하는 줄은 전부 센다(누락 0) · 거부하는 줄 중 센 것은 cert-authority 1꼴(엄격 방향).

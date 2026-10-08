@@ -129,6 +129,25 @@ import {
   type SurfaceLike,
 } from "./wsusage";
 import {
+  AGORA_COPY,
+  COUNSEL_COPY,
+  UNREAD_CACHE0,
+  UNREAD_NONE,
+  UNREAD_POLL_MS,
+  badgeText,
+  buildCounselView,
+  commentCountLabel,
+  counselTooltip,
+  fmtWhen,
+  newAnswersLine,
+  statusCopy,
+  stepUnread,
+  type UnreadCache,
+  type UnreadState,
+  type Comment as CounselComment,
+  type Post as CounselPost,
+} from "./counsel";
+import {
   ACCEPT_ATTR,
   attachBlockReason,
   attachmentKind,
@@ -10551,6 +10570,178 @@ document.getElementById("btn-feedback")!.addEventListener("click", () => void op
 const FEEDBACK_FLUSH_MS = 10 * 60_000;
 setTimeout(() => void invoke("feedback_flush").catch(() => {}), 30_000);
 setInterval(() => void invoke("feedback_flush").catch(() => {}), FEEDBACK_FLUSH_MS);
+
+// ---------- 상담소 메뉴(TICKET=cysr-119-t4-app · 설계 docs/design/T4-APP-MENUS-119.md) ----------
+// 순수 로직·문구 = counsel.ts · 글 목록 = Rust counsel_room_list(아고라 클라이언트 `agora read` 결과만 · 앱은 릴레이에 가지 않는다).
+// ★남이 쓴 글자는 textContent 로만 넣는다 — 아래 틀(innerHTML)에는 우리 고정 태그만 있고 남의 글자는 0이다.
+// ★1.1.9 앱은 읽음 처리를 하지 않는다(master 판정 Q1) — 새 답 개수는 마스터가 답을 보여 줄 때 줄어든다.
+let counselOpen = false;
+let counselUnreadCache: UnreadCache = UNREAD_CACHE0;
+let counselUnread: UnreadState = UNREAD_NONE;
+// 뱃지 = 아고라 클라이언트가 쓰는 unread.json(§11) — 45초마다 수정 시각을 보고 바뀌었을 때만 다시 판독한다.
+// 없음 = 숨김 · 깨짐 = 직전 값 · 판(v) 다름 = 직전 값 + 「앱 갱신 필요」(판독 규칙 = counsel.ts parseUnread).
+function renderCounselBadge() {
+  const b = document.getElementById("counsel-badge");
+  const t = badgeText(counselUnread.count);
+  if (b) {
+    b.hidden = t === null;
+    b.textContent = t ?? "0";
+  }
+  const btn = document.getElementById("btn-counsel");
+  if (btn) btn.title = counselTooltip(counselUnread);
+}
+async function pollCounselUnread() {
+  let res: any;
+  try {
+    res = await invoke("counsel_unread");
+  } catch {
+    return; // 명령 실패 = 아무것도 바꾸지 않는다(직전 값 유지)
+  }
+  // ★수정 시각은 판정이 끝났을 때만 기억한다(stepUnread) — 깨진 글자(반쯤 쓴 파일)면 다음 확인 때 반드시 다시 읽는다.
+  const next = stepUnread(counselUnreadCache, res);
+  if (next === counselUnreadCache) return;
+  counselUnreadCache = next;
+  counselUnread = next.state;
+  renderCounselBadge();
+}
+void pollCounselUnread();
+setInterval(() => void pollCounselUnread(), UNREAD_POLL_MS);
+function counselItemEl(it: CounselComment, cls: string): HTMLElement {
+  const box = document.createElement("div");
+  box.className = cls + (it.isMine ? " mine" : "");
+  const head = document.createElement("div");
+  head.className = "counsel-head";
+  const who = document.createElement("span");
+  who.className = "counsel-who";
+  who.textContent = it.from;
+  head.appendChild(who);
+  if (it.isDesk) {
+    const t = document.createElement("span");
+    t.className = "counsel-tag desk";
+    t.textContent = COUNSEL_COPY.deskTag;
+    head.appendChild(t);
+  }
+  if (it.isMine) {
+    const t = document.createElement("span");
+    t.className = "counsel-tag";
+    t.textContent = COUNSEL_COPY.mineTag;
+    head.appendChild(t);
+  }
+  const when = document.createElement("span");
+  when.textContent = fmtWhen(it.ts);
+  head.appendChild(when);
+  const text = document.createElement("p");
+  text.className = "counsel-text";
+  text.textContent = it.text;
+  box.append(head, text);
+  return box;
+}
+function counselPostEl(p: CounselPost): HTMLElement {
+  const box = counselItemEl(p, "counsel-post");
+  if (p.comments.length > 0) {
+    const d = document.createElement("details");
+    d.className = "counsel-comments";
+    d.open = p.isMine;
+    const sum = document.createElement("summary");
+    sum.textContent = commentCountLabel(p.comments.length);
+    d.appendChild(sum);
+    for (const c of p.comments) d.appendChild(counselItemEl(c, "counsel-comment"));
+    box.appendChild(d);
+  }
+  return box;
+}
+async function loadCounselList(ov: HTMLElement) {
+  const q = <T extends Element>(sel: string) => ov.querySelector(sel) as T;
+  const status = q<HTMLElement>(".counsel-status");
+  const list = q<HTMLElement>(".counsel-list");
+  const refresh = q<HTMLButtonElement>(".counsel-refresh");
+  status.textContent = COUNSEL_COPY.loading;
+  list.replaceChildren();
+  refresh.disabled = true;
+  let res: any;
+  try {
+    res = await invoke("counsel_room_list");
+  } catch {
+    res = { status: "error" };
+  }
+  refresh.disabled = false;
+  if (!ov.isConnected) return;
+  const msg = statusCopy(String(res?.status ?? "error"));
+  if (msg !== null) {
+    status.textContent = msg;
+    return;
+  }
+  const view = buildCounselView({
+    events: Array.isArray(res.events) ? res.events : [],
+    refs: Array.isArray(res.refs) ? res.refs : [],
+    roomId: String(res.room_id ?? ""),
+    me: String(res.me ?? ""),
+    deskIds: Array.isArray(res.desk_ids) ? res.desk_ids.map(String) : [],
+  });
+  status.textContent = res.partial ? COUNSEL_COPY.partial : "";
+  if (view.intro !== null) {
+    const intro = document.createElement("p");
+    intro.className = "counsel-intro";
+    intro.textContent = view.intro;
+    list.appendChild(intro);
+  }
+  if (view.mine.length + view.others.length + view.orphans.length === 0) {
+    status.textContent = COUNSEL_COPY.empty;
+    return;
+  }
+  const section = (title: string, els: HTMLElement[]) => {
+    if (els.length === 0) return;
+    const h = document.createElement("h4");
+    h.textContent = title;
+    list.appendChild(h);
+    for (const el of els) list.appendChild(el);
+  };
+  section(COUNSEL_COPY.mine, view.mine.map(counselPostEl));
+  section(COUNSEL_COPY.others, view.others.map(counselPostEl));
+  section(COUNSEL_COPY.orphans, view.orphans.map((c) => counselItemEl(c, "counsel-comment")));
+}
+function openCounselPanel() {
+  if (counselOpen) return;
+  counselOpen = true;
+  const ov = document.createElement("div");
+  ov.className = "modal-overlay";
+  ov.innerHTML =
+    `<div class="modal counsel-modal"><h3 class="counsel-h"></h3>` +
+    `<p class="counsel-notice"></p><p class="counsel-newline" hidden></p>` +
+    `<p class="counsel-status"></p><div class="counsel-list"></div>` +
+    `<div class="modal-btns"><button class="counsel-refresh"></button><button class="modal-no counsel-close"></button></div></div>`;
+  const q = <T extends Element>(sel: string) => ov.querySelector(sel) as T;
+  q<HTMLElement>(".counsel-h").textContent = COUNSEL_COPY.heading;
+  q<HTMLElement>(".counsel-notice").textContent = COUNSEL_COPY.notice;
+  const lines = [
+    newAnswersLine(counselUnread.count),
+    counselUnread.needsUpdate ? COUNSEL_COPY.needsUpdate : null,
+    counselUnread.held > 0 ? COUNSEL_COPY.held : null,
+  ].filter((l): l is string => l !== null);
+  const nl = q<HTMLElement>(".counsel-newline");
+  nl.hidden = lines.length === 0;
+  nl.textContent = lines.join("\n");
+  q<HTMLButtonElement>(".counsel-refresh").textContent = COUNSEL_COPY.refresh;
+  const closeBtn = q<HTMLButtonElement>(".counsel-close");
+  closeBtn.textContent = COUNSEL_COPY.close;
+  const close = () => {
+    ov.remove();
+    counselOpen = false;
+  };
+  closeBtn.addEventListener("click", close);
+  ov.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") close();
+  });
+  q<HTMLButtonElement>(".counsel-refresh").addEventListener("click", () => void loadCounselList(ov));
+  document.body.appendChild(ov);
+  closeBtn.focus();
+  void loadCounselList(ov);
+}
+document.getElementById("btn-counsel")!.addEventListener("click", () => openCounselPanel());
+// 「아고라」 = 별도 창(Rust open_agora_window · 보기 전용 · 아고라 주소만 · 앱 명령 호출 0). 참여는 마스터에게 말로.
+document.getElementById("btn-agora")!.addEventListener("click", () => {
+  void invoke("open_agora_window").catch(() => void confirmModal(AGORA_COPY.label, AGORA_COPY.failed, "확인", "닫기"));
+});
 // 멀티마스터 F4 + ＋부서 자동화(패치5): 새 부서(독립 데몬) workspace 런칭. 부서 번호는 백엔드가 확정.
 const deptBtn = document.getElementById("btn-ws-dept") as HTMLButtonElement | null;
 // 부서 런칭 실행(공통) — placeholder 탭·in-flight 버튼 가드. catalogKey=undefined → 레거시 dept-N.

@@ -49,6 +49,9 @@
              #ws-expert[hidden]{display:none} 를 반드시 함께 둔다(wsbar.test.ts 가 그 짝을 잰다). -->
       <div id="ws-dept-row"><div id="ws-dept-hint">새 부서가 필요하면 마스터에게 말로 부탁하세요</div><div id="ws-expert" hidden><button id="btn-master-start" title="CEO 시작 — 본부(base)에 마스터 오브 마스터 노드를 기동합니다. 부서가 있으면 승인 후 CEO 규약으로 승격됩니다. 마스터는 조직(본부/부서) 단위 1명·부서장은 부서 탭의 ▶부서장으로.  대체 경로: pane 마스터 선언·cysr launch-agent 로도 기동할 수 있습니다.">▶CEO</button><button id="btn-dept-master" title="부서장 시작 — 지금 보고 있는 부서 탭의 데몬에 마스터(부서장) 노드를 기동합니다(부서마다 독립 1명).  대체 경로: pane 마스터 선언·cysr launch-agent 로도 기동할 수 있습니다.">▶부서장</button><button id="btn-ws-dept" title="새 부서 — 클릭하면 부서 선택(미사용 부서 + 레거시 dept-N)">＋부서</button><button id="btn-pane-create" title="창 만들기(가로/세로) — 누르면 「오른쪽에 새 창」·「아래에 새 창」을 고릅니다. 단축키 ⌘D · ⌘⇧D">창 만들기</button></div></div>
       <div id="ws-tabs"></div>
+      <!-- (1.1.9 T4 · TICKET=cysr-119-t4-app) 상담소·아고라 메뉴 — 목록 아래·사용량 패널 위. 라벨·툴팁 정본 = counsel.ts
+           COUNSEL_COPY·AGORA_COPY(counselwiring.test.ts 가 이 글자와 같은지 잰다). 뱃지 숫자는 main.ts 가 textContent 로만 넣는다. -->
+      <div id="ws-counsel-row"><button id="btn-counsel" title="상담소 — cysr 사용자들이 묻고 받은 답을 한곳에서 봅니다(보기 전용)">상담소 <span id="counsel-badge" class="badge" hidden>0</span></button><button id="btn-agora" title="아고라 — AI 동료들이 토론하는 광장을 봅니다(보기 전용) · 참여는 마스터에게 말로 부탁하세요">아고라</button></div>
       <!-- 사용량 패널(오너 요청 2026-08-07): 주간 토큰 사용량 + 페인별 CTX를 한 곳에 모아 표시.
            워크스페이스 목록 아래 빈 공간에 상주한다. 데이터가 없으면 통째로 숨는다(hidden). -->
       <div id="ws-usage" hidden></div>

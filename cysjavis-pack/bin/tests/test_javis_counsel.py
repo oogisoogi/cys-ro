@@ -1496,7 +1496,7 @@ class DMac3OfficialOldClient(Base):
             self.assertEqual(jc.ensure_client(), "foreign")
         self.assertEqual(len(self.foreign_signals()), 2, "끊긴 뒤 새 구간 3번째에 다시 1줄")
 
-    def test_other_events_do_not_break_streak_and_rotated_log_counts(self):
+    def test_other_events_do_not_break_streak_and_rotated_log_does_not_matter(self):
         self._foreign_lib()
         jc.ensure_client()
         jc.log_event(self.cfg, "facts", result="ok")      # 다른 event 줄은 건너뛴다
@@ -1515,6 +1515,35 @@ class DMac3OfficialOldClient(Base):
         self.assertEqual(self.sig_lines(), [])
         notes = [e for e in self.events() if e["event"] == "client-foreign-signal"]
         self.assertEqual([(n["streak"], n["sent"]) for n in notes], [(3, False)], "못 쓴 것도 흔적은 남긴다")
+        # ★codex 1R ⑤: 못 쓴 신호는 다음 foreign 판에 다시 시도한다(4·5… 누락 0) — 켜면 그 판에 1줄.
+        self.config('{"counsel": {"auto": true}}')
+        jc.ensure_client()
+        self.assertEqual(len(self.foreign_signals()), 1, "끔 뒤 켰는데 4번째 판에 신호가 없다")
+        jc.ensure_client()
+        self.assertEqual(len(self.foreign_signals()), 1, "같은 구간에서 두 번 썼다")
+
+    def test_118_log_streak_is_seeded_once(self):
+        # ★codex 1R ⑤: 1.1.8 이 이미 foreign 3줄을 남긴 설치 — 상태 파일이 없으면 로그 꼬리로 1회 이관 → 첫 판(연속 4)에 신호.
+        self._foreign_lib()
+        os.makedirs(os.path.join(self.cfg, "counsel"), exist_ok=True)
+        for _ in range(3):
+            jc.log_event(self.cfg, "ensure-client", result="foreign", why="modified or unknown client")
+        jc.ensure_client()
+        self.assertEqual(len(self.foreign_signals()), 1, "이미 쌓인 연속을 버렸다")
+        st = jc._read_foreign_state(self.cfg)
+        self.assertEqual((st["streak"], st["signaled"]), (4, True))
+
+    def test_big_other_log_lines_do_not_reset_or_duplicate(self):
+        # ★codex 1R ⑥: 상태 파일이 정본 — 큰 다른 행이 로그 꼬리를 밀어내도 구간·신호 여부는 그대로.
+        self._foreign_lib()
+        for _ in range(3):
+            jc.ensure_client()
+            jc.log_event(self.cfg, "facts", blob="x" * (jc.FOREIGN_SCAN_BYTES + 10))
+        self.assertEqual(len(self.foreign_signals()), 1)
+        for _ in range(3):
+            jc.ensure_client()
+            jc.log_event(self.cfg, "facts", blob="x" * (jc.FOREIGN_SCAN_BYTES + 10))
+        self.assertEqual(len(self.foreign_signals()), 1, "같은 구간에서 두 번째 신호")
 
 
 if __name__ == "__main__":

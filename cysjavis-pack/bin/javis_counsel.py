@@ -72,7 +72,9 @@ INSTALL_LOCK_WAIT_S = 60.0
 KNOWN_FILE = "agora-client-known.txt"  # 자동 교체해도 되는 옛 판 지문 표(`<판본> <트리 지문>`)
 FOREIGN_STREAK_SIGNAL = 3              # ★D-mac-3: ensure-client 결과 foreign 이 이만큼 이어지면 신호 1줄(조용한 실패 금지)
 FOREIGN_SIGNAL = ("ensure-client", "counsel.client_foreign")   # (op, error_code)
-FOREIGN_SCAN_BYTES = 64 * 1024         # tick.log 끝에서 읽는 양(한 판 몇 줄 · 3연속 판정에 넉넉)
+FOREIGN_SCAN_BYTES = 64 * 1024         # tick.log 끝에서 읽는 양 — ★2판: 상태 파일이 없을 때 1회 이관(seed)에만 쓴다
+FOREIGN_STATE = "client-foreign.json"  # ★codex 1R ⑥: 연속 수·구간 신호 여부의 정본(원자 쓰기) · tick.log = 감사 기록
+FOREIGN_RESET = ("same", "installed", "replaced")   # 이 결과면 foreign 구간이 끝났다(busy·refused·error·no-pin = 판정 불가 · 무접촉)
 MAX_LIST = 64
 
 
@@ -784,8 +786,7 @@ def ensure_client(cfg=None, pack=None, wait_s=INSTALL_LOCK_WAIT_S):
             return "busy"
         try:
             res = _ensure_locked(cfg, pack, pin, blob)
-            if res == "foreign":
-                _note_client_foreign(cfg)
+            _note_client_result(cfg, res)
             return res
         except ValueError as e:            # zip-slip · 깨진 b64/zip(지문 재는 자리) = 거부
             return _refused(cfg, pin["ver"], str(e)[:120])
@@ -827,18 +828,57 @@ def foreign_streak(cfg):
     return n
 
 
-def _note_client_foreign(cfg):
-    """★D-mac-3(1.1.9): 「모르는 트리 = 불가침」은 옳지만 **조용히** 영원히 멈추면 그 PC 의 상담소가 소리 없이 죽는다
-    (실측: 공식 0.1.4 가 known 표에 없어 foreign ×3 · 수집·주간·방 읽기 불능). 이어진 foreign 이 정확히
-    FOREIGN_STREAK_SIGNAL 번째인 판에 신호 1줄을 쓴다(연속 구간당 1회 · 끊겼다 다시 이어지면 다시 1회).
-    결과(썼나)를 tick.log 에 남긴다 — 끔·잠금 초과로 못 써도 흔적은 있다. 예외 0."""
+def _read_foreign_state(cfg):
+    """`{streak:int, signaled:bool}` 또는 None(없음·깨짐)."""
     try:
-        n = foreign_streak(cfg)
-        if n != FOREIGN_STREAK_SIGNAL:
+        with open(_counsel(cfg, FOREIGN_STATE), encoding="utf-8") as f:
+            doc = json.load(f)
+        if type(doc) is dict and type(doc.get("streak")) is int and type(doc.get("signaled")) is bool:
+            return doc
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _write_foreign_state(cfg, doc):
+    """임시 파일 + os.replace(원자) — 실패 = False(다음 판이 다시 센다)."""
+    try:
+        _mkcounsel(cfg)
+        path = _counsel(cfg, FOREIGN_STATE)
+        tmp = "%s.tmp-%s" % (path, secrets.token_hex(4))
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps(doc, sort_keys=True) + "\n")
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        return False
+
+
+def _note_client_result(cfg, res):
+    """★codex 1R ⑤⑥(2판): foreign 연속 수·이 구간의 신호 여부를 상태 파일(정본)에 둔다.
+    · foreign = 연속 +1 · 연속 ≥ FOREIGN_STREAK_SIGNAL 이고 이 구간에 아직 신호를 못 썼으면 시도(성공할 때까지 매 판 · 4·5… 누락 0)
+    · same·installed·replaced = 구간 끝(0 · 신호 표지 해제) · 그 밖(busy·refused·error·no-pin·raced) = 판정 불가 → 무접촉
+    · 상태 파일이 없으면(1.1.8 → 1.1.9 첫 판) tick.log 꼬리의 연속 foreign 으로 1회 이관한다(이미 쌓인 연속을 버리지 않는다).
+    예외 0."""
+    try:
+        if res in FOREIGN_RESET:
+            st = _read_foreign_state(cfg)
+            if st is None or st["streak"] or st["signaled"]:
+                _write_foreign_state(cfg, {"streak": 0, "signaled": False})
             return False
-        ok = write_signal("pack", FOREIGN_SIGNAL[0], FOREIGN_SIGNAL[1], cfg=cfg)
-        log_event(cfg, "client-foreign-signal", streak=n, sent=bool(ok), error_code=FOREIGN_SIGNAL[1])
-        return bool(ok)
+        if res != "foreign":
+            return False
+        st = _read_foreign_state(cfg)
+        if st is None:
+            st = {"streak": max(foreign_streak(cfg) - 1, 0), "signaled": False}   # 이번 판 foreign 줄은 이미 로그에 있다
+        st = {"streak": st["streak"] + 1, "signaled": st["signaled"]}
+        sent = None
+        if st["streak"] >= FOREIGN_STREAK_SIGNAL and not st["signaled"]:
+            sent = bool(write_signal("pack", FOREIGN_SIGNAL[0], FOREIGN_SIGNAL[1], cfg=cfg))
+            st["signaled"] = sent
+            log_event(cfg, "client-foreign-signal", streak=st["streak"], sent=sent, error_code=FOREIGN_SIGNAL[1])
+        _write_foreign_state(cfg, st)
+        return bool(sent)
     except Exception:
         return False
 

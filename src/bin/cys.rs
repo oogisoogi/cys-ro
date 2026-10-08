@@ -23491,28 +23491,92 @@ fn recover_directive() -> &'static str {
 }
 
 /// T2-6 조직 복원: 토폴로지 스냅샷 기준으로 죽은 역할 일괄 재기동 (작업 재개는 master 판단)
-/// ★D-mac-2(1.1.9): 복원 회차의 대화 점유 판정 — 순수. `sess` 가 이미 `busy` 에 있으면 `(None, true)`
-/// (이어 붙이지 않는다) · 아니면 그대로 돌려주고 `busy` 에 넣는다(같은 회차의 두 번째 좌석이 같은 id 를 못 잡게).
-/// 빈 문자열·None = 점유 판정 대상 아님(`(sess, false)`).
-fn restore_claim_session(
-    sess: Option<String>,
-    busy: &mut std::collections::HashSet<String>,
-) -> (Option<String>, bool) {
-    match sess.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        Some(id) if busy.contains(id) => (None, true),
-        Some(id) => {
-            busy.insert(id.to_string());
-            (sess, false)
-        }
-        None => (sess, false),
-    }
-}
-
 /// ★D-mac-4(1.1.9): 부활 좌석에 요청할 제목 — 저장 엔트리의 옛 제목(공백 아닌 문자열) 또는 None. 순수.
 /// 옛 제목은 「옛 번호 · 모델 · 특성」 꼴이라, 데몬 `initial_title` 이 번호 칸만 새 번호로 바꾸고 나머지(특히
 /// spawn 때 지은 cwd 특성 — u4·lms·relay·lead)를 그대로 옮긴다. 없으면 종전 규칙(데몬 기본 「번호 · roleN」).
 fn restore_title(entry: &Value) -> Option<String> {
     entry["title"].as_str().map(str::trim).filter(|t| !t.is_empty()).map(String::from)
+}
+
+/// ★2판 ②④: 복원 회차의 대화 claim — 해제 가능한 표(프로세스 내 집합의 id + 원자 파일).
+struct RestoreClaim {
+    id: Option<String>,
+    file: Option<std::path::PathBuf>,
+}
+
+impl RestoreClaim {
+    /// 보류·기동 실패 시 해제 — 집합에서 빼고 원자 파일을 지운다(성공 시에는 부르지 않는다 · 파일은 TTL 로 자연 만료).
+    fn release(&self, busy: &mut std::collections::HashSet<String>) {
+        if let Some(id) = &self.id {
+            busy.remove(id);
+        }
+        if let Some(f) = &self.file {
+            let _ = std::fs::remove_file(f);
+        }
+    }
+}
+
+/// 원자 claim 파일의 유효 시간 — 이보다 오래된 파일은 앞선 restore 가 죽고 남긴 것으로 본다.
+const RESTORE_CLAIM_TTL_SECS: u64 = 600;
+
+fn restore_now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// 데몬이 지금 아는 점유 좌석의 대화 id(재조회 · 실패 = 빈 집합 → 원자 파일이 남은 방어).
+fn restore_live_sessions() -> std::collections::HashSet<String> {
+    request("system.topology", json!({}))
+        .ok()
+        .and_then(|t| t["live"].as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter(|e| e["seat"].as_str() != Some("empty"))
+        .filter_map(|e| e["session_id"].as_str().map(str::trim).filter(|s| !s.is_empty()).map(String::from))
+        .collect()
+}
+
+fn restore_claims_dir() -> Option<std::path::PathBuf> {
+    let d = cys::daemon_state_dir(&cys::socket_path()).join("restore-claims");
+    std::fs::create_dir_all(&d).ok().map(|_| d)
+}
+
+/// ★2판 ②④(순수 + 파일): 이 좌석이 `sess` 를 이어도 되는가. 셋 중 하나라도 점유면 이어 붙이지 않는다 —
+/// ① 같은 회차 앞 좌석(`busy`) ② 데몬 재조회의 점유 좌석(`live`) ③ 다른 `cys restore` 프로세스의 원자 파일
+/// (`<상태>/restore-claims/<id>` · create_new · TTL 안). 반환 = (이을 sess, 중복인가, 해제 표).
+/// id 는 파일 이름이 되므로 영숫자·`-`·`_` 만 허용한다(그 밖 = 파일 claim 생략 · 앞 두 축만).
+fn restore_claim_for_launch(
+    sess: Option<String>,
+    busy: &mut std::collections::HashSet<String>,
+    live: &std::collections::HashSet<String>,
+    dir: Option<&std::path::Path>,
+    now: u64,
+) -> (Option<String>, bool, RestoreClaim) {
+    let none = RestoreClaim { id: None, file: None };
+    let Some(id) = sess.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(String::from) else {
+        return (sess, false, none);
+    };
+    if busy.contains(&id) || live.contains(&id) {
+        return (None, true, none);
+    }
+    let mut file = None;
+    if let Some(d) = dir.filter(|_| id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')) {
+        let f = d.join(&id);
+        let fresh_other = std::fs::metadata(&f)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .is_some_and(|t| now.saturating_sub(t.as_secs()) < RESTORE_CLAIM_TTL_SECS);
+        if fresh_other {
+            return (None, true, none);
+        }
+        let _ = std::fs::remove_file(&f); // TTL 지난 잔재
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&f) {
+            Ok(_) => file = Some(f),
+            Err(_) => return (None, true, none), // 그 사이 다른 프로세스가 잡았다
+        }
+    }
+    busy.insert(id.clone());
+    (sess, false, RestoreClaim { id: Some(id), file })
 }
 
 /// ★D-mac-2(1.1.9): 이 역할로 새 좌석을 만들면 데몬이 이름을 바꾸는가 — 순수. 데몬의 `dedup_worker_role` 은
@@ -23623,7 +23687,12 @@ fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i3
             let sess = entry["session_id"].as_str().map(String::from);
             // ★D-mac-2: 그 대화를 이미 다른 좌석이 잇고 있으면 이 좌석은 이어 붙이지 않는다(resume 끔 —
             //   `--continue` 폴백도 같은 폴더의 최신 대화를 집어 같은 사고를 내므로 함께 끈다).
-            let (sess, resume_dup) = restore_claim_session(sess, &mut busy_sessions);
+            // ★2판 ②④(codex 1R): claim = 기동 직전(여기 = in-seat·fresh 두 기동 모두 이 아래) · 프로세스 내 집합 +
+            //   데몬 재조회(live 세션) + 상태 폴더 원자 파일(다른 `cys restore` 프로세스와의 경쟁) · 보류·실패 시 해제.
+            let live_now = restore_live_sessions();
+            let claim_dir = restore_claims_dir();
+            let (sess, resume_dup, claim) =
+                restore_claim_for_launch(sess, &mut busy_sessions, &live_now, claim_dir.as_deref(), restore_now_secs());
             if resume_dup {
                 println!("· {role}: 저장 대화를 이미 다른 좌석이 잇는 중 — 이어 붙이지 않고 새 대화로 기동(같은 jsonl 동시 쓰기 차단)");
             }
@@ -23732,13 +23801,16 @@ fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i3
             //   생기고, 그 역할의 원래 cwd 는 덮인다(10-08 실측: worker-7 = 전 u5 → a2). 그 좌석을 만들지 않고 보류한다
             //   (phoenix 의 fresh 강등이 빈 좌석을 회수한 뒤 정확한 이름으로 띄운다).
             if restore_launch_would_rename(role, empty_seats.contains_key(role)) {
+                claim.release(&mut busy_sessions); // ★④: 보류 = 이 좌석은 대화를 잇지 않았다 → 뒤 엔트리가 이을 수 있게
                 fail += 1;
                 println!("· {role}: 빈 좌석이 이 역할을 쥐고 있어 새 좌석이 다른 번호로 바뀐다 — 기동 보류(빈 좌석 회수 뒤 재시도)");
                 continue;
             }
-            busy_sessions.extend(sess.iter().cloned());
             println!("· {role}: {agent} 재기동…");
             let rc = run_launch_agent_opts(role, agent, target_cwd, resume, sess, true, cfg, restore_title(&entry));
+            if rc != 0 && rc != cys::EXIT_GATE_PENDING {
+                claim.release(&mut busy_sessions); // ★④: 기동 실패 = 대화를 잇지 않았다
+            }
             if rc == cys::EXIT_GATE_PENDING {
                 // 새 pane 은 떴고 프로세스도 살아 있다 — 닫지 않고, 디렉티브도 넣지 않는다.
                 // (처방 문안은 run_launch_agent_opts 가 stderr 로 이미 냈다.)
@@ -30031,14 +30103,36 @@ mod tests {
     }
 
     #[test]
-    fn d_mac_2_restore_claim_session_blocks_second_resume() {
-        // ★D-mac-2: 점유 좌석이 잇는 대화·같은 회차 앞 좌석이 잡은 대화 = 두 번째는 이어 붙이지 않는다.
-        let mut busy: std::collections::HashSet<String> = ["live-1".to_string()].into_iter().collect();
-        assert_eq!(restore_claim_session(Some("live-1".into()), &mut busy), (None, true), "점유 좌석의 대화");
-        assert_eq!(restore_claim_session(Some("s-a".into()), &mut busy), (Some("s-a".into()), false), "첫 좌석");
-        assert_eq!(restore_claim_session(Some("s-a".into()), &mut busy), (None, true), "같은 회차 두 번째 좌석");
-        assert_eq!(restore_claim_session(None, &mut busy), (None, false), "핀 없음 = 판정 밖");
-        assert_eq!(restore_claim_session(Some("  ".into()), &mut busy), (Some("  ".into()), false), "빈 id = 판정 밖");
+    fn d_mac_2_restore_claim_for_launch_blocks_second_resume_and_releases() {
+        // ★D-mac-2 + 2판 ②④: 점유 좌석(live) · 같은 회차 앞 좌석(busy) · 다른 restore 프로세스(원자 파일) 셋 다 중복으로 막고,
+        //   보류·실패 시 해제하면 뒤 좌석이 이을 수 있다.
+        let dir = std::env::temp_dir().join(format!("cys-claims-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = restore_now_secs();
+        let live: std::collections::HashSet<String> = ["live-1".to_string()].into_iter().collect();
+        let mut busy = std::collections::HashSet::new();
+        let (s, dup, _) = restore_claim_for_launch(Some("live-1".into()), &mut busy, &live, Some(&dir), now);
+        assert_eq!((s, dup), (None, true), "점유 좌석의 대화");
+        let (s, dup, a) = restore_claim_for_launch(Some("s-a".into()), &mut busy, &live, Some(&dir), now);
+        assert_eq!((s.as_deref(), dup), (Some("s-a"), false), "첫 좌석");
+        assert!(dir.join("s-a").exists(), "원자 파일");
+        let (s, dup, _) = restore_claim_for_launch(Some("s-a".into()), &mut busy, &live, Some(&dir), now);
+        assert_eq!((s, dup), (None, true), "같은 회차 두 번째 좌석");
+        // 다른 프로세스 = 새 busy 집합 · 같은 파일 → 중복
+        let mut other = std::collections::HashSet::new();
+        let (s, dup, _) = restore_claim_for_launch(Some("s-a".into()), &mut other, &live, Some(&dir), now);
+        assert_eq!((s, dup), (None, true), "다른 restore 프로세스의 claim");
+        // TTL 지난 파일 = 잔재 → 잡을 수 있다
+        let (_, dup, _) = restore_claim_for_launch(Some("s-a".into()), &mut other, &live, Some(&dir), now + RESTORE_CLAIM_TTL_SECS + 5);
+        assert!(!dup, "TTL 지난 잔재가 막았다");
+        // 해제(④) → 같은 회차 뒤 좌석이 다시 잡는다
+        a.release(&mut busy);
+        assert!(!busy.contains("s-a") && !dir.join("s-a").exists());
+        let (_, dup, _) = restore_claim_for_launch(Some("s-a".into()), &mut busy, &live, Some(&dir), now);
+        assert!(!dup, "해제 뒤에도 막혔다");
+        assert_eq!(restore_claim_for_launch(None, &mut busy, &live, Some(&dir), now).1, false, "핀 없음 = 판정 밖");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

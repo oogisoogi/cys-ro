@@ -619,6 +619,20 @@ room NOT-HEX\n";
         }
     }
 
+    /// 실 클라이언트 1회(수동 · 기본 꺼짐): `COUNSEL_LIVE_CFG=<0.1.14 lib 를 둔 임시 설정 폴더>` 로 실 상담소 방을 읽어 결과 JSON 을
+    /// `COUNSEL_LIVE_OUT` 파일에 쓴다(헤드리스 화면 게이트 ui/e2e/counsel_gate.py 의 실데이터 입력) — 망을 쓰므로 CI 에서 돌지 않는다.
+    #[test]
+    #[ignore]
+    fn live_room_list_with_real_client() {
+        let cfg = std::env::var("COUNSEL_LIVE_CFG").expect("COUNSEL_LIVE_CFG");
+        let v = room_list_at(Path::new(&cfg));
+        assert_eq!(v["status"], "ok", "{v}");
+        if let Ok(out) = std::env::var("COUNSEL_LIVE_OUT") {
+            std::fs::write(out, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+        }
+        println!("{v}");
+    }
+
     /// 시험 전용 임시 폴더(의존성 0 · 끝나면 지운다).
     mod tempfile_lite {
         pub struct Dir(std::path::PathBuf);

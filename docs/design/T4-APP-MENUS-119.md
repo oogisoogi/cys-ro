@@ -101,3 +101,4 @@
 - **Q4 = 채택**: `open_url` 허용 목록에 `agora.godmeyou.kr`·`jarvis-install.godmeyou.kr` **정확 일치 2줄**(하위 도메인 아님) · 시험에 위장 꼴(`….evil.com` · 하위 도메인 · 사용자정보 `@`) 포함.
 - 추가: ⓐ 상담소 패널 문구 = 왕초보 말투 · 위협 표현 0(공개 문안 규칙) ⓑ 라벨·툴팁 = cysr 명명 정본(cys 는 코드 식별자만) — `counselwiring.test.ts` 가 잰다.
 - 구현 메모(설계와 다른 점 · 이유): 문구의 「master」 → 화면 글자는 「마스터」(사이드바 기존 안내 「마스터에게 말로 부탁하세요」와 통일).
+- 구현 메모 2(2단계 결과 · 상세 = `HANDOFF-T4-119.md` §2·§3): 뱃지 폴링 = 별도 45초 `setInterval`(설계 「사용량 틱에 얹기」 대신) · 창 정책 = `spawn_policy(Attached)` 직접(인구조사 판독) · `agora read` 는 `-I` 없이(PYTHONUTF8 보존) · 아고라 창 이동 허용에 `about:blank`·`about:srcdoc` · **실 앱 창 캡처는 미실시**(캡처 = 헤드리스 + 실 클라이언트 결과).

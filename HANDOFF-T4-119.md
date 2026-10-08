@@ -3,6 +3,19 @@
 - 작성: 2026-10-09 07:3x KST · 가지 `feat/119-t4-app`(off merge/v0.14.43 = 9d8fff71) · **push 0**(워커 금지 · 병합 = master)
 - 판정: 설계 1장 통과 = master#fb304202(Q1~Q4 권고 채택 · 문구 규칙 ⓐⓑ) · 설계 = `docs/design/T4-APP-MENUS-119.md`(§7-1 = 판정 기록)
 
+## 0-2. 2판 델타(codex 1R BLOCK 5 · MAJOR 4 → master#6576ea7c 결정대로 9건 전부 코드 해소)
+| # | 결함(리뷰) | 고친 것 | 시험(무는지) |
+|---|---|---|---|
+| ① BLOCK | 명부 주체를 문자열 일치로 읽어 `jarvis-*` 공격 키를 놓침 | `glob_match`·`principal_matches` = OpenSSH match_pattern(_list) 의미론(쉼표·`*`·`?`·`!` 부정 · 따옴표 주체 · 옵션 칸) · 그 id 에 맞는 **모든 줄** 대조 · 지문 못 낸 줄 = 불일치(fail-closed) | `wildcard_attacker_line_breaks_desk_verification`(9꼴) · `principal_pattern_list_is_openssh_semantics` · 뮤턴트(부정 무력화) 적색 2 |
+| ② BLOCK | 격리 없는 python → sitecustomize 가 검증 전에 가짜 출력 | `read_command` = `python -I -B -X utf8` + 자식 env 에서 PYTHONPATH·HOME·STARTUP·USERBASE·INSPECT·EXECUTABLE 제거(-B = -I 아래서도 .pyc 안 씀 · SEAL-1) | `sitecustomize_injection_does_not_run_before_the_client`(공격 env 를 다시 넣어도 무효) · `read_command_is_isolated_and_read_only` · 뮤턴트(`-I` 제거) 적색 5 |
+| ③ BLOCK | `about:blank`·`srcdoc` 를 top-level 에도 허용 | **`about:` 전면 거부**(https 아고라 오리진만). 실측 wry 0.55.1 = 맥은 모든 틀에 URL 만 넘김(구분 불가) · 윈은 top-level 만 | 이동 판정 위장 꼴 14 · `ui/e2e/agora_frames_probe.py` 실 로비: 서브 틀 about:blank 탐색 2회(관측) · Cloudflare 확인 스크립트를 막아도 목록 정상·오류 0(WebKit·Chromium) → `shots-119-t4/agora-frames-probe-2026-10-09.txt` |
+| ④ BLOCK | 반쯤 쓴 unread.json 의 수정 시각을 캐시 → 같은 ms 완성본 영구 누락 | `parseUnread` → `{state, settled}` · `stepUnread` = settled(없음·정상·v≠1)일 때만 수정 시각 기억 | `stepUnread — 부분 쓰기 뒤 …` 2건 |
+| ⑤ BLOCK | 표식 16 hex 고정 가정 | 꼴 가정 0 — 비지 않고 한 줄·≤256자인 응답 값과 바이트 정확 일치만 | 32 hex·다른 접두 벗김 · 빈/여러 줄/긴 표식 안 벗김 |
+| ⑥ MAJOR | 거부된 이동을 브라우저로 자동 전달(탭 폭탄) | `on_navigation = agora_nav_allowed`(거부만) · `on_new_window = Deny` · `open_outside` 삭제 · 사람이 누른 바깥 링크 = 주입 스크립트가 창 안 안내 1줄(「바깥 링크는 이 창에서 열리지 않아요. 아래 주소를 복사해서 브라우저에서 여세요:」 + 주소 · textContent · 10초) · open_url 정확 일치 2줄 유지 | `init_script_embeds_my_id_as_json_and_blocks_forms`(안내·오리진 4조건·window.open 0) |
+| ⑦ MAJOR | stdout 무제한 적재 | 전체 상한 512KB(8쪽×64KB) · 읽는 스레드가 상한 넘는 순간 멈추고 본 스레드가 자식 즉시 종료 · 첫 쪽 넘침 = error · 이후 쪽 넘침 = 앞쪽만 + partial | `stdout_flood_is_cut_at_cap_not_buffered`(<10초 · 둘째 쪽 넘침 = partial) |
+| ⑧ MAJOR | capability 시험이 문자열 검색 | 모든 capability 파일(json 외 꼴 = 실패) + tauri*.conf.json 인라인 → windows·webviews glob(`*`·`?`·`[` = 연다고 봄)·remote·범위 칸 없음 구조 판정 | `capability_judge_catches_globs_star_and_remote`(8꼴) · 실 capability 전건 |
+| ⑨ MAJOR | 가짜 CLI 가 argv 를 안 봄 | 가짜 CLI = argv `read --thread_id <핀 방> [--cursor <값>]` · 격리 플래그 3 · AGORA_CONFIG_DIR · 금지 env 0 아니면 exit 9 · 커서 쪽 넘김 시험 신설 | 뮤턴트(`read`→`post`) 적색 4 |
+
 ## 0. 델타(후임이 읽을 최소 범위)
 - **이 파일 + 설계 §0(실측 표)·§3(보안 경계)·§7-1.** 재정독 불요: 종합 설계·SPEC 전문(§11 표만 설계 §2 에 옮겨 둠).
 - 커밋 5개(순서 = master 지시):
@@ -29,9 +42,9 @@
 ## 2. 지시 없이 내린 판단
 1. 뱃지 폴링 = **별도 `setInterval` 45초**(설계 초안 「사용량 틱에 얹기」 대신 · 3초 틱마다 Rust 를 부르지 않게) → `deptprogresswiring.test.ts` 총수 핀 11 → 12(사유 1줄).
 2. 인구조사 검출기가 같은 파일 밖 포장 함수(`no_console`)를 못 읽어 counsel.rs 는 **`cmd.spawn_policy(cys::ChildLifetime::Attached)` 직접**(no_console 본체와 같은 등급).
-3. `agora read` 를 `python -I` 로 부르지 않음 — `-I` 는 PYTHONUTF8 를 무시해 한국어 윈도(cp949)에서 JSON 출력이 깨질 수 있다. 팩 `javis_counsel.py` 호출 꼴(인자 없이 · env = inject_runtime_path)과 같게.
+3. ~~`agora read` 를 `python -I` 없이~~ → **2판에서 뒤집음**(master 결정 ② = `-I -B -X utf8` · §0-2 ②).
 4. 「상담소 답」 = 명부의 그 id 키 **전부**가 핀 지문일 때만(한 줄이라도 다르면 그 키로 서명된 글이 `sig: ok` 로 올 수 있다).
-5. 아고라 창 이동 허용에 `about:blank`·`about:srcdoc` 추가(사이트의 Cloudflare 확인 스크립트가 숨은 빈 틀을 만든다 · 실측 index.html).
+5. ~~아고라 창 이동 허용에 `about:blank`·`about:srcdoc` 추가~~ → **2판에서 철회**(§0-2 ③).
 6. 화면 글자 「master」 → 「마스터」(사이드바 기존 안내와 통일).
 
 ## 3. 미완 · 위험(정직)

@@ -11870,6 +11870,9 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                                "cwd": s.cwd,
                                "claude_config_dir": s.claude_config_dir.lock().unwrap().clone(),
                                "created_at": s.created_at,
+                               // ★D-mac-2(1.1.9): 좌석이 잇고 있는 대화 id — run_restore 가 같은 id 의 두 번째
+                               //   `--resume` 을 막는 입력(키 추가만 · 미관측 = null).
+                               "session_id": s.agent_session_id.lock().unwrap().clone(),
                                "agent": s.agent_meta.lock().unwrap().as_ref().map(|(n, _)| n.clone())})
                     })
                 })

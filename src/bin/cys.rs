@@ -23488,6 +23488,30 @@ fn recover_directive() -> &'static str {
 }
 
 /// T2-6 조직 복원: 토폴로지 스냅샷 기준으로 죽은 역할 일괄 재기동 (작업 재개는 master 판단)
+/// ★D-mac-2(1.1.9): 복원 회차의 대화 점유 판정 — 순수. `sess` 가 이미 `busy` 에 있으면 `(None, true)`
+/// (이어 붙이지 않는다) · 아니면 그대로 돌려주고 `busy` 에 넣는다(같은 회차의 두 번째 좌석이 같은 id 를 못 잡게).
+/// 빈 문자열·None = 점유 판정 대상 아님(`(sess, false)`).
+fn restore_claim_session(
+    sess: Option<String>,
+    busy: &mut std::collections::HashSet<String>,
+) -> (Option<String>, bool) {
+    match sess.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(id) if busy.contains(id) => (None, true),
+        Some(id) => {
+            busy.insert(id.to_string());
+            (sess, false)
+        }
+        None => (sess, false),
+    }
+}
+
+/// ★D-mac-2(1.1.9): 이 역할로 새 좌석을 만들면 데몬이 이름을 바꾸는가 — 순수. 데몬의 `dedup_worker_role` 은
+/// 정확히 `"worker"` 요청만 번호를 바꾸고(살아 있는 보유자가 있으면 다음 빈 번호), 복원은 점유 좌석 역할을
+/// 이미 건너뛰므로 여기 남는 살아 있는 보유자 = 빈 좌석뿐이다.
+fn restore_launch_would_rename(role: &str, held_by_empty_seat: bool) -> bool {
+    role == "worker" && held_by_empty_seat
+}
+
 fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i32 {
     let result = (|| -> Result<(usize, usize, usize), String> {
         let topo = request("system.topology", json!({}))?;
@@ -23511,6 +23535,14 @@ fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i3
                 let sid = e["surface_id"].as_u64()?;
                 Some((role, (sid, e["env_injected"].as_bool().unwrap_or(false))))
             })
+            .collect();
+        // ★D-mac-2(1.1.9): 지금 다른 좌석이 잇고 있는 대화(세션 id) — 같은 id 를 두 번째 좌석이
+        //   `--resume` 하면 두 claude 가 같은 jsonl 에 동시에 쓴다(10-09 06:38 실측 pid 2개).
+        //   점유 좌석의 세션 + 이 복원 회차에서 이미 이어 붙인 세션을 함께 센다.
+        let mut busy_sessions: std::collections::HashSet<String> = live_entries
+            .iter()
+            .filter(|e| e["seat"].as_str() != Some("empty"))
+            .filter_map(|e| e["session_id"].as_str().map(str::trim).filter(|s| !s.is_empty()).map(String::from))
             .collect();
         let saved = topo["saved"].as_array().cloned().unwrap_or_default();
         // ★W2a 심층방어: 의도적으로 닫힌(surface.close 경유) 역할의 묘비 — raw restore도 절대 재스폰하지
@@ -23579,6 +23611,13 @@ fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i3
             );
             // (4b) saved entry의 session_id를 꺼내 정확한 세션 재개(없으면 fallback)
             let sess = entry["session_id"].as_str().map(String::from);
+            // ★D-mac-2: 그 대화를 이미 다른 좌석이 잇고 있으면 이 좌석은 이어 붙이지 않는다(resume 끔 —
+            //   `--continue` 폴백도 같은 폴더의 최신 대화를 집어 같은 사고를 내므로 함께 끈다).
+            let (sess, resume_dup) = restore_claim_session(sess, &mut busy_sessions);
+            if resume_dup {
+                println!("· {role}: 저장 대화를 이미 다른 좌석이 잇는 중 — 이어 붙이지 않고 새 대화로 기동(같은 jsonl 동시 쓰기 차단)");
+            }
+            let resume = !no_resume && !resume_dup;
             // (W1) topology에 기록된 원 계정 config_dir을 넘긴다(구 topology=None → 기존 템플릿 동작).
             let cfg = cys::restore_config_dir(&entry); // ★D-mac-1: 관측 프로필 우선(없으면 종전 기록값)
             // ★SEAT in-seat 연결(오너 의도: "최초로 만들어지는 surface에 클로드가 연결되고 마스터로
@@ -23631,7 +23670,7 @@ fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i3
                     role,
                     agent,
                     &spec,
-                    !no_resume,
+                    resume,
                     sess.as_deref(),
                     // ★(0.14.31 · 성찰 C5) 좌석 내 재연결도 **restore** 다. 종전 `false` 는 두 가지를
                     //   한꺼번에 잃었다: ① `apply_config_dir_override` 가 꺼져 기록된 `claude_config_dir`
@@ -23678,8 +23717,18 @@ fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i3
                     }
                 }
             }
+            // ★D-mac-2: 「worker」 슬롯을 빈 좌석이 쥔 채(in-seat 실패·불가) 새 좌석을 만들면 데몬이 빈 번호
+            //   (worker-N)로 **이름을 바꿔** 띄운다(dedup_worker_role) — 남의 역할 이름으로 이 cwd·세션의 좌석이
+            //   생기고, 그 역할의 원래 cwd 는 덮인다(10-08 실측: worker-7 = 전 u5 → a2). 그 좌석을 만들지 않고 보류한다
+            //   (phoenix 의 fresh 강등이 빈 좌석을 회수한 뒤 정확한 이름으로 띄운다).
+            if restore_launch_would_rename(role, empty_seats.contains_key(role)) {
+                fail += 1;
+                println!("· {role}: 빈 좌석이 이 역할을 쥐고 있어 새 좌석이 다른 번호로 바뀐다 — 기동 보류(빈 좌석 회수 뒤 재시도)");
+                continue;
+            }
+            busy_sessions.extend(sess.iter().cloned());
             println!("· {role}: {agent} 재기동…");
-            let rc = run_launch_agent_opts(role, agent, target_cwd, !no_resume, sess, true, cfg);
+            let rc = run_launch_agent_opts(role, agent, target_cwd, resume, sess, true, cfg);
             if rc == cys::EXIT_GATE_PENDING {
                 // 새 pane 은 떴고 프로세스도 살아 있다 — 닫지 않고, 디렉티브도 넣지 않는다.
                 // (처방 문안은 run_launch_agent_opts 가 stderr 로 이미 냈다.)
@@ -29969,6 +30018,26 @@ mod tests {
         assert!(rs.contains("run_launch_agent_opts(role, agent, cwd, true, Some(sid), true, cfg)"));
         assert!(rs.contains(".is_some_and(|s| s.contains(sid.as_str()))"), "이을 수 있는지 미리 재지 않는다");
         assert_eq!(rs.matches("return run_launch_agent(role, agent, cwd);").count(), 2, "못 이을 때 종전 기동이 아니다");
+    }
+
+    #[test]
+    fn d_mac_2_restore_claim_session_blocks_second_resume() {
+        // ★D-mac-2: 점유 좌석이 잇는 대화·같은 회차 앞 좌석이 잡은 대화 = 두 번째는 이어 붙이지 않는다.
+        let mut busy: std::collections::HashSet<String> = ["live-1".to_string()].into_iter().collect();
+        assert_eq!(restore_claim_session(Some("live-1".into()), &mut busy), (None, true), "점유 좌석의 대화");
+        assert_eq!(restore_claim_session(Some("s-a".into()), &mut busy), (Some("s-a".into()), false), "첫 좌석");
+        assert_eq!(restore_claim_session(Some("s-a".into()), &mut busy), (None, true), "같은 회차 두 번째 좌석");
+        assert_eq!(restore_claim_session(None, &mut busy), (None, false), "핀 없음 = 판정 밖");
+        assert_eq!(restore_claim_session(Some("  ".into()), &mut busy), (Some("  ".into()), false), "빈 id = 판정 밖");
+    }
+
+    #[test]
+    fn d_mac_2_restore_launch_would_rename_only_worker_held_by_empty_seat() {
+        // 데몬 dedup_worker_role 은 정확히 "worker" 만 번호를 바꾼다(state.rs) — 그 경우만 보류.
+        assert!(restore_launch_would_rename("worker", true));
+        assert!(!restore_launch_would_rename("worker", false));
+        assert!(!restore_launch_would_rename("worker-7", true), "번호 역할은 이름이 안 바뀐다(latest-wins)");
+        assert!(!restore_launch_would_rename("master", true));
     }
 
     // ★항목별 restore override 진리표(2R codex #2) — 지켜야 할 값과 고쳐야 할 값.

@@ -70,6 +70,9 @@ AGORA_MIN_TIMEOUT_S = 30               # 남은 몫이 이보다 작으면 agora
 INSTALL_LOCK = "lib.install.lock"      # <설정> 옆 파일 · 존재 판정 ~ 게시까지 한 손
 INSTALL_LOCK_WAIT_S = 60.0
 KNOWN_FILE = "agora-client-known.txt"  # 자동 교체해도 되는 옛 판 지문 표(`<판본> <트리 지문>`)
+FOREIGN_STREAK_SIGNAL = 3              # ★D-mac-3: ensure-client 결과 foreign 이 이만큼 이어지면 신호 1줄(조용한 실패 금지)
+FOREIGN_SIGNAL = ("ensure-client", "counsel.client_foreign")   # (op, error_code)
+FOREIGN_SCAN_BYTES = 64 * 1024         # tick.log 끝에서 읽는 양(한 판 몇 줄 · 3연속 판정에 넉넉)
 MAX_LIST = 64
 
 
@@ -780,7 +783,10 @@ def ensure_client(cfg=None, pack=None, wait_s=INSTALL_LOCK_WAIT_S):
             log_event(cfg, "ensure-client", result="busy", why="install lock held", want=pin["ver"])
             return "busy"
         try:
-            return _ensure_locked(cfg, pack, pin, blob)
+            res = _ensure_locked(cfg, pack, pin, blob)
+            if res == "foreign":
+                _note_client_foreign(cfg)
+            return res
         except ValueError as e:            # zip-slip · 깨진 b64/zip(지문 재는 자리) = 거부
             return _refused(cfg, pin["ver"], str(e)[:120])
         finally:
@@ -789,6 +795,52 @@ def ensure_client(cfg=None, pack=None, wait_s=INSTALL_LOCK_WAIT_S):
     except Exception as e:
         log_event(cfg, "ensure-client", result="error", why=type(e).__name__)
         return "error"
+
+
+def foreign_streak(cfg):
+    """tick.log 끝에서 거슬러 이어진 `ensure-client` 결과 `foreign` 의 수 — 다른 ensure-client 결과를 만나면 멈춘다.
+    다른 event 줄(facts·agora 등)은 건너뛴다 · 로그가 막 돌았으면(`.1`) 그 끝도 이어 본다 · 읽기 실패 = 0."""
+    rows = []
+    for name in (TICK_LOG + ".1", TICK_LOG):
+        try:
+            path = _counsel(cfg, name)
+            with open(path, "rb") as f:
+                size = os.path.getsize(path)
+                f.seek(max(0, size - FOREIGN_SCAN_BYTES))
+                lines = f.read().decode("utf-8", "replace").splitlines()
+            if size > FOREIGN_SCAN_BYTES:
+                lines = lines[1:]              # 잘린 첫 줄
+            rows.extend(lines)
+        except OSError:
+            continue
+    n = 0
+    for line in reversed(rows):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if type(row) is not dict or row.get("event") != "ensure-client":
+            continue
+        if row.get("result") != "foreign":
+            break
+        n += 1
+    return n
+
+
+def _note_client_foreign(cfg):
+    """★D-mac-3(1.1.9): 「모르는 트리 = 불가침」은 옳지만 **조용히** 영원히 멈추면 그 PC 의 상담소가 소리 없이 죽는다
+    (실측: 공식 0.1.4 가 known 표에 없어 foreign ×3 · 수집·주간·방 읽기 불능). 이어진 foreign 이 정확히
+    FOREIGN_STREAK_SIGNAL 번째인 판에 신호 1줄을 쓴다(연속 구간당 1회 · 끊겼다 다시 이어지면 다시 1회).
+    결과(썼나)를 tick.log 에 남긴다 — 끔·잠금 초과로 못 써도 흔적은 있다. 예외 0."""
+    try:
+        n = foreign_streak(cfg)
+        if n != FOREIGN_STREAK_SIGNAL:
+            return False
+        ok = write_signal("pack", FOREIGN_SIGNAL[0], FOREIGN_SIGNAL[1], cfg=cfg)
+        log_event(cfg, "client-foreign-signal", streak=n, sent=bool(ok), error_code=FOREIGN_SIGNAL[1])
+        return bool(ok)
+    except Exception:
+        return False
 
 
 def _kept(old):

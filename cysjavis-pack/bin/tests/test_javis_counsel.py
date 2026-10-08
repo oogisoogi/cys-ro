@@ -726,13 +726,20 @@ class Fingerprint(Base):
 
     def test_known_file_rows(self):
         known = jc._read_known(os.path.dirname(BIN))
-        self.assertEqual(sorted(known.values()), ["0.1.12", "0.1.13", "0.1.14"])
+        # ★D-mac-3(1.1.9): 공식 발행판 0.1.4~0.1.11 도 표에 있어야 한다(빠지면 그 판 PC 가 영원히 foreign).
+        self.assertEqual(sorted(known.values(), key=lambda v: tuple(int(x) for x in v.split("."))),
+                         ["0.1.%d" % i for i in range(4, 15)])
         # ★known 의 동봉 판 줄 = 핀 넷째 칸(다음 판 동봉 때 이 판 PC 가 「모르는 트리」로 남지 않게 · 3판 ⑨)
         pin = rd(os.path.join(os.path.dirname(BIN), "install", "agora-client.pin"), encoding="utf-8").split()
         self.assertEqual({v: f for f, v in known.items()}.get(pin[0]), pin[3], "known 의 동봉 판 지문 ≠ 핀 넷째 칸")
         text = rd(os.path.join(os.path.dirname(BIN), "install", jc.KNOWN_FILE), encoding="utf-8")
         for sha in ("0f3f6616a95428cf0712da578221e3f709590cf3e76fbb6f809e615d458e7632",
-                    "3876029b22cfe25f2a43de4937c2dea52719e547eebe448e3149eb0975b03244"):
+                    "3876029b22cfe25f2a43de4937c2dea52719e547eebe448e3149eb0975b03244",
+                    # D-mac-3 — 0.1.4 · 0.1.6·0.1.7(= 아고라 RELEASES.md 핀) · 0.1.11
+                    "7b4d94a121989b464bb8934f013f7897d5e5c5805a10073c38b6ebdd4585f86b",
+                    "04ee6d4b16941c1fe2df048540dff419522839d968c952f889fcdec29e135536",
+                    "8ecf1c3fc51cf541a6da229addfe129cee149026ccdbbbf00b2620c73fedf371",
+                    "ba935334c5b2ccbc9ad0b061487b50734455e0f7c91e1123482cbe7eceb63e72"):
             self.assertIn(sha, text, "zip sha 주석 누락")
         site = os.path.expanduser(os.path.join("~", "axdev", "ai-jarvis", "site", "install"))
         for fp, ver in known.items():   # 사이트 zip 이 있는 기계(제작 맥)에서만 재계산 대조
@@ -1391,6 +1398,122 @@ class DeptTrap(Base):
         r = self.run_dept("list", CYS_DEPTS_JSON=ok)
         self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace")[-400:])
         self.assertEqual(self.sig_lines(), [])
+
+
+class DMac3OfficialOldClient(Base):
+    """★D-mac-3(1.1.9 · TICKET=cysr-119-defects) — 공식 옛 판(0.1.4)이 「모르는 트리」로 영원히 멈추던 결함.
+
+    재현(맥 실측 10-08): `<설정>/lib` = 공식 0.1.4(손대지 않음) · tick.log = foreign ×3 · 교체 0 · 신호 0.
+    수리: known 표에 0.1.4~0.1.11 · 고친 사본은 여전히 불가침 · foreign 3연속 = 신호 1줄(counsel.client_foreign)."""
+
+    REAL_PACK = os.path.dirname(BIN)
+    V014_FP = "c41104a28be325e45a1debe2b4cd4706b9e06eb55fe3f636056830b87eb93502"
+
+    def use_real_bundle(self):
+        """시험 팩에 실 동봉판(핀·b64)과 실 known 표를 그대로 싣는다."""
+        d = os.path.join(self.pack, "install")
+        os.makedirs(d, exist_ok=True)
+        pin = jc._read_pin(self.REAL_PACK)
+        for name in ("agora-client.pin", "agora-client-%s.zip.b64" % pin["ver"], jc.KNOWN_FILE):
+            shutil.copy(os.path.join(self.REAL_PACK, "install", name), os.path.join(d, name))
+        return pin
+
+    def old_014_tree(self, dest):
+        """공식 0.1.4 트리 사본 — ①이 맥 설치본(지문이 0.1.4 일 때만 · 읽기 전용 복사) ②제작 맥 사이트 zip ③아고라 dist zip."""
+        live = os.path.expanduser(os.path.join("~", ".config", "agora", "lib"))
+        if os.path.isdir(live) and not os.path.islink(live) and jc.tree_fingerprint(live) == self.V014_FP:
+            shutil.copytree(live, dest, symlinks=True)
+            if os.path.isfile(os.path.join(dest, ".pin")):
+                os.remove(os.path.join(dest, ".pin"))   # 사본의 .pin 만(지문 산식 밖)
+            return "live"
+        for z in (os.path.join("~", "axdev", "ai-jarvis", "site", "install", "agora-client-0.1.4.zip"),
+                  os.path.join("~", "axdev", "jarvis-agora", "dist", "agora-client-0.1.4.zip")):
+            z = os.path.expanduser(z)
+            if os.path.isfile(z):
+                os.makedirs(dest)
+                jc._extract(rd(z, "rb"), dest)
+                return z
+        self.skipTest("공식 0.1.4 사본 없음(제작 맥 전용 시험)")
+
+    def lib(self, *p):
+        return os.path.join(self.cfg, "lib", *p)
+
+    def events(self):
+        return [json.loads(x) for x in rd(os.path.join(self.cfg, "counsel", "tick.log")).splitlines()]
+
+    def test_official_014_replaced_by_bundle(self):
+        pin = self.use_real_bundle()
+        src = self.old_014_tree(self.lib())
+        self.assertEqual(jc.tree_fingerprint(self.lib()), self.V014_FP, "픽스처가 0.1.4 가 아니다(%s)" % src)
+        self.assertEqual(jc.ensure_client(), "replaced")
+        self.assertEqual(jc.tree_fingerprint(self.lib()), pin["fp"])
+        ev = self.events()[-1]
+        self.assertEqual((ev["result"], ev["was"], ev["version"]), ("replaced", "0.1.4", pin["ver"]))
+        self.assertEqual(self.sig_lines(), [], "교체 성공에 신호를 썼다")
+
+    def test_modified_014_copy_kept(self):
+        self.use_real_bundle()
+        self.old_014_tree(self.lib())
+        with open(self.lib("README.md"), "a", encoding="utf-8") as f:
+            f.write("\n# 내가 고침\n")
+        snap = jc.tree_fingerprint(self.lib())
+        self.assertEqual(jc.ensure_client(), "foreign")
+        self.assertEqual(jc.tree_fingerprint(self.lib()), snap, "고친 사본을 건드렸다")
+
+    def _foreign_lib(self):
+        os.makedirs(self.lib("bin"), exist_ok=True)
+        with open(self.lib("bin", "agora"), "w") as f:
+            f.write("mine")
+        EnsureClient.put(self, _zip([("bin/agora", "theirs")]))
+
+    def foreign_signals(self):
+        return [json.loads(x) for x in self.sig_lines()
+                if json.loads(x)["error_code"] == "counsel.client_foreign"]
+
+    def test_three_foreign_in_a_row_signals_once(self):
+        self._foreign_lib()
+        got = []
+        for _ in range(6):
+            self.assertEqual(jc.ensure_client(), "foreign")
+            got.append(len(self.foreign_signals()))
+        self.assertEqual(got, [0, 0, 1, 1, 1, 1], "3번째에 정확히 1줄 · 그 뒤 같은 구간은 더 안 쓴다")
+        row = self.foreign_signals()[0]
+        self.assertEqual((row["source"], row["op"]), ("pack", "ensure-client"))
+        notes = [e for e in self.events() if e["event"] == "client-foreign-signal"]
+        self.assertEqual([(n["streak"], n["sent"]) for n in notes], [(3, True)])
+
+    def test_streak_broken_by_other_result_signals_again(self):
+        self._foreign_lib()
+        for _ in range(3):
+            jc.ensure_client()
+        self.assertEqual(len(self.foreign_signals()), 1)
+        shutil.rmtree(self.lib())                 # 사람이 치웠다 → 새로 깐다(installed) = 구간 끊김
+        self.assertEqual(jc.ensure_client(), "installed")
+        with open(self.lib("bin", "agora"), "w") as f:
+            f.write("mine again")                 # 다시 고침 → foreign 구간 새로 시작
+        for _ in range(3):
+            self.assertEqual(jc.ensure_client(), "foreign")
+        self.assertEqual(len(self.foreign_signals()), 2, "끊긴 뒤 새 구간 3번째에 다시 1줄")
+
+    def test_other_events_do_not_break_streak_and_rotated_log_counts(self):
+        self._foreign_lib()
+        jc.ensure_client()
+        jc.log_event(self.cfg, "facts", result="ok")      # 다른 event 줄은 건너뛴다
+        log = os.path.join(self.cfg, "counsel", "tick.log")
+        os.replace(log, log + ".1")                         # 로그가 막 돌았다 — .1 끝도 이어 본다
+        jc.ensure_client()
+        self.assertEqual(len(self.foreign_signals()), 0)
+        jc.ensure_client()
+        self.assertEqual(len(self.foreign_signals()), 1)
+
+    def test_signal_off_switch_still_leaves_trace(self):
+        self.config('{"counsel": {"auto": false}}')
+        self._foreign_lib()
+        for _ in range(3):
+            jc.ensure_client()
+        self.assertEqual(self.sig_lines(), [])
+        notes = [e for e in self.events() if e["event"] == "client-foreign-signal"]
+        self.assertEqual([(n["streak"], n["sent"]) for n in notes], [(3, False)], "못 쓴 것도 흔적은 남긴다")
 
 
 if __name__ == "__main__":

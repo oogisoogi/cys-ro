@@ -19027,7 +19027,7 @@ fn sanitize_launch_cwd(cwd: String) -> String {
 }
 
 fn run_launch_agent(role: &str, agent: &str, cwd: Option<String>) -> i32 {
-    run_launch_agent_opts(role, agent, cwd, false, None, false, None)
+    run_launch_agent_opts(role, agent, cwd, false, None, false, None, None)
 }
 
 /// ★v115r5-t1 T3: 저장 topology 에서 이 역할의 대화 핀을 고른다(순수) — `(session_id, config_dir)`.
@@ -19086,7 +19086,7 @@ fn run_launch_agent_resume_saved(role: &str, agent: &str, cwd: Option<String>) -
         return run_launch_agent(role, agent, cwd);
     }
     eprintln!("[launch-agent] --resume-saved: {role} 저장 대화({sid})를 이어서 기동");
-    run_launch_agent_opts(role, agent, cwd, true, Some(sid), true, cfg)
+    run_launch_agent_opts(role, agent, cwd, true, Some(sid), true, cfg, None)
 }
 
 /// ★v115r5-t1 T1①: 이 역할이 지금 **실제로 앉은 좌석**(occupied)에 있는가(순수).
@@ -19161,6 +19161,9 @@ fn run_launch_agent_opts(
     restore: bool,
     // (W1) restore가 topology에 기록된 원 계정 config_dir을 넘긴다(재해소 금지). 신규 기동은 None.
     config_dir_override: Option<String>,
+    // ★D-mac-4(1.1.9): restore 가 저장된 옛 제목을 넘긴다 — 데몬 initial_title 의 「다른 번호로 시작 =
+    //   낡은 번호」 갈래가 번호 칸만 새 번호로 바꾸고 특성(cwd 특성 등)을 보존한다. None = 종전(workflow_title).
+    title_override: Option<String>,
 ) -> i32 {
     // ★(W2 · G12) LAUNCH 경로의 boot 락 참여 — 별도 프로세스로 도는 `cys launch-agent`
     //   (javis_boot_node → boot-reviewers 경로)를 GUI/훅 `cys boot` 와 직렬화한다.
@@ -19224,7 +19227,7 @@ fn run_launch_agent_opts(
             .collect();
         let r = request(
             "surface.create",
-            json!({"cwd": cwd, "title": workflow_title(role, agent, &cwd), "role": role,
+            json!({"cwd": cwd, "title": title_override.clone().unwrap_or_else(|| workflow_title(role, agent, &cwd)), "role": role,
                    // ★D17(1.1.8): 제목 판정 전용 어댑터 이름(데몬 initial_title 만 읽는다 · agent_meta 무접촉).
                    "title_agent": agent,
                    "rows": 40, "cols": 140, "idempotency_key": idem, "env": env_obj,
@@ -23505,6 +23508,13 @@ fn restore_claim_session(
     }
 }
 
+/// ★D-mac-4(1.1.9): 부활 좌석에 요청할 제목 — 저장 엔트리의 옛 제목(공백 아닌 문자열) 또는 None. 순수.
+/// 옛 제목은 「옛 번호 · 모델 · 특성」 꼴이라, 데몬 `initial_title` 이 번호 칸만 새 번호로 바꾸고 나머지(특히
+/// spawn 때 지은 cwd 특성 — u4·lms·relay·lead)를 그대로 옮긴다. 없으면 종전 규칙(데몬 기본 「번호 · roleN」).
+fn restore_title(entry: &Value) -> Option<String> {
+    entry["title"].as_str().map(str::trim).filter(|t| !t.is_empty()).map(String::from)
+}
+
 /// ★D-mac-2(1.1.9): 이 역할로 새 좌석을 만들면 데몬이 이름을 바꾸는가 — 순수. 데몬의 `dedup_worker_role` 은
 /// 정확히 `"worker"` 요청만 번호를 바꾸고(살아 있는 보유자가 있으면 다음 빈 번호), 복원은 점유 좌석 역할을
 /// 이미 건너뛰므로 여기 남는 살아 있는 보유자 = 빈 좌석뿐이다.
@@ -23728,7 +23738,7 @@ fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i3
             }
             busy_sessions.extend(sess.iter().cloned());
             println!("· {role}: {agent} 재기동…");
-            let rc = run_launch_agent_opts(role, agent, target_cwd, resume, sess, true, cfg);
+            let rc = run_launch_agent_opts(role, agent, target_cwd, resume, sess, true, cfg, restore_title(&entry));
             if rc == cys::EXIT_GATE_PENDING {
                 // 새 pane 은 떴고 프로세스도 살아 있다 — 닫지 않고, 디렉티브도 넣지 않는다.
                 // (처방 문안은 run_launch_agent_opts 가 stderr 로 이미 냈다.)
@@ -30015,7 +30025,7 @@ mod tests {
         assert!(held_at < fail_at, "재실측이 실패 계수보다 뒤에 있다");
         let rs = &src[src.find("fn run_launch_agent_resume_saved(").unwrap()..];
         let rs = &rs[..rs.find("\n}\n").unwrap()];
-        assert!(rs.contains("run_launch_agent_opts(role, agent, cwd, true, Some(sid), true, cfg)"));
+        assert!(rs.contains("run_launch_agent_opts(role, agent, cwd, true, Some(sid), true, cfg, None)"));
         assert!(rs.contains(".is_some_and(|s| s.contains(sid.as_str()))"), "이을 수 있는지 미리 재지 않는다");
         assert_eq!(rs.matches("return run_launch_agent(role, agent, cwd);").count(), 2, "못 이을 때 종전 기동이 아니다");
     }
@@ -30029,6 +30039,19 @@ mod tests {
         assert_eq!(restore_claim_session(Some("s-a".into()), &mut busy), (None, true), "같은 회차 두 번째 좌석");
         assert_eq!(restore_claim_session(None, &mut busy), (None, false), "핀 없음 = 판정 밖");
         assert_eq!(restore_claim_session(Some("  ".into()), &mut busy), (Some("  ".into()), false), "빈 id = 판정 밖");
+    }
+
+    #[test]
+    fn d_mac_4_restore_title_carries_saved_title() {
+        // ★D-mac-4: 부활 = 옛 제목을 요청 → 데몬이 번호만 바꾸고 특성을 보존(initial_title 낡은 번호 갈래).
+        assert_eq!(restore_title(&json!({"title": "298 · Opus · u5"})).as_deref(), Some("298 · Opus · u5"));
+        assert_eq!(restore_title(&json!({"title": "  "})), None, "빈 제목 = 종전 규칙");
+        assert_eq!(restore_title(&json!({"role": "worker-7"})), None);
+        // 배선 핀: restore 의 fresh 기동이 이 값을 넘기고, launch 가 그것을 surface.create 제목으로 쓴다.
+        let src = include_str!("cys.rs");
+        assert!(refl_fn_body(src, "run_restore").contains("restore_title(&entry)"), "restore 가 옛 제목을 안 넘긴다");
+        assert!(refl_fn_body(src, "run_launch_agent_opts").contains("title_override.clone().unwrap_or_else"),
+                "launch 가 요청 제목을 안 쓴다");
     }
 
     #[test]

@@ -21,6 +21,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -732,21 +733,29 @@ class Fingerprint(Base):
         # ★known 의 동봉 판 줄 = 핀 넷째 칸(다음 판 동봉 때 이 판 PC 가 「모르는 트리」로 남지 않게 · 3판 ⑨)
         pin = rd(os.path.join(os.path.dirname(BIN), "install", "agora-client.pin"), encoding="utf-8").split()
         self.assertEqual({v: f for f, v in known.items()}.get(pin[0]), pin[3], "known 의 동봉 판 지문 ≠ 핀 넷째 칸")
+        # ★2판 ⑨(codex 1R): CI 몫 = manifest 정합 — 원문 줄로 잰다(_read_known 은 지문 키라 중복을 조용히 접는다).
+        #   진위(zip sha·지문 재계산) = test_agora_known_authentic.py(제작 맥 · 게시 zip 없으면 FAIL).
         text = rd(os.path.join(os.path.dirname(BIN), "install", jc.KNOWN_FILE), encoding="utf-8")
-        for sha in ("0f3f6616a95428cf0712da578221e3f709590cf3e76fbb6f809e615d458e7632",
-                    "3876029b22cfe25f2a43de4937c2dea52719e547eebe448e3149eb0975b03244",
-                    # D-mac-3 — 0.1.0 · 0.1.4 · 0.1.6·0.1.7(= 아고라 RELEASES.md 핀) · 0.1.11
-                    "5171b1161fc5e326486e9ffdd96034a22e194dafba610ee94eeb670aa81e4b64",
-                    "7b4d94a121989b464bb8934f013f7897d5e5c5805a10073c38b6ebdd4585f86b",
-                    "04ee6d4b16941c1fe2df048540dff419522839d968c952f889fcdec29e135536",
-                    "8ecf1c3fc51cf541a6da229addfe129cee149026ccdbbbf00b2620c73fedf371",
-                    "ba935334c5b2ccbc9ad0b061487b50734455e0f7c91e1123482cbe7eceb63e72"):
-            self.assertIn(sha, text, "zip sha 주석 누락")
-        site = os.path.expanduser(os.path.join("~", "axdev", "ai-jarvis", "site", "install"))
-        for fp, ver in known.items():   # 사이트 zip 이 있는 기계(제작 맥)에서만 재계산 대조
-            z = os.path.join(site, "agora-client-%s.zip" % ver)
-            if os.path.isfile(z):
-                self.assertEqual(jc.zip_fingerprint(rd(z, "rb")), fp, ver)
+        rows, shas = [], {}
+        for line in text.splitlines():
+            m = re.match(r"^#\s*(\d+\.\d+\.\d+)\s*=.*?sha256\s+(\S+)", line)
+            if m:
+                self.assertNotIn(m.group(1), shas, "zip sha 주석 중복 %s" % m.group(1))
+                shas[m.group(1)] = m.group(2)
+            p = line.split()
+            if p and not p[0].startswith("#"):
+                self.assertEqual(len(p), 2, "형식 밖 줄: %r" % line)
+                rows.append(tuple(p))
+        vers = [v for v, _ in rows]
+        self.assertEqual(sorted(vers, key=lambda v: tuple(int(x) for x in v.split("."))),
+                         ["0.1.%d" % i for i in range(0, 15)], "판본 전건·중복 0")
+        fps = [f for _, f in rows]
+        self.assertTrue(all(re.fullmatch(r"[0-9a-f]{64}", f) for f in fps), "지문 = 소문자 64-hex")
+        self.assertEqual(len(set(fps)), len(fps), "지문 중복")
+        self.assertEqual(sorted(shas), sorted(vers), "판마다 zip sha 주석 하나")
+        self.assertTrue(all(re.fullmatch(r"[0-9a-f]{64}", s) for s in shas.values()), "zip sha = 소문자 64-hex")
+        self.assertEqual(len(set(shas.values())), len(shas), "zip sha 중복")
+        self.assertTrue(set(shas.values()).isdisjoint(fps), "zip sha 를 지문 칸에 옮겨 적었다")
 
     def test_pin_four_fields(self):
         data = _zip(self.NEW)
@@ -1407,59 +1416,14 @@ class DMac3OfficialOldClient(Base):
     재현(맥 실측 10-08): `<설정>/lib` = 공식 0.1.4(손대지 않음) · tick.log = foreign ×3 · 교체 0 · 신호 0.
     수리: known 표에 0.1.4~0.1.11 · 고친 사본은 여전히 불가침 · foreign 3연속 = 신호 1줄(counsel.client_foreign)."""
 
-    REAL_PACK = os.path.dirname(BIN)
-    V014_FP = "c41104a28be325e45a1debe2b4cd4706b9e06eb55fe3f636056830b87eb93502"
-
-    def use_real_bundle(self):
-        """시험 팩에 실 동봉판(핀·b64)과 실 known 표를 그대로 싣는다."""
-        d = os.path.join(self.pack, "install")
-        os.makedirs(d, exist_ok=True)
-        pin = jc._read_pin(self.REAL_PACK)
-        for name in ("agora-client.pin", "agora-client-%s.zip.b64" % pin["ver"], jc.KNOWN_FILE):
-            shutil.copy(os.path.join(self.REAL_PACK, "install", name), os.path.join(d, name))
-        return pin
-
-    def old_014_tree(self, dest):
-        """공식 0.1.4 트리 사본 — ①이 맥 설치본(지문이 0.1.4 일 때만 · 읽기 전용 복사) ②제작 맥 사이트 zip ③아고라 dist zip."""
-        live = os.path.expanduser(os.path.join("~", ".config", "agora", "lib"))
-        if os.path.isdir(live) and not os.path.islink(live) and jc.tree_fingerprint(live) == self.V014_FP:
-            shutil.copytree(live, dest, symlinks=True)
-            if os.path.isfile(os.path.join(dest, ".pin")):
-                os.remove(os.path.join(dest, ".pin"))   # 사본의 .pin 만(지문 산식 밖)
-            return "live"
-        for z in (os.path.join("~", "axdev", "ai-jarvis", "site", "install", "agora-client-0.1.4.zip"),
-                  os.path.join("~", "axdev", "jarvis-agora", "dist", "agora-client-0.1.4.zip")):
-            z = os.path.expanduser(z)
-            if os.path.isfile(z):
-                os.makedirs(dest)
-                jc._extract(rd(z, "rb"), dest)
-                return z
-        self.skipTest("공식 0.1.4 사본 없음(제작 맥 전용 시험)")
+    # ★2판 ⑨: 공식 0.1.4 실트리 시험 2건(교체 · 고친 사본 불가침)은 test_agora_known_authentic.py 로 옮겼다
+    #   (게시 zip 없으면 skip 이 아니라 FAIL · 제작 맥 전용 · CI 밖 사유 = lane-parity UNREGISTERED_OK).
 
     def lib(self, *p):
         return os.path.join(self.cfg, "lib", *p)
 
     def events(self):
         return [json.loads(x) for x in rd(os.path.join(self.cfg, "counsel", "tick.log")).splitlines()]
-
-    def test_official_014_replaced_by_bundle(self):
-        pin = self.use_real_bundle()
-        src = self.old_014_tree(self.lib())
-        self.assertEqual(jc.tree_fingerprint(self.lib()), self.V014_FP, "픽스처가 0.1.4 가 아니다(%s)" % src)
-        self.assertEqual(jc.ensure_client(), "replaced")
-        self.assertEqual(jc.tree_fingerprint(self.lib()), pin["fp"])
-        ev = self.events()[-1]
-        self.assertEqual((ev["result"], ev["was"], ev["version"]), ("replaced", "0.1.4", pin["ver"]))
-        self.assertEqual(self.sig_lines(), [], "교체 성공에 신호를 썼다")
-
-    def test_modified_014_copy_kept(self):
-        self.use_real_bundle()
-        self.old_014_tree(self.lib())
-        with open(self.lib("README.md"), "a", encoding="utf-8") as f:
-            f.write("\n# 내가 고침\n")
-        snap = jc.tree_fingerprint(self.lib())
-        self.assertEqual(jc.ensure_client(), "foreign")
-        self.assertEqual(jc.tree_fingerprint(self.lib()), snap, "고친 사본을 건드렸다")
 
     def _foreign_lib(self):
         os.makedirs(self.lib("bin"), exist_ok=True)

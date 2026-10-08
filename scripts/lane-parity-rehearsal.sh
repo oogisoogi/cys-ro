@@ -171,6 +171,12 @@ UNREGISTERED_OK["test_cysd_dispatch_storm_e2e"] = (
 UNREGISTERED_OK["test_release_trigger_split"] = (
     "cysr 1.1.8 — PyYAML 의존 · CI 파이썬 미보유(깨끗 env 실측 ModuleNotFoundError · PyYAML 있으면 12/12) · "
     "stdlib 파서 전환 = 1.1.9 백로그(BACKLOG-118) · 전환 커밋이 3레인 등재와 함께 이 항목을 지운다")
+# ★cysr-119-defects 2판 ⑨ — 설계상 CI 밖(제작 맥 전용): 옛 공식 아고라 zip 15개(≈7.4MB)로 known 표 zip sha·트리 지문을
+#   전 판 재계산한다 · zip 을 저장소에 두면 무겁고 cys-ro 공개 미러에 오른다 · 환경 변수 없으면 FAIL(skip 금지).
+#   CI 몫(manifest 정합 = 판본 전건·중복 0·64-hex·주석 sha 전건)은 test_javis_counsel test_known_file_rows 가 잰다.
+UNREGISTERED_OK["test_agora_known_authentic"] = (
+    "cysr-119 ⑨ 제작 맥 전용 — 게시 아고라 zip 15개(≈7.4MB) 필요(CYS_AGORA_ZIP_DIR · 없으면 FAIL) · 저장소·공개 미러 "
+    "적재 부적합 · CI 몫 manifest 정합은 test_javis_counsel test_known_file_rows 가 잰다")
 
 SB, SE = "LANE-GATE-SELF-BEGIN", "LANE-GATE-SELF-END"
 

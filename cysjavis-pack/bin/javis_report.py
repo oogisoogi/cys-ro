@@ -457,6 +457,9 @@ def _measurement_from_node(entry, sampled_at):
         #   live_nodes 산출부의 계약 주석 참조). ②자기보고 증거 / ③usage 토큰 델타.
         "status_age_secs": entry.get("status_age_secs"),
         "usage_ctx_tokens": entry.get("usage_ctx_tokens"),
+        # ★D-U5(1.1.9): 자기보고 state — 게이트 stall 축의 「명시 보류(waiting·done)」 억제 입력.
+        #   idle 판정에는 쓰지 않는다(위와 같은 계약). 결측 = None(억제 안 함 = fail-closed).
+        "state": entry.get("state"),
     }
 
 

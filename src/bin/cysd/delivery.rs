@@ -1214,6 +1214,8 @@ pub fn record_audited_with(
     from_surface: Option<u64>,
     extra: &Value,
 ) -> bool {
+    // ★1.1.9 2판 ⑩(D-U3 출처 창): 기계 주입의 단일 입구 — 경보 문구를 받은 좌석의 재진술이 그 좌석 경보로 되먹지 않게.
+    daemon.note_injected_quote(surface_id, text);
     let report =
         record_full_with(&daemon.socket_path, surface_id, text, origin, from_surface, extra);
     // ★R6: 조각(제출 단위) 기록이 불완전하면 그 행들은 층1 미대조다 — 차단할 수 없으니 드러낸다.

@@ -527,8 +527,10 @@ def t_winjob():
 
 # ── ⓕ 출발지 표기(박사님 확정 2026-09-27 · 구 2026-09-10 「원작자」 표기 대체) ──────────────
 # 박사님 09-27 원문: 「선언적으로 cysr의 시초가 어디인지만 밝히면 된다」 · 「도의상 cys가
-#   출발지였다는 내용만 표시」 ⇒ 5자리 모두 **한 문안**(ORIGIN_LINE) · 옛 「원작자」 문안 부재 ·
+#   출발지였다는 내용만 표시」 ⇒ 깃허브 쪽 4자리 모두 **한 문안**(ORIGIN_LINE) · 옛 「원작자」 문안 부재 ·
 #   cmux 표기 없음 · MIT LICENSE 저작권 줄은 라이선스 조건이라 유지(ⓕ-L).
+# ★1.1.8(박사님 10-08 12:5x 원문 「깃허브에만 원작자를 밝히고 cysr 앱에서는 삭제한다」): 앱 화면(ui/index.html
+#   #ws-credit)은 5번째 자리에서 빠지고 **부재**를 잰다(ⓕ-UI · 음성 픽스처 = 옛 요소를 되살리면 적색).
 # ★1R#6(codex): 종전 축은 「파일 어디든 idoforgod」였다. release.yml 에는 무관한 upstream URL·
 #   주석이, pack-release.yml 에는 시험 설명 주석이 이미 그 문자열을 갖고 있어 **실제 표기 블록을
 #   지워도 초록**이었다. 이제 자리마다 그 블록을 **파싱해서** 본다 — 그리고 각 축은 그 블록만
@@ -587,14 +589,6 @@ def _md_section(text, heading):
     return None
 
 
-def _ws_credit(html):
-    """`#ws-credit` 요소의 여는 태그 + 내용(순수). 없으면 None."""
-    for ln in html.splitlines():
-        if 'id="ws-credit"' in ln:
-            return ln
-    return None
-
-
 # (파일, 추출기, 자리 이름, 그 블록만 지우는 음성 변이)
 def _kill_block_scalar(text):
     b = _block_scalar(text, "releaseBody")
@@ -613,11 +607,6 @@ def _kill_md(heading):
     return f
 
 
-def _kill_credit(text):
-    ln = _ws_credit(text)
-    return text.replace(ln, "      <!-- 지움 -->") if ln else text
-
-
 ATTRIB_SITES = [
     (".github/workflows/release.yml", lambda t: _block_scalar(t, "releaseBody"),
      "본체 릴리스 본문(releaseBody 블록 스칼라)", _kill_block_scalar),
@@ -627,8 +616,14 @@ ATTRIB_SITES = [
      "포크 README 「출발지」 절", _kill_md("## 출발지")),
     ("README.en.md", lambda t: _md_section(t, "## Origin"),
      "영문 README 「Origin」 절", _kill_md("## Origin")),
-    ("ui/index.html", _ws_credit, "앱 안 표기(#ws-credit 요소)", _kill_credit),
 ]
+# 앱 화면에 다시 나오면 안 되는 출발지·원작자 흔적(ⓕ-UI) — 깃허브 쪽 문안·꼬리표·요소 id 전부.
+APP_CREDIT_TRACES = ("ws-credit", ORIGIN_LINE, "에서 출발", "idoforgod", "cys-terminal") + ATTRIB_STALE
+
+
+def _app_credit_free(html):
+    """앱 화면 파일에 출발지·원작자 흔적이 하나도 없는가(순수)."""
+    return not any(w in html for w in APP_CREDIT_TRACES)
 
 
 def _attrib_ok(block, site):
@@ -640,8 +635,6 @@ def _attrib_ok(block, site):
         return False
     if any(w in block for w in ATTRIB_STALE):
         return False
-    if site == "ui/index.html":
-        return " hidden" not in block and ">cys 터미널에서 출발<" in block
     if site == "README.en.md":
         return ORIGIN_LINE_EN in block
     return True
@@ -668,6 +661,19 @@ def t_attribution():
             check("ⓕ %s — 옛 원작자 문안 덧붙이면 적색" % rel,
                   not _attrib_ok(block + "\n원작자 CYSJavis", rel),
                   "옛 문안이 되살아나도 통과 — 대체 판정이 죽었다")
+    # ⓕ-UI 앱 화면 = 표기 부재(1.1.8 · 박사님 10-08) + 음성 픽스처(1.1.7 의 #ws-credit 줄을 되살리면 적색).
+    try:
+        html = io.open(os.path.join(REPO, "ui", "index.html"), encoding="utf-8", errors="replace").read()
+    except OSError as e:
+        html = None
+        check("ⓕ-UI ui/index.html 판독", False, str(e))
+    if html is not None:
+        check("ⓕ-UI ui/index.html — 앱 화면에 출발지·원작자 표기 없음", _app_credit_free(html),
+              [w for w in APP_CREDIT_TRACES if w in html])
+        old = '<div id="ws-credit" title="%s">cys 터미널에서 출발</div>' % ORIGIN_LINE
+        check("ⓕ-UI 옛 #ws-credit 줄을 되살리면 적색(게이트 실효 증명)",
+              not _app_credit_free(html.replace("</nav>", old + "\n    </nav>", 1)) and "</nav>" in html,
+              "되살려도 통과 — 부재 판정이 죽었다")
     # 옛 절 제목 부재(README 두 파일) · LICENSE 저작권 줄 불변.
     for rel, heading in (("README.md", "## 원작자"), ("README.en.md", "## Original author")):
         try:

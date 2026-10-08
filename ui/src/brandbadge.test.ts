@@ -41,11 +41,12 @@ describe("ⓐ 표시명 cysr", () => {
     expect(conf.identifier).toBe("com.cysjavis.terminal");
   });
 
-  // (1.1.7 ⑱ · 박사님 09-27 「도의상 cys가 출발지였다는 내용만 표시」) 옛 「원작자」 표기 → 출발지 한 줄.
-  //   문안 정본 = README「출발지」절 · 5자리 결박 = test_default_fleet_formation.py ⓕ.
-  it("앱 표기 = 출발지 한 줄(옛 원작자 문안 없음)", () => {
-    expect(html).toContain('title="cysr 는 cys 터미널(github.com/idoforgod/cys-terminal)에서 출발했습니다.">cys 터미널에서 출발</div>');
-    expect(html).not.toContain("파생판 배포 oogisoogi");
+  // (1.1.8 · 박사님 10-08 12:5x 「깃허브에만 원작자를 밝히고 cysr 앱에서는 삭제한다」) 1.1.7 ⑱ 의 앱 안 출발지 한 줄(#ws-credit)을 지운다.
+  //   깃허브 쪽 표기(README 출발지 절 · 릴리스 본문 · NOTICE.md · LICENSE)는 그대로 = test_default_fleet_formation.py ⓕ.
+  it("앱 화면에 출발지·원작자 표기 없음", () => {
+    for (const s of ["ws-credit", "에서 출발", "출발했습니다", "idoforgod", "cys-terminal", "원작자", "파생판", "Original author"]) {
+      expect(html).not.toContain(s);
+    }
   });
 });
 

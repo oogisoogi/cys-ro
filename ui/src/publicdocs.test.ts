@@ -112,8 +112,6 @@ export const NAME_CREDITS: Record<string, string[]> = {
   "docs/RELEASE_NOTES_1.0.0.md": [CREDIT_KO_RN],
   "docs/RELEASE_NOTES_1.0.1.md": [CREDIT_KO_RN],
   "docs/RELEASE_NOTES_1.0.2.md": [CREDIT_KO_RN],
-  // 앱 화면 출발지 표기 = 박사님 09-27 「도의상 cys가 출발지였다는 내용만 표시」(brandbadge.test · test_default_fleet_formation ⓕ 5자리 결박) — README 문장 그대로 + 짧은 꼬리표
-  "ui/index.html": [`title="${CREDIT_README}">cys 터미널에서 출발`],
 };
 // ③ 3판(master#62af6f8e ① · Opus 2R M1): 홑따옴표 'cys' 의 면제는 **문맥 결박** — 화면 알림 문구를 옮겨 적은 정확한 조각 4개 안에서만.
 //    (2판은 'cys' 토큰을 어디서나 지워 「제품 이름은 'cys' 입니다」 가 초록이었다.) 조각 = clipath.ts 고지 제목·본문의 'cys'(탐침 `which -a cys` 의 파일 이름).

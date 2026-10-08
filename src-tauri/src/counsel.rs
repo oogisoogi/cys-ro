@@ -290,6 +290,102 @@ pub(crate) fn counsel_unread() -> Value {
     unread_at(&config_dir())
 }
 
+// ── 아고라 창(읽기 전용 웹뷰) ──────────────────────────────────────────────
+pub(crate) const AGORA_HOST: &str = "agora.godmeyou.kr";
+const AGORA_HOME: &str = "https://agora.godmeyou.kr/";
+const AGORA_LABEL: &str = "agora";
+
+/// 창 안 이동 허용 = `https://agora.godmeyou.kr` 오리진만(포트·사용자정보 없음) + 빈 틀(`about:blank`·`about:srcdoc` —
+/// 사이트의 보안 확인 스크립트가 쓰는 숨은 틀). 그 밖은 창 안에서 열지 않는다(허용 목록 안이면 기본 브라우저로).
+pub(crate) fn agora_nav_allowed(url: &tauri::Url) -> bool {
+    match url.scheme() {
+        "https" => {
+            url.host_str() == Some(AGORA_HOST) && url.port().is_none() && url.username().is_empty() && url.password().is_none()
+        }
+        "about" => matches!(url.path(), "blank" | "srcdoc"),
+        _ => false,
+    }
+}
+
+/// 창마다 먼저 도는 스크립트 — ⑴폼 제출 막기(보기 전용) ⑵「내 글」 강조(글쓴이 칸 글자 == 내 id 인 글 상자에 테두리).
+/// 서버 변경 0 · 내 id 는 JSON 문자열로 박는다(형식 밖이면 빈 값 = 강조 안 함). 남의 페이지 DOM 은 클래스 1개만 더한다.
+pub(crate) fn agora_init_script(me: &str) -> String {
+    let me_js = serde_json::to_string(if valid_participant_id(me) { me } else { "" }).unwrap_or_else(|_| "\"\"".into());
+    format!(
+        r#"(function(){{
+  if (location.hostname !== "{host}") return;
+  document.addEventListener("submit", function (e) {{ e.preventDefault(); e.stopPropagation(); }}, true);
+  var ME = {me_js};
+  if (!ME) return;
+  function ensureStyle() {{
+    if (!document.head || document.getElementById("cysr-mine-style")) return;
+    var s = document.createElement("style");
+    s.id = "cysr-mine-style";
+    s.textContent = ".speech.cysr-mine{{outline:2px solid #2f81f7;outline-offset:2px;border-radius:6px}}";
+    document.head.appendChild(s);
+  }}
+  function mark() {{
+    ensureStyle();
+    var els = document.querySelectorAll(".speech-who");
+    for (var i = 0; i < els.length; i++) {{
+      if (els[i].textContent !== ME) continue;
+      var box = els[i].closest(".speech");
+      if (box && !box.classList.contains("cysr-mine")) box.classList.add("cysr-mine");
+    }}
+  }}
+  var queued = false;
+  function schedule() {{ if (queued) return; queued = true; setTimeout(function () {{ queued = false; mark(); }}, 200); }}
+  function start() {{ mark(); new MutationObserver(schedule).observe(document.documentElement, {{ childList: true, subtree: true }}); }}
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start); else start();
+}})();"#,
+        host = AGORA_HOST,
+        me_js = me_js
+    )
+}
+
+/// 창 밖 링크 — https 이고 `open_url` 허용 목록 안일 때만 기본 브라우저로(그 밖은 아무것도 열지 않는다).
+fn open_outside(url: &str) {
+    let _ = crate::open_url(url.to_string());
+}
+
+/// 「아고라」 단추 — 별도 창(라벨 `agora`). 이미 열려 있으면 앞으로.
+/// 경계: capability 무등재(= 이 창은 앱 명령 호출 0) · 이동 = 아고라 오리진만 · 새 창·다운로드 거부 ·
+/// 저장소 = 비영속(incognito · 메인 창과 공유 0 · 닫으면 소멸) · 개발자 도구 끔.
+/// ★창 만들기는 비동기 명령에서 한다(동기 명령에서 만들면 윈도에서 교착 — Tauri 문서).
+#[tauri::command]
+pub(crate) async fn open_agora_window(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager as _;
+    if let Some(w) = app.get_webview_window(AGORA_LABEL) {
+        let _ = w.unminimize();
+        let _ = w.show();
+        return w.set_focus().map_err(|e| e.to_string());
+    }
+    let me = my_id(read_opt(&config_dir().join("participant.json")).as_deref());
+    let url = AGORA_HOME.parse::<tauri::Url>().map_err(|e| e.to_string())?;
+    tauri::WebviewWindowBuilder::new(&app, AGORA_LABEL, tauri::WebviewUrl::External(url))
+        .title("아고라 — 보기 전용")
+        .inner_size(1100.0, 800.0)
+        .incognito(true)
+        .devtools(false)
+        .initialization_script(agora_init_script(&me))
+        .on_navigation(|u| {
+            if agora_nav_allowed(u) {
+                true
+            } else {
+                open_outside(u.as_str());
+                false
+            }
+        })
+        .on_new_window(|u, _features| {
+            open_outside(u.as_str());
+            tauri::webview::NewWindowResponse::Deny
+        })
+        .on_download(|_w, _e| false)
+        .build()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,6 +553,70 @@ room NOT-HEX\n";
         assert_eq!(unread_at(d.path())["text"], Value::Null, "상한 초과 = 깨진 파일 취급(UI 직전 값)");
         // 읽기만 — 파일이 그대로다.
         assert_eq!(std::fs::metadata(&p).unwrap().len(), UNREAD_MAX_BYTES + 1);
+    }
+
+    #[test]
+    fn agora_window_navigation_is_our_origin_only() {
+        let ok = |u: &str| agora_nav_allowed(&u.parse::<tauri::Url>().unwrap());
+        assert!(ok("https://agora.godmeyou.kr/"));
+        assert!(ok("https://agora.godmeyou.kr/room?id=2a3c1932d7eccf316cc4a0b312e558c7#x"));
+        assert!(ok("https://agora.godmeyou.kr/cdn-cgi/challenge-platform/scripts/jsd/main.js"));
+        assert!(ok("about:blank") && ok("about:srcdoc"), "사이트 보안 확인용 빈 틀");
+        for bad in [
+            "http://agora.godmeyou.kr/",
+            "https://agora.godmeyou.kr.evil.com/",
+            "https://evil.agora.godmeyou.kr/",
+            "https://godmeyou.kr/",
+            "https://jarvis-install.godmeyou.kr/",
+            "https://agora.godmeyou.kr:8443/",
+            "https://user@agora.godmeyou.kr/",
+            "https://agora.godmeyou.kr@evil.com/",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "about:config",
+            "tauri://localhost/",
+        ] {
+            assert!(!ok(bad), "창 안 이동을 막아야 한다: {bad}");
+        }
+    }
+
+    #[test]
+    fn open_url_allows_our_two_hosts_exactly_not_subdomains() {
+        assert!(crate::host_in_allowlist("agora.godmeyou.kr", &[]));
+        assert!(crate::host_in_allowlist("jarvis-install.godmeyou.kr", &[]));
+        for bad in ["godmeyou.kr", "evil.agora.godmeyou.kr", "agora.godmeyou.kr.evil.com", "x.jarvis-install.godmeyou.kr", "agora.godmeyou.krx"] {
+            assert!(!crate::host_in_allowlist(bad, &[]), "{bad}");
+        }
+        // 사용자정보(@) 위장 = 실제 호스트 evil.com 으로 판정된다.
+        assert!(crate::url_host_allowed("https://agora.godmeyou.kr@evil.com/").is_err());
+        assert!(crate::url_host_allowed("http://agora.godmeyou.kr/").is_err(), "https 만");
+        assert!(crate::url_host_allowed("https://jarvis-install.godmeyou.kr/").is_ok());
+    }
+
+    #[test]
+    fn init_script_embeds_my_id_as_json_and_blocks_forms() {
+        let s = agora_init_script("jarvis-me00000001");
+        assert!(s.contains(r#"var ME = "jarvis-me00000001";"#));
+        assert!(s.contains(r#"document.addEventListener("submit""#) && s.contains("e.preventDefault()"));
+        assert!(s.contains(r#"if (location.hostname !== "agora.godmeyou.kr") return;"#));
+        assert!(!s.contains("innerHTML") && !s.contains("fetch(") && !s.contains("__TAURI__"), "남의 페이지에 쓰는 것은 클래스·스타일 1개뿐");
+        // 형식 밖 id(따옴표·태그)는 박지 않는다 → 강조 안 함.
+        let bad = agora_init_script("\"; alert(1); //");
+        assert!(bad.contains(r#"var ME = "";"#));
+    }
+
+    #[test]
+    fn agora_window_gets_no_app_ipc_capability() {
+        // 경계 = capability 무등재: Tauri 2 는 등재되지 않은 창·원격 오리진에 앱 명령을 열지 않는다.
+        let cap: Value = serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        assert_eq!(cap["windows"], json!(["main"]), "capability 창 = main 하나뿐이어야 한다");
+        assert!(cap.get("remote").is_none(), "원격 주소에 앱 명령을 여는 remote 칸 0");
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities");
+        for e in std::fs::read_dir(&dir).unwrap() {
+            let raw = std::fs::read_to_string(e.unwrap().path()).unwrap();
+            assert!(!raw.contains(AGORA_LABEL) || !raw.contains("\"windows\""), "아고라 창 라벨이 capability 에 들어갔다");
+            assert!(!raw.contains("godmeyou"), "아고라 주소가 capability 에 들어갔다");
+        }
     }
 
     /// 시험 전용 임시 폴더(의존성 0 · 끝나면 지운다).

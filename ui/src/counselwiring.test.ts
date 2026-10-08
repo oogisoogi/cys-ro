@@ -91,3 +91,12 @@ describe("상담소 뱃지 배선(§11 — 읽기만 · 판독 = parseUnread)", 
   });
 });
 
+describe("아고라 메뉴 배선", () => {
+  it("단추 글자·툴팁 = AGORA_COPY · 상담소 단추 바로 뒤", () => {
+    expect(html).toContain(`</button><button id="btn-agora" title="${AGORA_COPY.tooltip}">${AGORA_COPY.label}</button></div>`);
+  });
+  it("단추는 Rust open_agora_window 만 부른다(UI 가 주소를 열지 않는다)", () => {
+    expect(main).toContain('void invoke("open_agora_window").catch(');
+    expect(main.includes('open_url", { url: "https://agora')).toBe(false);
+  });
+});

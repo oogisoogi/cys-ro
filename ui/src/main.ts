@@ -129,6 +129,7 @@ import {
   type SurfaceLike,
 } from "./wsusage";
 import {
+  AGORA_COPY,
   COUNSEL_COPY,
   UNREAD_NONE,
   UNREAD_POLL_MS,
@@ -10735,6 +10736,10 @@ function openCounselPanel() {
   void loadCounselList(ov);
 }
 document.getElementById("btn-counsel")!.addEventListener("click", () => openCounselPanel());
+// 「아고라」 = 별도 창(Rust open_agora_window · 보기 전용 · 아고라 주소만 · 앱 명령 호출 0). 참여는 마스터에게 말로.
+document.getElementById("btn-agora")!.addEventListener("click", () => {
+  void invoke("open_agora_window").catch(() => void confirmModal(AGORA_COPY.label, AGORA_COPY.failed, "확인", "닫기"));
+});
 // 멀티마스터 F4 + ＋부서 자동화(패치5): 새 부서(독립 데몬) workspace 런칭. 부서 번호는 백엔드가 확정.
 const deptBtn = document.getElementById("btn-ws-dept") as HTMLButtonElement | null;
 // 부서 런칭 실행(공통) — placeholder 탭·in-flight 버튼 가드. catalogKey=undefined → 레거시 dept-N.

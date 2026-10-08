@@ -773,6 +773,11 @@ fn url_host_allowed(url: &str) -> Result<(), String> {
 /// 순수 판정(테스트 핀) — 기본 allowlist + 사용자 확장 도메인, 정확일치 또는 서브도메인.
 fn host_in_allowlist(host: &str, extras: &[String]) -> bool {
     const ALLOW: &[&str] = &["notebooklm.google.com", "github.com", "cysinsight.com"];
+    // (1.1.9 T4 · master 판정 Q4) 아고라 창 안의 우리 링크 2곳 — **정확 일치만**(하위 도메인 허용 꼴 ALLOW 에 넣지 않는다).
+    const EXACT: &[&str] = &["agora.godmeyou.kr", "jarvis-install.godmeyou.kr"];
+    if EXACT.contains(&host) {
+        return true;
+    }
     ALLOW
         .iter()
         .map(|d| *d)
@@ -7493,6 +7498,7 @@ fn main() {
             // (1.1.9 T4 · cysr-119-t4-app) 상담소 메뉴 — 글 목록(아고라 클라이언트 read 결과만 · 앱은 릴레이에 안 감).
             counsel::counsel_room_list,
             counsel::counsel_unread,
+            counsel::open_agora_window,
             // ★U6(원작자 0.14.41) 피드백 1단계 명령 12개는 1.1.8 병합에서 **등록하지 않는다**(휴면 · 결정 대기 T3) —
             //   화면에 배선된 판은 위 우리 「피드백」 명령(2단계 업로드 · D-19 동등 = 우리 유지)이고, 원작자 코드·시험은
             //   feedback.rs 의 하위 모듈 `u6_local_bundle` 에 명령 표지 없이 보존돼 있다(같은 이름 feedback_submit·feedback_discard 충돌).

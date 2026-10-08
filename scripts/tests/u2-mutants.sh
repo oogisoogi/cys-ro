@@ -73,5 +73,6 @@ U2-HOLDMEMO bin:tests::pack_auto_hold_memo_skips_download_until_inputs_change
 U2-TXNGLUE bin:tests::pack_update_txn_glue_holds_in_a_real_process
 U2-MEMOCHECK bin:tests::pack_auto_hold_memo_rejects_forged_unreadable_and_clears_on_manual_apply
 U2-MEMOCLEAR bin:tests::pack_auto_hold_memo_rejects_forged_unreadable_and_clears_on_manual_apply
+U2-CSORESUME bin:tests::u13_default_resume_text_member_points_only_to_own_todo
 LIST
 exit $fail

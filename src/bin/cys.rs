@@ -22362,7 +22362,7 @@ fn cycle_receipt_ok(item: &Value, vsid: u64) -> Result<(), String> {
 /// 우선순위: pack_round 파일 실재 → cwd_round 파일 실재 → pack_round(폴백 · 부재여도).
 /// ★0.14.41 U13(WP-C1 · 반박 M6/D9): 팀원(`start_gate_member_role`)은 **자기 TODO 만** 가리킨다 — 종전은 master 의
 /// SESSION_STATE(부서장 '다음 액션' 큐)까지 읽고 "직전 작업을 이어가라" 였다(팀원에게 master 큐를 넘기는 문안).
-/// master·cso* 는 종전 문안 바이트 동일. 자동 순환(javis_cycle_autopilot)은 lease 의 역할 소관 파일로 자기 문안을
+/// master 는 종전 문안 바이트 동일 · cso* 의 SESSION_STATE = 자기 좌석 `_round/`(★cso-round). 자동 순환(javis_cycle_autopilot)은 lease 의 역할 소관 파일로 자기 문안을
 /// 만들므로 이 기본 문안을 쓰지 않는다(수동 `cys cycle-agent` 에 `--resume-text` 가 없을 때만 쓰인다).
 fn default_resume_text(
     role: &str,
@@ -22388,7 +22388,8 @@ fn default_resume_text(
     if start_gate_member_role(role) {
         return format!("[RESUME] 컨텍스트 순환 완료. {todo} 를 읽고 직전 작업을 이어가라.");
     }
-    let ss = resolve("SESSION_STATE.md");
+    // ★cso-round(1.1.8 재빌드 · 윈 실기 D-U1/D-U4): CSO 작업기억 = 자기 좌석 `_round/`(1.1.7) — 팩 round/ 는 master 공유 정본이다.
+    let ss = if role.starts_with("cso") && !(cfg!(test) && std::env::var("CYS_U1_MUTANT").as_deref() == Ok("U2-CSORESUME")) { cwd_round.join("SESSION_STATE.md").to_string_lossy().into_owned() } else { resolve("SESSION_STATE.md") };
     format!(
         "[RESUME] 컨텍스트 순환 완료. {} 를 읽고 직전 작업을 이어가라.",
         [ss, todo].join(" · ")
@@ -39413,13 +39414,19 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
             assert!(!text.contains("SESSION_STATE"), "{role}: 팀원 [RESUME] 이 master SESSION_STATE 를 가리킨다: {text}");
             assert!(!text.contains('\n'), "{role}: [RESUME] 이 한 줄이 아니다");
         }
-        // lead(master·cso*) 는 종전 문안 그대로(SESSION_STATE · 자기 TODO) — 바이트 동일.
-        for (role, todo) in [("master", "MASTER_TODO.md"), ("cso", "CSO_TODO.md"), ("cso-1", "CSO_1_TODO.md")] {
+        // lead(master·cso*) 는 SESSION_STATE · 자기 TODO — master 는 종전 바이트 동일.
+        // ★cso-round(1.1.8 재빌드): CSO 의 SESSION_STATE = 자기 좌석 `_round/`(팩 round/ 파일이 있어도 — 그것은 master 공유 정본).
+        //   뮤턴트 U2-CSORESUME(종전 해소) = 적.
+        for (role, todo, ss) in [
+            ("master", "MASTER_TODO.md", "/pack/round"),
+            ("cso", "CSO_TODO.md", "/project/_round"),
+            ("cso-1", "CSO_1_TODO.md", "/project/_round"),
+        ] {
             let text = default_resume_text(role, cwd, pack, todo, &|_| true);
             assert_eq!(
                 text,
-                format!("[RESUME] 컨텍스트 순환 완료. /pack/round/SESSION_STATE.md · /pack/round/{todo} 를 읽고 직전 작업을 이어가라."),
-                "{role} 바이트 변경"
+                format!("[RESUME] 컨텍스트 순환 완료. {ss}/SESSION_STATE.md · /pack/round/{todo} 를 읽고 직전 작업을 이어가라."),
+                "{role} 문안"
             );
         }
         // 술어 짝 — 셸 `cys_start_gate_is_lead`(master|cso*)와 같은 경계.

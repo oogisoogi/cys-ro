@@ -82,29 +82,32 @@ pub(crate) fn parse_desk_pin(text: &str) -> DeskPin {
 //   misc.c `strdelim_internal`(strdelimw) · match.c `match_pattern`·`match_pattern_list` · sshsig.c
 //   `parse_principals_key_and_options` · sshkey.c `sshkey_advance_past_options`.
 
-/// OpenSSH `match_pattern` — `*`(0자 이상)·`?`(1자) glob · 대소문자 구분.
+/// OpenSSH `match_pattern` — `*`(0자 이상)·`?`(1자) glob · 대소문자 구분. 결과 의미론은 원본과 같다.
+/// ★계산은 **선형 반복식**(두 포인터 + 마지막 `*` 위치·그때의 문자열 위치 기억 · 최악 O(n·m)) — 재귀 백트래킹은
+///   `*?`×32+`Z` 꼴 명부 한 줄에 C(64,32) 경로를 돌아 상담소 명령을 멈출 수 있었다(codex 3R MAJOR · OpenSSH 현행도 NFA 꼴).
+///   마지막 `*` 하나만 기억해도 정확하다: 뒤 `*` 가 앞 `*` 의 모든 늘림을 덮으므로 앞으로 되돌아갈 일이 없다(표준 와일드카드 증명).
 pub(crate) fn glob_match(s: &[u8], p: &[u8]) -> bool {
-    if p.is_empty() {
-        return s.is_empty();
-    }
-    if p[0] == b'*' {
-        let mut k = 0;
-        while k < p.len() && p[k] == b'*' {
-            k += 1;
+    let (mut si, mut pi) = (0usize, 0usize);
+    let mut star: Option<(usize, usize)> = None; // (패턴의 `*` 다음 위치, 그 `*` 가 지금까지 먹은 끝의 문자열 위치)
+    while si < s.len() {
+        if pi < p.len() && p[pi] == b'*' {
+            pi += 1;
+            star = Some((pi, si));
+        } else if pi < p.len() && (p[pi] == b'?' || p[pi] == s[si]) {
+            si += 1;
+            pi += 1;
+        } else if let Some((sp, ss)) = star {
+            pi = sp;
+            si = ss + 1;
+            star = Some((sp, ss + 1));
+        } else {
+            return false;
         }
-        let rest = &p[k..];
-        if rest.is_empty() {
-            return true;
-        }
-        return (0..s.len()).any(|i| glob_match(&s[i..], rest));
     }
-    if s.is_empty() {
-        return false;
+    while pi < p.len() && p[pi] == b'*' {
+        pi += 1;
     }
-    if p[0] != b'?' && p[0] != s[0] {
-        return false;
-    }
-    glob_match(&s[1..], &p[1..])
+    pi == p.len()
 }
 
 /// OpenSSH `match_pattern_list(string, pattern, dolower=0)` — 쉼표 목록 · `!` 부정이 맞으면 즉시 불일치(-1) ·
@@ -753,6 +756,45 @@ room NOT-HEX\n";
         // 하위 패턴 1023바이트 이상 = 원본은 목록 전체 불일치 → 그 줄은 대조 대상 아님.
         let long = format!("jarvis-*,{} {ATTACK}\n", "a".repeat(1100));
         assert!(roster_fingerprints(&long, "jarvis-counsel").is_empty());
+    }
+
+    #[test]
+    fn glob_is_linear_on_backtracking_bomb() {
+        // codex 3R MAJOR 재현: `*?`×32+`Z` × 64바이트 principal — 재귀판은 C(64,32) 경로(사실상 정지). 10ms 상한 단정.
+        // 별 스레드에서 재고 1초 안에 안 끝나면 실패(재귀판이 되돌아와도 시험이 매달리지 않게).
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let pat = format!("{}Z", "*?".repeat(32));
+            let id = "a".repeat(64);
+            let t0 = std::time::Instant::now();
+            let hit = principal_matches(&id, &pat) || glob_match(id.as_bytes(), pat.as_bytes());
+            let _ = tx.send((hit, t0.elapsed()));
+        });
+        let (hit, took) = rx.recv_timeout(std::time::Duration::from_secs(1)).expect("1초 안에 안 끝났다 — 백트래킹 폭발");
+        assert!(!hit);
+        assert!(took < std::time::Duration::from_millis(10), "10ms 상한 초과: {took:?}");
+    }
+
+    #[test]
+    fn openssh_oracle_nine_cases_still_agree() {
+        // shots-119-t4/openssh-oracle-2026-10-09.txt 의 9꼴(실 OpenSSH 10.3 판정) — 「그 id 의 키로 세는가」가 기록과 같아야 한다.
+        let k = real_key();
+        let long = format!("jarvis-*,{}", "a".repeat(1100));
+        let table: [(&str, bool); 9] = [
+            ("jarvis-counsel", true),
+            ("x,\"jarvis-*\"", true),
+            ("\"jarvis-\"*", false),
+            ("!jarvis-counsel,*", false),
+            ("jarvis-* namespaces=\"file\"", true),
+            ("jarvis-c?unsel", true),
+            ("jarvis-* cert-authority", true), // OpenSSH 는 거부 · 우리는 셈(더 엄격 · 기록된 의도)
+            ("\"x,jarvis-c*\"", true),
+            (long.as_str(), false),
+        ];
+        for (head, counted) in table {
+            let n = roster_fingerprints(&format!("{head} {k}\n"), "jarvis-counsel").len();
+            assert_eq!(n == 1, counted, "{head}");
+        }
     }
 
     #[test]

@@ -76,36 +76,112 @@ pub(crate) fn parse_desk_pin(text: &str) -> DeskPin {
     pin
 }
 
-/// 명부(`allowed_signers` · OpenSSH 꼴 `주체[,주체] [옵션] 키종류 base64 [주석]`)에서 그 id 의 키 지문 전부(`SHA256:` + 무패딩 base64).
-pub(crate) fn roster_fingerprints(roster: &str, id: &str) -> Vec<String> {
+/// OpenSSH `match_pattern` — `*`(0자 이상)·`?`(1자) glob · 대소문자 구분(sshsig 의 principals 대조와 같다).
+pub(crate) fn glob_match(s: &[u8], p: &[u8]) -> bool {
+    let (mut si, mut pi) = (0usize, 0usize);
+    let (mut star, mut mark) = (None::<usize>, 0usize);
+    while si < s.len() {
+        if pi < p.len() && (p[pi] == b'?' || p[pi] == s[si]) {
+            si += 1;
+            pi += 1;
+        } else if pi < p.len() && p[pi] == b'*' {
+            star = Some(pi);
+            mark = si;
+            pi += 1;
+        } else if let Some(st) = star {
+            pi = st + 1;
+            mark += 1;
+            si = mark;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == b'*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
+/// OpenSSH `match_pattern_list` — 쉼표 목록 · `!` 부정 항목이 맞으면 그 줄은 불일치 · 긍정 항목 하나라도 맞으면 일치.
+pub(crate) fn principal_matches(id: &str, list: &str) -> bool {
+    let mut got = false;
+    for sub in list.split(',') {
+        let (neg, pat) = match sub.strip_prefix('!') {
+            Some(rest) => (true, rest),
+            None => (false, sub),
+        };
+        if glob_match(id.as_bytes(), pat.as_bytes()) {
+            if neg {
+                return false;
+            }
+            got = true;
+        }
+    }
+    got
+}
+
+/// 명부 한 줄을 칸으로 — 공백 구분 · 큰따옴표 안 공백은 칸을 가르지 않는다(옵션 `namespaces="a b"` · 따옴표 친 주체 목록).
+fn split_fields(line: &str) -> Vec<String> {
+    let (mut out, mut cur, mut inq) = (Vec::new(), String::new(), false);
+    for c in line.chars() {
+        if c == '"' {
+            inq = !inq;
+            cur.push(c);
+        } else if c.is_whitespace() && !inq {
+            if !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
+            }
+        } else {
+            cur.push(c);
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+fn is_key_type(w: &str) -> bool {
+    w.starts_with("ssh-") || w.starts_with("ecdsa-") || w.starts_with("sk-")
+}
+
+/// 명부(`allowed_signers` · OpenSSH 꼴 `주체패턴[,…] [옵션] 키종류 base64 [주석]`)에서 **그 id 에 유효한 줄 전부**의 키 지문.
+/// 주체 칸 = OpenSSH pattern-list(쉼표·`*`·`?`·`!` 부정 · 따옴표 허용) — `ssh-keygen -Y verify -I <id>` 가 받아들이는 줄과 같은 집합.
+/// 지문을 못 낸 줄(키 판독 실패·꼴 밖)은 `None` 으로 싣는다 — 버리지 않는다(버리면 그 키가 대조에서 빠진다).
+/// 옵션(cert-authority·namespaces·valid-*)으로 실제 효력이 줄어드는 줄도 그대로 센다(더 엄격한 쪽 = 상담소 판정이 줄 뿐).
+pub(crate) fn roster_fingerprints(roster: &str, id: &str) -> Vec<Option<String>> {
     let mut out = Vec::new();
     for line in roster.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let t: Vec<&str> = line.split_whitespace().collect();
-        if t.is_empty() || !t[0].split(',').any(|p| p == id) {
+        let f = split_fields(line);
+        let principals = f[0].trim_matches('"');
+        if !principal_matches(id, principals) {
             continue;
         }
-        let Some(k) = t.iter().position(|w| w.starts_with("ssh-") || w.starts_with("ecdsa-") || w.starts_with("sk-")) else {
-            continue;
+        let key_at = match f.get(1) {
+            Some(w) if is_key_type(w) => Some(2),
+            Some(_) if f.get(2).is_some_and(|w| is_key_type(w)) => Some(3),
+            _ => None,
         };
-        let Some(b64) = t.get(k + 1) else { continue };
-        let Ok(blob) = base64::engine::general_purpose::STANDARD.decode(b64) else { continue };
-        let digest = Sha256::digest(&blob);
-        out.push(format!("SHA256:{}", base64::engine::general_purpose::STANDARD_NO_PAD.encode(digest)));
+        let fp = key_at
+            .and_then(|k| f.get(k))
+            .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
+            .map(|blob| format!("SHA256:{}", base64::engine::general_purpose::STANDARD_NO_PAD.encode(Sha256::digest(&blob))));
+        out.push(fp);
     }
     out
 }
 
-/// 핀과 명부가 함께 맞는 상담소 id 들 — 명부에 그 id 줄이 하나 이상이고 **모든** 줄의 지문이 핀 지문과 같을 때만.
-/// (한 줄이라도 다르면 그 다른 키로 서명된 글이 `sig: ok` 로 올 수 있으므로 상담소로 보지 않는다.)
+/// 핀과 명부가 함께 맞는 상담소 id 들 — 명부에서 그 id 에 유효한 줄이 하나 이상이고 **모든** 줄의 지문이 핀 지문과 같을 때만.
+/// (한 줄이라도 다르거나 못 읽으면 그 키로 서명된 글이 `sig: ok` 로 올 수 있으므로 상담소로 보지 않는다.)
 pub(crate) fn verified_desk_ids(pin: &DeskPin, roster: &str) -> Vec<String> {
     let mut out = Vec::new();
     for (id, fp) in &pin.desks {
         let fps = roster_fingerprints(roster, id);
-        if !fps.is_empty() && fps.iter().all(|f| f == fp) && !out.contains(id) {
+        if !fps.is_empty() && fps.iter().all(|f| f.as_deref() == Some(fp.as_str())) && !out.contains(id) {
             out.push(id.clone());
         }
     }
@@ -164,23 +240,49 @@ pub(crate) fn parse_read_page(v: &Value) -> (Vec<Value>, Vec<Value>, Option<Stri
     (events, refs, next)
 }
 
-/// 클라이언트 `read` 1회 — 번들 python(inject_runtime_path)으로 `<설정>/lib/bin/agora` 를 부른다(팩 javis_counsel.py 의 호출 꼴과 같다).
-/// stdout 은 별도 스레드가 읽는다(64KB 넘는 출력이 파이프를 막아 시간 상한까지 매달리지 않게).
-fn run_read(agora: &Path, cfg: &Path, room: &str, cursor: Option<&str>) -> Result<Value, String> {
+/// 클라이언트 출력 전체 상한 — 쪽당 64KB(클라이언트 READ_PAGE_BYTES) × 8쪽. 넘으면 그 자리에서 끊는다(메모리 무한 적재 0).
+const STDOUT_CAP: usize = MAX_PAGES * 64 * 1024;
+
+/// 격리 실행에서 지우는 환경(codex 1R BLOCK 2) — `-I` 가 PYTHON* 를 무시하지만 자식 env 에도 남기지 않는다(이중).
+const PY_ENV_STRIP: &[&str] = &["PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE", "PYTHONINSPECT", "PYTHONEXECUTABLE"];
+
+/// `agora read` 명령 조립 — **검증 경계(클라이언트 서명 검증)보다 먼저 남의 코드가 돌 길을 막는다**:
+/// `-I`(PYTHON* 환경·사용자 site·스크립트 폴더 경로 무시 → sitecustomize/usercustomize 주입 차단) · `-B`(-I 아래서도 .pyc 안 씀 —
+/// SEAL-1 번들 봉인) · `-X utf8`(한국어 윈도 cp949 에서도 JSON 출력 UTF-8 · PYTHONUTF8 는 -I 가 무시하므로 플래그로).
+/// launcher(`lib/bin/agora`)는 제 폴더를 sys.path 에 스스로 넣으므로 -I 아래서도 돈다(2026-10-09 실측).
+pub(crate) fn read_command(py: &str, agora: &Path, cfg: &Path, room: &str, cursor: Option<&str>) -> std::process::Command {
+    let mut cmd = std::process::Command::new(py);
+    inject_runtime_path(&mut cmd); // PATH(번들 python 찾기) — PYTHON* 칸은 아래에서 지우고 -I 가 무시한다
+    for k in PY_ENV_STRIP {
+        cmd.env_remove(k);
+    }
+    cmd.env("AGORA_CONFIG_DIR", cfg);
+    cmd.args(["-I", "-B", "-X", "utf8"]);
+    cmd.arg(agora).arg("read").arg("--thread_id").arg(room);
+    if let Some(c) = cursor {
+        cmd.arg("--cursor").arg(c);
+    }
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    // 창 정책 = GUI no_console 과 같은 등급(Attached · 윈도 콘솔 창 숨김) — 인구조사가 이 파일 안에서 판독하도록 직접 건다.
+    cmd.spawn_policy(cys::ChildLifetime::Attached);
+    cmd
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum ReadErr {
+    /// 출력이 남은 상한(`budget`)을 넘었다 — 끊었다.
+    Overflow,
+    Other(String),
+}
+
+/// 클라이언트 `read` 1회 — stdout 은 별도 스레드가 **상한까지만** 읽고(넘으면 즉시 자식 종료), 시간 상한 20초.
+fn run_read(agora: &Path, cfg: &Path, room: &str, cursor: Option<&str>, budget: usize) -> Result<(Value, usize), ReadErr> {
+    use std::sync::atomic::{AtomicBool, Ordering};
     let mut last_err = String::new();
     for py in BOOT_PY_CANDIDATES {
-        let mut cmd = std::process::Command::new(py);
-        inject_runtime_path(&mut cmd);
-        cmd.env("AGORA_CONFIG_DIR", cfg);
-        cmd.arg(agora).arg("read").arg("--thread_id").arg(room);
-        if let Some(c) = cursor {
-            cmd.arg("--cursor").arg(c);
-        }
-        cmd.stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null());
-        // 창 정책 = GUI no_console 과 같은 등급(Attached · 윈도 콘솔 창 숨김) — 인구조사가 이 파일 안에서 판독하도록 직접 건다.
-        cmd.spawn_policy(cys::ChildLifetime::Attached);
+        let mut cmd = read_command(py, agora, cfg, room, cursor);
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
@@ -188,32 +290,53 @@ fn run_read(agora: &Path, cfg: &Path, room: &str, cursor: Option<&str>) -> Resul
                 continue;
             }
         };
-        let mut out = child.stdout.take().ok_or("stdout")?;
+        let mut out = child.stdout.take().ok_or_else(|| ReadErr::Other("stdout".into()))?;
+        let over = std::sync::Arc::new(AtomicBool::new(false));
+        let over_r = over.clone();
         let reader = std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = out.read_to_end(&mut buf);
+            let (mut buf, mut chunk) = (Vec::new(), [0u8; 8192]);
+            loop {
+                match out.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) if buf.len() + n > budget => {
+                        over_r.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                }
+            }
             buf
         });
         let deadline = std::time::Instant::now() + READ_TIMEOUT;
         let status = loop {
+            if over.load(Ordering::SeqCst) {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                return Err(ReadErr::Overflow);
+            }
             match child.try_wait() {
                 Ok(Some(s)) => break s,
-                Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(50)),
+                Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(20)),
                 Ok(None) => {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err("timeout".into());
+                    return Err(ReadErr::Other("timeout".into()));
                 }
-                Err(e) => return Err(e.to_string()),
+                Err(e) => return Err(ReadErr::Other(e.to_string())),
             }
         };
-        let buf = reader.join().map_err(|_| "reader".to_string())?;
-        if !status.success() {
-            return Err(format!("agora read rc={:?}", status.code()));
+        let buf = reader.join().map_err(|_| ReadErr::Other("reader".into()))?;
+        if over.load(Ordering::SeqCst) {
+            return Err(ReadErr::Overflow);
         }
-        return serde_json::from_slice(&buf).map_err(|e| format!("json: {e}"));
+        if !status.success() {
+            return Err(ReadErr::Other(format!("agora read rc={:?}", status.code())));
+        }
+        let n = buf.len();
+        return serde_json::from_slice(&buf).map(|v| (v, n)).map_err(|e| ReadErr::Other(format!("json: {e}")));
     }
-    Err(format!("python 없음({last_err})"))
+    Err(ReadErr::Other(format!("python 없음({last_err})")))
 }
 
 fn read_opt(p: &Path) -> Option<String> {
@@ -237,10 +360,14 @@ pub(crate) fn room_list_at(cfg: &Path) -> Value {
     let (mut events, mut refs) = (Vec::new(), Vec::new());
     let mut cursor: Option<String> = None;
     let mut partial = false;
+    let mut used = 0usize;
     for page in 0..MAX_PAGES {
-        let v = match run_read(&agora, cfg, &room, cursor.as_deref()) {
-            Ok(v) => v,
-            Err(e) if page == 0 => return json!({"status": "error", "detail": e}),
+        let v = match run_read(&agora, cfg, &room, cursor.as_deref(), STDOUT_CAP - used) {
+            Ok((v, n)) => {
+                used += n;
+                v
+            }
+            Err(e) if page == 0 => return json!({"status": "error", "detail": format!("{e:?}")}),
             Err(_) => {
                 partial = true;
                 break;
@@ -294,20 +421,23 @@ pub(crate) fn counsel_unread() -> Value {
 pub(crate) const AGORA_HOST: &str = "agora.godmeyou.kr";
 const AGORA_HOME: &str = "https://agora.godmeyou.kr/";
 const AGORA_LABEL: &str = "agora";
+/// 바깥 링크를 눌렀을 때 창 안에 보이는 안내(공개 문안 · 왕초보 말투 · 뒤에 그 주소가 붙는다 — 복사해서 쓰게).
+pub(crate) const AGORA_OUTSIDE_NOTE: &str = "바깥 링크는 이 창에서 열리지 않아요. 아래 주소를 복사해서 브라우저에서 여세요:";
 
-/// 창 안 이동 허용 = `https://agora.godmeyou.kr` 오리진만(포트·사용자정보 없음) + 빈 틀(`about:blank`·`about:srcdoc` —
-/// 사이트의 보안 확인 스크립트가 쓰는 숨은 틀). 그 밖은 창 안에서 열지 않는다(허용 목록 안이면 기본 브라우저로).
+/// 창 안 이동 허용 = `https://agora.godmeyou.kr` 오리진만(포트·사용자정보 없음). `about:` 포함 그 밖은 전부 거부(codex 1R BLOCK 3).
+/// ★실측(wry 0.55.1): 맥 WKWebView 는 이 판정을 **모든 틀**에 URL 만 넘겨 부르고(메인/서브 구분 불가) · 윈 WebView2 는
+///   top-level(NavigationStarting)만 · 리눅스는 탐색 동작 전부 — 앱 쪽에서 틀을 가를 수 없으므로 예외를 두지 않는다.
+///   귀결(실측 2026-10-09 · ui/e2e/agora_frames_probe.py): 사이트의 숨은 틀은 `about:blank` 로 탐색한다(WebKit·Chromium 2회씩) — 맥에서 이 판정이
+///   그것을 거부하면 그 틀의 Cloudflare 확인 스크립트가 안 돈다. 그 스크립트를 막은 채로도 방 목록은 그려지고 페이지 오류 0(두 엔진).
 pub(crate) fn agora_nav_allowed(url: &tauri::Url) -> bool {
-    match url.scheme() {
-        "https" => {
-            url.host_str() == Some(AGORA_HOST) && url.port().is_none() && url.username().is_empty() && url.password().is_none()
-        }
-        "about" => matches!(url.path(), "blank" | "srcdoc"),
-        _ => false,
-    }
+    url.scheme() == "https"
+        && url.host_str() == Some(AGORA_HOST)
+        && url.port().is_none()
+        && url.username().is_empty()
+        && url.password().is_none()
 }
 
-/// 창마다 먼저 도는 스크립트 — ⑴폼 제출 막기(보기 전용) ⑵「내 글」 강조(글쓴이 칸 글자 == 내 id 인 글 상자에 테두리).
+/// 창마다 먼저 도는 스크립트 — ⑴폼 제출 막기(보기 전용) ⑵바깥 링크 클릭 = 이동 대신 창 안 안내 1줄(주소 · textContent) ⑶「내 글」 강조(글쓴이 칸 글자 == 내 id 인 글 상자에 테두리).
 /// 서버 변경 0 · 내 id 는 JSON 문자열로 박는다(형식 밖이면 빈 값 = 강조 안 함). 남의 페이지 DOM 은 클래스 1개만 더한다.
 pub(crate) fn agora_init_script(me: &str) -> String {
     let me_js = serde_json::to_string(if valid_participant_id(me) { me } else { "" }).unwrap_or_else(|_| "\"\"".into());
@@ -315,6 +445,34 @@ pub(crate) fn agora_init_script(me: &str) -> String {
         r#"(function(){{
   if (location.hostname !== "{host}") return;
   document.addEventListener("submit", function (e) {{ e.preventDefault(); e.stopPropagation(); }}, true);
+  var NOTE = {note_js};
+  function showNote(href) {{
+    var el = document.getElementById("cysr-outside-note");
+    if (!el) {{
+      el = document.createElement("div");
+      el.id = "cysr-outside-note";
+      el.setAttribute("role", "status");
+      el.style.cssText = "position:fixed;left:12px;right:12px;bottom:12px;z-index:2147483647;padding:8px 12px;border-radius:6px;background:#1f2937;color:#f9fafb;font:14px/1.5 sans-serif;-webkit-user-select:text;user-select:text;overflow-wrap:anywhere";
+      (document.body || document.documentElement).appendChild(el);
+    }}
+    el.textContent = NOTE + " " + href;
+    clearTimeout(window.__cysrNoteTimer);
+    window.__cysrNoteTimer = setTimeout(function () {{ if (el.parentNode) el.parentNode.removeChild(el); }}, 10000);
+  }}
+  function ours(u) {{ return u.protocol === "https:" && u.hostname === "{host}" && !u.port && !u.username && !u.password; }}
+  document.addEventListener("click", function (e) {{
+    var a = e.target && e.target.closest ? e.target.closest("a[href]") : null;
+    if (!a) return;
+    var u;
+    try {{ u = new URL(a.href, location.href); }} catch (_) {{ return; }}
+    if (ours(u)) {{
+      if (a.target && a.target !== "_self") {{ e.preventDefault(); location.href = u.href; }}
+      return;
+    }}
+    e.preventDefault();
+    e.stopPropagation();
+    showNote(u.href);
+  }}, true);
   var ME = {me_js};
   if (!ME) return;
   function ensureStyle() {{
@@ -339,17 +497,13 @@ pub(crate) fn agora_init_script(me: &str) -> String {
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start); else start();
 }})();"#,
         host = AGORA_HOST,
-        me_js = me_js
+        me_js = me_js,
+        note_js = serde_json::to_string(AGORA_OUTSIDE_NOTE).unwrap_or_else(|_| "\"\"".into())
     )
 }
 
-/// 창 밖 링크 — https 이고 `open_url` 허용 목록 안일 때만 기본 브라우저로(그 밖은 아무것도 열지 않는다).
-fn open_outside(url: &str) {
-    let _ = crate::open_url(url.to_string());
-}
-
 /// 「아고라」 단추 — 별도 창(라벨 `agora`). 이미 열려 있으면 앞으로.
-/// 경계: capability 무등재(= 이 창은 앱 명령 호출 0) · 이동 = 아고라 오리진만 · 새 창·다운로드 거부 ·
+/// 경계: capability 무등재(= 이 창은 앱 명령 호출 0) · 이동 = 아고라 오리진만(밖 = 거부 · 브라우저 전달 0) · 새 창·다운로드 거부 ·
 /// 저장소 = 비영속(incognito · 메인 창과 공유 0 · 닫으면 소멸) · 개발자 도구 끔.
 /// ★창 만들기는 비동기 명령에서 한다(동기 명령에서 만들면 윈도에서 교착 — Tauri 문서).
 #[tauri::command]
@@ -368,18 +522,11 @@ pub(crate) async fn open_agora_window(app: tauri::AppHandle) -> Result<(), Strin
         .incognito(true)
         .devtools(false)
         .initialization_script(agora_init_script(&me))
-        .on_navigation(|u| {
-            if agora_nav_allowed(u) {
-                true
-            } else {
-                open_outside(u.as_str());
-                false
-            }
-        })
-        .on_new_window(|u, _features| {
-            open_outside(u.as_str());
-            tauri::webview::NewWindowResponse::Deny
-        })
+        // 거부된 이동은 **아무 데도 보내지 않는다**(codex 1R MAJOR 1 · master 판정 ⑥) — 사용자 동작인지 가릴 수 없어서,
+        // 자동 전달하면 페이지 스크립트가 기본 브라우저 탭을 무한히 열 수 있다. 사람이 누른 바깥 링크는 주입 스크립트가
+        // 창 안 안내 1줄(주소 포함 · 복사 가능)로 바꾼다.
+        .on_navigation(agora_nav_allowed)
+        .on_new_window(|_u, _features| tauri::webview::NewWindowResponse::Deny)
         .on_download(|_w, _e| false)
         .build()
         .map(|_| ())
@@ -427,7 +574,7 @@ room NOT-HEX\n";
     fn roster_fingerprint_matches_openssh_sha256_form() {
         let roster = format!("jarvis-counsel {}\nother {}\n", real_key(), real_key());
         let fps = roster_fingerprints(&roster, "jarvis-counsel");
-        assert_eq!(fps, vec!["SHA256:yvjI714ZM9bpFldLoJFwATQgEX6JR1VT7Rh5jDGokiw".to_string()], "실 핀 값과 같아야 한다");
+        assert_eq!(fps, vec![Some("SHA256:yvjI714ZM9bpFldLoJFwATQgEX6JR1VT7Rh5jDGokiw".to_string())], "실 핀 값과 같아야 한다");
         // 옵션 칸·주체 목록(쉼표)도 읽는다.
         let r2 = format!("a,jarvis-counsel namespaces=\"file\" {} comment\n", real_key());
         assert_eq!(roster_fingerprints(&r2, "jarvis-counsel"), fps);
@@ -437,16 +584,57 @@ room NOT-HEX\n";
     #[test]
     fn desk_is_verified_only_when_every_roster_key_matches_pin() {
         let roster = format!("jarvis-counsel {}\n", real_key());
-        let fp = roster_fingerprints(&roster, "jarvis-counsel")[0].clone();
+        let fp = roster_fingerprints(&roster, "jarvis-counsel")[0].clone().unwrap();
         let pin = DeskPin { desks: vec![("jarvis-counsel".into(), fp.clone())], rooms: vec![] };
         assert_eq!(verified_desk_ids(&pin, &roster), vec!["jarvis-counsel".to_string()]);
         // 같은 id 에 다른 키가 하나 더 있으면 → 상담소로 보지 않는다.
-        let two = format!("{roster}jarvis-counsel ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ9AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n");
+        let two = format!("{roster}jarvis-counsel {ATTACK}\n");
         assert!(verified_desk_ids(&pin, &two).is_empty());
         // 명부에 없으면 → 아니다 · 지문이 다르면 → 아니다.
         assert!(verified_desk_ids(&pin, "").is_empty());
         let wrong = DeskPin { desks: vec![("jarvis-counsel".into(), "SHA256:zzz".into())], rooms: vec![] };
         assert!(verified_desk_ids(&wrong, &roster).is_empty());
+    }
+
+    const ATTACK: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ9AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+    #[test]
+    fn principal_pattern_list_is_openssh_semantics() {
+        assert!(glob_match(b"jarvis-counsel", b"jarvis-*"));
+        assert!(glob_match(b"jarvis-counsel", b"*"));
+        assert!(glob_match(b"jarvis-counsel", b"jarvis-c?unsel"));
+        assert!(glob_match(b"jarvis-counsel", b"*counsel"));
+        assert!(!glob_match(b"jarvis-counsel", b"Jarvis-*"), "대소문자 구분");
+        assert!(!glob_match(b"jarvis-counsel", b"jarvis-?"));
+        assert!(principal_matches("jarvis-counsel", "a,b,jarvis-*"));
+        assert!(!principal_matches("jarvis-counsel", "!jarvis-counsel,*"), "부정이 맞으면 그 줄은 불일치");
+        assert!(principal_matches("jarvis-other", "!jarvis-counsel,*"));
+        assert!(!principal_matches("jarvis-counsel", "jarvis-counse"));
+    }
+
+    #[test]
+    fn wildcard_attacker_line_breaks_desk_verification() {
+        // codex 1R BLOCK 1 재현: 정확한 핀 키 + `jarvis-*` 공격자 키 → 공격자 키도 jarvis-counsel 서명을 검증하므로 상담소 판정 거짓.
+        let pin_line = format!("jarvis-counsel {}\n", real_key());
+        let fp = roster_fingerprints(&pin_line, "jarvis-counsel")[0].clone().unwrap();
+        let pin = DeskPin { desks: vec![("jarvis-counsel".into(), fp)], rooms: vec![] };
+        for attacker in [
+            format!("jarvis-* {ATTACK}\n"),
+            format!("* {ATTACK}\n"),
+            format!("jarvis-c?unsel {ATTACK}\n"),
+            format!("x,jarvis-counsel {ATTACK}\n"),
+            format!("\"x,jarvis-*\" {ATTACK}\n"),
+            format!("jarvis-* namespaces=\"agora,file\" {ATTACK} 주석\n"),
+            format!("jarvis-* cert-authority {ATTACK}\n"),
+            "jarvis-* ssh-ed25519 !!!not-base64!!!\n".to_string(),
+            "jarvis-* 알수없는꼴\n".to_string(),
+        ] {
+            let roster = format!("{pin_line}{attacker}");
+            assert!(verified_desk_ids(&pin, &roster).is_empty(), "공격 줄이 대조에서 빠졌다: {attacker}");
+        }
+        // 부정 패턴으로 상담소 id 를 뺀 줄은 그 id 의 유효 키가 아니다 → 대조 대상 아님.
+        let roster = format!("{pin_line}!jarvis-counsel,* {ATTACK}\n");
+        assert_eq!(verified_desk_ids(&pin, &roster), vec!["jarvis-counsel".to_string()]);
     }
 
     #[test]
@@ -498,8 +686,12 @@ room NOT-HEX\n";
         assert_eq!(parse_read_page(&json!({"next_cursor": null})).2, None);
     }
 
-    /// 격리 하네스 — 임시 설정 폴더 + 가짜 `lib/bin/agora`(고정 JSON) → 실제 호출 경로 왕복.
-    fn fixture(version: &str, script_json: &str) -> tempfile_lite::Dir {
+    const ROOM: &str = "2a3c1932d7eccf316cc4a0b312e558c7";
+
+    /// 격리 하네스 — 임시 설정 폴더 + 가짜 `lib/bin/agora`. ★가짜 CLI 는 호출을 **엄격히 검사**한다(codex 1R MAJOR 4):
+    /// argv = `read --thread_id <핀 방> [--cursor <비지 않은 값>]` 만 · 격리 플래그(-I · -B · -X utf8) 켜짐 · AGORA_CONFIG_DIR = 그 폴더 ·
+    /// PYTHONPATH 류 환경 0 — 하나라도 어긋나면 exit 9(제품이 rc≠0 을 error 로 본다). 통과하면 `body`(파이썬 몇 줄)를 실행한다.
+    fn fixture_py(version: &str, body: &str) -> tempfile_lite::Dir {
         let d = tempfile_lite::Dir::new("counsel");
         let lib = d.path().join("lib");
         std::fs::create_dir_all(lib.join("bin")).unwrap();
@@ -507,22 +699,118 @@ room NOT-HEX\n";
         std::fs::write(lib.join("PACKAGE-MANIFEST.json"), format!(r#"{{"version":"{version}"}}"#)).unwrap();
         std::fs::write(lib.join("config").join("desk-pin.txt"), PIN).unwrap();
         std::fs::write(d.path().join("participant.json"), r#"{"id":"jarvis-me00000001"}"#).unwrap();
-        let script = format!("import sys\nsys.stdout.write({script_json:?})\n");
+        let cfg = d.path().to_string_lossy().to_string();
+        let strip: Vec<String> = PY_ENV_STRIP.iter().map(|k| format!("{k:?}")).collect();
+        let script = format!(
+            "import os, sys\n\
+a = sys.argv[1:]\n\
+ok = (len(a) in (3, 5) and a[0] == 'read' and a[1] == '--thread_id' and a[2] == {ROOM:?}\n\
+      and (len(a) == 3 or (a[3] == '--cursor' and a[4] != '')))\n\
+iso = sys.flags.isolated == 1 and sys.flags.utf8_mode == 1 and sys.flags.dont_write_bytecode == 1\n\
+env_ok = os.environ.get('AGORA_CONFIG_DIR') == {cfg:?} and not any(k in os.environ for k in [{strip}])\n\
+if not (ok and iso and env_ok): sys.stderr.write('bad call %r %r %r' % (a, iso, env_ok)); sys.exit(9)\n\
+cursor = a[4] if len(a) == 5 else None\n\
+{body}\n",
+            strip = strip.join(", ")
+        );
         std::fs::write(lib.join("bin").join("agora"), script).unwrap();
         d
     }
 
+    fn fixture(version: &str, out: &str) -> tempfile_lite::Dir {
+        fixture_py(version, &format!("sys.stdout.write({out:?})"))
+    }
+
+    fn genesis_page(next: Option<&str>) -> String {
+        json!({"events":[{"message_id":"g","kind":"genesis","from":"jarvis-chair1","ts":"2026-10-05T13:14:43Z","sig":"ok","body":"intro","untrusted":{"marker":null}}],"refs":[],"next_cursor":next}).to_string()
+    }
+
     #[test]
     fn harness_round_trip_through_fake_client() {
-        let page = json!({"events":[{"message_id":"g","kind":"genesis","from":"jarvis-chair1","ts":"2026-10-05T13:14:43Z","sig":"ok","body":"intro","untrusted":{"marker":null}}],"refs":[],"next_cursor":null}).to_string();
-        let d = fixture("0.1.14", &page);
+        let d = fixture("0.1.14", &genesis_page(None));
         let v = room_list_at(d.path());
         assert_eq!(v["status"], "ok", "{v}");
-        assert_eq!(v["room_id"], "2a3c1932d7eccf316cc4a0b312e558c7");
+        assert_eq!(v["room_id"], ROOM);
         assert_eq!(v["me"], "jarvis-me00000001");
         assert_eq!(v["events"].as_array().unwrap().len(), 1);
         assert_eq!(v["partial"], false);
         assert_eq!(v["desk_ids"], json!([]), "명부 파일이 없으면 상담소 답 표식 0");
+    }
+
+    #[test]
+    fn harness_cursor_pages_are_followed_with_the_cursor_arg() {
+        // 첫 쪽(커서 없음) → next "c1" · 둘째 쪽은 `--cursor c1` 로만 받는다(다른 커서 = exit 9).
+        let p2 = json!({"events":[{"message_id":"p","kind":"post","from":"jarvis-a1","ts":"2026-10-08T00:00:00Z","sig":"ok","body":"x","untrusted":{"marker":null}}],"refs":[],"next_cursor":null}).to_string();
+        let body = format!(
+            "if cursor is None: sys.stdout.write({:?})\nelif cursor == 'c1': sys.stdout.write({p2:?})\nelse: sys.exit(9)",
+            genesis_page(Some("c1"))
+        );
+        let d = fixture_py("0.1.14", &body);
+        let v = room_list_at(d.path());
+        assert_eq!(v["status"], "ok", "{v}");
+        assert_eq!(v["events"].as_array().unwrap().len(), 2);
+        assert_eq!(v["partial"], false);
+    }
+
+    #[test]
+    fn read_command_is_isolated_and_read_only() {
+        let cmd = read_command("python3", Path::new("/c/lib/bin/agora"), Path::new("/c"), ROOM, Some("k"));
+        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().to_string()).collect();
+        assert_eq!(args, ["-I", "-B", "-X", "utf8", "/c/lib/bin/agora", "read", "--thread_id", ROOM, "--cursor", "k"]);
+        let envs: std::collections::HashMap<String, Option<String>> = cmd
+            .get_envs()
+            .map(|(k, v)| (k.to_string_lossy().to_string(), v.map(|v| v.to_string_lossy().to_string())))
+            .collect();
+        for k in PY_ENV_STRIP {
+            assert_eq!(envs.get(*k), Some(&None), "{k} 는 자식 env 에서 지운다");
+        }
+        assert_eq!(envs.get("AGORA_CONFIG_DIR"), Some(&Some("/c".to_string())));
+    }
+
+    #[test]
+    fn sitecustomize_injection_does_not_run_before_the_client() {
+        // codex 1R BLOCK 2 재현: PYTHONPATH 의 sitecustomize 가 가짜 sig:ok 를 찍고 끝내는 공격 — 조립 뒤에 PYTHONPATH 를 다시 넣어도
+        // -I 가 무시하므로 가짜 CLI(진짜 경로)가 돈다.
+        let d = fixture("0.1.14", &genesis_page(None));
+        let evil = d.path().join("evil");
+        std::fs::create_dir_all(&evil).unwrap();
+        let fake = r#"{"events":[{"message_id":"x","kind":"post","from":"jarvis-evil1","ts":"t","sig":"ok","body":"pwned","untrusted":{"marker":null}}],"refs":[],"next_cursor":null}"#;
+        std::fs::write(evil.join("sitecustomize.py"), format!("import os, sys\nsys.stdout.write({fake:?})\nsys.stdout.flush()\nos._exit(0)\n")).unwrap();
+        std::fs::write(evil.join("usercustomize.py"), format!("import os, sys\nsys.stdout.write({fake:?})\nos._exit(0)\n")).unwrap();
+        let agora = d.path().join("lib").join("bin").join("agora");
+        // 이 시험의 가짜 CLI 는 환경 검사 없이 「격리로 떴는가」만 보고 진짜 출력을 낸다(공격 env 를 일부러 다시 넣으므로).
+        std::fs::write(&agora, format!("import sys\nsys.stdout.write({:?} if sys.flags.isolated else 'not-isolated')\n", genesis_page(None))).unwrap();
+        for py in BOOT_PY_CANDIDATES {
+            let mut cmd = read_command(py, &agora, d.path(), ROOM, None);
+            cmd.env("PYTHONPATH", &evil).env("PYTHONUSERBASE", &evil);
+            let Ok(out) = cmd.output() else { continue };
+            let text = String::from_utf8_lossy(&out.stdout);
+            assert!(!text.contains("pwned"), "sitecustomize 가 먼저 돌았다: {text}");
+            assert!(text.contains("\"genesis\""), "진짜 CLI 출력이어야 한다: {text}");
+            return;
+        }
+        panic!("python 없음");
+    }
+
+    #[test]
+    fn stdout_flood_is_cut_at_cap_not_buffered() {
+        // codex 1R MAJOR 2 재현: 끝없이 쓰는 CLI → 상한에서 끊고 즉시 종료(20초 시간 상한까지 안 간다).
+        let d = fixture_py("0.1.14", "while True:\n    sys.stdout.write('x' * 65536)");
+        let t0 = std::time::Instant::now();
+        let v = room_list_at(d.path());
+        assert_eq!(v["status"], "error", "첫 쪽 넘침 = 보일 것 없음 = error: {v}");
+        assert!(v["detail"].as_str().unwrap().contains("Overflow"), "{v}");
+        assert!(t0.elapsed() < std::time::Duration::from_secs(10), "상한에서 바로 끊겨야 한다({:?})", t0.elapsed());
+        // 둘째 쪽에서 넘치면 = 첫 쪽만 싣고 partial.
+        let body = format!(
+            "if cursor is None: sys.stdout.write({:?})\nelse:\n    while True: sys.stdout.write('x' * 65536)",
+            genesis_page(Some("c1"))
+        );
+        let d2 = fixture_py("0.1.14", &body);
+        let v2 = room_list_at(d2.path());
+        assert_eq!(v2["status"], "ok", "{v2}");
+        assert_eq!(v2["partial"], true);
+        assert_eq!(v2["events"].as_array().unwrap().len(), 1);
     }
 
     #[test]
@@ -536,6 +824,9 @@ room NOT-HEX\n";
         let d3 = fixture("0.1.14", "{}");
         std::fs::write(d3.path().join("lib").join("config").join("desk-pin.txt"), "# 빈 핀\n").unwrap();
         assert_eq!(room_list_at(d3.path())["status"], "no_room");
+        // 가짜 CLI 가 호출을 거부(exit 9)하면 = error(제품이 동사·인자를 바꾸면 여기서 잡힌다).
+        let d4 = fixture_py("0.1.14", "sys.exit(9)");
+        assert_eq!(room_list_at(d4.path())["status"], "error");
     }
 
     #[test]
@@ -561,7 +852,6 @@ room NOT-HEX\n";
         assert!(ok("https://agora.godmeyou.kr/"));
         assert!(ok("https://agora.godmeyou.kr/room?id=2a3c1932d7eccf316cc4a0b312e558c7#x"));
         assert!(ok("https://agora.godmeyou.kr/cdn-cgi/challenge-platform/scripts/jsd/main.js"));
-        assert!(ok("about:blank") && ok("about:srcdoc"), "사이트 보안 확인용 빈 틀");
         for bad in [
             "http://agora.godmeyou.kr/",
             "https://agora.godmeyou.kr.evil.com/",
@@ -574,6 +864,8 @@ room NOT-HEX\n";
             "file:///etc/passwd",
             "javascript:alert(1)",
             "about:config",
+            "about:blank",
+            "about:srcdoc",
             "tauri://localhost/",
         ] {
             assert!(!ok(bad), "창 안 이동을 막아야 한다: {bad}");
@@ -599,23 +891,98 @@ room NOT-HEX\n";
         assert!(s.contains(r#"var ME = "jarvis-me00000001";"#));
         assert!(s.contains(r#"document.addEventListener("submit""#) && s.contains("e.preventDefault()"));
         assert!(s.contains(r#"if (location.hostname !== "agora.godmeyou.kr") return;"#));
-        assert!(!s.contains("innerHTML") && !s.contains("fetch(") && !s.contains("__TAURI__"), "남의 페이지에 쓰는 것은 클래스·스타일 1개뿐");
+        assert!(!s.contains("innerHTML") && !s.contains("fetch(") && !s.contains("__TAURI__") && !s.contains("window.open"),
+            "남의 페이지에 쓰는 것은 클래스·스타일·안내 상자뿐");
+        // 바깥 링크 = 이동 막고 안내(문구 = 공개 문안 상수 · textContent) · 우리 오리진 판정은 Rust 와 같은 4조건.
+        assert!(s.contains(&format!("var NOTE = {};", serde_json::to_string(AGORA_OUTSIDE_NOTE).unwrap())));
+        assert!(s.contains("el.textContent = NOTE + \" \" + href;"));
+        assert!(s.contains(r#"u.protocol === "https:" && u.hostname === "agora.godmeyou.kr" && !u.port && !u.username && !u.password"#));
+        assert!(!AGORA_OUTSIDE_NOTE.contains("cys ") && !AGORA_OUTSIDE_NOTE.contains("위험") && !AGORA_OUTSIDE_NOTE.contains("금지"));
         // 형식 밖 id(따옴표·태그)는 박지 않는다 → 강조 안 함.
         let bad = agora_init_script("\"; alert(1); //");
         assert!(bad.contains(r#"var ME = "";"#));
     }
 
+    /// capability 1개가 아고라 창(라벨 `agora`)이나 아고라 주소에 앱 명령을 여는가 — Tauri 의 windows·webviews glob(`*`·`?`·`[..]`)과
+    /// remote.urls 를 구조로 읽어 판정한다. 판독 못 하는 꼴(창 범위 칸 없음·문자열 아닌 항목·`[` 문자 클래스)은 **연다고 본다**(fail-closed).
+    fn capability_opens_agora(cap: &Value) -> Option<String> {
+        if cap.get("remote").is_some() {
+            return Some("remote 칸(원격 주소 IPC)".into());
+        }
+        let mut scoped = false;
+        for key in ["windows", "webviews"] {
+            let Some(v) = cap.get(key) else { continue };
+            scoped = true;
+            let Some(arr) = v.as_array() else { return Some(format!("{key} 가 배열이 아니다")) };
+            for p in arr {
+                let Some(pat) = p.as_str() else { return Some(format!("{key} 항목이 문자열이 아니다")) };
+                if pat.contains('[') || glob_match(AGORA_LABEL.as_bytes(), pat.as_bytes()) {
+                    return Some(format!("{key} 패턴 {pat:?} 가 아고라 창에 맞는다"));
+                }
+            }
+        }
+        if !scoped {
+            return Some("창 범위(windows·webviews) 칸이 없다 — 판독 불가".into());
+        }
+        None
+    }
+
+    /// 파일 하나의 capability 들(단일 객체 · `{"capabilities":[…]}` · 배열 · 식별자 문자열 참조는 건너뜀).
+    fn capabilities_in(v: &Value) -> Vec<Value> {
+        match v {
+            Value::Array(a) => a.iter().flat_map(capabilities_in).collect(),
+            Value::Object(o) if o.contains_key("capabilities") => o["capabilities"].as_array().into_iter().flatten().flat_map(capabilities_in).collect(),
+            Value::Object(_) => vec![v.clone()],
+            _ => vec![],
+        }
+    }
+
+    #[test]
+    fn capability_judge_catches_globs_star_and_remote() {
+        // codex 1R MAJOR 3 재현 꼴 — 문자열 검색으로는 못 잡던 것들.
+        for bad in [
+            json!({"identifier":"x","windows":["*"],"permissions":[]}),
+            json!({"identifier":"x","windows":["ag*"],"permissions":[]}),
+            json!({"identifier":"x","windows":["main","?gora"],"permissions":[]}),
+            json!({"identifier":"x","webviews":["agora"],"permissions":[]}),
+            json!({"identifier":"x","windows":["[a]gora"],"permissions":[]}),
+            json!({"identifier":"x","windows":["main"],"remote":{"urls":["https://*"]},"permissions":[]}),
+            json!({"identifier":"x","permissions":[]}),
+            json!({"identifier":"x","windows":"main","permissions":[]}),
+        ] {
+            assert!(capability_opens_agora(&bad).is_some(), "놓쳤다: {bad}");
+        }
+        assert!(capability_opens_agora(&json!({"identifier":"d","windows":["main"],"permissions":[]})).is_none());
+        assert!(capability_opens_agora(&json!({"identifier":"d","windows":["main*"],"permissions":[]})).is_none());
+        assert_eq!(capabilities_in(&json!({"capabilities":[{"windows":["*"]},"ref-id"]})).len(), 1);
+    }
+
     #[test]
     fn agora_window_gets_no_app_ipc_capability() {
-        // 경계 = capability 무등재: Tauri 2 는 등재되지 않은 창·원격 오리진에 앱 명령을 열지 않는다.
-        let cap: Value = serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
-        assert_eq!(cap["windows"], json!(["main"]), "capability 창 = main 하나뿐이어야 한다");
-        assert!(cap.get("remote").is_none(), "원격 주소에 앱 명령을 여는 remote 칸 0");
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities");
-        for e in std::fs::read_dir(&dir).unwrap() {
-            let raw = std::fs::read_to_string(e.unwrap().path()).unwrap();
-            assert!(!raw.contains(AGORA_LABEL) || !raw.contains("\"windows\""), "아고라 창 라벨이 capability 에 들어갔다");
-            assert!(!raw.contains("godmeyou"), "아고라 주소가 capability 에 들어갔다");
+        // 경계 = capability 무등재: Tauri 2 는 어느 capability 에도 맞지 않는 창·원격 오리진에 앱 명령을 열지 않는다.
+        // capabilities/ 의 **모든 파일**(json 외 꼴 = 판독 불가 = 실패) + tauri*.conf.json 의 인라인 capability 전건.
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut caps: Vec<(String, Value)> = Vec::new();
+        for e in std::fs::read_dir(root.join("capabilities")).unwrap() {
+            let p = e.unwrap().path();
+            let name = p.display().to_string();
+            assert_eq!(p.extension().and_then(|x| x.to_str()), Some("json"), "판독 못 하는 capability 꼴: {name}");
+            let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+            caps.extend(capabilities_in(&v).into_iter().map(|c| (name.clone(), c)));
+        }
+        for e in std::fs::read_dir(root).unwrap() {
+            let p = e.unwrap().path();
+            let f = p.file_name().unwrap().to_string_lossy().to_string();
+            if f.starts_with("tauri") && f.ends_with(".conf.json") {
+                let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+                if let Some(c) = v.pointer("/app/security/capabilities") {
+                    caps.extend(capabilities_in(c).into_iter().map(|c| (f.clone(), c)));
+                }
+            }
+        }
+        assert!(!caps.is_empty(), "capability 를 하나도 못 읽었다 — 측정 불능은 통과가 아니다");
+        for (src, c) in &caps {
+            assert_eq!(capability_opens_agora(c), None, "{src}: {c}");
         }
     }
 

@@ -598,7 +598,7 @@ impl Ops for RealOps {
                     return Err(fail(ErrCode::ArchiveRefused, "S2", "실행 파일 아님"));
                 }
                 let sig_url = a.a2_sig_url.clone().ok_or_else(|| fail(ErrCode::WinA2SigBad, "S2", "a2_sig_url 없음"))?;
-                let sig = super::net::fetch(&sig_url, super::url::Hop::AssetFirst, 4096).map_err(|_| fail(ErrCode::WinA2SigBad, "S2", "서명 미도달"))?.bytes;
+                let sig = self.fetch_a2_sig(&sig_url).map_err(|_| fail(ErrCode::WinA2SigBad, "S2", "서명 미도달"))?;
                 let kr = super::keys::UpdateKeyring::embedded().map_err(|e| fail(ErrCode::WinA2SigBad, "S2", e))?;
                 let now = super::clock::wall_now();
                 let ok = kr.verify_any(super::keys::Purpose::WinAsset, &bytes, &sig, now).is_ok();
@@ -1225,6 +1225,15 @@ impl Ops for RealOps {
 }
 
 impl RealOps {
+    /// S2 A2 서명 받기(4 KiB 상한 · 자산 1홉 규칙) — 시험은 `asset_get` 주입(⑫ 롤백 자산 받기와 같은 이음매 · cysr-118-a2-sigformat).
+    fn fetch_a2_sig(&self, url: &str) -> Result<Vec<u8>, String> {
+        #[cfg(test)]
+        if let Some(g) = &self.asset_get {
+            return g(url, 4096);
+        }
+        super::net::fetch(url, super::url::Hop::AssetFirst, 4096).map(|f| f.bytes).map_err(|e| format!("{e:?}"))
+    }
+
     /// ★후속 3판(Opus 2R M1): stage 설치기 = 원점 stage 의 `setup.exe` · 크기·sha256 = 후보 행 · 저널 `stage_tree_sha256` = 후보 행 · A2 서명
     /// (`setup.exe.sig` · S2 가 둔 것) 검증 — 하나라도 어긋남 = 실행 0.
     fn verify_stage_installer(&self, j: &Journal) -> Step {
@@ -2737,6 +2746,76 @@ mod tests {
             let _ = k.wait();
         }
         assert_eq!(hq_daemon_count(&json!({"daemon_pid": kids[1].id()})), 0, "죽은 pid");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★cysr-118-a2-sigformat: 실 발행물 A2 `.sig` 꼴(minisign 서명 텍스트의 base64 겉포장 · tauri 번들러 · 1.1.8 윈 실기 17:07
+    /// 「설치기 A2 서명 불일치」) = 윈 자동 갱신 A2 경로 전부 통과 — ⓐ 롤백 자산 보관소 채우기(설치판 seq 8 · [`fill_installer_dir`] →
+    /// [`verify_installer_dir_with`]) ⓑ S2 후보 서명 검증 → stage 에 그대로 둠 ⓒ S9b stage 설치기 재검증 ⓓ S11 보존(`installers/9` 재검증).
+    /// 수정 전 = ⓐ 「받은 자산 — … A2 서명 불일치」 · ⓑ 「A2 서명 불일치」(S2 · `update.win_a2_sig_bad`).
+    /// ⓑ 는 S2 앞단 ⑫ 채우기를 시험 스위치 U2-S2FILL 로 건너뛴다 — 로컬 빌드 release_seq = 0 = 보관소 본문 없음(⑫ 배선 = 따로 시험).
+    #[cfg(unix)]
+    #[test]
+    fn win_a2_sig_in_tauri_base64_form_passes_s2_reverify_and_preserve() {
+        use crate::update::feed::fixture::{body_json, NOW};
+        use crate::update::keys::testkit::Keys;
+        use base64::Engine;
+        let _l = super::super::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let wrap = |s: &[u8]| b64.encode(s).into_bytes();
+        let k = Keys::new();
+        let (d, upd, _root, mut ops) = recon_rig("a2-tauri");
+        std::fs::write(d.join("kr.json"), k.keyring_json()).unwrap();
+        let _e = (
+            crate::pack::EnvGuard::set("CYS_UPDATE_TEST_KEYRING", d.join("kr.json")),
+            crate::pack::EnvGuard::set("CYS_UPDATE_NOW", NOW.to_string()),
+        );
+        // ⓐ 보관소 채우기(설치판 seq 8) — 행 A2 서명 = 감싼 꼴
+        let (bb8, sig8, setup8, a2_8, url8, sig_url8) = archive_fixture(&k);
+        let a2_8 = wrap(&a2_8);
+        assert!(!a2_8.starts_with(b"untrusted comment:"), "픽스처 = 겉포장 꼴");
+        let get_feed = |rel: &str| match rel {
+            "cysr/releases/8.json" => Ok(bb8.clone()),
+            "cysr/releases/8.json.minisig" => Ok(sig8.clone()),
+            _ => Err(format!("없음 {rel}")),
+        };
+        let get_asset = |u: &str, _m: u64| if u == url8 { Ok(setup8.clone()) } else if u == sig_url8 { Ok(a2_8.clone()) } else { Err(format!("없음 {u}")) };
+        let kr = k.keyring();
+        let r = fill_installer_dir(&upd, 8, &kr, &get_feed, &get_asset);
+        assert_eq!(r, Ok(true), "ⓐ 보관소 채우기 = 감싼 꼴 A2 서명 수용");
+        assert!(verify_installer_dir(&upd.join("installers/8"), 8, true).is_ok(), "ⓐ installers/8 재검증");
+        // ⓑ S2 — 후보(seq 9) 서명 본문 · 행(설치기 sha256·크기 · a2_sig_url · payload_manifest) · stage 에 받아 둔 설치기
+        let _m = crate::pack::EnvGuard::set("CYS_U1_MUTANT", "U2-S2FILL");
+        let t1 = "0123456789abcdef0123456789abcdef";
+        let new_sig_url = "https://github.com/oogisoogi/cys-ro/releases/download/v1.1.9/cysr_1.1.9_x64-setup.exe.sig";
+        let setup = b"MZ-setup-9".to_vec();
+        let mut body = body_json(&k, 9);
+        for a in body["assets"].as_object_mut().unwrap().values_mut() {
+            a["sha256"] = json!(crate::update::feed::sha256_hex(&setup));
+        }
+        let bb = body.to_string().into_bytes();
+        ops.env.os = Os::Win;
+        ops.cand.release_b64 = Some(b64.encode(&bb));
+        ops.cand.release_sig_b64 = Some(b64.encode(k.u.sign(&bb)));
+        ops.cand.asset.sha256 = crate::update::feed::sha256_hex(&setup);
+        ops.cand.asset.size = setup.len() as u64;
+        ops.cand.asset.a2_sig_url = Some(new_sig_url.into());
+        ops.cand.asset.payload_manifest = Some(vec![crate::update::feed::PayloadEntry { path: "cys.exe".into(), size: 1, sha256: "aa".repeat(32) }]);
+        let stage = upd.join("stage").join(t1);
+        std::fs::create_dir_all(&stage).unwrap();
+        std::fs::write(stage.join(SETUP), &setup).unwrap();
+        let sig = wrap(&k.a2.sign(&setup));
+        let sg = sig.clone();
+        ops.asset_get = Some(Box::new(move |u: &str, _m: u64| if u == new_sig_url { Ok(sg.clone()) } else { Err(format!("없음 {u}")) }));
+        let mut j = super::super::journal::Journal::new(t1, 1);
+        let r = ops.fetch(&mut j);
+        assert!(r.is_ok(), "ⓑ S2 = 감싼 꼴 A2 서명 수용: {r:?}");
+        assert_eq!(std::fs::read(stage.join(SETUP_SIG)).unwrap(), sig, "ⓑ 받은 서명 그대로 stage 에");
+        // ⓒ S9b 재검증 · ⓓ S11 보존
+        assert!(ops.verify_stage_installer(&j).is_ok(), "ⓒ S9b 재검증");
+        let p = ops.preserve_release(&j);
+        assert!(p.is_ok(), "ⓓ S11 보존: {p:?}");
+        assert!(verify_installer_dir(&upd.join("installers/9"), 9, true).is_ok(), "ⓓ installers/9 재검증");
         let _ = std::fs::remove_dir_all(&d);
     }
 

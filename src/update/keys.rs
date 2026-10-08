@@ -159,6 +159,9 @@ impl UpdateKeyring {
     /// `key_id` 가 가리키는 `purpose` 키로 `data` 의 minisign 서명을 검증한다.
     pub fn verify(&self, purpose: Purpose, key_id: &str, data: &[u8], sig: &[u8], now: i64) -> Result<(), String> {
         let k = self.find(key_id, purpose, now)?;
+        if purpose == Purpose::WinAsset {
+            return crate::packsig::verify_minisign(&k.pubkey, data, &win_asset_sig_text(sig));
+        }
         crate::packsig::verify_minisign(&k.pubkey, data, sig)
     }
 
@@ -180,6 +183,21 @@ impl UpdateKeyring {
         }
         out.revoked_key_ids.extend(rev.revoked_key_ids.iter().cloned());
         out
+    }
+}
+
+/// A2 `.sig` 입력 정규화(cysr-118-a2-sigformat) — tauri 번들러가 내는 `.sig` = minisign 서명 텍스트 전체를 base64(STANDARD)로 한 번 더
+/// 감싼 것(실 발행물 `cysr_1.1.8_x64-setup.exe.sig` 412 B). ① 「untrusted comment:」로 시작 = minisign 원문 그대로 ② 아니면 앞뒤 공백·
+/// 개행을 걷고 base64 해제 → 「untrusted comment:」로 시작하면 그 텍스트 ③ 둘 다 아님 = 원 바이트 그대로(종전 「서명 디코드 실패」).
+fn win_asset_sig_text(sig: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    use base64::Engine;
+    const HEAD: &[u8] = b"untrusted comment:";
+    if sig.starts_with(HEAD) {
+        return std::borrow::Cow::Borrowed(sig);
+    }
+    match base64::engine::general_purpose::STANDARD.decode(sig.trim_ascii()) {
+        Ok(text) if text.starts_with(HEAD) => std::borrow::Cow::Owned(text),
+        _ => std::borrow::Cow::Borrowed(sig),
     }
 }
 
@@ -486,6 +504,52 @@ mod tests {
         assert!(r.find(&k.f.key_id, Purpose::Feed, NOW).unwrap_err().contains("폐기"));
         let far = crate::packsig::parse_rfc3339("2099-01-01T00:00:00Z").unwrap();
         assert!(kr.find(&k.f.key_id, Purpose::Feed, far).unwrap_err().contains("만료"));
+    }
+
+    /// ★cysr-118-a2-sigformat: A2 `.sig` 실 발행물 꼴 = minisign 서명 텍스트를 base64(STANDARD)로 한 번 더 감싼 것(tauri 번들러 ·
+    /// 1.1.8 윈 실기 17:07 「설치기 A2 서명 불일치」) — ⓐ 감싼 꼴(+끝 개행) 통과 ⓒ 원문 텍스트 여전히 통과 ⓓ 다른 바이트 · 깨진 base64 ·
+    /// 서명 아닌 텍스트를 감싼 것 · A2 아닌 키(감싼 꼴) = 거부 · 감싼 꼴 수용은 A2 용도 한정(U 는 종전 그대로 「디코드 실패」).
+    #[test]
+    fn win_asset_accepts_tauri_base64_wrapped_sig() {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let k = Keys::new();
+        let kr = k.keyring();
+        let setup = b"MZ-setup-wrapped";
+        let raw = k.a2.sign(setup);
+        let wrapped = b64.encode(&raw).into_bytes();
+        assert!(kr.verify_any(Purpose::WinAsset, setup, &wrapped, NOW).is_ok(), "ⓐ tauri 꼴(base64 겉포장)");
+        let mut nl = wrapped.clone();
+        nl.extend_from_slice(b"\r\n");
+        assert!(kr.verify_any(Purpose::WinAsset, setup, &nl, NOW).is_ok(), "ⓐ 끝 개행");
+        assert!(kr.verify_any(Purpose::WinAsset, setup, &raw, NOW).is_ok(), "ⓒ 원문 텍스트");
+        assert!(kr.verify_any(Purpose::WinAsset, b"MZ-evil", &wrapped, NOW).is_err(), "ⓓ 다른 바이트");
+        let mut broken = wrapped.clone();
+        broken.truncate(broken.len() - 7);
+        broken.push(b'!');
+        assert!(kr.verify_any(Purpose::WinAsset, setup, &broken, NOW).is_err(), "ⓓ 깨진 base64");
+        assert!(kr.verify_any(Purpose::WinAsset, setup, b64.encode(b"not a signature").as_bytes(), NOW).is_err(), "ⓓ 서명 아닌 텍스트");
+        assert!(kr.verify_any(Purpose::WinAsset, setup, b64.encode(k.u.sign(setup)).as_bytes(), NOW).is_err(), "ⓓ A2 아닌 키");
+        let sig_u = k.u.sign(setup);
+        assert!(kr.verify(Purpose::Release, &k.u.key_id, setup, &sig_u, NOW).is_ok());
+        let wrapped_u = b64.encode(&sig_u);
+        assert!(
+            kr.verify(Purpose::Release, &k.u.key_id, setup, wrapped_u.as_bytes(), NOW).unwrap_err().contains("디코드"),
+            "감싼 꼴 수용 = A2 한정(U 경로 동작 불변)"
+        );
+    }
+
+    /// ⓔ 실물 대조(손 실행 · `--ignored`): 실 발행물 `cysr_1.1.8_x64-setup.exe` + `.sig`(cys-ro v1.1.8 · .sig 412 B)를 **내장 키링** A2
+    /// 공개키(831CA9172204E93E)로 검증 · 한 바이트 잘린 설치기 = 거부. `CYS_A2_REAL_SETUP` · `CYS_A2_REAL_SIG` = 받은 파일 경로.
+    #[test]
+    #[ignore]
+    fn real_release_a2_sig_verifies_with_embedded_keyring() {
+        let setup = std::fs::read(std::env::var("CYS_A2_REAL_SETUP").expect("CYS_A2_REAL_SETUP")).unwrap();
+        let sig = std::fs::read(std::env::var("CYS_A2_REAL_SIG").expect("CYS_A2_REAL_SIG")).unwrap();
+        let kr = UpdateKeyring::from_trusted_keys_json(crate::packsig::TRUSTED_KEYS_JSON).unwrap();
+        let now = super::super::clock::wall_now();
+        kr.verify_any(Purpose::WinAsset, &setup, &sig, now).expect("실 발행물 A2 서명");
+        assert!(kr.verify_any(Purpose::WinAsset, &setup[..setup.len() - 1], &sig, now).is_err(), "잘린 설치기 = 거부");
     }
 
     /// 교차 사용: F 키로 서명한 데이터를 U 용도로 검증 = 거부(키 자체로 막는다).

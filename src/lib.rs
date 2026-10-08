@@ -4367,6 +4367,7 @@ mod tests {
         //   src/bin/cysd/boot_supervisor.rs 1곳 — run_ensure_team · `.env(ENV_PY_NO_BYTECODE)` 직봉인
         //   src/bin/cysd/main.rs           2곳 — office-bridge(tokio 직봉인) + 테스트(self-test 게이트)
         //   src-tauri/src/main.rs          4곳 — orchestra/resource-gate/boot/org · inject_runtime_path
+        //   src-tauri/src/counsel.rs       1곳 — 상담소 `agora read`(1.1.9 T4) · inject_runtime_path + `-B`
         // (python_command 팩토리 경유 호출부는 구조상 봉인이라 여기 셈에 안 들어간다.)
         let expected: &[(&str, usize)] = &[
             ("src/bin/cys.rs", 1),

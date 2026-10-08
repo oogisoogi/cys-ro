@@ -166,5 +166,45 @@ class PublishLaneIsTheOnlyTrigger(unittest.TestCase):
                       "발행 잡이 자기 손으로 검증하지 않는다")
 
 
+class DraftGuardAndConcurrency(unittest.TestCase):
+    """★B1(1.1.9 · TICKET=cysr-119-defects) — 같은 태그 draft 가드 · 두 릴리스 레인의 concurrency.
+
+    뮤턴트: 가드 잡을 지운다 / build·windows-health-gate 의 needs 를 뗀다 / 가드 권한을 read 로 낮춘다
+    (draft 가 안 보여 헛돈다) / 조회 실패를 통과로 접는다 / pack-release concurrency 를 지운다 → 적색."""
+
+    def setUp(self):
+        self.rel = _load(_RELEASE)
+        self.jobs = self.rel["jobs"]
+
+    def test_20_draft_guard_job_exists_and_can_see_drafts(self):
+        g = self.jobs.get("draft-guard")
+        self.assertIsNotNone(g, "같은 태그 draft 가드 잡이 없다")
+        self.assertEqual(g.get("permissions", {}).get("contents"), "write",
+                         "draft 목록은 push 권한에만 보인다 — read 면 가드가 헛돈다")
+        run = "\n".join(st.get("run", "") for st in g["steps"])
+        self.assertIn(".draft and .tag_name == env.TAG", run, "같은 태그 draft 선택식")
+        self.assertIn("exit 1", run)
+        self.assertIn("if ! N=", run, "조회 실패 = 멈춤(fail-closed)")
+
+    def test_21_asset_producing_roots_wait_for_the_guard(self):
+        for name, job in self.jobs.items():
+            if name == "draft-guard":
+                continue
+            needs = job.get("needs")
+            needs = [needs] if isinstance(needs, str) else (needs or [])
+            if not needs:
+                self.fail("잡 %s 가 아무것도 기다리지 않는다 — 가드보다 먼저 돌 수 있다" % name)
+        for root in ("build", "windows-health-gate"):
+            needs = self.jobs[root].get("needs")
+            needs = [needs] if isinstance(needs, str) else needs
+            self.assertIn("draft-guard", needs, root)
+
+    def test_22_both_release_lanes_serialize_per_ref(self):
+        for path, prefix in ((_RELEASE, "release-"), (os.path.join(_WF, "pack-release.yml"), "pack-release-")):
+            c = _load(path).get("concurrency") or {}
+            self.assertEqual(c.get("group"), prefix + "${{ github.ref }}", path)
+            self.assertIs(c.get("cancel-in-progress"), False, path)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

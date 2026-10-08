@@ -190,6 +190,35 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
 }
 #ws-expert { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 #ws-expert[hidden] { display: none; }
+/* (1.1.9 T4) 상담소·아고라 메뉴 줄 — 목록(#ws-tabs) 아래·사용량 패널 위. flex:none = 목록이 남는 공간을 갖는다.
+   글자 = 사이드바 배율(--wsbar-font) 축을 따른다(A−/A＋ 한 축). 뱃지는 공용 .badge(+[hidden] 짝) 그대로. */
+#ws-counsel-row {
+  flex: none; display: flex; flex-wrap: wrap; gap: 4px 6px;
+  padding: 6px 8px; border-top: 1px solid var(--hairline);
+}
+#ws-counsel-row button {
+  background: none; border: 1px solid var(--hairline); border-radius: 6px;
+  color: var(--text, #e2e8f0); cursor: pointer; padding: 3px 10px;
+  font-size: calc(14px * var(--wsbar-font, 1));
+}
+#ws-counsel-row button:hover { border-color: var(--accent); }
+/* 상담소 창 — .modal 재사용 · 남의 글은 textContent 로만(줄바꿈은 pre-wrap 으로 보인다). */
+.modal.counsel-modal { max-width: 640px; width: calc(100vw - 48px); max-height: 88vh; overflow-y: auto; }
+.counsel-modal p.counsel-notice { font-size: 12px; line-height: 1.5; color: #94a3b8; margin: 4px 0 8px; }
+.counsel-modal p.counsel-newline { font-size: 13px; color: var(--accent); margin: 0 0 8px; }
+.counsel-modal p.counsel-status { font-size: 13px; margin: 6px 0; min-height: 16px; color: #94a3b8; }
+.counsel-modal p.counsel-intro { font-size: 12px; color: #94a3b8; white-space: pre-wrap; margin: 0 0 8px; }
+.counsel-modal h4 { font-size: 13px; margin: 12px 0 6px; color: var(--text, #e2e8f0); }
+.counsel-post { border: 1px solid var(--hairline); border-radius: 6px; padding: 6px 8px; margin: 0 0 6px; }
+.counsel-post.mine { border-color: var(--accent); }
+.counsel-head { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; font-size: 12px; color: #94a3b8; }
+.counsel-who { color: var(--text, #e2e8f0); }
+.counsel-tag { font-size: 11px; padding: 0 6px; border-radius: 8px; border: 1px solid var(--hairline); }
+.counsel-tag.desk { border-color: var(--accent); color: var(--accent); }
+.counsel-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; margin: 4px 0 0; }
+.counsel-comments { margin: 6px 0 0 12px; }
+.counsel-comments summary { cursor: pointer; font-size: 12px; color: #94a3b8; }
+.counsel-comment { border-left: 2px solid var(--hairline); padding: 2px 0 2px 8px; margin: 4px 0; }
 #ws-tabs {
   flex: 1; display: flex; flex-direction: column; gap: 2px;
   overflow-y: auto; padding: 2px 8px 10px;

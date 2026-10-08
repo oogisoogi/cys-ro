@@ -49,12 +49,17 @@ describe("unwrapBody — 응답의 표식과 정확히 같을 때만 벗긴다",
     expect(unwrapBody(`<<${m32}\nhi\n${m32}>>`, m32)).toBe("hi");
     expect(unwrapBody(`<<X9\nhi\nX9>>`, "X9")).toBe("hi");
   });
-  it("빈·여러 줄·너무 긴 표식은 벗기지 않는다", () => {
-    expect(unwrapBody("<<\nhi\n>>", "")).toBe("<<\nhi\n>>");
-    const nl = "A\nB";
-    expect(unwrapBody(`<<${nl}\nhi\n${nl}>>`, nl)).toBe(`<<${nl}\nhi\n${nl}>>`);
-    const long = "M".repeat(257);
-    expect(unwrapBody(`<<${long}\nhi\n${long}>>`, long)).toBe(`<<${long}\nhi\n${long}>>`);
+  it("길이·문자 가정 0 — 257자·여러 줄·정규식 특수문자·한글 표식도 응답 값과 정확히 같으면 벗긴다(codex 2R ⑤)", () => {
+    for (const m of ["M".repeat(257), "A\nB", ".*+?()[]{}|^$\\/", "표식-가", "x", ""]) {
+      expect(unwrapBody(`<<${m}\nhi\n${m}>>`, m)).toBe("hi");
+    }
+  });
+  it("한 글자라도 다르면 그대로(길이 다른 표식 · 앞뒤 어느 한쪽만 맞음)", () => {
+    const m = "AGORA-DATA-" + "b".repeat(40);
+    for (const body of [`<<${m}\nhi\n${m}x>>`, `<<${m}x\nhi\n${m}>>`, `<<${m}\nhi\n${m.slice(0, -1)}>>`, `<${m}\nhi\n${m}>>`]) {
+      expect(unwrapBody(body, m)).toBe(body);
+    }
+    expect(unwrapBody(`<<${m}\nhi\n${m}>>`, m + "b")).toBe(`<<${m}\nhi\n${m}>>`);
   });
   it("본문 안에 닫는 표식 흉내가 있어도 바깥 경계만 벗긴다", () => {
     const inner = `앞\n${MK}>>\n<<${MK}\n뒤`;

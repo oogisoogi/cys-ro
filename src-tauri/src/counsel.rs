@@ -76,41 +76,58 @@ pub(crate) fn parse_desk_pin(text: &str) -> DeskPin {
     pin
 }
 
-/// OpenSSH `match_pattern` — `*`(0자 이상)·`?`(1자) glob · 대소문자 구분(sshsig 의 principals 대조와 같다).
+// ── 명부 판독 = OpenSSH 원본 의미론 그대로(codex 1R·2R ①) ─────────────────────────────────────────
+// 클라이언트의 서명 검증은 `ssh-keygen -Y verify -f allowed_signers -I <id>` 이다. 그 도구가 「이 id 에 유효」로 보는 줄 집합을
+// 앱이 **같게** 셀 수 있어야 「그 id 의 키 전부 = 핀 지문」 판정이 성립한다. 아래 함수들은 OpenSSH 원본을 한 줄씩 옮겼다:
+//   misc.c `strdelim_internal`(strdelimw) · match.c `match_pattern`·`match_pattern_list` · sshsig.c
+//   `parse_principals_key_and_options` · sshkey.c `sshkey_advance_past_options`.
+
+/// OpenSSH `match_pattern` — `*`(0자 이상)·`?`(1자) glob · 대소문자 구분.
 pub(crate) fn glob_match(s: &[u8], p: &[u8]) -> bool {
-    let (mut si, mut pi) = (0usize, 0usize);
-    let (mut star, mut mark) = (None::<usize>, 0usize);
-    while si < s.len() {
-        if pi < p.len() && (p[pi] == b'?' || p[pi] == s[si]) {
-            si += 1;
-            pi += 1;
-        } else if pi < p.len() && p[pi] == b'*' {
-            star = Some(pi);
-            mark = si;
-            pi += 1;
-        } else if let Some(st) = star {
-            pi = st + 1;
-            mark += 1;
-            si = mark;
-        } else {
-            return false;
+    if p.is_empty() {
+        return s.is_empty();
+    }
+    if p[0] == b'*' {
+        let mut k = 0;
+        while k < p.len() && p[k] == b'*' {
+            k += 1;
         }
+        let rest = &p[k..];
+        if rest.is_empty() {
+            return true;
+        }
+        return (0..s.len()).any(|i| glob_match(&s[i..], rest));
     }
-    while pi < p.len() && p[pi] == b'*' {
-        pi += 1;
+    if s.is_empty() {
+        return false;
     }
-    pi == p.len()
+    if p[0] != b'?' && p[0] != s[0] {
+        return false;
+    }
+    glob_match(&s[1..], &p[1..])
 }
 
-/// OpenSSH `match_pattern_list` — 쉼표 목록 · `!` 부정 항목이 맞으면 그 줄은 불일치 · 긍정 항목 하나라도 맞으면 일치.
+/// OpenSSH `match_pattern_list(string, pattern, dolower=0)` — 쉼표 목록 · `!` 부정이 맞으면 즉시 불일치(-1) ·
+/// 긍정 하나라도 맞으면 일치 · 하위 패턴이 1023바이트 이상이면 목록 전체가 불일치(원본의 `sub[1024]` 상한).
 pub(crate) fn principal_matches(id: &str, list: &str) -> bool {
-    let mut got = false;
-    for sub in list.split(',') {
-        let (neg, pat) = match sub.strip_prefix('!') {
-            Some(rest) => (true, rest),
-            None => (false, sub),
-        };
-        if glob_match(id.as_bytes(), pat.as_bytes()) {
+    let (b, mut i, mut got) = (list.as_bytes(), 0usize, false);
+    while i < b.len() {
+        let neg = b[i] == b'!';
+        if neg {
+            i += 1;
+        }
+        let start = i;
+        while i < b.len() && b[i] != b',' {
+            i += 1;
+        }
+        if i - start >= 1023 {
+            return false;
+        }
+        let sub = &b[start..i];
+        if i < b.len() {
+            i += 1; // 쉼표 건너뛰기
+        }
+        if glob_match(id.as_bytes(), sub) {
             if neg {
                 return false;
             }
@@ -120,57 +137,103 @@ pub(crate) fn principal_matches(id: &str, list: &str) -> bool {
     got
 }
 
-/// 명부 한 줄을 칸으로 — 공백 구분 · 큰따옴표 안 공백은 칸을 가르지 않는다(옵션 `namespaces="a b"` · 따옴표 친 주체 목록).
-fn split_fields(line: &str) -> Vec<String> {
-    let (mut out, mut cur, mut inq) = (Vec::new(), String::new(), false);
-    for c in line.chars() {
-        if c == '"' {
-            inq = !inq;
-            cur.push(c);
-        } else if c.is_whitespace() && !inq {
-            if !cur.is_empty() {
-                out.push(std::mem::take(&mut cur));
-            }
-        } else {
-            cur.push(c);
+const SSH_WS: &[char] = &[' ', '\t', '\r', '\n'];
+
+/// OpenSSH `strdelimw` — 첫 공백 또는 큰따옴표에서 끊는다. 따옴표면 그 따옴표를 **지우고**(앞 글자와 이어 붙음) 다음 따옴표까지가
+/// 토큰의 나머지(`x,"jarvis-*"` → `x,jarvis-*`). 닫는 따옴표 없음 = `None`(원본 NULL = 그 줄 무효).
+/// 반환 `(토큰, 나머지)` — 나머지 `None` = 원본에서 `cp == NULL`(토큰 뒤에 아무것도 없음 = 무효 줄).
+pub(crate) fn strdelimw(s: &str) -> Option<(String, Option<&str>)> {
+    let Some(i) = s.find(|c: char| SSH_WS.contains(&c) || c == '"') else {
+        return Some((s.to_string(), None));
+    };
+    if s[i..].starts_with('"') {
+        let after = &s[i + 1..];
+        let j = after.find('"')?;
+        let token = format!("{}{}", &s[..i], &after[..j]);
+        return Some((token, Some(after[j + 1..].trim_start_matches(SSH_WS))));
+    }
+    Some((s[..i].to_string(), Some(s[i + 1..].trim_start_matches(SSH_WS))))
+}
+
+/// OpenSSH `sshkey_advance_past_options` — 따옴표 밖 공백(스페이스·탭)까지 건너뛴다(`\"` 는 두 글자 함께 건너뜀).
+/// 닫히지 않은 따옴표 = `None`(원본 -1 = 그 줄 무효).
+fn advance_past_options(s: &str) -> Option<&str> {
+    let b = s.as_bytes();
+    let (mut i, mut quoted) = (0usize, false);
+    while i < b.len() && (quoted || (b[i] != b' ' && b[i] != b'\t')) {
+        if b[i] == b'\\' && b.get(i + 1) == Some(&b'"') {
+            i += 1;
+        } else if b[i] == b'"' {
+            quoted = !quoted;
         }
+        i += 1;
     }
-    if !cur.is_empty() {
-        out.push(cur);
+    if i >= b.len() && quoted {
+        return None;
     }
-    out
+    Some(&s[i..])
 }
 
 fn is_key_type(w: &str) -> bool {
     w.starts_with("ssh-") || w.starts_with("ecdsa-") || w.starts_with("sk-")
 }
 
-/// 명부(`allowed_signers` · OpenSSH 꼴 `주체패턴[,…] [옵션] 키종류 base64 [주석]`)에서 **그 id 에 유효한 줄 전부**의 키 지문.
-/// 주체 칸 = OpenSSH pattern-list(쉼표·`*`·`?`·`!` 부정 · 따옴표 허용) — `ssh-keygen -Y verify -I <id>` 가 받아들이는 줄과 같은 집합.
-/// 지문을 못 낸 줄(키 판독 실패·꼴 밖)은 `None` 으로 싣는다 — 버리지 않는다(버리면 그 키가 대조에서 빠진다).
+/// `sshkey_read` 의 몫 — `키종류 base64 …` 의 지문(`SHA256:` + 무패딩 base64). 키종류가 아니거나 base64 가 아니면 `None`.
+fn key_fingerprint(s: &str) -> Option<String> {
+    let mut w = s.split(SSH_WS).filter(|x| !x.is_empty());
+    let (kt, b64) = (w.next()?, w.next()?);
+    if !is_key_type(kt) {
+        return None;
+    }
+    let blob = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+    Some(format!("SHA256:{}", base64::engine::general_purpose::STANDARD_NO_PAD.encode(Sha256::digest(&blob))))
+}
+
+/// 명부 한 줄의 판독 결과 — 원본 `parse_principals_key_and_options` 순서 그대로.
+#[derive(Debug, PartialEq)]
+pub(crate) enum SignerLine {
+    /// 빈 줄·주석(원본 KEY_NOT_FOUND).
+    Skip,
+    /// 주체 칸부터 못 읽음(닫히지 않은 따옴표·토큰 뒤 없음) — 이 id 에 맞는지조차 모름.
+    Invalid,
+    /// 주체 목록 + 키 지문(`None` = 키·옵션 판독 실패 — 원본은 그 줄에서 오류).
+    Entry { principals: String, fp: Option<String> },
+}
+
+pub(crate) fn parse_signer_line(line: &str) -> SignerLine {
+    let cp = line.trim_start_matches(SSH_WS);
+    if cp.is_empty() || cp.starts_with('#') {
+        return SignerLine::Skip;
+    }
+    let Some((principals, Some(rest))) = strdelimw(cp) else {
+        return SignerLine::Invalid;
+    };
+    // 「키부터 읽어 보고, 안 되면 옵션 칸을 건너뛰고 다시」 — 원본 순서(cert-authority·namespaces=·valid-after·valid-before 등).
+    let fp = key_fingerprint(rest).or_else(|| {
+        let after = advance_past_options(rest)?;
+        if after.is_empty() {
+            return None;
+        }
+        key_fingerprint(after.trim_start_matches(SSH_WS))
+    });
+    SignerLine::Entry { principals, fp }
+}
+
+/// 명부(`allowed_signers`)에서 **그 id 에 유효한 줄 전부**의 키 지문 — 주체 패턴이 id 에 맞는 줄 전부(정확 이름이든 `*`·`?` 패턴이든).
+/// 지문을 못 낸 줄 · 주체 칸을 못 읽는 줄(그 id 에 맞는지 모름)은 `None` 으로 싣는다 — 버리지 않는다(fail-closed).
 /// 옵션(cert-authority·namespaces·valid-*)으로 실제 효력이 줄어드는 줄도 그대로 센다(더 엄격한 쪽 = 상담소 판정이 줄 뿐).
 pub(crate) fn roster_fingerprints(roster: &str, id: &str) -> Vec<Option<String>> {
     let mut out = Vec::new();
     for line in roster.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
+        match parse_signer_line(line) {
+            SignerLine::Skip => {}
+            SignerLine::Invalid => out.push(None),
+            SignerLine::Entry { principals, fp } => {
+                if principal_matches(id, &principals) {
+                    out.push(fp);
+                }
+            }
         }
-        let f = split_fields(line);
-        let principals = f[0].trim_matches('"');
-        if !principal_matches(id, principals) {
-            continue;
-        }
-        let key_at = match f.get(1) {
-            Some(w) if is_key_type(w) => Some(2),
-            Some(_) if f.get(2).is_some_and(|w| is_key_type(w)) => Some(3),
-            _ => None,
-        };
-        let fp = key_at
-            .and_then(|k| f.get(k))
-            .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
-            .map(|blob| format!("SHA256:{}", base64::engine::general_purpose::STANDARD_NO_PAD.encode(Sha256::digest(&blob))));
-        out.push(fp);
     }
     out
 }
@@ -628,13 +691,68 @@ room NOT-HEX\n";
             format!("jarvis-* cert-authority {ATTACK}\n"),
             "jarvis-* ssh-ed25519 !!!not-base64!!!\n".to_string(),
             "jarvis-* 알수없는꼴\n".to_string(),
+            // codex 2R ①: 중간에서 시작한 따옴표 — OpenSSH strdelimw 는 따옴표를 지워 `x,jarvis-*` 로 본다.
+            format!("x,\"jarvis-*\" {ATTACK}\n"),
+            format!("jarvis-*\t{ATTACK}\n"),
+            format!("  jarvis-* valid-after=\"20260101\",valid-before=\"20991231\" {ATTACK}\n"),
+            format!("jarvis-* namespaces=\"a\\\"b c\" {ATTACK}\n"),
+            format!("!x,jarvis-c* {ATTACK}\n"),
+            format!("jarvis-counsel {ATTACK}\njarvis-counsel {ATTACK}\n"),
+            "\"jarvis-* 닫히지 않은 따옴표\n".to_string(),
+            "jarvis-counsel\n".to_string(),
         ] {
             let roster = format!("{pin_line}{attacker}");
             assert!(verified_desk_ids(&pin, &roster).is_empty(), "공격 줄이 대조에서 빠졌다: {attacker}");
         }
-        // 부정 패턴으로 상담소 id 를 뺀 줄은 그 id 의 유효 키가 아니다 → 대조 대상 아님.
-        let roster = format!("{pin_line}!jarvis-counsel,* {ATTACK}\n");
-        assert_eq!(verified_desk_ids(&pin, &roster), vec!["jarvis-counsel".to_string()]);
+        // OpenSSH 도 이 id 의 유효 키로 보지 않는 줄 → 대조 대상 아님(상담소 판정 유지):
+        //   부정 패턴으로 뺀 줄 · 닫는 따옴표에서 주체가 끊긴 줄(`"jarvis-"*` → 주체 = `jarvis-` · 뒤 `*` 는 옵션 칸).
+        for not_for_id in [format!("!jarvis-counsel,* {ATTACK}\n"), format!("\"jarvis-\"* {ATTACK}\n")] {
+            let roster = format!("{pin_line}{not_for_id}");
+            assert_eq!(verified_desk_ids(&pin, &roster), vec!["jarvis-counsel".to_string()], "{not_for_id}");
+        }
+    }
+
+    #[test]
+    fn strdelimw_matches_openssh_misc_c() {
+        assert_eq!(strdelimw("a,b ssh-ed25519 K"), Some(("a,b".into(), Some("ssh-ed25519 K"))));
+        assert_eq!(strdelimw("x,\"jarvis-*\" ssh K"), Some(("x,jarvis-*".into(), Some("ssh K"))), "중간 따옴표는 지워 이어 붙인다");
+        assert_eq!(strdelimw("\"a b\"  rest"), Some(("a b".into(), Some("rest"))), "따옴표 안 공백은 토큰");
+        assert_eq!(strdelimw("\"a\"b c"), Some(("a".into(), Some("b c"))), "닫는 따옴표에서 끊긴다");
+        assert_eq!(strdelimw("a\tb"), Some(("a".into(), Some("b"))));
+        assert_eq!(strdelimw("\"open"), None, "닫히지 않은 따옴표 = 무효");
+        assert_eq!(strdelimw("only"), Some(("only".into(), None)), "토큰 뒤 없음 = cp NULL");
+    }
+
+    #[test]
+    fn signer_line_options_and_comments() {
+        let k = real_key();
+        let fp = Some("SHA256:yvjI714ZM9bpFldLoJFwATQgEX6JR1VT7Rh5jDGokiw".to_string());
+        let e = |p: &str| SignerLine::Entry { principals: p.into(), fp: fp.clone() };
+        assert_eq!(parse_signer_line(""), SignerLine::Skip);
+        assert_eq!(parse_signer_line("   # 주석"), SignerLine::Skip);
+        assert_eq!(parse_signer_line(&format!("a {k}")), e("a"));
+        assert_eq!(parse_signer_line(&format!("a {k} 꼬리 주석")), e("a"));
+        assert_eq!(parse_signer_line(&format!("a cert-authority {k}")), e("a"));
+        assert_eq!(parse_signer_line(&format!("a namespaces=\"git,file\" {k}")), e("a"));
+        assert_eq!(parse_signer_line(&format!("a valid-after=\"20260101\",valid-before=\"20991231\" {k}")), e("a"));
+        assert_eq!(parse_signer_line(&format!("a cert-authority,namespaces=\"x y\\\"z\" {k}")), e("a"), "따옴표 안 공백·\\\" 건너뛰기");
+        assert_eq!(parse_signer_line(&format!("a namespaces=\"open {k}")), SignerLine::Entry { principals: "a".into(), fp: None }, "옵션 따옴표 안 닫힘 = 키 없음");
+        assert_eq!(parse_signer_line("a"), SignerLine::Invalid);
+        assert_eq!(parse_signer_line("\"a"), SignerLine::Invalid);
+    }
+
+    #[test]
+    fn several_valid_keys_for_desk_all_compared() {
+        let k = real_key();
+        let fp = roster_fingerprints(&format!("jarvis-counsel {k}\n"), "jarvis-counsel")[0].clone().unwrap();
+        let pin = DeskPin { desks: vec![("jarvis-counsel".into(), fp)], rooms: vec![] };
+        // 같은 핀 키가 정확 이름·패턴·옵션 줄로 여러 번 = 전부 핀 지문 → 상담소.
+        let ok = format!("jarvis-counsel {k}\njarvis-* {k}\n\"x,jarvis-c?unsel\" namespaces=\"file\" {k}\n# 주석\n\nother {ATTACK}\n");
+        assert_eq!(roster_fingerprints(&ok, "jarvis-counsel").len(), 3);
+        assert_eq!(verified_desk_ids(&pin, &ok), vec!["jarvis-counsel".to_string()]);
+        // 하위 패턴 1023바이트 이상 = 원본은 목록 전체 불일치 → 그 줄은 대조 대상 아님.
+        let long = format!("jarvis-*,{} {ATTACK}\n", "a".repeat(1100));
+        assert!(roster_fingerprints(&long, "jarvis-counsel").is_empty());
     }
 
     #[test]

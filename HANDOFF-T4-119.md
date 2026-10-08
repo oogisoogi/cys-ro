@@ -3,6 +3,12 @@
 - 작성: 2026-10-09 07:3x KST · 가지 `feat/119-t4-app`(off merge/v0.14.43 = 9d8fff71) · **push 0**(워커 금지 · 병합 = master)
 - 판정: 설계 1장 통과 = master#fb304202(Q1~Q4 권고 채택 · 문구 규칙 ⓐⓑ) · 설계 = `docs/design/T4-APP-MENUS-119.md`(§7-1 = 판정 기록)
 
+## 0-3. 3판 델타(codex 2R = ①⑤ 부분 해소 → master#fe827f4d · 나머지 7건 = 2R 「해소」)
+| # | 2R 근거 | 고친 것 | 시험·증거 |
+|---|---|---|---|
+| ① | `split_fields`+`trim_matches('"')` 는 OpenSSH `strdelimw` 와 다름 — `x,"jarvis-*"` 를 `x,"jarvis-*` 로 비교해 공격 줄 누락 | OpenSSH 원본 이식: `strdelimw`(따옴표 지우고 이어 붙임 · 닫는 따옴표에서 끊김 · 안 닫힘 = 무효) · `match_pattern`·`match_pattern_list`(하위 패턴 ≥1023B = 목록 불일치 포함) · `parse_principals_key_and_options` 순서(키 먼저 → 안 되면 `sshkey_advance_past_options` 로 옵션 칸 건너뛰고 다시 · `\"` 처리) · 무효 줄 = 지문 None(fail-closed) | `strdelimw_matches_openssh_misc_c` · `signer_line_options_and_comments`(cert-authority·namespaces·valid-after/before·주석·안 닫힌 따옴표) · `several_valid_keys_for_desk_all_compared` · 공격 꼴 17 · **실 OpenSSH 10.3 정답지 9꼴 일치**(`shots-119-t4/openssh-oracle-2026-10-09.txt` · cert-authority 만 우리가 더 엄격) |
+| ⑤ | `length > 256`·CR/LF 거부가 남음 = 길이 가정 | `typeof marker === "string"` 만 확인 · 경계 글자와 정확 일치(정규식 0) | 257자·여러 줄·정규식 특수문자·한글·1자·빈 표식 벗김 · 한 글자 다른 5꼴 안 벗김 |
+
 ## 0-2. 2판 델타(codex 1R BLOCK 5 · MAJOR 4 → master#6576ea7c 결정대로 9건 전부 코드 해소)
 | # | 결함(리뷰) | 고친 것 | 시험(무는지) |
 |---|---|---|---|

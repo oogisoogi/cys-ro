@@ -70,8 +70,8 @@ export const MAX_TEXT = 4000;
  *   맞지 않으면 받은 글자 그대로 둔다(벗기다 본문을 잃지 않는다).
  */
 export function unwrapBody(body: string, marker: string | null): string {
-  // 표식 꼴은 가정하지 않는다(길이·문자 고정 0 · codex 1R BLOCK 5) — 비어 있지 않고 한 줄·256자 이하인 응답 값과 바이트 정확 일치만.
-  if (typeof marker !== "string" || marker === "" || marker.length > 256 || /[\r\n]/.test(marker)) return body;
+  // 표식 꼴은 가정하지 않는다(길이·문자 집합·정규식 0 · codex 1R·2R ⑤) — 응답의 `untrusted.marker` 값과 경계 글자의 정확 일치만.
+  if (typeof marker !== "string") return body;
   const head = `<<${marker}\n`;
   const tail = `\n${marker}>>`;
   if (body.startsWith(head) && body.endsWith(tail) && body.length >= head.length + tail.length) {

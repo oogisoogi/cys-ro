@@ -73,10 +73,10 @@ describe("상담소 창 — 남의 글자는 textContent 로만", () => {
 describe("상담소 뱃지 배선(§11 — 읽기만 · 판독 = parseUnread)", () => {
   const poll = fnBody(main, "async function pollCounselUnread(");
   const render = fnBody(main, "function renderCounselBadge(");
-  it("unread.json 은 Rust counsel_unread 로 읽고 수정 시각이 같으면 다시 판독하지 않는다", () => {
+  it("unread.json 은 Rust counsel_unread 로 읽고 상태 전이는 stepUnread 하나(판정 끝난 수정 시각만 기억)", () => {
     expect(poll).toContain('invoke("counsel_unread")');
-    expect(poll).toContain("if (exists && mtime === counselUnreadMtime) return;");
-    expect(poll).toContain("parseUnread(");
+    expect(poll).toContain("const next = stepUnread(counselUnreadCache, res);");
+    expect(poll).toContain("if (next === counselUnreadCache) return;");
   });
   it("숫자는 textContent 로 · 0 이면 숨김", () => {
     expect(render).toContain("b.hidden = t === null;");

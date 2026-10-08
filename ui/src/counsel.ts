@@ -66,11 +66,12 @@ export const MAX_TEXT = 4000;
 
 /**
  * 클라이언트가 씌운 경계 표식(`<<MARKER\n본문\nMARKER>>`)을 벗긴다.
- * ★표식 값이 응답의 `untrusted.marker` 와 **정확히 같을 때만** 벗긴다 — 판마다 새로 뽑는 값이라 본문이 흉내 낼 수 없다.
+ * ★표식 값이 응답의 `untrusted.marker` 와 **정확히 같을 때만** 벗긴다 — 판마다 새로 뽑는 값이라 본문이 흉내 낼 수 없다(길이·꼴은 클라이언트 몫).
  *   맞지 않으면 받은 글자 그대로 둔다(벗기다 본문을 잃지 않는다).
  */
 export function unwrapBody(body: string, marker: string | null): string {
-  if (!marker || !/^AGORA-DATA-[0-9a-f]{16}$/.test(marker)) return body;
+  // 표식 꼴은 가정하지 않는다(길이·문자 고정 0 · codex 1R BLOCK 5) — 비어 있지 않고 한 줄·256자 이하인 응답 값과 바이트 정확 일치만.
+  if (typeof marker !== "string" || marker === "" || marker.length > 256 || /[\r\n]/.test(marker)) return body;
   const head = `<<${marker}\n`;
   const tail = `\n${marker}>>`;
   if (body.startsWith(head) && body.endsWith(tail) && body.length >= head.length + tail.length) {
@@ -195,21 +196,40 @@ export const UNREAD_NONE: UnreadState = { count: 0, deskCount: 0, held: 0, needs
 
 const nonNegInt = (x: unknown): number | null => (typeof x === "number" && Number.isInteger(x) && x >= 0 ? x : null);
 
-/** `raw` = 파일 글자(null = 파일 없음). 판독 실패는 언제나 `prev` 를 돌려준다(0 으로 거짓 표시하지 않는다). */
-export function parseUnread(raw: string | null, prev: UnreadState): UnreadState {
-  if (raw === null) return UNREAD_NONE;
+/**
+ * `raw` = 파일 글자(null = 파일 없음). 판독 실패는 언제나 `prev` 를 돌려준다(0 으로 거짓 표시하지 않는다).
+ * `settled` = 이 글자로 판정이 **끝났는가**(없음 · 정상 · 명시적 `v≠1`). 깨진 글자(반쯤 쓴 파일 등)는 `false` —
+ * 부르는 쪽은 settled 일 때만 수정 시각을 기억해야 한다(아니면 같은 밀리초에 쓰기가 끝난 파일을 영영 다시 안 읽는다 · codex 1R BLOCK 4).
+ */
+export function parseUnread(raw: string | null, prev: UnreadState): { state: UnreadState; settled: boolean } {
+  if (raw === null) return { state: UNREAD_NONE, settled: true };
   let doc: unknown;
   try {
     doc = JSON.parse(raw);
   } catch {
-    return prev;
+    return { state: prev, settled: false };
   }
-  if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return prev;
+  if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return { state: prev, settled: false };
   const d = doc as Record<string, unknown>;
-  if (d.v !== 1) return { ...prev, needsUpdate: true };
+  if (d.v !== 1) return { state: { ...prev, needsUpdate: true }, settled: true };
   const count = nonNegInt(d.count);
-  if (count === null) return prev;
-  return { count, deskCount: nonNegInt(d.desk_count) ?? 0, held: nonNegInt(d.held_for_roster) ?? 0, needsUpdate: false };
+  if (count === null) return { state: prev, settled: false };
+  return {
+    state: { count, deskCount: nonNegInt(d.desk_count) ?? 0, held: nonNegInt(d.held_for_roster) ?? 0, needsUpdate: false },
+    settled: true,
+  };
+}
+
+/** 폴링 1회의 상태 전이 — 캐시(마지막으로 **판정이 끝난** 수정 시각 + 뱃지 상태)와 Rust `counsel_unread` 결과 → 새 캐시.
+ * 같은 수정 시각이면 다시 판독하지 않되, 그 시각은 settled 일 때만 캐시에 들어간다(부분 쓰기 = 다음 폴링에서 재시도). */
+export type UnreadCache = { mtime: number; state: UnreadState };
+export const UNREAD_CACHE0: UnreadCache = { mtime: -1, state: UNREAD_NONE };
+export function stepUnread(cache: UnreadCache, res: { exists?: unknown; mtime_ms?: unknown; text?: unknown } | null): UnreadCache {
+  const exists = res?.exists === true;
+  const mtime = Number(res?.mtime_ms ?? 0);
+  if (exists && mtime === cache.mtime) return cache;
+  const r = parseUnread(exists ? (typeof res?.text === "string" ? res.text : "") : null, cache.state);
+  return { mtime: r.settled ? (exists ? mtime : -1) : cache.mtime, state: r.state };
 }
 
 /** 뱃지 글자 — 0 이면 null(숨김) · 100 이상은 「99+」. */

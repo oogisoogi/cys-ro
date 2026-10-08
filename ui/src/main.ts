@@ -131,6 +131,7 @@ import {
 import {
   AGORA_COPY,
   COUNSEL_COPY,
+  UNREAD_CACHE0,
   UNREAD_NONE,
   UNREAD_POLL_MS,
   badgeText,
@@ -139,8 +140,9 @@ import {
   counselTooltip,
   fmtWhen,
   newAnswersLine,
-  parseUnread,
   statusCopy,
+  stepUnread,
+  type UnreadCache,
   type UnreadState,
   type Comment as CounselComment,
   type Post as CounselPost,
@@ -10574,8 +10576,8 @@ setInterval(() => void invoke("feedback_flush").catch(() => {}), FEEDBACK_FLUSH_
 // ★남이 쓴 글자는 textContent 로만 넣는다 — 아래 틀(innerHTML)에는 우리 고정 태그만 있고 남의 글자는 0이다.
 // ★1.1.9 앱은 읽음 처리를 하지 않는다(master 판정 Q1) — 새 답 개수는 마스터가 답을 보여 줄 때 줄어든다.
 let counselOpen = false;
+let counselUnreadCache: UnreadCache = UNREAD_CACHE0;
 let counselUnread: UnreadState = UNREAD_NONE;
-let counselUnreadMtime = -1;
 // 뱃지 = 아고라 클라이언트가 쓰는 unread.json(§11) — 45초마다 수정 시각을 보고 바뀌었을 때만 다시 판독한다.
 // 없음 = 숨김 · 깨짐 = 직전 값 · 판(v) 다름 = 직전 값 + 「앱 갱신 필요」(판독 규칙 = counsel.ts parseUnread).
 function renderCounselBadge() {
@@ -10595,11 +10597,11 @@ async function pollCounselUnread() {
   } catch {
     return; // 명령 실패 = 아무것도 바꾸지 않는다(직전 값 유지)
   }
-  const exists = res?.exists === true;
-  const mtime = Number(res?.mtime_ms ?? 0);
-  if (exists && mtime === counselUnreadMtime) return;
-  counselUnreadMtime = exists ? mtime : -1;
-  counselUnread = parseUnread(exists ? (typeof res.text === "string" ? res.text : "") : null, counselUnread);
+  // ★수정 시각은 판정이 끝났을 때만 기억한다(stepUnread) — 깨진 글자(반쯤 쓴 파일)면 다음 확인 때 반드시 다시 읽는다.
+  const next = stepUnread(counselUnreadCache, res);
+  if (next === counselUnreadCache) return;
+  counselUnreadCache = next;
+  counselUnread = next.state;
   renderCounselBadge();
 }
 void pollCounselUnread();

@@ -11,6 +11,8 @@ import {
   fmtWhen,
   newAnswersLine,
   parseUnread,
+  stepUnread,
+  UNREAD_CACHE0,
   statusCopy,
   unwrapBody,
   type RawEvent,
@@ -41,6 +43,18 @@ describe("unwrapBody — 응답의 표식과 정확히 같을 때만 벗긴다",
   it("표식 없음·꼴 밖 표식 → 그대로", () => {
     expect(unwrapBody("raw", null)).toBe("raw");
     expect(unwrapBody(wrap("x"), "AGORA-DATA-xyz")).toBe(wrap("x"));
+  });
+  it("표식 길이·꼴 가정 0 — 32자 hex·다른 접두도 응답 값과 정확히 같으면 벗긴다(codex 1R BLOCK 5)", () => {
+    const m32 = "AGORA-DATA-" + "a".repeat(32);
+    expect(unwrapBody(`<<${m32}\nhi\n${m32}>>`, m32)).toBe("hi");
+    expect(unwrapBody(`<<X9\nhi\nX9>>`, "X9")).toBe("hi");
+  });
+  it("빈·여러 줄·너무 긴 표식은 벗기지 않는다", () => {
+    expect(unwrapBody("<<\nhi\n>>", "")).toBe("<<\nhi\n>>");
+    const nl = "A\nB";
+    expect(unwrapBody(`<<${nl}\nhi\n${nl}>>`, nl)).toBe(`<<${nl}\nhi\n${nl}>>`);
+    const long = "M".repeat(257);
+    expect(unwrapBody(`<<${long}\nhi\n${long}>>`, long)).toBe(`<<${long}\nhi\n${long}>>`);
   });
   it("본문 안에 닫는 표식 흉내가 있어도 바깥 경계만 벗긴다", () => {
     const inner = `앞\n${MK}>>\n<<${MK}\n뒤`;
@@ -158,33 +172,50 @@ describe("문구·표시", () => {
 describe("parseUnread — §11 읽기 규칙", () => {
   const prev = { count: 3, deskCount: 1, held: 0, needsUpdate: false };
   const doc = (o: Record<string, unknown>) => JSON.stringify({ v: 1, updated_at: "2026-10-09T00:00:00.000Z", count: 2, desk_count: 1, mail_unread: 1, desk_post_replies: 1, held_for_roster: 0, threads: [], ...o });
-  it("정상 → 그 값", () => {
-    expect(parseUnread(doc({}), prev)).toEqual({ count: 2, deskCount: 1, held: 0, needsUpdate: false });
+  it("정상 → 그 값 · 판정 끝", () => {
+    expect(parseUnread(doc({}), prev)).toEqual({ state: { count: 2, deskCount: 1, held: 0, needsUpdate: false }, settled: true });
   });
-  it("파일 없음 → 0(숨김)", () => {
-    expect(parseUnread(null, prev)).toEqual(UNREAD_NONE);
+  it("파일 없음 → 0(숨김) · 판정 끝", () => {
+    expect(parseUnread(null, prev)).toEqual({ state: UNREAD_NONE, settled: true });
   });
-  it("깨진 JSON·반쯤 쓴 파일·배열 → 직전 값", () => {
-    expect(parseUnread("{", prev)).toEqual(prev);
-    expect(parseUnread(doc({}).slice(0, 20), prev)).toEqual(prev);
-    expect(parseUnread("[]", prev)).toEqual(prev);
-    expect(parseUnread("null", prev)).toEqual(prev);
+  it("깨진 JSON·반쯤 쓴 파일·배열 → 직전 값 · 판정 안 끝남(다음에 다시 읽는다)", () => {
+    for (const raw of ["{", doc({}).slice(0, 20), "[]", "null", ""]) expect(parseUnread(raw, prev)).toEqual({ state: prev, settled: false });
   });
-  it("v ≠ 1 → 직전 값 + 갱신 필요", () => {
-    expect(parseUnread(doc({ v: 2 }), prev)).toEqual({ ...prev, needsUpdate: true });
-    expect(parseUnread(doc({ v: "1" }), prev).needsUpdate).toBe(true);
+  it("v ≠ 1 → 직전 값 + 갱신 필요 · 판정 끝", () => {
+    expect(parseUnread(doc({ v: 2 }), prev)).toEqual({ state: { ...prev, needsUpdate: true }, settled: true });
+    expect(parseUnread(doc({ v: "1" }), prev).state.needsUpdate).toBe(true);
   });
-  it("count 형식 밖 → 직전 값", () => {
-    expect(parseUnread(doc({ count: -1 }), prev)).toEqual(prev);
-    expect(parseUnread(doc({ count: 1.5 }), prev)).toEqual(prev);
-    expect(parseUnread(doc({ count: "2" }), prev)).toEqual(prev);
+  it("count 형식 밖 → 직전 값 · 판정 안 끝남", () => {
+    for (const c of [-1, 1.5, "2"]) expect(parseUnread(doc({ count: c }), prev)).toEqual({ state: prev, settled: false });
   });
   it("수신 보류 칸", () => {
-    expect(parseUnread(doc({ held_for_roster: 4 }), prev).held).toBe(4);
+    expect(parseUnread(doc({ held_for_roster: 4 }), prev).state.held).toBe(4);
   });
   it("실측 파일 모양(2026-10-09 이 맥 · 전부 0)", () => {
     const real = '{\n "count": 0,\n "desk_count": 0,\n "desk_post_replies": 0,\n "held_for_roster": 0,\n "mail_unread": 0,\n "threads": [],\n "updated_at": "2026-10-05T13:16:12.945Z",\n "v": 1\n}\n';
-    expect(parseUnread(real, prev)).toEqual(UNREAD_NONE);
+    expect(parseUnread(real, prev).state).toEqual(UNREAD_NONE);
+  });
+});
+
+describe("stepUnread — 부분 쓰기 뒤 같은 밀리초에 완성돼도 다시 읽는다(codex 1R BLOCK 4)", () => {
+  const full = JSON.stringify({ v: 1, count: 5, desk_count: 2, held_for_roster: 0 });
+  it("깨진 글자의 수정 시각은 기억하지 않는다 → 같은 시각의 완성본을 다음 폴링에서 읽는다", () => {
+    const c1 = stepUnread(UNREAD_CACHE0, { exists: true, mtime_ms: 1000, text: full.slice(0, 7) });
+    expect(c1.mtime).toBe(-1);
+    expect(c1.state).toEqual(UNREAD_NONE);
+    const c2 = stepUnread(c1, { exists: true, mtime_ms: 1000, text: full });
+    expect(c2.state.count).toBe(5);
+    expect(c2.mtime).toBe(1000);
+    // 판정이 끝난 뒤 같은 시각 = 다시 판독하지 않는다(같은 객체).
+    expect(stepUnread(c2, { exists: true, mtime_ms: 1000, text: "{" })).toBe(c2);
+  });
+  it("읽기 실패(text null·명령 실패) = 재시도 · 파일 사라짐 = 숨김", () => {
+    const c = stepUnread(UNREAD_CACHE0, { exists: true, mtime_ms: 9, text: full });
+    const failed = stepUnread(c, { exists: true, mtime_ms: 10, text: null });
+    expect(failed.mtime).toBe(9);
+    expect(failed.state.count).toBe(5);
+    expect(stepUnread(failed, { exists: false }).state).toEqual(UNREAD_NONE);
+    expect(stepUnread(failed, null).state).toEqual(UNREAD_NONE);
   });
 });
 

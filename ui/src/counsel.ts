@@ -186,3 +186,45 @@ export function statusCopy(status: string): string | null {
       return COUNSEL_COPY.failed;
   }
 }
+
+// ── 뱃지(§11 `mailbox/unread.json`) ──────────────────────────────────────────
+// 읽기 규칙(§11 그대로): 없으면 0(숨김) · 깨졌으면 직전 값 유지 · `v` 가 1 이 아니면 직전 값 + 「앱 갱신 필요」.
+// 숫자 = `count`(내 우편 미읽음 + 상담소 방 내 글의 새 댓글) · 쓰기는 아고라 클라이언트만(앱은 읽기만).
+export type UnreadState = { count: number; deskCount: number; held: number; needsUpdate: boolean };
+export const UNREAD_NONE: UnreadState = { count: 0, deskCount: 0, held: 0, needsUpdate: false };
+
+const nonNegInt = (x: unknown): number | null => (typeof x === "number" && Number.isInteger(x) && x >= 0 ? x : null);
+
+/** `raw` = 파일 글자(null = 파일 없음). 판독 실패는 언제나 `prev` 를 돌려준다(0 으로 거짓 표시하지 않는다). */
+export function parseUnread(raw: string | null, prev: UnreadState): UnreadState {
+  if (raw === null) return UNREAD_NONE;
+  let doc: unknown;
+  try {
+    doc = JSON.parse(raw);
+  } catch {
+    return prev;
+  }
+  if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return prev;
+  const d = doc as Record<string, unknown>;
+  if (d.v !== 1) return { ...prev, needsUpdate: true };
+  const count = nonNegInt(d.count);
+  if (count === null) return prev;
+  return { count, deskCount: nonNegInt(d.desk_count) ?? 0, held: nonNegInt(d.held_for_roster) ?? 0, needsUpdate: false };
+}
+
+/** 뱃지 글자 — 0 이면 null(숨김) · 100 이상은 「99+」. */
+export function badgeText(count: number): string | null {
+  if (!Number.isInteger(count) || count <= 0) return null;
+  return count > 99 ? "99+" : String(count);
+}
+
+/** 단추 툴팁 — 기본 툴팁 + 상태 1줄(갱신 필요 · 수신 멈춤). */
+export function counselTooltip(s: UnreadState): string {
+  const extra: string[] = [];
+  if (s.needsUpdate) extra.push(COUNSEL_COPY.needsUpdate);
+  if (s.held > 0) extra.push(COUNSEL_COPY.held);
+  return [COUNSEL_COPY.tooltip, ...extra].join("\n");
+}
+
+/** 파일 수정 시각 확인 주기(§11 「30~60초」). */
+export const UNREAD_POLL_MS = 45_000;

@@ -17,6 +17,26 @@ import unittest
 
 HOOKS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "hooks")
 SH = "/bin/sh"
+# ★1.1.10 ④(TODO 팩 시험 teardown 2종째 · 10-06 hf-ss-* 잔존 9 ≈400MB): 물려받은 CYS_* 는 인터프리터 해소 2종만 남긴다
+#   (test_dept_create_progress SANDBOX_KEEP_CYS 와 같은 화이트리스트 — 좌석 CYS_SOCKET 이 남으면 훅이 실 데몬에 역할을 묻는다).
+KEEP_CYS = ("CYS_PY", "CYS_PY_ORIGIN")
+# 목 cys = 「데몬 미응답」(rc 2) · 목 cysd = 기록만. session-start 는 cys claim-role·usage-register 를 부르는데 PATH 의 실 cys 는
+#   소켓이 없으면 형제 cysd 를 띄운다(가짜 HOME 에 고아 데몬 + 그 데몬이 시험 팩에 hooks/ 를 깔아 「조립기 없음」 전제까지 깬다 — 1.1.10 실측).
+STUB_CYS = '#!/bin/sh\necho "cys $*" >> "$(dirname "$0")/calls.log"\nexit 2\n'
+STUB_CYSD = '#!/bin/sh\necho "cysd $*" >> "$(dirname "$0")/calls.log"\nexit 0\n'
+
+
+def _base_env():
+    return {k: v for k, v in os.environ.items() if not k.startswith("CYS_") or k in KEEP_CYS}
+
+
+def _procs_holding(path):
+    """path 아래 파일을 연 프로세스 pid(나 제외) — lsof 없음 = None(판정 불가)."""
+    lsof = shutil.which("lsof")
+    if os.name == "nt" or not lsof:
+        return None
+    r = subprocess.run([lsof, "-t", "+D", path], capture_output=True, text=True, timeout=60)
+    return sorted({int(x) for x in r.stdout.split() if x.isdigit()} - {os.getpid()})
 
 
 def _sh(script, env):
@@ -26,7 +46,7 @@ def _sh(script, env):
 class T(unittest.TestCase):
     def setUp(self):
         self.st = tempfile.mkdtemp(prefix="hf-")
-        self.env = dict(os.environ, CYS_STATE_DIR=self.st, CYS_ROLE="cso", CYS_SURFACE_ID="44")
+        self.env = dict(_base_env(), CYS_STATE_DIR=self.st, CYS_ROLE="cso", CYS_SURFACE_ID="44")
         self.log = os.path.join(self.st, "hook-errors.log")
 
     def tearDown(self):
@@ -88,7 +108,14 @@ class T(unittest.TestCase):
             os.makedirs(home)
             tp = os.path.join(tmp, "t.jsonl")
             open(tp, "w").write("")
-            env = dict(self.env, HOME=home, CYS_PACK_DIR=pack, CYS_ROLE="master", CYS_SURFACE_ID="7")
+            stub = os.path.join(tmp, "stubbin")
+            os.makedirs(stub)
+            for name, body in (("cys", STUB_CYS), ("cysd", STUB_CYSD)):
+                with open(os.path.join(stub, name), "w") as f:
+                    f.write(body)
+                os.chmod(os.path.join(stub, name), 0o755)
+            env = dict(self.env, HOME=home, CYS_PACK_DIR=pack, CYS_ROLE="master", CYS_SURFACE_ID="7",
+                       PATH=stub + os.pathsep + self.env.get("PATH", ""))
             r = subprocess.run([SH, os.path.join(hk, "session-start.sh")], capture_output=True, text=True,
                                encoding="utf-8", env=env, timeout=60,
                                input=json.dumps({"transcript_path": tp, "source": "startup"}) + "\n")
@@ -99,7 +126,16 @@ class T(unittest.TestCase):
             self.assertEqual(len(ln), 1, self.lines())
             self.assertIn("rc=127 why=core_inject:조립기 파일 없음(실행 안 함)", ln[0])
             self.assertIn("role=master surface=7", ln[0])
+            self.assertFalse(os.path.exists(os.path.join(pack, "hooks")), "시험 팩에 hooks/ 가 깔렸다(실 cys·cysd 가 탔다)")
+            self.assertIn("cys claim-role master", open(os.path.join(stub, "calls.log")).read(), "목 cys 가 안 탔다")
+            left = _procs_holding(tmp)
+            self.assertFalse(left, "케이스 끝에 이 폴더를 쥔 프로세스가 남았다(고아 cysd 의심): %r" % (left,))
         finally:
+            for pid in _procs_holding(tmp) or []:   # 회귀 시에도 고아를 남기지 않는다(이 케이스 폴더를 쥔 것만)
+                try:
+                    os.kill(pid, 15)
+                except OSError:
+                    pass
             shutil.rmtree(tmp, ignore_errors=True)
 
     def _counsel_env(self, config=None):

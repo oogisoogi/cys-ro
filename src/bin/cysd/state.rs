@@ -2240,6 +2240,8 @@ pub struct Surface {
     /// 에이전트가 사라져도 마지막 값을 지킨다(죽은 좌석의 부활 입력이 이것이다). 윈도우·판독 실패 = 값 None(종전).
     /// 규칙: OS 관측 > 기록값(`claude_config_dir`) · 자기보고만으로는 격상 0(RV-SP-1 유지) — [`Surface::authoritative_config_dir`].
     pub os_config_dir: Mutex<Option<(u32, Option<String>)>>,
+    /// ★3판 ⑧: 지금 pid 의 연속 판독 실패 수(0 = 값 고정 · 1..상한 = 재시도 중 · 상한 = 소진) — [`governance::refresh_os_config_dir`].
+    pub os_config_dir_failures: std::sync::atomic::AtomicU8,
     /// T5 세션 트랜스크립트 등록 (`usage.register` — SessionStart hook의 결정론 매핑)
     pub registered_transcript: Mutex<Option<String>>,
     /// ★R3-1(0.14.42 · 리뷰 F3) /clear 재핀 연속성(ⓐ)의 기준 — 마지막 등록 중 **좌석 최상위 claude 의 훅이 아니라고
@@ -7475,6 +7477,7 @@ impl Daemon {
             inject_track,
             observed_usage: Mutex::new(None),
             os_config_dir: Mutex::new(None),
+            os_config_dir_failures: std::sync::atomic::AtomicU8::new(0),
             registered_transcript: Mutex::new(None),
             repin_anchor: Mutex::new(None),
             agent_session_id: Mutex::new(None),

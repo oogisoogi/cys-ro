@@ -3085,14 +3085,24 @@ pub(crate) fn pick_agent_env_pid(root: u32, root_is_agent: bool, descendants: &[
     descendants.iter().find(|(_, cmd)| cmdline_matches_agent_exec(cmd, bin_base)).map(|(pid, _)| *pid)
 }
 
+/// ★3판 ⑧(codex 2R MAJOR): env 판독 결과 3분 — 「값 있음」·「판독은 됐는데 키 없음」·「판독 실패」를 가른다
+/// (종전 = 셋 다 None 이라 일시 실패가 영구 고정됐다).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum EnvRead {
+    Observed(String),
+    /// env 를 읽었고(비어 있지 않음) 키가 없다 = OS 사실 → claude 는 기본 설정 폴더(`$HOME/.claude`)를 쓴다.
+    Absent,
+    /// 프로세스 없음·권한·env 숨김(맥 플랫폼 바이너리 = env 0개) 등 = 판단 불가 → 유계 재시도.
+    ReadFailed,
+}
+
 /// ★D-mac-5: 프로세스 env 의 한 값 — **OS 사실**(맥 = KERN_PROCARGS2 · 리눅스 = /proc/<pid>/environ · sysinfo environ 갈래 ·
-/// 격리 스냅샷 1회). 윈도우 = 읽지 않는다(None · 정직 고지: 다른 프로세스 env 판독 = PEB 원격 읽기라 이 단위에서 켜지 않는다).
-/// 권한 없음·종료 경주·키 없음 = None(폴백).
-pub(crate) fn process_env_value(pid: u32, key: &str) -> Option<String> {
+/// 격리 스냅샷 1회). 윈도우 = 읽지 않는다(ReadFailed · 정직 고지: 다른 프로세스 env 판독 = PEB 원격 읽기라 이 단위에서 켜지 않는다).
+pub(crate) fn process_env_value(pid: u32, key: &str) -> EnvRead {
     #[cfg(windows)]
     {
         let _ = (pid, key);
-        None
+        EnvRead::ReadFailed
     }
     #[cfg(not(windows))]
     {
@@ -3103,31 +3113,58 @@ pub(crate) fn process_env_value(pid: u32, key: &str) -> Option<String> {
             false,
             sysinfo::ProcessRefreshKind::nothing().with_environ(sysinfo::UpdateKind::Always),
         );
-        let pr = sys.process(target)?;
+        let Some(pr) = sys.process(target) else {
+            return EnvRead::ReadFailed;
+        };
+        if pr.environ().is_empty() {
+            return EnvRead::ReadFailed; // env 를 못 봤다(숨김·권한) ≠ 키 없음
+        }
         let prefix = format!("{key}=");
-        pr.environ().iter().find_map(|kv| {
-            let kv = kv.to_string_lossy();
-            kv.strip_prefix(&prefix).map(String::from)
-        })
+        pr.environ()
+            .iter()
+            .find_map(|kv| kv.to_string_lossy().strip_prefix(&prefix).map(String::from))
+            .map_or(EnvRead::Absent, EnvRead::Observed)
     }
 }
 
-/// ★D-mac-5: 좌석의 OS 관측 설정 폴더 갱신 — 에이전트 pid 가 **바뀔 때만** `read` 1회(좌석당 syscall 1회 · 같은 pid = 0회).
-/// pid None(에이전트 안 보임) = 무접촉(마지막 값 유지 — 죽은 좌석의 부활 입력). 반환 = 읽었는가.
+/// ★3판 ⑧: 같은 pid 의 판독 실패 재시도 상한(틱마다 1회 · 넘으면 그 pid 는 더 읽지 않는다).
+pub(crate) const OS_CONFIG_READ_RETRIES: u8 = 5;
+
+/// ★D-mac-5: 좌석의 OS 관측 설정 폴더 갱신 — 에이전트 pid 가 **바뀔 때** `read` 1회. ★3판 ⑧: 같은 pid 라도 직전 판독이
+/// ReadFailed 면 틱마다 다시(상한 [`OS_CONFIG_READ_RETRIES`]) · Observed·Absent 는 고정(같은 pid = 0회).
+/// Absent = `$HOME/.claude`(claude 기본 폴더)를 관측값으로 적는다. pid None(에이전트 안 보임) = 무접촉(마지막 값 유지).
+/// 반환 = 값이 바뀌었는가(영속 계기).
 pub(crate) fn refresh_os_config_dir(
     s: &crate::state::Surface,
     agent_pid: Option<u32>,
-    read: impl FnOnce(u32) -> Option<String>,
+    read: impl FnOnce(u32) -> EnvRead,
 ) -> bool {
     let Some(pid) = agent_pid else {
         return false;
     };
-    if matches!(s.os_config_dir.lock().unwrap().as_ref(), Some((p, _)) if *p == pid) {
-        return false;
+    let same_pid = matches!(s.os_config_dir.lock().unwrap().as_ref(), Some((p, _)) if *p == pid);
+    let fails = s.os_config_dir_failures.load(Ordering::Relaxed);
+    if same_pid && (fails == 0 || fails >= OS_CONFIG_READ_RETRIES) {
+        return false; // 고정(Observed·Absent) 또는 재시도 소진
     }
-    let v = read(pid);
-    *s.os_config_dir.lock().unwrap() = Some((pid, v));
-    true
+    let v = match read(pid) {
+        EnvRead::Observed(v) => {
+            s.os_config_dir_failures.store(0, Ordering::Relaxed);
+            Some(v)
+        }
+        EnvRead::Absent => {
+            s.os_config_dir_failures.store(0, Ordering::Relaxed);
+            Some(cys::home_dir().join(".claude").to_string_lossy().into_owned())
+        }
+        EnvRead::ReadFailed => {
+            s.os_config_dir_failures.store(if same_pid { fails + 1 } else { 1 }, Ordering::Relaxed);
+            None
+        }
+    };
+    let mut cur = s.os_config_dir.lock().unwrap();
+    let changed = cur.as_ref().and_then(|(_, old)| old.clone()) != v;
+    *cur = Some((pid, v));
+    changed
 }
 
 pub fn persist_topology(daemon: &Arc<Daemon>) {
@@ -13205,7 +13242,7 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let got_with = loop {
             let v = super::process_env_value(with.id(), "CLAUDE_CONFIG_DIR");
-            if v.is_some() || std::time::Instant::now() >= deadline {
+            if matches!(v, super::EnvRead::Observed(_)) || std::time::Instant::now() >= deadline {
                 break v;
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
@@ -13216,16 +13253,16 @@ mod tests {
         let _ = without.kill();
         let _ = with.wait();
         let _ = without.wait();
-        assert_eq!(got_with.as_deref(), Some("/x/.claude-acct2"), "계정2 env 좌석을 OS 에서 못 읽었다");
+        assert_eq!(got_with, super::EnvRead::Observed("/x/.claude-acct2".into()), "계정2 env 좌석을 OS 에서 못 읽었다");
         assert!(without_alive, "env 없는 자식이 판독 전에 끝났다(음성 대조 무효)");
-        assert_eq!(got_without, None, "env 없는 좌석에 값이 생겼다");
-        assert_eq!(super::process_env_value(u32::MAX - 7, "CLAUDE_CONFIG_DIR"), None, "없는 pid");
+        assert_eq!(got_without, super::EnvRead::Absent, "env 없는 좌석 = 키 없음(판독 실패 아님)");
+        assert_eq!(super::process_env_value(u32::MAX - 7, "CLAUDE_CONFIG_DIR"), super::EnvRead::ReadFailed, "없는 pid");
     }
 
     #[cfg(windows)]
     #[test]
     fn d_mac_5_process_env_value_is_none_on_windows() {
-        assert_eq!(super::process_env_value(std::process::id(), "PATH"), None, "윈 = 읽지 않는다(종전 · 정직 고지)");
+        assert_eq!(super::process_env_value(std::process::id(), "PATH"), super::EnvRead::ReadFailed, "윈 = 읽지 않는다(종전 · 정직 고지)");
     }
 
     /// ★D-mac-5: 에이전트 pid 고르기 — 뿌리 우선 · 아니면 엄격 일치 첫 자손 · 없으면 None.
@@ -13251,7 +13288,7 @@ mod tests {
             let reads = &reads;
             move |_pid: u32| {
                 reads.set(reads.get() + 1);
-                Some(v.to_string())
+                super::EnvRead::Observed(v.to_string())
             }
         };
         assert!(super::refresh_os_config_dir(&s, Some(50), rd("/a2")));
@@ -13262,6 +13299,43 @@ mod tests {
         assert!(super::refresh_os_config_dir(&s, Some(51), rd("/a3")), "새 pid = 다시 읽는다");
         assert_eq!(s.os_observed_config_dir().as_deref(), Some("/a3"));
         assert_eq!(reads.get(), 2);
+    }
+
+    /// ★3판 ⑧(codex 2R MAJOR): 같은 pid 의 첫 판독이 실패(ReadFailed)면 틱마다 다시 읽어 값을 얻는다(상한 5) ·
+    /// Absent(키 없음)는 고정 = claude 기본 폴더 · 재시도 소진 뒤 = 더 읽지 않는다.
+    #[test]
+    fn d_mac_5_read_failed_retries_bounded_absent_is_fixed() {
+        let dir = std::env::temp_dir().join(format!("cys-d5f-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let daemon = crate::state::Daemon::new(dir.join("cysd.sock"));
+        let mk = |r: &str| daemon
+            .create_surface_with_env(None, Some("sleep 30".into()), None, Some(r.into()), 24, 80, &[], None, None)
+            .unwrap();
+        let s = mk("worker-d5f");
+        assert!(!super::refresh_os_config_dir(&s, Some(60), |_| super::EnvRead::ReadFailed), "실패 = 값 그대로(없음)");
+        assert_eq!(s.os_observed_config_dir(), None);
+        assert!(super::refresh_os_config_dir(&s, Some(60), |_| super::EnvRead::Observed("/acct2".into())), "같은 pid 재시도로 값");
+        assert_eq!(s.os_observed_config_dir().as_deref(), Some("/acct2"));
+        assert!(!super::refresh_os_config_dir(&s, Some(60), |_| panic!("고정 값을 다시 읽었다")));
+        // 재시도 상한
+        let t = mk("worker-d5g");
+        let n = std::cell::Cell::new(0);
+        for _ in 0..20 {
+            super::refresh_os_config_dir(&t, Some(61), |_| {
+                n.set(n.get() + 1);
+                super::EnvRead::ReadFailed
+            });
+        }
+        assert_eq!(n.get(), super::OS_CONFIG_READ_RETRIES as usize, "실패 재시도가 무한하거나 0이다");
+        // Absent = 기본 폴더로 고정
+        let u = mk("worker-d5h");
+        assert!(super::refresh_os_config_dir(&u, Some(62), |_| super::EnvRead::Absent));
+        let def = cys::home_dir().join(".claude").to_string_lossy().into_owned();
+        assert_eq!(u.os_observed_config_dir().as_deref(), Some(def.as_str()));
+        assert!(!super::refresh_os_config_dir(&u, Some(62), |_| panic!("Absent 를 다시 읽었다")));
+        for x in [&s, &t, &u] {
+            let _ = super::close_surface(&daemon, x.id, super::CloseCause::Reap);
+        }
     }
 
     /// 드릴 자식: **이름에는 에이전트 식별자가 없고 argv 에만 있는** 프로세스를 띄운다.

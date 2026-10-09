@@ -466,11 +466,17 @@ check("18c reclaim-role 왕복이 실제로 났다(계측 가능)", "reclaim-rol
       "autostart.log=%r" % _seen)
 check("18d reclaim-role 이 CYS_NO_AUTOSTART=1 안에서 돈다",
       _seen.get("reclaim-role") == {"1"}, "받은 값: %r" % _seen.get("reclaim-role"))
-#   부수 계약: 봉인이 **자식에게만** 걸린다 — 훅 본체의 나머지 소비자(claim-role 재대조)까지
-#   조용히 바뀌면 그 자리의 계약이 이 커밋 밖에서 변한 것이다(범위를 못박는다).
-check("18e 봉인은 두 자리에만 걸렸다(claim-role 은 종전 그대로)",
-      _seen.get("claim-role", {"unset"}) == {"unset"},
+#   ★1.1.10 4b(master#4ec83d4b): 종전 18e(「claim-role 은 종전 그대로 = 무봉인」 범위 못박기)를 뒤집는다 — 재대조
+#   claim-role 도 데몬 없는 HOME 에서 형제 cysd 를 낳았다(시험 hf-ss-* 고아 실측) → 같은 봉인. 범위 못박기는 계속:
+#   봉인은 그 호출의 서브셸 안에서만이고, 훅 본체가 띄우는 나머지 셸은 플래그를 물려받지 않는다(18f).
+check("18e claim-role 재대조도 CYS_NO_AUTOSTART=1 안에서 돈다(1.1.10 4b)",
+      _seen.get("claim-role") == {"1"},
       "받은 값: %r" % _seen.get("claim-role"))
+_ss18f = open(HOOK, encoding="utf-8").read().splitlines()
+_ex = [l.strip() for l in _ss18f if "export CYS_NO_AUTOSTART" in l and not l.strip().startswith("#")]
+check("18f 봉인은 서브셸 안에서만 — 모든 `export CYS_NO_AUTOSTART` 가 `( …` 또는 `$( …` 서브셸 첫 줄(훅 본체 env 불변)",
+      len(_ex) >= 5 and all(l.startswith("( CYS_NO_AUTOSTART=1;") or "$(CYS_NO_AUTOSTART=1;" in l
+                             or l.startswith('CYS_RECLAIM_OUT="$( CYS_NO_AUTOSTART=1;') for l in _ex), "%r" % _ex)
 shutil.rmtree(tmp)
 
 # ── 19. ★0.14.31 성찰 G8 — 두 왕복 합에 하나의 예산 ──

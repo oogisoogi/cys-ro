@@ -6,7 +6,8 @@
   session-start.sh 는 훅 입력 한 줄에서 `<source>|<transcript_path>` 를 뽑아(62·70·71행) 두 갈래로 부른다.
   · clear → `cys usage-register --transcript <경로> --source clear`(10s 상한 · CYS_NO_AUTOSTART=1 ·
     rc 2 일 때만 플래그 없이 1회 재호출). 데몬은 이 신호로 resume 핀을 새 세션으로 바꾼다(R3-1(b)).
-  · 그 밖 source → 종전 호출 `cys usage-register --transcript <경로>` 그대로(T5 좌석↔세션 1:1 등록).
+  · 그 밖 source → 종전 호출 `cys usage-register --transcript <경로>` 그대로(T5 좌석↔세션 1:1 등록) · ★1.1.10 4b(master#4ec83d4b):
+    인자는 그대로이되 CYS_NO_AUTOSTART=1 봉인(종전 무봉인 = 데몬 없는 HOME 에서 형제 cysd 를 낳았다).
   파싱 줄이 조용히 망가지면(예: `TP=${SS#*|}` → `TP=${SS%%|*}`) 두 갈래가 전 좌석에서 함께 꺼진다 — 데몬은
   `not absolute` 로 거부하고 출력은 /dev/null 로 사라져 아무도 모른다. 종전 커밋 핀(cys.rs
   r3_1_usage_register_source_flag_and_hook_fallback_contract)은 호출 문자열의 존재·순서만 보므로 이 변이에 초록이다.
@@ -130,7 +131,7 @@ def PL1(p=P):
 
 
 def LEG(p=P):
-    return "usage-register --transcript %s|NA=" % p
+    return "usage-register --transcript %s|NA=1" % p   # ★1.1.10 4b: 종전 인자 그대로 + 봉인(종전 = NA= 빈 값)
 
 
 shells = [("sh", "sh")]
@@ -156,7 +157,7 @@ try:
             if src is not None:
                 o["source"] = src
             rc, calls, _ = R(line(o))
-            check(t + "SS-2 source=%s → 종전 호출 그대로(플래그·autostart 차단 없음 · 경로 전문)" % src,
+            check(t + "SS-2 source=%s → 종전 인자 그대로(--source 없음 · 경로 전문) · CYS_NO_AUTOSTART=1(1.1.10 4b)" % src,
                   rc == 0 and calls == [LEG()], repr(calls))
         rc, calls, _ = R(line({"source": "clear", "transcript_path": P}), "old")
         check(t + "SS-3 옛 cys(--source 거부 rc 2) → 플래그 없이 정확히 1회 재호출(둘 다 NO_AUTOSTART)",

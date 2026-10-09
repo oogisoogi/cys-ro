@@ -92,7 +92,10 @@ except Exception:
           cys_timeout_run 10 cys usage-register --transcript "$TP" </dev/null >/dev/null 2>&1 )
       fi
     else
-      cys usage-register --transcript "$TP" >/dev/null 2>&1
+      # ★1.1.10 4b(master#4ec83d4b): 같은 봉인 — 종전은 무봉인이라 데몬 없는 HOME 에서 이 호출이 형제 cysd 를 낳았다
+      #   (시험 hf-ss-* 고아 실측 · 사용자 기계에서도 뜻밖의 데몬 기동). 인자·리다이렉트는 종전 그대로.
+      ( CYS_NO_AUTOSTART=1; export CYS_NO_AUTOSTART
+        cys usage-register --transcript "$TP" >/dev/null 2>&1 )
     fi
   fi
 fi
@@ -493,7 +496,9 @@ case "$CYS_ROLE" in
       #   PortableGit 에서 **System32 timeout.exe**(인자를 받으면 즉시 rc=1)를 해소해, 재대조가
       #   실행조차 되지 않은 채 '데몬 미응답'으로 접혔다(MEMORY cys-01411 #3).
       #   `cys_timeout_run` 은 GNU 판별 후 gtimeout·python 그룹킬로 폴백한다(macOS 무 timeout 포함).
-      CLAIM_OUT=$(cys_timeout_run 2 cys claim-role "$CYS_ROLE" 2>&1); CLAIM_RC=$?
+      # ★1.1.10 4b(master#4ec83d4b): 역할 조회 블록(surface-role·reclaim-role)과 같은 봉인 — 재대조가 데몬을 낳지 않는다.
+      CLAIM_OUT=$(CYS_NO_AUTOSTART=1; export CYS_NO_AUTOSTART
+                  cys_timeout_run 2 cys claim-role "$CYS_ROLE" 2>&1); CLAIM_RC=$?
       # ★rc 6 = 발신 신원 미확정(2026-08-16 코드 분리): 데몬은 응답했지만 이 프로세스를 발신
       #   pane 에 붙이지 못한 경우다(pane 밖·세션 분리 실행). 아래 self-demote 조건(거부 마커)에는
       #   걸리지 않아 **동작은 이미 안전**하지만, 마지막 fail-open 문안이 "데몬 미응답"이라고

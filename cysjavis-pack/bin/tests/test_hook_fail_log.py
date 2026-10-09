@@ -183,5 +183,65 @@ class T(unittest.TestCase):
                       open(os.path.join(HOOKS, "role-bootstrap-legacy.sh"), encoding="utf-8").read())
 
 
+
+class SessionStartNoAutostart(unittest.TestCase):
+    """★1.1.10 4b(master#4ec83d4b): session-start 가 부르는 cys 호출 전부(usage-register 두 갈래 · surface-role · claim-role)가
+    CYS_NO_AUTOSTART=1 로 봉인된다 — 데몬 없는 HOME 에서 훅이 cysd 를 낳지 않는다. 종전 = usage-register(clear 아님)·claim-role 무봉인.
+    부른 쪽 env 에 플래그가 없어도(unset) 호출 자체·인자는 종전 그대로다(봉인은 그 호출의 서브셸 안에서만)."""
+
+    STUB = ('#!/bin/sh\necho "NA=${CYS_NO_AUTOSTART:-} $*" >> "$(dirname "$0")/calls.log"\n'
+            'case "$1" in --version) echo "cys 0.0.0-stub" ;; esac\nexit 2\n')
+
+    def run_hook(self, source):
+        tmp = tempfile.mkdtemp(prefix="hf-na-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        stub = os.path.join(tmp, "stubbin")
+        os.makedirs(stub)
+        for name, body in (("cys", self.STUB), ("cysd", STUB_CYSD)):
+            with open(os.path.join(stub, name), "w") as f:
+                f.write(body)
+            os.chmod(os.path.join(stub, name), 0o755)
+        home = os.path.join(tmp, "h")
+        os.makedirs(home)
+        tp = os.path.join(tmp, "t.jsonl")
+        open(tp, "w").write("")
+        pack = os.path.join(tmp, "pack")                     # test_session_start_fallback_records_reason 와 같은 최소 팩
+        os.makedirs(os.path.join(pack, "directives"))
+        os.makedirs(os.path.join(pack, "bin"))
+        open(os.path.join(pack, "directives", "MASTER_DIRECTIVE.md"), "w").write("BODY\n")
+        open(os.path.join(pack, "bin", "javis_bootstrap.py"), "w").write("# stub\n")
+        env = dict(_base_env(), HOME=home, CYS_PACK_DIR=pack, CYS_STATE_DIR=os.path.join(tmp, "st"),
+                   CYS_ROLE="master", CYS_SURFACE_ID="7", PATH=stub + os.pathsep + os.environ.get("PATH", ""))
+        env.pop("CYS_NO_AUTOSTART", None)                    # unset = 종전 조건
+        r = subprocess.run([SH, os.path.join(HOOKS, "session-start.sh")], capture_output=True, text=True, encoding="utf-8",
+                           env=env, timeout=60, input=json.dumps({"transcript_path": tp, "source": source}) + "\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = open(os.path.join(stub, "calls.log"), encoding="utf-8").read().splitlines()
+        return calls, tp
+
+    def assert_sealed(self, calls, tp, usage_args):
+        by_verb = {}
+        for c in calls:
+            na, _, rest = c.partition(" ")
+            by_verb.setdefault(rest.split(" ")[0], []).append((na, rest))
+        self.assertNotIn("cysd", by_verb, "cysd 가 불렸다")
+        for verb in ("usage-register", "surface-role", "claim-role"):
+            self.assertIn(verb, by_verb, "%s 호출이 사라졌다(종전 동작 변경): %r" % (verb, calls))
+            for na, rest in by_verb[verb]:
+                if verb == "cys" or rest.startswith("--version"):
+                    continue
+                self.assertEqual(na, "NA=1", "봉인 없는 cys 호출: %s" % rest)
+        self.assertEqual(by_verb["usage-register"][0][1], "usage-register --transcript %s%s" % (tp, usage_args))
+        self.assertEqual(by_verb["claim-role"][0][1], "claim-role master")
+
+    def test_startup_all_sealed(self):
+        calls, tp = self.run_hook("startup")
+        self.assert_sealed(calls, tp, "")
+
+    def test_clear_all_sealed(self):
+        calls, tp = self.run_hook("clear")
+        self.assert_sealed(calls, tp, " --source clear")
+
+
 if __name__ == "__main__":
     unittest.main()

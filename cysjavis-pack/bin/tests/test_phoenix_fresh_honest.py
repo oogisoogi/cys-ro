@@ -381,6 +381,9 @@ def main():
             check("session project unobserved refused", m._session_project_dir(unobs) is None)
             evil_unobs = dict(unobs, seat_profile="/tmp/evil", session_id="s-x")
             check("fresh_expected refused = no expectation", m.fresh_expected(evil_unobs) == (False, ""))
+            # ★4판 ③: 세션 없음 + unobserved = 예상 0(중단이 세션 검사보다 앞 · Rust run_restore 와 같은 순서)
+            check("fresh_expected unobserved before session check",
+                  m.fresh_expected(dict(unobs, session_id="")) == (False, ""))
             check("inventory refused = not inspected", m.session_inventory(evil_unobs) == (None, None))
             check("recorded authority = 기록값", m._restore_config_dir(dict(entry, agent="claude",
                   config_dir_authority="recorded"))[1] is None)

@@ -374,15 +374,17 @@ def fresh_expected(entry):
     agent = entry.get("agent")
     if agent != "claude":
         return False, ""          # 타 어댑터(F-1 범위 밖) · agent 부재(CLI 가 스폰하지 않는다)
+    # ★3판 ⑦ · ★4판 ③(agy 3R BLOCK): 프로필 거부·미관측 중단을 session_id 검사보다 **먼저** — Rust run_restore 는 cfg 판정
+    #   (claim 앞)에서 그 엔트리 기동을 멈추므로 세션이 없어도 fresh 로 뜨지 않는다. 예상도 같은 순서여야 한다.
+    pdir = _session_project_dir(entry)
+    if pdir is None:
+        return False, ""          # CLI 가 이 엔트리 기동을 멈춘다 — fresh 예상 자체를 하지 않는다
     sid = entry.get("session_id")
     if not isinstance(sid, str) or not sid.strip():
         return True, "no_session"     # Rust: `.filter(|s| !s.trim().is_empty())` — 공백만이면 부재
     # Rust 는 부재 검사에만 trim 을 쓰고 경로에는 **원문 id** 를 쓴다(`{cfg}/projects/{comp}/{id}.jsonl`).
     #   ★리뷰 R1b: CLI 는 이제 placeholder 없는 어댑터(`resume_arg: "--continue"`)에도 같은 파일 검사를 **앞**에서
     #   한다(파일 없음 → 접미 0 · fresh) — 그래서 이 예상은 어댑터 설정을 모르고도 CLI 와 갈리지 않는다.
-    pdir = _session_project_dir(entry)
-    if pdir is None:
-        return False, ""          # ★3판 ⑦: CLI 가 이 엔트리 기동을 멈춘다(프로필 거부·미관측) — fresh 예상 자체를 하지 않는다
     path = "%s/%s.jsonl" % (pdir, sid)
     missing = not os.path.exists(path)   # Rust `Path::exists` 와 동일(isfile 아님)
     if missing:

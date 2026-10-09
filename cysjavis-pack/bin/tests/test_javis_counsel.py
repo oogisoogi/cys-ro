@@ -1114,13 +1114,16 @@ class TickCap(Base):
         ★publish-docs-118 ⑥(10-07 windows-health 37507309556 @33ca7b68 간헐 적색 4.66s): 옛 판별 단언 = 「전체 벽시계 < 몫 상한
         + 1초」 는 경과(ensure_client 등)·끝내기(taskkill) 실소요가 러너 부하로 늘면 같이 늘어 정답 구현도 붉혔다 → 판별은
         **띄우기 시작 → 끝내기 시작** 구간만 잰다(경과·끝내기 실소요가 빠진다). 정답 = 그 구간 ≈ max(띄우기 2, 몫) ·
-        띄우는 시간을 몫 밖에서 셌다면(옛 꼴 = Popen 뒤 communicate(timeout=몫)) ≈ 띄우기 2 + 몫 → min(2, 몫) ≥ 2 라 1초 여유로 적색."""
+        띄우는 시간을 몫 밖에서 셌다면(옛 꼴 = Popen 뒤 communicate(timeout=몫)) ≈ 띄우기 2 + 몫 → min(2, 몫) ≥ 2 라 1초 여유로 적색.
+        ★1.1.10 ③(TODO T3 · 해소 판정 = 윈 10런 연속 초록): 맥 실측(무부하·yes×16 부하 각 3회) = 정답 3.00초 · 문턱 4.0 · 뮤턴트
+        5.07초 = 양쪽 여유 1초뿐 → 축척을 키우고(상한 12 · 띄우기 4 → 몫 7) 문턱 = 정답(max)과 뮤턴트(띄우기 + 몫)의 **한가운데**로.
+        여유 = min(띄우기, 몫)/2 = 2초(양쪽 대칭 · 종전 2배) — 러너 부하로 늘어나는 Popen 실소요·타이머 지연을 흡수."""
         hang = "#!/usr/bin/env python3\nimport time\ntime.sleep(10000)\n"
         self.put(_zip([("bin/agora", hang)]))
         empty = os.path.join(self.tmp, "emptybin")
         os.makedirs(empty)
-        self._patch(TICK_CAP_S=8, TASKKILL_TIMEOUT_S=3, REAP_TIMEOUT_S=1, KILL_BUDGET_S=4, AGORA_MIN_TIMEOUT_S=1)
-        spawn_s = 2.0
+        self._patch(TICK_CAP_S=12, TASKKILL_TIMEOUT_S=3, REAP_TIMEOUT_S=1, KILL_BUDGET_S=4, AGORA_MIN_TIMEOUT_S=1)
+        spawn_s = 4.0
         real_popen = jc.subprocess.Popen
         real_kill = jc._kill_group
         at = {}
@@ -1147,9 +1150,9 @@ class TickCap(Base):
         self.assertLessEqual(took, jc.TICK_CAP_S, took)  # ★계약 — 시작 → 반환(띄우기·끝내기 포함) ≤ 상한
         ev = [json.loads(x) for x in rd(os.path.join(self.cfg, "counsel", "tick.log")).splitlines()]
         share = ev[-1]["timeout_s"]
-        self.assertGreaterEqual(share, 2, "축척판 전제 깨짐(경과 ≥ 2초) — 몫 %s · 판별 여유가 없다" % share)
+        self.assertGreaterEqual(share, spawn_s, "축척판 전제 깨짐(경과 ≥ 1초) — 몫 %s · 판별 여유가 줄었다" % share)
         window = at["kill"] - at["spawn"]
-        self.assertLess(window, max(spawn_s, share) + 1.0,
+        self.assertLess(window, (max(spawn_s, share) + spawn_s + share) / 2,   # 정답과 뮤턴트의 한가운데 · 여유 2초
                         "띄우는 시간이 agora 몫 밖에서 셌다: 띄우기→끝내기 %.2f초 (몫 %s · 띄우기 %.1f)" % (window, share, spawn_s))
 
     def test_no_time_skips_agora(self):

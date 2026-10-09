@@ -7966,9 +7966,14 @@ impl Daemon {
     /// 오너 완화책 ①: scrollback 패턴 룰 — 매칭 시 health.alert를 push한다 (폴링 불필요).
     /// T4-17: 에코 제외(주입 직후 2초 라인은 매칭 제외 — 주입 문자열 에코로 인한
     /// 자기/타기 DoS 차단) + 조치 바인딩(60초 창 연속 매칭 게이트 통과 시에만 발동).
-    /// ★1.1.9 2판 ⑩ 출처 창 표지 — 기계 주입 본문(배달 원장 입구 `delivery::record_audited_with`)이
-    /// `QUOTE_WINDOW_RULES` 룰에 걸리면 받는 좌석에 창을 연다. 호출부가 다른 락을 쥐고 있어도 안전하다(leaf 락 하나).
-    pub(crate) fn note_injected_quote(&self, surface_id: u64, text: &str) {
+    /// ★1.1.9 2판 ⑩ 출처 창 표지 — 받는 좌석에 `QUOTE_WINDOW_RULES` 창을 연다. 호출부가 다른 락을 쥐고 있어도 안전하다(leaf 락 하나).
+    /// ★3판 ⑤(codex 2R BLOCK): **경보 중계 경로에서만** 연다 — `alert_relay` = 경보 라우터 적재(큐 항목 origin "alert") 또는
+    /// CSO 좌석 발신(건강 중계)이고, 본문에 **경보 키**(`health.alert` · 룰 이름 `rate_limited`)가 있을 때. 일반 send·스케줄 본문
+    /// (「PR #429 확인」)은 창 0 — 임의 좌석이 반복 전송으로 남의 진짜 경보를 무기한 억제하던 구멍.
+    pub(crate) fn note_injected_quote(&self, surface_id: u64, text: &str, alert_relay: bool) {
+        if !alert_relay || !(text.contains("health.alert") || text.contains("rate_limited")) {
+            return;
+        }
         if !rate_limited_quote_regex().is_match(text) {
             return;
         }
@@ -7978,6 +7983,18 @@ impl Daemon {
         for rule in QUOTE_WINDOW_RULES {
             q.insert((surface_id, *rule), now + std::time::Duration::from_secs(QUOTE_WINDOW_SECS));
         }
+    }
+
+    /// ★3판 ⑤: 발신 좌석이 CSO 인가 — **try_lock**(배달 경로는 다른 락을 쥐고 부를 수 있다 · 못 잡으면 false =
+    /// 창 0 = 경보가 나는 쪽 = 탐지 안전측).
+    pub(crate) fn surface_is_cso_try(&self, surface_id: u64) -> bool {
+        let Ok(surfaces) = self.surfaces.try_lock() else {
+            return false;
+        };
+        let Some(s) = surfaces.get(&surface_id) else {
+            return false;
+        };
+        s.role.try_lock().ok().and_then(|r| r.clone()).is_some_and(|r| crate::alert_route::is_cso_role(&r))
     }
 
     fn in_quote_window(&self, surface_id: u64, rule: &str) -> bool {
@@ -11066,13 +11083,17 @@ mod tests {
             .expect("create surface");
         daemon.surfaces.lock().unwrap().insert(b.id, b.clone());
         let restate = "worker reported HTTP 429 earlier";
-        // 출처: a 는 경보 유래 본문을 기계 주입으로 받았다(배달 원장 입구).
+        // ★3판 ⑤: 출처 = CSO 좌석의 건강 중계(경보 키 동반) — a 는 그 본문을 기계 주입으로 받았다(배달 원장 입구).
+        let cso = daemon
+            .create_surface(None, Some("sleep 30".into()), None, Some("cso".into()), 24, 80)
+            .expect("create surface");
+        daemon.surfaces.lock().unwrap().insert(cso.id, cso.clone());
         crate::delivery::record_audited(
             &daemon,
             a.id,
             "[CSO] surface 7 health.alert rule=rate_limited — HTTP 429",
             crate::delivery::Origin::Send,
-            None,
+            Some(cso.id),
         );
         assert!(feed_lines_collect_alerts(&daemon, &a, &[restate]).is_empty(), "받은 좌석의 재진술이 경보가 됐다");
         let last = daemon.recent_health.lock().unwrap().back().cloned().expect("인터록 원장 기록");
@@ -11100,6 +11121,14 @@ mod tests {
         // 경보와 무관한 주입은 창을 열지 않는다.
         crate::delivery::record_audited(&daemon, a.id, "build please", crate::delivery::Origin::Send, None);
         assert!(daemon.health_quote_until.lock().unwrap().is_empty());
+        // ★3판 ⑤(codex 2R BLOCK): 일반 좌석(b · worker)이 보낸 「PR #429 확인」 = 경보 중계 아님 → 창 0 →
+        //   받은 좌석 a 의 진짜 오류는 경보가 난다(반복 전송으로 남의 경보를 억제하던 구멍).
+        for _ in 0..3 {
+            crate::delivery::record_audited(&daemon, a.id, "PR #429 확인", crate::delivery::Origin::Send, Some(b.id));
+            crate::delivery::record_audited(&daemon, a.id, "health.alert rate_limited 다시 봐 줘 · PR #429",
+                                            crate::delivery::Origin::Schedule, None);
+        }
+        assert!(daemon.health_quote_until.lock().unwrap().is_empty(), "일반 send·스케줄이 출처 창을 열었다");
         // codex 1R ⑩ — 진짜 오류 두 문장(좌석마다 하나 · 같은 좌석·룰 30초 디바운스).
         assert_eq!(feed_lines_collect_alerts(&daemon, &a, &["Error: rate limit exceeded"]).len(), 1);
         assert_eq!(feed_lines_collect_alerts(&daemon, &b, &["Too Many Requests (429)"]).len(), 1);

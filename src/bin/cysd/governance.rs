@@ -10442,6 +10442,12 @@ pub(crate) fn deliver_head_locked(
             "digest_items": merged.len(),
             "digest_parts": parts,
         });
+        // ★3판 ⑤: 큐 배달의 출처 창 = 경보 라우터 적재 항목(origin "alert")이 실렸을 때만(락 조회 0 · 항목 사실).
+        daemon.note_injected_quote(
+            s.id,
+            &body,
+            merged.iter().any(|e| e.origin == crate::alert_route::ALERT_ORIGIN),
+        );
         crate::delivery::record_audited_with(
             daemon,
             s.id,

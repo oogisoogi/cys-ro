@@ -12292,7 +12292,7 @@ mod seat_latch_negation_tests {
         assert!(clear_at > inject_at, "표식 해제가 제출보다 앞이다 — 중단 시 [RESTORE] 가 소실된다");
         assert_eq!(inj.matches("\n    clear_gate_pending(sid);").count(), 1, "표식 해제 지점이 1곳이 아니다");
         // 세 발신자가 지시를 넘긴다: restore in-seat · node-recover · restore 경유 launch-agent.
-        assert!(fn_body("run_restore").contains("Some(restore_directive(role)),"), "restore in-seat 가 지시를 넘기지 않는다");
+        assert!(fn_body("restore_in_seat_boot").contains("Some(restore_directive(role)),"), "restore in-seat 가 지시를 넘기지 않는다");
         assert!(fn_body("run_node_recover").contains("Some(recover_directive()),"), "node-recover 가 지시를 넘기지 않는다");
         // ★(0.14.41 · U8 P0-M1) node-recover 의 [RECOVER] 는 부트 공용 함수가 디렉티브 뒤에 **한 제출**로
         //   잇는다(`adoption_payload(&directive, followup)`) — Ready 팔의 두 번째 `inject_text` 는 사라졌다.
@@ -23595,7 +23595,79 @@ fn restore_launch_would_rename(role: &str, held_by_empty_seat: bool) -> bool {
     role == "worker" && held_by_empty_seat
 }
 
+/// ★2판 ⑪(codex 1R): `run_restore` 의 기동 두 갈래 — 운영 = [`ProdRestoreLauncher`](종전 호출 그대로) ·
+/// 시험 = mock 데몬(topology) 위에서 **실제 루프**가 넘기는 인자(resume·sess·cfg)와 판정 뒤 처리를 잰다.
+trait RestoreLauncher {
+    /// in-seat 재연결. 바깥 Err = agent spec 해석 실패(건너뜀 · fresh 폴백 0) · 안 = `boot_agent_on_surface` 판정.
+    #[allow(clippy::too_many_arguments)]
+    fn in_seat(&mut self, sid: u64, role: &str, agent: &str, resume: bool, sess: Option<&str>,
+               cwd: Option<&str>, cfg: Option<&str>) -> Result<Result<BootVerdict, String>, String>;
+    /// fresh 기동(새 좌석) — rc 는 `run_launch_agent_opts` 계약.
+    #[allow(clippy::too_many_arguments)]
+    fn fresh(&mut self, role: &str, agent: &str, cwd: Option<String>, resume: bool, sess: Option<String>,
+             cfg: Option<String>, title: Option<String>) -> i32;
+}
+
+struct ProdRestoreLauncher;
+
+impl RestoreLauncher for ProdRestoreLauncher {
+    fn in_seat(&mut self, sid: u64, role: &str, agent: &str, resume: bool, sess: Option<&str>,
+               cwd: Option<&str>, cfg: Option<&str>) -> Result<Result<BootVerdict, String>, String> {
+        restore_in_seat_boot(sid, role, agent, resume, sess, cwd, cfg)
+    }
+
+    fn fresh(&mut self, role: &str, agent: &str, cwd: Option<String>, resume: bool, sess: Option<String>,
+             cfg: Option<String>, title: Option<String>) -> i32 {
+        run_launch_agent_opts(role, agent, cwd, resume, sess, true, cfg, title)
+    }
+}
+
+/// 운영 in-seat 재연결 — agent spec(실패 = 바깥 Err) → boot 락 → `boot_agent_on_surface`(restore=true).
+fn restore_in_seat_boot(
+    sid: u64,
+    role: &str,
+    agent: &str,
+    resume: bool,
+    sess: Option<&str>,
+    seat_cwd: Option<&str>,
+    cfg: Option<&str>,
+) -> Result<Result<BootVerdict, String>, String> {
+    let spec = load_agent_spec(agent)?;
+    // ★(0.14.31 · 성찰 C11) 좌석 내 재연결도 boot 락에 참여한다 — 이 경로는
+    //   `boot_agent_on_surface` 를 **직접** 부르므로 종전엔 락 밖이었다. 같은 pane 을
+    //   겨눈 두 `cys restore`(또는 restore ∥ node-recover)가 각자 `C-u` + 기동 커맨드를
+    //   보내면 화면 파괴·이중 기동이다. 가드는 이 함수 수명이다 — run_restore_with 의 fresh 폴백
+    //   (`run_launch_agent_opts`)이 같은 락을 다시 잡으므로(자기 교착 방지) 그 전에 반드시 drop 된다.
+    let _seat_lock = acquire_launch_lock();
+    let verdict = boot_agent_on_surface(
+        sid,
+        role,
+        agent,
+        &spec,
+        resume,
+        sess,
+        // ★(0.14.31 · 성찰 C5) 좌석 내 재연결도 **restore** 다. 종전 `false` 는 두 가지를
+        //   한꺼번에 잃었다: ① `apply_config_dir_override` 가 꺼져 기록된 `claude_config_dir`
+        //   이 기동 문자열에 리터럴로 박히지 않는다 → pane 셸이 `${CYS_ACCOUNT_DIR:-…}` 를
+        //   전개하므로 데몬 재기동으로 값이 바뀐 경우 `resolve_resume_suffix` 는 **기록된**
+        //   cfg 로 세션 파일을 찾아 `--resume <id>` 를 붙이는데 claude 는 **다른** 계정 dir 로
+        //   뜬다 = `effective_resume=true` 인데 지침 0 인 좌석(치명위험 ③).
+        //   ② `budget_readiness_max` 의 restore 캡(20s)이 **선호 경로인 in-seat 에서만** 빠져
+        //   5좌석이면 100s 대신 300s — DRILL_LIVE_1 이 막으려던 로스터 stall 그대로다.
+        //   fresh 폴백(`run_launch_agent_opts(..., restore=true, ...)`)과 같은 규칙으로 맞춘다.
+        true,
+        seat_cwd,
+        cfg,
+        Some(restore_directive(role)),
+    );
+    Ok(verdict)
+}
+
 fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i32 {
+    run_restore_with(cwd, include_master, no_resume, &mut ProdRestoreLauncher)
+}
+
+fn run_restore_with(cwd: Option<String>, include_master: bool, no_resume: bool, launcher: &mut dyn RestoreLauncher) -> i32 {
     let result = (|| -> Result<(usize, usize, usize), String> {
         let topo = request("system.topology", json!({}))?;
         // ★SEAT(2026-07-17 실사고 수리): '역할이 등록됨'과 '그 좌석에 누가 앉아 있음'을 구분한다.
@@ -23746,43 +23818,16 @@ fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i3
                     continue;
                 }
                 println!("· {role}: {agent} 좌석 내 재연결(surface:{sid})…");
-                let spec = match load_agent_spec(agent) {
-                    Ok(s) => s,
+                let seat_cwd = target_cwd.clone();
+                let verdict = match launcher.in_seat(sid, role, agent, resume, sess.as_deref(), seat_cwd.as_deref(), cfg.as_deref()) {
+                    Ok(v) => v,
                     Err(e) => {
                         println!("· {role}: agent spec 해석 실패({e}) — 건너뜀");
                         fail += 1;
                         continue;
                     }
                 };
-                let seat_cwd = target_cwd.clone();
-                // ★(0.14.31 · 성찰 C11) 좌석 내 재연결도 boot 락에 참여한다 — 이 경로는
-                //   `boot_agent_on_surface` 를 **직접** 부르므로 종전엔 락 밖이었다. 같은 pane 을
-                //   겨눈 두 `cys restore`(또는 restore ∥ node-recover)가 각자 `C-u` + 기동 커맨드를
-                //   보내면 화면 파괴·이중 기동이다. 가드는 이 블록 수명이다 — 아래 fresh 폴백의
-                //   `run_launch_agent_opts` 가 같은 락을 다시 잡으므로(자기 교착 방지) 그 전에
-                //   반드시 drop 돼야 한다(블록 끝 · `continue` 둘 다 여기서 벗어난다).
-                let _seat_lock = acquire_launch_lock();
-                match boot_agent_on_surface(
-                    sid,
-                    role,
-                    agent,
-                    &spec,
-                    resume,
-                    sess.as_deref(),
-                    // ★(0.14.31 · 성찰 C5) 좌석 내 재연결도 **restore** 다. 종전 `false` 는 두 가지를
-                    //   한꺼번에 잃었다: ① `apply_config_dir_override` 가 꺼져 기록된 `claude_config_dir`
-                    //   이 기동 문자열에 리터럴로 박히지 않는다 → pane 셸이 `${CYS_ACCOUNT_DIR:-…}` 를
-                    //   전개하므로 데몬 재기동으로 값이 바뀐 경우 `resolve_resume_suffix` 는 **기록된**
-                    //   cfg 로 세션 파일을 찾아 `--resume <id>` 를 붙이는데 claude 는 **다른** 계정 dir 로
-                    //   뜬다 = `effective_resume=true` 인데 지침 0 인 좌석(치명위험 ③).
-                    //   ② `budget_readiness_max` 의 restore 캡(20s)이 **선호 경로인 in-seat 에서만** 빠져
-                    //   5좌석이면 100s 대신 300s — DRILL_LIVE_1 이 막으려던 로스터 stall 그대로다.
-                    //   fresh 폴백(`run_launch_agent_opts(..., restore=true, ...)`)과 같은 규칙으로 맞춘다.
-                    true,
-                    seat_cwd.as_deref(),
-                    cfg.as_deref(),
-                    Some(restore_directive(role)),
-                ) {
+                match verdict {
                     Ok(BootVerdict::Ready) => {
                         ok += 1;
                         // ★(0.14.41 · U8 P0-M1) [RESTORE] 는 `boot_agent_on_surface` 가 디렉티브 뒤에 **한
@@ -23825,7 +23870,7 @@ fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i3
                 continue;
             }
             println!("· {role}: {agent} 재기동…");
-            let rc = run_launch_agent_opts(role, agent, target_cwd, resume, sess, true, cfg, restore_title(&entry));
+            let rc = launcher.fresh(role, agent, target_cwd, resume, sess, cfg, restore_title(&entry));
             if rc != 0 && rc != cys::EXIT_GATE_PENDING {
                 claim.release(&mut busy_sessions); // ★④: 기동 실패 = 대화를 잇지 않았다
             }
@@ -30108,7 +30153,7 @@ mod tests {
     #[test]
     fn v115r5_restore_and_resume_saved_wiring() {
         let src = include_str!("cys.rs");
-        let body = &src[src.find("fn run_restore(").unwrap()..];
+        let body = &src[src.find("fn run_restore_with(").unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
         let fail_at = body.find("println!(\"· {role}: 기동 실패 — 나머지 역할 계속 진행\");").unwrap();
         let held_at = body.find("role_held_by_live_seat(&t, role)").expect("재실측 분기 없음");
@@ -30161,9 +30206,95 @@ mod tests {
         assert_eq!(restore_title(&json!({"role": "worker-7"})), None);
         // 배선 핀: restore 의 fresh 기동이 이 값을 넘기고, launch 가 그것을 surface.create 제목으로 쓴다.
         let src = include_str!("cys.rs");
-        assert!(refl_fn_body(src, "run_restore").contains("restore_title(&entry)"), "restore 가 옛 제목을 안 넘긴다");
+        assert!(refl_fn_body(src, "run_restore_with").contains("restore_title(&entry)"), "restore 가 옛 제목을 안 넘긴다");
         assert!(refl_fn_body(src, "run_launch_agent_opts").contains("title_override.clone().unwrap_or_else"),
                 "launch 가 요청 제목을 안 쓴다");
+    }
+
+    /// ★2판 ⑪(codex 1R MAJOR): `run_restore` **실제 루프** 통합시험 — mock 데몬(system.topology · resolve_role)
+    /// + 기록 기동기. 사례 = 점유 좌석 대화 중복 · 같은 회차 중복 · in-seat · fresh · 실패 뒤 해제 · 보류(빈 worker 좌석) 뒤 해제.
+    /// 뮤턴트 `let resume = !no_resume;`(중복 판정 무시) = 적.
+    #[cfg(unix)]
+    #[test]
+    fn restore_run_loop_passes_claimed_resume_args_mock_daemon() {
+        use std::io::{BufRead, BufReader, Write};
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::path::PathBuf::from(format!("/tmp/rr11-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() % 1_000_000));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("s.sock");
+        let cwd = dir.to_string_lossy().into_owned();
+        let e = |role: &str, sess: &str| json!({"role": role, "agent": "claude", "session_id": sess,
+                                                 "cwd": cwd, "claude_config_dir": "/cfg"});
+        let topo = json!({
+            "saved": [e("w-occ", "live-1"), e("w-a", "s-a"), e("w-b", "s-a"), e("w-seat", "s-seat"),
+                      e("w-fail", "s-f"), e("w-after", "s-f"), e("worker", "s-hold"), e("w-after-hold", "s-hold"),
+                      // ⑧ 관측 전 claude 좌석 = 기동 0(claim 앞에서 중단 · 새 대화 폴백도 없음)
+                      json!({"role": "w-unobs", "agent": "claude", "session_id": "s-u", "cwd": cwd,
+                             "claude_config_dir": "/cfg", "config_dir_authority": "unobserved"})],
+            "tombstones": [],
+            "live": [{"role": "occ-holder", "seat": "occupied", "surface_id": 40, "session_id": "live-1"},
+                     {"role": "w-seat", "seat": "empty", "surface_id": 50},
+                     {"role": "worker", "seat": "empty", "surface_id": 51}]
+        });
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("가짜 소켓 bind");
+        let server = std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut line = String::new();
+                if BufReader::new(&mut stream).read_line(&mut line).is_err() {
+                    continue;
+                }
+                let req: Value = serde_json::from_str(line.trim()).unwrap_or(Value::Null);
+                let result = match req["method"].as_str().unwrap_or("") {
+                    "__stop" => break,
+                    "system.topology" => topo.clone(),
+                    "system.resolve_role" => json!({"surface_id": 99}),
+                    _ => json!({}),
+                };
+                let _ = writeln!(stream, "{}", json!({"id": req["id"], "ok": true, "result": result}));
+            }
+        });
+        #[derive(Default)]
+        struct Rec { calls: Vec<(String, &'static str, bool, Option<String>, Option<String>)> }
+        impl RestoreLauncher for Rec {
+            fn in_seat(&mut self, sid: u64, role: &str, _a: &str, resume: bool, sess: Option<&str>,
+                       _c: Option<&str>, cfg: Option<&str>) -> Result<Result<BootVerdict, String>, String> {
+                self.calls.push((role.into(), "in-seat", resume, sess.map(String::from), cfg.map(String::from)));
+                Ok(Ok(if sid == 50 { BootVerdict::Ready } else { BootVerdict::LaunchFailed { evidence: "stub".into() } }))
+            }
+            fn fresh(&mut self, role: &str, _a: &str, _c: Option<String>, resume: bool, sess: Option<String>,
+                     cfg: Option<String>, _t: Option<String>) -> i32 {
+                self.calls.push((role.into(), "fresh", resume, sess, cfg));
+                if role == "w-fail" { 1 } else { 0 }
+            }
+        }
+        let saved_env: Vec<_> = ["CYS_SOCKET", "CYS_NO_AUTOSTART"].into_iter().map(|k| (k, std::env::var_os(k))).collect();
+        std::env::set_var("CYS_SOCKET", &socket);
+        std::env::set_var("CYS_NO_AUTOSTART", "1");
+        let mut rec = Rec::default();
+        let rc = run_restore_with(None, false, false, &mut rec);
+        let _ = std::os::unix::net::UnixStream::connect(&socket)
+            .and_then(|mut s| writeln!(s, "{}", json!({"id": 0, "method": "__stop"})));
+        let _ = server.join();
+        for (k, v) in saved_env {
+            match v { Some(v) => std::env::set_var(k, v), None => std::env::remove_var(k) }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        let got: Vec<(&str, &str, bool, Option<&str>)> =
+            rec.calls.iter().map(|(r, k, res, s, _)| (r.as_str(), *k, *res, s.as_deref())).collect();
+        assert_eq!(got, vec![
+            ("w-occ", "fresh", false, None),                 // 점유 좌석이 잇는 대화 = 이어 붙이지 않는다
+            ("w-a", "fresh", true, Some("s-a")),             // 첫 좌석 = 잇는다
+            ("w-b", "fresh", false, None),                   // 같은 회차 두 번째 = 끈다
+            ("w-seat", "in-seat", true, Some("s-seat")),     // in-seat(빈 좌석 재연결)
+            ("w-fail", "fresh", true, Some("s-f")),          // 기동 실패 → claim 해제
+            ("w-after", "fresh", true, Some("s-f")),         //   → 뒤 엔트리가 잇는다
+            ("worker", "in-seat", true, Some("s-hold")),     // in-seat 실패 → 개명 보류(fresh 0) → 해제
+            ("w-after-hold", "fresh", true, Some("s-hold")), //   → 뒤 엔트리가 잇는다
+        ], "run_restore 기동 인자(w-unobs = 호출 0)");
+        assert!(rec.calls.iter().all(|c| c.4.as_deref() == Some("/cfg")), "기록 cfg 전달");
+        assert_eq!(rc, 1, "실패·보류가 있으면 rc 1");
     }
 
     #[test]
@@ -35078,7 +35209,7 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         );
         // ★(0.14.41 · U8 P0-M1 · 원작자 이사 핀 · 1.1.8 합성) restore 의 [RESTORE] 한 제출 결과가 사유를 달고 밖으로
         //   나간다(침묵 0) — 남은 셋 = [DRAIN] 브로드캐스트 · 부트 주입 직후 · 팩 업데이트 재주입(우리 ⑯ 판은 `inject_text_opts`).
-        let restore = strip_line_comments(refl_fn_body(src, "run_restore"));
+        let restore = strip_line_comments(refl_fn_body(src, "run_restore_with"));
         for marker in [
             "좌석 내 재연결 보류(관문 gate={gate})",
             "좌석 내 재연결 실패({e}) — fresh 기동으로 폴백",
@@ -42439,16 +42570,20 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
             refl_fn_body(src, "run_node_recover").contains("acquire_launch_lock()"),
             "node-recover 가 boot 락 밖이다 — 같은 pane 동시 기동이 가능하다"
         );
-        let restore = refl_fn_body(src, "run_restore");
+        let restore = refl_fn_body(src, "restore_in_seat_boot");
         assert!(
             restore.contains("acquire_launch_lock()"),
             "restore in-seat 가 boot 락 밖이다 — 같은 pane 동시 기동이 가능하다"
         );
-        // in-seat 가드는 fresh 폴백보다 **앞**에서 잡히고, 그 호출부보다 앞에 있어야 한다
-        // (같은 프로세스가 다른 fd 로 재획득하면 자기 교착 — 블록 수명으로 drop 된다).
+        // in-seat 가드는 기동 호출부보다 앞이고 함수 수명이다 — run_restore_with 의 fresh 폴백은 in-seat 가 돌아온 **뒤**다
+        // (같은 프로세스가 다른 fd 로 재획득하면 자기 교착 — 함수가 끝나며 drop 된다).
         let lock_at = restore.find("let _seat_lock = acquire_launch_lock();").expect("in-seat 락 바인딩");
-        let fresh_at = restore.find("run_launch_agent_opts(").expect("fresh 폴백 호출부");
-        assert!(lock_at < fresh_at, "in-seat 락이 fresh 폴백 뒤에 있다 — 배선이 뒤집혔다");
+        let boot_at = restore.find("boot_agent_on_surface(").expect("in-seat 기동 호출부");
+        assert!(lock_at < boot_at, "in-seat 락이 기동 호출 뒤에 있다");
+        assert!(!strip_line_comments(restore).contains("run_launch_agent_opts("), "in-seat 함수 안에서 fresh 를 부른다 — 락 재획득 교착");
+        let with = refl_fn_body(src, "run_restore_with");
+        assert!(with.find("launcher.in_seat(").expect("in-seat 호출") < with.find("launcher.fresh(").expect("fresh 호출"),
+                "fresh 폴백이 in-seat 앞에 있다 — 배선이 뒤집혔다");
     }
 
     /// ★C5: `cys restore` 의 좌석 내 재연결이 **restore 정책 두 축을 모두** 쓴다.
@@ -42471,21 +42606,24 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         assert_eq!(budget_readiness_max(10, true).as_secs(), 20);
         // ⓒ 배선 — in-seat 호출부가 `restore` 자리에 `true` 를 넘긴다(fresh 폴백과 같은 규칙).
         let src = include_str!("cys.rs");
-        let restore = refl_fn_body(src, "run_restore");
-        let call = restore.find("match boot_agent_on_surface(").expect("in-seat 호출부");
-        let seg = &restore[call..call + restore[call..].find(") {").expect("호출부 끝")];
+        let restore = refl_fn_body(src, "restore_in_seat_boot");
+        let call = restore.find("boot_agent_on_surface(").expect("in-seat 호출부");
+        let seg = &restore[call..call + restore[call..].find("\n    );").expect("호출부 끝")];
         assert!(
-            seg.contains("sess.as_deref(),") && seg.contains("seat_cwd.as_deref(),"),
+            seg.contains("\n        sess,\n") && seg.contains("\n        seat_cwd,\n") && seg.contains("\n        cfg,\n"),
             "in-seat 호출부 슬라이스가 어긋났다:\n{seg}"
         );
         assert!(
-            !seg.contains("\n                    false,\n"),
+            !seg.contains("\n        false,\n"),
             "in-seat 가 아직 restore=false 를 넘긴다 — 계정 dir 인라인과 20s 캡을 둘 다 잃는다:\n{seg}"
         );
         assert!(
-            seg.contains("\n                    true,\n"),
+            seg.contains("\n        true,\n"),
             "in-seat 의 restore 인자가 true 가 아니다:\n{seg}"
         );
+        // 실제 루프가 in-seat 에 기록 cfg·cwd 를 넘긴다(통합 검체 restore_run_loop_* 가 인자 값을 잰다).
+        assert!(refl_fn_body(src, "run_restore_with")
+                    .contains("launcher.in_seat(sid, role, agent, resume, sess.as_deref(), seat_cwd.as_deref(), cfg.as_deref())"));
     }
 
     /// ★C7: 역할 무관 재개 접미(`--continue`·`resume --last`)는 `[RESUME]` 을 정당화하지 않는다.
@@ -43040,7 +43178,9 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
             "선언과 제출 사이에서 payload 가 재대입된다(followup 이 조용히 빠질 수 있다):\n{between}"
         );
         // 세 호출부는 지시를 표식 이월용으로 **넘기되**(보류 시 채택이 다시 싣는다) 따로 제출하지 않는다.
-        let restore = strip_line_comments(refl_fn_body(src, "run_restore"));
+        // ★2판 ⑪: in-seat 기동 = restore_in_seat_boot(지시 전달) · 루프 = run_restore_with(별도 제출 0).
+        let restore = strip_line_comments(refl_fn_body(src, "restore_in_seat_boot"))
+            + &strip_line_comments(refl_fn_body(src, "run_restore_with"));
         assert!(restore.contains("Some(restore_directive(role)),"), "restore in-seat 가 지시를 넘기지 않는다");
         assert_eq!(restore.matches("inject_text(").count(), 0,
             "restore 가 복원 지시를 두 번째 제출로 보낸다(in-seat·fresh):\n{restore}");

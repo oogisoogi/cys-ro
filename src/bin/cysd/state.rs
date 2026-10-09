@@ -8845,10 +8845,6 @@ pub(crate) fn mask_health_line(line: &str, rules: &[HealthRule]) -> String {
     out.chars().take(200).collect()
 }
 
-/// 내장 `rate_limited` 룰 정규식 — 룰 표와 출처 창(`note_injected_quote`)이 같은 식을 쓴다(복제 0).
-/// 1.1.8 넓은 식 + 1판이 더한 공급사 문구 `usage limit reached`(합집합 · 좁히지 않는다).
-const RATE_LIMITED_PAT: &str = r"(?i)rate.?limit(ed)?|too many requests|\b429\b|usage limit reached";
-
 /// ★1.1.9 2판 ⑩(D-U3 안 A · 출처 창): 기계 주입 본문이 이 룰에 걸리면 **받은 좌석**의 같은 룰 탐지를
 /// `QUOTE_WINDOW_SECS` 동안 경보로 내지 않는다(`recent_health` 에는 `discourse = "injected-quote"` 로 남김 —
 /// 인터록 원장 보존). 왜: 경보 보고를 받은 좌석이 그것을 영어로 재진술(「worker reported HTTP 429 earlier」)하면
@@ -8857,9 +8853,17 @@ const RATE_LIMITED_PAT: &str = r"(?i)rate.?limit(ed)?|too many requests|\b429\b|
 pub(crate) const QUOTE_WINDOW_RULES: &[&str] = &["rate_limited"];
 pub(crate) const QUOTE_WINDOW_SECS: u64 = 600;
 
+/// 출처 창의 본문 판정 = 내장 룰 표의 `rate_limited` 식 그대로(복제 0 · ★5판: 식은 표 안의 리터럴로 둔다 —
+/// boot-health H-AUTH-SELFLOOP 가 표에서 `"이름", r"식"` 쌍을 수확한다 · 상수로 빼면 수확 0 = 계측 무효).
 fn rate_limited_quote_regex() -> &'static Regex {
     static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    RE.get_or_init(|| Regex::new(RATE_LIMITED_PAT).expect("RATE_LIMITED_PAT"))
+    RE.get_or_init(|| {
+        default_health_rules()
+            .into_iter()
+            .find(|r| r.name == "rate_limited")
+            .map(|r| r.regex)
+            .expect("내장 rate_limited 룰")
+    })
 }
 
 /// 오너 완화책 ① 기본 내장 룰: 로그인 만료·401·토큰 만료를 즉시 감지한다.
@@ -8880,7 +8884,11 @@ fn default_health_rules() -> Vec<HealthRule> {
         ),
         // ★1.1.9 2판 ⑩(codex 1R): 탐지는 **넓게** 둔다(1판의 공급사 서식 한정은 `rate limit exceeded`·`Too Many Requests (429)`
         //   같은 진짜 오류를 놓쳤다). 경보 재진술 되먹임은 내용이 아니라 **출처**로 막는다 — `QUOTE_WINDOW_RULES` 참조.
-        ("rate_limited", RATE_LIMITED_PAT),
+        //   1.1.8 넓은 식 + 1판이 더한 공급사 문구 `usage limit reached`(합집합 · 좁히지 않는다) · 출처 창이 이 식을 그대로 쓴다.
+        (
+            "rate_limited",
+            r"(?i)rate.?limit(ed)?|too many requests|\b429\b|usage limit reached",
+        ),
     ];
     defaults
         .iter()

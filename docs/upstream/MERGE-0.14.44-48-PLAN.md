@@ -13,6 +13,7 @@
 | 겹침 | 우리(v0.14.43..HEAD 1,313 커밋)와 함께 바꾼 파일 **44** (브리프 40 + 47·48 로 4: windows-build.yml · javis_phoenix.py · javis_state_snapshot.py · schedule.rs) | `comm -12` |
 | 충돌 | `git merge-tree HEAD v0.14.48` = **28 파일 · 66 덩어리**(v0.14.44 만 20 · 46 까지 26) | merge-tree · 덩어리 수 = `^<<<<<<<` 계수 |
 | 이미 우리에게 있음 | 8b8d7505·ea06f6bb(capgate 대체 출력) — patch-id 동일 | `git cherry HEAD v0.14.48` |
+| 우리 자동 갱신 | `scripts/update/*` · `src/update/*` = 원작자 43..48 **무접촉**(diff 0줄) — 1.1.8 U4(인앱 updater 삭제)·우리 갱신 체계는 이번 편입의 충돌 대상이 아니다 | `git diff v0.14.43 v0.14.48 -- scripts/update src/update \| wc -l` = 0 |
 
 **병합 방식 권고 = `git merge --no-ff v0.14.48` 한 번**(1.1.8 선례 c08489e7). 44→46→48 순차는 겹침 파일을 세 번 해소하고 중간 판(45·46)이 각자 녹이어야 해 비용만 늘고 얻는 것이 없다(46·47·48 은 덧붙임 위주). 병합 커밋 = 충돌 해소 + **컴파일·계수 핀 수리까지**(그래야 첫 커밋부터 녹) · 그 뒤 묶음별 적응 커밋.
 
@@ -102,7 +103,7 @@
 
 (44 = 위 행의 파일 합 · 비겹침 41 파일 = 원작자 신규 38 + 수정 3 → 전부 ⓐ【관측 `git diff --name-status`】: vendor/vt100 11(CYS-PATCHES.md 포함) · 새 Rust 8(claude_tui·settings_surgery·repaint·office_bridge·knobs + cysd 시험 3) + 수정 agy_statusline.rs · ui 10(새 ts 9 + 수정 wheelgate.test.ts — 배선 핀은 §5 처방) · 팩 6(시험 4 · hooks .cmd · 수정 hooks/README) · 릴리스 노트 5.)
 
-## 4. 📌 master 판정 필요 (권고 · 단점)
+## 4. 📌 master 판정 (master#60dc9ccf · 10-10 08:23 — ⑴~⑷ 전부 권고대로 · ⑴ canary 관문 = 윈 실기 A/B 통과 전 라이브 금지 · ⑷ 박사님 재상신 불요 = 같은 결정의 반복 적용)
 
 1. **휠 = claude_tui 동반 수용(윈 classic 기본 on) + 우리 altscroll 유지** — 권고. 단점: 윈 claude 좌석 화면 모드가 바뀐다(fullscreen → classic) · 우리 윈 레인은 classic 휠을 실기로 본 적 없다(원작자도 「같은 기계 CSO·리뷰어 좌석이 classic 정상」이 근거) · 사용자 settings.json 쓰기(원장·백업·되돌림 있음). 대안 「claude_tui 미수용」은 모달 Select 이동 위험을 그대로 둔다(우리 실측 0 — 원작자 바이너리 정적 판독뿐).
 2. **좌석 계정 trusted 보정 1줄** — §2-(i). 권고 = 넣는다(우리 범위 덧붙임 아님 · 융합의 일부). 단점: 원작자 판정 문면과 1줄 갈림(ledger 기록).

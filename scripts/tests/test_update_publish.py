@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 
@@ -1017,6 +1018,59 @@ class TestUpdateWorker(Base):
         self.assertEqual([g["status"] for g in got], [502, 502])  # 2R: 쌍의 한쪽만 나가는 일 0
 
 
+def hdiutil_retry(args, partial=None, runner=None, delay=1.0):
+    """hdiutil 1회 재시도(1.1.10 · 맥 러너 간헐 실패 10-07 37543589887 = create CalledProcessError · 사유 미출력).
+    실패 사유(rc·stderr)를 그 자리에서 stderr 로 내고 1회만 다시 한다 — 성공 = [] · 2회 실패 = 사유 2줄(호출자가 적색).
+    partial = 실패한 create 가 남긴 반쪽 dmg(재시도 전에 지운다). 계약 약화 0: 건너뛰기 없음 · 재시도는 1회뿐."""
+    runner = runner or run
+    reasons = []
+    for attempt in (1, 2):
+        r = runner(["hdiutil"] + list(args))
+        if r.returncode == 0:
+            return []
+        reasons.append("시도%d rc=%d stderr=%s" % (attempt, r.returncode, (r.stderr or "").strip() or "(빈)"))
+        sys.stderr.write("[hdiutil %s] %s\n" % (args[0], reasons[-1]))
+        if partial and os.path.exists(partial):
+            os.unlink(partial)
+        if attempt == 1:
+            time.sleep(delay)
+    return reasons
+
+
+class TestHdiutilRetry(unittest.TestCase):
+    """hdiutil_retry 계약 — 가짜 runner(플랫폼 무관)."""
+
+    def fake(self, rcs):
+        calls = []
+        def runner(argv):
+            calls.append(argv)
+            rc = rcs[len(calls) - 1]
+            return subprocess.CompletedProcess(argv, rc, "", "" if rc == 0 else "hdiutil: create failed - 리소스 일시 사용 불가")
+        return runner, calls
+
+    def test_first_ok_no_retry(self):
+        runner, calls = self.fake([0])
+        self.assertEqual(hdiutil_retry(["create", "x"], runner=runner, delay=0), [])
+        self.assertEqual(len(calls), 1)
+
+    def test_transient_failure_retried_once(self):
+        runner, calls = self.fake([1, 0])
+        self.assertEqual(hdiutil_retry(["create", "x"], runner=runner, delay=0), [])
+        self.assertEqual(len(calls), 2)
+
+    def test_two_failures_report_reasons_no_third(self):
+        tmp = tempfile.mkdtemp(prefix="hdi-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        partial = os.path.join(tmp, "m.dmg")
+        open(partial, "w").close()
+        runner, calls = self.fake([1, 1, 0])
+        reasons = hdiutil_retry(["create", partial], partial=partial, runner=runner, delay=0)
+        self.assertEqual(len(calls), 2, "재시도는 1회뿐")
+        self.assertEqual(len(reasons), 2)
+        self.assertIn("리소스 일시 사용 불가", reasons[0], "실패 사유(stderr)가 빠졌다")
+        self.assertFalse(os.path.exists(partial), "반쪽 dmg 를 남기면 재시도 create 가 「파일 있음」으로 또 실패한다")
+
+
 @unittest.skipUnless(sys.platform == "darwin" and shutil.which("hdiutil"), "가짜 매체 = hdiutil 마운트(맥 전용)")
 class TestOfflineRitual(Base):
     def setUp(self):
@@ -1024,8 +1078,11 @@ class TestOfflineRitual(Base):
         self.mnt = os.path.join(self.tmp, "mnt")
         os.makedirs(self.mnt)
         dmg = os.path.join(self.tmp, "m.dmg")
-        subprocess.check_call(["hdiutil", "create", "-size", "4m", "-fs", "HFS+", "-volname", "U3FAKE", "-quiet", dmg])
-        subprocess.check_call(["hdiutil", "attach", dmg, "-mountpoint", self.mnt, "-nobrowse", "-quiet"])
+        for args, partial in ((["create", "-size", "4m", "-fs", "HFS+", "-volname", "U3FAKE", "-quiet", dmg], dmg),
+                              (["attach", dmg, "-mountpoint", self.mnt, "-nobrowse", "-quiet"], None)):
+            reasons = hdiutil_retry(args, partial=partial)
+            if reasons:
+                self.fail("가짜 매체 준비 실패(hdiutil %s · 2회): %s" % (args[0], " | ".join(reasons)))
         for k in ("u", "r"):
             shutil.move(self.fx.key(k), os.path.join(self.mnt, k + ".key"))
         self.mini = os.path.join(self.tmp, "mini.sh")

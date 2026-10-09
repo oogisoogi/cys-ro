@@ -6,7 +6,7 @@
 글자 그대로 같아야 한다 — 한쪽만 넓으면 한쪽이 버린 줄을 다른 쪽이 보낸다.
 
 동사:
-  signal --source <역할|층> --op <op> --error-code <code>   신호 한 줄 append(형식 밖·끔·잠금 2초 초과 = 버림)
+  signal --source <역할|층> --op <op> --error-code <code>   신호 한 줄 append(형식 밖·끔·잠금 5초 초과 = 버림)
   facts          결정론 일일 사실 → `<설정>/counsel/facts.json`(원자 교체 · 못 잰 칸은 뺀다 · null 0 · `cutoff`·`since` = 오류 계수 창 `(since, cutoff]`)
                  · tick 이 부를 때만 `nonce` 칸(그 판 1회용 · 아래 tick)
   ensure-client  `<팩>/install/agora-client.pin` + `.zip.b64` → `<설정>/lib`(설치 잠금 안 · 판정 = 트리 지문:
@@ -58,7 +58,12 @@ FACTS_FILE = "facts.json"
 TICK_LOG = "tick.log"
 SIGNALS_MAX_BYTES = 2 * 1024 * 1024   # 넘으면 그 줄을 버린다(미발신 PC 의 무한 증가 차단)
 LOG_MAX_BYTES = 256 * 1024
-LOCK_WAIT_S = 2.0                      # 쓰는 쪽은 훅을 붙잡지 않는다 — 넘으면 버림
+LOCK_WAIT_S = 5.0                      # 쓰는 쪽은 훅을 오래 붙잡지 않는다 — 넘으면 버림
+#   ★1.1.10 ⑥(master#09eeb379 · A+B 채택 · docs/design/counsel-lock-wait-1110.md): 2.0 → 5.0 — 윈 실측(10-07) 무부하 최대 1.80초 =
+#   턱밑 · 러너 부하 최대 3.58초 → 진단 경로라 드문 +3초를 허용. 그래도 버리면 그 횟수를 남긴다(DROP_TALLY → 다음 쓰기의 신호 1줄).
+DROP_TALLY = "dropped.tally"           # 버린 쓰기 1회 = 1바이트 덧붙임(잠금 없이 · 다음 성공 쓰기가 rename 으로 가져가 센다)
+DROP_OP = "counsel.dropped"            # 「버린 쓰기 N」 신호 — error_code = counsel.dropped_writes.<N> · N = 0 이면 줄 생략
+DROP_N_MAX = 99999
 LOCK_RETRY_S = 0.05
 DOCTOR_TIMEOUT_S = 60
 CLI_TIMEOUT_S = 20
@@ -247,6 +252,7 @@ def write_signals(source, pairs, *, now=None, cfg=None, wait_s=LOCK_WAIT_S):
             _BEFORE_SIGNALS_LOCK()          # 시험 이음새(경합 재현) — 운영 = None
         fh = _acquire(_counsel(cfg, SIGNALS_LOCK), wait_s)
         if fh is None:
+            _tally_drop(cfg)
             return 0
         n = 0
         try:
@@ -255,20 +261,58 @@ def write_signals(source, pairs, *, now=None, cfg=None, wait_s=LOCK_WAIT_S):
             if not auto_enabled(cfg):
                 return 0
             path = _counsel(cfg, SIGNALS_FILE)
+            dropped = _take_drops(cfg)
+            extra = [make_row("pack", DROP_OP, "counsel.dropped_writes.%d" % min(dropped, DROP_N_MAX), now=now,
+                              version=version)] if dropped else []
+            wrote = 0
             with open(path, "a", encoding="utf-8", newline="\n") as out:
-                for row in rows:
+                for i, row in enumerate(rows + [r for r in extra if r]):
                     size = os.path.getsize(path) if os.path.exists(path) else 0
                     if size > SIGNALS_MAX_BYTES:
                         break
                     out.write(serialize(row))   # 한 줄 = write 1회
                     out.flush()
-                    n += 1
+                    wrote += 1
+                    if i < len(rows):
+                        n += 1                  # 반환 = 부른 쪽 줄 수(버림 신호 줄은 세지 않는다)
+            if dropped and wrote <= len(rows):
+                _tally_drop(cfg, min(dropped, DROP_N_MAX))   # 2MB 상한에 막혀 못 실었다 — 횟수를 되돌려 놓는다
         finally:
             _unlock(fh)
             fh.close()
         return n
     except Exception:
         return 0
+
+
+def _tally_drop(cfg, k=1):
+    """버린 쓰기 k회(기본 1)를 센다 — 잠금 밖이라 덧붙이기 1바이트(유닉스 O_APPEND = 원자 · 윈 = 드문 겹침 시 덜 셀 수 있다 · 진단용). 예외 0."""
+    try:
+        with open(_counsel(cfg, DROP_TALLY), "ab") as f:
+            f.write(b"x" * k)
+    except OSError:
+        pass
+
+
+def _take_drops(cfg):
+    """(신호 잠금 안) 지난 버림 횟수를 가져간다 — rename 으로 떼어 낸 뒤 세고 지운다(떼어 낸 뒤 버림은 새 파일로 간다). 없거나 못 떼면 0."""
+    path = _counsel(cfg, DROP_TALLY)
+    if not os.path.exists(path):
+        return 0
+    taken = "%s.take-%d" % (path, os.getpid())
+    try:
+        os.replace(path, taken)
+    except OSError:
+        return 0                                  # 윈 = 덧붙이는 쪽이 열고 있으면 못 뗀다 → 다음 쓰기에서
+    try:
+        return os.path.getsize(taken)
+    except OSError:
+        return 0
+    finally:
+        try:
+            os.unlink(taken)
+        except OSError:
+            pass
 
 
 def write_signal(source, op, error_code, **kw):

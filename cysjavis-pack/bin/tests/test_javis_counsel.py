@@ -4,7 +4,7 @@
 지키는 것(agora 클라이언트 `collector.py`·`mail.py` 와 글자 그대로 같은 계약):
   ① 신호 줄 정규식(ts·source·op·error_code·version·os) 수용/거부 벡터 · 형식 밖 줄은 안 쓴다
   ② CYS_ROLE → source 표 · 끄기 규칙 표(config.json 7행) · 2MB 넘으면 버림 · CRLF 0 · 한 줄 = 정렬 키 압축 JSON
-  ③ 잠금 — 남이 쥐고 있으면 상한(기본 2초) 뒤 버리고 exit 0(훅을 붙잡지 않는다)
+  ③ 잠금 — 남이 쥐고 있으면 상한(기본 5초 · 1.1.10 ⑥ 2→5) 뒤 버리고 exit 0(훅을 오래 붙잡지 않는다) · 버린 횟수 = 다음 쓰기의 신호 1줄
   ④ facts — 가짜 cys(PATH 대역)·가짜 상태 파일로 칸별 산출 · 못 잰 칸은 뺀다(null 0)
   ⑤ ensure-client — 올바른 sha = 설치+.pin · 틀린 sha = 거부 · zip-slip = 거부 · 판정 = 트리 지문(같음 = 무동작 ·
      알려진 옛 판 = 교체 · 고친/모르는 트리 = 불가침) · 설치 잠금(대기/포기) · 남의 lib 위로 rename 0
@@ -200,19 +200,48 @@ class Signal(Base):
             t0 = time.monotonic()
             self.assertEqual(jc.write_signals("pack", [("a", "b")], wait_s=0.4), 0)
             self.assertGreaterEqual(time.monotonic() - t0, 0.35)
-            # 기본 상한(2초) — CLI 가 버리고 exit 0
+            # 기본 상한(5초 · 1.1.10 ⑥) — CLI 가 버리고 exit 0
             t0 = time.monotonic()
             r = subprocess.run([sys.executable, SCRIPT, "signal", "--source", "cso", "--op", "a",
                                 "--error-code", "b"], capture_output=True, timeout=30)
             dt = time.monotonic() - t0
             self.assertEqual((r.returncode, r.stdout, r.stderr), (0, b"", b""))
-            self.assertGreaterEqual(dt, 1.9)
-            self.assertLess(dt, 10)
+            self.assertGreaterEqual(dt, 4.9)
+            self.assertLess(dt, 15)
             self.assertEqual(self.sig_lines(), [])
         finally:
             jc._unlock(holder)
             holder.close()
         self.assertTrue(jc.write_signal("pack", "a", "b"), "놓은 뒤에는 써야 한다")
+        ops = [(json.loads(x)["op"], json.loads(x)["error_code"]) for x in self.sig_lines()]
+        self.assertEqual(ops, [("a", "b"), ("counsel.dropped", "counsel.dropped_writes.2")], "버린 2회(직접·CLI)가 안 실렸다")
+
+    def test_lock_wait_cap_pin(self):
+        """★1.1.10 ⑥(master#09eeb379 · A): 상한 5.0 — 윈 부하 실측 최대 3.58초(10-07) 위 · 기본값이 write_signals 에 실린다."""
+        self.assertEqual(jc.LOCK_WAIT_S, 5.0)
+        self.assertEqual(jc.write_signals.__kwdefaults__["wait_s"], jc.LOCK_WAIT_S)
+
+    def test_drop_tally_becomes_one_signal_line(self):
+        """★1.1.10 ⑥(B): 버린 쓰기 N 회 → 다음 성공 쓰기에 「counsel.dropped · counsel.dropped_writes.N」 1줄 · 0 이면 줄 생략 ·
+        부른 쪽 반환값(쓴 줄 수)은 제 줄만 센다 · 가져간 뒤 tally 는 사라진다."""
+        os.makedirs(os.path.join(self.cfg, "counsel"))
+        self.assertEqual(jc.write_signals("pack", [("a", "b")]), 1)
+        self.assertEqual(len(self.sig_lines()), 1, "버림 0 인데 줄이 생겼다")
+        holder = jc._acquire(os.path.join(self.cfg, "counsel", "signals.lock"), 0)
+        try:
+            for _ in range(3):
+                self.assertEqual(jc.write_signals("pack", [("c", "d")], wait_s=0.05), 0)
+        finally:
+            jc._unlock(holder)
+            holder.close()
+        self.assertEqual(jc.write_signals("pack", [("e", "f"), ("g", "h")]), 2, "버림 줄을 반환값에 셌다")
+        rows = [json.loads(x) for x in self.sig_lines()]
+        self.assertEqual([(r["source"], r["op"], r["error_code"]) for r in rows[1:]],
+                         [("pack", "e", "f"), ("pack", "g", "h"), ("pack", "counsel.dropped", "counsel.dropped_writes.3")])
+        self.assertFalse(os.path.exists(os.path.join(self.cfg, "counsel", jc.DROP_TALLY)), "가져간 tally 가 남았다")
+        self.assertEqual(jc.write_signals("pack", [("i", "j")]), 1)
+        self.assertEqual(len(self.sig_lines()), 5, "버림 0 인데 버림 줄이 또 생겼다")
+        self.assertEqual([n for n in os.listdir(os.path.join(self.cfg, "counsel")) if ".take-" in n], [])
 
     def test_cli_always_zero(self):
         for argv in ([], ["nope"], ["signal"], ["signal", "--op"]):

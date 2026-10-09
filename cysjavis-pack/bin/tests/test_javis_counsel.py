@@ -1381,18 +1381,22 @@ class Preflight(Base):
 
 
 class OptionalToolGrade(Base):
-    """★1.1.10 D-U6(master#b3b9abd2): 선택 도구 점검 C19(LLM 오케스트레이션 도구)·C21(harness-creator)·C24(korean-law-mcp)은 모든 기기에서
-    없으면 INFO(「선택 · 없음」) · 있으면 PASS · FAIL/WARN 0 → preflight fail/warn 수와 상담소 신호에 안 실린다(윈 참가자 fail 3 소음)."""
+    """★1.1.10 D-U6(master#b3b9abd2 · 정정 #2089a445): 선택 도구 점검 C19(LLM 오케스트레이션 도구)·C21(harness-creator)·C24(korean-law-mcp)은
+    모든 기기에서 부재면 INFO(「선택 · 없음」) · 있으면 PASS → 부재는 preflight fail/warn 수와 상담소 신호에 안 실린다(윈 참가자 fail 3 소음).
+    부재가 아닌 실결함은 가리지 않는다: C19 동봉 도구 --self-test 실패 = WARN(신호 doctor.c19.warn) · C24 설치 뒤 키 미설정 WARN 유지."""
 
     IDS = ("C19.orchestra-engine", "C21.harness-creator", "C24.korean-law-mcp")
 
-    def run_pf(self, installed):
+    def run_pf(self, installed, orch_body=None):
         import javis_preflight as pf
         home = os.path.join(self.tmp, "home")
         stub = os.path.join(self.tmp, "stubbin")
         for d in (home, stub):
             os.makedirs(d, exist_ok=True)
         orch = os.path.join(self.pack, "bin", "javis_orchestra.py")
+        if orch_body is not None:
+            with open(orch, "w") as f:
+                f.write(orch_body)
         if installed:
             with open(orch, "w") as f:
                 f.write("import sys\nsys.exit(0 if '--self-test' in sys.argv else 2)\n")
@@ -1404,7 +1408,7 @@ class OptionalToolGrade(Base):
             with open(kl, "w") as f:
                 f.write("#!/bin/sh\necho %s\n" % ".".join(map(str, pf.KLAW_MIN_VERSION)))
             os.chmod(kl, 0o755)
-        elif os.path.exists(orch):
+        elif orch_body is None and os.path.exists(orch):
             os.unlink(orch)
         cwd = os.getcwd()
         os.chdir(self.tmp)                               # C24 의 .mcp.json 등록 판정은 cwd 의 .git 을 본다 — 저장소 밖에서
@@ -1431,13 +1435,30 @@ class OptionalToolGrade(Base):
         pf, rows = self.run_pf(installed=True)
         self.assertEqual({r["id"]: r["status"] for r in rows}, {cid: pf.PASS for cid in self.IDS}, rows)
 
-    def test_grade_scoped_to_three_families(self):
+    @unittest.skipIf(os.name == "nt", "stub korean-law = POSIX 셸 스크립트")
+    def test_c19_selftest_failure_stays_warn_and_signals(self):
+        pf, rows = self.run_pf(installed=False, orch_body="import sys\nprint('boom: W2 깨짐')\nsys.exit(1)\n")
+        by = {r["id"]: r for r in rows}
+        self.assertEqual(by["C19.orchestra-engine"]["status"], pf.WARN, by["C19.orchestra-engine"])
+        self.assertIn("boom: W2 깨짐", by["C19.orchestra-engine"]["detail"], "자기검증 실패 문구가 빠졌다")
+        self.assertEqual(pf._counsel_signal_pairs(rows), [("preflight.c19", "doctor.c19.warn")])
+
+    def test_grade_table(self):
         import javis_preflight as pf
         p = pf.Preflight(fix=False, skips=[], mode="report")
-        for cid, st in (("C19.orchestra-engine", pf.FAIL), ("C21.harness-creator", pf.WARN), ("C24.korean-law-mcp", pf.DRYRUN),
-                        ("C20.nlm-sot", pf.FAIL), ("C19x", pf.FAIL), ("C24.korean-law-mcp", pf.PASS)):
-            p.add(cid, st, "d")
-        self.assertEqual([r["status"] for r in p.results], [pf.INFO, pf.INFO, pf.INFO, pf.FAIL, pf.FAIL, pf.PASS])
+        for cid, st, d in (("C19.orchestra-engine", pf.FAIL, "pack/bin 누락: javis_orchestra.py — x"),
+                           ("C19.orchestra-engine", pf.FAIL, "javis_orchestra.py --self-test 실패: boom"),
+                           ("C19.orchestra-engine", pf.FAIL, "javis_orchestra.py --self-test 실행 불가: e"),
+                           ("C21.harness-creator", pf.WARN, "비가역 변경(subprocess_install) 보류 — x"),
+                           ("C21.harness-creator", pf.FAIL, "harness-creator 툴체인 미설치 — x"),
+                           ("C24.korean-law-mcp", pf.DRYRUN, "[dry-run] Would x"),
+                           ("C24.korean-law-mcp", pf.FAIL, "korean-law 미설치/판독불가 — x"),
+                           ("C24.korean-law-mcp", pf.WARN, "korean-law 설치됨 · OC 키 미설정 — x"),
+                           ("C24.korean-law-mcp", pf.WARN, "korean-law-mcp · OC 키 확인 · MCP 등록 실패: x"),
+                           ("C20.nlm-sot", pf.FAIL, "d"), ("C19x", pf.FAIL, "d"), ("C24.korean-law-mcp", pf.PASS, "d")):
+            p.add(cid, st, d)
+        self.assertEqual([r["status"] for r in p.results],
+                         [pf.INFO, pf.WARN, pf.WARN, pf.INFO, pf.INFO, pf.INFO, pf.INFO, pf.WARN, pf.WARN, pf.FAIL, pf.FAIL, pf.PASS])
 
 
 @unittest.skipIf(os.name == "nt", "cys-dept 를 격리 HOME 에서 bash 로 직접 실행(POSIX 셸·python3 전제) — 윈 cys-dept 실행 단계는 "

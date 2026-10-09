@@ -57,11 +57,26 @@ except Exception:
 PASS, FAIL, WARN, FIXED, SKIP = "PASS", "FAIL", "WARN", "FIXED", "SKIP"
 # OPP-17 Mutation 게이트 status — dry/safe 미리보기·무변경진단·비가역 차단(WARN-first).
 DRYRUN, SAFE_GAP, BLOCKED = "DRYRUN", "SAFE-GAP", "BLOCKED"
-# ★1.1.10 D-U6(master#b3b9abd2): 선택 도구 점검 등급 — 있으면 PASS(ok) · 없거나 못 쓰면 INFO(「선택 · 없음」 · FAIL/WARN 0 ·
-#   상담소 신호에 안 실림 · READY 무관). 윈 참가자 일일 신호 fail 3(c19·c21·c24) = 개발자 선택 도구 부재가 결함으로 집계된 소음.
-#   「비개발 설치」 기계 판별은 하지 않는다(추측 · 이 개발 맥에서도 C24 FAIL) → 모든 기기에서 같은 등급. 수리 지점 = add() 한 곳.
+# ★1.1.10 D-U6(master#b3b9abd2 · 정정 master#2089a445): 선택 도구 점검 등급 — 있으면 PASS(ok) · **부재**면 INFO(「선택 · 없음」 ·
+#   FAIL/WARN 아님 · 상담소 신호에 안 실림 · READY 무관). 윈 참가자 일일 신호 fail 3(c19·c21·c24) = 개발자 선택 도구 부재가 결함으로
+#   집계된 소음. 「비개발 설치」 기계 판별은 하지 않는다(추측) → 모든 기기에서 같은 등급. 부재가 아닌 것은 가리지 않는다:
+#   C19 동봉 javis_orchestra.py 의 --self-test 실패·실행 불가 = WARN(실결함 · 윈 C19 FAIL 원문 미확인) · C24 설치 뒤 OC 키·MCP 등록 WARN 유지.
+#   수리 지점 = add() 한 곳(_optional_tool_grade).
 INFO = "INFO"
 OPTIONAL_TOOL_FAMILIES = ("C19", "C21", "C24")   # LLM 오케스트레이션 도구 · harness-creator · korean-law-mcp
+OPTIONAL_OK = (PASS, FIXED, SKIP, INFO)
+
+
+def _optional_tool_grade(cid, status, detail):
+    """선택 도구 점검 행의 등급 — (status, detail). 가족 밖·이미 ok 류는 그대로."""
+    fam = str(cid).split(".", 1)[0]
+    if fam not in OPTIONAL_TOOL_FAMILIES or status in OPTIONAL_OK:
+        return status, detail
+    if fam == "C19" and not str(detail).startswith("pack/bin 누락"):
+        return (WARN if status == FAIL else status), detail          # 자기검증 실패·실행 불가 = 실결함(가리지 않는다)
+    if fam == "C24" and str(detail).startswith(("korean-law 설치됨", "korean-law-mcp · OC 키")):
+        return status, detail                                          # 설치 뒤 설정 문제 = 부재 아님
+    return INFO, "선택 · 없음 — 개발 기기용 선택 도구(없어도 결함 아님) · 원판정 %s: %s" % (status, detail)
 
 DIRECTIVES = [
     "MASTER_DIRECTIVE.md",
@@ -1756,8 +1771,7 @@ class Preflight:
         #   구분하지 못한다. 행 키는 True 일 때만 추가한다(기존 행 형상 불변 — 소비자 무영향).
         if self.only and not self._only_match(cid):
             return
-        if self._cid_family(cid) in OPTIONAL_TOOL_FAMILIES and status not in (PASS, FIXED, SKIP, INFO):
-            status, detail = INFO, "선택 · 없음 — 개발 기기용 선택 도구(없어도 결함 아님) · 원판정 %s: %s" % (status, detail)
+        status, detail = _optional_tool_grade(cid, status, detail)
         sink = getattr(self._local, "sink", None)
         target = self.results if sink is None else sink
         row = {"id": cid, "status": status, "detail": detail}

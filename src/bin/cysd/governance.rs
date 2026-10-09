@@ -967,7 +967,11 @@ fn check_agent_death_with_model(
             let root_is_agent = root_agent_cmd(sys, s.pid, &[(agent.clone(), bin_base.clone())])
                 .is_some_and(|c| cmdline_matches_agent_exec(&c, &bin_base));
             let pid = pick_agent_env_pid(s.pid, root_is_agent, &descendants, &bin_base);
-            refresh_os_config_dir(&s, pid, |p| process_env_value(p, "CLAUDE_CONFIG_DIR"));
+            // ★2판 ⑧: 새 판독은 곧바로 topology 에 영속한다 — 「unobserved」 칸이 다음 영속 계기까지 남아 콜드부트가
+            //   멀쩡한 좌석의 이어 기동을 막지 않게(surfaces 는 위에서 복제본 · 락 미보유 = 896 행과 같은 꼴).
+            if refresh_os_config_dir(&s, pid, |p| process_env_value(p, "CLAUDE_CONFIG_DIR")) {
+                persist_topology(daemon);
+            }
         }
         if alive {
             s.agent_seen.store(true, Ordering::Relaxed);
@@ -3056,6 +3060,22 @@ fn seat_profile_of(s: &crate::state::Surface) -> Option<String> {
     s.os_observed_config_dir()
 }
 
+/// ★2판 ⑧: topology `config_dir_authority`(`cys::CONFIG_DIR_AUTHORITY_KEY`) — claude 좌석만 · 그 밖 = null.
+/// `"os"` = OS env 관측값 있음(seat_profile) · `"recorded"` = 관측 불가 기계(윈도우 · env 판독 안 함 → 기록값이 유일 재료) ·
+/// `"unobserved"` = 관측 가능 기계인데 아직 못 읽음(관측 전 종료 · 판독 실패) → restore 가 이어 기동을 멈춘다.
+fn config_dir_authority_of(s: &crate::state::Surface, agent: Option<&str>) -> Option<&'static str> {
+    if !agent.is_some_and(cys::is_claude_agent) {
+        return None;
+    }
+    Some(if s.os_observed_config_dir().is_some() {
+        "os"
+    } else if cfg!(windows) {
+        "recorded"
+    } else {
+        cys::CONFIG_DIR_UNOBSERVED
+    })
+}
+
 /// ★D-mac-5: 좌석 에이전트 pid 고르기(순수) — 뿌리(좌석 pid)가 에이전트면 뿌리, 아니면 엄격 일치한 자손의 **첫** 것
 /// (`collect_descendants_with_cmd` 순서 · 셸 exec 여부 무관). 없으면 None.
 pub(crate) fn pick_agent_env_pid(root: u32, root_is_agent: bool, descendants: &[(u32, String)], bin_base: &str) -> Option<u32> {
@@ -3129,6 +3149,7 @@ pub fn persist_topology(daemon: &Arc<Daemon>) {
         .filter_map(|s| {
             s.role.lock().unwrap().clone().map(|role| {
                 let meta = s.agent_meta.lock().unwrap().clone();
+                let cfg_authority = config_dir_authority_of(s, meta.as_ref().map(|(n, _)| n.as_str()));
                 json!({"role": role, "agent": meta.as_ref().map(|(n, _)| n.clone()),
                        "agent_bin": meta.map(|(_, b)| b),
                        "cwd": s.cwd, "title": s.title.lock().unwrap().clone(),
@@ -3142,6 +3163,7 @@ pub fn persist_topology(daemon: &Arc<Daemon>) {
                        // 부활이 다른 계정으로 떴다(10-08 8/8). restore 는 이 칸을 먼저 본다(`cys::restore_config_dir`).
                        // 관측 전·비 claude = null(종전 동작).
                        "seat_profile": seat_profile_of(s),
+                       (cys::CONFIG_DIR_AUTHORITY_KEY): cfg_authority,
                        "pack_reinject": s.pack_reinject.lock().unwrap().clone(),
                        // ★(W2 · B6) 각성 래치 영속 — 데몬 재시작 생존이 **필수**다(비평2 B-1).
                        // 인메모리 단독이면 재시작 직후 건강한 전 팀이 래치를 잃고, 부트 체인은

@@ -9354,6 +9354,10 @@ mod tests {
         });
         let win = mk("worker-5"); // 윈 꼴 = 판독 시도했으나 값 없음
         *win.os_config_dir.lock().unwrap() = Some((102, None));
+        let _shell = mk("worker-6"); // 비 claude(에이전트 미상) = 권위 칸 null
+        for s in [&acct2, &fresh, &selfrep, &win] {
+            *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        }
         crate::governance::persist_topology(&daemon);
         let entries = crate::governance::load_topology(&daemon);
         let get = |role: &str| {
@@ -9363,13 +9367,23 @@ mod tests {
         let e2 = get("worker-2");
         assert_eq!(e2["seat_profile"].as_str(), Some("/home/x/.claude-acct2"), "OS 관측 프로필 영속");
         assert_ne!(e2["claude_config_dir"].as_str(), Some("/home/x/.claude-acct2"), "재현 전제: 기록값은 데몬 기본");
-        assert_eq!(cys::restore_config_dir(&e2).as_deref(), Some("/home/x/.claude-acct2"), "부활 = OS 관측 프로필 승계");
+        assert_eq!(e2[cys::CONFIG_DIR_AUTHORITY_KEY].as_str(), Some("os"));
+        // ★2판 ⑦: 부활은 그 관측값을 **검증 뒤**에만 쓴다 — 이 시험의 /home/x 는 없는 폴더라 중단(Err)이 맞다
+        //   (실재·소유·권한 통과 갈래 = lib `restore_config_dir_prefers_observed_seat_profile`).
+        assert!(cys::restore_config_dir(&e2).is_err(), "없는 관측 프로필을 검증 없이 승격");
+        let unobs_tag = if cfg!(windows) { "recorded" } else { cys::CONFIG_DIR_UNOBSERVED };
         for r in ["worker-3", "worker-4", "worker-5"] {
             let e = get(r);
             assert!(e["seat_profile"].is_null(), "{r}: 관측 전·자기보고만·윈 꼴 = null");
-            assert_eq!(cys::restore_config_dir(&e), e["claude_config_dir"].as_str().map(String::from),
-                       "{r}: 종전 기록값 그대로");
+            assert_eq!(e[cys::CONFIG_DIR_AUTHORITY_KEY].as_str(), Some(unobs_tag), "{r}");
+            // ★2판 ⑧: 관측 가능 기계에서 관측 전 = 판단 불가(조용한 기록값 폴백 0) · 윈도우 = 종전 기록값.
+            if cfg!(windows) {
+                assert_eq!(cys::restore_config_dir(&e), Ok(e["claude_config_dir"].as_str().map(String::from)), "{r}");
+            } else {
+                assert!(cys::restore_config_dir(&e).is_err(), "{r}: 권위 없는 기록값으로 부활");
+            }
         }
+        assert!(get("worker-6")[cys::CONFIG_DIR_AUTHORITY_KEY].is_null(), "비 claude = 권위 칸 없음");
     }
 
     /// ★D-mac-5: 권위 설정 폴더 = OS 관측 > 기록값 · 공백 OS 값 = 없음 · 자기보고는 들어오지 않는다.

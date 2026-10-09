@@ -19034,7 +19034,7 @@ fn run_launch_agent(role: &str, agent: &str, cwd: Option<String>) -> i32 {
 /// 원천은 `run_restore` 와 같은 `saved` 이므로 순환(/clear) 뒤 핀 추종(등록 경로 교체 · D2 R2)도 같다.
 /// 핀을 주지 않는 경우: 묘비 역할(의도 삭제 — 옛 대화 부활 금지) · 저장 agent 가 다름(다른 CLI 의
 /// 세션을 이 CLI 로 열지 않는다) · session_id 부재·빈 값.
-fn saved_resume_pin(topo: &Value, role: &str, agent: &str) -> Option<(String, Option<String>)> {
+fn saved_resume_pin(topo: &Value, role: &str, agent: &str) -> Option<(String, Result<Option<String>, String>)> {
     let tombstoned = topo["tombstones"]
         .as_array()
         .is_some_and(|a| a.iter().any(|t| t.as_str() == Some(role)));
@@ -19049,7 +19049,7 @@ fn saved_resume_pin(topo: &Value, role: &str, agent: &str) -> Option<(String, Op
         return None;
     }
     let sid = entry["session_id"].as_str().map(str::trim).filter(|s| !s.is_empty())?;
-    let cfg = cys::restore_config_dir(entry); // ★D-mac-1: 관측 프로필 우선
+    let cfg = cys::restore_config_dir(entry); // ★D-mac-1: 관측 프로필 우선 · ★2판 ⑦⑧: 검증 실패·권위 없음 = Err
     Some((sid.to_string(), cfg))
 }
 
@@ -19073,6 +19073,14 @@ fn run_launch_agent_resume_saved(role: &str, agent: &str, cwd: Option<String>) -
     let Some((sid, cfg)) = pin else {
         eprintln!("[launch-agent] --resume-saved: {role} 저장 대화 없음 — 새 대화로 기동");
         return run_launch_agent(role, agent, cwd);
+    };
+    // ★2판 ⑦⑧: 계정 프로필을 믿을 수 없으면 멈춘다 — 다른 계정으로 조용히 뜨는 새 기동도 하지 않는다(10-08 한도 정지 계보).
+    let cfg = match cfg {
+        Ok(c) => c,
+        Err(why) => {
+            eprintln!("[launch-agent] --resume-saved: {role} 기동 중단 — {why}");
+            return 2;
+        }
     };
     let resumable = load_agent_spec(agent)
         .ok()
@@ -23352,7 +23360,8 @@ fn run_node_recover(surface: Option<String>, role: Option<String>) -> i32 {
         let sess = entry["session_id"].as_str().map(String::from);
         // (W1) 같은 pane 재기동(restore=false → 인라인 없음)이나 resume 게이트엔 기록된 config_dir·cwd를 쓴다.
         let rec_cwd = entry["cwd"].as_str().map(String::from);
-        let rec_cfg = cys::restore_config_dir(&entry); // ★D-mac-1: 관측 프로필 우선
+        // ★D-mac-1: 관측 프로필 우선 · ★2판 ⑦⑧: 검증 실패·권위 없음 = 재기동 중단(명시 오류)
+        let rec_cfg = cys::restore_config_dir(&entry).map_err(|why| format!("node-recover {role_name}: {why}"))?;
         // 기동 send_text/Return 도 같은 접기 — C-u 는 지났는데 그 200ms 창에 사람이 치면 같은 코드로 거부된다.
         let verdict = boot_agent_on_surface(
             sid,
@@ -23683,6 +23692,17 @@ fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i3
                 &home,
                 &|p| std::path::Path::new(p).is_dir(),
             );
+            // (W1) topology에 기록된 원 계정 config_dir을 넘긴다(구 topology=None → 기존 템플릿 동작).
+            // ★D-mac-1: 관측 프로필 우선 · ★2판 ⑦⑧: 검증 실패·권위 없음 = 이 역할 기동 중단(claim 앞 — 잡은 것 0 ·
+            //   새 대화 폴백도 하지 않는다: 다른 계정으로 뜨는 것이 10-08 한도 정지 사고다).
+            let cfg = match cys::restore_config_dir(&entry) {
+                Ok(c) => c,
+                Err(why) => {
+                    println!("· {role}: 기동 중단 — {why}");
+                    fail += 1;
+                    continue;
+                }
+            };
             // (4b) saved entry의 session_id를 꺼내 정확한 세션 재개(없으면 fallback)
             let sess = entry["session_id"].as_str().map(String::from);
             // ★D-mac-2: 그 대화를 이미 다른 좌석이 잇고 있으면 이 좌석은 이어 붙이지 않는다(resume 끔 —
@@ -23697,8 +23717,6 @@ fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i3
                 println!("· {role}: 저장 대화를 이미 다른 좌석이 잇는 중 — 이어 붙이지 않고 새 대화로 기동(같은 jsonl 동시 쓰기 차단)");
             }
             let resume = !no_resume && !resume_dup;
-            // (W1) topology에 기록된 원 계정 config_dir을 넘긴다(구 topology=None → 기존 템플릿 동작).
-            let cfg = cys::restore_config_dir(&entry); // ★D-mac-1: 관측 프로필 우선(없으면 종전 기록값)
             // ★SEAT in-seat 연결(오너 의도: "최초로 만들어지는 surface에 클로드가 연결되고 마스터로
             // 부활"): 그 역할의 좌석이 이미 있고 비어 있으면 **새 surface 를 만들지 않고 그 좌석에
             // 직접** 에이전트를 기동한다. 좌석이 늘지 않고(796형 잔존 pane 0) 사용자가 보는 그 pane 이
@@ -30058,7 +30076,7 @@ mod tests {
         });
         assert_eq!(
             saved_resume_pin(&topo, "master", "claude"),
-            Some(("s-m".to_string(), Some("/cfg".to_string()))),
+            Some(("s-m".to_string(), Ok(Some("/cfg".to_string())))),
             "저장 핀이 있으면 그 대화를 잇는다"
         );
         assert_eq!(saved_resume_pin(&topo, "cso", "claude"), None, "빈 핀은 잇지 않는다");

@@ -25839,12 +25839,28 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cys-c3cie-{}-{}", std::process::id(), crate::state::now_epoch() as u64));
         let _ = std::fs::create_dir_all(&dir);
         let daemon = Daemon::new(dir.join("cysd.sock"));
+        // ★5판 ①(미러 CI macOS 적색): `$SHELL -lc "sleep 30"` 은 셸에 따라 sleep 을 **자식**으로 남긴다(러너 = 자손 1 ·
+        //   로컬 = exec 최적화로 0) → 「빈 좌석」 전제가 환경에 기댔다. `exec` 로 셸을 sleep 으로 바꾸고, 호출 전에
+        //   자손 0 을 폴링으로 **확인**한다(상한 10초 · 못 맞추면 전제 실패로 멈춤 — 추측 호출 0).
         let mk = |role: &str| {
             let s = daemon
-                .create_surface(None, Some("sleep 30".into()), None, Some(role.into()), 24, 80)
+                .create_surface(None, Some("exec sleep 30".into()), None, Some(role.into()), 24, 80)
                 .expect("create surface");
             daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
             s
+        };
+        let settle_empty = |s: &Arc<crate::state::Surface>| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                let mut sys = sysinfo::System::new();
+                sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+                let alive = sys.process(sysinfo::Pid::from_u32(s.pid)).is_some();
+                if alive && governance::collect_descendants(&sys, s.pid).is_empty() {
+                    return;
+                }
+                assert!(std::time::Instant::now() < deadline, "전제 실패: surface:{} 가 10초 안에 자손 0 이 안 됐다", s.id);
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
         };
         let close = |sid: u64, caller_pid: Option<u32>| -> Value {
             let req = Request { id: json!(1), method: "surface.close".into(),
@@ -25857,6 +25873,9 @@ mod tests {
         *typing.last_human_input.lock().unwrap() = Some(std::time::Instant::now());
         let queued = mk("worker-3");
         let peer = mk("worker-4");
+        for x in [&empty, &typing, &queued] {
+            settle_empty(x);
+        }
         // 비특권 pane(peer) 발신 = 거부(남의 좌석) — 가짜 pid 를 peer 좌석으로 해석시킨다.
         let fake_pid = 995_911_u32;
         daemon.caller_cache.lock().unwrap().insert(

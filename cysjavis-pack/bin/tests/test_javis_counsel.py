@@ -1380,6 +1380,66 @@ class Preflight(Base):
         self.assertLess(main.index("_counsel_emit(results)"), main.index("if args.json:"))
 
 
+class OptionalToolGrade(Base):
+    """★1.1.10 D-U6(master#b3b9abd2): 선택 도구 점검 C19(LLM 오케스트레이션 도구)·C21(harness-creator)·C24(korean-law-mcp)은 모든 기기에서
+    없으면 INFO(「선택 · 없음」) · 있으면 PASS · FAIL/WARN 0 → preflight fail/warn 수와 상담소 신호에 안 실린다(윈 참가자 fail 3 소음)."""
+
+    IDS = ("C19.orchestra-engine", "C21.harness-creator", "C24.korean-law-mcp")
+
+    def run_pf(self, installed):
+        import javis_preflight as pf
+        home = os.path.join(self.tmp, "home")
+        stub = os.path.join(self.tmp, "stubbin")
+        for d in (home, stub):
+            os.makedirs(d, exist_ok=True)
+        orch = os.path.join(self.pack, "bin", "javis_orchestra.py")
+        if installed:
+            with open(orch, "w") as f:
+                f.write("import sys\nsys.exit(0 if '--self-test' in sys.argv else 2)\n")
+            hc = os.path.join(home, ".cys", "harness-creator")
+            for k in pf.HARNESS_KEY_FILES:
+                os.makedirs(os.path.dirname(os.path.join(hc, k)), exist_ok=True)
+                open(os.path.join(hc, k), "w").close()
+            kl = os.path.join(stub, "korean-law")
+            with open(kl, "w") as f:
+                f.write("#!/bin/sh\necho %s\n" % ".".join(map(str, pf.KLAW_MIN_VERSION)))
+            os.chmod(kl, 0o755)
+        elif os.path.exists(orch):
+            os.unlink(orch)
+        cwd = os.getcwd()
+        os.chdir(self.tmp)                               # C24 의 .mcp.json 등록 판정은 cwd 의 .git 을 본다 — 저장소 밖에서
+        try:
+            with envset(HOME=home, USERPROFILE=home, CYS_HARNESS_HOME=None, LAW_OC="x" if installed else None, LAW_OC_ID=None,
+                        PATH=stub + os.pathsep + "/usr/bin" + os.pathsep + "/bin"):
+                return pf, pf.Preflight(fix=False, skips=[], mode="report", only=["C19", "C21", "C24"]).run()
+        finally:
+            os.chdir(cwd)
+
+    @unittest.skipIf(os.name == "nt", "stub korean-law = POSIX 셸 스크립트")
+    def test_absent_is_info_and_not_counted(self):
+        pf, rows = self.run_pf(installed=False)
+        by = {r["id"]: r for r in rows}
+        self.assertEqual(sorted(by), sorted(self.IDS), rows)
+        for cid in self.IDS:
+            self.assertEqual(by[cid]["status"], pf.INFO, by[cid])
+            self.assertTrue(by[cid]["detail"].startswith("선택 · 없음"), by[cid])
+        self.assertEqual(sum(r["status"] in (pf.FAIL, pf.WARN) for r in rows), 0)
+        self.assertEqual(pf._counsel_signal_pairs(rows), [], "선택 도구 부재가 상담소 신호로 실렸다")
+
+    @unittest.skipIf(os.name == "nt", "stub korean-law = POSIX 셸 스크립트")
+    def test_installed_is_pass(self):
+        pf, rows = self.run_pf(installed=True)
+        self.assertEqual({r["id"]: r["status"] for r in rows}, {cid: pf.PASS for cid in self.IDS}, rows)
+
+    def test_grade_scoped_to_three_families(self):
+        import javis_preflight as pf
+        p = pf.Preflight(fix=False, skips=[], mode="report")
+        for cid, st in (("C19.orchestra-engine", pf.FAIL), ("C21.harness-creator", pf.WARN), ("C24.korean-law-mcp", pf.DRYRUN),
+                        ("C20.nlm-sot", pf.FAIL), ("C19x", pf.FAIL), ("C24.korean-law-mcp", pf.PASS)):
+            p.add(cid, st, "d")
+        self.assertEqual([r["status"] for r in p.results], [pf.INFO, pf.INFO, pf.INFO, pf.FAIL, pf.FAIL, pf.PASS])
+
+
 @unittest.skipIf(os.name == "nt", "cys-dept 를 격리 HOME 에서 bash 로 직접 실행(POSIX 셸·python3 전제) — 윈 cys-dept 실행 단계는 "
                                    "windows-health 의 부서 실행 단계 스텝이 따로 실기한다")
 class DeptTrap(Base):

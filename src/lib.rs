@@ -2380,15 +2380,22 @@ pub fn validate_profile_dir_under(p: &str, home: &Path) -> Result<String, String
     if !canon.starts_with(&home) || canon == home {
         return Err(format!("계정 프로필이 홈 아래가 아니다: {} (홈 {})", canon.display(), home.display()));
     }
+    // ★3판 ⑨(codex 2R MAJOR · 부분 채택): 대상만이 아니라 **HOME 부터 대상까지 모든 폴더**가 내 것 · 그룹/기타 쓰기 0 —
+    //   0777 중간 폴더면 남이 검증 직후 프로필을 바꿔 끼울 수 있다. ⛔기동 직전 재검증(TOCTOU)은 하지 않는다(우리 HOME 안 = 신뢰 경계 · master#54e8020b).
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         let uid = unsafe { libc::getuid() };
-        if md.uid() != uid {
-            return Err(format!("계정 프로필 소유자가 현재 사용자가 아니다: {} (uid {} ≠ {uid})", canon.display(), md.uid()));
-        }
-        if md.mode() & 0o022 != 0 {
-            return Err(format!("계정 프로필에 그룹/기타 쓰기 권한이 있다: {} (mode {:o})", canon.display(), md.mode() & 0o777));
+        let mut chain: Vec<&Path> = canon.ancestors().take_while(|a| a.starts_with(&home)).collect();
+        chain.reverse(); // HOME → … → 대상
+        for dir in chain {
+            let m = std::fs::metadata(dir).map_err(|e| format!("계정 프로필 경로 판독 불가: {} ({e})", dir.display()))?;
+            if m.uid() != uid {
+                return Err(format!("계정 프로필 경로 소유자가 현재 사용자가 아니다: {} (uid {} ≠ {uid})", dir.display(), m.uid()));
+            }
+            if m.mode() & 0o022 != 0 {
+                return Err(format!("계정 프로필 경로에 그룹/기타 쓰기 권한이 있다: {} (mode {:o})", dir.display(), m.mode() & 0o777));
+            }
         }
     }
     Ok(canon.to_string_lossy().into_owned())
@@ -5943,6 +5950,19 @@ mod tests {
             assert!(v(&ok).is_err(), "그룹 쓰기");
             std::fs::set_permissions(&ok, std::fs::Permissions::from_mode(0o702)).unwrap();
             assert!(v(&ok).is_err(), "기타 쓰기");
+            // ★3판 ⑨: 중간 폴더(0777) 아래의 0700 프로필 = 거부 · 중간 폴더 0700 = 통과 · HOME 자체 0777 = 거부.
+            std::fs::set_permissions(&ok, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let mid = home.join("shared");
+            let deep = mid.join("profile");
+            std::fs::create_dir_all(&deep).unwrap();
+            std::fs::set_permissions(&deep, std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::set_permissions(&mid, std::fs::Permissions::from_mode(0o777)).unwrap();
+            assert!(v(&deep).is_err(), "0777 중간 폴더 아래 프로필을 통과시켰다");
+            std::fs::set_permissions(&mid, std::fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(v(&deep).is_ok(), "안전한 중간 폴더를 거부했다");
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o777)).unwrap();
+            assert!(v(&ok).is_err(), "0777 HOME 아래 프로필을 통과시켰다");
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
         let _ = std::fs::remove_dir_all(&tmp);
     }

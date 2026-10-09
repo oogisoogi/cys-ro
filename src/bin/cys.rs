@@ -23550,50 +23550,76 @@ fn restore_claim_file_release(f: &std::path::Path, token: &str) {
     }
 }
 
-/// ★3판 ②(codex 2R BLOCK): 원자 claim 획득 — remove→create 금지. `create_new` → EEXIST 면 내용(토큰+epoch)을 읽어
-/// **TTL 지난 것만** rename 으로 비켜 놓고(옮긴 내용이 읽은 것과 같은지 재확인 · 다르면 = 그 사이 남이 새로 잡은 것 → 되돌리고 포기)
-/// `create_new` 재시도. 내용을 못 읽거나 epoch 가 없으면(쓰는 중) mtime 으로 보고 · mtime 도 모르면 점유로 본다(fail-closed).
+/// ★3판 ② · ★4판 ①(agy 3R BLOCK · master#584026d0): 원자 claim 획득 — remove→create 금지 · **되돌리기(hard_link) 없음**.
+/// ① `create_new` 로 `<토큰> <epoch>` 기록 ② EEXIST 면 [`restore_claim_sweep`](내용 epoch 가 TTL 안 = 점유 → 진다 ·
+/// TTL 지난 것만 rename 으로 치우고 버린다) ③ 치운 뒤 `create_new` **한 번** — EEXIST 면 그 사이 남이 잡은 것 = **내가 진 것**
+/// (resume 끔 · fail-closed · 다시 치우지 않는다).
 fn restore_claim_file_acquire(f: &std::path::Path, token: &str, now: u64) -> bool {
-    use std::io::Write;
-    for _ in 0..3 {
-        match std::fs::OpenOptions::new().write(true).create_new(true).open(f) {
-            Ok(mut h) => {
-                if writeln!(h, "{token} {now}").and_then(|_| h.sync_all()).is_err() {
-                    restore_claim_file_release(f, token);
-                    return false;
-                }
-                return true;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                let content = std::fs::read_to_string(f).unwrap_or_default();
-                let epoch = content.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok()).or_else(|| {
-                    std::fs::metadata(f)
-                        .ok()
-                        .and_then(|m| m.modified().ok())
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs())
-                });
-                match epoch {
-                    Some(ep) if now.saturating_sub(ep) >= RESTORE_CLAIM_TTL_SECS => {}
-                    _ => return false, // 살아 있는 claim(또는 판단 불가) = 점유
-                }
-                let aside = f.with_extension(format!("stale-{token}"));
-                if std::fs::rename(f, &aside).is_err() {
-                    continue; // 그 사이 남이 치웠다 → 다시 create_new
-                }
-                let moved = std::fs::read_to_string(&aside).unwrap_or_default();
-                if moved != content {
-                    // 읽은 뒤 남이 새로 잡은 파일을 옮겼다 — 자리가 비어 있으면 되돌리고 나는 포기.
-                    let _ = std::fs::hard_link(&aside, f);
-                    let _ = std::fs::remove_file(&aside);
-                    return false;
-                }
-                let _ = std::fs::remove_file(&aside);
-            }
-            Err(_) => return false,
-        }
+    if let Some(created) = restore_claim_try_create(f, token, now) {
+        return created; // None = EEXIST → 아래 치우기
     }
-    false
+    if restore_claim_sweep(f, token, now) != ClaimSweep::Swept {
+        return false;
+    }
+    restore_claim_create_after_sweep(f, token, now)
+}
+
+/// ★4판 ①: 치운 뒤 `create_new` **한 번** — EEXIST(그 사이 남이 잡음)·쓰기 실패 = 진다(다시 치우지 않는다).
+fn restore_claim_create_after_sweep(f: &std::path::Path, token: &str, now: u64) -> bool {
+    restore_claim_try_create(f, token, now) == Some(true)
+}
+
+/// `create_new` 한 번 — Some(true) = 잡음 · Some(false) = 쓰기 실패(지움 · 진다) · None = EEXIST(이미 있다).
+fn restore_claim_try_create(f: &std::path::Path, token: &str, now: u64) -> Option<bool> {
+    use std::io::Write;
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(f) {
+        Ok(mut h) => {
+            if writeln!(h, "{token} {now}").and_then(|_| h.sync_all()).is_err() {
+                restore_claim_file_release(f, token);
+                return Some(false);
+            }
+            Some(true)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => None,
+        Err(_) => Some(false),
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum ClaimSweep {
+    /// 살아 있는 claim(또는 판단 불가 · 옮긴 내용이 읽은 것과 다름 = 남의 새 claim 을 옮겼다) — 진다.
+    Held,
+    /// TTL 지난 claim 을 치웠다(버림) — create_new 한 번 시도해도 된다.
+    Swept,
+}
+
+/// ★4판 ①: 낡은 claim 치우기 — 내용(토큰+epoch)을 읽어 **TTL 지난 것만** rename 으로 비켜 놓고 버린다. 내용 없음(쓰는 중) = mtime ·
+/// 모르면 점유. rename 실패(그 사이 남이 치움) = 치워진 것으로 본다. 옮긴 내용이 읽은 것과 다르면(읽은 뒤 남이 새로 잡았다) =
+/// Held(그 파일은 되살리지 않는다 — 되돌리기 경합 자체를 없앤다 · 정직: 그 소유자의 디스크 claim 은 사라진다).
+fn restore_claim_sweep(f: &std::path::Path, token: &str, now: u64) -> ClaimSweep {
+    let content = std::fs::read_to_string(f).unwrap_or_default();
+    let epoch = content.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok()).or_else(|| {
+        std::fs::metadata(f)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+    });
+    match epoch {
+        Some(ep) if now.saturating_sub(ep) >= RESTORE_CLAIM_TTL_SECS => {}
+        _ => return ClaimSweep::Held,
+    }
+    let aside = f.with_extension(format!("stale-{token}"));
+    if std::fs::rename(f, &aside).is_err() {
+        return ClaimSweep::Swept; // 이미 남이 치웠다 — create_new 한 번으로 승부
+    }
+    let moved = std::fs::read_to_string(&aside).unwrap_or_default();
+    let _ = std::fs::remove_file(&aside);
+    if moved != content {
+        ClaimSweep::Held
+    } else {
+        ClaimSweep::Swept
+    }
 }
 
 /// ★3판 ③: claim 파일 이름 = 세션 id 의 sha256(어떤 문자의 id 도 같은 규칙 · 경로 조각 0).
@@ -30322,6 +30348,42 @@ mod tests {
         assert!(restore_claim_file_acquire(&f, "B", now + RESTORE_CLAIM_TTL_SECS + 1));
         assert_eq!(std::fs::read_to_string(&f).unwrap().split_whitespace().next(), Some("B"));
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "비켜 놓은 낡은 파일이 남았다");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★4판 ①(agy 3R BLOCK · master#584026d0): 「A 옛 claim · B 치움(rename) · C 생성 · D 생성」 순서 — 동시 재개 0(승자 = C 하나).
+    /// B 는 치운 뒤 create_new 에서 EEXIST = 진다(다시 치우지 않는다) · D 는 C 의 살아 있는 claim 앞에서 진다.
+    /// 그리고 「D 가 낡았다고 읽은 뒤 그 사이 C 가 새로 잡은 파일을 옮긴」 경우도 D 는 진다(되돌리지 않는다).
+    #[test]
+    fn restore_claim_sequence_old_sweep_create_create_single_winner() {
+        let dir = std::env::temp_dir().join(format!("cys-claimq-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("c");
+        let now = 3_000_000u64;
+        let late = now + RESTORE_CLAIM_TTL_SECS + 1;
+        std::fs::write(&f, format!("A {now}\n")).unwrap(); // A = 죽은 restore 의 옛 claim
+        assert_eq!(restore_claim_try_create(&f, "B", late), None, "B: EEXIST");
+        assert_eq!(restore_claim_sweep(&f, "B", late), ClaimSweep::Swept, "B: 낡은 A 를 치움");
+        assert_eq!(restore_claim_try_create(&f, "C", late), Some(true), "C: 빈 자리를 잡음");
+        assert!(!restore_claim_create_after_sweep(&f, "B", late), "B: 치운 뒤 한 번 — EEXIST = 진다");
+        assert!(!restore_claim_file_acquire(&f, "D", late), "D: C 의 살아 있는 claim 앞에서 진다");
+        let winners = ["B", "C", "D"]
+            .iter()
+            .filter(|t| std::fs::read_to_string(&f).unwrap().split_whitespace().next() == Some(**t))
+            .count();
+        assert_eq!(winners, 1, "동시 재개");
+        // 낡았다고 본 자리를 그 사이 남이 새로 잡았으면(치우기 시점의 내용 = 새 epoch) Held — 그 자리에서 진다.
+        //   (읽기~rename 사이 교체 = 옮긴 내용 대조 갈래 · 단일 스레드 시험으로는 그 틈을 못 만든다 — 정직)
+        std::fs::write(&f, format!("OLD {now}\n")).unwrap();
+        let read_then_replaced = {
+            // C2 가 그 자리를 새로 잡은 상황을 치우기 직전 내용 교체로 재현.
+            let content = std::fs::read_to_string(&f).unwrap();
+            assert!(content.starts_with("OLD"));
+            std::fs::write(&f, format!("C2 {late}\n")).unwrap();
+            restore_claim_sweep(&f, "D", late)
+        };
+        assert_eq!(read_then_replaced, ClaimSweep::Held, "살아 있는 claim 을 치웠다고 봤다");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

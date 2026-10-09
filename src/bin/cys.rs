@@ -23543,11 +23543,30 @@ impl Drop for RestoreClaim<'_> {
 }
 
 /// ★3판 ②: claim 파일 해제 — 파일 첫 칸(토큰)이 **내 것일 때만** 지운다(남의 새 claim 을 지우지 않는다).
+/// ★1.1.10 ⑨: 읽기~지우기도 전역 잠금 안에서(잠금 실패 = 종전대로 잠금 없이 — 해제는 막지 않는다).
 fn restore_claim_file_release(f: &std::path::Path, token: &str) {
+    let _g = f.parent().and_then(restore_claims_lock);
+    restore_claim_file_release_locked(f, token);
+}
+
+/// 해제 본체 — 호출자가 전역 잠금을 이미 쥐고 있을 때(획득 중 쓰기 실패). 같은 프로세스에서 잠금을 다시 잡으면
+/// 새 핸들의 배타 잠금이 앞 핸들에 막혀 스스로 멈춘다(flock = 열린 파일 단위) — 그래서 따로 둔다.
+fn restore_claim_file_release_locked(f: &std::path::Path, token: &str) {
     let mine = std::fs::read_to_string(f).ok().is_some_and(|c| c.split_whitespace().next() == Some(token));
     if mine {
         let _ = std::fs::remove_file(f);
     }
+}
+
+/// ★1.1.10 ⑨(SOT 10-09 12:0x ① 「잔여 창 = 읽기~rename 틈 남의 claim 소실 → 전역 flock」): claim 저장소 전역 잠금 —
+/// `<restore-claims>/.lock` 의 OS 배타 잠금(std `File::lock` = 유닉스 flock · 윈 LockFileEx · 블로킹 · 핸들 drop 에 풀림).
+/// 획득 순서(만들기 → 치우기 → 만들기)와 해제(읽기 → 지우기)를 이 잠금 안에서 하므로 `cys restore` 끼리는 읽은 뒤 남이 끼어들
+/// 틈이 없다. 토큰 소유(`<토큰> <epoch>`)는 그대로 공존한다(잠금 = 순서 · 토큰 = 소유). 잠금 파일은 claim 이름(sha256 hex)과
+/// 겹치지 않고 내용은 비어 있다(윈 LockFileEx 가 잠근 범위 읽기를 막아도 읽을 것이 없다).
+fn restore_claims_lock(dir: &std::path::Path) -> Option<std::fs::File> {
+    let h = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(".lock")).ok()?;
+    h.lock().ok()?;
+    Some(h)
 }
 
 /// ★3판 ② · ★4판 ①(agy 3R BLOCK · master#584026d0): 원자 claim 획득 — remove→create 금지 · **되돌리기(hard_link) 없음**.
@@ -23555,6 +23574,10 @@ fn restore_claim_file_release(f: &std::path::Path, token: &str) {
 /// TTL 지난 것만 rename 으로 치우고 버린다) ③ 치운 뒤 `create_new` **한 번** — EEXIST 면 그 사이 남이 잡은 것 = **내가 진 것**
 /// (resume 끔 · fail-closed · 다시 치우지 않는다).
 fn restore_claim_file_acquire(f: &std::path::Path, token: &str, now: u64) -> bool {
+    // ★1.1.10 ⑨: 전역 잠금 못 잡으면 진다(resume 끔 · fail-closed — 저장소 없음과 같은 쪽).
+    let Some(_g) = f.parent().and_then(restore_claims_lock) else {
+        return false;
+    };
     if let Some(created) = restore_claim_try_create(f, token, now) {
         return created; // None = EEXIST → 아래 치우기
     }
@@ -23575,7 +23598,7 @@ fn restore_claim_try_create(f: &std::path::Path, token: &str, now: u64) -> Optio
     match std::fs::OpenOptions::new().write(true).create_new(true).open(f) {
         Ok(mut h) => {
             if writeln!(h, "{token} {now}").and_then(|_| h.sync_all()).is_err() {
-                restore_claim_file_release(f, token);
+                restore_claim_file_release_locked(f, token); // 호출자(획득)가 전역 잠금을 쥐고 있다
                 return Some(false);
             }
             Some(true)
@@ -30347,7 +30370,8 @@ mod tests {
         std::fs::write(&f, format!("OLD {}\n", now)).unwrap();
         assert!(restore_claim_file_acquire(&f, "B", now + RESTORE_CLAIM_TTL_SECS + 1));
         assert_eq!(std::fs::read_to_string(&f).unwrap().split_whitespace().next(), Some("B"));
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "비켜 놓은 낡은 파일이 남았다");
+        let left = std::fs::read_dir(&dir).unwrap().filter(|e| e.as_ref().unwrap().file_name() != ".lock").count();
+        assert_eq!(left, 1, "비켜 놓은 낡은 파일이 남았다"); // ★1.1.10 ⑨: 전역 잠금 파일(.lock)은 영속 · 셈에서 뺀다
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -30384,6 +30408,69 @@ mod tests {
             restore_claim_sweep(&f, "D", late)
         };
         assert_eq!(read_then_replaced, ClaimSweep::Held, "살아 있는 claim 을 치웠다고 봤다");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★1.1.10 ⑨(SOT 10-09 12:0x ①): 전역 잠금 — 다른 복원자가 잠금을 쥔 동안(= 읽기~rename 사이) 획득은 **기다린다**.
+    /// 잠금이 없으면(뮤턴트) 빈 자리를 바로 잡아 이 시험이 적색이다. 풀리면 이어서 잡는다.
+    #[test]
+    fn restore_claim_acquire_waits_for_global_lock() {
+        let dir = std::env::temp_dir().join(format!("cys-claimw-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let held = restore_claims_lock(&dir).expect("전역 잠금");
+        let f = dir.join("c");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let f2 = f.clone();
+        let t = std::thread::spawn(move || {
+            tx.send(restore_claim_file_acquire(&f2, "B", 4_000_000)).unwrap();
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(400)).is_err(),
+            "남이 전역 잠금을 쥔 동안 획득이 끝났다(잠금 미적용)"
+        );
+        assert!(!f.exists(), "잠금 안에서 claim 파일이 생겼다");
+        drop(held);
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(10)), Ok(true), "풀린 뒤 빈 자리를 못 잡았다");
+        t.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★1.1.10 ⑨: 두 복원자(여럿) 동시 — 낡은 claim 하나를 두고 16 스레드가 동시에 획득 · 20 판. 판마다 승자 정확히 1 이고,
+    /// 끝에 디스크 claim = 그 승자 토큰(이긴 자의 claim 이 남이 옮겨서 사라지는 일 = 소실 0) · 비켜 놓은 잔재 0.
+    #[test]
+    fn restore_claim_concurrent_restorers_single_winner_no_loss() {
+        let dir = std::env::temp_dir().join(format!("cys-claimr-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("c");
+        let now = 5_000_000u64;
+        let late = now + RESTORE_CLAIM_TTL_SECS + 1;
+        for round in 0..20 {
+            std::fs::write(&f, format!("OLD{round} {now}\n")).unwrap();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
+            let hs: Vec<_> = (0..16)
+                .map(|i| {
+                    let (f, b) = (f.clone(), barrier.clone());
+                    std::thread::spawn(move || {
+                        let tok = format!("R{round}-{i}");
+                        b.wait();
+                        (restore_claim_file_acquire(&f, &tok, late), tok)
+                    })
+                })
+                .collect();
+            let wins: Vec<String> =
+                hs.into_iter().map(|h| h.join().unwrap()).filter(|(w, _)| *w).map(|(_, t)| t).collect();
+            assert_eq!(wins.len(), 1, "판 {round}: 승자 {wins:?}");
+            let on_disk = std::fs::read_to_string(&f).unwrap();
+            assert_eq!(on_disk.split_whitespace().next(), Some(wins[0].as_str()), "판 {round}: 승자의 claim 이 사라졌다");
+            let stray = std::fs::read_dir(&dir)
+                .unwrap()
+                .filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().contains("stale-"))
+                .count();
+            assert_eq!(stray, 0, "판 {round}: 비켜 놓은 잔재");
+            std::fs::remove_file(&f).unwrap();
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

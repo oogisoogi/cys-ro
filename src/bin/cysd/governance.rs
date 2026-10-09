@@ -10481,12 +10481,13 @@ pub(crate) fn deliver_head_locked(
             "digest_items": merged.len(),
             "digest_parts": parts,
         });
-        // ★3판 ⑤: 큐 배달의 출처 창 = 경보 라우터 적재 항목(origin "alert")이 실렸을 때만(락 조회 0 · 항목 사실).
-        daemon.note_injected_quote(
-            s.id,
-            &body,
-            merged.iter().any(|e| e.origin == crate::alert_route::ALERT_ORIGIN),
-        );
+        // ★3판 ⑤ · ★4판 ②(agy 3R BLOCK): 큐 배달의 출처 창 = 경보 라우터 적재 항목(origin "alert") **또는** 발신 좌석이
+        //   CSO 인 항목(`cys send --queued` 건강 상신 · try_lock — 못 잡으면 창 0 = 경보 나는 쪽)이 실렸을 때.
+        let alert_relay = merged.iter().any(|e| {
+            e.origin == crate::alert_route::ALERT_ORIGIN
+                || crate::delivery::split_queue_from(e.from.as_deref()).0.is_some_and(|fs| daemon.surface_is_cso_try(fs))
+        });
+        daemon.note_injected_quote(s.id, &body, alert_relay);
         crate::delivery::record_audited_with(
             daemon,
             s.id,
@@ -21697,6 +21698,49 @@ mod tests {
     /// 선재 하네스 재사용이라 이 diff 가 새로 만든 위험은 아니다). Windows 레인에서 그 스폰이 실패하면
     /// 이 검체는 결함이 아니라 하네스 사유로 적색이 된다 — `windows-health.yml` 의 `--bin cysd` 스텝은
     /// `continue-on-error: true`(IG-31 A10 1단계)라 릴리스를 막지는 않는다.
+    /// ★4판 ②(agy 3R BLOCK · master#584026d0): 큐 배달 출처 창 — `cys send --queued` 의 발신 좌석이 CSO 면 받은 좌석에 창이 열리고
+    /// (「PR #429」 재진술이 거짓 경보가 되지 않게) · 일반 worker 발신이면 창 0(남의 진짜 경보 억제 구멍 차단).
+    #[test]
+    fn fourth_round_queued_send_from_cso_opens_quote_window_worker_does_not() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (_pack, _env) = wp5_env("quotequeue");
+        let (daemon, s) = wp5_seat("wp5-quotequeue", "claude");
+        let mk = |role: &str| {
+            let c = daemon
+                .create_surface(None, Some("sleep 30".into()), None, Some(role.into()), 24, 80)
+                .expect("create surface");
+            daemon.surfaces.lock().unwrap().insert(c.id, c.clone());
+            c
+        };
+        let cso = mk("cso");
+        let peer = mk("worker-9");
+        let idle = ["  이전 출력", "", RULE, "❯ ", RULE, STATUS1, STATUS2];
+        let deliver_from = |from: u64| {
+            let e = daemon.next_queue_entry("PR #429 확인".into(), Some(cys::surface_ref(from)), "send");
+            s.pending_queue.lock().unwrap().push_back(e);
+            s.set_pending_input(0);
+            *s.last_queue_delivery_at.lock().unwrap() = None;
+            paint_screen(&s, &idle, 3, 2, false);
+            quiet_since(&s, 10);
+            let gen = s.output_gen.load(AtomicOrdering::Acquire);
+            let rc = super::ScreenRecheck {
+                marker: Some(vec!["❯".to_string()]),
+                placeholder: None,
+                gen_at_verdict: gen,
+                approval_pending: false,
+            };
+            deliver_head_locked(&daemon, &s, false, false, None, None, Some(gen), Some(&rc)).is_some()
+        };
+        let window = || daemon.health_quote_until.lock().unwrap().contains_key(&(s.id, "rate_limited"));
+        assert!(deliver_from(peer.id), "전제: worker 발신 배달");
+        assert!(!window(), "일반 worker 의 --queued 「PR #429」 가 출처 창을 열었다");
+        assert!(deliver_from(cso.id), "전제: CSO 발신 배달");
+        assert!(window(), "CSO --queued 상신이 출처 창을 열지 않았다(거짓 경보 되먹임)");
+        for c in [&cso, &peer] {
+            let _ = super::close_surface(&daemon, c.id, super::CloseCause::Reap);
+        }
+    }
+
     #[test]
     fn triage_r1wp1hf_alt_screen_handoff_rereads_approval_control() {
         let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

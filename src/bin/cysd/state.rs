@@ -7971,10 +7971,11 @@ impl Daemon {
     /// 자기/타기 DoS 차단) + 조치 바인딩(60초 창 연속 매칭 게이트 통과 시에만 발동).
     /// ★1.1.9 2판 ⑩ 출처 창 표지 — 받는 좌석에 `QUOTE_WINDOW_RULES` 창을 연다. 호출부가 다른 락을 쥐고 있어도 안전하다(leaf 락 하나).
     /// ★3판 ⑤(codex 2R BLOCK): **경보 중계 경로에서만** 연다 — `alert_relay` = 경보 라우터 적재(큐 항목 origin "alert") 또는
-    /// CSO 좌석 발신(건강 중계)이고, 본문에 **경보 키**(`health.alert` · 룰 이름 `rate_limited`)가 있을 때. 일반 send·스케줄 본문
-    /// (「PR #429 확인」)은 창 0 — 임의 좌석이 반복 전송으로 남의 진짜 경보를 무기한 억제하던 구멍.
+    /// CSO 좌석 발신(직접·`--queued` 건강 중계). 일반 send·스케줄 본문(「PR #429 확인」)은 창 0 — 임의 좌석이 반복 전송으로
+    /// 남의 진짜 경보를 무기한 억제하던 구멍. ★4판 ②(master#584026d0): 출처가 증명되면 본문 경보 키는 요구하지 않는다
+    /// (CSO 상신 「PR #429」 도 창을 연다 · 본문은 룰 식에만 걸리면 된다).
     pub(crate) fn note_injected_quote(&self, surface_id: u64, text: &str, alert_relay: bool) {
-        if !alert_relay || !(text.contains("health.alert") || text.contains("rate_limited")) {
+        if !alert_relay {
             return;
         }
         if !rate_limited_quote_regex().is_match(text) {

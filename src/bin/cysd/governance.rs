@@ -13282,7 +13282,7 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let daemon = crate::state::Daemon::new(dir.join("cysd.sock"));
         let s = daemon
-            .create_surface_with_env(None, Some("sleep 30".into()), None, Some("worker-d5r".into()), 24, 80, &[], None, None)
+            .create_surface(None, Some("sleep 30".into()), None, Some("worker-d5r".into()), 24, 80)
             .unwrap();
         let reads = std::cell::Cell::new(0);
         let rd = |v: &'static str| {
@@ -13310,7 +13310,7 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let daemon = crate::state::Daemon::new(dir.join("cysd.sock"));
         let mk = |r: &str| daemon
-            .create_surface_with_env(None, Some("sleep 30".into()), None, Some(r.into()), 24, 80, &[], None, None)
+            .create_surface(None, Some("sleep 30".into()), None, Some(r.into()), 24, 80)
             .unwrap();
         let s = mk("worker-d5f");
         assert!(!super::refresh_os_config_dir(&s, Some(60), |_| super::EnvRead::ReadFailed), "실패 = 값 그대로(없음)");

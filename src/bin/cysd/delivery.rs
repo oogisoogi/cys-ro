@@ -1214,6 +1214,12 @@ pub fn record_audited_with(
     from_surface: Option<u64>,
     extra: &Value,
 ) -> bool {
+    // ★1.1.9 2판 ⑩(D-U3 출처 창) · ★3판 ⑤: 경보 중계 경로만 — 직접 배달은 CSO 좌석 발신일 때 · 큐 배달은 governance 큐 배달부가
+    //   항목 origin("alert")을 보고 따로 부른다(여기서는 큐 항목 출처를 모른다).
+    if origin != Origin::Queue {
+        let from_cso = from_surface.is_some_and(|fs| daemon.surface_is_cso_try(fs));
+        daemon.note_injected_quote(surface_id, text, from_cso);
+    }
     let report =
         record_full_with(&daemon.socket_path, surface_id, text, origin, from_surface, extra);
     // ★R6: 조각(제출 단위) 기록이 불완전하면 그 행들은 층1 미대조다 — 차단할 수 없으니 드러낸다.

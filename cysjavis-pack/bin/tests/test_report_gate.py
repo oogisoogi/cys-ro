@@ -923,5 +923,118 @@ class QueueHoldRefresh(unittest.TestCase):
             self.assertEqual(rec["first_ts"], 1_000_000.0, "무관한 보존이 내 TTL 창을 건드렸다")
 
 
+class DU5IdleHoldAndRefireBundle(unittest.TestCase):
+    """★D-U5(1.1.9 · Win master 10-08 상신) — 유휴 좌석 「무진행」 과승격.
+
+    재현: 임무를 마치고 `cys set-status --state waiting` 으로 대기 중인 좌석(todo 에 미체크 줄 잔존)이
+    5분 주기 게이트에서 6→18→30→42 … 주기로 1h 마다 끝없이 stall 을 울렸다.
+    수리: ① 명시 보류(waiting·done) 억제(보고가 정체 구간 시작 뒤일 때만) ② 같은 구간 재발화 간격 배증."""
+
+    NODE = {"node": "worker", "done": 3, "total": 5, "pct": 60}
+
+    def _rep(self, state=None, age=60, idle=1200, node=None):
+        ln = {"role": "worker", "agent_alive": True, "idle_secs": idle, "status_age_secs": age}
+        if state is not None:
+            ln["state"] = state
+        return report(nodes=[node or self.NODE], live_nodes=[ln])
+
+    def _run_cycles(self, t, reps, start=1_000_000.0):
+        """주기(5분)마다 게이트 1회 — reps 는 주기별 report(리스트) 또는 고정 report. stall 발화 주기 목록."""
+        clk = Clock(start)
+        fired = []
+        seq = reps if isinstance(reps, list) else None
+        n = len(seq) if seq else 0
+        for i in range(n):
+            r = FakeRunner(rep=seq[i])
+            gate(t, r, clock=clk, stall_cycles=6).run()
+            e = ledger_entries(t)[-1]
+            if any(x.startswith("stall:worker") for x in e.get("reasons", [])):
+                fired.append(i)
+            clk.epoch += 300
+        return fired
+
+    def test_waiting_idle_seat_never_fires(self):
+        with tempfile.TemporaryDirectory() as t:
+            fired = self._run_cycles(t, [self._rep(state="waiting") for _ in range(60)])
+            self.assertEqual(fired, [], "명시 보류(waiting) 좌석이 stall 을 울렸다 — D-U5 재발")
+
+    def test_stale_waiting_at_baseline_still_fires_after_ttl(self):
+        # ★codex 1R BLOCK①: 기준선에서 이미 하루 묵은 waiting(age 86400) = TTL 밖 → 억제하지 않는다.
+        with tempfile.TemporaryDirectory() as t:
+            reps = [self._rep(state="waiting", age=86400 + 300 * i) for i in range(10)]
+            self.assertTrue(self._run_cycles(t, reps), "하루 묵은 waiting 이 영구 억제했다")
+
+    def test_waiting_after_observed_progress_expires_after_ttl(self):
+        # ★codex 2R BLOCK①: 구간 시작을 **관측한** 갈래도 TTL 을 지킨다 — 진행(3→4) 뒤 waiting 을 보고하고 죽은 좌석은
+        #   보고 나이가 12h 를 넘으면 다시 울린다(종전 = 영구 침묵).
+        moved = dict(self.NODE, done=4, pct=80)
+        with tempfile.TemporaryDirectory() as t:
+            # 0 = 기준선(노드 카운터 미저장) · 1 = 같은 서명(카운터 저장) · 2 = 진행 관측(구간 시작 기록) → waiting.
+            reps = [self._rep(), self._rep()] + \
+                [self._rep(state="waiting", age=60 + 300 * (i - 2), node=moved) for i in range(2, 162)]
+            fired = self._run_cycles(t, reps)
+            self.assertTrue(fired, "TTL 넘은 waiting 이 구간 시작 관측 갈래에서 영구 억제했다")
+            ttl_cycle = 2 + (G.STALL_HOLD_TTL_SECS - 60) // 300
+            self.assertGreaterEqual(fired[0], ttl_cycle, "TTL 안의 보류를 믿지 않았다")
+
+    def test_fresh_waiting_at_baseline_is_honored_within_ttl(self):
+        with tempfile.TemporaryDirectory() as t:
+            reps = [self._rep(state="waiting", age=600 + 300 * i) for i in range(30)]
+            self.assertEqual(self._run_cycles(t, reps), [], "TTL 안 waiting 은 믿는다")
+
+    def test_done_idle_seat_never_fires(self):
+        with tempfile.TemporaryDirectory() as t:
+            self.assertEqual(self._run_cycles(t, [self._rep(state="done") for _ in range(30)]), [])
+
+    def test_blocked_still_fires(self):
+        # 막힘은 알려야 하는 사건 — 억제 대상이 아니다(대조군).
+        with tempfile.TemporaryDirectory() as t:
+            self.assertTrue(self._run_cycles(t, [self._rep(state="blocked") for _ in range(10)]))
+
+    def test_unmeasured_state_still_fires_fail_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            self.assertTrue(self._run_cycles(t, [self._rep(state=None) for _ in range(10)]))
+
+    def test_stale_waiting_after_new_mission_fires(self):
+        # 대기 보고(age 계속 증가) 뒤 todo 가 바뀌었다(새 임무 · 3/5 → 3/8) → 그 보류는 낡았다 → 울린다.
+        with tempfile.TemporaryDirectory() as t:
+            new = {"node": "worker", "done": 3, "total": 8, "pct": 37}
+            reps = [self._rep(state="waiting", age=60 + 300 * i) for i in range(4)]
+            reps += [self._rep(state="waiting", age=60 + 300 * (4 + i), node=new) for i in range(12)]
+            fired = self._run_cycles(t, reps)
+            self.assertTrue(fired, "새 임무 뒤 낡은 waiting 이 진짜 정체를 가렸다")
+
+    def test_waiting_reported_right_after_change_is_honored(self):
+        # 체크 → 곧바로 waiting(구간 시작 직후 보고) → 다음 주기에 변화 관측: 보류를 믿는다.
+        with tempfile.TemporaryDirectory() as t:
+            new = {"node": "worker", "done": 4, "total": 5, "pct": 80}
+            reps = [self._rep(state="working", age=30, idle=10) for _ in range(3)]
+            reps += [self._rep(state="waiting", age=120 + 300 * i, node=new) for i in range(30)]
+            self.assertEqual(self._run_cycles(t, reps), [])
+
+    def test_refire_interval_doubles_within_same_plateau(self):
+        # 종전: 6·18·30·42 …(1h 고정) → 수리: 6·18(+1h)·42(+2h)·90(+4h)·138(+4h 상한).
+        with tempfile.TemporaryDirectory() as t:
+            fired = self._run_cycles(t, [self._rep(state=None) for _ in range(140)])
+            # 첫 주기(i=0)는 기준선이라 count 는 i-1 — 발화 주기 = count+1
+            self.assertEqual(fired, [7, 19, 43, 91, 139])
+
+    def test_refire_bundle_resets_on_progress(self):
+        with tempfile.TemporaryDirectory() as t:
+            moved = {"node": "worker", "done": 4, "total": 5, "pct": 80}
+            reps = [self._rep(state=None) for _ in range(20)]       # 7·19 발화(1h 창) · i=20 변화 → count 0
+            reps += [self._rep(state=None, node=moved) for _ in range(10)]
+            fired = self._run_cycles(t, reps)
+            self.assertEqual(fired, [7, 19, 26], "진행 변화 뒤 첫 정체는 즉시(6주기) 알려야 한다")
+
+    def test_report_measurement_record_carries_state(self):
+        import javis_report as R
+        rec = R._measurement_from_node({"role": "worker", "idle_secs": 5, "state": "waiting",
+                                        "status_age_secs": 9}, 1.0)
+        self.assertEqual(rec["state"], "waiting")
+        rec2 = R._measurement_from_node({"role": "worker", "idle_secs": 5}, 1.0)
+        self.assertIsNone(rec2["state"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -362,6 +362,53 @@ def main():
         for name, cwd in (("empty", ""), ("None", None)):
             check("session project " + name + " cwd", m._session_project_dir(dict(entry, cwd=cwd))
                   == "%s/projects/" % td)
+        # ★D-mac-1(1.1.9): 관측 프로필(seat_profile)이 기록값을 이긴다 — Rust `cys::restore_config_dir` 와 같은 규칙.
+        # ★3판 ⑦: Rust 와 같은 진리표 + 프로필 검증 — 검증 통과 seat_profile(가짜 HOME 아래 0700) = 그것 · /tmp/evil·unobserved = 중단(None).
+        fake_home = os.path.realpath(os.path.join(td, "home"))
+        acct2 = os.path.join(fake_home, ".claude-acct2")
+        os.makedirs(acct2)
+        if os.name == "posix":
+            os.chmod(fake_home, 0o700)
+            os.chmod(acct2, 0o700)
+        original_home = os.environ.get("HOME")
+        try:
+            os.environ["HOME"] = fake_home
+            check("session project seat_profile wins",
+                  m._session_project_dir(dict(entry, seat_profile=acct2)) == "%s/projects/-tmp-a-b-c" % acct2)
+            check("session project seat_profile /tmp/evil refused",
+                  m._session_project_dir(dict(entry, seat_profile="/tmp/evil")) is None)
+            unobs = dict(entry, agent="claude", config_dir_authority="unobserved")
+            check("session project unobserved refused", m._session_project_dir(unobs) is None)
+            evil_unobs = dict(unobs, seat_profile="/tmp/evil", session_id="s-x")
+            check("fresh_expected refused = no expectation", m.fresh_expected(evil_unobs) == (False, ""))
+            # ★4판 ③: 세션 없음 + unobserved = 예상 0(중단이 세션 검사보다 앞 · Rust run_restore 와 같은 순서)
+            check("fresh_expected unobserved before session check",
+                  m.fresh_expected(dict(unobs, session_id="")) == (False, ""))
+            check("inventory refused = not inspected", m.session_inventory(evil_unobs) == (None, None))
+            check("recorded authority = 기록값", m._restore_config_dir(dict(entry, agent="claude",
+                  config_dir_authority="recorded"))[1] is None)
+            if os.name == "posix":
+                mid = os.path.join(fake_home, "shared")
+                deep = os.path.join(mid, "p")
+                os.makedirs(deep)
+                os.chmod(deep, 0o700)
+                os.chmod(mid, 0o777)
+                check("0777 중간 폴더 거부", m._validate_profile_dir(deep)[0] is False)
+                os.chmod(mid, 0o700)
+                check("0700 중간 폴더 통과", m._validate_profile_dir(deep)[0] is True)
+                os.chmod(acct2, 0o770)
+                check("그룹 쓰기 거부", m._validate_profile_dir(acct2)[0] is False)
+                os.chmod(acct2, 0o700)
+            check("상대경로 거부", m._validate_profile_dir("rel/x")[0] is False)
+            check("HOME 자신 거부", m._validate_profile_dir(fake_home)[0] is False)
+        finally:
+            if original_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = original_home
+        for name, sp in (("blank", "  "), ("None", None), ("non-string", 7)):
+            check("session project seat_profile " + name + " falls back",
+                  m._session_project_dir(dict(entry, seat_profile=sp)) == "%s/projects/-tmp-a-b-c" % td)
 
         inventory_entry = dict(entry, cwd="/inventory")
         project_dir = "%s/projects/-inventory" % td

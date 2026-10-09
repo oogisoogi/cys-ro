@@ -27,6 +27,7 @@
 """
 
 import io
+import json
 import os
 import unittest
 
@@ -164,6 +165,88 @@ class PublishLaneIsTheOnlyTrigger(unittest.TestCase):
                       "발행 잡이 자산을 다시 받지 않는다 — 승인 대기 중 바뀐 draft 를 발행한다")
         self.assertIn("release-verify.py", publish_steps,
                       "발행 잡이 자기 손으로 검증하지 않는다")
+
+
+class DraftGuardAndConcurrency(unittest.TestCase):
+    """★B1(1.1.9 · TICKET=cysr-119-defects) — 같은 태그 draft 가드 · 두 릴리스 레인의 concurrency.
+
+    뮤턴트: 가드 잡을 지운다 / build·windows-health-gate 의 needs 를 뗀다 / 가드 권한을 read 로 낮춘다
+    (draft 가 안 보여 헛돈다) / 조회 실패를 통과로 접는다 / pack-release concurrency 를 지운다 → 적색."""
+
+    def setUp(self):
+        self.rel = _load(_RELEASE)
+        self.jobs = self.rel["jobs"]
+
+    def test_20_draft_guard_job_exists_and_can_see_drafts(self):
+        g = self.jobs.get("draft-guard")
+        self.assertIsNotNone(g, "같은 태그 draft 가드 잡이 없다")
+        self.assertEqual(g.get("permissions", {}).get("contents"), "write",
+                         "draft 목록은 push 권한에만 보인다 — read 면 가드가 헛돈다")
+        run = "\n".join(st.get("run", "") for st in g["steps"])
+        self.assertIn(".draft and .tag_name == env.TAG", run, "같은 태그 draft 선택식")
+        self.assertIn("exit 1", run)
+        self.assertIn("if ! N=", run, "조회 실패 = 멈춤(fail-closed)")
+
+    def test_21_asset_producing_roots_wait_for_the_guard(self):
+        for name, job in self.jobs.items():
+            if name == "draft-guard":
+                continue
+            needs = job.get("needs")
+            needs = [needs] if isinstance(needs, str) else (needs or [])
+            if not needs:
+                self.fail("잡 %s 가 아무것도 기다리지 않는다 — 가드보다 먼저 돌 수 있다" % name)
+        for root in ("build", "windows-health-gate"):
+            needs = self.jobs[root].get("needs")
+            needs = [needs] if isinstance(needs, str) else needs
+            self.assertIn("draft-guard", needs, root)
+
+    # ★codex 1R ⑫: 문자열 핀이 아니라 **실행** — 가드 step 의 run 본문을 가짜 gh(페이지 픽스처 + 실 jq)로 돌린다.
+    _FAKE_GH = r"""#!/usr/bin/env python3
+import json, os, subprocess, sys
+a = sys.argv[1:]
+jq = a[a.index("--jq") + 1]
+pages = json.loads(os.environ["FAKE_PAGES"])
+if "--paginate" not in a:
+    pages = pages[:1]
+for p in pages:
+    if p == "FAIL":
+        sys.stderr.write("HTTP 502\n"); sys.exit(1)
+    r = subprocess.run(["jq", "-r", jq], input=json.dumps(p), text=True, capture_output=True, env=os.environ)
+    if r.returncode:
+        sys.stderr.write(r.stderr); sys.exit(r.returncode)
+    sys.stdout.write(r.stdout)
+"""
+
+    def _run_guard(self, pages, run=None):
+        import shutil, subprocess, tempfile
+        if not shutil.which("jq"):
+            self.fail("jq 없음 — 이 시험은 실 jq 로 선택식을 실행해야 한다")
+        run = run or next(st["run"] for st in self.jobs["draft-guard"]["steps"] if "run" in st)
+        with tempfile.TemporaryDirectory() as d:
+            gh = os.path.join(d, "gh")
+            with open(gh, "w") as f:
+                f.write(self._FAKE_GH)
+            os.chmod(gh, 0o755)
+            env = dict(os.environ, PATH=d + os.pathsep + os.environ.get("PATH", ""), TAG="v9.9.9",
+                       SRC_REPO="o/r", GH_TOKEN="x", FAKE_PAGES=json.dumps(pages))
+            return subprocess.run(["bash", "-c", run], env=env, capture_output=True, text=True).returncode
+
+    def test_23_guard_runs_against_paged_api(self):
+        rel = lambda tag, draft: {"id": 1, "tag_name": tag, "draft": draft}   # noqa: E731
+        p1 = [rel("v1", False)] * 3
+        self.assertEqual(self._run_guard([p1, [rel("v9.9.9", False)]]), 0, "published 같은 태그 = 진행")
+        self.assertEqual(self._run_guard([p1, [rel("v9.9.9", True)]]), 1, "2페이지의 draft 를 놓쳤다(--paginate)")
+        self.assertEqual(self._run_guard([p1, "FAIL"]), 1, "2페이지 조회 실패를 통과로 접었다")
+        run = next(st["run"] for st in self.jobs["draft-guard"]["steps"] if "run" in st)
+        bad = run.replace(".draft and .tag_name == env.TAG", ".draft and | .tag_name")
+        self.assertNotEqual(bad, run)
+        self.assertEqual(self._run_guard([p1], run=bad), 1, "잘못된 jq 를 통과로 접었다")
+
+    def test_22_both_release_lanes_serialize_per_ref(self):
+        for path, prefix in ((_RELEASE, "release-"), (os.path.join(_WF, "pack-release.yml"), "pack-release-")):
+            c = _load(path).get("concurrency") or {}
+            self.assertEqual(c.get("group"), prefix + "${{ github.ref }}", path)
+            self.assertIs(c.get("cancel-in-progress"), False, path)
 
 
 if __name__ == "__main__":

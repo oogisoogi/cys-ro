@@ -346,7 +346,11 @@ def t_rust_pins():
     rr = _slice(src, "fn run_restore(", "\n}\n") or ""
     check("⑦ run_restore 에 역할 필터가 없다(phoenix 는 target 이 아니라 topology 로 센다)",
           rr.startswith("fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i32"))
-    code = "\n".join(ln for ln in rr.splitlines() if not ln.strip().startswith("//"))   # 주석 = 이력 서술
+    # ★cysr-119 2판 ⑪: 루프 = run_restore_with · 기동 = restore_in_seat_boot(in-seat) + ProdRestoreLauncher.fresh(fresh).
+    rr = _slice(src, "fn run_restore_with(", "\n}\n") or ""
+    launch = (_slice(src, "fn restore_in_seat_boot(", "\n}\n") or "") + \
+        (_slice(src, "impl RestoreLauncher for ProdRestoreLauncher {", "\n}\n") or "")
+    code = "\n".join(ln for ln in (rr + launch).splitlines() if not ln.strip().startswith("//"))   # 주석 = 이력 서술
     check("⑦ 역할당 기동 지점 = in-seat 1 + fresh 1(빈 좌석 = 2단위)",
           code.count("acquire_launch_lock()") == 1 and code.count("boot_agent_on_surface(") == 1
           and code.count("run_launch_agent_opts(") == 1)

@@ -12292,7 +12292,7 @@ mod seat_latch_negation_tests {
         assert!(clear_at > inject_at, "표식 해제가 제출보다 앞이다 — 중단 시 [RESTORE] 가 소실된다");
         assert_eq!(inj.matches("\n    clear_gate_pending(sid);").count(), 1, "표식 해제 지점이 1곳이 아니다");
         // 세 발신자가 지시를 넘긴다: restore in-seat · node-recover · restore 경유 launch-agent.
-        assert!(fn_body("run_restore").contains("Some(restore_directive(role)),"), "restore in-seat 가 지시를 넘기지 않는다");
+        assert!(fn_body("restore_in_seat_boot").contains("Some(restore_directive(role)),"), "restore in-seat 가 지시를 넘기지 않는다");
         assert!(fn_body("run_node_recover").contains("Some(recover_directive()),"), "node-recover 가 지시를 넘기지 않는다");
         // ★(0.14.41 · U8 P0-M1) node-recover 의 [RECOVER] 는 부트 공용 함수가 디렉티브 뒤에 **한 제출**로
         //   잇는다(`adoption_payload(&directive, followup)`) — Ready 팔의 두 번째 `inject_text` 는 사라졌다.
@@ -19027,14 +19027,14 @@ fn sanitize_launch_cwd(cwd: String) -> String {
 }
 
 fn run_launch_agent(role: &str, agent: &str, cwd: Option<String>) -> i32 {
-    run_launch_agent_opts(role, agent, cwd, false, None, false, None)
+    run_launch_agent_opts(role, agent, cwd, false, None, false, None, None)
 }
 
 /// ★v115r5-t1 T3: 저장 topology 에서 이 역할의 대화 핀을 고른다(순수) — `(session_id, config_dir)`.
 /// 원천은 `run_restore` 와 같은 `saved` 이므로 순환(/clear) 뒤 핀 추종(등록 경로 교체 · D2 R2)도 같다.
 /// 핀을 주지 않는 경우: 묘비 역할(의도 삭제 — 옛 대화 부활 금지) · 저장 agent 가 다름(다른 CLI 의
 /// 세션을 이 CLI 로 열지 않는다) · session_id 부재·빈 값.
-fn saved_resume_pin(topo: &Value, role: &str, agent: &str) -> Option<(String, Option<String>)> {
+fn saved_resume_pin(topo: &Value, role: &str, agent: &str) -> Option<(String, Result<Option<String>, String>)> {
     let tombstoned = topo["tombstones"]
         .as_array()
         .is_some_and(|a| a.iter().any(|t| t.as_str() == Some(role)));
@@ -19049,7 +19049,7 @@ fn saved_resume_pin(topo: &Value, role: &str, agent: &str) -> Option<(String, Op
         return None;
     }
     let sid = entry["session_id"].as_str().map(str::trim).filter(|s| !s.is_empty())?;
-    let cfg = entry["claude_config_dir"].as_str().map(String::from);
+    let cfg = cys::restore_config_dir(entry); // ★D-mac-1: 관측 프로필 우선 · ★2판 ⑦⑧: 검증 실패·권위 없음 = Err
     Some((sid.to_string(), cfg))
 }
 
@@ -19074,6 +19074,14 @@ fn run_launch_agent_resume_saved(role: &str, agent: &str, cwd: Option<String>) -
         eprintln!("[launch-agent] --resume-saved: {role} 저장 대화 없음 — 새 대화로 기동");
         return run_launch_agent(role, agent, cwd);
     };
+    // ★2판 ⑦⑧: 계정 프로필을 믿을 수 없으면 멈춘다 — 다른 계정으로 조용히 뜨는 새 기동도 하지 않는다(10-08 한도 정지 계보).
+    let cfg = match cfg {
+        Ok(c) => c,
+        Err(why) => {
+            eprintln!("[launch-agent] --resume-saved: {role} 기동 중단 — {why}");
+            return 2;
+        }
+    };
     let resumable = load_agent_spec(agent)
         .ok()
         .and_then(|spec| spec["resume_arg"].as_str().map(String::from))
@@ -19086,7 +19094,7 @@ fn run_launch_agent_resume_saved(role: &str, agent: &str, cwd: Option<String>) -
         return run_launch_agent(role, agent, cwd);
     }
     eprintln!("[launch-agent] --resume-saved: {role} 저장 대화({sid})를 이어서 기동");
-    run_launch_agent_opts(role, agent, cwd, true, Some(sid), true, cfg)
+    run_launch_agent_opts(role, agent, cwd, true, Some(sid), true, cfg, None)
 }
 
 /// ★v115r5-t1 T1①: 이 역할이 지금 **실제로 앉은 좌석**(occupied)에 있는가(순수).
@@ -19161,6 +19169,9 @@ fn run_launch_agent_opts(
     restore: bool,
     // (W1) restore가 topology에 기록된 원 계정 config_dir을 넘긴다(재해소 금지). 신규 기동은 None.
     config_dir_override: Option<String>,
+    // ★D-mac-4(1.1.9): restore 가 저장된 옛 제목을 넘긴다 — 데몬 initial_title 의 「다른 번호로 시작 =
+    //   낡은 번호」 갈래가 번호 칸만 새 번호로 바꾸고 특성(cwd 특성 등)을 보존한다. None = 종전(workflow_title).
+    title_override: Option<String>,
 ) -> i32 {
     // ★(W2 · G12) LAUNCH 경로의 boot 락 참여 — 별도 프로세스로 도는 `cys launch-agent`
     //   (javis_boot_node → boot-reviewers 경로)를 GUI/훅 `cys boot` 와 직렬화한다.
@@ -19224,7 +19235,7 @@ fn run_launch_agent_opts(
             .collect();
         let r = request(
             "surface.create",
-            json!({"cwd": cwd, "title": workflow_title(role, agent, &cwd), "role": role,
+            json!({"cwd": cwd, "title": title_override.clone().unwrap_or_else(|| workflow_title(role, agent, &cwd)), "role": role,
                    // ★D17(1.1.8): 제목 판정 전용 어댑터 이름(데몬 initial_title 만 읽는다 · agent_meta 무접촉).
                    "title_agent": agent,
                    "rows": 40, "cols": 140, "idempotency_key": idem, "env": env_obj,
@@ -23349,7 +23360,8 @@ fn run_node_recover(surface: Option<String>, role: Option<String>) -> i32 {
         let sess = entry["session_id"].as_str().map(String::from);
         // (W1) 같은 pane 재기동(restore=false → 인라인 없음)이나 resume 게이트엔 기록된 config_dir·cwd를 쓴다.
         let rec_cwd = entry["cwd"].as_str().map(String::from);
-        let rec_cfg = entry["claude_config_dir"].as_str().map(String::from);
+        // ★D-mac-1: 관측 프로필 우선 · ★2판 ⑦⑧: 검증 실패·권위 없음 = 재기동 중단(명시 오류)
+        let rec_cfg = cys::restore_config_dir(&entry).map_err(|why| format!("node-recover {role_name}: {why}"))?;
         // 기동 send_text/Return 도 같은 접기 — C-u 는 지났는데 그 200ms 창에 사람이 치면 같은 코드로 거부된다.
         let verdict = boot_agent_on_surface(
             sid,
@@ -23488,7 +23500,273 @@ fn recover_directive() -> &'static str {
 }
 
 /// T2-6 조직 복원: 토폴로지 스냅샷 기준으로 죽은 역할 일괄 재기동 (작업 재개는 master 판단)
+/// ★D-mac-4(1.1.9): 부활 좌석에 요청할 제목 — 저장 엔트리의 옛 제목(공백 아닌 문자열) 또는 None. 순수.
+/// 옛 제목은 「옛 번호 · 모델 · 특성」 꼴이라, 데몬 `initial_title` 이 번호 칸만 새 번호로 바꾸고 나머지(특히
+/// spawn 때 지은 cwd 특성 — u4·lms·relay·lead)를 그대로 옮긴다. 없으면 종전 규칙(데몬 기본 「번호 · roleN」).
+fn restore_title(entry: &Value) -> Option<String> {
+    entry["title"].as_str().map(str::trim).filter(|t| !t.is_empty()).map(String::from)
+}
+
+/// ★2판 ②④ · ★3판 ⑥(codex 2R): 복원 회차의 대화 claim — **RAII 되돌림 가드**. 프로세스 내 집합의 id + 원자 파일
+/// (`<토큰> <epoch>`). `commit()`(기동 성공·관문 보류) 하지 않고 버려지면(어느 `continue` 든) 집합에서 빼고 파일을
+/// **내 토큰일 때만** 지운다 — 보류·실패·spec 실패·주입 표식 겹침 모두 같은 한 길.
+struct RestoreClaim<'a> {
+    busy: Option<&'a std::cell::RefCell<std::collections::HashSet<String>>>,
+    id: Option<String>,
+    file: Option<(std::path::PathBuf, String)>,
+    kept: bool,
+}
+
+impl RestoreClaim<'_> {
+    fn none() -> Self {
+        RestoreClaim { busy: None, id: None, file: None, kept: false }
+    }
+
+    /// 이 좌석이 대화를 잇는다(기동 성공·관문 보류) — 유지(파일은 TTL 로 자연 만료).
+    fn commit(mut self) {
+        self.kept = true;
+    }
+}
+
+impl Drop for RestoreClaim<'_> {
+    fn drop(&mut self) {
+        if self.kept {
+            return;
+        }
+        if let (Some(b), Some(id)) = (self.busy, &self.id) {
+            b.borrow_mut().remove(id);
+        }
+        if let Some((f, token)) = &self.file {
+            restore_claim_file_release(f, token);
+        }
+    }
+}
+
+/// ★3판 ②: claim 파일 해제 — 파일 첫 칸(토큰)이 **내 것일 때만** 지운다(남의 새 claim 을 지우지 않는다).
+fn restore_claim_file_release(f: &std::path::Path, token: &str) {
+    let mine = std::fs::read_to_string(f).ok().is_some_and(|c| c.split_whitespace().next() == Some(token));
+    if mine {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
+/// ★3판 ② · ★4판 ①(agy 3R BLOCK · master#584026d0): 원자 claim 획득 — remove→create 금지 · **되돌리기(hard_link) 없음**.
+/// ① `create_new` 로 `<토큰> <epoch>` 기록 ② EEXIST 면 [`restore_claim_sweep`](내용 epoch 가 TTL 안 = 점유 → 진다 ·
+/// TTL 지난 것만 rename 으로 치우고 버린다) ③ 치운 뒤 `create_new` **한 번** — EEXIST 면 그 사이 남이 잡은 것 = **내가 진 것**
+/// (resume 끔 · fail-closed · 다시 치우지 않는다).
+fn restore_claim_file_acquire(f: &std::path::Path, token: &str, now: u64) -> bool {
+    if let Some(created) = restore_claim_try_create(f, token, now) {
+        return created; // None = EEXIST → 아래 치우기
+    }
+    if restore_claim_sweep(f, token, now) != ClaimSweep::Swept {
+        return false;
+    }
+    restore_claim_create_after_sweep(f, token, now)
+}
+
+/// ★4판 ①: 치운 뒤 `create_new` **한 번** — EEXIST(그 사이 남이 잡음)·쓰기 실패 = 진다(다시 치우지 않는다).
+fn restore_claim_create_after_sweep(f: &std::path::Path, token: &str, now: u64) -> bool {
+    restore_claim_try_create(f, token, now) == Some(true)
+}
+
+/// `create_new` 한 번 — Some(true) = 잡음 · Some(false) = 쓰기 실패(지움 · 진다) · None = EEXIST(이미 있다).
+fn restore_claim_try_create(f: &std::path::Path, token: &str, now: u64) -> Option<bool> {
+    use std::io::Write;
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(f) {
+        Ok(mut h) => {
+            if writeln!(h, "{token} {now}").and_then(|_| h.sync_all()).is_err() {
+                restore_claim_file_release(f, token);
+                return Some(false);
+            }
+            Some(true)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => None,
+        Err(_) => Some(false),
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum ClaimSweep {
+    /// 살아 있는 claim(또는 판단 불가 · 옮긴 내용이 읽은 것과 다름 = 남의 새 claim 을 옮겼다) — 진다.
+    Held,
+    /// TTL 지난 claim 을 치웠다(버림) — create_new 한 번 시도해도 된다.
+    Swept,
+}
+
+/// ★4판 ①: 낡은 claim 치우기 — 내용(토큰+epoch)을 읽어 **TTL 지난 것만** rename 으로 비켜 놓고 버린다. 내용 없음(쓰는 중) = mtime ·
+/// 모르면 점유. rename 실패(그 사이 남이 치움) = 치워진 것으로 본다. 옮긴 내용이 읽은 것과 다르면(읽은 뒤 남이 새로 잡았다) =
+/// Held(그 파일은 되살리지 않는다 — 되돌리기 경합 자체를 없앤다 · 정직: 그 소유자의 디스크 claim 은 사라진다).
+fn restore_claim_sweep(f: &std::path::Path, token: &str, now: u64) -> ClaimSweep {
+    let content = std::fs::read_to_string(f).unwrap_or_default();
+    let epoch = content.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok()).or_else(|| {
+        std::fs::metadata(f)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+    });
+    match epoch {
+        Some(ep) if now.saturating_sub(ep) >= RESTORE_CLAIM_TTL_SECS => {}
+        _ => return ClaimSweep::Held,
+    }
+    let aside = f.with_extension(format!("stale-{token}"));
+    if std::fs::rename(f, &aside).is_err() {
+        return ClaimSweep::Swept; // 이미 남이 치웠다 — create_new 한 번으로 승부
+    }
+    let moved = std::fs::read_to_string(&aside).unwrap_or_default();
+    let _ = std::fs::remove_file(&aside);
+    if moved != content {
+        ClaimSweep::Held
+    } else {
+        ClaimSweep::Swept
+    }
+}
+
+/// ★3판 ③: claim 파일 이름 = 세션 id 의 sha256(어떤 문자의 id 도 같은 규칙 · 경로 조각 0).
+fn restore_claim_file_name(id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(id.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn restore_claim_token() -> String {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    format!("{}-{nanos}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+}
+
+/// 원자 claim 파일의 유효 시간 — 이보다 오래된 파일은 앞선 restore 가 죽고 남긴 것으로 본다.
+const RESTORE_CLAIM_TTL_SECS: u64 = 600;
+
+fn restore_now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// 데몬이 지금 아는 점유 좌석의 대화 id(재조회 · 실패 = 빈 집합 → 원자 파일이 남은 방어).
+fn restore_live_sessions() -> std::collections::HashSet<String> {
+    request("system.topology", json!({}))
+        .ok()
+        .and_then(|t| t["live"].as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter(|e| e["seat"].as_str() != Some("empty"))
+        .filter_map(|e| e["session_id"].as_str().map(str::trim).filter(|s| !s.is_empty()).map(String::from))
+        .collect()
+}
+
+fn restore_claims_dir() -> Option<std::path::PathBuf> {
+    let d = cys::daemon_state_dir(&cys::socket_path()).join("restore-claims");
+    std::fs::create_dir_all(&d).ok().map(|_| d)
+}
+
+/// ★2판 ②④ · ★3판 ②③(순수 + 파일): 이 좌석이 `sess` 를 이어도 되는가. 셋 중 하나라도 점유면 이어 붙이지 않는다 —
+/// ① 같은 회차 앞 좌석(`busy`) ② 데몬 재조회의 점유 좌석(`live`) ③ 다른 `cys restore` 프로세스의 원자 파일
+/// (`<상태>/restore-claims/<sha256(id)>` · [`restore_claim_file_acquire`]). 반환 = (이을 sess, 중복인가, 되돌림 가드).
+/// ★3판 ③: claim 저장소가 없으면(`dir` None = 만들기 실패) **resume 끔**(fail-closed — 종전 = 파일 축 생략 통과).
+fn restore_claim_for_launch<'a>(
+    sess: Option<String>,
+    busy: &'a std::cell::RefCell<std::collections::HashSet<String>>,
+    live: &std::collections::HashSet<String>,
+    dir: Option<&std::path::Path>,
+    now: u64,
+) -> (Option<String>, bool, RestoreClaim<'a>) {
+    let Some(id) = sess.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(String::from) else {
+        return (sess, false, RestoreClaim::none());
+    };
+    if busy.borrow().contains(&id) || live.contains(&id) {
+        return (None, true, RestoreClaim::none());
+    }
+    let Some(d) = dir else {
+        return (None, true, RestoreClaim::none());
+    };
+    let f = d.join(restore_claim_file_name(&id));
+    let token = restore_claim_token();
+    if !restore_claim_file_acquire(&f, &token, now) {
+        return (None, true, RestoreClaim::none());
+    }
+    busy.borrow_mut().insert(id.clone());
+    (sess, false, RestoreClaim { busy: Some(busy), id: Some(id), file: Some((f, token)), kept: false })
+}
+
+/// ★D-mac-2(1.1.9): 이 역할로 새 좌석을 만들면 데몬이 이름을 바꾸는가 — 순수. 데몬의 `dedup_worker_role` 은
+/// 정확히 `"worker"` 요청만 번호를 바꾸고(살아 있는 보유자가 있으면 다음 빈 번호), 복원은 점유 좌석 역할을
+/// 이미 건너뛰므로 여기 남는 살아 있는 보유자 = 빈 좌석뿐이다.
+fn restore_launch_would_rename(role: &str, held_by_empty_seat: bool) -> bool {
+    role == "worker" && held_by_empty_seat
+}
+
+/// ★2판 ⑪(codex 1R): `run_restore` 의 기동 두 갈래 — 운영 = [`ProdRestoreLauncher`](종전 호출 그대로) ·
+/// 시험 = mock 데몬(topology) 위에서 **실제 루프**가 넘기는 인자(resume·sess·cfg)와 판정 뒤 처리를 잰다.
+trait RestoreLauncher {
+    /// in-seat 재연결. 바깥 Err = agent spec 해석 실패(건너뜀 · fresh 폴백 0) · 안 = `boot_agent_on_surface` 판정.
+    #[allow(clippy::too_many_arguments)]
+    fn in_seat(&mut self, sid: u64, role: &str, agent: &str, resume: bool, sess: Option<&str>,
+               cwd: Option<&str>, cfg: Option<&str>) -> Result<Result<BootVerdict, String>, String>;
+    /// fresh 기동(새 좌석) — rc 는 `run_launch_agent_opts` 계약.
+    #[allow(clippy::too_many_arguments)]
+    fn fresh(&mut self, role: &str, agent: &str, cwd: Option<String>, resume: bool, sess: Option<String>,
+             cfg: Option<String>, title: Option<String>) -> i32;
+}
+
+struct ProdRestoreLauncher;
+
+impl RestoreLauncher for ProdRestoreLauncher {
+    fn in_seat(&mut self, sid: u64, role: &str, agent: &str, resume: bool, sess: Option<&str>,
+               cwd: Option<&str>, cfg: Option<&str>) -> Result<Result<BootVerdict, String>, String> {
+        restore_in_seat_boot(sid, role, agent, resume, sess, cwd, cfg)
+    }
+
+    fn fresh(&mut self, role: &str, agent: &str, cwd: Option<String>, resume: bool, sess: Option<String>,
+             cfg: Option<String>, title: Option<String>) -> i32 {
+        run_launch_agent_opts(role, agent, cwd, resume, sess, true, cfg, title)
+    }
+}
+
+/// 운영 in-seat 재연결 — agent spec(실패 = 바깥 Err) → boot 락 → `boot_agent_on_surface`(restore=true).
+fn restore_in_seat_boot(
+    sid: u64,
+    role: &str,
+    agent: &str,
+    resume: bool,
+    sess: Option<&str>,
+    seat_cwd: Option<&str>,
+    cfg: Option<&str>,
+) -> Result<Result<BootVerdict, String>, String> {
+    let spec = load_agent_spec(agent)?;
+    // ★(0.14.31 · 성찰 C11) 좌석 내 재연결도 boot 락에 참여한다 — 이 경로는
+    //   `boot_agent_on_surface` 를 **직접** 부르므로 종전엔 락 밖이었다. 같은 pane 을
+    //   겨눈 두 `cys restore`(또는 restore ∥ node-recover)가 각자 `C-u` + 기동 커맨드를
+    //   보내면 화면 파괴·이중 기동이다. 가드는 이 함수 수명이다 — run_restore_with 의 fresh 폴백
+    //   (`run_launch_agent_opts`)이 같은 락을 다시 잡으므로(자기 교착 방지) 그 전에 반드시 drop 된다.
+    let _seat_lock = acquire_launch_lock();
+    let verdict = boot_agent_on_surface(
+        sid,
+        role,
+        agent,
+        &spec,
+        resume,
+        sess,
+        // ★(0.14.31 · 성찰 C5) 좌석 내 재연결도 **restore** 다. 종전 `false` 는 두 가지를
+        //   한꺼번에 잃었다: ① `apply_config_dir_override` 가 꺼져 기록된 `claude_config_dir`
+        //   이 기동 문자열에 리터럴로 박히지 않는다 → pane 셸이 `${CYS_ACCOUNT_DIR:-…}` 를
+        //   전개하므로 데몬 재기동으로 값이 바뀐 경우 `resolve_resume_suffix` 는 **기록된**
+        //   cfg 로 세션 파일을 찾아 `--resume <id>` 를 붙이는데 claude 는 **다른** 계정 dir 로
+        //   뜬다 = `effective_resume=true` 인데 지침 0 인 좌석(치명위험 ③).
+        //   ② `budget_readiness_max` 의 restore 캡(20s)이 **선호 경로인 in-seat 에서만** 빠져
+        //   5좌석이면 100s 대신 300s — DRILL_LIVE_1 이 막으려던 로스터 stall 그대로다.
+        //   fresh 폴백(`run_launch_agent_opts(..., restore=true, ...)`)과 같은 규칙으로 맞춘다.
+        true,
+        seat_cwd,
+        cfg,
+        Some(restore_directive(role)),
+    );
+    Ok(verdict)
+}
+
 fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i32 {
+    run_restore_with(cwd, include_master, no_resume, &mut ProdRestoreLauncher)
+}
+
+fn run_restore_with(cwd: Option<String>, include_master: bool, no_resume: bool, launcher: &mut dyn RestoreLauncher) -> i32 {
     let result = (|| -> Result<(usize, usize, usize), String> {
         let topo = request("system.topology", json!({}))?;
         // ★SEAT(2026-07-17 실사고 수리): '역할이 등록됨'과 '그 좌석에 누가 앉아 있음'을 구분한다.
@@ -23512,6 +23790,16 @@ fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i3
                 Some((role, (sid, e["env_injected"].as_bool().unwrap_or(false))))
             })
             .collect();
+        // ★D-mac-2(1.1.9): 지금 다른 좌석이 잇고 있는 대화(세션 id) — 같은 id 를 두 번째 좌석이
+        //   `--resume` 하면 두 claude 가 같은 jsonl 에 동시에 쓴다(10-09 06:38 실측 pid 2개).
+        //   점유 좌석의 세션 + 이 복원 회차에서 이미 이어 붙인 세션을 함께 센다.
+        let busy_sessions: std::cell::RefCell<std::collections::HashSet<String>> = std::cell::RefCell::new(
+            live_entries
+                .iter()
+                .filter(|e| e["seat"].as_str() != Some("empty"))
+                .filter_map(|e| e["session_id"].as_str().map(str::trim).filter(|s| !s.is_empty()).map(String::from))
+                .collect(),
+        );
         let saved = topo["saved"].as_array().cloned().unwrap_or_default();
         // ★W2a 심층방어: 의도적으로 닫힌(surface.close 경유) 역할의 묘비 — raw restore도 절대 재스폰하지
         // 않는다(1급 원칙: 사고사만 부활, 의도삭제는 좀비 차단). phoenix가 desired_roster로 병합하는
@@ -23577,10 +23865,33 @@ fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i3
                 &home,
                 &|p| std::path::Path::new(p).is_dir(),
             );
+            // (W1) topology에 기록된 원 계정 config_dir을 넘긴다(구 topology=None → 기존 템플릿 동작).
+            // ★D-mac-1: 관측 프로필 우선 · ★2판 ⑦⑧: 검증 실패·권위 없음 = 이 역할 기동 중단(claim 앞 — 잡은 것 0 ·
+            //   새 대화 폴백도 하지 않는다: 다른 계정으로 뜨는 것이 10-08 한도 정지 사고다).
+            let cfg = match cys::restore_config_dir(&entry) {
+                Ok(c) => c,
+                Err(why) => {
+                    println!("· {role}: 기동 중단 — {why}");
+                    fail += 1;
+                    continue;
+                }
+            };
             // (4b) saved entry의 session_id를 꺼내 정확한 세션 재개(없으면 fallback)
             let sess = entry["session_id"].as_str().map(String::from);
-            // (W1) topology에 기록된 원 계정 config_dir을 넘긴다(구 topology=None → 기존 템플릿 동작).
-            let cfg = entry["claude_config_dir"].as_str().map(String::from);
+            // ★D-mac-2: 그 대화를 이미 다른 좌석이 잇고 있으면 이 좌석은 이어 붙이지 않는다(resume 끔 —
+            //   `--continue` 폴백도 같은 폴더의 최신 대화를 집어 같은 사고를 내므로 함께 끈다).
+            // ★2판 ②④(codex 1R): claim = 기동 직전(여기 = in-seat·fresh 두 기동 모두 이 아래) · 프로세스 내 집합 +
+            //   데몬 재조회(live 세션) + 상태 폴더 원자 파일(다른 `cys restore` 프로세스와의 경쟁) · 보류·실패 시 해제.
+            let live_now = restore_live_sessions();
+            let claim_dir = restore_claims_dir();
+            let (sess, resume_dup, claim) =
+                restore_claim_for_launch(sess, &busy_sessions, &live_now, claim_dir.as_deref(), restore_now_secs());
+            // ★3판 ⑥: 여기부터 `claim` 은 되돌림 가드다 — 기동 성공·관문 보류에서만 `commit()` · 그 밖의 모든 `continue`
+            //   (spec 실패 · 주입 표식 겹침 · 개명 보류 · 기동 실패)는 가드가 버려지며 집합·파일을 되돌린다.
+            if resume_dup {
+                println!("· {role}: 저장 대화를 이미 다른 좌석이 잇는 중 — 이어 붙이지 않고 새 대화로 기동(같은 jsonl 동시 쓰기 차단)");
+            }
+            let resume = !no_resume && !resume_dup;
             // ★SEAT in-seat 연결(오너 의도: "최초로 만들어지는 surface에 클로드가 연결되고 마스터로
             // 부활"): 그 역할의 좌석이 이미 있고 비어 있으면 **새 surface 를 만들지 않고 그 좌석에
             // 직접** 에이전트를 기동한다. 좌석이 늘지 않고(796형 잔존 pane 0) 사용자가 보는 그 pane 이
@@ -23610,45 +23921,19 @@ fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i3
                     continue;
                 }
                 println!("· {role}: {agent} 좌석 내 재연결(surface:{sid})…");
-                let spec = match load_agent_spec(agent) {
-                    Ok(s) => s,
+                let seat_cwd = target_cwd.clone();
+                let verdict = match launcher.in_seat(sid, role, agent, resume, sess.as_deref(), seat_cwd.as_deref(), cfg.as_deref()) {
+                    Ok(v) => v,
                     Err(e) => {
                         println!("· {role}: agent spec 해석 실패({e}) — 건너뜀");
                         fail += 1;
                         continue;
                     }
                 };
-                let seat_cwd = target_cwd.clone();
-                // ★(0.14.31 · 성찰 C11) 좌석 내 재연결도 boot 락에 참여한다 — 이 경로는
-                //   `boot_agent_on_surface` 를 **직접** 부르므로 종전엔 락 밖이었다. 같은 pane 을
-                //   겨눈 두 `cys restore`(또는 restore ∥ node-recover)가 각자 `C-u` + 기동 커맨드를
-                //   보내면 화면 파괴·이중 기동이다. 가드는 이 블록 수명이다 — 아래 fresh 폴백의
-                //   `run_launch_agent_opts` 가 같은 락을 다시 잡으므로(자기 교착 방지) 그 전에
-                //   반드시 drop 돼야 한다(블록 끝 · `continue` 둘 다 여기서 벗어난다).
-                let _seat_lock = acquire_launch_lock();
-                match boot_agent_on_surface(
-                    sid,
-                    role,
-                    agent,
-                    &spec,
-                    !no_resume,
-                    sess.as_deref(),
-                    // ★(0.14.31 · 성찰 C5) 좌석 내 재연결도 **restore** 다. 종전 `false` 는 두 가지를
-                    //   한꺼번에 잃었다: ① `apply_config_dir_override` 가 꺼져 기록된 `claude_config_dir`
-                    //   이 기동 문자열에 리터럴로 박히지 않는다 → pane 셸이 `${CYS_ACCOUNT_DIR:-…}` 를
-                    //   전개하므로 데몬 재기동으로 값이 바뀐 경우 `resolve_resume_suffix` 는 **기록된**
-                    //   cfg 로 세션 파일을 찾아 `--resume <id>` 를 붙이는데 claude 는 **다른** 계정 dir 로
-                    //   뜬다 = `effective_resume=true` 인데 지침 0 인 좌석(치명위험 ③).
-                    //   ② `budget_readiness_max` 의 restore 캡(20s)이 **선호 경로인 in-seat 에서만** 빠져
-                    //   5좌석이면 100s 대신 300s — DRILL_LIVE_1 이 막으려던 로스터 stall 그대로다.
-                    //   fresh 폴백(`run_launch_agent_opts(..., restore=true, ...)`)과 같은 규칙으로 맞춘다.
-                    true,
-                    seat_cwd.as_deref(),
-                    cfg.as_deref(),
-                    Some(restore_directive(role)),
-                ) {
+                match verdict {
                     Ok(BootVerdict::Ready) => {
                         ok += 1;
+                        claim.commit();
                         // ★(0.14.41 · U8 P0-M1) [RESTORE] 는 `boot_agent_on_surface` 가 디렉티브 뒤에 **한
                         //   제출**로 이미 넣었다(위 인자 `Some(restore_directive(role))` → `adoption_payload`).
                         //   종전의 두 번째 `inject_text(restore_directive)` 는 Claude 큐 선두에 끼어 감독자 지시를
@@ -23662,6 +23947,7 @@ fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i3
                     //   씨앗이다. 복원의 정답은 "그 좌석을 사람이 통과시키게 두는 것" 이다.
                     Ok(BootVerdict::GatePending { gate, tail }) => {
                         gated += 1;
+                        claim.commit(); // 좌석이 살아 있다(관문) — 대화를 쥔 채 둔다
                         print_gate_pending_prescription(sid, role, agent, &gate, &tail);
                         println!(
                             "· {role}: 좌석 내 재연결 보류(관문 gate={gate}) — 좌석 보존 · 주입 0 · fresh 폴백 0"
@@ -23678,8 +23964,31 @@ fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i3
                     }
                 }
             }
+            // ★D-mac-2: 「worker」 슬롯을 빈 좌석이 쥔 채(in-seat 실패·불가) 새 좌석을 만들면 데몬이 빈 번호
+            //   (worker-N)로 **이름을 바꿔** 띄운다(dedup_worker_role) — 남의 역할 이름으로 이 cwd·세션의 좌석이
+            //   생기고, 그 역할의 원래 cwd 는 덮인다(10-08 실측: worker-7 = 전 u5 → a2). 그 좌석을 만들지 않고 보류한다
+            //   (phoenix 의 fresh 강등이 빈 좌석을 회수한 뒤 정확한 이름으로 띄운다).
+            // ★2판 ③(master#9343f472 결정 A): 보류 전에 그 빈 좌석 회수를 **데몬에 요청**한다(`only_if_empty` —
+            //   데몬이 자손·에이전트·사람 입력·큐를 자기 쪽에서 재판정 · 통과 때만 cause=reap · 묘비 0) → 같은 회차 1회 재시도.
+            //   거절 = 보류 유지 + 데몬 사유 그대로(가시화).
+            if restore_launch_would_rename(role, empty_seats.contains_key(role)) {
+                let esid = empty_seats[role].0;
+                match request("surface.close", json!({"surface_id": esid, "cause": "reap", "only_if_empty": true})) {
+                    Ok(_) => println!(
+                        "· {role}: 빈 좌석(surface:{esid}) 회수 — 데몬 재판정 통과(자손·에이전트·사람 입력·큐 0) · 같은 회차 재시도"
+                    ),
+                    Err(why) => {
+                        fail += 1;
+                        println!("· {role}: 빈 좌석(surface:{esid})이 이 역할을 쥐고 있어 새 좌석이 다른 번호로 바뀐다 — 기동 보류 · 회수 거절: {why}");
+                        continue;
+                    }
+                }
+            }
             println!("· {role}: {agent} 재기동…");
-            let rc = run_launch_agent_opts(role, agent, target_cwd, !no_resume, sess, true, cfg);
+            let rc = launcher.fresh(role, agent, target_cwd, resume, sess, cfg, restore_title(&entry));
+            if rc == 0 || rc == cys::EXIT_GATE_PENDING {
+                claim.commit(); // 대화를 잇는 좌석이 섰다(관문 보류 포함) — 그 밖 = 가드 drop = 되돌림
+            }
             if rc == cys::EXIT_GATE_PENDING {
                 // 새 pane 은 떴고 프로세스도 살아 있다 — 닫지 않고, 디렉티브도 넣지 않는다.
                 // (처방 문안은 run_launch_agent_opts 가 stderr 로 이미 냈다.)
@@ -29927,7 +30236,7 @@ mod tests {
         });
         assert_eq!(
             saved_resume_pin(&topo, "master", "claude"),
-            Some(("s-m".to_string(), Some("/cfg".to_string()))),
+            Some(("s-m".to_string(), Ok(Some("/cfg".to_string())))),
             "저장 핀이 있으면 그 대화를 잇는다"
         );
         assert_eq!(saved_resume_pin(&topo, "cso", "claude"), None, "빈 핀은 잇지 않는다");
@@ -29959,16 +30268,282 @@ mod tests {
     #[test]
     fn v115r5_restore_and_resume_saved_wiring() {
         let src = include_str!("cys.rs");
-        let body = &src[src.find("fn run_restore(").unwrap()..];
+        let body = &src[src.find("fn run_restore_with(").unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
         let fail_at = body.find("println!(\"· {role}: 기동 실패 — 나머지 역할 계속 진행\");").unwrap();
         let held_at = body.find("role_held_by_live_seat(&t, role)").expect("재실측 분기 없음");
         assert!(held_at < fail_at, "재실측이 실패 계수보다 뒤에 있다");
         let rs = &src[src.find("fn run_launch_agent_resume_saved(").unwrap()..];
         let rs = &rs[..rs.find("\n}\n").unwrap()];
-        assert!(rs.contains("run_launch_agent_opts(role, agent, cwd, true, Some(sid), true, cfg)"));
+        assert!(rs.contains("run_launch_agent_opts(role, agent, cwd, true, Some(sid), true, cfg, None)"));
         assert!(rs.contains(".is_some_and(|s| s.contains(sid.as_str()))"), "이을 수 있는지 미리 재지 않는다");
         assert_eq!(rs.matches("return run_launch_agent(role, agent, cwd);").count(), 2, "못 이을 때 종전 기동이 아니다");
+    }
+
+    #[test]
+    fn d_mac_2_restore_claim_for_launch_blocks_second_resume_and_releases() {
+        // ★D-mac-2 + 2판 ②④ + 3판 ②③⑥: 점유 좌석(live) · 같은 회차 앞 좌석(busy) · 다른 restore 프로세스(원자 파일) 셋 다
+        //   중복으로 막고, commit 없이 버려진 가드는 되돌린다(뒤 좌석이 이을 수 있다).
+        let dir = std::env::temp_dir().join(format!("cys-claims-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = restore_now_secs();
+        let live: std::collections::HashSet<String> = ["live-1".to_string()].into_iter().collect();
+        let busy = std::cell::RefCell::new(std::collections::HashSet::new());
+        let (s, dup, _) = restore_claim_for_launch(Some("live-1".into()), &busy, &live, Some(&dir), now);
+        assert_eq!((s, dup), (None, true), "점유 좌석의 대화");
+        let (s, dup, a) = restore_claim_for_launch(Some("s-a".into()), &busy, &live, Some(&dir), now);
+        assert_eq!((s.as_deref(), dup), (Some("s-a"), false), "첫 좌석");
+        let fa = dir.join(restore_claim_file_name("s-a"));
+        assert!(fa.exists(), "원자 파일(이름 = sha256)");
+        let (s, dup, _) = restore_claim_for_launch(Some("s-a".into()), &busy, &live, Some(&dir), now);
+        assert_eq!((s, dup), (None, true), "같은 회차 두 번째 좌석");
+        // 다른 프로세스 = 새 busy 집합 · 같은 파일 → 중복 · 그 가드가 버려져도 남의(내 것 아닌) 파일은 안 지운다
+        let other = std::cell::RefCell::new(std::collections::HashSet::new());
+        let (s, dup, g) = restore_claim_for_launch(Some("s-a".into()), &other, &live, Some(&dir), now);
+        assert_eq!((s, dup), (None, true), "다른 restore 프로세스의 claim");
+        drop(g);
+        assert!(fa.exists(), "남의 claim 파일을 지웠다");
+        // 되돌림(⑥) → 같은 회차 뒤 좌석이 다시 잡는다 · 내 토큰 파일만 지운다
+        drop(a);
+        assert!(!busy.borrow().contains("s-a") && !fa.exists(), "가드가 되돌리지 않았다");
+        let (_, dup, b) = restore_claim_for_launch(Some("s-a".into()), &busy, &live, Some(&dir), now);
+        assert!(!dup, "해제 뒤에도 막혔다");
+        b.commit();
+        assert!(busy.borrow().contains("s-a") && fa.exists(), "commit 한 claim 이 사라졌다");
+        // TTL 지난 claim = rename 으로 치우고 잡는다(다른 프로세스 · 미래 시각)
+        let (_, dup, c) = restore_claim_for_launch(Some("s-a".into()), &other, &live, Some(&dir), now + RESTORE_CLAIM_TTL_SECS + 5);
+        assert!(!dup, "TTL 지난 잔재가 막았다");
+        drop(c);
+        assert_eq!(restore_claim_for_launch(None, &busy, &live, Some(&dir), now).1, false, "핀 없음 = 판정 밖");
+        // ③ 저장소 없음 = fail-closed · 허용 문자 밖 id 도 해시 파일로 claim
+        let (s, dup, _) = restore_claim_for_launch(Some("s-z".into()), &busy, &live, None, now);
+        assert_eq!((s, dup), (None, true), "claim 저장소 없음인데 이어 붙였다");
+        let (s, dup, d) = restore_claim_for_launch(Some("thread.123/../x".into()), &busy, &live, Some(&dir), now);
+        assert_eq!((s.as_deref(), dup), (Some("thread.123/../x"), false));
+        assert!(dir.join(restore_claim_file_name("thread.123/../x")).exists(), "점 섞인 id 의 원자 파일 없음");
+        drop(d);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★3판 ②(codex 2R BLOCK): remove→create 경합 — A 가 새로 잡은 파일을 B 가 지우고 같이 잡던 구멍.
+    /// 이제 B 는 ⓐ 살아 있는 claim 은 건드리지 않고 ⓑ 낡았다고 읽은 뒤 그 사이 A 가 새로 잡았으면(옮긴 내용이 다르면) 되돌리고 포기한다.
+    #[test]
+    fn restore_claim_file_protocol_never_steals_live_claim() {
+        let dir = std::env::temp_dir().join(format!("cys-claimp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("c");
+        let now = 2_000_000u64;
+        assert!(restore_claim_file_acquire(&f, "A", now), "빈 자리");
+        assert!(!restore_claim_file_acquire(&f, "B", now + 1), "살아 있는 claim 을 빼앗았다");
+        restore_claim_file_release(&f, "B");
+        assert!(f.exists(), "남의 토큰 파일을 지웠다");
+        assert_eq!(std::fs::read_to_string(&f).unwrap().split_whitespace().next(), Some("A"));
+        // 쓰는 중(내용 비었음) + mtime 신선 = 점유로 본다
+        std::fs::write(&f, "").unwrap();
+        assert!(!restore_claim_file_acquire(&f, "B", restore_now_secs()), "쓰는 중 claim 을 낡았다고 봤다");
+        // 낡은 claim = 치우고 잡는다 · 비켜 놓은 파일 잔재 0
+        std::fs::write(&f, format!("OLD {}\n", now)).unwrap();
+        assert!(restore_claim_file_acquire(&f, "B", now + RESTORE_CLAIM_TTL_SECS + 1));
+        assert_eq!(std::fs::read_to_string(&f).unwrap().split_whitespace().next(), Some("B"));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "비켜 놓은 낡은 파일이 남았다");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★4판 ①(agy 3R BLOCK · master#584026d0): 「A 옛 claim · B 치움(rename) · C 생성 · D 생성」 순서 — 동시 재개 0(승자 = C 하나).
+    /// B 는 치운 뒤 create_new 에서 EEXIST = 진다(다시 치우지 않는다) · D 는 C 의 살아 있는 claim 앞에서 진다.
+    /// 그리고 「D 가 낡았다고 읽은 뒤 그 사이 C 가 새로 잡은 파일을 옮긴」 경우도 D 는 진다(되돌리지 않는다).
+    #[test]
+    fn restore_claim_sequence_old_sweep_create_create_single_winner() {
+        let dir = std::env::temp_dir().join(format!("cys-claimq-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("c");
+        let now = 3_000_000u64;
+        let late = now + RESTORE_CLAIM_TTL_SECS + 1;
+        std::fs::write(&f, format!("A {now}\n")).unwrap(); // A = 죽은 restore 의 옛 claim
+        assert_eq!(restore_claim_try_create(&f, "B", late), None, "B: EEXIST");
+        assert_eq!(restore_claim_sweep(&f, "B", late), ClaimSweep::Swept, "B: 낡은 A 를 치움");
+        assert_eq!(restore_claim_try_create(&f, "C", late), Some(true), "C: 빈 자리를 잡음");
+        assert!(!restore_claim_create_after_sweep(&f, "B", late), "B: 치운 뒤 한 번 — EEXIST = 진다");
+        assert!(!restore_claim_file_acquire(&f, "D", late), "D: C 의 살아 있는 claim 앞에서 진다");
+        let winners = ["B", "C", "D"]
+            .iter()
+            .filter(|t| std::fs::read_to_string(&f).unwrap().split_whitespace().next() == Some(**t))
+            .count();
+        assert_eq!(winners, 1, "동시 재개");
+        // 낡았다고 본 자리를 그 사이 남이 새로 잡았으면(치우기 시점의 내용 = 새 epoch) Held — 그 자리에서 진다.
+        //   (읽기~rename 사이 교체 = 옮긴 내용 대조 갈래 · 단일 스레드 시험으로는 그 틈을 못 만든다 — 정직)
+        std::fs::write(&f, format!("OLD {now}\n")).unwrap();
+        let read_then_replaced = {
+            // C2 가 그 자리를 새로 잡은 상황을 치우기 직전 내용 교체로 재현.
+            let content = std::fs::read_to_string(&f).unwrap();
+            assert!(content.starts_with("OLD"));
+            std::fs::write(&f, format!("C2 {late}\n")).unwrap();
+            restore_claim_sweep(&f, "D", late)
+        };
+        assert_eq!(read_then_replaced, ClaimSweep::Held, "살아 있는 claim 을 치웠다고 봤다");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn d_mac_4_restore_title_carries_saved_title() {
+        // ★D-mac-4: 부활 = 옛 제목을 요청 → 데몬이 번호만 바꾸고 특성을 보존(initial_title 낡은 번호 갈래).
+        assert_eq!(restore_title(&json!({"title": "298 · Opus · u5"})).as_deref(), Some("298 · Opus · u5"));
+        assert_eq!(restore_title(&json!({"title": "  "})), None, "빈 제목 = 종전 규칙");
+        assert_eq!(restore_title(&json!({"role": "worker-7"})), None);
+        // 배선 핀: restore 의 fresh 기동이 이 값을 넘기고, launch 가 그것을 surface.create 제목으로 쓴다.
+        let src = include_str!("cys.rs");
+        assert!(refl_fn_body(src, "run_restore_with").contains("restore_title(&entry)"), "restore 가 옛 제목을 안 넘긴다");
+        assert!(refl_fn_body(src, "run_launch_agent_opts").contains("title_override.clone().unwrap_or_else"),
+                "launch 가 요청 제목을 안 쓴다");
+    }
+
+    /// ★2판 ⑪(codex 1R MAJOR): `run_restore` **실제 루프** 통합시험 — mock 데몬(system.topology · resolve_role)
+    /// + 기록 기동기. 사례 = 점유 좌석 대화 중복 · 같은 회차 중복 · in-seat · fresh · 실패 뒤 해제 · 보류(빈 worker 좌석) 뒤 해제.
+    /// 뮤턴트 `let resume = !no_resume;`(중복 판정 무시) = 적.
+    /// (사례 묶음) `reclaim_ok` = 데몬이 빈 worker 좌석 회수(`surface.close only_if_empty`)를 받아들이는가.
+    /// 반환 = (기동 호출, rc, 데몬이 받은 only_if_empty 회수 요청 surface id).
+    #[cfg(unix)]
+    #[allow(clippy::type_complexity)]
+    fn restore_loop_case(reclaim_ok: bool) -> (Vec<(String, &'static str, bool, Option<String>, Option<String>)>, i32, Vec<u64>) {
+        use std::io::{BufRead, BufReader, Write};
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::path::PathBuf::from(format!("/tmp/rr11-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() % 1_000_000));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("s.sock");
+        let cwd = dir.to_string_lossy().into_owned();
+        let e = |role: &str, sess: &str| json!({"role": role, "agent": "claude", "session_id": sess,
+                                                 "cwd": cwd, "claude_config_dir": "/cfg"});
+        let topo = json!({
+            "saved": [e("w-occ", "live-1"), e("w-a", "s-a"), e("w-b", "s-a"), e("w-seat", "s-seat"),
+                      e("w-fail", "s-f"), e("w-after", "s-f"), e("worker", "s-hold"), e("w-after-hold", "s-hold"),
+                      // ⑧ 관측 전 claude 좌석 = 기동 0(claim 앞에서 중단 · 새 대화 폴백도 없음)
+                      json!({"role": "w-unobs", "agent": "claude", "session_id": "s-u", "cwd": cwd,
+                             "claude_config_dir": "/cfg", "config_dir_authority": "unobserved"}),
+                      // ★3판 ⑥: in-seat spec 실패(기동 0) = 가드 되돌림 → 뒤 엔트리가 잇는다
+                      e("w-spec", "s-sp"), e("w-after-spec", "s-sp")],
+            "tombstones": [],
+            "live": [{"role": "occ-holder", "seat": "occupied", "surface_id": 40, "session_id": "live-1"},
+                     {"role": "w-seat", "seat": "empty", "surface_id": 50},
+                     {"role": "worker", "seat": "empty", "surface_id": 51},
+                     {"role": "w-spec", "seat": "empty", "surface_id": 52}]
+        });
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("가짜 소켓 bind");
+        let reclaims = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u64>::new()));
+        let reclaims_srv = std::sync::Arc::clone(&reclaims);
+        let server = std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut line = String::new();
+                if BufReader::new(&mut stream).read_line(&mut line).is_err() {
+                    continue;
+                }
+                let req: Value = serde_json::from_str(line.trim()).unwrap_or(Value::Null);
+                if req["method"] == "surface.close" && req["params"]["only_if_empty"] == true {
+                    reclaims_srv.lock().unwrap().push(req["params"]["surface_id"].as_u64().unwrap_or(0));
+                    let resp = if reclaim_ok {
+                        json!({"id": req["id"], "ok": true, "result": {"closed": true}})
+                    } else {
+                        json!({"id": req["id"], "ok": false,
+                               "error": {"code": "empty_seat_busy", "message": "surface.close only_if_empty denied: seat_not_empty"}})
+                    };
+                    let _ = writeln!(stream, "{resp}");
+                    continue;
+                }
+                let result = match req["method"].as_str().unwrap_or("") {
+                    "__stop" => break,
+                    "system.topology" => topo.clone(),
+                    "system.resolve_role" => json!({"surface_id": 99}),
+                    _ => json!({}),
+                };
+                let _ = writeln!(stream, "{}", json!({"id": req["id"], "ok": true, "result": result}));
+            }
+        });
+        #[derive(Default)]
+        struct Rec { calls: Vec<(String, &'static str, bool, Option<String>, Option<String>)> }
+        impl RestoreLauncher for Rec {
+            fn in_seat(&mut self, sid: u64, role: &str, _a: &str, resume: bool, sess: Option<&str>,
+                       _c: Option<&str>, cfg: Option<&str>) -> Result<Result<BootVerdict, String>, String> {
+                self.calls.push((role.into(), "in-seat", resume, sess.map(String::from), cfg.map(String::from)));
+                if sid == 52 {
+                    return Err("agents.json 손상(시험)".into());
+                }
+                Ok(Ok(if sid == 50 { BootVerdict::Ready } else { BootVerdict::LaunchFailed { evidence: "stub".into() } }))
+            }
+            fn fresh(&mut self, role: &str, _a: &str, _c: Option<String>, resume: bool, sess: Option<String>,
+                     cfg: Option<String>, _t: Option<String>) -> i32 {
+                self.calls.push((role.into(), "fresh", resume, sess, cfg));
+                if role == "w-fail" { 1 } else { 0 }
+            }
+        }
+        let saved_env: Vec<_> = ["CYS_SOCKET", "CYS_NO_AUTOSTART"].into_iter().map(|k| (k, std::env::var_os(k))).collect();
+        std::env::set_var("CYS_SOCKET", &socket);
+        std::env::set_var("CYS_NO_AUTOSTART", "1");
+        let mut rec = Rec::default();
+        let rc = run_restore_with(None, false, false, &mut rec);
+        let _ = std::os::unix::net::UnixStream::connect(&socket)
+            .and_then(|mut s| writeln!(s, "{}", json!({"id": 0, "method": "__stop"})));
+        let _ = server.join();
+        for (k, v) in saved_env {
+            match v { Some(v) => std::env::set_var(k, v), None => std::env::remove_var(k) }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        let reclaims = reclaims.lock().unwrap().clone();
+        (rec.calls, rc, reclaims)
+    }
+
+    /// ★2판 ⑪(codex 1R MAJOR) + ③(master#9343f472 A) — 회수 거절 = 보류 유지(fresh 0) · claim 해제 · 뒤 엔트리가 잇는다.
+    /// 뮤턴트 `let resume = !no_resume;`(중복 판정 무시) = 적.
+    #[cfg(unix)]
+    #[test]
+    fn restore_run_loop_passes_claimed_resume_args_mock_daemon() {
+        let (calls, rc, reclaims) = restore_loop_case(false);
+        assert_eq!(reclaims, vec![51], "빈 worker 좌석 회수를 데몬에 요청하지 않았다");
+        let got: Vec<(&str, &str, bool, Option<&str>)> =
+            calls.iter().map(|(r, k, res, s, _)| (r.as_str(), *k, *res, s.as_deref())).collect();
+        assert_eq!(got, vec![
+            ("w-occ", "fresh", false, None),                 // 점유 좌석이 잇는 대화 = 이어 붙이지 않는다
+            ("w-a", "fresh", true, Some("s-a")),             // 첫 좌석 = 잇는다
+            ("w-b", "fresh", false, None),                   // 같은 회차 두 번째 = 끈다
+            ("w-seat", "in-seat", true, Some("s-seat")),     // in-seat(빈 좌석 재연결)
+            ("w-fail", "fresh", true, Some("s-f")),          // 기동 실패 → claim 해제
+            ("w-after", "fresh", true, Some("s-f")),         //   → 뒤 엔트리가 잇는다
+            ("worker", "in-seat", true, Some("s-hold")),     // in-seat 실패 → 회수 거절 → 보류(fresh 0) → 해제
+            ("w-after-hold", "fresh", true, Some("s-hold")), //   → 뒤 엔트리가 잇는다
+            ("w-spec", "in-seat", true, Some("s-sp")),       // spec 실패(기동 0) → 가드 되돌림(⑥)
+            ("w-after-spec", "fresh", true, Some("s-sp")),   //   → 뒤 엔트리가 잇는다
+        ], "run_restore 기동 인자(w-unobs = 호출 0)");
+        assert!(calls.iter().all(|c| c.4.as_deref() == Some("/cfg")), "기록 cfg 전달");
+        assert_eq!(rc, 1, "실패·보류가 있으면 rc 1");
+    }
+
+    /// ★2판 ③(master#9343f472 A) — 빈 좌석 보류 → 데몬 회수 수락 → **같은 회차** fresh 재시도 성공(정확한 이름 · 잇는다).
+    #[cfg(unix)]
+    #[test]
+    fn restore_run_loop_reclaims_empty_worker_seat_then_retries_same_round() {
+        let (calls, rc, reclaims) = restore_loop_case(true);
+        assert_eq!(reclaims, vec![51]);
+        let got: Vec<(&str, &str, bool, Option<&str>)> =
+            calls.iter().map(|(r, k, res, s, _)| (r.as_str(), *k, *res, s.as_deref())).collect();
+        let at = got.iter().position(|g| g.0 == "worker").expect("worker 기동");
+        assert_eq!(&got[at..at + 3], &[
+            ("worker", "in-seat", true, Some("s-hold")),
+            ("worker", "fresh", true, Some("s-hold")),   // 회수 뒤 같은 회차 재시도(이 좌석이 대화를 잇는다)
+            ("w-after-hold", "fresh", false, None),      //   → 같은 대화 두 번째 = 끈다
+        ]);
+        assert_eq!(rc, 1, "w-fail·w-unobs 는 여전히 실패");
+    }
+
+    #[test]
+    fn d_mac_2_restore_launch_would_rename_only_worker_held_by_empty_seat() {
+        // 데몬 dedup_worker_role 은 정확히 "worker" 만 번호를 바꾼다(state.rs) — 그 경우만 보류.
+        assert!(restore_launch_would_rename("worker", true));
+        assert!(!restore_launch_would_rename("worker", false));
+        assert!(!restore_launch_would_rename("worker-7", true), "번호 역할은 이름이 안 바뀐다(latest-wins)");
+        assert!(!restore_launch_would_rename("master", true));
     }
 
     // ★항목별 restore override 진리표(2R codex #2) — 지켜야 할 값과 고쳐야 할 값.
@@ -34874,7 +35449,7 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         );
         // ★(0.14.41 · U8 P0-M1 · 원작자 이사 핀 · 1.1.8 합성) restore 의 [RESTORE] 한 제출 결과가 사유를 달고 밖으로
         //   나간다(침묵 0) — 남은 셋 = [DRAIN] 브로드캐스트 · 부트 주입 직후 · 팩 업데이트 재주입(우리 ⑯ 판은 `inject_text_opts`).
-        let restore = strip_line_comments(refl_fn_body(src, "run_restore"));
+        let restore = strip_line_comments(refl_fn_body(src, "run_restore_with"));
         for marker in [
             "좌석 내 재연결 보류(관문 gate={gate})",
             "좌석 내 재연결 실패({e}) — fresh 기동으로 폴백",
@@ -42235,16 +42810,20 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
             refl_fn_body(src, "run_node_recover").contains("acquire_launch_lock()"),
             "node-recover 가 boot 락 밖이다 — 같은 pane 동시 기동이 가능하다"
         );
-        let restore = refl_fn_body(src, "run_restore");
+        let restore = refl_fn_body(src, "restore_in_seat_boot");
         assert!(
             restore.contains("acquire_launch_lock()"),
             "restore in-seat 가 boot 락 밖이다 — 같은 pane 동시 기동이 가능하다"
         );
-        // in-seat 가드는 fresh 폴백보다 **앞**에서 잡히고, 그 호출부보다 앞에 있어야 한다
-        // (같은 프로세스가 다른 fd 로 재획득하면 자기 교착 — 블록 수명으로 drop 된다).
+        // in-seat 가드는 기동 호출부보다 앞이고 함수 수명이다 — run_restore_with 의 fresh 폴백은 in-seat 가 돌아온 **뒤**다
+        // (같은 프로세스가 다른 fd 로 재획득하면 자기 교착 — 함수가 끝나며 drop 된다).
         let lock_at = restore.find("let _seat_lock = acquire_launch_lock();").expect("in-seat 락 바인딩");
-        let fresh_at = restore.find("run_launch_agent_opts(").expect("fresh 폴백 호출부");
-        assert!(lock_at < fresh_at, "in-seat 락이 fresh 폴백 뒤에 있다 — 배선이 뒤집혔다");
+        let boot_at = restore.find("boot_agent_on_surface(").expect("in-seat 기동 호출부");
+        assert!(lock_at < boot_at, "in-seat 락이 기동 호출 뒤에 있다");
+        assert!(!strip_line_comments(restore).contains("run_launch_agent_opts("), "in-seat 함수 안에서 fresh 를 부른다 — 락 재획득 교착");
+        let with = refl_fn_body(src, "run_restore_with");
+        assert!(with.find("launcher.in_seat(").expect("in-seat 호출") < with.find("launcher.fresh(").expect("fresh 호출"),
+                "fresh 폴백이 in-seat 앞에 있다 — 배선이 뒤집혔다");
     }
 
     /// ★C5: `cys restore` 의 좌석 내 재연결이 **restore 정책 두 축을 모두** 쓴다.
@@ -42267,21 +42846,24 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         assert_eq!(budget_readiness_max(10, true).as_secs(), 20);
         // ⓒ 배선 — in-seat 호출부가 `restore` 자리에 `true` 를 넘긴다(fresh 폴백과 같은 규칙).
         let src = include_str!("cys.rs");
-        let restore = refl_fn_body(src, "run_restore");
-        let call = restore.find("match boot_agent_on_surface(").expect("in-seat 호출부");
-        let seg = &restore[call..call + restore[call..].find(") {").expect("호출부 끝")];
+        let restore = refl_fn_body(src, "restore_in_seat_boot");
+        let call = restore.find("boot_agent_on_surface(").expect("in-seat 호출부");
+        let seg = &restore[call..call + restore[call..].find("\n    );").expect("호출부 끝")];
         assert!(
-            seg.contains("sess.as_deref(),") && seg.contains("seat_cwd.as_deref(),"),
+            seg.contains("\n        sess,\n") && seg.contains("\n        seat_cwd,\n") && seg.contains("\n        cfg,\n"),
             "in-seat 호출부 슬라이스가 어긋났다:\n{seg}"
         );
         assert!(
-            !seg.contains("\n                    false,\n"),
+            !seg.contains("\n        false,\n"),
             "in-seat 가 아직 restore=false 를 넘긴다 — 계정 dir 인라인과 20s 캡을 둘 다 잃는다:\n{seg}"
         );
         assert!(
-            seg.contains("\n                    true,\n"),
+            seg.contains("\n        true,\n"),
             "in-seat 의 restore 인자가 true 가 아니다:\n{seg}"
         );
+        // 실제 루프가 in-seat 에 기록 cfg·cwd 를 넘긴다(통합 검체 restore_run_loop_* 가 인자 값을 잰다).
+        assert!(refl_fn_body(src, "run_restore_with")
+                    .contains("launcher.in_seat(sid, role, agent, resume, sess.as_deref(), seat_cwd.as_deref(), cfg.as_deref())"));
     }
 
     /// ★C7: 역할 무관 재개 접미(`--continue`·`resume --last`)는 `[RESUME]` 을 정당화하지 않는다.
@@ -42836,7 +43418,9 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
             "선언과 제출 사이에서 payload 가 재대입된다(followup 이 조용히 빠질 수 있다):\n{between}"
         );
         // 세 호출부는 지시를 표식 이월용으로 **넘기되**(보류 시 채택이 다시 싣는다) 따로 제출하지 않는다.
-        let restore = strip_line_comments(refl_fn_body(src, "run_restore"));
+        // ★2판 ⑪: in-seat 기동 = restore_in_seat_boot(지시 전달) · 루프 = run_restore_with(별도 제출 0).
+        let restore = strip_line_comments(refl_fn_body(src, "restore_in_seat_boot"))
+            + &strip_line_comments(refl_fn_body(src, "run_restore_with"));
         assert!(restore.contains("Some(restore_directive(role)),"), "restore in-seat 가 지시를 넘기지 않는다");
         assert_eq!(restore.matches("inject_text(").count(), 0,
             "restore 가 복원 지시를 두 번째 제출로 보낸다(in-seat·fresh):\n{restore}");

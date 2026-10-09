@@ -4,6 +4,36 @@
 #   (v1 = 경로+파일 sha 만 · 빈 폴더·링크가 안 보였다 → 이 표의 v1 값은 전부 v2 로 다시 쟀다)
 # ★설치된 `<설정>/lib` 의 지문이 여기 있으면(= 손대지 않은 그 판) 동봉 판으로 바꾼다 · 없으면 불가침 + 로그.
 # ★동봉 판을 올릴 때 지금 판의 지문(v2)을 여기 한 줄 더한다(안 그러면 그 판을 깐 PC 는 영영 「모르는 트리」).
+# ★D-mac-3(1.1.9 · TICKET=cysr-119-defects): 공식 발행판 0.1.4~0.1.11 추가 — 빠져 있어 그 판을 깐 PC 가 영원히 「모르는 트리」(foreign)로
+#   멈췄다(맥 실측: 0.1.4 · tick.log foreign ×3). 재료 = 게시 zip(https://jarvis.godmeyou.kr/install/agora-client-<판>.zip · 10-09 07:3x 받음) ·
+#   지문 = javis_counsel.zip_fingerprint(v2) · 교차 확인: 같은 방법으로 잰 0.1.12·0.1.13 = 아래 기존 값과 일치 · 0.1.6·0.1.7 zip sha = 아고라 docs/RELEASES.md 핀과 일치 ·
+#   0.1.4 = 맥 설치본 tree_fingerprint 와 일치(c41104a2…).
+# ★cysr-119-defects 2판(master#d8732dec): 공식 발행판 0.1.0~0.1.3 도 추가 — 재료·방법은 위 D-mac-3 줄과 같다(게시 zip ·
+#   10-09 07:3x 받음 · 로컬 사이트 미러 sha 와 4/4 일치 · javis_counsel.zip_fingerprint v2). 이 네 판의 설치본 실측 대조는 없다(맥 설치본 = 0.1.4).
+# 0.1.0 = 사이트 agora-client-0.1.0.zip sha256 5171b1161fc5e326486e9ffdd96034a22e194dafba610ee94eeb670aa81e4b64 · 416,041 B
+0.1.0 f2c623255ebc35cc6a943ce56d4c4226d3b7205bf96c9cce31c8d58eaef8b13f
+# 0.1.1 = 사이트 agora-client-0.1.1.zip sha256 5ff230287be1ab3455a055c1385e6bfe375b311b476152613ee35d298f6cb9ed · 418,594 B
+0.1.1 2cfcb80863a27c57706e76e8fce47390c7e1b8d413573c67c5d7fda3dc1ad766
+# 0.1.2 = 사이트 agora-client-0.1.2.zip sha256 b5a981f1e0d64414379e6f567a828b036e71d001161b09efad169ebf6af0925b · 420,406 B
+0.1.2 b59ae3998034d187c9936688369e89bb1a8b37fdfc32c27b724de1f31f28082c
+# 0.1.3 = 사이트 agora-client-0.1.3.zip sha256 97302be6023f6098f4fbe1bd402e1a138c8ee5b6b26f7aad8ef5888cf61a6754 · 441,622 B
+0.1.3 14ecb23baa5ff77a12208cfed7b877e592465d9b04e65a002224e7c873dd595c
+# 0.1.4 = 사이트 agora-client-0.1.4.zip sha256 7b4d94a121989b464bb8934f013f7897d5e5c5805a10073c38b6ebdd4585f86b · 451,639 B
+0.1.4 c41104a28be325e45a1debe2b4cd4706b9e06eb55fe3f636056830b87eb93502
+# 0.1.5 = 사이트 agora-client-0.1.5.zip sha256 83b07f4e7eb43b06864b11179a572f19053552074b690942cc72d21cdd2126dd · 462,342 B
+0.1.5 26cb351bf9e57dc0b4121937797386c699b440823826dcd2f58843428f719507
+# 0.1.6 = 사이트 agora-client-0.1.6.zip sha256 04ee6d4b16941c1fe2df048540dff419522839d968c952f889fcdec29e135536 · 512,068 B
+0.1.6 095054b4a73090466f710db6dda973f62f638cdbc6cbd63ff08cf5164f4ea291
+# 0.1.7 = 사이트 agora-client-0.1.7.zip sha256 8ecf1c3fc51cf541a6da229addfe129cee149026ccdbbbf00b2620c73fedf371 · 552,084 B
+0.1.7 63f6175f48dc2ebd906ad5ce55f206bb77e83eac6a72154b326968b6a55cccce
+# 0.1.8 = 사이트 agora-client-0.1.8.zip sha256 10e0b6851a5e2b9a3ddb1afc689781959f26d1ea12ea909226b17ccda8e4debb · 554,038 B
+0.1.8 030530511fc2ce0db60f26dba88ab1e5d87c2eed3ecdb2561d30bddfbc090256
+# 0.1.9 = 사이트 agora-client-0.1.9.zip sha256 bd196ed91484b109284b2a364365454b03e37152bd4b5fcad915480a7cf57e5d · 571,351 B
+0.1.9 accc1eb9f3e05df6fcc9252c681e0e4985fd70cbc455a456969663abfad6ffe2
+# 0.1.10 = 사이트 agora-client-0.1.10.zip sha256 82f870822684bce6ee90ad7bcfc256dcf45924c668026e7a890516a90172ee23 · 575,838 B
+0.1.10 b8cfecc84dd1b2e5dbf9a45802cde71d682659be1342ecafb737fbdf7ea1342a
+# 0.1.11 = 사이트 agora-client-0.1.11.zip sha256 ba935334c5b2ccbc9ad0b061487b50734455e0f7c91e1123482cbe7eceb63e72 · 607,111 B
+0.1.11 8dd6e47b8e24235fb42c3188d92545dd05e18aab49ca51a215bce076a97c4fe4
 # 0.1.12 = 사이트 agora-client-0.1.12.zip sha256 0f3f6616a95428cf0712da578221e3f709590cf3e76fbb6f809e615d458e7632 · 648,304B · 55 항목
 0.1.12 1362a6e5cd4ba26384b4fdd682ff60b4b0af4f334feeb7f8e39b606aff2d9e4f
 # 0.1.13 = 사이트 agora-client-0.1.13.zip sha256 3876029b22cfe25f2a43de4937c2dea52719e547eebe448e3149eb0975b03244 · 680,840B · 55 항목

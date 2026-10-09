@@ -2219,6 +2219,10 @@ def _cys_segment_verdict(tokens, ctx, seg_command, n_segs=1):
             return False, ("`cys %s` 는 대상 데몬을 바꾼다 — 판정 문맥(자기 데몬)과 실행 대상이 "
                            "갈리면 역할·승인·예산이 다른 데몬에 걸린다(어느 자리에 있어도 deny)"
                            % a), False
+    # ★1.1.9 준비 ②(윈 실기 D-U2): 판 확인 `cys --version` · `cys -V` **단독** = 읽기 전용(데몬 접촉 0 · 상태 변경 0) —
+    #   인자가 정확히 그 하나일 때만(다른 인자와 섞이면 아래 전역 옵션 규칙 그대로).
+    if raw_args in (["--version"], ["-V"]):
+        return True, "판 확인(읽기 전용)", False
     verb = None
     for a in args:
         if a.startswith("-"):
@@ -2736,8 +2740,10 @@ def _cso_verdict(tool, tool_input, ctx):
     elif tool == "Bash":
         deny, why, essential = cso_bash_verdict(ti.get("command"), ti, ctx)
         if deny:
+            # ★1.1.9 준비 ②(윈 실기 D-U2): 상향 경로를 이름으로 준다 — 좌석이 없는 명령(`cys alert`)을 지어내 막히지 않게.
             return True, ("%s — 게이트 deny 는 고장이 아니라 **승인 요청 신호**다: 보류하고 "
-                          "master 에 사유 1줄을 상신하라(§1-1)" % why), False
+                          "master 에 사유 1줄을 상신하라(§1-1 · 상향 경로 = `cys send --queued --to master \"…\"` · "
+                          "오너 승인 = `cys feed push --wait …` · `cys alert` 라는 명령은 없다)" % why), False
     else:
         essential = _read_tool_essential(tool, ti, ctx)
     if (ctx.tool_calls is not None and ctx.tool_calls >= BUDGET_DENY and not essential):
@@ -3223,6 +3229,16 @@ def self_test():
                   Ctx(pack=PACK, state=STATE, home=HOME, reader=reader, tempdir="/w/tmp"))
     if not b:
         fails.append("CSO-ROUND(cwd 모름 = 좌석 허용 꺼짐): 통과했다 (%s)" % r)
+    # ★1.1.9 준비 ②(윈 실기 D-U2): `cys --version`/`-V` 단독 = 허용 · 섞이면 종전대로 deny · Bash deny 사유에 상향 경로 2개.
+    for cmd, want_block in (("cys --version", False), ("cys -V", False), ("cys.exe --version", False),
+                            ("cys --version status", True), ("cys -V kill 7", True), ("cys --socket /x --version", True),
+                            ("cys alert x", True)):
+        b, r = decide("Bash", {"command": cmd}, "cso", ctx())
+        if b != want_block:
+            fails.append("D-U2(%s · 기대 %s): %s" % (cmd, "deny" if want_block else "allow", r))
+    b, r = decide("Bash", {"command": "cys alert x"}, "cso", ctx())
+    if not (b and "cys send --queued --to master" in r and "cys feed push" in r):
+        fails.append("D-U2(deny 사유에 상향 경로 2개 없음): %s" % r)
     b, _ = decide("WebSearch", {"query": "x"}, "cso", ctx())
     if not b:
         fails.append("CSO-BYPASS: WebSearch")

@@ -21,6 +21,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -726,19 +727,35 @@ class Fingerprint(Base):
 
     def test_known_file_rows(self):
         known = jc._read_known(os.path.dirname(BIN))
-        self.assertEqual(sorted(known.values()), ["0.1.12", "0.1.13", "0.1.14"])
+        # ★D-mac-3(1.1.9): 공식 발행판 0.1.0~0.1.11 도 표에 있어야 한다(빠지면 그 판 PC 가 영원히 foreign).
+        self.assertEqual(sorted(known.values(), key=lambda v: tuple(int(x) for x in v.split("."))),
+                         ["0.1.%d" % i for i in range(0, 15)])
         # ★known 의 동봉 판 줄 = 핀 넷째 칸(다음 판 동봉 때 이 판 PC 가 「모르는 트리」로 남지 않게 · 3판 ⑨)
         pin = rd(os.path.join(os.path.dirname(BIN), "install", "agora-client.pin"), encoding="utf-8").split()
         self.assertEqual({v: f for f, v in known.items()}.get(pin[0]), pin[3], "known 의 동봉 판 지문 ≠ 핀 넷째 칸")
+        # ★2판 ⑨(codex 1R): CI 몫 = manifest 정합 — 원문 줄로 잰다(_read_known 은 지문 키라 중복을 조용히 접는다).
+        #   진위(zip sha·지문 재계산) = test_agora_known_authentic.py(제작 맥 · 게시 zip 없으면 FAIL).
         text = rd(os.path.join(os.path.dirname(BIN), "install", jc.KNOWN_FILE), encoding="utf-8")
-        for sha in ("0f3f6616a95428cf0712da578221e3f709590cf3e76fbb6f809e615d458e7632",
-                    "3876029b22cfe25f2a43de4937c2dea52719e547eebe448e3149eb0975b03244"):
-            self.assertIn(sha, text, "zip sha 주석 누락")
-        site = os.path.expanduser(os.path.join("~", "axdev", "ai-jarvis", "site", "install"))
-        for fp, ver in known.items():   # 사이트 zip 이 있는 기계(제작 맥)에서만 재계산 대조
-            z = os.path.join(site, "agora-client-%s.zip" % ver)
-            if os.path.isfile(z):
-                self.assertEqual(jc.zip_fingerprint(rd(z, "rb")), fp, ver)
+        rows, shas = [], {}
+        for line in text.splitlines():
+            m = re.match(r"^#\s*(\d+\.\d+\.\d+)\s*=.*?sha256\s+(\S+)", line)
+            if m:
+                self.assertNotIn(m.group(1), shas, "zip sha 주석 중복 %s" % m.group(1))
+                shas[m.group(1)] = m.group(2)
+            p = line.split()
+            if p and not p[0].startswith("#"):
+                self.assertEqual(len(p), 2, "형식 밖 줄: %r" % line)
+                rows.append(tuple(p))
+        vers = [v for v, _ in rows]
+        self.assertEqual(sorted(vers, key=lambda v: tuple(int(x) for x in v.split("."))),
+                         ["0.1.%d" % i for i in range(0, 15)], "판본 전건·중복 0")
+        fps = [f for _, f in rows]
+        self.assertTrue(all(re.fullmatch(r"[0-9a-f]{64}", f) for f in fps), "지문 = 소문자 64-hex")
+        self.assertEqual(len(set(fps)), len(fps), "지문 중복")
+        self.assertEqual(sorted(shas), sorted(vers), "판마다 zip sha 주석 하나")
+        self.assertTrue(all(re.fullmatch(r"[0-9a-f]{64}", s) for s in shas.values()), "zip sha = 소문자 64-hex")
+        self.assertEqual(len(set(shas.values())), len(shas), "zip sha 중복")
+        self.assertTrue(set(shas.values()).isdisjoint(fps), "zip sha 를 지문 칸에 옮겨 적었다")
 
     def test_pin_four_fields(self):
         data = _zip(self.NEW)
@@ -1391,6 +1408,106 @@ class DeptTrap(Base):
         r = self.run_dept("list", CYS_DEPTS_JSON=ok)
         self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace")[-400:])
         self.assertEqual(self.sig_lines(), [])
+
+
+class DMac3OfficialOldClient(Base):
+    """★D-mac-3(1.1.9 · TICKET=cysr-119-defects) — 공식 옛 판(0.1.4)이 「모르는 트리」로 영원히 멈추던 결함.
+
+    재현(맥 실측 10-08): `<설정>/lib` = 공식 0.1.4(손대지 않음) · tick.log = foreign ×3 · 교체 0 · 신호 0.
+    수리: known 표에 0.1.4~0.1.11 · 고친 사본은 여전히 불가침 · foreign 3연속 = 신호 1줄(counsel.client_foreign)."""
+
+    # ★2판 ⑨: 공식 0.1.4 실트리 시험 2건(교체 · 고친 사본 불가침)은 test_agora_known_authentic.py 로 옮겼다
+    #   (게시 zip 없으면 skip 이 아니라 FAIL · 제작 맥 전용 · CI 밖 사유 = lane-parity UNREGISTERED_OK).
+
+    def lib(self, *p):
+        return os.path.join(self.cfg, "lib", *p)
+
+    def events(self):
+        return [json.loads(x) for x in rd(os.path.join(self.cfg, "counsel", "tick.log")).splitlines()]
+
+    def _foreign_lib(self):
+        os.makedirs(self.lib("bin"), exist_ok=True)
+        with open(self.lib("bin", "agora"), "w") as f:
+            f.write("mine")
+        EnsureClient.put(self, _zip([("bin/agora", "theirs")]))
+
+    def foreign_signals(self):
+        return [json.loads(x) for x in self.sig_lines()
+                if json.loads(x)["error_code"] == "counsel.client_foreign"]
+
+    def test_three_foreign_in_a_row_signals_once(self):
+        self._foreign_lib()
+        got = []
+        for _ in range(6):
+            self.assertEqual(jc.ensure_client(), "foreign")
+            got.append(len(self.foreign_signals()))
+        self.assertEqual(got, [0, 0, 1, 1, 1, 1], "3번째에 정확히 1줄 · 그 뒤 같은 구간은 더 안 쓴다")
+        row = self.foreign_signals()[0]
+        self.assertEqual((row["source"], row["op"]), ("pack", "ensure-client"))
+        notes = [e for e in self.events() if e["event"] == "client-foreign-signal"]
+        self.assertEqual([(n["streak"], n["sent"]) for n in notes], [(3, True)])
+
+    def test_streak_broken_by_other_result_signals_again(self):
+        self._foreign_lib()
+        for _ in range(3):
+            jc.ensure_client()
+        self.assertEqual(len(self.foreign_signals()), 1)
+        shutil.rmtree(self.lib())                 # 사람이 치웠다 → 새로 깐다(installed) = 구간 끊김
+        self.assertEqual(jc.ensure_client(), "installed")
+        with open(self.lib("bin", "agora"), "w") as f:
+            f.write("mine again")                 # 다시 고침 → foreign 구간 새로 시작
+        for _ in range(3):
+            self.assertEqual(jc.ensure_client(), "foreign")
+        self.assertEqual(len(self.foreign_signals()), 2, "끊긴 뒤 새 구간 3번째에 다시 1줄")
+
+    def test_other_events_do_not_break_streak_and_rotated_log_does_not_matter(self):
+        self._foreign_lib()
+        jc.ensure_client()
+        jc.log_event(self.cfg, "facts", result="ok")      # 다른 event 줄은 건너뛴다
+        log = os.path.join(self.cfg, "counsel", "tick.log")
+        os.replace(log, log + ".1")                         # 로그가 막 돌았다 — .1 끝도 이어 본다
+        jc.ensure_client()
+        self.assertEqual(len(self.foreign_signals()), 0)
+        jc.ensure_client()
+        self.assertEqual(len(self.foreign_signals()), 1)
+
+    def test_signal_off_switch_still_leaves_trace(self):
+        self.config('{"counsel": {"auto": false}}')
+        self._foreign_lib()
+        for _ in range(3):
+            jc.ensure_client()
+        self.assertEqual(self.sig_lines(), [])
+        notes = [e for e in self.events() if e["event"] == "client-foreign-signal"]
+        self.assertEqual([(n["streak"], n["sent"]) for n in notes], [(3, False)], "못 쓴 것도 흔적은 남긴다")
+        # ★codex 1R ⑤: 못 쓴 신호는 다음 foreign 판에 다시 시도한다(4·5… 누락 0) — 켜면 그 판에 1줄.
+        self.config('{"counsel": {"auto": true}}')
+        jc.ensure_client()
+        self.assertEqual(len(self.foreign_signals()), 1, "끔 뒤 켰는데 4번째 판에 신호가 없다")
+        jc.ensure_client()
+        self.assertEqual(len(self.foreign_signals()), 1, "같은 구간에서 두 번 썼다")
+
+    def test_118_log_streak_is_seeded_once(self):
+        # ★codex 1R ⑤: 1.1.8 이 이미 foreign 3줄을 남긴 설치 — 상태 파일이 없으면 로그 꼬리로 1회 이관 → 첫 판(연속 4)에 신호.
+        self._foreign_lib()
+        os.makedirs(os.path.join(self.cfg, "counsel"), exist_ok=True)
+        for _ in range(3):
+            jc.log_event(self.cfg, "ensure-client", result="foreign", why="modified or unknown client")
+        jc.ensure_client()
+        self.assertEqual(len(self.foreign_signals()), 1, "이미 쌓인 연속을 버렸다")
+        st = jc._read_foreign_state(self.cfg)
+        self.assertEqual((st["streak"], st["signaled"]), (4, True))
+
+    def test_big_other_log_lines_do_not_reset_or_duplicate(self):
+        # ★codex 1R ⑥: 상태 파일이 정본 — 큰 다른 행이 로그 꼬리를 밀어내도 구간·신호 여부는 그대로.
+        self._foreign_lib()
+        for _ in range(3):
+            jc.ensure_client()
+            jc.log_event(self.cfg, "facts", blob="x" * (jc.FOREIGN_SCAN_BYTES + 10))
+        self.assertEqual(len(self.foreign_signals()), 1)
+        for _ in range(3):
+            jc.ensure_client()
+            jc.log_event(self.cfg, "facts", blob="x" * (jc.FOREIGN_SCAN_BYTES + 10))
+        self.assertEqual(len(self.foreign_signals()), 1, "같은 구간에서 두 번째 신호")
 
 
 if __name__ == "__main__":

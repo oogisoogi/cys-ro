@@ -40,6 +40,14 @@ env:
   #   cys 를 빌드하는 두 잡(build · pack-artifacts)의 스텝 「CYSR_RELEASE_SEQ 정수 ≥1」 이 비거나 0 이면 빌드 전에 실패시킨다.
   CYSR_RELEASE_SEQ: ${{ vars.CYSR_RELEASE_SEQ }}
 
+# ★1.1.9 준비 ④(TICKET=cysr-119-concurrency): 같은 ref(태그 · 수동 실행이면 고른 ref)의 릴리스 런은 한 번에 하나 — 10-08 00:2x 같은 SHA
+#   런 2개(37642949667 진행 · 37643096896 대기)가 겹쳐 중복 draft 위험이 생겨 손으로 취소했다. cancel-in-progress: false = 진행 중
+#   발행 런을 죽이지 않고 뒤 런이 기다린다(release-postprocess · release-publish 와 같은 꼴). workflow_dispatch 는 입력이 없어 ref 만으로
+#   가른다(입력이 생기면 그때 group 에 더한다).
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # ═══════════════════════════════════════════════════════════════════════════
   # 잡0 — windows-health 결박(설계 D-6 "릴리스 게이트 결박" · 2026-08-24 M4-3)
@@ -65,7 +73,44 @@ jobs:
   #   (자동 dispatch 를 하지 않는 이유: `actions: write` 권한 확대는 별도 승인 사안이다).
   #
   # ★예산: ubuntu-latest 1대에서 API 폴링만 한다(빌드 0·체크아웃 0). 태그당 1회.
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ★B1(1.1.9 · TICKET=cysr-119-defects): 같은 태그 draft 가드 — 이 태그의 draft 릴리스가 이미 있으면
+  #   **자산 생산 전에** 멈춘다. 왜: 위 concurrency 는 「동시에 둘」만 막는다 — 앞 런이 끝난 뒤 같은 태그를
+  #   다시 돌리면(재태그·전체 재실행) 옛 draft 위에 자산이 덧씌워지거나(--clobber) 두 번째 draft 가 생겨,
+  #   발행 레인이 어느 draft 를 보는지가 갈린다(10-08 재태그 실전 · 중복 런 37642949667/37643096896).
+  #   · 정상 재시도 = 「Re-run failed jobs」(이 잡은 이미 성공이라 다시 돌지 않는다) · 다시 자를 때 = 옛 draft
+  #     를 먼저 지운다(사람 결정 — 이 잡은 지우지 않는다).
+  #   · draft 목록은 push 권한 토큰에만 보인다 → contents: write. 조회 실패 = 멈춤(fail-closed · 「못 봤다」를
+  #     「없다」로 접지 않는다).
+  #   · draft PATCH 함정(10-08 19:3x 실측): draft 메타 PATCH 에 tag_name 을 빼면 GitHub 이 tag_name 을
+  #     `untagged-…` 로 바꾼다 → draft 메타를 고칠 때는 언제나 `-f tag_name=<태그>` 를 함께 보낸다.
+  draft-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write         # draft 릴리스 목록은 push 권한에만 보인다(read 로는 draft 가 안 보여 가드가 헛돈다)
+    steps:
+      - name: 같은 태그 draft 가 이미 있으면 중단 (fail-closed)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! N="$(gh api "repos/$SRC_REPO/releases?per_page=100" --paginate \
+                     --jq '.[] | select(.draft and .tag_name == env.TAG) | .id' | wc -l | tr -d ' ')"; then
+            echo "::error::릴리스 목록 조회 실패 — 같은 태그 draft 유무를 모른다(fail-closed · 자산 생산 중단)."
+            exit 1
+          fi
+          if [ "$N" -gt 0 ]; then
+            echo "::error::$SRC_REPO 에 태그 $TAG 의 draft 릴리스가 이미 $N 개 있다 — 자산 생산을 시작하지 않는다."
+            echo "::error::정상 재시도는 'Re-run failed jobs' · 다시 자르려면 옛 draft 를 먼저 지운다(사람 결정)."
+            exit 1
+          fi
+          echo "✅ 태그 $TAG 의 draft 없음 — 진행"
+
   windows-health-gate:
+    needs: draft-guard
     runs-on: ubuntu-latest
     timeout-minutes: 50
     permissions:
@@ -116,6 +161,7 @@ jobs:
           done
 
   build:
+    needs: draft-guard     # ★B1: 같은 태그 draft 가드 뒤에만(첫 자산 = 이 잡의 tauri-action 이 draft 를 만든다)
     strategy:
       fail-fast: false     # 한 타깃이 실패해도 나머지는 계속
       matrix:

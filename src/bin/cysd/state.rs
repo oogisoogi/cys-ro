@@ -2233,6 +2233,15 @@ pub struct Surface {
     pub pending_agent_obs: Mutex<Option<(String, String, f64)>>,
     /// T5 사용량 관측 스냅샷 (usage.rs 수집기가 갱신 — 자기보고 agent_status와 별개 층위)
     pub observed_usage: Mutex<Option<crate::usage::ObservedUsage>>,
+    /// ★D-mac-5(1.1.9 · TICKET=cysr-119-defects · master#848f963a): **OS 가 답한** 이 좌석 claude 프로세스의
+    /// `CLAUDE_CONFIG_DIR` — `(그 값을 읽은 에이전트 pid, 값)`. 감시 틱이 에이전트 pid 가 바뀔 때만 1회 읽는다
+    /// (`governance::refresh_os_config_dir`). 좌석 안 `CLAUDE_CONFIG_DIR=<계정2> claude` 처럼 데몬이 모르는 env 로 뜬
+    /// 좌석의 진짜 프로필이고, 자기보고(statusline session_file)와 달리 좌석이 지어낼 수 없다.
+    /// 에이전트가 사라져도 마지막 값을 지킨다(죽은 좌석의 부활 입력이 이것이다). 윈도우·판독 실패 = 값 None(종전).
+    /// 규칙: OS 관측 > 기록값(`claude_config_dir`) · 자기보고만으로는 격상 0(RV-SP-1 유지) — [`Surface::authoritative_config_dir`].
+    pub os_config_dir: Mutex<Option<(u32, Option<String>)>>,
+    /// ★3판 ⑧: 지금 pid 의 연속 판독 실패 수(0 = 값 고정 · 1..상한 = 재시도 중 · 상한 = 소진) — [`governance::refresh_os_config_dir`].
+    pub os_config_dir_failures: std::sync::atomic::AtomicU8,
     /// T5 세션 트랜스크립트 등록 (`usage.register` — SessionStart hook의 결정론 매핑)
     pub registered_transcript: Mutex<Option<String>>,
     /// ★R3-1(0.14.42 · 리뷰 F3) /clear 재핀 연속성(ⓐ)의 기준 — 마지막 등록 중 **좌석 최상위 claude 의 훅이 아니라고
@@ -2628,6 +2637,23 @@ pub enum EscRecount {
 }
 
 impl Surface {
+    /// ★D-mac-5: OS 가 답한 이 좌석 claude 의 `CLAUDE_CONFIG_DIR`(공백 아닌 값만) — [`Surface::os_config_dir`].
+    pub fn os_observed_config_dir(&self) -> Option<String> {
+        self.os_config_dir
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|(_, v)| v.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(String::from))
+    }
+
+    /// ★D-mac-5: 이 좌석의 **권위** 설정 폴더 = OS 관측 > 기록값(`claude_config_dir` · 공백 = 없음). 자기보고는 들어오지 않는다.
+    /// 소비처 = 계정 경보 귀속(handlers usage.report) · 신원 뷰(accounts collect_seat_rows).
+    pub fn authoritative_config_dir(&self) -> Option<String> {
+        self.os_observed_config_dir().or_else(|| {
+            self.claude_config_dir.lock().unwrap().clone().filter(|c| !c.trim().is_empty())
+        })
+    }
+
     /// ★(0.14.31 · 리뷰 R2 · codex blocking) 결판 대기 중인 인계를 **취소**한다(처분자 전용).
     ///
     /// 반환 = **취소하지 못한** 항목 id 들(= writer 가 이미 쓰기로 확정 = 지금 배달 중). 호출부는
@@ -3978,6 +4004,8 @@ pub struct Daemon {
     /// 있다는 사실**은 보이게 두되 트리거 원문은 담지 않는다. 키 공간이 (룰 수 × 사유 4)로
     /// 유계라 무한 성장이 없다(다른 맵과 달리 prune 불필요).
     pub health_suppressed: Mutex<HashMap<(String, &'static str), u64>>,
+    /// ★1.1.9 2판 ⑩ 출처 창 — (surface_id, 룰) → 창 끝. 단독 leaf 락(쥔 채 다른 락 0) · 넣을 때 지난 창을 지운다.
+    pub health_quote_until: Mutex<HashMap<(u64, &'static str), Instant>>,
     /// T4-15 kill-switch: pause 중에는 큐 배달·스케줄 발화가 동결된다 (직접 send는 통과)
     pub paused: AtomicBool,
     pub pause_info: Mutex<Option<PauseInfo>>,
@@ -6231,6 +6259,7 @@ impl Daemon {
             health_hits: Mutex::new(HashMap::new()),
             recent_health: Mutex::new(VecDeque::new()),
             health_suppressed: Mutex::new(HashMap::new()),
+            health_quote_until: Mutex::new(HashMap::new()),
             paused: AtomicBool::new(pause_restored.is_some()),
             pause_info: Mutex::new(pause_restored),
             pause_persist_lock: Mutex::new(()),
@@ -7447,6 +7476,8 @@ impl Daemon {
             last_injected: Mutex::new(None),
             inject_track,
             observed_usage: Mutex::new(None),
+            os_config_dir: Mutex::new(None),
+            os_config_dir_failures: std::sync::atomic::AtomicU8::new(0),
             registered_transcript: Mutex::new(None),
             repin_anchor: Mutex::new(None),
             agent_session_id: Mutex::new(None),
@@ -7938,6 +7969,51 @@ impl Daemon {
     /// 오너 완화책 ①: scrollback 패턴 룰 — 매칭 시 health.alert를 push한다 (폴링 불필요).
     /// T4-17: 에코 제외(주입 직후 2초 라인은 매칭 제외 — 주입 문자열 에코로 인한
     /// 자기/타기 DoS 차단) + 조치 바인딩(60초 창 연속 매칭 게이트 통과 시에만 발동).
+    /// ★1.1.9 2판 ⑩ 출처 창 표지 — 받는 좌석에 `QUOTE_WINDOW_RULES` 창을 연다. 호출부가 다른 락을 쥐고 있어도 안전하다(leaf 락 하나).
+    /// ★3판 ⑤(codex 2R BLOCK): **경보 중계 경로에서만** 연다 — `alert_relay` = 경보 라우터 적재(큐 항목 origin "alert") 또는
+    /// CSO 좌석 발신(직접·`--queued` 건강 중계). 일반 send·스케줄 본문(「PR #429 확인」)은 창 0 — 임의 좌석이 반복 전송으로
+    /// 남의 진짜 경보를 무기한 억제하던 구멍. ★4판 ②(master#584026d0): 출처가 증명되면 본문 경보 키는 요구하지 않는다
+    /// (CSO 상신 「PR #429」 도 창을 연다 · 본문은 룰 식에만 걸리면 된다).
+    pub(crate) fn note_injected_quote(&self, surface_id: u64, text: &str, alert_relay: bool) {
+        if !alert_relay {
+            return;
+        }
+        if !rate_limited_quote_regex().is_match(text) {
+            return;
+        }
+        let now = Instant::now();
+        let mut q = self.health_quote_until.lock().unwrap();
+        q.retain(|_, until| *until > now);
+        for rule in QUOTE_WINDOW_RULES {
+            q.insert((surface_id, *rule), now + std::time::Duration::from_secs(QUOTE_WINDOW_SECS));
+        }
+    }
+
+    /// ★3판 ⑤: 발신 좌석이 CSO 인가 — **try_lock**(배달 경로는 다른 락을 쥐고 부를 수 있다 · 못 잡으면 false =
+    /// 창 0 = 경보가 나는 쪽 = 탐지 안전측).
+    pub(crate) fn surface_is_cso_try(&self, surface_id: u64) -> bool {
+        let Ok(surfaces) = self.surfaces.try_lock() else {
+            return false;
+        };
+        let Some(s) = surfaces.get(&surface_id) else {
+            return false;
+        };
+        s.role.try_lock().ok().and_then(|r| r.clone()).is_some_and(|r| crate::alert_route::is_cso_role(&r))
+    }
+
+    fn in_quote_window(&self, surface_id: u64, rule: &str) -> bool {
+        // 뮤턴트 U3-NOQUOTE(출처 창 끔) — 시험 빌드에서만.
+        if cfg!(test) && std::env::var("CYS_U1_MUTANT").as_deref() == Ok("U3-NOQUOTE") {
+            return false;
+        }
+        // ★3판 ⑩: 전 맵 선형 탐색 → 키 직접 조회(키의 룰 칸 = QUOTE_WINDOW_RULES 의 'static 문자열).
+        let Some(r) = QUOTE_WINDOW_RULES.iter().find(|r| **r == rule) else {
+            return false;
+        };
+        let now = Instant::now();
+        self.health_quote_until.lock().unwrap().get(&(surface_id, *r)).is_some_and(|until| *until > now)
+    }
+
     fn run_health_rules(&self, surface: &Surface, lines: &[String]) {
         let surface_id = surface.id;
         // 에코 제외: 직전 원격 주입 후 2초 내 도착한 라인 배치는 룰 평가에서 제외
@@ -7954,7 +8030,8 @@ impl Daemon {
                 if let Some(m) = rule.regex.find(line) {
                     // ⓑ 수신 격리 — "경보를 논하는 라인"은 경보가 아니다(자기증폭 차단).
                     // 룰 이름 표식은 `rules`를 직접 훑는다(핫패스 할당 0 — 매칭 시에만 실행).
-                    let discourse = alert_discourse_reason(line, m.start(), m.end(), &rules);
+                    let discourse = alert_discourse_reason(line, m.start(), m.end(), &rules)
+                        .or_else(|| self.in_quote_window(surface_id, &rule.name).then_some("injected-quote"));
                     if let Some(reason) = discourse {
                         // 관측 가능성 유지: 억제 사실만 남기고(원문·트리거 미포함) 발화는 하지 않는다.
                         let mut sup = self.health_suppressed.lock().unwrap();
@@ -8768,6 +8845,23 @@ pub(crate) fn mask_health_line(line: &str, rules: &[HealthRule]) -> String {
     out.chars().take(200).collect()
 }
 
+/// 내장 `rate_limited` 룰 정규식 — 룰 표와 출처 창(`note_injected_quote`)이 같은 식을 쓴다(복제 0).
+/// 1.1.8 넓은 식 + 1판이 더한 공급사 문구 `usage limit reached`(합집합 · 좁히지 않는다).
+const RATE_LIMITED_PAT: &str = r"(?i)rate.?limit(ed)?|too many requests|\b429\b|usage limit reached";
+
+/// ★1.1.9 2판 ⑩(D-U3 안 A · 출처 창): 기계 주입 본문이 이 룰에 걸리면 **받은 좌석**의 같은 룰 탐지를
+/// `QUOTE_WINDOW_SECS` 동안 경보로 내지 않는다(`recent_health` 에는 `discourse = "injected-quote"` 로 남김 —
+/// 인터록 원장 보존). 왜: 경보 보고를 받은 좌석이 그것을 영어로 재진술(「worker reported HTTP 429 earlier」)하면
+/// 내용 판정(`alert_discourse_reason`)으로는 진짜 오류와 갈리지 않는다 — 갈리는 것은 「방금 그 말을 들었다」는 사실뿐이다.
+/// 대가(정직): 창 안의 **진짜** 429 는 최대 창 길이만큼 늦게 본다(Claude·agy 좌석은 상태줄 `usage.report` 경로가 따로 있다).
+pub(crate) const QUOTE_WINDOW_RULES: &[&str] = &["rate_limited"];
+pub(crate) const QUOTE_WINDOW_SECS: u64 = 600;
+
+fn rate_limited_quote_regex() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(RATE_LIMITED_PAT).expect("RATE_LIMITED_PAT"))
+}
+
 /// 오너 완화책 ① 기본 내장 룰: 로그인 만료·401·토큰 만료를 즉시 감지한다.
 fn default_health_rules() -> Vec<HealthRule> {
     let defaults: &[(&str, &str)] = &[
@@ -8784,10 +8878,9 @@ fn default_health_rules() -> Vec<HealthRule> {
             "login_required",
             r"(?i)(please|run).{0,30}(/login|log ?in again)",
         ),
-        (
-            "rate_limited",
-            r"(?i)rate.?limit(ed)?|too many requests|\b429\b",
-        ),
+        // ★1.1.9 2판 ⑩(codex 1R): 탐지는 **넓게** 둔다(1판의 공급사 서식 한정은 `rate limit exceeded`·`Too Many Requests (429)`
+        //   같은 진짜 오류를 놓쳤다). 경보 재진술 되먹임은 내용이 아니라 **출처**로 막는다 — `QUOTE_WINDOW_RULES` 참조.
+        ("rate_limited", RATE_LIMITED_PAT),
     ];
     defaults
         .iter()
@@ -9255,6 +9348,85 @@ mod tests {
             .unwrap();
         assert!(daemon.master_claimed_at.lock().unwrap().is_some(),
                 "master 부활 시 master_claimed_at 스탬프돼야 approval.sign 가능(P1-2)");
+    }
+
+    /// ★D-mac-1 → D-mac-5(master#848f963a) — 좌석 안 `CLAUDE_CONFIG_DIR=<계정2> claude` 로 뜬 좌석: 기록값(claude_config_dir)은
+    /// 데몬 기본으로 남지만 **OS 관측**(좌석 claude 프로세스 env)이 계정2 면 topology `seat_profile` = 계정2 → 부활
+    /// (`cys::restore_config_dir`)이 계정2 를 승계한다. ★자기보고(statusline session_file)만 있는 좌석은 null — 7d298e35 판의
+    /// 자기보고 의존을 뺐다. 윈 꼴(판독 불가 = 값 None) · 관측 전 = null(종전 기록값).
+    #[test]
+    fn d_mac_1_topology_persists_observed_seat_profile() {
+        let sock = isolated_sock("dmac1-topo");
+        let daemon = Daemon::new(sock.clone());
+        let mk = |role: &str| {
+            daemon
+                .create_surface_with_env(Some("/home/x/wf".into()), Some("sleep 30".into()), None,
+                                         Some(role.into()), 24, 80, &[], None, None)
+                .unwrap()
+        };
+        let acct2 = mk("worker-2");
+        *acct2.os_config_dir.lock().unwrap() = Some((101, Some("/home/x/.claude-acct2".into())));
+        let fresh = mk("worker-3"); // 관측 전
+        let selfrep = mk("worker-4"); // 자기보고만(statusline session_file = 계정2) — 격상 0
+        *selfrep.observed_usage.lock().unwrap() = Some(crate::usage::ObservedUsage {
+            agent: "claude".into(), ctx_tokens: None, ctx_window: None, ctx_pct: None, rate: vec![],
+            source: "statusline".into(), session_file: "/home/x/.claude-acct2/projects/-home-x-wf/abc.jsonl".into(),
+            updated_at: 1.0, rate_observed_at: 0.0, rate_account: None,
+        });
+        let win = mk("worker-5"); // 윈 꼴 = 판독 시도했으나 값 없음
+        *win.os_config_dir.lock().unwrap() = Some((102, None));
+        let _shell = mk("worker-6"); // 비 claude(에이전트 미상) = 권위 칸 null
+        for s in [&acct2, &fresh, &selfrep, &win] {
+            *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        }
+        crate::governance::persist_topology(&daemon);
+        let entries = crate::governance::load_topology(&daemon);
+        let get = |role: &str| {
+            entries.as_array().unwrap().iter().find(|e| e["role"].as_str() == Some(role)).cloned()
+                .unwrap_or_else(|| panic!("{role} entry 영속"))
+        };
+        let e2 = get("worker-2");
+        assert_eq!(e2["seat_profile"].as_str(), Some("/home/x/.claude-acct2"), "OS 관측 프로필 영속");
+        assert_ne!(e2["claude_config_dir"].as_str(), Some("/home/x/.claude-acct2"), "재현 전제: 기록값은 데몬 기본");
+        assert_eq!(e2[cys::CONFIG_DIR_AUTHORITY_KEY].as_str(), Some("os"));
+        // ★2판 ⑦: 부활은 그 관측값을 **검증 뒤**에만 쓴다 — 이 시험의 /home/x 는 없는 폴더라 중단(Err)이 맞다
+        //   (실재·소유·권한 통과 갈래 = lib `restore_config_dir_prefers_observed_seat_profile`).
+        assert!(cys::restore_config_dir(&e2).is_err(), "없는 관측 프로필을 검증 없이 승격");
+        let unobs_tag = if cfg!(windows) { "recorded" } else { cys::CONFIG_DIR_UNOBSERVED };
+        for r in ["worker-3", "worker-4", "worker-5"] {
+            let e = get(r);
+            assert!(e["seat_profile"].is_null(), "{r}: 관측 전·자기보고만·윈 꼴 = null");
+            assert_eq!(e[cys::CONFIG_DIR_AUTHORITY_KEY].as_str(), Some(unobs_tag), "{r}");
+            // ★2판 ⑧: 관측 가능 기계에서 관측 전 = 판단 불가(조용한 기록값 폴백 0) · 윈도우 = 종전 기록값.
+            if cfg!(windows) {
+                assert_eq!(cys::restore_config_dir(&e), Ok(e["claude_config_dir"].as_str().map(String::from)), "{r}");
+            } else {
+                assert!(cys::restore_config_dir(&e).is_err(), "{r}: 권위 없는 기록값으로 부활");
+            }
+        }
+        assert!(get("worker-6")[cys::CONFIG_DIR_AUTHORITY_KEY].is_null(), "비 claude = 권위 칸 없음");
+    }
+
+    /// ★D-mac-5: 권위 설정 폴더 = OS 관측 > 기록값 · 공백 OS 값 = 없음 · 자기보고는 들어오지 않는다.
+    #[test]
+    fn d_mac_5_authoritative_config_dir_precedence() {
+        let sock = isolated_sock("dmac5-auth");
+        let daemon = Daemon::new(sock);
+        let s = daemon
+            .create_surface_with_env(None, Some("sleep 30".into()), None, Some("worker-6".into()), 24, 80, &[],
+                                     Some("/rec".into()), None)
+            .unwrap();
+        assert_eq!(s.authoritative_config_dir().as_deref(), Some("/rec"), "OS 관측 없음 = 기록값");
+        *s.observed_usage.lock().unwrap() = Some(crate::usage::ObservedUsage {
+            agent: "claude".into(), ctx_tokens: None, ctx_window: None, ctx_pct: None, rate: vec![],
+            source: "statusline".into(), session_file: "/self/projects/-w/s.jsonl".into(),
+            updated_at: 1.0, rate_observed_at: 0.0, rate_account: None,
+        });
+        assert_eq!(s.authoritative_config_dir().as_deref(), Some("/rec"), "자기보고가 권위를 바꿨다");
+        *s.os_config_dir.lock().unwrap() = Some((7, Some("  ".into())));
+        assert_eq!(s.authoritative_config_dir().as_deref(), Some("/rec"), "공백 OS 값 = 없음");
+        *s.os_config_dir.lock().unwrap() = Some((7, Some("/os".into())));
+        assert_eq!(s.authoritative_config_dir().as_deref(), Some("/os"), "OS 관측이 기록값을 이긴다");
     }
 
     /// (W1-6 a·d) 계정 config_dir 영속 라운드트립 + 구 topology 하위호환.
@@ -10809,12 +10981,18 @@ mod tests {
         assert!(m("login_required", "please log in again"));
         assert!(!m("login_required", "you are logged in"));
 
-        // rate_limited — rate limit(ed)? | too many requests | 429
+        // rate_limited — ★1.1.9 2판 ⑩: 탐지는 넓게(되먹임 차단 = 출처 창 · `d_u3_quote_window_*` 시험).
         assert!(m("rate_limited", "rate limited"));
         assert!(m("rate_limited", "ratelimit"));
         assert!(m("rate_limited", "rate-limited"));
         assert!(m("rate_limited", "too many requests"));
         assert!(m("rate_limited", "HTTP 429 Too Many Requests"));
+        assert!(m("rate_limited", "HTTP/1.1 429 Too Many Requests"));
+        assert!(m("rate_limited", r#"API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"Number of request tokens has exceeded your per-minute rate limit"}}"#));
+        assert!(m("rate_limited", "Claude AI usage limit reached|1760000000"));
+        // codex 1R ⑩ — 1판 축소식이 놓친 진짜 오류 두 문장
+        assert!(m("rate_limited", "Error: rate limit exceeded"));
+        assert!(m("rate_limited", "Too Many Requests (429)"));
         assert!(!m("rate_limited", "all good, build complete"));
 
         // 내장 룰은 alert-only(조치 미바인딩) + threshold/pause 기본값 박제
@@ -10895,6 +11073,73 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    /// ★1.1.9 2판 ⑩(codex 1R · D-U3 안 A 출처 창) — 넓은 탐지 + 「경보 문구를 받은 좌석」의 재진술 차단.
+    /// 재현: 1판 축소식은 `Error: rate limit exceeded`·`Too Many Requests (429)` 를 놓치고, 영어 재진술
+    /// `worker reported HTTP 429 earlier` 는 그대로 거짓 health.alert 를 냈다. 뮤턴트 U3-NOQUOTE(창 끔) = 적.
+    #[test]
+    fn d_u3_quote_window_blocks_restatement_after_injection() {
+        let _iso = crate::delivery::tests::isolate_state_dir("du3-quote");
+        let (daemon, a) = health_probe_daemon("du3-quote");
+        let b = daemon
+            .create_surface(None, Some("sleep 30".into()), None, Some("worker".into()), 24, 80)
+            .expect("create surface");
+        daemon.surfaces.lock().unwrap().insert(b.id, b.clone());
+        let restate = "worker reported HTTP 429 earlier";
+        // ★3판 ⑤: 출처 = CSO 좌석의 건강 중계(경보 키 동반) — a 는 그 본문을 기계 주입으로 받았다(배달 원장 입구).
+        let cso = daemon
+            .create_surface(None, Some("sleep 30".into()), None, Some("cso".into()), 24, 80)
+            .expect("create surface");
+        daemon.surfaces.lock().unwrap().insert(cso.id, cso.clone());
+        crate::delivery::record_audited(
+            &daemon,
+            a.id,
+            "[CSO] surface 7 health.alert rule=rate_limited — HTTP 429",
+            crate::delivery::Origin::Send,
+            Some(cso.id),
+        );
+        assert!(feed_lines_collect_alerts(&daemon, &a, &[restate]).is_empty(), "받은 좌석의 재진술이 경보가 됐다");
+        let last = daemon.recent_health.lock().unwrap().back().cloned().expect("인터록 원장 기록");
+        assert_eq!((last["surface_id"].as_u64(), last["discourse"].as_str()), (Some(a.id), Some("injected-quote")));
+        // 창은 받은 좌석·그 룰에만 — 다른 룰은 그대로 경보.
+        let other = feed_lines_collect_alerts(&daemon, &a, &["api: 401 Unauthorized"]);
+        assert_eq!(other.iter().map(|(r, _)| r.as_str()).collect::<Vec<_>>(), vec!["auth_401"]);
+        // 정직: 출처 없는 좌석의 같은 문장은 내용만으로는 진짜 오류와 갈리지 않는다(경보 = 종전).
+        assert_eq!(feed_lines_collect_alerts(&daemon, &b, &[restate]).len(), 1, "창은 받은 좌석에만");
+        // 창 끝 = 다시 경보.
+        for until in daemon.health_quote_until.lock().unwrap().values_mut() {
+            *until = Instant::now() - std::time::Duration::from_secs(1);
+        }
+        assert_eq!(feed_lines_collect_alerts(&daemon, &a, &[restate]).len(), 1, "창이 끝났는데 억제");
+        // ★3판 ⑩: 좌석을 닫으면 그 좌석 출처 창 키도 회수(누수 0).
+        assert!(daemon.health_quote_until.lock().unwrap().keys().any(|(sid, _)| *sid == a.id));
+        let _ = crate::governance::close_surface(&daemon, a.id, crate::governance::CloseCause::Reap);
+        assert!(!daemon.health_quote_until.lock().unwrap().keys().any(|(sid, _)| *sid == a.id), "닫힌 좌석 창 키가 남았다");
+    }
+
+    #[test]
+    fn d_u3_wide_detection_and_non_matching_injection_opens_no_window() {
+        let _iso = crate::delivery::tests::isolate_state_dir("du3-wide");
+        let (daemon, a) = health_probe_daemon("du3-wide");
+        let b = daemon
+            .create_surface(None, Some("sleep 30".into()), None, Some("worker".into()), 24, 80)
+            .expect("create surface");
+        daemon.surfaces.lock().unwrap().insert(b.id, b.clone());
+        // 경보와 무관한 주입은 창을 열지 않는다.
+        crate::delivery::record_audited(&daemon, a.id, "build please", crate::delivery::Origin::Send, None);
+        assert!(daemon.health_quote_until.lock().unwrap().is_empty());
+        // ★3판 ⑤(codex 2R BLOCK): 일반 좌석(b · worker)이 보낸 「PR #429 확인」 = 경보 중계 아님 → 창 0 →
+        //   받은 좌석 a 의 진짜 오류는 경보가 난다(반복 전송으로 남의 경보를 억제하던 구멍).
+        for _ in 0..3 {
+            crate::delivery::record_audited(&daemon, a.id, "PR #429 확인", crate::delivery::Origin::Send, Some(b.id));
+            crate::delivery::record_audited(&daemon, a.id, "health.alert rate_limited 다시 봐 줘 · PR #429",
+                                            crate::delivery::Origin::Schedule, None);
+        }
+        assert!(daemon.health_quote_until.lock().unwrap().is_empty(), "일반 send·스케줄이 출처 창을 열었다");
+        // codex 1R ⑩ — 진짜 오류 두 문장(좌석마다 하나 · 같은 좌석·룰 30초 디바운스).
+        assert_eq!(feed_lines_collect_alerts(&daemon, &a, &["Error: rate limit exceeded"]).len(), 1);
+        assert_eq!(feed_lines_collect_alerts(&daemon, &b, &["Too Many Requests (429)"]).len(), 1);
     }
 
     /// ★음성 대조(수용 기준) — 경보를 **논의하는 산문**은 신규 경보 0건이어야 한다.

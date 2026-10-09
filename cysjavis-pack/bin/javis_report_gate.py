@@ -118,6 +118,16 @@ QUIET_CYCLES_DEFAULT = 12      # 12주기=60분 QUIET → 세션 주차 후보(P
 GAP_CYCLES = 3                 # 직전 대장과 간격 >3주기 = GAP(슬립·재부팅 복귀 위양성 강등)
 SCHEMA_VERSION = 1
 STALL_COOLDOWN_SECS = 3600     # stall 재발화 쿨다운(1h·12주기) — 2026-07-26 무한 발화 결함 수정
+# ★D-U5(1.1.9 · Win master 10-08 상신): 유휴 좌석 「무진행」 과승격 — 같은 정체 구간에서 1h 마다
+#   6→18→30→42주기로 끝없이 다시 울려 진짜 멈춘 노드가 같은 채널에 묻혔다. 처방 2:
+#   ① 명시 보류 억제 — 자기보고 state ∈ STALL_HOLD_STATES 이고 그 보고가 정체 구간 시작 뒤
+#     (또는 구간 시작 미관측)면 이 축을 울리지 않는다(카운터는 계속 센다). blocked 는 억제 대상이
+#     아니다(막힘은 알려야 하는 사건). state 미측정 = 종전 그대로 울린다(fail-closed).
+#   ② 반복 묶음 — 같은 정체 구간 안의 재발화 간격을 배로 늘린다(1h→2h→4h · 상한 STALL_COOLDOWN_MAX_SECS).
+#     진행이 바뀌면 횟수·간격 모두 리셋(다음 정체는 즉시 알린다 — 종전 규칙 유지).
+STALL_HOLD_STATES = ("waiting", "done")
+STALL_HOLD_TTL_SECS = 12 * 3600        # ★codex 1R BLOCK①: 구간 시작 미관측(기준선·GAP)일 때 믿는 보류 보고의 최대 나이
+STALL_COOLDOWN_MAX_SECS = 4 * 3600
 LEDGER_MAX_BYTES = 5 * 1024 * 1024   # 대장 5MB 도달 시 ledger.jsonl.1로 1세대 로테이션
 
 # ── W5 상수 ──────────────────────────────────────────────────────────────────
@@ -737,6 +747,7 @@ def measurements(report):
             "agent_alive": n.get("agent_alive"),
             "status_age_secs": n.get("status_age_secs"),
             "usage_ctx_tokens": n.get("usage_ctx_tokens"),
+            "state": n.get("state"),
         }
     return out
 
@@ -1189,16 +1200,27 @@ def build_stall_warnings(counters, report, cycle_minutes, stall_cycles, now_iso,
             count = pc.get("count", 0) + 1
             last_change = pc.get("last_change_ts", now_iso)
             last_stall = pc.get("last_stall_fired", 0)
+            fires = pc.get("stall_fires", 0)
+            change_epoch = pc.get("last_change_epoch")
         else:
             count = 0                 # 진행 변화 시에만 리셋(해당 태스크 기준)
             last_change = now_iso
             last_stall = 0            # 진행 재개 = 쿨다운도 리셋(다음 정체는 즉시 알린다)
+            fires = 0
+            # ★D-U5 ①: 구간 시작 시각은 **변화를 실제로 본 때만** 적는다. 첫 관측(기준선·GAP 리셋)은
+            #   None = 「언제 시작했는지 모름」 → 보류 보고는 유한 TTL(STALL_HOLD_TTL_SECS) 안의 것만 믿는다
+            #   (codex 1R BLOCK①: 종전엔 나이와 무관하게 영구 억제). 첫 관측 시각은 따로 남긴다(first_obs_epoch · 감사용).
+            #   변화는 직전 주기와 이번 주기 사이 어딘가에서 났으므로 하한(직전 주기 시각)을 적는다 —
+            #   「체크 → 곧바로 waiting 보고 → 다음 주기에 변화 관측」이 낡은 보류로 오판되지 않게.
+            change_epoch = (now_epoch - cycle_minutes * 60) if (pc and now_epoch) else None
+        first_obs = (pc.get("first_obs_epoch") if pc else None) or (now_epoch or None)
         new_nodes[label] = {"sig": sig, "count": count, "last_change_ts": last_change,
-                            "last_stall_fired": last_stall}
+                            "last_stall_fired": last_stall, "stall_fires": fires,
+                            "last_change_epoch": change_epoch, "first_obs_epoch": first_obs}
 
         in_progress = n.get("total", 0) > 0 and n.get("done", 0) < n.get("total", 0)
         if in_progress and count >= stall_cycles:
-            if now_epoch and (now_epoch - last_stall) < STALL_COOLDOWN_SECS:
+            if now_epoch and (now_epoch - last_stall) < stall_refire_secs(fires):
                 continue              # 쿨다운 창 — 카운터는 계속 증가(다음 발화에 실제 경과 반영)
             roles, how = resolve_label_roles(label, live)
             if how == "none":
@@ -1206,8 +1228,11 @@ def build_stall_warnings(counters, report, cycle_minutes, stall_cycles, now_iso,
             idle = node_is_idle(report, label)
             if idle is False:
                 continue              # 노드 busy → 승격 보류(카운터는 이미 증가)
+            if stall_held(ms, roles, change_epoch, now_epoch):
+                continue              # ★D-U5 ①: 명시 보류(waiting·done) = 정체가 아니다(카운터는 계속)
             # idle True 또는 None(미지=보수적 시끄러운 쪽으로 승격) → stall WARN
             new_nodes[label]["last_stall_fired"] = now_epoch or last_stall
+            new_nodes[label]["stall_fires"] = fires + 1
             mins = count * cycle_minutes
             measured = [ms[r].get("idle_secs") for r in roles if r in ms]
             measured_idle = max([v for v in measured if isinstance(v, int)] or [0])
@@ -1233,8 +1258,8 @@ def build_stall_warnings(counters, report, cycle_minutes, stall_cycles, now_iso,
                                "measure_source": (ms.get(roles[0], {}) or {}).get("source")
                                if roles else "unavailable"},
                 "idem": "gate-stall-%s" % label,
-                # push 승격 시의 재발화 상한 = WARN 자체의 쿨다운과 같은 창(1h).
-                "cooldown": STALL_COOLDOWN_SECS,
+                # push 승격 시의 재발화 상한 = WARN 자체의 다음 재발화 창(D-U5 ② 배증 · 1h 부터).
+                "cooldown": stall_refire_secs(fires + 1),
                 "stamp": {"measure_source": (ms.get(roles[0], {}) or {}).get("source")
                           if roles else "unavailable",
                           "sampled_at": (ms.get(roles[0], {}) or {}).get("sampled_at")
@@ -1247,6 +1272,38 @@ def build_stall_warnings(counters, report, cycle_minutes, stall_cycles, now_iso,
             }))
     counters["nodes"] = new_nodes
     return stalls
+
+
+def stall_refire_secs(fires):
+    """★D-U5 ② 같은 정체 구간의 재발화 간격 — 이미 울린 횟수 `fires` 기준 1h·2h·4h(상한).
+    fires=0(아직 안 울림)은 쿨다운 없음과 같다(last_stall=0 이라 창이 이미 지나 있다)."""
+    n = max(int(fires or 0) - 1, 0)
+    return min(STALL_COOLDOWN_SECS * (2 ** min(n, 16)), STALL_COOLDOWN_MAX_SECS)
+
+
+def stall_held(ms, roles, change_epoch, now_epoch):
+    """★D-U5 ① 명시 보류 판정 — 해소된 role **전원**이 보류 상태를 자기보고했고, 그 보고가
+    정체 구간 시작 뒤(또는 구간 시작 미관측)일 때만 True.
+
+    · 전원(AND): 가족 라벨에서 하나라도 보류가 아니면 그 좌석이 멈췄을 수 있다 → 울린다.
+    · 선후: 보류 보고 뒤에 todo 가 바뀌었다면(새 임무가 들어왔다) 그 보류는 낡은 것이다 → 울린다.
+    · TTL: 보고 나이 ≤ STALL_HOLD_TTL_SECS 일 때만 믿는다 — **구간 시작 관측 여부와 무관**(codex 1R BLOCK① ·
+      2R BLOCK①: 진행 뒤 waiting 을 보고하고 죽은 좌석이 구간 시작 관측 갈래에서 영구 침묵하던 구멍). 나이 미측정 = 믿지 않는다.
+    · state·age 미측정 = 보류 아님(fail-closed — 종전처럼 울린다)."""
+    if not roles:
+        return False
+    for r in roles:
+        m = ms.get(r) or {}
+        if m.get("state") not in STALL_HOLD_STATES:
+            return False
+        age = m.get("status_age_secs")
+        if not isinstance(age, (int, float)) or isinstance(age, bool):
+            return False              # 나이 모름 = 선후·TTL 판정 불가 = 보류 아님(fail-closed)
+        if age > STALL_HOLD_TTL_SECS:
+            return False              # TTL 넘은 보류 = 믿지 않는다(죽은 좌석의 마지막 보고일 수 있다)
+        if change_epoch and now_epoch and (now_epoch - age) < change_epoch:
+            return False              # 보류 보고가 구간 시작(마지막 진행 변화)보다 앞 = 낡은 보류
+    return True
 
 
 def build_measure_warnings(stall_warns):

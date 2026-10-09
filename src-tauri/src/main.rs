@@ -14901,3 +14901,30 @@ osascript 를 실행할 수 없어 건너뜁니다({e}) — macOS 가 아닌 환
         assert!(m[0].get("current_profiles").is_none(), "키 없는 행끼리의 병합이 키를 만들었다: {}", m[0]);
     }
 }
+
+/// ★1.1.9 준비(MIT 고지 동봉): MIT 는 「모든 사본·상당 부분에 저작권 고지와 허가 고지를 포함」을 조건으로 한다 — 설치본(맥 .app
+/// `Contents/Resources/` · 윈 설치 폴더)에 LICENSE·NOTICE.md 가 실려야 한다. 두 설정(맥 기본 · 윈 덮어쓰기)이 모두 그 둘을 자원 뿌리
+/// (`./`)에 싣는지 · 원본 파일이 실재하고 MIT 고지인지 잰다(파일 부재 = include_str! 컴파일 실패 = 이 시험 자체가 서지 않는다).
+#[cfg(test)]
+mod license_bundle_tests {
+    fn resources(conf: &str) -> serde_json::Map<String, serde_json::Value> {
+        let v: serde_json::Value = serde_json::from_str(conf).expect("tauri 설정 JSON");
+        v["bundle"]["resources"].as_object().cloned().expect("bundle.resources 가 원본→대상 맵이 아니다")
+    }
+
+    #[test]
+    fn license_and_notice_ship_in_mac_and_windows_bundles() {
+        for (name, conf) in [
+            ("tauri.conf.json(맥·기본)", include_str!("../tauri.conf.json")),
+            ("tauri.windows.conf.json(윈)", include_str!("../tauri.windows.conf.json")),
+        ] {
+            let r = resources(conf);
+            for src in ["../LICENSE", "../NOTICE.md"] {
+                assert_eq!(r.get(src).and_then(|v| v.as_str()), Some("./"), "{name}: {src} 가 설치본 자원 뿌리에 안 실린다");
+            }
+        }
+        let license = include_str!("../../LICENSE");
+        assert!(license.starts_with("MIT License") && license.contains("Permission is hereby granted"), "LICENSE 가 MIT 고지가 아니다");
+        assert!(include_str!("../../NOTICE.md").contains("MIT License"), "NOTICE.md 가 LICENSE 를 가리키지 않는다");
+    }
+}

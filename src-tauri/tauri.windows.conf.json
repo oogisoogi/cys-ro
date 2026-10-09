@@ -7,6 +7,8 @@
       "resources/pack.tar.gz": "./",
       "resources/pack-manifest.json": "./",
       "resources/runtime-manifest.json": "./",
+      "../LICENSE": "./",
+      "../NOTICE.md": "./",
       "runtime/": "runtime/"
     },
     "windows": {

@@ -22,6 +22,12 @@ on:
 env:
   SRC_REPO: oogisoogi/cys-ro   # 2026-09-08 포크 전환(TICKET=cys-fork-rebase-v0.14.30)
 
+# ★B1(1.1.9 · TICKET=cysr-119-defects): release.yml 과 같은 규칙 — 같은 ref 의 팩 릴리스 런은 한 번에 하나
+#   (cancel-in-progress: false = 진행 런 보존 · 뒤 런 대기). 1.1.8 백로그 ⓒ(master#9306a99f).
+concurrency:
+  group: pack-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   pack-only:
     runs-on: ubuntu-latest

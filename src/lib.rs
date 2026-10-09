@@ -2324,6 +2324,83 @@ pub fn home_dir() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// ★D-mac-1(1.1.9 · TICKET=cysr-119-defects): topology(·phoenix 명부) 엔트리 → 부활 때 쓸 계정 프로필 dir.
+///
+/// 우선순위 = `seat_profile`(데몬이 **관측한** 좌석 transcript 경로의 프로필 폴더 · `<프로필>/projects/…`) →
+/// `claude_config_dir`(좌석 생성 때 데몬이 **기록한** 값 — 종전 정본) → None(호출부가 템플릿·기본값으로 접는다).
+///
+/// **왜 관측이 기록을 이기나**: 좌석 안에서 `CLAUDE_CONFIG_DIR=<계정2> claude …` 로 띄운 좌석(계정 전환·
+/// spawn 래퍼)은 데몬이 모르는 env 라 기록값이 데몬 기본(`~/.cys/claude`)으로 남는다. 콜드부트 부활이 그
+/// 기록값을 쓰면 좌석이 다른 계정으로 떠 한도 정지한다(10-08 실측 8/8). 관측값은 claude 가 실제로 쓰는
+/// 파일 위치라 그 좌석의 진짜 프로필이다. 관측이 없으면(구 topology·관측 전 종료) 종전 그대로다.
+/// 빈 문자열 `seat_profile` 은 없음으로 본다(`claude_config_dir` 의 `Some("")` 의미는 종전 그대로 보존).
+///
+/// ★2판 ⑦⑧(codex 1R · D-mac-5 = B 와 함께): claude 좌석이면 결과가 **권위**여야 한다 —
+/// ⑦ `seat_profile`(= 데몬이 OS env 로 관측한 값)은 [`validate_profile_dir`] 를 통과해야 쓴다(실패 = Err · resume 중단).
+/// ⑧ 관측이 가능한 기계인데 관측 전에 죽은 좌석(`config_dir_authority = "unobserved"`)은 기록값이 데몬 기본일 뿐이라
+///    **판단 불가 = Err**(조용한 계정1 폴백 0). 윈도우(`"recorded"` · env 판독 안 함)·구 topology(칸 없음)·비 claude = 종전 기록값.
+pub fn restore_config_dir(entry: &serde_json::Value) -> Result<Option<String>, String> {
+    restore_config_dir_under(entry, &home_dir())
+}
+
+pub fn restore_config_dir_under(entry: &serde_json::Value, home: &Path) -> Result<Option<String>, String> {
+    if let Some(p) = entry["seat_profile"].as_str().map(str::trim).filter(|p| !p.is_empty()) {
+        return validate_profile_dir_under(p, home).map(Some);
+    }
+    if entry["agent"].as_str().is_some_and(is_claude_agent) && entry[CONFIG_DIR_AUTHORITY_KEY].as_str() == Some(CONFIG_DIR_UNOBSERVED) {
+        return Err("좌석 계정 프로필 미관측(관측 전 종료) — 기록값은 데몬 기본일 뿐이라 권위가 없다 · 자동 이어 기동 중단".into());
+    }
+    Ok(entry["claude_config_dir"].as_str().map(String::from))
+}
+
+/// topology 엔트리의 설정 폴더 권위 칸(데몬 persist_topology 가 claude 좌석에 쓴다) — `"os"`(OS env 관측) ·
+/// `"recorded"`(관측 불가 기계 = 윈도우 · 기록값) · `"unobserved"`(관측 가능 기계인데 관측 전).
+pub const CONFIG_DIR_AUTHORITY_KEY: &str = "config_dir_authority";
+pub const CONFIG_DIR_UNOBSERVED: &str = "unobserved";
+
+/// ★2판 ⑦: 부활에 쓸 계정 프로필 폴더 검증 — 절대경로 · 실재 폴더 · 정규화(canonicalize · 심링크 해소) 뒤
+/// `$HOME` 아래 · (유닉스) 소유자 = 현재 사용자 · 그룹/기타 쓰기 불가. 통과 = 정규화 경로. 실패 = 사유(호출부가 기동 중단).
+/// 왜: 이 값은 `CLAUDE_CONFIG_DIR` 로 승격돼 그 폴더의 설정·훅을 자동 부활 프로세스가 읽는다 — 변조된
+/// topology(예: `/tmp/evil-claude`)가 지속 실행 경로가 되지 않게.
+pub fn validate_profile_dir(p: &str) -> Result<String, String> {
+    validate_profile_dir_under(p, &home_dir())
+}
+
+pub fn validate_profile_dir_under(p: &str, home: &Path) -> Result<String, String> {
+    let raw = Path::new(p);
+    if !raw.is_absolute() {
+        return Err(format!("계정 프로필 경로가 절대경로가 아니다: {p}"));
+    }
+    let canon = std::fs::canonicalize(raw).map_err(|e| format!("계정 프로필 폴더 없음/판독 불가: {p} ({e})"))?;
+    let md = std::fs::metadata(&canon).map_err(|e| format!("계정 프로필 판독 불가: {p} ({e})"))?;
+    if !md.is_dir() {
+        return Err(format!("계정 프로필이 폴더가 아니다: {p}"));
+    }
+    let home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    if !canon.starts_with(&home) || canon == home {
+        return Err(format!("계정 프로필이 홈 아래가 아니다: {} (홈 {})", canon.display(), home.display()));
+    }
+    // ★3판 ⑨(codex 2R MAJOR · 부분 채택): 대상만이 아니라 **HOME 부터 대상까지 모든 폴더**가 내 것 · 그룹/기타 쓰기 0 —
+    //   0777 중간 폴더면 남이 검증 직후 프로필을 바꿔 끼울 수 있다. ⛔기동 직전 재검증(TOCTOU)은 하지 않는다(우리 HOME 안 = 신뢰 경계 · master#54e8020b).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let uid = unsafe { libc::getuid() };
+        let mut chain: Vec<&Path> = canon.ancestors().take_while(|a| a.starts_with(&home)).collect();
+        chain.reverse(); // HOME → … → 대상
+        for dir in chain {
+            let m = std::fs::metadata(dir).map_err(|e| format!("계정 프로필 경로 판독 불가: {} ({e})", dir.display()))?;
+            if m.uid() != uid {
+                return Err(format!("계정 프로필 경로 소유자가 현재 사용자가 아니다: {} (uid {} ≠ {uid})", dir.display(), m.uid()));
+            }
+            if m.mode() & 0o022 != 0 {
+                return Err(format!("계정 프로필 경로에 그룹/기타 쓰기 권한이 있다: {} (mode {:o})", dir.display(), m.mode() & 0o777));
+            }
+        }
+    }
+    Ok(canon.to_string_lossy().into_owned())
+}
+
 /// (W1) claude CLAUDE_CONFIG_DIR 결정론 해소 — agents.json의 `${CYS_ACCOUNT_DIR:-$HOME/.cys/claude}`와
 /// 동일 규칙을 **현재 프로세스 env**로 전개한다. pane 셸(=데몬 자식)이 실제로 해소하는 값과 일치하려면
 /// 실제 전개 주체인 **데몬 프로세스에서 호출**하는 것이 권위다(state.rs의 CYS_ACCOUNT_DIR 전파와 정합).
@@ -5804,6 +5881,94 @@ mod tests {
             "-Users-user-Desktop-ProjX"
         );
         assert_eq!(claude_project_component("/tmp/a.b_c"), "-tmp-a-b-c");
+    }
+
+    #[test]
+    fn restore_config_dir_prefers_observed_seat_profile() {
+        // ★D-mac-1: 관측 프로필 > 기록 config dir > None. ★2판 ⑦⑧: 관측값은 검증 통과분만(정규화 경로).
+        let tmp = std::env::temp_dir().join(format!("cys-rcd-{}", std::process::id()));
+        let home = tmp.join("home");
+        let acct2 = home.join(".claude-acct2");
+        std::fs::create_dir_all(&acct2).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&acct2, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let canon = std::fs::canonicalize(&acct2).unwrap().to_string_lossy().into_owned();
+        let r = |e: serde_json::Value| restore_config_dir_under(&e, &home);
+        let both = serde_json::json!({"agent": "claude", "seat_profile": acct2.to_str().unwrap(), "claude_config_dir": "/h/.cys/claude"});
+        assert_eq!(r(both), Ok(Some(canon.clone())));
+        let rec_only = serde_json::json!({"claude_config_dir": "/h/.cys/claude"});
+        assert_eq!(r(rec_only), Ok(Some("/h/.cys/claude".into())), "구 topology(권위 칸 없음) = 종전");
+        let blank = serde_json::json!({"seat_profile": "  ", "claude_config_dir": "/h/.cys/claude", "x": 1});
+        assert_eq!(r(blank), Ok(Some("/h/.cys/claude".into())), "빈 관측 = 없음");
+        let null_obs = serde_json::json!({"seat_profile": null, "claude_config_dir": ""});
+        assert_eq!(r(null_obs), Ok(Some("".into())), "기록 Some(\"\") 의미 보존");
+        assert_eq!(r(serde_json::json!({"role": "w"})), Ok(None));
+        // ⑧ 관측 가능 기계인데 관측 전 = 판단 불가(조용한 기록값 폴백 0) · 윈도우 recorded = 종전 · 비 claude = 무관.
+        let unobs = serde_json::json!({"agent": "claude", "claude_config_dir": "/h/.cys/claude", "config_dir_authority": "unobserved"});
+        assert!(r(unobs).is_err(), "관측 전 claude 좌석을 기록값으로 띄웠다");
+        let win = serde_json::json!({"agent": "claude", "claude_config_dir": "C:/u/.cys/claude", "config_dir_authority": "recorded"});
+        assert_eq!(r(win), Ok(Some("C:/u/.cys/claude".into())));
+        let codex = serde_json::json!({"agent": "codex", "claude_config_dir": "/h/.cys/claude", "config_dir_authority": "unobserved"});
+        assert_eq!(r(codex), Ok(Some("/h/.cys/claude".into())));
+        // ⑦ 변조 관측값 = Err(중단) — 상대 · 홈 밖 · 없음.
+        for bad in ["rel/.claude", "/tmp/evil-claude", home.join("nope").to_str().unwrap()] {
+            let e = serde_json::json!({"agent": "claude", "seat_profile": bad, "claude_config_dir": "/h/.cys/claude"});
+            assert!(r(e).is_err(), "검증 없이 승격: {bad}");
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// ★2판 ⑦: 프로필 검증 — 홈 자신 · 홈 밖 심링크 · 파일 · 그룹/기타 쓰기 = 거부 · 홈 안 심링크 = 정규화 경로로 통과.
+    #[test]
+    fn validate_profile_dir_rejects_unsafe_profiles() {
+        let tmp = std::env::temp_dir().join(format!("cys-vpd-{}", std::process::id()));
+        let home = tmp.join("home");
+        let ok = home.join(".claude-acct2");
+        let outside = tmp.join("outside");
+        std::fs::create_dir_all(&ok).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(home.join("file"), b"x").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&ok, std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::os::unix::fs::symlink(&outside, home.join("link-out")).unwrap();
+            std::os::unix::fs::symlink(&ok, home.join("link-in")).unwrap();
+        }
+        let v = |p: &Path| validate_profile_dir_under(p.to_str().unwrap(), &home);
+        let canon_ok = std::fs::canonicalize(&ok).unwrap().to_string_lossy().into_owned();
+        assert_eq!(v(&ok), Ok(canon_ok.clone()));
+        assert!(v(&home).is_err(), "홈 자신");
+        assert!(v(&outside).is_err(), "홈 밖");
+        assert!(v(&home.join("file")).is_err(), "파일");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert!(v(&home.join("link-out")).is_err(), "홈 밖을 가리키는 심링크");
+            assert_eq!(v(&home.join("link-in")), Ok(canon_ok), "홈 안 심링크 = 정규화");
+            std::fs::set_permissions(&ok, std::fs::Permissions::from_mode(0o770)).unwrap();
+            assert!(v(&ok).is_err(), "그룹 쓰기");
+            std::fs::set_permissions(&ok, std::fs::Permissions::from_mode(0o702)).unwrap();
+            assert!(v(&ok).is_err(), "기타 쓰기");
+            // ★3판 ⑨: 중간 폴더(0777) 아래의 0700 프로필 = 거부 · 중간 폴더 0700 = 통과 · HOME 자체 0777 = 거부.
+            std::fs::set_permissions(&ok, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let mid = home.join("shared");
+            let deep = mid.join("profile");
+            std::fs::create_dir_all(&deep).unwrap();
+            std::fs::set_permissions(&deep, std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::set_permissions(&mid, std::fs::Permissions::from_mode(0o777)).unwrap();
+            assert!(v(&deep).is_err(), "0777 중간 폴더 아래 프로필을 통과시켰다");
+            std::fs::set_permissions(&mid, std::fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(v(&deep).is_ok(), "안전한 중간 폴더를 거부했다");
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o777)).unwrap();
+            assert!(v(&ok).is_err(), "0777 HOME 아래 프로필을 통과시켰다");
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

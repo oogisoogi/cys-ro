@@ -203,10 +203,63 @@ def _default_claude_config_dir():
 #   같게 둔다 — agent 부재는 CLI 가 스폰 자체를 건너뛰고(`agent 미상 — 건너뜀`), config dir 부재는
 #   `resolve_claude_config_dir()` 로, cwd 부재는 빈 문자열로 접는다. 경로 문자열도 Rust 의 format 그대로
 #   (`{cfg}/projects/{comp}/{sid}.jsonl`) 만든다 — 두 벌이 갈리면 성공한 fresh 각성이 'fork 의심' 으로 오보된다.
+def _validate_profile_dir(p, home=None):
+    """★cysr-119 3판 ⑦: Rust `cys::validate_profile_dir_under` 거울 → (True, 정규화 경로) | (False, 사유).
+    절대경로 · 실재 폴더 · realpath 뒤 HOME 아래(HOME 자신 제외) · (POSIX) HOME 부터 대상까지 모든 폴더 소유자 = 현재 uid ·
+    그룹/기타 쓰기 0. stdlib os 만."""
+    if not os.path.isabs(p):
+        return False, "not_absolute"
+    canon = os.path.realpath(p)
+    if not os.path.isdir(canon):
+        return False, "not_a_dir"
+    h = os.path.realpath(home or os.path.expanduser("~"))
+    if canon == h or not (canon + os.sep).startswith(h.rstrip(os.sep) + os.sep):
+        return False, "outside_home"
+    if os.name == "posix":
+        uid = os.getuid()
+        d = canon
+        while True:
+            try:
+                st = os.stat(d)
+            except OSError:
+                return False, "stat_failed"
+            if st.st_uid != uid:
+                return False, "owner_mismatch:%s" % d
+            if st.st_mode & 0o022:
+                return False, "group_other_writable:%s" % d
+            if d == h:
+                break
+            parent = os.path.dirname(d)
+            if parent == d:
+                break
+            d = parent
+    return True, canon
+
+
+def _restore_config_dir(entry, home=None):
+    """★cysr-119 3판 ⑦: Rust `cys::restore_config_dir` 의 진리표 거울 → (cfg | None, 중단 사유 | None).
+    seat_profile(공백 아닌) = 검증 통과분만 · claude 좌석 + config_dir_authority "unobserved" = 중단 · 그 밖 = 기록값."""
+    sp = entry.get("seat_profile")
+    if isinstance(sp, str) and sp.strip():
+        ok, v = _validate_profile_dir(sp.strip(), home)
+        return (v, None) if ok else (None, "seat_profile_refused:%s" % v)
+    agent = entry.get("agent")
+    if isinstance(agent, str) and (agent == "claude" or agent.startswith("claude-")) \
+            and entry.get("config_dir_authority") == "unobserved":
+        return None, "unobserved"
+    cfg = entry.get("claude_config_dir")
+    return (cfg if isinstance(cfg, str) else None), None
+
+
 def _session_project_dir(entry):
     """topology entry → claude 세션 파일 디렉터리 `{cfg}/projects/{munge(cwd)}` (Rust format 그대로 · 정규화 0).
-    cfg None/부재 → 기본값 · 빈 문자열은 Rust `Some("")` 처럼 빈 접두 그대로 · cwd 부재 → 빈 munge(이중 슬래시)."""
-    cfg = entry.get("claude_config_dir")
+    cfg None/부재 → 기본값 · 빈 문자열은 Rust `Some("")` 처럼 빈 접두 그대로 · cwd 부재 → 빈 munge(이중 슬래시).
+    ★D-mac-1(1.1.9): 관측 프로필 `seat_profile`(공백 아닌 문자열)이 있으면 그것이 먼저다 — Rust
+    `cys::restore_config_dir` 와 같은 규칙(부활 CLI 가 그 dir 로 띄우므로 예상도 같아야 fork 의심 오보 0).
+    ★3판 ⑦: Rust 가 이 엔트리의 기동을 멈추면(프로필 검증 실패 · unobserved) None — 호출부는 예상·재고를 하지 않는다."""
+    cfg, refused = _restore_config_dir(entry)
+    if refused:
+        return None
     if not isinstance(cfg, str):
         cfg = _default_claude_config_dir()
     comp = _claude_project_component(entry.get("cwd") or "")
@@ -321,13 +374,18 @@ def fresh_expected(entry):
     agent = entry.get("agent")
     if agent != "claude":
         return False, ""          # 타 어댑터(F-1 범위 밖) · agent 부재(CLI 가 스폰하지 않는다)
+    # ★3판 ⑦ · ★4판 ③(agy 3R BLOCK): 프로필 거부·미관측 중단을 session_id 검사보다 **먼저** — Rust run_restore 는 cfg 판정
+    #   (claim 앞)에서 그 엔트리 기동을 멈추므로 세션이 없어도 fresh 로 뜨지 않는다. 예상도 같은 순서여야 한다.
+    pdir = _session_project_dir(entry)
+    if pdir is None:
+        return False, ""          # CLI 가 이 엔트리 기동을 멈춘다 — fresh 예상 자체를 하지 않는다
     sid = entry.get("session_id")
     if not isinstance(sid, str) or not sid.strip():
         return True, "no_session"     # Rust: `.filter(|s| !s.trim().is_empty())` — 공백만이면 부재
     # Rust 는 부재 검사에만 trim 을 쓰고 경로에는 **원문 id** 를 쓴다(`{cfg}/projects/{comp}/{id}.jsonl`).
     #   ★리뷰 R1b: CLI 는 이제 placeholder 없는 어댑터(`resume_arg: "--continue"`)에도 같은 파일 검사를 **앞**에서
     #   한다(파일 없음 → 접미 0 · fresh) — 그래서 이 예상은 어댑터 설정을 모르고도 CLI 와 갈리지 않는다.
-    path = "%s/%s.jsonl" % (_session_project_dir(entry), sid)
+    path = "%s/%s.jsonl" % (pdir, sid)
     missing = not os.path.exists(path)   # Rust `Path::exists` 와 동일(isfile 아님)
     if missing:
         return True, "no_session_file"
@@ -346,6 +404,8 @@ def session_inventory(entry):
     """스폰 전 세션 재고 → (project_dir, sorted stems | None). 디렉터리 부재 = [](재개할 파일이 없다) ·
     그 밖의 OSError = None(재고 판정 불가 → verify 는 미확정 방향). stdlib os 만(Windows 안전)."""
     d = _session_project_dir(entry)
+    if d is None:
+        return None, None         # ★3판 ⑦: 거부된 프로필 폴더는 들여다보지도 않는다(재고 판정 불가)
     try:
         names = os.listdir(d)
     except FileNotFoundError:
@@ -3380,6 +3440,11 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
                 e = entries.get(role, {})
                 if e.get("agent") != "claude":
                     continue          # F-1 범위는 claude 어댑터만(예상·관측 둘 다)
+                _cfg, _refused = _restore_config_dir(e)
+                if _refused:
+                    # ★3판 ⑦: Rust restore 가 이 엔트리 기동을 멈춘다 — spawn 예상(fresh·재고·resume 모드) 자체를 하지 않는다.
+                    log("★3판 ⑦ %s: 계정 프로필 거부(%s) — cys restore 가 기동을 멈춘다 · 예상 0" % (role, _refused))
+                    continue
                 fe, why = fresh_expected(e)
                 pre_dir, pre_sids = session_inventory(e)
                 fresh_pre[role] = (why, pre_dir, pre_sids, bool(fe))

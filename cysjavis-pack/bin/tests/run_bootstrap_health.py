@@ -6336,7 +6336,8 @@ def h_seat_4axis():
     #   `_rs_prod` 의 doc 이 이미 그 규율을 적어 두었다).
     sbody2 = _rs_prod_lines(src[si2:src.find("\n/// T2-7", si2)])
     gj = sbody2.find("Ok(BootVerdict::GatePending")
-    fj = sbody2.find("run_launch_agent_opts(")
+    # ★cysr-119 2판 ⑪: 루프 본문 = run_restore_with · fresh 폴백 = 기동기 `launcher.fresh(`(운영 = run_launch_agent_opts).
+    fj = sbody2.find("launcher.fresh(")
     need(0 < gj < fj, "restore 보류 분기가 없거나 fresh 폴백보다 뒤다")
     need("continue;" in sbody2[gj:fj],
          "restore 보류가 fresh 로 폴백한다 — 살아있는 역할에 좌석을 하나 더 만들고 같은 관문에 "

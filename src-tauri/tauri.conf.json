@@ -34,6 +34,8 @@
     "resources": {
       "resources/pack.tar.gz": "./",
       "resources/pack-manifest.json": "./",
+      "../LICENSE": "./",
+      "../NOTICE.md": "./",
       "runtime/": "runtime/"
     },
     "icon": [

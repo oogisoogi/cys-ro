@@ -2208,6 +2208,46 @@ class DeptWiringStatic(unittest.TestCase):
             self.assertNotIn("CYS_SOCKET=", l.split("env -u", 1)[1], "env -u 뒤에 대입이 남아 있다")
 
 
+def _wait_formation_argv(path, tries=50, delay=0.1):
+    """formation 스텁 기록의 마지막 완결 줄(argv) — 없으면 None. ★1.1.10: 「존재」가 아니라 「개행으로 끝나는 내용」을
+    기다린다 — 스텁의 open(…,'a') 가 파일을 만든 뒤 write 가 닫힐 때까지 빈 파일이 보이는 순간이 있다(미러 CI 4f660dfb
+    test_7c IndexError = 그 순간을 읽음). 상한(50 × 0.1s)은 종전과 같다."""
+    for _ in range(tries):
+        text = _read_text(path) if os.path.exists(path) else ""
+        if text.endswith("\n"):
+            return json.loads(text.splitlines()[-1])
+        time.sleep(delay)
+    return None
+
+
+class FormationArgvWait(unittest.TestCase):
+    """_wait_formation_argv 재현 시험 — 빈 파일이 먼저 보이고 줄은 뒤에 착지하는 순서(CI 플레이크의 경쟁)를 결정론으로 만든다."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="fmwait-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.path = os.path.join(self.tmp, "formation.argv")
+
+    def test_empty_file_first_then_line(self):
+        open(self.path, "w").close()              # 존재하지만 비어 있음 = 종전 대기 조건이 통과해 버리는 순간
+        def late():
+            time.sleep(0.3)
+            with open(self.path, "a") as f:
+                f.write(json.dumps(["ensure", "--cwd", "/x"]) + "\n")
+        t = threading.Thread(target=late)
+        t.start()
+        self.addCleanup(t.join)
+        self.assertEqual(_wait_formation_argv(self.path), ["ensure", "--cwd", "/x"])
+
+    def test_partial_line_not_read(self):
+        with open(self.path, "w") as f:
+            f.write('["ensure", "--cw')           # 개행 없는 반쪽 줄 = 아직 기록 중
+        self.assertIsNone(_wait_formation_argv(self.path, tries=3, delay=0.01))
+
+    def test_absent_returns_none(self):
+        self.assertIsNone(_wait_formation_argv(self.path, tries=3, delay=0.01))
+
+
 class DeptLaunchWiring(unittest.TestCase):
     """launch 재사용 경로 완주(test_dept_creds_seed.LaunchWiring 동형 · Windows uname 목) — fork 계정 dir 에
     .claude.json 착지 + ★R1 formation 스텁 argv 실측(시드 cwd == 편성 --cwd). 팩 bin 은 실 dir: javis_preflight.py 는 repo
@@ -2271,12 +2311,7 @@ class DeptLaunchWiring(unittest.TestCase):
             os.unlink(self.fmlog)
         r = subprocess.run(["bash", DEPT, "launch", self.NAME], capture_output=True, text=True,
                            encoding="utf-8", env=self.env(**extra), cwd=self.tmp, timeout=120)   # 호출자 cwd = tmp ≠ HOME
-        for _ in range(50):                       # formation 스텁은 백그라운드 — 기록을 기다린다
-            if os.path.exists(self.fmlog):
-                break
-            time.sleep(0.1)
-        argv = json.loads(_read_text(self.fmlog).splitlines()[-1]) if os.path.exists(self.fmlog) else None
-        return r, argv
+        return r, _wait_formation_argv(self.fmlog)   # formation 스텁은 백그라운드 — 기록을 기다린다
 
     def _formation_cwd(self, argv):
         self.assertIsNotNone(argv, "formation 스텁이 호출되지 않았다")

@@ -580,6 +580,23 @@ fn close_if_empty_denial(
     None
 }
 
+#[cfg(test)]
+thread_local! {
+    /// 시험 전용 — 마지막 확인이 보는 자손 수를 덮는다(재판정 뒤 자손이 생긴 경합 재현).
+    static CLOSE_IF_EMPTY_LATE_CHILDREN: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// ★3판 ④: 닫기 직전 자손 재수집(프로세스 표 새로 고침 · 데몬 락 미보유).
+fn close_if_empty_late_children(surface: &crate::state::Surface) -> usize {
+    #[cfg(test)]
+    if let Some(n) = CLOSE_IF_EMPTY_LATE_CHILDREN.with(|c| c.get()) {
+        return n;
+    }
+    let mut sys = sysinfo::System::new();
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+    governance::collect_descendants(&sys, surface.pid).len()
+}
+
 fn close_if_empty(daemon: &Arc<Daemon>, id: &Value, sid: u64, caller_pid: Option<u32>) -> Value {
     let caller_sid = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
     let caller_role = caller_sid.and_then(|cs| daemon.get_surface(cs)).and_then(|s| s.role.lock().unwrap().clone());
@@ -614,6 +631,26 @@ fn close_if_empty(daemon: &Arc<Daemon>, id: &Value, sid: u64, caller_pid: Option
             Some(sid),
             json!({"requested_surface": sid, "role": role, "caller_surface": caller_sid,
                    "caller_pid": caller_pid, "reason": reason}),
+        );
+        return err_response(id, "empty_seat_busy", &format!("surface.close only_if_empty denied: {reason}"));
+    }
+    // ★3판 ④(codex 2R BLOCK): 닫기 직전 마지막 확인 — 프로세스 트리를 **다시** 모아 재판정 스냅샷(자손 0)에 없던
+    //   자손이 생겼으면(그 사이 사람이 CLI 를 띄웠다) 회수를 취소한다. 생애주기 락 전면 도입은 하지 않는다(최소 변형 ·
+    //   남는 창 = 이 확인 ~ close_surface 의 kill 사이 수 ms).
+    let late_children = close_if_empty_late_children(&surface);
+    let late_human = surface
+        .last_human_input
+        .lock()
+        .unwrap()
+        .is_some_and(|t| t.elapsed().as_secs() < governance::queue_human_quiet_secs());
+    if late_children > 0 || late_human {
+        let reason = if late_children > 0 { "new_child" } else { "new_human_input" };
+        daemon.bus.publish(
+            "surface.close_if_empty_denied",
+            "surface",
+            Some(sid),
+            json!({"requested_surface": sid, "role": role, "caller_surface": caller_sid,
+                   "caller_pid": caller_pid, "reason": reason, "late_children": late_children}),
         );
         return err_response(id, "empty_seat_busy", &format!("surface.close only_if_empty denied: {reason}"));
     }
@@ -25844,6 +25881,12 @@ mod tests {
         queued.pending_queue.lock().unwrap().push_back(e);
         let r = close(queued.id, None);
         assert!(r["error"].to_string().contains("queue_not_empty"), "{r}");
+        // ★3판 ④: 재판정 통과 뒤 자손이 생김(마지막 확인) = 취소 · 좌석 보존.
+        CLOSE_IF_EMPTY_LATE_CHILDREN.with(|c| c.set(Some(1)));
+        let r = close(empty.id, None);
+        CLOSE_IF_EMPTY_LATE_CHILDREN.with(|c| c.set(None));
+        assert!(r["error"].to_string().contains("new_child"), "재판정 뒤 생긴 자손을 죽였다: {r}");
+        assert!(!empty.exited.load(Ordering::Relaxed), "취소했는데 좌석이 죽었다");
         // 통과 = 닫힘(cause=reap · 묘비 0) + ⓑ 감사 이벤트(어느 좌석 · 왜).
         let r = close(empty.id, None);
         assert_eq!(r["ok"], json!(true), "빈 좌석 회수 실패: {r}");

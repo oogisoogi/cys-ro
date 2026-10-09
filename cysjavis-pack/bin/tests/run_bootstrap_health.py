@@ -8571,7 +8571,7 @@ def h_doc_11():
     그 값을 소비할 **권한 행**(§0-A session_error 행)은 도달하지 않는 비대칭이 있었다.
 
     비대칭의 기제는 소유권 등급이다 — `directives/*_DIRECTIVE.md` 는 `src/pack.rs ownership()`
-    상 `Ownership::User` 라 팩 업데이트가 본문을 절대 덮지 않고(신본은 `<rel>.new` 병치 +
+    상 `Ownership::User` 라 팩 갱신이 본문을 절대 덮지 않고(신본은 `<rel>.new` 병치 +
     `cys pack-merge` 대기), 훅은 `System` 이라 강제 치유로 전원에게 도달한다. 그래서 훅이
     "§0-A 의 session_error 행이 재실행 금지 행보다 우선한다"고 **가리키기만** 하면, 기존 설치본
     에는 훅만 도착하고 그 행은 없어 '재실행 금지 vs 1회 재실행'의 **이중 진실**이 배포된다 —
@@ -10418,7 +10418,7 @@ def h_lane_guard_1():
         r5 = run(selfpack, path=ov)
         need(r5.returncode == 0, "오버레이 훅이 비0 종료(%d)" % r5.returncode)
         need(MSG not in r5.stderr,
-             "사용자 로컬 오버레이 훅을 가드가 죽였다 — 업데이트 불가침 확장점 파괴: %r"
+             "사용자 로컬 오버레이 훅을 가드가 죽였다 — 갱신 불가침 확장점 파괴: %r"
              % r5.stderr[:300])
         need(r5.stdout != "", "오버레이 훅 본체가 죽었다(2단 프리루드 폴백 경로)")
         # ⑥ 양성 — 대응 훅이 실재하면 본부 훅은 레인 훅으로 1회 위임하고 표식을 만들지 않는다.

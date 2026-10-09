@@ -8002,12 +8002,12 @@ impl Daemon {
         if cfg!(test) && std::env::var("CYS_U1_MUTANT").as_deref() == Ok("U3-NOQUOTE") {
             return false;
         }
+        // ★3판 ⑩: 전 맵 선형 탐색 → 키 직접 조회(키의 룰 칸 = QUOTE_WINDOW_RULES 의 'static 문자열).
+        let Some(r) = QUOTE_WINDOW_RULES.iter().find(|r| **r == rule) else {
+            return false;
+        };
         let now = Instant::now();
-        self.health_quote_until
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|((sid, r), until)| *sid == surface_id && *r == rule && *until > now)
+        self.health_quote_until.lock().unwrap().get(&(surface_id, *r)).is_some_and(|until| *until > now)
     }
 
     fn run_health_rules(&self, surface: &Surface, lines: &[String]) {
@@ -11108,6 +11108,10 @@ mod tests {
             *until = Instant::now() - std::time::Duration::from_secs(1);
         }
         assert_eq!(feed_lines_collect_alerts(&daemon, &a, &[restate]).len(), 1, "창이 끝났는데 억제");
+        // ★3판 ⑩: 좌석을 닫으면 그 좌석 출처 창 키도 회수(누수 0).
+        assert!(daemon.health_quote_until.lock().unwrap().keys().any(|(sid, _)| *sid == a.id));
+        let _ = crate::governance::close_surface(&daemon, a.id, crate::governance::CloseCause::Reap);
+        assert!(!daemon.health_quote_until.lock().unwrap().keys().any(|(sid, _)| *sid == a.id), "닫힌 좌석 창 키가 남았다");
     }
 
     #[test]

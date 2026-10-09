@@ -5745,6 +5745,8 @@ pub fn close_surface(daemon: &Arc<Daemon>, id: u64, cause: CloseCause) -> Result
         &mut daemon.health_hits.lock().unwrap(),
         id,
     );
+    // ★3판 ⑩(codex 2R MINOR): 출처 창(D-U3)도 같은 지점에서 회수 — 새 매칭 주입이 없으면 닫힌 좌석 키가 데몬 수명 내내 남던 누수.
+    daemon.health_quote_until.lock().unwrap().retain(|(sid, _), _| *sid != id);
     // 미배달 큐 폐기 통지 — queued:true 응답을 받은 발신자의 무음 메시지 유실 차단
     // (★G1(W2-B): payload는 폐기 3발행처 공용 빌더 — 스키마 단일 소유).
     let dropped: Vec<crate::state::QueueEntry> = drain_active_except_inflight(&surface);

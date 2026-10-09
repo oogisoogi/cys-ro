@@ -23863,11 +23863,22 @@ fn run_restore_with(cwd: Option<String>, include_master: bool, no_resume: bool, 
             //   (worker-N)로 **이름을 바꿔** 띄운다(dedup_worker_role) — 남의 역할 이름으로 이 cwd·세션의 좌석이
             //   생기고, 그 역할의 원래 cwd 는 덮인다(10-08 실측: worker-7 = 전 u5 → a2). 그 좌석을 만들지 않고 보류한다
             //   (phoenix 의 fresh 강등이 빈 좌석을 회수한 뒤 정확한 이름으로 띄운다).
+            // ★2판 ③(master#9343f472 결정 A): 보류 전에 그 빈 좌석 회수를 **데몬에 요청**한다(`only_if_empty` —
+            //   데몬이 자손·에이전트·사람 입력·큐를 자기 쪽에서 재판정 · 통과 때만 cause=reap · 묘비 0) → 같은 회차 1회 재시도.
+            //   거절 = 보류 유지 + 데몬 사유 그대로(가시화).
             if restore_launch_would_rename(role, empty_seats.contains_key(role)) {
-                claim.release(&mut busy_sessions); // ★④: 보류 = 이 좌석은 대화를 잇지 않았다 → 뒤 엔트리가 이을 수 있게
-                fail += 1;
-                println!("· {role}: 빈 좌석이 이 역할을 쥐고 있어 새 좌석이 다른 번호로 바뀐다 — 기동 보류(빈 좌석 회수 뒤 재시도)");
-                continue;
+                let esid = empty_seats[role].0;
+                match request("surface.close", json!({"surface_id": esid, "cause": "reap", "only_if_empty": true})) {
+                    Ok(_) => println!(
+                        "· {role}: 빈 좌석(surface:{esid}) 회수 — 데몬 재판정 통과(자손·에이전트·사람 입력·큐 0) · 같은 회차 재시도"
+                    ),
+                    Err(why) => {
+                        claim.release(&mut busy_sessions); // ★④: 보류 = 이 좌석은 대화를 잇지 않았다 → 뒤 엔트리가 이을 수 있게
+                        fail += 1;
+                        println!("· {role}: 빈 좌석(surface:{esid})이 이 역할을 쥐고 있어 새 좌석이 다른 번호로 바뀐다 — 기동 보류 · 회수 거절: {why}");
+                        continue;
+                    }
+                }
             }
             println!("· {role}: {agent} 재기동…");
             let rc = launcher.fresh(role, agent, target_cwd, resume, sess, cfg, restore_title(&entry));
@@ -30214,9 +30225,11 @@ mod tests {
     /// ★2판 ⑪(codex 1R MAJOR): `run_restore` **실제 루프** 통합시험 — mock 데몬(system.topology · resolve_role)
     /// + 기록 기동기. 사례 = 점유 좌석 대화 중복 · 같은 회차 중복 · in-seat · fresh · 실패 뒤 해제 · 보류(빈 worker 좌석) 뒤 해제.
     /// 뮤턴트 `let resume = !no_resume;`(중복 판정 무시) = 적.
+    /// (사례 묶음) `reclaim_ok` = 데몬이 빈 worker 좌석 회수(`surface.close only_if_empty`)를 받아들이는가.
+    /// 반환 = (기동 호출, rc, 데몬이 받은 only_if_empty 회수 요청 surface id).
     #[cfg(unix)]
-    #[test]
-    fn restore_run_loop_passes_claimed_resume_args_mock_daemon() {
+    #[allow(clippy::type_complexity)]
+    fn restore_loop_case(reclaim_ok: bool) -> (Vec<(String, &'static str, bool, Option<String>, Option<String>)>, i32, Vec<u64>) {
         use std::io::{BufRead, BufReader, Write};
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::path::PathBuf::from(format!("/tmp/rr11-{}-{}", std::process::id(),
@@ -30238,6 +30251,8 @@ mod tests {
                      {"role": "worker", "seat": "empty", "surface_id": 51}]
         });
         let listener = std::os::unix::net::UnixListener::bind(&socket).expect("가짜 소켓 bind");
+        let reclaims = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u64>::new()));
+        let reclaims_srv = std::sync::Arc::clone(&reclaims);
         let server = std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { break };
@@ -30246,6 +30261,17 @@ mod tests {
                     continue;
                 }
                 let req: Value = serde_json::from_str(line.trim()).unwrap_or(Value::Null);
+                if req["method"] == "surface.close" && req["params"]["only_if_empty"] == true {
+                    reclaims_srv.lock().unwrap().push(req["params"]["surface_id"].as_u64().unwrap_or(0));
+                    let resp = if reclaim_ok {
+                        json!({"id": req["id"], "ok": true, "result": {"closed": true}})
+                    } else {
+                        json!({"id": req["id"], "ok": false,
+                               "error": {"code": "empty_seat_busy", "message": "surface.close only_if_empty denied: seat_not_empty"}})
+                    };
+                    let _ = writeln!(stream, "{resp}");
+                    continue;
+                }
                 let result = match req["method"].as_str().unwrap_or("") {
                     "__stop" => break,
                     "system.topology" => topo.clone(),
@@ -30281,8 +30307,19 @@ mod tests {
             match v { Some(v) => std::env::set_var(k, v), None => std::env::remove_var(k) }
         }
         let _ = std::fs::remove_dir_all(&dir);
+        let reclaims = reclaims.lock().unwrap().clone();
+        (rec.calls, rc, reclaims)
+    }
+
+    /// ★2판 ⑪(codex 1R MAJOR) + ③(master#9343f472 A) — 회수 거절 = 보류 유지(fresh 0) · claim 해제 · 뒤 엔트리가 잇는다.
+    /// 뮤턴트 `let resume = !no_resume;`(중복 판정 무시) = 적.
+    #[cfg(unix)]
+    #[test]
+    fn restore_run_loop_passes_claimed_resume_args_mock_daemon() {
+        let (calls, rc, reclaims) = restore_loop_case(false);
+        assert_eq!(reclaims, vec![51], "빈 worker 좌석 회수를 데몬에 요청하지 않았다");
         let got: Vec<(&str, &str, bool, Option<&str>)> =
-            rec.calls.iter().map(|(r, k, res, s, _)| (r.as_str(), *k, *res, s.as_deref())).collect();
+            calls.iter().map(|(r, k, res, s, _)| (r.as_str(), *k, *res, s.as_deref())).collect();
         assert_eq!(got, vec![
             ("w-occ", "fresh", false, None),                 // 점유 좌석이 잇는 대화 = 이어 붙이지 않는다
             ("w-a", "fresh", true, Some("s-a")),             // 첫 좌석 = 잇는다
@@ -30290,11 +30327,28 @@ mod tests {
             ("w-seat", "in-seat", true, Some("s-seat")),     // in-seat(빈 좌석 재연결)
             ("w-fail", "fresh", true, Some("s-f")),          // 기동 실패 → claim 해제
             ("w-after", "fresh", true, Some("s-f")),         //   → 뒤 엔트리가 잇는다
-            ("worker", "in-seat", true, Some("s-hold")),     // in-seat 실패 → 개명 보류(fresh 0) → 해제
+            ("worker", "in-seat", true, Some("s-hold")),     // in-seat 실패 → 회수 거절 → 보류(fresh 0) → 해제
             ("w-after-hold", "fresh", true, Some("s-hold")), //   → 뒤 엔트리가 잇는다
         ], "run_restore 기동 인자(w-unobs = 호출 0)");
-        assert!(rec.calls.iter().all(|c| c.4.as_deref() == Some("/cfg")), "기록 cfg 전달");
+        assert!(calls.iter().all(|c| c.4.as_deref() == Some("/cfg")), "기록 cfg 전달");
         assert_eq!(rc, 1, "실패·보류가 있으면 rc 1");
+    }
+
+    /// ★2판 ③(master#9343f472 A) — 빈 좌석 보류 → 데몬 회수 수락 → **같은 회차** fresh 재시도 성공(정확한 이름 · 잇는다).
+    #[cfg(unix)]
+    #[test]
+    fn restore_run_loop_reclaims_empty_worker_seat_then_retries_same_round() {
+        let (calls, rc, reclaims) = restore_loop_case(true);
+        assert_eq!(reclaims, vec![51]);
+        let got: Vec<(&str, &str, bool, Option<&str>)> =
+            calls.iter().map(|(r, k, res, s, _)| (r.as_str(), *k, *res, s.as_deref())).collect();
+        let tail = &got[got.len() - 3..];
+        assert_eq!(tail, &[
+            ("worker", "in-seat", true, Some("s-hold")),
+            ("worker", "fresh", true, Some("s-hold")),   // 회수 뒤 같은 회차 재시도(이 좌석이 대화를 잇는다)
+            ("w-after-hold", "fresh", false, None),      //   → 같은 대화 두 번째 = 끈다
+        ]);
+        assert_eq!(rc, 1, "w-fail·w-unobs 는 여전히 실패");
     }
 
     #[test]

@@ -543,6 +543,103 @@ fn revive_denial(
     }
 }
 
+/// ★1.1.9 2판 ③(master#9343f472 결정 A) 빈 좌석 회수 판정(순수) — `surface.close {only_if_empty: true}`.
+/// 입력은 전부 **데몬이 자기 쪽에서 잰 사실**이다(요청자 주장 신뢰 0). 발신 = 익명(pane 밖 · 데몬 내부 경로와 같은 계약)
+/// 또는 권위 role(master|cso) 또는 자기 좌석. 대상 = 살아 있는 · role 을 쥔 · Empty(자손 0)·살아 있는 meta 0·최근 사람 입력 0
+/// (`seat_claimable_now`) · 재검증(`seat_takeover_recheck`) 통과 · 큐 0(닫기의 큐 drain 이 배달을 버리지 않게).
+fn close_if_empty_denial(
+    caller_ok: bool,
+    exited: bool,
+    has_role: bool,
+    claimable_now: bool,
+    recheck: Option<&'static str>,
+    queue_depth: usize,
+) -> Option<&'static str> {
+    if !caller_ok {
+        return Some("caller_role_forbidden");
+    }
+    if exited {
+        return Some("surface_exited(reap 경로가 처리)");
+    }
+    if !has_role {
+        return Some("no_role(회수할 역할 없음)");
+    }
+    // 뮤턴트 C3-NORECHECK(데몬 재판정 끔) — 시험 빌드에서만.
+    if cfg!(test) && std::env::var("CYS_U1_MUTANT").as_deref() == Ok("C3-NORECHECK") {
+        return None;
+    }
+    if !claimable_now {
+        return Some("seat_not_empty(자손 프로세스·살아 있는 에이전트·최근 사람 입력 중 하나)");
+    }
+    if let Some(why) = recheck {
+        return Some(why);
+    }
+    if queue_depth > 0 {
+        return Some("queue_not_empty");
+    }
+    None
+}
+
+fn close_if_empty(daemon: &Arc<Daemon>, id: &Value, sid: u64, caller_pid: Option<u32>) -> Value {
+    let caller_sid = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
+    let caller_role = caller_sid.and_then(|cs| daemon.get_surface(cs)).and_then(|s| s.role.lock().unwrap().clone());
+    let caller_ok = match caller_sid {
+        None => true,
+        Some(cs) => cs == sid || caller_role.as_deref().is_some_and(privileged_role),
+    };
+    let Some(surface) = daemon.get_surface(sid) else {
+        return err_response(id, "not_found", &format!("surface {sid} not found"));
+    };
+    let role = surface.role.lock().unwrap().clone();
+    let exited = surface.exited.load(Ordering::Relaxed);
+    // 사실 수집 — 프로세스 표 refresh(수십 ms)는 데몬 락 밖(seat_claimable_now 가 자기 안에서 한다).
+    let claimable_now = !exited && governance::seat_claimable_now(&surface);
+    let recheck = if exited { None } else { governance::seat_takeover_recheck(&surface) };
+    // ★락 순서(큐 계열) — restored_queue → pending_queue 단방향 · 문장을 쪼갠다(surface.reap 과 같은 규율).
+    let restored_depth = daemon
+        .restored_queue
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|it| it.get("surface_id").and_then(|v| v.as_u64()) == Some(sid))
+        .count();
+    let pending_depth = surface.pending_queue.lock().unwrap().len();
+    let queue_depth = restored_depth + pending_depth;
+    if let Some(reason) =
+        close_if_empty_denial(caller_ok, exited, role.is_some(), claimable_now, recheck, queue_depth)
+    {
+        daemon.bus.publish(
+            "surface.close_if_empty_denied",
+            "surface",
+            Some(sid),
+            json!({"requested_surface": sid, "role": role, "caller_surface": caller_sid,
+                   "caller_pid": caller_pid, "reason": reason}),
+        );
+        return err_response(id, "empty_seat_busy", &format!("surface.close only_if_empty denied: {reason}"));
+    }
+    // ⓑ 감사 줄 — 어느 좌석을 왜 닫았나(버스 = 이벤트 원장 · 데몬 로그 1줄).
+    eprintln!(
+        "[cysd] 빈 좌석 회수 surface:{sid} role={} — 데몬 재판정 통과(자손 0 · 에이전트 0 · 사람 입력 0 · 큐 0) · 요청 caller_surface={caller_sid:?}",
+        role.as_deref().unwrap_or("-")
+    );
+    daemon.bus.publish(
+        "surface.close_if_empty",
+        "surface",
+        Some(sid),
+        json!({"requested_surface": sid, "surface_ref": surface_ref(sid), "role": role,
+               "caller_surface": caller_sid, "caller_pid": caller_pid, "cause": "reap",
+               "reason": "empty_seat_reclaim(restore 개명 방지 · 데몬 재판정 통과)"}),
+    );
+    match governance::close_surface(daemon, sid, governance::CloseCause::Reap) {
+        Ok(()) => {
+            daemon.create_caller.lock().unwrap().remove(&sid);
+            daemon.created_by.lock().unwrap().remove(&sid);
+            ok_response(id, json!({"surface_id": sid, "closed": true, "cause": "Reap", "only_if_empty": true}))
+        }
+        Err(e) => err_response(id, "not_found", &e),
+    }
+}
+
 /// ★G4(W4-C) 수동 reap(surface.reap) 순수 판정부 — **7조건 AND, 첫 미달에서 사유 코드 반환**
 /// (None=허용). rollback_allowed 관례 동형: 판정을 순수 함수로 박아 full Daemon 없이
 /// 조건 매트릭스를 테스트한다. deny-by-default — **부재는 무증명이다**(exited_at 스탬프
@@ -7446,6 +7543,10 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             let Some(sid) = resolve_surface_id(&params) else {
                 return Reply::Single(err_response(&id, "invalid_params", "missing surface_id"));
             };
+            // ★1.1.9 2판 ③(master#9343f472 결정 A): 빈 좌석 회수 갈래 — 아래 소유 게이트와 **별개 계약**이다.
+            if params.get("only_if_empty").and_then(|v| v.as_bool()) == Some(true) {
+                return Reply::Single(close_if_empty(daemon, &id, sid, caller_pid));
+            }
             // 신원·소유 게이트: close_surface는 대상 surface의 자식 프로세스 트리 전체를 kill하고
             // 셸을 죽이며 roles 매핑·인플라이트 큐까지 정리하는 변경계 RPC 중 파괴력이 가장 크다.
             // 가드가 없으면 워커 pane이 임의 surface_id로 master/타 노드 pane을 강제 종료해 send
@@ -25694,6 +25795,68 @@ mod tests {
             daemon.surfaces.lock().unwrap()[&own].pending_queue.lock().unwrap().is_empty(),
             "자기 clear가 통과했는데 큐가 남아 있다"
         );
+    }
+
+    // ─────────── ★1.1.9 2판 ③(master#9343f472 A): surface.close only_if_empty — 데몬 재판정 빈 좌석 회수 ───────────
+    #[cfg(unix)]
+    #[test]
+    fn c3_close_if_empty_daemon_rechecks_and_audits() {
+        let dir = std::env::temp_dir().join(format!("cys-c3cie-{}-{}", std::process::id(), crate::state::now_epoch() as u64));
+        let _ = std::fs::create_dir_all(&dir);
+        let daemon = Daemon::new(dir.join("cysd.sock"));
+        let mk = |role: &str| {
+            let s = daemon
+                .create_surface(None, Some("sleep 30".into()), None, Some(role.into()), 24, 80)
+                .expect("create surface");
+            daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+            s
+        };
+        let close = |sid: u64, caller_pid: Option<u32>| -> Value {
+            let req = Request { id: json!(1), method: "surface.close".into(),
+                                params: json!({"surface_id": sid, "cause": "reap", "only_if_empty": true}) };
+            let Reply::Single(resp) = dispatch(&daemon, req, caller_pid) else { panic!("single") };
+            resp
+        };
+        let empty = mk("worker");
+        let typing = mk("worker-2");
+        *typing.last_human_input.lock().unwrap() = Some(std::time::Instant::now());
+        let queued = mk("worker-3");
+        let peer = mk("worker-4");
+        // 비특권 pane(peer) 발신 = 거부(남의 좌석) — 가짜 pid 를 peer 좌석으로 해석시킨다.
+        let fake_pid = 995_911_u32;
+        daemon.caller_cache.lock().unwrap().insert(
+            fake_pid,
+            crate::state::CallerCacheEntry::new(Some(peer.id), crate::state::now_epoch(), None,
+                                               daemon.caller_gen.load(Ordering::Relaxed)),
+        );
+        let r = close(empty.id, Some(fake_pid));
+        assert_eq!(r["ok"], json!(false), "비특권 pane 이 남의 빈 좌석을 닫았다: {r}");
+        assert!(!empty.exited.load(Ordering::Relaxed));
+        // ⓐ 최근 사람 입력 = 거절 · 좌석 보존 · 거절 사유 이벤트.
+        let r = close(typing.id, None);
+        assert_eq!(r["ok"], json!(false), "입력 중 좌석을 닫았다: {r}");
+        assert!(r["error"].to_string().contains("seat_not_empty"), "{r}");
+        assert!(!typing.exited.load(Ordering::Relaxed), "거절했는데 좌석이 죽었다");
+        assert!(daemon.bus.tail(50).iter().any(|e| e["name"] == json!("surface.close_if_empty_denied")
+            && e["surface_id"] == json!(typing.id)), "거절 사유 이벤트 없음");
+        // 큐 잔존 = 거절(닫기가 배달을 버리지 않게).
+        let e = daemon.next_queue_entry("hi".into(), None, "send");
+        queued.pending_queue.lock().unwrap().push_back(e);
+        let r = close(queued.id, None);
+        assert!(r["error"].to_string().contains("queue_not_empty"), "{r}");
+        // 통과 = 닫힘(cause=reap · 묘비 0) + ⓑ 감사 이벤트(어느 좌석 · 왜).
+        let r = close(empty.id, None);
+        assert_eq!(r["ok"], json!(true), "빈 좌석 회수 실패: {r}");
+        assert!(!daemon.tombstones.lock().unwrap().contains("worker"), "회수가 묘비를 만들었다");
+        let ev = daemon.bus.tail(50).into_iter()
+            .find(|e| e["name"] == json!("surface.close_if_empty") && e["surface_id"] == json!(empty.id))
+            .expect("감사 이벤트 없음");
+        assert_eq!(ev["payload"]["role"], json!("worker"));
+        assert!(ev["payload"]["reason"].as_str().unwrap_or("").contains("empty_seat_reclaim"));
+        for s in [&typing, &queued, &peer] {
+            let _ = crate::governance::close_surface(&daemon, s.id, crate::governance::CloseCause::Reap);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ─────────── ★G4(W4-C): surface.reap — 수동 좌석 회수 7조건 게이트 핀 ───────────

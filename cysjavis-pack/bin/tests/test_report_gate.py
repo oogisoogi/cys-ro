@@ -964,6 +964,19 @@ class DU5IdleHoldAndRefireBundle(unittest.TestCase):
             reps = [self._rep(state="waiting", age=86400 + 300 * i) for i in range(10)]
             self.assertTrue(self._run_cycles(t, reps), "하루 묵은 waiting 이 영구 억제했다")
 
+    def test_waiting_after_observed_progress_expires_after_ttl(self):
+        # ★codex 2R BLOCK①: 구간 시작을 **관측한** 갈래도 TTL 을 지킨다 — 진행(3→4) 뒤 waiting 을 보고하고 죽은 좌석은
+        #   보고 나이가 12h 를 넘으면 다시 울린다(종전 = 영구 침묵).
+        moved = dict(self.NODE, done=4, pct=80)
+        with tempfile.TemporaryDirectory() as t:
+            # 0 = 기준선(노드 카운터 미저장) · 1 = 같은 서명(카운터 저장) · 2 = 진행 관측(구간 시작 기록) → waiting.
+            reps = [self._rep(), self._rep()] + \
+                [self._rep(state="waiting", age=60 + 300 * (i - 2), node=moved) for i in range(2, 162)]
+            fired = self._run_cycles(t, reps)
+            self.assertTrue(fired, "TTL 넘은 waiting 이 구간 시작 관측 갈래에서 영구 억제했다")
+            ttl_cycle = 2 + (G.STALL_HOLD_TTL_SECS - 60) // 300
+            self.assertGreaterEqual(fired[0], ttl_cycle, "TTL 안의 보류를 믿지 않았다")
+
     def test_fresh_waiting_at_baseline_is_honored_within_ttl(self):
         with tempfile.TemporaryDirectory() as t:
             reps = [self._rep(state="waiting", age=600 + 300 * i) for i in range(30)]

@@ -1287,8 +1287,8 @@ def stall_held(ms, roles, change_epoch, now_epoch):
 
     · 전원(AND): 가족 라벨에서 하나라도 보류가 아니면 그 좌석이 멈췄을 수 있다 → 울린다.
     · 선후: 보류 보고 뒤에 todo 가 바뀌었다면(새 임무가 들어왔다) 그 보류는 낡은 것이다 → 울린다.
-    · 구간 시작 미관측(change_epoch None): 보고 나이 ≤ STALL_HOLD_TTL_SECS 일 때만 믿는다(codex 1R BLOCK① ·
-      하루 묵은 waiting 이 영구 억제하던 구멍). 나이 미측정 = 믿지 않는다.
+    · TTL: 보고 나이 ≤ STALL_HOLD_TTL_SECS 일 때만 믿는다 — **구간 시작 관측 여부와 무관**(codex 1R BLOCK① ·
+      2R BLOCK①: 진행 뒤 waiting 을 보고하고 죽은 좌석이 구간 시작 관측 갈래에서 영구 침묵하던 구멍). 나이 미측정 = 믿지 않는다.
     · state·age 미측정 = 보류 아님(fail-closed — 종전처럼 울린다)."""
     if not roles:
         return False
@@ -1299,11 +1299,10 @@ def stall_held(ms, roles, change_epoch, now_epoch):
         age = m.get("status_age_secs")
         if not isinstance(age, (int, float)) or isinstance(age, bool):
             return False              # 나이 모름 = 선후·TTL 판정 불가 = 보류 아님(fail-closed)
-        if change_epoch and now_epoch:
-            if (now_epoch - age) < change_epoch:
-                return False          # 보류 보고가 구간 시작(마지막 진행 변화)보다 앞 = 낡은 보류
-        elif age > STALL_HOLD_TTL_SECS:
-            return False              # 구간 시작 미관측 + TTL 넘은 보류 = 믿지 않는다
+        if age > STALL_HOLD_TTL_SECS:
+            return False              # TTL 넘은 보류 = 믿지 않는다(죽은 좌석의 마지막 보고일 수 있다)
+        if change_epoch and now_epoch and (now_epoch - age) < change_epoch:
+            return False              # 보류 보고가 구간 시작(마지막 진행 변화)보다 앞 = 낡은 보류
     return True
 
 

@@ -483,6 +483,33 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// ★1.1.10 ⑪(master#c6c3784a · 알림 수신 멱등 키 = 경로 A `last_notified_result_id`): 러너가 **같은 result_id** 를 다시
+    /// 투입해도(state.json 재기록 · 바이트가 달라도 = release_seq·notes_ko 가 바뀌어도) 표시는 1회 — 닫힌 결과는 id 로만 가른다.
+    /// 롤백 실패는 설계상 하루 1회 재안내라 제외(rollback_failed_repeats_once_a_day_only 가 잰다).
+    #[test]
+    fn same_result_id_delivered_twice_is_shown_once() {
+        for kind in ["ok", "rollback_ok", "installed_revoked"] {
+            let d = tmpdir(kind);
+            put_state(&d, &st("r-dup", kind));
+            let mut shown = 0;
+            if let Some(t) = take_at(&d, 100) {
+                shown += 1;
+                assert!(done_at(&d, &t.result_id), "{kind}: ④ 닫기");
+            }
+            // 같은 id 재투입 — 다른 바이트(release_seq·notes_ko 변경)로 파일을 새로 쓴다.
+            put_state(&d, &json!({"last_result": {"result_id": "r-dup", "kind": kind, "release_seq": 8,
+                                                   "version": "1.1.10", "notes_ko": "다시 기록"}}));
+            for now in [101, 100 + ROLLBACK_FAILED_REPEAT_SECS + 1] {
+                if take_at(&d, now).is_some() {
+                    shown += 1;
+                }
+            }
+            assert_eq!(shown, 1, "{kind}: 같은 result_id 재투입이 다시 표시됐다");
+            assert_eq!(read_ack(&d).last_notified_result_id.as_deref(), Some("r-dup"));
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
     /// ② 가 실패하면 ③ 도 없다(잠금은 잡히는데 장부 쓰기만 실패 — 장부 자리에 비지 않은 폴더 · 2판: 아래 읽기 전용 시험은 잠금 단계에서 먼저 끝나
     /// 이 경로를 밟지 않으므로 따로 둔다 · 뮤턴트 M7).
     #[test]

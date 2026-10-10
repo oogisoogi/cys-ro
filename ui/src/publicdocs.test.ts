@@ -338,12 +338,27 @@ describe("공개 문서(README 링크 전부 + 다운로드 페이지) — 현�
   //   설명서에서 「Antigravity」 가 나오는 줄은 **같은 줄에 「휴면」** 이 있어야 한다(휴면 고지 문단 · 끄기 노브 표 2행 · 노드 표시 3곳이 전부 그 꼴).
   const antigravityLinesWithoutDormantNote = (s: string) =>
     s.split("\n").flatMap((l, i) => (l.includes("Antigravity") && !l.includes("휴면") ? [i + 1] : []));
+  // 1.1.10 병합 뒤(codex 3R WARN 1·6 · master#aac63fe1): ⑴ 위 줄 규칙을 설명서 한 파일이 아니라 **공개문서 수집 대상(DOCS) 전체**에 건다 — 대문자 정확 일치는 그대로다
+  //   (소문자 `agy` 는 살아 있는 팀 리뷰어 자리 이름이라 금지어가 아니다 · README 의 「이종 3사 리뷰어(claude·agy·codex)」 줄이 그 꼴).
+  //   ⑵ 줄 규칙 2: agy 사용량 RPC 의 이력 낱말 3개(백틱까지 정확 일치 — `~/.cys/agy-statusline-off` · `cys-agy-statusline.sh` 같은 끄기 노브·파일 이름은 안 걸린다)가
+  //   나오는 줄도 **같은 줄에 「휴면」**. 소문자 agy 라 줄 규칙 1 이 못 보는 자리다(설명서 RPC 가산분 절이 그 3줄을 현재형으로 적고 있었다).
+  const AGY_RPC_HISTORY = ['`reporter:"agy"`', "`agy-statusline`", "`agy_csrf_required`"];
+  const agyRpcLinesWithoutDormantNote = (s: string) =>
+    s.split("\n").flatMap((l, i) => (AGY_RPC_HISTORY.some((w) => l.includes(w)) && !l.includes("휴면") ? [i + 1] : []));
   const dormantHits = (s: string) => DORMANT.filter((w) => s.includes(w));
   it("휴면 기능(말로 팀 만들기 · Antigravity 사용량 값·상태줄 자동 연결) 서술 0 — 설명서는 휴면 고지만", () => {
     const manual = read("../../USER-MANUAL.md");
     expect({ 남은: dormantHits(manual) }).toEqual({ 남은: [] });
     expect(manual.includes("**Antigravity(agy) — 이 판에는 들어 있지 않습니다(휴면)**")).toBe(true);
-    expect({ 휴면_표기_없는_Antigravity_줄: antigravityLinesWithoutDormantNote(manual) }).toEqual({ 휴면_표기_없는_Antigravity_줄: [] });
+    for (const d of DOCS) {
+      const s = read(d);
+      expect({ d, 휴면_표기_없는_Antigravity_줄: antigravityLinesWithoutDormantNote(s) }).toEqual({ d, 휴면_표기_없는_Antigravity_줄: [] });
+      expect({ d, 휴면_표기_없는_agy_RPC_이력_줄: agyRpcLinesWithoutDormantNote(s) }).toEqual({ d, 휴면_표기_없는_agy_RPC_이력_줄: [] });
+    }
+    // 검사 대상이 비지 않았다 — 설명서가 DOCS 에 들어 있고, 두 규칙이 보는 줄이 설명서에 실제로 있다(빈 목록에 건 규칙은 아무것도 재지 않는다).
+    expect(DOCS.includes("../../USER-MANUAL.md")).toBe(true);
+    expect(manual.split("\n").filter((l) => l.includes("Antigravity")).length).toBeGreaterThan(0);
+    expect(manual.split("\n").filter((l) => AGY_RPC_HISTORY.some((w) => l.includes(w))).length).toBeGreaterThan(0);
     // 판정기 반례 — 잡아야 할 꼴 · 지나가야 할 꼴.
     for (const bad of ["(`cysr team-propose`)", "`kind=team-create-request`", "`5h 12% · 7d 25% · cys` 한 줄이 붙습니다", "`관측 실패 · agy 상태줄 연결 필요`", "sh ~/.cys/pack/hooks/cys-agy-statusline.sh",
       "X=Codex · A=Antigravity). 창마다", "Codex·Antigravity 는 그 에이전트의 좌석이 cysr 창에", "Antigravity 는 `Antigravity (agy)`)로 찾습니다", "제공자 이름(`Codex`·`Antigravity`)입니다"]) {
@@ -351,6 +366,12 @@ describe("공개 문서(README 링크 전부 + 다운로드 페이지) — 현�
     }
     // 줄 규칙 반례 — 휴면 표기 없는 현행형 문장은 잡고, 휴면을 같은 줄에 적은 문장은 지나간다.
     expect(antigravityLinesWithoutDormantNote("Claude 줄\nAntigravity 좌석이 살아 있으면 ● 사용 중\nAntigravity 는 이 판 휴면")).toEqual([2]);
+    // 살아 있는 소문자 agy 리뷰어 줄(README 꼴)은 두 규칙 모두 지나간다 — 휴면 표기를 강제하지 않는다.
+    const liveAgy = "| 2 | 역할 구성 | ✅ 우세 | 이종 3사 리뷰어(claude·agy·codex)로 상관 오류 차단 vs 동종 모델 4기 |";
+    expect({ 줄1: antigravityLinesWithoutDormantNote(liveAgy), 줄2: agyRpcLinesWithoutDormantNote(liveAgy) }).toEqual({ 줄1: [], 줄2: [] });
+    // 줄 규칙 2 반례 — 현재형 RPC 줄 3꼴은 잡고, 같은 줄에 휴면을 적은 꼴·끄기 노브 이름은 지나간다.
+    expect(agyRpcLinesWithoutDormantNote('- `usage.report` 에 `reporter:"agy"`(agy 상태줄 훅)\n- `source` 값 `agy-statusline` 추가\n  `source_error` 코드 `agy_csrf_required` 추가')).toEqual([1, 2, 3]);
+    expect(agyRpcLinesWithoutDormantNote('- `reporter:"agy"` — 이력 · 이 판 휴면\n빈 파일 `~/.cys/agy-statusline-off`\nsh ~/.cys/pack/hooks/cys-agy-statusline.sh\n`CYS_AGY_STATUSLINE=0`')).toEqual([]);
     for (const ok of ["전문가용 ▸ 팀 직접 만들기", "카탈로그 팀 만들기(`cys-dept create`)", "`CYS_AGY_STATUSLINE=0`", "`~/.cys/agy-statusline-off`", "Codex 는 이 컴퓨터의 로그인 하나", "Antigravity rv-gemini"]) {
       expect({ ok, 잡음: dormantHits(ok) }).toEqual({ ok, 잡음: [] });
     }

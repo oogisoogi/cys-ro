@@ -1897,9 +1897,9 @@ v0.14.42 가산분(additive):
 - `usage.report_account` {session_file, rate} — cysr 창 **밖** Claude 세션의 계정 전용 보고(좌석 배지·이벤트·임계
   무접촉). 호출자가 pane 안이거나 미상이면 `usage_denied` · 모양·경로 불통과는 `invalid_params` · 응답
   `{accepted:true}` 또는 빈도 상한 `{accepted:false, reason:"throttled"}`. 이벤트를 내지 않는다
-- `usage.report` 에 `reporter:"agy"`(agy 상태줄 훅) — agy 좌석(agent gemini)에서만 받는다(아니면 `invalid_params`)
-- `usage.accounts` 행: `source` 값 `statusline-outside`(창 밖 · 표시용 · 경보 제외)·`agy-statusline` 추가 ·
-  `source_error` 코드 `agy_csrf_required` 추가
+- `usage.report` 에 `reporter:"agy"`(agy 상태줄 훅) — **이력 · 이 판 휴면**: cysr(이 판)은 이 보고를 보내지 않고 Antigravity 계정에 싣지 않는다(§4 사이드바 사용량의 휴면 고지). RPC 모양은 남아 있다 — agy 좌석(agent gemini)에서만 받는다(아니면 `invalid_params`)
+- `usage.accounts` 행: `source` 값 `statusline-outside`(창 밖 · 표시용 · 경보 제외) 추가
+- `usage.accounts` 행의 `source` 값 `agy-statusline` · `source_error` 코드 `agy_csrf_required` — **이력 · 이 판 휴면**: cysr(이 판)은 Antigravity 계정 행을 새로 만들지 않는다(§4 사이드바 사용량의 휴면 고지)
 - clear 가드(§16 `CYS_CONTEXT_THRESHOLD_PCT`): `surface.cycle_claim` {surface_id, fire_id?, release?} — `cysr cycle-agent`
   0단계 단일 비행 점유 · 응답 `claim` = claimed | busy(`holder_pid`·`holder_fire_id`·`since`) | stale(그 통보 뒤 사이클이
   이미 끝남) | released | not_holder · 인가는 `surface.quiesce` 와 같다(점유 상한 1200초는 데몬 단조 시계 — 절전으로 벽시계만 뛰어도

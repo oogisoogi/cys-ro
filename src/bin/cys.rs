@@ -599,6 +599,10 @@ enum Command {
         /// 확인 프롬프트 없이 적용(병합 결과(kind=merged)에는 비허용 — 대화형 확인 또는 --revert-merge)
         #[arg(long)]
         yes: bool,
+        /// ★(0.14.44 · B6) 그 파일이 **없을 때만** 내장본으로 되살린다. 파일이 있으면 내용이 무엇이든 아무것도 하지 않고 종료코드 0.
+        /// 덮어쓰는 것이 없으므로 확인 질문도 없고, 병합 대기 원장에는 아무것도 적지 않는다(감사 기록에 한 줄만).
+        #[arg(long = "missing-only")]
+        missing_only: bool,
     },
     /// pro 라이선스("열쇠") 관리 — 검증·설치·typed 진단 (DESIGN-pro-license.md §7)
     License {
@@ -2396,7 +2400,7 @@ enum ApprovalAction {
         ///   의미는 하나다: **검사할 전체 명령 문자열**(서명된 prefix 와 매칭한다).
         #[arg(long, alias = "prefix")]
         command: String,
-        /// 명령 실행 cwd (생략 시 미지정 — 레코드가 cwd 무관이면 매칭)
+        /// 명령을 실행할 폴더. 생략하면 지금 폴더로 확인한다
         #[arg(long)]
         cwd: Option<String>,
         /// ★(0.14.31 · CONTRACTS B-3) **만료되지 않은 TTL 승인**만 통과시킨다.
@@ -2410,7 +2414,9 @@ enum ApprovalAction {
         /// 승인할 명령 prefix (공백 구분 토큰, 예: "git push")
         #[arg(long)]
         prefix: String,
-        /// 승인 범위를 고정할 cwd (생략 시 cwd 무관 승인)
+        /// 승인을 묶을 폴더. 생략하면 지금 폴더에 묶인다 — 다른 폴더의 좌석이 실행할 명령이면 그 좌석의 폴더를 적는다.
+        /// 대상을 직접 지정하는 cys 명령(kill·close-surface·launch-agent 등)을 시간 한정(`--ttl`)으로 서명하면,
+        /// 정확히 그 명령은 이 데몬 안에서 폴더와 무관하게 통한다
         #[arg(long)]
         cwd: Option<String>,
         /// ★(0.14.31 · CONTRACTS B-3) 승인 수명(초). 지정하면 레코드에 `expires_at`(epoch)이
@@ -5208,6 +5214,120 @@ const APPROVAL_TTL_UNSUPPORTED: &str = "--ttl 미지원 데몬 — **아무 승�
 이 데몬은 ttl_secs 를 버리고 무기한 승인을 만들었을 것이므로 서명 전에 멈춘다. 데몬을 0.14.31 이상으로 \
 갱신한 뒤 다시 서명하라(무기한 승인이 정말 필요하면 --ttl 을 생략하라).";
 
+/// ★(0.14.44 · A3) 게이트 훅이 남기는 **숫자 한 글자**를 가려낸다. CSO 가 명령 끝에 `2>&1` 이나 `2>/dev/null` 을 붙이면 훅은 방향 전환 기호와 그 대상만 떼어 내고
+/// 앞의 숫자를 명령에 남긴 채 확인에 넘긴다(`cys close-surface surface:5 2>&1` → `… surface:5 2`). 정확 명령 비교(㉣)가 깨지지 않게 CLI 가 그 숫자를 뗀다.
+///
+/// 떼는 조건(전부): ① 대상 동사 7종의 cys 명령이다 ② **원래 명령이 CLI 문법으로 읽히지 않는다 — 문법 오류의 종류가 "남는 인자"(`UnknownArgument`)일 때뿐**(도움말·버전,
+/// 값이 틀린 경우, 옵션 충돌에서는 떼지 않는다) ③ 끝에서 한 자리 숫자 토큰을 하나 또는 둘 떼면 **완전한 명령으로 읽힌다**. 문법은 CLI 가 이미 가진 것(clap)을 그대로 쓴다.
+/// 그대로 읽히는 명령(`cys kill 2` · `cys close-surface 2`)은 손대지 않는다 — 그 `2` 는 대상이다. 뗐을 때만 토큰을 안전하게 다시 이어 붙여 돌려준다. 그 밖에는 **원문 그대로**.
+fn approval_strip_hook_digits(command: &str) -> String {
+    use clap::Parser;
+    let Some(tokens) = cys::approval_tokenize(command) else {
+        return command.to_string();
+    };
+    let is_target = tokens.first().map(|b| b == "cys" || b == "cys.exe").unwrap_or(false)
+        && tokens
+            .get(1)
+            .map(|v| cys::APPROVAL_TARGET_VERBS.contains(&v.as_str()))
+            .unwrap_or(false);
+    if !is_target {
+        return command.to_string();
+    }
+    match Cli::try_parse_from(tokens.iter()) {
+        Ok(_) => return command.to_string(),
+        Err(e) if e.kind() == clap::error::ErrorKind::UnknownArgument => {}
+        Err(_) => return command.to_string(),
+    }
+    let is_digit = |t: &String| t.len() == 1 && t.chars().all(|c| c.is_ascii_digit());
+    for n in 1..=2usize {
+        if tokens.len() < n + 2 {
+            break;
+        }
+        let keep = tokens.len() - n;
+        let tail_ok = tokens.iter().skip(keep).all(is_digit);
+        if !tail_ok {
+            break;
+        }
+        let head: Vec<&String> = tokens.iter().take(keep).collect();
+        // 다시 인용이 필요한 토큰(안전 글자 밖)이 하나라도 있으면 떼지 않고 **원문 그대로** 보낸다 — 다시 인용하면 원문의 `"$(…)"`(큰따옴표 = 셸이 실행)가
+        // `'$(…)'`(리터럴)로 바뀌어 데몬의 원문 스캐너(㉢)를 우회한다(리뷰 1 의 2번). 안전한 토큰뿐이면 이어 붙인 결과는 원문과 의미가 같다.
+        if head.iter().any(|t| approval_shell_quote(t) != **t) {
+            break;
+        }
+        if Cli::try_parse_from(head.iter().copied()).is_ok() {
+            return head.iter().map(|t| approval_shell_quote(t)).collect::<Vec<_>>().join(" ");
+        }
+    }
+    command.to_string()
+}
+
+/// 데몬의 토크나이저로 다시 쪼개면 원래 토큰이 나오는 인용(게이트 훅의 `shlex.quote` 와 같은 규칙).
+fn approval_shell_quote(arg: &str) -> String {
+    let safe = !arg.is_empty()
+        && arg.chars().all(|c| c.is_ascii_alphanumeric() || "@%+=:,./-_".contains(c));
+    if safe {
+        arg.to_string()
+    } else {
+        format!("'{}'", arg.replace('\'', "'\"'\"'"))
+    }
+}
+
+/// ★(0.14.44 · A2) 데몬의 미승인 응답 `detail` 을 표준오류에 쓸 쉬운 말 한 줄로 바꾼다. 표준출력·종료코드는 건드리지 않는다.
+/// `detail` 이 없거나 모르는 코드면 `None` — 종전(무출력)과 같다.
+fn approval_detail_line(detail: &Value) -> Option<String> {
+    let code = detail.get("code")?.as_str()?;
+    let id = detail.get("record_id").and_then(|v| v.as_str()).unwrap_or("?");
+    let flag = |k: &str| detail.get(k).and_then(|v| v.as_bool()) == Some(true);
+    let requested = detail.get("requested_cwd").and_then(|v| v.as_str()).unwrap_or("(알 수 없음)");
+    let mut line = match code {
+        "bad_quote" => "[approval] 미승인 — 명령의 따옴표가 닫히지 않았습니다. 따옴표를 맞춰 다시 확인하세요.".to_string(),
+        "cwd_mismatch" => {
+            let signed = detail
+                .get("signed_cwd")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "))
+                .unwrap_or_default();
+            format!(
+                "[approval] 미승인 — 같은 명령의 승인({id})이 있지만 폴더가 다릅니다. 서명한 폴더: {signed} · 확인한 폴더: {requested}. \
+                 master 가 `--cwd \"{requested}\"` 를 붙여 다시 서명하면 됩니다."
+            )
+        }
+        "ttl_required" => format!(
+            "[approval] 미승인 — 같은 명령의 승인({id})이 있지만 만료 시각이 없는 승인이라 시간 한정 확인(--require-ttl)에는 쓸 수 없습니다. \
+             master 가 `--ttl <초>` 를 붙여 다시 서명하면 됩니다."
+        ),
+        "expired" => {
+            let at = detail.get("expired_at").and_then(|v| v.as_f64()).map(|t| t as u64);
+            match at {
+                Some(t) => format!("[approval] 미승인 — 같은 명령의 승인({id})이 만료됐습니다(만료 시각 epoch {t}). master 가 다시 서명하면 됩니다."),
+                None => format!("[approval] 미승인 — 같은 명령의 승인({id})이 만료됐습니다. master 가 다시 서명하면 됩니다."),
+            }
+        }
+        "lane_mismatch" => {
+            if flag("target_option") {
+                format!("[approval] 미승인 — 이 데몬의 승인({id})이 있지만 명령에 대상 데몬을 바꾸는 옵션(--socket 등)이 들어 있어 맞지 않습니다.")
+            } else {
+                format!(
+                    "[approval] 미승인 — 같은 명령의 승인({id})이 있지만 다른 데몬에서(또는 이 데몬의 상태 폴더가 새로 만들어지기 전에) 서명된 것입니다. \
+                     이 데몬에서 master 가 다시 서명하면 됩니다."
+                )
+            }
+        }
+        "no_record" => "[approval] 미승인 — 이 명령으로 시작하는 승인이 없습니다. master 가 이 명령을 서명해야 합니다.".to_string(),
+        _ => return None,
+    };
+    if flag("not_exact") {
+        line.push_str(" 서명한 명령과 글자가 달라 폴더를 건너뛰지 못했습니다.");
+    }
+    if flag("needs_launch_cwd") {
+        line.push_str(" launch-agent 는 낳을 폴더(`--cwd`)를 명령에 적어 서명받으면 어느 폴더에서든 통합니다.");
+    }
+    if flag("neutral_off") {
+        line.push_str(" 정책 파일 설정으로 폴더 건너뛰기가 꺼져 있습니다.");
+    }
+    Some(line)
+}
+
 /// ★(0.14.31 · 성찰 C8) TTL 서명 — 능력 조회와 변이를 **같은 연결 위에서** 잇는다.
 ///
 /// 【고치는 결함】 종전 `approval sign --ttl` 은 `approval.capabilities`(조회)와 `approval.sign`(변이)을
@@ -6063,6 +6183,8 @@ fn run(command: Command) -> i32 {
             return match action {
                 // exit 0 = 서명됨(통과) / 비0 = 미서명·차단. cysd 미가용 시 fail-closed(비0).
                 ApprovalAction::Check { command, cwd, require_ttl } => {
+                    // ★(0.14.44 · A3) 게이트 훅이 남긴 끝의 숫자 한 글자(`2>&1` 의 `2`)를 가려낸다 — 조건은 함수 설명.
+                    let command = approval_strip_hook_digits(&command);
                     let cwd = cwd.or_else(|| {
                         std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string())
                     });
@@ -6092,6 +6214,9 @@ fn run(command: Command) -> i32 {
                                 //   판정은 그대로 차단이다(사유는 거부에만 실린다).
                                 if let Some(why) = r["reason"].as_str() {
                                     eprintln!("[approval] 차단(승인 없음이 아니라 판정 불가): {why}");
+                                } else if let Some(line) = r.get("detail").and_then(approval_detail_line) {
+                                    // ★(0.14.44 · A2) 왜 안 맞았는지 쉬운 말 한 줄(표준오류 · 종료코드·표준출력은 종전과 같다).
+                                    eprintln!("{line}");
                                 }
                                 2 // 미서명 — 차단 유지
                             }
@@ -6120,8 +6245,9 @@ fn run(command: Command) -> i32 {
                     //   창은 남는다 · codex major). 연결 하나로 묶으면 세대 교체 = EOF 라 서명이
                     //   어느 데몬에도 닿지 않는다 — 근거 전문은 `approval_sign_ttl_bound` doc.
                     //   실패 방향은 어느 갈래든 **서명하지 않음**(fail-closed).
-                    let sign_params =
-                        json!({"command_prefix": tokens, "cwd": cwd, "ttl_secs": ttl});
+                    // ★(0.14.44 · A4) 명령 원문(`command_text`)을 함께 보낸다 — 새 데몬은 확인과 같은 토크나이저로 쪼갠다. 옛 데몬은 모르는 키를 무시하고 종전 배열을 쓴다.
+                    let sign_params = json!({"command_prefix": tokens, "command_text": prefix,
+                                             "cwd": cwd, "ttl_secs": ttl});
                     let signed = connect().and_then(|mut stream| {
                         let dl = RpcDeadline::arm(
                             &stream,
@@ -6284,7 +6410,9 @@ fn run(command: Command) -> i32 {
         Command::PackAdopt { rel, all, from, merge_after, yes } => {
             return run_pack_adopt(rel, all, from, merge_after, yes);
         }
-        Command::PackHeal { rel, yes } => return run_pack_heal(&rel, yes),
+        Command::PackHeal { rel, yes, missing_only } => {
+            return if missing_only { run_pack_heal_missing_only(&rel) } else { run_pack_heal(&rel, yes) };
+        }
         Command::HooksPrune { pack_dir, dry_run, allow_base } => {
             return run_hooks_prune(&pack_dir, dry_run, allow_base);
         }
@@ -7050,6 +7178,12 @@ fn schedule_result_cell(r: &Value, id: &str) -> String {
     } else {
         format!("result={kind}")
     }
+}
+
+fn schedule_note_cell(r: &Value, id: &str) -> Option<String> {
+    r["text_command_notes"][id]
+        .as_str()
+        .map(|kind| format!("note={kind}"))
 }
 
 fn chrono_fmt(epoch: i64) -> String {
@@ -7857,7 +7991,7 @@ fn run_schedule(action: ScheduleAction) -> i32 {
                     .map(String::from)
                     .or_else(|| j["at"].as_i64().map(|a| format!("once@{}", chrono_fmt(a))))
                     .unwrap_or_else(|| "?".into());
-                println!(
+                let line = format!(
                     "{}\t{} {}\t{}\t{}\tlast_fired={}\t{}",
                     j["id"].as_str().unwrap_or("?"),
                     when,
@@ -7877,6 +8011,11 @@ fn run_schedule(action: ScheduleAction) -> i32 {
                     lf.map(|t| t.to_string()).unwrap_or_else(|| "-".into()),
                     res,
                 );
+                if let Some(note) = schedule_note_cell(&r, j["id"].as_str().unwrap_or("")) {
+                    println!("{line}\t{note}");
+                } else {
+                    println!("{line}");
+                }
             }
         }),
         ScheduleAction::Remove { id } => (|| {
@@ -8561,6 +8700,8 @@ struct DoctorCtx {
     /// ★0.14.42 agy 상태줄 점검의 홈(`~/.gemini/antigravity-cli/settings.json` 의 기준). None = 점검 안 함(Skip) —
     /// 테스트 기본값이다(실 홈의 agy 설정을 진단·수리하지 않는다).
     agy_home: Option<std::path::PathBuf>,
+    /// ★0.14.45(성찰 M3) claude 렌더러(tui) 점검이 원장(`~/.cys/claude-tui-written.json`)을 읽는 홈. None = 원장 폴더를 보지 않는다(테스트 기본값).
+    tui_home: Option<std::path::PathBuf>,
 }
 
 /// settings.json 루트에 우리 SessionStart hook 명령이 등록돼 있는가.
@@ -9283,8 +9424,8 @@ fn diag_config_dir_target(ctx: &DoctorCtx) -> DiagItem {
 /// ★0.14.42 agy(Antigravity CLI) 상태줄 연결 점검 — 계약 전문은 `cys::agy_statusline`.
 ///
 /// 진단은 읽기 전용이다. `--fix` 는 **base 팩**(`~/.cys/pack`)에서만 설치 경로와 같은 조정을 하되 '연결한 적 있음' 기록을
-/// 무시한다(사람이 부른 수리 = 다시 연결 의사) — 그래도 **사용자 statusLine 은 덮지 않고**, 윈도우는 쓰지 않으며, 노브가
-/// 꺼져 있으면 cys 가 넣은 연결만 뺀다. 부서·임시 팩 레인의 doctor 는 개인 설정을 만지지 않는다(설치 경로와 같은 게이트).
+/// 무시한다(사람이 부른 수리 = 다시 연결 의사) — 그래도 **사용자 statusLine 은 덮지 않고**, 윈도우는 쓰기 직전 실연 검사
+/// (`agy::live_probe`)를 통과할 때만 쓰며, 노브가 꺼져 있으면 cys 가 넣은 연결만 뺀다. 부서·임시 팩 레인의 doctor 는 개인 설정을 만지지 않는다(설치 경로와 같은 게이트).
 fn diag_agy_statusline(ctx: &DoctorCtx, fix: bool) -> DiagItem {
     use cys::agy_statusline as agy;
     let item = |status, detail: String, action: String| DiagItem { name: "agy-statusline", status, detail, action };
@@ -9296,18 +9437,36 @@ fn diag_agy_statusline(ctx: &DoctorCtx, fix: bool) -> DiagItem {
         return item(DiagStatus::Skip, "agy 설정 폴더 없음(agy 미설치) — 점검 대상 아님".into(), String::new());
     }
     let cys_base = home.join(".cys");
-    let base_pack = ctx.pack_dir == cys_base.join("pack");
+    // ★(0.14.45 · codex 교차 검토 F) 같은 팩의 8.3 짧은/긴 철자 차이로 base 팩을 놓치지 않게 펼친 경로로 비교한다(유닉스는 그대로).
+    let base_pack = ctx.pack_dir == cys_base.join("pack") || agy::long_path(&ctx.pack_dir) == agy::long_path(&cys_base.join("pack"));
     let off = agy::knob_off(cys::env_compat(agy::ENV_KNOB).as_deref(), cys_base.join(agy::OFF_FILE).exists());
     let record = ctx.pack_dir.join(agy::RECORD_REL);
     let mut done = String::new();
     if fix && base_pack {
         let o = if off {
             agy::unlink(&settings, Some(&record), agy::Backup::Beside)
+        } else if !cys::dormant::agy_lane_enabled() {
+            // ★cysr 휴면(1.1.10 · master#c116db17): 이 판은 agy 상태줄을 연결하지 않는다 — `--fix` 도 넣지 않고 실연 검사·실패 기록 갱신도 없다.
+            agy::Outcome::Dormant
         } else {
-            agy::ensure_linked(
-                &agy::Ctx { settings: &settings, pack_dir: &ctx.pack_dir, record: &record, windows: cfg!(windows) },
+            // ★(0.14.45 · B1) 사람이 부른 수리는 지난 실연 검사 실패 기록을 **무시하고** 다시 검사한다 — 결과로 기록을 덮는다
+            //   (통과 = 지움 · 실패 = 이 버전으로 다시 기록 → 설치 경로는 버전이 바뀔 때까지 재검사하지 않는다).
+            agy::clear_probe_failure(&ctx.pack_dir);
+            let o = agy::ensure_linked(
+                &agy::Ctx {
+                    settings: &settings,
+                    pack_dir: &ctx.pack_dir,
+                    record: &record,
+                    windows: cfg!(windows),
+                    home: Some(home),
+                    probe: Some(&agy::live_probe),
+                },
                 true,
-            )
+            );
+            if let agy::Outcome::WindowsProbeFailed { reason, .. } = &o {
+                agy::record_probe_failure(&ctx.pack_dir, env!("CARGO_PKG_VERSION"), reason);
+            }
+            o
         };
         done = agy::describe(&o, &settings).map(|l| format!("--fix: {l}")).unwrap_or_default();
     }
@@ -9317,7 +9476,17 @@ fn diag_agy_statusline(ctx: &DoctorCtx, fix: bool) -> DiagItem {
     } else {
         format!("base 팩(~/.cys/pack)의 `cys doctor --fix` — 이 레인({})은 개인 설정을 고치지 않는다", ctx.pack_dir.display())
     };
-    let manual = "사용 설명서 §4 사용량「Antigravity(agy) 값」";
+    // ★cysr 휴면(1.1.10 · master#c116db17): agy 갈래가 꺼져 있으면(기본) 연결 상태를 점검하지 않는다 — 「아직 연결되지 않았다」·
+    //   「사용자 statusLine」·실연 검사 실패 기록은 이 판에서 경고가 아니다. 단 하나, 끄기 노브를 켰는데 예전 판이 넣은 표지 달린
+    //   연결이 남아 있는 경우만 종전처럼 알린다(빼는 길은 유지 — 아래 첫 갈래).
+    if !cys::dormant::agy_lane_enabled() && !(off && matches!(agy::inspect(&settings), Ok(Some(agy::Slot::OursAuto { .. })))) {
+        return item(
+            DiagStatus::Skip,
+            "휴면 · 점검 안 함(이 판은 Antigravity 상태줄을 연결하지 않는다)".into(),
+            with_done(format!("예전 판이 넣은 연결을 빼려면 ~/.cys/{} 를 만든 뒤 {fix_hint}", agy::OFF_FILE)),
+        );
+    }
+    let manual = "사용 설명서 §4 사용량「Antigravity(agy)」";
     let slot = match agy::inspect(&settings) {
         Ok(s) => s,
         Err(e) => {
@@ -9347,36 +9516,150 @@ fn diag_agy_statusline(ctx: &DoctorCtx, fix: bool) -> DiagItem {
             format!("cys 가 자동으로 연결함{}", disabled_note(&enabled)),
             with_done(String::new()),
         ),
-        (Some(Slot::CysManual { enabled }), _) => item(
-            DiagStatus::Ok,
-            format!("직접 넣은 cys 연결{} (되돌리기 노브는 cys 가 넣은 연결만 뺀다)", disabled_note(&enabled)),
-            with_done(String::new()),
-        ),
+        (Some(Slot::CysManual { enabled }), _) => {
+            // ★0.14.45: 윈도우에서 0.14.44 이전 안내대로 직접 넣은 `bash …/cys-agy-statusline.sh` 는 바꾸지 않고 `.cmd` 명령을
+            //   권한다 — 윈도우 판 agy 는 `cmd /c` 로 부르므로 `bash` 가 WSL 의 System32\bash.exe 로 잡힐 수 있다.
+            let legacy = cfg!(windows)
+                && agy::inspect_command(&settings).is_some_and(|c| agy::command_is_legacy_windows_sh(&c));
+            let advice = match (legacy, agy::link_command_resolved(&ctx.pack_dir, true, false, Some(home))) {
+                (true, Some(c)) => format!(
+                    "윈도우 판 agy 는 상태줄을 `cmd /c` 로 부릅니다 — `bash …sh` 연결은 WSL bash 로 잡혀 값이 안 들어올 수 \
+                     있습니다. 권장: statusLine command 를 `{c}` 로 바꾸거나, 칸을 비운 뒤 {fix_hint} (cys 는 직접 넣은 연결을 \
+                     바꾸지 않는다)"
+                ),
+                (true, None) => format!("윈도우 판 agy 는 상태줄을 `cmd /c` 로 부릅니다 — `bash …sh` 연결은 동작하지 않을 수 있습니다({manual})"),
+                (false, _) => String::new(),
+            };
+            item(
+                DiagStatus::Ok,
+                format!("직접 넣은 cys 연결{} (되돌리기 노브는 cys 가 넣은 연결만 뺀다)", disabled_note(&enabled)),
+                with_done(advice),
+            )
+        }
         (Some(Slot::User), _) => item(
             DiagStatus::Warn,
             format!("{} 에 사용자 statusLine 이 있다 — 덮지 않는다 · agy 쿼터 값은 들어오지 않는다", settings.display()),
             with_done(format!("cys 값을 받으려면 {manual} 을 보고 직접 바꾼다")),
         ),
         (_, true) => item(DiagStatus::Ok, "꺼짐(되돌리기 노브) — 연결 없음".into(), with_done(String::new())),
-        (_, false) if cfg!(windows) => item(
-            DiagStatus::Skip,
-            "윈도우는 자동 연결하지 않는다(agy 가 상태줄 명령을 어떤 셸로 부르는지 미확인 — 측정 불능은 통과가 아니다)".into(),
-            with_done(match agy::link_command_for(&ctx.pack_dir.to_string_lossy(), true, false) {
-                Some(c) => format!("직접 연결: statusLine command = `{c}` ({manual})"),
-                None => format!("팩 경로에 공백 등이 있어 붙여 넣을 명령을 만들 수 없다 — {manual}"),
-            }),
-        ),
         (_, false) if record.exists() => item(
             DiagStatus::Warn,
-            "전에 cys 가 연결했던 statusLine 이 비어 있다(agy 의 /statusline delete 등) — 설치는 다시 넣지 않는다".into(),
+            format!("전에 cys 가 연결했던 statusLine 이 비어 있다(agy 의 /statusline delete 등) — 설치는 다시 넣지 않는다{}", probe_failure_note(&ctx.pack_dir)),
             with_done(format!("다시 연결: {fix_hint}")),
         ),
         (_, false) => item(
             DiagStatus::Warn,
-            "아직 연결되지 않았다 — agy 쿼터 값은 들어오지 않는다".into(),
+            format!("아직 연결되지 않았다 — agy 쿼터 값은 들어오지 않는다{}", probe_failure_note(&ctx.pack_dir)),
             with_done(format!("{fix_hint} (다음 설치·업데이트 때도 자동으로 연결된다)")),
         ),
     }
+}
+
+/// ★(0.14.45 · 성찰 m2) 지난 윈도우 실연 검사 실패 기록(`state/agy-statusline-probe-failed`)을 doctor 에 **보이게** — 사유 · 버전 · 나이 · 재검사 규칙(같은 버전 24시간 뒤 자동 ·
+/// 버전 변경 · `--fix` 는 기록 무시). 기록 없음 = 빈 문자열.
+fn probe_failure_note(pack_dir: &std::path::Path) -> String {
+    use cys::agy_statusline as agy;
+    let Some(f) = agy::probe_failure_record(pack_dir) else {
+        return String::new();
+    };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let age = match f.age_secs(now) {
+        Some(a) if a >= 3600 => format!("{}시간 전", a / 3600),
+        Some(a) => format!("{}분 전", a / 60),
+        None => "시각 모름".into(),
+    };
+    let me = env!("CARGO_PKG_VERSION");
+    let state = if f.defers_retry(me, now) {
+        "설치 경로는 24시간이 지나면 자동 재검사"
+    } else if f.version == me {
+        "24시간이 지나 다음 설치·부트 조정 때 다시 검사한다"
+    } else {
+        "다른 버전의 기록이라 다음 설치·부트 조정 때 다시 검사한다"
+    };
+    format!(
+        " · 지난 실연 검사 실패 기록(버전 {} · {age}): {} — {state} · 지금 다시: `cys doctor --fix`(기록 무시)",
+        f.version,
+        if f.reason.is_empty() { "사유 없음" } else { f.reason.as_str() }
+    )
+}
+
+/// ★(0.14.45 · 성찰 M3 · Windows) 알려진 좌석 claude 설정 폴더에 `"tui": "fullscreen"` 이 적혀 있는가 — cys 는 덮지 않지만(사용자 선택인지 Claude Code 승격인지 구분 못 한다)
+/// 그 좌석은 휠이 PgUp/PgDn 키 번역으로 바뀌므로(cysr altscroll) **보이게** 한다. 알려진 폴더 = 이 레인의 실소비 폴더 + 부서 팩 agents.json 이 시드한 계정 폴더 + 원장(`~/.cys/claude-tui-written.json`)의 폴더.
+/// 읽기 전용(--fix 없음 · 수리는 사람이 그 pane 에서 `/tui default`). 비-Windows 는 Skip(classic 보장 자체가 Windows 전용).
+fn diag_claude_tui(ctx: &DoctorCtx) -> DiagItem {
+    diag_claude_tui_for(&claude_tui_known_dirs(ctx), cfg!(windows))
+}
+
+/// ★(codex 3차 검토 #1) `claude-tui-fullscreen` 이 보는 **알려진 좌석 폴더** — 이 레인 실소비 폴더 · 기본 좌석 폴더 `<state_base>/claude` · 이 팩과 `<state_base>/pack-dept-*`
+/// **전부**의 agents.json 시드 폴더(기동과 같은 env 전개 `resolve_env_value` — `$HOME/.claude-7` 같은 값을 상대 경로로 읽지 않는다) · 원장 폴더. 순서 보존 · 중복은 판독기가 접는다.
+fn claude_tui_known_dirs(ctx: &DoctorCtx) -> Vec<std::path::PathBuf> {
+    let mut dirs = vec![ctx.consumed_config_dir.clone(), ctx.state_base.join("claude")];
+    let mut packs = vec![ctx.pack_dir.clone()];
+    if let Ok(rd) = std::fs::read_dir(&ctx.state_base) {
+        let mut depts: Vec<std::path::PathBuf> = rd
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("pack-dept-") && e.path().is_dir())
+            .map(|e| e.path())
+            .collect();
+        depts.sort();
+        packs.extend(depts);
+    }
+    for pack in packs {
+        if let Some(d) = dept_seeded_acct_dir(&pack) {
+            let expanded = resolve_env_value(&d.to_string_lossy());
+            if !expanded.trim().is_empty() {
+                dirs.push(std::path::PathBuf::from(expanded));
+            }
+        }
+    }
+    if let Some(home) = &ctx.tui_home {
+        dirs.extend(cys::claude_tui::ledger_dirs(home));
+    }
+    dirs
+}
+
+/// [`diag_claude_tui`] 의 본체(OS 주입 — mac 검체가 Windows 갈래를 잰다).
+fn diag_claude_tui_for(dirs: &[std::path::PathBuf], windows: bool) -> DiagItem {
+    use cys::claude_tui::{tui_probe_dirs, TuiProbe};
+    let item = |status, detail: String, action: String| DiagItem { name: "claude-tui-fullscreen", status, detail, action };
+    if !windows {
+        return item(DiagStatus::Skip, "Windows 전용 점검(classic 렌더러 보장) — 이 OS 는 대상 아님".into(), String::new());
+    }
+    let probed = tui_probe_dirs(dirs);
+    let fullscreen: Vec<&std::path::PathBuf> = probed.iter().filter(|(_, p)| *p == TuiProbe::Fullscreen).map(|(d, _)| d).collect();
+    let unreadable: Vec<String> = probed
+        .iter()
+        .filter_map(|(d, p)| match p {
+            TuiProbe::Unreadable(e) => Some(format!("{}({e})", d.join("settings.json").display())),
+            _ => None,
+        })
+        .collect();
+    let checked = probed.iter().filter(|(_, p)| *p != TuiProbe::NoConfigDir).count();
+    if !fullscreen.is_empty() {
+        return item(
+            DiagStatus::Warn,
+            format!(
+                "{}개 좌석 설정 폴더에 \"tui\": \"fullscreen\" 이 적혀 있다 — 그 좌석은 전체화면이라 마우스 휠을 PgUp/PgDn 키로 바꿔 보낸다(cys 는 덮지 않는다: 사용자 선택인지 \
+                 Claude Code 의 전체화면 승격인지 구분할 수 없다): {}{}",
+                fullscreen.len(),
+                fullscreen.iter().map(|d| d.join("settings.json").display().to_string()).collect::<Vec<_>>().join(" · "),
+                if unreadable.is_empty() { String::new() } else { format!(" · 판독 실패: {}", unreadable.join(" · ")) }
+            ),
+            "그 좌석 pane 에서 `/tui default` 를 치면 Claude Code 가 classic(휠 스크롤)으로 다시 시작하고 설정에 저장된다(다음 기동부터 유지) — 자동 수리 대상 아님(사용자 값 불가침)".into(),
+        );
+    }
+    if !unreadable.is_empty() {
+        return item(
+            DiagStatus::Warn,
+            format!("좌석 설정 파일을 판독하지 못했다 — {}", unreadable.join(" · ")),
+            "파일을 고친 뒤 다시 점검(판독 불가 좌석의 렌더러는 알 수 없다)".into(),
+        );
+    }
+    item(
+        DiagStatus::Ok,
+        format!("알려진 좌석 설정 폴더 {checked}곳에 fullscreen 없음(tui 없음 = 기동 때 cys 가 classic 을 넣는다 · default = classic)"),
+        String::new(),
+    )
 }
 
 #[cfg(unix)]
@@ -10487,9 +10770,15 @@ fn diag_pack_drift(ctx: &DoctorCtx) -> DiagItem {
         fmt_bytes(cap_bytes)
     ));
     if !missing.is_empty() || unreadable > 0 {
-        action.push_str(
-            " · 누락·판독 불가: 데몬 재기동(부팅 install 이 보존 모드로 누락 파일을 다시 쓴다) 또는 cys init-pack",
-        );
+        // ★(0.14.44 · B6-3) 같은 버전에서는 데몬을 다시 띄워도 누락 파일이 복원되지 않는다[실측 R8] — 사실이 아닌 방법("데몬 재기동")은 권하지 않는다.
+        //   실제로 되는 방법만: 없는 파일만 되살리는 `cys pack-heal --missing-only <파일>`(원장 무접촉) 또는 팩 전체를 다시 설치하는 `cys init-pack`.
+        // 누락(파일 없음)과 판독 불가(파일은 있음)를 가른다 — `--missing-only` 는 있는 파일에는 무변경이다(리뷰 1 의 9번).
+        if !missing.is_empty() {
+            action.push_str(" · 누락: cys pack-heal --missing-only <파일>(없는 파일만 · 병합 원장 무접촉) 또는 cys init-pack");
+        }
+        if unreadable > 0 {
+            action.push_str(" · 판독 불가: cys init-pack");
+        }
     }
     let status = if !suspects.is_empty() || n_qr > 0 || !missing.is_empty() || unreadable > 0 {
         DiagStatus::Warn
@@ -10513,6 +10802,8 @@ fn run_doctor_diagnostics(ctx: &DoctorCtx, fix: bool) -> Vec<DiagItem> {
         diag_config_dir_target(ctx),
         // ★0.14.42 agy 상태줄 자동 연결(사용자 설정 불가침 · --fix 는 비었을 때만 연결 · base 팩 전용).
         diag_agy_statusline(ctx, fix),
+        // ★0.14.45(성찰 M3 · Windows) 좌석 설정에 tui=fullscreen 이 이미 적혀 있으면 휠이 PgUp/PgDn 키 번역으로 바뀐다(cysr altscroll) — 덮지 않되 보이게(읽기 전용).
+        diag_claude_tui(ctx),
         diag_orphan_socket(ctx, fix),
         diag_stale_lock(ctx, fix),
         diag_staging_residue(ctx, fix),
@@ -10560,6 +10851,8 @@ fn factory_reset_plan_json(plan: &cys::factory_reset::ResetPlan) -> Value {
         "strip_settings": plan.strip_settings.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>(),
         "strip_skill_dirs": plan.strip_skill_dirs.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>(),
         "strip_agy_statusline": plan.strip_agy_statusline.as_ref().map(|p| p.to_string_lossy().into_owned()),
+        // ★(0.14.45 · 2차 검토 MINOR) cys 가 좌석 설정에 넣은 "tui": "default" 의 되돌림 대상(원장 항목 · 폴더).
+        "claude_tui_rollback": plan.claude_tui_entries.iter().map(|e| e.dir.to_string_lossy().into_owned()).collect::<Vec<_>>(),
         "temp_sweep_count": plan.temp_sweep.len(),
         "report_only": plan.report_only,
         "purge_license": plan.purge_license,
@@ -10741,6 +11034,9 @@ fn run_factory_reset(
         }
         if let Some(s) = &plan.strip_agy_statusline {
             println!("  해제  {}  (cys 가 넣은 agy 상태줄 연결 제거)", s.display());
+        }
+        for e in &plan.claude_tui_entries {
+            println!("  해제  {}  (cys 가 넣은 \"tui\": \"default\" 되돌림 — 값이 아직 default 일 때만 · 백업은 격리 폴더)", e.settings.display());
         }
         if !plan.temp_sweep.is_empty() {
             println!("  소거  임시 캐시 {}건 ($TMPDIR)", plan.temp_sweep.len());
@@ -10938,6 +11234,7 @@ fn run_doctor(fix: bool, json_out: bool) -> i32 {
             .and_then(|p| p.parent().map(|d| d.to_path_buf())),
         consumed_config_dir: std::path::PathBuf::from(cys::resolve_claude_config_dir()),
         agy_home: dirs::home_dir(),
+        tui_home: dirs::home_dir(),
     };
     let items = run_doctor_diagnostics(&ctx, fix);
     let fails = items.iter().filter(|i| i.status == DiagStatus::Fail).count();
@@ -15003,6 +15300,22 @@ fn apply_config_dir_override(
     }
 }
 
+/// 0.14.45 렌더러 설정의 표적 — 이 좌석 claude 가 쓰는 설정 폴더(순수). `bin == "claude"` 이고 spec env 에
+/// `CLAUDE_CONFIG_DIR` 가 있을 때만 그 값을 **이 프로세스 env 로 해소**한다([`resolve_env_value`] — Windows 의
+/// launch-agent 가 surface.create 로 pane 에 싣는 값과 같은 해소). restore 면 호출부가 이미
+/// [`apply_config_dir_override`] 로 기록된 원 폴더를 넣어 두었다. 키가 없거나 비면 `None`(표적 없음 = 쓰지 않음 —
+/// 추측한 폴더에 쓰지 않는다).
+fn seat_claude_config_dir(env_pairs: &[(String, String)], bin: &str) -> Option<String> {
+    if bin != "claude" {
+        return None;
+    }
+    env_pairs
+        .iter()
+        .find(|(k, _)| k == "CLAUDE_CONFIG_DIR")
+        .map(|(_, v)| resolve_env_value(v))
+        .filter(|v| !v.trim().is_empty())
+}
+
 /// ★(W4 · D5 관측) launch-agent ready 판정 직후의 alternate-screen 통지 판정 — 순수 함수.
 ///
 /// 입력 `alt_screen` = 데몬 surface.list 의 동명 필드(`as_bool()` — **필드 부재(구 데몬)는
@@ -15054,16 +15367,23 @@ fn alt_screen_notice(
     if is_windows {
         return Some((
             "[launch-agent] hint: claude 가 alternate screen(fullscreen)으로 떴습니다 — Windows \
-             fullscreen 은 비지원(릴리스 노트 '알려진 제한'). fullscreen 여부는 OS 가 아니라 \
-             계정·롤아웃이 결정하므로 설정을 만진 적이 없어도 이렇게 뜹니다: settings 의 tui 키 \
-             제거는 판정을 서버측 기능 게이트에 넘길 뿐 inline 을 보장하지 않습니다. 휠→방향키 \
+             fullscreen 은 비지원(릴리스 노트 '알려진 제한') · 이 pane 에서는 휠로 대화가 올라가지 \
+             않습니다. **가장 빠른 해결: 이 pane 의 claude 에서 `/tui default`** (classic 화면으로 \
+             다시 시작하고 그 설정 폴더의 다음 세션에도 남습니다). 0.14.45 부터 cys 는 Windows 에서 \
+             claude 를 띄우기 직전 좌석 설정 폴더 settings.json 에 tui 키가 **없을 때만** \
+             \"tui\": \"default\"(classic)를 넣습니다 — 그런데도 fullscreen 이면 그 파일의 tui 가 \
+             'fullscreen' 으로 이미 적혀 있거나(/tui fullscreen · Claude Code 체험 승격 — cys 는 \
+             덮지 않습니다) env CLAUDE_CODE_NO_FLICKER=1 이 걸린 것이고, 그 기록을 끈 경우 \
+             (CYS_WIN_TUI_CLASSIC_OFF=1 · ~/.cys/win-tui-classic-off)에는 판정이 Claude Code 의 \
+             계정·롤아웃 게이트로 돌아갑니다. 휠→방향키 \
              합성 오염은 GUI 의 Windows 휠 가드가 막습니다 — 끄려면 PowerShell 에서 \
              `New-Item -ItemType File -Force $HOME\\.cys\\win-wheel-guard-off` 를 실행한 뒤 \
              **새 pane 을 여세요** (`touch` 는 PowerShell·cmd 에 없는 명령입니다. 되돌리기 \
              취소는 Remove-Item). \
              env(CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN)로 inline 을 강제하려면 **두 가지가 함께** \
-             필요합니다 — ①Windows 는 이 env 주입이 **기본 off(옵트인)** 입니다(실기 검증 전이라 \
-             그렇습니다): `New-Item -ItemType File -Force $HOME\\.cys\\win-no-alt-screen` \
+             필요합니다 — ①Windows 는 이 env 주입이 **기본 off(옵트인)** 입니다(이 env 경로만 Windows 실기 검증 \
+             전입니다 — 위의 설정 경로 classic 기본값(0.14.45)과는 별개의 벨트입니다): \
+             `New-Item -ItemType File -Force $HOME\\.cys\\win-no-alt-screen` \
              (되돌리기 Remove-Item · env CYS_WIN_NO_ALT_SCREEN=1 도 동등하나 GUI 재시작 필요). \
              ②그 뒤 이 pane 이 아니라 **새 pane 을 launch-agent 로 기동**하세요 — Windows 에서 \
              env 는 새 surface 를 만들 때만 실립니다(기존 pane 재기동 경로는 env 를 싣지 \
@@ -15664,6 +15984,26 @@ fn boot_agent_on_surface(
     // ★D25·D24ⓒ(1.1.8): claude 좌석 기동 설정 파일(RC 끄기 두 키 · 정책 allow 목록) — 사용자 cmd 에 --settings 가
     //   이미 있으면 붙이지 않는다(병합 방식 미실측 · 기동 뒤 cysd rc 감시만 동작).
     apply_seat_settings_arg(&mut cmd, role, agent);
+    // ★0.14.45 휠 스크롤 수리 A — Windows 좌석 claude 의 classic 렌더러 보장(`cys::claude_tui` 모듈 doc 정본).
+    //   이 함수는 launch-agent(GUI 포함) · node-recover · in-seat restore 가 모두 지나는 기동 직전 지점이라, 여기
+    //   한 곳에서 좌석 설정 폴더 settings.json 에 `tui` 가 **없을 때만** "default" 를 넣는다(D5 env 와 달리 설정
+    //   파일은 기존 pane 재기동에도 닿는다). 게이트(Windows ∧ ¬`CYS_WIN_TUI_CLASSIC_OFF`)는 그 모듈이 건다.
+    //   ★이 dir 은 좌석 spec env 에 CLAUDE_CONFIG_DIR 이 명시된 경우만 온다(SeatSpec 출처).
+    //   킬스위치는 원장의 cys 삽입값도 되돌린다. 결과가 무엇이든 기동은 계속한다 — 항목별 로그뿐이다.
+    if let Some(dir) = seat_claude_config_dir(&env_pairs, extract_bin(&cmd, agent)) {
+        let dir = std::path::PathBuf::from(dir);
+        if let Some(outcome) = cys::claude_tui::reconcile_for_launch(&dir) {
+            if let cys::claude_tui::Outcome::RolledBack(entries) = &outcome {
+                for (dir, outcome) in entries {
+                    if let Some(line) = cys::claude_tui::describe_rollback(outcome, dir) {
+                        eprintln!("[launch-agent] 렌더러 설정: {line}");
+                    }
+                }
+            } else if let Some(line) = cys::claude_tui::describe(&outcome, &dir) {
+                eprintln!("[launch-agent] 렌더러 설정: {line}");
+            }
+        }
+    }
     let (send, _send_env) = render_launch(&cmd, &env_pairs);
     // ★(W2 · B4) **기동 send 직전 line_count 스냅샷** — readiness 판정의 시간 귀속 기준선.
     //
@@ -20054,8 +20394,9 @@ fn usage_accounts_output(r: &Value, as_json: bool, now: f64) -> (String, String)
     (out, format!("{USAGE_ACCOUNTS_SCOPE_NOTE}\n"))
 }
 
-/// 1.1.8 휴면: 원작자 agy 상태줄 갈래(U2 · JT 「제외」)를 끈다 — 코드는 남기고 이 상수 하나로 실행만 막는다(master#36f48cf7).
-const AGY_STATUSLINE_BRANCH_ENABLED: bool = false;
+// 1.1.8 휴면: 원작자 agy 상태줄 갈래(U2 · JT 「제외」)를 끈다 — 코드는 남기고 실행만 막는다(master#36f48cf7).
+// ★1.1.10(cysr-1110-agy-link-dormant · master#c116db17): 이 파일에 따로 있던 상수를 없애고 데몬·설치 경로와 **같은 술어**
+//   `cys::dormant::agy_lane_enabled`(컴파일 상수가 권위 · env 는 그 아래 · 시험은 스레드 덮기)를 본다.
 
 /// cys-statusline.sh 래퍼 전용 — stdin의 claude statusline JSON을 읽어 usage.report로 push하고,
 /// (quiet가 아니면) 사람용 statusline 한 줄을 stdout으로 출력한다.
@@ -20096,7 +20437,7 @@ fn run_usage_report_stdin(surface: &Option<String>, quiet: bool, agy_only: bool)
     type Push = (&'static str, Value, u64);
     let agy_payload = agy_only || is_agy_statusline(&v);
     let (line, push, stamp): (String, Option<Push>, Option<(std::path::PathBuf, String)>) = if agy_payload
-        && !AGY_STATUSLINE_BRANCH_ENABLED
+        && !cys::dormant::agy_lane_enabled()
     {
         // 1.1.8 휴면(JT U2 제외 · master#36f48cf7): agy 페이로드는 push 0 · 출력 0(claude 경로로 오판해 보내지도 않는다).
         (String::new(), None, None)
@@ -26801,6 +27142,59 @@ fn run_pack_heal(rel: &str, yes: bool) -> i32 {
     0
 }
 
+/// ★(0.14.44 · B6) `pack-heal --missing-only <rel>` — **없는 파일만** 내장본으로 되살린다(앱의 오피스 화면 자산 복구가 쓴다).
+///
+/// 왜 따로 두는가: 기존 `pack-heal` 은 없는 파일을 되살릴 때에도 병합 대기 원장(`.merge-pending.json`)에 "healed"(사용자 수정을 원본으로 되돌렸다) 항목을 남기고,
+/// 그 항목은 저절로 지워지지 않아 부트 사전 점검의 경고(C62)와 14일 뒤 master 앞 병합 검토 신호(C68)를 만든다 — 앱이 조용히 한 복구가 master 에게 일을 만드는 셈이다.
+/// 여기서는 밀려난 사용자 수정이 없으므로 병합할 것이 없다 → **원장에 적지 않는다**. `init-pack` 처럼 팩 전체를 바꿔 끼우지도, 직전 보관본(`pack.prev`)을 덮지도 않는다.
+///
+/// 규칙: 내장 팩에 없는 경로 · system 소유가 아닌 경로는 기존처럼 거부(rc 1) · 파일이 있으면(내용이 무엇이든) 무변경 rc 0 · 없으면 쓰기(원자적)와 기준선 전진은 기존 함수 그대로 ·
+/// 감사 기록에 한 줄. 확인 질문 없음(덮어쓰는 것이 없다).
+fn run_pack_heal_missing_only(rel: &str) -> i32 {
+    let dir = cys::pack::pack_dir();
+    let Some(embed) = cys::pack::PACK_ALL.iter().find(|(r, _)| *r == rel).map(|(_, c)| *c)
+    else {
+        eprintln!("'{rel}' 은 임베드 팩에 없음(자작·폐기 파일) — pack-heal 대상 아님");
+        return 1;
+    };
+    let own = cys::pack::ownership_name_scoped(rel, &dir);
+    if own != "system" {
+        eprintln!("'{rel}' 은 system 소유가 아님({own}) — 헌법·user 파일의 해소는 cys pack-merge 경로를 쓰세요");
+        return 1;
+    }
+    // 팩 루트가 없으면(팩을 바꿔 끼우는 순간 · 설치 전) 아무것도 만들지 않고 거부한다 — 빈 `pack/` 뼈대가 뒤따르는 교체를 막을 수 있다.
+    if !dir.is_dir() {
+        eprintln!("팩 폴더({})가 없음 — 아무것도 만들지 않는다(무변경)", dir.display());
+        return 1;
+    }
+    let target = dir.join(rel);
+    // 있으면(심볼릭 링크·디렉터리·내용이 다른 파일 포함) 아무것도 하지 않는다.
+    if std::fs::symlink_metadata(&target).is_ok() {
+        println!("'{rel}' 은 이미 있음 — 무변경(--missing-only)");
+        return 0;
+    }
+    if let Some(parent) = target.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            eprintln!("폴더 생성 실패({e}) — 무변경");
+            return 1;
+        }
+    }
+    if let Err(e) = cys::pack::write_atomic(&target, embed.as_bytes()) {
+        eprintln!("복원 쓰기 실패: {e}");
+        return 1;
+    }
+    advance_vendor_baseline(&dir, rel, embed);
+    // 병합 대기 원장은 읽지도 쓰지도 않는다. 감사 기록 실패는 loud 경고 후 계속(관측이지 게이트가 아니다).
+    if let Err(e) = cys::pack::append_merge_audit(
+        &dir,
+        &merge_audit_entry(rel, "pack-heal-missing-only", "", embed, "n/a", &["missing-only".to_string()]),
+    ) {
+        eprintln!("⚠ 감사 원장 기록 실패(복원은 완료): {e}");
+    }
+    println!("✅ {rel} ← 내장본으로 되살림(없던 파일 · 병합 대기 원장 무접촉)");
+    0
+}
+
 /// ★T4(v2 §5): --revert-merge — 자동 병합 1명령 가역화(merged 원장 전용). 순서 고정:
 /// 캡처 부재=fail-closed 거부(무변경) → 확인 → 기존 .user 세대 보존(R1-적대 #2 동계열) →
 /// 현 디스크 전문 {rel}.user 백업(병합 후 사용자 재수정 보호 — 원칙 4) → disk←캡처본 →
@@ -30214,6 +30608,25 @@ mod tests {
         assert!(alt_screen_notice(Some(true), "claude", false, false).is_none());
     }
 
+    /// 0.14.45 렌더러 설정 표적(순수) — claude 이고 spec env 에 CLAUDE_CONFIG_DIR 가 있을 때만, 해소된 값.
+    /// 키 부재·빈 값·타 에이전트는 None(추측한 폴더에 쓰지 않는다).
+    #[test]
+    fn seat_claude_config_dir_truth_table() {
+        let pairs = |v: &str| vec![("CLAUDE_CONFIG_DIR".to_string(), v.to_string())];
+        assert_eq!(seat_claude_config_dir(&pairs("/x/acct"), "claude").as_deref(), Some("/x/acct"));
+        assert_eq!(seat_claude_config_dir(&pairs("/x/acct"), "codex"), None, "claude 한정");
+        assert_eq!(seat_claude_config_dir(&pairs(""), "claude"), None, "빈 값 = 표적 없음");
+        assert_eq!(seat_claude_config_dir(&[], "claude"), None, "키 부재 = 표적 없음");
+        // `${VAR:-default}` 템플릿은 이 프로세스 env 로 해소된다(Windows surface.create 주입과 같은 해소).
+        let home = cys::home_dir().to_string_lossy().into_owned();
+        let got = seat_claude_config_dir(
+            &pairs("${CYS_TEST_UNSET_ACCOUNT_DIR_0145:-$HOME/.cys/claude}"),
+            "claude",
+        )
+        .expect("템플릿 해소");
+        assert_eq!(got, format!("{home}/.cys/claude"));
+    }
+
     // ★루트 cwd 교정(2026-07-15 실사고): 루트류는 home으로, 정상 경로는 불변.
     #[test]
     fn sanitize_launch_cwd_truth_table() {
@@ -33609,6 +34022,25 @@ mod tests {
         let cmd = cys::agy_statusline::link_command_for("/Users/x/.cys/pack", false, true).unwrap();
         assert!(cmd.contains(&format!("/hooks/{}", cys::agy_statusline::SCRIPT)) && cmd.ends_with(cys::agy_statusline::MARKER));
         assert_eq!(cys::agy_statusline::SCRIPT, "cys-agy-statusline.sh");
+        // ★0.14.45 윈도우 래퍼(`.cmd` — agy 가 `cmd /c` 로 부른다): 같은 플래그 · 항상 exit /b 0 · LF · 라벨/goto 없음(LF 배치
+        //   파일에서 라벨 탐색이 어긋나는 cmd 의 알려진 함정) · 따옴표 없음 · 연결 명령이 이 파일을 가리킨다.
+        let cmdw = include_str!("../../cysjavis-pack/hooks/cys-agy-statusline.cmd");
+        assert!(cmdw.starts_with("@echo off\n"), "{cmdw}");
+        // ★(0.14.45 · B4) 작업 폴더 탈취 차단 — cmd 는 기본적으로 현재 폴더의 `cys.exe/.cmd` 를 PATH 보다 먼저 찾는다.
+        //   agy 가 상태줄을 어느 작업 폴더에서 부르든 PATH 의 cys 만 실행되게 `set` 한 줄을 cys 호출 **앞**에 둔다.
+        let set_at = cmdw.find("set NoDefaultCurrentDirectoryInExePath=1\n").expect("NoDefaultCurrentDirectoryInExePath 줄 없음");
+        let call_at = cmdw.find("cys usage-report-stdin --agy 2>nul").expect("cys 호출 줄 없음");
+        assert!(set_at < call_at, "set 은 cys 호출 앞이어야 한다:\n{cmdw}");
+        assert!(cmdw.trim_end().ends_with("exit /b 0"), "{cmdw}");
+        assert!(!cmdw.contains('\r') && !cmdw.contains('"'), "LF · 따옴표 없음: {cmdw:?}");
+        assert!(!cmdw.lines().any(|l| l.trim_start().starts_with(':')) && !cmdw.to_ascii_lowercase().contains("goto"));
+        assert!(cmdw.is_ascii(), "코드페이지 해석을 타지 않게 ASCII 만");
+        let wcmd = cys::agy_statusline::link_command_for(r"C:\Users\x\.cys\pack", true, true).unwrap();
+        assert!(wcmd.contains(&format!(r"\hooks\{}", cys::agy_statusline::SCRIPT_CMD)) && wcmd.ends_with(cys::agy_statusline::MARKER));
+        // 윈도우 실연 검사의 통과 줄은 이 CLI 가 검사 입력(빈 쿼터)에 실제로 찍는 줄과 같아야 한다(두 크레이트 사이의 계약)
+        let probe_in: Value = serde_json::from_str(cys::agy_statusline::PROBE_INPUT).unwrap();
+        assert_eq!(agy_statusline_human_line(&probe_in), cys::agy_statusline::PROBE_EXPECT);
+        assert!(cys::agy_statusline::probe_output_ok(&format!("{}\n", agy_statusline_human_line(&probe_in))).is_ok());
     }
 
     /// ★0.14.42 agy 자동 연결: 자동 연결 뒤에는 모든 agy 좌석이 상태 변화마다 push 한다 — 값 서명에 리셋 시각을 넣으면
@@ -37033,6 +37465,7 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
             // 기본은 실소비 폴더 = settings_paths[0] 의 폴더(같은 파일) — 기존 hook 검체의 의미 보존.
             consumed_config_dir: base.to_path_buf(),
             agy_home: None, // 기본은 agy 점검 Skip(다른 doctor 테스트에 부작용 0)
+            tui_home: None, // 기본은 원장 미판독(실 홈 무접촉)
         }
     }
 
@@ -37936,9 +38369,167 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
 
     /// ★0.14.42 agy 상태줄 자동 연결 — doctor 는 가짜 홈에서만 본다(기본 ctx 는 Skip). 사용자 설정은 --fix 로도 덮지
     /// 않고, 부서·임시 팩 레인의 --fix 는 개인 설정을 만지지 않으며, 끔 파일이 있으면 cys 가 넣은 연결만 뺀다.
+    /// ★(0.14.45 · 성찰 m2) 지난 실연 검사 실패 기록은 doctor 에 **보인다**(사유 · 버전 · 나이 · 재검사 규칙) — 연결되지 않은 두 Warn 행에 붙고, 기록이 없으면 빈 문자열.
+    #[test]
+    fn doctor_agy_statusline_shows_the_recorded_probe_failure_reason() {
+        use cys::agy_statusline as agy;
+        let _agy_on = cys::dormant::force_for_thread(cys::dormant::Switch::AgyLane, true); // ★cysr 휴면(기본 off) — 원작자 연결 시험은 이 스레드에서만 켠다
+        let base = std::env::temp_dir().join(format!("cys-doc-agy-pf-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let home = base.join("home");
+        let settings = agy::settings_path_under(&home);
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::fs::write(&settings, "{\n  \"statusLine\": {\n    \"type\": \"\",\n    \"command\": \"\",\n    \"enabled\": false\n  }\n}\n").unwrap();
+        let mut ctx = doctor_ctx_at(&base);
+        ctx.agy_home = Some(home.clone());
+        assert_eq!(probe_failure_note(&ctx.pack_dir), "", "기록 없음 = 빈 문자열");
+        let it = diag_agy_statusline(&ctx, false);
+        assert_eq!(it.status, DiagStatus::Warn);
+        assert!(!it.detail.contains("실연 검사 실패 기록"), "{}", it.detail);
+        // 이 버전 · 방금 — '24시간 뒤 자동 재검사'
+        agy::record_probe_failure(&ctx.pack_dir, env!("CARGO_PKG_VERSION"), "출력이 기대한 cys 가 아니다");
+        let it = diag_agy_statusline(&ctx, false);
+        assert!(it.detail.contains("지난 실연 검사 실패 기록") && it.detail.contains("출력이 기대한 cys 가 아니다") && it.detail.contains("24시간이 지나면 자동 재검사") && it.detail.contains("--fix"), "{}", it.detail);
+        // 다른 버전 · 2시간 전 — '다른 버전의 기록'
+        let p = ctx.pack_dir.join(agy::PROBE_FAIL_REL);
+        let two_h_ago = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() - 7200;
+        std::fs::write(&p, agy::probe_failure_record_text_at("0.0.1", "", two_h_ago)).unwrap();
+        let it = diag_agy_statusline(&ctx, false);
+        assert!(it.detail.contains("버전 0.0.1 · 2시간 전") && it.detail.contains("사유 없음") && it.detail.contains("다른 버전의 기록"), "{}", it.detail);
+        // 같은 버전 · 25시간 전 — '24시간이 지나'
+        std::fs::write(&p, agy::probe_failure_record_text_at(env!("CARGO_PKG_VERSION"), "timeout", two_h_ago - 23 * 3600)).unwrap();
+        let it = diag_agy_statusline(&ctx, false);
+        assert!(it.detail.contains("25시간 전") && it.detail.contains("24시간이 지나 다음 설치"), "{}", it.detail);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// ★(0.14.45 · 성찰 M3 · doctor) Windows 갈래: 알려진 좌석 폴더에 tui=fullscreen 이면 Warn + `/tui default` 안내 · 없으면 Ok · 판독 실패는 Warn · 비-Windows 는 Skip.
+    /// 폴더 목록 = 실소비 폴더 + 부서 팩 시드 폴더 + 원장 폴더(중복 제거). 쓰기 0(읽기 전용).
+    #[test]
+    fn doctor_claude_tui_reports_fullscreen_seats_on_windows_and_skips_elsewhere() {
+        let base = std::env::temp_dir().join(format!("cys-doc-tui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let a = base.join("home").join(".claude-4");
+        let b = base.join("home").join(".cys").join("claude");
+        let c = base.join("home").join(".claude-9");
+        for d in [&a, &b, &c] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(a.join("settings.json"), "{\"tui\":\"fullscreen\"}").unwrap();
+        std::fs::write(b.join("settings.json"), "{\"tui\":\"default\"}").unwrap();
+        // c: settings.json 없음(기동 때 classic 을 넣는 대상)
+        let dirs = vec![a.clone(), b.clone(), c.clone(), a.clone(), base.join("nope")];
+        let it = diag_claude_tui_for(&dirs, false);
+        assert_eq!(it.status, DiagStatus::Skip, "{}", it.detail);
+        let it = diag_claude_tui_for(&dirs, true);
+        assert_eq!(it.status, DiagStatus::Warn, "{}", it.detail);
+        assert!(it.detail.starts_with("1개 좌석 설정 폴더에") && it.detail.contains(&a.join("settings.json").display().to_string()) && it.detail.contains("휠을 PgUp/PgDn 키로 바꿔 보낸다") && !it.detail.contains("꺼진다"), "{}", it.detail);
+        assert!(!it.detail.contains(&b.display().to_string()), "classic 좌석은 목록에 없다: {}", it.detail);
+        assert!(it.action.contains("/tui default") && it.action.contains("자동 수리 대상 아님"), "{}", it.action);
+        assert_eq!(std::fs::read_to_string(a.join("settings.json")).unwrap(), "{\"tui\":\"fullscreen\"}", "읽기 전용");
+        std::fs::write(a.join("settings.json"), "{\"tui\":\"default\"}").unwrap();
+        let it = diag_claude_tui_for(&dirs, true);
+        assert_eq!(it.status, DiagStatus::Ok, "{}", it.detail);
+        assert!(it.detail.contains("3곳"), "중복·부재 폴더를 뺀 수: {}", it.detail);
+        std::fs::write(c.join("settings.json"), "{broken").unwrap();
+        let it = diag_claude_tui_for(&dirs, true);
+        assert_eq!(it.status, DiagStatus::Warn);
+        assert!(it.detail.contains("판독하지 못했다"), "{}", it.detail);
+        // ★(codex 3차 검토 #1) 알려진 폴더 수집 — 실소비 + `<state_base>/claude` + 이 팩·모든 pack-dept-* 의 시드 폴더(env 전개 · `$HOME` 상대 경로 금지) + 원장.
+        let ctx = doctor_ctx_at(&base);
+        std::fs::create_dir_all(&ctx.pack_dir).unwrap();
+        std::env::set_var("CYS_TEST_TUI_D7", base.join("home").join(".claude-7").to_str().unwrap());
+        std::fs::write(ctx.pack_dir.join("agents.json"), r#"{"claude":{"env":{"CLAUDE_CONFIG_DIR":"${CYS_TEST_TUI_D7:-/nope}"}}}"#).unwrap();
+        let d1 = base.join("pack-dept-d1");
+        std::fs::create_dir_all(&d1).unwrap();
+        std::fs::write(d1.join("agents.json"), format!(r#"{{"claude":{{"cmd":"CLAUDE_CONFIG_DIR=\"{}\" claude"}}}}"#, base.join("home").join(".claude-8").display())).unwrap();
+        let known = claude_tui_known_dirs(&ctx);
+        std::env::remove_var("CYS_TEST_TUI_D7");
+        assert!(known.contains(&base.to_path_buf()) && known.contains(&base.join("claude")), "{known:?}");
+        assert!(known.contains(&base.join("home").join(".claude-7")), "env 전개된 시드 폴더: {known:?}");
+        assert!(known.contains(&base.join("home").join(".claude-8")), "모든 pack-dept-* 의 시드 폴더: {known:?}");
+        assert!(!known.iter().any(|d| d.to_string_lossy().contains("${")), "미전개 경로 없음: {known:?}");
+        // 배선: 기본 ctx(원장 홈 없음) — 비-Windows 에서는 Skip · 목록 포함.
+        let items = run_doctor_diagnostics(&doctor_ctx_at(&base), false);
+        let it = items.iter().find(|i| i.name == "claude-tui-fullscreen").expect("진단 목록에 없다");
+        assert_eq!(it.status, if cfg!(windows) { DiagStatus::Ok } else { DiagStatus::Skip });
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    /// ★cysr 1.1.10(cysr-1110-agy-link-dormant · master#c116db17): 기본(휴면)에서 doctor `agy-statusline` 은 「휴면 · 점검 안 함」 한 줄(Skip — 경고 아님)이고,
+    /// `--fix` 는 격리 홈의 agy 설정 파일을 한 바이트도 바꾸지 않는다(연결 0 · 백업 0 · 연결 기록 0 · 실패 기록 무접촉). 사용자 statusLine·지난 실연 검사
+    /// 실패 기록도 경고가 아니다. 예전 판이 넣은 표지 달린 연결은 끄기 파일 + `--fix` 로만 빠진다(빼는 길 유지).
+    fn cysr_dormant_doctor_agy_statusline_skips_and_fix_writes_nothing() {
+        use cys::agy_statusline as agy;
+        let base = std::env::temp_dir().join(format!("cys-doc-agy-dormant-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let home = base.join("home");
+        let settings = agy::settings_path_under(&home);
+        let mut ctx = doctor_ctx_at(&base);
+        ctx.agy_home = Some(home.clone());
+        ctx.pack_dir = home.join(".cys").join("pack");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        for w in [agy::SCRIPT, agy::SCRIPT_CMD] {
+            let wrapper = ctx.pack_dir.join("hooks").join(w);
+            std::fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
+            std::fs::write(&wrapper, "#!/bin/sh\nexit 0\n").unwrap();
+        }
+        let dflt = "{\n  \"statusLine\": {\n    \"type\": \"\",\n    \"command\": \"\",\n    \"enabled\": false\n  }\n}\n";
+        std::fs::write(&settings, dflt).unwrap();
+        // 예전 빌드가 남긴 실연 검사 실패 기록 — 휴면 판에서는 경고도 재검사도 아니다
+        agy::record_probe_failure(&ctx.pack_dir, env!("CARGO_PKG_VERSION"), "지난 판의 실패");
+        let fail_rec = ctx.pack_dir.join(agy::PROBE_FAIL_REL);
+        let fail_before = std::fs::read(&fail_rec).expect("실패 기록 검체");
+        let listing = |d: &std::path::Path| {
+            let mut v: Vec<String> = std::fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+            v.sort();
+            v
+        };
+        assert!(!cys::dormant::agy_lane_enabled(), "기본 = 휴면");
+        for (body, what) in [(dflt, "빈 칸"), ("{\"statusLine\": {\"type\": \"command\", \"command\": \"~/mine.sh\"}}", "사용자 statusLine")] {
+            std::fs::write(&settings, body).unwrap();
+            for fix in [false, true] {
+                let it = diag_agy_statusline(&ctx, fix);
+                assert_eq!(it.status, DiagStatus::Skip, "{what} fix={fix}: {} / {}", it.detail, it.action);
+                assert!(it.detail.contains("휴면") && it.detail.contains("점검 안 함"), "{}", it.detail);
+                assert_eq!(std::fs::read_to_string(&settings).unwrap(), body, "{what} fix={fix}: 휴면인데 설정 파일이 바뀌었다");
+                assert_eq!(listing(settings.parent().unwrap()), vec!["settings.json".to_string()], "{what} fix={fix}: 백업·임시 파일이 생겼다");
+                assert!(!ctx.pack_dir.join(agy::RECORD_REL).exists(), "{what} fix={fix}: 연결 기록이 생겼다");
+                assert_eq!(std::fs::read(&fail_rec).ok().as_deref(), Some(fail_before.as_slice()), "{what} fix={fix}: 실패 기록을 건드렸다");
+            }
+        }
+        if cfg!(windows) {
+            let _ = std::fs::remove_dir_all(&base);
+            return; // 아래는 연결된 상태를 만들어야 한다(윈도우는 실연 검사가 러너 PATH 에 달렸다 — 유닉스 기준)
+        }
+        // 예전 판이 넣은 표지 달린 연결을 만든다(그 스레드에서만 갈래를 켜고 --fix)
+        std::fs::write(&settings, dflt).unwrap();
+        {
+            let _agy_on = cys::dormant::force_for_thread(cys::dormant::Switch::AgyLane, true);
+            assert_eq!(diag_agy_statusline(&ctx, true).status, DiagStatus::Ok);
+        }
+        let linked = std::fs::read_to_string(&settings).unwrap();
+        assert!(linked.contains(agy::MARKER), "{linked}");
+        // 휴면 + 끄기 노브 없음 = 남은 연결을 건드리지 않고 점검도 안 한다
+        let it = diag_agy_statusline(&ctx, true);
+        assert_eq!((it.status, std::fs::read_to_string(&settings).unwrap()), (DiagStatus::Skip, linked.clone()), "{}", it.detail);
+        assert!(it.action.contains(agy::OFF_FILE), "빼는 방법 안내가 없다: {}", it.action);
+        // 끄기 파일 → 진단은 「남아 있다」 를 알리고 --fix 가 그 연결만 뺀다
+        std::fs::write(home.join(".cys").join(agy::OFF_FILE), "").unwrap();
+        let it = diag_agy_statusline(&ctx, false);
+        assert_eq!(it.status, DiagStatus::Warn, "노브가 꺼졌는데 연결이 남은 상태: {}", it.detail);
+        let it = diag_agy_statusline(&ctx, true);
+        let after = std::fs::read_to_string(&settings).unwrap();
+        assert!(!after.contains(agy::MARKER), "끄기 노브 + --fix 가 표지 달린 연결을 빼지 않았다: {after}");
+        assert!(it.status == DiagStatus::Skip && it.action.contains("뺐습니다"), "{} / {}", it.detail, it.action);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn doctor_agy_statusline_reports_and_fixes_only_in_the_fake_home() {
         use cys::agy_statusline as agy;
+        let _agy_on = cys::dormant::force_for_thread(cys::dormant::Switch::AgyLane, true); // ★cysr 휴면(기본 off) — 원작자 연결 시험은 이 스레드에서만 켠다
         let base = std::env::temp_dir().join(format!("cys-doc-agy-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let home = base.join("home");
@@ -37956,7 +38547,7 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         assert!(!settings.parent().unwrap().exists());
         // agy 기본형 = 미연결 Warn → --fix 로 연결 → Ok (설치된 팩처럼 래퍼를 둔다 — 없으면 연결하지 않는다)
         std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
-        let wrapper = ctx.pack_dir.join("hooks").join(agy::SCRIPT);
+        let wrapper = ctx.pack_dir.join("hooks").join(agy::script_name(cfg!(windows)));
         std::fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
         std::fs::write(&wrapper, "#!/bin/sh\nexit 0\n").unwrap();
         let dflt = "{\n  \"statusLine\": {\n    \"type\": \"\",\n    \"command\": \"\",\n    \"enabled\": false\n  }\n}\n";
@@ -37971,8 +38562,28 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         assert_eq!(std::fs::read_to_string(&settings).unwrap(), dflt, "base 팩이 아닌 레인이 개인 설정을 고쳤다");
         assert!(it.action.contains("base 팩"), "{}", it.action);
         if cfg!(windows) {
+            // ★0.14.45 윈도우: --fix 는 쓰기 직전 실연 검사(`cmd /c` · 실제 PATH)를 부른다. 검체 환경에 cys 가 PATH 에 있는지는
+            //   러너마다 다르므로 두 갈래만 허용한다 — 통과면 `.cmd` 연결 · 실패면 파일 바이트 동일 + 붙여 넣을 `.cmd` 명령 안내.
+            //   (검사 자체의 통과·실패 판정은 agy_statusline 의 윈도우 검체가 가짜 cys 로 잰다.)
+            let it = by(&ctx, true);
+            let now = std::fs::read_to_string(&settings).unwrap();
+            if now == dflt {
+                assert_eq!(it.status, DiagStatus::Warn, "{} / {}", it.detail, it.action);
+                // ★(0.14.45) 운영 경로(`ensure_linked`)와 같이 8.3 짧은 이름을 펼친 경로로 판정한다(`agy::long_path`).
+                if agy::link_command_for(&agy::long_path(&ctx.pack_dir).to_string_lossy(), true, true).is_some() {
+                    assert!(it.action.contains("시험 실행") && it.action.contains(agy::SCRIPT_CMD), "{}", it.action);
+                } else {
+                    // 8.3 을 펼친 뒤에도 윈도우 안전 규칙 밖(공백 등 · 펼치기 실패로 `~` 잔존)이면 UnsafePath 안내(검사 전 거절)
+                    assert!(it.action.contains("안전한 연결 명령"), "{}", it.action);
+                }
+            } else {
+                assert_eq!(it.status, DiagStatus::Ok, "{} / {}", it.detail, it.action);
+                let v: Value = serde_json::from_str(&now).unwrap();
+                let c = v["statusLine"]["command"].as_str().unwrap();
+                assert!(agy::command_is_ours_auto(c) && c.contains(agy::SCRIPT_CMD), "{v}");
+            }
             let _ = std::fs::remove_dir_all(&base);
-            return; // 윈도우는 자동 연결 안 함 — 아래 쓰기 시나리오는 유닉스 전용
+            return; // 아래 쓰기 시나리오는 유닉스(검사 없음) 기준이다
         }
         let it = by(&ctx, true);
         assert_eq!(it.status, DiagStatus::Ok, "{} / {}", it.detail, it.action);
@@ -38767,6 +39378,109 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
                 .is_err(),
             "같은 인자를 두 번 준 호출이 조용히 통과했다"
         );
+    }
+
+    /// ★(0.14.44 · A1) `cys approval sign --help` · `check --help` 의 폴더 설명이 **실제 동작**(생략하면 지금 폴더)을 말한다.
+    /// 옛 문구("cwd 무관 승인" · "생략 시 미지정")는 0건, 새 문구의 핵심 낱말("지금 폴더")은 각 1건 이상.
+    #[test]
+    fn a1_approval_help_texts_describe_the_actual_cwd_behavior() {
+        use clap::CommandFactory;
+        let mut root = <Cli as CommandFactory>::command();
+        let approval = root.find_subcommand_mut("approval").expect("approval 동사");
+        for (verb, needle) in [("sign", "지금 폴더에 묶인다"), ("check", "지금 폴더로 확인한다")] {
+            let sub = approval.find_subcommand_mut(verb).expect("하위 동사");
+            let help = sub.render_long_help().to_string();
+            assert!(!help.contains("cwd 무관 승인"), "{verb}: 옛 문구가 남았다\n{help}");
+            assert!(!help.contains("생략 시 미지정"), "{verb}: 옛 문구가 남았다\n{help}");
+            assert_eq!(help.matches(needle).count(), 1, "{verb}: 새 문구가 정확히 한 번 있어야 한다\n{help}");
+            assert!(help.contains("지금 폴더"), "{verb}: 핵심 낱말");
+        }
+    }
+
+    /// ★(0.14.44 · A2) 데몬의 `detail` → 표준오류 한 줄. 여섯 코드 · 보조 표시 · 모르는 코드/없음은 종전(무출력).
+    #[test]
+    fn a2_detail_line_covers_six_codes_and_aux_flags() {
+        let line = |v: Value| approval_detail_line(&v);
+        let l = line(json!({"code": "cwd_mismatch", "record_id": "ap-1", "signed_cwd": ["/a/hq"], "requested_cwd": "/a/other"})).expect("cwd_mismatch");
+        assert!(l.contains("/a/hq") && l.contains("/a/other") && l.contains("--cwd \"/a/other\""), "{l}");
+        for (code, needle) in [
+            ("bad_quote", "따옴표"),
+            ("ttl_required", "--ttl"),
+            ("expired", "만료"),
+            ("lane_mismatch", "다른 데몬"),
+            ("no_record", "승인이 없습니다"),
+        ] {
+            let l = line(json!({"code": code, "record_id": "ap-9"})).unwrap_or_default();
+            assert!(l.contains(needle), "{code}: {l}");
+        }
+        let l = line(json!({"code": "lane_mismatch", "target_option": true})).unwrap_or_default();
+        assert!(l.contains("--socket"), "{l}");
+        let l = line(json!({"code": "cwd_mismatch", "not_exact": true, "needs_launch_cwd": true, "neutral_off": true})).unwrap_or_default();
+        assert!(l.contains("글자가 달라") && l.contains("낳을 폴더") && l.contains("꺼져 있습니다"), "{l}");
+        assert!(line(json!({"code": "something_new"})).is_none());
+        assert!(line(json!(null)).is_none());
+    }
+
+    /// ★(0.14.44 · A3) CLI `approval check` 의 끝 숫자 토큰 떼기 — 대상 동사 7종 × (`2` · `1` · `3` · `1 2`) 는 떼어지고, 숫자 셋 · 그대로 읽히는 명령 · 대상 밖 명령 ·
+    /// 모르는 옵션 · 도움말 · 인자가 모자란 꼴은 **원문 그대로**. 그리고 7종의 완전한 명령 뒤에 인자 하나를 더 붙이면 "남는 인자" 오류다(성질 고정 — 동사 문법이 바뀌면 멈춘다).
+    #[test]
+    fn a3_strip_hook_digits_only_for_the_seven_target_verbs_when_the_rest_is_leftover_args() {
+        use clap::Parser;
+        let complete = [
+            "cys kill 123",
+            "cys close-surface surface:5",
+            "cys pause",
+            "cys resume",
+            "cys tombstone worker",
+            "cys launch-agent --role worker --agent claude --cwd /a/hq",
+            "cys cycle-agent --surface surface:5",
+        ];
+        assert_eq!(complete.len(), cys::APPROVAL_TARGET_VERBS.len());
+        for c in complete {
+            // 성질 ①: 완전한 명령은 그대로 읽히고, 뒤에 인자 하나를 더 붙이면 "남는 인자" 오류다.
+            let toks: Vec<&str> = c.split_whitespace().collect();
+            assert!(Cli::try_parse_from(toks.iter()).is_ok(), "{c}: 완전한 명령이 아니다");
+            let more: Vec<&str> = toks.iter().copied().chain(std::iter::once("2")).collect();
+            let e = Cli::try_parse_from(more.iter()).err().unwrap_or_else(|| panic!("{c} 2: 오류여야 한다"));
+            assert_eq!(e.kind(), clap::error::ErrorKind::UnknownArgument, "{c} 2: {e}");
+            // 성질 ②: 숫자 토큰 하나 또는 둘이 붙은 꼴은 떼어진다.
+            for tail in ["2", "1", "3", "1 2"] {
+                let with = format!("{c} {tail}");
+                assert_eq!(approval_strip_hook_digits(&with), *c, "{with}");
+            }
+            // 숫자 셋은 떼지 않는다.
+            let three = format!("{c} 1 2 3");
+            assert_eq!(approval_strip_hook_digits(&three), three);
+            // 숫자 아닌 한 글자 · 두 자리 숫자는 떼지 않는다.
+            for tail in ["x", "22", "2>&1"] {
+                let with = format!("{c} {tail}");
+                assert_eq!(approval_strip_hook_digits(&with), with, "{with}");
+            }
+            // 완전한 명령은 손대지 않는다.
+            assert_eq!(approval_strip_hook_digits(c), *c);
+        }
+        // 그대로 읽히는 명령의 `2` 는 대상이다.
+        for c in ["cys kill 2", "cys close-surface 2", "cys cycle-agent --surface 2", "cys pause --reason 2"] {
+            assert_eq!(approval_strip_hook_digits(c), c, "{c}");
+        }
+        // 대상 밖 명령 · 다른 cys 동사 · 비 cys 명령.
+        for c in ["git push origin main 2", "cys list 2", "cys send --text x 2", "rm -rf x 2"] {
+            assert_eq!(approval_strip_hook_digits(c), c, "{c}");
+        }
+        // 인자가 모자란 꼴 · 모르는 옵션 · 도움말 · 따옴표가 닫히지 않음.
+        for c in [
+            "cys launch-agent --role worker 2",
+            "cys close-surface surface:5 --bogus 2",
+            "cys close-surface --help 2",
+            "cys kill abc 2",
+            "cys close-surface 'surface:5 2",
+        ] {
+            assert_eq!(approval_strip_hook_digits(c), c, "{c}");
+        }
+        // 다시 인용이 필요한 토큰(안전 글자 밖)이 하나라도 있으면 떼지 않고 원문 그대로 — 다시 인용하면 원문 스캐너(㉢)를 우회한다(리뷰 1 의 2번).
+        for c in ["cys tombstone 'a b' 2", "cys tombstone \"$(cat /tmp/t)\" 2", "cys tombstone '$(cat /tmp/t)' 2", "cys tombstone a;b 2"] {
+            assert_eq!(approval_strip_hook_digits(c), c, "{c}");
+        }
     }
 
     /// `cys reclaim-role --auto` 는 계약 인자 3종(+`--env-role`)을 받는다. 훅이 넘기는 그 형태로 핀.
@@ -41749,6 +42463,65 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         assert_eq!(t4_ledger_kind(&td, &rel).as_deref(), Some("healed"), "원장 healed 전환");
         assert_triple_advanced(&td, &rel, &embed);
         let _ = std::fs::remove_dir_all(td.parent().unwrap());
+    }
+
+    /// ★(0.14.44 · B6) `pack-heal --missing-only`: 없는 파일은 되살리되 **병합 대기 원장을 만들지도 바꾸지도 않고**(원장 파일 자체가 생기지 않는다),
+    /// 있는 파일은 내용이 무엇이든 무변경 rc 0, 내장 팩에 없는 경로는 거부. 인자가 없는 `pack-heal` 은 종전과 같다(원장 healed 항목을 남긴다).
+    #[test]
+    fn b6_pack_heal_missing_only_restores_without_touching_the_ledger() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (td, rel, embed, _env) = t4_system_fixture("b6mo");
+        let target = td.join(&rel);
+        let ledger = td.join(cys::pack::MERGE_PENDING_FILE);
+        let audit_before = std::fs::read_to_string(td.join(".merge-audit.jsonl")).unwrap_or_default();
+        assert!(!target.exists() && !ledger.exists());
+        // ① 없는 파일 → 복원 · 기준선 전진 · 원장 파일 없음 · 감사 한 줄.
+        assert_eq!(run_pack_heal_missing_only(&rel), 0);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), embed, "내장본으로 되살아나야 한다");
+        assert_triple_advanced(&td, &rel, &embed);
+        assert!(!ledger.exists(), "병합 대기 원장이 생겼다");
+        assert!(!td.join(format!("{rel}.user")).exists(), ".user 가 생겼다");
+        let audit = std::fs::read_to_string(td.join(".merge-audit.jsonl")).unwrap_or_default();
+        assert_eq!(audit.lines().count(), audit_before.lines().count() + 1, "감사 기록은 정확히 한 줄");
+        assert!(audit.contains("pack-heal-missing-only"));
+        // ② 있는 파일(내용이 다름) → 무변경 · 원장 무접촉 · rc 0.
+        std::fs::write(&target, "MY EDIT\n").unwrap();
+        assert_eq!(run_pack_heal_missing_only(&rel), 0);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "MY EDIT\n", "있는 파일을 건드렸다");
+        assert!(!ledger.exists() && !td.join(format!("{rel}.user")).exists());
+        // ③ 원장 항목이 이미 있어도 원장 파일은 바이트 그대로.
+        t4_write_ledger(&td, &rel, serde_json::json!({"kind": "kept-drift", "side": rel, "version": "x", "ts": 0}));
+        let led_bytes = std::fs::read(&ledger).unwrap();
+        std::fs::remove_file(&target).unwrap();
+        assert_eq!(run_pack_heal_missing_only(&rel), 0);
+        assert_eq!(std::fs::read(&ledger).unwrap(), led_bytes, "원장이 바뀌었다");
+        // ④ 내장 팩에 없는 경로 · system 이 아닌 경로는 거부.
+        assert_eq!(run_pack_heal_missing_only("no/such/file.txt"), 1);
+        // ⑤ 새 인자는 CLI 문법으로 파싱된다.
+        use clap::Parser;
+        assert!(matches!(
+            Cli::try_parse_from(["cys", "pack-heal", "--missing-only", "web/office3d.html"]).map(|c| c.command),
+            Ok(Command::PackHeal { missing_only: true, yes: false, .. })
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["cys", "pack-heal", "--yes", "web/office3d.html"]).map(|c| c.command),
+            Ok(Command::PackHeal { missing_only: false, yes: true, .. })
+        ));
+        let _ = std::fs::remove_dir_all(td.parent().unwrap());
+    }
+
+    /// ★(0.14.44 · B6-3) doctor 의 누락 안내에 사실이 아닌 방법("데몬 재기동")이 없다.
+    #[test]
+    fn b6_doctor_missing_hint_no_longer_recommends_a_daemon_restart() {
+        let src = include_str!("cys.rs");
+        let i = src.find(" · 누락: cys pack-heal").expect("누락 안내 문구");
+        let line = &src[i..i + 200];
+        assert!(!line.contains("데몬 재기동"), "{line}");
+        assert!(line.contains("pack-heal --missing-only") && line.contains("init-pack"), "{line}");
+        let j = src.find(" · 판독 불가: cys init-pack").expect("판독 불가 안내 문구");
+        assert!(!src[j..j + 80].contains("missing-only"), "판독 불가(파일 있음)에 --missing-only 를 권했다");
+        let old = ["부팅 install 이 보존 모드로 ", "누락 파일을 다시 쓴다) 또는"].concat(); // 이 시험 자신에 걸리지 않게 조각으로 잇는다
+        assert!(!src.contains(&old), "옛 안내가 남았다");
     }
 
     /// ★T4(ⓕ): merged 원장의 pack-heal --yes = 프롬프트 없이 즉시 거부(rc 1·전면 무변경 —
@@ -46889,6 +47662,17 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         // 줄 형식: last_fired 칸 뒤에 결과 칸이 **덧붙는다**(기존 칸 순서 불변).
         let src = include_str!("cys.rs");
         assert!(src.contains("\"{}\\t{} {}\\t{}\\t{}\\tlast_fired={}\\t{}\","));
+    }
+
+    #[test]
+    fn schedule_note_cell_handles_old_daemon_and_job_notes() {
+        assert_eq!(schedule_note_cell(&json!({"jobs": []}), "a"), None);
+        let r = json!({"text_command_notes": {"a": "retired-seed-text"}});
+        assert_eq!(
+            schedule_note_cell(&r, "a"),
+            Some("note=retired-seed-text".into())
+        );
+        assert_eq!(schedule_note_cell(&r, "other"), None);
     }
 
     /// ★U4-B2① 소스 핀(review1 M2 FIX #3 · blocking): 위 검체는 순수 함수 `schedule_result_cell`만

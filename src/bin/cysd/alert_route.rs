@@ -1346,7 +1346,7 @@ fn summary_value_is_machine(k: &str, v: &str) -> bool {
         return true;
     }
     // ★(0.14.43 · C5) `remedy` 는 허용 목록(열거형) 정확 일치만 기계값이다 — 복원된 요약도 같은 문법을 지난다(`input_pending_unknown`·`after_cursor_text` 는
-    //   마디가 셋이라 `safe_identity`(마디 ≤ 2)로는 못 지나므로 별도 열거 검사). 목록은 13종(RQFIX · 유령 계수 코드는 `phantom_count` — 옛 이름은 키 이름을 품고 있어 개명).
+    //   마디가 셋이라 `safe_identity`(마디 ≤ 2)로는 못 지나므로 별도 열거 검사). 목록은 14종(RQFIX · 유령 계수 코드는 `phantom_count` — 옛 이름은 키 이름을 품고 있어 개명 · 0.14.45 성찰 2회차 M3 `stale_screen` 추가).
     if k == "remedy" {
         return crate::governance::QUEUE_REMEDY_CODES.contains(&v);
     }
@@ -6062,10 +6062,11 @@ mod pure_tests {
             paused: false,
             kill_switch: false,
             input_model: "v3",
+            ..crate::governance::QueueBlockDiag::default()
         }
     }
 
-    /// 발행자가 실제로 내는 payload(`queue_starved_payload`)의 요약에 `remedy=<code>` 가 붙는다 — 허용 목록 13종 전부.
+    /// 발행자가 실제로 내는 payload(`queue_starved_payload`)의 요약에 `remedy=<code>` 가 붙는다 — 허용 목록 14종 전부.
     /// `remedy` 문장·`hint`·진단 필드는 요약에 실리지 않는다(pane stdin 으로 가는 문안 — 자유 문자열 금지).
     #[test]
     fn c5_queue_starved_summary_appends_remedy_code_only() {
@@ -6099,6 +6100,10 @@ mod pure_tests {
             assert!(!summary.contains("LLM"), "자유 문장이 요약에 실렸다: {summary}");
             assert!(!summary.contains("hint"), "hint 가 요약에 실렸다: {summary}");
             assert!(!summary.contains("draft_visible"), "진단 필드가 요약에 실렸다: {summary}");
+            // ★(0.14.47 · 계측) 새 진단 키 넷과 그 그릇(screen_diag)도 요약(pane stdin)에 실리지 않는다.
+            for key in ["screen_diag", "after_cursor_dim", "cursor_col", "alt_screen=", "\"alt_screen\"", "human_idle_secs"] {
+                assert!(!summary.contains(key), "진단 키 {key} 가 요약에 실렸다: {summary}");
+            }
         }
         // 허용 목록 전량이 요약에 실린다(열거형 하나라도 막히면 그 처방이 CSO 에게 안 간다).
         for code in crate::governance::QUEUE_REMEDY_CODES {

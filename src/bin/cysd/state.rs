@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::broadcast;
 
-const SCROLLBACK_LINES: usize = 10_000;
+pub(crate) const SCROLLBACK_LINES: usize = 10_000;
 pub const DEFAULT_ROWS: u16 = 35;
 pub const DEFAULT_COLS: u16 = 120;
 
@@ -665,6 +665,8 @@ pub fn queue_starved_payload(
         "input_model": diag.input_model,
         "remedy_code": remedy_code,
         "remedy": remedy,
+        // ★(0.14.45 · F3) 화면 동기 진단(커서 행 · 마커 행 · 커서 행 선두 코드포인트 · 마지막 패닉 · 마지막 다시 그리기 요청).
+        "screen_diag": crate::governance::screen_diag_json(diag),
     })
 }
 
@@ -2314,6 +2316,26 @@ pub struct Surface {
     pub dsr_dropped: AtomicU64,
     /// (W4) 마지막 파서 패닉 발생 epoch초(없으면 None) — 상습 트리거 포렌식용 health 신호.
     pub last_parser_panic: Mutex<Option<f64>>,
+    /// ★(0.14.45 · F2) 화면 사본 재동기(다시 그리기 요청) 상태 — leaf 락. 쓰는 곳은 `repaint::note_queue_screen` 하나다.
+    pub repaint: Mutex<crate::repaint::RepaintState>,
+    /// ★(0.14.45 · F2) 이 좌석에 크기 흔들기 스레드가 떠 있다(좌석당 동시 1건).
+    pub repaint_in_flight: AtomicBool,
+    /// ★(0.14.45 · F2-A1) 크기 변경 직렬화 — 값은 **바깥(GUI `surface.resize`) 크기 변경의 세대**다. PTY(master) 크기와
+    /// 파서 크기는 두 단계라 원자적이지 않다: 재동기 스레드의 '줄이기'·'대조+되돌리기' 와 GUI 의 변경이 엇갈리면 최종
+    /// PTY 크기가 파서·xterm 과 어긋나거나 GUI 크기가 사라진다. 그래서 **모든** 크기 변경은 이 락을 쥔 채 두 단계를
+    /// 한 번에 한다([`crate::repaint::apply_resize`] · [`crate::repaint::nudge_resize`]). 바깥 변경은 세대를 올리고(PTY 가
+    /// 실제로 바뀐 뒤에만), 재동기는 자기 세대를 기억해 그 사이 바깥 변경이 있었으면 되돌리지 않는다. 흔들기 중에는
+    /// 정식 크기(`nudge_origin`)를 들고 있어 치수를 생략한 바깥 변경이 임시 높이를 굳히지 않는다. 락 순서: resize_gate →
+    /// master → parser(master·parser 는 그 안에서 따로·잠깐씩). 잠든 사이(settle)에는 쥐지 않는다.
+    pub resize_gate: Mutex<crate::repaint::ResizeGate>,
+    /// ★(0.14.45 · F2-A2 · 성찰 2회차 M1) 다시 그리기 요청의 **반향 제외 창**([`crate::repaint::RepaintEcho`]) — 흔들기 시작부터 되돌린 뒤 최소
+    /// [`crate::repaint::REPAINT_ECHO_GRACE_MS`] · 재방송이 이어지면 마지막 출력 + [`crate::repaint::REPAINT_ECHO_QUIET_MS`] 까지(상한 [`crate::repaint::REPAINT_ECHO_CAP_SECS`]) 이 좌석의 출력은
+    /// 건강 룰(`run_health_rules`)·회상 색인(`persist_for_recall`)을 타지 않는다. 다시 그려진 화면은 **옛 줄의 재방송**이라(이미 처리한
+    /// "rate limit"·"Error" 줄) 경보·조치 바인딩(큐 일시정지)을 다시 당기고 색인을 중복시킨다(치명위험 ①). `last_injected` 의 2초 에코
+    /// 제외와 같은 꼴이다. 창 안에 줄 버퍼로 들어온 줄 번호 구간은 창이 닫힌 뒤에도 남아 `surface.wait_for`·델타 read 가 건너뛴다.
+    /// 최선 노력이다 — 창 안에 시작돼 창이 닫힌 뒤 줄바꿈으로 완성되는 미완성 줄 하나는 룰을 탈 수 있고(기존 에코 제외와 같은 한계),
+    /// 창은 유한해 영구 봉인은 없다. leaf 락.
+    pub repaint_echo: Mutex<crate::repaint::RepaintEcho>,
     /// ★(T-0147-7 W2 · B6) **각성 래치** — 이 surface 가 처음 `status.set`(=cys set-status)을 보낸
     /// epoch초. 단일 write path = status.set 핸들러의 `get_or_insert`(1회성 래치 · 이후 불변).
     ///
@@ -3562,7 +3584,23 @@ pub fn send_write_req_bounded(
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// 시험 전용: true 면 다음 `process_chunk_isolated` 한 번이 파서 반영 전에 패닉한다(한 번 쓰고 꺼진다).
+    static FORCE_PARSER_PANIC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// 시험 전용: 이 스레드의 다음 청크 처리 한 번에 파서 패닉을 주입한다.
+#[cfg(test)]
+pub(crate) fn force_parser_panic_once() {
+    FORCE_PARSER_PANIC.with(|f| f.set(true));
+}
+
 /// (W4) PTY 청크를 vt100 파서에 반영하되, 파서 내부 인덱스 패닉을 격리한다.
+///
+/// ★(0.14.45) 아래 row89 경로는 벤더 패치(vendor/vt100 — `Row::resize` 가 마지막 칸 넓은 글자 머리를
+/// 지운다 · 짝 칸 접근은 get_mut)로 더는 패닉하지 않는다. 격리는 알려지지 않은 다른 패닉을 위한 마지막
+/// 그물로 남긴다 — 패닉 뒤에는 화면 사본이 비므로 좌석이 다시 그리기 전까지 판독이 어긋난다(F2 재그리기 요청).
 ///
 /// vt100 0.15.2는 와이드(CJK·이모지) 문자의 선두 셀이 마지막 열에 놓인 상태에서 그 셀을
 /// 지우거나 덮어쓰면 `row.rs:89 clear_wide`가 `cells[col+1]`을 경계 밖 인덱싱해 패닉한다
@@ -3587,6 +3625,12 @@ fn process_chunk_isolated(
     // rows/cols를 process '이전'에 포착 — 패닉 후 파서를 재접근하지 않고 fresh 재초기화에 쓴다.
     let (rows, cols) = parser.screen().size();
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // 시험 전용 패닉 주입 — 0.14.45 벤더 패치로 row89 시퀀스가 더는 패닉하지 않으므로, 격리 장치 자체는
+        //   이 훅으로 계속 시험한다(실제 빌드에는 없는 코드다).
+        #[cfg(test)]
+        if FORCE_PARSER_PANIC.with(|f| f.replace(false)) {
+            panic!("시험 주입 파서 패닉");
+        }
         parser.process(chunk);
         // ★G5-④: 질의 수만큼 CPR 응답 — 좌표는 청크 반영 '후' 커서 위치로 동일하다(실단말도
         // 미처리 큐를 소진한 시점에 응답하므로 등가 · ConPTY 목적은 '응답 수 일치'가 본질).
@@ -3797,16 +3841,24 @@ mod dedup_tests {
 
 #[cfg(test)]
 mod panic_isolation_tests {
-    use super::{process_chunk_isolated, SCROLLBACK_LINES};
+    use super::{force_parser_panic_once, process_chunk_isolated, SCROLLBACK_LINES};
 
-    /// row.rs:89 clear_wide OOB 재현 시퀀스: 와이드(CJK) 문자의 선두 셀을 26열 그리드 끝에 놓고
-    /// 25열로 축소하면 선두 와이드 셀이 마지막 열(index 24, len 25)로 밀린다. 그 셀을 덮어쓰면
-    /// vt100 0.15.2가 `cells[col+1]`=cells[25]를 경계 밖 인덱싱해 패닉한다(프로덕션 "len 25 index 25").
-    /// 좁은 pane으로의 resize + 한국어 CLI 출력이라는 실제 경로를 그대로 박제한다.
-    fn drive_row89_panic(parser: &mut vt100::Parser) -> bool {
+    /// row.rs:89 clear_wide OOB 재현 시퀀스(종전 프로덕션 "len 25 index 25"): 와이드(CJK) 문자의 선두 셀을
+    /// 26열 그리드 끝에 놓고 25열로 축소하면 선두 와이드 셀이 마지막 열(index 24, len 25)로 밀린다.
+    /// 그 셀을 덮어쓰면 원본 vt100 0.15.2 가 `cells[25]` 를 짚어 패닉했다. 반환 = 마지막 청크의 panicked.
+    fn drive_row89(parser: &mut vt100::Parser) -> bool {
         process_chunk_isolated(parser, b"\x1b[1;25H", 0);
         process_chunk_isolated(parser, "\u{ac00}".as_bytes(), 0); // '가'(wide)
         parser.set_size(10, 25); // 축소 → 선두 와이드 셀이 마지막 열로
+        let (_, panicked) = process_chunk_isolated(parser, b"\x1b[1;25Ha", 0);
+        panicked
+    }
+
+    /// 격리 장치 시험용: row89 와 같은 상태를 만든 뒤 마지막 청크에 시험 훅으로 패닉을 주입한다.
+    fn drive_forced_panic(parser: &mut vt100::Parser) -> bool {
+        process_chunk_isolated(parser, b"\x1b[1;1Hkeep", 0);
+        parser.set_size(10, 25);
+        force_parser_panic_once();
         let (_, panicked) = process_chunk_isolated(parser, b"\x1b[1;25Ha", 0);
         panicked
     }
@@ -3819,27 +3871,106 @@ mod panic_isolation_tests {
         assert!(p.screen().contents().contains("hello world"));
     }
 
+    /// ★(0.14.45 · F1) 벤더 패치 적색→녹색: row89 시퀀스는 더는 패닉하지 않고 화면도 지워지지 않는다.
+    ///   패치 전에는 panicked=true 이고 화면이 빈 fresh 파서로 갈렸다(같은 줄의 다른 글자까지 소실).
     #[test]
-    fn row89_sequence_is_contained_not_propagated() {
-        // 격리가 없다면 이 시퀀스는 스레드를 죽인다 — catch_unwind가 panicked=true로 흡수해야 한다.
+    fn row89_sequence_no_longer_panics_and_screen_is_preserved() {
         let mut p = vt100::Parser::new(10, 26, SCROLLBACK_LINES);
-        let panicked = drive_row89_panic(&mut p);
-        assert!(panicked, "row.rs:89 clear_wide OOB 시퀀스가 격리(패닉 흡수)를 발동해야 한다");
+        process_chunk_isolated(&mut p, b"\x1b[3;1H\xe2\x9d\xaf ready", 0); // 3행 '❯ ready'
+        let panicked = drive_row89(&mut p);
+        assert!(!panicked, "row89 시퀀스가 여전히 패닉한다 — vendor/vt100 패치 소실?");
+        let scr = p.screen();
+        assert_eq!(scr.size(), (10, 25));
+        assert_eq!(scr.cursor_position().0, 0, "커서는 같은 줄(0행)에 머문다");
+        let row0 = scr.contents_between(0, 0, 0, 25);
+        assert!(row0.ends_with('a'), "마지막 칸 머리를 지우고 'a' 를 썼다: {row0:?}");
+        assert!(scr.contents().contains("\u{276f} ready"), "다른 줄(프롬프트)이 보존돼야 한다: {:?}", scr.contents());
+        // 넓은 글자 머리만 남은 칸이 없어야 한다(짝 없는 머리 = 다음 쓰기에서 패닉하던 상태).
+        let last = scr.cell(0, 24).expect("마지막 칸");
+        assert!(!last.is_wide(), "마지막 칸에 짝 없는 넓은 글자 머리가 남았다");
+    }
+
+    /// 축소만으로도 짝 없는 머리가 남지 않는다(Row::resize 패치 직접 핀) · 1열까지 줄여도 패닉 없다.
+    #[test]
+    fn shrink_clears_orphan_wide_head_down_to_one_col() {
+        for cols in (1u16..=25).rev() {
+            let mut p = vt100::Parser::new(4, 26, SCROLLBACK_LINES);
+            let line = "\u{ac00}".repeat(13); // 26칸 꽉 채움
+            let (_, pan) = process_chunk_isolated(&mut p, line.as_bytes(), 0);
+            assert!(!pan);
+            p.set_size(4, cols);
+            let last = p.screen().cell(0, cols - 1).expect("마지막 칸");
+            assert!(!last.is_wide(), "cols={cols}: 마지막 칸에 짝 없는 머리");
+            let (_, pan) = process_chunk_isolated(&mut p, b"\x1b[1;200Hxy\x1b[1;1H\xea\xb0\x80\xea\xb0\x80z", 0);
+            assert!(!pan, "cols={cols}: 축소 뒤 쓰기가 패닉했다");
+        }
+    }
+
+    /// 결정론 난수 스트레스: 넓은 글자·좁은 글자·커서 이동·삽입/삭제/지우기·크기 변경을 섞어도 패치된 파서는
+    ///   패닉하지 않는다(격리 장치에 기대지 않는다). 씨앗 고정 — 실패하면 같은 순서로 재현된다.
+    #[test]
+    fn randomized_wide_char_resize_stress_never_panics() {
+        let mut seed: u64 = 0x0145_0145_dead_beef;
+        let mut next = move |n: u64| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) % n
+        };
+        for round in 0..400 {
+            let mut p = vt100::Parser::new(6, 30, SCROLLBACK_LINES);
+            for step in 0..120 {
+                let tok: Vec<u8> = match next(17) {
+                    11 => format!("\x1b[{};{}r", next(7) + 1, next(7) + 1).into_bytes(),
+                    12 => if next(2) == 0 { b"\x1b[?1049h".to_vec() } else { b"\x1b[?1049l".to_vec() },
+                    13 => format!("\x1b[{}L\x1b[{}M", next(3) + 1, next(3) + 1).into_bytes(),
+                    14 => b"\x1bD\x1bM\x1b7\x1b8\x1b[?6h\t\x1b[?6l".to_vec(),
+                    15 => format!("\x1b[{}S\x1b[{}T", next(3), next(3)).into_bytes(),
+                    0 | 1 => "\u{ac00}\u{ac01}".as_bytes().to_vec(),
+                    2 => "\u{1f600}".as_bytes().to_vec(),
+                    3 => b"ab".to_vec(),
+                    4 => format!("\x1b[{};{}H", next(8) + 1, next(40) + 1).into_bytes(),
+                    5 => format!("\x1b[{}@", next(5) + 1).into_bytes(),
+                    6 => format!("\x1b[{}P", next(5) + 1).into_bytes(),
+                    7 => format!("\x1b[{}X", next(5) + 1).into_bytes(),
+                    8 => format!("\x1b[{}K", next(3)).into_bytes(),
+                    9 => b"\r\n\x08".to_vec(),
+                    _ => {
+                        p.set_size(next(6) as u16 + 1, next(32) as u16 + 1);
+                        continue;
+                    }
+                };
+                let (_, pan) = process_chunk_isolated(&mut p, &tok, 0);
+                assert!(!pan, "round={round} step={step}: 패치된 파서가 패닉했다 tok={tok:?}");
+                let _ = p.screen().contents();
+                let _ = p.screen().contents_formatted();
+            }
+        }
+    }
+
+    #[test]
+    fn forced_panic_is_contained_not_propagated() {
+        // 격리가 없다면 패닉은 reader 스레드를 죽인다 — catch_unwind가 panicked=true로 흡수해야 한다.
+        let mut p = vt100::Parser::new(10, 26, SCROLLBACK_LINES);
+        let panicked = drive_forced_panic(&mut p);
+        assert!(panicked, "시험 주입 패닉이 격리(패닉 흡수)를 발동해야 한다");
+        // 훅은 한 번만 쏜다 — 다음 청크는 정상.
+        let (_, again) = process_chunk_isolated(&mut p, b"x", 0);
+        assert!(!again, "주입 훅은 한 번 쓰고 꺼져야 한다");
     }
 
     #[test]
     fn reinit_preserves_rows_cols() {
         let mut p = vt100::Parser::new(10, 26, SCROLLBACK_LINES);
-        assert!(drive_row89_panic(&mut p));
+        assert!(drive_forced_panic(&mut p));
         // 패닉 직전 크기(축소 후 10x25)를 fresh 파서가 그대로 보존해야 한다.
         assert_eq!(p.screen().size(), (10, 25), "재초기화가 rows/cols를 보존해야 한다");
+        assert!(!p.screen().contents().contains("keep"), "재초기화 = 화면 사본 소실(재그리기 요청의 근거)");
     }
 
     #[test]
     fn parser_survives_and_processes_after_panic() {
         // 격리 후 파서는 계속 동작 — 후속 청크가 정상 반영돼야 한다(reader 배수 지속의 파서측 보증).
         let mut p = vt100::Parser::new(10, 26, SCROLLBACK_LINES);
-        assert!(drive_row89_panic(&mut p));
+        assert!(drive_forced_panic(&mut p));
         let (_, panicked) = process_chunk_isolated(&mut p, b"\x1b[2J\x1b[1;1Halive", 0);
         assert!(!panicked, "재초기화된 파서는 후속 청크를 패닉 없이 반영해야 한다");
         assert!(
@@ -7085,6 +7216,18 @@ impl Daemon {
         self.create_surface_with_env(cwd, cmd, title, role, rows, cols, &[], None, None)
     }
 
+    /// ★검체 전용 — 호출자 오버라이드 계정 dir 로 좌석을 만든다(`config_dir_trusted=false` · 복원 좌석·수동 CLAUDE_CONFIG_DIR 과 같은 꼴).
+    /// 운영 스폰은 `handlers` 의 `surface.create` 한 곳뿐이다(H-AUTH-SELFLOOP 가 스폰 함수의 소비 파일을 센다 — 검체는 이 이음매를 쓴다).
+    #[cfg(test)]
+    pub fn create_surface_untrusted_config_dir(
+        self: &Arc<Self>,
+        cmd: Option<String>,
+        role: Option<String>,
+        config_dir: String,
+    ) -> Result<Arc<Surface>, String> {
+        self.create_surface_with_env(None, cmd, None, role, 24, 80, &[], Some(config_dir), None)
+    }
+
     /// create_surface + PTY env 주입(RC-3 B′). `env`의 (k,v)를 builder.env로 실어 pane에 직접 전달한다
     /// (Windows launch-agent가 해소한 CLAUDE_CONFIG_DIR 등 — 순수 cmd send와 짝). unix는 빈 슬라이스라
     /// 무동작(셸 인라인 전개가 진실원). CYS_PACK_DIR·CYS_ACCOUNT_DIR 등 기존 주입과 동형.
@@ -7495,6 +7638,10 @@ impl Daemon {
             parser_panics: AtomicU64::new(0),
             dsr_dropped: AtomicU64::new(0),
             last_parser_panic: Mutex::new(None),
+            repaint: Mutex::new(crate::repaint::RepaintState::default()),
+            repaint_in_flight: AtomicBool::new(false),
+            resize_gate: Mutex::new(crate::repaint::ResizeGate::default()),
+            repaint_echo: Mutex::new(crate::repaint::RepaintEcho::default()),
             // ★W2 B6: 래치는 항상 None 으로 시작한다 — 생성 시점엔 아직 어떤 각성 증거도 없다.
             // restore 경로의 하이드레이션은 surface.create 핸들러가 topology 값으로 명시 주입한다
             // (여기서 유추하지 않는다 — 유추는 곧 위양성 래치이고, 그건 재주입 스킵 오판이 된다).
@@ -7869,6 +8016,9 @@ impl Daemon {
     /// 청크 경계 안전: 미완성 ESC 시퀀스·UTF-8 멀티바이트 꼬리는 다음 청크와 합쳐 처리한다
     /// (경계에서 한글 파괴·escape 잔재 혼입 차단).
     fn ingest_output(&self, surface: &Surface, chunk: &[u8]) {
+        // ★(0.14.45 · 성찰 2회차 M1) 반향 제외 창 — 청크 도착마다 한 번 묻는다(창의 끝은 '되돌린 뒤 바닥 3초 · 그 뒤 재방송 + 1초' 라 도착 시각이 재료다).
+        //   참이면 이 청크의 완성 줄은 재방송이다 — 아래에서 줄 번호 구간을 기억해 wait_for·델타 read 가 건너뛴다. leaf 락 · 다른 락 없이.
+        let echo = crate::repaint::echo_note_output(surface, Instant::now());
         let mut st = surface.ingest.lock().unwrap();
         st.carry.extend_from_slice(chunk);
         let mut cut = st.carry.len();
@@ -7932,20 +8082,36 @@ impl Daemon {
             // 읽으므로, push(N)과 fetch_add(N)이 분리되면 '증가 전 total + push 후 sb.len()'을
             // 관측하는 인터리빙으로 oldest가 N 작아져 skip이 N 과도해지고 최신 N라인을 건너뛴다.
             // 둘을 같은 락 아래로 묶어 reader가 (sb.len, line_count)를 항상 일관되게 본다.
-            surface
+            let before = surface
                 .line_count
                 .fetch_add(completed.len() as u64, Ordering::Relaxed);
             // ★scrollback 전진 시각 — read_text 의 신선도 판정 근거(§Surface::last_line_at).
             // scrollback 락 안에서 찍어 (sb, line_count, last_line_at) 셋이 한 관측점을 가리키게 한다.
             *surface.last_line_at.lock().unwrap() = Some(Instant::now());
+            // ★(M1-a) 반향 창 안의 완성 줄은 번호 구간으로 기억한다 — 같은 scrollback 락 아래라 wait_for·델타 read(락 안에서 구간을 읽는다)가
+            //   '줄은 보이는데 구간은 아직' 인 틈을 보지 않는다. 락 순서: scrollback → repaint_echo(leaf).
+            if echo {
+                let total = before + completed.len() as u64;
+                crate::repaint::echo_record_lines(surface, before, total, total.saturating_sub(sb.len() as u64));
+            }
             drop(sb);
             self.persist_for_recall(surface, &completed);
             self.run_health_rules(surface, &completed);
         }
     }
 
+    /// ★(0.14.45 · F2-A2) 다시 그리기 요청의 반향 제외 창 안인가 — 창 안이면 건강 룰·회상 색인을 건너뛴다(사유는
+    /// `Surface::repaint_echo` doc). 창이 지났으면 지워 둔다(이후 락 1회 비용 0).
+    pub(crate) fn repaint_echo_active(surface: &Surface) -> bool {
+        crate::repaint::echo_active(surface)
+    }
+
     /// FTS 영속: 의미 있는 라인만 (3자 미만·연속 중복 스킵 — TUI 리드로우 노이즈 억제).
+    /// ★(0.14.45 · F2-A2) 다시 그리기 요청의 반향 창 안이면 색인하지 않는다(재방송 줄의 중복 색인 차단).
     fn persist_for_recall(&self, surface: &Surface, lines: &[String]) {
+        if Self::repaint_echo_active(surface) {
+            return;
+        }
         let role = surface.role.lock().unwrap().clone();
         let title = surface.title.lock().unwrap().clone();
         let mut last = surface.last_recall_line.lock().unwrap();
@@ -8021,6 +8187,11 @@ impl Daemon {
             if t.elapsed().as_secs() < 2 {
                 return;
             }
+        }
+        // ★(0.14.45 · F2-A2) 다시 그리기 요청(크기 흔들기)의 반향 창 — 다시 그려진 화면은 옛 줄의 재방송이라 룰을 타지 않는다
+        //   (옛 "rate limit"·"Error" 줄이 경보·조치 바인딩을 다시 당기는 폭주 ① 차단). 창 = 흔들기 시작 ~ 되돌린 뒤 최소 3초 · 재방송이 이어지면 마지막 출력 + 1초(상한 60초).
+        if Self::repaint_echo_active(surface) {
+            return;
         }
         let rules = self.health_rules.lock().unwrap();
         for line in lines {
@@ -9648,11 +9819,10 @@ mod tests {
         process_chunk_isolated(&mut q, b"\x1b[?2004h", 0);
         mirror_screen_modes(&s, q.screen());
         assert!(s.bracketed_paste.load(Ordering::Relaxed));
-        process_chunk_isolated(&mut q, b"\x1b[1;25H", 0);
-        process_chunk_isolated(&mut q, "\u{ac00}".as_bytes(), 0);
-        q.set_size(10, 25);
+        // (0.14.45) row89 시퀀스는 벤더 패치로 더는 패닉하지 않는다 — 시험 훅으로 패닉을 주입한다.
+        super::force_parser_panic_once();
         let (_, panicked) = process_chunk_isolated(&mut q, b"\x1b[1;25Ha", 0);
-        assert!(panicked, "전제: row.rs:89 패닉 재현");
+        assert!(panicked, "전제: 파서 패닉 격리 발동");
         mirror_screen_modes(&s, q.screen());
         assert!(!s.bracketed_paste.load(Ordering::Relaxed), "재초기화 → false → 원문(종전) 폴백");
         let _ = std::fs::remove_dir_all(&dir);
@@ -11148,6 +11318,62 @@ mod tests {
         // codex 1R ⑩ — 진짜 오류 두 문장(좌석마다 하나 · 같은 좌석·룰 30초 디바운스).
         assert_eq!(feed_lines_collect_alerts(&daemon, &a, &["Error: rate limit exceeded"]).len(), 1);
         assert_eq!(feed_lines_collect_alerts(&daemon, &b, &["Too Many Requests (429)"]).len(), 1);
+    }
+
+    /// ★(0.14.45 · F2-A2) 다시 그리기 요청의 반향 제외 창 — 창 안에 도착한 줄은 **진짜 고장 문면이라도** 건강 룰을 타지 않고
+    /// (다시 그려진 화면은 옛 줄의 재방송 — 옛 "rate limit"·"Error" 가 경보·조치 바인딩을 다시 당기는 폭주 ① 차단) 회상 색인에도
+    /// 들어가지 않는다. 창이 닫히면(과거 시각) 같은 줄이 다시 경보를 낸다 = 창이 영구 봉인이 아니라는 음성 대조. 창이 지나면 지워진다.
+    #[test]
+    fn repaint_echo_window_mutes_health_rules_and_recall_then_expires() {
+        let (daemon, s) = health_probe_daemon("repaint-echo");
+        let start = s.line_count.load(Ordering::Relaxed);
+        // 창 열림(흔들기 중 — 되돌리기 전) — 경보 0 · 색인 0(마지막 색인 줄 불변).
+        s.repaint_echo.lock().unwrap().cap_until = Some(Instant::now() + std::time::Duration::from_secs(3));
+        let before = s.last_recall_line.lock().unwrap().clone();
+        let fired = feed_lines_collect_alerts(&daemon, &s, REAL_FAILURE_LINES);
+        assert!(fired.is_empty(), "반향 창 안의 재방송 줄은 경보가 아니다: {fired:?}");
+        assert_eq!(*s.last_recall_line.lock().unwrap(), before, "반향 창 안의 줄은 회상 색인에 들어가지 않는다");
+        assert!(s.repaint_echo.lock().unwrap().cap_until.is_some(), "창은 아직 열려 있다");
+        // 줄 버퍼(scrollback)·줄 계수는 그대로 쌓인다 — 창은 룰·색인만 가린다(화면 판독은 계속된다).
+        let after_echo = s.line_count.load(Ordering::Relaxed);
+        assert!(after_echo >= start + REAL_FAILURE_LINES.len() as u64);
+        // ★(성찰 2회차 M1-a) 창 안에 들어온 줄은 번호 구간으로 남는다 — wait_for·델타 read 가 건너뛴다.
+        let ranges = crate::repaint::echo_ranges(&s);
+        assert!((start..after_echo).all(|n| crate::repaint::line_in_echo(&ranges, n)), "창 안의 줄 {start}..{after_echo} 가 구간에 없다: {ranges:?}");
+        // 창 닫힘(과거) — 같은 줄이 경보를 낸다 · 창 표식은 지워진다 · 새 줄은 구간 밖이다 · 옛 구간은 남는다.
+        s.repaint_echo.lock().unwrap().cap_until = Some(Instant::now() - std::time::Duration::from_millis(1));
+        let fired = feed_lines_collect_alerts(&daemon, &s, REAL_FAILURE_LINES);
+        assert!(!fired.is_empty(), "창이 닫히면 진짜 고장은 경보를 낸다");
+        assert!(s.repaint_echo.lock().unwrap().cap_until.is_none(), "지난 창은 지운다");
+        assert_ne!(*s.last_recall_line.lock().unwrap(), before, "창 밖의 줄은 색인된다");
+        let after_all = s.line_count.load(Ordering::Relaxed);
+        let ranges = crate::repaint::echo_ranges(&s);
+        assert!((after_echo..after_all).all(|n| !crate::repaint::line_in_echo(&ranges, n)), "창 밖의 줄이 구간에 들었다: {ranges:?}");
+        assert!(crate::repaint::line_in_echo(&ranges, start), "닫힌 창의 구간은 남는다(재방송 줄은 계속 건너뛴다)");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// ★(성찰 2회차 M1-a) 되돌린 뒤의 재방송이 종전 고정 3초를 넘어도 창 안이다 — 실제 좌석에 '되돌린 뒤 4초' 시점의 줄을 흉내 내 넣으면(재방송이 0.1초 전까지
+    /// 이어진 것으로) 룰을 타지 않고 구간에 남는다. 바닥 3초가 지나고 정적 1초 뒤의 줄은 룰을 탄다(창 닫힘).
+    #[test]
+    fn repaint_echo_window_follows_long_replay_then_closes_on_quiet() {
+        let (daemon, s) = health_probe_daemon("repaint-echo-long");
+        let t0 = Instant::now();
+        {
+            let mut e = s.repaint_echo.lock().unwrap();
+            e.cap_until = Some(t0 + std::time::Duration::from_secs(crate::repaint::REPAINT_ECHO_CAP_SECS));
+            e.restored_at = Some(t0 - std::time::Duration::from_secs(4)); // 4초 전에 되돌렸다
+            e.last_output = Some(t0 - std::time::Duration::from_millis(100)); // 재방송이 0.1초 전까지 이어졌다
+        }
+        let fired = feed_lines_collect_alerts(&daemon, &s, REAL_FAILURE_LINES);
+        assert!(fired.is_empty(), "되돌린 뒤 4초가 지났어도 재방송이 이어지는 동안은 창 안이다: {fired:?}");
+        assert!(!crate::repaint::echo_ranges(&s).is_empty());
+        // 정적 1초 — 다음 줄은 창 밖.
+        s.repaint_echo.lock().unwrap().last_output = Some(Instant::now() - std::time::Duration::from_millis(crate::repaint::REPAINT_ECHO_QUIET_MS + 1));
+        let fired = feed_lines_collect_alerts(&daemon, &s, REAL_FAILURE_LINES);
+        assert!(!fired.is_empty(), "정적 1초 뒤의 줄은 재방송이 아니다");
+        assert!(s.repaint_echo.lock().unwrap().cap_until.is_none());
+        let _ = s.child.lock().unwrap().kill();
     }
 
     /// ★음성 대조(수용 기준) — 경보를 **논의하는 산문**은 신규 경보 0건이어야 한다.
@@ -12854,6 +13080,7 @@ mod tests {
             paused: false,
             kill_switch: false,
             input_model: "v3",
+            ..crate::governance::QueueBlockDiag::default()
         }
     }
 
@@ -12889,7 +13116,14 @@ mod tests {
         let remedy = p["remedy"].as_str().expect("remedy 문장");
         assert!(remedy.contains("Ctrl-U"), "유령 계수 처방: {remedy}");
         assert!(remedy.ends_with(crate::governance::REMEDY_LLM_SUFFIX), "자동 조치 금지 접미: {remedy}");
-        assert_eq!(p.as_object().unwrap().len(), 15, "기존 7 + 가산 8 — 그 밖의 키가 새면 계약 변경이다: {p}");
+        // ★(0.14.45 · F3) 가산 키 1개 더 — `screen_diag`(객체 · 관측 불능 필드는 null).
+        assert_eq!(p.as_object().unwrap().len(), 16, "기존 7 + 가산 8 + screen_diag 1 — 그 밖의 키가 새면 계약 변경이다: {p}");
+        assert_eq!(
+            p["screen_diag"],
+            json!({"cursor_row": null, "marker_row": null, "cursor_lead_cp": null, "last_parser_panic_at": null, "repaint_requested_at": null,
+                   "cursor_col": null, "after_cursor_dim": null, "alt_screen": false, "human_idle_secs": null}),
+            "결측은 null(값이 아니다) — ★(0.14.47 · 계측) 추가형 키 넷은 screen_diag 객체 안이다(최상위 키 수 16 은 그대로)"
+        );
         // 커서 뒤에 글자가 있으면(회색 제안인지 직접 쓴 글인지 모른다) 유령 단정이 아니라 `after_cursor_text`(표 7행) — 사람이 화면을 보고 가린다.
         let p_after = queue_starved_payload("surface:5", Some("cso".into()), &head, 4200, 3, blocked, &c5_diag_ga(Some(false), Some(true)));
         assert_eq!(p_after["remedy_code"], json!("after_cursor_text"));

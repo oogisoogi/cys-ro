@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use sysinfo::{Pid, ProcessesToUpdate, System};
 
-const WATCHDOG_INTERVAL_SECS: u64 = 5;
+pub(crate) const WATCHDOG_INTERVAL_SECS: u64 = 5;
 const LOAD_DEBOUNCE_SECS: f64 = 60.0;
 
 /// ★(0.14.31 · 성찰 Q8) watchdog 루프가 **어디서 도는가**. 관측·보고용(기동 1회).
@@ -218,6 +218,8 @@ pub fn spawn_watchdog(daemon: Arc<Daemon>) {
                 check_surface_crash(&daemon);
                 check_feed_aging(&daemon, &mut feed_reminded);
                 // ★v112-wake ⑥: 결재 주체가 사라진 pending(요청자 사망 · 이전 데몬 세대)은 expired 로 닫는다.
+                //   ★1.1.10 편입(📌3 · master#60dc9ccf): 아래 15초 틱의 원작자 C1 쓸기(닫힌 좌석의 daemon- 화면 감지 승인 → stale-cleared)와 **공존**한다 —
+                //   원작자 C3 의 publisher_alive=null(「데몬 이전 항목 = 모름」)은 우리 쪽에선 그런 항목이 여기서 이미 만료돼 거의 보이지 않는다(의미 차이 고지).
                 expire_orphan_feed(&daemon);
                 check_feed_backlog(&daemon, &mut feed_backlog_alerted);
                 check_approval_stall(&daemon, &mut approval_stall_fired);
@@ -230,6 +232,8 @@ pub fn spawn_watchdog(daemon: Arc<Daemon>) {
                     sweep_parked_queues(&daemon);
                     check_todo(&daemon);
                     check_approvals(&daemon, &mut approval_debounce, &mut scan_caches);
+                    // ★(0.14.44 · C1) 닫힌 좌석의 화면 감지 승인 쓸기 — 별도 함수(화면 감지 함수 안에 넣지 않는다 · 아래 설명).
+                    sweep_orphan_daemon_approvals(&daemon);
                     check_launch_flags(
                         &daemon,
                         &sys,
@@ -2275,6 +2279,78 @@ impl ScanCaches {
         self.gate_debounce.retain(|(sid, _), _| live.contains(sid));
         self.gate_escalations.retain(|sid, _| live.contains(sid));
     }
+}
+
+/// ★(0.14.44 · C1) **닫힌 좌석의 '데몬이 올린 감지 승인'을 데몬이 스스로 닫는다.**
+///
+/// 좌석을 닫거나(`close-surface`) 셸이 스스로 끝나도, 데몬이 화면에서 감지해 올린 승인 항목은 대기로 남는다(데몬을 다시 띄울 때에야 닫힌다 · 실측 R6). 낡은 대기 항목은
+/// 5분마다 재알림 이벤트를 만들고 대기 건수가 문턱(기본 25)에 닿으면 적체 경보를 낸다(`check_feed_aging`·`check_feed_backlog`) — 치명 위험 ① 쪽이다.
+///
+/// 대상은 **세 조건을 모두 채우는 대기 항목뿐**이다: ① request_id 가 `daemon-` 접두(클라이언트는 이 접두를 쓸 수 없다 — 위조 불가) ② 종류가 `approval` 또는 `first_run_gate`
+/// ③ 좌석 번호가 있고 그 좌석이 좌석 맵에 없거나 종료 상태. 이것들을 `stale-cleared`(화면에서 문구가 사라졌을 때 쓰는 기존 결정 문자열)로 닫는다.
+/// 클라이언트가 올린 항목(사람이 읽어야 할 보고가 섞여 있고 기계가 가를 칸이 없다) · 살아 있는 좌석의 항목 · 정보성 알림은 건드리지 않는다.
+///
+/// 별도 함수인 이유: 화면 감지 함수(`check_approvals`)는 에이전트 정의 파일을 읽지 못하면 일찍 돌아가고, 본문의 순서를 고정한 시험이 있다. 이 쓸기는 정의 파일과 무관하게 돈다.
+/// 틱 계약: **기다림(`.await`)이 없다** · 잠금은 한 문장 안에서 끝나고 둘을 겹쳐 쥐지 않는다(대기 항목 id 를 복사해 잠금을 놓고 → 좌석 맵을 보고 → 기존 해소 함수를 부른다) ·
+/// 한 번에 닫는 건수에 상한이 있다. 손잡이: `CYS_FEED_ORPHAN_SWEEP=0`(환경변수 또는 정책 파일의 `0`) → 종전 동작.
+#[deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+fn sweep_orphan_daemon_approvals(daemon: &Arc<Daemon>) {
+    if !crate::knobs::feed_orphan_sweep_enabled() {
+        return;
+    }
+    sweep_orphan_daemon_approvals_inner(daemon);
+}
+
+/// 쓸기 본체 — 손잡이 판정과 분리해 시험이 직접 부른다. 닫은 건수를 돌려준다.
+#[deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+pub(crate) fn sweep_orphan_daemon_approvals_inner(daemon: &Arc<Daemon>) -> usize {
+    // 한 번에 닫는 상한(틱 시간 상한) — 남은 것은 다음 틱(15초 뒤)이 닫는다.
+    const SWEEP_CAP: usize = 200;
+    // ① 대기 항목 스냅샷(잠금은 이 문장 안에서 끝난다 · poison 관용 — 읽기 전용 순회).
+    let candidates: Vec<(String, u64)> = daemon
+        .feed_items
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|i| {
+            i.status == "pending"
+                && crate::state::is_daemon_issued(&i.request_id)
+                && (i.kind == "approval" || i.kind == GATE_FEED_KIND)
+        })
+        .filter_map(|i| i.surface_id.map(|sid| (i.request_id.clone(), sid)))
+        .collect();
+    if candidates.is_empty() {
+        return 0;
+    }
+    // ② 좌석 사실 — 좌석 맵의 Arc 만 복사하고 잠금을 놓은 뒤 종료 여부를 본다.
+    let mut dead: HashMap<u64, bool> = HashMap::new();
+    for (_, sid) in &candidates {
+        if dead.contains_key(sid) {
+            continue;
+        }
+        let seat = daemon
+            .surfaces
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(sid)
+            .cloned();
+        let gone = match seat {
+            None => true,
+            Some(s) => s.exited.load(Ordering::Relaxed),
+        };
+        dead.insert(*sid, gone);
+    }
+    // ③ 닫는다(기존 해소 함수 — 멱등 · 다른 잠금을 쥔 채 부르지 않는다).
+    let mut closed = 0usize;
+    for (rid, sid) in candidates {
+        if closed >= SWEEP_CAP {
+            break;
+        }
+        if dead.get(&sid).copied().unwrap_or(false) && daemon.resolve_feed_item(&rid, "stale-cleared").is_some() {
+            closed += 1;
+        }
+    }
+    closed
 }
 
 /// T4-16 승인 격상 스캔: agents.json의 approval_patterns를 visible screen에 매칭.
@@ -4557,11 +4633,12 @@ pub fn cmdline_matches_agent_exec(cmdline: &str, bin_base: &str) -> bool {
     })
 }
 
-/// 자손 pid 트리만 수집한다(문자열 미조회) — collect_descendants 계열의 공통 골격.
+/// 자손 pid 트리만 수집한다(문자열 미조회) — collect_descendants 계열의 공통 골격. **0.14.43 의 본문 그대로**(시작 시각을 보지 않는다).
 /// pid 재사용으로 부모 링크에 사이클이 생겨도 무한루프하지 않게 방문 집합을 유지한다.
 /// 반환 순서는 종전 collect_descendants 의 DFS 순서와 동일하다(소비자 순서 의존 무변경).
+/// ★(0.14.44 · WH2) 생존 판정·에이전트 찾기·상태 판정 등 대부분의 소비자는 이 경로를 쓴다 — 보정판(`guarded_descendant_pids`)은
+/// 감시 틱의 계수·중복 판정과 좌석 닫기의 종료 목록 두 곳에서만 부른다(소스 핀 시험으로 고정).
 fn descendant_pids(sys: &System, root: u32) -> Vec<u32> {
-    // parent → children index
     let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
     for (pid, proc_) in sys.processes() {
         if let Some(parent) = proc_.parent() {
@@ -4587,6 +4664,166 @@ fn descendant_pids(sys: &System, root: u32) -> Vec<u32> {
         }
     }
     out
+}
+
+/// 보정판 자손 수집 — **윈도우에서만**(`guard_applies`) 시작 시각 보정을 적용하고, 아니면 `descendant_pids`(0.14.43)를 그대로 부른다(추가 할당 0).
+/// 윈도우는 죽은 부모 번호가 재사용되면 옛 고아(wininit.exe · csrss.exe …)가 새 프로세스에 매달린 채 남지만, 맥·리눅스는 고아가 1번으로 재부모되어 이 오탐이 없다.
+/// 윈도우에서 켜졌을 때의 추가 비용(사실): 표 `Vec` 1개 + pid→시작 시각 `HashMap` 1개를 호출마다 더 만든다(차수는 종전 순회와 같다 · 미측정).
+fn guarded_descendant_pids(sys: &System, root: u32) -> Vec<u32> {
+    if !guard_applies(start_guard_enabled(), cfg!(windows)) {
+        return descendant_pids(sys, root);
+    }
+    let table: Vec<(u32, Option<u32>, u64)> = sys
+        .processes()
+        .iter()
+        .map(|(pid, p)| (pid.as_u32(), p.parent().map(|x| x.as_u32()), p.start_time()))
+        .collect();
+    let (out, drops) = descendants_report(&table, root, true);
+    if !drops.is_empty() {
+        let legacy_n = descendants_report(&table, root, false).0.len();
+        log_drops_debounced(root, &drops, legacy_n, out.len());
+    }
+    out
+}
+
+/// 연결 버림의 여유(초) — 자식의 시작 시각이 부모(또는 root)보다 **이 값을 넘게** 이를 때만 연결을 버린다.
+/// 근거: ① sysinfo 의 start_time 은 초 단위(윈도우 FILETIME/1e7)라 반올림 1초, ② 윈도우는 프로세스를 만든 시점의 벽시계 초를
+/// 그대로 쓰므로 작은 시계 보정(NTP 슬루·몇 초 단계)이 낄 수 있다.
+/// 제보의 경우(고아의 시작은 부팅 때 · 부모 번호를 받은 새 프로세스는 며칠 뒤)는 차이가 부팅 이후 전체라 이 값과 무관하게 걸린다.
+/// 알려진 한계: 부모가 태어난 뒤 시계가 이 값보다 크게 뒤로 가면 그 뒤 태어난 진짜 자식도 버려진다(시험으로 고정).
+const DESC_START_SLACK_SECS: u64 = 30;
+
+/// 시작 시각으로 인정하는 상한(2100-01-01 UTC). 윈도우 sysinfo 는 GetProcessTimes 가 실패해도 `0/1e7-11644473600` 을 계산하므로
+/// 릴리스 빌드에서는 u64 가 한 바퀴 돈 거대한 수가 될 수 있다(디버그 빌드는 뺄셈 넘침 패닉) — 그런 값은 "모름" 으로 본다.
+const DESC_START_MAX_PLAUSIBLE: u64 = 4_102_444_800;
+
+/// 되돌리는 손잡이 `CYS_DESC_START_GUARD` — 환경변수 `0` 또는 정책 파일(`~/.cys/policy.json`)의 같은 이름 키 `0` 이면 끈다(0.14.43 동작 · 끄는 값만 인정).
+/// 처음 쓸 때 한 번만 읽는다(틱마다 환경·파일을 뒤지지 않는다 — 바꾸면 데몬 재시작 후 적용).
+fn start_guard_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(crate::knobs::desc_start_guard_enabled)
+}
+
+/// 보정을 적용하는가 — 윈도우이고 손잡이가 켜져 있을 때만(순수 함수 · 시험은 인자로 넣는다).
+fn guard_applies(knob_on: bool, is_windows: bool) -> bool {
+    knob_on && is_windows
+}
+
+/// 시작 시각을 아는가(0 · 상한 이상은 모름).
+fn start_known(s: u64) -> bool {
+    s > 0 && s < DESC_START_MAX_PLAUSIBLE
+}
+
+/// `child` 가 `anchor`(부모 또는 root)보다 **한참 먼저** 만들어진 것인가 — 번호가 재사용되어 엉뚱한 고아가 매달린 연결.
+/// 둘 다 시작 시각을 알 때만 참이 된다(모르면 종전대로 유지 — 모르는 것을 근거로 진짜 자식을 떼지 않는다).
+#[deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+fn child_predates_parent(parent_start: u64, child_start: u64) -> bool {
+    start_known(parent_start)
+        && start_known(child_start)
+        && child_start.saturating_add(DESC_START_SLACK_SECS) < parent_start
+}
+
+/// 버려진 연결 하나(로그용): 부모 번호 · 자식 번호 · 두 시작 시각 · root 닻 때문이었는가.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DropRec {
+    parent: u32,
+    child: u32,
+    parent_start: u64,
+    child_start: u64,
+    /// "parent_predates" | "root_anchor" | "child_start_unknown"
+    reason: &'static str,
+}
+
+/// 자손 판정의 순수 부분 — 입력은 (pid, 부모 pid, 시작 시각 epoch 초) 목록과 root. `System` 에 기대지 않는다.
+/// 반환 순서는 종전 DFS 순서(입력 순서대로 children 인덱스를 만들고 스택으로 순회)와 같다.
+/// `guard` 가 참이면 ① 자식이 부모보다 이른 연결 ② 자식이 **root** 보다 이른 후보(중간 부모의 시작 시각을 몰라도 걸린다)를 버린다.
+/// 줄어드는 방향으로만 바뀐다: 버려진 후보 아래 가지는 통째로 빠진다. 버린 것은 두 번째 값으로 돌려준다.
+#[deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+fn descendants_report(table: &[(u32, Option<u32>, u64)], root: u32, guard: bool) -> (Vec<u32>, Vec<DropRec>) {
+    let starts: HashMap<u32, u64> = if guard {
+        table.iter().map(|(pid, _, st)| (*pid, *st)).collect()
+    } else {
+        HashMap::new()
+    };
+    let root_start = starts.get(&root).copied().unwrap_or(0);
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (pid, parent, _start) in table {
+        if let Some(parent) = parent {
+            children.entry(*parent).or_default().push(*pid);
+        }
+    }
+    let mut out = Vec::new();
+    let mut drops = Vec::new();
+    let mut stack = vec![root];
+    let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    seen.insert(root);
+    while let Some(p) = stack.pop() {
+        if let Some(kids) = children.get(&p) {
+            for &kid in kids {
+                if !seen.insert(kid) {
+                    continue;
+                }
+                if guard {
+                    let ps = starts.get(&p).copied().unwrap_or(0);
+                    let ks = starts.get(&kid).copied().unwrap_or(0);
+                    // ① 자식이 부모보다 한참 이름 ② 부모의 시작은 아는데 자식의 시작은 모름(0 — 윈도우 sysinfo 가 핸들을 못 열면 0.
+                    //   표준 사용자 실측: 시스템 프로세스는 0, 같은 사용자의 좌석 자손은 읽힘 · 한계: 더 높은 권한으로 상승해 뜬 진짜 자식도 빠진다)
+                    // ③ 자식이 root 보다 한참 이름(root 닻 — 중간 부모를 몰라도 걸린다)
+                    let reason = if child_predates_parent(ps, ks) {
+                        Some("parent_predates")
+                    } else if start_known(ps) && ks == 0 {
+                        Some("child_start_unknown")
+                    } else if child_predates_parent(root_start, ks) {
+                        Some("root_anchor")
+                    } else {
+                        None
+                    };
+                    if let Some(reason) = reason {
+                        drops.push(DropRec { parent: p, child: kid, parent_start: ps, child_start: ks, reason });
+                        continue;
+                    }
+                }
+                out.push(kid);
+                stack.push(kid);
+            }
+        }
+    }
+    (out, drops)
+}
+
+/// 같은 (root, 부모 번호) 의 버림 로그는 이 간격(초)에 한 번만.
+const DESC_DROP_LOG_INTERVAL_SECS: u64 = 600;
+
+/// 디바운스 판정(순수): 키를 마지막으로 남긴 뒤 간격이 지났거나 처음이면 참이고 시각을 갱신한다.
+fn debounce_allows(map: &mut HashMap<(u32, u32), u64>, key: (u32, u32), now: u64, interval: u64) -> bool {
+    match map.get(&key) {
+        Some(&last) if now.saturating_sub(last) < interval => false,
+        _ => {
+            if map.len() > 256 {
+                map.retain(|_, t| now.saturating_sub(*t) < interval);
+            }
+            map.insert(key, now);
+            true
+        }
+    }
+}
+
+/// 버린 연결을 데몬 로그(stderr)에 남긴다 — (root, 부모 번호) 별로 간격당 한 줄. 자체 작은 잠금만 쥐고(다른 잠금과 겹치지 않음) 파일 I/O 는 없다.
+fn log_drops_debounced(root: u32, drops: &[DropRec], legacy_n: usize, kept_n: usize) {
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<HashMap<(u32, u32), u64>>> = std::sync::OnceLock::new();
+    let m = SEEN.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let now = now_epoch() as u64;
+    let Ok(mut g) = m.lock() else { return };
+    for d in drops {
+        if debounce_allows(&mut g, (root, d.parent), now, DESC_DROP_LOG_INTERVAL_SECS) {
+            eprintln!(
+                "[cysd] 자손 세기: 시작 시각이 이른 연결을 버림 root={root} 부모={}(시작 {}) 자식={}(시작 {}) {} · 연결 {}건 버림 · 자손 {}→{}개 (끄기: CYS_DESC_START_GUARD=0)",
+                d.parent, d.parent_start, d.child, d.child_start,
+                d.reason,
+                drops.len(), legacy_n, kept_n
+            );
+        }
+    }
 }
 
 /// 프로세스 표에 **이미 실린 사실만으로** 만드는 관측 문자열.
@@ -4695,7 +4932,23 @@ pub enum CmdSource {
 /// 기존 소비자는 얇은 래퍼(`collect_descendants_with_cmd`)를 그대로 쓰므로 거동 무변이고,
 /// 관측 실패를 구분해야 하는 소비자만 이 함수를 쓴다.
 pub fn collect_descendants_with_cmd_src(sys: &System, root: u32) -> Vec<(u32, String, CmdSource)> {
-    let kids = descendant_pids(sys, root);
+    with_cmd_src_of(sys, descendant_pids(sys, root))
+}
+
+/// 보정판(`guarded_descendant_pids`)의 출처 동반 수집 — **감시 틱의 계수·중복 판정 루프에서만** 부른다(소스 핀 시험).
+pub fn collect_descendants_with_cmd_src_guarded(sys: &System, root: u32) -> Vec<(u32, String, CmdSource)> {
+    with_cmd_src_of(sys, guarded_descendant_pids(sys, root))
+}
+
+/// 보정판 자손 (pid, 관측문자열) — **좌석 닫기의 종료 목록에서만** 부른다(소스 핀 시험).
+pub fn collect_descendants_guarded(sys: &System, root: u32) -> Vec<(u32, String)> {
+    guarded_descendant_pids(sys, root)
+        .into_iter()
+        .map(|kid| (kid, observed_cmdline(sys, kid)))
+        .collect()
+}
+
+fn with_cmd_src_of(sys: &System, kids: Vec<u32>) -> Vec<(u32, String, CmdSource)> {
     if kids.is_empty() {
         return Vec::new();
     }
@@ -5284,7 +5537,7 @@ fn check_surfaces(
         // 종전 관측(이름)을 유지한다 — 완화가 아니라 **무변경**이다.
         // ★B3(#20): 중복 판정에 쓰는 관측은 **argv 승격판**이어야 한다 — 이름 폴백은
         //   서로 다른 파이썬 스크립트를 한 문자열로 접어 정상 편성을 중복으로 만든다.
-        let descendants = collect_descendants_with_cmd_src(sys, *root_pid);
+        let descendants = collect_descendants_with_cmd_src_guarded(sys, *root_pid);
         if descendants.len() > daemon.config.proc_count_threshold {
             // 디바운스 — 임계 초과 상태가 지속돼도 5초마다 영구 발행하지 않는다
             let now = now_epoch();
@@ -5807,7 +6060,7 @@ pub fn close_surface(daemon: &Arc<Daemon>, id: u64, cause: CloseCause) -> Result
     // 시간이 걸리는 sysinfo refresh·프로세스 킬은 락 밖에서 수행
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::All, true);
-    let descendants = collect_descendants(&sys, surface.pid);
+    let descendants = collect_descendants_guarded(&sys, surface.pid);
     for (pid, _) in &descendants {
         kill_pid(*pid);
     }
@@ -9155,7 +9408,11 @@ fn mark_queue_blocked(s: &Arc<crate::state::Surface>, reason: &str) -> bool {
 ///   `kill_switch`(★RQFIX F8) = 그중 kill-switch(`daemon.paused`)만 — 좌석 pause 와는 처방 문장이 다르다(해제 주체가 오너냐 시간이냐).
 /// · `input_model` = 이 좌석에 **지금 이 순간 적용되는** 입력줄 계수 모델 — `"v2"` | `"v3"`([`crate::state::Surface::pending_input_model`] — 좌석 틱 표식 `lone_key_exempt`
 ///   ∧ 진단 시점의 전경이 에이전트 그룹일 때만 v3 · ★RQFIX2·R1F-IN: 전경이 셸·중첩 셸·다른 작업이면 표식이 참이어도 v2) · 전역 노브 값이 아니다. 전역 값은 `org.status` 의 `daemon.pending_input_model`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// · ★(0.14.45 · F3) 화면 동기 진단 — `cursor_row`(커서 행 · 0 기반) · `marker_row`(선두 글리프가 이 좌석 프롬프트 마커인 **마지막** 행) ·
+///   `cursor_lead_cp`(커서 행 선두 글리프(공백 제외)의 코드포인트 `U+XXXX` — `›`(U+203A)와 `❯`(U+276F) 같은 마커 혼동을 잴 수 있게) ·
+///   `last_parser_panic_at`(마지막 화면 파서 패닉 epoch 초) · `repaint_requested_at`(마지막 다시 그리기 요청 epoch 초 · [`crate::repaint`]).
+///   커서 행 ≠ 마커 행이면 화면 사본이 어긋났거나 커서가 입력줄 밖이다. 관측 불능은 `None`(결측은 값이 아니다).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct QueueBlockDiag {
     pub(crate) pending_input_bytes: u64,
     pub(crate) pending_input_human_bytes: u64,
@@ -9165,6 +9422,115 @@ pub(crate) struct QueueBlockDiag {
     pub(crate) paused: bool,
     pub(crate) kill_switch: bool,
     pub(crate) input_model: &'static str,
+    pub(crate) cursor_row: Option<u16>,
+    pub(crate) marker_row: Option<u16>,
+    pub(crate) cursor_lead_cp: Option<String>,
+    pub(crate) last_parser_panic_at: Option<u64>,
+    pub(crate) repaint_requested_at: Option<u64>,
+    /// ★(0.14.47 · 계측) 커서 열(0 기반) — `cursor_row` 와 같은 탐침의 값. 커서 행이 화면 밖이면 `None`.
+    pub(crate) cursor_col: Option<u16>,
+    /// ★(0.14.47 · 계측) 커서 뒤 글자가 전부 흐림(SGR 2)인가 — [`after_cursor_dim_of`]. **진단 전용**이다(게이트·배달·사이클은 읽지 않는다).
+    pub(crate) after_cursor_dim: Option<bool>,
+    /// ★(0.14.47 · 계측) 이 좌석이 대체 화면인가(진단 시점).
+    pub(crate) alt_screen: bool,
+    /// ★(0.14.47 · 계측) 마지막 사람 입력(`last_human_input`) 뒤 경과 초 — 기록이 없으면 `None`(결측은 값이 아니다).
+    pub(crate) human_idle_secs: Option<u64>,
+    /// ★(성찰 M1) 진단 시점의 출력 정적 초(`last_output` 경과) — 바쁨·모달 사유가 [`STALE_SCREEN_QUIET_SECS`] 넘게 정적이면 낡은 사본 후보. `None` = 미측정(검체 기본값).
+    pub(crate) quiet_secs: Option<u64>,
+    /// ★(성찰 M2) 대체 화면 좌석이고 PTY 전경이 에이전트(마커 좌석)다 — 다시 그리기 요청 대상. 비-unix 는 전경을 모르므로 마커 좌석이면 참([`seat_foreground_is_agent`]).
+    pub(crate) alt_fg_agent: bool,
+    /// ★(성찰 M2) 다시 그리기 노브(`CYS_SCREEN_REPAINT_NUDGE=0`)가 꺼져 있다.
+    pub(crate) repaint_knob_off: bool,
+    /// ★(성찰 M2) 화면 높이가 [`crate::repaint::REPAINT_MIN_ROWS`] 미만이라 흔들 수 없다.
+    pub(crate) rows_too_small: bool,
+    /// ★(성찰 M2) 다시 그리기를 요청한 뒤 아직 판독 가능한 화면을 보지 못했다(`RepaintState::unrecovered > 0`).
+    pub(crate) repaint_unresolved: bool,
+    /// ★(codex 2차 검토 #4) 이 좌석은 다시 그리기 요청 **대상이 아니다** — 프롬프트 표지를 모르는 좌석(맨 셸·마커 미선언 어댑터 — 큐 틱의 마커 없는 경로는 nudge 를 부르지 않는다)
+    /// 또는 전경이 에이전트가 아닌 대체 화면. 처방은 이 좌석에 요청을 약속하지 않는다.
+    pub(crate) nudge_ineligible: bool,
+}
+
+/// ★(0.14.45 · F3) 화면 동기 진단 묶음 — [`QueueBlockDiag`] 의 `cursor_row`·`marker_row`·`cursor_lead_cp`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct ScreenProbe {
+    pub(crate) cursor_row: Option<u16>,
+    pub(crate) marker_row: Option<u16>,
+    pub(crate) cursor_lead_cp: Option<String>,
+    /// ★(0.14.47 · 계측) 커서 열 · 커서 뒤 흐림 — [`seat_screen_probe_with`] 가 같은 파서 락 안에서 채운다([`screen_probe_of`] 는 글자만 보므로 채우지 않는다).
+    pub(crate) cursor_col: Option<u16>,
+    pub(crate) after_cursor_dim: Option<bool>,
+}
+
+/// ★(0.14.47 · 계측) 커서 행의 **커서 뒤 글자가 전부 흐림(SGR 2)인가**(순수 · 진단 전용 — 게이트는 이 값을 읽지 않는다).
+///
+/// 훑는 칸 = 커서 행의 커서 열부터 줄 끝까지. 커서 열의 칸이 반전이면(그려 놓은 커서) 그 한 칸을 뺀다 — 커서 열이 아닌 자리의 반전 칸은 빼지 않는다.
+/// 글자 칸 = 내용이 있고 공백류가 아닌 칸(넓은 글자의 짝 칸은 내용이 없어 빠진다). 남은 글자 칸이 **1개 이상이고 전부 흐림**이면 `Some(true)` ·
+/// 흐림이 아닌 것이 하나라도 있으면 `Some(false)` · 남은 글자 칸이 0 이거나 커서가 화면 밖이면 `None`(확인할 글자가 없다 — 결측은 값이 아니다).
+/// 패닉 없음: `cell()` 은 범위 밖이면 `None` 이다.
+pub(crate) fn after_cursor_dim_of(screen: &vt100::Screen, cursor_row: u16, cursor_col: u16) -> Option<bool> {
+    let (rows, cols) = screen.size();
+    if cursor_row >= rows || cursor_col >= cols {
+        return None;
+    }
+    let mut glyphs = 0usize;
+    let mut all_dim = true;
+    for col in cursor_col..cols {
+        let Some(cell) = screen.cell(cursor_row, col) else { break };
+        if col == cursor_col && cell.inverse() {
+            continue;
+        }
+        if !cell.has_contents() || cell.contents().chars().all(char::is_whitespace) {
+            continue;
+        }
+        glyphs += 1;
+        all_dim &= cell.dim();
+    }
+    (glyphs > 0).then_some(all_dim)
+}
+
+/// 화면 동기 진단(순수) — `rows_text` = 화면 행들(0 기반) · `cursor_row` = 커서 행 · `markers` = 이 좌석의 프롬프트 마커 후보(빈 목록이면 `marker_row` 는 `None`).
+/// 커서 행이 화면 밖이면 `cursor_row`·`cursor_lead_cp` 는 `None` 이다. 선두 글리프 = 앞 공백을 뺀 첫 글자(빈 행이면 `None`).
+pub(crate) fn screen_probe_of(rows_text: &[String], cursor_row: u16, markers: &[String]) -> ScreenProbe {
+    let marker_row = rows_text
+        .iter()
+        .rposition(|r| cys::agent_markers::pick_marker_leading(markers, r).is_some())
+        .and_then(|i| u16::try_from(i).ok());
+    let row = rows_text.get(usize::from(cursor_row));
+    let cursor_lead_cp = row
+        .and_then(|r| r.trim_start().chars().next())
+        .map(|c| format!("U+{:04X}", u32::from(c)));
+    // 칸 속성(커서 열·흐림)은 글자 행만으로는 알 수 없다 — [`seat_screen_probe_with`] 가 파서에서 채운다.
+    ScreenProbe { cursor_row: row.map(|_| cursor_row), marker_row, cursor_lead_cp, cursor_col: None, after_cursor_dim: None }
+}
+
+/// 좌석 한 곳의 화면 동기 진단(IO) — 파서 락 1회. 마커는 `agent_meta` 가 있는 좌석만 어댑터에서 읽는다(맨 셸 = 빈 목록 · 디스크 판독 0).
+/// 파서 락 오염·패닉은 결측으로 접는다(진단은 게이트가 아니다). 호출자는 큐 락을 쥐지 않아야 한다.
+pub(crate) fn seat_screen_probe_with(
+    s: &Arc<crate::state::Surface>,
+    defs: &dyn Fn() -> Arc<(serde_json::Value, serde_json::Value)>,
+) -> ScreenProbe {
+    if s.parser.is_poisoned() {
+        return ScreenProbe::default();
+    }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let has_agent = s.agent_meta.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+        let markers = if has_agent {
+            surface_prompt_marker(s, &defs()).map(|(m, _)| m).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+        let screen = p.screen();
+        let (rows, cols) = screen.size();
+        let (cr, cc) = screen.cursor_position();
+        let rows_text: Vec<String> = screen.rows(0, cols).collect();
+        // ★(0.14.47 · 계측) 커서 열과 커서 뒤 흐림 — 글자 행을 뜬 **같은 락 안**에서 읽는다(한 프레임). 커서 행이 화면 밖이면 둘 다 결측.
+        let cursor_col = (cr < rows).then_some(cc);
+        let after_cursor_dim = after_cursor_dim_of(screen, cr, cc);
+        drop(p);
+        ScreenProbe { cursor_col, after_cursor_dim, ..screen_probe_of(&rows_text, cr, &markers) }
+    }))
+    .unwrap_or_default()
 }
 
 /// ★(0.14.43 · RQFIX F6) composer **편집 영역의 나머지**(마커 행 **아래**)가 비어 있는가 — `None` = 화면에 마커 행이 없다(관측 불능).
@@ -9328,6 +9694,22 @@ pub(crate) fn queue_block_diag_with(
     let pending = s.pending_input_bytes.load(Ordering::Relaxed);
     let human = s.pending_input.lock().unwrap_or_else(|e| e.into_inner()).human.min(pending);
     let (draft_visible, ghost_after_cursor) = seat_input_line_visibility_with(s, defs);
+    let probe = seat_screen_probe_with(s, defs);
+    let last_parser_panic_at = s.last_parser_panic.lock().unwrap_or_else(|e| e.into_inner()).map(|t| t.max(0.0) as u64);
+    let (repaint_requested_at, repaint_unresolved) = {
+        let st = s.repaint.lock().unwrap_or_else(|e| e.into_inner());
+        (st.last_request_epoch.map(|t| t.max(0.0) as u64), st.last_request.is_some() && st.unrecovered > 0)
+    };
+    // ★(성찰 M1·M2) 처방 문장의 사실 재료 — 출력 정적 초 · 대체 화면 ∧ 전경 에이전트 · 노브 · 화면 높이. 파서 락은 순간(크기만).
+    let quiet_secs = Some(s.last_output.lock().unwrap_or_else(|e| e.into_inner()).elapsed().as_secs());
+    // ★(0.14.47 · 계측) 사람 입력 뒤 경과 초 — 기록이 없으면 None(0 으로 접지 않는다).
+    let human_idle_secs = s.last_human_input.lock().unwrap_or_else(|e| e.into_inner()).map(|t| t.elapsed().as_secs());
+    let alt = s.alt_screen.load(Ordering::Relaxed);
+    let alt_fg_agent = alt && seat_foreground_is_agent(s);
+    let rows_too_small = s.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().size().0 < crate::repaint::REPAINT_MIN_ROWS;
+    // (codex 2차 검토 #4) nudge 대상 = 마커 좌석(큐 틱의 마커 경로만 nudge 를 부른다) ∧ (비-대체 화면 ∨ 전경 에이전트). 맨 셸은 어댑터를 읽지 않는다(RQFIX F4 와 같은 규율).
+    let has_marker = s.agent_meta.lock().map(|m| m.is_some()).unwrap_or(false) && surface_prompt_marker(s, &defs()).is_some();
+    let nudge_ineligible = !has_marker || (alt && !alt_fg_agent);
     QueueBlockDiag {
         pending_input_bytes: pending,
         pending_input_human_bytes: human,
@@ -9337,7 +9719,38 @@ pub(crate) fn queue_block_diag_with(
         paused: queue_injection_paused(daemon, s),
         kill_switch: daemon.paused.load(Ordering::Relaxed),
         input_model: s.pending_input_model().as_str(),
+        cursor_row: probe.cursor_row,
+        marker_row: probe.marker_row,
+        cursor_lead_cp: probe.cursor_lead_cp,
+        last_parser_panic_at,
+        repaint_requested_at,
+        cursor_col: probe.cursor_col,
+        after_cursor_dim: probe.after_cursor_dim,
+        alt_screen: alt,
+        human_idle_secs,
+        quiet_secs,
+        alt_fg_agent,
+        repaint_knob_off: !crate::repaint::repaint_nudge_enabled(),
+        rows_too_small,
+        repaint_unresolved,
+        nudge_ineligible,
     }
+}
+
+/// ★(0.14.45 · F3) 화면 동기 진단의 wire 꼴 — `queue.starved` payload 와 `queue-blocked.json` 행의 `screen_diag` 객체(한 정의처).
+pub(crate) fn screen_diag_json(d: &QueueBlockDiag) -> Value {
+    json!({
+        "cursor_row": d.cursor_row,
+        "marker_row": d.marker_row,
+        "cursor_lead_cp": d.cursor_lead_cp,
+        "last_parser_panic_at": d.last_parser_panic_at,
+        "repaint_requested_at": d.repaint_requested_at,
+        // ★(0.14.47 · 계측) 추가형 키 넷 — 기존 다섯 키는 이름·뜻 불변. 관측 불능은 null.
+        "cursor_col": d.cursor_col,
+        "after_cursor_dim": d.after_cursor_dim,
+        "alt_screen": d.alt_screen,
+        "human_idle_secs": d.human_idle_secs,
+    })
 }
 
 /// [`queue_block_diag_with`] 의 진단 캐시 판 — 큐 틱 밖의 진단 경로가 쓴다(사유 파일·`queue.list`·`org.status`·스케줄 초안 우회 경보).
@@ -9348,12 +9761,14 @@ pub(crate) fn queue_block_diag(
     queue_block_diag_with(daemon, s, &diag_adapter_defs)
 }
 
-/// `queue_remedy` 가 돌려주는 code 의 **전량**(허용 목록 · 13종) — 소비자(경보 라우팅 요약)는 이 목록과 정확히 일치할 때만 싣는다
+/// `queue_remedy` 가 돌려주는 code 의 **전량**(허용 목록 · 14종) — 소비자(경보 라우팅 요약)는 이 목록과 정확히 일치할 때만 싣는다
 /// (요약은 pane stdin 으로 가므로 payload 의 자유 문자열을 그대로 싣지 않는다). GUI(`ui/src/starvednotice.ts`)의 어휘 대조 검체가 이 선언의 배열 리터럴을
 /// 소스에서 읽는다 — 선언 꼴(상수 이름·`[&str; 개수]` 타입 표기·배열 리터럴)을 바꾸지 않고 배열 안에 닫는 대괄호를 쓰지 않는다.
 /// ★(RQFIX I-5) 유령 계수 코드는 `phantom_count` 다(옛 이름은 끝에 누를 키 이름이 붙어 있었다) — 요약의 `remedy=<code>` 는 금지 문구 없이 LLM 좌석으로 가는데 코드 이름이
 /// **누를 키**를 말했다(키 이름을 코드에서 뺐다. 사람용 문장에는 Ctrl-U 가 그대로 있다).
-pub(crate) const QUEUE_REMEDY_CODES: [&str; 13] = [
+/// ★(0.14.45 · 성찰 2회차 M3) 14번째 `stale_screen` — 바쁨 표지가 출력 정적 60초를 넘겼는데 cys 가 다시 그리기를 **약속할 수 없을 때**(노브 끔 · 대상 아님 · 창 너무 작음 ·
+/// 요청했으나 풀리지 않음) 사람이 할 일이 있는 처방이다. 종전에는 같은 문장이 calm `wait` 로 나가 GUI 가 OS 배너를 내지 않았다(사람에게 하라고 적고는 알리지 않았다).
+pub(crate) const QUEUE_REMEDY_CODES: [&str; 14] = [
     "paused",
     "machine_residue",
     "phantom_count",
@@ -9365,9 +9780,13 @@ pub(crate) const QUEUE_REMEDY_CODES: [&str; 13] = [
     "alt_screen",
     "empty_seat",
     "prompt_unknown",
+    "stale_screen",
     "wait",
     "unknown",
 ];
+
+/// ★(성찰 2회차 M3) 낡은 화면 처방의 code — 바쁨 표지 ∧ 정적 ≥ [`STALE_SCREEN_QUIET_SECS`] ∧ 다시 그리기를 약속할 수 없음([`repaint_promise`] = Some).
+pub(crate) const REMEDY_CODE_STALE_SCREEN: &str = "stale_screen";
 
 /// 유령 계수 처방의 code — `queue_remedy` 8행과 직접 send 거부 이벤트(`queue.draft_gate_denied.remedy_code`)가 **같은 값**을 쓴다(어휘 한 곳).
 pub(crate) const REMEDY_CODE_PHANTOM: &str = "phantom_count";
@@ -9412,6 +9831,55 @@ pub(crate) fn blocked_is_input_pending(blocked_by: &str) -> bool {
 /// 두 사유는 같은 원인(입력줄)이라 같은 처방 행(3~9)을 쓴다. `schedule_divert` 의 그 밖 꼴은 이 계열이 아니다(미분류 `unknown`).
 pub(crate) fn blocked_is_input_line(blocked_by: &str) -> bool {
     blocked_is_input_pending(blocked_by) || blocked_by.starts_with("schedule_divert(gate:draft")
+}
+
+/// ★(0.14.45 · F3) 표 9행(`input_pending_unknown`) 처방 — 계수는 있는데 커서 행에서 입력줄을 못 읽었다. 종전 문장("비어 있으면 Ctrl-U")만으로는 풀리지 않았다:
+/// 데몬의 화면 사본이 어긋나 있으면(파서 패닉 뒤 · 유휴 좌석은 프롬프트를 다시 그리지 않는다) Ctrl-U 로 계수를 지워도 화면 판독(`line`)이 계속 비어 다음 사유가
+/// `prompt_unknown` 으로 바뀔 뿐이다. 그래서 다시 그리기(`repaint`)를 먼저 말한다 — 사람이 하는 일은 창 크기를 한 번 바꾸는 것뿐이고 키 입력은 아니다.
+/// ★(성찰 M1·M2) 이 문장은 **다시 그리기 요청이 실제로 올 때**의 문장이다 — 노브 끔·창이 너무 작음·이미 요청했으나 풀리지 않음이면 [`repaint_promise`] 의
+/// 다른 구절로 바꿔 쓴다(약속하지 않을 것을 약속하지 않는다). 기본 갈래의 바이트는 종전 그대로다(문서가 인용한다).
+pub(crate) const REMEDY_BODY_INPUT_PENDING_UNKNOWN: &str =
+    "입력줄에 미제출 입력이 있다고 계수됐으나 화면을 판독하지 못했다 — 데몬의 화면 사본이 어긋났을 수 있다(1분 넘게 못 읽으면 cys 가 키 입력 없이 \
+     창 크기를 한 칸 흔들어 다시 그리기를 요청한다 · 사람이 그 창 크기를 한 번 바꿔도 다시 그려진다). 다시 그려진 뒤에도 막혀 있으면 사람이 그 창을 확인한다\
+     (비어 있으면 Ctrl-U · 글이 있으면 제출하거나 지운다)";
+/// ★(0.14.45 · F3) 표 14행(`prompt_unknown`) 처방 — 커서 행에서 프롬프트 표지를 못 찾았다. 화면 사본 어긋남이면 다시 그리기로 풀린다. 갈래 규칙은 9행과 같다.
+pub(crate) const REMEDY_BODY_PROMPT_UNKNOWN: &str =
+    "입력 대기 표지(프롬프트)를 화면에서 찾지 못했다 — 다른 화면이 떠 있거나 데몬의 화면 사본이 어긋났을 수 있다(사본 어긋남이면 1분 뒤 cys 가 키 입력 없이 \
+     창 크기를 한 칸 흔들어 다시 그리기를 요청한다 · 사람이 그 창 크기를 한 번 바꿔도 풀린다). 그래도 막혀 있으면 그 창이 입력을 기다리는 상태인지 사람이 확인한다";
+
+/// ★(0.14.45 · 성찰 M2) 다시 그리기 요청에 관한 **사실 그대로의 구절**(순수) — `None` = 요청이 **올 것이다**(호출자가 자기 문장의 약속 구절을 그대로 쓴다) ·
+/// `Some(구절)` = 약속할 수 없거나 이미 해 봤다(호출자가 약속 구절 자리에 이 구절을 쓴다). 위에서부터 첫 일치: 노브 끔 → 대상 아님(마커 없는 좌석·전경이 에이전트가 아닌 대체 화면) → 창이 너무 작음 → 요청했으나 풀리지 않음.
+/// 호출자가 처방 문장에 "cys 가 다시 그리기를 요청한다" 고 적을 수 있는 것은 이 함수가 `None` 일 때뿐이다(약속하지 않을 것을 약속하지 않는다).
+pub(crate) fn repaint_promise(d: &QueueBlockDiag) -> Option<&'static str> {
+    if d.repaint_knob_off {
+        Some("다시 그리기 요청은 꺼져 있다(`CYS_SCREEN_REPAINT_NUDGE=0`) — 사람이 그 창 크기를 한 번 바꾸면 다시 그려진다")
+    } else if d.nudge_ineligible {
+        Some("이 좌석은 cys 가 다시 그리기를 요청하는 대상이 아니다(프롬프트 표지를 모르는 좌석이거나 전경이 에이전트가 아닌 전체화면) — 사람이 그 창 크기를 한 번 바꾸면 다시 그려진다")
+    } else if d.rows_too_small {
+        Some("창이 너무 작아 cys 가 크기를 흔들지 못한다(4행 미만) — 창을 키우거나 사람이 그 창 크기를 한 번 바꾼다")
+    } else if d.repaint_unresolved {
+        Some("cys 가 다시 그리기를 요청했으나 풀리지 않았다 — 사람이 그 창 크기를 한 번 바꾸거나 그 창을 확인한다")
+    } else {
+        None
+    }
+}
+
+/// ★(성찰 M1) 바쁨·모달 사유를 '낡은 화면 사본' 후보로 보는 출력 정적 하한(초) — 큐 틱의 nudge 분류([`nudge_screen_obs`])와 처방 문장이 같은 값을 쓴다.
+pub(crate) const STALE_SCREEN_QUIET_SECS: u64 = 60;
+
+/// ★(성찰 M1·M2) 판독 불가 두 갈래(9행·14행)의 본문 — 기본 갈래는 상수 그대로(바이트 불변) · 그 밖은 약속 구절을 [`repaint_promise`] 로 바꾼다.
+fn unreadable_body(base: &'static str, d: &QueueBlockDiag) -> String {
+    let Some(alt) = repaint_promise(d) else {
+        return base.to_string();
+    };
+    // 상수의 괄호 안 약속 구절("…(1분 넘게 못 읽으면 cys 가 … 다시 그려진다)" / "(사본 어긋남이면 1분 뒤 cys 가 … 풀린다)")을 통째로 바꾼다 — 괄호 밖 문장은
+    // 그대로다. 약속 구절은 "cys 가" 를 품은 괄호다(앞의 "(프롬프트)" 같은 다른 괄호가 아니다).
+    let Some(at) = base.find("cys 가") else {
+        return base.to_string();
+    };
+    let open = base[..at].rfind('(').unwrap_or(0);
+    let close = base[at..].find(')').map_or(base.len(), |i| at + i + 1);
+    format!("{}({alt}){}", &base[..open], &base[close..])
 }
 
 /// kill-switch 동결 처방(표 1행) — 정체가 아니라 동결이다. 해제는 오너(사람)가 한다.
@@ -9466,7 +9934,8 @@ pub(crate) fn paused_queue_remedy(
 /// | 12 | `alt_screen` | `alt_screen` |
 /// | 13 | `empty_seat` (입력줄 계수 > 0 이면 문장에 [`REMEDY_EMPTY_SEAT_COUNT_CLAUSE`] 한 구절이 더 붙는다 — code 는 같다) | `empty_seat` |
 /// | 14 | `prompt_unknown` | `prompt_unknown` |
-/// | 15 | `busy`·`delivery_interval`·`settle`·`quiescing`·`prompt_not_ready`·`human_typing`·`queue_paused` | `wait` |
+/// | 15′ | `busy` ∧ 출력 정적 ≥ [`STALE_SCREEN_QUIET_SECS`] ∧ 다시 그리기 약속 불가([`repaint_promise`] = Some — 노브 끔·대상 아님·창 너무 작음·요청했으나 미복구) | `stale_screen`(2회차 M3 · 사람 조치) |
+/// | 15 | `busy`(정적 ≥ 60초여도 cys 가 다시 그리기를 요청할 것이면 여기)·`delivery_interval`·`settle`·`quiescing`·`prompt_not_ready`·`human_typing`·`queue_paused` | `wait` |
 /// | 16 | 그 밖(`schedule_divert` 의 그 밖 꼴·미등재) | `unknown` |
 ///
 /// 모든 문장 끝에 [`REMEDY_LLM_SUFFIX`] 가 붙고, `d.parser_panics > 0` 이면 그 앞(문장 뒤)에 패닉 횟수 주석이 들어간다.
@@ -9477,67 +9946,103 @@ pub(crate) fn queue_remedy(blocked_by: &str, d: &QueueBlockDiag) -> (&'static st
     let input_line = blocked_is_input_line(blocked_by);
     // 본문 뒤·패닉 주석 앞에 붙는 한 구절 — 지금은 `empty_seat` 의 계수 구절 하나뿐이다(그 밖 행은 빈 문자열이라 바이트 불변).
     let mut clause: &str = "";
-    let (code, body): (&'static str, &str) = if let Some(body) = pause_remedy_body(d.kill_switch, d.paused) {
-        ("paused", body)
+    // ★(성찰 M1) 출력이 이만큼 조용한 채 바쁨·모달 사유면 그 표지가 낡은 화면 사본일 수 있다 — 큐 틱이 같은 하한으로 다시 그리기 후보로 본다.
+    let stale_quiet = d.quiet_secs.filter(|q| *q >= STALE_SCREEN_QUIET_SECS);
+    // ★(성찰 M2) 다시 그리기 약속 구절 — 바쁨·모달·대체 화면 갈래가 공유한다(기본 = 요청이 온다 · 그 밖 = 사실 그대로).
+    let promise = |d: &QueueBlockDiag| -> &'static str {
+        repaint_promise(d).unwrap_or("1분 넘게 이어지면 cys 가 키 입력 없이 창 크기를 한 칸 흔들어 다시 그리기를 요청한다 · 사람이 그 창 크기를 한 번 바꿔도 다시 그려진다")
+    };
+    let (code, body): (&'static str, String) = if let Some(body) = pause_remedy_body(d.kill_switch, d.paused) {
+        ("paused", body.into())
     } else if input_line && d.pending_input_bytes == 0 && d.draft_visible == Some(true) {
-        ("human_draft", REMEDY_BODY_HUMAN_DRAFT)
+        ("human_draft", REMEDY_BODY_HUMAN_DRAFT.into())
     } else if input_line && d.pending_input_bytes == 0 {
-        ("wait", "입력줄 계수는 이미 0 이다 — 다음 틱에 다시 판정된다(스스로 풀린다)")
+        ("wait", "입력줄 계수는 이미 0 이다 — 다음 틱에 다시 판정된다(스스로 풀린다)".into())
     } else if input_line && d.draft_visible == Some(true) && d.pending_input_human_bytes == 0 {
         (
             "machine_residue",
-            "기계가 넣고 제출되지 않은 본문이 입력줄에 보인다 — 사람이 그 창을 확인하고 Enter 로 제출하거나 지운다",
+            "기계가 넣고 제출되지 않은 본문이 입력줄에 보인다 — 사람이 그 창을 확인하고 Enter 로 제출하거나 지운다".into(),
         )
     } else if input_line && d.draft_visible == Some(true) {
-        ("human_draft", REMEDY_BODY_HUMAN_DRAFT)
+        ("human_draft", REMEDY_BODY_HUMAN_DRAFT.into())
     } else if input_line && d.draft_visible == Some(false) && d.ghost_after_cursor == Some(true) {
         (
             REMEDY_CODE_AFTER_CURSOR,
             "커서 앞은 비어 있는데 커서 뒤에 글자가 있다 — 회색 자동 제안이면 유령 계수다(사람이 그 창을 클릭하고 Ctrl-U 한 번). \
-             직접 쓴 글이면 초안이다(제출하거나 지운다). 사람이 화면을 보고 가린다",
+             직접 쓴 글이면 초안이다(제출하거나 지운다). 사람이 화면을 보고 가린다"
+                .into(),
         )
     } else if input_line && d.draft_visible == Some(false) {
         (
             REMEDY_CODE_PHANTOM,
-            "입력줄은 비어 있는데 미제출 계수가 남았다(유령 계수) — 사람이 그 창을 클릭하고 Ctrl-U 한 번(잠시 뒤 배달 재개)",
+            "입력줄은 비어 있는데 미제출 계수가 남았다(유령 계수) — 사람이 그 창을 클릭하고 Ctrl-U 한 번(잠시 뒤 배달 재개)".into(),
         )
     } else if input_line {
-        (
-            "input_pending_unknown",
-            "입력줄에 미제출 입력이 있다고 계수됐으나 화면을 판독하지 못했다 — 사람이 그 창을 확인한다(비어 있으면 Ctrl-U · 글이 있으면 제출하거나 지운다)",
-        )
+        ("input_pending_unknown", unreadable_body(REMEDY_BODY_INPUT_PENDING_UNKNOWN, d))
     } else if blocked_by.starts_with("modal_pending") {
-        ("answer_modal", "질문·선택 창이 떠 있다 — 사람이 답한다")
+        // ★(성찰 M1) 오래 정적인 선택 창은 낡은 사본일 수 있다 — 다시 그리기는 키 입력이 아니라 진짜 선택 창이면 그대로 남는다(사람이 답한다는 처방은 불변).
+        match stale_quiet {
+            Some(q) => (
+                "answer_modal",
+                format!("질문·선택 창이 떠 있다 — 사람이 답한다({q}초째 화면 변화가 없다 — 선택 창이 낡은 화면 사본일 수도 있어 {}; 진짜 선택 창이면 다시 그려져도 그대로다)", promise(d)),
+            ),
+            None => ("answer_modal", "질문·선택 창이 떠 있다 — 사람이 답한다".into()),
+        }
     } else if blocked_by.starts_with("approval_pending") {
         (
             "approval",
-            "승인·관문 대기 — 승인 절차(feed)로 처리한다. 큐로 승인을 누르지 않는다",
+            "승인·관문 대기 — 승인 절차(feed)로 처리한다. 큐로 승인을 누르지 않는다".into(),
         )
     } else if blocked_by.starts_with("alt_screen") {
-        (
-            "alt_screen",
-            "전체화면(대체 화면)이라 프롬프트를 확인하지 못한다 — 전체화면 프로그램을 끝내거나, Claude Code 면 `/tui default`; \
-             Windows 는 `~/.cys/win-no-alt-screen` 파일을 만들고 새 pane 으로 띄운다",
-        )
+        // ★(성찰 M2) 전경이 에이전트(Claude Code 등)인 전체화면 좌석은 cys 가 다시 그리기를 요청한다 — 그 사실(또는 못 하는 사유)을 그대로 적는다.
+        //   전경이 다른 프로그램(vim·less 등)이면 종전 문장(약속 없음).
+        if d.alt_fg_agent {
+            (
+                "alt_screen",
+                format!(
+                    "전체화면(대체 화면)이라 프롬프트를 확인하지 못한다 — 전경이 에이전트라 {}. 그래도 막혀 있으면 Claude Code 면 `/tui default`; \
+                     Windows 는 `~/.cys/win-no-alt-screen` 파일을 만들고 새 pane 으로 띄운다",
+                    promise(d)
+                ),
+            )
+        } else {
+            (
+                "alt_screen",
+                "전체화면(대체 화면)이라 프롬프트를 확인하지 못한다 — 전체화면 프로그램을 끝내거나, Claude Code 면 `/tui default`; \
+                 Windows 는 `~/.cys/win-no-alt-screen` 파일을 만들고 새 pane 으로 띄운다"
+                    .into(),
+            )
+        }
     } else if blocked_by.starts_with("empty_seat") {
         if d.pending_input_bytes > 0 {
             clause = REMEDY_EMPTY_SEAT_COUNT_CLAUSE;
         }
         (
             "empty_seat",
-            "그 자리에 에이전트가 붙어 있지 않다(빈 셸) — 에이전트를 다시 띄우면 순서대로 배달된다",
+            "그 자리에 에이전트가 붙어 있지 않다(빈 셸) — 에이전트를 다시 띄우면 순서대로 배달된다".into(),
         )
     } else if blocked_by.starts_with("prompt_unknown") {
+        ("prompt_unknown", unreadable_body(REMEDY_BODY_PROMPT_UNKNOWN, d))
+    } else if blocked_by.starts_with("busy") && stale_quiet.is_some() {
+        // ★(성찰 M1) 바쁨 표지("esc to interrupt")가 보이는데 출력이 1분 넘게 없다 — 표지가 낡은 화면 사본일 수 있다. 종전 "스스로 풀린다" 는 거짓이 될 수 있었다.
+        // ★(성찰 2회차 M3) cys 가 다시 그리기를 약속할 수 있으면(요청이 올 것이다) 아직 calm `wait` 다 · 약속할 수 없으면(노브 끔·대상 아님·창 너무 작음·요청했으나 미복구)
+        //   처방이 사람에게 창 크기 변경·확인을 요구하므로 code 도 사람 조치 `stale_screen` 이다(GUI 가 OS 배너를 낸다 · 문장은 두 갈래 모두 종전 그대로).
+        let q = stale_quiet.unwrap_or(0);
+        let code = if repaint_promise(d).is_some() { REMEDY_CODE_STALE_SCREEN } else { "wait" };
         (
-            "prompt_unknown",
-            "입력 대기 표지(프롬프트)를 화면에서 찾지 못했다 — 그 창이 입력을 기다리는 상태인지 사람이 확인한다(다른 화면이 떠 있거나 화면 판독이 어긋났을 수 있다)",
+            code,
+            format!("출력 중 표지가 보이지만 {q}초째 출력이 없다 — 표지가 낡은 화면 사본일 수 있다({}). 그래도 이어지면 그 창 화면을 확인", promise(d)),
         )
     } else if REMEDY_WAIT_PREFIXES.iter().any(|p| blocked_by.starts_with(p)) {
-        ("wait", "일시 보류 — 스스로 풀린다(오래 지속되면 그 창 화면을 확인)")
+        ("wait", "일시 보류 — 스스로 풀린다(오래 지속되면 그 창 화면을 확인)".into())
     } else {
-        ("unknown", "사유 미분류 — 그 창 화면을 확인")
+        ("unknown", "사유 미분류 — 그 창 화면을 확인".into())
     };
-    let panics = if d.parser_panics > 0 {
+    // ★(0.14.45 · F3) 화면을 못 읽어 막힌 두 갈래(`input_pending_unknown`·`prompt_unknown`)에서는 패닉이 '순간' 이 아니라 **사본 어긋남**의 원인이다 —
+    //   본문이 다시 그리기 요청을 말하므로 주석은 사실만 적는다. 그 밖 갈래의 주석은 종전 바이트 그대로다.
+    let panics = if d.parser_panics > 0 && (code == "input_pending_unknown" || code == "prompt_unknown") {
+        format!(" (이 좌석 화면 파서 패닉 {}회 — 데몬의 화면 사본이 어긋났다)", d.parser_panics)
+    } else if d.parser_panics > 0 {
         format!(" (이 좌석 화면 파서 패닉 {}회 — 화면 판독이 순간 비었을 수 있다)", d.parser_panics)
     } else {
         String::new()
@@ -9646,6 +10151,7 @@ fn queue_blocked_row(r: &BlockedSeat, d: &QueueBlockDiag) -> Value {
         "parser_panics": d.parser_panics,
         "input_model": d.input_model,
         "remedy_code": code,
+        "screen_diag": screen_diag_json(d),
     })
 }
 
@@ -12395,6 +12901,63 @@ pub(crate) fn force_deliver_entry(
 /// 양성 유휴 관측 포함) / 마커 없는 좌석은 `no_marker_gate` + quiet 규칙 → human_typing →
 /// 배달 최소 간격 → `deliver_head_locked`(임계영역: 간격·만료·프레임 신선도 재확인).
 /// 틱 머리에서 `queue_expiry_pass`(TTL 스윕·pause 크레딧·만료 통지)가 먼저 돈다.
+/// ★(0.14.45 · 성찰 M1·M2) 큐 틱이 마커 좌석의 한 관측을 다시 그리기 분류([`crate::repaint::ScreenObs`])로 접는 **순수 판정** — 배달 판정(`verdict`)의 입력이 아니다
+/// (nudge 전용 · 어떤 게이트도 바꾸지 않는다). 다시 그리기는 stdin 0 바이트(PTY 높이 한 줄 흔들기)라 진짜 모달·진짜 바쁨에도 해가 없다.
+///
+/// `Unreadable`(시계가 간다) = 발행된 프레임에서 다음 중 하나 ∧ (비-대체 화면 ∨ 전경이 에이전트):
+///   ⓐ 종전 — `prompt_unknown`·`input_pending` 막힘 ∧ 커서 행 마커 없음 ∧ 선택기 행 아님(화면 사본 어긋남의 지문).
+///   ⓑ ★M1 — `busy`·`modal_pending` 막힘 또는 선택기 행인데 출력이 [`STALE_SCREEN_QUIET_SECS`] 넘게 정적 — 낡은 사본의 "esc to interrupt"·`❯ 1. Yes` 는
+///      출력 없이 영원히 남아 큐가 굶는다(종전엔 이 꼴에 nudge 가 없고 처방은 "스스로 풀린다" 고 했다).
+///   ⓒ ★M2 — `alt_screen` 막힘 ∧ 전경이 에이전트(`alt_fg_agent`) — 종전엔 대체 화면이면 무조건 제외였는데 처방은 nudge 를 약속했다.
+/// `Readable`(시계·미복구 배수 리셋) = 준비 판정, 또는 발행된 프레임의 비-대체 화면·비-선택기 행에서 커서 행을 읽었다(종전 그대로 — 선택기 행은 복구 증거가 아니다 · A4).
+/// `Other` = 그 밖(발행 중 프레임 · 승인 대기 · 전경이 에이전트가 아닌 대체 화면 · 짧은 바쁨 등) — 시계만 지운다.
+pub(crate) fn nudge_screen_obs(verdict: &PromptGate, obs: &PromptObs, alt_fg_agent: bool) -> crate::repaint::ScreenObs {
+    use crate::repaint::ScreenObs;
+    if !obs.frame_published() {
+        return ScreenObs::Other;
+    }
+    let PromptGate::Blocked(blocked) = verdict else {
+        return ScreenObs::Readable;
+    };
+    let blocked = *blocked;
+    let screen_ok_to_nudge = !obs.alt_screen || alt_fg_agent;
+    // ⓑ 낡은 표지 — 커서 행이 읽혀도(바쁨 표지는 보통 입력줄 **근처**에 남는다) '판독 가능' 보다 먼저 본다: 그 화면은 복구의 증거가 아니라 굶김의 원인이다.
+    let stale_marker = (blocked == BLOCKED_BUSY || blocked == BLOCKED_MODAL || obs.selector_row) && obs.quiet_secs >= STALE_SCREEN_QUIET_SECS;
+    if stale_marker {
+        return if screen_ok_to_nudge { ScreenObs::Unreadable } else { ScreenObs::Other };
+    }
+    // ⓑ′ 바쁨·모달 사유에서 커서 행이 읽히는 것은 복구의 증거가 아니다(codex 2차 검토 #3) — 요청 뒤 제어 출력 한 조각(`ESC[0m`)이 quiet 를 0 으로 되돌려도
+    //    표지는 그대로인데 `Readable` 로 배수를 지우면 600·1200… 간격 대신 매 300초 재요청이 된다. 시계만 지운다(`Other`) · 복구 = 준비 판정.
+    if blocked == BLOCKED_BUSY || blocked == BLOCKED_MODAL {
+        return ScreenObs::Other;
+    }
+    if obs.line.is_some() && !obs.alt_screen && !obs.selector_row {
+        return ScreenObs::Readable;
+    }
+    let desync = (blocked == BLOCKED_PROMPT_UNKNOWN || blocked == BLOCKED_INPUT_PENDING) && obs.line.is_none() && !obs.selector_row;
+    let alt_agent = blocked == BLOCKED_ALT_SCREEN && alt_fg_agent;
+    if screen_ok_to_nudge && (desync || alt_agent) {
+        ScreenObs::Unreadable
+    } else {
+        ScreenObs::Other
+    }
+}
+
+/// ★(0.14.45 · 성찰 M2) 이 좌석 PTY 의 **전경이 에이전트인가** — unix 는 틱이 적어 둔 에이전트 전경 그룹(`Surface::agent_fg_pgid` · 엄격 생존 증거)과 지금의
+/// `tcgetpgrp` 를 [`foreground_is_agent`] 로 대조한다(모르면 거짓 — 대체 화면의 vim·less 를 흔들지 않는다). 비-unix(윈도우)는 전경 판정이 없다 — 호출자가 이미
+/// **마커를 아는 에이전트 좌석**에서만 부르므로 참으로 둔다(다시 그리기는 stdin 0 바이트라 과잉의 손실은 한 번의 다시 그리기뿐).
+#[cfg(unix)]
+pub(crate) fn seat_foreground_is_agent(s: &crate::state::Surface) -> bool {
+    let agent = s.agent_fg_pgid.load(Ordering::Relaxed);
+    agent > 0 && foreground_is_agent(s.foreground_pgid_now(), agent)
+}
+
+/// 비-unix: 전경을 알 수 없다 — 마커 좌석(호출자 조건)이면 참.
+#[cfg(not(unix))]
+pub(crate) fn seat_foreground_is_agent(s: &crate::state::Surface) -> bool {
+    s.agent_meta.lock().map(|m| m.is_some()).unwrap_or(false)
+}
+
 fn deliver_queued(
     daemon: &Arc<Daemon>,
     depth_alerted: &mut HashMap<u64, f64>,
@@ -12649,7 +13212,17 @@ fn deliver_queued(
                 continue;
             }
             let input = prompt_gate_input(daemon, &s, marker, placeholder, &obs);
-            match prompt_gate_verdict(&input) {
+            let verdict = prompt_gate_verdict(&input);
+            // ★(0.14.45 · F2) 화면 사본이 어긋난 좌석(커서 행에 마커가 없어 입력줄을 못 읽는 채 막힘)은 키 입력 없이
+            //   다시 그리기를 요청한다(PTY 높이 한 줄 흔들기 · 전용 스레드 · 좌석당 5분 이상 간격). 판독 불가가 아니면 시계를
+            //   지우고, **판독 가능**(준비 판정 또는 커서 행 관측)일 때만 미복구 배수도 지운다(A4 — 대체 화면·선택기 행 같은
+            //   다른 사유는 '복구' 의 증거가 아니다).
+            //   ★(성찰 M1·M2) 분류는 순수 함수 [`nudge_screen_obs`] — 판독 불가(커서 행 마커 없음) 외에 **오래 정적인 바쁨·모달·선택기 행**(낡은
+            //   사본의 "esc to interrupt"·`❯ 1. Yes`)과 **전경이 에이전트인 대체 화면**도 다시 그리기 후보다. 배달 판정(`verdict`)은 손대지 않는다.
+            let alt_fg_agent = obs.alt_screen && seat_foreground_is_agent(&s);
+            let screen_obs = nudge_screen_obs(&verdict, &obs, alt_fg_agent);
+            crate::repaint::note_queue_screen(daemon, &s, screen_obs);
+            match verdict {
                 PromptGate::Blocked(why) => {
                     // 사유를 갈라 기록한다 — 손잡이가 다르다(입력줄 점유는 사람이 비워야 풀리고,
                     // 경계 미도달은 화면이 바뀌면 저절로 풀린다).
@@ -13201,6 +13774,343 @@ mod tests {
         let hb = &gsrc[h..h + gsrc[h..].find("\n}\n").unwrap()];
         assert!(hb.contains("\"inject.skipped_no_agent\""), "이벤트 미발행");
         assert!(hb.contains("q.push_back(entry.clone())"), "큐 미적재");
+    }
+
+    /// 시험 편의 — 결과만(소스 핀 시험이 `#[cfg(test)]` 앞까지만 읽으므로 본문 쪽에는 cfg(test) 항목을 두지 않는다).
+    fn descendants_from_table(table: &[(u32, Option<u32>, u64)], root: u32, guard: bool) -> Vec<u32> {
+        super::descendants_report(table, root, guard).0
+    }
+
+    /// 제보 꼴 표 — root(좌석 셸) → 824(임시 자식 · 최근) · 부팅 때 만들어진 옛 고아 둘이 부모를 824 로 적고 있고 그 아래 200개.
+    fn report_shape_table() -> (Vec<(u32, Option<u32>, u64)>, u32) {
+        let boot = 1_700_000_000u64;
+        let now = boot + 5_000_000;
+        let root = 1000u32;
+        let mut t = vec![(root, Some(1), now - 3600), (824, Some(root), now - 2)];
+        t.push((100, Some(824), boot + 3));
+        t.push((101, Some(824), boot + 4));
+        for i in 0..200u32 {
+            t.push((2000 + i, Some(if i % 2 == 0 { 100 } else { 101 }), boot + 10));
+        }
+        (t, root)
+    }
+
+    #[test]
+    fn wh_before_fix_report_shape_counts_over_200() {
+        let (t, root) = report_shape_table();
+        let n = descendants_from_table(&t, root, false).len();
+        eprintln!("WH-BEFORE descendants={n}");
+        assert!(n > 200, "종전 로직은 제보 꼴에서 200개 넘게 센다: {n}");
+    }
+
+    #[test]
+    fn wh_report_shape_guard_drops_reused_pid_orphans() {
+        let (t, root) = report_shape_table();
+        let got = descendants_from_table(&t, root, true);
+        assert_eq!(got, vec![824], "고아 둘과 그 아래 200개는 버려지고 진짜 자식 824 만 남는다");
+        // 손잡이를 끄면 종전과 같다.
+        assert_eq!(descendants_from_table(&t, root, false).len(), 203);
+    }
+
+    #[test]
+    fn wh_normal_tree_unchanged_and_order_equals_legacy() {
+        let n = 1_800_000_000u64;
+        let t = vec![
+            (10, Some(1), n),
+            (11, Some(10), n + 1),
+            (12, Some(10), n + 1),
+            (13, Some(11), n + 5),
+            (14, Some(13), n + 5),
+            (99, Some(77), n), // 무관
+        ];
+        let a = descendants_from_table(&t, 10, true);
+        let b = descendants_from_table(&t, 10, false);
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 4);
+    }
+
+    #[test]
+    fn wh_unknown_parent_keeps_link_wraparound_value_is_not_zero() {
+        let n = 1_800_000_000u64;
+        // 부모 모름 + 자식 모름 = 유지 · 부모 모름 + 자식 앎(root 닻에 안 걸리는 값) = 유지 · 자식이 한 바퀴 돈 거대한 값(0 아님)은 이 규칙으로 버리지 않는다.
+        let t = vec![
+            (10, Some(1), n),
+            (11, Some(10), 0),          // 부모(root) 앎 + 자식 모름 → 버림(WH2)
+            (20, Some(10), n + 1),
+            (21, Some(20), 0),          // 부모 앎 + 자식 모름 → 버림
+            (30, Some(10), u64::MAX - 5), // 거대값 = 모름이지만 0 이 아니라 유지
+            (31, Some(30), 0),          // 부모(거대값) 모름 + 자식 모름 → 유지
+            (32, Some(30), n + 2),      // 부모 모름 + 자식 앎 → 유지
+        ];
+        let mut g = descendants_from_table(&t, 10, true);
+        g.sort();
+        assert_eq!(g, vec![20, 30, 31, 32]);
+    }
+
+    #[test]
+    fn wh_root_anchor_drops_known_old_descendant_under_unknown_middle() {
+        let n = 1_800_000_000u64;
+        // 중간 부모(11)가 거대값(모름 · 0 아님 → 유지)이어도 시작을 아는 옛 후손(12)은 root 보다 이르니 버린다. 모르는 후손(13)은 부모를 모르니 유지.
+        let t = vec![(10, Some(1), n), (11, Some(10), u64::MAX - 1), (12, Some(11), n - 1_000_000), (13, Some(11), 0)];
+        let (g, d) = super::descendants_report(&t, 10, true);
+        assert_eq!(g, vec![11, 13]);
+        assert_eq!(d.len(), 1);
+        assert!(d[0].reason == "root_anchor" && d[0].child == 12 && d[0].parent == 11);
+    }
+
+    /// 비상승(표준 사용자) 실측 꼴 — root → 824(시작 앎 · 최근) → wininit/csrss(시작 0) → 아래 111개 시작 0 + 28개 시작 앎. 보정 뒤 [824] 만 남는다.
+    #[test]
+    fn wh_nonelevated_measured_shape_only_real_child_remains() {
+        let n = 1_800_000_000u64;
+        let boot = n - 5_000_000;
+        let mut t = vec![(1000, Some(1), n - 3600), (824, Some(1000), n - 2), (600, Some(824), 0), (610, Some(824), 0)];
+        for i in 0..111u32 {
+            t.push((2000 + i, Some(if i % 2 == 0 { 600 } else { 610 }), 0));
+        }
+        for i in 0..28u32 {
+            t.push((3000 + i, Some(600), boot + 60 + i as u64));
+        }
+        let (on, drops) = super::descendants_report(&t, 1000, true);
+        assert_eq!(on, vec![824]);
+        assert!(drops.iter().all(|d| d.reason == "child_start_unknown"));
+        assert!(descendants_from_table(&t, 1000, false).len() > 140);
+    }
+
+    /// 상승 꼴(전부 시작 앎) — 종전 규칙(부모보다 이른 자식)으로 버린다.
+    #[test]
+    fn wh_elevated_shape_all_known_dropped_by_predates() {
+        let n = 1_800_000_000u64;
+        let boot = n - 5_000_000;
+        let t = vec![(1000, Some(1), n - 3600), (824, Some(1000), n - 2), (600, Some(824), boot), (601, Some(600), boot + 5)];
+        let (on, drops) = super::descendants_report(&t, 1000, true);
+        assert_eq!(on, vec![824]);
+        assert_eq!(drops[0].reason, "parent_predates");
+    }
+
+    /// 한계 고정 — 좌석의 진짜 자식이 더 높은 권한으로 상승해 떠서 시작 시각이 0 으로 읽히면(부모는 앎) **버려진다**.
+    #[test]
+    fn wh_limit_elevated_real_child_with_unknown_start_is_dropped() {
+        let n = 1_800_000_000u64;
+        let t = vec![(10, Some(1), n - 100), (11, Some(10), 0), (12, Some(11), 0)];
+        assert!(descendants_from_table(&t, 10, true).is_empty());
+        assert_eq!(descendants_from_table(&t, 10, false), vec![11, 12]);
+    }
+
+    #[test]
+    fn wh_knob_off_by_env_or_policy_zero_only() {
+        use serde_json::json;
+        let on = crate::knobs::desc_start_guard_enabled_from;
+        assert!(on(None, None));
+        assert!(!on(Some("0"), None));
+        assert!(!on(Some(" 0 "), None));
+        assert!(on(Some("1"), None));
+        assert!(!on(None, Some(&json!({"CYS_DESC_START_GUARD": 0}))));
+        assert!(!on(None, Some(&json!({"CYS_DESC_START_GUARD": false}))));
+        assert!(!on(None, Some(&json!({"CYS_DESC_START_GUARD": "0"}))));
+        // 켜는 값은 파일에서 받지 않는다 — 환경이 끈 것을 파일이 켜지 못한다.
+        assert!(!on(Some("0"), Some(&json!({"CYS_DESC_START_GUARD": 1}))));
+        assert!(on(None, Some(&json!({"CYS_DESC_START_GUARD": 1}))));
+    }
+
+    /// 소스 핀 — 보정판은 감시 틱의 계수·중복 판정 루프(check_surfaces)와 좌석 닫기의 종료 목록 두 곳에서만 부른다.
+    #[test]
+    fn wh_guarded_collectors_called_only_from_two_sites() {
+        let src = include_str!("governance.rs");
+        let prod = src.split("#[cfg(test)]").next().expect("프로덕션 구간");
+        let mut hits: Vec<&str> = Vec::new();
+        for line in prod.lines() {
+            let t = line.trim_start();
+            if t.starts_with("//") {
+                continue;
+            }
+            if (line.contains("collect_descendants_guarded(") || line.contains("collect_descendants_with_cmd_src_guarded(") || line.contains("guarded_descendant_pids("))
+                && !t.starts_with("pub fn ")
+                && !t.starts_with("fn ")
+            {
+                hits.push(t);
+            }
+        }
+        // 호출처: 계수·중복 루프 1 · 닫기 목록 1 · 보정판 내부 위임 2(두 collect 함수가 guarded_descendant_pids 를 부름)
+        let callers: Vec<_> = hits.iter().filter(|h| !h.contains("guarded_descendant_pids(")).collect();
+        assert_eq!(callers.len(), 2, "보정판 호출처가 둘이 아니다: {callers:?}");
+        assert!(callers.iter().any(|h| h.contains("let descendants = collect_descendants_with_cmd_src_guarded(sys, *root_pid)")));
+        assert!(callers.iter().any(|h| h.contains("let descendants = collect_descendants_guarded(&sys, surface.pid)")));
+        assert_eq!(hits.iter().filter(|h| h.contains("guarded_descendant_pids(")).count(), 2);
+        // 다른 파일은 보정판을 부르지 않는다.
+        for (name, other) in [("handlers.rs", include_str!("handlers.rs")), ("usage.rs", include_str!("usage.rs"))] {
+            assert!(!other.contains("collect_descendants_guarded") && !other.contains("_guarded("), "{name} 가 보정판을 부른다");
+        }
+    }
+
+    /// 사실 고정 — 시계가 뒤로 가서 진짜 자식이 부모보다 30초 넘게 이르게 기록되면 **버려진다**(윈도우 적용분의 알려진 위험).
+    #[test]
+    fn wh_clock_rollback_real_child_is_dropped_known_risk() {
+        let p = 1_800_000_000u64;
+        let t = vec![(10, Some(1), p), (11, Some(10), p - 3600 + 120), (12, Some(11), p - 3600 + 125)];
+        assert!(descendants_from_table(&t, 10, true).is_empty());
+        assert_eq!(descendants_from_table(&t, 10, false), vec![11, 12]);
+    }
+
+    #[test]
+    fn wh_plausible_upper_bound_and_exact_slack() {
+        let m = super::DESC_START_MAX_PLAUSIBLE;
+        assert!(super::start_known(m - 1));
+        assert!(!super::start_known(m));
+        assert!(!super::start_known(0));
+        let n = 1_800_000_000u64;
+        assert!(!super::child_predates_parent(n, n - 30), "정확히 30초 = 유지");
+        assert!(super::child_predates_parent(n, n - 31), "31초 = 버림");
+        // 상한 이상 값은 모름 → 유지
+        assert!(!super::child_predates_parent(m, 5));
+    }
+
+    #[test]
+    fn wh_guard_applies_only_on_windows_with_knob() {
+        assert!(super::guard_applies(true, true));
+        assert!(!super::guard_applies(false, true));
+        assert!(!super::guard_applies(true, false));
+        assert!(!super::guard_applies(false, false));
+    }
+
+    /// 맥·리눅스는 종전과 글자 그대로 같은 결과(같은 함수를 부른다 · 순서까지 동일).
+    #[cfg(not(windows))]
+    #[test]
+    fn wh_non_windows_result_identical_to_legacy() {
+        let mut sys = sysinfo::System::new();
+        sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+        for root in [1u32, std::process::id()] {
+            assert_eq!(super::guarded_descendant_pids(&sys, root), super::descendant_pids(&sys, root));
+        }
+    }
+
+    #[test]
+    fn wh_drop_log_debounce() {
+        let mut m = std::collections::HashMap::new();
+        assert!(super::debounce_allows(&mut m, (1, 2), 100, 600));
+        assert!(!super::debounce_allows(&mut m, (1, 2), 699, 600));
+        assert!(super::debounce_allows(&mut m, (1, 3), 150, 600), "다른 부모는 따로");
+        assert!(super::debounce_allows(&mut m, (1, 2), 700, 600));
+    }
+
+    #[test]
+    fn wh_root_unknown_start_keeps_all_and_root_known_drops_older() {
+        let n = 1_800_000_000u64;
+        let t = vec![(11, Some(10), n - 9_999_999)];
+        // root(10) 이 표에 없거나 시작을 모르면 유지.
+        assert_eq!(descendants_from_table(&t, 10, true), vec![11]);
+        let t2 = vec![(10, Some(1), 0), (11, Some(10), n - 9_999_999)];
+        assert_eq!(descendants_from_table(&t2, 10, true), vec![11]);
+        // root 의 시작을 알면 그보다 한참 이른 "자식"은 버린다.
+        let t3 = vec![(10, Some(1), n), (11, Some(10), n - 9_999_999)];
+        assert!(descendants_from_table(&t3, 10, true).is_empty());
+    }
+
+    #[test]
+    fn wh_same_second_and_slack_boundary() {
+        let n = 1_800_000_000u64;
+        let s = super::DESC_START_SLACK_SECS;
+        // 같은 초 · 부모보다 늦음 · 여유 안쪽(= 여유와 같음) → 유지.
+        assert!(!super::child_predates_parent(n, n));
+        assert!(!super::child_predates_parent(n, n + 7));
+        assert!(!super::child_predates_parent(n, n - s));
+        // 여유를 1초 넘으면 버림.
+        assert!(super::child_predates_parent(n, n - s - 1));
+        // 제보의 경우: 차이가 부팅 이후 전체(수일) — 여유와 무관하게 걸린다.
+        assert!(super::child_predates_parent(n, n - 5 * 86_400));
+        // 한쪽이라도 모르면 거짓.
+        assert!(!super::child_predates_parent(0, 5));
+        assert!(!super::child_predates_parent(n, 0));
+    }
+
+    #[test]
+    fn wh_cycle_terminates() {
+        let n = 1_800_000_000u64;
+        let t = vec![(10, Some(11), n), (11, Some(10), n), (12, Some(12), n)];
+        let got = descendants_from_table(&t, 10, true);
+        assert_eq!(got, vec![11]);
+    }
+
+    /// 진짜 프로세스 — 자기 프로세스가 띄운 자식은 종전과 같이 자손으로 나오고, 손잡이 켠 결과 ⊆ 끈 결과.
+    #[cfg(unix)]
+    #[test]
+    fn wh_real_child_still_counted_guard_subset_of_legacy() {
+        let mut child = std::process::Command::new("/bin/sleep").arg("20").spawn().expect("spawn");
+        let kid = child.id();
+        let me = std::process::id();
+        let mut sys = sysinfo::System::new();
+        let mut seen = false;
+        for _ in 0..50 {
+            sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+            if super::descendant_pids(&sys, me).contains(&kid) {
+                seen = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let table: Vec<(u32, Option<u32>, u64)> = sys
+            .processes()
+            .iter()
+            .map(|(p, pr)| (p.as_u32(), pr.parent().map(|x| x.as_u32()), pr.start_time()))
+            .collect();
+        let on = descendants_from_table(&table, me, true);
+        let off = descendants_from_table(&table, me, false);
+        let kid_start = table.iter().find(|r| r.0 == kid).map(|r| r.2);
+        let me_start = table.iter().find(|r| r.0 == me).map(|r| r.2);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(seen, "전제: 자식이 표에 보인다");
+        eprintln!("WH-REAL me_start={me_start:?} kid_start={kid_start:?} on={} off={}", on.len(), off.len());
+        assert!(on.contains(&kid), "진짜 자식은 손잡이 켠 결과에도 남는다");
+        assert!(on.iter().all(|p| off.contains(p)), "줄어드는 방향으로만");
+        assert_eq!(on, off, "정상 트리에서는 종전과 같다");
+    }
+
+    /// 윈도우 실표 시험(표준 사용자로 돌려도 통과) — wininit.exe · csrss.exe 의 start_time 을 측정해 찍고(0 = 핸들을 못 연 것으로 추정),
+    /// 그것들의 (죽은) 부모 번호를 새 프로세스(시작 = 지금)가 받은 꼴의 가짜 표에서 **읽히든 0 이든** 자손으로 세어지지 않는지 본다.
+    #[cfg(windows)]
+    #[test]
+    fn wh_windows_protected_start_time_measure_and_guard() {
+        let mut sys = sysinfo::System::new();
+        sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let table: Vec<(u32, Option<u32>, u64)> = sys
+            .processes()
+            .iter()
+            .map(|(pid, p)| (pid.as_u32(), p.parent().map(|x| x.as_u32()), p.start_time()))
+            .collect();
+        let mut seen_any = false;
+        for (pid, p) in sys.processes() {
+            let n = p.name().to_string_lossy().to_ascii_lowercase();
+            if n != "wininit.exe" && n != "csrss.exe" {
+                continue;
+            }
+            seen_any = true;
+            let st = p.start_time();
+            let ppid = p.parent().map(|x| x.as_u32());
+            eprintln!(
+                "WH-WIN-MEASURE {n} pid={} ppid={ppid:?} start_time={st} handle_opened_estimate={} now={now}",
+                pid.as_u32(),
+                st != 0
+            );
+            let Some(parent) = ppid else { continue };
+            let mut t = table.clone();
+            if let Some(r) = t.iter_mut().find(|r| r.0 == parent) {
+                r.2 = now;
+            } else {
+                t.push((parent, Some(1), now));
+            }
+            let on = descendants_from_table(&t, parent, true);
+            let off = descendants_from_table(&t, parent, false);
+            eprintln!("WH-WIN-GUARD parent={parent} child={} off_has={} on_has={}", pid.as_u32(), off.contains(&pid.as_u32()), on.contains(&pid.as_u32()));
+            assert!(off.contains(&pid.as_u32()), "전제: 종전 로직은 센다");
+            assert!(!on.contains(&pid.as_u32()), "{n}: 읽히든(부모보다 이름) 0 이든(자식 시작 모름) 자손으로 세지 않는다");
+        }
+        if !seen_any {
+            eprintln!("WH-WIN-SKIP wininit.exe/csrss.exe 가 표에 없다");
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -22113,6 +23023,392 @@ mod tests {
         );
     }
 
+    /// ★(0.14.45 · F2·F3) 화면 사본이 어긋난 좌석 — 커서가 마커 행 밖(파서 패닉 뒤 빈 사본에서 커서 (0,0) 과 같은 꼴)이라 입력줄을 못 읽는 채
+    /// 막혀 있으면, 판독 불가 60초 뒤 틱이 **키 입력 없이** 다시 그리기를 요청한다(이벤트 1건 · 크기 원복). 진단에는 커서 행·마커 행·선두 코드포인트가 실린다.
+    /// 다시 그려져 커서가 마커 행으로 오면 배달되고 재동기 시계가 지워진다. 음성 대조: 대체 화면 · 노브 끔 · 판독 가능 화면은 요청하지 않는다.
+    #[test]
+    fn f2_desynced_seat_requests_repaint_then_delivers_after_redraw() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (_pack, _env) = wp5_env("f2-repaint");
+        let (daemon, s) = wp5_seat("f2-repaint", "claude");
+        let e = daemon.next_queue_entry("[보고] f2".into(), None, "test");
+        s.pending_queue.lock().unwrap().push_back(e);
+        let repaint_events = |d: &Arc<Daemon>| -> Vec<Value> {
+            d.bus.replay_after(0).into_iter().filter(|e| e["name"] == "screen.repaint_requested").collect()
+        };
+        let wait_idle = |s: &Arc<crate::state::Surface>| {
+            let dl = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while s.repaint_in_flight.load(AtomicOrdering::Acquire) && std::time::Instant::now() < dl {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        };
+        let idle = [RULE, "❯ ", RULE, STATUS1, STATUS2];
+        // ① 커서가 마커 행 밖(0행 = 괘선) — 입력줄 판독 불가 · 계수 0 → prompt_unknown. 첫 관측은 시계만 선다.
+        paint_screen(&s, &idle, 0, 0, false);
+        quiet_since(&s, 30);
+        tick(&daemon);
+        assert_eq!(blocked_reason(&s), BLOCKED_PROMPT_UNKNOWN);
+        assert!(s.repaint.lock().unwrap().unreadable_since.is_some(), "판독 불가 시계가 서야 한다");
+        assert!(repaint_events(&daemon).is_empty(), "60초 전에는 요청하지 않는다");
+        // F3 진단 — 커서 행 0 · 마커 행 1 · 선두 글리프 '─'(U+2500).
+        let d = super::queue_block_diag(&daemon, &s);
+        assert_eq!((d.cursor_row, d.marker_row, d.cursor_lead_cp.as_deref()), (Some(0), Some(1), Some("U+2500")), "{d:?}");
+        // ② 61초째 — 요청 1건(키 입력 없음 · 크기 원복).
+        s.repaint.lock().unwrap().unreadable_since = Some(std::time::Instant::now() - std::time::Duration::from_secs(61));
+        let pending_before = s.pending_input_bytes.load(AtomicOrdering::Relaxed);
+        tick(&daemon);
+        let ev = repaint_events(&daemon);
+        assert_eq!(ev.len(), 1, "요청 1건: {ev:?}");
+        assert_eq!(ev[0]["payload"]["reason"], json!("screen_unreadable"));
+        wait_idle(&s);
+        assert_eq!(s.parser.lock().unwrap().screen().size(), (24, 80), "파서 크기 원복");
+        assert_eq!(s.pending_input_bytes.load(AtomicOrdering::Relaxed), pending_before, "stdin 계수 불변(키 입력 없음)");
+        // 같은 판독 불가가 이어져도 간격 안에서는 더 요청하지 않는다(폭주 없음).
+        for _ in 0..5 {
+            s.repaint.lock().unwrap().unreadable_since = Some(std::time::Instant::now() - std::time::Duration::from_secs(600));
+            tick(&daemon);
+        }
+        wait_idle(&s);
+        assert_eq!(repaint_events(&daemon).len(), 1, "간격(300초 · 미복구 배수) 안에서는 추가 요청 0");
+        assert!(super::queue_block_diag(&daemon, &s).repaint_requested_at.is_some(), "진단에 요청 시각");
+        // (A) 계수가 남아 있는 변형 — input_pending · 화면 판독 불가 = input_pending_unknown 처방(다시 그리기 문장).
+        s.set_pending_input(3);
+        paint_screen(&s, &idle, 0, 0, false);
+        quiet_since(&s, 30);
+        tick(&daemon);
+        assert_eq!(blocked_reason(&s), BLOCKED_INPUT_PENDING);
+        let d = super::queue_block_diag(&daemon, &s);
+        assert_eq!(d.draft_visible, None, "판독 불가 = 결측");
+        let (code, text) = super::queue_remedy(BLOCKED_INPUT_PENDING, &d);
+        assert_eq!(code, "input_pending_unknown");
+        // ★(성찰 M2) 이미 요청했고 아직 판독 가능한 화면을 못 봤다 — 처방은 '요청한다' 가 아니라 사실(요청했으나 풀리지 않음)을 말한다.
+        assert!(d.repaint_unresolved && d.quiet_secs.is_some() && !d.repaint_knob_off && !d.rows_too_small, "{d:?}");
+        assert!(text.contains("다시 그리기를 요청했으나 풀리지 않았다") && text.contains("창 크기를 한 번 바꾸거나"), "{text}");
+        assert!(!text.contains("다시 그리기를 요청한다"), "풀리지 않은 요청 뒤에 또 약속하지 않는다: {text}");
+        // ③ 다시 그려졌다(커서가 마커 뒤) — 계수 0 이면 배달되고 재동기 시계·미복구 수가 지워진다.
+        s.set_pending_input(0);
+        paint_screen(&s, &idle, 1, 2, false);
+        quiet_since(&s, 30);
+        *s.queue_blocked.lock().unwrap() = None;
+        tick(&daemon);
+        assert_eq!(s.pending_queue.lock().unwrap().len(), 0, "다시 그려진 뒤 배달: {}", blocked_reason(&s));
+        let st = s.repaint.lock().unwrap();
+        assert!(st.unreadable_since.is_none() && st.unrecovered == 0, "판독 가능 관측이 시계를 지운다");
+        drop(st);
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// 음성 대조 — 대체 화면(전체화면 앱 · 사람이 쓰는 중일 수 있다)과 노브 끔(`CYS_SCREEN_REPAINT_NUDGE=0`)에서는 판독 불가가 오래여도 요청하지 않는다.
+    #[test]
+    fn f2_no_repaint_on_alt_screen_or_when_knob_is_off() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (_pack, _env) = wp5_env("f2-negative");
+        let (daemon, s) = wp5_seat("f2-negative", "claude");
+        let e = daemon.next_queue_entry("[보고] f2-neg".into(), None, "test");
+        s.pending_queue.lock().unwrap().push_back(e);
+        let count = |d: &Arc<Daemon>| d.bus.replay_after(0).into_iter().filter(|e| e["name"] == "screen.repaint_requested").count();
+        // 대체 화면 — 유닉스: 전경이 에이전트로 확인되지 않으면(`agent_fg_pgid` 0 = 모름) 판독 불가로 세지 않는다(시계 없음 · vim·less 를 흔들지 않는다).
+        paint_screen(&s, &[RULE, "❯ ", RULE, STATUS1], 0, 0, true);
+        quiet_since(&s, 30);
+        s.repaint.lock().unwrap().unreadable_since = Some(std::time::Instant::now() - std::time::Duration::from_secs(600));
+        tick(&daemon);
+        #[cfg(unix)]
+        {
+            assert_eq!(count(&daemon), 0, "대체 화면은 요청하지 않는다: {}", blocked_reason(&s));
+            assert!(s.repaint.lock().unwrap().unreadable_since.is_none(), "대체 화면은 판독 불가 시계를 지운다");
+        }
+        // ★(windows-health 37586250048) 윈도우는 전경 판정이 없다 — `seat_foreground_is_agent` 의 비-unix 판은 마커를 아는 에이전트 좌석이면 참(문서화된 선택 ·
+        //   claude 가 윈도우에서 기본 대체 화면이라 M2 복구가 여기서 산다). 그 대신 폭주 없음(①)을 핀한다: 요청 1건 · 간격(300초) 안에서는 판독 불가가 이어져도 추가 0 ·
+        //   키 입력 0 · 크기 원복. (④ 사람 화면은 보장하지 않는다 — 에이전트 좌석 안의 전체화면 vim 도 한 번 다시 그려질 수 있다 · repaint.rs 【치명위험 렌즈】④.)
+        #[cfg(not(unix))]
+        {
+            assert_eq!(count(&daemon), 1, "윈도우 대체 화면 에이전트 좌석은 요청 1건: {}", blocked_reason(&s));
+            let dl = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while s.repaint_in_flight.load(AtomicOrdering::Acquire) && std::time::Instant::now() < dl {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            assert_eq!(s.parser.lock().unwrap().screen().size(), (24, 80), "파서 크기 원복");
+            for _ in 0..5 {
+                paint_screen(&s, &[RULE, "❯ ", RULE, STATUS1], 0, 0, true);
+                quiet_since(&s, 30);
+                s.repaint.lock().unwrap().unreadable_since = Some(std::time::Instant::now() - std::time::Duration::from_secs(600));
+                tick(&daemon);
+            }
+            assert_eq!(count(&daemon), 1, "간격(300초) 안에서는 추가 요청 0 — 폭주 없음");
+        }
+        let before_knob = count(&daemon);
+        // 노브 끔 — 비대체 화면 판독 불가라도 요청 0.
+        let _k = super::HKnobGuard::set(&[("CYS_SCREEN_REPAINT_NUDGE", "0")]);
+        s.alt_screen.store(false, AtomicOrdering::Relaxed);
+        s.parser.lock().unwrap().process(b"\x1b[?1049l");
+        paint_screen(&s, &[RULE, "❯ ", RULE, STATUS1], 0, 0, false);
+        quiet_since(&s, 30);
+        tick(&daemon);
+        s.repaint.lock().unwrap().unreadable_since = Some(std::time::Instant::now() - std::time::Duration::from_secs(600));
+        tick(&daemon);
+        assert_eq!(blocked_reason(&s), BLOCKED_PROMPT_UNKNOWN);
+        assert_eq!(count(&daemon), before_knob, "노브 끔이면 요청하지 않는다");
+        // ★(성찰 M2) 노브가 꺼져 있으면 처방도 약속하지 않는다 — '꺼져 있다 · 사람이 창 크기를 바꾼다'.
+        let d = super::queue_block_diag(&daemon, &s);
+        assert!(d.repaint_knob_off, "{d:?}");
+        let (_, t) = super::queue_remedy(BLOCKED_PROMPT_UNKNOWN, &d);
+        assert!(t.contains("다시 그리기 요청은 꺼져 있다") && t.contains("CYS_SCREEN_REPAINT_NUDGE=0") && !t.contains("다시 그리기를 요청한다"), "{t}");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// ★(0.14.45 · 성찰 M1·M2) nudge 분류 순수 표 — 배달 판정은 건드리지 않고 **다시 그리기 후보**만 넓힌다: 낡은 사본의 바쁨·모달·선택기 행(출력 정적 ≥ 60초) ·
+    /// 전경이 에이전트인 대체 화면. 짧은 정적·발행 중 프레임·승인 대기·전경이 다른 프로그램인 대체 화면은 종전처럼 후보가 아니다.
+    #[test]
+    fn m1m2_nudge_screen_obs_table() {
+        use crate::repaint::ScreenObs::*;
+        let obs = |line: bool, alt: bool, sel: bool, quiet: u64, published: bool| super::PromptObs {
+            marker: "❯".into(),
+            marker_seen: true,
+            line: line.then(|| (String::new(), String::new())),
+            screen: String::new(),
+            selector_row: sel,
+            busy_near_cursor: false,
+            output_gen: 20,
+            output_gen_after: if published { 20 } else { 21 },
+            quiet_secs: quiet,
+            alt_screen: alt,
+            block: None,
+        };
+        let b = |w: &'static str| PromptGate::Blocked(w);
+        let cases: Vec<(&str, PromptGate, super::PromptObs, bool, crate::repaint::ScreenObs)> = vec![
+            ("준비 = 판독 가능", PromptGate::Ready, obs(true, false, false, 0, true), false, Readable),
+            ("커서 행 읽힘(비-alt·비-선택기) = 판독 가능", b(BLOCKED_INPUT_PENDING), obs(true, false, false, 0, true), false, Readable),
+            ("종전 ⓐ prompt_unknown ∧ 마커 없음", b(BLOCKED_PROMPT_UNKNOWN), obs(false, false, false, 0, true), false, Unreadable),
+            ("종전 ⓐ input_pending ∧ 마커 없음", b(BLOCKED_INPUT_PENDING), obs(false, false, false, 0, true), false, Unreadable),
+            ("발행 중 프레임은 어느 것도 아니다", b(BLOCKED_PROMPT_UNKNOWN), obs(false, false, false, 600, false), false, Other),
+            ("M1 바쁨 ∧ 정적 60초 = 낡은 표지 후보", b(BLOCKED_BUSY), obs(true, false, false, 60, true), false, Unreadable),
+            ("바쁨 ∧ 정적 59초 = 아직 · 커서 행이 읽혀도 복구 증거가 아니다(배수 유지 · codex #3)", b(BLOCKED_BUSY), obs(true, false, false, 59, true), false, Other),
+            ("바쁨 ∧ 정적 59초 ∧ 커서 행 없음 = 그 밖", b(BLOCKED_BUSY), obs(false, false, false, 59, true), false, Other),
+            ("모달 ∧ 정적 0초 ∧ 커서 행 읽힘 = 그 밖(복구 = 준비 판정뿐)", b(BLOCKED_MODAL), obs(true, false, false, 0, true), false, Other),
+            ("prompt_not_ready ∧ 커서 행 읽힘 = 종전대로 판독 가능", b(super::BLOCKED_PROMPT_NOT_READY), obs(true, false, false, 0, true), false, Readable),
+            ("M1 모달 ∧ 정적 60초", b(BLOCKED_MODAL), obs(true, false, false, 60, true), false, Unreadable),
+            ("M1 선택기 행 ∧ 정적 60초(커서 행이 읽혀도)", b(BLOCKED_MODAL), obs(true, false, true, 60, true), false, Unreadable),
+            ("선택기 행 ∧ 정적 10초 = 그 밖(복구 증거도 아니다 · A4)", b(BLOCKED_MODAL), obs(true, false, true, 10, true), false, Other),
+            ("승인 대기는 화면이 아니다 — 정적이어도 후보 아님(커서 행 읽힘 = 종전대로 판독 가능)", b(BLOCKED_APPROVAL), obs(true, false, false, 600, true), false, Readable),
+            ("승인 대기 ∧ 커서 행 없음 = 그 밖", b(BLOCKED_APPROVAL), obs(false, false, false, 600, true), false, Other),
+            ("M2 대체 화면 ∧ 전경 에이전트", b(BLOCKED_ALT_SCREEN), obs(false, true, false, 0, true), true, Unreadable),
+            ("대체 화면 ∧ 전경이 다른 프로그램 = 그 밖(vim·less 를 흔들지 않는다)", b(BLOCKED_ALT_SCREEN), obs(false, true, false, 600, true), false, Other),
+            ("대체 화면 ∧ 전경 에이전트 ∧ 낡은 바쁨", b(BLOCKED_BUSY), obs(true, true, false, 60, true), true, Unreadable),
+            ("대체 화면의 커서 행 읽힘은 '판독 가능' 이 아니다(종전 A4)", b(BLOCKED_ALT_SCREEN), obs(true, true, false, 0, true), false, Other),
+            ("짧은 바쁨(비-alt)은 그 밖", b(BLOCKED_BUSY), obs(false, false, false, 3, true), false, Other),
+        ];
+        for (name, v, o, fg, want) in cases {
+            assert_eq!(super::nudge_screen_obs(&v, &o, fg), want, "{name}");
+        }
+        assert_eq!(super::STALE_SCREEN_QUIET_SECS, 60);
+    }
+
+    /// ★(0.14.45 · 성찰 M1·M2) 처방 문장은 사실만 약속한다 — 바쁨·모달은 정적 60초부터 '낡은 사본일 수 있다 + 다시 그리기' 를 말하고, 대체 화면은 전경이 에이전트일 때만
+    /// 다시 그리기를 말하며, 노브 끔·창 너무 작음·요청했으나 미복구는 그 사실로 약속 구절을 바꾼다(code·접미·패닉 주석 위치는 불변 · 기본 갈래 바이트 불변).
+    #[test]
+    fn m1m2_remedy_text_tells_the_truth_about_the_nudge() {
+        let base = |q: Option<u64>| QueueBlockDiag { quiet_secs: q, input_model: "v3", ..QueueBlockDiag::default() };
+        // 바쁨: 59초까지는 종전 문장 · 60초부터 낡은 표지 문장(code 는 그대로 wait).
+        let (c, t) = queue_remedy(BLOCKED_BUSY, &base(Some(59)));
+        assert_eq!((c, t.as_str()), ("wait", &*format!("일시 보류 — 스스로 풀린다(오래 지속되면 그 창 화면을 확인){REMEDY_LLM_SUFFIX}")));
+        let (c, t) = queue_remedy(BLOCKED_BUSY, &base(Some(60)));
+        assert_eq!(c, "wait");
+        assert!(t.contains("60초째 출력이 없다") && t.contains("낡은 화면 사본일 수 있다") && t.contains("다시 그리기를 요청한다") && t.ends_with(REMEDY_LLM_SUFFIX), "{t}");
+        assert!(!t.contains("스스로 풀린다"), "낡은 표지에 '스스로 풀린다' 는 거짓이다: {t}");
+        assert_eq!(queue_remedy(BLOCKED_BUSY, &base(None)).1, queue_remedy(BLOCKED_BUSY, &base(Some(0))).1, "미측정은 짧은 정적과 같은 문장");
+        // ★(2회차 M3) 약속할 수 없는 네 갈래(노브 끔·대상 아님·창 너무 작음·미복구)는 사람 조치 code `stale_screen` — 문장은 그대로고 code 만 바뀐다. 정적 59초면 약속 불가여도 calm.
+        for d in [
+            QueueBlockDiag { repaint_knob_off: true, ..base(Some(60)) },
+            QueueBlockDiag { nudge_ineligible: true, ..base(Some(60)) },
+            QueueBlockDiag { rows_too_small: true, ..base(Some(60)) },
+            QueueBlockDiag { repaint_unresolved: true, ..base(Some(60)) },
+        ] {
+            let (c, t) = queue_remedy(BLOCKED_BUSY, &d);
+            assert_eq!(c, super::REMEDY_CODE_STALE_SCREEN, "{d:?}: {t}");
+            assert!(t.starts_with("출력 중 표지가 보이지만 60초째 출력이 없다") && t.ends_with(REMEDY_LLM_SUFFIX), "{t}");
+            assert_eq!(queue_remedy(BLOCKED_BUSY, &QueueBlockDiag { quiet_secs: Some(59), ..d.clone() }).0, "wait", "정적 59초는 종전 calm");
+        }
+        // 모달: 정적 60초부터 낡은 사본 가능성을 덧붙이되 '사람이 답한다' 는 그대로.
+        let (c, t) = queue_remedy(BLOCKED_MODAL, &base(Some(120)));
+        assert_eq!(c, "answer_modal");
+        assert!(t.starts_with("질문·선택 창이 떠 있다 — 사람이 답한다(120초째") && t.contains("진짜 선택 창이면 다시 그려져도 그대로다"), "{t}");
+        assert_eq!(queue_remedy(BLOCKED_MODAL, &base(Some(5))).1, format!("질문·선택 창이 떠 있다 — 사람이 답한다{REMEDY_LLM_SUFFIX}"));
+        // 대체 화면: 전경이 에이전트일 때만 다시 그리기 약속 · 아니면 종전 문장(약속 없음).
+        let (_, t) = queue_remedy(BLOCKED_ALT_SCREEN, &base(None));
+        assert!(!t.contains("다시 그리기") && t.contains("전체화면 프로그램을 끝내거나"), "{t}");
+        let fg = QueueBlockDiag { alt_fg_agent: true, ..base(None) };
+        let (c, t) = queue_remedy(BLOCKED_ALT_SCREEN, &fg);
+        assert_eq!(c, "alt_screen");
+        assert!(t.contains("전경이 에이전트라") && t.contains("다시 그리기를 요청한다") && t.contains("`/tui default`") && t.contains("~/.cys/win-no-alt-screen"), "{t}");
+        // 약속 구절 셋 — 어느 갈래(9행·14행·바쁨·모달·대체 화면)에서도 같은 사실 문장으로 바뀌고 '요청한다' 는 사라진다.
+        for (what, d, needle) in [
+            ("노브 끔", QueueBlockDiag { repaint_knob_off: true, ..base(Some(90)) }, "다시 그리기 요청은 꺼져 있다"),
+            ("대상 아님(마커 없는 좌석 · codex #4)", QueueBlockDiag { nudge_ineligible: true, ..base(Some(90)) }, "요청하는 대상이 아니다"),
+            ("창 너무 작음", QueueBlockDiag { rows_too_small: true, ..base(Some(90)) }, "창이 너무 작아 cys 가 크기를 흔들지 못한다"),
+            ("요청했으나 미복구", QueueBlockDiag { repaint_unresolved: true, ..base(Some(90)) }, "다시 그리기를 요청했으나 풀리지 않았다"),
+        ] {
+            let fg = QueueBlockDiag { alt_fg_agent: true, ..d.clone() };
+            let dpos = QueueBlockDiag { pending_input_bytes: 3, ..d.clone() };
+            // ★(2회차 M3) 바쁨 + 정적 60초 + 약속 불가 = `stale_screen`(사람 조치 — GUI 가 배너를 낸다) · 그 밖 갈래의 code 는 그대로.
+            for (blocked, dd, code) in [
+                (BLOCKED_INPUT_PENDING, &dpos, "input_pending_unknown"),
+                (BLOCKED_PROMPT_UNKNOWN, &d, "prompt_unknown"),
+                (BLOCKED_BUSY, &d, "stale_screen"),
+                (BLOCKED_MODAL, &d, "answer_modal"),
+                (BLOCKED_ALT_SCREEN, &fg, "alt_screen"),
+            ] {
+                let (c, t) = queue_remedy(blocked, dd);
+                assert_eq!(c, code, "{what}: {blocked}");
+                assert!(t.contains(needle), "{what}: {blocked}: {t}");
+                assert!(!t.contains("다시 그리기를 요청한다"), "{what}: {blocked}: 약속할 수 없는데 약속한다: {t}");
+                assert!(t.ends_with(REMEDY_LLM_SUFFIX), "{t}");
+            }
+            // 우선순위: 노브 끔 > 창 너무 작음 > 미복구.
+        }
+        let all = QueueBlockDiag { repaint_knob_off: true, nudge_ineligible: true, rows_too_small: true, repaint_unresolved: true, ..base(None) };
+        assert!(super::repaint_promise(&all).unwrap().contains("꺼져 있다"));
+        assert!(super::repaint_promise(&QueueBlockDiag { nudge_ineligible: true, rows_too_small: true, ..base(None) }).unwrap().contains("대상이 아니다"));
+        assert!(super::repaint_promise(&QueueBlockDiag { rows_too_small: true, repaint_unresolved: true, ..base(None) }).unwrap().contains("너무 작아"));
+        assert!(super::repaint_promise(&base(None)).is_none());
+        // 9행·14행 기본 갈래는 상수 바이트 그대로(문서가 인용) · 괄호 밖 문장("(프롬프트)" 포함)은 갈래가 바뀌어도 그대로다.
+        assert_eq!(queue_remedy(BLOCKED_PROMPT_UNKNOWN, &base(None)).1, format!("{}{REMEDY_LLM_SUFFIX}", super::REMEDY_BODY_PROMPT_UNKNOWN));
+        let (_, t) = queue_remedy(BLOCKED_PROMPT_UNKNOWN, &QueueBlockDiag { repaint_unresolved: true, ..base(None) });
+        assert!(t.starts_with("입력 대기 표지(프롬프트)를 화면에서 찾지 못했다 — 다른 화면이 떠 있거나 데몬의 화면 사본이 어긋났을 수 있다(cys 가 다시 그리기를 요청했으나") && t.contains("). 그래도 막혀 있으면"), "{t}");
+        let (_, t) = queue_remedy(BLOCKED_INPUT_PENDING, &QueueBlockDiag { pending_input_bytes: 2, repaint_unresolved: true, ..base(None) });
+        assert!(t.contains("). 다시 그려진 뒤에도 막혀 있으면 사람이 그 창을 확인한다(비어 있으면 Ctrl-U"), "{t}");
+        // 패닉 주석은 여전히 본문 뒤·접미 앞.
+        let (_, t) = queue_remedy(BLOCKED_BUSY, &QueueBlockDiag { parser_panics: 2, ..base(Some(70)) });
+        assert!(t.ends_with(&format!(" (이 좌석 화면 파서 패닉 2회 — 화면 판독이 순간 비었을 수 있다){REMEDY_LLM_SUFFIX}")), "{t}");
+    }
+
+    /// ★(0.14.45 · 성찰 2회차 m2) 처방 문장의 숫자와 노브 상수의 **핀** — "1분" 은 [`crate::repaint::REPAINT_UNREADABLE_SECS`](60초) · "4행 미만" 은
+    /// [`crate::repaint::REPAINT_MIN_ROWS`](4) · "60초째" 의 하한은 [`STALE_SCREEN_QUIET_SECS`](60) 다. 상수를 바꾸면 이 검체가 적색이 되어 문장(기본 갈래는 바이트 핀 · 문서가 인용)을
+    /// 같이 고치게 한다 — 문장을 `format!` 로 짜면 바이트 핀이 깨지므로 핀 검체를 택했다.
+    #[test]
+    fn m2_remedy_numbers_match_the_knob_constants() {
+        assert_eq!(crate::repaint::REPAINT_UNREADABLE_SECS, 60, "처방 문장의 '1분' 이 이 상수를 말한다 — 바꾸면 아래 문장들도 고친다");
+        assert_eq!(crate::repaint::REPAINT_MIN_ROWS, 4, "처방 문장의 '4행 미만' 이 이 상수를 말한다");
+        assert_eq!(super::STALE_SCREEN_QUIET_SECS, 60, "바쁨·모달 낡은 사본 문장의 'N초째' 하한");
+        let minute = format!("{}분", crate::repaint::REPAINT_UNREADABLE_SECS / 60);
+        assert_eq!(minute, "1분");
+        assert!(super::REMEDY_BODY_INPUT_PENDING_UNKNOWN.contains(&format!("{minute} 넘게 못 읽으면")), "{}", super::REMEDY_BODY_INPUT_PENDING_UNKNOWN);
+        assert!(super::REMEDY_BODY_PROMPT_UNKNOWN.contains(&format!("{minute} 뒤 cys 가")), "{}", super::REMEDY_BODY_PROMPT_UNKNOWN);
+        let base = QueueBlockDiag { quiet_secs: Some(super::STALE_SCREEN_QUIET_SECS), input_model: "v3", ..QueueBlockDiag::default() };
+        let (_, t) = queue_remedy(BLOCKED_BUSY, &base);
+        assert!(t.contains(&format!("{minute} 넘게 이어지면")), "약속 구절의 분 표기: {t}");
+        let rows = format!("{}행 미만", crate::repaint::REPAINT_MIN_ROWS);
+        assert_eq!(rows, "4행 미만");
+        assert!(super::repaint_promise(&QueueBlockDiag { rows_too_small: true, ..QueueBlockDiag::default() }).unwrap().contains(&rows));
+    }
+
+    /// ★(0.14.45 · 성찰 M1) 실제 좌석 — 낡은 "esc to interrupt" 가 커서 근처에 남아 `busy` 로 막힌 채 출력이 60초 넘게 없으면 판독 불가 시계가 서고, 60초 뒤 다시 그리기 요청 1건
+    /// (키 입력 없음). 정적 59초면 시계가 서지 않는다. 배달 판정은 그대로 `busy` 다(nudge 전용).
+    #[test]
+    fn m1_stale_busy_marker_requests_repaint_without_touching_the_verdict() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (_pack, _env) = wp5_env("m1-stale-busy");
+        let (daemon, s) = wp5_seat("m1-stale-busy", "claude");
+        let e = daemon.next_queue_entry("[보고] m1".into(), None, "test");
+        s.pending_queue.lock().unwrap().push_back(e);
+        let count = |d: &Arc<Daemon>| d.bus.replay_after(0).into_iter().filter(|e| e["name"] == "screen.repaint_requested").count();
+        let stale = ["✻ Thinking… (esc to interrupt)", RULE, "❯ ", RULE, STATUS1];
+        // 정적 59초 — busy 이지만 후보가 아니다(시계 없음).
+        paint_screen(&s, &stale, 2, 2, false);
+        quiet_since(&s, 59);
+        tick(&daemon);
+        assert_eq!(blocked_reason(&s), BLOCKED_BUSY);
+        assert!(s.repaint.lock().unwrap().unreadable_since.is_none(), "59초 정적의 바쁨은 시계를 세우지 않는다");
+        // 정적 61초 — 후보(시계가 선다) · 아직 60초가 안 됐으니 요청 0.
+        quiet_since(&s, 61);
+        tick(&daemon);
+        assert_eq!(blocked_reason(&s), BLOCKED_BUSY, "배달 판정은 그대로다");
+        assert!(s.repaint.lock().unwrap().unreadable_since.is_some(), "낡은 바쁨 표지 = 판독 불가 시계");
+        assert_eq!(count(&daemon), 0);
+        let d = super::queue_block_diag(&daemon, &s);
+        assert!(!d.nudge_ineligible, "마커 좌석은 대상이다: {d:?}");
+        let (code, t) = super::queue_remedy(BLOCKED_BUSY, &d);
+        assert_eq!(code, "wait");
+        assert!(t.contains("낡은 화면 사본일 수 있다") && t.contains("다시 그리기를 요청한다"), "{t}");
+        // 61초 전부터 시계 → 요청 1건 · stdin 불변 · 크기 원복.
+        s.repaint.lock().unwrap().unreadable_since = Some(std::time::Instant::now() - std::time::Duration::from_secs(61));
+        let pending_before = s.pending_input_bytes.load(AtomicOrdering::Relaxed);
+        tick(&daemon);
+        assert_eq!(count(&daemon), 1, "낡은 바쁨 표지 60초 = 요청 1건");
+        let dl = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while s.repaint_in_flight.load(AtomicOrdering::Acquire) && std::time::Instant::now() < dl {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(s.pending_input_bytes.load(AtomicOrdering::Relaxed), pending_before, "stdin 0 바이트");
+        assert_eq!(s.parser.lock().unwrap().screen().size(), (24, 80));
+        // 요청 뒤 아직 판독 가능 화면을 못 봤다 → 처방은 '요청했으나 풀리지 않았다'.
+        // ★(windows-health 37586250048) 크기 흔들기 뒤의 출력은 좌석 프로그램이 아니라 단말 층이 낼 수도 있다 — 윈도우 ConPTY 는 크기 변경에 화면을
+        //   스스로 다시 내보내 `last_output` 이 새로 찍힌다(유닉스의 `sleep` 은 SIGWINCH 에 침묵). 실제 claude 는 두 플랫폼 모두 다시 그리며 출력하므로,
+        //   여기서 재는 것은 '다시 그려졌는데도 낡은 표지가 1분 넘게 정적' 인 상태의 문장이다 — 흔들기 출력을 흡수한 뒤 정적 61초를 다시 세운다.
+        quiesce(&s);
+        quiet_since(&s, 61);
+        let d = super::queue_block_diag(&daemon, &s);
+        assert!(d.repaint_unresolved);
+        let (_, t) = super::queue_remedy(BLOCKED_BUSY, &d);
+        assert!(t.contains("요청했으나 풀리지 않았다"), "quiet={:?}: {t}", d.quiet_secs);
+        // 다시 그려져 깨끗한 프롬프트 → 배달 · 시계·배수 리셋.
+        paint_screen(&s, &[RULE, "❯ ", RULE, STATUS1, STATUS2], 1, 2, false);
+        quiet_since(&s, 30);
+        *s.queue_blocked.lock().unwrap() = None;
+        tick(&daemon);
+        assert_eq!(s.pending_queue.lock().unwrap().len(), 0, "다시 그려진 뒤 배달: {}", blocked_reason(&s));
+        let st = s.repaint.lock().unwrap();
+        assert!(st.unreadable_since.is_none() && st.unrecovered == 0);
+        drop(st);
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// ★(0.14.45 · 성찰 M2 · unix) 대체 화면 좌석 — 전경이 에이전트 그룹(틱이 적어 둔 `agent_fg_pgid` == `tcgetpgrp`)이면 다시 그리기 후보다(종전엔 무조건 제외) ·
+    /// 처방도 '전경이 에이전트라 … 요청한다'. 전경 표식이 0 이면 종전처럼 제외(`f2_no_repaint_on_alt_screen_or_when_knob_is_off`).
+    #[cfg(unix)]
+    #[test]
+    fn m2_alt_screen_with_agent_foreground_is_nudged() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (_pack, _env) = wp5_env("m2-alt-fg");
+        let (daemon, s) = wp5_seat("m2-alt-fg", "claude");
+        let e = daemon.next_queue_entry("[보고] m2".into(), None, "test");
+        s.pending_queue.lock().unwrap().push_back(e);
+        let count = |d: &Arc<Daemon>| d.bus.replay_after(0).into_iter().filter(|e| e["name"] == "screen.repaint_requested").count();
+        let fg = s.foreground_pgid_now().expect("PTY 전경 그룹");
+        s.agent_fg_pgid.store(fg, AtomicOrdering::Relaxed);
+        assert!(super::seat_foreground_is_agent(&s));
+        // 괘선·상태줄 없는 맨 마커 행(레이아웃 미확인) · 커서는 마커 뒤 → 종전 판정 `alt_screen`.
+        paint_screen(&s, &["❯ "], 0, 2, true);
+        quiet_since(&s, 30);
+        tick(&daemon);
+        assert_eq!(blocked_reason(&s), BLOCKED_ALT_SCREEN, "배달 판정은 그대로(대체 화면)");
+        assert!(s.repaint.lock().unwrap().unreadable_since.is_some(), "전경이 에이전트인 대체 화면 = 후보");
+        let d = super::queue_block_diag(&daemon, &s);
+        assert!(d.alt_fg_agent, "{d:?}");
+        let (_, t) = super::queue_remedy(BLOCKED_ALT_SCREEN, &d);
+        assert!(t.contains("전경이 에이전트라") && t.contains("다시 그리기를 요청한다"), "{t}");
+        s.repaint.lock().unwrap().unreadable_since = Some(std::time::Instant::now() - std::time::Duration::from_secs(61));
+        tick(&daemon);
+        assert_eq!(count(&daemon), 1, "대체 화면 + 전경 에이전트 = 요청 1건");
+        let dl = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while s.repaint_in_flight.load(AtomicOrdering::Acquire) && std::time::Instant::now() < dl {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        // 전경 표식을 내리면(다른 프로그램이 전경) 후보가 아니다 — 시계가 지워지고 처방도 약속하지 않는다.
+        s.agent_fg_pgid.store(0, AtomicOrdering::Relaxed);
+        s.repaint.lock().unwrap().unreadable_since = Some(std::time::Instant::now() - std::time::Duration::from_secs(600));
+        tick(&daemon);
+        assert_eq!(count(&daemon), 1);
+        assert!(s.repaint.lock().unwrap().unreadable_since.is_none());
+        let d = super::queue_block_diag(&daemon, &s);
+        assert!(d.nudge_ineligible && !d.alt_fg_agent, "{d:?}");
+        let (_, t) = super::queue_remedy(BLOCKED_ALT_SCREEN, &d);
+        assert!(!t.contains("다시 그리기"), "{t}");
+        // 같은 좌석의 바쁨·모달 처방도 '대상이 아니다' 로 — 요청을 약속하지 않는다(codex #4).
+        let (_, t) = super::queue_remedy(BLOCKED_BUSY, &QueueBlockDiag { quiet_secs: Some(90), ..d.clone() });
+        assert!(t.contains("요청하는 대상이 아니다") && !t.contains("다시 그리기를 요청한다"), "{t}");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
     /// input_pending 고착 수리 — 화면은 빈 프롬프트·정적인데 계수만 >0 이면 같은 세대로 quiet 초 지속
     /// 후 0 으로 리셋(리셋 틱엔 배달 없음 · 이벤트 발행). 세대가 바뀌면 리셋하지 않는다(in-flight 보호).
     #[test]
@@ -27668,6 +28964,7 @@ mod tests {
             paused: false,
             kill_switch: false,
             input_model: "v3",
+            ..QueueBlockDiag::default()
         }
     }
 
@@ -27693,7 +28990,7 @@ mod tests {
         serde_json::from_str(&raw).unwrap_or_else(|e| panic!("{QUEUE_BLOCKED_FILE} 이 JSON 이 아니다: {e}\n{raw}"))
     }
 
-    /// `queue_remedy` 표의 **16행 전수** — 위에서부터 첫 일치 · 모든 문장 끝 "LLM 에이전트는 자동 조치…" · code 어휘는 허용 목록 13종 전부.
+    /// `queue_remedy` 표의 **16행 전수** — 위에서부터 첫 일치 · 모든 문장 끝 "LLM 에이전트는 자동 조치…" · code 어휘는 허용 목록 14종 전부.
     /// ★(RQFIX) 표가 재정의됐다: 입력줄 계열(`input_pending…`·`schedule_divert(gate:draft…`)은 계수 0 → 가시성 → 계수 → 커서 뒤 글자 순으로 갈린다.
     #[test]
     fn c5_queue_remedy_table_every_row_in_order() {
@@ -27814,7 +29111,7 @@ mod tests {
                         blocked,
                         &c5_diag_ga(3, h, None, ga),
                         "input_pending_unknown",
-                        &["화면을 판독하지 못했다", "비어 있으면 Ctrl-U", "글이 있으면 제출하거나 지운다"],
+                        &["화면을 판독하지 못했다", "화면 사본이 어긋났을 수 있다", "다시 그리기를 요청한다", "창 크기를 한 번 바꿔도", "비어 있으면 Ctrl-U", "글이 있으면 제출하거나 지운다"],
                     );
                 }
             }
@@ -27840,7 +29137,7 @@ mod tests {
             BLOCKED_PROMPT_UNKNOWN,
             &d0,
             "prompt_unknown",
-            &["입력 대기 표지(프롬프트)를 화면에서 찾지 못했다", "사람이 확인한다", "화면 판독이 어긋났을 수 있다"],
+            &["입력 대기 표지(프롬프트)를 화면에서 찾지 못했다", "사람이 확인한다", "화면 사본이 어긋났을 수 있다", "다시 그리기를 요청한다", "창 크기를 한 번 바꿔도"],
         );
         // 15행 wait — 일시 보류(스스로 풀린다).
         for blocked in [
@@ -27854,6 +29151,10 @@ mod tests {
         ] {
             check(blocked, &d0, "wait", &["일시 보류", "스스로 풀린다", "오래 지속되면 그 창 화면을 확인"]);
         }
+        // 15행 ′ stale_screen(2회차 M3) — 바쁨 + 정적 60초 + 다시 그리기 약속 불가(요청했으나 미복구 등).
+        let stale = QueueBlockDiag { quiet_secs: Some(60), repaint_unresolved: true, ..d0.clone() };
+        check(BLOCKED_BUSY, &stale, "stale_screen", &["60초째 출력이 없다", "낡은 화면 사본일 수 있다", "요청했으나 풀리지 않았다", "그 창 화면을 확인"]);
+        check(BLOCKED_BUSY, &QueueBlockDiag { quiet_secs: Some(60), ..d0.clone() }, "wait", &["낡은 화면 사본일 수 있다", "다시 그리기를 요청한다"]);
         // 16행 unknown — 그 밖(표에 없는 사유 · `schedule_divert` 의 `gate:draft` 가 아닌 꼴 · 빈 문자열 포함).
         for blocked in ["schedule_divert(gate:other · job j1)", "schedule_divert(other)", "zzz", ""] {
             check(blocked, &d0, "unknown", &["사유 미분류", "그 창 화면을 확인"]);
@@ -27862,9 +29163,9 @@ mod tests {
         assert!(!blocked_is_input_line("schedule_divert(other)") && !blocked_is_input_line(BLOCKED_BUSY));
         assert_eq!(super::REMEDY_CODE_PHANTOM, "phantom_count", "와이어 어휘(소비자 계약) 고정 — 코드 이름은 누를 키를 말하지 않는다(I-5)");
         assert!(QUEUE_REMEDY_CODES.contains(&super::REMEDY_CODE_PHANTOM), "유령 처방 code 상수가 허용 목록 밖이다");
-        // 표의 열세 code 가 전부 한 번 이상 나왔다(공허 방지 — 허용 목록 13종 = 실제로 낼 수 있는 code 전량).
+        // 표의 열네 code 가 전부 한 번 이상 나왔다(공허 방지 — 허용 목록 14종 = 실제로 낼 수 있는 code 전량).
         let want: BTreeSet<&str> = QUEUE_REMEDY_CODES.iter().copied().collect();
-        assert_eq!(QUEUE_REMEDY_CODES.len(), 13, "허용 목록은 13종");
+        assert_eq!(QUEUE_REMEDY_CODES.len(), 14, "허용 목록은 14종");
         assert_eq!(seen.iter().copied().collect::<BTreeSet<&str>>(), want, "표가 내지 못하는 허용 목록 code 가 있다");
     }
 
@@ -28941,17 +30242,18 @@ mod tests {
         assert!(super::queue_blocked_err_should_log(Some(&last), "권한 없음", t0 + s(1)), "오류 문구가 바뀌면 바로 찍는다");
     }
 
-    /// 어휘 계약 — 허용 목록 13종 · 유령 처방 code 는 `phantom_count`(키 이름을 코드에서 뺐다) · 금지 접미의 **앞부분은 바이트 그대로**(GUI 가 이 접두로 꼬리를 뗀다) ·
+    /// 어휘 계약 — 허용 목록 14종 · 유령 처방 code 는 `phantom_count`(키 이름을 코드에서 뺐다) · 금지 접미의 **앞부분은 바이트 그대로**(GUI 가 이 접두로 꼬리를 뗀다) ·
     /// GUI 어휘 대조가 읽는 두 선언의 꼴이 유지된다 · 유령 처방 접미의 정의처는 `src/lib.rs` 하나이며 제품 코드에 옛 코드 이름이 0건이다.
     #[test]
     fn rqfix_vocabulary_contract_for_codes_suffix_and_declarations() {
-        assert_eq!(QUEUE_REMEDY_CODES.len(), 13);
+        assert_eq!(QUEUE_REMEDY_CODES.len(), 14);
         let uniq: std::collections::BTreeSet<&&str> = QUEUE_REMEDY_CODES.iter().collect();
-        assert_eq!(uniq.len(), 13, "중복 없음");
+        assert_eq!(uniq.len(), 14, "중복 없음");
         assert!(QUEUE_REMEDY_CODES.iter().all(|c| !c.contains("ctrl_u") && !c.contains("Ctrl")), "코드 이름이 누를 키를 말하지 않는다(I-5)");
-        for code in ["paused", "machine_residue", "phantom_count", "after_cursor_text", "human_draft", "input_pending_unknown", "answer_modal", "approval", "alt_screen", "empty_seat", "prompt_unknown", "wait", "unknown"] {
+        for code in ["paused", "machine_residue", "phantom_count", "after_cursor_text", "human_draft", "input_pending_unknown", "answer_modal", "approval", "alt_screen", "empty_seat", "prompt_unknown", "stale_screen", "wait", "unknown"] {
             assert!(QUEUE_REMEDY_CODES.contains(&code), "{code}");
         }
+        assert_eq!(super::REMEDY_CODE_STALE_SCREEN, "stale_screen", "와이어 어휘(GUI STARVED_HUMAN_CODES · 경보 라우팅 허용 목록) 고정");
         assert!(
             REMEDY_LLM_SUFFIX.starts_with(" · LLM 에이전트는 자동 조치("),
             "GUI(starvednotice.ts STARVED_LLM_TAIL)가 이 접두로 꼬리를 뗀다 — 바이트 그대로: {REMEDY_LLM_SUFFIX:?}"
@@ -28960,8 +30262,8 @@ mod tests {
         assert_eq!(GHOST_CTRL_U_SUFFIX, cys::GHOST_CTRL_U_SUFFIX, "한 정의처(src/lib.rs) — 데몬과 CLI 가 같은 문자열을 쓴다");
         // GUI 어휘 대조(`ui/src/starvednotice.test.ts`)가 소스에서 읽는 두 선언의 꼴 — 같은 문법으로 파싱해 본다.
         let src = include_str!("governance.rs");
-        let decl = "const QUEUE_REMEDY_CODES: [&str; 13] = [";
-        let a = src.find(decl).expect("선언 꼴(const QUEUE_REMEDY_CODES: [&str; 13] = [) 소실 — GUI 어휘 대조가 파싱하지 못한다") + decl.len();
+        let decl = "const QUEUE_REMEDY_CODES: [&str; 14] = [";
+        let a = src.find(decl).expect("선언 꼴(const QUEUE_REMEDY_CODES: [&str; 14] = [) 소실 — GUI 어휘 대조가 파싱하지 못한다") + decl.len();
         let body = &src[a..a + src[a..].find("];").expect("배열 끝")];
         assert!(!body.contains(']'), "배열 안에 닫는 대괄호가 있으면 GUI 정규식이 잘린다");
         let parsed: Vec<&str> = body.split('"').skip(1).step_by(2).collect();
@@ -29004,6 +30306,152 @@ mod tests {
         assert_eq!((code, ks_text.clone()), (queue_remedy(BLOCKED_BUSY, &ks).0, queue_remedy(BLOCKED_BUSY, &ks).1), "표 1행과 같은 문장");
         assert!(ks_text.contains("해제는 오너(사람)가 한다"), "{ks_text}");
         assert_ne!(seat_text, ks_text, "좌석 pause 와 kill-switch 문장은 다르다(F8)");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ★(0.14.47 · 계측·관측 보강) 진단 탐침의 새 키 넷 — `after_cursor_dim` · `cursor_col` · `alt_screen` · `human_idle_secs`.
+    //   이 판은 큐 막힘의 **판정을 바꾸지 않는다** — 아래 `instr_gate_verdict_unchanged_*` 가 그것을 틱을 실제로 돌려 잰다.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// 시험 5 — `after_cursor_dim_of` 의 정의 표(순수). 검체의 꼴은 시험 자리에서 본 claude 2.1.294 의 입력줄 그리기다
+    /// (안내문 = 첫 글자 반전 + 나머지 SGR 2 · 사람 글 = 기본 표현).
+    #[test]
+    fn instr_after_cursor_dim_table() {
+        fn at(bytes: &str, row: u16, col: u16) -> Option<bool> {
+            let mut p = vt100::Parser::new(6, 40, 0);
+            p.process(bytes.as_bytes());
+            super::after_cursor_dim_of(p.screen(), row, col)
+        }
+        let m = "❯\u{a0}";
+        // 안내문 꼴: 그려 놓은 커서(반전 한 칸) + 나머지 전부 흐림.
+        assert_eq!(at(&format!("{m}\x1b[7mT\x1b[27m\x1b[2mry \"fix lint errors\"\x1b[22m"), 0, 2), Some(true), "안내문");
+        // 초안 + Home: 첫 글자 반전 + 나머지 기본 표현.
+        assert_eq!(at(&format!("{m}\x1b[7ma\x1b[27mbcdef"), 0, 2), Some(false), "초안+Home");
+        // 한 글자 초안 + Home · 빈 줄(반전 빈칸): 반전 한 칸을 빼면 글자 0 → 결측.
+        assert_eq!(at(&format!("{m}\x1b[7ma\x1b[27m"), 0, 2), None, "한 글자 초안+Home");
+        assert_eq!(at(&format!("{m}\x1b[7m \x1b[27m"), 0, 2), None, "빈 줄");
+        // 흐림과 기본이 섞임 → 거짓.
+        assert_eq!(at(&format!("{m}\x1b[7ms\x1b[27m\x1b[2mdim\x1b[22mplain"), 0, 2), Some(false), "섞임");
+        // ★반전 칸을 빼지 않으면 죽는 행: 커서 열이 **반전·기본 표현 글자**이고 나머지가 전부 흐림 — 그 한 칸을 빼야 참이다.
+        assert_eq!(at(&format!("{m}\x1b[7mX\x1b[27m\x1b[2mrest\x1b[22m"), 0, 2), Some(true), "커서 열의 반전 칸은 뺀다");
+        // 진짜 커서 꼴(반전 없음): 커서 열부터 전부 흐림 = 참 · 커서 열이 기본 표현 글자면 거짓(반전이 아니므로 빼지 않는다).
+        assert_eq!(at(&format!("{m}\x1b[2mghost text\x1b[22m"), 0, 2), Some(true), "진짜 커서 꼴의 흐린 글");
+        assert_eq!(at(&format!("{m}a\x1b[2mbc\x1b[22m"), 0, 2), Some(false), "커서 열이 반전이 아니면 빼지 않는다");
+        // 커서 열이 아닌 자리의 반전 칸은 글자 칸으로 남는다(흐림이 아니므로 거짓).
+        assert_eq!(at(&format!("{m}\x1b[2mab\x1b[22m\x1b[7mc\x1b[27m"), 0, 2), Some(false), "다른 자리의 반전 칸");
+        // 넓은 글자(짝 칸은 내용이 없다) · 흐림 사이의 공백(속성 무관).
+        assert_eq!(at(&format!("{m}\x1b[2m한글 제안\x1b[22m"), 0, 2), Some(true), "넓은 글자");
+        assert_eq!(at(&format!("{m}\x1b[2mab\x1b[22m   \x1b[2mcd\x1b[22m"), 0, 2), Some(true), "사이 공백은 속성을 보지 않는다");
+        // 커서가 글 끝 뒤 · 화면 밖(행·열) → 결측. 패닉 없음.
+        assert_eq!(at(&format!("{m}\x1b[2mabc\x1b[22m"), 0, 10), None, "커서 뒤에 글자 없음");
+        assert_eq!(at("abc", 99, 0), None, "행이 화면 밖");
+        assert_eq!(at("abc", 0, 999), None, "열이 화면 밖");
+        // SGR 22 뒤의 색 글자(명령 인자 안내의 꼴 — 흐림이 아니라 색 246)는 거짓이다.
+        assert_eq!(at(&format!("{m}/model \x1b[7m \x1b[27m\x1b[38;5;246m[model]\x1b[39m"), 0, 9), Some(false), "색으로 그린 인자 안내");
+    }
+
+    /// 좌석 진단에 실리는 값 — 탐침이 파서에서 읽은 커서 열·흐림 · 대체 화면 · 사람 입력 뒤 경과 초(시험 9: 기록 없음 = None).
+    #[test]
+    fn instr_queue_block_diag_carries_dim_col_alt_and_human_idle() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (_pack, _env) = wp5_env("instr-diag");
+        let (daemon, s) = wp5_seat("instr-diag", "claude");
+        let ghost_dim = "❯\u{a0}\x1b[7mT\x1b[27m\x1b[2mry \"fix lint errors\"\x1b[22m";
+        let draft_home = "❯\u{a0}\x1b[7ma\x1b[27mbcdef";
+        // 비-alt · 안내문.
+        paint_screen(&s, &["  출력", RULE, ghost_dim, RULE, STATUS1], 2, 2, false);
+        *s.last_human_input.lock().unwrap() = None;
+        let d = queue_block_diag(&daemon, &s);
+        assert_eq!((d.cursor_row, d.cursor_col), (Some(2), Some(2)), "{d:?}");
+        assert_eq!(d.after_cursor_dim, Some(true), "{d:?}");
+        assert!(!d.alt_screen);
+        assert_eq!(d.human_idle_secs, None, "시험 9 — 사람 입력 기록이 없으면 결측(0 으로 접지 않는다)");
+        assert_eq!(d.ghost_after_cursor, Some(true), "기존 키는 그대로(커서 뒤에 글자가 있다)");
+        // alt · 초안+Home — 기존 키 ghost_after_cursor 는 여전히 참이고(이름과 달리 「커서 뒤 글자 있음」), 새 키가 거짓으로 가른다.
+        paint_screen(&s, &["  출력", RULE, draft_home, RULE, STATUS1], 2, 2, true);
+        *s.last_human_input.lock().unwrap() = Some(std::time::Instant::now() - std::time::Duration::from_secs(40));
+        let d = queue_block_diag(&daemon, &s);
+        assert_eq!((d.after_cursor_dim, d.ghost_after_cursor), (Some(false), Some(true)), "{d:?}");
+        assert!(d.alt_screen);
+        let idle = d.human_idle_secs.expect("사람 입력 기록이 있으면 경과 초");
+        assert!((40..50).contains(&idle), "경과 초 {idle}");
+        // wire — screen_diag 객체는 기존 다섯 키 + 새 네 키(시험 6). 사유 파일 행과 payload 가 이 함수 하나를 쓴다.
+        let j = super::screen_diag_json(&d);
+        let keys: std::collections::BTreeSet<&str> = j.as_object().unwrap().keys().map(String::as_str).collect();
+        let want: std::collections::BTreeSet<&str> = [
+            "cursor_row", "marker_row", "cursor_lead_cp", "last_parser_panic_at", "repaint_requested_at",
+            "cursor_col", "after_cursor_dim", "alt_screen", "human_idle_secs",
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(keys, want, "screen_diag 키 집합");
+        assert_eq!(j["cursor_col"], json!(2));
+        assert_eq!(j["after_cursor_dim"], json!(false));
+        assert_eq!(j["alt_screen"], json!(true));
+        assert_eq!(j["human_idle_secs"], json!(idle));
+        assert_eq!(j["cursor_row"], json!(2), "기존 키 불변");
+        // 빈 줄(반전 빈칸만) → 흐림 결측 = null.
+        paint_screen(&s, &["  출력", RULE, "❯\u{a0}\x1b[7m \x1b[27m", RULE, STATUS1], 2, 2, true);
+        let j = super::screen_diag_json(&queue_block_diag(&daemon, &s));
+        assert!(j["after_cursor_dim"].is_null(), "{j}");
+        assert_eq!(j["cursor_col"], json!(2));
+    }
+
+    /// `bytes` 에서 SGR 의 흐림(2)만 뺀 쌍둥이 줄(색 지정 38;5;n·48;5;n 의 숫자는 건드리지 않는다 — 이 검체들은 단독 `ESC[2m` 만 쓴다).
+    fn instr_strip_dim(line: &str) -> String {
+        line.replace("\x1b[2m", "")
+    }
+
+    /// 한 화면을 좌석에 그리고 큐 틱을 **실제로** 돌려 (남은 큐 길이, 기록된 막힘 사유)를 돌려준다.
+    fn instr_tick_outcome(tag: &str, lines: &[String], row: u16, col: u16, alt: bool) -> (usize, String) {
+        let (daemon, s) = wp5_seat(tag, "claude");
+        let e = daemon.next_queue_entry("[보고] 계측 판 게이트 무변경 검체".into(), None, "test");
+        s.pending_queue.lock().unwrap().push_back(e);
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        paint_screen(&s, &refs, row, col, alt);
+        quiet_since(&s, 5);
+        tick(&daemon);
+        let out = (s.pending_queue.lock().unwrap().len(), blocked_reason(&s));
+        out
+    }
+
+    /// 시험 7 — **게이트 판정 무변경**: 흐림이 섞인 화면과 흐림만 뺀 같은 화면에서 큐 틱의 결과(배달 여부 · 막힘 사유)가 같다(alt · 비-alt 각각).
+    /// 흐림은 칸에만 기억되고 게이트가 읽는 화면 글자·커서·반전에는 닿지 않는다. 한 쌍이라도 다르면 이 판은 내보낼 수 없다.
+    #[test]
+    fn instr_gate_verdict_unchanged_by_dim_cells() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (_pack, _env) = wp5_env("instr-gate");
+        let m = "❯\u{a0}";
+        // (이름, 화면 줄, 커서 행, 커서 열)
+        let layouts: Vec<(&str, Vec<String>, u16, u16)> = vec![
+            ("안내문(흐림)", vec!["  출력".into(), RULE.into(), format!("{m}\x1b[7mT\x1b[27m\x1b[2mry \"fix lint errors\"\x1b[22m"), RULE.into(), STATUS1.into(), STATUS2.into()], 2, 2),
+            ("초안+Home 뒤에 흐린 꼬리", vec!["  출력".into(), RULE.into(), format!("{m}\x1b[7ma\x1b[27mbc \x1b[2mtail\x1b[22m"), RULE.into(), STATUS1.into(), STATUS2.into()], 2, 2),
+            ("커서 앞에 흐린 글", vec!["  출력".into(), RULE.into(), format!("{m}\x1b[2mabc\x1b[22m"), RULE.into(), STATUS1.into(), STATUS2.into()], 2, 5),
+            ("빈 줄 + 윗 행의 흐린 꼬리표", vec!["  출력".into(), format!("── \x1b[2mHistory 2/2\x1b[22m ──"), "❯ ".into(), RULE.into(), STATUS1.into(), STATUS2.into()], 2, 2),
+            ("빈 줄 + 흐린 출력 줄", vec![format!("  \x1b[2m흐린 출력 한 줄\x1b[22m"), "".into(), RULE.into(), "❯ ".into(), RULE.into(), STATUS1.into(), STATUS2.into()], 3, 2),
+            ("작업 중 표지(흐림)", vec![format!("\x1b[2m✻ Thinking… (esc to interrupt)\x1b[22m"), RULE.into(), "❯ ".into(), RULE.into(), STATUS1.into(), STATUS2.into()], 2, 2),
+        ];
+        let mut table = Vec::new();
+        for alt in [true, false] {
+            for (i, (name, lines, row, col)) in layouts.iter().enumerate() {
+                let twin: Vec<String> = lines.iter().map(|l| instr_strip_dim(l)).collect();
+                assert_ne!(&twin, lines, "{name}: 검체에 흐림이 없다(공허한 쌍)");
+                let with_dim = instr_tick_outcome(&format!("ig-d{}-{i}", u8::from(alt)), lines, *row, *col, alt);
+                let without = instr_tick_outcome(&format!("ig-p{}-{i}", u8::from(alt)), &twin, *row, *col, alt);
+                table.push(format!("alt={alt} · {name}: 흐림 있음 {with_dim:?} · 흐림 뺌 {without:?}"));
+                assert_eq!(with_dim, without, "alt={alt} · {name}: 흐림 유무로 큐 틱의 결과가 갈렸다 — 게이트 판정이 바뀌었다");
+            }
+        }
+        println!("INSTR-GATE-TABLE\n{}", table.join("\n"));
+        // 공허 방지 — 이 표 안에 배달된 화면과 막힌 화면이 둘 다 있어야 한다(전부 같은 사유로 막혔다면 게이트의 갈래를 지나지 않은 것이다).
+        assert!(table.iter().any(|l| l.contains("흐림 있음 (0, ")), "배달된 검체가 하나도 없다:\n{}", table.join("\n"));
+        assert!(table.iter().any(|l| l.contains("흐림 있음 (1, ")), "막힌 검체가 하나도 없다:\n{}", table.join("\n"));
+        // 오늘 판의 사실 그대로: alt 좌석의 안내문 화면은 여전히 막힌다(이 판은 그것을 풀지 않는다).
+        assert!(
+            table.iter().any(|l| l.starts_with("alt=true · 안내문(흐림): 흐림 있음 (1, ")),
+            "alt 좌석의 안내문 화면이 배달됐다 — 이 판은 큐 막힘의 판정을 바꾸지 않는다:\n{}",
+            table.join("\n")
+        );
     }
 }
 
@@ -32722,5 +34170,72 @@ mod r3_1_lineage_tests {
             assert_eq!(stray, None, "{entry}: 루트가 아닌 pid(1)까지는 사슬이 닿지 않아야 한다");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// ★(0.14.45 · F3) 화면 동기 진단(순수)과 화면 판독 불가 처방 문장.
+#[cfg(test)]
+mod f3_screen_probe_tests {
+    use super::{
+        queue_remedy, screen_probe_of, QueueBlockDiag, ScreenProbe, BLOCKED_INPUT_PENDING, BLOCKED_MODAL,
+        BLOCKED_PROMPT_UNKNOWN, REMEDY_LLM_SUFFIX,
+    };
+
+    fn rows(r: &[&str]) -> Vec<String> {
+        r.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn probe_reports_cursor_marker_rows_and_lead_codepoint() {
+        let claude = vec!["❯".to_string()];
+        let screen = rows(&["  출력", "────", "❯ ", "────", "  상태줄"]);
+        // 커서가 마커 행 — 선두 '❯' = U+276F.
+        assert_eq!(
+            screen_probe_of(&screen, 2, &claude),
+            ScreenProbe { cursor_row: Some(2), marker_row: Some(2), cursor_lead_cp: Some("U+276F".into()), cursor_col: None, after_cursor_dim: None }
+        );
+        // 패닉 뒤 빈 사본의 꼴 — 커서 (0,0) · 0행은 출력 줄.
+        let p = screen_probe_of(&screen, 0, &claude);
+        assert_eq!((p.cursor_row, p.marker_row), (Some(0), Some(2)), "커서 행 ≠ 마커 행 = 사본 어긋남의 지문");
+        assert_eq!(p.cursor_lead_cp.as_deref(), Some("U+CD9C"), "앞 공백을 뺀 첫 글자('출')");
+        // `›`(U+203A) 로 그려진 행은 claude 마커(❯)가 아니다 — 코드포인트로 가릴 수 있다.
+        let codex_like = rows(&["› ", "  상태"]);
+        let p = screen_probe_of(&codex_like, 0, &claude);
+        assert_eq!((p.marker_row, p.cursor_lead_cp.as_deref()), (None, Some("U+203A")));
+        // 빈 행·화면 밖 커서·빈 마커 목록 = 결측.
+        let p = screen_probe_of(&rows(&["", "❯ "]), 0, &claude);
+        assert_eq!((p.cursor_row, p.cursor_lead_cp), (Some(0), None));
+        let p = screen_probe_of(&rows(&["❯ "]), 5, &claude);
+        assert_eq!((p.cursor_row, p.cursor_lead_cp), (None, None));
+        assert_eq!(screen_probe_of(&rows(&["❯ "]), 0, &[]).marker_row, None);
+        // 마지막 마커 행을 고른다(스크롤백 위의 옛 프롬프트가 아니라).
+        assert_eq!(screen_probe_of(&rows(&["❯ 옛 입력", "출력", "❯ "]), 2, &claude).marker_row, Some(2));
+    }
+
+    fn diag(pending: u64, panics: u64) -> QueueBlockDiag {
+        QueueBlockDiag { pending_input_bytes: pending, parser_panics: panics, input_model: "v3", ..QueueBlockDiag::default() }
+    }
+
+    /// 판독 불가 두 갈래는 다시 그리기를 말하고, 패닉 주석은 '사본 어긋남' 으로 적는다(접미는 맨 끝 · 다른 갈래 주석은 종전 바이트).
+    #[test]
+    fn unreadable_remedies_mention_repaint_and_sync_note() {
+        let (code, t) = queue_remedy(BLOCKED_INPUT_PENDING, &diag(3, 0));
+        assert_eq!(code, "input_pending_unknown");
+        for w in ["화면 사본이 어긋났을 수 있다", "키 입력 없이", "다시 그리기를 요청한다", "창 크기를 한 번 바꿔도", "비어 있으면 Ctrl-U"] {
+            assert!(t.contains(w), "{w}: {t}");
+        }
+        assert!(t.ends_with(REMEDY_LLM_SUFFIX));
+        let (code, t) = queue_remedy(BLOCKED_PROMPT_UNKNOWN, &diag(0, 0));
+        assert_eq!(code, "prompt_unknown");
+        assert!(t.contains("다시 그리기를 요청한다") && !t.contains("Ctrl-U"), "{t}");
+        for b in [BLOCKED_INPUT_PENDING, BLOCKED_PROMPT_UNKNOWN] {
+            let (_, t) = queue_remedy(b, &diag(if b == BLOCKED_INPUT_PENDING { 1 } else { 0 }, 2));
+            assert!(
+                t.ends_with(&format!(" (이 좌석 화면 파서 패닉 2회 — 데몬의 화면 사본이 어긋났다){REMEDY_LLM_SUFFIX}")),
+                "{b}: {t}"
+            );
+        }
+        let (_, t) = queue_remedy(BLOCKED_MODAL, &diag(0, 2));
+        assert!(t.ends_with(&format!(" (이 좌석 화면 파서 패닉 2회 — 화면 판독이 순간 비었을 수 있다){REMEDY_LLM_SUFFIX}")), "{t}");
     }
 }

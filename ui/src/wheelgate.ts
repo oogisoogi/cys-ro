@@ -163,6 +163,25 @@ export function shouldSuppressWheel(s: WheelGateState): boolean {
 //     게이트가 꺼지면 wheelHandlerKind 가 "none" 을 돌려주고 main.ts 가 이 술어를 아예 호출하지
 //     않는다(아래 배선 계층). 기존 allow-app-mouse 킬스위치를 탈출구로 재사용하면 안 된다 —
 //     그것은 입·출력 양측을 열어 Windows ConPTY 결함 1호(마우스 보고 리터럴 타이핑)를 되살린다.
+//
+// (e) ★억제된 휠을 PgUp/PgDn(`\x1b[5~`/`\x1b[6~`)으로 바꿔 보내지 **않는** 이유(0.14.45 검토 · 2026-10-07).
+//     배경: 억제가 걸린 pane(claude fullscreen)에서는 휠이 완전 무동작이라 대화가 안 올라간다(오너 제보).
+//     Claude Code 2.1.291 바이너리 정적 판독으로 fullscreen 렌더러가 PageUp/PageDown 으로 트랜스크립트를
+//     스크롤하는 것은 **확인됐다** — 키바인딩 표 `{context:"Scroll",bindings:{pageup:"scroll:pageUp",
+//     pagedown:"scroll:pageDown",wheelup:"scroll:lineUp",…}}` 와 그 처리기(트랜스크립트 viewport 를 반 화면씩
+//     이동), 그리고 tmux 안내문 "scroll with PgUp/PgDn". 그래도 싣지 않았다:
+//       · 모달(권한 확인 Select 등)이 떠 있고 내용이 화면에 들어가면 Scroll 처리기가 페이지 키를 **양보**한다
+//         (`yieldsPageKeysWhenContentFits: modalSlotActive`) → PgUp/PgDn 이 Select 의 `select:pageUp/pageDown`
+//         으로 가 **선택 항목이 휠로 움직인다**. 그 상태에서 Enter 는 다른 선택지를 승인한다 — 휠이 방향키로
+//         합성되던 원 결함과 같은 계열의 위험을 새로 여는 셈이다(mac 의 보고 경로는 wheelup→scroll:lineUp 이라
+//         Select 에 닿지 않는다).
+//       · 1003 을 켜는 다른 전체화면 앱에도 페이지 키가 들어간다(판별자가 claude 전용이 아니다).
+//     대신 화면 모드를 고친다: 0.14.45 부터 cys 는 Windows 좌석 설정 폴더 settings.json 에 `tui` 가 없을 때
+//     `"default"`(classic)를 넣는다(src/claude_tui.rs). classic 에서는 이 술어가 애초에 불충족(alt 아님)이다.
+//     재검토 조건: 모달 활성 여부를 UI 가 알 수 있게 되거나, Claude Code 가 페이지 키를 모달에 양보하지 않게 될 때.
+//     ★cysr(1.1.10 편입 · master#60dc9ccf 📌1): 우리는 1.1.5 D5(altscroll.ts)로 이 번역을 **한다** — 원작자 classic 고정(claude_tui)을
+//       함께 받아 번역은 사용자가 `/tui fullscreen` 을 명시한 좌석에서만 발화한다. 위 모달 위험은 남은 쟁점이다 — 윈 실기 A/B(모달 떠 있을 때 휠)
+//       통과 전 라이브 금지(docs/upstream/MERGE-0.14.44-48-PLAN.md §2-(ii) · HANDOFF 1.1.10 윈 실기 항목).
 export interface WinWheelGateState {
   altActive: boolean; // term.buffer.active.type === "alternate"
   ledgerWantsAnyMotion: boolean; // 장부에 1003(any-motion) 활성(trackFilter.ledgerWantsAnyMotion())
@@ -175,6 +194,37 @@ export interface WinWheelGateState {
 // 항이 넷뿐인 것은 의도다 — deltaMode 상한을 뺀 이유는 위 (c).
 export function shouldSuppressWheelWin(s: WinWheelGateState): boolean {
   return s.altActive && s.ledgerWantsAnyMotion && !s.xtermTracking && !s.allowAppMouse;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ★(0.14.45 · 성찰 M4) Windows 휠 억제 **안내** — 억제가 처음 걸리는 pane 마다 한 번만(폭주 금지) 토스트를 띄운다.
+//
+// 왜: 억제된 pane 에서 휠은 **완전 무동작**이다((d) 정직 고지). 사용자는 "휠이 아무것도 안 한다" 만 보고 원인(Claude Code 전체화면
+// 렌더러 · settings 의 `tui:"fullscreen"` — cys 는 덮지 않는다)을 알 길이 없었다(0.14.45 성찰 1회차 M3/M4: 침묵 금지). 처방은 하나뿐이다 —
+// 그 창에서 `/tui default`(Claude Code 가 classic 으로 다시 시작하고 설정에 저장 · 다음 기동부터 유지).
+// 계약: 판정은 순수(DOM·토스트 무관) · pane 키당 **정확히 한 번** · 억제가 아닌 호출은 소비하지 않는다(처음 억제가 걸리는 순간에만 참) ·
+// pane 이 닫히면 `forget` 으로 키를 거둔다(재부착 pane 은 새 pane). 억제 자체(술어 반환값)는 이 안내와 무관하다.
+export const WIN_WHEEL_NOTICE_TITLE = "휠 스크롤 꺼짐";
+// ★(codex 3차 검토 #4) 억제 조건에는 앱 신원이 없다(1049h+1003h 를 켜는 어떤 전체화면 앱이든) — 원인 단정은 "전체화면 프로그램" 으로, 처방은 Claude Code 에 한정한다.
+export const WIN_WHEEL_NOTICE_TEXT =
+  "이 창은 전체화면 프로그램(Claude Code 전체화면 모드 등)이 마우스를 가져가 휠 스크롤이 꺼져 있습니다 — Claude Code 라면 그 창에서 /tui default 를 실행하면 다음부터 휠로 스크롤됩니다";
+
+export class WinWheelNoticeGate {
+  private readonly shown = new Set<string>();
+  /** 이 호출이 pane 의 **첫 억제**인가 — 참이면 호출자가 안내를 한 번 띄운다. 억제가 아니면 언제나 거짓(기록도 하지 않는다). */
+  shouldNotify(paneKey: string, suppressed: boolean): boolean {
+    if (!suppressed || this.shown.has(paneKey)) return false;
+    this.shown.add(paneKey);
+    return true;
+  }
+  /** pane 이 닫혔다 — 키를 거둔다(집합이 pane 수명과 같이 유계). */
+  forget(paneKey: string): void {
+    this.shown.delete(paneKey);
+  }
+  /** 시험·진단용 — 지금까지 안내한 pane 수. */
+  get size(): number {
+    return this.shown.size;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

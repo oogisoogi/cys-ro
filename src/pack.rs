@@ -1282,6 +1282,46 @@ pub fn merge_awakening_hooks_into_personal_profiles() -> Vec<(String, Vec<String
 /// 노브가 꺼져 있으면(`CYS_AGY_STATUSLINE=0` · `~/.cys/agy-statusline-off`) cys 가 넣은(표지 달린) 연결만 뺀다.
 /// best-effort — 무엇이 실패해도 팩 설치는 유효하고 설정 파일은 그대로다(실패 방향 = 쓰지 않음 · 로그 1줄).
 pub fn reconcile_agy_statusline_at_install() {
+    // ★(0.14.45 · B1 · 치명위험 ④) cysd 부트는 이 조정을 **소켓 바인드 뒤**로 미룬다 — 윈도우 실연 검사(≤5.2초)가 바인드 앞에서
+    //   돌면 CLI 자동기동의 4초 폴링이 데몬을 못 보고 실패했다. 여기서는 '미뤄 둔 조정 있음' 표식만 세우고 돌아간다
+    //   (`run_deferred_agy_statusline_reconcile` 이 바인드 뒤 별도 스레드에서 이 함수를 다시 부른다). 그 밖의 호출부
+    //   (`cys init-pack` · `cys doctor --fix` · GUI 인앱 업데이트)는 표식을 세우지 않으므로 종전처럼 동기다.
+    if AGY_PROBE_DEFERRED.load(std::sync::atomic::Ordering::Acquire) {
+        AGY_RECONCILE_PENDING.store(true, std::sync::atomic::Ordering::Release);
+        return;
+    }
+    reconcile_agy_statusline_now();
+}
+
+/// (B1) `cysd` 가 **소켓 바인드 전에** 세우는 표식 — 이 프로세스의 설치 경로는 agy 상태줄 조정(윈도우 실연 검사 포함)을 하지 않고
+/// 미뤄 둔다. 다른 프로세스(init-pack·doctor)에는 아무 영향이 없다(프로세스 전역 원자 플래그).
+static AGY_PROBE_DEFERRED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// (B1) 미뤄 둔 조정이 있다 — 바인드 뒤 [`run_deferred_agy_statusline_reconcile`] 이 한 번 소비한다.
+static AGY_RECONCILE_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// (B1) cysd 부트가 팩 설치 **앞에서** 부른다 — 이 프로세스의 설치 경로 agy 조정을 바인드 뒤로 미룬다.
+pub fn defer_agy_statusline_probe() {
+    AGY_PROBE_DEFERRED.store(true, std::sync::atomic::Ordering::Release);
+}
+
+/// (B1) cysd 가 소켓을 바인드한 직후 **동기로** 부른다 — 미루기 표식을 내려 그 뒤의 설치 경로(런타임 pack-update 등)가 종전처럼
+/// 동기가 되게 한다(소비 스레드 생성이 실패해도 표식이 남아 뒤 설치가 영영 미뤄지는 경로 차단 — 리뷰 지적 #8).
+pub fn end_agy_statusline_deferral() {
+    AGY_PROBE_DEFERRED.store(false, std::sync::atomic::Ordering::Release);
+}
+
+/// (B1) cysd 가 소켓을 바인드한 뒤(별도 스레드 · 락 0) 부른다 — 조정을 **매 부트** 한 번 한다(미뤄 둔 설치가 있었든 없었든).
+/// 설치 뒤 소비 전에 데몬이 죽으면 다음 부트는 팩이 최신이라 설치를 건너뛰므로, 소비를 설치에 묶지 않는다. 이미 연결된 기계·
+/// 전에 연결했던 기계·같은 버전 실패 기록이 있는 기계는 파일 stat 몇 번으로 끝난다(실연 검사 없음). 반환 = 미뤄 둔 설치가 있었는가.
+pub fn run_deferred_agy_statusline_reconcile() -> bool {
+    end_agy_statusline_deferral();
+    let pending = AGY_RECONCILE_PENDING.swap(false, std::sync::atomic::Ordering::AcqRel);
+    reconcile_agy_statusline_now();
+    pending
+}
+
+/// [`reconcile_agy_statusline_at_install`] 의 본체(미루기 표식 무관).
+fn reconcile_agy_statusline_now() {
     use crate::agy_statusline as agy;
     if cfg!(test) {
         return; // 테스트 빌드는 실 HOME 을 절대 만지지 않는다
@@ -1299,13 +1339,43 @@ pub fn reconcile_agy_statusline_at_install() {
     let settings = agy::settings_path_under(&home);
     let record = pack.join(agy::RECORD_REL);
     let off_file = home.join(".cys").join(agy::OFF_FILE);
+    let version = env!("CARGO_PKG_VERSION");
     let outcome = if agy::knob_off(crate::env_compat(agy::ENV_KNOB).as_deref(), off_file.exists()) {
         agy::unlink(&settings, Some(&record), agy::Backup::Beside)
+    } else if !crate::dormant::agy_lane_enabled() {
+        // ★cysr 휴면(1.1.10 · master#c116db17): agy 갈래가 꺼져 있으면 설치·갱신은 연결을 넣지 않는다 — 실연 검사·실패 기록·
+        //   「다시 검사하지 않았습니다」 안내도 없다(사용자 agy 설정 파일 쓰기 0). 위의 끄기 노브 빼기 경로는 그대로다.
+        return;
     } else {
-        agy::ensure_linked(
-            &agy::Ctx { settings: &settings, pack_dir: &pack, record: &record, windows: cfg!(windows) },
+        // ★(B1) 같은 버전에서 이미 실연 검사가 실패했으면 다시 검사하지 않는다(부트마다 5초 검사 반복 금지) — 버전이 바뀌거나
+        //   사람이 `cys doctor --fix` 를 부르면(기록 무시 · 결과로 덮는다) 다시 검사한다. 유닉스에는 검사가 없어 기록도 없다.
+        // ★(성찰 m2) 같은 버전이라도 24시간이 지나면 다시 검사한다(기계 환경이 바뀌었을 수 있다) — 시각 없는 옛 기록도 다시 검사.
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        if let Some(reason) = agy::probe_failure_deferring(&pack, version, now) {
+            eprintln!(
+                "[pack] agy 상태줄: 이 버전({version})의 실연 검사 실패 기록(24시간 이내)이 있어 다시 검사하지 않았습니다({reason}) — \
+                 24시간 뒤 자동 재검사 · 지금 다시 시도: `cys doctor --fix`"
+            );
+            return;
+        }
+        let o = agy::ensure_linked(
+            &agy::Ctx {
+                settings: &settings,
+                pack_dir: &pack,
+                record: &record,
+                windows: cfg!(windows),
+                home: Some(&home),
+                // 윈도우는 쓰기 직전 실연 검사(콘솔 창 없음 · 5초 상한) — 실패는 결과 한 줄일 뿐 설치는 계속된다.
+                probe: Some(&agy::live_probe),
+            },
             false,
-        )
+        );
+        match &o {
+            agy::Outcome::WindowsProbeFailed { reason, .. } => agy::record_probe_failure(&pack, version, reason),
+            agy::Outcome::Linked { .. } => agy::clear_probe_failure(&pack),
+            _ => {}
+        }
+        o
     };
     if let Some(line) = agy::describe(&outcome, &settings) {
         eprintln!("[pack] agy 상태줄: {line}");
@@ -11315,5 +11385,26 @@ mod tests {
             assert_eq!(job_flags(&ours(&std::fs::read_to_string(&path).unwrap())), want, "{lane}: 이행 뒤");
         }
         let _ = std::fs::remove_dir_all(&td);
+    }
+
+    /// ★(0.14.45 · B1) cysd 부트의 agy 상태줄 조정 미루기 — 표식을 세운 뒤의 설치 경로 호출은 '미뤄 둔 조정 있음' 만 남기고
+    /// 돌아오며, 바인드 뒤 소비는 **한 번**만 돈다(두 번째는 false). 표식이 없으면 소비도 false(설치가 돌지 않은 부트).
+    /// 테스트 빌드의 본체는 실 HOME 을 만지지 않으므로(`cfg!(test)` 조기 반환) 여기서 안전하게 흐름만 잰다.
+    #[test]
+    fn agy_statusline_reconcile_is_deferred_and_consumed_once() {
+        assert!(!run_deferred_agy_statusline_reconcile(), "미뤄 둔 것이 없으면 false");
+        defer_agy_statusline_probe();
+        reconcile_agy_statusline_at_install(); // 설치 경로 — 표식만 남긴다
+        reconcile_agy_statusline_at_install(); // 두 번 와도 표식은 하나
+        assert!(run_deferred_agy_statusline_reconcile(), "바인드 뒤 소비 1회");
+        assert!(!run_deferred_agy_statusline_reconcile(), "두 번째 소비는 없다");
+        // 소비가 표식을 내렸으므로 그 뒤 설치 경로는 종전처럼 동기다(표식 미설정 → pending 도 서지 않는다).
+        reconcile_agy_statusline_at_install();
+        assert!(!run_deferred_agy_statusline_reconcile());
+        // 표식만 내리는 동기 경로 — 그 뒤 설치는 pending 을 세우지 않는다(스레드 생성 실패에도 영영 미뤄지지 않는다).
+        defer_agy_statusline_probe();
+        end_agy_statusline_deferral();
+        reconcile_agy_statusline_at_install();
+        assert!(!run_deferred_agy_statusline_reconcile());
     }
 }

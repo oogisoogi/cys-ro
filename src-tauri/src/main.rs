@@ -15558,7 +15558,7 @@ osascript 를 실행할 수 없어 건너뜁니다({e}) — macOS 가 아닌 환
     }
 
     /// 배선 핀 — feed_reply 는 socket 인자를 받고 그 소켓의 토큰을 매번 새로 읽는다 · 토큰은 응답 값으로 나가지 않는다 · 본부 토큰을 부서 소켓에 붙이지 않는다 ·
-    /// 에이전트 CLI(`cys.rs`)는 조작자 토큰을 모른다 · 명령 등재.
+    /// 에이전트 CLI(`cys.rs`)가 조작자 토큰을 싣는 자리는 오퍼레이터 좌석의 `feed reply --operator` 한 곳뿐이다(cysr 1.1.8 W D24 · 아래 핀 = 정확히 1곳) · 명령 등재.
     #[test]
     fn c2_feed_reply_and_list_all_wiring() {
         let src = include_str!("main.rs");

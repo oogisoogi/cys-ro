@@ -4294,58 +4294,54 @@ mod tests {
         assert!(para.contains("80%·95%"), "계정 경보 기본 임계는 80%·95% 다(alerts.rs AlertConfig::default):\n{para}");
     }
 
-    /// ★fatal-fix W6: 매뉴얼의 agy 상태줄 연결 예시는 POSIX(`sh ~/…`) 하나뿐이었다 — 윈도우는 `~` 가 펼쳐지지 않고 `sh` 가
-    /// 보통 PATH 에 없다. 팩의 윈도우 훅 규약(`bash "C:/…"` 정슬래시 + 따옴표 — javis_preflight `_cys_hook_cmd`)과 같은
-    /// 모양의 예시와 '윈도우 미검증' 고지가 있어야 한다. (W5) 윈도우에서 곧바로 '상태줄 연결 필요'가 보이는 이유도 적는다.
+    // ★cysr 1.1.10 편입 r3(codex 1R BLOCK 1 · master 결정): 원작자는 아래 두 시험으로 매뉴얼의 「Antigravity(agy) 값」 문단이 agy 사용량 값·
+    //   상태줄 자동 연결 계약(넣는 명령 · 윈도우 예시 · 쓰기 전 실연 검사)을 글자로 적도록 핀했다. 우리 판은 agy 갈래가 휴면이다(usage-noagy ·
+    //   1.1.8 C4 — 값 push 0 · 출력 0). 그 문단을 그대로 두면 없는 기능을 있는 것처럼 설명한다 → 매뉴얼은 「이 판에는 들어 있지 않습니다(휴면)」
+    //   와 끄기 노브 둘만 적는다. 시험은 그 사실(휴면 고지 · 노브 · 값/연결 서술 부재)을 핀한다. agy 갈래를 다시 켜면 원작자 단언(이 파일의 git 이력
+    //   v0.14.48)으로 되돌린다.
+    /// 매뉴얼의 Antigravity 문단 = 문단 머리부터 「갱신」 항목 앞까지.
+    fn manual_agy_paragraph() -> &'static str {
+        let manual = include_str!("../../../USER-MANUAL.md");
+        let start = manual.find("**Antigravity(agy) — 이 판에는 들어 있지 않습니다(휴면)**").expect("agy 휴면 문단");
+        let end = manual[start..].find("- 갱신: 약 30초마다").map_or(manual.len(), |i| start + i);
+        &manual[start..end]
+    }
+
+    /// ★cysr: 매뉴얼은 휴면인 agy 사용량 값·상태줄 연결을 설명하지 않는다 — 연결 명령 예시(맥·윈도우)와 값 보기 서술이 남으면 붉다.
     #[test]
     fn manual_gives_a_windows_agy_statusline_example() {
         let manual = include_str!("../../../USER-MANUAL.md");
-        let start = manual.find("**Antigravity(agy) 값**").expect("agy 값 문단");
-        let end = manual[start..].find("- 갱신: 약 30초마다").map_or(manual.len(), |i| start + i);
-        let para = &manual[start..end];
-        // ★0.14.42 agy 자동 연결: 윈도우 예시는 **따옴표 없는** 정슬래시 경로다 — command 안의 따옴표가 글자 그대로 넘어가
-        //   경로가 깨졌다는 공개 보고 둘(agy_statusline 모듈 머리)이 있어, 종전 `bash \"C:/…\"` 예시를 거둔다. 예시 문자열은
-        //   코드가 만드는 명령과 같아야 한다(doctor 가 같은 함수로 이 컴퓨터용 명령을 보여 준다).
-        // ★0.14.45: 윈도우 명령은 `.cmd` 래퍼 직접 실행(역슬래시 · 따옴표 없음) — 매뉴얼의 실제 명령 줄과 JSON 예시(역슬래시
-        //   이스케이프) 둘 다 코드가 만드는 명령과 같아야 한다.
+        let para = manual_agy_paragraph();
+        assert!(!manual.contains("**Antigravity(agy) 값**"), "원작자 agy 값 문단 머리가 남았다");
+        // 코드가 만드는 연결 명령(윈도우 · 맥)이 매뉴얼 어디에도 예시로 남지 않는다.
         let win = cys::agy_statusline::link_command_for("C:/Users/x/.cys/pack", true, true)
             .expect("윈도우 자동 연결 명령")
             .replace(r"\x\", r"\<you>\");
-        assert!(para.contains(&win), "윈도우 명령이 코드의 명령({win})과 다르다:\n{para}");
-        let win_json = serde_json::to_string(&win).unwrap();
-        assert!(para.contains(&win_json), "윈도우 JSON 예시가 코드의 명령({win_json})과 다르다");
-        assert!(!para.contains(r#"bash \"C:/"#), "따옴표 두른 윈도우 예시가 남았다");
-        assert!(!para.contains("\"command\": \"bash C:/"), "옛 bash 윈도우 예시가 권장 모양으로 남았다");
-        assert!(para.contains("아직 실제로 확인하지 못했습니다"), "윈도우 미검증 고지가 없다");
-        assert!(para.contains("Windows 에서는 cysr 이 agy 내부 서버를 아예 찾을 수 없어"), "W5 고지가 없다");
+        let unix = cys::agy_statusline::link_command_for("/Users/x/.cys/pack", false, true).unwrap().replace("/x/", "/<you>/");
+        for cmd in [win.clone(), serde_json::to_string(&win).unwrap(), unix] {
+            assert!(!manual.contains(&cmd), "휴면인 자동 연결의 명령 예시({cmd})가 매뉴얼에 남았다");
+        }
+        assert!(!manual.contains(r#"bash \"C:/"#) && !manual.contains("\"command\": \"bash C:/"), "옛 bash 윈도우 예시가 남았다");
+        // 값 보기 서술(사이드바 값 · 쿼터 전송 · 연결 필요 행)이 없다.
+        for gone in ["agy 상태줄 연결 필요", "5h 12% · 7d 25% · cys", "쿼터 숫자만", "이제 Windows 도 자동으로 연결합니다", "stack_with_default"] {
+            assert!(!manual.contains(gone), "휴면 기능 서술({gone})이 매뉴얼에 남았다");
+        }
+        assert!(para.contains("값을 받아 오지 않습니다") && para.contains("자동 연결도 하지 않습니다"), "휴면 고지가 없다:\n{para}");
     }
 
-    /// ★0.14.42 agy 상태줄 자동 연결(오너 승인 2026-09-24) — 매뉴얼이 코드의 계약을 그대로 적는다: 넣는 명령(표지 포함)·
-    /// 비었거나 없을 때만 · 사용자 설정 불가침 · 되돌리기 노브 둘 · 윈도우는 시험 실행 통과 시 연결(0.14.45) · 다시 넣지 않음 ·
-    /// 환경변수 표 등재.
+    /// ★cysr: 휴면이어도 **끄기 노브 둘은 남는다**(예전 판이 넣어 둔 표지 달린 연결을 빼는 길) — 문단과 §16 환경변수 표가 코드 상수와 같은 이름을 적는다.
     #[test]
     fn manual_documents_the_agy_statusline_autolink_contract() {
         use cys::agy_statusline as agy;
         let manual = include_str!("../../../USER-MANUAL.md");
-        let start = manual.find("**Antigravity(agy) 값**").expect("agy 값 문단");
-        let end = manual[start..].find("- 갱신: 약 30초마다").map_or(manual.len(), |i| start + i);
-        let para = &manual[start..end];
-        let unix = agy::link_command_for("/Users/x/.cys/pack", false, true).unwrap().replace("/x/", "/<you>/");
-        assert!(para.contains(&unix), "자동 연결 명령({unix})이 매뉴얼에 없다:\n{para}");
-        assert!(para.contains(agy::MARKER) && para.contains("stack_with_default"));
-        assert!(para.contains("비어 있거나 없으면"), "조건(비었거나 없을 때만)이 없다");
-        assert!(para.contains("덮지 않습니다"), "사용자 설정 불가침 고지가 없다");
+        let para = manual_agy_paragraph();
         assert!(para.contains(&format!("{}=0", agy::ENV_KNOB)) && para.contains(&format!("~/.cys/{}", agy::OFF_FILE)), "되돌리기 노브");
-        assert!(para.contains("이제 Windows 도 자동으로 연결합니다") && para.contains("쓰기 전 시험 실행"), "윈도우 켬 + 시험 실행 고지");
-        assert!(para.contains("파일을 한 바이트도 바꾸지 않고"), "시험 실패 시 무변경 고지");
-        assert!(para.contains("다시 넣지 않습니다") && para.contains("cysr doctor --fix"), "다시 넣지 않음·다시 연결 방법");
-        assert!(para.contains(agy::BACKUP_SUFFIX), "백업 고지");
-        // 재개(2026-09-24 15시): macOS 판 agy 역어셈블 사실(`sh -c` · 5초) · 래퍼 부재 시 미연결 · 윈도우 Git Bash 부재 시 동작
-        assert!(para.contains("`sh -c`") && para.contains("5초"), "agy 가 상태줄을 부르는 방식(macOS 판 확인)이 없다");
-        assert!(para.contains(&format!("hooks/{}`", agy::SCRIPT)) && para.contains(&format!("hooks/{}`)이 없을 때", agy::SCRIPT_CMD)), "래퍼 부재 시 넣지 않는다는 고지가 없다");
-        assert!(para.contains("`cmd /c`") && para.contains("WSL"), "윈도우 cmd /c · 옛 bash 연결 안내가 없다");
+        assert!(para.contains(agy::MARKER), "cysr 이 넣은 연결의 표지({})가 없다", agy::MARKER);
+        assert!(para.contains("cysr doctor --fix"), "넣어 둔 연결을 빼는 방법이 없다");
+        assert!(para.contains("직접 넣은 연결·다른 설정은") && para.contains("건드리지 않습니다"), "사용자 설정 불가침 고지가 없다");
         let env = &manual[manual.find("## 16. 환경변수 레퍼런스").expect("§16")..];
-        assert!(env.contains(&format!("| `{}` |", agy::ENV_KNOB)), "§16 표에 노브가 없다");
+        let row = env.lines().find(|l| l.starts_with(&format!("| `{}` |", agy::ENV_KNOB))).expect("§16 표에 노브가 없다");
+        assert!(row.contains("휴면") && row.contains(agy::MARKER), "§16 노브 행이 휴면·표지를 적지 않는다: {row}");
     }
 
     // ───────── fatal-fix (2026-09-24) — 치명위험 재검증 지적 수정(수정 전 적색) ─────────

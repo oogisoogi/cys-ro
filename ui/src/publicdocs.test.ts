@@ -325,6 +325,26 @@ describe("공개 문서(README 링크 전부 + 다운로드 페이지) — 현�
     for (const bad of ["(v0.14.45)", "0.14.44 부터", "v0.14.48 가산분", "0.14.100"]) expect({ bad, 잡음: (bad.match(UP) ?? []).length }).toEqual({ bad, 잡음: 1 });
     for (const ok of ["0.14.43 동작", "v0.14.4", "10.14.45", "1.1.10", "2.1.291"]) expect({ ok, 잡음: (ok.match(UP) ?? []).length }).toEqual({ ok, 잡음: 0 });
   });
+  // 1.1.10 편입 r3(codex 1R BLOCK 1·2): 원작자에게서 받았지만 cysr 에서 **휴면**인 기능 둘(말로 팀 만들기 = team-propose/team-create · Antigravity 사용량 값과
+  //   agy 상태줄 자동 연결)을 설명서가 쓸 수 있는 기능처럼 설명하고 있었다. 설명서는 「이 판에는 들어 있지 않습니다(휴면)」 한 문단과 끄기 노브만 적는다.
+  //   낱말 기준 = 그 기능에만 쓰이는 꼴(값 보기 · 연결 명령 · 제안/토큰 경로). 맨 낱말 「팀 만들기」 는 살아 있는 「팀 직접 만들기」 진행 안내에도 쓰여 금지어가 아니다.
+  const DORMANT = [
+    "team-propose", "team-create", "말로 팀 만들기", "팀 만들기 제안", "--team-token", "대화 승인",
+    "**Antigravity(agy) 값**", "agy 상태줄 연결 필요", "쿼터 숫자만", "· cys` 한 줄이 붙습니다", "stack_with_default", "cys-agy-statusline", "자동으로 연결합니다",
+  ];
+  const dormantHits = (s: string) => DORMANT.filter((w) => s.includes(w));
+  it("휴면 기능(말로 팀 만들기 · Antigravity 사용량 값·상태줄 자동 연결) 서술 0 — 설명서는 휴면 고지만", () => {
+    const manual = read("../../USER-MANUAL.md");
+    expect({ 남은: dormantHits(manual) }).toEqual({ 남은: [] });
+    expect(manual.includes("**Antigravity(agy) — 이 판에는 들어 있지 않습니다(휴면)**")).toBe(true);
+    // 판정기 반례 — 잡아야 할 꼴 · 지나가야 할 꼴.
+    for (const bad of ["(`cysr team-propose`)", "`kind=team-create-request`", "`5h 12% · 7d 25% · cys` 한 줄이 붙습니다", "`관측 실패 · agy 상태줄 연결 필요`", "sh ~/.cys/pack/hooks/cys-agy-statusline.sh"]) {
+      expect({ bad, 잡음: dormantHits(bad).length > 0 }).toEqual({ bad, 잡음: true });
+    }
+    for (const ok of ["전문가용 ▸ 팀 직접 만들기", "카탈로그 팀 만들기(`cys-dept create`)", "`CYS_AGY_STATUSLINE=0`", "`~/.cys/agy-statusline-off`", "Codex·Antigravity 는 이 컴퓨터의 로그인 하나"]) {
+      expect({ ok, 잡음: dormantHits(ok) }).toEqual({ ok, 잡음: [] });
+    }
+  });
   it("지운 앱 명령·환경 노브·기록 파일·단추 id·앱 쪽 옛 서명 경로 이름 0", () => {
     for (const d of DOCS) {
       const s = read(d);

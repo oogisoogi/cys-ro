@@ -71,21 +71,26 @@ Test-Path "$env:USERPROFILE\.cys\win-tui-classic-off"   # 기대: False
 | 5 | `Remove-Item "$env:USERPROFILE\.cys\win-tui-classic-off"` | 다음 기동부터 W-1 동작 복귀 |
 | 6 | (별도 · 파괴적 — 시험 기계에서만) `cysr factory-reset --plan` | 계획 출력에 원장 폴더의 `tui` 되돌림 항목 · 쓰기 0(`--plan`) |
 
-## W-5. agy 상태줄 윈 자동 연결 (agy 가 깔린 기계만 · 없으면 「해당 없음」)
+## W-5. agy 상태줄 — 이 판은 자동 연결을 하지 않는다(휴면) (agy 가 깔린 기계만 · 없으면 「해당 없음」)
+
+> 기대값 정정(codex 1R 반영 r3 · master 결정 ⓐ): 종전 표는 「실연 검사 통과 시 연결」 을 기대했다. 우리 판은 agy 값 갈래가 휴면이라
+> (`src/bin/cys.rs` `AGY_STATUSLINE_BRANCH_ENABLED=false` → agy 입력에 출력 0) 윈 실연 검사(`src/agy_statusline.rs` `PROBE_EXPECT` = 마지막 줄 `cys`)가
+> 구조상 통과할 수 없다(코드 판독 · 윈 실행 0). master 결정 = 자동 연결까지 휴면(TICKET=cysr-1110-agy-link-dormant — 이 표는 그 티켓이
+> 들어간 빌드를 전제한다 · 그 전 빌드는 「실연 검사 실패 → 파일 무변경 + doctor 사유 + `state\agy-statusline-probe-failed`」 가 나온다).
 
 ```powershell
 $A = "$env:USERPROFILE\.gemini\antigravity-cli\settings.json"
 if (Test-Path $A) { Copy-Item $A "$A.w1110-before" -Force; Get-Content $A -Raw }
 cysr doctor                                      # agy-statusline 항목을 읽는다
 Get-ChildItem "$env:USERPROFILE\.cys\pack\state\agy-statusline-*" -ErrorAction SilentlyContinue
+if (Test-Path $A) { Compare-Object (Get-Content "$A.w1110-before") (Get-Content $A) }
 ```
 
 | 경우 | 기대(통과) |
 |---|---|
-| `statusLine` 이 비었거나 없음 + 쓰기 전 실연 검사 통과 | `$A` 에 `"command": "…\.cys\pack\hooks\cys-agy-statusline.cmd --cys-autolink"`(따옴표 없는 경로 · 비ASCII 사용자 폴더면 `%USERPROFILE%\…` 꼴) · `state\agy-statusline-linked` 존재 · 백업 `settings.json.bak-cys` |
-| 실연 검사 실패 | `$A` **바이트 동일**(`Compare-Object` 차이 0) · `state\agy-statusline-probe-failed` 존재 · doctor 항목에 사유·버전·나이 · 설치·기동은 계속 |
+| `statusLine` 이 비었거나 없음 | **연결 안 함(휴면)** · `$A` 바이트 동일(`Compare-Object` 차이 0) · `state\agy-statusline-linked`·`state\agy-statusline-probe-failed` 새로 생기지 않음 · doctor `agy-statusline` 경고 0 |
 | 사용자가 직접 넣은 `statusLine` 이 있음 | 무변경 |
-| 끄기: `New-Item "$env:USERPROFILE\.cys\agy-statusline-off"` 뒤 `cysr doctor --fix` | cysr 이 넣은(`--cys-autolink` 표지) 연결만 빠짐 |
+| 예전 판이 넣은(`--cys-autolink` 표지) 연결이 남아 있음 → 끄기: `New-Item "$env:USERPROFILE\.cys\agy-statusline-off"` 뒤 `cysr doctor --fix` | 그 표지가 달린 연결만 빠짐 |
 
 ## W-6. phoenix 자동 복원 — 기본 코드페이지에서 끝까지 돈다
 

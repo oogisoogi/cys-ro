@@ -9571,7 +9571,7 @@ fn probe_failure_note(pack_dir: &std::path::Path) -> String {
 }
 
 /// ★(0.14.45 · 성찰 M3 · Windows) 알려진 좌석 claude 설정 폴더에 `"tui": "fullscreen"` 이 적혀 있는가 — cys 는 덮지 않지만(사용자 선택인지 Claude Code 승격인지 구분 못 한다)
-/// 그 좌석은 휠 스크롤이 꺼지므로 **보이게** 한다. 알려진 폴더 = 이 레인의 실소비 폴더 + 부서 팩 agents.json 이 시드한 계정 폴더 + 원장(`~/.cys/claude-tui-written.json`)의 폴더.
+/// 그 좌석은 휠이 PgUp/PgDn 키 번역으로 바뀌므로(cysr altscroll) **보이게** 한다. 알려진 폴더 = 이 레인의 실소비 폴더 + 부서 팩 agents.json 이 시드한 계정 폴더 + 원장(`~/.cys/claude-tui-written.json`)의 폴더.
 /// 읽기 전용(--fix 없음 · 수리는 사람이 그 pane 에서 `/tui default`). 비-Windows 는 Skip(classic 보장 자체가 Windows 전용).
 fn diag_claude_tui(ctx: &DoctorCtx) -> DiagItem {
     diag_claude_tui_for(&claude_tui_known_dirs(ctx), cfg!(windows))
@@ -9626,7 +9626,7 @@ fn diag_claude_tui_for(dirs: &[std::path::PathBuf], windows: bool) -> DiagItem {
         return item(
             DiagStatus::Warn,
             format!(
-                "{}개 좌석 설정 폴더에 \"tui\": \"fullscreen\" 이 적혀 있다 — 그 좌석은 전체화면이라 마우스 휠 스크롤이 꺼진다(cys 는 덮지 않는다: 사용자 선택인지 \
+                "{}개 좌석 설정 폴더에 \"tui\": \"fullscreen\" 이 적혀 있다 — 그 좌석은 전체화면이라 마우스 휠을 PgUp/PgDn 키로 바꿔 보낸다(cys 는 덮지 않는다: 사용자 선택인지 \
                  Claude Code 의 전체화면 승격인지 구분할 수 없다): {}{}",
                 fullscreen.len(),
                 fullscreen.iter().map(|d| d.join("settings.json").display().to_string()).collect::<Vec<_>>().join(" · "),
@@ -10789,7 +10789,7 @@ fn run_doctor_diagnostics(ctx: &DoctorCtx, fix: bool) -> Vec<DiagItem> {
         diag_config_dir_target(ctx),
         // ★0.14.42 agy 상태줄 자동 연결(사용자 설정 불가침 · --fix 는 비었을 때만 연결 · base 팩 전용).
         diag_agy_statusline(ctx, fix),
-        // ★0.14.45(성찰 M3 · Windows) 좌석 설정에 tui=fullscreen 이 이미 적혀 있으면 휠 스크롤이 꺼진다 — 덮지 않되 보이게(읽기 전용).
+        // ★0.14.45(성찰 M3 · Windows) 좌석 설정에 tui=fullscreen 이 이미 적혀 있으면 휠이 PgUp/PgDn 키 번역으로 바뀐다(cysr altscroll) — 덮지 않되 보이게(읽기 전용).
         diag_claude_tui(ctx),
         diag_orphan_socket(ctx, fix),
         diag_stale_lock(ctx, fix),
@@ -38321,7 +38321,7 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         assert_eq!(it.status, DiagStatus::Skip, "{}", it.detail);
         let it = diag_claude_tui_for(&dirs, true);
         assert_eq!(it.status, DiagStatus::Warn, "{}", it.detail);
-        assert!(it.detail.starts_with("1개 좌석 설정 폴더에") && it.detail.contains(&a.join("settings.json").display().to_string()) && it.detail.contains("휠 스크롤이 꺼진다"), "{}", it.detail);
+        assert!(it.detail.starts_with("1개 좌석 설정 폴더에") && it.detail.contains(&a.join("settings.json").display().to_string()) && it.detail.contains("휠을 PgUp/PgDn 키로 바꿔 보낸다") && !it.detail.contains("꺼진다"), "{}", it.detail);
         assert!(!it.detail.contains(&b.display().to_string()), "classic 좌석은 목록에 없다: {}", it.detail);
         assert!(it.action.contains("/tui default") && it.action.contains("자동 수리 대상 아님"), "{}", it.action);
         assert_eq!(std::fs::read_to_string(a.join("settings.json")).unwrap(), "{\"tui\":\"fullscreen\"}", "읽기 전용");

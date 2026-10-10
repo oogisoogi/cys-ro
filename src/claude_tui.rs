@@ -305,7 +305,7 @@ pub fn already_set_is_fullscreen(json_repr: &str) -> bool {
 pub fn fullscreen_already_set_line(settings: &Path) -> String {
     format!(
         "{} 에 \"tui\": \"fullscreen\" 이 이미 적혀 있어 cys 는 덮지 않습니다(사용자 선택인지 Claude Code 의 전체화면 승격인지 구분할 수 없습니다) — \
-         이 좌석은 전체화면이라 마우스 휠 스크롤이 꺼집니다 · 그 pane 에서 /tui default 를 치면 다음 기동부터 classic(휠 스크롤)입니다",
+         이 좌석은 전체화면이라 마우스 휠을 PgUp/PgDn 키로 바꿔 보냅니다 · 그 pane 에서 /tui default 를 치면 다음 기동부터 classic(휠 스크롤)입니다",
         settings.display()
     )
 }
@@ -319,7 +319,7 @@ pub enum TuiProbe {
     Absent,
     /// `"default"`(classic).
     Classic,
-    /// `"fullscreen"` — 휠 스크롤이 꺼지는 좌석.
+    /// `"fullscreen"` — 휠을 PgUp/PgDn 키로 바꿔 보내는 좌석(cysr altscroll).
     Fullscreen,
     /// 그 밖 값(JSON 표기).
     Other(String),
@@ -1257,6 +1257,8 @@ mod tests {
         assert!(already_set_is_fullscreen("\"fullscreen\"") && !already_set_is_fullscreen("\"default\"") && !already_set_is_fullscreen("null") && !already_set_is_fullscreen("fullscreen"));
         let line = describe(&Outcome::AlreadySet("\"fullscreen\"".into()), &dir).expect("첫 안내");
         assert!(line.contains("fullscreen") && line.contains("/tui default") && line.contains("휠 스크롤") && line.contains("덮지 않습니다"), "{line}");
+        // cysr: 전체화면 좌석의 휠은 꺼지지 않는다 — UI 가 PgUp/PgDn 으로 번역한다(altscroll · 1.1.5 D5). 안내가 그 사실을 말한다.
+        assert!(line.contains("PgUp/PgDn 키로 바꿔 보냅니다") && !line.contains("꺼집니다"), "{line}");
         assert_eq!(describe(&Outcome::AlreadySet("\"fullscreen\"".into()), &dir), None, "같은 폴더는 1회");
         assert_eq!(describe(&Outcome::AlreadySet("\"fullscreen\"".into()), &dir.join(".")), None, "정규화된 같은 폴더");
         assert!(describe(&Outcome::AlreadySet("\"fullscreen\"".into()), &home.join(".claude-8")).is_some());

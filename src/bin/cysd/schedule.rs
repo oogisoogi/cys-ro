@@ -7164,6 +7164,7 @@ mod b_textcmd_retired_gate {
         let mut preempted = definitions.next().expect("선점 대조 잡");
         preempted.as_object_mut().unwrap().remove("_builtin");
         preempted["text_command"] = json!("printf edited");
+        // ⚠검체 사본: old_version 은 mismatch 와, normal 은 preempted 와 **같은 id** 다 — text_command_notes 는 항목마다 따로 판정하므로(id 로 접지 않는다) 기대값이 성립한다. id 중복 제거가 생기면 이 검체를 고친다.
         let mut old_version = definitions.next().expect("판 번호 대조 잡");
         old_version["_builtin_version"] = json!(BUILTIN_JOBS_VERSION + 1);
         old_version["text_command"] = json!("printf edited");

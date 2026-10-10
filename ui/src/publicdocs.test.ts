@@ -331,17 +331,27 @@ describe("공개 문서(README 링크 전부 + 다운로드 페이지) — 현�
   const DORMANT = [
     "team-propose", "team-create", "말로 팀 만들기", "팀 만들기 제안", "--team-token", "대화 승인",
     "**Antigravity(agy) 값**", "agy 상태줄 연결 필요", "쿼터 숫자만", "· cys` 한 줄이 붙습니다", "stack_with_default", "cys-agy-statusline", "자동으로 연결합니다",
+    // r4(codex 2R BLOCK 1 잔여 · WARN 1): 사용량 계정 규칙에 Antigravity 가 현행 참여자처럼 적힌 꼴(요약 글자 · 별명 키 · 「사용 중」 판정의 나란히 쓰기).
+    "A=Antigravity", "Codex·Antigravity", "`Codex`·`Antigravity`", "Antigravity (agy)",
   ];
+  // r4: 낱말 목록은 「아는 꼴」 만 잡는다 — 새 문장이 Antigravity 를 현행 기능처럼 말하면 놓친다. 그래서 줄 규칙을 하나 더 둔다:
+  //   설명서에서 「Antigravity」 가 나오는 줄은 **같은 줄에 「휴면」** 이 있어야 한다(휴면 고지 문단 · 끄기 노브 표 2행 · 노드 표시 3곳이 전부 그 꼴).
+  const antigravityLinesWithoutDormantNote = (s: string) =>
+    s.split("\n").flatMap((l, i) => (l.includes("Antigravity") && !l.includes("휴면") ? [i + 1] : []));
   const dormantHits = (s: string) => DORMANT.filter((w) => s.includes(w));
   it("휴면 기능(말로 팀 만들기 · Antigravity 사용량 값·상태줄 자동 연결) 서술 0 — 설명서는 휴면 고지만", () => {
     const manual = read("../../USER-MANUAL.md");
     expect({ 남은: dormantHits(manual) }).toEqual({ 남은: [] });
     expect(manual.includes("**Antigravity(agy) — 이 판에는 들어 있지 않습니다(휴면)**")).toBe(true);
+    expect({ 휴면_표기_없는_Antigravity_줄: antigravityLinesWithoutDormantNote(manual) }).toEqual({ 휴면_표기_없는_Antigravity_줄: [] });
     // 판정기 반례 — 잡아야 할 꼴 · 지나가야 할 꼴.
-    for (const bad of ["(`cysr team-propose`)", "`kind=team-create-request`", "`5h 12% · 7d 25% · cys` 한 줄이 붙습니다", "`관측 실패 · agy 상태줄 연결 필요`", "sh ~/.cys/pack/hooks/cys-agy-statusline.sh"]) {
+    for (const bad of ["(`cysr team-propose`)", "`kind=team-create-request`", "`5h 12% · 7d 25% · cys` 한 줄이 붙습니다", "`관측 실패 · agy 상태줄 연결 필요`", "sh ~/.cys/pack/hooks/cys-agy-statusline.sh",
+      "X=Codex · A=Antigravity). 창마다", "Codex·Antigravity 는 그 에이전트의 좌석이 cysr 창에", "Antigravity 는 `Antigravity (agy)`)로 찾습니다", "제공자 이름(`Codex`·`Antigravity`)입니다"]) {
       expect({ bad, 잡음: dormantHits(bad).length > 0 }).toEqual({ bad, 잡음: true });
     }
-    for (const ok of ["전문가용 ▸ 팀 직접 만들기", "카탈로그 팀 만들기(`cys-dept create`)", "`CYS_AGY_STATUSLINE=0`", "`~/.cys/agy-statusline-off`", "Codex·Antigravity 는 이 컴퓨터의 로그인 하나"]) {
+    // 줄 규칙 반례 — 휴면 표기 없는 현행형 문장은 잡고, 휴면을 같은 줄에 적은 문장은 지나간다.
+    expect(antigravityLinesWithoutDormantNote("Claude 줄\nAntigravity 좌석이 살아 있으면 ● 사용 중\nAntigravity 는 이 판 휴면")).toEqual([2]);
+    for (const ok of ["전문가용 ▸ 팀 직접 만들기", "카탈로그 팀 만들기(`cys-dept create`)", "`CYS_AGY_STATUSLINE=0`", "`~/.cys/agy-statusline-off`", "Codex 는 이 컴퓨터의 로그인 하나", "Antigravity rv-gemini"]) {
       expect({ ok, 잡음: dormantHits(ok) }).toEqual({ ok, 잡음: [] });
     }
   });

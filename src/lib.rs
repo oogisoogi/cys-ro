@@ -2860,12 +2860,13 @@ pub fn seat_settings_arg(path: &Path, windows: bool) -> String {
 /// * `agy_lane` — antigravity(agy) 계정 사용량 갈래(데이터 폴더 시드 · 오류 행 · agy 상태줄 권위 · `usage.report` 의
 ///   agy 귀속). 박사님 09-19 「agy 는 계정 사용량 표에서 뺀다」(usage-noagy). **꺼짐이면** 우리 1.1.7 동작 그대로.
 ///
-/// 켜는 법(운영) = 데몬 기동 env `CYS_ENABLE_TEAM_FLOW=1` / `CYS_ENABLE_AGY_LANE=1`(기본 = 둘 다 꺼짐 · 값은 프로세스
-/// 수명 동안 고정). ★1.1.10(cysr-1110-agy-link-dormant · master#c116db17): agy 갈래는 컴파일 상수
-/// [`dormant::AGY_LANE_COMPILED`] 가 **권위**다 — 상수가 false 면 env 로도 켜지지 않는다(env 는 상수 아래). 종전에는
-/// CLI 의 상태줄 상수와 데몬의 env 스위치가 따로 놀았다(env 만 켜면 표 귀속은 켜지고 값은 오지 않는 반쪽 상태) → 한 술어
-/// [`dormant::agy_lane_enabled`] 로 묶는다: 사용량 값 push·출력(cys.rs) · 표 귀속(accounts.rs) · 상태줄 자동 연결
-/// (agy_statusline `ensure_linked` · 설치·`doctor --fix`)이 전부 이 술어를 본다. 시험은 [`dormant::force_for_thread`] 로 **그 스레드에서만** 켠다(병렬 시험 간 간섭 0 — 우리
+/// 켜는 법(운영): **팀 흐름** = 데몬 기동 env `CYS_ENABLE_TEAM_FLOW=1`(기본 꺼짐 · 값은 프로세스 수명 동안 고정).
+/// **agy 갈래는 env 만으로 켜지지 않는다** — ★1.1.10(cysr-1110-agy-link-dormant · master#c116db17): 컴파일 상수
+/// [`dormant::AGY_LANE_COMPILED`] 가 **권위**다(false 면 `CYS_ENABLE_AGY_LANE=1` 을 줘도 꺼짐 · env 는 상수 아래 — 켜려면
+/// 상수 true 빌드 + env 둘 다). 종전에는 CLI 의 상태줄 상수와 데몬의 env 스위치가 따로 놀았다(env 만 켜면 표 귀속은 켜지고
+/// 값은 오지 않는 반쪽 상태) → 한 술어 [`dormant::agy_lane_enabled`] 로 묶었다: 사용량 값 push·출력(cys.rs) · 표 귀속
+/// (accounts.rs) · 상태줄 자동 연결(agy_statusline `ensure_linked` · 설치·`doctor --fix`)이 전부 이 술어를 본다.
+/// (docs/merge 의 1.1.8 기록 「env 로 켠다」 는 그 시점 서술이다 — agy 쪽 현행은 이 주석.) 시험은 [`dormant::force_for_thread`] 로 **그 스레드에서만** 켠다(병렬 시험 간 간섭 0 — 우리
 /// usage-noagy 회귀 시험은 꺼진 채 · 원작자 agy·팀 시험은 켠 채로 같은 프로세스에서 동시에 돈다).
 /// (master#c6a9de68 B(b) 10-06 확정: 이 env 스위치 방식 유지 · 기본 off · ui 의 휴면 기능 배선 시험은 `CYS_UI_DORMANT_LANE=1` 레인 — docs/merge/BACKLOG-118.md.)
 pub mod dormant {
@@ -2913,8 +2914,19 @@ pub mod dormant {
         }
     }
 
+    /// 스위치 값 판정(순수) — 스레드 덮기는 시험 이음매라 **디버그 빌드에서만** 읽는다. 릴리스 빌드(운영 바이너리)는 덮기를
+    /// 무시하고 프로세스 값(상수·env)만 본다 → 운영 코드가 실수로 [`force_for_thread`] 를 불러도 휴면 기능이 켜지지 않는다
+    /// (cysr-1110-upstream-r4 · codex 2R WARN 2 · master#641d3ec0). 속성 `cfg(test)` 로 좁히지 않는 이유: cys·cysd 바이너리
+    /// 시험은 비시험 빌드의 이 lib 에 링크한다. ⚠시험을 `--release` 로 돌리면 덮기가 무효라 원작자 agy·팀 시험이 붉어진다.
+    pub fn resolve(debug_build: bool, thread_override: Option<bool>, process: bool) -> bool {
+        match thread_override {
+            Some(v) if debug_build => v,
+            _ => process,
+        }
+    }
+
     pub fn enabled(sw: Switch) -> bool {
-        cell(sw).with(|c| c.get()).unwrap_or_else(|| process_value(sw))
+        resolve(cfg!(debug_assertions), cell(sw).with(|c| c.get()), process_value(sw))
     }
 
     /// 원작자 「말로 팀 만들기」·팀 토큰 갈래가 켜져 있는가(기본 꺼짐).
@@ -2927,7 +2939,8 @@ pub mod dormant {
         enabled(Switch::AgyLane)
     }
 
-    /// 시험 이음매 — 이 스레드에서만 스위치를 덮는다(가드가 떨어지면 원래 값으로). 운영 경로는 부르지 않는다.
+    /// 시험 이음매 — 이 스레드에서만 스위치를 덮는다(가드가 떨어지면 원래 값으로). 운영 경로는 부르지 않는다 — 불러도
+    /// 릴리스 빌드에서는 무효다([`resolve`] · 디버그 빌드에서만 읽는다).
     #[must_use]
     pub fn force_for_thread(sw: Switch, on: bool) -> ForceGuard {
         let prev = cell(sw).with(|c| c.replace(Some(on)));
@@ -2997,6 +3010,14 @@ mod dormant_switch_tests {
             [false, false, false, true],
             "상수 false 면 env 로도 켜지지 않는다"
         );
+        // ★r4(codex 2R WARN 2): 릴리스 빌드는 스레드 덮기를 무시한다(프로세스 값 그대로) · 디버그 빌드는 덮기를 읽는다 · 덮기 없으면 어느 쪽이든 프로세스 값.
+        assert_eq!(
+            [(false, Some(true), false), (false, Some(false), true), (true, Some(true), false), (true, Some(false), true), (true, None, true), (false, None, false)]
+                .map(|(dbg, ov, proc_)| resolve(dbg, ov, proc_)),
+            [false, true, true, false, true, false],
+            "릴리스 = 덮기 무시 · 디버그 = 덮기 우선"
+        );
+        assert!(cfg!(debug_assertions), "이 시험 묶음은 디버그 프로필 전제다 — `--release` 로 돌리면 스레드 덮기가 무효라 원작자 agy·팀 시험이 붉어진다");
         let base = (team_flow_enabled(), agy_lane_enabled());
         {
             let _t = force_for_thread(Switch::TeamFlow, true);

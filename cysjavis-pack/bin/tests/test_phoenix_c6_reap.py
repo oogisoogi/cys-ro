@@ -126,6 +126,8 @@ def main():
         check("C6 회수분 묘비 0(topology)", len(t_tombs) == 0, "topology.tombstones=%s" % sorted(t_tombs))
     finally:
         h.teardown(verbose=False)
+    _same, _diff = h.real_home_untouched()   # ★1.1.10 ⑩: 하네스 데몬 홈 = 임시 홈 → 부른 쪽 HOME 의 .cys/pack 불변
+    check("실 홈 .cys/pack 무접촉(manifest 대조 · 하네스 홈 %s)" % h.HARN_HOME, _same, "바뀐 경로 %s" % _diff)
 
     npass = sum(1 for c in results if c)
     print("\n=== %d/%d PASS ===" % (npass, len(results)))

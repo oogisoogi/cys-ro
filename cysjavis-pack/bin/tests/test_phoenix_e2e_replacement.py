@@ -129,6 +129,8 @@ def _boot_and_capture(stage, want="티켓="):
 
 
 def _finish():
+    _same, _diff = h.real_home_untouched()   # ★1.1.10 ⑩: 하네스 데몬 홈 = 임시 홈 → 부른 쪽 HOME 의 .cys/pack 불변
+    check("실 홈 .cys/pack 무접촉(manifest 대조 · 하네스 홈 %s)" % h.HARN_HOME, _same, "바뀐 경로 %s" % _diff)
     npass = sum(1 for c in results if c)
     print("\n=== %d/%d PASS ===" % (npass, len(results)))
     return 0 if npass == len(results) else 1

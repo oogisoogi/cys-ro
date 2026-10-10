@@ -44,6 +44,7 @@ import select
 import signal
 import subprocess
 import sys
+import tempfile
 sys.dont_write_bytecode = True  # SEAL-1 층4: 호출자 env 와 무관하게 형제 import 의 __pycache__ 기록 차단(D-pyc 2026-09-21)
 import time
 
@@ -80,7 +81,12 @@ LIVE_STATE = os.path.join(HOME, ".local", "state", "cys")
 LIVE_SOCK = os.path.join(LIVE_STATE, "cys.sock")
 
 # --- 격리(하네스 전용) ---
-HARN_DIR = os.path.join(HOME, ".cys", "state-harness")
+# ★1.1.10 ⑩(SOT 10-09 12:0x·12:1x · phoenix 공유 HOME 격리): 하네스 데몬의 HOME 을 **하네스 전용 임시 홈**으로 —
+#   종전엔 데몬이 부른 쪽 HOME 을 물려받아 첫 기동 팩 설치를 `$HOME/.cys/pack` 에 깔았다(개발 맥 = 실 홈 · CI·순차 실행 =
+#   같은 HOME 을 쓰는 다음 시험(f1 = `$HOME/.cys/pack/agents.json` 을 읽는다)이 그 팩을 보고 58/63). 실 홈(LIVE_*)은 보호 대상이라
+#   그대로 실 HOME 에 둔다. `PHOENIX_HARNESS_HOME` 으로 고정 가능(여러 프로세스가 같은 하네스 데몬을 공유할 때).
+HARN_HOME = os.environ.get("PHOENIX_HARNESS_HOME") or tempfile.mkdtemp(prefix="phoenix-harn-home-")
+HARN_DIR = os.path.join(HARN_HOME, ".cys", "state-harness")
 HARN_SOCK = os.path.join(HARN_DIR, "cys.sock")
 # ★하네스 데몬의 **상태 디렉터리**(원장·표식). 소켓만 격리하면 여기가 라이브로 떨어진다 —
 #   2026-09-04 실사고의 정확한 경로다(아래 LIVE_LEDGER_ROOT 주석 참조).
@@ -214,7 +220,37 @@ def _daemon_env():
     env.setdefault("CYS_NO_AUTORESTORE", "1")
     for k in LEAKY_ENV:
         env.pop(k, None)
+    # ★1.1.10 ⑩: 데몬 홈 = 하네스 임시 홈 · 팩 경로 env 는 물려주지 않는다(좌석의 CYS_PACK_DIR = 실 팩 → 데몬이 거기에 설치·치유).
+    env["HOME"] = HARN_HOME
+    env["USERPROFILE"] = HARN_HOME
+    for k in ("CYS_PACK_DIR", "JAVIS_PACK_DIR", "AITERM_PACK_DIR", "AITERM_JARVIS_DIR"):
+        env.pop(k, None)
     return env
+
+
+def _pack_manifest(home):
+    """`<home>/.cys/pack` 아래 파일 → (크기, mtime_ns) — 실 홈 무접촉 단언용(내용은 읽지 않는다)."""
+    root = os.path.join(home, ".cys", "pack")
+    out = {}
+    for dp, _dn, fns in os.walk(root):
+        for n in fns:
+            p = os.path.join(dp, n)
+            try:
+                st = os.lstat(p)
+            except OSError:
+                continue
+            out[os.path.relpath(p, root)] = (st.st_size, st.st_mtime_ns)
+    return out
+
+
+_REAL_PACK_BEFORE = _pack_manifest(HOME)   # 하네스 import 시점의 실 홈 팩 — 시험 끝 real_home_untouched() 가 대조
+
+
+def real_home_untouched():
+    """(같은가, 바뀐 경로 최대 10) — 실 홈 `.cys/pack` 의 파일 집합·크기·mtime 이 import 때와 같은가."""
+    now = _pack_manifest(HOME)
+    diff = sorted(k for k in set(now) | set(_REAL_PACK_BEFORE) if now.get(k) != _REAL_PACK_BEFORE.get(k))
+    return (not diff), diff[:10]
 
 
 def cys(*args, timeout=20, socket=True):

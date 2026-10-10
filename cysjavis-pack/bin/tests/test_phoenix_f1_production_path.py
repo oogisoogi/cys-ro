@@ -10,6 +10,14 @@ import importlib.util, json, os, shutil, sys, tempfile
 from types import SimpleNamespace
 
 sys.dont_write_bytecode = True
+# ★1.1.10 ⑩(phoenix 공유 HOME 격리): 어댑터 판정이 `$HOME/.cys/pack/agents.json`(팩 env 없을 때)을 읽는다 — 부른 쪽 HOME 에
+#   다른 시험(c6_reap·e2e_replacement 의 하네스 데몬)이나 개발 맥 실 설치가 깐 팩이 있으면 S1~S5 「records resume mode」 5건이
+#   붉어졌다(순차 58/63 실측). 이 시험의 전제 = 팩 없는 빈 홈 → javis_phoenix import **전에** 전용 임시 홈·빈 팩으로 고정한다.
+_F1_HOME = tempfile.mkdtemp(prefix="phoenix-f1-home-")
+os.environ["HOME"] = os.environ["USERPROFILE"] = _F1_HOME
+for _k in ("JAVIS_PACK_DIR", "AITERM_PACK_DIR", "AITERM_JARVIS_DIR"):
+    os.environ.pop(_k, None)
+os.environ["CYS_PACK_DIR"] = os.path.join(_F1_HOME, ".cys", "pack")
 HERE = os.path.dirname(os.path.abspath(__file__))
 PH = os.path.normpath(os.path.join(HERE, "..", "javis_phoenix.py"))
 spec = importlib.util.spec_from_file_location("javis_phoenix", PH)

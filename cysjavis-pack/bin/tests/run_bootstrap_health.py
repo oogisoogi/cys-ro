@@ -14958,6 +14958,105 @@ def h_reset_sent_1():
     return "경로 주입·절대경로 강제·기본 경로 보존 · 테스트 격리 · 계측검증=%s" % calib
 
 
+# ── 셸의 이름 일치 종료(pkill -f) 0 — 1.1.10 병합 티켓 B3 ─────────────────────────
+_SH_SCAN_SKIP_DIRS = frozenset((".git", "node_modules", "target", "__pycache__"))
+_SH_QUOTED_EXEC_RE = re.compile(r"\b(?:trap|eval)\b|\b(?:sh|bash|zsh|dash)\s+-[a-z]*c\b")
+_SH_F_OPT_RE = re.compile(r"^-[A-Za-z0-9]*f[A-Za-z0-9]*$")
+
+
+def _sh_code_and_quote_map(raw):
+    """셸 한 줄 → (주석을 뗀 본문, 글자마다 따옴표 안인가). 줄 단위 근사다(여러 줄 문자열은 못 본다)."""
+    sq = dq = False
+    quoted, i, n = [], 0, len(raw)
+    while i < n:
+        c = raw[i]
+        if c == "\\" and not sq and i + 1 < n:
+            quoted += [sq or dq, sq or dq]
+            i += 2
+            continue
+        if c == "'" and not dq:
+            sq = not sq
+        elif c == '"' and not sq:
+            dq = not dq
+        elif c == "#" and not sq and not dq and (i == 0 or raw[i - 1] in " \t;"):
+            break
+        quoted.append(sq or dq)
+        i += 1
+    return raw[:i], quoted
+
+
+def _pkill_f_exec_lines(text):
+    """셸 본문에서 `pkill` 을 `-f`(묶음 옵션 `-9f` 포함)와 함께 **실행하는** 줄 번호 목록.
+
+    세지 않는 것: 주석 · 따옴표 안의 낱말(낱말 목록·안내 문구 — 단 `trap`·`eval`·`sh -c` 줄의 따옴표는
+    실행이라 센다) · `pkill -x <이름>`(이 검체의 범위는 `-f` 다) · `pgrep`(읽기 전용)."""
+    hits = []
+    for ln, raw in enumerate(text.splitlines(), 1):
+        if "pkill" not in raw:
+            continue
+        code, quoted = _sh_code_and_quote_map(raw)
+        quoted_exec = bool(_SH_QUOTED_EXEC_RE.search(code))
+        for m in re.finditer(r"(?<![A-Za-z0-9_-])pkill(?![A-Za-z0-9_-])", code):
+            if quoted[m.start()] and not quoted_exec:
+                continue
+            args = re.split(r"[;&|)`]", code[m.end():], maxsplit=1)[0]
+            if any(_SH_F_OPT_RE.match(tok.strip("'\"")) for tok in args.split()):
+                hits.append(ln)
+                break
+    return hits
+
+
+def _sh_files(root):
+    out = []
+    for dp, dns, fns in os.walk(root):
+        dns[:] = [d for d in dns if d not in _SH_SCAN_SKIP_DIRS]
+        out += [os.path.join(dp, f) for f in fns if f.endswith(".sh")]
+    return sorted(out)
+
+
+@specimen("H-SH-PKILL-1", "W6",
+          "★팩·scripts 셸에 `pkill -f` 실행 줄 0 — 종료는 자기 pid/pgid 만(이름 일치 종료 금지)",
+          ["이름-일치-종료", "남의-프로세스-사망"])
+def h_sh_pkill_1():
+    """★왜: `pkill -f <낱말>` 은 명령줄에 그 낱말이 든 **모든** 프로세스를 고른다 — 다른 좌석·설치본
+    데몬·사용자의 다른 세션이 함께 죽는다. macOS `pkill` 은 여기에 함정이 하나 더 있다: 옵션을 패턴
+    **뒤에** 두면 옵션이 아니라 추가 패턴으로 읽는다(`pgrep 'sleep 987' -f` 가 무관한 프로세스 2개를
+    고른 실측 2026-10-10). 2026-10-10 09:00 에 이 꼴로 master·CSO 가 동시에 죽었다.
+    WORKER_DIRECTIVE §1-4 가 규율이고 이 검체가 그 기계 쪽이다(규율은 기억에 기대고, 기억은 진다).
+
+    ★범위: 팩의 `*.sh` 전부 + (레포 체크아웃이면) `scripts/` 의 `*.sh`. 파이썬의 `subprocess` 호출은
+      범위 밖이다(phoenix 하네스 5곳 · test_d1_dept_ready_probe 1곳 = 별 티켓 「하네스 종료 경로를
+      pid/pgid 로 재작성」)."""
+    roots = [PACK_DIR]
+    scripts_dir = os.path.join(REPO_DIR, "scripts")
+    if _is_git_checkout() and os.path.isdir(scripts_dir):
+        roots.append(scripts_dir)
+    files = [f for r in roots for f in _sh_files(r)]
+    need(files, "셸 파일을 0개 찾았다 — 잴 대상이 없다(경로 판별 파손 · 조용한 초록 금지)")
+    bad = []
+    for f in files:
+        for ln in _pkill_f_exec_lines(_read(f)):
+            bad.append("%s:%d" % (os.path.relpath(f, REPO_DIR if _is_git_checkout() else PACK_DIR), ln))
+    need(not bad,
+         "`pkill -f` 실행 줄 %d건: %s — 이름으로 고르지 말고 자기가 띄운 pid/pgid 를 기록해 그것만 끝내라"
+         % (len(bad), ", ".join(bad[:8])))
+    # ★계측 타당성 — 트리에 위반이 0이므로 합성 줄로 탐지력을 시험한다(양성 = 잡아야 · 음성 = 지나가야).
+    pos = ['pkill -f "sleep 600"', "  /usr/bin/pkill -9 -f foo", "pkill -9f foo",
+           'do_thing || pkill -KILL -f "$pat"', "trap 'pkill -f mysrv' EXIT", "sudo pkill -f x",
+           "timeout 5 pkill -f x", "x=$(pkill -f foo; echo $?)", "pkill foo -f"]
+    neg = ["# pkill -f 'sleep 600' 은 쓰지 않는다", "echo ok  # (pkill -f 금지)",
+           'KILL = {"kill", "pkill", "killall", "taskkill"}',
+           'emit_deny "kill-preflight INDET: pid 미명시(pkill/killall/명령치환)"',
+           'kill -TERM "$pid"', "pkill -x cysd-test-stub", 'echo "pkill -f 는 금지다"',
+           'pgrep -f "sleep 600"', 'kill -- "-$pgid"']
+    blind = [p for p in pos if not _pkill_f_exec_lines(p)]
+    noisy = [n for n in neg if _pkill_f_exec_lines(n)]
+    need(not blind, "합성 실행 줄을 못 잡았다(탐지기 고장): %s" % " / ".join(blind))
+    need(not noisy, "주석·낱말 목록·무관한 줄을 실행으로 셌다(오탐): %s" % " / ".join(noisy))
+    return ("셸 %d개 · pkill -f 실행 줄 0 · 합성 양성 %d/%d 적발 · 음성 %d/%d 통과"
+            % (len(files), len(pos), len(pos), len(neg), len(neg)))
+
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 러너

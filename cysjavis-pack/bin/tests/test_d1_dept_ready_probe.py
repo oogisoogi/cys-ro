@@ -20,6 +20,7 @@ cys-dept 가 $HOME/.local/bin 을 PATH 앞에 붙이므로 그 자리에 둔다)
 import json
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -79,9 +80,31 @@ class _Base(unittest.TestCase):
             "HOME": self.home, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "D1_T": self.t,
             "CYS_DEPTS_JSON": os.path.join(self.t, "depts.json"), "LANG": "C",
         }
+        self._pgids = []
+
+    def _run(self, argv, timeout, capture=False):
+        """cys-dept 를 **새 세션**(= 새 프로세스 그룹)에서 돌리고 그 그룹 id 를 적어 둔다 — 뒷정리는 이 장부의 그룹만 끝낸다.
+        cys-dept 가 남기는 백그라운드(가짜 cysd · 편성 서브셸)는 같은 그룹에 남는다(작업 제어 없는 bash 의 `&` · nohup)."""
+        out = subprocess.PIPE if capture else subprocess.DEVNULL
+        p = subprocess.Popen(argv, env=self.env, stdout=out, stderr=out, text=True, start_new_session=True)
+        self._pgids.append(p.pid)
+        try:
+            so, se = p.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self._kill_groups()
+            p.communicate()
+            raise
+        return subprocess.CompletedProcess(argv, p.returncode, so, se)
+
+    def _kill_groups(self):
+        for pg in self._pgids:
+            try:
+                os.killpg(pg, signal.SIGKILL)
+            except OSError:
+                pass
 
     def tearDown(self):
-        subprocess.run(["/usr/bin/pkill", "-f", self.t], capture_output=True)
+        self._kill_groups()
         shutil.rmtree(self.t, ignore_errors=True)
 
     def _catalog(self):
@@ -98,8 +121,7 @@ class _Base(unittest.TestCase):
         self.env["CYS_DEPT_MISSIONS"] = os.path.join(self.t, "missions")
 
     def _pings_before_spawn(self, argv):
-        subprocess.run(["/bin/bash", CYS_DEPT] + argv, env=self.env,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=90)
+        self._run(["/bin/bash", CYS_DEPT] + argv, timeout=90)
         spawned = os.path.join(self.t, "spawned")
         self.assertTrue(os.path.exists(spawned),
                         "전제 실패: 가짜 cysd 가 한 번도 불리지 않았다(시험이 기동 지점에 닿지 않음) · %s" % argv)
@@ -143,8 +165,7 @@ class DeptFormationDoesNotHoldCallerPipe(_Base):
         with open(os.path.join(self.home, ".cys", "pack", "agents.json"), "w") as f:
             json.dump({"claude": {"cmd": "claude", "env": {"CLAUDE_CONFIG_DIR": "x"}}}, f)
         t0 = time.time()
-        r = subprocess.run(["/bin/bash", CYS_DEPT, "create", "probe"], env=self.env,
-                           capture_output=True, text=True, timeout=90)
+        r = self._run(["/bin/bash", CYS_DEPT, "create", "probe"], timeout=90, capture=True)
         took = time.time() - t0
         self.assertIn("상비편성 ensure 착수", r.stderr,
                       "전제: 편성 착수 지점에 닿지 않았다(시험이 대상에 안 닿음) · stderr=%r" % r.stderr[-400:])
@@ -163,8 +184,7 @@ class DeptFirstBootWait(_Base):
         self.env["D10_MODE"] = mode
         self.env.update({k: str(v) for k, v in env.items()})
         t0 = time.time()
-        r = subprocess.run(["/bin/bash", CYS_DEPT, "launch", "probe"], env=self.env,
-                           capture_output=True, text=True, timeout=180)
+        r = self._run(["/bin/bash", CYS_DEPT, "launch", "probe"], timeout=180, capture=True)
         return r, time.time() - t0
 
     def _reg_has_probe(self):
@@ -246,8 +266,7 @@ class DeptSelfBinPrecedence(_Base):
             os.chmod(q, 0o755)
 
     def _launch_and_assert_new(self, lane):
-        subprocess.run(["/bin/bash", CYS_DEPT, "launch", "probe"], env=self.env,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=90)
+        self._run(["/bin/bash", CYS_DEPT, "launch", "probe"], timeout=90)
         by = os.path.join(self.t, "cysd_by")
         self.assertTrue(os.path.exists(by), "전제: 부서 데몬 기동 지점에 닿지 않았다(%s)" % lane)
         with open(by) as f:

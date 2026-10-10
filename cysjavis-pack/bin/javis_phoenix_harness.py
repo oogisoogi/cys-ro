@@ -364,6 +364,47 @@ def _annihilate():
     return sorted(victims)
 
 
+# ★1.1.10 문서 묶음 D ④(2026-10-10 09:00 사고 뒤): 드릴이 격리 surface 에 심는 stub(`exec sleep 600`)의 뒷정리를
+#   명령 문자열 일치(머신 전역 — 다른 좌석·다른 워커의 같은 이름 프로세스까지 닿는다)에서 **pid 장부**로 바꿨다.
+#   stub 은 PTY 자식이라 데몬과 프로세스 그룹이 다르다(`_kill_pg` 가 닿지 않는다) → 데몬이 죽으면 부모체인이 끊겨
+#   그 뒤에는 「우리 것」 을 가려낼 길이 없다. 그래서 데몬을 죽이기 **전에** 자손을 적어 두고(`_note_harness_children`),
+#   죽인 뒤 그 pid 만 끝낸다(`_reap_harness_children`). 시작 시각을 함께 적어 pid 재사용에도 남의 프로세스를 건드리지 않는다.
+_child_ledger = {}  # pid → 그 프로세스의 시작 시각(ps lstart 원문)
+
+
+def _proc_started(pid):
+    """pid 의 시작 시각(ps lstart 원문) — 없으면 ''. 장부의 pid 가 아직 「그때 그 프로세스」 인지 가리는 값."""
+    try:
+        r = subprocess.run(["ps", "-o", "lstart=", "-p", str(int(pid))], capture_output=True, text=True, timeout=10, **NOWIN)
+    except Exception:
+        return ""
+    return (r.stdout or "").strip()
+
+
+def _note_harness_children():
+    """격리 데몬의 **현재 자손**(pid · 시작 시각)을 장부에 적는다 — 데몬을 죽이기 전에 부른다. 반환 = 장부 크기."""
+    for pid in _descendants(harness_daemon_pids()):
+        st = _proc_started(pid)
+        if st:
+            _child_ledger[pid] = st
+    return len(_child_ledger)
+
+
+def _reap_harness_children():
+    """장부에 적힌 pid 중 시작 시각이 그대로인 것만 SIGKILL 하고 장부를 비운다(이름·명령 문자열로 고르지 않는다).
+    반환 = 끝낸 pid 목록. 장부가 비어 있으면 아무것도 하지 않는다 — 여러 번 불러도 안전하다."""
+    killed = []
+    for pid, st in sorted(_child_ledger.items()):
+        if _proc_started(pid) == st:
+            try:
+                os.kill(pid, signal.SIGKILL)
+                killed.append(pid)
+            except Exception:
+                pass
+    _child_ledger.clear()
+    return killed
+
+
 # ------------------------------------------------------------------ 데몬 lifecycle
 
 # ★v116-flake-pty ⑴: 빈 팩 폴더(워크플로 = 시험마다 새 mktemp)로 뜨는 **첫** 데몬은 팩 설치(478파일 ·
@@ -438,6 +479,8 @@ def close_all_surfaces():
 
 def teardown(verbose=False):
     """전면 정리 — 잔여 프로세스 0 보장. 어떤 종료 경로에서도 안전하게 재호출 가능."""
+    # 0) 데몬이 살아 있는 지금 자손(surface stub 등)을 pid 장부에 적는다 — 데몬이 죽은 뒤엔 부모체인으로 못 찾는다
+    _note_harness_children()
     # 1) 살아있으면 surface부터 정상 종료
     try:
         close_all_surfaces()
@@ -455,6 +498,8 @@ def teardown(verbose=False):
         except Exception:
             pass
         _tracked_daemon = None
+    # 3-b) 장부의 자손 중 아직 살아 있는 것(데몬이 죽어도 남은 surface stub)을 pid 로 끝낸다
+    _reap_harness_children()
     # 4) 확인
     time.sleep(0.4)
     remain = harness_daemon_pids()
@@ -1270,13 +1315,14 @@ def cmd_phoenix_p5_redelivery(args):
         ev["redelivery_pass"] = None
         ev["live_unchanged"] = live_before == len(live_surfaces())
         teardown(verbose=True)
-        subprocess.run(["pkill", "-9", "-f", "sleep 600"], capture_output=True, **NOWIN)
+        _reap_harness_children()  # stub(exec sleep 600) 정리 = teardown 이 적은 pid 장부로(멱등)
         print(json.dumps(ev, ensure_ascii=False, indent=2))
         return ev
     cys("pause", timeout=10)
     snd = cys("send", "--queued", "--to", "worker", "P5_REDELIV_MSG", timeout=10)
     ev["send_out"] = (snd.stdout or snd.stderr or "").strip()[:120]
     # 재기동
+    _note_harness_children()  # s1 의 stub — 데몬이 죽은 뒤엔 못 찾으므로 지금 적는다(정리는 아래 teardown)
     for p in harness_daemon_pids():
         _kill_pg(p, signal.SIGKILL)
     global _tracked_daemon
@@ -1294,8 +1340,8 @@ def cmd_phoenix_p5_redelivery(args):
     scr = cys("read-screen", "--surface", s2, timeout=12) if s2 else None
     ev["delivered_to_new_worker"] = bool(scr and "P5_REDELIV_MSG" in (scr.stdout or ""))
     remain = teardown(verbose=True)
-    # sleep 600 stub 정리
-    subprocess.run(["pkill", "-9", "-f", "sleep 600"], capture_output=True, **NOWIN)
+    # sleep 600 stub 정리 — pid 장부(재기동 전 s1 · teardown 직전 s2)에 적힌 것만
+    _reap_harness_children()
     ev["redelivery_pass"] = ev["restored_present"] and ev["queue_empty_after"] and ev["delivered_to_new_worker"]
     ev["live_unchanged"] = live_before == len(live_surfaces())
     ev["residual_zero"] = not remain
@@ -1456,11 +1502,12 @@ def cmd_phoenix_p7_inherit(args):
     ev["snapshot_covers_beta"] = ("cys-dept-beta" in src_lines)
 
     # ── ③ 재부팅 시뮬(실 데몬 재시작) → 노드 사망하지만 roster 잔존(크래시=보호 유지) ──
+    _note_harness_children()  # 데몬 kill 전에 자손(노드 stub)을 pid 장부에 적는다
     for p in harness_daemon_pids():
         _kill_pg(p, signal.SIGKILL)
     global _tracked_daemon
     _tracked_daemon = None
-    subprocess.run(["pkill", "-9", "-f", "sleep 600"], capture_output=True, **NOWIN)
+    _reap_harness_children()
     time.sleep(0.6)
     _wipe_daemon_state()  # ★cysd 자동복원 차단(phoenix roster 보존) → dead_by_desired 결정론
     start_daemon()
@@ -1488,7 +1535,7 @@ def cmd_phoenix_p7_inherit(args):
     ev["crash_role_still_kept"] = "worker" in roster2
 
     remain = teardown(verbose=True)
-    subprocess.run(["pkill", "-9", "-f", "sleep 600"], capture_output=True, **NOWIN)
+    _reap_harness_children()
     ev["live_unchanged"] = live_before == len(live_surfaces())
     ev["residual_zero"] = not remain
     ev["p7_pass"] = bool(
@@ -1676,7 +1723,7 @@ def cmd_phoenix_p9_catastrophe(args):
         ev["hash_mismatches"] = mism
     finally:
         teardown(verbose=True)
-        subprocess.run(["pkill", "-9", "-f", "sleep 600"], capture_output=True, **NOWIN)
+        _reap_harness_children()
         _sh.rmtree(scratch, ignore_errors=True)
     ev["live_unchanged"] = live_before == len(live_surfaces())
     ev["scratch_cleaned"] = not os.path.exists(scratch)

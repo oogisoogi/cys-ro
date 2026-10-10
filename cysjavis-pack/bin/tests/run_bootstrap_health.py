@@ -15025,8 +15025,7 @@ def h_sh_pkill_1():
     WORKER_DIRECTIVE §1-4 가 규율이고 이 검체가 그 기계 쪽이다(규율은 기억에 기대고, 기억은 진다).
 
     ★범위: 팩의 `*.sh` 전부 + (레포 체크아웃이면) `scripts/` 의 `*.sh`. 파이썬의 `subprocess` 호출은
-      범위 밖이다(phoenix 하네스 5곳 · test_d1_dept_ready_probe 1곳 = 별 티켓 「하네스 종료 경로를
-      pid/pgid 로 재작성」)."""
+      짝 검체 H-PY-PKILL-1(정적) · H-PY-PKILL-2(하네스 뒷정리 행동)가 잰다."""
     roots = [PACK_DIR]
     scripts_dir = os.path.join(REPO_DIR, "scripts")
     if _is_git_checkout() and os.path.isdir(scripts_dir):
@@ -15055,6 +15054,207 @@ def h_sh_pkill_1():
     need(not noisy, "주석·낱말 목록·무관한 줄을 실행으로 셌다(오탐): %s" % " / ".join(noisy))
     return ("셸 %d개 · pkill -f 실행 줄 0 · 합성 양성 %d/%d 적발 · 음성 %d/%d 통과"
             % (len(files), len(pos), len(pos), len(neg), len(neg)))
+
+
+# ── 파이썬의 이름 일치 종료(pkill -f) 0 — 1.1.10 문서 묶음 D ④(H-SH-PKILL-1 의 짝) ─────────────
+_PY_PKILL_SHELL_RE = re.compile(r"(?<![A-Za-z0-9_.-])pkill(?![A-Za-z0-9_-])([^\n;&|)`]*)")
+
+
+def _py_pkill_f_calls(src, shell_strings=True):
+    """파이썬 원문에서 `pkill` 을 `-f`(묶음 `-9f` 포함)와 함께 **부르는** 자리의 줄 번호 목록. AST 로 본다 — 주석과
+    독스트링은 세지 않는다.
+
+    ⑴ argv 리터럴: 리스트·튜플 리터럴 하나에 실행 파일 이름이 pkill 인 문자열(`/usr/bin/pkill` 포함)과 `-f` 문자열이 함께 있다.
+    ⑵ 셸 문자열(shell_strings=True): 독스트링이 아닌 문자열 상수의 한 줄이 `pkill … -f` 꼴이다(os.system · shell=True ·
+       `sh -c` · 파일로 써 넣는 셸 본문). 문자열 안에서 `#` 로 시작하는 줄(셸 주석)은 뺀다.
+    못 보는 것: 조각내어 붙인 argv(`cmd = ["pkill"]; cmd += ["-f", x]`) · 변수로 받은 실행 파일 이름."""
+    import ast
+    tree = ast.parse(src)
+    docs = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
+                docs.add(id(first.value))
+    hits = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.List, ast.Tuple)):
+            strs = [e.value for e in node.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+            if any(x.replace("\\", "/").rsplit("/", 1)[-1] == "pkill" for x in strs) and any(_SH_F_OPT_RE.match(x) for x in strs):
+                hits.add(node.lineno)
+        elif (shell_strings and isinstance(node, ast.Constant) and isinstance(node.value, str)
+              and id(node) not in docs and "pkill" in node.value):
+            for off, line in enumerate(node.value.split("\n")):
+                if line.lstrip().startswith("#"):
+                    continue
+                if any(_SH_F_OPT_RE.match(tok.strip("'\"")) for m in _PY_PKILL_SHELL_RE.finditer(line) for tok in m.group(1).split()):
+                    hits.add(node.lineno + off)
+    return sorted(hits)
+
+
+def _py_files(root):
+    out = []
+    for dp, dns, fns in os.walk(root):
+        dns[:] = [d for d in dns if d not in _SH_SCAN_SKIP_DIRS]
+        out += [os.path.join(dp, f) for f in fns if f.endswith(".py")]
+    return sorted(out)
+
+
+@specimen("H-PY-PKILL-1", "W6",
+          "★팩·scripts 파이썬에 `pkill -f` 호출 0 — 종료는 자기가 적어 둔 pid/pgid 만(H-SH-PKILL-1 의 짝)",
+          ["이름-일치-종료", "남의-프로세스-사망"])
+def h_py_pkill_1():
+    """★왜: 셸 쪽(H-SH-PKILL-1)만 막으면 같은 종료가 파이썬 `subprocess` 로 남는다 — 실제로 phoenix 하네스 5곳이
+    `sleep 600` 을 머신 전역 문자열 일치로 끝내고 있었고(다른 좌석·다른 워커의 `sleep 600` 까지 닿는다),
+    test_d1_dept_ready_probe 의 뒷정리 1곳이 임시 폴더 이름으로 고르고 있었다. 여섯 곳을 pid/pgid 장부 종료로 바꾼 뒤
+    그 꼴이 다시 들어오지 못하게 하는 기계 쪽이다.
+
+    ★범위: 팩의 `*.py` 전부 + (레포 체크아웃이면) `scripts/` 의 `*.py`. 이 러너 파일 자신은 셸 문자열 규칙 ⑵ 를
+      빼고 argv 리터럴 규칙 ⑴ 만 건다 — 두 검체의 합성 반례(셸 꼴 문자열)를 이 파일이 들고 있어서다."""
+    roots = [PACK_DIR]
+    scripts_dir = os.path.join(REPO_DIR, "scripts")
+    if _is_git_checkout() and os.path.isdir(scripts_dir):
+        roots.append(scripts_dir)
+    files = [f for r in roots for f in _py_files(r)]
+    need(files, "파이썬 파일을 0개 찾았다 — 잴 대상이 없다(경로 판별 파손 · 조용한 초록 금지)")
+    me = os.path.realpath(__file__)
+    need(any(os.path.realpath(f) == me for f in files), "이 러너 파일이 잴 대상에 없다(팩 뿌리 판별 파손)")
+    bad, unparsed = [], []
+    for f in files:
+        rel = os.path.relpath(f, REPO_DIR if _is_git_checkout() else PACK_DIR)
+        try:
+            lines = _py_pkill_f_calls(_read(f), shell_strings=os.path.realpath(f) != me)
+        except SyntaxError as e:
+            unparsed.append("%s(%s)" % (rel, e.msg))
+            continue
+        bad += ["%s:%d" % (rel, ln) for ln in lines]
+    need(not unparsed, "파이썬 %d개를 읽지 못했다(잴 수 없음 ≠ 0건): %s" % (len(unparsed), ", ".join(unparsed[:5])))
+    need(not bad,
+         "`pkill -f` 호출 %d건: %s — 이름으로 고르지 말고 자기가 띄운 pid/pgid 를 적어 두고 os.kill/os.killpg 로 그것만 끝내라"
+         % (len(bad), ", ".join(bad[:8])))
+    # ★계측 타당성 — 트리에 위반이 0이므로 합성 원문으로 탐지력을 시험한다(양성 = 잡아야 · 음성 = 지나가야).
+    pos = ['subprocess.run(["pkill", "-9", "-f", "sleep 600"], capture_output=True)',
+           'subprocess.run(["/usr/bin/pkill", "-f", self.t], capture_output=True)',
+           'subprocess.Popen(("pkill", "-9f", name))',
+           'argv = ["sudo", "pkill", "-KILL", "-f", pat]',
+           'os.system("pkill -f \'sleep 600\'")',
+           'subprocess.run("pkill -9 -f %s" % pat, shell=True)',
+           'subprocess.run(["sh", "-c", "sleep 1; pkill foo -f"])',
+           'BODY = """#!/bin/sh\\ntouch x\\npkill -f mysrv\\n"""']
+    neg = ['# subprocess.run(["pkill", "-9", "-f", "sleep 600"]) 은 쓰지 않는다',
+           'def f():\n    """구 방식(pkill -9 -f \'sleep 600\')은 문자열 일치였다."""\n    return 1',
+           'os.kill(pid, signal.SIGKILL)\nos.killpg(pgid, signal.SIGKILL)',
+           'subprocess.run(["pkill", "-x", "cysd-test-stub"])',
+           'subprocess.run(["pgrep", "-f", "sleep 600"], capture_output=True)',
+           'KILL = {"kill", "pkill", "killall", "taskkill"}',
+           'ev["old_pkill_would_miss"] = ("sleep 600" not in "exec sleep 3600")',
+           'BODY = """#!/bin/sh\\n# pkill -f mysrv 는 쓰지 않는다\\nkill -TERM "$pid"\\n"""']
+    blind = [p for p in pos if not _py_pkill_f_calls(p)]
+    noisy = [n for n in neg if _py_pkill_f_calls(n)]
+    need(not blind, "합성 호출을 못 잡았다(탐지기 고장): %s" % " / ".join(blind))
+    need(not noisy, "주석·독스트링·무관한 호출을 셌다(오탐): %s" % " / ".join(noisy))
+    return ("파이썬 %d개 · pkill -f 호출 0 · 합성 양성 %d/%d 적발 · 음성 %d/%d 통과"
+            % (len(files), len(pos), len(pos), len(neg), len(neg)))
+
+
+_PY_PKILL_2_CHILD = r"""
+import importlib.util, json, os, signal, subprocess, sys, time
+harness, shim_dir, shim_log = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("h", harness)
+h = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(h)
+# 가짜 「격리 데몬」: 제 세션의 파이썬 1개가 **다른 세션**의 stub(sleep 600)을 낳는다 — PTY 자식처럼 프로세스 그룹이 달라
+# 데몬 그룹 종료가 닿지 않는다.
+daemon = subprocess.Popen(
+    [sys.executable, "-c",
+     "import subprocess, time\np = subprocess.Popen(['sleep', '600'], start_new_session=True)\nprint(p.pid, flush=True)\ntime.sleep(600)"],
+    stdout=subprocess.PIPE, text=True, start_new_session=True)
+stub = int(daemon.stdout.readline())
+# 「남의 것」: 하네스 데몬의 자손이 아닌 sleep 600 — 명령줄이 stub 과 글자까지 같다.
+outsider = subprocess.Popen(["sleep", "600"], start_new_session=True)
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+h.harness_daemon_pids = lambda: [daemon.pid] if daemon.poll() is None else []
+h.close_all_surfaces = lambda: []
+# 안전 그물: 이 시험 안에서 누가 이름 일치 종료 도구를 부르면 진짜 도구 대신 이 가짜가 받는다 — 호출을 적고,
+# 이름 일치가 했을 일(같은 이름 전부 종료)을 **이 시험이 띄운 두 pid 에만** 흉내 낸다(머신의 다른 프로세스 무접촉).
+os.environ["PKILL_SHIM_LOG"] = shim_log
+os.environ["PKILL_SHIM_PIDS"] = "%d %d" % (stub, outsider.pid)
+os.environ["PATH"] = shim_dir + os.pathsep + os.environ.get("PATH", "")
+out = {}
+seen = {}
+_reap = h._reap_harness_children
+def _spy():
+    seen.update(h._child_ledger)   # teardown 이 스스로 적은 장부를 끝내기 직전에 본다(시험이 대신 적어 주지 않는다)
+    return _reap()
+h._reap_harness_children = _spy
+try:
+    h.teardown()
+    time.sleep(0.5)
+    out["noted"] = len(seen)
+    out["stub_in_ledger"] = stub in seen
+    out["outsider_in_ledger"] = outsider.pid in seen
+    out["daemon_dead"] = daemon.poll() is not None
+    out["stub_dead"] = not alive(stub)
+    out["outsider_alive"] = outsider.poll() is None
+    out["ledger_empty"] = not h._child_ledger
+    out["reap_again"] = h._reap_harness_children()
+    out["shim_calls"] = open(shim_log).read().splitlines() if os.path.exists(shim_log) else []
+finally:
+    for p in (outsider, daemon):
+        try:
+            p.kill()
+            p.wait(timeout=5)
+        except Exception:
+            pass
+    if alive(stub):
+        os.kill(stub, signal.SIGKILL)
+print("RESULT " + json.dumps(out))
+"""
+
+
+@specimen("H-PY-PKILL-2", "W6",
+          "★phoenix 하네스 뒷정리 = pid 장부만 — 바깥의 같은 이름 프로세스(sleep 600)는 살아남는다",
+          ["이름-일치-종료", "남의-프로세스-사망"])
+def h_py_pkill_2():
+    """★왜: 하네스 드릴은 격리 surface 에 stub(`exec sleep 600`)을 심고 끝에 그것을 치운다. 종전 치우는 방법은 명령 문자열
+    일치(머신 전역)였다 — 같은 기계에서 다른 좌석이 돌리던 `sleep 600` 이 함께 죽는다(2026-10-10 격상). 지금은 데몬을
+    죽이기 전에 자손 pid 를 장부에 적고 그 pid 만 끝낸다. 이 검체는 그 행동을 잰다: 가짜 격리 데몬(자식 = 다른 세션의
+    sleep 600)과 **자손이 아닌** sleep 600 을 하나 띄우고 `teardown()` 뒤 stub 사망 · 바깥 것 생존 · 이름 일치 도구 호출 0.
+
+    안전: 시험 안의 PATH 맨 앞에 가짜 이름 일치 도구를 둔다 — 옛 꼴이 되살아나도(뮤턴트) 실제 머신 전역 종료는 일어나지
+    않고 이 시험이 띄운 두 pid 에만 닿아 「바깥 것 사망」 으로 적색이 된다. 하네스는 자식 프로세스에서 임포트한다(임포트가
+    종료 훅·신호 처리기를 건다 — 러너 프로세스에 걸지 않는다)."""
+    if os.name != "posix":
+        raise Skip("posix 전용 측정(ps · 세션 · 신호) — Windows 하네스 종료 경로는 이 검체 범위 밖")
+    harness = os.path.join(PACK_DIR, "bin", "javis_phoenix_harness.py")
+    need(os.path.isfile(harness), "하네스가 없다: %s" % harness)
+    with tempfile.TemporaryDirectory(prefix="pypkill2-") as td:
+        shim_dir = os.path.join(td, "shim")
+        os.makedirs(shim_dir)
+        shim = os.path.join(shim_dir, "pkill")
+        with open(shim, "w") as f:
+            f.write('#!/bin/sh\necho "$*" >> "$PKILL_SHIM_LOG"\nkill -9 $PKILL_SHIM_PIDS 2>/dev/null\nexit 0\n')
+        os.chmod(shim, 0o755)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("CYS_")}
+        env.update({"HOME": os.path.join(td, "home"), "PHOENIX_HARNESS_HOME": os.path.join(td, "harn")})
+        os.makedirs(env["HOME"])
+        r = subprocess.run([sys.executable, "-c", _PY_PKILL_2_CHILD, harness, shim_dir, os.path.join(td, "shim.log")],
+                           capture_output=True, text=True, timeout=120, env=env)
+    line = next((l for l in (r.stdout or "").splitlines() if l.startswith("RESULT ")), None)
+    need(line, "자식 시험이 결과를 내지 않았다(rc=%s): %s" % (r.returncode, ((r.stderr or "") + (r.stdout or ""))[-400:]))
+    out = json.loads(line[len("RESULT "):])
+    need(out["outsider_alive"], "★바깥의 sleep 600(하네스 자손 아님)이 죽었다 — 뒷정리가 이름으로 골랐다: %s" % out)
+    need(not out["shim_calls"], "하네스가 이름 일치 종료 도구를 불렀다: %s" % out["shim_calls"])
+    need(out["stub_in_ledger"] and not out["outsider_in_ledger"],
+         "장부가 틀렸다 — 데몬 자손(stub)만 적혀야 한다: %s" % out)
+    need(out["daemon_dead"] and out["stub_dead"], "teardown 뒤 가짜 데몬 또는 그 자손(stub)이 살아 있다: %s" % out)
+    need(out["ledger_empty"] and out["reap_again"] == [], "장부가 비지 않았거나 두 번째 정리가 무언가를 끝냈다: %s" % out)
+    return "장부 %d건 · stub 사망 · 바깥 sleep 600 생존 · 이름 일치 도구 호출 0 · 재호출 무동작" % out["noted"]
 
 
 

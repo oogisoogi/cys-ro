@@ -442,6 +442,56 @@ describe("공개 문서(README 링크 전부 + 다운로드 페이지) — 현�
       expect({ d, 현행_뜻_cys_app_줄: bad }).toEqual({ d, 현행_뜻_cys_app_줄: [] });
     }
   });
+  // 1.1.10 문서 묶음 D(master#b24f81b1 ①): 위 검사에는 구멍이 둘 있었다 — ⑴ 대상이 README 링크 수집(DOCS)뿐이라 dist-win/README.md · docs/RELEASE.md ·
+  //   README 가 링크하지 않는 GUIDE-* 를 안 본다 ⑵ 같은 줄에 `cysr.app` 만 있으면 통과라 「받은 cysr.app 을 /Applications/cys.app 으로 옮깁니다」 가 초록이다.
+  //   그래서 줄 규칙을 하나 더 둔다. 대상 = **현행 안내 문서**(명칭 매니페스트에서 판별 릴리스 노트를 뺀 것 — 노트는 그 판 시점의 기록).
+  //   · 산문 줄(펜스 밖): `cys.app` 이 나오면 같은 줄에 **옛 자리 표지**(옛 · 이전 판/이름/자리/버전 · 0.14 · old · legacy · previous)가 있어야 한다 — `cysr.app` 병기만으로는 통과 못 한다.
+  //   · 코드 줄(펜스 안): 경로 리터럴 — 같은 줄에 `cysr.app` 짝이 있거나(두 자리를 나란히 훑는 식) 옛 자리 표지가 있어야 한다.
+  //   「이전」 은 「옮긴다」 뜻(「…로 이전합니다」)으로도 쓰여 맨 낱말로는 표지가 아니다 — 뒤에 판·이름·자리·버전이 붙은 꼴만 센다.
+  const OLD_PLACE_MARK = /옛|이전\s*(?:판|이름|자리|버전)|0\.14|\bold\b|legacy|previous/i;
+  const currentFormCysAppLines = (text: string): number[] => {
+    const out: number[] = [];
+    let fence: string | null = null;
+    text.split("\n").forEach((line, i) => {
+      const fm = line.match(/^\s*(?:>\s*)*(`{3,}|~{3,})(.*)$/);
+      if (fm && fence === null) {
+        fence = fm[1];
+        return;
+      }
+      if (fm && fence !== null && fm[1][0] === fence[0] && fm[1].length >= fence.length && fm[2].trim() === "") {
+        fence = null;
+        return;
+      }
+      if (!/(^|[^a-z])cys\.app/.test(line)) return;
+      if (OLD_PLACE_MARK.test(line)) return;
+      if (fence !== null && /cysr\.app/.test(line)) return;
+      out.push(i + 1);
+    });
+    return out;
+  };
+  const CURRENT_GUIDE_DOCS = NAME_MANIFEST.filter((f) => !/RELEASE_NOTES_/.test(f));
+  it("현행 안내 문서의 `cys.app` = 옛 자리 서술뿐 — 산문은 같은 줄 옛 자리 표지 · 코드 줄은 cysr.app 짝 또는 표지(dist-win · RELEASE · GUIDE 포함)", () => {
+    for (const f of CURRENT_GUIDE_DOCS) {
+      expect({ f, 현행형_cys_app_줄: currentFormCysAppLines(read(`../../${f}`)) }).toEqual({ f, 현행형_cys_app_줄: [] });
+    }
+    // 대상이 비지 않았다 — README 링크 밖 문서 셋이 들어 있고, 규칙이 실제로 보는 줄(옛 자리 서술)이 대상 안에 있다.
+    for (const must of ["dist-win/README.md", "docs/RELEASE.md", "docs/GUIDE-empty-surface-KR.md", "docs/INSTALL.md", "USER-MANUAL.md"]) {
+      expect({ must, 있음: CURRENT_GUIDE_DOCS.includes(must) }).toEqual({ must, 있음: true });
+    }
+    expect(CURRENT_GUIDE_DOCS.some((f) => /RELEASE_NOTES_/.test(f))).toBe(false);
+    const seen = CURRENT_GUIDE_DOCS.reduce((n, f) => n + read(`../../${f}`).split("\n").filter((l) => /(^|[^a-z])cys\.app/.test(l)).length, 0);
+    expect(seen).toBeGreaterThan(10);
+    // 반례(잡아야 할 꼴 3) — 현행형 산문 · `cysr.app` 병기만 있는 산문(위 검사의 구멍) · 펜스 안 단독 경로.
+    expect(currentFormCysAppLines("받은 앱을 `/Applications/cys.app` 에 옮깁니다")).toEqual([1]);
+    expect(currentFormCysAppLines("받은 `cysr.app` 을 `/Applications/cys.app` 으로 옮깁니다")).toEqual([1]);
+    expect(currentFormCysAppLines("```sh\nopen /Applications/cys.app\nxattr -d com.apple.quarantine /Applications/cysr.app\n```")).toEqual([2]);
+    expect(currentFormCysAppLines("기존 앱을 `/Applications/cys.app` 으로 이전합니다")).toEqual([1]);
+    // 반례(지나가야 할 꼴 4) — 옛 이름 병기 · 0.14 판 서술 · 펜스 안 두 자리 나란히 · 다른 낱말의 꼬리(xcys.app)와 cysr.app 단독.
+    expect(currentFormCysAppLines("이미 설치된 앱(`cysr.app` 또는 옛 이름 `cys.app`)을 휴지통으로")).toEqual([]);
+    expect(currentFormCysAppLines("0.14.x 판으로 설치한 맥은 `/Applications/cys.app` 자리입니다\n이전 판의 자리 `/Applications/cys.app` 도 봅니다")).toEqual([]);
+    expect(currentFormCysAppLines("```sh\nfor A in /Applications/cysr.app /Applications/cys.app; do\n  */cysr.app/Contents/MacOS/cys|*/cys.app/Contents/MacOS/cys) ours=yes ;;\n```")).toEqual([]);
+    expect(currentFormCysAppLines("`/Applications/cysr.app` 을 엽니다 · xcys.app")).toEqual([]);
+  });
   it("원작자 저장소(idoforgod/cys-terminal) 주소 = 출처 표기 줄에서만 — 받기·복제 안내 0(공개 문서 전건)", () => {
     for (const d of DOCS) {
       const bad = read(d)

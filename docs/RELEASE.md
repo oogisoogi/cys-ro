@@ -246,7 +246,7 @@ bash scripts/release-gate-gatekeeper.sh <DMG | .app>
   `stapler validate` + `spctl --assess --type execute` + ⑤ SEAL-2 불변식 **전칭(∀) 정적
   검사**(모든 `.py` 의 3레벨 `.pyc` 파일별 대응 + 고아 `.pyc` 0 + 발견된 `.pyc` 전량 헤더
   flags==1 — 실행 0 · 표본화 제거 F1 격상 2026-08-20, 세목은 스크립트 머리 주석). 대상은
-  DMG 안 **모든** `*.app`(설치 도우미 `Install cys.app` + 숨김 `.support/cys.app`).
+  DMG 안 **모든** `*.app`(원작자 판 DMG 꼴 = 설치 도우미 `Install cys.app` + 숨김 `.support/cys.app` · 옛 이름 — 우리 포크 자산은 zip 안 `cysr.app` 하나다 · 위 표).
   러너 정책이 `assessments disabled`(=degraded) 면 **판정 불가 exit 2 로 폐쇄**된다
   (F2 수리 2026-08-20 — 측정 불능≠통과 · `GATE_MODE=degraded` 1줄 출력 후 즉시 종료).
   강등 평가가 필요한 진단은 `--diagnose-degraded-ok`(LOUD 고지 · **발행 경로 사용 금지**

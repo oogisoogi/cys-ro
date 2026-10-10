@@ -21,7 +21,7 @@
 | 8 | rate_limited 확증 | (건너뜀) | 실물 = CSO active-monitor(git 밖 · 가동 중) · 설계 메모 §3 (master#772edf4b) |
 | 9 | 전역 restore 잠금 | `0b665b06` | `<restore-claims>/.lock` OS 배타 잠금 · 16 스레드 × 20판 소실 0 |
 | 10 | phoenix 공유 HOME 격리 | `644bb133` | 하네스 데몬 = 전용 임시 홈 · f1 58/63 → 63/63 · 실 홈 무접촉 단언 |
-| 11 | 알림 수신 멱등 키 | (보류) | 정의 출처 없음 → 【질문】 09:02 · 답 대기 |
+| 11 | 알림 수신 멱등 키 | `d81c640b` | master#c6c3784a: 경로 A(app-notify.json)로 한정 · 이미 멱등 → 코드 0 · 재투입 시험 1 · 뮤턴트 적 |
 | 12 | 팩 디렉티브·성찰 보고서 수정 지점 | (코드 0) | §2 에 파일:행 |
 
 전체 회귀(이 가지 HEAD · 격리 HOME): `cargo test --bin cys` **602/0** · test_javis_counsel 75/0 · test_trust_seed 276/0 · test_update_publish 104/0(skip 14 = 기존 조건) · test_hook_fail_log 11/0 · session_start_r31·session_start_hook OK · run_bootstrap_health 162 PASS / 2 FAIL(H-CLT-1·2) = 기준(HEAD 5e445ef2 임시 작업트리)과 FAIL 줄 전문 동일 · phoenix c6 7/7 · e2e 7/7 · f1 63/63 · w3 58/58 · w2_untomb 8/8 · sandbox_state_isolation OK · seat_revival 15/15 · secret-scan(변경 15파일) clean. 팩 회귀 묶음(javis_preflight·javis_counsel 을 부르는 시험 38파일 · 위에서 따로 센 4개 제외) = **38/38 녹**(test_preflight_phase1_checks 는 격리 env `JAVIS_ROOT`·`CYS_PROBE_RUNS` 를 주어야 도는 시험 · 주고 26/0).
@@ -51,8 +51,8 @@
 
 ## 2. 대기·판정 요청
 
-- **11 알림 수신 멱등 키 — 답 대기**(【질문】 09:02). 정의가 적힌 줄이 없다(SOT 28행 요약 1곳뿐 · TODO·briefs 0 · 「2회 배달」 사건 기록 0).
-  해소 판정: master 회신에 경로(앱 갱신 알림 / 상담소 수신 / cysd 큐 등)와 사건 1줄이 오면 착수.
+- **11 알림 수신 멱등 키 — 종결**(`d81c640b`). 정의 출처가 없어 【질문】(09:02) → master#c6c3784a 가 경로 A(앱 갱신 알림 `app-notify.json` · `last_notified_result_id`)로 한정. 이미 멱등(`updnotice::plan` 이 닫힌 result_id 는 표시 안 함 · 롤백 실패만 설계상 하루 1회)이라 코드 0 · 시험 `same_result_id_delivered_twice_is_shown_once`(ok·rollback_ok·installed_revoked 각각 · 같은 id 를 다른 바이트로 재투입 + 하루 넘김 = 표시 1) · 뮤턴트(닫힌 id 검사 끔) 적 · cys-app --bins 289/0. B(상담소 수신)·C(cysd 큐) = 범위 밖.
+  app 시험 준비 = 실 디버그 바이너리를 `src-tauri/binaries/{cys,cysd}-<triple>` 로 복사 + 빈 resources·runtime·ui/dist(전부 git 무시) · 끝나고 지웠다.
 - **12 수정 지점(별도 티켓 · 코드 0)**:
   - 팩 디렉티브 §6-9 불변식 5(b)⑶: 설치 팩 `directives/WORKER_DIRECTIVE.md:179`(「⑶제출 판정 yes」 → 「submitted yes 또는 queued∧verdict_by=session_jsonl_nonce」) + 같은 파일 `:236`(§6-12 「nonce·대상·제출판정·시각 4요건」 같은 뜻으로). ⚠ 이 저장소의 팩 원본 `cysjavis-pack/directives/WORKER_DIRECTIVE.md`(277줄)에는 §6-9 가 없다 — 설치본은 합성 결과이므로 합성기 원본 위치를 먼저 확인해야 한다.
   - 한주 성찰 보고서 「주인 이해 회복」 절: jarvis-agora 저장소(데스크 main 9529f73) `agora/counsel.py:1126` `WEEKLY_PROMPT_ADDENDUM`(절 작성 지시 3항목 · 5줄 상한 · 왕초보 말투) + `:1271` `_weekly_report_md`(보고서 절 배치). 팩이 아니라 데스크 코드다.

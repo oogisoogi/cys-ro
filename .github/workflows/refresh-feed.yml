@@ -62,7 +62,8 @@ concurrency:
 
 env:
   TAURI_CLI_VERSION: '2.11.4'
-  SITE: https://jarvis.godmeyou.kr
+  # 읽기 호스트 — 기본 = 공개 사이트 · 저장소 변수 CYS_FEED_FETCH_SITE 가 있으면 그것(2026-10-11: 공개 호스트의 Bot Fight Mode 가 GitHub 러너를 Managed Challenge 로 막아 403 → 같은 워커의 workers.dev 호스트로 읽는다 · 봉투 안 URL 은 바뀌지 않는다 · 쓰기 0)
+  SITE: ${{ vars.CYS_FEED_FETCH_SITE || 'https://jarvis.godmeyou.kr' }}
 
 jobs:
   refresh:

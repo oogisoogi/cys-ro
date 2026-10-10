@@ -40,6 +40,15 @@ import {
   CYCLE_VERIFY_NOTE,
   CYCLE_VERIFY_DISMISS_TITLE,
   feedCreatedToastTitle,
+  isEndedSeatRequest,
+  isConfirmableNotice,
+  isBulkConfirmable,
+  bulkConfirmSummary,
+  isHeadOnlyProcedureKind,
+  ENDED_SEAT_MARK,
+  NOTICE_CONFIRM_LABEL,
+  BULK_CONFIRM_MAX,
+  BULK_CONFIRM_TITLE,
 } from "./feedclass";
 import { appVersionLabel, appVersionTitle, daemonInfoLabel, daemonInfoTitle, holdReasonText } from "./headerlabels";
 import { exitedSweepTargets, armSweep, sweepScopeFor, settleSweep, type SweepArm } from "./exitedsweep";
@@ -183,10 +192,18 @@ import {
   kpiCandidates,
   aggSeatRates,
   sanitizeHiddenKeys,
+  sanitizeUsageMode,
+  nextUsageMode,
+  sanitizeFoldKeys,
+  USAGE_MODE_LABEL,
   USAGE_HIDDEN_MAX,
   windowView,
+  accountCardLabels,
+  type AcctRow,
 } from "./usagebar";
-import { starvedNotice, starvedDismissId, surfaceIdOfRef, locateStarvedSeat } from "./starvednotice"; // 0.14.43 UI2 큐 기아 경보 → 토스트·배너(순수 문구·좌석 확정)
+import { buildAcctIndex, buildWsAccountGroups, type SeatAcctSig, type AcctIndex } from "./seatacct"; // ★0.14.45 부서 카드 노드별 계정 줄(순수 판정)
+import { planOfficeTab, repairOutcomeOf, type OfficeCtx } from "./officetab"; // 0.14.44 B5·B6 오피스 탭 안내(순수 판정)
+import { starvedNotice, starvedShouldPop, starvedKeyHasHead, starvedPopAgeMs, starvedDismissId, surfaceIdOfRef, locateStarvedSeat } from "./starvednotice"; // 0.14.43 UI2 큐 기아 경보 → 토스트·배너(순수 문구·좌석 확정)
 import { latestOnly, parseResultNotice, seatsBlockedText, SEATS_NOTE_POLL_MS } from "./updateresult"; // 1.1.8 U4 자동 갱신 결과 알림(응답 해석만 · 갱신 결정·집행 0)
 import {
   deptPendingText,
@@ -1197,6 +1214,7 @@ function setCcOpen(open: boolean) {
     if (ccHwTimer == null) ccHwTimer = setInterval(refreshHw, 2000) as unknown as number;
     if (ccClockTimer == null) ccClockTimer = setInterval(tickCc, 1000) as unknown as number;
   } else {
+    officeStopWatch(); // ★0.14.44 B5 패널을 닫으면 오피스 건강 확인도 멈춘다
     if (ccTimer != null) { clearInterval(ccTimer); ccTimer = null; }
     if (ccHwTimer != null) { clearInterval(ccHwTimer); ccHwTimer = null; }
     if (ccClockTimer != null) { clearInterval(ccClockTimer); ccClockTimer = null; }
@@ -1338,6 +1356,7 @@ function setCcTab(view: CcTab) {
   document.getElementById("cc-view-feed")!.hidden = view !== "feed";
   document.getElementById("cc-view-alarms")!.hidden = view !== "alarms";
   document.getElementById("cc-view-office")!.hidden = view !== "office";
+  if (view !== "office") officeStopWatch(); // ★0.14.44 B5 탭을 떠나면 건강 확인을 멈춘다
   // 오피스 탭 전면 모드 — cc-body의 대시보드 폭 상한(780px)을 해제해 3D를 창 크기에 연동(cc-glance 패턴).
   document.body.classList.toggle("cc-office", view === "office");
   document.querySelectorAll("#cc-tabs .cc-tab").forEach((b) =>
@@ -1358,6 +1377,7 @@ function setCcTab(view: CcTab) {
     // 탭 진입 시 대기 렌더 상한을 되살린다 — '더 보기'로 푼 확장이 세션 내내 상주하면
     // 5초 주기 refreshFeed 가 매번 전건 DOM 을 재구성한다(상한을 둔 취지가 사라진다).
     feedPendingExpanded = false;
+    feedDeptExpanded.clear();
     refreshFeed();
   }
   if (view === "alarms") renderAlarmHistory();
@@ -1365,22 +1385,85 @@ function setCcTab(view: CcTab) {
 }
 
 // 메타버스 오피스 탭 — 로컬 브리지(127.0.0.1:8642, 3D 실시간 오피스)를 iframe으로 내장.
-// 탭 진입 시에만 로드(상시 연결 방지)·브리지 부재 시 기동 안내만 표시.
+// 탭 진입 시에만 로드(상시 연결 방지).
+// ★0.14.44 B5·B6: 화면이 아직 실리지 않았을 때만 앱 백엔드 `office_health`(브리지의 실제 응답 확인)를 3초(3분 뒤부터 15초)마다 부르고,
+//   탭을 떠나거나 패널을 닫으면 멈춘다. 새 setInterval 없이 setTimeout 연쇄(탭 틱 수 핀 불변). 문구·판정은 officetab.ts(순수) —
+//   터미널 명령은 화면 어디에도 없다. 화면이 실린 뒤의 문제는 화면 안 배너(office-boot.js)가 맡는다 — 탭 안내와 겹치지 않는다.
+//   자산이 없으면(B6) 맥은 앱 세션당 1회 스스로 `repair_office_assets` 를 부르고(백엔드가 상한을 지킨다), 단추는 사람이 누를 때만(manual).
 const OFFICE_URL = "http://127.0.0.1:8642/";
-async function openOfficeView() {
-  const frame = document.getElementById("cc-office-frame") as HTMLIFrameElement | null;
-  const hint = document.getElementById("cc-office-hint");
-  if (!frame || !hint) return;
-  try {
-    // no-cors: 도달성 프로브만(응답은 opaque). tauri://localhost → http://127.0.0.1 은
-    // 교차출처라 CORS-fetch는 ACAO 없이 reject되어 브리지가 살아있어도 hint에 갇혔다(근본 수리).
-    await fetch(OFFICE_URL + "world", { mode: "no-cors", signal: AbortSignal.timeout(1500) });
-    hint.hidden = true;
-    if (!frame.src) frame.src = OFFICE_URL;
-  } catch {
-    hint.hidden = false;
-    frame.removeAttribute("src");
+let officeWatchGen = 0; // 확인 루프의 세대 — 탭을 떠나거나 다시 열면 올라가 낡은 루프가 스스로 끝난다
+let officeWatchTimer: number | undefined;
+let officeWatchSince = 0;
+let officeRepairing = false;
+let officeRepairOutcome: OfficeCtx["repairOutcome"] = "none";
+function officeStopWatch() {
+  officeWatchGen++;
+  if (officeWatchTimer !== undefined) {
+    clearTimeout(officeWatchTimer);
+    officeWatchTimer = undefined;
   }
+}
+function officeRenderHint(text: string, buttonLabel: string) {
+  const hint = document.getElementById("cc-office-hint");
+  const txt = document.getElementById("cc-office-hint-text");
+  const btn = document.getElementById("cc-office-repair") as HTMLButtonElement | null;
+  if (!hint || !txt || !btn) return;
+  hint.hidden = text === "";
+  if (txt.textContent !== text) txt.textContent = text;
+  btn.hidden = buttonLabel === "";
+  if (btn.textContent !== buttonLabel) btn.textContent = buttonLabel;
+}
+async function officeRunRepair(manual: boolean, gen: number) {
+  if (officeRepairing) return;
+  officeRepairing = true;
+  try {
+    const r = (await invoke("repair_office_assets", { manual })) as { status?: string } | null;
+    const o = repairOutcomeOf(r?.status);
+    officeRepairOutcome = o === "retry" ? "none" : o;
+  } catch {
+    officeRepairOutcome = "failed";
+  } finally {
+    officeRepairing = false;
+  }
+  // 복구 뒤 바로 한 번 다시 확인한다(성공 여부는 건강 확인이 판정 — 명령의 종료코드를 믿지 않는다).
+  if (gen === officeWatchGen) {
+    if (officeWatchTimer !== undefined) clearTimeout(officeWatchTimer);
+    officeWatchTimer = setTimeout(() => void officeWatchTick(gen), 300) as unknown as number;
+  }
+}
+async function officeWatchTick(gen: number) {
+  if (gen !== officeWatchGen) return;
+  officeWatchTimer = undefined;
+  const frame = document.getElementById("cc-office-frame") as HTMLIFrameElement | null;
+  if (!frame) return;
+  let h: unknown = null;
+  try {
+    h = await invoke("office_health");
+  } catch {
+    h = null; // 호출 실패 — 준비 중으로 본다(브리지가 없을 때와 같은 안내)
+  }
+  if (gen !== officeWatchGen) return; // 기다리는 사이 탭을 떠났다
+  const plan = planOfficeTab(h, { elapsedMs: Date.now() - officeWatchSince, repairing: officeRepairing, repairOutcome: officeRepairOutcome, isWindows: IS_WINDOWS });
+  if (plan.loadFrame) {
+    officeRenderHint("", "");
+    if (!frame.src) frame.src = OFFICE_URL;
+    return; // 실렸다 — 확인을 멈춘다
+  }
+  frame.removeAttribute("src"); // 화면이 실리지 않은 상태에서는 빈 틀을 두지 않는다
+  officeRenderHint(plan.text, plan.buttonLabel);
+  if (plan.autoRepair && !officeRepairing) void officeRunRepair(false, gen);
+  if (plan.nextPollMs > 0) officeWatchTimer = setTimeout(() => void officeWatchTick(gen), plan.nextPollMs) as unknown as number;
+}
+document.getElementById("cc-office-repair")?.addEventListener("click", () => {
+  officeRepairOutcome = "none";
+  void officeRunRepair(true, officeWatchGen);
+});
+function openOfficeView() {
+  if (!document.getElementById("cc-office-frame")) return;
+  officeStopWatch();
+  officeWatchSince = Date.now();
+  officeRepairOutcome = "none"; // 탭을 다시 열면 처음부터(복구 실패의 잔상을 끌고 가지 않는다)
+  void officeWatchTick(officeWatchGen);
 }
 
 // D5: 스킬 버튼 보드 — 카탈로그 큐레이션 렌더 + 일회용 워커 실행 + 산출물 회수(터미널 입력 0회).
@@ -2508,6 +2591,8 @@ async function loadDefaultSocketSlug(): Promise<void> {
 // + working = 역할 점 깜빡임 판정(appearance.ts nodeWorking 단일 출처 · 우리 판 — 잠정 X6).
 type NodeSig = SeatSig & { working: boolean };
 const nodeSig = new Map<string, NodeSig>(); // 키 = `${socket}#${surface_id}`
+// ★0.14.45 좌석별 계정 캐시 — org.status 좌석 행의 `account` 가산 키(같은 10초 틱 · 새 RPC·타이머 0). 키는 nodeSig 와 같다. 표시 전용.
+const seatAccts = new Map<string, SeatAcctSig>();
 // 신호 낡음 창(3×폴링 주기). 재부팅 직후 Windows 는 같은 조회가 더 걸리므로 그 축에서만 2배(winScaled 관례) —
 // 넘기면: 그 좌석은 회색 '미확인'(표시만 · 재기동·회수 판정과 무관).
 const SIG_STALE_MS_UI = winScaled(SIG_STALE_MS);
@@ -4933,6 +5018,17 @@ async function refreshSidebarStatus() {
           unregistered: isUnregisteredRoleSeat(n), // ★U12(리뷰1 #3) 등록 에이전트 없는 역할 좌석 — 빈 자리 판정 제외 · 중립 표식만
           at: Date.now(), // ★U4-A5① 성공 조회 시각 — 실패는 덮어쓰지 않으므로 3×주기 뒤 '미확인'이 된다
         });
+      // ★0.14.45 좌석별 계정 — 키가 없으면(구버전 데몬) present=false 로 적는다(값을 지어내지 않는다). 실패 조회는 덮어쓰지 않으므로 낡음 창 뒤 '계정 미확인'.
+      for (const n of r.surfaces ?? []) {
+        if (!n || typeof n !== "object") continue;
+        seatAccts.set(`${sock}#${n.surface_id}`, {
+          present: Object.prototype.hasOwnProperty.call(n, "account"),
+          raw: n.account,
+          role: typeof n.role === "string" ? n.role : null,
+          exited: n.exited === true,
+          at: Date.now(),
+        });
+      }
     } catch {
       /* 부서 데몬 일시 부재 */
     }
@@ -4961,6 +5057,53 @@ function updatePendingBadges(n: number) {
 // ws별 고유색 (id 기반 — 세션 복원에도 같은 ws는 같은 색)
 const WS_COLORS = ["#2f81f7", "#3fb950", "#d29922", "#f85149", "#a371f7", "#db61a2", "#39c5cf", "#e3b341"];
 
+// ---------- ★0.14.45 부서 카드 노드별 계정 줄 ----------
+// 판정·표기는 seatacct.ts(순수 · seatacct.test.ts), 여기는 배선이다. 재료는 org.status 10초 틱이 적는 seatAccts 와
+// 사용량 패널이 이미 가진 계정 행(ccAccounts) — 새 RPC·타이머 0. 이름은 사용량 패널과 같은 규칙(accountCardLabels =
+// accountDisplayLabels 의 카드판)으로 짓되, 겹침 꼬리표는 🔒 상태와 무관하게 **언제나 가린 형**(#hash6)이다(C1 — 카드 본문에
+// 이메일 원문이 나오는 경로 0 · 이메일은 툴팁만).
+function wsAcctIndex(): AcctIndex {
+  // ★1.1.10 편입: 우리 화면은 원작자 U1 사이드바 패널이 없어 ccAccounts 가 CC Live 탭을 열 때만 채워진다 — 재료는 우리 사이드바
+  //   15초 폴러의 accountsCache(같은 usage_accounts_all 응답)를 먼저 쓰고, 비었을 때만 ccAccounts 로 내려간다(카드가 늘 「계정 미확인」이 되지 않게).
+  const src: any[] = accountsCache.length ? (accountsCache as any[]) : Array.isArray(ccAccounts) ? ccAccounts : [];
+  const all = src.filter((a) => a && typeof a === "object") as AcctRow[];
+  const visible = all.filter((a) => !usageHidden.has(acctKey(a))); // 패널에 보이는 계정끼리 겹침 꼬리표를 정한다(패널과 같은 이름)
+  return buildAcctIndex(all, accountCardLabels(visible, ccHash6));
+}
+// ★(C2) 탭 한 번 그리기(renderWsTabs)당 계정 표는 한 번만 만든다 — buildTab 은 탭마다 불리므로 종전엔 탭 수만큼 다시 만들었다.
+//   renderWsTabs 밖에서 buildTab 이 불리면(지금은 없음 — 호출부 둘 다 renderWsTabs 안) 그때만 폴백으로 새로 만든다.
+let wsAcctIdxForRender: AcctIndex | null = null;
+function wsAcctIndexCached(): AcctIndex {
+  return wsAcctIdxForRender ?? wsAcctIndex();
+}
+function wsSeatAccts(ws: Workspace): { sid: number; sig: SeatAcctSig | undefined }[] {
+  return collectSids(ws.tree).map((sid) => ({ sid, sig: seatAccts.get(`${ws.socket}#${sid}`) }));
+}
+function buildWsAcctLine(ws: Workspace): HTMLElement | null {
+  try {
+    const groups = buildWsAccountGroups(wsSeatAccts(ws), wsAcctIndexCached(), ccAcctLabel, ccAcctRedact, Date.now(), SIG_STALE_MS_UI);
+    if (!groups.length) return null;
+    const line = document.createElement("div");
+    line.className = "ws-accts";
+    for (const g of groups) {
+      const chip = document.createElement("span");
+      chip.className = "ws-acct" + (g.unknown ? " unknown" : "");
+      chip.title = g.title;
+      const name = document.createElement("span");
+      name.className = "ws-acct-name";
+      name.textContent = g.label;
+      const roles = document.createElement("span");
+      roles.className = "ws-acct-roles";
+      roles.textContent = g.roles.join("·");
+      chip.append(name, roles);
+      line.appendChild(chip);
+    }
+    return line;
+  } catch {
+    return null;
+  }
+}
+
 function renderWsTabs() {
   const bar = document.getElementById("ws-tabs")!;
   // (v116-ui-close · Fable 적대 2R) 탭 이름을 고치는 중이면 다시 그리지 않는다 — innerHTML 을 비우면 편집 중인
@@ -4968,6 +5111,12 @@ function renderWsTabs() {
   //   isContentEditable 가드와 같은 계약). 편집이 끝나면 확정 처리기가 render() 로 다시 그린다.
   if (bar.querySelector('.ws-name[contenteditable="true"]')) return;
   bar.innerHTML = "";
+  // ★(C2) 계정 표는 이 렌더에서 한 번 — 실패해도 탭은 그대로(계정 줄만 빠진다 · buildWsAcctLine 의 try 가 받는다).
+  try {
+    wsAcctIdxForRender = wsAcctIndex();
+  } catch {
+    wsAcctIdxForRender = null;
+  }
   // 06: 2계층 tier 정렬 — pinned 그룹 → unpinned 그룹 → ungrouped ws(배열 순서). 시각 순서≠배열 순서이므로
   // 탭 핸들러는 캡처 idx 대신 workspaces.indexOf(ws)로 활성 비교/전환(stale idx 회피, close 핸들러 패턴 일치).
   // 06: 멤버0 그룹은 렌더에서 제외(유령 헤더 차단 · 적대검증 교정 — saveLayout이 모듈 상태도 청소).
@@ -4976,6 +5125,7 @@ function renderWsTabs() {
   const unpinnedG = groups.filter((g) => !g.pinned && hasMembers(g));
   for (const g of [...pinnedG, ...unpinnedG]) bar.appendChild(buildGroupSection(g));
   for (const ws of workspaces.filter((w) => !w.pending && w.groupId == null)) bar.appendChild(buildTab(ws));
+  wsAcctIdxForRender = null; // (C2) 렌더 밖에서는 캐시를 쓰지 않는다(다음 렌더가 새로 만든다)
 }
 
 // 06: ws 1행 탭 DOM 생성(기존 renderWsTabs forEach 본문을 외과적으로 추출 — idx→workspaces.indexOf(ws)만 치환).
@@ -5047,6 +5197,9 @@ function buildTab(ws: Workspace): HTMLElement {
     sub.appendChild(txt);
   }
   tab.append(titleRow, sub);
+  // ★0.14.45 노드별 계정 줄(같은 계정을 쓰는 노드는 한 묶음 · 이메일은 툴팁에만 · 모르면 '계정 미확인'). 실패해도 탭은 그대로.
+  const acctLine = ws.pending ? null : buildWsAcctLine(ws);
+  if (acctLine) tab.appendChild(acctLine);
   tab.addEventListener("mousedown", (e) => {
     // 우클릭은 전환하지 않음 — render()가 탭 DOM을 재생성하면 컨텍스트 메뉴가 죽은 엘리먼트를 잡는다
     if (e.button !== 0 || e.target === close) return;
@@ -6111,6 +6264,7 @@ function detachPane(sid: number, socket?: string): void {
     }
   }
   nodeSig.delete(`${socket}#${sid}`); // 사이드바 신호 캐시도 같이 — 10초 폴링을 기다리지 않는다
+  seatAccts.delete(`${socket}#${sid}`); // ★0.14.45 좌석 계정 캐시도 같이
   // 포커스 이동은 죽은 pane이 '활성 ws(동일 socket)' 소속일 때만 — 타부서 동일 sid 종료가 현 포커스를 오해제하지 않게.
   if (focusedSid === sid && (current()?.socket ?? undefined) === (socket ?? undefined))
     focusedSid = collectSids(current()?.tree ?? null)[0] ?? null;
@@ -6142,6 +6296,16 @@ interface FeedItem {
   // state::is_daemon_issued). 아래 isDaemonDetectedApproval 하나만 읽는다.
   // optional 인 이유는 구 데몬 프로세스가 살아 있는 스큐뿐이다(그 경우의 폴백도 그 함수에 있다).
   daemon_issued?: boolean;
+  // ★0.14.44 C3 — 데몬 feed.list 의 파생 칸(옛 데몬은 없다): 이 항목의 결정을 기다리는 연결이 지금 있는가 · 올린 좌석이 살아 있는가(모르면 null).
+  //   표지·「확인」·「모두 확인」의 판정은 feedclass.ts 의 순수 함수가 한다(칸이 없으면 전부 '아니오' = 종전 화면).
+  waiter?: boolean | null;
+  publisher_alive?: boolean | null;
+}
+// ★0.14.44 C2 — 한 항목이 어느 데몬에서 왔는가. socket 이 없으면 본부(종전) · 있으면 그 부서 소켓(응답에도 이 소켓을 쓴다 — 열쇠 = (소켓, request_id)).
+interface FeedOrigin {
+  socket?: string;
+  label: string;
+  replyable: boolean;
 }
 
 // '데몬이 화면 패턴으로 감지해 올린 승인 항목'인가 — CC 패널(refreshFeed)과 커맨드 팔레트의
@@ -6557,6 +6721,8 @@ function feedReplyErrorText(e: unknown): string {
   // 새 토큰으로 다시 붙는다(allocate 는 멱등이라 팀이 이미 만들어졌어도 다시 만들지 않는다).
   if (s.includes("owner_gui_required"))
     return "앱에서만 처리할 수 있는 항목입니다 — 다시 눌러 주세요(데몬 토큰이 막 바뀌었을 수 있습니다).";
+  // ★0.14.44 C2: 백엔드가 응답을 보낼 수 없는 소켓(부서 등록부에 없음 · 토큰 폴더가 본부와 같음)을 거부한 코드.
+  if (s.includes("socket_not_allowed")) return "이 부서의 항목은 앱에서 처리할 수 없습니다 — 해당 부서로 이동해 그 pane 에서 처리하세요.";
   if (s.includes("not_found")) return "항목을 찾을 수 없습니다(만료·삭제되었을 수 있음).";
   if (s.includes("already resolved")) return "이미 처리된 항목입니다.";
   return `전송 오류: ${s}`;
@@ -6570,11 +6736,11 @@ function feedReplyErrorText(e: unknown): string {
 // 여기서 또 부르면 클릭 1회당 전체 재렌더가 2회 난다(N 건 정리 = O(N²) DOM 재구성).
 // 배지 갱신은 이벤트 경로에도 있으나(refreshSidebarStatus) 데몬 이벤트 유실 대비로 남긴다
 // — 그것은 목록 DOM 을 만들지 않아 비용이 다르다.
-function wireFeedDismiss(dismiss: HTMLButtonElement, requestId: string) {
+function wireFeedDismiss(dismiss: HTMLButtonElement, requestId: string, socket?: string) {
   dismiss.addEventListener("click", async () => {
     dismiss.disabled = true;
     try {
-      await invoke("feed_reply", { requestId, decision: "dismissed" });
+      await invoke("feed_reply", { requestId, decision: "dismissed", socket }); // socket 없음 = 본부(종전) · 부서 항목은 그 부서 소켓
     } catch (e) {
       toast("health", "알림 치우기 실패", feedReplyErrorText(e));
       refreshFeed(); // 실패 시엔 이벤트가 오지 않으므로 여기서 되돌린다(버튼 상태 복구)
@@ -6656,19 +6822,107 @@ function renderOtherWorkspacePending(box: HTMLElement): number {
   return total;
 }
 
+// ★0.14.44 C2 「그 화면으로 이동」 — 부서 워크스페이스로 바꾸고 그 좌석을 띄워 잠깐 강조한다(기존 inject-flash 재사용). 이미 닫힌 탭이면 사실대로 알린다.
+function jumpToDeptSurface(socket: string, sid: number | null, label: string) {
+  const out = switchToWorkspaceBySocket(socket);
+  if (out === "missing") {
+    toast("feed", "이동 불가", `${label} 탭이 이미 닫혔습니다 — 부서를 다시 열어 주세요.`);
+    return;
+  }
+  if (out === "pending") {
+    toast("feed", "부서 데몬 준비 중", `${label} 워크스페이스로 이동했습니다 — 기동이 끝나면 pane 이 나타납니다.`);
+  } else if (sid != null) {
+    jumpToSurface(sid, socket);
+    const rt = panes.get(paneKey(sid, socket));
+    if (rt) {
+      rt.el.classList.add("inject-flash");
+      setTimeout(() => rt.el.classList.remove("inject-flash"), 700);
+    }
+  }
+  setCcOpen(false); // CC 패널이 pane 을 가리므로 닫는다
+}
+
+// ★0.14.44 C3 「정보성 알림 N건 모두 확인」 — 정보성 종류 ∧ 기다리는 연결 없음 ∧ 데몬이 올린 것 아님 만(판정 = feedclass.ts isBulkConfirmable). 소켓별 · 한 번에 최대 BULK_CONFIRM_MAX.
+//   decision="dismissed"(판정 어휘 아님 — 거부 카운터 비오염). 순서대로 하나씩 보내고(동시 폭주 금지) 실패는 건수로 알린다.
+function renderBulkConfirm(box: HTMLElement, items: FeedItem[], socket?: string) {
+  const targets = items.filter((i) => isBulkConfirmable(i)).slice(0, BULK_CONFIRM_MAX);
+  if (targets.length === 0) return;
+  const row = document.createElement("div");
+  row.className = "feed-bulk";
+  const btn = document.createElement("button");
+  btn.textContent = `정보성 알림 ${targets.length}건 모두 확인`;
+  btn.title = BULK_CONFIRM_TITLE;
+  const sum = document.createElement("span");
+  sum.className = "fi-meta";
+  sum.textContent = bulkConfirmSummary(targets);
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    let failed = 0;
+    try {
+      for (const t of targets) {
+        try {
+          await invoke("feed_reply", { requestId: t.request_id, decision: "dismissed", socket });
+        } catch {
+          failed++;
+        }
+      }
+    } finally {
+      if (failed > 0) toast("health", "일부 알림을 확인하지 못했습니다", `${failed}건 — 이미 처리됐거나 부서 응답이 없습니다.`);
+      btn.disabled = false;
+      refreshFeed();
+      refreshSidebarStatus();
+    }
+  });
+  row.append(btn, sum);
+  box.appendChild(row);
+}
+
+interface FeedSection {
+  socket?: string;
+  label: string;
+  ok: boolean;
+  replyable: boolean;
+  items: FeedItem[]; // 최신순
+}
+
+// 세대 가드(리뷰 1 의 4번) — 늦게 끝난 낡은 응답이 마지막 그림이 되지 않게 한다. 부서 묶음의 '더 보기' 펼침 상태(소켓 키)도 여기 둔다.
+let feedRefreshGen = 0;
+const feedDeptExpanded = new Set<string>();
 async function refreshFeed() {
-  const r = (await invoke("feed_list", { status: null }).catch(() => null)) as
-    | { items: FeedItem[] }
+  const myGen = ++feedRefreshGen;
+  // 패널이 닫혀 있으면 조회하지 않는다 — 배지·알림 숫자는 refreshSidebarStatus(전체 소켓 집계)가 단독 소유라 이 조회 결과는 닫힌 동안 쓰이지 않는다.
+  //   (feed_list_all 은 본부 + 전 부서 데몬을 부르므로 닫힌 채 이벤트마다 도는 것은 순수 비용이다 — 성찰 2회차 m-2. 위 세대 번호는 올려 두어 진행 중이던 낡은 응답은 계속 버려진다.)
+  if (!(ccOpen && ccTab === "feed")) return;
+  // ★0.14.44 C2: 본부 + 등록된 부서를 한꺼번에(feed_list_all) — 이 목록을 그리는 **이 한 곳**만 바꿨다(다른 feed_list 호출처는 본부 전용 그대로).
+  //   호출 실패(옛 백엔드 등)이거나 본부 행이 실패면 종전 경로(feed_list + 부서 이동 띠)로 돌아간다.
+  const all = (await invoke("feed_list_all", { status: null }).catch(() => null)) as
+    | { sockets?: { socket: string; dept: string | null; display_name?: string | null; ok: boolean; items?: FeedItem[]; replyable?: boolean }[] }
     | null;
+  let sections: FeedSection[] | null = null;
+  if (all && Array.isArray(all.sockets) && all.sockets.length > 0 && all.sockets[0].dept === null && all.sockets[0].ok) {
+    sections = all.sockets.map((x) => ({
+      socket: x.dept === null ? undefined : x.socket,
+      label: x.dept === null ? "본부" : x.display_name || x.dept,
+      ok: x.ok,
+      replyable: x.dept === null ? true : x.replyable === true,
+      items: Array.isArray(x.items) ? x.items : [], // 데몬 순서(오래된 것 먼저) — 그릴 때 뒤집는다
+    }));
+  }
+  const legacyMode = sections === null;
+  const r = sections
+    ? { items: sections[0].items }
+    : ((await invoke("feed_list", { status: null }).catch(() => null)) as { items: FeedItem[] } | null);
   if (!r) return;
+  if (myGen !== feedRefreshGen) return; // 기다리는 사이 더 새 갱신이 시작됐다 — 이 응답은 버린다
   const items = r.items.slice().reverse();
+  const deptSections = sections ? sections.slice(1) : [];
 
   // 대기 배지는 refreshSidebarStatus(전체 소켓 집계)가 단독 소유 — 여기선 목록만 렌더.
   // (feed_list는 기본 데몬 1개만 조회하므로 멀티부서 집계와 스코프가 달라 배지 구동에 부적합.)
   if (!(ccOpen && ccTab === "feed")) return;
   const box = document.getElementById("cc-feed-items")!;
   box.innerHTML = "";
-  if (items.length === 0) {
+  if (items.length === 0 && !(deptSections.some((d) => d.items.length > 0 || !d.ok))) {
     // ★'비어 있음'만 적으면 거짓말이 될 수 있다 — 이 목록은 기본 데몬 1개만 보므로 부서 데몬에
     //  대기가 남아 있어도 비기 때문이다. 그 경우 사유를 함께 적는다.
     //  ※ 수치는 **타 소켓 직접 합**(pendingBySocket 소켓별 값)이다 — 전 소켓 합산(pendingApprovals)을
@@ -6728,7 +6982,15 @@ async function refreshFeed() {
   //     ★#4-b(2026-08-22): 그 값을 문장 한 줄로만 쓰던 것을 **부서별 행 + 이동 버튼**으로 바꾼다.
   //     "N건이 어딘가에 있다"는 고지는 사각을 아는 데까지만 데려다줄 뿐, 오너를 그 부서로
   //     데려가지 못했다(그래서 부서 상태가 '멈춤'으로 체감됐다).
-  renderOtherWorkspacePending(box);
+  if (legacyMode) renderOtherWorkspacePending(box); // 종전 경로(feed_list_all 을 쓸 수 없을 때)의 대비 — 새 경로에서는 부서가 아래에 같은 목록으로 나온다(C2)
+  else if (deptSections.length > 0) {
+    const hh = document.createElement("div");
+    hh.className = "feed-dept-head";
+    hh.textContent = `본부 — 대기 ${pendingItems.length}건`;
+    box.appendChild(hh);
+  }
+  // ★0.14.44 C3 「정보성 알림 N건 모두 확인」 — 이 소켓(본부)의 목록 위에.
+  renderBulkConfirm(box, pendingItems);
   // (b) 상한 초과분은 '나머지 보기'로 연다 — 지울 수 없는 pending 을 만들지 않기 위함이다.
   if (pendingHidden > 0) {
     const more = document.createElement("button");
@@ -6740,7 +7002,9 @@ async function refreshFeed() {
     });
     box.appendChild(more);
   }
-  for (const item of shown) {
+  const headOrigin: FeedOrigin = { label: "본부", replyable: true };
+  const renderItem = (item: FeedItem, origin: FeedOrigin) => {
+    const sock = origin.socket; // 없으면 본부(종전) · 있으면 그 부서 소켓 — 응답·치우기에 그대로 쓴다(열쇠 = (소켓, request_id))
     const el = document.createElement("div");
     el.className = `feed-item ${item.status}`;
     const title = document.createElement("div");
@@ -6814,7 +7078,7 @@ async function refreshFeed() {
       const actions = document.createElement("div");
       actions.className = "fi-actions";
       const jump = document.createElement("button");
-      jump.textContent = "이 pane에서 직접 응답";
+      jump.textContent = sock ? "그 화면으로 이동" : "이 pane에서 직접 응답";
       const target = item.surface_id;
       if (target == null) {
         // surface 미상(구 영속 라인 등) — 점프 대상이 없으면 비활성해 헛클릭을 막는다.
@@ -6823,7 +7087,11 @@ async function refreshFeed() {
         jump.title = "대상 surface 미상 — 해당 pane을 직접 찾아 응답하세요";
       } else {
         jump.addEventListener("click", () => {
-          // feed_list는 기본 데몬 1개만 조회한다(위 refreshFeed 주석) → socket 미지정 = 기본 데몬 ws.
+          if (sock) {
+            jumpToDeptSurface(sock, target, origin.label); // ★0.14.44 C2 — 부서 워크스페이스로 바꾸고 그 좌석을 띄워 잠깐 강조
+            return;
+          }
+          // 본부 항목 — socket 미지정 = 기본 데몬 ws(종전).
           jumpToSurface(target);
           setCcOpen(false); // CC 패널이 pane을 가리므로 닫는다 — 프롬프트를 바로 보고 답하게.
         });
@@ -6834,7 +7102,7 @@ async function refreshFeed() {
         "이 알림 항목만 목록에서 지웁니다 — 앱에는 아무것도 전달되지 않습니다(pane 종료 등으로 데몬 자동 정리가 닿지 않는 항목의 수동 해소 경로).\n" +
         "⚠ 해당 pane에 승인 프롬프트가 아직 떠 있으면 데몬이 잠시 뒤(최대 1분) 다시 감지해 항목이 재등장합니다 — 정상 동작입니다.\n" +
         "⚠ 치울 때마다 '사람 개입 필요' 방치 경보(approval.stalled)의 대기시간이 처음부터 다시 시작됩니다.";
-      wireFeedDismiss(dismiss, item.request_id); // 클릭 배선 = 공용 헬퍼(주석·근거는 그쪽)
+      wireFeedDismiss(dismiss, item.request_id, sock); // 클릭 배선 = 공용 헬퍼(주석·근거는 그쪽)
       actions.append(jump, dismiss);
       el.append(note, actions);
     } else if (item.status === "pending" && classifyPendingFeed(item) === "cycle-verify") {
@@ -6855,9 +7123,45 @@ async function refreshFeed() {
       const dismiss = document.createElement("button");
       dismiss.textContent = "알림 치우기";
       dismiss.title = CYCLE_VERIFY_DISMISS_TITLE;
-      wireFeedDismiss(dismiss, item.request_id);
+      wireFeedDismiss(dismiss, item.request_id, sock);
       actions.append(dismiss);
       el.append(note, actions);
+    } else if (item.status === "pending" && sock && isHeadOnlyProcedureKind(item.kind)) {
+      // ★0.14.44 C2 — 본부 전용 절차가 붙은 두 종류(팀 만들기 제안 · CEO 승격 요청)가 부서 소켓에서 보이면 Allow 를 두지 않고 「그 부서로 이동」만.
+      const note = document.createElement("div");
+      note.className = "fi-meta";
+      note.textContent = "본부에서만 처리하는 종류의 요청이 이 부서에 올라와 있습니다 — 해당 부서로 이동해 확인하세요.";
+      const actions = document.createElement("div");
+      actions.className = "fi-actions";
+      const go = document.createElement("button");
+      go.textContent = "그 부서로 이동";
+      go.addEventListener("click", () => jumpToDeptSurface(sock, null, origin.label));
+      actions.append(go);
+      el.append(note, actions);
+    } else if (item.status === "pending" && sock && !origin.replyable) {
+      // 이 앱이 응답을 보낼 수 없는 소켓(부서 등록부에 없음 · 토큰 폴더가 본부와 같음) — 단추를 내리고 이동만(백엔드도 거부한다).
+      const note = document.createElement("div");
+      note.className = "fi-meta";
+      note.textContent = "이 부서의 항목은 앱에서 처리할 수 없습니다 — 해당 부서로 이동해 그 pane 에서 처리하세요.";
+      const actions = document.createElement("div");
+      actions.className = "fi-actions";
+      const go = document.createElement("button");
+      go.textContent = "그 부서로 이동";
+      go.addEventListener("click", () => jumpToDeptSurface(sock, item.surface_id ?? null, origin.label));
+      actions.append(go);
+      el.append(note, actions);
+    // ★1.1.10 편입: 원작자 U16 team-create 카드 분기는 받지 않는다(D-TEAM 휴면 · 1.1.8 결정① 승계).
+    } else if (item.status === "pending" && isConfirmableNotice(item)) {
+      // ★0.14.44 C3 — 정보성 알림(기다리는 연결 없음)에는 Allow·Deny 대신 「확인」 하나(`dismissed`) — 알림에 승인 단추가 달려 있으면 초보가 무엇을 승인하는지 알 수 없다.
+      //   기다리는 연결이 있으면(waiter=true) 이 분기를 타지 않고 종전 단추를 그대로 둔다(「확인」의 응답은 기다리는 쪽에 거부로 가기 때문 — 마지막 확인 D2).
+      const actions = document.createElement("div");
+      actions.className = "fi-actions";
+      const ok = document.createElement("button");
+      ok.textContent = NOTICE_CONFIRM_LABEL;
+      ok.title = "이 알림을 확인했습니다 — 목록에서 닫습니다(승인이 아닙니다).";
+      wireFeedDismiss(ok, item.request_id, sock);
+      actions.append(ok);
+      el.append(actions);
     } else if (item.status === "pending") {
       const actions = document.createElement("div");
       actions.className = "fi-actions";
@@ -6898,7 +7202,7 @@ async function refreshFeed() {
               }
             } else {
               try {
-                await invoke("feed_reply", { requestId: item.request_id, decision });
+                await invoke("feed_reply", { requestId: item.request_id, decision, socket: sock }); // 부서 항목은 그 부서 소켓으로(C2)
               } catch (e) {
                 toast("health", decision === "allow" ? "승인 실패" : "거부 실패", feedReplyErrorText(e));
               }
@@ -6912,6 +7216,17 @@ async function refreshFeed() {
         btns.push(btn);
         actions.appendChild(btn);
       }
+      // ★0.14.44 C3 표지 「요청한 좌석이 종료됨」 — 정보일 뿐 Allow·Deny 는 그대로 두고 「치우기」를 **더한다**(판정 = feedclass.ts isEndedSeatRequest — 다섯 조건 + 오너의 카드 제외).
+      if (isEndedSeatRequest(item)) {
+        const mark = document.createElement("span");
+        mark.className = "fi-ended-mark";
+        mark.textContent = ENDED_SEAT_MARK;
+        const clear = document.createElement("button");
+        clear.textContent = "치우기";
+        clear.title = "이 항목만 목록에서 지웁니다(판정이 아닙니다) — 요청한 좌석이 이미 끝나 응답을 받을 쪽이 없습니다.";
+        wireFeedDismiss(clear, item.request_id, sock);
+        actions.append(mark, clear);
+      }
       el.appendChild(actions);
     } else {
       const d = document.createElement("div");
@@ -6920,6 +7235,42 @@ async function refreshFeed() {
       el.appendChild(d);
     }
     box.appendChild(el);
+  };
+  for (const item of shown) renderItem(item, headOrigin);
+  // ★0.14.44 C2 부서별 묶음 — 머리글("부서 이름 — 대기 N건") + 같은 항목 그리기. 응답 없는 부서는 한 줄 안내(다음 갱신 틱에 다시 확인).
+  for (const sec of deptSections) {
+    const sItems = sec.items.slice().reverse();
+    const sPending = sItems.filter((i) => i.status === "pending");
+    const hh = document.createElement("div");
+    hh.className = "feed-dept-head";
+    hh.textContent = `${sec.label} — 대기 ${sPending.length}건`;
+    box.appendChild(hh);
+    if (!sec.ok) {
+      const down = document.createElement("div");
+      down.className = "cc-empty";
+      down.textContent = "이 부서는 지금 응답이 없습니다 — 자동으로 다시 확인합니다";
+      box.appendChild(down);
+      continue;
+    }
+    if (sec.replyable) renderBulkConfirm(box, sPending, sec.socket); // 응답할 수 없는 부서에는 「모두 확인」을 내지 않는다(누르면 전부 실패)
+    const sExpanded = !!sec.socket && feedDeptExpanded.has(sec.socket);
+    const sPendingShown = sExpanded ? sPending : sPending.slice(0, PENDING_RENDER_CAP);
+    const sHidden = sPending.length - sPendingShown.length;
+    if (sHidden > 0) {
+      // 부서 묶음에도 본부와 같은 '더 보기' — 넘는 항목을 볼 수도 치울 수도 없는 사각을 만들지 않는다(리뷰 1 의 10번).
+      const more = document.createElement("button");
+      more.textContent = `대기 ${sHidden}건 더 보기 (총 ${sPending.length}건)`;
+      more.title = "대량 렌더는 UI 를 느리게 만들 수 있습니다 — 필요할 때만 펼치세요.";
+      const key = sec.socket;
+      more.addEventListener("click", () => {
+        if (key) feedDeptExpanded.add(key);
+        refreshFeed();
+      });
+      box.appendChild(more);
+    }
+    const sShown = sPendingShown.concat(sItems.filter((i) => i.status !== "pending").slice(0, Math.max(0, 50 - sPendingShown.length)));
+    const origin: FeedOrigin = { socket: sec.socket, label: sec.label, replyable: sec.replyable };
+    for (const item of sShown) renderItem(item, origin);
   }
 }
 
@@ -8570,6 +8921,8 @@ function toast(category: string, name: string, detail: string, onClick?: () => v
 // 완료·실패 때 dismissToast로 내리는 기존 계약은 그대로 유지되고, 페어가 유실돼도
 // TTL이 최후 방어선으로 화면을 정리한다(구 구현은 타이머가 없어 영구 잔존했다).
 const stickyToasts = new Map<string, { el: HTMLElement; timer: ReturnType<typeof setTimeout> }>();
+const starvedLastKey = new Map<string, string>();
+const starvedLastPopAt = new Map<string, { wall: number; mono: number }>();
 
 // onClick: 누를 수 있는 지속형 토스트(B15 재시작 1클릭). 갱신마다 다시 매기 위해 핸들러를
 // 요소에 직접 둔다(addEventListener 누적 금지 — 같은 id 로 여러 번 갱신되면 중복 발화한다).
@@ -8666,10 +9019,16 @@ async function osBanner(title: string, body: string) {
   }
 }
 
-/// ★0.14.43(UI2): 그 좌석의 '큐 막힘' 토스트를 거둔다(없으면 무동작) — id 의 모양은 starvednotice.ts 한 곳이 정한다.
+/// ★0.14.43(UI2): 그 좌석의 대기·막힘 토스트를 거두고 구간을 끝낸다(없으면 무동작) — id 의 모양은 starvednotice.ts 한 곳이 정한다.
 function dismissStarvedToast(socketSlug: unknown, surfaceId: unknown): void {
   const id = starvedDismissId(socketSlug, surfaceId);
-  if (id) dismissToast(id);
+  if (id) { dismissToast(id); starvedLastKey.delete(id); starvedLastPopAt.delete(id); }
+}
+
+/// ★0.14.48(D · F1-R): 만료·되살림된 항목이 **기억한 바로 그 머리**일 때만 그 좌석의 구간 기억을 지운다(꼬리·다른 항목·다른 소켓은 무동작) — 같은 id 가 되살아나 다시 기다리면 새 구간이다. 토스트는 건드리지 않는다.
+function forgetStarvedHead(socketSlug: unknown, surfaceId: unknown, entryId: unknown): void {
+  const id = starvedDismissId(socketSlug, surfaceId);
+  if (id && starvedKeyHasHead(starvedLastKey.get(id), entryId)) { starvedLastKey.delete(id); starvedLastPopAt.delete(id); }
 }
 
 /// ★0.14.43(UI2): '큐 막힘' 토스트를 **눌렀을 때만** 그 좌석 pane 으로 간다(자동 전환·포커스 강탈 없음 — 클릭은 사람의 의사표시다).
@@ -8830,17 +9189,28 @@ function onDaemonEvent(event: Record<string, unknown>) {
     //   질문 창에 답하기 …) — 알리는 표면이 없어 몇 시간씩 막혀도 아무도 몰랐다(CSO 좌석 자신의 경보는 라우터가 폐기한다).
     //   ① 문구·분류·id 는 순수 starvedNotice(starvednotice.ts) — payload 는 신뢰하지 않는다(타입 검사·길이 절단). 화면에는 stickyToast(textContent)로만 간다.
     //   ② 같은 좌석은 같은 id 하나로 갱신된다(데몬 쿨다운 5분이 빈도를 묶는다 — GUI 쪽 추가 타이머 없음). 풀리면 queue.delivered·좌석 종료가 거둔다(아래).
-    //   ③ 사람이 조치해야 하는 사유만 OS 배너를 겸한다(approval·paused·wait 는 토스트만 — 승인은 기존 승인 알림 경로).
+    //   ③ DESIGN-D-v3 §4: 사람 손은 매번 팝업·OS 배너, 대기(approval·paused·wait)는 같은 제목으로 구간당 1회 팝업하고 이후 이력만 갱신한다.
     //   ④ **자동 전환·포커스 강탈 없음** — 토스트를 눌렀을 때만 그 좌석으로 간다(다른 탭이면 탭 전환 포함 · 못 찾으면 무동작 · focusStarvedSeat).
     //   ⑤ 끝의 return — 폴백 레인(category)을 타지 않는다(이중 표시 금지).
     const starved = starvedNotice(payload, event.socket_slug);
     if (starved) {
       const seat = surfaceIdOfRef(payload.surface_ref);
       const slug = typeof event.socket_slug === "string" ? event.socket_slug : "";
-      stickyToast(starved.id, "health", starved.title, starved.detail, seat === null ? undefined : () => void focusStarvedSeat(slug, seat));
+      const lastPopAt = starvedLastPopAt.get(starved.id);
+      if (starvedShouldPop(starvedLastKey.get(starved.id), starved, lastPopAt === undefined ? undefined : starvedPopAgeMs(Date.now(), lastPopAt.wall, performance.now(), lastPopAt.mono))) {
+        stickyToast(starved.id, starved.level, starved.title, starved.detail, seat === null ? undefined : () => void focusStarvedSeat(slug, seat));
+        starvedLastPopAt.set(starved.id, { wall: Date.now(), mono: performance.now() });
+      } else {
+        recordAlarm(starved.level, starved.title, starved.detail, starved.id);
+      }
+      starvedLastKey.set(starved.id, starved.stateKey);
       if (starved.humanNeeded) osBanner(starved.title, starved.detail);
     }
     return;
+  }
+  if (name === "queue.expired" || name === "queue.revived") {
+    // ★0.14.48(D · F1-R): 기억한 머리가 만료·되살림되면 그 구간은 끝났다 — 같은 id 가 되살아나 다시 기다리면 새 구간 첫 팝업이 나가야 한다. 다른 처리는 없다(종전과 같이 이어서 흐른다).
+    forgetStarvedHead(event.socket_slug, sid, payload.queue_entry_id);
   }
   if (name === "queue.delivered") {
     // ★0.14.43(UI2): 그 좌석의 큐가 움직였다 = 막힘이 풀렸다 — 같은 좌석의 '큐 막힘' 토스트를 거둔다(없으면 무동작). 다른 처리는 없다

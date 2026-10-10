@@ -1047,6 +1047,61 @@ fn same_dir_on_disk(a: &str, b: &str) -> bool {
     }
 }
 
+/// ★(0.14.44 · C3) `feed.list` 파생 칸의 재료 ① — 살아 있는 좌석 번호 집합(좌석 맵 잠금은 이 함수 안에서 끝난다). 순수 읽기 · poison 관용.
+#[deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+fn feed_list_alive_seats(daemon: &Arc<Daemon>) -> std::collections::HashSet<u64> {
+    let seats: Vec<(u64, Arc<crate::state::Surface>)> = daemon
+        .surfaces
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .map(|(k, v)| (*k, v.clone()))
+        .collect();
+    seats
+        .iter()
+        .filter(|(_, s)| !s.exited.load(std::sync::atomic::Ordering::Relaxed))
+        .map(|(k, _)| *k)
+        .collect()
+}
+
+/// ★(0.14.44 · C3) 재료 ② — 지금 결정을 기다리는 연결이 있는 request_id 집합. 호출부가 항목 잠금을 쥔 채 부른다(잠금 순서 feed_items → feed_waiters).
+#[deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+fn feed_list_waiting(daemon: &Arc<Daemon>) -> std::collections::HashSet<String> {
+    daemon
+        .feed_waiters
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|(_, tx)| !tx.is_closed())
+        .map(|(k, _)| k.clone())
+        .collect()
+}
+
+/// ★(0.14.44 · C3) `publisher_alive` — 올린 좌석이 살아 있는가. 올린 좌석을 모르거나 이 데몬이 뜨기 전에 만들어진 항목이면 `null`.
+#[deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+fn feed_publisher_alive(
+    publisher_surface: Option<u64>,
+    created_at: f64,
+    daemon_started_at: f64,
+    alive: &std::collections::HashSet<u64>,
+) -> Option<bool> {
+    let sid = publisher_surface?;
+    if created_at < daemon_started_at {
+        return None;
+    }
+    Some(alive.contains(&sid))
+}
+
+/// ★(0.14.44 · A3) 승인 매칭 문맥 — 이 데몬의 묶음 값과 "폴더 건너뛰기" 손잡이. 저장소 잠금 **밖에서** 부른다(파일 입출력이 든다).
+#[deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+fn approval_match_ctx(daemon: &Arc<Daemon>) -> crate::approval::MatchCtx {
+    let dir = crate::state::state_dir(&daemon.socket_path);
+    crate::approval::MatchCtx {
+        lane: crate::approval::lane_value(&daemon.socket_path, &dir),
+        neutral: crate::approval::cwd_neutral_enabled(),
+    }
+}
+
 /// 승인 저장소 사고를 **stderr 에 한 번만** 남긴다(수렴 R2 · claude minor).
 ///
 /// 왜 한 번인가: 읽기 실패는 사람이 파일을 고칠 때까지 **매 호출** 재발하고, guard.sh 는 위험
@@ -6059,6 +6114,8 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             let usage_now = crate::state::now_epoch();
             let usage_view = crate::accounts::seat_identity_view_at(daemon, usage_now);
             let usage_stale_secs = crate::accounts::account_alert_stale_secs();
+            // ★0.14.45 좌석별 계정(`account`) — 같은 신원 표에서 만든다(추가 파일 IO 0 · surfaces 락 밖).
+            let seat_accounts = crate::accounts::seat_account_map(daemon, &usage_view);
             let surfaces = daemon.surfaces.lock().unwrap();
             let mut list: Vec<Value> = surfaces
                 .values()
@@ -6174,6 +6231,8 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                                 usage_stale_secs,
                             )
                         }),
+                        // ★0.14.45 좌석별 계정 — org.status 와 같은 키·같은 의미(표시 전용 가산 · null = 에이전트 아님·종료·수집 실패).
+                        "account": seat_accounts.get(&s.id).cloned().unwrap_or(Value::Null),
                     })
                 })
                 .collect();
@@ -7429,7 +7488,7 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                 // writer(state.rs)가 push(N)과 fetch_add(N)을 같은 락 아래에서 수행하므로,
                 // 락 보유 중 읽으면 (sb.len, total)이 항상 일관 — oldest/skip 오프셋 어긋남 차단.
                 // ★스냅샷 값만 꺼내고 락은 **이 블록에서 놓는다** — quiet 표본은 락 밖에서(중첩 0).
-                let (lines, start, next_cursor, total, truncated) = {
+                let (lines, start, next_cursor, total, truncated, echo) = {
                     let sb = surface.scrollback.lock().unwrap_or_else(|e| e.into_inner());
                     let total = surface.line_count.load(Ordering::Relaxed);
                     let oldest = total.saturating_sub(sb.len() as u64); // sb[0]의 라인 번호
@@ -7438,8 +7497,20 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     let skip = (start - oldest) as usize;
                     let lines: Vec<String> = sb.iter().skip(skip).take(max_lines).cloned().collect();
                     let next_cursor = start + lines.len() as u64;
-                    (lines, start, next_cursor, total, truncated)
+                    // ★(0.14.45 · 성찰 2회차 M1-a) 다시 그리기 요청의 반향 줄 구간 — 같은 락 아래 한 관측(ingest 가 같은 락 아래 기록한다).
+                    let echo = crate::repaint::echo_ranges(&surface);
+                    (lines, start, next_cursor, total, truncated, echo)
                 };
+                // 반향 구간(다시 그려진 옛 줄의 재방송)은 델타 본문에서 뺀다 — 옛 오류·완료 줄이 `since_line` 뒤의 새 사실로 보이지 않게.
+                //   커서 셈(`since`·`next_cursor`·`latest_cursor`)은 종전 그대로(번호는 빠진 줄을 포함해 매겨진다) · 뺀 줄 수는 `repaint_echo_skipped`.
+                let kept: Vec<&String> = lines
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| !crate::repaint::line_in_echo(&echo, start + *i as u64))
+                    .map(|(_, l)| l)
+                    .collect();
+                let skipped = lines.len() - kept.len();
+                let text = kept.iter().map(|l| l.as_str()).collect::<Vec<_>>().join("\n");
                 let quiet_secs = quiet_secs_consistent(&surface, gen_before);
                 // ★(⑴) 델타 경로는 **의미가 라인 커서**라 grid 로 갈아탈 수 없다(그리드 행은
                 // 단조 라인이 아니다 — 갈아타면 모니터가 같은 화면을 새 라인으로 무한 재수신한다).
@@ -7447,10 +7518,11 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                 return Reply::Single(ok_response(
                     &id,
                     json!({"surface_id": sid, "surface_ref": surface_ref(sid),
-                           "text": lines.join("\n"), "line_count": lines.len(),
+                           "text": text, "line_count": kept.len(),
                            "since": start, "next_cursor": next_cursor,
                            "latest_cursor": total, "truncated": truncated,
-                           "source": "scrollback", "scrollback_stale": stale, "quiet_secs": quiet_secs}),
+                           "source": "scrollback", "scrollback_stale": stale, "repaint_echo_skipped": skipped,
+                           "quiet_secs": quiet_secs}),
                 ));
             }
             // grid = vt100 그리드에서 재구성한 **정확한 현재 화면**(데몬 승인 감지기와 동일 소스).
@@ -7517,11 +7589,9 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     &format!("surface {sid} not found"),
                 ));
             };
-            // 미제공 시 현재 크기 유지 (surface 조회 후 fallback 계산)
-            let (cur_rows, cur_cols) = {
-                let parser = surface.parser.lock().unwrap_or_else(|e| e.into_inner());
-                parser.screen().size()
-            };
+            // 미제공 시 현재 크기 유지 (surface 조회 후 fallback 계산) — ★(0.14.45 · F2-A1) 재동기 흔들기 중이면 파서의
+            //   임시 높이(rows-1)가 아니라 정식 크기를 읽는다(너비만 바꾸는 GUI 변경이 흔들린 높이를 굳히는 경로 차단).
+            let (cur_rows, cur_cols) = crate::repaint::current_size_for_resize(&surface);
             let rows = match param_dim(&params, "rows", cur_rows, MAX_ROWS) {
                 Ok(v) => v,
                 Err(e) => return Reply::Single(err_response(&id, "invalid_params", &e)),
@@ -7530,29 +7600,15 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                 Ok(v) => v,
                 Err(e) => return Reply::Single(err_response(&id, "invalid_params", &e)),
             };
-            let res = surface
-                .master
-                .lock()
-                .unwrap()
-                .resize(portable_pty::PtySize {
-                    rows,
-                    cols,
-                    pixel_width: 0,
-                    pixel_height: 0,
-                });
-            match res {
-                Ok(()) => {
-                    surface
-                        .parser
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .set_size(rows, cols);
-                    Reply::Single(ok_response(
-                        &id,
-                        json!({"surface_id": sid, "rows": rows, "cols": cols}),
-                    ))
-                }
-                Err(e) => Reply::Single(err_response(&id, "resize_failed", &e.to_string())),
+            // ★(0.14.45 · F2-A1) PTY · 파서 두 단계를 좌석 `resize_gate` 락 아래에서 한 번에 한다 — 재동기 스레드
+            //   (`repaint::nudge_resize` · 크기 흔들기)와 엇갈려 끝 크기가 어긋나거나 GUI 크기가 사라지는 경합 차단.
+            //   세대가 오르므로 흔들기 중이던 스레드는 이 크기를 존중하고 되돌리지 않는다.
+            match crate::repaint::apply_resize(&surface, rows, cols) {
+                Ok(()) => Reply::Single(ok_response(
+                    &id,
+                    json!({"surface_id": sid, "rows": rows, "cols": cols}),
+                )),
+                Err(e) => Reply::Single(err_response(&id, "resize_failed", &e)),
             }
         }
 
@@ -9212,7 +9268,13 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
 
         "feed.list" => {
             let status_filter = param_str(&params, "status");
+            // ★(0.14.44 · C3) 파생 칸 둘의 재료 — **잠금을 하나씩** 쥐었다 놓는다(겹쳐 쥐지 않는다): 살아 있는 좌석 집합 → 지금 결정을 기다리는 연결 집합 → 항목 목록.
+            let alive_seats = feed_list_alive_seats(daemon);
+            let daemon_started_at = daemon.started_at;
             let items = daemon.feed_items.lock().unwrap();
+            // ★대기 연결 집합은 **항목 잠금을 쥔 채**(기존 잠금 순서 feed_items → feed_waiters — `feed.push --wait` 와 같다) 뜬다: `--wait` 항목이 보이는 순간
+            //   waiter 는 이미 있다는 push 쪽의 보장과 같은 시점에 맞춘다(그 사이에 끼면 방금 올라온 대기 항목이 `waiter:false` 로 나가 「확인」이 거부를 보낸다 — 리뷰 1 의 4번).
+            let waiting = feed_list_waiting(daemon);
             let list: Vec<Value> = items
                 .iter()
                 .filter(|i| {
@@ -9240,6 +9302,12 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                         // 대조한다. 기존 키 삭제·개명 0건 — cys feed list 텍스트 열 계약 무변경.
                         "resolver_surface": i.resolver_surface,
                         "resolver_pid": i.resolver_pid,
+                        // ★(0.14.44 · C3) 파생 칸 둘 — 화면이 "요청한 좌석이 종료됨" 표지와 정보성 알림의 「확인」 단추를 정할 때 쓴다(가산 키 · 옛 화면은 무시한다).
+                        //   `waiter` = 지금 이 항목의 결정을 기다리는 연결(`--wait`)이 있는가.
+                        //   `publisher_alive` = 올린 좌석이 살아 있는가 — 올린 좌석을 모르거나 **이 데몬이 뜨기 전에 만들어진 항목**이면 null(모름: 데몬이 다시 뜬 뒤에는
+                        //   "올린 좌석이 사라졌다"를 좌석 번호로 말할 수 없다).
+                        "waiter": waiting.contains(&i.request_id),
+                        "publisher_alive": feed_publisher_alive(i.publisher_surface, i.created_at, daemon_started_at, &alive_seats),
                     })
                 })
                 .collect();
@@ -10358,6 +10426,8 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             // ★0.14.43(B3) 좌석 `usage` 계산 키용 좌석 신원 표 — surfaces 락 **밖**에서(파일 IO · 폴더별 60초 캐시). surface.list 와 같은 도우미.
             let usage_view = crate::accounts::seat_identity_view_at(daemon, now);
             let usage_stale_secs = crate::accounts::account_alert_stale_secs();
+            // ★0.14.45 좌석별 계정(`account`) — 같은 신원 표에서 만든다(추가 파일 IO 0 · surfaces 락 밖). 사이드바 부서 카드·사용량 패널의 역매핑이 소비한다.
+            let seat_accounts = crate::accounts::seat_account_map(daemon, &usage_view);
             let surfaces = daemon.surfaces.lock().unwrap();
             // ★(0.14.43 · C5) 막힌 좌석(이 순회에서 사유를 읽은 좌석)의 조치 코드는 `surfaces` 가드를 **놓은 뒤** 계산한다 — 진단이 파서·어댑터를
             //   읽기 때문이다(좌석 맵 락을 쥔 채 파서 락을 잡지 않는다).
@@ -10500,6 +10570,8 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                         // ★(0.14.42 · clear 가드 v3) 좌석 clear 가드 — autopilot 게이트 3(미해결 발화 · `fire_id`)의 입력. 부재는
                         //   구 데몬 — 소비자는 fail-closed(발화 없음)로 읽는다. 가드 락은 말단(surfaces 락 안에서 잡아도 역순 없음).
                         "ctx_guard": crate::usage::ctx_guard_wire(daemon, s),
+                        // ★0.14.45 좌석별 계정 — {provider, agent, account_id, profile, state} · null = 에이전트 아님·종료·수집 실패. surface.list 와 같은 키·같은 의미.
+                        "account": seat_accounts.get(&s.id).cloned().unwrap_or(Value::Null),
                         "line_count": s.line_count.load(Ordering::Relaxed),
                         "created_at": s.created_at,
                         // (W4) 파서 패닉 격리 재발 관측 — surface별 누적·마지막 발생 시각.
@@ -12106,10 +12178,17 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
         // 구 데몬은 `method_not_found` 로 답하므로 그 자체가 판정이다(fail-closed).
         // 부작용 0: 어떤 레코드도 읽거나 쓰지 않고 이벤트도 내지 않는다.
         "approval.capabilities" => {
+            // ★(0.14.44 · A3) `cwd_neutral_verbs` — 폴더 건너뛰기가 **켜져 있을 때만** 대상 동사 7종을 싣는다(꺼져 있으면 빈 배열 — 꺼진 상태가 조용히 숨지 않게).
+            let neutral_verbs: Vec<&str> = if crate::approval::cwd_neutral_enabled() {
+                crate::approval::CWD_NEUTRAL_VERBS.to_vec()
+            } else {
+                Vec::new()
+            };
             return Reply::Single(ok_response(
                 &id,
                 json!({"ttl_secs": true, "require_ttl": true,
-                       "ttl_max_secs": APPROVAL_TTL_MAX_SECS}),
+                       "ttl_max_secs": APPROVAL_TTL_MAX_SECS,
+                       "cwd_neutral_verbs": neutral_verbs}),
             ));
         }
 
@@ -12118,10 +12197,16 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                 return Reply::Single(err_response(&id, "invalid_params", "missing command"));
             };
             let cwd = param_str(&params, "cwd");
-            let env = params
-                .get("env")
-                .map(crate::approval::env_from_json)
-                .unwrap_or_default();
+            // ★(0.14.44 · A3) 확인용 환경: 요청이 실어 온 예약 이름은 버리고 **데몬이 자기 묶음 값을 넣는다** — 기존 규칙 "레코드 환경 ⊆ 확인 환경"에 따라
+            //   예약 값이 든 레코드는 서명한 그 데몬(같은 상태 폴더)에서만 맞는다. 정책 손잡이는 저장소 잠금 **밖에서** 읽어 값으로 넘긴다(잠금 안에서는 파일 읽기·기다림이 없다).
+            let neutral_ctx = approval_match_ctx(daemon);
+            let env = crate::approval::with_lane_env(
+                params
+                    .get("env")
+                    .map(crate::approval::env_from_json)
+                    .unwrap_or_default(),
+                &neutral_ctx.lane,
+            );
             // ★(0.14.31 · CONTRACTS B-3) TTL 요구 — `cys approval check --require-ttl` 이 싣는다.
             //   true 면 만료되지 않은 **TTL 레코드**만 통과(무기한 구 레코드는 거부).
             //   응답의 `ttl_enforced` 는 "이 데몬이 그 요구를 실제로 집행했다"는 증거다 — 구 데몬은
@@ -12156,7 +12241,7 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                 //   **만료된 승인이 exit 0** 을 받았다(게이트 면제). 이 자리에서 뜬 값 하나로
                 //   선택(`is_expired`)과 응답의 `expires_at` 을 **같이** 판정한다.
                 let now_check_ttl = crate::state::now_epoch();
-                let hit = crate::approval::best_match_index_at(
+                let hit = crate::approval::best_match_index_ctx(
                     records,
                     &secret,
                     &command,
@@ -12164,6 +12249,7 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     &env,
                     now_check_ttl,
                     require_ttl,
+                    Some(&neutral_ctx),
                 )
                 .filter(|i| {
                     // 응답 계약 재확인: 고른 레코드의 만료가 **이 시각 기준으로도** 미래인가.
@@ -12184,7 +12270,22 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                         r.sign(&secret);
                     }
                 }
-                hit
+                // ★(0.14.44 · A2) 무매칭이면 **같은 트랜잭션 안에서** 사유를 만든다(읽기 전용 순수 함수 — 저장소를 쓰지 않는다).
+                let detail = if hit.is_none() {
+                    Some(crate::approval::explain_no_match(
+                        records,
+                        &secret,
+                        &command,
+                        cwd.as_deref(),
+                        &env,
+                        now_check_ttl,
+                        require_ttl,
+                        Some(&neutral_ctx),
+                    ))
+                } else {
+                    None
+                };
+                (hit, detail)
             });
             // ★(수렴 R2 · claude minor) 실패 사유를 **어디에도 남기지 않던** 자리다.
             //   · `hit == None` = 저장소를 읽지 못해 트랜잭션이 아예 돌지 않았다. 그 거부는
@@ -12196,6 +12297,10 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             //     승인 자체는 디스크의 서명으로 이미 유효하므로 판정을 뒤집지 않는다
             //     (장부 갱신 실패 ≠ 미승인). 그래도 **사실은 남긴다**.
             let ran = hit.is_some();
+            let (hit, deny_detail) = match hit {
+                Some((h, d)) => (Some(h), d),
+                None => (None, None),
+            };
             let store_error = saved.err();
             if let Some(e) = store_error.as_deref() {
                 warn_approval_store_once(if ran { "ledger" } else { "read" }, e);
@@ -12227,11 +12332,13 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                         json!({"approved": false, "require_ttl": require_ttl,
                                "reason": deny_reason}),
                     );
-                    Reply::Single(ok_response(
-                        &id,
-                        json!({"approved": false, "ttl_enforced": require_ttl,
-                               "reason": deny_reason}),
-                    ))
+                    // ★(0.14.44 · A2) `detail` 은 **가산 키**다 — `reason` 의 뜻은 종전 그대로(저장소를 읽지 못했을 때만)이고, 옛 CLI 는 모르는 키를 무시한다.
+                    let mut out = json!({"approved": false, "ttl_enforced": require_ttl,
+                                         "reason": deny_reason});
+                    if let (Some(d), Some(o)) = (deny_detail, out.as_object_mut()) {
+                        o.insert("detail".into(), d);
+                    }
+                    Reply::Single(ok_response(&id, out))
                 }
             }
         }
@@ -12287,13 +12394,38 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                 }
                 Some(_) => {} // 안정된 장수 master → 통과
             }
-            let prefix: Vec<String> = match params.get("command_prefix") {
+            let raw_prefix: Vec<String> = match params.get("command_prefix") {
                 Some(Value::Array(a)) => {
                     a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()
                 }
                 _ => Vec::new(),
             };
-            let prefix: Vec<String> = prefix.into_iter().filter(|t| !t.is_empty()).collect();
+            // ★(0.14.44 · A4) `command_text`(명령 원문)가 있으면 **확인(`approval.check`)과 같은 토크나이저**로 쪼갠 결과가 접두다 — 서명이 공백으로만
+            //   쪼개 따옴표 문자가 토큰에 남던 것을 없앤다. 옛 CLI 는 이 키를 보내지 않고(종전 배열), 옛 데몬은 이 키를 무시한다(모르는 키).
+            //   · 따옴표가 닫히지 않았으면 `invalid_params`. 토큰 수(2 이상)와 빈 토큰 검사는 **토큰화 결과**에 적용한다(빈 토큰은 종전과 같이 버린다).
+            //   · 배열은 접두로 쓰지 않는다. 다만 원문과 어긋난 배열(CLI 가 보내는 종전 공백 분할이나 토큰화 결과가 아닌 것)은 거부한다(독립 검증 X10).
+            let prefix: Vec<String> = match params.get("command_text").and_then(|v| v.as_str()) {
+                Some(text) => {
+                    let Some(toks) = crate::approval::tokenize(text) else {
+                        return Reply::Single(err_response(
+                            &id,
+                            "invalid_params",
+                            "command_text has an unclosed quote (따옴표가 닫히지 않았다)",
+                        ));
+                    };
+                    let legacy: Vec<String> = text.split_whitespace().map(|t| t.to_string()).collect();
+                    if raw_prefix != toks && raw_prefix != legacy {
+                        return Reply::Single(err_response(
+                            &id,
+                            "invalid_params",
+                            "command_prefix does not match command_text (배열과 원문이 어긋난다)",
+                        ));
+                    }
+                    // 빈 토큰은 종전 배열 경로와 같은 규칙으로 버린다(검사는 토큰화 결과에 적용 — 토큰 수 2 이상은 아래 R-GOV-1).
+                    toks.into_iter().filter(|t| !t.is_empty()).collect()
+                }
+                None => raw_prefix.into_iter().filter(|t| !t.is_empty()).collect(),
+            };
             // R-GOV-1: 최소 2토큰 강제 — 단일 토큰(git·bash 등) 광역 prefix는 넓은 명령군을 자동
             // 통과시키므로 거부(비어있음 폴백 차단 + 광역 단일토큰 차단). 서명 후 위조불가라 생성
             // 게이트가 광역 승인 발급을 원천 봉인한다.
@@ -12314,10 +12446,13 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     "cwd is required (광역 전-디렉터리 매칭 차단)",
                 ));
             }
-            let env = params
-                .get("env")
-                .map(crate::approval::env_from_json)
-                .unwrap_or_default();
+            // ★(0.14.44 · A3) 요청이 실어 온 예약 이름은 **버린다**(대상 동사가 아니거나 시간 한정이 아닐 때도 — 데몬만 넣는다).
+            let mut env = crate::approval::strip_reserved_env(
+                params
+                    .get("env")
+                    .map(crate::approval::env_from_json)
+                    .unwrap_or_default(),
+            );
             let Some(secret) = crate::approval::signing_secret() else {
                 return Reply::Single(err_response(
                     &id,
@@ -12347,6 +12482,15 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             };
             // ★(R2F-DM · 성찰 2회차) 서명 시각 셋(`created_at`·`updated_at`·`expires_at`)은 마이크로초로 양자화한 시계에서 나온다(`approval::record_now`·
             //   `quantize_epoch_us`) — 윈도우 100ns 시계의 17자리 값이 JSON 저장→읽기에서 바뀌어 서명이 죽던 것을 막는다(위 check 재서명과 같은 규칙).
+            // ★(0.14.44 · A3) 묶기: 시간 한정(`--ttl`) 서명이고 접두가 `cys`(`cys.exe`) + 대상 동사 7종이며 대상 데몬을 바꾸는 옵션이 없으면, 데몬이
+            //   레코드 `environment` 에 예약 값(이 데몬의 묶음)을 넣는다. 이 칸은 서명 범위 안이라 위조할 수 없고 레코드 형식도 바뀌지 않는다.
+            //   손잡이(`approval_cwd_neutral: false`)가 꺼져 있으면 넣지 않는다 = 0.14.43 의 레코드.
+            if ttl_secs.is_some() && crate::approval::lane_eligible_prefix(&prefix) {
+                let ctx = approval_match_ctx(daemon);
+                if ctx.neutral {
+                    env = crate::approval::with_lane_env(env, &ctx.lane);
+                }
+            }
             let now = crate::approval::record_now();
             let mut rec = crate::approval::ApprovalRecord {
                 version: 1,
@@ -13219,6 +13363,55 @@ mod tests {
                 );
             }
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★(0.14.45 · 성찰 2회차 M1-a) `surface.read_text since_line` 델타는 다시 그리기 요청의 **반향 줄 구간**을 본문에서 뺀다 — 재방송된 옛 오류·완료 줄이
+    /// `since_line` 뒤의 새 사실로 보이지 않게. 커서 셈(`since`·`next_cursor`·`latest_cursor`)은 종전 그대로이고 뺀 줄 수는 `repaint_echo_skipped` 로 보인다.
+    /// 구간이 없으면(보통) 종전 응답과 같다(`repaint_echo_skipped: 0`). `surface.wait_for` 의 한 회전(`wait_for_match`)도 같은 구간을 건너뛴다.
+    #[test]
+    fn read_text_delta_skips_repaint_echo_lines() {
+        let dir = std::env::temp_dir().join(format!("cys-echo-delta-{}-{}", std::process::id(), crate::state::now_epoch() as u64));
+        let _ = std::fs::create_dir_all(&dir);
+        let daemon = Daemon::new(dir.join("cysd.sock"));
+        let s = daemon
+            .create_surface(None, Some("sleep 30".into()), None, Some("worker-echo".into()), 24, 80)
+            .expect("create surface");
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        // 줄 버퍼 6줄(0..6) — 2·3·4 는 반향 구간(다시 그려진 옛 줄의 재방송).
+        {
+            let mut sb = s.scrollback.lock().unwrap();
+            for l in ["one", "two", "Error: old failure", "DONE marker", "five", "six"] {
+                sb.push_back(l.to_string());
+            }
+            s.line_count.store(6, Ordering::Relaxed);
+            s.repaint_echo.lock().unwrap().record_lines(2, 5, 0);
+        }
+        let read = |since: u64| -> serde_json::Value {
+            let req = Request { id: json!(1), method: "surface.read_text".into(), params: json!({"surface_id": s.id, "since_line": since}) };
+            let Reply::Single(resp) = dispatch(&daemon, req, None) else { panic!("single reply") };
+            assert_eq!(resp["ok"], json!(true), "read_text 실패: {resp}");
+            resp["result"].clone()
+        };
+        let r = read(0);
+        assert_eq!(r["text"], json!("one\ntwo\nsix"), "{r}");
+        assert_eq!((r["line_count"].clone(), r["repaint_echo_skipped"].clone()), (json!(3), json!(3)));
+        assert_eq!((r["since"].clone(), r["next_cursor"].clone(), r["latest_cursor"].clone()), (json!(0), json!(6), json!(6)), "커서 셈은 종전 그대로");
+        let r = read(3);
+        assert_eq!((r["text"].clone(), r["repaint_echo_skipped"].clone(), r["next_cursor"].clone()), (json!("six"), json!(2), json!(6)));
+        // 구간 밖만 읽으면 종전과 같다.
+        let r = read(5);
+        assert_eq!((r["text"].clone(), r["line_count"].clone(), r["repaint_echo_skipped"].clone()), (json!("six"), json!(1), json!(0)));
+        // wait_for 의 한 회전 — 반향 구간의 "DONE" 은 일치가 아니다 · 구간 밖의 같은 표지는 일치다.
+        let lines: Vec<String> = s.scrollback.lock().unwrap().iter().cloned().collect();
+        let echo = crate::repaint::echo_ranges(&s);
+        let re = regex::Regex::new("DONE").unwrap();
+        assert_eq!(crate::repaint::wait_for_match(&lines, 0, &echo, &re), None, "재방송된 옛 완료 표지에 거짓 일치했다");
+        assert_eq!(crate::repaint::wait_for_match(&lines, 0, &[], &re), Some((3, "DONE marker".to_string())), "구간이 없으면 종전과 같다");
+        let mut lines2 = lines.clone();
+        lines2.push("DONE again".into());
+        assert_eq!(crate::repaint::wait_for_match(&lines2, 0, &echo, &re), Some((6, "DONE again".to_string())));
+        let _ = s.child.lock().unwrap().kill();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -33883,6 +34076,46 @@ mod tests {
             }
             let _ = b3_rpc(&daemon, "usage.accounts");
             assert_eq!(daemon.seat_ident_cache.lock().unwrap().enum_reads, 1, "5초 폴링 13회에 홈 열거가 1회가 아니다(폴링이 read_dir 을 늘린다)");
+        }
+    }
+
+    /// ★0.14.45 좌석별 계정(`account`) — surface.list · org.status 두 RPC 가 같은 값을 싣는다(가산 키 · 기존 키 불변).
+    mod seat_account_0145_status {
+        use super::b3_status_tests::b3_rpc;
+        use super::*;
+
+        #[test]
+        fn surface_list_and_org_status_carry_the_same_seat_account() {
+            let daemon = claim_daemon();
+            let seat = make_surface(&daemon, Some("worker-acct0145"));
+            set_agent(&daemon, seat, "claude", "claude");
+            let shell = make_surface(&daemon, None);
+            let codex = make_surface(&daemon, Some("reviewer-codex-acct0145"));
+            set_agent(&daemon, codex, "codex", "codex");
+            let home = std::env::temp_dir().join(format!("cys-acct0145-{}-{}", std::process::id(), seat));
+            let _ = std::fs::remove_dir_all(&home);
+            seat_profile(&home, ".cys/claude-acct0145", "u-acct0145", "x-acct0145@example.test", false);
+            set_config_dir(&daemon, seat, &home.join(".cys/claude-acct0145"));
+            let pick = |method: &str, sid: u64| -> Value {
+                b3_rpc(&daemon, method)["result"]["surfaces"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|e| e["surface_id"].as_u64() == Some(sid))
+                    .map(|e| e.as_object().map(|o| o.get("account").cloned()))
+                    .unwrap_or_else(|| panic!("{method}: sid {sid} 없음"))
+                    .flatten()
+                    .unwrap_or_else(|| panic!("{method}: account 키 부재"))
+            };
+            for method in ["surface.list", "org.status"] {
+                let a = pick(method, seat);
+                assert_eq!((a["provider"].clone(), a["account_id"].clone(), a["state"].clone()), (json!("claude"), json!("u-acct0145"), json!("known")), "{method}: {a}");
+                assert!(!a.to_string().contains("x-acct0145@example.test"), "{method}: 이메일은 좌석 행에 싣지 않는다(화면은 usage.accounts 의 label 을 툴팁에만)");
+                assert_eq!(pick(method, shell), Value::Null, "{method}: 셸 좌석");
+                assert_eq!(pick(method, codex)["account_id"], json!("default"), "{method}: codex");
+            }
+            assert_eq!(pick("surface.list", seat), pick("org.status", seat), "두 RPC 의 좌석 계정이 다르다");
+            let _ = std::fs::remove_dir_all(&home);
         }
     }
 }

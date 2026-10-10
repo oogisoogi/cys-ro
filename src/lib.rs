@@ -8,6 +8,10 @@ pub mod action_catalog;
 /// agy(Antigravity CLI) 상태줄 자동 연결(0.14.42 · 오너 승인 2026-09-24) — 설정 칸이 비었거나 없을 때만 넣고,
 /// 사용자 설정은 덮지 않으며, 표지 달린 cys 연결만 뺀다. 윈도우는 자동 연결 끔(안내만).
 pub mod agy_statusline;
+pub mod settings_surgery;
+/// Windows 좌석 Claude Code classic 렌더러 보장(0.14.45 휠 스크롤 수리) — 좌석 설정 폴더 settings.json 에
+/// `tui` 키가 없을 때만 `"default"` 를 넣는다(사용자 값 불가침 · 실패는 기동을 막지 않는다).
+pub mod claude_tui;
 pub mod factory_reset;
 /// 앱 번들 완본 검증 + 원자 교체 계약(ATOMIC-1) — 2026-08-01 "손상되었기 때문에 열 수 없습니다" 사고의
 /// 재발 차단. SEAL-1(아래 `ENV_PY_NO_BYTECODE`)이 **번들이 스스로 봉인을 깨는 것**을 막는다면,
@@ -2464,6 +2468,9 @@ pub const ENV_CLAUDE_NO_ALT_SCREEN: &str = "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN
 /// ∴ 기존 pane 에 붙는 기동·GUI 기동에는 이 벨트가 닿지 않는다. Windows 휠 오염의 **본체 방어는
 /// UI 가드**(`ui/src/wheelgate.ts` 의 Windows 전용 억제 술어)이고, 이 함수는 그 위에 덧대는
 /// 벨트일 뿐이다. 여기를 고쳤다고 Windows 문제가 닫혔다고 판단하지 마라.
+/// ★0.14.45: Windows 의 **화면 모드 자체**는 이 env 가 아니라 [`crate::claude_tui`] 가 기본 on 으로 다룬다 —
+/// 좌석 설정 폴더 settings.json 에 `tui` 가 없을 때만 `"default"`(classic) 를 넣어, env 가 닿지 않는 기존 pane
+/// 재기동(node-recover · in-seat restore)까지 덮는다. 이 env 의 Windows 옵트인 계약은 그대로다.
 ///
 /// ★CI 실행 경로(2026-08-17 갱신 — 종전의 "Windows 레인 0건" 고지는 **해소됐다**):
 /// 적대검증 2R 이 major 로 지목한 "Windows 전용 신규 코드가 Windows 러너에서 한 줄도
@@ -2578,6 +2585,14 @@ pub fn d5_win_opt_in_from(env_val: Option<&str>, file_exists: bool) -> bool {
 /// 업데이트에 신중에 신중")과도 같은 방향이다. **조건을 건너뛴 것이 아니라, 조건이 걸린 변경
 /// 자체를 무장 해제한 것**이다.
 ///
+/// ★0.14.45 정정(두 경로의 지위 — 혼동 금지): 여기의 '옵트인'·'Windows 회귀 0'·'실기 검증 전' 은 **env 경로**
+/// (`CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN` 주입)에 한정된 서술이다. **설정 경로**(`src/claude_tui.rs` —
+/// 좌석 설정 폴더 `settings.json` 에 `tui` 가 없을 때만 `"default"` 를 넣어 classic 렌더러를 고른다)는
+/// 0.14.45 부터 **Windows 기본 on** 이며 그 근거는 그 모듈 doc(같은 기계의 classic 좌석이 정상 동작한 실기
+/// 증거 · 실패 방향 = 쓰지 않음 · 킬스위치 `CYS_WIN_TUI_CLASSIC_OFF` 는 원장으로 되돌린다)이다. 두 경로는 서로를
+/// 대체하지 않는다 — env 는 새 surface 기동에만 닿고 설정 파일은 모든 기동 경로에 닿는다. 사용자 안내
+/// (`alt_screen_notice` Windows 힌트 · USER-MANUAL env 표)는 둘을 나눠 말한다.
+///
 /// ★기본 on 승격 절차(다음 사람은 이 주석만 읽고 승격할 수 있어야 한다):
 ///  · 조건 — Windows 실기에서 **B-5 1회 통과**. 즉 옵트인(`~/.cys/win-no-alt-screen` 생성)
 ///    상태로 `cys boot` 가 4종 노드를 정상 기동하고, 각 pane 에서
@@ -2598,6 +2613,10 @@ pub fn d5_win_opt_in_from(env_val: Option<&str>, file_exists: bool) -> bool {
 ///    ⑤ `src/bin/cys.rs` 의 `alt_screen_notice` **Windows 힌트 문안** — '①Windows 는 이 env
 ///       주입이 기본 off(옵트인) 입니다' 가 통째로 거짓이 되고, 사용자에게 없는 절차를 시킨다.
 ///       진리표 핀은 `hint` 토큰만 보므로 **자동 검출되지 않는다**(문안은 사람이 지켜야 한다).
+///    ⑥ (0.14.45) `src/claude_tui.rs` 모듈 doc '왜 설정 파일인가' 절과 위 ★0.14.45 정정 문단 — 승격하면
+///       'D5 env 는 Windows 옵트인' 이라는 전제가 사라지므로 두 경로의 관계(env = 새 surface 기동만 ·
+///       설정 파일 = 모든 기동 경로)를 다시 써야 하고, 설정 경로의 킬스위치(`CYS_WIN_TUI_CLASSIC_OFF` ·
+///       원장 되돌림)와 env 롤백 킬스위치가 **각각** 있음을 USER-MANUAL env 표에 남겨야 한다.
 ///  · 승격하면 이 옵트인 스위치는 무의미해지고, 그때 필요한 것은 **롤백 킬스위치**다 —
 ///    그 이름으로 `CYS_WIN_ALT_SCREEN_OFF`(파일 `~/.cys/win-alt-screen-off`)를 비워 두었다
 ///    (형제 `CYS_WIN_WHEEL_GUARD_OFF` 와 같은 `_OFF` = '우리 기능 끄기' 극성).
@@ -3300,6 +3319,212 @@ pub fn is_dept_socket(socket_path: &std::path::Path) -> bool {
         .to_string_lossy()
         .split(|c| c == '/' || c == '\\')
         .any(|comp| comp.starts_with("cys-dept-"))
+}
+
+/// ★(0.14.44 · A3) 승인의 "폴더 건너뛰기"·CLI 숫자 토큰 떼기가 다루는 **대상 동사 7종** — 대상을 하나만 받거나 받지 않는 cys 명령.
+/// 게이트 훅(`role-capability-gate.sh`)의 `CSO_CYS_TTL_VERBS`(6종) + `CSO_CYS_OPT_TTL` 의 열쇠(`cycle-agent`)의 합집합과 같아야 한다(데몬 시험이 대조한다).
+pub const APPROVAL_TARGET_VERBS: [&str; 7] =
+    ["kill", "close-surface", "pause", "resume", "tombstone", "launch-agent", "cycle-agent"];
+
+// ★(0.14.44 · A3) 승인 명령 토크나이저 — `src/bin/cysd/approval.rs` 에서 옮겨 왔다(본문 불변 · 데몬과 CLI 가 같은 코드를 쓴다).
+/// 셸 토크나이저(cmux SurfaceResumeCommandCanonicalizer.tokens 포팅): 따옴표('/")·백슬래시
+/// 인식. 미닫힌 따옴표는 None(거부). shell Turing-complete 한계(파이프·;·$())는 prefix
+/// 매칭으로 blast radius만 좁힌다(완전차단 아님).
+pub fn approval_tokenize(command: &str) -> Option<Vec<String>> {
+    let mut tokens: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut has_token = false;
+    let mut chars = command.chars().peekable();
+    let mut quote: Option<char> = None;
+
+    while let Some(c) = chars.next() {
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None; // 따옴표 닫힘
+                } else if c == '\\' && q == '"' {
+                    // 큰따옴표 안의 백슬래시: 다음 문자 리터럴(POSIX 근사)
+                    if let Some(&n) = chars.peek() {
+                        if n == '"' || n == '\\' || n == '$' || n == '`' {
+                            cur.push(chars.next().unwrap());
+                        } else {
+                            cur.push('\\');
+                        }
+                    } else {
+                        cur.push('\\');
+                    }
+                } else {
+                    cur.push(c);
+                }
+            }
+            None => match c {
+                '\'' | '"' => {
+                    quote = Some(c);
+                    has_token = true;
+                }
+                '\\' => {
+                    if let Some(n) = chars.next() {
+                        cur.push(n);
+                        has_token = true;
+                    }
+                }
+                ' ' | '\t' | '\n' | '\r' => {
+                    if has_token {
+                        tokens.push(std::mem::take(&mut cur));
+                        has_token = false;
+                    }
+                }
+                _ => {
+                    cur.push(c);
+                    has_token = true;
+                }
+            },
+        }
+    }
+    if quote.is_some() {
+        return None; // 미닫힌 따옴표 = 거부
+    }
+    if has_token {
+        tokens.push(cur);
+    }
+    Some(tokens)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// ★(0.14.44 · B3) 오피스 브리지 건강 확인 도우미 — 데몬의 감독 루프와 앱 백엔드(`office_health`)가 **같은 탐침**을 쓴다.
+//
+// 탐침의 정의(R2 에서 잰 꼴 그대로): 접속 → **0.3초 기다림** → `GET <path>` 전송 → 전송 뒤 **5초** 안에 응답 머리와 본문 `min(Content-Length, 64KB)` 바이트 수신.
+// 접속 직후에 보내는 요청은 '닫히는 중' 표식 상태(접속 대기 소켓에 표시가 붙어 큰 응답이 끊기는 상태)를 가려내지 못하므로 기다림을 빼지 않는다[실측 R1·R2].
+// 64KB 를 넘는 본문은 읽지 않고 성공으로 친다(`/world` 폴백은 좌석·부서가 많으면 64KB 를 넘는다 — '전체 수신'을 요구하면 멀쩡한 브리지를 되풀이해 끝낸다 · 독립 검증 X6).
+// 모든 대기에 시간 상한이 있다 · 데몬의 잠금을 쥐지 않는다(순수 소켓 입출력) · 패닉 경로 없음.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+/// 오피스 브리지 기본 포트(`HUD_PORT` 로 바꿀 수 있다).
+pub const OFFICE_BRIDGE_PORT: u16 = 8642;
+pub const BRIDGE_PROBE_CONNECT_MS: u64 = 1500;
+/// 접속한 뒤 요청을 보내기 전의 기다림.
+pub const BRIDGE_PROBE_WAIT_MS: u64 = 300;
+/// 요청을 보낸 뒤 응답을 기다리는 상한.
+pub const BRIDGE_PROBE_BUDGET_MS: u64 = 5000;
+/// 이 이상의 본문은 읽지 않고 성공으로 친다.
+pub const BRIDGE_PROBE_BODY_CAP: usize = 64 * 1024;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BridgeProbeReply {
+    pub status: u16,
+    pub body: Vec<u8>,
+    /// 본문을 min(Content-Length, 64KB) 만큼 다 받았는가.
+    pub complete: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BridgeProbeError {
+    /// 접속 자체가 안 된다(브리지가 없다).
+    NoConnect,
+    /// 접속은 됐으나 시간 안에 응답을 못 받았다(표식 상태 등).
+    NoResponse,
+    /// 응답 머리를 읽을 수 없다.
+    BadReply,
+}
+
+/// HTTP 응답 머리 해석(순수) — (상태 번호, Content-Length, 머리 끝 위치). 머리가 아직 다 오지 않았으면 `None`.
+pub fn bridge_parse_head(buf: &[u8]) -> Option<(u16, Option<usize>, usize)> {
+    let end = buf.windows(4).position(|w| w == b"\r\n\r\n")?;
+    let head = std::str::from_utf8(buf.get(..end)?).ok()?;
+    let mut lines = head.split("\r\n");
+    let status_line = lines.next()?;
+    let mut parts = status_line.split_whitespace();
+    let proto = parts.next()?;
+    if !proto.starts_with("HTTP/") {
+        return None;
+    }
+    let status: u16 = parts.next()?.parse().ok()?;
+    let mut cl: Option<usize> = None;
+    for l in lines {
+        if let Some((k, v)) = l.split_once(':') {
+            if k.trim().eq_ignore_ascii_case("content-length") {
+                cl = v.trim().parse().ok();
+            }
+        }
+    }
+    Some((status, cl, end + 4))
+}
+
+/// 탐침 하나(블로킹 · 모든 대기에 상한) — `GET <path>` 를 기본 대기(0.3초)와 상한(5초)으로.
+pub fn bridge_probe_get(port: u16, path: &str) -> Result<BridgeProbeReply, BridgeProbeError> {
+    bridge_probe_request(port, path, &[], BRIDGE_PROBE_WAIT_MS, BRIDGE_PROBE_BUDGET_MS)
+}
+
+/// 탐침의 일반형 — 요청 머리 추가(`(이름, 값)` 쌍) · 접속 뒤 기다림(`wait_ms`) · 응답 상한(`budget_ms`)을 고른다.
+/// `wait_ms = 0` 은 "접속 직후의 요청"(옛 세대 판별 · 브리지 주인 확인에 쓴다 — 표식 상태의 브리지도 접속 직후의 요청에는 답한다[실측 R1]).
+#[deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+pub fn bridge_probe_request(
+    port: u16,
+    path: &str,
+    headers: &[(&str, &str)],
+    wait_ms: u64,
+    budget_ms: u64,
+) -> Result<BridgeProbeReply, BridgeProbeError> {
+    use std::io::{Read, Write};
+    use std::time::{Duration, Instant};
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(BRIDGE_PROBE_CONNECT_MS))
+        .map_err(|_| BridgeProbeError::NoConnect)?;
+    if wait_ms > 0 {
+        std::thread::sleep(Duration::from_millis(wait_ms));
+    }
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(budget_ms.max(1))));
+    let mut req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\nAccept: */*\r\n");
+    for (k, v) in headers {
+        req.push_str(&format!("{k}: {v}\r\n"));
+    }
+    req.push_str("\r\n");
+    if stream.write_all(req.as_bytes()).is_err() {
+        return Err(BridgeProbeError::NoResponse);
+    }
+    let deadline = Instant::now() + Duration::from_millis(budget_ms.max(1));
+    let mut buf: Vec<u8> = Vec::new();
+    let mut tmp = [0u8; 8192];
+    loop {
+        if let Some((status, cl, hdr_end)) = bridge_parse_head(&buf) {
+            let have = buf.len().saturating_sub(hdr_end);
+            let want = cl.map(|c| c.min(BRIDGE_PROBE_BODY_CAP)).unwrap_or(BRIDGE_PROBE_BODY_CAP);
+            if have >= want {
+                let body = buf.get(hdr_end..hdr_end.saturating_add(want)).unwrap_or(&[]).to_vec();
+                return Ok(BridgeProbeReply { status, body, complete: true });
+            }
+        }
+        // 머리 끝(`\r\n\r\n`)을 보내지 않는 포트 주인에게서 5초 동안 쌓고 다시 훑지 않게 — 머리를 못 찾은 채 16KB 를 넘으면 잘못된 응답이다.
+        if buf.len() > 16 * 1024 && bridge_parse_head(&buf).is_none() {
+            return Err(BridgeProbeError::BadReply);
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(BridgeProbeError::NoResponse);
+        }
+        let _ = stream.set_read_timeout(Some(left.max(Duration::from_millis(1))));
+        match stream.read(&mut tmp) {
+            Ok(0) => {
+                // 상대가 닫았다 — 머리를 읽었고 길이를 몰랐으면(=닫힘이 끝) 받은 만큼이 전부다.
+                return match bridge_parse_head(&buf) {
+                    Some((status, None, hdr_end)) => Ok(BridgeProbeReply {
+                        status,
+                        body: buf.get(hdr_end..).unwrap_or(&[]).to_vec(),
+                        complete: true,
+                    }),
+                    Some((status, Some(_), hdr_end)) => Ok(BridgeProbeReply {
+                        status,
+                        body: buf.get(hdr_end..).unwrap_or(&[]).to_vec(),
+                        complete: false,
+                    }),
+                    None if buf.is_empty() => Err(BridgeProbeError::NoResponse),
+                    None => Err(BridgeProbeError::BadReply),
+                };
+            }
+            Ok(n) => buf.extend_from_slice(tmp.get(..n).unwrap_or(&[])),
+            Err(_) => return Err(BridgeProbeError::NoResponse),
+        }
+    }
 }
 
 /// Parse a surface reference: "surface:31", "31", or 31 → 31.
@@ -6732,6 +6957,9 @@ mod spawn_policy_tests {
         // 1.1.8 U4(설계 §5-2 · 앱 updater 경로 삭제) −4 = same_version_rebuild_check `curl`(latest.json) · check_pack_update `curl`(pack-manifest) ·
         //   install_pack_update 사이드카 `cys pack-update` · smart_app_control_state `reg.exe` — 지점째 지웠다(옮긴 것 0 · 새 스폰 0).
         ("src-tauri/src/main.rs", 34),
+        // 1.1.10 편입(원작자 0.14.45 · agy 윈 자동 연결): 쓰기 전 실연 검사 자식 + 상한 초과 시 taskkill 트리 종료 = +2 — 둘 다 체인에
+        //   `spawn_policy(ChildLifetime::Attached)` 등급(원작자 b9151464 · 3a728d10).
+        ("src/agy_statusline.rs", 2),
         ("src/app_bundle.rs", 4),
         ("src/bin/cys.rs", 15),
         ("src/bin/cysd/accounts.rs", 2),
@@ -8783,3 +9011,113 @@ mod win_std_inherit_tests {
         assert!(dt < Duration::from_secs(8), "봉인했는데 {dt:?} 걸렸다 — 손자가 부모 파이프를 쥐고 있다");
     }
 }
+
+/// ★(0.14.44 · B3) 오피스 브리지 건강 확인 도우미 시험 — 가짜 서버(로컬 소켓 · 스레드)로 탐침의 정의(접속 → 0.3초 → 요청 → 5초 · min(CL,64KB))를 잰다. 프로세스를 띄우지 않는다.
+#[cfg(test)]
+mod bridge_probe_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    /// 한 접속만 받는 가짜 서버 — 접속과 요청 도착 사이의 간격을 재고 `reply` 를 돌려준다(`None` 이면 답하지 않고 붙들고 있는다).
+    fn serve(reply: Option<Vec<u8>>, hold_ms: u64) -> (u16, std::thread::JoinHandle<(Duration, String)>) {
+        let l = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = l.local_addr().expect("addr").port();
+        let h = std::thread::spawn(move || {
+            let (mut s, _) = l.accept().expect("accept");
+            let t0 = Instant::now();
+            let mut buf = [0u8; 4096];
+            let n = s.read(&mut buf).unwrap_or(0);
+            let gap = t0.elapsed();
+            let req = String::from_utf8_lossy(buf.get(..n).unwrap_or(&[])).into_owned();
+            if let Some(r) = reply {
+                let _ = s.write_all(&r);
+            }
+            std::thread::sleep(Duration::from_millis(hold_ms));
+            (gap, req)
+        });
+        (port, h)
+    }
+
+    fn http(status: u16, body: &str) -> Vec<u8> {
+        format!("HTTP/1.1 {status} X\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{body}", body.len()).into_bytes()
+    }
+
+    #[test]
+    fn probe_waits_300ms_after_connect_and_sends_get_with_host() {
+        let (port, h) = serve(Some(http(200, r#"{"ok":true}"#)), 0);
+        let r = bridge_probe_get(port, "/health").expect("응답");
+        assert_eq!((r.status, r.complete), (200, true));
+        assert_eq!(r.body, br#"{"ok":true}"#);
+        let (gap, req) = h.join().expect("join");
+        assert!(gap >= Duration::from_millis(280), "접속 직후에 요청을 보냈다({gap:?}) — 표식 상태를 가려내지 못한다");
+        assert!(req.starts_with("GET /health HTTP/1.1\r\n") && req.contains("Host: 127.0.0.1:"), "{req}");
+    }
+
+    #[test]
+    fn immediate_request_has_no_wait_and_carries_headers() {
+        let (port, h) = serve(Some(http(403, r#"{"error":"bad_key"}"#)), 0);
+        let r = bridge_probe_request(port, "/peek?key=none", &[("X-HUD-Token", "abc")], 0, 3000).expect("응답");
+        assert_eq!(r.status, 403);
+        let (gap, req) = h.join().expect("join");
+        assert!(gap < Duration::from_millis(250), "접속 직후의 요청이 늦었다({gap:?})");
+        assert!(req.contains("X-HUD-Token: abc\r\n"), "{req}");
+    }
+
+    #[test]
+    fn probe_gives_up_within_the_budget_when_the_server_never_answers() {
+        let (port, h) = serve(None, 1500);
+        let t0 = Instant::now();
+        let r = bridge_probe_request(port, "/health", &[], 0, 600);
+        assert_eq!(r, Err(BridgeProbeError::NoResponse));
+        assert!(t0.elapsed() < Duration::from_millis(1400), "상한을 넘겨 기다렸다: {:?}", t0.elapsed());
+        let _ = h.join();
+    }
+
+    #[test]
+    fn probe_reports_no_connect_when_nothing_listens() {
+        let l = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = l.local_addr().expect("addr").port();
+        drop(l);
+        assert_eq!(bridge_probe_get(port, "/health"), Err(BridgeProbeError::NoConnect));
+    }
+
+    /// 64KB 를 넘는 본문은 읽지 않고 성공으로 친다(`/world` 폴백이 좌석이 많으면 64KB 를 넘는다 — 독립 검증 X6) · 본문이 모자라게 끊기면 `complete=false`.
+    #[test]
+    fn probe_caps_the_body_at_64kb_and_flags_truncated_replies() {
+        let big = "x".repeat(200_000);
+        let (port, h) = serve(Some(http(200, &big)), 200);
+        let r = bridge_probe_request(port, "/world", &[], 0, 3000).expect("응답");
+        assert!(r.complete && r.status == 200);
+        assert_eq!(r.body.len(), BRIDGE_PROBE_BODY_CAP, "min(Content-Length, 64KB) 바이트만 받는다");
+        let _ = h.join();
+        // Content-Length 보다 적게 보내고 닫는다 — 끊긴 응답.
+        let mut cut = http(200, &"y".repeat(100));
+        cut.truncate(cut.len() - 40);
+        let (port, h) = serve(Some(cut), 0);
+        let r = bridge_probe_request(port, "/world", &[], 0, 3000).expect("응답");
+        assert_eq!((r.status, r.complete), (200, false));
+        let _ = h.join();
+    }
+
+    /// 머리 끝을 보내지 않고 계속 쏟아내는 상대 — 16KB 를 넘으면 상한(5초)을 기다리지 않고 `BadReply`.
+    #[test]
+    fn probe_rejects_an_endless_header_without_waiting_for_the_budget() {
+        let junk = vec![b'a'; 64 * 1024];
+        let (port, h) = serve(Some(junk), 300);
+        let t0 = Instant::now();
+        assert_eq!(bridge_probe_request(port, "/health", &[], 0, 5000), Err(BridgeProbeError::BadReply));
+        assert!(t0.elapsed() < Duration::from_millis(2500), "{:?}", t0.elapsed());
+        let _ = h.join();
+    }
+
+    #[test]
+    fn parse_head_reads_status_and_length() {
+        assert_eq!(bridge_parse_head(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"), Some((404, Some(0), 45)));
+        assert_eq!(bridge_parse_head(b"HTTP/1.0 200 OK\r\nX: y\r\n\r\nbody"), Some((200, None, 25)));
+        assert_eq!(bridge_parse_head(b"HTTP/1.1 200 OK\r\nContent-Le"), None, "머리가 다 오지 않았다");
+        assert_eq!(bridge_parse_head(b"garbage\r\n\r\n"), None);
+    }
+}
+

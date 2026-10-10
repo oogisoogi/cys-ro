@@ -180,7 +180,7 @@ Evidence = merge-tree extract `scratchpad/mt/` (hunk line numbers refer to those
 
 | file | result | risk / action |
 |---|---|---|
-| .github/workflows/windows-build.yml | clean; T5b step (encoding test, no PYTHONUTF8) lands between T5 (L1186) and T6 (L1266); uses `CYS_INSTALL_DIR`, `CYS_INSTALL_VER`, `cys-installed-version.txt`, `runtime\python\python3.exe` — all exist in ours (L254-260, 499) | low — Windows lane; file already in pyseal list (`PYTHONDONTWRITEBYTECODE` line ok) |
+| .github/workflows/windows-build.yml | clean; T5b step (encoding test, no PYTHONUTF8) lands between T5 (L1186) and T6 (L1266); uses `CYS_INSTALL_DIR`, `CYS_INSTALL_VER`, `cys-installed-version.txt`, `runtime\python\python3.exe` — all exist in ours (L254-260, 499) | low — Windows lane; file already in pyseal list (bytecode-seal env line ok) |
 | cysjavis-pack/bin/javis_hud_bridge.py | clean, parses; ours `Hub.watched` + `fleet_loop` gate (console-flicker-r2) + upstream B4 (_legacy_win, /health, lifeline, SIGTERM, `_nostdin()`) coexist. `_shutdown` uses `os._exit` so blocking `watched.wait()` doesn't stall exit. Upstream unit pins (`creationflags` count 1, every spawn has `_nostdin()`, no `os.kill(`/getppid) hold — ours added no spawns | low |
 | cysjavis-pack/hooks/role-capability-gate.sh | merged == ours byte-identical (ours already carries 8b8d7505/ea06f6bb via 613b12a4/9eb9f2b0) | none — ⓓ security gate unchanged |
 | cysjavis-pack/bin/tests/test_capgate_surrogate_deny.py | merged == ours == upstream | none (already registered in all 5 lists) |

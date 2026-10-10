@@ -4876,59 +4876,180 @@ async fn feed_list(status: Option<String>) -> Result<Value, String> {
 /// 매 호출 신선 재독(캐시 금지) — 데몬 재시작(churn)마다 토큰이 재발급되기 때문.
 /// 부재·빈 파일=None(구 데몬 호환 — 첨부 없이 호출).
 fn read_operator_token_for(socket: &std::path::Path) -> Option<String> {
-    let dir = daemon_state_dir_for(socket)?;
+    let dir = operator_token_dir_for(socket)?;
     let tok = std::fs::read_to_string(dir.join("operator.token")).ok()?;
     let tok = tok.trim().to_string();
     (!tok.is_empty()).then_some(tok)
 }
 
 /// 데몬 소켓 → 그 데몬의 상태 폴더(operator.token·phoenix/ 가 사는 곳). cysd state 규약 미러.
+/// ★1.1.10 편입: 계산 본체는 원작자 `operator_token_dir_for`(같은 규약을 C2 응답 허용 판정과 공유 · 줄 단위 동일 대조)에 위임한다 — 사본 0.
 fn daemon_state_dir_for(socket: &std::path::Path) -> Option<std::path::PathBuf> {
+    operator_token_dir_for(socket)
+}
+
+/// 소켓이 가리키는 데몬의 **조작자 토큰 파일이 놓이는 폴더**(맥·리눅스 = 소켓의 부모 폴더 · 윈도우 = `%LOCALAPPDATA%\cys` 아래의 파이프 슬러그 폴더).
+/// `read_operator_token_for` 가 쓰던 계산을 그대로 뺐다(동작 불변) — 부서 항목 응답 허용 판정(`feed_reply_socket_allowed_with`)이 같은 계산을 쓴다.
+fn operator_token_dir_for(socket: &std::path::Path) -> Option<std::path::PathBuf> {
     #[cfg(windows)]
-    let dir = {
-        // cysd state::pipe_slug 미러: `\\.\pipe\<name>` 의 마지막 컴포넌트에서 파일시스템
-        // 안전 문자만 남긴다. 기본 데몬(`cys`)은 루트 유지, 부서는 슬러그 하위(격리).
-        let root = std::path::PathBuf::from(std::env::var("LOCALAPPDATA").ok()?).join("cys");
-        let last = socket
-            .to_string_lossy()
-            .rsplit(|c| c == '\\' || c == '/')
-            .next()
-            .unwrap_or("")
-            .to_string();
-        let slug: String = last
-            .chars()
-            .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-            .collect();
-        if slug.is_empty() || slug == "cys" {
-            root
-        } else {
-            root.join(slug)
-        }
-    };
+    {
+        Some(windows_token_dir(&std::path::PathBuf::from(std::env::var("LOCALAPPDATA").ok()?), &socket.to_string_lossy()))
+    }
     #[cfg(not(windows))]
-    let dir = socket.parent()?.to_path_buf();
-    Some(dir)
+    {
+        Some(socket.parent()?.to_path_buf())
+    }
 }
 
-/// 기본 데몬(feed_reply 전용) 토큰 — 소켓 인지 판을 기본 소켓으로 부른다(사본 금지).
-fn read_operator_token() -> Option<String> {
-    read_operator_token_for(&default_socket())
+/// 윈도우 토큰 폴더 계산(순수 — 맥에서도 시험된다). cysd `state::pipe_slug` 미러: `\\.\pipe\<name>` 의 마지막 컴포넌트에서 파일시스템
+/// 안전 문자만 남긴다. 기본 데몬(`cys`)은 루트 유지, 부서는 슬러그 하위(격리). ★소켓의 부모 폴더로 비교하면 안 된다 —
+/// 윈도우에서는 모든 파이프의 부모가 `\\.\pipe` 로 같아 부서 소켓이 전부 거부된다(Fable 검증 V3).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_token_dir(local_app_data: &std::path::Path, socket: &str) -> std::path::PathBuf {
+    let root = local_app_data.join("cys");
+    let last = socket.rsplit(|c| c == '\\' || c == '/').next().unwrap_or("").to_string();
+    let slug: String = last.chars().filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_').collect();
+    if slug.is_empty() || slug == "cys" {
+        root
+    } else {
+        root.join(slug)
+    }
 }
 
+/// ★0.14.44 C2 — 사람(앱 화면)이 응답을 보낼 수 있는 소켓인가(순수 — 폴더 계산은 주입).
+/// 허용: 본부 소켓, 그리고 세 조건을 **모두** 채우는 부서 소켓뿐 — ① 부서 등록부에 있음 ② 이름 규칙(`cys-dept-<이름>`)에 맞음
+/// ③ 그 소켓의 조작자 토큰 폴더가 본부의 그것과 **다름**. ③을 두는 이유: 등록부에 본부와 같은 토큰 폴더의 소켓이 끼어들면 본부 토큰이
+/// 엉뚱한 소켓으로 간다(설계 리뷰 1 의 22번). 폴더는 `operator_token_dir_for` 가 끌어낸 것으로 비교한다 — 소켓의 부모 폴더로 비교하면 안 된다
+/// (윈도우에서는 모든 파이프의 부모가 같다 · Fable 검증 V3).
+fn feed_reply_socket_allowed_with(
+    sock: &std::path::Path,
+    head: &std::path::Path,
+    registered: &[std::path::PathBuf],
+    dir_of: &dyn Fn(&std::path::Path) -> Option<std::path::PathBuf>,
+) -> bool {
+    if sock == head {
+        return true;
+    }
+    if !registered.iter().any(|r| r == sock) {
+        return false;
+    }
+    if dept_name_from_socket(&sock.to_string_lossy()).is_none() {
+        return false;
+    }
+    // 윈도우 파이프: 이름의 마지막 요소가 슬러그 허용 글자만으로 이루어져야 한다 — 슬러그가 글자를 걸러 내므로(`cys-dept-x.` → `cys-dept-x`)
+    // 다른 파이프가 부서 x 의 토큰 폴더로 풀리는 길을 닫는다(리뷰 1 의 7번).
+    let ss = sock.to_string_lossy();
+    if ss.starts_with("\\\\") && !pipe_name_is_slug_exact(&ss) {
+        return false;
+    }
+    match (dir_of(sock), dir_of(head)) {
+        (Some(a), Some(b)) => a != b,
+        _ => false,
+    }
+}
+
+/// 부서 등록부(depts.json)의 소켓 목록 — `(이름, 소켓 경로, 표시명)`. 소켓이 비어 있는 등재는 canonical 경로로 채워져 있다(list_depts).
+fn registered_dept_sockets() -> Vec<(String, std::path::PathBuf, Option<String>)> {
+    let mut out = Vec::new();
+    if let Ok(reg) = list_depts() {
+        if let Some(depts) = reg.get("depts").and_then(|d| d.as_object()) {
+            for (name, meta) in depts {
+                let sock = meta
+                    .get("socket")
+                    .and_then(|s| s.as_str())
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| dept_socket_path(name));
+                let display = meta.get("display_name").and_then(|d| d.as_str()).map(|s| s.to_string());
+                out.push((name.clone(), sock, display));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// 파이프 이름의 마지막 요소가 슬러그 허용 글자(영숫자 · `-` · `_`)로만 이루어졌는가(순수).
+fn pipe_name_is_slug_exact(socket: &str) -> bool {
+    let last = socket.rsplit(|c| c == '\\' || c == '/').next().unwrap_or("");
+    !last.is_empty() && last.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+}
+
+/// 토큰 폴더를 실경로로 정규화한다(순수 — 심볼릭 링크를 풀어 본부 폴더와 같은 곳을 가리키는 소켓 경로를 가려낸다). 폴더가 없거나 풀지 못하면 None(= 거부, fail-closed).
+fn canonical_dir(dir: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    dir?.canonicalize().ok()
+}
+
+fn feed_reply_socket_allowed(sock: &std::path::Path) -> bool {
+    let registered: Vec<std::path::PathBuf> = registered_dept_sockets().into_iter().map(|(_, p, _)| p).collect();
+    feed_reply_socket_allowed_with(sock, &default_socket(), &registered, &|p| canonical_dir(operator_token_dir_for(p)))
+}
+
+/// ★0.14.44 C2 — 본부와 등록된 부서의 승인 Feed 를 한꺼번에 묻는다(소켓당 2초 · 동시 · 응답 없는 부서는 빼지 않고 오류 행으로).
+/// 반환 `{sockets:[{socket, dept(이름|null=본부), display_name, ok, items, error, replyable}]}` — 본부가 맨 앞, 부서는 이름순.
+/// `replyable` = 그 소켓에 이 앱이 응답을 보낼 수 있는가(`feed_reply_socket_allowed` 와 같은 판정 — 화면이 단추를 내릴 근거).
+/// 종전 `feed_list`(본부 전용)는 그대로 둔다 — 승인 전환 스케줄러·팔레트 등 다른 호출처는 본부 전용이다.
 #[tauri::command]
-async fn feed_reply(request_id: String, decision: String) -> Result<(), String> {
+async fn feed_list_all(status: Option<String>) -> Result<Value, String> {
+    use std::time::Duration;
+    let head = default_socket();
+    let mut targets: Vec<(Option<String>, std::path::PathBuf, Option<String>)> = vec![(None, head.clone(), None)];
+    let depts = registered_dept_sockets();
+    let registered: Vec<std::path::PathBuf> = depts.iter().map(|(_, p, _)| p.clone()).collect();
+    for (name, sock, display) in depts {
+        targets.push((Some(name), sock, display));
+    }
+    let handles: Vec<_> = targets
+        .iter()
+        .map(|(_, sock, _)| {
+            let sock = sock.clone();
+            let params = json!({"status": status});
+            tauri::async_runtime::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(2), rpc_oneshot(&sock, "feed.list", params)).await
+            })
+        })
+        .collect();
+    let mut rows: Vec<Value> = Vec::new();
+    for ((dept, sock, display), h) in targets.iter().zip(handles) {
+        let replyable = feed_reply_socket_allowed_with(sock, &head, &registered, &|p| canonical_dir(operator_token_dir_for(p)));
+        let (ok, items, error) = match h.await {
+            Ok(Ok(Ok(resp))) => (true, resp.get("items").cloned().unwrap_or_else(|| json!([])), Value::Null),
+            Ok(Ok(Err(e))) => (false, json!([]), json!(e)),
+            Ok(Err(_)) => (false, json!([]), json!("timeout")),
+            Err(e) => (false, json!([]), json!(e.to_string())),
+        };
+        rows.push(json!({
+            "socket": sock.to_string_lossy(),
+            "dept": dept,
+            "display_name": display,
+            "ok": ok,
+            "items": items,
+            "error": error,
+            "replyable": replyable,
+        }));
+    }
+    Ok(json!({"sockets": rows}))
+}
+
+/// `socket` — 부서 항목에 응답할 때만(없으면 종전처럼 본부). 허용 소켓은 `feed_reply_socket_allowed` 가 가른다(본부 · 세 조건을 채우는 부서).
+/// 그 소켓의 조작자 토큰을 **매번 새로** 읽어 붙인다(데몬을 다시 띄우면 바뀐다). 토큰은 이 백엔드에서만 다루고 화면으로 내보내지 않는다.
+#[tauri::command]
+async fn feed_reply(request_id: String, decision: String, socket: Option<String>) -> Result<(), String> {
+    let sock = resolve_socket(&socket);
+    if socket.is_some() && !feed_reply_socket_allowed(&sock) {
+        return Err("socket_not_allowed: 이 소켓의 항목은 앱에서 처리할 수 없습니다(부서 등록부에 없거나 토큰 폴더가 본부와 같습니다)".to_string());
+    }
     // ★GUI 오퍼레이터 승인(오너 2026-07-15): operator.token을 첨부해 §3.2 자기승인 가드의 GUI 오탐
     // (부서 생성 체인 pgid 각인 + surface 미귀속 fail-closed)을 면제한다. 첨부 지점은 이 Tauri 백엔드
     // 단 한 곳 — 공용 cys CLI 무첨부는 워커의 **우발적** 면제만 차단한다(의도적 동일사용자
     // 프로세스는 토큰 파일을 읽어 raw RPC로 우회 가능 — M11 수준·사고 방지용).
-    async fn call(request_id: &str, decision: &str) -> Result<Value, String> {
+    async fn call(sock: &std::path::Path, request_id: &str, decision: &str) -> Result<Value, String> {
         let mut params = json!({"request_id": request_id, "decision": decision});
-        if let Some(tok) = read_operator_token() {
+        if let Some(tok) = read_operator_token_for(sock) {
             params["operator_token"] = json!(tok);
         }
-        rpc_full(&default_socket(), "feed.reply", params).await
+        rpc_full(sock, "feed.reply", params).await
     }
-    let mut resp = call(&request_id, &decision).await?;
+    let mut resp = call(&sock, &request_id, &decision).await?;
     // ★REVIEW1 m4: `owner_gui_required` 도 같은 좁은 창(토큰 회전 경합)에서 난다 — 팀 제안
     // 해소는 operator token 전용(team_spec::reply_allowed)이라, 첫 호출의 파일 읽기와 데몬
     // 재시작(토큰 회전)이 겹치면 방금 읽은 토큰이 이미 낡아 이 코드로 떨어진다. 그대로 두면
@@ -4942,7 +5063,7 @@ async fn feed_reply(request_id: String, decision: String) -> Result<(), String> 
         )
     {
         // 첫 호출의 파일 읽기와 데몬 재시작(토큰 회전)이 겹친 좁은 창 — 신선 재독으로 1회만 재시도.
-        resp = call(&request_id, &decision).await?;
+        resp = call(&sock, &request_id, &decision).await?;
     }
     if resp["ok"].as_bool() == Some(true) {
         Ok(())
@@ -4954,6 +5075,222 @@ async fn feed_reply(request_id: String, decision: String) -> Result<(), String> 
             resp["error"]["message"].as_str().unwrap_or("unknown error")
         ))
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// 0.14.44 WP-B B5·B6 — 오피스 브리지 건강 확인(`office_health`)과 화면 자산 복구(`repair_office_assets`)
+//
+// ★건강 확인 탐침은 lib 도우미(`cys::bridge_probe_get` — 데몬 감독과 같은 코드)를 쓴다(아래 별칭). 탐침의 정의 = 접속 → 0.3초 → `GET /health` → 전송 뒤 5초 안에 200 과 본문
+//   min(Content-Length, 64KB) 바이트 · 404 면 같은 꼴로 `/world`. 판정(`office_health_value`)과 화면 계약은 이 파일이 가진다.
+// ★화면 안(127.0.0.1:8642 에서 온 내용)은 이 명령을 부를 수 없다 — capabilities 에 `remote` 가 없고 tauri 가 원격 출처의 앱 명령을
+//   기본 거부한다(`tauri-2.11.2/src/webview/mod.rs:1818-1822`). 핀: `office_iframe_has_no_ipc_path`.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+use cys::{
+    bridge_parse_head as office_parse_head, bridge_probe_get as office_probe_get, BridgeProbeError as OfficeProbeError,
+    BridgeProbeReply as OfficeProbeReply, BRIDGE_PROBE_BODY_CAP as OFFICE_PROBE_BODY_CAP, OFFICE_BRIDGE_PORT,
+};
+/// B6 파일당 복구 명령의 시간 상한(설계 B6).
+const OFFICE_REPAIR_TIMEOUT_SECS: u64 = 10;
+/// B6-2 윈도우의 [복구] 단추 — CI 윈도우 레인(데몬·브리지가 도는 중의 실행)과 실기 확인을 통과하기 전에는 꺼 둔다.
+/// 켜는 것은 코드 변경이고 릴리스 결재 사항이다(설계 B6 · §5-4 ㉥).
+const OFFICE_REPAIR_WINDOWS_BUTTON: bool = false;
+/// 화면 자산 세 파일 — (`/health` 의 `assets` 키, 팩 상대경로).
+const OFFICE_ASSET_FILES: [(&str, &str); 3] = [
+    ("office3d_html", "web/office3d.html"),
+    ("office_boot_js", "web/office-boot.js"),
+    ("three_module_js", "web/vendor/three.module.js"),
+];
+/// 앱 세션당 자동 복구 1회 상한(설계 B6-2).
+static OFFICE_AUTO_REPAIR_TRIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 건강 확인 결과를 화면 계약으로 모은다(순수 — 탐침은 주입).
+/// `/health` 가 200 이면 그 본문에서 기동 식별자·팩 버전·자산 유무를 읽고, 404 면(옛 스크립트) 같은 꼴로 `/world` 를 본다(legacy).
+/// ok = 탐침 통과(상태 200 ∧ 본문을 다 받음). 반환 키: ok · reachable · reason · legacy · boot_id · pack_version · assets_missing(팩 상대경로 목록).
+fn office_health_value(probe: &dyn Fn(&str) -> Result<OfficeProbeReply, OfficeProbeError>) -> Value {
+    let fail = |reachable: bool, reason: String, legacy: bool| {
+        json!({"ok": false, "reachable": reachable, "reason": reason, "legacy": legacy,
+               "boot_id": Value::Null, "pack_version": Value::Null, "assets_missing": Vec::<String>::new()})
+    };
+    let err_reason = |e: &OfficeProbeError| match e {
+        OfficeProbeError::NoConnect => ("no_connect".to_string(), false),
+        OfficeProbeError::NoResponse => ("no_response".to_string(), true),
+        OfficeProbeError::BadReply => ("bad_reply".to_string(), true),
+    };
+    match probe("/health") {
+        Ok(r) if r.status == 200 && r.complete => {
+            let v: Value = serde_json::from_slice(&r.body).unwrap_or(Value::Null);
+            let boot_id = v.get("boot_id").and_then(|x| x.as_str()).map(|s| s.to_string());
+            let pack_version = v.get("pack_version").and_then(|x| x.as_str()).map(|s| s.to_string());
+            // 자산: `assets` 객체가 있을 때만 판정한다 — 키가 없거나 모양이 다르면 '모름'(빈 목록 · 지어내지 않는다). false 인 것만 없는 것.
+            let mut missing: Vec<String> = Vec::new();
+            if let Some(a) = v.get("assets").and_then(|x| x.as_object()) {
+                for (key, rel) in OFFICE_ASSET_FILES {
+                    if a.get(key).and_then(|x| x.as_bool()) == Some(false) {
+                        missing.push(rel.to_string());
+                    }
+                }
+            }
+            json!({"ok": true, "reachable": true, "reason": "ok", "legacy": false,
+                   "boot_id": boot_id, "pack_version": pack_version, "assets_missing": missing})
+        }
+        Ok(r) if r.status == 404 => match probe("/world") {
+            Ok(w) if w.status == 200 && w.complete => json!({"ok": true, "reachable": true, "reason": "ok", "legacy": true,
+                "boot_id": Value::Null, "pack_version": Value::Null, "assets_missing": Vec::<String>::new()}),
+            Ok(w) => fail(true, format!("status_{}", w.status), true),
+            Err(e) => {
+                let (reason, reachable) = err_reason(&e);
+                fail(reachable, reason, true)
+            }
+        },
+        Ok(r) => fail(true, if r.status == 200 { "incomplete".to_string() } else { format!("status_{}", r.status) }, false),
+        Err(e) => {
+            let (reason, reachable) = err_reason(&e);
+            fail(reachable, reason, false)
+        }
+    }
+}
+
+/// 자산 복구의 실행 방식(순수) — `auto`(자동 실행 + 단추) · `button`(단추만) · `none`(안내 문구만).
+/// 윈도우: 자동 없음, 단추는 `windows_button` 플래그 뒤(꺼져 있으면 none). 그 밖(맥·리눅스): 정책 파일이 끄지 않았으면 auto, 껐으면 button.
+fn office_repair_mode(is_windows: bool, policy_off: bool, windows_button: bool) -> &'static str {
+    if is_windows {
+        if windows_button {
+            "button"
+        } else {
+            "none"
+        }
+    } else if policy_off {
+        "button"
+    } else {
+        "auto"
+    }
+}
+
+/// 정책 파일의 `CYS_OFFICE_ASSET_REPAIR` 값이 '끔'인가 — 0 · "0" · false 만 끈다(그 밖·키 없음은 기본 = 켬). 끄는 값만 받는다.
+fn office_policy_value_is_off(v: Option<&Value>) -> bool {
+    match v {
+        Some(Value::Number(n)) => n.as_i64() == Some(0),
+        Some(Value::String(s)) => s.trim() == "0",
+        Some(Value::Bool(b)) => !*b,
+        _ => false,
+    }
+}
+
+fn office_asset_repair_policy_off() -> bool {
+    let path = cys::home_dir().join(".cys").join("policy.json");
+    let Ok(text) = std::fs::read_to_string(&path) else { return false };
+    let Ok(v) = serde_json::from_str::<Value>(strip_utf8_bom(&text)) else { return false };
+    office_policy_value_is_off(v.get("CYS_OFFICE_ASSET_REPAIR"))
+}
+
+/// B5 — 오피스 브리지 건강 확인. 오피스 탭이 보이는 동안 화면이 부른다(실리지 않았을 때 3초 · 3분 뒤 15초 간격 — 간격은 화면이 정한다).
+/// 반환: office_health_value 의 키 + `repair`(auto|button|none — B6 의 실행 방식).
+#[tauri::command]
+async fn office_health() -> Result<Value, String> {
+    let mut v = tokio::task::spawn_blocking(|| office_health_value(&|p| office_probe_get(OFFICE_BRIDGE_PORT, p)))
+        .await
+        .map_err(|e| e.to_string())?;
+    let mode = office_repair_mode(cfg!(windows), office_asset_repair_policy_off(), OFFICE_REPAIR_WINDOWS_BUTTON);
+    if let Some(o) = v.as_object_mut() {
+        o.insert("repair".into(), json!(mode));
+    }
+    Ok(v)
+}
+
+/// 자식 프로세스를 시간 상한 안에서 기다린다 — 표준입력은 닫고(물려주면 질문을 기다리며 멈춘 실측이 있다 · R8) 출력은 버린다.
+/// 상한을 넘기면 그 프로세스만 끝낸다(`Child::kill` — 그룹 신호 아님). 성공 = 종료코드 0.
+fn run_command_with_timeout(mut cmd: std::process::Command, limit: std::time::Duration) -> Result<(), String> {
+    use std::process::Stdio;
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    let mut child = cmd.spawn().map_err(|e| format!("spawn: {e}"))?;
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(st)) => {
+                return if st.success() { Ok(()) } else { Err(format!("exit {}", st.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into()))) };
+            }
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("timeout".into());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(40));
+            }
+            Err(e) => return Err(format!("wait: {e}")),
+        }
+    }
+}
+
+/// 동봉 CLI 의 `pack-heal --missing-only <rel>` 한 번 — 사이드카 실행 도우미(`sealed_sidecar_cys`)로 띄운다(새 스폰 지점을 만들지 않는다 · 독립 검증 X14).
+fn run_pack_heal_missing_only(rel: &str) -> Result<(), String> {
+    let cmd = sealed_sidecar_cys(&["pack-heal", "--missing-only", rel]);
+    run_command_with_timeout(cmd, std::time::Duration::from_secs(OFFICE_REPAIR_TIMEOUT_SECS))
+}
+
+/// B6 — 없는 화면 자산만 되살린다(순수 조율 — 팩 폴더·앱 버전·실행기는 주입).
+/// 순서: ① 팩 버전 표식(`.pack-version`)이 앱 버전과 같을 때만(다르면 `version_mismatch` — 판이 섞인다) ② 없는 파일 고르기(없으면 `nothing_missing` · 명령은 한 번도 안 부른다)
+/// ③ 병합 대기 원장에 항목이 이미 있는 파일은 건드리지 않는다(`skipped` — 사용자가 손댄 이력) ④ 나머지를 한 번에 하나씩 실행하고 파일이 실제로 생겼는지 확인한다.
+/// 반환 status: repaired · partial · failed · ledger_entry · nothing_missing · version_mismatch.
+fn repair_office_assets_with(dir: &std::path::Path, app_version: &str, run: &mut dyn FnMut(&str) -> Result<(), String>) -> Value {
+    let disk_version = std::fs::read_to_string(dir.join(".pack-version")).ok().map(|s| s.trim().to_string());
+    if disk_version.as_deref() != Some(app_version) {
+        return json!({"status": "version_mismatch", "pack_version": disk_version, "app_version": app_version,
+                      "repaired": Vec::<String>::new(), "failed": Vec::<String>::new(), "skipped": Vec::<String>::new()});
+    }
+    let missing: Vec<&str> = OFFICE_ASSET_FILES.iter().map(|(_, rel)| *rel).filter(|rel| !dir.join(rel).is_file()).collect();
+    if missing.is_empty() {
+        return json!({"status": "nothing_missing", "repaired": Vec::<String>::new(), "failed": Vec::<String>::new(), "skipped": Vec::<String>::new()});
+    }
+    let ledger = cys::pack::load_merge_pending(dir);
+    let (mut repaired, mut failed, mut skipped) = (Vec::<String>::new(), Vec::<String>::new(), Vec::<String>::new());
+    for rel in &missing {
+        if ledger.contains_key(*rel) {
+            skipped.push((*rel).to_string());
+            continue;
+        }
+        match run(rel) {
+            Ok(()) if dir.join(rel).is_file() => repaired.push((*rel).to_string()),
+            _ => failed.push((*rel).to_string()),
+        }
+    }
+    let status = if repaired.len() == missing.len() {
+        "repaired"
+    } else if repaired.is_empty() && failed.is_empty() {
+        "ledger_entry"
+    } else if repaired.is_empty() {
+        "failed"
+    } else {
+        "partial"
+    };
+    json!({"status": status, "repaired": repaired, "failed": failed, "skipped": skipped})
+}
+
+/// B6 — 앱 백엔드 명령. 오피스 탭이 `/health` 에서 '자산이 없다'를 보면 화면이 부른다.
+/// `manual` = 사람이 단추를 눌렀는가. 자동(manual=false)은 실행 방식이 auto 일 때만, 앱 세션당 1회 — 두 번째부터는 `already_tried`.
+/// 윈도우는 자동 없음, 단추는 플래그 뒤(꺼져 있으면 `unavailable`). 정책 파일 `CYS_OFFICE_ASSET_REPAIR: 0` 이면 자동은 `auto_disabled`(단추만).
+#[tauri::command]
+async fn repair_office_assets(manual: Option<bool>) -> Result<Value, String> {
+    let manual = manual.unwrap_or(false);
+    let mode = office_repair_mode(cfg!(windows), office_asset_repair_policy_off(), OFFICE_REPAIR_WINDOWS_BUTTON);
+    if mode == "none" {
+        return Ok(json!({"status": "unavailable"}));
+    }
+    if !manual {
+        if mode != "auto" {
+            return Ok(json!({"status": "auto_disabled"}));
+        }
+        if OFFICE_AUTO_REPAIR_TRIED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return Ok(json!({"status": "already_tried"}));
+        }
+    }
+    tokio::task::spawn_blocking(|| {
+        let dir = cys::pack::pack_dir();
+        repair_office_assets_with(&dir, env!("CARGO_PKG_VERSION"), &mut |rel| run_pack_heal_missing_only(rel))
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// Attach: 부서 소켓의 surface PTY 출력을 base64 이벤트로 webview에 스트리밍.
@@ -7488,7 +7825,10 @@ fn main() {
             attach_surface,
             start_surface_stream,
             feed_list,
+            feed_list_all,
             feed_reply,
+            office_health,
+            repair_office_assets,
             list_dir,
             open_path,
             reveal_path,
@@ -14899,6 +15239,362 @@ osascript 를 실행할 수 없어 건너뜁니다({e}) — macOS 가 아닌 환
         // 대조: 키 없는 행끼리(둘 다 읽지 못함·구버전)는 키를 만들지 않는다 — 위의 결과가 '키 부재 = 빈 배열' 로 뭉개진 것이 아니다
         let m = merge_account_rows(&[missing(100.0), missing(200.0)]);
         assert!(m[0].get("current_profiles").is_none(), "키 없는 행끼리의 병합이 키를 만들었다: {}", m[0]);
+    }
+
+    // ═════════ 0.14.44 WC — B5·B6 오피스 건강 확인 · 화면 자산 복구 ═════════
+
+    fn office_reply(status: u16, body: &str) -> Result<OfficeProbeReply, OfficeProbeError> {
+        Ok(OfficeProbeReply { status, body: body.as_bytes().to_vec(), complete: true })
+    }
+
+    /// 응답 머리 해석 — 상태 번호 · Content-Length(대소문자 무관) · 머리 끝. 머리가 덜 왔으면 None · HTTP 가 아니면 None.
+    #[test]
+    fn b5_parse_head_status_length_and_partial() {
+        let raw = b"HTTP/1.0 200 OK\r\nServer: x\r\ncontent-length: 5\r\n\r\nhello";
+        assert_eq!(office_parse_head(raw), Some((200, Some(5), raw.len() - 5)));
+        assert_eq!(office_parse_head(b"HTTP/1.1 404 Not Found\r\n\r\n"), Some((404, None, 26)));
+        assert_eq!(office_parse_head(b"HTTP/1.1 200 OK\r\nContent-Le"), None, "머리가 덜 왔다");
+        assert_eq!(office_parse_head(b"garbage\r\n\r\n"), None, "HTTP 가 아니다");
+        assert_eq!(office_parse_head(b"HTTP/1.1 abc OK\r\n\r\n"), None, "상태 번호가 숫자가 아니다");
+    }
+
+    /// 건강 확인 판정 — /health 200 이면 기동 식별자·팩 버전·없는 자산(팩 상대경로)을 읽는다 · 자산 키가 없으면 '모름'(빈 목록).
+    #[test]
+    fn b5_health_value_reads_boot_id_and_missing_assets() {
+        let body = r#"{"ok":true,"pid":1,"boot_id":"abc","pack_version":"0.14.44","assets":{"office3d_html":true,"office_boot_js":false,"three_module_js":false},"timeouts":0}"#;
+        let v = office_health_value(&|p| {
+            assert_eq!(p, "/health");
+            office_reply(200, body)
+        });
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["reachable"], true);
+        assert_eq!(v["legacy"], false);
+        assert_eq!(v["boot_id"], "abc");
+        assert_eq!(v["pack_version"], "0.14.44");
+        assert_eq!(v["assets_missing"], json!(["web/office-boot.js", "web/vendor/three.module.js"]));
+        // assets 가 없거나 모양이 다르면 모름 — 없다고 지어내지 않는다
+        for b in [r#"{"ok":true,"boot_id":"x"}"#, r#"{"assets":"nope"}"#, "not json"] {
+            let v = office_health_value(&|_| office_reply(200, b));
+            assert_eq!(v["ok"], true, "{b}");
+            assert_eq!(v["assets_missing"], json!([]), "{b}");
+        }
+    }
+
+    /// 옛 브리지(/health 404)는 같은 꼴로 /world 를 본다 · 둘 다 안 되면 사유를 구분해 돌려준다(접속 불가 / 응답 없음 / 상태 번호).
+    #[test]
+    fn b5_health_value_legacy_world_fallback_and_reasons() {
+        let v = office_health_value(&|p| if p == "/health" { office_reply(404, "") } else { office_reply(200, "{}") });
+        assert_eq!((v["ok"].as_bool(), v["legacy"].as_bool(), v["reason"].as_str()), (Some(true), Some(true), Some("ok")));
+        let v = office_health_value(&|p| if p == "/health" { office_reply(404, "") } else { Err(OfficeProbeError::NoResponse) });
+        assert_eq!((v["ok"].as_bool(), v["legacy"].as_bool(), v["reason"].as_str()), (Some(false), Some(true), Some("no_response")));
+        let v = office_health_value(&|_| Err(OfficeProbeError::NoConnect));
+        assert_eq!((v["ok"].as_bool(), v["reachable"].as_bool(), v["reason"].as_str()), (Some(false), Some(false), Some("no_connect")));
+        let v = office_health_value(&|_| Err(OfficeProbeError::NoResponse));
+        assert_eq!((v["ok"].as_bool(), v["reachable"].as_bool(), v["reason"].as_str()), (Some(false), Some(true), Some("no_response")));
+        let v = office_health_value(&|_| office_reply(500, ""));
+        assert_eq!((v["ok"].as_bool(), v["reason"].as_str()), (Some(false), Some("status_500")));
+        let v = office_health_value(&|_| Ok(OfficeProbeReply { status: 200, body: vec![], complete: false }));
+        assert_eq!((v["ok"].as_bool(), v["reason"].as_str()), (Some(false), Some("incomplete")), "본문을 다 못 받은 200 은 통과가 아니다");
+    }
+
+    /// 실제 소켓으로 탐침 — 접속 불가 / 정상(Content-Length) / 응답 머리만 오고 본문이 멈춘 서버(시간 상한) / 64KB 이상 본문은 읽지 않고 성공.
+    #[test]
+    fn b5_probe_get_against_local_servers() {
+        use std::io::{Read, Write};
+        // 닫힌 포트
+        // (병렬로 도는 다른 시험이 같은 임시 포트를 막 잡을 수 있다 — 실제로 접속이 거절되는 포트를 확인한 것만 쓴다)
+        let closed = (0..50)
+            .find_map(|_| {
+                let l = std::net::TcpListener::bind("127.0.0.1:0").ok()?;
+                let p = l.local_addr().ok()?.port();
+                drop(l);
+                std::net::TcpStream::connect_timeout(&std::net::SocketAddr::from(([127, 0, 0, 1], p)), std::time::Duration::from_millis(300)).is_err().then_some(p)
+            })
+            .expect("닫힌 포트를 찾지 못했다");
+        assert_eq!(office_probe_get(closed, "/health"), Err(OfficeProbeError::NoConnect));
+        // 정상
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let h = std::thread::spawn(move || {
+            let (mut s, _) = l.accept().unwrap();
+            let mut b = [0u8; 512];
+            let n = s.read(&mut b).unwrap();
+            let req = String::from_utf8_lossy(&b[..n]).to_string();
+            let body = r#"{"ok":true,"boot_id":"z"}"#;
+            let _ = s.write_all(format!("HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n{}", body.len(), body).as_bytes());
+            req
+        });
+        let r = office_probe_get(port, "/health").unwrap();
+        assert_eq!((r.status, r.complete), (200, true));
+        assert!(String::from_utf8_lossy(&r.body).contains("\"boot_id\":\"z\""));
+        let req = h.join().unwrap();
+        assert!(req.starts_with("GET /health HTTP/1.1\r\n"), "{req}");
+        // 64KB 보다 큰 본문 — 상한만큼만 읽고 성공으로 친다
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let h = std::thread::spawn(move || {
+            let (mut s, _) = l.accept().unwrap();
+            let mut b = [0u8; 512];
+            let _ = s.read(&mut b);
+            let body = vec![b'x'; 200 * 1024];
+            let _ = s.write_all(format!("HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).as_bytes());
+            let _ = s.write_all(&body);
+        });
+        let r = office_probe_get(port, "/world").unwrap();
+        assert_eq!((r.status, r.complete, r.body.len()), (200, true, OFFICE_PROBE_BODY_CAP));
+        let _ = h.join();
+    }
+
+    /// 실행 방식 — 맥: 자동(정책이 끄면 단추만) · 윈도우: 자동 없음, 단추는 플래그 뒤 · 플래그는 꺼져 있다.
+    #[test]
+    fn b6_repair_mode_matrix_and_windows_flag_off() {
+        assert_eq!(office_repair_mode(false, false, false), "auto");
+        assert_eq!(office_repair_mode(false, true, false), "button");
+        assert_eq!(office_repair_mode(true, false, false), "none");
+        assert_eq!(office_repair_mode(true, true, false), "none");
+        assert_eq!(office_repair_mode(true, false, true), "button", "윈도우 단추는 플래그가 켜져야만");
+        assert_eq!(office_repair_mode(true, true, true), "button");
+        assert!(!OFFICE_REPAIR_WINDOWS_BUTTON, "윈도우 [복구] 단추는 CI 윈도우 레인·실기 확인 전에는 꺼 둔다(설계 B6-2)");
+        assert!(office_policy_value_is_off(Some(&json!(0))));
+        assert!(office_policy_value_is_off(Some(&json!("0"))));
+        assert!(office_policy_value_is_off(Some(&json!(false))));
+        assert!(!office_policy_value_is_off(Some(&json!(1))));
+        assert!(!office_policy_value_is_off(Some(&json!("on"))));
+        assert!(!office_policy_value_is_off(None), "키가 없으면 기본(켬)");
+    }
+
+    fn office_pack_dir(tag: &str, version: Option<&str>, present: &[&str]) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("wc-office-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("web/vendor")).unwrap();
+        if let Some(v) = version {
+            std::fs::write(d.join(".pack-version"), format!("{v}\n")).unwrap();
+        }
+        for rel in present {
+            std::fs::write(d.join(rel), b"x").unwrap();
+        }
+        d
+    }
+
+    /// 복구 조율 — 없는 것만 · 파일이 있을 때는 명령 0회 · 버전이 다르면 실행 0회 · 원장 항목이 있는 파일은 건드리지 않는다 · 부분 성공.
+    #[test]
+    fn b6_repair_orchestration_missing_only_version_and_ledger() {
+        let all = ["web/office3d.html", "web/office-boot.js", "web/vendor/three.module.js"];
+        let ver = env!("CARGO_PKG_VERSION");
+        // 전부 있다 → 명령 0회
+        let d = office_pack_dir("allpresent", Some(ver), &all);
+        let mut calls: Vec<String> = vec![];
+        let v = repair_office_assets_with(&d, ver, &mut |r| { calls.push(r.to_string()); Ok(()) });
+        assert_eq!(v["status"], "nothing_missing");
+        assert!(calls.is_empty(), "파일이 있을 때 명령이 불렸다: {calls:?}");
+        // 버전 표식이 다르거나 없다 → 실행 0회
+        for (tag, version) in [("badver", Some("0.0.1")), ("nover", None)] {
+            let d = office_pack_dir(tag, version, &[]);
+            let v = repair_office_assets_with(&d, ver, &mut |r| { calls.push(r.to_string()); Ok(()) });
+            assert_eq!(v["status"], "version_mismatch", "{tag}");
+        }
+        assert!(calls.is_empty(), "판이 다른 팩에서 명령이 불렸다: {calls:?}");
+        // 하나만 없다 → 그 파일에만 · 파일이 실제로 생겨야 repaired
+        let d = office_pack_dir("one", Some(ver), &[all[0], all[1]]);
+        let dd = d.clone();
+        let v = repair_office_assets_with(&d, ver, &mut |r| { calls.push(r.to_string()); std::fs::write(dd.join(r), b"healed").unwrap(); Ok(()) });
+        assert_eq!(v["status"], "repaired");
+        assert_eq!(calls, vec!["web/vendor/three.module.js".to_string()]);
+        // 명령은 성공(0)이라고 했으나 파일이 안 생겼다 → failed(거짓 성공 금지)
+        let d = office_pack_dir("liar", Some(ver), &[all[0], all[1]]);
+        let v = repair_office_assets_with(&d, ver, &mut |_| Ok(()));
+        assert_eq!((v["status"].as_str(), v["failed"].as_array().map(|a| a.len())), (Some("failed"), Some(1)));
+        // 원장 항목이 있는 파일은 건드리지 않는다
+        let d = office_pack_dir("ledger", Some(ver), &[all[0], all[1]]);
+        std::fs::write(d.join(".merge-pending.json"), r#"{"web/vendor/three.module.js":{"kind":"kept-drift","ts":1}}"#).unwrap();
+        calls.clear();
+        let v = repair_office_assets_with(&d, ver, &mut |r| { calls.push(r.to_string()); Ok(()) });
+        assert_eq!(v["status"], "ledger_entry");
+        assert!(calls.is_empty(), "원장 항목이 있는 파일에 명령이 불렸다: {calls:?}");
+        assert_eq!(v["skipped"], json!(["web/vendor/three.module.js"]));
+        // 셋 다 없다 → 한 번에 하나씩 순서대로(부분 성공 포함)
+        let d = office_pack_dir("three", Some(ver), &[]);
+        calls.clear();
+        let dd = d.clone();
+        let v = repair_office_assets_with(&d, ver, &mut |r| {
+            calls.push(r.to_string());
+            if r.ends_with("office-boot.js") { Err("exit 1".into()) } else { std::fs::write(dd.join(r), b"healed").unwrap(); Ok(()) }
+        });
+        assert_eq!(calls, all.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(v["status"], "partial");
+        assert_eq!(v["failed"], json!(["web/office-boot.js"]));
+    }
+
+    /// 병합 대기 원장을 만들거나 바꾸지 않는다 — 조율 함수가 원장 파일에 쓰지 않는다(읽기만).
+    #[test]
+    fn b6_repair_orchestration_never_writes_ledger() {
+        let src = include_str!("main.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계 소실")];
+        let s = prod.find("fn repair_office_assets_with(").expect("조율 함수 소실");
+        let body = &prod[s..s + prod[s..].find("\n}\n").expect("fn 끝")];
+        for bad in ["save_merge_pending", "write_atomic", "std::fs::write", "remove_file", "rename("] {
+            assert!(!body.contains(bad), "복구 조율이 원장·파일에 쓴다: {bad}");
+        }
+        assert!(body.contains("load_merge_pending"), "원장을 읽어 항목이 있는 파일을 건너뛰어야 한다");
+    }
+
+    /// 자식 실행기 — 표준입력은 닫혀 있고(읽으려는 자식이 즉시 끝난다) · 시간 상한을 넘기면 끝낸다 · 실패 종료코드는 Err.
+    #[cfg(unix)]
+    #[test]
+    fn b6_run_command_with_timeout_closes_stdin_and_kills() {
+        use std::time::{Duration, Instant};
+        // cat 은 표준입력이 열려 있으면 영원히 기다린다 — 닫혀 있으면 즉시 끝난다.
+        let t = Instant::now();
+        assert!(run_command_with_timeout(std::process::Command::new("cat"), Duration::from_secs(5)).is_ok());
+        assert!(t.elapsed() < Duration::from_secs(3), "표준입력이 닫혀 있지 않다");
+        let mut c = std::process::Command::new("sleep");
+        c.arg("30");
+        let t = Instant::now();
+        assert_eq!(run_command_with_timeout(c, Duration::from_millis(300)), Err("timeout".to_string()));
+        assert!(t.elapsed() < Duration::from_secs(3));
+        assert!(run_command_with_timeout(std::process::Command::new("false"), Duration::from_secs(5)).is_err());
+    }
+
+    /// 명령 등재 + 오피스 화면(원격 출처)이 백엔드 명령에 닿는 길이 없다 — capabilities 에 remote 없음 · 원격 도메인 IPC 허용 설정 없음 ·
+    /// 앱 명령은 파일에 적지 않는다 · 자산 복구 명령은 사이드카 도우미 하나로만 부른다(새 스폰 지점 없음).
+    #[test]
+    fn office_iframe_has_no_ipc_path_and_commands_registered() {
+        let src = include_str!("main.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계 소실")];
+        let i = prod.find("tauri::generate_handler![").expect("invoke_handler 소실");
+        let reg = &prod[i..i + prod[i..].find("\n        ])").expect("핸들러 목록 끝")];
+        for name in ["office_health", "repair_office_assets"] {
+            assert!(reg.lines().any(|l| l.trim() == format!("{name},")), "{name} 이 invoke_handler 에 등재되지 않았다");
+        }
+        let cap: Value = serde_json::from_str(include_str!("../capabilities/default.json")).expect("capabilities 파싱");
+        assert!(cap.get("remote").is_none(), "capabilities 에 remote 가 생겼다 — 오피스 화면이 백엔드 명령을 부를 수 있게 된다");
+        assert_eq!(cap["windows"], json!(["main"]));
+        let perms = cap["permissions"].as_array().unwrap();
+        assert!(perms.iter().all(|p| p.as_str().map(|s| !s.contains("office") && !s.contains("feed")).unwrap_or(false)), "앱 명령은 capabilities 에 적지 않는다");
+        let conf = include_str!("../tauri.conf.json");
+        assert!(!conf.contains("dangerousRemoteDomainIpcAccess"), "원격 도메인 IPC 허용 설정이 생겼다");
+        // 화면 자산 복구는 사이드카 도우미로만 — `Command::new` 를 새로 만들지 않는다
+        let s = prod.find("fn run_pack_heal_missing_only(").expect("소실");
+        let body = &prod[s..s + prod[s..].find("\n}\n").unwrap()];
+        assert!(body.contains("sealed_sidecar_cys(&[\"pack-heal\", \"--missing-only\", rel])"));
+        assert!(!body.contains("Command::new"));
+    }
+
+    // ═════════ 0.14.44 WC — C2 부서 항목 응답(feed_list_all · feed_reply 의 socket 인자) ═════════
+
+    fn pb(s: &str) -> std::path::PathBuf {
+        std::path::PathBuf::from(s)
+    }
+
+    /// 맥: 본부는 항상 허용 · 부서는 등록부에 있고 이름 규칙에 맞고 토큰 폴더가 본부와 다를 때만.
+    #[test]
+    fn c2_reply_socket_allowed_unix_rules() {
+        let dir_of = |p: &std::path::Path| p.parent().map(|d| d.to_path_buf());
+        let head = pb("/state/cys/cys.sock");
+        let sales = pb("/state/cys-dept-sales/cys.sock");
+        let reg = vec![sales.clone(), pb("/state/cys-dept-ops/cys.sock")];
+        assert!(feed_reply_socket_allowed_with(&head, &head, &reg, &dir_of), "본부는 허용");
+        assert!(feed_reply_socket_allowed_with(&sales, &head, &reg, &dir_of), "등록된 부서는 허용");
+        // 등록부에 없다
+        assert!(!feed_reply_socket_allowed_with(&pb("/state/cys-dept-ghost/cys.sock"), &head, &reg, &dir_of));
+        // 이름 규칙에 안 맞는다(등록부에는 있다)
+        let odd = pb("/state/other/cys.sock");
+        assert!(!feed_reply_socket_allowed_with(&odd, &head, &[odd.clone()], &dir_of));
+        // 토큰 폴더가 본부와 같다 — 등록부에 본부와 같은 폴더의 소켓이 끼어든 검체: 본부 토큰이 엉뚱한 소켓으로 가지 않는다
+        let same_dir = pb("/state/cys/cys-dept-evil.sock");
+        assert_eq!(dept_name_from_socket(&same_dir.to_string_lossy()).as_deref(), Some("evil.sock"), "이름 규칙은 통과하는 검체여야 ③을 시험한다");
+        assert!(!feed_reply_socket_allowed_with(&same_dir, &head, &[same_dir.clone()], &dir_of), "본부와 같은 토큰 폴더의 소켓은 거부");
+        // 폴더를 계산하지 못하면 거부(fail-closed)
+        assert!(!feed_reply_socket_allowed_with(&sales, &head, &reg, &|_| None));
+    }
+
+    /// 윈도우: 모든 파이프의 부모가 `\\.\pipe` 로 같다 — 소켓의 부모로 비교하면 부서가 전부 거부된다. 토큰 폴더(슬러그)로 비교하면 허용된다.
+    #[test]
+    fn c2_reply_socket_allowed_windows_pipe_rules() {
+        let lad = pb("C:/Users/x/AppData/Local");
+        let dir_of = move |p: &std::path::Path| Some(windows_token_dir(&lad, &p.to_string_lossy()));
+        let head = pb(r"\\.\pipe\cys");
+        let sales = pb(r"\\.\pipe\cys-dept-sales");
+        let reg = vec![sales.clone()];
+        // 계산 규칙: 본부는 루트 · 부서는 슬러그 하위
+        assert_eq!(windows_token_dir(&pb("C:/L"), r"\\.\pipe\cys"), pb("C:/L/cys"));
+        assert_eq!(windows_token_dir(&pb("C:/L"), r"\\.\pipe\cys-dept-sales"), pb("C:/L/cys/cys-dept-sales"));
+        assert_eq!(windows_token_dir(&pb("C:/L"), r"\\.\pipe\cys-dept-s!ales"), pb("C:/L/cys/cys-dept-sales"), "파일시스템 안전 문자만");
+        assert!(feed_reply_socket_allowed_with(&sales, &head, &reg, &dir_of), "윈도우 부서 파이프가 거부되면 안 된다(Fable V3)");
+        // 대조: 부모 폴더 비교였다면 거부됐을 것이다
+        let parent_of = |p: &std::path::Path| p.to_string_lossy().rsplit_once('\\').map(|(a, _)| pb(a));
+        assert!(!feed_reply_socket_allowed_with(&sales, &head, &reg, &parent_of), "대조: 부모 비교는 모든 부서를 거부한다");
+        // 이름이 본부와 같은 슬러그로 접히는 파이프는 폴더가 같아 거부
+        let alias = pb(r"\\.\pipe\cys");
+        assert!(feed_reply_socket_allowed_with(&alias, &head, &[], &dir_of), "본부 자신은 허용(소켓이 같다)");
+    }
+
+    /// 리뷰 1 의 7번 — 본부 상태 폴더를 가리키는 심볼릭 링크 아래의 소켓은 실경로 비교로 거부 · 폴더가 없으면 거부 · 윈도우 파이프 이름은 슬러그와 완전히 같아야 한다.
+    #[cfg(unix)]
+    #[test]
+    fn c2_reply_socket_rejects_symlinked_head_dir_and_inexact_pipe_names() {
+        let base = std::env::temp_dir().join(format!("wc-c2-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("head")).unwrap();
+        std::fs::create_dir_all(base.join("other")).unwrap();
+        std::os::unix::fs::symlink(base.join("head"), base.join("cys-dept-x")).unwrap();
+        let head = base.join("head/cys.sock");
+        let linked = base.join("cys-dept-x/cys.sock"); // 문자열로는 다른 폴더 · 실경로는 본부 폴더
+        let ok_dept = base.join("other/cys-dept-y/cys.sock");
+        std::fs::create_dir_all(ok_dept.parent().unwrap()).unwrap();
+        let reg = vec![linked.clone(), ok_dept.clone()];
+        let dir_of = |p: &std::path::Path| canonical_dir(p.parent().map(|d| d.to_path_buf()));
+        assert!(!feed_reply_socket_allowed_with(&linked, &head, &reg, &dir_of), "심볼릭 링크로 본부 폴더를 가리키는 소켓은 거부");
+        assert!(feed_reply_socket_allowed_with(&ok_dept, &head, &reg, &dir_of), "진짜 다른 폴더의 부서는 허용");
+        let missing = base.join("none/cys-dept-z/cys.sock");
+        assert!(!feed_reply_socket_allowed_with(&missing, &head, &[missing.clone()], &dir_of), "폴더를 풀지 못하면 거부");
+        assert!(pipe_name_is_slug_exact(r"\\.\pipe\cys-dept-x") && !pipe_name_is_slug_exact(r"\\.\pipe\cys-dept-x.") && !pipe_name_is_slug_exact(r"\\.\pipe\cys-dept-x!"));
+        let lad = pb("C:/L");
+        let wdir = move |p: &std::path::Path| Some(windows_token_dir(&lad, &p.to_string_lossy()));
+        let h = pb(r"\\.\pipe\cys");
+        let bad = pb(r"\\.\pipe\cys-dept-x.");
+        assert!(!feed_reply_socket_allowed_with(&bad, &h, &[bad.clone()], &wdir), "슬러그와 다른 파이프 이름은 거부");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 배선 핀 — feed_reply 는 socket 인자를 받고 그 소켓의 토큰을 매번 새로 읽는다 · 토큰은 응답 값으로 나가지 않는다 · 본부 토큰을 부서 소켓에 붙이지 않는다 ·
+    /// 에이전트 CLI(`cys.rs`)는 조작자 토큰을 모른다 · 명령 등재.
+    #[test]
+    fn c2_feed_reply_and_list_all_wiring() {
+        let src = include_str!("main.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계 소실")];
+        let seg = |start: &str| -> &str {
+            let s = prod.find(start).unwrap_or_else(|| panic!("`{start}` 소실"));
+            &prod[s..s + prod[s..].find("\n}\n").expect("fn 끝")]
+        };
+        let reply = seg("async fn feed_reply(");
+        assert!(reply.contains("socket: Option<String>"));
+        assert!(reply.contains("feed_reply_socket_allowed(&sock)"), "허용 판정이 응답 앞에 있어야 한다");
+        assert!(reply.contains("read_operator_token_for(sock)"), "토큰은 그 소켓의 것을 매번 새로 읽는다");
+        assert!(!reply.contains("read_operator_token()") && !reply.contains("default_socket()"), "본부 고정으로 되돌아가면 안 된다");
+        assert!(reply.contains("self_approval_denied") && reply.contains("owner_gui_required"), "거부 응답 때 토큰을 다시 읽어 1회 재시도하는 종전 규칙이 남아 있다");
+        let all = seg("async fn feed_list_all(");
+        assert!(all.contains("Duration::from_secs(2)"), "소켓당 2초");
+        assert!(!all.contains("read_operator_token") && !all.contains("\"operator_token\""), "목록 응답에는 토큰이 실리지 않는다");
+        let i = prod.find("tauri::generate_handler![").expect("invoke_handler 소실");
+        let reg = &prod[i..i + prod[i..].find("\n        ])").expect("핸들러 목록 끝")];
+        for name in ["feed_list", "feed_list_all", "feed_reply"] {
+            assert!(reg.lines().any(|l| l.trim() == format!("{name},")), "{name} 미등재");
+        }
+        // 에이전트 CLI 불변 — operator_token 0건(원작자) → ★1.1.10 편입: cysr 은 1.1.8 W D24ⓐⓑ(59a8268a)로 오퍼레이터 좌석(master·cso)의
+        //   `cys feed reply --operator` 한 갈래에만 조작자 토큰을 싣는다(우리 결정 유지). 핀 = 그 한 자리 밖으로 번지지 않는다.
+        let cys_rs = include_str!("../../src/bin/cys.rs");
+        assert_eq!(cys_rs.matches("params[\"operator_token\"]").count(), 1, "cys CLI 의 조작자 토큰 싣기가 --operator 한 갈래 밖으로 번졌다");
+    }
+
+    /// 목록 응답 — 응답 없는 부서(닫힌 소켓)가 있어도 본부와 나머지가 오고, 그 부서는 오류 행으로 남는다 — 실제 소켓 없이 볼 수 있는 부분: 기본 소켓이 없으면 본부 행이 ok=false.
+    /// (등록부·소켓 접속은 라이브라 시험에서 부르지 않는다 — 판정은 위 순수 함수가 맡는다.)
+    #[test]
+    fn c2_registered_dept_sockets_sorted_and_canonical_filled() {
+        let mut reg = json!({"depts": {"zeta": {"display_name": "제타"}, "alpha": {"socket": "/x/cys-dept-alpha/cys.sock"}}});
+        fill_canonical_dept_sockets(&mut reg);
+        assert_eq!(reg["depts"]["alpha"]["socket"], "/x/cys-dept-alpha/cys.sock", "값이 있는 소켓은 건드리지 않는다");
+        assert!(reg["depts"]["zeta"]["socket"].as_str().map(|s| s.contains("cys-dept-zeta")).unwrap_or(false), "빈 등재는 canonical 로 채운다");
     }
 }
 

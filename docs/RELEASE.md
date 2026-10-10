@@ -267,7 +267,8 @@ bash scripts/release-gate-gatekeeper.sh <DMG | .app>
   반영되고, `.app` 직접 지정 모드에서는 "대상 아님(DMG 없음)" info 1줄만 남는다.
   · **왜 여기인가** — `scripts/build-macos-signed.sh:332` 가 같은 평가식을 이미 쓰지만 그것은
     빌드 시점 러너 산출물 검사다. 이 게이트는 업로드 **전**(release.yml)과 발행 후처리
-    (`scripts/release-postprocess.py` 가 draft 백업 DMG = **발행될 실물 바이트**에 재실행)에서
+    (`scripts/release-postprocess.py` 가 **발행될 실물 바이트**에 재실행 — 원작자 레인 = draft 백업 DMG ·
+    우리 포크 = 배포 zip 2종 속 `.app` 이라 이 ⑦ 축은 위 「대상 아님(DMG 없음)」 1줄이다)에서
     돌므로 발행 전 마지막 지점이다.
 - ★**⑨ gktool 실평가 축 — 2026-09-08 신설(오너 참고2)**: ①~⑧ 의 Gatekeeper 판정은 전부
   `spctl` **한 도구**에 걸려 있었다. `gktool scan <app>` 은 사용자가 앱을 **처음 열 때** 도는
@@ -301,9 +302,10 @@ bash scripts/release-gate-gatekeeper.sh <DMG | .app>
   가 필요하고(없으면 FAIL) 임시 디스크 ~2GB 를 쓴다 — 그대로 CI 매트릭스에 걸면 x64 레그가
   구조적으로 깨진다. 이 스크립트는 실행을 전혀 하지 않는 **정적 평가만** 남긴 CI 판이다.
   로컬 릴리스 절차에서는 여전히 위 실사용자 경로 게이트를 돌려라.
-- ★**발행 층위 훅**(F2 · 2026-08-20 신설): `scripts/release-postprocess.py` 가 4단계
-  (자기 검증) 직후에 draft 백업 DMG 2종 = **발행될 실물 바이트**에 이 게이트를 자동 실행하고,
-  네이티브 아키텍처 DMG 에는 `verify-gatekeeper-user-path.sh`(⑥ 포함)까지 얹는다.
+- ★**발행 층위 훅**(F2 · 2026-08-20 신설 · 2026-09-20 조준 전환): `scripts/release-postprocess.py` 가 4단계
+  (자기 검증) 직후에 draft 백업 **배포 zip 2종 속 `.app`** = **발행될 실물 바이트**에 이 게이트를
+  `--lane self-signed` 로 자동 실행한다(구판은 DMG 2종을 조준했다 — 우리 포크가 만든 적 없는 자산이다 ·
+  `verify-gatekeeper-user-path.sh` 는 DMG 전용이라 이 레인의 대상이 아니고, 후처리가 그 사유를 출력에 인쇄한다).
   rc≠0(1·2 모두)이면 postprocess 전체가 비영 종료해 `--apply` 가 거부된다(fail-closed ·
   측정 불능≠통과 · macOS 밖에서는 판정 불가로 fail-closed). 비상 탈출구
   `--unsafe-skip-gatekeeper`(LOUD 경고 2줄 · 평시 금지).
@@ -338,14 +340,11 @@ bash scripts/check-no-ioreport-link.sh <cysd 바이너리 경로>
   건너뜀(exit 0)은 macOS 가 아닌 러너뿐이다. 세 갈래(0/1/2)는 음성 대조 검체 `scripts/tests/test_check_no_ioreport_link.py`
   (12건 — 브랜치 CI 의 macOS 레인이 매 push 돌린다)가 잰다. 전체 목록의 정본은 스크립트 머리 주석의 '종료' 항이다.
 - **보지 못하는 것**: 로드 명령(`LC_LOAD_DYLIB`·약한/재수출/지연 로드)만 본다 — `dlopen` 으로 런타임에 여는 것은 의도된
-  방식이라 나오지 않고, 정적 라이브러리로 섞어 넣는 경우는 대상이 아니다. 이 스크립트는 macOS 에서만 판정한다. 공증된 DMG 의
-  데몬이 실제로 NPU 전력을 읽는지는 아래 체크리스트의 별도 행이다.
+  방식이라 나오지 않고, 정적 라이브러리로 섞어 넣는 경우는 대상이 아니다. 이 스크립트는 macOS 에서만 판정한다. 발행물(우리 포크 =
+  배포 zip 안 `cysr.app`)의 데몬이 실제로 NPU 전력을 읽는지는 이 게이트가 재지 않는다 — 실기 확인 몫이다(아래 체크리스트에 그 행은 없다).
 
 ### ★비기술자(청중) 배포 전 게이트 체크리스트 (D6 제품 모드)
 오너 대표 산출물을 제3자에게 패키징해 내보내기 전, 아래를 **모두** 확인한다.
-      accepted 인데도 "손상되었기 때문에 열 수 없습니다"로 막히는 경로(2026-08-01 사고)를
-      잡는 유일한 검사다. 비기술자는 이 화면을 만나면 **문의 없이 그냥 이탈한다** —
-      실패가 신고로 나타나지 않으므로 기계 게이트로만 막을 수 있다.
 - [ ] **신뢰선 라벨 활성** — 스킬 보드 산출물에 "🔒 AI 보조 생성 · 오너 검수 전"이 부착되는지(과대약속 "80~90%" 금지).
 - [ ] **외부발행은 master 승인 경유** — 제3자 공유/전송은 자율주행 denylist의 "외부발행(비가역)"에 해당. `cysr feed push --wait`(master 승인)를 거친다. 임의 전송 금지(§4 외부발행 원칙 계승).
 - [ ] **HITL 미리보기 보존** — 제품 모드도 입력 모달·validate_ir 게이트·미리보기 확인을 우회하지 않는다("1클릭"이라도 게이트 제거는 REJECT).

@@ -2861,7 +2861,11 @@ pub fn seat_settings_arg(path: &Path, windows: bool) -> String {
 ///   agy 귀속). 박사님 09-19 「agy 는 계정 사용량 표에서 뺀다」(usage-noagy). **꺼짐이면** 우리 1.1.7 동작 그대로.
 ///
 /// 켜는 법(운영) = 데몬 기동 env `CYS_ENABLE_TEAM_FLOW=1` / `CYS_ENABLE_AGY_LANE=1`(기본 = 둘 다 꺼짐 · 값은 프로세스
-/// 수명 동안 고정). 시험은 [`dormant::force_for_thread`] 로 **그 스레드에서만** 켠다(병렬 시험 간 간섭 0 — 우리
+/// 수명 동안 고정). ★1.1.10(cysr-1110-agy-link-dormant · master#c116db17): agy 갈래는 컴파일 상수
+/// [`dormant::AGY_LANE_COMPILED`] 가 **권위**다 — 상수가 false 면 env 로도 켜지지 않는다(env 는 상수 아래). 종전에는
+/// CLI 의 상태줄 상수와 데몬의 env 스위치가 따로 놀았다(env 만 켜면 표 귀속은 켜지고 값은 오지 않는 반쪽 상태) → 한 술어
+/// [`dormant::agy_lane_enabled`] 로 묶는다: 사용량 값 push·출력(cys.rs) · 표 귀속(accounts.rs) · 상태줄 자동 연결
+/// (agy_statusline `ensure_linked` · 설치·`doctor --fix`)이 전부 이 술어를 본다. 시험은 [`dormant::force_for_thread`] 로 **그 스레드에서만** 켠다(병렬 시험 간 간섭 0 — 우리
 /// usage-noagy 회귀 시험은 꺼진 채 · 원작자 agy·팀 시험은 켠 채로 같은 프로세스에서 동시에 돈다).
 /// (master#c6a9de68 B(b) 10-06 확정: 이 env 스위치 방식 유지 · 기본 off · ui 의 휴면 기능 배선 시험은 `CYS_UI_DORMANT_LANE=1` 레인 — docs/merge/BACKLOG-118.md.)
 pub mod dormant {
@@ -2869,6 +2873,14 @@ pub mod dormant {
 
     pub const ENV_TEAM_FLOW: &str = "CYS_ENABLE_TEAM_FLOW";
     pub const ENV_AGY_LANE: &str = "CYS_ENABLE_AGY_LANE";
+    /// agy 갈래 컴파일 상수(권위) — false 면 env `CYS_ENABLE_AGY_LANE=1` 로도 켜지지 않는다. 다시 켜려면 이 상수를 true 로
+    /// 바꾼 빌드 + env 둘 다 필요하다(휴면 기능을 운영 env 하나로 반쪽만 켜는 길을 막는다).
+    pub const AGY_LANE_COMPILED: bool = false;
+
+    /// agy 갈래의 프로세스 기본값(순수) — 상수가 권위 · env 는 그 아래.
+    pub fn agy_lane_process_default(compiled: bool, env_on: bool) -> bool {
+        compiled && env_on
+    }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum Switch {
@@ -2890,7 +2902,7 @@ pub mod dormant {
         static AGY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         match sw {
             Switch::TeamFlow => *TEAM.get_or_init(|| env_on(ENV_TEAM_FLOW)),
-            Switch::AgyLane => *AGY.get_or_init(|| env_on(ENV_AGY_LANE)),
+            Switch::AgyLane => *AGY.get_or_init(|| agy_lane_process_default(AGY_LANE_COMPILED, env_on(ENV_AGY_LANE))),
         }
     }
 
@@ -2910,7 +2922,7 @@ pub mod dormant {
         enabled(Switch::TeamFlow)
     }
 
-    /// antigravity(agy) 계정 사용량 갈래가 켜져 있는가(기본 꺼짐).
+    /// antigravity(agy) 갈래(사용량 값 · 표 귀속 · 상태줄 자동 연결)가 켜져 있는가(기본 꺼짐 · 상수 권위).
     pub fn agy_lane_enabled() -> bool {
         enabled(Switch::AgyLane)
     }
@@ -2977,9 +2989,14 @@ mod dormant_switch_tests {
         if std::env::var(ENV_TEAM_FLOW).is_err() {
             assert!(!team_flow_enabled(), "팀 흐름 기본값은 꺼짐(휴면)");
         }
-        if std::env::var(ENV_AGY_LANE).is_err() {
-            assert!(!agy_lane_enabled(), "agy 갈래 기본값은 꺼짐(휴면)");
-        }
+        // ★1.1.10: agy 갈래는 상수가 권위 — env 가 켜져 있어도 꺼짐이다(시험 스레드 덮기만 켠다).
+        assert!(!AGY_LANE_COMPILED, "agy 갈래 컴파일 상수를 켰다면 설명서 §4 「Antigravity(agy)」 휴면 고지·WIN-GATE W-5 를 함께 고쳐라");
+        assert!(!agy_lane_enabled(), "agy 갈래 기본값은 꺼짐(휴면 · env 무관)");
+        assert_eq!(
+            [(false, false), (false, true), (true, false), (true, true)].map(|(c, e)| agy_lane_process_default(c, e)),
+            [false, false, false, true],
+            "상수 false 면 env 로도 켜지지 않는다"
+        );
         let base = (team_flow_enabled(), agy_lane_enabled());
         {
             let _t = force_for_thread(Switch::TeamFlow, true);

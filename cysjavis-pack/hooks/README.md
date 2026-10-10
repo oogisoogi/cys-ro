@@ -129,7 +129,7 @@ command -v cys_lane_redirect >/dev/null 2>&1 && cys_lane_redirect "$@"
 
 훅이 아닌 파일: `_lib.sh`(프리루드 §2) · `cys-statusline.sh`(statusline 래퍼) ·
 `cys-agy-statusline.sh`(agy 상태줄 래퍼 — `~/.gemini/antigravity-cli/settings.json` 의 statusLine 명령 · 설치 때 칸이
-비었을 때만 자동 연결 · 계약은 `src/agy_statusline.rs`) ·
+비었을 때만 자동 연결 · 계약은 `src/agy_statusline.rs` · ★cysr 1.1.10: agy 갈래 휴면 — 이 판은 자동 연결을 하지 않고 래퍼는 불려도 아무것도 내지 않는다) ·
 `cys-agy-statusline.cmd`(같은 래퍼의 Windows 판 — 윈도우 판 agy 는 상태줄을 `cmd /c` 로 부른다 · 0.14.45 · LF 개행 ·
 라벨/goto 금지 · 따옴표 없음 · 항상 `exit /b 0` · 연결 전 cys 가 agy 와 같은 방식으로 한 번 시험 실행해 통과할 때만 넣는다) ·
 `inject_gate.py`(주입 포이즌 게이트 — inject-context 가 부른다) · `test_pre_dispatch.sh`(회귀 하네스) ·

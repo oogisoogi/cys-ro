@@ -73,10 +73,11 @@ Test-Path "$env:USERPROFILE\.cys\win-tui-classic-off"   # 기대: False
 
 ## W-5. agy 상태줄 — 이 판은 자동 연결을 하지 않는다(휴면) (agy 가 깔린 기계만 · 없으면 「해당 없음」)
 
-> 기대값 정정(codex 1R 반영 r3 · master 결정 ⓐ): 종전 표는 「실연 검사 통과 시 연결」 을 기대했다. 우리 판은 agy 값 갈래가 휴면이라
-> (`src/bin/cys.rs` `AGY_STATUSLINE_BRANCH_ENABLED=false` → agy 입력에 출력 0) 윈 실연 검사(`src/agy_statusline.rs` `PROBE_EXPECT` = 마지막 줄 `cys`)가
-> 구조상 통과할 수 없다(코드 판독 · 윈 실행 0). master 결정 = 자동 연결까지 휴면(TICKET=cysr-1110-agy-link-dormant — 이 표는 그 티켓이
-> 들어간 빌드를 전제한다 · 그 전 빌드는 「실연 검사 실패 → 파일 무변경 + doctor 사유 + `state\agy-statusline-probe-failed`」 가 나온다).
+> 기대값 확정(TICKET=cysr-1110-agy-link-dormant · master#c116db17): 종전 표는 「실연 검사 통과 시 연결」 을 기대했다. 우리 판은 agy 갈래가 휴면이고
+> (`src/lib.rs` `dormant::AGY_LANE_COMPILED = false` — 상수가 권위 · env `CYS_ENABLE_AGY_LANE` 로도 켜지지 않는다), 그 술어 하나를 값 push·출력(`src/bin/cys.rs`) ·
+> 표 귀속(`accounts.rs`) · **자동 연결**(`src/agy_statusline.rs` `ensure_linked` · 설치·갱신 `src/pack.rs` · `doctor --fix`)이 함께 본다. 그래서 이 판은
+> 사용자 agy 설정 파일에 연결을 쓰지 않고, 윈 쓰기 전 실연 검사도 부르지 않는다(검사 호출 0 · `state\agy-statusline-probe-failed` 새 기록 0 · doctor 항목 = 「휴면 · 점검 안 함」).
+> 근거 = 맥 단위 시험 + 뮤턴트(HANDOFF-1110 §8) · **윈 실행 0** — 아래 표가 그 실기 확인이다.
 
 ```powershell
 $A = "$env:USERPROFILE\.gemini\antigravity-cli\settings.json"
@@ -88,7 +89,7 @@ if (Test-Path $A) { Compare-Object (Get-Content "$A.w1110-before") (Get-Content 
 
 | 경우 | 기대(통과) |
 |---|---|
-| `statusLine` 이 비었거나 없음 | **연결 안 함(휴면)** · `$A` 바이트 동일(`Compare-Object` 차이 0) · `state\agy-statusline-linked`·`state\agy-statusline-probe-failed` 새로 생기지 않음 · doctor `agy-statusline` 경고 0 |
+| `statusLine` 이 비었거나 없음 | **연결 안 함(휴면)** · `$A` 바이트 동일(`Compare-Object` 차이 0) · `state\agy-statusline-linked`·`state\agy-statusline-probe-failed` 새로 생기지 않음 · doctor `agy-statusline` = `휴면 · 점검 안 함(이 판은 Antigravity 상태줄을 연결하지 않는다)`(건너뜀 표기 · 경고 아님) · `cysr doctor --fix` 뒤에도 같음 |
 | 사용자가 직접 넣은 `statusLine` 이 있음 | 무변경 |
 | 예전 판이 넣은(`--cys-autolink` 표지) 연결이 남아 있음 → 끄기: `New-Item "$env:USERPROFILE\.cys\agy-statusline-off"` 뒤 `cysr doctor --fix` | 그 표지가 달린 연결만 빠짐 |
 

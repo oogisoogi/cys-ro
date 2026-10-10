@@ -643,6 +643,8 @@ pub fn verify_render(orig: &Value, new_text: &str, want: Option<&Value>) -> Resu
 /// 조정 결과.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
+    /// ★cysr 휴면(1.1.10 · [`crate::dormant::agy_lane_enabled`] 꺼짐) — 연결을 넣지 않았다(판독·실연 검사·기록 0).
+    Dormant,
     /// agy 설정 폴더가 없다(agy 미설치) — 아무것도 만들지 않는다.
     NotInstalled,
     /// 윈도우 — 쓰기 전 실연 검사(`live_probe`)가 실패해 쓰지 않았다(설정 파일 무변경). `command` = 사람이 직접 넣을 명령.
@@ -913,6 +915,13 @@ fn write_record(record: &Path, settings: &Path) {
 /// statusLine 칸이 비어 있거나 없을 때만 cys 연결을 넣는다. `force` = '연결한 적 있음' 기록을 무시한다
 /// (사람이 부른 `cys doctor --fix` 만 쓴다 — 설치 경로는 false).
 pub fn ensure_linked(ctx: &Ctx, force: bool) -> Outcome {
+    // ★cysr 휴면(1.1.10 · master#c116db17): agy 갈래가 꺼져 있으면(기본 · 상수 권위) 연결을 넣지 않는다 — 우리 판의 agy 상태줄
+    //   명령은 아무것도 보내지 않고 아무 줄도 내지 않으므로(cys.rs 휴면 분기), 그런 줄을 사용자 agy 설정에 쓰지 않는다. 윈도우의
+    //   쓰기 전 실연 검사도 부르지 않는다(그 검사는 마지막 줄 `cys` 를 기대해 휴면 분기와 맞물리면 늘 실패한다). 운영의 모든
+    //   연결 쓰기는 이 함수를 지난다(설치·갱신 = pack.rs · `doctor --fix` = cys.rs). 빼기([`unlink`])는 게이트 밖이다.
+    if !crate::dormant::agy_lane_enabled() {
+        return Outcome::Dormant;
+    }
     ensure_linked_cmd(ctx, force, link_command_resolved(ctx.pack_dir, ctx.windows, true, ctx.home))
 }
 
@@ -1090,7 +1099,7 @@ pub fn unlink(settings: &Path, record: Option<&Path>, how: Backup) -> Outcome {
 pub fn describe(o: &Outcome, settings: &Path) -> Option<String> {
     let p = settings.display();
     Some(match o {
-        Outcome::NotInstalled | Outcome::AlreadyLinked(_) | Outcome::NothingToUnlink(_) => return None,
+        Outcome::Dormant | Outcome::NotInstalled | Outcome::AlreadyLinked(_) | Outcome::NothingToUnlink(_) => return None,
         Outcome::WindowsProbeFailed { reason, command } => format!(
             "Antigravity 사용량 자동 연결을 하지 않았습니다 — 연결 명령을 시험 실행했지만 통과하지 못했습니다({reason}). \
              {p} 는 그대로입니다 · 다시 시도: `cys doctor --fix` · 직접 넣기: statusLine command = `{command}`(사용 설명서 agy 절)"
@@ -1119,6 +1128,11 @@ pub fn describe(o: &Outcome, settings: &Path) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// ★cysr 휴면(1.1.10): 원작자 연결 시험은 이 스레드에서만 agy 갈래를 켠다(가드가 떨어지면 원래 값으로 · 단언 무변경).
+    fn agy_on() -> crate::dormant::ForceGuard {
+        crate::dormant::force_for_thread(crate::dormant::Switch::AgyLane, true)
+    }
 
     /// 가짜 홈 샌드박스 — 테스트는 실 HOME·~/.gemini 를 절대 만지지 않는다.
     struct Sandbox {
@@ -1171,6 +1185,7 @@ mod tests {
             if cfg!(windows) {
                 ensure_linked_cmd(&ctx, force, Some(self.want_cmd()))
             } else {
+                let _agy_on = agy_on(); // ★cysr 휴면(기본 off) — 원작자 연결 시험은 이 스레드에서만 켠다
                 ensure_linked(&ctx, force)
             }
         }
@@ -1713,6 +1728,7 @@ mod tests {
         sb.put(AGY_DEFAULT.as_bytes());
         let (s, r) = (sb.settings(), sb.record());
         let p = sb.root.join("with space").join("pack");
+        let _agy_on = agy_on(); // ★cysr 휴면(기본 off) — 이 스레드에서만 켠다
         assert!(matches!(ensure_linked(&Ctx { settings: &s, pack_dir: &p, record: &r, windows: false, home: None, probe: None }, false), Outcome::UnsafePath(_)));
         assert_eq!(sb.read(), AGY_DEFAULT);
     }
@@ -1829,6 +1845,7 @@ mod tests {
         let (s, r) = (sb.settings(), sb.record());
         let p = sb.root.join("with space").join("pack");
         std::fs::create_dir_all(&p).unwrap(); // 실재 폴더 — 펼치기 실패(`~` 잔존)가 아니라 공백으로 거절됨을 잰다
+        let _agy_on = agy_on(); // ★cysr 휴면(기본 off) — 이 스레드에서만 켠다
         let o = ensure_linked(&Ctx { settings: &s, pack_dir: &p, record: &r, windows: true, home: None, probe: Some(&probe) }, true);
         assert!(matches!(o, Outcome::UnsafePath(_)), "{o:?}");
         assert!(!called.get());
@@ -1906,6 +1923,7 @@ mod tests {
             Ok(())
         };
         let (s, r) = (sb.settings(), sb.record());
+        let _agy_on = agy_on(); // ★cysr 휴면(기본 off) — 이 스레드에서만 켠다
         let o = ensure_linked(&Ctx { settings: &s, pack_dir: &pack, record: &r, windows: true, home: None, probe: Some(&probe) }, true);
         assert_eq!(o, Outcome::Linked { created: false }, "{}", seen.borrow());
         let c = seen.borrow().clone();
@@ -2048,6 +2066,7 @@ mod tests {
         std::fs::write(&settings, AGY_DEFAULT).unwrap();
         let record = pack.join(RECORD_REL);
         let probe = |c: &str| probe_output_ok(&run_like_agy(c, Some(std::ffi::OsStr::new(&with_cys)))?);
+        let _agy_on = agy_on(); // ★cysr 휴면(기본 off) — 이 스레드에서만 켠다
         let o = ensure_linked(&Ctx { settings: &settings, pack_dir: &pack, record: &record, windows: true, home: None, probe: Some(&probe) }, false);
         assert_eq!(o, Outcome::Linked { created: false });
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
@@ -2064,5 +2083,100 @@ mod tests {
         let wf = describe(&Outcome::WindowsProbeFailed { reason: "r".into(), command: r"C:\p\hooks\cys-agy-statusline.cmd".into() }, s).unwrap();
         assert!(wf.contains("시험 실행") && wf.contains(r"C:\p\hooks\cys-agy-statusline.cmd") && !wf.contains("다음 판에서"), "{wf}");
         assert!(describe(&Outcome::Linked { created: false }, s).unwrap().contains("CYS_AGY_STATUSLINE=0"));
+    }
+
+    // ───────── cysr 1.1.10 — agy 상태줄 자동 연결 휴면(cysr-1110-agy-link-dormant · master#c116db17) ─────────
+    // 우리 판의 agy 상태줄 명령은 아무것도 보내지 않고 아무 줄도 내지 않는다(cys.rs 휴면 분기). 그런 줄을 사용자 agy 설정에 쓰지 않는다 —
+    // 운영의 모든 연결 쓰기가 지나는 `ensure_linked` 가 갈래 술어(기본 꺼짐 · 상수 권위)를 본다. 빼기(`unlink`)는 게이트 밖이다.
+
+    /// 설정 폴더 안의 파일 이름 목록(백업·임시 파일이 새로 생겼는지 본다).
+    fn agy_dir_listing(sb: &Sandbox) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(sb.settings().parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// 기본(휴면): 설치·갱신(force=false)과 `doctor --fix`(force=true) 어느 쪽으로 불러도 사용자 설정 파일은 한 바이트도 바뀌지 않고,
+    /// 백업·연결 기록도 생기지 않는다. 대조 = 같은 샌드박스에서 갈래를 켜면 실제로 연결된다(게이트만 빼면 붉어지는 검체).
+    #[test]
+    fn cysr_dormant_ensure_linked_leaves_user_settings_untouched() {
+        let sb = Sandbox::new("dormant-nowrite");
+        sb.put(AGY_DEFAULT.as_bytes());
+        let (s, p, r) = (sb.settings(), sb.pack(), sb.record());
+        let before = agy_dir_listing(&sb);
+        for force in [false, true] {
+            let o = ensure_linked(&Ctx { settings: &s, pack_dir: &p, record: &r, windows: false, home: None, probe: None }, force);
+            assert_eq!(o, Outcome::Dormant, "force={force}");
+            assert_eq!(sb.read(), AGY_DEFAULT, "휴면인데 설정 파일이 바뀌었다(force={force})");
+            assert_eq!(agy_dir_listing(&sb), before, "휴면인데 설정 폴더에 파일이 생겼다(force={force})");
+            assert!(!r.exists(), "휴면인데 연결 기록이 생겼다(force={force})");
+        }
+        assert!(describe(&Outcome::Dormant, &s).is_none(), "휴면은 설치 기록에 줄을 내지 않는다");
+        // 대조(유닉스 호스트): 갈래를 켜면 같은 호출이 연결한다 — 위 무변경이 '원래 아무것도 안 하는 호출'이어서가 아니다.
+        #[cfg(unix)]
+        {
+            let _agy_on = agy_on();
+            let o = ensure_linked(&Ctx { settings: &s, pack_dir: &p, record: &r, windows: false, home: None, probe: None }, false);
+            assert_eq!(o, Outcome::Linked { created: false });
+            assert_ne!(sb.read(), AGY_DEFAULT);
+        }
+    }
+
+    /// 기본(휴면): 윈도우 분기에서도 쓰기 전 실연 검사를 **부르지 않는다**(호출 0) — 그 검사는 마지막 줄 `cys` 를 기대하는데 휴면
+    /// 분기는 아무것도 내지 않아 늘 실패하고, 실패 기록·doctor 경고가 24시간마다 되풀이된다(1.1.10 r3 교차 결함).
+    #[test]
+    fn cysr_dormant_windows_branch_never_runs_the_live_probe() {
+        let sb = Sandbox::new("dormant-noprobe");
+        sb.put(AGY_DEFAULT.as_bytes());
+        std::fs::write(sb.pack().join("hooks").join(SCRIPT_CMD), "@echo off\nexit /b 0\n").unwrap();
+        let (s, p, r) = (sb.settings(), sb.pack(), sb.record());
+        let calls = std::cell::Cell::new(0u32);
+        let probe = |_c: &str| -> Result<(), String> {
+            calls.set(calls.get() + 1);
+            Ok(())
+        };
+        for force in [false, true] {
+            let o = ensure_linked(&Ctx { settings: &s, pack_dir: &p, record: &r, windows: true, home: None, probe: Some(&probe) }, force);
+            assert_eq!(o, Outcome::Dormant, "force={force}");
+        }
+        assert_eq!(calls.get(), 0, "휴면인데 실연 검사를 불렀다");
+        assert_eq!(sb.read(), AGY_DEFAULT);
+        assert!(!r.exists() && !p.join(PROBE_FAIL_REL).exists(), "휴면인데 연결·실패 기록이 생겼다");
+        // 대조: 갈래를 켜면 윈도우 본체는 검사를 부른다(검사 주입 이음매 — 위 0 이 '검사를 안 부르는 경로'여서가 아니다).
+        let _agy_on = agy_on();
+        let o = sb.ensure_win(true, Some(&probe));
+        assert_eq!((o, calls.get()), (Outcome::Linked { created: false }, 1));
+    }
+
+    /// 예전 판이 넣어 둔 표지 달린 연결을 빼는 길은 휴면이어도 그대로다(설명서 §4 「Antigravity(agy)」 의 끄기 노브 경로).
+    #[test]
+    fn cysr_dormant_unlink_of_our_marked_link_still_works() {
+        let sb = Sandbox::new("dormant-unlink");
+        sb.put(AGY_DEFAULT.as_bytes());
+        {
+            let _agy_on = agy_on(); // 예전 판이 넣은 상태를 만든다
+            assert_eq!(sb.ensure(false), Outcome::Linked { created: false });
+        }
+        assert!(!crate::dormant::agy_lane_enabled(), "가드가 떨어지면 휴면이다");
+        let (s, r) = (sb.settings(), sb.record());
+        assert_eq!(unlink(&s, Some(&r), Backup::Beside), Outcome::Unlinked);
+        assert!(matches!(inspect(&s), Ok(Some(Slot::Empty)) | Ok(Some(Slot::Absent)) | Ok(None)), "{:?}", inspect(&s));
+    }
+
+    /// 배선 핀 — 설치·갱신 경로(`pack.rs`)는 끄기 노브 빼기를 먼저 보고, 그다음 휴면이면 **실패 기록 판독·연결보다 앞에서** 끝낸다.
+    /// (그 함수는 시험 빌드에서 실 HOME 보호로 곧장 돌아가므로 동작 시험 대신 순서를 핀한다.)
+    #[test]
+    fn cysr_dormant_install_path_gates_before_probe_record_and_link() {
+        let src = include_str!("pack.rs");
+        let body = &src[src.find("\nfn reconcile_agy_statusline_now() {").expect("설치 경로 본체")..];
+        let body = &body[..body.find("\n}\n").expect("fn 끝")];
+        let at = |needle: &str| body.find(needle).unwrap_or_else(|| panic!("{needle} 소실"));
+        let (unlink_at, gate, deferring, link) =
+            (at("agy::unlink("), at("!crate::dormant::agy_lane_enabled()"), at("agy::probe_failure_deferring("), at("agy::ensure_linked("));
+        assert!(unlink_at < gate, "끄기 노브 빼기 경로가 휴면 게이트 뒤로 밀렸다(빼는 길이 막힌다)");
+        assert!(gate < deferring && gate < link, "휴면 게이트가 실패 기록 판독·연결보다 뒤다");
     }
 }

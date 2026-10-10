@@ -9445,6 +9445,9 @@ fn diag_agy_statusline(ctx: &DoctorCtx, fix: bool) -> DiagItem {
     if fix && base_pack {
         let o = if off {
             agy::unlink(&settings, Some(&record), agy::Backup::Beside)
+        } else if !cys::dormant::agy_lane_enabled() {
+            // ★cysr 휴면(1.1.10 · master#c116db17): 이 판은 agy 상태줄을 연결하지 않는다 — `--fix` 도 넣지 않고 실연 검사·실패 기록 갱신도 없다.
+            agy::Outcome::Dormant
         } else {
             // ★(0.14.45 · B1) 사람이 부른 수리는 지난 실연 검사 실패 기록을 **무시하고** 다시 검사한다 — 결과로 기록을 덮는다
             //   (통과 = 지움 · 실패 = 이 버전으로 다시 기록 → 설치 경로는 버전이 바뀔 때까지 재검사하지 않는다).
@@ -9473,7 +9476,17 @@ fn diag_agy_statusline(ctx: &DoctorCtx, fix: bool) -> DiagItem {
     } else {
         format!("base 팩(~/.cys/pack)의 `cys doctor --fix` — 이 레인({})은 개인 설정을 고치지 않는다", ctx.pack_dir.display())
     };
-    let manual = "사용 설명서 §4 사용량「Antigravity(agy) 값」";
+    // ★cysr 휴면(1.1.10 · master#c116db17): agy 갈래가 꺼져 있으면(기본) 연결 상태를 점검하지 않는다 — 「아직 연결되지 않았다」·
+    //   「사용자 statusLine」·실연 검사 실패 기록은 이 판에서 경고가 아니다. 단 하나, 끄기 노브를 켰는데 예전 판이 넣은 표지 달린
+    //   연결이 남아 있는 경우만 종전처럼 알린다(빼는 길은 유지 — 아래 첫 갈래).
+    if !cys::dormant::agy_lane_enabled() && !(off && matches!(agy::inspect(&settings), Ok(Some(agy::Slot::OursAuto { .. })))) {
+        return item(
+            DiagStatus::Skip,
+            "휴면 · 점검 안 함(이 판은 Antigravity 상태줄을 연결하지 않는다)".into(),
+            with_done(format!("예전 판이 넣은 연결을 빼려면 ~/.cys/{} 를 만든 뒤 {fix_hint}", agy::OFF_FILE)),
+        );
+    }
+    let manual = "사용 설명서 §4 사용량「Antigravity(agy)」";
     let slot = match agy::inspect(&settings) {
         Ok(s) => s,
         Err(e) => {
@@ -20381,8 +20394,9 @@ fn usage_accounts_output(r: &Value, as_json: bool, now: f64) -> (String, String)
     (out, format!("{USAGE_ACCOUNTS_SCOPE_NOTE}\n"))
 }
 
-/// 1.1.8 휴면: 원작자 agy 상태줄 갈래(U2 · JT 「제외」)를 끈다 — 코드는 남기고 이 상수 하나로 실행만 막는다(master#36f48cf7).
-const AGY_STATUSLINE_BRANCH_ENABLED: bool = false;
+// 1.1.8 휴면: 원작자 agy 상태줄 갈래(U2 · JT 「제외」)를 끈다 — 코드는 남기고 실행만 막는다(master#36f48cf7).
+// ★1.1.10(cysr-1110-agy-link-dormant · master#c116db17): 이 파일에 따로 있던 상수를 없애고 데몬·설치 경로와 **같은 술어**
+//   `cys::dormant::agy_lane_enabled`(컴파일 상수가 권위 · env 는 그 아래 · 시험은 스레드 덮기)를 본다.
 
 /// cys-statusline.sh 래퍼 전용 — stdin의 claude statusline JSON을 읽어 usage.report로 push하고,
 /// (quiet가 아니면) 사람용 statusline 한 줄을 stdout으로 출력한다.
@@ -20423,7 +20437,7 @@ fn run_usage_report_stdin(surface: &Option<String>, quiet: bool, agy_only: bool)
     type Push = (&'static str, Value, u64);
     let agy_payload = agy_only || is_agy_statusline(&v);
     let (line, push, stamp): (String, Option<Push>, Option<(std::path::PathBuf, String)>) = if agy_payload
-        && !AGY_STATUSLINE_BRANCH_ENABLED
+        && !cys::dormant::agy_lane_enabled()
     {
         // 1.1.8 휴면(JT U2 제외 · master#36f48cf7): agy 페이로드는 push 0 · 출력 0(claude 경로로 오판해 보내지도 않는다).
         (String::new(), None, None)
@@ -38272,6 +38286,7 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
     #[test]
     fn doctor_agy_statusline_shows_the_recorded_probe_failure_reason() {
         use cys::agy_statusline as agy;
+        let _agy_on = cys::dormant::force_for_thread(cys::dormant::Switch::AgyLane, true); // ★cysr 휴면(기본 off) — 원작자 연결 시험은 이 스레드에서만 켠다
         let base = std::env::temp_dir().join(format!("cys-doc-agy-pf-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let home = base.join("home");
@@ -38355,8 +38370,79 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
     }
 
     #[test]
+    /// ★cysr 1.1.10(cysr-1110-agy-link-dormant · master#c116db17): 기본(휴면)에서 doctor `agy-statusline` 은 「휴면 · 점검 안 함」 한 줄(Skip — 경고 아님)이고,
+    /// `--fix` 는 격리 홈의 agy 설정 파일을 한 바이트도 바꾸지 않는다(연결 0 · 백업 0 · 연결 기록 0 · 실패 기록 무접촉). 사용자 statusLine·지난 실연 검사
+    /// 실패 기록도 경고가 아니다. 예전 판이 넣은 표지 달린 연결은 끄기 파일 + `--fix` 로만 빠진다(빼는 길 유지).
+    fn cysr_dormant_doctor_agy_statusline_skips_and_fix_writes_nothing() {
+        use cys::agy_statusline as agy;
+        let base = std::env::temp_dir().join(format!("cys-doc-agy-dormant-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let home = base.join("home");
+        let settings = agy::settings_path_under(&home);
+        let mut ctx = doctor_ctx_at(&base);
+        ctx.agy_home = Some(home.clone());
+        ctx.pack_dir = home.join(".cys").join("pack");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        for w in [agy::SCRIPT, agy::SCRIPT_CMD] {
+            let wrapper = ctx.pack_dir.join("hooks").join(w);
+            std::fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
+            std::fs::write(&wrapper, "#!/bin/sh\nexit 0\n").unwrap();
+        }
+        let dflt = "{\n  \"statusLine\": {\n    \"type\": \"\",\n    \"command\": \"\",\n    \"enabled\": false\n  }\n}\n";
+        std::fs::write(&settings, dflt).unwrap();
+        // 예전 빌드가 남긴 실연 검사 실패 기록 — 휴면 판에서는 경고도 재검사도 아니다
+        agy::record_probe_failure(&ctx.pack_dir, env!("CARGO_PKG_VERSION"), "지난 판의 실패");
+        let fail_rec = ctx.pack_dir.join(agy::PROBE_FAIL_REL);
+        let fail_before = std::fs::read(&fail_rec).expect("실패 기록 검체");
+        let listing = |d: &std::path::Path| {
+            let mut v: Vec<String> = std::fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+            v.sort();
+            v
+        };
+        assert!(!cys::dormant::agy_lane_enabled(), "기본 = 휴면");
+        for (body, what) in [(dflt, "빈 칸"), ("{\"statusLine\": {\"type\": \"command\", \"command\": \"~/mine.sh\"}}", "사용자 statusLine")] {
+            std::fs::write(&settings, body).unwrap();
+            for fix in [false, true] {
+                let it = diag_agy_statusline(&ctx, fix);
+                assert_eq!(it.status, DiagStatus::Skip, "{what} fix={fix}: {} / {}", it.detail, it.action);
+                assert!(it.detail.contains("휴면") && it.detail.contains("점검 안 함"), "{}", it.detail);
+                assert_eq!(std::fs::read_to_string(&settings).unwrap(), body, "{what} fix={fix}: 휴면인데 설정 파일이 바뀌었다");
+                assert_eq!(listing(settings.parent().unwrap()), vec!["settings.json".to_string()], "{what} fix={fix}: 백업·임시 파일이 생겼다");
+                assert!(!ctx.pack_dir.join(agy::RECORD_REL).exists(), "{what} fix={fix}: 연결 기록이 생겼다");
+                assert_eq!(std::fs::read(&fail_rec).ok().as_deref(), Some(fail_before.as_slice()), "{what} fix={fix}: 실패 기록을 건드렸다");
+            }
+        }
+        if cfg!(windows) {
+            let _ = std::fs::remove_dir_all(&base);
+            return; // 아래는 연결된 상태를 만들어야 한다(윈도우는 실연 검사가 러너 PATH 에 달렸다 — 유닉스 기준)
+        }
+        // 예전 판이 넣은 표지 달린 연결을 만든다(그 스레드에서만 갈래를 켜고 --fix)
+        std::fs::write(&settings, dflt).unwrap();
+        {
+            let _agy_on = cys::dormant::force_for_thread(cys::dormant::Switch::AgyLane, true);
+            assert_eq!(diag_agy_statusline(&ctx, true).status, DiagStatus::Ok);
+        }
+        let linked = std::fs::read_to_string(&settings).unwrap();
+        assert!(linked.contains(agy::MARKER), "{linked}");
+        // 휴면 + 끄기 노브 없음 = 남은 연결을 건드리지 않고 점검도 안 한다
+        let it = diag_agy_statusline(&ctx, true);
+        assert_eq!((it.status, std::fs::read_to_string(&settings).unwrap()), (DiagStatus::Skip, linked.clone()), "{}", it.detail);
+        assert!(it.action.contains(agy::OFF_FILE), "빼는 방법 안내가 없다: {}", it.action);
+        // 끄기 파일 → 진단은 「남아 있다」 를 알리고 --fix 가 그 연결만 뺀다
+        std::fs::write(home.join(".cys").join(agy::OFF_FILE), "").unwrap();
+        let it = diag_agy_statusline(&ctx, false);
+        assert_eq!(it.status, DiagStatus::Warn, "노브가 꺼졌는데 연결이 남은 상태: {}", it.detail);
+        let it = diag_agy_statusline(&ctx, true);
+        let after = std::fs::read_to_string(&settings).unwrap();
+        assert!(!after.contains(agy::MARKER), "끄기 노브 + --fix 가 표지 달린 연결을 빼지 않았다: {after}");
+        assert!(it.status == DiagStatus::Skip && it.action.contains("뺐습니다"), "{} / {}", it.detail, it.action);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn doctor_agy_statusline_reports_and_fixes_only_in_the_fake_home() {
         use cys::agy_statusline as agy;
+        let _agy_on = cys::dormant::force_for_thread(cys::dormant::Switch::AgyLane, true); // ★cysr 휴면(기본 off) — 원작자 연결 시험은 이 스레드에서만 켠다
         let base = std::env::temp_dir().join(format!("cys-doc-agy-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let home = base.join("home");

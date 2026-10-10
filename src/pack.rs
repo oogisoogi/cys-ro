@@ -1342,6 +1342,10 @@ fn reconcile_agy_statusline_now() {
     let version = env!("CARGO_PKG_VERSION");
     let outcome = if agy::knob_off(crate::env_compat(agy::ENV_KNOB).as_deref(), off_file.exists()) {
         agy::unlink(&settings, Some(&record), agy::Backup::Beside)
+    } else if !crate::dormant::agy_lane_enabled() {
+        // ★cysr 휴면(1.1.10 · master#c116db17): agy 갈래가 꺼져 있으면 설치·갱신은 연결을 넣지 않는다 — 실연 검사·실패 기록·
+        //   「다시 검사하지 않았습니다」 안내도 없다(사용자 agy 설정 파일 쓰기 0). 위의 끄기 노브 빼기 경로는 그대로다.
+        return;
     } else {
         // ★(B1) 같은 버전에서 이미 실연 검사가 실패했으면 다시 검사하지 않는다(부트마다 5초 검사 반복 금지) — 버전이 바뀌거나
         //   사람이 `cys doctor --fix` 를 부르면(기록 무시 · 결과로 덮는다) 다시 검사한다. 유닉스에는 검사가 없어 기록도 없다.

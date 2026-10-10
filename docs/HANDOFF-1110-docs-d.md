@@ -152,7 +152,7 @@ PLAN 의 「35곳」 은 2026-10-07 publish-docs-118(`81b792db` · `docs/update/
 - **이 좌석의 PATH 에는 bun·cargo 가 없다.** `~/.bun/bin` · `~/.cargo/bin` 을 앞에 붙인다. 격리 HOME 으로 cargo 를 부를 때는 `CARGO_HOME`·`RUSTUP_HOME` 을 실 홈의 것으로 지정한다(도구 읽기만).
 - **빌드 자리·ui 의존 모듈**: 같은 머리의 작업 트리(`~/axdev/.wt/cys-1110-upstream`)에서 `cp -c -R`(APFS 복제 · 원본 쓰기 0)로 `target/debug` · `ui/node_modules` 를 가져오면 `cargo test --bin cysd manual_` 이 웜으로 돈다(둘 다 추적 제외).
 - **하네스 드릴(p5·p7·p9)을 격리 HOME 에서 돌리면 그 HOME 에 cysd 1개가 남는다.** 드릴이 「라이브 무접촉」 을 재려고 부르는 `live_surfaces()`(= 소켓 지정 없는 `cys list`)가 빈 HOME 의 기본 소켓에 데몬을 자동 기동하고, `teardown()` 은 격리 폴더에 묶인 데몬만 끝낸다. 기준 트리도 같다(이번 손 실행 2회에서 각 1개 · `lsof` 로 내 임시 HOME 에 묶인 것을 확인하고 pid 로 종료). c6·e2e·f1 시험은 남기지 않는다(그 HOME 은 비어 있었다).
-- **py_compile 은 `cysjavis-pack/bin/__pycache__` 를 만든다**(추적 제외지만 봉인 시험이 오염으로 본다) — 지운다. 팩 시험은 `PYTHONDONTWRITEBYTECODE=1` 로 돌린다.
+- **py_compile 은 `cysjavis-pack/bin/__pycache__` 를 만든다**(추적 제외지만 봉인 시험이 오염으로 본다) — 지운다. 팩 시험은 bytecode 쓰기 억제 env(이름은 여기 적지 않는다 — `test_pyseal_census.py` ⓑ 가 그 이름을 언급하는 파일 수를 37 로 봉인한다 · 그 시험 파일의 상수 참조)를 1 로 두고 돌린다.
 
 ## 6. 남은 일 · 범위 밖 관찰(무수정)
 
@@ -168,7 +168,7 @@ PLAN 의 「35곳」 은 2026-10-07 publish-docs-118(`81b792db` · `docs/update/
 ISO() {  # 좌석 CYS_* env 제거 · 새 임시 HOME · 도구는 실 홈의 것을 읽기만
   local a=(); while IFS= read -r n; do a+=(-u "$n"); done < <(env | grep -o '^CYS_[A-Z0-9_]*')
   env "${a[@]}" -u CLAUDE_CONFIG_DIR HOME="$(mktemp -d)" CARGO_HOME=/Users/$USER/.cargo RUSTUP_HOME=/Users/$USER/.rustup \
-      PATH="/Users/$USER/.bun/bin:/Users/$USER/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin" PYTHONDONTWRITEBYTECODE=1 "$@"; }
+      PATH="/Users/$USER/.bun/bin:/Users/$USER/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin" "$@"; }  # bytecode 억제 env 는 §4 함정 줄 참조(이름 비기재)
 ( cd ui && ISO bun test src/publicdocs.test.ts )                                    # 18 / 0 · expect 296
 ( cd ui && ISO bun test )                                                           # 2918 pass / 85 skip / 0 fail
 ( cd ui && ISO bun x --package typescript@7.0.2 tsc -p tsconfig.check.json )        # rc 0

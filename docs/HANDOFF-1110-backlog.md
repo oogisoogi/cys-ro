@@ -25,6 +25,7 @@
 | 12 | 팩 디렉티브·성찰 보고서 수정 지점 | (코드 0) | §2 에 파일:행 |
 
 전체 회귀(이 가지 HEAD · 격리 HOME): `cargo test --bin cys` **602/0** · test_javis_counsel 75/0 · test_trust_seed 276/0 · test_update_publish 104/0(skip 14 = 기존 조건) · test_hook_fail_log 11/0 · session_start_r31·session_start_hook OK · run_bootstrap_health 162 PASS / 2 FAIL(H-CLT-1·2) = 기준(HEAD 5e445ef2 임시 작업트리)과 FAIL 줄 전문 동일 · phoenix c6 7/7 · e2e 7/7 · f1 63/63 · w3 58/58 · w2_untomb 8/8 · sandbox_state_isolation OK · seat_revival 15/15 · secret-scan(변경 15파일) clean. 팩 회귀 묶음(javis_preflight·javis_counsel 을 부르는 시험 38파일 · 위에서 따로 센 4개 제외) = **38/38 녹**(test_preflight_phase1_checks 는 격리 env `JAVIS_ROOT`·`CYS_PROBE_RUNS` 를 주어야 도는 시험 · 주고 26/0).
+  - ★전제 보강(master#e38309e4): 같은 묶음에 `test_agora_known_authentic.py` 까지 넣어 돌리려면 `CYS_AGORA_ZIP_DIR=<게시 zip 폴더>`(그 파일 머리 주석의 실행 줄) 가 필요하다 — 없으면 설계상 FAIL(skip 금지). 내 38 은 그 파일을 **뺀** 수(42 − 따로 센 3 − 그 파일 1)이고, master 게이트 재검의 38/38 은 그 env 를 준 실행이다.
 
 ## 1. 항목별 — 재현 → 수리 → 재현 0 → 뮤턴트
 

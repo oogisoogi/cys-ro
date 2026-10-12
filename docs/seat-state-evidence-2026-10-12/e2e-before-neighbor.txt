@@ -1,0 +1,13 @@
+== 수리 전(이웃 트리 디버그 빌드 10-10 · 좌석 판정 코드 = 기준 bb52b846 과 같음) · cysd=~/axdev/.wt/cys-1110-screen-settings/target/debug/cysd
+좌석 A(뿌리=claude)=surface:1 rc=0 · 좌석 B(맨 셸)=surface:2 rc=0
+  뿌리 pid 56474 :: /Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3 :: 자손 0
+  뿌리 pid 56475 :: <box>/bin/claude 600 :: 자손 0
+  뿌리 pid 56482 :: /bin/zsh -l :: 자손 0
+틱 3회 seat — A ['empty', 'empty', 'empty'] · B ['empty', 'empty', 'empty']
+큐 적재 rc=0 QUEUED (depth 1)
+A 최종 — seat=empty queue_depth=1 queue_blocked_by=empty_seat(좌석에 에이전트 미연결) agent=None
+queue list rc=0 :: surface:1	[0]	16B	seat119-e2e-ping	q6acc9dc8.1	13s / # surface:1 blocked_by=empty_seat(좌석에 에이전트 미연결) (이 사유로 8s) → 그 자리에 에이전트가 붙어 있지 않다(빈 셸) — 에이전트를 다시 띄우면 순서대로 배달된다 · LLM 에이전트는 자동 조치(강제 배달·드레인·키 주입·동결 해제·항목 삭제) 금지
+  끝 뿌리 pid 56474 자손 0
+  끝 뿌리 pid 56475 자손 0
+  끝 뿌리 pid 56482 자손 0
+정리 — 데몬 rc=0 · 강제 종료한 뿌리 [] · 트립와이어 적중 0

@@ -3649,7 +3649,8 @@ fn check_load(daemon: &Daemon, last_alert: &mut f64) {
 pub enum SeatState {
     /// 판정 미도달(프로브 실패·첫 틱 이전) — 소비처는 **현행 동작**으로 강등한다.
     Unknown = 0,
-    /// 자손 프로세스 존재 = 사람이든 에이전트든 이 좌석은 쓰이는 중.
+    /// 자손 프로세스 존재 = 사람이든 에이전트든 이 좌석은 쓰이는 중. 자손이 없어도 뿌리 자신이 기지 에이전트면
+    /// 여기다(1.1.9 · 판정표의 정본 = `seat_verdict` 문서).
     Occupied = 1,
     /// 셸 단독 = 빈 좌석.
     Empty = 2,
@@ -3825,21 +3826,75 @@ pub fn liveness_verdict(
     LivenessVerdict::Alive
 }
 
-/// ★SEAT 1차(커널 사실): 이 좌석에 셸 이외의 자손 프로세스가 있는가.
-/// 종료된 surface 는 좌석 개념이 없으므로 Empty(무해 — 승계 게이트는 exited 를 이미 별도 처리).
-/// 셸 pid 가 프로세스 표에 아예 없으면(아직 미갱신·프로브 실패) Unknown → 소비처가 현행 동작 유지.
-pub fn seat_state(sys: &System, s: &crate::state::Surface) -> SeatState {
-    if s.exited.load(Ordering::Relaxed) {
+/// ★SEAT 1차 판정의 **단일 정의**(순수 · 1.1.9 좌석 판정) — 위에서 아래로 첫 매치:
+///   종료된 surface                              → Empty   (좌석 개념 없음 — 승계 게이트는 exited 를 따로 처리)
+///   뿌리 pid 가 프로세스 표에 없음                  → Unknown (미갱신·프로브 실패 → 소비처가 현행 동작 유지)
+///   자손 1개 이상                                → Occupied
+///   자손 0 ∧ 뿌리 argv 가 기지 에이전트             → Occupied (에이전트가 페인의 직접 프로세스인 좌석)
+///   자손 0 ∧ 그 밖(맨 셸 · argv 미관측 · 후보 없음)   → Empty
+/// 「자손이 없다」 는 「아무도 없다」 가 아니다 — `cys new-surface --cmd '… claude …'` 로 띄운 좌석은 뿌리가
+/// claude 자신이라 도구를 돌리지 않는 유휴 순간마다 자손이 0 이다(10-12 실기 1336·1348: 그 순간마다 빈 좌석으로
+/// 읽혀 큐 배달이 empty_seat 로 멈췄다). 뿌리가 셸인 좌석은 뿌리 argv 가 에이전트와 엄격 매칭되지 않아 종전 그대로다.
+pub(crate) fn seat_verdict(
+    exited: bool,
+    root_in_table: bool,
+    descendants: usize,
+    root_cmd: Option<&str>,
+    candidates: &[(String, String)],
+) -> SeatState {
+    if exited {
         return SeatState::Empty;
     }
-    if sys.process(sysinfo::Pid::from_u32(s.pid)).is_none() {
+    if !root_in_table {
         return SeatState::Unknown;
     }
-    if collect_descendants(sys, s.pid).is_empty() {
-        SeatState::Empty
-    } else {
+    if descendants > 0 || root_cmd.is_some_and(|c| known_agent_cmd(c, candidates)) {
         SeatState::Occupied
+    } else {
+        SeatState::Empty
     }
+}
+
+/// 명령줄이 기지 에이전트의 실행인가 — **존재** 판정(후보 가운데 하나라도 엄격 매칭이면 참 · 순수).
+/// 「어느 에이전트인가」(정체 · 등록)는 `select_observed_agent` 소관이고 그쪽은 모호하면 None 이다. 존재를 그 함수로
+/// 물으면, 같은 실행 파일을 쓰는 후보가 둘 이상인 팩(claude · claude-fable · claude-sonnet = 전부 `claude`)에서
+/// 「있다」 가 「모호」 로 접혀 「없다」 가 된다 — 10-12 큐 배달 정지의 실제 원인(뿌리 보정이 한 번도 발화하지 않았다).
+pub(crate) fn known_agent_cmd(cmd: &str, candidates: &[(String, String)]) -> bool {
+    candidates
+        .iter()
+        .any(|(_, bin_base)| cmdline_matches_agent_exec(cmd, bin_base))
+}
+
+/// ★SEAT 1차(커널 사실): 이 좌석이 쓰이는 중인가 — 판정은 [`seat_verdict`] 한 곳이다.
+/// 캐시(틱 · 생성 직후)와 즉시 프로브(승계 게이트 · 빈 셸 가드)가 **같은 판정**으로 답한다(같은 질문에 두 답 금지).
+pub fn seat_state(sys: &System, s: &crate::state::Surface) -> SeatState {
+    seat_state_of(sys, s.pid, s.exited.load(Ordering::Relaxed), &mut None)
+}
+
+/// [`seat_state`] 의 본체 — 판정 재료(뿌리 pid · 종료 여부)를 값으로 받는다. `candidates` 는 여러 좌석을 한 번에
+/// 재는 호출자(틱)가 후보 목록(agents.json 파일 IO)을 한 번만 읽게 하는 지연 로드 칸이다.
+fn seat_state_of(
+    sys: &System,
+    root: u32,
+    exited: bool,
+    candidates: &mut Option<Vec<(String, String)>>,
+) -> SeatState {
+    let root_in_table = sys.process(Pid::from_u32(root)).is_some();
+    if exited || !root_in_table {
+        return seat_verdict(exited, root_in_table, 0, None, &[]);
+    }
+    let descendants = collect_descendants(sys, root).len();
+    if descendants > 0 {
+        return seat_verdict(false, true, descendants, None, &[]);
+    }
+    // 뿌리 argv 는 자손이 0 일 때만 읽는다 — 그 밖에는 판정에 쓰이지 않는다(틱 비용은 종전 그대로).
+    let cands = candidates.get_or_insert_with(known_agent_candidates);
+    let root_cmd = if cands.is_empty() {
+        None
+    } else {
+        argv_snapshot(&[root]).remove(&root)
+    };
+    seat_verdict(false, true, 0, root_cmd.as_deref(), cands)
 }
 
 /// ★G2(W3-A BLOCK 교정)의 **생산자측 판정 하나**를 순수 함수로 노출한다 — 좌석 자손 cmdline
@@ -3864,20 +3919,14 @@ pub(crate) fn seat_agent_observed(cmds: &[String], candidates: &[(String, String
 
 /// 캐시에 싣는 좌석 판정 — 틱(`refresh_seat_cache`)과 생성 직후 1회(`prime_seat_cache_at_create`)가
 /// **같은 판정**을 쓰도록 한 곳에 둔다(두 자리가 갈라지면 생성 직후 값과 첫 틱 값이 어긋난다).
+/// ★1.1.9 좌석 판정: v113-restore 의 「뿌리 자신이 기지 에이전트면 차 있다」 는 [`seat_verdict`] 로 올라갔다 —
+/// 여기는 즉시 프로브([`seat_state`])와 같은 본체를 후보 목록만 틱 단위로 공유해 부른다.
 fn cache_seat_verdict(
     sys: &System,
     s: &crate::state::Surface,
     candidates: &mut Option<Vec<(String, String)>>,
 ) -> SeatState {
-    let mut seat = seat_state(sys, s);
-    // ★v113-restore: 자손이 없어도 뿌리 자신이 기지 에이전트면 좌석은 차 있다(설치기 master 자리).
-    if seat == SeatState::Empty && !s.exited.load(Ordering::Relaxed) {
-        let cands = candidates.get_or_insert_with(known_agent_candidates);
-        if root_agent_cmd(sys, s.pid, cands).is_some() {
-            seat = SeatState::Occupied;
-        }
-    }
-    seat
+    seat_state_of(sys, s.pid, s.exited.load(Ordering::Relaxed), candidates)
 }
 
 /// ★v115r3-d7(D7⑴) 생성 직후 좌석 캐시 1회 채움 — 새 좌석의 `seat_cache` 는 0(Unknown)으로 태어나
@@ -4101,20 +4150,21 @@ fn meta_blocks_seat(s: &crate::state::Surface) -> bool {
 /// 커널 사실이 Empty 이고 + 살아있는 agent_meta 부재(죽은 에이전트의 meta 는 봉쇄하지 않는다 —
 /// meta_blocks_seat) + 최근 사람 입력 없음(사용자가 지금 claude 를 띄우려 타이핑 중일 수 있다)
 /// 셋을 **모두** 만족할 때만 true. Unknown 은 false(현행=거부 유지).
+/// ★1.1.9 좌석 판정: 커널 사실은 [`seat_state`] 그대로다 — 뿌리가 에이전트 자신인 유휴 좌석은 Occupied 라
+/// 승계 대상이 아니다(살아 있는 에이전트 자리를 남이 가져가지 않는다).
 pub fn seat_claimable(sys: &System, s: &crate::state::Surface) -> bool {
-    if seat_state(sys, s) != SeatState::Empty {
-        return false;
-    }
-    if meta_blocks_seat(s) {
-        return false;
-    }
     let human_recent = s
         .last_human_input
         .lock()
         .unwrap()
         .map(|t| t.elapsed().as_secs() < queue_human_quiet_secs())
         .unwrap_or(false);
-    !human_recent
+    seat_claimable_verdict(seat_state(sys, s), meta_blocks_seat(s), human_recent)
+}
+
+/// [`seat_claimable`] 의 판정표(순수) — 승계 가능 = 좌석 Empty ∧ 살아 있는 meta 없음 ∧ 최근 사람 입력 없음.
+pub(crate) fn seat_claimable_verdict(seat: SeatState, meta_blocks: bool, human_recent: bool) -> bool {
+    seat == SeatState::Empty && !meta_blocks && !human_recent
 }
 
 /// 승계 게이트 전용 즉시 프로브 — 캐시(watchdog 틱 주기)는 role 재바인딩 판정에 쓰기엔 stale 하다.
@@ -4905,12 +4955,14 @@ pub fn collect_descendants_with_cmd(sys: &System, root: u32) -> Vec<(u32, String
 /// 너는 마스터다…` · STAT Ss+). 자손만 보면 그 좌석은 영원히 「빈 자리」라, 유예가 지나면
 /// `AgentNeverStarted` 로 **살아 있는 master 에 사망 경보**를 냈다(설치 약 10분 뒤 1회 · misses=63).
 /// 뿌리가 셸인 보통 좌석은 뿌리 argv 가 에이전트와 엄격 매칭되지 않아 `None` — 종전 거동 그대로다.
+/// ★1.1.9 좌석 판정: 여기서 묻는 것은 「뿌리가 에이전트인가」(존재)라 [`known_agent_cmd`] 로 답한다 — 종전에는
+/// 등록용 「정확히 한 에이전트」 규칙을 타서, 같은 실행 파일을 쓰는 후보가 여럿인 팩에서는 늘 `None` 이었다.
 pub fn root_agent_cmd(sys: &System, root: u32, candidates: &[(String, String)]) -> Option<String> {
     if candidates.is_empty() || sys.process(Pid::from_u32(root)).is_none() {
         return None;
     }
     let cmd = argv_snapshot(&[root]).remove(&root)?;
-    seat_agent_observed(std::slice::from_ref(&cmd), candidates).then_some(cmd)
+    known_agent_cmd(&cmd, candidates).then_some(cmd)
 }
 
 /// 관측 문자열의 **출처** — "argv 를 실제로 읽었는가, `name()` 폴백인가".
@@ -15170,15 +15222,155 @@ mod tests {
         assert_eq!(none, None, "후보가 없으면 관측 0(fail-closed)");
     }
 
+    /// 이 맥 설치 팩의 후보 꼴 — 실행 파일 이름이 같은 claude 계열 셋 + 나머지(10-12 `~/.cys/pack/agents.json` 실측).
+    fn seat119_this_mac_candidates() -> Vec<(String, String)> {
+        [
+            ("claude", "claude"),
+            ("claude-fable", "claude"),
+            ("claude-sonnet", "claude"),
+            ("gemini", "agy"),
+            ("codex", "codex"),
+            ("grok", "grok"),
+        ]
+        .iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect()
+    }
+
+    /// 뿌리=claude 좌석의 뿌리 argv(10-12 ps 실측 · pid 17263·2552·96776 공통).
+    const SEAT119_ROOT_CLAUDE: &str =
+        "claude --dangerously-skip-permissions --model claude-opus-5-5 --effort high";
+
+    /// ★1.1.9 좌석 판정 ① — 실기 재현: 뿌리 argv 가 claude 이고 자손이 0 인 좌석은 Occupied 다.
+    /// 수리 전에는 「있는가」 를 등록용 「정확히 한 에이전트」 규칙으로 물어, 실행 파일이 같은 후보가 셋인 이 맥
+    /// 팩에서 모호 → 없음 → Empty 였다(큐 배달이 empty_seat 로 멈춘 실제 원인). 후보 1개 꼴(저장소 내장 팩)도 함께 잰다.
+    #[test]
+    fn seat119_root_agent_with_no_descendants_is_occupied_even_when_candidates_share_a_binary() {
+        use super::{known_agent_cmd, seat_verdict, select_observed_agent, SeatState};
+        let cands = seat119_this_mac_candidates();
+        let cmd = SEAT119_ROOT_CLAUDE;
+        // 정체 판정은 종전 그대로 모호 = None 이다(등록 규칙 무접촉) — 존재 판정이 이 답에 끌려가던 것이 결함이었다.
+        assert_eq!(select_observed_agent(&[cmd.to_string()], &cands), None);
+        assert!(known_agent_cmd(cmd, &cands), "같은 실행 파일 후보가 여럿이라고 에이전트가 없다고 답했다");
+        assert_eq!(seat_verdict(false, true, 0, Some(cmd), &cands), SeatState::Occupied);
+        // 후보 1개 꼴(내장 팩) · 경로가 붙은 뿌리(설치기 master 자리 — 893 VM 실기 꼴).
+        let one = vec![("claude".to_string(), "claude".to_string())];
+        assert_eq!(seat_verdict(false, true, 0, Some(cmd), &one), SeatState::Occupied);
+        assert_eq!(
+            seat_verdict(false, true, 0, Some("/opt/agents/bin/claude --dangerously-skip-permissions"), &cands),
+            SeatState::Occupied
+        );
+    }
+
+    /// ★1.1.9 좌석 판정 ②~⑤ — 판정표의 나머지 줄. 맨 셸 좌석 = Empty 계약(빈 좌석 승계·빈 셸 가드의 전제)은 그대로다.
+    #[test]
+    fn seat119_verdict_table_keeps_bare_shell_empty_and_dead_root_out() {
+        use super::{seat_verdict, SeatState};
+        let cands = seat119_this_mac_candidates();
+        // ② 뿌리 = 셸 · 자손 0 → Empty(뿌리 argv 가 에이전트와 엄격 매칭되지 않는다).
+        for shell in ["/bin/zsh -l", "-zsh", "/bin/bash -l", "bash", "sh"] {
+            assert_eq!(seat_verdict(false, true, 0, Some(shell), &cands), SeatState::Empty, "{shell}");
+        }
+        // 에이전트가 아닌 뿌리 · 경로 조각에만 이름이 든 인자(엄격 매처) · argv 미관측 · 후보 없음 = Empty.
+        for not_agent in ["sleep 30", "vim notes.md", "tail -f /home/u/claude/dev.log"] {
+            assert_eq!(seat_verdict(false, true, 0, Some(not_agent), &cands), SeatState::Empty, "{not_agent}");
+        }
+        assert_eq!(seat_verdict(false, true, 0, None, &cands), SeatState::Empty, "argv 를 못 읽었는데 차 있다고 답했다");
+        assert_eq!(seat_verdict(false, true, 0, Some(SEAT119_ROOT_CLAUDE), &[]), SeatState::Empty, "후보가 없으면 뿌리를 셀 근거가 없다");
+        // ③ 뿌리 = 셸 · 자손 claude → Occupied(자손이 있으면 뿌리 argv 는 보지 않는다).
+        assert_eq!(seat_verdict(false, true, 1, None, &cands), SeatState::Occupied);
+        assert_eq!(seat_verdict(false, true, 1, Some("/bin/zsh -l"), &[]), SeatState::Occupied);
+        // ④ 종료된 surface → Empty(자손·뿌리 argv 가 무엇이든).
+        assert_eq!(seat_verdict(true, true, 0, Some(SEAT119_ROOT_CLAUDE), &cands), SeatState::Empty);
+        assert_eq!(seat_verdict(true, true, 3, Some(SEAT119_ROOT_CLAUDE), &cands), SeatState::Empty);
+        assert_eq!(seat_verdict(true, false, 0, None, &cands), SeatState::Empty);
+        // ⑤ 뿌리가 프로세스 표에 없음 → Unknown(죽은 뿌리를 차 있다고도 비었다고도 하지 않는다).
+        assert_eq!(seat_verdict(false, false, 0, None, &cands), SeatState::Unknown);
+        assert_eq!(seat_verdict(false, false, 0, Some(SEAT119_ROOT_CLAUDE), &cands), SeatState::Unknown);
+    }
+
+    /// ★1.1.9 좌석 판정 ⑥ + 실 프로세스 — 뿌리가 에이전트 자신인 유휴 좌석은 즉시 프로브에서도 Occupied 이고
+    /// 승계 대상이 아니다. 같은 프로세스를 「에이전트 아님」 후보로 재면 Empty · 승계 가능(대조군 = 판정이 후보를 본다).
+    #[cfg(unix)]
+    #[test]
+    fn seat119_live_root_agent_seat_is_occupied_and_not_claimable() {
+        use super::{seat_claimable_verdict, seat_state_of, SeatState};
+        let mut child = std::process::Command::new("/bin/sleep").arg("30").spawn().expect("sleep");
+        let pid = child.id();
+        let mut sys = sysinfo::System::new();
+        sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+        // 실행 파일이 같은 후보 셋(이 맥 팩의 claude 계열과 같은 꼴) — 수리 전 규칙이면 모호 → 미관측이다.
+        let same_bin: Vec<(String, String)> = ["a", "b", "c"].iter().map(|n| (n.to_string(), "sleep".to_string())).collect();
+        let as_agent = seat_state_of(&sys, pid, false, &mut Some(same_bin.clone()));
+        let root_cmd = super::root_agent_cmd(&sys, pid, &same_bin);
+        let not_agent = seat_state_of(&sys, pid, false, &mut Some(seat119_this_mac_candidates()));
+        let exited = seat_state_of(&sys, pid, true, &mut Some(same_bin.clone()));
+        let _ = child.kill();
+        let _ = child.wait();
+        let mut after = sysinfo::System::new();
+        after.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+        let dead = seat_state_of(&after, pid, false, &mut Some(same_bin));
+        assert_eq!(as_agent, SeatState::Occupied, "뿌리가 에이전트인 유휴 좌석(자손 0)을 빈 좌석으로 읽었다");
+        assert!(root_cmd.as_deref().is_some_and(|c| c.contains("sleep")), "같은 실행 파일 후보 셋에서 뿌리를 못 봤다: {root_cmd:?}");
+        assert_eq!(not_agent, SeatState::Empty, "에이전트가 아닌 뿌리(자손 0)를 차 있다고 읽었다");
+        assert_eq!(exited, SeatState::Empty);
+        assert_eq!(dead, SeatState::Unknown, "프로세스 표에 없는 뿌리");
+        // ⑥ 승계 판정표 — 뿌리=에이전트 좌석은 meta·사람 입력이 없어도 승계 불가 · Empty 만 승계 가능 · Unknown 은 거부.
+        assert!(!seat_claimable_verdict(as_agent, false, false), "살아 있는 에이전트 자리를 승계 대상으로 봤다");
+        assert!(seat_claimable_verdict(not_agent, false, false));
+        assert!(!seat_claimable_verdict(not_agent, true, false), "살아 있는 meta 가 승계를 막지 않았다");
+        assert!(!seat_claimable_verdict(not_agent, false, true), "최근 사람 입력이 승계를 막지 않았다");
+        assert!(!seat_claimable_verdict(dead, false, false), "Unknown 은 거부(현행 유지)");
+    }
+
+    /// ★1.1.9 좌석 판정 배선 핀 — 「이 좌석이 쓰이는 중인가」 에 답하는 자리는 전부 같은 본체를 지난다(두 답 금지).
+    #[test]
+    fn seat119_every_seat_probe_goes_through_the_single_verdict() {
+        let src = include_str!("governance.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap();
+        let body_of = |needle: &str| {
+            let at = prod.find(needle).unwrap_or_else(|| panic!("{needle} 소실"));
+            &prod[at..at + prod[at..].find("\n}\n").unwrap()]
+        };
+        assert!(
+            body_of("pub fn seat_state(").contains("seat_state_of(sys, s.pid, s.exited.load(Ordering::Relaxed), &mut None)"),
+            "즉시 프로브가 본체를 우회"
+        );
+        assert!(
+            body_of("pub fn seat_claimable(").contains("seat_claimable_verdict(seat_state(sys, s), meta_blocks_seat(s), human_recent)"),
+            "승계 게이트가 판정을 우회"
+        );
+        assert!(body_of("pub fn agent_seat_vacant_now(").contains("let seat = seat_state(&sys, s);"), "빈 셸 가드가 판정을 우회");
+        assert!(body_of("pub fn root_agent_cmd(").contains("known_agent_cmd(&cmd, candidates).then_some(cmd)"), "뿌리 관측이 존재 판정을 우회");
+        // 판정 본체는 하나 — 자손 수를 세어 좌석을 가르는 자리가 본체 밖에 다시 생기면 답이 둘이 된다.
+        assert_eq!(prod.matches("fn seat_verdict(").count(), 1);
+        assert_eq!(prod.matches("collect_descendants(sys, root).len()").count(), 1);
+        assert!(!prod.contains("collect_descendants(sys, s.pid).is_empty()"), "자손 유무만으로 좌석을 가르는 옛 판정이 남았다");
+    }
+
     /// 배선 핀 — 좌석 캐시·생존 판정 두 자리 모두 뿌리 관측을 쓴다(한쪽만 고치면 경보가 남는다).
     #[test]
     fn v113_root_agent_wired_into_seat_cache_and_liveness() {
         let src = include_str!("governance.rs");
         let prod = src.split("#[cfg(test)]").next().unwrap();
         // ★v115r3-d7: 판정은 cache_seat_verdict 한 곳 — 틱·생성 직후 채움이 둘 다 그것을 불러야 한다.
-        let v = prod.find("fn cache_seat_verdict(").unwrap();
-        let verdict_body = &prod[v..v + prod[v..].find("\n}\n").unwrap()];
-        assert!(verdict_body.contains("root_agent_cmd(sys, s.pid, cands).is_some()"), "좌석 캐시 미배선");
+        // ★1.1.9 좌석 판정 재표적: 뿌리 관측은 순수 판정 `seat_verdict` 로 올라갔다 — 캐시 판정은 즉시 프로브와 같은
+        //   본체(`seat_state_of`)를 부르고, 그 본체가 뿌리 argv 를 읽어 `seat_verdict` 에 넘긴다(단언 목적 불변).
+        let body_of = |needle: &str| {
+            let at = prod.find(needle).unwrap_or_else(|| panic!("{needle} 소실"));
+            &prod[at..at + prod[at..].find("\n}\n").unwrap()]
+        };
+        assert!(
+            body_of("fn cache_seat_verdict(").contains("seat_state_of(sys, s.pid, s.exited.load(Ordering::Relaxed), candidates)"),
+            "좌석 캐시 미배선"
+        );
+        let of_body = body_of("fn seat_state_of(");
+        assert!(of_body.contains("argv_snapshot(&[root]).remove(&root)"), "본체가 뿌리 argv 를 읽지 않는다");
+        assert!(of_body.contains("seat_verdict(false, true, 0, root_cmd.as_deref(), cands)"), "본체가 뿌리 argv 를 판정에 넘기지 않는다");
+        assert!(
+            body_of("pub(crate) fn seat_verdict(").contains("root_cmd.is_some_and(|c| known_agent_cmd(c, candidates))"),
+            "판정이 뿌리 에이전트를 세지 않는다"
+        );
         let a = prod.find("pub fn refresh_seat_cache(").unwrap();
         let seat_body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
         assert!(seat_body.contains("cache_seat_verdict(sys, &s, &mut candidates)"), "틱이 판정을 우회");

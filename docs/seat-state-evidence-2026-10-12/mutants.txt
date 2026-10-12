@@ -1,0 +1,21 @@
+M1 판정에서 뿌리 에이전트 절 삭제(= v113 블록 되돌림) → 잡음 rc=101 test result: FAILED. 5 passed; 3 failed; 0 ignored; 0 measured; 2604 filtered out; finished in 0.02s
+    FAILED: ['seat119_live_root_agent_seat_is_occupied_and_not_claimable', 'seat119_root_agent_with_no_descendants_is_occupied_even_when_candidates_share_a_binary', 'v113_root_agent_wired_into_seat_cache_and_liveness']
+M2 존재 판정을 옛 「정확히 한 에이전트」 규칙으로(= 수리 전 재현) → 잡음 rc=101 test result: FAILED. 6 passed; 2 failed; 0 ignored; 0 measured; 2604 filtered out; finished in 0.02s
+    FAILED: ['seat119_live_root_agent_seat_is_occupied_and_not_claimable', 'seat119_root_agent_with_no_descendants_is_occupied_even_when_candidates_share_a_binary']
+M3 승계 판정이 Unknown 을 통과 → 잡음 rc=101 test result: FAILED. 7 passed; 1 failed; 0 ignored; 0 measured; 2604 filtered out; finished in 0.02s
+    FAILED: ['seat119_live_root_agent_seat_is_occupied_and_not_claimable']
+M4 승계 판정이 meta 를 안 봄 → 잡음 rc=101 test result: FAILED. 7 passed; 1 failed; 0 ignored; 0 measured; 2604 filtered out; finished in 0.03s
+    FAILED: ['seat119_live_root_agent_seat_is_occupied_and_not_claimable']
+M5 판정이 종료를 안 봄 → 잡음 rc=101 test result: FAILED. 7 passed; 1 failed; 0 ignored; 0 measured; 2604 filtered out; finished in 0.02s
+    FAILED: ['seat119_verdict_table_keeps_bare_shell_empty_and_dead_root_out']
+M6 표에 없는 뿌리를 Empty 로 → 잡음 rc=101 test result: FAILED. 6 passed; 2 failed; 0 ignored; 0 measured; 2604 filtered out; finished in 0.02s
+    FAILED: ['seat119_live_root_agent_seat_is_occupied_and_not_claimable', 'seat119_verdict_table_keeps_bare_shell_empty_and_dead_root_out']
+M7 승계 게이트가 옛 자손 유무 판정으로 우회 → 잡음 rc=101 test result: FAILED. 7 passed; 1 failed; 0 ignored; 0 measured; 2604 filtered out; finished in 0.02s
+    FAILED: ['seat119_every_seat_probe_goes_through_the_single_verdict']
+M8 본체가 뿌리 argv 를 판정에 안 넘김 → 잡음 rc=101 test result: FAILED. 6 passed; 2 failed; 0 ignored; 0 measured; 2604 filtered out; finished in 0.02s
+    FAILED: ['seat119_live_root_agent_seat_is_occupied_and_not_claimable', 'v113_root_agent_wired_into_seat_cache_and_liveness']
+M9 뿌리 관측을 옛 규칙으로 → 잡음 rc=101 test result: FAILED. 6 passed; 2 failed; 0 ignored; 0 measured; 2604 filtered out; finished in 0.02s
+    FAILED: ['seat119_every_seat_probe_goes_through_the_single_verdict', 'seat119_live_root_agent_seat_is_occupied_and_not_claimable']
+복원: True
+합계 9/9 잡음
+rc=0

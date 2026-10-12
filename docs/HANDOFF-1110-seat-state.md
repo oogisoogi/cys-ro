@@ -1,0 +1,282 @@
+# HANDOFF — cysd 좌석 판정: 뿌리가 에이전트 자신인 좌석이 유휴마다 「빈 좌석」 으로 읽히던 결함 (TICKET=cysr-1110-seat-state)
+
+- 발주 = master#06eeaab3(2026-10-12 17:25) · 범위 답 = master#6d32701a(1번 A안) · master#fe654723(2번 B안)
+- 작업 트리 = `~/axdev/.wt/cys-1110-seat-state` · 가지 `fix/1110-seat-state` · 기준 `bb52b846`
+- 작업자 = worker-seatstate(surface:1352 · Opus 5.5) · push 0 · 병합 0(둘 다 master 소관)
+
+## 0. 한눈에
+
+| 항목 | 내용 |
+|---|---|
+| 1번 커밋 | `fix(cysd)(1.1.9 좌석 판정 · master#06eeaab3)` — `src/bin/cysd/governance.rs` 1파일 + 이 문서 + 증거 폴더 |
+| 2번 커밋 | `test(publish)(1.1.9 hdiutil 재시도 · master#06eeaab3)` — `scripts/tests/test_update_publish.py` 1파일 |
+| 제품 거동이 바뀌는 좌석 | 뿌리 프로세스가 에이전트 자신(`cys new-surface --cmd '… claude …'`)이고, 팩 `agents.json` 에 **같은 실행 파일을 쓰는 에이전트가 둘 이상** 등록된 설치(이 맥 = claude · claude-fable · claude-sonnet) |
+| 바뀌는 방향 | 그 좌석의 유휴 순간 판정 `empty` → `occupied` ⇒ 큐 배달 보류(`empty_seat`) 해소 · 빈 좌석 승계 대상에서 제외 |
+| 안 바뀌는 것 | 뿌리가 셸인 좌석(맨 셸 = `empty` · 셸+에이전트 = `occupied`) · 종료 좌석 = `empty` · 프로세스 표에 없는 뿌리 = `unknown` · 에이전트 등록(정체) 규칙 · 데드맨 보조축 |
+
+## 1. 결함 — 브리프의 가설과 실제 원인이 달랐다
+
+### 1-1. 브리프의 가설
+「`seat_state()` 가 자손 유무 한 가지로만 Empty 를 낸다. `cache_seat_verdict()` 에는 v113 보정(뿌리가 기지 에이전트면 Occupied)이 있지만 캐시 경로뿐이고, 큐 배달 쪽은 날 `seat_state()` 를 쓴다.」
+
+### 1-2. 실측 — 큐 배달은 이미 보정된 캐시를 읽고 있었다
+- 큐 배달이 「빈 좌석인가」 를 묻는 자리는 `role_seat_hold()` 한 곳이다(틱 배달 `deliver_queued` · 강제 배달 `force_deliver_entry` 둘 다 이 함수 · §4 표).
+- `role_seat_hold()` 는 `s.seat_cache` 를 읽고, 그 캐시는 `refresh_seat_cache()` 가 `cache_seat_verdict()` 로 쓴다. 즉 **v113 보정이 얹힌 값**이다.
+- 그런데도 실기(10-12 10:43 · surface 1348 · claude pid 생존)에서 `blocked_by=empty_seat` 가 났다. 보정이 있는데 왜 Empty 였는가가 진짜 질문이었다.
+
+### 1-3. 실제 원인 — 「있는가」 를 「어느 것인가」 규칙으로 물었다
+v113 보정의 호출 사슬(수리 전):
+
+```
+cache_seat_verdict → root_agent_cmd → seat_agent_observed → select_observed_agent
+```
+
+`select_observed_agent` 는 **등록용** 함수다. 「어느 에이전트인가」 를 정해야 하므로 서로 다른 에이전트가 동시에 맞으면 모호 = `None` 을 낸다(엉뚱한 CLI 를 부활시키는 것보다 기록하지 않는 편이 낫다는 계약 — 그 계약 자체는 옳다).
+
+이 맥 설치 팩 `~/.cys/pack/agents.json` 의 후보(10-12 파일 실측):
+
+| 에이전트 이름 | cmd | 실행 파일 이름 |
+|---|---|---|
+| claude | `claude --model claude-opus-5-5 --dangerously-skip-permissions` | claude |
+| claude-fable | `claude --model claude-fable-5-1 --dangerously-skip-permissions` | claude |
+| claude-sonnet | `claude --model claude-sonnet-5-5 --dangerously-skip-permissions` | claude |
+| gemini | `~/.local/bin/agy --dangerously-skip-permissions` | agy |
+| codex | `~/.npm-global/bin/codex --dangerously-bypass-approvals-and-sandbox` | codex |
+| grok | `grok` | grok |
+
+뿌리=claude 좌석의 뿌리 argv(10-12 `ps` 실측 · pid 17263·2552·96776 공통)는 `claude --dangerously-skip-permissions --model claude-opus-5-5 --effort high` 다. 이 명령줄은 위 세 claude 계열 후보에 **전부** 맞는다 → 이름이 서로 다른 에이전트 셋이 동시 매칭 → 모호 → `None` → 보정 미발화 → Empty → `empty_seat` 보류.
+
+저장소 내장 `cysjavis-pack/agents.json` 은 claude 1종뿐이라(파일 실측) 원작자 환경과 기존 시험(`v113_root_agent_cmd_counts_pane_root_agent_only` = 후보 1개)에서는 드러나지 않았다.
+
+### 1-4. 원인 확정 — 격리 실데몬 대조 3+1런(§6)
+같은 검체(뿌리 = `claude 600` · 자손 0 · 역할 좌석)를 바이너리·팩만 바꿔 돌렸다.
+
+| 데몬 바이너리 | 팩 후보 | 좌석 A(뿌리=claude) seat | 큐 1건 | 좌석 B(맨 셸) |
+|---|---|---|---|---|
+| 수리 전 — 설치본 cysr 1.1.8 | 이 맥 꼴(claude 계열 3) | empty · empty · empty | 보류 `empty_seat` · depth 1 | empty |
+| 수리 전 — 이웃 트리 디버그 빌드(10-10) | 이 맥 꼴 | empty · empty · empty | 보류 `empty_seat` · depth 1 | empty |
+| 수리 전 — 설치본 cysr 1.1.8 | 내장 claude 1종(원인 대조군) | occupied · occupied · occupied | 배달 · depth 0 | empty |
+| **수리 후 — 이 트리 빌드** | 이 맥 꼴 | occupied · occupied · occupied | 배달 · depth 0 | empty |
+
+셋째 줄이 원인을 가른다: 수리 전 바이너리도 후보가 1종이면 정상이다. 결함은 「뿌리 보정이 없어서」 가 아니라 「같은 실행 파일 후보가 여럿이면 보정이 꺼져서」 였다.
+
+### 1-5. 그래서 브리프대로만 했다면
+v113 블록을 `seat_state()` 안으로 옮기기만 하면 `root_agent_cmd` 가 계속 `None` 이라 **이 맥에서는 아무것도 고쳐지지 않는다.** 판정 자체를 「후보 가운데 하나라도 엄격 매칭이면 있다」 로 바꿔야 했다(master 답 = A안: 뿌리 경로만 · 자손 쪽 데드맨 보조축은 무접촉).
+
+## 2. 수정 — `src/bin/cysd/governance.rs`
+
+| 함수 | 종류 | 내용 |
+|---|---|---|
+| `seat_verdict(exited, root_in_table, descendants, root_cmd, candidates)` | 신설 · 순수 | 좌석 1차 판정의 **단일 정의**. 판정표는 아래 |
+| `known_agent_cmd(cmd, candidates)` | 신설 · 순수 | **존재** 판정 — 후보 가운데 하나라도 `cmdline_matches_agent_exec`(엄격 매처)에 맞으면 참 |
+| `seat_state_of(sys, root, exited, candidates)` | 신설 | 판정 재료 수집(프로세스 표 · 자손 수 · 자손 0 일 때만 뿌리 argv) → `seat_verdict` |
+| `seat_state(sys, s)` | 본문 교체 | `seat_state_of(sys, s.pid, exited, &mut None)` — 시그니처 불변 |
+| `cache_seat_verdict(sys, s, candidates)` | 본문 교체 | `seat_state_of(…, candidates)` — v113 블록은 `seat_verdict` 로 올라감 |
+| `root_agent_cmd(sys, root, candidates)` | 1줄 | `seat_agent_observed(…)` → `known_agent_cmd(&cmd, candidates)` |
+| `seat_claimable(sys, s)` | 본문 정리 | `seat_claimable_verdict(seat_state(sys, s), meta_blocks_seat(s), human_recent)` — 판정 결과 불변 |
+| `seat_claimable_verdict(seat, meta_blocks, human_recent)` | 신설 · 순수 | 승계 가능 = Empty ∧ 살아 있는 meta 없음 ∧ 최근 사람 입력 없음 |
+
+`seat_verdict` 판정표(위에서 아래로 첫 매치):
+
+| 조건 | 결과 |
+|---|---|
+| 종료된 surface | Empty |
+| 뿌리 pid 가 프로세스 표에 없음 | Unknown |
+| 자손 1개 이상 | Occupied |
+| 자손 0 ∧ 뿌리 argv 가 기지 에이전트 | Occupied ← 이번에 1차 사실로 올라간 줄 |
+| 자손 0 ∧ 그 밖(맨 셸 · argv 미관측 · 후보 없음) | Empty |
+
+무접촉으로 둔 것: `select_observed_agent`(등록 · 정체) · `seat_agent_observed`(무메타 좌석의 `seat_agent_cache` = 데드맨 `SeatVacantNoMeta` 보조축 · 부서 `seat_no_agent` 보류) · `agent_seat_vacant_now` 본문 · `role_seat_hold` · `refresh_seat_cache` · handlers·alert_route·schedule 전부.
+
+비용: 뿌리 argv 는 종전(v113 블록)과 같이 「자손 0 인 살아 있는 좌석」 에서만 읽는다. 틱 경로의 호출 수는 그대로다. 즉시 프로브(`seat_claimable_now` · `agent_seat_vacant_now`)는 자손 0 일 때 `agents.json` 읽기 1회 + argv 읽기 1회가 늘었다(드문 경로).
+
+## 3. 소비처 표 — 「이 좌석이 쓰이는 중인가」 를 묻는 모든 자리(제품 코드)
+
+줄 번호는 1번 커밋 기준이다. 「전」 = 기준 bb52b846.
+
+### 3-1. 판정을 **만드는** 자리(전부 `seat_verdict` 한 곳으로 모임)
+
+| 자리 | 전 | 후 |
+|---|---|---|
+| `governance.rs:3870` `seat_state()` — 즉시 프로브의 입구 | 자손 유무만 · 뿌리 보정 없음 | `seat_state_of` → `seat_verdict` |
+| `governance.rs:3924` `cache_seat_verdict()` — 틱(`refresh_seat_cache` :4050) · 생성 직후(`prime_seat_cache_at_create` :3944) | `seat_state()` + v113 블록(`root_agent_cmd` = 등록 규칙 → 후보가 겹치면 미발화) | `seat_state_of` → `seat_verdict`(같은 본체) |
+| `governance.rs:4155` `seat_claimable()` ← `seat_claimable_now()` :4172 — 승계 게이트 | 날 `seat_state()`(뿌리 보정 없음) | `seat_state()`(같은 본체) → `seat_claimable_verdict` |
+| `governance.rs:4288` `agent_seat_vacant_now()` — 빈 셸 가드 | 날 `seat_state()`(뿌리 보정 없음) | `seat_state()`(같은 본체) · 본문 무수정 |
+
+### 3-2. 즉시 프로브를 **부르는** 자리(호출 코드는 무수정 · 받는 값이 달라진다)
+
+| 자리 | 부르는 함수 | 뿌리=에이전트 유휴 좌석에서 전 → 후 |
+|---|---|---|
+| `handlers.rs:611` `close_if_empty` | `seat_claimable_now` | meta 없는 좌석이면 「승계 가능」 → 「불가」(닫기 후보에서 빠짐). meta 가 살아 있는 좌석은 전에도 meta 가 막았다 |
+| `handlers.rs:1245` `reclaim_commit` | `seat_claimable_now` | 같음 |
+| `handlers.rs:5776` `dispatch`(역할 선언 승계) | `seat_claimable_now` | 같음 |
+| `handlers.rs:8287` `dispatch`(부트 선언 승계) | `seat_claimable_now` | 같음 |
+| `handlers.rs:4566` `deliver_to_ceo` | `agent_seat_vacant_now` | false → false(전에도 뿌리가 셸이 아니라 false · 이제는 Occupied 에서 일찍 반환) |
+| `handlers.rs:6456` `dispatch`(surface.send_text 빈 셸 가드) | `agent_seat_vacant_now` | 같음 |
+| `schedule.rs:2654` `inject_on` | `agent_seat_vacant_now` | 같음 |
+
+### 3-3. 캐시(`seat_cache`)를 **읽는** 자리(코드 무수정 · 캐시 값이 달라진다)
+
+| 자리 | 무엇에 쓰나 | 뿌리=에이전트 유휴 좌석에서 전(후보 겹침 팩) → 후 |
+|---|---|---|
+| `governance.rs:4012` `role_seat_hold()` | **큐 배달 보류** | `empty_seat` 보류 → 통과 ← 이번 티켓의 목표 |
+| `governance.rs:1434` 데드맨 틱 → `liveness_verdict` | meta 좌석의 `AgentNeverStarted` · 무메타 좌석의 `SeatVacantNoMeta` | Empty → Occupied(사망 후보에서 빠지는 방향) |
+| `governance.rs:4511` `seat_takeover_recheck()` | 승계 직전 재검(캐시가 Occupied 면 취소) | 취소 사유 없음 → 「좌석 캐시가 Occupied」 로 취소 |
+| `governance.rs:7692` `machine_hold_probe()` 의 `shell_evidence` | 기계 보류 판정의 「셸 증거」 축 | true → false |
+| `alert_route.rs:1756` `seat_is_agent_backed()` | 경보·스케줄 push 의 대상 좌석 적격 | 부적격 → 적격 |
+| `handlers.rs:4560` `deliver_to_ceo` | CEO 좌석 적격 | SeatEmpty → 통과 |
+| `handlers.rs:1020` `reclaim_live_snapshot` · `:6164` · `:10513` · `:12074` · `governance.rs:13183` | status·topology·이벤트의 `seat` 문자열 노출 | `"empty"` → `"occupied"` |
+
+### 3-4. `root_agent_cmd` 를 부르는 자리(존재 판정으로 바뀐 영향)
+
+| 자리 | 후보 | 전 → 후 |
+|---|---|---|
+| `governance.rs:941` · `:971` 사망 감지 | 그 좌석 meta 1개 | 불변(후보 1개는 모호할 수 없다) |
+| `governance.rs:4076` `refresh_seat_cache` 의 `seat_agent_cache` 재료 | 전체 후보 | 뿌리 argv 가 재료 목록에 **들어가기는** 한다. 그러나 바로 다음 줄 `seat_agent_observed` 가 종전 규칙이라 후보가 겹치면 여전히 미관측 = 결과 불변(A안이 남긴 자리 · §8) |
+| `governance.rs:877` 2표본 확정 대기(주석상 unix 는 항상 no-op) | 전체 후보 | 뿌리가 후보 겹침 에이전트이고 **자손에 다른 종류 에이전트가 하나만** 있는 좌석: 전 = 자손 쪽으로 확정 · 후 = 모호 → 유보. Windows 한정 · 그 꼴의 좌석은 실측한 적 없음 |
+| `governance.rs:4299` `agent_seat_vacant_now` 의 `root_is_agent` | 전체 후보 | 이 줄에 닿는 경우(좌석 Empty)는 이제 「뿌리가 에이전트 아님」 이 이미 확정이라 값 불변 |
+
+## 4. 큐 배달 경로는 어느 함수로 「빈 좌석」 을 묻는가(브리프 2항 답)
+
+| 경로 | Empty 를 묻는 코드 줄 | 읽는 값 |
+|---|---|---|
+| 틱 배달(조용해지면 자동 배달 · `cys send --queued`) | `governance.rs:13167` `deliver_queued` → `role_seat_hold(&s, now_epoch(), dept_grace)` | `seat_cache` |
+| 강제 배달(`cys queue deliver`) | `governance.rs:12786` `force_deliver_entry` → `role_seat_hold(…)` | `seat_cache` |
+| 직접 전송(`cys send` · surface.send_text) | `handlers.rs:6456` → `agent_seat_vacant_now` | 즉시 프로브. 빈 셸로 판정되면 본문을 큐로 돌린다(→ 위 두 줄의 게이트로) |
+| 스케줄 push(정기 스캔 등 `[schedule …]`) | `schedule.rs:2654` `inject_on` → `agent_seat_vacant_now` · 대상 좌석 선정은 `alert_route.rs:1756` `seat_is_agent_backed` | 즉시 프로브 + `seat_cache` |
+| 각성 핑(`cys reinject --check`) | **데몬 쪽 전용 게이트는 찾지 못했다.** 원장 기록(10-12 10:5x 「reinject --check = 핑 큐 적재」)대로 핑은 큐 항목으로 들어가므로 위 틱 배달 게이트를 지난다고 **추정**한다 — CLI(`src/bin/cys.rs`)의 핑 발신 코드를 이번에 따라가 확인하지는 않았다 |
+| master 큐 폴백(`master-send.sh` 의 queued 판정) | cys 저장소 밖 스크립트 — 큐에 들어간 뒤로는 위 틱 배달 게이트 | `seat_cache` |
+
+10-12 사고와의 대응: 큐로 간 R4 브리프가 `empty_seat` 로 멈춘 것 = 첫 줄. 「직접 send + Return 은 통했다」 = 셋째 줄(뿌리가 셸이 아니라 빈 셸 가드가 발화하지 않음).
+
+## 5. 시험
+
+### 5-1. 새 시험 4건(`governance.rs` 시험 모듈 · 이름 접두 `seat119_`)
+
+| 브리프 번호 | 시험 | 재는 것 |
+|---|---|---|
+| ① | `seat119_root_agent_with_no_descendants_is_occupied_even_when_candidates_share_a_binary` | 이 맥 팩 꼴(claude 계열 3 + gemini·codex·grok) × 실측 뿌리 argv → `select_observed_agent` 는 여전히 None(등록 규칙 무접촉) · `known_agent_cmd` = 참 · `seat_verdict` = Occupied. 후보 1개 꼴·경로 붙은 뿌리도 Occupied |
+| ②③④⑤ | `seat119_verdict_table_keeps_bare_shell_empty_and_dead_root_out` | ② 셸 뿌리 5종 · 비에이전트 뿌리 3종 · argv 미관측 · 후보 없음 = Empty ③ 자손 1 = Occupied ④ 종료 = Empty(자손·뿌리 무엇이든) ⑤ 표에 없는 뿌리 = Unknown |
+| ⑥ + 실 프로세스 | `seat119_live_root_agent_seat_is_occupied_and_not_claimable`(unix) | 실제 `/bin/sleep 30` 을 뿌리로: 같은 실행 파일 후보 셋 → Occupied · `root_agent_cmd` = Some · 에이전트 아닌 후보 → Empty(대조군) · 종료 표시 → Empty · 죽인 뒤 → Unknown. 승계 판정표: 뿌리=에이전트 좌석 = 불가 · Empty = 가능 · meta·사람 입력·Unknown = 불가 |
+| 배선 | `seat119_every_seat_probe_goes_through_the_single_verdict` | `seat_state`·`seat_claimable`·`agent_seat_vacant_now`·`root_agent_cmd` 가 같은 본체를 지남 · `fn seat_verdict(` 1개 · 옛 식 `collect_descendants(sys, s.pid).is_empty()` 0건 |
+
+기존 시험 1건 재표적: `v113_root_agent_wired_into_seat_cache_and_liveness` — 「캐시 판정이 뿌리 관측을 쓴다」 는 단언 목적은 그대로, 찾는 자리만 `cache_seat_verdict` 본문 → `seat_state_of`·`seat_verdict` 본문으로 옮겼다. 후보 1개 꼴의 `v113_root_agent_cmd_counts_pane_root_agent_only` 는 무수정 유지.
+
+### 5-2. 뮤턴트 9종 — 전부 잡음(한 번에 하나 · 끝나면 원본 복원 확인)
+
+| # | 뮤턴트 | 적색이 된 시험 |
+|---|---|---|
+| M1 | 판정에서 뿌리 에이전트 절 삭제(= v113 블록 되돌림) | ① · 실 프로세스 · v113 배선 핀 |
+| M2 | 존재 판정을 옛 「정확히 한 에이전트」 규칙으로(= **수리 전 재현**) | ① · 실 프로세스 |
+| M3 | 승계 판정이 Unknown 을 통과 | 실 프로세스(⑥) |
+| M4 | 승계 판정이 meta 를 안 봄 | 실 프로세스(⑥) |
+| M5 | 판정이 종료를 안 봄 | ④ |
+| M6 | 표에 없는 뿌리를 Empty 로 | ⑤ · 실 프로세스 |
+| M7 | 승계 게이트가 옛 자손 유무 식으로 우회 | 배선 핀 |
+| M8 | 본체가 뿌리 argv 를 판정에 안 넘김 | 실 프로세스 · v113 배선 핀 |
+| M9 | 뿌리 관측(`root_agent_cmd`)을 옛 규칙으로 | 배선 핀 · 실 프로세스 |
+
+M2 가 「수리 전 None/Empty · 수리 후 Occupied」 의 단위 층 증거다(같은 시험이 옛 규칙에서 적색 · 새 규칙에서 초록). 후보 1개 꼴의 기존 v113 시험은 M2 에서도 초록이다 — 그 시험만으로는 이 결함을 볼 수 없었다는 뜻이다.
+
+## 6. 격리 실연 — `docs/seat-state-evidence-2026-10-12/`
+
+- 검체 = `seat-root-agent-e2e.py`(실데몬 · 격리 HOME·소켓·상태·팩 · 트립와이어 · 종료는 기록한 pid 만).
+- 좌석 A = 뿌리 `claude 600`(이름만 claude 인 `/bin/sleep` 심링크 · 자손 0 · 역할 worker-e2e) · 좌석 B = 맨 셸(역할 worker-shell).
+- 결과 원문 4개: `e2e-after.txt` · `e2e-before-installed.txt` · `e2e-before-neighbor.txt` · `e2e-before-single.txt`(§1-4 표가 그 요약). 뮤턴트 스크립트·출력 = `mutants.py`·`mutants.txt`(Rust 9종) · `mutants-hdiutil.py`·`mutants-hdiutil.txt`(2번 5종).
+- 네 런 모두: 좌석 B = empty 3/3 · 트립와이어 적중 0 · 강제 종료한 뿌리 0 · 끝난 뒤 남은 프로세스 0(ps 확인).
+
+## 7. 게이트 수치(격리 HOME · 좌석 `CYS_*` env 제거 · 이 작업 트리)
+
+| 게이트 | 결과 |
+|---|---|
+| `cargo test --bin cysd -- seat119 v113_ seat_agent_observed select_observed`(해당 묶음) | 12 passed / 0 failed(2600 filtered out) |
+| `cargo test --bin cysd`(전체 · **최종 소스** · 17:58~18:06) | **2604 passed / 0 failed / 8 ignored** · 418.59s |
+| 같은 전체 실행 1회 더(최종 소스 직전 = 시험 문자열 1곳·주석 1곳을 고치기 전 · 17:45~17:52) | 2604 passed / 0 failed / 8 ignored · 397.11s |
+| `cargo test --lib` | 1077 passed / 0 failed / 2 ignored · 298.55s |
+| `cargo clippy --bin cysd --tests --message-format=short` | rc 0 · error 0 · 파일 위치가 있는 경고 355줄(governance.rs 60) 가운데 **이번에 바꾼 줄 범위 안 = 0**(diff 의 14개 범위와 줄 번호 대조). 기준 트리의 clippy 총수는 따로 재지 않았다 — 「신규 0」 의 근거는 총수 비교가 아니라 이 줄 범위 대조다 |
+| `python3 scripts/tests/test_update_publish.py` | 107 통과 / 0 실패(건너뜀 14) · 마운트 잔류 0 |
+| `bash scripts/secret-scan.sh --all`(새 파일 스테이징 상태) | clean(1694 파일). 1차 실행은 적색 1건이었다 — 내가 쓴 시험 문자열의 홈 경로 견본. 홈이 아닌 경로(`/opt/agents/bin/claude …`)로 바꿔 해소 |
+| 팩 계약(`test_pyseal_census.py` · `test_bootv2_doc_contract.py` · `test_content_pins_parity.py`) | `PYSEAL-CENSUS-OK` · `BOOTV2-DOC-CONTRACT-OK` · `OK` — 증거 폴더에 파이썬 3파일을 넣었으므로 확인 |
+| ui · 팩 | 변경 0(시험하지 않음) |
+| 격리 실연 4런 | §1-4 표 · 수리 후 런은 최종 소스 빌드로 다시 돌린 것 |
+
+기준 대비: 기준 bb52b846 의 cysd 시험 수 = 2608(이번에 +4 = 2612 · 그중 8 은 기존 ignored). 전체 실행에서 실패가 0 이라 「기준과 같은 실패」 로 넘긴 것은 없다.
+
+## 8. 남긴 것 — 별도 후보
+
+### 8-1. B 후보: 자손 쪽 존재 판정(`seat_agent_observed`)에 같은 꼴이 남아 있다
+- 자리 = `governance.rs:3913` `seat_agent_observed` → `select_observed_agent`. 쓰는 곳 = `refresh_seat_cache` :4077 → `seat_agent_cache`.
+- 영향 = **무메타 좌석**에서만: 데드맨 보조축 `SeatVacantNoMeta` 의 무장(`liveness_verdict`) · 부서 좌석의 `seat_no_agent` 보류(`role_seat_hold` · 생성 뒤 180초 유예 안).
+- 후보가 겹치는 팩에서는 claude 자손을 봐도 「미관측」 이라, 보조축이 조용히 꺼져 있고 부서 무메타 좌석은 유예 내내 보류된다(코드 판독 · 실측 아님).
+- 고치는 법 = `seat_agent_observed` 본문을 `cmds.iter().any(|c| known_agent_cmd(c, candidates))` 로(1줄). 거동 변화 = 이 맥에서 그 보조축이 처음으로 실제 무장된다 → 사망 경보 거동을 따로 재야 한다(그래서 이번 티켓에서 제외 · master 결정).
+- B 티켓의 입력 — 이 맥 본부 데몬의 좌석별 meta 실측(2026-10-12 17:34 · `cys status --json`):
+
+| surface | role | agent(meta) | seat | seat_agent |
+|---|---|---|---|---|
+| 1307 | worker-eduscan | claude-sonnet | occupied | false |
+| 1314 | worker | claude | occupied | false |
+| 1336 | worker-lms | claude | occupied | false |
+| 1340 | worker-6 | claude | occupied | false |
+| 1352 | worker-seatstate | claude | occupied | false |
+
+  좌석 5 · **무메타 좌석 0**. `seat_agent` 는 무메타 좌석에서만 계산되므로 전부 false 다. 지금 이 맥 본부에서 B 를 고쳐도 당장 무장되는 좌석은 없다 — 무메타 에이전트 좌석(사람이 손으로 claude 를 띄우고 역할만 선언한 좌석 · 부서 좌석)이 생길 때 차이가 난다. 같은 시각 프로세스 표에는 자식이 0 인 `cysd` 가 9개 더 있었다(부서·시험 데몬인지 미확인 · 좌석 없음).
+
+### 8-2. 그 밖의 관찰(수정 안 함)
+- `SeatState::Occupied` 의 문서 주석에는 「자손이 없어도 뿌리 자신이 기지 에이전트면 여기」 를 한 줄 더했다. 그 위 설계 원칙 문단(「커널 사실 1차 = 셸 이외의 자손이 있는가」)과 `Empty` 주석(「셸 단독」)은 그대로 두었다 — 판정표의 정본은 `seat_verdict` 의 문서 주석이다.
+- 사용자가 `agents.json` 에 실행 파일이 셸 이름인 에이전트(예: cmd 가 `bash run.sh`)를 등록하면 그 셸이 뿌리인 맨 셸 좌석이 Occupied 로 읽힌다. v113 때부터 캐시 경로에 있던 한계이고 이번에 즉시 프로브로도 넓어졌다. 내장·이 맥 팩에는 그런 항목이 없다.
+- 엄격 매처는 명령줄의 **어느 낱말이든** 실행 파일 이름과 같으면 맞는다. 뿌리가 `vim claude` 처럼 인자에 그 이름을 든 비에이전트 프로세스면 Occupied 로 읽힌다(보호 방향 · 뿌리는 셸이거나 `--cmd` 명령이라 실제로는 드물다).
+
+## 9. 운영 보조 처방(코드 변경 아님 · master 쪽 선택지)
+- `cys new-surface --cmd '… claude …'` 좌석을 `bash -lc '…'` 로 감싸면 뿌리가 셸이 되고 claude 가 자손으로 남아, 수리 전 데몬에서도 늘 occupied 다(spawn-worker 경로가 이미 그 꼴 · 1307·1314).
+- 1.1.9 를 깔기 전까지의 임시 처방으로만 뜻이 있다. 이 수정이 들어간 데몬에서는 감싸지 않아도 된다.
+- 주의: 셸에 따라 `-lc` 의 마지막 명령을 exec 로 바꿔 치기도 한다(zsh). 그러면 감싸도 뿌리가 claude 가 된다 — 「감쌌으니 됐다」 고 보지 말고 `ps` 로 뿌리를 확인한다.
+
+## 10. 되돌리기
+- 1번: `git revert <1번 커밋>` — `governance.rs` 1파일 + 문서. 스키마·저장 형식·RPC 무변경이라 데몬 재시작 외 후속 조치 없음.
+- 2번: `git revert <2번 커밋>` — 시험 파일 1개.
+- 부분 되돌리기(뿌리 관측만 옛 규칙으로) = `known_agent_cmd` 본문을 `seat_agent_observed(&[cmd.to_string()], candidates)` 로(뮤턴트 M2 와 같은 모양).
+
+## 11. 2번 항목 — hdiutil 재시도(`scripts/tests/test_update_publish.py`)
+
+- **이미 반이 되어 있었다**: 커밋 `061e041a`(TICKET=cysr-1110-backlog · master#1378f1c3)가 도우미 `hdiutil_retry`(1회 재시도 · rc·stderr 출력 · 반쪽 dmg 삭제)와 단위 3(`TestHdiutilRetry`)을 넣고, 10-07 run 37543589887 의 실패 자리(`TestOfflineRitual.setUp`)를 고쳤다. 도우미는 이번에 손대지 않았다.
+- 이번에 닫은 남은 두 자리(master 답 B안):
+  1. `setUpModule` 의 매체 전제 확인 — `media_probe_failures()` 로 끌어내 create·attach 를 `hdiutil_retry` 로. 2회 실패 = 종전처럼 `RuntimeError`(모듈 오류 · 건너뛰기 없음 · `REQUIRE_ALL` 계약 그대로).
+  2. `second_media()` — `check_call` 2줄 → `hdiutil_retry` · 2회 실패 = `self.fail`(사유 2줄).
+- 추가 시험 3(`TestHdiutilRetry` 안 · 가짜 runner · 플랫폼 무관):
+  - `test_module_probe_survives_one_transient_create_failure` — create 첫 실패·둘째 성공 = 통과(create·create·attach·detach).
+  - `test_module_probe_two_failures_stay_a_module_error` — 둘 다 실패 = 사유 실린 목록 → `setUpModule()` 이 `RuntimeError` · attach 미호출.
+  - `test_every_create_and_attach_goes_through_the_retry_helper` — 배선 핀: 이 파일에 hdiutil create·attach 직접 호출 줄 0 · 도우미 실행 줄 1 · 도우미를 거치는 호출부 3.
+  - master 답은 「추가 = 배선 핀 1」 이었다. 앞의 두 건은 브리프 2번이 적은 단위 2(첫 실패·둘째 성공 / 둘 다 실패 = 모듈 오류 유지)라 남겼다 — 도우미가 아니라 `setUpModule` 쪽 거동을 잰다. 빼라고 하면 그 두 메서드만 지우면 된다.
+- 수치: `python3 scripts/tests/test_update_publish.py` = 107 통과 / 0 실패(건너뜀 14 = 기존 VERIFY_BIN·node 조건 · 수정 전 104) · 끝난 뒤 마운트 잔류 0.
+- 음성 대조 5종 전부 잡음: P1 둘째 매체를 직접 호출로 되돌림 → 배선 핀 · P2 재시도 0 → 4건 · P3 전제 확인이 실패를 무시 → 모듈 오류 시험 · P4 `setUpModule` 이 실패 목록을 버림 → 모듈 오류 시험 · P5 전제 확인이 도우미를 안 거침 → 3건.
+
+## 12. 함정·관찰
+1. **「보정이 있다」 와 「보정이 발화한다」 는 다른 사실이다.** 브리프와 CSO 실측은 코드에 v113 블록이 있다는 데서 「캐시 경로는 안전」 으로 읽었다. 설치 팩의 후보 목록을 넣어 보기 전에는 그 블록이 한 번도 돌지 않는다는 것이 보이지 않았다. 판정 코드를 볼 때는 **그 설치의 실제 입력**(여기서는 `~/.cys/pack/agents.json`)을 같이 읽는다.
+2. **존재를 정체 규칙으로 묻지 않는다.** 「있는가」 와 「어느 것인가」 는 모호할 때 답이 반대다(있다 / 기록 안 함).
+3. 맥은 시스템 바이너리의 **사본** 실행을 막는다 — `/bin/sleep` 을 `claude` 로 복사하면 좌석이 즉시 종료된다. 이름만 바꾼 **심링크**는 되고 argv[0] 이 그 이름이 된다.
+4. 실 프로세스 시험은 PTY 좌석을 쓰지 않았다. `create_surface(… "sleep 30")` 의 뿌리가 셸인지 sleep 인지는 로그인 셸의 exec 여부에 달려 비결정이다(09-10 · 09-23 기록). 그래서 본체를 pid 로 받는 `seat_state_of` 로 끌어내 `/bin/sleep` 자식을 직접 뿌리로 쟀다.
+5. 뮤턴트와 cargo 는 겹쳐 돌리지 않았다. 뮤턴트가 도는 동안에는 Rust 소스를 건드리지 않고 파이썬 쪽(2번)만 진행했다.
+6. 격리 실연 중 설치본 데몬은 `phoenix-embed` python 자식을 스스로 띄운다(격리 폴더 안). 정리는 데몬 pid 와 그 직계 자식 pid 로만 했고 끝난 뒤 잔류 0 을 확인했다.
+7. 이종 검토(codex 1R)는 이 티켓 안에서 돌리지 않았다(브리프: master 가 스냅샷 재검 뒤).
+
+## 13. 재현 명령
+
+```sh
+cd ~/axdev/.wt/cys-1110-seat-state
+a=(); while IFS= read -r n; do a+=(-u "$n"); done < <(env | sed -n 's/^\(CYS_[A-Za-z0-9_]*\)=.*/\1/p')
+ISO() { env "${a[@]}" -u CLAUDE_CONFIG_DIR HOME="$(mktemp -d)" CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup" \
+      PATH="$HOME/.bun/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin" "$@"; }   # bash 에서
+
+ISO cargo test --bin cysd -- seat119 v113_ seat_agent_observed select_observed   # 12 / 0
+ISO cargo test --bin cysd                                                        # §7
+ISO cargo test --lib                                                             # §7
+ISO cargo clippy --bin cysd --tests --message-format=short                       # §7
+ISO python3 scripts/tests/test_update_publish.py                                 # 107 / 0(skip 14)
+
+# 격리 실연(수리 후 / 수리 전 / 원인 대조군)
+ISO cargo build --bin cysd
+E=docs/seat-state-evidence-2026-10-12
+python3 $E/seat-root-agent-e2e.py target/debug/cysd target/debug/cys "수리 후"
+python3 $E/seat-root-agent-e2e.py /Applications/cys.app/Contents/MacOS/cysd target/debug/cys "수리 전(설치본)"
+SEAT119_AGENTS=single python3 $E/seat-root-agent-e2e.py /Applications/cys.app/Contents/MacOS/cysd target/debug/cys "수리 전 · 후보 1종"
+```

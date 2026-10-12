@@ -1,0 +1,13 @@
+== 수리 전(설치본 1.1.8) · 팩 후보 = 내장 claude 1종(원인 대조군) · cysd=/Applications/cys.app/Contents/MacOS/cysd
+좌석 A(뿌리=claude)=surface:1 rc=0 · 좌석 B(맨 셸)=surface:2 rc=0
+  뿌리 pid 58197 :: /Applications/cys.app/Contents/Resources/runtime/python/bin/python3 <box>/phoenix-embed/1. :: 자손 0
+  뿌리 pid 58201 :: <box>/bin/claude 600 :: 자손 0
+  뿌리 pid 58213 :: /bin/zsh -l :: 자손 0
+틱 3회 seat — A ['occupied', 'occupied', 'occupied'] · B ['empty', 'empty', 'empty']
+큐 적재 rc=0 QUEUED (depth 1)
+A 최종 — seat=occupied queue_depth=0 queue_blocked_by=None agent=None
+queue list rc=0 :: (queue empty)
+  끝 뿌리 pid 58197 자손 1
+  끝 뿌리 pid 58201 자손 0
+  끝 뿌리 pid 58213 자손 0
+정리 — 데몬 rc=0 · 강제 종료한 뿌리 [] · 트립와이어 적중 0

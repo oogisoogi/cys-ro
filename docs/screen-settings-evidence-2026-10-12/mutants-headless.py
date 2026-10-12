@@ -23,6 +23,12 @@ M = [
  ("H4 꺼진 단추에 display 를 주는 규칙(숨김이 풀림) + 짝 규칙 뺌", "src/style.css", "#topbar > button[hidden] { display: none; }", "#topbar button { display: inline-block; }", "s1"),
  ("H5 토글이 저장만 하고 화면에 안 바름", "src/main.ts", "    b.hidden = !it.on;\n    topbarEl.appendChild(b);", "    if (persist === false) b.hidden = !it.on;\n    topbarEl.appendChild(b);", "s4"),
  ("H6 고정 단추 토글 비활성 뺌", "src/main.ts", "      tog.disabled = pinned;", "      tog.disabled = false;", "s5"),
+ # ── codex 1R 채택 4건(TICKET=cysr-1110-screen-settings-r2) — 수정 전 모습으로 되돌리면 새 칸이 FAIL 하는가
+ ("H7 최소 폭 clamp 뺌(250% · 500px 창에서 오른쪽 잘림)", "src/style.css", "min-width: min(calc(256px * var(--ui-chrome-scale)), calc(100vw - 8px));", "min-width: calc(256px * var(--ui-chrome-scale));", "s13"),
+ ("H8 팝오버 닫힘이 끌기를 취소하지 않음(Esc 뒤 놓으면 저장)", "src/main.ts", '    cancelTopbarDrag?.("close"); // 끄는 도중 닫히면 그 끌기는 버린다(놓아도 순서·저장 불변)\n', "", "s14"),
+ ("H9 초점 잃음 처리기 뺌", "src/main.ts", '  window.addEventListener("blur", onBlur);\n', "", "s14"),
+ ("H10 저장 예외를 잡지 않음(토글 글자 어긋남)", "src/main.ts", "  } catch {\n    return false;\n  }\n  return true;\n}", "  } finally {\n  }\n  return true;\n}", "s15"),
+ ("H11 저장 실패 알림을 켜지 않음", "src/main.ts", "    tbUnsaved.hidden = saved;\n", "", "s15"),
 ]
 bad = 0
 for name, rel, a, b, only in M:
@@ -36,5 +42,5 @@ for name, rel, a, b, only in M:
     caught = rc == 1 and any(l.startswith("FAIL " + only) for l in lines)
     if not caught: bad += 1
     print(("잡음 " if caught else "놓침 ") + name, "rc", rc, "|", " / ".join(l for l in lines if l.startswith("FAIL"))[:260])
-build(); rc, lines = run("s1,s2,s3,s4,s5")
+build(); rc, lines = run("s1,s2,s3,s4,s5,s13,s14,s15")
 print("복원 뒤 rc", rc, lines[-1], "· 놓침·건너뜀", bad)

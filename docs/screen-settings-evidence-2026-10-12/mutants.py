@@ -25,6 +25,17 @@ M = [
  ("M14 팝오버 스크롤(overflow) 뺌", "src/style.css", "max-height: calc(100vh - var(--topbar-h) - 8px); overflow: auto;", "max-height: calc(100vh - var(--topbar-h) - 8px);"),
  ("M15 꺼진 상단 단추 짝 규칙 뺌", "src/style.css", "#topbar > button[hidden] { display: none; }", ""),
  ("M16 html 에 + New 를 hidden 으로 박음", "index.html", '<button id="btn-new" title="새 surface (⌘T)">+ New</button>', '<button id="btn-new" hidden title="새 surface (⌘T)">+ New</button>'),
+ # ── codex 1R 채택 4건(TICKET=cysr-1110-screen-settings-r2)
+ ("M17 최소 폭 clamp 뺌(창 폭을 모르는 최소 폭)", "src/style.css", "min-width: min(calc(256px * var(--ui-chrome-scale)), calc(100vw - 8px));", "min-width: calc(256px * var(--ui-chrome-scale));"),
+ ("M18 팝오버 닫힘이 끌기를 취소하지 않음", "src/main.ts", '    cancelTopbarDrag?.("close"); // 끄는 도중 닫히면 그 끌기는 버린다(놓아도 순서·저장 불변)\n', ""),
+ ("M19 취소가 순서를 저장함", "src/main.ts", "    const wasDragging = dragging;\n    teardown();\n", "    const wasDragging = dragging;\n    teardown();\n    if (drop) commit(dropTopbarItem(topbarLayout, srcId, drop.anchorId, drop.before));\n"),
+ ("M20 초점 잃음 처리기 뺌", "src/main.ts", '  window.addEventListener("blur", onBlur);\n', ""),
+ ("M21 저장 예외를 잡지 않음", "src/main.ts", "  } catch {\n    return false;\n  }\n  return true;\n}", "  } finally {\n  }\n  return true;\n}"),
+ ("M22 저장 실패 알림을 켜지 않음", "src/main.ts", "    tbUnsaved.hidden = saved;\n", ""),
+ ("M23 토스트가 다시 없는 단추만 가리킴", "src/main.ts", "끝난 뒤 상단의 「완전 초기화」를 눌러 주세요. 상단에 보이지 않으면 「화면 설정」 → 「상단 단추」에서 「완전 초기화」를 켜면 나타납니다.", "끝난 뒤 툴바의 [완전 초기화]를 눌러 주세요."),
+ ("M24 깨끗이 지우기 안내에서 켜는 길 뺌", "../docs/GUIDE-clean-reset-KR.md", " 이 버튼은 처음에는 보이지 않습니다 — 상단 **화면 설정** → **상단 단추**에서 **완전 초기화**를 켜면 상단에 나타납니다.", ""),
+ ("M25 CLI 안내를 옛 문구로", "../src/bin/cys.rs", "지금 켜져 있는 cys 앱에서 하는 것이 가장 쉽다 — 상단 '화면 설정' → '상단 단추'에서 '완전 초기화'를 켠 뒤, 상단에 생긴 '완전 초기화' 버튼을 누른다.", "지금 켜져 있는 cys 앱의 상단바 '완전 초기화' 버튼을 쓰는 것이 가장 쉽다."),
+ ("M26 사용 설명서 표에서 켜는 길 뺌", "../USER-MANUAL.md", "상단의 **완전 초기화** 버튼(안 보이면 `화면 설정` → 「상단 단추」에서 `완전 초기화` 를 켭니다) 또는", "상단의 **완전 초기화** 버튼 또는"),
 ]
 base = run(); print("기준", base)
 bad = 0

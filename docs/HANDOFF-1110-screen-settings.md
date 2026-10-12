@@ -4,6 +4,7 @@
 - 가지: `feat/1110-screen-settings` ← `017e6d86`(int/1110-upstream 머리) · 작업 시각 09:04 ~ 09:3x(상한 12:17)
 - 박사님 원문(2026-10-12 09:0x): 「1. 현재 "테마" 메뉴의 글자들이 너무 작다. 지금의 2배 이상 키워야 제대로 볼 수 있다. 2. "테마"처럼 메뉴도 선택할 수 있게 하자. 메뉴 목록을 보여주고 켜기/끄기 버튼을 두는 것이다. 순서로 마음대로 조정할 수 있도록 드래그드롭하든지 켜기/끄지 버튼 옆에 끌어옮기기 아이콘을 넣든지 3. 메뉴 커스텀 기능은 "테마"에 한꺼번에 넣어 구현하는 것은 어떤가?」 → 09:1x 「최적안대로 한다.」(기본 숨김 = A안 5개)
 - push · int/1110-upstream 병합 · 발행 = master. 이 가지는 로컬 커밋만 있다(push 0).
+- **R2(2026-10-12 09:38 · master#01c6e170 · TICKET=cysr-1110-screen-settings-r2)**: codex 1R(이종 적대검토 · 8축) = MED 3 · LOW 1 · 기각 0 → 4건 모두 수정(§8). 아래 §1~§7 은 R1 시점 기록이고, R2 로 달라진 수치·동작은 §8 이 정본이다.
 
 ## 0. 델타 — 커밋 4 + 이 문서
 
@@ -13,8 +14,10 @@
 | ② | `861eafc0` | 상단 단추 구획 — 켬끔 토글 · 순서(끌어 놓기 + ▲▼) · 저장 | `ui/src/topbarlayout.ts`(새 파일) · `ui/src/main.ts` · `ui/src/style.css` |
 | ③ | `dd27573c` | 기본값 끔 5 · `v116-recut-newsplit` 주석 갱신 · 사용 설명서 안내 · 옛 헤드리스 c4a 기대값 | `ui/src/topbarlayout.ts` · `ui/index.html` · `USER-MANUAL.md` · `docs/v116-ui-evidence/v116-headless.ts` |
 | ④ | `36e1fdeb` | bun 시험 2파일 58건 + 실렌더 증거 + 음성 대조 | `ui/src/topbarlayout.test.ts` · `ui/src/screensettings.test.ts` · `docs/screen-settings-evidence-2026-10-12/` |
+| R2 | `62ae9d13` | codex 1R 채택 4건 수정 + 시험 9건 | `ui/src/main.ts` · `ui/src/style.css` · `ui/src/screensettings.test.ts` · `USER-MANUAL.md` · `docs/GUIDE-clean-reset-KR.md` · `src/bin/cys.rs`(문자열 1줄) |
+| R2 증거 | (이 문서와 같은 커밋) | 실렌더 새 6칸 · 스크린샷 3장 · 뮤턴트 10 + 5 추가 | `docs/screen-settings-evidence-2026-10-12/` |
 
-Rust · 데몬 · 팩 변경 = 0(소스 무변경). 단 `USER-MANUAL.md` 는 `cys`·`cysd` 가 `include_str!` 로 품는 파일이라 바이너리에 실리는 글은 바뀐다(핀 시험 = §3 의 `manual_` 6건).
+Rust · 데몬 · 팩 변경 = R1 은 0(소스 무변경) · R2 는 `src/bin/cys.rs` 안내 문자열 1줄(master 허용 범위). 단 `USER-MANUAL.md` 는 `cys`·`cysd` 가 `include_str!` 로 품는 파일이라 바이너리에 실리는 글은 바뀐다(핀 시험 = §3 의 `manual_` 6건).
 
 ## 1. 무엇이 바뀌었나(화면 기준)
 
@@ -126,17 +129,61 @@ ISO() { env "${a[@]}" -u CLAUDE_CONFIG_DIR HOME="$(mktemp -d)" CARGO_HOME="$HOME
 CHS="$HOME/Library/Caches/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-mac-arm64/chrome-headless-shell"
 E=docs/screen-settings-evidence-2026-10-12
 
-( cd ui && ISO bun test )                                                        # 2976 pass / 85 skip / 0 fail
-( cd ui && ISO bun test src/topbarlayout.test.ts src/screensettings.test.ts )    # 58 / 0
+( cd ui && ISO bun test )                                                        # 2985 pass / 85 skip / 0 fail(R2)
+( cd ui && ISO bun test src/topbarlayout.test.ts src/screensettings.test.ts )    # 67 / 0(R2)
 ( cd ui && ISO bun x --package typescript@7.0.2 tsc -p tsconfig.check.json )     # rc 0
 ( cd ui && ISO sh build.sh )                                                     # ui/dist ready
-ISO env DIST="$PWD/ui/dist" CHS="$CHS" OUT="$PWD/$E/shots" bun $E/screen-settings-headless.ts   # 19칸 ALL PASS
+ISO env DIST="$PWD/ui/dist" CHS="$CHS" OUT="$PWD/$E/shots" bun $E/screen-settings-headless.ts   # 25칸 ALL PASS(R2)
 ISO env DIST="$PWD/ui/dist" CHS="$CHS" ONLY=c1,c4,c7,c19 bun docs/v116-ui-evidence/v116-headless.ts
-python3 $E/mutants.py "$PWD/ui"                                                  # 16종 잡음 · 복원 뒤 58 / 0
-python3 $E/mutants-headless.py "$PWD" "$CHS" "$(mktemp -d)"                      # 6종 잡음 · 복원 뒤 ALL PASS
+python3 $E/mutants.py "$PWD/ui"                                                  # 26종 잡음 · 복원 뒤 67 / 0(R2)
+python3 $E/mutants-headless.py "$PWD" "$CHS" "$(mktemp -d)"                      # 11종 잡음 · 복원 뒤 ALL PASS(R2)
 ( cd cysjavis-pack/bin/tests && ISO python3 test_bootv2_doc_contract.py && ISO python3 test_content_pins_parity.py && ISO python3 test_pyseal_census.py )
 ISO bash scripts/secret-scan.sh --all                                            # clean
 ISO cargo test --bin cysd manual_                                                # 6 / 0
+ISO cargo check --bin cys                                                        # rc 0(R2 — cys.rs 문자열 1줄)
 ```
 
 손으로 볼 때: 앱 상단 맨 끝 「화면 설정」 → 「상단 단추」 에서 「+ New」 의 「끔」 을 누르면 그 자리에서 상단에 「+ New」 가 생긴다. 「기본값 복원」 → 「모두 기본값으로 되돌리기」 로 처음 화면(단추 6개)으로 돌아간다.
+
+## 8. R2 — codex 1R 채택 4건(MED 3 · LOW 1 · 기각 0)
+
+보고서 전문 = `master/reports/screen-settings-1012/REVIEW-codex-1r.md`. 수정 커밋 = `62ae9d13`.
+
+| # | 지적 | 수정 | 소스 시험(`screensettings.test.ts`) | 실렌더 칸 |
+|---|---|---|---|---|
+| MED-1 | 배율 250% + 좁은 창(500px)에서 팝오버 최소 폭 640px 이 `fitPop` 왼쪽 하한 4px 과 충돌 → 오른쪽 144px 화면 밖 | `#theme-pop` `min-width: min(calc(256px * var(--ui-chrome-scale)), calc(100vw - 8px))` — 최소 폭도 창 안으로 접는다. 넘치는 내용은 팝오버 안 가로 스크롤(`overflow: auto` 는 종전 그대로) | 최소 폭 clamp 핀 · 창 폭을 모르는 맨 최소 폭 0 | **s13**: 500×600·250% 에서 바로 열기 = 왼쪽 4 · 오른쪽 496 · 폭 492 · 높이 532(위 65 · 아래 596) / 1440×900 에서 연 뒤(폭 868) 500×600 으로 줄이기 = 왼쪽 4 · 오른쪽 496 · 폭 492 / 두 경우 모두 첫 줄 토글·맨 아래 단추가 팝오버 안 스크롤로 닿음(내용 폭 691 > 보이는 폭 490) |
+| MED-2 | 끄는 도중 Esc 로 팝오버를 닫아도 mouseup 처리기가 살아 있어 놓는 순간 순서 저장 | `startTopbarRowDrag` 에 끝내기 공통 `teardown`(처리기 3개 · 삽입선 · `body.ws-reordering` · `tb-dragging` · 취소 손잡이) + `cancel`(commit 을 부르지 않음). 모듈 변수 `cancelTopbarDrag` 를 팝오버 `close()` 첫 줄이 부른다(Esc 도 close 를 지난다) · `window` `blur` 처리기 · 닫힘으로 취소됐을 때만 다음 mouseup 뒤 click 1회 삼킴 | 취소 본문 commit 0 · teardown 7항 · 세 경로 배선 | **s14a** 끄는 도중 Esc → 팝오버 닫힘 · 삽입선·전역 표시 0 → 놓아도 순서 = 처음 · 저장 없음 · 다시 열어도 처음 순서 / **s14b** 창이 초점을 잃음 → 끌기 버림(팝오버 열린 채) → 놓아도 불변 → 그 뒤 실제 누름(+ New 토글)은 정상 반영 / **s14c** 취소 뒤 다시 끌어 놓기 = 정상 |
+| MED-3 | 기본으로 숨긴 「완전 초기화」 를 앱·문서가 「상단바에서 누르라」 고 안내 | 켜는 길을 함께 적었다(화면 설정 → 상단 단추 → 완전 초기화 켬 → 상단의 완전 초기화): `ui/src/main.ts` 「새로 시작 확인 창을 아직 열지 않았습니다」 토스트 · `USER-MANUAL.md` 2곳(§ 완전 초기화 · 문제 해결 표) · `docs/GUIDE-clean-reset-KR.md` 머리말 · `src/bin/cys.rs` factory-reset 의 GUI 실행 중 거부 안내 1줄. 기본 표시로 되돌리지 않았다(박사님 A안) | 4파일 5곳에 「화면 설정 → 상단 단추 → 완전 초기화」 순서 · 옛 문구 0 | (글자 안내 — 실렌더 칸 없음) |
+| LOW | `localStorage.setItem` 예외에서 상단바는 바뀌고 토글 글자는 그대로 | `applyTopbarLayout` 이 저장을 `try` 로 감싸 성공 여부를 돌려준다. **화면에는 끝까지 바른다(되돌리지 않는다)** — 저장소가 막힌 기기에서도 단추를 켤 수 있어야 한다. `commitTb` 가 목록을 다시 그리고 「⚠ 저장되지 않았습니다 — 지금 화면에는 반영됐지만, 앱을 다시 켜면 이전 상태로 돌아갑니다.」 1줄을 보인다(저장이 되면 숨김). 시작 시 읽기 예외 = 저장 없음(기본값) | 저장 try/false · 읽기 예외 · 알림 줄 동기 순서 · 알림 줄에 display 0 | **s15a** 저장이 던짐(QuotaExceeded 흉내) → 상단 반영 · 토글 글자 켬 · 알림 줄 보임(25px) · 기본값 복원(삭제도 던짐) = 화면은 기본 6개 · 알림 유지 → 저장이 되면 알림 사라짐 · 페이지 예외 0 / **s15b** 읽기가 던져도 앱은 기본 6개로 선다 |
+
+지시의 「롤백 또는 끝까지 동기화」 가운데 **끝까지 동기화 + 알림**을 골랐다(되돌리면 저장소가 막힌 기기에서 단추를 켤 길이 없어진다 — 윈에서 창 만들기의 보이는 길이 이 토글이다).
+
+### R2 게이트 수치(격리 HOME · 좌석 `CYS_*` env 제거 · 이 작업 트리)
+
+| 게이트 | 결과 |
+|---|---|
+| ui `bun test` 전체 | **2985 pass / 85 skip / 0 fail**(94 파일 · R1 2976 + 9) |
+| 새 시험 2파일 | `topbarlayout.test.ts` 40 / 0 · `screensettings.test.ts` 27 / 0 |
+| tsc(`typescript@7.0.2`) · `sh build.sh` | rc 0 · rc 0 |
+| 실렌더 `screen-settings-headless.ts` | **25칸 ALL PASS**(R1 19 + 새 6 = s13 · s14a · s14b · s14c · s15a · s15b) · 스크린샷 15장 |
+| 옛 헤드리스 `v116-headless.ts` `ONLY=c1,c4,c7,c19` | ALL PASS |
+| `cargo check --bin cys` | rc 0 — 그 문구를 재는 cys 시험은 없다(`cargo test --bin cys factory` = 0건 일치 · 612 filtered out) |
+| `cargo test --bin cysd manual_` | 6 / 0 |
+| doc-contract · pins · pyseal census · `gen_ceo_template.py --check` | 모두 rc 0 |
+| boot-health 전량 | 165 PASS / 2 FAIL(`H-CLT-1`·`H-CLT-2`) / 1 SKIP · 431.6초 — `docs/HANDOFF-1110-docs-d.md` §4 에 적힌 기준(017e6d86)과 같은 합계·같은 두 id. FAIL 사유 글 전문을 이 티켓 이전 실행과 나란히 놓고 대조하지는 않았다(사유 = 이 맥의 파이썬 해소 경로 · 이 티켓이 건드린 파일과 무관) |
+| `secret-scan.sh --all` | clean(1683 파일 · 새 스크린샷 3장을 스테이징한 상태에서) |
+
+음성 대조(R1 것 포함 전체 재실행)
+- `mutants.py` = **26종 전부 잡음**(R1 16 + R2 10: 최소 폭 clamp 뺌 · 닫힘이 끌기를 취소하지 않음 · 취소가 순서를 저장 · 초점 잃음 처리기 뺌 · 저장 예외 미포착 · 알림을 켜지 않음 · 토스트 옛 문구 · 깨끗이 지우기 안내에서 켜는 길 뺌 · CLI 안내 옛 문구 · 사용 설명서 표에서 켜는 길 뺌) · 복원 뒤 67 / 0
+- `mutants-headless.py` = **11종 전부 그 칸 FAIL**(R1 6 + R2 5: clamp 뺌 → s13 · 닫힘이 취소하지 않음 → s14a · 초점 잃음 처리기 뺌 → s14b · 저장 예외 미포착 → s15 · 알림을 켜지 않음 → s15a) · 복원 뒤 ALL PASS
+
+### R2 함정·관찰
+
+1. **뮤턴트와 cargo 를 겹쳐 돌리지 않는다**: `mutants.py` 의 M25·M26 은 `src/bin/cys.rs`·`USER-MANUAL.md` 를 잠깐 바꾼다. 그 사이 배경에서 돌던 cargo 는 바뀐 글을 컴파일했을 수 있어, 뮤턴트가 끝난 뒤 cargo 를 다시 돌렸다(위 수치는 다시 돌린 것).
+2. **boot-health 전량은 작업 트리에 찌꺼기를 남긴다**: `cysjavis-pack/bin/tests/` 아래에 윈도우 경로 모양 이름의 폴더(`hook-errors.log` 1개)가 생겼다(추적 제외 아님 → `git status` 에 뜬다). 내용을 보고 지웠다. 전량을 돌린 뒤에는 `git status` 를 확인해야 한다.
+3. **「완전 초기화」 를 가리키는 다른 글(무수정)**: `src/bin/cys.rs:10958`(「GUI '완전 초기화' 버튼에서 실행하라」 — Rust 는 한 줄만 허용) · `cysjavis-pack/hooks/guard.sh:298`(팩 = 범위 밖) · `docs/DESIGN-factory-reset.md:139`(설계 기록) · `docs/GUIDE-clean-reset-KR.md` 의 비교 문장 4곳(33 · 108 · 352 · 455 — 「누르라」 가 아니라 버튼과 이 문서의 차이를 말하는 글). 앞의 둘은 숨긴 단추를 켜는 길 없이 가리키므로 다음 티켓 후보다.
+4. **좁은 창 + 큰 배율의 가로 스크롤**: 500px 창 · 250% 에서 줄(이름 + ▲▼ + 토글)이 팝오버보다 넓어 가로로 밀어야 토글이 보인다. 줄바꿈·말줄임으로 바꾸는 길은 넓은 창의 팝오버 폭 계산(내용 폭에 맞춤)을 함께 건드려 이번에는 넣지 않았다.
+5. **Esc 는 끌기만이 아니라 팝오버를 닫는다**(종전 동작 그대로 · 닫히면서 끌기를 버린다).
+6. §6 ⑩(localStorage 예외)은 상단 단추 저장에 한해 풀렸다. 「글자·배경」 쪽 설정(`cys-menu-scale` 등)의 저장 예외는 종전 그대로다.
+7. 이종 2R(수렴 판정)은 master 가 돌린다.
+

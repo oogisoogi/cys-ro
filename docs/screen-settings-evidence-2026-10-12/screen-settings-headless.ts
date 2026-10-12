@@ -14,6 +14,10 @@
 //   s10 손상·구판 저장 = 기본값 · 저장에 없는 단추(나중에 생긴 단추) = 켠 채 맨 끝
 //   s11 구획 접기: 제목 줄 누르면 몸통 숨김 · 팝오버 높이 줄어듦 · 다시 누르면 펼침
 //   s12 상단바 한 줄 유지(1280폭 기본) — 높이 = --topbar-h · 가로 넘침 0
+//   (codex 1R 채택 4건 · TICKET=cysr-1110-screen-settings-r2)
+//   s13 좁은 창 + 큰 배율(500×600 · 250%): 팝오버 화면 밖 0 — 그 크기에서 바로 열기 · 넓은 창에서 연 뒤 줄이기 · 토글·맨 아래 단추는 팝오버 안 스크롤로 닿음
+//   s14 끌기 취소: 끄는 도중 Esc(팝오버 닫힘) → 놓아도 순서·저장 불변 · 삽입선·전역 표시 0 / 창이 초점을 잃음 → 놓아도 불변 · 팝오버 열린 채 · 그 뒤 누름은 정상
+//   s15 저장 예외: 저장이 던져도(QuotaExceeded 흉내) 상단 반영 + 토글 글자 동기 + 「저장되지 않았습니다」 1줄 · 저장이 되면 그 줄 사라짐 · 읽기가 던져도 앱은 기본값으로 선다
 // 원형 = docs/v116-ui-evidence/v116-headless.ts 의 CDP 드라이버.
 import { spawn } from "bun";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync, mkdirSync } from "fs";
@@ -24,7 +28,7 @@ const H = import.meta.dir;
 const DIST = process.env.DIST!;
 const CH = process.env.CHS!;
 const OUT = process.env.OUT || "";
-const ONLY = (process.env.ONLY || "s1,s2,s3,s4,s5,s6,s7,s8,s9,s10,s11,s12").split(",");
+const ONLY = (process.env.ONLY || "s1,s2,s3,s4,s5,s6,s7,s8,s9,s10,s11,s12,s13,s14,s15").split(",");
 const shim = readFileSync(join(H, "../v116-ui-evidence/shim.js"), "utf8");
 if (OUT) mkdirSync(OUT, { recursive: true });
 
@@ -293,6 +297,100 @@ if (ONLY.includes("s12")) {
     rows.push({ w, ...a });
   }
   check("s12 상단바 한 줄(1440·1280폭 기본) — 높이 = --topbar-h · 가로 넘침 0 · 맨 끝 단추 = 「화면 설정」 화면 안", ok, rows);
+}
+
+if (ONLY.includes("s13")) {
+  // 맨 아래 단추(세로) · 첫 줄 토글(가로)이 팝오버 안 스크롤로 닿는가
+  const REACH = `(() => { const p = document.getElementById("theme-pop"); const pr = () => p.getBoundingClientRect(); const inside = (el) => { const r = el.getBoundingClientRect(), q = pr(); return r.left >= q.left - 1 && r.right <= q.right + 1 && r.top >= q.top - 1 && r.bottom <= q.bottom + 1; }; const last = [...p.querySelectorAll(".theme-pop-reset")].at(-1); last.scrollIntoView({ block: "nearest", inline: "nearest" }); const a = inside(last); const tog = p.querySelector(".tb-row .tb-toggle"); tog.scrollIntoView({ block: "nearest", inline: "nearest" }); const b = inside(tog); p.scrollTop = 0; p.scrollLeft = 0; return { lastReset: a, firstToggle: b }; })()`;
+  await size(500, 600); await load(`localStorage.setItem("cys-menu-scale", "250");`);
+  await ev(OPEN); await Bun.sleep(200);
+  const a = await ev(BOX); const ar = await ev(REACH);
+  const minW = await ev(`getComputedStyle(document.getElementById("theme-pop")).minWidth`);
+  await shot("s13-popover-500x600-scale250.png");
+  // 넓은 창에서 연 뒤 줄인다(codex 재현 순서)
+  await size(1440, 900); await load(`localStorage.setItem("cys-menu-scale", "250");`);
+  await ev(OPEN); await Bun.sleep(200);
+  const wide = await ev(BOX);
+  await size(500, 600); await Bun.sleep(300);
+  const b = await ev(BOX); const br = await ev(REACH);
+  await shot("s13-popover-shrunk-to-500x600-scale250.png");
+  check("s13 좁은 창 + 큰 배율(500×600 · 250%): 팝오버 화면 밖 0(바로 열기 · 넓게 연 뒤 줄이기) · 폭 ≤ 창 − 8 · 토글·맨 아래 단추 스크롤로 닿음", inView(a) && a.w <= 492 && ar.lastReset && ar.firstToggle && inView(wide) && inView(b) && b.w <= 492 && br.lastReset && br.firstToggle, { direct: { left: a.left, right: a.right, top: a.top, bottom: a.bottom, w: a.w, h: a.h, vw: a.vw, vh: a.vh, scrollW: a.scrollW, clientW: a.clientW, minWidth: minW, ...ar }, wide: { w: wide.w, right: wide.right, vw: wide.vw }, shrunk: { left: b.left, right: b.right, bottom: b.bottom, w: b.w, vw: b.vw, vh: b.vh, ...br } });
+}
+
+if (ONLY.includes("s14")) {
+  const mouse = (type: string, x: number, y: number, buttons: number) => cdp("Input.dispatchMouseEvent", { type, x, y, button: "left", buttons, clickCount: 1 });
+  const pt = async (rowId: string, sel: string, fy: number) => await ev(`(() => { const r = [...document.querySelectorAll("#theme-pop .tb-row")].find(r => r.dataset.tbId === ${JSON.stringify(rowId)}); const g = (${JSON.stringify(sel)} ? r.querySelector(${JSON.stringify(sel)}) : r).getBoundingClientRect(); return { x: g.left + g.width / 2, y: g.top + g.height * ${fy} }; })()`);
+  const STATE = `({ line: !!document.querySelector(".ws-drop-indicator"), body: document.body.classList.contains("ws-reordering"), dragRow: !!document.querySelector(".tb-row.tb-dragging"), pop: !!document.getElementById("theme-pop"), order: ${TB}.all, saved: ${SAVED} })`;
+  const startDrag = async () => {
+    await ev(`document.querySelector('#theme-pop .sp-sec[data-sec="topbar"]').scrollIntoView({ block: "start" })`); await Bun.sleep(80);
+    const from = await pt("btn-restart-daemon", ".tb-grip", 0.5);
+    const to = await pt("btn-feedback", "", 0.8);
+    await mouse("mousePressed", from.x, from.y, 1);
+    await mouse("mouseMoved", from.x, from.y - 10, 1);
+    await mouse("mouseMoved", to.x, to.y, 1);
+    await Bun.sleep(80);
+    return { to, mid: await ev(STATE) };
+  };
+  // ⓐ 끄는 도중 Esc → 팝오버 닫힘 → 놓음
+  await size(1440, 900); await load();
+  await ev(OPEN); await Bun.sleep(150);
+  const a0 = await startDrag();
+  await cdp("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+  await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+  await Bun.sleep(80);
+  const aEsc = await ev(STATE);
+  await mouse("mouseReleased", a0.to.x, a0.to.y, 0); await Bun.sleep(150);
+  const aUp = await ev(STATE);
+  await ev(OPEN); await Bun.sleep(150);
+  const aRows = (await ev(ROWS)).map((r: any) => r.id);
+  const okA = a0.mid.line && a0.mid.dragRow && !aEsc.pop && !aEsc.line && !aEsc.body && JSON.stringify(aUp.order) === JSON.stringify(HTML_ORDER) && aUp.saved === null && !aUp.line && JSON.stringify(aRows) === JSON.stringify(HTML_ORDER);
+  check("s14a 끄는 도중 Esc → 팝오버 닫힘 · 삽입선·전역 표시 0 → 놓아도 순서·저장 불변 · 다시 열어도 처음 순서", okA, { during: { line: a0.mid.line, dragRow: a0.mid.dragRow }, afterEsc: { pop: aEsc.pop, line: aEsc.line, body: aEsc.body }, afterUp: { order: aUp.order, saved: aUp.saved }, reopened: aRows });
+  // ⓑ 끄는 도중 창이 초점을 잃음 → 놓음 → 그 뒤 토글 누름은 정상(삼켜지지 않는다)
+  await load();
+  await ev(OPEN); await Bun.sleep(150);
+  const b0 = await startDrag();
+  await ev(`window.dispatchEvent(new Event("blur"))`); await Bun.sleep(80);
+  const bBlur = await ev(STATE);
+  await mouse("mouseReleased", b0.to.x, b0.to.y, 0); await Bun.sleep(150);
+  const bUp = await ev(STATE);
+  const tg = await pt("btn-new", ".tb-toggle", 0.5);
+  await mouse("mousePressed", tg.x, tg.y, 1); await mouse("mouseReleased", tg.x, tg.y, 0); await Bun.sleep(120);
+  const bClick = await ev(`({ shown: ${TB}.shownIds.includes("btn-new"), saved: ${SAVED} })`);
+  const okB = b0.mid.line && bBlur.pop && !bBlur.line && !bBlur.body && !bBlur.dragRow && JSON.stringify(bUp.order) === JSON.stringify(HTML_ORDER) && bUp.saved === null && bClick.shown && bClick.saved?.items?.find((x: any) => x.id === "btn-new")?.on === true && JSON.stringify(bClick.saved.items.map((x: any) => x.id)) === JSON.stringify(HTML_ORDER);
+  check("s14b 끄는 도중 창이 초점을 잃음 → 끌기 버림(팝오버는 열린 채) → 놓아도 순서·저장 불변 → 그 뒤 실제 누름(+ New 토글)은 정상", okB, { afterBlur: { pop: bBlur.pop, line: bBlur.line, body: bBlur.body, dragRow: bBlur.dragRow }, afterUp: { order: bUp.order, saved: bUp.saved }, clickAfter: { newShown: bClick.shown, savedOrderUnchanged: JSON.stringify(bClick.saved?.items?.map((x: any) => x.id)) === JSON.stringify(HTML_ORDER) } });
+  // ⓒ 취소 뒤 다시 끌면 정상으로 놓인다(취소가 다음 끌기를 망가뜨리지 않는다)
+  const c0 = await startDrag();
+  await mouse("mouseReleased", c0.to.x, c0.to.y, 0); await Bun.sleep(150);
+  const cUp = await ev(STATE);
+  const want = ["btn-feedback", "btn-restart-daemon", ...HTML_ORDER.slice(1).filter((x) => x !== "btn-restart-daemon")];
+  check("s14c 취소 뒤 다시 끌어 놓기 = 정상 반영(↻ 재시작이 피드백 아래 · 저장)", JSON.stringify(cUp.order) === JSON.stringify(want) && JSON.stringify(cUp.saved?.items?.map((x: any) => x.id)) === JSON.stringify(want) && !cUp.line && !cUp.body, { order: cUp.order });
+}
+
+if (ONLY.includes("s15")) {
+  await size(1440, 900); await load();
+  await ev(OPEN); await Bun.sleep(150);
+  // 저장이 던지게 만든다(용량 초과 흉내) — 이 키의 setItem·removeItem 만
+  await ev(`(() => { const S = Storage.prototype; window.__origSet = S.setItem; window.__origRem = S.removeItem; S.setItem = function (k, v) { if (k === ${JSON.stringify(KEY)}) throw new DOMException("quota (test)", "QuotaExceededError"); return window.__origSet.call(this, k, v); }; S.removeItem = function (k) { if (k === ${JSON.stringify(KEY)}) throw new DOMException("blocked (test)", "SecurityError"); return window.__origRem.call(this, k); }; })()`);
+  const WARN = `(() => { const w = document.querySelector("#theme-pop .sp-warn"); return { exists: !!w, visible: !!w && w.getClientRects().length > 0, text: w ? w.textContent : "", px: w ? parseFloat(getComputedStyle(w).fontSize) : 0 }; })()`;
+  const w0 = await ev(WARN);
+  await ev(`${ROWBTN("btn-new", "tb-toggle")}.click()`); await Bun.sleep(80);
+  const a = await ev(`({ shown: ${TB}.shownIds.includes("btn-new"), rowOn: ${ROWS}.find(r => r.id === "btn-new").on, saved: ${SAVED}, warn: ${WARN} })`);
+  await ev(`document.querySelector('#theme-pop .sp-sec[data-sec="topbar"]').scrollIntoView({ block: "start" })`);
+  await shot("s15-unsaved-note-1440x900.png");
+  // 기본값 복원(저장 지우기)도 던진다 → 화면은 기본값 · 알림 유지
+  await ev(`document.querySelector('#theme-pop .sp-sec[data-sec="topbar"] .theme-pop-reset').click()`); await Bun.sleep(80);
+  const r = await ev(`({ shown: ${TB}.shown, warn: ${WARN} })`);
+  // 저장이 다시 되면 알림이 사라진다
+  await ev(`Storage.prototype.setItem = window.__origSet; Storage.prototype.removeItem = window.__origRem;`);
+  await ev(`${ROWBTN("btn-close", "tb-toggle")}.click()`); await Bun.sleep(80);
+  const b = await ev(`({ shown: ${TB}.shownIds.includes("btn-close"), savedOn: ${SAVED}?.items?.find(x => x.id === "btn-close")?.on, warn: ${WARN} })`);
+  check("s15a 저장이 던져도: 상단에 반영 · 토글 글자 = 켬(동기) · 「저장되지 않았습니다」 1줄 보임 · 페이지 예외 0 → 저장이 되면 그 줄 사라짐", w0.exists && !w0.visible && a.shown && a.rowOn && a.saved === null && a.warn.visible && a.warn.text.includes("저장되지 않았습니다") && a.warn.px >= 25 && JSON.stringify(r.shown) === JSON.stringify(DEFAULT_SHOWN) && r.warn.visible && b.shown && b.savedOn === true && !b.warn.visible && !logs.length, { before: w0.visible, afterThrow: { shown: a.shown, rowOn: a.rowOn, saved: a.saved, warnVisible: a.warn.visible, warnPx: a.warn.px, text: a.warn.text }, resetThrow: { shown: r.shown.length, warnVisible: r.warn.visible }, afterOk: b });
+  // 읽기가 던지는 환경 — 앱은 기본값으로 선다(문서가 뜨기 전에 이 키의 getItem 만 던지게)
+  const inj = await cdp("Page.addScriptToEvaluateOnNewDocument", { source: `(() => { const g = Storage.prototype.getItem; Storage.prototype.getItem = function (k) { if (k === ${JSON.stringify(KEY)}) throw new DOMException("blocked (test)", "SecurityError"); return g.call(this, k); }; })();` });
+  await load(`localStorage.setItem(${JSON.stringify(KEY)}, ${JSON.stringify(JSON.stringify({ version: 1, items: HTML_ORDER.map((id) => ({ id, on: true })) }))});`);
+  const t = await ev(TB);
+  await cdp("Page.removeScriptToEvaluateOnNewDocument", { identifier: inj.result.identifier });
+  check("s15b 저장 읽기가 던져도 앱은 선다 — 상단 = 기본값(보이는 6개)", JSON.stringify(t.shown) === JSON.stringify(DEFAULT_SHOWN) && !logs.length, { shown: t.shown });
 }
 
 if (logs.length) { console.log("페이지 예외:"); for (const l of logs) console.log("  " + l); fails.push("page-exception"); }

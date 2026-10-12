@@ -12,7 +12,10 @@
     "s9",
     "s10",
     "s11",
-    "s12"
+    "s12",
+    "s13",
+    "s14",
+    "s15"
   ],
   "fails": [],
   "numbers": {
@@ -553,6 +556,174 @@
           "title": "화면 설정 — 글자·배경·상단 단추"
         }
       ]
+    },
+    "s13": {
+      "ok": true,
+      "detail": {
+        "direct": {
+          "left": 4,
+          "right": 496,
+          "top": 65,
+          "bottom": 596,
+          "w": 492,
+          "h": 532,
+          "vw": 500,
+          "vh": 600,
+          "scrollW": 691,
+          "clientW": 490,
+          "minWidth": "492px",
+          "lastReset": true,
+          "firstToggle": true
+        },
+        "wide": {
+          "w": 868,
+          "right": 1440,
+          "vw": 1440
+        },
+        "shrunk": {
+          "left": 4,
+          "right": 496,
+          "bottom": 596,
+          "w": 492,
+          "vw": 500,
+          "vh": 600,
+          "lastReset": true,
+          "firstToggle": true
+        }
+      }
+    },
+    "s14a": {
+      "ok": true,
+      "detail": {
+        "during": {
+          "line": true,
+          "dragRow": true
+        },
+        "afterEsc": {
+          "pop": false,
+          "line": false,
+          "body": false
+        },
+        "afterUp": {
+          "order": [
+            "btn-feedback",
+            "btn-equalize",
+            "btn-new",
+            "btn-split-h",
+            "btn-split-v",
+            "btn-close",
+            "btn-files",
+            "btn-cc",
+            "btn-restart-daemon",
+            "btn-factory-reset",
+            "btn-theme"
+          ],
+          "saved": null
+        },
+        "reopened": [
+          "btn-feedback",
+          "btn-equalize",
+          "btn-new",
+          "btn-split-h",
+          "btn-split-v",
+          "btn-close",
+          "btn-files",
+          "btn-cc",
+          "btn-restart-daemon",
+          "btn-factory-reset",
+          "btn-theme"
+        ]
+      }
+    },
+    "s14b": {
+      "ok": true,
+      "detail": {
+        "afterBlur": {
+          "pop": true,
+          "line": false,
+          "body": false,
+          "dragRow": false
+        },
+        "afterUp": {
+          "order": [
+            "btn-feedback",
+            "btn-equalize",
+            "btn-new",
+            "btn-split-h",
+            "btn-split-v",
+            "btn-close",
+            "btn-files",
+            "btn-cc",
+            "btn-restart-daemon",
+            "btn-factory-reset",
+            "btn-theme"
+          ],
+          "saved": null
+        },
+        "clickAfter": {
+          "newShown": true,
+          "savedOrderUnchanged": true
+        }
+      }
+    },
+    "s14c": {
+      "ok": true,
+      "detail": {
+        "order": [
+          "btn-feedback",
+          "btn-restart-daemon",
+          "btn-equalize",
+          "btn-new",
+          "btn-split-h",
+          "btn-split-v",
+          "btn-close",
+          "btn-files",
+          "btn-cc",
+          "btn-factory-reset",
+          "btn-theme"
+        ]
+      }
+    },
+    "s15a": {
+      "ok": true,
+      "detail": {
+        "before": false,
+        "afterThrow": {
+          "shown": true,
+          "rowOn": true,
+          "saved": null,
+          "warnVisible": true,
+          "warnPx": 25,
+          "text": "⚠ 저장되지 않았습니다 — 지금 화면에는 반영됐지만, 앱을 다시 켜면 이전 상태로 돌아갑니다."
+        },
+        "resetThrow": {
+          "shown": 6,
+          "warnVisible": true
+        },
+        "afterOk": {
+          "shown": true,
+          "savedOn": true,
+          "warn": {
+            "exists": true,
+            "visible": false,
+            "text": "⚠ 저장되지 않았습니다 — 지금 화면에는 반영됐지만, 앱을 다시 켜면 이전 상태로 돌아갑니다.",
+            "px": 25
+          }
+        }
+      }
+    },
+    "s15b": {
+      "ok": true,
+      "detail": {
+        "shown": [
+          "피드백",
+          "정렬",
+          "파일",
+          "Control Center",
+          "↻ 재시작",
+          "화면 설정"
+        ]
+      }
     }
   }
 }

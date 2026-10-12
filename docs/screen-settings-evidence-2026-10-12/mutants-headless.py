@@ -37,6 +37,9 @@ M = [
  ("H16 삼킴 대기에서 새 mousedown 걷기 뺌", "src/main.ts", '  window.addEventListener("mousedown", off, { capture: true, signal: ac.signal });\n', "", "s14"),
  ("H17 삼킴 대기에서 시간 경과 걷기 뺌", "src/main.ts", "  const timer = setTimeout(off, TB_CANCEL_SWALLOW_MS);", "  const timer = setTimeout(() => {}, TB_CANCEL_SWALLOW_MS);", "s14"),
  ("H18 단추가 떼어진 움직임을 버리지 않음", "src/main.ts", '    if (!(e.buttons & 1)) return cancel("blur");\n', "", "s14"),
+ # ── codex 3R 채택 1건(TICKET=cysr-1110-screen-settings-r4)
+ ("H19 끄는 중의 새 누름 취소 처리기 뺌(다른 조작의 mouseup 이 옛 끌기를 끝냄)", "src/main.ts", '  window.addEventListener("mousedown", onDown, true);\n', "", "s14"),
+ ("H20 새 누름 취소가 삼킴을 남김(그 조작의 click 을 삼킴)", "src/main.ts", '    if (e !== e0) cancel("blur");', '    if (e !== e0) cancel("close");', "s14"),
 ]
 bad = 0
 for name, rel, a, b, only in M:

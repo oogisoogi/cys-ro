@@ -25,6 +25,7 @@ PASS s14c 취소 뒤 다시 끌어 놓기 = 정상 반영(↻ 재시작이 피�
 PASS s14d mouseup 이 안 온 채 Esc → 돌아와서 곧바로 누른 첫 단추(화면 설정) = 삼키지 않음(팝오버 열림) · 순서·저장 불변 — {"lineDuringDrag":true,"closedByEsc":true,"clickOpened":true,"saved":null}
 PASS s14e 기다림 1초가 지나면 스스로 걷힌다 — 1.3초 뒤 늦은 mouseup 직후의 click(화면 설정) = 삼키지 않음 — {"lineDuringDrag":true,"clickOpenedAfterTimeout":true}
 PASS s14f mouseup 을 놓친 끌기 — 단추가 떼어진 채 움직이면 끌기를 버린다(삽입선·전역 표시 0 · 팝오버 열린 채 · 순서·저장 불변) → 그 뒤 실제 누름 정상 — {"afterMoveWithoutButton":{"line":false,"body":false,"dragRow":false,"pop":true,"saved":null},"clickAfter":true}
+PASS s14g mouseup 을 놓친 끌기 — 떼어진 움직임 없이 곧바로 다른 조작(+ New 토글)을 누름 = 누르는 순간 끌기 버림(삽입선·전역 표시 0 · 순서 불변 · 저장 없음) → 떼면 토글만 동작(+ New 켜짐 · 순서는 처음 그대로 · 저장된 순서도 그대로) — {"lineDuringDrag":true,"atPress":{"line":false,"body":false,"dragRow":false,"pop":true,"orderSame":true,"saved":null},"afterRelease":{"newShown":true,"toggle":"true","orderSame":true,"savedOrderSame":true,"savedNewOn":true}}
 PASS s15a 저장이 던져도: 상단에 반영 · 토글 글자 = 켬(동기) · 「저장되지 않았습니다」 1줄 보임 · 페이지 예외 0 → 저장이 되면 그 줄 사라짐 — {"before":false,"afterThrow":{"shown":true,"rowOn":true,"saved":null,"warnVisible":true,"warnPx":25,"text":"⚠ 저장되지 않았습니다 — 지금 화면에는 반영됐지만, 앱을 다시 켜면 이전 상태로 돌아갑니다."},"resetThrow":{"shown":6,"warnVisible":true},"afterOk":{"shown":true,"savedOn":true,"warn":{"exists":true,"visible":false,"text":"⚠ 저장되지 않았습니다 — 지금 화면에는 반영됐지만, 앱을 다시 켜면 이전 상태로 돌아갑니다.","px":25}}}
 PASS s15b 저장 읽기가 던져도 앱은 선다 — 상단 = 기본값(보이는 6개) — {"shown":["피드백","정렬","파일","Control Center","↻ 재시작","화면 설정"]}
 ALL PASS

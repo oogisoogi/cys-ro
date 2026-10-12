@@ -433,6 +433,19 @@ if (ONLY.includes("s14")) {
   await mouse("mousePressed", tg.x, tg.y, 1); await mouse("mouseReleased", tg.x, tg.y, 0); await Bun.sleep(120);
   const f2 = await ev(`({ shown: ${TB}.shownIds.includes("btn-new"), order: ${TB}.all })`);
   check("s14f mouseup 을 놓친 끌기 — 단추가 떼어진 채 움직이면 끌기를 버린다(삽입선·전역 표시 0 · 팝오버 열린 채 · 순서·저장 불변) → 그 뒤 실제 누름 정상", f0.line && !f1.line && !f1.body && !f1.dragRow && f1.pop && JSON.stringify(f1.order) === JSON.stringify(HTML_ORDER) && f1.saved === null && f2.shown && JSON.stringify(f2.order) === JSON.stringify(HTML_ORDER), { afterMoveWithoutButton: { line: f1.line, body: f1.body, dragRow: f1.dragRow, pop: f1.pop, saved: f1.saved }, clickAfter: f2.shown });
+  // ⓖ mouseup 을 놓친 끌기 — 떼어진 움직임(buttons 0)도 없이 곧바로 팝오버 안 다른 조작(+ New 토글)을 누른다(codex 3R LOW ·
+  //   접근성·합성 입력처럼 새 좌표로 누름만 오는 경로). 새 누름이 끌기를 버려야 한다 — 안 버리면 그 조작의 mouseup 이 옛 끌기를
+  //   끝내 순서를 저장하고 토글 click 을 삼킨다. 누른 순간과 뗀 뒤를 따로 잰다.
+  await load();
+  await ev(OPEN); await Bun.sleep(150);
+  const g0 = await dragNoRelease();
+  const gt = await pt("btn-new", ".tb-toggle", 0.5);
+  await mouse("mousePressed", gt.x, gt.y, 1); await Bun.sleep(60);
+  const g1 = await ev(`({ line: !!document.querySelector(".ws-drop-indicator"), body: document.body.classList.contains("ws-reordering"), dragRow: !!document.querySelector(".tb-row.tb-dragging"), pop: !!document.getElementById("theme-pop"), order: ${TB}.all, saved: ${SAVED} })`);
+  await mouse("mouseReleased", gt.x, gt.y, 0); await Bun.sleep(120);
+  const g2 = await ev(`(() => { const s = ${SAVED}; return { shown: ${TB}.shownIds.includes("btn-new"), order: ${TB}.all, savedOrder: s ? s.items.map(i => i.id) : null, savedNewOn: s ? !!s.items.find(i => i.id === "btn-new")?.on : null, toggle: [...document.querySelectorAll("#theme-pop .tb-row")].find(r => r.dataset.tbId === "btn-new").querySelector(".tb-toggle").getAttribute("aria-checked") }; })()`);
+  const same = (x: unknown) => JSON.stringify(x) === JSON.stringify(HTML_ORDER);
+  check("s14g mouseup 을 놓친 끌기 — 떼어진 움직임 없이 곧바로 다른 조작(+ New 토글)을 누름 = 누르는 순간 끌기 버림(삽입선·전역 표시 0 · 순서 불변 · 저장 없음) → 떼면 토글만 동작(+ New 켜짐 · 순서는 처음 그대로 · 저장된 순서도 그대로)", g0.line && !g1.line && !g1.body && !g1.dragRow && g1.pop && same(g1.order) && g1.saved === null && g2.shown && g2.toggle === "true" && same(g2.order) && same(g2.savedOrder) && g2.savedNewOn === true, { lineDuringDrag: g0.line, atPress: { line: g1.line, body: g1.body, dragRow: g1.dragRow, pop: g1.pop, orderSame: same(g1.order), saved: g1.saved }, afterRelease: { newShown: g2.shown, toggle: g2.toggle, orderSame: same(g2.order), savedOrderSame: same(g2.savedOrder), savedNewOn: g2.savedNewOn } });
 }
 
 if (ONLY.includes("s15")) {

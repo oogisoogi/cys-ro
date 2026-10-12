@@ -247,6 +247,20 @@ describe("codex 2R — 삼킴 대기 자기청소(LOW) · 좁은 폭 두 줄(MED
     expect(move.indexOf("e.buttons & 1")).toBeLessThan(move.indexOf("dragging = true;"));
   });
 
+  it("끄는 중의 새 누름(mousedown)은 앞선 끌기를 버린다 — 새 조작의 mouseup 이 옛 끌기를 끝내지 못하게(codex 3R LOW)", () => {
+    const i = main.indexOf("function startTopbarRowDrag(");
+    const drag = main.slice(i, main.indexOf("\n}\n", i));
+    // window · capture — 새 누름이 대상(토글·▲▼)에 닿기 전에 걷힌다
+    const h = /window\.addEventListener\("mousedown", (\w+), true\);/.exec(drag)?.[1] ?? "";
+    expect(h).not.toBe("");
+    const teardown = drag.slice(drag.indexOf("const teardown ="), drag.indexOf("const up ="));
+    expect(teardown).toContain(`window.removeEventListener("mousedown", ${h}, true);`); // 끝나면 걷힌다(놓기·취소 둘 다)
+    const body = new RegExp(`const ${h} = \\(e: MouseEvent\\) => \\{([\\s\\S]*?)\\n  \\};`).exec(drag)?.[1] ?? "";
+    expect(body).toContain('cancel("blur")'); // 삼킴을 남기지 않는 취소 — 새 누름의 click 은 살아야 한다
+    expect(body).not.toContain("commit(");
+    expect(body).toContain("e0"); // 끌기를 시작한 그 누름 자신은 취소하지 않는다
+  });
+
   it("좁은 폭 = 줄이 두 줄로 접힌다(가로 스크롤 뒤로 조작부가 숨지 않는다) — 접힘·묶음·폭 계산", () => {
     const body = (sel: string) => rules.find((r) => r.sel === sel)?.body ?? "";
     expect(/flex-wrap:\s*wrap/.test(body("#theme-pop .tb-row"))).toBe(true);

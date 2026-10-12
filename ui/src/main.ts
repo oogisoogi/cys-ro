@@ -5813,6 +5813,7 @@ function startTopbarRowDrag(e0: MouseEvent, srcId: string, list: HTMLElement, co
   const teardown = () => {
     window.removeEventListener("mousemove", move, true);
     window.removeEventListener("mouseup", up, true);
+    window.removeEventListener("mousedown", onDown, true);
     window.removeEventListener("blur", onBlur);
     cancelTopbarDrag = null;
     line?.remove();
@@ -5833,9 +5834,16 @@ function startTopbarRowDrag(e0: MouseEvent, srcId: string, list: HTMLElement, co
     if (wasDragging && why === "close") armTbCancelSwallow();
   };
   const onBlur = () => cancel("blur");
+  // 끄는 중의 새 누름 = 앞선 누름의 mouseup 을 놓쳤다(codex 3R LOW) → 그 끌기를 버린다. 움직임 없이 새 좌표로 누름만 오는
+  // 경로(접근성·합성 입력)에서는 move 의 단추 검사가 돌지 않아, 새 조작의 mouseup 이 옛 up() 을 실행해 순서를 저장하고
+  // 그 click 을 삼켰다. window capture 라 새 누름이 대상에 닿기 전에 걷힌다 — 삼킴도 남기지 않는다(새 누름은 무관한 조작).
+  const onDown = (e: MouseEvent) => {
+    if (e !== e0) cancel("blur");
+  };
   cancelTopbarDrag = cancel;
   window.addEventListener("mousemove", move, true);
   window.addEventListener("mouseup", up, true);
+  window.addEventListener("mousedown", onDown, true);
   window.addEventListener("blur", onBlur);
 }
 

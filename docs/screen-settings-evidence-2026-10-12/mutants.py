@@ -49,6 +49,9 @@ M = [
  ("M36 이름 기준 폭 0(접히지 않고 눌림)", "src/style.css", "#theme-pop .tb-name { flex: 1 1 auto; min-width: 0;", "#theme-pop .tb-name { flex: 1; min-width: 0;"),
  ("M37 안내 줄이 팝오버 폭 계산에 낌", "src/style.css", "word-break: keep-all; width: 0; min-width: 100%; }", "word-break: keep-all; }"),
  ("M38 팝오버 폭 = 내용 폭 고정 뺌", "src/style.css", "  width: max-content;\n", ""),
+ # ── codex 3R 채택 1건(TICKET=cysr-1110-screen-settings-r4)
+ ("M39 끄는 중의 새 누름 취소 처리기 뺌", "src/main.ts", '  window.addEventListener("mousedown", onDown, true);\n', ""),
+ ("M40 새 누름 취소가 삼킴을 남김(close 로 취소)", "src/main.ts", '    if (e !== e0) cancel("blur");', '    if (e !== e0) cancel("close");'),
 ]
 base = run(); print("기준", base)
 bad = 0

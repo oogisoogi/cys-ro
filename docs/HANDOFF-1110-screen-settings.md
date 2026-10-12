@@ -6,6 +6,7 @@
 - push · int/1110-upstream 병합 · 발행 = master. 이 가지는 로컬 커밋만 있다(push 0).
 - **R2(2026-10-12 09:38 · master#01c6e170 · TICKET=cysr-1110-screen-settings-r2)**: codex 1R(이종 적대검토 · 8축) = MED 3 · LOW 1 · 기각 0 → 4건 모두 수정(§8). 아래 §1~§7 은 R1 시점 기록이고, R2 로 달라진 수치·동작은 §8 이 정본이다.
 - **R3(2026-10-12 10:07 · master#5b0a479f · TICKET=cysr-1110-screen-settings-r3)**: codex 2R = 1R 4건 가운데 닫힘 3 · 부분 1(MED-3 잔여 2곳) + 신규 2(MED · LOW) → master 가 4건 전부 채택 → 수정(§9). **지금 수치·동작의 정본은 §9** 다(§8 의 s13 판정·「가로 스크롤」 서술 · 익명 한 번짜리 처리기 서술은 R3 로 바뀌었다).
+- **R4(2026-10-12 13:15 · master#0a059306 · TICKET=cysr-1110-screen-settings-r4)**: codex 3R = 2R 4건 닫힘 4/4 · 병합 차단 아니오 · 신규 LOW 1(mouseup 을 놓친 끌기 중 새 누름) → 채택 → 수정(§9 끝 「R4」). 수치는 §9 「R4」 가 가장 새것이다(ui 시험 2990 · 실렌더 30칸 · 뮤턴트 40 + 20).
 
 ## 0. 델타 — 커밋 4 + 이 문서
 
@@ -19,6 +20,7 @@
 | R2 증거 | `34cafdc4` | 실렌더 새 6칸 · 스크린샷 3장 · 뮤턴트 10 + 5 추가 | `docs/screen-settings-evidence-2026-10-12/` |
 | R3 | `b27f27c7` | codex 2R 채택 4건 수정 + 시험 4건 | `ui/src/main.ts` · `ui/src/style.css` · `ui/src/screensettings.test.ts` · `src/bin/cys.rs`(문자열 1줄) · `cysjavis-pack/hooks/guard.sh`(문자열 1줄) · `docs/GUIDE-clean-reset-KR.md` |
 | R3 증거 | (이 문서와 같은 커밋) | 실렌더 s13 판정 교체 + 새 4칸 · 스크린샷 1장 추가 · 뮤턴트 12 + 7 추가 | `docs/screen-settings-evidence-2026-10-12/` |
+| R4 | (이 문서와 같은 커밋) | codex 3R 채택 1건 수정 + 시험 1건 + 실렌더 s14g + 뮤턴트 2 + 2 | `ui/src/main.ts` · `ui/src/screensettings.test.ts` · `docs/screen-settings-evidence-2026-10-12/` |
 
 Rust · 데몬 · 팩 변경 = R1 은 0(소스 무변경) · R2 는 `src/bin/cys.rs` 안내 문자열 1줄 · R3 는 `src/bin/cys.rs` 문자열 1줄 더 + 팩 `cysjavis-pack/hooks/guard.sh` 문자열 1줄(모두 master 허용 범위 · 로직 무변경). 단 `USER-MANUAL.md` 는 `cys`·`cysd` 가 `include_str!` 로 품는 파일이라 바이너리에 실리는 글은 바뀐다(핀 시험 = §3 의 `manual_` 6건).
 
@@ -132,14 +134,14 @@ ISO() { env "${a[@]}" -u CLAUDE_CONFIG_DIR HOME="$(mktemp -d)" CARGO_HOME="$HOME
 CHS="$HOME/Library/Caches/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-mac-arm64/chrome-headless-shell"
 E=docs/screen-settings-evidence-2026-10-12
 
-( cd ui && ISO bun test )                                                        # 2989 pass / 85 skip / 0 fail(R3)
-( cd ui && ISO bun test src/topbarlayout.test.ts src/screensettings.test.ts )    # 71 / 0(R3)
+( cd ui && ISO bun test )                                                        # 2990 pass / 85 skip / 0 fail(R4)
+( cd ui && ISO bun test src/topbarlayout.test.ts src/screensettings.test.ts )    # 72 / 0(R4)
 ( cd ui && ISO bun x --package typescript@7.0.2 tsc -p tsconfig.check.json )     # rc 0
 ( cd ui && ISO sh build.sh )                                                     # ui/dist ready
-ISO env DIST="$PWD/ui/dist" CHS="$CHS" OUT="$PWD/$E/shots" bun $E/screen-settings-headless.ts   # 29칸 ALL PASS(R3)
+ISO env DIST="$PWD/ui/dist" CHS="$CHS" OUT="$PWD/$E/shots" bun $E/screen-settings-headless.ts   # 30칸 ALL PASS(R4)
 ISO env DIST="$PWD/ui/dist" CHS="$CHS" ONLY=c1,c4,c7,c19 bun docs/v116-ui-evidence/v116-headless.ts
-python3 $E/mutants.py "$PWD/ui"                                                  # 38종 잡음 · 복원 뒤 71 / 0(R3)
-python3 $E/mutants-headless.py "$PWD" "$CHS" "$(mktemp -d)"                      # 18종 잡음 · 복원 뒤 ALL PASS(R3)
+python3 $E/mutants.py "$PWD/ui"                                                  # 40종 잡음 · 복원 뒤 72 / 0(R4)
+python3 $E/mutants-headless.py "$PWD" "$CHS" "$(mktemp -d)"                      # 20종 잡음 · 복원 뒤 ALL PASS(R4)
 ( cd cysjavis-pack/bin/tests && ISO python3 test_bootv2_doc_contract.py && ISO python3 test_content_pins_parity.py && ISO python3 test_pyseal_census.py )
 ISO bash scripts/secret-scan.sh --all                                            # clean
 ISO cargo test --bin cysd manual_                                                # 6 / 0
@@ -237,3 +239,30 @@ ISO cargo check --bin cys                                                       
 7. R2 함정 2(뮤턴트와 cargo 를 겹쳐 돌리지 않기 · boot-health 전량의 찌꺼기 폴더)는 이번에도 그대로 지켰다 — 뮤턴트(bun 38 · 실렌더 18)가 전부 끝난 뒤 cargo·팩 시험·boot-health 를 돌렸고, boot-health 가 다시 남긴 찌꺼기 폴더(로그 1개)는 내용을 보고 지웠다(커밋에 섞이지 않음).
 8. 실렌더는 여전히 헤드리스 크롬 계산값이다(웹뷰 실기 아님). `e.buttons` 판정은 맥 WKWebView · 윈 WebView2 실기에서 재지 않았다(둘 다 표준 속성을 지원하나 이 저장소에서의 실측은 없다).
 
+### R4 — codex 3R 채택 1건(LOW · 마지막 라운드)
+
+보고서 전문 = `master/reports/screen-settings-1012/REVIEW-codex-3r.md`(2R 4건 닫힘 4/4 · 병합 차단 아니오 · 신규 LOW 1 · 기각 5).
+
+| 지적 | 수정 | 소스 시험 | 실렌더 칸 |
+|---|---|---|---|
+| LOW — mouseup 을 놓친 끌기가 팝오버 열린 채 남아 있을 때, 떼어진 움직임(`buttons` 0 인 mousemove) 없이 곧바로 팝오버 안 다른 조작을 누르면 그 조작의 mouseup 이 옛 `up()` 을 실행해 순서를 저장하고 그 click 을 삼킨다. R3 의 버림은 mousemove 의 단추 검사에만 있었다(접근성·합성 입력처럼 새 좌표로 누름만 오는 경로에서 결정적) | `startTopbarRowDrag` 에 **끄는 중의 새 누름 취소 처리기**(`onDown` · window · capture): 끌기를 시작한 그 누름(`e0`)이 아닌 mousedown 이 오면 `cancel("blur")` — 처리기·삽입선·전역 표시를 걷고 commit 을 부르지 않으며 삼킴도 남기지 않는다(새 누름은 무관한 조작이라 그 click 은 살아야 한다). capture 라 새 누름이 대상에 닿기 전에 걷힌다. `teardown` 이 이 처리기도 걷는다(놓기·취소 둘 다) | 「끄는 중의 새 누름(mousedown)은 앞선 끌기를 버린다」 1건(31 → 32): window capture 등록 · teardown 에서 제거 · 본문이 `cancel("blur")`(삼킴 없는 취소) · commit 0 · 시작 누름 제외 | **s14g** 끄는 도중 mouseup 미전달 · 떼어진 움직임 없이 「+ New」 토글을 누름 → **누르는 순간** 삽입선·전역 표시·끌리는 줄 0 · 팝오버 열린 채 · 순서 불변 · 저장 없음 → **떼면** 「+ New」 켜짐(토글 글자 켬) · 상단 순서 = 처음 그대로 · 저장된 순서도 처음 그대로 |
+
+R4 게이트(격리 HOME · 좌석 `CYS_*` env 제거 · 이 작업 트리 · Rust·팩 변경 0 이라 cargo·팩 시험·boot-health 는 다시 돌리지 않았다 — R3 수치 그대로):
+
+| 게이트 | 결과 |
+|---|---|
+| `ui` `bun test` | **2990 pass / 85 skip / 0 fail**(94 파일 · R3 2989 + 1) |
+| 새 두 파일만 | 72 / 0(`topbarlayout.test.ts` 40 · `screensettings.test.ts` 32) |
+| `bun x --package typescript@7.0.2 tsc -p tsconfig.check.json` | rc 0 |
+| `sh build.sh` | rc 0 |
+| 실렌더 `screen-settings-headless.ts` | **30칸 ALL PASS**(R3 29 + s14g · `headless-final.txt` · `shots/numbers.json`) |
+| 옛 실렌더 c1·c4·c7·c19 | rc 0 |
+| `mutants.py` | **40종 전부 잡음**(R3 38 + M39 새 누름 취소 처리기 뺌 · M40 삼킴을 남기는 취소로 바꿈) · 복원 뒤 72 / 0 |
+| `mutants-headless.py` | **20종 전부 그 칸 FAIL**(R3 18 + H19 처리기 뺌 → s14g = codex 지적의 재현 · H20 삼킴을 남기는 취소 → s14g) · 복원 뒤 ALL PASS |
+
+R4 관찰:
+
+1. 발주문의 「저장 없음」 은 **순서 저장이 없다**는 뜻으로 쟀다. 토글이 정상 동작하면 토글 자신의 저장은 생긴다 — 그래서 s14g 는 누른 순간(저장 없음)과 뗀 뒤(「+ New」 켬이 저장됨 · 저장된 순서는 처음 그대로)를 따로 잰다.
+2. 새 누름은 단추 종류를 가리지 않는다(왼쪽 단추를 누른 채 오른쪽을 눌러도 그 끌기는 버려진다). 끄는 중에 다른 단추를 누르는 것은 끌기를 그만두는 몸짓으로 읽었다.
+3. 스크린샷은 다시 찍혔으나 3장(s2 · s3 · s7)이 바이트만 달라져 종전 것을 그대로 뒀다(R4 는 모양을 바꾸지 않는다 — CSS 무변경). 새 칸 s14g 는 수치만 남긴다.
+4. s14g 가 실제로 그 결함을 재현하는지는 H19 가 가른다 — 처리기를 빼면 s14g 가 FAIL 한다(수정 전 모습 = 순서가 저장되고 토글 click 이 삼켜짐). 실렌더는 여전히 헤드리스 크롬 계산값이고, 웹뷰 실기에서 「움직임 없이 누름만 오는」 입력을 재지는 않았다.

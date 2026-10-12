@@ -782,6 +782,27 @@
         "clickAfter": true
       }
     },
+    "s14g": {
+      "ok": true,
+      "detail": {
+        "lineDuringDrag": true,
+        "atPress": {
+          "line": false,
+          "body": false,
+          "dragRow": false,
+          "pop": true,
+          "orderSame": true,
+          "saved": null
+        },
+        "afterRelease": {
+          "newShown": true,
+          "toggle": "true",
+          "orderSame": true,
+          "savedOrderSame": true,
+          "savedNewOn": true
+        }
+      }
+    },
     "s15a": {
       "ok": true,
       "detail": {

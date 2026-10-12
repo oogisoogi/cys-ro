@@ -5706,16 +5706,30 @@ function showCtxMenu(
   window.addEventListener("keydown", onKey, true);
 }
 
-// 배경 테마 팝오버 — 컬러피커 + 기본값 복원. showCtxMenu의 바깥클릭·Esc 닫기 패턴 재사용.
+// 화면 설정 팝오버(종전 「테마」 · TICKET=cysr-1110-screen-settings · 박사님 2026-10-12) — showCtxMenu의 바깥클릭·Esc 닫기 패턴 재사용.
+// 구획(제목 줄을 누르면 접힌다): ① 글자·배경(종전 항목 전부 그대로) ② 상단 단추 ③ 기본값 복원.
 // 컬러피커 input 이벤트마다 applyBgColor 라이브 적용(localStorage 영속은 applyBgColor 내부).
+// 글자 크기는 style.css #theme-pop 한 곳(20px × 메뉴 배율) — 여기서 px 를 넣지 않는다(두 축 금지).
+const spCollapsed = new Set<string>(); // 접어 둔 구획 — 앱이 켜져 있는 동안만 기억한다(저장 0)
 function openThemePopover(anchor: HTMLElement) {
   document.getElementById("theme-pop")?.remove();
   const pop = document.createElement("div");
   pop.id = "theme-pop";
+  // 단추 아래에 놓고, 오른쪽으로 넘치면 안쪽으로 당기고, 아래로 넘치는 몫은 팝오버 안 스크롤로 받는다(화면 밖 0).
+  // 구획을 접고 펼 때·메뉴 크기를 바꿀 때·창 크기가 바뀔 때 다시 부른다.
+  const fitPop = () => {
+    const r = anchor.getBoundingClientRect();
+    pop.style.top = `${r.bottom + 4}px`;
+    pop.style.maxHeight = `${Math.max(80, window.innerHeight - r.bottom - 8)}px`;
+    pop.style.left = `${Math.max(4, r.left)}px`;
+    const pr = pop.getBoundingClientRect();
+    if (pr.right > window.innerWidth - 4) pop.style.left = `${Math.max(4, window.innerWidth - pr.width - 4)}px`;
+  };
   const close = () => {
     pop.remove();
     window.removeEventListener("mousedown", dismiss, true);
     window.removeEventListener("keydown", onKey, true);
+    window.removeEventListener("resize", fitPop);
   };
   const dismiss = (e?: Event) => {
     if (e instanceof MouseEvent && pop.contains(e.target as globalThis.Node)) return;
@@ -5723,6 +5737,45 @@ function openThemePopover(anchor: HTMLElement) {
   };
   const onKey = (e: KeyboardEvent) => {
     if (e.key === "Escape") close();
+  };
+  const mkSection = (key: string, title: string) => {
+    const sec = document.createElement("section");
+    sec.className = "sp-sec";
+    sec.dataset.sec = key;
+    const head = document.createElement("button");
+    head.type = "button";
+    head.className = "sp-sec-head";
+    const body = document.createElement("div");
+    body.className = "sp-sec-body";
+    const sync = () => {
+      const folded = spCollapsed.has(key);
+      body.hidden = folded;
+      head.setAttribute("aria-expanded", String(!folded));
+      head.textContent = `${folded ? "▸" : "▾"} ${title}`;
+    };
+    head.addEventListener("click", () => {
+      if (spCollapsed.has(key)) spCollapsed.delete(key);
+      else spCollapsed.add(key);
+      sync();
+      fitPop();
+    });
+    sync();
+    sec.append(head, body);
+    return { sec, body };
+  };
+  const mkNote = (txt: string) => {
+    const n = document.createElement("div");
+    n.className = "sp-note";
+    n.textContent = txt;
+    return n;
+  };
+  const mkReset = (txt: string, on: () => void) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "theme-pop-reset";
+    b.textContent = txt;
+    b.addEventListener("click", on);
+    return b;
   };
 
   const row = document.createElement("label");
@@ -5765,7 +5818,7 @@ function openThemePopover(anchor: HTMLElement) {
     r.appendChild(sel); return r;
   };
   const titleSizeRow = document.createElement("label"); titleSizeRow.className = "theme-pop-row"; titleSizeRow.textContent = "제목 크기";
-  const tsInp = document.createElement("input"); tsInp.type = "number"; tsInp.min = "8"; tsInp.max = "40"; tsInp.style.width = "56px";
+  const tsInp = document.createElement("input"); tsInp.type = "number"; tsInp.min = "8"; tsInp.max = "40";
   tsInp.value = localStorage.getItem("cys-title-size") || "20";
   tsInp.addEventListener("input", () => applyTitleSize(tsInp.value)); titleSizeRow.appendChild(tsInp);
   const titleWeightRow = mkWeightRow("제목 굵기", "cys-title-weight", "400", applyTitleWeight);
@@ -5778,14 +5831,12 @@ function openThemePopover(anchor: HTMLElement) {
   const menuSizeRow = document.createElement("label"); menuSizeRow.className = "theme-pop-row"; menuSizeRow.textContent = "메뉴 크기(%)";
   const msInp = document.createElement("input");
   msInp.type = "number"; msInp.min = String(MENU_SCALE_MIN_PCT); msInp.max = String(MENU_SCALE_MAX_PCT);
-  msInp.step = "5"; msInp.style.width = "56px";
+  msInp.step = "5";
   msInp.value = localStorage.getItem("cys-menu-scale") || String(MENU_SCALE_DEFAULT_PCT);
-  msInp.addEventListener("input", () => applyMenuScale(msInp.value)); menuSizeRow.appendChild(msInp);
+  // 이 손잡이 하나가 상단 단추와 이 팝오버를 함께 키운다 — 커진 만큼 자리를 다시 잡는다.
+  msInp.addEventListener("input", () => { applyMenuScale(msInp.value); fitPop(); }); menuSizeRow.appendChild(msInp);
 
-  const reset = document.createElement("button");
-  reset.className = "theme-pop-reset";
-  reset.textContent = "기본값 복원";
-  reset.addEventListener("click", () => {
+  const resetLook = () => {
     applyBgColor(null);
     picker.value = DEFAULT_BG;
     applyFontFace(null);
@@ -5796,18 +5847,23 @@ function openThemePopover(anchor: HTMLElement) {
     applyTermWeight(null); (termWeightRow.querySelector("select") as HTMLSelectElement).value = "400";
     applyMenuWeight(null); (menuWeightRow.querySelector("select") as HTMLSelectElement).value = "600";
     applyMenuScale(null); msInp.value = String(MENU_SCALE_DEFAULT_PCT);
-  });
+    fitPop();
+  };
 
-  pop.append(row, fontRow, titleSizeRow, titleWeightRow, titleColorRow, termWeightRow, menuWeightRow, menuSizeRow, reset);
+  // ① 글자·배경 — 종전 「테마」 항목 전부 그대로.
+  const look = mkSection("look", "글자·배경");
+  look.body.append(row, fontRow, titleSizeRow, titleWeightRow, titleColorRow, termWeightRow, menuWeightRow, menuSizeRow,
+    mkReset("이 구획만 기본값으로", resetLook));
 
-  // 앵커(테마 버튼) 하단에 배치 후 화면 밖으로 나가면 안쪽으로 보정.
-  const r = anchor.getBoundingClientRect();
-  pop.style.left = `${r.left}px`;
-  pop.style.top = `${r.bottom + 4}px`;
+  // ③ 기본값 복원 — 위 구획들을 한 번에 되돌린다.
+  const all = mkSection("reset", "기본값 복원");
+  all.body.append(mkNote("글자·배경을 처음 상태로 되돌립니다."), mkReset("모두 기본값으로 되돌리기", resetLook));
+
+  pop.append(look.sec, all.sec);
   document.body.appendChild(pop);
-  const pr = pop.getBoundingClientRect();
-  if (pr.right > window.innerWidth) pop.style.left = `${window.innerWidth - pr.width - 4}px`;
+  fitPop();
 
+  window.addEventListener("resize", fitPop);
   window.addEventListener("mousedown", dismiss, true);
   window.addEventListener("keydown", onKey, true);
 }

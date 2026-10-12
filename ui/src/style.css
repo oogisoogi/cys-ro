@@ -31,7 +31,7 @@
   /* ★적용 범위가 좁아졌다(2026-08-11): 이제 **툴바(상단바)** 전용이다. 사이드바(#wsbar)의
      헤더·버튼·목록·사용량 패널은 전부 --wsbar-font(A−/A＋) 한 축으로 옮겼다 — 오너 지시.
      두 축을 섞으면 같은 사이드바 안에서 덩어리마다 다른 크기가 되는 원 사고가 되돌아온다. */
-  --ui-chrome-scale: 1.25; /* UI 크롬(툴바) 글자 배율 — 테마 팝오버 「메뉴 크기」로 조절 */
+  --ui-chrome-scale: 1.25; /* UI 크롬(툴바) 글자 배율 — 화면 설정 팝오버 「메뉴 크기」로 조절(팝오버 자신도 이 배율을 따른다) */
   /* ★topbar 높이는 메뉴 배율을 따라간다(codex [Medium] 수리 2026-08-07).
      초판은 38px 고정이라 메뉴 250%에서 버튼(약 52px)이 위아래로 넘쳐 본문과 겹쳤다.
      기준점을 1.25로 잡아 **기본값에서는 정확히 38px**이 되게 했다(기존 화면 무회귀).
@@ -481,30 +481,55 @@ body.ws-reordering { cursor: grabbing; -webkit-user-select: none; user-select: n
 }
 #ctx-menu .ctx-item:hover { background: var(--accent); color: #fff; }
 
-/* 배경 테마 팝오버 — btn-theme 하단. ctx-menu 톤(--bar/--border) 재사용. */
+/* 화면 설정 팝오버(#theme-pop · 종전 「테마」 · TICKET=cysr-1110-screen-settings · 박사님 2026-10-12 「지금의 2배 이상 키워야 제대로 볼 수 있다」)
+   — btn-theme 하단. ctx-menu 톤(--bar/--border) 재사용.
+   ★글자 축은 하나다: 팝오버 글자 = 20px × 메뉴 배율(--ui-chrome-scale · 기본 1.25 → 25px = 종전 12px 의 2배 남짓).
+     안쪽 부품(선택 상자·색상 칸·입력·단추·여백)은 전부 em 으로 그 글자를 따라간다 — px 고정을 다시 넣으면
+     「메뉴 크기(%)」 손잡이를 올려도 그 부품만 작게 남는다(두 축 금지 · screensettings.test.ts 가 잰다).
+   ★작은 창: 높이·폭 상한을 두고 넘치는 몫은 팝오버 안에서 스크롤한다(화면 밖으로 나가지 않는다). 높이 상한의
+     정확한 값은 main.ts 가 단추 아래 남은 높이로 다시 넣는다(여기 값은 그 전 한 틀의 안전값). */
 #theme-pop {
   position: fixed; z-index: var(--z-ctx-menu);
-  display: flex; flex-direction: column; gap: 8px;
-  padding: 10px; min-width: 160px;
+  display: flex; flex-direction: column; gap: .5em;
+  padding: .5em .6em;
+  min-width: calc(256px * var(--ui-chrome-scale)); max-width: calc(100vw - 8px);
+  max-height: calc(100vh - var(--topbar-h) - 8px); overflow: auto;
   background: var(--bar); border: 1px solid var(--border); border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, .4); font-size: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .4);
+  font-size: calc(20px * var(--ui-chrome-scale)); line-height: 1.35; color: var(--text);
 }
+#theme-pop button, #theme-pop select, #theme-pop input { font: inherit; color: var(--text); }
+/* 구획(제목 줄 + 접기) — 제목 줄을 누르면 그 구획 몸통이 접힌다. */
+#theme-pop .sp-sec + .sp-sec { border-top: 1px solid var(--border); padding-top: .45em; }
+#theme-pop .sp-sec-head {
+  display: block; width: 100%; padding: .1em 0; cursor: pointer; text-align: left;
+  background: none; border: 0; font-weight: 700;
+}
+#theme-pop .sp-sec-head:hover { color: #fff; }
+#theme-pop .sp-sec-body { display: flex; flex-direction: column; gap: .4em; padding: .35em 0 .15em; }
+#theme-pop .sp-sec-body[hidden] { display: none; } /* 짝 규칙 — 위 display 가 UA [hidden] 을 이긴다(hiddenpair.test.ts) */
+#theme-pop .sp-note { color: #8b949e; }
 #theme-pop .theme-pop-row {
-  display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  color: var(--text);
+  display: flex; align-items: center; justify-content: space-between; gap: .8em;
+  white-space: nowrap;
 }
 #theme-pop input[type="color"] {
-  width: 40px; height: 24px; padding: 0; cursor: pointer;
+  width: 2.4em; height: 1.4em; padding: 0; cursor: pointer;
   background: none; border: 1px solid var(--border); border-radius: 4px;
 }
+#theme-pop input[type="number"] {
+  width: 3.6em; padding: .05em .2em;
+  background: var(--bar); border: 1px solid var(--border); border-radius: 4px;
+}
+#theme-pop input[type="checkbox"] { width: 1.1em; height: 1.1em; margin: 0; cursor: pointer; }
 #theme-pop select {
-  max-width: 150px; padding: 3px 4px; cursor: pointer; font-size: 12px;
-  background: var(--bar); color: var(--text);
+  max-width: 11em; padding: .1em .2em; cursor: pointer;
+  background: var(--bar);
   border: 1px solid var(--border); border-radius: 4px;
 }
 #theme-pop .theme-pop-reset {
-  padding: 5px 8px; cursor: pointer;
-  background: var(--bar); color: var(--text);
+  padding: .25em .6em; cursor: pointer;
+  background: var(--bar);
   border: 1px solid var(--border); border-radius: 6px;
 }
 #theme-pop .theme-pop-reset:hover { border-color: var(--accent); }

@@ -317,10 +317,13 @@ describe("codex 1R — 숨긴 「완전 초기화」 를 가리키는 안내(MED
   //   사용 설명서 · README · docs 의 안내 문서. 제외 = 시험 파일 · 코드 주석 줄 · 그날 기록(HANDOFF · REVIEW · DESIGN · RELEASE_NOTES ·
   //   rebase 보고 · PLAN · 하위 폴더의 증거·점검표).
   it("저장소 전체 — 「완전 초기화」 단추를 쓰라는 안내는 켜는 길(화면 설정)을 함께 적는다(없는 단추만 가리키는 줄 0)", () => {
-    const ROOT = new URL("../../", import.meta.url).pathname;
+    // 저장소 뿌리 = URL 그대로 fs 에 넘긴다(이 파일 머리의 read · clipath.test.ts 와 같은 길). URL 에서 경로 글자만 떼어 쓰면
+    // Windows 에서 「/D:/…」 가 되어 폴더 읽기가 ENOENT 로 죽는다(CI windows-health). 이름 마디는 URL 글자(# ? % 빈칸)에 안전하게 싼다.
+    const ROOT = new URL("../../", import.meta.url);
+    const at = (rel: string) => new URL(rel.split("/").map(encodeURIComponent).join("/"), ROOT);
     const out: string[] = [];
     const walk = (rel: string) => {
-      for (const e of readdirSync(ROOT + rel, { withFileTypes: true })) {
+      for (const e of readdirSync(at(rel), { withFileTypes: true })) {
         const p = rel ? `${rel}/${e.name}` : e.name;
         if (e.isDirectory()) {
           if (/^(node_modules|dist|target|tests|__pycache__|\.git)$/.test(e.name)) continue;
@@ -331,7 +334,7 @@ describe("codex 1R — 숨긴 「완전 초기화」 를 가리키는 안내(MED
     for (const r of ["src", "src-tauri/src", "ui/src", "cysjavis-pack"]) walk(r);
     out.push("ui/index.html", "USER-MANUAL.md");
     for (const e of readdirSync(ROOT, { withFileTypes: true })) if (e.isFile() && /^README.*\.md$/.test(e.name)) out.push(e.name);
-    for (const e of readdirSync(ROOT + "docs", { withFileTypes: true })) {
+    for (const e of readdirSync(at("docs"), { withFileTypes: true })) {
       if (e.isFile() && /\.md$/.test(e.name) && !/^(HANDOFF|REVIEW|DESIGN|RELEASE_NOTES|RELEASE-NOTES|rebase-|PLAN)/.test(e.name)) out.push(`docs/${e.name}`);
     }
     expect(out.length).toBeGreaterThan(200);
@@ -345,7 +348,7 @@ describe("codex 1R — 숨긴 「완전 초기화」 를 가리키는 안내(MED
     const hits: string[] = [];
     const bad: string[] = [];
     for (const f of out) {
-      const lines = readFileSync(ROOT + f, "utf8").split("\n");
+      const lines = readFileSync(at(f), "utf8").split("\n");
       lines.forEach((l, i) => {
         if (!REF.test(l) || COMPARE.test(l) || isComment(f, l)) return;
         hits.push(`${f}:${i + 1}`);

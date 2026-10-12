@@ -1,11 +1,11 @@
-== 수리 후 R2(이 트리 빌드 · 최종 소스) · 팩 = 이 맥 꼴 · cysd=~/axdev/.wt/cys-1110-seat-state/target/debug/cysd
+== 수리 후 R3(이 트리 빌드 · 최종 소스) · 팩 = 이 맥 꼴 · cysd=~/axdev/.wt/cys-1110-seat-state/target/debug/cysd
 좌석 A(뿌리=claude)=surface:1 rc=0 · 좌석 B(맨 셸)=surface:2 rc=0
-  뿌리 pid 73702 :: <box>/bin/claude 600 :: 자손 0
-  뿌리 pid 73741 :: /bin/zsh -l :: 자손 0
+  뿌리 pid 50002 :: <box>/bin/claude 600 :: 자손 0
+  뿌리 pid 50006 :: /bin/zsh -l :: 자손 0
 틱 3회 seat — A ['occupied', 'occupied', 'occupied'] · B ['empty', 'empty', 'empty']
 큐 적재 rc=0 QUEUED (depth 1)
 A 최종 — seat=occupied queue_depth=0 queue_blocked_by=None agent=None
 queue list rc=0 :: (queue empty)
-  끝 뿌리 pid 73702 자손 0
-  끝 뿌리 pid 73741 자손 0
+  끝 뿌리 pid 50002 자손 0
+  끝 뿌리 pid 50006 자손 0
 정리 — 데몬 rc=0 · 강제 종료한 뿌리 [] · 트립와이어 적중 0

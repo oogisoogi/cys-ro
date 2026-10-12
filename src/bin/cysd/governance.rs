@@ -3839,7 +3839,7 @@ pub(crate) fn seat_verdict(
     exited: bool,
     root_in_table: bool,
     descendants: usize,
-    root_cmd: Option<&str>,
+    root_argv: Option<&[String]>,
     specs: &[(String, RootAgentSpec)],
 ) -> SeatState {
     if exited {
@@ -3848,7 +3848,7 @@ pub(crate) fn seat_verdict(
     if !root_in_table {
         return SeatState::Unknown;
     }
-    if descendants > 0 || root_cmd.is_some_and(|c| root_cmd_is_agent(c, specs)) {
+    if descendants > 0 || root_argv.is_some_and(|a| root_cmd_is_agent(a, specs)) {
         SeatState::Occupied
     } else {
         SeatState::Empty
@@ -3883,30 +3883,88 @@ pub(crate) fn is_interpreter_name(name: &str) -> bool {
     n.starts_with("python") || matches!(n.as_str(), "node" | "nodejs" | "bun" | "deno" | "ruby" | "perl" | "php")
 }
 
-/// 명령줄에서 (실행 파일 낱말, 엔트리 낱말)을 꺼낸다(순수). 엔트리 = 실행 파일이 셸·인터프리터일 때 그 뒤의 첫 비옵션
-/// 낱말(스크립트·모듈). 셸의 `-c` 묶음(`-c` · `-lc` · `-ic`) 뒤는 명령 문자열이지 스크립트가 아니므로 엔트리로 치지 않는다.
-fn exec_and_entry(cmd: &str) -> Option<(&str, Option<&str>)> {
-    let mut words = cmd.split_whitespace();
-    let a0 = words.next()?;
-    if !is_interpreter_name(a0) {
-        return Some((a0, None));
+/// 인터프리터가 **다음 낱말을 값으로 받는** 옵션(공백으로 띄운 꼴 · `--opt=값` 은 한 낱말이라 표가 필요 없다).
+/// 이 표가 모르는 옵션이 와도 [`root_cmd_is_agent`] 는 비옵션 낱말 전부를 보므로 엔트리를 놓치지 않는다 — 표의 몫은
+/// 「옵션 값에 든 이름」(`node --require /x/claude app.js`)을 엔트리로 세지 않는 것이다.
+fn interpreter_value_options(interp: &str) -> &'static [&'static str] {
+    if is_shell_name(interp) {
+        return &["-o", "+o", "--rcfile", "--init-file"];
     }
-    let shell = is_shell_name(a0);
-    for w in words {
-        if let Some(flags) = w.strip_prefix('-') {
-            if shell && !flags.starts_with('-') && flags.contains('c') {
-                return Some((a0, None));
+    let n = interp.rsplit(['/', '\\']).next().unwrap_or(interp);
+    let n = strip_win_exec_ext(n).0.to_ascii_lowercase();
+    if n.starts_with("python") {
+        return &["-W", "-X", "-c"];
+    }
+    match n.as_str() {
+        "node" | "nodejs" | "bun" | "deno" => &[
+            "-r", "--require", "--import", "--loader", "--experimental-loader", "--inspect-port", "-e", "--eval",
+            "-p", "--print", "-C", "--conditions", "--env-file",
+        ],
+        "ruby" => &["-e", "-r", "-I"],
+        "perl" => &["-e", "-E", "-I"],
+        "php" => &["-r", "-c", "-d"],
+        _ => &[],
+    }
+}
+
+/// 인터프리터 argv(argv[0] 뒤)에서 **비옵션 낱말**을 순서대로 꺼낸다(순수) — 첫째가 스크립트·모듈(엔트리)이고 그 뒤는
+/// 스크립트의 인자다. 값 받는 옵션의 값은 건너뛴다. 셸의 `-c` 묶음(`-c` · `-lc` · `-ic`) 뒤는 명령 문자열이지 스크립트가
+/// 아니므로 아무것도 내지 않는다 · 셸 묶음이 `o` 로 끝나면(`-eo pipefail`) 다음 낱말이 그 값이다.
+fn interpreter_operands<'a>(interp: &str, rest: &'a [String]) -> Vec<&'a str> {
+    let shell = is_shell_name(interp);
+    let takes_value = interpreter_value_options(interp);
+    let mut out: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while i < rest.len() {
+        let w = rest[i].as_str();
+        i += 1;
+        if !out.is_empty() {
+            // 엔트리 뒤 = 스크립트의 인자 — 옵션 꼴만 뺀다(스크립트 옵션의 값은 알 수 없다).
+            if !w.starts_with('-') {
+                out.push(w);
             }
             continue;
         }
-        return Some((a0, Some(w)));
+        if takes_value.contains(&w) {
+            i += 1;
+            continue;
+        }
+        if let Some(flags) = w.strip_prefix('-') {
+            if shell && !flags.starts_with('-') {
+                if flags.contains('c') {
+                    return Vec::new();
+                }
+                if flags.ends_with('o') {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        if shell && w.starts_with('+') {
+            continue;
+        }
+        out.push(w);
     }
-    Some((a0, None))
+    out
 }
 
-/// 후보 엔트리(agents.json 에 적힌 꼴)와 뿌리 argv 의 엔트리가 같은 파일을 가리키는가(순수).
+/// 후보 엔트리(agents.json 에 적힌 꼴)와 뿌리 argv 의 낱말이 같은 파일을 가리키는가(순수).
 /// `~/…` 는 홈 뒤 꼬리로 · 절대 경로는 그대로 · 그 밖(상대 경로·모듈 이름)은 같거나 경로 꼬리가 같으면 참.
+/// ★R3 Windows 규약: 어느 한쪽에 `\` 가 있거나 드라이브 글자 꼴(`C:`)이면 구분자를 `/` 로 맞추고 대소문자를 무시해
+/// 견준다(`node C:\Agents\worker.js` 후보 × `node.exe c:\agents\worker.js` 뿌리). 그 밖(Unix)은 글자 그대로 — 대소문자를 가린다.
 fn entry_matches(spec_entry: &str, root_entry: &str) -> bool {
+    let windows_form = |p: &str| {
+        let b = p.as_bytes();
+        p.contains('\\') || (b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':')
+    };
+    if windows_form(spec_entry) || windows_form(root_entry) {
+        let norm = |p: &str| p.replace('\\', "/").to_ascii_lowercase();
+        return entry_matches_exact(&norm(spec_entry), &norm(root_entry));
+    }
+    entry_matches_exact(spec_entry, root_entry)
+}
+
+fn entry_matches_exact(spec_entry: &str, root_entry: &str) -> bool {
     if let Some(tail) = spec_entry.strip_prefix('~') {
         return tail.starts_with('/') && root_entry.ends_with(tail);
     }
@@ -3917,28 +3975,36 @@ fn entry_matches(spec_entry: &str, root_entry: &str) -> bool {
     !rel.is_empty() && (root_entry == rel || root_entry.ends_with(&format!("/{rel}")))
 }
 
-/// ★뿌리 존재 판정(순수 · 1.1.9 R2) — 뿌리 프로세스의 명령줄이 기지 에이전트의 **기동 꼴**인가.
+/// ★뿌리 존재 판정(순수 · 1.1.9 R2 · R3) — 뿌리 프로세스의 argv 가 기지 에이전트의 **기동 꼴**인가.
 /// 자손 쪽 매처(`cmdline_matches_agent_exec`)는 명령줄의 어느 낱말이든 본다. 뿌리에 그 규칙을 쓰면 `tail -f /tmp/claude`
 /// 같은 비에이전트가 차 있는 좌석이 되고(승계 차단), 셸이 실행 파일인 후보(`bash /opt/agents/a.sh`)가 있으면 **맨 셸**이
 /// 에이전트로 읽혀 빈 셸 가드가 풀린다(codex 1R HIGH·MED · 실 프로세스 재현). 그래서 뿌리는 자리로만 본다:
 ///   ⓐ 후보 실행 파일이 셸·인터프리터가 **아닐 때**: 뿌리 argv[0] 이 그 실행 파일이거나, 뿌리가 인터프리터이고 그
-///      엔트리가 그 실행 파일(shebang 스크립트 = `node …/bin/codex` · npm 번들 = `node …/claude-code/cli.js`).
-///   ⓑ 후보 실행 파일이 셸·인터프리터일 때: argv[0] 이 그 인터프리터이고 **엔트리까지** 후보와 같을 때만.
-///      엔트리가 없는 후보(맨 `bash`)는 어떤 뿌리에도 맞지 않는다 — 맨 셸은 에이전트가 아니다.
+///      비옵션 낱말 가운데 하나가 그 실행 파일(shebang 스크립트 = `node …/bin/codex` · npm 번들 = `node …/claude-code/cli.js`).
+///   ⓑ 후보 실행 파일이 셸·인터프리터일 때: argv[0] 이 그 인터프리터이고 비옵션 낱말 가운데 하나가 후보의 **엔트리**와
+///      같을 때만. 엔트리가 없는 후보(맨 `bash`)는 어떤 뿌리에도 맞지 않는다 — 맨 셸은 에이전트가 아니다.
+/// 인터프리터 뿌리의 비옵션 낱말을 「첫째 하나」 가 아니라 **전부** 보는 까닭(R3 · codex 2R): 값 받는 옵션을 표가 모르면
+/// 그 값이 첫째 자리를 차지해 진짜 엔트리를 가린다(`node --require pre.js …/cli.js`) — 놓치면 살아 있는 에이전트가 빈 좌석이
+/// 된다. 인터프리터가 아닌 뿌리는 argv[0] 만 본다(`tail -f /tmp/claude` 는 여전히 에이전트가 아니다).
 /// 후보가 여럿 맞아도 참이다(존재 판정 — 같은 실행 파일을 쓰는 claude 계열이 겹치는 팩에서 모호로 접히지 않는다).
-/// 한계: 명령줄은 공백으로 나눈 낱말이다(이 파일의 다른 매처와 같은 재료) — 실행 파일·엔트리 경로에 공백이 있으면 맞지 않는다(Empty 쪽).
-pub(crate) fn root_cmd_is_agent(root_cmd: &str, specs: &[(String, RootAgentSpec)]) -> bool {
-    let Some((a0, entry)) = exec_and_entry(root_cmd) else {
+/// 재료는 **인자 경계가 살아 있는 argv** 다(R3) — 공백이 든 경로도 한 낱말로 견준다.
+pub(crate) fn root_cmd_is_agent(root_argv: &[String], specs: &[(String, RootAgentSpec)]) -> bool {
+    let Some(a0) = root_argv.first() else {
         return false;
+    };
+    let operands = if is_interpreter_name(a0) {
+        interpreter_operands(a0, &root_argv[1..])
+    } else {
+        Vec::new()
     };
     let a0 = a0.strip_prefix('-').unwrap_or(a0);
     specs.iter().any(|(_, spec)| {
         if is_interpreter_name(&spec.bin_base) {
             cmdline_matches_agent_exec(a0, &spec.bin_base)
-                && matches!((&spec.entry, entry), (Some(want), Some(got)) if entry_matches(want, got))
+                && spec.entry.as_deref().is_some_and(|want| operands.iter().any(|got| entry_matches(want, got)))
         } else {
             cmdline_matches_agent_exec(a0, &spec.bin_base)
-                || entry.is_some_and(|e| cmdline_matches_agent_exec(e, &spec.bin_base))
+                || operands.iter().any(|w| cmdline_matches_agent_exec(w, &spec.bin_base))
         }
     })
 }
@@ -3967,12 +4033,12 @@ fn seat_state_of(
     }
     // 뿌리 argv 는 자손이 0 일 때만 읽는다 — 그 밖에는 판정에 쓰이지 않는다(틱 비용은 종전 그대로).
     let specs = specs.get_or_insert_with(known_agent_root_specs);
-    let root_cmd = if specs.is_empty() {
+    let root_argv = if specs.is_empty() {
         None
     } else {
-        argv_snapshot(&[root]).remove(&root)
+        argv_parts_snapshot(&[root]).remove(&root)
     };
-    seat_verdict(false, true, 0, root_cmd.as_deref(), specs)
+    seat_verdict(false, true, 0, root_argv.as_deref(), specs)
 }
 
 /// ★G2(W3-A BLOCK 교정)의 **생산자측 판정 하나**를 순수 함수로 노출한다 — 좌석 자손 cmdline
@@ -4378,7 +4444,7 @@ pub fn agent_seat_vacant_now(s: &crate::state::Surface) -> bool {
     let root_is_agent = if specs.is_empty() {
         None
     } else {
-        Some(argv_snapshot(&[s.pid]).remove(&s.pid).is_some_and(|c| root_cmd_is_agent(&c, &specs)))
+        Some(argv_parts_snapshot(&[s.pid]).remove(&s.pid).is_some_and(|a| root_cmd_is_agent(&a, &specs)))
     };
     agent_seat_vacant_verdict(true, seat, root_is_shell, root_is_agent)
 }
@@ -5101,6 +5167,14 @@ fn with_cmd_src_of(sys: &System, kids: Vec<u32>) -> Vec<(u32, String, CmdSource)
 /// `UpdateKind::Always` 인 이유: 매 호출 새 `System` 이라 `cmd` 가 항상 비어 있어
 /// `OnlyIfNotSet` 과 결과가 동일하고, 의도(=지금 읽어온다)가 명시적이다.
 fn argv_snapshot(pids: &[u32]) -> HashMap<u32, String> {
+    argv_parts_snapshot(pids)
+        .into_iter()
+        .map(|(pid, parts)| (pid, parts.join(" ")))
+        .collect()
+}
+
+/// [`argv_snapshot`] 의 본체 — 인자 경계를 그대로 둔 argv(뿌리 존재 판정이 자리와 공백 든 경로를 견주는 재료).
+fn argv_parts_snapshot(pids: &[u32]) -> HashMap<u32, Vec<String>> {
     let targets: Vec<Pid> = pids.iter().map(|p| Pid::from_u32(*p)).collect();
     let mut sys = System::new();
     sys.refresh_processes_specifics(
@@ -5108,7 +5182,7 @@ fn argv_snapshot(pids: &[u32]) -> HashMap<u32, String> {
         false,
         sysinfo::ProcessRefreshKind::nothing().with_cmd(sysinfo::UpdateKind::Always),
     );
-    let mut out: HashMap<u32, String> = HashMap::new();
+    let mut out: HashMap<u32, Vec<String>> = HashMap::new();
     for &pid in pids {
         let Some(pr) = sys.process(Pid::from_u32(pid)) else {
             continue;
@@ -5121,7 +5195,7 @@ fn argv_snapshot(pids: &[u32]) -> HashMap<u32, String> {
         if parts.is_empty() {
             continue; // argv 미관측 — 호출부가 name() 폴백
         }
-        out.insert(pid, parts.join(" "));
+        out.insert(pid, parts);
     }
     out
 }
@@ -5333,7 +5407,7 @@ fn known_agents_with<T>(derive: fn(&serde_json::Value) -> Vec<(String, T)>) -> V
 }
 
 /// agents.json(JSON 값)에서 뿌리 존재 판정용 후보를 파생한다(순수) — 실행 파일은 [`agent_candidates_from_json`] 과
-/// 같은 규칙(선두 env 대입을 건너뛴 첫 낱말의 basename)이고, 그것이 셸·인터프리터면 그 뒤 첫 비옵션 낱말이 엔트리다.
+/// 같은 규칙(선두 env 대입을 건너뛴 첫 낱말의 basename)이고, 그것이 셸·인터프리터면 그 뒤 첫 비옵션 낱말(값 받는 옵션의 값 제외)이 엔트리다.
 pub(crate) fn agent_root_specs_from_json(agents: &serde_json::Value) -> Vec<(String, RootAgentSpec)> {
     let Some(obj) = agents.as_object() else {
         return Vec::new();
@@ -5342,13 +5416,17 @@ pub(crate) fn agent_root_specs_from_json(agents: &serde_json::Value) -> Vec<(Str
     let mut out = Vec::new();
     for (name, bin_base) in bins {
         let cmd = obj.get(&name).and_then(|spec| spec.get("cmd")).and_then(|v| v.as_str()).unwrap_or("");
-        // 실행 파일 낱말부터의 꼬리(선두 env 대입을 건너뛴다 — 위 함수와 같은 규칙).
-        let from_bin = cmd
-            .split_whitespace()
-            .skip_while(|t| is_env_assign_word(t))
-            .collect::<Vec<_>>()
-            .join(" ");
-        let entry = exec_and_entry(&from_bin).and_then(|(_, e)| e).map(str::to_string);
+        // ★R3: 기동 문자열은 셸 낱말로 나눈다(따옴표를 벗긴다 · `\ ` = 공백 · 그 밖의 `\` 는 Windows 경로라 그대로 —
+        //   lib 의 관문 판정과 같은 분해기). 따옴표가 엔트리에 남으면 관측 argv 와 영영 맞지 않는다(codex 2R).
+        let words = cys::first_run_gates::split_shell_words(cmd);
+        let entry = if is_interpreter_name(&bin_base) {
+            words
+                .iter()
+                .position(|w| !is_env_assign_word(w))
+                .and_then(|i| interpreter_operands(&words[i], &words[i + 1..]).first().map(|e| e.to_string()))
+        } else {
+            None
+        };
         out.push((name, RootAgentSpec { bin_base, entry }));
     }
     out
@@ -15359,6 +15437,25 @@ mod tests {
         super::agent_root_specs_from_json(&serde_json::Value::Object(obj))
     }
 
+    /// 시험 도우미 — 공백으로 나눈 명령줄을 argv 로(인자 경계가 필요한 시험은 argv 를 직접 만든다).
+    fn seat119_argv(cmd: &str) -> Vec<String> {
+        cmd.split_whitespace().map(str::to_string).collect()
+    }
+
+    fn seat119_is_agent(cmd: &str, specs: &[(String, super::RootAgentSpec)]) -> bool {
+        super::root_cmd_is_agent(&seat119_argv(cmd), specs)
+    }
+
+    fn seat119_verdict(
+        exited: bool,
+        root_in_table: bool,
+        descendants: usize,
+        root_cmd: Option<&str>,
+        specs: &[(String, super::RootAgentSpec)],
+    ) -> super::SeatState {
+        super::seat_verdict(exited, root_in_table, descendants, root_cmd.map(seat119_argv).as_deref(), specs)
+    }
+
     /// 뿌리=claude 좌석의 뿌리 argv(10-12 ps 실측 · pid 17263·2552·96776 공통).
     const SEAT119_ROOT_CLAUDE: &str =
         "claude --dangerously-skip-permissions --model claude-opus-5-5 --effort high";
@@ -15368,20 +15465,20 @@ mod tests {
     /// 팩에서 모호 → 없음 → Empty 였다(큐 배달이 empty_seat 로 멈춘 실제 원인). 후보 1개 꼴(저장소 내장 팩)도 함께 잰다.
     #[test]
     fn seat119_root_agent_with_no_descendants_is_occupied_even_when_candidates_share_a_binary() {
-        use super::{known_agent_cmd, root_cmd_is_agent, seat_verdict, select_observed_agent, SeatState};
+        use super::{known_agent_cmd, select_observed_agent, SeatState};
         let cands = super::agent_candidates_from_json(&seat119_this_mac_agents());
         let specs = seat119_this_mac_specs();
         let cmd = SEAT119_ROOT_CLAUDE;
         // 정체 판정은 종전 그대로 모호 = None 이다(등록 규칙 무접촉) — 존재 판정이 이 답에 끌려가던 것이 결함이었다.
         assert_eq!(select_observed_agent(&[cmd.to_string()], &cands), None);
         assert!(known_agent_cmd(cmd, &cands), "같은 실행 파일 후보가 여럿이라고 에이전트가 없다고 답했다");
-        assert!(root_cmd_is_agent(cmd, &specs), "같은 실행 파일 후보가 여럿이라고 뿌리 에이전트가 없다고 답했다");
-        assert_eq!(seat_verdict(false, true, 0, Some(cmd), &specs), SeatState::Occupied);
+        assert!(seat119_is_agent(cmd, &specs), "같은 실행 파일 후보가 여럿이라고 뿌리 에이전트가 없다고 답했다");
+        assert_eq!(seat119_verdict(false, true, 0, Some(cmd), &specs), SeatState::Occupied);
         // 후보 1개 꼴(내장 팩) · 경로가 붙은 뿌리(설치기 master 자리 — 893 VM 실기 꼴).
         let one = seat119_specs(&[("claude", "claude --dangerously-skip-permissions")]);
-        assert_eq!(seat_verdict(false, true, 0, Some(cmd), &one), SeatState::Occupied);
+        assert_eq!(seat119_verdict(false, true, 0, Some(cmd), &one), SeatState::Occupied);
         assert_eq!(
-            seat_verdict(false, true, 0, Some("/opt/agents/bin/claude --dangerously-skip-permissions"), &specs),
+            seat119_verdict(false, true, 0, Some("/opt/agents/bin/claude --dangerously-skip-permissions"), &specs),
             SeatState::Occupied
         );
     }
@@ -15389,65 +15486,65 @@ mod tests {
     /// ★1.1.9 좌석 판정 ②~⑤ — 판정표의 나머지 줄. 맨 셸 좌석 = Empty 계약(빈 좌석 승계·빈 셸 가드의 전제)은 그대로다.
     #[test]
     fn seat119_verdict_table_keeps_bare_shell_empty_and_dead_root_out() {
-        use super::{seat_verdict, SeatState};
+        use super::{SeatState};
         let specs = seat119_this_mac_specs();
         // ② 뿌리 = 셸 · 자손 0 → Empty(뿌리 argv 가 에이전트 기동 꼴이 아니다).
         for shell in ["/bin/zsh -l", "-zsh", "/bin/bash -l", "bash", "sh"] {
-            assert_eq!(seat_verdict(false, true, 0, Some(shell), &specs), SeatState::Empty, "{shell}");
+            assert_eq!(seat119_verdict(false, true, 0, Some(shell), &specs), SeatState::Empty, "{shell}");
         }
         // 에이전트가 아닌 뿌리 · argv 미관측 · 후보 없음 = Empty.
         for not_agent in ["sleep 30", "vim notes.md", "tail -f /home/u/claude/dev.log"] {
-            assert_eq!(seat_verdict(false, true, 0, Some(not_agent), &specs), SeatState::Empty, "{not_agent}");
+            assert_eq!(seat119_verdict(false, true, 0, Some(not_agent), &specs), SeatState::Empty, "{not_agent}");
         }
-        assert_eq!(seat_verdict(false, true, 0, None, &specs), SeatState::Empty, "argv 를 못 읽었는데 차 있다고 답했다");
-        assert_eq!(seat_verdict(false, true, 0, Some(SEAT119_ROOT_CLAUDE), &[]), SeatState::Empty, "후보가 없으면 뿌리를 셀 근거가 없다");
+        assert_eq!(seat119_verdict(false, true, 0, None, &specs), SeatState::Empty, "argv 를 못 읽었는데 차 있다고 답했다");
+        assert_eq!(seat119_verdict(false, true, 0, Some(SEAT119_ROOT_CLAUDE), &[]), SeatState::Empty, "후보가 없으면 뿌리를 셀 근거가 없다");
         // ③ 뿌리 = 셸 · 자손 claude → Occupied(자손이 있으면 뿌리 argv 는 보지 않는다).
-        assert_eq!(seat_verdict(false, true, 1, None, &specs), SeatState::Occupied);
-        assert_eq!(seat_verdict(false, true, 1, Some("/bin/zsh -l"), &[]), SeatState::Occupied);
+        assert_eq!(seat119_verdict(false, true, 1, None, &specs), SeatState::Occupied);
+        assert_eq!(seat119_verdict(false, true, 1, Some("/bin/zsh -l"), &[]), SeatState::Occupied);
         // ④ 종료된 surface → Empty(자손·뿌리 argv 가 무엇이든).
-        assert_eq!(seat_verdict(true, true, 0, Some(SEAT119_ROOT_CLAUDE), &specs), SeatState::Empty);
-        assert_eq!(seat_verdict(true, true, 3, Some(SEAT119_ROOT_CLAUDE), &specs), SeatState::Empty);
-        assert_eq!(seat_verdict(true, false, 0, None, &specs), SeatState::Empty);
+        assert_eq!(seat119_verdict(true, true, 0, Some(SEAT119_ROOT_CLAUDE), &specs), SeatState::Empty);
+        assert_eq!(seat119_verdict(true, true, 3, Some(SEAT119_ROOT_CLAUDE), &specs), SeatState::Empty);
+        assert_eq!(seat119_verdict(true, false, 0, None, &specs), SeatState::Empty);
         // ⑤ 뿌리가 프로세스 표에 없음 → Unknown(죽은 뿌리를 차 있다고도 비었다고도 하지 않는다).
-        assert_eq!(seat_verdict(false, false, 0, None, &specs), SeatState::Unknown);
-        assert_eq!(seat_verdict(false, false, 0, Some(SEAT119_ROOT_CLAUDE), &specs), SeatState::Unknown);
+        assert_eq!(seat119_verdict(false, false, 0, None, &specs), SeatState::Unknown);
+        assert_eq!(seat119_verdict(false, false, 0, Some(SEAT119_ROOT_CLAUDE), &specs), SeatState::Unknown);
     }
 
     /// ★1.1.9 R2(codex 1R HIGH) — 셸이 실행 파일인 후보가 있어도 **맨 셸 뿌리는 에이전트가 아니다**. 그런 후보는
     /// 엔트리(스크립트)까지 같을 때만 뿌리와 맞는다. 맨 셸이 Occupied 가 되면 빈 셸 가드가 풀려 지시문이 셸에 타이핑된다.
     #[test]
     fn seat119r2_shell_exec_candidates_never_make_a_bare_shell_an_agent() {
-        use super::{agent_seat_vacant_verdict, is_shell_name, root_cmd_is_agent, seat_verdict, SeatState};
+        use super::{agent_seat_vacant_verdict, is_shell_name, SeatState};
         // codex 재현 입력 그대로: 셸 후보 둘 · 뿌리 `/bin/bash -l` · 자손 0.
         let specs = seat119_specs(&[("bash-a", "bash /opt/agents/a.sh"), ("bash-b", "bash /opt/agents/b.sh")]);
         assert_eq!(specs[0].1.entry.as_deref(), Some("/opt/agents/a.sh"), "후보의 엔트리를 못 꺼냈다");
         for bare in ["/bin/bash -l", "bash", "-bash", "/bin/bash -lc", "bash -l -i", "/bin/bash --noprofile --norc"] {
-            assert!(!root_cmd_is_agent(bare, &specs), "맨 셸({bare})을 에이전트로 읽었다");
-            let seat = seat_verdict(false, true, 0, Some(bare), &specs);
+            assert!(!seat119_is_agent(bare, &specs), "맨 셸({bare})을 에이전트로 읽었다");
+            let seat = seat119_verdict(false, true, 0, Some(bare), &specs);
             assert_eq!(seat, SeatState::Empty, "{bare}");
             // 빈 셸 가드: 메타 있는 좌석 · 빈 좌석 · 뿌리가 셸 · 뿌리가 에이전트 아님 → 타이핑 대신 보류(true).
             let root_is_shell = Some(is_shell_name(bare.split_whitespace().next().unwrap()));
             assert!(
-                agent_seat_vacant_verdict(true, seat, root_is_shell, Some(root_cmd_is_agent(bare, &specs))),
+                agent_seat_vacant_verdict(true, seat, root_is_shell, Some(seat119_is_agent(bare, &specs))),
                 "맨 셸({bare}) 좌석의 빈 셸 가드가 풀렸다"
             );
         }
         // 셸의 `-c` 뒤는 명령 문자열이지 스크립트가 아니다 — 엔트리로 치지 않는다.
-        assert!(!root_cmd_is_agent("bash -c /opt/agents/a.sh", &specs));
-        assert!(!root_cmd_is_agent("/bin/zsh -lc claude --model x", &seat119_this_mac_specs()));
+        assert!(!seat119_is_agent("bash -c /opt/agents/a.sh", &specs));
+        assert!(!seat119_is_agent("/bin/zsh -lc claude --model x", &seat119_this_mac_specs()));
         // 양성: 뿌리 argv 가 그 후보의 기동 꼴 그대로면 Occupied(옵션이 끼어도 · 실행 파일에 경로가 붙어도).
         for agent_root in ["bash /opt/agents/a.sh", "/bin/bash /opt/agents/b.sh --flag", "bash -x /opt/agents/a.sh"] {
-            assert_eq!(seat_verdict(false, true, 0, Some(agent_root), &specs), SeatState::Occupied, "{agent_root}");
+            assert_eq!(seat119_verdict(false, true, 0, Some(agent_root), &specs), SeatState::Occupied, "{agent_root}");
         }
         // 엔트리가 다르면(다른 스크립트 · 다른 인터프리터) 아니다.
         for other in ["bash /opt/agents/c.sh", "bash /tmp/a.sh", "zsh /opt/agents/a.sh", "sh /opt/agents/a.sh"] {
-            assert_eq!(seat_verdict(false, true, 0, Some(other), &specs), SeatState::Empty, "{other}");
+            assert_eq!(seat119_verdict(false, true, 0, Some(other), &specs), SeatState::Empty, "{other}");
         }
         // 엔트리가 없는 셸 후보(맨 `bash` · `zsh -l`)는 어떤 뿌리에도 맞지 않는다.
         let bare_cands = seat119_specs(&[("sh-agent", "bash"), ("zsh-agent", "zsh -l")]);
         assert_eq!(bare_cands[0].1.entry, None);
         for root in ["bash", "/bin/bash -l", "/bin/zsh -l", "bash /opt/agents/a.sh"] {
-            assert!(!root_cmd_is_agent(root, &bare_cands), "엔트리 없는 셸 후보가 뿌리({root})와 맞았다");
+            assert!(!seat119_is_agent(root, &bare_cands), "엔트리 없는 셸 후보가 뿌리({root})와 맞았다");
         }
         // 엔트리 표기: `~/…` 는 홈 뒤 꼬리로 · 상대 경로·모듈 이름은 꼬리가 같으면 맞는다 · env 대입은 건너뛴다.
         let forms = seat119_specs(&[
@@ -15459,26 +15556,26 @@ mod tests {
         assert_eq!(entry_of("home").as_deref(), Some("~/agents/main.js"));
         assert_eq!(entry_of("rel").as_deref(), Some("tools/agent.py"), "선두 env 대입을 건너뛰지 못했다");
         assert_eq!(entry_of("module").as_deref(), Some("aider"));
-        assert!(root_cmd_is_agent("node /opt/home/u/agents/main.js --serve", &forms));
-        assert!(root_cmd_is_agent("/usr/bin/python3 /srv/app/tools/agent.py", &forms));
-        assert!(root_cmd_is_agent("python3 -m aider --model x", &forms));
-        assert!(!root_cmd_is_agent("node /opt/other/main.js", &forms));
-        assert!(!root_cmd_is_agent("python3", &forms));
-        assert!(!root_cmd_is_agent("node", &forms));
+        assert!(seat119_is_agent("node /opt/home/u/agents/main.js --serve", &forms));
+        assert!(seat119_is_agent("/usr/bin/python3 /srv/app/tools/agent.py", &forms));
+        assert!(seat119_is_agent("python3 -m aider --model x", &forms));
+        assert!(!seat119_is_agent("node /opt/other/main.js", &forms));
+        assert!(!seat119_is_agent("python3", &forms));
+        assert!(!seat119_is_agent("node", &forms));
     }
 
     /// ★1.1.9 R2(codex 1R MED) — 뿌리는 **자리**로만 본다: argv[0] 이 에이전트 실행 파일이거나, 뿌리가 인터프리터이고
     /// 그 엔트리가 에이전트일 때만. 인자 어딘가에 에이전트 이름이 든 비에이전트(`tail -f /tmp/claude`)는 빈 좌석이다.
     #[test]
     fn seat119r2_root_matches_by_position_not_by_any_argument_word() {
-        use super::{cmdline_matches_agent_exec, root_cmd_is_agent, seat_claimable_verdict, seat_verdict, SeatState};
+        use super::{cmdline_matches_agent_exec, seat_claimable_verdict, SeatState};
         let specs = seat119_this_mac_specs();
         // codex 재현 입력: 인자에 에이전트 이름이 든 장기 실행 비에이전트 — 자손 쪽 매처는 맞다고 하지만 뿌리 규칙은 아니다.
         for not_agent in ["/usr/bin/tail -f /tmp/claude", "vim claude", "less /var/log/codex", "cat grok", "sleep 600 claude"] {
             let any_word = specs.iter().any(|(_, s)| cmdline_matches_agent_exec(not_agent, &s.bin_base));
             assert!(any_word, "대조군이 약하다 — {not_agent} 는 「어느 낱말이든」 규칙에 맞아야 한다");
-            assert!(!root_cmd_is_agent(not_agent, &specs), "인자 낱말로 뿌리를 에이전트로 읽었다: {not_agent}");
-            let seat = seat_verdict(false, true, 0, Some(not_agent), &specs);
+            assert!(!seat119_is_agent(not_agent, &specs), "인자 낱말로 뿌리를 에이전트로 읽었다: {not_agent}");
+            let seat = seat119_verdict(false, true, 0, Some(not_agent), &specs);
             assert_eq!(seat, SeatState::Empty, "{not_agent}");
             assert!(seat_claimable_verdict(seat, false, false), "비에이전트 뿌리({not_agent})가 승계를 막았다");
         }
@@ -15498,22 +15595,26 @@ mod tests {
             "C:\\Tools\\claude.exe --dangerously-skip-permissions",
             "node.exe C:\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js",
         ] {
-            assert!(root_cmd_is_agent(agent_root, &specs), "실 기동 꼴을 놓쳤다: {agent_root}");
-            assert_eq!(seat_verdict(false, true, 0, Some(agent_root), &specs), SeatState::Occupied, "{agent_root}");
+            assert!(seat119_is_agent(agent_root, &specs), "실 기동 꼴을 놓쳤다: {agent_root}");
+            assert_eq!(seat119_verdict(false, true, 0, Some(agent_root), &specs), SeatState::Occupied, "{agent_root}");
         }
-        // 인터프리터의 엔트리가 에이전트가 아니면(둘째 인자에 이름이 있어도) 아니다.
-        assert!(!root_cmd_is_agent("node /opt/app/server.js claude", &specs));
-        assert!(!root_cmd_is_agent("python3 /opt/app/run.py --agent codex", &specs));
+        // ★R3 로 기대값이 바뀐 두 줄: 인터프리터 뿌리는 비옵션 낱말 **전부**를 엔트리 후보로 본다(값 받는 옵션을 표가
+        //   모를 때 진짜 엔트리를 놓치지 않으려는 안전 쪽 선택) — 그래서 스크립트 인자에 에이전트 이름이 있으면 차 있다고 읽는다.
+        assert!(seat119_is_agent("node /opt/app/server.js claude", &specs));
+        assert!(seat119_is_agent("python3 /opt/app/run.py --agent codex", &specs));
+        // 인터프리터의 비옵션 낱말 어디에도 에이전트가 없으면 아니다 · 옵션 꼴 낱말(`--claude`)은 세지 않는다.
+        assert!(!seat119_is_agent("node /opt/app/server.js --claude", &specs));
+        assert!(!seat119_is_agent("python3 /opt/app/run.py worker", &specs));
         // 내장 팩 꼴(저장소 `cysjavis-pack/agents.json`)의 실 후보도 같은 답이다.
         let embedded = super::agent_root_specs_from_json(
             &serde_json::from_str(include_str!("../../../cysjavis-pack/agents.json")).expect("내장 agents.json"),
         );
         assert!(embedded.iter().all(|(_, s)| s.entry.is_none()), "내장 팩에 셸·인터프리터 기동형 후보가 생겼다 — 엔트리 규칙으로 재는지 확인: {embedded:?}");
         for agent_root in [SEAT119_ROOT_CLAUDE, "/opt/home/u/.local/bin/agy --dangerously-skip-permissions", "node /opt/n/bin/codex --x", "grok"] {
-            assert!(root_cmd_is_agent(agent_root, &embedded), "내장 팩 후보로 실 기동 꼴을 놓쳤다: {agent_root}");
+            assert!(seat119_is_agent(agent_root, &embedded), "내장 팩 후보로 실 기동 꼴을 놓쳤다: {agent_root}");
         }
-        assert!(!root_cmd_is_agent("/bin/zsh -l", &embedded));
-        assert!(!root_cmd_is_agent("/usr/bin/tail -f /tmp/claude", &embedded));
+        assert!(!seat119_is_agent("/bin/zsh -l", &embedded));
+        assert!(!seat119_is_agent("/usr/bin/tail -f /tmp/claude", &embedded));
     }
 
     /// ★1.1.9 좌석 판정 ⑥ + 실 프로세스 — 뿌리가 에이전트 자신인 유휴 좌석은 즉시 프로브에서도 Occupied 이고
@@ -15557,7 +15658,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn seat119r2_live_tail_and_bare_shell_roots_stay_empty() {
-        use super::{agent_seat_vacant_verdict, is_shell_name, root_cmd_is_agent, seat_claimable_verdict, seat_state_of, SeatState};
+        use super::{agent_seat_vacant_verdict, is_shell_name, seat_claimable_verdict, seat_state_of, SeatState};
         use std::process::{Command, Stdio};
         let dir = std::env::temp_dir().join(format!("seat119r2-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -15590,11 +15691,144 @@ mod tests {
         assert!(seat_claimable_verdict(tail_seat, false, false), "비에이전트 뿌리가 승계를 막았다");
         assert_eq!(bare_seat, SeatState::Empty, "셸 후보 앞에서 맨 셸 뿌리를 차 있다고 읽었다");
         assert!(
-            agent_seat_vacant_verdict(true, bare_seat, Some(is_shell_name("/bin/sh")), Some(root_cmd_is_agent("/bin/sh", &sh_a))),
+            agent_seat_vacant_verdict(true, bare_seat, Some(is_shell_name("/bin/sh")), Some(seat119_is_agent("/bin/sh", &sh_a))),
             "맨 셸 좌석의 빈 셸 가드가 풀렸다"
         );
         assert_eq!(scripted_seat, SeatState::Occupied, "후보의 스크립트를 돌리는 셸 뿌리를 빈 좌석으로 읽었다");
         assert_eq!(scripted_other, SeatState::Empty, "다른 스크립트 후보로 쟀는데 차 있다고 읽었다");
+    }
+
+    /// ★1.1.9 R3 ①(codex 2R MED) — 후보 기동 문자열의 **따옴표는 엔트리에 남지 않는다**. `bash '/tmp/agent.sh'` 후보와
+    /// 관측 argv `/bin/bash /tmp/agent.sh` 는 같은 스크립트다(따옴표가 남으면 실행 중인 셸 에이전트가 빈 좌석이 된다).
+    /// 공백이 든 경로는 따옴표·`\ ` 로 묶은 후보와 인자 경계가 살아 있는 argv 가 한 낱말로 맞는다.
+    #[test]
+    fn seat119r3_quoted_candidate_entries_match_the_observed_argv() {
+        use super::{agent_seat_vacant_verdict, root_cmd_is_agent, seat_verdict, SeatState};
+        let argv = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<String>>();
+        // codex 재현 입력 그대로.
+        for cmd in ["bash '/tmp/agent.sh'", "bash \"/tmp/agent.sh\"", "bash /tmp/agent.sh"] {
+            let specs = seat119_specs(&[("shell-worker", cmd)]);
+            assert_eq!(specs[0].1.entry.as_deref(), Some("/tmp/agent.sh"), "후보 `{cmd}` 의 엔트리에 따옴표가 남았다");
+            let root = argv(&["/bin/bash", "/tmp/agent.sh"]);
+            assert!(root_cmd_is_agent(&root, &specs), "{cmd}");
+            let seat = seat_verdict(false, true, 0, Some(&root), &specs);
+            assert_eq!(seat, SeatState::Occupied, "실행 중인 셸 에이전트를 빈 좌석으로 읽었다: {cmd}");
+            assert!(!agent_seat_vacant_verdict(true, seat, Some(true), Some(true)), "살아 있는 셸 에이전트 좌석에 빈 셸 가드가 섰다");
+        }
+        // 공백 경로: 따옴표·`\ ` 로 묶은 후보 = 한 낱말 → 인자 경계가 살아 있는 argv 와 맞는다.
+        let spaced = argv(&["/bin/bash", "/opt/my agents/run.sh", "--serve"]);
+        for cmd in ["bash '/opt/my agents/run.sh' --serve", "bash \"/opt/my agents/run.sh\"", "bash /opt/my\\ agents/run.sh"] {
+            let specs = seat119_specs(&[("spaced", cmd)]);
+            assert_eq!(specs[0].1.entry.as_deref(), Some("/opt/my agents/run.sh"), "{cmd}");
+            assert!(root_cmd_is_agent(&spaced, &specs), "{cmd}");
+        }
+        // 기대값 명시: **묶지 않은** 공백 경로는 종전처럼 맞지 않는다(셸도 그 문자열을 두 낱말로 읽는다).
+        let unquoted = seat119_specs(&[("unquoted", "bash /opt/my agents/run.sh")]);
+        assert_eq!(unquoted[0].1.entry.as_deref(), Some("/opt/my"));
+        assert!(!root_cmd_is_agent(&spaced, &unquoted), "묶지 않은 공백 경로 후보가 맞았다");
+        // 인자 경계가 사라진 argv(공백으로 다시 나눈 것)로는 묶은 후보와도 맞지 않는다 — 재료가 argv 여야 하는 이유.
+        let quoted = seat119_specs(&[("spaced", "bash '/opt/my agents/run.sh'")]);
+        assert!(!seat119_is_agent("/bin/bash /opt/my agents/run.sh", &quoted));
+        // env 대입·옵션 뒤의 따옴표 엔트리 · 따옴표로 묶은 Windows 경로(백슬래시는 글자 그대로).
+        let mixed = seat119_specs(&[
+            ("env", "LOG_LEVEL=debug node --require ./pre.js '/srv/agents/main.js'"),
+            ("win", "node \"C:\\Program Files\\Agent\\worker.js\""),
+        ]);
+        let entry_of = |name: &str| mixed.iter().find(|(n, _)| n == name).and_then(|(_, s)| s.entry.clone());
+        assert_eq!(entry_of("env").as_deref(), Some("/srv/agents/main.js"), "값 받는 옵션의 값을 엔트리로 골랐다");
+        assert_eq!(entry_of("win").as_deref(), Some("C:\\Program Files\\Agent\\worker.js"));
+        assert!(root_cmd_is_agent(&argv(&["node.exe", "c:\\program files\\agent\\worker.js"]), &mixed));
+    }
+
+    /// ★1.1.9 R3 ②(codex 2R MED) — 값 받는 인터프리터 옵션이 엔트리를 가리지 않는다. 표가 아는 옵션은 값을 건너뛰고,
+    /// 표가 모르는 옵션이 와도 인터프리터 뿌리는 비옵션 낱말 **전부**를 보므로 진짜 엔트리를 놓치지 않는다.
+    /// 비인터프리터 뿌리는 여전히 argv[0] 만 본다(1R MED 유지).
+    #[test]
+    fn seat119r3_interpreter_option_values_do_not_hide_the_entry() {
+        let specs = seat119_this_mac_specs();
+        // codex 재현 입력 그대로 + 같은 계열.
+        for agent_root in [
+            "node --require /tmp/preload.js /tmp/node_modules/@anthropic-ai/claude-code/cli.js",
+            "node -r /tmp/preload.js --import /tmp/hook.mjs /opt/n/bin/codex --x",
+            "node --max-old-space-size=4096 /opt/n/lib/node_modules/@openai/codex/bin/codex.js",
+            "/opt/homebrew/bin/node --loader /tmp/l.mjs --inspect-port 9229 /opt/n/bin/claude",
+        ] {
+            assert!(seat119_is_agent(agent_root, &specs), "옵션 값이 엔트리를 가렸다: {agent_root}");
+        }
+        // 인터프리터 후보(엔트리 있음)도 같다 — `-m 모듈` 은 값이 곧 엔트리다(기존 유지).
+        let custom = seat119_specs(&[("aider", "python3 -m aider"), ("py", "python3 -X dev /srv/agent.py"), ("sh", "bash -o pipefail /srv/run.sh")]);
+        for agent_root in ["python3 -m aider --model x", "python3 -W ignore -X dev /srv/agent.py", "bash -eo pipefail /srv/run.sh", "bash --rcfile /etc/rc /srv/run.sh"] {
+            assert!(seat119_is_agent(agent_root, &custom), "{agent_root}");
+        }
+        // 1R MED 유지: 인터프리터가 아닌 뿌리는 인자를 보지 않는다.
+        for not_agent in ["/usr/bin/tail -f /tmp/claude", "vim claude", "less /opt/n/bin/codex", "tail --require /tmp/x claude"] {
+            assert!(!seat119_is_agent(not_agent, &specs), "비인터프리터 뿌리를 인자로 에이전트로 읽었다: {not_agent}");
+        }
+        // 1R HIGH 유지: 셸의 `-c` 묶음 뒤는 명령 문자열 · 맨 셸은 어떤 후보와도 맞지 않는다.
+        for bare in ["/bin/bash -l", "bash -o pipefail", "bash -lc /srv/run.sh", "/bin/zsh -ic claude"] {
+            assert!(!seat119_is_agent(bare, &custom) && !seat119_is_agent(bare, &specs), "{bare}");
+        }
+    }
+
+    /// ★1.1.9 R3 ② 의 두 장치를 따로 고정한다 — ⑴ 표가 모르는 값 옵션 뒤의 엔트리는 「비옵션 낱말 전부」 가 받는다
+    /// ⑵ 표가 아는 값 옵션의 **값**에 든 에이전트 이름은 엔트리로 세지 않는다(표의 몫).
+    #[test]
+    fn seat119r3_all_operands_catch_unknown_options_and_the_table_drops_option_values() {
+        let specs = seat119_this_mac_specs();
+        // ⑴ 표에 없는 값 옵션(`--unknown-flag 값`) — 첫 비옵션 낱말은 그 값이지만 진짜 엔트리가 뒤에 있다.
+        assert!(seat119_is_agent("node --unknown-flag /tmp/x.js /opt/n/bin/claude", &specs));
+        assert!(seat119_is_agent("python3 --some-opt value /opt/py/bin/codex", &specs));
+        // ⑵ 표가 아는 값 옵션의 값은 건너뛴다 — 그 값의 이름이 에이전트와 같아도 엔트리가 아니다.
+        assert!(!seat119_is_agent("node --require /opt/pre/claude /opt/app/server.js", &specs));
+        assert!(!seat119_is_agent("python3 -W claude /opt/app/run.py", &specs));
+        assert!(!seat119_is_agent("bash -o claude /opt/app/run.sh", &specs));
+    }
+
+    /// ★1.1.9 R3 ③(codex 2R MED) — Windows 꼴 엔트리는 구분자(`\` · `/`)와 대소문자를 가리지 않고 견준다.
+    /// Unix 꼴은 종전 그대로 대소문자를 가린다.
+    #[test]
+    fn seat119r3_windows_entries_ignore_separator_and_case_unix_entries_do_not() {
+        // codex 재현 입력 둘.
+        let abs = seat119_specs(&[("w", "node C:\\Agents\\worker.js")]);
+        assert!(seat119_is_agent("node.exe c:\\agents\\worker.js", &abs));
+        let rel = seat119_specs(&[("w", "node tools\\worker.js")]);
+        assert!(seat119_is_agent("node.exe C:\\app\\tools\\worker.js", &rel));
+        // 구분자가 섞여도 같다 · 다른 파일은 여전히 아니다.
+        assert!(seat119_is_agent("node.exe C:/Agents/Worker.js", &abs));
+        assert!(seat119_is_agent("node.exe C:\\app\\Tools\\WORKER.JS", &seat119_specs(&[("w", "node tools/worker.js")])));
+        assert!(!seat119_is_agent("node.exe c:\\agents\\other.js", &abs));
+        assert!(!seat119_is_agent("node.exe d:\\agents\\worker.js", &abs));
+        // Unix 비교 보존: 대소문자가 다른 경로는 다른 파일이다.
+        let unix = seat119_specs(&[("u", "bash /opt/Agents/run.sh"), ("r", "node tools/Worker.js")]);
+        assert!(seat119_is_agent("bash /opt/Agents/run.sh", &unix));
+        assert!(!seat119_is_agent("bash /opt/agents/run.sh", &unix), "Unix 경로를 대소문자 무시로 견줬다");
+        assert!(seat119_is_agent("node /srv/app/tools/Worker.js", &unix));
+        assert!(!seat119_is_agent("node /srv/app/tools/worker.js", &unix), "Unix 상대 경로를 대소문자 무시로 견줬다");
+    }
+
+    /// ★1.1.9 R3 실 프로세스 — 공백이 든 경로의 스크립트를 실제로 돌리는 셸 뿌리(자손 0)를, 따옴표로 묶은 후보로 재면
+    /// Occupied 다(후보 쪽 = 셸 낱말 분해 · 뿌리 쪽 = 인자 경계가 살아 있는 실제 argv).
+    #[cfg(unix)]
+    #[test]
+    fn seat119r3_live_quoted_space_path_script_root_is_occupied() {
+        use super::{seat_state_of, SeatState};
+        use std::process::{Command, Stdio};
+        let dir = std::env::temp_dir().join(format!("seat119r3-{}", std::process::id())).join("my agents");
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("run a.sh");
+        std::fs::write(&script, b"read line\n").unwrap();
+        let script_s = script.to_string_lossy().into_owned();
+        let mut child = Command::new("/bin/sh").arg(&script).stdin(Stdio::piped()).stdout(Stdio::null()).spawn().expect("sh script");
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let mut sys = sysinfo::System::new();
+        sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+        let quoted = seat_state_of(&sys, child.id(), false, &mut Some(seat119_specs(&[("q", &format!("sh '{script_s}'"))])));
+        let unquoted = seat_state_of(&sys, child.id(), false, &mut Some(seat119_specs(&[("u", &format!("sh {script_s}"))])));
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+        assert_eq!(quoted, SeatState::Occupied, "따옴표로 묶은 공백 경로 후보로 실행 중인 스크립트 뿌리를 못 봤다");
+        assert_eq!(unquoted, SeatState::Empty, "묶지 않은 공백 경로 후보가 맞았다(기대 = 불일치)");
     }
 
     /// ★1.1.9 좌석 판정 배선 핀 — 「이 좌석이 쓰이는 중인가」 에 답하는 자리는 전부 같은 본체를 지난다(두 답 금지).
@@ -15617,7 +15851,7 @@ mod tests {
         let vacant = body_of("pub fn agent_seat_vacant_now(");
         assert!(vacant.contains("let seat = seat_state(&sys, s);"), "빈 셸 가드가 판정을 우회");
         // R2: 빈 셸 가드의 「뿌리가 에이전트인가」 도 좌석 판정과 같은 뿌리 규칙이다(옛 「어느 낱말이든」 매처 금지).
-        assert!(vacant.contains("is_some_and(|c| root_cmd_is_agent(&c, &specs))"), "빈 셸 가드가 뿌리 규칙을 우회");
+        assert!(vacant.contains("is_some_and(|a| root_cmd_is_agent(&a, &specs))"), "빈 셸 가드가 뿌리 규칙을 우회");
         assert!(!vacant.contains("root_agent_cmd("), "빈 셸 가드에 옛 뿌리 관측이 남았다");
         assert!(body_of("pub fn root_agent_cmd(").contains("known_agent_cmd(&cmd, candidates).then_some(cmd)"), "뿌리 관측이 존재 판정을 우회");
         // 판정 본체는 하나 — 자손 수를 세어 좌석을 가르는 자리가 본체 밖에 다시 생기면 답이 둘이 된다.
@@ -15643,10 +15877,10 @@ mod tests {
             "좌석 캐시 미배선"
         );
         let of_body = body_of("fn seat_state_of(");
-        assert!(of_body.contains("argv_snapshot(&[root]).remove(&root)"), "본체가 뿌리 argv 를 읽지 않는다");
-        assert!(of_body.contains("seat_verdict(false, true, 0, root_cmd.as_deref(), specs)"), "본체가 뿌리 argv 를 판정에 넘기지 않는다");
+        assert!(of_body.contains("argv_parts_snapshot(&[root]).remove(&root)"), "본체가 뿌리 argv 를 읽지 않는다");
+        assert!(of_body.contains("seat_verdict(false, true, 0, root_argv.as_deref(), specs)"), "본체가 뿌리 argv 를 판정에 넘기지 않는다");
         assert!(
-            body_of("pub(crate) fn seat_verdict(").contains("root_cmd.is_some_and(|c| root_cmd_is_agent(c, specs))"),
+            body_of("pub(crate) fn seat_verdict(").contains("root_argv.is_some_and(|a| root_cmd_is_agent(a, specs))"),
             "판정이 뿌리 에이전트를 세지 않는다"
         );
         let a = prod.find("pub fn refresh_seat_cache(").unwrap();

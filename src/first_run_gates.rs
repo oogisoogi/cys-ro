@@ -163,7 +163,7 @@ fn is_env_assignment(tok: &str) -> bool {
 
 /// 최소 셸 단어 분리 — 공백 구분 · `'…'`·`"…"` 묶음. 역슬래시는 **문자 그대로**다 — 윈도 경로
 /// (`C:\\tools\\claude.exe`)를 이스케이프로 먹으면 basename 이 깨진다(판정에 필요한 것은 첫 실행 파일뿐).
-fn split_shell_words(s: &str) -> Vec<String> {
+pub fn split_shell_words(s: &str) -> Vec<String> {
     let (mut out, mut cur, mut has) = (Vec::new(), String::new(), false);
     let mut cs = s.chars();
     while let Some(c) = cs.next() {

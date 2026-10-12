@@ -2553,9 +2553,20 @@ function topbarBtnLabel(id: string): string {
   const txt = b ? [...b.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent ?? "").join("").trim() : "";
   return txt || id;
 }
-let topbarLayout: TopbarItem[] = parseTopbarLayout(localStorage.getItem(TOPBAR_LAYOUT_KEY), TOPBAR_DOM_IDS);
+// 저장소가 던지는 환경(차단·용량 초과)에서도 상단 단추는 서야 한다 — 읽기 실패 = 저장 없음(기본값).
+function topbarSavedRaw(): string | null {
+  try {
+    return localStorage.getItem(TOPBAR_LAYOUT_KEY);
+  } catch {
+    return null;
+  }
+}
+let topbarLayout: TopbarItem[] = parseTopbarLayout(topbarSavedRaw(), TOPBAR_DOM_IDS);
 // persist: true = 저장 · false = 화면에만(시작 복원) · null = 저장을 지운다(기본값 복원 — 다음 판의 기본값을 그대로 따른다).
-function applyTopbarLayout(items: TopbarItem[], persist: boolean | null) {
+// 돌려주는 값 = 저장까지 됐는가. ★저장이 실패해도(codex 1R LOW · QuotaExceeded 등) 화면에는 끝까지 바른다 — 되돌리면
+//   저장소가 막힌 기기에서는 단추를 켤 길이 없어진다(윈에서 창 만들기의 보이는 길이 이 토글이다). 부르는 쪽이 false 를
+//   받아 「저장되지 않았습니다」 를 알리고, 목록(토글 글자)은 화면과 같게 다시 그린다.
+function applyTopbarLayout(items: TopbarItem[], persist: boolean | null): boolean {
   topbarLayout = items;
   for (const it of items) {
     const b = topbarBtn(it.id);
@@ -2563,8 +2574,13 @@ function applyTopbarLayout(items: TopbarItem[], persist: boolean | null) {
     b.hidden = !it.on;
     topbarEl.appendChild(b); // 목록 순서대로 끝에 다시 붙인다 = 화면 순서(왼쪽 → 오른쪽)
   }
-  if (persist === null) localStorage.removeItem(TOPBAR_LAYOUT_KEY);
-  else if (persist) localStorage.setItem(TOPBAR_LAYOUT_KEY, serializeTopbarLayout(items));
+  try {
+    if (persist === null) localStorage.removeItem(TOPBAR_LAYOUT_KEY);
+    else if (persist) localStorage.setItem(TOPBAR_LAYOUT_KEY, serializeTopbarLayout(items));
+  } catch {
+    return false;
+  }
+  return true;
 }
 applyTopbarLayout(topbarLayout, false);
 
@@ -5740,7 +5756,12 @@ function showCtxMenu(
 
 // 화면 설정 「상단 단추」 줄 끌기 — 사이드바 순서 바꾸기(startWsDrag)와 같은 부품을 쓴다: 삽입선(makeDropLine·placeDropLine ·
 // --z-drop-indicator) · 4px 임계(클릭과 구분) · 끌기 뒤 따라오는 click 1회 삼킴. 배열 변형은 topbarlayout.ts dropTopbarItem.
+// ★취소(codex 1R MED-2): 끄는 도중 Esc·팝오버 닫힘·창이 초점을 잃음 = 끌기를 버린다(순서·저장 불변). 종전에는 팝오버가
+//   닫힌 뒤에도 mouseup 처리기가 살아 있어, 놓는 순간 보이지 않는 목록의 순서가 저장됐다. cancelTopbarDrag 는 진행 중인
+//   끌기가 있을 때만 값이 있다 — 팝오버의 close() 가 부른다(Esc 도 close 를 지난다).
+let cancelTopbarDrag: ((why: "close" | "blur") => void) | null = null;
 function startTopbarRowDrag(e0: MouseEvent, srcId: string, list: HTMLElement, commit: (next: TopbarItem[]) => void) {
+  cancelTopbarDrag?.("close"); // 앞선 끌기가 남아 있으면 먼저 버린다(mouseup 을 놓친 경우)
   const start = { x: e0.clientX, y: e0.clientY };
   let dragging = false;
   let line: HTMLElement | null = null;
@@ -5766,17 +5787,34 @@ function startTopbarRowDrag(e0: MouseEvent, srcId: string, list: HTMLElement, co
       line!.hidden = true; // 자기 줄 위·목록 밖 = 놓아도 그대로
     }
   };
-  const up = () => {
+  // 끝내기 공통 — 처리기·삽입선·전역 표시를 걷는다(놓기·취소 둘 다 지난다).
+  const teardown = () => {
     window.removeEventListener("mousemove", move, true);
     window.removeEventListener("mouseup", up, true);
+    window.removeEventListener("blur", onBlur);
+    cancelTopbarDrag = null;
     line?.remove();
     document.body.classList.remove("ws-reordering");
     srcRow()?.classList.remove("tb-dragging");
+  };
+  const up = () => {
+    teardown();
     if (dragging) suppressNextClick();
     if (dragging && drop) commit(dropTopbarItem(topbarLayout, srcId, drop.anchorId, drop.before));
   };
+  // 취소 — commit 을 부르지 않는다. 닫힘(Esc 포함)으로 취소되면 단추는 아직 눌린 채라 곧 mouseup 이 온다 → 그 한 번의
+  // 뒤따르는 click 만 삼킨다. 초점을 잃어 취소되면 mouseup 이 창 밖에서 끝났을 수 있어 아무것도 남기지 않는다
+  // (남겨 두면 돌아와서 누른 첫 click 을 삼킨다).
+  const cancel = (why: "close" | "blur") => {
+    const wasDragging = dragging;
+    teardown();
+    if (wasDragging && why === "close") window.addEventListener("mouseup", () => suppressNextClick(), { capture: true, once: true });
+  };
+  const onBlur = () => cancel("blur");
+  cancelTopbarDrag = cancel;
   window.addEventListener("mousemove", move, true);
   window.addEventListener("mouseup", up, true);
+  window.addEventListener("blur", onBlur);
 }
 
 // 화면 설정 팝오버(종전 「테마」 · TICKET=cysr-1110-screen-settings · 박사님 2026-10-12) — showCtxMenu의 바깥클릭·Esc 닫기 패턴 재사용.
@@ -5799,6 +5837,7 @@ function openThemePopover(anchor: HTMLElement) {
     if (pr.right > window.innerWidth - 4) pop.style.left = `${Math.max(4, window.innerWidth - pr.width - 4)}px`;
   };
   const close = () => {
+    cancelTopbarDrag?.("close"); // 끄는 도중 닫히면 그 끌기는 버린다(놓아도 순서·저장 불변)
     pop.remove();
     window.removeEventListener("mousedown", dismiss, true);
     window.removeEventListener("keydown", onKey, true);
@@ -5934,9 +5973,15 @@ function openThemePopover(anchor: HTMLElement) {
   const tbList = document.createElement("div");
   tbList.className = "tb-list";
   // focus = 다시 그린 뒤 초점을 돌려줄 부품(▲▼·토글을 키보드로 이어 누를 수 있게 — 줄을 새로 만들면 초점이 사라진다)
+  // 저장이 안 됐을 때만 보이는 1줄 — 화면에는 반영됐지만 다음에 켜면 사라진다는 것을 그 자리에서 알린다.
+  const tbUnsaved = mkNote("⚠ 저장되지 않았습니다 — 지금 화면에는 반영됐지만, 앱을 다시 켜면 이전 상태로 돌아갑니다.");
+  tbUnsaved.classList.add("sp-warn");
+  tbUnsaved.setAttribute("role", "status");
+  tbUnsaved.hidden = true;
   const commitTb = (next: TopbarItem[], persist: boolean | null = true, focus?: { id: string; cls: string }) => {
-    applyTopbarLayout(next, persist);
+    const saved = applyTopbarLayout(next, persist);
     renderTbList();
+    tbUnsaved.hidden = saved;
     fitPop(); // 「화면 설정」 단추 자리가 바뀌었을 수 있다
     if (focus) {
       const row = [...tbList.querySelectorAll<HTMLElement>(".tb-row")].find((r) => r.dataset.tbId === focus.id);
@@ -5994,6 +6039,7 @@ function openThemePopover(anchor: HTMLElement) {
   bar.body.append(
     mkNote("끈 단추는 상단에서만 숨겨집니다 — 여기서 다시 켜면 바로 보이고, 단축키는 그대로 됩니다."),
     tbList,
+    tbUnsaved,
     mkNote("「화면 설정」·「Control Center」는 끌 수 없습니다(순서만 바꿀 수 있어요). 목록의 위쪽이 상단의 왼쪽입니다."),
     mkReset("이 구획만 기본값으로", resetBar),
   );
@@ -9033,7 +9079,7 @@ async function deferredFreshReset() {
     "fresh-timeout",
     "feed",
     "⏳ 새로 시작 확인 창을 아직 열지 않았습니다",
-    "시작 작업이나 데몬 교대·부서 삭제가 오래 이어져 기다림을 멈췄습니다(아무것도 바뀌지 않았습니다) — 끝난 뒤 툴바의 [완전 초기화]를 눌러 주세요.",
+    "시작 작업이나 데몬 교대·부서 삭제가 오래 이어져 기다림을 멈췄습니다(아무것도 바뀌지 않았습니다) — 끝난 뒤 상단의 「완전 초기화」를 눌러 주세요. 상단에 보이지 않으면 「화면 설정」 → 「상단 단추」에서 「완전 초기화」를 켜면 나타납니다.",
   );
 }
 

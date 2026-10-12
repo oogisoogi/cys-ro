@@ -87,7 +87,9 @@ describe("글자 2배 — 한 축(20px × 메뉴 배율)", () => {
   it("작은 창 = 팝오버 안 스크롤(화면 밖 0) — 폭·높이 상한 + overflow auto · 높이는 단추 아래 남은 만큼", () => {
     expect(root.body).toContain("max-width: calc(100vw - 8px);");
     expect(/max-height:\s*calc\(100vh - var\(--topbar-h\) - 8px\);\s*overflow:\s*auto;/.test(root.body)).toBe(true);
-    expect(root.body).toContain("min-width: calc(256px * var(--ui-chrome-scale));"); // 기본 배율에서 320px
+    // 최소 폭 = 256px × 배율(기본 320px) — 단 창 폭 안으로 접는다(codex 1R MED-1: 250% 의 640px 이 500px 창을 넘겼다)
+    expect(root.body).toContain("min-width: min(calc(256px * var(--ui-chrome-scale)), calc(100vw - 8px));");
+    expect(/min-width:\s*calc\(/.test(root.body)).toBe(false); // 창 폭을 모르는 맨 최소 폭 0
     expect(pop).toContain("pop.style.maxHeight = `${Math.max(80, window.innerHeight - r.bottom - 8)}px`;");
     expect(pop).toContain('window.addEventListener("resize", fitPop);');
     expect(pop).toContain('window.removeEventListener("resize", fitPop);');
@@ -116,7 +118,7 @@ describe("상단 단추 — 적용·저장 배선", () => {
   it("저장 = localStorage cys-topbar-layout(TOPBAR_LAYOUT_KEY) · 기본값 복원 = 키 삭제 · 시작 시 복원은 저장을 다시 쓰지 않는다", () => {
     expect(apply).toContain("if (persist === null) localStorage.removeItem(TOPBAR_LAYOUT_KEY);");
     expect(apply).toContain("else if (persist) localStorage.setItem(TOPBAR_LAYOUT_KEY, serializeTopbarLayout(items));");
-    expect(main).toContain("let topbarLayout: TopbarItem[] = parseTopbarLayout(localStorage.getItem(TOPBAR_LAYOUT_KEY), TOPBAR_DOM_IDS);");
+    expect(main).toContain("let topbarLayout: TopbarItem[] = parseTopbarLayout(topbarSavedRaw(), TOPBAR_DOM_IDS);");
     expect(main).toContain("\napplyTopbarLayout(topbarLayout, false);\n");
     // 저장 키를 글자로 따로 적은 곳 0(모듈 상수 한 곳)
     expect(main.includes('"cys-topbar-layout"')).toBe(false);
@@ -155,6 +157,101 @@ describe("상단 단추 — 적용·저장 배선", () => {
     expect(drag).toContain("commit(dropTopbarItem(topbarLayout, srcId, drop.anchorId, drop.before));");
     expect(pop).toContain("startTopbarRowDrag(e, it.id, tbList, (next) => commitTb(next));");
     expect(/\.ws-drop-indicator\s*\{[^}]*z-index:\s*var\(--z-drop-indicator\)/.test(css)).toBe(true);
+  });
+});
+
+// ── codex 1R(이종 적대검토 2026-10-12) 채택 4건의 핀 — 화면 동작은 실렌더 s13(좁은 창 250%) · s14(끌기 취소) · s15(저장 예외)가 잰다.
+describe("codex 1R — 끌기 취소(MED-2) · 저장 예외(LOW)", () => {
+  const drag = (() => {
+    const i = main.indexOf("function startTopbarRowDrag(");
+    return main.slice(i, main.indexOf("\n}\n", i));
+  })();
+  const apply = (() => {
+    const i = main.indexOf("function applyTopbarLayout(");
+    return main.slice(i, main.indexOf("\n}\n", i));
+  })();
+
+  it("취소는 순서를 저장하지 않는다 — cancel 본문에 commit 0 · 놓기(up)만 commit", () => {
+    const cancel = drag.slice(drag.indexOf("const cancel = ("), drag.indexOf("const onBlur ="));
+    expect(cancel.length).toBeGreaterThan(50);
+    expect(cancel).toContain("teardown();");
+    expect(/commit\(/.test(cancel)).toBe(false);
+    expect((drag.match(/commit\(dropTopbarItem\(/g) || []).length).toBe(1);
+    const up = drag.slice(drag.indexOf("const up = () => {"), drag.indexOf("const cancel = ("));
+    expect(up).toContain("commit(dropTopbarItem(topbarLayout, srcId, drop.anchorId, drop.before));");
+  });
+
+  it("끝내기 공통(teardown) = 처리기 3개·삽입선·전역 표시·취소 손잡이를 모두 걷는다", () => {
+    const td = drag.slice(drag.indexOf("const teardown = () => {"), drag.indexOf("const up = () => {"));
+    for (const s of ['window.removeEventListener("mousemove", move, true);', 'window.removeEventListener("mouseup", up, true);', 'window.removeEventListener("blur", onBlur);', "cancelTopbarDrag = null;", "line?.remove();", 'document.body.classList.remove("ws-reordering");', 'classList.remove("tb-dragging")']) expect(td).toContain(s);
+  });
+
+  it("세 경로가 취소에 닿는다 — 팝오버 닫힘(Esc 포함)은 close() 첫 줄 · 창이 초점을 잃음은 blur 처리기", () => {
+    const close = pop.slice(pop.indexOf("const close = () => {"), pop.indexOf("const dismiss ="));
+    expect(close.indexOf('cancelTopbarDrag?.("close");')).toBeGreaterThan(-1);
+    expect(close.indexOf('cancelTopbarDrag?.("close");')).toBeLessThan(close.indexOf("pop.remove();"));
+    expect(/if \(e\.key === "Escape"\) close\(\);/.test(pop)).toBe(true);
+    expect(drag).toContain('const onBlur = () => cancel("blur");');
+    expect(drag).toContain('window.addEventListener("blur", onBlur);');
+    expect(drag).toContain("cancelTopbarDrag = cancel;");
+    // 닫힘으로 취소됐을 때만 다음 mouseup 뒤의 click 1회를 삼킨다(초점을 잃은 취소는 아무것도 남기지 않는다)
+    expect(drag).toContain('if (wasDragging && why === "close") window.addEventListener("mouseup", () => suppressNextClick(), { capture: true, once: true });');
+  });
+
+  it("저장이 던져도 화면에는 끝까지 바른다 — DOM 적용이 저장보다 먼저 · 예외 = false · 읽기 예외 = 기본값", () => {
+    expect(apply.indexOf("b.hidden = !it.on;")).toBeLessThan(apply.indexOf("try {"));
+    expect(/try \{[\s\S]*localStorage\.setItem\(TOPBAR_LAYOUT_KEY[\s\S]*\} catch \{\s*return false;\s*\}\s*return true;/.test(apply)).toBe(true);
+    expect(main).toContain("function applyTopbarLayout(items: TopbarItem[], persist: boolean | null): boolean {");
+    const raw = main.slice(main.indexOf("function topbarSavedRaw()"), main.indexOf("let topbarLayout: TopbarItem[]"));
+    expect(/try \{\s*return localStorage\.getItem\(TOPBAR_LAYOUT_KEY\);\s*\} catch \{\s*return null;/.test(raw)).toBe(true);
+  });
+
+  it("저장 실패 = 목록을 화면과 같게 다시 그리고 「저장되지 않았습니다」 1줄을 보인다(성공하면 숨긴다)", () => {
+    const c = pop.slice(pop.indexOf("const commitTb ="), pop.indexOf("const renderTbList ="));
+    expect(c.indexOf("const saved = applyTopbarLayout(next, persist);")).toBeGreaterThan(-1);
+    expect(c.indexOf("renderTbList();")).toBeLessThan(c.indexOf("tbUnsaved.hidden = saved;"));
+    expect(pop).toContain('const tbUnsaved = mkNote("⚠ 저장되지 않았습니다 — 지금 화면에는 반영됐지만, 앱을 다시 켜면 이전 상태로 돌아갑니다.");');
+    expect(pop).toContain("tbUnsaved.hidden = true;");
+    // 알림 줄에 display 를 주지 않는다(hidden 속성이 듣게)
+    for (const r of rules.filter((x) => x.sel.includes(".sp-note"))) expect(/display\s*:/.test(r.body)).toBe(false);
+  });
+});
+
+describe("codex 1R — 숨긴 「완전 초기화」 를 가리키는 안내(MED-3)", () => {
+  // 기본 화면에는 「완전 초기화」 가 없다(끔 5) — 「상단바 단추를 누르라」 만 적으면 없는 단추를 가리킨다.
+  // 네 곳 모두 켜는 길(화면 설정 → 상단 단추 → 완전 초기화)을 함께 적는다.
+  const path = (s: string) => {
+    const a = s.indexOf("화면 설정"), b = s.indexOf("상단 단추", a), c = s.indexOf("완전 초기화", b);
+    return a >= 0 && b > a && c > b;
+  };
+  const line = (rel: string, needle: string) => {
+    const lines = read(rel).split("\n");
+    const i = lines.findIndex((l) => l.includes(needle));
+    expect({ 파일: rel, 찾음: i >= 0 }).toEqual({ 파일: rel, 찾음: true });
+    return lines.slice(i, i + 3).join("\n");
+  };
+
+  it("앱 토스트(새로 시작 대기 멈춤)", () => {
+    const t = line("./main.ts", "기다림을 멈췄습니다(아무것도 바뀌지 않았습니다)");
+    expect(path(t)).toBe(true);
+    expect(read("./main.ts").includes("끝난 뒤 툴바의 [완전 초기화]를 눌러 주세요.\"")).toBe(false);
+  });
+
+  it("사용 설명서 2곳(§ 완전 초기화 · 문제 해결 표)", () => {
+    const manual = read("../../USER-MANUAL.md");
+    expect(path(line("../../USER-MANUAL.md", '되돌리려면 상단의 **완전 초기화** 버튼'))).toBe(true);
+    expect(path(line("../../USER-MANUAL.md", "연습 흔적(부서·세션·기억)이 자꾸 살아나 충돌").split("\n")[0])).toBe(true);
+    expect(manual.includes("topbar **완전 초기화** 버튼")).toBe(false);
+  });
+
+  it("깨끗이 지우기 안내(GUIDE-clean-reset-KR) 머리말", () => {
+    expect(path(line("../../docs/GUIDE-clean-reset-KR.md", "이 문서 대신 앱 상단의 **완전 초기화** 버튼"))).toBe(true);
+  });
+
+  it("CLI 거부 안내(cysr factory-reset · 앱이 켜져 있을 때)", () => {
+    const rs = line("../../src/bin/cys.rs", "지금 켜져 있는 cys 앱에서 하는 것이 가장 쉽다").split("\n")[0];
+    expect(path(rs)).toBe(true);
+    expect(read("../../src/bin/cys.rs").includes("상단바 '완전 초기화' 버튼을 쓰는 것이 가장 쉽다")).toBe(false);
   });
 });
 

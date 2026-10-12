@@ -495,7 +495,8 @@ body.ws-reordering { cursor: grabbing; -webkit-user-select: none; user-select: n
   position: fixed; z-index: var(--z-ctx-menu);
   display: flex; flex-direction: column; gap: .5em;
   padding: .5em .6em;
-  min-width: calc(256px * var(--ui-chrome-scale)); max-width: calc(100vw - 8px);
+  /* 최소 폭도 창 안으로 접는다(codex 1R MED-1): 배율 250% 의 최소 폭 640px 이 500px 창을 넘겨 오른쪽이 잘렸다. 좁으면 내용은 팝오버 안에서 가로 스크롤. */
+  min-width: min(calc(256px * var(--ui-chrome-scale)), calc(100vw - 8px)); max-width: calc(100vw - 8px);
   max-height: calc(100vh - var(--topbar-h) - 8px); overflow: auto;
   background: var(--bar); border: 1px solid var(--border); border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, .4);
@@ -512,6 +513,7 @@ body.ws-reordering { cursor: grabbing; -webkit-user-select: none; user-select: n
 #theme-pop .sp-sec-body { display: flex; flex-direction: column; gap: .4em; padding: .35em 0 .15em; }
 #theme-pop .sp-sec-body[hidden] { display: none; } /* 짝 규칙 — 위 display 가 UA [hidden] 을 이긴다(hiddenpair.test.ts) */
 #theme-pop .sp-note { color: #8b949e; word-break: keep-all; } /* 한글 낱말 가운데서 줄이 꺾이지 않게 */
+#theme-pop .sp-note.sp-warn { color: var(--warn); } /* 저장 실패 알림 — display 를 주지 않는다(hidden 속성으로 숨긴다) */
 #theme-pop .theme-pop-row {
   display: flex; align-items: center; justify-content: space-between; gap: .8em;
   white-space: nowrap;

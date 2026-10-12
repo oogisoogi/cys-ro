@@ -3884,8 +3884,8 @@ pub(crate) fn is_interpreter_name(name: &str) -> bool {
 }
 
 /// 인터프리터가 **다음 낱말을 값으로 받는** 옵션(공백으로 띄운 꼴 · `--opt=값` 은 한 낱말이라 표가 필요 없다).
-/// 이 표가 모르는 옵션이 와도 [`root_cmd_is_agent`] 는 비옵션 낱말 전부를 보므로 엔트리를 놓치지 않는다 — 표의 몫은
-/// 「옵션 값에 든 이름」(`node --require /x/claude app.js`)을 엔트리로 세지 않는 것이다.
+/// 엔트리는 「값을 건너뛴 첫 비옵션 낱말」 하나라, 이 표가 값과 엔트리를 가르는 유일한 장치다(R4) — 표에 없는 값 옵션이
+/// 오면 그 값을 엔트리로 잘못 고른다(불일치 = Empty 쪽).
 fn interpreter_value_options(interp: &str) -> &'static [&'static str] {
     if is_shell_name(interp) {
         return &["-o", "+o", "--rcfile", "--init-file"];
@@ -3907,57 +3907,57 @@ fn interpreter_value_options(interp: &str) -> &'static [&'static str] {
     }
 }
 
-/// 인터프리터 argv(argv[0] 뒤)에서 **비옵션 낱말**을 순서대로 꺼낸다(순수) — 첫째가 스크립트·모듈(엔트리)이고 그 뒤는
-/// 스크립트의 인자다. 값 받는 옵션의 값은 건너뛴다. 셸의 `-c` 묶음(`-c` · `-lc` · `-ic`) 뒤는 명령 문자열이지 스크립트가
-/// 아니므로 아무것도 내지 않는다 · 셸 묶음이 `o` 로 끝나면(`-eo pipefail`) 다음 낱말이 그 값이다.
-fn interpreter_operands<'a>(interp: &str, rest: &'a [String]) -> Vec<&'a str> {
+/// 인터프리터 argv(argv[0] 뒤)에서 **엔트리**(스크립트·모듈 = 첫 비옵션 낱말)를 꺼낸다(순수). 값 받는 옵션의 값은
+/// 건너뛴다. 엔트리 뒤의 낱말(스크립트 인자)은 보지 않는다 — R3 는 그것까지 봤다가 `python3 backup.py --target claude`
+/// 를 에이전트로 읽었다(codex 3R · 승계 차단). 셸의 `-c` 묶음(`-c` · `-lc` · `-ic`) 뒤는 명령 문자열이라 엔트리가 없다 ·
+/// 셸 묶음이 `o` 로 끝나면(`-eo pipefail`) 다음 낱말이 그 값이다.
+/// `is_candidate` = 「이 낱말이 어느 후보의 엔트리인가」. 값 자리의 낱말이 후보 엔트리이고 **그 뒤에 비옵션 낱말이 더
+/// 없으면** 값으로 삼키지 않고 엔트리로 본다 — 프로세스 표 판독(sysinfo)이 빈 인자를 버려 `python3 -W "" worker` 가
+/// `[-W, worker]` 로 보이는 자리의 가드다(codex 3R). 뒤에 비옵션 낱말이 있으면 그쪽이 엔트리다(`node --require
+/// /opt/pre/claude app.js` 의 값은 그대로 값).
+fn interpreter_entry<'a>(interp: &str, rest: &'a [String], is_candidate: &dyn Fn(&str) -> bool) -> Option<&'a str> {
     let shell = is_shell_name(interp);
     let takes_value = interpreter_value_options(interp);
-    let mut out: Vec<&str> = Vec::new();
+    let lost_empty_value =
+        |at: usize| rest.get(at).is_some_and(|v| is_candidate(v) && rest[at + 1..].iter().all(|w| w.starts_with('-')));
     let mut i = 0;
     while i < rest.len() {
         let w = rest[i].as_str();
         i += 1;
-        if !out.is_empty() {
-            // 엔트리 뒤 = 스크립트의 인자 — 옵션 꼴만 뺀다(스크립트 옵션의 값은 알 수 없다).
-            if !w.starts_with('-') {
-                out.push(w);
-            }
-            continue;
-        }
-        if takes_value.contains(&w) {
-            i += 1;
-            continue;
-        }
-        if let Some(flags) = w.strip_prefix('-') {
-            if shell && !flags.starts_with('-') {
-                if flags.contains('c') {
-                    return Vec::new();
+        let mut value_follows = takes_value.contains(&w);
+        if !value_follows {
+            match w.strip_prefix('-') {
+                Some(flags) => {
+                    if shell && !flags.starts_with('-') {
+                        if flags.contains('c') {
+                            return None;
+                        }
+                        value_follows = flags.ends_with('o');
+                    }
+                    if !value_follows {
+                        continue;
+                    }
                 }
-                if flags.ends_with('o') {
-                    i += 1;
-                }
+                None if shell && w.starts_with('+') => continue,
+                None => return Some(w),
             }
-            continue;
         }
-        if shell && w.starts_with('+') {
-            continue;
+        // 여기 = 값 받는 옵션. 다음 낱말이 그 값이다 — 단 빈 값이 유실된 꼴이면 그 낱말이 엔트리다.
+        if lost_empty_value(i) {
+            return rest.get(i).map(String::as_str);
         }
-        out.push(w);
+        i += 1;
     }
-    out
+    None
 }
 
-/// 후보 엔트리(agents.json 에 적힌 꼴)와 뿌리 argv 의 낱말이 같은 파일을 가리키는가(순수).
+/// 후보 엔트리(agents.json 에 적힌 꼴)와 뿌리 argv 의 엔트리가 같은 파일을 가리키는가(순수).
 /// `~/…` 는 홈 뒤 꼬리로 · 절대 경로는 그대로 · 그 밖(상대 경로·모듈 이름)은 같거나 경로 꼬리가 같으면 참.
-/// ★R3 Windows 규약: 어느 한쪽에 `\` 가 있거나 드라이브 글자 꼴(`C:`)이면 구분자를 `/` 로 맞추고 대소문자를 무시해
-/// 견준다(`node C:\Agents\worker.js` 후보 × `node.exe c:\agents\worker.js` 뿌리). 그 밖(Unix)은 글자 그대로 — 대소문자를 가린다.
-fn entry_matches(spec_entry: &str, root_entry: &str) -> bool {
-    let windows_form = |p: &str| {
-        let b = p.as_bytes();
-        p.contains('\\') || (b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':')
-    };
-    if windows_form(spec_entry) || windows_form(root_entry) {
+/// ★Windows 규약(구분자 `\` · `/` 통일 + 대소문자 무시)은 **관측 플랫폼이 Windows 일 때만** 켠다(`windows` 인자 ·
+/// 운영 값 = `cfg!(windows)`). R3 는 문자열 내용(`\` · 드라이브 글자)으로 켰다가 Unix 파일 이름 안의 `\`
+/// (`/tmp/review/agents\run.sh`)를 다른 스크립트와 같은 것으로 읽었다(codex 3R · 빈 셸 가드 해제). Unix 는 글자 그대로다.
+fn entry_matches_on(windows: bool, spec_entry: &str, root_entry: &str) -> bool {
+    if windows {
         let norm = |p: &str| p.replace('\\', "/").to_ascii_lowercase();
         return entry_matches_exact(&norm(spec_entry), &norm(root_entry));
     }
@@ -3975,36 +3975,46 @@ fn entry_matches_exact(spec_entry: &str, root_entry: &str) -> bool {
     !rel.is_empty() && (root_entry == rel || root_entry.ends_with(&format!("/{rel}")))
 }
 
-/// ★뿌리 존재 판정(순수 · 1.1.9 R2 · R3) — 뿌리 프로세스의 argv 가 기지 에이전트의 **기동 꼴**인가.
+/// ★뿌리 존재 판정(순수 · 1.1.9 R2~R4) — 뿌리 프로세스의 argv 가 기지 에이전트의 **기동 꼴**인가.
 /// 자손 쪽 매처(`cmdline_matches_agent_exec`)는 명령줄의 어느 낱말이든 본다. 뿌리에 그 규칙을 쓰면 `tail -f /tmp/claude`
 /// 같은 비에이전트가 차 있는 좌석이 되고(승계 차단), 셸이 실행 파일인 후보(`bash /opt/agents/a.sh`)가 있으면 **맨 셸**이
 /// 에이전트로 읽혀 빈 셸 가드가 풀린다(codex 1R HIGH·MED · 실 프로세스 재현). 그래서 뿌리는 자리로만 본다:
 ///   ⓐ 후보 실행 파일이 셸·인터프리터가 **아닐 때**: 뿌리 argv[0] 이 그 실행 파일이거나, 뿌리가 인터프리터이고 그
-///      비옵션 낱말 가운데 하나가 그 실행 파일(shebang 스크립트 = `node …/bin/codex` · npm 번들 = `node …/claude-code/cli.js`).
-///   ⓑ 후보 실행 파일이 셸·인터프리터일 때: argv[0] 이 그 인터프리터이고 비옵션 낱말 가운데 하나가 후보의 **엔트리**와
-///      같을 때만. 엔트리가 없는 후보(맨 `bash`)는 어떤 뿌리에도 맞지 않는다 — 맨 셸은 에이전트가 아니다.
-/// 인터프리터 뿌리의 비옵션 낱말을 「첫째 하나」 가 아니라 **전부** 보는 까닭(R3 · codex 2R): 값 받는 옵션을 표가 모르면
-/// 그 값이 첫째 자리를 차지해 진짜 엔트리를 가린다(`node --require pre.js …/cli.js`) — 놓치면 살아 있는 에이전트가 빈 좌석이
-/// 된다. 인터프리터가 아닌 뿌리는 argv[0] 만 본다(`tail -f /tmp/claude` 는 여전히 에이전트가 아니다).
+///      **엔트리**가 그 실행 파일(shebang 스크립트 = `node …/bin/codex` · npm 번들 = `node …/claude-code/cli.js`).
+///   ⓑ 후보 실행 파일이 셸·인터프리터일 때: argv[0] 이 그 인터프리터이고 엔트리가 후보의 엔트리와 같을 때만.
+///      엔트리가 없는 후보(맨 `bash`)는 어떤 뿌리에도 맞지 않는다 — 맨 셸은 에이전트가 아니다.
+/// 엔트리 = 값 받는 옵션의 값을 건너뛴 첫 비옵션 낱말 하나([`interpreter_entry`]) — 스크립트 인자는 보지 않는다(R4).
 /// 후보가 여럿 맞아도 참이다(존재 판정 — 같은 실행 파일을 쓰는 claude 계열이 겹치는 팩에서 모호로 접히지 않는다).
 /// 재료는 **인자 경계가 살아 있는 argv** 다(R3) — 공백이 든 경로도 한 낱말로 견준다.
 pub(crate) fn root_cmd_is_agent(root_argv: &[String], specs: &[(String, RootAgentSpec)]) -> bool {
+    root_cmd_is_agent_on(cfg!(windows), root_argv, specs)
+}
+
+/// [`root_cmd_is_agent`] 의 본체 — 관측 플랫폼을 값으로 받는다(시험이 두 플랫폼의 입력을 한 기계에서 고정한다).
+pub(crate) fn root_cmd_is_agent_on(windows: bool, root_argv: &[String], specs: &[(String, RootAgentSpec)]) -> bool {
     let Some(a0) = root_argv.first() else {
         return false;
     };
-    let operands = if is_interpreter_name(a0) {
-        interpreter_operands(a0, &root_argv[1..])
+    // 「이 낱말이 이 후보의 엔트리인가」 — 인터프리터 후보는 적힌 엔트리와, 그 밖은 실행 파일 낱말 규칙으로.
+    let entry_of = |spec: &RootAgentSpec, word: &str| {
+        if is_interpreter_name(&spec.bin_base) {
+            spec.entry.as_deref().is_some_and(|want| entry_matches_on(windows, want, word))
+        } else {
+            cmdline_matches_agent_exec(word, &spec.bin_base)
+        }
+    };
+    let entry = if is_interpreter_name(a0) {
+        interpreter_entry(a0, &root_argv[1..], &|w| specs.iter().any(|(_, spec)| entry_of(spec, w)))
     } else {
-        Vec::new()
+        None
     };
     let a0 = a0.strip_prefix('-').unwrap_or(a0);
     specs.iter().any(|(_, spec)| {
+        let entry_hit = entry.is_some_and(|e| entry_of(spec, e));
         if is_interpreter_name(&spec.bin_base) {
-            cmdline_matches_agent_exec(a0, &spec.bin_base)
-                && spec.entry.as_deref().is_some_and(|want| operands.iter().any(|got| entry_matches(want, got)))
+            cmdline_matches_agent_exec(a0, &spec.bin_base) && entry_hit
         } else {
-            cmdline_matches_agent_exec(a0, &spec.bin_base)
-                || operands.iter().any(|w| cmdline_matches_agent_exec(w, &spec.bin_base))
+            cmdline_matches_agent_exec(a0, &spec.bin_base) || entry_hit
         }
     })
 }
@@ -5423,7 +5433,7 @@ pub(crate) fn agent_root_specs_from_json(agents: &serde_json::Value) -> Vec<(Str
             words
                 .iter()
                 .position(|w| !is_env_assign_word(w))
-                .and_then(|i| interpreter_operands(&words[i], &words[i + 1..]).first().map(|e| e.to_string()))
+                .and_then(|i| interpreter_entry(&words[i], &words[i + 1..], &|_| false).map(str::to_string))
         } else {
             None
         };
@@ -15598,11 +15608,10 @@ mod tests {
             assert!(seat119_is_agent(agent_root, &specs), "실 기동 꼴을 놓쳤다: {agent_root}");
             assert_eq!(seat119_verdict(false, true, 0, Some(agent_root), &specs), SeatState::Occupied, "{agent_root}");
         }
-        // ★R3 로 기대값이 바뀐 두 줄: 인터프리터 뿌리는 비옵션 낱말 **전부**를 엔트리 후보로 본다(값 받는 옵션을 표가
-        //   모를 때 진짜 엔트리를 놓치지 않으려는 안전 쪽 선택) — 그래서 스크립트 인자에 에이전트 이름이 있으면 차 있다고 읽는다.
-        assert!(seat119_is_agent("node /opt/app/server.js claude", &specs));
-        assert!(seat119_is_agent("python3 /opt/app/run.py --agent codex", &specs));
-        // 인터프리터의 비옵션 낱말 어디에도 에이전트가 없으면 아니다 · 옵션 꼴 낱말(`--claude`)은 세지 않는다.
+        // 인터프리터의 **엔트리**가 에이전트가 아니면 아니다 — 스크립트 인자에 이름이 있어도(R4: R3 가 이 두 줄의 기대값을
+        //   「맞다」 로 뒤집었다가 codex 3R 이 승계 차단으로 재현해 되돌렸다. 인터프리터 뿌리도 엔트리 하나만 본다).
+        assert!(!seat119_is_agent("node /opt/app/server.js claude", &specs));
+        assert!(!seat119_is_agent("python3 /opt/app/run.py --agent codex", &specs));
         assert!(!seat119_is_agent("node /opt/app/server.js --claude", &specs));
         assert!(!seat119_is_agent("python3 /opt/app/run.py worker", &specs));
         // 내장 팩 꼴(저장소 `cysjavis-pack/agents.json`)의 실 후보도 같은 답이다.
@@ -15737,11 +15746,13 @@ mod tests {
         let entry_of = |name: &str| mixed.iter().find(|(n, _)| n == name).and_then(|(_, s)| s.entry.clone());
         assert_eq!(entry_of("env").as_deref(), Some("/srv/agents/main.js"), "값 받는 옵션의 값을 엔트리로 골랐다");
         assert_eq!(entry_of("win").as_deref(), Some("C:\\Program Files\\Agent\\worker.js"));
-        assert!(root_cmd_is_agent(&argv(&["node.exe", "c:\\program files\\agent\\worker.js"]), &mixed));
+        let win_root = argv(&["node.exe", "c:\\program files\\agent\\worker.js"]);
+        assert!(super::root_cmd_is_agent_on(true, &win_root, &mixed), "Windows 에서 구분자·대소문자만 다른 같은 파일");
+        assert!(!super::root_cmd_is_agent_on(false, &win_root, &mixed), "Unix 에서는 글자 그대로 견준다");
     }
 
-    /// ★1.1.9 R3 ②(codex 2R MED) — 값 받는 인터프리터 옵션이 엔트리를 가리지 않는다. 표가 아는 옵션은 값을 건너뛰고,
-    /// 표가 모르는 옵션이 와도 인터프리터 뿌리는 비옵션 낱말 **전부**를 보므로 진짜 엔트리를 놓치지 않는다.
+    /// ★1.1.9 R3 ②(codex 2R MED) — 값 받는 인터프리터 옵션이 엔트리를 가리지 않는다: 표가 아는 옵션은 값을 건너뛴다.
+    /// (R4: 「비옵션 낱말 전부」 는 철회됐다 — 표가 값과 엔트리를 가르는 유일한 장치다.)
     /// 비인터프리터 뿌리는 여전히 argv[0] 만 본다(1R MED 유지).
     #[test]
     fn seat119r3_interpreter_option_values_do_not_hide_the_entry() {
@@ -15770,40 +15781,92 @@ mod tests {
         }
     }
 
-    /// ★1.1.9 R3 ② 의 두 장치를 따로 고정한다 — ⑴ 표가 모르는 값 옵션 뒤의 엔트리는 「비옵션 낱말 전부」 가 받는다
-    /// ⑵ 표가 아는 값 옵션의 **값**에 든 에이전트 이름은 엔트리로 세지 않는다(표의 몫).
+    /// ★1.1.9 R4 ①(codex 3R MED) — 인터프리터 뿌리도 **엔트리 하나만** 본다. 스크립트 인자에 에이전트 이름이 든
+    /// 비에이전트(`python3 /tmp/backup.py --target claude`)는 빈 좌석이고 승계할 수 있다. 값과 엔트리를 가르는 것은 값 받는
+    /// 옵션 표뿐이다 — 표에 없는 값 옵션 뒤의 엔트리는 놓친다(기대값 명시 = 남는 한계).
     #[test]
-    fn seat119r3_all_operands_catch_unknown_options_and_the_table_drops_option_values() {
+    fn seat119r4_only_the_entry_counts_script_arguments_do_not() {
+        use super::{seat_claimable_verdict, SeatState};
         let specs = seat119_this_mac_specs();
-        // ⑴ 표에 없는 값 옵션(`--unknown-flag 값`) — 첫 비옵션 낱말은 그 값이지만 진짜 엔트리가 뒤에 있다.
-        assert!(seat119_is_agent("node --unknown-flag /tmp/x.js /opt/n/bin/claude", &specs));
-        assert!(seat119_is_agent("python3 --some-opt value /opt/py/bin/codex", &specs));
-        // ⑵ 표가 아는 값 옵션의 값은 건너뛴다 — 그 값의 이름이 에이전트와 같아도 엔트리가 아니다.
+        // codex 3R 재현 입력 그대로 + 같은 계열(도구 래퍼가 node 로 뜬 꼴).
+        for not_agent in [
+            "python3 /tmp/backup.py --target claude",
+            "node /tmp/server.js --name claude",
+            "node /opt/n/lib/node_modules/tsx/dist/cli.mjs /srv/app.ts --name claude",
+            "python3 -W ignore /tmp/backup.py codex",
+            "bash /srv/deploy.sh claude",
+        ] {
+            assert!(!seat119_is_agent(not_agent, &specs), "스크립트 인자로 뿌리를 에이전트로 읽었다: {not_agent}");
+            let seat = seat119_verdict(false, true, 0, Some(not_agent), &specs);
+            assert_eq!(seat, SeatState::Empty, "{not_agent}");
+            assert!(seat_claimable_verdict(seat, false, false), "비에이전트 인터프리터 뿌리({not_agent})가 승계를 막았다");
+        }
+        // 표가 아는 값 옵션의 값은 엔트리가 아니다 — 그 값의 이름이 에이전트와 같아도(뒤에 진짜 엔트리가 있다).
         assert!(!seat119_is_agent("node --require /opt/pre/claude /opt/app/server.js", &specs));
         assert!(!seat119_is_agent("python3 -W claude /opt/app/run.py", &specs));
         assert!(!seat119_is_agent("bash -o claude /opt/app/run.sh", &specs));
+        // 기대값 명시(한계): 표에 **없는** 값 옵션이 오면 그 값을 엔트리로 고른다 → 뒤의 진짜 엔트리를 놓친다(Empty 쪽).
+        assert!(!seat119_is_agent("node --unknown-flag /tmp/x.js /opt/n/bin/claude", &specs));
+        // 같은 꼴이라도 `--opt=값` 한 낱말이면 값이 자리를 차지하지 않는다.
+        assert!(seat119_is_agent("node --unknown-flag=/tmp/x.js /opt/n/bin/claude", &specs));
     }
 
-    /// ★1.1.9 R3 ③(codex 2R MED) — Windows 꼴 엔트리는 구분자(`\` · `/`)와 대소문자를 가리지 않고 견준다.
-    /// Unix 꼴은 종전 그대로 대소문자를 가린다.
+    /// ★1.1.9 R4 ②(codex 3R MED) — Windows 엔트리 규약(구분자·대소문자 무시)은 **관측 플랫폼**으로 켠다. 내용(`\` ·
+    /// 드라이브 글자)으로 켜면 Unix 파일 이름 안의 `\` 가 다른 스크립트와 같은 것으로 읽힌다. 두 플랫폼의 입력을 다 고정한다.
     #[test]
-    fn seat119r3_windows_entries_ignore_separator_and_case_unix_entries_do_not() {
-        // codex 재현 입력 둘.
+    fn seat119r4_windows_entry_rules_follow_the_platform_not_the_string() {
+        use super::root_cmd_is_agent_on as on;
+        let argv = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<String>>();
+        // Windows 모드 — codex 2R 입력 둘 + 구분자 섞임·대소문자 다름 = 같은 파일 · 다른 파일·드라이브 = 아님.
         let abs = seat119_specs(&[("w", "node C:\\Agents\\worker.js")]);
-        assert!(seat119_is_agent("node.exe c:\\agents\\worker.js", &abs));
         let rel = seat119_specs(&[("w", "node tools\\worker.js")]);
-        assert!(seat119_is_agent("node.exe C:\\app\\tools\\worker.js", &rel));
-        // 구분자가 섞여도 같다 · 다른 파일은 여전히 아니다.
-        assert!(seat119_is_agent("node.exe C:/Agents/Worker.js", &abs));
-        assert!(seat119_is_agent("node.exe C:\\app\\Tools\\WORKER.JS", &seat119_specs(&[("w", "node tools/worker.js")])));
-        assert!(!seat119_is_agent("node.exe c:\\agents\\other.js", &abs));
-        assert!(!seat119_is_agent("node.exe d:\\agents\\worker.js", &abs));
-        // Unix 비교 보존: 대소문자가 다른 경로는 다른 파일이다.
-        let unix = seat119_specs(&[("u", "bash /opt/Agents/run.sh"), ("r", "node tools/Worker.js")]);
-        assert!(seat119_is_agent("bash /opt/Agents/run.sh", &unix));
-        assert!(!seat119_is_agent("bash /opt/agents/run.sh", &unix), "Unix 경로를 대소문자 무시로 견줬다");
-        assert!(seat119_is_agent("node /srv/app/tools/Worker.js", &unix));
-        assert!(!seat119_is_agent("node /srv/app/tools/worker.js", &unix), "Unix 상대 경로를 대소문자 무시로 견줬다");
+        assert!(on(true, &argv(&["node.exe", "c:\\agents\\worker.js"]), &abs));
+        assert!(on(true, &argv(&["node.exe", "C:\\app\\tools\\worker.js"]), &rel));
+        assert!(on(true, &argv(&["node.exe", "C:/Agents/Worker.js"]), &abs));
+        assert!(on(true, &argv(&["node.exe", "C:\\app\\Tools\\WORKER.JS"]), &seat119_specs(&[("w", "node tools/worker.js")])));
+        assert!(!on(true, &argv(&["node.exe", "c:\\agents\\other.js"]), &abs));
+        assert!(!on(true, &argv(&["node.exe", "d:\\agents\\worker.js"]), &abs));
+        // Unix 모드 — codex 3R 재현 입력 그대로: 파일 이름 안의 `\` 는 글자다(다른 스크립트 = 불일치 · 가드 유지).
+        let unix = seat119_specs(&[("u", "bash /tmp/review/Agents/run.sh"), ("r", "node tools/Worker.js")]);
+        let backslash_name = argv(&["/bin/bash", "/tmp/review/agents\\run.sh"]);
+        assert!(!on(false, &backslash_name, &unix), "Unix 파일 이름의 백슬래시를 구분자로 읽어 다른 스크립트와 맞췄다");
+        assert!(on(true, &backslash_name, &unix), "대조: Windows 모드에서는 같은 파일이다(그래서 플랫폼으로 갈라야 한다)");
+        // Unix 는 대소문자를 가린다(절대·상대) · Windows 꼴 문자열이 와도 Unix 모드면 글자 그대로다.
+        assert!(on(false, &argv(&["bash", "/tmp/review/Agents/run.sh"]), &unix));
+        assert!(!on(false, &argv(&["bash", "/tmp/review/agents/run.sh"]), &unix));
+        assert!(on(false, &argv(&["node", "/srv/app/tools/Worker.js"]), &unix));
+        assert!(!on(false, &argv(&["node", "/srv/app/tools/worker.js"]), &unix));
+        assert!(!on(false, &argv(&["node.exe", "c:\\agents\\worker.js"]), &abs));
+        assert!(on(false, &argv(&["node.exe", "C:\\Agents\\worker.js"]), &abs), "글자가 같으면 Unix 모드에서도 같다");
+        // 운영 래퍼는 빌드 플랫폼을 넘긴다.
+        assert_eq!(super::root_cmd_is_agent(&backslash_name, &unix), on(cfg!(windows), &backslash_name, &unix));
+    }
+
+    /// ★1.1.9 R4 ③(codex 3R MED) — 프로세스 표 판독이 **빈 인자를 버린** argv 의 가드. `python3 -W "" worker` 가
+    /// `[-W, worker]` 로 보일 때, 값 자리 낱말이 후보 엔트리이고 그 뒤에 비옵션 낱말이 없으면 값이 아니라 엔트리다.
+    /// 뒤에 비옵션 낱말이 있으면 가드는 서지 않는다(옵션 값에 든 이름을 엔트리로 세지 않는다).
+    #[test]
+    fn seat119r4_lost_empty_option_value_does_not_swallow_the_entry() {
+        use super::{root_cmd_is_agent, seat_verdict, SeatState};
+        let argv = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<String>>();
+        let worker = seat119_specs(&[("worker", "worker")]);
+        // codex 재현 입력 그대로(빈 인자가 유실된 argv · 프레임워크 Python 의 argv[0]).
+        let lost = argv(&["Python", "-W", "/tmp/review/worker"]);
+        assert!(root_cmd_is_agent(&lost, &worker), "빈 옵션 값이 유실된 argv 에서 엔트리를 값으로 삼켰다");
+        assert_eq!(seat_verdict(false, true, 0, Some(&lost), &worker), SeatState::Occupied);
+        // 빈 인자가 보존된 argv 도 같은 답이다 · 뒤따르는 낱말이 옵션 꼴뿐이어도 가드가 선다.
+        assert!(root_cmd_is_agent(&argv(&["python3", "-W", "", "/tmp/review/worker"]), &worker));
+        assert!(root_cmd_is_agent(&argv(&["python3", "-W", "/tmp/review/worker", "--verbose"]), &worker));
+        // 인터프리터 후보(엔트리 있음)도 같은 가드를 탄다.
+        let py = seat119_specs(&[("py", "python3 /srv/agent.py")]);
+        assert!(root_cmd_is_agent(&argv(&["python3", "-X", "/srv/agent.py"]), &py));
+        // 음성 — 가드가 오탐을 만들지 않는다: 값 뒤에 비옵션 낱말이 있으면 값은 값이다(뒤의 것이 엔트리).
+        let specs = seat119_this_mac_specs();
+        assert!(!seat119_is_agent("node --require /opt/pre/claude /opt/app/server.js", &specs));
+        assert!(!root_cmd_is_agent(&argv(&["python3", "-W", "/tmp/review/worker", "/srv/other.py"]), &worker));
+        // 값이 후보 엔트리가 아니면 평소대로 값이다 · 엔트리가 없으면 아니다.
+        assert!(!root_cmd_is_agent(&argv(&["python3", "-W", "ignore"]), &worker));
+        assert!(root_cmd_is_agent(&argv(&["python3", "-W", "ignore", "/tmp/review/worker"]), &worker));
     }
 
     /// ★1.1.9 R3 실 프로세스 — 공백이 든 경로의 스크립트를 실제로 돌리는 셸 뿌리(자손 0)를, 따옴표로 묶은 후보로 재면

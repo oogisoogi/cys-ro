@@ -1,0 +1,12 @@
+T1 인터프리터 뿌리가 비옵션 낱말 전부를 봄(= R3 ⓑ 복귀) → 잡음 rc=101 test result: FAILED. 10 passed; 5 failed; 0 ignored; 0 measured; 2606 filtered out; finished in 0.46s
+    FAILED: ['seat119r2_root_matches_by_position_not_by_any_argument_word', 'seat119r2_shell_exec_candidates_never_make_a_bare_shell_an_agent', 'seat119r3_interpreter_option_values_do_not_hide_the_entry', 'seat119r4_lost_empty_option_value_does_not_swallow_the_entry', 'seat119r4_only_the_entry_counts_script_arguments_do_not']
+T2 Windows 규약을 문자열 내용으로 켬(= R3 판별 복귀) → 잡음 rc=101 test result: FAILED. 13 passed; 2 failed; 0 ignored; 0 measured; 2606 filtered out; finished in 0.44s
+    FAILED: ['seat119r3_quoted_candidate_entries_match_the_observed_argv', 'seat119r4_windows_entry_rules_follow_the_platform_not_the_string']
+T3 빈 인자 유실 가드 제거 → 잡음 rc=101 test result: FAILED. 14 passed; 1 failed; 0 ignored; 0 measured; 2606 filtered out; finished in 0.46s
+    FAILED: ['seat119r4_lost_empty_option_value_does_not_swallow_the_entry']
+T4 값 받는 옵션 표 비움(R4 에서는 엔트리 시험이 적색이어야 한다 — 표가 유일한 방어) → 잡음 rc=101 test result: FAILED. 11 passed; 4 failed; 0 ignored; 0 measured; 2606 filtered out; finished in 0.42s
+    FAILED: ['seat119r3_interpreter_option_values_do_not_hide_the_entry', 'seat119r3_quoted_candidate_entries_match_the_observed_argv', 'seat119r4_lost_empty_option_value_does_not_swallow_the_entry', 'seat119r4_only_the_entry_counts_script_arguments_do_not']
+T5 가드가 뒤따르는 비옵션 낱말을 안 봄(값 자리 낱말이 후보 엔트리면 무조건 엔트리) → 잡음 rc=101 test result: FAILED. 13 passed; 2 failed; 0 ignored; 0 measured; 2606 filtered out; finished in 0.46s
+    FAILED: ['seat119r4_lost_empty_option_value_does_not_swallow_the_entry', 'seat119r4_only_the_entry_counts_script_arguments_do_not']
+복원: True
+합계 5/5 잡음

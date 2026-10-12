@@ -1,5 +1,6 @@
 # HANDOFF — cysd 좌석 판정: 뿌리가 에이전트 자신인 좌석이 유휴마다 「빈 좌석」 으로 읽히던 결함 (TICKET=cysr-1110-seat-state)
 
+- **R4(2026-10-12 19:54~ · master#175bc660 · codex 3R 신규 MED 3건 · 마지막 라운드)의 정본은 §16** 다 — 지금 규칙의 최종 서술은 §16-2 다. §14·§15 의 규칙 서술 가운데 「비옵션 낱말 전부」 와 「내용으로 켜는 Windows 규약」 은 R4 에서 철회됐다.
 - **R3(2026-10-12 19:16~ · master#f30628ff · codex 2R 신규 MED 3건)의 정본은 §15** 다 — 후보 기동 문자열의 셸 낱말 분해 · 인터프리터 옵션 값 · Windows 엔트리 규약. §14 의 규칙 서술 가운데 R3 로 바뀐 줄에는 「R3」 표시를 달았다.
 - **R2(2026-10-12 18:28~ · master#40dad7fc · codex 1R 채택 3건)의 정본은 §14** 다 — 뿌리 존재 판정이 「어느 낱말이든」 에서 「자리(argv[0] · 인터프리터+엔트리)」 규칙으로 바뀌었고, §2 판정표·§3 줄 번호·§4 핑 줄·§8·§9 를 그에 맞춰 고쳤다.
 - 발주 = master#06eeaab3(2026-10-12 17:25) · 범위 답 = master#6d32701a(1번 A안) · master#fe654723(2번 B안)
@@ -13,6 +14,7 @@
 | 1번 커밋 | `fix(cysd)(1.1.9 좌석 판정 · master#06eeaab3)` — `src/bin/cysd/governance.rs` 1파일 + 이 문서 + 증거 폴더 |
 | 2번 커밋 | `test(publish)(1.1.9 hdiutil 재시도 · master#06eeaab3)` — `scripts/tests/test_update_publish.py` 1파일 |
 | R2 커밋 | `fix(cysd)(1.1.9 좌석 판정 R2 · master#40dad7fc)` — `governance.rs` + 이 문서 + 증거 폴더(§14) |
+| R4 커밋 | `fix(cysd)(1.1.9 좌석 판정 R4 · master#175bc660)` — `governance.rs` + 이 문서 + 증거 폴더(§16) |
 | R3 커밋 | `fix(cysd)(1.1.9 좌석 판정 R3 · master#f30628ff)` — `governance.rs` + `src/first_run_gates.rs`(분해기 공개 1낱말) + 이 문서 + 증거 폴더(§15) |
 | 제품 거동이 바뀌는 좌석 | 뿌리 프로세스가 에이전트 자신(`cys new-surface --cmd '… claude …'`)이고, 팩 `agents.json` 에 **같은 실행 파일을 쓰는 에이전트가 둘 이상** 등록된 설치(이 맥 = claude · claude-fable · claude-sonnet) |
 | 바뀌는 방향 | 그 좌석의 유휴 순간 판정 `empty` → `occupied` ⇒ 큐 배달 보류(`empty_seat`) 해소 · 빈 좌석 승계 대상에서 제외 |
@@ -97,16 +99,16 @@ v113 블록을 `seat_state()` 안으로 옮기기만 하면 `root_agent_cmd` 가
 
 ## 3. 소비처 표 — 「이 좌석이 쓰이는 중인가」 를 묻는 모든 자리(제품 코드)
 
-줄 번호는 **R3 커밋** 기준이다(라운드마다 governance.rs 가 밀려 다시 맞췄다). 「전」 = 기준 bb52b846.
+줄 번호는 **R4 커밋** 기준이다(라운드마다 governance.rs 가 밀려 다시 맞췄다 — 단 R3 에서 생겼다가 R4 에서 사라진 `interpreter_operands` :3913 · `entry_matches` :3955 · R3 의 `root_cmd_is_agent` :3991 은 §15 의 서술 그대로 둔 옛 줄이다. 지금 자리는 §16-3). 「전」 = 기준 bb52b846.
 
 ### 3-1. 판정을 **만드는** 자리(전부 `seat_verdict` 한 곳으로 모임)
 
 | 자리 | 전 | 후 |
 |---|---|---|
-| `governance.rs:4014` `seat_state()` — 즉시 프로브의 입구 | 자손 유무만 · 뿌리 보정 없음 | `seat_state_of` → `seat_verdict` |
-| `governance.rs:4068` `cache_seat_verdict()` — 틱(`refresh_seat_cache` :4196) · 생성 직후(`prime_seat_cache_at_create` :4088) | `seat_state()` + v113 블록(`root_agent_cmd` = 등록 규칙 → 후보가 겹치면 미발화) | `seat_state_of` → `seat_verdict`(같은 본체) |
-| `governance.rs:4301` `seat_claimable()` ← `seat_claimable_now()` :4318 — 승계 게이트 | 날 `seat_state()`(뿌리 보정 없음) | `seat_state()`(같은 본체) → `seat_claimable_verdict` |
-| `governance.rs:4434` `agent_seat_vacant_now()` — 빈 셸 가드 | 날 `seat_state()`(뿌리 보정 없음) + 「뿌리가 에이전트인가」 = `root_agent_cmd`(어느 낱말이든) | `seat_state()`(같은 본체) + 「뿌리가 에이전트인가」 = `root_cmd_is_agent`(R2 · :4447 · 좌석 판정과 같은 뿌리 규칙) |
+| `governance.rs:4024` `seat_state()` — 즉시 프로브의 입구 | 자손 유무만 · 뿌리 보정 없음 | `seat_state_of` → `seat_verdict` |
+| `governance.rs:4078` `cache_seat_verdict()` — 틱(`refresh_seat_cache` :4206) · 생성 직후(`prime_seat_cache_at_create` :4098) | `seat_state()` + v113 블록(`root_agent_cmd` = 등록 규칙 → 후보가 겹치면 미발화) | `seat_state_of` → `seat_verdict`(같은 본체) |
+| `governance.rs:4311` `seat_claimable()` ← `seat_claimable_now()` :4328 — 승계 게이트 | 날 `seat_state()`(뿌리 보정 없음) | `seat_state()`(같은 본체) → `seat_claimable_verdict` |
+| `governance.rs:4444` `agent_seat_vacant_now()` — 빈 셸 가드 | 날 `seat_state()`(뿌리 보정 없음) + 「뿌리가 에이전트인가」 = `root_agent_cmd`(어느 낱말이든) | `seat_state()`(같은 본체) + 「뿌리가 에이전트인가」 = `root_cmd_is_agent`(R2 · :4457 · 좌석 판정과 같은 뿌리 규칙) |
 
 ### 3-2. 즉시 프로브를 **부르는** 자리(호출 코드는 무수정 · 받는 값이 달라진다)
 
@@ -124,29 +126,29 @@ v113 블록을 `seat_state()` 안으로 옮기기만 하면 `root_agent_cmd` 가
 
 | 자리 | 무엇에 쓰나 | 뿌리=에이전트 유휴 좌석에서 전(후보 겹침 팩) → 후 |
 |---|---|---|
-| `governance.rs:4156` `role_seat_hold()` | **큐 배달 보류** | `empty_seat` 보류 → 통과 ← 이번 티켓의 목표 |
+| `governance.rs:4166` `role_seat_hold()` | **큐 배달 보류** | `empty_seat` 보류 → 통과 ← 이번 티켓의 목표 |
 | `governance.rs:1434` 데드맨 틱 → `liveness_verdict` | meta 좌석의 `AgentNeverStarted` · 무메타 좌석의 `SeatVacantNoMeta` | Empty → Occupied(사망 후보에서 빠지는 방향) |
-| `governance.rs:4659` `seat_takeover_recheck()` | 승계 직전 재검(캐시가 Occupied 면 취소) | 취소 사유 없음 → 「좌석 캐시가 Occupied」 로 취소 |
-| `governance.rs:7884` `machine_hold_probe()` 의 `shell_evidence` | 기계 보류 판정의 「셸 증거」 축 | true → false |
+| `governance.rs:4669` `seat_takeover_recheck()` | 승계 직전 재검(캐시가 Occupied 면 취소) | 취소 사유 없음 → 「좌석 캐시가 Occupied」 로 취소 |
+| `governance.rs:7894` `machine_hold_probe()` 의 `shell_evidence` | 기계 보류 판정의 「셸 증거」 축 | true → false |
 | `alert_route.rs:1756` `seat_is_agent_backed()` | 경보·스케줄 push 의 대상 좌석 적격 | 부적격 → 적격 |
 | `handlers.rs:4560` `deliver_to_ceo` | CEO 좌석 적격 | SeatEmpty → 통과 |
-| `handlers.rs:1020` `reclaim_live_snapshot` · `:6164` · `:10513` · `:12074` · `governance.rs:13375` | status·topology·이벤트의 `seat` 문자열 노출 | `"empty"` → `"occupied"` |
+| `handlers.rs:1020` `reclaim_live_snapshot` · `:6164` · `:10513` · `:12074` · `governance.rs:13385` | status·topology·이벤트의 `seat` 문자열 노출 | `"empty"` → `"occupied"` |
 
 ### 3-4. `root_agent_cmd` 를 부르는 자리(존재 판정으로 바뀐 영향)
 
 | 자리 | 후보 | 전 → 후 |
 |---|---|---|
 | `governance.rs:941` · `:971` 사망 감지 | 그 좌석 meta 1개 | 불변(후보 1개는 모호할 수 없다) |
-| `governance.rs:4222` `refresh_seat_cache` 의 `seat_agent_cache` 재료 | 전체 후보 | 뿌리 argv 가 재료 목록에 **들어가기는** 한다. 그러나 바로 다음 줄 `seat_agent_observed` 가 종전 규칙이라 후보가 겹치면 여전히 미관측 = 결과 불변(A안이 남긴 자리 · §8) |
+| `governance.rs:4232` `refresh_seat_cache` 의 `seat_agent_cache` 재료 | 전체 후보 | 뿌리 argv 가 재료 목록에 **들어가기는** 한다. 그러나 바로 다음 줄 `seat_agent_observed` 가 종전 규칙이라 후보가 겹치면 여전히 미관측 = 결과 불변(A안이 남긴 자리 · §8) |
 | `governance.rs:877` 2표본 확정 대기(주석상 unix 는 항상 no-op) | 전체 후보 | 뿌리가 후보 겹침 에이전트이고 **자손에 다른 종류 에이전트가 하나만** 있는 좌석: 전 = 자손 쪽으로 확정 · 후 = 모호 → 유보. Windows 한정 · 그 꼴의 좌석은 실측한 적 없음 |
-| (R2 로 호출 삭제) `agent_seat_vacant_now` 의 `root_is_agent` | — | R2 에서 이 자리는 `root_agent_cmd` 를 부르지 않는다 — `root_cmd_is_agent`(:4447)로 바뀌었다(§14-3) |
+| (R2 로 호출 삭제) `agent_seat_vacant_now` 의 `root_is_agent` | — | R2 에서 이 자리는 `root_agent_cmd` 를 부르지 않는다 — `root_cmd_is_agent`(:4457)로 바뀌었다(§14-3) |
 
 ## 4. 큐 배달 경로는 어느 함수로 「빈 좌석」 을 묻는가(브리프 2항 답)
 
 | 경로 | Empty 를 묻는 코드 줄 | 읽는 값 |
 |---|---|---|
-| 틱 배달(조용해지면 자동 배달 · `cys send --queued`) | `governance.rs:13359` `deliver_queued` → `role_seat_hold(&s, now_epoch(), dept_grace)` | `seat_cache` |
-| 강제 배달(`cys queue deliver`) | `governance.rs:12978` `force_deliver_entry` → `role_seat_hold(…)` | `seat_cache` |
+| 틱 배달(조용해지면 자동 배달 · `cys send --queued`) | `governance.rs:13369` `deliver_queued` → `role_seat_hold(&s, now_epoch(), dept_grace)` | `seat_cache` |
+| 강제 배달(`cys queue deliver`) | `governance.rs:12988` `force_deliver_entry` → `role_seat_hold(…)` | `seat_cache` |
 | 직접 전송(`cys send` · surface.send_text) | `handlers.rs:6456` → `agent_seat_vacant_now` | 즉시 프로브. 빈 셸로 판정되면 본문을 큐로 돌린다(→ 위 두 줄의 게이트로) |
 | 스케줄 push(정기 스캔 등 `[schedule …]`) | `schedule.rs:2654` `inject_on` → `agent_seat_vacant_now` · 대상 좌석 선정은 `alert_route.rs:1756` `seat_is_agent_backed` | 즉시 프로브 + `seat_cache` |
 | 각성 핑(`cys reinject --check`) | `src/bin/cys.rs:24841` `run_reinject` → `inject_text_opts`(:4039): **직접 전송이 먼저다**(`surface.send_text` · authoritative) → 데몬의 `handlers.rs:6456` 빈 셸 가드(`agent_seat_vacant_now`)를 지난다. 그 요청이 타이핑 가드 오류로 거부되면(:4065) 같은 본문을 **큐로 1회 전환**한다(:4079 `queued: true` · from = `inject(typing_guard fallback)`) → 위 틱 배달 게이트(`role_seat_hold`). (R2 에서 코드 줄 확인 · codex 1R 보조 관측과 일치. R1 문서의 「추정」 을 이 사실로 교체) | 즉시 프로브 → (전환 시) `seat_cache` |
@@ -211,7 +213,7 @@ M2 가 「수리 전 None/Empty · 수리 후 Occupied」 의 단위 층 증거�
 ## 8. 남긴 것 — 별도 후보
 
 ### 8-1. B 후보: 자손 쪽 존재 판정(`seat_agent_observed`)에 같은 꼴이 남아 있다
-- 자리 = `governance.rs:4057` `seat_agent_observed` → `select_observed_agent`. 쓰는 곳 = `refresh_seat_cache` :4223 → `seat_agent_cache`.
+- 자리 = `governance.rs:4067` `seat_agent_observed` → `select_observed_agent`. 쓰는 곳 = `refresh_seat_cache` :4233 → `seat_agent_cache`.
 - 영향 = **무메타 좌석**에서만: 데드맨 보조축 `SeatVacantNoMeta` 의 무장(`liveness_verdict`) · 부서 좌석의 `seat_no_agent` 보류(`role_seat_hold` · 생성 뒤 180초 유예 안).
 - 후보가 겹치는 팩에서는 claude 자손을 봐도 「미관측」 이라, 보조축이 조용히 꺼져 있고 부서 무메타 좌석은 유예 내내 보류된다(코드 판독 · 실측 아님).
 - 같은 성질 하나 더(R2 · codex 1R MED 의 자손판): 자손 쪽 매처 `cmdline_matches_agent_exec` 는 명령줄의 **어느 낱말이든** 본다 — `tail -f /tmp/claude` 가 자손이면 에이전트 관측으로 센다. 뿌리는 R2 에서 자리 규칙으로 바꿨고 자손 쪽(등록·데드맨)은 master 지시로 무접촉이다. B 를 열 때 함께 잰다.
@@ -304,6 +306,7 @@ python3 $E/seat-root-agent-e2e.py /Applications/cys.app/Contents/MacOS/cysd targ
 SEAT119_AGENTS=single python3 $E/seat-root-agent-e2e.py /Applications/cys.app/Contents/MacOS/cysd target/debug/cys "수리 전 · 후보 1종"
 SEAT119_AGENTS=shell python3 $E/seat-root-agent-e2e.py target/debug/cysd target/debug/cys "수리 후 R2 · 셸 후보 2"   # 맨 셸 좌석 B = empty 여야 한다
 python3 $E/mutants-r2.py <격리 실행 래퍼>                                         # R2 뮤턴트 8종(끝나면 원본 복원)
+python3 $E/mutants-r4.py <격리 실행 래퍼>                                         # R4 뮤턴트 5종(현재 소스 기준) · mutants-r3.py·r2.py·mutants.py 는 각 라운드 커밋 소스 기준 기록
 python3 $E/mutants-r3.py <격리 실행 래퍼>                                         # R3 뮤턴트 8종 · ONLY=Q4 처럼 접두로 하나만 · mutants-r2.py 는 R2 커밋 소스 기준 기록
 ```
 
@@ -331,20 +334,20 @@ python3 $E/mutants-r3.py <격리 실행 래퍼>                                 
 
 - 셸·인터프리터 목록(`is_interpreter_name` :3877) = 기존 `is_shell_name` 의 셸들 + `node` · `nodejs` · `bun` · `deno` · `ruby` · `perl` · `php` · `python*`(대소문자 무시 · Windows 실행 확장자 제거 뒤).
 - 후보가 여럿 맞아도 참이다(존재 판정 — R1 의 원인 수리는 그대로).
-- 후보(`RootAgentSpec { bin_base, entry }`)는 `agent_root_specs_from_json`(:5411)이 낸다. 실행 파일은 종전 `agent_candidates_from_json` 의 결과를 그대로 쓰고 엔트리만 더한다. 디스크 팩 ∪ 내장 팩 합치기는 `known_agents_with`(:5390) 한 곳으로 모았다(`known_agent_candidates` 의 본문을 옮긴 것 · 규칙 불변).
+- 후보(`RootAgentSpec { bin_base, entry }`)는 `agent_root_specs_from_json`(:5421)이 낸다. 실행 파일은 종전 `agent_candidates_from_json` 의 결과를 그대로 쓰고 엔트리만 더한다. 디스크 팩 ∪ 내장 팩 합치기는 `known_agents_with`(:5400) 한 곳으로 모았다(`known_agent_candidates` 의 본문을 옮긴 것 · 규칙 불변).
 
 ### 14-3. R2 로 바뀐 코드(R1 커밋 대비 · `governance.rs` 1파일)
 
 | 자리 | R1 | R2 |
 |---|---|---|
 | `seat_verdict` 의 뿌리 절(:3838) | `known_agent_cmd(c, candidates)`(어느 낱말이든) | `root_cmd_is_agent(c, specs)`(자리 규칙) |
-| `seat_state_of`(:4020) · `cache_seat_verdict`(:4068) 의 지연 로드 칸 | `(이름, 실행 파일)` 목록 | `(이름, RootAgentSpec)` 목록 — `known_agent_root_specs`(:5385) |
-| `refresh_seat_cache`(:4196) | 후보 칸 1개를 좌석 판정과 `seat_agent_cache` 가 같이 씀 | 뿌리 후보 칸 `root_specs` 를 따로 둠(자손 0 좌석이 있을 때만 읽음) · `seat_agent_cache` 쪽은 종전 칸 그대로 |
-| `agent_seat_vacant_now` 의 `root_is_agent`(:4447) | `root_agent_cmd(…).is_some()`(어느 낱말이든) | 뿌리 argv 를 읽어 `root_cmd_is_agent` |
-| `agent_candidates_from_json` | env 대입 판별이 함수 안 클로저 | 같은 식을 `is_env_assign_word`(:5315)로 꺼내 뿌리 후보 파생과 같이 씀(판별식 불변) |
-| `root_agent_cmd`(:5108) · `known_agent_cmd`(:3862) · 자손 쪽 전부 | — | **R1 그대로**(생존 판정·2표본 확정·`seat_agent_cache` 의 재료 — master 지시 「자손 쪽 매처 무접촉」) |
+| `seat_state_of`(:4030) · `cache_seat_verdict`(:4078) 의 지연 로드 칸 | `(이름, 실행 파일)` 목록 | `(이름, RootAgentSpec)` 목록 — `known_agent_root_specs`(:5395) |
+| `refresh_seat_cache`(:4206) | 후보 칸 1개를 좌석 판정과 `seat_agent_cache` 가 같이 씀 | 뿌리 후보 칸 `root_specs` 를 따로 둠(자손 0 좌석이 있을 때만 읽음) · `seat_agent_cache` 쪽은 종전 칸 그대로 |
+| `agent_seat_vacant_now` 의 `root_is_agent`(:4457) | `root_agent_cmd(…).is_some()`(어느 낱말이든) | 뿌리 argv 를 읽어 `root_cmd_is_agent` |
+| `agent_candidates_from_json` | env 대입 판별이 함수 안 클로저 | 같은 식을 `is_env_assign_word`(:5325)로 꺼내 뿌리 후보 파생과 같이 씀(판별식 불변) |
+| `root_agent_cmd`(:5118) · `known_agent_cmd`(:3862) · 자손 쪽 전부 | — | **R1 그대로**(생존 판정·2표본 확정·`seat_agent_cache` 의 재료 — master 지시 「자손 쪽 매처 무접촉」) |
 
-귀결 하나(정직 고지): `root_agent_cmd` 는 여전히 「어느 낱말이든」 이다. 그것을 부르는 자리는 사망 감지(:941 · :971 — 그 좌석 meta 1개로 물음)·2표본 확정(:877)·`seat_agent_cache` 재료(:4222)뿐이고, 좌석 판정·빈 셸 가드·승계 게이트는 이제 부르지 않는다(배선 핀이 빈 셸 가드에 `root_agent_cmd(` 가 다시 들어오면 적색).
+귀결 하나(정직 고지): `root_agent_cmd` 는 여전히 「어느 낱말이든」 이다. 그것을 부르는 자리는 사망 감지(:941 · :971 — 그 좌석 meta 1개로 물음)·2표본 확정(:877)·`seat_agent_cache` 재료(:4232)뿐이고, 좌석 판정·빈 셸 가드·승계 게이트는 이제 부르지 않는다(배선 핀이 빈 셸 가드에 `root_agent_cmd(` 가 다시 들어오면 적색).
 
 ### 14-4. 실 후보 꼴 실측 — 새 뿌리 규칙에 그대로 맞는가
 
@@ -399,7 +402,7 @@ lib 1차 실패에 대한 판단(실측과 해석을 가른다): **실측** = �
 
 | # | 지적(codex 재현) | R2 의 어디가 틀렸나 | R3 처방 |
 |---|---|---|---|
-| ① | 후보 `bash '/tmp/agent.sh'` × 관측 뿌리 `/bin/bash /tmp/agent.sh` → **R1 Occupied → R2 Empty** · 메타 좌석의 빈 셸 가드 false → true(실 bash) | 후보 cmd 를 공백으로만 나눠 따옴표가 엔트리에 남았다. 내가 한계로 적은 「공백 경로」 보다 넓었다 — 공백이 없어도 따옴표만 치면 걸린다 | 후보 기동 문자열을 **셸 낱말로 분해**한다(작은·큰따옴표를 벗김 · `\ ` = 공백). 저장소에 이미 있던 분해기 `cys::first_run_gates::split_shell_words` 를 그대로 쓴다(공개 표기 1낱말만 추가). 뿌리 쪽은 공백으로 이어 붙였다 다시 나누지 않고 **argv 그대로** 견준다(`argv_parts_snapshot` :5177) → 따옴표로 묶은 공백 경로도 한 낱말로 맞는다 |
+| ① | 후보 `bash '/tmp/agent.sh'` × 관측 뿌리 `/bin/bash /tmp/agent.sh` → **R1 Occupied → R2 Empty** · 메타 좌석의 빈 셸 가드 false → true(실 bash) | 후보 cmd 를 공백으로만 나눠 따옴표가 엔트리에 남았다. 내가 한계로 적은 「공백 경로」 보다 넓었다 — 공백이 없어도 따옴표만 치면 걸린다 | 후보 기동 문자열을 **셸 낱말로 분해**한다(작은·큰따옴표를 벗김 · `\ ` = 공백). 저장소에 이미 있던 분해기 `cys::first_run_gates::split_shell_words` 를 그대로 쓴다(공개 표기 1낱말만 추가). 뿌리 쪽은 공백으로 이어 붙였다 다시 나누지 않고 **argv 그대로** 견준다(`argv_parts_snapshot` :5187) → 따옴표로 묶은 공백 경로도 한 낱말로 맞는다 |
 | ② | 뿌리 `node --require /tmp/preload.js …/claude-code/cli.js` → 엔트리를 preload.js 로 오선택 → **R1 Occupied → R2 Empty**(실 node) · 역할 큐 `empty_seat` · 무메타면 승계 false → true | 「첫 비옵션 낱말 하나」 를 엔트리로 봤다. 값 받는 옵션의 값이 그 자리를 차지한다 | 둘 다: ⓐ 인터프리터별 **값 받는 옵션 표**(`interpreter_value_options` :3889)로 값을 건너뛴다 ⓑ 그 위에 **인터프리터 뿌리에 한해** 비옵션 낱말 **전부**를 엔트리 후보로 본다(`interpreter_operands` :3913) — 표가 모르는 옵션이 와도 진짜 엔트리를 놓치지 않는다. 인터프리터가 아닌 뿌리는 argv[0] 만(1R MED 유지) |
 | ③ | 후보 `node C:\Agents\worker.js` × 뿌리 `node.exe c:\agents\worker.js` · 후보 `node tools\worker.js` × 뿌리 `node.exe C:\app\tools\worker.js` → **R1 Occupied → R2 Empty**(순수 함수) | 엔트리 비교가 대소문자를 가리고 상대 경로 꼬리에 `/` 만 썼다 | `entry_matches`(:3955): **어느 한쪽에 `\` 가 있거나 드라이브 글자 꼴(`C:`)이면** 양쪽의 구분자를 `/` 로 맞추고 소문자로 견준다. 그 밖(Unix)은 글자 그대로(`entry_matches_exact` :3967). 실행 파일의 `.exe` 접미는 기존 매처(`strip_win_exec_ext`)가 이미 벗긴다 — 재사용 |
 | 보조 | 후보 칸은 `refresh_seat_cache` 의 함수 로컬 · 두 로더(`known_agent_candidates` · `known_agent_root_specs`)는 같은 합치기 함수를 쓰지만 **파일 읽기는 따로**라 팩을 고치는 순간에는 같은 스냅샷을 보장하지 않는다 | — | 변경 0(codex 도 그 경합의 장애를 재현하지 못했다). 팩 변경은 다음 틱의 지연 로드에서 반영되고 즉시 프로브는 매번 다시 읽는다 |
@@ -421,8 +424,8 @@ lib 1차 실패에 대한 판단(실측과 해석을 가른다): **실측** = �
 |---|---|---|
 | `root_cmd_is_agent`(:3991) 의 재료 | 공백으로 나눈 명령줄 문자열 · 엔트리 = 첫 비옵션 낱말 | argv 조각(`&[String]`) · 인터프리터 뿌리의 비옵션 낱말 전부 |
 | `seat_verdict`(:3838) 넷째 인자 | `root_cmd: Option<&str>` | `root_argv: Option<&[String]>` |
-| `seat_state_of`(:4020) · `agent_seat_vacant_now`(:4447) 의 뿌리 argv 읽기 | `argv_snapshot`(공백으로 이어 붙인 문자열) | `argv_parts_snapshot`(:5177 · 인자 경계 보존). `argv_snapshot`(:5169)은 그 위의 얇은 래퍼가 됐다(반환값 불변 · 다른 소비자 무접촉) |
-| `agent_root_specs_from_json`(:5411) | cmd 를 공백으로 나눔 | `split_shell_words`(:5421) → 선두 env 대입을 건너뛴 뒤 `interpreter_operands` 의 첫째가 엔트리 |
+| `seat_state_of`(:4030) · `agent_seat_vacant_now`(:4457) 의 뿌리 argv 읽기 | `argv_snapshot`(공백으로 이어 붙인 문자열) | `argv_parts_snapshot`(:5187 · 인자 경계 보존). `argv_snapshot`(:5179)은 그 위의 얇은 래퍼가 됐다(반환값 불변 · 다른 소비자 무접촉) |
+| `agent_root_specs_from_json`(:5421) | cmd 를 공백으로 나눔 | `split_shell_words`(:5431) → 선두 env 대입을 건너뛴 뒤 `interpreter_operands` 의 첫째가 엔트리 |
 | `exec_and_entry` | 있음 | 삭제(→ `interpreter_value_options` · `interpreter_operands`) |
 | `entry_matches` | Unix 꼴만 | Windows 규약 분기 + `entry_matches_exact` |
 | `src/first_run_gates.rs:166` `split_shell_words` | 비공개 | `pub`(한 낱말 · 본문 무수정 · lib 의 관문 판정과 같은 분해기를 쓴다) |
@@ -452,7 +455,7 @@ lib 1차 실패에 대한 판단(실측과 해석을 가른다): **실측** = �
 ### 15-5. 실 후보 꼴 표(§14-4)는 R3 에서도 그대로 선다
 이 맥 팩·내장 팩의 후보는 따옴표·값 옵션·Windows 경로를 쓰지 않는다. §14-4 의 기동 꼴(실측 2 · 파일 종류로 본 꼴 1 · 추정 1 · 미설치 1)은 R3 시험에서도 전부 Occupied 다(`seat119r2_root_matches_by_position_not_by_any_argument_word` 가 같은 13꼴을 R3 규칙으로 잰다).
 
-### 15-6. R3 뒤에 남는 한계
+### 15-6. R3 뒤에 남는 한계 (→ R4 갱신: 2·4 는 뒤집혔고 6 은 닫혔다. 최종 목록 = §16-6)
 1. **묶지 않은** 공백 경로 후보(`bash /opt/my agents/run.sh`)는 맞지 않는다 — 셸도 그 문자열을 두 낱말로 읽는다(기대값을 시험에 명시). 따옴표나 `\ ` 로 묶으면 맞는다.
 2. 인터프리터 뿌리는 비옵션 낱말 전부를 보므로, **스크립트 인자에 에이전트 이름이 든** 인터프리터 프로세스(`node /opt/app/server.js claude`)는 에이전트로 읽힌다(Occupied = 보호 방향 · R3 에서 넓어진 자리). 인터프리터가 아닌 뿌리는 해당 없다.
 3. 인터프리터의 엔트리 이름이 에이전트 이름과 같은 다른 스크립트(`python3 /tmp/claude`)는 에이전트로 읽힌다(R2 와 같음 · shebang 기동 꼴과 구별 불가).
@@ -474,3 +477,69 @@ lib 1차 실패에 대한 판단(실측과 해석을 가른다): **실측** = �
 | `test_pyseal_census.py` | `PYSEAL-CENSUS-OK` |
 | 뮤턴트 | 8 / 8 잡음(Q2a 는 의도한 갈림 · §15-4) |
 | ui · 팩 · `scripts/tests/test_update_publish.py` | R3 변경 0(다시 돌리지 않음) |
+
+## 16. R4 — codex 3R(신규 한정 · 마지막 이종 라운드) 채택 3건 (TICKET=cysr-1110-seat-state-r4 · master#175bc660)
+
+검토 원문 = `~/axdev/master/reports/seat-state-1012/REVIEW-codex-3r.md`. 2R 세 건은 닫힘 3/3 확정. 신규 MED 3(전부 실 프로세스 재현). 이종 검토는 3R 로 상한 — R4 는 master 독립 재검 + 코드 정독으로 닫는다.
+
+### 16-1. 지적과 처방
+
+| # | 지적(codex 재현) | 어디가 틀렸나 | R4 처방 |
+|---|---|---|---|
+| ① | 뿌리 `python3 /tmp/backup.py --target claude` · `node /tmp/server.js --name claude`(생존 · 자손 0)가 **R2 Empty → R3 Occupied** · 무메타 승계 true → false = 1R MED 의 인터프리터 뿌리 재발 | R3 의 「인터프리터 뿌리는 비옵션 낱말 전부를 본다」(master 지시 ②ⓑ · master 가 오판으로 판정). 내가 「보호 방향」 이라 적은 것이 승계 계약에서는 복구 차단이다 | 철회 — 값 받는 옵션의 값을 건너뛴 **엔트리(첫 비옵션 낱말 하나 · `-m 모듈` 포함)만** 본다(`interpreter_entry` :3918). 스크립트 인자는 보지 않는다. R3 가 뒤집은 기대값 2줄은 「아니다」 로 되돌렸다 |
+| ② | 후보 `bash /tmp/review/Agents/run.sh` × 실제 뿌리 argv `["/bin/bash", "/tmp/review/agents\run.sh"]`(다른 파일) → **Occupied** · 빈 셸 가드 true → false | R3 는 Windows 규약을 문자열 내용(`\` · 드라이브 글자)으로 켰다. Unix 파일 이름 안의 `\` 는 글자다 | 관측 플랫폼으로 켠다 — `entry_matches_on(windows, …)`(:3959) · 운영 값은 `root_cmd_is_agent`(:3989) 가 넘기는 `cfg!(windows)`. Unix 는 글자 그대로. 시험은 `root_cmd_is_agent_on`(:3994)으로 두 플랫폼의 입력을 한 기계에서 고정 |
+| ③ | `python3 -W "" /tmp/review/worker` 가 프로세스 표에서 `[Python, -W, /tmp/review/worker]` 로 보인다(sysinfo 0.33.1 이 macOS·Linux 에서 **빈 인자를 버림**) → 엔트리를 `-W` 의 값으로 삼켜 **R2 Occupied → R3 Empty** · 무메타 승계 false → true | R3 가 값 받는 옵션 표를 들이면서, 재료(argv)가 빈 인자를 잃을 수 있다는 것을 보지 않았다 | 최소 가드: 값 자리의 낱말이 **어느 후보의 엔트리이고 그 뒤에 비옵션 낱말이 더 없으면** 값으로 삼키지 않고 엔트리로 본다. 뒤에 비옵션 낱말이 있으면 가드는 서지 않는다(`node --require /opt/pre/claude /opt/app/server.js` 는 여전히 Empty). 근본 수리는 별도 후보 **B-2**(§16-6) |
+
+### 16-2. 뿌리 존재 판정 — 최종 규칙(R4 · `root_cmd_is_agent_on` :3994)
+
+1. 재료 = 뿌리의 argv 그대로(인자 경계 보존 · `argv_parts_snapshot`).
+2. 엔트리 = argv[0] 이 셸·인터프리터일 때만 있다: 값 받는 옵션(§15-2 표)의 값을 건너뛴 **첫 비옵션 낱말 하나**. 셸의 `-c` 묶음이 있으면 없다. 빈 인자 유실 가드(§16-1 ③) 한 가지 예외.
+3. 후보 실행 파일이 셸·인터프리터가 **아니면**: argv[0] 이 그 실행 파일이거나 엔트리가 그 실행 파일(낱말 규칙 = 기존 엄격 매처의 낱말 판정).
+4. 후보 실행 파일이 셸·인터프리터면: argv[0] 이 그 인터프리터이고 엔트리가 후보의 엔트리와 같을 때만(엔트리 없는 후보는 무엇과도 불일치).
+5. 엔트리 경로 비교 = `~/…` 는 홈 뒤 꼬리 · 절대 경로는 그대로 · 상대 경로·모듈은 같거나 꼬리가 같음. Windows 에서만 구분자 통일 + 대소문자 무시.
+6. 후보가 여럿 맞아도 참(존재 판정). 인터프리터가 아닌 뿌리는 argv[0] 만 본다.
+
+### 16-3. R4 로 바뀐 코드(R3 커밋 대비 · `governance.rs` 1파일)
+
+| 자리 | R3 | R4 |
+|---|---|---|
+| 엔트리 추출 | `interpreter_operands` — 비옵션 낱말 전부 | `interpreter_entry`(:3918) — 첫 비옵션 낱말 하나 + 빈 인자 유실 가드(후보 판정 클로저를 받는다) |
+| `root_cmd_is_agent` | 인터프리터 뿌리의 낱말 「전부 중 하나」 | `root_cmd_is_agent_on(cfg!(windows), …)` 래퍼(:3989) · 본체(:3994)는 엔트리 하나만 견준다 |
+| 엔트리 비교 | `entry_matches` — 내용이 Windows 꼴이면 정규화 | `entry_matches_on(windows, …)`(:3959) — 플랫폼 인자로만 |
+| `agent_root_specs_from_json` 의 후보 엔트리 | `interpreter_operands(…).first()` | `interpreter_entry(…, 후보 판정 없음)` — 결과 같음 |
+
+`seat_verdict` · `seat_state_of` · 빈 셸 가드 · `argv_parts_snapshot` · `split_shell_words` 재사용 · 값 받는 옵션 표 · `root_agent_cmd` · 자손 쪽 = R3 그대로.
+
+### 16-4. R4 시험·뮤턴트·실연
+
+- 새 시험 3건(`seat119r4_`): `…only_the_entry_counts_script_arguments_do_not`(codex ① 입력 그대로 2 + tsx 래퍼 꼴 등 5꼴 = Empty · 승계 가능 / 표가 아는 옵션의 값 = 엔트리 아님 3꼴 / **표에 없는 값 옵션 뒤의 엔트리는 놓친다 = 기대값 명시** / `--opt=값` 한 낱말이면 맞음) · `…windows_entry_rules_follow_the_platform_not_the_string`(Windows 모드: codex 2R 입력 둘 + 구분자·대소문자 변형 = 맞음 · 다른 파일·드라이브 = 아님 / Unix 모드: codex 3R 입력 그대로 = 불일치 · 같은 입력이 Windows 모드에서는 맞음(대조) · 대소문자 다르면 아님 · Windows 꼴 문자열도 글자가 다르면 아님 / 운영 래퍼 = 빌드 플랫폼) · `…lost_empty_option_value_does_not_swallow_the_entry`(codex ③ 입력 그대로 `[Python, -W, /tmp/review/worker]` = Occupied · 빈 인자가 보존된 argv 도 같은 답 · 뒤가 옵션 꼴뿐이어도 가드 · 인터프리터 후보도 같은 가드 / 음성: 값 뒤에 비옵션 낱말이 있으면 값 = `node --require /opt/pre/claude /opt/app/server.js` Empty · 값이 후보 엔트리가 아니면 값).
+- 바뀐 기존 시험: R3 가 뒤집었던 두 줄(`node /opt/app/server.js claude` · `python3 /opt/app/run.py --agent codex`)을 「아니다」 로 원복 · R3 의 「전부 보기/표 분리」 시험과 Windows 시험은 위 R4 시험 둘로 교체 · R3 따옴표 시험의 Windows 경로 줄은 플랫폼을 명시(`_on(true)` 맞음 · `_on(false)` 아님). Windows CI 에서도 같은 기대값이 서도록 플랫폼에 달린 단언은 전부 `_on` 으로 부른다.
+- 뮤턴트 5/5 잡음(`mutants-r4.txt`): **T1 인터프리터 뿌리가 비옵션 낱말 전부를 봄(= R3 ⓑ 복귀)** → 5건 적 · **T2 Windows 규약을 문자열 내용으로 켬(= R3 판별 복귀)** → 2건 적 · **T3 빈 인자 유실 가드 제거** → 1건 적 · T4 값 받는 옵션 표 비움 → 4건 적(R3 때는 엔트리 시험이 초록으로 남았으나 이제는 `seat119r3_interpreter_option_values_do_not_hide_the_entry` 도 적색 — 표가 유일한 방어) · T5 가드가 뒤따르는 비옵션 낱말을 안 봄 → 2건 적(`node --require /opt/pre/claude /opt/app/server.js` 가 Occupied 가 되는 것을 잡는다).
+- 격리 실데몬 2런(R4 최종 빌드): 이 맥 팩 꼴 = 뿌리 claude 좌석 occupied×3 · 큐 배달 · 맨 셸 좌석 empty×3 / 이 맥 팩 꼴 + 셸 후보 2 = 맨 `/bin/zsh -l` 좌석 empty×3 · 뿌리 claude 좌석 occupied×3 · 큐 배달. codex 3R 의 세 입력을 실데몬으로 돌린 런은 없다(순수 함수 시험으로 쟀다 — 3R 입력의 실 프로세스판 시험도 이번에는 넣지 않았다).
+
+### 16-5. codex 3R 의 나머지 확인(변경 0 · 기록)
+- 분해기: JSON 디코딩 뒤 `node "C:\Program Files\x\a.js"` 는 두 낱말로 옳게 나뉜다. `\"`·`\\` 미해석은 R2 에서도 불일치라 신규로 세지 않았다. `pub` 외 본문 변경 없음 = 기존 호출자 거동 불변.
+- argv: macOS·Linux 는 빈 인자를 보존하지 않는다(위 ③). Windows 는 `CommandLineToArgvW` 분해 — 네이티브 미검증. macOS 에서 70,000자 인자는 그대로 보존됐다.
+- 도구 뿌리: argv[0] 이 글자 그대로 `npx`·`tsx`·`uv`·`poetry` 면 인터프리터 분기에 들어가지 않는다(argv[0] 만 본다). 각 도구의 실기동 꼴은 미측정.
+
+### 16-6. 남는 한계 — 최종 목록(R4 뒤)
+1. **B-2 후보(별도 티켓)**: 빈 인자 유실은 sysinfo 0.33.1 상류의 거동이다(macOS `process.rs:602` · Linux `process.rs:839` — codex 판독). 이번 가드는 「값 자리 낱말이 후보 엔트리 ∧ 뒤에 비옵션 낱말 없음」 한 꼴만 구한다. 스크립트 인자가 뒤따르는 꼴(`python3 -W "" worker job1`)은 여전히 엔트리를 값으로 삼킨다(Empty). 근본 수리 = argv 를 직접 읽는다(macOS `KERN_PROCARGS2` · Linux `/proc/<pid>/cmdline`) — 빈 인자까지 보존.
+2. 표에 **없는** 값 받는 옵션이 오면 그 값을 엔트리로 고른다 → 진짜 엔트리를 놓친다(Empty = 큐 보류 쪽). 시험에 기대값을 명시했다. 표를 넓히는 것이 유일한 수리다(R3 의 「전부 보기」 는 ①로 철회).
+3. 인터프리터의 엔트리 이름이 에이전트와 같은 다른 스크립트(`python3 /tmp/claude`)는 에이전트로 읽힌다(shebang 기동 꼴과 구별 불가).
+4. 묶지 않은 공백 경로 후보는 맞지 않는다(셸도 두 낱말로 읽는다). 분해기는 `\ ` 만 이스케이프로 읽는다(`\"`·`\\` 미해석).
+5. Windows 네이티브 좌석의 실제 뿌리 꼴과 큐·승계 영향은 재지 않았다. Windows 규약은 빌드 플랫폼으로 켜지므로 Windows 에서 대소문자·구분자만 다른 **다른 파일**은 같은 것으로 읽힌다(그 플랫폼의 파일 시스템 규약과 같다).
+6. `/usr/bin/env node …` 를 cmd 로 적은 후보는 exec 뒤 `node …` 가 되어 맞지 않는다(R1 부터 같음). argv[0] 이 바뀌는 인터프리터(프레임워크 Python)는 인터프리터 **후보**와 맞지 않는다 — 다만 비인터프리터 후보(`worker`)는 엔트리로 맞는다(위 ③ 시험의 `Python` 꼴).
+7. B 후보(자손 쪽 `seat_agent_observed` 의 같은 꼴 · §8-1)는 그대로 남아 있다.
+
+### 16-7. R4 게이트 수치(격리 HOME · 좌석 `CYS_*` env 제거)
+
+| 게이트 | 결과 |
+|---|---|
+| `cargo test --bin cysd -- seat119 v113_ seat_agent_observed select_observed`(해당 묶음) | 21 passed / 0 failed(전체 실행 출력에서 센 수 · seat119 14 = R1 4 + R2 3 + R3 4 + R4 3) |
+| `cargo test --bin cysd`(전체 · R4 최종 소스 · 20:02~20:10) | **2613 passed / 0 failed / 8 ignored** · 415.41s(R3 2612 − 교체 2 + 새 3) |
+| `cargo test --lib`(전체 · 20:10~20:15) | **1077 passed / 0 failed** / 2 ignored · 301.60s |
+| `cargo clippy --bin cysd --tests --message-format=short` | rc 0 · error 0 · 파일 위치가 있는 경고 355줄(R1~R3 과 같은 수) 가운데 **기준 bb52b846 대비 바꾼 줄 범위 안 = 0**(governance.rs 30개 범위 · first_run_gates.rs 1개 범위) |
+| `bash scripts/secret-scan.sh --all`(스테이징 상태) | clean(1701 파일) |
+| `test_pyseal_census.py` | `PYSEAL-CENSUS-OK` |
+| 뮤턴트 | 5 / 5 잡음 |
+| ui · 팩 · lib 소스 · `scripts/tests/test_update_publish.py` | R4 변경 0 |

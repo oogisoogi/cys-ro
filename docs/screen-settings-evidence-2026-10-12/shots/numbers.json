@@ -113,14 +113,14 @@
           "vh": 900,
           "left": 915,
           "top": 42,
-          "right": 1440,
+          "right": 1436,
           "bottom": 896,
-          "w": 525,
+          "w": 521,
           "h": 854,
           "scrollH": 1871,
           "clientH": 852,
-          "scrollW": 523,
-          "clientW": 523,
+          "scrollW": 519,
+          "clientW": 519,
           "anchorBottom": 38
         }
       }
@@ -135,14 +135,14 @@
           "vh": 900,
           "left": 1001,
           "top": 37,
-          "right": 1440,
+          "right": 1436,
           "bottom": 896,
-          "w": 439,
+          "w": 435,
           "h": 859,
           "scrollH": 1570,
           "clientH": 857,
-          "scrollW": 437,
-          "clientW": 437,
+          "scrollW": 433,
+          "clientW": 433,
           "anchorBottom": 33,
           "lastRowReachable": true,
           "inView": true
@@ -154,14 +154,14 @@
           "vh": 800,
           "left": 841,
           "top": 37,
-          "right": 1280,
+          "right": 1276,
           "bottom": 796,
-          "w": 439,
+          "w": 435,
           "h": 759,
           "scrollH": 1570,
           "clientH": 757,
-          "scrollW": 437,
-          "clientW": 437,
+          "scrollW": 433,
+          "clientW": 433,
           "anchorBottom": 33,
           "lastRowReachable": true,
           "inView": true
@@ -173,14 +173,14 @@
           "vh": 800,
           "left": 412,
           "top": 65,
-          "right": 1280,
+          "right": 1276,
           "bottom": 796,
-          "w": 868,
+          "w": 864,
           "h": 732,
           "scrollH": 3089,
           "clientH": 730,
-          "scrollW": 866,
-          "clientW": 866,
+          "scrollW": 862,
+          "clientW": 862,
           "anchorBottom": 61,
           "lastRowReachable": true,
           "inView": true
@@ -192,14 +192,14 @@
           "vh": 600,
           "left": 361,
           "top": 37,
-          "right": 800,
+          "right": 796,
           "bottom": 596,
-          "w": 439,
+          "w": 435,
           "h": 559,
           "scrollH": 1570,
           "clientH": 557,
-          "scrollW": 437,
-          "clientW": 437,
+          "scrollW": 433,
+          "clientW": 433,
           "anchorBottom": 33,
           "lastRowReachable": true,
           "inView": true
@@ -557,7 +557,7 @@
         }
       ]
     },
-    "s13": {
+    "s13a": {
       "ok": true,
       "detail": {
         "direct": {
@@ -569,15 +569,20 @@
           "h": 532,
           "vw": 500,
           "vh": 600,
-          "scrollW": 691,
-          "clientW": 490,
           "minWidth": "492px",
-          "lastReset": true,
-          "firstToggle": true
+          "scrollLeft": 0,
+          "scrollW": 490,
+          "clientW": 490,
+          "controls": 55,
+          "outside": 0,
+          "maxRightOverflow": -30,
+          "rows": 11,
+          "twoLineRows": 11,
+          "lastResetByVerticalScroll": true
         },
         "wide": {
-          "w": 868,
-          "right": 1440,
+          "w": 864,
+          "right": 1436,
           "vw": 1440
         },
         "shrunk": {
@@ -587,10 +592,74 @@
           "w": 492,
           "vw": 500,
           "vh": 600,
-          "lastReset": true,
-          "firstToggle": true
+          "scrollLeft": 0,
+          "scrollW": 490,
+          "clientW": 490,
+          "controls": 55,
+          "outside": 0,
+          "maxRightOverflow": -30,
+          "rows": 11,
+          "twoLineRows": 11,
+          "lastResetByVerticalScroll": true
         }
       }
+    },
+    "s13b": {
+      "ok": true,
+      "detail": [
+        {
+          "win": "1440x900",
+          "scalePct": 125,
+          "w": 435,
+          "wantW": 435,
+          "right": 1436,
+          "h": 859,
+          "scrollH": 1570,
+          "twoLineRows": 0,
+          "outside": 0,
+          "tbRow": 43,
+          "lookRow": 35
+        },
+        {
+          "win": "1280x800",
+          "scalePct": 125,
+          "w": 435,
+          "wantW": 435,
+          "right": 1276,
+          "h": 759,
+          "scrollH": 1570,
+          "twoLineRows": 0,
+          "outside": 0,
+          "tbRow": 43,
+          "lookRow": 35
+        },
+        {
+          "win": "1280x800",
+          "scalePct": 250,
+          "w": 864,
+          "wantW": 864,
+          "right": 1276,
+          "h": 732,
+          "scrollH": 3089,
+          "twoLineRows": 0,
+          "outside": 0,
+          "tbRow": 85,
+          "lookRow": 70
+        },
+        {
+          "win": "800x600",
+          "scalePct": 125,
+          "w": 435,
+          "wantW": 435,
+          "right": 796,
+          "h": 559,
+          "scrollH": 1570,
+          "twoLineRows": 0,
+          "outside": 0,
+          "tbRow": 43,
+          "lookRow": 35
+        }
+      ]
     },
     "s14a": {
       "ok": true,
@@ -682,6 +751,35 @@
           "btn-factory-reset",
           "btn-theme"
         ]
+      }
+    },
+    "s14d": {
+      "ok": true,
+      "detail": {
+        "lineDuringDrag": true,
+        "closedByEsc": true,
+        "clickOpened": true,
+        "saved": null
+      }
+    },
+    "s14e": {
+      "ok": true,
+      "detail": {
+        "lineDuringDrag": true,
+        "clickOpenedAfterTimeout": true
+      }
+    },
+    "s14f": {
+      "ok": true,
+      "detail": {
+        "afterMoveWithoutButton": {
+          "line": false,
+          "body": false,
+          "dragRow": false,
+          "pop": true,
+          "saved": null
+        },
+        "clickAfter": true
       }
     },
     "s15a": {

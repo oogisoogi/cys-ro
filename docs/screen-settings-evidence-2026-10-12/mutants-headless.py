@@ -17,7 +17,7 @@ def run(only):
     lines = [l[:110] for l in r.stdout.splitlines() if l.startswith(("PASS", "FAIL", "ALL"))]
     return r.returncode, lines
 M = [
- ("H1 선택 상자만 12px 고정(한 부품이 작게 남음)", "src/style.css", "  max-width: 11em; padding: .1em .2em; cursor: pointer;", "  max-width: 11em; padding: .1em .2em; cursor: pointer; font-size: 12px;", "s2"),
+ ("H1 선택 상자만 12px 고정(한 부품이 작게 남음)", "src/style.css", "  max-width: min(11em, 100%); padding: .1em .2em; cursor: pointer;", "  max-width: min(11em, 100%); padding: .1em .2em; cursor: pointer; font-size: 12px;", "s2"),
  ("H2 팝오버 스크롤(overflow) 뺌", "src/style.css", "max-height: calc(100vh - var(--topbar-h) - 8px); overflow: auto;", "max-height: calc(100vh - var(--topbar-h) - 8px);", "s3"),
  ("H3 기본 끔에서 창 닫기 뺌", "src/topbarlayout.ts", '["btn-new", "btn-split-h", "btn-split-v", "btn-close", "btn-factory-reset"]', '["btn-new", "btn-split-h", "btn-split-v", "btn-factory-reset"]', "s1"),
  ("H4 꺼진 단추에 display 를 주는 규칙(숨김이 풀림) + 짝 규칙 뺌", "src/style.css", "#topbar > button[hidden] { display: none; }", "#topbar button { display: inline-block; }", "s1"),
@@ -29,6 +29,14 @@ M = [
  ("H9 초점 잃음 처리기 뺌", "src/main.ts", '  window.addEventListener("blur", onBlur);\n', "", "s14"),
  ("H10 저장 예외를 잡지 않음(토글 글자 어긋남)", "src/main.ts", "  } catch {\n    return false;\n  }\n  return true;\n}", "  } finally {\n  }\n  return true;\n}", "s15"),
  ("H11 저장 실패 알림을 켜지 않음", "src/main.ts", "    tbUnsaved.hidden = saved;\n", "", "s15"),
+ # ── codex 2R 채택 4건(TICKET=cysr-1110-screen-settings-r3)
+ ("H12 상단 단추 줄 접힘 뺌(▲▼·켬/끔이 가로 스크롤 뒤로)", "src/style.css", "  display: flex; flex-wrap: wrap; align-items: center; gap: .15em .4em; padding: .1em .2em;", "  display: flex; align-items: center; gap: .15em .4em; padding: .1em .2em;", "s13"),
+ ("H13 팝오버 폭 = 내용 폭 고정 뺌(넓은 창에서 줄이 접힘)", "src/style.css", "  width: max-content;\n", "", "s13"),
+ ("H14 안내 줄이 팝오버 폭 계산에 낌(넓은 창에서 팝오버가 창 폭까지 벌어짐)", "src/style.css", "word-break: keep-all; width: 0; min-width: 100%; }", "word-break: keep-all; }", "s13"),
+ ("H15 걷을 길 없는 한 번짜리 처리기로 되돌림(R2 모습)", "src/main.ts", '    if (wasDragging && why === "close") armTbCancelSwallow();', '    if (wasDragging && why === "close") window.addEventListener("mouseup", () => suppressNextClick(), { capture: true, once: true });', "s14"),
+ ("H16 삼킴 대기에서 새 mousedown 걷기 뺌", "src/main.ts", '  window.addEventListener("mousedown", off, { capture: true, signal: ac.signal });\n', "", "s14"),
+ ("H17 삼킴 대기에서 시간 경과 걷기 뺌", "src/main.ts", "  const timer = setTimeout(off, TB_CANCEL_SWALLOW_MS);", "  const timer = setTimeout(() => {}, TB_CANCEL_SWALLOW_MS);", "s14"),
+ ("H18 단추가 떼어진 움직임을 버리지 않음", "src/main.ts", '    if (!(e.buttons & 1)) return cancel("blur");\n', "", "s14"),
 ]
 bad = 0
 for name, rel, a, b, only in M:

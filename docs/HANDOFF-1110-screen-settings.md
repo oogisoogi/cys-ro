@@ -5,6 +5,7 @@
 - 박사님 원문(2026-10-12 09:0x): 「1. 현재 "테마" 메뉴의 글자들이 너무 작다. 지금의 2배 이상 키워야 제대로 볼 수 있다. 2. "테마"처럼 메뉴도 선택할 수 있게 하자. 메뉴 목록을 보여주고 켜기/끄기 버튼을 두는 것이다. 순서로 마음대로 조정할 수 있도록 드래그드롭하든지 켜기/끄지 버튼 옆에 끌어옮기기 아이콘을 넣든지 3. 메뉴 커스텀 기능은 "테마"에 한꺼번에 넣어 구현하는 것은 어떤가?」 → 09:1x 「최적안대로 한다.」(기본 숨김 = A안 5개)
 - push · int/1110-upstream 병합 · 발행 = master. 이 가지는 로컬 커밋만 있다(push 0).
 - **R2(2026-10-12 09:38 · master#01c6e170 · TICKET=cysr-1110-screen-settings-r2)**: codex 1R(이종 적대검토 · 8축) = MED 3 · LOW 1 · 기각 0 → 4건 모두 수정(§8). 아래 §1~§7 은 R1 시점 기록이고, R2 로 달라진 수치·동작은 §8 이 정본이다.
+- **R3(2026-10-12 10:07 · master#5b0a479f · TICKET=cysr-1110-screen-settings-r3)**: codex 2R = 1R 4건 가운데 닫힘 3 · 부분 1(MED-3 잔여 2곳) + 신규 2(MED · LOW) → master 가 4건 전부 채택 → 수정(§9). **지금 수치·동작의 정본은 §9** 다(§8 의 s13 판정·「가로 스크롤」 서술 · 익명 한 번짜리 처리기 서술은 R3 로 바뀌었다).
 
 ## 0. 델타 — 커밋 4 + 이 문서
 
@@ -15,9 +16,11 @@
 | ③ | `dd27573c` | 기본값 끔 5 · `v116-recut-newsplit` 주석 갱신 · 사용 설명서 안내 · 옛 헤드리스 c4a 기대값 | `ui/src/topbarlayout.ts` · `ui/index.html` · `USER-MANUAL.md` · `docs/v116-ui-evidence/v116-headless.ts` |
 | ④ | `36e1fdeb` | bun 시험 2파일 58건 + 실렌더 증거 + 음성 대조 | `ui/src/topbarlayout.test.ts` · `ui/src/screensettings.test.ts` · `docs/screen-settings-evidence-2026-10-12/` |
 | R2 | `62ae9d13` | codex 1R 채택 4건 수정 + 시험 9건 | `ui/src/main.ts` · `ui/src/style.css` · `ui/src/screensettings.test.ts` · `USER-MANUAL.md` · `docs/GUIDE-clean-reset-KR.md` · `src/bin/cys.rs`(문자열 1줄) |
-| R2 증거 | (이 문서와 같은 커밋) | 실렌더 새 6칸 · 스크린샷 3장 · 뮤턴트 10 + 5 추가 | `docs/screen-settings-evidence-2026-10-12/` |
+| R2 증거 | `34cafdc4` | 실렌더 새 6칸 · 스크린샷 3장 · 뮤턴트 10 + 5 추가 | `docs/screen-settings-evidence-2026-10-12/` |
+| R3 | `b27f27c7` | codex 2R 채택 4건 수정 + 시험 4건 | `ui/src/main.ts` · `ui/src/style.css` · `ui/src/screensettings.test.ts` · `src/bin/cys.rs`(문자열 1줄) · `cysjavis-pack/hooks/guard.sh`(문자열 1줄) · `docs/GUIDE-clean-reset-KR.md` |
+| R3 증거 | (이 문서와 같은 커밋) | 실렌더 s13 판정 교체 + 새 4칸 · 스크린샷 1장 추가 · 뮤턴트 12 + 7 추가 | `docs/screen-settings-evidence-2026-10-12/` |
 
-Rust · 데몬 · 팩 변경 = R1 은 0(소스 무변경) · R2 는 `src/bin/cys.rs` 안내 문자열 1줄(master 허용 범위). 단 `USER-MANUAL.md` 는 `cys`·`cysd` 가 `include_str!` 로 품는 파일이라 바이너리에 실리는 글은 바뀐다(핀 시험 = §3 의 `manual_` 6건).
+Rust · 데몬 · 팩 변경 = R1 은 0(소스 무변경) · R2 는 `src/bin/cys.rs` 안내 문자열 1줄 · R3 는 `src/bin/cys.rs` 문자열 1줄 더 + 팩 `cysjavis-pack/hooks/guard.sh` 문자열 1줄(모두 master 허용 범위 · 로직 무변경). 단 `USER-MANUAL.md` 는 `cys`·`cysd` 가 `include_str!` 로 품는 파일이라 바이너리에 실리는 글은 바뀐다(핀 시험 = §3 의 `manual_` 6건).
 
 ## 1. 무엇이 바뀌었나(화면 기준)
 
@@ -129,14 +132,14 @@ ISO() { env "${a[@]}" -u CLAUDE_CONFIG_DIR HOME="$(mktemp -d)" CARGO_HOME="$HOME
 CHS="$HOME/Library/Caches/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-mac-arm64/chrome-headless-shell"
 E=docs/screen-settings-evidence-2026-10-12
 
-( cd ui && ISO bun test )                                                        # 2985 pass / 85 skip / 0 fail(R2)
-( cd ui && ISO bun test src/topbarlayout.test.ts src/screensettings.test.ts )    # 67 / 0(R2)
+( cd ui && ISO bun test )                                                        # 2989 pass / 85 skip / 0 fail(R3)
+( cd ui && ISO bun test src/topbarlayout.test.ts src/screensettings.test.ts )    # 71 / 0(R3)
 ( cd ui && ISO bun x --package typescript@7.0.2 tsc -p tsconfig.check.json )     # rc 0
 ( cd ui && ISO sh build.sh )                                                     # ui/dist ready
-ISO env DIST="$PWD/ui/dist" CHS="$CHS" OUT="$PWD/$E/shots" bun $E/screen-settings-headless.ts   # 25칸 ALL PASS(R2)
+ISO env DIST="$PWD/ui/dist" CHS="$CHS" OUT="$PWD/$E/shots" bun $E/screen-settings-headless.ts   # 29칸 ALL PASS(R3)
 ISO env DIST="$PWD/ui/dist" CHS="$CHS" ONLY=c1,c4,c7,c19 bun docs/v116-ui-evidence/v116-headless.ts
-python3 $E/mutants.py "$PWD/ui"                                                  # 26종 잡음 · 복원 뒤 67 / 0(R2)
-python3 $E/mutants-headless.py "$PWD" "$CHS" "$(mktemp -d)"                      # 11종 잡음 · 복원 뒤 ALL PASS(R2)
+python3 $E/mutants.py "$PWD/ui"                                                  # 38종 잡음 · 복원 뒤 71 / 0(R3)
+python3 $E/mutants-headless.py "$PWD" "$CHS" "$(mktemp -d)"                      # 18종 잡음 · 복원 뒤 ALL PASS(R3)
 ( cd cysjavis-pack/bin/tests && ISO python3 test_bootv2_doc_contract.py && ISO python3 test_content_pins_parity.py && ISO python3 test_pyseal_census.py )
 ISO bash scripts/secret-scan.sh --all                                            # clean
 ISO cargo test --bin cysd manual_                                                # 6 / 0
@@ -186,4 +189,51 @@ ISO cargo check --bin cys                                                       
 5. **Esc 는 끌기만이 아니라 팝오버를 닫는다**(종전 동작 그대로 · 닫히면서 끌기를 버린다).
 6. §6 ⑩(localStorage 예외)은 상단 단추 저장에 한해 풀렸다. 「글자·배경」 쪽 설정(`cys-menu-scale` 등)의 저장 예외는 종전 그대로다.
 7. 이종 2R(수렴 판정)은 master 가 돌린다.
+
+## 9. R3 — codex 2R 채택 4건(MED 2 · LOW 1 · 시험 1)
+
+보고서 전문 = `master/reports/screen-settings-1012/REVIEW-codex-2r.md`. 수정 커밋 = `b27f27c7`.
+
+| # | 지적 | 수정 | 소스 시험(`screensettings.test.ts`) | 실렌더 칸 |
+|---|---|---|---|---|
+| ① MED | 1R MED-3 잔여 2곳 — 기본으로 숨긴 「완전 초기화」 를 켜는 길 없이 가리킴: `src/bin/cys.rs` CLI 자기살해 가드(「GUI '완전 초기화' 버튼에서 실행하라」) · 팩 `cysjavis-pack/hooks/guard.sh` 의 완전 초기화 거부 안내 | 두 문자열에 「(상단에 안 보이면 '화면 설정' → '상단 단추'에서 '완전 초기화'를 켠다)」 를 넣었다(각 1줄 · 로직 무변경). 저장소를 훑다가 찾은 한 곳 더 = `docs/GUIDE-clean-reset-KR.md` 본문(「맨 위의 완전 초기화 버튼을 쓰세요」 — 보고서 밖 · 같은 꼴) | 아래 ④ 의 저장소 전체 훑기 | (글자 안내) |
+| ② MED | 250%·500px 에서 ▲▼·켬/끔이 초기 화면(scrollLeft 0) 밖 201px — R2 는 가로 스크롤로 받았고 시험이 `scrollIntoView` 로 가렸다 | 좁으면 **줄을 두 줄로 접는다**: `.tb-row` `flex-wrap: wrap` — 윗줄 = `[≡][이름]` · 아랫줄 = 조작 묶음(`.tb-ctl` = ▲ ▼ 켬/끔 · 오른쪽 정렬 · 안에서는 접히지 않음). ① 구획 줄(`.theme-pop-row`)도 접힌다(이름 / 입력 부품). 팝오버 폭 = `width: max-content`(접지 않은 내용 폭) + 상한 `100vw − 8px` — 안내 줄(`.sp-note`)은 `width: 0; min-width: 100%` 로 그 계산에서 뺐다. 전부 em(px 재유입 0) | 접힘·묶음·이름 기준 폭·팝오버 폭 계산·안내 줄 제외 | **s13a**(판정 교체): 500×600·250% 에서 **scrollLeft 0 그대로** — 조작·입력 부품 55개 가운데 보이는 폭 밖 0 · 가로 넘침 0(내용 폭 490 = 보이는 폭 490) · 11줄 모두 두 줄 · 맨 아래 단추는 세로 스크롤로 닿음(바로 열기 · 넓게 연 뒤 줄이기) / **s13b**: 넓은 창 4종은 접힌 줄 0 · 전체 높이 = R1 과 같은 값(1570 · 배율 250% = 3089) |
+| ③ LOW | 닫힘 취소 뒤 한 번짜리 mouseup 처리기가 mouseup 을 영영 놓치면 무기한 남아 돌아와서 누른 무관한 click 을 삼킴 | `armTbCancelSwallow()` — 기다림이 스스로 걷힌다: mouseup(제 할 일) · **새 mousedown**(놓쳤다는 뜻) · 창이 초점을 잃음 · **1초 경과**(`TB_CANCEL_SWALLOW_MS`) · 다시 무장하면 앞의 것부터 걷음(쌓이지 않음). 덧붙여 **mouseup 을 놓친 끌기 자체**도 버린다 — 끄는 중 단추가 떼어진 채 움직이면(`e.buttons` 에 왼쪽 단추 없음) 취소 | 걷히는 길 넷 + 다시 무장(구현 모양 아님) · 끌기 처리기 안 `once: true` 0 · 떼어진 움직임 취소 | **s14d** mouseup 이 안 온 채 Esc → 돌아와서 곧바로 누른 「화면 설정」 = 삼키지 않음(팝오버 열림) / **s14e** 1.3초 뒤 늦은 mouseup 직후의 click = 삼키지 않음 / **s14f** 단추가 떼어진 채 움직이면 끌기 버림(삽입선·전역 표시 0 · 팝오버 열린 채) → 그 뒤 실제 누름 정상 |
+| ④ 시험 | 문서 시험이 고친 자리만 열거 — 다른 사용자 노출 문구를 못 찾는다 | **저장소 전체 훑기**로 바꿨다: 제품 소스(`src` · `src-tauri/src` · `ui/src` · `ui/index.html`) · 팩(`cysjavis-pack` — 시험 폴더 제외) · `USER-MANUAL.md` · `README*.md` · `docs/*.md`(그날 기록 = HANDOFF · REVIEW · DESIGN · RELEASE_NOTES · rebase 보고 · PLAN 제외) 약 740 파일에서 「완전 초기화」 단추를 가리키는 줄(뒤에 버튼/단추 · 또는 앞에 툴바/상단/GUI)은 그 줄이나 바로 아래 2줄 안에 「화면 설정」 을 적어야 한다. 예외 = 코드 주석 줄 · 견주는 글(「버튼이라면」 · 「버튼보다」 · 「버튼과」). 규칙이 헐거워져 0건을 0건으로 통과하지 않게, 아는 자리 8곳(cys.rs 2 · guard.sh 1 · main.ts 1 · USER-MANUAL 2 · GUIDE 2)이 실제로 잡히는지도 함께 잰다 | (이 시험 자체) | — |
+
+### R3 에서 지시 밖으로 정한 것(보고에 올림)
+
+1. **넓은 창 팝오버 폭이 4px 줄었다(439 → 435 · 배율 250% 868 → 864)**. 줄의 배치·높이는 그대로다(전체 높이 1570 · 3089 = R1 과 같은 값). R1 의 4px 은 내용이 아니라 자리 잡기의 부산물이었다 — 폭이 「남은 폭에 맞춤」 이라, `fitPop` 이 오른쪽 여백 4px 을 두려고 왼쪽으로 당기면 그 4px 만큼 팝오버가 다시 늘어 오른쪽 끝이 창 끝에 붙었다(R1 수치 「오른쪽 1440」). 지금은 폭 = 내용 폭 고정이라 여백 4px 이 실제로 남는다(오른쪽 = 창 − 4). 줄을 접게 하려면 폭을 내용 폭에 고정해야 했고(접힘을 허용하면 「남은 폭에 맞춤」 이 넓은 창에서도 줄을 접는다 — H13 이 재현), 그 귀결이다.
+2. **mouseup 을 놓친 끌기를 움직임에서 버린다**(③ 의 덧붙임). 지적은 「놓친 뒤 Esc」 의 뒷처리였지만, 놓친 순간부터 끌기가 살아 있어 떼지 않은 손을 삽입선이 따라다니는 것이 뿌리라 함께 닫았다.
+3. **`docs/GUIDE-clean-reset-KR.md` 본문 1곳**(보고서 밖)을 같은 꼴이라 함께 고쳤다 — ④ 의 훑기가 찾았다.
+
+### R3 게이트 수치(격리 HOME · 좌석 `CYS_*` env 제거 · 이 작업 트리)
+
+| 게이트 | 결과 |
+|---|---|
+| ui `bun test` 전체 | **2989 pass / 85 skip / 0 fail**(94 파일 · R2 2985 + 4) |
+| 새 시험 2파일 | `topbarlayout.test.ts` 40 / 0 · `screensettings.test.ts` 31 / 0 |
+| tsc(`typescript@7.0.2`) · `sh build.sh` | rc 0 · rc 0 |
+| 실렌더 `screen-settings-headless.ts` | **29칸 ALL PASS**(R2 25 − s13 1 + s13a·s13b 2 + s14d·e·f 3) · 스크린샷 16장 |
+| 옛 헤드리스 `v116-headless.ts` `ONLY=c1,c4,c7,c19` | ALL PASS |
+| `cargo check --bin cys` | rc 0(그 문구를 재는 cys 시험 없음 — `cargo test --bin cys factory` = 0건 일치 · 612 filtered out) |
+| `cargo test --bin cysd manual_` | 6 / 0 |
+| 팩 시험(guard.sh 를 읽는 것 5종 + 계약 3종) | `test_completion_guard_notice` rc 0 · `test_dbg_d3_d11_shared_profile_hooks` rc 0 · `test_py_resolver_clt_stub` rc 0 · `test_trust_seed_reflect` rc 0 · `test_preflight_phase1_checks` rc 0(격리 env `JAVIS_ROOT`·`CYS_PROBE_RUNS` 를 준 실행 — 안 주면 시험이 스스로 거부 rc 2) · doc-contract rc 0 · pins rc 0 · pyseal census rc 0 · `gen_ceo_template.py --check` rc 0 · `bash -n guard.sh` rc 0 |
+| boot-health 전량 | 165 PASS / 2 FAIL(`H-CLT-1`·`H-CLT-2`) / 1 SKIP · 470.8초 — R2 실행과 FAIL 사유 줄이 글자까지 같고(두 실행의 사유 줄 diff 0), `docs/HANDOFF-1110-docs-d.md` §4 에 적힌 기준(017e6d86)과 같은 합계·같은 두 id. 이 티켓 **이전** 실행의 사유 전문과는 여전히 대조하지 않았다 |
+| `secret-scan.sh --all` | clean(1684 파일 · 새 스크린샷 1장을 스테이징한 상태에서) |
+
+음성 대조(전체 재실행 · 뮤턴트가 끝난 뒤 cargo·팩 시험을 돌렸다)
+- `mutants.py` = **38종 전부 잡음**(R2 26 + R3 12: 팩 가드 옛 문구 · CLI 자기살해 가드 옛 문구 · 가이드 본문에서 켜는 길 뺌 · 제품 소스에 없는 단추만 가리키는 새 줄 추가 · 새 mousedown 걷기 뺌 · 시간 경과 걷기 뺌 · 한 번짜리 처리기로 되돌림 · 떼어진 움직임을 버리지 않음 · 줄 접힘 뺌 · 이름 기준 폭 0 · 안내 줄이 폭 계산에 낌 · 폭 고정 뺌) · 복원 뒤 71 / 0
+- `mutants-headless.py` = **18종 전부 그 칸 FAIL**(R2 11 + R3 7: 줄 접힘 뺌 → s13a · 폭 고정 뺌 → s13b · 안내 줄이 폭 계산에 낌 → s13b · **R2 의 한 번짜리 처리기로 되돌림 → s14d·s14e**(codex 지적의 재현) · 새 mousedown 걷기 뺌 → s14d · 시간 경과 걷기 뺌 → s14e · 떼어진 움직임을 버리지 않음 → s14f) · 복원 뒤 ALL PASS
+
+### R3 함정·관찰
+
+1. **「화면 밖 0」 과 「처음부터 보임」 은 다른 계약이다**: R2 의 s13 은 팝오버 상자가 창 안에 있는지만 봤고, 조작부는 `scrollIntoView` 로 밀어 놓고 「닿음」 이라 했다. 판정에 밀기·당기기를 넣으면 초기 가시성을 가린다 — 지금은 scrollLeft 0 그대로 잰다.
+2. **줄을 접게 하면 팝오버 폭 계산이 바뀐다**: 위치 고정 요소의 폭은 「남은 폭에 맞춤」 이라, 접힘을 허용하는 순간 넓은 창에서도 줄이 접힌다(R1 은 줄이 안 접혀서 우연히 성립). 폭을 내용 폭(`max-content`)에 고정하고, 길게 한 줄로 늘어나는 안내 줄은 그 계산에서 빼야 한다(안 빼면 팝오버가 창 폭까지 벌어진다 — H14).
+3. **CDP 로 「단추가 떼어진 움직임」 을 보내려면** `button: "none"` 이어야 한다. `button: "left"` 면 `buttons: 0` 을 줘도 눌린 것으로 간다(첫 s14f 실패의 원인).
+4. **고친 자리를 세지 말고 훑어라**: R2 에서 5곳을 고치고 「남은 2곳은 범위 밖」 으로 적었지만, 사용자에게 닿는 같은 결함이라 닫은 것이 아니었다(codex 2R). 훑기 시험은 그 뒤 한 곳(GUIDE 본문)을 더 찾았다.
+5. **훑기 규칙의 한계**: 「단추를 가리키는 꼴」 을 낱말 모양으로 잡는다(뒤에 버튼/단추 · 앞에 툴바/상단/GUI). 그 모양을 벗어난 안내(예: 「맨 오른쪽 초기화 메뉴」)는 못 잡는다. 견주는 글 예외도 낱말 셋(「이라면」 · 「보다」 · 「과」)이다.
+6. 좁은 창 + 큰 배율에서 팝오버는 세로로 길다(500×600·250% 에서 줄마다 두 줄). 세로 스크롤과 구획 접기로 받는다.
+7. R2 함정 2(뮤턴트와 cargo 를 겹쳐 돌리지 않기 · boot-health 전량의 찌꺼기 폴더)는 이번에도 그대로 지켰다 — 뮤턴트(bun 38 · 실렌더 18)가 전부 끝난 뒤 cargo·팩 시험·boot-health 를 돌렸고, boot-health 가 다시 남긴 찌꺼기 폴더(로그 1개)는 내용을 보고 지웠다(커밋에 섞이지 않음).
+8. 실렌더는 여전히 헤드리스 크롬 계산값이다(웹뷰 실기 아님). `e.buttons` 판정은 맥 WKWebView · 윈 WebView2 실기에서 재지 않았다(둘 다 표준 속성을 지원하나 이 저장소에서의 실측은 없다).
 

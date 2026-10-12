@@ -17,7 +17,7 @@ M = [
  ("M6 맨 아래 ▼ 경계 뺌", "src/topbarlayout.ts", "if (i < 0 || j < 0 || j >= arr.length) return arr;", "if (i < 0 || j < 0) return arr;"),
  ("M7 끌어 놓기 앞/뒤 뒤집힘", "src/topbarlayout.ts", "arr.splice(before ? ai : ai + 1, 0, src);", "arr.splice(before ? ai + 1 : ai, 0, src);"),
  ("M8 팝오버 글자 12px 로 되돌림", "src/style.css", "font-size: calc(20px * var(--ui-chrome-scale)); line-height: 1.35;", "font-size: 12px; line-height: 1.35;"),
- ("M9 선택 상자만 12px 고정", "src/style.css", "  max-width: 11em; padding: .1em .2em; cursor: pointer;", "  max-width: 11em; padding: .1em .2em; cursor: pointer; font-size: 12px;"),
+ ("M9 선택 상자만 12px 고정", "src/style.css", "  max-width: min(11em, 100%); padding: .1em .2em; cursor: pointer;", "  max-width: min(11em, 100%); padding: .1em .2em; cursor: pointer; font-size: 12px;"),
  ("M10 입력 칸 인라인 56px 되살림", "src/main.ts", 'tsInp.max = "40";', 'tsInp.max = "40"; tsInp.style.width = "56px";'),
  ("M11 숨김 대신 요소 제거", "src/main.ts", "    b.hidden = !it.on;\n    topbarEl.appendChild(b);", "    if (!it.on) { b.remove(); continue; }\n    topbarEl.appendChild(b);"),
  ("M12 시작 복원 줄 뺌", "src/main.ts", "\napplyTopbarLayout(topbarLayout, false);\n", "\n"),
@@ -36,6 +36,19 @@ M = [
  ("M24 깨끗이 지우기 안내에서 켜는 길 뺌", "../docs/GUIDE-clean-reset-KR.md", " 이 버튼은 처음에는 보이지 않습니다 — 상단 **화면 설정** → **상단 단추**에서 **완전 초기화**를 켜면 상단에 나타납니다.", ""),
  ("M25 CLI 안내를 옛 문구로", "../src/bin/cys.rs", "지금 켜져 있는 cys 앱에서 하는 것이 가장 쉽다 — 상단 '화면 설정' → '상단 단추'에서 '완전 초기화'를 켠 뒤, 상단에 생긴 '완전 초기화' 버튼을 누른다.", "지금 켜져 있는 cys 앱의 상단바 '완전 초기화' 버튼을 쓰는 것이 가장 쉽다."),
  ("M26 사용 설명서 표에서 켜는 길 뺌", "../USER-MANUAL.md", "상단의 **완전 초기화** 버튼(안 보이면 `화면 설정` → 「상단 단추」에서 `완전 초기화` 를 켭니다) 또는", "상단의 **완전 초기화** 버튼 또는"),
+ # ── codex 2R 채택 4건(TICKET=cysr-1110-screen-settings-r3)
+ ("M27 팩 가드 안내를 옛 문구로(없는 단추만 가리킴)", "../cysjavis-pack/hooks/guard.sh", "GUI '완전 초기화' 버튼(상단에 안 보이면 '화면 설정' → '상단 단추'에서 '완전 초기화'를 켠다) 또는", "GUI '완전 초기화' 버튼 또는"),
+ ("M28 CLI 자기살해 가드 안내를 옛 문구로", "../src/bin/cys.rs", "GUI '완전 초기화' 버튼(상단에 안 보이면 '화면 설정' → '상단 단추'에서 '완전 초기화'를 켠다)에서 실행하라.", "GUI '완전 초기화' 버튼에서 실행하라."),
+ ("M29 깨끗이 지우기 안내 본문에서 켜는 길 뺌", "../docs/GUIDE-clean-reset-KR.md", "을 쓰세요(앱 상단에 안 보이면 **화면 설정** → **상단 단추**에서 **완전 초기화**를 켭니다) —", "을 쓰세요 —"),
+ ("M30 새 안내가 없는 단추만 가리킴(제품 소스에 한 줄 추가)", "src/main.ts", 'const TB_CANCEL_SWALLOW_MS = 1000;', 'const TB_CANCEL_SWALLOW_MS = 1000;\nconst __m30 = "상단바 [완전 초기화] 버튼을 눌러 주세요";'),
+ ("M31 삼킴 대기에서 새 mousedown 걷기 뺌", "src/main.ts", '  window.addEventListener("mousedown", off, { capture: true, signal: ac.signal });\n', ""),
+ ("M32 삼킴 대기에서 시간 경과 걷기 뺌", "src/main.ts", "  const timer = setTimeout(off, TB_CANCEL_SWALLOW_MS);", "  const timer = setTimeout(() => {}, TB_CANCEL_SWALLOW_MS);"),
+ ("M33 걷을 길 없는 한 번짜리 처리기로 되돌림", "src/main.ts", '    if (wasDragging && why === "close") armTbCancelSwallow();', '    if (wasDragging && why === "close") window.addEventListener("mouseup", () => suppressNextClick(), { capture: true, once: true });'),
+ ("M34 단추가 떼어진 움직임을 버리지 않음", "src/main.ts", '    if (!(e.buttons & 1)) return cancel("blur");\n', ""),
+ ("M35 상단 단추 줄 접힘 뺌", "src/style.css", "  display: flex; flex-wrap: wrap; align-items: center; gap: .15em .4em; padding: .1em .2em;", "  display: flex; align-items: center; gap: .15em .4em; padding: .1em .2em;"),
+ ("M36 이름 기준 폭 0(접히지 않고 눌림)", "src/style.css", "#theme-pop .tb-name { flex: 1 1 auto; min-width: 0;", "#theme-pop .tb-name { flex: 1; min-width: 0;"),
+ ("M37 안내 줄이 팝오버 폭 계산에 낌", "src/style.css", "word-break: keep-all; width: 0; min-width: 100%; }", "word-break: keep-all; }"),
+ ("M38 팝오버 폭 = 내용 폭 고정 뺌", "src/style.css", "  width: max-content;\n", ""),
 ]
 base = run(); print("기준", base)
 bad = 0

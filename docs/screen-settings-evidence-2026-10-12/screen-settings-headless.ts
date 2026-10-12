@@ -15,8 +15,10 @@
 //   s11 구획 접기: 제목 줄 누르면 몸통 숨김 · 팝오버 높이 줄어듦 · 다시 누르면 펼침
 //   s12 상단바 한 줄 유지(1280폭 기본) — 높이 = --topbar-h · 가로 넘침 0
 //   (codex 1R 채택 4건 · TICKET=cysr-1110-screen-settings-r2)
-//   s13 좁은 창 + 큰 배율(500×600 · 250%): 팝오버 화면 밖 0 — 그 크기에서 바로 열기 · 넓은 창에서 연 뒤 줄이기 · 토글·맨 아래 단추는 팝오버 안 스크롤로 닿음
+//   s13 좁은 창 + 큰 배율(500×600 · 250%): a 팝오버 화면 밖 0 · **scrollLeft 0 에서** ▲·▼·켬/끔·입력 부품이 보이는 폭 안(가로 넘침 0 · 줄이 두 줄로 접힘 — codex 2R) ·
+//       b 넓은 창(1440·1280·800 · 배율 250%)은 접힌 줄 0 · 팝오버 폭·높이 = R1 실측값(레이아웃 무변경)
 //   s14 끌기 취소: 끄는 도중 Esc(팝오버 닫힘) → 놓아도 순서·저장 불변 · 삽입선·전역 표시 0 / 창이 초점을 잃음 → 놓아도 불변 · 팝오버 열린 채 · 그 뒤 누름은 정상
+//       (codex 2R) d mouseup 이 안 온 채 Esc → 돌아와서 누른 첫 단추를 삼키지 않음 · e 기다림 1초 뒤 스스로 걷힘 · f 단추가 떼어진 채 움직이면 끌기 버림
 //   s15 저장 예외: 저장이 던져도(QuotaExceeded 흉내) 상단 반영 + 토글 글자 동기 + 「저장되지 않았습니다」 1줄 · 저장이 되면 그 줄 사라짐 · 읽기가 던져도 앱은 기본값으로 선다
 // 원형 = docs/v116-ui-evidence/v116-headless.ts 의 CDP 드라이버.
 import { spawn } from "bun";
@@ -300,21 +302,41 @@ if (ONLY.includes("s12")) {
 }
 
 if (ONLY.includes("s13")) {
-  // 맨 아래 단추(세로) · 첫 줄 토글(가로)이 팝오버 안 스크롤로 닿는가
-  const REACH = `(() => { const p = document.getElementById("theme-pop"); const pr = () => p.getBoundingClientRect(); const inside = (el) => { const r = el.getBoundingClientRect(), q = pr(); return r.left >= q.left - 1 && r.right <= q.right + 1 && r.top >= q.top - 1 && r.bottom <= q.bottom + 1; }; const last = [...p.querySelectorAll(".theme-pop-reset")].at(-1); last.scrollIntoView({ block: "nearest", inline: "nearest" }); const a = inside(last); const tog = p.querySelector(".tb-row .tb-toggle"); tog.scrollIntoView({ block: "nearest", inline: "nearest" }); const b = inside(tog); p.scrollTop = 0; p.scrollLeft = 0; return { lastReset: a, firstToggle: b }; })()`;
+  // ★(codex 2R) 판정 = **scrollLeft 0 그대로**(가로로 밀지 않는다): 모든 줄의 ▲·▼·켬/끔과 ① 구획의 입력 부품이 팝오버의 보이는 폭 안에 있고,
+  //   가로 넘침 자체가 없다(scrollWidth ≤ clientWidth). 종전 판정은 scrollIntoView 로 밀어 놓고 「닿음」 이라 해 초기 가시성을 가렸다.
+  //   세로는 스크롤로 받는다(맨 아래 단추는 scrollTop 만 움직여 닿는가).
+  const VISIBLE = `(() => { const p = document.getElementById("theme-pop"); p.scrollLeft = 0; p.scrollTop = 0; const pr = p.getBoundingClientRect(); const L = pr.left + p.clientLeft, R = L + p.clientWidth; const ctl = [...p.querySelectorAll(".tb-row .tb-up, .tb-row .tb-down, .tb-row .tb-toggle, .theme-pop-row select, .theme-pop-row input, .theme-pop-reset, .tb-grip")]; const out = ctl.filter(e => { const r = e.getBoundingClientRect(); return r.left < L - 0.5 || r.right > R + 0.5; }); const rows = [...p.querySelectorAll(".tb-row")]; const twoLine = rows.filter(r => r.querySelector(".tb-ctl").getBoundingClientRect().top >= r.querySelector(".tb-name").getBoundingClientRect().bottom - 1).length; const maxRight = Math.max(...ctl.map(e => e.getBoundingClientRect().right)); const last = [...p.querySelectorAll(".theme-pop-reset")].at(-1); p.scrollTop = p.scrollHeight; const lr = last.getBoundingClientRect(); const q = p.getBoundingClientRect(); const lastReach = lr.bottom <= q.bottom + 1 && lr.top >= q.top - 1 && p.scrollLeft === 0; p.scrollTop = 0; return { scrollLeft: p.scrollLeft, scrollW: p.scrollWidth, clientW: p.clientWidth, controls: ctl.length, outside: out.length, maxRightOverflow: Math.round(maxRight - R), rows: rows.length, twoLineRows: twoLine, lastResetByVerticalScroll: lastReach }; })()`;
+  const ok = (v: any) => v.outside === 0 && v.scrollW <= v.clientW && v.scrollLeft === 0 && v.lastResetByVerticalScroll && v.controls >= 40;
   await size(500, 600); await load(`localStorage.setItem("cys-menu-scale", "250");`);
   await ev(OPEN); await Bun.sleep(200);
-  const a = await ev(BOX); const ar = await ev(REACH);
+  const a = await ev(BOX); const av = await ev(VISIBLE);
   const minW = await ev(`getComputedStyle(document.getElementById("theme-pop")).minWidth`);
   await shot("s13-popover-500x600-scale250.png");
-  // 넓은 창에서 연 뒤 줄인다(codex 재현 순서)
+  await ev(`document.querySelector('#theme-pop .tb-list').scrollIntoView({ block: "start" })`); await Bun.sleep(80); // 세로만 — 상단 단추 목록(두 줄로 접힌 줄)을 찍는다
+  const sl = await ev(`document.getElementById("theme-pop").scrollLeft`);
+  await shot("s13-topbar-section-500x600-scale250.png");
+  // 넓은 창에서 연 뒤 줄인다(codex 1R 재현 순서)
   await size(1440, 900); await load(`localStorage.setItem("cys-menu-scale", "250");`);
   await ev(OPEN); await Bun.sleep(200);
   const wide = await ev(BOX);
   await size(500, 600); await Bun.sleep(300);
-  const b = await ev(BOX); const br = await ev(REACH);
+  const b = await ev(BOX); const bv = await ev(VISIBLE);
   await shot("s13-popover-shrunk-to-500x600-scale250.png");
-  check("s13 좁은 창 + 큰 배율(500×600 · 250%): 팝오버 화면 밖 0(바로 열기 · 넓게 연 뒤 줄이기) · 폭 ≤ 창 − 8 · 토글·맨 아래 단추 스크롤로 닿음", inView(a) && a.w <= 492 && ar.lastReset && ar.firstToggle && inView(wide) && inView(b) && b.w <= 492 && br.lastReset && br.firstToggle, { direct: { left: a.left, right: a.right, top: a.top, bottom: a.bottom, w: a.w, h: a.h, vw: a.vw, vh: a.vh, scrollW: a.scrollW, clientW: a.clientW, minWidth: minW, ...ar }, wide: { w: wide.w, right: wide.right, vw: wide.vw }, shrunk: { left: b.left, right: b.right, bottom: b.bottom, w: b.w, vw: b.vw, vh: b.vh, ...br } });
+  check("s13a 좁은 창 + 큰 배율(500×600 · 250%): 팝오버 화면 밖 0 · scrollLeft 0 에서 ▲·▼·켬/끔·입력 부품 전부 보이는 폭 안 · 가로 넘침 0 · 줄이 두 줄로 접힘 · 맨 아래 단추는 세로 스크롤로 닿음(바로 열기 · 넓게 연 뒤 줄이기)", inView(a) && a.w <= 492 && ok(av) && av.twoLineRows === av.rows && sl === 0 && inView(wide) && inView(b) && b.w <= 492 && ok(bv) && bv.twoLineRows === bv.rows, { direct: { left: a.left, right: a.right, top: a.top, bottom: a.bottom, w: a.w, h: a.h, vw: a.vw, vh: a.vh, minWidth: minW, ...av }, wide: { w: wide.w, right: wide.right, vw: wide.vw }, shrunk: { left: b.left, right: b.right, bottom: b.bottom, w: b.w, vw: b.vw, vh: b.vh, ...bv } });
+  // 넓은 창 레이아웃 — 접힘 0(전 줄 한 줄) · 전체 높이 = R1 실측과 같은 값(1570 · 배율 250% = 3089) · 팝오버 폭 = 내용 폭(435 · 배율 250% = 864).
+  //   ★폭은 R1(439 · 868)보다 4px 좁다 — R1 의 4px 은 내용이 아니라 자리 잡기의 부산물이었다: 폭이 「남은 폭에 맞춤」 이라 fitPop 이 오른쪽 여백 4px 을
+  //   두려고 왼쪽으로 당기면 그 4px 만큼 팝오버가 다시 늘어 오른쪽 끝이 창 끝(1440)에 붙었다. 지금은 폭 = 내용 폭 고정이라 여백 4px 이 실제로 남는다(오른쪽 끝 = 창 − 4).
+  const wideRows: any[] = []; let wideOk = true;
+  for (const [w, h, pct, wantW] of [[1440, 900, null, 435], [1280, 800, null, 435], [1280, 800, 250, 864], [800, 600, null, 435]] as const) {
+    await size(w, h); await load(pct ? `localStorage.setItem("cys-menu-scale", "${pct}");` : "");
+    await ev(OPEN); await Bun.sleep(200);
+    const bx = await ev(BOX); const v = await ev(VISIBLE);
+    const rowH = await ev(`(() => { const r = document.querySelector("#theme-pop .tb-row"); const l = document.querySelector("#theme-pop .theme-pop-row"); return { tbRow: Math.round(r.getBoundingClientRect().height), lookRow: Math.round(l.getBoundingClientRect().height) }; })()`);
+    const good = bx.w === wantW && bx.right === w - 4 && v.twoLineRows === 0 && v.outside === 0 && v.scrollW <= v.clientW && inView(bx);
+    if (!good) wideOk = false;
+    wideRows.push({ win: `${w}x${h}`, scalePct: pct ?? 125, w: bx.w, wantW, right: bx.right, h: bx.h, scrollH: bx.scrollH, twoLineRows: v.twoLineRows, outside: v.outside, ...rowH });
+  }
+  check("s13b 넓은 창 — 접힌 줄 0 · 전체 높이 = R1 실측값(1570 · 배율 250% = 3089) · 팝오버 폭 = 내용 폭(435 · 864 = R1 보다 4px 좁음 — 오른쪽 여백 4px 이 실제로 남음)", wideOk && wideRows[0].scrollH === 1570 && wideRows[1].scrollH === 1570 && wideRows[2].scrollH === 3089 && wideRows[3].scrollH === 1570, wideRows);
 }
 
 if (ONLY.includes("s14")) {
@@ -364,6 +386,53 @@ if (ONLY.includes("s14")) {
   const cUp = await ev(STATE);
   const want = ["btn-feedback", "btn-restart-daemon", ...HTML_ORDER.slice(1).filter((x) => x !== "btn-restart-daemon")];
   check("s14c 취소 뒤 다시 끌어 놓기 = 정상 반영(↻ 재시작이 피드백 아래 · 저장)", JSON.stringify(cUp.order) === JSON.stringify(want) && JSON.stringify(cUp.saved?.items?.map((x: any) => x.id)) === JSON.stringify(want) && !cUp.line && !cUp.body, { order: cUp.order });
+}
+
+if (ONLY.includes("s14")) {
+  // ── (codex 2R LOW) 닫힘 취소 뒤 click 삼킴 대기의 자기청소 — mouseup 이 영영 안 오는 경우
+  const mouse = (type: string, x: number, y: number, buttons: number) => cdp("Input.dispatchMouseEvent", { type, x, y, button: "left", buttons, clickCount: 1 });
+  const pt = async (rowId: string, sel: string, fy: number) => await ev(`(() => { const r = [...document.querySelectorAll("#theme-pop .tb-row")].find(r => r.dataset.tbId === ${JSON.stringify(rowId)}); const g = (${JSON.stringify(sel)} ? r.querySelector(${JSON.stringify(sel)}) : r).getBoundingClientRect(); return { x: g.left + g.width / 2, y: g.top + g.height * ${fy} }; })()`);
+  const dragNoRelease = async () => {
+    await ev(`document.querySelector('#theme-pop .sp-sec[data-sec="topbar"]').scrollIntoView({ block: "start" })`); await Bun.sleep(80);
+    const from = await pt("btn-restart-daemon", ".tb-grip", 0.5);
+    const to = await pt("btn-feedback", "", 0.8);
+    await mouse("mousePressed", from.x, from.y, 1);
+    await mouse("mouseMoved", from.x, from.y - 10, 1);
+    await mouse("mouseMoved", to.x, to.y, 1);
+    await Bun.sleep(80);
+    return { to, line: await ev(`!!document.querySelector(".ws-drop-indicator") && !document.querySelector(".ws-drop-indicator").hidden`) };
+  };
+  const esc = async () => { await cdp("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }); await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }); await Bun.sleep(80); };
+  const themeBtn = `(() => { const r = document.getElementById("btn-theme").getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`;
+  // ⓓ 끄는 도중 Esc → mouseup 이 오지 않음(창 밖에서 뗌) → 돌아와서 곧바로 「화면 설정」 을 실제로 누름 = 삼키지 않는다(팝오버가 열린다)
+  await size(1440, 900); await load();
+  await ev(OPEN); await Bun.sleep(150);
+  const d0 = await dragNoRelease();
+  await esc();
+  const dClosed = await ev(`!document.getElementById("theme-pop")`);
+  const tb = await ev(themeBtn);
+  await mouse("mousePressed", tb.x, tb.y, 1); await mouse("mouseReleased", tb.x, tb.y, 0); await Bun.sleep(150);
+  const dOpen = await ev(`({ pop: !!document.getElementById("theme-pop"), order: ${TB}.all, saved: ${SAVED} })`);
+  check("s14d mouseup 이 안 온 채 Esc → 돌아와서 곧바로 누른 첫 단추(화면 설정) = 삼키지 않음(팝오버 열림) · 순서·저장 불변", d0.line && dClosed && dOpen.pop && JSON.stringify(dOpen.order) === JSON.stringify(HTML_ORDER) && dOpen.saved === null, { lineDuringDrag: d0.line, closedByEsc: dClosed, clickOpened: dOpen.pop, saved: dOpen.saved });
+  // ⓔ 같은 상황에서 기다림 시간(1초)이 지난 뒤 — 늦게 온 mouseup 바로 뒤의 click 도 삼키지 않는다(기다림이 스스로 걷혔다)
+  await load();
+  await ev(OPEN); await Bun.sleep(150);
+  const e0 = await dragNoRelease();
+  await esc();
+  await Bun.sleep(1300);
+  const eOpen = await ev(`(() => { window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true })); document.getElementById("btn-theme").click(); return !!document.getElementById("theme-pop"); })()`);
+  check("s14e 기다림 1초가 지나면 스스로 걷힌다 — 1.3초 뒤 늦은 mouseup 직후의 click(화면 설정) = 삼키지 않음", e0.line && eOpen, { lineDuringDrag: e0.line, clickOpenedAfterTimeout: eOpen });
+  // ⓕ mouseup 을 놓친 끌기 — 단추가 떼어진 채 움직이면(buttons 0) 그 끌기를 버린다 · 팝오버는 열린 채 · 그 뒤 누름 정상
+  await load();
+  await ev(OPEN); await Bun.sleep(150);
+  const f0 = await dragNoRelease();
+  // 단추가 떼어진 움직임 — CDP 는 button 이 "left" 면 buttons 를 1 로 채우므로 "none" 으로 보낸다
+  await cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x: f0.to.x + 5, y: f0.to.y, button: "none", buttons: 0 }); await Bun.sleep(80);
+  const f1 = await ev(`({ line: !!document.querySelector(".ws-drop-indicator"), body: document.body.classList.contains("ws-reordering"), dragRow: !!document.querySelector(".tb-row.tb-dragging"), pop: !!document.getElementById("theme-pop"), order: ${TB}.all, saved: ${SAVED} })`);
+  const tg = await pt("btn-new", ".tb-toggle", 0.5);
+  await mouse("mousePressed", tg.x, tg.y, 1); await mouse("mouseReleased", tg.x, tg.y, 0); await Bun.sleep(120);
+  const f2 = await ev(`({ shown: ${TB}.shownIds.includes("btn-new"), order: ${TB}.all })`);
+  check("s14f mouseup 을 놓친 끌기 — 단추가 떼어진 채 움직이면 끌기를 버린다(삽입선·전역 표시 0 · 팝오버 열린 채 · 순서·저장 불변) → 그 뒤 실제 누름 정상", f0.line && !f1.line && !f1.body && !f1.dragRow && f1.pop && JSON.stringify(f1.order) === JSON.stringify(HTML_ORDER) && f1.saved === null && f2.shown && JSON.stringify(f2.order) === JSON.stringify(HTML_ORDER), { afterMoveWithoutButton: { line: f1.line, body: f1.body, dragRow: f1.dragRow, pop: f1.pop, saved: f1.saved }, clickAfter: f2.shown });
 }
 
 if (ONLY.includes("s15")) {

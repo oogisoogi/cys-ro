@@ -26,6 +26,10 @@ import { planRestartInject, restartInvokeFailureReason } from "./restartplan";
 import { DEFAULT_BG, readableForeground } from "./theme";
 import { reorderWorkspace, reorderGroup } from "./reorder";
 import {
+  TOPBAR_LAYOUT_KEY, type TopbarItem, isTopbarPinned, defaultTopbarLayout, parseTopbarLayout, serializeTopbarLayout,
+  setTopbarItemOn, moveTopbarItem, canMoveTopbarItem, dropTopbarItem,
+} from "./topbarlayout";
+import {
   classifyDrainVerifyFallback,
   drainVerifyFallbackToast,
   drainVerifyNotice,
@@ -2535,6 +2539,34 @@ function applyTermWeight(w: string | null) {
   const ms = menuScaleFromPct(localStorage.getItem("cys-menu-scale"));
   if (ms) document.documentElement.style.setProperty("--ui-chrome-scale", ms);
 })();
+
+// ── 상단 단추 켬끔·순서(TICKET=cysr-1110-screen-settings · 박사님 2026-10-12) — 계산은 topbarlayout.ts, 여기는 DOM·저장만.
+// 대상 = #topbar 바로 아래의 id 달린 단추 전부(나중에 생기는 단추도 저절로 목록에 든다).
+// 기본 순서 = index.html 순서 — 손대기 전에 한 번 읽어 둔다.
+// ★숨김 = hidden 속성만 바꾼다. 요소·누름 처리기는 그대로라 단축키(⌘T·⌘D·⌘W)·팔레트·창 머리 × 는 숨겨도 동작한다.
+const topbarEl = document.getElementById("topbar")!;
+const topbarBtn = (id: string) => topbarEl.querySelector<HTMLButtonElement>(`:scope > button[id="${id}"]`);
+const TOPBAR_DOM_IDS: readonly string[] = [...topbarEl.querySelectorAll<HTMLButtonElement>(":scope > button[id]")].map((b) => b.id);
+// 목록에 보일 이름 = 단추 글자(승인 대기 배지 같은 안쪽 요소의 글자는 뺀다).
+function topbarBtnLabel(id: string): string {
+  const b = topbarBtn(id);
+  const txt = b ? [...b.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent ?? "").join("").trim() : "";
+  return txt || id;
+}
+let topbarLayout: TopbarItem[] = parseTopbarLayout(localStorage.getItem(TOPBAR_LAYOUT_KEY), TOPBAR_DOM_IDS);
+// persist: true = 저장 · false = 화면에만(시작 복원) · null = 저장을 지운다(기본값 복원 — 다음 판의 기본값을 그대로 따른다).
+function applyTopbarLayout(items: TopbarItem[], persist: boolean | null) {
+  topbarLayout = items;
+  for (const it of items) {
+    const b = topbarBtn(it.id);
+    if (!b) continue;
+    b.hidden = !it.on;
+    topbarEl.appendChild(b); // 목록 순서대로 끝에 다시 붙인다 = 화면 순서(왼쪽 → 오른쪽)
+  }
+  if (persist === null) localStorage.removeItem(TOPBAR_LAYOUT_KEY);
+  else if (persist) localStorage.setItem(TOPBAR_LAYOUT_KEY, serializeTopbarLayout(items));
+}
+applyTopbarLayout(topbarLayout, false);
 
 // Control Center 본문 전용 zoom — 터미널 fontSize와 분리(배율 단위).
 // WebKit `zoom`을 #cc-body에만 적용(host #cc-panel은 fixed라 zoom 시 위치/스크롤 회귀 → 본문만 확대,
@@ -5706,6 +5738,47 @@ function showCtxMenu(
   window.addEventListener("keydown", onKey, true);
 }
 
+// 화면 설정 「상단 단추」 줄 끌기 — 사이드바 순서 바꾸기(startWsDrag)와 같은 부품을 쓴다: 삽입선(makeDropLine·placeDropLine ·
+// --z-drop-indicator) · 4px 임계(클릭과 구분) · 끌기 뒤 따라오는 click 1회 삼킴. 배열 변형은 topbarlayout.ts dropTopbarItem.
+function startTopbarRowDrag(e0: MouseEvent, srcId: string, list: HTMLElement, commit: (next: TopbarItem[]) => void) {
+  const start = { x: e0.clientX, y: e0.clientY };
+  let dragging = false;
+  let line: HTMLElement | null = null;
+  let drop: { anchorId: string; before: boolean } | null = null;
+  const srcRow = () => list.querySelector<HTMLElement>(`.tb-row[data-tb-id="${srcId}"]`);
+  const move = (e: MouseEvent) => {
+    if (!dragging) {
+      if (Math.abs(e.clientX - start.x) + Math.abs(e.clientY - start.y) < 4) return;
+      dragging = true;
+      srcRow()?.classList.add("tb-dragging");
+      line = makeDropLine();
+      document.body.classList.add("ws-reordering");
+    }
+    const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+    const over = el?.closest<HTMLElement>(".tb-row[data-tb-id]");
+    drop = null;
+    if (over && list.contains(over) && over.dataset.tbId !== srcId) {
+      const r = over.getBoundingClientRect();
+      const before = e.clientY < r.top + r.height / 2; // 커서가 줄의 위쪽 절반이면 그 앞
+      drop = { anchorId: over.dataset.tbId!, before };
+      placeDropLine(line!, r.left, before ? r.top : r.bottom, r.width);
+    } else {
+      line!.hidden = true; // 자기 줄 위·목록 밖 = 놓아도 그대로
+    }
+  };
+  const up = () => {
+    window.removeEventListener("mousemove", move, true);
+    window.removeEventListener("mouseup", up, true);
+    line?.remove();
+    document.body.classList.remove("ws-reordering");
+    srcRow()?.classList.remove("tb-dragging");
+    if (dragging) suppressNextClick();
+    if (dragging && drop) commit(dropTopbarItem(topbarLayout, srcId, drop.anchorId, drop.before));
+  };
+  window.addEventListener("mousemove", move, true);
+  window.addEventListener("mouseup", up, true);
+}
+
 // 화면 설정 팝오버(종전 「테마」 · TICKET=cysr-1110-screen-settings · 박사님 2026-10-12) — showCtxMenu의 바깥클릭·Esc 닫기 패턴 재사용.
 // 구획(제목 줄을 누르면 접힌다): ① 글자·배경(종전 항목 전부 그대로) ② 상단 단추 ③ 기본값 복원.
 // 컬러피커 input 이벤트마다 applyBgColor 라이브 적용(localStorage 영속은 applyBgColor 내부).
@@ -5855,11 +5928,84 @@ function openThemePopover(anchor: HTMLElement) {
   look.body.append(row, fontRow, titleSizeRow, titleWeightRow, titleColorRow, termWeightRow, menuWeightRow, menuSizeRow,
     mkReset("이 구획만 기본값으로", resetLook));
 
-  // ③ 기본값 복원 — 위 구획들을 한 번에 되돌린다.
-  const all = mkSection("reset", "기본값 복원");
-  all.body.append(mkNote("글자·배경을 처음 상태로 되돌립니다."), mkReset("모두 기본값으로 되돌리기", resetLook));
+  // ② 상단 단추 — 줄 = [≡ 끌기 손잡이] [이름] [▲] [▼] [켬/끔]. 목록의 위 → 아래 = 상단의 왼쪽 → 오른쪽.
+  // 누르는 즉시 상단에 반영하고 저장한다(재시작 불요). 고정 단추(화면 설정·Control Center)는 끌 수 없고 순서만 바뀐다.
+  const bar = mkSection("topbar", "상단 단추");
+  const tbList = document.createElement("div");
+  tbList.className = "tb-list";
+  // focus = 다시 그린 뒤 초점을 돌려줄 부품(▲▼·토글을 키보드로 이어 누를 수 있게 — 줄을 새로 만들면 초점이 사라진다)
+  const commitTb = (next: TopbarItem[], persist: boolean | null = true, focus?: { id: string; cls: string }) => {
+    applyTopbarLayout(next, persist);
+    renderTbList();
+    fitPop(); // 「화면 설정」 단추 자리가 바뀌었을 수 있다
+    if (focus) {
+      const row = [...tbList.querySelectorAll<HTMLElement>(".tb-row")].find((r) => r.dataset.tbId === focus.id);
+      const el = row?.querySelector<HTMLButtonElement>(`.${focus.cls}`);
+      (el && !el.disabled ? el : row?.querySelector<HTMLButtonElement>("button:not(:disabled)"))?.focus();
+    }
+  };
+  const renderTbList = () => {
+    tbList.replaceChildren();
+    for (const it of topbarLayout) {
+      const label = topbarBtnLabel(it.id);
+      const pinned = isTopbarPinned(it.id);
+      const r = document.createElement("div");
+      r.className = "tb-row";
+      r.dataset.tbId = it.id;
+      const grip = document.createElement("span");
+      grip.className = "tb-grip";
+      grip.textContent = "≡";
+      grip.title = "끌어서 순서 바꾸기";
+      grip.addEventListener("mousedown", (e) => {
+        if (e.button !== 0) return;
+        e.preventDefault(); // 글자 선택 방지
+        startTopbarRowDrag(e, it.id, tbList, (next) => commitTb(next));
+      });
+      const name = document.createElement("span");
+      name.className = "tb-name";
+      name.textContent = label;
+      const mkMove = (cls: string, glyph: string, delta: -1 | 1, tip: string) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = `tb-move ${cls}`;
+        b.textContent = glyph;
+        b.title = `「${label}」 ${tip}`;
+        b.setAttribute("aria-label", b.title);
+        b.disabled = !canMoveTopbarItem(topbarLayout, it.id, delta);
+        b.addEventListener("click", () => commitTb(moveTopbarItem(topbarLayout, it.id, delta), true, { id: it.id, cls }));
+        return b;
+      };
+      const tog = document.createElement("button");
+      tog.type = "button";
+      tog.className = "tb-toggle";
+      tog.setAttribute("role", "switch");
+      tog.setAttribute("aria-checked", String(it.on));
+      tog.setAttribute("aria-label", `「${label}」 상단에 보이기`);
+      tog.textContent = it.on ? "켬" : "끔";
+      tog.disabled = pinned;
+      tog.title = pinned ? "이 단추는 항상 켜 둡니다(순서만 바꿀 수 있어요)" : it.on ? "누르면 상단에서 숨깁니다" : "누르면 상단에 보입니다";
+      tog.addEventListener("click", () => commitTb(setTopbarItemOn(topbarLayout, it.id, !it.on), true, { id: it.id, cls: "tb-toggle" }));
+      r.append(grip, name, mkMove("tb-up", "▲", -1, "위로(상단에서는 왼쪽으로)"), mkMove("tb-down", "▼", 1, "아래로(상단에서는 오른쪽으로)"), tog);
+      tbList.appendChild(r);
+    }
+  };
+  renderTbList();
+  const resetBar = () => commitTb(defaultTopbarLayout(TOPBAR_DOM_IDS), null);
+  bar.body.append(
+    mkNote("끈 단추는 상단에서만 숨겨집니다 — 여기서 다시 켜면 바로 보이고, 단축키는 그대로 됩니다."),
+    tbList,
+    mkNote("「화면 설정」·「Control Center」는 끌 수 없습니다(순서만 바꿀 수 있어요). 목록의 위쪽이 상단의 왼쪽입니다."),
+    mkReset("이 구획만 기본값으로", resetBar),
+  );
 
-  pop.append(look.sec, all.sec);
+  // ③ 기본값 복원 — 위 두 구획을 한 번에 되돌린다.
+  const all = mkSection("reset", "기본값 복원");
+  all.body.append(
+    mkNote("글자·배경과 상단 단추를 모두 처음 상태로 되돌립니다."),
+    mkReset("모두 기본값으로 되돌리기", () => { resetLook(); resetBar(); }),
+  );
+
+  pop.append(look.sec, bar.sec, all.sec);
   document.body.appendChild(pop);
   fitPop();
 

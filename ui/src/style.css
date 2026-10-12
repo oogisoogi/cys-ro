@@ -79,6 +79,9 @@ html, body {
   padding: 4px 12px; cursor: pointer; font-size: calc(12px * var(--ui-chrome-scale));
 }
 #topbar button:hover { border-color: var(--accent); }
+/* 화면 설정에서 끈 단추(TICKET=cysr-1110-screen-settings) — main.ts 가 hidden 속성만 바꾼다. 위 규칙에 display 가 없어 지금도
+   UA [hidden] 이 듣지만, 뒤에 display 를 주는 규칙(.icon-btn 등)이 다시 걸려도 숨김이 풀리지 않게 짝을 둔다. */
+#topbar > button[hidden] { display: none; }
 /* 아이콘 버튼(New·Split·Close·Files) — 글자 대신 16px 인라인 SVG(index.html). 정사각에 가까운 28×26으로
    글자 버튼(≈25px)과 높이를 맞추고, svg 는 stroke=currentColor 라 위 #topbar button 의 color(var(--text))를
    그대로 따른다(--text 는 배경 테마 커스텀과 무관한 크롬 고정색 — applyBgColor 가 건드리지 않음). hover 는 위 규칙 상속. */
@@ -508,7 +511,7 @@ body.ws-reordering { cursor: grabbing; -webkit-user-select: none; user-select: n
 #theme-pop .sp-sec-head:hover { color: #fff; }
 #theme-pop .sp-sec-body { display: flex; flex-direction: column; gap: .4em; padding: .35em 0 .15em; }
 #theme-pop .sp-sec-body[hidden] { display: none; } /* 짝 규칙 — 위 display 가 UA [hidden] 을 이긴다(hiddenpair.test.ts) */
-#theme-pop .sp-note { color: #8b949e; }
+#theme-pop .sp-note { color: #8b949e; word-break: keep-all; } /* 한글 낱말 가운데서 줄이 꺾이지 않게 */
 #theme-pop .theme-pop-row {
   display: flex; align-items: center; justify-content: space-between; gap: .8em;
   white-space: nowrap;
@@ -533,6 +536,29 @@ body.ws-reordering { cursor: grabbing; -webkit-user-select: none; user-select: n
   border: 1px solid var(--border); border-radius: 6px;
 }
 #theme-pop .theme-pop-reset:hover { border-color: var(--accent); }
+/* ② 상단 단추 구획 — 줄 = [≡][이름][▲][▼][켬/끔]. 끌기 삽입선은 사이드바와 같은 부품(.ws-drop-indicator). */
+#theme-pop .tb-list { display: flex; flex-direction: column; gap: .15em; }
+#theme-pop .tb-row {
+  display: flex; align-items: center; gap: .4em; padding: .1em .2em;
+  border-radius: 6px; white-space: nowrap;
+}
+#theme-pop .tb-row:hover { background: rgba(255, 255, 255, .05); }
+#theme-pop .tb-row.tb-dragging { opacity: .4; }
+#theme-pop .tb-grip { padding: 0 .25em; cursor: grab; color: #8b949e; -webkit-user-select: none; user-select: none; }
+#theme-pop .tb-name { flex: 1; min-width: 0; }
+#theme-pop .tb-move {
+  padding: 0 .35em; cursor: pointer;
+  background: var(--bar); border: 1px solid var(--border); border-radius: 4px;
+}
+#theme-pop .tb-move:hover:not(:disabled) { border-color: var(--accent); }
+#theme-pop .tb-move:disabled { opacity: .35; cursor: default; }
+#theme-pop .tb-toggle {
+  min-width: 3em; padding: .05em .55em; cursor: pointer;
+  background: #21262d; color: #8b949e;
+  border: 1px solid var(--border); border-radius: 999px;
+}
+#theme-pop .tb-toggle[aria-checked="true"] { background: rgba(47, 129, 247, .22); border-color: var(--accent); color: #fff; }
+#theme-pop .tb-toggle:disabled { opacity: .55; cursor: not-allowed; }
 
 #body-row { height: calc(100% - var(--topbar-h)); display: flex; }
 /* (1.1.8 U4 · 📌18) 좌석 0 상태 창 고정 안내 — 흐름 밖(fixed)이라 #body-row 높이 계산을 건드리지 않는다. 닫기 단추 없음.

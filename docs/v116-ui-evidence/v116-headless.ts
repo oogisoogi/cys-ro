@@ -4,7 +4,7 @@
 //   c1 산 창 Close·⌘W → 확인 1회(기본 포커스 = 취소 · 겹침 0 · 취소 시 close_surface 0) · exited 창 Close → 확인 0 · 바로 닫힘
 //   c2 복원 직후 목록 조회 실패(이벤트 유실 잔재) → 다음 틱에 [exited] 옛 창 0
 //   c3 창 2개 중 1개 exited(이벤트) → 남은 창 폭 = 전체 · PTY cols 재조정
-//   c4 (v116-recut-newsplit) 기본 화면 상단에 + New · Split → · Split ↓ 보임(1.1.5 되살림) · 누르면 창 +1(Split ↓ = 세로 분할) ·
+//   c4 (v116-recut-newsplit → cysr-1110-screen-settings) 상단 + New · Split → · Split ↓ = 기본 화면에서 숨김(화면 설정 토글로 켠다 · 요소는 남음) · 누르면 창 +1(Split ↓ = 세로 분할) ·
 //      전문가 모드 칸에 「창 만들기」 → 오른쪽 한 갈래
 //   c6 복원 카드가 떠 있을 때 뒤에 뜬 경보(에이전트 사망 알림)가 카드에 가려지지 않는다(D4 #21 · 1280·800 폭)
 //   c7 상단바 데몬 라벨 = 판번만(pid·소켓 경로·daemon 0) · 전문은 툴팁(D4 #5)
@@ -170,8 +170,12 @@ if (ONLY.includes("c4")) {
   await shot("c4a-beginner.png");
   // ★(v116-recut-newsplit · 박사님 09-25 23:2x) 상단 「+ New · Split → · Split ↓」 되살림(1.1.5 모습) — 종전 기대값 = 초보 화면에
   //   창 만들기·Split·New 0. 지금 = 상단에 세 단추가 보이고(1.1.5 글자) · 전문가 칸 「창 만들기」는 초보 화면에 여전히 0.
+  // ★(cysr-1110-screen-settings · 박사님 2026-10-12 「최적안대로 한다」) 세 단추는 **기본 화면에서 꺼져 있다**(화면 설정 → 상단 단추 토글로 켠다).
+  //   종전 기대값 = 기본 화면 상단에 세 단추 보임. 지금 = 보이는 단추에 0 · 요소는 DOM 에 그대로(아래 c4c 가 숨긴 단추의 누름 = 단축키 결과를 잰다) ·
+  //   켜는 길·켠 뒤 보임은 docs/screen-settings-evidence-2026-10-12/screen-settings-headless.ts s4 가 잰다.
   const TOP3 = ["+ New", "Split →", "Split ↓"];
-  check("c4a 초보 화면 상단 + New · Split → · Split ↓ 보임 · 「창 만들기」 0", TOP3.every((t) => a.tb.includes(t)) && !a.hits.some((h: string) => h.includes("창 만들기")), JSON.stringify(a));
+  const dom3 = await ev(`["btn-new", "btn-split-h", "btn-split-v"].every(id => !!document.getElementById(id))`);
+  check("c4a 초보 화면 상단 + New · Split → · Split ↓ 기본 숨김(요소는 남음) · 「창 만들기」 0", TOP3.every((t) => !a.tb.includes(t)) && dom3 && !a.hits.some((h: string) => h.includes("창 만들기")), JSON.stringify({ ...a, dom3 }));
   await load("two", `localStorage.setItem("cys-expert-mode", "1")`);
   const b = await ev(`(() => { const btn = [...document.querySelectorAll("#ws-expert button")].find(x => x.textContent.includes("창 만들기")); if (!btn || btn.offsetParent === null) return { btn: false }; btn.click(); const items = [...document.querySelectorAll("#ctx-menu .ctx-item")].map(x => x.textContent); return { btn: true, items }; })()`);
   await shot("c4b-expert-create.png");

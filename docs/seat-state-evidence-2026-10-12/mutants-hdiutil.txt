@@ -1,0 +1,6 @@
+P1 둘째 매체를 직접 호출로 되돌림 → 잡음 rc=1 ['test_every_create_and_attach_goes_through_the_retry_helper']
+P2 재시도 0(도우미 1회만) → 잡음 rc=1 ['test_module_probe_survives_one_transient_create_failure', 'test_module_probe_two_failures_stay_a_module_error', 'test_transient_failure_retried_once', 'test_two_failures_report_reasons_no_third']
+P3 모듈 전제 확인이 실패를 무시 → 잡음 rc=1 ['test_module_probe_two_failures_stay_a_module_error']
+P4 setUpModule 이 전제 실패를 버림 → 잡음 rc=1 ['test_module_probe_two_failures_stay_a_module_error']
+P5 모듈 전제 확인이 도우미를 안 거침(직접 1회) → 잡음 rc=1 ['test_every_create_and_attach_goes_through_the_retry_helper', 'test_module_probe_survives_one_transient_create_failure', 'test_module_probe_two_failures_stay_a_module_error']
+복원: True

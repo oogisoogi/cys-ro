@@ -19,6 +19,7 @@ import tempfile
 import time
 import unittest
 import zipfile
+from unittest import mock
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 UPD = os.path.join(ROOT, "scripts", "update")
@@ -53,20 +54,28 @@ def setUpModule():
     if sys.platform != "darwin" or not shutil.which("hdiutil"):
         bad.append("hdiutil 없음(맥 매체 묶음 실행 불가)")
     else:
-        d = tempfile.mkdtemp(prefix="u3-req-")
-        try:
-            dmg, mnt = os.path.join(d, "p.dmg"), os.path.join(d, "mnt")
-            os.makedirs(mnt)
-            r = run(["hdiutil", "create", "-size", "1m", "-fs", "HFS+", "-volname", "U3PROBE", "-quiet", dmg])
-            r = r if r.returncode else run(["hdiutil", "attach", dmg, "-mountpoint", mnt, "-nobrowse", "-quiet"])
-            if r.returncode:
-                bad.append("hdiutil 매체 생성·마운트 실패(rc %d): %s" % (r.returncode, (r.stderr or r.stdout).strip()[-200:]))
-            else:
-                run(["hdiutil", "detach", mnt, "-quiet"])
-        finally:
-            shutil.rmtree(d, ignore_errors=True)
+        bad.extend(media_probe_failures())
     if bad:
         raise RuntimeError("CYS_U3_REQUIRE_ALL=1 전제 부재 — " + " · ".join(bad))
+
+
+def media_probe_failures(runner=None, delay=1.0):
+    """setUpModule 의 매체 전제 확인(hdiutil 로 실제 생성·마운트) — 반환 = 실패 사유 목록(빈 목록 = 통과).
+    1.1.9: create·attach 를 hdiutil_retry 로 부른다 — 맥 러너의 간헐 실패 1회는 사유를 찍고 다시 하고, 2회 실패는
+    종전처럼 모듈 오류다(건너뛰기 없음 · REQUIRE_ALL 계약 그대로)."""
+    d = tempfile.mkdtemp(prefix="u3-req-")
+    try:
+        dmg, mnt = os.path.join(d, "p.dmg"), os.path.join(d, "mnt")
+        os.makedirs(mnt)
+        for args, partial in ((["create", "-size", "1m", "-fs", "HFS+", "-volname", "U3PROBE", "-quiet", dmg], dmg),
+                              (["attach", dmg, "-mountpoint", mnt, "-nobrowse", "-quiet"], None)):
+            reasons = hdiutil_retry(args, partial=partial, runner=runner, delay=delay)
+            if reasons:
+                return ["hdiutil 매체 생성·마운트 실패(hdiutil %s · 2회): %s" % (args[0], " | ".join(reasons))]
+        (runner or run)(["hdiutil", "detach", mnt, "-quiet"])
+        return []
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def py(script, *args, now=None, **kw):
@@ -1070,6 +1079,37 @@ class TestHdiutilRetry(unittest.TestCase):
         self.assertIn("리소스 일시 사용 불가", reasons[0], "실패 사유(stderr)가 빠졌다")
         self.assertFalse(os.path.exists(partial), "반쪽 dmg 를 남기면 재시도 create 가 「파일 있음」으로 또 실패한다")
 
+    def test_module_probe_survives_one_transient_create_failure(self):
+        # 1.1.9: setUpModule 의 매체 전제 확인 — create 첫 실패·둘째 성공이면 통과(create 2 + attach 1 + detach 1).
+        runner, calls = self.fake([1, 0, 0, 0])
+        self.assertEqual(media_probe_failures(runner=runner, delay=0), [])
+        self.assertEqual([c[1] for c in calls], ["create", "create", "attach", "detach"])
+
+    def test_module_probe_two_failures_stay_a_module_error(self):
+        # 둘 다 실패 = 사유가 실린 목록 → setUpModule 이 RuntimeError(모듈 오류 · 건너뛰기 아님). attach 는 부르지 않는다.
+        runner, calls = self.fake([1, 1, 0])
+        bad = media_probe_failures(runner=runner, delay=0)
+        self.assertEqual([c[1] for c in calls], ["create", "create"], "재시도는 1회뿐 · 실패한 create 뒤에 attach 금지")
+        self.assertEqual(len(bad), 1)
+        self.assertIn("리소스 일시 사용 불가", bad[0], "실패 사유(stderr)가 빠졌다")
+        mod = sys.modules[__name__]
+        with mock.patch.object(mod, "REQUIRE_ALL", True), mock.patch.object(mod, "media_probe_failures", lambda: bad), \
+                mock.patch.object(sys, "platform", "darwin"), mock.patch.object(shutil, "which", lambda n: "/usr/bin/" + n):
+            with self.assertRaises(RuntimeError) as cm:
+                setUpModule()
+        self.assertIn(bad[0], str(cm.exception))
+        self.assertIn("CYS_U3_REQUIRE_ALL=1 전제 부재", str(cm.exception))
+
+    def test_every_create_and_attach_goes_through_the_retry_helper(self):
+        # 배선 핀: 이 파일에서 hdiutil create·attach 를 도우미 밖에서 직접 부르는 줄은 0 이다(detach 는 재시도 대상 아님).
+        # 바늘은 조각으로 이어 이 줄이 자기 자신에 걸리지 않게 한다.
+        src = open(os.path.abspath(__file__), encoding="utf-8").read()
+        head = '["hdi' + 'util", "'
+        for verb in ("create", "attach"):
+            self.assertEqual(src.count(head + verb + '"'), 0, "hdiutil %s 직접 호출이 남았다 — hdiutil_retry 로 부른다" % verb)
+        self.assertEqual(src.count('runner(["hdi' + 'util"] + list(args))'), 1, "도우미의 실행 줄이 사라졌거나 둘이 됐다")
+        self.assertEqual(src.count("hdiutil_" + "retry(args, partial=partial"), 3, "도우미를 거치는 호출부 = 모듈 전제·첫 매체·둘째 매체")
+
 
 @unittest.skipUnless(sys.platform == "darwin" and shutil.which("hdiutil"), "가짜 매체 = hdiutil 마운트(맥 전용)")
 class TestOfflineRitual(Base):
@@ -1242,8 +1282,11 @@ class TestOfflineRitual(Base):
         m2 = os.path.join(self.tmp, "mnt2")
         os.makedirs(m2)
         dmg = os.path.join(self.tmp, "m2.dmg")
-        subprocess.check_call(["hdiutil", "create", "-size", "4m", "-fs", "HFS+", "-volname", "U3FAKE2", "-quiet", dmg])
-        subprocess.check_call(["hdiutil", "attach", dmg, "-mountpoint", m2, "-nobrowse", "-quiet"])
+        for args, partial in ((["create", "-size", "4m", "-fs", "HFS+", "-volname", "U3FAKE2", "-quiet", dmg], dmg),
+                              (["attach", dmg, "-mountpoint", m2, "-nobrowse", "-quiet"], None)):
+            reasons = hdiutil_retry(args, partial=partial)
+            if reasons:
+                self.fail("둘째 가짜 매체 준비 실패(hdiutil %s · 2회): %s" % (args[0], " | ".join(reasons)))
         self.addCleanup(subprocess.call, ["hdiutil", "detach", m2, "-quiet"])
         return m2
 

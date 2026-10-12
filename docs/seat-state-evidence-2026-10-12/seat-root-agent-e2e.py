@@ -15,6 +15,8 @@
 
 실행: python3 seat-root-agent-e2e.py <cysd 바이너리> <cys 클라이언트 바이너리> [라벨]
   SEAT119_AGENTS=single 을 주면 팩 agents.json 을 쓰지 않는다(= 저장소 내장 팩의 claude 1종만 · 원인 대조군).
+  SEAT119_AGENTS=shell 을 주면 셸이 실행 파일인 후보 둘(`zsh /opt/agents/a.sh` · `b.sh`)을 더한다(R2 · codex 1R HIGH 의
+  실데몬판: 좌석 B 의 맨 셸 뿌리 `/bin/zsh -l` 이 그 후보 때문에 occupied 로 읽히면 안 된다).
 """
 import json
 import os
@@ -47,9 +49,13 @@ def main():
         with open(p, "w") as f:
             f.write('#!/bin/sh\necho "TRIP $0 $*" >> "%s"\nexit 97\n' % hits)
         os.chmod(p, 0o755)
-    if os.environ.get("SEAT119_AGENTS") != "single":
+    mode = os.environ.get("SEAT119_AGENTS")
+    if mode != "single":
+        agents = dict(AGENTS)
+        if mode == "shell":
+            agents.update({"zsh-a": {"cmd": "zsh /opt/agents/a.sh"}, "zsh-b": {"cmd": "zsh /opt/agents/b.sh"}})
         with open(os.path.join(box, "pack", "agents.json"), "w") as f:
-            json.dump(AGENTS, f)
+            json.dump(agents, f)
     with open(os.path.join(box, "pack", "acl.json"), "w") as f:
         f.write('{"default":"allow","rules":[]}')
     fake = os.path.join(box, "bin", "claude")

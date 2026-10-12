@@ -10955,7 +10955,7 @@ fn run_factory_reset(
     if cys::env_compat(ENV_SURFACE_ID).filter(|v| !v.is_empty()).is_some() {
         eprintln!(
             "cys surface 안에서는 완전 초기화를 실행할 수 없다 — 데몬이 죽는 순간 이 세션도 \
-             끊긴다. 외부 터미널(맥 기본 터미널 등)이나 GUI '완전 초기화' 버튼에서 실행하라."
+             끊긴다. 외부 터미널(맥 기본 터미널 등)이나 GUI '완전 초기화' 버튼(상단에 안 보이면 '화면 설정' → '상단 단추'에서 '완전 초기화'를 켠다)에서 실행하라."
         );
         return 2;
     }

@@ -5760,6 +5760,26 @@ function showCtxMenu(
 //   닫힌 뒤에도 mouseup 처리기가 살아 있어, 놓는 순간 보이지 않는 목록의 순서가 저장됐다. cancelTopbarDrag 는 진행 중인
 //   끌기가 있을 때만 값이 있다 — 팝오버의 close() 가 부른다(Esc 도 close 를 지난다).
 let cancelTopbarDrag: ((why: "close" | "blur") => void) | null = null;
+// 닫힘으로 끌기가 취소된 직후 — 아직 눌린 단추가 떼어질 때 따라오는 click 1회를 삼키려고 mouseup 을 기다린다.
+// ★이 기다림은 스스로 걷힌다(codex 2R LOW): mouseup 을 영영 놓치면(창 밖에서 뗌) 종전의 한 번짜리 처리기가 무기한 남아,
+//   돌아와서 누른 **무관한 첫 click** 을 삼켰다. 걷히는 때 = mouseup(제 할 일) · 새 mousedown(놓쳤다는 뜻 — 새 누름은
+//   무관한 조작) · 창이 초점을 잃음 · TB_CANCEL_SWALLOW_MS 경과. 다시 무장하면 앞의 것을 먼저 걷는다(쌓이지 않는다).
+const TB_CANCEL_SWALLOW_MS = 1000;
+let disarmTbCancelSwallow: (() => void) | null = null;
+function armTbCancelSwallow() {
+  disarmTbCancelSwallow?.();
+  const ac = new AbortController();
+  const off = () => {
+    ac.abort();
+    clearTimeout(timer);
+    if (disarmTbCancelSwallow === off) disarmTbCancelSwallow = null;
+  };
+  const timer = setTimeout(off, TB_CANCEL_SWALLOW_MS);
+  window.addEventListener("mouseup", () => { off(); suppressNextClick(); }, { capture: true, signal: ac.signal });
+  window.addEventListener("mousedown", off, { capture: true, signal: ac.signal });
+  window.addEventListener("blur", off, { signal: ac.signal });
+  disarmTbCancelSwallow = off;
+}
 function startTopbarRowDrag(e0: MouseEvent, srcId: string, list: HTMLElement, commit: (next: TopbarItem[]) => void) {
   cancelTopbarDrag?.("close"); // 앞선 끌기가 남아 있으면 먼저 버린다(mouseup 을 놓친 경우)
   const start = { x: e0.clientX, y: e0.clientY };
@@ -5768,6 +5788,8 @@ function startTopbarRowDrag(e0: MouseEvent, srcId: string, list: HTMLElement, co
   let drop: { anchorId: string; before: boolean } | null = null;
   const srcRow = () => list.querySelector<HTMLElement>(`.tb-row[data-tb-id="${srcId}"]`);
   const move = (e: MouseEvent) => {
+    // 단추가 떼어진 채 움직인다 = mouseup 을 놓쳤다(창 밖에서 뗌) → 그 끌기는 버린다(떼지 않은 손을 따라다니지 않는다).
+    if (!(e.buttons & 1)) return cancel("blur");
     if (!dragging) {
       if (Math.abs(e.clientX - start.x) + Math.abs(e.clientY - start.y) < 4) return;
       dragging = true;
@@ -5808,7 +5830,7 @@ function startTopbarRowDrag(e0: MouseEvent, srcId: string, list: HTMLElement, co
   const cancel = (why: "close" | "blur") => {
     const wasDragging = dragging;
     teardown();
-    if (wasDragging && why === "close") window.addEventListener("mouseup", () => suppressNextClick(), { capture: true, once: true });
+    if (wasDragging && why === "close") armTbCancelSwallow();
   };
   const onBlur = () => cancel("blur");
   cancelTopbarDrag = cancel;
@@ -6030,7 +6052,11 @@ function openThemePopover(anchor: HTMLElement) {
       tog.disabled = pinned;
       tog.title = pinned ? "이 단추는 항상 켜 둡니다(순서만 바꿀 수 있어요)" : it.on ? "누르면 상단에서 숨깁니다" : "누르면 상단에 보입니다";
       tog.addEventListener("click", () => commitTb(setTopbarItemOn(topbarLayout, it.id, !it.on), true, { id: it.id, cls: "tb-toggle" }));
-      r.append(grip, name, mkMove("tb-up", "▲", -1, "위로(상단에서는 왼쪽으로)"), mkMove("tb-down", "▼", 1, "아래로(상단에서는 오른쪽으로)"), tog);
+      // 조작 묶음 — 좁은 폭에서는 이 묶음이 통째로 아랫줄로 내려간다(style.css .tb-row · .tb-ctl)
+      const ctl = document.createElement("span");
+      ctl.className = "tb-ctl";
+      ctl.append(mkMove("tb-up", "▲", -1, "위로(상단에서는 왼쪽으로)"), mkMove("tb-down", "▼", 1, "아래로(상단에서는 오른쪽으로)"), tog);
+      r.append(grip, name, ctl);
       tbList.appendChild(r);
     }
   };

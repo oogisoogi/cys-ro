@@ -6,7 +6,7 @@
 // docs/screen-settings-evidence-2026-10-12/screen-settings-headless.ts. 여기는 그 동작을 만드는 소스 모양을 잰다
 // (index.html · main.ts · style.css 를 데이터로 읽는다 — wswiring.test.ts 관례 · 주석 제거 본문 기준).
 import { describe, it, expect } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { TOPBAR_DEFAULT_OFF, TOPBAR_PINNED } from "./topbarlayout";
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
@@ -132,7 +132,8 @@ describe("상단 단추 — 적용·저장 배선", () => {
   });
 
   it("줄 = [≡ 손잡이][이름][▲][▼][켬/끔] · 토글은 누르는 즉시 적용+저장 · 고정 단추 토글 비활성", () => {
-    expect(pop).toContain('r.append(grip, name, mkMove("tb-up", "▲", -1,');
+    expect(pop).toContain('ctl.append(mkMove("tb-up", "▲", -1,');
+    expect(pop).toContain("r.append(grip, name, ctl);"); // [≡][이름][조작 묶음 = ▲ ▼ 켬/끔]
     expect(pop).toContain('mkMove("tb-down", "▼", 1,');
     expect(pop).toContain('grip.textContent = "≡";');
     expect(pop).toContain('tog.setAttribute("role", "switch");');
@@ -194,8 +195,10 @@ describe("codex 1R — 끌기 취소(MED-2) · 저장 예외(LOW)", () => {
     expect(drag).toContain('const onBlur = () => cancel("blur");');
     expect(drag).toContain('window.addEventListener("blur", onBlur);');
     expect(drag).toContain("cancelTopbarDrag = cancel;");
-    // 닫힘으로 취소됐을 때만 다음 mouseup 뒤의 click 1회를 삼킨다(초점을 잃은 취소는 아무것도 남기지 않는다)
-    expect(drag).toContain('if (wasDragging && why === "close") window.addEventListener("mouseup", () => suppressNextClick(), { capture: true, once: true });');
+    // 닫힘으로 취소됐을 때만 다음 mouseup 뒤의 click 1회를 삼킬 채비를 한다(초점을 잃은 취소는 아무것도 남기지 않는다)
+    expect(/if \(wasDragging && why === "close"\) armTbCancelSwallow\(\);/.test(drag)).toBe(true);
+    // 끌기 처리기 안에 걷을 길 없는 한 번짜리 처리기를 다시 두지 않는다(codex 2R LOW — 무기한 남아 무관한 click 을 삼켰다)
+    expect(/once:\s*true/.test(drag)).toBe(false);
   });
 
   it("저장이 던져도 화면에는 끝까지 바른다 — DOM 적용이 저장보다 먼저 · 예외 = false · 읽기 예외 = 기본값", () => {
@@ -214,6 +217,52 @@ describe("codex 1R — 끌기 취소(MED-2) · 저장 예외(LOW)", () => {
     expect(pop).toContain("tbUnsaved.hidden = true;");
     // 알림 줄에 display 를 주지 않는다(hidden 속성이 듣게)
     for (const r of rules.filter((x) => x.sel.includes(".sp-note"))) expect(/display\s*:/.test(r.body)).toBe(false);
+  });
+});
+
+// ── codex 2R(2026-10-12) 채택 4건 — 화면 동작은 실렌더 s13(scrollLeft 0 에서 조작부 보임) · s14d·e(삼킴 대기 자기청소)가 잰다.
+describe("codex 2R — 삼킴 대기 자기청소(LOW) · 좁은 폭 두 줄(MED)", () => {
+  const arm = (() => {
+    const i = main.indexOf("function armTbCancelSwallow(");
+    return main.slice(i, main.indexOf("\n}\n", i));
+  })();
+
+  it("닫힘 취소 뒤의 mouseup 기다림은 스스로 걷힌다 — mouseup · 새 mousedown · 초점 잃음 · 시간 경과 · 다시 무장", () => {
+    // 구현 모양(AbortController 냐 이름 있는 처리기냐)이 아니라 「걷히는 길 넷 + 쌓이지 않음」 을 본다. 동작은 실렌더 s14d·s14e.
+    expect(arm.length).toBeGreaterThan(100);
+    for (const ev of ["mouseup", "mousedown", "blur"]) expect(`${ev}: ${arm.includes(`addEventListener("${ev}"`)}`).toBe(`${ev}: true`);
+    expect(/setTimeout\(\w+, TB_CANCEL_SWALLOW_MS\)/.test(arm)).toBe(true);
+    expect(/^\s*disarmTbCancelSwallow\?\.\(\);/m.test(arm)).toBe(true); // 다시 무장하면 앞의 것부터 걷는다
+    expect(arm).toContain("suppressNextClick();");
+    const ms = Number(/const TB_CANCEL_SWALLOW_MS = (\d+);/.exec(main)?.[1]);
+    expect(ms > 0 && ms <= 2000).toBe(true); // 기다림이 길면 그 사이의 무관한 조작을 삼킬 창이 넓어진다
+    expect(/once:\s*true/.test(arm)).toBe(false);
+  });
+
+  it("mouseup 을 놓친 끌기(단추가 떼어진 채 움직임)는 버린다", () => {
+    const i = main.indexOf("function startTopbarRowDrag(");
+    const drag = main.slice(i, main.indexOf("\n}\n", i));
+    const move = drag.slice(drag.indexOf("const move = ("), drag.indexOf("const teardown ="));
+    expect(/if \(!\(e\.buttons & 1\)\) return cancel\("blur"\);/.test(move)).toBe(true);
+    expect(move.indexOf("e.buttons & 1")).toBeLessThan(move.indexOf("dragging = true;"));
+  });
+
+  it("좁은 폭 = 줄이 두 줄로 접힌다(가로 스크롤 뒤로 조작부가 숨지 않는다) — 접힘·묶음·폭 계산", () => {
+    const body = (sel: string) => rules.find((r) => r.sel === sel)?.body ?? "";
+    expect(/flex-wrap:\s*wrap/.test(body("#theme-pop .tb-row"))).toBe(true);
+    expect(/flex-wrap:\s*wrap/.test(body("#theme-pop .theme-pop-row"))).toBe(true);
+    // 조작 묶음은 안에서 접히지 않고(한 덩어리) 아랫줄 오른쪽에 선다
+    const ctl = body("#theme-pop .tb-ctl");
+    expect(/display:\s*inline-flex/.test(ctl) && /margin-left:\s*auto/.test(ctl) && /flex:\s*none/.test(ctl)).toBe(true);
+    expect(/flex-wrap/.test(ctl)).toBe(false);
+    // 이름의 기준 폭 = 글자 폭(basis auto) — 0 이면 접히지 않고 이름이 0 폭으로 눌린다
+    expect(/flex:\s*1 1 auto/.test(body("#theme-pop .tb-name"))).toBe(true);
+    // 팝오버 폭 = 접지 않은 내용 폭(창 폭 − 8px 상한) · 안내 줄은 그 계산에서 빠진다
+    const root = body("#theme-pop");
+    expect(/width:\s*max-content;/.test(root)).toBe(true);
+    expect(root).toContain("max-width: calc(100vw - 8px);");
+    const note = body("#theme-pop .sp-note");
+    expect(/width:\s*0;/.test(note) && /min-width:\s*100%/.test(note)).toBe(true);
   });
 });
 
@@ -246,6 +295,57 @@ describe("codex 1R — 숨긴 「완전 초기화」 를 가리키는 안내(MED
 
   it("깨끗이 지우기 안내(GUIDE-clean-reset-KR) 머리말", () => {
     expect(path(line("../../docs/GUIDE-clean-reset-KR.md", "이 문서 대신 앱 상단의 **완전 초기화** 버튼"))).toBe(true);
+  });
+
+  // ★(codex 2R) 고친 자리를 열거하는 대신 **저장소를 훑는다** — 「완전 초기화」 단추를 쓰라고 시키는 줄은 어디에 있든
+  //   켜는 길(화면 설정)을 그 줄이나 바로 아래 2줄 안에 함께 적어야 한다. 새 안내가 생겨도 이 시험이 잡는다(견주는 글만 예외).
+  //   대상 = 사용자에게 닿는 글: 제품 소스(src · src-tauri/src · ui/src · ui/index.html) · 팩(cysjavis-pack — 시험 폴더 제외) ·
+  //   사용 설명서 · README · docs 의 안내 문서. 제외 = 시험 파일 · 코드 주석 줄 · 그날 기록(HANDOFF · REVIEW · DESIGN · RELEASE_NOTES ·
+  //   rebase 보고 · PLAN · 하위 폴더의 증거·점검표).
+  it("저장소 전체 — 「완전 초기화」 단추를 쓰라는 안내는 켜는 길(화면 설정)을 함께 적는다(없는 단추만 가리키는 줄 0)", () => {
+    const ROOT = new URL("../../", import.meta.url).pathname;
+    const out: string[] = [];
+    const walk = (rel: string) => {
+      for (const e of readdirSync(ROOT + rel, { withFileTypes: true })) {
+        const p = rel ? `${rel}/${e.name}` : e.name;
+        if (e.isDirectory()) {
+          if (/^(node_modules|dist|target|tests|__pycache__|\.git)$/.test(e.name)) continue;
+          walk(p);
+        } else if (/\.(rs|ts|sh|py|md|html|cmd|ps1|json|txt)$/.test(e.name) && !/\.test\.ts$/.test(e.name)) out.push(p);
+      }
+    };
+    for (const r of ["src", "src-tauri/src", "ui/src", "cysjavis-pack"]) walk(r);
+    out.push("ui/index.html", "USER-MANUAL.md");
+    for (const e of readdirSync(ROOT, { withFileTypes: true })) if (e.isFile() && /^README.*\.md$/.test(e.name)) out.push(e.name);
+    for (const e of readdirSync(ROOT + "docs", { withFileTypes: true })) {
+      if (e.isFile() && /\.md$/.test(e.name) && !/^(HANDOFF|REVIEW|DESIGN|RELEASE_NOTES|RELEASE-NOTES|rebase-|PLAN)/.test(e.name)) out.push(`docs/${e.name}`);
+    }
+    expect(out.length).toBeGreaterThan(200);
+    // 단추를 가리키는 꼴 — 「완전 초기화」 뒤에 버튼/단추, 또는 앞에 자리(툴바·상단·GUI)가 붙은 것
+    // (기능 자체를 설명하는 「앱 안의 완전 초기화는 …」 은 단추를 가리키는 글이 아니라 대상 밖)
+    const REF = /완전 초기화['"」\]*`]*\s*(버튼|단추)|(툴바|상단바|상단|topbar|GUI)(의)?\s*['"「\[*`]*완전 초기화/;
+    // 단추를 쓰라는 안내가 아니라 **견주는 글**(「버튼이라면 남겨 두었을 것」 · 「버튼보다 넓게」 · 「버튼과 이 문서는」)은 뺀다.
+    //   (「쓰라」 는 낱말로 고르지 않는다 — 시키는 말이 다음 줄에 오는 안내를 놓친다. 단추를 가리키면 일단 대상이다.)
+    const COMPARE = /완전 초기화['"」\]*`]*\s*(버튼|단추)(이라면|보다|과 )/;
+    const isComment = (f: string, l: string) => !/\.md$/.test(f) && /^\s*(\/\/|#|\*|\/\*)/.test(l);
+    const hits: string[] = [];
+    const bad: string[] = [];
+    for (const f of out) {
+      const lines = readFileSync(ROOT + f, "utf8").split("\n");
+      lines.forEach((l, i) => {
+        if (!REF.test(l) || COMPARE.test(l) || isComment(f, l)) return;
+        hits.push(`${f}:${i + 1}`);
+        if (!lines.slice(i, i + 3).join("\n").includes("화면 설정")) bad.push(`${f}:${i + 1} ${l.trim().slice(0, 90)}`);
+      });
+    }
+    expect(bad).toEqual([]);
+    // 훑기가 실제로 그 줄들을 본다(규칙이 헐거워져 0건을 0건으로 통과하지 않게) — 지금 아는 안내 자리들
+    for (const f of ["src/bin/cys.rs", "cysjavis-pack/hooks/guard.sh", "USER-MANUAL.md", "docs/GUIDE-clean-reset-KR.md", "ui/src/main.ts"]) {
+      expect(`${f}: ${hits.some((h) => h.startsWith(f + ":"))}`).toBe(`${f}: true`);
+    }
+    expect(hits.filter((h) => h.startsWith("src/bin/cys.rs:")).length).toBeGreaterThanOrEqual(2); // 자기살해 가드 + GUI 실행 중 거부
+    for (const f of ["USER-MANUAL.md", "docs/GUIDE-clean-reset-KR.md"]) expect(hits.filter((h) => h.startsWith(f + ":")).length).toBeGreaterThanOrEqual(2);
+    expect(hits.length).toBeGreaterThanOrEqual(8);
   });
 
   it("CLI 거부 안내(cysr factory-reset · 앱이 켜져 있을 때)", () => {

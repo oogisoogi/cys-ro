@@ -1019,6 +1019,26 @@ class DU5IdleHoldAndRefireBundle(unittest.TestCase):
             # 첫 주기(i=0)는 기준선이라 count 는 i-1 — 발화 주기 = count+1
             self.assertEqual(fired, [7, 19, 43, 91, 139])
 
+    def test_confirmed_stall_push_follows_refire_schedule(self):
+        # ★dbg-119 ②(master#7a176ca4): push 쿨다운이 경보의 **다음** 간격(fires+1)을 써서 재통보가 0·7h 로 밀렸다
+        #   (경보 0·1·3·7h ↔ push 0·7·11·15h). push 시각 자체를 잰다 — 설계 = 경보와 같은 0·1·3·7h.
+        #   배달 영수증(queue.delivered)을 준다 — push 엣지는 영수증에서 찍히므로 영수증이 없으면 쿨다운이 아예 안 걸려
+        #   어긋남이 가려진다(첫 판 시험이 그래서 초록이었다). FakeRunner 는 판마다 새로 만들어 wakeup id = W-…01.
+        ack = [{"name": "queue.delivered", "payload": {"entry_ids": ["W-%010x" % 1]}}]
+        with tempfile.TemporaryDirectory() as t:
+            clk = Clock(1_000_000.0)
+            pushed = []
+            for i in range(140):
+                ln = {"role": "worker", "agent_alive": True, "idle_secs": 1200, "status_age_secs": 3600,
+                      "usage_ctx_tokens": 5000}
+                cso = {"role": "cso", "agent_alive": True, "idle_secs": 5, "status_age_secs": 60}
+                r = FakeRunner(rep=report(nodes=[self.NODE], live_nodes=[ln, cso]), events=ack)
+                gate(t, r, clock=clk, stall_cycles=6).run()
+                if any(e[1].startswith("gate-stall-worker") for e in r.enqueues):
+                    pushed.append(i)
+                clk.epoch += 300
+            self.assertEqual(pushed, [7, 19, 43, 91, 139], "확증 stall push 가 경보 재발화 주기(0·1·3·7h)를 따르지 않았다")
+
     def test_refire_bundle_resets_on_progress(self):
         with tempfile.TemporaryDirectory() as t:
             moved = {"node": "worker", "done": 4, "total": 5, "pct": 80}

@@ -1258,8 +1258,11 @@ def build_stall_warnings(counters, report, cycle_minutes, stall_cycles, now_iso,
                                "measure_source": (ms.get(roles[0], {}) or {}).get("source")
                                if roles else "unavailable"},
                 "idem": "gate-stall-%s" % label,
-                # push 승격 시의 재발화 상한 = WARN 자체의 다음 재발화 창(D-U5 ② 배증 · 1h 부터).
-                "cooldown": stall_refire_secs(fires + 1),
+                # push 승격 시의 재발화 상한 = 이 WARN 이 통과한 **현재** 재발화 창(D-U5 ② 배증 · 1h 부터) − 1주기.
+                # ★dbg-119 ②(master#7a176ca4): 종전 fires+1(다음 창)은 push 를 0·7·11·15h 로 밀었다(설계 0·1·3·7h).
+                #   push 엣지는 배달 영수증 시각(push 뒤 ≤1주기)에 찍히므로 1주기를 빼야 같은 창의 다음 WARN 이 통과한다 —
+                #   창 안의 중복 push 는 WARN 재발화 일정(위 continue)이 이미 막는다.
+                "cooldown": max(stall_refire_secs(fires) - cycle_minutes * 60, 0),
                 "stamp": {"measure_source": (ms.get(roles[0], {}) or {}).get("source")
                           if roles else "unavailable",
                           "sampled_at": (ms.get(roles[0], {}) or {}).get("sampled_at")

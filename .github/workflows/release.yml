@@ -1406,7 +1406,11 @@ jobs:
       #   `cys team-propose` · `cys team-token …` · `cys usage-report-stdin --agy` · `cys usage-register --source clear`).
       #   우리 판번 줄(1.x)에서는 그 값들이 전부 1.1.7 아래라 그대로 들이지 않는다. 편입된 팩이 1.1.7 바이너리에 없는
       #   표면을 지시하면 1.1.8 로 올려야 한다 — 판번 SOT 단계 결정(병합 갈림 R2 · pack-release.yml 과 동시).
-      PACK_MIN_BINARY: '1.1.7'
+      # ★1.1.8 상향(1.1.9 발행 준비 · master#68ef6257 · TICKET=cysr-119-release-prep) — 팩이 1.1.8 신설 표면
+      #   `cys reclaim-role --auto` 를 부른다(cysjavis-pack/hooks/session-start.sh · v1.1.7 cys.rs 에 reclaim-role 0건 →
+      #   옛 바이너리 clap rc 2 = 역할 자동 복구 갈래 상시 무동작). 1.1.9 신설 표면(pack-heal --missing-only)은 팩 호출 0.
+      #   pack-release.yml PACK_MIN_BINARY_OVERRIDE 와 동시 상향(두 값 동일 계약 · cys.rs 시험 핀).
+      PACK_MIN_BINARY: '1.1.8'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 

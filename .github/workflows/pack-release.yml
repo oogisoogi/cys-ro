@@ -84,7 +84,9 @@ jobs:
       # ★1.1.8 편입(원작자 0.14.43 병합 · 2026-10-05) — 원작자 줄은 이 값을 0.14.41 · 0.14.42 로 올렸다(근거 =
       #   release.yml PACK_MIN_BINARY 주석). 우리 판번 줄(1.x)에서는 1.1.7 아래 값이라 그대로 들이지 않는다.
       #   1.1.8 상향 여부는 판번 SOT 단계 결정(병합 갈림 R2 · release.yml 과 동시).
-      PACK_MIN_BINARY_OVERRIDE: '1.1.7'
+      # ★1.1.8 상향(1.1.9 발행 준비 · master#68ef6257 · TICKET=cysr-119-release-prep) — 팩이 1.1.8 신설
+      #   `cys reclaim-role --auto` 를 부른다(근거 = release.yml PACK_MIN_BINARY 주석). release.yml 과 동시 상향.
+      PACK_MIN_BINARY_OVERRIDE: '1.1.8'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 

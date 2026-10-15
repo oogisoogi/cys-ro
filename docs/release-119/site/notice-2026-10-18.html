@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>자비스 새 판 1.1.9 — AI 자비스</title>
+<meta name="description" content="자비스 새 판 cysr 1.1.9에서 달라진 점과, 1.1.8을 쓰시는 분은 자비스가 알아서 받는다는 것, 첫 설치와 업데이트를 한 줄로 하는 법, 처음부터 다시 설치하는 법을 안내합니다.">
+<link rel="stylesheet" href="/assets/tokens.css">
+<link rel="stylesheet" href="/assets/styles.css">
+<!-- 명령 상자·「복사」 단추는 설치하기(/get/)와 같은 모양·같은 동작을 쓴다(get.css · get.js).
+     상자 속 명령은 빌드가 /get 에서 가져와 넣는다(web/site_inject.py) — 여기에 손으로 적지 않는다. -->
+<link rel="stylesheet" href="/get/get.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap">
+    <a class="brand" href="/">
+      <span class="brand-mark" aria-hidden="true">cysr</span>
+      <span>AI 자비스</span>
+    </a>
+    <nav aria-label="주요 메뉴">
+      <a href="/">홈</a>
+      <a href="/notice/">공지</a>
+      <a href="/lecture/">강의안</a>
+      <a href="/get/">설치하기</a>
+      <a href="/howto/">사용법</a>
+      <a href="/devlog/">개발록</a>
+      <a href="/apply.html">참가 신청</a>
+    </nav>
+  </div>
+</header>
+
+<main class="doc wrap notice-body">
+
+  <p class="eyebrow">공지 · <time datetime="2026-10-18">2026년 10월 18일</time></p>
+  <h1>자비스 새 판 1.1.9 · 1.1.8을 쓰시면 자비스가 알아서 받습니다</h1>
+
+  <!-- ↓ 공지 원문 초안(2026-10-16 · TICKET=cysr-119-release-prep · 틀 = 1.1.8 공지(/notice/2026-10-11/) 그대로 ·
+       게시 자리 = ai-jarvis site/notice/2026-10-18/index.html · 이 파일은 cys 저장소 rel/1.1.9-prep 의 초안이다(배포 0).
+       주요 항목 = 1.1.9 후보(50085df0)의 코드·시험·설명서로 확인된 것 가운데 사용하시는 분 화면에 보이는 것만. 세부는 개발록 1.1.9 에 둔다.
+       ⚠ 1절 둘째 문단(「알아서 받습니다」)은 실기기 1.1.8 → 1.1.9 자동 받기 실측 뒤에만 그대로 둔다(사이트 1.1.8 인계 §0-2).
+         실측 전이면 둘째 문단 끝에 「며칠이 지나도 바뀌지 않았으면 아래 2번의 한 줄을 한 번 넣어 주세요.」 를 그대로 둔다(지금 초안이 이 꼴).
+       class="cmdbox" 칸의 명령은 빌드가 /get 에서 가져와 넣는다 — 여기에 손으로 적지 않는다.
+       notice-body 표식 사이가 대문에 그대로 실린다(이 공지가 목록 맨 위일 때). -->
+  <!-- notice-body:start -->
+  <h2>1. 자비스 새 판 cysr 1.1.9가 나왔습니다</h2>
+  <p>윈도우와 맥에서 모두 쓰실 수 있습니다. 인텔 맥도 됩니다. 지난 판을 건너뛰셨어도 바로 받으시면 됩니다.</p>
+  <p class="greet"><a href="/get/#install">설치·업데이트 링크 → jarvis.godmeyou.kr/get</a></p>
+  <p>1.1.8을 쓰고 계시면 따로 하실 일이 없습니다. 자비스가 쉬는 시간에 이 판을 알아서 받아 두고, 새 판으로 바뀌면 다음에 앱 창을 여실 때 알림 한 줄로 알려 드립니다. 며칠이 지나도 바뀌지 않았으면 아래 2번의 한 줄을 한 번 넣어 주세요.</p>
+  <p>1.1.7 이하를 쓰고 계시면, 처음 설치하실 때 쓴 한 줄을 한 번 더 붙여 넣어 주세요. 방법은 바로 아래 2번에 그대로 적어 두었습니다.</p>
+
+  <h3>이번 판의 주요 항목</h3>
+  <ul class="dots">
+    <li>· 위쪽 단추줄의 「테마」가 「화면 설정」으로 바뀌었습니다. 안의 글자를 지난 판의 두 배 넘게 키웠습니다.</li>
+    <li>· 화면 설정에서 위쪽 단추를 하나씩 켜고 끄고, 순서를 바꾸실 수 있습니다.</li>
+    <li>· 위쪽의 「+ New」·「Split」·「창 닫기」·「완전 초기화」 단추는 처음에는 숨겨져 있습니다. 쓰고 싶으시면 화면 설정 → 상단 단추에서 켜시면 됩니다.</li>
+    <li>· 자비스가 쓰시다 막힌 곳을 모으는 도구가 옛 판에 머물러 있던 컴퓨터에서, 그 도구를 새 판으로 바꿔 둡니다.</li>
+    <li>· 할 일을 마치고 기다리는 중인 창을 「멈췄다」고 거듭 알리던 일을 고쳤습니다.</li>
+    <li>· 쉬고 있는 창을 빈 창으로 잘못 보아, 그 창에 보낼 글이 전해지지 않고 쌓이던 일을 고쳤습니다.</li>
+    <li>· 다시 켤 때 창이 원래 쓰던 계정과 이름으로 되살아나도록 고쳤습니다.</li>
+    <li>· 왼쪽 목록에 「상담소」와 「아고라」가 생겼습니다. 다른 분들이 묻고 받은 답과 게시판을 보기만 하는 창으로 여실 수 있습니다.</li>
+  </ul>
+  <p>하나하나 더 자세한 내용은 <a href="/devlog/">개발록</a>에 적어 두었습니다.</p>
+
+  <h2>2. 첫 설치도 업데이트도 이 한 줄로</h2>
+  <p>처음 설치하시는 분, 1.1.7 이하를 쓰시는 분, 며칠이 지나도 새 판으로 바뀌지 않은 분은 아래 순서대로 해 주세요. 이미 설치되어 있어도 괜찮습니다. 하던 일과 로그인은 그대로 남습니다.</p>
+
+  <h3>윈도우</h3>
+  <ol class="steps">
+    <li>① 아래 상자의 「복사」 단추를 눌러 주세요(설치하기 페이지로 가지 않아도 됩니다).
+      <div class="cmdbox">
+        <div class="cmd-head">
+          <h4>윈도우 — PowerShell</h4>
+          <button class="copy-btn" type="button" data-copy-target="cmd-win" aria-label="윈도우 설치 한 줄 복사">복사</button>
+        </div>
+        <div class="cmd-row"><pre id="cmd-win" data-from-get></pre></div>
+      </div>
+      <p class="hint" style="margin:0">같은 한 줄이 설치하기 페이지 <a href="/get/#install">jarvis.godmeyou.kr/get</a> 에도 있습니다.</p>
+    </li>
+    <li>② 화면 왼쪽 아래 시작 단추를 누르고, PowerShell 이라고 입력한 뒤 Enter를 눌러 주세요.</li>
+    <li>③ 파란 창이 열리면 Ctrl과 V를 함께 누르고, Enter를 눌러 주세요.</li>
+    <li>④ 글자가 흘러가는 동안 창은 그대로 두어 주세요.</li>
+  </ol>
+
+  <h3>맥</h3>
+  <ol class="steps">
+    <li>① 아래 상자의 「복사」 단추를 눌러 주세요(설치하기 페이지로 가지 않아도 됩니다).
+      <div class="cmdbox">
+        <div class="cmd-head">
+          <h4>맥 — 터미널</h4>
+          <button class="copy-btn" type="button" data-copy-target="cmd-mac" aria-label="맥 설치 한 줄 복사">복사</button>
+        </div>
+        <div class="cmd-row"><pre id="cmd-mac" data-from-get></pre></div>
+      </div>
+      <p class="hint" style="margin:0">같은 한 줄이 설치하기 페이지 <a href="/get/#install">jarvis.godmeyou.kr/get</a> 에도 있습니다.</p>
+    </li>
+    <li>② 키보드의 command와 스페이스를 함께 누르고, 터미널 이라고 입력한 뒤 Enter를 눌러 주세요.</li>
+    <li>③ 창이 열리면 command와 V를 함께 누르고, Enter를 눌러 주세요.</li>
+    <li>④ 글자가 흘러가는 동안 창은 그대로 두어 주세요.</li>
+  </ol>
+
+  <h3>꼭 지켜 주세요</h3>
+  <ul class="dots">
+    <li>· 사이트에서 복사한 내용은 cysr 창에 붙여 넣지 마세요.</li>
+    <li>· 윈도우는 PowerShell, 맥은 터미널을 새로 열어서 붙여 넣어 주세요.</li>
+    <li>· 설치하는 동안 자비스가 한 번 꺼졌다 켜집니다. 중요한 작업을 마친 뒤에 해 주세요.</li>
+  </ul>
+
+  <h2>3. 처음부터 다시 설치하기</h2>
+  <p>설치하다가 막히거나 잘 되지 않으면 이 방법을 써 주세요. 아래 상자의 「복사」 단추를 누르시면 됩니다. 나머지 순서는 2번과 똑같습니다.</p>
+  <p>2번의 한 줄은 하던 일을 제자리에서 그대로 이어 갑니다. 이 방법은 설치 도우미가 놓은 것을 깨끗이 지우고 처음부터 새로 설치합니다.</p>
+  <p>로그인과 자비스와 나눈 대화 기록은 그대로 남습니다. 자비스 작업 폴더는 지우지 않고 보관 폴더로 옮겨 둡니다. 바탕화면과 내 사용자 폴더의 CYSjavis 폴더, 사진·문서는 손대지 않습니다.</p>
+  <div class="panel-reinstall">
+    <div class="cmdbox">
+      <div class="cmd-head">
+        <h4>처음부터 다시 설치하기 — 윈도우 PowerShell</h4>
+        <button class="copy-btn" type="button" data-copy-target="cmd-win-reinstall" aria-label="윈도우 다시 설치 한 줄 복사">복사</button>
+      </div>
+      <div class="cmd-row"><pre id="cmd-win-reinstall" data-from-get></pre></div>
+    </div>
+    <div class="cmdbox">
+      <div class="cmd-head">
+        <h4>처음부터 다시 설치하기 — 맥 터미널</h4>
+        <button class="copy-btn" type="button" data-copy-target="cmd-mac-reinstall" aria-label="맥 다시 설치 한 줄 복사">복사</button>
+      </div>
+      <div class="cmd-row"><pre id="cmd-mac-reinstall" data-from-get></pre></div>
+    </div>
+  </div>
+
+  <h2>도움이 필요하시면</h2>
+  <p>cysr 창 위쪽 단추줄의 파란 「피드백」 단추를 눌러 알려 주세요. 사진도 함께 보내실 수 있습니다. 앱이 열리지 않으면 <a href="https://jarvis-install.godmeyou.kr/feedback">jarvis-install.godmeyou.kr/feedback</a> 에서 보내 주시면 됩니다.</p>
+  <!-- notice-body:end -->
+  <!-- ↑ 공지 원문 끝 -->
+
+  <p class="back"><a href="/notice/">공지 목록으로</a></p>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <p>AI 자비스</p>
+    <p class="credit">이 사이트가 설치하는 cysr 는 cys 터미널을 바탕으로 만든 파생판입니다. cys 터미널의 원작자는 CYSJavis(GitHub: <a href="https://github.com/idoforgod/cys-terminal">idoforgod</a>)이며, 이 배포본은 원작자의 허락을 받아 oogisoogi가 원작(MIT)을 바탕으로 빌드·서명·배포합니다.</p>
+  </div>
+</footer>
+
+<script src="/get/get.js" defer></script>
+</body>
+</html>

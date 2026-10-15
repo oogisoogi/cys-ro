@@ -11,10 +11,10 @@
 | # | 할 것 | 확인 줄 | 상태 |
 |---|---|---|---|
 | 0-1 | 윈 실기 관문 W-1~W-6 결과(`docs/upstream/WIN-GATE-1110.md` · 「통과 전 라이브 금지」 master#60dc9ccf · 10-16 윈 master 집행) | 6관문 통과 기록 | **미확인**(저장소 결과 0건) |
-| 0-2 | 【결정필요】 USER-MANUAL 판번 표기(이 후보 변경을 「1.1.10」 34곳 · 「1.1.9 까지」 6곳 — 1.1.9 로 나가면 한 판씩 어긋남) | 정리 커밋 또는 「그대로」 결정 | 미결 |
-| 0-3 | 【결정필요】 release.yml:1296~1299 자동 본문 「앱 내 Update 버튼」(1.1.8 에서 없어진 단추) — 템플릿 수리(태그 전) 또는 draft 뒤 손 수정(1.1.8 방식) | 택일 | 미결 |
-| 0-4 | 【결정필요】 `docs/index.html:36` `id="ver"` = 아직 **v1.1.7**(1.1.8 때도 안 올림) — 올리면 `:43·48·53·58` href 4줄 함께 · 시험 `ui/src/publicdocs.test.ts:577-599` · Pages 생존 **미확인** | 택일(태그 전) | 미결 |
-| 0-5 | 본문 칸 값: `--min-from-release-seq` · `--notes-ko` · `--requires-min-binary-for-pack` · `PACK_MIN_BINARY`(현 `'1.1.7'` · release.yml:1409 · pack-release.yml:87 동시) | 1.1.8 = `1` · `'cysr 1.1.8 로 새로 갱신되었습니다.'` · `1.1.8` · 1.1.9 값 **미확인** | 미결 |
+| 0-2 | USER-MANUAL 판번 표기 정리(master#c8ffe91e (가) 채택) — 같은 가지 문서 커밋 · 「1.1.10」 26 → 0 · 「1.1.9」 5 → 26 · 「1.1.8」 4 → 9 | 커밋 됨(§7) | 해소 |
+| 0-3 | release.yml:1296~1299 자동 본문 「앱 내 Update 버튼」 = **draft 뒤 손 수정**(master#c8ffe91e (나) 채택) → 3-2 명령 줄 | 3-2 | 해소(방식) |
+| 0-4 | `docs/index.html` `id="ver"` v1.1.7 → **v1.1.9** + href 4줄(master#c8ffe91e (다) 채택 · 1.1.8 자산 이름 꼴 `gh release view v1.1.8 --json assets` 대조) · ⚠태그 전에 이 커밋이 들어가야 태그 트리에 실린다 · 발행 전(3-8 전)에 Pages 가 이 파일을 보이면 폴백 링크가 잠시 404(동적 스크립트가 latest 를 덮어 실제 화면 영향은 작음 · Pages 생존 **미확인**) | 커밋 됨(§7) | 해소 |
+| 0-5 | 본문 칸·팩 하한 4값 = 아래 §6 권고표(master 확정) | §6 | 권고 제출 |
 | 0-6 | 발행 노트·공지·카톡 초안 확정(`docs/release-119/` · 【발행 전 확인】 표시 줄 처리) | 박사님·master 확정 | 대기 |
 
 ## 1. 태그 전(가역)
@@ -40,7 +40,7 @@
 | # | 명령 | 확인 줄 | 롤백 |
 |---|---|---|---|
 | 3-1 | 손대기 전 draft 사본(`~/cys-release-backup/v1.1.9-draft-before-r7/`) → 맥 zip 2종 업로드 → `make-darwin-updater-tarball.sh` → `make-darwin-update-row.py --merge` → `gh release upload … latest.json --clobber` → `python3 scripts/release-postprocess.py v1.1.9` → `… --apply` | 자산 14(13 + SHA256SUMS) | 사본에서 복원 · ⚠`make-update-manifest.sh` 금지(윈 행 소실 · HANDOFF-118-r7:81) · zsh 는 `"${PREV_TAG}:…"` |
-| 3-2 | draft 본문 = `docs/release-119/RELEASE_NOTES_1.1.9.md` 「GitHub 릴리스 본문 초안」 (0-3 손 수정 갈래) · 메타 PATCH 시 `-f tag_name=v1.1.9` 동반(release.yml:85-86) | `gh release view v1.1.9 -R oogisoogi/cys-ro --json body,isDraft` | 다시 수정 · 수정 명령 원문 **미확인** |
+| 3-2 | draft 본문 손 수정(0-3): 먼저 옛 본문 사본 `gh release view v1.1.9 -R oogisoogi/cys-ro --json body -q .body > r7/body-before.txt` → `gh release edit v1.1.9 -R oogisoogi/cys-ro --tag v1.1.9 --notes-file docs/release-119/GH-BODY-1.1.9.txt` (`--tag v1.1.9` = tag_name 동반 — 빼면 draft tag_name 이 `untagged-…` 로 바뀐다 · release.yml:85-86 · 같은 `--tag` 꼴 = RELEASE-ROLLBACK 롤백 명령) · ⚠3-3 다시 받기·3-4 sha 는 이 뒤에(본문은 자산·SUMS 와 무관하나 순서 고정) | `gh release view v1.1.9 -R oogisoogi/cys-ro --json tagName,isDraft,body` = tagName v1.1.9 · isDraft true · body 첫 줄 「cysr 터미널 v1.1.9. … 1.1.8 을 쓰시는 분은 …」 · 「Update 버튼」 0 | `gh release edit v1.1.9 -R oogisoogi/cys-ro --tag v1.1.9 --notes-file r7/body-before.txt` · ⚠`gh release edit --notes-file` 이 draft 에 tag_name 을 같이 보내는지 = 실행 뒤 tagName 실측으로만 확인(1.1.8 손 수정 명령 원문 **미확인**) |
 | 3-3 | 다시 받아 검증: `python3 scripts/release-verify.py --version 1.1.9 --release-dir r7/reviewed --prev-tauri-conf prev-conf.json --prev-pack-keyring prev-keys.json` · `python3 scripts/update/release-gate.py assets --release-dir r7/reviewed --pack-manifest r7/reviewed/pack-manifest.json` | 「릴리스 검증 통과 — 자산 13종(+SHA256SUMS.txt) · 업데이터 4행 전부 서명 일치 · 맥 자산 포함」 · 팩 replay 단조 위반 = E1 최소 재서명 → SUMS 재생성(RELEASE.md:98-117) | — |
 | 3-4 | `shasum -a 256 r7/reviewed/SHA256SUMS.txt` = **release_bundle_sha256**(E1 재서명 있었으면 그 뒤 값) | 기록 | — |
 | 3-5 ⛔ | main 이동(불변식 = 「main = 최신 발행 태그 커밋 + CI 전용 패치」) · 옛 main 보존 가지(1.1.8 = `archive/main-pre-r7-20260814`) · `--force-with-lease` · **`6fddbffe` 다시 얹기 필수**(빠지면 refresh-feed 가 공개 호스트 403 → 「게시된 봉투 없음」 rc 0 조용한 무동작 · refresh-feed.yml:111-118) | `gh workflow list -R oogisoogi/cys-ro` 에 refresh-feed · main 트리에 `CYS_FEED_FETCH_SITE` 줄 | 보존 가지로 되돌림 · 정확 명령 **미확인** |
@@ -60,4 +60,22 @@
 
 ## 5. 미확인 모음(집행 전 master 확정)
 
-1. 윈 W-1~W-6 결과 2. main 이동 정확 명령 3. refresh-feed 1.1.9 명령 원문(위 3-6 은 입력 정의로 구성) 4. draft 본문 수정 명령 5. 본문 칸 4값·PACK_MIN_BINARY 6. x64 build-info 수집 시 arm64 맥 Rosetta 경고 처리(HANDOFF-118-r7:90-93 함정 10) 7. `release-production` 승인 필요 여부 8. 설치기 1.1.9 핀 커밋 절차 9. docs/index.html Pages 생존 10. 캐너리(R8 · DESIGN-AUTOUPDATE-118.md:650-653) 1.1.9 시행 여부 11. 10-19(월) 09:20 launchd `com.jarvis.cys-ro-refresh-feed` 주간 발화 = dispatch 만 · 게시는 사람 손(3-9 와 같은 날 겹침 주의).
+1. 윈 W-1~W-6 결과 2. main 이동 정확 명령 3. refresh-feed 1.1.9 명령 원문(위 3-6 은 입력 정의로 구성) 4. draft 본문 수정 시 gh 가 tag_name 을 보내는지(3-2 실측) 5. 본문 칸 권고(§6) 확정 6. x64 build-info 수집 시 arm64 맥 Rosetta 경고 처리(HANDOFF-118-r7:90-93 함정 10) 7. `release-production` 승인 필요 여부 8. 설치기 1.1.9 핀 커밋 절차 9. docs/index.html Pages 생존 10. 캐너리(R8 · DESIGN-AUTOUPDATE-118.md:650-653) 1.1.9 시행 여부 11. 10-19(월) 09:20 launchd `com.jarvis.cys-ro-refresh-feed` 주간 발화 = dispatch 만 · 게시는 사람 손(3-9 와 같은 날 겹침 주의).
+
+## 6. 본문 칸·팩 하한 1.1.9 권고표(master#c8ffe91e (라) · 2026-10-16 02:5x 실측)
+
+| 칸 | 1.1.8 발행 값(출처) | 1.1.9 권고 | 근거(코드·실측) | 확신 |
+|---|---|---|---|---|
+| `--release-seq` | 3(`master/briefs/r3-r6-seq3-20261008.md:37`) | **4** | 보관소 `releases/3.json` 200 · `releases/4.json` 404(curl 10-16) · RELEASE.md:20 「보관소 최댓값 + 1」 · `CYSR_RELEASE_SEQ` 도 4(1-3) | High |
+| `--min-from-release-seq` | 1(같은 곳 :37 · :46 「MICRO-RELEASE §1 과 같은 값 · 열거 출발 = max(값,1)」) | **1**(선례 그대로) | 계약 `0 ≤ 값 < release_seq`(make-release-json.py:101-102) · 설치판 < 값 = 보류(src/update/gates.rs:192-195 N11) · 열거 폭 4−1+1 = 4 ≤ 256(DESIGN-AUTOUPDATE-118.md:501) · seq 1 바이너리는 어차피 봉투를 못 받음(:46) — 3 으로 올리면 seq 2 설치본(있다면)이 자동 대상에서 빠진다(seq 2 기기 실재 **미확인**) | Med |
+| `--state-migration` | none(:38) | **none** | 허용값 none·additive·breaking(update_common.py:23) · breaking = 자동 제외(DESIGN:185·503) · 이번 판 상태 변화 = 가산 키·새 파일뿐(topology `seat_profile` · `config_dir_authority` = D-mac-1/5 · counsel `client-foreign.json` = 254b09a0) · 옛 판이 가산 키를 무시하는지 = **미확인**(옛 판 phoenix 는 `entry.get(...)` 사전 접근 · Rust 쪽 미대조) — 무시가 확인 안 되면 additive 후보 | Med |
+| `--notes-ko` | `'cysr 1.1.8 로 새로 갱신되었습니다.'`(:38) | **`'cysr 1.1.9 로 새로 갱신되었습니다.'`**(24자) | ≤80자 · 제어문자 0 · 금지 어휘(오류·실패·위험·손상·경고) 0(update_common.py:163-170 · DESIGN:505) · 앱 알림 한 줄(updnotice) | High |
+| `--requires-min-binary-for-pack` | 1.1.8(:38) | **1.1.8** | 빈 값·파싱 불가 = 발행 거부(make-release-json.py:111-114 · feed.rs:469-471 · release-gate.py:109-111) · 아래 PACK_MIN_BINARY 와 같은 값으로 맞춤(1.1.8 발행은 본문 1.1.8 ↔ 팩 매니페스트 1.1.7 로 갈려 있었다 — 둘을 대조하는 게이트는 찾지 못함) | Med |
+| `PACK_MIN_BINARY`(release.yml:1409) = `PACK_MIN_BINARY_OVERRIDE`(pack-release.yml:87) | 1.1.7(둘 다 · 1.1.8 때 무변경) | **1.1.8**(두 레인 같은 커밋 · 태그 전) | 규칙 = 「팩이 새 바이너리 표면을 지시하면 그 판으로 상향」(RELEASE.md:52-68) · **팩은 1.1.8 신설 표면 `cys reclaim-role --auto` 를 이미 부른다**(cysjavis-pack/hooks/session-start.sh:200 · `git show v1.1.7:src/bin/cys.rs` 에 reclaim-role 0건 · v1.1.7..v1.1.8 diff 에 `#[command(name = "reclaim-role")]` 추가) — 1.1.7 바이너리에서는 clap rc 2 → 역할 자동 복구 갈래가 늘 무동작(1.1.7 상향 사유 「G2 영구 degraded」 와 같은 꼴) · 1.1.9 신설 표면 = `pack-heal --missing-only` 1개뿐이고 팩 호출 0건(git grep) → 1.1.9 까지 올릴 근거 없음 · 시험 핀 `cys.rs:29121` u8_pack_min_binary_two_lanes_match_and_cover_ack_only = 「두 값 같음 ∧ ≥1.1.7」 → 1.1.8 통과 · 귀결: 1.1.7 이하 기기는 새 팩을 거부(그 기기들은 어차피 자동 갱신 없음 = 설치 한 줄 재실행 대상) | Med(호출 실측 High · 상향 판단 = master) |
+| 자산 행 | arm64 · win(:39-41 · **인텔 없음**) | **arm64 · x64 · win** 셋 | 생성기 필수 = arm64·win 뿐(update_common.py:31) → x64 는 사람이 넣어야 함 · `--asset macos-x64=cysr-macos-x64-v1.1.9.zip --build-info macos-x64=… --cdhash macos-x64=…` | High |
+
+## 7. 이 체크리스트와 같은 가지의 태그 전 커밋(master#c8ffe91e)
+
+- USER-MANUAL 판번 정리(문서만): 전 = 「1.1.10」 26 · 「1.1.9」 5 · 「1.1.8」 4 → 후 = 「1.1.10」 0 · 「1.1.9」 26 · 「1.1.8」 9(옛 동작 5곳 = :426 「종전(1.1.8)」 · :737 「1.1.8 까지의 이름은 테마」 · :976 「1.1.8 까지는 13종」 · :2048 「1.1.8 와 같이」 · :2049 「구버전 화면(1.1.8 GUI)」).
+- `docs/index.html` id=ver v1.1.9 + href 4줄 + 주석 2줄(폴백 판).
+- 시험(이 가지 · 맥): ui bun 0 fail · test_bootv2_doc_contract BOOTV2-DOC-CONTRACT-OK · cargo test --bin cysd manual 6/0 · --bin cys manual 1/0 · --bin cys doc 27/0.

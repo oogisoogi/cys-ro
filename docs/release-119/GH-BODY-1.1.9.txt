@@ -1,0 +1,4 @@
+cysr 터미널 v1.1.9. Windows는 -setup.exe를 내려받아 설치하세요. 1.1.8 을 쓰시는 분은 자비스가 쉬는 시간에 알아서 받습니다. 1.1.7 이하를 쓰시는 분은 처음 설치 때 쓴 설치 한 줄을 한 번 더 붙여 넣어 주세요.
+
+---
+cysr 는 cys 터미널(github.com/idoforgod/cys-terminal)에서 출발했습니다.

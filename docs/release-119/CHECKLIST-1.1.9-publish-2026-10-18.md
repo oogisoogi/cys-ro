@@ -79,3 +79,4 @@
 - USER-MANUAL 판번 정리(문서만): 전 = 「1.1.10」 26 · 「1.1.9」 5 · 「1.1.8」 4 → 후 = 「1.1.10」 0 · 「1.1.9」 26 · 「1.1.8」 9(옛 동작 5곳 = :426 「종전(1.1.8)」 · :737 「1.1.8 까지의 이름은 테마」 · :976 「1.1.8 까지는 13종」 · :2048 「1.1.8 와 같이」 · :2049 「구버전 화면(1.1.8 GUI)」).
 - `docs/index.html` id=ver v1.1.9 + href 4줄 + 주석 2줄(폴백 판).
 - 시험(이 가지 · 맥): ui bun 0 fail · test_bootv2_doc_contract BOOTV2-DOC-CONTRACT-OK · cargo test --bin cysd manual 6/0 · --bin cys manual 1/0 · --bin cys doc 27/0.
+- 메모(master#809c1526 · 그대로 둠): 앱 동봉 팩 매니페스트 min_binary = 1.1.9(scripts/bundle-prep.sh:59 · CYS_PACK_MIN_BINARY 미전달 → Cargo 판) ↔ 서명 레인 1.1.8 — 동봉본은 그 앱과 함께 가므로 실해 0(1.1.8 발행도 1.1.8 ↔ 1.1.7 같은 꼴).

@@ -3631,6 +3631,25 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
     #    fresh 는 원 세션 보존이 아니라 새 세션 + 디렉티브/원장 재주입이다(정직: resumed→fresh 전환을 저널에 명시).
     #    fresh 는 최후수단 — resume 성공/재시도 회복은 이 지점에 오지 않는다.
     need = need + [r for r in forced_fresh if r not in need]
+
+    def _hold_profile_refused(roles):
+        """★dbg-119 ①(master#7a176ca4): Rust `cys restore` 가 계정 프로필 거부(unobserved · seat_profile 검증 실패)로
+        기동을 멈춘 역할은 fresh 대체로도 띄우지 않는다 — launch-agent 는 agents.json 기본 계정 · 새 대화라
+        cys.rs 의 「새 대화 폴백도 하지 않는다: 다른 계정으로 뜨는 것이 10-08 한도 정지 사고다」를 우회한다.
+        「복원 보류 + 사유 1줄」로 남기고 spawn 단계는 미완(INCOMPLETE 집계 = Rust 의 fail 과 같다 · 사람 단계)."""
+        keep = []
+        for _r in roles:
+            _cfg, _why = _restore_config_dir(entries.get(_r, {}))
+            if not _why:
+                keep.append(_r)
+                continue
+            j["roles"].setdefault(_r, {"stages": {}})["restore_held"] = _why
+            mark_stage(j, _r, "spawn", False, "복원 보류(계정 프로필 거부: %s) — 기본 계정 fresh 기동 안 함 · 사람 단계" % _why)
+            jevent(j, _r, "spawn", "profile_held",
+                   "복원 보류 — 계정 프로필 거부(%s) · cys restore 와 같은 규칙으로 기본 계정 fresh 대체 안 함(사람 단계)" % _why)
+            log("★dbg-119 ① %s: 계정 프로필 거부(%s) → 복원 보류(fresh 대체 안 함)" % (_r, _why))
+        return keep
+    need = _hold_profile_refused(need)
     if need and POISON_FRESH_FALLBACK:
         fresh_still = []
         # ★R4-3 빈 좌석 재사용(prod): fresh 대상 역할이 **빈 좌석**(role 보유·exited=false·seat=empty)을 이미

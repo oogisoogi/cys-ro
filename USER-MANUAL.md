@@ -405,7 +405,7 @@ Control Center Live 의 계정 표가 "지금 어느 계정이 쓰이는가"를 
   - 이미 떠 있는 Claude Code 가 로그인 전환 뒤에 실제로 어느 계정으로 소비하는지는 실기로 확인하지 못했습니다 — '사용 중'은 설정 폴더에 기록된 로그인을 기준으로 합니다(§9).
   - 좁은 사이드바 폭·큰 글자 배율·24자 별명에서의 실제 모양과 Windows 실기는 확인하지 못했습니다.
 
-#### 부서별 노드 계정 (1.1.10)
+#### 부서별 노드 계정 (1.1.9)
 
 어느 부서·노드가 어느 계정으로 돌고 있는지 보려고 pane 마다 `/config` 를 칠 필요가 없습니다.
 - **부서(워크스페이스) 탭**: 둘째 줄 아래에 노드별 계정 줄이 붙습니다. 같은 계정을 쓰는 노드는 한 묶음입니다 —
@@ -418,12 +418,12 @@ Control Center Live 의 계정 표가 "지금 어느 계정이 쓰이는가"를 
   `~/.cys/claude` 인데 실제 claude 는 부서 계정 폴더로 떠 있을 수 있는 경우)가 모입니다. 기록된 폴더의 로그인을 그 노드의 계정으로 **보여 주지 않습니다**
   (확인되지 않은 계정을 확인된 것처럼 내지 않기 위해서입니다) — 불일치도 아닙니다(아직 아무것도 기록을 부정하지 않았습니다). 대화가 시작돼 실제 대화 기록 폴더가
   관측되면 기록 폴더 아래면 **확인된 계정**으로, 기록 폴더 밖이면 아래 `계정 불일치·확인 필요` 로 바뀝니다. 마우스를 올리면 기록된 폴더가 보입니다 · 급하면 그 창에서
-  `/config` 로 확인하세요. 좌석 행의 `account.state` 는 `pending` 입니다(1.1.10 성찰 2회차 — 1회차 초안에서는 이 상태가 `mismatch` 였습니다).
+  `/config` 로 확인하세요. 좌석 행의 `account.state` 는 `pending` 입니다(1.1.9 성찰 2회차 — 1회차 초안에서는 이 상태가 `mismatch` 였습니다).
 - **`계정 불일치·확인 필요`**: 실제 대화 기록의 폴더가 데몬이 기록한 폴더 **밖**인 노드 — 관측이 기록을 실제로 부정한 경우에만 이 묶음입니다. 마우스를 올리면 실제 폴더와
   기록된 폴더가 함께 보입니다. 좌석 행의 `account.state` 는 `mismatch` 이고 `profile` 은 실제(관측) 폴더, `recorded_profile` 은 기록 폴더, `account_id` 는 실제 폴더의
   로그인(읽혔을 때만)입니다 — 화면은 그 계정을 확인된 묶음에 붙이지 않습니다. 계정을 바꾸려면 그 좌석을 다시 띄우세요.
-- **표시와 경보는 다른 규칙입니다(1.1.10 성찰 2회차)**: 위 두 상태는 **화면 표시**만 바꿉니다. 사용량 경보·`in_use`(낡은 경보 억제)·`rate_in_use` 가 쓰는 좌석 신원은
-  종전(1.1.9)과 같이 **데몬이 기록한 설정 폴더**의 로그인입니다 — 복원 좌석이라고 모든 Claude 계정이 '사용 여부 모름' 으로 접히지 않습니다.
+- **표시와 경보는 다른 규칙입니다(1.1.9 성찰 2회차)**: 위 두 상태는 **화면 표시**만 바꿉니다. 사용량 경보·`in_use`(낡은 경보 억제)·`rate_in_use` 가 쓰는 좌석 신원은
+  종전(1.1.8)과 같이 **데몬이 기록한 설정 폴더**의 로그인입니다 — 복원 좌석이라고 모든 Claude 계정이 '사용 여부 모름' 으로 접히지 않습니다.
 - **반영 시점**: 사이드바 상태 조회(10초)와 같은 주기입니다. 좌석을 다른 계정으로 다시 띄우거나 같은 폴더에서 다시 로그인하면
   신원 확인 하한(폴더당 최대 60초)을 더해 늦게 바뀝니다. 계정 이름(별명)은 사용량 조회(30초)를 따릅니다.
 - **한계**: Claude 는 좌석 설정 폴더(`CLAUDE_CONFIG_DIR`)의 로그인 정보로 계정을 압니다. Codex 는 이 컴퓨터의 로그인 하나
@@ -431,7 +431,7 @@ Control Center Live 의 계정 표가 "지금 어느 계정이 쓰이는가"를 
   그 밖의 에이전트(grok 등)는 `계정 미확인` 입니다. 데몬은 좌석 행(`cysr status --json` · `org.status`/`surface.list`)에 `account` 키
   (`provider`·`account_id`·`profile`·`state`)를 실어 보냅니다 — 이메일은 싣지 않습니다.
 
-#### 오피스 탭 · 되돌리는 손잡이 (1.1.10)
+#### 오피스 탭 · 되돌리는 손잡이 (1.1.9)
 
 **오피스 탭**: 오피스 화면이 뜨지 않을 때 이제 터미널 명령을 시키지 않고 화면이 스스로 고칩니다.
 - 브리지가 아직 안 떠 있으면 「오피스를 준비하고 있습니다… 자동으로 다시 확인합니다.」가 보이고, 처음 3분은 3초 간격으로, 그 뒤에는 15초 간격으로 다시 확인합니다. 뜨는 순간 사람 손 없이 오피스가 열립니다.
@@ -673,7 +673,7 @@ Control Center Live 의 계정 표가 "지금 어느 계정이 쓰이는가"를 
   · ⚠ 이 용도로 `allow-app-mouse` 를 켜지 마세요 — 그것은 입·출력 양측을 열어 위의 ConPTY
   리터럴 타이핑(`[555;98;34M` 이 입력창에 찍히는 결함)을 되살립니다. **휠 억제만** 끄는
   전용 스위치가 이것입니다.
-- **Windows 에서 claude 좌석을 classic 화면으로 고정**(1.1.10 · **기본 on**): 위 휠 가드 때문에
+- **Windows 에서 claude 좌석을 classic 화면으로 고정**(1.1.9 · **기본 on**): 위 휠 가드 때문에
   claude 전체화면 pane 에서는 휠이 터미널 스크롤백을 움직이지 못합니다(전체화면에는 스크롤백이 없습니다 — cysr 은 그 휠을 PgUp/PgDn 키로 바꿔 보냅니다).
   그래서 cysr 는 Windows 에서 claude 를 띄우기 직전(`cysr boot`·`cysr launch-agent`·GUI·node-recover·
   restore 모두) 그 좌석 설정 폴더의 `settings.json`(보통 `~/.cys/claude/settings.json`)에 Claude Code
@@ -694,7 +694,7 @@ Control Center Live 의 계정 표가 "지금 어느 계정이 쓰이는가"를 
   · 그런데도 전체화면으로 뜨면 그 `settings.json` 에 `"tui": "fullscreen"` 이 이미 적혀 있거나
   (사용자 `/tui fullscreen` · Claude Code 전체화면 체험 승격) env `CLAUDE_CODE_NO_FLICKER=1` 이 걸린
   것입니다 — 그 pane 에서 `/tui default` 를 치세요.
-  · **침묵하지 않습니다(1.1.10 성찰 1회차 M3·M4)**: `"tui": "fullscreen"` 이 이미 적혀 있으면 cysr 는 덮지 않되(사용자 선택인지
+  · **침묵하지 않습니다(1.1.9 성찰 1회차 M3·M4)**: `"tui": "fullscreen"` 이 이미 적혀 있으면 cysr 는 덮지 않되(사용자 선택인지
     Claude Code 의 승격인지 구분할 수 없습니다) 기동 로그에 폴더당 한 번 「… 이미 적혀 있어 cysr 는 덮지 않습니다 … /tui default」 를
     찍고, `cysr doctor` 의 `claude-tui-fullscreen` 항목(Windows 전용 · 읽기 전용)이 알려진 좌석 설정 폴더(이 레인의 실소비 폴더 ·
     `~/.cys/claude` · 이 팩과 모든 `~/.cys/pack-dept-*` 의 agents.json 이 시드한 계정 폴더(기동과 같은 env 전개) · 원장
@@ -734,7 +734,7 @@ Control Center Live 의 계정 표가 "지금 어느 계정이 쓰이는가"를 
 
 ### 4.7 테마·폰트
 
-- 다크 테마 고정 + **배경색 커스텀 피커**(`화면 설정` 버튼 → 「글자·배경」 · 1.1.9 까지의 이름은 `테마`). 밝은 배경을 고르면 글자색이 자동
+- 다크 테마 고정 + **배경색 커스텀 피커**(`화면 설정` 버튼 → 「글자·배경」 · 1.1.8 까지의 이름은 `테마`). 밝은 배경을 고르면 글자색이 자동
   보정됩니다. OS 라이트/다크 자동 전환은 없습니다.
 - `화면 설정` 창의 글자는 「메뉴 크기(%)」 를 따라 커집니다(기본 125% = 25px · 100% = 20px). 창이 작으면 그 안에서 스크롤하고, 구획 제목을 누르면 접힙니다.
 - **터미널 폰트 선택**: `화면 설정` 버튼 → 폰트 드롭다운(기본값·Menlo·SF Mono·Cascadia Mono·
@@ -949,7 +949,7 @@ cysr send --queued --to worker "..."    # followup 큐: 대상이 조용해지�
 
 **화면에 보이는 모습**
 
-- **토스트** — 제목은 두 부류입니다(1.1.10). **사람이 손대야 하는 경보**(처방 코드 11종)는 종전 그대로 빨간 테두리 `⏳ 큐 막힘 — <역할> surface:<번호>`, **기다리면 스스로 풀리는 상태**(`wait`·`approval`·`paused`)는 회색 테두리의 `⏳ 배달 대기 중 — …`(`wait`) · `⏳ 승인 대기 중 — …`(`approval`) · `⏳ 일시 정지 중 — …`(`paused`) 입니다. 본문은 두 부류 모두 `<N분째> · <조치 문장>`. `N분째` 는 큐 머리가 기다린 시간(데몬·좌석이 생긴 뒤부터 잰 값)을 분으로 **올림**한 값입니다(61초 → 2분째). `cysr queue list` 의 `(이 사유로 <N>s)`(현재 사유가 시작된 뒤)와는 기준이 다릅니다.
+- **토스트** — 제목은 두 부류입니다(1.1.9). **사람이 손대야 하는 경보**(처방 코드 11종)는 종전 그대로 빨간 테두리 `⏳ 큐 막힘 — <역할> surface:<번호>`, **기다리면 스스로 풀리는 상태**(`wait`·`approval`·`paused`)는 회색 테두리의 `⏳ 배달 대기 중 — …`(`wait`) · `⏳ 승인 대기 중 — …`(`approval`) · `⏳ 일시 정지 중 — …`(`paused`) 입니다. 본문은 두 부류 모두 `<N분째> · <조치 문장>`. `N분째` 는 큐 머리가 기다린 시간(데몬·좌석이 생긴 뒤부터 잰 값)을 분으로 **올림**한 값입니다(61초 → 2분째). `cysr queue list` 의 `(이 사유로 <N>s)`(현재 사유가 시작된 뒤)와는 기준이 다릅니다.
   조치 문장은 데몬이 보낸 처방에서 사람에게 필요 없는 꼬리(" · LLM 에이전트는 자동 조치…")를 뗀 것이고, 처방 코드를 모르면(구버전 데몬·새 코드)
   `막힘 사유: <blocked_by>`(기다리는 상태에서는 `대기 사유: <blocked_by>`) 만 보입니다. 본문은 200자까지입니다. 처방 코드가 없는 구버전 데몬의 경보도 `blocked_by` 앞부분이 `approval_pending` 이면 `승인 대기 중`, `paused` 로 시작하면 `일시 정지 중`, 그 밖의 스스로 풀리는 사유(`queue_paused` 포함)는 `배달 대기 중` 으로 보입니다.
 - **OS 알림 배너** — `approval`·`paused`·`wait` 가 아닌 경보에는 토스트와 함께 뜹니다(아래 표의 'OS 배너' 열 · 이 화면이 모르는 처방 코드의 경보에도 뜹니다 — 코드가 아예 없는 구 데몬의 경보는 아래 사유 접두 규칙). 이 셋은 토스트만입니다 —
@@ -958,7 +958,7 @@ cysr send --queued --to worker "..."    # followup 큐: 대상이 조용해지�
 - **한 좌석에 한 장** — 같은 좌석의 알림은 토스트가 쌓이지 않고 한 장이 갱신됩니다. 토스트는 60초 뒤 닫히지만 내용은 앱을 켜 둔 동안(이 세션에서 최대 200건) Control Center **알람 탭**에
   남고(같은 좌석은 최신 한 줄로 합쳐집니다 · 앱을 다시 시작하면 비워집니다), **사람이 손대야 하는 경보**는 막힘이 이어지면 데몬 쿨다운(5분) 뒤 다시 뜹니다. **기다리는 상태**(`배달 대기 중`·`승인 대기 중`·`일시 정지 중`)는 그 대기 구간에서 **처음 한 번만** 팝업으로 뜨고, 이어지는 갱신은 팝업 없이 알람 탭의 그 좌석 한 줄(`N분째`)만 새로 고쳐집니다 — 대기 종류가 바뀌거나, 큐의 맨 앞 항목이 다른 것으로 바뀌었거나(앞 항목이 배달 없이 지워지거나 만료된 경우 포함 — 새 대기 구간으로 봅니다), 사람이 손대야 하는 경보로 바뀌면 그 즉시 다시 뜹니다. 구버전 데몬처럼 맨 앞 항목을 알 수 없는 알림은 대기 종류만 비교합니다. 만료됐던 항목이 같은 항목 그대로 되살아나 다시 기다릴 때도 새 대기 구간으로 보아 팝업이 다시 뜹니다. 구간이 끝났다는 신호를 앱이 놓친 경우에도 침묵이 이어지지 않도록, 마지막 팝업 뒤 1시간이 지나면 같은 대기여도 한 번 더 뜹니다. 큐가 움직이거나(`queue.delivered`)
   그 좌석이 끝나면(`surface.exited`·`closed`·`reaped`) 그 좌석의 토스트를 거둡니다.
-- **알려 둘 점(1.1.10) — 두 가지를 구분해서 읽으세요.**
+- **알려 둘 점(1.1.9) — 두 가지를 구분해서 읽으세요.**
   ⒜ 종전에는 화면 표시가 데몬이 보낸 분류 신호(처방 코드)를 제목과 색에 쓰지 않아, 기다리면 스스로 풀리는 상태도 빨간 「큐 막힘」으로 떴습니다 — 이번에 고쳤습니다(위의 두 부류 제목).
   ⒝ 그 분류표(데몬이 막힘 사유를 어느 처방 코드로 나누는 규칙) 자체에 오분류가 있습니다 — 실측 2회(2026-10-09 15:03·15:18, reviewer-codex 좌석이 작업 중인데 `alt_screen` 으로 분류됐고, 작업이 끝나자 손대지 않아도 배달됨). 이번에는 고치지 않습니다. 그런 좌석은 이번 수정 뒤에도 빨갛게 뜹니다(`alt_screen` 은 사람 손 부류에 그대로 둡니다 — 모르면 경보를 유지하는 쪽이 안전하기 때문입니다).
 - **누르면 그 좌석으로** — 토스트를 **눌렀을 때만** 그 좌석으로 이동합니다(다른 부서 탭이면 탭 전환까지, Control Center 가 열려 있으면 닫습니다).
@@ -973,13 +973,13 @@ cysr send --queued --to worker "..."    # followup 큐: 대상이 조용해지�
   전역 계수 모델을 알려 주는 `daemon.pending_input_model` 이 새로 생겼습니다.
 - `queue-blocked.json` — 데몬이 막힘 사유를 파일로도 남깁니다(아래).
 
-**처방 코드 14종**(1.1.10 성찰 2회차에 `stale_screen` 추가 — 1.1.9 까지는 13종) — `remedy_code`(와 사람이 읽는 `remedy` 문장)는 아래 표의 조건 가운데 하나로 정해지는데, 데몬이 조건을 보는 순서는 표의 위아래 순서와 다릅니다 — 처음 맞는 것으로 정하고 순서는 이렇습니다: ① 동결·일시정지 `paused` ② 입력줄 점유인데 계수가 이미 0 이면 글이 보일 때 `human_draft`, 아니면 `wait` ③ 입력줄 점유(계수 있음)는 글이 보이면 사람이 친 몫이 0 일 때 `machine_residue`·있을 때 `human_draft`, 글이 안 보이면 커서 뒤 글자 유무로 `after_cursor_text`·`phantom_count`, 화면을 읽지 못하면 `input_pending_unknown` ④ 그 밖은 `answer_modal` → `approval` → `alt_screen` → `empty_seat` → `prompt_unknown` → `busy` 가 60초 넘게 정적이면 다시 그리기를 약속할 수 없을 때 `stale_screen`(약속할 수 있으면 `wait`) → `wait`(일시 보류) → `unknown` 입니다.
+**처방 코드 14종**(1.1.9 성찰 2회차에 `stale_screen` 추가 — 1.1.8 까지는 13종) — `remedy_code`(와 사람이 읽는 `remedy` 문장)는 아래 표의 조건 가운데 하나로 정해지는데, 데몬이 조건을 보는 순서는 표의 위아래 순서와 다릅니다 — 처음 맞는 것으로 정하고 순서는 이렇습니다: ① 동결·일시정지 `paused` ② 입력줄 점유인데 계수가 이미 0 이면 글이 보일 때 `human_draft`, 아니면 `wait` ③ 입력줄 점유(계수 있음)는 글이 보이면 사람이 친 몫이 0 일 때 `machine_residue`·있을 때 `human_draft`, 글이 안 보이면 커서 뒤 글자 유무로 `after_cursor_text`·`phantom_count`, 화면을 읽지 못하면 `input_pending_unknown` ④ 그 밖은 `answer_modal` → `approval` → `alt_screen` → `empty_seat` → `prompt_unknown` → `busy` 가 60초 넘게 정적이면 다시 그리기를 약속할 수 없을 때 `stale_screen`(약속할 수 있으면 `wait`) → `wait`(일시 보류) → `unknown` 입니다.
 조건 가운데 '입력줄 점유'는 `blocked_by` 가 `input_pending…` 이거나 스케줄 push 가 초안 때문에 큐로 돌려진 경우입니다. 모든 처방 문장 끝에는
 ` · LLM 에이전트는 자동 조치(강제 배달·드레인·키 주입·동결 해제·항목 삭제) 금지` 가 붙고, 그 좌석의 화면 파서가 패닉을 낸 적이 있으면 문장 뒤에
 `(이 좌석 화면 파서 패닉 N회 — 화면 판독이 순간 비었을 수 있다)` 가 붙습니다(화면을 못 읽어 막힌 `input_pending_unknown`·`prompt_unknown` 에서는
 `(이 좌석 화면 파서 패닉 N회 — 데몬의 화면 사본이 어긋났다)`). 처방은 **안내일 뿐**이라 어떤 배달 판정도 바꾸지 않고, 데몬이 키를 대신 눌러 주는 경로도 없습니다.
 
-**화면 사본 재동기(1.1.10)** — 데몬은 좌석 화면의 사본을 출력만으로 만듭니다. Claude Code 처럼 바뀐 곳만 다시 그리는 프로그램은 유휴일 때 프롬프트 줄을
+**화면 사본 재동기(1.1.9)** — 데몬은 좌석 화면의 사본을 출력만으로 만듭니다. Claude Code 처럼 바뀐 곳만 다시 그리는 프로그램은 유휴일 때 프롬프트 줄을
 다시 그리지 않으므로, 사본이 한 번 어긋나면(예전 판의 화면 파서 패닉 뒤) 커서 행에서 프롬프트 표지를 영영 못 찾아 큐가 `prompt_unknown`·`input_pending_unknown` 으로
 멈춰 있을 수 있었습니다. 이제 프롬프트 표지를 아는 에이전트 좌석이 **화면을 못 읽는 채 1분 넘게** 막혀 있으면(파서 패닉 뒤라면 10초) 데몬이 **키를 한 바이트도 보내지 않고**
 그 창의 **높이만** 한 줄 줄였다가 약 0.5초 뒤 되돌려 다시 그리기를 요청합니다(이벤트 `screen.repaint_requested` · 너비는 건드리지 않습니다 — Windows ConPTY 가
@@ -987,7 +987,7 @@ cysr send --queued --to worker "..."    # followup 큐: 대상이 조용해지�
 간격이 두 배씩(최대 80분) 늘어납니다. 끄려면 `CYS_SCREEN_REPAINT_NUDGE=0` 입니다. 사람이 그 창 크기를 한 번 바꿔도 같은 효과입니다.
 - **이 요청은 큐가 막힌 좌석에서만 납니다**: 다시 그리기 요청은 큐 틱이 **배달할 항목이 있는 좌석**을 볼 때 그 좌석의 화면을 판정하면서 나옵니다. 큐가 빈 좌석의
   화면 사본이 어긋나 있어도 cysr 는 모르고 고치지 않습니다(일반 화면 어긋남 수리 기능이 아닙니다) — 그런 좌석은 사람이 창 크기를 한 번 바꾸면 됩니다.
-- **다시 그려진 화면은 옛 줄의 재방송입니다(반향 제외 창)**: 되돌린 뒤 **최소 3초, 재방송이 이어지면 마지막 출력 뒤 1초까지**(상한 60초 · 1.1.10 성찰 2회차 — 초안은 고정 3초였습니다)
+- **다시 그려진 화면은 옛 줄의 재방송입니다(반향 제외 창)**: 되돌린 뒤 **최소 3초, 재방송이 이어지면 마지막 출력 뒤 1초까지**(상한 60초 · 1.1.9 성찰 2회차 — 초안은 고정 3초였습니다)
   그 좌석의 출력은 건강 룰(`health.alert` · pause-queue 같은 조치 바인딩)·회상 색인을 타지 않고, 그동안 줄 버퍼에 들어온 줄은 번호 구간으로 기억돼
   `cysr wait-for`(`surface.wait_for`)와 `cysr read-screen --since`(`surface.read_text since_line` — 응답 `repaint_echo_skipped` 에 뺀 줄 수)가 건너뜁니다.
   옛 "rate limit"·"Error" 줄이 새 경보가 되거나 옛 "완료" 표지에 `wait-for` 가 거짓으로 일치하지 않게 하기 위해서입니다. 창 안에 시작돼 창이 닫힌 뒤 완성되는
@@ -995,7 +995,7 @@ cysr send --queued --to worker "..."    # followup 큐: 대상이 조용해지�
 - **알려진 제한(정직 고지)**: Windows 의 classic(주 화면) 좌석에서 ConPTY 가 크기 변경에 얼마나 긴 재방송을 내는지는 **실기로 재지 않았습니다**. 위의 정적 기준 창과
   줄 구간 표식은 그 길이에 의존하지 않도록 설계한 것이지 측정 결과가 아닙니다 — Windows 에서 다시 그리기 뒤 `cysr read-screen --since` 의 `repaint_echo_skipped` 가 크게
   나오거나 경보가 재발하면 제보해 주세요(끄는 법은 위 노브).
-- **요청하는 꼴 셋(1.1.10 성찰 1회차 · 배달 판정은 바꾸지 않습니다)**: ① 커서 행에서 프롬프트 표지를 못 읽는 `prompt_unknown`·`input_pending_unknown` ② **출력이 60초 넘게
+- **요청하는 꼴 셋(1.1.9 성찰 1회차 · 배달 판정은 바꾸지 않습니다)**: ① 커서 행에서 프롬프트 표지를 못 읽는 `prompt_unknown`·`input_pending_unknown` ② **출력이 60초 넘게
   없는데** `busy`(「esc to interrupt」 표지)·`modal_pending`(선택 창 `❯ 1. Yes`)으로 막혀 있는 좌석 — 낡은 화면 사본의 표지일 수 있습니다(진짜 선택 창이면 다시 그려져도
   그대로이고 키는 한 바이트도 가지 않습니다) ③ 전체화면(대체 화면) 좌석 가운데 **창의 전경 프로세스가 에이전트**(Claude Code 등)인 좌석 — 전경이 vim·less 같은 다른
   프로그램이면 흔들지 않습니다(Windows 는 전경을 알 수 없어 프롬프트 표지를 아는 에이전트 좌석이면 요청합니다).
@@ -1018,7 +1018,7 @@ cysr send --queued --to worker "..."    # followup 큐: 대상이 조용해지�
 | `alt_screen` | `alt_screen` — 전체화면(대체 화면)이라 프롬프트 레이아웃을 확인하지 못함 | 전경이 다른 프로그램 — 「전체화면(대체 화면)이라 프롬프트를 확인하지 못한다 — 전체화면 프로그램을 끝내거나, Claude Code 면 `/tui default`; Windows 는 `~/.cys/win-no-alt-screen` 파일을 만들고 새 pane 으로 띄운다」 · 전경이 에이전트 — 「… — 전경이 에이전트라 1분 넘게 이어지면 cysr 가 키 입력 없이 창 크기를 한 칸 흔들어 다시 그리기를 요청한다 · 사람이 그 창 크기를 한 번 바꿔도 다시 그려진다. 그래도 막혀 있으면 Claude Code 면 `/tui default`; …」 | 예 |
 | `empty_seat` | `empty_seat` — 역할이 있는 좌석에 에이전트가 붙어 있지 않음(빈 셸) | 「그 자리에 에이전트가 붙어 있지 않다(빈 셸) — 에이전트를 다시 띄우면 순서대로 배달된다」 · 그 좌석의 입력줄 계수가 남아 있으면(예: 되돌린 Esc 로 계수 1 이 선 채 에이전트가 끝난 좌석) 문장 뒤에 「 — 다시 띄우기 전에 사람이 그 창에서 Ctrl-U 한 번(입력줄 계수가 남아 있다)」 가 붙습니다 | 예 |
 | `prompt_unknown` | `prompt_unknown` — 프롬프트 경계(입력 대기 표지)를 화면에서 관측하지 못함 | 「입력 대기 표지(프롬프트)를 화면에서 찾지 못했다 — 다른 화면이 떠 있거나 데몬의 화면 사본이 어긋났을 수 있다(사본 어긋남이면 1분 뒤 cysr 가 키 입력 없이 창 크기를 한 칸 흔들어 다시 그리기를 요청한다 · 사람이 그 창 크기를 한 번 바꿔도 풀린다). 그래도 막혀 있으면 그 창이 입력을 기다리는 상태인지 사람이 확인한다」 | 예 |
-| `stale_screen` | `busy`(출력 중 표지)인데 출력이 60초 넘게 없고 **cysr 가 다시 그리기를 약속할 수 없을 때**(노브 끔 · 대상 아닌 좌석 · 창 4행 미만 · 이미 요청했으나 풀리지 않음) — 1.1.10 성찰 2회차 | 「출력 중 표지가 보이지만 N초째 출력이 없다 — 표지가 낡은 화면 사본일 수 있다(cysr 가 다시 그리기를 요청했으나 풀리지 않았다 — 사람이 그 창 크기를 한 번 바꾸거나 그 창을 확인한다 / 다시 그리기 요청은 꺼져 있다 — … / 창이 너무 작아 … / 이 좌석은 … 대상이 아니다 …). 그래도 이어지면 그 창 화면을 확인」 — 문장은 아래 `wait` 의 낡은 표지 문장과 같고 **code 만** 사람 조치로 바뀝니다 | 예 |
+| `stale_screen` | `busy`(출력 중 표지)인데 출력이 60초 넘게 없고 **cysr 가 다시 그리기를 약속할 수 없을 때**(노브 끔 · 대상 아닌 좌석 · 창 4행 미만 · 이미 요청했으나 풀리지 않음) — 1.1.9 성찰 2회차 | 「출력 중 표지가 보이지만 N초째 출력이 없다 — 표지가 낡은 화면 사본일 수 있다(cysr 가 다시 그리기를 요청했으나 풀리지 않았다 — 사람이 그 창 크기를 한 번 바꾸거나 그 창을 확인한다 / 다시 그리기 요청은 꺼져 있다 — … / 창이 너무 작아 … / 이 좌석은 … 대상이 아니다 …). 그래도 이어지면 그 창 화면을 확인」 — 문장은 아래 `wait` 의 낡은 표지 문장과 같고 **code 만** 사람 조치로 바뀝니다 | 예 |
 | `wait` | 몇 초~몇 분 뒤 스스로 풀리는 보류 — `busy`(출력 중)·`delivery_interval`·`settle`·`quiescing`·`prompt_not_ready`·`human_typing`·`queue_paused`(이미 만료됨) — 또는 입력줄 점유인데 계수가 이미 0 | 「일시 보류 — 스스로 풀린다(오래 지속되면 그 창 화면을 확인)」 · `busy` 인데 출력이 60초 넘게 없고 cysr 가 다시 그리기를 요청할 것이면 「출력 중 표지가 보이지만 N초째 출력이 없다 — 표지가 낡은 화면 사본일 수 있다(1분 넘게 이어지면 cysr 가 키 입력 없이 창 크기를 한 칸 흔들어 다시 그리기를 요청한다 · …). 그래도 이어지면 그 창 화면을 확인」(요청할 수 없으면 위 `stale_screen`) · 입력줄 계열이면 「입력줄 계수는 이미 0 이다 — 다음 틱에 다시 판정된다(스스로 풀린다)」 | 아니오 |
 | `unknown` | 위 어디에도 들지 않는 사유(예: `schedule_divert` 의 그 밖 꼴) | 「사유 미분류 — 그 창 화면을 확인」 | 예 |
 
@@ -1170,7 +1170,7 @@ cysr feed reply <request_id> allow                            # CLI로 응답 (U
 - UI: 승인 요청이 오면 배지·토스트·OS 알림이 뜨고, 30초 내 해소되지 않은(=사람 개입이
   필요한) 건만 Feed 탭으로 화면이 전환됩니다.
 
-#### 승인 Feed 정리 (1.1.10)
+#### 승인 Feed 정리 (1.1.9)
 
 - **부서 항목도 같은 화면에서 처리합니다.** Control Center 의 승인 Feed 가 본부 항목 아래에 부서별 묶음
   (`부서 이름 — 대기 N건`)을 함께 보여 줍니다. 부서 항목의 Allow·Deny 는 그 부서의 데몬으로 가므로, 부서 화면으로 건너가지 않아도 됩니다.
@@ -1196,7 +1196,7 @@ cysr approval check  # 서명 유효성 확인
 서명은 `--cwd` 를 생략하면 지금 폴더에 묶이고, 확인도 `--cwd` 를 생략하면 지금 폴더로 합니다. 다른 폴더의 좌석이 실행할 명령이면 그 좌석의 폴더를 `--cwd` 로 적어 서명하세요.
 대상을 직접 지정하는 cysr 명령(`kill` · `close-surface` · `launch-agent` 등)을 시간 한정(`--ttl`)으로 서명하면, 정확히 그 명령은 이 데몬 안에서 폴더와 무관하게 통합니다.
 
-**승인이 안 될 때 이유를 한 줄로 말합니다 (1.1.10)**: `cysr approval check` 가 승인을 찾지 못하면 종료코드 2 와 함께 이유를 표준오류에 한 줄 적습니다
+**승인이 안 될 때 이유를 한 줄로 말합니다 (1.1.9)**: `cysr approval check` 가 승인을 찾지 못하면 종료코드 2 와 함께 이유를 표준오류에 한 줄 적습니다
 (표준출력은 종전처럼 비어 있습니다). 게이트 훅은 종료코드만 읽으므로 이 한 줄은 좌석이나 master 가 `check` 를 직접 돌릴 때 보입니다. 이유는 여섯 가지입니다.
 
 | 이유 | 쉬운 말 |
@@ -1211,7 +1211,7 @@ cysr approval check  # 서명 유효성 확인
 이유 뒤에 짧은 덧말이 붙을 수 있습니다: 서명한 명령과 글자가 달라 폴더를 건너뛰지 못했다 · `launch-agent` 는 낳을 폴더(`--cwd`)를 명령에 적어 서명받으면 어느 폴더에서든 통한다 ·
 정책 파일 설정으로 폴더 건너뛰기가 꺼져 있다 · 명령에 대상 데몬을 바꾸는 옵션(`--socket` · `-S`)이 들어 있다. 서명값·비밀키는 출력하지 않습니다.
 
-**대상을 직접 지정하는 명령의 승인은 폴더 대신 "서명한 데몬"에 묶입니다 (1.1.10)**: `kill` · `close-surface` · `pause` · `resume` · `tombstone` · `launch-agent` · `cycle-agent` 를
+**대상을 직접 지정하는 명령의 승인은 폴더 대신 "서명한 데몬"에 묶입니다 (1.1.9)**: `kill` · `close-surface` · `pause` · `resume` · `tombstone` · `launch-agent` · `cycle-agent` 를
 시간 한정(`--ttl`)으로 서명하면, 그 승인은 서명한 데몬에서만 폴더와 무관하게 통합니다(본부 master 의 승인이 부서 데몬의 같은 번호 좌석에 통하지는 않습니다).
 조건은 모두 맞아야 합니다 — 확인하는 명령이 서명한 명령과 글자까지 같을 것(뒤에 인자를 더 붙인 꼴은 제외) · `;` `&` `|` `<` `>` 나 명령 치환이 없는 단순 명령일 것(`2>&1` · `>/dev/null` 같은 출력 버리기 꼬리는 허용) ·
 만료 전일 것 · `launch-agent` 는 낳을 폴더가 절대 경로로 적혀 있을 것. 그 밖의 서명은 종전처럼 폴더가 같아야 합니다. 같은 데몬을 다시 켜도 승인은 유지되고,
@@ -1317,7 +1317,7 @@ cysr schedule list / remove <id> / run <id>
   기록)이지 성공 여부가 아닙니다 — 두 칸을 함께 봐야 "제때 돌았는데 매번 실패"를 구분합니다. 결과
   기록은 데몬 메모리에만 있어 데몬을 다시 켜면 비고(`result=-`), 구버전 데몬이면 `result=?`(판정
   불가)로 보입니다.
-- **`text_command` 잡과 승인(1.1.10)**: `text_command` 는 데몬이 셸로 돌리는 글이라, 데몬에 내장된 문구가
+- **`text_command` 잡과 승인(1.1.9)**: `text_command` 는 데몬이 셸로 돌리는 글이라, 데몬에 내장된 문구가
   아니면 서명 승인(「6.2 승인 서명」)이 있어야 돕니다. 승인이 없으면 실행하지 않고 `result=error` 로 남습니다.
   예외는 예전 판이 넣어 둔 두 잡(`fleet-adoption-cost-digest` · `content-channel-health-watch`)의 원래 문구입니다 —
   승인 파일을 읽었고 그 문구의 승인이 **없다는 것이 확인되면** 오류로 세지 않고 `result=skipped` 로 건너뜁니다.
@@ -1460,7 +1460,7 @@ cysr skill list / show <name> / run <name> / new   # 경험을 스킬로 영속�
   처음부터 시작됩니다. ⚠ CLI로 실행할 때는 **앱을 먼저 종료**하세요(앱이 살아 있으면
   초기화 도중 데몬을 되살립니다 — CLI가 이를 감지해 거부합니다).
   ★에이전트(마스터·워커)는 이 명령을 실행할 수 없습니다 — 오너 전용입니다(guard.sh R-02b).
-  · **(1.1.10) Windows 좌석 classic 화면 기록도 되돌립니다**: cysr 가 좌석 설정 폴더(`~/.claude-N` 등)의 `settings.json` 에 넣은 `"tui": "default"`(§4.6b)를
+  · **(1.1.9) Windows 좌석 classic 화면 기록도 되돌립니다**: cysr 가 좌석 설정 폴더(`~/.claude-N` 등)의 `settings.json` 에 넣은 `"tui": "default"`(§4.6b)를
     원장 `~/.cys/claude-tui-written.json` 의 항목대로 되돌립니다 — 킬스위치 되돌림과 같은 규약(값이 아직 정확히 `"default"` 일 때만 빼고 바이트를 원복 ·
     사용자가 `/tui fullscreen` 등으로 바꾼 값은 그대로 · 되돌림 백업은 격리 폴더 `settings-backups/` 안). cysr 가 만들었던 옆자리 백업 `settings.json.bak-cys-tui` 도
     **cysr 가 만든 것만**(있던 파일을 고쳤을 때) 격리 폴더로 옮기고, 원장 파일은 `~/.cys` 와 함께 격리됩니다. 원장이 깨져 읽지 못하면 자동 수정 없이 안내만 합니다.
@@ -1737,7 +1737,7 @@ claude       a-b1@example.test                5h 12% · 7d 40% | ● 사용 중 
 | `CYS_MACHINE_INJECT_HOLD` | 전부 | 데몬 내부 주입의 화면 판정(0.14.42 · H · §5.3) — 미설정·`1`·`all` = 다섯 경로 전부 · `0`·`off` = 전부 종전 동작 · 목록(`schedule,channel,ceo,supervisor,takeover`) = 그 경로만. 재기동하면 적용 |
 | `CYS_MACHINE_INJECT_HOLD_AXES` | unix 전 축 · Windows draft 제외 | 판정 축(`pause,quiescing,shell,human,modal,draft`) — 빼면 그 축을 안 본다. `all` = 전 축(Windows draft 포함 · 명시 선택). Windows 기본에서 초안 축을 끈 이유는 ConPTY 입력줄 판정이 가장 약해서다(실측 전까지) |
 | `CYS_SCHEDULE_PUSH_COUNTS_SUBMIT` | 켬 (`0`=끔) | 스케줄 직접 push 의 입력줄 계수 계상(0.14.43 · §5.3) — 켜져 있으면 스케줄 push(하트비트·wakeup)가 좌석의 쓰기 대기열에 성공적으로 넘겨진 직후 같은 입력 게이트 안에서 미제출 계수(와 사람 몫)를 0 으로 되돌리고, 계수가 0 이 아니던 좌석이면 이벤트 `schedule.push_cleared_pending`(§17)을 1건 냅니다. 앞뒤 공백을 걷은 값이 `0` 이면(` 0`·`0 ` 포함) 게이트·계수를 건드리지 않는 종전 동작이고, 그 밖의 값(`false`·`off`·`0 0`·빈 값 포함)과 미설정은 켠 채입니다. 데몬 환경변수 — push 때마다 읽지만 실행 중인 데몬의 환경은 바뀌지 않으므로 값을 바꾸면 **데몬을 다시 띄워야** 적용됩니다 |
-| `CYS_SCREEN_REPAINT_NUDGE` | 켜짐 (`0`=끔) | 화면 사본 재동기(1.1.10) — 프롬프트 표지를 아는 에이전트 좌석이 화면을 못 읽는 채(또는 출력 없이 60초 넘게 `busy`·`modal_pending` 표지가 남은 채) 1분(파서 패닉 뒤 10초) 넘게 큐가 막혀 있으면 창 크기를 한 칸 줄였다 되돌려 다시 그리기를 요청한다(키 입력 없음 · 좌석당 5분 이상 간격 · 미복구 시 간격 두 배 · 최대 80분 · 대체 화면은 전경이 에이전트일 때만 · 이벤트 `screen.repaint_requested`) |
+| `CYS_SCREEN_REPAINT_NUDGE` | 켜짐 (`0`=끔) | 화면 사본 재동기(1.1.9) — 프롬프트 표지를 아는 에이전트 좌석이 화면을 못 읽는 채(또는 출력 없이 60초 넘게 `busy`·`modal_pending` 표지가 남은 채) 1분(파서 패닉 뒤 10초) 넘게 큐가 막혀 있으면 창 크기를 한 칸 줄였다 되돌려 다시 그리기를 요청한다(키 입력 없음 · 좌석당 5분 이상 간격 · 미복구 시 간격 두 배 · 최대 80분 · 대체 화면은 전경이 에이전트일 때만 · 이벤트 `screen.repaint_requested`) |
 | `CYS_QUEUE_QUIESCE_HOLD_SECS` | 600 (0=off) | 사이클 창(quiescing) 보류 상한(0.14.42 · H1) — 큐 틱 배달과 스케줄·CEO·감독자의 quiescing 축이 쓴다. 넘긴 표시는 무시하고 `queue.quiesce_stale` 1회. 채널의 quiescing 보류(종전 무기한)는 이 값과 무관. 표시를 세운 `cysr cycle-agent` 프로세스가 해제 없이 끝나면(강제 종료·도구 시한) 데몬이 상한을 기다리지 않고 곧바로 푼다(손으로 친 `cysr quiesce` 표시는 그 CLI 수명에 묶지 않는다 — 상한·`cysr quiesce --off` 로만 풀린다) — 같은 좌석에 새 에이전트가 앉거나 에이전트 종료가 관측될 때도 푼다(`surface.quiescing` 의 `reason`: `owner_exited`·`agent_relaunched`·`agent_exited`). `cysr cycle-agent` 가 세운 표시의 나이는 데몬 단조 시계로 잰다 — 사이클 도중 랩톱이 절전해도 깨어난 뒤 산 사이클 창이 상한을 넘긴 표시로 보이지 않는다(게이트 수정 1회차 · 손으로 친 `cysr quiesce` 표시는 종전대로 벽시계 나이) |
 | `CYS_SEND_SETTLE` | 켬 (0/false/off=끔) | 직접 `send` 의 제출 정착(0.14.42 · S21 · §5.3) — 데몬: 에이전트 좌석에 기계 제출 CR 이 대기 중이거나 쓴 지 80ms 안이면 다음 본문을 받지 않고(`submit_settling`) 기계 제출 때문인 거부에 정착 힌트(`[settle:<ms>]`)를 붙인다(kill-switch pause 중에는 붙이지 않는다) · 제출 CR 을 쓰기 직전 새로 뜬 질문·선택 창이면 그 CR 을 쓰지 않고(`queue.submit_withheld`) 창이 닫힌 뒤 입력줄이 그 본문 그대로면 한 번 다시 쓴다(`queue.submit_resubmitted`) · CLI: 힌트가 있을 때만 다시 보낸다. 끄면 셋 다 종전(0.14.42 A2). **macOS·Linux 전용**(Windows 는 무변경). 재기동 없이 데몬만 끄려면 데몬 상태 폴더에 `send-settle-off` 파일 |
 | `CYS_SEND_SETTLE_BUDGET_MS` | 3000 (0=off · 상한 10000) | `cysr send` 가 정착 힌트를 받고 기다리는 최대 시간(CLI · §5.3). 넘기면 종전처럼 `--queued` 1회 전환 |
@@ -1776,8 +1776,8 @@ claude       a-b1@example.test                5h 12% · 7d 40% | ● 사용 중 
 | `CYS_CLAUDE_CTX_WINDOW` | 200k (`[1m]`=1M) | 컨텍스트 창 크기 힌트 |
 | `CYS_ALLOW_APP_MOUSE` | — (`1`=on) | 앱 마우스 킬스위치 — TUI가 마우스를 갖는다 (§4.6b · `~/.cys/allow-app-mouse` 파일과 동등 · 새 pane부터). ⚠ **Windows에서는 켜지 마세요** — ConPTY가 마우스 시퀀스를 깨뜨려 입력창에 `[555;98;34M` 같은 리터럴이 타이핑됩니다. Windows 휠 가드를 끄는 용도로도 쓰면 안 됩니다(그건 아래 전용 스위치) |
 | `CYS_WIN_WHEEL_GUARD_OFF` | — (`1`=off로 되돌림) | **Windows 전용** 휠 가드 롤백 — 전체화면 TUI 휠 억제를 끄고 종전(방향키 합성)으로 복귀 (§4.6b). ⚠ **적용 시점이 파일 게이트와 다릅니다**: env는 **GUI 프로세스가 상속한 값만** 읽으므로 `setx` 후 **GUI 재시작**이 필요하고, 동등 수단인 `~/.cys/win-wheel-guard-off` **파일은 새 pane부터 즉시** 반영됩니다(Windows 권장 수단은 파일 — PowerShell `New-Item -ItemType File -Force $HOME\.cys\win-wheel-guard-off`, `touch`는 PowerShell에 없는 명령입니다). ⚠ **결함 복원 스위치** — 켜면 claude fullscreen에서 휠이 다시 방향키로 합성돼 **프롬프트 입력창이 오염될 수 있습니다.** ⚠ 이 용도로 `CYS_ALLOW_APP_MOUSE`를 대신 쓰지 마세요 — 입·출력 양측이 열려 ConPTY 리터럴 타이핑이 되살아납니다 |
-| `CYS_WIN_NO_ALT_SCREEN` | — (`1`=on · **Windows 기본 off**) | **Windows 전용 옵트인** — claude를 기동할 때 `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1`을 함께 실어 **전체화면(alt screen) 대신 inline으로 뜨게** 합니다(아래 줄과 짝 · macOS는 이 스위치 없이 늘 주입됩니다). **왜 Windows만 기본 off인가**: 이 env가 Windows의 claude를 깨뜨리면 `cysr boot`로 띄운 **모든 pane이 한꺼번에 죽는** 경로라, 실기 Windows에서 그 확인(`cysr boot` 4종 노드 정상 기동)을 마치기 전에는 기본값으로 켜지 않습니다(옵트인·실기 검증 전이라는 말은 **이 env 경로에만** 해당합니다). 1.1.10 부터는 **설정 경로**(§4.6b — 좌석 `settings.json` 의 `"tui": "default"`)가 Windows 기본 on 이라 cysr 가 띄운 claude 는 보통 classic 으로 뜹니다 — 이 env 는 그 위에 덧대는 옵트인 벨트이고, 켜지 않아도 **전체화면 휠 오염은 Windows 휠 가드가 막습니다**(위 §4.6b — 그쪽이 본체 방어입니다). **켜는 법**: PowerShell `New-Item -ItemType File -Force $HOME\.cys\win-no-alt-screen` 후 **`cysr launch-agent`로 새 pane 기동**(되돌리기 `Remove-Item …`). env `CYS_WIN_NO_ALT_SCREEN=1`도 동등하지만 **GUI가 상속한 값만** 읽으므로 `setx` 후 GUI 재시작이 필요합니다(권장 수단은 파일). ⚠ **켜도 새 surface를 만들며 기동한 pane에만** 도달합니다 — 이미 열린 pane의 재기동(node-recover)·GUI에서 연 pane에는 실리지 않습니다. ⚠ `agents.json` env에 `"0"`이 적혀 있으면 켜도 주입하지 않습니다(사용자 값 우선) |
-| `CYS_WIN_TUI_CLASSIC_OFF` | — (`1`=off로 되돌림 · **Windows 기본 on**) | **Windows 전용** 롤백 — 1.1.10 부터 cysr 는 Windows 에서 claude 를 띄우기 직전 좌석 설정 폴더 `settings.json` 에 `tui` 키가 **없을 때만** `"tui": "default"`(classic 화면 — 휠 스크롤이 되는 화면)를 넣고, 쓴 폴더를 원장 `~/.cys/claude-tui-written.json` 에 적습니다(§4.6b). 이 스위치는 그 **이후 기록을 멈추고 원장의 폴더에서 cysr 가 넣은 값을 되돌립니다**(다음 claude 기동 때 · 값이 아직 정확히 `"default"` 일 때만 — 사용자가 `/tui fullscreen` 등으로 바꾼 값은 그대로 두고 원장에서만 뺍니다 · 백업 `.bak-cys-tui`). 원장에 없는 폴더(사용자가 직접 친 `/tui default`)는 건드리지 않습니다. 동등 파일 `~/.cys/win-tui-classic-off`(다음 기동부터 · PowerShell `New-Item -ItemType File -Force $HOME\.cys\win-tui-classic-off`) — env 는 GUI 가 상속한 값만 읽으므로 `setx` 후 GUI 재시작(권장은 파일) |
+| `CYS_WIN_NO_ALT_SCREEN` | — (`1`=on · **Windows 기본 off**) | **Windows 전용 옵트인** — claude를 기동할 때 `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1`을 함께 실어 **전체화면(alt screen) 대신 inline으로 뜨게** 합니다(아래 줄과 짝 · macOS는 이 스위치 없이 늘 주입됩니다). **왜 Windows만 기본 off인가**: 이 env가 Windows의 claude를 깨뜨리면 `cysr boot`로 띄운 **모든 pane이 한꺼번에 죽는** 경로라, 실기 Windows에서 그 확인(`cysr boot` 4종 노드 정상 기동)을 마치기 전에는 기본값으로 켜지 않습니다(옵트인·실기 검증 전이라는 말은 **이 env 경로에만** 해당합니다). 1.1.9 부터는 **설정 경로**(§4.6b — 좌석 `settings.json` 의 `"tui": "default"`)가 Windows 기본 on 이라 cysr 가 띄운 claude 는 보통 classic 으로 뜹니다 — 이 env 는 그 위에 덧대는 옵트인 벨트이고, 켜지 않아도 **전체화면 휠 오염은 Windows 휠 가드가 막습니다**(위 §4.6b — 그쪽이 본체 방어입니다). **켜는 법**: PowerShell `New-Item -ItemType File -Force $HOME\.cys\win-no-alt-screen` 후 **`cysr launch-agent`로 새 pane 기동**(되돌리기 `Remove-Item …`). env `CYS_WIN_NO_ALT_SCREEN=1`도 동등하지만 **GUI가 상속한 값만** 읽으므로 `setx` 후 GUI 재시작이 필요합니다(권장 수단은 파일). ⚠ **켜도 새 surface를 만들며 기동한 pane에만** 도달합니다 — 이미 열린 pane의 재기동(node-recover)·GUI에서 연 pane에는 실리지 않습니다. ⚠ `agents.json` env에 `"0"`이 적혀 있으면 켜도 주입하지 않습니다(사용자 값 우선) |
+| `CYS_WIN_TUI_CLASSIC_OFF` | — (`1`=off로 되돌림 · **Windows 기본 on**) | **Windows 전용** 롤백 — 1.1.9 부터 cysr 는 Windows 에서 claude 를 띄우기 직전 좌석 설정 폴더 `settings.json` 에 `tui` 키가 **없을 때만** `"tui": "default"`(classic 화면 — 휠 스크롤이 되는 화면)를 넣고, 쓴 폴더를 원장 `~/.cys/claude-tui-written.json` 에 적습니다(§4.6b). 이 스위치는 그 **이후 기록을 멈추고 원장의 폴더에서 cysr 가 넣은 값을 되돌립니다**(다음 claude 기동 때 · 값이 아직 정확히 `"default"` 일 때만 — 사용자가 `/tui fullscreen` 등으로 바꾼 값은 그대로 두고 원장에서만 뺍니다 · 백업 `.bak-cys-tui`). 원장에 없는 폴더(사용자가 직접 친 `/tui default`)는 건드리지 않습니다. 동등 파일 `~/.cys/win-tui-classic-off`(다음 기동부터 · PowerShell `New-Item -ItemType File -Force $HOME\.cys\win-tui-classic-off`) — env 는 GUI 가 상속한 값만 읽으므로 `setx` 후 GUI 재시작(권장은 파일) |
 | `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN` | macOS: claude 기동 시 `"1"` 기본 주입 · **Windows: 기본 주입 없음**(위 `CYS_WIN_NO_ALT_SCREEN` 옵트인 시에만) | cysr가 읽는 게 아니라 **주입**하는 변수(claude가 소비) — fullscreen(alt screen) 진입 차단. 계정별 되살리기는 팩 `agents.json` env에 `"0"`(키가 있으면 주입하지 않음 · §4.6b). ⚠ Windows는 옵트인해도 **새 surface를 만들며 기동한 pane에만** 주입이 도달합니다(벨트 — 이것만으로 fullscreen을 막았다고 보면 안 됩니다) |
 | `CYS_DEPT_FALLBACK` | — (`0`/`off`=끔) | 마스터 선언→부서 자동 생성 폴백 끄기 (§4.4 · 구계약 rc=7 복원) |
 | `CYS_DEPT_CREATE_STREAM` | 켬 (`0`=끔) | 「팀 직접 만들기」 단계 표시(v0.14.43 · §4.4)의 되돌리기. 켜져 있으면 앱이 `cys-dept` 를 띄울 때 표준 오류를 **실시간으로** 읽어 `[cys-dept] @stage <키>` 줄마다 화면의 단계 줄(「지금: …」)을 고칩니다. 앞뒤 공백을 걷은 값이 `0` 이면(`0 `·` 0` 포함) 종전처럼 자식이 끝난 뒤에야 읽어 대기 화면에는 경과 시간만 보입니다(팀원 부팅 안내·첫 자리 문구는 계속 나옵니다 — 다만 단계 표지를 받지 못해 기존 팀을 돌려받은 경우와 새 팀을 구분하지 못하므로 성공한 호출마다 새 팀으로 보고 냅니다). 그 밖의 값·빈 값은 켠 채입니다(`false`·`00`·공백뿐인 값 포함). 어느 쪽이든 팀을 만드는 판정과 실패 메시지는 같고 메시지에서는 표지 줄을 뺍니다. 앱(GUI)이 상속한 값만 읽으므로 설정 뒤 **앱 재시작**이 필요합니다(데몬 재시작은 필요 없음). |
@@ -1988,7 +1988,7 @@ v0.14.43 가산분(팀 만들기 진행·ABI 계측 · 전부 additive):
 v0.14.43 가산분(큐 막힘 진단 · 전부 additive — 기존 키의 이름·의미는 그대로):
 - `queue.starved` 에 가산 8키 — `pending_input_bytes`(u64 · 입력줄 미제출 계수) · `pending_input_human_bytes`(u64 · 그중 사람 몫) · `draft_visible`(bool 또는 null · 입력줄에 글이 보이는가) ·
   `ghost_after_cursor`(bool 또는 null · 커서 뒤 글자) · `parser_panics`(u64 · 그 좌석 화면 파서의 패닉 누적) · `input_model`(`"v2"`·`"v3"` · **그 좌석에 지금 적용되는** 계수 모델) ·
-  `remedy_code`(§5.3 14종 가운데 하나 — 1.1.10 성찰 2회차에 `stale_screen` 추가) · `remedy`(처방 문장 · 끝에 LLM 금지 접미). `draft_visible`·`ghost_after_cursor` 는 관측 불능(프롬프트 마커가 없는 좌석·선택기 행·발행 중인 프레임·파서 오류)이면
+  `remedy_code`(§5.3 14종 가운데 하나 — 1.1.9 성찰 2회차에 `stale_screen` 추가) · `remedy`(처방 문장 · 끝에 LLM 금지 접미). `draft_visible`·`ghost_after_cursor` 는 관측 불능(프롬프트 마커가 없는 좌석·선택기 행·발행 중인 프레임·파서 오류)이면
   null 입니다 — 결측은 값이 아닙니다. 기존 7키(`surface_ref`·`role`·`head_entry_id`·`waited_secs`·`depth`·`blocked_by`·`hint`)는 그대로이고 `hint` 문구만 바로잡혔습니다(§5.3 · 노브 `CYS_QUEUE_STARVED_HINT_LEGACY`).
 - 경보 라우팅(CSO 큐의 `[alert] queue.starved …` 줄) 요약 끝에 ` remedy=<코드>` 가 붙습니다(요약은 200바이트에서 잘리고, 자른 자리가 낱말 중간이면 그 낱말을 통째로 버립니다 — 그래서 `blocked_by` 가 아주 길면 끝의 `remedy=<코드>` 가 반쯤 잘린 채 남지 않고 아예 빠질 수 있습니다) — 요약 형식 `depth=<n> head_wait=<N>s blocked_by=<사유> remedy=<코드>`. 코드가 14종 허용 목록과 정확히 일치할 때만 싣고,
   처방 문장·`hint` 같은 자유 문자열은 싣지 않습니다.
@@ -2041,15 +2041,15 @@ v0.14.43 가산분(`control.hw` 응답의 `npu` 객체 · NPU 전력 읽기 — 
 - `npu` 의 `cores`·`pct`(늘 null)·`watts` 는 그대로이고 `status`(`"ok"`|`"unavailable"` — 항상)와 `reason`(쓸 수 없을 때만: `"dylib"` 전력용 시스템 라이브러리를 못 염 · `"symbol"` 필요한 함수가 없음 · `"no_channel"` ANE 에너지 채널 없음(인텔 맥·일부 VM) · `"subscribe"` 채널 구독 실패 · `"platform"` macOS 가 아님)이 더해졌습니다. 쓸 수 없으면 `watts` 만 null 로 비우고 데몬은 그대로 뜹니다(그 라이브러리를 데몬이 켜질 때가 아니라 처음 읽을 때 불러옵니다).
 - `status:"ok"` 는 읽기 초기화가 됐다는 뜻이지 값의 신뢰가 아닙니다 — 첫 호출의 `watts` 는 기준 측정이라 null 이고, macOS 27 에서 0 W 로 보이는 현상은 그대로입니다.
 
-1.1.10 가산분(화면 사본 재동기 · 전부 additive):
+1.1.9 가산분(화면 사본 재동기 · 전부 additive):
 - 새 이벤트 `screen.repaint_requested` {surface_id, surface_ref, reason(`parser_panic`|`screen_unreadable`), unreadable_secs, parser_panics, attempt, rows, cols, next_min_interval_secs, note} — 화면을 못 읽어 막힌 에이전트 좌석에 데몬이 크기 흔들기로 다시 그리기를 요청했다(§5.3 · 좌석당 5분 이상 간격 · 키 입력 없음).
 - `queue.starved` payload 와 `queue-blocked.json` 행에 `screen_diag` 객체 — `cursor_row`(커서 행 · 0 기반) · `marker_row`(선두 글리프가 프롬프트 표지인 마지막 행) · `cursor_lead_cp`(커서 행 선두 글리프의 코드포인트 `U+XXXX` — `›` U+203A 와 `❯` U+276F 를 가린다) · `last_parser_panic_at` · `repaint_requested_at`(epoch 초). 관측 불능은 null 입니다. ★`queue-blocked.json` 의 `screen_diag` 는 **그 사유가 시작된(또는 마지막으로 기록된) 순간의 스냅샷**입니다 — 파일은 바뀐 것이 있을 때만 다시 쓰므로(§5.3) 지금 화면이 아닐 수 있습니다. 지금 값은 `cysr queue list --json`·`cysr status --json` 으로 보세요(서명·형식은 그대로입니다).
 - `surface.read_text` 의 `since_line` 델타 응답에 가산 키 `repaint_echo_skipped`(정수) — 다시 그리기 요청의 반향 구간이라 본문에서 뺀 줄 수(§5.3). 커서 셈(`since`·`next_cursor`·`latest_cursor`)은 종전 그대로입니다. `surface.wait_for` 도 같은 구간을 건너뜁니다(응답 키 불변).
-- 좌석 행 `account.state` 에 `pending`(계정 확인 중 — 복원 좌석 등 기록은 있으나 관측 전)이 더해지고, `mismatch` 는 관측이 기록 폴더를 실제로 부정했을 때만이며 그때 가산 키 `recorded_profile`(기록 폴더)이 붙고 `profile` 은 관측 폴더입니다(§4 부서별 노드 계정). 경보·`in_use`·`rate_in_use` 의 좌석 신원은 1.1.9 와 같이 기록 폴더입니다.
-- 처방 코드 `stale_screen`(14번째 · §5.3) — `queue.starved`·`queue.list`·`org.status`·`queue-blocked.json`·경보 라우팅 요약 `remedy=` 에 나올 수 있습니다. 구버전 화면(1.1.9 GUI)은 모르는 코드라 조치 문장 대신 `blocked_by` 만 보이고 배너는 냅니다(모르면 알린다).
+- 좌석 행 `account.state` 에 `pending`(계정 확인 중 — 복원 좌석 등 기록은 있으나 관측 전)이 더해지고, `mismatch` 는 관측이 기록 폴더를 실제로 부정했을 때만이며 그때 가산 키 `recorded_profile`(기록 폴더)이 붙고 `profile` 은 관측 폴더입니다(§4 부서별 노드 계정). 경보·`in_use`·`rate_in_use` 의 좌석 신원은 1.1.8 와 같이 기록 폴더입니다.
+- 처방 코드 `stale_screen`(14번째 · §5.3) — `queue.starved`·`queue.list`·`org.status`·`queue-blocked.json`·경보 라우팅 요약 `remedy=` 에 나올 수 있습니다. 구버전 화면(1.1.8 GUI)은 모르는 코드라 조치 문장 대신 `blocked_by` 만 보이고 배너는 냅니다(모르면 알린다).
 - 화면 파서(vt100 0.15.2)를 저장소 안(`vendor/vt100/`)으로 들여와 폭을 줄일 때 넓은 글자(한글 등)가 마지막 칸에 반쪽만 남아 패닉하던 결함을 고쳤습니다 — 좁은 창 + 한국어 출력에서 `parser_panics` 가 더는 늘지 않아야 합니다.
 
-1.1.10 가산분(계측·관측 — 큐 막힘의 판정은 바뀌지 않습니다 · 전부 additive):
+1.1.9 가산분(계측·관측 — 큐 막힘의 판정은 바뀌지 않습니다 · 전부 additive):
 - `screen_diag` 객체에 키 넷이 더해졌습니다(위 다섯 키는 그대로 · `queue.starved` payload 와 `queue-blocked.json` 행 양쪽) — `after_cursor_dim`(`true`/`false`/`null` — 커서 행에서 커서 열부터 줄 끝까지, 커서 열의 칸이 반전이면 그 한 칸을 빼고, 남은 글자 칸이 하나 이상이고 전부 흐림(SGR 2)이면 `true` · 흐림 아닌 것이 하나라도 있으면 `false` · 남은 글자 칸이 없거나 커서가 화면 밖이면 `null`) · `cursor_col`(커서 열 · 0 기반 · 커서 행이 화면 밖이면 `null`) · `alt_screen`(그 좌석이 대체 화면인가) · `human_idle_secs`(마지막 사람 입력 뒤 지난 초 · 기록이 없으면 `null`). 진단 전용입니다 — 큐 배달·컨텍스트 순환은 이 값을 읽지 않고, 경보 요약 줄에도 실리지 않습니다.
 - `after_cursor_dim` 은 기존 `ghost_after_cursor`(커서 뒤에 글자가 있다 — 이름과 달리 회색 글이라는 뜻이 아닙니다)가 못 가르던 것을 가릅니다: 커서 뒤 글자가 회색 안내문(흐림)인지 직접 쓴 글인지. 두 값은 서로 다른 순간에 화면을 읽으므로 그 사이에 화면이 바뀌면 한 프레임의 값이 아닐 수 있습니다.
 - 화면 파서 사본(`vendor/vt100/`)이 흐림(SGR 2)을 칸에 기억합니다(읽기 전용 — 칸 비교와 다시 그리기 출력에는 들어가지 않습니다 · 패치 목록 `vendor/vt100/CYS-PATCHES.md`). ★윈도우에서 콘솔 계층이 SGR 2 를 넘겨 주는지는 재지 못했습니다 — 안 넘겨 주면 `after_cursor_dim` 은 회색 글 위에서도 `false` 입니다.
@@ -2069,11 +2069,11 @@ v0.14.43 가산분(`control.hw` 응답의 `npu` 객체 · NPU 전력 읽기 — 
 | 데몬이 두 개 뜬 것 같음 | 실제로는 불가(중복 기동 거부). 갱신 후 스큐 배지가 떠 있으면 클릭해 교대 |
 | 팩 갱신가 거부됨 | 정상일 수 있음 — 서명·신선도·replay 검증은 fail-closed. `cysr pack-update --dry-run`·`cysr doctor`로 원인 확인 |
 | 노드에 메시지가 안 들어감 | 타이핑 가드(사람 입력 직후 3초)·ACL(`acl.denied` 이벤트)·kill-switch(`cysr gate-check`) 순서로 확인 |
-| 화면에 "⏳ 큐 막힘 — …"(빨강) 또는 "⏳ 배달 대기 중 — …"·"⏳ 승인 대기 중 — …"·"⏳ 일시 정지 중 — …"(회색) 알림이 뜸(0.14.43 · 회색 세 가지는 1.1.10) | 좌석 큐 머리가 기본 10분(600초) 넘게 배달되지 못한 것입니다. 회색 세 가지는 스스로 풀리는 상태라 기다리면 되고(승인 대기는 승인 절차로, 일시 정지는 재개로 풀립니다) 처음 한 번만 팝업이 뜹니다. 빨강 「큐 막힘」은 다음과 같습니다: 알림 본문의 조치 문장을 따르거나 `cysr queue list`(막힌 좌석마다 stderr 에 사유와 처방 한 줄)로 확인하세요 — 처방 코드 14종 표는 §5.3. 대부분 사람이 그 창에서 할 일입니다(질문 창에 답하기 · 초안 제출·삭제 · 입력줄이 비어 보이면 클릭 뒤 Ctrl-U 한 번). 데몬이 키를 대신 눌러 주는 자동 조치는 없습니다 |
+| 화면에 "⏳ 큐 막힘 — …"(빨강) 또는 "⏳ 배달 대기 중 — …"·"⏳ 승인 대기 중 — …"·"⏳ 일시 정지 중 — …"(회색) 알림이 뜸(0.14.43 · 회색 세 가지는 1.1.9) | 좌석 큐 머리가 기본 10분(600초) 넘게 배달되지 못한 것입니다. 회색 세 가지는 스스로 풀리는 상태라 기다리면 되고(승인 대기는 승인 절차로, 일시 정지는 재개로 풀립니다) 처음 한 번만 팝업이 뜹니다. 빨강 「큐 막힘」은 다음과 같습니다: 알림 본문의 조치 문장을 따르거나 `cysr queue list`(막힌 좌석마다 stderr 에 사유와 처방 한 줄)로 확인하세요 — 처방 코드 14종 표는 §5.3. 대부분 사람이 그 창에서 할 일입니다(질문 창에 답하기 · 초안 제출·삭제 · 입력줄이 비어 보이면 클릭 뒤 Ctrl-U 한 번). 데몬이 키를 대신 눌러 주는 자동 조치는 없습니다 |
 | 입력줄이 비었는데 큐가 `input_pending` 으로 멈추거나 `cysr send` 가 `… [draft_gate:pending_input]` 로 거부됨(0.14.43) | 화면에 보이지 않는 입력(유령 계수)입니다. 그 창을 클릭하고 **사람이** Ctrl-U 를 한 번 누르면 계수가 0 이 되고(Ctrl-U 는 계수를 되돌리는 키), 사람 입력 직후 보호(기본 30초 · `CYS_QUEUE_HUMAN_QUIET_SECS`)가 지나면 배달이 이어집니다. 글이 보이면 제출하거나 지우세요. v3 가 적용되는 좌석(§5.3 의 세 조건)에서는 빈 줄의 단독 Esc·Backspace 가 이 상태를 만들지 않습니다 — 맨 셸·등록 없이 띄운 에이전트·마커 없는 어댑터 좌석과 전경이 에이전트가 아닌 좌석(셸 프롬프트·셸 안에서 띄운 셸·Ctrl-Z 로 멈춘 에이전트)은 macOS·Linux 에서도 여전히 만들 수 있습니다(§5.3). 또 에이전트가 읽지 못한 채 사라진 단독 Esc 는 다음 점검이 계수 1 로 되돌립니다(이벤트 `input.esc_recounted`) — 그때도 처방은 같습니다(그 창에서 사람이 Ctrl-U) |
 | 입력줄 계수 v3 때문에 큐·직접 전송이 이상하다고 의심될 때(0.14.43) | 데몬 env `CYS_PENDING_INPUT_MODEL=v2` 로 종전 모델로 되돌립니다 — 데몬이 프로세스 시작 때 한 번만 읽으므로 **데몬을 재시작해야** 적용됩니다. 되돌린 뒤에는 빈 줄 Esc·Backspace 의 유령 계수가 다시 생길 수 있으니 위 처방(Ctrl-U)을 함께 알아 두세요 |
 | Windows SmartScreen 경고 | 현재 Authenticode 미서명 — "추가 정보→실행". 스마트 앱 컨트롤이 켜진 Windows 11 은 SmartScreen 경고와 별개로 코드 서명도 평판도 없는 파일의 실행을 차단합니다(오류 4551) — 아래 「Windows 11 스마트 앱 컨트롤이 켜진 PC」 |
-| Windows 에서 큐(`--queued`)로 보낸 메시지가 Claude Code **전체화면** 좌석에 들어가지 않고 쌓임 — `cysr queue list --json` 의 `blocked_by` 가 `alt_screen(전체화면 · 프롬프트 레이아웃 미확인)` | **원인**: cysr 가 claude 를 띄울 때 macOS 는 `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` 을 실어 보통 클래식 화면으로 뜨지만(손으로 띄운 claude·GUI 가 연 pane 에는 실리지 않습니다) Windows 는 옵트인(기본 off)이라 주입이 없고, 화면 모드는 Claude Code 가 정합니다(Claude Code 문서의 기본값 표: 환경변수·저장된 `tui` 설정이 없고 기능 플래그를 받아 오는 세션에서 2026-05-06 이후 처음 쓴 계정은 전체화면으로 시작하고, 기능 플래그를 받지 않는 세션은 이 컴퓨터의 첫 실행이 v2.1.239 이상이면 전체화면입니다. OS 를 가르는 행은 'Windows 의 Claude Code 에 SSH 로 붙은 경우는 클래식' 하나뿐이고, 로컬 Windows 를 따로 가르는 행은 없습니다). 큐 배달은 전체화면에서 "입력줄이 비어 있고 조용하다"는 **양성 증거**(프롬프트 표지·레이아웃 증거 포함)가 있을 때만 통과시키는데, Windows(ConPTY)에서 그 증거가 성립하는지는 실측한 적이 없습니다. **지금 쓸 수 있는 방법**: ① Claude Code 안에서 `/tui default`(클래식 화면으로 전환 — `/tui` 만 치면 지금 렌더러를 보여 줍니다. 이 명령은 Claude Code 사용자 설정 `tui` 를 그 좌석 설정 폴더의 `settings.json`(보통 `~/.cys/claude/settings.json`)에 저장하므로 같은 폴더의 다음 세션에도 남습니다 — Claude Code 2.1.291 정적 확인. 1.1.10 부터 cysr 는 Windows 에서 이 키가 없을 때 `"default"` 를 미리 넣어 두므로(§4.6b) 새로 뜨는 좌석은 보통 classic 입니다) ② 빈 파일 `~/.cys/win-no-alt-screen` 을 만들고 **`cysr launch-agent` 로 새 pane** 을 띄움(§4.6b — 이미 열린 pane·GUI 가 연 pane 에는 실리지 않습니다. Windows 실기에서 아직 확인하지 못한 옵트인이라 새 pane 이 정상으로 뜨는지 보고, 문제가 있으면 그 파일을 지우세요 — PowerShell `Remove-Item $HOME\.cys\win-no-alt-screen`) ③ 급한 메시지는 `--queued` 없이 직접 `cysr send` 뒤에 `cysr send-key --surface <좌석 번호> Return`(그 창에 질문·선택 창이 떠 있지 않은지 `cysr read-screen` 으로 먼저 확인하세요 · 전체화면 판정은 큐 배달에만 걸립니다 — 다만 직접 send 가 사람 입력·초안·질문 창 때문에 거부돼 큐로 전환되면 그 항목은 큐의 판정을 받습니다 · §5.3). 이미 쌓인 항목은 디스크(WAL)에 남지만(큐 TTL 기본 6시간) **강제 배달(`cysr queue deliver`)로도 풀리지 않습니다**(같은 판정 — `prompt gate refused: … 전체화면 … 면제 불가`). 화면 모드를 바꾸거나 직접 다시 보내야 합니다 — 쌓인 항목은 큐 TTL 안에 남아 있어 화면 모드를 바꾸면 한 번 더 배달되므로, 직접 다시 보냈다면 `cysr queue list` 로 보고 필요 없는 항목은 `cysr queue clear` 로 거두세요. 0.14.43 부터 큐 막힘 처방(`remedy`)의 `alt_screen` 코드가 ①·② 를 그대로 안내합니다. |
+| Windows 에서 큐(`--queued`)로 보낸 메시지가 Claude Code **전체화면** 좌석에 들어가지 않고 쌓임 — `cysr queue list --json` 의 `blocked_by` 가 `alt_screen(전체화면 · 프롬프트 레이아웃 미확인)` | **원인**: cysr 가 claude 를 띄울 때 macOS 는 `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` 을 실어 보통 클래식 화면으로 뜨지만(손으로 띄운 claude·GUI 가 연 pane 에는 실리지 않습니다) Windows 는 옵트인(기본 off)이라 주입이 없고, 화면 모드는 Claude Code 가 정합니다(Claude Code 문서의 기본값 표: 환경변수·저장된 `tui` 설정이 없고 기능 플래그를 받아 오는 세션에서 2026-05-06 이후 처음 쓴 계정은 전체화면으로 시작하고, 기능 플래그를 받지 않는 세션은 이 컴퓨터의 첫 실행이 v2.1.239 이상이면 전체화면입니다. OS 를 가르는 행은 'Windows 의 Claude Code 에 SSH 로 붙은 경우는 클래식' 하나뿐이고, 로컬 Windows 를 따로 가르는 행은 없습니다). 큐 배달은 전체화면에서 "입력줄이 비어 있고 조용하다"는 **양성 증거**(프롬프트 표지·레이아웃 증거 포함)가 있을 때만 통과시키는데, Windows(ConPTY)에서 그 증거가 성립하는지는 실측한 적이 없습니다. **지금 쓸 수 있는 방법**: ① Claude Code 안에서 `/tui default`(클래식 화면으로 전환 — `/tui` 만 치면 지금 렌더러를 보여 줍니다. 이 명령은 Claude Code 사용자 설정 `tui` 를 그 좌석 설정 폴더의 `settings.json`(보통 `~/.cys/claude/settings.json`)에 저장하므로 같은 폴더의 다음 세션에도 남습니다 — Claude Code 2.1.291 정적 확인. 1.1.9 부터 cysr 는 Windows 에서 이 키가 없을 때 `"default"` 를 미리 넣어 두므로(§4.6b) 새로 뜨는 좌석은 보통 classic 입니다) ② 빈 파일 `~/.cys/win-no-alt-screen` 을 만들고 **`cysr launch-agent` 로 새 pane** 을 띄움(§4.6b — 이미 열린 pane·GUI 가 연 pane 에는 실리지 않습니다. Windows 실기에서 아직 확인하지 못한 옵트인이라 새 pane 이 정상으로 뜨는지 보고, 문제가 있으면 그 파일을 지우세요 — PowerShell `Remove-Item $HOME\.cys\win-no-alt-screen`) ③ 급한 메시지는 `--queued` 없이 직접 `cysr send` 뒤에 `cysr send-key --surface <좌석 번호> Return`(그 창에 질문·선택 창이 떠 있지 않은지 `cysr read-screen` 으로 먼저 확인하세요 · 전체화면 판정은 큐 배달에만 걸립니다 — 다만 직접 send 가 사람 입력·초안·질문 창 때문에 거부돼 큐로 전환되면 그 항목은 큐의 판정을 받습니다 · §5.3). 이미 쌓인 항목은 디스크(WAL)에 남지만(큐 TTL 기본 6시간) **강제 배달(`cysr queue deliver`)로도 풀리지 않습니다**(같은 판정 — `prompt gate refused: … 전체화면 … 면제 불가`). 화면 모드를 바꾸거나 직접 다시 보내야 합니다 — 쌓인 항목은 큐 TTL 안에 남아 있어 화면 모드를 바꾸면 한 번 더 배달되므로, 직접 다시 보냈다면 `cysr queue list` 로 보고 필요 없는 항목은 `cysr queue clear` 로 거두세요. 0.14.43 부터 큐 막힘 처방(`remedy`)의 `alt_screen` 코드가 ①·② 를 그대로 안내합니다. |
 | 데몬 로그에 `[cysd] ABI producer self-verify critical (Drift) — falling back to legacy serialization` 줄이 보임 | 0.14.42 이하에서는 부동소수(좌석 사용률처럼 소수점 아래가 긴 값)가 실린 응답마다 값에 따라 이 줄이 찍혀 로그의 대부분을 차지했습니다(라이브 0.14.42 관측: 본부 데몬 로그 4,472줄 중 4,412줄). 줄이 찍혀도 응답은 메타 없는 종전 형식으로 그대로 나갑니다. 0.14.43 부터는 부동소수 표기 정밀도 차이**만**이면 로그 없이 `cysr status --json` 의 `daemon.abi_float_inexact_total` 만 올리고(정상 신호 — 경보 기준으로 삼지 마세요), 진짜 불일치만 `daemon.abi_drift_total` 을 올리며 로그는 **프로세스 전체에서 60초에 1줄**(`… (suppressed N since last)`)입니다. `abi_drift_total` 이 0 이 아니면 진짜 와이어 결함이니 로그와 함께 알려 주세요. 프레임 직렬화는 같은 값이면 0.14.42 와 같은 바이트입니다(`org.status` 에 새 키 2개가 더해진 것은 별개). |
 
 **Windows 11 스마트 앱 컨트롤이 켜진 PC (v0.14.43 실측)**

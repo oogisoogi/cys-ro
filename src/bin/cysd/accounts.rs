@@ -1437,18 +1437,24 @@ fn report_outside_at(
     if !canon.is_file() || canon.extension().and_then(|e| e.to_str()) != Some("jsonl") {
         return Err("session_file_missing");
     }
-    // ② 알려진 프로필 dir 의 projects/ 아래(정규화끼리 비교 — 홈이 심볼릭 링크를 지나도 같게 판정)
-    let (dir, canon_dir) = cys::profile_gate::enumerate_profile_dirs(home)
+    // ② 프로필은 호출자 경로가 **어휘적으로** 들어 있는 dir 이다(⓪ 과 같은 판정) — 실제 파일은 그 dir 의 projects/ 를
+    //   정규화한 곳 아래여야 한다(밖을 가리키는 링크 거절). ★(usage-acct-misattrib) 정규화 경로로 프로필을 고르지 않는다:
+    //   `~/.claude-acct2/projects → ~/.claude/projects` 처럼 projects/ 를 나눠 쓰면 정규화 경로가 먼저 닿는 `~/.claude`
+    //   (다른 계정)로 귀속됐다(10-15 16:2x 실측 — 계정2 의 7d 96 · 리셋 17:00 이 계정1 칸에).
+    let (dir, canon_dir, rel) = cys::profile_gate::enumerate_profile_dirs(home)
         .into_iter()
         .find_map(|d| {
             let cd = std::fs::canonicalize(&d).ok()?;
-            let projects = cd.join("projects");
-            (canon.starts_with(&projects) && canon != projects).then_some((d, cd))
+            if !path_strictly_under(raw, &d.join("projects")) && !path_strictly_under(raw, &cd.join("projects")) {
+                return None;
+            }
+            let projects = std::fs::canonicalize(d.join("projects")).ok()?;
+            let rel = canon.strip_prefix(&projects).ok().filter(|r| !r.as_os_str().is_empty())?.to_path_buf();
+            Some((d, cd, rel))
         })
         .ok_or("session_file_outside_profiles")?;
     // ③ 귀속은 열거된(홈 기준) dir 로 표기한다 — 신원 규칙(기본 ~/.claude → 홈 직하)과 프로필 표기가 홈 기준이다.
-    let rel = canon.strip_prefix(&canon_dir).map_err(|_| "session_file_outside_profiles")?;
-    let attributed = dir.join(rel);
+    let attributed = dir.join("projects").join(rel);
     let attributed = attributed.to_string_lossy().into_owned();
     if profile_dir_from_session(&attributed).as_deref() != Some(dir.as_path()) {
         return Err("session_file_ambiguous");
@@ -3938,6 +3944,43 @@ mod tests {
         let t = home.join(".claude/projects/-w/t.jsonl");
         assert_eq!(report_outside_at(&d, Some(&home), &t.to_string_lossy(), &[rw("5h", 5.0, None)], now), Ok(OutsideOutcome::Accepted));
         assert!(claude_rows(&d).iter().any(|r| r["account_id"] == "u-def" && r["profiles"] == json!([".claude"])));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// ★(usage-acct-misattrib 2026-10-15) 프로필끼리 `projects/` 를 심볼릭 링크로 나눠 쓰면(`acct-switch.sh` 게이트 2 —
+    /// `~/.claude-acct2/projects → ~/.claude/projects`) 정규화 경로는 두 프로필에서 같다. 귀속은 호출자가 댄 **어휘 경로의
+    /// 프로필**(Claude Code 가 자기 `CLAUDE_CONFIG_DIR` 로 적는 transcript_path)을 따른다 — 정규화 경로가 먼저 닿는 프로필이 아니다.
+    /// RED(9d8fff71): 계정2 세션의 값이 `~/.claude`(계정1) 칸에 붙었다(10-15 16:2x 실측 · 7d 96 · 리셋 17:00 = 계정2 모양).
+    #[cfg(unix)]
+    #[test]
+    fn outside_report_follows_the_callers_profile_when_projects_is_a_shared_symlink() {
+        let dir = tmp("daemon-out-shared");
+        let home = tmp("home-out-shared");
+        write(&home.join(".claude.json"), r#"{"oauthAccount":{"accountUuid":"u-one","emailAddress":"one@example.test"}}"#);
+        write(&home.join(".claude/projects/-w/s.jsonl"), "{}\n");
+        write(&home.join(".claude-acct2/.claude.json"), r#"{"oauthAccount":{"accountUuid":"u-two","emailAddress":"two@example.test"}}"#);
+        std::os::unix::fs::symlink(home.join(".claude/projects"), home.join(".claude-acct2/projects")).unwrap();
+        let d = crate::state::Daemon::new(dir.join("cysd.sock"));
+        let now = crate::state::now_epoch();
+        let via2 = home.join(".claude-acct2/projects/-w/s.jsonl");
+        assert_eq!(
+            report_outside_at(&d, Some(&home), &via2.to_string_lossy(), &[rw("7d", 96.0, None)], now),
+            Ok(OutsideOutcome::Accepted)
+        );
+        let rows = claude_rows(&d);
+        let two = rows.iter().find(|r| r["account_id"] == "u-two").expect("계정2 행 없음 — 계정2 값이 다른 계정에 붙었다");
+        assert_eq!(two["profiles"], json!([".claude-acct2"]));
+        assert_eq!(two["rate"][0]["used_pct"], json!(96.0));
+        assert!(!rows.iter().any(|r| r["account_id"] == "u-one"), "계정2 세션의 값이 계정1(~/.claude) 칸에 붙었다");
+        // 같은 파일을 기본 프로필 경로로 대면 계정1 — 프로필마다 빈도 상한도 따로다(계정2 보고가 계정1 보고를 막지 않는다).
+        let via1 = home.join(".claude/projects/-w/s.jsonl");
+        assert_eq!(
+            report_outside_at(&d, Some(&home), &via1.to_string_lossy(), &[rw("7d", 74.0, None)], now),
+            Ok(OutsideOutcome::Accepted)
+        );
+        let one = claude_rows(&d).into_iter().find(|r| r["account_id"] == "u-one").expect("계정1 행 없음");
+        assert_eq!(one["rate"][0]["used_pct"], json!(74.0));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&home);
     }

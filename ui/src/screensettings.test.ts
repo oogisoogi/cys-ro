@@ -54,13 +54,13 @@ describe("이름·입구 — 「화면 설정」", () => {
   });
 });
 
-describe("글자 2배 — 한 축(20px × 메뉴 배율)", () => {
+describe("글자 한 축(10px × 메뉴 배율)", () => {
   const root = popRules.find((r) => r.sel === "#theme-pop")!;
 
-  it("팝오버 글자 = calc(20px * var(--ui-chrome-scale)) — 기본 배율 1.25 → 25px(종전 12px 의 2배 이상)", () => {
-    expect(root.body).toContain("font-size: calc(20px * var(--ui-chrome-scale));");
+  it("팝오버 글자 = calc(10px * var(--ui-chrome-scale)) — 기본 배율 1.25 → 12.5px(1.1.9 의 25px 절반 · 박사님 2026-10-17)", () => {
+    expect(root.body).toContain("font-size: calc(10px * var(--ui-chrome-scale));");
     expect(/--ui-chrome-scale:\s*1\.25;/.test(css)).toBe(true);
-    expect((20 * 1.25) / 12).toBeGreaterThanOrEqual(2);
+    expect(10 * 1.25).toBe((20 * 1.25) / 2);
   });
 
   it("안쪽 부품은 그 글자를 물려받는다 — 팝오버 규칙 가운데 font-size 선언은 위 한 줄뿐(px 고정 글자 0)", () => {
@@ -87,8 +87,8 @@ describe("글자 2배 — 한 축(20px × 메뉴 배율)", () => {
   it("작은 창 = 팝오버 안 스크롤(화면 밖 0) — 폭·높이 상한 + overflow auto · 높이는 단추 아래 남은 만큼", () => {
     expect(root.body).toContain("max-width: calc(100vw - 8px);");
     expect(/max-height:\s*calc\(100vh - var\(--topbar-h\) - 8px\);\s*overflow:\s*auto;/.test(root.body)).toBe(true);
-    // 최소 폭 = 256px × 배율(기본 320px) — 단 창 폭 안으로 접는다(codex 1R MED-1: 250% 의 640px 이 500px 창을 넘겼다)
-    expect(root.body).toContain("min-width: min(calc(256px * var(--ui-chrome-scale)), calc(100vw - 8px));");
+    // 최소 폭 = 128px × 배율(기본 160px · 글자와 같은 12.8em) — 단 창 폭 안으로 접는다(codex 1R MED-1: 250% 의 640px 이 500px 창을 넘겼다)
+    expect(root.body).toContain("min-width: min(calc(128px * var(--ui-chrome-scale)), calc(100vw - 8px));");
     expect(/min-width:\s*calc\(/.test(root.body)).toBe(false); // 창 폭을 모르는 맨 최소 폭 0
     expect(pop).toContain("pop.style.maxHeight = `${Math.max(80, window.innerHeight - r.bottom - 8)}px`;");
     expect(pop).toContain('window.addEventListener("resize", fitPop);');

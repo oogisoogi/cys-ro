@@ -486,7 +486,8 @@ body.ws-reordering { cursor: grabbing; -webkit-user-select: none; user-select: n
 
 /* 화면 설정 팝오버(#theme-pop · 종전 「테마」 · TICKET=cysr-1110-screen-settings · 박사님 2026-10-12 「지금의 2배 이상 키워야 제대로 볼 수 있다」)
    — btn-theme 하단. ctx-menu 톤(--bar/--border) 재사용.
-   ★글자 축은 하나다: 팝오버 글자 = 20px × 메뉴 배율(--ui-chrome-scale · 기본 1.25 → 25px = 종전 12px 의 2배 남짓).
+   ★글자 축은 하나다: 팝오버 글자 = 10px × 메뉴 배율(--ui-chrome-scale · 기본 1.25 → 12.5px).
+     박사님 2026-10-17 「화면 설정 기본 폰트 크기가 너무 크다. 절반으로 줄이자」(TICKET=cysr-1110-popfont) — 1.1.9 의 20px × 배율(25px)을 절반으로.
      안쪽 부품(선택 상자·색상 칸·입력·단추·여백)은 전부 em 으로 그 글자를 따라간다 — px 고정을 다시 넣으면
      「메뉴 크기(%)」 손잡이를 올려도 그 부품만 작게 남는다(두 축 금지 · screensettings.test.ts 가 잰다).
    ★작은 창: 높이·폭 상한을 두고 넘치는 몫은 팝오버 안에서 스크롤한다(화면 밖으로 나가지 않는다). 높이 상한의
@@ -498,13 +499,14 @@ body.ws-reordering { cursor: grabbing; -webkit-user-select: none; user-select: n
   /* 최소 폭도 창 안으로 접는다(codex 1R MED-1): 배율 250% 의 최소 폭 640px 이 500px 창을 넘겨 오른쪽이 잘렸다.
      ★폭 = 줄을 접지 않았을 때의 내용 폭(max-content) — 단 창 폭 − 8px 을 넘지 못한다(codex 2R). 창이 그보다 좁으면
        줄이 두 줄로 접힌다(.theme-pop-row · .tb-row 의 flex-wrap) — 가로 스크롤 뒤로 조작부가 숨지 않는다.
-       안내 줄(.sp-note)은 이 폭 계산에서 빠진다(아래 width 0 · min-width 100%) — 빠지지 않으면 긴 문장이 팝오버를 창 폭까지 벌린다. */
+       안내 줄(.sp-note)은 이 폭 계산에서 빠진다(아래 width 0 · min-width 100%) — 빠지지 않으면 긴 문장이 팝오버를 창 폭까지 벌린다.
+     최소 폭은 글자와 같은 비율(12.8em)로 128px × 배율(기본 160px = 1.1.9 이전 최소 폭과 같다) — 글자만 절반이면 빈 폭이 남는다(cysr-1110-popfont). */
   width: max-content;
-  min-width: min(calc(256px * var(--ui-chrome-scale)), calc(100vw - 8px)); max-width: calc(100vw - 8px);
+  min-width: min(calc(128px * var(--ui-chrome-scale)), calc(100vw - 8px)); max-width: calc(100vw - 8px);
   max-height: calc(100vh - var(--topbar-h) - 8px); overflow: auto;
   background: var(--bar); border: 1px solid var(--border); border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, .4);
-  font-size: calc(20px * var(--ui-chrome-scale)); line-height: 1.35; color: var(--text);
+  font-size: calc(10px * var(--ui-chrome-scale)); line-height: 1.35; color: var(--text);
 }
 #theme-pop button, #theme-pop select, #theme-pop input { font: inherit; color: var(--text); }
 /* 구획(제목 줄 + 접기) — 제목 줄을 누르면 그 구획 몸통이 접힌다. */

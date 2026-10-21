@@ -27640,6 +27640,41 @@ mod tests {
         assert!(ids.iter().all(|i| led.contains(i)), "상한 초과분이 원장 묘비 없이 사라졌다: {ids:?} ↔ {led:?}");
     }
 
+    /// ★1.1.11(review-a A4) 주차 상한 초과로 버려진 항목의 원장 묘비 `surface` 는 **그 항목을 주차한 좌석**이다 —
+    /// 종전엔 지금 나가는 좌석(넘치게 한 쪽)이 적혀, 먼저 주차된 옛 항목이 그 좌석에서 온 것처럼 남았다.
+    #[test]
+    fn a4_parked_overflow_tombstone_names_the_seat_that_parked_the_entry() {
+        let daemon = claim_daemon();
+        let full: Vec<crate::state::QueueEntry> = (0..crate::state::PARKED_QUEUE_MAX_ENTRIES)
+            .map(|i| {
+                let mut e = daemon.next_queue_entry(format!("주차 {i}"), None, "test");
+                e.id.push_str("-a4-overflow");
+                e
+            })
+            .collect();
+        let oldest = full[0].id.clone();
+        daemon.parked_queues.lock().unwrap().insert(
+            "master".into(),
+            crate::state::ParkedQueue { entries: full, parked_at: crate::state::now_epoch(), from_surface: 5 },
+        );
+        let b = make_surface(&daemon, Some("master"));
+        let eb = daemon.next_queue_entry("넘치게 하는 지시".into(), None, "test");
+        daemon.surfaces.lock().unwrap()[&b].pending_queue.lock().unwrap().push_back(eb);
+        mark_surface_dead(&daemon, b);
+        wait_surface_exited_event(&daemon, b);
+        let rows: Vec<Value> = std::fs::read_to_string(crate::delivery::ledger_path(&daemon.socket_path))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|r| r["origin"] == "queue_tombstone" && r["reason"] == "parked_overflow")
+            .collect();
+        let row = rows
+            .iter()
+            .find(|r| r["queue_entry_id"] == json!(oldest))
+            .unwrap_or_else(|| panic!("가장 오래된 항목의 묘비가 없다(전제 붕괴): {rows:?}"));
+        assert_eq!(row["surface"], json!("5"), "묘비 surface 가 그 항목을 주차한 좌석이 아니다(나가는 좌석 {b}): {row}");
+    }
+
     /// ★(1.1.10 · cysr-1110-winqueue Q1-A ①) 사람이 닫은 좌석(OwnerClose)의 큐 폐기 이벤트는 `owner_close=true` 와 건수를 싣는다 —
     /// GUI 는 이것으로만 「대기 중이던 지시 N건을 버렸습니다」 1줄을 띄운다. 0건이면 이벤트 자체가 없다 · Reap 은 false.
     #[test]

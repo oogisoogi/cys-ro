@@ -755,7 +755,7 @@ pub fn park_queue_for_role(
     role: &str,
     from_surface: u64,
     entries: Vec<QueueEntry>,
-) -> (Vec<QueueEntry>, Vec<QueueEntry>, Vec<(String, u64, Vec<QueueEntry>)>) {
+) -> (Vec<QueueEntry>, Vec<(u64, Vec<QueueEntry>)>, Vec<(String, u64, Vec<QueueEntry>)>) {
     let now = now_epoch();
     let mut map = daemon.parked_queues.lock().unwrap();
     // ⑴ 게으른 만기 회수 — **지우지 말고 꺼낸다**(호출부가 사유를 달아 발행한다).
@@ -769,9 +769,17 @@ pub fn park_queue_for_role(
     let first_at = prev.as_ref().map(|pq| pq.parked_at).unwrap_or(now);
     let first_from = prev.as_ref().map(|pq| pq.from_surface).unwrap_or(from_surface);
     let mut merged = prev.map(|pq| pq.entries).unwrap_or_default();
+    // ★1.1.11(review-a A4) 버림분을 **주차한 좌석별로** 돌려준다 — 기존 배치 몫은 `first_from`(만기 묘비와 같은 출처
+    //   표기) · 이번에 들어온 몫은 `from_surface`. 종전엔 호출부가 전부 나가는 좌석으로 묘비를 남겨, 먼저 주차된 옛
+    //   항목이 그 좌석에서 온 것처럼 원장에 적혔다.
+    let prev_ids: std::collections::HashSet<String> = merged.iter().map(|e| e.id.clone()).collect();
     merged.extend(entries);
-    let (keep, evicted) =
+    let (keep, dropped) =
         parked_cap_split(merged, PARKED_QUEUE_MAX_ENTRIES, PARKED_QUEUE_MAX_BYTES);
+    let (old, new): (Vec<QueueEntry>, Vec<QueueEntry>) =
+        dropped.into_iter().partition(|e| prev_ids.contains(&e.id));
+    let evicted: Vec<(u64, Vec<QueueEntry>)> =
+        [(first_from, old), (from_surface, new)].into_iter().filter(|(_, v)| !v.is_empty()).collect();
     if !keep.is_empty() {
         map.insert(
             role.to_string(),
@@ -7964,7 +7972,11 @@ impl Daemon {
                         if !evicted.is_empty() {
                             // 상한 초과분은 **조용히 사라지지 않는다** — 사유를 달고 폐기 발행.
                             // ★(1.1.10 · cysr-1110-winqueue Q1-A ②) 원장 묘비도(같은 서식 · 최선 노력).
-                            crate::governance::record_active_drain(&daemon, surf.id, &evicted, "parked_overflow");
+                            // ★1.1.11(A4) 묘비 surface = 그 항목을 주차한 좌석(이벤트는 종전처럼 한 건 · 나가는 좌석).
+                            for (from, ents) in &evicted {
+                                crate::governance::record_active_drain(&daemon, *from, ents, "parked_overflow");
+                            }
+                            let evicted: Vec<QueueEntry> = evicted.into_iter().flat_map(|(_, v)| v).collect();
                             daemon.bus.publish(
                                 "queue.dropped",
                                 "queue",

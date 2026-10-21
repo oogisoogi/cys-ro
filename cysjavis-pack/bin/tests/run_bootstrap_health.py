@@ -627,6 +627,55 @@ _SECRET_CLEAN = (
 )
 
 
+SECRET_BLIND_GIT_TIMEOUT_S = 60   # 측정 실패 검체의 임시 저장소 git init/add (우리 포크 · 아래 함수)
+
+
+def _secret_blind_probes(scan, _scan, _labels):
+    """★v0.14.51 편입(우리 포크): H-SECRET-1 ⓓ 「못 봤다 ≠ 깨끗하다」 측정 실패 5형 검체(TICKET=cysr-117-impl-lead · MUST-DO-117 ⑥)를
+    H-SECRET-1 본문 밖으로 뗐다 — 원작자 B-070 배선 시험(test_secret_scan_limit T2)이 그 본문의 `_run` 을 `_scan` 안 1개로,
+    타임아웃을 이름 붙은 한도로만 허용하기 때문이다. 검체 내용·단언은 종전 그대로이고 반환은 통과한 형의 이름 목록이다."""
+    probe_secret = dict((pid, body) for pid, _, body in _SECRET_PROBES)["secret"]
+    tmp2 = tempfile.mkdtemp(prefix="cys-secret-fail-")   # ★저장소 밖 · HOME 무접촉
+    blind = []
+    try:
+        outside = os.path.join(tmp2, "outside")
+        os.makedirs(outside)
+        r2 = _run([BASH, scan, "--all"], cwd=outside, timeout=SECRET_SCAN_ONE_FILE_TIMEOUT_S)
+        need(r2.returncode == 2, "저장소 밖 실행이 exit=%d(≠2) — 죽은 가드: %s" % (r2.returncode, r2.stdout[-300:]))
+        blind.append("저장소밖")
+        repo = os.path.join(tmp2, "repo")
+        os.makedirs(repo)
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com"]
+        _run(git + ["init", "-q"], cwd=repo, timeout=SECRET_BLIND_GIT_TIMEOUT_S)
+        r3 = _run([BASH, scan, "--all"], cwd=repo, timeout=SECRET_SCAN_ONE_FILE_TIMEOUT_S)
+        need(r3.returncode == 2, "--all 추적 0건이 exit=%d(≠2) — 측정 실패를 clean 으로 접었다" % r3.returncode)
+        blind.append("0건")
+        kor = os.path.join(repo, "한글 비밀.txt")
+        with open(kor, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(probe_secret + "\n")
+        _run(git + ["add", "-A"], cwd=repo, timeout=SECRET_BLIND_GIT_TIMEOUT_S)
+        r4 = _run([BASH, scan, "--all"], cwd=repo, timeout=SECRET_SCAN_ONE_FILE_TIMEOUT_S)
+        need(r4.returncode == 1 and "SECRET" in _labels(r4.stdout),
+             "한글 이름 파일의 양성 표본을 못 봤다(exit=%d) — 줄 단위 목록 누락: %s"
+             % (r4.returncode, r4.stdout[-400:]))
+        blind.append("한글파일명")
+        r5 = _scan(os.path.join(tmp2, "없는-파일.txt"))
+        need(r5.returncode == 2, "없는 대상이 exit=%d(≠2) — 건너뛰고 clean" % r5.returncode)
+        blind.append("없는대상")
+        if os.name == "posix" and os.geteuid() != 0:
+            locked = os.path.join(tmp2, "locked.txt")
+            with open(locked, "w", encoding="utf-8") as fh:
+                fh.write(probe_secret + "\n")
+            os.chmod(locked, 0)
+            r6 = _scan(locked)
+            os.chmod(locked, 0o644)
+            need(r6.returncode == 2, "읽기 거부 파일이 exit=%d(≠2) — grep 오류를 clean 으로 접었다" % r6.returncode)
+            blind.append("읽기거부")
+    finally:
+        shutil.rmtree(tmp2, ignore_errors=True)
+    return blind
+
+
 @specimen("H-SECRET-1", "W0",
           "발행 차단 게이트 상시화 — 산 트리 clean(853파일) + 규칙 6종 합성 변조 FIRE + 음성 대조",
           ["#81", "개인정보-누출", "CI-only-게이트"])
@@ -717,45 +766,7 @@ def h_secret_1():
     # ⓓ ★「못 봤다」 ≠ 「깨끗하다」(TICKET=cysr-117-impl-lead · MUST-DO-117 ⑥) — 측정 실패 4형이 전부
     #    exit 2 인가. 종전엔 넷 다 exit 0(clean)이었다: 저장소 밖(죽은 `cd ""` 가드) · 한글 파일명(줄 단위
     #    목록의 따옴표 이스케이프로 조용히 누락) · `--all` 0건 · 읽기 거부 파일(grep rc 2 삼킴).
-    probe_secret = dict((pid, body) for pid, _, body in _SECRET_PROBES)["secret"]
-    tmp2 = tempfile.mkdtemp(prefix="cys-secret-fail-")   # ★저장소 밖 · HOME 무접촉
-    blind = []
-    try:
-        outside = os.path.join(tmp2, "outside")
-        os.makedirs(outside)
-        r2 = _run([BASH, scan, "--all"], cwd=outside, timeout=120)
-        need(r2.returncode == 2, "저장소 밖 실행이 exit=%d(≠2) — 죽은 가드: %s" % (r2.returncode, r2.stdout[-300:]))
-        blind.append("저장소밖")
-        repo = os.path.join(tmp2, "repo")
-        os.makedirs(repo)
-        git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com"]
-        _run(git + ["init", "-q"], cwd=repo, timeout=60)
-        r3 = _run([BASH, scan, "--all"], cwd=repo, timeout=120)
-        need(r3.returncode == 2, "--all 추적 0건이 exit=%d(≠2) — 측정 실패를 clean 으로 접었다" % r3.returncode)
-        blind.append("0건")
-        kor = os.path.join(repo, "한글 비밀.txt")
-        with open(kor, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(probe_secret + "\n")
-        _run(git + ["add", "-A"], cwd=repo, timeout=60)
-        r4 = _run([BASH, scan, "--all"], cwd=repo, timeout=120)
-        need(r4.returncode == 1 and "SECRET" in _labels(r4.stdout),
-             "한글 이름 파일의 양성 표본을 못 봤다(exit=%d) — 줄 단위 목록 누락: %s"
-             % (r4.returncode, r4.stdout[-400:]))
-        blind.append("한글파일명")
-        r5 = _scan(os.path.join(tmp2, "없는-파일.txt"))
-        need(r5.returncode == 2, "없는 대상이 exit=%d(≠2) — 건너뛰고 clean" % r5.returncode)
-        blind.append("없는대상")
-        if os.name == "posix" and os.geteuid() != 0:
-            locked = os.path.join(tmp2, "locked.txt")
-            with open(locked, "w", encoding="utf-8") as fh:
-                fh.write(probe_secret + "\n")
-            os.chmod(locked, 0)
-            r6 = _scan(locked)
-            os.chmod(locked, 0o644)
-            need(r6.returncode == 2, "읽기 거부 파일이 exit=%d(≠2) — grep 오류를 clean 으로 접었다" % r6.returncode)
-            blind.append("읽기거부")
-    finally:
-        shutil.rmtree(tmp2, ignore_errors=True)
+    blind = _secret_blind_probes(scan, _scan, _labels)
 
     # ⓒ 자기 면제 동결
     stext = _read(scan)

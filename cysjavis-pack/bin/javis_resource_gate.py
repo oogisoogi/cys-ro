@@ -3008,7 +3008,7 @@ def _pc_read_ps():
     """The ONE own ps read of `product-cpu` -> (rows|None, state|None, reason|None)."""
     try:
         p = subprocess.run(["ps", "-axo", "pid=,ppid=,pcpu=,command="], capture_output=True,
-                           text=True, errors="replace", timeout=PRODUCT_CPU_PS_TIMEOUT_S)
+                           text=True, errors="replace", timeout=PRODUCT_CPU_PS_TIMEOUT_S, **NOWIN)  # v0.14.51 편입: 우리 NOWIN(윈 콘솔 창 숨김)
     except FileNotFoundError:
         return None, "unavailable", "ps absent on this platform"
     except subprocess.TimeoutExpired:

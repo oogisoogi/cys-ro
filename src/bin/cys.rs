@@ -9315,6 +9315,30 @@ fn diag_dept_awakening_seed(ctx: &DoctorCtx) -> DiagItem {
             action: String::new(),
         };
     }
+    // ★1.1.10 ⑦: 닫힌 부서(레지스트리를 읽었고 그 이름이 없다)의 팩 잔재는 재지 않는다 — `cys-dept down` 은 팩 폴더를
+    //   남기고 hooks-prune 으로 그 훅을 지우므로, 재면 매번 「미시드」 다(윈 1.1.9 실측). 판독 불가 = 종전대로 잰다.
+    let reg: Option<Value> = std::fs::read_to_string(
+        std::env::var("CYS_DEPTS_JSON")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| ctx.state_base.join("depts.json")),
+    )
+    .ok()
+    .and_then(|t| serde_json::from_str(t.trim_start_matches('\u{feff}')).ok());
+    let closed = |pack: &std::path::Path| {
+        let Some(reg) = reg.as_ref().filter(|r| r.is_object()) else {
+            return false;
+        };
+        let scope = cys::pack::dept_scope_of(pack).unwrap_or_default();
+        reg["depts"].as_object().map_or(true, |d| !d.contains_key(&scope))
+    };
+    let (remnants, packs): (Vec<_>, Vec<_>) = packs.into_iter().partition(|p| closed(p));
+    let remnant_note = if remnants.is_empty() {
+        String::new()
+    } else {
+        let names: Vec<String> =
+            remnants.iter().filter_map(|p| p.file_name().map(|s| s.to_string_lossy().into_owned())).collect();
+        format!(" · 닫힌 부서 팩 잔재 {}(판정 제외): {}", names.len(), names.join(", "))
+    };
     let mut anomalies: Vec<String> = Vec::new();
     for pack in &packs {
         let name = pack
@@ -9346,14 +9370,14 @@ fn diag_dept_awakening_seed(ctx: &DoctorCtx) -> DiagItem {
         return DiagItem {
             name: "dept-awakening-seed",
             status: DiagStatus::Ok,
-            detail: format!("부서 팩 {}개 acctdir 각성 훅 실측 — anomaly 0", packs.len()),
+            detail: format!("부서 팩 {}개 acctdir 각성 훅 실측 — anomaly 0{remnant_note}", packs.len()),
             action: String::new(),
         };
     }
     DiagItem {
         name: "dept-awakening-seed",
         status: DiagStatus::Warn,
-        detail: format!("부서 각성 시드 anomaly: {}", anomalies.join(" | ")),
+        detail: format!("부서 각성 시드 anomaly: {}{remnant_note}", anomalies.join(" | ")),
         action: "해당 부서 재기동(cys-dept <name> launch/rotate)이 acctdir 에 재시드한다 · \
                  부서 레인 수리: cys-dept <name> -- cys doctor --fix"
             .into(),
@@ -38332,6 +38356,33 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         install_claude_hook(&acct.join("settings.json").to_string_lossy(), &dept).unwrap();
         let it = diag_dept_awakening_seed(&ctx);
         assert_eq!(it.status, DiagStatus::Ok, "{}", it.detail);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// ★1.1.10 ⑦(윈 1.1.9 실기 10-17 · dept-awakening-seed WARN 지속): 닫힌 부서의 팩 잔재는 각성 시드 판정 대상이 아니다.
+    /// `cys-dept down` 은 팩 폴더를 남기고(묘비 + hooks-prune + 레지스트리 제거) — hooks-prune 이 지운 바로 그 훅을 이 항목이
+    /// 「미시드」 로 다시 올렸다(윈 실측: depts.json {} · pack-dept-dept-1 잔존 · 매 doctor WARN). 레지스트리를 못 읽으면 종전대로 잰다.
+    #[test]
+    fn diag_dept_awakening_seed_skips_closed_dept_remnant() {
+        let _lock = DOCTOR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _e = cys::pack::EnvGuard::remove("CYS_DEPTS_JSON");
+        let base = std::env::temp_dir().join(format!("cys-doc-awseed-closed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("pack-dept-dept-1")).unwrap();
+        let ctx = doctor_ctx_at(&base);
+        let reg = base.join("depts.json");
+        // 닫힌 부서(윈 실측 꼴 `{}` · depts 칸에 없음) → 판정 제외 · 잔재는 detail 에 남긴다(침묵 아님).
+        for closed in ["{}", r#"{"depts":{"other":{}}}"#] {
+            std::fs::write(&reg, closed).unwrap();
+            let it = diag_dept_awakening_seed(&ctx);
+            assert_eq!(it.status, DiagStatus::Ok, "닫힌 부서 잔재를 미시드로 올렸다({closed}): {}", it.detail);
+            assert!(it.detail.contains("pack-dept-dept-1"), "{}", it.detail);
+        }
+        // 등록 부서 · 레지스트리 판독 불가 = 종전대로 잰다(판정 불가는 닫힘의 근거가 아니다).
+        for live in [r#"{"depts":{"dept-1":{}}}"#, "{not json"] {
+            std::fs::write(&reg, live).unwrap();
+            assert_eq!(diag_dept_awakening_seed(&ctx).status, DiagStatus::Warn, "{live}");
+        }
         let _ = std::fs::remove_dir_all(&base);
     }
 

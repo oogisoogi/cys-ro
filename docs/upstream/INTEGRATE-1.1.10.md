@@ -43,7 +43,7 @@
 | 화면 | `ui/src/trashconfirm.ts`(거부 문구 `confirm_unbound` 등) · `ui/src/main.ts`(삭제 명령에 `confirmNonce: prev.confirm_nonce` · `typed`) | trashconfirm.ts = 810dcbd0 과 **바이트 동일** · main.ts = 가지 추가 10줄 전부 실재 |
 | 네이티브 | `src-tauri/src/main.rs`(`trash_preview_poll` 이 `confirm_nonce` 발급 · `trash_delete` 단회 확인 꺼냄 · `confirm_unbound`/`confirm_expired`/`phrase_mismatch`) | 810dcbd0 과 **바이트 동일** |
 
-⇒ **같은 커밋(`19af40c4`)에 함께 있다** — 구 화면 + 새 네이티브(= `confirm_unbound` 거부 · 삭제 0) 조합은 이 가지에서 생기지 않는다. 앱 번들 하나에 둘 다 실리는지는 §3 앱 빌드에서 확인.
+⇒ **같은 커밋(`19af40c4`)에 함께 있다** — 구 화면 + 새 네이티브(= `confirm_unbound` 거부 · 삭제 0) 조합은 이 가지에서 생기지 않는다. 앱 번들 하나에 둘 다 실리는지 = §3 앱 빌드에서 **확인(둘 다 실림)**.
 윈도우 교차 컴파일 = 이 맥 불가(`libsqlite3-sys` C 교차 컴파일러 부재 · trash-harden HANDOFF §2-6) → **윈 실기 확인**(CI 윈도우 잡·윈 실기).
 
 ### 큐 폐기 알림 ↔ ALERTS_QUIET 시험 두 값(`7bea2400`)
@@ -56,7 +56,31 @@
 
 ## 3. 전수 시험
 
-(§3 표는 시험 완료 뒤 채운다)
+최종 트리 = `f791b797`(①~⑦ 병합 뒤) · 이 맥(arm64) · 2026-10-22 00:13~01:14 · 사슬 실행(앞 단계 끝나면 다음 단계 · 동시 실행 0) · 부하 평균 4~7(다른 좌석 동시 가동).
+⑦ 전 트리(①~⑥)에서 먼저 돈 cargo 3종(1096/626/2692 · 0 실패 · 23:47~00:09)은 ⑦ 이 lib·cysd·앱을 바꿔 최종 트리 기준이 아니므로 아래로 대체.
+
+| 시험 | 명령 | 결과 |
+|---|---|---|
+| cargo lib | `cargo test --lib` | **1100 통과 · 0 실패** · 2 무시 · 580s |
+| cargo cys | `cargo test --bin cys` | **626 통과 · 0 실패** · 150s |
+| cargo cysd | `cargo test --bin cysd` | **2698 통과 · 0 실패** · 9 무시 · 516s |
+| 앱 | `cd src-tauri && cargo test` | **309 통과 · 0 실패** · 2 무시 |
+| ui | `bun test`(ui) | **3173 통과 · 0 실패** · 85 건너뜀 · 98 파일 |
+| ui 형 검사 | `bun run typecheck` | rc 0 |
+| 팩 py | ci-branch.yml 맥 팩 루프 137개(`CYS_PACK_DIR`=mktemp) | **135 rc0 · 2 rc1** — 아래 판정 |
+| 팩 py 추가 | `test_org_audit` · `test_preflight_nlm_pin` · `test_preflight_phase1_checks` | 2 rc0 · phase1 = rc2(격리 env 미설정 자체 거부) → 격리 env(`JAVIS_ROOT`·`CYS_PROBE_RUNS`=스크래치)로 재실행 **26 OK** |
+| 팩 자체 시험 | `javis_org.py --self-test` · `scripts/tests/test_update_publish.py` | ok · **108 OK**(14 건너뜀) |
+| CEO 템플릿 | `gen_ceo_template.py --check` | rc 0 |
+| H-SECRET-1 | `run_bootstrap_health.py --only H-SECRET-1` | rc 0(853파일) — §4 |
+| 앱 빌드 | `bunx @tauri-apps/cli@2 build --bundles app`(갱신 산출물 끔 · runtime 복제 + `precompile-bundled-python.sh` rc0) | rc 0 · `target/release/bundle/macos/cysr.app` · Info.plist **1.1.9**(판번 올림 0) · 번들 `cys --version` = `cysr 1.1.9` · `cysd 1.1.9 (build f791b7973363…)` · **설치·교체·서명 0** |
+| ⑦ 짝 번들 실림 | `strings Contents/MacOS/cys-app` | 화면 쪽 `confirmNonce`(내장 UI) 1 · 네이티브 쪽 `confirm_nonce` 1 — **한 번들에 둘 다** |
+
+**실패 2건 판정(단독 3회 + 기준선 8d81d780 대조 · 스크래치 별 작업트리)**:
+
+| 시험 | 최종 트리 사슬 | 단독 1·2·3회 | 기준선 8d81d780 단독 | 판정 |
+|---|---|---|---|---|
+| `test_hook_r34` | rc1 — RCF-3(3.02s) | rc1 · rc1 · rc1 — 적 항목이 회마다 다름: {RCF-3 3.05s · RCF-4a 3.49s} · {DL-1b} · {RCF-4a 3.01s}(RCF-3 은 2·3회 3.00s·2.89s 로 녹) | rc1 — {RCF-3 3.01s · RCF-4a 3.09s · DL-1b} | **시간 경계 플레이크 · 통합 무관** — 전부 「경과 < 3.0s」 상한을 0.0x~0.5s 넘는 같은 꼴(시한 1s + 자식 4s · 지연 고지·본체 0 은 매번 녹) · 기준선도 같은 적 · 통합 가지는 `cysjavis-pack/hooks/`·시험 파일 무변경(`git diff 8d81d780 HEAD` 빈) |
+| `test_dept_team_token` | rc1 — 18/23 적 | 18 · 18 · 18 | 18(적 이름 집합 **동일**) | **기준선 적 · 통합 무관** — 사유 `team_flow_dormant`(이 판에서 team-token 휴면 · 대화로 부서 생성) · vendor HANDOFF 기록과 같음 |
 
 ## 4. H-SECRET-1 (발행 차단 게이트)
 

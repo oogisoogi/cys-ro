@@ -11971,6 +11971,7 @@ mod tests {
 
     /// ★v0.14.51 편입 · codex 1R B1(우리 포크): hooks/ 보고는 **팩 안의 실제 파일만** 연다 — 매니페스트 키의 `..`·절대 경로,
     /// 팩 밖을 가리키는 파일 심링크, 심링크인 `hooks/` 디렉터리는 열지 않고 「판독 불가」(해시 없음)로 보고한다.
+    #[cfg(unix)]
     #[test]
     fn f10_b1_manifest_dotdot_and_symlinks_never_read_outside_the_pack() {
         let pack = f10_pack("b1", &[("hooks/guard.sh", b"g\n")]);

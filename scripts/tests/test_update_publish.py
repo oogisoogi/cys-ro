@@ -72,7 +72,10 @@ def media_probe_failures(runner=None, delay=1.0):
             reasons = hdiutil_retry(args, partial=partial, runner=runner, delay=delay)
             if reasons:
                 return ["hdiutil 매체 생성·마운트 실패(hdiutil %s · 2회): %s" % (args[0], " | ".join(reasons))]
-        (runner or run)(["hdiutil", "detach", mnt, "-quiet"])
+        # 1.1.10: detach 도 rc 를 본다 — 1회 재시도 · 2회 실패 = 사유가 실린 모듈 오류(마운트가 남은 채 통과 금지).
+        reasons = hdiutil_retry(["detach", mnt, "-quiet"], runner=runner, delay=delay)
+        if reasons:
+            return ["hdiutil 매체 분리 실패(hdiutil detach · 2회): %s" % " | ".join(reasons)]
         return []
     finally:
         shutil.rmtree(d, ignore_errors=True)
@@ -1100,8 +1103,22 @@ class TestHdiutilRetry(unittest.TestCase):
         self.assertIn(bad[0], str(cm.exception))
         self.assertIn("CYS_U3_REQUIRE_ALL=1 전제 부재", str(cm.exception))
 
+    def test_module_probe_detach_failure_is_retried_then_a_module_error(self):
+        # 1.1.10(ChatGPT A/B F2): 전제 확인의 detach rc 를 버리지 않는다 — 1회 실패는 사유를 찍고 다시 하고(통과),
+        # 2회 실패는 사유가 실린 목록 = setUpModule 모듈 오류(마운트가 남은 채 「전제 통과」 로 읽히지 않는다).
+        runner, calls = self.fake([0, 0, 1, 0])
+        self.assertEqual(media_probe_failures(runner=runner, delay=0), [])
+        self.assertEqual([c[1] for c in calls], ["create", "attach", "detach", "detach"])
+        runner, calls = self.fake([0, 0, 1, 1, 0])
+        bad = media_probe_failures(runner=runner, delay=0)
+        self.assertEqual([c[1] for c in calls], ["create", "attach", "detach", "detach"], "재시도는 1회뿐")
+        self.assertEqual(len(bad), 1)
+        self.assertIn("detach", bad[0])
+        self.assertIn("리소스 일시 사용 불가", bad[0], "실패 사유(stderr)가 빠졌다")
+
     def test_every_create_and_attach_goes_through_the_retry_helper(self):
-        # 배선 핀: 이 파일에서 hdiutil create·attach 를 도우미 밖에서 직접 부르는 줄은 0 이다(detach 는 재시도 대상 아님).
+        # 배선 핀: 이 파일에서 hdiutil create·attach 를 도우미 밖에서 직접 부르는 줄은 0 이다(정리용 detach 는 재시도 대상 아님 ·
+        # 모듈 전제의 detach 는 1.1.10 부터 도우미 경유).
         # 바늘은 조각으로 이어 이 줄이 자기 자신에 걸리지 않게 한다.
         src = open(os.path.abspath(__file__), encoding="utf-8").read()
         head = '["hdi' + 'util", "'

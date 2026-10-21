@@ -663,7 +663,12 @@ mod tests {
         let reply = handlers
             .find("\"feed.reply\" =>")
             .expect("the feed.reply arm must exist");
-        let window = &handlers[reply..reply + 3_000];
+        // v0.14.51 편입(우리 포크): 우리 handlers.rs 의 이 자리에는 한글 주석이 있어 바이트 3,000 이 글자 경계가 아닐 수 있다 — 다음 글자 경계까지 넓힌다.
+        let mut end = (reply + 3_000).min(handlers.len());
+        while !handlers.is_char_boundary(end) {
+            end += 1;
+        }
+        let window = &handlers[reply..end];
         assert!(
             window.contains("item.status != \"pending\""),
             "feed.reply must refuse an item that is not pending"

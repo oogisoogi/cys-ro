@@ -53,7 +53,9 @@ BIN = os.path.dirname(HERE)
 ROOT = os.path.dirname(os.path.dirname(BIN))
 GATE = os.path.abspath(os.environ.get("GATE_UNDER_TEST") or os.path.join(BIN, "javis_resource_gate.py"))
 GATE_DIR = os.path.dirname(GATE)
-TAG_REF = "51b00d7a"            # v0.14.49 = base of integ/0.14.50-b (the "tag" of the design)
+# ★v0.14.51 편입(우리 포크): 「F5 밖은 태그와 같다」의 태그 = **우리 편입 전 main**(fb386c49 · 원작자 v0.14.48 + 우리 커스텀 NOWIN·윈 부서 소켓 등).
+#   원작자 값 51b00d7a(v0.14.49)는 우리 커스텀이 없어 F5 와 무관한 차이로 적색이 된다 — 지키는 것(F5 가 기존 경로를 바꾸지 않는다)은 그대로다.
+TAG_REF = "fb386c49"            # upstream: "51b00d7a" = v0.14.49 = base of integ/0.14.50-b
 TAG_PATH = "cysjavis-pack/bin/javis_resource_gate.py"
 LINE_HEAD = "product itself (report-only, not a gate input): "
 NEW_COLS = "pid=,ppid=,pcpu=,command="
@@ -1059,10 +1061,10 @@ class T15NoTimeoutLengthened(unittest.TestCase):
         "cysjavis-pack/bin/javis_resource_gate.py": [
             'DEPT_STATUS_TIMEOUT = 5 ', 'LEDGER_TIMEOUT = 5 ', 'SOCKET_PROBE_TIMEOUT = 0.3 ',
             '["ps", "-axo", "pid,pcpu,command"], capture_output=True,\n'
-            '                           text=True, errors="replace", timeout=10)',
+            '                           text=True, errors="replace", timeout=10, **NOWIN)',  # v0.14.51 편입: 우리 NOWIN(윈 콘솔 창 숨김)
             'PRODUCT_CPU_PS_TIMEOUT_S = 1.5 ', 'PRODUCT_CPU_CHILD_DEADLINE_S = 3.0 '],
         "cysjavis-pack/bin/javis_completion_guard.py": [
-            'r = subprocess.run(argv, capture_output=True, text=True, timeout=10, env=env)'],
+            'r = subprocess.run(argv, capture_output=True, text=True, timeout=10, env=env, **NOWIN)'],  # v0.14.51 편입: 우리 NOWIN
         "cysjavis-pack/bin/javis_formation.py": ['kw = {"timeout": 30}',
                                                  'RESOURCE_RETRY_TIMEOUT_S = 15\n'],
         "cysjavis-pack/bin/javis_bootstrap.py": ['timeout=_budget_leaf("RPC_SLACK_S", 10) * 3)'],

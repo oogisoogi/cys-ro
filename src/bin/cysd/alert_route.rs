@@ -3930,8 +3930,11 @@ mod drills {
 
     /// 역할만 쥔 **빈 셸**(에이전트 미등록) — 정본 §10-3 의 '빈 좌석' 그대로.
     fn bare_seat(daemon: &Arc<Daemon>, role: &str) -> u64 {
+        // ★1.1.11(MI-cysd) 좌석 수명은 드릴보다 길어야 한다 — `sleep 30` 은 부하로 드릴이 30초를 넘기면 끝나고, 그 좌석의
+        //   자력 종료 경로가 큐를 비우고 좌석을 죽여 배달이 멎었다(`drill_edge_loop_clear_signals_…` 4506 흔들림 · 좌석을
+        //   `sleep 3` 으로 줄이면 같은 줄·같은 메시지로 매번 재현). 시험 프로세스가 끝나면 PTY 가 닫혀 함께 끝난다.
         let s = daemon
-            .create_surface(None, Some("sleep 30".into()), None, Some(role.into()), 24, 80)
+            .create_surface(None, Some("sleep 600".into()), None, Some(role.into()), 24, 80)
             .expect("create surface");
         daemon.roles.lock().unwrap().insert(role.into(), s.id);
         daemon.surfaces.lock().unwrap().insert(s.id, s.clone());

@@ -18,6 +18,8 @@
 | ⑥ | `docs/1110-naming` @ 29f02a2d (4커밋 · 머리 = cysr-1110-docs HANDOFF · 10-10 · master#e6c5cb95) | 4f660dfb | `8875ddca` | **1파일 1덩어리** — §2-⑥ | 0 |
 | — | H-SECRET-1 적 해소(master#f55812f6 A안) | — | `349c3ce0` | — | §4 |
 | ⑦ | `fix/1110-trash-harden` @ 810dcbd0 (9커밋 · codex 4R ACCEPT · HANDOFF `docs/HANDOFF-cysr-1110-trash-harden-2026-10-21.md`) | 8d81d780(rebase 완료) | `19af40c4` | 0 (자동 병합 1파일: `ui/src/main.ts`) | 0 |
+| — | 팩 지침 출처 표기(master#c287b9bc · §6) | — | `e22af6e3` | — | 파생 핀 2(core_inject 절 해시 · event_inject 줄 번호) → 같은 커밋에서 해소 |
+| ⑧ | `docs/1110-release-prep` @ fb3aa025 (6커밋 · 551 · master#8148264e · 체크리스트·윈 실기 45·노트·카톡 초안 · `release.yml` 설치 안내 2줄 · USER-MANUAL · 팩 하한 두 레인 1.1.10 = 별도 커밋 fb3aa025) | 53031718 | `76e1eda5` | 0 (새 파일 4 + 수정 3 · 겹친 파일 0) | 0 — 시험: `scripts/tests` 릴리스 6종(trigger_split 16 · release_verify 140 · postprocess_gate 82 · update_publish 108 · version_sot_mutation 16건 · ci_branch_cysd_step 14) + nsis-template check · 워크플로를 읽는 팩 시험 5종 · `u8_pack_min_binary_two_lanes_match_and_cover_ack_only` 1/0 · lib `job_name` 5/0 · ui publicdocs·screensettings·clipath 326/0 · gen `--check` · H-SECRET-1 = 전부 녹 |
 
 ## 2. 덩어리별 판정 (1덩어리 = 1줄)
 

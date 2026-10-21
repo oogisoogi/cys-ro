@@ -1,7 +1,7 @@
 # HANDOFF — TICKET=cysr-1110-integrate (1.1.10 통합 가지)
 
 - 가지: `rel/1.1.10` · 작업트리 `~/cys-terminal-src-wt/rel-1110` · 기준 **8d81d780**(`rebase/v0.14.51` · 원작자 v0.14.49~51 편입) · 좌석 546(surface:1545) · 2026-10-21 23:4x ~ 10-22 01:3x
-- 지시: 브리프 cysr-1110-integrate(①~⑥) · master#f55812f6(H-SECRET-1 A안) · master#f4d3dcf2(⑦ trash-harden 추가)
+- 지시: 브리프 cysr-1110-integrate(①~⑥) · master#f55812f6(H-SECRET-1 A안) · master#f4d3dcf2(⑦ trash-harden 추가) · master#c287b9bc(팩 지침 출처 표기) · master#8148264e(⑧ release-prep)
 - **push 0 · 태그 0 · 판번 올림 0(1.1.9 유지) · 앱 설치/교체 0 · 발행 0 · 팩 지침 문구 수정 0** — 전부 로컬 커밋.
 - 판정표 정본 = `docs/upstream/INTEGRATE-1.1.10.md`(이 문서는 요약 · 덩어리 1줄 판정·시험 표·팩 지침 표는 그쪽).
 
@@ -18,6 +18,8 @@
 | ⑥ | `docs/1110-naming` @ 29f02a2d(4커밋) | `8875ddca` | 1(`docs/RELEASE.md` → HEAD 유지) | 0 |
 | — | H-SECRET-1 적 해소(A안) | `349c3ce0` | — | — |
 | ⑦ | `fix/1110-trash-harden` @ 810dcbd0(9커밋) | `19af40c4` | 0 | 0 |
+| — | 팩 지침 출처 표기(master#c287b9bc) | `e22af6e3` | — | — |
+| ⑧ | `docs/1110-release-prep` @ fb3aa025(6커밋 · master#8148264e) | `76e1eda5` | 0 | 0 |
 | — | 판정표 | `6872ed07` · `f791b797` · `c95276f9` | — | — |
 
 ## 1. 판정 요지
@@ -58,7 +60,8 @@
 ## 5. 남은 것
 
 - **윈 실기 확인**: ⑦(휴지통 확인 단회 확인 · 뿌리 핸들 결박 — 이 맥에서 윈 교차 컴파일 불가 `libsqlite3-sys`) · ① winqueue(축1 휠·축2 layout_why·자리표) · ② minor ③⑥⑦ — 각 가지 HANDOFF 의 윈 절차대로.
-- master 몫: push · 판번 1.1.10 올림 · 태그 · 앱 설치/교체 · 발행.
+- master 몫(10-23 목 · master 가 따로 연다): push · 판번 1.1.10 올림 · 태그 · 앱 설치/교체 · 윈 실기(⑧ `docs/release-1110/WIN-FIELD-1.1.10.md` 확인점 45) · 발행(⑧ 체크리스트 `docs/release-1110/CHECKLIST-1.1.10-publish-2026-10-25.md`).
+- ⑧ 팩 하한 두 레인 1.1.10(fb3aa025): pack-release 하한 검증기가 태그 v1.1.10 을 빌드하므로 그 태그 전 팩 전용 릴리스는 멈춤(가지 주석대로).
 - 지침 출처 표기 집행 뒤 앱 번들은 다시 만들지 않았다(§2 앱 빌드 = 집행 전 `f791b797` 트리) — 판번 올림 때 새로 만든다.
 - 별건 후보: `test_dept_team_token` 18 적(휴면 ↔ 시험 불일치) · `test_hook_r34` 시간 상한 3.0s 여유(부하 시 0.0x~0.5s 초과).
 - 스크래치 기준선 작업트리는 정리함(`git worktree remove`).

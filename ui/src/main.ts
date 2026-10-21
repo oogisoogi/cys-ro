@@ -96,12 +96,35 @@ import {
   resetResultTitle,
   resetResultBody,
   freshStartLiveNotice,
+  TRASH_KEEP_NOTICE,
   resetGateVerdict,
   isBootGateRefusal,
   type ResetGateInput,
   type ResetPreview,
   type ResetResult,
 } from "./resetconfirm";
+import {
+  TRASH_ORDER_UNKNOWN,
+  trashAgeLines,
+  trashChips,
+  trashMismatchHint,
+  TRASH_DELETE_UNCERTAIN_TITLE,
+  TRASH_PREVIEW_EXPIRED_CODE,
+  TRASH_PREVIEW_WAIT_LINE,
+  trashTransportReceipt,
+  trashModalLines,
+  trashOrderProgressText,
+  trashOrderSeverity,
+  trashOutcomeText,
+  trashPhraseMatches,
+  trashRefusalText,
+  trashRequiredPhrase,
+  trashSelectable,
+  trashSizeText,
+  trashUnavailableText,
+  type TrashEntry,
+  type TrashOrder,
+} from "./trashconfirm";
 import { ccEffectiveZoom } from "./ccscale";
 import { clampWsbarWidth, clampWsbarFont, showsRowAge, WSBAR_W_DEFAULT, WSBAR_FONT_STEP } from "./wsbar";
 import {
@@ -209,6 +232,7 @@ import { buildAcctIndex, buildWsAccountGroups, type SeatAcctSig, type AcctIndex 
 import { planOfficeTab, repairOutcomeOf, type OfficeCtx } from "./officetab"; // 0.14.44 B5·B6 오피스 탭 안내(순수 판정)
 import { starvedNotice, starvedShouldPop, starvedKeyHasHead, starvedPopAgeMs, starvedDismissId, surfaceIdOfRef, locateStarvedSeat } from "./starvednotice"; // 0.14.43 UI2 큐 기아 경보 → 토스트·배너(순수 문구·좌석 확정)
 import { latestOnly, parseResultNotice, seatsBlockedText, SEATS_NOTE_POLL_MS } from "./updateresult"; // 1.1.8 U4 자동 갱신 결과 알림(응답 해석만 · 갱신 결정·집행 0)
+import { alertsQuiet } from "./alertquiet"; // 0.14.51 TOAST 축 — 데몬 이벤트 출처의 사람 싱크를 끄는 단일 판정(순수)
 import {
   deptPendingText,
   deptProgressId,
@@ -857,7 +881,7 @@ let ccUptimeBase = 0;
 let ccUptimeFetchedAt = 0;
 type CcTab =
   | "live" | "eff" | "skills" | "sessions" | "weekly" | "learn"
-  | "board" | "tasks" | "feed" | "alarms" | "office";
+  | "board" | "tasks" | "feed" | "alarms" | "trash" | "office";
 let ccTab: CcTab = "office";
 let ccEffWindow = "today";
 let ccSkillsWindow = "today";
@@ -1281,6 +1305,8 @@ async function refreshControlCenter() {
   // Tasks 안전망 reconcile: 이벤트 누락·부서 신규 기동을 5초 폴링으로 보정(평시는 이벤트 드리븐).
   if (ccTab === "tasks") refreshTasks();
   if (ccTab === "feed") refreshFeed();
+  // ★m3: 탭 진입(setCcTab)만으로는 목록이 멈춘다 — 다른 탭과 같은 5초 주기로 다시 읽는다.
+  if (ccTab === "trash") void refreshTrash();
   // 보드는 카탈로그 전체 재렌더 없이 최근 실행 카드만 5초 갱신(깜빡임 방지).
   if (ccTab === "board") refreshBoardRuns();
 }
@@ -1290,7 +1316,7 @@ let ccFailStreak = 0;
 function updateCcStale() {
   const f = document.getElementById("cc-footer");
   if (!f) return;
-  if (ccFailStreak >= 3) {
+  if (ccFailStreak >= 3 && !alertsQuiet("ccFooter")) { // ★TOAST: 푸터 경고 문구는 끈다(ccFailStreak 계수·재시도는 그대로)
     f.textContent = "⚠ 데몬 응답 없음 — 표시 중인 값은 마지막 성공 시점 기준(자동 재시도 중)";
     f.classList.add("stale");
   } else {
@@ -1304,6 +1330,7 @@ function updateCcStale() {
 //   그래서 alertsTracker.step 이 낸 표시 값 중 **스트립(rows)만** 그린다 — 배지 칸(hidden·text·cls·title)은 쓰지 않는다.
 // 입력은 alertsTracker.step 이 낸 표시 값(판정은 probefail.ts) — 이 함수는 DOM 에 옮기기만 한다.
 function renderAlerts(v: AlertsView | null) {
+  if (alertsQuiet("renderAlerts")) return; // ★TOAST: 경보 배지·스트립은 그리지 않는다(데이터 AlertsView 는 그대로 흐른다 — 이 함수는 DOM 에 옮기기만 한다)
   if (!v) return; // 조회 실패가 아직 상한 미만 — 직전 표시 유지(0 으로 접지 않는다)
   const strip = document.getElementById("cc-alerts");
   if (strip)
@@ -1359,6 +1386,7 @@ function setCcTab(view: CcTab) {
   document.getElementById("cc-view-tasks")!.hidden = view !== "tasks";
   document.getElementById("cc-view-feed")!.hidden = view !== "feed";
   document.getElementById("cc-view-alarms")!.hidden = view !== "alarms";
+  document.getElementById("cc-view-trash")!.hidden = view !== "trash";
   document.getElementById("cc-view-office")!.hidden = view !== "office";
   if (view !== "office") officeStopWatch(); // ★0.14.44 B5 탭을 떠나면 건강 확인을 멈춘다
   // 오피스 탭 전면 모드 — cc-body의 대시보드 폭 상한(780px)을 해제해 3D를 창 크기에 연동(cc-glance 패턴).
@@ -1385,6 +1413,7 @@ function setCcTab(view: CcTab) {
     refreshFeed();
   }
   if (view === "alarms") renderAlarmHistory();
+  if (view === "trash") void refreshTrash();
   if (view === "office") openOfficeView();
 }
 
@@ -1468,6 +1497,509 @@ function openOfficeView() {
   officeWatchSince = Date.now();
   officeRepairOutcome = "none"; // 탭을 다시 열면 처음부터(복구 실패의 잔상을 끌고 가지 않는다)
   void officeWatchTick(officeWatchGen);
+}
+
+// ─── S8-UI 휴지통 탭 (오너 명령 삭제의 화면 절반) ──────────────────────────────────────────────
+// ★이 화면은 **판정하지 않는다**: 무엇을 고를 수 있는가(`deletable`)·왜 거부됐는가(`reason_code`)·
+//   무엇이 지워졌는가(`outcome`)는 전부 데몬이 준 값이고, 문구 조립과 확인 판정은 순수 모듈
+//   trashconfirm.ts(시험으로 잠금)가 한다. 그래서 화면과 데몬의 판정이 갈라질 자리가 없다.
+// ★없는 것 셋(설계 Q1·Q2): '전부 선택'·'오래된 것 전부' 단추가 없고, 항목이 하나여도 확인 문구
+//   타이핑을 요구하며, 거부에 '그래도 지우기' 선택지가 없다.
+// ★데몬이 없거나 낡으면 **빈 휴지통으로 보이지 않는다**(R-7) — 오류를 그대로 적는다.
+let trashSelected = new Set<string>();
+let trashEntries: TrashEntry[] = [];
+let trashOrderGen = 0; // 결과 읽기의 세대 — 새 명령이 뜨면 올라가 낡은 연쇄가 스스로 끝난다
+let trashOrderTimer: number | undefined;
+let trashDeleting = false; // 두 번 누름 방지(데몬도 `busy` 로 거절한다 — 여기선 창의 중복 명령만 막는다)
+const TRASH_POLL_MS = 1000;
+const TRASH_POLL_MAX = 1200; // 20분 — 그 뒤엔 '성공'도 '실패'도 주장하지 않고 원장을 가리킨다
+// ★S8 재착륙 §1 — 미리보기 폴링(델타 상태 전이표 「500ms 타이머 폴링 시작, 스피너 표시」).
+const TRASH_PREVIEW_POLL_MS = 500;
+let trashPreviewTimer: number | undefined;
+let trashPreviewGen = 0; // 모달을 닫으면 올라가 낡은 폴링 연쇄가 스스로 끝난다
+
+function trashStopPoll() {
+  trashOrderGen++;
+  if (trashOrderTimer !== undefined) {
+    clearTimeout(trashOrderTimer);
+    trashOrderTimer = undefined;
+  }
+}
+
+// ★모달 닫기 / 취소 행 — **폴링 타이머를 취소하고 결과를 무시한다**(델타 상태 전이표).
+//   데몬에 취소를 보내지 않는다: 그런 동사가 없고, 배경 순회는 자기 상한까지 완주한 뒤
+//   빗장을 놓고 스스로 폐기된다(그 설계가 「취소가 또 하나의 막힘이 되지 않게」 한 자리다).
+function trashStopPreviewPoll() {
+  trashPreviewGen++;
+  if (trashPreviewTimer !== undefined) {
+    clearTimeout(trashPreviewTimer);
+    trashPreviewTimer = undefined;
+  }
+}
+
+function trashSetStatus(text: string) {
+  const el = document.getElementById("cc-trash-status");
+  if (el) el.textContent = text;
+}
+
+function trashSetNotice(text: string) {
+  const el = document.getElementById("cc-trash-notice");
+  if (!el) return;
+  el.textContent = text;
+  el.hidden = text === "";
+}
+
+// 오래된 것부터(설계 6.2). 스탬프를 모르는 항목은 끝에 두고, 같은 값끼리는 이름 순 — 결정론 정렬.
+function trashSortedEntries(list: TrashEntry[]): TrashEntry[] {
+  const byName = (a: TrashEntry, b: TrashEntry) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  return [...list].sort((a, b) => {
+    if (a.stamp_epoch == null && b.stamp_epoch == null) return byName(a, b);
+    if (a.stamp_epoch == null) return 1;
+    if (b.stamp_epoch == null) return -1;
+    if (a.stamp_epoch !== b.stamp_epoch) return a.stamp_epoch - b.stamp_epoch;
+    return byName(a, b);
+  });
+}
+
+function trashSelectedNames(): string[] {
+  return trashSortedEntries(trashEntries)
+    .filter((e) => trashSelected.has(e.name) && trashSelectable(e))
+    .map((e) => e.name);
+}
+
+function trashSyncDeleteButton(supported: boolean) {
+  const btn = document.getElementById("btn-cc-trash-delete") as HTMLButtonElement | null;
+  if (!btn) return;
+  const n = trashSelectedNames().length;
+  btn.disabled = trashDeleting || !supported || n === 0;
+  btn.textContent = n === 0 ? "고른 항목 삭제" : `고른 항목 삭제 (${n})`;
+}
+
+// 탭 본문 — `trash.list` 응답을 그대로 그린다(이름은 파일 이름이므로 textContent 로만 넣는다).
+function renderTrash(payload: {
+  root?: string;
+  entries?: TrashEntry[];
+  strays?: { name: string; why: string }[];
+  ledger_writable?: boolean;
+  delete_supported?: boolean;
+}) {
+  const host = document.getElementById("cc-trash-list");
+  if (!host) return;
+  const rootEl = document.getElementById("cc-trash-root");
+  if (rootEl) rootEl.textContent = payload.root ?? "";
+  const supported = payload.delete_supported !== false;
+  const notes: string[] = [];
+  if (!supported) notes.push("이 빌드에서는 삭제가 꺼져 있습니다 — 목록과 표시는 그대로 동작합니다.");
+  if (payload.ledger_writable === false)
+    notes.push("기록 파일을 쓸 수 없어 삭제 명령이 진행되지 않습니다 — 기록할 수 없는 삭제는 하지 않습니다.");
+  for (const s of payload.strays ?? []) notes.push(`${s.name}: ${s.why} — 목록에서 다루지 않습니다.`);
+  trashSetNotice(notes.join("\n"));
+
+  host.textContent = "";
+  const entries = trashSortedEntries(payload.entries ?? []);
+  if (entries.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "cc-board-note";
+    empty.textContent = "휴지통이 비어 있습니다.";
+    host.appendChild(empty);
+    trashSyncDeleteButton(supported);
+    return;
+  }
+  const nowEpoch = Date.now() / 1000;
+  for (const e of entries) {
+    const row = document.createElement("div");
+    row.className = "cc-trash-item";
+    const head = document.createElement("div");
+    head.className = "ct-head";
+    if (trashSelectable(e)) {
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = trashSelected.has(e.name);
+      cb.addEventListener("change", () => {
+        if (cb.checked) trashSelected.add(e.name);
+        else trashSelected.delete(e.name);
+        trashSyncDeleteButton(supported);
+      });
+      head.appendChild(cb);
+    } else {
+      // 고를 수 없는 항목에는 체크박스를 두지 않는다(설계 6.2) — 사유는 아래 표지가 말한다.
+      const lock = document.createElement("span");
+      lock.className = "ct-lock";
+      lock.textContent = "고를 수 없음";
+      head.appendChild(lock);
+    }
+    const name = document.createElement("span");
+    name.className = "ct-name";
+    name.textContent = e.name;
+    const size = document.createElement("span");
+    size.className = "ct-size";
+    size.textContent = trashSizeText(e.size);
+    head.append(name, size);
+    row.appendChild(head);
+
+    const chips = trashChips(e);
+    if (chips.length) {
+      const chipBox = document.createElement("div");
+      chipBox.className = "ct-chips";
+      for (const c of chips) {
+        const chip = document.createElement("span");
+        chip.className = "cc-chip";
+        chip.textContent = c;
+        chipBox.appendChild(chip);
+      }
+      row.appendChild(chipBox);
+    }
+    for (const line of trashAgeLines(e, nowEpoch)) {
+      const age = document.createElement("div");
+      age.className = "ct-age";
+      age.textContent = line;
+      row.appendChild(age);
+    }
+    const kids = document.createElement("div");
+    kids.className = "ct-kids";
+    const shown = e.children_depth1.slice(0, 50);
+    kids.textContent = `안에 있는 것(첫 단계 ${shown.length}/${e.children_total}): ${shown.join(", ") || "(없음)"}`;
+    row.appendChild(kids);
+    host.appendChild(row);
+  }
+  trashSyncDeleteButton(supported);
+}
+
+function renderTrashUnavailable(text: string) {
+  const host = document.getElementById("cc-trash-list");
+  if (host) host.textContent = "";
+  const rootEl = document.getElementById("cc-trash-root");
+  if (rootEl) rootEl.textContent = "";
+  trashSetNotice(text);
+  trashSyncDeleteButton(false);
+}
+
+// 5초 주기(다른 탭과 같은 타이머)와 탭 진입에서 부른다. ★실패를 '빈 휴지통'으로 접지 않는다.
+async function refreshTrash() {
+  if (!document.getElementById("cc-trash-list")) return;
+  let payload: Parameters<typeof renderTrash>[0];
+  try {
+    payload = (await invoke("trash_list")) as Parameters<typeof renderTrash>[0];
+  } catch (e) {
+    trashEntries = [];
+    trashSelected.clear();
+    renderTrashUnavailable(trashUnavailableText(e));
+    return;
+  }
+  trashEntries = payload?.entries ?? [];
+  // 사라진 항목의 선택은 버린다 — 없는 이름을 미리보기로 보내지 않는다.
+  for (const n of [...trashSelected]) if (!trashEntries.some((e) => e.name === n)) trashSelected.delete(n);
+  renderTrash(payload ?? {});
+}
+
+// 확인 모달 — factoryResetConfirmModal 규약 계승(textContent 주입·자동교정 차단·불일치 사유 표시).
+// ★기본 포커스는 **취소**다(설계 6.2 3항): Enter 한 번이 삭제로 이어지는 길을 두지 않는다.
+// ★`confirm()` 은 이 WebView 에서 억제되므로 DOM 모달만 쓴다(설계 6.3).
+type TrashPreview = {
+  confirm_id?: string | null;
+  digest?: string | null;
+  entries?: { name: string; nodes: number; bytes: number }[];
+  refused?: { name: string; reason_code: string; boundary: string | null; detail: string }[];
+};
+
+// ★미리보기 + 확인 모달 — **모달은 기다린다. 그러나 막는 방식으로 기다리지 않는다**(2단계 심사 판정문).
+//   열리는 즉시 스피너와 진행 수치를 보이고, `trash_preview_start` 로 잡을 띄운 뒤 500ms 타이머로
+//   `trash_preview_poll` 을 돈다. 타이핑은 **ready 에서만** 열린다(대기 중엔 입력이 비활성이다).
+//   상태 전이표 그대로다(`DESIGN-S8-DELTA-RELAND-1-R2.md:67`~`:74`):
+//     running → 진행 갱신 · ready → 요약 + 타이핑 활성 · failed → 사유 + 재시도 안내 ·
+//     expired → 만료 고지 + 「다시 미리보기」 · job_unknown(데몬 재시작) → 새 미리보기 요구 ·
+//     모달 닫기 → 폴링 타이머 취소 · 중복 요청 → `preview_busy`(기다리지 않고 거부).
+//   ★사유 문구는 **전부 순수 모듈의 표**에서 온다 — 화면이 사유를 다시 지어내지 않는다.
+function trashConfirmModal(names: string[]): Promise<{ ok: boolean; prev: TrashPreview | null }> {
+  return new Promise((resolve) => {
+    const ov = document.createElement("div");
+    ov.className = "modal-overlay";
+    ov.innerHTML =
+      `<div class="modal"><h3></h3>` +
+      `<div class="ct-wait"><span class="dept-spinner"></span><span class="ct-wait-text"></span></div>` +
+      `<p class="modal-label" style="white-space:pre-wrap;max-height:46vh;overflow-y:auto"></p>` +
+      `<input class="modal-input" type="text" disabled />` +
+      `<div class="modal-hint" aria-live="polite"></div>` +
+      `<div class="modal-btns"><button class="modal-no">취소</button>` +
+      `<button class="modal-yes" disabled>삭제</button></div></div>`;
+    (ov.querySelector("h3") as HTMLElement).textContent = "휴지통에서 삭제 — 되돌릴 수 없습니다";
+    const waitRow = ov.querySelector(".ct-wait") as HTMLElement;
+    const waitText = ov.querySelector(".ct-wait-text") as HTMLElement;
+    const label = ov.querySelector(".modal-label") as HTMLElement;
+    const inp = ov.querySelector(".modal-input") as HTMLInputElement;
+    const yes = ov.querySelector(".modal-yes") as HTMLButtonElement;
+    const no = ov.querySelector(".modal-no") as HTMLButtonElement;
+    const hint = ov.querySelector(".modal-hint") as HTMLElement;
+    for (const [k, v] of PURGE_INPUT_GUARDS) inp.setAttribute(k, v);
+    label.textContent = TRASH_PREVIEW_WAIT_LINE;
+    waitText.textContent = "확인하는 중…";
+    const gen = ++trashPreviewGen;
+    const done = (ok: boolean, prev: TrashPreview | null) => {
+      trashStopPreviewPoll();
+      ov.remove();
+      resolve({ ok, prev });
+    };
+    // 대기 표시를 끝낸다(스피너는 **끝날 때만** 사라진다 — 끝나지 않았는데 사라지면 멈춘 것처럼 보인다).
+    const stopWaiting = () => {
+      waitRow.hidden = true;
+    };
+    // 거부·만료·모르는 잡 — 사유는 순수 모듈의 표에서, 행동 안내는 그 표의 `action` 에서 온다.
+    const refuse = (code: string, detail: string) => {
+      const r = trashRefusalText(code);
+      stopWaiting();
+      const again =
+        r.action === "preview_again"
+          ? "다시 미리보기를 하세요 — 아무 것도 지우지 않았습니다."
+          : "아무 것도 지우지 않았습니다.";
+      label.textContent = detail ? `${r.text}\n${again}\n\n(${detail})` : `${r.text}\n${again}`;
+      inp.disabled = true;
+      yes.disabled = true;
+      trashSetStatus(r.text);
+      stickyToast("trash-preview", "watchdog", "휴지통 — 확인하지 못했습니다", `${r.text}\n${detail}`);
+    };
+    // ready — 데몬이 **확인한 항목만** 보여주고, 그때 비로소 타이핑을 연다.
+    const ready = (prev: TrashPreview) => {
+      stopWaiting();
+      dismissToast("trash-preview");
+      const shown = prev.entries ?? [];
+      const refused = prev.refused ?? [];
+      if (!prev.confirm_id || !prev.digest || shown.length === 0) {
+        // 하나도 확인되지 않았다 — 사유만 적고 타이핑을 열지 않는다(모달에 '그래도 지우기'가 없다).
+        const why = refused.map((r) => `${r.name} — ${trashRefusalText(r.reason_code).text}`).join("\n");
+        label.textContent = why || "확인된 항목이 없습니다 — 지우지 않았습니다.";
+        inp.disabled = true;
+        yes.disabled = true;
+        trashSetStatus(why || "확인된 항목이 없습니다 — 지우지 않았습니다.");
+        if (why) stickyToast("trash-preview", "watchdog", "휴지통 — 지우지 않았습니다", why);
+        return;
+      }
+      const confirmNames = shown.map((s) => s.name);
+      const modalEntries: TrashEntry[] = confirmNames.map((n) => {
+        const base = trashEntries.find((x) => x.name === n);
+        const m = shown.find((s) => s.name === n)!;
+        return {
+          ...(base ?? {
+            name: n,
+            interrupted_deleting: false,
+            deletable: true,
+            root_mtime_age_secs: 0,
+            stamp_epoch: null,
+            old_by_stamp: false,
+            children_depth1: [],
+            children_total: 0,
+            sole_copy_advisory: false,
+            producer_chip: "",
+            size: { state: "pending" },
+          }),
+          size: { state: "measured", value: { bytes: m.bytes, nodes: m.nodes } },
+        };
+      });
+      const lines = [...trashModalLines(modalEntries, Date.now() / 1000)];
+      if (refused.length) {
+        lines.push("");
+        lines.push("이번에 지우지 않는 것(데몬이 거부했습니다):");
+        for (const r of refused) lines.push(`• ${r.name} — ${trashRefusalText(r.reason_code).text}`);
+      }
+      lines.push("");
+      lines.push(`계속하려면 아래에 그대로 입력하세요: ${trashRequiredPhrase(confirmNames)}`);
+      label.textContent = lines.join("\n");
+      inp.disabled = false;
+      inp.placeholder = trashRequiredPhrase(confirmNames);
+      inp.addEventListener("input", () => {
+        yes.disabled = !trashPhraseMatches(inp.value, confirmNames);
+        hint.textContent = trashMismatchHint(inp.value, confirmNames);
+      });
+      yes.addEventListener("click", () => {
+        if (!yes.disabled) done(true, prev);
+      });
+      trashSetStatus("확인 문구를 입력하면 삭제합니다.");
+    };
+    // 폴링 연쇄 — 새 setInterval 0(setTimeout 연쇄 · 탭 틱 수 핀 불변).
+    const poll = async (jobId: string) => {
+      if (gen !== trashPreviewGen) return;
+      let st: {
+        status?: string;
+        progress?: { nodes: number; elapsed_secs: number };
+        result?: TrashPreview;
+        refusal?: { reason_code?: string; detail?: string };
+      };
+      try {
+        st = (await invoke("trash_preview_poll", { jobId })) as typeof st;
+      } catch (e) {
+        // 데몬이 다시 떴거나 잡이 사라졌다 — 새 미리보기를 요구한다(옛 결과를 짜맞추지 않는다).
+        if (gen !== trashPreviewGen) return;
+        refuse(String(e).split(":")[0], String(e));
+        return;
+      }
+      if (gen !== trashPreviewGen) return;
+      if (st.status === "running") {
+        const pg = st.progress;
+        waitText.textContent = pg
+          ? `확인하는 중… 노드 ${pg.nodes.toLocaleString()} · ${pg.elapsed_secs}초`
+          : "확인하는 중…";
+        trashPreviewTimer = setTimeout(() => void poll(jobId), TRASH_PREVIEW_POLL_MS) as unknown as number;
+        return;
+      }
+      if (st.status === "ready" && st.result) {
+        ready(st.result);
+        return;
+      }
+      if (st.status === "expired") {
+        refuse(TRASH_PREVIEW_EXPIRED_CODE, "");
+        return;
+      }
+      refuse(st.refusal?.reason_code ?? "unknown", st.refusal?.detail ?? "");
+    };
+    const start = async () => {
+      let job: { job_id?: string };
+      try {
+        job = (await invoke("trash_preview_start", { names })) as { job_id?: string };
+      } catch (e) {
+        // 단일 플라이트 거부(`preview_busy`)도 이 길로 온다 — 기다리지 않고 사유를 적는다.
+        if (gen !== trashPreviewGen) return;
+        refuse(String(e).split(":")[0], String(e));
+        return;
+      }
+      if (gen !== trashPreviewGen) return;
+      if (!job?.job_id) {
+        refuse("unknown", "데몬이 job_id 를 주지 않았습니다");
+        return;
+      }
+      void poll(job.job_id);
+    };
+    no.addEventListener("click", () => done(false, null));
+    ov.addEventListener("click", (ev) => {
+      if (ev.target === ov) done(false, null);
+    });
+    document.body.appendChild(ov);
+    setTimeout(() => no.focus(), 50);
+    void start();
+  });
+}
+
+function renderTrashResult(order: TrashOrder, total: number) {
+  const box = document.getElementById("cc-trash-result");
+  trashSetStatus(trashOrderProgressText(order, total));
+  if (!box) return;
+  box.textContent = "";
+  for (const e of order.per_entry) {
+    const t = trashOutcomeText(e);
+    const row = document.createElement("div");
+    row.className = `ct-outcome ${t.severity}`;
+    row.textContent = t.text;
+    box.appendChild(row);
+  }
+}
+
+// 결과 읽기 — 새 setInterval 을 만들지 않는다(setTimeout 연쇄 · 탭 틱 수 핀 불변).
+// ★탭을 떠나도 멈추지 않는다: 실패를 조용히 흘려보내지 않으려면 결과를 끝까지 읽어야 한다.
+async function trashPollOrder(orderId: string, total: number, gen: number, polls: number) {
+  if (gen !== trashOrderGen) return;
+  let order: TrashOrder | null = null;
+  try {
+    order = (await invoke("trash_order", { orderId })) as TrashOrder;
+  } catch (e) {
+    // 데몬이 다시 뜨면 order 를 잊는다 — 그때는 원장이 정본이라고 말한다(성공 주장 금지).
+    if (gen !== trashOrderGen) return;
+    trashDeleting = false;
+    trashSetStatus(TRASH_ORDER_UNKNOWN);
+    stickyToast("trash-order", "watchdog", TRASH_DELETE_UNCERTAIN_TITLE, `${TRASH_ORDER_UNKNOWN} (${e})`);
+    void refreshTrash();
+    return;
+  }
+  if (gen !== trashOrderGen) return;
+  renderTrashResult(order, total);
+  if (order.finished == null) {
+    if (polls >= TRASH_POLL_MAX) {
+      trashDeleting = false;
+      trashSetStatus(TRASH_ORDER_UNKNOWN);
+      stickyToast("trash-order", "watchdog", "휴지통 삭제 — 아직 끝나지 않았습니다", TRASH_ORDER_UNKNOWN);
+      return;
+    }
+    trashOrderTimer = setTimeout(
+      () => void trashPollOrder(orderId, total, gen, polls + 1),
+      TRASH_POLL_MS,
+    ) as unknown as number;
+    return;
+  }
+  trashDeleting = false;
+  const severity = trashOrderSeverity(order);
+  const detail = order.per_entry.map((e) => trashOutcomeText(e).text).join("\n");
+  // 실패는 소리내어(sticky) — 성공은 사라지는 알림으로 충분하다(설계 6.2 4항).
+  if (severity === "ok") {
+    dismissToast("trash-order");
+    toast("feed", "휴지통 삭제 완료", detail);
+  } else {
+    stickyToast(
+      "trash-order",
+      "watchdog",
+      severity === "fail" ? "휴지통 삭제 — 끝나지 않은 것이 있습니다" : "휴지통 삭제 — 지우지 않은 것이 있습니다",
+      detail,
+    );
+  }
+  trashSelected.clear();
+  await refreshTrash();
+}
+
+// 삭제 흐름: 고른 이름만 미리보기 → 모달(타이핑 확인) → 명령 → 결과 읽기.
+// 데몬이 거부한 이름은 **조용히 빠지지 않고** 모달과 상태줄에 사유가 그대로 적힌다.
+async function trashDeleteFlow() {
+  if (trashDeleting) return;
+  const names = trashSelectedNames();
+  if (names.length === 0) return;
+  trashDeleting = true;
+  trashSyncDeleteButton(true);
+  // 무피드백이면 재클릭을 부른다 — 모달이 열리기 **전에** 상태줄이 먼저 말한다(12.U ③).
+  trashSetStatus("고른 항목을 확인하는 중입니다(크기를 재고 있습니다)…");
+  // ★미리보기는 **모달 안에서** 기다린다(비동기 잡 + 500ms 폴링). 이 `await` 가 기다리는 것은
+  //   사람의 판정이고, 그 동안 어떤 RPC 도 파일 순회에 묶여 있지 않다(델타 §1.4 큐 쌍 ⒤).
+  const { ok, prev } = await trashConfirmModal(names);
+  if (!ok || !prev?.confirm_id || !prev?.digest) {
+    trashDeleting = false;
+    // 거부·만료·확인 0건의 사유는 **모달과 상태줄에 이미** 적혔다 — 취소만 여기서 말한다.
+    if (prev === null) trashSetStatus("취소했습니다 — 아무 것도 지우지 않았습니다.");
+    trashSyncDeleteButton(true);
+    await refreshTrash();
+    return;
+  }
+  const confirmNames = (prev.entries ?? []).map((e) => e.name);
+  trashSetStatus("삭제 명령을 보냈습니다…");
+  let ordered: { order_id?: string };
+  try {
+    ordered = (await invoke("trash_delete", {
+      confirmId: prev.confirm_id,
+      names: confirmNames,
+      digest: prev.digest,
+    })) as { order_id?: string };
+  } catch (e) {
+    // ★MJR-4(델타 §2.2) — 전송 실패는 **두 부류**다. 판정은 순수 모듈이 하고 화면은 그대로 옮긴다.
+    //   Class 1(확정적 비실행)만 「지우지 않았습니다」라고 말할 수 있다.
+    const rcpt = trashTransportReceipt(String(e).split(":")[0], String(e));
+    trashSetStatus(rcpt.status);
+    stickyToast("trash-order", "watchdog", rcpt.title, rcpt.body);
+    if (rcpt.resend === "blocked") {
+      // ★맹목 재전송 차단(화해 프로토콜) — `trashDeleting` 을 **풀지 않는다**: 그 깃발이
+      //   `trashSyncDeleteButton` 에서 단추를 계속 잠그므로 주기 갱신이 와도 다시 열리지 않는다.
+      //   원장(DELETE-LEDGER.jsonl)을 대조하는 것이 먼저다 — 그 말은 상태줄이 이미 하고 있다.
+      trashSyncDeleteButton(true);
+      return;
+    }
+    trashDeleting = false;
+    trashSyncDeleteButton(true);
+    await refreshTrash();
+    return;
+  }
+  if (!ordered?.order_id) {
+    trashDeleting = false;
+    trashSetStatus(TRASH_ORDER_UNKNOWN);
+    // ★제목의 정의처는 하나다(순수 모듈) — 응답은 왔지만 order_id 가 없는 이 자리도 「알 수 없다」다.
+    stickyToast("trash-order", "watchdog", TRASH_DELETE_UNCERTAIN_TITLE, TRASH_ORDER_UNKNOWN);
+    return;
+  }
+  trashStopPoll();
+  const box = document.getElementById("cc-trash-result");
+  if (box) box.textContent = "";
+  void trashPollOrder(ordered.order_id, confirmNames.length, trashOrderGen, 0);
 }
 
 // D5: 스킬 버튼 보드 — 카탈로그 큐레이션 렌더 + 일회용 워커 실행 + 산출물 회수(터미널 입력 0회).
@@ -1667,14 +2199,16 @@ function renderTasks(fleet: any) {
       const surfaces: any[] = (d.surfaces ?? []).slice();
       surfaces.sort((a, b) => (a.surface_id ?? 0) - (b.surface_id ?? 0));
       const working = surfaces.filter((s) => nodeWorking(s.status, s.idle_secs, s.exited)).length; // stale 자기보고 불신 — 판정=appearance.ts 단일 출처
-      const deadBadge = d.error
+      const deadBadge = d.error && !alertsQuiet("ccFailBadge")
         ? `<span class="cc-fail-badge crit">⚠ ${d.error === "timeout" ? "응답없음" : "도달불가"}</span>`
         : "";
       const head =
         `<div class="cc-tasks-dept-h"><span class="cc-tasks-dept-name">${ccEsc(d.display_name ?? d.name ?? "")}</span>` +
         `<span class="cc-tasks-dept-meta">노드 ${surfaces.length} · 작업중 ${working}</span>${deadBadge}</div>`;
       const rows = d.error
-        ? `<div class="cc-empty">${d.error === "timeout" ? "부서 데몬 응답 없음(2초 초과)" : "부서 데몬 연결 실패 — 다운/기동 중"}</div>`
+        ? alertsQuiet("ccTaskError") // ★TOAST: 부서 데몬 오류 안내 행은 그리지 않는다(d.error 데이터·재시도는 그대로)
+          ? ""
+          : `<div class="cc-empty">${d.error === "timeout" ? "부서 데몬 응답 없음(2초 초과)" : "부서 데몬 연결 실패 — 다운/기동 중"}</div>`
         : surfaces.length === 0
           ? `<div class="cc-empty">노드 없음</div>`
           : surfaces.map((s) => taskRow(s, deptKey)).join("");
@@ -5094,6 +5628,7 @@ async function refreshSidebarStatus() {
 
 // 승인 대기 건수 배지 — 상단 Control Center 버튼 + 편입된 '승인 Feed' 탭 둘 다 갱신.
 function updatePendingBadges(n: number) {
+  if (alertsQuiet("pendingBadges")) return; // ★TOAST: Control Center 버튼·Feed 탭의 승인 대기 건수 배지는 경보 표시라 끈다(카드·버튼 면은 남는다)
   for (const id of ["cc-pending-badge", "cc-feed-tabbadge"]) {
     const b = document.getElementById(id);
     if (!b) continue;
@@ -5210,7 +5745,7 @@ function buildTab(ws: Workspace): HTMLElement {
     tab.setAttribute("aria-busy", "true");
   }
   // 승인 대기 배지(B3): 중복 표시 방지 위해 활성 ws 행에만 1개 노출.
-  if (pendingApprovals > 0 && workspaces.indexOf(ws) === activeWs) {
+  if (pendingApprovals > 0 && workspaces.indexOf(ws) === activeWs && !alertsQuiet("sidebarBadge")) {
     const badge = document.createElement("span");
     badge.className = "ws-approve-badge";
     badge.textContent = `⚠${pendingApprovals}`;
@@ -5236,11 +5771,16 @@ function buildTab(ws: Workspace): HTMLElement {
     );
     const dot = document.createElement("span");
     dot.className = "ws-dot " + sum.dot;
-    sub.appendChild(dot);
-    if (sum.title) sub.title = sum.title;
+    // ★TOAST: 상태 점·사망/CTX/유휴 비트·심각도 색은 자발적 경보 표시라 끈다(판정 sum 은 그대로 계산 — 데이터는 흐른다). 탭에는 pane 수·대표 제목만 남는다.
+    const wsQuiet = alertsQuiet("wsDot");
+    if (!wsQuiet) sub.appendChild(dot);
+    if (sum.title && !wsQuiet) sub.title = sum.title;
     const txt = document.createElement("span");
-    txt.textContent = wsSubBits(sum, firstTitle).join(" · ");
-    if (sum.worst >= 80) txt.className = "sev-crit";
+    const subBits = wsSubBits(sum, firstTitle);
+    txt.textContent = (wsQuiet ? subBits.slice(0, firstTitle ? 2 : 1) : subBits).join(" · ");
+    if (wsQuiet) {
+      /* 심각도 색 없음 */
+    } else if (sum.worst >= 80) txt.className = "sev-crit";
     else if (sum.worst >= 60) txt.className = "sev-warn";
     sub.appendChild(txt);
   }
@@ -8602,7 +9142,8 @@ function fieldsModal(title: string, label: string, fields: any[]): Promise<strin
 }
 
 // ★기능2: 부서 완전 폐역 확인 — 부서명 타이핑 일치 시에만 "완전 삭제" 활성. 크기·최종 mtime·CEO 강등·
-// 격리 복구를 정직 고지한다(비가역처럼 보이나 실제는 격리 후 약 14일 소거 — 오도 금지). teardown-only 인
+// 격리 복구를 정직 고지한다(비가역처럼 보이나 실제는 격리 보관이고, ★S8 이후 **스스로 소거되지 않는다**
+// — 오도 금지: 자동 소거를 약속하면 그것이 거짓이 된다). teardown-only 인
 // 기존 탭 삭제(2-click 대체 close)와 별개 경로. resolve(true)=진행.
 function purgeConfirmModal(
   name: string,
@@ -8619,7 +9160,7 @@ function purgeConfirmModal(
       // 현실에서 "작업물 격리" 고지는 홈 격리 약속이 되는 오도였다. GUI는 --purge-workdir 미요청.
       "삭제되는 것: 부서 데몬 종료 + 대화기억·pack 격리 + 재시작 부활 영구 차단(묘비 존치). 작업 폴더(cwd)는 보존됩니다.",
       info.isLast ? "⚠ 이 부서가 마지막입니다 — 삭제 시 CEO가 표준 master로 강등됩니다." : "",
-      "복구: 즉시 삭제가 아니라 ~/.local/state/cys-trash/ 로 격리 보관되어 되돌릴 수 있고, 약 14일 후 자동 소거됩니다.",
+      "복구: 즉시 삭제가 아니라 ~/.local/state/cys-trash/ 로 격리 보관되어 되돌릴 수 있습니다. " + TRASH_KEEP_NOTICE,
       `계속하려면 아래에 부서명 "${name}" 을 정확히 입력하세요.`,
     ]
       .filter(Boolean)
@@ -9301,6 +9842,24 @@ async function osBanner(title: string, body: string) {
   }
 }
 
+// ---------- ★TOAST 축(오너 2026-10-15 「전부 보이지 않게」): 데몬 이벤트가 밀어 올린 사람 싱크를 끈다 ----------
+// 판별자는 **출처**다(부서장 판정): 사용자가 아무것도 하지 않았는데 데몬 이벤트(`onDaemonEvent`)가 띄운 박스·배너·화면 전환만 끈다.
+// 사용자 행동의 응답(전송 실패·전출 실패·복사됨)과 업데이트 경로·앱 백엔드 알림(안전모드·번들 손상 등)은 toast/stickyToast/osBanner 를 **직접** 불러 그대로 남는다.
+// ⛔toast()/stickyToast()/osBanner() 첫 줄에 통짜 가드를 두지 않는다(출처를 구별할 수 없다). ⛔onDaemonEvent 에서 early return 하지 않는다(AT-10 — 비표시 부작용이 함께 죽는다).
+// 출처 = 호출 경로: onDaemonEvent 본문은 이 세 래퍼를 부르고, 직접 호출은 **넷뿐**이다(시험 toastaxis 가 소스에서 센다) —
+//   approval.stalled 블록의 toast/osBanner/openFeed 셋(부서장 판정 R5 — 보류 = 복원) + feed.item.created 분기의 osBanner 하나(R2 — `--wait` 대기 항목 중 auto_route 아닌 것의 생성 시점 알림. R6 의 approval.request 직접 배너는 범주 오류라 되돌렸다).
+function daemonToast(...a: Parameters<typeof toast>): void {
+  if (alertsQuiet("toast")) return;
+  toast(...a);
+}
+function daemonStickyToast(...a: Parameters<typeof stickyToast>): void {
+  if (alertsQuiet("stickyToast")) return;
+  stickyToast(...a);
+}
+function daemonOsBanner(title: string, body: string): void {
+  if (alertsQuiet("osBanner")) return;
+  void osBanner(title, body);
+}
 /// ★0.14.43(UI2): 그 좌석의 대기·막힘 토스트를 거두고 구간을 끝낸다(없으면 무동작) — id 의 모양은 starvednotice.ts 한 곳이 정한다.
 function dismissStarvedToast(socketSlug: unknown, surfaceId: unknown): void {
   const id = starvedDismissId(socketSlug, surfaceId);
@@ -9354,8 +9913,8 @@ function onDaemonEvent(event: Record<string, unknown>) {
   // --- name-우선 전용 처리(B1) : name 매칭이 category 폴백보다 우선 ---
   if (name === "approval.request") {
     const c = approvalRequestCopy(no, ap);
-    toast("approval", c.title, c.body);
-    osBanner(c.title, c.body); // B4 OS 배너(고우선)
+    daemonToast("approval", c.title, c.body);
+    daemonOsBanner(c.title, c.body); // B4 OS 배너(고우선)
     // 자동 화면전환 없음 — 페인 승인 프롬프트는 master 즉각 자동승인 관할.
     // 토스트·OS 배너·사이드바 배지로만 알린다(feed.item.created의 유예 경로와 정합).
     refreshFeed();
@@ -9376,25 +9935,25 @@ function onDaemonEvent(event: Record<string, unknown>) {
   }
   if (name === "context.threshold") {
     const c = contextThresholdCopy(no, ap); // 데몬 action 칸(내부 지침 문구)은 싣지 않는다
-    toast("threshold", c.title, c.body);
+    daemonToast("threshold", c.title, c.body);
     // ★WP6-2 — 결측을 0 으로 접지 않는다. 이 페이로드는 데몬 에지 게이트(handlers.rs maybe_fire_context_threshold)가
     //   임계 교차를 이미 판정한 **단일값**(+source)이라 usage/status 축이 없어 pickCtx 대상이 아니다.
     //   숫자가 아니면 배너를 안 띄운다(판정 불가 = 무발화 · "0%" 위장 없음). 80 임계는 불변.
     const evPct = payload.context_pct;
-    if (typeof evPct === "number" && evPct >= 80) osBanner(c.title, c.body); // B4 OS 배너(≥80만)
+    if (typeof evPct === "number" && evPct >= 80) daemonOsBanner(c.title, c.body); // B4 OS 배너(≥80만)
     refreshSidebarStatus();
     return;
   }
   if (name === "restore.retrying") {
     // ★v115-restore(A4): ↻ 뒤 master 자리 공백(자동 재시도 대기) — 조용히 비어 있지 않게 알린다.
-    stickyToast(`restore-retrying:${event.socket_slug ?? ""}`, "health", "⏳ 자비스 자리를 다시 세우는 중", String(payload.message ?? ""));
+    daemonStickyToast(`restore-retrying:${event.socket_slug ?? ""}`, "health", "⏳ 자비스 자리를 다시 세우는 중", String(payload.message ?? ""));
     return;
   }
   if (name === "role.takeover") {
     // ★v115-restore(A3): 좌석 승계 고지는 셸 입력 주입을 끊고 화면 출력으로 바꿨다 — 그 좌석을 보고 있지 않은
     //   사용자도 알게 GUI 에서도 한 번 알린다(역할별 안정 id · 적층 없음).
     const c = roleTakeoverCopy(shown(seatNo(payload.prev_surface ?? sid, null)), ap);
-    stickyToast(`role-takeover:${event.socket_slug ?? ""}:${String(payload.role ?? "")}`, "health", c.title, c.body);
+    daemonStickyToast(`role-takeover:${event.socket_slug ?? ""}:${String(payload.role ?? "")}`, "health", c.title, c.body);
     return;
   }
   if (name === "seat.folder_denied") {
@@ -9402,12 +9961,12 @@ function onDaemonEvent(event: Record<string, unknown>) {
     //   claude 가 내는 「file descriptors」 오류 문구는 원인이 아니다 — 원인 문장으로 대신 알린다.
     const f = payload.folder === "Documents" ? "문서" : payload.folder === "Downloads" ? "다운로드" : "데스크탑";
     const c = seatFolderDeniedCopy(no, ap, f);
-    stickyToast(`perm-seat-${String(payload.folder ?? "folder")}`, "health", c.title, c.body);
+    daemonStickyToast(`perm-seat-${String(payload.folder ?? "folder")}`, "health", c.title, c.body);
     return;
   }
   if (name === "pane.idle") {
     const c = paneIdleCopy(no, ap);
-    toast("idle", c.title, c.body);
+    daemonToast("idle", c.title, c.body);
     refreshSidebarStatus();
     return;
   }
@@ -9425,14 +9984,14 @@ function onDaemonEvent(event: Record<string, unknown>) {
     //      이력 링버퍼를 잠식하지 않는다(pushAlarm coalesce).
     const role = String(payload.role ?? "master");
     const c = masterIdleCopy(no, role, ap);
-    stickyToast(`master-idle:${event.socket_slug ?? ""}:${role}`, "idle", c.title, c.body);
+    daemonStickyToast(`master-idle:${event.socket_slug ?? ""}:${role}`, "idle", c.title, c.body);
     refreshSidebarStatus();
     return;
   }
   if (name === "agent.exited") {
     const c = agentExitedCopy(no, ap);
-    toast("alert", c.title, c.body);
-    osBanner(c.title, c.body); // B4 OS 배너(고우선)
+    daemonToast("alert", c.title, c.body);
+    daemonOsBanner(c.title, c.body); // B4 OS 배너(고우선)
     refreshSidebarStatus();
     // ★정합기 리셋 훅(스펙 D4 ②): 앱 즉사(SIGKILL — 복원 시퀀스 없음)로 유출·잔존한 트래킹을
     // 소등한다. 조준은 socket_slug **실해석 성공** pane 만(:5194 선례 — slug 부재·미해석 시
@@ -9461,8 +10020,8 @@ function onDaemonEvent(event: Record<string, unknown>) {
     // 폴백이 양 버전을 모두 흡수한다(governance.rs). reason 은 verbatim 표시라 신규값
     // ("shell process dead"/"agent process dead" 등)도 자연 수용 — 핸들러 무변경(W3-B).
     const c = deadmanCopy(no, ap); // 축(axis) → 사람 말 · 데몬 사유 원문은 「자세히」 안쪽
-    toast("alert", c.title, c.body, undefined, c.raw);
-    osBanner(c.title, c.body); // B4 OS 배너(고우선)
+    daemonToast("alert", c.title, c.body, undefined, c.raw);
+    daemonOsBanner(c.title, c.body); // B4 OS 배너(고우선)
     return;
   }
   if (name === "queue.starved") {
@@ -9475,18 +10034,20 @@ function onDaemonEvent(event: Record<string, unknown>) {
     //   ④ **자동 전환·포커스 강탈 없음** — 토스트를 눌렀을 때만 그 좌석으로 간다(다른 탭이면 탭 전환 포함 · 못 찾으면 무동작 · focusStarvedSeat).
     //   ⑤ 끝의 return — 폴백 레인(category)을 타지 않는다(이중 표시 금지).
     const starved = starvedNotice(payload, event.socket_slug);
-    if (starved) {
+    // ★v0.14.51 편입(master#1a52b068 A안): 원작자 S5 의 제거는 받지 않고(우리 경보 유지 · X1 배치 보존) 표시 끄기는 TOAST 축 스위치가 맡는다 —
+    //   박스·배너는 데몬 래퍼, 알람 이력(recordAlarm 직접)은 이 블록 가드 `starvedNotice` 가 덮는다(ALERTS_QUIET=true 면 이 블록이 아무것도 그리지 않는다).
+    if (starved && !alertsQuiet("starvedNotice")) {
       const seat = surfaceIdOfRef(payload.surface_ref);
       const slug = typeof event.socket_slug === "string" ? event.socket_slug : "";
       const lastPopAt = starvedLastPopAt.get(starved.id);
       if (starvedShouldPop(starvedLastKey.get(starved.id), starved, lastPopAt === undefined ? undefined : starvedPopAgeMs(Date.now(), lastPopAt.wall, performance.now(), lastPopAt.mono))) {
-        stickyToast(starved.id, starved.level, starved.title, starved.detail, seat === null ? undefined : () => void focusStarvedSeat(slug, seat));
+        daemonStickyToast(starved.id, starved.level, starved.title, starved.detail, seat === null ? undefined : () => void focusStarvedSeat(slug, seat));
         starvedLastPopAt.set(starved.id, { wall: Date.now(), mono: performance.now() });
       } else {
         recordAlarm(starved.level, starved.title, starved.detail, starved.id);
       }
       starvedLastKey.set(starved.id, starved.stateKey);
-      if (starved.humanNeeded) osBanner(starved.title, starved.detail);
+      if (starved.humanNeeded) daemonOsBanner(starved.title, starved.detail);
     }
     return;
   }
@@ -9508,23 +10069,26 @@ function onDaemonEvent(event: Record<string, unknown>) {
     return;
   }
   if (name === "osc.notify") {
-    toast("osc", `🔔 ${payload.title ?? "알림"}`, `surface:${sid} — ${String(payload.body ?? "").slice(0, 120)}`);
+    daemonToast("osc", `🔔 ${payload.title ?? "알림"}`, `surface:${sid} — ${String(payload.body ?? "").slice(0, 120)}`);
     return;
   }
 
   if (category === "health") {
-    toast("health", `⚠ ${name}`, `surface:${sid} rule=${payload.rule} — ${String(payload.line ?? "").slice(0, 120)}`);
+    daemonToast("health", `⚠ ${name}`, `surface:${sid} rule=${payload.rule} — ${String(payload.line ?? "").slice(0, 120)}`);
   } else if (category === "watchdog") {
     const detail =
       name === "watchdog.duplicate_procs"
         ? `중복 서버 ${payload.count}개: ${String(payload.cmdline ?? "").slice(0, 80)}`
         : JSON.stringify(payload).slice(0, 120);
-    toast("watchdog", `🐕 ${name}`, detail);
+    daemonToast("watchdog", `🐕 ${name}`, detail);
   } else if (category === "feed") {
     if (name === "feed.item.created") {
       // ★U10(0.14.41): kind가 정보성(각성 훅·부트 실패·편성·CEO 알림 등)이면 'ℹ 알림', 아니면 '📥 승인 요청'.
       //   (1.1.8) 원작자 U16 팀 제안 카드 안내 분기는 받지 않았다(우리 말로 부서 만들기 유지).
-      toast("feed", feedCreatedToastTitle(payload.kind), String(payload.title ?? ""));
+      daemonToast("feed", feedCreatedToastTitle(payload.kind), String(payload.title ?? ""));
+      // ★TOAST R2(codex MAJOR-1): `cys feed push --wait` 요청자가 기다리는 항목 중 **기계 라우트가 없는**(auto_route 아님) 것에만 OS 배너 **한 면**을 직접 남긴다 — 토스트·Feed 자동 전환·배지는 꺼진 채, auto_route 항목은 기계 라우트(W3.4)가 있어 무음.
+      //   사유는 크기가 아니라 **시점**: 이 항목은 stalled 의 대상이 아니라서(그 스캔은 kind==approval ∧ 데몬 발행 id 만 센다) 생성 시점 알림이 유일한 경로다. 근거 소스는 toastaxis.test.ts AT-19 가 읽고, 발행 모양은 AT-20 이 producer 소스에서 읽는다.
+      if (payload.wait === true && payload.auto_route !== true) osBanner(feedCreatedToastTitle(payload.kind), String(payload.title ?? "")); // 직접 호출 — 출처 예외(래퍼 아님)
       // ★R1F-UB(S4 B1): 편성 결과(formation-*) feed 는 팀원 부팅 안내를 건드리지 않는다 — 편성 도구(javis_formation.py _feed)는 소켓 지정 없이 `cys feed push` 를 불러 **본부 데몬**으로 가고,
       //   화면의 socketForSlug 에는 부서 소켓만 있어 그 이벤트의 socket_slug 를 새로 만든 부서 탭에 대응시킬 수 없다(종전 배선은 닿지 않았다). 팀원 안내의 완료 판정은
       //   3초 틱이 받는 그 팀 소켓의 좌석 목록(checkDeptFormationNotices)이다. 위의 일반 알림(ℹ 알림 · 부서 팀 편성 완결)은 종전 그대로다.
@@ -9532,7 +10096,7 @@ function onDaemonEvent(event: Record<string, unknown>) {
       // 사람 개입 필요로 보고 전환한다(자동 승인분은 무전환).
       // W3.4: auto_route 항목은 90초 기본 + CEO 활성 동적 연장, 비대상 wait 항목은 30초.
       const autoRoute = payload.auto_route === true;
-      if (payload.wait === true || autoRoute)
+      if ((payload.wait === true || autoRoute) && !alertsQuiet("feedSwitch")) // ★TOAST: 유예 후 자동 Feed 화면 전환 예약은 데몬 이벤트 출처 — 끈다(스케줄러 배선·위임 한 줄은 그대로)
         scheduleFeedSwitchIfStillPending(String(payload.request_id ?? ""), autoRoute);
     }
     refreshFeed();
@@ -10828,6 +11392,7 @@ document.getElementById("btn-install-cli")?.addEventListener("click", async () =
 document.querySelectorAll("#cc-tabs .cc-tab").forEach((b) =>
   b.addEventListener("click", () => setCcTab((b as HTMLElement).dataset.view as typeof ccTab)),
 );
+document.getElementById("btn-cc-trash-delete")?.addEventListener("click", () => void trashDeleteFlow());
 document.querySelectorAll("#cc-eff-win .cc-win").forEach((b) =>
   b.addEventListener("click", () => {
     ccEffWindow = (b as HTMLElement).dataset.window!;

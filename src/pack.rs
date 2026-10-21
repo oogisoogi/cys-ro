@@ -2239,6 +2239,292 @@ pub fn content_hash_pub(content: &str) -> String {
     content_hash(content)
 }
 
+// ── F10 (0.14.50): hooks/ 드리프트 보고 — 순수 분류기 + 읽기 전용 수집 ─────────────────────────────
+// 전파 장치는 이미 있다(소유권 등급 · kept-drift 제자리 보존 · 3-way 병합 · `.user` 사본). 이 블록은 아무것도 쓰지 않고
+// 그 상태를 **보고**만 한다: 디스크 · 설치 매니페스트 · vendor(= 실행 중인 바이너리에 임베드된 팩) 세 해시의 관계.
+
+/// `hooks/` 아래 파일 하나의 상태(일곱 가지). 판정 순서가 규칙이다: 판독 불가는 vendor 비교보다 먼저 정해진다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookState {
+    /// 디스크 = vendor.
+    Same,
+    /// 사용자가 고쳤고 vendor 는 매니페스트 이후 전진하지 않았다(kept-drift — 다음 설치에서도 제자리 보존).
+    Drift,
+    /// 고치지 않았고 vendor 만 전진했다(다음 설치가 갱신한다).
+    Behind,
+    /// 고쳤고 vendor 도 전진했다(다음 설치가 병합하거나 `.user` 사본을 남기고 교체한다).
+    DriftBehind,
+    /// 매니페스트(또는 vendor)에 있는데 디스크에 없다.
+    Missing,
+    /// 디스크에 있는데 텍스트로 읽을 수 없다(비 UTF-8 · 권한).
+    Unreadable,
+    /// 디스크에만 있고 vendor 가 모른다(자작 파일).
+    Extra,
+}
+
+impl HookState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HookState::Same => "same",
+            HookState::Drift => "drift",
+            HookState::Behind => "behind",
+            HookState::DriftBehind => "drift+behind",
+            HookState::Missing => "missing",
+            HookState::Unreadable => "unreadable",
+            HookState::Extra => "extra",
+        }
+    }
+    /// WARN 으로 세는 상태 — `same` · `behind`(설치 대기) · `extra`(자작)는 세지 않는다.
+    pub fn counted(self) -> bool {
+        matches!(
+            self,
+            HookState::Drift | HookState::DriftBehind | HookState::Missing | HookState::Unreadable
+        )
+    }
+}
+
+/// 디스크 쪽 관측.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiskRead {
+    Missing,
+    Unreadable,
+    Hash(String),
+}
+
+/// 순수 분류기(F10 · 시뮬레이션 `drift_report.py` 의 규칙). `manifest`/`vendor` 는 해당 파일의 해시 문자열(없으면 None).
+pub fn classify_hook(disk: &DiskRead, manifest: Option<&str>, vendor: Option<&str>) -> HookState {
+    let disk_hash = match disk {
+        DiskRead::Missing => return HookState::Missing,
+        DiskRead::Unreadable => return HookState::Unreadable,
+        DiskRead::Hash(h) => h.as_str(),
+    };
+    let Some(vendor) = vendor else {
+        return HookState::Extra;
+    };
+    if disk_hash == vendor {
+        return HookState::Same;
+    }
+    let edited = manifest.map_or(true, |m| disk_hash != m);
+    let advanced = manifest.is_some_and(|m| vendor != m);
+    match (edited, advanced) {
+        (true, true) => HookState::DriftBehind,
+        (true, false) => HookState::Drift,
+        (false, _) => HookState::Behind,
+    }
+}
+
+/// 보고 한 줄.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookRow {
+    pub rel: String,
+    pub state: HookState,
+    pub disk: Option<String>,
+    pub manifest: Option<String>,
+    pub vendor: Option<String>,
+}
+
+/// 매니페스트 키 정규화(윈도우 역슬래시 키도 같은 행으로 — F10 시험 6).
+pub fn normalize_manifest_key(key: &str) -> String {
+    key.replace('\\', "/")
+}
+
+/// 세 해시 중 앞 8자(짧은 표기).
+pub fn short_hash(h: &str) -> &str {
+    h.get(..8).unwrap_or(h)
+}
+
+/// vendor 쪽: 이 바이너리에 임베드된 팩의 `hooks/` 파일들의 해시.
+pub fn vendor_hook_hashes() -> std::collections::BTreeMap<String, String> {
+    PACK_ALL
+        .iter()
+        .filter(|(rel, _)| rel.starts_with("hooks/"))
+        .map(|(rel, body)| ((*rel).to_string(), content_hash(body)))
+        .collect()
+}
+
+/// F10 M2(리뷰 1회차): hooks/ 보고가 읽는 파일 크기 상한 · 순회 깊이 · 항목 수 상한 — 병적인 폴더가 보고를 늘리거나 멈추게 하지 못한다.
+pub const HOOKS_READ_CAP: u64 = 8 * 1024 * 1024;
+const HOOKS_WALK_MAX_DEPTH: usize = 8;
+const HOOKS_WALK_MAX_ENTRIES: usize = 4096;
+
+/// 팩 파일 하나를 **블로킹 없이** 텍스트로 읽는다: unix 에서는 `O_NONBLOCK` 로 열어(쓰는 쪽이 없는 FIFO 도 즉시 열린다) 핸들의 stat 이
+/// 일반 파일이고 상한 이하일 때만 읽는다. 일반 파일이 아닌 것(FIFO · 소켓 · 장치) · 상한 초과 · 심링크 순환 · 읽기 오류는 `Err`
+/// (호출부는 '판독 불가/미지원'으로 보고한다). 심링크는 일반 파일을 가리킬 때만 따라간다. 부재는 `NotFound` 그대로.
+pub fn read_pack_text_bounded(p: &Path) -> std::io::Result<String> {
+    use std::io::Read;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NONBLOCK);
+    }
+    let f = opts.open(p)?;
+    let m = f.metadata()?;
+    if !m.is_file() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "비정규 파일(FIFO·소켓·장치 등)은 읽지 않는다"));
+    }
+    if m.len() > HOOKS_READ_CAP {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "크기 상한 초과"));
+    }
+    read_capped_utf8(f, HOOKS_READ_CAP)
+}
+
+/// ★F10 R2-m3: 상한 + 1 바이트까지 읽어 넘치면 거부한다 — stat 뒤에 파일이 자라도 앞부분(상한까지)만 해시한 '성공'이 나오지 않는다.
+fn read_capped_utf8<R: std::io::Read>(r: R, cap: u64) -> std::io::Result<String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    r.take(cap + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > cap {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "크기 상한 초과(읽는 동안 커졌다)"));
+    }
+    String::from_utf8(bytes).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.utf8_error()))
+}
+
+/// ★F10 R2-m2: 순회가 끝까지 가지 못한 사유(보고는 이것을 '깨끗함'으로 읽지 않는다 — 진단은 WARN).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HooksIncomplete {
+    /// 깊이 상한(`HOOKS_WALK_MAX_DEPTH`)에서 멈춘 디렉터리 수.
+    pub depth_cut: usize,
+    /// 방문 항목(파일 + 디렉터리) 수 상한(`HOOKS_WALK_MAX_ENTRIES`)에 닿아 멈췄는가.
+    pub entries_cut: bool,
+    /// 열 수 없던 디렉터리 수(최상위 `hooks/` 가 없는 경우는 세지 않는다 — 설치된 적 없는 팩).
+    pub unreadable_dirs: usize,
+}
+
+impl HooksIncomplete {
+    fn is_empty(&self) -> bool {
+        self.depth_cut == 0 && !self.entries_cut && self.unreadable_dirs == 0
+    }
+    /// 한 줄 사유.
+    pub fn describe(&self) -> String {
+        let mut v = Vec::new();
+        if self.depth_cut > 0 {
+            v.push(format!("깊이 상한({}) 초과 폴더 {}개", HOOKS_WALK_MAX_DEPTH, self.depth_cut));
+        }
+        if self.entries_cut {
+            v.push(format!("항목 수 상한({}) 도달", HOOKS_WALK_MAX_ENTRIES));
+        }
+        if self.unreadable_dirs > 0 {
+            v.push(format!("열 수 없는 폴더 {}개", self.unreadable_dirs));
+        }
+        v.join(" · ")
+    }
+}
+
+fn walk_hooks_dir(dir: &Path, base: &Path, out: &mut Vec<String>) {
+    let _ = walk_hooks_dir_checked(dir, base, out);
+}
+
+/// 순회 + 불완전 결과. 방문 수는 파일뿐 아니라 **디렉터리도** 센다(디렉터리만 있는 넓은 나무가 상한을 우회하지 못하게).
+fn walk_hooks_dir_checked(dir: &Path, base: &Path, out: &mut Vec<String>) -> Option<HooksIncomplete> {
+    let mut inc = HooksIncomplete { depth_cut: 0, entries_cut: false, unreadable_dirs: 0 };
+    let mut visited = 0usize;
+    walk_hooks_dir_bounded(dir, base, out, 0, &mut visited, &mut inc, true);
+    (!inc.is_empty()).then_some(inc)
+}
+
+fn walk_hooks_dir_bounded(
+    dir: &Path,
+    base: &Path,
+    out: &mut Vec<String>,
+    depth: usize,
+    visited: &mut usize,
+    inc: &mut HooksIncomplete,
+    top: bool,
+) {
+    if depth > HOOKS_WALK_MAX_DEPTH {
+        inc.depth_cut += 1;
+        return;
+    }
+    let rd = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(e) => {
+            if !(top && e.kind() == std::io::ErrorKind::NotFound) {
+                inc.unreadable_dirs += 1;
+            }
+            return;
+        }
+    };
+    for e in rd.flatten() {
+        if *visited >= HOOKS_WALK_MAX_ENTRIES {
+            inc.entries_cut = true;
+            return;
+        }
+        *visited += 1;
+        let p = e.path();
+        // 디렉터리 심링크는 따라가지 않는다(file_type 은 따라가지 않는다) — 순환 · 팩 밖으로의 이탈 없음. 나머지는 항목으로 올려 분류에 맡긴다.
+        if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            walk_hooks_dir_bounded(&p, base, out, depth + 1, visited, inc, false);
+        } else if let Ok(rel) = p.strip_prefix(base) {
+            out.push(normalize_manifest_key(&rel.to_string_lossy()));
+        }
+    }
+}
+
+/// `hooks_report_scan` 의 결과 — 행과, 순회가 끝까지 가지 못했는가.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HooksScan {
+    pub rows: Vec<HookRow>,
+    pub incomplete: Option<HooksIncomplete>,
+}
+
+/// 읽기 전용 수집: `pack_dir/hooks/` 아래를 매니페스트 · vendor 와 대조해 `same` 이 아닌 행만 돌려준다(정렬).
+/// 아무것도 쓰지 않고 디렉터리를 만들지 않으며 데몬에 닿지 않는다. `vendor` 는 주입 가능(시험) — 운영은 `vendor_hook_hashes()`.
+pub fn hooks_report(
+    pack_dir: &Path,
+    manifest: &std::collections::BTreeMap<String, String>,
+    vendor: &std::collections::BTreeMap<String, String>,
+) -> Vec<HookRow> {
+    hooks_report_scan(pack_dir, manifest, vendor).rows
+}
+
+/// `hooks_report` 와 같되 순회가 끝까지 갔는지도 알려 준다(R2-m2) — 진단(doctor)은 이쪽을 쓴다.
+pub fn hooks_report_scan(
+    pack_dir: &Path,
+    manifest: &std::collections::BTreeMap<String, String>,
+    vendor: &std::collections::BTreeMap<String, String>,
+) -> HooksScan {
+    let mut rels: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let man: std::collections::BTreeMap<String, &String> = manifest
+        .iter()
+        .map(|(k, v)| (normalize_manifest_key(k), v))
+        .filter(|(k, _)| k.starts_with("hooks/"))
+        .collect();
+    rels.extend(man.keys().cloned());
+    // vendor 에만 있고 매니페스트에도 디스크에도 없는 파일은 보고하지 않는다(아직 설치된 적 없음 — 다음 설치가 들여온다).
+    let mut on_disk = Vec::new();
+    let incomplete = walk_hooks_dir_checked(&pack_dir.join("hooks"), pack_dir, &mut on_disk);
+    rels.extend(on_disk);
+    let mut rows = Vec::new();
+    for rel in rels {
+        let p = pack_dir.join(&rel);
+        let disk = match read_pack_text_bounded(&p) {
+            Ok(text) => DiskRead::Hash(content_hash(&text)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && std::fs::symlink_metadata(&p).is_err() => DiskRead::Missing,
+            Err(_) => DiskRead::Unreadable,
+        };
+        let m = man.get(&rel).map(|s| s.as_str());
+        let v = vendor.get(&rel).map(|s| s.as_str());
+        let state = classify_hook(&disk, m, v);
+        if state == HookState::Same {
+            continue;
+        }
+        rows.push(HookRow {
+            rel,
+            state,
+            disk: if let DiskRead::Hash(h) = &disk { Some(h.clone()) } else { None },
+            manifest: m.map(str::to_string),
+            vendor: v.map(str::to_string),
+        });
+    }
+    HooksScan { rows, incomplete }
+}
+
+/// ★F10 C3 — 안내 문장의 **단일 출처**. 이 상수를 `cys doctor` 의 `hooks/` drift 행 아래와 `cys pack-ownership <hooks/…>` 가 찍는다.
+/// `pack-guard.sh` 의 메시지는 같은 낱말(`~/.cys/local/hooks/<이벤트>.d/` · `cys pack-merge --file` · `--propose`)을 쓴다(그 훅은 lane B).
+pub const HOOKS_LOCAL_GUIDANCE: &str = "hooks/ 아래 vendor 파일의 수정은 제자리에 보존됩니다. 영속하는 쪽은 ~/.cys/local/hooks/<이벤트>.d/ 에 자기 훅 파일을 두는 것입니다(업데이트·치유 불가침). 제품에 반영할 개선이면 cys pack-merge --file <rel> --propose 로 제안 패치를 만드세요.";
+
 /// ★B2(§2 축B 소유권 매니페스트): 팩 파일의 system|user 소유권 축. **기본값=system**(임베드 진실 —
 /// 벤더 전진 시 갱신·병합, 벤더 미전진 드리프트는 kept-drift 제자리 보존 · v2 §3 L0-L4),
 /// **user 는 화이트리스트만**(사용자 수정 보존). 화이트리스트를 좁게 유지해
@@ -11407,4 +11693,256 @@ mod tests {
         reconcile_agy_statusline_at_install();
         assert!(!run_deferred_agy_statusline_reconcile());
     }
+
+    // ── F10 (0.14.50): hooks/ 드리프트 분류기 · 보고 (시뮬레이션 SIM-03 네 번의 실행을 표로 박제) ──
+    fn f10_pack(tag: &str, files: &[(&str, &[u8])]) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("cys-f10-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (rel, body) in files {
+            let p = root.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, body).unwrap();
+        }
+        root
+    }
+    fn f10_hashes(files: &[(&str, &str)]) -> std::collections::BTreeMap<String, String> {
+        files.iter().map(|(k, v)| (k.to_string(), content_hash(v))).collect()
+    }
+    fn f10_states(rows: &[HookRow]) -> Vec<(String, &'static str)> {
+        rows.iter().map(|r| (r.rel.clone(), r.state.as_str())).collect()
+    }
+
+    #[test]
+    fn f10_classifier_truth_table_and_unreadable_wins_over_vendor() {
+        use DiskRead::*;
+        let h = |s: &str| Hash(s.to_string());
+        assert_eq!(classify_hook(&Missing, Some("m"), Some("v")), HookState::Missing);
+        assert_eq!(classify_hook(&Unreadable, Some("m"), Some("v2")), HookState::Unreadable, "판독 불가가 vendor 전진보다 먼저");
+        assert_eq!(classify_hook(&h("v"), Some("m"), Some("v")), HookState::Same);
+        assert_eq!(classify_hook(&h("x"), Some("m"), None), HookState::Extra);
+        assert_eq!(classify_hook(&h("x"), Some("m"), Some("m")), HookState::Drift, "고침 + vendor 미전진");
+        assert_eq!(classify_hook(&h("x"), Some("m"), Some("v")), HookState::DriftBehind, "고침 + vendor 전진");
+        assert_eq!(classify_hook(&h("m"), Some("m"), Some("v")), HookState::Behind, "안 고침 + vendor 전진");
+        assert_eq!(classify_hook(&h("x"), None, Some("v")), HookState::Drift, "매니페스트 항목이 없으면 고친 것으로 보되(edited) 전진 여부는 판단 못 한다(advanced 는 항목이 있을 때만) — 모형 규칙");
+        for st in [HookState::Same, HookState::Behind, HookState::Extra] {
+            assert!(!st.counted(), "{st:?}");
+        }
+        for st in [HookState::Drift, HookState::DriftBehind, HookState::Missing, HookState::Unreadable] {
+            assert!(st.counted(), "{st:?}");
+        }
+    }
+
+    #[test]
+    fn f10_planted_copy_four_runs_counts_0_3_3_4() {
+        let vend_a = [("hooks/guard.sh", "g\n"), ("hooks/_lib.sh", "l\n"), ("hooks/inject-context.sh", "i1\n"), ("hooks/save-state.sh", "s\n")];
+        let man = f10_hashes(&vend_a);
+        let vendor_a = man.clone();
+        // 대조군: 고치지 않은 사본 → 0행.
+        let ctl = f10_pack("ctl", &[("hooks/guard.sh", b"g\n"), ("hooks/_lib.sh", b"l\n"), ("hooks/inject-context.sh", b"i1\n"), ("hooks/save-state.sh", b"s\n")]);
+        assert!(hooks_report(&ctl, &man, &vendor_a).is_empty(), "대조군은 0행");
+        // 심기: guard.sh 수정 · _lib.sh 삭제 · mine.sh 추가 · save-state.sh 를 비 UTF-8 로(어느 OS 에서도 만들 수 있는 '판독 불가').
+        let pl = f10_pack("pl", &[("hooks/guard.sh", b"EDITED\n"), ("hooks/inject-context.sh", b"i1\n"), ("hooks/save-state.sh", &[0xffu8, 0xfe, 0x00]), ("hooks/mine.sh", b"m\n")]);
+        let r2 = hooks_report(&pl, &man, &vendor_a);
+        assert_eq!(
+            f10_states(&r2),
+            vec![
+                ("hooks/_lib.sh".into(), "missing"),
+                ("hooks/guard.sh".into(), "drift"),
+                ("hooks/mine.sh".into(), "extra"),
+                ("hooks/save-state.sh".into(), "unreadable"),
+            ]
+        );
+        assert_eq!(r2.iter().filter(|r| r.state.counted()).count(), 3, "extra 는 세지 않는다");
+        // 실행 3: 같은 사본, vendor B 에서 inject-context.sh 만 전진 → behind 행이 늘되 세지 않고, 판독 불가 행은 남는다.
+        let mut vendor_b = vendor_a.clone();
+        vendor_b.insert("hooks/inject-context.sh".into(), content_hash("i2\n"));
+        let r3 = hooks_report(&pl, &man, &vendor_b);
+        assert_eq!(r3.len(), 5);
+        assert!(r3.iter().any(|r| r.rel == "hooks/inject-context.sh" && r.state == HookState::Behind));
+        assert!(r3.iter().any(|r| r.rel == "hooks/save-state.sh" && r.state == HookState::Unreadable), "다른 파일의 vendor 변경으로 판독 불가 행이 사라지지 않는다(T10-7 a)");
+        assert_eq!(r3.iter().filter(|r| r.state.counted()).count(), 3);
+        // 실행 4: 합친 행 — inject-context.sh 도 판독 불가이면서 vendor 가 전진: 'behind' 가 아니라 'unreadable', 세어진다(T10-7 b).
+        let pl2 = f10_pack("pl2", &[("hooks/guard.sh", b"EDITED\n"), ("hooks/inject-context.sh", &[0xffu8, 0xfe]), ("hooks/save-state.sh", &[0xffu8, 0xfe, 0x00]), ("hooks/mine.sh", b"m\n")]);
+        let r4 = hooks_report(&pl2, &man, &vendor_b);
+        assert!(r4.iter().any(|r| r.rel == "hooks/inject-context.sh" && r.state == HookState::Unreadable));
+        assert_eq!(r4.iter().filter(|r| r.state.counted()).count(), 4);
+        for d in [ctl, pl, pl2] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn f10_backslash_manifest_keys_give_the_same_rows_as_slash_keys() {
+        let vend = [("hooks/guard.sh", "g\n")];
+        let vendor = f10_hashes(&vend);
+        let slash = vendor.clone();
+        let back: std::collections::BTreeMap<String, String> = vendor.iter().map(|(k, v)| (k.replace('/', "\\"), v.clone())).collect();
+        let pack = f10_pack("bs", &[("hooks/guard.sh", b"EDITED\n")]);
+        let a = hooks_report(&pack, &slash, &vendor);
+        let b = hooks_report(&pack, &back, &vendor);
+        assert_eq!(f10_states(&a), f10_states(&b), "역슬래시 키도 같은 행");
+        assert_eq!(f10_states(&a), vec![("hooks/guard.sh".to_string(), "drift")]);
+        assert_eq!(normalize_manifest_key(r"hooks\sub\x.sh"), "hooks/sub/x.sh");
+        let _ = std::fs::remove_dir_all(pack);
+    }
+
+    #[test]
+    fn f10_report_writes_nothing_and_creates_no_directory() {
+        let pack = f10_pack("ro", &[("hooks/guard.sh", b"EDITED\n")]);
+        let before = f10_listing(&pack);
+        let _ = hooks_report(&pack, &f10_hashes(&[("hooks/guard.sh", "g\n"), ("hooks/gone.sh", "x\n")]), &f10_hashes(&[("hooks/guard.sh", "g\n")]));
+        assert_eq!(f10_listing(&pack), before);
+        // 팩 폴더 자체가 없어도 만들지 않는다.
+        let absent = std::env::temp_dir().join(format!("cys-f10-absent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&absent);
+        let rows = hooks_report(&absent, &f10_hashes(&[("hooks/gone.sh", "x\n")]), &std::collections::BTreeMap::new());
+        assert_eq!(f10_states(&rows), vec![("hooks/gone.sh".to_string(), "missing")]);
+        assert!(!absent.exists());
+        let _ = std::fs::remove_dir_all(pack);
+    }
+    fn f10_listing(root: &Path) -> Vec<String> {
+        let mut v = Vec::new();
+        walk_hooks_dir(root, root, &mut v);
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn f10_guidance_names_the_local_folder_and_the_existing_propose_route() {
+        for needle in ["~/.cys/local/hooks/<이벤트>.d/", "cys pack-merge --file", "--propose"] {
+            assert!(HOOKS_LOCAL_GUIDANCE.contains(needle), "{needle}");
+        }
+        assert!(!HOOKS_LOCAL_GUIDANCE.contains("pack-drift"), "만들지 않은 명령을 약속하지 않는다");
+        assert!(!vendor_hook_hashes().is_empty(), "임베드 팩에 hooks/ 가 있다");
+    }
+    // ── F10 R2 minors (리뷰 2회차): r2-m2 불완전 순회 · r2-m3 읽는 동안 자란 파일 ──
+    #[test]
+    fn f10_r2m3_a_file_that_grows_past_the_cap_while_being_read_is_rejected_not_hashed_as_a_prefix() {
+        // 정확히 상한: 통과. 상한 + 1: 거부(앞 상한 바이트만 해시한 '성공'이 아니다).
+        let at_cap = vec![b'a'; 16];
+        assert_eq!(read_capped_utf8(&at_cap[..], 16).unwrap().len(), 16);
+        let over = vec![b'a'; 17];
+        let e = read_capped_utf8(&over[..], 16).expect_err("상한 + 1 바이트는 거부");
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+        // 비 UTF-8 은 종전처럼 오류.
+        assert!(read_capped_utf8(&[0xffu8, 0xfe][..], 16).is_err());
+    }
+
+    #[test]
+    fn f10_r2m2_depth_cut_entry_cut_and_wide_directory_trees_are_reported_incomplete_never_clean() {
+        let root = std::env::temp_dir().join(format!("cys-f10-r2m2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        // 대조군: 얕고 작은 나무는 불완전이 아니다.
+        let ctl = root.join("ctl");
+        std::fs::create_dir_all(ctl.join("hooks/sub")).unwrap();
+        std::fs::write(ctl.join("hooks/a.sh"), b"a").unwrap();
+        std::fs::write(ctl.join("hooks/sub/b.sh"), b"b").unwrap();
+        let mut out = Vec::new();
+        assert_eq!(walk_hooks_dir_checked(&ctl.join("hooks"), &ctl, &mut out), None, "대조군은 완전");
+        assert_eq!(out.len(), 2);
+        // 팩에 hooks/ 자체가 없는 경우도 불완전이 아니다(설치된 적 없음).
+        let mut out = Vec::new();
+        assert_eq!(walk_hooks_dir_checked(&root.join("nope/hooks"), &root.join("nope"), &mut out), None);
+        // 깊이 상한: 상한보다 깊은 폴더.
+        let deep = root.join("deep");
+        let mut d = deep.join("hooks");
+        for i in 0..(HOOKS_WALK_MAX_DEPTH + 3) {
+            d = d.join(format!("d{i}"));
+        }
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("x.sh"), b"x").unwrap();
+        let mut out = Vec::new();
+        let inc = walk_hooks_dir_checked(&deep.join("hooks"), &deep, &mut out).expect("깊이 초과는 불완전");
+        assert!(inc.depth_cut >= 1 && !inc.entries_cut, "{inc:?}");
+        // 항목 수 상한: 디렉터리만으로도 센다(파일 0개).
+        let wide = root.join("wide");
+        std::fs::create_dir_all(wide.join("hooks")).unwrap();
+        for i in 0..(HOOKS_WALK_MAX_ENTRIES + 5) {
+            std::fs::create_dir(wide.join("hooks").join(format!("e{i}"))).unwrap();
+        }
+        let mut out = Vec::new();
+        let inc = walk_hooks_dir_checked(&wide.join("hooks"), &wide, &mut out).expect("디렉터리만 많아도 불완전");
+        assert!(inc.entries_cut, "{inc:?}");
+        assert!(out.is_empty(), "파일은 하나도 없다 — 종전 셈(파일만)이면 상한에 닿지 않았다");
+        // 보고 단계로 전파된다.
+        let scan = hooks_report_scan(&wide, &std::collections::BTreeMap::new(), &std::collections::BTreeMap::new());
+        assert!(scan.incomplete.as_ref().is_some_and(|i| i.entries_cut));
+        assert!(scan.incomplete.unwrap().describe().contains("항목 수 상한"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── F10 M2 (리뷰 1회차): hooks/ 아래 비정규 파일(FIFO) · 심링크가 보고를 멈추게 하면 안 된다 ──
+    #[cfg(unix)]
+    fn f10_bounded<T: Send + 'static>(secs: u64, f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(secs)).ok()
+    }
+    #[cfg(unix)]
+    fn f10_mkfifo(p: &Path) {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        let st = std::process::Command::new("/usr/bin/mkfifo").arg(p).status().expect("mkfifo");
+        assert!(st.success());
+    }
+    /// 시한 안에 못 끝나면 실패한다 — 시험 자체는 멈추지 않는다(막힌 스레드는 쓰기 쪽을 열어 풀어 준다).
+    #[cfg(unix)]
+    fn f10_release_fifo(p: &Path) {
+        let _ = std::fs::OpenOptions::new().write(true).custom_flags_nonblock().open(p);
+    }
+    #[cfg(unix)]
+    trait NonBlockOpen { fn custom_flags_nonblock(&mut self) -> &mut Self; }
+    #[cfg(unix)]
+    impl NonBlockOpen for std::fs::OpenOptions {
+        fn custom_flags_nonblock(&mut self) -> &mut Self {
+            use std::os::unix::fs::OpenOptionsExt;
+            self.custom_flags(libc::O_NONBLOCK) // 플랫폼 상수(macOS 0x4 · Linux 0x800): 읽는 쪽이 대기 중이면 열려서 풀어 준다
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn f10_m2_unmanifested_fifo_under_hooks_is_reported_without_blocking() {
+        let pack = f10_pack("fifo", &[("hooks/guard.sh", b"g\n")]);
+        let fifo = pack.join("hooks/local.pipe");
+        f10_mkfifo(&fifo);
+        let man = f10_hashes(&[("hooks/guard.sh", "g\n")]);
+        let (p2, m2) = (pack.clone(), man.clone());
+        let got = f10_bounded(5, move || hooks_report(&p2, &m2, &m2));
+        if got.is_none() {
+            f10_release_fifo(&fifo);
+        }
+        let rows = got.expect("FIFO 에서 보고가 5초 안에 끝나지 않았다(블로킹 읽기)");
+        assert_eq!(f10_states(&rows), vec![("hooks/local.pipe".to_string(), "unreadable")], "비정규 파일은 unreadable(미지원)로 보고한다");
+        assert!(rows[0].state.counted());
+        let _ = std::fs::remove_dir_all(pack);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn f10_m2_manifested_fifo_symlink_to_fifo_and_symlink_loops_are_bounded() {
+        let pack = f10_pack("fifo2", &[("hooks/guard.sh", b"g\n")]);
+        let fifo = pack.join("hooks/listed.pipe");
+        f10_mkfifo(&fifo);
+        std::os::unix::fs::symlink(&fifo, pack.join("hooks/via-link")).unwrap();
+        std::os::unix::fs::symlink(pack.join("hooks/loop-b"), pack.join("hooks/loop-a")).unwrap();
+        std::os::unix::fs::symlink(pack.join("hooks/loop-a"), pack.join("hooks/loop-b")).unwrap();
+        std::os::unix::fs::symlink(pack.join("hooks"), pack.join("hooks/dir-loop")).unwrap();
+        let mut man = f10_hashes(&[("hooks/guard.sh", "g\n")]);
+        man.insert("hooks/listed.pipe".into(), content_hash("x"));
+        let (p2, m2) = (pack.clone(), man.clone());
+        let got = f10_bounded(5, move || hooks_report(&p2, &m2, &m2));
+        if got.is_none() {
+            f10_release_fifo(&fifo);
+        }
+        let rows = got.expect("FIFO · 심링크 순환에서 보고가 5초 안에 끝나지 않았다");
+        let st: std::collections::BTreeMap<_, _> = f10_states(&rows).into_iter().collect();
+        assert_eq!(st.get("hooks/listed.pipe"), Some(&"unreadable"));
+        assert_eq!(st.get("hooks/via-link"), Some(&"unreadable"), "FIFO 를 가리키는 심링크도 열지 않는다");
+        assert_eq!(st.get("hooks/loop-a"), Some(&"unreadable"));
+        assert!(!st.keys().any(|k| k.starts_with("hooks/dir-loop/")), "디렉터리 심링크는 따라가지 않는다(순환 없음): {st:?}");
+        let _ = std::fs::remove_dir_all(pack);
+    }
+
 }

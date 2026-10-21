@@ -108,6 +108,23 @@ enum RpcErr {
     AfterSend(String),
 }
 
+/// ★MJR-4(델타 §2.2) — 전송 **가능성**의 두 부류. 이 분류가 **수신증의 진실성**을 가른다.
+///
+/// `Definite` = 「데몬은 이 요청을 **보지 못했다**」가 확정인 경우(바이트 미송신).
+/// `Uncertain` = 「**이미 처리됐을 수 있다**」인 경우(flush 뒤 단절·응답 파싱 실패).
+/// ⛔둘을 한 문자열로 합치면 화면이 Class 2 에서도 「지우지 않았습니다」라고 **거짓**을 말한다 —
+/// 삭제는 최종적이고 복구 단계가 없으므로 그 거짓은 오너를 **두 번 누르게** 만든다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransportClass {
+    Definite,
+    Uncertain,
+}
+
+/// Class 2 의 표식 — 이 접두가 붙은 오류만 화면이 「결과를 확인할 수 없습니다」로 읽는다.
+/// ★화면 쪽 정의처는 `ui/src/trashconfirm.ts` 의 `TRASH_DELETE_UNCERTAIN_CODE` 이고,
+/// 두 자리가 어긋나지 않도록 **시험이 양쪽 문자열을 대조한다**.
+const TRASH_DELETE_UNCERTAIN_CODE: &str = "transport_uncertain";
+
 async fn rpc_once(
     socket: &std::path::Path,
     conn: &mut Option<tokio::io::BufReader<Stream>>,
@@ -161,8 +178,21 @@ async fn rpc_on(socket: &std::path::Path, method: &str, params: Value) -> Result
 /// 재시도·UI 분류를 해야 하는데 rpc_on은 message만 올려 코드가 유실됐다 — 기존 호출부의 문자열
 /// 계약(message만)은 rpc_on 래퍼로 그대로 보존하고, 코드가 필요한 곳만 이 함수를 직접 쓴다.
 async fn rpc_full(socket: &std::path::Path, method: &str, params: Value) -> Result<Value, String> {
+    rpc_full_classified(socket, method, params)
+        .await
+        .map_err(|(_, e)| e)
+}
+
+/// `rpc_full` 의 본체 — 실패를 **부류와 함께** 돌려준다(델타 §2.2).
+/// ★`rpc_full` 은 이것의 얇은 포장이다: 기존 호출부 수십 곳의 문자열 계약을 **바꾸지 않기 위해**
+/// 메시지만 떼어 준다. 부류가 필요한 자리(비멱등 명령 = 삭제)만 이 함수를 직접 쓴다.
+async fn rpc_full_classified(
+    socket: &std::path::Path,
+    method: &str,
+    params: Value,
+) -> Result<Value, (TransportClass, String)> {
     let req = json!({"id": 1, "method": method, "params": params});
-    let mut line = serde_json::to_vec(&req).map_err(|e| e.to_string())?;
+    let mut line = serde_json::to_vec(&req).map_err(|e| (TransportClass::Definite, e.to_string()))?;
     line.push(b'\n');
     let cell = conn_cell(socket);
     let mut conn = cell.lock().await;
@@ -173,9 +203,15 @@ async fn rpc_full(socket: &std::path::Path, method: &str, params: Value) -> Resu
             *conn = None;
             match rpc_once(socket, &mut conn, &line).await {
                 Ok(r) => r,
-                Err(RpcErr::BeforeSend(e)) | Err(RpcErr::AfterSend(e)) => {
+                // 두 번째 시도도 미송신이면 **확정적 비실행**이다.
+                Err(RpcErr::BeforeSend(e)) => {
                     *conn = None;
-                    return Err(e);
+                    return Err((TransportClass::Definite, e));
+                }
+                // 두 번째 시도에서 바이트가 나갔다면 결과는 **알 수 없다**.
+                Err(RpcErr::AfterSend(e)) => {
+                    *conn = None;
+                    return Err((TransportClass::Uncertain, e));
                 }
             }
         }
@@ -183,10 +219,11 @@ async fn rpc_full(socket: &std::path::Path, method: &str, params: Value) -> Resu
             // 데몬이 이미 처리했을 수 있음 — 중복 surface 생성·키 이중 주입을 막기 위해
             // 재전송하지 않고 에러를 그대로 올린다
             *conn = None;
-            return Err(e);
+            return Err((TransportClass::Uncertain, e));
         }
     };
-    serde_json::from_str(resp_line.trim()).map_err(|e| e.to_string())
+    // ★응답 파싱 실패도 Class 2 다 — 바이트는 나갔고 데몬의 처리 여부를 알 수 없다.
+    serde_json::from_str(resp_line.trim()).map_err(|e| (TransportClass::Uncertain, e.to_string()))
 }
 
 /// 기본(본부) 데몬의 socket_slug — 전달기는 기본 데몬 이벤트에도 slug 를 붙이므로(spawn_event_forwarder)
@@ -5030,6 +5067,117 @@ async fn feed_list_all(status: Option<String>) -> Result<Value, String> {
     Ok(json!({"sockets": rows}))
 }
 
+// ─── S8 휴지통(번들 S8-UI 의 백엔드 절반) ─────────────────────────────────────────────────────
+//
+// 네 명령 모두 **기지 데몬**만 쓴다 — `socket` 인자를 받지 않는다(휴지통은 기계에 하나이고, 부서
+// 데몬은 `base_daemon_only` 로 거절한다). 읽기 둘은 토큰 없이, 쓰기 둘은 **기지 소켓의**
+// operator token 을 매 호출 새로 읽어 붙인다(`feed_reply` 의 부착 방식 그대로 · 데몬을 다시
+// 띄우면 토큰이 바뀐다). 토큰은 이 백엔드에서만 다루고 화면으로 내보내지 않는다.
+//
+// ★`rpc_full` 을 쓰는 이유: 데몬의 **error.code** 가 화면까지 살아서 올라가야 한다
+// (`not_certifiable`·`producer_active`·`confirm_expired`·`recent_may_be_in_use`·
+// `names_not_in_preview`·`busy`·`unsupported_platform_pending_validation`·`base_daemon_only` 를
+// 화면이 구분해 문구와 단추를 정한다 — message 만 올리면 전부 한 덩어리가 된다).
+fn trash_err(resp: &Value) -> String {
+    let code = resp["error"]["code"].as_str().unwrap_or("unknown");
+    let msg = resp["error"]["message"].as_str().unwrap_or("");
+    format!("{code}: {msg}")
+}
+
+/// 읽기 전용 목록 — 토큰 없음. 감사자가 거부당하지 않는 면이다(설계 4.1).
+#[tauri::command]
+async fn trash_list() -> Result<Value, String> {
+    let sock = default_socket();
+    let resp = rpc_full(&sock, "trash.list", json!({})).await?;
+    if resp["ok"].as_bool() == Some(true) {
+        Ok(resp["result"].clone())
+    } else {
+        Err(trash_err(&resp))
+    }
+}
+
+/// 읽기 전용 명령 상태 — 토큰 없음.
+#[tauri::command]
+async fn trash_order(order_id: String) -> Result<Value, String> {
+    let sock = default_socket();
+    let resp = rpc_full(&sock, "trash.order", json!({"order_id": order_id})).await?;
+    if resp["ok"].as_bool() == Some(true) {
+        Ok(resp["result"].clone())
+    } else {
+        Err(trash_err(&resp))
+    }
+}
+
+/// ★S8 재착륙 §1 — 비동기 미리보기 **기동**. 오너 등급. 즉시 `{job_id}` 로 돌아온다.
+///
+/// ★이 명령은 **순회를 기다리지 않는다**: 데몬이 배경 스레드를 띄우고 바로 응답하므로 이 호출이
+/// 쥐는 공유 연결 셀(`conn_cell(&default_socket())`)의 점유는 **상수시간**이다. 그것이 MJR-6 을
+/// 닫는 기제다 — 종전 동기 `trash_preview` 는 순회가 끝날 때까지 그 셀을 쥐고 있어서 그 동안
+/// 오너의 키 입력·`surface.send_text`·제어센터 폴링이 **그 뒤에 줄을 섰다**.
+#[tauri::command]
+async fn trash_preview_start(names: Vec<String>) -> Result<Value, String> {
+    let sock = default_socket();
+    let mut params = json!({"names": names, "client": "tauri-app"});
+    if let Some(tok) = read_operator_token_for(&sock) {
+        params["operator_token"] = json!(tok);
+    }
+    let resp = rpc_full(&sock, "trash.preview_start", params).await?;
+    if resp["ok"].as_bool() == Some(true) {
+        Ok(resp["result"].clone())
+    } else {
+        Err(trash_err(&resp))
+    }
+}
+
+/// ★S8 재착륙 §1 — 비동기 미리보기 **폴링**. 오너 등급. 즉시 상태로 돌아온다.
+/// 화면은 500 ms 타이머로 이것을 부른다(델타 §1.3 상태 전이표 넷째 칸).
+#[tauri::command]
+async fn trash_preview_poll(job_id: String) -> Result<Value, String> {
+    let sock = default_socket();
+    let mut params = json!({"job_id": job_id, "client": "tauri-app"});
+    if let Some(tok) = read_operator_token_for(&sock) {
+        params["operator_token"] = json!(tok);
+    }
+    let resp = rpc_full(&sock, "trash.preview_poll", params).await?;
+    if resp["ok"].as_bool() == Some(true) {
+        Ok(resp["result"].clone())
+    } else {
+        Err(trash_err(&resp))
+    }
+}
+
+/// 명령 — 오너 등급. 미리보기가 준 `confirm_id` 와 `digest` 를 그대로 되보낸다(한 번만 쓰인다).
+/// 즉시 `order_id` 로 돌아오고, 결과는 `trash_order` 로 읽는다.
+#[tauri::command]
+async fn trash_delete(
+    confirm_id: String,
+    names: Vec<String>,
+    digest: String,
+) -> Result<Value, String> {
+    let sock = default_socket();
+    let mut params = json!({"confirm_id": confirm_id, "names": names, "digest": digest,
+                            "client": "tauri-app"});
+    if let Some(tok) = read_operator_token_for(&sock) {
+        params["operator_token"] = json!(tok);
+    }
+    // ★MJR-4 — 삭제는 **비멱등**이다. 전송 실패를 두 부류로 갈라 올리고, Class 2(전송 불확실)는
+    //   코드로 표시해 화면이 「지우지 않았습니다」라고 **말하지 못하게** 한다(델타 §2.2 엄격 금지선).
+    //   ⛔재전송은 하지 않는다: `rpc_once` 의 AfterSend 는 이미 재시도 없이 올라오고, 여기서도
+    //   다시 보내지 않는다(맹목 재전송은 삭제를 두 번 거는 길이다).
+    match rpc_full_classified(&sock, "trash.delete", params).await {
+        Ok(resp) => {
+            if resp["ok"].as_bool() == Some(true) {
+                Ok(resp["result"].clone())
+            } else {
+                // 데몬의 정형 거부 = Class 1(인텐트 기록 전 명시적 거부) — 사유 코드를 그대로 올린다.
+                Err(trash_err(&resp))
+            }
+        }
+        Err((TransportClass::Uncertain, e)) => Err(format!("{TRASH_DELETE_UNCERTAIN_CODE}: {e}")),
+        Err((TransportClass::Definite, e)) => Err(e),
+    }
+}
+
 /// `socket` — 부서 항목에 응답할 때만(없으면 종전처럼 본부). 허용 소켓은 `feed_reply_socket_allowed` 가 가른다(본부 · 세 조건을 채우는 부서).
 /// 그 소켓의 조작자 토큰을 **매번 새로** 읽어 붙인다(데몬을 다시 띄우면 바뀐다). 토큰은 이 백엔드에서만 다루고 화면으로 내보내지 않는다.
 #[tauri::command]
@@ -7788,6 +7936,11 @@ fn main() {
             feedback::feedback_flush,
             dept_tombstone_by_socket,
             dept_tombstones,
+            trash_list,
+            trash_order,
+            trash_preview_start,
+            trash_preview_poll,
+            trash_delete,
             start_master,
             start_dept_master,
             ceo_pending,
@@ -15586,6 +15739,164 @@ osascript 를 실행할 수 없어 건너뜁니다({e}) — macOS 가 아닌 환
         let cys_rs = include_str!("../../src/bin/cys.rs");
         assert_eq!(cys_rs.matches("params[\"operator_token\"]").count(), 1, "cys CLI 의 조작자 토큰 싣기가 --operator 한 갈래 밖으로 번졌다");
     }
+    /// ★S8 12.G — 휴지통 명령의 등재와 **토큰을 붙이는 명령의 목록**을 잠근다.
+    ///
+    /// 두 가지를 지킨다: ①읽기 둘(`trash_list`·`trash_order`)에는 토큰이 실리지 않는다(감사자가
+    /// 거부당하지 않는 면이다) ②토큰을 붙이는 명령은 **잠근 그 목록과 정확히 같다**. 목록에 없는
+    /// 이름이 하나라도 생기면 이 시험이 빨개진다: 부착면이 넓어지는 것은 S8 이 의존하는 등급이
+    /// 넓어지는 것과 같다(설계 §5 B2 · H3).
+    ///
+    /// ★**개정(S8 재착륙 · 델타 §4 파급)**: 종전 이 시험의 이름과 문면은 「**정확히 네 개**」였다.
+    /// §1(Option A)이 `trash_preview_start`·`trash_preview_poll` 을 들여오고 **둘 다 델타 §1.3 의
+    /// 인증 봉투(= 삭제와 같은 오너 등급)를 요구**하므로 부착면은 **여섯**이 된다. 이 시험은 그
+    /// 넓어짐을 **막는 장치가 아니라 의식하게 만드는 장치**이고, 지금 그것이 의식적으로 일어났다.
+    /// ⇒ 숫자를 올리는 대신 **이름을 「잠근 목록」으로 바꿨다**: 수치가 이름에 박히면 다음 개정마다
+    /// 이름이 거짓이 되고, 이 시험이 실제로 재는 것은 **개수가 아니라 집합**이다.
+    /// ★**개정 2(동기 미리보기 퇴역 · 2단계 심사 minor)**: 잠근 집합이 **여섯에서 다섯으로 줄었다** —
+    /// `trash_preview`(동기)를 등재와 함수째로 뺐기 때문이다. 왜 줄였는가: 리뷰어가 「그 빗장에
+    /// 실제로 참여하는 호출자가 누구냐」를 물어 재 보니 **예약을 잡는 것은 `preview_start` 경로뿐**이고
+    /// (`trash.rs` 의 `preview_lock_try_acquire`) 동기 경로는 `certify_names(root, state, &names, None, None)`
+    /// 으로 **세션 마감도 빗장도 없이** 걸었다 ⇒ 그것이 남아 있는 동안은 「단일 플라이트가 인증자를
+    /// 1로 묶는다」가 **GUI 경로에 대해서도 거짓**이었다. 퇴역 전에 호출자를 셌다: UI 0(핀 두 줄만
+    /// 부재를 단언한다) · Tauri 0 · `cys` CLI 0. ⚠오너 등급 우회는 아니었다(두 경로 모두 오너 게이트
+    /// 뒤다) — 그래서 major 가 아니라 minor 였다.
+    /// ★**그 한계는 뒤이어 닫혔다**: 내가 「데몬 동사 `trash.preview` 는 남아 있다(raw RPC 전용)」고
+    /// 보고했고, 부서장이 **퇴역을 판정**해 그 동사와 함수가 **같은 판에서** 제거됐다(별 커밋 ·
+    /// `src/bin/cysd/trash.rs` 의 `the_synchronous_preview_verb_is_retired_and_cannot_come_back` 가
+    /// 재출현을 잠근다).
+    /// ⛔★**정정(S18 ⒟-4 · 4단계 심사 적색)**: 종전 이 자리에는 「⇒ 단일 플라이트가 1로 묶는 것이 이제
+    /// **인증자 전체**다」라고 적혀 있었고 그것은 **과장**이었다. `src/bin/cysd/trash.rs` 의
+    /// `certify_entry` 머리 주석이 적는 대로, **쓸기·봉인(집행) 경로의 항목 인증 셋은 빗장 밖**이고
+    /// 항목별 상한으로만 유계다. ⇒ 정확한 문면은 「**단일 플라이트는 「미리보기 인증자」를 1로 묶는다.
+    /// 미리보기 대 쓸기는 1이 아니다**」이고, 그것이 **의도된 선택**이다(빗장을 쓸기까지 넓히면
+    /// 쓸기가 오너의 미리보기를 기다린다).
+    /// ★**이 검사는 그 문면을 검증하지 않는다** — 이 검사가 보는 것은 **등재 목록과 토큰 부착 집합**이고,
+    /// 다른 크레이트(`cysd`)의 호출자 수는 **볼 수 없다**. 그래서 그 주장은 여기 산문으로만 있었고
+    /// **아무 단언도 그것을 읽지 않았다**(= 구멍 난 핀은 확신으로 읽히므로 선언보다 나쁘다 · 선례 T-S3-OBL).
+    /// ⇒ 처분: 그 불변식을 **이 검사의 약속에서 떼어** 내고, 세는 일은 그것을 **볼 수 있는 자리**에
+    /// 세웠다 — `cysd` 쪽 검사 `the_enforcement_path_certifiers_outside_the_latch_are_exactly_three`
+    /// 가 집행 경로 인증 호출자를 **세어서** 셋이 아니면 빨개지고, 그때 이 주석도 함께 고치게 만든다.
+    /// ⇒ ★이 검사의 이름은 **바꾸지 않는다**: 이름이 약속하는 것(등재 + 잠근 토큰 부착 집합)은
+    /// 실제로 **이 검사가 탐지하는 것**이다(이름이 거짓인 자리가 아니었다 — 거짓은 주석이었다).
+    #[test]
+    fn s8_trash_commands_are_registered_and_the_token_attach_list_is_the_locked_set() {
+        // 경계는 기존 배선 핀(c2_feed_reply_and_list_all_wiring)과 같은 식으로 잡는다.
+        let src = include_str!("main.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계 소실")];
+        let seg = |head: &str| -> &str {
+            let i = prod.find(head).unwrap_or_else(|| panic!("`{head}` 소실"));
+            &prod[i..i + prod[i..].find("\n}\n").expect("fn 끝")]
+        };
+        let i = prod.find("tauri::generate_handler![").expect("invoke_handler 소실");
+        let reg = &prod[i..i + prod[i..].find("\n        ])").expect("핸들러 목록 끝")];
+        for name in [
+            "trash_list",
+            "trash_order",
+            "trash_preview_start",
+            "trash_preview_poll",
+            "trash_delete",
+        ] {
+            assert!(reg.lines().any(|l| l.trim() == format!("{name},")), "{name} 미등재");
+        }
+        // ★퇴역의 결박: 동기 미리보기는 **등재돼 있지 않고 함수도 없다**(다시 들어오면 빨개진다).
+        assert!(
+            !reg.lines().any(|l| l.trim() == "trash_preview,"),
+            "동기 trash_preview 가 다시 등재됐다 — 그것은 빗장에 참여하지 않는 두 번째 인증자다"
+        );
+        assert!(
+            !prod.contains("async fn trash_preview("),
+            "동기 trash_preview 명령이 되살아났다"
+        );
+        for ro in ["async fn trash_list(", "async fn trash_order("] {
+            let body: &str = seg(ro);
+            assert!(!body.contains("read_operator_token_for") && !body.contains("\"operator_token\""),
+                    "{ro} 읽기 전용인데 토큰이 실린다");
+        }
+        for rw in [
+            "async fn trash_preview_start(",
+            "async fn trash_preview_poll(",
+            "async fn trash_delete(",
+        ] {
+            let body: &str = seg(rw);
+            assert!(body.contains("read_operator_token_for(&sock)"), "{rw} 토큰을 매번 새로 읽어야 한다");
+            // ★`rpc_on` 은 message 만 올려 코드를 잃는다 ⇒ 둘 중 하나여야 한다. `_classified` 는
+            //   비멱등 명령(삭제)이 전송 **부류**까지 필요해서 쓰는 변종이고(MJR-4 · 델타 §2.2),
+            //   error.code 보존은 둘이 같다.
+            assert!(
+                body.contains("rpc_full(") || body.contains("rpc_full_classified("),
+                "{rw} 데몬의 error.code 가 화면까지 살아야 한다"
+            );
+            assert!(!body.contains("socket: Option<String>"), "{rw} 소켓 인자를 받으면 안 된다(기지 전용)");
+        }
+        // ★MJR-4 결박 — 삭제만은 **부류를 아는** 전송을 쓴다(그냥 `rpc_full` 로 되돌리면 화면이
+        //   Class 2 에서도 「지우지 않았습니다」를 말하게 된다).
+        {
+            let del: &str = seg("async fn trash_delete(");
+            assert!(
+                del.contains("rpc_full_classified(&sock, \"trash.delete\""),
+                "삭제가 부류 없는 전송으로 되돌아갔다 — 전송 불확실을 거부로 보고하게 된다"
+            );
+            assert!(
+                del.contains("TransportClass::Uncertain") && del.contains("TRASH_DELETE_UNCERTAIN_CODE"),
+                "삭제가 Class 2 를 코드로 표시하지 않는다"
+            );
+            // ★화면 쪽 정의처와 **같은 문자열**인가(두 자리가 어긋나면 수신증이 조용히 거부로 떨어진다).
+            // ★문면이 아니라 **값**에 걸린다: 상수 이름이 있는 줄을 찾아 그 줄이 값을 품는지만 본다
+            //   (따옴표 종류·공백·줄바꿈을 포맷터가 바꿔도 적색이 되지 않는다).
+            let ui = include_str!("../../ui/src/trashconfirm.ts");
+            let decl = ui
+                .lines()
+                .find(|l| l.contains("TRASH_DELETE_UNCERTAIN_CODE") && l.contains('='));
+            let decl = decl.unwrap_or_else(|| {
+                panic!(
+                    "ui 쪽 TRASH_DELETE_UNCERTAIN_CODE 선언 줄을 찾지 못했다 — \
+                     ★이름이 바뀐 것일 수 있다(문면 변경)이고 계약 위반과는 다르다. \
+                     두 자리의 **값**이 같은지 손으로 확인한 뒤 이 핀의 찾는 이름을 고쳐라."
+                )
+            });
+            assert!(
+                decl.contains(TRASH_DELETE_UNCERTAIN_CODE),
+                "ui 쪽 표식 값이 데몬측과 다르다({decl}) — ★선언 줄의 **문면**이 바뀐 것일 수 있으니 \
+                 계약 위반(값이 실제로 다름)과 구별하라: 값이 같다면 이 핀을 고치는 것이 맞고, \
+                 다르다면 전송 불확실이 조용히 거부로 떨어진다는 뜻이다"
+            );
+            assert_eq!(TRASH_DELETE_UNCERTAIN_CODE, "transport_uncertain");
+        }
+
+        // ★부착면의 전수: `read_operator_token_for` 를 쓰는 **최상위 명령 함수**는 잠근 집합과 같다.
+        //   감싸는 함수는 **열 0 의 `fn`/`async fn` 줄**을 거슬러 찾는다(feed_reply 안의 중첩
+        //   `async fn call(` 처럼 들여쓴 보조 함수는 그 바깥 명령으로 귀속된다).
+        let mut callers: Vec<String> = Vec::new();
+        for (k, _) in prod.match_indices("read_operator_token_for") {
+            let head = &prod[..k];
+            let owner = head
+                .lines()
+                .rev()
+                .find_map(|l| {
+                    let t = l.strip_prefix("async fn ").or_else(|| l.strip_prefix("fn "))?;
+                    Some(t.split('(').next().unwrap_or(t).trim().to_string())
+                })
+                .unwrap_or_else(|| "?".into());
+            // 빈 이름 = 정의 줄 자신(`fn read_operator_token_for(` 의 중간에서 끊긴 조각)이다.
+            if !owner.is_empty() && owner != "read_operator_token_for" {
+                callers.push(owner);
+            }
+        }
+        callers.sort();
+        callers.dedup();
+        assert_eq!(
+            callers,
+            vec![
+                "feed_reply".to_string(),
+                "send_input".to_string(),
+                "trash_delete".to_string(),
+                "trash_preview_poll".to_string(),
+                "trash_preview_start".to_string()
+            ],
+            "operator token 부착 명령 목록이 잠근 집합과 다르다(부착면이 넓어지면 삭제 등급도 넓어진다)"
+        );
+    }
+
 
     /// 목록 응답 — 응답 없는 부서(닫힌 소켓)가 있어도 본부와 나머지가 오고, 그 부서는 오류 행으로 남는다 — 실제 소켓 없이 볼 수 있는 부분: 기본 소켓이 없으면 본부 행이 ok=false.
     /// (등록부·소켓 접속은 라이브라 시험에서 부르지 않는다 — 판정은 위 순수 함수가 맡는다.)
@@ -15595,6 +15906,90 @@ osascript 를 실행할 수 없어 건너뜁니다({e}) — macOS 가 아닌 환
         fill_canonical_dept_sockets(&mut reg);
         assert_eq!(reg["depts"]["alpha"]["socket"], "/x/cys-dept-alpha/cys.sock", "값이 있는 소켓은 건드리지 않는다");
         assert!(reg["depts"]["zeta"]["socket"].as_str().map(|s| s.contains("cys-dept-zeta")).unwrap_or(false), "빈 등재는 canonical 로 채운다");
+    }
+
+    // ───────────────────────────────────────────────────────────────────────────────────────
+    // ★MJR-4 결박 — `test_delete_transport_loss_receipt_is_unknown_not_refused`(델타 §2.3).
+    //
+    // 이 검체가 재는 것(6단정 중 **전송 쪽**): ⑴flush 뒤 단절은 `TransportClass::Uncertain` 이다
+    // ⑵그 실패에 **자동 재전송이 0건**이다(소켓이 받은 `trash.delete` 가 정확히 1건) ⑶양성 대조로
+    // 바이트 미송신은 `Definite` 다. 문면 쪽 다섯 단정(제목·상태·본문·제목 금지어·본문 금지어)은
+    // 순수 모듈 검사 `ui/src/trashconfirm.test.ts` 의 같은 이름 검체가 **동작으로** 잰다 —
+    // 토스트는 이 층에서 관측할 수 없고, 그 판정은 화면이 아니라 `trashTransportReceipt` 에 있다.
+    // ⚠못 보는 것(델타가 적은 그대로): 데몬 **안에서** 디스크 삭제가 어디까지 갔는지는 이 층에서
+    // 볼 수 없다 — 그것은 `DELETE-LEDGER.jsonl` 만이 안다. 그래서 수신증이 「알 수 없다」여야 한다.
+    // ───────────────────────────────────────────────────────────────────────────────────────
+    #[cfg(unix)]
+    #[test]
+    fn test_delete_transport_loss_receipt_is_unknown_not_refused() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::AsyncBufReadExt as _;
+        use tokio::net::UnixListener;
+        let dir = std::env::temp_dir().join(format!("cys-mjr4-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let eof_sock = dir.join("eof.sock");
+        let gone_sock = dir.join("never-bound.sock");
+        let _ = std::fs::remove_file(&eof_sock);
+        let _ = std::fs::remove_file(&gone_sock);
+        let seen = std::sync::Arc::new(AtomicUsize::new(0));
+
+        tauri::async_runtime::block_on(async {
+            // 모의 데몬 — 요청 한 줄을 **읽고**(= 바이트가 나갔다) 응답 없이 **끊는다**(EOF 주입).
+            let l = UnixListener::bind(&eof_sock).unwrap();
+            let c = seen.clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    match l.accept().await {
+                        Ok((mut s, _)) => {
+                            let mut line = String::new();
+                            let mut br = BufReader::new(&mut s);
+                            if br.read_line(&mut line).await.unwrap_or(0) > 0
+                                && line.contains("\"trash.delete\"")
+                            {
+                                c.fetch_add(1, Ordering::SeqCst);
+                            }
+                            // s 를 여기서 떨어뜨린다 = flush 뒤 단절.
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await; // bind 안정화
+
+            // ⑴ Class 2 — 전송 불확실
+            let err = rpc_full_classified(
+                &eof_sock,
+                "trash.delete",
+                json!({"confirm_id": "cf-1", "names": ["dept-9-1760000000"], "digest": "d"}),
+            )
+            .await
+            .expect_err("응답이 없으므로 실패여야 한다");
+            assert_eq!(
+                err.0,
+                TransportClass::Uncertain,
+                "flush 뒤 단절이 확정적 비실행으로 분류됐다 — 화면이 「지우지 않았습니다」라고 거짓을 말한다: {}",
+                err.1
+            );
+            // ⑵ ★자동 재전송 0건 — 삭제는 비멱등이므로 한 번만 나가야 한다.
+            assert_eq!(
+                seen.load(Ordering::SeqCst),
+                1,
+                "삭제 요청이 두 번 이상 나갔다 — 맹목 재전송은 삭제를 두 번 거는 길이다"
+            );
+
+            // ⑶ ★양성 대조(Class 1) — 소켓이 없으면 **바이트가 한 개도** 나가지 않는다.
+            let err2 = rpc_full_classified(&gone_sock, "trash.delete", json!({"confirm_id": "cf-2"}))
+                .await
+                .expect_err("없는 소켓이면 실패여야 한다");
+            assert_eq!(
+                err2.0,
+                TransportClass::Definite,
+                "바이트 미송신이 전송 불확실로 분류됐다 — 안전한 재시도를 막는다: {}",
+                err2.1
+            );
+            assert_eq!(seen.load(Ordering::SeqCst), 1, "대조군이 모의 데몬에 닿았다");
+        });
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

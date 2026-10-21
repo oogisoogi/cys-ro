@@ -745,24 +745,32 @@ fn load_records_from(path: &PathBuf) -> Result<Vec<ApprovalRecord>, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(format!("{}: 읽기 실패: {e}", path.display())),
     };
+    decode_records_text(&content).map_err(|m| format!("{}: {m}", path.display()))
+}
+
+/// 승인 저장소 **텍스트**의 단일 디코더(F7 · 0.14.50) — `load_records_from` 의 파일 읽기 뒤 몸통 그대로이고
+/// 경로만 뺐다(오류 문구는 호출부가 `경로: ` 를 앞에 붙인다). 스케줄의 은퇴 시드 흔적 검사도 같은 함수를 쓴다 —
+/// 같은 바이트를 두 길로 읽어 한쪽만 받아들이던 틈(알려진 필드 중복)을 없앤다. 동작은 입력마다 종전과 같다.
+#[deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+pub(crate) fn decode_records_text(content: &str) -> Result<Vec<ApprovalRecord>, String> {
     // ★1.1.8 병합(우리 1.1.7 fix-blockers A1-F1 오버레이): 윈도 편집기가 붙인 BOM 은 벗긴다 — 벗기지 않으면 유효한
     //   승인 파일이 영구 판독 실패(= 무저장 · 새 승인 불가)로 굳는다(`load_records_zero_bytes_is_empty_and_bom_is_stripped`).
-    let content = content.strip_prefix('\u{feff}').map(str::to_string).unwrap_or(content);
+    //   ★v0.14.51 편입: 원작자 단일 디코더(F7) 안으로 옮겼다 — 로더와 스케줄 은퇴 시드 검사가 같은 바이트를 같게 읽는다.
+    let content = content.strip_prefix('\u{feff}').unwrap_or(content);
     // 빈 파일은 '아직 아무 것도 안 썼다'로 읽는다(0바이트는 JSON 이 아니다 — 여기서 Err 로
     // 접으면 첫 서명 전 상태의 데몬이 승인을 만들 수 없다).
     if content.trim().is_empty() {
         return Ok(Vec::new());
     }
     // ① {"records":[...]} 형태
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(content) {
         if let Some(arr) = v.get("records") {
             return serde_json::from_value::<Vec<ApprovalRecord>>(arr.clone())
-                .map_err(|e| format!("{}: records 디코드 실패: {e}", path.display()));
+                .map_err(|e| format!("records 디코드 실패: {e}"));
         }
     }
     // ② bare 배열
-    serde_json::from_str::<Vec<ApprovalRecord>>(&content)
-        .map_err(|e| format!("{}: JSON 디코드 실패: {e}", path.display()))
+    serde_json::from_str::<Vec<ApprovalRecord>>(content).map_err(|e| format!("JSON 디코드 실패: {e}"))
 }
 
 /// 저장 포맷: `{"records":[...]}` 또는 bare 배열 둘 다 디코드(cmux 하위호환).

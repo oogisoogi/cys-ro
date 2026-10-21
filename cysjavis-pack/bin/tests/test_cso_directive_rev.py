@@ -2438,11 +2438,20 @@ class CsoDirectiveRevision(unittest.TestCase):
         숫자를 강제하는 검체가 저장소에 없었다(CSO 는 여유가 3 B). 줄 수는 CEO 합성 제출단위 핀이 간접으로 막지만 바이트는 아무것도 막지 않는다.
         ★래칫: 지침을 **줄이면 아래 상한도 함께 낮춘다** — 줄인 커밋이 이 숫자를 새 크기로 내리지 않으면 그 여유가 다음 증가를 조용히 받아 준다. 늘려야 할 때는 이 숫자를 올리는 것이 아니라 먼저 다른 곳을 줄인다
         (예산을 올리는 변경은 그 사유를 커밋 메시지에 적는다 — 이 핀이 붉어지는 순간이 그 결정을 사람 눈에 올리는 자리다). 단위 = 파일의 UTF-8 바이트(줄바꿈 포함)."""
+        # ★2026-10-14 재기준선(S64-IMPL · 부서장 결정, 조건 5개) — 모양은 그대로다: 정확한 **최대값** 단언(≤), 창·허용오차·퍼센트 여유 없음.
+        #   ① 무엇이 얼마나 키웠나 (단위 B · 출처 = 각 커밋의 `git cat-file -s <sha>:cysjavis-pack/directives/<파일>`):
+        #     CSO    57,365(0a20e3ba) → 57,698(S8 만료 약속 삭제문: 8211c199 이 되돌림 2분 뒤 57,723 으로 다시 넘겼고, fba8da68 이 되돌림을 되돌려 57,698)  +333
+        #                              → 59,715(33288649: 안전지점·사이클 예고 16줄)                                                          +2,017   = 59,715
+        #     MASTER 98,706(0a20e3ba) → 100,723(33288649: 같은 16줄)                                                                         +2,017   = 100,723
+        #     CEO    107,320(0a20e3ba) → 107,422(S8: 8211c199·fba8da68 의 같은 문안)  +102
+        #                              → 114,340(bec69f49: 오너 복원 조항 59줄, 6,918 B)  +6,918
+        #                              → 116,357(33288649: 같은 16줄)                    +2,017   = 116,357   (CEO 는 MASTER 바이트 연접이라 16줄이 두 번 센다)
+        #   ② 받아들인 것 = **오늘 현장의 헌장 크기 그대로**다. 앞으로 늘려도 된다는 면허가 **아니다** — 다음 증가는 이 핀이 다시 붉어져 사람 결정으로 올라온다.
+        #     되돌릴 때: 지침을 줄이는 커밋이 아래 세 숫자를 새 크기로 함께 내린다(래칫). 상한 = 이 날의 실측 크기이므로 1 B 만 늘어도 적색이다.
         size = lambda name: os.path.getsize(os.path.join(REAL_DIRECTIVES_DIR, name))   # 실제 파일(전체 검체 재실행이 DIRECTIVES_DIR 을 임시 사본으로 바꿔도 영향 없다)
-        # ★cso-round(1.1.8 재빌드): §1-1 허용 경로 줄 정정(SESSION_STATE = 좌석 `_round/`)으로 21B 줄어 상한을 함께 낮춘다(57,368 → 57,347).
-        self.assertLessEqual(size("CSO_DIRECTIVE.md"), 57347, "CSO_DIRECTIVE.md 바이트 예산(57,347) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다)")
-        self.assertLessEqual(size("MASTER_DIRECTIVE.md"), 99272, "MASTER_DIRECTIVE.md 바이트 예산(99,272) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다)")
-        self.assertLessEqual(size("CEO_TEMPLATE.md"), 107886, "CEO_TEMPLATE.md 바이트 예산(107,886) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다 · 생성물이라 MASTER 와 머리글 바이트가 함께 든다)")
+        self.assertLessEqual(size("CSO_DIRECTIVE.md"), 59715, "CSO_DIRECTIVE.md 바이트 예산(59,715) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다)")
+        self.assertLessEqual(size("MASTER_DIRECTIVE.md"), 100723, "MASTER_DIRECTIVE.md 바이트 예산(100,723) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다)")
+        self.assertLessEqual(size("CEO_TEMPLATE.md"), 116357, "CEO_TEMPLATE.md 바이트 예산(116,357) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다 · 생성물이라 MASTER 와 머리글 바이트가 함께 든다)")
 
     def test_utf8_and_lf(self):
         """세 지시문 모두 엄격 UTF-8 로 읽히고 CRLF 가 없어야 한다(Windows 체크아웃 회귀)."""
@@ -2666,18 +2675,60 @@ class TriageRemainingIssues(unittest.TestCase):
                     "공백 뒤 접미 반전을 어떤 판정기도 잡지 못했다(%s)" % label)
 
     # ── A1 · C3(양 리뷰어 major) ──────────────────────────────────────────
-    def test_triage_section2_does_not_assert_zero_loss(self):
-        """§2 무응답 정책은 §1-2 ⑦ 의 증명 범위와 같은 말을 해야 한다.
+    def test_triage_section2_has_no_known_zero_loss_after_execution_phrasing(self):
+        """★이것은 **알려진 옛 결함 문구의 감시선(tripwire)** 이다 — 불변식의 증명이 아니다.
 
-        §1-2 ⑦ 은 checksum·mtime 이 **저장된 파일만** 증명하며 "'손실 0' 을 단언하지 마라" 고
-        규정하는데, §2 는 같은 검증을 `신선(미저장 작업 없음 확정)=…집행(손실0)` 으로 정의한다 —
-        같은 문서가 같은 상태에서 반대로 지시한다."""
+        불변식(문서화된 관례 · 기계가 증명하지 않는다): §2 무응답 정책은 §1-2 ⑦ 의 증명 범위와 같은 말을 해야
+        한다 — checksum·mtime 은 **저장된 파일만** 증명하므로 clear 를 **집행한 뒤** 손실이 없다고 단언하지 않는다.
+        옛 결함은 같은 검증을 `신선(미저장 작업 없음 확정)=…clear 집행(손실0)` 으로 정의해 같은 문서가 같은 상태에서
+        반대로 지시한 것이다.
+
+        이 검사가 잡는 것: 공백·줄바꿈·`**` 강조를 접은 뒤(squash) `ZERO_LOSS_AFTER_EXECUTION_PHRASES_CSO`
+        의 **알려진 문구 조각들**이 §2 에 있는가.
+        ★그 목록의 **실제 형태**(⑻ codex N1 — 종전 서술이 목록보다 좁게 약속했다): 분류는 이 파일의
+        `ZERO_LOSS_PHRASE_CLASSES_CSO` 가 정본이고 손으로 요약하지 않는다. 분류가 목록과 어긋나면
+        `test_zero_loss_phrase_classification_matches_the_watch_list` 가 적색이 된다. 분류 결과는
+        **셋 중 하나만** 집행 분기를 문구 안에 담는다(`clear 집행(손실0)`) — `미저장 작업 없음 확정` 은
+        옛 결함 문장의 **신선 정의** 쪽이고, `손실 0을` 은 **완결 문구가 아니라 조각**이다.
+        ⇒ ★그러므로 이 감시선은 "집행 분기를 품은 완결형만 건다" 가 **아니다**. 알려진 결함 문장의
+        **조각들**을 건다. 그 조각 둘은 참인 문장에도 나타날 수 있어 **거짓 적색의 여지**가 남는다
+        (관례로 남긴 한계 · 리뷰어 읽기가 받친다).
+        ★이 검사가 **잡지 못하는 것**(커버 범위를 부풀리지 않는다): 다른 어휘('집행 후 손실 없음'·'무손실'·'유실 0'),
+        전각·제로폭 문자로 쓴 같은 문구, 집행/미집행 분기를 나눠 쓴 서술. 그 범위는 리뷰어의 읽기 관례다.
+        ★맨 토큰 `손실0`·`손실0)` 는 감시 문구에서 뺐다 — `…clear 미집행 · 손실 0)` 처럼 **집행하지 않았으니
+        손실이 없다**는 참인 문장까지 붉혔기 때문이다(거짓 적색)."""
         section2 = section_body(self.cso, "## 2.")
         folded = squash(section2)
-        for banned in ("미저장 작업 없음 확정", "손실0", "손실 0을", "손실0)"):
-            with self.subTest(token=banned):
+        for banned in ZERO_LOSS_AFTER_EXECUTION_PHRASES_CSO:
+            with self.subTest(phrase=banned):
                 self.assertNotIn(squash(banned), folded,
-                                 "§2 가 §1-2 ⑦ 이 금지한 단언을 그대로 지시한다: %r" % banned)
+                                 "§2 가 알려진 옛 결함 문구(집행 뒤 손실 0 단언)를 지시한다: %r" % banned)
+
+    # ── ⑻ codex N1 ────────────────────────────────────────────────────────
+    def test_zero_loss_phrase_classification_matches_the_watch_list(self):
+        """★이 검사의 존재 이유: **서술이 감시 목록보다 넓어지는 것**을 기계가 막는다(codex N1).
+
+        독스트링은 변이로 재기 어렵다 — 그래서 설명을 산문이 아니라 **데이터**(분류표)로 두고,
+        그 데이터가 감시 목록과 **집합으로 같은지** 여기서 단언한다. 문구를 더하거나 빼면서 분류를
+        갱신하지 않으면 이 줄이 적색이 되므로, 다음 사람은 '분류하지 않은 감시 문구' 를 남길 수 없다.
+        ⇒ 독스트링 자신은 여전히 기계가 증명하지 않는다(관례). 그러나 독스트링이 가리키는 **분류**는
+        증명된다 — 설명을 목록에서 파생시키라는 요구가 닫히는 자리가 거기다."""
+        self.assertEqual(
+            set(ZERO_LOSS_PHRASE_CLASSES_CSO), set(ZERO_LOSS_AFTER_EXECUTION_PHRASES_CSO),
+            "감시 목록과 분류표가 어긋난다 — 문구를 고쳤으면 분류도 같이 고쳐라")
+        for phrase, (complete, has_branch, note) in ZERO_LOSS_PHRASE_CLASSES_CSO.items():
+            with self.subTest(phrase=phrase):
+                self.assertIsInstance(note, str)
+                self.assertTrue(note, "분류에 설명이 없다")
+                # ★분류는 선언이 아니라 **문구에서 파생**된다: '집행' 이 문구 안에 있는가.
+                self.assertEqual(has_branch, "집행" in phrase,
+                                 "집행 분기 분류가 문구의 실제 글자와 어긋난다: %r" % phrase)
+                self.assertEqual(complete, not phrase.rstrip().endswith(("을", "를", "이", "가")),
+                                 "완결형 분류가 문구의 실제 꼴과 어긋난다: %r" % phrase)
+        # ★그리고 **하나뿐**이라는 사실 자체를 핀한다 — 종전 서술("셋 모두")이 틀렸던 자리다.
+        self.assertEqual(
+            [p for p in ZERO_LOSS_AFTER_EXECUTION_PHRASES_CSO if "집행" in p], ["clear 집행(손실0)"],
+            "집행 분기를 문구 안에 담는 감시 문구가 하나가 아니다 — 독스트링 서술을 다시 보라")
 
     # ── C4(codex major) ───────────────────────────────────────────────────
     def test_triage_cycle_agent_rebaseline_is_disclosed(self):
@@ -2759,6 +2810,11 @@ class TriageRemainingIssues(unittest.TestCase):
                     for test in loader.loadTestsFromTestCase(case):
                         if test.id().endswith(_FULL_SUITE_TEST):
                             continue
+                        # ★증폭기 차단(S64-IMPL): 바이트 예산 핀은 편집된 사본이 아니라 **실제 파일**을 잰다(REAL_DIRECTIVES_DIR) —
+                        #   정당한 편집이 무엇을 하든 결과가 같으므로 셀 안에서 다시 돌릴 이유가 없고, 돌리면 진짜 예산 적색 1건이
+                        #   8셀로 복제된다(13 = 독립 5 + 그림자 8 의 원인). 이 핀은 위에서 한 번만 센다.
+                        if test.id().endswith(_REAL_FILE_PINS):
+                            continue
                         suite.addTest(test)
                 return suite.run(unittest.TestResult())
             finally:
@@ -2821,11 +2877,17 @@ class TriageRemainingIssues(unittest.TestCase):
                                 or any(v != self.raw[k] for k, v in (extra or {}).items()),
                                 "정당한 편집 앵커 부재(검체가 낡았다)")
                 result = full_suite_rc(cso_text, template_text, extra)
+                if not result.wasSuccessful():
+                    # ★13 이 13개의 독립 원인으로 읽히지 않게 같은 줄에 센다: 편집하지 않은 사본에서도 붉은 것(독립) + 이 편집이 새로 붉힌 것(파생).
+                    base = full_suite_rc(cso, template)
+                    base_ids = {t[0].id() for t in base.failures + base.errors}
+                    ids = [t[0].id() for t in result.failures + result.errors]
+                    indep = [i for i in ids if i in base_ids]
                 self.assertTrue(
                     result.wasSuccessful(),
-                    "정당한 편집이 전체 검체에서 거짓 적색을 냈다(%s): failures=%d errors=%d\n%s"
-                    % (label, len(result.failures), len(result.errors),
-                       "\n".join(t[0].id() for t in result.failures + result.errors)))
+                    "정당한 편집이 전체 검체에서 거짓 적색을 냈다(%s): 실패 %d = 독립(미편집 사본도 붉음) %d + 이 편집이 새로 붉힘 %d\n%s"
+                    % (label, len(ids), len(indep), len(ids) - len(indep), "\n".join(ids))
+                    if not result.wasSuccessful() else "")
 
         # ★D7 음성 대조 — **같은 입력**(조항 내부 주석 문서)에서 조항을 지우거나 뒤집으면 전체
         #   검체는 붉어야 한다. 이것이 없으면 위 통과 대조는 "투영을 느슨하게 해서 다 통과" 로도
@@ -2909,9 +2971,28 @@ INVERTED_PROHIBITIONS = (
     "`tail -f cysd.log` 를 켜 두라.",
     "위 문단은 참고일 뿐 현행 규칙이 아니다.",
 )
-# MASTER §11-6 에서 **사라져야** 하는 옛 단언(CSO §2 와 같은 방향으로 고쳤다는 증거).
-MASTER_BANNED_ZERO_LOSS = ("미저장 작업 없음 확정", "clear 집행(손실0)", "손실0)")
+# MASTER §11-6 에서 **사라져야** 하는 옛 단언(CSO §2 와 같은 방향으로 고쳤다는 증거) — 알려진 **완결 문구** 감시선.
+# ★맨 `손실0)` 는 뺐다: `clear 미집행 · 손실 0)`(집행하지 않았으니 손실 없음 — 참)까지 붉히는 거짓 적색이었다.
+# ★잡지 못하는 것: 다른 어휘·전각/제로폭 문자·분기를 나눠 쓴 서술 — 불변식은 문서화된 관례이고 이 상수는 증명이 아니다.
+ZERO_LOSS_AFTER_EXECUTION_PHRASES_MASTER = ("미저장 작업 없음 확정", "clear 집행(손실0)")
+# CSO §2 쪽 감시 문구(같은 방향) — 위 상수와 같은 한계를 가진다. 맨 `손실0`·`손실0)` 는 같은 이유로 뺐다.
+ZERO_LOSS_AFTER_EXECUTION_PHRASES_CSO = ("미저장 작업 없음 확정", "clear 집행(손실0)", "손실 0을")
+# ★⑻ codex N1 수리 — 감시 문구의 **분류표**. 독스트링이 "셋 모두 집행 분기를 품은 완결형" 이라고
+#   적었는데 실제 목록은 그보다 넓다(아래 분류가 그 사실이다). 설명을 손으로 요약하지 않고
+#   **목록에서 파생**시키기 위해 분류를 데이터로 둔다 — 그리고 분류와 목록이 어긋나면
+#   `test_zero_loss_phrase_classification_matches_the_watch_list` 가 **적색**이 된다
+#   (서술이 목록보다 넓어지는 일을 기계가 막는 자리).
+#   ⛔감시 문구를 더하거나 빼지 않았다(부서장 ⒞ — 금지 어휘 확장 금지 · ⒝⒤ 를 골랐다: 셋은 **한
+#   문장**(`신선(미저장 작업 없음 확정)=…clear 집행(손실0)`)의 조각이라 빼면 그 결함의 부분 재출현을
+#   놓친다. 고른 이유는 보고에 적었다).
+ZERO_LOSS_PHRASE_CLASSES_CSO = {
+    # 문구: (완결형인가, 집행 분기를 품는가, 무엇인가)
+    "미저장 작업 없음 확정": (True, False, "옛 결함 문장의 **신선 정의** 쪽 — '집행' 을 담지 않는다"),
+    "clear 집행(손실0)": (True, True, "'집행' 을 담은 완결형 — 분기가 문구 안에 있다"),
+    "손실 0을": (False, False, "★**조각** — 옛 결함 문장의 꼬리(조사까지만)"),
+}
 _FULL_SUITE_TEST = "test_triage_positive_controls_pass_through_full_suite"
+_REAL_FILE_PINS = ("test_directive_byte_budget_ratchet",)   # 실제 저장소 파일을 재는 핀 — 전체 검체 셀 안에서 제외(증폭기 차단)
 _IN_FULL_SUITE = False          # C6 의 재귀 가드(전체 검체 안에서 자기 자신을 다시 돌리지 않는다)
 
 
@@ -3042,20 +3123,26 @@ class ConvergenceRoundTwo(unittest.TestCase):
         self.assertTrue(any_detector_fires(removed), "고지 삭제를 어떤 판정기도 잡지 못했다")
 
     # ── 형제 지침·생성물의 무손실 단언(reviewer-claude major) ─────────────
-    def test_master_no_response_policy_matches_cso(self):
-        """MASTER §11-6 과 그 생성물 CEO_TEMPLATE 도 CSO §2·§1-2 ⑦ 과 같은 문면이어야 한다.
+    def test_master_and_ceo_carry_no_known_zero_loss_phrasing(self):
+        """★알려진 옛 결함 문구의 감시선(tripwire) — 불변식의 증명이 아니다(CSO §2 쪽과 같은 한계).
 
         `①신선(미저장 작업 없음 확정) → cycle-agent로 clear 집행(손실0)` 이 남아 있으면 ①오너에게
-        가는 거짓 보증이 그대로이고 ②같은 절차를 두 지침이 반대로 지시한다."""
+        가는 거짓 보증이 그대로이고 ②같은 절차를 두 지침이 반대로 지시한다. 공백·줄바꿈·`**` 를 접은 뒤
+        완결 문구가 **문서 전체**에 있는지만 본다. 잡지 못하는 것: 다른 어휘·전각/제로폭 문자·분기를 나눠 쓴 서술."""
+        for name in ("MASTER_DIRECTIVE.md", "CEO_TEMPLATE.md"):
+            folded = squash(self.raw[name])
+            for banned in ZERO_LOSS_AFTER_EXECUTION_PHRASES_MASTER:
+                with self.subTest(directive=name, phrase=banned):
+                    self.assertNotIn(squash(banned), folded,
+                                     "%s 가 알려진 옛 결함 문구(집행 뒤 손실 0 단언)를 유지한다: %r" % (name, banned))
+
+    def test_master_no_response_policy_matches_cso(self):
+        """MASTER §11-6 과 그 생성물 CEO_TEMPLATE 도 CSO §2·§1-2 ⑦ 과 같은 **개정 문면**을 정확히 1회 가져야 한다
+        (완결 조항 핀 — 감시선이 아니다). 금지 문구 감시선은 위 `…carry_no_known_zero_loss_phrasing` 이다."""
         master = self.raw["MASTER_DIRECTIVE.md"]
         ceo = self.raw["CEO_TEMPLATE.md"]
         clause = dict(SAFETY_CLAUSES["MASTER_DIRECTIVE.md"])["무응답 무손실 단언 금지"]
         for name, raw in (("MASTER_DIRECTIVE.md", master), ("CEO_TEMPLATE.md", ceo)):
-            folded = squash(raw)
-            for banned in MASTER_BANNED_ZERO_LOSS:
-                with self.subTest(directive=name, token=banned):
-                    self.assertNotIn(squash(banned), folded,
-                                     "%s 가 금지된 무손실 단언을 유지한다: %r" % (name, banned))
             with self.subTest(directive=name, clause="무응답 무손실 단언 금지"):
                 spans = bounded_spans(normalize(strip_html_comments(raw)), normalize(clause))
                 self.assertEqual(len(spans), 1,

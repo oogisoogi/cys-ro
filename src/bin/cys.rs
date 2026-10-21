@@ -665,10 +665,14 @@ enum Command {
         /// 커스터마이즈 실태 리포트 생성(로컬 파일 — 자발 제출용·자동 전송 없음)
         #[arg(long)]
         custom_report: bool,
+        /// ★F10: 모든 레인(기본 팩 + pack-dept-*)의 hooks/ 드리프트 표 — 읽기 전용(아무것도 쓰지 않고 데몬에 닿지 않는다 · 종료코드는 항상 0).
+        #[arg(long)]
+        lanes: bool,
     },
     /// 완전 초기화(팩토리 리셋) — 연습·사용 흔적 전부(부서·세션·대화기억·상태·훅·스킬링크)를
     /// cys-trash 로 격리하고 "설치 초기 상태"로 되돌린다. 라이선스·미등록 파일(오너 배치 *.env 등)은
-    /// 보존, 복구는 격리 폴더 manifest.json 역방향 mv(14일 후 reap 자동 소거). DESIGN-factory-reset.md
+    /// 보존, 복구는 격리 폴더 manifest.json 역방향 mv(★S8 이후 자동 소거 없음 — 격리본은 그대로
+    /// 보관되고 삭제는 Control Center 의 휴지통에서 오너가 명령한다). DESIGN-factory-reset.md
     FactoryReset {
         /// 쓰기 0 프리뷰 — 격리·보존·해제 계획만 표시하고 아무것도 바꾸지 않는다.
         #[arg(long)]
@@ -2127,13 +2131,14 @@ mod queue_list_row_tests {
             let g = arm.find(&call).unwrap_or_else(|| panic!("처방 줄 호출 소실: {call}"));
             let q = arm.find(queued_line).unwrap_or_else(|| panic!("stdout QUEUED 줄 소실: {queued_line}"));
             assert!(n < g && g < q, "{start}: 안내 줄 → 처방 줄 → stdout 순서여야 한다");
-            let print_at = arm[g..].find("eprintln!(\"{line}\")").expect("처방 줄은 eprintln 으로만 찍는다");
-            assert!(print_at < 160, "{start}: 호출 바로 뒤에서 stderr 로 찍는다");
+            // ★TOAST: 처방 줄은 경보 산문이라 alert_prose(끄는 단일 경유)로만 나간다 — 맨 eprintln/println 이 아니다.
+            let print_at = arm[g..].find("alert_prose(&line)").expect("처방 줄은 alert_prose 로만 찍는다");
+            assert!(print_at < 160, "{start}: 호출 바로 뒤에서 alert_prose 로 찍는다");
             assert_eq!(arm.matches("ghost_fallback_stderr_line(").count(), 1, "{start}: 처방 줄은 갈래당 한 번");
             // `eprintln!("{line}")` 도 부분 문자열로 `println!("{line}")` 를 품는다 — stdout 판은 앞 글자가 `e` 가 아닌 것만 센다.
             let total = arm.matches("println!(\"{line}\")").count();
             let stderr_only = arm.matches("eprintln!(\"{line}\")").count();
-            assert_eq!((total, stderr_only), (1, 1), "{start}: 처방 줄이 stdout 으로 나가면 안 된다(println 1 = eprintln 1)");
+            assert_eq!((total, stderr_only), (0, 0), "{start}: 처방 줄이 맨 출력 매크로로 나가면 안 된다(alert_prose 경유만)");
         }
     }
 
@@ -3466,6 +3471,36 @@ fn read_send_body(
     send_body_from_bytes(parts, raw.as_deref())
 }
 
+// ★0.14.51 TOAST 축 — 사람이 읽는 **경보 산문**의 stderr 싱크(큐 막힘·데몬 상태 경고)를 끈다(오너 2026-10-15 「전부 보이지 않게」·2026-10-12 「내부 신호는 없애지말라, 내 눈에서 보이지 않게만」).
+//   · 끄는 자리는 문구를 **만드는 함수**(queue_blocked_notice_lines 등 — 다른 소비자·`--json` 경로와 공유될 수 있다)가 아니라 바이트가 출력에 **닿는 호출부**다. 최초 판정(부서장)은 stderr 세 곳이었고 이후 넷이 더해져 **최종 재고는 아래 7곳**이다 — 최초 세 곳:
+//     `queue_durable_suffix`(durable=false 경고) · `warn_if_daemon_paused`(pause 안내) · `queue list` 의 막힌 좌석 안내 루프. 호출부는 지우지 않고 이 함수를 통한다 — 되돌리는 것은 아래 상수 한 줄이다.
+//   · 호출부 7곳 = stderr 6(위 3 + 유령 계수 처방 2 + 구데몬 --queued 경고 1) + stdout 1(`cys fleet` 도달불가 경고 산문 — fleet_unreachable_to, 머리줄 `■ 부서명` 은 남김). 전수 분해표 = _evidence/dept5-TOAST-impl-20261015/print-census.tsv.
+//   · 남기는 것: `--json` 필드·exit code(stdout/종료 코드 경로는 이 함수를 지나지 않는다) · 명령 오류·사용법·진단 stderr(eprintln! 336건 그대로) · `[approval]` 3건(명령 거부 사유라 경보가 아니다).
+//   · 시험: `toast_axis_*` — 쓰기 대상을 주입해 0 바이트를 단언하고, 세 호출부가 실제로 이 함수를 지나는지 소스 핀으로 못박는다.
+//   ★v0.14.51 편입(우리 · master#1a52b068 A안): 출하 값 = false — 우리 현재 산문 출력 유지(켜기는 박사님 화면 정책 · 다음 판 후보). 원작자 값은 true.
+const ALERT_PROSE_QUIET: bool = false;
+
+fn alert_prose_to<W: std::io::Write>(w: &mut W, line: &str, quiet: bool) {
+    if quiet {
+        return;
+    }
+    let _ = writeln!(w, "{line}");
+}
+
+fn alert_prose(line: &str) {
+    alert_prose_to(&mut std::io::stderr(), line, ALERT_PROSE_QUIET);
+}
+
+/// `cys fleet` 의 도달불가 부서 행(부서장 판정 R1 §1-3 + MAJOR12): 머리줄 `■ 부서명` 은 **데이터 뷰라 남기고**, 「⚠ 도달불가: 사유」 경고 산문만 `alert_prose_to` 로 끈다.
+/// `--json` 경로는 이 함수를 지나지 않는다(error 필드 그대로). 쓰기 대상·quiet 를 주입해 시험한다.
+/// ★머리줄 쓰기 오류는 **돌려준다**(codex R1 minor 3): 기준선은 `println!` 이라 stdout 이 닫힌 파이프면 패닉(`failed printing to stdout`)했는데, 이 함수가 오류를 삼키면 같은 상황이 조용한 exit 0 이 된다.
+/// 호출부가 기준선과 같은 패닉으로 이어 받는다. 경고 산문 쪽은 `alert_prose_to` 의 best-effort 그대로다(출하값은 quiet 라 쓰지 않는다).
+fn fleet_unreachable_to<W: std::io::Write>(w: &mut W, disp: &str, e: &str, quiet: bool) -> std::io::Result<()> {
+    writeln!(w, "\n■ {disp}")?;
+    alert_prose_to(w, &format!("   ⚠ 도달불가: {e}"), quiet);
+    Ok(())
+}
+
 /// ★B3 보조 — 큐 전환 직후 데몬이 pause 중이면 한 줄 경고한다.
 ///
 /// pause 중에는 큐 배달이 동결되므로(kill-switch 의미론 — 이 코드는 그 의미론을 **바꾸지
@@ -3488,9 +3523,9 @@ fn read_send_body(
 fn queue_durable_suffix(r: &serde_json::Value) -> &'static str {
     match r.get("durable").and_then(|v| v.as_bool()) {
         Some(false) => {
-            eprintln!(
+            alert_prose(
                 "[queue] 경고: 데몬이 큐 WAL 저장에 실패했다(durable=false) — 항목은 메모리 큐에 \
-                 있고 다음 틱이 재시도한다. 그 전에 데몬이 죽으면 이 메시지는 유실된다."
+                 있고 다음 틱이 재시도한다. 그 전에 데몬이 죽으면 이 메시지는 유실된다.",
             );
             " · durable=false"
         }
@@ -3501,7 +3536,7 @@ fn queue_durable_suffix(r: &serde_json::Value) -> &'static str {
 fn warn_if_daemon_paused() {
     if let Ok(r) = request("org.status", json!({})) {
         if r["paused"].as_bool() == Some(true) {
-            eprintln!("[queue] 데몬 pause 중 — 큐는 resume 후 배달됩니다");
+            alert_prose("[queue] 데몬 pause 중 — 큐는 resume 후 배달됩니다");
         }
     }
 }
@@ -5637,7 +5672,7 @@ fn run(command: Command) -> i32 {
                             );
                             // ★(0.14.43 · RQFIX I-8) 데몬이 유령 계수 처방을 붙여 거부했다면 그 처방을 안내 줄 바로 뒤에 한 줄 더(stderr 만 — stdout·종료 코드 무변경).
                             if let Some(line) = ghost_fallback_stderr_line("send", &e, sid) {
-                                eprintln!("{line}");
+                                alert_prose(&line); // ★TOAST: 사람 조치 처방 줄(유령 계수 Ctrl-U)은 경보 산문 — 끈다
                             }
                             // ★(0.14.41-fix1 · REVIEW1 F6) 모달(질문·선택 창)이 원인이면 관례적
                             //   `cys send-key Return` 이 더 이상 "빈 프롬프트의 무해한 Enter" 가 아니다 —
@@ -5734,7 +5769,7 @@ fn run(command: Command) -> i32 {
                                 );
                                 // ★(0.14.43 · RQFIX I-8) `cys send` 폴백과 같다 — 유령 처방이 붙은 거부면 안내 줄 뒤에 처방 한 줄(stderr).
                                 if let Some(line) = ghost_fallback_stderr_line("send-key", &e, sid) {
-                                    eprintln!("{line}");
+                                    alert_prose(&line); // ★TOAST
                                 }
                                 warn_if_daemon_paused();
                                 println!("QUEUED (depth {depth}){}", queue_durable_suffix(&r2));
@@ -5757,9 +5792,10 @@ fn run(command: Command) -> i32 {
                                 }
                                 // 구 데몬은 queued 파라미터를 모르고 즉시 주입한다 —
                                 // "QUEUED"로 오표시하지 않는다(skew의 결정론 신호).
-                                None => eprintln!(
+                                None => alert_prose(
+                                    // ★TOAST: 구데몬 버전 skew 경고는 경보 산문 — 끈다(주입 동작·종료 코드는 그대로)
                                     "[send-key] 경고: 데몬이 --queued를 지원하지 않아 \
-                                     직접 주입됨(구버전 cysd — 재기동으로 갱신하라)"
+                                     직접 주입됨(구버전 cysd — 재기동으로 갱신하라)",
                                 ),
                             }
                         }
@@ -5955,7 +5991,7 @@ fn run(command: Command) -> i32 {
                             }
                         }
                         for line in notices {
-                            eprintln!("{line}");
+                            alert_prose(&line);
                         }
                         0
                     })
@@ -6390,17 +6426,7 @@ fn run(command: Command) -> i32 {
             } else {
                 let dept_soul = cys::pack::dept_scope_of(&dir).is_some()
                     && (rel == "soul.md" || rel.ends_with("/soul.md"));
-                let meaning = if dept_soul && name == "seed-once" {
-                    "부서 soul — base 헌장 승계(최초 1회 시드), 존재하면 force 여도 불가침"
-                } else {
-                    match name {
-                        "custom" => "비출하 자작 파일 — 업데이트·치유·정리 전부 불가침(생존 보증 대상)",
-                        "user" => "사용자 소유 — 업데이트가 절대 덮지 않음(vendor 전진은 .new 병치)",
-                        "seed-once" => "런타임 상태 — 부재 시에만 시드, 존재하면 불가침",
-                        _ => "vendor 소유 — 수정본은 제자리 보존(kept-drift)·벤더 전진 시 자동 병합(충돌 시 .user 보존). 자작은 새 파일로",
-                    }
-                };
-                println!("{rel}: {name} — {meaning}");
+                println!("{}", pack_ownership_line(&rel, name, dept_soul));
             }
             return 0;
         }
@@ -6421,9 +6447,12 @@ fn run(command: Command) -> i32 {
             return run_pack_manifest(key_id, signed_at, expires_at, &min_binary_version, pack_version);
         }
 
-        Command::Doctor { fix, json, custom_report } => {
+        Command::Doctor { fix, json, custom_report, lanes } => {
             if custom_report {
                 return run_doctor_custom_report();
+            }
+            if lanes {
+                return run_doctor_lanes(json);
             }
             return run_doctor(fix, json);
         }
@@ -10629,6 +10658,39 @@ const RUNTIME_SEAL_RECOVERY: &str = "복구는 v0.14.30 이상으로 재설치 �
 폴더)을 통째로 교체하므로 오염 파일이 함께 사라지고 봉인이 자연 복원된다(부분 삭제 불요·권장하지 \
 않음). 전역 npm 설치가 원인이면 그 패키지를 앱 밖 prefix 로 다시 설치하라";
 
+/// ★F10: `hooks/` 행 → doctor 상세 조각. 센 행(drift · drift+behind · missing · unreadable)은 이름과 세 해시(디스크·매니페스트·vendor 앞 8자)로,
+/// 안 센 행(behind · extra)은 이름만. 고친 훅(drift 계열)이 있으면 C3 안내 문장을 한 번 붙인다.
+/// hooks/ 순회 불완전 한 줄(doctor · `--lanes` 공통 문구).
+fn hooks_incomplete_part(inc: &cys::pack::HooksIncomplete) -> String {
+    format!("★hooks/ 순회 불완전({}) — 이 점검은 hooks/ 전체를 보지 못했다(깨끗하다는 뜻이 아님)", inc.describe())
+}
+
+fn hook_drift_parts(rows: &[cys::pack::HookRow]) -> Vec<String> {
+    let sh = |h: &Option<String>| h.as_deref().map(cys::pack::short_hash).unwrap_or("-").to_string();
+    let mut parts = Vec::new();
+    let counted: Vec<String> = rows
+        .iter()
+        .filter(|r| r.state.counted())
+        .map(|r| format!("{}({}·디스크 {}·매니페스트 {}·vendor {})", r.rel, r.state.as_str(), sh(&r.disk), sh(&r.manifest), sh(&r.vendor)))
+        .collect();
+    if !counted.is_empty() {
+        parts.push(format!("★hooks 점검 {}건: {}", counted.len(), counted.join(", ")));
+    }
+    let names = |st: cys::pack::HookState| -> Vec<&str> { rows.iter().filter(|r| r.state == st).map(|r| r.rel.as_str()).collect() };
+    let behind = names(cys::pack::HookState::Behind);
+    if !behind.is_empty() {
+        parts.push(format!("hooks 설치 대기(behind) {}건: {} — 다음 설치가 갱신한다(등급 무관)", behind.len(), behind.join(", ")));
+    }
+    let extra = names(cys::pack::HookState::Extra);
+    if !extra.is_empty() {
+        parts.push(format!("hooks 자작(extra) {}건: {} — vendor 가 모르는 파일(등급 무관)", extra.len(), extra.join(", ")));
+    }
+    if rows.iter().any(|r| matches!(r.state, cys::pack::HookState::Drift | cys::pack::HookState::DriftBehind)) {
+        parts.push(cys::pack::HOOKS_LOCAL_GUIDANCE.to_string());
+    }
+    parts
+}
+
 /// ★T4: 팩 드리프트 관측 — 읽기 전용(--fix 무관 · "pack 본체 불가침" 계약 유지).
 /// manifest↔디스크 해시 대조 + 원장 kind 별 계상(pending_kind_counts 자구 동형 — pub(crate)라
 /// bin 비가시·직접 집계) + 손상 의심 라벨(cys::merge3::suspect_damage + json_gate import 소비 —
@@ -10676,7 +10738,8 @@ fn diag_pack_drift(ctx: &DoctorCtx) -> DiagItem {
     let mut missing: Vec<String> = Vec::new();
     for (rel, mhash) in &manifest {
         let p = ctx.pack_dir.join(rel);
-        match std::fs::read_to_string(&p) {
+        // ★F10 M2: 비정규 파일(FIFO 등)에서 doctor 가 멈추지 않도록 블로킹 없는 읽기를 쓴다(일반 파일의 결과는 종전과 같다).
+        match cys::pack::read_pack_text_bounded(&p) {
             Ok(d) => {
                 if &cys::pack::content_hash_pub(&d) != mhash {
                     let mut labeled = false;
@@ -10702,6 +10765,10 @@ fn diag_pack_drift(ctx: &DoctorCtx) -> DiagItem {
             Err(_) => missing.push(rel.clone()),
         }
     }
+    // ★F10(0.14.50): hooks/ 드리프트 보고 — 순수 분류기(pack::hooks_report)로 일곱 상태를 가른다. 읽기 전용이고 등급 계약은 그대로
+    //   (OK/WARN/SKIP · FAIL 없음): 고친 훅(drift · drift+behind) · 누락 · 판독 불가만 세고, 설치 대기(behind)와 자작(extra)은 이름만 올린다.
+    let hook_scan = cys::pack::hooks_report_scan(&ctx.pack_dir, &manifest, &cys::pack::vendor_hook_hashes());
+    let hook_rows = hook_scan.rows;
     let pending = cys::pack::load_merge_pending(&ctx.pack_dir);
     // ★성찰 차단 수리(계상 SOT 3분산): 자구 동형 count_kind 클로저 재구현 제거 —
     // pack::pending_kind_counts(pub 승격) 위임 소비. 신 kind 추가 시 계상기는 한 곳이고,
@@ -10765,6 +10832,11 @@ fn diag_pack_drift(ctx: &DoctorCtx) -> DiagItem {
             bin_set.len()
         ));
     }
+    parts.extend(hook_drift_parts(&hook_rows));
+    // ★F10 R2-m2: 순회가 끝까지 가지 못했으면 '깨끗함'으로 읽지 않는다 — 사유를 밝히고 WARN.
+    if let Some(inc) = &hook_scan.incomplete {
+        parts.push(hooks_incomplete_part(inc));
+    }
     parts.push(format!(
         "캡처 저장소 {cap_n}건 · {}(GC 없음 — 수동 정리 가능)",
         fmt_bytes(cap_bytes)
@@ -10780,7 +10852,8 @@ fn diag_pack_drift(ctx: &DoctorCtx) -> DiagItem {
             action.push_str(" · 판독 불가: cys init-pack");
         }
     }
-    let status = if !suspects.is_empty() || n_qr > 0 || !missing.is_empty() || unreadable > 0 {
+    let hooks_counted = hook_rows.iter().any(|r| r.state.counted()) || hook_scan.incomplete.is_some();
+    let status = if !suspects.is_empty() || n_qr > 0 || !missing.is_empty() || unreadable > 0 || hooks_counted {
         DiagStatus::Warn
     } else {
         DiagStatus::Ok
@@ -11199,6 +11272,138 @@ fn run_factory_reset(
             1
         }
     }
+}
+
+/// `cys pack-ownership <rel>` 의 사람용 한 줄(순수). ★F10 C3: vendor 소유 `hooks/` 파일에는 안내 문장(단일 출처 `pack::HOOKS_LOCAL_GUIDANCE`)을 덧붙인다.
+/// `--quiet` 어휘 4종({system,user,seed-once,custom})은 이 함수와 무관하게 그대로다.
+fn pack_ownership_line(rel: &str, name: &str, dept_soul: bool) -> String {
+    let meaning = if dept_soul && name == "seed-once" {
+        "부서 soul — base 헌장 승계(최초 1회 시드), 존재하면 force 여도 불가침"
+    } else {
+        match name {
+            "custom" => "비출하 자작 파일 — 업데이트·치유·정리 전부 불가침(생존 보증 대상)",
+            "user" => "사용자 소유 — 업데이트가 절대 덮지 않음(vendor 전진은 .new 병치)",
+            "seed-once" => "런타임 상태 — 부재 시에만 시드, 존재하면 불가침",
+            _ => "vendor 소유 — 수정본은 제자리 보존(kept-drift)·벤더 전진 시 자동 병합(충돌 시 .user 보존). 자작은 새 파일로",
+        }
+    };
+    if name == "system" && rel.starts_with("hooks/") {
+        return format!("{rel}: {name} — {meaning}\n{}", cys::pack::HOOKS_LOCAL_GUIDANCE);
+    }
+    format!("{rel}: {name} — {meaning}")
+}
+
+/// ★F10 `cys doctor --lanes` — 한 레인의 hooks/ 드리프트.
+struct LaneDrift {
+    lane: String,
+    pack_dir: std::path::PathBuf,
+    status: DiagStatus,
+    rows: Vec<cys::pack::HookRow>,
+    /// R2-m2: hooks/ 순회가 끝까지 가지 못한 사유(있으면 상태는 WARN 이다).
+    incomplete: Option<cys::pack::HooksIncomplete>,
+}
+
+/// 레인 열거(순수 읽기): `<cys_root>/pack`(기본) + `<cys_root>/pack-dept-*`. 같은 폴더의 두 철자는 한 번만(정규화 경로 기준).
+/// vendor 쪽은 인자로 받는다(운영은 실행 중인 바이너리의 임베드 팩 · 시험은 주입). 아무것도 만들지 않고 쓰지 않는다.
+fn lanes_report(cys_root: &std::path::Path, vendor: &std::collections::BTreeMap<String, String>) -> Vec<LaneDrift> {
+    let mut packs: Vec<(String, std::path::PathBuf)> = Vec::new();
+    let base = cys_root.join("pack");
+    if base.is_dir() {
+        packs.push(("base".to_string(), base));
+    }
+    let mut depts: Vec<(String, std::path::PathBuf)> = std::fs::read_dir(cys_root)
+        .map(|rd| {
+            rd.flatten()
+                .filter_map(|e| {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    let dept = name.strip_prefix("pack-dept-")?.to_string();
+                    (!dept.is_empty() && e.path().is_dir()).then(|| (format!("dept-{dept}"), e.path()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    depts.sort();
+    packs.extend(depts);
+    let mut seen: std::collections::BTreeSet<std::path::PathBuf> = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for (lane, dir) in packs {
+        let key = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+        if !seen.insert(key) {
+            continue;
+        }
+        let manifest: Option<std::collections::BTreeMap<String, String>> =
+            std::fs::read_to_string(dir.join(cys::pack::INSTALL_MANIFEST)).ok().and_then(|t| serde_json::from_str(&t).ok());
+        let (status, rows, incomplete) = match manifest {
+            None => (DiagStatus::Skip, Vec::new(), None),
+            Some(m) => {
+                let scan = cys::pack::hooks_report_scan(&dir, &m, vendor);
+                let st = if scan.rows.iter().any(|r| r.state.counted()) || scan.incomplete.is_some() { DiagStatus::Warn } else { DiagStatus::Ok };
+                (st, scan.rows, scan.incomplete)
+            }
+        };
+        out.push(LaneDrift { lane, pack_dir: dir, status, rows, incomplete });
+    }
+    out
+}
+
+fn render_lanes_text(lanes: &[LaneDrift]) -> String {
+    let mut o = String::new();
+    let word = |s: DiagStatus| match s {
+        DiagStatus::Ok => "OK",
+        DiagStatus::Warn => "WARN",
+        DiagStatus::Fail => "FAIL",
+        DiagStatus::Skip => "SKIP(매니페스트 없음 — 대조 불가)",
+    };
+    let mut any_drift = false;
+    for l in lanes {
+        let counted = l.rows.iter().filter(|r| r.state.counted()).count();
+        o.push_str(&format!("{}: {} — 확인할 파일 {counted}건 ({})\n", l.lane, word(l.status), l.pack_dir.display()));
+        if let Some(inc) = &l.incomplete {
+            o.push_str(&format!("  {}\n", hooks_incomplete_part(inc)));
+        }
+        for r in &l.rows {
+            let sh = |h: &Option<String>| h.as_deref().map(cys::pack::short_hash).unwrap_or("-").to_string();
+            any_drift |= matches!(r.state, cys::pack::HookState::Drift | cys::pack::HookState::DriftBehind);
+            o.push_str(&format!(
+                "  {} [{}] 디스크 {} · 매니페스트 {} · vendor {}{}\n",
+                r.rel,
+                r.state.as_str(),
+                sh(&r.disk),
+                sh(&r.manifest),
+                sh(&r.vendor),
+                if r.state.counted() { "" } else { " (등급 무관)" }
+            ));
+        }
+    }
+    if any_drift {
+        o.push_str(&format!("{}\n", cys::pack::HOOKS_LOCAL_GUIDANCE));
+    }
+    o
+}
+
+/// `cys doctor --lanes`: 읽기 전용 · 데몬 무접촉(connect/request 를 부르지 않는다 — 자동 기동 호출자가 되지 않는다) · 종료코드 0.
+fn run_doctor_lanes(json_out: bool) -> i32 {
+    let root = cys::pack::pack_dir().parent().map(|p| p.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("."));
+    let lanes = lanes_report(&root, &cys::pack::vendor_hook_hashes());
+    if json_out {
+        let arr: Vec<Value> = lanes
+            .iter()
+            .map(|l| {
+                json!({
+                    "lane": l.lane,
+                    "pack_dir": l.pack_dir.display().to_string(),
+                    "status": format!("{:?}", l.status).to_uppercase(),
+                    "incomplete": l.incomplete.as_ref().map(|i| i.describe()),
+                    "rows": l.rows.iter().map(|r| json!({"rel": r.rel, "state": r.state.as_str(), "counted": r.state.counted(),
+                        "disk": r.disk, "manifest": r.manifest, "vendor": r.vendor})).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&json!({"lanes": arr})).unwrap_or_default());
+    } else {
+        print!("{}", render_lanes_text(&lanes));
+    }
+    0
 }
 
 fn run_doctor(fix: bool, json_out: bool) -> i32 {
@@ -22228,8 +22433,37 @@ fn ctx_cell(s: &serde_json::Value) -> String {
     }
 }
 
+/// ★(0.14.51 · S2 §5.4) 상태 칸 — `cys status` 표에 찍는 낱말. **표시 전용**(판정·상태 변경 없음).
+/// 종료·에이전트 부재가 먼저이고, 그 밖에는 상태행의 `state` 를 그대로 쓴다. 단 **묵은 사이클 창**
+/// (`status.window` 가 있고 보류 상한이 지났다)은 맨낱말 `quiescing` 대신 `quiescing (stale Ns)` 로 찍는다 —
+/// 라벨이 설명하는 것보다 오래 살아 있다는 사실이 사람 눈에 보이지 않는 것이 S2 가 없애려는 침묵이다.
+/// 【묵음의 판정】 데몬이 **같은 술어로 이미 계산해 보낸** `window.queue_gate_open`(= `quiesce_hold_active` 의 부정)을
+/// 쓴다 — CLI 가 나이·상한으로 다시 유도하면 술어가 둘이 된다(델타 §5.2 m2 '복사 아닌 호출'과 같은 이유).
+/// 상한 0(축 끔)은 묵음이 아니다(`queue-axis-off` 가 그 사실을 싣는다 · 기존 데몬 동작과 같다).
+/// 【구 데몬】 `window` 가 없으면 종전 그대로 맨낱말이다(가산 키 부재 = 모름).
+fn state_cell(s: &serde_json::Value) -> String {
+    if s["exited"].as_bool().unwrap_or(false) {
+        return "exited!".to_string();
+    }
+    if s["agent_alive"].as_bool() == Some(false) {
+        return "agent✗".to_string();
+    }
+    let state = s["status"]["state"].as_str().unwrap_or("-");
+    let w = &s["status"]["window"];
+    if state == "quiescing"
+        && w["queue_gate_open"].as_bool() == Some(true)
+        && w["hold_secs"].as_u64().is_some_and(|h| h > 0)
+    {
+        if let Some(age) = w["age_secs"].as_f64() {
+            return format!("quiescing (stale {}s)", age.max(0.0).round() as u64);
+        }
+    }
+    state.to_string()
+}
+
 /// Tasks Control Center(CLI) — depts.json을 읽어 본부+각 부서 소켓에 org.status를 순회 집계한다.
-/// master 능동 모니터링: 모든 부서의 모든 노드가 지금 하는 업무를 1콜로 본다. 도달불가 부서는 표기.
+/// master 능동 모니터링: 모든 부서의 모든 노드가 지금 하는 업무를 1콜로 본다.
+/// 도달불가 부서는 머리줄(`■ 부서명`)만 표기한다 — 「⚠ 도달불가: 사유」 경고 산문은 TOAST 축이 끈다(`fleet_unreachable_to`·`--json` 의 error 필드는 그대로).
 fn run_fleet(as_json: bool) -> i32 {
     // RC-7: HOME 미설정(Windows) 함정 회피 — dirs 기반 공용 해소.
     let home = cys::home_dir().to_string_lossy().into_owned();
@@ -22277,7 +22511,10 @@ fn run_fleet(as_json: bool) -> i32 {
     for d in &out {
         let disp = d["department"].as_str().unwrap_or("");
         if let Some(e) = d["error"].as_str() {
-            println!("\n■ {disp}  ⚠ 도달불가: {e}");
+            // 머리줄 쓰기 실패(닫힌 파이프 등)는 기준선의 `println!` 과 같은 패닉으로 잇는다 — 조용한 exit 0 이 되지 않게(위 함수 주석).
+            if let Err(werr) = fleet_unreachable_to(&mut std::io::stdout(), disp, e, ALERT_PROSE_QUIET) {
+                panic!("failed printing to stdout: {werr}");
+            }
             continue;
         }
         let surfaces = d["surfaces"].as_array().cloned().unwrap_or_default();
@@ -22348,14 +22585,7 @@ fn run_status(as_json: bool) -> i32 {
     );
     println!("{header}");
     for s in r["surfaces"].as_array().cloned().unwrap_or_default() {
-        let exited = s["exited"].as_bool().unwrap_or(false);
-        let state = if exited {
-            "exited!".to_string()
-        } else if s["agent_alive"].as_bool() == Some(false) {
-            "agent✗".to_string()
-        } else {
-            s["status"]["state"].as_str().unwrap_or("-").to_string()
-        };
+        let state = state_cell(&s);
         let ctx = ctx_cell(&s);
         let task = s["status"]["task"]
             .as_str()
@@ -47565,6 +47795,48 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
     /// 실패 방향: 실측이 없고 자기보고가 낡거나 `age_secs` 가 결측이면 `?`(판정 불가)로
     /// 무너진다 — 값 쪽으로 접히면 낡은 추정이 60% 임계 판정의 입력이 된다(그것이 이 검체가 막는 사고).
     /// ⑦(0.14.31 감사): 종료 좌석(`exited=true`)의 동결 실측은 값이 아니라 `?` 다 — 데몬은 exited
+    /// ★(0.14.51 · S2 §5.4) 표 상태 칸 — 묵은 사이클 창은 맨낱말이 아니라 `quiescing (stale Ns)` 로 보인다.
+    /// 판정은 데몬이 보낸 `window.queue_gate_open`(같은 술어)로만 하고 CLI 는 나이·상한을 다시 유도하지 않는다.
+    /// 표시 전용이므로 이 함수는 아무것도 바꾸지 않는다(순수 — 입력 Value 하나).
+    #[test]
+    fn state_cell_marks_a_stale_quiescing_window_and_leaves_everything_else() {
+        // ⓐ 묵은 창(상한 지남 = 게이트 열림) → 표식 + 나이
+        let stale = json!({"status": {"state": "quiescing",
+            "window": {"queue_gate_open": true, "hold_secs": 600, "age_secs": 72.4}}});
+        assert_eq!(state_cell(&stale), "quiescing (stale 72s)");
+        // ⓑ 산 창(상한 안 = 게이트 닫힘) → 맨낱말 그대로
+        let live = json!({"status": {"state": "quiescing",
+            "window": {"queue_gate_open": false, "hold_secs": 600, "age_secs": 5.0}}});
+        assert_eq!(state_cell(&live), "quiescing");
+        // ⓒ 축 끔(상한 0)은 묵음이 아니다 — 맨낱말(그 사실은 reading=queue-axis-off 가 싣는다)
+        let off = json!({"status": {"state": "quiescing",
+            "window": {"queue_gate_open": true, "hold_secs": 0, "age_secs": 999.0}}});
+        assert_eq!(state_cell(&off), "quiescing");
+        // ⓓ 구 데몬(window 부재) → 종전 그대로 맨낱말
+        let old = json!({"status": {"state": "quiescing"}});
+        assert_eq!(state_cell(&old), "quiescing");
+        // ⓔ 나이 결측은 "방금"이 아니다 — 표식을 붙이지 않는다(모름 방향)
+        let noage = json!({"status": {"state": "quiescing",
+            "window": {"queue_gate_open": true, "hold_secs": 600}}});
+        assert_eq!(state_cell(&noage), "quiescing");
+        // ⓕ 음수 나이(시계 역행)는 0 으로 접어 찍는다 — 술어는 이미 절댓값으로 판정했다
+        let back = json!({"status": {"state": "quiescing",
+            "window": {"queue_gate_open": true, "hold_secs": 600, "age_secs": -700.0}}});
+        assert_eq!(state_cell(&back), "quiescing (stale 0s)");
+        // ⓖ 종료·에이전트 부재가 상태보다 먼저다(종전 순서 보존)
+        assert_eq!(state_cell(&json!({"exited": true, "status": {"state": "quiescing"}})), "exited!");
+        assert_eq!(
+            state_cell(&json!({"agent_alive": false, "status": {"state": "quiescing"}})),
+            "agent✗"
+        );
+        // ⓗ quiescing 이 아닌 상태는 window 가 있어도 손대지 않는다
+        let working = json!({"status": {"state": "working",
+            "window": {"queue_gate_open": true, "hold_secs": 600, "age_secs": 900.0}}});
+        assert_eq!(state_cell(&working), "working");
+        // ⓘ 상태행 결측
+        assert_eq!(state_cell(&json!({})), "-");
+    }
+
     /// 좌석의 usage 를 지우지 않는다(collect_tick 건너뜀). 값 쪽으로 접히면 죽은 좌석이 60% 목록에 남는다.
     #[test]
     fn ctx_cell_prefers_measured_and_degrades_stale_self_report() {
@@ -47940,6 +48212,227 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         assert_eq!(it.status, DiagStatus::Warn, "{}", it.detail);
         assert!(it.detail.contains("판독 불가 1건"), "{}", it.detail);
         assert_ne!(it.status, DiagStatus::Fail);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // ── F10 (0.14.50): hooks/ 드리프트 — 고친 훅은 WARN 으로 이름·해시 셋과 함께 보이되 FAIL 은 없다 ──
+    fn f10_two_embedded_hooks() -> (String, String, String, String) {
+        let v = cys::pack::vendor_hook_hashes();
+        let mut it = v.into_iter();
+        let (a, ah) = it.next().expect("임베드 hooks/ 첫 파일");
+        let (b, bh) = it.next().expect("임베드 hooks/ 둘째 파일");
+        (a, ah, b, bh)
+    }
+    fn f10_ctx(tag: &str) -> (DoctorCtx, std::path::PathBuf) {
+        let base = b2_tmp(tag);
+        let ctx = doctor_ctx_at(&base);
+        std::fs::create_dir_all(ctx.pack_dir.join("hooks")).unwrap();
+        (ctx, base)
+    }
+    fn f10_write_manifest(ctx: &DoctorCtx, m: &Value) {
+        std::fs::write(ctx.pack_dir.join(cys::pack::INSTALL_MANIFEST), serde_json::to_string_pretty(m).unwrap()).unwrap();
+    }
+
+    /// T10-1(설계 시험 1): 매니페스트 해시와 다른 훅 파일 → pack-drift 는 WARN 이고 파일을 이름과 세 해시(디스크·매니페스트·vendor)로 보인다.
+    #[test]
+    fn f10_t1_edited_hook_makes_pack_drift_warn_with_name_and_three_hashes() {
+        let _lock = DOCTOR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (ctx, base) = f10_ctx("f10-t1");
+        let (a, ah, _, _) = f10_two_embedded_hooks();
+        // 대조군: 디스크 = 매니페스트 = vendor → Ok.
+        let body = cys::pack::PACK_ALL.iter().find(|(r, _)| *r == a).unwrap().1;
+        std::fs::write(ctx.pack_dir.join(&a), body).unwrap();
+        f10_write_manifest(&ctx, &json!({ a.clone(): ah.clone() }));
+        let ctl = diag_pack_drift(&ctx);
+        assert_eq!(ctl.status, DiagStatus::Ok, "{}", ctl.detail);
+        // 수정: 같은 파일을 고친다.
+        std::fs::write(ctx.pack_dir.join(&a), format!("{body}\n# edited\n")).unwrap();
+        let it = diag_pack_drift(&ctx);
+        assert_eq!(it.status, DiagStatus::Warn, "{}", it.detail);
+        assert_eq!(it.name, "pack-drift");
+        assert!(it.detail.contains(&a), "{}", it.detail);
+        let disk = cys::pack::content_hash_pub(&format!("{body}\n# edited\n"));
+        for h in [&disk, &ah] {
+            assert!(it.detail.contains(cys::pack::short_hash(h)), "해시 {h} 의 앞 8자가 없다: {}", it.detail);
+        }
+        assert!(it.detail.contains("drift"), "{}", it.detail);
+        assert!(it.detail.contains(cys::pack::HOOKS_LOCAL_GUIDANCE), "C3 안내 문장이 drift 행 아래에 있어야 한다: {}", it.detail);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// T10-2 + T10-4: 등급은 FAIL 이 아니다 · `behind`(설치 대기)와 `extra`(자작)는 등급을 올리지 않는다.
+    #[test]
+    fn f10_t2_t4_never_fail_and_behind_extra_do_not_raise_the_grade() {
+        let _lock = DOCTOR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (ctx, base) = f10_ctx("f10-t24");
+        let (a, _, b, bh) = f10_two_embedded_hooks();
+        // a: 안 고쳤고 매니페스트가 옛 해시(= vendor 전진) → behind. 자작 훅 하나 → extra.
+        let abody = cys::pack::PACK_ALL.iter().find(|(r, _)| *r == a).unwrap().1;
+        std::fs::write(ctx.pack_dir.join(&a), abody).unwrap();
+        let bbody = cys::pack::PACK_ALL.iter().find(|(r, _)| *r == b).unwrap().1;
+        std::fs::write(ctx.pack_dir.join(&b), bbody).unwrap();
+        std::fs::write(ctx.pack_dir.join("hooks/my-own-hook.sh"), "echo mine\n").unwrap();
+        f10_write_manifest(&ctx, &json!({ a.clone(): cys::pack::content_hash_pub("옛 판\n"), b.clone(): bh }));
+        // a 의 디스크가 옛 판이어야 behind 다(디스크 = 매니페스트 ≠ vendor).
+        std::fs::write(ctx.pack_dir.join(&a), "옛 판\n").unwrap();
+        let it = diag_pack_drift(&ctx);
+        assert_eq!(it.status, DiagStatus::Ok, "behind/extra 는 등급을 올리지 않는다: {}", it.detail);
+        assert!(it.detail.contains("behind") && it.detail.contains(&a), "{}", it.detail);
+        assert!(it.detail.contains("extra") && it.detail.contains("my-own-hook.sh"), "{}", it.detail);
+        // 최악의 조합에서도 FAIL 은 없다.
+        std::fs::write(ctx.pack_dir.join(&b), [0xffu8, 0xfe]).unwrap();
+        std::fs::remove_file(ctx.pack_dir.join(&a)).unwrap();
+        let worst = diag_pack_drift(&ctx);
+        assert_eq!(worst.status, DiagStatus::Warn, "{}", worst.detail);
+        assert_ne!(worst.status, DiagStatus::Fail);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// F10 C3: `cys pack-ownership hooks/…` (vendor) 는 안내 문장을 같은 출처로 덧붙이고, 그 밖의 파일 · 다른 소유 등급은 종전 문구 그대로다.
+    #[test]
+    fn f10_c3_pack_ownership_line_carries_the_guidance_only_for_vendor_hooks() {
+        let hook = pack_ownership_line("hooks/guard.sh", "system", false);
+        assert!(hook.contains(cys::pack::HOOKS_LOCAL_GUIDANCE), "{hook}");
+        assert!(hook.starts_with("hooks/guard.sh: system — vendor 소유"), "종전 문구 보존: {hook}");
+        for (rel, name) in [("skills/x/SKILL.md", "system"), ("hooks/mine.sh", "custom"), ("hooks/u.sh", "user"), ("state.json", "seed-once")] {
+            let line = pack_ownership_line(rel, name, false);
+            assert!(!line.contains("~/.cys/local/hooks"), "{line}");
+        }
+        assert!(pack_ownership_line("soul.md", "seed-once", true).contains("부서 soul"));
+    }
+
+    /// T10-3(설계 시험 3): 두 레인(하나는 고친 훅) → WARN 한 레인과 OK 한 레인 · 폴더 목록 전후 동일(아무것도 쓰지 않음) · 소켓 접속 없음(소스 핀).
+    #[test]
+    fn f10_t3_lanes_report_two_scratch_packs_writes_nothing_and_never_connects() {
+        let root = b2_tmp("f10-t3");
+        let (a, ah, _, _) = f10_two_embedded_hooks();
+        let body = cys::pack::PACK_ALL.iter().find(|(r, _)| *r == a).unwrap().1;
+        let mk = |pack: &str, text: &str| {
+            let d = root.join(pack);
+            std::fs::create_dir_all(d.join("hooks")).unwrap();
+            std::fs::write(d.join(&a), text).unwrap();
+            std::fs::write(d.join(cys::pack::INSTALL_MANIFEST), serde_json::to_string(&json!({ a.clone(): ah.clone() })).unwrap()).unwrap();
+        };
+        mk("pack", body);
+        mk("pack-dept-x", &format!("{body}\n# edited\n"));
+        std::fs::create_dir_all(root.join("pack-dept-nomanifest")).unwrap();
+        let list = |r: &std::path::Path| {
+            let mut v = Vec::new();
+            fn walk(d: &std::path::Path, root: &std::path::Path, v: &mut Vec<String>) {
+                for e in std::fs::read_dir(d).unwrap().flatten() {
+                    v.push(format!("{}:{}", e.path().strip_prefix(root).unwrap().display(), e.metadata().map(|m| m.len()).unwrap_or(0)));
+                    if e.path().is_dir() { walk(&e.path(), root, v); }
+                }
+            }
+            walk(r, r, &mut v);
+            v.sort();
+            v
+        };
+        let before = list(&root);
+        let lanes = lanes_report(&root, &cys::pack::vendor_hook_hashes());
+        assert_eq!(list(&root), before, "보고가 파일을 썼다");
+        let by = |n: &str| lanes.iter().find(|l| l.lane == n).unwrap_or_else(|| panic!("레인 {n} 없음"));
+        assert_eq!(by("base").status, DiagStatus::Ok);
+        assert_eq!(by("dept-x").status, DiagStatus::Warn);
+        assert_eq!(by("dept-nomanifest").status, DiagStatus::Skip);
+        assert_eq!(by("dept-x").rows.len(), 1);
+        let text = render_lanes_text(&lanes);
+        assert!(text.contains("base: OK") && text.contains("dept-x: WARN") && text.contains(&a), "{text}");
+        assert!(text.contains(cys::pack::HOOKS_LOCAL_GUIDANCE));
+        // 소켓 접속 없음: 이 경로는 connect()/request() 를 부르지 않는다(자동 기동 호출자가 되지 않는다 — F8 과의 결합 점검).
+        let src = include_str!("cys.rs");
+        let start = src.find("\nfn run_doctor_lanes(").expect("앵커");
+        let body_src = &src[start..];
+        let body_src = &body_src[..body_src.find("\n}\n").unwrap()];
+        for forbidden in ["connect(", "request(", "request_on", "UnixStream", "socket_path("] {
+            assert!(!body_src.contains(forbidden), "run_doctor_lanes 가 {forbidden} 를 부른다");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// F10 M2(리뷰 1회차): hooks/ 아래 FIFO 가 있어도 doctor 와 --lanes 는 시한 안에 끝나고 WARN 이다(FAIL 아님) — 부팅·좌석을 막을 수 없다.
+    #[cfg(unix)]
+    #[test]
+    fn f10_m2_fifo_never_blocks_doctor_or_lanes_and_stays_warn() {
+        let _lock = DOCTOR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (ctx, base) = f10_ctx("f10-m2");
+        let (a, ah, _, _) = f10_two_embedded_hooks();
+        let body = cys::pack::PACK_ALL.iter().find(|(r, _)| *r == a).unwrap().1;
+        std::fs::write(ctx.pack_dir.join(&a), body).unwrap();
+        let mk = |rel: &str| {
+            let p = ctx.pack_dir.join(rel);
+            let st = std::process::Command::new("/usr/bin/mkfifo").arg(&p).status().unwrap();
+            assert!(st.success());
+            p
+        };
+        let extra = mk("hooks/local.pipe"); // 매니페스트에 없는 FIFO
+        let listed = mk("hooks/listed.pipe"); // 매니페스트에 있는 FIFO(종전 루프도 멈추던 자리)
+        f10_write_manifest(&ctx, &json!({ a.clone(): ah.clone(), "hooks/listed.pipe": cys::pack::content_hash_pub("x") }));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let pack_root = base.clone();
+        std::thread::spawn(move || {
+            let ctx2 = doctor_ctx_at(&pack_root);
+            let item = diag_pack_drift(&ctx2);
+            let lanes = lanes_report(&pack_root, &cys::pack::vendor_hook_hashes());
+            let _ = tx.send((item.status, item.detail, lanes.len()));
+        });
+        let got = rx.recv_timeout(std::time::Duration::from_secs(8));
+        if got.is_err() {
+            use std::os::unix::fs::OpenOptionsExt;
+            for f in [&extra, &listed] {
+                // R2-m4: 비블로킹으로 연다 — 읽는 쪽이 있으면 열려 풀어 주고, 없으면 즉시 실패한다(정리가 스스로 멈추지 않는다).
+                let _ = std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(f);
+            }
+        }
+        let (status, detail, _n) = got.expect("doctor/--lanes 가 FIFO 에서 8초 안에 끝나지 않았다(블로킹 읽기)");
+        assert_eq!(status, DiagStatus::Warn, "{detail}");
+        assert_ne!(status, DiagStatus::Fail);
+        assert!(detail.contains("hooks/local.pipe") && detail.contains("hooks/listed.pipe"), "{detail}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// R2-m2: hooks/ 순회가 상한에 닿으면 doctor 와 --lanes 는 '깨끗함(OK)'이 아니라 WARN 과 사유를 낸다(대조군은 OK).
+    #[test]
+    fn f10_r2m2_incomplete_hooks_scan_is_warn_with_reason_never_ok() {
+        let _lock = DOCTOR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (ctx, base) = f10_ctx("f10-r2m2");
+        let (a, ah, _, _) = f10_two_embedded_hooks();
+        let body = cys::pack::PACK_ALL.iter().find(|(r, _)| *r == a).unwrap().1;
+        std::fs::write(ctx.pack_dir.join(&a), body).unwrap();
+        f10_write_manifest(&ctx, &json!({ a.clone(): ah.clone() }));
+        // 대조군: 완전한 순회 → OK.
+        let ctl = diag_pack_drift(&ctx);
+        assert_eq!(ctl.status, DiagStatus::Ok, "{}", ctl.detail);
+        assert!(!ctl.detail.contains("순회 불완전"));
+        // 디렉터리만 4096+ 개 — 파일 셈만으로는 상한에 닿지 않는 나무.
+        for i in 0..4100 {
+            std::fs::create_dir(ctx.pack_dir.join("hooks").join(format!("w{i}"))).unwrap();
+        }
+        let item = diag_pack_drift(&ctx);
+        assert_eq!(item.status, DiagStatus::Warn, "{}", item.detail);
+        assert!(item.detail.contains("순회 불완전") && item.detail.contains("항목 수 상한"), "{}", item.detail);
+        let lanes = lanes_report(&base, &cys::pack::vendor_hook_hashes());
+        let l = lanes.iter().find(|l| l.pack_dir == ctx.pack_dir).expect("레인");
+        assert_eq!(l.status, DiagStatus::Warn);
+        assert!(render_lanes_text(&lanes).contains("순회 불완전"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// T10-7(합친 행 포함): 판독 불가는 vendor 전진에 가려지지 않고(behind 로 둔갑하지 않고) 세어진다.
+    #[test]
+    fn f10_t7_unreadable_stays_unreadable_and_counted_even_when_vendor_advanced() {
+        let _lock = DOCTOR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (ctx, base) = f10_ctx("f10-t7");
+        let (a, _, b, _) = f10_two_embedded_hooks();
+        // 매니페스트는 둘 다 옛 해시(= 두 파일 모두 vendor 전진). a 는 판독 불가, b 는 안 고친 옛 판(behind).
+        f10_write_manifest(&ctx, &json!({ a.clone(): cys::pack::content_hash_pub("옛 a\n"), b.clone(): cys::pack::content_hash_pub("옛 b\n") }));
+        std::fs::write(ctx.pack_dir.join(&a), [0xffu8, 0xfe, 0x00]).unwrap();
+        std::fs::write(ctx.pack_dir.join(&b), "옛 b\n").unwrap();
+        let it = diag_pack_drift(&ctx);
+        assert_eq!(it.status, DiagStatus::Warn, "{}", it.detail);
+        assert!(it.detail.contains(&format!("{a}(unreadable")), "합친 행은 behind 가 아니라 unreadable 이다: {}", it.detail);
+        assert!(it.detail.contains("판독 불가 1건"), "종전 계수 문구 유지: {}", it.detail);
+        assert!(it.detail.contains("behind") && it.detail.contains(&b), "{}", it.detail);
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -49399,5 +49892,102 @@ mod usage_accounts_line_tests {
         let src = include_str!("cys.rs");
         let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계")];
         assert!(!prod.contains("본부 데몬 기준"), "옛 안내 문구가 프로덕션에 남아 있다(부서 좌석에서 실행하면 틀린 말)");
+    }
+}
+
+/// ★0.14.51 TOAST 축 — CLI 경보 산문 싱크 호출부 7곳(stderr 6 + stdout 1)이 꺼졌음을, 그리고 쓰기 대상을 주입한 단위로 「quiet 면 0바이트 · 양성 대조는 쓴다 · 머리줄 쓰기 오류는 전파」를 못박는다.
+/// 전수 분해표(print 매크로 전체의 5갈래 처분)는 `_evidence/dept5-TOAST-impl-20261015/print-census.tsv`(행 수 == 독립 계수 − 주석·문자열 출현).
+#[cfg(test)]
+mod toast_axis_tests {
+    use super::*;
+
+    #[test]
+    fn toast_axis_quiet_writes_zero_bytes_and_positive_control_writes() {
+        let mut quiet: Vec<u8> = Vec::new();
+        alert_prose_to(&mut quiet, "경보 산문", true);
+        assert!(quiet.is_empty(), "quiet 인데 {}바이트가 나갔다", quiet.len());
+        // 양성 대조 — 이 시험이 '쓰였는가'를 볼 수 있다는 증명(예외·빈 쓰기 대상으로 초록이 되지 않는다).
+        let mut loud: Vec<u8> = Vec::new();
+        alert_prose_to(&mut loud, "경보 산문", false);
+        assert_eq!(String::from_utf8(loud).unwrap(), "경보 산문\n");
+        assert!(!ALERT_PROSE_QUIET, "우리 출하 값은 quiet=false(v0.14.51 편입 A안 · 원작자 true)");
+    }
+
+    /// MAJOR12 — `cys fleet` 의 도달불가 부서는 **머리줄(`■ 부서명`)이 남고** 경고 산문만 꺼진다(데이터 뷰 손실 금지).
+    #[test]
+    fn toast_axis_fleet_unreachable_keeps_head_line_and_drops_only_the_alert_prose() {
+        let mut quiet: Vec<u8> = Vec::new();
+        fleet_unreachable_to(&mut quiet, "테스트부", "connect /x.sock: No such file", true).unwrap();
+        assert_eq!(String::from_utf8(quiet).unwrap(), "\n■ 테스트부\n", "quiet: 머리줄만 — 부서가 목록에서 사라지면 안 된다");
+        // 양성 대조 — 같은 함수가 quiet=false 에서는 경고 산문을 실제로 쓴다(시험이 '쓰임'을 볼 수 있다).
+        let mut loud: Vec<u8> = Vec::new();
+        fleet_unreachable_to(&mut loud, "테스트부", "connect /x.sock: No such file", false).unwrap();
+        let loud = String::from_utf8(loud).unwrap();
+        assert!(loud.starts_with("\n■ 테스트부\n") && loud.contains("⚠ 도달불가: connect /x.sock"), "{loud:?}");
+    }
+
+    /// 항상 BrokenPipe 로 실패하는 쓰기 대상 — stdout 의 읽는 쪽이 이미 닫힌 파이프를 흉내 낸다.
+    struct ClosedPipe;
+    impl std::io::Write for ClosedPipe {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+        }
+    }
+
+    /// MINOR-3(codex R1) — 머리줄 쓰기 실패는 호출자에게 돌아간다(quiet 여부와 무관). 기준선 `println!` 은 이 상황에서 패닉이었다.
+    #[test]
+    fn toast_axis_fleet_unreachable_propagates_header_write_error_on_closed_pipe() {
+        for quiet in [true, false] {
+            let err = fleet_unreachable_to(&mut ClosedPipe, "테스트부", "connect /x.sock: No such file", quiet)
+                .expect_err("닫힌 파이프인데 Ok — 쓰기 오류가 삼켜졌다");
+            assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe, "quiet={quiet}");
+        }
+        // 양성 대조 — 같은 호출이 정상 쓰기 대상에서는 Ok 이고 머리줄을 쓴다(「항상 Err」 로 초록이 되지 않는다).
+        let mut ok: Vec<u8> = Vec::new();
+        assert!(fleet_unreachable_to(&mut ok, "테스트부", "x", true).is_ok());
+        assert_eq!(String::from_utf8(ok).unwrap(), "\n■ 테스트부\n");
+    }
+
+    /// 진짜 닫힌 파이프(유닉스 소켓 쌍의 읽는 쪽을 닫는다) — 흉내 쓰기 대상이 아니라 운영체제가 EPIPE 를 돌려주는 경로로도 같은 결과다.
+    #[cfg(unix)]
+    #[test]
+    fn toast_axis_fleet_unreachable_real_closed_pipe_returns_error() {
+        let (mut w, r) = std::os::unix::net::UnixStream::pair().unwrap();
+        drop(r);
+        let err = fleet_unreachable_to(&mut w, "테스트부", "x", true).expect_err("읽는 쪽이 닫혔는데 Ok");
+        assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe);
+    }
+
+    #[test]
+    fn toast_axis_call_sites_pass_through_alert_prose_and_json_path_untouched() {
+        let all = include_str!("cys.rs");
+        let prod = &all[..all.find(concat!("#[cfg(test)]\n", "mod toast_axis_tests")).unwrap()];
+        let code: String = prod
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        // 정의 1 + 호출 6(+핀 문자열 1)(큐 durable=false · pause 안내 · 막힌 좌석 안내 루프 · 유령 처방 2 · 구데몬 --queued 경고)
+        assert_eq!(code.matches(concat!("alert_prose", "(")).count(), 8); // 정의 1 + 호출 6 + 유령 처방 핀 시험의 문자열 1
+        // 호출 1(fleet 도달불가: 머리줄은 남기고 경고 산문만 alert_prose_to) — 정의는 제네릭 `<W>` 때문에 `_to(` 패턴에 안 잡힌다.
+        assert_eq!(code.matches(concat!("fleet_unreachable", "_to(")).count(), 1);
+        assert_eq!(code.matches(concat!("fn fleet_unreachable", "_to<")).count(), 1);
+        assert!(code.contains(concat!("fleet_unreachable_to(&mut std::io::stdout(), disp, e, ", "ALERT_PROSE_QUIET)")));
+        // 머리줄 쓰기 오류는 호출부가 기준선 println! 과 같은 패닉으로 잇는다(조용한 exit 0 금지 · codex R1 minor 3).
+        assert!(code.contains(concat!("panic!(\"failed printing to stdout: ", "{werr}\");")));
+        assert!(code.contains(concat!("alert_prose(\"[queue] 데몬 pause 중", " — 큐는 resume 후 배달됩니다\");")));
+        assert!(code.contains(concat!("alert_prose(&", "line);")));
+        // 끈 자리에 맨 출력 매크로가 남지 않았다.
+        assert!(!code.contains(concat!("println!(\"\\n■ {disp}  ", "⚠ 도달불가")));
+        assert!(!code.contains(concat!("eprintln!(\"[queue] 데몬 pause 중", "")));
+        // --json 경로(stdout 바이트 계약)는 그대로 println 이다.
+        assert!(code.contains(concat!("serde_json::to_string_pretty(&json!({ \"departments\"", ": out }))")));
+        // 문구를 만드는 3함수는 그대로 존재한다(호출부만 끈다).
+        for f in ["fn queue_blocked_notice_lines(", "fn queue_durable_suffix(", "fn warn_if_daemon_paused("] {
+            assert!(code.contains(f), "{f} 가 사라졌다");
+        }
     }
 }

@@ -32,7 +32,7 @@
     <button id="btn-files" title="파일 목록 — 선택한 창의 폴더">파일</button>
     <button id="btn-cc" title="Control Center — 실시간 플릿·사용량·시스템 모니터링 · 승인 Feed">Control Center <span id="cc-pending-badge" class="badge" hidden>0</span></button>
     <button id="btn-restart-daemon" title="데몬 재시작 — 진행 중인 노드에 저장(drain) 신호를 보낸 뒤 데몬을 새로 켜고, 부서·노드를 대화 기억까지 자동 복원합니다(피닉스). 마지막 미저장분은 손실될 수 있습니다.">↻ 재시작</button>
-    <button id="btn-factory-reset" title="완전 초기화(팩토리 리셋) — 모든 부서·세션·대화기억·작업기억·훅을 격리 보관(복구 가능·약 14일 후 소거)하고 설치 초기 상태로 되돌립니다. 라이선스·직접 넣은 파일은 보존됩니다.">완전 초기화</button>
+    <button id="btn-factory-reset" title="완전 초기화(팩토리 리셋) — 모든 부서·세션·대화기억·작업기억·훅을 격리 보관(복구 가능·그대로 보관되고 삭제는 휴지통에서 명령)하고 설치 초기 상태로 되돌립니다. 라이선스·직접 넣은 파일은 보존됩니다.">완전 초기화</button>
     <button id="btn-theme" title="화면 설정 — 글자·배경·상단 단추">화면 설정</button>
   </header>
   <!-- (1.1.8 U4 · 📌18) 좌석 0 상태 창 고정 안내 1줄 — 닫기 단추 없음 · 문구는 main.ts 가 textContent 로만 넣는다 -->
@@ -89,6 +89,7 @@
         <button class="cc-tab" data-view="tasks">작업</button>
         <button class="cc-tab" data-view="feed">승인 Feed <span id="cc-feed-tabbadge" class="badge" hidden>0</span></button>
         <button class="cc-tab" data-view="alarms">🔔 알람</button>
+        <button class="cc-tab" data-view="trash">휴지통</button>
         <button class="cc-tab active" data-view="office">🏢 오피스</button>
       </div>
       <div id="cc-body">
@@ -193,6 +194,19 @@
         <div id="cc-view-alarms" hidden>
           <div class="cc-board-note">화면에 떴던 알람 이력(최신순 · 이 세션에서 최대 200건). 모든 알람은 종류 불문 일정 시간이 지나면 화면에서 자동으로 사라지고, 내용은 여기에 남습니다.</div>
           <div class="cc-section"><div class="cc-h">알람 이력</div><div id="cc-alarm-list"></div></div>
+        </div>
+        <div id="cc-view-trash" hidden>
+          <div class="cc-board-note">여기 있는 것은 그대로 보관됩니다. 고른 항목을 미리 보고 확인 문구를 입력해 명령할 때만 지워지며, 그 삭제는 되돌릴 수 없습니다. 전부 고르기·오래된 것 한번에 지우기는 없습니다.</div>
+          <div class="cc-section">
+            <div class="cc-h">휴지통 <span class="cc-sub" id="cc-trash-root"></span></div>
+            <div id="cc-trash-notice" class="cc-trash-notice" hidden></div>
+            <div id="cc-trash-list"></div>
+            <div class="cc-trash-actions">
+              <button id="btn-cc-trash-delete" disabled>고른 항목 삭제</button>
+              <span id="cc-trash-status" aria-live="polite"></span>
+            </div>
+            <div id="cc-trash-result" class="cc-trash-result"></div>
+          </div>
         </div>
         <div id="cc-view-office" hidden>
           <div id="cc-office-hint" class="cc-board-note" hidden><span id="cc-office-hint-text">오피스를 준비하고 있습니다… 자동으로 다시 확인합니다.</span>

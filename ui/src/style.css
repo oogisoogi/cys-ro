@@ -1222,6 +1222,15 @@ body.cc-glance #cc-view-feed .feed-item button { font-size: 16px; padding: 10px 
   background: var(--accent); color: #fff; font-weight: 600; cursor: pointer; font-size: 13px;
 }
 .dept-idle-btn:disabled { opacity: .5; cursor: default; }
+/* ★U2(0.14.41) 보류 중인 역할 칸(구멍) — [새 셸 열기]·[칸 비우기] 두 손잡이 사이 간격만 더한다(나머지는 dept-pending 재사용). */
+.role-slot .dept-idle-btn + .dept-idle-btn { margin-left: 8px; }
+/* ★S8 재착륙 §1 — 미리보기를 기다리는 모달의 한 줄(스피너 + 진행 수치).
+   스피너는 `dept-spinner` 를 그대로 쓰고 **크기만** 모달 눈금으로 줄인다(회전 키프레임·
+   prefers-reduced-motion 처리를 두 벌로 만들지 않는다 — 아래 미디어 쿼리가 둘 다 덮는다).
+   ★움직임을 줄인 환경에서는 회전이 멈추므로 **대기를 말하는 것은 글자**다(노드 수·경과 초). */
+.ct-wait { display: flex; align-items: center; gap: 8px; margin: 4px 0 8px; font-size: 12px; opacity: .85; }
+.ct-wait .dept-spinner { width: 14px; height: 14px; margin: 0; border-width: 2px; }
+.ct-wait[hidden] { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .ws-tab-spinner, .dept-spinner { animation: none; border-top-color: var(--accent); }
 }
@@ -1336,3 +1345,29 @@ body.cc-office #cc-view-office { flex: 1; min-height: 0; }
 .feed-bulk button:hover:not(:disabled) { color: #f1f5f9; border-color: rgba(226,232,240,.6); }
 .feed-bulk .fi-meta { margin-bottom: 0; }
 .feed-item .fi-ended-mark { align-self: center; font-size: 10px; color: #8b949e; }
+/* ★S8-UI 휴지통 탭 — .cc-section·.alarm-item 톤을 따른다(새 색 토큰 0 · 이름은 줄바꿈 가능) */
+.cc-trash-notice { font-size: 12px; color: var(--warn); white-space: pre-wrap; word-break: break-word;
+  padding: 6px 8px; margin-bottom: 8px; border: 1px solid rgba(210,153,34,.45); border-radius: 8px;
+  background: rgba(210,153,34,.1); }
+.cc-trash-notice[hidden] { display: none; }
+.cc-trash-item { padding: 8px 10px; margin-bottom: 6px; border: 1px solid rgba(255,255,255,.08);
+  border-radius: 8px; background: rgba(255,255,255,.02); }
+.cc-trash-item .ct-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.cc-trash-item .ct-name { font-weight: 700; word-break: break-all; }
+.cc-trash-item .ct-size { font-size: 11px; color: #8b949e; }
+.cc-trash-item .ct-lock { font-size: 10px; color: #8b949e; border: 1px solid rgba(148,163,184,.4);
+  border-radius: 8px; padding: 0 6px; }
+.cc-trash-item .ct-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.cc-trash-item .ct-age { font-size: 11px; color: #8b949e; margin-top: 2px; }
+.cc-trash-item .ct-kids { font-size: 11px; color: #6e7681; margin-top: 4px; word-break: break-all; }
+.cc-trash-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+.cc-trash-actions button { font-size: 12px; padding: 3px 12px; border-radius: 8px;
+  border: 1px solid rgba(148,163,184,.4); background: none; color: #cbd5e1; cursor: pointer; }
+.cc-trash-actions button:hover:not(:disabled) { color: #f1f5f9; border-color: rgba(226,232,240,.6); }
+.cc-trash-actions button:disabled { opacity: .45; cursor: default; }
+#cc-trash-status { font-size: 11px; color: #94a3b8; white-space: pre-wrap; }
+.cc-trash-result .ct-outcome { font-size: 11px; margin-top: 4px; white-space: pre-wrap;
+  word-break: break-word; border-left: 2px solid rgba(148,163,184,.4); padding-left: 6px; }
+.cc-trash-result .ct-outcome.ok { color: #8b949e; }
+.cc-trash-result .ct-outcome.warn { color: var(--warn); border-left-color: rgba(210,153,34,.6); }
+.cc-trash-result .ct-outcome.fail { color: var(--error); border-left-color: rgba(248,81,73,.6); }

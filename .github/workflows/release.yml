@@ -614,8 +614,8 @@ jobs:
                    test_trust_seed test_capgate_registration test_capgate_hook_shell \
                    test_cso_directive_rev test_role_authority test_role_authority_shell \
                    test_role_authority_triage \
-                   test_round_stop_reason test_resource_gate test_resource_gate_fleet_cpu \
-                   test_inject_context_role_seat test_carry_unproven_scope \
+                   test_round_stop_reason test_resource_gate test_resource_gate_fleet_cpu test_resource_gate_product_cpu \
+                   test_inject_context_role_seat test_inject_context_soul_l0 test_carry_unproven_scope \
                    test_wakeup_durable_receipt test_wakeup_park_failure \
                    test_capgate_remeasure_order test_phoenix_p10_lease_split \
                    test_preflight_only_dispatch test_preflight_settings_fifo \
@@ -628,7 +628,8 @@ jobs:
                    test_phoenix_r32_restore_budget test_phoenix_encoding_default \
                    test_report_ctx_axis test_formation_tick_visibility \
                    test_resource_gate_boot_anchor test_ctx_divergence \
-                   test_state_rotate test_bootstrap_resource_recheck test_silentpass_pack_c2 \
+                   test_state_rotate test_bootstrap_resource_recheck test_secret_scan_limit test_pack_guard_hooks_guidance test_silentpass_pack_c2 \
+                   test_trash_old_marking test_producer_marker \
                    test_dept_schedule_seed test_ctx_relay \
                    test_dept_b11_lock test_hook_timing test_seat_folders test_t6_injection_policy test_v113_review_fix \
                    test_lane_redirect \
@@ -708,7 +709,7 @@ jobs:
           #   레인은 여전히 적색(fail-closed)이지만 이 스텝이 존재하는 이유인 **진단**이 사라진다.
           #   `if <명령>; then …; else r=$?; fi` 는 그 명령에 한해 `-e` 를 끈다(POSIX 셸 규약).
           rc=0
-          for t in test_resource_gate test_resource_gate_fleet_cpu \
+          for t in test_resource_gate test_resource_gate_fleet_cpu test_resource_gate_product_cpu \
                    test_inject_context_role_seat test_wp7_gate_triage; do
             f="cysjavis-pack/bin/tests/$t.py"
             [ -f "$f" ] || { echo "테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
@@ -1650,8 +1651,8 @@ jobs:
                    test_trust_seed test_capgate_registration test_capgate_hook_shell \
                    test_cso_directive_rev test_role_authority test_role_authority_shell \
                    test_role_authority_triage \
-                   test_round_stop_reason test_resource_gate test_resource_gate_fleet_cpu \
-                   test_inject_context_role_seat test_carry_unproven_scope \
+                   test_round_stop_reason test_resource_gate test_resource_gate_fleet_cpu test_resource_gate_product_cpu \
+                   test_inject_context_role_seat test_inject_context_soul_l0 test_carry_unproven_scope \
                    test_wakeup_durable_receipt test_wakeup_park_failure \
                    test_capgate_remeasure_order test_phoenix_p10_lease_split \
                    test_preflight_only_dispatch test_preflight_settings_fifo \
@@ -1664,7 +1665,8 @@ jobs:
                    test_phoenix_r32_restore_budget test_phoenix_encoding_default \
                    test_report_ctx_axis test_formation_tick_visibility \
                    test_resource_gate_boot_anchor test_ctx_divergence \
-                   test_state_rotate test_bootstrap_resource_recheck test_silentpass_pack_c2 \
+                   test_state_rotate test_bootstrap_resource_recheck test_secret_scan_limit test_pack_guard_hooks_guidance test_silentpass_pack_c2 \
+                   test_trash_old_marking test_producer_marker \
                    test_dept_schedule_seed test_ctx_relay \
                    test_dept_b11_lock test_hook_timing test_seat_folders test_t6_injection_policy test_v113_review_fix \
                    test_lane_redirect \
@@ -1757,7 +1759,7 @@ jobs:
           #   레인은 여전히 적색(fail-closed)이지만 이 스텝이 존재하는 이유인 **진단**이 사라진다.
           #   `if <명령>; then …; else r=$?; fi` 는 그 명령에 한해 `-e` 를 끈다(POSIX 셸 규약).
           rc=0
-          for t in test_resource_gate test_resource_gate_fleet_cpu \
+          for t in test_resource_gate test_resource_gate_fleet_cpu test_resource_gate_product_cpu \
                    test_inject_context_role_seat test_wp7_gate_triage; do
             f="cysjavis-pack/bin/tests/$t.py"
             [ -f "$f" ] || { echo "테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }

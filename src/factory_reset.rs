@@ -109,8 +109,10 @@ const LICENSE_FILES: [&str; 2] = crate::license::LICENSE_BASENAMES;
 
 /// ★A8(성찰 확정): `~/.cys/local` 은 **오너 저작 오버레이**다 — 업데이터가 절대 건드리지 않는
 /// 사용자 전용 영역(직접 만든 지침 append·스킬·훅·노트). 종전엔 무조건 격리했는데 두 계약을
-/// 동시에 깼다: ①고지문 "직접 넣은 파일은 삭제되지 않습니다" ②격리본은 14일 뒤 reap 가 영구
-/// 소거하므로 **사용자 저작물이 사라진다**. 게다가 settings.json 에 직접 등록된 local 훅은
+/// 동시에 깼다: ①고지문 "직접 넣은 파일은 삭제되지 않습니다" ②격리본이 **나중에 소거**되면
+/// 사용자 저작물이 사라진다(당시 근거: reap 이 14일 뒤 지웠다. ★S8 이후 그 자동 소거는 없어졌고
+/// 삭제는 오너 명령뿐이지만, 그렇다고 동의 없이 옮기는 것이 정당해지지는 않으므로 이 판정은
+/// 그대로다 — 옮겨진 것을 되찾으려면 오너가 복구 경로를 알아야 한다). 게다가 settings.json 에 직접 등록된 local 훅은
 /// strip 대상(pack) 밖이라 격리 후 "No such file" 깨진 훅으로 영구 잔존했다.
 /// → 기본 보존(등록 훅도 계속 유효 = dangling 0), 연습 잔재까지 지우려면 `--purge-local` opt-in.
 const LOCAL_OVERLAY: &str = "local";
@@ -135,7 +137,7 @@ const TEMP_SWEEP_PREFIX: [&str; 7] = [
 /// 격리하면 **앱 자신(cys.exe·cysd.exe·runtime/·resources/)을 언인스톨**해 버린다.
 /// → `~/.cys` 와 같은 교리를 적용한다: **알려진 상태 항목만** 격리하고 나머지(=설치본)는 보존.
 /// 놓친 상태 파일이 남는 것은 불편이지만, 앱을 옮기는 것은 복구 불능급 사고다(fail-safe 방향).
-const WIN_STATE_EXACT: [&str; 24] = [
+const WIN_STATE_EXACT: [&str; 25] = [
     "transcripts.db",
     "analytics.db",
     "channels.db",
@@ -164,6 +166,15 @@ const WIN_STATE_EXACT: [&str; 24] = [
     // ★(성찰 2회차 m-1 · 0.14.44 A4) 승인 묶음 식별자 — 상태 폴더의 무작위 값 파일(`approval::LANE_FILE`). 윈도우 본부의 상태 폴더는 설치 폴더와 같아 알려진 이름만 격리하므로 여기 없으면 초기화 뒤에도 남는다.
     //   `write_json_atomic` 으로 쓰므로 임시 잔재 `.approval-lane.tmp` 는 [`WIN_STATE_ATOMIC`] 이 잡는다.
     "approval-lane",
+    // ★(S8 · 0.14.51) 오너 명령 삭제의 **삭제 원장** — `trash.rs` 의 `DELETE_LEDGER` 가 데몬 상태 폴더에 append+fsync 로 쓴다
+    //   (의도·거부·결과 기록 · 설계 `DESIGN-S8.md:101` 은 휴지통 뿌리였고 2026-10-12 판정으로 **state dir** 가 정본이 됐다 — `DESIGN-S8-SUPERSESSION-1-ledger-location.md`).
+    //   윈도우 본부의 상태 폴더는 **설치 폴더와 같아** 알려진 이름만 격리하므로 여기 없으면 초기화 뒤에도 남는다 — 형제 `.jsonl` 네 개
+    //   (`feed.jsonl`·`dead-letters.jsonl`·`approval_audit.jsonl`·`alert-route-folded.jsonl`)가 이미 이름으로 등재돼 있어 이 하나의 부재는 정책이 아니라 **누락**이었다.
+    //   `write_json_atomic` 이 아니라 append 로 쓰므로 [`WIN_STATE_ATOMIC`](임시 잔재 `.{name}.tmp` 판정용)에는 넣지 않는다 —
+    //   ★단 `is_win_state_name` 의 잔재 축은 이 **정확 이름 목록과의 일치**로도 판정하므로, 실제로는 생기지 않는
+    //   `.DELETE-LEDGER.jsonl.tmp` 도 상태로 분류된다(실측 · 격리는 이동이라 해가 작다 · 행동 핀에 박아 두었다).
+    //   격리는 **이동이고 삭제가 아니다** — 감사 이력은 격리 폴더에 남고 새 설치에는 넘어가지 않는다.
+    "DELETE-LEDGER.jsonl",
 ];
 
 /// 접두로 잡는 Windows 상태 항목(부서 슬러그 디렉토리·저널/스풀 디렉토리·손상 격리본).
@@ -468,8 +479,9 @@ fn push_item(
 ///
 /// ★P0-3 판정(시뮬레이션 2026-08-16): 종전엔 ACTIVE_PROJECT 포인터가 가리키는 **사용자
 /// 프로젝트 폴더 안의 _round** 까지 말없이 격리했다. 두 가지가 동시에 깨졌다:
-///  ① 격리본은 `cys-dept reap` 이 14일 뒤 `rm -rf` 하므로 **동의 없이 옮긴 사용자 저작물이
-///     영구 소거**된다(생초보 가이드는 "일반 폴더 파일은 안 지워진다"고 단언한다).
+///  ① 동의 없이 옮긴 사용자 저작물을 오너가 되찾지 못한다(생초보 가이드는 "일반 폴더 파일은
+///     안 지워진다"고 단언한다). ★당시 근거는 "`cys-dept reap` 이 14일 뒤 `rm -rf` 한다"였고
+///     S8 이후 그 자동 소거는 없다 — 그래도 **말없이 옮기지 않는다**는 판정은 그대로다.
 ///  ② 같은 워크스페이스 안의 다른 프로젝트 _round 는 남는데 왜 이것만 지워지는지 설명 불가.
 /// → **기본 격리는 $HOME/_round 와 <workspace>/_round 둘뿐**. 프로젝트 _round 는 순회해서
 /// 찾되 `report_only` 로 "남습니다 — 직접 정리하세요"라고 **고지**만 한다. 전면 격리는
@@ -1586,6 +1598,9 @@ pub fn execute_quarantine(
 
     std::fs::create_dir_all(&plan.trash_dir)
         .map_err(|e| format!("격리 디렉토리 생성 실패 {}: {e}", plan.trash_dir.display()))?;
+    // ★S8 M3: 여기부터 마지막 쓰기(REPORT.txt)까지가 내 격리 창이다. 중간에 Err 로 돌아가면 표식은
+    //   `open` + 곧 죽는 pid 로 남고, 그것이 설계가 말하는 "생산자가 끝내지 못함(중단)" 표지다.
+    producer_mark(&plan.trash_dir, "open", false);
 
     // ★J1(성찰 확정): 복구 지도를 **이동 전에** 한 줄씩 선기록한다(append-only journal).
     // 종전엔 전 항목 이동이 끝난 뒤에야 manifest 를 썼다 — 중도 사망(강제종료·전원·업데이트
@@ -1834,6 +1849,8 @@ pub fn execute_quarantine(
         &plan.trash_dir.join("REPORT.txt"),
         report.human_report().as_bytes(),
     );
+    // 마지막 쓰기가 끝났다 — 창을 닫는다(이 뒤로 이 폴더에 쓰는 것이 없다).
+    producer_mark(&plan.trash_dir, "complete", false);
     Ok(report)
 }
 
@@ -1846,6 +1863,66 @@ pub fn execute_quarantine(
 // 공백·ZWSP 가 섞여도 육안으로는 구분이 안 된다. 전부 같은 뜻이므로 같게 취급한다.
 // ★의존성 0: 전면 NFC 가 아니라 **한글 음절 합성**만 직접 구현한다(대상 문구가 한글이므로 충분).
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ─── S8 M3: `.producer` 표식 — "이 격리는 지금 진행 중이다"를 디스크에 남긴다 ────────────────────
+// 읽는 쪽은 데몬(`cysd::trash::producer_state`)이고 규칙은 설계 r2 §3.4 다: `open` + 살아 있는 pid 는
+// 삭제를 거부하고(`producer_active`), `open` + 죽은 pid 는 "생산자가 끝내지 못함(중단)" 표지와 함께
+// 삭제를 허용하며, `complete`|`aborted` 는 보통 항목, 표식 없음은 "생산자 알 수 없음"이다.
+// ★이 표식은 `manifest.json` 과 다른 질문에 답한다: manifest 는 **이동 전에** 써지므로 완료의 증거가
+//   아니고(REPORT.txt 가 마지막이다), 표식은 "지금 돌고 있는가"를 답한다 — 설계 I-10 이 그 둘을
+//   구별하라고 요구한 자리다.
+// ★절대 규칙(r2 §3.4 · R1-k): 표식 기록 실패가 격리를 실패·지연·재배열시키지 않는다 — 돌려주는 값이
+//   없고, 오류는 stderr 한 줄이다. 이 함수는 초기화 흐름의 어떤 분기도 바꾸지 않는다.
+// ★남의 표식은 건드리지 않는다(한 격리 폴더에 생산자가 둘일 수 있다 — 여기선 폴더 이름이
+//   `factory-reset-<stamp>` 라 겹치지 않지만, 규칙은 세 writer 가 같다).
+fn producer_start_token() -> String {
+    // pid 재사용 구별용. Linux `/proc` 에서만 얻고 없으면 빈 문자열이다.
+    // ★현재 판독기는 이 값을 **대조하지 않는다**(pid 존재만 본다) — 나중을 위한 기록이다.
+    std::fs::read_to_string("/proc/self/stat")
+        .ok()
+        .and_then(|t| {
+            let after = t.rsplit_once(')').map(|(_, a)| a.to_string())?;
+            after.split_whitespace().nth(19).map(|s| s.to_string())
+        })
+        .unwrap_or_default()
+}
+
+fn producer_mark(trash_dir: &Path, state: &str, create: bool) {
+    let mine = std::process::id();
+    if create && !trash_dir.is_dir() {
+        let _ = std::fs::create_dir_all(trash_dir);
+    }
+    if !trash_dir.is_dir() {
+        return; // 표식 때문에 **빈 격리 항목을 만들지 않는다**
+    }
+    let path = trash_dir.join(".producer");
+    if let Ok(txt) = std::fs::read_to_string(&path) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+            let cur_pid = v.get("pid").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
+            if cur_pid != mine {
+                let cur_open = v.get("state").and_then(|x| x.as_str()) == Some("open");
+                if state == "open" && cur_open {
+                    return; // 더 넓은 창이 이긴다
+                }
+                if state != "open" {
+                    return; // 내 표식이 아니면 닫지 않는다
+                }
+            }
+        }
+    }
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    let body = serde_json::json!({
+        "v": 1, "state": state, "producer": "cys factory-reset",
+        "pid": mine, "start_token": producer_start_token(), "ts": ts,
+    })
+    .to_string();
+    if let Err(e) = crate::pack::write_atomic(&path, body.as_bytes()) {
+        eprintln!("[factory-reset] .producer 표식 기록 실패(격리는 그대로 계속한다): {e}");
+    }
+}
 
 /// 한글 자모(L+V[+T])를 완성형 음절로 합성한다(유니코드 표준 알고리즘 · NFD→NFC 부분집합).
 fn compose_hangul(input: &str) -> String {
@@ -1929,7 +2006,9 @@ pub fn normalize_confirm_phrase(input: &str) -> String {
 //
 // ★P0(시뮬레이션 확정): 모달·가이드·CLI 가 모두 "격리 보관되어 되돌릴 수 있다"고 안심시키는데
 // 정작 복구 수단이 제품에 없었다(터미널로 manifest 를 열어 수십 건을 손으로 mv 하는 것이 전부).
-// 격리본은 14일 뒤 reap 대상이므로, 복구가 어려우면 사실상 비가역 삭제와 같다.
+// 복구가 어려우면 사실상 비가역 삭제와 같다(당시엔 "격리본이 14일 뒤 reap 대상"이라는 사실이
+// 그 근거였다 — ★S8 이후 자동 소거는 없으나, 손으로 수십 건을 mv 해야 하는 복구는 여전히
+// 복구가 아니므로 이 판정과 그 뒤의 `--undo` 는 그대로 유효하다).
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub struct UndoPlan {
@@ -3369,6 +3448,67 @@ mod tests {
         assert!(txt.contains("--undo"));
     }
 
+    /// ★S8 M3: 격리가 끝나면 `.producer` 가 `complete` 로 닫혀 있다 — 그리고 그것은
+    /// `manifest.json`(이동 **전에** 써진다)이 아니라 **이 표식**이 완료를 말한다는 뜻이다.
+    /// 읽는 쪽과 같은 길로(serde_json) 파싱해 계약 필드를 본다.
+    #[test]
+    fn producer_marker_is_closed_after_quarantine() {
+        let td = test_home("producer-mark");
+        let r = seed_practice_tree(&td);
+        let plan = build_plan(
+            &r,
+            &ResetOptions { purge_license: false, purge_local: false, purge_round: false },
+        );
+        let not_cysd = |_p: u32| false;
+        let no_daemon = || false;
+        let mut noop = |_p: &str, _d: &str| {};
+        let rep = execute_quarantine(&plan, &r, &not_cysd, &no_daemon, &mut noop).unwrap();
+        let mark = plan.trash_dir.join(".producer");
+        let txt = std::fs::read_to_string(&mark).expect("표식이 없다");
+        let v: serde_json::Value = serde_json::from_str(&txt).expect("표식이 JSON 이 아니다");
+        assert_eq!(v["state"], "complete", "{txt}");
+        assert_eq!(v["v"], 1);
+        assert_eq!(v["pid"].as_u64().unwrap() as u32, std::process::id());
+        assert_eq!(v["producer"], "cys factory-reset");
+        assert!(v.get("start_token").is_some() && v["ts"].as_f64().unwrap() > 0.0, "{txt}");
+        // 표식은 격리분의 dot-file 이라 첫 단계 목록·복구 지도에 섞이지 않는다.
+        assert!(rep.manifest_written);
+        let man = std::fs::read_to_string(plan.trash_dir.join("manifest.json")).unwrap();
+        assert!(!man.contains(".producer"), "복구 지도에 표식이 섞였다");
+        let _ = rep;
+    }
+
+    /// ★S8 M3 소유 규칙: 다른 pid 의 `open` 창은 덮지 않고, 남의 표식은 닫지 않는다
+    /// (한 격리 폴더를 생산자 둘이 쓸 수 있고, 표식 파일은 하나다). pid 1 은 언제나 살아 있다.
+    #[test]
+    fn producer_marker_never_touches_another_producers_window() {
+        let td = test_home("producer-own");
+        let dir = td.join("entry");
+        std::fs::create_dir_all(&dir).unwrap();
+        let foreign = serde_json::json!({
+            "v": 1, "state": "open", "producer": "cys-dept purge-state",
+            "pid": 1, "start_token": "", "ts": 1.0
+        })
+        .to_string();
+        let mark = dir.join(".producer");
+        std::fs::write(&mark, &foreign).unwrap();
+        producer_mark(&dir, "open", false);
+        assert_eq!(std::fs::read_to_string(&mark).unwrap(), foreign, "남의 창을 덮었다");
+        producer_mark(&dir, "complete", false);
+        assert_eq!(std::fs::read_to_string(&mark).unwrap(), foreign, "남의 표식을 닫았다");
+        // 내 표식은 내가 닫는다.
+        let mine = td.join("mine");
+        producer_mark(&mine, "open", true);
+        producer_mark(&mine, "complete", false);
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(mine.join(".producer")).unwrap()).unwrap();
+        assert_eq!(v["state"], "complete");
+        // 닫기는 폴더를 만들지 않는다(표식 때문에 빈 격리 항목이 생기지 않는다).
+        let never = td.join("never");
+        producer_mark(&never, "complete", false);
+        assert!(!never.exists(), "닫기가 격리 폴더를 만들었다");
+    }
+
     /// ★P0(복구) 회귀: undo 가 격리본을 원위치로 되돌리고, 원위치가 차 있으면 덮어쓰지 않는다.
     #[test]
     fn undo_restores_and_never_overwrites() {
@@ -3918,7 +4058,9 @@ mod r2f_dm_factory_reset {
         assert_eq!(CYS_BASE_EXACT2.len(), 12, "~/.cys 직하 정확 이름 목록(2차)의 길이");
         assert!(CYS_BASE_EXACT2.contains(&"claude-tui-written.json") && crate::claude_tui::LEDGER_FILE.ends_with("/claude-tui-written.json"), "claude tui 원장이 기본 격리 목록에 없다");
         assert!(CYS_BASE_EXACT2.contains(&".update-attempt.json"), "~/.cys/.update-attempt.json(인앱 업데이트 시도 기록)이 기본 격리 목록에 없다");
-        assert_eq!(WIN_STATE_EXACT.len(), 24, "윈도우 상태 폴더 정확 이름 목록의 길이");
+        assert_eq!(WIN_STATE_EXACT.len(), 25, "윈도우 상태 폴더 정확 이름 목록의 길이");
+        assert!(WIN_STATE_EXACT.contains(&"DELETE-LEDGER.jsonl"), "오너 명령 삭제의 삭제 원장이 정확 일치 목록에 없다 — 윈도우에서는 초기화 뒤에도 남는다");
+        assert!(!WIN_STATE_ATOMIC.contains(&"DELETE-LEDGER.jsonl"), "삭제 원장은 append 로 쓰므로 원자 쓰기 목록에 있어서는 안 된다(`.DELETE-LEDGER.jsonl.tmp` 는 **생기지 않는다 — 다만 있으면 격리된다**: 잔재 축이 정확 이름 목록과도 일치한다)");
         for n in ["queue-blocked.json", "queue-blocked.prev.json", "approval-lane"] {
             assert!(WIN_STATE_EXACT.contains(&n), "윈도우 상태 폴더의 {n} 이 정확 일치 목록에 없다");
         }
@@ -3985,6 +4127,45 @@ mod r2f_dm_factory_reset {
         let _ = std::fs::remove_dir_all(&td);
     }
 
+    /// [행동 핀] 윈도우 상태 폴더에서 **삭제 원장**(`DELETE-LEDGER.jsonl`)은 **격리**된다. 이름이 비슷한 미등록 파일
+    /// (`DELETE-LEDGER.jsonl.bak` · `DELETE-LEDGER-notes.md`)은 **보존**되고, ★`.DELETE-LEDGER.jsonl.tmp` 는 **격리된다** —
+    /// 잔재 축([`is_win_state_name`] :233-239)이 선두 점과 꼬리 `.tmp` 를 벗긴 뒤 [`WIN_STATE_EXACT`] **또는**
+    /// [`WIN_STATE_ATOMIC`] 과 정확 일치로 보기 때문이다(:237-238). 원장은 append 로 쓰므로 그 이름을 **만들지 않지만**,
+    /// 있으면 상태로 분류된다 — 아래 본문이 그 축을 단언한다.
+    /// ★부작용의 방향: 격리는 **이동**이고 삭제가 아니다 — 감사 이력은 격리 폴더에 남고 초기화된 설치에는 넘어가지 않는다.
+    #[test]
+    fn s8_factory_reset_plan_claims_the_delete_ledger_in_the_windows_state_dir() {
+        let td = std::env::temp_dir().join(format!("cys-s8-freset-ledger-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&td);
+        let inst = td.join("AppData/Local/cys");
+        touch(&inst.join("cys.exe"), "MZ"); // 설치본(보존 대상)
+        touch(&inst.join("DELETE-LEDGER.jsonl"), "{\"kind\":\"intent\"}\n");
+        touch(&inst.join("DELETE-LEDGER.jsonl.bak"), "owner");
+        touch(&inst.join("DELETE-LEDGER-notes.md"), "owner");
+        touch(&inst.join(".DELETE-LEDGER.jsonl.tmp"), "x");
+        let plan = build_plan(&roots_in(&td, Some(inst.clone())), &ResetOptions { purge_license: false, purge_local: false, purge_round: false });
+        let (q, k) = names(&plan);
+        assert!(q.contains(&"DELETE-LEDGER.jsonl".to_string()), "삭제 원장이 격리 계획에 없다 — 윈도우에서는 초기화 뒤에도 남는다 · 격리: {q:?} · 보존: {k:?}");
+        for keep in ["DELETE-LEDGER.jsonl.bak", "DELETE-LEDGER-notes.md"] {
+            assert!(!q.contains(&keep.to_string()), "{keep}: 미등록 파일을 격리했다 — 보존 계약 위반: {q:?}");
+        }
+        // ★실측된 부작용(내가 기대를 틀렸고 제품이 맞았다): 정확 이름을 목록에 넣으면 `is_win_state_name` 의
+        //   **세 번째 축**(원자 쓰기 임시 잔재 `.{name}.tmp` 는 [`WIN_STATE_EXACT`]·[`WIN_STATE_ATOMIC`] 과의 정확
+        //   일치로 판정)이 `.DELETE-LEDGER.jsonl.tmp` 까지 상태로 분류한다. 원장은 append 로 쓰므로 그 이름을
+        //   **만들지 않는다** — 그래도 그 이름의 파일이 있으면 격리된다(격리는 이동이라 해는 작다). 모르는 채
+        //   두지 않고 여기에 박아 둔다: 이 줄이 붉어지면 판정 축이 바뀐 것이다.
+        assert!(q.contains(&".DELETE-LEDGER.jsonl.tmp".to_string()),
+                "원자 잔재 축의 판정이 바뀌었다(종전: 정확 이름 목록에 있으면 `.{{name}}.tmp` 도 상태로 분류): {q:?}");
+        assert!(k.contains(&"cys.exe".to_string()), "전제: 설치본은 보존한다: {k:?}");
+        // 격리의 뜻 — 분류가 `Quarantine` 이고, 그 등급의 집행이 **이동**(rename/mv)이라는 것은
+        // `execute_moves_writes_manifest_and_is_rerun_safe` 가 이미 박고 있다(여기서 다시 세우지 않는다).
+        // ⇒ 감사 이력은 격리 폴더에 남고 초기화된 설치에는 넘어가지 않는다.
+        let row = plan.quarantine.iter().find(|i| i.path.file_name().map(|n| n == "DELETE-LEDGER.jsonl").unwrap_or(false)).expect("원장 행");
+        assert_eq!(row.action, Action::Quarantine, "원장이 격리 등급으로 분류되지 않았다 — 감사 이력이 사라질 수 있다");
+        assert!(is_win_state_name("DELETE-LEDGER.jsonl"), "이름 판정 자체");
+        let _ = std::fs::remove_dir_all(&td);
+    }
+
     /// [소스 핀] 인벤토리의 이름은 **생산자 상수와 같다** — 데몬의 사유 파일 상수(`QUEUE_BLOCKED_FILE`·`QUEUE_BLOCKED_PREV_FILE`)가 바뀌거나 이름이 갈리면 적색이다(인벤토리가 옛 이름을 들고 있는 채로 초록이 되지 않게).
     #[test]
     fn r2f_dm_factory_reset_inventory_names_match_the_daemon_producer_constants() {
@@ -4002,5 +4183,15 @@ mod r2f_dm_factory_reset {
         assert!(WIN_STATE_ATOMIC.contains(&cur.as_str()), "`write_json_atomic` 으로 쓰는 사유 파일이 원자 쓰기 목록에 없다");
         // 그 파일이 정말 `write_json_atomic` 으로 쓰이는가(목록의 근거) — 생산 구간에서 호출이 상수와 함께 있다.
         assert!(gov.contains("write_json_atomic(&dir, QUEUE_BLOCKED_FILE,"), "사유 파일 쓰기가 `write_json_atomic` 이 아니게 됐다 — 원자 쓰기 목록의 근거가 바뀌었다");
+        // ★(S8 · 0.14.51) 삭제 원장도 같은 방식으로 데몬 상수에 묶는다 — 인벤토리가 옛 이름을 들고 초록이 되지 않게.
+        let trash = include_str!("bin/cysd/trash.rs");
+        let head = "pub const DELETE_LEDGER: &str = \"";
+        let i = trash.find(head).expect("데몬에 DELETE_LEDGER 상수가 없다");
+        let rest = &trash[i + head.len()..];
+        let ledger = &rest[..rest.find('"').expect("리터럴 끝")];
+        assert_eq!(ledger, "DELETE-LEDGER.jsonl");
+        assert!(WIN_STATE_EXACT.contains(&ledger), "데몬이 쓰는 삭제 원장 이름이 인벤토리에 없다");
+        assert!(!WIN_STATE_ATOMIC.contains(&ledger), "삭제 원장은 append 로 쓴다 — 원자 쓰기 목록의 근거가 없다");
+        assert!(trash.contains("fn ledger_append(dir: &Path"), "원장 쓰기 함수 모양이 바뀌었다 — append 축의 근거를 다시 확인하라");
     }
 }

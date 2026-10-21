@@ -1507,6 +1507,51 @@ class OptionalToolGrade(Base):
                          [pf.WARN, pf.WARN, pf.INFO, pf.WARN, pf.INFO, pf.DRYRUN, pf.SAFE_GAP, pf.BLOCKED])
         self.assertIn("0.9.1", p.results[0]["detail"], "구버전 문구가 가려졌다")
 
+    def run_fix(self, klaw_ver=None, hc_partial=False):
+        # 부트 ⓪ 표준 호출(--fix · --allow-irreversible 없음) — 비가역 설치 보류 WARN 행이 함께 선다
+        import javis_preflight as pf
+        home = os.path.join(self.tmp, "home")
+        stub = os.path.join(self.tmp, "stubbin")
+        for d in (home, stub):
+            os.makedirs(d, exist_ok=True)
+        npm = os.path.join(stub, "npm")
+        with open(npm, "w") as f:
+            f.write("#!/bin/sh\nexit 1\n")
+        os.chmod(npm, 0o755)
+        if klaw_ver:
+            kl = os.path.join(stub, "korean-law")
+            with open(kl, "w") as f:
+                f.write("#!/bin/sh\necho %s\n" % klaw_ver)
+            os.chmod(kl, 0o755)
+        if hc_partial:
+            os.makedirs(os.path.join(home, ".cys", "harness-creator"), exist_ok=True)
+        cwd = os.getcwd()
+        os.chdir(self.tmp)
+        try:
+            with envset(HOME=home, USERPROFILE=home, CYS_HARNESS_HOME=None, LAW_OC=None, LAW_OC_ID=None,
+                        PATH=stub + os.pathsep + "/usr/bin" + os.pathsep + "/bin"):
+                return pf, pf.Preflight(fix=True, skips=[], mode="fix", only=["C21", "C24"]).run()
+        finally:
+            os.chdir(cwd)
+
+    @unittest.skipIf(os.name == "nt", "stub korean-law·npm = POSIX 셸 스크립트")
+    def test_fix_mode_hold_row_not_absent_when_installed(self):
+        # 1.1.10 사전 검토(cysr-1110-prerelease-review-a): 구버전 korean-law·불완전 harness-creator 클론에서 --fix 의 「비가역 변경 보류」
+        # 행이 「선택 · 없음」 INFO 로 덮여, 같은 점검에 「없음」 과 「구버전/불완전」 이 함께 떴다 — 보류 행도 부재일 때만 INFO.
+        pf, rows = self.run_fix(klaw_ver="0.9.1", hc_partial=True)
+        for cid in ("C21.harness-creator", "C24.korean-law-mcp"):
+            mine = [r for r in rows if r["id"] == cid]
+            self.assertTrue(mine, rows)
+            self.assertFalse([r for r in mine if r["status"] == pf.INFO], mine)
+            self.assertTrue(any(r["detail"].startswith("비가역 변경(") for r in mine), mine)
+
+    @unittest.skipIf(os.name == "nt", "stub npm = POSIX 셸 스크립트")
+    def test_fix_mode_absent_stays_info(self):
+        pf, rows = self.run_fix()
+        mine = [r for r in rows if r["id"] in ("C21.harness-creator", "C24.korean-law-mcp")]
+        self.assertTrue(mine, rows)
+        self.assertEqual({r["status"] for r in mine}, {pf.INFO}, mine)
+
 
 @unittest.skipIf(os.name == "nt", "cys-dept 를 격리 HOME 에서 bash 로 직접 실행(POSIX 셸·python3 전제) — 윈 cys-dept 실행 단계는 "
                                    "windows-health 의 부서 실행 단계 스텝이 따로 실기한다")

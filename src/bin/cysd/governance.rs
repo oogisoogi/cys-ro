@@ -8612,6 +8612,22 @@ pub(crate) fn pending_input_step_model(
     st
 }
 
+/// ★(1.1.10 · cysr-1110-winqueue 축1) 청크가 **PgUp/PgDn 키만**(`ESC[5~`·`ESC[6~` 의 반복)으로 이뤄졌는가(순수).
+///
+/// 윈도우 GUI 는 대체화면(전체화면 TUI) pane 의 휠을 이 키로 번역해 사람 키와 같은 경로로 보낸다(`ui/src/altscroll.ts`
+/// `altWheelAction` · 기본 page 모드). 이 바이트는 입력줄에 글자를 남기지 못하는데 사람 초안으로 세어져, 휠 몇 번에
+/// `pending_input_human_bytes` 가 수천이 되고 큐가 `input_pending` 으로 무기한 멎었다(윈 1.1.9 실기 W-2 10-17 01:5x · 3364).
+/// 화살표(cursor 모드 · `ESC[A`·`ESC OA`)는 여기 넣지 않는다 — 입력 기록을 불러와 줄에 글자를 남기는 키다(V3 doc 과 같은 입장).
+/// 소비처는 [`crate::state::Surface::apply_pending_input`] 하나 — **대체화면일 때만** 계수에서 뺀다(본 화면 셸 줄 편집기는
+/// 묶이지 않은 키의 꼬리 `~` 를 글자로 남길 수 있다).
+pub(crate) fn is_page_scroll_chunk(chunk: &[u8]) -> bool {
+    const PGUP: &[u8] = b"\x1b[5~";
+    const PGDN: &[u8] = b"\x1b[6~";
+    !chunk.is_empty()
+        && chunk.len() % PGUP.len() == 0
+        && chunk.chunks(PGUP.len()).all(|k| k == PGUP || k == PGDN)
+}
+
 /// 프롬프트 경계 판정 결과.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PromptBoundary {
@@ -21564,6 +21580,75 @@ mod tests {
     fn qa_tick(daemon: &Arc<Daemon>) {
         let (mut depth, mut starve, mut stale) = (HashMap::new(), HashMap::new(), HashMap::new());
         deliver_queued(daemon, &mut depth, &mut starve, &mut stale);
+    }
+
+    // ─────────── ★cysr-1110-winqueue(2026-10-21): fullscreen(`/tui fullscreen`) 좌석 × 큐 배달 핀(wq_*) ───────────
+    //
+    // 픽스처 = claude 2.1.306 실화면 PTY 원바이트(맥 · 40×120 · `CLAUDE_CODE_NO_FLICKER=1` 로 fullscreen 렌더러 강제 · 중첩 기동이라
+    // 꼬리에 `⚠ Transcript saving is off …` 한 줄이 붙어 있다 — 괘선 아래 정체 모를 문면 한 줄이 있어도 배달된다는 것까지 함께 잰다).
+    //   idle     = 첫 화면(빈 composer `❯\u{a0}` · 위아래 괘선 · 커서 (35,2))
+    //   scrolled = 숫자 120줄 응답 뒤 PgUp 3회(transcript 가 위로 밀리고 `Jump to bottom` 표지 · 맨 위 고정 머리 `❯ <지난 질문>`)
+    // 윈 1.1.9 실기 W-2 의 둘째 축(`alt_screen` 보류)은 이 두 화면에서 재현되지 않는다 — 맥 판정 입력은 통과한다(윈 화면 차이는 HANDOFF 「윈 실기 확인 필요」).
+    const WQ_IDLE_FULLSCREEN: &[u8] =
+        include_bytes!("testdata/claude_2_1_306_idle_fullscreen.raw");
+    const WQ_SCROLLED_FULLSCREEN: &[u8] =
+        include_bytes!("testdata/claude_2_1_306_scrolled_fullscreen.raw");
+
+    fn wq_env(tag: &str) -> QueueEnvGuard {
+        let pack = empty_pack_dir(tag);
+        QueueEnvGuard::set(&[
+            ("CYS_PACK_DIR", pack.to_str().unwrap()),
+            ("CYS_QUEUE_MAX_WAIT_SECS", "0"),
+            ("CYS_QUEUE_STARVE_ALERT_SECS", "0"),
+        ])
+    }
+
+    /// 빈 fullscreen composer(유휴 · 스크롤 뒤 둘 다)에는 큐가 배달된다 — 대체화면 갈래의 양성 증거(괘선 상자)가 선다.
+    #[test]
+    fn wq_fullscreen_idle_composer_delivers() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = wq_env("wq-idle");
+        for (tag, raw) in [("wq-idle", WQ_IDLE_FULLSCREEN), ("wq-scrolled", WQ_SCROLLED_FULLSCREEN)] {
+            let (daemon, s) = qa_fixture_seat(tag, raw);
+            assert!(s.alt_screen.load(Ordering::Relaxed), "{tag}: 픽스처 전제 붕괴 — 대체화면이 아니다");
+            qa_tick(&daemon);
+            assert_eq!(
+                s.pending_queue.lock().unwrap().len(),
+                0,
+                "{tag}: 빈 fullscreen composer 에 배달하지 않았다: {}",
+                qa_blocked_reason(&s)
+            );
+        }
+    }
+
+    /// ★축1 재현(윈 W-2 01:5x): 빈 fullscreen composer 에서 휠(→ GUI 가 PgUp/PgDn 으로 번역해 사람 키로 보냄) 뒤에도 큐가 배달된다.
+    /// 수리 전: `pending_input_human_bytes` 가 휠 바이트만큼 쌓여 `input_pending` 무기한(Enter·Ctrl-U 전까지).
+    #[test]
+    fn wq_fullscreen_wheel_scroll_does_not_block_queue() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = wq_env("wq-wheel");
+        let (daemon, s) = qa_fixture_seat("wq-wheel", WQ_SCROLLED_FULLSCREEN);
+        {
+            let _gate = s.input_gate.lock().unwrap_or_else(|e| e.into_inner());
+            s.apply_pending_input(&b"\x1b[5~".repeat(3), InputOrigin::Human);
+        }
+        assert_eq!(s.pending_input_bytes.load(Ordering::Relaxed), 0, "휠 번역 키가 미제출 입력으로 세어졌다");
+        qa_tick(&daemon);
+        assert_eq!(
+            s.pending_queue.lock().unwrap().len(),
+            0,
+            "휠 뒤 fullscreen 좌석에 배달하지 않았다: {}",
+            qa_blocked_reason(&s)
+        );
+    }
+
+    #[test]
+    fn wq_page_scroll_chunk_pure() {
+        assert!(super::is_page_scroll_chunk(b"\x1b[5~"));
+        assert!(super::is_page_scroll_chunk(b"\x1b[6~\x1b[5~\x1b[6~"));
+        for no in [&b""[..], b"\x1b[5", b"\x1b[5~a", b"a\x1b[5~", b"\x1b[A", b"\x1bOA", b"\x1b[5;2~", b"\x1b[2~", b"~"] {
+            assert!(!super::is_page_scroll_chunk(no), "{no:?}");
+        }
     }
 
     fn qa_blocked_reason(s: &Arc<crate::state::Surface>) -> String {

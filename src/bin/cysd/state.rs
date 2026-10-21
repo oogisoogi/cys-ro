@@ -2791,6 +2791,15 @@ impl Surface {
         st.count = self.pending_input_bytes.load(Ordering::Relaxed); // 미러가 count 의 SOT
         // count 만 바꾸는 경로(큐 Inject·롤백 `set_pending_input`)가 지나간 뒤 불변식 human ≤ count 를 복원 — human 은 D-12 Return 게이트 축이라 stale 하면 자기 본문 제출이 거부된다.
         st.human = st.human.min(st.count);
+        // ★(1.1.10 · cysr-1110-winqueue 축1) 대체화면의 PgUp/PgDn 만으로 된 청크(윈 GUI 휠 번역)는 줄에 글자를 남기지 않는다 —
+        //   계수·사람 몫·세대를 바꾸지 않는다(가산도 감산도 아니다). 봉투 안·이월 꼬리가 있으면 종전 규칙에 맡긴다.
+        if self.alt_screen.load(Ordering::Relaxed)
+            && !st.in_paste
+            && st.tail.is_empty()
+            && crate::governance::is_page_scroll_chunk(chunk)
+        {
+            return st.clone();
+        }
         let mut next = crate::governance::pending_input_step_model(
             &st,
             chunk,
@@ -11807,6 +11816,45 @@ mod tests {
         crate::governance::close_surface(&daemon, s.id, crate::governance::CloseCause::OwnerClose)
             .expect("surface 종료 및 자식 프로세스 회수");
         // ★(R2F-DM 2차 · B3-b) 끝정리 — 유닉스는 종전처럼 엄격(실패 = 패닉) · 윈도우는 공유 위반(os error 32)을 잠깐 다시 시도한 뒤 무시한다(이 검체는 데몬을 쥔 채 지운다).
+        test_rm_rf(sock.parent().unwrap());
+    }
+
+    /// ★(1.1.10 · cysr-1110-winqueue 축1) 윈 1.1.9 실기 W-2(10-17 01:5x): fullscreen 좌석에서 휠 → GUI 가 PgUp/PgDn 으로 번역해
+    /// 사람 키로 보냄 → `pending_input_human_bytes=3364`(입력줄은 빈 화면) → 큐 `input_pending` 무기한. 대체화면의 PgUp/PgDn 만으로 된 청크는
+    /// 계수·사람 몫을 바꾸지 않는다. 본 화면·화살표·기존 초안은 종전 그대로(감산 없음).
+    #[test]
+    fn winqueue_alt_screen_page_scroll_keys_are_not_a_draft() {
+        use crate::governance::InputOrigin;
+
+        let sock = isolated_sock("winqueue-page-scroll");
+        let daemon = Daemon::new(sock.clone());
+        let s = daemon
+            .create_surface(None, Some("sleep 30".into()), None, None, 24, 80)
+            .expect("surface 생성");
+        let wheel = b"\x1b[5~\x1b[5~\x1b[6~".repeat(280); // 840 키 · 3360 바이트 — 실측 3364 와 같은 규모
+        {
+            let _gate = s.input_gate.lock().unwrap_or_else(|e| e.into_inner());
+            // ① 대체화면 · 빈 줄 · 휠 번역 → 0 그대로(재현: 수리 전에는 3360/3360)
+            s.alt_screen.store(true, Ordering::Relaxed);
+            let st = s.apply_pending_input(&wheel, InputOrigin::Human);
+            assert_eq!((st.count, st.human), (0, 0), "대체화면 PgUp/PgDn 이 사람 초안으로 세어졌다");
+            assert_eq!(s.pending_input_bytes.load(Ordering::Relaxed), 0);
+            // ② 사람이 친 초안 위의 휠 — 감산하지 않는다(초안 3 글자 그대로)
+            s.apply_pending_input(b"abc", InputOrigin::Human);
+            let st = s.apply_pending_input(&wheel, InputOrigin::Human);
+            assert_eq!((st.count, st.human), (3, 3), "휠이 사람 초안 계수를 바꿨다");
+            // ③ 화살표(cursor 모드)는 입력 기록을 불러오는 키 — 종전대로 센다
+            s.clear_pending_input();
+            let st = s.apply_pending_input(b"\x1b[A", InputOrigin::Human);
+            assert_eq!(st.count, 3, "화살표까지 면제됐다(입력 기록을 줄에 불러오는 키)");
+            // ④ 본 화면에서는 면제하지 않는다(셸 줄 편집기는 묶이지 않은 키 꼬리를 글자로 남길 수 있다)
+            s.clear_pending_input();
+            s.alt_screen.store(false, Ordering::Relaxed);
+            let st = s.apply_pending_input(b"\x1b[5~", InputOrigin::Human);
+            assert_eq!(st.count, 4, "본 화면 PgUp 까지 면제됐다");
+        }
+        crate::governance::close_surface(&daemon, s.id, crate::governance::CloseCause::OwnerClose)
+            .expect("surface 종료 및 자식 프로세스 회수");
         test_rm_rf(sock.parent().unwrap());
     }
 

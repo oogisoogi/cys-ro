@@ -11149,7 +11149,8 @@ fn run_factory_reset(
             "  복구  cys factory-reset --undo {}  (또는 그 폴더의 manifest.json / journal.ndjson 을 역방향 mv)",
             plan.trash_dir.display()
         );
-        println!("        격리본은 약 14일 뒤 정리 작업에서 소거될 수 있습니다(직접 지우려면 rm -rf).");
+        // ★(1.1.10 사전 검토) 1.1.10 은 격리본 자동 소거(옛 14일)를 없앴다 — 지우는 길 = 휴지통(설명서 「완전 초기화」 절과 같은 말).
+        println!("        격리본은 저절로 지워지지 않습니다 — 지우려면 앱 Control Center 의 「휴지통」 탭에서 골라 지웁니다(맥).");
     }
     // ★P0-6: 격리 목적지가 못 쓰는 상태면 **데몬을 건드리기 전에** 거부한다.
     if let Err(e) = &plan.trash_root_ready {
@@ -37625,6 +37626,21 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         let _ = std::fs::remove_dir_all(&td);
         assert!(out.find("■ 사용자 오버라이드").is_none(), "오버라이드 없는데 블록 등장");
         assert!(out.find("■ 안전핵 재확인").is_none(), "오버라이드 없으면 안전핵 재선언도 생략");
+    }
+
+    /// ★(1.1.10 사전 검토 · cysr-1110-prerelease-review-a) 1.1.10 은 격리본 자동 소거(옛 14일)를 없애고 지우는 길을 휴지통
+    /// (Control Center)으로 모았다 — `factory-reset` 계획 화면만 「약 14일 뒤 소거될 수 있습니다(직접 지우려면 rm -rf)」로 남아
+    /// 설명서(「저절로 지워지지 않습니다 — 휴지통에서」)와 반대로 말했다.
+    #[test]
+    fn factory_reset_plan_does_not_promise_auto_purge() {
+        let src = include_str!("cys.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계")];
+        let body = &prod[prod.find("\nfn run_factory_reset(").expect("계획 화면 함수")..];
+        let body = &body[..1 + body[1..].find("\nfn ").unwrap_or(body.len() - 1)];
+        assert!(body.contains("factory-reset --undo"), "절단 경계가 계획 화면을 놓쳤다");
+        assert!(!body.contains("14일 뒤"), "계획 화면이 사라진 자동 소거를 약속한다");
+        assert!(!body.contains("rm -rf"), "계획 화면이 휴지통 대신 rm -rf 를 안내한다");
+        assert!(body.contains("저절로 지워지지 않습니다"), "격리본 보관 안내가 빠졌다");
     }
 
     #[test]

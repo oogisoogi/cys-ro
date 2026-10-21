@@ -15,7 +15,7 @@
 5. **윈도우 휴지통 삭제는 이 판에서 꺼진 채 나가는 것이 정상이다** — `src/bin/cysd/trash.rs:1630-1637` `delete_supported()` = 윈에서는 `cfg!(feature = "trash_win_validated")` · `Cargo.toml:31` 그 feature 는 default 에 없음 · 워크플로·스크립트에서 켜는 곳 0(git grep) · `Cargo.toml:27-29` 「켜는 유일한 정당 경로는 12.W(W1~W8)를 통과한 릴리스 단계」 — **12.W 정의 문서는 이 저장소에 없다**(`git grep '12\.W' -- '*.md'` = trash-harden HANDOFF 2줄뿐). 이번 실기는 「꺼져 있음」 을 확인하는 것이지 켜는 시험이 아니다.
 6. **지금 가지(`rel/1.1.10`)는 CI push 트리거 밖** — `workflow_dispatch` 로 돌린다(체크리스트 1-1 · 1.1.9 선례 SS:628).
 
-## 1. 확인점 전부(46개)
+## 1. 확인점 전부(48개)
 
 ### A. WIN-GATE-1110(관문표 · 요약 `docs/upstream/HANDOFF-1110.md:17-28`) — 9
 
@@ -35,7 +35,7 @@
 
 관문 결과 보고 서식(:111-113) = 「W-n: 통과\|적\|해당 없음 · 관측 1줄 · 원문 첨부」 + 마지막에 `$h0` 대조 1줄.
 
-### B. winqueue(`docs/HANDOFF-cysr-1110-winqueue-2026-10-21.md` · 통합 HANDOFF:60 「① winqueue(축1 휠·축2 layout_why·자리표)」) — 8
+### B. winqueue(`docs/HANDOFF-cysr-1110-winqueue-2026-10-21.md` · 통합 HANDOFF:60 「① winqueue(축1 휠·축2 layout_why·자리표)」) — 8 + 발행 전 검토 2(WINQ-9·10)
 
 | ID | 출처 | 무엇을 | 어떻게 | 통과 기준 | 맥 확인 / 안 된 이유 |
 |---|---|---|---|---|---|
@@ -46,7 +46,9 @@
 | WINQ-5 | :81 ⑸ · :131 「윈 의미론은 OS 인자판…으로만 쟀다」 | `caller_env_keeps_config_dir(_on)`(`src/bin/cysd/state.rs:3263·3271`) — `C:\Users\x/.cys/claude` 구분자 혼용 | **제안**: `cysr launch-agent --role worker --agent claude` → 계정 표시가 「확인 중」 이 아닌지 · 좌석 `config_dir_trusted` 값 | **제안**: true · 계정 확인됨 | 시험 `winqueue_config_dir_trust_compares_paths_not_spellings_on_windows`(맥에서 윈 의미론) 녹 · 뮤턴트 적 · 윈 바이너리 실행 0 |
 | WINQ-6 | :82 ⑹ | `cys factory-reset --plan` 의 「창 안 실행 거부」 를 실집행에만 | **제안**: WG-4 #6 을 좌석 창 안에서 직접 `cysr factory-reset --plan` | **제안**: 거부 없이 계획 출력 · rc 0 · 데몬 무접촉 · 부기(:82): `probe_trash_root` 가 격리 폴더가 없으면 만든다 → W-4 #6 「쓰기 0」 과 미세 차이(해석 — 폴더 생성 1건은 적이 아님) | 전용 시험 이름 없음 · 1.1.9 윈 실측 = 거부(SS:607) |
 | WINQ-7 | :80 ⑷ · 커밋 `fa56bd91` 제목 「윈 1.1.9 실기 W-2 문안·관측」 | `directive.verify` 의 `verify_denied` 문구(거부 규칙 무변경) | **제안**: 윈 master 창에서 `cysr launch-agent …` 출력 확인 | **제안**: 「이 launch-agent 가 cys pane 안에서 실행돼 데몬이 검증 상태 기록을 받지 않는다…」 문구 · 「구 데몬?」 없음 | 문구는 플랫폼 공통(해석) · 원 관측 = SS:609 |
-| WINQ-8 | :110-111 §8 한계 | cursor 모드 휠(화살표)은 여전히 초안으로 셈 · 휠이 `last_human_input` 을 갱신해 3초 직접 send 보류 | 절차 없음 — 알려진 잔여 | 보이면 「알려진 잔여」 로 분류(적 아님 · 해석) | 의도된 보수 · 범위 밖 |
+| WINQ-8 | :110-111 §8 한계 | cursor 모드 휠(화살표)은 여전히 초안으로 셈 · ~~휠이 `last_human_input` 을 갱신해 3초 직접 send 보류~~ → 발행 전 검토 review-a R1(`b75d8b25`)이 해소(실제 영향은 큐 30초 보류였다 · WINQ-9) | 절차 없음 — 알려진 잔여 | 보이면 「알려진 잔여」 로 분류(적 아님 · 해석) | 의도된 보수 · 범위 밖 |
+| WINQ-9 | 발행 전 검토 review-a R1(`b75d8b25` · `docs/HANDOFF-cysr-1110-prerelease-review-a-2026-10-22.md` §2 · master#4a059fc9 ④) | `surface.send_text` 처리기(`src/bin/cysd/handlers.rs` 6362 부근) — 대체화면 + PgUp/PgDn 만인 입력은 타이핑 가드(`last_human_input`)를 찍지 않음(계수 면제와 같은 조건). 수리 전 = 휠마다 가드 → 그 좌석 `--queued` 가 마지막 휠 뒤 30초(`queue_human_quiet_secs`) `human_typing` 보류 | **제안**: WG-2 좌석에서 휠을 위아래로 수 초 굴리는 중에 다른 창에서 `cysr send --queued --to <역할> "핑"` → **휠을 멈추고 시계를 본다** → 들어간 시각 · 들어가기 전 `cysr status --json` 그 좌석 `queue_blocked_by` | **제안**: 휠을 멈춘 뒤 수 초 안에 「핑」 이 들어감(30초 기다림 없음) · 보류 사유에 `human_typing(사람 입력 직후)` 없음 | 맥 = 실 대체화면 좌석 처리기 경유 시험 `alt_screen_page_scroll_wheel_does_not_arm_typing_guard` 녹 · 원 코드·뮤턴트 적 · 윈 휠 번역은 윈 GUI 전용 |
+| WINQ-10 | 발행 전 검토 review-a 지적표 A 「자리표 isWrapped」(같은 HANDOFF §3 · 확신도 하) · master#4a059fc9 ④ | `ui/src/placeholderclose.ts:55` 가 줄 접힘을 xterm `isWrapped` 로만 한 줄로 셈 — ConPTY 가 리사이즈 뒤 줄 단위로 다시 찍으면 88자 PowerShell 5.1 안내 줄(「Install the latest PowerShell … https://aka.ms/PSWindows」)이 2~3줄로 세어져 상한 4(`PLACEHOLDER_MAX_LINES_WIN`) 초과 | **제안**: 콜드 기동 직후 자리표 창이 떠 있는 동안 창을 좌우로 쪼개 **88열 미만**으로 만든 뒤 편성 도착을 기다림 | **제안**: 88열 미만이어도 자리표가 사람 손 없이 닫힘 · 안 닫히면 화면 사진 + 그 창 폭(열 수) — 실패 방향은 「안 닫힘」(종전 결함과 같은 꼴 · 데이터 손실 없음) | 맥 = `placeholderclose.test.ts` 녹(접힘 표지 있는 경우만) · ConPTY 재도색 꼴은 윈에만 |
 
 ### C. minor(`docs/HANDOFF-cysr-1110-minor-2026-10-21.md` · :129 「③⑥⑦ 은 윈 실기에서 … 확인해야 해소다」) — 3
 
@@ -99,8 +101,8 @@
 
 윈 항목이 없는 출처: popfont(`af852096` 본문에 윈 언급 없음 — 단 글꼴 크기 체감은 MENU-1 사진에서 화면 설정을 열어 함께 보면 된다 · 제안) · docs/1110-naming(`29f02a2d` · 앱 윈 실기 항목 없음) · 통합 HANDOFF:60·INTEGRATE:47 은 위 B·C·D 를 가리키는 색인.
 
-**합계 46** = WIN-GATE 9 · winqueue 8 · minor 3 · trash-harden 4 + 발행 전 검토 1(TRASH-5) · 원작자 편입 15(그중 V14 해당 없음 · V8·V13 실기 대상 아님 · V6·V9·V10·V11 = CI 로그 판독) · menu-top-row 5 · backlog 1.
-노트북 본체에서 사람 화면 조작이 필요한 것 = WG-1~4·6 · WINQ-1~7 · MINOR-3·6·7 · TRASH-2·4·5 · V1·V2·V3·V4·V5·V7·V12 · MENU-1~5 · BACKLOG-1. CI 로그로 보는 것 = TRASH-1 · V6·V8·V9·V10·V11·V13. 판단 대기 = TRASH-3(본체 실집행 여부).
+**합계 48** = WIN-GATE 9 · winqueue 8 + 발행 전 검토 2(WINQ-9·10) · minor 3 · trash-harden 4 + 발행 전 검토 1(TRASH-5) · 원작자 편입 15(그중 V14 해당 없음 · V8·V13 실기 대상 아님 · V6·V9·V10·V11 = CI 로그 판독) · menu-top-row 5 · backlog 1.
+노트북 본체에서 사람 화면 조작이 필요한 것 = WG-1~4·6 · WINQ-1~7·9·10 · MINOR-3·6·7 · TRASH-2·4·5 · V1·V2·V3·V4·V5·V7·V12 · MENU-1~5 · BACKLOG-1. CI 로그로 보는 것 = TRASH-1 · V6·V8·V9·V10·V11·V13. 판단 대기 = TRASH-3(본체 실집행 여부).
 
 ### G. CI 윈도우 잡(실기 전에 같은 SHA 초록)
 
@@ -164,7 +166,7 @@
 
 ⓔ 확인점(첨부 2파일 · 순서대로 · 항목마다 「ID: 통과|적|해당 없음 · 관측 1줄 · 원문」)
    첨부 1 = docs/upstream/WIN-GATE-1110.md(W-0~W-6 명령 원문) — W-4 #6 은 좌석 창 안에서 직접 `cysr factory-reset --plan`(1.1.10 에서 창 안 허용)
-   첨부 2 = 이 문서 §1 B·C·D·E·F 표의 사람 조작 항목(WINQ-1~7 · MINOR-3·6·7 · TRASH-2·4·5 · V1·V2·V3·V4·V5·V7·V12 · MENU-1~5 · BACKLOG-1)
+   첨부 2 = 이 문서 §1 B·C·D·E·F 표의 사람 조작 항목(WINQ-1~7·9·10 · MINOR-3·6·7 · TRASH-2·4·5 · V1·V2·V3·V4·V5·V7·V12 · MENU-1~5 · BACKLOG-1)
    ⛔TRASH-3(공장 초기화 실집행)은 하지 않는다(맥 master 별도 지시가 있을 때만).
    ⛔휴지통 시험(TRASH-2·V1)은 「삭제」 를 눌러도 지워지지 않는 것이 정상이다 — 지워지면 즉시 멈추고 회신. (단 14일 지난 항목이 정리 작업으로 사라지는 것은 정상이다 — TRASH-5)
 

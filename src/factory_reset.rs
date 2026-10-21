@@ -2006,7 +2006,8 @@ pub fn execute_quarantine(
 // 화면에서 드래그 복사하면 **큰따옴표가 딸려 오고**, `trim()` 은 따옴표를 깎지 않아 즉시 거부됐다.
 // 또 macOS 는 자모 분리(NFD) 한글을 흔히 만들고(파일시스템·일부 입력기·웹 복사), NBSP·전각
 // 공백·ZWSP 가 섞여도 육안으로는 구분이 안 된다. 전부 같은 뜻이므로 같게 취급한다.
-// ★의존성 0: 전면 NFC 가 아니라 **한글 음절 합성**만 직접 구현한다(대상 문구가 한글이므로 충분).
+// ★1.1.11(C1): 전면 NFC(icu_normalizer). 종전에는 의존성 0 을 위해 **한글 음절 합성**만 직접 했으나, 휴지통
+// 이름 하나 지우기의 확인 문구는 디스크의 이름(한글 밖 분해형 가능)이라 화면(완전 NFC)과 갈렸다.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─── S8 M3: `.producer` 표식 — "이 격리는 지금 진행 중이다"를 디스크에 남긴다 ────────────────────
@@ -2046,52 +2047,10 @@ fn producer_body(state: &str) -> String {
 }
 
 
-/// 한글 자모(L+V[+T])를 완성형 음절로 합성한다(유니코드 표준 알고리즘 · NFD→NFC 부분집합).
-fn compose_hangul(input: &str) -> String {
-    const L_BASE: u32 = 0x1100;
-    const V_BASE: u32 = 0x1161;
-    const T_BASE: u32 = 0x11A7;
-    const S_BASE: u32 = 0xAC00;
-    const V_COUNT: u32 = 21;
-    const T_COUNT: u32 = 28;
-
-    let chars: Vec<char> = input.chars().collect();
-    let mut out = String::with_capacity(input.len());
-    let mut i = 0usize;
-    while i < chars.len() {
-        let c = chars[i] as u32;
-        let l_idx = c.wrapping_sub(L_BASE);
-        // 초성 + 중성이 이어질 때만 합성 시도.
-        if l_idx < 19 && i + 1 < chars.len() {
-            let v_idx = (chars[i + 1] as u32).wrapping_sub(V_BASE);
-            if v_idx < V_COUNT {
-                let mut t_idx = 0u32;
-                let mut consumed = 2usize;
-                if i + 2 < chars.len() {
-                    let t = (chars[i + 2] as u32).wrapping_sub(T_BASE);
-                    if t >= 1 && t < T_COUNT {
-                        t_idx = t;
-                        consumed = 3;
-                    }
-                }
-                let syllable = S_BASE + (l_idx * V_COUNT + v_idx) * T_COUNT + t_idx;
-                if let Some(ch) = char::from_u32(syllable) {
-                    out.push(ch);
-                    i += consumed;
-                    continue;
-                }
-            }
-        }
-        out.push(chars[i]);
-        i += 1;
-    }
-    out
-}
-
-/// 확인 문구 비교용 정규화 — 따옴표 제거·공백류 통일·한글 합성·양끝 정리.
+/// 확인 문구 비교용 정규화 — 따옴표 제거·공백류 통일·NFC 합성·양끝 정리.
 /// GUI(resetconfirm.ts `normalizePhrase`)와 **같은 규칙**이어야 한다(한쪽만 관용하면 계약이 갈린다).
 pub fn normalize_confirm_phrase(input: &str) -> String {
-    let composed = compose_hangul(input);
+    let composed = icu_normalizer::ComposingNormalizerBorrowed::new_nfc().normalize(input);
     let unquoted = {
         let t = composed.trim();
         let pairs = [('"', '"'), ('\'', '\''), ('\u{201C}', '\u{201D}'), ('\u{2018}', '\u{2019}')];
@@ -4188,6 +4147,11 @@ mod tests {
                 "같은 문구로 받아야 한다: {s:?}"
             );
         }
+        // ★1.1.11(C1) — 한글 밖의 분해형(NFD)도 같게 받는다. 휴지통 이름 하나 지우기의 확인 문구는 디스크의
+        //   이름 그대로라(Finder·손으로 만든 폴더 = NFD 가능) 화면(완전 NFC · resetconfirm.ts)과 네이티브가
+        //   갈리면 화면은 통과하고 네이티브는 phrase_mismatch 를 영원히 돌려준다(그 항목을 GUI 에서 못 지움).
+        assert_eq!(normalize_confirm_phrase("cafe\u{301}"), normalize_confirm_phrase("caf\u{e9}"));
+        assert_eq!(normalize_confirm_phrase("dept-A\u{30A}rhus"), "dept-\u{C5}rhus");
         // 다른 문구는 여전히 다르다(관용이 정확성을 삼키면 안 된다).
         for s in ["완전초기화", "완전 삭제", "초기화", ""] {
             assert_ne!(normalize_confirm_phrase(s), want, "{s:?}");

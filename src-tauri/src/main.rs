@@ -5136,9 +5136,9 @@ fn trash_new_nonce() -> String {
 }
 
 /// 확인 문구 정규화 — lib 의 `normalize_confirm_phrase`(공장 초기화 CLI 와 같은 것 · `ui/src/resetconfirm.ts`
-/// `normalizePhrase` 와 같은 규칙 + 한글 조합)를 그대로 쓴다(사본을 만들지 않는다).
-/// ★한계: 한글 밖의 분해형 문자(예: 분해형 라틴 악센트)는 조합하지 않는다 — 그 경우 화면은 통과하고
-/// 여기서 `phrase_mismatch` 로 **거부**된다(실패의 방향은 지우지 않는 쪽).
+/// `normalizePhrase` 와 같은 규칙 · 완전 NFC)를 그대로 쓴다(사본을 만들지 않는다).
+/// ★1.1.11(C1): 종전 한계(한글만 조합 → 분해형 라틴 이름은 화면 통과·여기서 `phrase_mismatch`)는 lib 가
+/// 완전 NFC 로 바뀌어 닫혔다.
 fn trash_normalize_phrase(input: &str) -> String {
     cys::factory_reset::normalize_confirm_phrase(input)
 }

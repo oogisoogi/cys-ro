@@ -1049,6 +1049,113 @@ def hdiutil_retry(args, partial=None, runner=None, delay=1.0):
     return reasons
 
 
+FAKE_CURL = r"""#!/usr/bin/env python3
+import json, os, sys
+a = sys.argv[1:]
+out = fmt = None
+fail = False
+i = 0
+while i < len(a):
+    x = a[i]
+    if x in ("-o", "-w", "--proto", "--max-redirs"):
+        if x == "-o":
+            out = a[i + 1]
+        if x == "-w":
+            fmt = a[i + 1]
+        i += 2
+        continue
+    if x.startswith("-") and not x.startswith("--") and "f" in x:
+        fail = True
+    i += 1
+url = a[-1]
+with open(os.environ["FAKE_LOG"], "a") as f:
+    f.write(url + "\n")
+codes = json.loads(os.environ["FAKE_CODES"])
+code = next((v for k, v in codes.items() if url.endswith(k)), 404)
+if code == "net":
+    if fmt:
+        sys.stdout.write("000")
+    sys.stderr.write("curl: (6) Could not resolve host\n")
+    sys.exit(6)
+if fail and code >= 400:
+    sys.stderr.write("curl: (22) The requested URL returned error: %d\n" % code)
+    sys.exit(22)
+body = os.path.join(os.environ["FAKE_BODIES"], url.rsplit("/", 1)[-1])
+data = open(body, "rb").read() if code == 200 and os.path.exists(body) else b"<html>%d</html>" % code
+if out:
+    open(out, "wb").write(data)
+if fmt:
+    sys.stdout.write(str(code))
+"""
+
+
+class TestRefreshFeedFetch(unittest.TestCase):
+    """refresh-feed.yml 「Fetch current envelope」 단계 셸을 실제로 돌린다(1.1.10 사전 검토 · master#4a059fc9 ③).
+    종전엔 봉투 읽기 실패를 전부(403·5xx·DNS·TLS) 404 와 같이 「게시된 봉투 없음」 notice + exit 0 으로 처리해, 읽기 호스트가
+    막히면 주간 재서명이 녹색으로 아무것도 안 하고 봉투가 만료됐다(자동 갱신 정지 · 무증상). 404 만 부재 · 그 밖 = 적색."""
+
+    def step_script(self):
+        s = open(os.path.join(ROOT, ".github", "workflows", "refresh-feed.yml"), encoding="utf-8").read()
+        i = s.index("- name: Fetch current envelope")
+        j = s.index("run: |\n", i) + len("run: |\n")
+        lines = []
+        for l in s[j:].splitlines():
+            if l.strip() and not l.startswith(" " * 10):
+                break
+            lines.append(l[10:])
+        sc = "\n".join(lines)
+        sc = sc.replace("${{ github.event_name == 'workflow_dispatch' && inputs.first || false }}", "false")
+        sc = sc.replace("${{ github.event_name == 'workflow_dispatch' && inputs.release_seq || '' }}", "")
+        self.assertNotIn("${{", sc, "시험이 모르는 식이 단계에 생겼다 — 치환 목록 갱신")
+        return sc
+
+    def run_step(self, codes):
+        d = tempfile.mkdtemp(prefix="rf-")
+        self.addCleanup(shutil.rmtree, d, True)
+        binp, bodies = os.path.join(d, "bin"), os.path.join(d, "bodies")
+        os.makedirs(binp)
+        os.makedirs(bodies)
+        with open(os.path.join(binp, "curl"), "w") as f:
+            f.write(FAKE_CURL)
+        os.chmod(os.path.join(binp, "curl"), 0o755)
+        rel = base64.b64encode(b'{"seq":1}').decode()
+        for n, b in (("stable.json", json.dumps({"release": rel, "release_sig": rel})), ("stable.json.minisig", "sig"),
+                     ("revocations.json", "{}"), ("revocations.json.minisig", "sig")):
+            open(os.path.join(bodies, n), "w").write(b)
+        out = os.path.join(d, "gh_out")
+        env = dict(os.environ, PATH=binp + os.pathsep + os.environ["PATH"], C="cysr", CH="stable",
+                   SITE="https://feed.invalid", GITHUB_OUTPUT=out, FAKE_CODES=json.dumps(codes),
+                   FAKE_BODIES=bodies, FAKE_LOG=os.path.join(d, "log"))
+        r = subprocess.run(["bash", "-c", self.step_script()], cwd=d, env=env, capture_output=True, text=True)
+        outs = open(out).read() if os.path.exists(out) else ""
+        return r, outs
+
+    def test_404_is_absent_and_green(self):
+        r, outs = self.run_step({"/stable.json": 404})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("skip=1", outs)
+        self.assertIn("게시된 봉투 없음", r.stdout)
+
+    def test_read_failures_are_red_not_absent(self):
+        for code in (403, 500, 503, "net"):
+            r, outs = self.run_step({"/stable.json": code})
+            self.assertNotEqual(r.returncode, 0, "읽기 실패 %s 가 녹색으로 끝났다(봉투 만료 무증상)" % code)
+            self.assertNotIn("skip=1", outs, code)
+            self.assertIn("::error::", r.stdout, code)
+
+    def test_signature_read_failure_is_red(self):
+        r, outs = self.run_step({"/stable.json": 200, "/stable.json.minisig": 403})
+        self.assertNotEqual(r.returncode, 0, "서명 읽기 실패가 녹색으로 끝났다")
+        self.assertNotIn("skip=1", outs)
+
+    def test_published_envelope_proceeds(self):
+        r, outs = self.run_step({"/stable.json": 200, "/stable.json.minisig": 200, "/revocations.json": 200,
+                                 "/revocations.json.minisig": 200})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("have=1", outs)
+        self.assertIn("skip=0", outs)
+
+
 class TestHdiutilRetry(unittest.TestCase):
     """hdiutil_retry 계약 — 가짜 runner(플랫폼 무관)."""
 

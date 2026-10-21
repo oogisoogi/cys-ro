@@ -109,10 +109,18 @@ jobs:
           mkdir -p feed && cd feed
           get() { curl -fsS --proto '=https' --max-redirs 0 -o "$2" "$SITE$1"; }
           FIRST="${{ github.event_name == 'workflow_dispatch' && inputs.first || false }}"
-          if get "/update/$C/$CH.json" cur.json && get "/update/$C/$CH.json.minisig" cur.json.minisig; then
+          # 봉투 유무 = HTTP 404 하나로만 「없음」(1.1.10 사전 검토 · master#4a059fc9) — 403(봇 차단)·5xx·DNS·TLS 를 「없음」 으로 읽으면
+          #   주간 재서명이 녹색으로 아무것도 안 하고 봉투가 만료된다(사용자 자동 갱신 정지 · 무증상). 그 밖 실패 = 적색.
+          CODE=$(curl -sS --proto '=https' --max-redirs 0 -o cur.json -w '%{http_code}' "$SITE/update/$C/$CH.json") || CODE="${CODE:-000}"
+          if [ "$CODE" = "200" ]; then
+            get "/update/$C/$CH.json.minisig" cur.json.minisig || { echo "::error::$C/$CH 봉투는 있는데 서명을 못 읽었다 — 읽기 호스트 확인"; exit 1; }
             [ "$FIRST" != "true" ] || { echo "::error::first=true 인데 $C/$CH 봉투가 이미 게시돼 있다"; exit 1; }
             echo "have=1" >> "$GITHUB_OUTPUT"
+          elif [ "$CODE" != "404" ]; then
+            echo "::error::$C/$CH 봉투 읽기 실패(HTTP $CODE · 000 = 연결 실패) — 「없음」 이 아니다 · 읽기 호스트(SITE=$SITE · 변수 CYS_FEED_FETCH_SITE) 확인"
+            exit 1
           else
+            rm -f cur.json
             if [ "$FIRST" != "true" ]; then
               echo "::notice::$C/$CH 게시된 봉투 없음 — 이 레그는 할 일 없음(첫 게시 = master · first=true)"
               echo "have=0" >> "$GITHUB_OUTPUT"; echo "skip=1" >> "$GITHUB_OUTPUT"; exit 0

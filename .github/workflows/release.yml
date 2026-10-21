@@ -1416,7 +1416,13 @@ jobs:
       #   `cys reclaim-role --auto` 를 부른다(cysjavis-pack/hooks/session-start.sh · v1.1.7 cys.rs 에 reclaim-role 0건 →
       #   옛 바이너리 clap rc 2 = 역할 자동 복구 갈래 상시 무동작). 1.1.9 신설 표면(pack-heal --missing-only)은 팩 호출 0.
       #   pack-release.yml PACK_MIN_BINARY_OVERRIDE 와 동시 상향(두 값 동일 계약 · cys.rs 시험 핀).
-      PACK_MIN_BINARY: '1.1.8'
+      # ★1.1.10 상향(1.1.10 발행 준비 · master#c5547f8b ⑵ · TICKET=cysr-1110-release-prep) — 새 팩(원작자 S8 편입)은 옛
+      #   14일 자동 삭제(v1.1.9 cys-dept TRASH-EXPIRE rm -rf)를 없애고 지우는 유일한 길을 1.1.10 신설 표면(데몬 trash.* ·
+      #   앱 Control Center 휴지통)으로 지시한다(cysjavis-pack/bin/cys-dept TRASH-OLD · CSO_DIRECTIVE.md §3-1). 옛 바이너리
+      #   (1.1.8·1.1.9 — trash.rs 없음) + 새 팩 = 자동 삭제도 휴지통도 없어 격리분이 무한히 쌓인다. 새 CLI 표면은 아니지만
+      #   「팩이 새 바이너리 표면을 지시하면 그 판으로」 의 뜻에 해당(근거 표 = docs/release-1110/CHECKLIST-1.1.10-publish-2026-10-25.md A-4).
+      #   pack-release.yml PACK_MIN_BINARY_OVERRIDE 와 동시 상향(두 값 동일 계약 · cys.rs 시험 핀).
+      PACK_MIN_BINARY: '1.1.10'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 

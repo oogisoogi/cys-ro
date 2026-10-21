@@ -9701,6 +9701,8 @@ pub(crate) struct QueueBlockDiag {
     pub(crate) cursor_col: Option<u16>,
     /// ★(0.14.47 · 계측) 커서 뒤 글자가 전부 흐림(SGR 2)인가 — [`after_cursor_dim_of`]. **진단 전용**이다(게이트·배달·사이클은 읽지 않는다).
     pub(crate) after_cursor_dim: Option<bool>,
+    /// ★(1.1.10 · cysr-1110-winqueue 축2) 대체화면 마커 좌석의 레이아웃 판정 사유 코드([`ScreenProbe::layout_why`]) — **진단 전용**(게이트는 읽지 않는다).
+    pub(crate) layout_why: Option<&'static str>,
     /// ★(0.14.47 · 계측) 이 좌석이 대체 화면인가(진단 시점).
     pub(crate) alt_screen: bool,
     /// ★(0.14.47 · 계측) 마지막 사람 입력(`last_human_input`) 뒤 경과 초 — 기록이 없으면 `None`(결측은 값이 아니다).
@@ -9729,6 +9731,8 @@ pub(crate) struct ScreenProbe {
     /// ★(0.14.47 · 계측) 커서 열 · 커서 뒤 흐림 — [`seat_screen_probe_with`] 가 같은 파서 락 안에서 채운다([`screen_probe_of`] 는 글자만 보므로 채우지 않는다).
     pub(crate) cursor_col: Option<u16>,
     pub(crate) after_cursor_dim: Option<bool>,
+    /// ★(1.1.10 · cysr-1110-winqueue 축2) 대체화면 좌석의 레이아웃 판정 사유 코드([`cys::readiness::composer_layout_why`]) — 본 화면·마커 없는 좌석은 `None`.
+    pub(crate) layout_why: Option<&'static str>,
 }
 
 /// ★(0.14.47 · 계측) 커서 행의 **커서 뒤 글자가 전부 흐림(SGR 2)인가**(순수 · 진단 전용 — 게이트는 이 값을 읽지 않는다).
@@ -9770,7 +9774,7 @@ pub(crate) fn screen_probe_of(rows_text: &[String], cursor_row: u16, markers: &[
         .and_then(|r| r.trim_start().chars().next())
         .map(|c| format!("U+{:04X}", u32::from(c)));
     // 칸 속성(커서 열·흐림)은 글자 행만으로는 알 수 없다 — [`seat_screen_probe_with`] 가 파서에서 채운다.
-    ScreenProbe { cursor_row: row.map(|_| cursor_row), marker_row, cursor_lead_cp, cursor_col: None, after_cursor_dim: None }
+    ScreenProbe { cursor_row: row.map(|_| cursor_row), marker_row, cursor_lead_cp, cursor_col: None, after_cursor_dim: None, layout_why: None }
 }
 
 /// 좌석 한 곳의 화면 동기 진단(IO) — 파서 락 1회. 마커는 `agent_meta` 가 있는 좌석만 어댑터에서 읽는다(맨 셸 = 빈 목록 · 디스크 판독 0).
@@ -9784,11 +9788,12 @@ pub(crate) fn seat_screen_probe_with(
     }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let has_agent = s.agent_meta.lock().unwrap_or_else(|e| e.into_inner()).is_some();
-        let markers = if has_agent {
-            surface_prompt_marker(s, &defs()).map(|(m, _)| m).unwrap_or_default()
+        let (markers, placeholder) = if has_agent {
+            surface_prompt_marker(s, &defs()).unwrap_or_default()
         } else {
-            Vec::new()
+            (Vec::new(), None)
         };
+        let quiet_secs = s.last_output.lock().unwrap_or_else(|e| e.into_inner()).elapsed().as_secs();
         let p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
         let screen = p.screen();
         let (rows, cols) = screen.size();
@@ -9797,8 +9802,19 @@ pub(crate) fn seat_screen_probe_with(
         // ★(0.14.47 · 계측) 커서 열과 커서 뒤 흐림 — 글자 행을 뜬 **같은 락 안**에서 읽는다(한 프레임). 커서 행이 화면 밖이면 둘 다 결측.
         let cursor_col = (cr < rows).then_some(cc);
         let after_cursor_dim = after_cursor_dim_of(screen, cr, cc);
+        // ★(1.1.10 · 축2) 대체화면 마커 좌석만 — 틱의 `layout_ok` 와 같은 재료(화면 글자·마커·플레이스홀더·출력 정적 변환기).
+        let layout_why = (screen.alternate_screen() && !markers.is_empty()).then(|| {
+            let contents = screen.contents();
+            let marker = cys::agent_markers::pick_marker_for_screen(&markers, &contents).unwrap_or("");
+            cys::readiness::composer_layout_why(
+                &contents,
+                marker,
+                placeholder.as_deref(),
+                cys::readiness::idle_quiet_from(Some(quiet_secs as f64)),
+            )
+        });
         drop(p);
-        ScreenProbe { cursor_col, after_cursor_dim, ..screen_probe_of(&rows_text, cr, &markers) }
+        ScreenProbe { cursor_col, after_cursor_dim, layout_why, ..screen_probe_of(&rows_text, cr, &markers) }
     }))
     .unwrap_or_default()
 }
@@ -9996,6 +10012,7 @@ pub(crate) fn queue_block_diag_with(
         repaint_requested_at,
         cursor_col: probe.cursor_col,
         after_cursor_dim: probe.after_cursor_dim,
+        layout_why: probe.layout_why,
         alt_screen: alt,
         human_idle_secs,
         quiet_secs,
@@ -10020,6 +10037,8 @@ pub(crate) fn screen_diag_json(d: &QueueBlockDiag) -> Value {
         "after_cursor_dim": d.after_cursor_dim,
         "alt_screen": d.alt_screen,
         "human_idle_secs": d.human_idle_secs,
+        // ★(1.1.10 · cysr-1110-winqueue 축2) 추가형 키 — 대체화면 마커 좌석의 레이아웃 판정 사유 코드(그 밖 null).
+        "layout_why": d.layout_why,
     })
 }
 
@@ -21611,6 +21630,8 @@ mod tests {
         for (tag, raw) in [("wq-idle", WQ_IDLE_FULLSCREEN), ("wq-scrolled", WQ_SCROLLED_FULLSCREEN)] {
             let (daemon, s) = qa_fixture_seat(tag, raw);
             assert!(s.alt_screen.load(Ordering::Relaxed), "{tag}: 픽스처 전제 붕괴 — 대체화면이 아니다");
+            // 진단 사유 코드(축2) — 배달되는 화면은 `ok` 다(윈에서 이 값이 다르면 그 코드가 거짓인 규칙을 가리킨다).
+            assert_eq!(queue_block_diag(&daemon, &s).layout_why, Some("ok"), "{tag}");
             qa_tick(&daemon);
             assert_eq!(
                 s.pending_queue.lock().unwrap().len(),
@@ -21640,6 +21661,24 @@ mod tests {
             "휠 뒤 fullscreen 좌석에 배달하지 않았다: {}",
             qa_blocked_reason(&s)
         );
+    }
+
+    /// ★축2 진단: 같은 실화면에 괘선 한 줄을 더 그리면(상자 아래 괘선 2개 = 닫힌 상자 아님) 종전대로 `alt_screen` 보류이고,
+    /// 진단 사유 코드가 그 규칙을 가리킨다(`queue.list`·`queue-blocked.json` 의 `screen_diag.layout_why`).
+    #[test]
+    fn wq_fullscreen_layout_block_names_the_failed_rule() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = wq_env("wq-why");
+        let (daemon, s) = qa_fixture_seat("wq-why", WQ_IDLE_FULLSCREEN);
+        {
+            let mut p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+            p.process("\x1b[39;1H────────────────────────\x1b[36;3H".as_bytes());
+        }
+        qa_tick(&daemon);
+        assert_eq!(s.pending_queue.lock().unwrap().len(), 1, "닫히지 않은 상자에 배달했다");
+        assert!(qa_blocked_reason(&s).starts_with("alt_screen"), "{}", qa_blocked_reason(&s));
+        let j = super::screen_diag_json(&queue_block_diag(&daemon, &s));
+        assert_eq!(j["layout_why"], json!("box_rules_2+_first_rule"), "{j}");
     }
 
     #[test]
@@ -31232,7 +31271,7 @@ mod tests {
         let keys: std::collections::BTreeSet<&str> = j.as_object().unwrap().keys().map(String::as_str).collect();
         let want: std::collections::BTreeSet<&str> = [
             "cursor_row", "marker_row", "cursor_lead_cp", "last_parser_panic_at", "repaint_requested_at",
-            "cursor_col", "after_cursor_dim", "alt_screen", "human_idle_secs",
+            "cursor_col", "after_cursor_dim", "alt_screen", "human_idle_secs", "layout_why",
         ]
         .into_iter()
         .collect();
@@ -35044,7 +35083,7 @@ mod f3_screen_probe_tests {
         // 커서가 마커 행 — 선두 '❯' = U+276F.
         assert_eq!(
             screen_probe_of(&screen, 2, &claude),
-            ScreenProbe { cursor_row: Some(2), marker_row: Some(2), cursor_lead_cp: Some("U+276F".into()), cursor_col: None, after_cursor_dim: None }
+            ScreenProbe { cursor_row: Some(2), marker_row: Some(2), cursor_lead_cp: Some("U+276F".into()), cursor_col: None, after_cursor_dim: None, layout_why: None }
         );
         // 패닉 뒤 빈 사본의 꼴 — 커서 (0,0) · 0행은 출력 줄.
         let p = screen_probe_of(&screen, 0, &claude);

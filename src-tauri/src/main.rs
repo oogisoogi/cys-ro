@@ -5101,9 +5101,19 @@ struct TrashTypedGate {
     issued: std::time::Instant,
 }
 
-fn trash_typed_gates() -> &'static Mutex<HashMap<String, TrashTypedGate>> {
-    static G: std::sync::OnceLock<Mutex<HashMap<String, TrashTypedGate>>> = std::sync::OnceLock::new();
-    G.get_or_init(|| Mutex::new(HashMap::new()))
+/// 발급된 확인(nonce → 확인)과 **쓴 confirm_id 의 묘비**(confirm_id → 쓴 시각).
+/// ★confirm_id 하나에 살아 있는 확인은 **하나**다(codex 1R major): ready 를 다시 폴링하면 같은 nonce 를
+/// 돌려주고 새로 만들지 않는다 · 한 번 꺼내면(판정 실패 포함) 그 confirm_id 는 묘비가 되어 다시 발급되지
+/// 않는다 ⇒ 같은 미리보기로 두 번째 시도는 없다.
+#[derive(Default)]
+struct TrashTypedGates {
+    live: HashMap<String, TrashTypedGate>,
+    spent: HashMap<String, std::time::Instant>,
+}
+
+fn trash_typed_gates() -> &'static Mutex<TrashTypedGates> {
+    static G: std::sync::OnceLock<Mutex<TrashTypedGates>> = std::sync::OnceLock::new();
+    G.get_or_init(|| Mutex::new(TrashTypedGates::default()))
 }
 
 /// 단회 확인 값 — 비밀이 아니라 **유일성**이 목적이다(화면이 그대로 받아 되보낸다).
@@ -5125,66 +5135,12 @@ fn trash_new_nonce() -> String {
     h.finalize().iter().take(16).map(|b| format!("{b:02x}")).collect()
 }
 
-/// 한글 자모 조합(NFC 의 한글 부분 · 유니코드 알고리즘 그대로). 화면은 `normalize("NFC")` 를 쓰고 Rust
-/// std 에는 NFC 가 없다 — 이름이 분해형(NFD) 한글로 디스크에 있어도 화면과 같은 판정이 나도록 한글만
-/// 조합한다. ★한계: 한글 밖의 분해형 문자(예: 분해형 라틴 악센트)는 조합하지 않는다 — 그 경우 화면은
-/// 통과하고 여기서 `phrase_mismatch` 로 **거부**된다(실패의 방향은 지우지 않는 쪽).
-fn trash_compose_hangul(s: &str) -> String {
-    const S_BASE: u32 = 0xAC00;
-    const L_BASE: u32 = 0x1100;
-    const V_BASE: u32 = 0x1161;
-    const T_BASE: u32 = 0x11A7;
-    const L_COUNT: u32 = 19;
-    const V_COUNT: u32 = 21;
-    const T_COUNT: u32 = 28;
-    let n_count = V_COUNT * T_COUNT;
-    let s_count = L_COUNT * n_count;
-    let mut out: Vec<char> = Vec::new();
-    for c in s.chars() {
-        let cu = c as u32;
-        if let Some(&last) = out.last() {
-            let lu = last as u32;
-            if (L_BASE..L_BASE + L_COUNT).contains(&lu) && (V_BASE..V_BASE + V_COUNT).contains(&cu) {
-                let sy = S_BASE + ((lu - L_BASE) * V_COUNT + (cu - V_BASE)) * T_COUNT;
-                *out.last_mut().unwrap() = char::from_u32(sy).unwrap();
-                continue;
-            }
-            if (S_BASE..S_BASE + s_count).contains(&lu)
-                && (lu - S_BASE) % T_COUNT == 0
-                && (T_BASE + 1..T_BASE + T_COUNT).contains(&cu)
-            {
-                *out.last_mut().unwrap() = char::from_u32(lu + (cu - T_BASE)).unwrap();
-                continue;
-            }
-        }
-        out.push(c);
-    }
-    out.into_iter().collect()
-}
-
-/// 확인 문구 정규화 — `ui/src/resetconfirm.ts` 의 `normalizePhrase` 와 같은 규칙(양끝 짝 따옴표 반복 제거 ·
-/// 폭 없는 문자 제거 · 모든 공백류를 한 칸으로) + 한글 조합(위 함수).
+/// 확인 문구 정규화 — lib 의 `normalize_confirm_phrase`(공장 초기화 CLI 와 같은 것 · `ui/src/resetconfirm.ts`
+/// `normalizePhrase` 와 같은 규칙 + 한글 조합)를 그대로 쓴다(사본을 만들지 않는다).
+/// ★한계: 한글 밖의 분해형 문자(예: 분해형 라틴 악센트)는 조합하지 않는다 — 그 경우 화면은 통과하고
+/// 여기서 `phrase_mismatch` 로 **거부**된다(실패의 방향은 지우지 않는 쪽).
 fn trash_normalize_phrase(input: &str) -> String {
-    let mut t: String = trash_compose_hangul(input.trim());
-    let pairs = [('"', '"'), ('\'', '\''), ('\u{201C}', '\u{201D}'), ('\u{2018}', '\u{2019}')];
-    loop {
-        let mut stripped = false;
-        for (a, b) in pairs {
-            if t.chars().count() >= 2 && t.starts_with(a) && t.ends_with(b) {
-                t = t[a.len_utf8()..t.len() - b.len_utf8()].to_string();
-                stripped = true;
-                break;
-            }
-        }
-        if !stripped {
-            break;
-        }
-    }
-    let t: String = t
-        .chars()
-        .filter(|c| !matches!(c, '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}'))
-        .collect();
-    t.split_whitespace().collect::<Vec<_>>().join(" ")
+    cys::factory_reset::normalize_confirm_phrase(input)
 }
 
 /// 요구 문구 — 화면 `trashRequiredPhrase` 와 같다(이름 하나면 그 이름, 여럿이면 `삭제 N`).
@@ -5216,13 +5172,21 @@ fn trash_issue_typed_gate(poll: &mut Value) {
         names,
         issued: std::time::Instant::now(),
     };
-    let nonce = trash_new_nonce();
-    if let Ok(mut m) = trash_typed_gates().lock() {
-        // 만료분은 여기서 버린다(타이머 스레드를 만들지 않는다).
-        m.retain(|_, g| g.issued.elapsed().as_secs() < TRASH_TYPED_GATE_TTL_SECS);
-        m.insert(nonce.clone(), gate);
-        poll["result"]["confirm_nonce"] = json!(nonce);
+    let Ok(mut m) = trash_typed_gates().lock() else { return };
+    // 만료분·묵은 묘비는 여기서 버린다(타이머 스레드를 만들지 않는다). 묘비는 데몬 확인 수명 동안만
+    // 의미가 있다 — 그 뒤엔 데몬이 그 confirm_id 를 어차피 거부한다.
+    m.live.retain(|_, g| g.issued.elapsed().as_secs() < TRASH_TYPED_GATE_TTL_SECS);
+    m.spent.retain(|_, t| t.elapsed().as_secs() < TRASH_TYPED_GATE_TTL_SECS);
+    if m.spent.contains_key(cid) {
+        return; // 이미 한 번 꺼낸 확인 — 다시 발급하지 않는다
     }
+    if let Some((n, _)) = m.live.iter().find(|(_, g)| g.confirm_id == cid) {
+        poll["result"]["confirm_nonce"] = json!(n.clone()); // 같은 확인을 다시 준다(새로 만들지 않는다)
+        return;
+    }
+    let nonce = trash_new_nonce();
+    m.live.insert(nonce.clone(), gate);
+    poll["result"]["confirm_nonce"] = json!(nonce);
 }
 
 /// 명령 직전 판정(순수) — 꺼낸 확인(`gate`)이 이 명령과 결박되고 입력 문구가 맞을 때만 `Ok`.
@@ -5260,7 +5224,12 @@ fn trash_consume_typed_gate(
     digest: &str,
     typed: &str,
 ) -> Result<(), String> {
-    let gate = trash_typed_gates().lock().ok().and_then(|mut m| m.remove(nonce));
+    let gate = trash_typed_gates().lock().ok().and_then(|mut m| {
+        let g = m.live.remove(nonce)?;
+        // 꺼낸 확인의 confirm_id 는 묘비가 된다(같은 미리보기로 다시 발급되지 않는다).
+        m.spent.insert(g.confirm_id.clone(), std::time::Instant::now());
+        Some(g)
+    });
     trash_typed_gate_check(gate.as_ref(), confirm_id, names, digest, typed)
 }
 
@@ -16129,7 +16098,7 @@ osascript 를 실행할 수 없어 건너뜁니다({e}) — macOS 가 아닌 환
         let mut poll = m1_poll("cf-m1", "dg", &["b-2", "a-1"]);
         trash_issue_typed_gate(&mut poll);
         let nonce = poll["result"]["confirm_nonce"].as_str().expect("ready 인데 확인이 실리지 않았다").to_string();
-        let take = |n: &str| trash_typed_gates().lock().unwrap().remove(n);
+        let take = |n: &str| trash_typed_gates().lock().unwrap().live.remove(n);
         let names = vec!["a-1".to_string(), "b-2".to_string()];
         let g = take(&nonce);
         assert!(trash_typed_gate_check(g.as_ref(), "cf-m1", &names, "dg", "삭제 2").is_ok());
@@ -16161,6 +16130,25 @@ osascript 를 실행할 수 없어 건너뜁니다({e}) — macOS 가 아닌 환
         let one = TrashTypedGate { names: vec!["dept-9-17".into()], ..g };
         assert!(trash_typed_gate_check(Some(&one), "cf-m1", &["dept-9-17".into()], "dg", "dept-9-17").is_ok());
         assert!(trash_typed_gate_check(Some(&one), "cf-m1", &["dept-9-17".into()], "dg", "삭제 1").is_err());
+    }
+
+    /// ★codex 1R major — ready 를 두 번 폴링해도 확인은 **하나**이고, 한 번 꺼내면(판정 실패라도)
+    /// 같은 미리보기로 다시 발급되지 않는다 ⇒ 실패 뒤 형제 nonce 로 재시도하는 길이 없다.
+    #[test]
+    fn m1_one_confirm_per_preview_and_a_spent_preview_is_never_reissued() {
+        let mut p1 = m1_poll("cf-once", "dg", &["n-1"]);
+        let mut p2 = m1_poll("cf-once", "dg", &["n-1"]);
+        trash_issue_typed_gate(&mut p1);
+        trash_issue_typed_gate(&mut p2);
+        let n1 = p1["result"]["confirm_nonce"].as_str().unwrap().to_string();
+        assert_eq!(p2["result"]["confirm_nonce"].as_str(), Some(n1.as_str()), "같은 미리보기에 확인이 둘 발급됐다");
+        let e = trash_consume_typed_gate(&n1, "cf-once", &["n-1".into()], "dg", "틀린 문구").unwrap_err();
+        assert!(e.starts_with("phrase_mismatch:"), "{e}");
+        let mut p3 = m1_poll("cf-once", "dg", &["n-1"]);
+        trash_issue_typed_gate(&mut p3);
+        assert!(p3["result"].get("confirm_nonce").is_none(), "쓴 미리보기에 확인을 다시 발급했다");
+        let e = trash_consume_typed_gate(&n1, "cf-once", &["n-1".into()], "dg", "n-1").unwrap_err();
+        assert!(e.starts_with("confirm_unbound:"), "실패한 확인으로 다시 통과했다: {e}");
     }
 
     /// 만료(같음 = 만료) · ready 가 아니면 발급하지 않는다.

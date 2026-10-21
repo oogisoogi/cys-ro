@@ -382,6 +382,26 @@ pub fn certify_entry_until(
     dev_of: DevOf,
     session_deadline: Option<Instant>,
 ) -> CertifyResult {
+    certify_walk(root, dev_of, session_deadline, None)
+}
+
+/// `certify_entry` 와 같되 **인증한 노드 전부의 실제 (dev, ino)** 를 함께 돌려준다(정렬됨 · 뿌리 제외).
+/// ★C-R1(codex 1R major · TICKET=cysr-1110-trash-harden): 집행의 **봉인 뒤 대조**가 이것을 쓰고, 제거
+/// 순회는 이 집합에 든 노드만 지운다 ⇒ 대조 뒤 끼어든 객체는 제거 집합에 들어오지 못한다(인증 집합 =
+/// 제거 집합을 신원으로 묶는다). 메모리: 노드당 16 바이트(노드 상한에서 약 80 MB · 집행 한 항목 동안만).
+pub fn certify_entry_ids(root: &Path, dev_of: DevOf) -> Result<(Certificate, Vec<(u64, u64)>), Refusal> {
+    let mut ids = Vec::new();
+    let c = certify_walk(root, dev_of, None, Some(&mut ids))?;
+    ids.sort_unstable();
+    Ok((c, ids))
+}
+
+fn certify_walk(
+    root: &Path,
+    dev_of: DevOf,
+    session_deadline: Option<Instant>,
+    mut ids: Option<&mut Vec<(u64, u64)>>,
+) -> CertifyResult {
     let t0 = Instant::now();
     let root_md = std::fs::symlink_metadata(root).map_err(|e| Refusal {
         code: R_UNREADABLE,
@@ -539,6 +559,9 @@ pub fn certify_entry_until(
             }
             let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().to_string();
             let (_d, ino) = dev_ino(&md);
+            if let Some(v) = ids.as_deref_mut() {
+                v.push((_d, ino));
+            }
             let kind = if md.is_dir() { "d" } else if md.file_type().is_symlink() { "l" } else { "f" };
             let mut nh = Sha256::new();
             nh.update(rel.as_bytes());
@@ -896,17 +919,17 @@ pub fn reset_state_for_test() {
 pub static AFTER_SEAL_HOOK: Mutex<Option<(PathBuf, fn(&Path))>> = Mutex::new(None);
 /// ★B2(codex 1R · TICKET=cysr-1110-trash-harden) 시험 전용 — 봉인 rename **직전**과 제거 **직전**에
 /// 뿌리 경로를 바꿔치는 자리. 경쟁의 시점을 시험이 정한다(결정론). 등록한 범위 아래 뿌리에서만 발화한다.
+/// 목록이다 — 병렬 시험 둘이 같은 자리에 등록해도 서로를 덮지 않는다(범위로 가른다).
 #[cfg(test)]
-pub static BEFORE_SEAL_HOOK: Mutex<Option<(PathBuf, fn(&Path))>> = Mutex::new(None);
+pub static BEFORE_SEAL_HOOK: Mutex<Vec<(PathBuf, fn(&Path))>> = Mutex::new(Vec::new());
 #[cfg(test)]
-pub static BEFORE_REMOVE_HOOK: Mutex<Option<(PathBuf, fn(&Path))>> = Mutex::new(None);
+pub static BEFORE_REMOVE_HOOK: Mutex<Vec<(PathBuf, fn(&Path))>> = Mutex::new(Vec::new());
 #[cfg(test)]
-fn fire_root_hook(hook: &Mutex<Option<(PathBuf, fn(&Path))>>, root: &Path) {
-    let g = hook.lock().unwrap();
-    if let Some((scope, h)) = g.as_ref() {
-        if root.starts_with(scope) {
-            h(root);
-        }
+fn fire_root_hook(hook: &Mutex<Vec<(PathBuf, fn(&Path))>>, root: &Path) {
+    let hs: Vec<fn(&Path)> =
+        hook.lock().unwrap().iter().filter(|(sc, _)| root.starts_with(sc)).map(|(_, h)| *h).collect();
+    for h in hs {
+        h(root);
     }
 }
 
@@ -973,12 +996,24 @@ impl RootDir {
         std::fs::rename(self.path.join(from), self.path.join(to))
     }
     /// `name` 을 지운다 — 연 객체가 `expect`(미리보기의 항목 신원)가 아니면 한 바이트도 지우지 않는다.
+    /// 하위 노드는 `allow`(인증 순회가 모은 신원)에 든 것만 지운다(C-R1).
     #[cfg(unix)]
-    fn remove_tree_at(&self, name: &str, expect: (u64, u64)) -> std::io::Result<()> {
-        at::remove_tree_at(&self.fd, name.as_bytes(), expect)
+    fn remove_tree_at(
+        &self,
+        name: &str,
+        expect: (u64, u64),
+        allow: &dyn Fn((u64, u64)) -> bool,
+    ) -> std::io::Result<()> {
+        at::remove_tree_at(&self.fd, name.as_bytes(), expect, allow)
     }
+    /// ★윈도우(표식): 노드 신원을 얻을 수 없어 `allow` 를 적용하지 못한다 — 경로 기반 `remove_dir_all`.
     #[cfg(not(unix))]
-    fn remove_tree_at(&self, name: &str, _expect: (u64, u64)) -> std::io::Result<()> {
+    fn remove_tree_at(
+        &self,
+        name: &str,
+        _expect: (u64, u64),
+        _allow: &dyn Fn((u64, u64)) -> bool,
+    ) -> std::io::Result<()> {
         std::fs::remove_dir_all(self.path.join(name))
     }
 }
@@ -1141,8 +1176,8 @@ pub fn execute_one_at(
     }
     // (4) 봉인 뒤 재확인 — 다르면 **봉인 상태로 남긴다**(되돌리지 않는다 · 자동 재개 없음).
     //     ★B2: 경로로 읽은 대조에 더해 **핸들 아래 봉인 이름의 신원**도 본다.
-    match certify_entry(&sealed, dev_of) {
-        Ok(c) if c.digest == baseline.digest && rd.id_at(&sealed_name).ok() == Some(want) => {}
+    let certified_ids = match certify_entry_ids(&sealed, dev_of) {
+        Ok((c, ids)) if c.digest == baseline.digest && rd.id_at(&sealed_name).ok() == Some(want) => ids,
         Ok(_) => {
             let r = Refusal {
                 code: R_CHANGED,
@@ -1164,14 +1199,15 @@ pub fn execute_one_at(
             out.duration_ms = t0.elapsed().as_millis() as u64;
             return out;
         }
-    }
+    };
     // (5) 제거 — 인증이 "이 뿌리 아래 장치 경계 없음"을 이미 확정했으므로 이 순회는 인증 집합을
     //     넓힐 수 없다(C-R1). 심링크는 따라가지 않고 링크 자체가 지워진다.
     //     ★B2: 제거는 핸들 기준 순회다 — 연 객체가 `want` 가 아니면 한 바이트도 지우지 않고, 하위에서
     //     장치가 바뀌면 멈춘다(경로를 다시 해석하지 않는다).
     #[cfg(test)]
     fire_root_hook(&BEFORE_REMOVE_HOOK, root);
-    if let Err(e) = rd.remove_tree_at(&sealed_name, want) {
+    //     ★C-R1: 하위 노드는 봉인 뒤 대조가 모은 신원 집합에 든 것만 지운다(대조 뒤 끼어든 것은 멈춤).
+    if let Err(e) = rd.remove_tree_at(&sealed_name, want, &|id| certified_ids.binary_search(&id).is_ok()) {
         // m3: 제거가 **시작된 뒤**의 오류다 — 남은 것이 있을 수 있다고 적는다(무결 주장 금지).
         let remaining = certify_entry(&sealed, dev_of).map(|c| c.nodes).ok();
         // partial = 제거가 시작된 뒤 멈췄다(남은 것이 있을 수 있다 · m3).
@@ -2972,9 +3008,9 @@ mod tests {
         let state = base_dir.join("sd");
         std::fs::create_dir_all(&state).unwrap();
         let base = certify_entry(&root.join(name), &real_dev).unwrap();
-        *BEFORE_SEAL_HOOK.lock().unwrap() = Some((base_dir.clone(), swap_root_to_outside));
+        BEFORE_SEAL_HOOK.lock().unwrap().push((base_dir.clone(), swap_root_to_outside));
         let out = execute_one(&root, name, &base, &real_dev, now_epoch() + 100_000.0, &state, "od-b2a");
-        *BEFORE_SEAL_HOOK.lock().unwrap() = None;
+        BEFORE_SEAL_HOOK.lock().unwrap().retain(|(sc, _)| sc != &base_dir);
         assert!(
             outside.join(name).join("victim.txt").exists(),
             "바깥 동명 디렉터리가 옮겨졌다(격리 루트 밖 rename): {out:?}"
@@ -3004,9 +3040,9 @@ mod tests {
         let state = base_dir.join("sd");
         std::fs::create_dir_all(&state).unwrap();
         let base = certify_entry(&root.join(name), &real_dev).unwrap();
-        *BEFORE_REMOVE_HOOK.lock().unwrap() = Some((base_dir.clone(), swap_root_to_outside));
+        BEFORE_REMOVE_HOOK.lock().unwrap().push((base_dir.clone(), swap_root_to_outside));
         let out = execute_one(&root, name, &base, &real_dev, now_epoch() + 100_000.0, &state, "od-b2b");
-        *BEFORE_REMOVE_HOOK.lock().unwrap() = None;
+        BEFORE_REMOVE_HOOK.lock().unwrap().retain(|(sc, _)| sc != &base_dir);
         assert!(
             victim.join("victim.txt").exists(),
             "바깥 동명 디렉터리가 지워졌다(격리 루트 밖 remove_dir_all): {out:?}"
@@ -3054,6 +3090,41 @@ mod tests {
         w(".producer", "open", 111);
         assert_eq!(producer_state(&e, &alive), ProducerState::ActiveOpen);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ★C-R1(codex 1R major) — 봉인 뒤 대조가 끝난 **뒤** 같은 파일계의 바깥 트리를 봉인 트리 안으로
+    /// 옮겨 넣으면, 현재 열거를 지우는 제거기는 인증하지 않은 그 트리를 지운다. 제거는 대조가 모은
+    /// 신원 집합 안의 것만 지우고, 밖의 것을 만나면 멈춰야 한다(그 트리는 한 바이트도 잃지 않는다).
+    #[cfg(unix)]
+    fn move_victim_into_sealed(root: &Path) {
+        let sealed = std::fs::read_dir(root)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.file_name().unwrap().to_string_lossy().starts_with(TRASH_SEAL_PREFIX))
+            .expect("봉인이 있어야 한다");
+        std::fs::rename(root.with_file_name("victim"), sealed.join("state/victim")).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn c_r1_a_tree_moved_in_after_the_compare_is_never_removed() {
+        let base_dir = rig("cr1-movein");
+        let root = base_dir.join("trash");
+        let name = "dept-4-1760000000";
+        mk(&root.join(name), "state/x.txt", b"x");
+        mk(&base_dir.join("victim"), "deep/keep.txt", b"must survive");
+        let state = base_dir.join("sd");
+        std::fs::create_dir_all(&state).unwrap();
+        let base = certify_entry(&root.join(name), &real_dev).unwrap();
+        BEFORE_REMOVE_HOOK.lock().unwrap().push((base_dir.clone(), move_victim_into_sealed));
+        let out = execute_one(&root, name, &base, &real_dev, now_epoch() + 100_000.0, &state, "od-cr1");
+        BEFORE_REMOVE_HOOK.lock().unwrap().retain(|(sc, _)| sc != &base_dir);
+        let moved = root.join(format!("{TRASH_SEAL_PREFIX}{name}")).join("state/victim/deep/keep.txt");
+        assert!(moved.exists(), "인증하지 않은 트리를 지웠다: {out:?}");
+        assert_ne!(out.outcome, "deleted_verified", "{out:?}");
+        assert_eq!(out.reason_code.as_deref(), Some(R_REMOVE_ERROR), "{out:?}");
+        let _ = std::fs::remove_dir_all(&base_dir);
     }
 
     /// 명령 진입 — 미리보기 뒤 뿌리가 **다른 진짜 디렉터리**로 바뀌었으면(심링크가 아니라 `O_NOFOLLOW`
@@ -3117,11 +3188,11 @@ mod tests {
         let root = rig("b2-ident");
         mk(&root, "a/keep.txt", b"keep");
         let rd = RootDir::open(&root).unwrap();
-        let err = rd.remove_tree_at("a", (1, 1)).expect_err("신원이 다르면 거부해야 한다");
+        let err = rd.remove_tree_at("a", (1, 1), &|_| true).expect_err("신원이 다르면 거부해야 한다");
         assert!(err.to_string().contains("미리보기의 항목이 아니다"), "{err}");
         assert!(root.join("a/keep.txt").exists(), "한 바이트도 지워지지 않아야 한다");
         let want = rd.id_at("a").unwrap();
-        rd.remove_tree_at("a", want).expect("같은 신원이면 지운다");
+        rd.remove_tree_at("a", want, &|_| true).expect("같은 신원이면 지운다");
         assert!(!root.join("a").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -3757,7 +3828,8 @@ mod tests {
         .expect("trash.rs");
         let prod = &src[..src.find("#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계 소실")];
         // `certify_entry(&` 는 집행 경로의 호출만 잡는다 — 미리보기는 `certify_entry_until(&` 라 안 걸린다.
-        let callers = prod.matches("certify_entry(&").count();
+        // ★`certify_entry_ids(&` 는 봉인 뒤 대조의 이름이다(C-R1 신원 집합을 함께 모은다 · 같은 순회).
+        let callers = prod.matches("certify_entry(&").count() + prod.matches("certify_entry_ids(&").count();
         assert_eq!(
             callers, 3,
             "집행 경로의 인증 호출자가 {callers}건이다 — 셋이 아니면 `certify_entry` 머리 주석의 범위 문면과 \

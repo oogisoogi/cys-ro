@@ -79,9 +79,19 @@ fn unlink_at(dir: BorrowedFd, name: &[u8], is_dir: bool) -> io::Result<()> {
     let flag = if is_dir { libc::AT_REMOVEDIR } else { 0 };
     check(unsafe { libc::unlinkat(dir.as_raw_fd(), c.as_ptr(), flag) }).map(|_| ())
 }
+/// errno 를 0 으로 놓는다 — `readdir` 의 끝(NULL·errno 0)과 오류(NULL·errno≠0)를 가르기 위해서다.
+fn clear_errno() {
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+    unsafe {
+        *libc::__error() = 0;
+    }
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    unsafe {
+        *libc::__errno_location() = 0;
+    }
+}
 /// 디렉터리 핸들의 자식 이름 전수(`.`·`..` 제외). 먼저 다 읽고 지운다 — 읽는 중에 지우면
-/// readdir 결과가 POSIX 상 미정이다. ★readdir 의 오류와 끝은 구별하지 않는다: 덜 읽혔다면
-/// 마지막 `unlinkat(AT_REMOVEDIR)` 가 ENOTEMPTY 로 실패해 **오류로 올라온다**(더 지우는 쪽이 아니다).
+/// readdir 결과가 POSIX 상 미정이다. 열거 오류(errno≠0)와 `closedir` 실패는 `Err` 다(codex 1R minor).
 fn list(dir: BorrowedFd) -> io::Result<Vec<Vec<u8>>> {
     let dup = check(unsafe { libc::fcntl(dir.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) })?;
     let dp = unsafe { libc::fdopendir(dup) };
@@ -91,9 +101,15 @@ fn list(dir: BorrowedFd) -> io::Result<Vec<Vec<u8>>> {
         return Err(e);
     }
     let mut out = Vec::new();
+    let mut err: Option<io::Error> = None;
     loop {
+        clear_errno();
         let ent = unsafe { libc::readdir(dp) };
         if ent.is_null() {
+            let e = io::Error::last_os_error();
+            if e.raw_os_error().unwrap_or(0) != 0 {
+                err = Some(e);
+            }
             break;
         }
         let n = unsafe { CStr::from_ptr((*ent).d_name.as_ptr()) }.to_bytes();
@@ -101,20 +117,38 @@ fn list(dir: BorrowedFd) -> io::Result<Vec<Vec<u8>>> {
             out.push(n.to_vec());
         }
     }
-    unsafe { libc::closedir(dp) };
-    Ok(out)
+    // closedir 는 dup 한 fd 를 닫는다(소유권이 DIR 로 넘어갔다 — 따로 close 하지 않는다).
+    if unsafe { libc::closedir(dp) } != 0 && err.is_none() {
+        err = Some(io::Error::last_os_error());
+    }
+    match err {
+        Some(e) => Err(e),
+        None => Ok(out),
+    }
 }
-/// 하위 내용 제거 — 디렉터리는 `O_NOFOLLOW` 로 열고 장치가 `dev` 와 다르면 **멈춘다**
-/// (인증이 본 집합을 넓히지 않는다 · C-R1 을 구조로 지킨다). 심링크는 링크 자체만 지운다.
-fn remove_contents(dir: BorrowedFd, dev: u64) -> io::Result<()> {
+/// 하위 내용 제거. ★인증 집합 = 제거 집합(C-R1 · codex 1R major): 노드마다 (dev, ino) 가 `allow`
+/// (호출자가 인증 순회에서 모은 신원 집합)에 있어야 지운다 — 인증 뒤 끼어든 객체(밖에서 옮겨 넣은
+/// 트리·새 파일)를 만나면 **그 자리에서 멈춘다**. 디렉터리는 `O_NOFOLLOW` 로 열고, 연 객체의 신원이
+/// 직전 `lstat` 의 신원과 같아야 하며(사이 바꿔치기), 장치가 `dev` 와 다르면 멈춘다. 심링크는 링크 자체만.
+/// ★남는 창(정직): 파일은 `lstat` 대조와 `unlinkat` 사이에 이름이 바뀌면 다른 객체를 지울 수 있다 —
+/// POSIX 에 「이 inode 일 때만 unlink」가 없다. 그 객체는 같은 UID 가 **봉인된 트리 안으로** 옮겨 넣은
+/// 것이어야 한다(경로 바꿔치기로 트리 밖에 닿는 길은 위 핸들 결박이 닫는다).
+fn remove_contents(dir: BorrowedFd, dev: u64, allow: &dyn Fn((u64, u64)) -> bool) -> io::Result<()> {
     for n in list(dir)? {
         let st = lstat_at(&dir, &n)?;
+        if !allow(id_of(&st)) {
+            return Err(io::Error::other("인증 집합에 없는 객체를 만났다 — 제거를 멈춘다"));
+        }
         if is_dir(&st) {
             let sub = open_dir_at(dir, &n)?;
-            if id_of(&fstat(&sub)?).0 != dev {
+            let sid = id_of(&fstat(&sub)?);
+            if sid != id_of(&st) {
+                return Err(io::Error::other("연 디렉터리가 확인한 객체가 아니다 — 제거를 멈춘다"));
+            }
+            if sid.0 != dev {
                 return Err(io::Error::other("장치 경계를 만났다 — 제거를 멈춘다"));
             }
-            remove_contents(sub.as_fd(), dev)?;
+            remove_contents(sub.as_fd(), dev, allow)?;
             drop(sub);
             unlink_at(dir, &n, true)?;
         } else {
@@ -123,17 +157,62 @@ fn remove_contents(dir: BorrowedFd, dev: u64) -> io::Result<()> {
     }
     Ok(())
 }
-/// `parent` 아래 `name` 을 통째로 지운다 — 연 객체의 신원이 `expect` 가 아니면 아무것도 지우지 않는다.
-pub fn remove_tree_at(parent: &OwnedFd, name: &[u8], expect: (u64, u64)) -> io::Result<()> {
+/// `parent` 아래 `name` 을 통째로 지운다 — 연 객체의 신원이 `expect` 가 아니면 아무것도 지우지 않고,
+/// 하위 노드는 `allow` 에 든 신원만 지운다(위 `remove_contents`).
+pub fn remove_tree_at(
+    parent: &OwnedFd,
+    name: &[u8],
+    expect: (u64, u64),
+    allow: &dyn Fn((u64, u64)) -> bool,
+) -> io::Result<()> {
     let fd = open_dir_at(parent.as_fd(), name)?;
     if id_of(&fstat(&fd)?) != expect {
         return Err(io::Error::other("연 객체가 미리보기의 항목이 아니다 — 지우지 않는다"));
     }
-    remove_contents(fd.as_fd(), expect.0)?;
+    remove_contents(fd.as_fd(), expect.0, allow)?;
     drop(fd);
     // 마지막 rmdir 직전 — 그 이름이 아직 그 객체인가(바꿔친 빈 디렉터리를 지우지 않는다).
     if id_of(&lstat_at(parent, name)?) != expect {
         return Err(io::Error::other("마지막 단계에서 이름이 다른 객체를 가리킨다 — 멈춘다"));
     }
     unlink_at(parent.as_fd(), name, true)
+}
+/// `dir` 아래 `name` 을 추가 쓰기로 연다(없으면 0644 로 만든다 · 마지막 성분이 심링크면 실패).
+pub fn open_append_at(dir: &OwnedFd, name: &[u8]) -> io::Result<std::fs::File> {
+    let c = cstr(name)?;
+    let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+    let fd = check(unsafe { libc::openat(dir.as_raw_fd(), c.as_ptr(), flags, 0o644 as libc::c_uint) })?;
+    Ok(std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) }))
+}
+/// `dir` 아래 `name` 을 원자 교체로 쓴다 — 임시 이름을 `O_EXCL` 로 만들고 fsync 뒤 같은 핸들 안에서
+/// `renameat`. 실패하면 임시 파일을 지운다.
+pub fn write_atomic_at(dir: &OwnedFd, name: &[u8], bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write as _;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let mut tmp = b".".to_vec();
+    tmp.extend_from_slice(name);
+    tmp.extend_from_slice(
+        format!(".tmp-{}-{}", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)).as_bytes(),
+    );
+    let c = cstr(&tmp)?;
+    let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+    let fd = check(unsafe { libc::openat(dir.as_raw_fd(), c.as_ptr(), flags, 0o644 as libc::c_uint) })?;
+    let mut f = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) });
+    let r = f.write_all(bytes).and_then(|_| f.sync_all()).and_then(|_| rename_at(dir, &tmp, name));
+    if r.is_err() {
+        let _ = unlink_at(dir.as_fd(), &tmp, false);
+    }
+    r
+}
+/// 경로가 **지금** 이 핸들의 객체인가(마지막 성분이 심링크면 아니다). 경로로만 쓸 수 있는 자리의
+/// 직전 대조용이다 — 대조와 쓰기 사이의 창은 남는다(호출자가 그 한계를 적는다).
+pub fn path_is(dir: &OwnedFd, p: &Path) -> bool {
+    match (std::fs::symlink_metadata(p), fstat(dir)) {
+        (Ok(md), Ok(st)) => {
+            use std::os::unix::fs::MetadataExt as _;
+            !md.file_type().is_symlink() && (md.dev(), md.ino()) == id_of(&st)
+        }
+        _ => false,
+    }
 }

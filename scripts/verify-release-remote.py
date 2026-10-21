@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """원격 발행 검증 — `docs/RELEASE.md` 의 메인·다운로드 페이지 검증 6항목을 기계로 돌린다.
+★원작자(벤더) 홈페이지 레인 전용 · 우리 포크 미사용 — 우리 발행 = `docs/RELEASE.md` 「현행 정본」 절(oogisoogi/cys-ro 릴리스 · 설치 사이트 jarvis.godmeyou.kr/get). 이 스크립트를 우리 발행에 부르지 않는다.
 
 ★배경: 이 6항목은 지금까지 **100% 수동 게이트**였다(`verify-release-remote.sh`·
 `release-assemble.py` 는 이 레인에 존재하지 않는다 — 실측). 수동이라 v0.13.17 에서

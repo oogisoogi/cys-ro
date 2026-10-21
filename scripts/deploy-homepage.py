@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """홈페이지(www.cysinsight.com) 배포 — 자산 업로드 + 페이지 버전 범프 + 구버전 정리.
+★원작자(벤더) 홈페이지 레인 전용 · 우리 포크 미사용 — 우리 발행 = `docs/RELEASE.md` 「현행 정본」 절(oogisoogi/cys-ro 릴리스 · 설치 사이트 jarvis.godmeyou.kr/get). 이 스크립트를 우리 발행에 부르지 않는다.
 
 ★설계 근거 (2026-07-29 실측):
   · 배포처는 Hostinger 공유호스팅(LiteSpeed). 자격은 `~/.cys/hostinger-ftp.env`(600).

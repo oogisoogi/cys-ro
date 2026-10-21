@@ -126,7 +126,10 @@ def make_env(home, role="master"):
     for k in ("CYS_ROLE", "CYS_SOCKET", "CYS_PACK_DIR", "CYS_NO_AUTOSTART", "CYS_DEPT_ROTATE",
               "CYS_DEPT_CATALOG", "CYS_DEPT_DEFAULT_ACCOUNT", "CYS_PRIMARY_ACCOUNT", "CYS_DEPT_CWD",
               "CYS_DEPT_CAP", "CYS_SURFACE_ID", "TT_CONSUME_OUT", "TT_CONSUME_RC", "TT_INSPECT_OUT",
-              "TT_INSPECT_RC", "TT_SETTLE_OUT", "TT_SETTLE_RC", "STUB_STATUS_JSON"):
+              "TT_INSPECT_RC", "TT_SETTLE_OUT", "TT_SETTLE_RC", "STUB_STATUS_JSON",
+              # 1.1.11 T1: cys-dept 는 CYS_CYS_BIN·CYS_CYSD_BIN 을 PATH 보다 먼저 쓴다 — cys 좌석 안에서 돌리면 앱이 내보낸
+              #   실 설치본(team-token 휴면)이 가짜 cys 대신 답해 18 적(test_team_create_u16.py:109 꼴).
+              "CYS_CYS_BIN", "CYS_CYSD_BIN"):
         env.pop(k, None)
     for k in list(env):
         if k.startswith("_CYS_TT_"):

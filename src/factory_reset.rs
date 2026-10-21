@@ -359,6 +359,11 @@ pub struct PlanItem {
     /// ★P0-2: `~/.cys`·데몬 상태 루트 **밖**의 경로인가(사용자 프로젝트 폴더 안 작업기억 등).
     /// 확인 모달이 이 항목만 따로 강조해 "내 폴더에서 뭐가 사라지는지"를 승인 전에 보여준다.
     pub outside_state: bool,
+    /// ★M4(codex 1R · TICKET=cysr-1110-trash-harden): 계획 때 잰 **부모 디렉터리의 (dev, ino)**.
+    /// 집행은 부모를 다시 열어 이 값과 대조하고 **그 핸들 기준으로** rename 한다 — 확인창 대기 중 부모가
+    /// 바꿔치기되면(심링크·다른 디렉터리) 계획과 다른 객체를 옮기지 않는다. `None` = 계획 때 부모가
+    /// 없었거나 잴 수 없는 플랫폼(윈도우 · 표식). 보존(keep) 항목은 옮기지 않으므로 언제나 `None`.
+    pub parent_id: Option<(u64, u64)>,
 }
 
 pub struct ResetPlan {
@@ -465,6 +470,7 @@ fn push_item(
     outside_state: bool,
 ) {
     let size_bytes = dir_size(&path);
+    let parent_id = plan_parent_id(&path);
     items.push(PlanItem {
         path,
         label: label.to_string(),
@@ -472,7 +478,40 @@ fn push_item(
         action: Action::Quarantine,
         best_effort,
         outside_state,
+        parent_id,
     });
+}
+
+/// 계획 시점 부모 신원(M4). 부모 경로의 정상 심링크(예: macOS `/var`)는 따라간다 — 대조할 것은
+/// 그 끝의 **객체**다.
+#[cfg(unix)]
+fn plan_parent_id(p: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt as _;
+    let md = std::fs::metadata(p.parent()?).ok()?;
+    Some((md.dev(), md.ino()))
+}
+/// ★윈도우(표식): 안정 std 에 파일 신원(file index)이 없다 — 잴 수 없으므로 결박하지 않는다.
+#[cfg(not(unix))]
+fn plan_parent_id(_p: &Path) -> Option<(u64, u64)> {
+    None
+}
+
+/// 집행 시점 부모 핸들(M4) — 부모를 열어 계획 때 신원과 대조한다. 어긋나면 `Err`(그 항목은 옮기지 않는다).
+#[cfg(unix)]
+fn bound_parent(item: &PlanItem) -> Result<std::os::fd::OwnedFd, String> {
+    let parent = item.path.parent().ok_or("부모가 없는 경로 — 옮기지 않았다")?;
+    let want = item
+        .parent_id
+        .ok_or("계획 때 부모 디렉터리가 없었다 — 계획과 다른 상태라 옮기지 않았다")?;
+    let fd = crate::dirat::open_dir_follow(parent)
+        .map_err(|e| format!("부모 디렉터리를 열 수 없다 — 옮기지 않았다: {e}"))?;
+    let got = crate::dirat::fstat(&fd)
+        .map(|st| crate::dirat::id_of(&st))
+        .map_err(|e| format!("부모 디렉터리 신원을 읽을 수 없다 — 옮기지 않았다: {e}"))?;
+    if got != want {
+        return Err("계획 뒤 부모 디렉터리가 바뀌었다(바꿔치기 의심) — 계획과 다른 객체일 수 있어 옮기지 않았다".into());
+    }
+    Ok(fd)
 }
 
 /// `_round` 후보를 **격리 대상**과 **보고 대상**으로 나눈다.
@@ -602,6 +641,7 @@ pub fn build_plan(roots: &ResetRoots, opts: &ResetOptions) -> ResetPlan {
                         action: Action::Keep,
                         best_effort: false,
                         outside_state: false,
+                        parent_id: None,
                     });
                 }
             } else if is_local {
@@ -615,6 +655,7 @@ pub fn build_plan(roots: &ResetRoots, opts: &ResetOptions) -> ResetPlan {
                         action: Action::Keep,
                         best_effort: false,
                         outside_state: false,
+                        parent_id: None,
                     });
                 }
             } else if known {
@@ -627,6 +668,7 @@ pub fn build_plan(roots: &ResetRoots, opts: &ResetOptions) -> ResetPlan {
                     action: Action::Keep,
                     best_effort: false,
                     outside_state: false,
+                    parent_id: None,
                 });
             }
         }
@@ -711,6 +753,7 @@ pub fn build_plan(roots: &ResetRoots, opts: &ResetOptions) -> ResetPlan {
                         action: Action::Keep,
                         best_effort: false,
                         outside_state: false,
+                        parent_id: None,
                     });
                 }
             }
@@ -921,6 +964,7 @@ pub fn build_plan(roots: &ResetRoots, opts: &ResetOptions) -> ResetPlan {
                 action: Action::Keep,
                 best_effort: false,
                 outside_state: false,
+                parent_id: None,
             });
         }
     }
@@ -1598,6 +1642,10 @@ pub fn execute_quarantine(
 
     std::fs::create_dir_all(&plan.trash_dir)
         .map_err(|e| format!("격리 디렉토리 생성 실패 {}: {e}", plan.trash_dir.display()))?;
+    // ★M4 — 목적지도 **핸들**로 연다(마지막 성분이 심링크면 거부 · 격리분이 격리 폴더 밖으로 가지 않는다).
+    #[cfg(unix)]
+    let trash_fd = crate::dirat::open_dir(&plan.trash_dir)
+        .map_err(|e| format!("격리 디렉토리를 핸들로 열 수 없다 {}: {e}", plan.trash_dir.display()))?;
     // ★S8 M3: 여기부터 마지막 쓰기(REPORT.txt)까지가 내 격리 창이다. 중간에 Err 로 돌아가면 표식은
     //   `open` + 곧 죽는 pid 로 남고, 그것이 설계가 말하는 "생산자가 끝내지 못함(중단)" 표지다.
     producer_mark(&plan.trash_dir, "open", false);
@@ -1624,13 +1672,25 @@ pub fn execute_quarantine(
             skipped_absent += 1;
             continue; // 재실행 안전: 이미 없는 항목은 건너뛴다(가이드 FAQ 계약).
         }
+        // ★M4 — 부모 신원 대조(계획 때 값). 어긋나면 이 항목은 옮기지 않는다(저널도 쓰지 않는다).
+        //   ★윈도우(표식): 부모 핸들·신원을 얻을 수 없다 — 경로 기반 rename 그대로이고 부모 바꿔치기를
+        //   막지 못한다(남은 한계).
+        #[cfg(unix)]
+        let parent_fd = match bound_parent(item) {
+            Ok(fd) => fd,
+            Err(e) => {
+                failed.push((item.path.clone(), e));
+                continue;
+            }
+        };
         let base = item
             .path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "item".into());
         // 목적지 = <seq>-<basename> — 동명 항목(_round 다수 등) 충돌 없이 manifest 가 복구 지도.
-        let dest = plan.trash_dir.join(format!("{i:03}-{base}"));
+        let dest_name = format!("{i:03}-{base}");
+        let dest = plan.trash_dir.join(&dest_name);
         // 선기록 + fsync — 이 줄이 디스크에 닿은 뒤에만 mv 한다(순서가 **계약**이다).
         // ★P0-5: 종전엔 write/flush/fsync 결과를 셋 다 버려서(`let _ =`) 저널 줄이 빠진 채 mv 가
         // 진행됐다 — 그러면 `042-_round`·`043-_round` 중 어느 것이 사용자 프로젝트였는지 영영
@@ -1653,7 +1713,16 @@ pub fn execute_quarantine(
             continue;
         }
         progress("quarantine", &format!("{} → trash", item.path.display()));
-        match std::fs::rename(&item.path, &dest) {
+        // ★M4 — 대조한 부모 핸들 → 격리 폴더 핸들(경로를 다시 해석하지 않는다).
+        #[cfg(unix)]
+        let mv = {
+            use std::os::unix::ffi::OsStrExt as _;
+            let src = item.path.file_name().map(|n| n.as_bytes()).unwrap_or_default();
+            crate::dirat::rename_between(&parent_fd, src, &trash_fd, dest_name.as_bytes())
+        };
+        #[cfg(not(unix))]
+        let mv = std::fs::rename(&item.path, &dest);
+        match mv {
             Ok(()) => moved.push((item.path.clone(), dest)),
             // best_effort(=실행 중 앱이 점유한 GUI 웹층) 실패는 부분 실패가 아니라 이연이다.
             Err(e) if item.best_effort => deferred.push((item.path.clone(), e.to_string())),
@@ -3446,6 +3515,47 @@ mod tests {
         assert!(txt.contains("cys 완전 초기화 결과"));
         assert!(txt.contains("이미 없음"));
         assert!(txt.contains("--undo"));
+    }
+
+    /// ★M4(codex 1R · TICKET=cysr-1110-trash-harden): 계획(확인창 대기) 뒤 부모 경로가 바꿔치기되면
+    /// 경로로 다시 해석하는 rename 은 **계획과 다른 객체**를 옮긴다. 계획 때 잡은 부모 신원(dev, ino)과
+    /// 집행 때 연 부모 핸들이 다르면 그 항목은 옮기지 않아야 한다(바꿔 넣은 쪽도 원래 쪽도 그대로).
+    #[cfg(unix)]
+    #[test]
+    fn m4_parent_swapped_after_the_plan_moves_nothing_from_the_impostor() {
+        let td = test_home("m4-parent-swap");
+        let r = seed_practice_tree(&td);
+        let plan = build_plan(
+            &r,
+            &ResetOptions { purge_license: false, purge_local: false, purge_round: false },
+        );
+        let pack = r.cys_base.join("pack");
+        assert!(plan.quarantine.iter().any(|i| i.path == pack), "전제: ~/.cys/pack 이 격리 대상이다");
+        // 확인창 대기 중 — ~/.cys 를 옮기고 그 자리에 바깥 디렉터리로 가는 심링크를 꽂는다.
+        let decoy = td.join("decoy");
+        touch(&decoy.join("pack/victim.txt"), "must stay");
+        std::fs::rename(&r.cys_base, td.join("cys-moved")).unwrap();
+        std::os::unix::fs::symlink(&decoy, &r.cys_base).unwrap();
+        let not_cysd = |_p: u32| false;
+        let no_daemon = || false;
+        let mut noop = |_p: &str, _d: &str| {};
+        let rep = execute_quarantine(&plan, &r, &not_cysd, &no_daemon, &mut noop).unwrap();
+        assert!(
+            decoy.join("pack/victim.txt").exists(),
+            "계획과 다른 객체(바꿔 넣은 쪽의 pack)를 옮겼다: moved={:?}",
+            rep.moved
+        );
+        assert!(
+            !rep.moved.iter().any(|(f, _)| f.starts_with(&r.cys_base)),
+            "바꿔친 부모 아래에서 옮긴 것이 있다: {:?}",
+            rep.moved
+        );
+        assert!(
+            rep.failed.iter().any(|(p, e)| p == &pack && e.contains("부모")),
+            "부모 불일치가 실패로 보고되지 않았다: {:?}",
+            rep.failed
+        );
+        assert!(td.join("cys-moved/pack/round").exists(), "원래 쪽도 그대로여야 한다");
     }
 
     /// ★S8 M3: 격리가 끝나면 `.producer` 가 `complete` 로 닫혀 있다 — 그리고 그것은

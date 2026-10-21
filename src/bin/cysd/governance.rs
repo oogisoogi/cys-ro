@@ -3943,7 +3943,9 @@ fn interpreter_entry<'a>(interp: &str, rest: &'a [String], is_candidate: &dyn Fn
             }
         }
         // 여기 = 값 받는 옵션. 다음 낱말이 그 값이다 — 단 빈 값이 유실된 꼴이면 그 낱말이 엔트리다.
-        if lost_empty_value(i) {
+        // 셸은 제외(1.1.10 ①): 셸 값 옵션(`--rcfile` · `--init-file` · `-o`)의 값은 읽을 파일·옵션 이름이다 —
+        // `bash --rcfile /tmp/claude` 는 맨 대화형 셸이지 `/tmp/claude` 실행이 아니다.
+        if !shell && lost_empty_value(i) {
             return rest.get(i).map(String::as_str);
         }
         i += 1;
@@ -15867,6 +15869,31 @@ mod tests {
         // 값이 후보 엔트리가 아니면 평소대로 값이다 · 엔트리가 없으면 아니다.
         assert!(!root_cmd_is_agent(&argv(&["python3", "-W", "ignore"]), &worker));
         assert!(root_cmd_is_agent(&argv(&["python3", "-W", "ignore", "/tmp/review/worker"]), &worker));
+    }
+
+    /// ★1.1.10 ①(dbg119 10-16 MINOR) — 셸의 값 옵션(`--rcfile` · `--init-file` · `-o`) 값은 빈 값 유실 가드를 타지 않는다.
+    /// 셸 값 옵션의 값은 읽어 들일 파일·옵션 이름이지 실행할 엔트리가 아니다 — `bash --rcfile /tmp/claude` 는 맨 대화형
+    /// 셸이다. R4 ③ 가드가 그 값을 후보(`claude`)로 보고 엔트리로 집어 맨 셸을 Occupied 로 읽었다(빈 셸 가드 해제).
+    #[test]
+    fn seat1110_shell_option_value_is_never_the_entry() {
+        use super::{seat_claimable_verdict, SeatState};
+        let specs = seat119_this_mac_specs();
+        let custom = seat119_specs(&[("sh", "bash /srv/run.sh")]);
+        for bare in [
+            "bash --rcfile /tmp/claude",
+            "/bin/bash --init-file /opt/n/bin/codex",
+            "bash --rcfile /srv/run.sh",
+            "zsh -o claude",
+        ] {
+            assert!(!seat119_is_agent(bare, &specs) && !seat119_is_agent(bare, &custom), "셸 옵션 값을 엔트리로 읽었다: {bare}");
+            let seat = seat119_verdict(false, true, 0, Some(bare), &specs);
+            assert_eq!(seat, SeatState::Empty, "{bare}");
+            assert!(seat_claimable_verdict(seat, false, false), "맨 셸({bare})이 승계를 막았다");
+        }
+        // 셸 값 옵션 뒤의 진짜 엔트리는 그대로 엔트리다(기존 R3 유지).
+        assert!(seat119_is_agent("bash --rcfile /etc/rc /srv/run.sh", &custom));
+        // 인터프리터(셸 아님)의 빈 값 유실 가드는 그대로다(R4 ③ 유지).
+        assert!(seat119_is_agent("python3 -W /tmp/review/worker", &seat119_specs(&[("worker", "worker")])));
     }
 
     /// ★1.1.9 R3 실 프로세스 — 공백이 든 경로의 스크립트를 실제로 돌리는 셸 뿌리(자손 0)를, 따옴표로 묶은 후보로 재면

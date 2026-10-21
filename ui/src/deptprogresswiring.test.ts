@@ -2145,7 +2145,7 @@ describe("★S4 B1 — 실제 3초 틱(refreshPaneTitles 실제 본문)으로: �
       openNewlyRegisteredDepts: async () => false, rememberRoles: nothing, arrangeWs: nothing,
       displayNoByKey: new Map<string, unknown>(), exitedPaneKeys: new Set<string>(),
       surfaceWorking: () => false, titleColorRole: false, roleDotColor: () => null, paneTitleText: (sid: number) => String(sid), ruleTitleOf: () => null,
-      placeholderSids: new Set<number>(), touchedPlaceholders: new Set<number>(), shouldClosePlaceholder: () => false,
+      placeholderSids: new Set<number>(), touchedPlaceholders: new Set<number>(), shouldClosePlaceholder: () => false, placeholderScreenLines: () => null,
       hqMasterSids: null, renderWsTabs: nothing, current: () => null,
       lastSurfacesBySocket: new Map<string, unknown>(), refreshUsageAccounts: () => Promise.resolve(), refreshNamedReporters: () => Promise.resolve(), renderSidebarUsage: nothing,
     };

@@ -285,6 +285,7 @@ import { seatNo, visibleNo, approvalRequestCopy, approvalStalledCopy, contextThr
 import { parseBriefSections, recordedAt, localStamp, briefStatePaths, pickBriefText, buildBriefCard, unsubmittedSurfaces, friendlyRole, briefTiming, isFirstLaunch, isMasterSeatSignal, BRIEF_RESTORE_GRACE_MS } from "./restorebrief";
 import { nextFollow, shouldShowFoldHint, FOLD_HINT_TITLE, FOLD_HINT_BODY } from "./scrollfollow";
 import { shouldClosePlaceholder } from "./placeholderclose";
+import { placeholderScreenLines } from "./placeholderclose";
 import {
   permWarningToast,
   cwdBlockedNotices,
@@ -3164,7 +3165,9 @@ async function refreshPaneTitles() {
                 isOwnPlaceholder: placeholderSids.has(sid),
                 touched: touchedPlaceholders.has(sid),
                 role: su?.role ?? null,
-                lineCount: su?.line_count ?? null,
+                // ★(1.1.10) 데몬 line_count(출력 개행 누적 커서)가 아니라 그 pane 화면의 비어 있지 않은 줄(윈 466 ↔ 화면 4줄).
+                lineCount: placeholderScreenLines(panes.get(paneKey(sid, ws.socket))?.term),
+                isWindows: IS_WINDOWS,
                 formationArrived,
                 exited: su?.exited ?? true,
               })

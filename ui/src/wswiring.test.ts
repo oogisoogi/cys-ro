@@ -574,6 +574,14 @@ describe("빈 자리표 회수 — 배선", () => {
     expect(src.includes('import { shouldClosePlaceholder } from "./placeholderclose";')).toBe(true);
     expect((src.match(/shouldClosePlaceholder\(/g) ?? []).length).toBe(1);
   });
+  it("★(1.1.10) 줄 수 입력은 그 pane 화면에서 센다 — 데몬 line_count(출력 개행 누적 커서)를 쓰지 않는다", () => {
+    const a = src.indexOf("// ── ③ 빈 자리표 회수");
+    const b = src.indexOf("const masterSids = new Set(", a);
+    const slice = src.slice(a, b);
+    expect(slice.includes("lineCount: placeholderScreenLines(panes.get(paneKey(sid, ws.socket))?.term),")).toBe(true);
+    expect(/lineCount:\s*su\?\.line_count/.test(slice)).toBe(false);
+    expect(slice.includes("isWindows: IS_WINDOWS,")).toBe(true);
+  });
   it("ⓒ 손댄 자리는 닫지 않고 알림도 없다 — 회수 구간에 토스트가 없다", () => {
     const a = src.indexOf("// ── ③ 빈 자리표 회수");
     const b = src.indexOf("const masterSids = new Set(", a);

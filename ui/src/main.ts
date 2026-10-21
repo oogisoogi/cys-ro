@@ -6395,7 +6395,7 @@ function startTopbarRowDrag(e0: MouseEvent, srcId: string, list: HTMLElement, co
 // 화면 설정 팝오버(종전 「테마」 · TICKET=cysr-1110-screen-settings · 박사님 2026-10-12) — showCtxMenu의 바깥클릭·Esc 닫기 패턴 재사용.
 // 구획(제목 줄을 누르면 접힌다): ① 글자·배경(종전 항목 전부 그대로) ② 상단 단추 ③ 기본값 복원.
 // 컬러피커 input 이벤트마다 applyBgColor 라이브 적용(localStorage 영속은 applyBgColor 내부).
-// 글자 크기는 style.css #theme-pop 한 곳(20px × 메뉴 배율) — 여기서 px 를 넣지 않는다(두 축 금지).
+// 글자 크기는 style.css #theme-pop 한 곳(10px × 메뉴 배율) — 여기서 px 를 넣지 않는다(두 축 금지).
 const spCollapsed = new Set<string>(); // 접어 둔 구획 — 앱이 켜져 있는 동안만 기억한다(저장 0)
 function openThemePopover(anchor: HTMLElement) {
   document.getElementById("theme-pop")?.remove();

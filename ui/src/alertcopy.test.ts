@@ -104,7 +104,7 @@ describe("D4 #8 도우미", () => {
     const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
     expect(main).toContain("approvalStalledCopy(shown(seatNo(null, payload.surface_ref)), ap)");
     expect(main).toContain("{ ...payload, dept: ctxGroupLabel(evSock) } : payload;");
-    expect(main).toContain("toast(\"alert\", c.title, c.body, undefined, c.raw);");
+    expect(main).toContain("daemonToast(\"alert\", c.title, c.body, undefined, c.raw);"); // v0.14.51 편입: TOAST 축 래퍼 경유
   });
   it("seatName · durText", () => {
     expect(seatName(3, "reviewer-codex")).toBe("3번 검토 창");

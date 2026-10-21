@@ -689,17 +689,17 @@ describe("main.ts 배선 — queue.starved 분기(name-우선 · 끝의 return �
   it("starvedNotice 로 문구·등급을 만들고 stickyToast(id, level, 제목, 상세, …) 로 올린다 — 같은 제목의 calm 은 이력만 갱신된다", () => {
     const b = branch("queue.starved");
     expect(b).toContain("const starved = starvedNotice(payload, event.socket_slug);");
-    expect(b).toContain("stickyToast(starved.id, starved.level, starved.title, starved.detail, ");
+    expect(b).toContain("daemonStickyToast(starved.id, starved.level, starved.title, starved.detail, "); // v0.14.51 편입: TOAST 축 래퍼 경유
     expect(b).toContain("if (starvedShouldPop(starvedLastKey.get(starved.id), starved, lastPopAt === undefined ? undefined : starvedPopAgeMs(Date.now(), lastPopAt.wall, performance.now(), lastPopAt.mono))) {");
     expect(b).toContain("recordAlarm(starved.level, starved.title, starved.detail, starved.id);");
     expect(b).toContain("starvedLastKey.set(starved.id, starved.stateKey);");
-    expect(b.split("stickyToast(").length - 1).toBe(1);
+    expect(b.split("StickyToast(").length - 1).toBe(1);
     expect(/(^|[^A-Za-z])toast\(/.test(b)).toBe(false); // 일회성 toast( 를 따로 부르지 않는다(같은 좌석의 토스트가 쌓이지 않는다)
   });
   it("OS 배너는 humanNeeded 일 때만 · 같은 제목·상세로 — 데몬 쿨다운이 빈도를 묶는다(GUI 쪽 타이머 0)", () => {
     const b = branch("queue.starved");
-    expect(b).toContain("if (starved.humanNeeded) osBanner(starved.title, starved.detail);");
-    expect(b.split("osBanner(").length - 1).toBe(1);
+    expect(b).toContain("if (starved.humanNeeded) daemonOsBanner(starved.title, starved.detail);");
+    expect(b.split("OsBanner(").length - 1).toBe(1);
     // ★F1-R(0.14.48): 시계 읽기(Date.now)는 억제 상한(STARVED_REPOP_MS)이 쓴다 — 타이머(예약 실행)는 여전히 0 이다.
     for (const timer of ["setTimeout", "setInterval"]) expect({ 금지: timer, 있음: b.includes(timer) }).toEqual({ 금지: timer, 있음: false });
   });
@@ -707,8 +707,8 @@ describe("main.ts 배선 — queue.starved 분기(name-우선 · 끝의 return �
     const b = branch("queue.starved");
     expect(/\n    return;\n  \}\n$/.test(b)).toBe(true);
     // 새 payload 가 null 이어도(잘못된 payload) return 은 if (starved) 밖에 있다 — 폴백으로 새지 않는다
-    expect(b.indexOf("return;") > b.indexOf("if (starved) {")).toBe(true);
-    expect(/if \(starved\) \{[\s\S]*?\n    \}\n    return;/.test(b)).toBe(true);
+    expect(b.indexOf("return;") > b.indexOf('if (starved && !alertsQuiet("starvedNotice")) {')).toBe(true);
+    expect(/if \(starved && !alertsQuiet\("starvedNotice"\)\) \{[\s\S]*?\n    \}\n    return;/.test(b)).toBe(true);
   });
   it("★포커스는 클릭 처리기 안에서만 — 이벤트가 올 때 좌석·탭·패널을 건드리는 코드가 분기에 없다(포커스 강탈 금지)", () => {
     const b = branch("queue.starved");
@@ -837,7 +837,7 @@ describe("main.ts 배선 — 이벤트 분기의 실제 본문을 대역 위에�
       Date: { now: () => 0 },
       performance: { now: () => 0 },
       surfaceIdOfRef,
-      stickyToast: rec("stickyToast"),
+      stickyToast: rec("stickyToast"), daemonStickyToast: rec("stickyToast"), daemonOsBanner: rec("osBanner"), alertsQuiet: () => false, /* v0.14.51 편입: TOAST 축 래퍼·가드(우리 출하 값 false) */
       recordAlarm: rec("recordAlarm"),
       osBanner: rec("osBanner"),
       focusStarvedSeat: rec("focusStarvedSeat"),

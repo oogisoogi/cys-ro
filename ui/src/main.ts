@@ -1903,7 +1903,8 @@ async function trashPollOrder(orderId: string, total: number, gen: number, polls
     if (gen !== trashOrderGen) return;
     trashDeleting = false;
     trashSetStatus(TRASH_ORDER_UNKNOWN);
-    stickyToast("trash-order", "watchdog", TRASH_DELETE_UNCERTAIN_TITLE, `${TRASH_ORDER_UNKNOWN} (${e})`);
+    // v0.14.51 편입(우리 D4 #14): 원문(e)은 본문에 붙이지 않고 「자세히」(raw) 안쪽으로 — 원작자 줄은 본문 끝에 `(${e})` 를 붙였다.
+    stickyToast("trash-order", "watchdog", TRASH_DELETE_UNCERTAIN_TITLE, TRASH_ORDER_UNKNOWN, undefined, String(e));
     void refreshTrash();
     return;
   }

@@ -213,7 +213,7 @@ describe("0.14.48 D — main.ts 배선: 분기 인자 실행 검증(판정 조�
     const starvedLastKey = new Map<string, string>();
     const deps = {
       starvedNotice, surfaceIdOfRef, starvedShouldPop, starvedLastKey, starvedLastPopAt: new Map<string, { wall: number; mono: number }>(), starvedPopAgeMs, Date: { now: () => 0 }, performance: { now: () => 0 }, starvedDismissId,
-      stickyToast: rec("stickyToast"), osBanner: rec("osBanner"), recordAlarm: rec("recordAlarm"), focusStarvedSeat: rec("focusStarvedSeat"), dismissToast: rec("dismissToast"),
+      stickyToast: rec("stickyToast"), daemonStickyToast: rec("stickyToast"), daemonOsBanner: rec("osBanner"), alertsQuiet: () => false, /* v0.14.51 편입: TOAST 축 래퍼·가드(우리 출하 값 false) */ osBanner: rec("osBanner"), recordAlarm: rec("recordAlarm"), focusStarvedSeat: rec("focusStarvedSeat"), dismissToast: rec("dismissToast"),
     };
     const fireFn = new Function("deps", "name", "event", "payload", "sid", `with (deps) {\n${branch}\n}\nreturn "fell-through";`) as (...a: unknown[]) => unknown;
     const dismissRun = new Function("deps", "slug", "sid", `with (deps) {\n${dismissFn}\n dismissStarvedToast(slug, sid);\n}`) as (...a: unknown[]) => unknown;
@@ -228,7 +228,7 @@ describe("0.14.48 D — main.ts 배선: 분기 인자 실행 검증(판정 조�
 
   it("소스 핀: 분기에 「health」 리터럴 0 · 배너 줄은 원문 그대로 · 마지막 제목 맵 사용 · return 으로 끝남", () => {
     expect(branch).not.toContain('"health"');
-    expect(branch).toContain("if (starved.humanNeeded) osBanner(starved.title, starved.detail);");
+    expect(branch).toContain("if (starved.humanNeeded) daemonOsBanner(starved.title, starved.detail);"); // v0.14.51 편입: TOAST 축 래퍼 경유
     expect(branch).toContain("starvedLastKey");
     expect(branch).toContain("starvedShouldPop(");
     expect(branch).toContain("recordAlarm(");
@@ -406,7 +406,7 @@ describe("0.14.48 D F1-R — 만료·되살림(같은 머리 id)과 억제 상�
     const deps = {
       starvedNotice, surfaceIdOfRef, starvedShouldPop, starvedKeyHasHead, starvedPopAgeMs, starvedLastKey, starvedLastPopAt, starvedDismissId,
       Date: { now: () => wall }, performance: { now: () => mono },
-      stickyToast: rec("stickyToast"), osBanner: rec("osBanner"), recordAlarm: rec("recordAlarm"), focusStarvedSeat: rec("focusStarvedSeat"), dismissToast: rec("dismissToast"),
+      stickyToast: rec("stickyToast"), daemonStickyToast: rec("stickyToast"), daemonOsBanner: rec("osBanner"), alertsQuiet: () => false, /* v0.14.51 편입: TOAST 축 래퍼·가드(우리 출하 값 false) */ osBanner: rec("osBanner"), recordAlarm: rec("recordAlarm"), focusStarvedSeat: rec("focusStarvedSeat"), dismissToast: rec("dismissToast"),
     };
     const run = (src: string, name: string, event: unknown, payload: unknown, sid: number) =>
       new Function("deps", "name", "event", "payload", "sid", `with (deps) {\n${forgetFn}\n${dismissFn}\n${src}\n}\nreturn "fell-through";`)(deps, name, event, payload, sid);

@@ -1712,6 +1712,18 @@ struct ComposerScan {
 /// 종전 `contains` 는 출력의 `cat a > b`·푸터의 `‹ prev » next` 를 composer 행으로 골랐다.
 /// 마커 위치도 그 행의 선두 하나다 — 초안 안에서 다시 친 마커 뒤만 보면 앞 문면을 놓친다.
 /// 꼬리·강약 증거의 구조는 그대로 둔다 — 선두 후보 행만으로 강한 증거를 세우지 않는다.
+/// 마커 줄의 나머지(`rest`)가 어댑터 플레이스홀더와 평탄화 공간에서 **완전히** 같은가(부분 일치 불인정 · fail-closed).
+/// [`scan_composer`] 와 진단 [`composer_layout_why`] 가 같은 면제를 쓴다(★1.1.11 A3⒝ — 진단이 따로 판정하면 오표기한다).
+fn rest_is_placeholder(rest: &str, placeholder: Option<&str>) -> bool {
+    placeholder
+        .map(|ph| {
+            let a = first_run_gates::flatten(rest);
+            let b = first_run_gates::flatten(ph);
+            !b.is_empty() && a == b
+        })
+        .unwrap_or(false)
+}
+
 fn scan_composer(screen: &str, marker: &str, placeholder: Option<&str>) -> Option<ComposerScan> {
     let lines: Vec<&str> = screen.lines().collect();
     let li = lines
@@ -1721,13 +1733,7 @@ fn scan_composer(screen: &str, marker: &str, placeholder: Option<&str>) -> Optio
     let mi = crate::agent_markers::leading_marker_index(marker, line)?;
     let rest = &line[mi + marker.len()..];
     // ★(리뷰 R2(R7회차)) 어댑터 플레이스홀더는 '빈 입력줄' 이고 **약한** 레이아웃 증거다.
-    let placeholder_ok = placeholder
-        .map(|ph| {
-            let a = first_run_gates::flatten(rest);
-            let b = first_run_gates::flatten(ph);
-            !b.is_empty() && a == b
-        })
-        .unwrap_or(false);
+    let placeholder_ok = rest_is_placeholder(rest, placeholder);
     if !placeholder_ok && !rest.trim().is_empty() {
         return None; // 같은 줄에 문면 — 선택 커서 행이거나 사람이 치던 초안이다(둘 다 닫지 않는다).
     }
@@ -2068,7 +2074,8 @@ pub fn composer_layout_why(
     let Some(sc) = scan_composer(screen, marker, placeholder) else {
         let line = lines[li];
         let mi = crate::agent_markers::leading_marker_index(marker, line).unwrap_or(0);
-        if !line[mi + marker.len()..].trim().is_empty() {
+        let rest = &line[mi + marker.len()..];
+        if !rest_is_placeholder(rest, placeholder) && !rest.trim().is_empty() {
             return "marker_row_text";
         }
         return "marker_below";
@@ -3619,6 +3626,29 @@ mod tests {
             assert_eq!(
                 got == "ok",
                 composer_layout_static_ok(screen, "❯", None, *quiet),
+                "진단 코드가 판정과 갈라졌다: {screen:?} quiet={quiet:?} code={got}"
+            );
+        }
+    }
+
+    /// ★(1.1.11 · cysr-1111-next · A3⒝) 마커 줄의 나머지가 어댑터 플레이스홀더면 `scan_composer` 는 그 줄을 '빈 입력줄' 로 면제한다 —
+    /// 진단도 같은 면제를 써야 한다. 수리 전: 플레이스홀더 + 아래 선택지 행 화면을 `marker_row_text`(마커 줄에 문면)로 오표기했다.
+    #[test]
+    fn a3_composer_layout_why_exempts_the_placeholder_like_the_verdict() {
+        let ph = Some("Ask Codex to do anything");
+        let cases: Vec<(&str, Option<bool>, &str)> = vec![
+            ("› Ask Codex to do anything\n  1. Yes\n  2. No", Some(true), "marker_below"),
+            ("› Ask Codex to do anything\n  다음 ❯ 안내", Some(true), "marker_below"),
+            ("› Ask Codex to do anything", Some(true), "ok"),
+            ("› Ask Codex to do anything", None, "weak_not_quiet"),
+            ("› Ask Codex to do", Some(true), "marker_row_text"), // 잘린 플레이스홀더는 면제하지 않는다(fail-closed)
+        ];
+        for (screen, quiet, want) in &cases {
+            let got = composer_layout_why(screen, "›", ph, *quiet);
+            assert_eq!(got, *want, "{screen:?} quiet={quiet:?}");
+            assert_eq!(
+                got == "ok",
+                composer_layout_static_ok(screen, "›", ph, *quiet),
                 "진단 코드가 판정과 갈라졌다: {screen:?} quiet={quiet:?} code={got}"
             );
         }

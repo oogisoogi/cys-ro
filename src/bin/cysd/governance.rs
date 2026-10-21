@@ -9437,6 +9437,21 @@ fn observe_prompt_block(s: &Arc<crate::state::Surface>, markers: &[String]) -> P
     observe_prompt_ext(s, markers, true)
 }
 
+/// 틱이 composer 마커를 고르는 규칙(순수) — `cursor_row` = 커서행의 (커서 앞, 행 전체) 글자 · 커서가 화면 밖이면 `None`.
+/// [`observe_prompt_ext`](틱 판정)와 [`seat_screen_probe_with`](진단 `layout_why`)가 같이 쓴다(★1.1.11 A3⒜ — 진단이 따로 고르면 틱과 다른 마커로 잰다).
+/// ★(0.14.39 · 수정 라운드 1 · 리뷰 PROBE-A) composer 마커는 커서행 **선두** 후보가 우선이다. 종전 '커서 앞
+///   가장 뒤 후보(rfind)' 는 출력 행 끝의 `->` 와 초안 속 글리프(`» abc » `)를 빈 composer 로 읽었다.
+fn tick_prompt_marker<'a>(markers: &'a [String], cursor_row: Option<(&str, &str)>, contents: &str) -> Option<&'a str> {
+    let Some((before_all, row_all)) = cursor_row else {
+        return cys::agent_markers::pick_marker_for_screen(markers, contents);
+    };
+    cys::agent_markers::pick_marker_leading(markers, row_all)
+        .map(|(m, _)| m)
+        .or_else(|| cys::agent_markers::pick_marker_last(markers, before_all))
+        .or_else(|| cys::agent_markers::pick_marker_last(markers, row_all))
+        .or_else(|| cys::agent_markers::pick_marker_for_screen(markers, contents))
+}
+
 fn observe_prompt_ext(s: &Arc<crate::state::Surface>, markers: &[String], want_block: bool) -> PromptObs {
     // ★(0.14.31 · 리뷰 R5 · codex major) 세대는 파서 락 **밖·앞**에서 읽는다. 락 안에서 읽으면
     //   "락을 기다리는 동안 reader 가 새 청크를 반영했다" 는 창이 관측에 흡수돼 보이지 않는다 —
@@ -9451,7 +9466,7 @@ fn observe_prompt_ext(s: &Arc<crate::state::Surface>, markers: &[String], want_b
     let marker_seen = markers.iter().any(|m| contents.contains(m.as_str()));
     if cr >= rows || markers.is_empty() {
         // 빈 목록은 호출부 불변식 위반이다. 빈 문자열로 contains/rfind 하지 않고 보류한다.
-        let marker = cys::agent_markers::pick_marker_for_screen(markers, &contents)
+        let marker = tick_prompt_marker(markers, None, &contents)
             .unwrap_or("")
             .to_string();
         drop(p);
@@ -9472,14 +9487,8 @@ fn observe_prompt_ext(s: &Arc<crate::state::Surface>, markers: &[String], want_b
     }
     let before_all = screen.contents_between(cr, 0, cr, cc);
     let row_all = screen.contents_between(cr, 0, cr, cols);
-    // ★(0.14.39 · 수정 라운드 1 · 리뷰 PROBE-A) composer 마커는 커서행 **선두** 후보만이다. 종전 '커서 앞
-    //   가장 뒤 후보(rfind)' 는 출력 행 끝의 `->` 와 초안 속 글리프(`» abc » `)를 빈 composer 로 읽었다.
     let leading_row = cys::agent_markers::pick_marker_leading(markers, &row_all);
-    let marker = leading_row
-        .map(|(m, _)| m)
-        .or_else(|| cys::agent_markers::pick_marker_last(markers, &before_all))
-        .or_else(|| cys::agent_markers::pick_marker_last(markers, &row_all))
-        .or_else(|| cys::agent_markers::pick_marker_for_screen(markers, &contents))
+    let marker = tick_prompt_marker(markers, Some((&before_all, &row_all)), &contents)
         .expect("non-empty marker candidates");
     // 커서 앞 구간이 같은 선두 후보로 시작해야 커서가 마커 뒤에 있는 것이다(커서가 마커 앞이면 None).
     let line = cys::agent_markers::pick_marker_leading(markers, &before_all)
@@ -10009,7 +10018,10 @@ pub(crate) fn seat_screen_probe_with(
         // ★(1.1.10 · 축2) 대체화면 마커 좌석만 — 틱의 `layout_ok` 와 같은 재료(화면 글자·마커·플레이스홀더·출력 정적 변환기).
         let layout_why = (screen.alternate_screen() && !markers.is_empty()).then(|| {
             let contents = screen.contents();
-            let marker = cys::agent_markers::pick_marker_for_screen(&markers, &contents).unwrap_or("");
+            let cursor_text =
+                (cr < rows).then(|| (screen.contents_between(cr, 0, cr, cc), screen.contents_between(cr, 0, cr, cols)));
+            let cursor_row = cursor_text.as_ref().map(|(b, r)| (b.as_str(), r.as_str()));
+            let marker = tick_prompt_marker(&markers, cursor_row, &contents).unwrap_or("");
             cys::readiness::composer_layout_why(
                 &contents,
                 marker,
@@ -21954,6 +21966,24 @@ mod tests {
         assert!(qa_blocked_reason(&s).starts_with("alt_screen"), "{}", qa_blocked_reason(&s));
         let j = super::screen_diag_json(&queue_block_diag(&daemon, &s));
         assert_eq!(j["layout_why"], json!("box_rules_2+_first_rule"), "{j}");
+    }
+
+    /// ★(1.1.11 · cysr-1111-next · A3⒜) 진단 사유 코드는 **틱과 같은 마커**로 잰다 — 틱(`observe_prompt_ext`)은 커서행 선두 후보가 우선이다.
+    /// 수리 전: 진단은 `pick_marker_for_screen`(화면 전체에서 가장 뒤 후보)을 써서, 다중 마커 어댑터(codex `›`·`»`)의 빈 composer 아래
+    /// 상태줄에 비선두 `»` 가 있으면 `»` 를 골라 `no_marker_row` 를 냈다 — 틱은 `›` 로 레이아웃을 통과시켜 배달하는데.
+    #[test]
+    fn a3_layout_why_uses_the_tick_marker() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = wq_env("a3-why");
+        let rule = "─".repeat(40);
+        let raw = format!("\x1b[?1049h\x1b[2J\x1b[34;1H{rule}\x1b[35;1H› \x1b[36;1H{rule}\x1b[37;1H  ~/dev » main\x1b[35;3H");
+        let (daemon, s) = qa_fixture_seat("a3-why", raw.as_bytes());
+        *s.agent_meta.lock().unwrap() = Some(("codex".to_string(), "worker".to_string()));
+        assert!(s.alt_screen.load(Ordering::Relaxed), "픽스처 전제 붕괴 — 대체화면이 아니다");
+        assert_eq!(super::observe_prompt(&s, &["›".to_string(), "»".to_string()]).marker, "›", "픽스처 전제 붕괴 — 틱 마커");
+        assert_eq!(queue_block_diag(&daemon, &s).layout_why, Some("ok"), "진단이 틱과 다른 마커를 골랐다");
+        qa_tick(&daemon);
+        assert_eq!(s.pending_queue.lock().unwrap().len(), 0, "틱이 배달하지 않았다(픽스처 전제): {}", qa_blocked_reason(&s));
     }
 
     #[test]

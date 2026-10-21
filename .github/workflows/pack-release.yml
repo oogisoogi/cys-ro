@@ -86,7 +86,11 @@ jobs:
       #   1.1.8 상향 여부는 판번 SOT 단계 결정(병합 갈림 R2 · release.yml 과 동시).
       # ★1.1.8 상향(1.1.9 발행 준비 · master#68ef6257 · TICKET=cysr-119-release-prep) — 팩이 1.1.8 신설
       #   `cys reclaim-role --auto` 를 부른다(근거 = release.yml PACK_MIN_BINARY 주석). release.yml 과 동시 상향.
-      PACK_MIN_BINARY_OVERRIDE: '1.1.8'
+      # ★1.1.10 상향(1.1.10 발행 준비 · master#c5547f8b ⑵ · TICKET=cysr-1110-release-prep) — 새 팩이 지우는 유일한 길을
+      #   1.1.10 신설 휴지통(데몬 trash.* · 앱 Control Center)으로 지시한다(근거 = release.yml PACK_MIN_BINARY 주석).
+      #   release.yml 과 동시 상향. ⚠이 레인의 하한 검증기는 태그 v$MIN_BINARY 를 빌드한다(아래 「하한 검증기」 스텝) —
+      #   v1.1.10 태그가 서기 전의 팩 전용 릴리스(pack-v*)는 그 태그가 없어 멈춘다(1.1.10 태그 뒤에는 해당 없음).
+      PACK_MIN_BINARY_OVERRIDE: '1.1.10'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 

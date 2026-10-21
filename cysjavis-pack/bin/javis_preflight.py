@@ -67,15 +67,24 @@ OPTIONAL_TOOL_FAMILIES = ("C19", "C21", "C24")   # LLM 오케스트레이션 도
 OPTIONAL_OK = (PASS, FIXED, SKIP, INFO)
 
 
+# ★1.1.10 ②(dbg119 10-16): INFO 는 **부재**로 확인된 행에만 — 종전 폴백(그 밖 전부 INFO)은 구버전·불완전 클론·판독불가까지
+#   「없음」 으로 덮었다. 부재 문구 = 각 점검의 「미설치·누락」 행 머리 + 비가역 설치 보류(WARN · 부재일 때만 선다).
+OPTIONAL_ABSENT_HEADS = {
+    "C19": ("pack/bin 누락",),
+    "C21": ("harness-creator 툴체인 미설치", "비가역 변경("),
+    "C24": ("korean-law 미설치", "비가역 변경("),
+}
+
+
 def _optional_tool_grade(cid, status, detail):
     """선택 도구 점검 행의 등급 — (status, detail). 가족 밖·이미 ok 류는 그대로."""
     fam = str(cid).split(".", 1)[0]
     if fam not in OPTIONAL_TOOL_FAMILIES or status in OPTIONAL_OK:
         return status, detail
-    if fam == "C19" and not str(detail).startswith("pack/bin 누락"):
-        return (WARN if status == FAIL else status), detail          # 자기검증 실패·실행 불가 = 실결함(가리지 않는다)
-    if fam == "C24" and str(detail).startswith(("korean-law 설치됨", "korean-law-mcp · OC 키")):
-        return status, detail                                          # 설치 뒤 설정 문제 = 부재 아님
+    d = str(detail)
+    if not d.startswith(OPTIONAL_ABSENT_HEADS[fam]) or "불완전" in d:
+        # 자기검증 실패·구버전·불완전·판독불가·설정 문제 = 실결함 · DRYRUN·SAFE-GAP·BLOCKED = 미리보기·차단 표시(그대로)
+        return (WARN if status == FAIL else status), detail
     return INFO, "선택 · 없음 — 개발 기기용 선택 도구(없어도 결함 아님) · 원판정 %s: %s" % (status, detail)
 
 DIRECTIVES = [
@@ -4316,7 +4325,7 @@ class Preflight:
         # 버전 게이트는 C20과 동형으로 빈틈없이(else-망라) — ver 판독불가가
         # FAIL 없이 통과하던 무성 폴스루를 차단하고, 설치 후 버전을 재탐침한다.
         if cli is None or ver is None or ver < KLAW_MIN_VERSION:
-            cur = ".".join(map(str, ver)) if ver else "미설치/판독불가"
+            cur = ".".join(map(str, ver)) if ver else ("판독불가" if cli else "미설치")
             if self.mode in ("dry", "safe"):
                 # OPP-17: npm install -g 은 external_install(전역 환경 변경·사실상 비가역) → 미리보기/무변경.
                 self.may_mutate(cid, "subprocess_install", "npm install -g %s" % KLAW_PIN,

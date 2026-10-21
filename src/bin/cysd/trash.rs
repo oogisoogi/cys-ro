@@ -254,6 +254,8 @@ pub const R_REMOVE_ERROR: &str = "removal_error";
 pub const R_NOT_OWNER: &str = "owner_gui_required";
 pub const R_NOT_BASE: &str = "base_daemon_only";
 pub const R_PRODUCER_ACTIVE: &str = "producer_active";
+/// ★B2 — 휴지통 뿌리(또는 그 아래 항목)가 미리보기가 본 객체가 아니다. 뿌리·부모 바꿔치기의 표지다.
+pub const R_ROOT_CHANGED: &str = "trash_root_changed";
 /// ★S8 재착륙 §1 — 비동기 미리보기 잡의 세 코드.
 /// ★표기: 델타는 산문에서 `refused:` 접두를 붙여 쓰지만, 이 모듈의 기존 코드는 접두 없는 **맨 코드**다
 ///   (`R_PRODUCER_ACTIVE` = `producer_active` ↔ 델타 `refused:producer_active`). **기존 관례를 따른다.**
@@ -672,6 +674,8 @@ pub struct Confirm {
     pub issued: Instant,
     /// 미리보기 때의 항목별 인증서(봉인 전후 대조의 기준값).
     pub certs: HashMap<String, Certificate>,
+    /// ★B2 — 미리보기가 걸은 휴지통 뿌리의 (dev, ino). 명령은 RPC 진입에서 연 뿌리 핸들을 이것과 대조한다.
+    pub root_id: (u64, u64),
 }
 
 fn confirms() -> &'static Mutex<HashMap<String, Confirm>> {
@@ -887,10 +891,221 @@ pub fn reset_state_for_test() {
 /// 일부다(오염된 초록은 초록이 아니다).
 #[cfg(test)]
 pub static AFTER_SEAL_HOOK: Mutex<Option<(PathBuf, fn(&Path))>> = Mutex::new(None);
+/// ★B2(codex 1R · TICKET=cysr-1110-trash-harden) 시험 전용 — 봉인 rename **직전**과 제거 **직전**에
+/// 뿌리 경로를 바꿔치는 자리. 경쟁의 시점을 시험이 정한다(결정론). 등록한 범위 아래 뿌리에서만 발화한다.
+#[cfg(test)]
+pub static BEFORE_SEAL_HOOK: Mutex<Option<(PathBuf, fn(&Path))>> = Mutex::new(None);
+#[cfg(test)]
+pub static BEFORE_REMOVE_HOOK: Mutex<Option<(PathBuf, fn(&Path))>> = Mutex::new(None);
+#[cfg(test)]
+fn fire_root_hook(hook: &Mutex<Option<(PathBuf, fn(&Path))>>, root: &Path) {
+    let g = hook.lock().unwrap();
+    if let Some((scope, h)) = g.as_ref() {
+        if root.starts_with(scope) {
+            h(root);
+        }
+    }
+}
+
+// ─── B2: 집행을 **뿌리 디렉터리 핸들**에 묶는다 ─────────────────────────────────────────────────
+/// ★B2(codex 1R blocking · TICKET=cysr-1110-trash-harden) — 집행은 경로가 아니라 **뿌리 핸들**에 묶인다.
+/// 종전: RPC 진입에서 뿌리를 한 번 검사하고(`root_sane`) 배경 집행이 `root.join(name)` 을 단계마다
+/// **다시 해석**했다 ⇒ 그 사이 같은 UID 프로세스가 뿌리(또는 그 부모)를 심링크로 바꿔치면 봉인
+/// rename 과 `remove_dir_all` 이 격리 루트 **밖**의 동명 디렉터리에 닿았다(TOCTOU).
+/// 지금: ⑴뿌리는 `O_DIRECTORY|O_NOFOLLOW` 로 **한 번** 열고, 그 (dev, ino) 를 미리보기가 기록한 뿌리
+/// 신원과 대조한다(`delete`) ⑵항목·봉인의 신원 확인·rename·제거는 **전부 이 핸들 기준**
+/// (`fstatat`·`renameat`·`openat`·`unlinkat`)이고 어느 단계도 심링크를 따라가지 않는다 ⑶제거 순회는
+/// 열 때마다 신원(뿌리 객체)·장치(하위)를 다시 보고 어긋나면 **그 자리에서 멈춘다** — 실패의 방향은
+/// 언제나 「더 지우지 않음」이다.
+/// ★남는 한계(정직): 인증(`certify_entry`)·봉인 뒤 대조는 여전히 **경로로 읽는** 순회다. 그것은 읽기
+/// 전용이고 대조 기준(digest)에 모든 노드의 (dev, ino) 가 들어 있어, 바꿔친 경로를 읽으면 **불일치 =
+/// 거부**로 끝난다(지우는 쪽으로 가지 않는다). 파괴 연산만 핸들에 묶었다.
+/// ★윈도우(표식): 안정 std 에 `openat` 계열·파일 신원(file index)이 없다 ⇒ 경로 기반 그대로이고
+/// **결박하지 않는다**. 윈도우 삭제는 기본 꺼짐(`delete_supported`)이고 12.W 검증 게이트 뒤에서만 켜진다.
+pub struct RootDir {
+    path: PathBuf,
+    #[cfg(unix)]
+    fd: std::os::fd::OwnedFd,
+    id: (u64, u64),
+}
+
+impl RootDir {
+    /// 뿌리를 연다 — 마지막 성분이 심링크거나 디렉터리가 아니면 실패한다.
+    #[cfg(unix)]
+    pub fn open(path: &Path) -> std::io::Result<RootDir> {
+        let fd = at::open_dir(path)?;
+        let id = at::id_of(&at::fstat(&fd)?);
+        Ok(RootDir { path: path.to_path_buf(), fd, id })
+    }
+    #[cfg(not(unix))]
+    pub fn open(path: &Path) -> std::io::Result<RootDir> {
+        if !root_sane(path) {
+            return Err(std::io::Error::other("휴지통 뿌리가 디렉터리가 아니거나 심링크다"));
+        }
+        let md = std::fs::symlink_metadata(path)?;
+        Ok(RootDir { path: path.to_path_buf(), id: dev_ino(&md) })
+    }
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+    /// 뿌리 객체의 (dev, ino) — 열 때 핸들에서 읽은 값.
+    pub fn id(&self) -> (u64, u64) {
+        self.id
+    }
+    /// 뿌리 바로 아래 `name` 의 (dev, ino) — 심링크를 따라가지 않는다. 없으면 `Err(NotFound)`.
+    #[cfg(unix)]
+    fn id_at(&self, name: &str) -> std::io::Result<(u64, u64)> {
+        at::lstat_at(&self.fd, name.as_bytes()).map(|st| at::id_of(&st))
+    }
+    #[cfg(not(unix))]
+    fn id_at(&self, name: &str) -> std::io::Result<(u64, u64)> {
+        std::fs::symlink_metadata(self.path.join(name)).map(|md| dev_ino(&md))
+    }
+    #[cfg(unix)]
+    fn rename_at(&self, from: &str, to: &str) -> std::io::Result<()> {
+        at::rename_at(&self.fd, from.as_bytes(), to.as_bytes())
+    }
+    #[cfg(not(unix))]
+    fn rename_at(&self, from: &str, to: &str) -> std::io::Result<()> {
+        std::fs::rename(self.path.join(from), self.path.join(to))
+    }
+    /// `name` 을 지운다 — 연 객체가 `expect`(미리보기의 항목 신원)가 아니면 한 바이트도 지우지 않는다.
+    #[cfg(unix)]
+    fn remove_tree_at(&self, name: &str, expect: (u64, u64)) -> std::io::Result<()> {
+        at::remove_tree_at(&self.fd, name.as_bytes(), expect)
+    }
+    #[cfg(not(unix))]
+    fn remove_tree_at(&self, name: &str, _expect: (u64, u64)) -> std::io::Result<()> {
+        std::fs::remove_dir_all(self.path.join(name))
+    }
+}
+
+/// 핸들 기준 파일 연산(unix · libc 직호출). 모든 디렉터리 열기는 `O_NOFOLLOW` 다.
+#[cfg(unix)]
+mod at {
+    use std::ffi::{CStr, CString};
+    use std::io;
+    use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::path::Path;
+
+    const DIR_FLAGS: libc::c_int =
+        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+
+    fn cstr(b: &[u8]) -> io::Result<CString> {
+        CString::new(b).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
+    }
+    fn check(rc: libc::c_int) -> io::Result<libc::c_int> {
+        if rc < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(rc)
+        }
+    }
+    pub fn id_of(st: &libc::stat) -> (u64, u64) {
+        (st.st_dev as u64, st.st_ino as u64)
+    }
+    fn is_dir(st: &libc::stat) -> bool {
+        (st.st_mode & libc::S_IFMT) == libc::S_IFDIR
+    }
+    pub fn open_dir(p: &Path) -> io::Result<OwnedFd> {
+        let c = cstr(p.as_os_str().as_bytes())?;
+        let fd = check(unsafe { libc::open(c.as_ptr(), DIR_FLAGS) })?;
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    }
+    fn open_dir_at(dir: BorrowedFd, name: &[u8]) -> io::Result<OwnedFd> {
+        let c = cstr(name)?;
+        let fd = check(unsafe { libc::openat(dir.as_raw_fd(), c.as_ptr(), DIR_FLAGS) })?;
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    }
+    pub fn fstat(fd: &OwnedFd) -> io::Result<libc::stat> {
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        check(unsafe { libc::fstat(fd.as_raw_fd(), &mut st) })?;
+        Ok(st)
+    }
+    pub fn lstat_at(dir: &impl AsFd, name: &[u8]) -> io::Result<libc::stat> {
+        let c = cstr(name)?;
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        check(unsafe {
+            libc::fstatat(dir.as_fd().as_raw_fd(), c.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW)
+        })?;
+        Ok(st)
+    }
+    pub fn rename_at(dir: &OwnedFd, from: &[u8], to: &[u8]) -> io::Result<()> {
+        let (f, t) = (cstr(from)?, cstr(to)?);
+        let d = dir.as_raw_fd();
+        check(unsafe { libc::renameat(d, f.as_ptr(), d, t.as_ptr()) }).map(|_| ())
+    }
+    fn unlink_at(dir: BorrowedFd, name: &[u8], is_dir: bool) -> io::Result<()> {
+        let c = cstr(name)?;
+        let flag = if is_dir { libc::AT_REMOVEDIR } else { 0 };
+        check(unsafe { libc::unlinkat(dir.as_raw_fd(), c.as_ptr(), flag) }).map(|_| ())
+    }
+    /// 디렉터리 핸들의 자식 이름 전수(`.`·`..` 제외). 먼저 다 읽고 지운다 — 읽는 중에 지우면
+    /// readdir 결과가 POSIX 상 미정이다. ★readdir 의 오류와 끝은 구별하지 않는다: 덜 읽혔다면
+    /// 마지막 `unlinkat(AT_REMOVEDIR)` 가 ENOTEMPTY 로 실패해 **오류로 올라온다**(더 지우는 쪽이 아니다).
+    fn list(dir: BorrowedFd) -> io::Result<Vec<Vec<u8>>> {
+        let dup = check(unsafe { libc::fcntl(dir.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) })?;
+        let dp = unsafe { libc::fdopendir(dup) };
+        if dp.is_null() {
+            let e = io::Error::last_os_error();
+            unsafe { libc::close(dup) };
+            return Err(e);
+        }
+        let mut out = Vec::new();
+        loop {
+            let ent = unsafe { libc::readdir(dp) };
+            if ent.is_null() {
+                break;
+            }
+            let n = unsafe { CStr::from_ptr((*ent).d_name.as_ptr()) }.to_bytes();
+            if n != b"." && n != b".." {
+                out.push(n.to_vec());
+            }
+        }
+        unsafe { libc::closedir(dp) };
+        Ok(out)
+    }
+    /// 하위 내용 제거 — 디렉터리는 `O_NOFOLLOW` 로 열고 장치가 `dev` 와 다르면 **멈춘다**
+    /// (인증이 본 집합을 넓히지 않는다 · C-R1 을 구조로 지킨다). 심링크는 링크 자체만 지운다.
+    fn remove_contents(dir: BorrowedFd, dev: u64) -> io::Result<()> {
+        for n in list(dir)? {
+            let st = lstat_at(&dir, &n)?;
+            if is_dir(&st) {
+                let sub = open_dir_at(dir, &n)?;
+                if id_of(&fstat(&sub)?).0 != dev {
+                    return Err(io::Error::other("장치 경계를 만났다 — 제거를 멈춘다"));
+                }
+                remove_contents(sub.as_fd(), dev)?;
+                drop(sub);
+                unlink_at(dir, &n, true)?;
+            } else {
+                unlink_at(dir, &n, false)?;
+            }
+        }
+        Ok(())
+    }
+    /// `parent` 아래 `name` 을 통째로 지운다 — 연 객체의 신원이 `expect` 가 아니면 아무것도 지우지 않는다.
+    pub fn remove_tree_at(parent: &OwnedFd, name: &[u8], expect: (u64, u64)) -> io::Result<()> {
+        let fd = open_dir_at(parent.as_fd(), name)?;
+        if id_of(&fstat(&fd)?) != expect {
+            return Err(io::Error::other("연 객체가 미리보기의 항목이 아니다 — 지우지 않는다"));
+        }
+        remove_contents(fd.as_fd(), expect.0)?;
+        drop(fd);
+        // 마지막 rmdir 직전 — 그 이름이 아직 그 객체인가(바꿔친 빈 디렉터리를 지우지 않는다).
+        if id_of(&lstat_at(parent, name)?) != expect {
+            return Err(io::Error::other("마지막 단계에서 이름이 다른 객체를 가리킨다 — 멈춘다"));
+        }
+        unlink_at(parent.as_fd(), name, true)
+    }
+}
 
 // ─── 한 항목의 집행(순차) — 티켓 ⒡ 의 순서 그대로 ────────────────────────────────────────────
-/// 집행 한 항목: 신원 재확인 → 봉인 rename → 재확인 → `remove_dir_all` → lstat 검증.
+/// 집행 한 항목: 신원 재확인 → 봉인 rename → 재확인 → 제거 → lstat 검증.
 /// ★호출 전에 인증(certify)이 성공했어야 한다 — 인증 실패는 여기 오지 않고 거부로 끝난다.
+/// ★이 겉면은 뿌리를 **지금** 핸들로 연다(시험·단건용). 명령(`delete`)은 RPC 진입에서 연 핸들을
+/// 미리보기의 뿌리 신원과 대조한 뒤 `execute_one_at` 에 그대로 넘긴다(B2).
 #[allow(clippy::too_many_arguments)]
 pub fn execute_one(
     root: &Path,
@@ -901,8 +1116,45 @@ pub fn execute_one(
     state: &Path,
     order_id: &str,
 ) -> EntryOutcome {
+    match RootDir::open(root) {
+        Ok(rd) => execute_one_at(&rd, name, baseline, dev_of, now, state, order_id),
+        Err(e) => {
+            let r = Refusal {
+                code: R_ROOT_CHANGED,
+                boundary: Some(root.display().to_string()),
+                detail: format!("휴지통 뿌리를 핸들로 열 수 없다(심링크·디렉터리 아님·없음): {e} — 손대지 않는다"),
+            };
+            let _ = record_refusal(state, order_id, name, &r);
+            EntryOutcome {
+                name: name.to_string(),
+                outcome: "refused".into(),
+                reason_code: Some(r.code.to_string()),
+                boundary: r.boundary,
+                bytes_before: Some(baseline.bytes),
+                duration_ms: 0,
+                remaining: None,
+                errors: vec![],
+            }
+        }
+    }
+}
+
+/// `execute_one` 의 본체 — 모든 파괴 연산이 `rd`(뿌리 핸들) 기준이다(B2).
+#[allow(clippy::too_many_arguments)]
+pub fn execute_one_at(
+    rd: &RootDir,
+    name: &str,
+    baseline: &Certificate,
+    dev_of: DevOf,
+    now: f64,
+    state: &Path,
+    order_id: &str,
+) -> EntryOutcome {
     let t0 = Instant::now();
+    let root = rd.path();
     let src = root.join(name);
+    let sealed_name = format!("{TRASH_SEAL_PREFIX}{name}");
+    let want = (baseline.dev, baseline.ino);
     let mut out = EntryOutcome {
         name: name.to_string(),
         outcome: "refused".into(),
@@ -914,7 +1166,7 @@ pub fn execute_one(
         errors: vec![],
     };
     // 이미 사라졌는가 — 손댈 것이 없다(성공도 실패도 아닌 사실).
-    if std::fs::symlink_metadata(&src).is_err() {
+    if rd.id_at(name).is_err() {
         out.outcome = "already_gone".into();
         out.duration_ms = t0.elapsed().as_millis() as u64;
         return out;
@@ -954,9 +1206,23 @@ pub fn execute_one(
         out.duration_ms = t0.elapsed().as_millis() as u64;
         return out;
     }
+    // (2′) B2 — 경로로 인증한 그 객체가 **핸들 아래** 그 이름의 객체인가. 아니면 경로가 다른 곳을
+    //      가리키는 중이다(뿌리·부모 바꿔치기) — 손대지 않는다.
+    if rd.id_at(name).ok() != Some(want) {
+        let r = Refusal {
+            code: R_ROOT_CHANGED,
+            boundary: Some(src.display().to_string()),
+            detail: "뿌리 핸들 아래 그 이름의 객체가 미리보기의 항목이 아니다 — 손대지 않는다".into(),
+        };
+        out.reason_code = Some(r.code.to_string());
+        out.boundary = r.boundary.clone();
+        let _ = record_refusal(state, order_id, name, &r);
+        out.duration_ms = t0.elapsed().as_millis() as u64;
+        return out;
+    }
     // (3) 봉인 — 옛 이름으로 계속 쓰는 생산자가 봉인된 객체에 자동으로 닿지 못하게 한다.
-    let sealed = root.join(format!("{TRASH_SEAL_PREFIX}{name}"));
-    if sealed.exists() {
+    let sealed = root.join(&sealed_name);
+    if rd.id_at(&sealed_name).is_ok() {
         let r = Refusal {
             code: R_SEAL_FAILED,
             boundary: Some(sealed.display().to_string()),
@@ -968,7 +1234,9 @@ pub fn execute_one(
         out.duration_ms = t0.elapsed().as_millis() as u64;
         return out;
     }
-    if let Err(e) = std::fs::rename(&src, &sealed) {
+    #[cfg(test)]
+    fire_root_hook(&BEFORE_SEAL_HOOK, root);
+    if let Err(e) = rd.rename_at(name, &sealed_name) {
         let r = Refusal {
             code: R_SEAL_FAILED,
             boundary: Some(src.display().to_string()),
@@ -989,8 +1257,9 @@ pub fn execute_one(
         }
     }
     // (4) 봉인 뒤 재확인 — 다르면 **봉인 상태로 남긴다**(되돌리지 않는다 · 자동 재개 없음).
+    //     ★B2: 경로로 읽은 대조에 더해 **핸들 아래 봉인 이름의 신원**도 본다.
     match certify_entry(&sealed, dev_of) {
-        Ok(c) if c.digest == baseline.digest => {}
+        Ok(c) if c.digest == baseline.digest && rd.id_at(&sealed_name).ok() == Some(want) => {}
         Ok(_) => {
             let r = Refusal {
                 code: R_CHANGED,
@@ -1015,7 +1284,11 @@ pub fn execute_one(
     }
     // (5) 제거 — 인증이 "이 뿌리 아래 장치 경계 없음"을 이미 확정했으므로 이 순회는 인증 집합을
     //     넓힐 수 없다(C-R1). 심링크는 따라가지 않고 링크 자체가 지워진다.
-    if let Err(e) = std::fs::remove_dir_all(&sealed) {
+    //     ★B2: 제거는 핸들 기준 순회다 — 연 객체가 `want` 가 아니면 한 바이트도 지우지 않고, 하위에서
+    //     장치가 바뀌면 멈춘다(경로를 다시 해석하지 않는다).
+    #[cfg(test)]
+    fire_root_hook(&BEFORE_REMOVE_HOOK, root);
+    if let Err(e) = rd.remove_tree_at(&sealed_name, want) {
         // m3: 제거가 **시작된 뒤**의 오류다 — 남은 것이 있을 수 있다고 적는다(무결 주장 금지).
         let remaining = certify_entry(&sealed, dev_of).map(|c| c.nodes).ok();
         // partial = 제거가 시작된 뒤 멈췄다(남은 것이 있을 수 있다 · m3).
@@ -1035,8 +1308,8 @@ pub fn execute_one(
         out.duration_ms = t0.elapsed().as_millis() as u64;
         return out;
     }
-    // (6) lstat 검증 — 없어졌는가.
-    if std::fs::symlink_metadata(&sealed).is_ok() {
+    // (6) lstat 검증 — 없어졌는가(핸들 기준).
+    if rd.id_at(&sealed_name).is_ok() {
         out.outcome = "removal_error".into();
         out.reason_code = Some(R_REMOVE_ERROR.to_string());
         out.errors.push("제거 뒤에도 봉인 경로가 남아 있다".into());
@@ -1305,6 +1578,10 @@ pub fn handle(
     }
 }
 
+/// ★B2 — 뿌리 신원 불일치의 사람용 문장(미리보기 잡·명령 공용).
+pub const ROOT_CHANGED_MSG: &str = "휴지통 뿌리를 핸들로 열 수 없거나 미리보기가 본 뿌리와 다른 객체다 \
+    (심링크·바꿔치기) — 아무것도 지우지 않았다. 새 미리보기가 필요하다";
+
 pub const OWNER_REQUIRED_MSG: &str = "휴지통 삭제는 앱(오너 GUI)에서만 명령한다 — \
     operator token 과 pane 에 붙지 않은 호출자만 이 동사를 쓴다. \
     ★정직한 한계: 같은 UID 로 토큰 파일을 읽는 프로세스는 이 등급을 참칭할 수 있다(거버넌스 구분이지 보안 경계가 아니다).";
@@ -1460,8 +1737,12 @@ enum NamesOutcome {
         shown: Vec<Value>,
         refusals: Vec<Value>,
         certs: HashMap<String, Certificate>,
+        /// ★B2 — 순회 전후 같았던 뿌리 신원(확인 레코드에 실린다).
+        root_id: (u64, u64),
     },
     InvalidName,
+    /// ★B2 — 뿌리를 핸들로 열 수 없거나 순회 전후 뿌리 신원이 달랐다(바꿔치기 표지).
+    RootChanged,
     LedgerUnwritable,
     /// 세션 예산 소진 — **잡 전체를 종결**시킨다(항목별 거부와 다르다).
     SessionExpired(Refusal),
@@ -1510,6 +1791,12 @@ fn certify_names_into(
     let mut shown = Vec::new();
     let mut refusals = Vec::new();
     let mut nodes_done = 0usize;
+    // ★B2 — 순회 **전후**에 뿌리 신원을 잰다. 달라졌으면 그 사이 뿌리가 바뀐 것이고, 그 미리보기로는
+    //   어떤 확인도 발급하지 않는다(경로로 걸은 인증서가 어느 뿌리의 것인지 말할 수 없다).
+    let root_id = match RootDir::open(root) {
+        Ok(rd) => rd.id(),
+        Err(_) => return NamesOutcome::RootChanged,
+    };
     for name in names {
         if !safe_name(name) {
             return NamesOutcome::InvalidName;
@@ -1588,10 +1875,14 @@ fn certify_names_into(
             }
         }
     }
+    if RootDir::open(root).map(|rd| rd.id()).ok() != Some(root_id) {
+        return NamesOutcome::RootChanged;
+    }
     NamesOutcome::Done {
         shown,
         refusals,
         certs,
+        root_id,
     }
 }
 
@@ -1601,6 +1892,7 @@ fn preview_payload(
     shown: Vec<Value>,
     refusals: Vec<Value>,
     certs: HashMap<String, Certificate>,
+    root_id: (u64, u64),
 ) -> Value {
     if certs.is_empty() {
         return json!({"confirm_id": Value::Null, "entries": shown, "refused": refusals,
@@ -1620,6 +1912,7 @@ fn preview_payload(
             digest: digest.clone(),
             issued: Instant::now(),
             certs,
+            root_id,
         },
     );
     json!({"confirm_id": cid, "entries": shown, "refused": refusals, "digest": digest,
@@ -1747,10 +2040,16 @@ fn preview_outcome_phase(out: NamesOutcome) -> (PreviewPhase, Option<Value>, Opt
             shown,
             refusals,
             certs,
+            root_id,
         } => (
             PreviewPhase::Ready,
-            Some(preview_payload(shown, refusals, certs)),
+            Some(preview_payload(shown, refusals, certs, root_id)),
             None,
+        ),
+        NamesOutcome::RootChanged => (
+            PreviewPhase::Failed,
+            None,
+            Some(job_refusal("(root)", R_ROOT_CHANGED, ROOT_CHANGED_MSG)),
         ),
         NamesOutcome::InvalidName => (
             PreviewPhase::Failed,
@@ -1962,6 +2261,22 @@ fn delete(id: &Value, root: &Path, state: &Path, params: &Value, caller_pid: Opt
         }
         return Reply::Single(err_response(id, r.code, &r.detail));
     }
+    // ★B2 — 뿌리를 **지금 한 번** 핸들로 열고(심링크 불추적) 미리보기가 걸은 뿌리와 같은 객체인지
+    //   대조한다. 이후 집행은 이 핸들만 쓴다 — 배경 스레드가 경로를 다시 해석하지 않는다.
+    let rd = match RootDir::open(root) {
+        Ok(rd) if rd.id() == c.root_id => rd,
+        _ => {
+            let r = Refusal {
+                code: R_ROOT_CHANGED,
+                boundary: Some(root.display().to_string()),
+                detail: ROOT_CHANGED_MSG.into(),
+            };
+            if record_refusal(state, "(order)", &cid, &r).is_err() {
+                return Reply::Single(err_response(id, R_LEDGER_UNWRITABLE, LEDGER_FAIL_MSG));
+            }
+            return Reply::Single(err_response(id, r.code, &r.detail));
+        }
+    };
     // 단일 삭제자 — try-lock. 기다리지 않는다(기다리면 그것이 stall 이다).
     if !deleter_try_acquire() {
         return Reply::Single(err_response(
@@ -2006,7 +2321,6 @@ fn delete(id: &Value, root: &Path, state: &Path, params: &Value, caller_pid: Opt
         },
     );
     // 집행은 별도 스레드 — dispatch 스레드를 쥐지 않는다(큐·배달 경로에 영향 0).
-    let root2 = root.to_path_buf();
     let state2 = state.to_path_buf();
     let oid2 = order_id.clone();
     // 빗장은 **이미 잡혀 있다**(위 try_acquire). 집행 스레드가 끝에서 놓는다.
@@ -2034,8 +2348,8 @@ fn delete(id: &Value, root: &Path, state: &Path, params: &Value, caller_pid: Opt
                 });
                 continue;
             }
-            let out = execute_one(
-                &root2, name, &c.certs[name], &real_dev, now_epoch(), &state2, &oid2,
+            let out = execute_one_at(
+                &rd, name, &c.certs[name], &real_dev, now_epoch(), &state2, &oid2,
             );
             outs.push(out);
             if t0.elapsed().as_secs() >= TRASH_REMOVE_STALL_REPORT_SECS {
@@ -2114,12 +2428,42 @@ pub enum ProducerState {
     Undeterminable,
 }
 
-/// `<entry>/.producer` 를 읽어 상태를 돌려준다. 파일이 깨졌으면 Undeterminable(= 살아 있는 쪽).
+/// 항목의 생산자 표식을 **전부** 읽어 가장 보수적인 상태를 돌려준다.
+/// ★M3(codex 1R · TICKET=cysr-1110-trash-harden) — 생산자는 자기 파일 `.producer-<pid>` 만 쓴다(공유
+/// 파일 하나를 읽고-바꿔쓰던 종전 방식은 원자적이지 않아 B 의 `complete` 가 아직 옮기는 중인 A 의 `open`
+/// 을 덮을 수 있었다). 그래서 판독은 옛 공유 파일 `.producer`(구 생산자·공장 초기화) 와 `.producer-*`
+/// (`*.tmp` 제외 — 쓰다 만 임시파일은 표식이 아니다)를 모두 모은다. 순위(앞이 이긴다):
+/// 돌고 있음 > 판정 불가 > 열린 채 죽음 > 정상 종료 · 표식이 하나도 없으면 `Unknown`.
+/// 항목 디렉터리를 읽을 수 없으면 판정 불가다(fail closed).
 pub fn producer_state(entry: &Path, alive: &dyn Fn(u32, &str) -> Option<bool>) -> ProducerState {
-    let p = entry.join(".producer");
-    let txt = match std::fs::read_to_string(&p) {
-        Ok(t) => t,
+    let rd = match std::fs::read_dir(entry) {
+        Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return ProducerState::Unknown,
+        Err(_) => return ProducerState::Undeterminable,
+    };
+    let mut states = Vec::new();
+    for de in rd {
+        let Ok(de) = de else { return ProducerState::Undeterminable };
+        let n = de.file_name();
+        let n = n.to_string_lossy();
+        if n == ".producer" || (n.starts_with(".producer-") && !n.ends_with(".tmp")) {
+            states.push(producer_mark_state(&entry.join(&*n), alive));
+        }
+    }
+    let rank = |s: &ProducerState| match s {
+        ProducerState::ActiveOpen => 4,
+        ProducerState::Undeterminable => 3,
+        ProducerState::InterruptedOpen => 2,
+        ProducerState::Settled => 1,
+        ProducerState::Unknown => 0,
+    };
+    states.into_iter().max_by_key(rank).unwrap_or(ProducerState::Unknown)
+}
+
+/// 표식 파일 하나의 상태. 파일이 깨졌으면 Undeterminable(= 살아 있는 쪽).
+fn producer_mark_state(p: &Path, alive: &dyn Fn(u32, &str) -> Option<bool>) -> ProducerState {
+    let txt = match std::fs::read_to_string(p) {
+        Ok(t) => t,
         Err(_) => return ProducerState::Undeterminable,
     };
     let v: Value = match serde_json::from_str(&txt) {
@@ -2723,6 +3067,182 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    // ─── B2(codex 1R · TICKET=cysr-1110-trash-harden): 뿌리 바꿔치기 TOCTOU ──────────────────
+    // 같은 UID 의 프로세스가 집행 도중 뿌리를 옮기고 그 자리에 **바깥 디렉터리로 가는 심링크**를 꽂는다.
+    // 경로를 다시 해석하는 집행은 바깥의 동명 디렉터리를 rename·remove_dir_all 한다 — 그 자리를
+    // 시험이 정한다(갈고리 · 결정론).
+    #[cfg(unix)]
+    fn swap_root_to_outside(root: &Path) {
+        std::fs::rename(root, root.with_file_name("trash-moved")).unwrap();
+        std::os::unix::fs::symlink(root.with_file_name("outside"), root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn b2_root_swapped_before_the_seal_never_renames_outside_the_vetted_root() {
+        let base_dir = rig("b2-seal");
+        let root = base_dir.join("trash");
+        let outside = base_dir.join("outside");
+        let name = "dept-7-1760000000";
+        mk(&root.join(name), "state/x.txt", b"x");
+        mk(&outside.join(name), "victim.txt", b"must survive");
+        let state = base_dir.join("sd");
+        std::fs::create_dir_all(&state).unwrap();
+        let base = certify_entry(&root.join(name), &real_dev).unwrap();
+        *BEFORE_SEAL_HOOK.lock().unwrap() = Some((base_dir.clone(), swap_root_to_outside));
+        let out = execute_one(&root, name, &base, &real_dev, now_epoch() + 100_000.0, &state, "od-b2a");
+        *BEFORE_SEAL_HOOK.lock().unwrap() = None;
+        assert!(
+            outside.join(name).join("victim.txt").exists(),
+            "바깥 동명 디렉터리가 옮겨졌다(격리 루트 밖 rename): {out:?}"
+        );
+        assert!(
+            !outside.join(format!("{TRASH_SEAL_PREFIX}{name}")).exists(),
+            "바깥에 봉인이 생겼다: {out:?}"
+        );
+        // 봉인은 핸들 아래(옮겨진 진짜 뿌리 안)에서 일어나고, 경로로 읽는 봉인 뒤 대조는 바뀐 경로를
+        // 읽어 어긋난다 ⇒ **봉인 상태로 멈춘다**(아무것도 지우지 않는다 · 실패의 방향).
+        assert_eq!(out.outcome, "sealed_not_removed", "{out:?}");
+        let kept = base_dir.join("trash-moved").join(format!("{TRASH_SEAL_PREFIX}{name}"));
+        assert!(kept.join("state/x.txt").exists(), "검증한 객체는 봉인된 채 그대로여야 한다: {out:?}");
+        let _ = std::fs::remove_dir_all(&base_dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn b2_root_swapped_before_the_removal_never_removes_outside_the_vetted_root() {
+        let base_dir = rig("b2-remove");
+        let root = base_dir.join("trash");
+        let outside = base_dir.join("outside");
+        let name = "dept-8-1760000000";
+        mk(&root.join(name), "state/x.txt", b"x");
+        let victim = outside.join(format!("{TRASH_SEAL_PREFIX}{name}"));
+        mk(&victim, "victim.txt", b"must survive");
+        let state = base_dir.join("sd");
+        std::fs::create_dir_all(&state).unwrap();
+        let base = certify_entry(&root.join(name), &real_dev).unwrap();
+        *BEFORE_REMOVE_HOOK.lock().unwrap() = Some((base_dir.clone(), swap_root_to_outside));
+        let out = execute_one(&root, name, &base, &real_dev, now_epoch() + 100_000.0, &state, "od-b2b");
+        *BEFORE_REMOVE_HOOK.lock().unwrap() = None;
+        assert!(
+            victim.join("victim.txt").exists(),
+            "바깥 동명 디렉터리가 지워졌다(격리 루트 밖 remove_dir_all): {out:?}"
+        );
+        assert_eq!(out.outcome, "deleted_verified", "{out:?}");
+        assert!(
+            !base_dir.join("trash-moved").join(format!("{TRASH_SEAL_PREFIX}{name}")).exists(),
+            "검증한 봉인 객체는 지워져야 한다"
+        );
+        let _ = std::fs::remove_dir_all(&base_dir);
+    }
+
+    // ─── M3(codex 1R · TICKET=cysr-1110-trash-harden): 생산자별 표식 판독 ─────────────────────
+    /// 생산자는 이제 자기 파일 `.producer-<pid>` 만 쓴다(공유 파일 읽고-바꿔쓰기는 원자적이지 않았다).
+    /// 판독기는 전부 모아 가장 보수적인 쪽으로 판정해야 한다 — B 의 complete 가 A 의 open 을 가리면 안 된다.
+    #[test]
+    fn m3_reader_sees_every_per_producer_marker_and_the_legacy_one() {
+        let root = rig("m3-reader");
+        let e = root.join("dept-3-1760000000");
+        mk(&e, "pack/x", b"x");
+        let w = |n: &str, st: &str, pid: u32| {
+            std::fs::write(
+                e.join(n),
+                format!(r#"{{"v":1,"state":"{st}","producer":"t","pid":{pid},"start_token":"","ts":1}}"#),
+            )
+            .unwrap()
+        };
+        let alive = |pid: u32, _: &str| Some(pid == 111);
+        // A(111) 는 아직 열려 있고 B(222) 는 닫았다 — B 의 complete 가 A 의 창을 가리지 못한다.
+        w(".producer-111", "open", 111);
+        w(".producer-222", "complete", 222);
+        assert_eq!(producer_state(&e, &alive), ProducerState::ActiveOpen);
+        // 임시파일은 표식이 아니다.
+        std::fs::remove_file(e.join(".producer-111")).unwrap();
+        std::fs::write(e.join(".producer-333.tmp"), b"{garbage").unwrap();
+        assert_eq!(producer_state(&e, &alive), ProducerState::Settled);
+        // 하나라도 못 읽으면 판정 불가(= 막는다 · fail closed).
+        std::fs::write(e.join(".producer-444"), b"{not json").unwrap();
+        assert_eq!(producer_state(&e, &alive), ProducerState::Undeterminable);
+        std::fs::remove_file(e.join(".producer-444")).unwrap();
+        // 죽은 채 열린 표식 → 중단 표지.
+        w(".producer-555", "open", 555);
+        assert_eq!(producer_state(&e, &alive), ProducerState::InterruptedOpen);
+        // 옛 공유 파일도 계속 읽는다(구 생산자·공장 초기화는 그 이름을 쓴다).
+        w(".producer", "open", 111);
+        assert_eq!(producer_state(&e, &alive), ProducerState::ActiveOpen);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 명령 진입 — 미리보기 뒤 뿌리가 **다른 진짜 디렉터리**로 바뀌었으면(심링크가 아니라 `O_NOFOLLOW`
+    /// 가 막지 못하는 꼴) **신원 대조**가 명령 자체를 거부하고, 의도 기록·집행 스레드 없이 끝난다.
+    /// 바꿔 넣은 디렉터리는 한 바이트도 바뀌지 않는다.
+    #[cfg(unix)]
+    #[test]
+    fn b2_delete_refuses_when_the_root_is_not_the_one_the_preview_walked() {
+        let base_dir = rig("b2-rpc");
+        let root = base_dir.join("trash");
+        let outside = base_dir.join("outside");
+        let name = "dept-5-1760000000";
+        mk(&root.join(name), "state/x.txt", b"x");
+        mk(&outside.join(name), "state/x.txt", b"x");
+        let state = base_dir.join("sd");
+        std::fs::create_dir_all(&state).unwrap();
+        let cert = certify_entry(&root.join(name), &real_dev).unwrap();
+        let root_id = RootDir::open(&root).unwrap().id();
+        let mut certs = HashMap::new();
+        certs.insert(name.to_string(), cert);
+        let digest = order_digest(&certs);
+        let cid = "cf-b2-rpc-test".to_string();
+        confirms().lock().unwrap().insert(
+            cid.clone(),
+            Confirm {
+                id: cid.clone(),
+                names: vec![name.to_string()],
+                digest: digest.clone(),
+                issued: Instant::now(),
+                certs,
+                root_id,
+            },
+        );
+        std::fs::rename(&root, base_dir.join("trash-moved")).unwrap();
+        std::fs::rename(&outside, &root).unwrap();
+        let v = match delete(
+            &json!(1),
+            &root,
+            &state,
+            &json!({"confirm_id": cid, "names": [name], "digest": digest}),
+            None,
+        ) {
+            Reply::Single(v) => v,
+            _ => panic!("delete 는 Reply::Single 만 돌려준다"),
+        };
+        assert_eq!(v["error"]["code"], R_ROOT_CHANGED, "{v}");
+        assert!(root.join(name).join("state/x.txt").exists(), "바꿔 넣은 디렉터리가 바뀌었다");
+        assert!(!root.join(format!("{TRASH_SEAL_PREFIX}{name}")).exists());
+        assert!(base_dir.join("trash-moved").join(name).join("state/x.txt").exists());
+        assert!(
+            !ledger_lines(&state).iter().any(|l| l["kind"] == "intent"),
+            "거부된 명령이 의도를 기록했다"
+        );
+        let _ = std::fs::remove_dir_all(&base_dir);
+    }
+
+    /// 제거 순회는 연 객체가 미리보기 항목이 아니면 **아무것도** 지우지 않는다(신원 결박의 하중 시험).
+    #[cfg(unix)]
+    #[test]
+    fn b2_handle_removal_refuses_an_object_that_is_not_the_previewed_one() {
+        let root = rig("b2-ident");
+        mk(&root, "a/keep.txt", b"keep");
+        let rd = RootDir::open(&root).unwrap();
+        let err = rd.remove_tree_at("a", (1, 1)).expect_err("신원이 다르면 거부해야 한다");
+        assert!(err.to_string().contains("미리보기의 항목이 아니다"), "{err}");
+        assert!(root.join("a/keep.txt").exists(), "한 바이트도 지워지지 않아야 한다");
+        let want = rd.id_at("a").unwrap();
+        rd.remove_tree_at("a", want).expect("같은 신원이면 지운다");
+        assert!(!root.join("a").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     // ─── 핀: 에이전트가 닿을 CLI 경로가 없다 ────────────────────────────────────────────────
     #[test]
     fn no_cli_verb_reaches_the_trash_rpcs() {
@@ -2966,6 +3486,7 @@ mod tests {
             ),
             NamesOutcome::InvalidName => panic!("이름이 거부됐다 — 이 검체의 전제가 깨졌다"),
             NamesOutcome::LedgerUnwritable => panic!("원장을 쓸 수 없다 — 이 검체의 전제가 깨졌다"),
+            NamesOutcome::RootChanged => panic!("뿌리 신원이 바뀌었다 — 이 검체의 전제가 깨졌다"),
         }
         // ⒟ 과 묶어서 읽는다: 이 결말의 단계는 `Failed` 다.
         let (phase, result, refusal) = preview_outcome_phase(out);
@@ -2981,11 +3502,13 @@ mod tests {
             shown: vec![],
             refusals: vec![],
             certs: HashMap::new(),
+            root_id: (1, 1),
         };
         assert_eq!(preview_outcome_phase(done).0, PreviewPhase::Ready);
         for out in [
             NamesOutcome::InvalidName,
             NamesOutcome::LedgerUnwritable,
+            NamesOutcome::RootChanged,
             NamesOutcome::SessionExpired(Refusal {
                 code: R_SESSION_TOO_SLOW,
                 boundary: None,
@@ -3398,6 +3921,7 @@ mod tests {
             }
             NamesOutcome::InvalidName => panic!("전제가 깨졌다 — 이름이 거부됐다"),
             NamesOutcome::LedgerUnwritable => panic!("전제가 깨졌다 — 원장을 쓸 수 없다"),
+            NamesOutcome::RootChanged => panic!("전제가 깨졌다 — 뿌리 신원이 바뀌었다"),
             NamesOutcome::SessionExpired(r) => {
                 panic!("전제가 깨졌다 — 예산 없이 불렀는데 세션 만료다: {}", r.code)
             }

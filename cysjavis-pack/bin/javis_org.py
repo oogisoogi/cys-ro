@@ -653,8 +653,13 @@ def _quarantine(src, trash_dir, label):
 #   함께 삭제 가능 · complete|aborted → 보통 항목 · 표식 없음 → "생산자 알 수 없음"(구 버전과 동일).
 # ★절대 규칙(r2 §3.4 · R1-k): **표식 기록 실패가 격리를 실패·지연·재배열시키지 않는다.** 오류는
 #   stderr 한 줄이고, 그래서 이 함수는 어떤 예외도 밖으로 내보내지 않는다.
-# ★남의 창은 건드리지 않는다: 같은 격리 폴더를 쓰는 생산자가 둘(이 파일과 cys-dept)이라 표식 파일도
-#   하나다 — 다른 pid 의 `open` 은 덮지 않고, 닫는 것도 **내 pid 의 표식**만 닫는다.
+# ★생산자마다 자기 파일 하나(codex 1R M3 · TICKET=cysr-1110-trash-harden): 같은 격리 폴더를 쓰는 생산자가
+#   둘(이 파일과 cys-dept)인데 예전엔 공유 파일 `.producer` 하나를 '읽고 → 바꿔 쓰기' 했다. 그건 원자적이지
+#   않았다 — 남의 open 이 잠깐 못 읽히거나(깨짐·파싱 불가 → None 으로 접힘) 둘이 동시에 읽으면 남의 창을
+#   덮고, 내 complete 가 아직 옮기는 중인 남의 항목을 '끝남'으로 보이게 했다. 이제 **내 pid 의 파일
+#   `.producer-<pid>` 만** 쓰고(tmp `.producer-<pid>.tmp` → 원자적 rename) 남의 표식은 읽지도 않는다 —
+#   남이 덮을 수 없으니 소유 판정이 필요 없다. 옛 공유 파일 `.producer` 는 더 쓰지 않는다. 판독기
+#   (`trash.rs`)는 `.producer` 와 `.producer-*`(`*.tmp` 제외)를 모두 모아 판정한다.
 def _proc_start_token():
     """pid 재사용을 구별할 프로세스 시작 토큰. Linux `/proc` 에서만 얻고 없으면 빈 문자열이다.
     ★현재 판독기(`trash.rs real_alive`)는 이 값을 **대조하지 않는다**(pid 존재만 본다) — 나중을
@@ -674,26 +679,22 @@ def _producer_mark(trash_dir, state, producer, create=False):
             os.makedirs(trash_dir, exist_ok=True)
         if not os.path.isdir(trash_dir):
             return  # 격리 폴더가 없다 — 표식 때문에 **빈 격리 항목을 만들지 않는다**
-        path = os.path.join(trash_dir, ".producer")
         mine = os.getpid()
-        cur = None
-        try:
-            with open(path, encoding="utf-8") as f:
-                cur = json.load(f)
-        except Exception:
-            cur = None
-        if isinstance(cur, dict) and cur.get("pid") != mine:
-            if state == "open" and cur.get("state") == "open":
-                return  # 다른 생산자가 창을 열어 뒀다 — 더 넓은 창이 이긴다
-            if state != "open":
-                return  # 내 표식이 아니면 닫지 않는다
+        path = os.path.join(trash_dir, ".producer-%d" % mine)  # 내 파일만 — 남의 표식은 읽지 않는다
         body = json.dumps({"v": 1, "state": state, "producer": producer, "pid": mine,
                            "start_token": _proc_start_token(), "ts": time.time()},
                           ensure_ascii=False)
-        tmp = "%s.tmp-%d" % (path, mine)
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(body)
-        os.replace(tmp, path)  # 원자적 tmp+rename
+        tmp = path + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(body)
+            os.replace(tmp, path)  # 원자적 tmp+rename
+        except Exception:
+            try:
+                os.remove(tmp)  # 실패해도 임시파일을 남기지 않는다
+            except Exception:
+                pass
+            raise
     except Exception as e:
         sys.stderr.write("[destroy] .producer 표식 기록 실패(격리는 그대로 계속한다): %s\n" % e)
 
@@ -1233,9 +1234,11 @@ def self_test():
         and "부서는 살아 있다" not in refuse_diag.getvalue(),
         "down rc=12 에서 pack/workdir 격리 또는 원본 변경·거부 사유 누락: %r" % refuse_actions)
     # --- S8 M3: `.producer` 표식 — 쓰기 규칙과 '격리를 절대 방해하지 않는다' ---
-    def _mark_read(d):
+    def _mark_read(d, name=None):
+        # 기본은 내 표식 `.producer-<내 pid>` · name 을 주면 그 파일(예: 옛 공유 파일 `.producer`)
         try:
-            with open(os.path.join(d, ".producer"), encoding="utf-8") as f: return json.load(f)
+            with open(os.path.join(d, name or ".producer-%d" % os.getpid()), encoding="utf-8") as f:
+                return json.load(f)
         except Exception: return None
     mk_home = os.path.join(td, "destroy-mark-home")
     mk_name = "marked"
@@ -1262,7 +1265,8 @@ def self_test():
         and mk_rec.get("pid") == os.getpid() and mk_rec.get("producer") == "javis_org.destroy_dept"
         and "start_token" in mk_rec and isinstance(mk_rec.get("ts"), float)
         and os.path.isdir(os.path.join(mk_dir, "pack")) and os.path.isdir(os.path.join(mk_dir, "workdir"))
-        and not [f for f in os.listdir(mk_dir) if f.startswith(".producer.tmp-")],
+        and not [f for f in os.listdir(mk_dir) if f.endswith(".tmp") or ".tmp-" in f]
+        and not os.path.exists(os.path.join(mk_dir, ".producer")),
         "격리 뒤 표식이 complete 가 아니거나 임시파일 잔존: %r / %r" % (mk_rec, mk_actions))
     # 옮길 것이 하나도 없으면 표식도 격리 폴더도 만들지 않는다(빈 항목 금지).
     none_home = os.path.join(td, "destroy-mark-none-home")
@@ -1295,16 +1299,17 @@ def self_test():
             "부적격 성분(name=%r ts=%r)을 거부하지 않았다: %r" % (m2_name, m2_ts, m2_res))
     chk("m2-reject-before-any-action", m2_calls == [] and not os.path.exists(none_trash),
         "부적격 성분인데 하위 호출·격리 폴더가 생겼다: %r" % m2_calls)
-    # 남의 창은 덮지 않고, 남의 표식은 닫지 않는다(한 폴더를 두 생산자가 쓴다).
+    # 남의 창은 덮지 않고, 남의 표식은 닫지 않는다(한 폴더를 두 생산자가 쓴다) — 옛 공유 파일 `.producer`
+    #   는 더 이상 쓰지 않으므로 그 안의 남의 창은 그대로 남는다.
     own_dir = os.path.join(td, "mark-ownership"); os.makedirs(own_dir, exist_ok=True)
     foreign = {"v": 1, "state": "open", "producer": "cys-dept", "pid": 1, "start_token": "", "ts": 1.0}
     with open(os.path.join(own_dir, ".producer"), "w", encoding="utf-8") as f: json.dump(foreign, f)
     _producer_mark(own_dir, "open", "javis_org.destroy_dept")
-    chk("producer-mark-foreign-open-not-overwritten", _mark_read(own_dir) == foreign,
-        "다른 pid 의 open 창을 덮었다: %r" % _mark_read(own_dir))
+    chk("producer-mark-foreign-open-not-overwritten", _mark_read(own_dir, ".producer") == foreign,
+        "다른 pid 의 open 창을 덮었다: %r" % _mark_read(own_dir, ".producer"))
     _producer_mark(own_dir, "complete", "javis_org.destroy_dept")
-    chk("producer-mark-foreign-not-closed", _mark_read(own_dir) == foreign,
-        "내 것이 아닌 표식을 닫았다: %r" % _mark_read(own_dir))
+    chk("producer-mark-foreign-not-closed", _mark_read(own_dir, ".producer") == foreign,
+        "내 것이 아닌 표식을 닫았다: %r" % _mark_read(own_dir, ".producer"))
     # 내 표식은 내가 닫는다.
     _producer_mark(own_dir + "-mine", "open", "javis_org.destroy_dept", create=True)
     _producer_mark(own_dir + "-mine", "complete", "javis_org.destroy_dept")
@@ -1319,8 +1324,34 @@ def self_test():
     def _boom(*a, **k): raise OSError(28, "No space left on device")
     with patch.object(os, "replace", _boom), redirect_stderr(raise_diag):
         _producer_mark(own_dir + "-mine", "open", "javis_org.destroy_dept")
-    chk("producer-mark-never-raises", "표식 기록 실패(격리는 그대로 계속한다)" in raise_diag.getvalue(),
-        "표식 기록 실패가 stderr 1줄로 보고되지 않았다: %r" % raise_diag.getvalue())
+    chk("producer-mark-never-raises", "표식 기록 실패(격리는 그대로 계속한다)" in raise_diag.getvalue()
+        and not [f for f in os.listdir(own_dir + "-mine") if f.endswith(".tmp")],
+        "표식 기록 실패가 stderr 1줄로 보고되지 않았거나 임시파일 잔존: %r / %r"
+        % (raise_diag.getvalue(), os.listdir(own_dir + "-mine")))
+    # ★codex 1R M3 경합(TICKET=cysr-1110-trash-harden): 남의 open 창이 **옛 판독으로는 못 읽는** 상태여도
+    #   내 open+complete 가 그 창을 지우지 않는다 — 옛 공유 파일(`.producer`, 잘린 JSON)과 새 남의 파일
+    #   (`.producer-1`) 둘 다 바이트 그대로 남고, 내 표식은 따로 `.producer-<내 pid>` 에 complete 로 닫힌다.
+    race_dir = os.path.join(td, "mark-race"); os.makedirs(race_dir, exist_ok=True)
+    race_legacy = b'{"v":1,"state":"open","pid":1'
+    race_foreign = b'{"v":1,"state":"open","producer":"cys-dept purge-state","pid":1,"start_token":"","ts":1}\n'
+    with open(os.path.join(race_dir, ".producer"), "wb") as f: f.write(race_legacy)
+    with open(os.path.join(race_dir, ".producer-1"), "wb") as f: f.write(race_foreign)
+    _producer_mark(race_dir, "open", "javis_org.destroy_dept")
+    _producer_mark(race_dir, "complete", "javis_org.destroy_dept")
+    with open(os.path.join(race_dir, ".producer"), "rb") as f: race_legacy_after = f.read()
+    with open(os.path.join(race_dir, ".producer-1"), "rb") as f: race_foreign_after = f.read()
+    chk("producer-mark-race-foreign-window-survives",
+        race_legacy_after == race_legacy and race_foreign_after == race_foreign,
+        "남의 open 창이 바뀌었다: %r / %r" % (race_legacy_after, race_foreign_after))
+    try:
+        with open(os.path.join(race_dir, ".producer-%d" % os.getpid()), encoding="utf-8") as f:
+            race_own = json.load(f)
+    except Exception:
+        race_own = None
+    chk("producer-mark-race-own-file-separate",
+        isinstance(race_own, dict) and race_own.get("state") == "complete" and race_own.get("pid") == os.getpid()
+        and not [f for f in os.listdir(race_dir) if f.endswith(".tmp") or ".tmp-" in f],
+        "내 표식이 따로 complete 로 닫히지 않았거나 임시파일 잔존: %r / %r" % (race_own, os.listdir(race_dir)))
     print(json.dumps({"self_test": "ok" if not failures else "fail",
                       "failures": failures}, ensure_ascii=False))
     return 1 if failures else 0

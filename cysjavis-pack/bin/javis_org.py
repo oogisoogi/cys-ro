@@ -699,6 +699,15 @@ def _producer_mark(trash_dir, state, producer, create=False):
 
 def destroy_dept(name, mission_key, purge=False, purge_workdir=False, purge_state=False, expect_gen=None):
     require_cso()  # 게이트를 효과 함수에 (R1 REVISE-1) — import 직접호출 우회 차단
+    # ★v0.14.51 편입 · codex 1R M2(우리 포크): 부서명·CYS_TRASH_STAMP 는 격리 목적지 `<TRASH_ROOT>/<name>-<ts>` 의
+    #   경로 성분이다 — 경로 구분자·상위참조·빈 값을 어떤 동작(하위 down 호출·이동·표식)보다 먼저 거부한다
+    #   (cys-dept purge-state F2 의 이름 규칙과 같고, 도장은 숫자만).
+    if not name or "/" in name or "\\" in name or ".." in name:
+        sys.stderr.write("[destroy] 부적격 부서명(%r) — 경로 구분자·상위참조 불허\n" % (name,))
+        return [("invalid_name", 2)]
+    if not os.environ.get("CYS_TRASH_STAMP", "0").isdigit():
+        sys.stderr.write("[destroy] 부적격 도장(CYS_TRASH_STAMP=%r) — 숫자만 허용\n" % os.environ.get("CYS_TRASH_STAMP"))
+        return [("invalid_stamp", 2)]
     actions = []
     # ★B11(codex 2R F6): 기대 세대가 주어지면 어떤 격리보다 먼저 대조한다 — 번호(dept-N)가 재사용된 뒤
     #   옛 카드로 닫으면 새 부서의 pack·workdir 를 격리하게 된다. 최종 대조는 cys-dept down 의 잠금 안
@@ -845,7 +854,7 @@ def cmd_destroy(args):
             # ★F1(reviewer1): down·사후검증 실패는 최종 exit 비0 — 부분 성공을 "done"·0으로 오보 금지
             #   (state 잔존→재발견→부활 차단 붕괴를 조용히 통과시키던 결함 봉인).
             if (any(a[0]=="down" and a[1]!=0 for a in res) or any(a[0]=="verify" and a[1]!=0 for a in res)
-                    or any(a[0]=="gen_mismatch" for a in res)):
+                    or any(a[0] in ("gen_mismatch", "invalid_name", "invalid_stamp") for a in res)):
                 failed = True
         print(json.dumps({"destroy": "done" if not failed else "incomplete", "targets": allres,
                           "note": "forwarder는 소켓 소멸 후 ~30s self-reap(직접 회수 안 함)"}, ensure_ascii=False))
@@ -1269,6 +1278,23 @@ def self_test():
         destroy_dept("nomove", None, purge=True, purge_workdir=True)
     chk("producer-mark-no-empty-entry", not os.path.exists(none_trash),
         "옮길 것이 없는데 격리 폴더·표식이 생겼다: %s" % none_trash)
+    # ★v0.14.51 편입 · codex 1R M2(우리 포크): 부서명·CYS_TRASH_STAMP 는 격리 목적지의 경로 성분이다 —
+    #   `../` 가 들어오면 cys-trash 밖으로 정규화된다. 어떤 동작(하위 down 호출·이동·표식)보다 먼저 거부한다.
+    m2_calls = []
+    for m2_name, m2_ts, m2_code in (("../esc", "100", "invalid_name"), ("a/b", "100", "invalid_name"),
+                                     ("..", "100", "invalid_name"), ("ok", "../../evil", "invalid_stamp"),
+                                     ("ok", "12a", "invalid_stamp")):
+        with patch.multiple(sys.modules[__name__], HOME=none_home, DEPTS=none_reg, TRASH_ROOT=none_trash), \
+             patch.object(sys.modules[__name__], "require_cso"), \
+             patch.dict(os.environ, {"CYS_DEPT_BIN": mk_bin, "CYS_TRASH_STAMP": m2_ts}), \
+             patch.object(subprocess, "run", side_effect=lambda *a, **k: m2_calls.append(a) or
+                          subprocess.CompletedProcess(a, 0, "", "")), \
+             redirect_stderr(StringIO()):
+            m2_res = destroy_dept(m2_name, None, purge=True, purge_workdir=True, purge_state=True)
+        chk("m2-reject-%s-%s" % (m2_code, m2_name), m2_res == [(m2_code, 2)],
+            "부적격 성분(name=%r ts=%r)을 거부하지 않았다: %r" % (m2_name, m2_ts, m2_res))
+    chk("m2-reject-before-any-action", m2_calls == [] and not os.path.exists(none_trash),
+        "부적격 성분인데 하위 호출·격리 폴더가 생겼다: %r" % m2_calls)
     # 남의 창은 덮지 않고, 남의 표식은 닫지 않는다(한 폴더를 두 생산자가 쓴다).
     own_dir = os.path.join(td, "mark-ownership"); os.makedirs(own_dir, exist_ok=True)
     foreign = {"v": 1, "state": "open", "producer": "cys-dept", "pid": 1, "start_token": "", "ts": 1.0}

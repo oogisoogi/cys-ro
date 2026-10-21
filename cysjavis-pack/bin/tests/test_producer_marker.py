@@ -163,6 +163,27 @@ def main():
         else:
             print("  skip: 교체 실패 경로(chflags uchg)는 이 플랫폼에서 구성 불가 — 미검증으로 남는다")
 
+    # ★v0.14.51 편입 · codex 1R M2(우리 포크): 격리 목적지 `<TRASH_ROOT>/<name>-<stamp>` 의 stamp(CYS_TRASH_STAMP)도
+    #   경로 성분이다 — `../..` 가 들어오면 격리분이 cys-trash 밖으로 옮겨진다. 숫자만 받는다(이름은 F2 가 이미 막는다).
+    print("== M2 purge-state 도장(CYS_TRASH_STAMP) 성분 검증 ==")
+    src = open(DEPT, encoding="utf-8").read().splitlines()
+    a = next(i for i, l in enumerate(src) if l.startswith("dept_purge_state(){"))
+    b = next(i for i, l in enumerate(src[a:], a) if l == "}")
+    purge_fn = "\n".join(src[a:b + 1])
+    with tempfile.TemporaryDirectory() as td:
+        home = os.path.join(td, "home")
+        sd = os.path.join(home, ".local", "state", "cys-dept-m2")
+        os.makedirs(sd)
+        troot = os.path.join(home, ".local", "state", "cys-trash")
+        stub = 'dept_state(){ echo "$HOME/.local/state/cys-dept-$1"; }\nTRASH_ROOT="%s"\n' % troot
+        for bad in ("../../evil", "1/2", "12a", "-1"):
+            r = run(stub + purge_fn + '\ndept_purge_state m2; echo "rc=$?"', env={"HOME": home, "CYS_TRASH_STAMP": bad})
+            check("rc=2" in r.stdout, "도장 %r → rc 2 거부 — %r" % (bad, r.stdout.strip()[-120:]))
+            check(os.path.isdir(sd), "도장 %r → 원위치 state 그대로" % bad)
+            # `cys-trash/m2-../../evil` = mkdir -p 가 `m2-..` 를 만들고 `..` 두 번이 cys-trash 위로 → `.local/state/evil`(종전 실측 자리)
+            check(not os.path.exists(os.path.join(home, ".local", "state", "evil")) and not os.path.exists(os.path.join(td, "evil")),
+                  "도장 %r → cys-trash 밖에 아무것도 만들지 않는다" % bad)
+
     print("RESULT:", "PASS" if not FAIL else "FAIL (%d)" % len(FAIL))
     return 1 if FAIL else 0
 

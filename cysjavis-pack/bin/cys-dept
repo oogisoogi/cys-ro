@@ -366,6 +366,10 @@ dept_purge_state(){
   echo "[cys-dept] purge-state: 대상=$name 경로=$rp 크기=${sz:-?} 최종수정=${mt}"
   local ts trash
   ts="${CYS_TRASH_STAMP:-$(date +%s)}"
+  # ★v0.14.51 편입 · codex 1R M2(우리 포크): 도장도 격리 목적지의 경로 성분이다 — 숫자만(`../` 가 들어오면 cys-trash 밖으로 옮겨졌다).
+  case "$ts" in
+    ''|*[!0-9]*) echo "[cys-dept] purge-state: 부적격 도장(CYS_TRASH_STAMP='"'"'$ts'"'"') — 숫자만 허용" >&2; return 2 ;;
+  esac
   trash="$TRASH_ROOT/$name-$ts"
   mkdir -p "$trash" || { echo "[cys-dept] purge-state: trash 생성 실패($trash)" >&2; return 5; }
   # ★S8 M3: 내가 옮기는 동안을 표식으로 알린다. 아래 실패 경로(5·6)에서는 창을 **열어 둔 채** 끝나고,

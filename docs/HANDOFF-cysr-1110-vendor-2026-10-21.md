@@ -115,7 +115,7 @@
 | 병합 후 회귀 수리 | UI 109건(TOAST 시험 54 · starved 33+ · publicdocs 2 · D4 2 등) · lib 1 · cysd 1 · 팩 7 |
 | 리뷰 | codex 1R 22:01:13~22:07:54(6분 41초 · REVISE) · master 결정 2회(21:49→21:49:49 · 22:09:07→22:09:29) |
 | 시험 시간(맥 arm64) | UI 1.3~2.2초 · cargo lib 359초(단독)/858초(부하) · cys 217/290초 · cysd 597/660초 · 팩 목록 137개 26분 47초 |
-| 앱 빌드 | 3분 38초(runtime 복제 34초 · precompile 7초 · tauri build 3분 38초 중 대부분) |
+| 앱 빌드 | 총 4분 19초 = runtime 복제 34초 + precompile 7초 + tauri build 3분 38초 |
 
 ## 8. 앱 빌드 결과
 

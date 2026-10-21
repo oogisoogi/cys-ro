@@ -19,7 +19,7 @@
 | — | H-SECRET-1 적 해소(A안) | `349c3ce0` | — | — |
 | ⑦ | `fix/1110-trash-harden` @ 810dcbd0(9커밋) | `19af40c4` | 0 | 0 |
 | — | 팩 지침 출처 표기(master#c287b9bc) | `e22af6e3` | — | — |
-| ⑧ | `docs/1110-release-prep` @ fb3aa025(6커밋 · master#8148264e) | `76e1eda5` | 0 | 0 |
+| ⑧ | `docs/1110-release-prep` @ fb3aa025(5커밋 · master#8148264e) | `76e1eda5` | 0 | 0 |
 | — | 판정표 | `6872ed07` · `f791b797` · `c95276f9` | — | — |
 
 ## 1. 판정 요지

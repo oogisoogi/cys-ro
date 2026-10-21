@@ -1745,11 +1745,11 @@ fn certify_names_into(
         }
         let p = root.join(name);
         // D-r2-5 M3: 생산자가 돌고 있으면(또는 생존 판정 불가면) 이 항목은 거부한다.
-        let pst = producer_state(&p, &real_alive);
+        let (pst, mark) = producer_state_at(&p, &real_alive);
         if producer_blocks(&pst) {
             let r = Refusal {
                 code: R_PRODUCER_ACTIVE,
-                boundary: Some(p.join(".producer").display().to_string()),
+                boundary: Some(mark.display().to_string()),
                 detail: format!("생산자 표식 상태: {} — 거부", producer_chip(&pst)),
             };
             if record_refusal(state, "(preview)", name, &r).is_err() {
@@ -2374,18 +2374,26 @@ pub enum ProducerState {
 /// 돌고 있음 > 판정 불가 > 열린 채 죽음 > 정상 종료 · 표식이 하나도 없으면 `Unknown`.
 /// 항목 디렉터리를 읽을 수 없으면 판정 불가다(fail closed).
 pub fn producer_state(entry: &Path, alive: &dyn Fn(u32, &str) -> Option<bool>) -> ProducerState {
+    producer_state_at(entry, alive).0
+}
+
+/// `producer_state` + **그 판정을 낸 자리**(표식 파일 · 표식이 없거나 항목을 못 읽었으면 항목 자신).
+/// ★1.1.11(review-a C3) — `producer_active` 거부의 원장 `boundary` 가 옛 공유 이름 `.producer` 를 고정으로
+/// 적어, 생산자별 파일(`.producer-<pid>`)이 막았을 때 원장이 없는 파일을 가리켰다.
+pub fn producer_state_at(entry: &Path, alive: &dyn Fn(u32, &str) -> Option<bool>) -> (ProducerState, PathBuf) {
     let rd = match std::fs::read_dir(entry) {
         Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return ProducerState::Unknown,
-        Err(_) => return ProducerState::Undeterminable,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (ProducerState::Unknown, entry.to_path_buf()),
+        Err(_) => return (ProducerState::Undeterminable, entry.to_path_buf()),
     };
     let mut states = Vec::new();
     for de in rd {
-        let Ok(de) = de else { return ProducerState::Undeterminable };
+        let Ok(de) = de else { return (ProducerState::Undeterminable, entry.to_path_buf()) };
         let n = de.file_name();
         let n = n.to_string_lossy();
         if n == ".producer" || (n.starts_with(".producer-") && !n.ends_with(".tmp")) {
-            states.push(producer_mark_state(&entry.join(&*n), alive));
+            let mark = entry.join(&*n);
+            states.push((producer_mark_state(&mark, alive), mark));
         }
     }
     let rank = |s: &ProducerState| match s {
@@ -2395,7 +2403,10 @@ pub fn producer_state(entry: &Path, alive: &dyn Fn(u32, &str) -> Option<bool>) -
         ProducerState::Settled => 1,
         ProducerState::Unknown => 0,
     };
-    states.into_iter().max_by_key(rank).unwrap_or(ProducerState::Unknown)
+    states
+        .into_iter()
+        .max_by_key(|(s, _)| rank(s))
+        .unwrap_or((ProducerState::Unknown, entry.to_path_buf()))
 }
 
 /// 표식 파일 하나의 상태. 파일이 깨졌으면 Undeterminable(= 살아 있는 쪽).
@@ -3112,6 +3123,36 @@ mod tests {
         w(".producer", "open", 111);
         assert_eq!(producer_state(&e, &alive), ProducerState::ActiveOpen);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ★1.1.11(review-a C3) — `producer_active` 거부의 `boundary` 는 **그 판정을 낸 표식 파일**이다.
+    /// 생산자는 `.producer-<pid>` 를 쓰므로 옛 공유 이름 `.producer` 를 고정으로 적으면 원장이 없는 파일을 가리킨다.
+    #[test]
+    fn c3_producer_active_refusal_names_the_marker_that_decided() {
+        let base_dir = rig("c3-boundary");
+        let root = base_dir.join("trash");
+        let name = "dept-6-1760000000";
+        let e = root.join(name);
+        mk(&e, "state/x.txt", b"x");
+        let pid = std::process::id();
+        let mark = e.join(format!(".producer-{pid}"));
+        std::fs::write(
+            &mark,
+            format!(r#"{{"v":1,"state":"open","producer":"t","pid":{pid},"start_token":"","ts":1}}"#),
+        )
+        .unwrap();
+        let state = base_dir.join("sd");
+        std::fs::create_dir_all(&state).unwrap();
+        let (out, _) = certify_names(&root, &state, &[name.to_string()], None, None);
+        let NamesOutcome::Done { refusals, .. } = out else { panic!("항목 거부는 Done 안에 실린다") };
+        assert_eq!(refusals.len(), 1, "{refusals:?}");
+        assert_eq!(refusals[0]["reason_code"], R_PRODUCER_ACTIVE, "{refusals:?}");
+        assert_eq!(
+            refusals[0]["boundary"].as_str().map(Path::new),
+            Some(mark.as_path()),
+            "거부 경계가 판정을 낸 표식 파일이 아니다"
+        );
+        let _ = std::fs::remove_dir_all(&base_dir);
     }
 
     /// ★C-R1(codex 1R major) — 봉인 뒤 대조가 끝난 **뒤** 같은 파일계의 바깥 트리를 봉인 트리 안으로

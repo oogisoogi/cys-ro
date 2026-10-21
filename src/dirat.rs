@@ -150,6 +150,15 @@ fn remove_contents(dir: BorrowedFd, dev: u64, allow: &dyn Fn((u64, u64)) -> bool
             }
             remove_contents(sub.as_fd(), dev, allow)?;
             drop(sub);
+            #[cfg(test)]
+            if let Some(h) = *BEFORE_SUBDIR_RMDIR.lock().unwrap() {
+                h(&dir, &n);
+            }
+            // ★codex 2R — 비운 뒤 rmdir **직전** 그 이름이 아직 그 객체인가(재귀 중 바꿔 넣은 빈
+            //   디렉터리를 지우지 않는다 · 뿌리의 마지막 대조와 같은 규칙).
+            if id_of(&lstat_at(&dir, &n)?) != sid {
+                return Err(io::Error::other("rmdir 직전 이름이 다른 객체를 가리킨다 — 제거를 멈춘다"));
+            }
             unlink_at(dir, &n, true)?;
         } else {
             unlink_at(dir, &n, false)?;
@@ -190,14 +199,22 @@ pub fn write_atomic_at(dir: &OwnedFd, name: &[u8], bytes: &[u8]) -> io::Result<(
     use std::io::Write as _;
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
-    let mut tmp = b".".to_vec();
-    tmp.extend_from_slice(name);
-    tmp.extend_from_slice(
-        format!(".tmp-{}-{}", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)).as_bytes(),
-    );
-    let c = cstr(&tmp)?;
     let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC;
-    let fd = check(unsafe { libc::openat(dir.as_raw_fd(), c.as_ptr(), flags, 0o644 as libc::c_uint) })?;
+    // 이름이 이미 있으면(남이 둔 것 · 죽은 같은 pid 의 잔재) 새 번호로 몇 번 더 — 남의 파일은 건드리지 않는다.
+    let mut attempt = 0;
+    let (tmp, fd) = loop {
+        let mut tmp = b".".to_vec();
+        tmp.extend_from_slice(name);
+        tmp.extend_from_slice(
+            format!(".tmp-{}-{}", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)).as_bytes(),
+        );
+        let c = cstr(&tmp)?;
+        match check(unsafe { libc::openat(dir.as_raw_fd(), c.as_ptr(), flags, 0o644 as libc::c_uint) }) {
+            Ok(fd) => break (tmp, fd),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists && attempt < 8 => attempt += 1,
+            Err(e) => return Err(e),
+        }
+    };
     let mut f = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) });
     let r = f.write_all(bytes).and_then(|_| f.sync_all()).and_then(|_| rename_at(dir, &tmp, name));
     if r.is_err() {
@@ -214,5 +231,41 @@ pub fn path_is(dir: &OwnedFd, p: &Path) -> bool {
             !md.file_type().is_symlink() && (md.dev(), md.ino()) == id_of(&st)
         }
         _ => false,
+    }
+}
+
+/// 시험 전용 — 하위 디렉터리를 비운 뒤 rmdir 직전에 끼어드는 자리(경쟁 시점을 시험이 정한다).
+#[cfg(test)]
+static BEFORE_SUBDIR_RMDIR: std::sync::Mutex<Option<fn(&BorrowedFd, &[u8])>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ★codex 2R — 재귀로 비우는 사이 그 이름을 **인증하지 않은 빈 디렉터리**로 바꿔 넣으면, 마지막
+    /// rmdir 이 바꿔 넣은 쪽을 지우면 안 된다(멈추고 둘 다 남는다).
+    #[test]
+    fn a_subdir_swapped_during_emptying_is_not_rmdired() {
+        let td = std::env::temp_dir().join(format!("cys-dirat-subswap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&td);
+        std::fs::create_dir_all(td.join("root/a")).unwrap();
+        std::fs::write(td.join("root/a/f"), b"x").unwrap();
+        fn swap(dir: &BorrowedFd, n: &[u8]) {
+            if n == b"a" {
+                let (a, b) = (cstr(b"a").unwrap(), cstr(b"a-away").unwrap());
+                unsafe { libc::renameat(dir.as_raw_fd(), a.as_ptr(), dir.as_raw_fd(), b.as_ptr()) };
+                unsafe { libc::mkdirat(dir.as_raw_fd(), a.as_ptr(), 0o755) };
+            }
+        }
+        let parent = open_dir(&td).unwrap();
+        let want = id_of(&lstat_at(&parent, b"root").unwrap());
+        *BEFORE_SUBDIR_RMDIR.lock().unwrap() = Some(swap);
+        let r = remove_tree_at(&parent, b"root", want, &|_| true);
+        *BEFORE_SUBDIR_RMDIR.lock().unwrap() = None;
+        let e = r.expect_err("바꿔 넣은 디렉터리를 지웠다");
+        assert!(e.to_string().contains("rmdir 직전"), "{e}");
+        assert!(td.join("root/a").is_dir(), "바꿔 넣은 빈 디렉터리가 사라졌다");
+        assert!(td.join("root/a-away").is_dir());
+        let _ = std::fs::remove_dir_all(&td);
     }
 }

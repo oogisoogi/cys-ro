@@ -1756,9 +1756,13 @@ pub fn execute_quarantine(
         // 알 수 없다. 지도를 못 남기면 **옮기지 않는다**(항목 단위 fail-closed).
         let journal_ok = {
             use std::io::Write;
+            // ★M4(codex 2R) — `to_rel` = 격리 폴더 기준 이름. 이동은 격리 폴더 **핸들**로 가므로 그 폴더가
+            //   어디로 옮겨져도 이 지도와 격리분은 같은 폴더에 있다 — undo 는 이 칸을 그 폴더 기준으로
+            //   해석한다(`to` 는 계획 때 경로 · 하위 호환으로 남긴다).
             let line = serde_json::json!({
                 "from": item.path.to_string_lossy(),
                 "to": dest.to_string_lossy(),
+                "to_rel": dest_name,
             });
             writeln!(journal, "{line}")
                 .and_then(|_| journal.flush())
@@ -1807,10 +1811,11 @@ pub fn execute_quarantine(
         "kind": "cys-factory-reset",
         "version": env!("CARGO_PKG_VERSION"),
         "stamp": plan.stamp,
-        "restore": "각 entries[].to 를 entries[].from 으로 mv 하면 복구된다",
+        "restore": "각 entries[].to_rel(이 폴더 기준 · 없으면 to) 을 entries[].from 으로 mv 하면 복구된다",
         "journal": "journal.ndjson — 이동 직전 선기록(중도 사망 시 이 파일이 유일한 복구 지도)",
         "entries": moved.iter().map(|(f, t)| serde_json::json!({
             "from": f.to_string_lossy(), "to": t.to_string_lossy(),
+            "to_rel": t.file_name().map(|n| n.to_string_lossy().into_owned()),
         })).collect::<Vec<_>>(),
         "failed": failed.iter().map(|(p, e)| serde_json::json!({
             "path": p.to_string_lossy(), "error": e,
@@ -1859,8 +1864,9 @@ pub fn execute_quarantine(
     if !dest_still_here {
         failed.push((
             plan.trash_dir.clone(),
-            "격리 폴더 경로가 이동 도중 다른 객체로 바뀌었다 — 오너 설정 사본·훅 제거(백업이 그 폴더로 \
-             간다)를 건너뛰었다(설정 파일 무변경). 격리분과 journal.ndjson 은 원래 폴더 객체에 있다"
+            "격리 폴더 경로가 이동 도중 다른 객체로 바뀌었다 — 오너 설정 사본·훅 제거·agy 상태줄·claude tui \
+             되돌림(백업이 그 폴더로 간다)을 건너뛰었다(설정 파일 무변경). 격리분과 복구 지도는 원래 폴더 \
+             객체에 함께 있다 — 그 폴더를 `cys factory-reset --undo <폴더>` 로 가리키면 된다"
                 .into(),
         ));
     }
@@ -1900,7 +1906,8 @@ pub fn execute_quarantine(
             )),
         }
     }
-    if let Some(s) = &plan.strip_agy_statusline {
+    // ★M4(codex 2R) — `backup_dir` 를 쓰는 분기는 **전부** 같은 대조 아래에 둔다(어긋나면 설정 변경 0).
+    if let Some(s) = plan.strip_agy_statusline.as_ref().filter(|_| dest_still_here) {
         use crate::agy_statusline::{unlink, Backup, Outcome};
         progress("strip", &format!("{} cys 가 넣은 agy 상태줄 연결 제거", s.display()));
         match unlink(s, None, Backup::Dir(&backup_dir)) {
@@ -1916,7 +1923,7 @@ pub fn execute_quarantine(
     }
     // ★(0.14.45 · 성찰 2회차 m4) cys 가 Windows 좌석 설정 폴더에 넣은 `"tui": "default"` 를 원장 항목으로 되돌린다(격리 뒤라 원장 파일은 이미 없다 · 항목은 계획에 있다).
     //   킬스위치 되돌림과 같은 안전 규약 — 값이 아직 정확히 "default" 일 때만 · 백업은 격리 폴더 · 우리가 만든 `.bak-cys-tui` 만 옮긴다 · 사용자 변경값은 그대로(무언급).
-    if !plan.claude_tui_entries.is_empty() {
+    if dest_still_here && !plan.claude_tui_entries.is_empty() {
         use crate::claude_tui::{reset_entries, RollbackOutcome};
         progress("strip", &format!("cys 가 넣은 claude tui 설정 되돌림 {}건", plan.claude_tui_entries.len()));
         for t in reset_entries(&plan.claude_tui_entries, &roots.home, &backup_dir) {
@@ -2135,6 +2142,19 @@ pub struct UndoPlan {
     pub blocked: Vec<(PathBuf, PathBuf)>,
 }
 
+/// 지도 한 줄의 격리 위치. ★M4(codex 2R): `to_rel`(격리 폴더 기준 이름 한 성분)이 있으면 **지금 가리킨
+/// 격리 폴더** 기준으로 해석한다 — 격리분은 그 지도와 같은 폴더에 있기 때문이다. 없거나(옛 지도)
+/// 한 성분이 아니면 절대 `to` 를 쓴다.
+fn undo_location(trash_dir: &Path, e: &serde_json::Value) -> Option<PathBuf> {
+    if let Some(r) = e["to_rel"].as_str() {
+        let one = !r.is_empty() && r != "." && r != ".." && !r.contains('/') && !r.contains('\\');
+        if one {
+            return Some(trash_dir.join(r));
+        }
+    }
+    e["to"].as_str().map(PathBuf::from)
+}
+
 /// 격리 폴더에서 복구 계획을 읽는다(쓰기 0). manifest 가 없으면 저널로 폴백한다.
 pub fn read_undo_plan(trash_dir: &Path) -> Result<UndoPlan, String> {
     let mut entries: Vec<(PathBuf, PathBuf)> = Vec::new();
@@ -2144,8 +2164,8 @@ pub fn read_undo_plan(trash_dir: &Path) -> Result<UndoPlan, String> {
         let v: serde_json::Value =
             serde_json::from_str(&body).map_err(|e| format!("manifest 파싱 실패: {e}"))?;
         for e in v["entries"].as_array().cloned().unwrap_or_default() {
-            if let (Some(f), Some(t)) = (e["from"].as_str(), e["to"].as_str()) {
-                entries.push((PathBuf::from(t), PathBuf::from(f)));
+            if let (Some(f), Some(t)) = (e["from"].as_str(), undo_location(trash_dir, &e)) {
+                entries.push((t, PathBuf::from(f)));
             }
         }
     } else {
@@ -2161,8 +2181,8 @@ pub fn read_undo_plan(trash_dir: &Path) -> Result<UndoPlan, String> {
                 Ok(v) => v,
                 Err(_) => continue, // 중도 사망으로 잘린 마지막 줄은 건너뛴다.
             };
-            if let (Some(f), Some(t)) = (v["from"].as_str(), v["to"].as_str()) {
-                entries.push((PathBuf::from(t), PathBuf::from(f)));
+            if let (Some(f), Some(t)) = (v["from"].as_str(), undo_location(trash_dir, &v)) {
+                entries.push((t, PathBuf::from(f)));
             }
         }
     }
@@ -3648,6 +3668,16 @@ mod tests {
             "경로 분기가 보고되지 않았다: {:?}",
             rep.failed
         );
+        // ★codex 2R — 지도는 동거만이 아니라 **실제로 복구**되어야 한다(옮겨진 폴더를 가리켜 undo).
+        let up = read_undo_plan(&moved_dir).unwrap();
+        assert_eq!(up.entries.len(), rep.moved.len(), "복구 지도가 실제 격리분을 가리키지 않는다");
+        for (from, _) in &up.entries {
+            assert!(from.starts_with(&moved_dir), "지도가 다른 폴더를 가리킨다: {from:?}");
+        }
+        let mut noop2 = |_p: &str, _d: &str| {};
+        let (restored, ufailed) = execute_undo(&up, &mut noop2);
+        assert_eq!(restored, rep.moved.len(), "복구 실패: {ufailed:?}");
+        assert!(r.cys_base.join("pack/round").exists(), "원위치로 돌아오지 않았다");
     }
 
     /// ★S8 M3: 격리가 끝나면 `.producer` 가 `complete` 로 닫혀 있다 — 그리고 그것은

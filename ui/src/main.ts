@@ -10059,8 +10059,9 @@ function onDaemonEvent(event: Record<string, unknown>) {
   if (name === "queue.dropped") {
     // ★(1.1.10 · cysr-1110-winqueue Q1-A ①) 사람이 닫은 좌석의 큐 폐기 — 1건 이상일 때만 1줄(문구·조건 = queuedropnotice.ts).
     //   종전엔 이 이벤트를 GUI 가 소비하지 않아 화면 0 이었다(category "queue" 는 폴백 레인이 없다 — return 으로 달라지는 것 없음).
+    //   ★(1.1.10 통합 · cysr-1110-integrate) 데몬 이벤트 출처라 TOAST 축 래퍼(daemonToast)를 탄다 — ALERTS_QUIET=true 면 이 알림도 꺼진다(우리 출하 값 false = 보임).
     const notice = queueDropNotice(payload);
-    if (notice) toast("feed", notice.title, notice.detail);
+    if (notice) daemonToast("feed", notice.title, notice.detail);
     return;
   }
   if (name === "queue.expired" || name === "queue.revived") {

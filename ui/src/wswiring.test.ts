@@ -590,7 +590,7 @@ describe("빈 자리표 회수 — 배선", () => {
     expect(b).toBeGreaterThan(a);
     const slice = src.slice(a, b);
     expect(slice.includes("const notice = queueDropNotice(payload);")).toBe(true);
-    expect(slice.includes('if (notice) toast("feed", notice.title, notice.detail);')).toBe(true);
+    expect(slice.includes('if (notice) daemonToast("feed", notice.title, notice.detail);')).toBe(true); // 1.1.10 통합: TOAST 축 래퍼 경유(ALERTS_QUIET 를 따른다)
     expect(/osBanner\(/.test(slice)).toBe(false); // OS 배너 없음(조용한 알림)
   });
   it("ⓒ 손댄 자리는 닫지 않고 알림도 없다 — 회수 구간에 토스트가 없다", () => {

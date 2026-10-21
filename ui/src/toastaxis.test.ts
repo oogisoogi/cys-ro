@@ -28,6 +28,7 @@ import { FEED_TOAST_APPROVAL_TITLE, feedCreatedToastTitle } from "./feedclass";
 import { seatNo, visibleNo, approvalRequestCopy, approvalStalledCopy, contextThresholdCopy, paneIdleCopy, masterIdleCopy, agentExitedCopy, deadmanCopy, roleTakeoverCopy, seatFolderDeniedCopy } from "./alertcopy";
 import { isMasterSeatSignal } from "./restorebrief";
 import { starvedNotice, starvedShouldPop, starvedPopAgeMs, surfaceIdOfRef } from "./starvednotice";
+import { queueDropNotice } from "./queuedropnotice"; // 1.1.10 통합(winqueue Q1-A ①): 큐 폐기 알림 판정 실물
 import { eventSock } from "./evsock";
 import { bodyPrint, fingerprint, findAnchor, normLine } from "./siteprint";
 
@@ -201,6 +202,7 @@ function build(opts: { quiet: boolean; ccOpen?: boolean; slugs?: Record<string, 
     seatNo, visibleNo, approvalRequestCopy, approvalStalledCopy, contextThresholdCopy, paneIdleCopy, masterIdleCopy, agentExitedCopy, deadmanCopy, roleTakeoverCopy, seatFolderDeniedCopy,
     isMasterSeatSignal,
     starvedNotice, starvedShouldPop, starvedPopAgeMs, surfaceIdOfRef,
+    queueDropNotice,
     eventSock,
     displayNoByKey: new Map(),
     starvedLastPopAt: new Map(),
@@ -257,6 +259,8 @@ const EVENTS: { id: string; ev: Record<string, unknown>; expect: string[] }[] = 
   { id: "queue.delivered", ev: { name: "queue.delivered", category: "queue", surface_id: 2, payload: {} }, expect: [] },
   { id: "queue.expired", ev: { name: "queue.expired", category: "queue", surface_id: 2, payload: { queue_entry_id: "q1" } }, expect: [] },
   { id: "queue.revived", ev: { name: "queue.revived", category: "queue", surface_id: 2, payload: { queue_entry_id: "q1" } }, expect: [] },
+  // ★1.1.10 통합(winqueue Q1-A ①): 사람이 닫은 좌석의 큐 폐기 1줄(daemonToast 경유) — quiet 면 박스 0 이어야 한다.
+  { id: "queue.dropped.owner_close", ev: { name: "queue.dropped", category: "queue", surface_id: 2, payload: { reason: "surface_closed", owner_close: true, count: 2 } }, expect: [] },
   // ★v0.14.51 편입(우리 main.ts): 우리만의 데몬 출처 sticky 분기 셋(daemonStickyToast 경유) — quiet 면 박스·알람 0 이어야 한다.
   { id: "restore.retrying", ev: { name: "restore.retrying", category: "info", socket_slug: "base", payload: { message: "재시도 대기" } }, expect: [] },
   { id: "role.takeover", ev: { name: "role.takeover", category: "info", surface_id: 4, socket_slug: "base", payload: { role: "master", prev_surface: 1 } }, expect: [] },
@@ -310,7 +314,7 @@ describe("TOAST 축 T-1 — 데몬 이벤트가 밀어 올린 사람 싱크 0", 
   test("category × name 퍼즈 — 어떤 조합도 박스·배너·알람 이력·Feed 전환을 만들지 않는다", async () => {
     const cats = ["", "health", "watchdog", "feed", "info", "alert", "approval", "context", "osc", "unknown-x"];
     const names = ["", "x", "approval.request", "context.threshold", "pane.idle", "master.idle", "agent.exited", "master.deadman", "queue.starved", "queue.delivered", "status.changed", "task.changed", "osc.notify", "feed.item.created", "watchdog.duplicate_procs", "surface.exited", "surface.closed", "surface.reaped", "health.stuck",
-      "restore.retrying", "role.takeover", "seat.folder_denied", "queue.expired", "queue.revived"]; // ★v0.14.51 편입: 우리 main.ts 의 추가 분기
+      "restore.retrying", "role.takeover", "seat.folder_denied", "queue.expired", "queue.revived", "queue.dropped"]; // ★v0.14.51 편입: 우리 main.ts 의 추가 분기 (+ 1.1.10 통합 queue.dropped)
     let n = 0;
     for (const category of cats)
       for (const name of names) {
@@ -472,6 +476,29 @@ describe("TOAST 축 — 우리 포크(출하 값 false · S5 미채택 queue.sta
     expect(QUIET_SINKS.length).toBe(12);
     for (const s of QUIET_SINKS) expect([s, alertsQuiet(s)]).toEqual([s, false]);
     expect(coverageDeclaration()).toContain(" quiet=false ");
+  });
+
+  // ★1.1.10 통합(cysr-1110-integrate): 큐 폐기 알림(winqueue Q1-A ①) ↔ ALERTS_QUIET — 스위치 true 면 알림도 끔 · false(우리 출하 값) 면 1줄 보임.
+  const DROPPED_OWNER = { name: "queue.dropped", category: "queue", surface_id: 2, socket_slug: "base", payload: { reason: "surface_closed", owner_close: true, count: 2 } };
+  test("queue.dropped(owner_close) — quiet=true 면 박스 0 / quiet=false 면 토스트 1(문구 = queueDropNotice) · 어느 쪽도 OS 배너·알람 이력·sticky 0", async () => {
+    const q = build({ quiet: true });
+    q.fn.onDaemonEvent(DROPPED_OWNER);
+    await flush();
+    expect([q.toasts.children.length, q.stickyMap.size, q.calls.sendNotification?.length ?? 0, q.calls.pushAlarm?.length ?? 0]).toEqual([0, 0, 0, 0]);
+
+    const l = build({ quiet: false });
+    l.fn.onDaemonEvent(DROPPED_OWNER);
+    await flush();
+    expect([l.toasts.children.length, l.stickyMap.size, l.calls.sendNotification?.length ?? 0, l.calls.pushAlarm?.length ?? 0]).toEqual([1, 0, 0, 1]);
+    // 문구는 알람 이력 기록(toast → recordAlarm → pushAlarm)으로 잰다 — 가짜 DOM 의 querySelector 는 매번 새 요소라 박스 글자를 담지 않는다.
+    expect(JSON.stringify(l.calls.pushAlarm?.[0] ?? [])).toContain("대기 중이던 지시 2건을 버렸습니다(기록은 남아 있습니다)");
+    // 회수(Reap · owner_close 없음)·0건은 quiet=false 여도 알림 0(판정은 queueDropNotice 단독)
+    for (const payload of [{ reason: "surface_closed", count: 2 }, { reason: "surface_closed", owner_close: true, count: 0 }]) {
+      const z = build({ quiet: false });
+      z.fn.onDaemonEvent({ ...DROPPED_OWNER, payload });
+      await flush();
+      expect([JSON.stringify(payload), z.toasts.children.length]).toEqual([JSON.stringify(payload), 0]);
+    }
   });
 
   const STARVED_HUMAN = { name: "queue.starved", category: "queue", surface_id: 2, socket_slug: "dept-5", payload: { surface_ref: "surface:2", role: "worker", remedy_code: "machine_residue", blocked_by: "x", waited_secs: 700 } };
@@ -746,7 +773,7 @@ interface KeptSite {
   pin: string;
 }
 const KEPT_SITES: KeptSite[] = [
-  { id: "feed-wait-banner", kind: "R2", anchor: "if (payload.wait === true && payload.auto_route !== true) osBanner(feedCreatedToastTitle(payload.kind), String(payload.title ?? \"\"));", nth: 0, pin: "7e292a7ea0458b84" }, // 재기준선: 우리 onDaemonEvent 의 선행 분기 줄(restore.retrying·role.takeover·seat.folder_denied·queue.expired/revived·복원 카드 판정) · 원작자 U16 팀 제안 분기 없음
+  { id: "feed-wait-banner", kind: "R2", anchor: "if (payload.wait === true && payload.auto_route !== true) osBanner(feedCreatedToastTitle(payload.kind), String(payload.title ?? \"\"));", nth: 0, pin: "17801e6610300e2c" }, // 재기준선: 우리 onDaemonEvent 의 선행 분기 줄(restore.retrying·role.takeover·seat.folder_denied·queue.expired/revived·복원 카드 판정) · 원작자 U16 팀 제안 분기 없음 · ★1.1.10 통합 재계산: 선행 분기 queue.dropped(winqueue Q1-A ①) 추가(7e292a7ea0458b84 → 17801e6610300e2c)
   { id: "K5-daemon-error", kind: "daemon-info", anchor: "info.textContent = `daemon error: ${e.payload}`;", nth: 0, pin: "1fc56231bf45df6e" },
   { id: "K5-startup-failed", kind: "daemon-info", anchor: "document.getElementById(\"daemon-info\")!.textContent = `startup failed: ${e}`;", nth: 0, pin: "607b4ac9163cc886" },
   { id: "K5-recovery-failed", kind: "daemon-info", anchor: "document.getElementById(\"daemon-info\")!.textContent = `startup failed: ${e} / recovery failed: ${e2}`;", nth: 0, pin: "bd517611b51bc743" },
@@ -864,9 +891,10 @@ describe("TOAST 축 — 출처 핀 · 통짜 가드 금지 · 커버리지", () 
     expect(SRC).not.toContain("daemonOpenFeed(");
     // ★v0.14.51 편입(우리 main.ts): 원작자 10·1·4 → 우리 9·5·5.
     //   daemonToast 9 = approval.request · context.threshold · pane.idle · agent.exited · master.deadman · osc.notify · health · watchdog · feed.item.created (원작자 10번째 = U16 팀 제안 카드 안내 — 우리는 받지 않았다)
+    //   ★1.1.10 통합(cysr-1110-integrate): + queue.dropped(winqueue Q1-A ① 큐 폐기 1줄) = 10
     //   daemonStickyToast 5 = master.idle + 우리 restore.retrying · role.takeover · seat.folder_denied + queue.starved(S5 미채택 · starvedNotice 블록 안)
     //   daemonOsBanner 5 = approval.request · context.threshold · agent.exited · master.deadman + queue.starved(사람 손일 때 · starvedNotice 블록 안)
-    expect((body.match(/daemonToast\(/g) ?? []).length).toBe(9);
+    expect((body.match(/daemonToast\(/g) ?? []).length).toBe(10);
     expect((body.match(/daemonStickyToast\(/g) ?? []).length).toBe(5);
     expect((body.match(/daemonOsBanner\(/g) ?? []).length).toBe(5);
     // 래퍼가 닿지 않는 직접 알람 이력 기록은 queue.starved 의 recordAlarm 하나뿐이고, 그 줄은 starvedNotice 블록 가드 안이다(가드 줄이 그 앞 · 블록 안 유일).
@@ -954,6 +982,7 @@ describe("TOAST 축 — 출처 핀 · 통짜 가드 금지 · 커버리지", () 
     const names = new Set([...body.matchAll(/name === "([\w.]+)"/g)].map((m) => m[1]));
     for (const n of names) expect([n, EVENTS.some((e) => e.ev.name === n)]).toEqual([n, true]);
     // ★v0.14.51 편입(우리 main.ts): 원작자 17 + 우리 5(restore.retrying · role.takeover · seat.folder_denied · queue.expired · queue.revived) = 22
-    expect(names.size).toBe(22); // approval.request/stalled · context.threshold · restore.retrying · role.takeover · seat.folder_denied · pane.idle · master.idle/deadman · agent.exited · queue.starved/expired/revived/delivered · status.changed · task.changed · osc.notify · feed.item.created · watchdog.duplicate_procs · surface.exited/closed/reaped
+    // ★1.1.10 통합: + queue.dropped(winqueue Q1-A ①) = 23
+    expect(names.size).toBe(23); // approval.request/stalled · context.threshold · restore.retrying · role.takeover · seat.folder_denied · pane.idle · master.idle/deadman · agent.exited · queue.starved/expired/revived/delivered · status.changed · task.changed · osc.notify · feed.item.created · watchdog.duplicate_procs · surface.exited/closed/reaped
   });
 });

@@ -359,6 +359,11 @@ pub struct PlanItem {
     /// ★P0-2: `~/.cys`·데몬 상태 루트 **밖**의 경로인가(사용자 프로젝트 폴더 안 작업기억 등).
     /// 확인 모달이 이 항목만 따로 강조해 "내 폴더에서 뭐가 사라지는지"를 승인 전에 보여준다.
     pub outside_state: bool,
+    /// ★M4(codex 1R · TICKET=cysr-1110-trash-harden): 계획 때 잰 **부모 디렉터리의 (dev, ino)**.
+    /// 집행은 부모를 다시 열어 이 값과 대조하고 **그 핸들 기준으로** rename 한다 — 확인창 대기 중 부모가
+    /// 바꿔치기되면(심링크·다른 디렉터리) 계획과 다른 객체를 옮기지 않는다. `None` = 계획 때 부모가
+    /// 없었거나 잴 수 없는 플랫폼(윈도우 · 표식). 보존(keep) 항목은 옮기지 않으므로 언제나 `None`.
+    pub parent_id: Option<(u64, u64)>,
 }
 
 pub struct ResetPlan {
@@ -465,6 +470,7 @@ fn push_item(
     outside_state: bool,
 ) {
     let size_bytes = dir_size(&path);
+    let parent_id = plan_parent_id(&path);
     items.push(PlanItem {
         path,
         label: label.to_string(),
@@ -472,7 +478,97 @@ fn push_item(
         action: Action::Quarantine,
         best_effort,
         outside_state,
+        parent_id,
     });
+}
+
+/// 계획 시점 부모 신원(M4). 부모 경로의 정상 심링크(예: macOS `/var`)는 따라간다 — 대조할 것은
+/// 그 끝의 **객체**다.
+#[cfg(unix)]
+fn plan_parent_id(p: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt as _;
+    let md = std::fs::metadata(p.parent()?).ok()?;
+    Some((md.dev(), md.ino()))
+}
+/// ★윈도우(표식): 안정 std 에 파일 신원(file index)이 없다 — 잴 수 없으므로 결박하지 않는다.
+#[cfg(not(unix))]
+fn plan_parent_id(_p: &Path) -> Option<(u64, u64)> {
+    None
+}
+
+/// 시험 전용 — 목적지 핸들을 연 **직후** 그 경로를 바꿔치는 자리(경쟁 시점을 시험이 정한다 · 범위로 가른다).
+/// ★`cfg(any(test))` 로 적는다(뜻은 시험 빌드 전용 그대로다): 이 파일의 핀들이 「시험 모듈 머리의 cfg
+/// 속성이 처음 나오는 자리 앞 = 생산 코드」로 자르므로, 생산 구역에 그 속성 글자를 그대로 두면 핀이
+/// 생산 코드를 덜 본다(이 주석도 그 글자를 쓰지 않는다).
+#[cfg(any(test))]
+static AFTER_DEST_OPEN_HOOK: std::sync::Mutex<Vec<(PathBuf, fn(&Path))>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// ★M4 — 격리 목적지(이번 초기화의 `factory-reset-<UTC>` 폴더). unix 는 **핸들**이고 이동·저널·
+/// manifest·REPORT·표식이 전부 이 객체 기준이다(경로 재해석 없음). 윈도우는 경로(표식 — 핸들 API 없음).
+struct TrashDest {
+    path: PathBuf,
+    #[cfg(unix)]
+    fd: std::os::fd::OwnedFd,
+}
+
+impl TrashDest {
+    fn open(path: &Path) -> std::io::Result<TrashDest> {
+        Ok(TrashDest {
+            path: path.to_path_buf(),
+            #[cfg(unix)]
+            fd: crate::dirat::open_dir(path)?,
+        })
+    }
+    /// 추가 쓰기(저널).
+    fn append(&self, name: &str) -> std::io::Result<std::fs::File> {
+        #[cfg(unix)]
+        return crate::dirat::open_append_at(&self.fd, name.as_bytes());
+        #[cfg(not(unix))]
+        return std::fs::OpenOptions::new().create(true).append(true).open(self.path.join(name));
+    }
+    /// 원자 교체 쓰기(manifest·REPORT·표식).
+    fn write(&self, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+        #[cfg(unix)]
+        return crate::dirat::write_atomic_at(&self.fd, name.as_bytes(), bytes);
+        #[cfg(not(unix))]
+        return crate::pack::write_atomic(&self.path.join(name), bytes);
+    }
+    /// 경로가 아직 이 객체인가(경로로만 쓰는 하위 폴더 직전 대조 · 윈도우는 언제나 참 — 표식).
+    fn path_is_same(&self) -> bool {
+        #[cfg(unix)]
+        return crate::dirat::path_is(&self.fd, &self.path);
+        #[cfg(not(unix))]
+        return true;
+    }
+    /// 생산자 표식 — ★M3(codex 1R · TICKET=cysr-1110-trash-harden): 다른 두 생산자(javis_org.py ·
+    /// cys-dept)와 같은 규칙으로 **내 pid 의 파일 `.producer-<pid>` 만** 쓴다(원자 교체 · 남의 표식은
+    /// 읽지도 덮지도 않는다). 판독기는 `.producer`·`.producer-*` 를 모두 모은다. 실패는 stderr 한 줄이고
+    /// 격리를 멈추지 않는다.
+    fn mark(&self, state: &str) {
+        let name = format!(".producer-{}", std::process::id());
+        if let Err(e) = self.write(&name, producer_body(state).as_bytes()) {
+            eprintln!("[factory-reset] .producer 표식 기록 실패(격리는 그대로 계속한다): {e}");
+        }
+    }
+}
+
+/// 집행 시점 부모 핸들(M4) — 부모를 열어 계획 때 신원과 대조한다. 어긋나면 `Err`(그 항목은 옮기지 않는다).
+#[cfg(unix)]
+fn bound_parent(item: &PlanItem) -> Result<std::os::fd::OwnedFd, String> {
+    let parent = item.path.parent().ok_or("부모가 없는 경로 — 옮기지 않았다")?;
+    let want = item
+        .parent_id
+        .ok_or("계획 때 부모 디렉터리가 없었다 — 계획과 다른 상태라 옮기지 않았다")?;
+    let fd = crate::dirat::open_dir_follow(parent)
+        .map_err(|e| format!("부모 디렉터리를 열 수 없다 — 옮기지 않았다: {e}"))?;
+    let got = crate::dirat::fstat(&fd)
+        .map(|st| crate::dirat::id_of(&st))
+        .map_err(|e| format!("부모 디렉터리 신원을 읽을 수 없다 — 옮기지 않았다: {e}"))?;
+    if got != want {
+        return Err("계획 뒤 부모 디렉터리가 바뀌었다(바꿔치기 의심) — 계획과 다른 객체일 수 있어 옮기지 않았다".into());
+    }
+    Ok(fd)
 }
 
 /// `_round` 후보를 **격리 대상**과 **보고 대상**으로 나눈다.
@@ -602,6 +698,7 @@ pub fn build_plan(roots: &ResetRoots, opts: &ResetOptions) -> ResetPlan {
                         action: Action::Keep,
                         best_effort: false,
                         outside_state: false,
+                        parent_id: None,
                     });
                 }
             } else if is_local {
@@ -615,6 +712,7 @@ pub fn build_plan(roots: &ResetRoots, opts: &ResetOptions) -> ResetPlan {
                         action: Action::Keep,
                         best_effort: false,
                         outside_state: false,
+                        parent_id: None,
                     });
                 }
             } else if known {
@@ -627,6 +725,7 @@ pub fn build_plan(roots: &ResetRoots, opts: &ResetOptions) -> ResetPlan {
                     action: Action::Keep,
                     best_effort: false,
                     outside_state: false,
+                    parent_id: None,
                 });
             }
         }
@@ -711,6 +810,7 @@ pub fn build_plan(roots: &ResetRoots, opts: &ResetOptions) -> ResetPlan {
                         action: Action::Keep,
                         best_effort: false,
                         outside_state: false,
+                        parent_id: None,
                     });
                 }
             }
@@ -921,6 +1021,7 @@ pub fn build_plan(roots: &ResetRoots, opts: &ResetOptions) -> ResetPlan {
                 action: Action::Keep,
                 best_effort: false,
                 outside_state: false,
+                parent_id: None,
             });
         }
     }
@@ -1598,9 +1699,17 @@ pub fn execute_quarantine(
 
     std::fs::create_dir_all(&plan.trash_dir)
         .map_err(|e| format!("격리 디렉토리 생성 실패 {}: {e}", plan.trash_dir.display()))?;
+    // ★M4 — 목적지도 **핸들**로 연다(마지막 성분이 심링크면 거부). 이동·저널·manifest·REPORT·표식이
+    //   전부 이 한 객체에 간다(codex 1R major: 이동만 핸들이고 지도는 경로면 둘이 갈라질 수 있었다).
+    let tdest = TrashDest::open(&plan.trash_dir)
+        .map_err(|e| format!("격리 디렉토리를 핸들로 열 수 없다 {}: {e}", plan.trash_dir.display()))?;
+    #[cfg(any(test))]
+    for h in AFTER_DEST_OPEN_HOOK.lock().unwrap().iter().filter(|(sc, _)| plan.trash_dir.starts_with(sc)) {
+        (h.1)(&plan.trash_dir);
+    }
     // ★S8 M3: 여기부터 마지막 쓰기(REPORT.txt)까지가 내 격리 창이다. 중간에 Err 로 돌아가면 표식은
     //   `open` + 곧 죽는 pid 로 남고, 그것이 설계가 말하는 "생산자가 끝내지 못함(중단)" 표지다.
-    producer_mark(&plan.trash_dir, "open", false);
+    tdest.mark("open");
 
     // ★J1(성찰 확정): 복구 지도를 **이동 전에** 한 줄씩 선기록한다(append-only journal).
     // 종전엔 전 항목 이동이 끝난 뒤에야 manifest 를 썼다 — 중도 사망(강제종료·전원·업데이트
@@ -1609,10 +1718,8 @@ pub fn execute_quarantine(
     // 같은 결. journal.ndjson 은 manifest.json 이 기록되면 그 부분집합이 되지만, 중도 사망 시
     // **유일한 복구 지도**로 남는다(그래서 지우지 않는다).
     let journal_path = plan.trash_dir.join("journal.ndjson");
-    let mut journal = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&journal_path)
+    let mut journal = tdest
+        .append("journal.ndjson")
         .map_err(|e| format!("격리 저널 생성 실패 {}: {e}", journal_path.display()))?;
 
     let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
@@ -1624,22 +1731,38 @@ pub fn execute_quarantine(
             skipped_absent += 1;
             continue; // 재실행 안전: 이미 없는 항목은 건너뛴다(가이드 FAQ 계약).
         }
+        // ★M4 — 부모 신원 대조(계획 때 값). 어긋나면 이 항목은 옮기지 않는다(저널도 쓰지 않는다).
+        //   ★윈도우(표식): 부모 핸들·신원을 얻을 수 없다 — 경로 기반 rename 그대로이고 부모 바꿔치기를
+        //   막지 못한다(남은 한계).
+        #[cfg(unix)]
+        let parent_fd = match bound_parent(item) {
+            Ok(fd) => fd,
+            Err(e) => {
+                failed.push((item.path.clone(), e));
+                continue;
+            }
+        };
         let base = item
             .path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "item".into());
         // 목적지 = <seq>-<basename> — 동명 항목(_round 다수 등) 충돌 없이 manifest 가 복구 지도.
-        let dest = plan.trash_dir.join(format!("{i:03}-{base}"));
+        let dest_name = format!("{i:03}-{base}");
+        let dest = plan.trash_dir.join(&dest_name);
         // 선기록 + fsync — 이 줄이 디스크에 닿은 뒤에만 mv 한다(순서가 **계약**이다).
         // ★P0-5: 종전엔 write/flush/fsync 결과를 셋 다 버려서(`let _ =`) 저널 줄이 빠진 채 mv 가
         // 진행됐다 — 그러면 `042-_round`·`043-_round` 중 어느 것이 사용자 프로젝트였는지 영영
         // 알 수 없다. 지도를 못 남기면 **옮기지 않는다**(항목 단위 fail-closed).
         let journal_ok = {
             use std::io::Write;
+            // ★M4(codex 2R) — `to_rel` = 격리 폴더 기준 이름. 이동은 격리 폴더 **핸들**로 가므로 그 폴더가
+            //   어디로 옮겨져도 이 지도와 격리분은 같은 폴더에 있다 — undo 는 이 칸을 그 폴더 기준으로
+            //   해석한다(`to` 는 계획 때 경로 · 하위 호환으로 남긴다).
             let line = serde_json::json!({
                 "from": item.path.to_string_lossy(),
                 "to": dest.to_string_lossy(),
+                "to_rel": dest_name,
             });
             writeln!(journal, "{line}")
                 .and_then(|_| journal.flush())
@@ -1653,7 +1776,16 @@ pub fn execute_quarantine(
             continue;
         }
         progress("quarantine", &format!("{} → trash", item.path.display()));
-        match std::fs::rename(&item.path, &dest) {
+        // ★M4 — 대조한 부모 핸들 → 격리 폴더 핸들(경로를 다시 해석하지 않는다).
+        #[cfg(unix)]
+        let mv = {
+            use std::os::unix::ffi::OsStrExt as _;
+            let src = item.path.file_name().map(|n| n.as_bytes()).unwrap_or_default();
+            crate::dirat::rename_between(&parent_fd, src, &tdest.fd, dest_name.as_bytes())
+        };
+        #[cfg(not(unix))]
+        let mv = std::fs::rename(&item.path, &dest);
+        match mv {
             Ok(()) => moved.push((item.path.clone(), dest)),
             // best_effort(=실행 중 앱이 점유한 GUI 웹층) 실패는 부분 실패가 아니라 이연이다.
             Err(e) if item.best_effort => deferred.push((item.path.clone(), e.to_string())),
@@ -1679,10 +1811,11 @@ pub fn execute_quarantine(
         "kind": "cys-factory-reset",
         "version": env!("CARGO_PKG_VERSION"),
         "stamp": plan.stamp,
-        "restore": "각 entries[].to 를 entries[].from 으로 mv 하면 복구된다",
+        "restore": "각 entries[].to_rel(이 폴더 기준 · 없으면 to) 을 entries[].from 으로 mv 하면 복구된다",
         "journal": "journal.ndjson — 이동 직전 선기록(중도 사망 시 이 파일이 유일한 복구 지도)",
         "entries": moved.iter().map(|(f, t)| serde_json::json!({
             "from": f.to_string_lossy(), "to": t.to_string_lossy(),
+            "to_rel": t.file_name().map(|n| n.to_string_lossy().into_owned()),
         })).collect::<Vec<_>>(),
         "failed": failed.iter().map(|(p, e)| serde_json::json!({
             "path": p.to_string_lossy(), "error": e,
@@ -1699,8 +1832,7 @@ pub fn execute_quarantine(
     // 실패는 보고에 싣고(manifest_written=false) 나머지 단계는 **반드시 이어서 실행**한다.
     // journal.ndjson 은 이미 디스크에 있으므로 복구 지도는 살아 있다.
     let manifest_written = match serde_json::to_string_pretty(&manifest) {
-        Ok(body) => match crate::pack::write_atomic(&plan.trash_dir.join("manifest.json"), body.as_bytes())
-        {
+        Ok(body) => match tdest.write("manifest.json", body.as_bytes()) {
             Ok(()) => true,
             Err(e) => {
                 failed.push((
@@ -1726,7 +1858,22 @@ pub fn execute_quarantine(
     // 되돌리기 쉽도록 별도 사본을 남기고 REPORT 에 위치를 적는다.
     let owner_settings_dir = plan.trash_dir.join("owner-settings");
     let mut owner_settings_saved: Vec<String> = Vec::new();
+    // ★M4 — 이 사본·아래 백업은 하위 폴더라 경로로 쓴다. 쓰기 **직전** 그 경로가 아직 격리 폴더
+    //   핸들의 객체인지 대조하고, 아니면 쓰지 않는다(대조와 쓰기 사이 창은 남는다 · 정직한 한계).
+    let dest_still_here = tdest.path_is_same();
+    if !dest_still_here {
+        failed.push((
+            plan.trash_dir.clone(),
+            "격리 폴더 경로가 이동 도중 다른 객체로 바뀌었다 — 오너 설정 사본·훅 제거·agy 상태줄·claude tui \
+             되돌림(백업이 그 폴더로 간다)을 건너뛰었다(설정 파일 무변경). 격리분과 복구 지도는 원래 폴더 \
+             객체에 함께 있다 — 그 폴더를 `cys factory-reset --undo <폴더>` 로 가리키면 된다"
+                .into(),
+        ));
+    }
     for name in ["policy.json", "accounts.json", "profile.json"] {
+        if !dest_still_here {
+            break;
+        }
         let src = roots.cys_base.join(name);
         if src.is_file() {
             let _ = std::fs::create_dir_all(&owner_settings_dir);
@@ -1743,7 +1890,7 @@ pub fn execute_quarantine(
     }
 
     let backup_dir = plan.trash_dir.join("settings-backups");
-    for s in &plan.strip_settings {
+    for s in plan.strip_settings.iter().filter(|_| dest_still_here) {
         progress("strip", &format!("{} cys 훅 제거", s.display()));
         match strip_cys_from_settings_to(s, &roots.cys_base, plan.purge_local, &backup_dir) {
             Ok(removed) if removed.is_empty() => {}
@@ -1759,7 +1906,8 @@ pub fn execute_quarantine(
             )),
         }
     }
-    if let Some(s) = &plan.strip_agy_statusline {
+    // ★M4(codex 2R) — `backup_dir` 를 쓰는 분기는 **전부** 같은 대조 아래에 둔다(어긋나면 설정 변경 0).
+    if let Some(s) = plan.strip_agy_statusline.as_ref().filter(|_| dest_still_here) {
         use crate::agy_statusline::{unlink, Backup, Outcome};
         progress("strip", &format!("{} cys 가 넣은 agy 상태줄 연결 제거", s.display()));
         match unlink(s, None, Backup::Dir(&backup_dir)) {
@@ -1775,7 +1923,7 @@ pub fn execute_quarantine(
     }
     // ★(0.14.45 · 성찰 2회차 m4) cys 가 Windows 좌석 설정 폴더에 넣은 `"tui": "default"` 를 원장 항목으로 되돌린다(격리 뒤라 원장 파일은 이미 없다 · 항목은 계획에 있다).
     //   킬스위치 되돌림과 같은 안전 규약 — 값이 아직 정확히 "default" 일 때만 · 백업은 격리 폴더 · 우리가 만든 `.bak-cys-tui` 만 옮긴다 · 사용자 변경값은 그대로(무언급).
-    if !plan.claude_tui_entries.is_empty() {
+    if dest_still_here && !plan.claude_tui_entries.is_empty() {
         use crate::claude_tui::{reset_entries, RollbackOutcome};
         progress("strip", &format!("cys 가 넣은 claude tui 설정 되돌림 {}건", plan.claude_tui_entries.len()));
         for t in reset_entries(&plan.claude_tui_entries, &roots.home, &backup_dir) {
@@ -1845,12 +1993,9 @@ pub fn execute_quarantine(
 
     // ★P0-4: 결과를 **디스크에 영속**한다. 화면 토스트는 60초 뒤 사라지고 완료 모달을 닫으면
     // 실패 내역이 영영 없어진다 — 사용자가 나중에 "뭐가 안 지워졌지?"를 확인할 단일 파일.
-    let _ = crate::pack::write_atomic(
-        &plan.trash_dir.join("REPORT.txt"),
-        report.human_report().as_bytes(),
-    );
+    let _ = tdest.write("REPORT.txt", report.human_report().as_bytes());
     // 마지막 쓰기가 끝났다 — 창을 닫는다(이 뒤로 이 폴더에 쓰는 것이 없다).
-    producer_mark(&plan.trash_dir, "complete", false);
+    tdest.mark("complete");
     Ok(report)
 }
 
@@ -1887,42 +2032,19 @@ fn producer_start_token() -> String {
         .unwrap_or_default()
 }
 
-fn producer_mark(trash_dir: &Path, state: &str, create: bool) {
-    let mine = std::process::id();
-    if create && !trash_dir.is_dir() {
-        let _ = std::fs::create_dir_all(trash_dir);
-    }
-    if !trash_dir.is_dir() {
-        return; // 표식 때문에 **빈 격리 항목을 만들지 않는다**
-    }
-    let path = trash_dir.join(".producer");
-    if let Ok(txt) = std::fs::read_to_string(&path) {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
-            let cur_pid = v.get("pid").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
-            if cur_pid != mine {
-                let cur_open = v.get("state").and_then(|x| x.as_str()) == Some("open");
-                if state == "open" && cur_open {
-                    return; // 더 넓은 창이 이긴다
-                }
-                if state != "open" {
-                    return; // 내 표식이 아니면 닫지 않는다
-                }
-            }
-        }
-    }
+/// 표식 본문(판독기 `trash.rs producer_state` 의 계약 필드).
+fn producer_body(state: &str) -> String {
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0);
-    let body = serde_json::json!({
+    serde_json::json!({
         "v": 1, "state": state, "producer": "cys factory-reset",
-        "pid": mine, "start_token": producer_start_token(), "ts": ts,
+        "pid": std::process::id(), "start_token": producer_start_token(), "ts": ts,
     })
-    .to_string();
-    if let Err(e) = crate::pack::write_atomic(&path, body.as_bytes()) {
-        eprintln!("[factory-reset] .producer 표식 기록 실패(격리는 그대로 계속한다): {e}");
-    }
+    .to_string()
 }
+
 
 /// 한글 자모(L+V[+T])를 완성형 음절로 합성한다(유니코드 표준 알고리즘 · NFD→NFC 부분집합).
 fn compose_hangul(input: &str) -> String {
@@ -2020,6 +2142,26 @@ pub struct UndoPlan {
     pub blocked: Vec<(PathBuf, PathBuf)>,
 }
 
+/// 지도 한 줄의 격리 위치. ★M4(codex 2R): `to_rel`(격리 폴더 기준 이름 한 성분)이 있으면 **지금 가리킨
+/// 격리 폴더** 기준으로 해석한다 — 격리분은 그 지도와 같은 폴더에 있기 때문이다.
+/// ★codex 3R: 절대 `to` 폴백은 `to_rel` 칸이 **아예 없을 때**(옛 지도)만이다. 칸이 있는데 문자열이 아니거나
+/// 정확히 한 개의 보통 성분(`Component::Normal`)이 아니면(빈 값·`.`·`..`·구분자·윈도우 드라이브 접두사
+/// `C:foo` 등) **지도 전체를 거부**한다 — 손상·변조된 지도로 격리 폴더 밖 객체를 옮기지 않는다.
+fn undo_location(trash_dir: &Path, e: &serde_json::Value) -> Result<Option<PathBuf>, String> {
+    let Some(rel) = e.get("to_rel") else {
+        return Ok(e["to"].as_str().map(PathBuf::from));
+    };
+    let bad = || format!("복구 지도의 to_rel 이 격리 폴더 안의 이름 하나가 아니다({rel}) — 지도를 쓰지 않는다");
+    let r = rel.as_str().ok_or_else(bad)?;
+    let mut comps = Path::new(r).components();
+    match (comps.next(), comps.next()) {
+        (Some(std::path::Component::Normal(n)), None) if !r.contains('/') && !r.contains('\\') => {
+            Ok(Some(trash_dir.join(n)))
+        }
+        _ => Err(bad()),
+    }
+}
+
 /// 격리 폴더에서 복구 계획을 읽는다(쓰기 0). manifest 가 없으면 저널로 폴백한다.
 pub fn read_undo_plan(trash_dir: &Path) -> Result<UndoPlan, String> {
     let mut entries: Vec<(PathBuf, PathBuf)> = Vec::new();
@@ -2029,8 +2171,8 @@ pub fn read_undo_plan(trash_dir: &Path) -> Result<UndoPlan, String> {
         let v: serde_json::Value =
             serde_json::from_str(&body).map_err(|e| format!("manifest 파싱 실패: {e}"))?;
         for e in v["entries"].as_array().cloned().unwrap_or_default() {
-            if let (Some(f), Some(t)) = (e["from"].as_str(), e["to"].as_str()) {
-                entries.push((PathBuf::from(t), PathBuf::from(f)));
+            if let (Some(f), Some(t)) = (e["from"].as_str(), undo_location(trash_dir, &e)?) {
+                entries.push((t, PathBuf::from(f)));
             }
         }
     } else {
@@ -2046,8 +2188,8 @@ pub fn read_undo_plan(trash_dir: &Path) -> Result<UndoPlan, String> {
                 Ok(v) => v,
                 Err(_) => continue, // 중도 사망으로 잘린 마지막 줄은 건너뛴다.
             };
-            if let (Some(f), Some(t)) = (v["from"].as_str(), v["to"].as_str()) {
-                entries.push((PathBuf::from(t), PathBuf::from(f)));
+            if let (Some(f), Some(t)) = (v["from"].as_str(), undo_location(trash_dir, &v)?) {
+                entries.push((t, PathBuf::from(f)));
             }
         }
     }
@@ -3448,6 +3590,162 @@ mod tests {
         assert!(txt.contains("--undo"));
     }
 
+    /// ★M4(codex 1R · TICKET=cysr-1110-trash-harden): 계획(확인창 대기) 뒤 부모 경로가 바꿔치기되면
+    /// 경로로 다시 해석하는 rename 은 **계획과 다른 객체**를 옮긴다. 계획 때 잡은 부모 신원(dev, ino)과
+    /// 집행 때 연 부모 핸들이 다르면 그 항목은 옮기지 않아야 한다(바꿔 넣은 쪽도 원래 쪽도 그대로).
+    #[cfg(unix)]
+    #[test]
+    fn m4_parent_swapped_after_the_plan_moves_nothing_from_the_impostor() {
+        let td = test_home("m4-parent-swap");
+        let r = seed_practice_tree(&td);
+        let plan = build_plan(
+            &r,
+            &ResetOptions { purge_license: false, purge_local: false, purge_round: false },
+        );
+        let pack = r.cys_base.join("pack");
+        assert!(plan.quarantine.iter().any(|i| i.path == pack), "전제: ~/.cys/pack 이 격리 대상이다");
+        // 확인창 대기 중 — ~/.cys 를 옮기고 그 자리에 바깥 디렉터리로 가는 심링크를 꽂는다.
+        let decoy = td.join("decoy");
+        touch(&decoy.join("pack/victim.txt"), "must stay");
+        std::fs::rename(&r.cys_base, td.join("cys-moved")).unwrap();
+        std::os::unix::fs::symlink(&decoy, &r.cys_base).unwrap();
+        let not_cysd = |_p: u32| false;
+        let no_daemon = || false;
+        let mut noop = |_p: &str, _d: &str| {};
+        let rep = execute_quarantine(&plan, &r, &not_cysd, &no_daemon, &mut noop).unwrap();
+        assert!(
+            decoy.join("pack/victim.txt").exists(),
+            "계획과 다른 객체(바꿔 넣은 쪽의 pack)를 옮겼다: moved={:?}",
+            rep.moved
+        );
+        assert!(
+            !rep.moved.iter().any(|(f, _)| f.starts_with(&r.cys_base)),
+            "바꿔친 부모 아래에서 옮긴 것이 있다: {:?}",
+            rep.moved
+        );
+        assert!(
+            rep.failed.iter().any(|(p, e)| p == &pack && e.contains("부모")),
+            "부모 불일치가 실패로 보고되지 않았다: {:?}",
+            rep.failed
+        );
+        assert!(td.join("cys-moved/pack/round").exists(), "원래 쪽도 그대로여야 한다");
+    }
+
+    /// ★M4(codex 1R major) — 목적지 핸들을 연 뒤 그 경로가 다른 폴더로 바뀌어도 **격리분과 복구 지도
+    /// (journal·manifest·REPORT·표식)는 같은 객체에 남는다**. 바꿔 넣은 폴더에는 아무것도 쓰지 않고,
+    /// 경로로만 쓰는 부속(오너 설정 사본·훅 제거 백업)은 건너뛰며 그 사실을 보고한다.
+    #[cfg(unix)]
+    fn swap_dest(p: &Path) {
+        std::fs::rename(p, p.with_file_name("dest-moved")).unwrap();
+        std::fs::create_dir_all(p).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn m4_destination_swapped_after_open_keeps_data_and_recovery_map_together() {
+        let td = test_home("m4-dest-swap");
+        let r = seed_practice_tree(&td);
+        let plan = build_plan(
+            &r,
+            &ResetOptions { purge_license: false, purge_local: false, purge_round: false },
+        );
+        AFTER_DEST_OPEN_HOOK.lock().unwrap().push((td.clone(), swap_dest));
+        let not_cysd = |_p: u32| false;
+        let no_daemon = || false;
+        let mut noop = |_p: &str, _d: &str| {};
+        let rep = execute_quarantine(&plan, &r, &not_cysd, &no_daemon, &mut noop);
+        AFTER_DEST_OPEN_HOOK.lock().unwrap().retain(|(sc, _)| sc != &td);
+        let rep = rep.unwrap();
+        let moved_dir = plan.trash_dir.with_file_name("dest-moved");
+        assert!(!rep.moved.is_empty(), "전제: 옮긴 항목이 있다");
+        let jl = std::fs::read_to_string(moved_dir.join("journal.ndjson")).expect("저널이 격리분과 같은 폴더에 없다");
+        assert_eq!(jl.lines().filter(|l| !l.trim().is_empty()).count(), rep.moved.len());
+        for f in ["manifest.json", "REPORT.txt"] {
+            assert!(moved_dir.join(f).exists(), "{f} 가 격리분과 같은 폴더에 없다");
+        }
+        assert!(moved_dir.join(format!(".producer-{}", std::process::id())).exists());
+        let decoy: Vec<String> = std::fs::read_dir(&plan.trash_dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(decoy.is_empty(), "바꿔 넣은 폴더에 썼다: {decoy:?}");
+        assert!(
+            rep.failed.iter().any(|(_, e)| e.contains("격리 폴더 경로가 이동 도중")),
+            "경로 분기가 보고되지 않았다: {:?}",
+            rep.failed
+        );
+        // ★codex 2R — 지도는 동거만이 아니라 **실제로 복구**되어야 한다(옮겨진 폴더를 가리켜 undo).
+        let up = read_undo_plan(&moved_dir).unwrap();
+        assert_eq!(up.entries.len(), rep.moved.len(), "복구 지도가 실제 격리분을 가리키지 않는다");
+        for (from, _) in &up.entries {
+            assert!(from.starts_with(&moved_dir), "지도가 다른 폴더를 가리킨다: {from:?}");
+        }
+        let mut noop2 = |_p: &str, _d: &str| {};
+        let (restored, ufailed) = execute_undo(&up, &mut noop2);
+        assert_eq!(restored, rep.moved.len(), "복구 실패: {ufailed:?}");
+        assert!(r.cys_base.join("pack/round").exists(), "원위치로 돌아오지 않았다");
+    }
+
+    /// ★codex 3R — `to_rel` 칸이 **있는데** 이름 하나가 아니면 지도 전체를 거부한다(절대 `to` 로 폴백해
+    /// 격리 폴더 밖의 객체를 옮기지 않는다). 칸이 **없으면**(옛 지도) 절대 `to` 를 쓴다. manifest·저널 둘 다.
+    #[test]
+    fn undo_rejects_a_bad_to_rel_and_falls_back_only_when_it_is_absent() {
+        let td = test_home("undo-to-rel");
+        let trash = td.join("trash");
+        let outside = td.join("outside-obj");
+        mk(&trash.join("000-x"));
+        mk(&outside);
+        let origin = td.join("origin");
+        let line = |rel: serde_json::Value| {
+            let mut v = serde_json::json!({"from": origin.join("x").to_string_lossy(), "to": outside.to_string_lossy()});
+            if !rel.is_null() {
+                v["to_rel"] = rel;
+            }
+            v
+        };
+        let mut bads = vec![json_s(""), json_s("."), json_s(".."), json_s("../outside-obj"), json_s("a/b"),
+                            json_s("a\\b"), json_s("/abs"), serde_json::json!(7)];
+        // 윈도우 드라이브 접두사는 윈도우에서만 접두사다(유닉스에선 `C:foo` 가 보통 이름 한 성분 —
+        // 판정은 그 플랫폼의 `Path::components()` 가 한다).
+        if cfg!(windows) {
+            bads.push(json_s("C:foo"));
+        }
+        for bad in bads {
+            for kind in ["manifest", "journal"] {
+                let _ = std::fs::remove_file(trash.join("manifest.json"));
+                let _ = std::fs::remove_file(trash.join("journal.ndjson"));
+                if kind == "manifest" {
+                    touch(&trash.join("manifest.json"), &serde_json::json!({"entries": [line(bad.clone())]}).to_string());
+                } else {
+                    touch(&trash.join("journal.ndjson"), &format!("{}\n", line(bad.clone())));
+                }
+                let e = read_undo_plan(&trash).err();
+                assert!(e.is_some(), "[{kind}] 잘못된 to_rel {bad} 을 받아들였다");
+            }
+        }
+        // 정상 한 성분 → 지금 가리킨 폴더 기준.
+        let _ = std::fs::remove_file(trash.join("journal.ndjson"));
+        touch(&trash.join("manifest.json"), &serde_json::json!({"entries": [line(json_s("000-x"))]}).to_string());
+        let up = read_undo_plan(&trash).unwrap();
+        assert_eq!(up.entries, vec![(trash.join("000-x"), origin.join("x"))]);
+        // ★codex 4R minor — 유닉스에서 `C:foo` 는 보통 이름 한 성분이라 그 폴더 기준으로 해석된다(허용 고정).
+        #[cfg(unix)]
+        {
+            touch(&trash.join("manifest.json"), &serde_json::json!({"entries": [line(json_s("C:foo"))]}).to_string());
+            mk(&trash.join("C:foo"));
+            let up = read_undo_plan(&trash).unwrap();
+            assert_eq!(up.entries, vec![(trash.join("C:foo"), origin.join("x"))]);
+        }
+        // 칸 없음(옛 지도) → 절대 to 폴백.
+        touch(&trash.join("manifest.json"), &serde_json::json!({"entries": [line(serde_json::Value::Null)]}).to_string());
+        let up = read_undo_plan(&trash).unwrap();
+        assert_eq!(up.entries, vec![(outside.clone(), origin.join("x"))]);
+    }
+    fn json_s(s: &str) -> serde_json::Value {
+        serde_json::Value::String(s.to_string())
+    }
+
     /// ★S8 M3: 격리가 끝나면 `.producer` 가 `complete` 로 닫혀 있다 — 그리고 그것은
     /// `manifest.json`(이동 **전에** 써진다)이 아니라 **이 표식**이 완료를 말한다는 뜻이다.
     /// 읽는 쪽과 같은 길로(serde_json) 파싱해 계약 필드를 본다.
@@ -3463,7 +3761,7 @@ mod tests {
         let no_daemon = || false;
         let mut noop = |_p: &str, _d: &str| {};
         let rep = execute_quarantine(&plan, &r, &not_cysd, &no_daemon, &mut noop).unwrap();
-        let mark = plan.trash_dir.join(".producer");
+        let mark = plan.trash_dir.join(format!(".producer-{}", std::process::id()));
         let txt = std::fs::read_to_string(&mark).expect("표식이 없다");
         let v: serde_json::Value = serde_json::from_str(&txt).expect("표식이 JSON 이 아니다");
         assert_eq!(v["state"], "complete", "{txt}");
@@ -3478,8 +3776,10 @@ mod tests {
         let _ = rep;
     }
 
-    /// ★S8 M3 소유 규칙: 다른 pid 의 `open` 창은 덮지 않고, 남의 표식은 닫지 않는다
-    /// (한 격리 폴더를 생산자 둘이 쓸 수 있고, 표식 파일은 하나다). pid 1 은 언제나 살아 있다.
+    /// ★M3(codex 1R · TICKET=cysr-1110-trash-harden): 표식은 **내 pid 의 파일**에만 쓴다 — 같은 폴더의
+    /// 남의 표식(옛 공유 `.producer` · 남의 `.producer-<pid>`)은 바이트 그대로다(읽지도 덮지도 않는다).
+    /// pid 1 은 언제나 살아 있다.
+    #[cfg(unix)]
     #[test]
     fn producer_marker_never_touches_another_producers_window() {
         let td = test_home("producer-own");
@@ -3490,23 +3790,23 @@ mod tests {
             "pid": 1, "start_token": "", "ts": 1.0
         })
         .to_string();
-        let mark = dir.join(".producer");
-        std::fs::write(&mark, &foreign).unwrap();
-        producer_mark(&dir, "open", false);
-        assert_eq!(std::fs::read_to_string(&mark).unwrap(), foreign, "남의 창을 덮었다");
-        producer_mark(&dir, "complete", false);
-        assert_eq!(std::fs::read_to_string(&mark).unwrap(), foreign, "남의 표식을 닫았다");
-        // 내 표식은 내가 닫는다.
-        let mine = td.join("mine");
-        producer_mark(&mine, "open", true);
-        producer_mark(&mine, "complete", false);
-        let v: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(mine.join(".producer")).unwrap()).unwrap();
+        std::fs::write(dir.join(".producer"), &foreign).unwrap();
+        std::fs::write(dir.join(".producer-1"), &foreign).unwrap();
+        let dest = TrashDest::open(&dir).unwrap();
+        dest.mark("open");
+        dest.mark("complete");
+        for n in [".producer", ".producer-1"] {
+            assert_eq!(std::fs::read_to_string(dir.join(n)).unwrap(), foreign, "남의 표식 {n} 을 건드렸다");
+        }
+        let v: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join(format!(".producer-{}", std::process::id()))).unwrap(),
+        )
+        .unwrap();
         assert_eq!(v["state"], "complete");
-        // 닫기는 폴더를 만들지 않는다(표식 때문에 빈 격리 항목이 생기지 않는다).
-        let never = td.join("never");
-        producer_mark(&never, "complete", false);
-        assert!(!never.exists(), "닫기가 격리 폴더를 만들었다");
+        assert!(
+            !std::fs::read_dir(&dir).unwrap().flatten().any(|e| e.file_name().to_string_lossy().contains(".tmp-")),
+            "임시파일이 남았다"
+        );
     }
 
     /// ★P0(복구) 회귀: undo 가 격리본을 원위치로 되돌리고, 원위치가 차 있으면 덮어쓰지 않는다.

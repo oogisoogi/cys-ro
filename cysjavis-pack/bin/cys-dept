@@ -282,36 +282,33 @@ formation_ensure_async(){
 # 표식 없음 → "생산자 알 수 없음"(구 버전과 동일).
 # ★절대 규칙: **표식이 격리를 실패·지연·재배열시키지 않는다** — 모든 실패는 stderr 한 줄이고 이
 #   함수는 언제나 0 으로 돌아온다(호출부는 반환값을 보지 않는다).
-# ★한 격리 폴더에 생산자가 둘(이 스크립트와 javis_org.py)이라 표식 파일도 하나다 — 다른 pid 의
-#   `open` 은 덮지 않고, 닫는 것도 내 pid 의 표식만 닫는다.
+# ★생산자마다 자기 파일 하나(codex 1R M3 · TICKET=cysr-1110-trash-harden): 한 격리 폴더에 생산자가
+#   둘(이 스크립트와 javis_org.py)인데 예전엔 공유 파일 `.producer` 하나를 '읽고 → 바꿔 쓰기' 했다. 그건
+#   원자적이지 않았다 — 남의 표식에서 pid 를 못 뽑으면(빈 cur_pid 로 접힘) 또는 둘이 동시에 읽으면 남의
+#   open 창을 덮고, 내 complete 가 아직 옮기는 중인 남의 항목을 '끝남'으로 보이게 했다. 이제 **내 pid 의
+#   파일 `.producer-$$` 만** 쓰고(tmp `.producer-$$.tmp` → mv -f) 남의 표식은 읽지도 않는다 — 남이 덮을
+#   수 없으니 소유 판정이 필요 없다. 옛 공유 파일 `.producer` 는 더 쓰지 않는다. 판독기(`trash.rs`)는
+#   `.producer` 와 `.producer-*`(`*.tmp` 제외)를 모두 모아 판정한다.
 # $1=격리 폴더 · $2=open|complete|aborted · $3=1 이면 폴더가 없을 때 만든다(닫을 때는 쓰지 않는다)
 producer_mark(){
-  local d="${1%/}" st="$2" create="${3:-0}" f mine cur_pid cur_state tok tmp
+  local d="${1%/}" st="$2" create="${3:-0}" f mine tok tmp
   [ -n "$d" ] || return 0
   if [ "$create" = 1 ] && [ ! -d "$d" ]; then mkdir -p "$d" 2>/dev/null || true; fi
   [ -d "$d" ] || return 0
-  f="$d/.producer"; mine=$$
-  # ★표식 자리가 디렉터리면 쓰지 않는다. `mv -f tmp dir` 는 **디렉터리 안으로 옮기고 성공으로 끝나서**
+  mine=$$; f="$d/.producer-$mine"   # 내 파일만 — 남의 표식은 읽지 않는다
+  # ★표식 자리(`.producer-$$`)가 디렉터리면 쓰지 않는다. `mv -f tmp dir` 는 **디렉터리 안으로 옮기고 성공으로 끝나서**
   #   표식은 안 써지고 쓰레기 파일만 남는다(python os.replace·rust rename 은 그냥 실패한다 — bash 만
   #   다른 자리다). 판독기는 이 상태를 '판정 불가 = 살아 있는 쪽'으로 읽어 삭제를 막는다(fail closed).
   if [ -d "$f" ]; then
     echo "[cys-dept] .producer 표식 기록 실패(격리는 그대로 계속한다): $f 가 디렉터리다" >&2
     return 0
   fi
-  if [ -f "$f" ]; then
-    cur_pid="$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$f" 2>/dev/null | head -1)"
-    cur_state="$(sed -n 's/.*"state"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p' "$f" 2>/dev/null | head -1)"
-    if [ -n "$cur_pid" ] && [ "$cur_pid" != "$mine" ]; then
-      if [ "$st" = open ] && [ "$cur_state" = open ]; then return 0; fi   # 더 넓은 창이 이긴다
-      if [ "$st" != open ]; then return 0; fi                             # 남의 표식은 닫지 않는다
-    fi
-  fi
   # 프로세스 시작 토큰(pid 재사용 구별용) — Linux /proc 에서만. ★현재 판독기는 대조하지 않는다.
   tok=""
   if [ -r "/proc/$$/stat" ]; then
     tok="$(sed 's/.*) //' "/proc/$$/stat" 2>/dev/null | awk '{print $20}' 2>/dev/null)"
   fi
-  tmp="$f.tmp-$mine"
+  tmp="$f.tmp"
   if printf '{"v":1,"state":"%s","producer":"cys-dept purge-state","pid":%s,"start_token":"%s","ts":%s}\n' \
        "$st" "$mine" "$tok" "$(date +%s 2>/dev/null || echo 0)" > "$tmp" 2>/dev/null \
      && mv -f "$tmp" "$f" 2>/dev/null; then

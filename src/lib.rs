@@ -18,6 +18,9 @@ pub mod factory_reset;
 /// 이쪽은 **교체가 반쪽으로 끝나는 것**을 막는다(같은 사고의 다른 절반).
 pub mod app_bundle;
 pub mod declaration;
+/// 디렉터리 핸들 기준 rename·제거(unix) — 경로 재해석 TOCTOU 를 닫는 leaf(TICKET=cysr-1110-trash-harden).
+#[cfg(unix)]
+pub mod dirat;
 pub mod mission_gate;
 pub mod directive_compose;
 pub mod edit_kinds;

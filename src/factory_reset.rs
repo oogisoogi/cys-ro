@@ -3729,6 +3729,14 @@ mod tests {
         touch(&trash.join("manifest.json"), &serde_json::json!({"entries": [line(json_s("000-x"))]}).to_string());
         let up = read_undo_plan(&trash).unwrap();
         assert_eq!(up.entries, vec![(trash.join("000-x"), origin.join("x"))]);
+        // ★codex 4R minor — 유닉스에서 `C:foo` 는 보통 이름 한 성분이라 그 폴더 기준으로 해석된다(허용 고정).
+        #[cfg(unix)]
+        {
+            touch(&trash.join("manifest.json"), &serde_json::json!({"entries": [line(json_s("C:foo"))]}).to_string());
+            mk(&trash.join("C:foo"));
+            let up = read_undo_plan(&trash).unwrap();
+            assert_eq!(up.entries, vec![(trash.join("C:foo"), origin.join("x"))]);
+        }
         // 칸 없음(옛 지도) → 절대 to 폴백.
         touch(&trash.join("manifest.json"), &serde_json::json!({"entries": [line(serde_json::Value::Null)]}).to_string());
         let up = read_undo_plan(&trash).unwrap();

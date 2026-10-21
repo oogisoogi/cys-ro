@@ -1405,6 +1405,23 @@ fn path_strictly_under(raw: &Path, root: &Path) -> bool {
     }
 }
 
+/// ② 의 프로필 선택(순수 — 열거 순서를 인자로 받아 시험이 순서를 고정한다). 반환 = (열거 dir · 정규화 dir · projects 아래 상대경로).
+/// ★1.1.11(B4): **어휘 일치(d/projects 아래)를 먼저 전부** 보고, 정규화 일치(심볼릭 링크 홈 호환)는 그다음 회차에만 —
+/// 한 회차에 둘을 받으면 프로필 dir 통째 별칭(`~/.claude-acct2 → ~/.claude`)이 열거 순서로 먼저 잡혔다.
+fn pick_outside_profile(dirs: &[PathBuf], raw: &Path, canon: &Path) -> Option<(PathBuf, PathBuf, PathBuf)> {
+    let pick = |d: &PathBuf, lexical_only: bool| {
+        let cd = std::fs::canonicalize(d).ok()?;
+        let lexical = path_strictly_under(raw, &d.join("projects"));
+        if !lexical && (lexical_only || !path_strictly_under(raw, &cd.join("projects"))) {
+            return None;
+        }
+        let projects = std::fs::canonicalize(d.join("projects")).ok()?;
+        let rel = canon.strip_prefix(&projects).ok().filter(|r| !r.as_os_str().is_empty())?.to_path_buf();
+        Some((d.clone(), cd, rel))
+    };
+    dirs.iter().find_map(|d| pick(d, true)).or_else(|| dirs.iter().find_map(|d| pick(d, false)))
+}
+
 fn report_outside_at(
     daemon: &Arc<Daemon>,
     home: Option<&Path>,
@@ -1441,18 +1458,9 @@ fn report_outside_at(
     //   정규화한 곳 아래여야 한다(밖을 가리키는 링크 거절). ★(usage-acct-misattrib) 정규화 경로로 프로필을 고르지 않는다:
     //   `~/.claude-acct2/projects → ~/.claude/projects` 처럼 projects/ 를 나눠 쓰면 정규화 경로가 먼저 닿는 `~/.claude`
     //   (다른 계정)로 귀속됐다(10-15 16:2x 실측 — 계정2 의 7d 96 · 리셋 17:00 이 계정1 칸에).
-    let (dir, canon_dir, rel) = cys::profile_gate::enumerate_profile_dirs(home)
-        .into_iter()
-        .find_map(|d| {
-            let cd = std::fs::canonicalize(&d).ok()?;
-            if !path_strictly_under(raw, &d.join("projects")) && !path_strictly_under(raw, &cd.join("projects")) {
-                return None;
-            }
-            let projects = std::fs::canonicalize(d.join("projects")).ok()?;
-            let rel = canon.strip_prefix(&projects).ok().filter(|r| !r.as_os_str().is_empty())?.to_path_buf();
-            Some((d, cd, rel))
-        })
-        .ok_or("session_file_outside_profiles")?;
+    let (dir, canon_dir, rel) =
+        pick_outside_profile(&cys::profile_gate::enumerate_profile_dirs(home), raw, &canon)
+            .ok_or("session_file_outside_profiles")?;
     // ③ 귀속은 열거된(홈 기준) dir 로 표기한다 — 신원 규칙(기본 ~/.claude → 홈 직하)과 프로필 표기가 홈 기준이다.
     let attributed = dir.join("projects").join(rel);
     let attributed = attributed.to_string_lossy().into_owned();
@@ -3982,6 +3990,30 @@ mod tests {
         let one = claude_rows(&d).into_iter().find(|r| r["account_id"] == "u-one").expect("계정1 행 없음");
         assert_eq!(one["rate"][0]["used_pct"], json!(74.0));
         let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// ★1.1.11(B4) — 프로필 dir **통째** 별칭(`~/.claude-acct2 → ~/.claude`)이 열거에서 먼저 나와도 `~/.claude/projects/…`
+    /// 보고는 어휘적으로 그 경로를 담은 `~/.claude` 로 간다. 종전은 정규화 일치를 같은 회차에 받아 별칭이 먼저 잡혔다
+    /// (그 별칭에 신원 파일이 없으면 identity_unresolved — 기본 계정의 바깥 사용량이 사라졌다).
+    #[cfg(unix)]
+    #[test]
+    fn outside_profile_pick_prefers_the_lexical_dir_over_a_whole_dir_alias() {
+        // 홈은 정규화 경로로(맥 임시 폴더 /var → /private/var 링크가 정규화 일치를 가리면 결함이 재현되지 않는다 — 실 홈 /Users/… 꼴).
+        let home = std::fs::canonicalize(tmp("home-out-alias")).unwrap();
+        write(&home.join(".claude/projects/-w/s.jsonl"), "{}\n");
+        std::os::unix::fs::symlink(home.join(".claude"), home.join(".claude-acct2")).unwrap();
+        let raw = home.join(".claude/projects/-w/s.jsonl");
+        let canon = std::fs::canonicalize(&raw).unwrap();
+        let alias_first = [home.join(".claude-acct2"), home.join(".claude")];
+        let (dir, _, rel) = pick_outside_profile(&alias_first, &raw, &canon).expect("프로필 안의 파일이다");
+        assert_eq!(dir, home.join(".claude"), "통째 별칭이 먼저 잡혔다");
+        assert_eq!(rel, PathBuf::from("-w/s.jsonl"));
+        // 별칭 경로로 댄 보고는 종전처럼 별칭 dir(어휘 일치)로.
+        let via_alias = home.join(".claude-acct2/projects/-w/s.jsonl");
+        let (dir, _, _) = pick_outside_profile(&[home.join(".claude"), home.join(".claude-acct2")], &via_alias, &canon)
+            .expect("별칭 안의 파일이다");
+        assert_eq!(dir, home.join(".claude-acct2"));
         let _ = std::fs::remove_dir_all(&home);
     }
 

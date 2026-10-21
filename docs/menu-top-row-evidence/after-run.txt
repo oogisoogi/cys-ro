@@ -1,0 +1,13 @@
+[scoped pid=49415 registered in ledger]
+PASS m1 상단 맨 앞 넷 = 피드백 · 상담소 · 아고라 · 정렬 · 사이드바 상담소·아고라 0 · 옛 줄 0 — {"top":["피드백","상담소","아고라","정렬","파일","Control Center","↻ 재시작","화면 설정"],"topIds":["btn-feedback","btn-counsel","btn-agora","btn-equalize","btn-files","btn-cc","btn-restart-daemon","btn-theme"],"side":[],"sideRow":false}
+PASS m2a 상담소 누름 → 상담소 창(제목 「상담소」) · counsel_room_list 1 — {"modal":true,"h":"상담소","list":1}
+PASS m2b 아고라 누름 → open_agora_window 1 · open_url 0 · 실패 창 0 — {"agora":1,"openUrl":0,"modal":0}
+PASS m3a 키보드 Tab 순서 = 피드백 → 상담소 → 아고라 → 정렬 — ["btn-feedback","btn-counsel","btn-agora","btn-equalize"]
+PASS m3b 상담소에 초점 두고 Enter → 상담소 창 — {"modal":true,"list":1}
+PASS m3c 툴팁 = 정본 문구(상담소 · 아고라) — {"c":"상담소 — cysr 사용자들이 묻고 받은 답을 한곳에서 봅니다(보기 전용)","a":"아고라 — AI 동료들이 토론하는 광장을 봅니다(보기 전용) · 참여는 마스터에게 말로 부탁하세요"}
+     m4 상단바 넘침(px): 390=382 · 640=132 · 800=0 · 1024=0 · 1280=0
+PASS m4 폭 1280·1024·800·640·390(뱃지 12) — 높이 38 · 겹침 0 · 잘림 0 · 줄바꿈 0 · 뱃지는 상담소 단추 안 · 800 이상 세 단추 화면 안 · 상단바 넘침 0 · 「cysr」·판번 사이 띄움 유지 — {"390":{"barH":38,"overflow":382,"brandGap":4,"overlaps":[],"clipped":[],"wrapped":[],"threeInView":true,"threeReach":true,"badge":"12","badgeInside":true},"640":{"barH":38,"overflow":132,"brandGap":4,"overlaps":[],"clipped":[],"wrapped":[],"threeInView":true,"threeReach":true,"badge":"12","badgeInside":true},"800":{"barH":38,"overflow":0,"brandGap":4,"overlaps":[],"clipped":[],"wrapped":[],"threeInView":true,"threeReach":true,"badge":"12","badgeInside":true},"1024":{"barH":38,"overflow":0,"brandGap":4,"overlaps":[],"clipped":[],"wrapped":[],"threeInView":true,"threeReach":true,"badge":"12","badgeInside":true},"1280":{"barH":38,"overflow":0,"brandGap":4,"overlaps":[],"clipped":[],"wrapped":[],"threeInView":true,"threeReach":true,"badge":"12","badgeInside":true}}
+PASS m5 1.1.9 순서 저장 사용자 → 피드백 · 상담소 · 아고라 · + New … 정렬(맨 뒤 그대로) · 파일 꺼진 채 — {"top":["피드백","상담소","아고라","+ New","Control Center","↻ 재시작","화면 설정","정렬"],"topIds":["btn-feedback","btn-counsel","btn-agora","btn-new","btn-cc","btn-restart-daemon","btn-theme","btn-equalize"],"side":[],"sideRow":false}
+PASS m6 화면 설정 → 상단 단추 목록 맨 앞 셋 = 피드백 · 상담소 · 아고라(켬 · 끌 수 있음) — [{"id":"btn-feedback","name":"피드백","on":true,"togDisabled":false},{"id":"btn-counsel","name":"상담소","on":true,"togDisabled":false},{"id":"btn-agora","name":"아고라","on":true,"togDisabled":false}]
+ALL PASS
+[scoped pid=49415 exited (exit status: 0); process group force-killed and deregistered]

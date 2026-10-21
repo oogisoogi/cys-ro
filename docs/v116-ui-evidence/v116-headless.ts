@@ -971,7 +971,8 @@ if (ONLY.includes("c19")) {
     res[name] = await ev(M);
     await shot(`c19-${name}-1280.png`);
   }
-  const ok = (m: any) => m.fb && m.first === "피드백" && m.second === "btn-equalize" && m.side === 0 && m.fs >= m.fsEq && m.padX >= m.padXEq && m.h >= m.hEq && m.contrast >= 4.5 && m.borderDiff && m.inView;
+  // (cysr-menu-top-row 2026-10-21) 종전 = 피드백 다음 정렬 · 지금 = 피드백 다음 상담소(박사님 「피드백 상담소 아고라 순」)
+  const ok = (m: any) => m.fb && m.first === "피드백" && m.second === "btn-counsel" && m.side === 0 && m.fs >= m.fsEq && m.padX >= m.padXEq && m.h >= m.hEq && m.contrast >= 4.5 && m.borderDiff && m.inView;
   check("c19a 상단바 첫 단추 = 「피드백」(정렬 왼쪽) · 사이드바 0 · 글자·여백·높이 ≥ 정렬 · 대비 ≥ 4.5 · 테두리 강조 — 기본·밝은 배경 둘 다", ok(res.dark) && ok(res.light), JSON.stringify(res));
   // 누르면 종전과 같은 피드백 창 — 흉내층엔 feedback_new_draft 가 없어 이 칸에서만 초안 응답을 세운다(호출 계수는 그대로 남긴다)
   await load("two", `localStorage.removeItem("cys-bg-color")`);

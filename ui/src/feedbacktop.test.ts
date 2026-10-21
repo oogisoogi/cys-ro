@@ -13,10 +13,12 @@ const css = readFileSync(new URL("./style.css", import.meta.url), "utf8");
 const top = html.slice(html.indexOf('<header id="topbar">'), html.indexOf("</header>"));
 
 describe("피드백 단추 = 상단 메뉴바 맨 앞", () => {
-  it("상단바 첫 단추 = 「피드백」(박사님 00:3x 글자 변경) · 그다음 = 정렬", () => {
+  // ★(cysr-menu-top-row · 박사님 2026-10-21 「순서는 피드백 상담소 아고라 순」) 종전 기대값 = 피드백 다음 = 정렬.
+  //   지금 = 피드백 다음 = 상담소 · 아고라 · 그다음 정렬(피드백은 여전히 맨 앞).
+  it("상단바 첫 단추 = 「피드백」(박사님 00:3x 글자 변경) · 그다음 = 상담소 · 아고라 · 정렬", () => {
     const ids = [...top.matchAll(/<button\b[^>]*?\bid="([^"]+)"/g)].map((m) => m[1]); // 속성 순서 무관(적대 1R NIT)
     expect(ids[0]).toBe("btn-feedback");
-    expect(ids[1]).toBe("btn-equalize");
+    expect(ids.slice(1, 4)).toEqual(["btn-counsel", "btn-agora", "btn-equalize"]);
     expect(/<button id="btn-feedback"[^>]*>피드백<\/button>/.test(top)).toBe(true);
     expect(top).toContain('title="피드백 — 아쉬운 점이나 문제를 사진·영상과 함께 운영팀에 보냅니다"');
   });

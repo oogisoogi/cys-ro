@@ -1,4 +1,4 @@
-// 「상담소」·「아고라」 사이드바 메뉴의 순수 로직(TICKET=cysr-119-t4-app · 설계 = docs/design/T4-APP-MENUS-119.md).
+// 「상담소」·「아고라」 상단 단추(1.1.9 = 사이드바 · cysr-menu-top-row 에서 상단바 피드백 뒤로)의 순수 로직(TICKET=cysr-119-t4-app · 설계 = docs/design/T4-APP-MENUS-119.md).
 // DOM·Tauri 0 — main.ts 가 배선만 한다. 계약 정본 = 아고라 SPEC-mail-1to1 §10-7a(정렬)·§11(뱃지 파일).
 //
 // ★남이 쓴 글자는 이 모듈이 **문자열로만** 넘긴다 — 그리는 쪽(main.ts)은 textContent 로만 넣는다(innerHTML 0).

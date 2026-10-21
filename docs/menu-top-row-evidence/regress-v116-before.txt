@@ -1,0 +1,22 @@
+[scoped pid=32614 registered in ledger]
+PASS c4a 초보 화면 상단 + New · Split → · Split ↓ 기본 숨김(요소는 남음) · 「창 만들기」 0 — {"tb":["피드백","정렬","파일","Control Center 0","↻ 재시작","화면 설정"],"hits":[],"dom3":true}
+PASS c4b 전문가 칸 「창 만들기」 → 오른쪽 한 갈래(「아래」 0) · 누르면 창 +1 · 세로 분할 0 — {"btn":true,"items":["오른쪽에 새 창 (⌘D)"],"n0":2,"panes":3,"col":0}
+PASS c4c 상단 + New ≡ ⌘T · Split → ≡ ⌘D · Split ↓ ≡ ⌘⇧D(워커 4) — 창 +1 · 세로 분할 +0/+0/+1 · 배치 모양 = 단축키 결과 — [{"id":"btn-new","panes":"5→6","col":"1→1","sameAsKey":true},{"id":"btn-split-h","panes":"5→6","col":"1→1","sameAsKey":true},{"id":"btn-split-v","panes":"5→6","col":"1→2","sameAsKey":true}]
+PASS c7 w1280 상단바 라벨 = 판번만(찌그러짐 0) · 툴팁 = 전문 — {"text":"엔진 v1.1.6","title":"daemon v1.1.6 pid=4242 sock=/Users/user/.local/state/cys/cys.sock","fits":true}
+PASS c7 w800 상단바 라벨 = 판번만(찌그러짐 0) · 툴팁 = 전문 — {"text":"엔진 v1.1.6","title":"daemon v1.1.6 pid=4242 sock=/Users/user/.local/state/cys/cys.sock","fits":true}
+PASS c12a 역할 없는 창 제목 = 「2 · project-alpha」(번호 먼저 · 폴더 이름) · 전체 경로는 툴팁 — [{"text":"1 · master","tip":"/Users/user/jarvis"},{"text":"2 · project-alpha","tip":"/Users/user/axdev/.wt/very-long-worktree-name/nested/project-alpha"}]
+PASS c12d 역할 없는 창 이름 변경 → 바꾸지 않고 확정 = 쓰기 0(자동 제목 유지) — {"renames":0,"seat2":""}
+PASS c12b 끝난 창 = 「(끝남)」이 제목 맨 앞(좁아도 먼저 잘리지 않는다) — {"text":"(끝남) 2 · project-alpha","tip":"/Users/user/axdev/.wt/very-long-worktree-name/nested/project-alpha"}
+PASS c12c 역할 창 이름 비워 확정 → 「1 · master」 유지(번호·특성 소실 0) — {"editing":true,"renames":["1 · master"],"seat":"1 · master","shown":["1 · master","(끝남) 2 · project-alpha"]}
+551 |   await ev(`document.getElementById("btn-update").click()`); await Bun.sleep(600);
+552 |   const h0 = await ev(X);
+553 |   await ev(`window.__shimEmit("update-restart-required", { version: "1.1.7", reason: "app_replaced" })`); await Bun.sleep(300);
+554 |   await ev(`document.querySelector(".modal-yes")?.click()`); await Bun.sleep(500);
+555 |   const h1 = await ev(X);
+556 |   check("c17h 설치 확인 창 떠 있는 사이 교체 완료 → 「설치」 눌러도 install_update 0 · restart_after_update 1", !!h0.modal && /설치/.test(h0.modal) && h1.installs === 0 && JSON.stringify(h1.restarts) === "[false]", JSON.stringify({ h0, h1 }));
+                                                                                                  ^
+TypeError: undefined is not an object (evaluating 'h0.modal')
+      at /private/tmp/claude-501/-Users-oogisoogi-cys-terminal-src/5b054e7e-d22f-4f00-9451-3554f154d968/scratchpad/base-docs/docs/v116-ui-evidence/v116-headless.ts:556:93
+
+Bun v1.3.11 (macOS arm64)
+[scoped pid=32614 exited (exit status: 1); process group force-killed and deregistered]

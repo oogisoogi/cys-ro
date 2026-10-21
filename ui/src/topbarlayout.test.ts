@@ -20,14 +20,14 @@ const label = (id: string) => new RegExp(`<button\\b[^>]*\\bid="${id}"[^>]*>([^<
 const ids = (xs: readonly TopbarItem[]) => xs.map((x) => x.id);
 const save = (items: unknown, version: unknown = 1) => JSON.stringify({ version, items });
 
-describe("기본값 — 박사님 확정 A안(끔 5 · 보이는 6)", () => {
-  it("대상 = 상단바 단추 11개 · 기본 순서 = index.html 순서", () => {
-    expect(DOM).toEqual(["btn-feedback", "btn-equalize", "btn-new", "btn-split-h", "btn-split-v", "btn-close", "btn-files", "btn-cc", "btn-restart-daemon", "btn-factory-reset", "btn-theme"]);
+describe("기본값 — 박사님 확정 A안(끔 5 · 보이는 8 = 종전 6 + 상단으로 옮긴 상담소·아고라)", () => {
+  it("대상 = 상단바 단추 13개 · 기본 순서 = index.html 순서(피드백 · 상담소 · 아고라 · 정렬 …)", () => {
+    expect(DOM).toEqual(["btn-feedback", "btn-counsel", "btn-agora", "btn-equalize", "btn-new", "btn-split-h", "btn-split-v", "btn-close", "btn-files", "btn-cc", "btn-restart-daemon", "btn-factory-reset", "btn-theme"]);
     expect(ids(defaultTopbarLayout(DOM))).toEqual(DOM);
   });
 
-  it("처음 보이는 단추 = 피드백 · 정렬 · 파일 · Control Center · ↻ 재시작 · 화면 설정", () => {
-    expect(visibleTopbarIds(defaultTopbarLayout(DOM)).map(label)).toEqual(["피드백", "정렬", "파일", "Control Center", "↻ 재시작", "화면 설정"]);
+  it("처음 보이는 단추 = 피드백 · 상담소 · 아고라 · 정렬 · 파일 · Control Center · ↻ 재시작 · 화면 설정", () => {
+    expect(visibleTopbarIds(defaultTopbarLayout(DOM)).map(label)).toEqual(["피드백", "상담소", "아고라", "정렬", "파일", "Control Center", "↻ 재시작", "화면 설정"]);
   });
 
   it("처음 꺼진 단추 = + New · Split → · Split ↓ · 창 닫기 · 완전 초기화(html 에 요소는 그대로 있다)", () => {
@@ -98,17 +98,38 @@ describe("손상·구판 저장 = 기본값(앱이 죽거나 단추가 통째로
     it(name, () => expect(parseTopbarLayout(raw, DOM)).toEqual(defaultTopbarLayout(DOM)));
   }
   it("손상 폴백에서도 끔 5 는 꺼진 채다(전부 켬으로 새지 않는다)", () => {
-    expect(visibleTopbarIds(parseTopbarLayout("{{{", DOM)).length).toBe(6);
+    expect(visibleTopbarIds(parseTopbarLayout("{{{", DOM)).length).toBe(8);
   });
 });
 
 describe("새 단추·없어진 단추·중복", () => {
-  it("저장에 없는 단추(나중에 생긴 단추) = 켠 채 맨 끝 — 기본 끔 목록에 든 id 라도 켠다", () => {
+  // ★(cysr-menu-top-row 2026-10-21) 종전 기대값 = 「켠 채 맨 끝」. 지금 = 켠 채 **html 바로 앞 단추의 뒤** — 1.1.9 에서 순서를 저장한
+  //   사람에게 상담소·아고라가 맨 오른쪽(화면 설정 뒤)이 아니라 피드백 바로 뒤에 서야 박사님 순서(피드백 · 상담소 · 아고라)가 된다.
+  it("저장에 없는 단추(나중에 생긴 단추) = 켠 채 html 바로 앞 단추의 뒤 — 기본 끔 목록에 든 id 라도 켠다", () => {
     const saved = save(DOM.filter((id) => id !== "btn-files" && id !== "btn-new").map((id) => ({ id, on: false })));
     const l = parseTopbarLayout(saved, DOM);
-    expect(ids(l).slice(-2)).toEqual(["btn-new", "btn-files"]); // 끝에 · html 순서대로
-    expect(l.slice(-2).every((x) => x.on)).toBe(true);
+    expect(ids(l)).toEqual(DOM); // 저장 순서가 html 순서였으니 빈 자리에 그대로 돌아간다
+    expect(l.filter((x) => x.id === "btn-new" || x.id === "btn-files").every((x) => x.on)).toBe(true);
     expect(ids(l).length).toBe(DOM.length);
+  });
+
+  it("1.1.9 에서 순서를 저장한 사람(상담소·아고라 없는 저장) → 상담소·아고라가 피드백 바로 뒤 · 켬 · 나머지 저장 순서·켬끔 그대로", () => {
+    const OLD = DOM.filter((id) => id !== "btn-counsel" && id !== "btn-agora"); // 1.1.9 상단바 11개
+    const custom = [...OLD].reverse().map((id) => ({ id, on: id !== "btn-files" })); // 뒤집고 파일만 끔(손댄 저장)
+    const l = parseTopbarLayout(save(custom), DOM);
+    const at = ids(l).indexOf("btn-feedback");
+    expect(ids(l).slice(at, at + 3)).toEqual(["btn-feedback", "btn-counsel", "btn-agora"]);
+    expect(l.find((x) => x.id === "btn-counsel")!.on && l.find((x) => x.id === "btn-agora")!.on).toBe(true);
+    expect(ids(l).filter((id) => OLD.includes(id))).toEqual(custom.map((x) => x.id));
+    expect(l.find((x) => x.id === "btn-files")!.on).toBe(false);
+  });
+
+  it("피드백을 옮겨 둔 저장이어도 상담소·아고라는 피드백을 따라간다 · 피드백을 꺼 둔 저장이면 그 자리(꺼진 피드백 뒤)에 켠 채", () => {
+    const OLD = DOM.filter((id) => id !== "btn-counsel" && id !== "btn-agora");
+    const moved = [...OLD.filter((id) => id !== "btn-feedback"), "btn-feedback"].map((id) => ({ id, on: id !== "btn-feedback" }));
+    const l = parseTopbarLayout(save(moved), DOM);
+    expect(ids(l).slice(-3)).toEqual(["btn-feedback", "btn-counsel", "btn-agora"]);
+    expect(l.slice(-3).map((x) => x.on)).toEqual([false, true, true]);
   });
 
   it("미래 단추 id 가 html 에 생기면 옛 저장을 읽어도 그 단추가 보인다", () => {
@@ -122,7 +143,10 @@ describe("새 단추·없어진 단추·중복", () => {
     const l = parseTopbarLayout(save([{ id: "btn-gone", on: true }, { id: "btn-new", on: true }, { id: "btn-new", on: false }]), DOM);
     expect(ids(l)).not.toContain("btn-gone");
     expect(l.filter((x) => x.id === "btn-new")).toEqual([{ id: "btn-new", on: true }]);
-    expect(l[0]).toEqual({ id: "btn-new", on: true });
+    // (cysr-menu-top-row) 종전 기대값 = l[0] 이 btn-new. 지금 = 저장에 없는 단추가 html 바로 앞 단추 뒤에 끼므로 피드백(html 맨 앞)이 맨 앞 ·
+    //   btn-new 는 html 앞 단추(정렬) 뒤.
+    expect(l[0]).toEqual({ id: "btn-feedback", on: true });
+    expect(ids(l).indexOf("btn-new")).toBe(ids(l).indexOf("btn-equalize") + 1);
     expect([...ids(l)].sort()).toEqual([...DOM].sort());
   });
 });
@@ -166,7 +190,7 @@ describe("▲▼ — 한 칸 · 경계", () => {
   const l = defaultTopbarLayout(DOM);
   it("▼ = 다음 단추와 자리 바꿈 · ▲ 로 되돌아옴", () => {
     const d = moveTopbarItem(l, "btn-feedback", 1);
-    expect(ids(d).slice(0, 2)).toEqual(["btn-equalize", "btn-feedback"]);
+    expect(ids(d).slice(0, 2)).toEqual([DOM[1], "btn-feedback"]); // 다음 단추 = DOM[1](1.1.10 = 상담소)
     expect(moveTopbarItem(d, "btn-feedback", -1)).toEqual(l);
   });
 
@@ -187,28 +211,28 @@ describe("▲▼ — 한 칸 · 경계", () => {
   it("켬끔은 따라간다(꺼진 단추를 옮겨도 꺼진 채)", () => {
     const d = moveTopbarItem(l, "btn-new", -1);
     expect(d.find((x) => x.id === "btn-new")!.on).toBe(false);
-    expect(visibleTopbarIds(d).length).toBe(6);
+    expect(visibleTopbarIds(d).length).toBe(8);
   });
 });
 
 describe("끌어 놓기 결과 = 순서", () => {
   const l = defaultTopbarLayout(DOM);
   it("다른 줄의 앞·뒤에 놓는다(아래 → 위 · 위 → 아래)", () => {
-    expect(ids(dropTopbarItem(l, "btn-restart-daemon", "btn-feedback", false)).slice(0, 3)).toEqual(["btn-feedback", "btn-restart-daemon", "btn-equalize"]);
+    expect(ids(dropTopbarItem(l, "btn-restart-daemon", "btn-feedback", false)).slice(0, 3)).toEqual(["btn-feedback", "btn-restart-daemon", DOM[1]]);
     expect(ids(dropTopbarItem(l, "btn-restart-daemon", "btn-feedback", true)).slice(0, 2)).toEqual(["btn-restart-daemon", "btn-feedback"]);
     expect(ids(dropTopbarItem(l, "btn-feedback", "btn-theme", false)).at(-1)).toBe("btn-feedback");
     expect(ids(dropTopbarItem(l, "btn-feedback", "btn-theme", true)).slice(-2)).toEqual(["btn-feedback", "btn-theme"]);
   });
 
   it("제자리(바로 뒤 줄의 앞 · 바로 앞 줄의 뒤)·자기 위·없는 id = 순서 그대로", () => {
-    expect(dropTopbarItem(l, "btn-feedback", "btn-equalize", true)).toEqual(l);
-    expect(dropTopbarItem(l, "btn-equalize", "btn-feedback", false)).toEqual(l);
+    expect(dropTopbarItem(l, "btn-feedback", DOM[1], true)).toEqual(l);
+    expect(dropTopbarItem(l, DOM[1], "btn-feedback", false)).toEqual(l);
     expect(dropTopbarItem(l, "btn-feedback", "btn-feedback", true)).toEqual(l);
     expect(dropTopbarItem(l, "btn-nope", "btn-feedback", true)).toEqual(l);
     expect(dropTopbarItem(l, "btn-feedback", "btn-nope", true)).toEqual(l);
   });
 
-  it("어떤 조합으로 옮겨도 단추가 늘거나 줄거나 켬끔이 바뀌지 않는다(11×11×2 전수 + ▲▼ 잇기)", () => {
+  it("어떤 조합으로 옮겨도 단추가 늘거나 줄거나 켬끔이 바뀌지 않는다(13×13×2 전수 + ▲▼ 잇기)", () => {
     const onOf = (xs: TopbarItem[]) => Object.fromEntries(xs.map((x) => [x.id, x.on]));
     for (const s of DOM) for (const a of DOM) for (const before of [true, false]) {
       const r = dropTopbarItem(l, s, a, before);

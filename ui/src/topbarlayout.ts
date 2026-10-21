@@ -21,7 +21,8 @@ export interface TopbarItem {
 export const TOPBAR_PINNED: readonly string[] = ["btn-theme", "btn-cc"];
 
 // 기본으로 꺼 두는 단추(처음 쓰는 사람·저장이 없거나 깨진 경우) — 박사님 확정 2026-10-12 09:1x 「최적안대로 한다」(A안 5개):
-// + New · Split → · Split ↓ · 창 닫기 · 완전 초기화. 켜진 채 남는 것 = 피드백 · 정렬 · 파일 · Control Center · ↻ 재시작 · 화면 설정.
+// + New · Split → · Split ↓ · 창 닫기 · 완전 초기화. 켜진 채 남는 것 = 피드백 · 상담소 · 아고라(cysr-menu-top-row 2026-10-21 사이드바에서 옮김) ·
+// 정렬 · 파일 · Control Center · ↻ 재시작 · 화면 설정.
 // ⛔이 집합을 바꾸는 것은 박사님 결정 사항이다. 윈에서는 터미널에 초점이 있을 때 단축키를 xterm 이 먹으므로, 창 만들기 세 단추의
 //   보이는 길은 「화면 설정 → 상단 단추」 토글 하나다(index.html v116-recut-newsplit 주석) — 그 길(토글·「화면 설정」 고정)을 먼저 없애지 마라.
 export const TOPBAR_DEFAULT_OFF: readonly string[] = ["btn-new", "btn-split-h", "btn-split-v", "btn-close", "btn-factory-reset"];
@@ -36,7 +37,9 @@ export function defaultTopbarLayout(domIds: readonly string[]): TopbarItem[] {
 // 저장 문자열 → 배치. domIds = 지금 화면(index.html)에 실제로 있는 단추 id(그 순서).
 //   · 없음·JSON 아님·version ≠ 1·items 가 배열 아님·항목 모양이 틀림·아는 단추가 하나도 없음 = 기본값(손상·구판).
 //   · 저장에는 있는데 화면에 없는 id(없어진 단추) = 버린다. 같은 id 두 번 = 앞의 것만.
-//   · 화면에는 있는데 저장에 없는 id(나중에 생긴 단추) = **켠 채 끝에** 붙인다 — 새 단추가 조용히 숨지 않게.
+//   · 화면에는 있는데 저장에 없는 id(나중에 생긴 단추) = **켠 채**, html 에서 **바로 앞 단추의 뒤**에 끼운다(맨 앞 단추면 맨 앞) —
+//     새 단추가 조용히 숨지 않게 · 정한 자리 그대로 서게(cysr-menu-top-row 2026-10-21: 1.1.9 에서 순서를 저장한 사람에게도
+//     상담소·아고라가 피드백 바로 뒤에 선다 — 종전 「끝에」 면 화면 설정 뒤 맨 오른쪽에 떨어졌다).
 //   · 고정 단추는 저장값이 끔이어도 켬으로 읽는다.
 export function parseTopbarLayout(raw: string | null | undefined, domIds: readonly string[]): TopbarItem[] {
   if (!raw) return defaultTopbarLayout(domIds);
@@ -60,7 +63,13 @@ export function parseTopbarLayout(raw: string | null | undefined, domIds: readon
     out.push({ id, on: on || isTopbarPinned(id) });
   }
   if (!out.length) return defaultTopbarLayout(domIds);
-  for (const id of domIds) if (!seen.has(id)) out.push({ id, on: true });
+  domIds.forEach((id, i) => {
+    if (seen.has(id)) return;
+    // 앞 단추는 이미 out 에 있다(저장에 있었거나 이 고리에서 먼저 끼웠다) — html 순서대로 돌기 때문이다.
+    const at = i === 0 ? 0 : out.findIndex((it) => it.id === domIds[i - 1]) + 1;
+    out.splice(at, 0, { id, on: true });
+    seen.add(id);
+  });
   return out;
 }
 

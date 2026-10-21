@@ -113,6 +113,20 @@ check("C1 비표준 exit 0", code == 0)
 check("C2 묘비 미기록(보수)", "tombstone" not in phoenix_log(tmp))
 shutil.rmtree(tmp)
 
+# ── D. B1(1.1.11 · review-a B): `down --purge-state` 의 부적격 도장은 teardown 어느 것보다 먼저 거부 ──
+#   종전엔 도장 검사가 dept_purge_state 안(= kill·묘비·reg_remove 뒤)에만 있어, 부적격 도장이면 부서는
+#   이미 내려가고 등재가 지워진 뒤 「격리 실패 exit 3」으로 끝났다(반쯤 닫힘). 검사 자리 = 인자 파싱 직후.
+tmp = tempfile.mkdtemp(prefix="dt-d-")
+sockD = os.path.join(tmp, "cys-dept-dept-4", "cys.sock")
+env, home, reg = setup(tmp, {"dept-4": {"socket": sockD}})
+env["CYS_TRASH_STAMP"] = "../evil"
+code, out = run(env, "down", "dept-4", "--purge-state")
+check("D1 부적격 도장 exit 2", code == 2, "code=%s %s" % (code, out[-200:]))
+check("D2 teardown 전 거부 — 등재 그대로", "dept-4" in json.load(open(reg, encoding="utf-8"))["depts"],
+      json.dumps(json.load(open(reg, encoding="utf-8"))))
+check("D3 teardown 전 거부 — 묘비 미기록", "tombstone" not in phoenix_log(tmp), phoenix_log(tmp)[-150:])
+shutil.rmtree(tmp)
+
 # ── 정적 트립와이어: 배선 소실 검출 ──
 src = open(DEPT, encoding="utf-8").read()
 check("W1 launch 배선", src.count("dept_tombstone_remove \"$name\"") >= 3,

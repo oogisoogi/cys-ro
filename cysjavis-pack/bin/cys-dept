@@ -2970,6 +2970,13 @@ down_dept(){
     esac
   done
   [ -n "$name" ] || { echo "usage: cys-dept down <name> [--purge-state]" >&2; exit 2; }
+  # ★B1(1.1.11 · review-a B): 격리 도장은 teardown 어느 것보다 먼저 본다 — dept_purge_state 안의 검사는
+  #   kill·묘비·reg_remove 뒤라 부적격이면 부서만 닫히고 「격리 실패」로 끝났다(state 폴더가 없으면 아예 안 봄).
+  if [ "$purge_state" = 1 ]; then
+    case "${CYS_TRASH_STAMP:-0}" in
+      *[!0-9]*) echo "[cys-dept] down: 부적격 도장(CYS_TRASH_STAMP='$CYS_TRASH_STAMP') — 숫자만 허용 · 닫지 않음" >&2; exit 2 ;;
+    esac
+  fi
   # ★P1: 판독 실패를 kill/묘비/CEO 강등 뒤에 발견하지 않는다(읽기만·실패 exit 12 — 1.1.8 병합: 우리 번호).
   reg_count >/dev/null || exit $?
   # ★B11: 닫기 울타리(세대 대조 + 닫는 중 표식) — teardown 어느 것보다 먼저. 9/10/11 은 그대로 전파.

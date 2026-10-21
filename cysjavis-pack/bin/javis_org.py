@@ -708,7 +708,8 @@ def destroy_dept(name, mission_key, purge=False, purge_workdir=False, purge_stat
     if not name or "/" in name or "\\" in name or ".." in name:
         sys.stderr.write("[destroy] 부적격 부서명(%r) — 경로 구분자·상위참조 불허\n" % (name,))
         return [("invalid_name", 2)]
-    if not os.environ.get("CYS_TRASH_STAMP", "0").isdigit():
+    _stamp = os.environ.get("CYS_TRASH_STAMP", "0")
+    if not (_stamp.isascii() and _stamp.isdigit()):   # B2(1.1.11): isdigit 단독은 '²'·'٣' 도 참 — cys-dept 의 [0-9] 와 맞춘다
         sys.stderr.write("[destroy] 부적격 도장(CYS_TRASH_STAMP=%r) — 숫자만 허용\n" % os.environ.get("CYS_TRASH_STAMP"))
         return [("invalid_stamp", 2)]
     actions = []
@@ -1289,7 +1290,10 @@ def self_test():
     m2_calls = []
     for m2_name, m2_ts, m2_code in (("../esc", "100", "invalid_name"), ("a/b", "100", "invalid_name"),
                                      ("..", "100", "invalid_name"), ("ok", "../../evil", "invalid_stamp"),
-                                     ("ok", "12a", "invalid_stamp")):
+                                     ("ok", "12a", "invalid_stamp"),
+                                     # B2(1.1.11 · review-a B): str.isdigit 는 위첨자·다른 문자 체계 숫자도 참 —
+                                     #   cys-dept 의 [0-9] 와 어긋난다(파이썬이 먼저 옮기고 하위가 거부).
+                                     ("ok", "\u00b2", "invalid_stamp"), ("ok", "\u0663", "invalid_stamp")):
         with patch.multiple(sys.modules[__name__], HOME=none_home, DEPTS=none_reg, TRASH_ROOT=none_trash), \
              patch.object(sys.modules[__name__], "require_cso"), \
              patch.dict(os.environ, {"CYS_DEPT_BIN": mk_bin, "CYS_TRASH_STAMP": m2_ts}), \

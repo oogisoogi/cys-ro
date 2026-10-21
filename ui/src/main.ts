@@ -1782,6 +1782,12 @@ function trashConfirmModal(names: string[]): Promise<{ ok: boolean; prev: TrashP
         if (why) stickyToast("trash-preview", "watchdog", "휴지통 — 지우지 않았습니다", why);
         return;
       }
+      if (!prev.confirm_nonce) {
+        // ★1.1.11(C5) — 네이티브 단회 확인이 발급되지 않았다(잠금 오염 등). 타이핑을 열면 「삭제」가 trashDeleteFlow 의
+        //   nonce 가드에서 무소식으로 끝난다 — 여기서 네이티브와 같은 사유 코드로 거부한다.
+        refuse("confirm_unbound", "");
+        return;
+      }
       const confirmNames = shown.map((s) => s.name);
       const modalEntries: TrashEntry[] = confirmNames.map((n) => {
         const base = trashEntries.find((x) => x.name === n);

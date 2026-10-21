@@ -100,6 +100,22 @@ describe("데몬이 부르는 명령만 쓰고, 이름은 그대로 돌려보낸
     const m = fnBody("trashConfirmModal");
     expect(m.includes("if (!yes.disabled) done(true, { ...prev, typed: inp.value });")).toBe(true);
   });
+  it("★C5(TICKET=cysr-1111-next) — ready 에 네이티브 확인(confirm_nonce)이 없으면 타이핑을 열지 않고 confirm_unbound 로 거부한다", () => {
+    // 종전: 확인 미발급(네이티브 잠금 오염)이어도 타이핑이 열렸고, 「삭제」를 누르면 trashDeleteFlow 의 nonce 가드가
+    //   상태줄·알림 없이 끝냈다(무소식 종료). 거부는 네이티브가 내는 것과 같은 사유 코드다(문구는 순수 모듈 표).
+    const m = fnBody("trashConfirmModal");
+    const r = m.slice(m.indexOf("const ready = (prev: TrashPreview) => {"));
+    const iGuard = r.indexOf("if (!prev.confirm_nonce) {");
+    const iRefuse = r.indexOf('refuse("confirm_unbound", "");', iGuard);
+    const iReturn = r.indexOf("return;", iRefuse);
+    const iOpen = r.indexOf("inp.disabled = false;");
+    expect({ 가드: iGuard >= 0, 거부: iRefuse > iGuard, 반환: iReturn > iRefuse, 여는곳보다앞: iReturn < iOpen }).toEqual({
+      가드: true,
+      거부: true,
+      반환: true,
+      여는곳보다앞: true,
+    });
+  });
   it("★폴링은 500ms 타이머 연쇄다 — 새 setInterval 0 이고, 모달을 닫으면 타이머가 취소된다", () => {
     const m = fnBody("trashConfirmModal");
     expect(m.includes("setInterval(")).toBe(false);

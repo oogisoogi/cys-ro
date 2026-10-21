@@ -4310,14 +4310,24 @@ fn meta_blocks_seat(s: &crate::state::Surface) -> bool {
 /// 셋을 **모두** 만족할 때만 true. Unknown 은 false(현행=거부 유지).
 /// ★1.1.9 좌석 판정: 커널 사실은 [`seat_state`] 그대로다 — 뿌리가 에이전트 자신인 유휴 좌석은 Occupied 라
 /// 승계 대상이 아니다(살아 있는 에이전트 자리를 남이 가져가지 않는다).
+/// ★1.1.10 ④: 판정표 순서대로 단락한다 — 좌석이 Empty 가 아니거나 meta 가 막으면 사람 입력 뮤텍스를 잡지 않는다
+/// (Occupied·Unknown 좌석마다 불필요한 lock · poisoned 패닉 경로 봉쇄). 답은 판정표 그대로다.
 pub fn seat_claimable(sys: &System, s: &crate::state::Surface) -> bool {
+    let seat = seat_state(sys, s);
+    if seat != SeatState::Empty {
+        return seat_claimable_verdict(seat, false, false);
+    }
+    let meta_blocks = meta_blocks_seat(s);
+    if meta_blocks {
+        return seat_claimable_verdict(seat, meta_blocks, false);
+    }
     let human_recent = s
         .last_human_input
         .lock()
         .unwrap()
         .map(|t| t.elapsed().as_secs() < queue_human_quiet_secs())
         .unwrap_or(false);
-    seat_claimable_verdict(seat_state(sys, s), meta_blocks_seat(s), human_recent)
+    seat_claimable_verdict(seat, meta_blocks, human_recent)
 }
 
 /// [`seat_claimable`] 의 판정표(순수) — 승계 가능 = 좌석 Empty ∧ 살아 있는 meta 없음 ∧ 최근 사람 입력 없음.
@@ -15896,6 +15906,28 @@ mod tests {
         assert!(seat119_is_agent("python3 -W /tmp/review/worker", &seat119_specs(&[("worker", "worker")])));
     }
 
+    /// ★1.1.10 ④(ChatGPT A/B · master 실측) — 승계 게이트는 좌석이 Empty 가 아니면 사람 입력 뮤텍스를 **잡지 않고** 답한다.
+    /// 종전 본체는 판정 전에 `last_human_input` 을 먼저 lock 해(단락 평가 소실) Occupied·Unknown 좌석마다 불필요한 lock 을
+    /// 잡았고, 그 뮤텍스가 poisoned 면 답이 정해진 좌석에서도 패닉했다. 독(poison)으로 「lock 을 잡았는가」 를 관측한다.
+    #[test]
+    fn seat1110_claimable_answers_without_human_lock_when_seat_not_empty() {
+        let d = drill_daemon("seat1110-lock");
+        let s = d.create_surface(None, Some("sleep 30".into()), None, None, 24, 80).expect("create surface");
+        let s2 = s.clone();
+        let _ = std::thread::spawn(move || {
+            let _held = s2.last_human_input.lock().unwrap();
+            panic!("뮤텍스 독 주입(시험)");
+        })
+        .join();
+        assert!(s.last_human_input.is_poisoned());
+        // 빈 프로세스 표 = 뿌리가 표에 없다 = Unknown → 승계 불가가 이미 정해졌다.
+        let sys = sysinfo::System::new();
+        assert_eq!(super::seat_state(&sys, &s), super::SeatState::Unknown);
+        let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| super::seat_claimable(&sys, &s)));
+        assert_eq!(got.ok(), Some(false), "Empty 아닌 좌석에서 사람 입력 뮤텍스를 잡았다(조기 반환 소실)");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
     /// ★1.1.9 R3 실 프로세스 — 공백이 든 경로의 스크립트를 실제로 돌리는 셸 뿌리(자손 0)를, 따옴표로 묶은 후보로 재면
     /// Occupied 다(후보 쪽 = 셸 낱말 분해 · 뿌리 쪽 = 인자 경계가 살아 있는 실제 argv).
     #[cfg(unix)]
@@ -15935,7 +15967,8 @@ mod tests {
             "즉시 프로브가 본체를 우회"
         );
         assert!(
-            body_of("pub fn seat_claimable(").contains("seat_claimable_verdict(seat_state(sys, s), meta_blocks_seat(s), human_recent)"),
+            body_of("pub fn seat_claimable(").contains("let seat = seat_state(sys, s);")
+                && body_of("pub fn seat_claimable(").contains("seat_claimable_verdict(seat, meta_blocks, human_recent)"),
             "승계 게이트가 판정을 우회"
         );
         let vacant = body_of("pub fn agent_seat_vacant_now(");

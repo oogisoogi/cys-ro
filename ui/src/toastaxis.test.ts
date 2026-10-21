@@ -24,6 +24,11 @@ import {
   coverageDeclaration,
 } from "./alertquiet";
 import { FEED_TOAST_APPROVAL_TITLE, feedCreatedToastTitle } from "./feedclass";
+// ★v0.14.51 편입(우리 main.ts): onDaemonEvent 가 쓰는 우리 순수 모듈 — 스텁이 아니라 **실물**을 샌드박스에 넣는다(문구·번호·큐 막힘 판정·출처 소켓 판정).
+import { seatNo, visibleNo, approvalRequestCopy, approvalStalledCopy, contextThresholdCopy, paneIdleCopy, masterIdleCopy, agentExitedCopy, deadmanCopy, roleTakeoverCopy, seatFolderDeniedCopy } from "./alertcopy";
+import { isMasterSeatSignal } from "./restorebrief";
+import { starvedNotice, starvedShouldPop, starvedPopAgeMs, surfaceIdOfRef } from "./starvednotice";
+import { eventSock } from "./evsock";
 import { bodyPrint, fingerprint, findAnchor, normLine } from "./siteprint";
 
 const SRC = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
@@ -164,7 +169,9 @@ function build(opts: { quiet: boolean; ccOpen?: boolean; slugs?: Record<string, 
     window: { setTimeout: getSpy("window.setTimeout", () => 0) },
     setTimeout: () => 0,
     clearTimeout: () => {},
-    alertsQuiet: opts.quiet ? alertsQuiet : () => false,
+    // ★v0.14.51 편입(우리 · A안): 출하 상수는 false(우리 화면 동작 유지)라 quiet 모드는 **원작자 값 true** 를 직접 주입해 잰다 —
+    //   main.ts 의 가드 배선이 「켜면 정말 끈다」는 것을 시험이 계속 지키게 한다(출하 값 자체는 아래 「출하 값」 시험이 핀).
+    alertsQuiet: opts.quiet ? () => true : () => false,
     pushAlarm: getSpy("pushAlarm", (h: unknown, a: unknown) => [...((h as unknown[]) ?? []), a]),
     toastTtl: () => ({ ttlMs: 1 }),
     toastClassName: () => "toast",
@@ -190,6 +197,18 @@ function build(opts: { quiet: boolean; ccOpen?: boolean; slugs?: Record<string, 
     taskSeatView: () => ({}),
     taskRow: () => "<row/>",
     invoke: getSpy("invoke", () => Promise.resolve({ items: [], groups: [], total: 0 })),
+    // ★v0.14.51 편입(우리 main.ts): 우리 onDaemonEvent 가 더 읽는 것 — 순수 함수는 실물, 상태는 빈 값(모르는 식별자 = 스파이 함수라 Map·배열·불리언 자리에 두면 죽거나 참이 된다).
+    seatNo, visibleNo, approvalRequestCopy, approvalStalledCopy, contextThresholdCopy, paneIdleCopy, masterIdleCopy, agentExitedCopy, deadmanCopy, roleTakeoverCopy, seatFolderDeniedCopy,
+    isMasterSeatSignal,
+    starvedNotice, starvedShouldPop, starvedPopAgeMs, surfaceIdOfRef,
+    eventSock,
+    displayNoByKey: new Map(),
+    starvedLastPopAt: new Map(),
+    starvedLastKey: new Map(),
+    factoryResetting: false,
+    resetCompleted: false,
+    workspaces: [],
+    defaultSocketSlug: null,
   };
   const out: Record<string, (...a: any[]) => any> = {};
   const proxy = new Proxy(store, {
@@ -233,7 +252,15 @@ const EVENTS: { id: string; ev: Record<string, unknown>; expect: string[] }[] = 
   { id: "agent.exited", ev: { name: "agent.exited", category: "agent", surface_id: 7, payload: { role: "worker" } }, expect: ["refreshSidebarStatus"] },
   { id: "master.deadman", ev: { name: "master.deadman", category: "alert", surface_id: 1, payload: { reason: "agent process dead", role: "master" } }, expect: [] },
   { id: "queue.starved", ev: { name: "queue.starved", category: "queue", surface_id: 2, payload: {} }, expect: [] },
+  // ★v0.14.51 편입(우리 main.ts): 우리는 원작자 S5(큐 막힘 경보 제거)를 받지 않았다 — 판정 가능한 payload(사람 손 · surface:<n>)로 경보 블록이 실제로 도는 모양을 더한다.
+  { id: "queue.starved.human", ev: { name: "queue.starved", category: "queue", surface_id: 2, socket_slug: "dept-5", payload: { surface_ref: "surface:2", role: "worker", remedy_code: "machine_residue", blocked_by: "x", waited_secs: 700 } }, expect: [] },
   { id: "queue.delivered", ev: { name: "queue.delivered", category: "queue", surface_id: 2, payload: {} }, expect: [] },
+  { id: "queue.expired", ev: { name: "queue.expired", category: "queue", surface_id: 2, payload: { queue_entry_id: "q1" } }, expect: [] },
+  { id: "queue.revived", ev: { name: "queue.revived", category: "queue", surface_id: 2, payload: { queue_entry_id: "q1" } }, expect: [] },
+  // ★v0.14.51 편입(우리 main.ts): 우리만의 데몬 출처 sticky 분기 셋(daemonStickyToast 경유) — quiet 면 박스·알람 0 이어야 한다.
+  { id: "restore.retrying", ev: { name: "restore.retrying", category: "info", socket_slug: "base", payload: { message: "재시도 대기" } }, expect: [] },
+  { id: "role.takeover", ev: { name: "role.takeover", category: "info", surface_id: 4, socket_slug: "base", payload: { role: "master", prev_surface: 1 } }, expect: [] },
+  { id: "seat.folder_denied", ev: { name: "seat.folder_denied", category: "info", surface_id: 4, payload: { folder: "Documents" } }, expect: [] },
   { id: "status.changed", ev: { name: "status.changed", category: "status", surface_id: 5, socket_slug: "dept-5", payload: { state: "working" } }, expect: ["refreshSidebarStatus", "upsertTaskCell"] },
   { id: "task.changed", ev: { name: "task.changed", category: "task", surface_id: 5, socket_slug: "dept-5", payload: { task: "x" } }, expect: ["upsertTaskCell"] },
   { id: "osc.notify", ev: { name: "osc.notify", category: "osc", surface_id: 6, payload: { title: "T", body: "B" } }, expect: [] },
@@ -282,7 +309,8 @@ describe("TOAST 축 T-1 — 데몬 이벤트가 밀어 올린 사람 싱크 0", 
 
   test("category × name 퍼즈 — 어떤 조합도 박스·배너·알람 이력·Feed 전환을 만들지 않는다", async () => {
     const cats = ["", "health", "watchdog", "feed", "info", "alert", "approval", "context", "osc", "unknown-x"];
-    const names = ["", "x", "approval.request", "context.threshold", "pane.idle", "master.idle", "agent.exited", "master.deadman", "queue.starved", "queue.delivered", "status.changed", "task.changed", "osc.notify", "feed.item.created", "watchdog.duplicate_procs", "surface.exited", "surface.closed", "surface.reaped", "health.stuck"];
+    const names = ["", "x", "approval.request", "context.threshold", "pane.idle", "master.idle", "agent.exited", "master.deadman", "queue.starved", "queue.delivered", "status.changed", "task.changed", "osc.notify", "feed.item.created", "watchdog.duplicate_procs", "surface.exited", "surface.closed", "surface.reaped", "health.stuck",
+      "restore.retrying", "role.takeover", "seat.folder_denied", "queue.expired", "queue.revived"]; // ★v0.14.51 편입: 우리 main.ts 의 추가 분기
     let n = 0;
     for (const category of cats)
       for (const name of names) {
@@ -385,7 +413,9 @@ describe("TOAST 축 — 가드 싱크(함수 실행)", () => {
     l.elements.set("cc-alerts", fakeEl());
     l.fn.renderAlerts(view);
     expect(l.elements.get("cc-alerts")!.innerHTML).toContain("cc-alert-row");
-    expect(l.elements.get("cc-alertbadge")!.textContent).toBe("3");
+    // ★v0.14.51 편입(우리 main.ts): 경보 개수 배지(#cc-alertbadge)는 우리 포크가 94dd866b 에서 지웠다 — renderAlerts 는 스트립만 그린다.
+    //   원작자 단언(배지 textContent "3")은 우리에게 대상이 없으므로, 대신 「배지를 다시 건드리지 않는다」를 핀한다(되살아나면 이 단언과 함께 다시 본다).
+    expect(l.elements.get("cc-alertbadge")!.textContent).toBe("");
   });
 
   test("양성 대조 C — 승인 Feed 상호작용 면(카드·묶음 확인)은 quiet=true 에서도 그대로 조회·그려진다(부서장 판정 R1 §3 · 오너 승인)", async () => {
@@ -419,7 +449,7 @@ describe("TOAST 축 — 가드 싱크(함수 실행)", () => {
     l.fn.onDaemonEvent(ev);
     await flush();
     expect([l.stickyMap.size, l.toasts.children.length, l.calls.pushAlarm?.length ?? 0]).toEqual([1, 1, 1]);
-    expect([...l.stickyMap.keys()]).toEqual(["master-idle:base:master"]); // 데몬 이벤트가 만든 id — role별 안정 id(데몬 출처 sticky 는 이 하나뿐)
+    expect([...l.stickyMap.keys()]).toEqual(["master-idle:base:master"]); // 데몬 이벤트가 만든 id — role별 안정 id(★v0.14.51 편입: 우리 데몬 출처 sticky 는 이것 말고 넷 더 — 아래 「우리 데몬 출처 sticky」 시험)
   });
 
   test("updatePendingBadges — quiet 에서 배지 요소를 건드리지 않고, 가드가 풀리면 건드린다(양성 대조)", () => {
@@ -433,6 +463,55 @@ describe("TOAST 축 — 가드 싱크(함수 실행)", () => {
     l.elements.set("cc-pending-badge", b2);
     l.fn.updatePendingBadges(3);
     expect([b2.hidden, b2.textContent]).toEqual([false, "3"]);
+  });
+});
+
+// ★v0.14.51 편입(우리 · master#1a52b068 A안): 출하 값과 우리 추가 분기 — 원작자 시험에 없는 것.
+describe("TOAST 축 — 우리 포크(출하 값 false · S5 미채택 queue.starved · 우리 데몬 출처 sticky)", () => {
+  test("출하 값 — 우리 alertsQuiet(<sink>) 는 모든 QUIET_SINKS 에서 false 다(원작자 출하 값은 true · quiet 모드 시험은 true 를 직접 주입해 원작자 동작을 잰다)", () => {
+    expect(QUIET_SINKS.length).toBe(12);
+    for (const s of QUIET_SINKS) expect([s, alertsQuiet(s)]).toEqual([s, false]);
+    expect(coverageDeclaration()).toContain(" quiet=false ");
+  });
+
+  const STARVED_HUMAN = { name: "queue.starved", category: "queue", surface_id: 2, socket_slug: "dept-5", payload: { surface_ref: "surface:2", role: "worker", remedy_code: "machine_residue", blocked_by: "x", waited_secs: 700 } };
+  // 대기(calm) 사유 — 사람 손이 아니라 같은 키로 두 번째 오면 팝업 대신 recordAlarm(직접 호출) 갈래로 간다.
+  const STARVED_CALM = { name: "queue.starved", category: "queue", surface_id: 3, socket_slug: "dept-5", payload: { surface_ref: "surface:3", role: "worker", remedy_code: "wait", blocked_by: "y", waited_secs: 700 } };
+  test("queue.starved — quiet=true 면 박스·OS 배너·알람 이력(직접 recordAlarm 갈래 포함)·구간 기억 0 / quiet=false 면 sticky 1·배너 1·알람 기록이 선다(양성 대조)", async () => {
+    const q = build({ quiet: true });
+    q.fn.onDaemonEvent(STARVED_HUMAN);
+    q.fn.onDaemonEvent(STARVED_CALM);
+    q.fn.onDaemonEvent(STARVED_CALM); // 같은 키 두 번째 = 블록이 돌면 recordAlarm 직접 호출 갈래
+    await flush();
+    expect([q.toasts.children.length, q.stickyMap.size, q.calls.sendNotification?.length ?? 0, q.calls.pushAlarm?.length ?? 0]).toEqual([0, 0, 0, 0]);
+    // 블록 가드(starvedNotice)가 블록 전체를 막는다 — 래퍼만으로는 막히지 않는 구간 기억·직접 알람 기록까지 0
+    expect([(q.store.starvedLastKey as Map<string, unknown>).size, (q.store.starvedLastPopAt as Map<string, unknown>).size]).toEqual([0, 0]);
+
+    const l = build({ quiet: false });
+    l.fn.onDaemonEvent(STARVED_HUMAN);
+    await flush();
+    expect([l.toasts.children.length, l.stickyMap.size, l.calls.sendNotification?.length ?? 0, l.calls.pushAlarm?.length ?? 0]).toEqual([1, 1, 1, 1]);
+    l.fn.onDaemonEvent(STARVED_CALM);
+    l.fn.onDaemonEvent(STARVED_CALM);
+    await flush();
+    // calm 첫 번째 = 팝업(sticky +1 · 알람 +1 · 배너 없음) · 두 번째 = 팝업 없이 recordAlarm 직접(알람 +1 · 박스 그대로)
+    expect([l.stickyMap.size, l.calls.sendNotification?.length ?? 0, l.calls.pushAlarm?.length ?? 0]).toEqual([2, 1, 3]);
+  });
+
+  test("우리 데몬 출처 sticky 넷(restore.retrying · role.takeover · seat.folder_denied · queue.starved) — quiet=true 면 레지스트리 0 / quiet=false 면 각자 안정 id 하나(양성 대조)", async () => {
+    const cases: [string, string][] = [["restore.retrying", "restore-retrying:"], ["role.takeover", "role-takeover:"], ["seat.folder_denied", "perm-seat-"], ["queue.starved.human", ""]];
+    for (const [id, prefix] of cases) {
+      const ev = EVENTS.find((e) => e.id === id)!.ev;
+      const q = build({ quiet: true });
+      q.fn.onDaemonEvent(ev);
+      await flush();
+      expect([id, q.stickyMap.size, q.toasts.children.length, q.calls.pushAlarm?.length ?? 0]).toEqual([id, 0, 0, 0]);
+      const l = build({ quiet: false });
+      l.fn.onDaemonEvent(ev);
+      await flush();
+      expect([id, l.stickyMap.size, l.toasts.children.length, l.calls.pushAlarm?.length ?? 0]).toEqual([id, 1, 1, 1]);
+      expect([id, [...l.stickyMap.keys()][0].startsWith(prefix)]).toEqual([id, true]);
+    }
   });
 });
 
@@ -654,6 +733,11 @@ describe("TOAST 축 — R1b 구멍 넷 (자동 전환 · 푸터 · 부서 오류
 //     실행 흐름 자체는 위 이벤트·싱크 실행 시험(T-1·AT-20 등)이 지킨다.
 //   · 의도된 변경으로 지문이 바뀌면 실패 메시지가 실제 값을 찍는다 — 이 표의 pin 을 다시 계산해 넣는다(변경 이유를 커밋에 적는다).
 //   · kind: daemon-info(상단바 오류 표기) · update(업데이트·팩 적용 고지) · K6(부트·설치본·온보딩 고지) · R2(`--wait` 대기 항목 배너 — 핀은 R2 수리 시점에서 계산, 나머지는 4bad39ca)
+//   · ★v0.14.51 편입: 우리 main.ts 로 재기준선(같은 siteprint.fingerprint) — 바뀐 핀: feed-wait-banner(선행 분기 줄 차이) · info-pid · info-noresp · update-warn(우리 문구로 앵커 교체) ·
+//     update-result-notice(우리 갱신 경로 자리 — 새 행). 그대로인 핀 17개는 원작자 값과 같다(재계산 결과 일치).
+//     우리 main.ts 에 **자리 자체가 없는** 원작자 행 13개는 뺐다: upd-pack-start · upd-pack-fail-toast · silent-update-toast · upd-bin-1~5 · upd-pack-apply · pack-already ·
+//     pack-partial · upd-bin-patch · update-failed — 우리 앱은 앱 안 업데이트 단추·다운로드·팩 적용 고지를 갖지 않는다(1.1.8 U4 「갱신을 결정·집행하는 코드는 앱에 0」).
+//     (근거: main.ts 에서 `"upd-pack"`·`"upd-bin"`·`UPDATE_FAILED_TOAST_ID`·「팩 업데이트 실패」·「이미 적용돼 있음」·「팩 일부 미각성」·「패치 설치」·`if (t) toast(` 0 히트 — 아래 「열거 완전성」이 그 id 들이 다시 나타나면 적색.)
 interface KeptSite {
   id: string;
   kind: "daemon-info" | "update" | "K6" | "R2";
@@ -662,29 +746,19 @@ interface KeptSite {
   pin: string;
 }
 const KEPT_SITES: KeptSite[] = [
-  { id: "feed-wait-banner", kind: "R2", anchor: "if (payload.wait === true && payload.auto_route !== true) osBanner(feedCreatedToastTitle(payload.kind), String(payload.title ?? \"\"));", nth: 0, pin: "095ff275a023d511" },
+  { id: "feed-wait-banner", kind: "R2", anchor: "if (payload.wait === true && payload.auto_route !== true) osBanner(feedCreatedToastTitle(payload.kind), String(payload.title ?? \"\"));", nth: 0, pin: "7e292a7ea0458b84" }, // 재기준선: 우리 onDaemonEvent 의 선행 분기 줄(restore.retrying·role.takeover·seat.folder_denied·queue.expired/revived·복원 카드 판정) · 원작자 U16 팀 제안 분기 없음
   { id: "K5-daemon-error", kind: "daemon-info", anchor: "info.textContent = `daemon error: ${e.payload}`;", nth: 0, pin: "1fc56231bf45df6e" },
   { id: "K5-startup-failed", kind: "daemon-info", anchor: "document.getElementById(\"daemon-info\")!.textContent = `startup failed: ${e}`;", nth: 0, pin: "607b4ac9163cc886" },
   { id: "K5-recovery-failed", kind: "daemon-info", anchor: "document.getElementById(\"daemon-info\")!.textContent = `startup failed: ${e} / recovery failed: ${e2}`;", nth: 0, pin: "bd517611b51bc743" },
   { id: "info-verskew", kind: "daemon-info", anchor: "info.appendChild(verSkewBadge);", nth: 0, pin: "f1f0e053fc42afc9" },
   { id: "info-blocked", kind: "daemon-info", anchor: "info.textContent = daemonActionBlockedMsg();", nth: 0, pin: "c8b805cf81306f13" },
-  { id: "info-pid", kind: "daemon-info", anchor: "info.textContent = `daemon pid=${status.daemon_pid} sock=${status.socket_path}`;", nth: 0, pin: "a16c137737a92fb7" },
-  { id: "info-noresp", kind: "daemon-info", anchor: "info.textContent = \"데몬 응답 없음 — 화면은 계속 사용할 수 있습니다(연결되면 자동으로 붙습니다)\";", nth: 0, pin: "f9baef97e329c860" },
-  { id: "upd-pack-start", kind: "update", anchor: "stickyToast(\"upd-pack\", \"feed\", \"↻ 무중단 팩 업데이트\", `팩 ${pv} 적용 중… 세션·데몬 유지(재시작 없음).`);", nth: 0, pin: "8ce6fd934d60bf6e" },
-  { id: "upd-pack-fail-toast", kind: "update", anchor: "toast(\"health\", \"팩 업데이트 실패\", String(e));", nth: 0, pin: "d0cd2fbfa976eb51" },
-  { id: "silent-update-toast", kind: "update", anchor: "if (t) toast(\"feed\", t.title, t.msg);", nth: 0, pin: "9c92b98f8b000ab0" },
+  { id: "info-pid", kind: "daemon-info", anchor: "info.textContent = daemonInfoLabel(status);", nth: 0, pin: "ee6f8acb67328e1c" }, // 우리: (D4 #5) 라벨 함수 · 전문은 툴팁(원작자 `daemon pid=…` 줄과 같은 자리)
+  { id: "info-noresp", kind: "daemon-info", anchor: "info.textContent = \"엔진 응답 없음\";", nth: 0, pin: "f2e72b90d0a72b05" }, // 우리: (D-1) 짧은 라벨 · 설명은 툴팁(원작자 「데몬 응답 없음 — …」 줄과 같은 자리)
   { id: "safe-mode-start", kind: "K6", anchor: "stickyToast(\"safe-mode\", \"health\", \"안전모드 — 설치 위치를 옮겨 주세요\", guidance);", nth: 0, pin: "a408a3d221e3cde7" },
   { id: "bundle-damaged-start", kind: "K6", anchor: "stickyToast(\"bundle-damaged\", \"health\", \"설치본이 온전하지 않습니다 — 재설치 필요\", damage);", nth: 0, pin: "8179f4e7bca32541" },
   { id: "claude-missing", kind: "K6", anchor: "stickyToast(\"claude-missing\", \"health\", \"Claude Code CLI가 없습니다\", hint);", nth: 0, pin: "cd63b1333f50d07d" },
-  { id: "upd-bin-1", kind: "update", anchor: "stickyToast(\"upd-bin\", \"feed\", \"⬇ 업데이트 설치\", \"다운로드 시작…\");", nth: 0, pin: "1ab88556f3ff9cd5" },
-  { id: "upd-bin-2", kind: "update", anchor: "stickyToast(\"upd-bin\", \"feed\", \"⬇ 업데이트 설치\", `다운로드 중 ${mb(updDownloaded)} / ${mb(p.total)} MB (${pct}%)`);", nth: 0, pin: "c47d425a280ecee0" },
-  { id: "upd-bin-3", kind: "update", anchor: "stickyToast(\"upd-bin\", \"feed\", \"⬇ 업데이트 설치\", `다운로드 중 ${mb(updDownloaded)} MB`);", nth: 0, pin: "410d4fb4a3da9819" },
-  { id: "upd-bin-4", kind: "update", anchor: "stickyToast(\"upd-bin\", \"feed\", \"⬇ 업데이트 설치\", \"세션 정리 중…\");", nth: 0, pin: "a5be5464d81aeea3" },
-  { id: "upd-bin-5", kind: "update", anchor: "stickyToast(\"upd-bin\", \"feed\", \"⬇ 업데이트 설치\", \"재시작 준비 중…\");", nth: 0, pin: "afdcd1969e2f7e93" },
-  { id: "upd-pack-apply", kind: "update", anchor: "stickyToast(\"upd-pack\", \"feed\", \"🔄 무중단 적용 중\", \"서명검증 → 다운로드 → 원자적 팩 교체 → 노드 reinject…\");", nth: 0, pin: "c6179312c9d356cd" },
-  { id: "pack-already", kind: "update", anchor: "toast(\"watchdog\", \"ℹ 이미 적용돼 있음\", `팩 ${p.disk_version ?? \"\"} — 반영할 것이 없습니다(이미 최신).`);", nth: 0, pin: "98d9acbe744e0208" },
-  { id: "pack-partial", kind: "update", anchor: "toast(\"health\", \"⚠ 팩 일부 미각성\", p.message ?? \"디스크 팩은 갱신됐으나 일부 노드 reinject 보류/실패(라이브 유지).\");", nth: 0, pin: "3facd62da87e228a" },
-  { id: "update-warn", kind: "update", anchor: "toast(\"health\", \"업데이트 경고\", msg);", nth: 0, pin: "30467694c59a4023" },
+  { id: "update-warn", kind: "update", anchor: "toast(\"health\", \"새 판 반영 경고\", msg);", nth: 0, pin: "8bedb3853e7573f9" }, // 우리: (1.1.8 U4) 「업데이트」 낱말 없음(원작자 「업데이트 경고」와 같은 update-error 듣개)
+  { id: "update-result-notice", kind: "update", anchor: "stickyToast(n.toastId, \"feed\", n.title, n.body);", nth: 0, pin: "eca1ab835747002a" }, // 우리 갱신 경로(1.1.8 U4 자동 갱신 결과 알림) — 원작자 upd-bin/upd-pack 자리 대신 이 한 자리가 우리 「업데이트 경로 남김」이다
   { id: "boot-warn", kind: "K6", anchor: "stickyToast(\"boot-warn\", \"health\", \"팀 기동 경고\", msg);", nth: 0, pin: "567bfe96cc30d932" },
   { id: "boot-info", kind: "K6", anchor: "stickyToast(\"boot-info\", \"health\", \"팀 기동 안내\", msg);", nth: 0, pin: "63af881eb2cefa72" },
   { id: "boot-degrade", kind: "K6", anchor: "stickyToast(\"boot-degrade\", \"health\", \"팀 부트 경로 강등\", msg);", nth: 0, pin: "a0b21799994a3004" },
@@ -694,14 +768,14 @@ const KEPT_SITES: KeptSite[] = [
   { id: "onboard-capped", kind: "K6", anchor: "if (kind === \"capped\") stickyToast(\"onboard-capped\", \"health\", \"Claude 설정 파일을 고쳐 주세요\", message);", nth: 0, pin: "ccaa6290cb9cd4c4" },
   { id: "onboard-restored", kind: "K6", anchor: "else if (kind === \"restored\") stickyToast(\"onboard-restored\", \"health\", \"Claude 연결 설정을 다시 넣었습니다\", message);", nth: 0, pin: "2c57cd9493198257" },
   { id: "onboard-devtools", kind: "K6", anchor: "else if (kind === \"devtools-missing\") stickyToast(\"onboard-devtools\", \"health\", \"개발자 도구 없이 동작 중입니다\", message);", nth: 0, pin: "d7780395e2c8965d" },
-  { id: "upd-bin-patch", kind: "update", anchor: "stickyToast(\"upd-bin\", \"feed\", \"⬇ 패치 설치(자동 테스트)\", \"패치 업데이트 확인·설치 중…\");", nth: 0, pin: "f7cbba739b0fb1fa" },
-  { id: "update-failed", kind: "update", anchor: "if (plan.kind === \"notice\") stickyToast(UPDATE_FAILED_TOAST_ID, \"health\", plan.title, plan.body);", nth: 0, pin: "995ec2c77d9286ab" },
 ];
+// ★v0.14.51 편입: 우리 main.ts 로 재기준선(같은 bodyPrint) — toast/stickyToast/recordAlarm 은 우리 D4 #14 `raw` 인자(원문은 「자세히」 안쪽 · setToastRaw · RAW_DETAIL_LABEL)
+//   와 stickyToast 클릭 핸들러 표기 차이로 원작자 값(0112c5af32addf86 · 08c33dfc6cb3ae9f · fbca511a1e48fe1a)과 다르다. 가드·조기 반환 추가는 아니다(아래 「통짜 가드 없음」 시험이 따로 본다). osBanner 는 원작자 값 그대로.
 const SINK_BODY_PINS: Record<string, string> = {
-  toast: "0112c5af32addf86",
-  stickyToast: "08c33dfc6cb3ae9f",
+  toast: "314fce42c639cfb4",
+  stickyToast: "3f5673c93dd930dc",
   osBanner: "0c60fbe8ba648c4a",
-  recordAlarm: "fbca511a1e48fe1a",
+  recordAlarm: "0a201d6f47a90188",
 };
 
 
@@ -721,7 +795,8 @@ describe("TOAST 축 — 남긴 자리 지문 (K5·K6·daemon-info 전수 · 업�
     const ids = /["'](upd-pack|upd-bin|safe-mode|bundle-damaged|claude-missing|boot-warn|boot-info|boot-degrade|onboard-capped|onboard-restored|onboard-devtools)["']|UPDATE_FAILED_TOAST_ID,/;
     const have = new Set(KEPT_SITES.map((k) => k.anchor));
     const calls = MAIN_LINES.map(normLine).filter((l) => ids.test(l) && /(^|[^A-Za-z])stickyToast\(/.test(l));
-    expect(calls.length).toBeGreaterThanOrEqual(20);
+    // ★v0.14.51 편입: 원작자 모집단 20+ 중 업데이트 자리 8(upd-pack·upd-bin·UPDATE_FAILED_TOAST_ID)은 우리 main.ts 에 없다 — 우리 모집단 = 안전모드 2 · 설치본 3 · CLI 없음 1 · 부트 3 · 온보딩 3 = 12.
+    expect(calls.length).toBeGreaterThanOrEqual(12);
     for (const l of calls) expect([l.slice(0, 80), have.has(l)]).toEqual([l.slice(0, 80), true]);
     for (const l of calls) expect(/daemonStickyToast\(/.test(l)).toBe(false);
   });
@@ -787,16 +862,34 @@ describe("TOAST 축 — 출처 핀 · 통짜 가드 금지 · 커버리지", () 
     expect(feed).toContain("if (payload.wait === true && payload.auto_route !== true) osBanner(");
     expect(SRC).not.toContain("function daemonOpenFeed("); // 호출자 0 이 된 죽은 래퍼는 남기지 않는다(실효 0 장치)
     expect(SRC).not.toContain("daemonOpenFeed(");
-    expect((body.match(/daemonToast\(/g) ?? []).length).toBe(10);
-    expect((body.match(/daemonStickyToast\(/g) ?? []).length).toBe(1);
-    expect((body.match(/daemonOsBanner\(/g) ?? []).length).toBe(4); // approval.request 의 배너가 래퍼로 돌아와 호출자 4(context.threshold · agent.exited · master.deadman · approval.request)
+    // ★v0.14.51 편입(우리 main.ts): 원작자 10·1·4 → 우리 9·5·5.
+    //   daemonToast 9 = approval.request · context.threshold · pane.idle · agent.exited · master.deadman · osc.notify · health · watchdog · feed.item.created (원작자 10번째 = U16 팀 제안 카드 안내 — 우리는 받지 않았다)
+    //   daemonStickyToast 5 = master.idle + 우리 restore.retrying · role.takeover · seat.folder_denied + queue.starved(S5 미채택 · starvedNotice 블록 안)
+    //   daemonOsBanner 5 = approval.request · context.threshold · agent.exited · master.deadman + queue.starved(사람 손일 때 · starvedNotice 블록 안)
+    expect((body.match(/daemonToast\(/g) ?? []).length).toBe(9);
+    expect((body.match(/daemonStickyToast\(/g) ?? []).length).toBe(5);
+    expect((body.match(/daemonOsBanner\(/g) ?? []).length).toBe(5);
+    // 래퍼가 닿지 않는 직접 알람 이력 기록은 queue.starved 의 recordAlarm 하나뿐이고, 그 줄은 starvedNotice 블록 가드 안이다(가드 줄이 그 앞 · 블록 안 유일).
+    expect((body.match(/(?<![A-Za-z0-9_.])recordAlarm\(/g) ?? []).length).toBe(1);
+    const sg = body.indexOf('if (starved && !alertsQuiet("starvedNotice")) {');
+    const qs = body.indexOf('name === "queue.starved"');
+    const qn = body.indexOf('name === "queue.expired"');
+    expect([qs >= 0, sg > qs, qn > sg]).toEqual([true, true, true]);
+    const starvedSeg = body.slice(sg, qn);
+    expect((starvedSeg.match(/(?<![A-Za-z0-9_.])recordAlarm\(/g) ?? []).length).toBe(1);
+    expect((starvedSeg.match(/daemonStickyToast\(/g) ?? []).length).toBe(1);
+    expect((starvedSeg.match(/daemonOsBanner\(/g) ?? []).length).toBe(1);
     // 유예 후 자동 전환 예약은 호출부 인라인 가드(probefail 핀 보존): 가드 줄 + 호출 1
     expect(body).toContain('(payload.wait === true || autoRoute) && !alertsQuiet("feedSwitch")');
     expect((body.match(/(?<![A-Za-z0-9_])scheduleFeedSwitchIfStillPending\(/g) ?? []).length).toBe(1);
   });
 
   test("onDaemonEvent 에는 앞쪽 early return 가드가 없다 — 첫 문장이 alertsQuiet 가 아니다", () => {
-    expect((body.match(/alertsQuiet\(/g) ?? []).length).toBe(1); // 유일: feed.item.created 의 유예 후 전환 예약 인라인 가드(early return 아님)
+    // ★v0.14.51 편입(우리 main.ts): 2 = feedSwitch 인라인 가드(feed.item.created 의 유예 후 전환 예약) + starvedNotice 블록 가드(queue.starved 경보 블록) — 둘 다 early return 이 아니다.
+    expect((body.match(/alertsQuiet\(/g) ?? []).length).toBe(2);
+    expect((body.match(/alertsQuiet\("feedSwitch"\)/g) ?? []).length).toBe(1);
+    expect((body.match(/alertsQuiet\("starvedNotice"\)/g) ?? []).length).toBe(1);
+    expect(/alertsQuiet\([^)]*\)\)\s*return/.test(body)).toBe(false); // 어느 가드도 `if (alertsQuiet(…)) return` 꼴이 아니다
     const first = body.split("\n").slice(1).find((l) => l.trim() !== "")!;
     expect(first.trim().startsWith("const name")).toBe(true);
   });
@@ -822,8 +915,11 @@ describe("TOAST 축 — 출처 핀 · 통짜 가드 금지 · 커버리지", () 
 
   test("업데이트·안전모드 고지 호출부는 래퍼가 아니라 직접 호출이다(최소 8곳) · Feed 상호작용 함수에는 가드가 없다", () => {
     const code = stripComments(SRC);
-    const sites = code.split("\n").filter((l) => /["']upd-(pack|bin)["']|["']safe-mode["']|UPDATE_FAILED_TOAST_ID,/.test(l) && /[sS]tickyToast\(/.test(l));
-    expect(sites.length).toBeGreaterThanOrEqual(8);
+    // ★v0.14.51 편입: 우리 갱신 경로 자리(1.1.8 U4 자동 갱신 결과 알림 `stickyToast(n.toastId, …)`)를 모집단에 더한다 — 원작자 upd-pack/upd-bin 자리는 우리에게 없다(남긴 자리 표 머리말).
+    //   원작자 바닥 8 = upd 자리 6+ · safe-mode 2 → 우리 바닥 3 = safe-mode 2 · 갱신 결과 알림 1.
+    const sites = code.split("\n").filter((l) => /["']upd-(pack|bin)["']|["']safe-mode["']|UPDATE_FAILED_TOAST_ID,|\bn\.toastId,/.test(l) && /[sS]tickyToast\(/.test(l));
+    expect(sites.length).toBeGreaterThanOrEqual(3);
+    expect(sites.some((l) => /\bn\.toastId,/.test(l))).toBe(true);
     for (const l of sites) expect(/daemonStickyToast\(/.test(l)).toBe(false);
     for (const n of ["refreshFeed", "renderBulkConfirm", "renderOtherWorkspacePending"]) expect([n, /alertsQuiet\(/.test(stripComments(extractFn(n)))]).toEqual([n, false]);
   });
@@ -847,7 +943,7 @@ describe("TOAST 축 — 출처 핀 · 통짜 가드 금지 · 커버리지", () 
     for (const m of stripComments(SRC).matchAll(/alertsQuiet\("(\w+)"\)/g)) counts[m[1]] = (counts[m[1]] ?? 0) + 1;
     for (const s of QUIET_SINKS) expect([s, counts[s] ?? 0]).toEqual([s, EXPECTED_GUARDS[s]]);
     expect(Object.keys(counts).sort()).toEqual([...QUIET_SINKS].sort());
-    expect(CHANNEL_COUNT).toBe(13); // UI 가드 11 + 경로 덮임 1(recordAlarm) + CLI 군 1(호출부 7) = 13 (UI 12 + CLI 1)
+    expect(CHANNEL_COUNT).toBe(14); // ★v0.14.51 편입: UI 가드 12(원작자 11 + 우리 starvedNotice) + 경로 덮임 1(recordAlarm) + CLI 군 1(호출부 7) = 14 (원작자 13)
     expect(ROUTE_COVERED).toEqual(["recordAlarm"]);
     expect(CLI_PROSE_CALLSITES).toBe(7);
     // eslint-disable-next-line no-console
@@ -857,6 +953,7 @@ describe("TOAST 축 — 출처 핀 · 통짜 가드 금지 · 커버리지", () 
   test("전 이벤트 분기를 이 시험이 덮는다 — onDaemonEvent 의 name 분기 수와 EVENTS 표가 일치", () => {
     const names = new Set([...body.matchAll(/name === "([\w.]+)"/g)].map((m) => m[1]));
     for (const n of names) expect([n, EVENTS.some((e) => e.ev.name === n)]).toEqual([n, true]);
-    expect(names.size).toBe(17); // approval.request/stalled · context.threshold · pane.idle · master.idle/deadman · agent.exited · queue.starved/delivered · status.changed · task.changed · osc.notify · feed.item.created · watchdog.duplicate_procs · surface.exited/closed/reaped
+    // ★v0.14.51 편입(우리 main.ts): 원작자 17 + 우리 5(restore.retrying · role.takeover · seat.folder_denied · queue.expired · queue.revived) = 22
+    expect(names.size).toBe(22); // approval.request/stalled · context.threshold · restore.retrying · role.takeover · seat.folder_denied · pane.idle · master.idle/deadman · agent.exited · queue.starved/expired/revived/delivered · status.changed · task.changed · osc.notify · feed.item.created · watchdog.duplicate_procs · surface.exited/closed/reaped
   });
 });

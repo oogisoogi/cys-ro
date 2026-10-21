@@ -15,6 +15,7 @@
 //   끄는 것 = 데몬 이벤트 출처의 모든 사람 싱크 — toast·stickyToast·osBanner(래퍼 경유) · recordAlarm(그 래퍼가 닿지 않아 기록 0) · renderAlerts · 사이드바 ⚠ ·
 //             탭 부제 상태 점 · 승인 대기 건수 배지 · Feed 자동 화면 전환 · Control Center 실패 배지 · CC 푸터 · Tasks 오류 행
 //             (= UI 12 = 가드 보유 싱크 11 + 경로 덮임 1[recordAlarm])  +  CLI 경보 산문 호출부 7곳 (= 채널 1) ⇒ 채널 13
+//   ★v0.14.51 편입(우리): 가드 싱크 `starvedNotice`(큐 막힘 블록 · 원작자 S5 제거 대신) 1 추가 ⇒ 가드 보유 12 · 채널 14(CHANNEL_COUNT 가 계산한다).
 //   남기는 것 = 사용자 행동 응답 토스트 · 업데이트 경로 전부 · 앱 백엔드 알림 · 데이터 뷰 · `--json` 필드·exit code · 명령 오류·사용법·진단 stderr
 //             · 데몬 출처인데 **꺼지지 않는** 직접 호출 넷(위 출처 규칙): approval.stalled 셋 + `--wait` 대기 항목 배너 하나
 // 런마다 coverageDeclaration() 이 이 재고를 출력하고 시험이 소스의 실제 가드 수와 대조한다(B-216).

@@ -225,7 +225,7 @@
 # 사용: run.sh <old|fixed>  — 격리 cysd 기동 → launch-agent(fakeclaude) → 좌석 생존 판정 → 데몬 정리
 E="$(cd "$(dirname "$0")" && pwd)"; V="$1"
 R="$E/r-$V"; rm -rf "${R:?}"; mkdir -p "$R/home"
-SK="/private/tmp/claude-501/-Users-oogisoogi-axdev--wt-cys-v116-tusage/4fd59ca0-1979-4a2f-92f5-d8b96321c5a6/scratchpad/s/$V.sock"; SKL="/private/tmp/claude-501/v116$V.sock"; rm -f "$SKL"; export HOME="$R/home" CYS_SOCKET="$SKL" CYS_PACK_DIR="$E/pack" CYS_NO_AUTOSTART=1
+SK="/private/tmp/claude-501/-Users-USER-axdev--wt-cys-v116-tusage/4fd59ca0-1979-4a2f-92f5-d8b96321c5a6/scratchpad/s/$V.sock"; SKL="/private/tmp/claude-501/v116$V.sock"; rm -f "$SKL"; export HOME="$R/home" CYS_SOCKET="$SKL" CYS_PACK_DIR="$E/pack" CYS_NO_AUTOSTART=1
 unset CYS_SURFACE_ID CYS_ROLE CLAUDE_CONFIG_DIR
 "$E/bin-fixed/cysd" >"$R/cysd.out" 2>&1 &
 DPID=$!

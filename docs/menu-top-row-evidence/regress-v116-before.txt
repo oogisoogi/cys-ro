@@ -16,7 +16,7 @@ PASS c12c 역할 창 이름 비워 확정 → 「1 · master」 유지(번호·�
 556 |   check("c17h 설치 확인 창 떠 있는 사이 교체 완료 → 「설치」 눌러도 install_update 0 · restart_after_update 1", !!h0.modal && /설치/.test(h0.modal) && h1.installs === 0 && JSON.stringify(h1.restarts) === "[false]", JSON.stringify({ h0, h1 }));
                                                                                                   ^
 TypeError: undefined is not an object (evaluating 'h0.modal')
-      at /private/tmp/claude-501/-Users-oogisoogi-cys-terminal-src/5b054e7e-d22f-4f00-9451-3554f154d968/scratchpad/base-docs/docs/v116-ui-evidence/v116-headless.ts:556:93
+      at /private/tmp/claude-501/-Users-USER-cys-terminal-src/5b054e7e-d22f-4f00-9451-3554f154d968/scratchpad/base-docs/docs/v116-ui-evidence/v116-headless.ts:556:93
 
 Bun v1.3.11 (macOS arm64)
 [scoped pid=32614 exited (exit status: 1); process group force-killed and deregistered]

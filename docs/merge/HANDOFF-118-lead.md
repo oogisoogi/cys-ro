@@ -43,7 +43,7 @@
 - 충돌 표기를 zdiff3 로 다시 꺼냄(`git checkout --conflict=zdiff3`) — 덩어리 수가 merge 기본 표기와 다르다(main.ts 80→85 · handlers 26→97 · cys.rs 46→140, histogram 재병합 55).
 - 정책 = docs/merge/RESOLUTION-POLICY-118.md · 갈림·master 결정 = docs/merge/DECISIONS-PENDING-118.md([master#36f48cf7] 22:34 7건 결정 · X14~X17 새 갈림 미상신).
 - 277 judge 결정표 = ~/axdev/master/reports/cysr-118-plan/DECISION-TABLE-118.md(📌1·2·5·6·7·8 master 결정 대기) · 보안 REVIEW-D-118.md.
-- 서브 원장·보고 = 스크래치패드 /private/tmp/claude-501/-Users-oogisoogi-axdev--wt-cys-118-merge/54666fef-e7a9-4c12-8dda-5515d5d458d5/scratchpad/ledger-*.tsv · report-*.txt(handlers 는 report-handlers-rs.md) · 리드 직접 해소 = ledger-lead.tsv(+판번 파일 ours · .gitignore union · Cargo.lock ours · AA ui: droppoint/restartplan=원작자 · wsreconcile/feedback=우리 · UPSTREAM_BASE).
+- 서브 원장·보고 = 스크래치패드 /private/tmp/claude-501/-Users-USER-axdev--wt-cys-118-merge/54666fef-e7a9-4c12-8dda-5515d5d458d5/scratchpad/ledger-*.tsv · report-*.txt(handlers 는 report-handlers-rs.md) · 리드 직접 해소 = ledger-lead.tsv(+판번 파일 ours · .gitignore union · Cargo.lock ours · AA ui: droppoint/restartplan=원작자 · wsreconcile/feedback=우리 · UPSTREAM_BASE).
 - 계수: main.ts 24m47s · cys.rs ~28m(중단 제외) · handlers 19m45s · ui 나머지 6파일 4m30s · 팩 27파일 ~28m · CI 10파일 26m.
 
 ## 남은 일(브리프 §2 순서)

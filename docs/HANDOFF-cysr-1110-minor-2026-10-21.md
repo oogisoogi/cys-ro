@@ -82,7 +82,7 @@
   모듈 오류(기존 전이 경로). 정리용 detach(`tearDown`·`addCleanup`)는 종전대로 — 배선 핀 주석만 정정.
 
 ### ⑥ 윈 runtime-seal 「추가 1건」 — 수리 · 윈 실기 필요
-- 윈 실측(10-08~10-17 · doctor 5회 동일): `C:\Users\oogis\AppData\Local\cys\runtime\git\mingw64\libexec\git-core\dlls-copied.exe` ·
+- 윈 실측(10-08~10-17 · doctor 5회 동일): `%USERPROFILE%\AppData\Local\cys\runtime\git\mingw64\libexec\git-core\dlls-copied.exe` ·
   Authenticode 정상 · 서명자 Git for Windows 유지자 · 06-30 생성.
 - 판독: 「옛 Git for Windows 잔여」 가설은 **근거가 없다** — 동봉 PortableGit 은 윈 첫 도입 커밋 `5454a2f9`(07-01)부터 줄곧 2.55.0
   (`git log -S` 실측). 대신 **같은 판의 post-install 이 만드는 표지**다:
@@ -96,7 +96,7 @@
 - 윈 실기에서 볼 것: 새 설치 doctor runtime-seal = OK 이고 runtime_managed 목록에 그 파일이 뜨는지 · 실제 파일 sha256 = `mingw64\bin\git.exe` sha256.
 
 ### ⑦ dept-awakening-seed WARN — 수리 · 윈 실기 필요
-- 윈 실측 원문: `pack-dept-dept-1: acctdir(C:\Users\oogis\.cys\claude) 각성 훅 미시드 — SessionStart←session-start.sh+UserPromptSubmit←role-bootstrap.sh`
+- 윈 실측 원문: `pack-dept-dept-1: acctdir(%USERPROFILE%\.cys\claude) 각성 훅 미시드 — SessionStart←session-start.sh+UserPromptSubmit←role-bootstrap.sh`
   · 같은 기계 `depts.json` = `{}`(GUI 로 시험부를 닫음) · `~/.cys/pack-dept-dept-1` 잔존(닫기 때 무접촉).
 - 원인(코드): `cys-dept down`(`down_dept`)은 묘비 + `cys hooks-prune --pack-dir <부서 팩>` + 레지스트리 제거만 하고 **팩 폴더는 남긴다**.
   `diag_dept_awakening_seed` 는 상태 폴더의 `pack-dept-*` 이름만으로 대상을 고른다(문서 주석은 「등록된 부서 팩」). 그래서 hooks-prune 이

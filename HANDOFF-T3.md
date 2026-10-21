@@ -83,7 +83,7 @@ python3 -c "import sys;sys.path.insert(0,'cysjavis-pack/bin');import javis_prefl
 |---|---|
 | E2E 1회차(수정 전 a56df481) | 세션 0c1f001e · 6단계 기대대로 · 사본 `e2e/r1/transcript.jsonl`(sha256 75ef4b60…) |
 | E2E 2회차(수정 후 0845f949) | 세션 0672f692 · 6단계 기대대로 · 사본 `e2e/transcript.jsonl`(sha256 a41aff8e…) · 원장 4행(§1-A·§2 inject · §14 deny · §0-C inject) · 서브에이전트 훅 첨부 0 · 원장 행 0 |
-| 계정2 부산물 | `~/.cys/claude/projects/-private-tmp-claude-501--Users-oogisoogi-axdev--wt-cys-v110-inject-eaa6a685-9cb3-4b87-b90c-68437229d62d-scratchpad-e2e-cwd/` 사본 해시 일치 확인 후 삭제 |
+| 계정2 부산물 | `~/.cys/claude/projects/-private-tmp-claude-501--Users-USER-axdev--wt-cys-v110-inject-eaa6a685-9cb3-4b87-b90c-68437229d62d-scratchpad-e2e-cwd/` 사본 해시 일치 확인 후 삭제 |
 | health 전건 | 수정 전 GREEN 149/0/1skip(H-WIN-11) 404.0s · 수정 후 GREEN 149/0/1skip 408.9s |
 | cargo test --lib | 수정 전·후 508 pass · 0 fail · 1 ignored |
 | gen_ceo_template --check | GREEN |

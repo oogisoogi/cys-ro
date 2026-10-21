@@ -1370,8 +1370,8 @@ pub fn sole_copy_advisory(name: &str, children: &[String]) -> bool {
 }
 
 /// 이름의 스탬프에서 나이를 읽는다(D-r2-9 — 유예 시계는 **이름의 스탬프**이고 mtime 이 아니다).
-/// 생산자가 둘이고 형식이 둘이다: ①epoch 초(cys-dept:271 · javis_org.py:600) ②`%Y%m%dT%H%M%SZ`
-/// (factory_reset.rs:546). **둘 다 받고, 알 수 없으면 '오래되지 않음'** 으로 본다(미지 = 안 지운다).
+/// 형식이 둘이다: ①epoch 초(cys-dept:271 · javis_org.py:600) ②`%Y%m%dT%H%M%SZ`
+/// (factory_reset.rs:546 · 1.1.11 부터 javis_dept_request.py `_move_to_trash` 의 formation-* 도). **둘 다 받고, 알 수 없으면 '오래되지 않음'** 으로 본다(미지 = 안 지운다).
 pub fn stamp_epoch_from_name(name: &str) -> Option<f64> {
     let tail = name.rsplit('-').next()?;
     // ② 압축 UTC
@@ -2630,6 +2630,9 @@ mod tests {
         assert_eq!(iso, 1_789_204_160.0, "2026-09-12T09:09:20Z 의 epoch");
         // ① epoch 초 — cys-dept·javis_org 의 기본값.
         assert_eq!(stamp_epoch_from_name("dept-3-1760000000"), Some(1_760_000_000.0));
+        // ★1.1.11(R8) — 넷째 생산자 javis_dept_request.py `_move_to_trash`(formation-*)도 ② 형식을 쓴다
+        //   (python 시험 test_dept_b11_lock … r8 이 그 이름을 이 형식으로 핀한다).
+        assert_eq!(stamp_epoch_from_name("formation-20260912T090920Z"), Some(1_789_204_160.0));
         // 미지 = None = 오래되지 않음.
         assert_eq!(stamp_epoch_from_name("hand-made-folder"), None);
         assert!(!is_old_by_stamp("hand-made-folder", 9_999_999_999.0, 14.0), "미지는 절대 old 가 아니다");

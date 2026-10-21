@@ -1407,7 +1407,9 @@ def _notify(r, tag):
 
 
 def _move_to_trash(path, label):
-    dest_dir = os.path.join(trash_root(), "%s-%s" % (label, time.strftime("%Y%m%d-%H%M%S")))
+    # ★1.1.11(R8): 스탬프는 데몬 trash.rs `stamp_epoch_from_name` 이 읽는 형식(`%Y%m%dT%H%M%SZ` · UTC)으로 —
+    #   종전 `%Y%m%d-%H%M%S`(지역 시각)는 마지막 `-` 조각이 6자리라 휴지통 탭에서 나이가 늘 「알 수 없음」이었다.
+    dest_dir = os.path.join(trash_root(), "%s-%s" % (label, time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())))
     os.makedirs(dest_dir, exist_ok=True)
     dest = os.path.join(dest_dir, os.path.basename(path))
     os.replace(path, dest)

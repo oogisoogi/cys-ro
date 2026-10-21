@@ -8,6 +8,7 @@
   R1 편성 원장 청소가 레지스트리 잠금을 기다린다 — 잠금 보유 중 같은 번호가 예약되면(GUI 동시 생성) 옮기지 않는다
   G1 닫기 카드가 gen 을 기록 · 같은 번호가 다른 세대로 바뀌면 target_changed:gen · 같으면 --expect-gen 전달
 """
+import calendar
 import json
 import os
 import subprocess
@@ -215,6 +216,21 @@ class TestRequestSide(TDR.Base):
         moved = self.m.cleanup_orphan_ledgers()
         self.assertEqual(len(moved), 1, "진짜 고아 원장을 못 치웠다(과차단)")
         self.assertFalse(os.path.exists(p))
+
+    def test_1111_r8_trash_entry_name_carries_a_stamp_the_daemon_reads(self):
+        # ★1.1.11(R8) — 휴지통 항목 이름의 끝 스탬프는 데몬 trash.rs `stamp_epoch_from_name` 이 읽는 두 형식
+        #   (epoch 초 · `%Y%m%dT%H%M%SZ`) 중 하나여야 나이·「오래됨」 표시가 붙는다. 종전 `%Y%m%d-%H%M%S`(지역 시각)는
+        #   마지막 `-` 조각이 6자리라 영원히 「알 수 없음」이었다.
+        self._ledger("dept-5", "/a/cys-dept-dept-5/cys.sock")
+        t0 = time.time()
+        moved = self.m.cleanup_orphan_ledgers()
+        self.assertEqual(len(moved), 1)
+        entry = os.path.basename(os.path.dirname(moved[0]))
+        self.assertTrue(entry.startswith("formation-"), entry)
+        tail = entry.rsplit("-", 1)[1]
+        self.assertRegex(tail, r"^[0-9]{8}T[0-9]{6}Z$", entry)
+        got = calendar.timegm(time.strptime(tail, "%Y%m%dT%H%M%SZ"))   # UTC — 데몬도 UTC 로 읽는다
+        self.assertLessEqual(abs(got - t0), 5, entry)
 
     def _menu_dept(self, gen):
         json.dump({"depts": {"dept-3": {"socket": "/a/cys-dept-dept-3/cys.sock", "display_name": "메뉴부서",

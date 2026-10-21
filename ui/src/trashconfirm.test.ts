@@ -133,6 +133,10 @@ test("거부 문구는 되돌릴 수 없는 쪽으로 가는 선택지를 주지
     expect(trashRefusalText(code).text).toContain("지우지 않았습니다");
     expect(trashRefusalText(code).action).toBe("preview_again");
   }
+  // ★1.1.11(C4) — 뿌리가 지워진 것은 「바뀜(다른 폴더·링크)」이 아니다 · 기본값도 아니다.
+  expect(trashRefusalText("trash_root_missing").text).toContain("없어졌습니다");
+  expect(trashRefusalText("trash_root_missing").text).not.toContain("링크");
+  expect(trashRefusalText("trash_root_missing").text).toContain("지우지 않았습니다");
   // 세션 상한 초과는 **한 번에 더 적게 고르라**고 말한다(같은 선택을 다시 눌러도 같은 결과다).
   expect(trashRefusalText("cannot_certify_in_time").text).toContain("더 적게");
   expect(trashRefusalText("preview_busy").text).toContain("다른 미리보기");

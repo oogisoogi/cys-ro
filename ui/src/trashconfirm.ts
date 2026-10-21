@@ -202,6 +202,9 @@ export function trashRefusalText(code: string): { text: string; action: "preview
         text: "휴지통 폴더가 미리보기 뒤 바뀌었습니다(다른 폴더·링크) — 지우지 않았습니다. 새로 미리보기를 하세요.",
         action: "preview_again",
       };
+    // ★1.1.11(C4) — 휴지통 폴더가 그냥 지워진 경우(바뀐 것이 아니다). 다시 미리보기를 해도 같으니 행동 안내 없음.
+    case "trash_root_missing":
+      return { text: "휴지통 폴더가 없어졌습니다(지워짐) — 지우지 않았습니다.", action: "none" };
     case "confirm_unbound":
       return { text: "이 명령에 맞는 확인 단계가 없습니다 — 지우지 않았습니다. 새로 미리보기를 하세요.", action: "preview_again" };
     case "phrase_mismatch":

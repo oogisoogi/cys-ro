@@ -259,6 +259,8 @@ pub const R_NOT_BASE: &str = "base_daemon_only";
 pub const R_PRODUCER_ACTIVE: &str = "producer_active";
 /// ★B2 — 휴지통 뿌리(또는 그 아래 항목)가 미리보기가 본 객체가 아니다. 뿌리·부모 바꿔치기의 표지다.
 pub const R_ROOT_CHANGED: &str = "trash_root_changed";
+/// ★1.1.11(C4) — 휴지통 뿌리가 **없다**(지워짐). 바꿔치기와 같은 쪽으로 멈추되(지우지 않음) 문면은 참으로.
+pub const R_ROOT_MISSING: &str = "trash_root_missing";
 /// ★S8 재착륙 §1 — 비동기 미리보기 잡의 세 코드.
 /// ★표기: 델타는 산문에서 `refused:` 접두를 붙여 쓰지만, 이 모듈의 기존 코드는 접두 없는 **맨 코드**다
 ///   (`R_PRODUCER_ACTIVE` = `producer_active` ↔ 델타 `refused:producer_active`). **기존 관례를 따른다.**
@@ -965,6 +967,8 @@ impl RootDir {
     }
     #[cfg(not(unix))]
     pub fn open(path: &Path) -> std::io::Result<RootDir> {
+        // ★1.1.11(C4) — 부재는 NotFound 로 먼저(바꿔치기 문면과 가른다 · 유닉스 open_dir 과 같은 판정).
+        std::fs::symlink_metadata(path)?;
         if !root_sane(path) {
             return Err(std::io::Error::other("휴지통 뿌리가 디렉터리가 아니거나 심링크다"));
         }
@@ -1038,7 +1042,7 @@ pub fn execute_one(
         Ok(rd) => execute_one_at(&rd, name, baseline, dev_of, now, state, order_id),
         Err(e) => {
             let r = Refusal {
-                code: R_ROOT_CHANGED,
+                code: if root_missing(&e) { R_ROOT_MISSING } else { R_ROOT_CHANGED },
                 boundary: Some(root.display().to_string()),
                 detail: format!("휴지통 뿌리를 핸들로 열 수 없다(심링크·디렉터리 아님·없음): {e} — 손대지 않는다"),
             };
@@ -1500,6 +1504,13 @@ pub fn handle(
 /// ★B2 — 뿌리 신원 불일치의 사람용 문장(미리보기 잡·명령 공용).
 pub const ROOT_CHANGED_MSG: &str = "휴지통 뿌리를 핸들로 열 수 없거나 미리보기가 본 뿌리와 다른 객체다 \
     (심링크·바꿔치기) — 아무것도 지우지 않았다. 새 미리보기가 필요하다";
+/// ★1.1.11(C4) — 뿌리 부재의 사람용 문장(미리보기 잡·명령 공용).
+pub const ROOT_MISSING_MSG: &str = "휴지통 뿌리가 없다(지워짐) — 아무것도 지우지 않았다";
+
+/// ★1.1.11(C4) — 뿌리를 못 연 까닭이 **부재**인가(그 밖 = 심링크·디렉터리 아님·권한 = 바꿔치기 쪽).
+fn root_missing(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::NotFound
+}
 
 pub const OWNER_REQUIRED_MSG: &str = "휴지통 삭제는 앱(오너 GUI)에서만 명령한다 — \
     operator token 과 pane 에 붙지 않은 호출자만 이 동사를 쓴다. \
@@ -1659,6 +1670,8 @@ enum NamesOutcome {
     InvalidName,
     /// ★B2 — 뿌리를 핸들로 열 수 없거나 순회 전후 뿌리 신원이 달랐다(바꿔치기 표지).
     RootChanged,
+    /// ★1.1.11(C4) — 뿌리가 없다(지워짐).
+    RootMissing,
     LedgerUnwritable,
     /// 세션 예산 소진 — **잡 전체를 종결**시킨다(항목별 거부와 다르다).
     SessionExpired(Refusal),
@@ -1711,6 +1724,7 @@ fn certify_names_into(
     //   어떤 확인도 발급하지 않는다(경로로 걸은 인증서가 어느 뿌리의 것인지 말할 수 없다).
     let root_id = match RootDir::open(root) {
         Ok(rd) => rd.id(),
+        Err(e) if root_missing(&e) => return NamesOutcome::RootMissing,
         Err(_) => return NamesOutcome::RootChanged,
     };
     for name in names {
@@ -1791,8 +1805,10 @@ fn certify_names_into(
             }
         }
     }
-    if RootDir::open(root).map(|rd| rd.id()).ok() != Some(root_id) {
-        return NamesOutcome::RootChanged;
+    match RootDir::open(root) {
+        Ok(rd) if rd.id() == root_id => {}
+        Err(e) if root_missing(&e) => return NamesOutcome::RootMissing,
+        _ => return NamesOutcome::RootChanged,
     }
     NamesOutcome::Done {
         shown,
@@ -1966,6 +1982,11 @@ fn preview_outcome_phase(out: NamesOutcome) -> (PreviewPhase, Option<Value>, Opt
             PreviewPhase::Failed,
             None,
             Some(job_refusal("(root)", R_ROOT_CHANGED, ROOT_CHANGED_MSG)),
+        ),
+        NamesOutcome::RootMissing => (
+            PreviewPhase::Failed,
+            None,
+            Some(job_refusal("(root)", R_ROOT_MISSING, ROOT_MISSING_MSG)),
         ),
         NamesOutcome::InvalidName => (
             PreviewPhase::Failed,
@@ -2181,11 +2202,12 @@ fn delete(id: &Value, root: &Path, state: &Path, params: &Value, caller_pid: Opt
     //   대조한다. 이후 집행은 이 핸들만 쓴다 — 배경 스레드가 경로를 다시 해석하지 않는다.
     let rd = match RootDir::open(root) {
         Ok(rd) if rd.id() == c.root_id => rd,
-        _ => {
+        opened => {
+            let missing = matches!(&opened, Err(e) if root_missing(e));
             let r = Refusal {
-                code: R_ROOT_CHANGED,
+                code: if missing { R_ROOT_MISSING } else { R_ROOT_CHANGED },
                 boundary: Some(root.display().to_string()),
-                detail: ROOT_CHANGED_MSG.into(),
+                detail: if missing { ROOT_MISSING_MSG } else { ROOT_CHANGED_MSG }.into(),
             };
             if record_refusal(state, "(order)", &cid, &r).is_err() {
                 return Reply::Single(err_response(id, R_LEDGER_UNWRITABLE, LEDGER_FAIL_MSG));
@@ -3124,6 +3146,53 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base_dir);
     }
 
+    /// ★1.1.11(C4) — 뿌리가 그냥 **지워졌으면** 「다른 폴더·링크로 바뀜」이 아니라 「없어짐」으로 말한다.
+    /// 미리보기 경로·명령 경로 둘 다 · 둘 다 지우지 않는다(종전과 같은 쪽 실패 · 문면만 참으로).
+    #[cfg(unix)]
+    #[test]
+    fn c4_a_deleted_root_is_reported_missing_not_changed() {
+        let base_dir = rig("c4-missing");
+        let root = base_dir.join("trash");
+        let name = "dept-5-1760000000";
+        mk(&root.join(name), "state/x.txt", b"x");
+        let state = base_dir.join("sd");
+        std::fs::create_dir_all(&state).unwrap();
+        let cert = certify_entry(&root.join(name), &real_dev).unwrap();
+        let root_id = RootDir::open(&root).unwrap().id();
+        let mut certs = HashMap::new();
+        certs.insert(name.to_string(), cert);
+        let digest = order_digest(&certs);
+        let cid = "cf-c4-missing-test".to_string();
+        confirms().lock().unwrap().insert(
+            cid.clone(),
+            Confirm {
+                id: cid.clone(),
+                names: vec![name.to_string()],
+                digest: digest.clone(),
+                issued: Instant::now(),
+                certs,
+                root_id,
+            },
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+        let v = match delete(
+            &json!(1),
+            &root,
+            &state,
+            &json!({"confirm_id": cid, "names": [name], "digest": digest}),
+            None,
+        ) {
+            Reply::Single(v) => v,
+            _ => panic!("delete 는 Reply::Single 만 돌려준다"),
+        };
+        assert_eq!(v["error"]["code"], "trash_root_missing", "{v}");
+        let (out, _) = certify_names(&root, &state, &[name.to_string()], None, None);
+        let (_, _, refusal) = preview_outcome_phase(out);
+        let r = refusal.expect("실패는 이유를 들고 있어야 한다");
+        assert_eq!(r["reason_code"], "trash_root_missing", "{r}");
+        let _ = std::fs::remove_dir_all(&base_dir);
+    }
+
     /// 명령 진입 — 미리보기 뒤 뿌리가 **다른 진짜 디렉터리**로 바뀌었으면(심링크가 아니라 `O_NOFOLLOW`
     /// 가 막지 못하는 꼴) **신원 대조**가 명령 자체를 거부하고, 의도 기록·집행 스레드 없이 끝난다.
     /// 바꿔 넣은 디렉터리는 한 바이트도 바뀌지 않는다.
@@ -3438,6 +3507,7 @@ mod tests {
             NamesOutcome::InvalidName => panic!("이름이 거부됐다 — 이 검체의 전제가 깨졌다"),
             NamesOutcome::LedgerUnwritable => panic!("원장을 쓸 수 없다 — 이 검체의 전제가 깨졌다"),
             NamesOutcome::RootChanged => panic!("뿌리 신원이 바뀌었다 — 이 검체의 전제가 깨졌다"),
+            NamesOutcome::RootMissing => panic!("뿌리가 없다 — 이 검체의 전제가 깨졌다"),
         }
         // ⒟ 과 묶어서 읽는다: 이 결말의 단계는 `Failed` 다.
         let (phase, result, refusal) = preview_outcome_phase(out);
@@ -3460,6 +3530,7 @@ mod tests {
             NamesOutcome::InvalidName,
             NamesOutcome::LedgerUnwritable,
             NamesOutcome::RootChanged,
+            NamesOutcome::RootMissing,
             NamesOutcome::SessionExpired(Refusal {
                 code: R_SESSION_TOO_SLOW,
                 boundary: None,
@@ -3874,6 +3945,7 @@ mod tests {
             NamesOutcome::InvalidName => panic!("전제가 깨졌다 — 이름이 거부됐다"),
             NamesOutcome::LedgerUnwritable => panic!("전제가 깨졌다 — 원장을 쓸 수 없다"),
             NamesOutcome::RootChanged => panic!("전제가 깨졌다 — 뿌리 신원이 바뀌었다"),
+            NamesOutcome::RootMissing => panic!("전제가 깨졌다 — 뿌리가 없다"),
             NamesOutcome::SessionExpired(r) => {
                 panic!("전제가 깨졌다 — 예산 없이 불렀는데 세션 만료다: {}", r.code)
             }

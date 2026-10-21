@@ -15906,6 +15906,29 @@ mod tests {
         assert!(seat119_is_agent("python3 -W /tmp/review/worker", &seat119_specs(&[("worker", "worker")])));
     }
 
+    /// ★1.1.10 ③(dbg119 10-16 · 판정만 · 윈 실기 0) — Windows 셸 뿌리 argv 의 **현행** 판독을 기대값으로 고정한다.
+    /// 셸 묶음 규칙(`-c` 묶음 = 명령 문자열 · `o` 로 끝나면 값)은 POSIX 꼴이라 PowerShell 의 낱말 매개변수에 맞지 않는다:
+    /// `-Command` 는 소문자 `c` 가 없어 묶음으로 안 읽히고 뒤의 **명령 문자열이 엔트리**가 된다 → 맥 `zsh -lc claude`(뿌리 ≠
+    /// 에이전트)와 비대칭. 실해는 좁다 — `-Command`(‑NoExit 없음) 셸은 명령이 끝나면 함께 끝나고, 도는 동안은 자손이 이미
+    /// Occupied 를 만든다. 수리(PowerShell 매개변수 표)는 윈 실기 판독 뒤로 미룬다(HANDOFF ③). 이 값들이 바뀌면 판정을 다시 한다.
+    #[test]
+    fn seat1110_windows_shell_root_readings_are_pinned() {
+        use super::root_cmd_is_agent_on as on;
+        let argv = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<String>>();
+        let specs = seat119_this_mac_specs();
+        // cysd 의 윈 좌석 기동 꼴(state.rs windows_exec_flag) — 명령 문자열이 엔트리로 읽힌다(맥과 비대칭 · 현행).
+        assert!(on(true, &argv(&["powershell.exe", "-Command", "claude --resume"]), &specs));
+        assert!(on(true, &argv(&["powershell.exe", "-NoExit", "-Command", "claude"]), &specs));
+        assert!(on(true, &argv(&["powershell.exe", "-Command", "echo claude"]), &specs), "명령 문자열의 아무 낱말이나 맞는다");
+        // 맥 대조: `-lc` 묶음 뒤는 엔트리가 없다.
+        assert!(!on(false, &argv(&["/bin/zsh", "-lc", "claude --resume"]), &specs));
+        // PowerShell 줄임 `-c` 는 POSIX 묶음 규칙에 걸려 엔트리 없음(같은 뜻인데 답이 갈린다).
+        assert!(!on(true, &argv(&["powershell.exe", "-c", "claude"]), &specs));
+        // 맨 셸(윈 대화형 좌석 꼴) · cmd `/C` = 아님.
+        assert!(!on(true, &argv(&["powershell.exe", "-NoLogo"]), &specs));
+        assert!(!on(true, &argv(&["cmd.exe", "/C", "claude --resume"]), &specs));
+    }
+
     /// ★1.1.10 ④(ChatGPT A/B · master 실측) — 승계 게이트는 좌석이 Empty 가 아니면 사람 입력 뮤텍스를 **잡지 않고** 답한다.
     /// 종전 본체는 판정 전에 `last_human_input` 을 먼저 lock 해(단락 평가 소실) Occupied·Unknown 좌석마다 불필요한 lock 을
     /// 잡았고, 그 뮤텍스가 poisoned 면 답이 정해진 좌석에서도 패닉했다. 독(poison)으로 「lock 을 잡았는가」 를 관측한다.

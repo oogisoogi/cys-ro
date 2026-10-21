@@ -64,6 +64,7 @@ def media_probe_failures(runner=None, delay=1.0):
     1.1.9: create·attach 를 hdiutil_retry 로 부른다 — 맥 러너의 간헐 실패 1회는 사유를 찍고 다시 하고, 2회 실패는
     종전처럼 모듈 오류다(건너뛰기 없음 · REQUIRE_ALL 계약 그대로)."""
     d = tempfile.mkdtemp(prefix="u3-req-")
+    stuck = False
     try:
         dmg, mnt = os.path.join(d, "p.dmg"), os.path.join(d, "mnt")
         os.makedirs(mnt)
@@ -73,12 +74,15 @@ def media_probe_failures(runner=None, delay=1.0):
             if reasons:
                 return ["hdiutil 매체 생성·마운트 실패(hdiutil %s · 2회): %s" % (args[0], " | ".join(reasons))]
         # 1.1.10: detach 도 rc 를 본다 — 1회 재시도 · 2회 실패 = 사유가 실린 모듈 오류(마운트가 남은 채 통과 금지).
-        reasons = hdiutil_retry(["detach", mnt, "-quiet"], runner=runner, delay=delay)
+        # 1.1.11(review-a B3): 재시도는 -force · 2회 실패면 마운트가 남았으므로 d 를 rmtree 하지 않는다(볼륨 안으로 들어간다).
+        reasons = hdiutil_retry(["detach", mnt, "-quiet"], runner=runner, delay=delay, force_retry=True)
         if reasons:
-            return ["hdiutil 매체 분리 실패(hdiutil detach · 2회): %s" % " | ".join(reasons)]
+            stuck = True
+            return ["hdiutil 매체 분리 실패(hdiutil detach · 2회 · 마운트가 남아 %s 를 지우지 않음): %s" % (d, " | ".join(reasons))]
         return []
     finally:
-        shutil.rmtree(d, ignore_errors=True)
+        if not stuck:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 def py(script, *args, now=None, **kw):
@@ -1030,13 +1034,16 @@ class TestUpdateWorker(Base):
         self.assertEqual([g["status"] for g in got], [502, 502])  # 2R: 쌍의 한쪽만 나가는 일 0
 
 
-def hdiutil_retry(args, partial=None, runner=None, delay=1.0):
+def hdiutil_retry(args, partial=None, runner=None, delay=1.0, force_retry=False):
     """hdiutil 1회 재시도(1.1.10 · 맥 러너 간헐 실패 10-07 37543589887 = create CalledProcessError · 사유 미출력).
     실패 사유(rc·stderr)를 그 자리에서 stderr 로 내고 1회만 다시 한다 — 성공 = [] · 2회 실패 = 사유 2줄(호출자가 적색).
-    partial = 실패한 create 가 남긴 반쪽 dmg(재시도 전에 지운다). 계약 약화 0: 건너뛰기 없음 · 재시도는 1회뿐."""
+    partial = 실패한 create 가 남긴 반쪽 dmg(재시도 전에 지운다). 계약 약화 0: 건너뛰기 없음 · 재시도는 1회뿐.
+    force_retry = 재시도에 -force 를 붙인다(1.1.11 · detach 전용 — 바쁜 볼륨에 같은 일반 분리를 또 부르지 않는다)."""
     runner = runner or run
     reasons = []
     for attempt in (1, 2):
+        if attempt == 2 and force_retry:
+            args = list(args) + ["-force"]
         r = runner(["hdiutil"] + list(args))
         if r.returncode == 0:
             return []
@@ -1218,10 +1225,30 @@ class TestHdiutilRetry(unittest.TestCase):
         self.assertEqual([c[1] for c in calls], ["create", "attach", "detach", "detach"])
         runner, calls = self.fake([0, 0, 1, 1, 0])
         bad = media_probe_failures(runner=runner, delay=0)
+        # 1.1.11(B3): 분리 2회 실패면 임시 폴더를 남긴다(사유에 경로) — 가짜 runner 라 마운트가 없으니 여기서 치운다.
+        shutil.rmtree(bad[0].split("마운트가 남아 ", 1)[1].split(" 를 지우지 않음", 1)[0], ignore_errors=True)
         self.assertEqual([c[1] for c in calls], ["create", "attach", "detach", "detach"], "재시도는 1회뿐")
         self.assertEqual(len(bad), 1)
         self.assertIn("detach", bad[0])
         self.assertIn("리소스 일시 사용 불가", bad[0], "실패 사유(stderr)가 빠졌다")
+
+    def test_module_probe_detach_retry_is_forced_and_a_stuck_mount_is_not_rmtreed(self):
+        # 1.1.11(review-a B3): 재시도 detach 는 -force 로(같은 일반 detach 를 또 부르면 바쁜 볼륨에서 같은 실패) ·
+        # 2회 실패 = 마운트가 남았다는 뜻이라 임시 폴더를 rmtree 하지 않는다(볼륨 안으로 들어가 지운다).
+        import re
+        runner, calls = self.fake([0, 0, 1, 0])
+        self.assertEqual(media_probe_failures(runner=runner, delay=0), [])
+        self.assertNotIn("-force", calls[2], "첫 detach 는 일반 분리")
+        self.assertIn("-force", calls[3], "재시도 detach 에 -force 가 없다")
+        runner, calls = self.fake([0, 0, 1, 1])
+        real_rmtree = shutil.rmtree
+        with mock.patch.object(shutil, "rmtree") as rm:
+            bad = media_probe_failures(runner=runner, delay=0)
+        self.assertEqual(len(bad), 1)
+        self.assertEqual(rm.call_count, 0, "분리 실패(마운트 남음)인데 임시 폴더를 rmtree 했다: %r" % rm.call_args_list)
+        left = re.search(r"(\S*u3-req-\S+?)(?:\)|$| )", bad[0])
+        self.assertIsNotNone(left, "남긴 임시 폴더 경로가 사유에 없다: %s" % bad[0])
+        real_rmtree(left.group(1), ignore_errors=True)
 
     def test_every_create_and_attach_goes_through_the_retry_helper(self):
         # 배선 핀: 이 파일에서 hdiutil create·attach 를 도우미 밖에서 직접 부르는 줄은 0 이다(정리용 detach 는 재시도 대상 아님 ·

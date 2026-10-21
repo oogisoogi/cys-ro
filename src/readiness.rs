@@ -1443,6 +1443,68 @@ pub fn composer_layout_static_ok(
     }
 }
 
+/// ★(1.1.10 · cysr-1110-winqueue 축2) [`composer_layout_static_ok`] 가 **왜** 거짓인가 — **진단 전용**이다(게이트·배달·리셋은 읽지 않는다).
+///
+/// 윈 1.1.9 실기 W-2(10-17 02:0x): fullscreen 좌석이 입력줄은 비었는데 `alt_screen(전체화면 · 프롬프트 레이아웃 미확인)` 으로 큐만 무기한 보류됐다.
+/// 맥 2.1.306 fullscreen 실화면(유휴·스크롤 뒤)은 같은 판정을 통과한다 — 윈 화면의 어느 규칙이 거짓인지 한 번에 읽으려고 사유 코드를 낸다.
+/// [`scan_composer`]·[`trailer_is_closed_box`] 의 갈래를 같은 순서로 밟는다. 참 판정과의 일치는 검체가 잡는다(`"ok"` ⇔ `composer_layout_static_ok`).
+/// 코드: `ok` · `no_marker_row`(선두 마커 줄 없음) · `marker_row_text`(마커 줄에 문면) · `marker_below`(아래에 `❯`·마커·번호 항목) ·
+/// `nothing_below_no_evidence`(마커 아래 비공백 0 · 위 상태줄·플레이스홀더도 없음) · `marker_row_in_draft` ·
+/// `box_rules_<0|1|2+>_first_<rule|status|other>`(아래 위젯이 닫힌 상자 모양 아님 · 괘선 개수와 첫 줄 종류) · `weak_not_quiet`(약한 증거뿐 · 출력 정적 아님).
+pub fn composer_layout_why(
+    screen: &str,
+    marker: &str,
+    placeholder: Option<&str>,
+    idle_quiet: Option<bool>,
+) -> &'static str {
+    let lines: Vec<&str> = screen.lines().collect();
+    let Some(li) = lines
+        .iter()
+        .rposition(|l| crate::agent_markers::leading_marker_index(marker, l).is_some())
+    else {
+        return "no_marker_row";
+    };
+    let Some(sc) = scan_composer(screen, marker, placeholder) else {
+        let line = lines[li];
+        let mi = crate::agent_markers::leading_marker_index(marker, line).unwrap_or(0);
+        if !line[mi + marker.len()..].trim().is_empty() {
+            return "marker_row_text";
+        }
+        return "marker_below";
+    };
+    if sc.strong {
+        return "ok";
+    }
+    if sc.weak {
+        return if idle_quiet == Some(true) { "ok" } else { "weak_not_quiet" };
+    }
+    if sc.trailer_empty {
+        return "nothing_below_no_evidence";
+    }
+    if !marker_row_is_composer_row(&lines, li, marker) {
+        return "marker_row_in_draft";
+    }
+    let trailer: Vec<&str> = lines[li + 1..].iter().copied().filter(|l| !l.trim().is_empty()).collect();
+    let rules = trailer.iter().filter(|l| is_rule_line(l)).count();
+    let first = trailer.first().copied().unwrap_or("");
+    let first = if is_rule_line(first) {
+        "rule"
+    } else if is_status_row(first) {
+        "status"
+    } else {
+        "other"
+    };
+    // 첫 줄이 괘선이고 괘선이 하나면 닫힌 상자(= strong)라 여기 오지 않는다 · 첫 줄이 상태줄이고 괘선 0 도 같다.
+    match (rules.min(2), first) {
+        (0, _) => "box_rules_0_first_other",
+        (1, "status") => "box_rules_1_first_status",
+        (1, _) => "box_rules_1_first_other",
+        (_, "rule") => "box_rules_2+_first_rule",
+        (_, "status") => "box_rules_2+_first_status",
+        _ => "box_rules_2+_first_other",
+    }
+}
+
 /// 마커 줄 **바로 위**에 있는 상태줄이 이 composer 의 것인가 — 꼬리가 빈 분기의 양성 증거.
 ///
 /// ★(0.14.31 · 리뷰 R2(R7회차) · codex blocking B2) R6 은 "마커 위 **어디든** 상태줄 어휘"였다. 그러면
@@ -3533,6 +3595,35 @@ mod tests {
     ///    그 프레임들은 '라벨이 아직 안 그려진 선택기' 와 문자열이 같아 화면만으로 갈리지 않는다.
     /// ⓒ 역사적 상태줄(빈 줄·괘선으로 끊긴 위쪽 · 4행 초과)은 이 composer 의 것이 아니다.
     /// ⓓ 마커가 `ready_marker`(`? for shortcuts`)면 codex·gemini 유휴 화면이 영원히 거짓이다.
+    /// ★(1.1.10 · cysr-1110-winqueue 축2) 진단 사유 코드 — 갈래별 값 + **판정과의 일치**(`"ok"` ⇔ `composer_layout_static_ok`).
+    /// 진단이 판정과 갈라지면 윈 실기에서 엉뚱한 규칙을 고치게 된다 — 이 검체가 두 함수를 같은 화면들로 대조한다.
+    #[test]
+    fn winqueue_composer_layout_why_codes_agree_with_the_verdict() {
+        let rule = "────────────────────────";
+        let cases: Vec<(String, Option<bool>, &str)> = vec![
+            (format!("{rule}\n❯\u{a0}\n{rule}\n  ⚠ 경고 한 줄\n\n  ⏵⏵ auto mode on (shift+tab to cycle)"), None, "ok"),
+            (format!("❯ \n{rule}\n  초안 같은 줄\n{rule}"), Some(true), "box_rules_2+_first_rule"),
+            (format!("❯ \n  둘째 행 초안\n{rule}"), Some(true), "box_rules_1_first_other"),
+            ("❯ \n  사람 문장\n".to_string(), Some(true), "box_rules_0_first_other"),
+            (format!("❯ hello\n{rule}"), Some(true), "marker_row_text"),
+            (format!("❯ \n{rule}\n❯ 1. Yes"), Some(true), "marker_row_text"), // 마지막 선두 마커 줄이 선택기 행
+            (format!("❯ \n{rule}\n  다음 ❯ 안내"), Some(true), "marker_below"),
+            ("출력만 있는 화면".to_string(), Some(true), "no_marker_row"),
+            ("출력\n❯ ".to_string(), Some(true), "nothing_below_no_evidence"),
+            ("  ? for shortcuts\n❯ ".to_string(), None, "weak_not_quiet"),
+            ("  ? for shortcuts\n❯ ".to_string(), Some(true), "ok"),
+        ];
+        for (screen, quiet, want) in &cases {
+            let got = composer_layout_why(screen, "❯", None, *quiet);
+            assert_eq!(got, *want, "{screen:?} quiet={quiet:?}");
+            assert_eq!(
+                got == "ok",
+                composer_layout_static_ok(screen, "❯", None, *quiet),
+                "진단 코드가 판정과 갈라졌다: {screen:?} quiet={quiet:?} code={got}"
+            );
+        }
+    }
+
     #[test]
     fn r7_composer_layout_evidence_is_graded_and_adapter_resolved() {
         let live261 = fixtures::LIVE_TUI_2_1_261_STATUS_BELOW_PROMPT;

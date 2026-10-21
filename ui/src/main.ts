@@ -309,6 +309,8 @@ import { seatNo, visibleNo, approvalRequestCopy, approvalStalledCopy, contextThr
 import { parseBriefSections, recordedAt, localStamp, briefStatePaths, pickBriefText, buildBriefCard, unsubmittedSurfaces, friendlyRole, briefTiming, isFirstLaunch, isMasterSeatSignal, BRIEF_RESTORE_GRACE_MS } from "./restorebrief";
 import { nextFollow, shouldShowFoldHint, FOLD_HINT_TITLE, FOLD_HINT_BODY } from "./scrollfollow";
 import { shouldClosePlaceholder } from "./placeholderclose";
+import { placeholderScreenLines } from "./placeholderclose";
+import { queueDropNotice } from "./queuedropnotice";
 import {
   permWarningToast,
   cwdBlockedNotices,
@@ -3699,7 +3701,9 @@ async function refreshPaneTitles() {
                 isOwnPlaceholder: placeholderSids.has(sid),
                 touched: touchedPlaceholders.has(sid),
                 role: su?.role ?? null,
-                lineCount: su?.line_count ?? null,
+                // ★(1.1.10) 데몬 line_count(출력 개행 누적 커서)가 아니라 그 pane 화면의 비어 있지 않은 줄(윈 466 ↔ 화면 4줄).
+                lineCount: placeholderScreenLines(panes.get(paneKey(sid, ws.socket))?.term),
+                isWindows: IS_WINDOWS,
                 formationArrived,
                 exited: su?.exited ?? true,
               })
@@ -10050,6 +10054,13 @@ function onDaemonEvent(event: Record<string, unknown>) {
       starvedLastKey.set(starved.id, starved.stateKey);
       if (starved.humanNeeded) daemonOsBanner(starved.title, starved.detail);
     }
+    return;
+  }
+  if (name === "queue.dropped") {
+    // ★(1.1.10 · cysr-1110-winqueue Q1-A ①) 사람이 닫은 좌석의 큐 폐기 — 1건 이상일 때만 1줄(문구·조건 = queuedropnotice.ts).
+    //   종전엔 이 이벤트를 GUI 가 소비하지 않아 화면 0 이었다(category "queue" 는 폴백 레인이 없다 — return 으로 달라지는 것 없음).
+    const notice = queueDropNotice(payload);
+    if (notice) toast("feed", notice.title, notice.detail);
     return;
   }
   if (name === "queue.expired" || name === "queue.revived") {

@@ -6085,6 +6085,8 @@ fn sweep_parked_queues(daemon: &Arc<Daemon>) {
         crate::state::drain_expired_parked_locked(&mut map, now)
     };
     for (role, from, entries) in expired {
+        // ★(1.1.10 · cysr-1110-winqueue Q1-A ②) 주차 만기도 원장 묘비(같은 서식 · 본문 없이 sha256 · 최선 노력) — 종전엔 이벤트뿐이었다.
+        record_active_drain(daemon, from, &entries, "parked_expired");
         daemon.bus.publish(
             "queue.dropped",
             "queue",
@@ -6344,12 +6346,13 @@ pub fn close_surface(daemon: &Arc<Daemon>, id: u64, cause: CloseCause) -> Result
         // ★(0.14.31 · 리뷰 R2 · claude minor) 원장 묘비 먼저(최선 노력 · 배치) — 좌석이 사라지는
         //   경로라 항목을 보존할 자리가 없다. 기록 실패는 `delivery.record_failed` 로 드러난다.
         record_active_drain(daemon, id, &dropped, "surface_closed");
-        daemon.bus.publish(
-            "queue.dropped",
-            "queue",
-            Some(id),
-            crate::state::queue_dropped_payload("surface_closed", &dropped, None),
-        );
+        let mut payload = crate::state::queue_dropped_payload("surface_closed", &dropped, None);
+        // ★(1.1.10 · cysr-1110-winqueue Q1-A ①) 추가형 키 — 사람이 닫은 좌석(OwnerClose)인가. GUI 가 이 값이 참일 때만
+        //   「대기 중이던 지시 N건을 버렸습니다」 1줄을 띄운다(Reap·역할 없는 회수는 사람의 행위가 아니다 · reason 은 무변경).
+        if let Some(o) = payload.as_object_mut() {
+            o.insert("owner_close".into(), Value::Bool(cause == CloseCause::OwnerClose));
+        }
+        daemon.bus.publish("queue.dropped", "queue", Some(id), payload);
     }
     // ★(0.14.31 · WP-5 M) 만료 큐는 위(맵 제거 **전**)에서 이미 처분했다. 그 사이에 새로 만료된
     //   항목이 있을 수 있으므로 한 번 더 — 이 시점의 실패분은 보존소로 간다(도달 가능 유지).
@@ -8801,6 +8804,22 @@ pub(crate) fn pending_input_step_model(
     st
 }
 
+/// ★(1.1.10 · cysr-1110-winqueue 축1) 청크가 **PgUp/PgDn 키만**(`ESC[5~`·`ESC[6~` 의 반복)으로 이뤄졌는가(순수).
+///
+/// 윈도우 GUI 는 대체화면(전체화면 TUI) pane 의 휠을 이 키로 번역해 사람 키와 같은 경로로 보낸다(`ui/src/altscroll.ts`
+/// `altWheelAction` · 기본 page 모드). 이 바이트는 입력줄에 글자를 남기지 못하는데 사람 초안으로 세어져, 휠 몇 번에
+/// `pending_input_human_bytes` 가 수천이 되고 큐가 `input_pending` 으로 무기한 멎었다(윈 1.1.9 실기 W-2 10-17 01:5x · 3364).
+/// 화살표(cursor 모드 · `ESC[A`·`ESC OA`)는 여기 넣지 않는다 — 입력 기록을 불러와 줄에 글자를 남기는 키다(V3 doc 과 같은 입장).
+/// 소비처는 [`crate::state::Surface::apply_pending_input`] 하나 — **대체화면일 때만** 계수에서 뺀다(본 화면 셸 줄 편집기는
+/// 묶이지 않은 키의 꼬리 `~` 를 글자로 남길 수 있다).
+pub(crate) fn is_page_scroll_chunk(chunk: &[u8]) -> bool {
+    const PGUP: &[u8] = b"\x1b[5~";
+    const PGDN: &[u8] = b"\x1b[6~";
+    !chunk.is_empty()
+        && chunk.len() % PGUP.len() == 0
+        && chunk.chunks(PGUP.len()).all(|k| k == PGUP || k == PGDN)
+}
+
 /// 프롬프트 경계 판정 결과.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PromptBoundary {
@@ -9874,6 +9893,8 @@ pub(crate) struct QueueBlockDiag {
     pub(crate) cursor_col: Option<u16>,
     /// ★(0.14.47 · 계측) 커서 뒤 글자가 전부 흐림(SGR 2)인가 — [`after_cursor_dim_of`]. **진단 전용**이다(게이트·배달·사이클은 읽지 않는다).
     pub(crate) after_cursor_dim: Option<bool>,
+    /// ★(1.1.10 · cysr-1110-winqueue 축2) 대체화면 마커 좌석의 레이아웃 판정 사유 코드([`ScreenProbe::layout_why`]) — **진단 전용**(게이트는 읽지 않는다).
+    pub(crate) layout_why: Option<&'static str>,
     /// ★(0.14.47 · 계측) 이 좌석이 대체 화면인가(진단 시점).
     pub(crate) alt_screen: bool,
     /// ★(0.14.47 · 계측) 마지막 사람 입력(`last_human_input`) 뒤 경과 초 — 기록이 없으면 `None`(결측은 값이 아니다).
@@ -9902,6 +9923,8 @@ pub(crate) struct ScreenProbe {
     /// ★(0.14.47 · 계측) 커서 열 · 커서 뒤 흐림 — [`seat_screen_probe_with`] 가 같은 파서 락 안에서 채운다([`screen_probe_of`] 는 글자만 보므로 채우지 않는다).
     pub(crate) cursor_col: Option<u16>,
     pub(crate) after_cursor_dim: Option<bool>,
+    /// ★(1.1.10 · cysr-1110-winqueue 축2) 대체화면 좌석의 레이아웃 판정 사유 코드([`cys::readiness::composer_layout_why`]) — 본 화면·마커 없는 좌석은 `None`.
+    pub(crate) layout_why: Option<&'static str>,
 }
 
 /// ★(0.14.47 · 계측) 커서 행의 **커서 뒤 글자가 전부 흐림(SGR 2)인가**(순수 · 진단 전용 — 게이트는 이 값을 읽지 않는다).
@@ -9943,7 +9966,7 @@ pub(crate) fn screen_probe_of(rows_text: &[String], cursor_row: u16, markers: &[
         .and_then(|r| r.trim_start().chars().next())
         .map(|c| format!("U+{:04X}", u32::from(c)));
     // 칸 속성(커서 열·흐림)은 글자 행만으로는 알 수 없다 — [`seat_screen_probe_with`] 가 파서에서 채운다.
-    ScreenProbe { cursor_row: row.map(|_| cursor_row), marker_row, cursor_lead_cp, cursor_col: None, after_cursor_dim: None }
+    ScreenProbe { cursor_row: row.map(|_| cursor_row), marker_row, cursor_lead_cp, cursor_col: None, after_cursor_dim: None, layout_why: None }
 }
 
 /// 좌석 한 곳의 화면 동기 진단(IO) — 파서 락 1회. 마커는 `agent_meta` 가 있는 좌석만 어댑터에서 읽는다(맨 셸 = 빈 목록 · 디스크 판독 0).
@@ -9957,11 +9980,12 @@ pub(crate) fn seat_screen_probe_with(
     }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let has_agent = s.agent_meta.lock().unwrap_or_else(|e| e.into_inner()).is_some();
-        let markers = if has_agent {
-            surface_prompt_marker(s, &defs()).map(|(m, _)| m).unwrap_or_default()
+        let (markers, placeholder) = if has_agent {
+            surface_prompt_marker(s, &defs()).unwrap_or_default()
         } else {
-            Vec::new()
+            (Vec::new(), None)
         };
+        let quiet_secs = s.last_output.lock().unwrap_or_else(|e| e.into_inner()).elapsed().as_secs();
         let p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
         let screen = p.screen();
         let (rows, cols) = screen.size();
@@ -9970,8 +9994,19 @@ pub(crate) fn seat_screen_probe_with(
         // ★(0.14.47 · 계측) 커서 열과 커서 뒤 흐림 — 글자 행을 뜬 **같은 락 안**에서 읽는다(한 프레임). 커서 행이 화면 밖이면 둘 다 결측.
         let cursor_col = (cr < rows).then_some(cc);
         let after_cursor_dim = after_cursor_dim_of(screen, cr, cc);
+        // ★(1.1.10 · 축2) 대체화면 마커 좌석만 — 틱의 `layout_ok` 와 같은 재료(화면 글자·마커·플레이스홀더·출력 정적 변환기).
+        let layout_why = (screen.alternate_screen() && !markers.is_empty()).then(|| {
+            let contents = screen.contents();
+            let marker = cys::agent_markers::pick_marker_for_screen(&markers, &contents).unwrap_or("");
+            cys::readiness::composer_layout_why(
+                &contents,
+                marker,
+                placeholder.as_deref(),
+                cys::readiness::idle_quiet_from(Some(quiet_secs as f64)),
+            )
+        });
         drop(p);
-        ScreenProbe { cursor_col, after_cursor_dim, ..screen_probe_of(&rows_text, cr, &markers) }
+        ScreenProbe { cursor_col, after_cursor_dim, layout_why, ..screen_probe_of(&rows_text, cr, &markers) }
     }))
     .unwrap_or_default()
 }
@@ -10169,6 +10204,7 @@ pub(crate) fn queue_block_diag_with(
         repaint_requested_at,
         cursor_col: probe.cursor_col,
         after_cursor_dim: probe.after_cursor_dim,
+        layout_why: probe.layout_why,
         alt_screen: alt,
         human_idle_secs,
         quiet_secs,
@@ -10193,6 +10229,8 @@ pub(crate) fn screen_diag_json(d: &QueueBlockDiag) -> Value {
         "after_cursor_dim": d.after_cursor_dim,
         "alt_screen": d.alt_screen,
         "human_idle_secs": d.human_idle_secs,
+        // ★(1.1.10 · cysr-1110-winqueue 축2) 추가형 키 — 대체화면 마커 좌석의 레이아웃 판정 사유 코드(그 밖 null).
+        "layout_why": d.layout_why,
     })
 }
 
@@ -21755,6 +21793,95 @@ mod tests {
         deliver_queued(daemon, &mut depth, &mut starve, &mut stale);
     }
 
+    // ─────────── ★cysr-1110-winqueue(2026-10-21): fullscreen(`/tui fullscreen`) 좌석 × 큐 배달 핀(wq_*) ───────────
+    //
+    // 픽스처 = claude 2.1.306 실화면 PTY 원바이트(맥 · 40×120 · `CLAUDE_CODE_NO_FLICKER=1` 로 fullscreen 렌더러 강제 · 중첩 기동이라
+    // 꼬리에 `⚠ Transcript saving is off …` 한 줄이 붙어 있다 — 괘선 아래 정체 모를 문면 한 줄이 있어도 배달된다는 것까지 함께 잰다).
+    //   idle     = 첫 화면(빈 composer `❯\u{a0}` · 위아래 괘선 · 커서 (35,2))
+    //   scrolled = 숫자 120줄 응답 뒤 PgUp 3회(transcript 가 위로 밀리고 `Jump to bottom` 표지 · 맨 위 고정 머리 `❯ <지난 질문>`)
+    // 윈 1.1.9 실기 W-2 의 둘째 축(`alt_screen` 보류)은 이 두 화면에서 재현되지 않는다 — 맥 판정 입력은 통과한다(윈 화면 차이는 HANDOFF 「윈 실기 확인 필요」).
+    const WQ_IDLE_FULLSCREEN: &[u8] =
+        include_bytes!("testdata/claude_2_1_306_idle_fullscreen.raw");
+    const WQ_SCROLLED_FULLSCREEN: &[u8] =
+        include_bytes!("testdata/claude_2_1_306_scrolled_fullscreen.raw");
+
+    fn wq_env(tag: &str) -> QueueEnvGuard {
+        let pack = empty_pack_dir(tag);
+        QueueEnvGuard::set(&[
+            ("CYS_PACK_DIR", pack.to_str().unwrap()),
+            ("CYS_QUEUE_MAX_WAIT_SECS", "0"),
+            ("CYS_QUEUE_STARVE_ALERT_SECS", "0"),
+        ])
+    }
+
+    /// 빈 fullscreen composer(유휴 · 스크롤 뒤 둘 다)에는 큐가 배달된다 — 대체화면 갈래의 양성 증거(괘선 상자)가 선다.
+    #[test]
+    fn wq_fullscreen_idle_composer_delivers() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = wq_env("wq-idle");
+        for (tag, raw) in [("wq-idle", WQ_IDLE_FULLSCREEN), ("wq-scrolled", WQ_SCROLLED_FULLSCREEN)] {
+            let (daemon, s) = qa_fixture_seat(tag, raw);
+            assert!(s.alt_screen.load(Ordering::Relaxed), "{tag}: 픽스처 전제 붕괴 — 대체화면이 아니다");
+            // 진단 사유 코드(축2) — 배달되는 화면은 `ok` 다(윈에서 이 값이 다르면 그 코드가 거짓인 규칙을 가리킨다).
+            assert_eq!(queue_block_diag(&daemon, &s).layout_why, Some("ok"), "{tag}");
+            qa_tick(&daemon);
+            assert_eq!(
+                s.pending_queue.lock().unwrap().len(),
+                0,
+                "{tag}: 빈 fullscreen composer 에 배달하지 않았다: {}",
+                qa_blocked_reason(&s)
+            );
+        }
+    }
+
+    /// ★축1 재현(윈 W-2 01:5x): 빈 fullscreen composer 에서 휠(→ GUI 가 PgUp/PgDn 으로 번역해 사람 키로 보냄) 뒤에도 큐가 배달된다.
+    /// 수리 전: `pending_input_human_bytes` 가 휠 바이트만큼 쌓여 `input_pending` 무기한(Enter·Ctrl-U 전까지).
+    #[test]
+    fn wq_fullscreen_wheel_scroll_does_not_block_queue() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = wq_env("wq-wheel");
+        let (daemon, s) = qa_fixture_seat("wq-wheel", WQ_SCROLLED_FULLSCREEN);
+        {
+            let _gate = s.input_gate.lock().unwrap_or_else(|e| e.into_inner());
+            s.apply_pending_input(&b"\x1b[5~".repeat(3), InputOrigin::Human);
+        }
+        assert_eq!(s.pending_input_bytes.load(Ordering::Relaxed), 0, "휠 번역 키가 미제출 입력으로 세어졌다");
+        qa_tick(&daemon);
+        assert_eq!(
+            s.pending_queue.lock().unwrap().len(),
+            0,
+            "휠 뒤 fullscreen 좌석에 배달하지 않았다: {}",
+            qa_blocked_reason(&s)
+        );
+    }
+
+    /// ★축2 진단: 같은 실화면에 괘선 한 줄을 더 그리면(상자 아래 괘선 2개 = 닫힌 상자 아님) 종전대로 `alt_screen` 보류이고,
+    /// 진단 사유 코드가 그 규칙을 가리킨다(`queue.list`·`queue-blocked.json` 의 `screen_diag.layout_why`).
+    #[test]
+    fn wq_fullscreen_layout_block_names_the_failed_rule() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = wq_env("wq-why");
+        let (daemon, s) = qa_fixture_seat("wq-why", WQ_IDLE_FULLSCREEN);
+        {
+            let mut p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+            p.process("\x1b[39;1H────────────────────────\x1b[36;3H".as_bytes());
+        }
+        qa_tick(&daemon);
+        assert_eq!(s.pending_queue.lock().unwrap().len(), 1, "닫히지 않은 상자에 배달했다");
+        assert!(qa_blocked_reason(&s).starts_with("alt_screen"), "{}", qa_blocked_reason(&s));
+        let j = super::screen_diag_json(&queue_block_diag(&daemon, &s));
+        assert_eq!(j["layout_why"], json!("box_rules_2+_first_rule"), "{j}");
+    }
+
+    #[test]
+    fn wq_page_scroll_chunk_pure() {
+        assert!(super::is_page_scroll_chunk(b"\x1b[5~"));
+        assert!(super::is_page_scroll_chunk(b"\x1b[6~\x1b[5~\x1b[6~"));
+        for no in [&b""[..], b"\x1b[5", b"\x1b[5~a", b"a\x1b[5~", b"\x1b[A", b"\x1bOA", b"\x1b[5;2~", b"\x1b[2~", b"~"] {
+            assert!(!super::is_page_scroll_chunk(no), "{no:?}");
+        }
+    }
+
     fn qa_blocked_reason(s: &Arc<crate::state::Surface>) -> String {
         s.queue_blocked
             .lock()
@@ -31336,7 +31463,7 @@ mod tests {
         let keys: std::collections::BTreeSet<&str> = j.as_object().unwrap().keys().map(String::as_str).collect();
         let want: std::collections::BTreeSet<&str> = [
             "cursor_row", "marker_row", "cursor_lead_cp", "last_parser_panic_at", "repaint_requested_at",
-            "cursor_col", "after_cursor_dim", "alt_screen", "human_idle_secs",
+            "cursor_col", "after_cursor_dim", "alt_screen", "human_idle_secs", "layout_why",
         ]
         .into_iter()
         .collect();
@@ -31913,6 +32040,8 @@ mod todo_decl_tests {
         assert_eq!(ev["payload"]["role"], serde_json::json!("reviewer-gemini"));
         assert_eq!(ev["payload"]["from_surface"], serde_json::json!(91));
         assert_eq!(ev["payload"]["queue_entry_ids"], serde_json::json!([eid]));
+        // ★(1.1.10 · Q1-A ②) 묘비 경로 1/3 — 워치독 스윕의 주차 만기도 원장에 남는다.
+        assert!(crate::delivery::tombstone_ids_for_test(&daemon, "parked_expired").contains(&eid), "스윕 만기가 원장 묘비 없이 사라졌다");
         assert!(
             daemon.parked_queues.lock().unwrap().is_empty(),
             "스윕 뒤에도 만기분이 남았다"
@@ -35601,7 +35730,7 @@ mod f3_screen_probe_tests {
         // 커서가 마커 행 — 선두 '❯' = U+276F.
         assert_eq!(
             screen_probe_of(&screen, 2, &claude),
-            ScreenProbe { cursor_row: Some(2), marker_row: Some(2), cursor_lead_cp: Some("U+276F".into()), cursor_col: None, after_cursor_dim: None }
+            ScreenProbe { cursor_row: Some(2), marker_row: Some(2), cursor_lead_cp: Some("U+276F".into()), cursor_col: None, after_cursor_dim: None, layout_why: None }
         );
         // 패닉 뒤 빈 사본의 꼴 — 커서 (0,0) · 0행은 출력 줄.
         let p = screen_probe_of(&screen, 0, &claude);

@@ -25,6 +25,55 @@
  */
 export const PLACEHOLDER_MAX_LINES = 3;
 
+/**
+ * ★(1.1.10 · cysr-1110-winqueue) 윈도우 맨 셸의 상한. 윈도우 자리표는 인자 없는 `powershell.exe`(5.1)라 프롬프트 **앞에**
+ * 배너 3줄(`Windows PowerShell` · `Copyright (C) Microsoft Corporation…` · `Install the latest PowerShell… https://aka.ms/PSWindows`)을
+ * 스스로 찍는다 — 배너 3 + 프롬프트 1 = 4. 실측 근거 = 윈 1.1.9 실기(10-17 00:1x) 「자리표 화면 4줄」 · 그 배너 문면(정적 · 실기 화면 사본 0 —
+ * 윈 실기 확인 필요). 유닉스 상한(3)은 무변경이다.
+ */
+export const PLACEHOLDER_MAX_LINES_WIN = 4;
+
+/** xterm 버퍼의 최소 모양(구조 타입 — 시험이 가짜를 넣는다 · `exitbanner.ts` 와 같은 방식). */
+export interface PlaceholderTermLike {
+  rows: number;
+  buffer: {
+    active: {
+      baseY: number;
+      getLine(y: number): { isWrapped: boolean; translateToString(trimRight?: boolean): string } | undefined;
+    };
+  };
+}
+
+/**
+ * ★(1.1.10 · cysr-1110-winqueue) 판정 입력 「화면 줄 수」 = 그 pane 의 **화면(바닥 페이지)에 찍힌 비어 있지 않은 논리 줄 수**.
+ *
+ * 종전 입력은 데몬 `line_count` 였다 — 그것은 화면 줄이 아니라 **출력 개행의 누적 커서**(줄지 않는다 · `state.rs` T3-14)라
+ * 윈도우(ConPTY 가 다시 그릴 때마다 개행을 내보낸다)에서 화면 4줄에 466 이 됐고 자리표가 영영 안 닫혔다(10-17 00:1x).
+ * 자동 줄바꿈으로 이어진 행(`isWrapped`)은 앞 줄과 한 줄로 센다 — 편성이 붙으며 칸이 좁아져도 같은 값이 나온다.
+ * pane 이 없거나 읽다 실패하면 `null`(모르면 닫지 않는다).
+ */
+export function placeholderScreenLines(term: PlaceholderTermLike | undefined): number | null {
+  if (!term) return null;
+  try {
+    const buf = term.buffer.active;
+    let n = 0;
+    let open = false; // 지금 논리 줄에 글자가 있었는가
+    for (let y = 0; y < term.rows; y++) {
+      const line = buf.getLine(buf.baseY + y);
+      if (!line) continue;
+      if (!line.isWrapped) {
+        if (open) n++;
+        open = false;
+      }
+      if (line.translateToString(true).trim() !== "") open = true;
+    }
+    if (open) n++;
+    return n;
+  } catch {
+    return null;
+  }
+}
+
 export interface PlaceholderDecision {
   /** ⓐ UI 가 **자기가 만든** 자리표로 기억하는 번호인가. 아니면 남의 페인이다. */
   isOwnPlaceholder: boolean;
@@ -32,8 +81,10 @@ export interface PlaceholderDecision {
   touched: boolean;
   /** 자리표에 역할이 붙었으면 그것은 더 이상 자리표가 아니다(입양·승계된 좌석). */
   role: string | null;
-  /** ⓑ 화면 줄 수(모르면 null — 모르면 닫지 않는다). */
+  /** ⓑ 화면에 찍힌 비어 있지 않은 논리 줄 수([`placeholderScreenLines`] · 모르면 null — 모르면 닫지 않는다). */
   lineCount: number | null;
+  /** 윈도우 맨 셸이면 상한이 배너만큼 크다([`PLACEHOLDER_MAX_LINES_WIN`]). */
+  isWindows: boolean;
   /** ⓑ 그 탭에 진짜 역할 좌석이 붙었는가. 안 붙었으면 자리표가 유일한 화면이다. */
   formationArrived: boolean;
   /** 이미 죽은 자리는 이 경로가 아니라 죽은 pane 정리가 가져간다. */
@@ -52,6 +103,6 @@ export function shouldClosePlaceholder(d: PlaceholderDecision): boolean {
   if (d.role !== null) return false; // 역할이 붙었다 = 자리표가 아니다
   if (d.exited) return false; // 죽은 자리는 죽은 pane 정리 소관
   if (d.lineCount === null) return false; // 모르면 닫지 않는다
-  if (d.lineCount > PLACEHOLDER_MAX_LINES) return false; // ⓑ 프롬프트 밖 출력이 있다
+  if (d.lineCount > (d.isWindows ? PLACEHOLDER_MAX_LINES_WIN : PLACEHOLDER_MAX_LINES)) return false; // ⓑ 프롬프트 밖 출력이 있다
   return d.formationArrived; // ⓑ 편성이 도착한 뒤에만
 }

@@ -2806,6 +2806,15 @@ impl Surface {
         //   입력이 한 비트도 달라지지 않는다. ③세우지 않음의 확인 근거 = 이 커밋의 diff 가 `//` 로 시작하는 줄만 담는다(비주석
         //   줄 변경 0 — 커밋 뒤 기계 검사로 되찍었다 · U2-REPAIR 보고서의 '큐 3항' 절).
         st.human = st.human.min(st.count);
+        // ★(1.1.10 · cysr-1110-winqueue 축1) 대체화면의 PgUp/PgDn 만으로 된 청크(윈 GUI 휠 번역)는 줄에 글자를 남기지 않는다 —
+        //   계수·사람 몫·세대를 바꾸지 않는다(가산도 감산도 아니다). 봉투 안·이월 꼬리가 있으면 종전 규칙에 맡긴다.
+        if self.alt_screen.load(Ordering::Relaxed)
+            && !st.in_paste
+            && st.tail.is_empty()
+            && crate::governance::is_page_scroll_chunk(chunk)
+        {
+            return st.clone();
+        }
         let mut next = crate::governance::pending_input_step_model(
             &st,
             chunk,
@@ -3252,12 +3261,21 @@ const HOME_ENV_KEYS: [&str; 2] = ["HOME", "USERPROFILE"];
 /// 값이 데몬 값과 다르면 — 빈 문자열(=미설정 취급으로 기본값에 떨어지는 신고)이라도 —
 /// 표식을 세우지 않는다. 모르면 서지 않는 것이 이 표식의 계약이다(fail-closed).
 pub fn caller_env_keeps_config_dir(env: &[(String, String)], daemon_resolved: &str) -> bool {
+    caller_env_keeps_config_dir_on(env, daemon_resolved, cfg!(windows))
+}
+
+/// [`caller_env_keeps_config_dir`] 의 OS 인자판 — 경로 값 비교만 플랫폼 의미론([`crate::reclaim::norm_path_on`])을 쓴다.
+/// ★(1.1.10 · cysr-1110-winqueue ⑸) 윈도우 launch-agent 는 agents.json `${CYS_ACCOUNT_DIR:-$HOME/.cys/claude}` 를
+/// `C:\Users\x/.cys/claude`(구분자 혼용)로 전개하고 데몬 해소값은 `C:\Users\x\.cys\claude` 다 — 종전 글자 비교는 같은 폴더를
+/// 다르다고 읽어 윈도우의 모든 launch-agent 좌석이 `config_dir_trusted=false` 였다. 빈 값·다른 폴더는 종전대로 거짓(fail-closed).
+pub fn caller_env_keeps_config_dir_on(env: &[(String, String)], daemon_resolved: &str, windows: bool) -> bool {
     env.iter().all(|(k, v)| {
         if ACCOUNT_DIR_ENV_KEYS.iter().any(|key| k.eq_ignore_ascii_case(key)) {
             // 값이 데몬 해소값과 같을 때만 통과한다. 빈 문자열(=미설정 취급으로 기본값에
             // 떨어지는 신고)도 '같지 않으면 거짓'이다 — 그 신고가 정말 무해한지는 좌석의
             // 실행 환경 전체를 봐야 알 수 있고, 여기서 우리는 그것을 모른다(fail-closed).
-            return v == daemon_resolved;
+            return !v.trim().is_empty()
+                && crate::reclaim::norm_path_on(v, windows) == crate::reclaim::norm_path_on(daemon_resolved, windows);
         }
         if let Some(key) = HOME_ENV_KEYS.iter().find(|key| k.eq_ignore_ascii_case(key)) {
             // 홈은 **데몬 자신의 값**과 대조한다(계정 dir 이 아니라 그 뿌리다).
@@ -7934,6 +7952,8 @@ impl Daemon {
                         // ★agy r1 ⑴: 게으른 만기 회수분을 **사유를 달아** 발행한다(종전엔 retain 이
                         //   조용히 지웠다 — 무음 유실). 락은 이미 해제된 뒤다.
                         for (ex_role, ex_from, ex_entries) in &expired {
+                            // ★(1.1.10 · cysr-1110-winqueue Q1-A ②) 주차 만기 원장 묘비(같은 서식 · 최선 노력).
+                            crate::governance::record_active_drain(&daemon, *ex_from, ex_entries, "parked_expired");
                             daemon.bus.publish(
                                 "queue.dropped",
                                 "queue",
@@ -7943,6 +7963,8 @@ impl Daemon {
                         }
                         if !evicted.is_empty() {
                             // 상한 초과분은 **조용히 사라지지 않는다** — 사유를 달고 폐기 발행.
+                            // ★(1.1.10 · cysr-1110-winqueue Q1-A ②) 원장 묘비도(같은 서식 · 최선 노력).
+                            crate::governance::record_active_drain(&daemon, surf.id, &evicted, "parked_overflow");
                             daemon.bus.publish(
                                 "queue.dropped",
                                 "queue",
@@ -9237,6 +9259,22 @@ mod tests {
         ] {
             assert!(!caller_env_keeps_config_dir(&env, OK), "{label} 가 표식을 통과했다");
         }
+    }
+
+    /// ★(1.1.10 · cysr-1110-winqueue ⑸) 윈도우: 같은 폴더의 구분자 혼용 표기(`resolve_env_value` 의 `$HOME` + `/.cys/claude`)는 같은 폴더다 —
+    /// 수리 전 글자 비교는 이 좌석들을 전부 `config_dir_trusted=false` 로 떨궜다. 다른 폴더·빈 값은 여전히 거짓.
+    #[test]
+    fn winqueue_config_dir_trust_compares_paths_not_spellings_on_windows() {
+        let daemon = r"C:\Users\x\.cys\claude";
+        let pair = |k: &str, v: &str| (k.to_string(), v.to_string());
+        for v in [r"C:\Users\x/.cys/claude", "C:/Users/x/.cys/claude", r"c:\Users\x\.cys\claude\"] {
+            assert!(caller_env_keeps_config_dir_on(&[pair("CLAUDE_CONFIG_DIR", v)], daemon, true), "{v}");
+        }
+        for v in [r"C:\Users\x/.cys/claude-2", r"C:\Users\y\.cys\claude", "", "  "] {
+            assert!(!caller_env_keeps_config_dir_on(&[pair("CLAUDE_CONFIG_DIR", v)], daemon, true), "{v:?}");
+        }
+        // 유닉스는 역슬래시를 구분자로 보지 않는다(글자다) — 종전 의미 그대로.
+        assert!(!caller_env_keeps_config_dir_on(&[pair("CLAUDE_CONFIG_DIR", r"\tmp\a")], "/tmp/a", false));
     }
 
     // ── pid_alive: 생존 판정 단일 정의처(channels·deadman 위임 대상)의 unix 계약 핀 ──
@@ -11825,6 +11863,45 @@ mod tests {
         test_rm_rf(sock.parent().unwrap());
     }
 
+    /// ★(1.1.10 · cysr-1110-winqueue 축1) 윈 1.1.9 실기 W-2(10-17 01:5x): fullscreen 좌석에서 휠 → GUI 가 PgUp/PgDn 으로 번역해
+    /// 사람 키로 보냄 → `pending_input_human_bytes=3364`(입력줄은 빈 화면) → 큐 `input_pending` 무기한. 대체화면의 PgUp/PgDn 만으로 된 청크는
+    /// 계수·사람 몫을 바꾸지 않는다. 본 화면·화살표·기존 초안은 종전 그대로(감산 없음).
+    #[test]
+    fn winqueue_alt_screen_page_scroll_keys_are_not_a_draft() {
+        use crate::governance::InputOrigin;
+
+        let sock = isolated_sock("winqueue-page-scroll");
+        let daemon = Daemon::new(sock.clone());
+        let s = daemon
+            .create_surface(None, Some("sleep 30".into()), None, None, 24, 80)
+            .expect("surface 생성");
+        let wheel = b"\x1b[5~\x1b[5~\x1b[6~".repeat(280); // 840 키 · 3360 바이트 — 실측 3364 와 같은 규모
+        {
+            let _gate = s.input_gate.lock().unwrap_or_else(|e| e.into_inner());
+            // ① 대체화면 · 빈 줄 · 휠 번역 → 0 그대로(재현: 수리 전에는 3360/3360)
+            s.alt_screen.store(true, Ordering::Relaxed);
+            let st = s.apply_pending_input(&wheel, InputOrigin::Human);
+            assert_eq!((st.count, st.human), (0, 0), "대체화면 PgUp/PgDn 이 사람 초안으로 세어졌다");
+            assert_eq!(s.pending_input_bytes.load(Ordering::Relaxed), 0);
+            // ② 사람이 친 초안 위의 휠 — 감산하지 않는다(초안 3 글자 그대로)
+            s.apply_pending_input(b"abc", InputOrigin::Human);
+            let st = s.apply_pending_input(&wheel, InputOrigin::Human);
+            assert_eq!((st.count, st.human), (3, 3), "휠이 사람 초안 계수를 바꿨다");
+            // ③ 화살표(cursor 모드)는 입력 기록을 불러오는 키 — 종전대로 센다
+            s.clear_pending_input();
+            let st = s.apply_pending_input(b"\x1b[A", InputOrigin::Human);
+            assert_eq!(st.count, 3, "화살표까지 면제됐다(입력 기록을 줄에 불러오는 키)");
+            // ④ 본 화면에서는 면제하지 않는다(셸 줄 편집기는 묶이지 않은 키 꼬리를 글자로 남길 수 있다)
+            s.clear_pending_input();
+            s.alt_screen.store(false, Ordering::Relaxed);
+            let st = s.apply_pending_input(b"\x1b[5~", InputOrigin::Human);
+            assert_eq!(st.count, 4, "본 화면 PgUp 까지 면제됐다");
+        }
+        crate::governance::close_surface(&daemon, s.id, crate::governance::CloseCause::OwnerClose)
+            .expect("surface 종료 및 자식 프로세스 회수");
+        test_rm_rf(sock.parent().unwrap());
+    }
+
     fn sample_feed_item(id: &str, body: String) -> FeedItem {
         FeedItem {
             request_id: id.into(),
@@ -13136,8 +13213,9 @@ mod tests {
         assert_eq!(
             p["screen_diag"],
             json!({"cursor_row": null, "marker_row": null, "cursor_lead_cp": null, "last_parser_panic_at": null, "repaint_requested_at": null,
-                   "cursor_col": null, "after_cursor_dim": null, "alt_screen": false, "human_idle_secs": null}),
-            "결측은 null(값이 아니다) — ★(0.14.47 · 계측) 추가형 키 넷은 screen_diag 객체 안이다(최상위 키 수 16 은 그대로)"
+                   "cursor_col": null, "after_cursor_dim": null, "alt_screen": false, "human_idle_secs": null,
+                   "layout_why": null}),
+            "결측은 null(값이 아니다) — ★(0.14.47 · 계측) 추가형 키 넷 + ★(1.1.10 · cysr-1110-winqueue 축2) layout_why 는 screen_diag 객체 안이다(최상위 키 수 16 은 그대로)"
         );
         // 커서 뒤에 글자가 있으면(회색 제안인지 직접 쓴 글인지 모른다) 유령 단정이 아니라 `after_cursor_text`(표 7행) — 사람이 화면을 보고 가린다.
         let p_after = queue_starved_payload("surface:5", Some("cso".into()), &head, 4200, 3, blocked, &c5_diag_ga(Some(false), Some(true)));

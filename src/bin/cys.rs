@@ -11025,7 +11025,8 @@ fn run_factory_reset(
     verbose: bool,
 ) -> i32 {
     // 자기 살해 방지: cys surface(데몬 PTY) 안에서 실행하면 데몬 kill 이 자기 세션을 끊는다.
-    if cys::env_compat(ENV_SURFACE_ID).filter(|v| !v.is_empty()).is_some() {
+    // ★(1.1.10 · cysr-1110-winqueue ⑹) 프리뷰(--plan)는 쓰기 0·데몬 무접촉이라 surface 안에서도 허용한다(아래 GUI 검사와 같은 예외).
+    if !plan_only && cys::env_compat(ENV_SURFACE_ID).filter(|v| !v.is_empty()).is_some() {
         eprintln!(
             "cys surface 안에서는 완전 초기화를 실행할 수 없다 — 데몬이 죽는 순간 이 세션도 \
              끊긴다. 외부 터미널(맥 기본 터미널 등)이나 GUI '완전 초기화' 버튼(상단에 안 보이면 '화면 설정' → '상단 단추'에서 '완전 초기화'를 켠다)에서 실행하라."
@@ -15572,8 +15573,9 @@ fn alt_screen_notice(
     if is_windows {
         return Some((
             "[launch-agent] hint: claude 가 alternate screen(fullscreen)으로 떴습니다 — Windows \
-             fullscreen 은 비지원(릴리스 노트 '알려진 제한') · 이 pane 에서는 휠로 대화가 올라가지 \
-             않습니다. **가장 빠른 해결: 이 pane 의 claude 에서 `/tui default`** (classic 화면으로 \
+             fullscreen 에서는 GUI 가 휠을 PgUp/PgDn 키로 바꿔 보내 대화가 반 화면씩 올라갑니다 \
+             (classic 처럼 화면 스크롤백으로 올라가지는 않습니다). classic 화면을 원하면 \
+             **가장 빠른 해결: 이 pane 의 claude 에서 `/tui default`** (classic 화면으로 \
              다시 시작하고 그 설정 폴더의 다음 세션에도 남습니다). 0.14.45 부터 cys 는 Windows 에서 \
              claude 를 띄우기 직전 좌석 설정 폴더 settings.json 에 tui 키가 **없을 때만** \
              \"tui\": \"default\"(classic)를 넣습니다 — 그런데도 fullscreen 이면 그 파일의 tui 가 \
@@ -15581,10 +15583,10 @@ fn alt_screen_notice(
              덮지 않습니다) env CLAUDE_CODE_NO_FLICKER=1 이 걸린 것이고, 그 기록을 끈 경우 \
              (CYS_WIN_TUI_CLASSIC_OFF=1 · ~/.cys/win-tui-classic-off)에는 판정이 Claude Code 의 \
              계정·롤아웃 게이트로 돌아갑니다. 휠→방향키 \
-             합성 오염은 GUI 의 Windows 휠 가드가 막습니다 — 끄려면 PowerShell 에서 \
-             `New-Item -ItemType File -Force $HOME\\.cys\\win-wheel-guard-off` 를 실행한 뒤 \
-             **새 pane 을 여세요** (`touch` 는 PowerShell·cmd 에 없는 명령입니다. 되돌리기 \
-             취소는 Remove-Item). \
+             합성 오염(프롬프트 입력 기록이 바뀜)은 GUI 의 Windows 휠 가드가 막고, 위의 PgUp/PgDn \
+             번역도 그 가드가 합니다 — 가드를 끄면(`$HOME\\.cys\\win-wheel-guard-off` 파일 · 새 pane 부터) \
+             번역도 함께 꺼지고 방향키 합성이 되살아나므로 끄지 않는 것을 권합니다 \
+             (`touch` 는 PowerShell·cmd 에 없는 명령입니다 · 되돌리기는 Remove-Item). \
              env(CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN)로 inline 을 강제하려면 **두 가지가 함께** \
              필요합니다 — ①Windows 는 이 env 주입이 **기본 off(옵트인)** 입니다(이 env 경로만 Windows 실기 검증 \
              전입니다 — 위의 설정 경로 classic 기본값(0.14.45)과는 별개의 벨트입니다): \
@@ -16181,6 +16183,9 @@ fn boot_agent_on_surface(
     // **본체 방어는 UI 가드**(ui/src/wheelgate.ts 의 shouldSuppressWheelWin)다. 여기 호출이
     // 있다는 이유로 "Windows 는 env 로 막힌다"고 판단하지 마라 — 규약 단일화(사본 금지)를 위해
     // 두 소비처가 모두 lib 헬퍼를 경유할 뿐이다.
+    // ★설계 의도(1.1.10 · cysr-1110-winqueue ⑽ · master#904c96af Q2-A): 맥은 이 env 가 Claude Code 판정에서 settings `tui` 보다 앞서
+    //   사용자가 `/tui fullscreen` 을 골라도 classic 이다 — 의도다. 맥은 `tui:"default"` 를 선기록하지 않아 Claude Code 자동 승격이 쓴 값과
+    //   사용자 선택을 구분할 수 없기 때문이다. 대칭(윈 모델: tui 선기록 + 사용자 fullscreen 존중)은 1.1.11 후보(맥 함대 실기 동반).
     cys::inject_claude_alt_screen_default(&mut env_pairs, extract_bin(&cmd, agent));
     // ★v116-integ B: 제안 글 끄기 env — 키 부재 시에만(사용자 agents.json 을 고친 기계 포함 · lib 헬퍼 doc).
     cys::inject_claude_prompt_suggestion_default(&mut env_pairs, extract_bin(&cmd, agent));
@@ -17074,7 +17079,15 @@ fn inject_directive_after_ready(
         "directive.verify",
         json!({"surface_id": sid, "verified": verified, "reason": verify_reason}),
     ) {
-        eprintln!("[launch-agent] directive_verified 상태 기록 실패(구 데몬?): {e}");
+        // ★(1.1.10 · cysr-1110-winqueue ⑷) verify_denied = 데몬 규칙(호출자가 pane 안 → 자기 선언 금지)이지 구 데몬이 아니다 — 원인을 바로 적는다.
+        if e.to_string().contains("verify_denied") {
+            eprintln!(
+                "[launch-agent] directive_verified 상태 기록 생략 — 이 launch-agent 가 cys pane 안에서 실행돼 데몬이 \
+                 검증 상태 기록을 받지 않는다(pane 의 자기 선언 금지 규칙 · 기동은 그대로 진행): {e}"
+            );
+        } else {
+            eprintln!("[launch-agent] directive_verified 상태 기록 실패(구 데몬?): {e}");
+        }
     }
 
     // 5) T2-5 에이전트 메타 등록은 ★Phase 5 ①a로 기동 직후(위)로 이동했다 — readiness 폴링/주입

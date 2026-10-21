@@ -574,6 +574,25 @@ describe("빈 자리표 회수 — 배선", () => {
     expect(src.includes('import { shouldClosePlaceholder } from "./placeholderclose";')).toBe(true);
     expect((src.match(/shouldClosePlaceholder\(/g) ?? []).length).toBe(1);
   });
+  it("★(1.1.10) 줄 수 입력은 그 pane 화면에서 센다 — 데몬 line_count(출력 개행 누적 커서)를 쓰지 않는다", () => {
+    const a = src.indexOf("// ── ③ 빈 자리표 회수");
+    const b = src.indexOf("const masterSids = new Set(", a);
+    const slice = src.slice(a, b);
+    expect(slice.includes("lineCount: placeholderScreenLines(panes.get(paneKey(sid, ws.socket))?.term),")).toBe(true);
+    expect(/lineCount:\s*su\?\.line_count/.test(slice)).toBe(false);
+    expect(slice.includes("isWindows: IS_WINDOWS,")).toBe(true);
+  });
+  it("★(1.1.10 Q1-A ①) 큐 폐기 이벤트는 queueDropNotice 가 단독으로 판정해 1줄 토스트로만 낸다", () => {
+    expect(src.includes('import { queueDropNotice } from "./queuedropnotice";')).toBe(true);
+    const a = src.indexOf('if (name === "queue.dropped") {');
+    const b = src.indexOf('if (name === "queue.expired" || name === "queue.revived") {', a);
+    expect(a).toBeGreaterThan(0);
+    expect(b).toBeGreaterThan(a);
+    const slice = src.slice(a, b);
+    expect(slice.includes("const notice = queueDropNotice(payload);")).toBe(true);
+    expect(slice.includes('if (notice) toast("feed", notice.title, notice.detail);')).toBe(true);
+    expect(/osBanner\(/.test(slice)).toBe(false); // OS 배너 없음(조용한 알림)
+  });
   it("ⓒ 손댄 자리는 닫지 않고 알림도 없다 — 회수 구간에 토스트가 없다", () => {
     const a = src.indexOf("// ── ③ 빈 자리표 회수");
     const b = src.indexOf("const masterSids = new Set(", a);

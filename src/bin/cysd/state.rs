@@ -3246,12 +3246,21 @@ const HOME_ENV_KEYS: [&str; 2] = ["HOME", "USERPROFILE"];
 /// 값이 데몬 값과 다르면 — 빈 문자열(=미설정 취급으로 기본값에 떨어지는 신고)이라도 —
 /// 표식을 세우지 않는다. 모르면 서지 않는 것이 이 표식의 계약이다(fail-closed).
 pub fn caller_env_keeps_config_dir(env: &[(String, String)], daemon_resolved: &str) -> bool {
+    caller_env_keeps_config_dir_on(env, daemon_resolved, cfg!(windows))
+}
+
+/// [`caller_env_keeps_config_dir`] 의 OS 인자판 — 경로 값 비교만 플랫폼 의미론([`crate::reclaim::norm_path_on`])을 쓴다.
+/// ★(1.1.10 · cysr-1110-winqueue ⑸) 윈도우 launch-agent 는 agents.json `${CYS_ACCOUNT_DIR:-$HOME/.cys/claude}` 를
+/// `C:\Users\x/.cys/claude`(구분자 혼용)로 전개하고 데몬 해소값은 `C:\Users\x\.cys\claude` 다 — 종전 글자 비교는 같은 폴더를
+/// 다르다고 읽어 윈도우의 모든 launch-agent 좌석이 `config_dir_trusted=false` 였다. 빈 값·다른 폴더는 종전대로 거짓(fail-closed).
+pub fn caller_env_keeps_config_dir_on(env: &[(String, String)], daemon_resolved: &str, windows: bool) -> bool {
     env.iter().all(|(k, v)| {
         if ACCOUNT_DIR_ENV_KEYS.iter().any(|key| k.eq_ignore_ascii_case(key)) {
             // 값이 데몬 해소값과 같을 때만 통과한다. 빈 문자열(=미설정 취급으로 기본값에
             // 떨어지는 신고)도 '같지 않으면 거짓'이다 — 그 신고가 정말 무해한지는 좌석의
             // 실행 환경 전체를 봐야 알 수 있고, 여기서 우리는 그것을 모른다(fail-closed).
-            return v == daemon_resolved;
+            return !v.trim().is_empty()
+                && crate::reclaim::norm_path_on(v, windows) == crate::reclaim::norm_path_on(daemon_resolved, windows);
         }
         if let Some(key) = HOME_ENV_KEYS.iter().find(|key| k.eq_ignore_ascii_case(key)) {
             // 홈은 **데몬 자신의 값**과 대조한다(계정 dir 이 아니라 그 뿌리다).
@@ -9231,6 +9240,22 @@ mod tests {
         ] {
             assert!(!caller_env_keeps_config_dir(&env, OK), "{label} 가 표식을 통과했다");
         }
+    }
+
+    /// ★(1.1.10 · cysr-1110-winqueue ⑸) 윈도우: 같은 폴더의 구분자 혼용 표기(`resolve_env_value` 의 `$HOME` + `/.cys/claude`)는 같은 폴더다 —
+    /// 수리 전 글자 비교는 이 좌석들을 전부 `config_dir_trusted=false` 로 떨궜다. 다른 폴더·빈 값은 여전히 거짓.
+    #[test]
+    fn winqueue_config_dir_trust_compares_paths_not_spellings_on_windows() {
+        let daemon = r"C:\Users\x\.cys\claude";
+        let pair = |k: &str, v: &str| (k.to_string(), v.to_string());
+        for v in [r"C:\Users\x/.cys/claude", "C:/Users/x/.cys/claude", r"c:\Users\x\.cys\claude\"] {
+            assert!(caller_env_keeps_config_dir_on(&[pair("CLAUDE_CONFIG_DIR", v)], daemon, true), "{v}");
+        }
+        for v in [r"C:\Users\x/.cys/claude-2", r"C:\Users\y\.cys\claude", "", "  "] {
+            assert!(!caller_env_keeps_config_dir_on(&[pair("CLAUDE_CONFIG_DIR", v)], daemon, true), "{v:?}");
+        }
+        // 유닉스는 역슬래시를 구분자로 보지 않는다(글자다) — 종전 의미 그대로.
+        assert!(!caller_env_keeps_config_dir_on(&[pair("CLAUDE_CONFIG_DIR", r"\tmp\a")], "/tmp/a", false));
     }
 
     // ── pid_alive: 생존 판정 단일 정의처(channels·deadman 위임 대상)의 unix 계약 핀 ──

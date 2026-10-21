@@ -5078,6 +5078,192 @@ async fn feed_list_all(status: Option<String>) -> Result<Value, String> {
 // (`not_certifiable`·`producer_active`·`confirm_expired`·`recent_may_be_in_use`·
 // `names_not_in_preview`·`busy`·`unsupported_platform_pending_validation`·`base_daemon_only` 를
 // 화면이 구분해 문구와 단추를 정한다 — message 만 올리면 전부 한 덩어리가 된다).
+// ─── ★M1(codex 1R major · TICKET=cysr-1110-trash-harden) — 타이핑 확인을 IPC 경계에 결박 ─────────────
+// 종전: 타이핑 확인은 화면(WebView)에만 있었고 `trash_delete` 는 `confirm_id/names/digest` 만 받아 토큰을
+// 붙였다 ⇒ 모달을 거치지 않는 호출(배선 실수·회귀·스크립트)이 미리보기 직후 타이핑 없이 삭제에 닿았다.
+// 지금: 미리보기 폴링이 ready + confirm_id 를 돌려줄 때 **네이티브가** 단회 확인(nonce)을 발급한다. 그것이
+// 결박하는 것 = confirm_id · digest · 이름 목록(정렬) · 발급 시각(단조 시계 · 수명 = 데몬 확인 수명).
+// `trash_delete` 는 그 nonce 를 맵에서 **꺼내고**(= 단회 · 실패해도 소멸) 결박 대조 + 입력 문구 재측정을
+// 통과해야만 데몬에 보낸다. 어긋나면 데몬으로 한 바이트도 보내지 않는다(Class 1 거부).
+// ★닫는 것: 타이핑 모달을 거치지 않는 화면 경로 · nonce 재사용 · 다른 목록으로의 바꿔치기 · 만료 뒤 사용.
+// ★정직한 한계(닫지 못하는 것): **오염된 WebView 스크립트**. 확인 문구는 이름에서 결정론으로 나오므로
+//   (`trashRequiredPhrase` — 이름 하나면 그 이름, 여럿이면 「삭제 N」) 그 스크립트는 nonce 를 받아 문구를
+//   지어 보낼 수 있다 ⇒ 이 관문은 **「사람이 쳤다」를 증명하지 않는다**. 그것을 닫으려면 WebView 밖 OS
+//   확인창이 필요하고, 사용자 체감을 바꾸므로 이 판 밖이다(master#9146f4c3 · HANDOFF 「다음 판 후보」).
+/// 네이티브 확인 수명 — 데몬 `TRASH_CONFIRM_TTL_SECS`(300)와 같다(같음 = 만료).
+const TRASH_TYPED_GATE_TTL_SECS: u64 = 300;
+
+struct TrashTypedGate {
+    confirm_id: String,
+    digest: String,
+    /// 정렬된 이름 목록(명령이 보낸 목록도 정렬해 대조한다).
+    names: Vec<String>,
+    issued: std::time::Instant,
+}
+
+fn trash_typed_gates() -> &'static Mutex<HashMap<String, TrashTypedGate>> {
+    static G: std::sync::OnceLock<Mutex<HashMap<String, TrashTypedGate>>> = std::sync::OnceLock::new();
+    G.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 단회 확인 값 — 비밀이 아니라 **유일성**이 목적이다(화면이 그대로 받아 되보낸다).
+fn trash_new_nonce() -> String {
+    use sha2::{Digest, Sha256};
+    use std::hash::{BuildHasher, Hasher};
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut h = Sha256::new();
+    h.update(SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed).to_le_bytes());
+    h.update(std::process::id().to_le_bytes());
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    h.update(nanos.to_le_bytes());
+    let mut rs = std::collections::hash_map::RandomState::new().build_hasher();
+    rs.write_u128(nanos);
+    h.update(rs.finish().to_le_bytes());
+    h.finalize().iter().take(16).map(|b| format!("{b:02x}")).collect()
+}
+
+/// 한글 자모 조합(NFC 의 한글 부분 · 유니코드 알고리즘 그대로). 화면은 `normalize("NFC")` 를 쓰고 Rust
+/// std 에는 NFC 가 없다 — 이름이 분해형(NFD) 한글로 디스크에 있어도 화면과 같은 판정이 나도록 한글만
+/// 조합한다. ★한계: 한글 밖의 분해형 문자(예: 분해형 라틴 악센트)는 조합하지 않는다 — 그 경우 화면은
+/// 통과하고 여기서 `phrase_mismatch` 로 **거부**된다(실패의 방향은 지우지 않는 쪽).
+fn trash_compose_hangul(s: &str) -> String {
+    const S_BASE: u32 = 0xAC00;
+    const L_BASE: u32 = 0x1100;
+    const V_BASE: u32 = 0x1161;
+    const T_BASE: u32 = 0x11A7;
+    const L_COUNT: u32 = 19;
+    const V_COUNT: u32 = 21;
+    const T_COUNT: u32 = 28;
+    let n_count = V_COUNT * T_COUNT;
+    let s_count = L_COUNT * n_count;
+    let mut out: Vec<char> = Vec::new();
+    for c in s.chars() {
+        let cu = c as u32;
+        if let Some(&last) = out.last() {
+            let lu = last as u32;
+            if (L_BASE..L_BASE + L_COUNT).contains(&lu) && (V_BASE..V_BASE + V_COUNT).contains(&cu) {
+                let sy = S_BASE + ((lu - L_BASE) * V_COUNT + (cu - V_BASE)) * T_COUNT;
+                *out.last_mut().unwrap() = char::from_u32(sy).unwrap();
+                continue;
+            }
+            if (S_BASE..S_BASE + s_count).contains(&lu)
+                && (lu - S_BASE) % T_COUNT == 0
+                && (T_BASE + 1..T_BASE + T_COUNT).contains(&cu)
+            {
+                *out.last_mut().unwrap() = char::from_u32(lu + (cu - T_BASE)).unwrap();
+                continue;
+            }
+        }
+        out.push(c);
+    }
+    out.into_iter().collect()
+}
+
+/// 확인 문구 정규화 — `ui/src/resetconfirm.ts` 의 `normalizePhrase` 와 같은 규칙(양끝 짝 따옴표 반복 제거 ·
+/// 폭 없는 문자 제거 · 모든 공백류를 한 칸으로) + 한글 조합(위 함수).
+fn trash_normalize_phrase(input: &str) -> String {
+    let mut t: String = trash_compose_hangul(input.trim());
+    let pairs = [('"', '"'), ('\'', '\''), ('\u{201C}', '\u{201D}'), ('\u{2018}', '\u{2019}')];
+    loop {
+        let mut stripped = false;
+        for (a, b) in pairs {
+            if t.chars().count() >= 2 && t.starts_with(a) && t.ends_with(b) {
+                t = t[a.len_utf8()..t.len() - b.len_utf8()].to_string();
+                stripped = true;
+                break;
+            }
+        }
+        if !stripped {
+            break;
+        }
+    }
+    let t: String = t
+        .chars()
+        .filter(|c| !matches!(c, '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}'))
+        .collect();
+    t.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// 요구 문구 — 화면 `trashRequiredPhrase` 와 같다(이름 하나면 그 이름, 여럿이면 `삭제 N`).
+fn trash_required_phrase(names: &[String]) -> String {
+    if names.len() == 1 {
+        names[0].clone()
+    } else {
+        format!("삭제 {}", names.len())
+    }
+}
+
+/// 폴링 결과가 ready + confirm_id 이면 단회 확인을 발급해 `result.confirm_nonce` 로 싣는다.
+fn trash_issue_typed_gate(poll: &mut Value) {
+    if poll["status"].as_str() != Some("ready") {
+        return;
+    }
+    let r = &poll["result"];
+    let (Some(cid), Some(digest)) = (r["confirm_id"].as_str(), r["digest"].as_str()) else {
+        return;
+    };
+    let mut names: Vec<String> = r["entries"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|e| e["name"].as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    names.sort();
+    let gate = TrashTypedGate {
+        confirm_id: cid.to_string(),
+        digest: digest.to_string(),
+        names,
+        issued: std::time::Instant::now(),
+    };
+    let nonce = trash_new_nonce();
+    if let Ok(mut m) = trash_typed_gates().lock() {
+        // 만료분은 여기서 버린다(타이머 스레드를 만들지 않는다).
+        m.retain(|_, g| g.issued.elapsed().as_secs() < TRASH_TYPED_GATE_TTL_SECS);
+        m.insert(nonce.clone(), gate);
+        poll["result"]["confirm_nonce"] = json!(nonce);
+    }
+}
+
+/// 명령 직전 판정(순수) — 꺼낸 확인(`gate`)이 이 명령과 결박되고 입력 문구가 맞을 때만 `Ok`.
+/// 오류 문자열은 `코드: 문장` 이고 화면(`trashRefusalText`)이 코드로 문구를 고른다.
+fn trash_typed_gate_check(
+    gate: Option<&TrashTypedGate>,
+    confirm_id: &str,
+    names: &[String],
+    digest: &str,
+    typed: &str,
+) -> Result<(), String> {
+    let Some(g) = gate else {
+        return Err("confirm_unbound: 이 명령에 맞는 네이티브 확인이 없다(없음·이미 씀) — 데몬에 보내지 않았다".into());
+    };
+    if g.issued.elapsed().as_secs() >= TRASH_TYPED_GATE_TTL_SECS {
+        return Err("confirm_expired: 네이티브 확인의 수명이 지났다 — 데몬에 보내지 않았다".into());
+    }
+    let mut asked = names.to_vec();
+    asked.sort();
+    if g.confirm_id != confirm_id || g.digest != digest || g.names != asked {
+        return Err("confirm_unbound: 확인이 결박한 미리보기(confirm_id·digest·이름 목록)와 명령이 다르다 — 데몬에 보내지 않았다".into());
+    }
+    if trash_normalize_phrase(typed) != trash_normalize_phrase(&trash_required_phrase(&g.names)) {
+        return Err("phrase_mismatch: 입력한 확인 문구가 요구 문구와 다르다 — 데몬에 보내지 않았다".into());
+    }
+    Ok(())
+}
+
+/// 명령 관문 — nonce 를 **꺼내고**(= 단회 · 판정이 실패해도 소멸 — 같은 확인으로 다시 시도할 수 없다)
+/// 판정한다. `trash_delete` 는 소켓을 고르기 **전에** 이것을 부른다(시험 핀이 그 순서를 잠근다).
+fn trash_consume_typed_gate(
+    nonce: &str,
+    confirm_id: &str,
+    names: &[String],
+    digest: &str,
+    typed: &str,
+) -> Result<(), String> {
+    let gate = trash_typed_gates().lock().ok().and_then(|mut m| m.remove(nonce));
+    trash_typed_gate_check(gate.as_ref(), confirm_id, names, digest, typed)
+}
+
 fn trash_err(resp: &Value) -> String {
     let code = resp["error"]["code"].as_str().unwrap_or("unknown");
     let msg = resp["error"]["message"].as_str().unwrap_or("");
@@ -5140,7 +5326,9 @@ async fn trash_preview_poll(job_id: String) -> Result<Value, String> {
     }
     let resp = rpc_full(&sock, "trash.preview_poll", params).await?;
     if resp["ok"].as_bool() == Some(true) {
-        Ok(resp["result"].clone())
+        let mut out = resp["result"].clone();
+        trash_issue_typed_gate(&mut out); // ★M1 — ready 일 때만 단회 확인을 싣는다
+        Ok(out)
     } else {
         Err(trash_err(&resp))
     }
@@ -5148,12 +5336,17 @@ async fn trash_preview_poll(job_id: String) -> Result<Value, String> {
 
 /// 명령 — 오너 등급. 미리보기가 준 `confirm_id` 와 `digest` 를 그대로 되보낸다(한 번만 쓰인다).
 /// 즉시 `order_id` 로 돌아오고, 결과는 `trash_order` 로 읽는다.
+/// ★M1 — 먼저 네이티브 단회 확인(`confirm_nonce`)을 꺼내고 입력 문구(`typed`)를 다시 잰다. 어긋나면
+/// 데몬에 보내지 않는다(위 `trash_typed_gate_check` · 정직한 한계는 그 머리 주석).
 #[tauri::command]
 async fn trash_delete(
     confirm_id: String,
     names: Vec<String>,
     digest: String,
+    confirm_nonce: String,
+    typed: String,
 ) -> Result<Value, String> {
+    trash_consume_typed_gate(&confirm_nonce, &confirm_id, &names, &digest, &typed)?;
     let sock = default_socket();
     let mut params = json!({"confirm_id": confirm_id, "names": names, "digest": digest,
                             "client": "tauri-app"});
@@ -15901,6 +16094,92 @@ osascript 를 실행할 수 없어 건너뜁니다({e}) — macOS 가 아닌 환
             ],
             "operator token 부착 명령 목록이 잠근 집합과 다르다(부착면이 넓어지면 삭제 등급도 넓어진다)"
         );
+    }
+
+    // ─── ★M1(codex 1R · TICKET=cysr-1110-trash-harden) — 네이티브 단회 확인 ─────────────────────────
+    fn m1_poll(cid: &str, digest: &str, names: &[&str]) -> Value {
+        json!({"status": "ready", "result": {
+            "confirm_id": cid, "digest": digest,
+            "entries": names.iter().map(|n| json!({"name": n, "nodes": 1, "bytes": 1})).collect::<Vec<_>>(),
+        }})
+    }
+
+    /// 모달을 거치지 않은 호출(확인 없음·남의 확인)은 **데몬에 닿기 전에** 거부된다.
+    /// ★시험은 `trash_delete` 를 직접 부르지 않는다 — 관문이 빠진 뮤턴트에서 그 호출은 **실물 기지 데몬
+    ///   소켓**으로 나간다(2026-10-21 뮤턴트 실행에서 실제로 그랬다 · 가짜 confirm_id 라 데몬이 거부 ·
+    ///   원장 무기록 실측). 그래서 관문 함수를 시험하고, 「소켓보다 관문이 먼저」는 소스 순서로 잠근다.
+    #[test]
+    fn m1_a_delete_without_the_native_confirm_never_reaches_the_daemon() {
+        let e = trash_consume_typed_gate("no-such-nonce", "cf-x", &["dept-1-1".into()], "d", "dept-1-1")
+            .expect_err("확인 없이 통과했다");
+        assert!(e.starts_with("confirm_unbound:"), "{e}");
+        let src = include_str!("main.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").expect("시험 모듈 경계")];
+        let del = &prod[prod.find("async fn trash_delete(").unwrap()..];
+        let del = &del[..del.find("\n}\n").unwrap()];
+        let gate = del.find("trash_consume_typed_gate(&confirm_nonce").expect("trash_delete 가 관문을 부르지 않는다");
+        let sock = del.find("default_socket()").expect("소켓 선택");
+        assert!(gate < sock, "관문이 소켓 선택보다 뒤에 있다 — 확인 없는 호출이 데몬에 닿는다");
+        assert!(del[gate..sock].contains(")?;"), "관문의 거부가 전파되지 않는다");
+    }
+
+    /// 발급 → 한 번 쓰면 사라진다(재사용 불가) · 결박(confirm_id·digest·목록)·문구가 모두 맞아야 통과.
+    #[test]
+    fn m1_the_native_confirm_is_single_use_bound_to_the_list_and_checks_the_phrase() {
+        let mut poll = m1_poll("cf-m1", "dg", &["b-2", "a-1"]);
+        trash_issue_typed_gate(&mut poll);
+        let nonce = poll["result"]["confirm_nonce"].as_str().expect("ready 인데 확인이 실리지 않았다").to_string();
+        let take = |n: &str| trash_typed_gates().lock().unwrap().remove(n);
+        let names = vec!["a-1".to_string(), "b-2".to_string()];
+        let g = take(&nonce);
+        assert!(trash_typed_gate_check(g.as_ref(), "cf-m1", &names, "dg", "삭제 2").is_ok());
+        assert!(take(&nonce).is_none(), "꺼낸 확인이 다시 나왔다(재사용)");
+        // 결박 — 다른 목록·다른 digest·다른 confirm_id 는 거부.
+        let g = TrashTypedGate {
+            confirm_id: "cf-m1".into(),
+            digest: "dg".into(),
+            names: names.clone(),
+            issued: std::time::Instant::now(),
+        };
+        for (cid, ns, dg) in [
+            ("cf-m1", vec!["a-1".to_string(), "c-3".to_string()], "dg"),
+            ("cf-m1", names.clone(), "other"),
+            ("cf-other", names.clone(), "dg"),
+        ] {
+            let e = trash_typed_gate_check(Some(&g), cid, &ns, dg, "삭제 2").unwrap_err();
+            assert!(e.starts_with("confirm_unbound:"), "{e}");
+        }
+        // 문구 — 화면과 같은 관용(짝 따옴표·공백류·폭 없는 문자·분해형 한글)과 같은 불관용(틀린 수).
+        for ok in ["삭제 2", " \"삭제 2\" ", "삭제\u{00A0}\u{00A0}2", "삭\u{200B}제 2", "\u{1109}\u{1161}\u{11A8}\u{110C}\u{1166} 2"] {
+            assert!(trash_typed_gate_check(Some(&g), "cf-m1", &names, "dg", ok).is_ok(), "{ok:?}");
+        }
+        for bad in ["", "삭제 3", "삭제2", "delete 2"] {
+            let e = trash_typed_gate_check(Some(&g), "cf-m1", &names, "dg", bad).unwrap_err();
+            assert!(e.starts_with("phrase_mismatch:"), "{bad:?} → {e}");
+        }
+        // 이름 하나면 그 이름이 문구다.
+        let one = TrashTypedGate { names: vec!["dept-9-17".into()], ..g };
+        assert!(trash_typed_gate_check(Some(&one), "cf-m1", &["dept-9-17".into()], "dg", "dept-9-17").is_ok());
+        assert!(trash_typed_gate_check(Some(&one), "cf-m1", &["dept-9-17".into()], "dg", "삭제 1").is_err());
+    }
+
+    /// 만료(같음 = 만료) · ready 가 아니면 발급하지 않는다.
+    #[test]
+    fn m1_the_native_confirm_expires_and_is_only_issued_for_a_ready_preview() {
+        let old = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(TRASH_TYPED_GATE_TTL_SECS))
+            .expect("단조 시계를 되돌릴 수 없는 기계");
+        let g = TrashTypedGate { confirm_id: "c".into(), digest: "d".into(), names: vec!["n".into()], issued: old };
+        let e = trash_typed_gate_check(Some(&g), "c", &["n".into()], "d", "n").unwrap_err();
+        assert!(e.starts_with("confirm_expired:"), "{e}");
+        let mut running = json!({"status": "running", "progress": {"nodes": 1}});
+        trash_issue_typed_gate(&mut running);
+        assert!(running.get("result").is_none(), "running 에 확인을 실었다");
+        let mut no_cid = m1_poll("x", "d", &["n"]);
+        no_cid["result"]["confirm_id"] = Value::Null;
+        trash_issue_typed_gate(&mut no_cid);
+        assert!(no_cid["result"].get("confirm_nonce").is_none(), "확인할 것이 없는데 발급했다");
+        assert_eq!(TRASH_TYPED_GATE_TTL_SECS, 300, "데몬 확인 수명(TRASH_CONFIRM_TTL_SECS)과 같아야 한다");
     }
 
 

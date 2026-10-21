@@ -195,6 +195,17 @@ export function trashRefusalText(code: string): { text: string; action: "preview
       };
     case "preview_worker_unavailable":
       return { text: "확인 작업을 시작하지 못했습니다 — 잠시 뒤 다시 누르세요.", action: "preview_again" };
+    // ★TICKET=cysr-1110-trash-harden — B2(데몬: 뿌리 바꿔치기) · M1(앱 네이티브: 확인 결박). 셋 다
+    //   명령이 데몬에서 집행되기 **전**에 멈춘 것이다(M1 둘은 데몬으로 아예 보내지 않았다).
+    case "trash_root_changed":
+      return {
+        text: "휴지통 폴더가 미리보기 뒤 바뀌었습니다(다른 폴더·링크) — 지우지 않았습니다. 새로 미리보기를 하세요.",
+        action: "preview_again",
+      };
+    case "confirm_unbound":
+      return { text: "이 명령에 맞는 확인 단계가 없습니다 — 지우지 않았습니다. 새로 미리보기를 하세요.", action: "preview_again" };
+    case "phrase_mismatch":
+      return { text: "입력한 확인 문구가 맞지 않습니다 — 지우지 않았습니다. 새로 미리보기를 하세요.", action: "preview_again" };
     default:
       return { text: `처리하지 못했습니다 (${code}).`, action: "none" };
   }

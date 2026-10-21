@@ -89,6 +89,17 @@ describe("데몬이 부르는 명령만 쓰고, 이름은 그대로 돌려보낸
     expect(f.includes("digest: prev.digest")).toBe(true);
     expect(f.includes("names: confirmNames")).toBe(true);
   });
+  it("★M1(TICKET=cysr-1110-trash-harden) — 명령은 네이티브 단회 확인(confirm_nonce)과 **입력한 문구**를 함께 보낸다", () => {
+    // 타이핑 확인이 화면에만 있으면 모달을 거치지 않는 호출이 그대로 삭제에 닿는다 — 네이티브가 문구를
+    // 다시 재고 nonce 를 소비해야 데몬으로 간다(정직한 한계: 오염된 WebView 는 문구도 흉내 낸다).
+    const f = fnBody("trashDeleteFlow");
+    expect(f.includes("confirmNonce: prev.confirm_nonce")).toBe(true);
+    expect(f.includes("typed: normalizePhrase(prev.typed")).toBe(true);
+    expect(f.includes("!prev?.confirm_nonce")).toBe(true);
+    // 입력값은 「삭제」 단추가 눌린 순간의 것이다(모달이 돌려준다).
+    const m = fnBody("trashConfirmModal");
+    expect(m.includes("if (!yes.disabled) done(true, { ...prev, typed: inp.value });")).toBe(true);
+  });
   it("★폴링은 500ms 타이머 연쇄다 — 새 setInterval 0 이고, 모달을 닫으면 타이머가 취소된다", () => {
     const m = fnBody("trashConfirmModal");
     expect(m.includes("setInterval(")).toBe(false);
@@ -159,7 +170,7 @@ describe("확인 관문 — 클릭만으로 넘어가는 길이 없다", () => {
     const iModal = f.indexOf("await trashConfirmModal(");
     const iOrder = f.indexOf('invoke("trash_delete"');
     expect(iModal >= 0 && iOrder > iModal).toBe(true);
-    expect(f.includes("if (!ok || !prev?.confirm_id || !prev?.digest) {")).toBe(true);
+    expect(f.includes("if (!ok || !prev?.confirm_id || !prev?.digest || !prev?.confirm_nonce) {")).toBe(true);
     expect(f.includes("취소했습니다 — 아무 것도 지우지 않았습니다.")).toBe(true);
   });
   it("★선택은 항목마다 손으로 한다 — 선택 집합에 넣는 곳은 체크박스 처리기 **하나**다(전체선택이 코드에도 없다)", () => {

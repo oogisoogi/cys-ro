@@ -126,6 +126,13 @@ test("거부 문구는 되돌릴 수 없는 쪽으로 가는 선택지를 주지
     expect(trashRefusalText(code).text).not.toContain(code);
     expect(trashRefusalText(code).action).toBe("preview_again");
   }
+  // ★TICKET=cysr-1110-trash-harden — 새 거부 코드 넷(B2 뿌리 바꿔치기 · M1 네이티브 확인 결박)도
+  //   기본값이 아니고, 전부 「지우지 않았습니다 + 다시 미리보기」다.
+  for (const code of ["trash_root_changed", "confirm_unbound", "phrase_mismatch"]) {
+    expect(trashRefusalText(code).text).not.toContain(code);
+    expect(trashRefusalText(code).text).toContain("지우지 않았습니다");
+    expect(trashRefusalText(code).action).toBe("preview_again");
+  }
   // 세션 상한 초과는 **한 번에 더 적게 고르라**고 말한다(같은 선택을 다시 눌러도 같은 결과다).
   expect(trashRefusalText("cannot_certify_in_time").text).toContain("더 적게");
   expect(trashRefusalText("preview_busy").text).toContain("다른 미리보기");

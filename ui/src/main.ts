@@ -90,6 +90,7 @@ import {
 } from "./wsreconcile";
 import {
   RESET_PHRASE,
+  normalizePhrase,
   resetPhraseMatches,
   resetMismatchHint,
   resetNoticeLines,
@@ -1698,6 +1699,10 @@ async function refreshTrash() {
 type TrashPreview = {
   confirm_id?: string | null;
   digest?: string | null;
+  /// ★M1 — 앱 네이티브가 미리보기 ready 때 발급한 단회 확인(명령이 소비한다 · 이름 목록에 결박).
+  confirm_nonce?: string | null;
+  /// ★M1 — 「삭제」를 누른 순간의 입력값(모달이 채운다 · 네이티브가 문구를 다시 잰다).
+  typed?: string;
   entries?: { name: string; nodes: number; bytes: number }[];
   refused?: { name: string; reason_code: string; boundary: string | null; detail: string }[];
 };
@@ -1810,7 +1815,7 @@ function trashConfirmModal(names: string[]): Promise<{ ok: boolean; prev: TrashP
         hint.textContent = trashMismatchHint(inp.value, confirmNames);
       });
       yes.addEventListener("click", () => {
-        if (!yes.disabled) done(true, prev);
+        if (!yes.disabled) done(true, { ...prev, typed: inp.value });
       });
       trashSetStatus("확인 문구를 입력하면 삭제합니다.");
     };
@@ -1955,7 +1960,7 @@ async function trashDeleteFlow() {
   // ★미리보기는 **모달 안에서** 기다린다(비동기 잡 + 500ms 폴링). 이 `await` 가 기다리는 것은
   //   사람의 판정이고, 그 동안 어떤 RPC 도 파일 순회에 묶여 있지 않다(델타 §1.4 큐 쌍 ⒤).
   const { ok, prev } = await trashConfirmModal(names);
-  if (!ok || !prev?.confirm_id || !prev?.digest) {
+  if (!ok || !prev?.confirm_id || !prev?.digest || !prev?.confirm_nonce) {
     trashDeleting = false;
     // 거부·만료·확인 0건의 사유는 **모달과 상태줄에 이미** 적혔다 — 취소만 여기서 말한다.
     if (prev === null) trashSetStatus("취소했습니다 — 아무 것도 지우지 않았습니다.");
@@ -1967,10 +1972,13 @@ async function trashDeleteFlow() {
   trashSetStatus("삭제 명령을 보냈습니다…");
   let ordered: { order_id?: string };
   try {
+    // ★M1 — 네이티브가 nonce 를 소비하고 문구를 다시 잰 뒤에만 데몬으로 간다(어긋나면 Class 1 거부).
     ordered = (await invoke("trash_delete", {
       confirmId: prev.confirm_id,
       names: confirmNames,
       digest: prev.digest,
+      confirmNonce: prev.confirm_nonce,
+      typed: normalizePhrase(prev.typed ?? ""),
     })) as { order_id?: string };
   } catch (e) {
     // ★MJR-4(델타 §2.2) — 전송 실패는 **두 부류**다. 판정은 순수 모듈이 하고 화면은 그대로 옮긴다.

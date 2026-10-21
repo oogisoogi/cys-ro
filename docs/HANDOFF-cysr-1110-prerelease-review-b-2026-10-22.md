@@ -65,8 +65,23 @@
 ### 3-4. R4 — delivery.rs 주석 (실행 영향 0)
 S73 단락 앞에 「원작자 v0.14.51 판(4016)의 기록 · 우리는 6000 · 우리 바 1,500 단위」 고지 3줄 · 시험 실패 문구의 「여유 0 단위」를 「(원작자 4016 기준의 문면 — cysr 은 6000 이라 여유가 있다)」로.
 
-## 4. 시험 묶음 결과
-(커밋 직전 실측 — §6 에 붙인다)
+## 4. 시험 묶음 결과(최종 트리 `416c06da` · 10-22 03:1x~03:4x)
+
+| 묶음 | 결과 | 비고 |
+|---|---|---|
+| cargo 전건(`cargo test`) | lib **1100** · `--bin cys` **627** · `--bin cysd` **2698** · 실패 0 | 기준선(1c2f3a14 + d9def91a)도 1100 / 627 / 2698 · 0 실패 |
+| ui `bun test` | **3175 pass · 0 fail** | 수리 전 3173(+2 = resetconfirm 맥/윈 문장) |
+| 릴리스 시험 6종(`scripts/tests`) | `update_publish` · `release_verify` · `release_postprocess_gate` · `release_trigger_split` · `version_sot_mutation`(16건) · `ci_branch_cysd_step` 전부 rc 0 | build-info 가산 칸이 발행 본문 생성기와 충돌 없음 |
+| 생성기 | `gen_ceo_template.py --check` GREEN(100,473 B) · `gen_released_directive_hashes.py --check` OK | |
+| H-SECRET-1 | rc 0 · GREEN | 이 HANDOFF 포함 |
+| 팩 py 전건(`cysjavis-pack/bin/tests/test_*.py` **189종**) | 적 8 → 판정: **제품 회귀 0** | ↓ |
+| ├ 기준선과 같은 적 3 | `test_agora_known_authentic`(`CYS_AGORA_ZIP_DIR` 필수 · 제작 맥 전용) · `test_dept_name_guard` · `test_dept_team_token`(통합 기록의 기준선 적 18 그대로) | 기준선 = 1c2f3a14 임시 작업트리에서 같은 시험 실측 rc 1 |
+| ├ 격리 env 미설정 2 | `test_preflight_phase1_checks` · `test_verify_gate` — `JAVIS_ROOT`·`CYS_PROBE_RUNS` 격리 주입 뒤 둘 다 OK | 시험이 일부러 거부(REFUSE) |
+| └ phoenix 3 | 일괄 실행 때 `target/debug/cys`(새로 빌드)와 설치본 `/usr/local/bin/cysd`(1.1.9)가 **짝이 안 맞은 채** 돌았다(`target/debug/cysd` 부재) + 같은 시각 cargo 전건 고부하. `cysd` 도 빌드해 짝을 맞춘 뒤 `w2_untomb_fullcycle` 8/8 · `e2e_replacement` 7/7 · `c6_reap` 은 단독 4회 중 1회 6/7(빌드 직후 고부하 · `detected=[]` 시간 경계) → 이어 3회 연속 7/7 | 수리는 reap·close-surface 경로를 건드리지 않는다 · 흔들림 = 기존 시간 경계 |
+| cys-dept 관련 팩 단독 | `test_trash_old_marking`(⑤~⑧ 포함) · `test_d1_4_orphan_reap` · `test_phoenix_c6_reap` · `test_producer_marker` 녹 | |
+| 실제 바이너리 | `target/debug/cys build-info --json` = `…"target":"macos-arm64","trash_delete_supported":true,…` — cys-dept 의 대조 문자열 `*'"trash_delete_supported":true'*` 와 일치 | |
+
+**못 돌린 것(정직 고지)**: ①`src-tauri` 크레이트 시험(이번 수리는 src-tauri Rust 를 건드리지 않음 · 그 크레이트가 `include_str!` 로 읽는 `src/bin/cys.rs` 의 `params["operator_token"]` 1곳·`ui/src/trashconfirm.ts` 는 불변) ②윈도우 실기·윈 교차 컴파일(이 맥 불가 — WIN-FIELD TRASH-5 · CI 윈도우 잡) ③`javis_purge_e2e.sh`(CI 밖 · 맥 출력 바이트 불변이라 8단계 단언은 그대로 성립 — 코드 판독).
 
 ## 5. 다음 판 후보
 1. **R5 지침 바이트 래칫 재조임** — 우리 실측(57,687 / 84,987 / 100,473)으로. 지침을 만지는 가지가 모두 들어온 뒤 한 번에.

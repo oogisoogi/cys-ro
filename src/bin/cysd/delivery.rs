@@ -787,6 +787,18 @@ pub fn ledger_path(socket_path: &Path) -> PathBuf {
     cys::lane::ledger_path_in(&pack_state_dir(), socket_path)
 }
 
+/// ★(1.1.10 · cysr-1110-winqueue) 검체 전용 — 이 데몬 원장의 큐 묘비 중 사유가 `reason` 인 줄의 `queue_entry_id` 들(파일 없음 = 빈 목록).
+#[cfg(test)]
+pub(crate) fn tombstone_ids_for_test(daemon: &crate::state::Daemon, reason: &str) -> Vec<String> {
+    std::fs::read_to_string(ledger_path(&daemon.socket_path))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|r| r["origin"] == "queue_tombstone" && r["reason"] == reason)
+        .filter_map(|r| r["queue_entry_id"].as_str().map(String::from))
+        .collect()
+}
+
 /// 데몬 인스턴스 표식 경로 — 임무의 **세션 결박**(過去 임무 무기한 유효 차단)에 쓴다.
 pub fn epoch_path(socket_path: &Path) -> PathBuf {
     cys::lane::epoch_path_in(&pack_state_dir(), socket_path)

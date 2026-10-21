@@ -7937,6 +7937,8 @@ impl Daemon {
                         // ★agy r1 ⑴: 게으른 만기 회수분을 **사유를 달아** 발행한다(종전엔 retain 이
                         //   조용히 지웠다 — 무음 유실). 락은 이미 해제된 뒤다.
                         for (ex_role, ex_from, ex_entries) in &expired {
+                            // ★(1.1.10 · cysr-1110-winqueue Q1-A ②) 주차 만기 원장 묘비(같은 서식 · 최선 노력).
+                            crate::governance::record_active_drain(&daemon, *ex_from, ex_entries, "parked_expired");
                             daemon.bus.publish(
                                 "queue.dropped",
                                 "queue",
@@ -7946,6 +7948,8 @@ impl Daemon {
                         }
                         if !evicted.is_empty() {
                             // 상한 초과분은 **조용히 사라지지 않는다** — 사유를 달고 폐기 발행.
+                            // ★(1.1.10 · cysr-1110-winqueue Q1-A ②) 원장 묘비도(같은 서식 · 최선 노력).
+                            crate::governance::record_active_drain(&daemon, surf.id, &evicted, "parked_overflow");
                             daemon.bus.publish(
                                 "queue.dropped",
                                 "queue",

@@ -914,6 +914,8 @@ fn inherit_parked_queue(daemon: &Arc<Daemon>, next: &Arc<crate::state::Surface>,
         .drain(..)
         .partition(|e| now - e.enqueued_at < crate::state::PARKED_QUEUE_TTL_SECS);
     if !gone.is_empty() {
+        // ★(1.1.10 · cysr-1110-winqueue Q1-A ②) 주차 만기 원장 묘비 — 출처 좌석 번호로(같은 서식 · 최선 노력).
+        crate::governance::record_active_drain(daemon, pq.from_surface, &gone, "parked_expired");
         daemon.bus.publish(
             "queue.dropped",
             "queue",
@@ -27041,6 +27043,7 @@ mod tests {
         let daemon = claim_daemon();
         // A: 이미 만기인 주차분(다른 역할) — 벽시계에 의존하지 않고 값으로 만든다.
         let mut ea = daemon.next_queue_entry("A 역할 만기 지시".into(), None, "test");
+        ea.id.push_str("-wq-park-path"); // ★(1.1.10) 묘비 대조용 고유 id — 같은 초에 뜬 검체 데몬끼리 원장 갈래·id 가 겹친다
         // ★만기 축 = 항목의 enqueued_at(미배달 경과) — 배치 시각이 아니다(r2 개정).
         ea.enqueued_at = crate::state::now_epoch() - crate::state::PARKED_QUEUE_TTL_SECS - 1.0;
         let ea_id = ea.id.clone();
@@ -27072,6 +27075,8 @@ mod tests {
         assert_eq!(ev["payload"]["role"], json!("cso"), "어느 역할의 주차분이 사라졌나");
         assert_eq!(ev["payload"]["from_surface"], json!(77), "어느 좌석에서 온 것인가");
         assert_eq!(ev["payload"]["queue_entry_ids"], json!([ea_id]));
+        // ★(1.1.10 · Q1-A ②) 묘비 경로 2/3 — 좌석 자력 종료(주차) 길에 걷힌 만기분도 원장에 남는다(출처 좌석 77).
+        assert!(crate::delivery::tombstone_ids_for_test(&daemon, "parked_expired").contains(&ea_id), "주차 길의 만기가 원장 묘비 없이 사라졌다");
         assert!(
             daemon.parked_queues.lock().unwrap().get("cso").is_none(),
             "만기분이 원장에 남았다"
@@ -27180,6 +27185,7 @@ mod tests {
     fn d7_expired_parked_queue_is_dropped_with_reason_not_inherited() {
         let daemon = claim_daemon();
         let mut e = daemon.next_queue_entry("만기 예정 지시".into(), None, "test");
+        e.id.push_str("-wq-inherit-path"); // ★(1.1.10) 묘비 대조용 고유 id(위와 같은 이유)
         // TTL 을 확실히 넘긴 미배달 경과 — 벽시계에 의존하지 않고 값으로 만든다(항목별 축).
         e.enqueued_at = crate::state::now_epoch() - crate::state::PARKED_QUEUE_TTL_SECS - 1.0;
         let eid = e.id.clone();
@@ -27219,6 +27225,81 @@ mod tests {
                 && ev["payload"]["reason"] == json!("parked_expired"))
             .expect("만기 폐기가 무음이다 — 발신자가 유실을 모른다");
         assert_eq!(dropped["payload"]["queue_entry_ids"], json!([eid]));
+        // ★(1.1.10 · Q1-A ②) 묘비 경로 3/3 — 역할 상속(claim_role) 때 걸러진 만기분도 원장에 남는다.
+        assert!(crate::delivery::tombstone_ids_for_test(&daemon, "parked_expired").contains(&eid), "상속 길의 만기가 원장 묘비 없이 사라졌다");
+    }
+
+    /// ★(1.1.10 · cysr-1110-winqueue Q1-A ②) 주차 상한 초과분(오래된 것부터 버림)도 원장 묘비가 남는다 — 종전엔 이벤트뿐이었다.
+    #[test]
+    fn winqueue_parked_overflow_leaves_ledger_tombstones() {
+        let daemon = claim_daemon();
+        let full: Vec<crate::state::QueueEntry> = (0..crate::state::PARKED_QUEUE_MAX_ENTRIES)
+            .map(|i| {
+                let mut e = daemon.next_queue_entry(format!("주차 {i}"), None, "test");
+                e.id.push_str("-wq-overflow"); // 묘비 대조용 고유 id
+                e
+            })
+            .collect();
+        let oldest = full[0].id.clone();
+        daemon.parked_queues.lock().unwrap().insert(
+            "master".into(),
+            crate::state::ParkedQueue { entries: full, parked_at: crate::state::now_epoch(), from_surface: 5 },
+        );
+        let b = make_surface(&daemon, Some("master"));
+        let eb = daemon.next_queue_entry("넘치게 하는 지시".into(), None, "test");
+        daemon.surfaces.lock().unwrap()[&b].pending_queue.lock().unwrap().push_back(eb);
+        mark_surface_dead(&daemon, b);
+        wait_surface_exited_event(&daemon, b);
+        let ev = daemon
+            .bus
+            .tail(200)
+            .into_iter()
+            .find(|e| e["name"] == json!("queue.dropped") && e["payload"]["reason"] == json!("parked_overflow"))
+            .expect("상한 초과 폐기 이벤트가 없다(전제 붕괴)");
+        let ids: Vec<String> = serde_json::from_value(ev["payload"]["queue_entry_ids"].clone()).unwrap();
+        assert!(ids.contains(&oldest), "가장 오래된 것부터 버리지 않았다: {ids:?}");
+        let led = crate::delivery::tombstone_ids_for_test(&daemon, "parked_overflow");
+        assert!(ids.iter().all(|i| led.contains(i)), "상한 초과분이 원장 묘비 없이 사라졌다: {ids:?} ↔ {led:?}");
+    }
+
+    /// ★(1.1.10 · cysr-1110-winqueue Q1-A ①) 사람이 닫은 좌석(OwnerClose)의 큐 폐기 이벤트는 `owner_close=true` 와 건수를 싣는다 —
+    /// GUI 는 이것으로만 「대기 중이던 지시 N건을 버렸습니다」 1줄을 띄운다. 0건이면 이벤트 자체가 없다 · Reap 은 false.
+    #[test]
+    fn winqueue_owner_close_drop_event_carries_owner_close_and_count() {
+        let daemon = claim_daemon();
+        let dropped_events = |d: &Arc<Daemon>, sid: u64| -> Vec<Value> {
+            d.bus
+                .tail(400)
+                .into_iter()
+                .filter(|e| e["name"] == json!("queue.dropped") && e["surface_id"] == json!(sid))
+                .collect()
+        };
+        for n in [0usize, 1, 3] {
+            let s = make_surface(&daemon, None);
+            for i in 0..n {
+                let e = daemon.next_queue_entry(format!("지시 {i}"), None, "test");
+                daemon.surfaces.lock().unwrap()[&s].pending_queue.lock().unwrap().push_back(e);
+            }
+            crate::governance::close_surface(&daemon, s, crate::governance::CloseCause::OwnerClose).expect("닫기");
+            let evs = dropped_events(&daemon, s);
+            if n == 0 {
+                assert!(evs.is_empty(), "0건인데 폐기 이벤트가 났다: {evs:?}");
+                continue;
+            }
+            assert_eq!(evs.len(), 1, "n={n}: {evs:?}");
+            assert_eq!(evs[0]["payload"]["owner_close"], json!(true), "n={n}");
+            assert_eq!(evs[0]["payload"]["count"], json!(n), "n={n}");
+            assert_eq!(evs[0]["payload"]["reason"], json!("surface_closed"), "사유 어휘를 바꿨다(소비처 javis_report_gate)");
+            assert_eq!(crate::delivery::tombstone_ids_for_test(&daemon, "surface_closed").len() >= n, true);
+        }
+        // Reap(역할 없는 회수)은 사람의 행위가 아니다 — 같은 폐기여도 owner_close=false.
+        let s = make_surface(&daemon, None);
+        let e = daemon.next_queue_entry("회수될 지시".into(), None, "test");
+        daemon.surfaces.lock().unwrap()[&s].pending_queue.lock().unwrap().push_back(e);
+        crate::governance::close_surface(&daemon, s, crate::governance::CloseCause::Reap).expect("회수");
+        let evs = dropped_events(&daemon, s);
+        assert_eq!(evs.len(), 1, "{evs:?}");
+        assert_eq!(evs[0]["payload"]["owner_close"], json!(false));
     }
     /// 대조 핀: cso 라도 **살아있는** 타 surface 의 queue.clear 는 여전히 clear_denied.
     #[test]

@@ -286,6 +286,7 @@ import { parseBriefSections, recordedAt, localStamp, briefStatePaths, pickBriefT
 import { nextFollow, shouldShowFoldHint, FOLD_HINT_TITLE, FOLD_HINT_BODY } from "./scrollfollow";
 import { shouldClosePlaceholder } from "./placeholderclose";
 import { placeholderScreenLines } from "./placeholderclose";
+import { queueDropNotice } from "./queuedropnotice";
 import {
   permWarningToast,
   cwdBlockedNotices,
@@ -9491,6 +9492,13 @@ function onDaemonEvent(event: Record<string, unknown>) {
       starvedLastKey.set(starved.id, starved.stateKey);
       if (starved.humanNeeded) osBanner(starved.title, starved.detail);
     }
+    return;
+  }
+  if (name === "queue.dropped") {
+    // ★(1.1.10 · cysr-1110-winqueue Q1-A ①) 사람이 닫은 좌석의 큐 폐기 — 1건 이상일 때만 1줄(문구·조건 = queuedropnotice.ts).
+    //   종전엔 이 이벤트를 GUI 가 소비하지 않아 화면 0 이었다(category "queue" 는 폴백 레인이 없다 — return 으로 달라지는 것 없음).
+    const notice = queueDropNotice(payload);
+    if (notice) toast("feed", notice.title, notice.detail);
     return;
   }
   if (name === "queue.expired" || name === "queue.revived") {

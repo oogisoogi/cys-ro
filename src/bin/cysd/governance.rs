@@ -6039,6 +6039,8 @@ fn sweep_parked_queues(daemon: &Arc<Daemon>) {
         crate::state::drain_expired_parked_locked(&mut map, now)
     };
     for (role, from, entries) in expired {
+        // ★(1.1.10 · cysr-1110-winqueue Q1-A ②) 주차 만기도 원장 묘비(같은 서식 · 본문 없이 sha256 · 최선 노력) — 종전엔 이벤트뿐이었다.
+        record_active_drain(daemon, from, &entries, "parked_expired");
         daemon.bus.publish(
             "queue.dropped",
             "queue",
@@ -6298,12 +6300,13 @@ pub fn close_surface(daemon: &Arc<Daemon>, id: u64, cause: CloseCause) -> Result
         // ★(0.14.31 · 리뷰 R2 · claude minor) 원장 묘비 먼저(최선 노력 · 배치) — 좌석이 사라지는
         //   경로라 항목을 보존할 자리가 없다. 기록 실패는 `delivery.record_failed` 로 드러난다.
         record_active_drain(daemon, id, &dropped, "surface_closed");
-        daemon.bus.publish(
-            "queue.dropped",
-            "queue",
-            Some(id),
-            crate::state::queue_dropped_payload("surface_closed", &dropped, None),
-        );
+        let mut payload = crate::state::queue_dropped_payload("surface_closed", &dropped, None);
+        // ★(1.1.10 · cysr-1110-winqueue Q1-A ①) 추가형 키 — 사람이 닫은 좌석(OwnerClose)인가. GUI 가 이 값이 참일 때만
+        //   「대기 중이던 지시 N건을 버렸습니다」 1줄을 띄운다(Reap·역할 없는 회수는 사람의 행위가 아니다 · reason 은 무변경).
+        if let Some(o) = payload.as_object_mut() {
+            o.insert("owner_close".into(), Value::Bool(cause == CloseCause::OwnerClose));
+        }
+        daemon.bus.publish("queue.dropped", "queue", Some(id), payload);
     }
     // ★(0.14.31 · WP-5 M) 만료 큐는 위(맵 제거 **전**)에서 이미 처분했다. 그 사이에 새로 만료된
     //   항목이 있을 수 있으므로 한 번 더 — 이 시점의 실패분은 보존소로 간다(도달 가능 유지).
@@ -31848,6 +31851,8 @@ mod todo_decl_tests {
         assert_eq!(ev["payload"]["role"], serde_json::json!("reviewer-gemini"));
         assert_eq!(ev["payload"]["from_surface"], serde_json::json!(91));
         assert_eq!(ev["payload"]["queue_entry_ids"], serde_json::json!([eid]));
+        // ★(1.1.10 · Q1-A ②) 묘비 경로 1/3 — 워치독 스윕의 주차 만기도 원장에 남는다.
+        assert!(crate::delivery::tombstone_ids_for_test(&daemon, "parked_expired").contains(&eid), "스윕 만기가 원장 묘비 없이 사라졌다");
         assert!(
             daemon.parked_queues.lock().unwrap().is_empty(),
             "스윕 뒤에도 만기분이 남았다"

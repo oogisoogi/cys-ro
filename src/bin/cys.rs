@@ -15978,6 +15978,9 @@ fn boot_agent_on_surface(
     // **본체 방어는 UI 가드**(ui/src/wheelgate.ts 의 shouldSuppressWheelWin)다. 여기 호출이
     // 있다는 이유로 "Windows 는 env 로 막힌다"고 판단하지 마라 — 규약 단일화(사본 금지)를 위해
     // 두 소비처가 모두 lib 헬퍼를 경유할 뿐이다.
+    // ★설계 의도(1.1.10 · cysr-1110-winqueue ⑽ · master#904c96af Q2-A): 맥은 이 env 가 Claude Code 판정에서 settings `tui` 보다 앞서
+    //   사용자가 `/tui fullscreen` 을 골라도 classic 이다 — 의도다. 맥은 `tui:"default"` 를 선기록하지 않아 Claude Code 자동 승격이 쓴 값과
+    //   사용자 선택을 구분할 수 없기 때문이다. 대칭(윈 모델: tui 선기록 + 사용자 fullscreen 존중)은 1.1.11 후보(맥 함대 실기 동반).
     cys::inject_claude_alt_screen_default(&mut env_pairs, extract_bin(&cmd, agent));
     // ★v116-integ B: 제안 글 끄기 env — 키 부재 시에만(사용자 agents.json 을 고친 기계 포함 · lib 헬퍼 doc).
     cys::inject_claude_prompt_suggestion_default(&mut env_pairs, extract_bin(&cmd, agent));

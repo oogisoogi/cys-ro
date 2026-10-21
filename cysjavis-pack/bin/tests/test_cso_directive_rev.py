@@ -2448,10 +2448,13 @@ class CsoDirectiveRevision(unittest.TestCase):
         #                              → 116,357(33288649: 같은 16줄)                    +2,017   = 116,357   (CEO 는 MASTER 바이트 연접이라 16줄이 두 번 센다)
         #   ② 받아들인 것 = **오늘 현장의 헌장 크기 그대로**다. 앞으로 늘려도 된다는 면허가 **아니다** — 다음 증가는 이 핀이 다시 붉어져 사람 결정으로 올라온다.
         #     되돌릴 때: 지침을 줄이는 커밋이 아래 세 숫자를 새 크기로 함께 내린다(래칫). 상한 = 이 날의 실측 크기이므로 1 B 만 늘어도 적색이다.
+        #   ③ 2026-10-22 재조임(1.1.11 · review-b R5): 1.1.8 원작자 병합이 상한을 원작자 재기준선(위 ①)으로 올려 둔 채 우리 지침은 그보다 작았다 —
+        #     CSO 57,687 · MASTER 84,987 · CEO 100,473(`wc -c` · rel/1.1.10 39189404 위 이 가지). 여유 2,028 / 15,736 / 15,884 B 가 다음 증가를 조용히 받아
+        #     주던 것을 걷는다. 지침을 만지는 가지(review-a·b)가 모두 들어온 뒤의 크기다.
         size = lambda name: os.path.getsize(os.path.join(REAL_DIRECTIVES_DIR, name))   # 실제 파일(전체 검체 재실행이 DIRECTIVES_DIR 을 임시 사본으로 바꿔도 영향 없다)
-        self.assertLessEqual(size("CSO_DIRECTIVE.md"), 59715, "CSO_DIRECTIVE.md 바이트 예산(59,715) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다)")
-        self.assertLessEqual(size("MASTER_DIRECTIVE.md"), 100723, "MASTER_DIRECTIVE.md 바이트 예산(100,723) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다)")
-        self.assertLessEqual(size("CEO_TEMPLATE.md"), 116357, "CEO_TEMPLATE.md 바이트 예산(116,357) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다 · 생성물이라 MASTER 와 머리글 바이트가 함께 든다)")
+        self.assertLessEqual(size("CSO_DIRECTIVE.md"), 57687, "CSO_DIRECTIVE.md 바이트 예산(57,687) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다)")
+        self.assertLessEqual(size("MASTER_DIRECTIVE.md"), 84987, "MASTER_DIRECTIVE.md 바이트 예산(84,987) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다)")
+        self.assertLessEqual(size("CEO_TEMPLATE.md"), 100473, "CEO_TEMPLATE.md 바이트 예산(100,473) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다 · 생성물이라 MASTER 와 머리글 바이트가 함께 든다)")
 
     def test_utf8_and_lf(self):
         """세 지시문 모두 엄격 UTF-8 로 읽히고 CRLF 가 없어야 한다(Windows 체크아웃 회귀)."""

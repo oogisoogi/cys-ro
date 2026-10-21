@@ -11149,7 +11149,8 @@ fn run_factory_reset(
             "  복구  cys factory-reset --undo {}  (또는 그 폴더의 manifest.json / journal.ndjson 을 역방향 mv)",
             plan.trash_dir.display()
         );
-        println!("        격리본은 약 14일 뒤 정리 작업에서 소거될 수 있습니다(직접 지우려면 rm -rf).");
+        // ★1.1.10(S8): 자동 소거는 없어졌다 — 문장은 앱 정본(ui/src/resetconfirm.ts TRASH_KEEP_NOTICE)과 같게(시험 factory_reset_trash_notice_tests).
+        println!("        격리본은 그대로 보관됩니다 — 이 제품은 더 이상 스스로 지우지 않습니다(삭제는 Control Center 의 휴지통에서 명령합니다).");
     }
     // ★P0-6: 격리 목적지가 못 쓰는 상태면 **데몬을 건드리기 전에** 거부한다.
     if let Err(e) = &plan.trash_root_ready {
@@ -50053,5 +50054,25 @@ mod toast_axis_tests {
         for f in ["fn queue_blocked_notice_lines(", "fn queue_durable_suffix(", "fn warn_if_daemon_paused("] {
             assert!(code.contains(f), "{f} 가 사라졌다");
         }
+    }
+}
+
+/// ★1.1.10 발행 전 검토(TICKET=cysr-1110-prerelease-review-b): 원작자 S8 이 격리분 자동 소거를 없애며 화면 세 곳의
+/// 약속(「약 14일 뒤 소거」)은 지웠지만 CLI `factory-reset` 계획 출력의 같은 문장은 원작자 판(v0.14.51)에도 남아 있었다.
+/// 이 시험은 그 출력이 ①옛 약속을 하지 않고 ②앱의 정본 문장(ui/src/resetconfirm.ts `TRASH_KEEP_NOTICE`)과 같은 말을 하는지 잰다.
+#[cfg(test)]
+mod factory_reset_trash_notice_tests {
+    #[test]
+    fn factory_reset_plan_output_says_the_same_trash_lifetime_as_the_app() {
+        let src = include_str!("cys.rs");
+        let i = src.find("\nfn run_factory_reset(").expect("run_factory_reset 소실");
+        let body = &src[i..i + src[i..].find("\n}\n").expect("fn 끝")];
+        assert!(!body.contains("14일 뒤"), "CLI 초기화 계획이 아직 자동 소거(약 14일 뒤)를 약속한다 — S8 이후 거짓이다");
+        let ui = include_str!("../../ui/src/resetconfirm.ts");
+        let k = ui.find("export const TRASH_KEEP_NOTICE =").expect("ui TRASH_KEEP_NOTICE 소실");
+        let rest = &ui[k..];
+        let a = rest.find('"').expect("문자열 시작") + 1;
+        let notice = &rest[a..a + rest[a..].find('"').expect("문자열 끝")];
+        assert!(body.contains(notice), "CLI 초기화 계획의 격리분 수명 안내가 앱 정본 문장과 다르다: {notice}");
     }
 }

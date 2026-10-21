@@ -684,9 +684,11 @@ def _producer_mark(trash_dir, state, producer, create=False):
         body = json.dumps({"v": 1, "state": state, "producer": producer, "pid": mine,
                            "start_token": _proc_start_token(), "ts": time.time()},
                           ensure_ascii=False)
-        tmp = path + ".tmp"
+        # 유일 tmp(mkstemp) — 고정 `.tmp` 는 H-CONC-3 이 막는 공유 스테이징 꼴. 이름은 `.producer-<pid>.*.tmp`
+        #   라 trash.rs 의 `*.tmp` 제외 규칙에 그대로 걸린다.
+        fd, tmp = tempfile.mkstemp(dir=trash_dir, prefix=".producer-%d." % mine, suffix=".tmp")
         try:
-            with open(tmp, "w", encoding="utf-8") as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(body)
             os.replace(tmp, path)  # 원자적 tmp+rename
         except Exception:

@@ -68,12 +68,16 @@ OPTIONAL_OK = (PASS, FIXED, SKIP, INFO)
 
 
 # ★1.1.10 ②(dbg119 10-16): INFO 는 **부재**로 확인된 행에만 — 종전 폴백(그 밖 전부 INFO)은 구버전·불완전 클론·판독불가까지
-#   「없음」 으로 덮었다. 부재 문구 = 각 점검의 「미설치·누락」 행 머리 + 비가역 설치 보류(WARN · 부재일 때만 선다).
+#   「없음」 으로 덮었다. 부재 문구 = 각 점검의 「미설치·누락」 행 머리 + 비가역 설치 보류(WARN) — 보류 행은 구버전·불완전
+#   클론에서도 서므로(--fix 표준 호출) 설치돼 있으면 「현 설치:」 꼬리를 달아 부재와 가른다(1.1.10 사전 검토).
 OPTIONAL_ABSENT_HEADS = {
     "C19": ("pack/bin 누락",),
     "C21": ("harness-creator 툴체인 미설치", "비가역 변경("),
     "C24": ("korean-law 미설치", "비가역 변경("),
 }
+
+
+OPTIONAL_PRESENT_TAIL = " · 현 설치: "
 
 
 def _optional_tool_grade(cid, status, detail):
@@ -82,7 +86,7 @@ def _optional_tool_grade(cid, status, detail):
     if fam not in OPTIONAL_TOOL_FAMILIES or status in OPTIONAL_OK:
         return status, detail
     d = str(detail)
-    if not d.startswith(OPTIONAL_ABSENT_HEADS[fam]) or "불완전" in d:
+    if not d.startswith(OPTIONAL_ABSENT_HEADS[fam]) or "불완전" in d or OPTIONAL_PRESENT_TAIL in d:
         # 자기검증 실패·구버전·불완전·판독불가·설정 문제 = 실결함 · DRYRUN·SAFE-GAP·BLOCKED = 미리보기·차단 표시(그대로)
         return (WARN if status == FAIL else status), detail
     return INFO, "선택 · 없음 — 개발 기기용 선택 도구(없어도 결함 아님) · 원판정 %s: %s" % (status, detail)
@@ -1842,8 +1846,9 @@ class Preflight:
     # 한정된다 — "단일 Mutation 게이트·전 사이트 1:1 미리보기" 는 의도적으로 *주장하지 않는다*.
     # 비가역만 게이트한 이유: 가역(.bak·kill·재실행 가능)은 dry/safe 비집행으로 충분하고, 비가역은
     # 사전 확인·denylist 차단이 *반드시* 필요하기 때문(자율주행 denylist ④ 정합).
-    def may_mutate(self, cid, kind, target, summary, denylist_class=None):
-        """이 *비가역 외부설치* 부작용을 지금 집행해도 되는가? 계획 기록 + 모드별 분기. 집행=True."""
+    def may_mutate(self, cid, kind, target, summary, denylist_class=None, present=None):
+        """이 *비가역 외부설치* 부작용을 지금 집행해도 되는가? 계획 기록 + 모드별 분기. 집행=True.
+        present = 대상이 이미 (구버전·불완전으로) 있으면 그 상태 — 보류 행에 꼬리로 달려 선택 도구 부재 INFO 와 갈린다."""
         self.planned.append({"cid": cid, "kind": kind, "target": target,
                              "summary": summary, "denylist_class": denylist_class})
         if self.mode == "dry":
@@ -1855,8 +1860,8 @@ class Preflight:
         if self.mode == "fix":
             if denylist_class and not self.allow_irreversible:
                 # 첫 도입 WARN-first(BLOCK 아님) — 부트 ⓪ 표준 호출 회귀(NOT READY) 방지.
-                self.add(cid, WARN, "비가역 변경(%s) 보류 — --allow-irreversible 없이 자동집행 안 함: %s"
-                         % (denylist_class, target))
+                self.add(cid, WARN, "비가역 변경(%s) 보류 — --allow-irreversible 없이 자동집행 안 함: %s%s"
+                         % (denylist_class, target, OPTIONAL_PRESENT_TAIL + present if present else ""))
                 return False
             return True
         return False  # report 모드: 관찰만, 부작용 없음
@@ -4173,7 +4178,8 @@ class Preflight:
         if self.fix and gitbin and self.may_mutate(
                 cid, "subprocess_install", "git clone %s → %s" % (HARNESS_REPO, dst),
                 "harness-creator 툴체인 git clone(핀 %s)" % HARNESS_PIN[:8],
-                denylist_class="external_install"):
+                denylist_class="external_install",
+                present="%s 불완전" % dst if os.path.isdir(dst) else None):
             try:
                 ok = subprocess.run([gitbin, "clone", HARNESS_REPO, dst],
                                     capture_output=True, timeout=300, **NOWIN).returncode == 0
@@ -4335,7 +4341,7 @@ class Preflight:
             if self.fix and shutil.which("npm") and self.may_mutate(
                     cid, "subprocess_install", "npm install -g %s" % KLAW_PIN,
                     "korean-law MCP CLI 전역 설치(핀 %s)" % KLAW_PIN,
-                    denylist_class="external_install"):
+                    denylist_class="external_install", present=cur if cli else None):
                 try:
                     if subprocess.run(["npm", "install", "-g", KLAW_PIN],
                                       capture_output=True, timeout=600, **NOWIN).returncode == 0:

@@ -6359,7 +6359,11 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             //   자동 응답은 정의상 사람 입력이 아니므로 가드를 찍지 않는다. 판정 SOT 는 그대로
             //   cys::mousereport 하나이고(단일 정의처), 새 술어는 is_pure_mouse_report 의
             //   **상위 집합**이라 A9 면제는 축소되지 않는다(lib 상위집합 핀이 고정).
-            if human && !cys::mousereport::is_pure_terminal_autoreply(&text) {
+            // ★(1.1.10 사전 검토) 윈 GUI 의 대체화면 휠 번역(PgUp/PgDn 만)도 같은 면제 — 계수 면제(state.rs 축1)와 같은 조건.
+            //   빠지면 스크롤 중 큐 배달이 마지막 휠 뒤 queue_human_quiet_secs(30초)까지 멎는다(맥 = SGR 보고라 A9 로 면제).
+            let page_scroll = surface.alt_screen.load(Ordering::Relaxed)
+                && crate::governance::is_page_scroll_chunk(text.as_bytes());
+            if human && !page_scroll && !cys::mousereport::is_pure_terminal_autoreply(&text) {
                 *surface.last_human_input.lock().unwrap() = Some(std::time::Instant::now());
             }
             // T3-13 권위 전달(clear_first): 잔존 미제출 텍스트를 Ctrl-U로 지운 깨끗한 라인에
@@ -16952,6 +16956,82 @@ mod tests {
             resp["error"]["code"], json!(cys::ERR_TYPING_GUARD),
             "사람 타이핑 중 비-권위 Return 은 종전대로 거부돼야 한다 (응답: {resp})"
         );
+
+        std::env::remove_var(cys::pack::ENV_PACK_DIR);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★(1.1.10 사전 검토 · cysr-1110-prerelease-review-a) 윈 GUI 는 대체화면 pane 의 휠을 PgUp/PgDn(`ESC[5~`·`ESC[6~`)으로
+    /// 번역해 human=true 로 보낸다. 축1(winqueue)이 계수는 뺐지만 이 처리기가 휠마다 `last_human_input` 을 찍어, 오너가
+    /// 스크롤해 읽는 동안 그 pane 의 `--queued` 배달이 마지막 휠 뒤 30초(queue_human_quiet_secs)까지 `human_typing` 으로
+    /// 멎고 노드의 제출 Return 은 typing_guard 로 거부됐다 — 맥의 같은 스크롤(SGR 마우스 보고)은 A9 로 면제된다.
+    /// 계약: 대체화면 + PgUp/PgDn 만 = 가드 미갱신 · 본 화면·글자 섞임 = 종전대로 갱신(대조군).
+    #[test]
+    fn alt_screen_page_scroll_wheel_does_not_arm_typing_guard() {
+        let _g = ACL_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (daemon, dir) =
+            daemon_with_acl("pgscroll-guard", r#"{ "default": "allow", "rules": [] }"#);
+        let seat = daemon
+            // 진짜 대체화면 좌석(reader 가 1049h 를 미러) · 에코 끔(에코 출력이 파서 상태를 흔들지 않게)
+            .create_surface(None, Some("stty -echo; printf '\\033[?1049h'; exec sleep 30".into()), None, Some("worker".into()), 24, 80)
+            .expect("create seat");
+        daemon.surfaces.lock().unwrap().insert(seat.id, seat.clone());
+        let gui_pid = 999_430_u32;
+        bind_caller(&daemon, gui_pid, seat.id);
+        let master = daemon
+            .create_surface(None, Some("sleep 30".into()), None, Some("master".into()), 24, 80)
+            .expect("create master");
+        daemon.surfaces.lock().unwrap().insert(master.id, master.clone());
+        let master_pid = 999_431_u32;
+        bind_caller(&daemon, master_pid, master.id);
+
+        let send_human_to = |sid: u64, text: &str| {
+            let req = Request {
+                id: json!(1),
+                method: "surface.send_text".into(),
+                params: json!({ "surface_id": sid, "text": text, "quiet": true, "human": true }),
+            };
+            let Reply::Single(resp) = dispatch(&daemon, req, Some(gui_pid)) else {
+                panic!("expected single reply");
+            };
+            assert_eq!(resp["ok"], json!(true), "전제: 전송 자체는 성공해야 한다 (응답: {resp})");
+        };
+        let submit_return = || {
+            let req = Request {
+                id: json!(2),
+                method: "surface.send_key".into(),
+                params: json!({ "surface_id": seat.id, "key": "Return" }),
+            };
+            let Reply::Single(resp) = dispatch(&daemon, req, Some(master_pid)) else {
+                panic!("expected single reply");
+            };
+            resp
+        };
+
+        let send_human = |text: &str| send_human_to(seat.id, text);
+        let dl = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < dl && !seat.alt_screen.load(Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(seat.alt_screen.load(Ordering::Relaxed), "전제: reader 가 1049h 를 미러해야 한다");
+        for wheel in ["\u{1b}[5~", "\u{1b}[6~", "\u{1b}[5~\u{1b}[5~\u{1b}[5~"] {
+            *seat.last_human_input.lock().unwrap() = None;
+            send_human(wheel);
+            assert!(
+                seat.last_human_input.lock().unwrap().is_none(),
+                "대체화면 휠 번역 {wheel:?} 이 타이핑 가드를 켰다 — 큐 배달이 30초 멎는다"
+            );
+            assert_eq!(submit_return()["ok"], json!(true), "휠 {wheel:?} 직후 노드 제출 Return 이 거부됐다");
+        }
+        // 대조군 ① 대체화면이라도 글자가 섞이면 사람 입력이다
+        *seat.last_human_input.lock().unwrap() = None;
+        send_human("\u{1b}[5~a");
+        assert!(seat.last_human_input.lock().unwrap().is_some(), "글자 섞인 청크까지 면제됐다");
+        // 대조군 ② 본 화면의 PgUp 은 종전대로(셸 줄 편집기는 꼬리 `~` 를 글자로 남길 수 있다 — 계수 규칙과 같은 입장)
+        assert!(!master.alt_screen.load(Ordering::Relaxed), "전제: 본 화면 좌석");
+        *master.last_human_input.lock().unwrap() = None;
+        send_human_to(master.id, "\u{1b}[5~");
+        assert!(master.last_human_input.lock().unwrap().is_some(), "본 화면 PgUp 까지 면제됐다");
 
         std::env::remove_var(cys::pack::ENV_PACK_DIR);
         let _ = std::fs::remove_dir_all(&dir);

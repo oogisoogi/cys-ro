@@ -2143,16 +2143,23 @@ pub struct UndoPlan {
 }
 
 /// 지도 한 줄의 격리 위치. ★M4(codex 2R): `to_rel`(격리 폴더 기준 이름 한 성분)이 있으면 **지금 가리킨
-/// 격리 폴더** 기준으로 해석한다 — 격리분은 그 지도와 같은 폴더에 있기 때문이다. 없거나(옛 지도)
-/// 한 성분이 아니면 절대 `to` 를 쓴다.
-fn undo_location(trash_dir: &Path, e: &serde_json::Value) -> Option<PathBuf> {
-    if let Some(r) = e["to_rel"].as_str() {
-        let one = !r.is_empty() && r != "." && r != ".." && !r.contains('/') && !r.contains('\\');
-        if one {
-            return Some(trash_dir.join(r));
+/// 격리 폴더** 기준으로 해석한다 — 격리분은 그 지도와 같은 폴더에 있기 때문이다.
+/// ★codex 3R: 절대 `to` 폴백은 `to_rel` 칸이 **아예 없을 때**(옛 지도)만이다. 칸이 있는데 문자열이 아니거나
+/// 정확히 한 개의 보통 성분(`Component::Normal`)이 아니면(빈 값·`.`·`..`·구분자·윈도우 드라이브 접두사
+/// `C:foo` 등) **지도 전체를 거부**한다 — 손상·변조된 지도로 격리 폴더 밖 객체를 옮기지 않는다.
+fn undo_location(trash_dir: &Path, e: &serde_json::Value) -> Result<Option<PathBuf>, String> {
+    let Some(rel) = e.get("to_rel") else {
+        return Ok(e["to"].as_str().map(PathBuf::from));
+    };
+    let bad = || format!("복구 지도의 to_rel 이 격리 폴더 안의 이름 하나가 아니다({rel}) — 지도를 쓰지 않는다");
+    let r = rel.as_str().ok_or_else(bad)?;
+    let mut comps = Path::new(r).components();
+    match (comps.next(), comps.next()) {
+        (Some(std::path::Component::Normal(n)), None) if !r.contains('/') && !r.contains('\\') => {
+            Ok(Some(trash_dir.join(n)))
         }
+        _ => Err(bad()),
     }
-    e["to"].as_str().map(PathBuf::from)
 }
 
 /// 격리 폴더에서 복구 계획을 읽는다(쓰기 0). manifest 가 없으면 저널로 폴백한다.
@@ -2164,7 +2171,7 @@ pub fn read_undo_plan(trash_dir: &Path) -> Result<UndoPlan, String> {
         let v: serde_json::Value =
             serde_json::from_str(&body).map_err(|e| format!("manifest 파싱 실패: {e}"))?;
         for e in v["entries"].as_array().cloned().unwrap_or_default() {
-            if let (Some(f), Some(t)) = (e["from"].as_str(), undo_location(trash_dir, &e)) {
+            if let (Some(f), Some(t)) = (e["from"].as_str(), undo_location(trash_dir, &e)?) {
                 entries.push((t, PathBuf::from(f)));
             }
         }
@@ -2181,7 +2188,7 @@ pub fn read_undo_plan(trash_dir: &Path) -> Result<UndoPlan, String> {
                 Ok(v) => v,
                 Err(_) => continue, // 중도 사망으로 잘린 마지막 줄은 건너뛴다.
             };
-            if let (Some(f), Some(t)) = (v["from"].as_str(), undo_location(trash_dir, &v)) {
+            if let (Some(f), Some(t)) = (v["from"].as_str(), undo_location(trash_dir, &v)?) {
                 entries.push((t, PathBuf::from(f)));
             }
         }
@@ -3678,6 +3685,57 @@ mod tests {
         let (restored, ufailed) = execute_undo(&up, &mut noop2);
         assert_eq!(restored, rep.moved.len(), "복구 실패: {ufailed:?}");
         assert!(r.cys_base.join("pack/round").exists(), "원위치로 돌아오지 않았다");
+    }
+
+    /// ★codex 3R — `to_rel` 칸이 **있는데** 이름 하나가 아니면 지도 전체를 거부한다(절대 `to` 로 폴백해
+    /// 격리 폴더 밖의 객체를 옮기지 않는다). 칸이 **없으면**(옛 지도) 절대 `to` 를 쓴다. manifest·저널 둘 다.
+    #[test]
+    fn undo_rejects_a_bad_to_rel_and_falls_back_only_when_it_is_absent() {
+        let td = test_home("undo-to-rel");
+        let trash = td.join("trash");
+        let outside = td.join("outside-obj");
+        mk(&trash.join("000-x"));
+        mk(&outside);
+        let origin = td.join("origin");
+        let line = |rel: serde_json::Value| {
+            let mut v = serde_json::json!({"from": origin.join("x").to_string_lossy(), "to": outside.to_string_lossy()});
+            if !rel.is_null() {
+                v["to_rel"] = rel;
+            }
+            v
+        };
+        let mut bads = vec![json_s(""), json_s("."), json_s(".."), json_s("../outside-obj"), json_s("a/b"),
+                            json_s("a\\b"), json_s("/abs"), serde_json::json!(7)];
+        // 윈도우 드라이브 접두사는 윈도우에서만 접두사다(유닉스에선 `C:foo` 가 보통 이름 한 성분 —
+        // 판정은 그 플랫폼의 `Path::components()` 가 한다).
+        if cfg!(windows) {
+            bads.push(json_s("C:foo"));
+        }
+        for bad in bads {
+            for kind in ["manifest", "journal"] {
+                let _ = std::fs::remove_file(trash.join("manifest.json"));
+                let _ = std::fs::remove_file(trash.join("journal.ndjson"));
+                if kind == "manifest" {
+                    touch(&trash.join("manifest.json"), &serde_json::json!({"entries": [line(bad.clone())]}).to_string());
+                } else {
+                    touch(&trash.join("journal.ndjson"), &format!("{}\n", line(bad.clone())));
+                }
+                let e = read_undo_plan(&trash).err();
+                assert!(e.is_some(), "[{kind}] 잘못된 to_rel {bad} 을 받아들였다");
+            }
+        }
+        // 정상 한 성분 → 지금 가리킨 폴더 기준.
+        let _ = std::fs::remove_file(trash.join("journal.ndjson"));
+        touch(&trash.join("manifest.json"), &serde_json::json!({"entries": [line(json_s("000-x"))]}).to_string());
+        let up = read_undo_plan(&trash).unwrap();
+        assert_eq!(up.entries, vec![(trash.join("000-x"), origin.join("x"))]);
+        // 칸 없음(옛 지도) → 절대 to 폴백.
+        touch(&trash.join("manifest.json"), &serde_json::json!({"entries": [line(serde_json::Value::Null)]}).to_string());
+        let up = read_undo_plan(&trash).unwrap();
+        assert_eq!(up.entries, vec![(outside.clone(), origin.join("x"))]);
+    }
+    fn json_s(s: &str) -> serde_json::Value {
+        serde_json::Value::String(s.to_string())
     }
 
     /// ★S8 M3: 격리가 끝나면 `.producer` 가 `complete` 로 닫혀 있다 — 그리고 그것은

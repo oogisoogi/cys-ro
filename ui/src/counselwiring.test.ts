@@ -22,14 +22,21 @@ function fnBody(src: string, header: string): string {
   throw new Error(`닫힘 없음: ${header}`);
 }
 
+// ★(cysr-menu-top-row · 박사님 2026-10-21 「상담소, 아고라 메뉴 위치가 왼쪽 메뉴바면 애매하다. 상단 피드백과 함께 배치하자.
+//   순서는 피드백 상담소 아고라 순을 제안한다.」) 종전 기대값 = 사이드바 줄(#ws-counsel-row)이 목록(#ws-tabs) 아래 · 사용량 패널 위.
+//   지금 = 상단바에서 피드백 바로 뒤 상담소 → 아고라 → 정렬 · 사이드바 0(한 곳에만).
 describe("상담소 메뉴 자리·라벨", () => {
-  it("사이드바 줄은 목록(#ws-tabs) 아래 · 사용량 패널(#ws-usage) 위에 있다", () => {
-    const tabs = html.indexOf('<div id="ws-tabs">');
-    const row = html.indexOf('<div id="ws-counsel-row">');
-    const usage = html.indexOf('<div id="ws-usage"');
-    expect(tabs).toBeGreaterThan(0);
-    expect(row).toBeGreaterThan(tabs);
-    expect(usage).toBeGreaterThan(row);
+  const top = html.slice(html.indexOf('<header id="topbar">'), html.indexOf("</header>"));
+  it("상단바 단추 순서 = 피드백 · 상담소 · 아고라 · 정렬(맨 앞 넷)", () => {
+    const ids = [...top.matchAll(/<button\b[^>]*?\bid="([^"]+)"/g)].map((m) => m[1]);
+    expect(ids.slice(0, 4)).toEqual(["btn-feedback", "btn-counsel", "btn-agora", "btn-equalize"]);
+  });
+  it("사이드바(왼쪽 메뉴바)에는 상담소·아고라 0 · 옛 줄(#ws-counsel-row) 0 · 각 id 는 문서에 한 번", () => {
+    const nav = html.slice(html.indexOf('<nav id="wsbar">'), html.indexOf("</nav>"));
+    expect(nav.length).toBeGreaterThan(0);
+    for (const s of ['id="btn-counsel"', 'id="btn-agora"', 'id="counsel-badge"', 'id="ws-counsel-row"', ">상담소", ">아고라<"]) expect(nav.includes(s)).toBe(false);
+    for (const s of ['id="btn-counsel"', 'id="btn-agora"', 'id="counsel-badge"']) expect(html.split(s).length - 1).toBe(1);
+    expect(html.includes("ws-counsel-row")).toBe(false);
   });
   it("단추 글자·툴팁 = counsel.ts 문구 정본과 같다", () => {
     expect(html).toContain(`<button id="btn-counsel" title="${COUNSEL_COPY.tooltip}">${COUNSEL_COPY.label} <span id="counsel-badge" class="badge" hidden>0</span></button>`);
@@ -39,8 +46,10 @@ describe("상담소 메뉴 자리·라벨", () => {
     expect(/\bcys\b/.test(all)).toBe(false);
     for (const bad of ["경고", "위험", "금지", "차단", "삭제됩니다", "책임"]) expect(all.includes(bad)).toBe(false);
   });
-  it("메뉴 줄 CSS 는 목록이 남는 공간을 갖게 flex:none 이다", () => {
-    expect(css).toMatch(/#ws-counsel-row \{\s*flex: none;/);
+  it("옛 사이드바 줄 CSS 0 · 상단 두 단추에 자기 크기 규칙 0(글자·여백·높이 = 상단 단추 공통 #topbar button)", () => {
+    const code = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(code.includes("#ws-counsel-row")).toBe(false);
+    expect(/#btn-(counsel|agora)\b/.test(code)).toBe(false);
   });
 });
 
@@ -93,7 +102,7 @@ describe("상담소 뱃지 배선(§11 — 읽기만 · 판독 = parseUnread)", 
 
 describe("아고라 메뉴 배선", () => {
   it("단추 글자·툴팁 = AGORA_COPY · 상담소 단추 바로 뒤", () => {
-    expect(html).toContain(`</button><button id="btn-agora" title="${AGORA_COPY.tooltip}">${AGORA_COPY.label}</button></div>`);
+    expect(html).toContain(`</span></button><button id="btn-agora" title="${AGORA_COPY.tooltip}">${AGORA_COPY.label}</button>`);
   });
   it("단추는 Rust open_agora_window 만 부른다(UI 가 주소를 열지 않는다)", () => {
     expect(main).toContain('void invoke("open_agora_window").catch(');

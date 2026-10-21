@@ -91,9 +91,10 @@ const fails: string[] = [];
 const numbers: Record<string, any> = {};
 const check = (name: string, ok: boolean, detail: any) => { console.log(`${ok ? "PASS" : "FAIL"} ${name} — ${typeof detail === "string" ? detail : JSON.stringify(detail)}`); if (!ok) fails.push(name); numbers[name.split(" ")[0]] = { ok, detail }; };
 
-const DEFAULT_SHOWN = ["피드백", "정렬", "파일", "Control Center", "↻ 재시작", "화면 설정"];
+// (cysr-menu-top-row 2026-10-21) 상담소·아고라가 사이드바에서 피드백 바로 뒤로 옮겨 와 보이는 단추 6 → 8 · 상단바 11 → 13.
+const DEFAULT_SHOWN = ["피드백", "상담소", "아고라", "정렬", "파일", "Control Center", "↻ 재시작", "화면 설정"];
 const DEFAULT_HIDDEN = ["btn-new", "btn-split-h", "btn-split-v", "btn-close", "btn-factory-reset"];
-const HTML_ORDER = ["btn-feedback", "btn-equalize", "btn-new", "btn-split-h", "btn-split-v", "btn-close", "btn-files", "btn-cc", "btn-restart-daemon", "btn-factory-reset", "btn-theme"];
+const HTML_ORDER = ["btn-feedback", "btn-counsel", "btn-agora", "btn-equalize", "btn-new", "btn-split-h", "btn-split-v", "btn-close", "btn-files", "btn-cc", "btn-restart-daemon", "btn-factory-reset", "btn-theme"];
 
 if (ONLY.includes("s1")) {
   await size(1440, 900); await load();
@@ -152,14 +153,14 @@ if (ONLY.includes("s4")) {
   }
   const allOn = await ev(TB);
   await shot("s4-all-on-1440x900.png");
-  check("s4a 끔 5개를 하나씩 켬 → 그 즉시 상단에 보임 · 저장 version 1", ok && allOn.shownIds.length === 11 && JSON.stringify(allOn.shownIds) === JSON.stringify(HTML_ORDER), { steps, shown: allOn.shown });
+  check("s4a 끔 5개를 하나씩 켬 → 그 즉시 상단에 보임 · 저장 version 1", ok && allOn.shownIds.length === HTML_ORDER.length && JSON.stringify(allOn.shownIds) === JSON.stringify(HTML_ORDER), { steps, shown: allOn.shown });
   await load("", true); // 새로 고침(저장 유지)
   const re = await ev(TB);
-  check("s4b 새로 고침 뒤에도 11개 그대로(저장 복원)", re.shownIds.length === 11 && JSON.stringify(re.shownIds) === JSON.stringify(HTML_ORDER), { shown: re.shown });
+  check("s4b 새로 고침 뒤에도 11개 그대로(저장 복원)", re.shownIds.length === HTML_ORDER.length && JSON.stringify(re.shownIds) === JSON.stringify(HTML_ORDER), { shown: re.shown });
   await ev(OPEN); await Bun.sleep(150);
   await ev(`${ROWBTN("btn-feedback", "tb-toggle")}.click()`); await Bun.sleep(60);
   const off = await ev(TB);
-  check("s4c 켜진 단추(피드백)를 끔 → 그 즉시 숨김 · 요소는 남음(DOM 11개)", !off.shownIds.includes("btn-feedback") && off.all.length === 11 && off.hiddenIds.includes("btn-feedback"), { shown: off.shown, domCount: off.all.length });
+  check("s4c 켜진 단추(피드백)를 끔 → 그 즉시 숨김 · 요소는 남음(DOM 11개)", !off.shownIds.includes("btn-feedback") && off.all.length === HTML_ORDER.length && off.hiddenIds.includes("btn-feedback"), { shown: off.shown, domCount: off.all.length });
 }
 
 if (ONLY.includes("s5")) {
@@ -183,8 +184,9 @@ if (ONLY.includes("s6")) {
   const focus1 = await ev(`(() => { const a = document.activeElement; return a?.closest?.(".tb-row")?.dataset.tbId + ":" + a?.className; })()`);
   await ev(`${ROWBTN("btn-theme", "tb-up")}.click()`); await Bun.sleep(60);
   const t2 = await ev(TB);
-  const want1 = ["btn-equalize", "btn-feedback", ...HTML_ORDER.slice(2)];
-  const want2 = [...want1.slice(0, 9), "btn-theme", "btn-factory-reset"];
+  // (cysr-menu-top-row) 피드백 다음 단추 = HTML_ORDER[1](1.1.10 = 상담소) · 화면 설정 ▲ = 맨 끝 두 칸 자리 바꿈(종전 slice(0, 9) = 11개 기준)
+  const want1 = [HTML_ORDER[1], "btn-feedback", ...HTML_ORDER.slice(2)];
+  const want2 = [...want1.slice(0, -2), "btn-theme", "btn-factory-reset"];
   const box = await ev(BOX);
   await shot("s6-after-move-1440x900.png");
   check("s6 ▲▼: 맨 위 ▲·맨 아래 ▼ 비활성 · 피드백 ▼ = 정렬 다음 · 화면 설정 ▲ = 완전 초기화 앞 · 저장 · 초점 유지 · 팝오버가 옮겨 간 단추 아래", edge && JSON.stringify(t1.all) === JSON.stringify(want1) && JSON.stringify(saved1.items.map((x: any) => x.id)) === JSON.stringify(want1) && JSON.stringify(t2.all) === JSON.stringify(want2) && focus1 === "btn-feedback:tb-move tb-down" && box.top >= box.anchorBottom && inView(box), { edge, order1: t1.all, order2: t2.all, shown2: t2.shown, focus1 });
@@ -268,7 +270,7 @@ if (ONLY.includes("s10")) {
   const partial = { version: 1, items: [{ id: "btn-theme", on: false }, { id: "btn-gone", on: true }, ...HTML_ORDER.filter((x) => x !== "btn-files" && x !== "btn-theme").map((id) => ({ id, on: id === "btn-new" }))] };
   await load(`localStorage.setItem(${JSON.stringify(KEY)}, ${JSON.stringify(JSON.stringify(partial))});`);
   const t = await ev(TB);
-  check("s10b 저장에 없는 단추(파일) = 켠 채 맨 끝 · 고정 단추(화면 설정) 끔 저장 = 켬으로 읽음 · 없어진 단추 id 무시", t.all[0] === "btn-theme" && t.all.at(-1) === "btn-files" && JSON.stringify(t.shownIds) === JSON.stringify(["btn-theme", "btn-new", "btn-cc", "btn-files"]) && t.all.length === 11, { order: t.all, shown: t.shown });
+  check("s10b 저장에 없는 단추(파일) = 켠 채 html 바로 앞 단추(창 닫기) 뒤(cysr-menu-top-row · 종전 = 맨 끝) · 고정 단추(화면 설정) 끔 저장 = 켬으로 읽음 · 없어진 단추 id 무시", t.all[0] === "btn-theme" && t.all[t.all.indexOf("btn-close") + 1] === "btn-files" && JSON.stringify(t.shownIds) === JSON.stringify(["btn-theme", "btn-new", "btn-files", "btn-cc"]) && t.all.length === HTML_ORDER.length, { order: t.all, shown: t.shown });
 }
 
 if (ONLY.includes("s11")) {
@@ -324,6 +326,8 @@ if (ONLY.includes("s13")) {
   await shot("s13-popover-shrunk-to-500x600-scale250.png");
   check("s13a 좁은 창 + 큰 배율(500×600 · 250%): 팝오버 화면 밖 0 · scrollLeft 0 에서 ▲·▼·켬/끔·입력 부품 전부 보이는 폭 안 · 가로 넘침 0 · 줄이 두 줄로 접힘 · 맨 아래 단추는 세로 스크롤로 닿음(바로 열기 · 넓게 연 뒤 줄이기)", inView(a) && a.w <= 492 && ok(av) && av.twoLineRows === av.rows && sl === 0 && inView(wide) && inView(b) && b.w <= 492 && ok(bv) && bv.twoLineRows === bv.rows, { direct: { left: a.left, right: a.right, top: a.top, bottom: a.bottom, w: a.w, h: a.h, vw: a.vw, vh: a.vh, minWidth: minW, ...av }, wide: { w: wide.w, right: wide.right, vw: wide.vw }, shrunk: { left: b.left, right: b.right, bottom: b.bottom, w: b.w, vw: b.vw, vh: b.vh, ...bv } });
   // 넓은 창 레이아웃 — 접힘 0(전 줄 한 줄) · 전체 높이 = R1 실측과 같은 값(1570 · 배율 250% = 3089) · 팝오버 폭 = 내용 폭(435 · 배율 250% = 864).
+  // (cysr-menu-top-row 2026-10-21) 상단 단추 목록이 11 → 13 줄(상담소·아고라)이라 높이 = R1 + 두 줄(줄 43 + 사이 4 = 47 × 2 = 94 → 1664 ·
+  //   배율 250% = 92 × 2 = 184 → 3273). 폭·접힘은 R1 그대로.
   //   ★폭은 R1(439 · 868)보다 4px 좁다 — R1 의 4px 은 내용이 아니라 자리 잡기의 부산물이었다: 폭이 「남은 폭에 맞춤」 이라 fitPop 이 오른쪽 여백 4px 을
   //   두려고 왼쪽으로 당기면 그 4px 만큼 팝오버가 다시 늘어 오른쪽 끝이 창 끝(1440)에 붙었다. 지금은 폭 = 내용 폭 고정이라 여백 4px 이 실제로 남는다(오른쪽 끝 = 창 − 4).
   const wideRows: any[] = []; let wideOk = true;
@@ -336,7 +340,7 @@ if (ONLY.includes("s13")) {
     if (!good) wideOk = false;
     wideRows.push({ win: `${w}x${h}`, scalePct: pct ?? 125, w: bx.w, wantW, right: bx.right, h: bx.h, scrollH: bx.scrollH, twoLineRows: v.twoLineRows, outside: v.outside, ...rowH });
   }
-  check("s13b 넓은 창 — 접힌 줄 0 · 전체 높이 = R1 실측값(1570 · 배율 250% = 3089) · 팝오버 폭 = 내용 폭(435 · 864 = R1 보다 4px 좁음 — 오른쪽 여백 4px 이 실제로 남음)", wideOk && wideRows[0].scrollH === 1570 && wideRows[1].scrollH === 1570 && wideRows[2].scrollH === 3089 && wideRows[3].scrollH === 1570, wideRows);
+  check("s13b 넓은 창 — 접힌 줄 0 · 전체 높이 = R1 실측값 + 두 줄(1664 · 배율 250% = 3273) · 팝오버 폭 = 내용 폭(435 · 864 = R1 보다 4px 좁음 — 오른쪽 여백 4px 이 실제로 남음)", wideOk && wideRows[0].scrollH === 1664 && wideRows[1].scrollH === 1664 && wideRows[2].scrollH === 3273 && wideRows[3].scrollH === 1664, wideRows);
 }
 
 if (ONLY.includes("s14")) {

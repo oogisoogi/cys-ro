@@ -1,0 +1,5 @@
+[scoped pid=4803 registered in ledger]
+BEFORE 1280: {"top":["피드백","정렬","파일","Control Center","↻ 재시작","화면 설정"],"topIds":["btn-feedback","btn-equalize","btn-files","btn-cc","btn-restart-daemon","btn-theme"],"side":["상담소","아고라"],"sideRow":true}
+BEFORE 800: {"top":["피드백","정렬","파일","Control Center","↻ 재시작","화면 설정"],"topIds":["btn-feedback","btn-equalize","btn-files","btn-cc","btn-restart-daemon","btn-theme"],"side":["상담소","아고라"],"sideRow":true}
+BEFORE badge: {"top":["피드백","정렬","파일","Control Center","↻ 재시작","화면 설정"],"topIds":["btn-feedback","btn-equalize","btn-files","btn-cc","btn-restart-daemon","btn-theme"],"side":["상담소","아고라"],"sideRow":true}
+[scoped pid=4803 exited (exit status: 0); process group force-killed and deregistered]

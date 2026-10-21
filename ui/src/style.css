@@ -79,6 +79,13 @@ html, body {
   padding: 4px 12px; cursor: pointer; font-size: calc(12px * var(--ui-chrome-scale));
 }
 #topbar button:hover { border-color: var(--accent); }
+/* (cysr-menu-top-row 2026-10-21) 좁은 창 — 상담소·아고라가 상단으로 오면서 800폭에서 상단바가 12px(상담소 뱃지가 뜨면 36px) 넘쳐
+   맨 오른쪽 「화면 설정」 끝이 잘렸다(1.1.9 = 넘침 0 · 실측). 900폭 이하에서만 단추 안쪽 좌우 여백(12 → 8px)을 줄여 800폭 넘침 0 으로
+   되돌린다. 글자 크기·높이는 그대로(작아 보이지 않게) · 900폭 넘는 창은 무변경 · 아이콘 단추(padding 0)는 더 센 규칙이 그대로 이긴다.
+   ⚠단추 사이(#topbar gap)는 줄이지 않는다 — #app-ver 의 margin-left:-4px 가 gap 8 을 전제로 해서, gap 4 면 「cysrv1.1.9」 로 붙는다(실측). */
+@media (max-width: 900px) {
+  #topbar button { padding: 4px 8px; }
+}
 /* 화면 설정에서 끈 단추(TICKET=cysr-1110-screen-settings) — main.ts 가 hidden 속성만 바꾼다. 위 규칙에 display 가 없어 지금도
    UA [hidden] 이 듣지만, 뒤에 display 를 주는 규칙(.icon-btn 등)이 다시 걸려도 숨김이 풀리지 않게 짝을 둔다. */
 #topbar > button[hidden] { display: none; }
@@ -193,18 +200,8 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
 }
 #ws-expert { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 #ws-expert[hidden] { display: none; }
-/* (1.1.9 T4) 상담소·아고라 메뉴 줄 — 목록(#ws-tabs) 아래·사용량 패널 위. flex:none = 목록이 남는 공간을 갖는다.
-   글자 = 사이드바 배율(--wsbar-font) 축을 따른다(A−/A＋ 한 축). 뱃지는 공용 .badge(+[hidden] 짝) 그대로. */
-#ws-counsel-row {
-  flex: none; display: flex; flex-wrap: wrap; gap: 4px 6px;
-  padding: 6px 8px; border-top: 1px solid var(--hairline);
-}
-#ws-counsel-row button {
-  background: none; border: 1px solid var(--hairline); border-radius: 6px;
-  color: var(--text, #e2e8f0); cursor: pointer; padding: 3px 10px;
-  font-size: calc(14px * var(--wsbar-font, 1));
-}
-#ws-counsel-row button:hover { border-color: var(--accent); }
+/* (1.1.9 T4 → cysr-menu-top-row 2026-10-21) 상담소·아고라 단추는 사이드바 줄(#ws-counsel-row)을 떠나 상단바 피드백 바로 뒤로 갔다.
+   글자·여백·높이 = 상단 단추 공통(#topbar button) 그대로 · 자기 크기 규칙 0 · 뱃지는 공용 .badge(+[hidden] 짝) 그대로. */
 /* 상담소 창 — .modal 재사용 · 남의 글은 textContent 로만(줄바꿈은 pre-wrap 으로 보인다). */
 .modal.counsel-modal { max-width: 640px; width: calc(100vw - 48px); max-height: 88vh; overflow-y: auto; }
 .counsel-modal p.counsel-notice { font-size: 12px; line-height: 1.5; color: #94a3b8; margin: 4px 0 8px; }

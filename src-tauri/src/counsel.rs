@@ -1,4 +1,4 @@
-//! 「상담소」·「아고라」 사이드바 메뉴의 Rust 쪽(1.1.9 T4 · TICKET=cysr-119-t4-app · 설계 docs/design/T4-APP-MENUS-119.md).
+//! 「상담소」·「아고라」 상단 단추(1.1.9 = 사이드바 · cysr-menu-top-row 에서 상단바로)의 Rust 쪽(1.1.9 T4 · TICKET=cysr-119-t4-app · 설계 docs/design/T4-APP-MENUS-119.md).
 //!
 //! ★앱은 릴레이에 가지 않는다(아고라 SPEC-mail-1to1 §11) — 망 호출·서명 검증은 아고라 클라이언트(`<설정>/lib/bin/agora`)의 일이고,
 //!   앱은 그 클라이언트를 **읽기 동사(`read`)로만** 부르거나, 클라이언트가 쓴 파일을 **읽기만** 한다:

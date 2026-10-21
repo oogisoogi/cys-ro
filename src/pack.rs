@@ -2462,6 +2462,26 @@ fn walk_hooks_dir_bounded(
     }
 }
 
+/// ★v0.14.51 편입 · codex 1R B1(우리 포크): hooks/ 보고가 열어도 되는 rel 인가 — 성분이 전부 일반 이름이고(`..`·`.`·절대·드라이브 접두 거부),
+/// 팩 디렉터리부터 그 경로의 **어느 성분도 심링크가 아니어야** 한다(파일 심링크·심링크 `hooks/` 둘 다 팩 밖으로 나갈 수 있다).
+/// 경로 중간이 없으면 참(아래 판독이 「없음」으로 가른다 — 심링크가 아니다). 원작자 판은 접두 `hooks/` 만 보고 join 해 읽었다.
+fn hooks_rel_confined(pack_dir: &Path, rel: &str) -> bool {
+    let rp = Path::new(rel);
+    if rel.is_empty() || !rp.components().all(|c| matches!(c, std::path::Component::Normal(_))) {
+        return false;
+    }
+    let mut cur = pack_dir.to_path_buf();
+    for c in rp.components() {
+        cur.push(c);
+        match std::fs::symlink_metadata(&cur) {
+            Ok(m) if m.file_type().is_symlink() => return false,
+            Ok(_) => {}
+            Err(_) => return true,
+        }
+    }
+    true
+}
+
 /// `hooks_report_scan` 의 결과 — 행과, 순회가 끝까지 가지 못했는가.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HooksScan {
@@ -2499,10 +2519,14 @@ pub fn hooks_report_scan(
     let mut rows = Vec::new();
     for rel in rels {
         let p = pack_dir.join(&rel);
-        let disk = match read_pack_text_bounded(&p) {
-            Ok(text) => DiskRead::Hash(content_hash(&text)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound && std::fs::symlink_metadata(&p).is_err() => DiskRead::Missing,
-            Err(_) => DiskRead::Unreadable,
+        let disk = if !hooks_rel_confined(pack_dir, &rel) {
+            DiskRead::Unreadable // ★codex 1R B1: 팩 밖으로 나가는 키·심링크는 열지 않는다
+        } else {
+            match read_pack_text_bounded(&p) {
+                Ok(text) => DiskRead::Hash(content_hash(&text)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound && std::fs::symlink_metadata(&p).is_err() => DiskRead::Missing,
+                Err(_) => DiskRead::Unreadable,
+            }
         };
         let m = man.get(&rel).map(|s| s.as_str());
         let v = vendor.get(&rel).map(|s| s.as_str());
@@ -11943,6 +11967,42 @@ mod tests {
         assert_eq!(st.get("hooks/loop-a"), Some(&"unreadable"));
         assert!(!st.keys().any(|k| k.starts_with("hooks/dir-loop/")), "디렉터리 심링크는 따라가지 않는다(순환 없음): {st:?}");
         let _ = std::fs::remove_dir_all(pack);
+    }
+
+    /// ★v0.14.51 편입 · codex 1R B1(우리 포크): hooks/ 보고는 **팩 안의 실제 파일만** 연다 — 매니페스트 키의 `..`·절대 경로,
+    /// 팩 밖을 가리키는 파일 심링크, 심링크인 `hooks/` 디렉터리는 열지 않고 「판독 불가」(해시 없음)로 보고한다.
+    #[test]
+    fn f10_b1_manifest_dotdot_and_symlinks_never_read_outside_the_pack() {
+        let pack = f10_pack("b1", &[("hooks/guard.sh", b"g\n")]);
+        let outside = std::env::temp_dir().join(format!("cys-f10-b1-out-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(outside.join("hooks")).unwrap();
+        std::fs::write(outside.join("secret.txt"), b"s\n").unwrap();
+        std::fs::write(outside.join("hooks/guard.sh"), b"g\n").unwrap();
+        // ⑴ 매니페스트 키 `hooks/../../<밖>` — 접두 `hooks/` 만으로 통과하던 키
+        let esc = format!("hooks/../../{}/secret.txt", outside.file_name().unwrap().to_string_lossy());
+        assert!(pack.join(&esc).exists(), "검체 전제: 이 키를 그대로 join 하면 팩 밖 파일에 닿는다");
+        // ⑵ 팩 밖 일반 파일을 가리키는 파일 심링크
+        std::os::unix::fs::symlink(outside.join("secret.txt"), pack.join("hooks/out-link.sh")).unwrap();
+        let mut man = f10_hashes(&[("hooks/guard.sh", "g\n"), ("hooks/out-link.sh", "s\n")]);
+        man.insert(esc.clone(), content_hash("s\n"));
+        let rows = hooks_report(&pack, &man, &man);
+        let by: std::collections::BTreeMap<_, _> = rows.iter().map(|r| (r.rel.clone(), (r.state.as_str(), r.disk.clone()))).collect();
+        // 해시가 매니페스트와 같으므로 **읽었다면** 「같음」으로 행이 사라진다(누출이 조용히 숨는 꼴) — 행이 있고 해시가 없어야 한다.
+        assert_eq!(by.get(&esc), Some(&("unreadable", None)), "`..` 키는 열지 않는다: {by:?}");
+        assert_eq!(by.get("hooks/out-link.sh"), Some(&("unreadable", None)), "팩 밖 심링크는 따라가지 않는다: {by:?}");
+        assert!(!by.contains_key("hooks/guard.sh"), "정상 파일은 그대로 Same: {by:?}");
+        // ⑶ `hooks/` 디렉터리 자체가 팩 밖을 가리키는 심링크
+        let pack2 = std::env::temp_dir().join(format!("cys-f10-b1-p2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&pack2);
+        std::fs::create_dir_all(&pack2).unwrap();
+        std::os::unix::fs::symlink(outside.join("hooks"), pack2.join("hooks")).unwrap();
+        let man2 = f10_hashes(&[("hooks/guard.sh", "g\n")]);
+        let rows2 = hooks_report(&pack2, &man2, &man2);
+        assert_eq!(f10_states(&rows2), vec![("hooks/guard.sh".to_string(), "unreadable")], "심링크 hooks/ 아래는 열지 않는다");
+        let _ = std::fs::remove_dir_all(pack);
+        let _ = std::fs::remove_dir_all(pack2);
+        let _ = std::fs::remove_dir_all(outside);
     }
 
 }

@@ -128,6 +128,31 @@ class RuntimeSealTests(unittest.TestCase):
         self.assertEqual({"added": 0, "changed": 0, "missing": 0}, d["counts"])
         self.assertEqual(7, len(d["runtime_managed"]), d)
 
+    # ── ★1.1.10 ⑥(윈 1.1.9 실기 10-17 · runtime-seal 「추가 1」): PortableGit post-install 13-copy-dlls.post 가 표지
+    #   `mingw64/libexec/git-core/dlls-copied`(.exe)를 **mingw64/bin/git.exe 하드링크**로 만든다(실패 시 빈 파일 touch ·
+    #   upstream git-for-windows/build-extra portable/root/etc/post-install/13-copy-dlls.post). 옛 판 잔여가 아니다.
+    #   이름만으로 빼면 그 자리에 놓인 임의 실행 파일이 숨는다 → 내용이 봉인된 git.exe 와 같거나 빈 표지일 때만.
+    def _dlls_copied_tree(self):
+        _write(os.path.join(self.root, "git", "mingw64", "bin", "git.exe"), b"MZ-GIT", 0o755)
+        self.assertEqual(0, self._emit())
+        return os.path.join(self.root, "git", "mingw64", "libexec", "git-core")
+
+    def test_1110_dlls_copied_marker_is_runtime_managed(self):
+        core = self._dlls_copied_tree()
+        for name, body in (("dlls-copied.exe", b"MZ-GIT"), ("dlls-copied", b"")):
+            _write(os.path.join(core, name), body, 0o755)
+            rc, d = self._verify()
+            self.assertEqual(0, rc, "post-install 표지를 파손으로 판정했다: %r" % d)
+            self.assertIn("git/mingw64/libexec/git-core/" + name, d["runtime_managed"])
+            os.unlink(os.path.join(core, name))
+
+    def test_1110_dlls_copied_name_with_foreign_body_still_counts(self):
+        core = self._dlls_copied_tree()
+        _write(os.path.join(core, "dlls-copied.exe"), b"MZ-EVIL", 0o755)
+        rc, d = self._verify()
+        self.assertEqual(1, rc, d)
+        self.assertIn("git/mingw64/libexec/git-core/dlls-copied.exe", d["added"])
+
     def test_d11b_other_git_etc_changes_still_count(self):
         """좁게 뺀다 — 실행되는 설정(git/etc/profile)의 추가·변조는 여전히 파손이다."""
         _write(os.path.join(self.root, "git", "etc", "profile"), b"evil", 0o644)

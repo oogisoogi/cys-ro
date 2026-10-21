@@ -1481,13 +1481,31 @@ class OptionalToolGrade(Base):
                            ("C21.harness-creator", pf.WARN, "비가역 변경(subprocess_install) 보류 — x"),
                            ("C21.harness-creator", pf.FAIL, "harness-creator 툴체인 미설치 — x"),
                            ("C24.korean-law-mcp", pf.DRYRUN, "[dry-run] Would x"),
-                           ("C24.korean-law-mcp", pf.FAIL, "korean-law 미설치/판독불가 — x"),
+                           ("C24.korean-law-mcp", pf.FAIL, "korean-law 미설치 — x"),
                            ("C24.korean-law-mcp", pf.WARN, "korean-law 설치됨 · OC 키 미설정 — x"),
                            ("C24.korean-law-mcp", pf.WARN, "korean-law-mcp · OC 키 확인 · MCP 등록 실패: x"),
                            ("C20.nlm-sot", pf.FAIL, "d"), ("C19x", pf.FAIL, "d"), ("C24.korean-law-mcp", pf.PASS, "d")):
             p.add(cid, st, d)
         self.assertEqual([r["status"] for r in p.results],
-                         [pf.INFO, pf.WARN, pf.WARN, pf.INFO, pf.INFO, pf.INFO, pf.INFO, pf.WARN, pf.WARN, pf.FAIL, pf.FAIL, pf.PASS])
+                         [pf.INFO, pf.WARN, pf.WARN, pf.INFO, pf.INFO, pf.DRYRUN, pf.INFO, pf.WARN, pf.WARN, pf.FAIL, pf.FAIL, pf.PASS])
+
+    def test_grade_table_only_absence_is_info(self):
+        # 1.1.10 ②(dbg119 10-16 MINOR): INFO(「선택 · 없음」)는 **부재**에만 — 구버전·불완전 설치·판독불가는 실결함(WARN) ·
+        # DRYRUN·SAFE-GAP·BLOCKED 는 미리보기·차단 표시라 등급을 바꾸지 않는다(OPP-17 원장 그대로).
+        import javis_preflight as pf
+        p = pf.Preflight(fix=False, skips=[], mode="report")
+        for cid, st, d in (("C24.korean-law-mcp", pf.FAIL, "korean-law 0.9.1 — 법령 MCP 미비. x"),
+                           ("C24.korean-law-mcp", pf.FAIL, "korean-law 판독불가 — 법령 MCP 미비. x"),
+                           ("C24.korean-law-mcp", pf.FAIL, "korean-law 미설치 — 법령 MCP 미비. x"),
+                           ("C21.harness-creator", pf.FAIL, "harness-creator 툴체인 미설치 (기존 /h 불완전 — 제거 후 재시도 필요) — x"),
+                           ("C21.harness-creator", pf.FAIL, "harness-creator 툴체인 미설치 — x"),
+                           ("C21.harness-creator", pf.DRYRUN, "[dry-run] Would subprocess_install → git clone x"),
+                           ("C24.korean-law-mcp", pf.SAFE_GAP, "[safe] 누락: x (무변경 — 수리 보류)"),
+                           ("C19.orchestra-engine", pf.BLOCKED, "x")):
+            p.add(cid, st, d)
+        self.assertEqual([r["status"] for r in p.results],
+                         [pf.WARN, pf.WARN, pf.INFO, pf.WARN, pf.INFO, pf.DRYRUN, pf.SAFE_GAP, pf.BLOCKED])
+        self.assertIn("0.9.1", p.results[0]["detail"], "구버전 문구가 가려졌다")
 
 
 @unittest.skipIf(os.name == "nt", "cys-dept 를 격리 HOME 에서 bash 로 직접 실행(POSIX 셸·python3 전제) — 윈 cys-dept 실행 단계는 "

@@ -3989,7 +3989,9 @@ fn interpreter_entry<'a>(interp: &str, rest: &'a [String], is_candidate: &dyn Fn
             }
         }
         // 여기 = 값 받는 옵션. 다음 낱말이 그 값이다 — 단 빈 값이 유실된 꼴이면 그 낱말이 엔트리다.
-        if lost_empty_value(i) {
+        // 셸은 제외(1.1.10 ①): 셸 값 옵션(`--rcfile` · `--init-file` · `-o`)의 값은 읽을 파일·옵션 이름이다 —
+        // `bash --rcfile /tmp/claude` 는 맨 대화형 셸이지 `/tmp/claude` 실행이 아니다.
+        if !shell && lost_empty_value(i) {
             return rest.get(i).map(String::as_str);
         }
         i += 1;
@@ -4354,14 +4356,24 @@ fn meta_blocks_seat(s: &crate::state::Surface) -> bool {
 /// 셋을 **모두** 만족할 때만 true. Unknown 은 false(현행=거부 유지).
 /// ★1.1.9 좌석 판정: 커널 사실은 [`seat_state`] 그대로다 — 뿌리가 에이전트 자신인 유휴 좌석은 Occupied 라
 /// 승계 대상이 아니다(살아 있는 에이전트 자리를 남이 가져가지 않는다).
+/// ★1.1.10 ④: 판정표 순서대로 단락한다 — 좌석이 Empty 가 아니거나 meta 가 막으면 사람 입력 뮤텍스를 잡지 않는다
+/// (Occupied·Unknown 좌석마다 불필요한 lock · poisoned 패닉 경로 봉쇄). 답은 판정표 그대로다.
 pub fn seat_claimable(sys: &System, s: &crate::state::Surface) -> bool {
+    let seat = seat_state(sys, s);
+    if seat != SeatState::Empty {
+        return seat_claimable_verdict(seat, false, false);
+    }
+    let meta_blocks = meta_blocks_seat(s);
+    if meta_blocks {
+        return seat_claimable_verdict(seat, meta_blocks, false);
+    }
     let human_recent = s
         .last_human_input
         .lock()
         .unwrap()
         .map(|t| t.elapsed().as_secs() < queue_human_quiet_secs())
         .unwrap_or(false);
-    seat_claimable_verdict(seat_state(sys, s), meta_blocks_seat(s), human_recent)
+    seat_claimable_verdict(seat, meta_blocks, human_recent)
 }
 
 /// [`seat_claimable`] 의 판정표(순수) — 승계 가능 = 좌석 Empty ∧ 살아 있는 meta 없음 ∧ 최근 사람 입력 없음.
@@ -16096,6 +16108,76 @@ mod tests {
         assert!(root_cmd_is_agent(&argv(&["python3", "-W", "ignore", "/tmp/review/worker"]), &worker));
     }
 
+    /// ★1.1.10 ①(dbg119 10-16 MINOR) — 셸의 값 옵션(`--rcfile` · `--init-file` · `-o`) 값은 빈 값 유실 가드를 타지 않는다.
+    /// 셸 값 옵션의 값은 읽어 들일 파일·옵션 이름이지 실행할 엔트리가 아니다 — `bash --rcfile /tmp/claude` 는 맨 대화형
+    /// 셸이다. R4 ③ 가드가 그 값을 후보(`claude`)로 보고 엔트리로 집어 맨 셸을 Occupied 로 읽었다(빈 셸 가드 해제).
+    #[test]
+    fn seat1110_shell_option_value_is_never_the_entry() {
+        use super::{seat_claimable_verdict, SeatState};
+        let specs = seat119_this_mac_specs();
+        let custom = seat119_specs(&[("sh", "bash /srv/run.sh")]);
+        for bare in [
+            "bash --rcfile /tmp/claude",
+            "/bin/bash --init-file /opt/n/bin/codex",
+            "bash --rcfile /srv/run.sh",
+            "zsh -o claude",
+        ] {
+            assert!(!seat119_is_agent(bare, &specs) && !seat119_is_agent(bare, &custom), "셸 옵션 값을 엔트리로 읽었다: {bare}");
+            let seat = seat119_verdict(false, true, 0, Some(bare), &specs);
+            assert_eq!(seat, SeatState::Empty, "{bare}");
+            assert!(seat_claimable_verdict(seat, false, false), "맨 셸({bare})이 승계를 막았다");
+        }
+        // 셸 값 옵션 뒤의 진짜 엔트리는 그대로 엔트리다(기존 R3 유지).
+        assert!(seat119_is_agent("bash --rcfile /etc/rc /srv/run.sh", &custom));
+        // 인터프리터(셸 아님)의 빈 값 유실 가드는 그대로다(R4 ③ 유지).
+        assert!(seat119_is_agent("python3 -W /tmp/review/worker", &seat119_specs(&[("worker", "worker")])));
+    }
+
+    /// ★1.1.10 ③(dbg119 10-16 · 판정만 · 윈 실기 0) — Windows 셸 뿌리 argv 의 **현행** 판독을 기대값으로 고정한다.
+    /// 셸 묶음 규칙(`-c` 묶음 = 명령 문자열 · `o` 로 끝나면 값)은 POSIX 꼴이라 PowerShell 의 낱말 매개변수에 맞지 않는다:
+    /// `-Command` 는 소문자 `c` 가 없어 묶음으로 안 읽히고 뒤의 **명령 문자열이 엔트리**가 된다 → 맥 `zsh -lc claude`(뿌리 ≠
+    /// 에이전트)와 비대칭. 실해는 좁다 — `-Command`(‑NoExit 없음) 셸은 명령이 끝나면 함께 끝나고, 도는 동안은 자손이 이미
+    /// Occupied 를 만든다. 수리(PowerShell 매개변수 표)는 윈 실기 판독 뒤로 미룬다(HANDOFF ③). 이 값들이 바뀌면 판정을 다시 한다.
+    #[test]
+    fn seat1110_windows_shell_root_readings_are_pinned() {
+        use super::root_cmd_is_agent_on as on;
+        let argv = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<String>>();
+        let specs = seat119_this_mac_specs();
+        // cysd 의 윈 좌석 기동 꼴(state.rs windows_exec_flag) — 명령 문자열이 엔트리로 읽힌다(맥과 비대칭 · 현행).
+        assert!(on(true, &argv(&["powershell.exe", "-Command", "claude --resume"]), &specs));
+        assert!(on(true, &argv(&["powershell.exe", "-NoExit", "-Command", "claude"]), &specs));
+        assert!(on(true, &argv(&["powershell.exe", "-Command", "echo claude"]), &specs), "명령 문자열의 아무 낱말이나 맞는다");
+        // 맥 대조: `-lc` 묶음 뒤는 엔트리가 없다.
+        assert!(!on(false, &argv(&["/bin/zsh", "-lc", "claude --resume"]), &specs));
+        // PowerShell 줄임 `-c` 는 POSIX 묶음 규칙에 걸려 엔트리 없음(같은 뜻인데 답이 갈린다).
+        assert!(!on(true, &argv(&["powershell.exe", "-c", "claude"]), &specs));
+        // 맨 셸(윈 대화형 좌석 꼴) · cmd `/C` = 아님.
+        assert!(!on(true, &argv(&["powershell.exe", "-NoLogo"]), &specs));
+        assert!(!on(true, &argv(&["cmd.exe", "/C", "claude --resume"]), &specs));
+    }
+
+    /// ★1.1.10 ④(ChatGPT A/B · master 실측) — 승계 게이트는 좌석이 Empty 가 아니면 사람 입력 뮤텍스를 **잡지 않고** 답한다.
+    /// 종전 본체는 판정 전에 `last_human_input` 을 먼저 lock 해(단락 평가 소실) Occupied·Unknown 좌석마다 불필요한 lock 을
+    /// 잡았고, 그 뮤텍스가 poisoned 면 답이 정해진 좌석에서도 패닉했다. 독(poison)으로 「lock 을 잡았는가」 를 관측한다.
+    #[test]
+    fn seat1110_claimable_answers_without_human_lock_when_seat_not_empty() {
+        let d = drill_daemon("seat1110-lock");
+        let s = d.create_surface(None, Some("sleep 30".into()), None, None, 24, 80).expect("create surface");
+        let s2 = s.clone();
+        let _ = std::thread::spawn(move || {
+            let _held = s2.last_human_input.lock().unwrap();
+            panic!("뮤텍스 독 주입(시험)");
+        })
+        .join();
+        assert!(s.last_human_input.is_poisoned());
+        // 빈 프로세스 표 = 뿌리가 표에 없다 = Unknown → 승계 불가가 이미 정해졌다.
+        let sys = sysinfo::System::new();
+        assert_eq!(super::seat_state(&sys, &s), super::SeatState::Unknown);
+        let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| super::seat_claimable(&sys, &s)));
+        assert_eq!(got.ok(), Some(false), "Empty 아닌 좌석에서 사람 입력 뮤텍스를 잡았다(조기 반환 소실)");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
     /// ★1.1.9 R3 실 프로세스 — 공백이 든 경로의 스크립트를 실제로 돌리는 셸 뿌리(자손 0)를, 따옴표로 묶은 후보로 재면
     /// Occupied 다(후보 쪽 = 셸 낱말 분해 · 뿌리 쪽 = 인자 경계가 살아 있는 실제 argv).
     #[cfg(unix)]
@@ -16135,7 +16217,8 @@ mod tests {
             "즉시 프로브가 본체를 우회"
         );
         assert!(
-            body_of("pub fn seat_claimable(").contains("seat_claimable_verdict(seat_state(sys, s), meta_blocks_seat(s), human_recent)"),
+            body_of("pub fn seat_claimable(").contains("let seat = seat_state(sys, s);")
+                && body_of("pub fn seat_claimable(").contains("seat_claimable_verdict(seat, meta_blocks, human_recent)"),
             "승계 게이트가 판정을 우회"
         );
         let vacant = body_of("pub fn agent_seat_vacant_now(");

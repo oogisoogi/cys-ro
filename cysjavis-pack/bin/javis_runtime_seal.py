@@ -199,6 +199,23 @@ def runtime_managed(rel):
     return r in RUNTIME_MANAGED_EXACT or any(r.startswith(p) for p in RUNTIME_MANAGED_PREFIXES)
 
 
+# ★1.1.10 ⑥(윈 1.1.9 실기 10-17 · 「추가 1건 git/mingw64/libexec/git-core/dlls-copied.exe」): 옛 판 잔여가 아니라 같은
+#   PortableGit 의 post-install `13-copy-dlls.post` 가 만드는 표지다 — `ln mingw64/bin/git.exe …/dlls-copied`(MSYS 가 .exe 를
+#   붙인다) · 링크 실패 시 빈 파일 touch(upstream git-for-windows/build-extra portable/root/etc/post-install/13-copy-dlls.post).
+#   이름만으로 빼면 그 자리의 임의 실행 파일이 숨는다 → **추가**이고 내용이 봉인된 mingw64/bin/git.exe 와 같거나 빈 파일일 때만.
+DLLS_COPIED_MARKERS = frozenset(("git/mingw64/libexec/git-core/dlls-copied",
+                                 "git/mingw64/libexec/git-core/dlls-copied.exe"))
+DLLS_COPIED_SOURCE = "git/mingw64/bin/git.exe"
+_EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
+
+
+def _dlls_copied_marker(rel, want, have):
+    ent, src = have.get(rel) or {}, want.get(DLLS_COPIED_SOURCE) or {}
+    if rel not in DLLS_COPIED_MARKERS or rel in want or ent.get("t") != "f":
+        return False
+    return ent.get("sha256") in (_EMPTY_SHA256, src.get("sha256") if src.get("t") == "f" else None)
+
+
 def classify(manifest, root):
     """매니페스트 ↔ 실제 트리 3분류(+ 런타임 관리 자리 분리 보고). 어떤 파일도 건드리지 않는다."""
     want = manifest.get("entries") or {}
@@ -209,9 +226,10 @@ def classify(manifest, root):
         rel for rel in (set(want) & set(have))
         if _canonical_line(rel, want[rel]) != _canonical_line(rel, have[rel])
     )
-    managed = sorted(r for r in missing + added + changed if runtime_managed(r))
+    marker = {r for r in added if _dlls_copied_marker(r, want, have)}
+    managed = sorted(set(r for r in missing + added + changed if runtime_managed(r)) | marker)
     return {"missing": [r for r in missing if not runtime_managed(r)],
-            "added": [r for r in added if not runtime_managed(r)],
+            "added": [r for r in added if not runtime_managed(r) and r not in marker],
             "changed": [r for r in changed if not runtime_managed(r)],
             "runtime_managed": managed}
 

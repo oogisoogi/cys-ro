@@ -282,8 +282,8 @@ def ceo_drift(fragment_bytes, master_bytes, ceo_bytes, separator):
 #   범위: ⑤와 같이 **repo 전용**(fragment 실재가 조건)이다. 배포 설치본의 옛 템플릿을
 #   적색으로 만들지 않는다(⑦ 축과 같은 규율).
 OWNER_CLAUSE_HEADING = "## [CEO 와 master 의 차이"
-OWNER_CLAUSE_BYTES = 6918
-OWNER_CLAUSE_SHA256 = "ef982427f25c5b2c9ad18bca217af043f06ac82e899700ee33ba0887493c1e4c"
+OWNER_CLAUSE_BYTES = 7167   # 1.1.10 통합(cysr-1110-integrate · master#c287b9bc): 출처 표기만 원작자로 · 오너 정의 1줄 · 원작자 내부 상태 문장 2개 제거(규칙 문장 0 제거) — 6918 → 7167
+OWNER_CLAUSE_SHA256 = "b0edfdcd6d91197bb2d8501e634ae99f0668ce6ec38eae819b9fd7572544b410"
 _TOP_SECTION_RE = re.compile(r"(?m)^## \[")
 
 

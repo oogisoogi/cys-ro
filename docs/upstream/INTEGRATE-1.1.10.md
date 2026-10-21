@@ -115,3 +115,31 @@
 덩어리 수: CEO_TEMPLATE 10(D1 · D2 · D3~D10) · MASTER 8(M1~M8) · CSO 2(C1 · C2) · RSI 1(R1) = **21**(`git diff -U0 fb386c49 HEAD` 의 `@@` 수와 일치).
 같은 편입이 바꾼 짝 파일(이 표 범위 밖 · 참고): `CEO_CORE.md` 6줄 · `MASTER_CORE.md` 2줄 · `RELEASED_MASTER_DIRECTIVE.sha256` +3(vendor HANDOFF §2 — 절 해시 갱신).
 master 판단을 요하는 ⚠ 3갈래: ⑴ D1 「오너 원문」 귀속(원작자 오너 ↔ 박사님) ⑵ C2 「오너 지시 2026-10-12」 표기가 D2 와 갈림 ⑶ 포인터 경로 `CHARTER-RATIONALE.md`(팩 루트) 와 원작자 CEO 표시 문면.
+
+## 6. master 결정 집행 — 팩 지침 출처 표기(master#c287b9bc · 10-22 01:25 · 규칙 내용 그대로 · 출처 표기만)
+
+| ⚠ | 고친 자리 | 바뀐 것 | 규칙 문장 |
+|---|---|---|---|
+| ⑴ | `scripts/ceo_template_header.md`(→ `gen_ceo_template.py` 재합성 → `CEO_TEMPLATE.md`) 「CEO 와 master 의 차이」 절 · 「부가 원칙」 절 | 절 머리표 「(오너 제정 …)」 → 「(원작자가 제정한 조항 …)」 2곳 · 「이 절은 오너가 직접 쓴 조항이다. 아래 인용은 오너 원문이며」 → 「원작자가 제정한 조항 … 원작자 원문(cys 개발자 · v0.14.51 편입)이며」 · 인용 앞 「(오너 원문)」 → 「(원작자 원문 · cys 개발자 · v0.14.51 편입)」 2곳 · 「★오너 원문 · 한 글자도」 → 「★원작자 원문(cys 개발자 · v0.14.51 편입) · 한 글자도」 · 적용 주석 머리 「오너 원문 아님」 → 「원작자 원문 아님」 2곳 · **절 머리 1줄 추가**: 「여기서 오너 = 이 cysr 를 설치한 사용자다. 인용문은 원작자가 자기 설치에서 한 말이며, 같은 원칙을 우리 설치에도 적용한다.」 · 「복원 경위」 문단 머리 「(원작자 쪽 기록)」 · 원작자 내부 상태 문장 **2개 제거**: 「그것은 배포 전담 부서의 작업이다(현재 토큰 정지 중이라 재설정 후)」 · 「⑶은 배포 전담 부서의 작업이다」 | **0 제거** — 인용문 본문 바이트 그대로 · 규칙 본문의 「오너」(이 설치의 주인) 그대로(① 「오너 원문 그대로」 확인 3요건 · 「오너 원문을 증거 폴더에 백업」 등) · 절 이름 「★오너 복원 조항」 그대로(지시 목록 밖) |
+| ⑵ | `CSO_DIRECTIVE.md` §3-1 | 「(오너 지시 2026-10-12: 휴지통 삭제는 …)」 → 「(원작자 S8 · v0.14.51 편입: 휴지통 삭제는 …)」 — CEO D2 와 같은 표기 | 0 제거 |
+| ⑶ | 포인터 10곳(`MASTER_DIRECTIVE.md` 9 · `RSI_LEARNING_DIRECTIVE.md` 1 · CEO 는 재합성으로 따라옴) + `CHARTER-RATIONALE.md` 「포인터 정본」 블록 | 「근거는 `CHARTER-RATIONALE.md` 로 이관했다(CEO 표시 A1~A9·A11 · 2026-10-14)」 → 「근거는 팩 루트 `CHARTER-RATIONALE.md`(이 지침 폴더 기준 `../CHARTER-RATIONALE.md`) 로 이관했다(CEO 표시 A1~A9·A11 = 원작자 조직 문면 · 2026-10-14)」 — 포인터 문면 전부 동일 유지(제출단위 1 규칙) · `CHARTER-RATIONALE.md` 머리에 1줄 「「CEO 표시 A1~A9·A11」 = 원작자 조직(cys 개발자 쪽)의 문면이다(v0.14.51 편입 · 우리 cysr 설치의 결정 기록이 아니다)」 · 같은 파일 A5 「붙어 있던 자리」 인용(이관 당시 기록)은 그대로 | 0 |
+
+파생 핀 갱신(지침 바이트가 바뀌면 같이 바뀌어야 하는 것 · 전부 생성기·계산으로):
+- `CEO_TEMPLATE.md` = `gen_ceo_template.py` 재합성(100,473 B) · `--check` GREEN.
+- `src/released_directive_hashes.rs` · `RELEASED_MASTER_DIRECTIVE.sha256` = `gen_released_directive_hashes.py` 재생성 · `--check` OK(현 작업 트리 판 = 미발행 8d81d780 판 해시를 새 판 해시로 교체 · 발행 태그 판은 그대로).
+- `test_bootv2_doc_contract.py` ⑤-b 오너 조항 핀 `OWNER_CLAUSE_BYTES/SHA256` 6918/`ef982427…` → 7167/`b0edfdcd…`(시험 주석 「고쳤다면 두 상수를 함께 갱신」 대로 · 사유 주석 1줄).
+- `MASTER_CORE.md`·`CEO_CORE.md` 머리 주석 절 해시 §6·§7(HTML 포인터만 바뀜 · 요지 문면 무변경 — vendor `d8e28331` 과 같은 처방) · `core_inject.verify` 15/15 · 26/26.
+- `test_event_inject.py` CEO §2 줄 번호 480–522 → 482–524(머리 1줄 + 빈 줄 · 길이 43줄 그대로).
+- 바이트 예산 래칫(`test_cso_directive_rev`) 안: CSO 57,687 ≤ 59,715 · MASTER 84,987 ≤ 100,723 · CEO 100,473 ≤ 116,357.
+
+시험(집행 뒤 트리 · 10-22 01:28~02:37):
+
+| 시험 | 결과 |
+|---|---|
+| `gen_ceo_template.py --check` · `gen_released_directive_hashes.py --check` | GREEN · OK |
+| H-SECRET-1 | rc 0(GREEN) |
+| 팩 py 137 1차(01:28~01:51 · 파생 핀 갱신 전) | 133 녹 · 적 4 = `test_core_inject`(§6·§7 절 해시) · `test_event_inject`(CEO §2 줄 번호) — 파생 핀 → 위 처방 · 나머지 2 = 기준선 동일 적(§3) |
+| 파생 핀 갱신 뒤 핀 시험 5종 단독(`core_inject`·`event_inject`·`bootv2_doc_contract`·`cso_directive_rev`·`content_pins_parity`) | 전부 rc 0 |
+| 팩 py 137 2차(02:09~02:31 · 최종) | **135 녹 · 적 2 = 기준선 동일**(`test_hook_r34` 시간 경계 {RCF-4a · DL-1b} · `test_dept_team_token` 18) |
+| 팩 추가 · `test_preflight_phase1_checks`(격리 env) | 녹 · 26 OK |
+| cargo `--lib` / `--bin cys` / `--bin cysd`(1차 뒤) · `--lib`(최종 트리 재실행) | 1100 / 626 / 2698 · 0 실패 · lib 재실행 1100 · 0 실패 |

@@ -48,9 +48,9 @@
 - 8d81d780 부터 적(전재 `docs/upstream/REVIEW-0.14.49-51-codex-1r.md` 의 개인 경로) + ② 유입 minor HANDOFF 의 윈 경로 2줄.
 - `349c3ce0`: 전재 파일 `/Users/<사용자>`→`~` 23곳 + 머리 1줄 「경로만 치환 · 그 밖 무편집(원문 = codex 1R 출력)」 · minor HANDOFF `%USERPROFILE%` 2곳 · 스캐너 범위 밖 grep 1회 → 인코딩 경로 `-Users-<사용자>-` 7파일 같은 처방(`-Users-USER-`) · 계정 메일(공개 연락처)·GitHub 계정 이름 무변경 ⇒ **GREEN**(853파일).
 
-## 4. master 판단 대상(이 티켓은 고치지 않았다)
+## 4. 팩 지침 ⚠ 3갈래 — master#c287b9bc 결정으로 집행(INTEGRATE §6)
 
-팩 지침 문구 점검 표(INTEGRATE §5 · 21덩어리 · 전부 vendor 편입분)의 ⚠ 3갈래:
+팩 지침 문구 점검 표(INTEGRATE §5 · 21덩어리 · 전부 vendor 편입분)의 ⚠ 3갈래(아래) → master 결정(10-22 01:25 · 규칙 내용 그대로 · 출처 표기만)으로 이 가지에서 고쳤다 — 고친 자리·파생 핀·시험은 INTEGRATE §6:
 1. D1 `CEO_TEMPLATE.md` +59줄 「오너 원문」·「주인님의 명령」 = **원작자 오너** — System 소유라 전 설치 강제 · 우리 CEO 가 박사님 말로 오인할 위험.
 2. C2 `CSO_DIRECTIVE.md` 「(오너 지시 2026-10-12)」 — CEO 쪽(D2)은 「원작자 S8 · v0.14.51 편입」 으로 고쳤는데 CSO 쪽은 그대로라 표기가 갈림.
 3. 근거 주석 포인터 `CHARTER-RATIONALE.md` 는 팩 루트(`cysjavis-pack/CHARTER-RATIONALE.md`)에 있음(지침 옆 상대 경로로는 없음) + 「CEO 표시 A1~A9·A11」 = 원작자 조직 문면.
@@ -58,6 +58,7 @@
 ## 5. 남은 것
 
 - **윈 실기 확인**: ⑦(휴지통 확인 단회 확인 · 뿌리 핸들 결박 — 이 맥에서 윈 교차 컴파일 불가 `libsqlite3-sys`) · ① winqueue(축1 휠·축2 layout_why·자리표) · ② minor ③⑥⑦ — 각 가지 HANDOFF 의 윈 절차대로.
-- master 몫: push · 판번 1.1.10 올림 · 태그 · 앱 설치/교체 · 발행 · 위 §4 팩 지침 판단.
+- master 몫: push · 판번 1.1.10 올림 · 태그 · 앱 설치/교체 · 발행.
+- 지침 출처 표기 집행 뒤 앱 번들은 다시 만들지 않았다(§2 앱 빌드 = 집행 전 `f791b797` 트리) — 판번 올림 때 새로 만든다.
 - 별건 후보: `test_dept_team_token` 18 적(휴면 ↔ 시험 불일치) · `test_hook_r34` 시간 상한 3.0s 여유(부하 시 0.0x~0.5s 초과).
 - 스크래치 기준선 작업트리는 정리함(`git worktree remove`).

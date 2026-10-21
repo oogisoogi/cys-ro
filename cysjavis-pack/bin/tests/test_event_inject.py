@@ -375,7 +375,8 @@ def s_C(pack, tmp):
     ok = check("C CEO: cys-dept → [부서 수명주기] 원문", "[부서 수명주기" in c and "■ 원문 [부서 수명주기]" in c, c[:200])
     rc, out, _e, _t = fire(pack, tmp, "cys launch-agent --role w", sid="s2")
     # v0.14.51 편입: 원작자 「주인님 조항」 59줄이 CEO 머리글에 들어와 §2 가 +59줄 내려갔다(421–463 → 480–522 · 길이 43줄 그대로).
-    ok &= check("C CEO: §2 줄 번호 = CEO 템플릿 기준(480–522)", "■ 원문 §2 (줄 480–522)" in ctx(out), ctx(out)[:160])
+    # 1.1.10 통합(cysr-1110-integrate · master#c287b9bc): 그 조항 머리에 오너 정의 1줄 + 빈 줄 → +2줄(480–522 → 482–524 · 길이 그대로).
+    ok &= check("C CEO: §2 줄 번호 = CEO 템플릿 기준(482–524)", "■ 원문 §2 (줄 482–524)" in ctx(out), ctx(out)[:160])
     return ok
 
 

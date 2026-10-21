@@ -15869,6 +15869,10 @@ osascript 를 실행할 수 없어 건너뜁니다({e}) — macOS 가 아닌 환
         let mut callers: Vec<String> = Vec::new();
         for (k, _) in prod.match_indices("read_operator_token_for") {
             let head = &prod[..k];
+            // v0.14.51 편입(우리 포크): 주석 줄의 이름 언급은 호출이 아니다(우리 daemon_state_dir_for 의 doc 주석이 이 이름을 적는다).
+            if head.rsplit('\n').next().map_or(false, |l| l.trim_start().starts_with("//")) {
+                continue;
+            }
             let owner = head
                 .lines()
                 .rev()
@@ -15888,6 +15892,8 @@ osascript 를 실행할 수 없어 건너뜁니다({e}) — macOS 가 아닌 환
             callers,
             vec![
                 "feed_reply".to_string(),
+                // v0.14.51 편입(우리 포크): 우리 복원 보고(1.1.x · 편입 전 main 에서도 대상 데몬 토큰을 붙였다) — 넓힌 것이 아니라 원래 있던 부착면이다.
+                "run_sidecar_restore_report".to_string(),
                 "send_input".to_string(),
                 "trash_delete".to_string(),
                 "trash_preview_poll".to_string(),

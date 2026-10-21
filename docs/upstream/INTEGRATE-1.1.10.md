@@ -3,7 +3,7 @@
 > TICKET=cysr-1110-integrate · 워커 546(surface:1545) · 작업트리 `~/cys-terminal-src-wt/rel-1110` · 2026-10-21~22
 > 기준 = `rebase/v0.14.51` **8d81d780**(원작자 v0.14.49~51 편입 · `docs/HANDOFF-cysr-1110-vendor-2026-10-21.md`)
 > **push 0 · 태그 0 · 판번 올림 0(1.1.9 유지) · 앱 설치/교체 0 · 팩 지침 문구 수정 0** — 전부 로컬 커밋.
-> 합치지 않은 것: ⑦ `fix/1110-trash-harden`(좌석 544 진행 중 · master 가 따로 지시).
+> ⑦ `fix/1110-trash-harden` 은 master#f4d3dcf2(10-22 00:12) 추가 지시로 ①~⑥ 뒤 마지막에 합쳤다.
 
 ## 1. 병합 순서와 결과
 
@@ -17,6 +17,7 @@
 | ⑤ | `fix/1110-backlog` @ de8e1cd2 (1커밋) | e2532e05 | `51571f59` | 0 | 0 |
 | ⑥ | `docs/1110-naming` @ 29f02a2d (4커밋 · 머리 = cysr-1110-docs HANDOFF · 10-10 · master#e6c5cb95) | 4f660dfb | `8875ddca` | **1파일 1덩어리** — §2-⑥ | 0 |
 | — | H-SECRET-1 적 해소(master#f55812f6 A안) | — | `349c3ce0` | — | §4 |
+| ⑦ | `fix/1110-trash-harden` @ 810dcbd0 (9커밋 · codex 4R ACCEPT · HANDOFF `docs/HANDOFF-cysr-1110-trash-harden-2026-10-21.md`) | 8d81d780(rebase 완료) | `19af40c4` | 0 (자동 병합 1파일: `ui/src/main.ts`) | 0 |
 
 ## 2. 덩어리별 판정 (1덩어리 = 1줄)
 
@@ -28,11 +29,22 @@
 | ①-d | 같은 시험 남긴 자리 지문 `feed-wait-banner` | 재계산 `7e292a7ea0458b84` → `17801e6610300e2c` | 지문은 앞선 제어 흐름 줄을 포함 — 선행 분기 `queue.dropped` 추가로 생긴 의도된 표류(시험 머리 주석 「의도된 변경이면 pin 을 다시 계산해 넣는다」) · 래퍼 변경 전후 같은 값(분기 줄 자체가 원인) |
 | ①-e | `ui/src/wswiring.test.ts` 큐 폐기 배선 핀 | `toast("feed", …)` → `daemonToast("feed", …)` | ①-a 와 한 몸 |
 | ①-f | `ui/src/queuedropnotice.ts` 머리 주석 「연결은 master 통합 때」 | 「연결됨(daemonToast · 시험 두 값)」 으로 | 사실이 바뀜 |
+| ⑦-a | `ui/src/main.ts` 자동 병합(trash-harden 의 휴지통 확인 배선 · `confirmNonce`) | 가지의 추가 10줄 **전부 실재**(줄 단위 대조 10/10) | 다른 가지(winqueue·popfont)가 바꾼 자리와 겹치지 않음 |
 | ⑥-a | `docs/RELEASE.md` §1 잠복 DMG 레그 줄(`Install cys.app`·`.support/cys.app`) | **HEAD(8d81d780) 유지** | 같은 줄을 뒤의 cysr-1110-docs-d(`52f5a748`)가 같은 뜻(「원작자 판 DMG 꼴 · 옛 이름 — 우리 포크 자산은 zip 안 cysr.app 하나」)으로 이미 고쳤고 publicdocs 줄 규칙까지 붙었다 — ⑥ ③ 의 뜻(옛 이름 표지) 보존 · 문장만 docs-d 판 |
 
 자동 병합(텍스트 충돌 0) 파일 중 두 가지 이상이 함께 바꾼 것 — 시험으로만 확인(§3):
 `src/bin/cys.rs`(vendor · winqueue · minor) · `src/bin/cysd/governance.rs`(vendor · winqueue · minor) · `src/bin/cysd/handlers.rs`·`state.rs`·`delivery.rs`(vendor · winqueue) ·
 `ui/src/main.ts`(vendor · winqueue · popfont) · `ui/src/style.css`(popfont · menu-top-row) · `ui/index.html`(menu-top-row) · `cysjavis-pack/bin/tests/run_bootstrap_health.py`(vendor · ⑥).
+
+### ⑦ 휴지통 확인 — 화면과 네이티브가 같은 커밋에 있는가(master#f4d3dcf2)
+
+| 쪽 | 파일 | 병합 커밋 `19af40c4` 에서 |
+|---|---|---|
+| 화면 | `ui/src/trashconfirm.ts`(거부 문구 `confirm_unbound` 등) · `ui/src/main.ts`(삭제 명령에 `confirmNonce: prev.confirm_nonce` · `typed`) | trashconfirm.ts = 810dcbd0 과 **바이트 동일** · main.ts = 가지 추가 10줄 전부 실재 |
+| 네이티브 | `src-tauri/src/main.rs`(`trash_preview_poll` 이 `confirm_nonce` 발급 · `trash_delete` 단회 확인 꺼냄 · `confirm_unbound`/`confirm_expired`/`phrase_mismatch`) | 810dcbd0 과 **바이트 동일** |
+
+⇒ **같은 커밋(`19af40c4`)에 함께 있다** — 구 화면 + 새 네이티브(= `confirm_unbound` 거부 · 삭제 0) 조합은 이 가지에서 생기지 않는다. 앱 번들 하나에 둘 다 실리는지는 §3 앱 빌드에서 확인.
+윈도우 교차 컴파일 = 이 맥 불가(`libsqlite3-sys` C 교차 컴파일러 부재 · trash-harden HANDOFF §2-6) → **윈 실기 확인**(CI 윈도우 잡·윈 실기).
 
 ### 큐 폐기 알림 ↔ ALERTS_QUIET 시험 두 값(`7bea2400`)
 

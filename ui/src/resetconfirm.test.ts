@@ -15,8 +15,12 @@ import {
   RESET_GATE_FAIL_OPEN_MS,
   BOOT_GATE_REFUSAL_LEAD,
   isBootGateRefusal,
+  TRASH_KEEP_NOTICE,
+  TRASH_KEEP_NOTICE_WIN,
+  trashKeepNotice,
   type ResetPreview,
 } from "./resetconfirm";
+import { readFileSync } from "node:fs";
 
 const preview = (over: Partial<ResetPreview> = {}): ResetPreview => ({
   quarantineCount: 34,
@@ -248,5 +252,26 @@ describe("isBootGateRefusal", () => {
   it("다른 실패는 실패로 둔다", () => {
     expect(isBootGateRefusal("격리 폴더를 쓸 수 없어 초기화를 시작하지 않는다: EPERM")).toBe(false);
     expect(isBootGateRefusal(new Error(BOOT_GATE_REFUSAL_LEAD))).toBe(false);
+  });
+});
+
+// ★cysr 1.1.10(master#4e61b71e Q1=B · TICKET=cysr-1110-prerelease-review-b): 휴지통 삭제가 꺼진 윈도우 빌드는 cys-dept reap 이
+//   1.1.9 처럼 14일 정리를 유지한다 — 그 기계의 확인창이 「더 이상 스스로 지우지 않습니다」를 말하면 거짓이다.
+describe("격리분 수명 문장 — 맥/윈도우(Q1=B)", () => {
+  it("resetNoticeLines(info, true) = 윈도우 문장 · 기본(false) = 맥 문장 · 서로 섞이지 않는다", () => {
+    const mac = resetNoticeLines(preview({})).join("\n");
+    const win = resetNoticeLines(preview({}), true).join("\n");
+    expect(mac).toContain(TRASH_KEEP_NOTICE);
+    expect(mac).not.toContain(TRASH_KEEP_NOTICE_WIN);
+    expect(win).toContain(TRASH_KEEP_NOTICE_WIN);
+    expect(win).not.toContain("더 이상 스스로 지우지 않습니다");
+    expect(trashKeepNotice(true)).toBe(TRASH_KEEP_NOTICE_WIN);
+    expect(trashKeepNotice(false)).toBe(TRASH_KEEP_NOTICE);
+  });
+  it("배선 — 앱의 두 확인창(완전 초기화 · 부서 완전 삭제)이 윈도우 여부를 넘긴다", () => {
+    const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+    expect(main).toContain("resetNoticeLines(info, IS_WINDOWS)");
+    expect(main).toContain("trashKeepNotice(IS_WINDOWS)");
+    expect(main).not.toContain("+ TRASH_KEEP_NOTICE,");
   });
 });

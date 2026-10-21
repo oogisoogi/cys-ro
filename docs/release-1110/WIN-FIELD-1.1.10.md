@@ -15,7 +15,7 @@
 5. **윈도우 휴지통 삭제는 이 판에서 꺼진 채 나가는 것이 정상이다** — `src/bin/cysd/trash.rs:1630-1637` `delete_supported()` = 윈에서는 `cfg!(feature = "trash_win_validated")` · `Cargo.toml:31` 그 feature 는 default 에 없음 · 워크플로·스크립트에서 켜는 곳 0(git grep) · `Cargo.toml:27-29` 「켜는 유일한 정당 경로는 12.W(W1~W8)를 통과한 릴리스 단계」 — **12.W 정의 문서는 이 저장소에 없다**(`git grep '12\.W' -- '*.md'` = trash-harden HANDOFF 2줄뿐). 이번 실기는 「꺼져 있음」 을 확인하는 것이지 켜는 시험이 아니다.
 6. **지금 가지(`rel/1.1.10`)는 CI push 트리거 밖** — `workflow_dispatch` 로 돌린다(체크리스트 1-1 · 1.1.9 선례 SS:628).
 
-## 1. 확인점 전부(45개)
+## 1. 확인점 전부(46개)
 
 ### A. WIN-GATE-1110(관문표 · 요약 `docs/upstream/HANDOFF-1110.md:17-28`) — 9
 
@@ -56,7 +56,7 @@
 | MINOR-6 | :19 · :84-96 「수리 · 윈 실기 필요」 | `javis_runtime_seal.py classify`(:219) · `DLLS_COPIED_MARKERS`(:206-207) | 출처(:96) 「새 설치 doctor runtime-seal = OK 이고 runtime_managed 목록에 그 파일이 뜨는지 · 실제 파일 sha256 = `mingw64\bin\git.exe` sha256」 · **제안**: `cysr doctor` + `Get-FileHash` 두 파일(`%LOCALAPPDATA%\cys\runtime\git\mingw64\libexec\git-core\dlls-copied.exe` ↔ `…\mingw64\bin\git.exe`) | :96 그대로(1.1.8 윈 doctor 의 `FAIL runtime-seal …dlls-copied.exe` 가 OK 로 바뀜) | `test_runtime_seal` 22 등 녹 · 뮤턴트 적 · 실물 파일은 윈에만 |
 | MINOR-7 | :20 · :98-108 「수리 · 윈 실기 필요」 | `diag_dept_awakening_seed`(`src/bin/cys.rs:9324`) — 레지스트리에 없는 부서 제외 | 출처(:108) 「같은 기계 doctor 에서 dept-awakening-seed = OK · detail 에 `pack-dept-dept-1` 잔재 표기」(전제 :99-100: `depts.json {}` + `pack-dept-dept-1` 잔존) | :108 그대로(1.1.8 윈 doctor 의 `WARN dept-awakening-seed` 가 OK 로 바뀜) | `diag_dept_awakening_seed_skips_closed_dept_remnant` 녹 · 수리 전 코드 = 적 |
 
-### D. trash-harden(`docs/HANDOFF-cysr-1110-trash-harden-2026-10-21.md` · INTEGRATE §2 ⑦ :47) — 4
+### D. trash-harden(`docs/HANDOFF-cysr-1110-trash-harden-2026-10-21.md` · INTEGRATE §2 ⑦ :47) — 4 + 발행 전 검토 1(TRASH-5)
 
 | ID | 출처 | 무엇을 | 어떻게 | 통과 기준 | 맥 |
 |---|---|---|---|---|---|
@@ -64,13 +64,14 @@
 | TRASH-2 | :49 §2-5 「윈도우 휴지통 삭제는 기본 꺼짐(`delete_supported` · 12.W 게이트)」 · :116 ⒞ | `delete_supported`(`trash.rs:1630-1637`) → 거부 문구 `trash.rs:2139` 「이 빌드에서는 휴지통 삭제가 꺼져 있다 — 윈도우 삭제는 12.W 검증을 통과한 빌드에서만 켠다」 · 화면 쪽 「이 빌드에서는 삭제가 꺼져 있습니다 — 목록과 표시는 그대로 동작합니다.」 · M1 확인(`src-tauri/src/main.rs:5202-5210·5290·5311`) | **제안**: Control Center → 「휴지통」 탭 → 항목 고르기 → 미리보기 → 삭제 모달 → 확인 문구 입력 → 「삭제」 | **제안**: 삭제 단추 꺼짐 또는 데몬 거부(삭제 꺼짐 문구) · 격리 폴더 내용 무변경(전후 `Get-ChildItem -Recurse \| Measure-Object` 수) · **`confirm_unbound`(「지우지 않았습니다 … 새로 미리보기를 하세요」 꼴) 안 뜸** = 화면·네이티브 짝 일치 | M1 tauri 시험 4 · ui 시험 녹 · 윈 실행 0 |
 | TRASH-3 | :49 「공장 초기화 윈도우 경로는 결박 없이 종전과 같다」 · 커밋 `68ff7c15` 본문 L9 · `e9083e31` L4·L8(「윈도우에선 C:foo 포함 9종」) | factory_reset.rs 윈 경로 · M3 `.producer-<pid>` · 복구 지도 `to_rel` · 드라이브 접두사 거부 | **제안**(⚠파괴적 · 시험 기계에서만 · 백업 뒤): WG-4 #6 plan → 실집행 → 격리 폴더 journal/manifest 의 `to_rel` · `.producer-<pid>` 확인 → `--undo <격리 폴더>` | **제안**: 계획대로 이동 · 원위치 복구 · 표식이 생산자별 · 드라이브 접두사(`C:foo`) 든 `to_rel` 거부 | factory_reset 시험(m4_* · `undo_rejects_a_bad_to_rel…` · `producer_marker…`) 녹 · C:foo 갈래는 윈에서만 도는 검체 → windows-health `--lib factory_reset` 스텝(`windows-health.yml:227` · 해석) · ⚠실집행은 노트북 본체의 자비스 상태를 옮긴다 → 0-3 결정과 함께 **할지 말지 master 판단**(권고: CI 스텝 결과로 갈음하고 본체 실집행은 생략) |
 | TRASH-4 | INTEGRATE:39-47 · trash-harden :116 「화면과 네이티브가 함께 출하되어야 한다」 | 윈 번들에 화면 `confirmNonce` + 네이티브 `confirm_nonce` | **제안**: `Select-String -Path "$env:LOCALAPPDATA\cys\cys-app.exe" -Pattern 'confirmNonce','confirm_nonce' -SimpleMatch -List`(이진 파일 검색 = 해석 · 설치 폴더 경로는 설치본에 맞춰) 또는 TRASH-2 조작으로 갈음 | **제안**: 둘 다 있음 · TRASH-2 에서 `confirm_unbound` 없음 | 맥 번들 `strings` 로 둘 다 확인(INTEGRATE §3) · 윈 NSIS 번들 미확인 |
+| TRASH-5 | 발행 전 검토 review-b(master#4e61b71e Q1=B · `docs/HANDOFF-cysr-1110-prerelease-review-b-2026-10-22.md`) | 윈도우 · 삭제 꺼진 빌드에서 `cys-dept reap` 이 1.1.9 처럼 14일 지난 격리분을 정리(`TRASH-EXPIRE`) · 판정 칸 = `cysr build-info --json` 의 `trash_delete_supported`(lib `trash_delete_supported` 정본) | **제안**: ① `cysr build-info --json` 에 `"trash_delete_supported":false` 가 있는지 ② (격리분이 있으면) Git Bash 에서 `bash "$LOCALAPPDATA/cys/pack/bin/cys-dept" reap --dry` 로 판정만(지우지 않음 · 팩 경로는 설치본에 맞춰) — ⛔dry 없이 돌리지 않는다 | **제안**: ① false ② 14일 넘은 항목마다 `reap(dry): TRASH-EXPIRE … windows - app trash delete is off in this build` 줄 · 요약에 `TRASH-EXPIRE=0`(dry 는 세지 않음) · 휴지통 탭 안내 「… 오래된 항목은 지난 판처럼 약 14일이 지나면 저절로 정리됩니다.」 | 맥 = 하네스 시험(`test_trash_old_marking.py` ⑤~⑧ · 가짜 uname/build-info) · 맥 build-info = true · 윈 실기 0 |
 
 ### E. 원작자 편입분(`docs/HANDOFF-cysr-1110-vendor-2026-10-21.md:106` 「5. 윈 실기 — S8 휴지통(윈 삭제 feature 꺼짐 확인)·TOAST 래퍼·HUD 다리(G1) 는 맥 시험만 했다(윈 0)」 + 원작자 커밋 본문 + 원작자 노트) — 15
 
 | ID | 출처 | 무엇을 | 어떻게 | 통과 기준 | 맥 / 비고 |
 |---|---|---|---|---|---|
-| V1 | vendor :106 · :41(G9) · :85(Q3 codex 정적 통과) · 커밋 `a11687e1` L44-45(「윈도우에서는 named pipe 경로 · 윈도우 실기 검증 없음」) · `a4202a2d` L26-27 · `f4848d77` L20-28 · `3112e06c` L63-65 · `9fc7b9ca` L38-39 · `6cb142b5` L41 | S8 휴지통 탭 목록·비동기 미리보기·삭제 꺼짐 | **제안**: 휴지통 탭 열기 · 목록 · 미리보기 스피너(「확인하는 중… 노드 N · S초」) → 삭제 시도(TRASH-2 와 같은 조작) | **제안**: 목록·미리보기 동작 · 삭제 거부 · 정리 작업이 지우지 않음 · 빈 휴지통이면 「휴지통이 비어 있습니다.」 | 맥 시험만(vendor :106) |
-| V2 | vendor :106 · :44(G13 `ALERTS_QUIET=false`(`ui/src/alertquiet.ts:64`)·`ALERT_PROSE_QUIET=false`(`src/bin/cys.rs:3481`)) · 커밋 `c9e84636` L13-14(「앱 번들 변경 — 맥·윈도우 재빌드 · 윈도우 실기」) · `a708ba3d` L12 · `e0661d8a` L12 · `e06477c3` L16 · `1a4e4183` L16(「실제 OS 알림 권한 흐름 · 윈도우 실기」) | TOAST 축 래퍼(데몬 출처 알림) + 큐 폐기 알림 연결(`7bea2400`) | **제안**: ① 큐에 대기 지시를 2건 쌓은 좌석을 사람이 닫는다(창 닫기) → 오른쪽 아래 알림 ② `cysr feed push --wait --title "시험" --body "시험"` → OS 배너 ③ CLI 경보 산문 | **제안**: ① 박스 1 · 문구 「대기 중이던 지시 2건을 버렸습니다(기록은 남아 있습니다)」(INTEGRATE §2 표) · OS 배너 0 · 알람 이력 1 ② 승인 요청 OS 배너 1(auto_route 아닌 요청) ③ 1.1.9 와 같은 배너 | toastaxis 시험 두 값 녹(맥) |
+| V1 | vendor :106 · :41(G9) · :85(Q3 codex 정적 통과) · 커밋 `a11687e1` L44-45(「윈도우에서는 named pipe 경로 · 윈도우 실기 검증 없음」) · `a4202a2d` L26-27 · `f4848d77` L20-28 · `3112e06c` L63-65 · `9fc7b9ca` L38-39 · `6cb142b5` L41 | S8 휴지통 탭 목록·비동기 미리보기·삭제 꺼짐 | **제안**: 휴지통 탭 열기 · 목록 · 미리보기 스피너(「확인하는 중… 노드 N · S초」) → 삭제 시도(TRASH-2 와 같은 조작) | **제안**: 목록·미리보기 동작 · 삭제 거부 · (★Q1=B) 14일 지난 항목은 정리 작업이 1.1.9 처럼 지운다(TRASH-5) · 빈 휴지통이면 「휴지통이 비어 있습니다.」 | 맥 시험만(vendor :106) |
+| V2 | vendor :106 · :44(G13 `ALERTS_QUIET=false`(`ui/src/alertquiet.ts:64`)·`ALERT_PROSE_QUIET=false`(`src/bin/cys.rs:3481`)) · 커밋 `c9e84636` L13-14(「앱 번들 변경 — 맥·윈도우 재빌드 · 윈도우 실기」) · `a708ba3d` L12 · `e0661d8a` L12 · `e06477c3` L16 · `1a4e4183` L16(「실제 OS 알림 권한 흐름 · 윈도우 실기」) | TOAST 축 래퍼(데몬 출처 알림) + 큐 폐기 알림 연결(`7bea2400`) | **제안**: ① 큐에 대기 지시를 2건 쌓은 좌석을 사람이 닫는다(창 닫기) → 오른쪽 아래 알림 ② `cysr feed push --wait --title "시험" --body "시험"` → OS 배너 ③ CLI 경보 산문 | **제안**: ① 박스 1 · 문구 「대기 중이던 지시 2건을 버렸습니다(기록은 남아 있습니다)」(INTEGRATE §2 표) · OS 배너 0 · 알람 이력 1 ② 승인 요청 = 오른쪽 아래 박스 1 · ★OS 배너 0(master#4e61b71e Q2=B — 토스트가 보이는 우리 출하 값에서는 R2 배너를 더하지 않는다 = 1.1.9 동작) ③ 1.1.9 와 같은 배너 | toastaxis 시험 두 값 녹(맥) |
 | V3 | vendor :106·:38(G1) · `docs/RELEASE_NOTES_0.14.49.md:9` 「재지 않은 것: 윈도우 11 … `office-bridge.log` 판정 · 한글 윈도우(cp949) 실기」 · :48-50 · 커밋 `c8f611ec` L18 · `2f40c8fa` L13 · `b78a58e9` L6 · `1791fc1a` L10 · `b1ef81d2` L8 · `fcf41fe0` L6 · `a3408d5f` L14 · `HANDOFF-1110.md:87` | HUD(오피스 화면) 다리가 비UTF-8 로케일에서 구독 스레드를 잃던 수리 | 판정식 = RN 0.14.49:49 「있음 · 비어 있지 않음 → UnicodeDecodeError 줄 0 → _reader 스레드 예외 줄 0」 · **제안**: 한글 윈(949)에서 오피스 탭 + 한글 이벤트 뒤 `Select-String -Path "$env:LOCALAPPDATA\cys\office-bridge.log" -Pattern 'UnicodeDecodeError','Traceback'`(로그 자리 = cysd `main.rs:2045` state_dir · 윈 state_dir = `%LOCALAPPDATA%\cys` 는 winqueue:53 근거 · 해석) | RN 판정식 + 오피스 화면이 계속 갱신 | 맥 ko_KR.CP949 로케일 41/41 · CI T5c cp1252 42/42(런 38051474831) |
 | V4 | vendor :39(G2 「우리 BOM 벗기기를 원작자 단일 디코더 안으로」) · 커밋 `81f99cb5` L14 · `236f3d86` L12(「Not-tested: Windows」) · RN 0.14.50:78 | F7 승인 저장소 단일 디코더(BOM) | **제안**: `cysr feed push --wait --title "시험" --body "시험"` → 허락 1회 왕복(V2 ② 와 같은 조작) | **제안**: rc 0(allow) · 판독 오류 없음 | 21행 parity 말뭉치(맥) · 윈 cysd 레인은 비차단 |
 | V5 | 커밋 `48739eb0` L13 · `1b1fa3aa` L11(「two-spelling dedupe of one pack folder on Windows」) · `a93d2ce9` L13 · `82d94dbb` L9 · `1b5da27f` L1 | F10 hooks/ 드리프트 보고 · `cys doctor --lanes`(신설) | **제안**: `cysr doctor --lanes` · `cysr doctor --lanes --json` | **제안**: 같은 팩 폴더가 두 철자로 두 줄 나오지 않음 · 종료코드 0 · CI 차단 스텝(`windows-health.yml:918`) 녹 | FIFO·심링크 검체는 unix 전용 |
@@ -98,8 +99,8 @@
 
 윈 항목이 없는 출처: popfont(`af852096` 본문에 윈 언급 없음 — 단 글꼴 크기 체감은 MENU-1 사진에서 화면 설정을 열어 함께 보면 된다 · 제안) · docs/1110-naming(`29f02a2d` · 앱 윈 실기 항목 없음) · 통합 HANDOFF:60·INTEGRATE:47 은 위 B·C·D 를 가리키는 색인.
 
-**합계 45** = WIN-GATE 9 · winqueue 8 · minor 3 · trash-harden 4 · 원작자 편입 15(그중 V14 해당 없음 · V8·V13 실기 대상 아님 · V6·V9·V10·V11 = CI 로그 판독) · menu-top-row 5 · backlog 1.
-노트북 본체에서 사람 화면 조작이 필요한 것 = WG-1~4·6 · WINQ-1~7 · MINOR-3·6·7 · TRASH-2·4 · V1·V2·V3·V4·V5·V7·V12 · MENU-1~5 · BACKLOG-1. CI 로그로 보는 것 = TRASH-1 · V6·V8·V9·V10·V11·V13. 판단 대기 = TRASH-3(본체 실집행 여부).
+**합계 46** = WIN-GATE 9 · winqueue 8 · minor 3 · trash-harden 4 + 발행 전 검토 1(TRASH-5) · 원작자 편입 15(그중 V14 해당 없음 · V8·V13 실기 대상 아님 · V6·V9·V10·V11 = CI 로그 판독) · menu-top-row 5 · backlog 1.
+노트북 본체에서 사람 화면 조작이 필요한 것 = WG-1~4·6 · WINQ-1~7 · MINOR-3·6·7 · TRASH-2·4·5 · V1·V2·V3·V4·V5·V7·V12 · MENU-1~5 · BACKLOG-1. CI 로그로 보는 것 = TRASH-1 · V6·V8·V9·V10·V11·V13. 판단 대기 = TRASH-3(본체 실집행 여부).
 
 ### G. CI 윈도우 잡(실기 전에 같은 SHA 초록)
 
@@ -163,9 +164,9 @@
 
 ⓔ 확인점(첨부 2파일 · 순서대로 · 항목마다 「ID: 통과|적|해당 없음 · 관측 1줄 · 원문」)
    첨부 1 = docs/upstream/WIN-GATE-1110.md(W-0~W-6 명령 원문) — W-4 #6 은 좌석 창 안에서 직접 `cysr factory-reset --plan`(1.1.10 에서 창 안 허용)
-   첨부 2 = 이 문서 §1 B·C·D·E·F 표의 사람 조작 항목(WINQ-1~7 · MINOR-3·6·7 · TRASH-2·4 · V1·V2·V3·V4·V5·V7·V12 · MENU-1~5 · BACKLOG-1)
+   첨부 2 = 이 문서 §1 B·C·D·E·F 표의 사람 조작 항목(WINQ-1~7 · MINOR-3·6·7 · TRASH-2·4·5 · V1·V2·V3·V4·V5·V7·V12 · MENU-1~5 · BACKLOG-1)
    ⛔TRASH-3(공장 초기화 실집행)은 하지 않는다(맥 master 별도 지시가 있을 때만).
-   ⛔휴지통 시험(TRASH-2·V1)은 「삭제」 를 눌러도 지워지지 않는 것이 정상이다 — 지워지면 즉시 멈추고 회신.
+   ⛔휴지통 시험(TRASH-2·V1)은 「삭제」 를 눌러도 지워지지 않는 것이 정상이다 — 지워지면 즉시 멈추고 회신. (단 14일 지난 항목이 정리 작업으로 사라지는 것은 정상이다 — TRASH-5)
 
 막히면(설치 창이 [N/10] 에서 5분 넘게 멈춤 · 네 창이 10분 넘게 안 돌아옴) 그 자리의 화면 글자 원문과 bootstrap.log 마지막 30줄을 회신하고 멈춘다. 되돌림은 맥 master 지시가 있을 때만.
 

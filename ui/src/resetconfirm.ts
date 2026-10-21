@@ -11,6 +11,15 @@
 /// 이 문장은 **무엇이 일어나는가**만 말하고 누가 허용되는지는 말하지 않는다(r2 §8 문안 규칙).
 export const TRASH_KEEP_NOTICE =
   "격리본은 그대로 보관됩니다 — 이 제품은 더 이상 스스로 지우지 않습니다(삭제는 Control Center 의 휴지통에서 명령합니다).";
+/// ★cysr 1.1.10(master#4e61b71e Q1=B): 휴지통 삭제가 꺼진 윈도우 빌드에서는 `cys-dept reap` 이 1.1.9 처럼 약 14일 지난 격리분을
+/// 정리한다 — 그 기계에 위 문장을 보이면 거짓이 된다. CLI(`src/bin/cys.rs` factory-reset 계획 출력)도 같은 두 문장을 쓴다(시험이 대조).
+export const TRASH_KEEP_NOTICE_WIN =
+  "격리본은 그대로 보관되고, 지난 판처럼 약 14일이 지나면 저절로 정리됩니다(윈도우 — 휴지통에서 직접 지우는 기능이 켜지는 판부터는 맥과 같아집니다).";
+/// 화면이 고르는 자리 — `windowsReclaim` = 윈도우 앱(지금 출하하는 윈 빌드는 전부 휴지통 삭제가 꺼져 있다 · `trash_win_validated`
+/// 를 켜는 판에서는 이 인자를 `trash.list` 의 `delete_supported` 로 바꿔야 한다 — HANDOFF 다음 판 후보).
+export function trashKeepNotice(windowsReclaim: boolean): string {
+  return windowsReclaim ? TRASH_KEEP_NOTICE_WIN : TRASH_KEEP_NOTICE;
+}
 
 export const RESET_PHRASE = "완전 초기화";
 
@@ -105,7 +114,7 @@ export function resetTopItems(info: ResetPreview, n = 6): ResetPreviewItem[] {
 
 // 프리뷰 → 모달 고지문(순수 조립 — 테스트로 문구 계약을 잠근다). 정직 고지 규약:
 // 무엇이 사라지고 무엇이 보존되며 복구 경로가 뭔지 명시(비가역처럼 보이는 오도 금지).
-export function resetNoticeLines(info: ResetPreview): string[] {
+export function resetNoticeLines(info: ResetPreview, windowsReclaim = false): string[] {
   const lines: string[] = [];
 
   // ① 되돌릴 수 없는 즉시 피해를 맨 위에 — '↻ 재시작' 툴팁도 drain·미저장 손실을 고지한다.
@@ -170,7 +179,7 @@ export function resetNoticeLines(info: ResetPreview): string[] {
 
   lines.push(
     "복구: 즉시 삭제가 아니라 격리 보관되어 되돌릴 수 있습니다 — 완료 후 안내되는 폴더에서 `cysr factory-reset --undo <폴더>`. " +
-      TRASH_KEEP_NOTICE,
+      trashKeepNotice(windowsReclaim),
   );
   lines.push("완료 후 앱을 다시 실행하면 설치 온보딩이 처음부터 시작됩니다.");
   lines.push(`계속하려면 아래에 "${RESET_PHRASE}" 를 정확히 입력하세요.`);

@@ -3362,6 +3362,18 @@ pub fn is_dept_socket(socket_path: &std::path::Path) -> bool {
         .any(|comp| comp.starts_with("cys-dept-"))
 }
 
+/// 이 빌드에서 휴지통 삭제(데몬 `trash.delete` · 앱 Control Center 휴지통)가 켜져 있는가 — 판정의 **정본 한 곳**.
+/// 윈도우는 원작자 S8 의 `trash_win_validated` feature(12.W 검증 릴리스 단계에서만 켬 · 기본 꺼짐)가 있을 때만 켜진다.
+/// ★cysr 1.1.10(master#4e61b71e Q1=B): 데몬(`trash.rs delete_supported`)과 `cys build-info --json` 의
+/// `trash_delete_supported` 가 이 값을 같이 쓴다 — `cys-dept reap` 은 그 칸으로 「윈도우·삭제 꺼짐」일 때만 옛 14일 정리를 유지한다.
+pub fn trash_delete_supported() -> bool {
+    if cfg!(windows) {
+        cfg!(feature = "trash_win_validated")
+    } else {
+        true
+    }
+}
+
 /// ★(0.14.44 · A3) 승인의 "폴더 건너뛰기"·CLI 숫자 토큰 떼기가 다루는 **대상 동사 7종** — 대상을 하나만 받거나 받지 않는 cys 명령.
 /// 게이트 훅(`role-capability-gate.sh`)의 `CSO_CYS_TTL_VERBS`(6종) + `CSO_CYS_OPT_TTL` 의 열쇠(`cycle-agent`)의 합집합과 같아야 한다(데몬 시험이 대조한다).
 pub const APPROVAL_TARGET_VERBS: [&str; 7] =

@@ -11149,7 +11149,13 @@ fn run_factory_reset(
             "  복구  cys factory-reset --undo {}  (또는 그 폴더의 manifest.json / journal.ndjson 을 역방향 mv)",
             plan.trash_dir.display()
         );
-        println!("        격리본은 약 14일 뒤 정리 작업에서 소거될 수 있습니다(직접 지우려면 rm -rf).");
+        // ★1.1.10(S8): 자동 소거는 없어졌다 — 문장은 앱 정본(ui/src/resetconfirm.ts TRASH_KEEP_NOTICE)과 같게(시험 factory_reset_trash_notice_tests).
+        //   ★단 휴지통 삭제가 꺼진 빌드(윈도우 · master#4e61b71e Q1=B)는 cys-dept reap 이 1.1.9 처럼 14일 정리를 유지한다 — 그 문장은 TRASH_KEEP_NOTICE_WIN.
+        if cys::trash_delete_supported() {
+            println!("        격리본은 그대로 보관됩니다 — 이 제품은 더 이상 스스로 지우지 않습니다(삭제는 Control Center 의 휴지통에서 명령합니다).");
+        } else {
+            println!("        격리본은 그대로 보관되고, 지난 판처럼 약 14일이 지나면 저절로 정리됩니다(윈도우 — 휴지통에서 직접 지우는 기능이 켜지는 판부터는 맥과 같아집니다).");
+        }
     }
     // ★P0-6: 격리 목적지가 못 쓰는 상태면 **데몬을 건드리기 전에** 거부한다.
     if let Err(e) = &plan.trash_root_ready {
@@ -50053,5 +50059,33 @@ mod toast_axis_tests {
         for f in ["fn queue_blocked_notice_lines(", "fn queue_durable_suffix(", "fn warn_if_daemon_paused("] {
             assert!(code.contains(f), "{f} 가 사라졌다");
         }
+    }
+}
+
+/// ★1.1.10 발행 전 검토(TICKET=cysr-1110-prerelease-review-b): 원작자 S8 이 격리분 자동 소거를 없애며 화면 세 곳의
+/// 약속(「약 14일 뒤 소거」)은 지웠지만 CLI `factory-reset` 계획 출력의 같은 문장은 원작자 판(v0.14.51)에도 남아 있었다.
+/// 이 시험은 그 출력이 ①옛 약속을 하지 않고 ②앱의 정본 문장(ui/src/resetconfirm.ts `TRASH_KEEP_NOTICE`)과 같은 말을 하는지 잰다.
+#[cfg(test)]
+mod factory_reset_trash_notice_tests {
+    #[test]
+    fn factory_reset_plan_output_says_the_same_trash_lifetime_as_the_app() {
+        let src = include_str!("cys.rs");
+        let i = src.find("\nfn run_factory_reset(").expect("run_factory_reset 소실");
+        let body = &src[i..i + src[i..].find("\n}\n").expect("fn 끝")];
+        assert!(!body.contains("14일 뒤"), "CLI 초기화 계획이 아직 자동 소거(약 14일 뒤)를 약속한다 — S8 이후 거짓이다");
+        let ui = include_str!("../../ui/src/resetconfirm.ts");
+        let notice_of = |name: &str| -> String {
+            let k = ui.find(&format!("export const {name} =")).unwrap_or_else(|| panic!("ui {name} 소실"));
+            let rest = &ui[k..];
+            let a = rest.find('"').expect("문자열 시작") + 1;
+            rest[a..a + rest[a..].find('"').expect("문자열 끝")].to_string()
+        };
+        // ★두 문장 모두 — 삭제 켜진 빌드(맥) = TRASH_KEEP_NOTICE · 삭제 꺼진 빌드(윈 · Q1=B 14일 정리 유지) = TRASH_KEEP_NOTICE_WIN.
+        for name in ["TRASH_KEEP_NOTICE", "TRASH_KEEP_NOTICE_WIN"] {
+            let notice = notice_of(name);
+            assert!(body.contains(&notice), "CLI 초기화 계획의 격리분 수명 안내가 앱 정본 문장({name})과 다르다: {notice}");
+        }
+        // 고르는 판정은 휴지통 삭제 판정 정본(lib) 하나다(cys-dept reap 의 윈 분기와 같은 값).
+        assert!(body.contains("if cys::trash_delete_supported() {"), "CLI 가 격리분 수명 문장을 삭제 판정 정본으로 고르지 않는다");
     }
 }

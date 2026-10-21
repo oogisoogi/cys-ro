@@ -56,7 +56,7 @@ enum UpdCmd {
         #[arg(long)]
         json: bool,
     },
-    /// 이 바이너리의 빌드 신원 {version, build_id, release_seq, target, features, bundled_pack, keyring_ids}
+    /// 이 바이너리의 빌드 신원 {version, build_id, release_seq, target, features, bundled_pack, keyring_ids, trash_delete_supported}
     #[command(name = "build-info")]
     BuildInfo {
         #[arg(long)]

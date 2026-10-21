@@ -15593,9 +15593,11 @@ fn alt_screen_notice(
     if is_macos {
         return Some((
             "[launch-agent] WARN: claude 가 alternate screen(fullscreen)으로 떴다 — D5 기본 env \
-             (CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1)가 settings tui 키 등으로 우회된 상태. \
-             fullscreen 휠은 프롬프트 히스토리 오염 경로다: 해당 계정 settings 의 tui 키 제거 \
-             (D1(d) 정규화·.bak 관례) 또는 agents.json env 확인."
+             (CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1)가 이 claude 에 닿지 않은 상태(Claude Code 는 \
+             이 env 를 settings tui 키보다 먼저 본다 — env 가 1 로 닿았다면 tui 키로는 fullscreen 이 \
+             되지 않는다). fullscreen 휠은 프롬프트 히스토리 오염 경로다: agents.json claude env 에 \
+             이 키가 0 등 다른 값으로 적혀 있는지 확인(사용자 값이 있으면 cys 는 기본값을 넣지 \
+             않는다 — 그 경우에만 settings tui 키가 판정에 참여한다)."
                 .to_string(),
             true,
         ));
@@ -30870,6 +30872,10 @@ mod tests {
             .expect("mac claude fullscreen 은 WARN");
         assert!(line.contains("WARN"), "WARN 표식 누락: {line}");
         assert!(attach, "mac WARN 은 directive.verify reason 에 부기해야 한다");
+        // ★1.1.11: Claude Code 는 D5 env 를 settings `tui` 보다 먼저 본다(src/claude_tui.rs `Hc()` 판독) —
+        // env=1 이 닿았다면 tui 키로는 우회되지 않는다. 「tui 키 제거」를 해결책으로 말하면 거짓 안내다.
+        assert!(!line.contains("settings tui 키 등으로 우회"), "env 가 tui 보다 앞선다: {line}");
+        assert!(line.contains("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN") && line.contains("agents.json"), "{line}");
         // win ∧ claude ∧ true → 힌트(경보 아님) + 부기 없음.
         let (line, attach) = alt_screen_notice(Some(true), "claude", false, true)
             .expect("win claude fullscreen 은 힌트");

@@ -173,6 +173,8 @@ function build(opts: { quiet: boolean; ccOpen?: boolean; slugs?: Record<string, 
     // ★v0.14.51 편입(우리 · A안): 출하 상수는 false(우리 화면 동작 유지)라 quiet 모드는 **원작자 값 true** 를 직접 주입해 잰다 —
     //   main.ts 의 가드 배선이 「켜면 정말 끈다」는 것을 시험이 계속 지키게 한다(출하 값 자체는 아래 「출하 값」 시험이 핀).
     alertsQuiet: opts.quiet ? () => true : () => false,
+    // ★cysr 1.1.10(Q2=B): `--wait` 배너는 꺼진 토스트를 대신하는 면 — 실물(alertquiet.ts)과 같게 quiet 값을 따른다.
+    waitBannerReplacesToast: opts.quiet ? () => true : () => false,
     pushAlarm: getSpy("pushAlarm", (h: unknown, a: unknown) => [...((h as unknown[]) ?? []), a]),
     toastTtl: () => ({ ttlMs: 1 }),
     toastClassName: () => "toast",
@@ -666,11 +668,11 @@ describe("TOAST 축 R2 — `--wait` 대기 항목의 생성 시점 배너 1면 (
     expect(notice.calls.sendNotification?.[0]?.[0]).toEqual({ title: feedCreatedToastTitle("formation-failed"), body: "부서 팀 편성 실패" });
   });
 
-  test("AT-20 대조(보이는 쪽) — 가드를 푼 같은 이벤트는 토스트 1 · 알람 1 · 전환 예약 1 · 배너 1 이 모두 선다: 시험이 '보이는 것'을 실제로 볼 수 있다", async () => {
+  test("AT-20 대조(보이는 쪽) — 가드를 푼 같은 이벤트는 토스트 1 · 알람 1 · 전환 예약 1 이 서고, ★배너는 0(cysr 1.1.10 Q2=B — 보이는 토스트가 이미 알린다 = 1.1.9 동작): 시험이 '보이는 것'을 실제로 볼 수 있다", async () => {
     const sb = build({ quiet: false });
     sb.fn.onDaemonEvent(published());
     await flush();
-    expect([sb.toasts.children.length, sb.calls.pushAlarm?.length ?? 0, sb.calls.scheduleFeedSwitchIfStillPending?.length ?? 0, sb.calls.sendNotification?.length ?? 0]).toEqual([1, 1, 1, 1]);
+    expect([sb.toasts.children.length, sb.calls.pushAlarm?.length ?? 0, sb.calls.scheduleFeedSwitchIfStillPending?.length ?? 0, sb.calls.sendNotification?.length ?? 0]).toEqual([1, 1, 1, 0]);
   });
 });
 
@@ -773,7 +775,7 @@ interface KeptSite {
   pin: string;
 }
 const KEPT_SITES: KeptSite[] = [
-  { id: "feed-wait-banner", kind: "R2", anchor: "if (payload.wait === true && payload.auto_route !== true) osBanner(feedCreatedToastTitle(payload.kind), String(payload.title ?? \"\"));", nth: 0, pin: "17801e6610300e2c" }, // 재기준선: 우리 onDaemonEvent 의 선행 분기 줄(restore.retrying·role.takeover·seat.folder_denied·queue.expired/revived·복원 카드 판정) · 원작자 U16 팀 제안 분기 없음 · ★1.1.10 통합 재계산: 선행 분기 queue.dropped(winqueue Q1-A ①) 추가(7e292a7ea0458b84 → 17801e6610300e2c)
+  { id: "feed-wait-banner", kind: "R2", anchor: "if (waitBannerReplacesToast() && payload.wait === true && payload.auto_route !== true) osBanner(feedCreatedToastTitle(payload.kind), String(payload.title ?? \"\"));", nth: 0, pin: "83f3a45e7bfb4b70" }, // ★cysr 1.1.10 Q2=B 재기준선(문장 머리에 waitBannerReplacesToast() 조건 · 17801e6610300e2c → 83f3a45e7bfb4b70) · 재기준선: 우리 onDaemonEvent 의 선행 분기 줄(restore.retrying·role.takeover·seat.folder_denied·queue.expired/revived·복원 카드 판정) · 원작자 U16 팀 제안 분기 없음 · ★1.1.10 통합 재계산: 선행 분기 queue.dropped(winqueue Q1-A ①) 추가(7e292a7ea0458b84 → 17801e6610300e2c)
   { id: "K5-daemon-error", kind: "daemon-info", anchor: "info.textContent = `daemon error: ${e.payload}`;", nth: 0, pin: "1fc56231bf45df6e" },
   { id: "K5-startup-failed", kind: "daemon-info", anchor: "document.getElementById(\"daemon-info\")!.textContent = `startup failed: ${e}`;", nth: 0, pin: "607b4ac9163cc886" },
   { id: "K5-recovery-failed", kind: "daemon-info", anchor: "document.getElementById(\"daemon-info\")!.textContent = `startup failed: ${e} / recovery failed: ${e2}`;", nth: 0, pin: "bd517611b51bc743" },
@@ -886,7 +888,7 @@ describe("TOAST 축 — 출처 핀 · 통짜 가드 금지 · 커버리지", () 
       expect([n, "feed", direct(feed, n)]).toEqual([n, "feed", n === "osBanner" ? 1 : 0]);
     }
     // 그 한 면의 술어는 정확히 이 문장이다(wait===true ∧ auto_route!==true) — AT-20 판별 행렬이 동작으로, 이 줄이 소스로 못박는다.
-    expect(feed).toContain("if (payload.wait === true && payload.auto_route !== true) osBanner(");
+    expect(feed).toContain("if (waitBannerReplacesToast() && payload.wait === true && payload.auto_route !== true) osBanner("); // cysr 1.1.10 Q2=B: 토스트가 꺼졌을 때만
     expect(SRC).not.toContain("function daemonOpenFeed("); // 호출자 0 이 된 죽은 래퍼는 남기지 않는다(실효 0 장치)
     expect(SRC).not.toContain("daemonOpenFeed(");
     // ★v0.14.51 편입(우리 main.ts): 원작자 10·1·4 → 우리 9·5·5.

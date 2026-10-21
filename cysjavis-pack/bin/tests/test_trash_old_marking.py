@@ -59,12 +59,26 @@ def extract_block():
 BLOCK = extract_block()
 
 
-def run_reap(home, dry):
-    """떼어 온 블록만 격리 실행한다(제품의 바이트 그대로 · 변수만 주입)."""
+def run_reap(home, dry, win=None):
+    """떼어 온 블록만 격리 실행한다(제품의 바이트 그대로 · 변수만 주입).
+
+    win = None → 이 기계의 실제 `uname`(맥·리눅스). win = (build_info 출력 | None, rc) → 가짜 `uname`(MINGW64_NT)과
+    가짜 `cys build-info --json`(CYS_BIN)을 주입해 윈도우 분기를 돌린다(★cysr 1.1.10 · master#4e61b71e Q1=B).
+    """
     trash = os.path.join(home, ".local", "state", "cys-trash")
-    script = "set -u\nTRASH_ROOT=%s\ndry=%d\n%s\necho \"[cys-dept] reap 완료(dry=$dry): TRASH-OLD=$nt\"\n" % (
-        json.dumps(trash), 1 if dry else 0, BLOCK)
+    prelude = ""
     env = dict(os.environ)
+    if win is not None:
+        out, rc = win
+        fake = os.path.join(home, "fake-cys")
+        with open(fake, "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\n[ \"$1\" = build-info ] || exit 9\n%s\nexit %d\n" % (
+                "printf '%s\\n' " + json.dumps(out) if out is not None else ":", rc))
+        os.chmod(fake, 0o755)
+        env["CYS_BIN"] = fake
+        prelude = "uname(){ echo MINGW64_NT-10.0-19045; }\n"
+    script = "set -u\n%sTRASH_ROOT=%s\ndry=%d\n%s\necho \"[cys-dept] reap 완료(dry=$dry): TRASH-OLD=$nt TRASH-EXPIRE=$ne\"\n" % (
+        prelude, json.dumps(trash), 1 if dry else 0, BLOCK)
     env.update(HOME=home, CYS_TRASH_TTL_DAYS="14")
     r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env, timeout=120)
     return r.returncode, r.stdout + r.stderr
@@ -98,7 +112,8 @@ def case(age_days, expect_marked):
                   "[%s · %sd] TRASH-OLD 알림 %s" % (tag, age_days, "있음" if expect_marked else "없음"))
             check("TRASH-OLD=%d" % (1 if expect_marked else 0) in out,
                   "[%s · %sd] 요약 줄 TRASH-OLD=%d" % (tag, age_days, 1 if expect_marked else 0))
-            check("TRASH-EXPIRE" not in out, "[%s · %sd] 출력에 TRASH-EXPIRE 토큰 없음" % (tag, age_days))
+            check(("TRASH-EXPIRE %s" % d) not in out and "TRASH-EXPIRE=0" in out,
+                  "[%s · %sd] 정리(TRASH-EXPIRE) 0건 — 맥·리눅스는 언제나 S8" % (tag, age_days))
             check(os.path.isdir(d), "[%s · %sd] ★엔트리가 그대로 있다(지워지지 않았다)" % (tag, age_days))
         check(tree_fingerprint(d) == before,
               "[%sd] ★격리분 안의 내용이 한 바이트도 바뀌지 않았다(표식 파일 없음)" % age_days)
@@ -108,10 +123,45 @@ print("== ① 양성: TTL(14d) 초과 30일 격리분 ==")
 case(30, True)
 print("== ② 음성: 3일 격리분 ==")
 case(3, False)
-print("== ③ 핀: 파괴 블록 부재 ==")
+def win_case(build_info, rc, expect_reclaim, label):
+    """★cysr 1.1.10 윈도우 예외: 윈도우 ∧ 앱 휴지통 삭제 꺼짐(build-info 에 `"trash_delete_supported":true` 없음)이면
+    1.1.9 처럼 TTL 초과분을 정리한다 · 켜진 빌드면 S8(표시만). 3일 격리분은 어느 쪽이든 그대로다."""
+    with tempfile.TemporaryDirectory(prefix="cys-1110-win-") as home:
+        trash = os.path.join(home, ".local", "state", "cys-trash")
+        os.makedirs(trash)
+        old_d = mk_entry(trash, "dept-9-%d" % int(time.time()), 30)
+        young = mk_entry(trash, "dept-8-%d" % int(time.time()), 3)
+        rc_, out = run_reap(home, True, (build_info, rc))
+        check(os.path.isdir(old_d), "[win %s · dry] dry 는 아무 것도 지우지 않는다" % label)
+        check(("TRASH-EXPIRE %s" % old_d in out) == expect_reclaim, "[win %s · dry] TRASH-EXPIRE 알림 %s" % (label, expect_reclaim))
+        rc_, out = run_reap(home, False, (build_info, rc))
+        if expect_reclaim:
+            check(not os.path.exists(old_d), "[win %s] ★30일 격리분이 정리됐다(1.1.9 동작)" % label)
+            check("TRASH-EXPIRE=1" in out and "TRASH-OLD=0" in out, "[win %s] 요약 TRASH-EXPIRE=1 · TRASH-OLD=0" % label)
+        else:
+            check(os.path.isdir(old_d), "[win %s] ★30일 격리분이 그대로다(S8 — 앱에서 지운다)" % label)
+            check("TRASH-OLD=1" in out and "TRASH-EXPIRE=0" in out, "[win %s] 요약 TRASH-OLD=1 · TRASH-EXPIRE=0" % label)
+        check(os.path.isdir(young), "[win %s] 3일 격리분은 그대로다(TTL 미만)" % label)
+
+
+print("== ⑤ 윈도우 · 삭제 꺼진 빌드(칸 false) → 1.1.9 처럼 정리 ==")
+win_case('{"target":"windows-x64","trash_delete_supported":false,"version":"1.1.10"}', 0, True, "false")
+print("== ⑥ 윈도우 · 칸 없는 옛 바이너리(1.1.9) → 정리 ==")
+win_case('{"target":"windows-x64","version":"1.1.9"}', 0, True, "칸 없음")
+print("== ⑦ 윈도우 · build-info 실패(1.1.8 이전·바이너리 없음) → 정리 ==")
+win_case(None, 2, True, "실패")
+print("== ⑧ 윈도우 · 삭제 켜진 빌드(trash_win_validated) → S8 표시만 ==")
+win_case('{"target":"windows-x64","trash_delete_supported":true,"version":"1.1.11"}', 0, False, "true")
+
+print("== ③ 핀: 파괴는 윈도우 예외 갈래 한 자리뿐 ==")
 src = open(DEPT, encoding="utf-8").read()
-check('rm -rf "$_td"' not in src, '스크립트에 rm -rf "$_td" 가 없다')
-check("TRASH-EXPIRE" not in src, "스크립트에 TRASH-EXPIRE 토큰이 없다")
+check(src.count('rm -rf "$_td"') == 1, '스크립트의 rm -rf "$_td" 는 정확히 한 자리다')
+_lines = BLOCK.splitlines()
+_rm = next((i for i, l in enumerate(_lines) if 'rm -rf "$_td"' in l), None)
+check(_rm is not None and any('if [ "$_trash_reclaim" = 1 ]' in l for l in _lines[max(0, _rm - 3):_rm]),
+      'rm -rf "$_td" 는 `_trash_reclaim = 1`(윈도우 ∧ 삭제 꺼짐) 갈래 안에만 있다')
+check(src.count('_trash_reclaim=1') == 1 and '*\'"trash_delete_supported":true\'*) _trash_reclaim=0' in src,
+      "정리 갈래는 build-info 의 trash_delete_supported:true 가 **없을 때만** 켜진다")
 check("TRASH-OLD" in src, "스크립트에 TRASH-OLD 가 있다")
 check("delete from Control Center > Trash" in src, "안내 문구가 있다(누가 아니라 이 도구가 무엇을 하는지)")
 print()
@@ -120,4 +170,4 @@ if FAIL:
     for f in FAIL:
         print(" -", f)
     sys.exit(1)
-print("PASS — 휴지통 블록은 표시만 하고 지우지 않는다(reap 명령 전체는 미실행 게이트)")
+print("PASS — 휴지통 블록은 맥·리눅스·삭제 켜진 윈도우에서 표시만 하고, 삭제 꺼진 윈도우에서만 1.1.9 처럼 정리한다(reap 명령 전체는 미실행 게이트)")

@@ -1629,11 +1629,8 @@ fn dev_ino(_md: &std::fs::Metadata) -> (u64, u64) {
 
 /// 윈도우 삭제는 **검증된 빌드에서만** 켜진다(12.W 가 돌지 않으면 꺼진 채로 출하된다).
 pub fn delete_supported() -> bool {
-    if cfg!(windows) {
-        cfg!(feature = "trash_win_validated")
-    } else {
-        true
-    }
+    // cysr 1.1.10: 판정 정본은 lib 한 곳(`cys build-info` 의 `trash_delete_supported` 와 같은 값 · cys-dept reap 의 윈 분기가 읽는다).
+    cys::trash_delete_supported()
 }
 
 fn ledger_writable(state: &Path) -> bool {

@@ -67,6 +67,13 @@ export function alertsQuiet(_sink: QuietSink): boolean {
   return ALERTS_QUIET;
 }
 
+/** ★cysr 1.1.10(master#4e61b71e Q2=B): `--wait` 대기 항목(wait ∧ ¬auto_route)의 생성 시점 OS 배너(원작자 R2)는 **꺼진 토스트를 대신하는 면**이다.
+ *  토스트가 보이면(우리 출하 값 false) 그 토스트가 이미 알리므로 배너를 더하지 않는다(= 1.1.9 화면 동작 · 판정표 A안) ·
+ *  토스트가 꺼지면(원작자 값 true) 배너 한 면이 그 항목의 유일한 사람 알림이다(R2 그대로). 가드 재고(EXPECTED_GUARDS)는 건드리지 않는다. */
+export function waitBannerReplacesToast(): boolean {
+  return alertsQuiet("toast");
+}
+
 /** 남기는 것(재고) — 선언에 같이 찍는다. */
 export const KEPT = [
   "사용자 행동 응답 토스트(전송 실패·전출 실패·복사됨 등)",

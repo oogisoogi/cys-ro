@@ -49,6 +49,9 @@ pub struct BuildInfo {
     pub bundled_pack: BundledPackInfo,
     /// 내장 갱신 키링의 `용도:key_id` 목록(이 판 = 빈 목록 · U3 기입 뒤 4개).
     pub keyring_ids: Vec<String>,
+    /// ★cysr 1.1.10(가산 칸 · 소비자는 이름으로 읽는다): 이 빌드에서 휴지통 삭제가 켜져 있는가(`crate::trash_delete_supported`).
+    /// `cys-dept reap` 이 읽는다 — 윈도우에서 false·칸 없음(1.1.9 이하)이면 옛 14일 정리를 유지한다(master#4e61b71e Q1=B).
+    pub trash_delete_supported: bool,
 }
 
 pub fn build_info() -> BuildInfo {
@@ -63,6 +66,7 @@ pub fn build_info() -> BuildInfo {
             digest: crate::pack::embedded_pack_hash(),
         },
         keyring_ids: super::keys::UpdateKeyring::embedded().map(|k| k.key_ids()).unwrap_or_default(),
+        trash_delete_supported: crate::trash_delete_supported(),
     }
 }
 
@@ -195,6 +199,13 @@ mod tests {
         let j = serde_json::to_value(&b).unwrap();
         for k in ["version", "build_id", "release_seq", "target", "features", "bundled_pack", "keyring_ids"] {
             assert!(j.get(k).is_some(), "build-info 칸 {k} 부재(§4-2)");
+        }
+        // ★cysr 1.1.10: cys-dept reap 의 윈도우 분기가 이 칸을 **이 이름·bool** 로 읽는다(문자열 대조 `"trash_delete_supported":true`).
+        assert_eq!(j["trash_delete_supported"], serde_json::Value::Bool(crate::trash_delete_supported()));
+        assert!(serde_json::to_string(&b).unwrap().contains(&format!("\"trash_delete_supported\":{}", b.trash_delete_supported)),
+                "압축 JSON 의 칸 모양이 cys-dept 의 대조 문자열과 다르다");
+        if !cfg!(windows) {
+            assert!(b.trash_delete_supported, "맥·리눅스는 휴지통 삭제가 언제나 켜져 있다(S8)");
         }
     }
 

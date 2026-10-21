@@ -97,7 +97,7 @@ import {
   resetResultTitle,
   resetResultBody,
   freshStartLiveNotice,
-  TRASH_KEEP_NOTICE,
+  trashKeepNotice,
   resetGateVerdict,
   isBootGateRefusal,
   type ResetGateInput,
@@ -233,7 +233,7 @@ import { buildAcctIndex, buildWsAccountGroups, type SeatAcctSig, type AcctIndex 
 import { planOfficeTab, repairOutcomeOf, type OfficeCtx } from "./officetab"; // 0.14.44 B5·B6 오피스 탭 안내(순수 판정)
 import { starvedNotice, starvedShouldPop, starvedKeyHasHead, starvedPopAgeMs, starvedDismissId, surfaceIdOfRef, locateStarvedSeat } from "./starvednotice"; // 0.14.43 UI2 큐 기아 경보 → 토스트·배너(순수 문구·좌석 확정)
 import { latestOnly, parseResultNotice, seatsBlockedText, SEATS_NOTE_POLL_MS } from "./updateresult"; // 1.1.8 U4 자동 갱신 결과 알림(응답 해석만 · 갱신 결정·집행 0)
-import { alertsQuiet } from "./alertquiet"; // 0.14.51 TOAST 축 — 데몬 이벤트 출처의 사람 싱크를 끄는 단일 판정(순수)
+import { alertsQuiet, waitBannerReplacesToast } from "./alertquiet"; // 0.14.51 TOAST 축 — 데몬 이벤트 출처의 사람 싱크를 끄는 단일 판정(순수)
 import {
   deptPendingText,
   deptProgressId,
@@ -1592,7 +1592,9 @@ function renderTrash(payload: {
   if (rootEl) rootEl.textContent = payload.root ?? "";
   const supported = payload.delete_supported !== false;
   const notes: string[] = [];
-  if (!supported) notes.push("이 빌드에서는 삭제가 꺼져 있습니다 — 목록과 표시는 그대로 동작합니다.");
+  // cysr 1.1.10(master#4e61b71e Q1=B): 삭제가 꺼진 빌드(= 윈도우 · trash_win_validated 꺼짐)에서는 cys-dept reap 이 1.1.9 처럼
+  //   약 14일 지난 항목을 정리한다(판정 정본 = lib `trash_delete_supported` 한 곳 — 이 칸과 그 갈래가 같은 값을 쓴다).
+  if (!supported) notes.push("이 빌드에서는 삭제가 꺼져 있습니다 — 목록과 표시는 그대로 동작하고, 오래된 항목은 지난 판처럼 약 14일이 지나면 저절로 정리됩니다.");
   if (payload.ledger_writable === false)
     notes.push("기록 파일을 쓸 수 없어 삭제 명령이 진행되지 않습니다 — 기록할 수 없는 삭제는 하지 않습니다.");
   for (const s of payload.strays ?? []) notes.push(`${s.name}: ${s.why} — 목록에서 다루지 않습니다.`);
@@ -9173,7 +9175,7 @@ function purgeConfirmModal(
       // 현실에서 "작업물 격리" 고지는 홈 격리 약속이 되는 오도였다. GUI는 --purge-workdir 미요청.
       "삭제되는 것: 부서 데몬 종료 + 대화기억·pack 격리 + 재시작 부활 영구 차단(묘비 존치). 작업 폴더(cwd)는 보존됩니다.",
       info.isLast ? "⚠ 이 부서가 마지막입니다 — 삭제 시 CEO가 표준 master로 강등됩니다." : "",
-      "복구: 즉시 삭제가 아니라 ~/.local/state/cys-trash/ 로 격리 보관되어 되돌릴 수 있습니다. " + TRASH_KEEP_NOTICE,
+      "복구: 즉시 삭제가 아니라 ~/.local/state/cys-trash/ 로 격리 보관되어 되돌릴 수 있습니다. " + trashKeepNotice(IS_WINDOWS), // cysr 1.1.10 Q1=B: 윈 = 14일 정리 유지
       `계속하려면 아래에 부서명 "${name}" 을 정확히 입력하세요.`,
     ]
       .filter(Boolean)
@@ -9324,7 +9326,7 @@ function factoryResetConfirmModal(info: ResetPreview): Promise<boolean> {
       `<div class="modal-btns"><button class="modal-no">취소</button>` +
       `<button class="modal-yes" disabled>완전 초기화</button></div></div>`;
     (ov.querySelector("h3") as HTMLElement).textContent = "완전 초기화(팩토리 리셋) — 설치 초기 상태로";
-    (ov.querySelector(".modal-label") as HTMLElement).textContent = resetNoticeLines(info).join("\n\n");
+    (ov.querySelector(".modal-label") as HTMLElement).textContent = resetNoticeLines(info, IS_WINDOWS).join("\n\n"); // cysr 1.1.10 Q1=B: 윈 = 14일 정리 유지 문장
     const inp = ov.querySelector(".modal-input") as HTMLInputElement;
     const yes = ov.querySelector(".modal-yes") as HTMLButtonElement;
     const hint = ov.querySelector(".modal-hint") as HTMLElement;
@@ -10109,7 +10111,8 @@ function onDaemonEvent(event: Record<string, unknown>) {
       daemonToast("feed", feedCreatedToastTitle(payload.kind), String(payload.title ?? ""));
       // ★TOAST R2(codex MAJOR-1): `cys feed push --wait` 요청자가 기다리는 항목 중 **기계 라우트가 없는**(auto_route 아님) 것에만 OS 배너 **한 면**을 직접 남긴다 — 토스트·Feed 자동 전환·배지는 꺼진 채, auto_route 항목은 기계 라우트(W3.4)가 있어 무음.
       //   사유는 크기가 아니라 **시점**: 이 항목은 stalled 의 대상이 아니라서(그 스캔은 kind==approval ∧ 데몬 발행 id 만 센다) 생성 시점 알림이 유일한 경로다. 근거 소스는 toastaxis.test.ts AT-19 가 읽고, 발행 모양은 AT-20 이 producer 소스에서 읽는다.
-      if (payload.wait === true && payload.auto_route !== true) osBanner(feedCreatedToastTitle(payload.kind), String(payload.title ?? "")); // 직접 호출 — 출처 예외(래퍼 아님)
+      //   ★cysr 1.1.10(master#4e61b71e Q2=B): 그 배너는 꺼진 토스트를 **대신하는** 면이다 — 토스트가 보이는 우리 출하 값(false)에서는 위 토스트가 이미 알리므로 배너를 더하지 않는다(1.1.9 동작).
+      if (waitBannerReplacesToast() && payload.wait === true && payload.auto_route !== true) osBanner(feedCreatedToastTitle(payload.kind), String(payload.title ?? "")); // 직접 호출 — 출처 예외(래퍼 아님)
       // ★R1F-UB(S4 B1): 편성 결과(formation-*) feed 는 팀원 부팅 안내를 건드리지 않는다 — 편성 도구(javis_formation.py _feed)는 소켓 지정 없이 `cys feed push` 를 불러 **본부 데몬**으로 가고,
       //   화면의 socketForSlug 에는 부서 소켓만 있어 그 이벤트의 socket_slug 를 새로 만든 부서 탭에 대응시킬 수 없다(종전 배선은 닿지 않았다). 팀원 안내의 완료 판정은
       //   3초 틱이 받는 그 팀 소켓의 좌석 목록(checkDeptFormationNotices)이다. 위의 일반 알림(ℹ 알림 · 부서 팀 편성 완결)은 종전 그대로다.

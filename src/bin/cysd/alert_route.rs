@@ -3922,7 +3922,11 @@ mod drills {
     /// ★(리뷰 R2) **에이전트가 등록된** 좌석이다: 목적지 적격성은 이제 등록을 요구한다
     /// (`launch-agent` 가 하는 일과 같다). 등록 없는 좌석은 `empty_seat` 드릴이 따로 세운다.
     fn seat(daemon: &Arc<Daemon>, role: &str) -> u64 {
-        let id = bare_seat(daemon, role);
+        seat_with(daemon, role, "sleep 30")
+    }
+
+    fn seat_with(daemon: &Arc<Daemon>, role: &str, cmd: &str) -> u64 {
+        let id = bare_seat_with(daemon, role, cmd);
         let s = daemon.get_surface(id).expect("좌석");
         *s.agent_meta.lock().unwrap() = Some(("claude".into(), "/usr/local/bin/claude".into()));
         id
@@ -3930,11 +3934,34 @@ mod drills {
 
     /// 역할만 쥔 **빈 셸**(에이전트 미등록) — 정본 §10-3 의 '빈 좌석' 그대로.
     fn bare_seat(daemon: &Arc<Daemon>, role: &str) -> u64 {
-        // ★1.1.11(MI-cysd) 좌석 수명은 드릴보다 길어야 한다 — `sleep 30` 은 부하로 드릴이 30초를 넘기면 끝나고, 그 좌석의
-        //   자력 종료 경로가 큐를 비우고 좌석을 죽여 배달이 멎었다(`drill_edge_loop_clear_signals_…` 4506 흔들림 · 좌석을
-        //   `sleep 3` 으로 줄이면 같은 줄·같은 메시지로 매번 재현). 시험 프로세스가 끝나면 PTY 가 닫혀 함께 끝난다.
+        bare_seat_with(daemon, role, "sleep 30")
+    }
+
+    /// ★1.1.11(MI-cysd) 몇 시간치 `Now` 를 미는 긴 드릴 전용 좌석 — `sleep 30` 좌석은 부하로 드릴이 30초를 넘기면 끝나고,
+    /// 그 좌석의 자력 종료 경로가 큐를 비우고 좌석을 죽여 배달이 멎었다(`drill_edge_loop_clear_signals_…` 4506 흔들림 ·
+    /// 좌석을 `sleep 3` 으로 줄이면 같은 줄·같은 메시지로 매번 재현). 수명을 늘린 좌석은 드릴 끝(패닉 포함)에
+    /// [`ReapSeats`] 가 거둔다 — 모든 드릴 좌석을 오래 살리면 전건 동안 PTY 가 쌓여 다른 시험이 깨졌다(u18 실측).
+    fn long_seat(daemon: &Arc<Daemon>, role: &str) -> u64 {
+        seat_with(daemon, role, "sleep 600")
+    }
+
+    /// 긴 드릴이 끝나면 그 좌석들의 자식을 거둔다(Drop · 패닉 경로 포함).
+    struct ReapSeats(Arc<Daemon>, Vec<u64>);
+    impl Drop for ReapSeats {
+        fn drop(&mut self) {
+            for id in &self.1 {
+                if let Some(s) = self.0.get_surface(*id) {
+                    let mut child = s.child.lock().unwrap();
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
+    }
+
+    fn bare_seat_with(daemon: &Arc<Daemon>, role: &str, cmd: &str) -> u64 {
         let s = daemon
-            .create_surface(None, Some("sleep 600".into()), None, Some(role.into()), 24, 80)
+            .create_surface(None, Some(cmd.into()), None, Some(role.into()), 24, 80)
             .expect("create surface");
         daemon.roles.lock().unwrap().insert(role.into(), s.id);
         daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
@@ -4464,9 +4491,10 @@ mod drills {
     #[test]
     fn drill_edge_loop_clear_signals_are_never_held_by_the_hourly_cap() {
         let daemon = drill_daemon("edge-loop-cap");
-        let cso = seat(&daemon, "cso");
-        let master = seat(&daemon, "master");
-        let ceo = seat(&daemon, "ceo");
+        let cso = long_seat(&daemon, "cso");
+        let master = long_seat(&daemon, "master");
+        let ceo = long_seat(&daemon, "ceo");
+        let _reap = ReapSeats(daemon.clone(), vec![cso, master, ceo]);
         let t0 = after_grace(&daemon);
         for i in 0..HOURLY_CAP as u64 {
             handle_event(&daemon, &ev("health.alert", Some(700 + i), json!({"rule": "storm"})), t0);
@@ -4531,13 +4559,14 @@ mod drills {
     #[test]
     fn drill_steady_edge_loops_do_not_delay_master_ceo_clear_signals() {
         let daemon = drill_daemon("edge-loop-steady");
-        let cso = seat(&daemon, "cso");
+        let cso = long_seat(&daemon, "cso");
         let seats: Vec<(u64, &str)> = vec![
-            (seat(&daemon, "master"), "master"),
-            (seat(&daemon, "ceo"), "ceo"),
-            (seat(&daemon, "worker-a"), "worker"),
-            (seat(&daemon, "worker-b"), "worker"),
+            (long_seat(&daemon, "master"), "master"),
+            (long_seat(&daemon, "ceo"), "ceo"),
+            (long_seat(&daemon, "worker-a"), "worker"),
+            (long_seat(&daemon, "worker-b"), "worker"),
         ];
+        let _reap = ReapSeats(daemon.clone(), std::iter::once(cso).chain(seats.iter().map(|(s, _)| *s)).collect());
         let t0 = after_grace(&daemon);
         let drain = |d: &Arc<Daemon>| -> Vec<String> {
             let s = d.get_surface(cso).unwrap();
@@ -4691,9 +4720,10 @@ mod drills {
     #[test]
     fn drill_clear_signal_load_does_not_hold_self_heal_alerts() {
         let daemon = drill_daemon("clear-vs-selfheal");
-        let cso = seat(&daemon, "cso");
-        let master = seat(&daemon, "master");
-        let ceo = seat(&daemon, "ceo");
+        let cso = long_seat(&daemon, "cso");
+        let master = long_seat(&daemon, "master");
+        let ceo = long_seat(&daemon, "ceo");
+        let _reap = ReapSeats(daemon.clone(), vec![cso, master, ceo]);
         let t0 = after_grace(&daemon);
         let drain = |d: &Arc<Daemon>| -> Vec<String> {
             let s = d.get_surface(cso).unwrap();

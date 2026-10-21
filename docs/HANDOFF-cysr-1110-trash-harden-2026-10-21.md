@@ -1,6 +1,6 @@
 # HANDOFF — cysr 1.1.10 휴지통·초기화 경로 결함 4건 설계급 수리 · TICKET=cysr-1110-trash-harden · 2026-10-21
 
-가지 `fix/1110-trash-harden`(출발 = `rebase/v0.14.51` 의 `2b2179b7`) · 작업트리 `~/cys-terminal-src-wt/1110-trash-harden` · 워커 worker-7(surface:1543) · push 0.
+가지 `fix/1110-trash-harden`(출발 = `rebase/v0.14.51` 의 `2b2179b7` → **rebase 후 기준 `8d81d780`**) · 작업트리 `~/cys-terminal-src-wt/1110-trash-harden` · 워커 worker-7(surface:1543) · push 0.
 출처 = TICKET=cysr-1110-vendor(540) 의 codex 1R REVISE(병합 `ba38b6aa` 대상) 중 B2·M1·M3·M4. 540 이 B1·M2 를 고치는 중이라 그 둘은 이 가지에 없다.
 
 ## 0. 한눈에
@@ -83,12 +83,33 @@
 - codex 1R(`668aee8f` 대상): **REVISE** — major 3 · minor 1 → 전부 수용 · `53985c6c`. 판정문 = `~/.cys/pack/round/_reviews/cysr-1110-trash-harden_보안_경계_삭제_로직__리뷰__B2_M1_M3_M4_수리-r1-reviewer1.json`(원문 `…-codex-r1.out.txt`).
 - codex 2R(`53985c6c` 대상): **REVISE** — 1R ②·④ 닫힘 판정 · 남은 major 3(하위 rmdir 재대조 · 지도 절대 to · agy/tui 분기 대조 밖) · minor 1(임시 이름 재시도) → 전부 수용 · `cd390154`. 판정문 = `…-r2-reviewer1.json`(원문 `…-codex-r2.out.txt`).
 - codex 3R(`cd390154` 대상): **REVISE** — 2R 4건 닫힘 판정 · 새 major 1(잘못된 to_rel 폴백·드라이브 접두사) → 수용 · `4da85f2f`. 판정문 = `…-r3-reviewer1.json`.
-- codex 4R(`4da85f2f` 대상): §6.
+- codex 4R(`4da85f2f` 대상): **ACCEPT** — blocking·major 0 · minor 1(유닉스 `C:foo` 허용 양성 시험 없음) → 시험 추가 `36241868`. 판정문 = `…-r4-reviewer1.json`.
+- ⇒ **수렴**: 1R REVISE(4건) → 2R REVISE(4건) → 3R REVISE(1건) → 4R ACCEPT. 판정문 4개 = `~/.cys/pack/round/_reviews/cysr-1110-trash-harden_*-r{1..4}-reviewer1.json` · 원문 `cysr-1110-trash-harden-codex-r{1..4}.out.txt`. ★codex 는 읽기 전용 제약이라 시험을 돌리지 않았다(정적 검토) — 실행 증거는 §6.
 
-## 6. 결과 원문(마지막에 채움)
+## 6. 결과 원문
+### rebase(master#eb1c8465)
+- `rebase/v0.14.51` **`8d81d780`** 위로 rebase 완료 → HEAD `87e69ddc`(커밋 8개 재적용). 충돌 2파일 = `javis_org.py` 자기검사 · `tests/test_producer_marker.py` — 둘 다 540 의 **M2 시험 블록을 그대로 보존**하고 내 M3 경합 시험을 나란히 둠(제품 코드 충돌 0 · `cys-dept`·`main.rs` 자동 병합). rebase 전 끝 = 로컬 가지 `backup/1110-trash-harden-pre-rebase`(`73b8b29d`).
+
+### 시험 전건 — rebase 뒤 HEAD `87e69ddc`(직렬 1회 · 2026-10-21 23:4x~00:1x)
+| 묶음 | 결과 |
+|---|---|
+| ui `bun test` | **3155 pass · 0 fail** |
+| `cargo test --lib` | **1099 passed · 0 failed** · 2 ignored |
+| `cargo test --bin cysd` | **2686 passed · 0 failed** · 9 ignored |
+| `cargo test --bin cys` | **625 passed · 0 failed** |
+| `src-tauri cargo test` | **309 passed · 0 failed** · 2 ignored |
+| `tests/test_producer_marker.py` | RESULT: PASS(540 의 M2 도장 검증 포함) |
+| `javis_org.py --self-test` | ok · failures [] |
+| `tests/test_org_audit.py` | ALL PASS |
+- 참고(rebase 전 HEAD `4da85f2f` 전건): lib·cysd·tauri 에 각 1 적색이 있었다 — `pack::released_tables_cover_current_embed` · `s5_escalation…source_pin`(글자 경계) · S8 토큰 부착 핀(`daemon_state_dir_for`·`run_sidecar_restore_report`). 셋 다 이 가지 diff 가 닿지 않는 입력이고 540 의 `d8e28331`·`38508fc4` 가 고친 것 — rebase 뒤 전부 초록.
+- 시험 빌드 자리표시자(커밋 안 함 · 전부 .gitignore 대상): `src-tauri/binaries/cys{,d}-aarch64-apple-darwin`(빈 파일) · `src-tauri/resources/pack.tar.gz`·`pack-manifest.json` · `src-tauri/runtime/` · `ui/dist/index.html`.
+
+### 변경 크기(`8d81d780..HEAD` · docs 제외)
+- 12 파일 · **+1580 / −167**. Rust 는 생산 구역 **+882**(머리 주석 다수 포함) · 시험 모듈 **+529**. 새 파일 = `src/dirat.rs`(unsafe libc 래퍼 · unix 전용). 팩 3파일 +80 남짓 · ui 4파일 +43.
 
 ## 7. 1.1.10 편입 판단 근거
-- 변경 크기: §6.
+- 변경 크기: §6(생산 Rust +882 · unsafe 래퍼 1파일 신규).
+- 시험 수: 새·바뀐 검체 = trash 6(B2 4 · C-R1 1 · M3 판독 1) · factory_reset 4(M4 부모 · M4 목적지+undo · to_rel 검증 · 표식) · dirat 1 · tauri 4(M1) · ui 2+1 · 팩 py 경합 5 check. 뮤턴트 = 라운드별 수리마다 1개 이상, 전부 빨강(§4).
 - 회귀 위험 축:
   - ⒜휴지통 삭제 집행 — 정상 경로는 같은 순서(신원 재확인 → 봉인 → 대조 → 제거 → 검증)이고 연산만 핸들로 바뀌었다. 새 거부 3종(뿌리 신원 · 제거 집합 밖 · 경로 분기)은 전부 「지우지 않음」 쪽이다.
   - ⒝공장 초기화 — 부모 대조 실패와 목적지 경로 분기만 새 실패다. 정상 시험 45건이 그대로 통과한다.

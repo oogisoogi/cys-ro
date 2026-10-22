@@ -37,6 +37,11 @@ LEARN = os.path.join(BIN, "javis_learn.py")
 PY = sys.executable or "python3"
 TASK = "WP6 정체"
 
+# 데몬 자동 기동 봉인(모듈 전역 — 아래 시험들의 env 는 전부 os.environ 사본이다): `round-init` 의
+# ACK 게이트가 `cys status --json` 을 부르면 진짜 cys 가 임시 HOME 에 cysd 를 띄우고 그 데몬이
+# 고아로 남는다(cysr-1111-backlog-misc #2 실측 · 실행마다 1개). 러너가 무엇을 넘기든 덮어쓴다.
+os.environ["CYS_NO_AUTOSTART"] = "1"
+
 
 def _verdict(severities=("minor",), verdict="ACCEPT"):
     return {
@@ -485,6 +490,32 @@ class RoundStopReason(unittest.TestCase):
             self.assertNotIn("Traceback", r2.stderr)
         finally:
             os.chmod(rd, 0o700)
+
+    @unittest.skipIf(os.name == "nt", "가짜 cys 가 sh 스크립트다(윈 레인 SKIP)")
+    def test_round_init_status_probe_never_autostarts_a_daemon(self):
+        """`round-init` 의 ACK 게이트는 `cys status --json` 을 부른다 — 진짜 cys 는 임시 HOME 에
+        데몬이 없으면 cysd 를 띄우고, 그 cysd 는 시험이 끝나도 고아로 남는다(cysr-1111-backlog-misc
+        #2 실측: 실행마다 1개). 여기서는 PATH 앞에 가짜 cys 를 두어 **그 호출이 받은 env** 를 잰다 —
+        autostart 봉인(`CYS_NO_AUTOSTART=1`)이 자식까지 닿아야 한다."""
+        fake = os.path.join(self.root, "fakebin")
+        os.makedirs(fake)
+        seen = os.path.join(self.root, "fake-cys.log")
+        with open(os.path.join(fake, "cys"), "w") as f:
+            f.write("#!/bin/sh\nprintf '%%s %%s\\n' \"$1\" \"${CYS_NO_AUTOSTART-unset}\" >> '%s'\n"
+                    "exit 1\n" % seen)
+        os.chmod(os.path.join(fake, "cys"), 0o755)
+        env = dict(self.env)
+        env["PATH"] = fake + os.pathsep + env.get("PATH", "")
+        r = subprocess.run([PY, ORC, "round-init", "--task", TASK], capture_output=True,
+                           text=True, env=env, timeout=60)
+        self.assertNotIn("Traceback", r.stderr)
+        with open(seen) as f:
+            calls = f.read().split("\n")
+        status = [c for c in calls if c.startswith("status ")]
+        self.assertTrue(status, "전제 불성립: round-init 이 cys status 를 부르지 않았다: %r" % calls)
+        self.assertEqual(status, ["status 1"] * len(status),
+                         "cys status 가 autostart 봉인 없이 불렸다 — 실제 cys 면 고아 cysd 가 남는다: %r"
+                         % status)
 
     def test_separate_path_reevaluation_wins(self):
         """재평가를 **다른 경로**의 파일로 해도 마지막 결속이 이긴다 — 종전 검체는 같은 경로를

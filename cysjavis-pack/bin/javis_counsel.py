@@ -20,8 +20,13 @@
                  — 「cysr는 문제를 빨리 찾아 고치기 위해 하루 한 번 판번·운영체제·오류 횟수만 개발팀에 보냅니다(이름·파일·
                  대화 내용은 보내지 않습니다). 끄려면 ‘상담소 끄기’를 누르세요.」
 
-★언제나 exit 0 · stdout 무출력 — 훅·preflight·cys-dept·Rust 업데이트 경로가 부르므로 이 도구의 실패가 호출자를 바꾸면
-  안 된다. 결과는 `<설정>/counsel/tick.log`(JSON 줄 · 256KB 넘으면 `.1`)에만 남긴다.
+  ★1.1.10 앱 단추(TICKET=cysr-1110-counsel-off) — 앱(상단바 「상담소」 창 · 첫 안내 창)만 부르는 동사 셋:
+  auto-status    {auto, notice_seen, needs_notice} 한 줄 JSON
+  auto-set on|off  「상담소 켜기/끄기」 = 동봉 클라이언트의 `agora counsel on|off` 그대로(없으면 끄기만 같은 두 칸을 팩이 적는다)
+  notice-seen    안내문이 기기 화면에 떴다는 표식 — 이 표식 전에는 help 가 보내지 않는다
+
+★언제나 exit 0 · stdout 무출력(위 앱 동사 셋만 JSON 한 줄) — 훅·preflight·cys-dept·Rust 업데이트 경로가 부르므로 이 도구의
+  실패가 호출자를 바꾸면 안 된다. 결과는 `<설정>/counsel/tick.log`(JSON 줄 · 256KB 넘으면 `.1`)에만 남긴다.
 <설정> = `$AGORA_CONFIG_DIR` 또는 `~/.config/agora`(agora participant.config_dir 와 같은 규칙).
 """
 import base64
@@ -1244,6 +1249,8 @@ def help_report(cfg, now=None):
             return "off"
         if os.path.exists(os.path.join(cfg, PARTICIPANT_FILE)):
             return "agora"
+        if not notice_seen(cfg):
+            return "notice-pending"            # 안내문이 아직 이 기기 화면에 안 떴다(앱 첫 안내 창 · cysr-1110-counsel-off) — 로그 0
         iid = read_install_id()
         if iid is None:
             return "no-id"                     # 로그 0 — 30분마다 같은 줄이 쌓일 뿐이다
@@ -1293,6 +1300,107 @@ def help_report(cfg, now=None):
     except Exception as e:
         log_event(cfg, "help", result="error", why=type(e).__name__)
         return "error"
+
+
+# ── 앱 단추 — 「상담소 끄기/켜기」·첫 안내(1.1.10 · TICKET=cysr-1110-counsel-off) ─────────────────────────
+# 앱은 아고라 설정을 직접 쓰지 않는다 — 이 동사들만 부른다(설정 파일 꼴의 주인 = 아고라 클라이언트 · 팩은 그 클라이언트를 부른다).
+NOTICE_FILE = "help-notice.json"       # {shown, notice} — 앱이 안내문을 화면에 띄운 뒤 남긴다 · 없음·깨짐 = 안 뜸(help 가 보내지 않는다)
+AUTO_SET_TIMEOUT_S = 30                # `agora counsel on|off` 상한 — 끄기는 첫 원자 쓰기(auto=false + purge_due)로 이미 꺼졌다 ·
+                                       # 그 뒤 도는 판을 기다리다 끊겨도 표식이 남아 다음 판이 지운다(아고라 set_auto 설계)
+
+
+def notice_seen(cfg):
+    try:
+        with open(_counsel(cfg, NOTICE_FILE), encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return False
+    return type(doc) is dict and type(doc.get("shown")) is str
+
+
+def mark_notice_seen(cfg, now=None):
+    """임시 파일 + os.replace(원자) — 남겼으면 True."""
+    try:
+        _mkcounsel(cfg)
+        path = _counsel(cfg, NOTICE_FILE)
+        tmp = "%s.tmp-%d-%s" % (path, os.getpid(), secrets.token_hex(4))
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps({"shown": ms_iso(now or time.time()), "notice": HELP_NOTICE}, ensure_ascii=False, sort_keys=True) + "\n")
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        return False
+
+
+def auto_status(cfg):
+    """needs_notice = help 가 보낼 기기(켬 · 가입 없음)인데 안내가 아직 안 떴다."""
+    on = auto_enabled(cfg)
+    seen = notice_seen(cfg)
+    joined = os.path.exists(os.path.join(cfg, PARTICIPANT_FILE))
+    return {"auto": on, "notice_seen": seen, "needs_notice": on and not joined and not seen}
+
+
+def _agora_counsel(cfg, agora, action):
+    """`agora counsel on|off` 1회(상한 AUTO_SET_TIMEOUT_S · 넘으면 자손째 끝낸다) — 결과는 설정 파일을 다시 읽어 판정한다."""
+    env = dict(os.environ, AGORA_CONFIG_DIR=cfg)
+    try:
+        proc = subprocess.Popen([sys.executable, agora, "counsel", action], stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env,
+                                start_new_session=(os.name != "nt"), **NOWIN)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return
+    try:
+        proc.wait(timeout=AUTO_SET_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        _kill_group(proc)
+        try:
+            proc.wait(timeout=REAP_TIMEOUT_S)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+
+def _write_off(cfg):
+    """클라이언트 없이 끈다 — 아고라 `_write_auto(on=False, due=…)` 와 같은 두 칸(`auto=false` · `purge_due`)만 고친다
+    (다른 칸 그대로 · 원자). 못 읽는 설정은 덮어쓰지 않는다(그 자체로 이미 꺼짐 — auto_enabled 규칙)."""
+    path = os.path.join(cfg, "config.json")
+    doc = {}
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                doc = json.load(f)
+        except (OSError, ValueError):
+            return
+        if type(doc) is not dict:
+            return
+    sec = dict(doc["counsel"]) if type(doc.get("counsel")) is dict else {}
+    sec["auto"] = False
+    sec["purge_due"] = secrets.token_hex(8)   # 아고라 PURGE_DUE_KEY — 클라이언트가 생기면 모은 줄을 먼저 지운다(몰아 보내기 0)
+    doc["counsel"] = sec
+    os.makedirs(cfg, mode=0o700, exist_ok=True)
+    tmp = "%s.tmp-%d-%s" % (path, os.getpid(), secrets.token_hex(4))
+    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+        f.write(json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=1) + "\n")
+    os.replace(tmp, path)
+
+
+def set_auto(cfg, on):
+    """「상담소 켜기/끄기」 — 끄기 = 보내기·신호 쓰기·일일 측정·재시도 전부 멈춤(`auto=false`) + 모은 줄 지우기(아고라 몫).
+    끄기는 언제나 끈다(클라이언트 없음·실패 = 팩이 같은 두 칸) · 켜기는 클라이언트가 켰을 때만(못 켜면 꺼진 채 `no-client`)."""
+    ensure_client(cfg)
+    agora = os.path.join(cfg, "lib", "bin", "agora")
+    has_client = os.path.isfile(agora)
+    if has_client:
+        _agora_counsel(cfg, agora, "on" if on else "off")
+    if not on and auto_enabled(cfg):
+        try:
+            _write_off(cfg)
+        except OSError:
+            pass
+    res = auto_status(cfg)
+    if on and not res["auto"] and not has_client:
+        res["error"] = "no-client"
+    log_event(cfg, "auto-set", want="on" if on else "off", auto=res["auto"], client=has_client)
+    return res
 
 
 def agora_timeout(elapsed):
@@ -1403,9 +1511,25 @@ def main(argv=None):
             ensure_client()
         elif verb == "tick":
             tick()
+        elif verb in ("auto-status", "auto-set", "notice-seen"):   # 앱 단추 동사 — JSON 한 줄(cysr-1110-counsel-off)
+            print(json.dumps(_app_verb(verb, argv[1:]), ensure_ascii=False), flush=True)
     except Exception:
         pass
     return 0
+
+
+def _app_verb(verb, rest):
+    try:
+        cfg = config_dir()
+        if verb == "auto-status":
+            return auto_status(cfg)
+        if verb == "notice-seen":
+            return {"ok": mark_notice_seen(cfg)}
+        if rest[:1] in (["on"], ["off"]):
+            return set_auto(cfg, rest[0] == "on")
+        return {"error": "usage"}
+    except Exception as e:
+        return {"error": type(e).__name__}
 
 
 if __name__ == "__main__":

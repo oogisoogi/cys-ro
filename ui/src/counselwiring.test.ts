@@ -2,7 +2,7 @@
 // (wswiring·feedbackwiring 관례: 런타임 코드 0줄 · DOM/Tauri 불요).
 import { describe, it, expect } from "bun:test";
 import { readFileSync } from "node:fs";
-import { AGORA_COPY, COUNSEL_COPY } from "./counsel";
+import { AGORA_COPY, AUTO_COPY, COUNSEL_COPY, REPORT_NOTICE } from "./counsel";
 
 const read = (rel: string): string => readFileSync(new URL(rel, import.meta.url), "utf-8");
 const main = read("./main.ts");
@@ -107,5 +107,47 @@ describe("아고라 메뉴 배선", () => {
   it("단추는 Rust open_agora_window 만 부른다(UI 가 주소를 열지 않는다)", () => {
     expect(main).toContain('void invoke("open_agora_window").catch(');
     expect(main.includes('open_url", { url: "https://agora')).toBe(false);
+  });
+});
+
+// ★(1.1.10 · TICKET=cysr-1110-counsel-off) 안내문이 가리키는 「상담소 끄기」 단추가 앱에 없었고, 안내문도 기기 화면에 한 번도
+//   안 떴다(Fable 적대 검토 2건 · cysr-1110.md ① · fleet-report F1·F2). 단추 = 상담소 창 · 안내 = 첫 전송 전 1회 창.
+describe("상담소 끄기/켜기 · 첫 안내", () => {
+  const pack = read("../../cysjavis-pack/bin/javis_counsel.py");
+  const panel = fnBody(main, "function openCounselPanel(");
+  const toggle = fnBody(main, "async function loadCounselAuto(");
+  const notice = fnBody(main, "async function maybeShowReportNotice(");
+  it("안내문 = 팩 HELP_NOTICE 와 글자 그대로(박사님 승인 문구 · 변경 금지) · 단추 이름이 안내문 속 이름과 같다", () => {
+    const m = pack.match(/HELP_NOTICE = \("([^"]*)"\s*\n\s*"([^"]*)"\)/);
+    expect(m).not.toBeNull();
+    expect(REPORT_NOTICE).toBe(m![1] + m![2]);
+    expect(REPORT_NOTICE).toContain(`‘${AUTO_COPY.turnOff}’`);
+    expect(AUTO_COPY.turnOff).toBe("상담소 끄기");
+  });
+  it("공개 문구 규칙(cysr · 위협 표현 0)", () => {
+    const all = Object.values(AUTO_COPY).join("\n");
+    expect(/\bcys\b/.test(all + REPORT_NOTICE)).toBe(false);
+    for (const bad of ["경고", "위험", "금지", "차단", "삭제됩니다", "책임"]) expect(all.includes(bad)).toBe(false);
+  });
+  it("상담소 창에 켜짐/꺼짐 줄과 단추 — 단추는 Rust counsel_auto_set 하나로만 바꾼다(앱이 설정 파일을 직접 쓰지 않는다)", () => {
+    expect(panel).toContain('<p class="counsel-auto"><span class="counsel-auto-state"></span><button class="counsel-auto-toggle"></button></p>');
+    expect(panel).toContain("void loadCounselAuto(ov);");
+    expect(toggle).toContain('invoke("counsel_auto_status")');
+    expect(toggle).toContain('invoke("counsel_auto_set", { on: next })');
+    expect(toggle).toContain("state.textContent = autoLine(st.auto);");
+  });
+  it("첫 안내 = 팩이 원할 때만(needs_notice) · 문구 그대로 · 「상담소 끄기」 단추 · 끈 게 확인된 뒤에만 「봤음」 표식", () => {
+    expect(notice).toContain('parseAutoStatus(await invoke("counsel_auto_status"))');
+    expect(notice).toContain("if (!st.needsNotice) return;");
+    expect(notice).toContain("confirmModal(AUTO_COPY.noticeTitle, REPORT_NOTICE, AUTO_COPY.turnOff, AUTO_COPY.ok)");
+    const off = notice.indexOf('invoke("counsel_auto_set", { on: false })');
+    const seen = notice.indexOf('invoke("counsel_notice_seen")');
+    expect(off).toBeGreaterThan(0);
+    expect(seen).toBeGreaterThan(off);
+    expect(notice).toContain("parseAutoStatus(res).auto !== false");
+  });
+  it("앱이 뜬 뒤 곧 한 번 + 그 뒤 주기 확인(팩이 판 중간에 새로 깔려도 다음 확인 때 뜬다)", () => {
+    expect(main).toContain("setTimeout(() => void maybeShowReportNotice(), REPORT_NOTICE_FIRST_MS);");
+    expect(main).toContain("setInterval(() => void maybeShowReportNotice(), REPORT_NOTICE_POLL_MS);");
   });
 });

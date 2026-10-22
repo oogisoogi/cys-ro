@@ -1,7 +1,11 @@
 // counsel.ts 순수 로직 시험(TICKET=cysr-119-t4-app) — 정렬(§10-7a)·댓글 트리·표식 벗기기·상담소 답 판별·문구.
 import { describe, it, expect } from "bun:test";
 import {
+  AUTO_COPY,
   COUNSEL_COPY,
+  autoLine,
+  autoToggle,
+  parseAutoStatus,
   MAX_TEXT,
   UNREAD_NONE,
   badgeText,
@@ -236,5 +240,21 @@ describe("뱃지 글자·툴팁", () => {
     expect(counselTooltip({ ...UNREAD_NONE, needsUpdate: true, held: 1 })).toBe(
       [COUNSEL_COPY.tooltip, COUNSEL_COPY.needsUpdate, COUNSEL_COPY.held].join("\n"),
     );
+  });
+});
+
+describe("상담소 끄기/켜기 상태 판독(TICKET=cysr-1110-counsel-off)", () => {
+  it("auto 가 참/거짓일 때만 안다 · 안내는 켜짐이고 팩이 원할 때만", () => {
+    expect(parseAutoStatus({ auto: true, notice_seen: false, needs_notice: true })).toEqual({ auto: true, needsNotice: true });
+    expect(parseAutoStatus({ auto: false, needs_notice: true })).toEqual({ auto: false, needsNotice: false });
+    for (const bad of [null, undefined, "x", { error: "no-python" }, { auto: "true" }]) {
+      expect(parseAutoStatus(bad)).toEqual({ auto: null, needsNotice: false });
+    }
+  });
+  it("모를 때 단추 = 끄기(안전 쪽) · 줄 문구", () => {
+    expect(autoToggle(true)).toEqual({ label: AUTO_COPY.turnOff, next: false });
+    expect(autoToggle(null)).toEqual({ label: AUTO_COPY.turnOff, next: false });
+    expect(autoToggle(false)).toEqual({ label: AUTO_COPY.turnOn, next: true });
+    expect([autoLine(true), autoLine(false), autoLine(null)]).toEqual([AUTO_COPY.on, AUTO_COPY.off, AUTO_COPY.unknown]);
   });
 });

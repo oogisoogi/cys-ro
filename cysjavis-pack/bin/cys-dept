@@ -1281,13 +1281,30 @@ boot_progress_sig(){ # $1=sock $2=pack — 진행 신호 한 줄(바뀌면 진�
   [ -S "$s" ] && k=1
   echo "lock=$l files=$n ver=$v sock=$k"
 }
+# ★cysr-1111-bootwait-lock-winner: 시작 락(cysd 가 소켓 옆 <이름>.lock 을 flock 하고 자기 pid 를 적는다 — deadman::claim_lock)을
+#   **우리가 띄우지 않은 산 pid** 가 쥐고 있는가. 쥐고 있으면 우리 데몬은 싱글턴 경쟁 패자로 끝난 것이고 소켓은 그 승자가 연다
+#   (패자는 승자가 락을 쥔 뒤 bind 전에 죽을 수 있다 — 그 창에서 사망만 보고 실패하면 살아 있는 승자를 버린다).
+#   락 없음 · 빈 값 · 숫자 아님 · 0 · 우리 pid · 죽은 pid = 아님(1) → boot_wait 는 지금처럼 조기 실패한다(dbg-D10).
+#   윈도 cysd 는 named pipe 싱글턴이라 이 락 파일이 없다 → 항상 1(동작 무변경).
+boot_lock_winner(){ # $1=sock $2=pid(방금 띄운 데몬) — 0=다른 산 데몬이 시작 락을 쥠
+  local l="${1%.sock}.lock" h=""
+  [ -f "$l" ] || return 1
+  IFS= read -r h < "$l" 2>/dev/null || [ -n "$h" ] || return 1
+  h="${h%$'\r'}"
+  case "$h" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$h" -gt 0 ] 2>/dev/null && [ "$h" != "$2" ] && kill -0 "$h" 2>/dev/null
+}
 boot_wait(){ # $1=sock $2=pack $3=pid(방금 띄운 데몬) — 0=응답 · 1=실패(사유 stderr)
   local s="$1" p="$2" pid="$3" max="${CYS_DEPT_BOOT_MAX_S:-120}" stall="${CYS_DEPT_BOOT_STALL_S:-30}"
-  local t0=$SECONDS last=$SECONDS sig="" nsig
+  local t0=$SECONDS last=$SECONDS sig="" nsig won=""
   while :; do
     alive "$s" && return 0
     if ! kill -0 "$pid" 2>/dev/null; then
-      echo "[cys-dept] 부서 데몬(pid $pid)이 기동 중 종료했다 — 진행 신호: ${sig:-없음}" >&2; return 1
+      if boot_lock_winner "$s" "$pid"; then   # 경쟁 패자 — 승자의 응답을 같은 정지·상한 예산 안에서 기다린다(아래 두 검사 그대로)
+        [ -n "$won" ] || { won=1; echo "[cys-dept] 부서 데몬(pid $pid)은 끝났지만 시작 락을 다른 산 데몬이 쥐고 있다 — 그 데몬의 응답을 기다린다" >&2; }
+      else
+        echo "[cys-dept] 부서 데몬(pid $pid)이 기동 중 종료했다 — 진행 신호: ${sig:-없음}" >&2; return 1
+      fi
     fi
     nsig="$(boot_progress_sig "$s" "$p")"
     if [ "$nsig" != "$sig" ]; then sig="$nsig"; last=$SECONDS; fi

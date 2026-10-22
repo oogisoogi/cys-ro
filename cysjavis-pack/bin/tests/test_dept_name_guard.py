@@ -1485,6 +1485,12 @@ def corrupt():
 if sys.argv[1] == "winner":
     # 이번 cys-dept의 자식이 스폰되고 경쟁 패자로 사망한 뒤에만 승자의 ready를 공개한다.
     # 실제 두 프로세스를 쓰되 소켓은 기존 하네스처럼 파일 기반 목(실 bind 불필요)이다.
+    # ★cysr-1111-bootwait-lock-winner: 실 cysd 의 경쟁 패자는 승자가 시작 락(flock + pid 기록 · deadman::claim_lock)을
+    #   **이미** 쥐었기 때문에 진다 — 승자는 락부터 쥔다. 종전 픽스처는 패자 사망 뒤에 락·소켓을 함께 공개해, 그 사이
+    #   boot_wait 가 사망을 먼저 보면 승자를 버렸다(HEAD 단독 5/10 적 · 강제 재현 10/10).
+    _lk = Path(env["GUARD_TARGET_SOCKET"]).with_suffix(".lock")
+    _lk.parent.mkdir(parents=True, exist_ok=True)
+    _lk.write_text(str(os.getpid()))
     pidfile = Path(env["GUARD_PID_FILE"])
     while True:
         try:

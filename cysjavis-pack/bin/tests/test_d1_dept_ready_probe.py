@@ -53,6 +53,13 @@ echo "$n" > "$T/spawned"
 if [ -n "${D10_MODE:-}" ]; then
   : > "${CYS_SOCKET%.sock}.lock"
   [ "$D10_MODE" = die ] && exit 3
+  # ★cysr-1111-bootwait-lock-winner 싱글턴 경쟁 패자: lost_dead = 락에 죽은 pid 를 적고 즉사 · lost_win = 산 승자가 락을 쥐고
+  #   D10_WIN_UP_S 초 뒤 응답 · lost_never = 산 승자가 락만 쥐고 끝내 응답 안 함. 승자는 이 프로세스 그룹에 남아 정리가 거둔다.
+  case "$D10_MODE" in
+    lost_dead) ( exit 0 ) & dp=$!; wait "$dp"; echo "$dp" > "${CYS_SOCKET%.sock}.lock"; exit 3 ;;
+    lost_win) ( sleep "${D10_WIN_UP_S:-2}"; : > "$T/up"; exec sleep 600 ) & echo "$!" > "${CYS_SOCKET%.sock}.lock"; exit 3 ;;
+    lost_never) ( exec sleep 600 ) & echo "$!" > "${CYS_SOCKET%.sock}.lock"; exit 3 ;;
+  esac
   [ "$D10_MODE" = stall ] && exec sleep 600
   end=$(( $(date +%s) + ${D10_BOOT_S:-0} )); i=0
   while [ "$(date +%s)" -lt "$end" ]; do i=$((i+1)); : > "$CYS_PACK_DIR/.d10-$i"; sleep 1; done
@@ -180,11 +187,11 @@ class DeptFirstBootWait(_Base):
     고아 데몬 회수 + 등록 원복(한 묶음). 종전 ready()(≈12초)는 22초 첫 부팅을 「데몬 기동 실패」로 끊고
     살아 있는 데몬을 등록 없이 남겼다(VM 07:00:15 · 부서 cysd 고아 생존)."""
 
-    def _launch(self, mode, **env):
+    def _launch(self, mode, timeout=180, **env):
         self.env["D10_MODE"] = mode
         self.env.update({k: str(v) for k, v in env.items()})
         t0 = time.time()
-        r = self._run(["/bin/bash", CYS_DEPT, "launch", "probe"], timeout=180, capture=True)
+        r = self._run(["/bin/bash", CYS_DEPT, "launch", "probe"], timeout=timeout, capture=True)
         return r, time.time() - t0
 
     def _reg_has_probe(self):
@@ -241,12 +248,38 @@ class DeptFirstBootWait(_Base):
             alive = False
         self.assertFalse(alive, "기동 실패 뒤 부서 데몬(pid %d)이 고아로 살아 있다(D10 · D9 축)" % pid)
         self.assertFalse(self._reg_has_probe(), "기동 실패 뒤 등록이 남았다 — 원복 미이행")
+        return out
 
     def test_stalled_boot_fails_early_and_reaps_daemon_and_unregisters(self):
         self._assert_failed_and_cleaned("stall", 25, CYS_DEPT_BOOT_STALL_S=3)
 
     def test_daemon_death_during_boot_fails_fast_and_unregisters(self):
         self._assert_failed_and_cleaned("die", 10)
+
+    # ── ★cysr-1111-bootwait-lock-winner: 싱글턴 경쟁 패자(우리 데몬은 죽고 시작 락은 다른 데몬이 쥠) ──
+    def test_lost_race_to_a_live_lock_holder_waits_for_its_answer(self):
+        """우리가 띄운 데몬은 즉사했지만 시작 락을 산 승자가 쥐고 2초 뒤 응답한다 → 실패가 아니라 그 응답을 받는다."""
+        r, took = self._launch("lost_win", D10_WIN_UP_S=2)
+        out = r.stdout + r.stderr
+        self.assertNotIn("데몬 기동 실패", out, "락을 쥔 산 승자를 버리고 실패했다\n%s" % out[-600:])
+        self.assertIn("시작 락을 다른 산 데몬이 쥐고 있다", out, "승자 대기 안내 줄이 없다\n%s" % out[-600:])
+        self.assertEqual(r.returncode, 0, out[-600:])
+        self.assertGreaterEqual(took, 1.5, "전제: 승자 응답(2초 뒤) 전에 끝났다 — 대기 경로를 안 탔다(%.1f)" % took)
+
+    def test_lock_naming_a_dead_pid_still_fails_fast(self):
+        """락에 적힌 pid 가 죽었으면 승자가 아니다 — 지금처럼 「기동 중 종료」 조기 실패(정지 예산 기본 30초를 기다리지 않는다)."""
+        out = self._assert_failed_and_cleaned("lost_dead", 10)
+        self.assertIn("이 기동 중 종료했다", out, "죽은 pid 락인데 조기 실패 사유가 아니다")
+
+    def test_live_lock_holder_that_never_answers_fails_within_the_stall_budget(self):
+        """산 승자가 락만 쥐고 응답하지 않으면 정지 예산(3초) 안에 기존 실패 문구로 끝난다 — 무한 대기 금지."""
+        r, took = self._launch("lost_never", timeout=40, CYS_DEPT_BOOT_STALL_S=3)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, "응답 없는 승자인데 성공으로 끝났다\n%s" % out[-600:])
+        self.assertIn("데몬 기동 실패", out, out[-600:])
+        self.assertIn("기동 진행이 3초 멈췄다", out, "예산 초과가 기존 정지 문구가 아니다\n%s" % out[-600:])
+        self.assertLess(took, 25, "정지 예산(3초)을 넘겨 기다렸다(%.1f초)" % took)
+        self.assertFalse(self._reg_has_probe(), "기동 실패 뒤 등록이 남았다 — 원복 미이행")
 
 
 class DeptSelfBinPrecedence(_Base):

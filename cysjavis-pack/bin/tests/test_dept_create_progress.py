@@ -105,6 +105,16 @@ def last_line(text):
 #   않게). STUB_PING_OK_FROM=N 이면 소켓별 N 번째 핑부터 성공한다 — 번호 점유 확인(파이썬 첫 핑)은 실패하고 사전 검사 `ready` 의 첫 핑이
 #   성공하는 '이미 켜져 있다(재사용)' 분기를 만든다. 핑은 pings.log 에 한 줄씩(횟수 핀), 그 밖의 호출은 calls.log 에.
 CYS_STUB = r'''#!/bin/bash
+# 응답 성공 — 목 cysd 에게 '관측됐다'를 알리고(answered.<소켓>) 그 목이 끝날(좀비/사라짐) 때까지 기다린 뒤 0(아래 CYSD_STUB 주석 · 상한 500회 — 정상은 1~3회).
+answered(){
+  k="${CYS_SOCKET//\//_}"; touch "@STATE@/answered.$k"
+  if [ -f "@STATE@/cysd.$k" ]; then
+    read -r p < "@STATE@/cysd.$k"; i=0
+    while [ $i -lt 500 ] && kill -0 "$p" 2>/dev/null && [ "$(ps -o stat= -p "$p" 2>/dev/null | cut -c1)" != Z ]; do command -p sleep 0.01; i=$((i+1)); done
+    rm -f "@STATE@/cysd.$k"
+  fi
+  exit 0
+}
 case "$1" in
   ping)
     if [ -n "${STUB_PING_RAT:-}" ]; then
@@ -132,20 +142,26 @@ PYB
       f="@STATE@/ping.${CYS_SOCKET//\//_}"
       n=0; [ -f "$f" ] && read -r n < "$f"
       n=$((n + 1)); echo "$n" > "$f"
-      [ "$n" -ge "$STUB_PING_OK_FROM" ] && exit 0
+      [ "$n" -ge "$STUB_PING_OK_FROM" ] && answered
     fi
-    [ -e "$CYS_SOCKET" ] && exit 0 || exit 1 ;;
+    [ -e "$CYS_SOCKET" ] && answered || exit 1 ;;
   status|identify) echo "cys $*" >> "@CALLS@"; exit 1 ;;
 esac
 echo "cys $*" >> "@CALLS@"
 exit 0
 '''
 # 목 cysd: 스폰 사실을 남기고 소켓 파일을 만든다(STUB_CYSD_MODE=dead 면 소켓 없이 즉시 종료 = 스폰 뒤 대기 실패 재현).
-CYSD_STUB = r'''#!/bin/sh
+# ★결정론(TICKET=cysr-1111-dept-flake · CI 39707938057 1회차 적): 우리 boot_wait 는 한 반복에서 (핑 → `kill -0 pid`) 순으로 본다. 목이 소켓 파일을
+#   만들자마자 끝나면 그 「생성 → 종료」가 두 관측 사이에 끼는 순간(핑은 생성 전 · kill -0 은 종료 후) 성공 경로가 '기동 중 종료'로 뒤집힌다(강제 재현 5/5 ·
+#   대조군 0/5). 실 cysd 는 응답한 뒤 스스로 끝나지 않으므로 목도 **응답이 관측되기 전에는 끝나지 않는다** — 핑 목이 성공을 알릴 때(answered.<소켓>)까지
+#   살아 있고(상한 1000회 × 0.01초), 핑 목은 이 목이 끝난 뒤에야 성공을 돌려준다(케이스 끝 잔존 프로세스 검사와 경주하지 않게). 상태 파일 키 = 소켓 경로(핑 목과 같은 꼴).
+CYSD_STUB = r'''#!/bin/bash
 echo "cysd spawn $CYS_SOCKET" >> "@CALLS@"
 [ "${STUB_CYSD_MODE:-up}" = dead ] && exit 0
+k="${CYS_SOCKET//\//_}"; rm -f "@STATE@/answered.$k"; echo $$ > "@STATE@/cysd.$k"
 mkdir -p "$(dirname "$CYS_SOCKET")"
 touch "$CYS_SOCKET"
+i=0; while [ ! -e "@STATE@/answered.$k" ] && [ $i -lt 1000 ]; do command -p sleep 0.01; i=$((i+1)); done
 exit 0
 '''
 SLEEP_STUB = "#!/bin/sh\nexit 0\n"

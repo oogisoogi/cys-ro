@@ -41,6 +41,8 @@ import unittest
 SELF = os.path.dirname(os.path.abspath(__file__))
 BIN = os.path.dirname(SELF)
 DEPT = os.path.join(BIN, "cys-dept")
+sys.path.insert(0, SELF)   # 같은 폴더의 목 도우미(dept_mock_hold — cysr-1111-dept-mock-siblings)
+import dept_mock_hold  # noqa: E402
 
 TOKEN = "0123456789abcdef0123456789abcdef"
 PID = "tp-1790203425-5048x"   # 라이브 대기 제안(tp-1790203425-5048)과 **다른** id — 무접촉 확인용 접미
@@ -82,7 +84,7 @@ leak=no
 env | grep -q "%(token)s" && leak=yes
 printf 'cys %%s NA=%%s LEAK=%%s\n' "$*" "${CYS_NO_AUTOSTART-unset}" "$leak" >> "%(log)s"
 case "$1" in
-  ping) [ -e "$CYS_SOCKET" ] && exit 0 || exit 1 ;;
+  ping) [ -e "$CYS_SOCKET" ] && { %(ans)s; } || exit 1 ;;
   status) [ -n "${STUB_STATUS_JSON-}" ] && { printf '%%s\n' "$STUB_STATUS_JSON"; exit 0; }; exit 1 ;;
   identify) exit 1 ;;
   team-token)
@@ -104,11 +106,15 @@ def make_home(tmp):
     os.makedirs(bindir, exist_ok=True)
     os.makedirs(os.path.join(home, ".cys"), exist_ok=True)
     log = os.path.join(tmp, "calls.log")
-    _write_exec(os.path.join(bindir, "cys"), MOCK_CYS % {"log": log, "token": TOKEN})
+    # ★cysr-1111-dept-mock-siblings: 목 cysd 는 응답이 관측될 때까지 산다(dept_mock_hold 주석 — 소켓 생성 직후 종료하면
+    #   boot_wait 의 핑·kill -0 사이에 끼어 성공 경로가 '기동 중 종료'로 뒤집혔다 · 강제 재현 12건 적).
+    st = dept_mock_hold.state_dir(tmp)
+    _write_exec(os.path.join(bindir, "cys"), MOCK_CYS % {"log": log, "token": TOKEN, "ans": dept_mock_hold.ping_answered(st)})
     # 목 cysd — 스폰 사실과 **자기 프로세스 그룹**(fatal-fix X-R4-1: 토큰 경로는 새 세션)을 남긴다.
     _write_exec(os.path.join(bindir, "cysd"),
                 '#!/bin/sh\necho "cysd spawn $CYS_SOCKET pgid=$(ps -o pgid= -p $$ | tr -d \' \') pid=$$" >> "%(log)s"\n'
-                'mkdir -p "$(dirname "$CYS_SOCKET")"\ntouch "$CYS_SOCKET"\nexit 0\n' % {"log": log})
+                'mkdir -p "$(dirname "$CYS_SOCKET")"\n%(pre)stouch "$CYS_SOCKET"\n%(post)sexit 0\n'
+                % {"log": log, "pre": dept_mock_hold.cysd_before_touch(st), "post": dept_mock_hold.cysd_after_touch(st)})
     pack = os.path.join(home, ".cys", "pack")
     os.makedirs(pack, exist_ok=True)
     with open(os.path.join(pack, "agents.json"), "w", encoding="utf-8") as f:

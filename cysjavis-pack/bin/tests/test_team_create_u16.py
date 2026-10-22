@@ -43,7 +43,9 @@ BIN = os.path.dirname(SELF)
 PACK_SRC = os.path.dirname(BIN)
 REPO = os.path.dirname(PACK_SRC)
 DEPT = os.path.join(BIN, "cys-dept")
-HOOK = os.path.join(PACK_SRC, "hooks", "session-start.sh")
+sys.path.insert(0, SELF)   # 같은 폴더의 목 도우미(dept_mock_hold — cysr-1111-dept-mock-siblings)
+import dept_mock_hold  # noqa: E402
+HOOK =os.path.join(PACK_SRC, "hooks", "session-start.sh")
 LIB = os.path.join(PACK_SRC, "hooks", "_lib.sh")
 TEAM_SPEC_RS = os.path.join(REPO, "src", "team_spec.rs")
 TEAMPROPOSAL_TS = os.path.join(REPO, "ui", "src", "teamproposal.ts")
@@ -80,16 +82,20 @@ def make_home(tmp):
     os.makedirs(bindir, exist_ok=True)
     os.makedirs(os.path.join(home, ".cys"), exist_ok=True)
     log = os.path.join(tmp, "calls.log")
+    # ★cysr-1111-dept-mock-siblings: 목 cysd 는 응답이 관측될 때까지 산다(dept_mock_hold 주석 — 소켓 생성 직후 종료하면
+    #   boot_wait 의 핑·kill -0 사이에 끼어 성공 경로가 '기동 중 종료'로 뒤집혔다 · 강제 재현 4건 적).
+    st = dept_mock_hold.state_dir(tmp)
     _write_exec(os.path.join(bindir, "cys"),
                 '#!/bin/sh\n'
                 'echo "cys $@" >> "%(log)s"\n'
                 'case "$1" in\n'
-                '  ping) [ -e "$CYS_SOCKET" ] && exit 0 || exit 1 ;;\n'
+                '  ping) [ -e "$CYS_SOCKET" ] && { %(ans)s; } || exit 1 ;;\n'
                 '  status|identify) exit 1 ;;\n'
-                'esac\nexit 0\n' % {"log": log})
+                'esac\nexit 0\n' % {"log": log, "ans": dept_mock_hold.ping_answered(st)})
     _write_exec(os.path.join(bindir, "cysd"),
                 '#!/bin/sh\necho "cysd spawn $CYS_SOCKET" >> "%(log)s"\n'
-                'mkdir -p "$(dirname "$CYS_SOCKET")"\ntouch "$CYS_SOCKET"\nexit 0\n' % {"log": log})
+                'mkdir -p "$(dirname "$CYS_SOCKET")"\n%(pre)stouch "$CYS_SOCKET"\n%(post)sexit 0\n'
+                % {"log": log, "pre": dept_mock_hold.cysd_before_touch(st), "post": dept_mock_hold.cysd_after_touch(st)})
     # seed_agents_account 소스(메인 팩 agents.json — env 맵 구조 · test_dept_name_guard 와 같은 픽스처)
     pack = os.path.join(home, ".cys", "pack")
     os.makedirs(pack, exist_ok=True)

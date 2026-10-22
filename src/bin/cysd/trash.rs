@@ -328,6 +328,31 @@ pub fn reset_yields_for_test() {
     YIELD_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// 세션 마감 판정이 읽는 시계 — ★T2(TICKET=cysr-1111-trash-preview) 시험 주입점. 운영에서는 `Instant::now()` 그대로다.
+/// 시험은 **스레드 지역** 가짜 시계를 걸 수 있다: 읽을 때마다 정해진 걸음만큼 흐른다 ⇒ 마감이 「순회 도중」에
+/// 지나가는 것을 기계 속도와 무관하게 만든다. 종전 검체는 이 기계의 순회 시간을 재고 그 절반을 예산으로 줬고,
+/// 병렬 부하에서 두 번째 순회가 첫 순회의 절반보다 빨리 끝나면 `Done` 이 나왔다(1회 적 · 단독 3/3 녹).
+/// ★스레드 지역이라 병렬 시험이 서로의 시계를 보지 않는다(배경 잡 스레드도 보지 않는다 — 운영 시계 그대로).
+fn session_now() -> Instant {
+    #[cfg(test)]
+    if let Some(t) = FAKE_SESSION_CLOCK.with(|c| {
+        let v = c.get();
+        if let Some((now, step)) = v {
+            c.set(Some((now + step, step)));
+        }
+        v.map(|(now, _)| now)
+    }) {
+        return t;
+    }
+    Instant::now()
+}
+#[cfg(test)]
+thread_local! {
+    /// 시험 전용 — (다음에 돌려줄 시각, 한 번 읽을 때마다 흐르는 걸음). `None` = 실제 시계.
+    static FAKE_SESSION_CLOCK: std::cell::Cell<Option<(Instant, std::time::Duration)>> =
+        const { std::cell::Cell::new(None) };
+}
+
 /// 장치 번호를 어디서 읽는가 — **시험용 주입점**(C-R4 known-failure 픽스처).
 /// 이 기계에는 휴지통 뿌리 아래 교차장치 디렉터리가 **0개**라(부서장 실측 · 내 재측정도 0) 실물로는
 /// 이 경로를 밟을 수 없다. 그래서 장치 읽기를 seam 으로 두고, 시험이 경계에서 다른 값을 주입한다.
@@ -460,7 +485,7 @@ fn certify_walk(
     while let Some((dir, depth)) = stack.pop() {
         // ★세션 마감 먼저 — 항목별 상한보다 상위다(넘으면 잡 전체가 끝난다).
         if let Some(dl) = session_deadline {
-            if Instant::now() >= dl {
+            if session_now() >= dl {
                 return Err(Refusal {
                     code: R_SESSION_TOO_SLOW,
                     boundary: Some(dir.display().to_string()),
@@ -507,7 +532,7 @@ fn certify_walk(
             //   (동결본 `DESIGN-S8.md:103` 의 「up to the budget」이 최악에서 깨진다).
             //   ★`Instant::now()` 는 **한 번만** 부르고 세 판정이 그 값을 나눠 쓴다(단가를 두 번 내지 않는다).
             if nodes % TRASH_CERTIFY_BUDGET_CHECK_NODES == 0 {
-                let now_i = Instant::now();
+                let now_i = session_now();
                 if let Some(dl) = session_deadline {
                     if now_i >= dl {
                         return Err(Refusal {
@@ -583,7 +608,7 @@ fn certify_walk(
     //   작은 트리(또는 유별나게 느린 lstat 한 번)가 예산을 넘기고도 `Ok` 로 나갈 수 있다.
     //   ⇒ ★`Ready` 로 가는 길에 **예산을 넘긴 순회가 없다**(부서장이 못 박은 성공 기준).
     if let Some(dl) = session_deadline {
-        if Instant::now() >= dl {
+        if session_now() >= dl {
             return Err(Refusal {
                 code: R_SESSION_TOO_SLOW,
                 boundary: Some(root.display().to_string()),
@@ -1733,7 +1758,7 @@ fn certify_names_into(
         }
         // ★항목을 **시작하기 전에** 세션 마감을 본다(시작해 놓고 중간에 끊는 것보다 싸다).
         if let Some(dl) = session_deadline {
-            if Instant::now() >= dl {
+            if session_now() >= dl {
                 return NamesOutcome::SessionExpired(Refusal {
                     code: R_SESSION_TOO_SLOW,
                     boundary: Some(root.join(name).display().to_string()),
@@ -3528,20 +3553,28 @@ mod tests {
         for i in 0..3_000 {
             std::fs::write(entry.join(format!("f{i:05}")), b"x").unwrap();
         }
-        // 먼저 **예산 없이** 재서 이 기계에서의 순회 시간을 얻는다(예측하지 않는다).
-        let t = Instant::now();
         let full = certify_entry(&entry, &real_dev).expect("예산 없는 순회는 인증된다");
-        let whole = t.elapsed();
         assert_eq!(full.nodes, 3_000);
-        // 그 절반을 예산으로 준다 ⇒ 순회는 반드시 예산 안에 끝나지 못한다.
-        let dl = Instant::now() + whole / 2;
+        // ★T2(TICKET=cysr-1111-trash-preview) — 마감을 **가짜 시계**로 정한다(종전: 이 기계의 순회 시간을 재고 그 절반을
+        //   예산으로 줬다 ⇒ 병렬 부하에서 두 번째 순회가 더 빨리 끝나면 `Done` 이 나왔다 · 1회 적).
+        //   시계는 읽을 때마다 1 걸음 흐르고 마감은 1.5 걸음 뒤다: 읽기 0 = 항목 시작 전 검사(통과) ·
+        //   읽기 1 = 디렉터리 머리(통과) · 읽기 2 = 자식 루프의 첫 간격 검사(지남) ⇒ **순회 도중에** 마감이 지난다.
+        let step = std::time::Duration::from_secs(1);
+        let base = Instant::now();
+        let dl = base + step + step / 2;
+        FAKE_SESSION_CLOCK.with(|c| c.set(Some((base, step))));
         let (out, _pending) = certify_names(&root, &state, &[name.to_string()], Some(dl), None);
+        FAKE_SESSION_CLOCK.with(|c| c.set(None));
         // ★결말이 `Done` 이면 안 된다 — `Done` 은 `Ready` 의 **유일한 입구**이기 때문이다(⒟ 검체).
         //   ⚠선존 결함에서는 여기서 `Done` 이 나왔다(그 안의 항목은 `recent` 로 거부되지만 **단계는
         //   `Ready`** 다 — 예산을 넘긴 순회가 `Ready` 로 끝나는 바로 그 길이다).
         match &out {
             NamesOutcome::SessionExpired(r) => {
                 assert_eq!(r.code, R_SESSION_TOO_SLOW);
+                // ★마감이 **순회 안에서** 걸렸다는 증거 — 항목 시작 전 검사와 루프 뒤 검사는 경계를 항목 뿌리로 적는다.
+                let b = r.boundary.clone().expect("경계가 있어야 한다");
+                assert_ne!(b, entry.display().to_string(), "순회 도중이 아니라 항목 경계에서 끊겼다");
+                assert!(b.starts_with(&entry.display().to_string()), "경계가 이 항목 안이어야 한다: {b}");
             }
             NamesOutcome::Done { shown, refusals, .. } => panic!(
                 "예산을 넘긴 순회가 Done 으로 끝났다(= Ready) — shown {} · refusals {}",

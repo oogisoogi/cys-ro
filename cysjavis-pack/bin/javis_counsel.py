@@ -1231,12 +1231,13 @@ def _help_post(body):
 def help_outcome(code, err):
     """서버 §12-4 재시도 표 → sent(201·200 = 끝) · refused(400·413 = 같은 요청은 같은 답 → 그날 다시 안 보냄) ·
     cap(429 daily_cap = 그날 포기) · retry(429 rate_limited·404·5xx·네트워크·그 밖 = 표식 0 · 다음 30분 판).
-    ★400 invalid_day(기기 시계가 서버 ±2일 밖) = cap — 그날만 멈추고 신호 커서는 그대로(줄 탓이 아니라 시계 탓 · fleet-report F5)."""
+    ★400 invalid_day(기기 시계가 서버 ±2일 밖) = cap — 그날만 멈추고 신호 커서는 그대로(줄 탓이 아니라 시계 탓 · fleet-report F5).
+    ★401·403(엣지가 막음·인증 거부) = refused — 30분마다 같은 거절을 받으며 조용히 도는 retry 로 두지 않는다(fleet-report F8)."""
     if code in (200, 201):
         return "sent"
     if code == 400 and err == "invalid_day":
         return "cap"
-    if code in (400, 413):
+    if code in (400, 401, 403, 413):
         return "refused"
     if code == 429 and err == "daily_cap":
         return "cap"

@@ -2002,6 +2002,21 @@ class HelpReport(Base):
         self.assertEqual(self.got[0][1]["payload"]["items"][0]["first_seen"], "2026-10-22T00:10:00.000Z", "시계가 틀렸던 날의 신호 줄을 잃었다")
         self.assertEqual(jc.help_outcome(400, "invalid_payload"), "refused", "다른 400 은 종전대로")
 
+    def test_401_403_refused_stops_for_the_day(self):
+        """fleet-report F8 — 401·403(엣지가 막음 · 인증 거부) = refused · 그날 다시 안 보낸다
+        (종전: retry 로 분류돼 30분마다 같은 거절을 받으며 표식 0 · 보고 0 인 채 조용히 돌았다)."""
+        import datetime as _dt
+        self.assertEqual([jc.help_outcome(c, None) for c in (401, 403)], ["refused", "refused"])
+        self.put_id()
+        self.put_facts()
+        self.put_signals(self.row("2026-10-22T00:10:00.000Z"))
+        self.codes[:] = [403, 401]
+        self.assertEqual(self.run_help(), "ran")
+        st = self.help_state()
+        self.assertEqual((st.get("signal_day"), st.get("daily_day")), ("2026-10-22", "2026-10-22"))
+        self.assertEqual(self.run_help(self.now + _dt.timedelta(minutes=30)), "done")
+        self.assertEqual(len(self.got), 2, "거절된 요청을 같은 날 다시 보냈다")
+
     def test_200_already_received_counts_as_done(self):
         self.put_id()
         self.put_facts()

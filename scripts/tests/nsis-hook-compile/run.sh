@@ -50,7 +50,9 @@ cp "$HOOK" build/nsis-hooks.nsh
 cmp -s "$HOOK" build/nsis-hooks.nsh || { echo "FAIL: hook copy not byte-identical" >&2; exit 2; }
 # helper scripts the hook ships with compile-time `File` from ${CYS_HOOK_DIR}\nsis\ (1.1.11)
 SAMEBYTES="../../../src-tauri/nsis/cys-samebytes.ps1"
+PRUNE="../../../src-tauri/nsis/cys-runtime-prune.ps1"
 cp "$SAMEBYTES" build/nsis/cys-samebytes.ps1
+cp "$PRUNE" build/nsis/cys-runtime-prune.ps1
 
 SIDE_CYS=build/binaries/cys-x86_64-pc-windows-msvc.exe
 SIDE_CYSD=build/binaries/cysd-x86_64-pc-windows-msvc.exe
@@ -263,6 +265,75 @@ if [ "$n10_same" != "0" ] || [ "$n10_diff" != "1" ] || [ "$n10_size" != "1" ] ||
   exit 1
 fi
 echo "nsis-hook-compile: N10 OK (cys-samebytes.ps1: same=0 diff=1 size=1 missing=2 no-args=2)"
+
+# N11 — (1.1.11 · cysr-1111-installer) stale dist-info prune. The installer extracts runtime\ over
+# the old tree file by file, so a bundled package whose version changed leaves its old
+# <name>-<ver>.dist-info behind = runtime-seal "added" (2026-10-22: pip-26.2.2.dist-info, FAIL 32).
+#   static: POSTINSTALL ships cys-runtime-prune.ps1 and runs it ONLY on the success branch
+#           (after cys_post_ok), with the install root; the helper is pure ASCII
+#   e2e:    a real manifest (javis_runtime_seal.py emit) + residue → seal FAILs (the field state);
+#           after the real helper runs under pwsh → seal PASSES; a user's own dist-info, package
+#           code, a symlinked stale dist-info (and its target) all survive; no manifest → no-op
+n11_post=$(awk '/^!macro NSIS_HOOK_POSTINSTALL/,/^!macroend/' "$HOOK" | tr -d '\r')
+n11_ok=$(printf '%s\n' "$n11_post" | grep -n '^cys_post_ok:' | head -1 | cut -d: -f1 || true)
+n11_ship=$(printf '%s\n' "$n11_post" | grep -n 'File "/oname=\$PLUGINSDIR\\cys-runtime-prune.ps1" "\${CYS_HOOK_DIR}\\nsis\\cys-runtime-prune.ps1"' | head -1 | cut -d: -f1 || true)
+n11_call=$(printf '%s\n' "$n11_post" | grep -n "nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File \"\$PLUGINSDIR\\\\cys-runtime-prune.ps1\" \"\$INSTDIR\"'" || true)
+n11_calls=$(printf '%s\n' "$n11_call" | grep -c . || true)
+n11_call=$(printf '%s\n' "$n11_call" | head -1 | cut -d: -f1)
+n11_nonascii=$(LC_ALL=C grep -c '[^[:print:][:space:]]' "$PRUNE" || true)
+if [ -z "$n11_ok" ] || [ -z "$n11_ship" ] || [ -z "$n11_call" ] || [ "$n11_calls" != "1" ] \
+   || [ "$n11_ship" -le "$n11_ok" ] || [ "$n11_call" -le "$n11_ship" ] || [ "$n11_nonascii" != "0" ]; then
+  echo "FAIL[N11]: runtime prune wiring drifted — cys_post_ok line=$n11_ok · helper shipped at=$n11_ship · called at=$n11_call (calls=$n11_calls, want 1; order must be cys_post_ok < ship < call) · non-ASCII lines in helper=$n11_nonascii (want 0)" >&2
+  exit 1
+fi
+SEAL="../../../cysjavis-pack/bin/javis_runtime_seal.py"
+N11=build/n11
+SP=runtime/python/Lib/site-packages
+mk() { mkdir -p "$(dirname "$1")"; printf '%s' "$2" > "$1"; }
+rm -rf "$N11"
+mk "$N11/inst/$SP/pip-26.2.1.dist-info/METADATA" 'Name: pip 26.2.1'
+mk "$N11/inst/$SP/pip-26.2.1.dist-info/RECORD" 'pip/__init__.py'
+mk "$N11/inst/$SP/pip/__init__.py" '__version__ = "26.2.1"'
+mk "$N11/inst/$SP/Setuptools-80.0.dist-info/METADATA" 'Name: setuptools'
+mk "$N11/inst/runtime/git/etc/profile" 'export X=1'
+"$PYTHON" "$SEAL" emit --root "$N11/inst/runtime" --out "$N11/inst/runtime-manifest.json" >/dev/null
+# the field residue: the previous kit's pip dist-info + a case/separator variant of a shipped name
+mk "$N11/inst/$SP/pip-26.2.2.dist-info/METADATA" 'Name: pip 26.2.2'
+mk "$N11/inst/$SP/pip-26.2.2.dist-info/licenses/LICENSE.txt" 'MIT'
+mk "$N11/inst/$SP/setuptools-79.0.dist-info/RECORD" 'x'
+n11_seal() { set +e; "$PYTHON" "$SEAL" verify --root "$N11/inst/runtime" --manifest "$N11/inst/runtime-manifest.json" >/dev/null 2>&1; local rc=$?; set -e; echo "$rc"; }
+n11_before=$(n11_seal)
+# negatives the prune must leave alone (each is reported by the seal, never silently deleted)
+mkdir -p "$N11/inst2"; cp -R "$N11/inst/." "$N11/inst2/"
+mk "$N11/inst2/$SP/userpkg-1.0.dist-info/METADATA" 'Name: userpkg'
+mk "$N11/inst2/$SP/pip/_new_module.py" 'x = 1'
+mk "$N11/outside/keep/LICENSE" 'outside'
+ln -s "$(cd "$N11/outside" && pwd)/keep" "$N11/inst2/$SP/pip-26.2.0.dist-info"
+mkdir -p "$N11/inst2/$SP/pip-25.0.dist-info"; ln -s "$(cd "$N11/outside" && pwd)/keep" "$N11/inst2/$SP/pip-25.0.dist-info/inner"
+mkdir -p "$N11/inst3"; cp -R "$N11/inst/." "$N11/inst3/"; rm -f "$N11/inst3/runtime-manifest.json"
+"$PWSH" -NoProfile -File "$PRUNE" "$N11/inst"  > "$N11/out1.log" 2>&1 || true
+"$PWSH" -NoProfile -File "$PRUNE" "$N11/inst2" > "$N11/out2.log" 2>&1 || true
+"$PWSH" -NoProfile -File "$PRUNE" "$N11/inst3" > "$N11/out3.log" 2>&1 || true
+n11_after=$(n11_seal)
+n11_bad=""
+[ "$n11_before" = "1" ] || n11_bad="$n11_bad residue-not-seen-by-seal(rc=$n11_before)"
+[ "$n11_after" = "0" ] || n11_bad="$n11_bad seal-still-fails-after-prune(rc=$n11_after)"
+[ ! -e "$N11/inst/$SP/pip-26.2.1.dist-info/METADATA" ] && n11_bad="$n11_bad shipped-dist-info-removed"
+[ -e "$N11/inst/$SP/pip/__init__.py" ] || n11_bad="$n11_bad package-code-removed"
+[ -e "$N11/inst2/$SP/userpkg-1.0.dist-info/METADATA" ] || n11_bad="$n11_bad user-dist-info-removed"
+[ -e "$N11/inst2/$SP/pip/_new_module.py" ] || n11_bad="$n11_bad package-code-file-removed"
+[ -L "$N11/inst2/$SP/pip-26.2.0.dist-info" ] || n11_bad="$n11_bad symlinked-dist-info-removed"
+[ -e "$N11/inst2/$SP/pip-25.0.dist-info/inner" ] || n11_bad="$n11_bad dist-info-holding-a-link-removed"
+[ -e "$N11/outside/keep/LICENSE" ] || n11_bad="$n11_bad link-target-deleted"
+[ -e "$N11/inst2/$SP/pip-26.2.2.dist-info" ] && n11_bad="$n11_bad inst2-residue-kept"
+[ -e "$N11/inst3/$SP/pip-26.2.2.dist-info/METADATA" ] || n11_bad="$n11_bad pruned-without-manifest"
+grep -q '^cys-runtime-prune: skipped (no runtime-manifest.json' "$N11/out3.log" || n11_bad="$n11_bad no-manifest-not-a-deliberate-skip"
+grep -q 'cys-runtime-prune: stale-dist-info removed=2 failed=0' "$N11/out1.log" || n11_bad="$n11_bad summary-line($(tail -1 "$N11/out1.log"))"
+if [ -n "$n11_bad" ]; then
+  echo "FAIL[N11]: stale dist-info prune contract broken:$n11_bad" >&2
+  exit 1
+fi
+echo "nsis-hook-compile: N11 OK (prune wired after cys_post_ok; seal FAIL with residue → PASS after prune; user dist-info · package code · links kept; no manifest = no-op)"
 
 # ── re-verify the positive with restored inputs (negatives must leave no residue) ──
 "$MAKENSIS" -V2 -WX -INPUTCHARSET UTF8 harness.nsi >/dev/null

@@ -987,6 +987,18 @@ cys_post_ok:
 cys_post_nomarker:
   ClearErrors
 
+  ; ★runtime 옛 판 dist-info 정리(1.1.11 · cysr-1111-installer). 템플릿은 runtime\ 를 비우지 않고
+  ;   파일 단위로 덮어 펼친다 — 동봉 패키지 판이 바뀌면 옛 <이름>-<판>.dist-info 폴더가 남아 runtime-seal
+  ;   이 「추가」로 센다(10-22 실기: pip-26.2.2.dist-info → FAIL 32). 도우미는 **runtime-manifest 에
+  ;   같은 이름의 다른 판이 실려 있는** dist-info 폴더만 지운다(패키지 코드·사용자 설치분·링크 무접촉 ·
+  ;   매니페스트 부재 = 무행동). 성공 갈래에서만 돈다(실패 갈래는 재실행이 어차피 필요하다).
+  ;   결과 1줄 `cys-runtime-prune: …` 은 상세 로그에 남고, 실패해도 설치 결과를 뒤집지 않는다(잔재는
+  ;   봉인이 계속 보여 준다). 원본 = src-tauri/nsis/cys-runtime-prune.ps1(컴파일 시 부재 = 빌드 실패).
+  File "/oname=$PLUGINSDIR\cys-runtime-prune.ps1" "${CYS_HOOK_DIR}\nsis\cys-runtime-prune.ps1"
+  nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\cys-runtime-prune.ps1" "$INSTDIR"'
+  Pop $R0
+  ClearErrors
+
   ; (cysr-alias · 2026-09-16) command alias cysr.exe = byte copy of the verified cys.exe.
   ;   Placed only here (after every gate passed) so the alias is always the build the oracle
   ;   accepted. pane PATH puts $INSTDIR first, so `cysr` resolves beside `cys`.

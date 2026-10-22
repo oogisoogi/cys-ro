@@ -84,6 +84,16 @@ WHAT IS MODELED / NOT MODELED
                The mirror is hand-kept like the rest of this file; GUARD_PIN forces a review on any
                hook edit. Not a substitute for the Windows field run (docs/update/WIN-NSIS-0A-FIELD.md).
 
+  not modeled — added after the 1.1.8 pin (1.1.11 · judged invariant-neutral · re-pinned in
+             the SAME commit as this note · TICKET=cysr-1111-installer):
+             * POSTINSTALL success branch (past cys_post_ok/cys_post_nomarker): ship
+               cys-runtime-prune.ps1 and run it on $INSTDIR — it deletes only
+               runtime/**/<name>-<ver>.dist-info folders outside runtime-manifest.json whose
+               distribution the manifest ships in another version. It never reads or writes
+               cys/cysd/cys-app, the failure file, the marker or SetErrorLevel, and its result
+               is ignored — so I1/I3/I4 are unaffected. (Its own contract is measured for real
+               under pwsh by the compile harness N11.)
+
 INVARIANTS (mechanical form of hook R1/R3/R4 with the honest scopes of
 NSIS-CONTRACT §9 — the model refuses to over-claim):
   I1  No terminal state loses a canonical silently:
@@ -149,7 +159,7 @@ EXPECTED_MACROS = {
 # sha256 over the sorted census the mirrors depend on: anchors/tokens + the
 # normalized BODY hashes of the modeled macros/callbacks + POSTINSTALL order
 # (see hook_guard)
-GUARD_PIN = "01bd7571289a6543fb8f4fdc6e9a5a22f5d121d1daa8972a6fceba797f599f27"
+GUARD_PIN = "c63284801cb8fec77990d8b8efaddf3cef38a478dc05b4584b31ff74e2e0baf5"
 
 
 def hook_path():

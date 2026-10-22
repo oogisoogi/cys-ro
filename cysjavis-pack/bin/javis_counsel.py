@@ -1246,6 +1246,14 @@ def help_outcome(code, err):
     return "retry"
 
 
+def _host_version(facts):
+    """installer_version 칸 = 앱 판번(그날 facts 의 version.host · 서버 HELP-API §12 예시 「1.1.10」) · 없으면 None(선택 칸).
+    ★팩 판번으로 메우지 않는다 — 팩 판번은 payload.version.pack 에 따로 있다(fleet-report F7 · 보관 TSV 「version」 열 오독)."""
+    v = facts.get("version") if type(facts) is dict else None
+    host = v.get("host") if type(v) is dict else None
+    return host if type(host) is str and VERSION_RE.match(host) and host[:1].isalnum() else None
+
+
 def help_report(cfg, now=None):
     """가입 없는 기기의 하루 1통(신호 1 + 일일 1) — 결과 문자열(시험용). 예외 0 · 그날 표식 = help_outcome 이 retry 가 아닐 때만
     (신호 커서는 sent·refused 에서만 전진 — cap 은 그 줄을 내일 보낸다).
@@ -1266,7 +1274,8 @@ def help_report(cfg, now=None):
         first = not (st.get("daily_day") or st.get("signal_day"))
         if st.get("daily_day") == today and st.get("signal_day") == today:
             return "done"
-        base = {"install_id": iid, "day": today, "installer_version": pack_version(), "os": _help_os()}
+        facts = _facts_of_day(cfg, today)
+        base = {"install_id": iid, "day": today, "installer_version": _host_version(facts), "os": _help_os()}
         sent_sigs, results = [], {}
         if st.get("signal_day") != today:
             cursor = st.get("signal_cursor_ts") if type(st.get("signal_cursor_ts")) is str else None
@@ -1289,7 +1298,6 @@ def help_report(cfg, now=None):
                         sent_sigs = [it["signature"] for it in items]
                     _write_help_state(cfg, st)
         if st.get("daily_day") != today:
-            facts = _facts_of_day(cfg, today)
             if facts is None:
                 results["daily"] = "no-facts"
             else:

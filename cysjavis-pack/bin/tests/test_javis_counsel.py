@@ -1824,7 +1824,9 @@ class HelpReport(Base):
         self.assertEqual((p1, p2), ("/api/report", "/api/report"))
         for b in (sig, daily):
             self.assertEqual(sorted(b), ["day", "install_id", "installer_version", "kind", "os", "payload"])
-            self.assertEqual((b["install_id"], b["day"], b["installer_version"]), (self.IID, "2026-10-22", "1.1.8"))
+            # ★F7(cysr-1110-counsel-off): installer_version = 앱 판번(그날 facts 의 version.host · 서버 HELP-API §12 예시) —
+            #   종전엔 팩 판번(1.1.8)이 실려 보관 TSV 「version」 열에서 1.1.10 기기가 팩 판번으로 보였다. 팩 판번은 payload.version.pack.
+            self.assertEqual((b["install_id"], b["day"], b["installer_version"]), (self.IID, "2026-10-22", "1.1.10"))
             self.assertIn(b["os"], ("mac", "win", None))
         items = sig["payload"]["items"]
         self.assertEqual([(i["op"], i["count"]) for i in items], [("hook.session-start", 2), ("ensure-client", 1)])
@@ -2026,6 +2028,20 @@ class HelpReport(Base):
         self.assertEqual((st.get("signal_day"), st.get("daily_day")), ("2026-10-22", "2026-10-22"))
         self.assertEqual(self.run_help(self.now + _dt.timedelta(minutes=30)), "done")
         self.assertEqual(len(self.got), 2, "거절된 요청을 같은 날 다시 보냈다")
+
+    def test_installer_version_is_host_or_null_never_pack(self):
+        """F7 — 그날 facts 가 없거나 host 칸이 없으면 null(서버 §12: 선택 칸) · 팩 판번으로 메우지 않는다."""
+        self.put_id()
+        self.put_signals(self.row("2026-10-22T00:10:00.000Z"))
+        self.run_help()
+        self.assertEqual([(b["kind"], b["installer_version"]) for _p, b in self.got], [("signal", None)])
+        self.got.clear()
+        facts = self.put_facts()
+        facts["version"] = {"pack": "1.1.8"}
+        with open(os.path.join(self.cfg, "counsel", "facts.json"), "w") as f:
+            json.dump(facts, f)
+        self.run_help()
+        self.assertEqual([(b["kind"], b["installer_version"]) for _p, b in self.got], [("daily", None)])
 
     def test_200_already_received_counts_as_done(self):
         self.put_id()

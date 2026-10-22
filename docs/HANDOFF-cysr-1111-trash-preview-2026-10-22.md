@@ -149,3 +149,55 @@ amend 뒤 T2 검체 녹 · win-typecheck 재실행 rc 0(경고 66 → 65)을 확
 - `feedback_cysd-trash-session-clock-seam`(팩 메모리 · 가짜 시계 패턴 + thread_local! 주석 함정)
 - `feedback_cysd-trash-c4-confirms-race`(팩 메모리 · c4 경쟁 추정 · 확신도 중)
 - 스킬 수확: 대상 없음(도구 5회+ 막힘 돌파에 해당하는 새 절차 없음).
+
+---
+
+## 덧붙임 — TICKET=cysr-1111-trash-c4race(2026-10-22 · master#4e731894 후속 · 같은 가지)
+
+위 【별건】의 처분이다. 커밋 `9eeee184` 1건(시험 모듈만 · 운영 코드 무변경). push·태그·설치·발행·윈 기기 = 0.
+
+### 실패 원문 — 강제 재현으로 대신했다(포획 루프는 상한 안에 1회도 못 끝냄)
+
+- 전체 cysd 병렬 반복 포획(상한 20회)을 먼저 띄웠으나, 이 기계의 전체 실행이 회당 약 7.5분(450초 안팎)이고 같은 시각
+  빌드·검체 실행과 CPU 를 나눠 **1회차도 끝나기 전에** 60분 상한 안에 20회가 불가능함이 분명해져 멈췄다(잔존 프로세스 0 확인).
+- 대신 master 지시의 차선 = **경쟁 가설 강제 재현 시험**. 수리 전 실패 원문(원 c4 단언과 같은 자리):
+  `left: String("confirm_expired")` · `right: "trash_root_missing"`.
+  덤으로 원 c4 검체도 같은 실행에서 같은 메시지로 적이 났다 — 강제 재현 검체의 리셋 스레드가 병렬로 돌던 원 c4 의 확인
+  레코드를 지운 것(현장 경쟁의 실연).
+
+### 원인(확정)
+
+`c4_a_deleted_root_is_reported_missing_not_changed` 와 `b2_delete_refuses_when_the_root_is_not_the_one_the_preview_walked`(unix)가
+전역 `confirms()` 에 확인 레코드를 넣고 `delete` 를 부르는 동안 `PREVIEW_TEST_SERIAL` 을 쥐지 않았다. 자물쇠를 쥔 다른 검체
+3개(`a_worker_that_cannot_be_spawned…` · `test_gui_input_latency_during_slow_preview` · `a_preview_of_more_names_than_the_cap…`)의
+`reset_state_for_test()` 가 그 사이에 맵을 비우면 `delete` 는 `confirms().remove(cid)` 에서 못 찾고 `confirm_expired` 로 돌아온다.
+전수 대조: 시험 모듈에서 `confirms()`·`delete(`·`reset_state_for_test()` 를 쓰는 함수는 위 5개 + 새 검체뿐이고,
+다른 cysd 파일의 시험에는 trash RPC 호출이 없다(`handlers.rs` 의 위임 1줄만).
+
+### 수리
+
+- c4 본문을 `c4_run(tag, window)` 로 뗐다(`window` = 확인 레코드 삽입 뒤·`delete` 앞). 그 안과 b2 머리에서 `PREVIEW_TEST_SERIAL` 을 잡는다.
+- 강제 재현 검체 `c4_a_reset_from_another_test_cannot_land_between_the_confirm_and_the_delete`: 창에서 다른 스레드가
+  (다른 검체처럼) 자물쇠를 잡고 `reset_state_for_test()` 를 하게 두고 500 ms 기회를 준다. 직렬화가 있으면 리셋은 c4 가
+  끝난 뒤에야 들어온다(녹) · 없으면 `confirm_expired`(적).
+- 소스 핀 `every_test_that_touches_the_confirm_map_holds_the_preview_serial_lock`: 시험 모듈에서 `confirms()` 나
+  `reset_state_for_test()` 를 쓰는 함수는 전부 `PREVIEW_TEST_SERIAL.lock()` 을 쥔다 — 주석 줄은 빼고 본다(다음 함수의 문서
+  주석이 앞 조각에 붙기 때문) · 대상 5개 미만이면 적(공허 방지). 앞으로 붙는 검체도 이 규칙 아래 둔다.
+
+### 검증(숫자)
+
+| 항목 | 결과 |
+|---|---|
+| 수리 전(자물쇠 없음) | 적 3 — 강제 재현(`confirm_expired`) · 원 c4(같은 메시지) · 핀(`["c4_run", "b2_delete_refuses_…"]`) |
+| 수리 뒤 | 4/4 녹(c4 · 강제 재현 · 핀 · b2) · c4 두 검체 반복 20/20 |
+| 뮤턴트 ⑴ `c4_run` 자물쇠 제거 | 적 — 강제 재현 `confirm_expired` + 핀 `["c4_run"]` |
+| 뮤턴트 ⑵ b2 자물쇠 제거 | 적 — 핀 `["b2_delete_refuses_…"]` |
+| cysd 전체 병렬 3회 연속 | 2706 pass · 0 fail(9 ignored) × 3 — 451.63 s · 452.47 s · 450.80 s |
+| `sh scripts/win-typecheck.sh` | rc 0 · 판정 0(오류 0) · 경고 65(변화 없음 — trash.rs 는 선존 `:1057 execute_one` 1건) |
+
+정직 고지: 뮤턴트 ⑵(b2)는 강제 재현 검체가 없다 — b2 의 경쟁은 핀(구조)으로만 잡힌다. b2 의 창에 리셋을 넣는 검체를 더하면
+동적으로도 잡히지만 c4 와 같은 꼴이라 더하지 않았다(요청 시 추가).
+
+### 증류
+
+- 팩 메모리 `feedback_cysd-trash-c4-confirms-race` 를 **추정 → 확정**으로 갱신(`javis_memory.py update` · 색인 동기).

@@ -75,7 +75,9 @@ class Base(unittest.TestCase):
         with open(os.path.join(self.pack, ".pack-version"), "w") as f:
             f.write("1.1.8\n")
         shutil.copy(SCRIPT, os.path.join(self.pack, "bin", "javis_counsel.py"))
-        self._env = envset(AGORA_CONFIG_DIR=self.cfg, CYS_PACK_DIR=self.pack)
+        # ★help(1.1.10): 실 갱신기 id(~/.cys/update/install_id)를 읽지 않게 · 혹시 보내도 버리는 주소(discard 9번 포트)로
+        self._env = envset(AGORA_CONFIG_DIR=self.cfg, CYS_PACK_DIR=self.pack,
+                           CYS_UPDATE_STATE_DIR=os.path.join(self.tmp, "update"), CYS_FEEDBACK_BASE="http://127.0.0.1:9")
         self._env.__enter__()
 
     def tearDown(self):
@@ -654,6 +656,8 @@ class EnsureClient(Base):
         os.makedirs(os.path.join(self.tmp, "emptybin"))
         os.makedirs(os.path.join(self.cfg, "counsel"))
         old_nonce = "a" * 32
+        with open(os.path.join(self.cfg, "participant.json"), "w") as f:
+            f.write("{}")   # ★1.1.10 help ⑤: 가입 기기만 그 판 새 사실을 다시 잰다(가입 없는 기기는 그날 facts 재사용 — HelpReport 시험)
         facts = os.path.join(self.cfg, "counsel", "facts.json")
         now = jc.decide_cutoff()
         doc = {"cutoff": jc.ms_iso(now), "since": jc.ms_iso(now - 86400), "nonce": old_nonce}
@@ -1684,6 +1688,404 @@ class DMac3OfficialOldClient(Base):
             jc.ensure_client()
             jc.log_event(self.cfg, "facts", blob="x" * (jc.FOREIGN_SCAN_BYTES + 10))
         self.assertEqual(len(self.foreign_signals()), 1, "같은 구간에서 두 번째 신호")
+
+
+class HelpReport(Base):
+    """⑨ help(1.1.10 · TICKET=help-report-pack) — 가입 없는 기기가 설치 도움 서버 `POST /api/report` 로 하루 신호 1 + 일일 1.
+    가짜 서버 = 127.0.0.1 의 http.server(받은 본문을 적고 정해 둔 상태 코드로 답한다) · 실 서버 접촉 0."""
+
+    IID = "0123456789abcdef0123456789abcdef"
+
+    def setUp(self):
+        super().setUp()
+        import http.server
+        test = self
+        self.got, self.codes, self.delay = [], [], 0.0
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers.get("content-length") or 0))
+                test.got.append((self.path, json.loads(body.decode("utf-8"))))
+                if test.delay:
+                    time.sleep(test.delay)
+                code = test.codes.pop(0) if test.codes else 201
+                code, err = code if type(code) is tuple else (code, None)   # (상태, 서버 오류 이름) — §12-2 오류 본문
+                out = json.dumps({"id": None, "ok": err is None, "error": err, "message": "m"} if err else
+                                 {"id": None, "ok": True, "message": "m"}).encode("utf-8")
+                self.send_response(code)
+                if 300 <= code < 400:
+                    self.send_header("location", "/elsewhere")
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+
+            def do_GET(self):              # 넘겨주기를 따라오면 여기서 200 — 팩은 따라오면 안 된다
+                test.got.append((self.path, "GET"))
+                self.send_response(200)
+                self.send_header("content-length", "2")
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *a):
+                pass
+        self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.srv.daemon_threads = True
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        os.environ["CYS_FEEDBACK_BASE"] = "http://127.0.0.1:%d/" % self.srv.server_address[1]   # Base 가 tearDown 에서 되돌린다
+        import datetime as _dt
+        self.now = _dt.datetime(2026, 10, 22, 1, 0, tzinfo=_dt.timezone.utc)   # 10:00 KST → 그날 2026-10-22
+
+    def tearDown(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+        super().tearDown()
+
+    # ── 재료 ──
+    def put_id(self, text=None):
+        d = os.path.join(self.tmp, "update")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "install_id"), "wb") as f:
+            f.write((self.IID if text is None else text).encode("utf-8"))
+
+    def put_facts(self, at=None):
+        at = at or self.now
+        os.makedirs(os.path.join(self.cfg, "counsel"), exist_ok=True)
+        doc = {"cutoff": jc.ms_iso(at.timestamp()), "since": jc.ms_iso(at.timestamp() - 86400), "nonce": "n" * 32,
+               "version": {"host": "1.1.10", "pack": "1.1.8"}, "os": "macos-15.1",
+               "seats": {"count": 3, "roles": ["master", "worker"]},
+               "doctor": {"ok": 9, "warn": 1, "fail": 0, "skip": 2, "warn_ids": ["c03"], "fail_ids": []},
+               "errors": {"tick_errors": 2, "hook_rc_nonzero": 1}, "depts": {"active": 1, "tombstones": 0},
+               "uptime": {"last_boot": "2026-10-21T23:00:00.000Z", "uptime_s": 7200}}
+        with open(os.path.join(self.cfg, "counsel", "facts.json"), "w") as f:
+            json.dump(doc, f)
+        return doc
+
+    def put_signals(self, *rows, crlf=False):
+        os.makedirs(os.path.join(self.cfg, "counsel"), exist_ok=True)
+        with open(self.sig_path(), "ab") as f:
+            for r in rows:
+                f.write((jc.serialize(r).rstrip("\n") + ("\r\n" if crlf else "\n")).encode("utf-8"))
+
+    def row(self, ts, op="hook.session-start", code="hook.rc1", version="1.1.10"):
+        return {"ts": ts, "source": "worker", "op": op, "error_code": code, "version": version, "os": "macos-15.1"}
+
+    def help_state(self):
+        return jc._read_help_state(self.cfg)
+
+    def kinds(self):
+        return [b["kind"] for _p, b in self.got if b != "GET"]
+
+    def run_help(self, now=None):
+        return jc.help_report(self.cfg, now=now or self.now)
+
+    # ── 기기 id · 경로 의미론 ──
+    def test_update_state_dir_paths_mac_and_win(self):
+        mac = jc.update_state_dir(nt=False, env={}, home="/Users/u")
+        self.assertEqual(mac, "/Users/u/.cys/update")
+        la = "C:\\Users\\u\\AppData\\Local"
+        self.assertEqual(jc.update_state_dir(nt=True, env={"LOCALAPPDATA": la}), la + "\\cys-update")
+        self.assertIsNone(jc.update_state_dir(nt=True, env={}), "윈 LOCALAPPDATA 없음 = 보내지 않음(집 폴더로 물러서지 않는다)")
+        self.assertIsNone(jc.update_state_dir(nt=True, env={"LOCALAPPDATA": "AppData\\Local"}), "상대 경로 = None")
+        self.assertIsNone(jc.update_state_dir(nt=False, env={}, home="rel/home"))
+        self.assertIsNone(jc.update_state_dir(nt=False, env={}, home=""))
+        self.assertEqual(jc.update_state_dir(nt=True, env={"CYS_UPDATE_STATE_DIR": "/x", "LOCALAPPDATA": la}), "/x")
+
+    def test_install_id_read_rules_crlf_bom_and_never_created(self):
+        self.assertIsNone(jc.read_install_id())
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "update")), "id 를 새로 만들었다(발명 금지)")
+        for text, want in ((self.IID, self.IID), (self.IID + "\r\n", self.IID), ("\ufeff" + self.IID + "\r\n", self.IID),
+                           ("  " + self.IID + "\n", self.IID), (self.IID.upper(), None), (self.IID[:31], None),
+                           (self.IID + "0", None), ("g" * 32, None), ("", None)):
+            with self.subTest(repr(text)):
+                self.put_id(text)
+                self.assertEqual(jc.read_install_id(), want)
+
+    # ── 보낼 때 / 안 보낼 때 6갈래 ──
+    def test_sends_signal_then_daily_with_closed_shape(self):
+        self.put_id()
+        facts = self.put_facts()
+        self.put_signals(self.row("2026-10-22T00:10:00.000Z"), self.row("2026-10-22T00:20:00.000Z"),
+                         self.row("2026-10-22T00:30:00.000Z", op="ensure-client", code="counsel.client_foreign"))
+        self.assertEqual(self.run_help(), "ran")
+        self.assertEqual(self.kinds(), ["signal", "daily"])
+        (p1, sig), (p2, daily) = self.got
+        self.assertEqual((p1, p2), ("/api/report", "/api/report"))
+        for b in (sig, daily):
+            self.assertEqual(sorted(b), ["day", "install_id", "installer_version", "kind", "os", "payload"])
+            self.assertEqual((b["install_id"], b["day"], b["installer_version"]), (self.IID, "2026-10-22", "1.1.8"))
+            self.assertIn(b["os"], ("mac", "win", None))
+        items = sig["payload"]["items"]
+        self.assertEqual([(i["op"], i["count"]) for i in items], [("hook.session-start", 2), ("ensure-client", 1)])
+        self.assertEqual(items[0]["first_seen"], "2026-10-22T00:10:00.000Z")
+        self.assertEqual(items[0]["last_seen"], "2026-10-22T00:20:00.000Z")
+        self.assertEqual(sorted(items[0]), sorted(["signature", "count", "source", "op", "error_code", "version", "os",
+                                                   "first_seen", "last_seen"]))
+        d = daily["payload"]
+        self.assertEqual(sorted(d), ["depts", "doctor", "errors", "os", "seats", "uptime", "version"])
+        self.assertNotIn("nonce", d)
+        self.assertNotIn("cutoff", d)
+        self.assertEqual(d["seats"], facts["seats"])
+        self.assertEqual(d["errors"], {"tick_errors": 2, "hook_rc_nonzero": 1,
+                                       "signatures": sorted(i["signature"] for i in items)})
+        st = self.help_state()
+        self.assertEqual((st["daily_day"], st["signal_day"], st["signal_cursor_ts"]),
+                         ("2026-10-22", "2026-10-22", "2026-10-22T00:30:00.000Z"))
+        self.assertFalse(os.path.exists(os.path.join(self.cfg, "counsel", "state.json")), "아고라 state.json 을 건드렸다")
+
+    def test_off_sends_nothing(self):
+        self.put_id()
+        self.put_facts()
+        self.put_signals(self.row("2026-10-22T00:10:00.000Z"))
+        self.config(json.dumps({"counsel": {"auto": False}}))
+        self.assertEqual(self.run_help(), "off")
+        self.assertEqual(self.got, [])
+
+    def test_registered_machine_left_to_agora(self):
+        self.put_id()
+        self.put_facts()
+        self.put_signals(self.row("2026-10-22T00:10:00.000Z"))
+        with open(os.path.join(self.cfg, "participant.json"), "w") as f:
+            f.write("{}")
+        self.assertEqual(self.run_help(), "agora")
+        self.assertEqual(self.got, [])
+        self.assertEqual(self.help_state(), {})
+
+    def test_no_updater_id_sends_nothing(self):
+        self.put_facts()
+        self.put_signals(self.row("2026-10-22T00:10:00.000Z"))
+        self.assertEqual(self.run_help(), "no-id")
+        self.assertEqual(self.got, [])
+        self.put_id("not-an-id")
+        self.assertEqual(self.run_help(), "no-id")
+        self.assertEqual(self.got, [])
+
+    def test_done_today_sends_nothing(self):
+        self.put_id()
+        self.put_facts()
+        self.put_signals(self.row("2026-10-22T00:10:00.000Z"))
+        self.assertEqual(self.run_help(), "ran")
+        n = len(self.got)
+        self.put_signals(self.row("2026-10-22T00:40:00.000Z"))
+        self.assertEqual(self.run_help(), "done")
+        self.assertEqual(len(self.got), n, "같은 날 두 번째 통")
+
+    def test_nothing_to_send_without_facts_or_signals(self):
+        self.put_id()
+        self.assertEqual(self.run_help(), "ran")
+        self.assertEqual(self.got, [])
+        self.assertEqual(self.help_state(), {}, "보낸 것 없이 표식을 세웠다")
+        import datetime as _dt
+        self.put_facts(at=self.now - _dt.timedelta(days=1))           # 어제 잰 사실 = 오늘 일일이 아니다
+        self.assertEqual(self.run_help(), "ran")
+        self.assertEqual(self.got, [])
+
+    # ── 실패 = 표식 0 → 다음 판 재시도 ──
+    def test_404_5xx_rate_limited_redirect_and_network_failure_leave_no_mark_then_retry(self):
+        """§12-4 — 429 rate_limited · 404(서버 아직 없음) · 5xx · 넘겨주기 · 네트워크 = 표식 0 → 다음 판 재시도."""
+        self.put_id()
+        self.put_facts()
+        self.put_signals(self.row("2026-10-22T00:10:00.000Z"))
+        rl = (429, "rate_limited")
+        for codes in ([404, 404], [500, 503], [302, 301], [rl, rl]):
+            with self.subTest(codes):
+                self.got.clear()
+                self.codes[:] = list(codes)
+                self.assertEqual(self.run_help(), "ran")
+                self.assertEqual(self.kinds(), ["signal", "daily"])
+                self.assertNotIn("GET", [b for _p, b in self.got], "넘겨주기를 따라갔다")
+                self.assertEqual(self.help_state(), {}, "실패에 표식")
+        with envset(CYS_FEEDBACK_BASE="http://127.0.0.1:9"):          # 닫힌 포트 = 네트워크 실패
+            self.assertEqual(self.run_help(), "ran")
+        self.assertEqual(self.help_state(), {})
+        self.got.clear()
+        self.codes[:] = [201, 404]                                    # 신호만 성공 → 신호 표식만
+        self.run_help()
+        st = self.help_state()
+        self.assertEqual((st.get("signal_day"), st.get("daily_day")), ("2026-10-22", None))
+        self.got.clear()
+        self.run_help()                                               # 다음 판 = 일일만 다시
+        self.assertEqual(self.kinds(), ["daily"])
+        self.assertEqual(self.help_state()["daily_day"], "2026-10-22")
+        ev = [json.loads(x) for x in rd(os.path.join(self.cfg, "counsel", "tick.log")).splitlines()]
+        self.assertIn({"signal": 404, "daily": 404}, [{k: e[k] for k in ("signal", "daily") if k in e}
+                                                      for e in ev if e["event"] == "help"])
+
+    def test_400_413_refused_marks_day_no_retry_and_logs_error(self):
+        """§12-4 — 400·413 = 같은 요청은 같은 답 → 그날 다시 보내지 않는다(표식) · 신호 커서도 넘긴다 · 로그 1줄에 오류 이름."""
+        import datetime as _dt
+        self.put_id()
+        self.put_facts()
+        self.put_signals(self.row("2026-10-22T00:10:00.000Z"))
+        self.codes[:] = [(400, "invalid_payload"), (413, "too_large")]
+        self.assertEqual(self.run_help(), "ran")
+        st = self.help_state()
+        self.assertEqual((st["signal_day"], st["daily_day"], st["signal_cursor_ts"]),
+                         ("2026-10-22", "2026-10-22", "2026-10-22T00:10:00.000Z"))
+        self.assertEqual(self.run_help(self.now + _dt.timedelta(minutes=30)), "done")
+        self.assertEqual(len(self.got), 2, "거절된 요청을 같은 날 다시 보냈다")
+        ev = [json.loads(x) for x in rd(os.path.join(self.cfg, "counsel", "tick.log")).splitlines()]
+        helps = [e for e in ev if e["event"] == "help"]
+        self.assertEqual(len(helps), 1)
+        self.assertEqual({k: helps[0][k] for k in ("signal", "signal_error", "daily", "daily_error")},
+                         {"signal": 400, "signal_error": "invalid_payload", "daily": 413, "daily_error": "too_large"})
+        self.assertEqual([e for e in ev if e["event"] == "help-notice"], [], "보낸 것 없이 첫 전송 안내")
+        self.got.clear()
+        nxt = self.now + _dt.timedelta(days=1)
+        self.put_facts(at=nxt)
+        self.run_help(nxt)
+        self.assertEqual(self.kinds(), ["daily"], "다음 날 거절된 신호 줄을 다시 보냈다(커서)")
+
+    def test_daily_cap_gives_up_for_the_day_and_resends_signals_tomorrow(self):
+        """§12-4 — 429 daily_cap = 그날 포기(표식) · 신호 줄은 못 갔으니 커서를 넘기지 않는다 → 다음 날 같은 줄을 보낸다."""
+        import datetime as _dt
+        self.put_id()
+        self.put_facts()
+        self.put_signals(self.row("2026-10-22T00:10:00.000Z"))
+        cap = (429, "daily_cap")
+        self.codes[:] = [cap, cap]
+        self.run_help()
+        st = self.help_state()
+        self.assertEqual((st.get("signal_day"), st.get("daily_day"), st.get("signal_cursor_ts")), ("2026-10-22", "2026-10-22", None))
+        self.assertEqual(self.run_help(self.now + _dt.timedelta(hours=2)), "done")
+        self.assertEqual(len(self.got), 2)
+        self.got.clear()
+        nxt = self.now + _dt.timedelta(days=1)
+        self.put_facts(at=nxt)
+        self.run_help(nxt)
+        self.assertEqual(self.kinds(), ["signal", "daily"])
+        self.assertEqual(self.got[0][1]["payload"]["items"][0]["first_seen"], "2026-10-22T00:10:00.000Z")
+
+    def test_200_already_received_counts_as_done(self):
+        self.put_id()
+        self.put_facts()
+        self.put_signals(self.row("2026-10-22T00:10:00.000Z"))
+        self.codes[:] = [200, 200]
+        self.run_help()
+        st = self.help_state()
+        self.assertEqual((st["signal_day"], st["daily_day"]), ("2026-10-22", "2026-10-22"))
+        self.assertEqual(len(self.got[1][1]["payload"]["errors"]["signatures"]), 1)
+
+    def test_request_capped_at_three_seconds(self):
+        self.put_id()
+        self.put_facts()
+        self.delay = 6.0
+        t0 = time.monotonic()
+        self.assertEqual(self.run_help(), "ran")
+        self.assertLess(time.monotonic() - t0, jc.HELP_TIMEOUT_S + 1.5)
+        self.assertEqual(self.help_state(), {}, "시간 초과에 표식")
+
+    # ── 하루 1통 · 신호 커서 ──
+    def test_one_report_per_day_and_next_day_again(self):
+        import datetime as _dt
+        self.put_id()
+        self.put_facts()
+        self.assertEqual(self.run_help(), "ran")
+        self.assertEqual(self.kinds(), ["daily"])
+        for later in (self.now + _dt.timedelta(minutes=30), self.now + _dt.timedelta(hours=19, minutes=59)):  # 05:59 KST 다음날 = 아직 그날
+            self.run_help(later)
+        self.assertEqual(self.kinds(), ["daily"], "같은 날 두 통")
+        nxt = self.now + _dt.timedelta(days=1)
+        self.put_facts(at=nxt)
+        self.run_help(nxt)
+        self.assertEqual(self.kinds(), ["daily", "daily"])
+        self.assertEqual(self.got[-1][1]["day"], "2026-10-23")
+
+    def test_signal_cursor_reads_only_new_lines_and_never_edits_file(self):
+        import datetime as _dt
+        self.put_id()
+        self.put_signals(self.row("2026-10-22T00:10:00.000Z"), self.row("2026-10-22T00:20:00.000Z", code="hook.rc2"),
+                         crlf=True)
+        self.put_signals(self.row("2026-10-22T03:00:00.000Z"))        # 지금(01:00Z) 뒤 = 이번 통 밖(다음 몫)
+        before = rd(self.sig_path(), "rb")
+        self.run_help()
+        self.assertEqual([i["count"] for i in self.got[0][1]["payload"]["items"]], [1, 1])
+        self.assertEqual(self.help_state()["signal_cursor_ts"], "2026-10-22T00:20:00.000Z")
+        self.put_signals(self.row("2026-10-22T04:00:00.000Z"))
+        nxt = self.now + _dt.timedelta(days=1)
+        self.got.clear()
+        self.run_help(nxt)
+        items = self.got[0][1]["payload"]["items"]
+        self.assertEqual([(i["count"], i["first_seen"], i["last_seen"]) for i in items],
+                         [(2, "2026-10-22T03:00:00.000Z", "2026-10-22T04:00:00.000Z")], "커서 앞 줄을 다시 보냈다")
+        self.assertTrue(rd(self.sig_path(), "rb").startswith(before), "signals.jsonl 을 고쳤다")
+        self.got.clear()
+        self.run_help(nxt + _dt.timedelta(days=1))
+        self.assertEqual(self.got, [], "새 줄 없이 신호를 보냈다")
+
+    def test_signal_body_trimmed_under_32kb(self):
+        self.put_id()
+        rows = [self.row("2026-10-22T00:%02d:%02d.000Z" % (i // 60, i % 60), op="o%d" % i, code="e" * 48, version="v" * 32)
+                for i in range(150)]
+        self.put_signals(*rows)
+        self.run_help()
+        body = self.got[0][1]
+        self.assertLessEqual(len(json.dumps(body, ensure_ascii=False).encode("utf-8")), jc.HELP_MAX_BYTES)
+        self.assertTrue(0 < len(body["payload"]["items"]) <= jc.HELP_SIGNAL_ITEMS_MAX)
+
+    def test_notice_logged_on_first_send_only(self):
+        import datetime as _dt
+        self.put_id()
+        self.put_facts()
+        self.run_help()
+        nxt = self.now + _dt.timedelta(days=1)
+        self.put_facts(at=nxt)
+        self.run_help(nxt)
+        ev = [json.loads(x) for x in rd(os.path.join(self.cfg, "counsel", "tick.log")).splitlines()]
+        notes = [e["notice"] for e in ev if e["event"] == "help-notice"]
+        self.assertEqual(notes, [jc.HELP_NOTICE])
+        self.assertIn("문제를 빨리 찾아 고치기 위해", jc.HELP_NOTICE)
+        self.assertIn("‘상담소 끄기’", jc.HELP_NOTICE)
+        self.assertIn(re.sub(r"\s+", "", jc.HELP_NOTICE), re.sub(r"\s+", "", jc.__doc__ or ""), "도움말(모듈 설명)에 같은 문장이 없다")
+
+    # ── _daily_due 수리 · tick 자리 ──
+    def test_daily_due_unregistered_measures_once_per_day(self):
+        self.assertTrue(jc._daily_due(self.cfg, self.now))
+        self.put_facts()
+        self.assertFalse(jc._daily_due(self.cfg, self.now), "가입 없는 기기가 같은 날 사실을 다시 잰다(30분마다 doctor)")
+        with open(os.path.join(self.cfg, "participant.json"), "w") as f:
+            f.write("{}")
+        self.assertTrue(jc._daily_due(self.cfg, self.now), "가입 기기 = 아고라가 그 판 nonce 의 새 사실을 원한다")
+        os.remove(os.path.join(self.cfg, "participant.json"))
+        os.remove(os.path.join(self.cfg, "counsel", "facts.json"))
+        jc._write_help_state(self.cfg, {"daily_day": "2026-10-22"})
+        self.assertFalse(jc._daily_due(self.cfg, self.now), "help 일일 완료인데 다시 잰다")
+
+    def test_tick_reports_before_client_check(self):
+        self.put_id()
+        self.put_signals(self.row(jc.ms_iso(time.time() - 60)))
+        os.makedirs(os.path.join(self.tmp, "emptybin"))
+        with envset(PATH=os.path.join(self.tmp, "emptybin"), CYS_CYS_BIN=None):
+            self.assertEqual(jc.tick(), "no-client")
+        self.assertEqual(self.kinds(), ["signal", "daily"], "클라이언트 없는 기기가 보내지 않았다")
+        ev = [(e["event"], e.get("result")) for e in map(json.loads, rd(os.path.join(self.cfg, "counsel", "tick.log")).splitlines())]
+        self.assertLess(ev.index(("help", "ran")), ev.index(("tick", "no-client")))
+
+    # ── 계약 대조 ──
+    def test_help_base_matches_app_feedback_constant(self):
+        rs = os.path.join(os.path.dirname(os.path.dirname(BIN)), "src-tauri", "src", "feedback.rs")
+        if not os.path.isfile(rs):
+            self.skipTest("저장소 밖(설치 팩) — 앱 소스 없음")
+        m = re.search(r'FEEDBACK_BASE_DEFAULT: &str = "([^"]+)"', rd(rs, encoding="utf-8"))
+        self.assertEqual(m.group(1), jc.HELP_BASE_DEFAULT)
+        self.assertIn('std::env::var("%s")' % jc.HELP_BASE_ENV, rd(rs, encoding="utf-8"))
+
+    def test_signature_matches_bundled_agora_client(self):
+        inst = os.path.join(os.path.dirname(BIN), "install")
+        pin = os.path.join(inst, "agora-client.pin")
+        if not os.path.isfile(pin):
+            self.skipTest("동봉 클라이언트 없음")
+        ver = rd(pin, encoding="utf-8").split()[0]
+        data = base64.b64decode("".join(rd(os.path.join(inst, "agora-client-%s.zip.b64" % ver), encoding="ascii").split()))
+        out = os.path.join(self.tmp, "client")
+        zipfile.ZipFile(io.BytesIO(data)).extractall(out)
+        cases = [("worker", "hook.session-start", "hook.rc1", "1.1.10-RC.1"), ("pack", "a", "b", "V9")]
+        code = ("import json,sys; sys.path.insert(0, sys.argv[1]); from agora import mail; "
+                "print(json.dumps([mail.signal_signature(source=s, op=o, error_code=e, version=v) "
+                "for s,o,e,v in json.loads(sys.argv[2])]))")
+        r = subprocess.run([sys.executable, "-I", "-c", code, out, json.dumps(cases)], capture_output=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace")[-400:])
+        self.assertEqual(json.loads(r.stdout), [jc.signal_signature(*c) for c in cases])
 
 
 if __name__ == "__main__":

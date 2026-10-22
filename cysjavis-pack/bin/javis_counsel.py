@@ -15,6 +15,10 @@
                  30분 · 한 판 상한 540초 = agora 몫 ≤500 + 끝내기 몫 40) · ★facts 를 안 썼거나 못 쓴 판도 nonce 는
                  언제나 넘긴다 — 아고라는 파일의 `nonce` 가 없거나 다르면 사실 없음(일일 no_fresh_facts)으로 본다 →
                  옛 판의 신선한 facts.json 재사용 0(리뷰 3R ② 4판)
+                 · ★1.1.10 help: 아고라를 띄우기 전에 가입 없는 기기(participant.json 없음)는 설치 도움 서버
+                 `POST /api/report` 로 하루 신호 1통 + 일일 1통(기기 id = 갱신기 install_id · 없으면 안 보냄 · 끔이면 안 보냄)
+                 — 「cysr는 문제를 빨리 찾아 고치기 위해 하루 한 번 판번·운영체제·오류 횟수만 개발팀에 보냅니다(이름·파일·
+                 대화 내용은 보내지 않습니다). 끄려면 ‘상담소 끄기’를 누르세요.」
 
 ★언제나 exit 0 · stdout 무출력 — 훅·preflight·cys-dept·Rust 업데이트 경로가 부르므로 이 도구의 실패가 호출자를 바꾸면
   안 된다. 결과는 `<설정>/counsel/tick.log`(JSON 줄 · 256KB 넘으면 `.1`)에만 남긴다.
@@ -1016,15 +1020,279 @@ def _read_state(cfg):
         return {}
 
 
+def counsel_day(now=None):
+    """그 시각이 어느 날의 것인가(YYYY-MM-DD) — 아고라 `counsel.day_of` 와 같은 선(KST 06:00 이전은 어제)."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    return (now + datetime.timedelta(hours=9) - datetime.timedelta(hours=6)).date().isoformat()
+
+
 def _daily_due(cfg, now=None):
     """일일 사실이 필요한 판인가 — 꺼짐이면 아니다(doctor·좌석 조회 0) · 그날(06:00 KST 경계) 일일이 끝났고 pending 이 없으면 아니다.
-    ★날짜 경계 = 아고라 `counsel.day_of` 와 같은 선(KST 06:00) · 판정 재료 = state.json 의 `daily_day`·`daily_pending`(아고라가 쓴다)."""
+    ★날짜 경계 = 아고라 `counsel.day_of` 와 같은 선(KST 06:00) · 판정 재료 = state.json 의 `daily_day`·`daily_pending`(아고라가 쓴다).
+    ★1.1.10 help(TICKET=help-report-pack ⑤): 가입 없는 기기(participant.json 없음)는 아고라가 사실을 쓰지 않으므로 아고라 표식이
+      영영 서지 않았다 → 30분마다 doctor(≤60초)째 다시 쟀다. 그 기기의 사실 소비자는 help 하나뿐이니 「그날 help 일일 완료」
+      또는 「그날 잰 facts.json 이 이미 있음」이면 아니다(서버가 아직 없어 404 가 나는 날에도 하루 1회만 잰다)."""
     if not auto_enabled(cfg):
         return False
-    now = now or datetime.datetime.now(datetime.timezone.utc)
-    today = (now + datetime.timedelta(hours=9) - datetime.timedelta(hours=6)).date().isoformat()
+    today = counsel_day(now)
     st = _read_state(cfg)
-    return not (st.get("daily_day") == today and not st.get("daily_pending"))
+    if st.get("daily_day") == today and not st.get("daily_pending"):
+        return False
+    if os.path.exists(os.path.join(cfg, PARTICIPANT_FILE)):
+        return True                        # 가입 기기 = 아고라가 그 판 nonce 에 묶인 새 사실을 원한다(종전 그대로)
+    return _read_help_state(cfg).get("daily_day") != today and _facts_of_day(cfg, today) is None
+
+
+# ── help — 가입 없는 기기의 하루 1통(설치 도움 서버 `POST /api/report` · TICKET=help-report-pack) ─────────────────
+# 설계 정본 = 2026-10-22-help-channel-c-REPORT.md §2 a~d. 아고라에 가입한 기기(participant.json)는 아고라가 보내므로 건너뛴다.
+# 기기 id = cysr 갱신기 id 만(새 id 를 만들지 않는다 — 없으면 보내지 않는다). 성공(200·201)에만 표식 · 그 밖(404·5xx·
+# 네트워크)은 표식 0 → 다음 30분 판이 다시 시도. 신호는 signals.jsonl 을 지우지 않고 커서(ts)로만 읽는다(줄 정리 = 아고라 몫).
+PARTICIPANT_FILE = "participant.json"   # 아고라 participant.FILENAME — <설정> 바로 아래
+HELP_STATE = "help-state.json"          # {daily_day, signal_day, signal_cursor_ts} — 아고라 state.json 과 분리(한 파일 한 소유자)
+HELP_PATH = "/api/report"
+HELP_TIMEOUT_S = 3                      # 요청 하나의 상한(설치기 관례 — bootstrap.ps1 「요청 하나의 상한」 3초)
+HELP_MAX_BYTES = 32 * 1024              # 서버 FLEET_REQUEST_MAX_BYTES · 아고라 mail.DAILY_MAX_BYTES 와 같은 값
+HELP_SIGNAL_ITEMS_MAX = 100             # 서버·아고라 SIGNAL_ITEMS_MAX
+HELP_SIGNAL_COUNT_MAX = 100000          # 서버·아고라 SIGNAL_COUNT_MAX
+# 도움 서버 주소 = 앱 「피드백」과 같은 값·같은 덮어쓰기(`src-tauri/src/feedback.rs` FEEDBACK_BASE_DEFAULT · `CYS_FEEDBACK_BASE`)
+#   — 파이썬이 러스트 상수를 읽을 수 없어 글자를 옮겨 두고, 시험이 그 파일과 글자 대조한다(한쪽만 바뀌면 적).
+HELP_BASE_ENV = "CYS_FEEDBACK_BASE"
+HELP_BASE_DEFAULT = "https://jarvis-install.godmeyou.kr"
+UPDATE_STATE_ENV = "CYS_UPDATE_STATE_DIR"   # 갱신기 상태 폴더 덮어쓰기(src/update/buildinfo.rs 와 같은 이름 · 시험 격리용)
+INSTALL_ID_RE = re.compile(r"^[0-9a-f]{32}\Z", re.ASCII)   # buildinfo.rs ensure_install_id 꼴(소문자 16진 32자) = 서버 §12-2 가 받는 꼴만
+HELP_ERROR_RE = re.compile(r"^[a-z_]{1,40}\Z", re.ASCII)     # 서버 오류 이름(`daily_cap` 등) — 로그에 옮길 때 이 꼴만
+HELP_NOTICE = ("cysr는 문제를 빨리 찾아 고치기 위해 하루 한 번 판번·운영체제·오류 횟수만 개발팀에 보냅니다"
+               "(이름·파일·대화 내용은 보내지 않습니다). 끄려면 ‘상담소 끄기’를 누르세요.")
+
+
+def update_state_dir(nt=None, env=None, home=None):
+    """갱신기 상태 폴더(src/update/buildinfo.rs resolve_state_dir 와 같은 자리) — 맥·리눅스 `~/.cys/update` ·
+    윈 `%LOCALAPPDATA%\\cys-update` · 기준 폴더가 없거나 상대 경로면 None(`.` 로 물러서지 않는다). `CYS_UPDATE_STATE_DIR` 우선."""
+    import ntpath
+    import posixpath
+    env = os.environ if env is None else env
+    nt = (os.name == "nt") if nt is None else nt
+    v = env.get(UPDATE_STATE_ENV) or ""
+    if v.strip():
+        return v
+    p = ntpath if nt else posixpath
+    base = env.get("LOCALAPPDATA") if nt else (home if home is not None else os.path.expanduser("~"))
+    if not base or not p.isabs(base):
+        return None
+    return p.join(base, "cys-update") if nt else p.join(base, ".cys", "update")
+
+
+def read_install_id(nt=None, env=None, home=None):
+    """갱신기 id 첫 줄(BOM·CR·공백 걷음) · 없음·형식 밖 = None(만들지 않는다)."""
+    d = update_state_dir(nt, env, home)
+    if d is None:
+        return None
+    v = _first_line(os.path.join(d, "install_id"))
+    return v if v and INSTALL_ID_RE.match(v) else None
+
+
+def _read_help_state(cfg):
+    try:
+        with open(_counsel(cfg, HELP_STATE), encoding="utf-8") as f:
+            doc = json.load(f)
+        return doc if type(doc) is dict else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_help_state(cfg, doc):
+    """임시 파일 + os.replace(원자) — 실패 = False(표식 0 → 다음 판이 다시 보낸다 · 서버 UNIQUE 가 중복을 1통으로 접는다)."""
+    try:
+        _mkcounsel(cfg)
+        path = _counsel(cfg, HELP_STATE)
+        tmp = "%s.tmp-%d-%s" % (path, os.getpid(), secrets.token_hex(4))
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps(doc, sort_keys=True) + "\n")
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        return False
+
+
+def _facts_of_day(cfg, day):
+    """facts.json 이 그날(KST 06:00 경계) 잰 것이면 그 dict · 아니면 None."""
+    try:
+        with open(_counsel(cfg, FACTS_FILE), encoding="utf-8") as f:
+            doc = json.load(f)
+        cut = doc.get("cutoff") if type(doc) is dict else None
+        if type(cut) is not str or not TS_RE.match(cut):
+            return None
+        t = datetime.datetime.strptime(cut, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=datetime.timezone.utc)
+    except (OSError, ValueError):
+        return None
+    return doc if counsel_day(t) == day else None
+
+
+def signal_signature(source, op, error_code, version):
+    """아고라 `mail.signal_signature` 와 같은 값 — 정렬 키 압축 JSON 의 sha256 앞 32자 · version 만 소문자로 접는다."""
+    raw = json.dumps({"error_code": error_code, "op": op, "source": source, "version": version.lower()},
+                     ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def _signal_rows(cfg, after, upto):
+    """signals.jsonl 에서 `after < ts <= upto` 인 형식 안 줄(dict) — 파일은 읽기만(잠금·지우기 0 · CRLF 걷음)."""
+    rows = []
+    try:
+        with open(_counsel(cfg, SIGNALS_FILE), "rb") as f:
+            text = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return rows
+    for line in text.split("\n"):
+        try:
+            row = json.loads(line.strip())
+        except ValueError:
+            continue
+        if type(row) is not dict or not all(type(row.get(k)) is str for k in ("ts", "source", "op", "error_code",
+                                                                                "version", "os")):
+            continue
+        if not (TS_RE.match(row["ts"]) and row["source"] in SIGNAL_SOURCES and OP_RE.match(row["op"])
+                and ERROR_CODE_RE.match(row["error_code"]) and VERSION_RE.match(row["version"]) and OS_RE.match(row["os"])):
+            continue
+        if (after is None or row["ts"] > after) and row["ts"] <= upto:   # 고정폭 ISO 글자 비교 = 시각 비교
+            rows.append(row)
+    return rows
+
+
+def signal_items(rows):
+    """줄 → 서버 items(아고라 collector.signal_items 와 같은 접기) — 같은 (source, op, error_code, version) = 한 항목 count ·
+    os 는 그 묶음 마지막 줄 값 · 횟수 많은 순 100개."""
+    groups = {}
+    for row in rows:
+        sig = signal_signature(row["source"], row["op"], row["error_code"], row["version"])
+        groups.setdefault(sig, []).append(row)
+    ranked = sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))[:HELP_SIGNAL_ITEMS_MAX]
+    items = []
+    for sig, rs in ranked:
+        ts = sorted(r["ts"] for r in rs)
+        last = rs[-1]
+        items.append({"signature": sig, "count": min(len(rs), HELP_SIGNAL_COUNT_MAX), "source": last["source"],
+                      "op": last["op"], "error_code": last["error_code"], "version": last["version"], "os": last["os"],
+                      "first_seen": ts[0], "last_seen": ts[-1]})
+    return items
+
+
+def daily_body(facts, signatures):
+    """facts.json → 서버 daily payload(닫힌 칸만 · 못 잰 칸은 없다 · errors.signatures = 같은 판에 보낸 신호 서명)."""
+    out = {k: facts[k] for k in ("version", "os", "seats", "doctor", "depts", "uptime") if k in facts}
+    errs = facts.get("errors")
+    if type(errs) is dict:
+        out["errors"] = {"tick_errors": errs.get("tick_errors"), "hook_rc_nonzero": errs.get("hook_rc_nonzero"),
+                         "signatures": sorted(signatures)[:HELP_SIGNAL_ITEMS_MAX]}
+    return out
+
+
+def _help_os():
+    return "mac" if sys.platform == "darwin" else ("win" if os.name == "nt" else None)
+
+
+def help_url():
+    return (os.environ.get(HELP_BASE_ENV) or HELP_BASE_DEFAULT).rstrip("/") + HELP_PATH
+
+
+def _help_post(body):
+    """POST JSON → (HTTP 상태, 오류 이름 또는 None) · 네트워크 실패 = (None, None).
+    넘겨주기(3xx)는 따라가지 않는다(따라가면 GET 200 을 성공으로 읽는다)."""
+    import urllib.error
+    import urllib.request
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **kw):
+            return None
+    data = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    req = urllib.request.Request(help_url(), data=data, method="POST",
+                                 headers={"content-type": "application/json", "user-agent": "cysr-pack-counsel"})
+    try:
+        with urllib.request.build_opener(_NoRedirect).open(req, timeout=HELP_TIMEOUT_S) as r:
+            return r.status, None
+    except urllib.error.HTTPError as e:
+        try:
+            doc = json.loads(e.read(4096).decode("utf-8"))     # 서버 오류 본문 {ok:false, error, message}
+            err = doc.get("error") if type(doc) is dict else None
+        except Exception:
+            err = None
+        finally:
+            e.close()                      # 응답 본문 손잡이(안 닫으면 ResourceWarning)
+        return e.code, err if type(err) is str and HELP_ERROR_RE.match(err) else None
+    except Exception:
+        return None, None
+
+
+def help_outcome(code, err):
+    """서버 §12-4 재시도 표 → sent(201·200 = 끝) · refused(400·413 = 같은 요청은 같은 답 → 그날 다시 안 보냄) ·
+    cap(429 daily_cap = 그날 포기) · retry(429 rate_limited·404·5xx·네트워크·그 밖 = 표식 0 · 다음 30분 판)."""
+    if code in (200, 201):
+        return "sent"
+    if code in (400, 413):
+        return "refused"
+    if code == 429 and err == "daily_cap":
+        return "cap"
+    return "retry"
+
+
+def help_report(cfg, now=None):
+    """가입 없는 기기의 하루 1통(신호 1 + 일일 1) — 결과 문자열(시험용). 예외 0 · 그날 표식 = help_outcome 이 retry 가 아닐 때만
+    (신호 커서는 sent·refused 에서만 전진 — cap 은 그 줄을 내일 보낸다).
+    off(끔) · agora(가입 기기 — 아고라 몫) · no-id(갱신기 id 없음) · done(그날 둘 다 끝) · ran(보낸 판 — 칸별 결과는 로그)."""
+    try:
+        if not auto_enabled(cfg):
+            return "off"
+        if os.path.exists(os.path.join(cfg, PARTICIPANT_FILE)):
+            return "agora"
+        iid = read_install_id()
+        if iid is None:
+            return "no-id"                     # 로그 0 — 30분마다 같은 줄이 쌓일 뿐이다
+        now = now or datetime.datetime.now(datetime.timezone.utc)
+        today = counsel_day(now)
+        st = _read_help_state(cfg)
+        first = not (st.get("daily_day") or st.get("signal_day"))
+        if st.get("daily_day") == today and st.get("signal_day") == today:
+            return "done"
+        base = {"install_id": iid, "day": today, "installer_version": pack_version(), "os": _help_os()}
+        sent_sigs, results = [], {}
+        if st.get("signal_day") != today:
+            cursor = st.get("signal_cursor_ts") if type(st.get("signal_cursor_ts")) is str else None
+            rows = _signal_rows(cfg, cursor, ms_iso(now.timestamp()))
+            items = signal_items(rows)
+            body = dict(base, kind="signal", payload={"items": items})
+            while items and len(json.dumps(body, ensure_ascii=False).encode("utf-8")) > HELP_MAX_BYTES:
+                items.pop()                    # 횟수 적은 것부터 뺀다(서버 32KB 상한 · 413 은 매 판 같은 실패)
+            if not items:
+                results["signal"] = "nothing"  # 표식 0 — 그날 늦게 쌓인 줄도 그날 보낸다(아고라 _signal_step 과 같은 규칙)
+            else:
+                code, err = _help_post(body)
+                results.update(signal=code, **({"signal_error": err} if err else {}))
+                out = help_outcome(code, err)
+                if out != "retry":
+                    st = dict(st, signal_day=today)
+                    if out != "cap":
+                        st["signal_cursor_ts"] = max(r["ts"] for r in rows)
+                    if out == "sent":
+                        sent_sigs = [it["signature"] for it in items]
+                    _write_help_state(cfg, st)
+        if st.get("daily_day") != today:
+            facts = _facts_of_day(cfg, today)
+            if facts is None:
+                results["daily"] = "no-facts"
+            else:
+                code, err = _help_post(dict(base, kind="daily", payload=daily_body(facts, sent_sigs)))
+                results.update(daily=code, **({"daily_error": err} if err else {}))
+                if help_outcome(code, err) != "retry":
+                    st = dict(st, daily_day=today)
+                    _write_help_state(cfg, st)
+        sent = [k for k, v in results.items() if v in (200, 201)]
+        log_event(cfg, "help", result="ran", **{k: v for k, v in results.items()})
+        if first and sent:
+            log_event(cfg, "help-notice", notice=HELP_NOTICE)   # 첫 전송 = 왜 보내는지 한 줄(박사님 10-22 09:4x)
+        return "ran"
+    except Exception as e:
+        log_event(cfg, "help", result="error", why=type(e).__name__)
+        return "error"
 
 
 def agora_timeout(elapsed):
@@ -1074,6 +1342,7 @@ def tick(cfg=None):
             ok = False
         if not ok:   # ★그래도 agora 는 돈다(신호·주간) — 이 판 nonce 의 facts 가 없으니 아고라가 일일을 거절한다 · 팩은 완료 표식 0
             log_event(cfg, "tick", result="facts-failed", note="agora runs anyway; daily refused without fresh facts")
+    help_report(cfg)   # ★agora 유무 판정보다 앞 — 클라이언트가 없는(no-client) 기기도 보낸다 · 몫 ≤ 3초 × 2통
     agora = os.path.join(cfg, "lib", "bin", "agora")
     if not os.path.isfile(agora):
         log_event(cfg, "tick", result="no-client")

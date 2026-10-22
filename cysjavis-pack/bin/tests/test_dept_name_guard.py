@@ -51,6 +51,8 @@ import unittest
 
 SELF = os.path.dirname(os.path.abspath(__file__))
 DEPT = os.path.join(SELF, "..", "cys-dept")
+sys.path.insert(0, SELF)   # 같은 폴더의 목 도우미(dept_mock_hold — cysr-1111-dept-mock-siblings)
+import dept_mock_hold  # noqa: E402
 # ★v116-pack(CSO 실측 2026-09-24 · 시험 cysd 누수): 이 실행의 임시 폴더는 전부 RUN_ROOT 아래 — 케이스마다
 #   띄운 프로세스 회수·폴더 삭제(Base._cleanup) + 모듈 끝 「잔존 0」 단언(tearDownModule)의 범위가 된다.
 RUN_ROOT = tempfile.mkdtemp(prefix="deptguard-run-")
@@ -149,19 +151,23 @@ def make_home(tmp):
     os.makedirs(os.path.join(home, ".cys"), exist_ok=True)
     log = os.path.join(tmp, "calls.log")
     feedlist = os.path.join(tmp, "feed-list.txt")
+    st = dept_mock_hold.state_dir(tmp)
     _write_exec(os.path.join(bindir, "cys"),
                 '#!/bin/sh\n'
                 'echo "cys $@" >> "%(log)s"\n'
                 'case "$1" in\n'
-                '  ping) [ -e "$CYS_SOCKET" ] && exit 0 || exit 1 ;;\n'
+                '  ping) [ -e "$CYS_SOCKET" ] && { %(ans)s; } || exit 1 ;;\n'
                 '  status) exit 1 ;;\n'
                 '  identify) exit 1 ;;\n'
                 '  feed) if [ "$2" = "list" ]; then [ -f "%(fl)s" ] && cat "%(fl)s"; exit 0; fi; exit 0 ;;\n'
                 '  list) exit 0 ;;\n'
-                'esac\nexit 0\n' % {"log": log, "fl": feedlist})
-    # 목 cysd: 소켓 파일 생성 후 즉시 종료(ready()의 ping 파일-실존 프로브와 정합).
+                'esac\nexit 0\n' % {"log": log, "fl": feedlist, "ans": dept_mock_hold.ping_answered(st)})
+    # 목 cysd: 소켓 파일 생성 후 응답이 관측되면 종료(ready()의 ping 파일-실존 프로브와 정합).
+    # ★cysr-1111-dept-mock-siblings: 생성 직후 종료하면 boot_wait 의 핑·kill -0 사이에 끼어 성공 경로가 '기동 중 종료'로
+    #   뒤집혔다(강제 재현 4건 적 · dept_mock_hold 주석). 케이스 안에서 cysd 를 갈아 끼우는 목(j6 env 덤프 · 누수 검사)은 그대로다.
     _write_exec(os.path.join(bindir, "cysd"),
-                '#!/bin/sh\nmkdir -p "$(dirname "$CYS_SOCKET")"\ntouch "$CYS_SOCKET"\nexit 0\n')
+                '#!/bin/sh\nmkdir -p "$(dirname "$CYS_SOCKET")"\n%stouch "$CYS_SOCKET"\n%sexit 0\n'
+                % (dept_mock_hold.cysd_before_touch(st), dept_mock_hold.cysd_after_touch(st)))
     return home, log, feedlist
 
 

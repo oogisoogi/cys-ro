@@ -57,12 +57,13 @@ if [ -n "${D10_MODE:-}" ]; then
   #   D10_WIN_UP_S 초 뒤 응답 · lost_never = 산 승자가 락만 쥐고 끝내 응답 안 함. 승자는 이 프로세스 그룹에 남아 정리가 거둔다.
   #   ★cysr-1111-adv-fixes #1: 승자는 이름이 cysd 인 프로세스다(sleep 을 cysd 라는 이름으로 실행 — 맥 ps comm=argv0 ·
   #   리눅스 comm=실행 경로 끝 이름) · lost_reused = 락의 낡은 pid 를 관계없는 산 프로세스(sleep)가 재사용.
+  #   ★#6: 락은 실물(deadman::claim_lock `write!(file,"{pid}")`)처럼 **줄바꿈 없이** 쓴다(printf %s).
   mkdir -p "$T/w" && ln -sf "$(command -v sleep)" "$T/w/cysd"
   case "$D10_MODE" in
-    lost_dead) ( exit 0 ) & dp=$!; wait "$dp"; echo "$dp" > "${CYS_SOCKET%.sock}.lock"; exit 3 ;;
-    lost_win) "$T/w/cysd" 600 & echo "$!" > "${CYS_SOCKET%.sock}.lock"; ( sleep "${D10_WIN_UP_S:-2}"; : > "$T/up" ) & exit 3 ;;
-    lost_never) "$T/w/cysd" 600 & echo "$!" > "${CYS_SOCKET%.sock}.lock"; exit 3 ;;
-    lost_reused) sleep 600 & echo "$!" > "${CYS_SOCKET%.sock}.lock"; exit 3 ;;
+    lost_dead) ( exit 0 ) & dp=$!; wait "$dp"; printf %s "$dp" > "${CYS_SOCKET%.sock}.lock"; exit 3 ;;
+    lost_win) "$T/w/cysd" 600 & printf %s "$!" > "${CYS_SOCKET%.sock}.lock"; ( sleep "${D10_WIN_UP_S:-2}"; : > "$T/up" ) & exit 3 ;;
+    lost_never) "$T/w/cysd" 600 & printf %s "$!" > "${CYS_SOCKET%.sock}.lock"; exit 3 ;;
+    lost_reused) sleep 600 & printf %s "$!" > "${CYS_SOCKET%.sock}.lock"; exit 3 ;;
   esac
   [ "$D10_MODE" = stall ] && exec sleep 600
   end=$(( $(date +%s) + ${D10_BOOT_S:-0} )); i=0

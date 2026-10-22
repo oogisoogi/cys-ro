@@ -4,6 +4,7 @@
 // 판정·문구 자체는 trashconfirm.test.ts 가 표로 잡는다 — 여기는 main.ts 가 그것을 어떻게 옮기는가.
 import { describe, it, expect } from "bun:test";
 import { readFileSync } from "node:fs";
+import { TRASH_PREVIEW_ONLY_LABEL } from "./trashconfirm";
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf-8");
 const stripComments = (s: string): string =>
@@ -29,10 +30,12 @@ describe("탭과 패널의 마크업(index.html)", () => {
     for (const id of ["cc-trash-root", "cc-trash-notice", "cc-trash-list", "cc-trash-status", "cc-trash-result"])
       expect({ 칸: id, 있음: panel.includes(`id="${id}"`) }).toEqual({ 칸: id, 있음: true });
   });
-  it("★패널의 단추는 **삭제 하나**다 — '전부 선택'·'오래된 것 전부' 단추가 마크업에 없다(Q2)", () => {
+  it("★패널의 단추는 **삭제 하나 + 크기 미리 보기 하나**다 — '전부 선택'·'오래된 것 전부' 단추가 마크업에 없다(Q2)", () => {
+    // T1(TICKET=cysr-1111-trash-preview · master#84adde96 결정 A): 삭제 꺼진 빌드 전용 「크기 미리 보기」가 더해졌다.
     const buttons = panel.match(/<button/g) ?? [];
-    expect(buttons.length).toBe(1);
+    expect(buttons.length).toBe(2);
     expect(/<button id="btn-cc-trash-delete" disabled>/.test(panel)).toBe(true);
+    expect(/<button id="btn-cc-trash-preview" hidden disabled>/.test(panel)).toBe(true);
     for (const bad of ["select-all", "전부 선택", "모두 선택", "모두 삭제", "전부 삭제", "오래된 것 전부"])
       expect({ 금지: bad, 있음: panel.includes(bad) }).toEqual({ 금지: bad, 있음: false });
   });
@@ -257,5 +260,69 @@ describe("걷는 동안 · 데몬이 없을 때 · 결과를 못 읽을 때 (12.
     const d = fnBody("trashDeleteFlow");
     expect(d.includes("trashTransportReceipt(")).toBe(true);
     expect(d.includes("trashRefusalText(")).toBe(false);
+  });
+});
+
+// ★T1(TICKET=cysr-1111-trash-preview · master#84adde96 결정 A) — 삭제 꺼진 빌드(윈 출하본)에서 미리보기의 입구가
+//   흐린 「고른 항목 삭제」 하나뿐이라 미리보기에 닿을 길이 0 이었다. 이 묶음은 새 입구의 배선을 잠근다.
+describe("T1 — 삭제 꺼진 빌드의 「크기 미리 보기」 입구", () => {
+  it("마크업: 새 단추는 기본 숨김·꺼짐이고 글자는 순수 모듈의 문안과 같다", () => {
+    const m = panel.match(/<button id="btn-cc-trash-preview" hidden disabled>([^<]*)<\/button>/);
+    expect(m?.[1]).toBe(TRASH_PREVIEW_ONLY_LABEL);
+  });
+  it("「고른 항목 삭제」 단추의 흐림 판정은 바이트 그대로다(삭제 꺼짐이면 흐림)", () => {
+    expect(fnBody("trashSyncDeleteButton")).toBe(
+      [
+        "function trashSyncDeleteButton(supported: boolean) {",
+        '  const btn = document.getElementById("btn-cc-trash-delete") as HTMLButtonElement | null;',
+        "  if (!btn) return;",
+        "  const n = trashSelectedNames().length;",
+        "  btn.disabled = trashDeleting || !supported || n === 0;",
+        '  btn.textContent = n === 0 ? "고른 항목 삭제" : `고른 항목 삭제 (${n})`;',
+        "}\n",
+      ].join("\n"),
+    );
+  });
+  it("보임 여부는 순수 판정 하나에서 온다 — 목록을 그릴 때마다·고를 때마다 같이 맞추고, 열 수 없을 때는 숨긴다", () => {
+    const s = fnBody("trashSyncPreviewButton");
+    expect(s.includes('document.getElementById("btn-cc-trash-preview")')).toBe(true);
+    expect(s.includes("btn.hidden = !visible;")).toBe(true);
+    const r = fnBody("renderTrash");
+    const del = (r.match(/trashSyncDeleteButton\(supported\);/g) ?? []).length;
+    const pv = (r.match(/trashSyncPreviewButton\(trashPreviewOnlyVisible\(supported\)\);/g) ?? []).length;
+    expect({ 삭제맞춤: del, 미리보기맞춤: pv }).toEqual({ 삭제맞춤: 3, 미리보기맞춤: 3 });
+    expect(fnBody("renderTrashUnavailable").includes("trashSyncPreviewButton(false);")).toBe(true);
+  });
+  it("단추는 미리보기 전용 흐름 하나에만 연결되고, 그 흐름은 모달을 미리보기 전용으로 연다(삭제 명령 0)", () => {
+    expect(
+      code.includes('document.getElementById("btn-cc-trash-preview")?.addEventListener("click", () => void trashPreviewOnlyFlow());'),
+    ).toBe(true);
+    const f = fnBody("trashPreviewOnlyFlow");
+    expect(f.includes("await trashConfirmModal(names, true);")).toBe(true);
+    expect(f.includes("invoke(")).toBe(false);
+    expect(f.includes("await refreshTrash();")).toBe(true);
+    // 삭제 흐름은 종전처럼 삭제 모달을 연다(두 번째 인자 없음).
+    expect(fnBody("trashDeleteFlow").includes("await trashConfirmModal(names);")).toBe(true);
+  });
+  it("모달: 미리보기 전용이면 안내 줄과 결과만 보이고 입력·「삭제」를 열지 않는다 — 그 갈래는 nonce 가드·입력 열기보다 앞이다", () => {
+    const m = fnBody("trashConfirmModal");
+    expect(m.includes("function trashConfirmModal(names: string[], previewOnly = false)")).toBe(true);
+    const r = m.slice(m.indexOf("const ready = (prev: TrashPreview) => {"));
+    const iBranch = r.indexOf("if (previewOnly) {");
+    const iLines = r.indexOf("trashPreviewOnlyLines(", iBranch);
+    const iReturn = r.indexOf("return;", iLines);
+    const iGuard = r.indexOf("if (!prev.confirm_nonce) {");
+    const iOpen = r.indexOf("inp.disabled = false;");
+    expect({ 갈래: iBranch >= 0, 본문: iLines > iBranch, 반환: iReturn > iLines, 가드보다앞: iReturn < iGuard, 열기보다앞: iReturn < iOpen }).toEqual({
+      갈래: true,
+      본문: true,
+      반환: true,
+      가드보다앞: true,
+      열기보다앞: true,
+    });
+    // 제목은 단추 문안, 닫기는 기존 「닫기」 문구 재사용 · 입력칸과 「삭제」는 숨긴다.
+    const head = m.slice(0, m.indexOf("const gen = ++trashPreviewGen;"));
+    for (const must of ["TRASH_PREVIEW_ONLY_LABEL", 'no.textContent = "닫기";', "inp.hidden = true;", "yes.hidden = true;"])
+      expect({ 필수: must, 있음: head.includes(must) }).toEqual({ 필수: must, 있음: true });
   });
 });

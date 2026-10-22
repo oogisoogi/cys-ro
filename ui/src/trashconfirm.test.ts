@@ -26,6 +26,10 @@ import {
   TRASH_DELETE_REFUSED_TITLE,
   TRASH_DELETE_UNCERTAIN_TITLE,
   trashTransportReceipt,
+  TRASH_PREVIEW_ONLY_LABEL,
+  TRASH_PREVIEW_ONLY_NOTE,
+  trashPreviewOnlyVisible,
+  trashPreviewOnlyLines,
 } from "./trashconfirm";
 
 const E = (o: Partial<TrashEntry> = {}): TrashEntry => ({
@@ -266,4 +270,38 @@ test("★양성 대조(Class 1) — BeforeSend·정형 거부는 '지우지 않�
   }
   // ★두 부류의 제목은 **다르다**(같아지면 이 검사 전체가 무의미해진다)
   expect(TRASH_DELETE_REFUSED_TITLE).not.toBe(TRASH_DELETE_UNCERTAIN_TITLE);
+});
+
+// ★T1(TICKET=cysr-1111-trash-preview · master#84adde96 결정 A) — 삭제가 꺼진 빌드(윈 출하본)에서 미리보기의
+//   유일한 입구가 흐린 「고른 항목 삭제」 단추라 크기 칸이 영구 「크기 미측정 — 미리보기에서 측정합니다」였다.
+//   삭제 꺼진 빌드에만 「크기 미리 보기」 단추를 따로 둔다. 문안은 master 결정 원문 그대로다.
+test("T1: 「크기 미리 보기」 단추는 삭제가 꺼진 빌드에서만 보이고, 삭제 켜진 빌드(맥)에서는 보이지 않는다", () => {
+  expect(trashPreviewOnlyVisible(false)).toBe(true);
+  expect(trashPreviewOnlyVisible(true)).toBe(false);
+  expect(TRASH_PREVIEW_ONLY_LABEL).toBe("크기 미리 보기");
+  expect(TRASH_PREVIEW_ONLY_NOTE).toBe(
+    "이 판에서는 휴지통 비우기가 꺼져 있어서 크기만 보여 드려요. 파일은 그대로 남아 있습니다.",
+  );
+});
+
+test("T1: 미리보기 전용 본문은 안내 줄이 맨 위이고, 잰 크기를 보이며, 삭제 문장(되돌릴 수 없음)을 싣지 않는다", () => {
+  const measured = E({ size: { state: "measured", value: { bytes: 2048, nodes: 3 } } });
+  const lines = trashPreviewOnlyLines([measured], [], 1_760_000_000);
+  expect(lines[0]).toBe(TRASH_PREVIEW_ONLY_NOTE);
+  const all = lines.join("\n");
+  expect(all).toContain(`• ${measured.name} — ${trashSizeText(measured.size)}`);
+  expect(all).not.toContain("되돌릴 수 없");
+  expect(all).not.toContain("입력하세요");
+  // 항목 줄은 삭제 모달과 같은 모양이다(같은 조립을 쓴다 — 문구를 두 벌로 만들지 않는다).
+  const del = trashModalLines([measured], 1_760_000_000);
+  const cut = del.indexOf("이 삭제는 되돌릴 수 없습니다.");
+  expect(lines.slice(2)).toEqual(del.slice(0, cut - 1));
+});
+
+test("T1: 미리보기 거부 사유는 기존 거부 문구 그대로 보인다(새 문구 0)", () => {
+  const refused = [{ name: "dept-1-x", reason_code: "recent_may_be_in_use" }];
+  const lines = trashPreviewOnlyLines([], refused, 1_760_000_000);
+  expect(lines[0]).toBe(TRASH_PREVIEW_ONLY_NOTE);
+  expect(lines).toContain(`• dept-1-x — ${trashRefusalText("recent_may_be_in_use").text}`);
+  expect(lines).toContain("이번에 지우지 않는 것(데몬이 거부했습니다):");
 });

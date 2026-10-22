@@ -112,6 +112,9 @@ import {
   TRASH_DELETE_UNCERTAIN_TITLE,
   TRASH_PREVIEW_EXPIRED_CODE,
   TRASH_PREVIEW_WAIT_LINE,
+  TRASH_PREVIEW_ONLY_LABEL,
+  trashPreviewOnlyLines,
+  trashPreviewOnlyVisible,
   trashTransportReceipt,
   trashModalLines,
   trashOrderProgressText,
@@ -1514,6 +1517,7 @@ let trashEntries: TrashEntry[] = [];
 let trashOrderGen = 0; // 결과 읽기의 세대 — 새 명령이 뜨면 올라가 낡은 연쇄가 스스로 끝난다
 let trashOrderTimer: number | undefined;
 let trashDeleting = false; // 두 번 누름 방지(데몬도 `busy` 로 거절한다 — 여기선 창의 중복 명령만 막는다)
+let trashPreviewOnlyOpen = false; // T1 — 크기 미리 보기 모달이 열려 있는 동안 두 번 누름 방지
 const TRASH_POLL_MS = 1000;
 const TRASH_POLL_MAX = 1200; // 20분 — 그 뒤엔 '성공'도 '실패'도 주장하지 않고 원장을 가리킨다
 // ★S8 재착륙 §1 — 미리보기 폴링(델타 상태 전이표 「500ms 타이머 폴링 시작, 스피너 표시」).
@@ -1578,6 +1582,14 @@ function trashSyncDeleteButton(supported: boolean) {
   btn.textContent = n === 0 ? "고른 항목 삭제" : `고른 항목 삭제 (${n})`;
 }
 
+// ★T1(TICKET=cysr-1111-trash-preview) — 삭제 꺼진 빌드 전용 「크기 미리 보기」 단추(보임 판정 = 순수 모듈).
+function trashSyncPreviewButton(visible: boolean) {
+  const btn = document.getElementById("btn-cc-trash-preview") as HTMLButtonElement | null;
+  if (!btn) return;
+  btn.hidden = !visible;
+  btn.disabled = trashPreviewOnlyOpen || trashSelectedNames().length === 0;
+}
+
 // 탭 본문 — `trash.list` 응답을 그대로 그린다(이름은 파일 이름이므로 textContent 로만 넣는다).
 function renderTrash(payload: {
   root?: string;
@@ -1608,6 +1620,7 @@ function renderTrash(payload: {
     empty.textContent = "휴지통이 비어 있습니다.";
     host.appendChild(empty);
     trashSyncDeleteButton(supported);
+    trashSyncPreviewButton(trashPreviewOnlyVisible(supported));
     return;
   }
   const nowEpoch = Date.now() / 1000;
@@ -1624,6 +1637,7 @@ function renderTrash(payload: {
         if (cb.checked) trashSelected.add(e.name);
         else trashSelected.delete(e.name);
         trashSyncDeleteButton(supported);
+        trashSyncPreviewButton(trashPreviewOnlyVisible(supported));
       });
       head.appendChild(cb);
     } else {
@@ -1668,6 +1682,7 @@ function renderTrash(payload: {
     host.appendChild(row);
   }
   trashSyncDeleteButton(supported);
+  trashSyncPreviewButton(trashPreviewOnlyVisible(supported));
 }
 
 function renderTrashUnavailable(text: string) {
@@ -1677,6 +1692,7 @@ function renderTrashUnavailable(text: string) {
   if (rootEl) rootEl.textContent = "";
   trashSetNotice(text);
   trashSyncDeleteButton(false);
+  trashSyncPreviewButton(false);
 }
 
 // 5초 주기(다른 탭과 같은 타이머)와 탭 진입에서 부른다. ★실패를 '빈 휴지통'으로 접지 않는다.
@@ -1719,7 +1735,30 @@ type TrashPreview = {
 //     expired → 만료 고지 + 「다시 미리보기」 · job_unknown(데몬 재시작) → 새 미리보기 요구 ·
 //     모달 닫기 → 폴링 타이머 취소 · 중복 요청 → `preview_busy`(기다리지 않고 거부).
 //   ★사유 문구는 **전부 순수 모듈의 표**에서 온다 — 화면이 사유를 다시 지어내지 않는다.
-function trashConfirmModal(names: string[]): Promise<{ ok: boolean; prev: TrashPreview | null }> {
+// 미리보기가 잰 항목 → 모달 줄용 항목(목록의 칸 + 잰 크기). 삭제 모달과 미리보기 전용 모달이 같이 쓴다.
+function trashMeasuredEntries(shown: { name: string; nodes: number; bytes: number }[]): TrashEntry[] {
+  return shown.map((m) => {
+    const base = trashEntries.find((x) => x.name === m.name);
+    return {
+      ...(base ?? {
+        name: m.name,
+        interrupted_deleting: false,
+        deletable: true,
+        root_mtime_age_secs: 0,
+        stamp_epoch: null,
+        old_by_stamp: false,
+        children_depth1: [],
+        children_total: 0,
+        sole_copy_advisory: false,
+        producer_chip: "",
+        size: { state: "pending" },
+      }),
+      size: { state: "measured", value: { bytes: m.bytes, nodes: m.nodes } },
+    };
+  });
+}
+
+function trashConfirmModal(names: string[], previewOnly = false): Promise<{ ok: boolean; prev: TrashPreview | null }> {
   return new Promise((resolve) => {
     const ov = document.createElement("div");
     ov.className = "modal-overlay";
@@ -1742,6 +1781,13 @@ function trashConfirmModal(names: string[]): Promise<{ ok: boolean; prev: TrashP
     for (const [k, v] of PURGE_INPUT_GUARDS) inp.setAttribute(k, v);
     label.textContent = TRASH_PREVIEW_WAIT_LINE;
     waitText.textContent = "확인하는 중…";
+    // ★T1 — 미리보기 전용(삭제 꺼진 빌드): 제목은 단추 문안, 닫기는 기존 「닫기」 문구 · 입력칸과 「삭제」는 없다.
+    if (previewOnly) {
+      (ov.querySelector("h3") as HTMLElement).textContent = TRASH_PREVIEW_ONLY_LABEL;
+      no.textContent = "닫기";
+      inp.hidden = true;
+      yes.hidden = true;
+    }
     const gen = ++trashPreviewGen;
     const done = (ok: boolean, prev: TrashPreview | null) => {
       trashStopPreviewPoll();
@@ -1772,6 +1818,11 @@ function trashConfirmModal(names: string[]): Promise<{ ok: boolean; prev: TrashP
       dismissToast("trash-preview");
       const shown = prev.entries ?? [];
       const refused = prev.refused ?? [];
+      if (previewOnly) {
+        // ★T1 — 잰 크기와 거부 사유(기존 문구)만 보인다. 확인·nonce·타이핑은 이 갈래에 없다.
+        label.textContent = trashPreviewOnlyLines(trashMeasuredEntries(shown), refused, Date.now() / 1000).join("\n");
+        return;
+      }
       if (!prev.confirm_id || !prev.digest || shown.length === 0) {
         // 하나도 확인되지 않았다 — 사유만 적고 타이핑을 열지 않는다(모달에 '그래도 지우기'가 없다).
         const why = refused.map((r) => `${r.name} — ${trashRefusalText(r.reason_code).text}`).join("\n");
@@ -1789,26 +1840,7 @@ function trashConfirmModal(names: string[]): Promise<{ ok: boolean; prev: TrashP
         return;
       }
       const confirmNames = shown.map((s) => s.name);
-      const modalEntries: TrashEntry[] = confirmNames.map((n) => {
-        const base = trashEntries.find((x) => x.name === n);
-        const m = shown.find((s) => s.name === n)!;
-        return {
-          ...(base ?? {
-            name: n,
-            interrupted_deleting: false,
-            deletable: true,
-            root_mtime_age_secs: 0,
-            stamp_epoch: null,
-            old_by_stamp: false,
-            children_depth1: [],
-            children_total: 0,
-            sole_copy_advisory: false,
-            producer_chip: "",
-            size: { state: "pending" },
-          }),
-          size: { state: "measured", value: { bytes: m.bytes, nodes: m.nodes } },
-        };
-      });
+      const modalEntries = trashMeasuredEntries(shown);
       const lines = [...trashModalLines(modalEntries, Date.now() / 1000)];
       if (refused.length) {
         lines.push("");
@@ -1954,6 +1986,20 @@ async function trashPollOrder(orderId: string, total: number, gen: number, polls
     );
   }
   trashSelected.clear();
+  await refreshTrash();
+}
+
+// ★T1 — 삭제 꺼진 빌드의 크기 미리 보기: 고른 이름만 미리보기 → 결과를 보이고 닫는다(명령 0).
+//   닫은 뒤 목록을 다시 읽는다 — 미리보기가 잰 크기는 데몬 크기 캐시에 남아 목록 칸이 「잰 크기」로 바뀐다.
+async function trashPreviewOnlyFlow() {
+  if (trashPreviewOnlyOpen) return;
+  const names = trashSelectedNames();
+  if (names.length === 0) return;
+  trashPreviewOnlyOpen = true;
+  trashSyncPreviewButton(true);
+  await trashConfirmModal(names, true);
+  trashPreviewOnlyOpen = false;
+  trashSyncPreviewButton(true);
   await refreshTrash();
 }
 
@@ -11423,6 +11469,7 @@ document.querySelectorAll("#cc-tabs .cc-tab").forEach((b) =>
   b.addEventListener("click", () => setCcTab((b as HTMLElement).dataset.view as typeof ccTab)),
 );
 document.getElementById("btn-cc-trash-delete")?.addEventListener("click", () => void trashDeleteFlow());
+document.getElementById("btn-cc-trash-preview")?.addEventListener("click", () => void trashPreviewOnlyFlow());
 document.querySelectorAll("#cc-eff-win .cc-win").forEach((b) =>
   b.addEventListener("click", () => {
     ccEffWindow = (b as HTMLElement).dataset.window!;

@@ -223,6 +223,17 @@ export function trashUnavailableText(err: unknown): string {
 
 /// 모달 본문 — 지울 것, 되돌릴 수 없다는 사실, 공장초기화 격리분이 복구 원본이라는 사실.
 export function trashModalLines(entries: TrashEntry[], nowEpoch: number): string[] {
+  const lines = trashEntryLines(entries, nowEpoch);
+  lines.push("");
+  lines.push("이 삭제는 되돌릴 수 없습니다.");
+  if (entries.some((e) => e.name.startsWith("factory-reset-"))) {
+    lines.push("factory-reset- 로 시작하는 항목은 이전 설치를 되돌릴 때 쓰는 원본입니다.");
+  }
+  return lines;
+}
+
+/// 항목 줄 — 삭제 모달과 미리보기 전용 모달이 **같은 조립**을 쓴다(문구를 두 벌로 만들지 않는다).
+function trashEntryLines(entries: TrashEntry[], nowEpoch: number): string[] {
   const lines: string[] = [];
   for (const e of entries) {
     lines.push(`• ${e.name} — ${trashSizeText(e.size)}`);
@@ -234,10 +245,34 @@ export function trashModalLines(entries: TrashEntry[], nowEpoch: number): string
       `    안에 있는 것(첫 단계 ${shown.length}/${e.children_total}): ${shown.join(", ") || "(없음)"}`,
     );
   }
-  lines.push("");
-  lines.push("이 삭제는 되돌릴 수 없습니다.");
-  if (entries.some((e) => e.name.startsWith("factory-reset-"))) {
-    lines.push("factory-reset- 로 시작하는 항목은 이전 설치를 되돌릴 때 쓰는 원본입니다.");
+  return lines;
+}
+
+// ★T1(TICKET=cysr-1111-trash-preview · master#84adde96 결정 A) — 삭제가 꺼진 빌드(윈 출하본 ·
+//   lib `trash_delete_supported` 가 false)에서는 「고른 항목 삭제」가 흐리고, 그것이 미리보기의 유일한 입구라
+//   크기 칸이 영구 「크기 미측정 — 미리보기에서 측정합니다」였다. 그 빌드에만 크기만 재는 입구를 따로 둔다.
+//   문안 = master 결정 원문(바꾸지 않는다).
+export const TRASH_PREVIEW_ONLY_LABEL = "크기 미리 보기";
+export const TRASH_PREVIEW_ONLY_NOTE =
+  "이 판에서는 휴지통 비우기가 꺼져 있어서 크기만 보여 드려요. 파일은 그대로 남아 있습니다.";
+
+/// 「크기 미리 보기」 단추를 보이는가 — 삭제가 꺼진 빌드에서만(삭제 켜진 빌드는 삭제 모달이 미리보기를 한다).
+export function trashPreviewOnlyVisible(deleteSupported: boolean): boolean {
+  return !deleteSupported;
+}
+
+/// 미리보기 전용 모달 본문 — 안내 줄이 맨 위, 잰 항목 줄, 거부가 있으면 기존 거부 문구 그대로.
+/// 삭제 문장(되돌릴 수 없음·확인 문구 입력)은 싣지 않는다 — 이 모달에는 삭제가 없다.
+export function trashPreviewOnlyLines(
+  entries: TrashEntry[],
+  refused: { name: string; reason_code: string }[],
+  nowEpoch: number,
+): string[] {
+  const lines = [TRASH_PREVIEW_ONLY_NOTE, "", ...trashEntryLines(entries, nowEpoch)];
+  if (refused.length) {
+    if (entries.length) lines.push("");
+    lines.push("이번에 지우지 않는 것(데몬이 거부했습니다):");
+    for (const r of refused) lines.push(`• ${r.name} — ${trashRefusalText(r.reason_code).text}`);
   }
   return lines;
 }

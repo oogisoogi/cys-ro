@@ -217,13 +217,14 @@ if "--paginate" not in a:
 for p in pages:
     if p == "FAIL":
         sys.stderr.write("HTTP 502\n"); sys.exit(1)
-    r = subprocess.run(["jq", "-r", jq], input=json.dumps(p), text=True, capture_output=True, env=os.environ)
+    raw = ["-r"] if os.environ.get("FAKE_JQ_RAW", "1") == "1" else []
+    r = subprocess.run(["jq", *raw, jq], input=json.dumps(p), text=True, capture_output=True, env=os.environ)
     if r.returncode:
         sys.stderr.write(r.stderr); sys.exit(r.returncode)
-    sys.stdout.write(r.stdout)
+    sys.stdout.write(r.stdout.replace("\n", os.environ.get("FAKE_EOL", "\n")))
 """
 
-    def _run_guard(self, pages, run=None):
+    def _run_guard(self, pages, run=None, **fake):
         import shutil, subprocess, tempfile
         if not shutil.which("jq"):
             self.fail("jq 없음 — 이 시험은 실 jq 로 선택식을 실행해야 한다")
@@ -234,7 +235,7 @@ for p in pages:
                 f.write(self._FAKE_GH)
             os.chmod(gh, 0o755)
             env = dict(os.environ, PATH=d + os.pathsep + os.environ.get("PATH", ""), TAG="v9.9.9",
-                       SRC_REPO="o/r", GH_TOKEN="x", FAKE_PAGES=json.dumps(pages))
+                       SRC_REPO="o/r", GH_TOKEN="x", FAKE_PAGES=json.dumps(pages), **fake)
             return subprocess.run(["bash", "-c", run], env=env, capture_output=True, text=True).returncode
 
     def test_23_guard_runs_against_paged_api(self):
@@ -249,6 +250,15 @@ for p in pages:
         bad = run.replace("select(.tag_name == env.TAG)", "select(| .tag_name)")
         self.assertNotEqual(bad, run)
         self.assertEqual(self._run_guard([p1], run=bad), 1, "잘못된 jq 를 통과로 접었다")
+
+    def test_24_guard_fails_closed_on_unclassified_output_format(self):
+        # ★(1.1.11 · cysr-1111-fable-fixes F3) 분류는 gh --jq 의 raw 문자열 형식에 묶여 있다 — 따옴표(`"published"`)·CR 이
+        #   붙으면 P=N=0 → 「없음 = 진행」(fail-open). 총줄수 = P+N 단언이 그 형식 변화를 거부로 바꾼다.
+        rel = lambda tag, draft: {"id": 1, "tag_name": tag, "draft": draft}   # noqa: E731
+        same = [[rel("v1", False), rel("v9.9.9", False)]]
+        self.assertEqual(self._run_guard(same, FAKE_JQ_RAW="0"), 1, "따옴표 출력의 공개 같은 태그를 「없음」으로 접었다")
+        self.assertEqual(self._run_guard(same, FAKE_EOL="\r\n"), 1, "CR 붙은 출력의 공개 같은 태그를 「없음」으로 접었다")
+        self.assertEqual(self._run_guard([[rel("v1", False)]], FAKE_JQ_RAW="0"), 0, "빈 출력(같은 태그 없음)은 형식과 무관하게 진행")
 
     def test_22_both_release_lanes_serialize_per_ref(self):
         for path, prefix in ((_RELEASE, "release-"), (os.path.join(_WF, "pack-release.yml"), "pack-release-")):

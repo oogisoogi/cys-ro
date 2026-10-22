@@ -24,6 +24,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 
 BIN = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))          # cysjavis-pack/bin
@@ -37,10 +38,15 @@ class TicketSnapshotTest(unittest.TestCase):
 
     # ── 4) 내부 assertion 동기 ──
     def test_orchestra_self_test_passes(self):
+        # 소스 트리를 팩 자리로 넘기면 self-test 의 `cys status` 가 PATH 의 설치본 cysd 를 띄우고
+        # 그 데몬이 소스 `bin/` 에 팩을 깔고(986파일) 고아로 남아 `schedule.json.cys-lock` 을
+        # 계속 만든다(cysr-1111-test-hygiene 실측) — 팩 자리는 임시 폴더, 데몬 자동 기동은 봉인.
         env = dict(os.environ)
-        env.setdefault("CYS_PACK_DIR", BIN)
-        r = subprocess.run([sys.executable, os.path.join(BIN, "javis_orchestra.py"), "--self-test"],
-                           capture_output=True, text=True, timeout=120, env=env)
+        env["CYS_NO_AUTOSTART"] = "1"
+        with tempfile.TemporaryDirectory() as td:
+            env.setdefault("CYS_PACK_DIR", td)
+            r = subprocess.run([sys.executable, os.path.join(BIN, "javis_orchestra.py"), "--self-test"],
+                               capture_output=True, text=True, timeout=120, env=env)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("self-test OK", r.stdout)
 

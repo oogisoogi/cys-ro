@@ -787,8 +787,9 @@ jobs:
           # ★내용 3줄 동결 — `import site` 를 빼면 pip·site-packages 가 죽어 앱 내 CLI 설치가 붕괴한다.
           printf 'python312.zip\n.\nimport site\n' > "$RT/python/python312._pth"
           # ── pip 부트스트랩 (embeddable은 pip 미포함 → 'No module named pip' 방지) ──
+          # ★pip 26.2.1 고정(cysr-1110-winseal) — 설치기는 runtime 을 덮어 펼쳐 판이 바뀌면 옛 dist-info 가 남는다(봉인 「추가」) · 1.1.8·1.1.9 와 같은 판 · 두 레인 같은 값(test_runtime_manifest_parity).
           curl -fL -o "$RT/python/get-pip.py" "https://bootstrap.pypa.io/get-pip.py"
-          "$RT/python/python.exe" "$RT/python/get-pip.py" --no-warn-script-location
+          "$RT/python/python.exe" "$RT/python/get-pip.py" --no-warn-script-location "pip==26.2.1"
           rm -f "$RT/python/get-pip.py"
           # ── uv/uvx 동봉 (serena·nlm-mcp-cli가 uvx 전제 → C20/C43 FAIL 방지). runtime/python은 cysd가 PATH 주입. ──
           curl -fL -o uv.zip "https://github.com/astral-sh/uv/releases/download/0.11.26/uv-x86_64-pc-windows-msvc.zip"

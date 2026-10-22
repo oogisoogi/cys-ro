@@ -279,6 +279,28 @@ class ManifestSchemaParityTests(unittest.TestCase):
                           "%s 가 fix/** 에서 돌지 않는다 — 수리 레인의 Windows 변경이 "
                           "태그 레인에 가서야 드러난다" % name)
 
+    # ── ⑧ 두 Windows 레인이 **같은 고정 pip** 를 싣는다 (TICKET=cysr-1110-winseal · master#da756888) ──
+    def test_both_windows_lanes_pin_the_same_pip(self):
+        """설치기는 runtime 을 지우지 않고 **덮어** 펼친다(installer.nsi Section Install 의 File /a ·
+        통째 삭제는 언인스톨뿐). 그래서 판과 판 사이에 runtime 안 파일 **목록**이 바뀌면 옛 판 파일이
+        남고 봉인이 「추가」로 센다. 다른 런타임(Git·Python·uv·node)은 판이 고정인데 pip 만
+        `get-pip.py` 최신을 받았다 — 1.1.8·1.1.9 릴리스 = pip 26.2.1 · 1.1.10 windows-build
+        39679438763 = 26.2.2 → 윈 실기 「추가 28」(옛 pip-26.2.1.dist-info) · 업그레이드 사용자 전원.
+        get-pip 호출마다 `pip==X.Y.Z` 가 있어야 하고(미고정 재등장 = 적), 두 레인의 판이 같아야 한다."""
+        pins = {}
+        for p in WIN_WIRING:
+            code = "\n".join(l for l in read(p).split("\n") if not l.lstrip().startswith("#"))
+            calls = [l for l in code.split("\n") if re.search(r"python3?\.exe\S*\s+\S*get-pip\.py", l)]
+            name = os.path.basename(p)
+            self.assertTrue(calls, "%s 에 get-pip 실행 줄이 없다 — 배선이 사라졌다" % name)
+            for l in calls:
+                m = re.search(r"[\"']?pip==(\d+\.\d+(?:\.\d+)?)[\"']?", l)
+                self.assertIsNotNone(m, "%s 의 get-pip 가 pip 판을 고정하지 않는다(최신을 받는다): %s"
+                                     % (name, l.strip()))
+                pins.setdefault(name, set()).add(m.group(1))
+        got = set().union(*pins.values())
+        self.assertEqual(1, len(got), "두 Windows 레인의 pip 고정 판이 갈렸다: %r" % pins)
+
     def test_windows_lane_ships_the_manifest_as_a_bundle_resource(self):
         conf = os.path.join(REPO, "src-tauri", "tauri.windows.conf.json")
         self.assertTrue(os.path.isfile(conf))

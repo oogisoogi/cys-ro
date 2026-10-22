@@ -295,17 +295,22 @@ mk "$N11/inst/$SP/pip-26.2.1.dist-info/METADATA" 'Name: pip 26.2.1'
 mk "$N11/inst/$SP/pip-26.2.1.dist-info/RECORD" 'pip/__init__.py'
 mk "$N11/inst/$SP/pip/__init__.py" '__version__ = "26.2.1"'
 mk "$N11/inst/$SP/Setuptools-80.0.dist-info/METADATA" 'Name: setuptools'
+# (cysr-1111-adv-fixes #4) a shipped dist-info whose (non-normalized) name itself holds '-'
+mk "$N11/inst/$SP/python-dateutil-2.9.0.dist-info/METADATA" 'Name: python-dateutil'
 mk "$N11/inst/runtime/git/etc/profile" 'export X=1'
 "$PYTHON" "$SEAL" emit --root "$N11/inst/runtime" --out "$N11/inst/runtime-manifest.json" >/dev/null
 # the field residue: the previous kit's pip dist-info + a case/separator variant of a shipped name
 mk "$N11/inst/$SP/pip-26.2.2.dist-info/METADATA" 'Name: pip 26.2.2'
 mk "$N11/inst/$SP/pip-26.2.2.dist-info/licenses/LICENSE.txt" 'MIT'
 mk "$N11/inst/$SP/setuptools-79.0.dist-info/RECORD" 'x'
+mk "$N11/inst/$SP/python-dateutil-2.8.2.dist-info/RECORD" 'x'
 n11_seal() { set +e; "$PYTHON" "$SEAL" verify --root "$N11/inst/runtime" --manifest "$N11/inst/runtime-manifest.json" >/dev/null 2>&1; local rc=$?; set -e; echo "$rc"; }
 n11_before=$(n11_seal)
 # negatives the prune must leave alone (each is reported by the seal, never silently deleted)
 mkdir -p "$N11/inst2"; cp -R "$N11/inst/." "$N11/inst2/"
 mk "$N11/inst2/$SP/userpkg-1.0.dist-info/METADATA" 'Name: userpkg'
+# a user's dist-info sharing only the first '-' segment with a shipped name: key = name before the LAST '-'
+mk "$N11/inst2/$SP/python-jose-3.3.0.dist-info/METADATA" 'Name: python-jose'
 mk "$N11/inst2/$SP/pip/_new_module.py" 'x = 1'
 mk "$N11/outside/keep/LICENSE" 'outside'
 ln -s "$(cd "$N11/outside" && pwd)/keep" "$N11/inst2/$SP/pip-26.2.0.dist-info"
@@ -321,6 +326,8 @@ n11_bad=""
 [ ! -e "$N11/inst/$SP/pip-26.2.1.dist-info/METADATA" ] && n11_bad="$n11_bad shipped-dist-info-removed"
 [ -e "$N11/inst/$SP/pip/__init__.py" ] || n11_bad="$n11_bad package-code-removed"
 [ -e "$N11/inst2/$SP/userpkg-1.0.dist-info/METADATA" ] || n11_bad="$n11_bad user-dist-info-removed"
+[ -e "$N11/inst2/$SP/python-jose-3.3.0.dist-info/METADATA" ] || n11_bad="$n11_bad user-dist-info-with-dash-in-name-removed"
+[ -e "$N11/inst/$SP/python-dateutil-2.9.0.dist-info/METADATA" ] || n11_bad="$n11_bad shipped-dash-name-dist-info-removed"
 [ -e "$N11/inst2/$SP/pip/_new_module.py" ] || n11_bad="$n11_bad package-code-file-removed"
 [ -L "$N11/inst2/$SP/pip-26.2.0.dist-info" ] || n11_bad="$n11_bad symlinked-dist-info-removed"
 [ -e "$N11/inst2/$SP/pip-25.0.dist-info/inner" ] || n11_bad="$n11_bad dist-info-holding-a-link-removed"
@@ -328,7 +335,7 @@ n11_bad=""
 [ -e "$N11/inst2/$SP/pip-26.2.2.dist-info" ] && n11_bad="$n11_bad inst2-residue-kept"
 [ -e "$N11/inst3/$SP/pip-26.2.2.dist-info/METADATA" ] || n11_bad="$n11_bad pruned-without-manifest"
 grep -q '^cys-runtime-prune: skipped (no runtime-manifest.json' "$N11/out3.log" || n11_bad="$n11_bad no-manifest-not-a-deliberate-skip"
-grep -q 'cys-runtime-prune: stale-dist-info removed=2 failed=0' "$N11/out1.log" || n11_bad="$n11_bad summary-line($(tail -1 "$N11/out1.log"))"
+grep -q 'cys-runtime-prune: stale-dist-info removed=3 failed=0' "$N11/out1.log" || n11_bad="$n11_bad summary-line($(tail -1 "$N11/out1.log"))"
 if [ -n "$n11_bad" ]; then
   echo "FAIL[N11]: stale dist-info prune contract broken:$n11_bad" >&2
   exit 1

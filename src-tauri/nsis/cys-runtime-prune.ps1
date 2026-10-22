@@ -29,7 +29,8 @@ if ([string]::IsNullOrEmpty($Root)) { Write-Output 'cys-runtime-prune: no instal
 function Get-DistKey([string]$DirName) {
   # "<name>-<version>.dist-info" -> normalized <name>
   $stem = $DirName.Substring(0, $DirName.Length - '.dist-info'.Length)
-  $i = $stem.IndexOf('-')
+  # split at the LAST '-': a version never holds '-', a non-normalized name may (python-dateutil vs python-jose)
+  $i = $stem.LastIndexOf('-')
   if ($i -le 0) { return $null }
   return ([regex]::Replace($stem.Substring(0, $i), '[-_.]+', '_')).ToLowerInvariant()
 }

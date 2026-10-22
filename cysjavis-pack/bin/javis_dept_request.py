@@ -1412,6 +1412,12 @@ def _move_to_trash(path, label):
     dest_dir = os.path.join(trash_root(), "%s-%s" % (label, time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())))
     os.makedirs(dest_dir, exist_ok=True)
     dest = os.path.join(dest_dir, os.path.basename(path))
+    # ★review15(codex 1R #2): 같은 초·같은 basename 이면 os.replace 가 첫 보관본을 덮는다 — 비켜 간다(항목 폴더 = 스탬프는 그대로).
+    #   유일 호출부(cleanup_orphan_ledgers)가 레지스트리 잠금 안이라 청소끼리는 직렬이다(확인 ↔ 이동 사이 경쟁 없음).
+    n = 1
+    while os.path.lexists(dest):
+        dest = os.path.join(dest_dir, "%s.%d" % (os.path.basename(path), n))
+        n += 1
     os.replace(path, dest)
     return dest
 

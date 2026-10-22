@@ -232,6 +232,22 @@ class TestRequestSide(TDR.Base):
         got = calendar.timegm(time.strptime(tail, "%Y%m%dT%H%M%SZ"))   # UTC — 데몬도 UTC 로 읽는다
         self.assertLessEqual(abs(got - t0), 5, entry)
 
+    def test_review15_same_second_same_ledger_does_not_clobber_the_first_archive(self):
+        # ★review15(codex 1R #2) — 휴지통 항목 이름은 초 단위라 같은 초에 같은 원장이 다시 생겨 다시 청소되면 같은 폴더 ·
+        #   같은 basename 이 된다. 종전 os.replace 는 첫 보관본을 말없이 덮었다(보관이 아니라 삭제). 시각을 고정해 재현한다.
+        from unittest import mock
+        fixed = time.gmtime(1_789_204_160)
+        with mock.patch.object(self.m.time, "gmtime", return_value=fixed):
+            p = self._ledger("dept-5", "/a/cys-dept-dept-5/cys.sock")
+            first = self.m.cleanup_orphan_ledgers()
+            json.dump({"state": "partial:second", "socket": "/a/cys-dept-dept-5/cys.sock"}, open(p, "w"))
+            second = self.m.cleanup_orphan_ledgers()
+        self.assertEqual((len(first), len(second)), (1, 1), (first, second))
+        self.assertNotEqual(first[0], second[0], "같은 자리로 옮겼다(첫 보관본 덮어씀)")
+        self.assertEqual(os.path.dirname(first[0]), os.path.dirname(second[0]), "항목 폴더(스탬프)는 그대로 하나")
+        self.assertEqual(json.load(open(first[0]))["state"], "partial:x", "첫 보관본 내용이 바뀌었다")
+        self.assertEqual(json.load(open(second[0]))["state"], "partial:second")
+
     def _menu_dept(self, gen):
         json.dump({"depts": {"dept-3": {"socket": "/a/cys-dept-dept-3/cys.sock", "display_name": "메뉴부서",
                                         "gen": gen}}}, open(os.environ["CYS_DEPTS_JSON"], "w"))

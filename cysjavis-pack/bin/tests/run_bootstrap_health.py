@@ -4091,7 +4091,7 @@ def h_win_7():
         need(want in r.stdout,
              "role-less 안내가 네이티브 경로+인용을 쓰지 않는다: %r" % r.stdout[:600])
         env["CYS_ROLE"] = "master"
-        r2 = _run(["sh", _hook("session-start.sh")], env=env, stdin=subprocess.DEVNULL)
+        r2 = _run(["sh", _hook("session-start.sh")], env=env, stdin=subprocess.DEVNULL, cwd=tmp)
         need("부트 브리지" in r2.stdout and want in r2.stdout,
              "master 부트 브리지가 네이티브 경로+인용을 쓰지 않는다: %r" % r2.stdout[-600:])
         # 인용이 실제로 sh 에서 원 경로로 복원되는가(eval 왕복)

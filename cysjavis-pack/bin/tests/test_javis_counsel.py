@@ -1980,6 +1980,28 @@ class HelpReport(Base):
         self.assertEqual(self.kinds(), ["signal", "daily"])
         self.assertEqual(self.got[0][1]["payload"]["items"][0]["first_seen"], "2026-10-22T00:10:00.000Z")
 
+    def test_invalid_day_keeps_signal_cursor_like_cap(self):
+        """fleet-report F5 — 400 invalid_day(기기 시계가 서버 ±2일 밖) = 그날만 멈춤 · 신호 커서는 넘기지 않는다
+        (종전: refused 로 커서 전진 → 시계가 틀린 기기의 신호 줄이 매일 영구 폐기됐다)."""
+        import datetime as _dt
+        self.put_id()
+        self.put_facts()
+        self.put_signals(self.row("2026-10-22T00:10:00.000Z"))
+        bad = (400, "invalid_day")
+        self.codes[:] = [bad, bad]
+        self.assertEqual(jc.help_outcome(*bad), "cap")
+        self.run_help()
+        st = self.help_state()
+        self.assertEqual((st.get("signal_day"), st.get("daily_day"), st.get("signal_cursor_ts")), ("2026-10-22", "2026-10-22", None))
+        self.assertEqual(self.run_help(self.now + _dt.timedelta(hours=2)), "done", "같은 날 다시 보냈다(그날은 멈춘다)")
+        self.got.clear()
+        nxt = self.now + _dt.timedelta(days=1)
+        self.put_facts(at=nxt)
+        self.run_help(nxt)
+        self.assertEqual(self.kinds(), ["signal", "daily"])
+        self.assertEqual(self.got[0][1]["payload"]["items"][0]["first_seen"], "2026-10-22T00:10:00.000Z", "시계가 틀렸던 날의 신호 줄을 잃었다")
+        self.assertEqual(jc.help_outcome(400, "invalid_payload"), "refused", "다른 400 은 종전대로")
+
     def test_200_already_received_counts_as_done(self):
         self.put_id()
         self.put_facts()

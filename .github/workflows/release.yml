@@ -84,13 +84,18 @@ jobs:
   #     「없다」로 접지 않는다).
   #   · draft PATCH 함정(10-08 19:3x 실측): draft 메타 PATCH 에 tag_name 을 빼면 GitHub 이 tag_name 을
   #     `untagged-…` 로 바꾼다 → draft 메타를 고칠 때는 언제나 `-f tag_name=<태그>` 를 함께 보낸다.
+  #   · ★1.1.11(TICKET=cysr-1111-installer): **공개 릴리스**가 이미 있는 태그도 멈춘다. 고정 tauri-action
+  #     (84b9d35b create-release.ts)은 releaseDraft:true 여도 모든 릴리스에서 tag_name 을 찾아 공개본을 집고
+  #     같은 이름 자산을 지운 뒤 다시 올린다(팩 자산은 gh release upload --clobber) — 전체 재실행·수동 실행이
+  #     같은 판·같은 release_seq(vars 그대로)의 **다른 바이트**로 공개 setup.exe 를 갈아 끼운다. 설치기 판번
+  #     오라클(VERSIONINFO 4마디 = 판 + seq)이 못 가르는 계급이다(10-22 kit B). 재발행 = 새 판번(재태그 금지와 같은 길).
   draft-guard:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: write         # draft 릴리스 목록은 push 권한에만 보인다(read 로는 draft 가 안 보여 가드가 헛돈다)
     steps:
-      - name: 같은 태그 draft 가 이미 있으면 중단 (fail-closed)
+      - name: 같은 태그 릴리스(draft·공개)가 이미 있으면 중단 (fail-closed)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
@@ -98,8 +103,15 @@ jobs:
         run: |
           set -euo pipefail
           if ! N="$(gh api "repos/$SRC_REPO/releases?per_page=100" --paginate \
-                     --jq '.[] | select(.draft and .tag_name == env.TAG) | .id' | wc -l | tr -d ' ')"; then
-            echo "::error::릴리스 목록 조회 실패 — 같은 태그 draft 유무를 모른다(fail-closed · 자산 생산 중단)."
+                     --jq '.[] | select(.tag_name == env.TAG) | if .draft then "draft" else "published" end')"; then
+            echo "::error::릴리스 목록 조회 실패 — 같은 태그 릴리스 유무를 모른다(fail-closed · 자산 생산 중단)."
+            exit 1
+          fi
+          P="$(printf '%s\n' "$N" | grep -c '^published$' || true)"
+          N="$(printf '%s\n' "$N" | grep -c '^draft$' || true)"
+          if [ "$P" -gt 0 ]; then
+            echo "::error::$SRC_REPO 에 태그 $TAG 의 **공개** 릴리스가 이미 있다 — 자산 생산을 시작하지 않는다."
+            echo "::error::다시 돌리면 같은 판·같은 release_seq 의 다른 바이트가 공개 자산을 갈아 끼운다(설치기 판번 오라클 실명). 재발행은 새 판번으로."
             exit 1
           fi
           if [ "$N" -gt 0 ]; then
@@ -107,7 +119,7 @@ jobs:
             echo "::error::정상 재시도는 'Re-run failed jobs' · 다시 자르려면 옛 draft 를 먼저 지운다(사람 결정)."
             exit 1
           fi
-          echo "✅ 태그 $TAG 의 draft 없음 — 진행"
+          echo "✅ 태그 $TAG 의 릴리스(draft·공개) 없음 — 진행"
 
   windows-health-gate:
     needs: draft-guard

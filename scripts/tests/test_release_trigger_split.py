@@ -171,7 +171,13 @@ class DraftGuardAndConcurrency(unittest.TestCase):
     """★B1(1.1.9 · TICKET=cysr-119-defects) — 같은 태그 draft 가드 · 두 릴리스 레인의 concurrency.
 
     뮤턴트: 가드 잡을 지운다 / build·windows-health-gate 의 needs 를 뗀다 / 가드 권한을 read 로 낮춘다
-    (draft 가 안 보여 헛돈다) / 조회 실패를 통과로 접는다 / pack-release concurrency 를 지운다 → 적색."""
+    (draft 가 안 보여 헛돈다) / 조회 실패를 통과로 접는다 / pack-release concurrency 를 지운다 → 적색.
+
+    ★1.1.11(TICKET=cysr-1111-installer): **공개 릴리스**가 이미 있는 태그도 멈춘다. 종전 시험은 「published 같은
+    태그 = 진행」이었는데(draft 만 고르는 선택식의 특성 기록), 고정 tauri-action(84b9d35b create-release.ts)은
+    releaseDraft:true 여도 **모든 릴리스**에서 tag_name 을 찾아 공개본을 집고, upload-release-assets.ts 가 같은 이름
+    자산을 지운 뒤 다시 올린다(팩 자산은 gh release upload --clobber). = 같은 판·같은 release_seq(vars 그대로)의 다른
+    바이트가 공개 setup.exe 를 갈아 끼운다 — VERSIONINFO 가 같아 설치기 판번 오라클이 못 가른다(10-22 kit B 계급)."""
 
     def setUp(self):
         self.rel = _load(_RELEASE)
@@ -183,7 +189,7 @@ class DraftGuardAndConcurrency(unittest.TestCase):
         self.assertEqual(g.get("permissions", {}).get("contents"), "write",
                          "draft 목록은 push 권한에만 보인다 — read 면 가드가 헛돈다")
         run = "\n".join(st.get("run", "") for st in g["steps"])
-        self.assertIn(".draft and .tag_name == env.TAG", run, "같은 태그 draft 선택식")
+        self.assertIn("select(.tag_name == env.TAG)", run, "같은 태그 릴리스(draft·공개) 선택식")
         self.assertIn("exit 1", run)
         self.assertIn("if ! N=", run, "조회 실패 = 멈춤(fail-closed)")
 
@@ -234,11 +240,13 @@ for p in pages:
     def test_23_guard_runs_against_paged_api(self):
         rel = lambda tag, draft: {"id": 1, "tag_name": tag, "draft": draft}   # noqa: E731
         p1 = [rel("v1", False)] * 3
-        self.assertEqual(self._run_guard([p1, [rel("v9.9.9", False)]]), 0, "published 같은 태그 = 진행")
+        self.assertEqual(self._run_guard([p1]), 0, "같은 태그 릴리스 없음 = 진행")
+        self.assertEqual(self._run_guard([p1, [rel("v9.9.9", False)]]), 1,
+                         "2페이지의 공개 같은 태그를 놓쳤다 — 재실행이 공개 setup.exe 를 같은 판·같은 seq 다른 바이트로 갈아 끼운다")
         self.assertEqual(self._run_guard([p1, [rel("v9.9.9", True)]]), 1, "2페이지의 draft 를 놓쳤다(--paginate)")
         self.assertEqual(self._run_guard([p1, "FAIL"]), 1, "2페이지 조회 실패를 통과로 접었다")
         run = next(st["run"] for st in self.jobs["draft-guard"]["steps"] if "run" in st)
-        bad = run.replace(".draft and .tag_name == env.TAG", ".draft and | .tag_name")
+        bad = run.replace("select(.tag_name == env.TAG)", "select(| .tag_name)")
         self.assertNotEqual(bad, run)
         self.assertEqual(self._run_guard([p1], run=bad), 1, "잘못된 jq 를 통과로 접었다")
 

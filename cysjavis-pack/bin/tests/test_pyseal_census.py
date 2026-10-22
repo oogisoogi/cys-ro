@@ -505,7 +505,7 @@ RUST_SPAWN_PIN = {  # Rust 핀 expected 와 동일 값(2026-08-26 실측 · 2026
     "src/bin/cysd/boot_supervisor.rs": 1,  # run_ensure_team · .env 직봉인
     "src/bin/cysd/main.rs": 2,             # office-bridge(tokio 직봉인) + self-test 게이트
     "src-tauri/src/main.rs": 4,            # orchestra/resource-gate/boot/org · inject_runtime_path
-    "src-tauri/src/counsel.rs": 1,         # 1.1.9 T4 상담소 `agora read` · inject_runtime_path + -B + spawn_policy(Attached)
+    "src-tauri/src/counsel.rs": 2,         # 1.1.9 T4 상담소 `agora read` + 1.1.10 팩 앱 동사(cysr-1110-counsel-off) · 둘 다 inject_runtime_path + -B + spawn_policy(Attached)
 }
 _ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)  # Rust to_ascii_lowercase 동형
 

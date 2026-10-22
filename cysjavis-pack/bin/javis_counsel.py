@@ -1045,6 +1045,8 @@ def _daily_due(cfg, now=None):
         return False
     if os.path.exists(os.path.join(cfg, PARTICIPANT_FILE)):
         return True                        # 가입 기기 = 아고라가 그 판 nonce 에 묶인 새 사실을 원한다(종전 그대로)
+    if read_install_id() is None:
+        return False                       # help 가 보내지 않는 기기(no-id)는 재지도 않는다(fleet-report F9)
     return _read_help_state(cfg).get("daily_day") != today and _facts_of_day(cfg, today) is None
 
 

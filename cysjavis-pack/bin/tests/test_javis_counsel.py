@@ -509,6 +509,13 @@ class EnsureClient(Base):
             f.write(base64.encodebytes(data).decode("ascii"))
         return line
 
+    def joined(self):
+        """가입 기기(participant.json) — 아래 tick·일일 시험의 주제는 아고라 쪽 흐름이다. ★F9(cysr-1110-counsel-off) 뒤로
+        가입 없는 기기는 갱신기 id 가 없으면 재지 않는다 — 그 갈래는 HelpReport 가 잰다."""
+        os.makedirs(self.cfg, exist_ok=True)
+        with open(os.path.join(self.cfg, "participant.json"), "w") as f:
+            f.write("{}")
+
     def lib(self, *p):
         return os.path.join(self.cfg, "lib", *p)
 
@@ -564,6 +571,7 @@ class EnsureClient(Base):
 
     def test_tick_runs_agora_with_args_and_key(self):
         self.put(_zip([("bin/agora", self.AGORA)]))
+        self.joined()
         os.makedirs(self.cfg, exist_ok=True)
         key = os.path.join(self.cfg, "id_ed25519")
         with open(key, "w") as f:
@@ -599,6 +607,7 @@ class EnsureClient(Base):
         """꺼짐 = doctor·좌석 조회 0 · 그날(06:00 KST) 일일이 끝났고 pending 없음 = 0 · pending 남음 = 다시 모은다."""
         import datetime as _dt
         now = _dt.datetime(2026, 10, 6, 0, 30, tzinfo=_dt.timezone.utc)     # = 09:30 KST → 2026-10-06
+        self.joined()
         self.assertTrue(jc._daily_due(self.cfg, now))
         os.makedirs(os.path.join(self.cfg, "counsel"), exist_ok=True)
         st = os.path.join(self.cfg, "counsel", "state.json")
@@ -617,6 +626,7 @@ class EnsureClient(Base):
     def test_tick_facts_failure_still_runs_agora(self):
         """★리뷰 3R ③ — facts 쓰기 실패 = 로그 + agora 는 그대로 돈다 · 팩은 daily 완료 표식(state.json)을 쓰지 않는다."""
         self.put(_zip([("bin/agora", self.AGORA)]))
+        self.joined()
         empty = os.path.join(self.tmp, "emptybin")
         os.makedirs(empty)
         real = jc.collect_facts
@@ -2100,7 +2110,19 @@ class HelpReport(Base):
         self.assertIn(re.sub(r"\s+", "", jc.HELP_NOTICE), re.sub(r"\s+", "", jc.__doc__ or ""), "도움말(모듈 설명)에 같은 문장이 없다")
 
     # ── _daily_due 수리 · tick 자리 ──
+    def test_daily_due_unregistered_without_updater_id_measures_nothing(self):
+        """fleet-report F9 — 가입 없는 기기의 사실 소비자는 help 하나뿐 · help 는 갱신기 id 가 없으면 보내지 않는다(no-id) →
+        보내지 않는 기기는 재지도 않는다(종전: 하루 1회 doctor ≤60초를 돌고 버렸다)."""
+        self.assertFalse(jc._daily_due(self.cfg, self.now))
+        with open(os.path.join(self.cfg, "participant.json"), "w") as f:
+            f.write("{}")
+        self.assertTrue(jc._daily_due(self.cfg, self.now), "가입 기기는 id 와 무관(아고라가 보낸다)")
+        os.remove(os.path.join(self.cfg, "participant.json"))
+        self.put_id()
+        self.assertTrue(jc._daily_due(self.cfg, self.now))
+
     def test_daily_due_unregistered_measures_once_per_day(self):
+        self.put_id()
         self.assertTrue(jc._daily_due(self.cfg, self.now))
         self.put_facts()
         self.assertFalse(jc._daily_due(self.cfg, self.now), "가입 없는 기기가 같은 날 사실을 다시 잰다(30분마다 doctor)")

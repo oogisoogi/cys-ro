@@ -104,6 +104,33 @@ class ContentPinsParity(unittest.TestCase):
         self.assertNotIn(CEO_WAVE2_PIN, pf.MARKER_PINS)
 
 
+class WorkerIntentAgreementRoute(unittest.TestCase):
+    """★cysr-1111-backlog-misc #1: 워커 4규칙 c)(의도 합의)는 grill-me 가 아니라 【질문】 master 상신이다.
+
+    모순: 종전 c) 는 워커에게 grill-me 스킬을 지시했는데, 그 스킬은 AskUserQuestion 모달 20개 +
+    Stop 훅으로 턴 종료를 막는다 — 워커 좌석에는 모달에 답할 사람이 없어 좌석이 멈춘다.
+    이 검사는 c) 의 세 사본(repo 디렉티브 원문 · task-prompt 추출분 · FALLBACK_RULES)을 함께 본다:
+    한 사본만 고치면 티켓이 옛 문구를 계속 배포한다(추출 실패 시 폴백이 원문을 대신한다)."""
+
+    def _c_bullet(self, bullets):
+        hits = [b for b in bullets if b.startswith("- c) **의도 합의**")]
+        self.assertEqual(len(hits), 1, "4규칙 c) 불릿이 정확히 1개여야 한다: %r" % hits)
+        return hits[0]
+
+    def test_worker_c_routes_question_to_master_not_grill_me(self):
+        import javis_orchestra as orch
+        with open(os.path.join(DIRECTIVES_DIR, "WORKER_DIRECTIVE.md"), encoding="utf-8") as f:
+            extracted = orch.extract_rules_from_text(f.read())
+        self.assertIsNotNone(extracted, "WORKER §3 추출 실패 — RULE_MARKERS 와 원문이 어긋났다(폴백 강등)")
+        c = self._c_bullet(extracted)
+        self.assertIn("【질문】", c, "c) 가 【질문】 master 상신을 지시하지 않는다")
+        self.assertIn("master", c)
+        self.assertNotIn("grill-me", c, "c) 가 여전히 워커에게 grill-me(모달) 를 지시한다")
+        self.assertEqual(c, self._c_bullet(orch.FALLBACK_RULES), "FALLBACK_RULES c) 가 원문과 어긋났다")
+        ticket = orch.build_task_ticket("T", "S", "C", "worker", rules=orch.FALLBACK_RULES)
+        self.assertNotIn("grill-me", ticket, "위임 티켓이 워커에게 grill-me 를 배포한다")
+
+
 class Wave2PinRemovalMutation(unittest.TestCase):
     """★뮤테이션(U4 C4-④ · 2026-09-23): **임시 사본**의 CEO_TEMPLATE.md 에서 Wave2 핀
     (오너 절대 규칙 'CEO·마스터는 직접 구현하지 않는다' 의 주입 문면)을 지우면 CEO 핀 검사가

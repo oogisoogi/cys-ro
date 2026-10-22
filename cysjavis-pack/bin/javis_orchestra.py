@@ -1684,7 +1684,7 @@ def cmd_review_prompt(args):
 # 4규칙 무결성 마커 — 추출분이 이 전부를 포함해야 '완전한 4규칙'으로 인정한다.
 # (부분 잘림·약화된 디렉티브가 티켓으로 전파되는 silent failure를 구조 차단 — 적대 검증 R1)
 RULE_MARKERS = ("품질 절대우선", "할루시네이션 방지", "hallucination-guard", "몽상",
-                "Garbage-in", "grill-me", "합의에 이를 때까지", "요약·압축 절대 금지",
+                "Garbage-in", "【질문】", "합의에 이를 때까지", "요약·압축 절대 금지",
                 "전문용어·약호", "길이는 원문 수준", "충돌 시 상위 기준 절대 우선")
 
 
@@ -1732,8 +1732,11 @@ FALLBACK_RULES = [
     "전담 sub-skill(`cys skill show hallucination-guard`)을 반드시 사용해 검증 엄밀성·평가 "
     "신뢰성·환각 안전장치를 확보한다. 과장·거짓 확신·현실감 없는 출력 금지, 몽상·망상을 "
     "촉진하는 말 절대 금지. Garbage-in 차단 — 토대가 오염되면 아무리 다듬어도 거짓만 정교해진다.",
-    "- c) **의도 합의**: 받은 지시의 의도 파악이 불충분하면 추측 진행 금지 — grill-me 스킬"
-    "(`cys skill show grill-me`) 등으로 의뢰자(master)와 합의에 이를 때까지 질문을 반복한다.",
+    "- c) **의도 합의**: 받은 지시의 의도 파악이 불충분하면 추측 진행 금지 — 【질문】 머리표로 "
+    "의뢰자(master)에게 상신해(`cys send --queued --to master \"【질문】 ...\"`) 합의에 이를 때까지 "
+    "질문을 반복한다. 질문에는 선택지·근거·권고를 글로 적고, 답을 기다리는 동안 그 결정에 의존하지 "
+    "않는 일은 계속한다. 선택형 모달(AskUserQuestion)로 멈추지 마라 — 워커 좌석에는 모달에 답할 "
+    "사람이 없어 좌석이 멈춘다.",
     "- d) **요약·압축 절대 금지**: 최종 결과물은 일반인도 이해하고 읽기 편하게 첨삭하되, 모든 "
     "분석·수치·표·단서를 하나도 빠뜨리지 않는다. 전문용어·약호·내부 검증 표시만 쉬운 말로 "
     "풀고 길이는 원문 수준을 유지한다.",
@@ -4980,7 +4983,7 @@ def cmd_self_test(args):
         #   더 강하게 핀한다 — 토큰 존재 검사는 그 불변식과 정면으로 모순된다.
         ticket = build_task_ticket("T", "S", "C", "worker", rules=FALLBACK_RULES)
         for must in ("절대 강조 4규칙", "품질 절대우선", "할루시네이션 방지",
-                     "hallucination-guard", "grill-me", "요약·압축 절대 금지", "게이트",
+                     "hallucination-guard", "【질문】", "요약·압축 절대 금지", "게이트",
                      "성공 기준", "WORKER_TODO.md", "보고 채널",
                      "--queued", "완료 증거(E1 evidence-artifact 게이트", "--evidence-artifact",
                      "done 증거 게이트(P3)"):

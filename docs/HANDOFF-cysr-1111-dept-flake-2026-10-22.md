@@ -161,3 +161,78 @@
 
 `test_dept_name_guard` `PostSpawnRegistryFailure.test_create_spawn_loser_preserves_live_winner` — HEAD 사본 **단독 10회 중 5회 적**(수리본 2/10 · 이 케이스는 cys·cysd 를 자기 파이썬 목으로 갈아 끼워 이 수리와 무관).
 증상 = rc 12 는 맞는데 「후행 ready가 경쟁 승자의 응답을 못 받음」(핑 4~8회 · pong 0). 원인과 수리 = 다음 티켓 `cysr-1111-bootwait-lock-winner`(아래 덧붙임).
+
+---
+
+# 덧붙임 · TICKET=cysr-1111-bootwait-lock-winner · 2026-10-22 17:42~ · worker-3
+
+지시 = master#9b238c76(권고 A · 운영 코드 변경 허용). 바뀐 파일 = `cys-dept`(운영 · +19 −2) · `test_d1_dept_ready_probe.py`(새 행위 시험 3 + 가짜 cysd 모드 3) · `test_dept_name_guard.py`(경쟁 승자 픽스처 = 락 먼저).
+
+## W1. 원인 (확정 — 강제 재현 + 운영 진리표 + 실 바이너리)
+
+- `boot_wait` 는 우리가 띄운 cysd 의 pid 가 죽으면 즉시 「기동 중 종료」로 실패했다(dbg-D10). 그런데 그 cysd 가 **싱글턴 경쟁 패자**면 소켓은 승자가 연다.
+- 실 cysd 의 패자 판정(`src/bin/cysd/deadman.rs:167` `judge_holder`): `Some(_) if responded => Healthy` · **`Some(_) if !hb_stale => Healthy`** — 승자가 **아직 응답하지 않아도** 하트비트만 신선하면
+  패자는 「건강한 홀더」로 보고 exit(1) 한다. 승자는 락을 잡는 즉시 pid 를 적고 하트비트를 찍는다(`deadman::claim_lock` · `src/bin/cysd/main.rs:1773` `acquire_startup_lock`).
+  ∴ 「락에 산 승자 pid · 소켓 무응답 · 패자 이미 종료」 창이 운영에 실재 → 그 창에서 boot_wait 가 살아 있는 승자를 버린다.
+- 시험 픽스처(`PostSpawnRegistryFailure` 경쟁 승자)는 패자 사망 **뒤에** 락·소켓을 함께 공개했다 → 그 사이 boot_wait 가 사망을 먼저 보면 적(HEAD 단독 5/10).
+  이 순서는 실 cysd 와 다르다(실 패자는 승자가 락을 **이미** 쥐었기 때문에 진다).
+
+### 강제 재현 (시험 파일 무수정 하네스 · 모듈 전역 `open` 을 감싸 픽스처 도우미 기록 순간만 바꿈)
+
+주입 = 승자가 「패자 사망 → 사망 뒤 첫 핑 → +1초」 뒤에야 공개(앵커 = 승자 갈래 `    corrupt()` + `sock = Path(...)` 두 줄 · 수리 전후 공통).
+
+| 실행 | 결과 |
+|---|---|
+| 수리 전(HEAD cys-dept + 락-먼저 픽스처) · 주입 10회 | **10/10 적** — 전부 `1 != 12 : 스폰 이후 판독 실패가 exit12로 전파되지 않음`(사망을 먼저 보고 회수 → rc 1) · 주입 적중 10/10 |
+| 수리 전 HEAD 사본 · 주입 없음 · 단독 10회 | 5/10 적(기존 플레이크 그대로) |
+| 수리 후 · 주입 10회 | **0/10 적** |
+| 수리 후 · 대조군(주입 없음) 10회 | 0/10 적 |
+
+- 하네스 결함 1건(정직 고지): 처음엔 회차마다 스위트를 따로 돌려 모듈 정리(`tearDownModule`)가 매번 RUN_ROOT 를 지웠다 → 2회차부터 `FileNotFoundError`. 10회를 한 스위트에 담아 다시 쟀다(위 표).
+
+## W2. 수리
+
+- 운영 `cys-dept`: `boot_lock_winner(sock, pid)` 신설 — `${sock%.sock}.lock` 첫 줄이 숫자뿐 · 0 아님 · 우리 pid 아님 · `kill -0` 성공일 때만 0.
+  `boot_wait` 는 pid 사망 시 이것이 0 이면 안내 1줄(「부서 데몬(pid N)은 끝났지만 시작 락을 다른 산 데몬이 쥐고 있다 — 그 데몬의 응답을 기다린다」 · 1회만)을 내고 **기존 정지(`CYS_DEPT_BOOT_STALL_S`)·상한(`CYS_DEPT_BOOT_MAX_S`) 검사 그대로** 계속 돈다.
+  아니면 종전과 같은 「기동 중 종료」 조기 실패(dbg-D10 유지). 판정은 매 반복 다시 한다 — 기다리던 승자마저 죽으면 다음 반복에서 조기 실패.
+  예산 초과 = 기존 문구(「기동 진행이 N초 멈췄다」/「기동 상한 N초 초과」) + 「데몬 기동 실패」.
+- 윈도: 소켓이 named pipe 이름(`\\.\pipe\cys-dept-<이름>` · `cys-dept:dept_sock`)이라 `.lock` 파일이 없다 · 윈 cysd 는 시작 락을 `#[cfg(unix)]` 갈래에서만 만든다 → 항상 1 = 동작 무변경. Rust 변경 0 → win-typecheck 해당 없음.
+- 시험 `test_dept_name_guard` 경쟁 승자 픽스처: 승자가 **시작하자마자** 락(자기 pid)을 쥔다(실 cysd 순서). 끝의 락·소켓 공개 줄과 모든 단언은 그대로.
+- 시험 `test_d1_dept_ready_probe` `DeptFirstBootWait` 에 3건(가짜 cysd `D10_MODE` = `lost_win`·`lost_dead`·`lost_never`):
+  ① 산 승자가 락을 쥐고 2초 뒤 응답 → rc 0 · 안내 줄 · 「데몬 기동 실패」 없음 ② 락에 죽은 pid → 10초 안 조기 실패 + 「기동 중 종료」 + 고아·등록 회수
+  ③ 산 승자가 끝내 무응답 · 정지 예산 3초 → 25초 안에 「기동 진행이 3초 멈췄다」 + 「데몬 기동 실패」 + 등록 원복. 기존 `die`(빈 락 → 조기 실패) 핀이 「락 pid 없음」 갈래를 그대로 지킨다.
+
+## W3. 뮤턴트 · 수리 전 적
+
+| 변이 | 대상 시험 | 결과 |
+|---|---|---|
+| 수리 전(HEAD cys-dept) | ① lost_win | **적** — 「락을 쥔 산 승자를 버리고 실패했다」 |
+| 뮤턴트 A: 산 pid 검사(`kill -0 "$h"`) 삭제 | ② lost_dead | **적** — 31.4초 헛대기 → 「조기 실패가 아니다」 |
+| 뮤턴트 B: 승자 대기 중 정지·상한 검사 무시(2줄) | ③ lost_never | **적** — 40초 시간 초과(`TimeoutExpired`) |
+
+뮤턴트는 스크립트가 심고 끝나면 수리본으로 복원(바이트 동일 확인 `cmp`).
+
+## W4. 실 cysd 동시 기동 2개 (격리 HOME · `/tmp` 짧은 경로 — scratch 경로는 sun_path 104B 초과)
+
+1) 맨 cysd 2개 같은 소켓: 락 = 승자 pid · 패자 `error: another cysd holds the startup lock … reason=healthy-holder` · 승자 `pong`.
+2) `cys-dept launch` 경유(이 수리): 승자 cysd 를 먼저 띄워 락 pid 기록(0.03초) → 직전 승자 응답 rc 1(아직 무응답 = 창 안) → `launch` 가 띄운 cysd = 패자(`healthy-holder`) →
+   boot_wait 안내 줄 「…시작 락을 다른 산 데몬이 쥐고 있다 — 그 데몬의 응답을 기다린다」 → **rc 0 · 51.6초**(승자 첫 기동의 팩 설치) · 승자 생존 · 락 = 승자 pid · 소켓 응답 rc 0 · 소켓 파일 1개.
+- ⚠ 하네스 정리 누락 1건(정직 고지): `cys-dept` 가 `CYS_SOCKET` 없이 `cys` 를 부를 때 `cys` 가 격리 HOME 의 **기본** 데몬(`.local/state/cys/cys.sock`)을 자동 기동했고, 그 데몬은 독립 세션이라
+  내 프로세스 그룹 정리에서 빠졌다 — lsof 로 내 격리 HOME 파일을 쥔 것을 확인하고 그 pid 하나만 종료(잔존 0 실측). 다음 실행은 `CYS_NO_AUTOSTART=1` 또는 격리 HOME 소켓 보유자 회수가 필요.
+
+## W5. 검증
+
+| 항목 | 결과 |
+|---|---|
+| `test_d1_dept_ready_probe` 전체 | 14 OK · 98초 |
+| `test_dept_create_progress` 전체(boot_wait 문면 census · bash 3.2/MSYS 문법 census 포함) | 105 OK |
+| `test_win_dept_spawn` · `test_dept_win_python_resolve` · `test_dbg_d3_dept_path_precedence` | 11 OK(skip 2 = 윈 실기 전용) · rc 0 · rc 0 |
+| `test_dept_name_guard` 30회(수리본 · 동시 5 · 15×2) | **30/30 rc 0** · 매회 75 OK — 별건이던 `test_create_spawn_loser_preserves_live_winner` 포함 적 0 · 끝난 뒤 남은 시험 프로세스 0 |
+| 팩 py 전건(수리본 · 본 작업트리 · 동시 4 · 격리 env 같은 꼴) | **185 rc 0** · 적 4 = 기준선 3 + 부하 시한 1 ↓ |
+
+전건 적 4의 판정:
+- `test_agora_known_authentic` · `test_preflight_phase1_checks`·`test_verify_gate`(요구 env 재실행 **26 OK · 9 OK**) = 기준선.
+- `test_d1_dept_ready_probe` rc 1 — 새 시험이 아니라 **기존 `die` 핀**(`test_daemon_death_during_boot_fails_fast_and_unregisters`)이 동시 4 실행에서 14.2초로 「10초 안」 문턱을 넘었다.
+  판정 근거(실측): 이 케이스 직렬 3회 소요 = 수리본 4.7·1.7·1.7초 / 수리 전(HEAD cys-dept) 4.4·1.6·1.6초 — 같다(빈 락 → `boot_lock_winner` 는 `read` 빈 값으로 즉시 1).
+  당시 맥 부하 평균 17~23(다른 좌석 작업 겹침). 모듈 직렬 재실행 **14 OK**. → 부하 시한 · 수리 무관.
+- 이번 전건에선 `test_session_start_hook` · `test_dbg_d3_d11_shared_profile_hooks` 둘 다 rc 0(형제 전건의 두 산물은 동시 실행·/tmp 작업트리 조건 탓이라는 판정과 맞다).

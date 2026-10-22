@@ -135,6 +135,8 @@ describe("상담소 끄기/켜기 · 첫 안내", () => {
     expect(toggle).toContain('invoke("counsel_auto_status")');
     expect(toggle).toContain('invoke("counsel_auto_set", { on: next })');
     expect(toggle).toContain("state.textContent = autoLine(st.auto);");
+    // 꺼진 창에 「끄려면 ‘상담소 끄기’」가 남던 것(master#5a04ba60 눈 검수) — 상태가 바뀔 때마다 안내문도 같이 바꾼다.
+    expect(toggle).toContain('(ov.querySelector(".counsel-auto-notice") as HTMLElement).textContent = autoNotice(st.auto);');
   });
   it("첫 안내 = 팩이 원할 때만(needs_notice) · 문구 그대로 · 「상담소 끄기」 단추 · 끈 게 확인된 뒤에만 「봤음」 표식", () => {
     expect(notice).toContain('parseAutoStatus(await invoke("counsel_auto_status"))');

@@ -3,7 +3,9 @@ import { describe, it, expect } from "bun:test";
 import {
   AUTO_COPY,
   COUNSEL_COPY,
+  REPORT_NOTICE,
   autoLine,
+  autoNotice,
   autoToggle,
   parseAutoStatus,
   MAX_TEXT,
@@ -256,5 +258,11 @@ describe("상담소 끄기/켜기 상태 판독(TICKET=cysr-1110-counsel-off)", 
     expect(autoToggle(null)).toEqual({ label: AUTO_COPY.turnOff, next: false });
     expect(autoToggle(false)).toEqual({ label: AUTO_COPY.turnOn, next: true });
     expect([autoLine(true), autoLine(false), autoLine(null)]).toEqual([AUTO_COPY.on, AUTO_COPY.off, AUTO_COPY.unknown]);
+  });
+  it("단추 아래 안내문 — 꺼짐만 「다시 켜려면」 · 켜짐·모름 = 승인 문구 그대로(cysr-1110-visual 눈 검수)", () => {
+    expect(autoNotice(false)).toBe("지금은 보내지 않습니다. 다시 켜려면 ‘상담소 켜기’를 누르세요.");
+    expect(autoNotice(false)).toContain(`‘${AUTO_COPY.turnOn}’`);
+    expect(autoNotice(true)).toBe(REPORT_NOTICE);
+    expect(autoNotice(null)).toBe(REPORT_NOTICE);
   });
 });

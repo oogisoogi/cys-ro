@@ -50,6 +50,7 @@ export const AUTO_COPY = {
   unknown: "자동 보고 상태를 확인하지 못했어요.",
   busy: "바꾸는 중이에요…",
   notTurnedOn: "지금은 켜지 못했어요. 잠시 뒤 다시 눌러 주세요.",
+  offNotice: "지금은 보내지 않습니다. 다시 켜려면 ‘상담소 켜기’를 누르세요.",
 } as const;
 
 /** Rust `counsel_auto_status`·`counsel_auto_set` 결과 판독 — auto 가 참/거짓이 아니면 모름(null). 안내 = 켜짐이고 팩이 원할 때만. */
@@ -62,6 +63,11 @@ export function parseAutoStatus(res: unknown): AutoStatus {
 
 export function autoLine(auto: boolean | null): string {
   return auto === true ? AUTO_COPY.on : auto === false ? AUTO_COPY.off : AUTO_COPY.unknown;
+}
+
+/** 단추 아래 안내문 — 꺼짐일 때만 「다시 켜려면」(master#5a04ba60 · cysr-1110-visual 눈 검수) · 켜짐·모름 = 승인 문구 그대로. */
+export function autoNotice(auto: boolean | null): string {
+  return auto === false ? AUTO_COPY.offNotice : REPORT_NOTICE;
 }
 
 /** 단추 = 지금 상태의 반대 · 모를 때는 끄기(보내지 않는 쪽). */

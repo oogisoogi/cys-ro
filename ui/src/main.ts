@@ -174,6 +174,7 @@ import {
   AUTO_COPY,
   REPORT_NOTICE,
   autoLine,
+  autoNotice,
   autoToggle,
   badgeText,
   buildCounselView,
@@ -12009,6 +12010,7 @@ async function loadCounselAuto(ov: HTMLElement, next?: boolean) {
   if (!ov.isConnected) return;
   const st = parseAutoStatus(res);
   state.textContent = autoLine(st.auto);
+  (ov.querySelector(".counsel-auto-notice") as HTMLElement).textContent = autoNotice(st.auto);
   if (next === true && st.auto !== true) state.textContent += " " + AUTO_COPY.notTurnedOn;
   const t = autoToggle(st.auto);
   btn.textContent = t.label;

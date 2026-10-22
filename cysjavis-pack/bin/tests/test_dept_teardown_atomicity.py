@@ -127,6 +127,35 @@ check("D2 teardown 전 거부 — 등재 그대로", "dept-4" in json.load(open(
 check("D3 teardown 전 거부 — 묘비 미기록", "tombstone" not in phoenix_log(tmp), phoenix_log(tmp)[-150:])
 shutil.rmtree(tmp)
 
+# ── E. review15(codex 1R #1): `down` 의 부서명 상위참조는 identify·kill·소켓 삭제 어느 것보다 먼저 거부 ──
+#   `dept-1/../cys` 는 dept_sock 에서 `~/.local/state/cys-dept-dept-1/../cys/cys.sock` = **기지 데몬 소켓**이 된다.
+#   종전엔 이름 검사가 dept_purge_state 안(= kill·rm 뒤)에만 있어 기지 데몬을 죽이고 그 소켓을 지운 뒤 exit 3 이었다.
+tmp = tempfile.mkdtemp(prefix="dt-e-")
+env, home, reg = setup(tmp, {"dept-1": {"socket": os.path.join(tmp, "x", "cys.sock")}})
+st = os.path.join(home, ".local", "state")
+os.makedirs(os.path.join(st, "cys-dept-dept-1"))
+os.makedirs(os.path.join(st, "cys"))
+base_sock = os.path.join(st, "cys", "cys.sock")
+open(base_sock, "w").close()
+victim = subprocess.Popen(["sleep", "60"])   # 「기지 데몬」 대역 — 이 시험이 띄운 자식이다
+with open(os.path.join(home, ".local", "bin", "cys"), "w", encoding="utf-8", newline="\n") as f:
+    f.write("#!/bin/sh\necho \"cys $@ sock=$CYS_SOCKET\" >> \"%s/calls.log\"\n"
+            "case \"$1\" in identify) echo '{\"daemon_pid\": %d}'; exit 0;; esac\nexit 0\n" % (tmp, victim.pid))
+for nm in ("dept-1/../cys", "dept-1\\..\\cys", "..", "a/b", "a\\b"):   # 뒤 둘 = 구분자만(`..` 없이) — 가드 각 갈래를 따로 문다
+    for flags in ((), ("--purge-state",)):   # 플래그 없는 down 은 종전에 이름 검사가 아예 없었다(kill·rm 뒤 exit 0)
+        code, out = run(env, "down", nm, *flags)
+        check("E1 상위참조 이름 exit 2 (%s %s)" % (nm, " ".join(flags)), code == 2, "code=%s %s" % (code, out[-200:]))
+check("E2 기지 데몬 대역 생존", victim.poll() is None)
+check("E3 기지 소켓 보존", os.path.exists(base_sock))
+calls_e = open(os.path.join(tmp, "calls.log"), encoding="utf-8").read() if \
+    os.path.exists(os.path.join(tmp, "calls.log")) else ""
+check("E4 identify 미호출", "identify" not in calls_e, calls_e[-200:])
+check("E5 묘비 미기록", "tombstone" not in phoenix_log(tmp), phoenix_log(tmp)[-150:])
+check("E6 등재 그대로", "dept-1" in json.load(open(reg, encoding="utf-8"))["depts"])
+victim.kill()
+victim.wait()
+shutil.rmtree(tmp)
+
 # ── 정적 트립와이어: 배선 소실 검출 ──
 src = open(DEPT, encoding="utf-8").read()
 check("W1 launch 배선", src.count("dept_tombstone_remove \"$name\"") >= 3,

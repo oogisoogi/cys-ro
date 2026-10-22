@@ -3226,6 +3226,9 @@ mod tests {
     /// c4 의 본문 — `window` 는 확인 레코드를 전역 `confirms()` 에 넣은 **뒤**·`delete` **앞**에 불린다.
     /// ★TICKET=cysr-1111-trash-c4race: 그 사이에 다른 검체의 `reset_state_for_test()` 가 끼면 확인 레코드가 사라져
     ///   `delete` 가 `confirm_expired` 로 돌아온다(전체 병렬 1회 적). 강제 재현 검체가 이 자리에 리셋을 넣는다.
+    /// ★cysr-1111-adv-fixes #2: 본문을 떼어 낸 검체(c4_a_deleted_root…)와 같은 `#[cfg(unix)]` — 윈 기본 빌드는 삭제가 꺼져
+    ///   (`trash_delete_supported()` = trash_win_validated) `delete` 가 `unsupported_platform_pending_validation` 으로 돌아온다.
+    #[cfg(unix)]
     fn c4_run(tag: &str, window: &dyn Fn()) {
         let _g = PREVIEW_TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let base_dir = rig(tag);
@@ -3275,6 +3278,7 @@ mod tests {
     /// 검체가 하는 일(`PREVIEW_TEST_SERIAL` 을 잡고 `reset_state_for_test()`)을 다른 스레드로 넣고, 끝날 기회를 넉넉히 준다.
     /// c4 가 같은 자물쇠를 쥐고 있으면 리셋은 c4 가 끝날 때까지 못 들어온다(녹). 쥐지 않으면 리셋이 확인 레코드를 지워
     /// `delete` 가 `confirm_expired` 로 돌아온다(적 — 전체 병렬에서 관측된 바로 그 실패).
+    #[cfg(unix)]
     #[test]
     fn c4_a_reset_from_another_test_cannot_land_between_the_confirm_and_the_delete() {
         let (tx, rx) = std::sync::mpsc::channel::<()>();

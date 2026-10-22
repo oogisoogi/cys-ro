@@ -1286,13 +1286,18 @@ boot_progress_sig(){ # $1=sock $2=pack — 진행 신호 한 줄(바뀌면 진�
 #   (패자는 승자가 락을 쥔 뒤 bind 전에 죽을 수 있다 — 그 창에서 사망만 보고 실패하면 살아 있는 승자를 버린다).
 #   락 없음 · 빈 값 · 숫자 아님 · 0 · 우리 pid · 죽은 pid = 아님(1) → boot_wait 는 지금처럼 조기 실패한다(dbg-D10).
 #   윈도 cysd 는 named pipe 싱글턴이라 이 락 파일이 없다 → 항상 1(동작 무변경).
+#   ★cysr-1111-adv-fixes #1: 락 파일은 cysd 가 끝나도 마지막 pid 를 품고 남는다 → 그 pid 를 관계없는 프로세스가 재사용하면
+#   「산 승자」가 아니다. 실 cysd deadman::pid_is_cysd 와 같은 판정(프로세스 이름의 끝 이름이 정확히 cysd · 조회 실패 = 아님)을
+#   ps 로 한다(맥 comm = 실행 경로 · 리눅스 comm = 실행 파일 이름).
 boot_lock_winner(){ # $1=sock $2=pid(방금 띄운 데몬) — 0=다른 산 데몬이 시작 락을 쥠
-  local l="${1%.sock}.lock" h=""
+  local l="${1%.sock}.lock" h="" c=""
   [ -f "$l" ] || return 1
   IFS= read -r h < "$l" 2>/dev/null || [ -n "$h" ] || return 1
   h="${h%$'\r'}"
   case "$h" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$h" -gt 0 ] 2>/dev/null && [ "$h" != "$2" ] && kill -0 "$h" 2>/dev/null
+  [ "$h" -gt 0 ] 2>/dev/null && [ "$h" != "$2" ] && kill -0 "$h" 2>/dev/null || return 1
+  c="$(ps -p "$h" -o comm= 2>/dev/null)" || return 1
+  [ "${c##*/}" = cysd ]
 }
 boot_wait(){ # $1=sock $2=pack $3=pid(방금 띄운 데몬) — 0=응답 · 1=실패(사유 stderr)
   local s="$1" p="$2" pid="$3" max="${CYS_DEPT_BOOT_MAX_S:-120}" stall="${CYS_DEPT_BOOT_STALL_S:-30}"

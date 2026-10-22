@@ -55,10 +55,14 @@ if [ -n "${D10_MODE:-}" ]; then
   [ "$D10_MODE" = die ] && exit 3
   # ★cysr-1111-bootwait-lock-winner 싱글턴 경쟁 패자: lost_dead = 락에 죽은 pid 를 적고 즉사 · lost_win = 산 승자가 락을 쥐고
   #   D10_WIN_UP_S 초 뒤 응답 · lost_never = 산 승자가 락만 쥐고 끝내 응답 안 함. 승자는 이 프로세스 그룹에 남아 정리가 거둔다.
+  #   ★cysr-1111-adv-fixes #1: 승자는 이름이 cysd 인 프로세스다(sleep 을 cysd 라는 이름으로 실행 — 맥 ps comm=argv0 ·
+  #   리눅스 comm=실행 경로 끝 이름) · lost_reused = 락의 낡은 pid 를 관계없는 산 프로세스(sleep)가 재사용.
+  mkdir -p "$T/w" && ln -sf "$(command -v sleep)" "$T/w/cysd"
   case "$D10_MODE" in
     lost_dead) ( exit 0 ) & dp=$!; wait "$dp"; echo "$dp" > "${CYS_SOCKET%.sock}.lock"; exit 3 ;;
-    lost_win) ( sleep "${D10_WIN_UP_S:-2}"; : > "$T/up"; exec sleep 600 ) & echo "$!" > "${CYS_SOCKET%.sock}.lock"; exit 3 ;;
-    lost_never) ( exec sleep 600 ) & echo "$!" > "${CYS_SOCKET%.sock}.lock"; exit 3 ;;
+    lost_win) "$T/w/cysd" 600 & echo "$!" > "${CYS_SOCKET%.sock}.lock"; ( sleep "${D10_WIN_UP_S:-2}"; : > "$T/up" ) & exit 3 ;;
+    lost_never) "$T/w/cysd" 600 & echo "$!" > "${CYS_SOCKET%.sock}.lock"; exit 3 ;;
+    lost_reused) sleep 600 & echo "$!" > "${CYS_SOCKET%.sock}.lock"; exit 3 ;;
   esac
   [ "$D10_MODE" = stall ] && exec sleep 600
   end=$(( $(date +%s) + ${D10_BOOT_S:-0} )); i=0
@@ -270,6 +274,13 @@ class DeptFirstBootWait(_Base):
         """락에 적힌 pid 가 죽었으면 승자가 아니다 — 지금처럼 「기동 중 종료」 조기 실패(정지 예산 기본 30초를 기다리지 않는다)."""
         out = self._assert_failed_and_cleaned("lost_dead", 10)
         self.assertIn("이 기동 중 종료했다", out, "죽은 pid 락인데 조기 실패 사유가 아니다")
+
+    def test_lock_pid_reused_by_a_live_non_cysd_process_still_fails_fast(self):
+        """★cysr-1111-adv-fixes #1: 락에 남은 낡은 pid 를 관계없는 산 프로세스가 재사용 중이면 승자가 아니다 —
+        「다른 산 데몬」 거짓 안내 + 정지 예산(기본 30초) 헛대기 없이 종전처럼 「기동 중 종료」 조기 실패."""
+        out = self._assert_failed_and_cleaned("lost_reused", 10)
+        self.assertNotIn("시작 락을 다른 산 데몬이 쥐고 있다", out, "cysd 가 아닌 산 pid 를 승자로 오인했다\n%s" % out[-600:])
+        self.assertIn("이 기동 중 종료했다", out, "재사용 pid 락인데 조기 실패 사유가 아니다")
 
     def test_live_lock_holder_that_never_answers_fails_within_the_stall_budget(self):
         """산 승자가 락만 쥐고 응답하지 않으면 정지 예산(3초) 안에 기존 실패 문구로 끝난다 — 무한 대기 금지."""

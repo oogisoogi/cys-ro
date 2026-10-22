@@ -1488,9 +1488,12 @@ if sys.argv[1] == "winner":
     # ★cysr-1111-bootwait-lock-winner: 실 cysd 의 경쟁 패자는 승자가 시작 락(flock + pid 기록 · deadman::claim_lock)을
     #   **이미** 쥐었기 때문에 진다 — 승자는 락부터 쥔다. 종전 픽스처는 패자 사망 뒤에 락·소켓을 함께 공개해, 그 사이
     #   boot_wait 가 사망을 먼저 보면 승자를 버렸다(HEAD 단독 5/10 적 · 강제 재현 10/10).
+    # ★cysr-1111-adv-fixes #1: boot_wait 는 락 pid 의 프로세스 이름이 cysd 일 때만 산 승자로 본다(pid 재사용 방어) —
+    #   승자 신원은 이름이 cysd 인 대리 프로세스(GUARD_WINNER_PID)가 맡고, 이 파이썬은 그 pid 로 락·소켓을 공개만 한다.
+    me = int(env.get("GUARD_WINNER_PID") or os.getpid())
     _lk = Path(env["GUARD_TARGET_SOCKET"]).with_suffix(".lock")
     _lk.parent.mkdir(parents=True, exist_ok=True)
-    _lk.write_text(str(os.getpid()))
+    _lk.write_text(str(me))
     pidfile = Path(env["GUARD_PID_FILE"])
     while True:
         try:
@@ -1507,8 +1510,8 @@ if sys.argv[1] == "winner":
     corrupt()
     sock = Path(env["GUARD_TARGET_SOCKET"])
     sock.parent.mkdir(parents=True, exist_ok=True)
-    Path(str(sock)).with_suffix(".lock").write_text(str(os.getpid()))
-    sock.write_text(str(os.getpid()))
+    Path(str(sock)).with_suffix(".lock").write_text(str(me))
+    sock.write_text(str(me))
     while True:
         signal.pause()
 elif sys.argv[1] == "daemon":
@@ -1567,11 +1570,19 @@ else:
         # Mutation control may leave the newly spawned child running. Always reclaim that exact PID.
         self.addCleanup(self._cleanup_owned_daemon)
         if competing:
-            self.winner_process = subprocess.Popen(
-                [sys.executable, helper, "winner"], env=self.env,
+            # 승자 신원 = sleep 을 cysd 라는 이름으로 실행(맥 ps comm=argv0 · 리눅스 comm=실행 경로 끝 이름)
+            wbin = os.path.join(self.tmp, "winner-bin", "cysd")
+            os.makedirs(os.path.dirname(wbin), exist_ok=True)
+            os.symlink(shutil.which("sleep"), wbin)
+            self.winner_process = subprocess.Popen([wbin, "600"], stdout=subprocess.DEVNULL,
+                                                   stderr=subprocess.DEVNULL)
+            self.winner_coordinator = subprocess.Popen(
+                [sys.executable, helper, "winner"],
+                env=dict(self.env, GUARD_WINNER_PID=str(self.winner_process.pid)),
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.addCleanup(self._cleanup_winner)
             self.assertIsNone(self.winner_process.poll(), "경쟁 승자 fixture 미기동")
+            self.assertIsNone(self.winner_coordinator.poll(), "경쟁 승자 fixture 미기동")
         if existing:
             env = dict(self.env, CYS_SOCKET=self.sock)
             proc = subprocess.Popen([sys.executable, helper, "daemon"], env=env,
@@ -1621,14 +1632,14 @@ else:
             pass  # 정상 EXIT cleanup과 fixture 종료가 겹칠 수 있다.
 
     def _cleanup_winner(self):
-        proc = self.winner_process
-        if proc.poll() is None:
-            proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=5)
+        for proc in (self.winner_coordinator, self.winner_process):
+            if proc.poll() is None:
+                proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
 
     def _assert_failure(self, verb, existing=False, reuse_dead=False, competing=False):
         self._fixture(verb, reuse_dead=reuse_dead, existing=existing, competing=competing)

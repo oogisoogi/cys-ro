@@ -8960,8 +8960,10 @@ pub(crate) struct PromptObs {
     /// 선두 마커가 없거나 커서가 마커 앞이면 `None` — 초안 속 글리프는 경계로 삼지 않으며,
     /// 호출부는 `Unknown` 으로 받아 배달하지 않는다(fail-closed).
     pub(crate) line: Option<(String, String)>,
-    /// 화면 전량(모달·레이아웃 판정 재료 — `readiness::modal_foreground`·`composer_layout_static_ok`).
+    /// 화면 전량(모달 판정 재료 — `readiness::modal_foreground`).
     pub(crate) screen: String,
+    /// ★(1.1.11 · WINQ-2) 화면 **물리 행** 전량([`screen_rows_text`] — 줄바꿈 표시 행을 잇지 않는다) · 레이아웃 판정 재료(`composer_layout_static_ok`).
+    pub(crate) layout_screen: String,
     /// 커서 행이 마커 뒤 `N. …` 번호 선택지 행이다(codex `› 1. Yes, continue` · claude `❯ 1. Yes`) —
     /// composer 가 아니라 선택기다(codex 설계 검토 Q5 반례).
     pub(crate) selector_row: bool,
@@ -9009,6 +9011,7 @@ impl PromptObs {
         let b = self.block.as_ref()?;
         Some(PromptObs {
             screen: b.as_empty_prompt.clone(),
+            layout_screen: b.as_empty_prompt.clone(),
             line: Some((String::new(), String::new())),
             selector_row: false,
             block: None,
@@ -9452,6 +9455,13 @@ fn tick_prompt_marker<'a>(markers: &'a [String], cursor_row: Option<(&str, &str)
         .or_else(|| cys::agent_markers::pick_marker_for_screen(markers, contents))
 }
 
+/// ★(1.1.11 · cysr-1111-int-winq2 · WINQ-2) 화면을 **물리 행**마다 한 줄로 — `screen.contents()` 는 줄바꿈 표시 행을 다음 행과 이어 붙인다.
+/// ConPTY 는 너비를 꽉 채운 행 뒤를 자동 줄바꿈으로 이어 보내므로 윈에서는 괘선 + composer 가 `────…❯` 한 줄이 됐다(선두 마커 행·괘선 행 소실).
+fn screen_rows_text(screen: &vt100::Screen) -> String {
+    let (_, cols) = screen.size();
+    screen.rows(0, cols).collect::<Vec<_>>().join("\n")
+}
+
 fn observe_prompt_ext(s: &Arc<crate::state::Surface>, markers: &[String], want_block: bool) -> PromptObs {
     // ★(0.14.31 · 리뷰 R5 · codex major) 세대는 파서 락 **밖·앞**에서 읽는다. 락 안에서 읽으면
     //   "락을 기다리는 동안 reader 가 새 청크를 반영했다" 는 창이 관측에 흡수돼 보이지 않는다 —
@@ -9463,6 +9473,7 @@ fn observe_prompt_ext(s: &Arc<crate::state::Surface>, markers: &[String], want_b
     let (rows, cols) = screen.size();
     let (cr, cc) = screen.cursor_position();
     let contents = screen.contents();
+    let layout_screen = screen_rows_text(screen);
     let marker_seen = markers.iter().any(|m| contents.contains(m.as_str()));
     if cr >= rows || markers.is_empty() {
         // 빈 목록은 호출부 불변식 위반이다. 빈 문자열로 contains/rfind 하지 않고 보류한다.
@@ -9476,6 +9487,7 @@ fn observe_prompt_ext(s: &Arc<crate::state::Surface>, markers: &[String], want_b
             marker_seen,
             line: None,
             screen: contents,
+            layout_screen,
             selector_row: false,
             busy_near_cursor: false,
             output_gen,
@@ -9524,6 +9536,7 @@ fn observe_prompt_ext(s: &Arc<crate::state::Surface>, markers: &[String], want_b
         marker_seen,
         line,
         screen: contents,
+        layout_screen,
         selector_row,
         busy_near_cursor,
         output_gen,
@@ -9837,7 +9850,7 @@ fn prompt_gate_input_with_approval(
         layout_ok: alt_screen
             && !marker.is_empty()
             && cys::readiness::composer_layout_static_ok(
-                &obs.screen,
+                &obs.layout_screen,
                 marker,
                 placeholder,
                 cys::readiness::idle_quiet_from(Some(obs.quiet_secs as f64)),
@@ -10023,7 +10036,7 @@ pub(crate) fn seat_screen_probe_with(
             let cursor_row = cursor_text.as_ref().map(|(b, r)| (b.as_str(), r.as_str()));
             let marker = tick_prompt_marker(&markers, cursor_row, &contents).unwrap_or("");
             cys::readiness::composer_layout_why(
-                &contents,
+                &rows_text.join("\n"),
                 marker,
                 placeholder.as_deref(),
                 cys::readiness::idle_quiet_from(Some(quiet_secs as f64)),
@@ -21986,6 +21999,63 @@ mod tests {
         assert_eq!(s.pending_queue.lock().unwrap().len(), 0, "틱이 배달하지 않았다(픽스처 전제): {}", qa_blocked_reason(&s));
     }
 
+    /// 맥 실화면을 파서에 먹인 뒤 **같은 행 글자**를 ConPTY 식으로 다시 그린다 — 각 행을 `CUP` 로 찍되, 앞 행이 마지막 열까지
+    /// 차 있으면 `CUP` 없이 이어 쓴다(자동 줄바꿈 · 앞 행에 줄바꿈 표시가 선다). 글자·행 위치·커서는 원화면 그대로다.
+    fn winq2_conpty_redraw(raw: &[u8]) -> Vec<u8> {
+        let mut p = vt100::Parser::new(40, 120, 0);
+        p.process(raw);
+        let screen = p.screen();
+        let (rows, cols) = screen.size();
+        let (cr, cc) = screen.cursor_position();
+        let mut out = b"\x1b[?1049h\x1b[2J".to_vec();
+        let mut prev_full = false;
+        for (i, row) in screen.rows(0, cols).enumerate() {
+            if !(prev_full && !row.is_empty()) {
+                out.extend(format!("\x1b[{};1H", i + 1).as_bytes());
+            }
+            out.extend(row.as_bytes());
+            prev_full = screen.cell(i as u16, cols - 1).is_some_and(|c| c.has_contents());
+        }
+        assert_eq!(usize::from(rows), screen.rows(0, cols).count());
+        out.extend(format!("\x1b[{};{}H", cr + 1, cc + 1).as_bytes());
+        out
+    }
+
+    /// ★(1.1.11 · cysr-1111-int-winq2 · WINQ-2) 윈 1.1.10 실기: fullscreen 좌석 `--queued` 95초+ 미배달 · `layout_why=no_marker_row` · 화면 = 테두리와 `❯` 한 줄.
+    /// 원인: 레이아웃 재료가 `screen.contents()` 였다 — vt100 은 줄바꿈 표시 행을 다음 행과 **이어 붙인다**. ConPTY 가 너비를 꽉 채운 괘선 뒤
+    /// composer 행을 자동 줄바꿈으로 이어 보내면 `────…❯` 한 줄이 되어 선두 마커 행·괘선 행이 둘 다 사라진다(틱 `layout_ok` 거짓 = `alt_screen` 보류).
+    /// 화면은 맥 2.1.306 idle 실화면과 글자·행이 같다(다시 그린 방식만 다르다) — 맥에서 배달되는 화면은 윈 그리기에서도 배달돼야 한다.
+    #[test]
+    fn winq2_wrapped_rule_row_keeps_fullscreen_composer_deliverable() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = wq_env("winq2");
+        let (daemon, s) = qa_fixture_seat("winq2", &winq2_conpty_redraw(WQ_IDLE_FULLSCREEN));
+        assert!(s.alt_screen.load(Ordering::Relaxed), "픽스처 전제 붕괴 — 대체화면이 아니다");
+        {
+            let p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+            let screen = p.screen();
+            let (rows, cols) = screen.size();
+            let li = screen
+                .rows(0, cols)
+                .position(|r| cys::agent_markers::leading_marker_index("❯", &r).is_some())
+                .expect("픽스처 전제 붕괴 — 행 단위로는 선두 ❯ 행이 있다");
+            assert!(li > 0 && screen.row_wrapped(li as u16 - 1), "픽스처 전제 붕괴 — composer 위 괘선 행에 줄바꿈 표시가 없다");
+            assert!(
+                !screen.contents().lines().any(|l| cys::agent_markers::leading_marker_index("❯", l).is_some()),
+                "픽스처 전제 붕괴 — contents() 에 선두 ❯ 줄이 남았다(윈 관측 no_marker_row 와 다른 화면)"
+            );
+            assert!(rows > 0);
+        }
+        assert_eq!(queue_block_diag(&daemon, &s).layout_why, Some("ok"), "진단이 줄바꿈 표시 행을 이어 붙인 화면으로 쟀다");
+        qa_tick(&daemon);
+        assert_eq!(
+            s.pending_queue.lock().unwrap().len(),
+            0,
+            "윈 식으로 다시 그린 빈 fullscreen composer 에 배달하지 않았다: {}",
+            qa_blocked_reason(&s)
+        );
+    }
+
     #[test]
     fn wq_page_scroll_chunk_pure() {
         assert!(super::is_page_scroll_chunk(b"\x1b[5~"));
@@ -23995,6 +24065,7 @@ mod tests {
             marker_seen: true,
             line: Some(("› ".to_string(), PH.to_string())),
             screen: screen.clone(),
+            layout_screen: screen.clone(),
             selector_row: false,
             busy_near_cursor: false,
             output_gen: 2,
@@ -24362,6 +24433,7 @@ mod tests {
             marker_seen: true,
             line: line.then(|| (String::new(), String::new())),
             screen: String::new(),
+            layout_screen: String::new(),
             selector_row: sel,
             busy_near_cursor: false,
             output_gen: 20,
@@ -31003,6 +31075,7 @@ mod tests {
             marker_seen: true,
             line: Some((String::new(), String::new())),
             screen: "────────────────────\n❯ \n────────────────────\n  ? for shortcuts".to_string(),
+            layout_screen: "────────────────────\n❯ \n────────────────────\n  ? for shortcuts".to_string(),
             selector_row: false,
             busy_near_cursor: false,
             output_gen: 2,
@@ -31061,6 +31134,7 @@ mod tests {
             marker_seen: true,
             line: Some((before.into(), after.into())),
             screen: screen.to_string(),
+            layout_screen: screen.to_string(),
             selector_row: false,
             busy_near_cursor: false,
             output_gen: 2,

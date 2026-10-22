@@ -9457,7 +9457,7 @@ fn tick_prompt_marker<'a>(markers: &'a [String], cursor_row: Option<(&str, &str)
 
 /// ★(1.1.11 · cysr-1111-int-winq2 · WINQ-2) 화면을 **물리 행**마다 한 줄로 — `screen.contents()` 는 줄바꿈 표시 행을 다음 행과 이어 붙인다.
 /// ConPTY 는 너비를 꽉 채운 행 뒤를 자동 줄바꿈으로 이어 보내므로 윈에서는 괘선 + composer 가 `────…❯` 한 줄이 됐다(선두 마커 행·괘선 행 소실).
-fn screen_rows_text(screen: &vt100::Screen) -> String {
+pub(crate) fn screen_rows_text(screen: &vt100::Screen) -> String {
     let (_, cols) = screen.size();
     screen.rows(0, cols).collect::<Vec<_>>().join("\n")
 }
@@ -10114,7 +10114,8 @@ pub(crate) fn input_line_visibility(
             let draft_visible = if before_occupied {
                 Some(true)
             } else {
-                composer_rest_empty(&obs.screen, &obs.marker, placeholder, (before.as_str(), after.as_str())).map(|empty| !empty)
+                // ★(1.1.11 · WINQ-2 동형 ⓐ) stale 리셋과 같은 재료(물리 행) — 진단 = 리셋 술어 계약 유지.
+                composer_rest_empty(&obs.layout_screen, &obs.marker, placeholder, (before.as_str(), after.as_str())).map(|empty| !empty)
             };
             (draft_visible, Some(!after.trim().is_empty()))
         }
@@ -13888,7 +13889,8 @@ fn maybe_reset_stale_pending_input(
         .line
         .as_ref()
         .is_some_and(|(before, after)| before.trim().is_empty() && after.trim().is_empty())
-        && cys::readiness::composer_edit_region_empty(&obs.screen, marker, placeholder);
+        // ★(1.1.11 · cysr-1111-test-hygiene · WINQ-2 동형 ⓐ) 편집 영역은 행 모양 판독이라 **물리 행** 재료로 잰다(`layout_screen` doc · 틱 `layout_ok` 와 같은 재료).
+        && cys::readiness::composer_edit_region_empty(&obs.layout_screen, marker, placeholder);
     // ★(0.14.31 · 리뷰 R5 · codex major) 관측이 **한 프레임의 사실**일 때만 모순으로 센다 —
     //   발행 중이거나 관측 창에서 세대가 바뀐 화면은 "빈 입력줄" 의 근거가 되지 못한다.
     let contradiction = pending > 0
@@ -22054,6 +22056,37 @@ mod tests {
             "윈 식으로 다시 그린 빈 fullscreen composer 에 배달하지 않았다: {}",
             qa_blocked_reason(&s)
         );
+    }
+
+    /// ★(1.1.11 · cysr-1111-test-hygiene · WINQ-2 동형 ⓐ) stale `pending_input_bytes` 리셋과 그 진단 짝(입력줄 가시성)도 composer 를 **행 모양**으로 읽는다 —
+    /// 재료가 `contents()` 면 윈 식 화면(괘선 행 줄바꿈 표시 → `────…❯` 한 줄)에서 선두 마커 행이 사라져 리셋이 영영 안 걸리고(`input_pending` 무기한) 진단은 `None`(관측 불능)이 된다.
+    /// 맥 원화면(대조군)과 윈 식 다시 그리기는 글자·행·커서가 같으므로 둘 다 같은 답이어야 한다.
+    #[test]
+    fn winq2_wrapped_rule_row_lets_stale_pending_input_reset() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pack = empty_pack_dir("winq2-stale");
+        let _env = QueueEnvGuard::set(&[
+            ("CYS_PACK_DIR", pack.to_str().unwrap()),
+            ("CYS_QUEUE_MAX_WAIT_SECS", "0"),
+            ("CYS_QUEUE_STARVE_ALERT_SECS", "0"),
+            ("CYS_QUEUE_QUIET_SECS", "1"),
+        ]);
+        for (tag, raw) in [("winq2-stale-mac", WQ_IDLE_FULLSCREEN.to_vec()), ("winq2-stale-win", winq2_conpty_redraw(WQ_IDLE_FULLSCREEN))] {
+            let (daemon, s) = qa_fixture_seat(tag, &raw);
+            assert_eq!(
+                input_line_visibility(&super::observe_prompt(&s, &["❯".to_string()]), None).0,
+                Some(false),
+                "{tag}: 진단이 빈 편집 영역을 못 읽었다"
+            );
+            s.set_pending_input(7);
+            qa_tick(&daemon);
+            assert_eq!(qa_blocked_reason(&s), BLOCKED_INPUT_PENDING, "{tag}: 첫 틱은 스탬프만");
+            std::thread::sleep(std::time::Duration::from_millis(1200));
+            qa_tick(&daemon);
+            assert_eq!(s.pending_input_bytes.load(Ordering::Relaxed), 0, "{tag}: 빈 fullscreen composer 의 stale 계수가 리셋되지 않았다");
+            qa_tick(&daemon);
+            assert!(s.pending_queue.lock().unwrap().is_empty(), "{tag}: 리셋 뒤 배달하지 않았다: {}", qa_blocked_reason(&s));
+        }
     }
 
     #[test]

@@ -3613,11 +3613,13 @@ fn gate_guard_screen(sid: u64) -> Option<String> {
 /// 읽으면 그 사이에 값이 갈려 "화면은 프롬프트인데 정적은 옛 틱" 인 찢어진 관측이 판정에 실린다.
 /// `quiet_secs` 부재(구 데몬)는 `None`(미관측) 으로 접는다 — 환산의 소유자는 판정부 상수 하나다.
 /// 관측 실패(`None`)와 빈 화면을 타입으로 가르는 것은 [`gate_guard_screen`] 과 같은 계약이다.
-fn gate_guard_screen_with_quiet(sid: u64) -> Option<(String, Option<bool>)> {
+/// ★(1.1.11 · WINQ-2 동형 ⓑ) 둘째 값 = 같은 응답의 이월 판정 재료([`carry_layout`] · 물리 행).
+fn gate_guard_screen_with_quiet(sid: u64) -> Option<(String, String, Option<bool>)> {
     let r = request("surface.read_text", json!({"surface_id": sid})).ok()?;
     let text = r["text"].as_str()?.to_string();
     note_quiet_axis(&r); // ★(성찰 C3) 같은 응답에서 데몬 능력을 1회 판정한다.
-    Some((text, cys::readiness::idle_quiet_from(r["quiet_secs"].as_f64())))
+    let layout = carry_layout(&r, &text).to_string();
+    Some((text, layout, cys::readiness::idle_quiet_from(r["quiet_secs"].as_f64())))
 }
 
 /// ★(0.14.31 · 성찰 C3) `surface.read_text` 응답이 **출력 정적 축을 낼 수 있는가**(순수).
@@ -12718,6 +12720,42 @@ mod seat_latch_negation_tests {
     /// codex 플레이스홀더를 대조군으로 유지해 상태줄 문면을 마커로 쓰던 영구 보류를 막는다.
     /// ★(라운드3) 해소기를 프로덕션 두 값(leading + glyph_off_composer)으로 맞췄다 — 이 검체가 해소기 변경을 함께 따라간다.
     #[test]
+    fn winq2_carry_reads_physical_rows_of_a_wrapped_composer() {
+        // ★(1.1.11 · cysr-1111-test-hygiene · WINQ-2 동형 ⓑ) 윈 식 화면 — 꽉 찬 괘선 뒤 composer 를 자동 줄바꿈으로 이어 그리면 `text`(`contents()`)는
+        //   `────…❯ ` 한 줄이다(선두 마커 행 소실). 물리 행(`layout_text`)으로는 정상 빈 composer(위아래 괘선 + 상태줄)다. 관문을 본 부트가 이 화면에서
+        //   이월을 못 풀면 `carry-unproven` 영구 보류(디렉티브 미주입)다.
+        let rule = "─".repeat(80);
+        let text = format!("  각성 확인 완료.\n{rule}❯ \n{rule}  ? for shortcuts\n");
+        let layout = format!("  각성 확인 완료.\n{rule}\n❯ \n{rule}\n  ? for shortcuts\n");
+        let marker = vec!["❯".to_string()];
+        let carry = |screen: &str| {
+            let lead = cys::agent_markers::pick_marker_leading_on_screen(&marker, screen);
+            let glyph_off = lead.is_none() && cys::agent_markers::pick_marker_last(&marker, screen).is_some();
+            gate_carry_ok(true, false, lead, None, screen, Some(true), Some(true), glyph_off, false)
+        };
+        assert!(!carry(&text), "검체 전제 붕괴 — 이어 붙인 화면에서도 이월이 풀린다(윈 증상을 재지 못한다)");
+        assert!(carry(&layout), "검체 전제 붕괴 — 물리 행 화면에서 이월이 안 풀린다");
+        let resp = json!({"text": text, "layout_text": layout});
+        assert!(carry(carry_layout(&resp, &text)), "이월 판정이 물리 행 재료(layout_text)를 쓰지 않는다");
+        // 구 데몬(키 부재) = 종전 재료 그대로(스큐 무변경).
+        assert_eq!(carry_layout(&json!({"text": text}), &text), text);
+        // 배선 — 이월 판정 소비처 둘(부트 폴링 · 관문 보류 재관측)이 마커 해소·이월 술어에 그 재료를 넘긴다(관문·모달 판독은 `text` 그대로).
+        let src = include_str!("cys.rs");
+        let body = |name: &str| {
+            let a = src.find(&format!("\nfn {name}(")).expect("함수") + 1;
+            &src[a..a + src[a..].find("\n}\n").expect("함수 끝")]
+        };
+        for (f, mat) in [("boot_agent_on_surface", "layout"), ("gate_pending_reobserve_once", "&layout")] {
+            let b = body(f);
+            assert!(b.contains(&format!("pick_marker_leading_on_screen(&composer_marker, {mat})")), "{f}: 마커 해소가 물리 행 재료가 아니다");
+            assert!(b.contains(&format!("pick_marker_last(&composer_marker, {mat})")), "{f}: 글리프 판독이 물리 행 재료가 아니다");
+            assert!(b.contains(&format!("\n{mat},\n")) || b.contains(&format!(" {mat},\n")), "{f}: 이월 술어의 화면 인자가 물리 행 재료가 아니다");
+        }
+        assert!(body("boot_agent_on_surface").contains("let layout = carry_layout(&screen, text);"));
+        assert!(body("gate_guard_screen_with_quiet").contains("carry_layout(&r, &text)"));
+    }
+
+    #[test]
     fn triage_wp5_gemini_seat_can_prove_carry_evidence_after_a_gate() {
         let embed = embedded_agents_json().expect("임베드 agents.json");
         let marker = composer_marker_of(&embed["gemini"]);
@@ -16632,17 +16670,19 @@ fn boot_agent_on_surface(
         match cys::readiness::judge(&obs) {
             cys::readiness::Verdict::Ready { evidence } => {
                 // ★(리뷰 R5) 관문 증거 이월 — 위 `gate_evidence_seen` 주석 참조.
-                let leading = cys::agent_markers::pick_marker_leading_on_screen(&composer_marker, text);
+                // ★(1.1.11 · WINQ-2 동형 ⓑ) composer 행 모양 판독은 물리 행 재료로([`carry_layout`]) — 관문·모달 판독은 `text` 그대로.
+                let layout = carry_layout(&screen, text);
+                let leading = cys::agent_markers::pick_marker_leading_on_screen(&composer_marker, layout);
                 let carry_ok = gate_carry_ok(
                     gate_evidence_seen,
                     readiness_v1,
                     leading,
                     composer_placeholder.as_deref(),
-                    text,
+                    layout,
                     obs.idle_quiet,
                     quiet_axis_supported(),
                     leading.is_none()
-                        && cys::agent_markers::pick_marker_last(&composer_marker, text).is_some(),
+                        && cys::agent_markers::pick_marker_last(&composer_marker, layout).is_some(),
                     cys::readiness::gate_or_modal_present(text, &gate_corpus.gates, &composer_marker),
                 );
                 if !carry_ok {
@@ -17146,6 +17186,13 @@ fn inject_directive_after_ready(
 // 절반)를 그대로 태운다. 기동 send 는 **한 글자도** 보내지 않는다.
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// ★(1.1.11 · cysr-1111-test-hygiene · WINQ-2 동형 ⓑ) 이월 판정([`gate_carry_ok`])의 화면 재료 — `surface.read_text` 응답의 **물리 행**
+/// 재료(`layout_text`)가 있으면 그것, 없으면(구 데몬 · 키 부재) `text`(= 종전 거동). `text` 는 `contents()` 라 줄바꿈 표시 행을 다음 행과
+/// 이어 붙인다 — 윈 식 화면에서 괘선 + composer 가 `────…❯` 한 줄이 되어 선두 마커 행이 사라지면 관문을 본 부트가 `carry-unproven` 에 갇힌다.
+fn carry_layout<'a>(resp: &'a Value, text: &'a str) -> &'a str {
+    resp["layout_text"].as_str().unwrap_or(text)
+}
+
 /// ★(0.14.31 · 리뷰 R5 · codex blocking) **관문 증거 이월**의 순수 술어 — 이 부트에서 관문·모달을
 /// 본 적이 있으면 Ready 에 **양성 프롬프트 증거**를 더 요구한다. 근거 전문은 호출부
 /// (`boot_agent_on_surface` 의 `gate_evidence_seen`) 주석에 있다.
@@ -17391,7 +17438,7 @@ fn gate_pending_reobserve(sid: u64, agent: &str, marked_gate: Option<&str>) -> G
     }
     // 코퍼스 해소(파일 판독 가능)는 확인 읽기 **앞**이다 — 읽기와 전송 사이에는 순수 판정만 둔다.
     let corpus = resolve_gate_corpus(agent);
-    let Some((screen, _)) = gate_guard_screen_with_quiet(sid) else {
+    let Some((screen, _, _)) = gate_guard_screen_with_quiet(sid) else {
         eprintln!(
             "[boot] 관문 보류 재관측({}): 확인 직전 화면을 읽지 못했다 — Return 0발(보류 유지)",
             surface_ref(sid)
@@ -17447,7 +17494,7 @@ fn gate_pending_reobserve(sid: u64, agent: &str, marked_gate: Option<&str>) -> G
 /// 떠 있는 한 어느 쪽도 Ready 를 내지 못한다. 시간 폴백은 참으로 준다(이 좌석은 이미 준비
 /// 예산을 한 번 다 쓴 좌석이라 '아직 이르다' 가 성립하지 않는다).
 fn gate_pending_reobserve_once(sid: u64, agent: &str, marked_gate: Option<&str>) -> GateRecheck {
-    let Some((screen, idle_quiet)) = gate_guard_screen_with_quiet(sid) else {
+    let Some((screen, layout, idle_quiet)) = gate_guard_screen_with_quiet(sid) else {
         // 화면 관측 실패는 **판정 불가**다 — 보류 유지(fail-closed · P4-6 의 loud 규율).
         eprintln!(
             "[boot] 관문 보류 재관측: 화면을 읽지 못했다({}) — 보류 유지(스폰·회수·파괴 0)",
@@ -17478,19 +17525,20 @@ fn gate_pending_reobserve_once(sid: u64, agent: &str, marked_gate: Option<&str>)
         idle_quiet,
         legacy_v1: cys::readiness::legacy_v1(),
     };
-    let leading = cys::agent_markers::pick_marker_leading_on_screen(&composer_marker, &screen);
+    // ★(1.1.11 · WINQ-2 동형 ⓑ) 이월 축은 부트 폴링과 같은 물리 행 재료([`carry_layout`]) — 관문·모달 판독은 `screen` 그대로.
+    let leading = cys::agent_markers::pick_marker_leading_on_screen(&composer_marker, &layout);
     gate_recheck_with_carry(
         gate_pending_recheck(cys::readiness::judge(&obs)),
         gate_mark_saw_a_gate(marked_gate),
         cys::readiness::legacy_v1(),
         leading,
         composer_placeholder.as_deref(),
-        &screen,
+        &layout,
         idle_quiet,
         // 위 `gate_guard_screen_with_quiet` 가 같은 응답에서 이미 래치했다(같은 관측 · 1지점).
         quiet_axis_supported(),
         leading.is_none()
-            && cys::agent_markers::pick_marker_last(&composer_marker, &screen).is_some(),
+            && cys::agent_markers::pick_marker_last(&composer_marker, &layout).is_some(),
         cys::readiness::gate_or_modal_present(&screen, &corpus.gates, &composer_marker),
     )
 }
@@ -47643,7 +47691,7 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         //    판정 화면은 `_once` 가 읽어 둔 것이 아니라 **확인 직전 재읽기**의 것이고, 그 읽기와
         //    전송 사이에는 순수 판정 말고 아무 왕복도 없다(창을 넓히는 파일·RPC 작업 0).
         let read_at = wrap
-            .find("let Some((screen, _)) = gate_guard_screen_with_quiet(sid)")
+            .find("let Some((screen, _, _)) = gate_guard_screen_with_quiet(sid)")
             .expect("확인 직전 재읽기가 없다 — 허가가 낡은 화면에 묶인다");
         let corpus_at = wrap.find("resolve_gate_corpus(agent)").expect("코퍼스 해소");
         let judge_at = wrap.find("reobserve_trust_confirm(").expect("판정");

@@ -7574,6 +7574,11 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                     None => full,
                 }
             };
+            // ★(1.1.11 · cysr-1111-test-hygiene · WINQ-2 동형 ⓑ) 전체 화면 응답에는 **물리 행** 재료(`layout_text`)를 함께 싣는다 —
+            //   `text`(`contents()`)는 줄바꿈 표시 행을 다음 행과 이어 붙여 윈 식 화면에서 괘선 + composer 가 `────…❯` 한 줄이 된다.
+            //   부트 관문 증거 이월(`cys.rs gate_carry_ok`)은 composer 를 행 모양으로 읽으므로 이 재료를 쓴다(구 데몬 = 키 부재 → `text` 폴백).
+            //   `text` 는 그대로다(모달·관문 판독과 사람용 출력 무변경) · 둘은 같은 파서 락 안에서 뜬다(한 프레임).
+            let mut layout_text = None;
             let (text, source) = if let Some(lines) = param_u64(&params, "lines") {
                 if stale {
                     // ★(⑴ 수리) scrollback 이 정지한 pane 에서 그 버퍼를 돌려주면 **기동 직후
@@ -7598,16 +7603,19 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                 }
             } else {
                 // Accurate visible screen, reconstructed by the vt100 grid.
-                (grid(None), "grid")
+                let p = surface.parser.lock().unwrap_or_else(|e| e.into_inner());
+                layout_text = Some(crate::governance::screen_rows_text(p.screen()));
+                (p.screen().contents(), "grid")
             };
             // 스냅샷 락은 위 식이 끝나며 놓였다 — quiet 표본은 스냅샷 **뒤**·세대 확인 **앞**.
             let quiet_secs = quiet_secs_consistent(&surface, gen_before);
-            Reply::Single(ok_response(
-                &id,
-                json!({"surface_id": sid, "surface_ref": surface_ref(sid), "text": text,
-                       "latest_cursor": surface.line_count.load(Ordering::Relaxed),
-                       "source": source, "scrollback_stale": stale, "quiet_secs": quiet_secs}),
-            ))
+            let mut result = json!({"surface_id": sid, "surface_ref": surface_ref(sid), "text": text,
+                   "latest_cursor": surface.line_count.load(Ordering::Relaxed),
+                   "source": source, "scrollback_stale": stale, "quiet_secs": quiet_secs});
+            if let Some(layout_text) = layout_text {
+                result["layout_text"] = json!(layout_text);
+            }
+            Reply::Single(ok_response(&id, result))
         }
 
         "surface.resize" => {
@@ -21321,6 +21329,33 @@ mod tests {
         );
         assert_eq!(resp["result"]["source"], json!("grid"), "소스 표기 누락");
         assert_eq!(resp["result"]["scrollback_stale"], json!(true));
+
+        std::env::remove_var(cys::pack::ENV_PACK_DIR);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★(1.1.11 · cysr-1111-test-hygiene · WINQ-2 동형 ⓑ) 전체 화면 응답은 `text`(`contents()`) 옆에 **물리 행** 재료 `layout_text` 를 싣는다.
+    /// 화면 = ConPTY 식 그리기 — 너비를 꽉 채운 괘선 뒤 composer 행을 `CUP` 없이 이어 쓴다(괘선 행에 줄바꿈 표시). `text` 에서는 `────…❯` 한 줄이 되어
+    /// 선두 마커 행이 사라지고, 부트 이월(`cys.rs gate_carry_ok`)은 composer 를 행 모양으로 읽으므로 `layout_text` 를 쓴다. `lines` 응답에는 키가 없다(이월 소비처 0).
+    #[test]
+    fn read_text_full_screen_carries_physical_rows_for_wrapped_composer() {
+        let _g = ACL_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (daemon, dir) = daemon_with_acl("readtext-winq2", r#"{"default":"allow","rules":[]}"#);
+        let sid = make_surface(&daemon, None);
+        let s = daemon.get_surface(sid).unwrap();
+        let rule = "─".repeat(80);
+        let raw = format!("\x1b[?1049h\x1b[2J\x1b[20;1H{rule}❯ \x1b[22;1H{rule}\x1b[23;1H  ? for shortcuts\x1b[21;3H");
+        s.parser.lock().unwrap().process(raw.as_bytes());
+        let leading = |t: &str| t.lines().any(|l| cys::agent_markers::leading_marker_index("❯", l).is_some());
+
+        let resp = read_text(&daemon, json!({"surface_id": sid}));
+        let text = resp["result"]["text"].as_str().expect("text");
+        assert!(!leading(text), "검체 전제 붕괴 — contents() 가 줄바꿈 표시 행을 잇지 않았다: {text:?}");
+        let layout = resp["result"]["layout_text"].as_str().expect("전체 화면 응답에 layout_text 가 없다");
+        assert!(leading(layout), "layout_text 가 물리 행이 아니다(선두 ❯ 행 소실): {layout:?}");
+        assert!(layout.lines().any(|l| l == rule), "layout_text 에 괘선 행이 따로 서지 않는다: {layout:?}");
+        let resp = read_text(&daemon, json!({"surface_id": sid, "lines": 5}));
+        assert!(resp["result"].get("layout_text").is_none(), "lines 응답에 layout_text 가 실렸다: {resp}");
 
         std::env::remove_var(cys::pack::ENV_PACK_DIR);
         let _ = std::fs::remove_dir_all(&dir);

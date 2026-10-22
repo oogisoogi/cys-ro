@@ -3220,7 +3220,15 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn c4_a_deleted_root_is_reported_missing_not_changed() {
-        let base_dir = rig("c4-missing");
+        c4_run("c4-missing", &|| {});
+    }
+
+    /// c4 의 본문 — `window` 는 확인 레코드를 전역 `confirms()` 에 넣은 **뒤**·`delete` **앞**에 불린다.
+    /// ★TICKET=cysr-1111-trash-c4race: 그 사이에 다른 검체의 `reset_state_for_test()` 가 끼면 확인 레코드가 사라져
+    ///   `delete` 가 `confirm_expired` 로 돌아온다(전체 병렬 1회 적). 강제 재현 검체가 이 자리에 리셋을 넣는다.
+    fn c4_run(tag: &str, window: &dyn Fn()) {
+        let _g = PREVIEW_TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let base_dir = rig(tag);
         let root = base_dir.join("trash");
         let name = "dept-5-1760000000";
         mk(&root.join(name), "state/x.txt", b"x");
@@ -3244,6 +3252,7 @@ mod tests {
             },
         );
         std::fs::remove_dir_all(&root).unwrap();
+        window();
         let v = match delete(
             &json!(1),
             &root,
@@ -3262,12 +3271,63 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base_dir);
     }
 
+    /// ★TICKET=cysr-1111-trash-c4race — 경쟁 가설의 **강제 재현**: c4 의 창(확인 레코드 삽입 뒤 · `delete` 앞)에 다른
+    /// 검체가 하는 일(`PREVIEW_TEST_SERIAL` 을 잡고 `reset_state_for_test()`)을 다른 스레드로 넣고, 끝날 기회를 넉넉히 준다.
+    /// c4 가 같은 자물쇠를 쥐고 있으면 리셋은 c4 가 끝날 때까지 못 들어온다(녹). 쥐지 않으면 리셋이 확인 레코드를 지워
+    /// `delete` 가 `confirm_expired` 로 돌아온다(적 — 전체 병렬에서 관측된 바로 그 실패).
+    #[test]
+    fn c4_a_reset_from_another_test_cannot_land_between_the_confirm_and_the_delete() {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let resetter = std::cell::RefCell::new(None);
+        c4_run("c4-race", &|| {
+            let tx = tx.clone();
+            *resetter.borrow_mut() = Some(std::thread::spawn(move || {
+                let _g = PREVIEW_TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+                reset_state_for_test();
+                let _ = tx.send(());
+            }));
+            let _ = rx.recv_timeout(std::time::Duration::from_millis(500));
+        });
+        resetter.into_inner().expect("창이 불렸어야 한다").join().unwrap();
+    }
+
+    /// ★TICKET=cysr-1111-trash-c4race — 전역 `confirms()` 를 만지거나 그것을 비우는(`reset_state_for_test()`) 시험 함수는
+    /// **전부** `PREVIEW_TEST_SERIAL` 을 잡는다(소스로 잠근다 — 다음에 붙는 검체도 같은 규칙 아래 둔다).
+    #[test]
+    fn every_test_that_touches_the_confirm_map_holds_the_preview_serial_lock() {
+        let src = include_str!("trash.rs");
+        let tests = &src[src.find("\nmod tests {").unwrap()..];
+        let starts: Vec<usize> = tests.match_indices("\n    fn ").map(|(i, _)| i).collect();
+        let mut checked = 0;
+        let mut missing = Vec::new();
+        for (k, &a) in starts.iter().enumerate() {
+            let b = starts.get(k + 1).copied().unwrap_or(tests.len());
+            let seg = &tests[a..b];
+            let name = seg[8..].split('(').next().unwrap_or("");
+            // 주석 줄은 뺀다 — 다음 함수의 문서 주석이 이 조각 끝에 붙어 있다.
+            let body: String =
+                seg.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+            if name == "every_test_that_touches_the_confirm_map_holds_the_preview_serial_lock" {
+                continue;
+            }
+            if body.contains("confirms()") || body.contains("reset_state_for_test()") {
+                checked += 1;
+                if !body.contains("PREVIEW_TEST_SERIAL.lock()") {
+                    missing.push(name.to_string());
+                }
+            }
+        }
+        assert!(checked >= 5, "검사 대상이 너무 적다({checked}) = 이 스캔이 공허하다");
+        assert!(missing.is_empty(), "전역 확인 맵을 만지는데 직렬화 자물쇠가 없다: {missing:?}");
+    }
+
     /// 명령 진입 — 미리보기 뒤 뿌리가 **다른 진짜 디렉터리**로 바뀌었으면(심링크가 아니라 `O_NOFOLLOW`
     /// 가 막지 못하는 꼴) **신원 대조**가 명령 자체를 거부하고, 의도 기록·집행 스레드 없이 끝난다.
     /// 바꿔 넣은 디렉터리는 한 바이트도 바뀌지 않는다.
     #[cfg(unix)]
     #[test]
     fn b2_delete_refuses_when_the_root_is_not_the_one_the_preview_walked() {
+        let _g = PREVIEW_TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let base_dir = rig("b2-rpc");
         let root = base_dir.join("trash");
         let outside = base_dir.join("outside");

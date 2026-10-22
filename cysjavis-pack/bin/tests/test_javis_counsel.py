@@ -2088,5 +2088,81 @@ class HelpReport(Base):
         self.assertEqual(json.loads(r.stdout), [jc.signal_signature(*c) for c in cases])
 
 
+REAL_BASE = os.environ.get("CYS_HELP_REAL_BASE", "").strip()
+
+
+@unittest.skipUnless(REAL_BASE.startswith("http://127.0.0.1:"),
+                     "실서버 교차시험 — CYS_HELP_REAL_BASE=http://127.0.0.1:<port>(로컬 `wrangler dev --local` · 라이브 금지) 일 때만")
+class HelpReportRealServer(Base):
+    """⑩ 서버 실물(web-install `wrangler dev --local` · 로컬 D1) 교차시험 — 팩이 만든 본문을 서버 parseFleet 이 받는가.
+    요청 수 9건(주소당 분당 20 안) · 시험마다 새 install_id(같은 날 UNIQUE 충돌 0)."""
+
+    put_facts = HelpReport.put_facts
+    put_signals = HelpReport.put_signals
+    row = HelpReport.row
+    help_state = HelpReport.help_state
+
+    def setUp(self):
+        super().setUp()
+        import datetime as _dt
+        os.environ["CYS_FEEDBACK_BASE"] = REAL_BASE
+        self.iid = secrets_hex()
+        d = os.path.join(self.tmp, "update")
+        os.makedirs(d)
+        with open(os.path.join(d, "install_id"), "w") as f:
+            f.write(self.iid)
+        self.now = _dt.datetime.now(_dt.timezone.utc)
+
+    def help_log(self):
+        return [e for e in map(json.loads, rd(os.path.join(self.cfg, "counsel", "tick.log")).splitlines())
+                if e["event"] == "help"]
+
+    def test_daily_and_signal_accepted_then_resend_is_200(self):
+        self.put_facts()
+        self.put_signals(self.row(jc.ms_iso(time.time() - 120)), self.row(jc.ms_iso(time.time() - 60)))
+        self.assertEqual(jc.help_report(self.cfg), "ran")
+        self.assertEqual({k: self.help_log()[-1][k] for k in ("signal", "daily")}, {"signal": 201, "daily": 201})
+        st = self.help_state()
+        self.assertEqual((st["signal_day"], st["daily_day"]), (jc.counsel_day(), jc.counsel_day()))
+        os.remove(os.path.join(self.cfg, "counsel", "help-state.json"))   # 표식을 잃은 기기 = 같은 날 재전송
+        jc.help_report(self.cfg)
+        self.assertEqual({k: self.help_log()[-1][k] for k in ("signal", "daily")}, {"signal": 200, "daily": 200})
+        self.assertEqual(self.help_state()["daily_day"], jc.counsel_day(), "200(이미 받음)을 완료로 세지 않았다")
+
+    def test_oversize_signal_trimmed_and_accepted(self):
+        rows = [dict(self.row(jc.ms_iso(time.time() - 600 + i), op="o%031d" % i, code="e" * 48, version="v" * 32),
+                     os="windows-" + "1" * 16) for i in range(150)]
+        items = jc.signal_items(rows)
+        whole = {"install_id": self.iid, "kind": "signal", "day": jc.counsel_day(), "installer_version": "1.1.8",
+                 "os": "mac", "payload": {"items": items}}
+        self.assertGreater(len(json.dumps(whole, ensure_ascii=False).encode("utf-8")), jc.HELP_MAX_BYTES,
+                           "전제 — 줄이지 않은 100항목이 32KB 를 넘어야 줄이기 경로를 잰다")
+        code, err = jc._help_post(whole)
+        self.assertEqual((code, err), (413, "too_large"), "줄이지 않은 본문을 서버가 받았다 — 이 시험이 줄이기를 재지 못한다")
+        self.put_signals(*rows)
+        jc.help_report(self.cfg)
+        self.assertEqual(self.help_log()[-1]["signal"], 201, "32KB 안으로 줄인 신호를 서버가 받지 않았다")
+
+    def test_bad_id_is_server_400_and_refused_for_the_day(self):
+        code, err = jc._help_post({"install_id": self.iid.upper(), "kind": "daily", "day": jc.counsel_day(),
+                                   "payload": {"os": "macos-15.1"}})
+        self.assertEqual((code, err, jc.help_outcome(code, err)), (400, "invalid_install_id", "refused"))
+        self.put_facts()
+        real = jc.read_install_id
+        jc.read_install_id = lambda *a, **kw: self.iid.upper()      # 팩은 대문자를 안 보낸다 — 서버 400 경로만 실물로
+        try:
+            jc.help_report(self.cfg)
+        finally:
+            jc.read_install_id = real
+        last = self.help_log()[-1]
+        self.assertEqual((last["daily"], last["daily_error"]), (400, "invalid_install_id"))
+        self.assertEqual(self.help_state()["daily_day"], jc.counsel_day(), "400 뒤 그날 재시도 금지가 아니다")
+
+
+def secrets_hex():
+    import secrets
+    return secrets.token_hex(16)
+
+
 if __name__ == "__main__":
     unittest.main()

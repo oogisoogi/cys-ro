@@ -255,8 +255,8 @@ describe("isBootGateRefusal", () => {
   });
 });
 
-// ★cysr 1.1.10(master#4e61b71e Q1=B · TICKET=cysr-1110-prerelease-review-b): 휴지통 삭제가 꺼진 윈도우 빌드는 cys-dept reap 이
-//   1.1.9 처럼 14일 정리를 유지한다 — 그 기계의 확인창이 「더 이상 스스로 지우지 않습니다」를 말하면 거짓이다.
+// ★cysr 1.1.10(master#4e61b71e Q1=B · TICKET=cysr-1110-prerelease-review-b): 휴지통 삭제가 꺼진 윈도우 빌드의 확인창이
+//   「삭제는 Control Center 의 휴지통에서 명령」을 말하면 거짓이다(윈에서는 아직 못 지운다) — 그래서 윈 문장을 따로 둔다.
 describe("격리분 수명 문장 — 맥/윈도우(Q1=B)", () => {
   it("resetNoticeLines(info, true) = 윈도우 문장 · 기본(false) = 맥 문장 · 서로 섞이지 않는다", () => {
     const mac = resetNoticeLines(preview({})).join("\n");
@@ -267,6 +267,14 @@ describe("격리분 수명 문장 — 맥/윈도우(Q1=B)", () => {
     expect(win).not.toContain("더 이상 스스로 지우지 않습니다");
     expect(trashKeepNotice(true)).toBe(TRASH_KEEP_NOTICE_WIN);
     expect(trashKeepNotice(false)).toBe(TRASH_KEEP_NOTICE);
+  });
+  // ★(TICKET=cysr-1110-counsel-off ⓒ) 「약 14일이 지나면 저절로 정리됩니다」는 거짓이었다 — 1.1.10 에서 `cys-dept reap` 을
+  //   자동으로 부르는 자리가 0이다(schedule.json 잡 없음 · CSO_DIRECTIVE §3-1 이 reap 을 돌리지 말라고 함 · CEO 는 가드 exit 7).
+  it("윈도우 문장 = 사실(저절로 지워지지 않는다) · 화면 어디에도 14일 자동 정리 약속 0", () => {
+    expect(TRASH_KEEP_NOTICE_WIN).toContain("저절로 지워지지 않습니다");
+    for (const lie of ["저절로 정리", "14일"]) expect(TRASH_KEEP_NOTICE_WIN.includes(lie)).toBe(false);
+    const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+    expect(main.includes("14일이 지나면 저절로 정리")).toBe(false);
   });
   it("배선 — 앱의 두 확인창(완전 초기화 · 부서 완전 삭제)이 윈도우 여부를 넘긴다", () => {
     const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");

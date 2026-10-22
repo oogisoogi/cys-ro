@@ -1599,7 +1599,7 @@ function renderTrash(payload: {
   const notes: string[] = [];
   // cysr 1.1.10(master#4e61b71e Q1=B): 삭제가 꺼진 빌드(= 윈도우 · trash_win_validated 꺼짐)에서는 cys-dept reap 이 1.1.9 처럼
   //   약 14일 지난 항목을 정리한다(판정 정본 = lib `trash_delete_supported` 한 곳 — 이 칸과 그 갈래가 같은 값을 쓴다).
-  if (!supported) notes.push("이 빌드에서는 삭제가 꺼져 있습니다 — 목록과 표시는 그대로 동작하고, 오래된 항목은 지난 판처럼 약 14일이 지나면 저절로 정리됩니다.");
+  if (!supported) notes.push("이 빌드에서는 삭제가 꺼져 있습니다 — 목록과 표시는 그대로 동작하고, 격리본은 저절로 지워지지 않고 그대로 보관됩니다.");
   if (payload.ledger_writable === false)
     notes.push("기록 파일을 쓸 수 없어 삭제 명령이 진행되지 않습니다 — 기록할 수 없는 삭제는 하지 않습니다.");
   for (const s of payload.strays ?? []) notes.push(`${s.name}: ${s.why} — 목록에서 다루지 않습니다.`);
@@ -9186,7 +9186,7 @@ function purgeConfirmModal(
       // 현실에서 "작업물 격리" 고지는 홈 격리 약속이 되는 오도였다. GUI는 --purge-workdir 미요청.
       "삭제되는 것: 부서 데몬 종료 + 대화기억·pack 격리 + 재시작 부활 영구 차단(묘비 존치). 작업 폴더(cwd)는 보존됩니다.",
       info.isLast ? "⚠ 이 부서가 마지막입니다 — 삭제 시 CEO가 표준 master로 강등됩니다." : "",
-      "복구: 즉시 삭제가 아니라 ~/.local/state/cys-trash/ 로 격리 보관되어 되돌릴 수 있습니다. " + trashKeepNotice(IS_WINDOWS), // cysr 1.1.10 Q1=B: 윈 = 14일 정리 유지
+      "복구: 즉시 삭제가 아니라 ~/.local/state/cys-trash/ 로 격리 보관되어 되돌릴 수 있습니다. " + trashKeepNotice(IS_WINDOWS), // 윈 = 휴지통 삭제 꺼짐 · 저절로 지워지지도 않음(cysr-1110-counsel-off ⓒ)
       `계속하려면 아래에 부서명 "${name}" 을 정확히 입력하세요.`,
     ]
       .filter(Boolean)

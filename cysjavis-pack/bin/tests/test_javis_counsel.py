@@ -1781,9 +1781,9 @@ class HelpReport(Base):
 
     # ── 기기 id · 경로 의미론 ──
     def test_update_state_dir_paths_mac_and_win(self):
-        mac = jc.update_state_dir(nt=False, env={}, home="/Users/u")
-        self.assertEqual(mac, "/Users/u/.cys/update")
-        la = "C:\\Users\\u\\AppData\\Local"
+        mac = jc.update_state_dir(nt=False, env={}, home="/fakehome")
+        self.assertEqual(mac, "/fakehome/.cys/update")
+        la = "D:\\Profile\\AppData\\Local"
         self.assertEqual(jc.update_state_dir(nt=True, env={"LOCALAPPDATA": la}), la + "\\cys-update")
         self.assertIsNone(jc.update_state_dir(nt=True, env={}), "윈 LOCALAPPDATA 없음 = 보내지 않음(집 폴더로 물러서지 않는다)")
         self.assertIsNone(jc.update_state_dir(nt=True, env={"LOCALAPPDATA": "AppData\\Local"}), "상대 경로 = None")

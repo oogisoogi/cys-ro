@@ -304,6 +304,34 @@ describe("T1 — 삭제 꺼진 빌드의 「크기 미리 보기」 입구", () 
     // 삭제 흐름은 종전처럼 삭제 모달을 연다(두 번째 인자 없음).
     expect(fnBody("trashDeleteFlow").includes("await trashConfirmModal(names);")).toBe(true);
   });
+  // ★cysr-1111-adv-fixes #5 — 열림 표시(trashPreviewOnlyOpen)의 잠금·해제와 흐림 판정을 고정한다(종전 생존 뮤턴트 3:
+  //   두 번 누름 가드 제거 · 흐림 식을 false 로 · 모달 닫은 뒤 해제 제거 = 단추 영구 흐림).
+  it("미리보기 전용 흐름: 열려 있으면 곧장 돌아가고, 모달 앞에서 잠그고 모달이 닫힌 뒤 풀어 단추를 다시 맞춘다", () => {
+    const f = fnBody("trashPreviewOnlyFlow");
+    const iHead = f.indexOf("{\n") + 2;
+    const iSet = f.indexOf("trashPreviewOnlyOpen = true;");
+    const iAwait = f.indexOf("await trashConfirmModal(names, true);");
+    const iClear = f.indexOf("trashPreviewOnlyOpen = false;");
+    const iResync = f.indexOf("trashSyncPreviewButton(true);", iClear);
+    expect({
+      첫줄가드: f.slice(iHead).startsWith("  if (trashPreviewOnlyOpen) return;\n"),
+      잠금은모달앞: iSet >= 0 && iSet < iAwait,
+      해제는모달뒤: iClear > iAwait,
+      해제뒤다시맞춤: iResync > iClear,
+    }).toEqual({ 첫줄가드: true, 잠금은모달앞: true, 해제는모달뒤: true, 해제뒤다시맞춤: true });
+  });
+  it("「크기 미리 보기」 단추의 흐림 판정은 바이트 그대로다(열려 있는 동안·고른 것 0개면 흐림)", () => {
+    expect(fnBody("trashSyncPreviewButton")).toBe(
+      [
+        "function trashSyncPreviewButton(visible: boolean) {",
+        '  const btn = document.getElementById("btn-cc-trash-preview") as HTMLButtonElement | null;',
+        "  if (!btn) return;",
+        "  btn.hidden = !visible;",
+        "  btn.disabled = trashPreviewOnlyOpen || trashSelectedNames().length === 0;",
+        "}\n",
+      ].join("\n"),
+    );
+  });
   it("모달: 미리보기 전용이면 안내 줄과 결과만 보이고 입력·「삭제」를 열지 않는다 — 그 갈래는 nonce 가드·입력 열기보다 앞이다", () => {
     const m = fnBody("trashConfirmModal");
     expect(m.includes("function trashConfirmModal(names: string[], previewOnly = false)")).toBe(true);

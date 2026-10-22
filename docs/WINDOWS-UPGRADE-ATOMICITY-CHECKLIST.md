@@ -89,7 +89,7 @@ Test-Path "$env:LOCALAPPDATA\cys\cys.exe"; Test-Path "$env:LOCALAPPDATA\cys\cysd
 > **rename 2회**(정식→prev 슬롯 `cys_pl_vacate` → `.new`→정식 `cys_pl_fill`)
 > 로 교체한다. 두 rename 은 모두 메타데이터 연산이라 정식 이름이 비는 창은 **수 ms** 다
 > (훅 침불변 L2). 종전(0.14.27)의 `Rename → cmd copy` 2단이 만들던 수십~수백 ms 창보다 더
-> 좁아졌고, 같은 버전 재설치는 오라클 단락(`CYS_PLACE` ①)으로 **아예 스왑을 하지
+> 좁아졌고, 같은 버전·같은 바이트 재설치는 내용 오라클(`CYS_PLACE` ④-b · 1.1.11)로 **아예 스왑을 하지
 > 않으므로** 창 자체가 없다. 200ms 표집에서 False 0~2줄은 정상 범위다.
 >
 > 채우기 rename 이 일시 거부되면(AV 가 `.new` 를 쥔 경우) 유한 재시도(5회×1초 —
@@ -135,7 +135,7 @@ PASS 조건: `cys --version` 이 **신 버전** · `cys-install-failure.txt` 부
 > 부재는 **fail-closed**(`CYS_ORACLE` 의 IfErrors 갈래 = notfresh 간주)다. 따라서:
 > - 신본이 실제로 안 들어왔는데 성공(exit 0)으로 끝나는 조합은 원리적으로 없다 — 보이면
 >   오라클 자체 결함이니 **최우선 보고**.
-> - **같은 버전 재설치는 오라클 단락**(`CYS_PLACE` ①)으로 아무 스왑 없이 exit 0 이다 — prev
+> - **같은 버전·같은 바이트 재설치는 내용 오라클**(`CYS_PLACE` ④-b · 1.1.11 — 판번만 같고 바이트가 다르면 교체)로 아무 스왑 없이 exit 0 이다 — prev
 >   슬롯이 새로 생기지 않는 것이 정상이다(면제 기계 불요의 근거 · NSIS-CONTRACT §4).
 > `cys-installed-version.txt` 는 이제 판정 재료가 아니라 **정보성 마커**다(성공 종단 `cys_post_ok` 의 마커 쓰기) —
 > 모든 게이트를 통과한 뒤에만 쓰이므로, 실패·중단한 설치로는 갱신되지 않는다
@@ -378,7 +378,7 @@ $INST  = "$env:LOCALAPPDATA\cys"
 $setup = "<방금 설치한 것과 같은 -setup.exe 전체 경로>"
 # 정상 설치가 끝난 상태(P2 PASS 직후)에서, 같은 설치본을 무인으로 한 번 더:
 $before = @(Get-ChildItem $INST -Filter '*.prev*.exe').Count
-$p = Start-Process $setup -ArgumentList '/S' -PassThru -Wait; $p.ExitCode   # ★0 기대(오라클 단락 `CYS_PLACE` ①)
+$p = Start-Process $setup -ArgumentList '/S' -PassThru -Wait; $p.ExitCode   # ★0 기대(같은 바이트 → 내용 오라클 `CYS_PLACE` ④-b 무행동)
 Test-Path "$INST\cys-install-failure.txt"                                   # False
 @(Get-ChildItem $INST -Filter '*.prev*.exe').Count                          # $before 보다 늘지 않아야 한다(스왑 미발생 = prev 신규 0 · cysd 스윕이 줄이는 것은 정상)
 & "$INST\cys.exe" --version                                                 # 같은(신) 버전
@@ -399,7 +399,7 @@ Get-Process cys,cysd,cys-app -ErrorAction SilentlyContinue | Stop-Process -Force
 Copy-Item "$env:SystemRoot\System32\cmd.exe" "$INST\cys.exe" -Force
 (Get-Item "$INST\cys.exe").VersionInfo.FileVersion          # 우리 버전이 아님을 확인
 
-$p = Start-Process $setup -ArgumentList '/S' -PassThru -Wait; $p.ExitCode   # 0 기대(notfresh → 스왑 `cys_pl_need` 이후 ②~⑧)
+$p = Start-Process $setup -ArgumentList '/S' -PassThru -Wait; $p.ExitCode   # 0 기대(notfresh → 스왑 `cys_pl_extract` ③ 이후 ~⑧)
 & "$INST\cys.exe" --version                                                 # ★신 버전(스탠드인이 아니라)
 Test-Path "$INST\cys-install-failure.txt"                                   # False
 ```
@@ -500,7 +500,7 @@ tick `.prev<숫자>.exe`)와 잠금 스윕의 `.prev<rand>` 를 잔해로 정리
 | P7 훅 bash | | |
 | P8 자동 갱신(1.1.7 까지 = 앱 안 갱신 단추) | | |
 | P9 제거 | | `*.prev*`·`*.new.exe`·마커 2종·runtime 잔존 0 |
-| P10-a 같은 버전 재설치 | | exit code (**0** 기대) · prev 신규 0 (오라클 단락) |
+| P10-a 같은 버전 재설치 | | exit code (**0** 기대) · prev 신규 0 (내용 오라클 ④-b 같은 바이트) |
 | P10-b 구본 잔존 교체 | | exit 0 + `--version` 신 버전 (성공 위장 불가) |
 | P11 전원 차단 주입(rename 사이) | | 부팅 가드 수리 — `cys.exe` 복원 · 재료 무삭제 |
 
@@ -515,7 +515,7 @@ FAIL 이 하나라도 나오면 `%LOCALAPPDATA%\cys\cys-install-failure.txt` 와
 |---|---|---|
 | 정식 이름이 **빈 채로 남는 종단** | **닫힘(코드·3중)** | ①배치 실패 전수 슬롯 복귀(`CYS_RESTORE_SLOT`·undo `CYS_UNPLACE`) ②콜백+최종 바닥 점검(`CYS_ABORT_RESCUE`·`CYS_LASTDITCH`) ③cysd 부팅 회수 가드(Wave 1 W1 — 설치기 밖 2차 복구선). P1·P4·P11 이 실기로 잰다 |
 | **구본 잔존 미탐**(반쪽 업그레이드를 성공 보고) | **닫힘(코드·설계 교체)** | 지문 대조 폐기 → 절대 오라클(VERSIONINFO == 컴파일 상수 = `CYS_ORACLE`) + 배치 후 재검증(⑦ `cys_pl_rv`). notfresh 종단은 전부 exit 3/4 + 토큰. P10 이 양방향을 잰다 |
-| **같은 버전 재설치 → 영원한 exit 4 루프**(2026-08-28 실사고) | **닫힘(코드)** | 면제 기계 제거 + 오라클 단락(`CYS_PLACE` ①) — "이미 이번 빌드" 는 무행동 성공. P10-a·CI T4-4 |
+| **같은 버전 재설치 → 영원한 exit 4 루프**(2026-08-28 실사고) | **닫힘(코드)** | 면제 기계 제거 + 내용 오라클(`CYS_PLACE` ④-b · 1.1.11 — 구 ① 판번 단락은 같은 판 재빌드를 놓쳐 폐기) — "이미 이번 빌드"(같은 바이트)는 무행동 성공. P10-a·CI T4-4 |
 | **이미지 잠금 하 업그레이드 실패**(잠긴 구 CLI 위로) | **닫힘(코드)** | `.new` 추출→rename 2단은 잠긴 정식을 덮지 않고 대피시킨다(③ 추출 → ⑤ `cys_pl_vacate`). P6-b·CI T4-14 |
 | **전이 창 자체** | **좁힘(rename 2회 사이 수 ms)** | copy 채움 폐기 — 채움도 rename(⑥ `cys_pl_fill`). copy 는 undo 복귀 경로에만 잔존(`CYS_RESTORE_SLOT` 의 copy 강등). 잔여 창은 P11 의 부팅 가드가 받친다 |
 | 핸들 잠금(delete 비공유) 기계 | **의도된 거부(exit 4)** | rename 조차 불가한 잠금은 우회 불가 — 구본 무손상으로 거부하고 재실행 안내(`cys_pl_stick` 거부 종단 · 안내문 = NSIS-CONTRACT §3 Action 동결문). P6-a |

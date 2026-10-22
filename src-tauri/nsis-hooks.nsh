@@ -20,6 +20,12 @@
 ;      컴파일 시 `!getdllversion /packed` 로 **같은 원본 파일**에서 뽑는다(형식 불일치 불가).
 ;      런타임 GetDLLVersion 실패(리소스 없음·열기 실패)는 **fail-closed**(신본 아님으로 간주).
 ;      같은 버전 재설치는 오라클이 "이미 신본"으로 단락하므로 면제 기계가 필요 없다.
+;      ★1.1.11 정정(cysr-1111-installer · 10-22 윈 2차 키트 실기): **판번은 정체가 아니다.**
+;      같은 판번으로 다시 지은 빌드(1.1.10.0 == 1.1.10.0 · 다른 바이트)는 버전 오라클이 "fresh"
+;      로 읽고, 잠긴 정식은 템플릿 File 이 SetOverwrite try 로 무음 스킵하므로, 버전 단락이면
+;      옛 바이트가 그대로 남은 채 exit 0 이었다. 이제 버전 "fresh" 는 끝이 아니라 **내용 오라클
+;      (CYS_PLACE ④-b · 정식 ↔ 방금 푼 `.new` 의 크기 + SHA-256)** 의 입장권이다 — 같은 바이트면
+;      무행동 성공(종전 단락과 같은 결과), 다르거나 판정 불가면(fail-closed) 정상 배치로 교체한다.
 ;  R3. **배치는 3종에 걸쳐 트랜잭션이다.** 순서는 cys → cysd → cys-app 고정(cys 를 먼저:
 ;      "새 cys + 구 cysd" 는 지원되는 lame-duck 상태지만 "새 cysd + 구 cys" 는 다음 부팅의
 ;      phoenix 정체 exit 6 = 전 pane 복원 불가). 어느 하나가 거부되면 이미 배치한 앞선 것을
@@ -190,14 +196,10 @@ cys_rs_done_${TAG}:
 !macro CYS_PLACE BIN TAG SRC EXPHIGH EXPLOW SLOTVAR
   StrCpy ${SLOTVAR} ""
   StrCpy $R3 "ok"
-  ; ① 오라클 단락: 정식이 이미 이번 빌드면 아무것도 하지 않는다(같은 버전 재설치·복구
-  ;    설치·추출이 이미 성공한 경우 전부 여기서 끝 — 면제 기계 불요의 근거).
+  ; ① 버전 오라클: 결과($R2)는 ④-b 까지 들고 간다. ★1.1.11: "fresh"(판번 일치)로 더는 단락하지
+  ;    않는다 — 같은 판번 재빌드(다른 바이트)가 잠겨 템플릿에 스킵되면 그 단락이 옛 바이트를 이번
+  ;    빌드로 오인해 무음 exit 0 을 냈다(10-22 실기). 같은 바이트 판정은 ④-b 내용 오라클이 한다.
   !insertmacro CYS_ORACLE "${BIN}" "pl${TAG}" "${EXPHIGH}" "${EXPLOW}" $R2
-  StrCmp $R2 "fresh" 0 cys_pl_need_${TAG}
-  Delete "$INSTDIR\${BIN}.new.exe"
-  ClearErrors
-  Goto cys_pl_done_${TAG}
-cys_pl_need_${TAG}:
   ; ② 이전 실행의 stale `.new` 는 반드시 완전 제거 — 잠겨서 못 지우면 거부한다.
   ;    (SetOverwrite try 아래에서 잠긴 stale 위로 추출이 무음 스킵되면, 뒤 단계가 그
   ;     구버전 `.new` 를 정식으로 세워 **다운그레이드**가 제자리에 들어간다 — 실측 함정.)
@@ -226,6 +228,21 @@ cys_pl_extract_${TAG}:
   IfErrors cys_pl_newbad_${TAG}
   IntCmp $R9 ${EXPHIGH} 0 cys_pl_newbad_${TAG} cys_pl_newbad_${TAG}
   IntCmp $R5 ${EXPLOW} 0 cys_pl_newbad_${TAG} cys_pl_newbad_${TAG}
+  ; ④-b ★내용 오라클(1.1.11): 버전이 "fresh" 였던 정식만 — 검증된 `.new`(= 이번 빌드 바이트)와
+  ;    크기 + SHA-256 으로 대조한다. 0 = 같은 바이트 → `.new` 를 치우고 무행동 성공(종전 단락과
+  ;    같은 결과 · prev 0). 그 밖(1 다름 · 2 판독 불가 · error 실행 불가)은 fail-closed = 교체 —
+  ;    교체는 ⑤~⑧ 의 정상 배치이므로 판정 불가의 대가는 불필요한 스왑 1회뿐이다(침묵 아님:
+  ;    교체에 실패하면 종전 거부 토큰이 그대로 유음으로 남는다). 판독은 공유 열기라 실행 중
+  ;    이미지도 읽힌다. 도우미는 POSTINSTALL 이 $PLUGINSDIR 에 풀어 둔 cys-samebytes.ps1.
+  StrCmp $R2 "fresh" 0 cys_pl_vacate_${TAG}
+  nsExec::Exec 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\cys-samebytes.ps1" "$INSTDIR\${BIN}.exe" "$INSTDIR\${BIN}.new.exe"'
+  Pop $8
+  StrCmp $8 "0" 0 cys_pl_differ_${TAG}
+  Delete "$INSTDIR\${BIN}.new.exe"
+  ClearErrors
+  Goto cys_pl_done_${TAG}
+cys_pl_differ_${TAG}:
+  DetailPrint "cys: ${BIN}.exe has this version but not this build's bytes (samebytes=$8) - replacing"
   Goto cys_pl_vacate_${TAG}
 cys_pl_exfail_${TAG}:
   Delete "$INSTDIR\${BIN}.new.exe"
@@ -869,6 +886,9 @@ cys_pre_dir_kept:
   StrCpy $5 ""
   StrCpy $6 ""
   StrCpy $7 ""
+  ; ④-b 내용 오라클 도우미(1.1.11) — 원본 src-tauri/nsis/cys-samebytes.ps1 을 그대로 싣는다
+  ;   (컴파일 시 부재 = File 이 빌드를 깬다). 풀기 실패는 ④-b 에서 판정 불가 = 교체(fail-closed).
+  File "/oname=$PLUGINSDIR\cys-samebytes.ps1" "${CYS_HOOK_DIR}\nsis\cys-samebytes.ps1"
   SetOverwrite try
   !insertmacro CYS_PLACE "cys" "cys" "${CYS_SRC_CYS}" "${CYS_V_CYS_High}" "${CYS_V_CYS_Low}" $5
   StrCmp $R3 "fail" cys_txn_undo 0

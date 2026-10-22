@@ -16,7 +16,7 @@ WHAT THIS IS
 
 FIDELITY CONTRACT (read this before editing the hook)
   * Each mirror function below cites the hook ANCHORS it models (macro names and
-    label families such as cys_pl_need_ / cys_ld_bad_ — never line numbers; the
+    label families such as cys_pl_differ_ / cys_ld_bad_ — never line numbers; the
     same rule as harness N6).  If you change a macro body, change its mirror in
     the same commit.
   * A guard at startup (`hook_guard()`) re-derives the hook's macro/anchor/token
@@ -130,6 +130,10 @@ SIZE_FLOOR = 65536                  # the hook's working-executable floor (R1-r1
 REASONS = ("stale-new-locked", "extract-failed", "new-bad",
            "vacate-locked", "fill-failed", "reverify-failed")
 
+# kinds that are a previous build (generation-wise OLD) — SAMEVER passes the
+# version oracle but is not this build's bytes
+OLDGEN = ("OLD", "SAMEVER")
+
 FAULT_BUDGET = int(os.environ.get("CYS_MODEL_FAULTS", "4"))
 INT_FAULT_CAP = int(os.environ.get("CYS_MODEL_INT_FAULT_CAP", "3"))
 
@@ -145,7 +149,7 @@ EXPECTED_MACROS = {
 # sha256 over the sorted census the mirrors depend on: anchors/tokens + the
 # normalized BODY hashes of the modeled macros/callbacks + POSTINSTALL order
 # (see hook_guard)
-GUARD_PIN = "36eb658e17c5b3f85f91a8381671c582f2eba06e2be688ae5dcbebafe1628d02"
+GUARD_PIN = "01bd7571289a6543fb8f4fdc6e9a5a22f5d121d1daa8972a6fceba797f599f27"
 
 
 def hook_path():
@@ -283,6 +287,10 @@ def explore(run_fn):
 #   OLD    previous working build (>=64KiB; VERSIONINFO may be absent — oracle
 #          reads it as notfresh, never fresh)
 #   NEW    this build (oracle DWORDs match the compile constants)
+#   SAMEVER a PREVIOUS build stamped with this build's VERSIONINFO (a same-version
+#          rebuild — 1.1.10 kit B 2026-10-22: 1.1.10.0 == 1.1.10.0, other bytes).
+#          The version oracle reads it "fresh"; only the content oracle tells it
+#          apart. Generation-wise it is OLD (OLDGEN).
 #   NEWBAD size-passing torn/corrupt claim of this build (oracle mismatch)
 #   TRUNC  truncated junk below the 64KiB floor
 # lock classes:  image      rename OK / delete·overwrite DENIED / read OK   (L2)
@@ -414,7 +422,7 @@ class Run:
             return "notfresh"                # < 64KiB floor
         if self.fault(site):
             return "notfresh"                # GetDLLVersion read blip → fail-closed
-        return "fresh" if e["kind"] == "NEW" else "notfresh"
+        return "fresh" if e["kind"] in ("NEW", "SAMEVER") else "notfresh"
 
     def refuse(self, b, reason):
         assert reason in REASONS, reason
@@ -502,9 +510,12 @@ def restore_slot(run, b, slot):
 
 def place(run, b, src_ok=True):
     """CYS_PLACE — lock-tolerant placement, 8 steps (IMPL-SPEC §W4-B).
-    anchors: cys_pl_need_ / cys_pl_extract_ / cys_pl_exfail_ / cys_pl_newbad_ /
+    anchors: cys_pl_extract_ / cys_pl_exfail_ / cys_pl_newbad_ / cys_pl_differ_ /
     cys_pl_vacate_ (s2/s3/stick) / cys_pl_fill_ / cys_pl_rv_ / cys_pl_rvstuck_ /
-    cys_pl_commit_.  Returns "ok"/"fail"."""
+    cys_pl_commit_.  Returns "ok"/"fail".
+    ★1.1.11: ① no longer short-circuits on the version oracle — "fresh" only
+    sends the binary to the ④-b content oracle (canonical vs the verified
+    `.new`, size + SHA-256 via cys-samebytes.ps1; any non-0 = replace)."""
     n, new = b + ".exe", b + ".new.exe"
     run.slots[b] = None
 
@@ -518,11 +529,10 @@ def place(run, b, src_ok=True):
             if c is not None and c["lock"] != "sharenone" and c["kind"] != "TRUNC":
                 run.op_delete(new, "d-done:" + b)   # best-effort
         return res
-    # ① oracle short-circuit — same-version reinstall / already-extracted path
-    if run.oracle(b, "or1:" + b) == "fresh":
-        run.op_delete(new, "d-shortcut:" + b)   # best-effort, errors cleared
-        return done("ok")
-    run.attempted[b] = True
+    # ① version oracle — the verdict is carried to ④-b (no short-circuit)
+    ver_fresh = run.oracle(b, "or1:" + b) == "fresh"
+    if not ver_fresh:
+        run.attempted[b] = True
     run.int_point("place:" + b)
     # ② stale .new must be FULLY removed (downgrade trap — see hook comment)
     if not run.op_delete(new, "d-stale:" + b):
@@ -544,6 +554,18 @@ def place(run, b, src_ok=True):
         run.op_delete(new, "d-newbad:" + b)   # failure ignored by the hook
         run.refuse(b, "new-bad")
         return done("fail")
+    # ④-b content oracle — only for a version-"fresh" canonical. The helper
+    # reads both files with share-read (image/shareread locks still read;
+    # share-none already made the version oracle "notfresh"). 0 = same bytes
+    # → drop `.new`, no-op success; 1/2/error (fault = could not decide) →
+    # fail-closed: replace through the normal placement below.
+    if ver_fresh:
+        if run.files[n]["kind"] == "NEW" and not run.fault("samebytes:" + b):
+            run.op_delete(new, "d-same:" + b)   # best-effort, errors cleared
+            run.events.append("SAMEBYTES-EQUAL " + b)
+            return done("ok")
+        run.events.append("SAMEBYTES-DIFFER " + b)
+        run.attempted[b] = True
     # ⑤ vacate the canonical (old build) to a prev slot — absent → straight to ⑥
     slot = None
     if n in run.files:
@@ -764,11 +786,11 @@ def check(run):
     start = {b: k for b, k in scen["start_kind"].items()}
     fam = {b: run.family(b) for b in BINS}
 
-    def working_copy_somewhere(b, kinds=("OLD", "NEW")):
+    def working_copy_somewhere(b, kinds=OLDGEN + ("NEW",)):
         return any(e["kind"] in kinds for e in fam[b].values())
 
     def old_somewhere(b):
-        return any(e["kind"] == "OLD" for e in fam[b].values())
+        return any(e["kind"] in OLDGEN for e in fam[b].values())
 
     completed = run.exit in (0, 3, 4)
 
@@ -798,7 +820,7 @@ def check(run):
             if run.exit == 3 and b not in run.R["unrec"]:
                 raise Violation("I1: %s absent on exit 3 but not named in "
                                 "unrecoverable: — silent loss" % n)
-            if start[b] in ("OLD", "NEW") and not working_copy_somewhere(b):
+            if start[b] in OLDGEN + ("NEW",) and not working_copy_somewhere(b):
                 raise Violation("I1: %s absent and NO working copy left in its "
                                 "family — silent total loss (started %s)"
                                 % (n, start[b]))
@@ -811,7 +833,7 @@ def check(run):
             # cancel/kill: the deliberate loud Hold state (R2-r2) — allowed;
             # silent-loss guard: a torn canonical that DESTROYED the old build
             # is only reachable through the template's own truncate-write tear
-            if run.exit in ("cancel", "kill") and start[b] == "OLD" \
+            if run.exit in ("cancel", "kill") and start[b] in OLDGEN \
                     and not working_copy_somewhere(b) and b not in run.torn_tpl:
                 raise Violation("I1: %s truncated, old build gone, and not a "
                                 "template tear — hook-made silent loss" % n)
@@ -829,7 +851,7 @@ def check(run):
         | set(run.R["rolled"]) | set(run.R["notupd"])
     for i in range(3):
         for j in range(i + 1, 3):
-            if kinds[i] == "OLD" and kinds[j] == "NEW" and run.exit == 0:
+            if kinds[i] in OLDGEN and kinds[j] == "NEW" and run.exit == 0:
                 raise Violation("I3: exit 0 with generation split (%s OLD / "
                                 "%s NEW)" % (BINS[i], BINS[j]))
     # per-binary loudness: any binary the transaction ATTEMPTED that ends on
@@ -840,7 +862,7 @@ def check(run):
     if completed:
         for b in BINS:
             if run.attempted[b] and run.files.get(b + ".exe", {}).get("kind") \
-                    == "OLD" and b not in named:
+                    in OLDGEN and b not in named:
                 raise Violation("I3: %s was attempted, ends on the OLD build, "
                                 "and is named in no token" % b)
 
@@ -862,7 +884,7 @@ def check(run):
             raise Violation("I4: refusal reason %r outside the frozen set"
                             % run.reason[b])
         e = run.files.get(b + ".exe")
-        if start[b] == "OLD" and not old_somewhere(b) \
+        if start[b] in OLDGEN and not old_somewhere(b) \
                 and not (e is not None and e["kind"] == "NEW") \
                 and not working_copy_somewhere(b):
             # CONTRACT §4 exit-4 row + §9-5/§9-3 scopes: the old build survives
@@ -925,6 +947,13 @@ SCENARIOS = [
          [O("cys.exe", "NEW", "image"), O("cysd.exe", "NEW", "image"),
           O("cys-app.exe", "NEW", "image", "gui")],
          {"exit": 0, "no_prev": True}),
+    scen("S3c-samever-stale-running", "same VERSIONINFO, OTHER bytes (a "
+         "same-version rebuild) while CLI+daemon run: the template skips the "
+         "locked pair silently, so only a content oracle can replace them "
+         "(1.1.10 kit B · 572 kitbstale 2026-10-22)",
+         [O("cys.exe", "SAMEVER", "image"), O("cysd.exe", "SAMEVER", "image"),
+          O("cys-app.exe", "SAMEVER", "image", "gui")],
+         {"exit": 0, "prev": ("cys", "cysd")}),
     scen("S4a-trunc-unlocked", "truncated canonical, unlocked (task S4): "
          "template heals it in place",
          [O("cys.exe", "TRUNC"), O("cysd.exe", "OLD"), O("cys-app.exe", "OLD")],
@@ -1009,7 +1038,8 @@ def coverage_of(run):
             hit.add(key)
     for ev in run.events:
         for tag in ("UNDO-STUCK", "UNDO-KEEPNEW", "UNDO-LOST-BOTH",
-                    "LD-KEEP-SUSPECT", "RESTORE-FATAL", "EMERGENCY"):
+                    "LD-KEEP-SUSPECT", "RESTORE-FATAL", "EMERGENCY",
+                    "SAMEBYTES-EQUAL", "SAMEBYTES-DIFFER"):
             if ev.startswith(tag):
                 hit.add("lane:" + tag)
     for b in BINS:
@@ -1029,7 +1059,7 @@ def coverage_of(run):
     if run.torn_tpl:
         hit.add("lane:template-tear")
     kinds = [run.files.get(b + ".exe", {}).get("kind") for b in BINS]
-    if any(kinds[i] == "OLD" and kinds[j] == "NEW"
+    if any(kinds[i] in OLDGEN and kinds[j] == "NEW"
            for i in range(3) for j in range(i + 1, 3)):
         hit.add("lane:generation-split-loud")
     # D11 doc-claim pins (2026-08-29): NSIS-CONTRACT §9-3 / checklist exit-code
@@ -1047,7 +1077,7 @@ def coverage_of(run):
         if any(run.files.get(b + ".exe", {}).get("kind") == "NEWBAD"
                for b in BINS):
             hit.add("lane:D11-torn-canonical-exit4")
-        if any(kinds[i] == "OLD" and kinds[j] == "NEW"
+        if any(kinds[i] in OLDGEN and kinds[j] == "NEW"
                and run.files[BINS[j] + ".exe"].get("arrival") == "ld-new"
                for i in range(3) for j in range(i + 1, 3)):
             hit.add("lane:D11-ld-split-exit4")
@@ -1066,6 +1096,7 @@ COVERAGE_PINS = (
        "lane:torn-size-passing-canonical", "lane:hold-truncated-canonical",
        "lane:tick-slot", "lane:template-tear", "lane:generation-split-loud",
        "lane:D11-torn-canonical-exit4", "lane:D11-ld-split-exit4",
+       "lane:SAMEBYTES-EQUAL", "lane:SAMEBYTES-DIFFER",
        "arrival:ld-new", "arrival:ld-prev", "arrival:cb-new", "arrival:cb-prev",
        "arrival:unplace-reseat", "arrival:restore-old", "arrival:txn-fill",
        "arrival:tpl-extract",

@@ -45,9 +45,12 @@ command -v "$MAKENSIS" >/dev/null 2>&1 || { echo "FAIL: makensis not found (set 
 [ -f "$HOOK" ] || { echo "FAIL: hook not found at $HOOK" >&2; exit 2; }
 
 rm -rf build
-mkdir -p build/binaries
+mkdir -p build/binaries build/nsis
 cp "$HOOK" build/nsis-hooks.nsh
 cmp -s "$HOOK" build/nsis-hooks.nsh || { echo "FAIL: hook copy not byte-identical" >&2; exit 2; }
+# helper scripts the hook ships with compile-time `File` from ${CYS_HOOK_DIR}\nsis\ (1.1.11)
+SAMEBYTES="../../../src-tauri/nsis/cys-samebytes.ps1"
+cp "$SAMEBYTES" build/nsis/cys-samebytes.ps1
 
 SIDE_CYS=build/binaries/cys-x86_64-pc-windows-msvc.exe
 SIDE_CYSD=build/binaries/cysd-x86_64-pc-windows-msvc.exe
@@ -210,6 +213,56 @@ if [ -z "$n8_pin_line" ] || [ -z "$n8_sweep_line" ] || [ "$n8_pin_line" -ge "$n8
   exit 1
 fi
 echo "nsis-hook-compile: N8 OK (install dir pinned before sweep; stray new-name folder swept non-recursively behind its guard; legacy cleanup deletes 2 keys + shortcuts, never the state folder)"
+
+# N9 — (1.1.11 · cysr-1111-installer) content oracle pins. VERSIONINFO is not identity: a
+# same-version rebuild (1.1.10.0 == 1.1.10.0, other bytes) held by a running CLI/daemon is
+# skipped silently by the template's `SetOverwrite try` File, and the old ① version
+# short-circuit then reported exit 0 over the stale bytes (2026-10-22 kit B field run).
+#   · CYS_PLACE consumes the version verdict ($R2 "fresh") only AFTER its `.new` extraction, and
+#     the first such use is the step 4-b gate (no version short-circuit)
+#   · step 4-b runs cys-samebytes.ps1 on canonical vs `.new` and only exit "0" skips placement
+#   · POSTINSTALL ships the helper (File from nsis\) BEFORE the first CYS_PLACE
+#   · the helper is pure ASCII (Windows PowerShell 5.1 reads a BOM-less script as ANSI)
+n9_place=$(awk '/^!macro CYS_PLACE /,/^!macroend/' "$HOOK" | tr -d '\r')
+n9_ex=$(printf '%s\n' "$n9_place" | grep -n 'File "/oname=\$INSTDIR\\\${BIN}.new.exe"' | head -1 | cut -d: -f1 || true)
+n9_done=$(printf '%s\n' "$n9_place" | grep -n 'StrCmp \$R2 "fresh"' | head -1 || true)
+n9_first_gate=$(printf '%s' "$n9_done" | grep -cE ':  StrCmp \$R2 "fresh" 0 cys_pl_vacate_\$\{TAG\}$' || true)
+n9_done=$(printf '%s' "$n9_done" | cut -d: -f1)
+n9_call=$(printf '%s\n' "$n9_place" | grep -c "nsExec::Exec 'powershell -NoProfile -ExecutionPolicy Bypass -File \"\$PLUGINSDIR\\\\cys-samebytes.ps1\" \"\$INSTDIR\\\\\${BIN}.exe\" \"\$INSTDIR\\\\\${BIN}.new.exe\"'" || true)
+n9_gate=$(printf '%s\n' "$n9_place" | grep -cE '^  StrCmp \$8 "0" 0 cys_pl_differ_\$\{TAG\}$' || true)
+n9_post=$(awk '/^!macro NSIS_HOOK_POSTINSTALL/,/^!macroend/' "$HOOK" | tr -d '\r')
+n9_ship=$(printf '%s\n' "$n9_post" | grep -n 'File "/oname=\$PLUGINSDIR\\cys-samebytes.ps1" "\${CYS_HOOK_DIR}\\nsis\\cys-samebytes.ps1"' | head -1 | cut -d: -f1 || true)
+n9_first=$(printf '%s\n' "$n9_post" | grep -n '!insertmacro CYS_PLACE' | head -1 | cut -d: -f1 || true)
+n9_nonascii=$(LC_ALL=C grep -c '[^[:print:][:space:]]' "$SAMEBYTES" || true)
+if [ -z "$n9_ex" ] || [ -z "$n9_done" ] || [ "$n9_done" -le "$n9_ex" ] || [ "$n9_call" != "1" ] \
+   || [ "$n9_first_gate" != "1" ] || [ "$n9_gate" != "1" ] || [ -z "$n9_ship" ] || [ -z "$n9_first" ] || [ "$n9_ship" -ge "$n9_first" ] \
+   || [ "$n9_nonascii" != "0" ]; then
+  echo "FAIL[N9]: content oracle drifted — .new extract line=$n9_ex · first use of the version verdict=$n9_done (must be after extract) and be the 4-b gate=$n9_first_gate (want 1) · samebytes call=$n9_call (want 1) · exit-0 gate=$n9_gate (want 1) · helper shipped at=$n9_ship (must be < first CYS_PLACE=$n9_first) · non-ASCII lines in helper=$n9_nonascii (want 0)" >&2
+  exit 1
+fi
+echo "nsis-hook-compile: N9 OK (no version short-circuit before extraction; samebytes gate on exit 0 only; helper shipped before placement; helper ASCII)"
+
+# N10 — the helper's exit-code contract, run for real (pwsh). 0 same · 1 different (same size
+# and different size) · 2 undecidable (missing file / no args). The hook reads only "0".
+PWSH="${PWSH:-pwsh}"
+command -v "$PWSH" >/dev/null 2>&1 || { echo "FAIL[N10]: pwsh not found (set PWSH=...) — the helper contract is unmeasured, which is not a pass" >&2; exit 1; }
+N10=build/n10
+mkdir -p "$N10"
+printf 'MZ-same-bytes-0123456789' > "$N10/a.exe"
+cp "$N10/a.exe" "$N10/b.exe"
+printf 'MZ-same-bytes-0123456780' > "$N10/c.exe"
+printf 'MZ-longer-by-some-bytes-0123456789' > "$N10/d.exe"
+n10() { set +e; "$PWSH" -NoProfile -File "$SAMEBYTES" "$@" >/dev/null 2>&1; local rc=$?; set -e; echo "$rc"; }
+n10_same=$(n10 "$N10/a.exe" "$N10/b.exe")
+n10_diff=$(n10 "$N10/a.exe" "$N10/c.exe")
+n10_size=$(n10 "$N10/a.exe" "$N10/d.exe")
+n10_miss=$(n10 "$N10/a.exe" "$N10/missing.exe")
+n10_none=$(n10)
+if [ "$n10_same" != "0" ] || [ "$n10_diff" != "1" ] || [ "$n10_size" != "1" ] || [ "$n10_miss" != "2" ] || [ "$n10_none" != "2" ]; then
+  echo "FAIL[N10]: cys-samebytes.ps1 exit contract broken — same=$n10_same (want 0) · diff=$n10_diff (want 1) · size=$n10_size (want 1) · missing=$n10_miss (want 2) · no-args=$n10_none (want 2)" >&2
+  exit 1
+fi
+echo "nsis-hook-compile: N10 OK (cys-samebytes.ps1: same=0 diff=1 size=1 missing=2 no-args=2)"
 
 # ── re-verify the positive with restored inputs (negatives must leave no residue) ──
 "$MAKENSIS" -V2 -WX -INPUTCHARSET UTF8 harness.nsi >/dev/null

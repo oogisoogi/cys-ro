@@ -264,7 +264,19 @@ if [ "$n10_same" != "0" ] || [ "$n10_diff" != "1" ] || [ "$n10_size" != "1" ] ||
   echo "FAIL[N10]: cys-samebytes.ps1 exit contract broken — same=$n10_same (want 0) · diff=$n10_diff (want 1) · size=$n10_size (want 1) · missing=$n10_miss (want 2) · no-args=$n10_none (want 2)" >&2
   exit 1
 fi
-echo "nsis-hook-compile: N10 OK (cys-samebytes.ps1: same=0 diff=1 size=1 missing=2 no-args=2)"
+# (cysr-1111-adv-fixes #9) the same contract under ConstrainedLanguage (AppLocker/WDAC put scripts run from
+# %TEMP% = $PLUGINSDIR there): .NET static calls are blocked, so without a fallback every call was 2 =
+# "replace" even for identical bytes (P10-a "no new prev on same-version reinstall" broken on such PCs).
+n10c() { set +e; "$PWSH" -NoProfile -Command "\$ExecutionContext.SessionState.LanguageMode='ConstrainedLanguage'; if (\$ExecutionContext.SessionState.LanguageMode -ne 'ConstrainedLanguage') { exit 9 }; & '$SAMEBYTES' '$1' '$2'; exit \$LASTEXITCODE" >/dev/null 2>&1; local rc=$?; set -e; echo "$rc"; }
+n10c_same=$(n10c "$N10/a.exe" "$N10/b.exe")
+n10c_diff=$(n10c "$N10/a.exe" "$N10/c.exe")
+n10c_size=$(n10c "$N10/a.exe" "$N10/d.exe")
+n10c_miss=$(n10c "$N10/a.exe" "$N10/missing.exe")
+if [ "$n10c_same" != "0" ] || [ "$n10c_diff" != "1" ] || [ "$n10c_size" != "1" ] || [ "$n10c_miss" != "2" ]; then
+  echo "FAIL[N10]: cys-samebytes.ps1 exit contract broken under ConstrainedLanguage — same=$n10c_same (want 0) · diff=$n10c_diff (want 1) · size=$n10c_size (want 1) · missing=$n10c_miss (want 2)" >&2
+  exit 1
+fi
+echo "nsis-hook-compile: N10 OK (cys-samebytes.ps1: same=0 diff=1 size=1 missing=2 no-args=2; ConstrainedLanguage same=0 diff=1 size=1 missing=2)"
 
 # N11 — (1.1.11 · cysr-1111-installer) stale dist-info prune. The installer extracts runtime\ over
 # the old tree file by file, so a bundled package whose version changed leaves its old

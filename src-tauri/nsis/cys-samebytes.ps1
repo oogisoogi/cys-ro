@@ -15,6 +15,12 @@ param([string]$A, [string]$B)
 $ErrorActionPreference = 'Stop'
 
 function Get-Sha256Hex([string]$Path) {
+  # ConstrainedLanguage (AppLocker/WDAC; $PLUGINSDIR is under %TEMP%) blocks the .NET static calls below, which
+  # made every call "could not decide" = replace, even for identical bytes. Get-FileHash is an allowed cmdlet there.
+  # Both files of one call go through the same branch, so the two hash strings stay comparable.
+  if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+  }
   $share = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
   $s = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
   try {

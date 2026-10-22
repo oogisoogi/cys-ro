@@ -102,3 +102,62 @@
 - push·태그·CI 재실행 = 하지 않았다(master 몫).
 - 장기기억 증류 1건: `feedback_cysd-dept-mock-exit-races-boot-wait`(원인·핸드셰이크 재현법·계측 함정).
 - 강제 재현 하네스는 scratch 에만 있다(저장소에 안 넣음) — 필요하면 이 문서 §2 의 설계 그대로 다시 만든다.
+
+---
+
+# 덧붙임 · TICKET=cysr-1111-dept-mock-siblings · 2026-10-22 17:23~ · worker-3
+
+지시 = master#e518da57(결정 A) · 마감 결정 = master#9b238c76(C: 형제 목 수리까지로 닫는다 · name_guard 30회는 별건 1건 제외 집계 병기).
+커밋 = `f6fe2692`(시험 3파일 + 공용 조각 `cysjavis-pack/bin/tests/dept_mock_hold.py`) · 운영 코드 변경 0.
+
+## S1. 강제 재현 → 수리 → 뮤턴트 (파일별 · 모듈 전체 실행)
+
+하네스 = 모듈의 `_write_exec` 를 감싸 목 cys/cysd 내용만 바꾼다(시험 파일 무수정) · 주입 = §2 와 같은 핸드셰이크
+(목 cysd 는 `touch` 직전에 「핑이 소켓 없음을 확인」 표식을 기다리고 · 그 핑은 목 cysd 가 끝난 뒤 실패 반환) · 주입 지점 = `  ping) ` 머리 · `touch "$CYS_SOCKET"` 줄(수리 전후 공통).
+뮤턴트 = 수리본에서 목 cysd 의 「관측 신호까지 대기」 줄(`while [ ! -e …answered`) 1줄 삭제 + 같은 주입.
+
+| 파일 | 대조군(수리 전) | 수리 전 · 주입 | 수리 후 · 주입 | 뮤턴트 · 주입 |
+|---|---|---|---|---|
+| `test_team_create_u16`(목 `:92`) | 19 중 적 0 | **적 4**(A1·A3·A4·A5 — 전부 「기동 중 종료/기동 실패」) | 적 0 | 적 4(같은 4건) |
+| `test_dept_team_token`(목 `:111`) | 23 중 적 0 | **적 12**(T5·T6·T7·T8·T9·T16·T17·T18·T19×2·T20×2) | 적 0 | 적 12(같은 12건) |
+| `test_dept_name_guard`(목 `:164` 공용 make_home) | 75 중 적 0 | **적 4**(CreateGate happy · J5 m1 · RotatePostKill relaunch · SockLenDiag mkdtemp) + 별건 1 ↓ | 적 0 | 적 4(같은 4건) |
+
+- `T16`·`T9` 처럼 원래 실패를 다루는 케이스도 원문 확인: 스폰 뒤 시드 실패(rc 6)·생성 성공(rc 0)을 기대하는데 그 앞 기동 단계에서 「기동 중 종료」(rc 1)로 꺾였다 = 같은 경주.
+- 뮤턴트 실행의 name_guard 「OTHER」 9건은 **내 하네스 결함** — 뮤턴트 모드가 자기 목을 쓰는 케이스(대상 줄 없음)에서 `뮤턴트 대상 줄이 정확히 1줄이 아니다` 단언을 냈다(원문 확인). 시험 결과 아님.
+
+## S2. `name_guard:1071`(j6 env 덤프 목) = 경로가 다름 → 수리 안 함
+
+- 주입이 그 목에도 걸렸는데(목 적중 75회 중) `test_j6_marker_is_not_inherited_by_the_spawned_daemon` 은 녹.
+- 근거: 이 시험은 `rotate` 의 rc 를 단언하지 않고 「스폰된 자식 cysd 의 env 덤프」만 판정한다 — boot_wait 성패가 결과를 못 바꾼다.
+- 같은 파일의 다른 목: `:1319`(누수 검사 · `exec sleep 600` = 스스로 안 끝남) · `:1399`(`exit 0` 만 = 실패 시나리오) · `PostSpawnRegistryFailure` 의 파이썬 목 = 이 경주와 무관.
+
+## S3. 수리
+
+- `dept_mock_hold.py`(신규 · 시험 폴더) = sh 조각 3개: `ping_answered(st)`(핑 성공 갈래 전체 — 관측 신호 → 그 소켓 목 cysd 가 끝날 때(좀비 포함)까지 대기 → `exit 0`) ·
+  `cysd_before_touch(st)`(묵은 신호 삭제 · 자기 pid 기록) · `cysd_after_touch(st)`(신호까지 생존 · 상한 1000×0.01초). 상태 폴더 = 케이스 임시 폴더의 `mockhold/`(소켓 폴더 무접촉).
+  조각에 `%` 가 없다 → 세 파일의 서로 다른 목 꼴(`%` 서식 · `%%` 이스케이프 템플릿 · 즉석 목)에 **값**으로 끼운다. POSIX sh 만(목이 `#!/bin/sh`).
+- 세 파일: import 2줄(`sys.path.insert(0, SELF)` + `import dept_mock_hold`) + 목 2개의 ping 갈래·touch 앞뒤. 목의 나머지 꼴(셔뱅 · 호출 기록 · pgid 기록 · env 덤프)은 그대로.
+- `test_dept_create_progress` 는 b5ed5fbc 의 bash·@STATE@ 꼴을 유지(이 모듈을 쓰지 않음 — 무리한 통합 금지).
+- 세 파일이 도는 레인 = 맥(`macos-rust-pack`)·우분투(`ubuntu-pack-suite`)·release 의 aarch64-apple-darwin 스텝(`if: matrix.target == 'aarch64-apple-darwin'`) — 윈도 번들 파이썬(스크립트 폴더가 sys.path 에 안 들어온다 · test_import_guard 배경) 레인 없음.
+- 케이스별 시간: name_guard 수리본 92초(기준 90초) · 가장 느린 케이스 5초 — 관측 신호를 안 주는 케이스별 cys 목(`:694`·`:763`·`:832`·`:1005`)과 짝지어도 늘지 않았다(`--durations` 실측).
+
+## S4. 검증
+
+| 항목 | 결과 |
+|---|---|
+| `test_team_create_u16` 30회(동시 3) | **30/30 rc 0** · 매회 19 OK |
+| `test_dept_team_token` 30회(동시 3) | **30/30 rc 0** · 매회 23 OK |
+| `test_dept_name_guard` 30회(동시 5 · 15×2 묶음) | **29/30 rc 0** · 적 1회 = 별건 1건(`test_create_spawn_loser_preserves_live_winner`)만 · 그 회차의 다른 적 0 → **별건 제외 30/30** |
+| 팩 py 전건(`f6fe2692` 별도 작업트리 · 동시 4 · 격리 env 같은 꼴 · 약 12분) | **184 rc 0** · 적 5 = 기준선 3 + 실행 조건 산물 2 ↓ |
+
+전건 적 5의 판정:
+- `test_agora_known_authentic`(CYS_AGORA_ZIP_DIR 없음) · `test_preflight_phase1_checks`·`test_verify_gate`(격리 가드 거부 → 요구 env 로 재실행 **26 OK · 9 OK**) = 기준선.
+- `test_session_start_hook` rc 1 · 「4 FAIL」(18c·18d·18e reclaim-role 계측 · 20j 강등 문안) — **동시 4 실행에서만** · 같은 작업트리 직렬 재실행 **ALL PASS**. 이 수리는 훅·cys-dept 무접촉.
+- `test_dbg_d3_d11_shared_profile_hooks` rc 2 · `MEASURE-FAIL: 본부 컨텍스트 등록이 0건` — 작업트리가 `/private/tmp` 아래라 C28 이 「임시 팩 컨텍스트 — 등록 금지」로 판정해 측정 전제가 무너졌다(위치 산물 · 직렬 재실행도 rc 2).
+  본 작업트리(`~/cys-terminal-src-wt/1111-deptflake` · 이 수리 포함)에서는 **rc 0 · PASS**.
+- 별도 작업트리를 쓴 이유: 다음 티켓의 cys-dept 수리를 본 작업트리에서 병행하려고(이 전건은 `f6fe2692` 그대로를 재야 한다).
+
+## S5. 별건(이 티켓 밖) — 경쟁 승자 플레이크
+
+`test_dept_name_guard` `PostSpawnRegistryFailure.test_create_spawn_loser_preserves_live_winner` — HEAD 사본 **단독 10회 중 5회 적**(수리본 2/10 · 이 케이스는 cys·cysd 를 자기 파이썬 목으로 갈아 끼워 이 수리와 무관).
+증상 = rc 12 는 맞는데 「후행 ready가 경쟁 승자의 응답을 못 받음」(핑 4~8회 · pong 0). 원인과 수리 = 다음 티켓 `cysr-1111-bootwait-lock-winner`(아래 덧붙임).

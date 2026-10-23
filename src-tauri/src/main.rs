@@ -6170,6 +6170,32 @@ where
     }
 }
 
+/// ★X-1: `ensure_daemon_on` 의 launchd 위임 한 걸음(적재 확인 → kickstart → 소켓 대기 · 총 예산 6초).
+/// cysr 1.1.11(원작자 0.14.52 C-LOUD 편입): 원작자 시험이 `ensure_daemon_on` 을 리그로 직접 몰기 시작해 우리가 위임을 함수로 뺐다 —
+/// 시험 빌드는 NotLoaded 로 돌아가 실 launchctl·실 데몬 소켓에 닿지 않는다(종전엔 리그 시험이 이 맥의 launchd 를 kickstart 하고
+/// 라이브 소켓 응답을 Served 로 읽어 형제 spawn 이 0 회로 셌다). 위임 절차 자체는 `delegate_autostart_with` 의 x1_* 시험이 진다.
+/// 플랫폼 갈라짐은 본문 안(BLOCK-B · `blockb_no_new_file_level_cfg_gated_items`).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+async fn delegate_to_launchd() -> DelegateOutcome {
+    if cfg!(test) {
+        return DelegateOutcome::NotLoaded;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        delegate_autostart_with(
+            LAUNCHD_DELEGATE_BUDGET,
+            || cys::launchd::should_delegate_autostart(cys::launchd::is_loaded()),
+            cys::launchd::kickstart,
+            || async { connect().await.is_ok() },
+        )
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        DelegateOutcome::NotLoaded
+    }
+}
+
 async fn ensure_daemon() -> Result<(), String> {
     ensure_daemon_on(&default_socket(), cys::factory_reset::reset_in_progress, spawn_bundled_cysd).await
 }
@@ -6200,20 +6226,11 @@ async fn ensure_daemon_on(
     // 다퉜고, 진 쪽(launchd KeepAlive)이 ~10초마다 영구 재시도했다. 위임 총 예산 6초 뒤에만 형제
     // spawn 폴백(개발 환경·미승인 백그라운드 항목). KeepAlive·plist 는 건드리지 않는다(X-2 범위 밖).
     #[cfg(target_os = "macos")]
-    {
-        let outcome = delegate_autostart_with(
-            LAUNCHD_DELEGATE_BUDGET,
-            || cys::launchd::should_delegate_autostart(cys::launchd::is_loaded()),
-            cys::launchd::kickstart,
-            || async { connect().await.is_ok() },
-        )
-        .await;
-        match outcome {
-            DelegateOutcome::Served => return Ok(()),
-            DelegateOutcome::NotLoaded => {}
-            DelegateOutcome::Fallback(why) => {
-                eprintln!("[cys-app] launchd 위임 실패({why}) — 형제 cysd spawn 폴백");
-            }
+    match delegate_to_launchd().await {
+        DelegateOutcome::Served => return Ok(()),
+        DelegateOutcome::NotLoaded => {}
+        DelegateOutcome::Fallback(why) => {
+            eprintln!("[cys-app] launchd 위임 실패({why}) — 형제 cysd spawn 폴백");
         }
     }
     spawn()?;
@@ -8836,9 +8853,12 @@ mod tests {
             Some(super::RestoreSummary { ok: 2, fail: 1, gated: 3 })
         );
         assert_eq!(super::parse_restore_summary("error: cannot connect"), None);
+        // cysr 1.1.11: 원작자 0.14.52 가 요약 줄 뒤에 journal refused · outcome unknown 을 덧붙였다 — 앞 세 수는 그대로 읽힌다.
+        let out = "restore 완료: 재기동 1 · 실패 0 · 관문 보류 0 · journal refused 2 · outcome unknown 1 · 현황 `cys status`\n";
+        assert_eq!(super::parse_restore_summary(out), Some(super::RestoreSummary { ok: 1, fail: 0, gated: 0 }));
         // 형식 정본(cys.rs) 드리프트 핀 — 요약 문장이 바뀌면 여기서 적색.
         let cli = include_str!("../../src/bin/cys.rs");
-        assert!(cli.contains("\"restore 완료: 재기동 {ok} · 실패 {fail} · 관문 보류 {gated} · 현황"));
+        assert!(cli.contains("\"restore 완료: 재기동 {ok} · 실패 {fail} · 관문 보류 {gated} · journal refused {refused} · outcome unknown \\\n"));
     }
 
     #[test]
@@ -12111,6 +12131,8 @@ exit 0
             ("fn announce_not_answering(", &[("killwords", 0)]),
             ("async fn boot_first_daemon_step(", &[("killwords", 0)]),
             ("async fn ensure_daemon_on(", &[("killwords", 0)]),
+            // cysr 1.1.11: 우리 X-1 위임(ensure_daemon_on 에서 뺀 한 걸음) — 멈춤·신호 0.
+            ("async fn delegate_to_launchd(", &[("killwords", 0)]),
             ("enum Readiness", &[("killwords", 0)]),
             ("async fn plan_daemon_stop(", &[("killwords", 0)]),
             ("fn lock_file_pid(", &[("killwords", 0)]),
@@ -12155,7 +12177,12 @@ exit 0
 
         let prod = wu_code(wu_prod());
         assert_eq!(prod.matches("wait_for_connect(").count(), 0, "design row 1: the presence helper served only rows 4 and 5");
-        assert_eq!(prod.matches("connect().await.is_ok()").count(), 1, "only row 2 keeps the presence check");
+        // cysr 1.1.11: 우리 X-1 launchd 위임의 kickstart 뒤 소켓 대기도 PRESENCE(base 동작 그대로 · 원작자 표 밖) — 2곳.
+        assert_eq!(prod.matches("connect().await.is_ok()").count(), 2, "only row 2 and our X-1 delegate keep the presence check");
+        assert!(
+            wu_code(wu_seg("async fn delegate_to_launchd(")).contains("|| async { connect().await.is_ok() },"),
+            "X-1: the presence check after kickstart"
+        );
         assert!(
             wu_code(wu_seg("async fn maybe_autoregister_launchd(")).contains("let running = connect().await.is_ok();"),
             "row 2 (launchd autoregister `running`) stays PRESENCE"
@@ -16380,16 +16407,22 @@ osascript 를 실행할 수 없어 건너뜁니다({e}) — macOS 가 아닌 환
     #[cfg(target_os = "macos")]
     #[test]
     fn x1_ensure_daemon_delegates_before_sibling_spawn() {
+        // cysr 1.1.11: 원작자 C-LOUD 가 형제 spawn 을 spawn_bundled_cysd 로, 판정을 ensure_daemon_on 으로 옮겼다 — 핀도 따라간다.
         let src = include_str!("main.rs");
-        let start = src.find("async fn ensure_daemon() -> Result<(), String> {").expect("ensure_daemon");
-        let body = &src[start..];
-        let body = &body[..body.find("\n}\n").expect("fn end")];
-        let reset = body.find("reset_in_progress()").expect("초기화 가드");
-        let deleg = body.find("delegate_autostart_with(").expect("launchd 위임 배선 누락");
-        let spawn = body.find(".spawn()").expect("형제 spawn");
+        let seg = |sig: &str| {
+            let start = src.find(sig).unwrap_or_else(|| panic!("`{sig}` 소실"));
+            &src[start..start + src[start..].find("\n}\n").expect("fn end")]
+        };
+        let body = seg("async fn ensure_daemon_on(");
+        let reset = body.find("if reset_in_progress()").expect("초기화 가드");
+        let deleg = body.find("match delegate_to_launchd().await {").expect("launchd 위임 배선 누락");
+        let spawn = body.find("spawn()?;").expect("형제 spawn");
         assert!(reset < deleg && deleg < spawn, "순서: 초기화 가드 → 위임 → 형제 spawn");
-        assert!(body.contains("LAUNCHD_DELEGATE_BUDGET"), "위임 예산 상수 미사용");
         assert!(body.contains("DelegateOutcome::Served => return Ok(()),"), "위임 성공 시 형제 spawn 생략 누락");
+        let real = seg("async fn delegate_to_launchd() -> DelegateOutcome {");
+        assert!(real.contains("delegate_autostart_with(") && real.contains("LAUNCHD_DELEGATE_BUDGET"), "위임 예산·절차 미사용");
+        assert!(real.contains("    if cfg!(test) {\n        return DelegateOutcome::NotLoaded;\n    }"), "시험 빌드만 실 launchd 를 건너뛴다");
+        assert!(real.contains("cys::launchd::kickstart,"), "실 빌드 위임 = kickstart");
     }
 
     /// X-1 은 plist 의 KeepAlive·RunAtLoad 값을 건드리지 않는다(X-2 범위 밖) — 이 시험이 증명하는 것은

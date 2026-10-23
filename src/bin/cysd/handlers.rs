@@ -19674,9 +19674,14 @@ mod tests {
         //   같은 sender pane 이 worker role 이면 거부 · master role 이면 면제.
         v7_send_human(&daemon, target.id, pid, "\u{15}");
         *target.last_human_input.lock().unwrap() = None;
+        // ★1.1.11 편입(원작자 0.14.52 B-360 직접 보내기 보류): 에이전트 좌석의 Return 없는 기계 본문은 0 바이트로 잡혀 60초
+        //   같은 호출자 Return 을 기다린다 — 기계 잔여가 생기지 않는다. 잔여는 셸 좌석 경로(종전대로 바로 타이핑)로 만들고
+        //   메타를 되돌린다(이 단언의 대상은 잔여가 아니라 그 뒤 타이핑 가드의 role 판별이다).
+        let meta = target.agent_meta.lock().unwrap().take();
         let residue = d12_rpc(&daemon, pid + 1, "surface.send_text", json!({
             "surface_id": target.id, "text": "foo", "human": false, "queued": false, "quiet": true,
         }));
+        *target.agent_meta.lock().unwrap() = meta;
         *target.last_human_input.lock().unwrap() = Some(std::time::Instant::now());
         *sender.role.lock().unwrap() = Some("worker-2".into());
         let worker_typing = d12_rpc(&daemon, pid + 1, "surface.send_key", json!({

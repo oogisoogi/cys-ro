@@ -1153,7 +1153,9 @@ fn u4_4_identity_census_every_named_production_site_is_guarded() {
         ("handlers.rs", "*pin = Some(new_sid.clone());", "crate::activity::IdentityWrite::begin(&surface)", 2),
         ("handlers.rs", "let at = crate::state::now_epoch();", "crate::activity::invalidate_identity(&surface)", 2),
         ("governance.rs", "*s.agent_meta.lock().unwrap() = Some((agent.clone(), bin.clone()));", "crate::activity::IdentityWrite::begin(&s)", 2),
-        ("usage.rs", "*s.agent_session_id.lock().unwrap() = Some(sid);", "crate::activity::IdentityWrite::begin(s)", 2),
+        // cysr 1.1.11 편입: 우리 dbg-D2 R2 세션 핀 교체 경로(usage.rs `let mut pin = s.agent_session_id.lock()` · 등록 경로가 교체를
+        //   따라간다)의 쓰기 줄 — 원작자 한 줄 쓰기와 같은 자리 · 같은 가드.
+        ("usage.rs", "*pin = Some(sid);", "crate::activity::IdentityWrite::begin(s)", 2),
         ("repaint.rs", "match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| p.set_size(rows, cols))) {", "crate::activity::bump_view(s)", 3),
         ("state.rs", "process_chunk_isolated(&mut parser, chunk, dsr_count);", "crate::activity::bump_view(&surf)", -4),
     ];

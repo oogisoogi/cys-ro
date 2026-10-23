@@ -84,6 +84,9 @@ mod unix_dispatch {
             self.owned.push(surface.clone());
             // Legacy intent classification fixture only. No receiver/native/write proof is minted.
             *surface.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+            // ★cysr 1.1.11 편입: 고정물 셸이 `cat` 으로 exec 하기 전 찰나(뿌리 = 셸 · 자손 0)는 우리 v115 빈 좌석 가드가 no_agent 로
+            //   보류한다 — 시험이 겨누는 수신 경로에 닿도록 exec 를 기다린다(가드 판정은 바꾸지 않는다).
+            crate::governance::test_wait_seat_runs(&surface, "cat", &[]);
             surface
         }
         fn connection(&mut self) -> (BufReader<tokio::io::DuplexStream>, usize) {

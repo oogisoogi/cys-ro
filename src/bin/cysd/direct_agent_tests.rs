@@ -54,8 +54,23 @@ fn seat(fx: &Fx, agent: bool) -> Arc<Surface> {
     fx.daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
     if agent {
         *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        crate::governance::test_wait_seat_runs(&s, "sleep", &["30"]);
+        settle_past_vacant_guard(&s);
     }
     s
+}
+
+/// ★cysr 1.1.11 편입(우리 v115-restore A3 빈 좌석 가드 × 원작자 0.14.52 직접 보내기 시험): 갓 띄운 `sleep 30` 좌석은
+/// 셸이 `sleep` 으로 exec 하기 전 잠깐 「뿌리 = 셸 · 자손 0」 이라 에이전트 메타가 붙으면 빈 에이전트 좌석으로 판정돼
+/// 본문이 큐로 보류된다(no_agent) — 시험이 겨누는 직접 쓰기 경로에 닿지 못하는 경합. 호출자는 먼저 `sleep 30` 이 뜬 것을
+/// (`test_wait_seat_runs` · 로그인 프로파일 자식이 잠깐 좌석을 점유로 보이게 하는 찰나를 건너뛴다) 기다리고, 이 함수는 가드가
+/// 풀린 것을 확인한다(상한 5초 · 넘으면 전제 실패로 멈춘다 — 가드 판정 자체는 바꾸지 않는다).
+pub(crate) fn settle_past_vacant_guard(s: &Surface) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while crate::governance::agent_seat_vacant_now(s) {
+        assert!(std::time::Instant::now() < deadline, "premise: seat {} still reads as a vacant agent seat after 5s", s.id);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
 }
 
 /// Callers are told apart by their self-declared seat (`Claimed`, C5B-PLAN I9); the peer pid is fake.

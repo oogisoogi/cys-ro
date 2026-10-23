@@ -6031,10 +6031,12 @@ mod tests {
         //   dispatch_one + notify_no_spawn **정확히 2곳**이 됐다. 여전히 닫힌 집합 단언이다 —
         //   제3 지점 유입은 이 핀이 계속 적색으로 잡는다(구현 갈라짐 차단 목적 불변).
         // ★(R3SH-3) 통보 줄 쓰기는 `pane_notice_line` 하나로 모였다(즉시·미룬 재시도 공용) — 지정 지점은 여전히 2곳.
+        // ★1.1.11 편입(원작자 0.14.52 S-a C6c × 우리 v115-restore A3): pane_notice_line 안에 유래 지정이 2개가 됐다 — 빈 좌석
+        //   갈래의 단일 입구 인자와, 에이전트 좌석 갈래의 원작자 원장 선기록(record_audited). 함수 집합은 그대로 2곳(닫힌 집합).
         assert_eq!(
             prod.matches("crate::delivery::Origin::Supervisor").count(),
-            2,
-            "감독자 원장 유래 지정 지점은 정확히 2곳(dispatch_one·pane_notice_line)이어야 한다"
+            3,
+            "감독자 원장 유래 지정 지점은 dispatch_one 1 + pane_notice_line 2(빈 좌석 입구 · 에이전트 좌석 선기록)여야 한다"
         );
         // 통보 줄 쪽도 순서 불변식이 같다 — 원장 기록이 주입(try_send)보다 앞.
         let nat = prod.find("fn pane_notice_line(").expect("pane_notice_line 소실");
@@ -6044,7 +6046,11 @@ mod tests {
         let nend = nbody.find("\n}\n").expect("notify_no_spawn 끝");
         let nb = &nbody[..nend];
         assert!(nb.contains("crate::governance::seat_inject_guarded("), "소진 통보가 단일 입구를 안 지난다");
-        assert!(!nb.contains("write_tx.try_send("), "소진 통보에 직접 주입이 되살아났다 — 기계 push 오너 임무 오인 창");
+        // ★1.1.11 편입 재조준: 에이전트 좌석은 원작자의 검사된 쓰기(write_tx.try_send)를 직접 넘긴다 — 빈 좌석 입구가 그보다
+        //   앞이고, 그 직접 쓰기 앞에 같은 유래의 원장 선기록이 있어야 한다(기계 push 오너 임무 오인 창 0).
+        let (g, w) = (nb.find("crate::governance::seat_inject_guarded(").unwrap(), nb.find("write_tx.try_send(").expect("직접 쓰기"));
+        let r = nb.find("crate::delivery::record_audited(").expect("에이전트 좌석 갈래 원장 선기록 소실");
+        assert!(g < r && r < w, "통보 줄: 빈 좌석 입구 → 원장 선기록 → 직접 쓰기 순서가 깨졌다");
     }
 
     /// ★(R2) provenance 상속 절단이 **실재 배선**인가 — 소스 단언.

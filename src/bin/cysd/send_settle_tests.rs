@@ -1385,7 +1385,11 @@ fn k17_refuse_mode_return_raises_settle_marker_but_cancel_key_does_not() {
     }));
     assert_eq!(r["result"]["sent"], json!(true), "창 없는 화면의 거부 모드 Return 은 쓴다: {r}");
     let o = obs(&t);
-    assert!(o.inflight && o.pending == 1, "거부 모드 Return 도 인계 표식(H7): {o:?}");
+    // ★1.1.11 편입(원작자 0.14.52 B-360): 보류된 본문과 그 Return 은 한 writer 요청(본문+CR)으로 묶여 나간다 — writer 가 관측보다
+    //   먼저 끝낼 수 있다(실측 handed 226ms · written 21ms). 단언 목적(거부 모드 Return 도 인계 표식을 올린다)은 「인계됐고, 아직
+    //   대기 중이거나 이미 써졌다」로 본다.
+    assert!(o.handed_age_ms.is_some() && ((o.inflight && o.pending == 1) || o.since_written_ms.is_some()),
+        "거부 모드 Return 도 인계 표식(H7): {o:?}");
     if cfg!(unix) {
         let y = direct(&fx, Some(P + 92), &t, "M|y|BBB");
         assert!(msg(&y).contains("[draft_gate:submit_settling]"), "대기 CR 뒤 본문은 분리 보류: {y}");

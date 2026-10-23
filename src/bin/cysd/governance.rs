@@ -15201,7 +15201,7 @@ mod tests {
         let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").unwrap()];
         let f = &prod[prod.find("fn deliver_queued(").unwrap()..];
         let call = f
-            .find("if deliver_head_locked(\n") // ★1.1.8: 원작자 8인자 호출(여러 줄) — 앵커를 호출 머리로
+            .find("if let Some(handoff) = deliver_head_locked(\n") // ★1.1.8: 원작자 8인자 호출(여러 줄) — 앵커를 호출 머리로 · 1.1.11: 원작자 0.14.52 가 인계 핸들을 받는다
             .unwrap();
         let pos = f[..call]
             .rfind("if daemon.paused.load(Ordering::Relaxed) {\n            break;")
@@ -15382,8 +15382,13 @@ mod tests {
         ] {
             let a = src.find(fname).unwrap_or_else(|| panic!("{file} {fname} 소실"));
             let body = &src[a..a + src[a..].find("\n}\n").unwrap()];
-            assert!(body.contains("seat_inject_guarded("), "{file} {fname} 입구 미경유");
-            assert!(!body.contains("write_tx"), "{file} {fname} 직접 write_tx 잔존");
+            // ★1.1.11 편입 재표적(원작자 0.14.52 S-a C6b·C6c): 두 함수는 에이전트가 있는 좌석에 원작자의 **검사된 에이전트 쓰기**
+            //   (본문+Return 1요청 · 결판)를 직접 넘긴다 — 우리 A3 는 그 앞에서 빈 좌석이면 입구로 보류하고 돌아간다.
+            //   단언 목적(빈 좌석은 입구 경유 · 타이핑 0)은 그대로: 빈 좌석 프로브 → 입구 → (갈래 밖) write_tx 순서를 본다.
+            let g = body.find("crate::governance::agent_seat_vacant_now(").unwrap_or_else(|| panic!("{file} {fname} 빈 좌석 프로브 미배선"));
+            let e = body.find("seat_inject_guarded(").unwrap_or_else(|| panic!("{file} {fname} 입구 미경유"));
+            let w = body.find("write_tx").unwrap_or_else(|| panic!("{file} {fname} 주입 지점"));
+            assert!(g < e && e < w, "{file} {fname} 빈 좌석 보류가 직접 쓰기보다 뒤");
         }
         // ★1.1.8 병합 재표적(판정 갈림 SC2): schedule `inject` → 원작자 `inject_on`. 원작자 C8 계상(인계·계수 0 을 한 input_gate
         //   안에서)을 지키려고 입구를 부르지 않고 **입구와 같은 술어·같은 보류 함수**를 첫머리에 둔다 — 그 보류가 write_tx 보다 앞인지 본다.
@@ -29344,7 +29349,7 @@ mod tests {
         let body = &body[..body.find("\n}\n").unwrap()];
         let (rel, del) = (
             body.find("release_stale_seat_hold_reason(&s, seat_hold);").expect("틱 경로가 사유 걷기를 잃었다"),
-            body.find("if deliver_head_locked(").expect("배달 지점"),
+            body.find("if let Some(handoff) = deliver_head_locked(").expect("배달 지점"), // 1.1.11: 원작자 0.14.52 인계 핸들
         );
         assert!(rel < del, "사유 걷기가 배달 시도 뒤로 밀렸다(배달 실패 시 낡은 사유 잔존)");
     }
@@ -36103,6 +36108,9 @@ mod h_machine_hold_tests {
             found.extend(guard_none_producers(f, src));
         }
         let allow: std::collections::BTreeSet<String> = [
+            // ★1.1.11 편입(원작자 0.14.52 S-a C6b): 에이전트가 있는 master 좌석은 다시 원작자의 검사된 에이전트 쓰기를 직접 넘긴다
+            //   (판정 H3 = 호출부 `master_hold` · 빈 좌석은 함수 머리에서 입구로 보류 — v115 배선 핀이 순서를 본다) → 목록 복귀.
+            "channels::inject_master_confirmed",
             // ★1.1.8 병합 조정(판정 갈림 H2 · 우리 v115-restore A3 단일 입구): `channels::inject_master_confirmed`·
             //   `boot_supervisor::pane_notice_line` 은 `governance::seat_inject_guarded`(아래 · 목록에 있음)를 거쳐 주입하므로
             //   스스로 `guard: None` 을 싣지 않는다 — 생산자 집합에서 빠지고 그 입구가 대신 든다(시험 삭제 아님 · 판정 →

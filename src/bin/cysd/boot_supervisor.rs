@@ -2070,7 +2070,7 @@ fn pane_notice_line(daemon: &Arc<Daemon>, s: &Arc<crate::state::Surface>, text: 
     //   좌석 입력 주입 단일 입구가 원장 선기록·보류를 맡는다(delivery.rs 불변식 ①). 에이전트가 있는 좌석만 원작자의
     //   검사된 에이전트 쓰기(본문+Return 1요청 · 결판 이벤트)로 간다.
     if crate::governance::agent_seat_vacant_now(s) {
-        let _ = crate::governance::seat_inject_guarded(
+        let reason = match crate::governance::seat_inject_guarded(
             daemon,
             s,
             &text,
@@ -2078,6 +2078,19 @@ fn pane_notice_line(daemon: &Arc<Daemon>, s: &Arc<crate::state::Surface>, text: 
             crate::delivery::Origin::Supervisor,
             None,
             "boot_supervisor.no_spawn",
+        ) {
+            // 보류(큐가 배달) · 판정 사이 에이전트가 서서 종전 주입 — 원작자 결판 이벤트 대상 아님(종전 동작).
+            crate::governance::SeatInject::Injected | crate::governance::SeatInject::HeldVacant(Some(_)) => return,
+            crate::governance::SeatInject::HeldVacant(None) => "vacant_seat_queue_full",
+            crate::governance::SeatInject::WriterUnavailable => "refused_no_write:writer_unavailable",
+        };
+        // ★1.1.11 편입(codex 1R ⓓ): 쓰지도 싣지도 못했다 — 원작자 계약대로 생략 사실을 남긴다(재시도 없음 · feed 가 바닥).
+        let NoticeCtx { intent, why, .. } = ctx;
+        publish(
+            daemon,
+            "boot_supervisor.pane_notice_skipped",
+            json!({"intent": intent, "reason": reason, "surface_id": s.id, "why": why,
+                   "note": "The pane notice was neither written nor held for the vacant seat; it is not retried - feed(bootstrap-fail) already holds the fact"}),
         );
         return;
     }

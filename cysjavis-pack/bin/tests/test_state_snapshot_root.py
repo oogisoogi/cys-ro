@@ -452,6 +452,9 @@ try:
 
     fh, fbrd, fd1, fd2 = build_fleet("fleet")
     live_card = os.path.join(fh, "_round", "SESSION_STATE.md")
+    # ★우리 판(cysr) D14 · 1.1.11 편입(codex 1R ⓓ ⑸): 본부 정본 카드 = 본부 팩 round/SESSION_STATE.md(javis_session.
+    #   session_state_path) — 원작자 결정 7 의 `~/_round` 카드(live_card)는 우리 판에선 옛 자리라 실재할 때 보관만 한다.
+    canon_card = os.path.join(fbrd, "SESSION_STATE.md")
     rdry = run_tool(fh, os.path.join(fh, ".cys", "pack"), "snapshot", "--dry-run")
     plus = [l.strip()[2:].rsplit("  (", 1)[0] for l in rdry.stdout.splitlines() if l.strip().startswith("+ ")]
     absent = [l.split("(없음) ", 1)[1] for l in rdry.stdout.splitlines() if "(없음) " in l]
@@ -470,8 +473,8 @@ try:
     check("F2 ★fail-closed: 등록됐으나 팩이 없는 dept-2 의 카드·TODO 패턴이 (없음) 으로 출력(선언이 적재를 뜻한다)",
           os.path.join(fd2, "round", "SESSION_STATE.md") in absent
           and os.path.join(fd2, "round", "*_TODO.md") in absent, repr(absent))
-    check("F3 dry-run 이 레인별 정본 카드 지도를 출력(본부 -> ~/_round · dept-1 -> <pack>/round)",
-          ("* base -> %s" % live_card) in rdry.stdout
+    check("F3 dry-run 이 레인별 정본 카드 지도를 출력(본부 -> 본부 팩 round(D14) · dept-1 -> <pack>/round)",
+          ("* base -> %s" % canon_card) in rdry.stdout
           and ("* dept-1 -> %s" % os.path.join(fd1, "round", "SESSION_STATE.md")) in rdry.stdout, rdry.stdout[-600:])
     bad = [p for p in plus if ss._capture_excluded(p)]
     check("F4 ★B-317-AMEND 결박: 선언 집합에 .db/.sqlite/-wal/-shm/.bak 0건 · '-wal' 을 이름 안에 가진 TODO 는 적재",
@@ -489,13 +492,15 @@ try:
     nh, _nb, _n1, _n2 = build_fleet("noround")
     shutil.rmtree(os.path.join(nh, "_round"))
     rno = run_tool(nh, os.path.join(nh, ".cys", "pack"), "snapshot", "--dry-run")
-    check("F8a (R2) ~/_round 디렉터리가 없으면 본부 카드를 선언하지 않는다(거짓 누락 0 · 카드 지도에 base 없음)",
+    check("F8a (D14) ~/_round 디렉터리가 없어도 본부 정본(본부 팩 round 카드)은 선언 · 옛 자리는 출력 0",
           rno.returncode == 0 and os.path.join(nh, "_round", "SESSION_STATE.md") not in rno.stdout
-          and "* base -> " not in rno.stdout, rno.stdout[-400:])
+          and ("* base -> %s" % os.path.join(nh, ".cys", "pack", "round", "SESSION_STATE.md")) in rno.stdout,
+          rno.stdout[-400:])
     os.makedirs(os.path.join(nh, "_round"))
     rno2 = run_tool(nh, os.path.join(nh, ".cys", "pack"), "snapshot", "--dry-run")
-    check("F8b (R2) ~/_round 가 있는데 카드가 없으면 (없음) 으로 선언(fail-closed)",
-          ("(없음) %s" % os.path.join(nh, "_round", "SESSION_STATE.md")) in rno2.stdout, rno2.stdout[-400:])
+    check("F8b (D14) ~/_round 가 있는데 카드가 없어도 옛 자리는 누락으로 선언하지 않는다(정본 아님 · 거짓 누락 0)",
+          rno2.returncode == 0 and ("(없음) %s" % os.path.join(nh, "_round", "SESSION_STATE.md")) not in rno2.stdout,
+          rno2.stdout[-400:])
     check("F7 ~/_round 는 레인 round 가 아니다 — 카드만 선언(TODO 패턴 누락을 영구히 만들지 않는다)",
           os.path.join(fh, "_round", "*_TODO.md") not in absent and os.path.join(fh, "_round", "*_TODO.md") not in plus,
           repr(absent))
@@ -519,8 +524,9 @@ try:
     srcs_base = sorted(e["source"] for e in (man or {}).get("files", []))
     check("G0 본부 발화 세대 생성(rc 0)", rb.returncode == 0 and gname is not None, (rb.stdout + rb.stderr)[-300:])
     live_entry = [e for e in (man or {}).get("files", []) if e.get("source") == live_card]
-    check("G1 ★세대에 본부 라이브 카드(~/_round/SESSION_STATE.md)가 담겼다(종전: 담기지 않음 = 복원 정본 부재)",
-          len(live_entry) == 1, "sources=%r" % srcs_base)
+    canon_entry = [e for e in (man or {}).get("files", []) if e.get("source") == canon_card]
+    check("G1 ★세대에 본부 정본 카드(D14 본부 팩 round)와 옛 자리 카드(~/_round · 실재하므로)가 둘 다 담겼다(손실 0)",
+          len(canon_entry) == 1 and len(live_entry) == 1, "sources=%r" % srcs_base)
     restore_dir = tempfile.mkdtemp(prefix="snap-restore-", dir=root)
     rc_card = run_tool(fh, os.path.join(fh, ".cys", "pack"), "card", "--lane", "base")
     restored_sha = None
@@ -529,8 +535,8 @@ try:
         dst = os.path.join(restore_dir, "SESSION_STATE.md")
         shutil.copyfile(stored, dst)                      # 복원 = 사람이 출력된 저장 파일을 복사
         restored_sha = _sha(dst)
-    check("G2 ★복원 시뮬: card --lane base 로 복원한 카드 sha == 원본 본부 정본 카드 sha(≠ 본부 팩 round 사본)",
-          restored_sha == _sha(live_card) and restored_sha != _sha(os.path.join(fbrd, "SESSION_STATE.md")),
+    check("G2 ★복원 시뮬: card --lane base 로 복원한 카드 sha == 본부 정본(D14 본부 팩 round) sha(≠ ~/_round 옛 자리)",
+          restored_sha == _sha(canon_card) and restored_sha != _sha(live_card),
           "rc=%s out=%r err=%r" % (rc_card.returncode, rc_card.stdout[-200:], rc_card.stderr[-300:]))
     rc_d1 = run_tool(fh, os.path.join(fh, ".cys", "pack"), "card", "--lane", "dept-1")
     d1_card = os.path.join(fd1, "round", "SESSION_STATE.md")
@@ -572,12 +578,12 @@ try:
         os.symlink(sbrd, os.path.join(sh, "_round"))
         rs = run_tool(sh, os.path.join(sh, ".cys", "pack"), "snapshot")
         rcs = run_tool(sh, os.path.join(sh, ".cys", "pack"), "card", "--lane", "base")
-        check("G9 (R1) ~/_round 심링크 형상에서도 card --lane base 가 rc 0 · 원 경로 = ~/_round/SESSION_STATE.md",
+        check("G9 (R1·D14) ~/_round 심링크 형상에서도 card --lane base 가 rc 0 · 원 경로 = 본부 팩 round/SESSION_STATE.md",
               rs.returncode == 0 and rcs.returncode == 0
-              and rcs.stdout.strip().split("\t")[-1] == os.path.join(sh, "_round", "SESSION_STATE.md"),
+              and rcs.stdout.strip().split("\t")[-1] == os.path.join(sbrd, "SESSION_STATE.md"),
               "rc=%s/%s out=%r err=%r" % (rs.returncode, rcs.returncode, rcs.stdout[-200:], rcs.stderr[-200:]))
-    if live_entry:
-        tampered = os.path.join(gr_f, gname, live_entry[0]["stored_as"])
+    if canon_entry:
+        tampered = os.path.join(gr_f, gname, canon_entry[0]["stored_as"])
         with open(tampered, "ab") as f:
             f.write(b"x")
         rc_t = run_tool(fh, os.path.join(fh, ".cys", "pack"), "card", "--gen", gname, "--lane", "base")

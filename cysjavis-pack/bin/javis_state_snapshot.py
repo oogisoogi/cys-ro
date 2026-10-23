@@ -287,11 +287,12 @@ def capture_lanes(home=HOME, env=None, depts_json=None, faults=None):
 
     base_pack = os.path.join(home, ".cys", "pack")
     if os.path.isdir(base_pack):
-        # ★본부 카드 자리 `~/_round` 는 이 배치(본부 master 가 홈에서 돈다 → 부트가 홈의 _round 를 찾는다)의 사실이다.
-        #   그 디렉터리가 없는 설치에서는 선언하지 않는다(매 세대 거짓 「누락」 금지 · R2). 디렉터리가 있는데 카드가 없으면
-        #   선언된 채 누락으로 뜬다(fail-closed).
-        bcard = os.path.join(home, "_round", ROUND_CARD) if os.path.isdir(os.path.join(home, "_round")) else None
-        _add(BASE_LANE, os.path.join(base_pack, "round"), bcard)
+        # ★우리 판(cysr) D14(1.1.8): SESSION_STATE 정본 = 레인 팩 `round/SESSION_STATE.md`(javis_session.session_state_path)
+        #   — 본부도 같다. 원작자 결정 7 의 본부 카드 `~/_round/SESSION_STATE.md` 는 우리 판에선 **옛 자리**다(1.1.7 까지 복원
+        #   훅이 주입하던 곳 · javis_session.legacy_candidates · `adopt` 가 정본으로 옮기고 치운다). 1.1.11 편입(codex 1R ⓓ ⑸):
+        #   본부 정본 카드를 D14 경로로 결박한다(capture·manifest canonical_cards·select_card 가 같은 경로) — 옛 자리 카드가
+        #   남아 있으면 default_sources 가 보관만 한다(복원 정본으로 고르지 않는다 · 손실 0). 카드가 없으면 fail-closed 누락.
+        _add(BASE_LANE, os.path.join(base_pack, "round"), os.path.join(base_pack, "round", ROUND_CARD))
     entries, errs = _registry_pack_dirs(depts_json or os.path.join(home, ".cys", "depts.json"))
     if faults is not None:
         faults.extend(errs)
@@ -313,6 +314,8 @@ def canonical_cards(home=HOME, env=None, depts_json=None, lanes=None):
 
 def select_card(manifest, lane=BASE_LANE):
     """세대 manifest 에서 그 레인의 정본 카드 항목을 고른다(없으면 None).
+    ★우리 판(cysr) 1.1.11: 정본 지도는 capture_lanes 가 만든다 — 본부도 D14 `~/.cys/pack/round/SESSION_STATE.md`(아래 원작자
+      문면의 `~/_round` 본부 정본은 우리 판에선 옛 자리 · 보관만). 이 함수의 「이름으로 고른다」 계약은 그대로다.
     ★결정 7(CEO 2026-10-20) + HEAD 범위 정정: 본부(base) 레인의 정본 = `~/_round/SESSION_STATE.md` ·
       ★부서 레인의 정본 = `<pack>/round/SESSION_STATE.md` 그 자체 — 부서 카드는 주석·은퇴·강등·건너뛰기 대상이 아니다.
       `~/.cys/pack/round/SESSION_STATE.md`(본부 팩 round 의 사본 · 716,061 B · 10-16 정지)는 세대에 담기지만 **본부
@@ -372,6 +375,11 @@ def default_sources(home=HOME, state_root=None, depts_json=None, windows=None, l
     #   보관은 손실 쪽이 아니다(정본 선택 = select_card 는 원작자 계약 그대로).
     import javis_session as _jsess   # 형제 모듈 — 모듈 머리 _SELF_DIR 가드 뒤
     _add_src(_jsess.session_state_path())
+    # 1.1.11 편입(codex 1R ⓓ ⑸): 옛 자리 본부 카드(`~/_round/SESSION_STATE.md` · 원작자 결정 7 의 본부 정본)는 실재할 때만
+    #   보관한다 — 우리 판 정본이 아니므로 canonical_cards 에 올리지 않고, 없으면 선언하지 않는다(거짓 누락 0).
+    _legacy_base_card = os.path.join(home, "_round", ROUND_CARD)
+    if os.path.isfile(_legacy_base_card):
+        _add_src(_legacy_base_card)
     if lanes is None:
         lanes = capture_lanes(home=home, env=env, depts_json=depts_json)
     for _lane, proj_round, card in lanes:
@@ -386,7 +394,7 @@ def default_sources(home=HOME, state_root=None, depts_json=None, windows=None, l
             if not _capture_excluded(p):
                 _add_src(p)
         if card:
-            _add_src(card)   # 부서 레인은 round 카드와 같은 경로(중복 제거) · 본부는 `~/_round/SESSION_STATE.md`
+            _add_src(card)   # 레인 round 카드와 같은 경로(중복 제거 · 우리 판 D14 — 본부도 `~/.cys/pack/round/SESSION_STATE.md`)
     srcs.extend(sorted(_glob.glob(os.path.join(
         home, ".claude*", "projects", "*", "memory", "*.md"))))
     return srcs

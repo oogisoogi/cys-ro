@@ -1640,9 +1640,17 @@ fn master_hold(daemon: &Arc<Daemon>, sid: u64) -> Result<Arc<crate::state::Surfa
     Ok(surface)
 }
 
+/// ★1.1.11 편입(codex 1R ⓓ): 넘긴 곳 — 원작자의 검사된 writer 요청(요청 id · 결판 `channel.message.written`/
+/// `.write_refused`/`.write_partial` 이 뒤따른다) 또는 결판 없는 인계(우리 v115-restore A3 빈 좌석 갈래: 큐 보류 ·
+/// 판정 사이 에이전트가 서서 단일 입구가 종전 주입으로 넘김) — 결판이 오지 않는 쪽은 요청 id 를 내밀지 않는다.
+enum MasterHandoff {
+    Writer(String),
+    Unsettled,
+}
+
 /// master stdin에 봉투를 주입(bracketed paste + Return). schedule.rs inject와 동형.
 /// ★(0.14.42 · 설계 H3) 판정([`master_hold`])과 상태 기록은 호출부가 **먼저** 끝낸 뒤 부른다 — 이 함수는
-/// 원장 선기록(delivery.rs 불변식 ①)과 writer 인계만 한다. 반환 = 인계 성공(그 요청 id).
+/// 원장 선기록(delivery.rs 불변식 ①)과 writer 인계만 한다. 반환 = 인계 성공(넘긴 곳 · [`MasterHandoff`]).
 /// ★(0.14.52 · S-a C6b) The envelope is ONE checked agent request (body + its own Return); its settlement
 /// ([`ChannelSettle`], writer thread) decides what the hand-off only promised: written -> `channel.message.written`;
 /// zero bytes -> the hand-off mark is undone (the writer's `end()` never ran, so a stale mark would pace every later row and
@@ -1654,7 +1662,7 @@ fn inject_master_confirmed(
     envelope: &str,
     inbox_id: i64,
     handoff: InboxHandoff,
-) -> Option<String> {
+) -> Option<MasterHandoff> {
     // ★R1 배달 원장 — 주입보다 앞(delivery.rs 불변식 ①). 외부 채널 봉투도 기계 유래다.
     // ★v115-restore(A3): 좌석 입력 주입 단일 입구 — 빈 에이전트 좌석이면 타이핑 대신 큐 보류.
     //   보류도 「넘겼다」로 센다(큐가 배달한다 — false 면 다음 틱이 같은 봉투를 또 적재해 중복된다).
@@ -1683,7 +1691,7 @@ fn inject_master_confirmed(
             "channel.inbox",
         ) {
             // 판정 사이에 에이전트가 섰다 — 단일 입구가 종전 주입으로 넘겼다(인계 표식 유지 · writer 가 끝낸다).
-            crate::governance::SeatInject::Injected => Some(request_id),
+            crate::governance::SeatInject::Injected => Some(MasterHandoff::Unsettled),
             crate::governance::SeatInject::WriterUnavailable => {
                 surface.inject_track.undo_handoff(mark);
                 None
@@ -1697,7 +1705,8 @@ fn inject_master_confirmed(
                     daemon.bus.publish("channel.dropped", "channel", Some(surface.id),
                         json!({"reason": "vacant_seat_queue_full", "method": "channel.inbox"}));
                 }
-                Some(request_id)
+                // 1.1.11 편입(codex 1R ⓓ): writer 결판이 오지 않으므로 요청 id(`written: pending`)를 내밀지 않는다.
+                Some(MasterHandoff::Unsettled)
             }
         };
     }
@@ -1733,7 +1742,7 @@ fn inject_master_confirmed(
     if !ok {
         surface.inject_track.undo_handoff(mark);
     }
-    ok.then_some(request_id)
+    ok.then_some(MasterHandoff::Writer(request_id))
 }
 
 /// ★(0.14.52 · S-a C6b) The row state a channel hand-off changed, so a zero-byte terminal can put it back exactly.
@@ -1959,9 +1968,11 @@ fn deliver_new_inbox_with(daemon: &Arc<Daemon>, conn: &Connection) -> InboxDeliv
         }
         let env = envelope_at(&channel, &sender_id, created_ts, inbox_id, false, &text, lag_on.then_some(now));
         // ③ 주입.
-        if let Some(request_id) = inject_master_confirmed(daemon, &surface, &env, inbox_id, InboxHandoff::New) {
+        if let Some(handed) = inject_master_confirmed(daemon, &surface, &env, inbox_id, InboxHandoff::New) {
             out.delivered.push(inbox_id);
-            out.requests.push((inbox_id, request_id));
+            if let MasterHandoff::Writer(request_id) = handed {
+                out.requests.push((inbox_id, request_id));
+            }
         } else {
             // 인계 실패(채널 정체) — 기록을 되돌린다(최선노력). 되돌림까지 실패하는 이중 결함이면 그 행은
             // injected 로 남는다(재배달 기본 0 이라 재주입되지 않는다 · 잔여 · 원장에 선기록은 남는다).

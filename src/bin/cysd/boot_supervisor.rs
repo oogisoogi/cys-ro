@@ -2102,6 +2102,8 @@ fn pane_notice_line(daemon: &Arc<Daemon>, s: &Arc<crate::state::Surface>, text: 
         crate::delivery::digest_text(&text),
     );
     let handle = request.clone();
+    // 1.1.11 편입(codex 2R ⓓ ⑶): 인계 실패 시 생략 결판에 쓸 사본(결판 클로저가 ctx 를 가져간다).
+    let (intent, why) = (ctx.intent.clone(), ctx.why.clone());
     let settle = NoticeSettle { daemon: Arc::downgrade(daemon), sid: s.id, ctx };
     let job = crate::agent_write::AgentJob {
         attempt: None,
@@ -2119,6 +2121,15 @@ fn pane_notice_line(daemon: &Arc<Daemon>, s: &Arc<crate::state::Surface>, text: 
     // 이미 사실을 남겼다(고지 실패가 유계를 흔들면 안 된다).
     if s.write_tx.try_send(crate::state::WriteReq::Agent(Box::new(job))).is_ok() {
         crate::agent_write::test_wait_settled(&handle);
+    } else {
+        // ★1.1.11 편입(codex 2R ⓓ ⑶): 넘기지 못했다 = 결판이 영영 오지 않는다 — 원작자 계약(쓰이지 않은 통보는
+        //   pane_notice_skipped)대로 생략 사실을 남긴다(재시도 없음 · 포기 자체는 종전 그대로).
+        publish(
+            daemon,
+            "boot_supervisor.pane_notice_skipped",
+            json!({"intent": intent, "reason": "refused_no_write:writer_channel_unavailable", "surface_id": s.id, "why": why,
+                   "note": "The pane notice could not be handed to the seat's writer; it is not retried - feed(bootstrap-fail) already holds the fact"}),
+        );
     }
 }
 

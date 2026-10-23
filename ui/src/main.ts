@@ -8551,7 +8551,7 @@ type DrainVerifyNode = {
   dept?: string;
   department?: string;
   surface: string;
-  outcome: string; // saved | timeout | delivery_failed | unverifiable | skipped_restoring
+  outcome: string; // saved | timeout | delivery_failed | unverifiable | skipped_restoring | unknown(1.1.11 · 원작자 f45017d7)
   detail: string;
   pending_undelivered?: number;
 };

@@ -9,6 +9,10 @@ import {
 } from "./transfer";
 import { deptCloseAfterStop, deptLaunchName, resolveDeptLaunchName } from "./deptlabel";
 import { placeSeatSafe } from "./seatlayout";
+// ★1.1.11 편입: 우리 판 detachPane 은 replaceNode 대신 arrangeWs(remove) 로 배치를 짠다 — 실제 arrangeWs 본문 + 실제 배치 함수로 돌린다.
+import { autoArrange, arrangeWithoutRoles } from "./formation";
+// ★1.1.11 편입: 우리 판 actionClose 는 닫기 전 확인 판정(closeguard)을 지난다 — 실제 판정 모듈을 그대로 쓴다.
+import { CLOSE_CONFIRM_POLICY, CLOSE_CONFIRM_TEXT, needsCloseConfirm, closeConfirmBody } from "./closeguard";
 
 declare const Bun: { Transpiler: new (o: { loader: "ts" }) => { transformSync(s: string): string } };
 // Explicit dynamic scope matches deptprogresswiring.test.ts's actual-source seam.
@@ -93,6 +97,12 @@ function harness(workspaces = [ws(1, SOURCE, [42])]) {
     destinationCanReceive, destinationGone, handoffAckPath, handoffInstruction,
     originCloseVerdict, parseEnqueueReceipt, pickLaunchedAgentSid, transferRetryAction,
     deptCloseAfterStop, deptLaunchName, resolveDeptLaunchName, placeSeatSafe,
+    // ★1.1.11 편입: 우리 판 자유 변수 — 배치(arrangeWs)·닫기 확인(actionClose)·종료 표식(destroyPaneRuntime).
+    autoArrange, arrangeWithoutRoles, currentDefaultLeftShare: () => 0.25,
+    CLOSE_CONFIRM_POLICY, CLOSE_CONFIRM_TEXT, needsCloseConfirm, closeConfirmBody,
+    exitedPaneKeys: new Set<string>(), ccOpen: false, setCcOpen: (_open: boolean) => {},
+    // 표시 이름 seam(우리 판 wsLabel = wsname.ts 판정) — 닫기를 결정하지 않는다.
+    wsLabel: (w: Any) => String(w.name),
     // This translation seam returns the injected reason intact; it does not decide close.
     restartInvokeFailureReason: (e: unknown) => String(e),
     winWheelNotice: { forget: (_k: string) => {} },
@@ -123,7 +133,7 @@ function harness(workspaces = [ws(1, SOURCE, [42])]) {
   };
   function addRuntime(sid: number, socket: string) {
     const effects = { disconnected: 0, unlistened: 0, disposed: 0 };
-    const rt = { sid, socket, effects, el: new FakeElement(),
+    const rt = { sid, socket, effects, el: new FakeElement(), titleEl: new FakeElement(),
       observer: { disconnect: () => { effects.disconnected++; } },
       unlisten: [() => { effects.unlistened++; }],
       term: { dispose: () => { effects.disposed++; } } };
@@ -158,15 +168,19 @@ function harness(workspaces = [ws(1, SOURCE, [42])]) {
         throw new Error(`SETUP: unscripted invoke ${command}`);
     }
   };
-  const names = ["collectSids", "replaceNode", "markClosing", "isClosingSid",
+  // ★1.1.11 편입: 우리 판엔 markClosing/isClosingSid·bareSeat(원작자 구멍 경합 표식)가 없다 — detachPane 이 arrangeWs 를 부른다.
+  //   actionClose 의 「닫는 중」 표식은 우리 판 closingPaneKeys(+ 확인 창 재진입 closeConfirmOpen)다.
+  const names = ["collectSids", "replaceNode", "arrangeWs",
     "destroyPaneRuntime", "detachPane", "closePane", "actionClose", "transferCrossDept", "awaitHandoffAck",
     "confirmDeleteGroup", "purgeDept"];
-  const prelude = ["paneKey", "closingSids", "transfersInFlight", "groupDeleteArm",
-    "TRANSFER_ACK_WAIT_SECS", "bareSeat"].map(declaration).join("\n");
+  const prelude = ["paneKey", "closingPaneKeys", "closeConfirmOpen", "arrangeRolesBySocket",
+    "transfersInFlight", "groupDeleteArm", "TRANSFER_ACK_WAIT_SECS"].map(declaration).join("\n");
   const transpiler = new Bun.Transpiler({ loader: "ts" });
   const body = transpiler.transformSync(prelude + "\n" + names.map(fnText).join("\n"));
   const api = new Function("scope", `with (scope) {\n${body}\nreturn {
     ${names.join(", ")}, transfersInFlight,
+    // ★1.1.11 편입: 원작자 isClosingSid 자리 = 우리 판 「닫는 중」 표식(closingPaneKeys · socket+SID 열쇠)이 남지 않았는가.
+    isClosingSid: (sid, socket) => closingPaneKeys.has(paneKey(sid, socket)),
     armGroup: id => { groupDeleteArm = id; },
     installHeader: () => { ${transpiler.transformSync(registration("header"))} },
     installWorkspace: () => { ${transpiler.transformSync(registration("workspace"))} }
@@ -270,7 +284,8 @@ describe("S6 actual pane handlers", () => {
 });
 
 describe("S6 actual marker races", () => {
-  test("old 15-second timeout cannot erase a newer marker for the same pane", () => {
+  // ★1.1.11 편입: 우리 판 해당 없음 — 원작자 markClosing(15초 구멍 보류 경합 표식)을 핀한다. 우리 판은 구멍(U2) 대신 arrangeWs 배치라 그 표식이 없고, 닫는 중 표식은 actionClose 의 closingPaneKeys(요청 수명 = finally 로만 해제 · 타이머 없음)뿐이다.
+  test.skip("old 15-second timeout cannot erase a newer marker for the same pane", () => {
     const h = harness();
     h.api.markClosing(42, SOURCE);
     const old = h.timers[h.timers.length - 1];
@@ -280,7 +295,8 @@ describe("S6 actual marker races", () => {
     expect(old.ms).toBe(15000);
   });
 
-  test("old close finally cannot erase a newer marker; the newer timeout owns its cleanup", async () => {
+  // ★1.1.11 편입: 우리 판 해당 없음 — 원작자 markClosing(15초 구멍 보류 경합 표식)을 핀한다. 우리 판은 구멍(U2) 대신 arrangeWs 배치라 그 표식이 없고, 닫는 중 표식은 actionClose 의 closingPaneKeys(요청 수명 = finally 로만 해제 · 타이머 없음)뿐이다.
+  test.skip("old close finally cannot erase a newer marker; the newer timeout owns its cleanup", async () => {
     const h = harness(); const first = deferred<null>();
     h.script(cmd => cmd === "close_surface" ? first.promise : undefined);
     const a = h.api.actionClose();
@@ -292,7 +308,8 @@ describe("S6 actual marker races", () => {
     expect(h.api.isClosingSid(42, SOURCE)).toBe(false);
   });
 
-  test("marker timeout is scoped to socket as well as SID", () => {
+  // ★1.1.11 편입: 우리 판 해당 없음 — 원작자 markClosing(15초 구멍 보류 경합 표식)을 핀한다. 우리 판은 구멍(U2) 대신 arrangeWs 배치라 그 표식이 없고, 닫는 중 표식은 actionClose 의 closingPaneKeys(요청 수명 = finally 로만 해제 · 타이머 없음)뿐이다.
+  test.skip("marker timeout is scoped to socket as well as SID", () => {
     const h = harness(); h.api.markClosing(42, SOURCE); const old = h.timers[h.timers.length - 1];
     h.api.markClosing(42, DEST); old.callback();
     expect(h.api.isClosingSid(42, DEST)).toBe(true);

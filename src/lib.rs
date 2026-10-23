@@ -7031,6 +7031,9 @@ mod spawn_policy_tests {
         ("src/app_bundle.rs", 4),
         ("src/bin/cys.rs", 15),
         ("src/bin/cysd/accounts.rs", 2),
+        // 1.1.11 편입(원작자 0.14.52 시험 파일 3개 · 전부 #[cfg(test)] 격리 고정물 — 제품 스폰 0): F-01 U4-3 계측 하네스 2 ·
+        //   native publication 격리 감독자 2 · PTY 할당 입장 검체 1. 새 제품 스폰이 아니라 원작자 시험의 자식 프로세스다.
+        ("src/bin/cysd/activity_bench_tests.rs", 2),
         ("src/bin/cysd/boot_supervisor.rs", 1),
         ("src/bin/cysd/channels.rs", 2),
         // 1.1.8 병합: 원작자 cycle_jobs.rs(0.14.42) start() 의 cys 자식 — 체인에 SpawnPolicy 등급을 단다.
@@ -7038,6 +7041,8 @@ mod spawn_policy_tests {
         ("src/bin/cysd/governance.rs", 2),
         ("src/bin/cysd/hwmon.rs", 3),
         ("src/bin/cysd/main.rs", 1),
+        ("src/bin/cysd/native_publication_transition_tests.rs", 2),
+        ("src/bin/cysd/pty_admission_tests.rs", 1),
         ("src/bin/cysd/schedule.rs", 3),
         ("src/bin/cysd/state.rs", 3),
         ("src/bin/cysd/usage.rs", 3),

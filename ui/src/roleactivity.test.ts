@@ -258,7 +258,7 @@ interface FakeRt {
   sid: number;
   socket?: string;
   roleEl: FakeDot;
-  titleEl: { isContentEditable: boolean; textContent: string };
+  titleEl: { isContentEditable: boolean; textContent: string; title: string; style: Record<string, string>; dataset: Record<string, string> }; // ★1.1.11 편입: 우리 판 본문은 제목 글자색(style)·툴팁(title)·규칙 제목(dataset)도 쓴다
   usageEl: Record<string, never>;
   termHost: { scrollTop: number };
   el: Record<string, never>;
@@ -273,7 +273,7 @@ function harness() {
   const focus: number[] = [];
   const paneKey = (sid: number, socket?: string): string => `${socket ?? ""}#${sid}`;
   const makeRt = (sid: number, socket?: string): FakeRt => ({
-    sid, socket, roleEl: new FakeDot(), titleEl: { isContentEditable: false, textContent: "" }, usageEl: {}, termHost: { scrollTop: 120 + sid }, el: {},
+    sid, socket, roleEl: new FakeDot(), titleEl: { isContentEditable: false, textContent: "", title: "", style: {}, dataset: {} }, usageEl: {}, termHost: { scrollTop: 120 + sid }, el: {},
   });
   const panes = new Map<string, FakeRt>();
   for (const [sid, sk] of [[1, "/a.sock"], [2, "/a.sock"], [3, "/b.sock"]] as const) panes.set(paneKey(sid, sk), makeRt(sid, sk));
@@ -319,6 +319,17 @@ function harness() {
     listTransport, roleActivity: new RoleActivityStore(31_000), dotRoles: new WeakMap<object, string | null>(), T_ACTIVITY: 31_000,
     roleDotColor, projectActivity, applyDotPaint, HIDDEN_DOT,
     performance: { now: () => mono.t }, document: { visibilityState: "visible" },
+    // ── ★1.1.11 편입: 우리 판 refreshPaneTitles·paintRoleDot 의 자유 변수 대역(deptprogresswiring.test.ts S4 B1 검체와 같은 목록) — 이 검체가 보는 축
+    //    (활동 패스·바쁨 가드·단일 렌더러)과 무관한 우리 배선(B17 옛 자리 스윕 · 새 부서 감지 M7① · 자동 정렬 · 빈 자리표 회수 · 표시 번호 · 본부 판정 ·
+    //    사이드바 사용량 패널)은 무동작. 제목 문안은 원작자 대역(paneTitle)과 같은 항등(행 title 그대로)으로 둔다.
+    //    ★surfaceWorking = false: 우리 판 paintRoleDot 의 자기보고 폴백(관측 '모름' → 자기보고 작업 중)은 끈다 — 이 검체는 데몬 관측 투영만 본다.
+    exitedSweepArm: null, sweepScopeFor: () => null, exitedSweepTargets: () => [], settleSweep: (a: unknown) => a,
+    openNewlyRegisteredDepts: async () => false, rememberRoles: nothing, arrangeWs: nothing,
+    displayNoByKey: new Map<string, unknown>(), exitedPaneKeys: new Set<string>(),
+    surfaceWorking: () => false, titleColorRole: false, paneTitleText: (_sid: number, t: string): string => String(t), ruleTitleOf: () => null,
+    placeholderSids: new Set<number>(), touchedPlaceholders: new Set<number>(), shouldClosePlaceholder: () => false, placeholderScreenLines: () => null,
+    hqMasterSids: null, renderWsTabs: nothing,
+    lastSurfacesBySocket: new Map<string, unknown>(), refreshUsageAccounts: () => Promise.resolve(), refreshNamedReporters: () => Promise.resolve(), renderSidebarUsage: nothing,
   };
   const loaded = loadWith(FNS, deps);
   fns = loaded.fns;

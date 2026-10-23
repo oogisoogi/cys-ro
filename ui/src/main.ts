@@ -7331,7 +7331,9 @@ async function actionClose() {
     render();
     return;
   }
-  focusedSid = collectSids(ws.tree)[0] ?? null;
+  // ★1.1.11 편입(원작자 0.14.52 S6 검체 「newer focus survives」): 닫힘 확인을 기다리는 사이 사람이 다른 창을 골랐으면 그 선택을 지킨다 —
+  //   닫힌 창의 포커스 이동은 detachPane 이 맡았다. 포커스가 비었거나 이 탭 밖을 가리킬 때만 첫 창으로 둔다(종전: 늘 첫 창으로 덮었다).
+  if (focusedSid == null || !collectSids(ws.tree).includes(focusedSid)) focusedSid = collectSids(ws.tree)[0] ?? null;
   render();
   if (focusedSid != null) setFocus(focusedSid);
 }

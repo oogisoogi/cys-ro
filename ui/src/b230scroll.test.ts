@@ -125,7 +125,8 @@ describe("B-230 ① render() — 다시 붙인 뒤 보이는 pane 마다 resyncV
       current: () => ({ tree, socket: "sock" }),
       nodeShown: () => true,
       holeShownFor: () => new Set(),
-      renderNode: (t: typeof tree) => ({ sids: t.sids }),
+      // ★1.1.11 편입: 우리 판 render() 는 루트 직계의 인라인 flex 를 지운다(top.style.flex = "" · v116-ui-close X-1) — 대역 노드에 style 칸을 둔다.
+      renderNode: (t: typeof tree) => ({ sids: t.sids, style: {} as Record<string, string> }),
       renderDeptPending: () => { throw new Error("not expected"); },
       renderIdleWorkspace: () => { throw new Error("not expected"); },
       renderWsTabs: () => log.push("renderWsTabs"),

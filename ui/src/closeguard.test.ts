@@ -58,15 +58,25 @@ describe("닫기 확인 문안 — 공개 문구 규율", () => {
 describe("닫기 배선 — 세 입구가 모두 판정을 지난다", () => {
   const fn = main.slice(main.indexOf("async function actionClose() {"));
   const body = fn.slice(0, fn.indexOf("\n}\n") + 3);
+  // ★1.1.11 편입(원작자 0.14.52 c3ce3272 확인 닫기): actionClose 는 close_surface 를 직접 부르지 않고 closePane(데몬 확인 → detachPane)을 부른다 —
+  //   아래 핀의 「닫기 지점」은 그 호출 한 줄이고, closePane 안의 close_surface 는 별도 핀이 잡는다.
+  const CLOSE_AT = "await closePane(sid, ws.socket);";
 
   it("actionClose 는 close_surface 보다 앞에서 판정·확인 창을 거친다", () => {
     const judge = body.indexOf("needsCloseConfirm(CLOSE_CONFIRM_POLICY,");
     const ask = body.indexOf("await confirmModal(CLOSE_CONFIRM_TEXT.title");
-    const close = body.indexOf('invoke("close_surface"');
+    const close = body.indexOf(CLOSE_AT);
     expect(judge).toBeGreaterThan(-1);
     expect(ask).toBeGreaterThan(judge);
     expect(close).toBeGreaterThan(ask);
-    expect(body.split('invoke("close_surface"').length - 1).toBe(1); // 우회 닫기 경로 0
+    expect(body.split("closePane(").length - 1).toBe(1); // 우회 닫기 경로 0 — 닫기 지점은 하나
+    expect(body.split('invoke("close_surface"').length - 1).toBe(0); // close_surface 를 직접 부르는 우회 0
+    // 그 닫기 지점(closePane)은 close_surface 하나를 기다린 **뒤에만** 화면에서 뗀다
+    const cpAt = main.indexOf("async function closePane(");
+    expect(cpAt).toBeGreaterThan(-1);
+    const cp = main.slice(cpAt, main.indexOf("\n}\n", cpAt) + 3);
+    expect(cp.split('invoke("close_surface"').length - 1).toBe(1);
+    expect(cp.indexOf("detachPane(sid, socket);")).toBeGreaterThan(cp.indexOf('await invoke("close_surface", { socket, surfaceId: sid });'));
   });
 
   it("취소면 닫지 않고, 묻는 사이 그 창이 사라졌으면 다른 창을 닫지 않는다", () => {
@@ -89,14 +99,16 @@ describe("닫기 배선 — 세 입구가 모두 판정을 지난다", () => {
     const guard = body.indexOf("if (closingPaneKeys.has(key)) return;");
     expect(guard).toBeGreaterThan(-1);
     expect(guard).toBeLessThan(body.indexOf("needsCloseConfirm("));
-    expect(body.indexOf("closingPaneKeys.add(key);")).toBeLessThan(body.indexOf('invoke("close_surface"'));
+    expect(body.indexOf("closingPaneKeys.add(key);")).toBeGreaterThan(-1);
+    expect(body.indexOf("closingPaneKeys.add(key);")).toBeLessThan(body.indexOf(CLOSE_AT));
     expect(/finally \{\s*closingPaneKeys\.delete\(key\);/.test(body)).toBe(true);
   });
 
   it("(Fable MINOR-2·3) 취소하면 그 창에 포커스를 돌려주고, 닫은 뒤 탭이 바뀌었으면 보이는 탭 포커스를 건드리지 않는다", () => {
     expect(/if \(!ok\) \{[\s\S]*?setFocus\(sid\);\s*return;/.test(body)).toBe(true);
     const moved = body.indexOf("if (ws !== current()) {");
-    expect(moved).toBeGreaterThan(body.indexOf('invoke("close_surface"'));
+    expect(body.indexOf(CLOSE_AT)).toBeGreaterThan(-1);
+    expect(moved).toBeGreaterThan(body.indexOf(CLOSE_AT));
     expect(moved).toBeLessThan(body.indexOf("focusedSid = collectSids(ws.tree)[0] ?? null;"));
   });
 

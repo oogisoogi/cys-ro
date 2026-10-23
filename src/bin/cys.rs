@@ -27,7 +27,13 @@ struct Cli {
     command: Command,
 }
 
-/// `cys kept-pane-notice` arguments (see [`Command::KeptPaneNotice`]).
+/// `cys reap-due <surface>` arguments (see [`VendorAuxCommand::ReapDue`]).
+#[derive(clap::Args)]
+struct ReapDueArgs {
+    surface: String,
+}
+
+/// `cys kept-pane-notice` arguments (see [`VendorAuxCommand::KeptPaneNotice`]).
 #[derive(clap::Args)]
 struct KeptPaneNoticeArgs {
     /// the input JSON file, or `-` for stdin: {"command", "records": [...], "ready_withheld": null | {...}}
@@ -387,11 +393,6 @@ enum Command {
     ReapSurface {
         surface: String,
     },
-    /// Request automatic cleanup of one exited surface if its daemon grace has elapsed.
-    /// Prints JSON: outcome=reaped, deferred (with reason), or gone. Errors exit 1.
-    ReapDue {
-        surface: String,
-    },
     /// ★W2/A-S3: 역할을 topology 묘비에 심는다(의도적 폐역). 데몬이 묘비 유일 작성자(단일 작성자 원칙).
     #[command(name = "tombstone")]
     Tombstone {
@@ -462,15 +463,11 @@ enum Command {
     /// 이 거대한 `Command` 의 clap 조립 함수 스택 프레임이 변형마다 커져 시험 스레드(2MB)에서 넘친다(rqfix_f10 실측).
     #[command(flatten)]
     DormantTeam(DormantTeamCommand),
-    /// ★(B-360 R3) The single sender of a kept-pane notice for a caller that deferred it (`CYS_KEPT_PANE_NOTICE=caller`):
-    /// ONE queued `[kept-pane]` notice to master, optionally with the ready-marker withheld clause. Exit 0 queued ·
-    /// 3 not sent (reason on stderr) · 2 bad input. Never autostarts a daemon. Internal (javis_bootstrap; hidden).
-    /// ★The arguments live in their own `Args` struct ON PURPOSE: clap's derive inlines an inline variant's arg
-    ///   builders into the enum's one generated function, and that grew the in-process parse frame enough to overflow
-    ///   a 2 MiB test thread (`tests::j3_cys_send_carries_label_out_of_pane_and_number_in_pane` needed 2056 KiB with
-    ///   the inline form, 2044 KiB without the variant and with this form — measured, debug build).
-    #[command(name = "kept-pane-notice", hide = true)]
-    KeptPaneNotice(KeptPaneNoticeArgs),
+    /// ★1.1.11 편입(원작자 0.14.52 새 동사 `reap-due` · `kept-pane-notice`) — [`VendorAuxCommand`] 로 평탄화한다(위 DormantTeam 과 같은
+    /// 이유 · 같은 꼴). 우리 판 `Command` 는 원작자보다 커서 0.14.52 의 두 변형을 여기 그대로 두면 debug 파싱 프레임이 2 MiB 시험 스레드를
+    /// 넘었다(실측: `tests::j3_…` 기준 int/1111 = 2048 KiB 에서 통과 · 병합 직후 = 2048 KiB 실패·2100 KiB 통과). 최상위 동사 이름은 그대로다.
+    #[command(flatten)]
+    VendorAux(VendorAuxCommand),
     /// RSI 학습 루프 — 사람 직접 명령(제안 생성) 또는 현재 학습 라운드 상태 조회
     Learn {
         /// 학습 주제 (생략하고 --status면 상태 조회)
@@ -1637,7 +1634,7 @@ fn parse_kept_pane_notice_input(raw: &str) -> Result<(String, Vec<Value>, Option
     Ok((command.to_string(), records.clone(), withheld))
 }
 
-/// `cys kept-pane-notice --input <path|->` — see [`Command::KeptPaneNotice`]. Reuses [`kept_pane_notify_master`] (the
+/// `cys kept-pane-notice --input <path|->` — see [`VendorAuxCommand::KeptPaneNotice`]. Reuses [`kept_pane_notify_master`] (the
 /// same bounded transport, resolve and queue scan); it never calls `request()`, so it never autostarts a daemon.
 fn run_kept_pane_notice(input: &str) -> i32 {
     let raw = if input == "-" {
@@ -3379,6 +3376,23 @@ enum FeedAction {
     },
 }
 
+
+/// ★1.1.11 편입 — 원작자 0.14.52 의 새 최상위 동사 2개(`Command` 에 평탄화 · 이름·도움말·숨김은 원작자 그대로).
+#[derive(Subcommand)]
+enum VendorAuxCommand {
+    /// Request automatic cleanup of one exited surface if its daemon grace has elapsed.
+    /// Prints JSON: outcome=reaped, deferred (with reason), or gone. Errors exit 1.
+    ReapDue(ReapDueArgs),
+    /// ★(B-360 R3) The single sender of a kept-pane notice for a caller that deferred it (`CYS_KEPT_PANE_NOTICE=caller`):
+    /// ONE queued `[kept-pane]` notice to master, optionally with the ready-marker withheld clause. Exit 0 queued ·
+    /// 3 not sent (reason on stderr) · 2 bad input. Never autostarts a daemon. Internal (javis_bootstrap; hidden).
+    /// ★The arguments live in their own `Args` struct ON PURPOSE: clap's derive inlines an inline variant's arg
+    ///   builders into the enum's one generated function, and that grew the in-process parse frame enough to overflow
+    ///   a 2 MiB test thread (`tests::j3_cys_send_carries_label_out_of_pane_and_number_in_pane` needed 2056 KiB with
+    ///   the inline form, 2044 KiB without the variant and with this form — measured, debug build).
+    #[command(name = "kept-pane-notice", hide = true)]
+    KeptPaneNotice(KeptPaneNoticeArgs),
+}
 
 /// ★1.1.8 휴면(master D-TEAM [master#36f48cf7] · judge 조건 ① [master#cd9e534c]) — 원작자 팀 만들기 동사 2개.
 /// `Command` 에 평탄화(`#[command(flatten)]`)되어 최상위 동사(`cys team-propose` · `cys team-token`)로 파싱된다.
@@ -6523,7 +6537,7 @@ fn run(command: Command) -> i32 {
         }
 
         Command::Status { json: as_json } => return run_status(as_json),
-        Command::KeptPaneNotice(args) => return run_kept_pane_notice(&args.input),
+        Command::VendorAux(VendorAuxCommand::KeptPaneNotice(args)) => return run_kept_pane_notice(&args.input),
         Command::Fleet { json: as_json } => return run_fleet(as_json),
 
         Command::Pause { reason } => request("system.pause", json!({"reason": reason}))
@@ -7221,7 +7235,7 @@ fn run(command: Command) -> i32 {
 
         // ★G4(W4-C): 수동 좌석 회수 — 게이트 거부는 exit 7(사유 stderr), 오류는 1.
         Command::ReapSurface { surface } => return run_reap_surface(&surface),
-        Command::ReapDue { surface } => return run_reap_due(&surface),
+        Command::VendorAux(VendorAuxCommand::ReapDue(args)) => return run_reap_due(&args.surface),
 
         Command::Tombstone { role, remove, dept } => {
             if dept {
@@ -43863,7 +43877,16 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         let mut argv = vec!["cys", "send", "--surface", "surface:7"];
         argv.extend_from_slice(flags);
         argv.push("J3 본문");
-        let rc = run(Cli::parse_from(argv).command);
+        // ★1.1.11 편입: 시험 안 실행(파싱 + `run`)을 8 MiB 스레드에서 돈다 — debug 빌드의 이 경로는 int/1111 에서 이미 2048 KiB 경계(그 값에서 통과)
+        //   였고, 원작자 0.14.52 send 경로가 몇 KiB 를 더해 기본 2 MiB 시험 스레드를 넘었다(실측 2060 KiB 통과). 원작자 CI 도 cys 시험에 8 MiB 를 준다
+        //   (c8fd47ff). 실제 기본 스택(윈 주 스레드) 판정은 시험이 아니라 W-GATE(패키지 cys.exe --help) 몫이다. env 가드는 프로세스 전역이라 그대로 유효.
+        let argv: Vec<String> = argv.iter().map(|a| a.to_string()).collect();
+        let rc = std::thread::Builder::new()
+            .stack_size(8 << 20)
+            .spawn(move || run(Cli::parse_from(argv).command))
+            .expect("j3 시험 스레드")
+            .join()
+            .expect("j3 시험 스레드 종료");
         stop();
         let sends = calls
             .lock()
@@ -52069,7 +52092,7 @@ mod aid_s5_cli_tests {
         use clap::Parser;
         assert!(Cli::try_parse_from(["cys", "reap-due"]).is_err());
         assert!(Cli::try_parse_from(["cys", "reap-due", "surface:9", "--reap"]).is_err());
-        assert!(matches!(Cli::try_parse_from(["cys", "reap-due", "surface:9"]).unwrap().command, Command::ReapDue { .. }));
+        assert!(matches!(Cli::try_parse_from(["cys", "reap-due", "surface:9"]).unwrap().command, Command::VendorAux(VendorAuxCommand::ReapDue(_))));
         for outcome in ["reaped", "gone", "deferred"] {
             let result = json!({"surface_id":9, "outcome":outcome, "reason":"grace_not_elapsed"});
             assert_eq!(serde_json::from_str::<Value>(&reap_due_json(&result, 9).unwrap()).unwrap(), result);

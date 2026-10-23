@@ -316,7 +316,9 @@ describe("codex 1R — 숨긴 「완전 초기화」 를 가리키는 안내(MED
   //   대상 = 사용자에게 닿는 글: 제품 소스(src · src-tauri/src · ui/src · ui/index.html) · 팩(cysjavis-pack — 시험 폴더 제외) ·
   //   사용 설명서 · README · docs 의 안내 문서. 제외 = 시험 파일 · 코드 주석 줄 · 그날 기록(HANDOFF · REVIEW · DESIGN · RELEASE_NOTES ·
   //   rebase 보고 · PLAN · 하위 폴더의 증거·점검표).
-  it("저장소 전체 — 「완전 초기화」 단추를 쓰라는 안내는 켜는 길(화면 설정)을 함께 적는다(없는 단추만 가리키는 줄 0)", () => {
+  // ★1.1.11 편입: 이 검체만 상한을 늘린다(아래 끝 주석). src/bun-env.d.ts 의 손 선언 TestFn 은 상한 인자를 적지 않았다 — 시험 파일 안의 별칭으로만 넘긴다(비시험 파일 무접촉).
+  const itSlow = it as unknown as (label: string, body: () => void, timeoutMs: number) => void;
+  itSlow("저장소 전체 — 「완전 초기화」 단추를 쓰라는 안내는 켜는 길(화면 설정)을 함께 적는다(없는 단추만 가리키는 줄 0)", () => {
     // 저장소 뿌리 = URL 그대로 fs 에 넘긴다(이 파일 머리의 read · clipath.test.ts 와 같은 길). URL 에서 경로 글자만 떼어 쓰면
     // Windows 에서 「/D:/…」 가 되어 폴더 읽기가 ENOENT 로 죽는다(CI windows-health). 이름 마디는 URL 글자(# ? % 빈칸)에 안전하게 싼다.
     const ROOT = new URL("../../", import.meta.url);
@@ -363,7 +365,9 @@ describe("codex 1R — 숨긴 「완전 초기화」 를 가리키는 안내(MED
     expect(hits.filter((h) => h.startsWith("src/bin/cys.rs:")).length).toBeGreaterThanOrEqual(2); // 자기살해 가드 + GUI 실행 중 거부
     for (const f of ["USER-MANUAL.md", "docs/GUIDE-clean-reset-KR.md"]) expect(hits.filter((h) => h.startsWith(f + ":")).length).toBeGreaterThanOrEqual(2);
     expect(hits.length).toBeGreaterThanOrEqual(8);
-  });
+    // ★1.1.11 편입: 저장소 훑기(파일 ~1,600개 동기 읽기)는 단독으로는 0.3초지만 전체 실행·디스크 경합 중에는 bun 기본 상한 5초를 넘겨
+    //   내용 위반 없이 「시간 초과」 로 떨어졌다(--timeout 60000 실측 통과) — 판정은 그대로 두고 이 검체의 상한만 늘린다.
+  }, 30_000);
 
   it("CLI 거부 안내(cysr factory-reset · 앱이 켜져 있을 때)", () => {
     const rs = line("../../src/bin/cys.rs", "지금 켜져 있는 cys 앱에서 하는 것이 가장 쉽다").split("\n")[0];

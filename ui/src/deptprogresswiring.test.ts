@@ -337,7 +337,11 @@ describe("main.ts 소스 핀 — 이벤트·점검 배선(새 setInterval 0 · �
     const f = fnText("refreshPaneTitles", true);
     const decl = f.indexOf("const seatRolesTick = new Map<string, string[] | null>();");
     expect(decl).toBeGreaterThan(0);
-    expect(decl).toBeLessThan(f.indexOf("try {")); // 소켓 루프(try) 밖에서 선언 — 끝의 점검이 읽는다
+    // ★1.1.11 편입(F-01): 첫 `try {` 는 이제 바쁨 가드 앞의 활동 패스(pumpRoleActivity) 가두개다 — 소켓 루프를 품은 본 try 는 바쁨 가드(refreshing = true) 뒤의 것.
+    const mainTry = f.indexOf("try {", f.indexOf("refreshing = true;"));
+    expect(f.indexOf("refreshing = true;")).toBeGreaterThan(0);
+    expect(decl).toBeLessThan(mainTry); // 소켓 루프(try) 밖에서 선언 — 끝의 점검이 읽는다
+    expect(decl).toBeLessThan(f.indexOf("for (const sk of sockets) {"));
     const rpc = f.indexOf("await rpcT(listCall, T_LIST)");
     const rec = f.indexOf('seatRolesTick.set(sk ?? "", deptLiveRoles(r.surfaces));');
     expect(rpc).toBeGreaterThan(0);
@@ -353,9 +357,11 @@ describe("main.ts 소스 핀 — 이벤트·점검 배선(새 setInterval 0 · �
     expect(rec).toBeLessThan(loopEnd); // 소켓 루프 안
     expect(f.split("seatRolesTick.set(").length - 1).toBe(1);
     expect((f.match(/invoke\("list_surfaces"/g) ?? []).length).toBe(1); // 새 RPC 0 — 종전 호출 하나가 어차피 받는 결과를 쓴다
-    // (1.1.8 병합) 우리 판에는 빈 자리표 회수(v111-restore ③ · 우리 손대지 않은 자리표만)의 close_surface 1곳이 더 있다 — 판정 입력용 RPC 가 아니다.
-    expect(f.split("invoke(").length - 1).toBe(2); // 이 함수의 invoke 는 list_surfaces 하나 + 우리 자리표 회수 하나뿐
-    expect(f.split('invoke("close_surface", { socket: ws.socket, surfaceId: sid })').length - 1).toBe(1);
+    // (1.1.8 병합) 우리 판에는 빈 자리표 회수(v111-restore ③ · 우리 손대지 않은 자리표만)의 닫기 1곳이 더 있다 — 판정 입력용 RPC 가 아니다.
+    // ★1.1.11 편입(원작자 0.14.52 c3ce3272): 그 닫기는 이제 closePane(데몬 확인 → detachPane)을 지난다 — 이 함수 본문의 직접 invoke 는 list_surfaces 하나뿐.
+    expect(f.split("invoke(").length - 1).toBe(1); // 이 함수의 invoke 는 list_surfaces 하나뿐(새 RPC 0)
+    expect(f.split("await closePane(sid, ws.socket);").length - 1).toBe(1);
+    expect(f.split('invoke("close_surface"').length - 1).toBe(0);
   });
   it("★onDaemonEvent 의 feed.item.created 분기에는 팀원 안내 배선이 없다(S4 B1) — 편성 도구의 feed 는 본부 데몬 소속이라 화면이 부서 탭과 대응시킬 수 없다 · 그 함수·판정 도우미도 없다 · 일반 알림(ℹ 알림)은 종전 그대로", () => {
     const i = CODE.indexOf('if (name === "feed.item.created") {');

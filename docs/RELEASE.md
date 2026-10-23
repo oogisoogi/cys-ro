@@ -213,6 +213,7 @@ replay 로 거부한다(`src/packsig.rs` ⓔ). 벤더 팩을 받은 기계는 �
      이 **모두 success** 여야 한다(0.14.43 부터 `windows-health` 포함 — 태그 레인의 `windows-health-gate` 가 같은 SHA 의
      windows-health 완주 런을 요구하므로, 이 워크플로를 안 보면 4종이 rc=0 이어도 태그 레인이 죽는다).
      진행 중·런 없음·실패·취소는 전부 rc=1(태그 금지), 네트워크·API 한도는 rc=2(판정 불가 — 통과 아님).
+   - (0.14.52 · W-GATE) `windows-build` now runs the packaged `cys.exe --help` dry run (step `Packaged cys.exe --help gate (default stack · blocking · before upload)`) with the SAME run body as the blocking `release.yml` Windows step, so this check makes it a tag condition; it is a SEPARATE build instance (built without `--target`) and does NOT replace the in-release step (CEO ruling 2026-10-22).
    - **gh 불필요**: 공개 저장소의 Actions 런·잡 목록은 인증 없이 조회된다(익명 한도 시간당 60회).
      `--wait N` 은 진행 중인 런을 60초 간격으로 최대 N분 기다리고, 실패한 런은 잡·스텝·annotation 을 보여 준다.
      `ci-branch` 의 macOS 데몬 시험 단계가 붉으면 annotation 첫 줄이 `failed=N — <실패한 시험 이름…>` 이다(이름순 최대 20개 ·
@@ -411,6 +412,9 @@ bash scripts/check-no-ioreport-link.sh <cysd 바이너리 경로>
       초록이어도 Windows 에서 전 검체가 통과했다는 뜻이 아니다(실패·절단도 conclusion 은 success 로 찍힌다). 발행 전에 바로 뒤의 판독
       스텝(annotation · STEP_SUMMARY)에서 실패 검체 이름 목록을 읽고 원인을 분류한다: 제품 결함 / 검체의 유닉스 가정 / 러너 환경.
       제품 결함이 하나라도 있으면 릴리스 노트의 알려진 한계에 적고, 직전 런에 없던 새 실패가 생겼는지 대조한다.
+      ★B-344: the bootstrap-health step (`부트스트랩 건강성 — H-WIN 검체 실기`) is `continue-on-error: true` as well, by design, so on a
+      bootstrap-health red its REST conclusion also reads `success`. That red is carried by the blocking step
+      `부트스트랩 건강성 판정 결박 (H-WIN · 차단 · fail-closed)`, the job and run conclusion, and the bootstrap-health step's annotations.
       **0.14.43 의 경과**(릴리스 노트 §14): 이 단계는 이번 판 이전부터 한 검체에서 멈춘 채 30분 상한에 끊겼고, 그 검체를 건너뛰자 처음
       완주해 1680 통과 · 196 실패 · 3 무시였다(진단 실행 `37188821194` · 건강성 잡은 1681 · 195 · 3). 196건 분류: 상태 폴더 공유 154 ·
       경로 구분자 3 · `HOME` 전제 2 · 유닉스 전제 35 · 제품 결함 2건(원인 1 — 승인 서명 · 고침). 수리 뒤(커밋 `2bf75a12`) 같은 명령의

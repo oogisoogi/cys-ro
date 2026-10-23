@@ -448,12 +448,36 @@ jobs:
           # Rust auto-restore 단위(재시도 seam·env 주입·B1·B3) + pack 소유권(B2).
           # ★--skip hwmon:: — hwmon 테스트는 실 GPU 전제(gpu.cores>0 단언)라 가상 러너에서 환경 FAIL
           #   (v0.12.21 release run 28792111282 실증 — phoenix 게이트와 무관한 host 하드웨어 의존).
-          CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" cargo test --bin cysd -- --test-threads=1 --skip hwmon::
+          CYSD_LOG="${RUNNER_TEMP:-/tmp}/c8-release-cysd.log"
+          rm -f "$CYSD_LOG"
+          set +e
+          CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" cargo test --bin cysd -- --test-threads=1 --skip hwmon:: 2>&1 | tee "$CYSD_LOG"
+          cysd_rc="${PIPESTATUS[0]}"
+          set -e
+          if [ "$cysd_rc" -ne 0 ]; then exit "$cysd_rc"; fi
           CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" cargo test --lib -- --test-threads=1
           # ★A10 승격(2026-08-16): ci-branch 리허설 1사이클 green 실증(feat/v4-repair 18dc9a6 run
           #   success — 115 passed/0 failed) 후 릴리스 레인 편입. 환경 의존 실패 발견 시 위
           #   --skip hwmon:: 선례 패턴으로 격리하라(테스트 삭제 금지).
           CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" cargo test --bin cys -- --test-threads=1
+
+      - name: C8 UNMEASURED marker gate (release native macOS)
+        if: always() && matrix.target == 'aarch64-apple-darwin'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PY=python
+          if command -v python3 >/dev/null 2>&1; then PY=python3; fi
+          PYTHONDONTWRITEBYTECODE=1 "$PY" scripts/c8_native_measurement.py "${RUNNER_TEMP:-/tmp}/c8-release-cysd.log"
+
+      - name: C8 native test names (release macOS full group)
+        if: always() && matrix.target == 'aarch64-apple-darwin'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PY=python
+          if command -v python3 >/dev/null 2>&1; then PY=python3; fi
+          PYTHONDONTWRITEBYTECODE=1 "$PY" scripts/c8_native_names.py "${RUNNER_TEMP:-/tmp}/c8-release-cysd.log"
 
       # ── ★todo 선언·유령집계 게이트(C-1 교정 · 2026-07-26) ──
       # **왜 여기 있어야 하는가**: 이 게이트 3종은 `ci-branch.yml` 에만 있었고 그 워크플로는
@@ -636,7 +660,7 @@ jobs:
                    test_refl_inject_context_role_canon test_refl_round_lock_ownership \
                    test_refl_rsi_state_ownership test_refl_stagnation_budget_ledger \
                    test_refl_wakeup_expiry_attribution \
-                   test_phoenix_fresh_honest test_phoenix_f1_production_path \
+                   test_phoenix_fresh_honest test_phoenix_f1_production_path test_phoenix_c6_due test_reap_exited_matrix \
                    test_phoenix_r32_restore_budget test_phoenix_encoding_default \
                    test_report_ctx_axis test_formation_tick_visibility \
                    test_resource_gate_boot_anchor test_ctx_divergence \
@@ -650,7 +674,7 @@ jobs:
                    test_dept_create_progress \
                    test_default_fleet_formation test_formation test_nowin_periodic_spawns test_hud_bridge_unwatched_no_spawn test_nowin_captured_spawns test_awaken_enter test_resource_gate_notify_rule test_phoenix_a3_ps_axis test_dept_request test_d1_dept_ready_probe test_dbg_d3_dept_path_precedence test_dbg_d3_d11_shared_profile_hooks test_dbg_d3_f4_answer_classifier test_dbg_d3_f5_dept_intent test_d1_4_orphan_reap test_v116_rb1_formation test_v116_auto_restore_status test_v116_phoenix_midrun_tomb test_v116_num_cys_list_compat test_win_dept_spawn \
                    test_awaken_seat_fold test_awaken_status_lane test_boot_preflight_degraded test_c82_win_isolation test_dept_tick_stdin test_dept_tombstone_no_autostart test_dept_win_python_resolve test_hook_fail_log test_mission_anomaly_provenance test_preflight_fresh_full_json test_report_gate_win_na test_resource_gate_win_roster test_session_state_canon test_javis_counsel \
-                   test_hud_bridge_0144_bootjs test_hud_bridge_0144_specimen test_hud_bridge_0144_unit; do
+                   test_hud_bridge_0144_bootjs test_hud_bridge_0144_specimen test_hud_bridge_0144_unit test_intake_exit_contract test_mission_anomaly_emit test_resource_gate_bg_class test_computer_use_audit; do
             f="cysjavis-pack/bin/tests/$t.py"
             [ -f "$f" ] || { echo "선언·유령집계 테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
             echo "== declared-state test: $t =="
@@ -1320,6 +1344,55 @@ jobs:
           echo "install_line=$line" >> "$GITHUB_OUTPUT"
           echo "본문 설치 안내: $line"
 
+      # W-GATE (0.14.52 · CEO ruling 2026-10-22, release condition 2): run the EXACT sidecar file the NSIS installer packed in
+      #   the build step above (scripts/bundle-prep.sh copies the release cys.exe to this path; tauri-action below only
+      #   collects and uploads, tauriScript 'true') with three parser-heavy --help calls at the DEFAULT stack. Any non-zero
+      #   native exit fails this leg BEFORE any upload (0xC00000FD = stack overflow; the debug build does that on this
+      #   runner - windows-health "스택 넘침 측정"). BLOCKING on purpose: no continue-on-error. RUST_MIN_STACK is removed
+      #   (it only sizes spawned threads, but nothing should pretend to help). The native exit comes from $LASTEXITCODE,
+      #   never from Git bash (which folds 0xC00000FD to 127). windows-build.yml runs the SAME body as the pre-tag dry run;
+      #   scripts/tests/test_release_windows_help_gate.py pins both.
+      - name: Packaged cys.exe --help gate (default stack · blocking · before upload)
+        if: matrix.platform == 'windows-latest'
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          Remove-Item Env:RUST_MIN_STACK -ErrorAction SilentlyContinue
+          try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { Write-Host "[help-gate] console encoding unchanged (display only): $_" }
+          $exe = 'src-tauri/binaries/cys-x86_64-pc-windows-msvc.exe'
+          if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+            Write-Host "::error title=packaged cys.exe help gate::$exe is missing - the installer's sidecar was not built at this path"
+            exit 1
+          }
+          $full = (Resolve-Path -LiteralPath $exe).Path
+          Write-Host "[help-gate] $exe sha256=$((Get-FileHash -Algorithm SHA256 -LiteralPath $full).Hash)"
+          $failed = @()
+          foreach ($argv in @(@('--help'), @('queue', '--help'), @('queue', 'list', '--help'))) {
+            $label = $argv -join ' '
+            $global:LASTEXITCODE = $null
+            $ErrorActionPreference = 'Continue'
+            try { $out = & $full @argv 2>&1 } catch { $out = @("launch error: $_") }
+            $code = $LASTEXITCODE
+            $ErrorActionPreference = 'Stop'
+            if ($null -eq $code) {
+              Write-Host "[help-gate] cys.exe $label native-exit=UNMEASURED (no exit code)"
+              $failed += "${label}: UNMEASURED"
+              continue
+            }
+            $hex = '0x{0:X8}' -f $code
+            Write-Host "[help-gate] cys.exe $label native-exit=$hex"
+            @($out) | Select-Object -First 3 | ForEach-Object { Write-Host "[help-gate]   | $_" }
+            if ($code -ne 0) { $failed += "${label}: $hex" }
+          }
+          if ($failed.Count -gt 0) {
+            Write-Host "::error title=packaged cys.exe help gate::non-zero native exit at the default stack: $($failed -join '; ') - this build must not be uploaded"
+            exit 1
+          }
+          Write-Host "[help-gate] all three exited 0x00000000 at the default stack"
+          exit 0
+
       # tauri build → beforeBuildCommand(bundle-prep.sh)가 UI 번들 + cys/cysd 릴리스 빌드 + externalBin
       # 배치 → 번들(dmg/app) → createUpdaterArtifacts(.app.tar.gz + .sig + latest.json) → 비공개 repo 릴리스 업로드.
       # Windows: NSIS setup.exe + .sig — tauri-action이 같은 릴리스의 latest.json에 platforms.windows-x86_64를 병합.
@@ -1435,6 +1508,11 @@ jobs:
       #   (1.1.8·1.1.9 — trash.rs 없음) + 새 팩 = 자동 삭제도 휴지통도 없어 격리분이 무한히 쌓인다. 새 CLI 표면은 아니지만
       #   「팩이 새 바이너리 표면을 지시하면 그 판으로」 의 뜻에 해당(근거 표 = docs/release-1110/CHECKLIST-1.1.10-publish-2026-10-25.md A-4).
       #   pack-release.yml PACK_MIN_BINARY_OVERRIDE 와 동시 상향(두 값 동일 계약 · cys.rs 시험 핀).
+      # ★1.1.11 편입(원작자 0.14.52 병합 · 2026-10-23 · TICKET=cysr-1111-vendor-01452) — 원작자 줄은 이 자리를 0.14.42 →
+      #   0.14.52 로 올렸다(원작자 커밋 9b438ee2 — 근거 표면: `cys kept-pane-notice --input -`(javis_bootstrap.py 레디 마커
+      #   보류 알림) · `cys boot --json` 지연 쌍 env `CYS_KEPT_PANE_NOTICE`·`CYS_KEPT_PANE_RECORDS_OUT`). 우리 판번 줄에서는
+      #   이 표면이 이 병합 바이너리(1.1.11)에 처음 실린다 — 1.1.10 바이너리 + 새 팩 = 부트는 죽지 않으나 보류 알림 통로가
+      #   사라진다(원작자 판단). 1.1.11 상향 여부는 판번 SOT 단계 결정(master 게이트 · pack-release.yml 과 동시).
       PACK_MIN_BINARY: '1.1.10'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
@@ -1685,7 +1763,7 @@ jobs:
                    test_refl_inject_context_role_canon test_refl_round_lock_ownership \
                    test_refl_rsi_state_ownership test_refl_stagnation_budget_ledger \
                    test_refl_wakeup_expiry_attribution \
-                   test_phoenix_fresh_honest test_phoenix_f1_production_path \
+                   test_phoenix_fresh_honest test_phoenix_f1_production_path test_phoenix_c6_due test_reap_exited_matrix \
                    test_phoenix_r32_restore_budget test_phoenix_encoding_default \
                    test_report_ctx_axis test_formation_tick_visibility \
                    test_resource_gate_boot_anchor test_ctx_divergence \
@@ -1699,7 +1777,7 @@ jobs:
                    test_dept_create_progress \
                    test_default_fleet_formation test_formation test_nowin_periodic_spawns test_hud_bridge_unwatched_no_spawn test_nowin_captured_spawns test_awaken_enter test_resource_gate_notify_rule test_phoenix_a3_ps_axis test_dept_request test_d1_dept_ready_probe test_dbg_d3_dept_path_precedence test_dbg_d3_d11_shared_profile_hooks test_dbg_d3_f4_answer_classifier test_dbg_d3_f5_dept_intent test_d1_4_orphan_reap test_v116_rb1_formation test_v116_auto_restore_status test_v116_phoenix_midrun_tomb test_v116_num_cys_list_compat test_win_dept_spawn \
                    test_awaken_seat_fold test_awaken_status_lane test_boot_preflight_degraded test_c82_win_isolation test_dept_tick_stdin test_dept_tombstone_no_autostart test_dept_win_python_resolve test_hook_fail_log test_mission_anomaly_provenance test_preflight_fresh_full_json test_report_gate_win_na test_resource_gate_win_roster test_session_state_canon test_javis_counsel \
-                   test_hud_bridge_0144_bootjs test_hud_bridge_0144_specimen test_hud_bridge_0144_unit; do
+                   test_hud_bridge_0144_bootjs test_hud_bridge_0144_specimen test_hud_bridge_0144_unit test_intake_exit_contract test_mission_anomaly_emit test_resource_gate_bg_class test_computer_use_audit; do
             f="cysjavis-pack/bin/tests/$t.py"
             [ -f "$f" ] || { echo "선언·유령집계 테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
             echo "== [pack] declared-state test: $t =="

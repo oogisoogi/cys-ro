@@ -2498,9 +2498,14 @@ fn run_reap_surface(surface: &str) -> i32 {
 }
 
 fn run_reap_due(surface: &str) -> i32 {
-    let Some(sid) = parse_surface_ref(surface) else {
-        eprintln!("error: invalid surface ref: {surface}");
-        return 1;
+    // ★1.1.11 편입(우리 v116-num 일관성 핀): 좌석 인자는 해석기를 지난다 — `surface:N`·`N`(내부 번호 · 원작자 phoenix 호출)은 종전과
+    //   같은 값이고, 사람이 친 `#N`(보이는 번호)도 같은 좌석으로 푼다(직접 parse_surface_ref 는 `#N` 을 「invalid」로만 끝냈다).
+    let sid = match resolve_surface_arg(surface) {
+        Ok(sid) => sid,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
     };
     match request("surface.reap_due", json!({"surface_id": sid})) {
         Ok(result) => match reap_due_json(&result, sid) {
@@ -26284,7 +26289,9 @@ fn directive_presence(sid: u64, timeout: u64) -> Presence {
         Ok(r) => r["latest_cursor"].as_u64().unwrap_or(0),
         Err(e) => return Presence::Undetermined(format!("screen cursor unreadable: {e}")),
     };
-    if let Err(e) = inject_text(sid, &reinject_ping_text(&nonce)) {
+    // ★1.1.11 편입(우리 ⑯ precut ㉮ 형제 · 원작자 0.14.52 새 무인 주입 지점): 팩 갱신의 존재 확인 핑도 사람 손 없이 친다 — 승인·질문 창 위에는
+    //   쓰지 않는다(거부 = 쓰기 0 → 아래 Undetermined 로 접힌다 · 재주입·표식 없음 = 원작자 UNKNOWN 규칙과 같은 안전 방향).
+    if let Err(e) = inject_text_opts(sid, &reinject_ping_text(&nonce), true) {
         return Presence::Undetermined(format!("presence ping not delivered: {e}"));
     }
     match request(
@@ -31381,8 +31388,9 @@ mod tests {
         assert_eq!(body.matches("inject_text(").count(), 0, "순환에 거부 없는 주입이 있다");
         assert_eq!(body.matches("inject_text_opts(").count(), 5, "순환 주입 지점 수가 바뀌었다");
         for call in [
-            "inject_text_opts(sid, &cycle_save_directive(&role_name, &files), true)?;",
-            "판정하라.\"), true)?;",
+            // (1.1.11 편입 · 원작자 B-360 R2 revise S48·S49) 저장 지시·검증자 글은 결과 3값 판정 match 로 감싸였다 — 거부 옵션은 그대로.
+            "match inject_text_opts(sid, &cycle_save_directive(&role_name, &files), true) {",
+            "판정하라.\"), true) {",
             "inject_text_opts(sid, &cycle_reinject_payload(hooks_inject, &resume_text, &mut || compose_directive(&role_name))?, true)?;",
         ] {
             assert!(body.contains(call), "순환 주입에 거부 옵션이 꺼져 있다: {call}");
@@ -31408,7 +31416,8 @@ mod tests {
         let rb = &prod[ri..ri + prod[ri + 1..].find("\n}\n").unwrap() + 1];
         assert_eq!(rb.matches("inject_text(").count(), 0, "reinject(phoenix 핑·재주입)에 거부 없는 주입이 남았다");
         assert_eq!(rb.matches("inject_text_opts(").count(), 2, "reinject 핑·재주입 지점 수");
-        assert!(rb.contains("inject_text_opts(sid, &reinject_ping_text(&nonce), true)?;"), "reinject 핑에 거부 옵션");
+        // (1.1.11 편입 · 원작자 B-360 R2 revise S63) 핑은 결과 3값 판정 match 로 감싸였다 — 거부 옵션은 그대로.
+        assert!(rb.contains("match inject_text_opts(sid, &reinject_ping_text(&nonce), true) {"), "reinject 핑에 거부 옵션");
         assert!(rb.contains("inject_text_opts(sid, &directive, true)"), "reinject 재주입에 거부 옵션");
         // 거부로 끝나도 quiescing 은 풀린다(결과를 싣는 해제 · 원작자 RR1-ROLE-1) — 승인 창 거부는 not_cleared 로 접힌다.
         let release = body.find("let _ = end_surface_quiescing(sid, outcome);").expect("quiescing 해제");
@@ -52283,7 +52292,9 @@ mod update_repair_c_row7 {
         let cmd = item_code(src, "fn run_daemon_cmd(");
         assert_eq!(
             capability_census(&cmd),
-            vec![("killwords", 2), ("Command::new", 10), ("launchctl", 7), ("request(", 1), ("\"system.", 1)],
+            // (1.1.11 편입) 우리 판 run_daemon_cmd 의 원시 Command::new 는 7(원작자 base 4ed79fdd 는 10) — 우리 포크가 그 셋을 헬퍼로 옮긴 차이다.
+            //   이 핀의 뜻(행 7 수리가 능력을 늘리지 않는다)은 우리 판 기준값으로 지킨다.
+            vec![("killwords", 2), ("Command::new", 7), ("launchctl", 7), ("request(", 1), ("\"system.", 1)],
             "run_daemon_cmd capability census changed from base 4ed79fdd"
         );
         assert!(cmd.contains("let up = daemon_answers_within(&socket_path(), std::time::Duration::from_secs(4));"), "row 7");
@@ -54161,10 +54172,12 @@ mod b360_tests {
         if !callers("directive_presence").contains(&"consume_reinject_pending".to_string()) {
             failures.push(format!("control: consume_reinject_pending → directive_presence not found: {:?}", callers("directive_presence")));
         }
-        if !callers("run_launch_agent_opts").contains(&"run_restore".to_string()) {
-            failures.push("control: run_restore → run_launch_agent_opts not found (the scanner cannot see root edges)".into());
+        // (1.1.11 편입) 우리 판 run_restore 는 run_restore_with(&mut ProdRestoreLauncher) 로 간접 호출한다 — fresh 폴백의 호출 지점은
+        //   `ProdRestoreLauncher::fresh` 다. 대조(통제)는 그 간선으로 보고, 뿌리에 우리 간접 층(run_restore_with·fresh·in_seat)을 더한다.
+        if !callers("run_launch_agent_opts").contains(&"fresh".to_string()) {
+            failures.push("control: ProdRestoreLauncher::fresh → run_launch_agent_opts not found (the scanner cannot see root edges)".into());
         }
-        let roots = ["run_boot", "run_restore", "run_launch_agent_opts", "run_launch_agent", "run_node_recover"];
+        let roots = ["run_boot", "run_restore", "run_restore_with", "fresh", "in_seat", "run_launch_agent_opts", "run_launch_agent", "run_node_recover"];
         let mut seen: Vec<String> = Vec::new();
         let mut queue: Vec<String> =
             ["consume_reinject_pending", "consume_reinject_pending_core", "directive_presence"].map(String::from).to_vec();

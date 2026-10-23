@@ -1098,16 +1098,17 @@ class T15NoTimeoutLengthened(unittest.TestCase):
     NEW_REPORT_ONLY_TIMEOUTS = {
         "product-cpu (F5, 0.14.50): _pc_read_ps ps 1.5 s, _pc_run_child": [
             "PRODUCT_CPU_PS_TIMEOUT_S = 1.5        # the separate invocation's own ps timeout (F5-A1 rule 4)",
-            'text=True, errors="replace", timeout=PRODUCT_CPU_PS_TIMEOUT_S)',
+            # cysr: 우리 NOWIN(윈 콘솔 창 숨김 · v0.14.51 편입 · r2 1.1.11) 이 붙은 줄 그대로 핀한다 — timeout 값은 원작자와 같다.
+            'text=True, errors="replace", timeout=PRODUCT_CPU_PS_TIMEOUT_S, **NOWIN)  # v0.14.51 편입: 우리 NOWIN(윈 콘솔 창 숨김)',
             'return None, "not_measured", "ps timeout %.1f s" % PRODUCT_CPU_PS_TIMEOUT_S',
             'out, _ = p.communicate(timeout=PRODUCT_CPU_CHILD_DEADLINE_S)',
             'p.communicate(timeout=2.0)          # reap: no child left behind (test 9)'],
         "pty-headroom (2026-10-17): _ptmx_ceiling sysctl 5 s, _ptmx_devices lsof 20 s": [
-            'capture_output=True, text=True, timeout=5)',
-            'timeout=20).stdout))()'],
+            'capture_output=True, text=True, timeout=5, **NOWIN)',
+            'timeout=20, **NOWIN).stdout))()'],
         "bg-parents (2026-10-17): _bg_parents_ps ps 1.5 s": [
             'BG_PARENTS_PS_TIMEOUT_S = 1.5',
-            'text=True, errors="replace", timeout=BG_PARENTS_PS_TIMEOUT_S)',
+            'text=True, errors="replace", timeout=BG_PARENTS_PS_TIMEOUT_S, **NOWIN)',
             'return None, "not_measured", "ps timeout %.1f s" % BG_PARENTS_PS_TIMEOUT_S'],
     }
     # Gate lines that hold the word but set no timeout. Each is pinned by exact text, must occur exactly once,

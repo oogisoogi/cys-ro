@@ -61,7 +61,14 @@ BIN = os.path.dirname(SELF)
 MISSION = os.path.join(BIN, "javis_mission.py")
 PY = sys.executable or "python3"
 HANG_LIMIT_S = 20.0           # 콜드 스타트 여유를 둔 시한 — 정상 도움말은 1초 안에 끝난다
-ANOMALY_LINE = re.compile(r"^\[mission\] ★이상징후\(([a-z_]+)\): (.+) — 오너에게 보고하라\(은폐 금지\)$")
+# ★우리 판(cysr) D15: 보고 1줄에 출처 절 「— 지금 관측(시각 · 좌석 …)」/「— 재생(기록 시각 · 좌석 …)」이 붙는다
+#   (javis_mission.anomaly_line · 1.1.11 편입 TICKET=cysr-1111-vendor-01452-r2). 원작자 형식(출처 절 없음)도 받는다.
+ANOMALY_LINE = re.compile(r"^\[mission\] ★이상징후\(([a-z_]+)\): (.+?) — (?:(?:지금 관측|재생)\(.*\) · )?오너에게 보고하라\(은폐 금지\)$")
+
+
+def _code_detail(lines):
+    """(코드, 본문) 집합 — D15 출처 절(지금 관측 / 재생)은 뺀다."""
+    return {(m.group(1), m.group(2)) for m in map(ANOMALY_LINE.match, lines) if m}
 OWNER_PROMPT = "윈도우 실사고 근본수정 진행해"
 fails = []
 
@@ -166,13 +173,14 @@ try:
     a2 = anomaly_lines(r2.stderr)
     r2mo = run(["machine-origin"], e1, stdin=hook_json(OWNER_PROMPT))
     a2mo = anomaly_lines(r2mo.stderr)
-    common = sorted(set(a2) & set(a2mo))
+    # D15: status 는 대장에서 「재생」, machine-origin 은 「지금 관측」 — 출처 절이 설계상 다르므로 (코드, 본문)으로 대조한다.
+    common = sorted(_code_detail(a2) & _code_detail(a2mo))
     check("2a status 도 같은 두 코드를 싣는다(비교 대상 실재)",
           {"env_not_int", "ledger_absent"} <= set(
               ANOMALY_LINE.match(ln).group(1) for ln in a2 if ANOMALY_LINE.match(ln)),
           repr(a2))
-    check("2b machine-origin 의 이상징후 줄 집합 == status 의 이상징후 줄 집합(바이트 동일)",
-          bool(common) and set(a2mo) == set(a2), repr({"status": a2, "machine-origin": a2mo}))
+    check("2b machine-origin 의 이상징후 (코드, 본문) 집합 == status 의 집합(D15 출처 절 제외 바이트 동일)",
+          bool(common) and _code_detail(a2mo) == _code_detail(a2), repr({"status": a2, "machine-origin": a2mo}))
 
     # ── 3 층1 이상도 발행 — 판정표 fixture 의 케이스로 원장을 만든다 ───────────
     FIXTURE = os.path.join(SELF, "fixtures", "mission-origin-corpus.json")

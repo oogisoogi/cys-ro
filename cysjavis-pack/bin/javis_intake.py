@@ -60,6 +60,11 @@ import re
 import sys
 import time
 
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 MIN_EVIDENCE_CHARS = 40      # 지불로 인정하는 증거 최소 길이(문자) — "했다"·"ok" 불통과
 MIN_REASON_CHARS = 20        # 보류 사유 최소 길이
 SCHEMA = 1
@@ -109,7 +114,7 @@ def _seat():
     auth = False
     try:
         import subprocess
-        out = subprocess.run(["cys", "identify"], capture_output=True, text=True, timeout=10)
+        out = subprocess.run(["cys", "identify"], capture_output=True, text=True, timeout=10, **NOWIN)
         if out.returncode == 0:
             j = json.loads(out.stdout)
             c = (j.get("caller") or {})
@@ -127,7 +132,7 @@ def _live_surfaces():
     못 읽으면 None(= 판정에 쓰지 않는다 · 측정 불가를 통과로 바꾸지 않는다)."""
     import subprocess
     try:
-        out = subprocess.run(["cys", "status", "--json"], capture_output=True, text=True, timeout=10)
+        out = subprocess.run(["cys", "status", "--json"], capture_output=True, text=True, timeout=10, **NOWIN)
         d = json.loads(out.stdout)
         return {str(x.get("surface_id")) for x in (d.get("surfaces") or []) if x.get("surface_id") is not None}
     except Exception:
@@ -638,12 +643,12 @@ def cmd_selftest(_a):
     # -B: -I 는 환경변수의 캐시 금지 봉인을 무시하므로, 번들 python 이면 이 자식이 .pyc 를 번들 안에 쓸 수 있다
     #     (2026-10-20 수리 · 오너 규칙 — 번들 python 은 번들 안에 캐시를 쓰지 않는다).
     _r = subprocess.run([sys.executable, "-I", "-B", os.path.abspath(__file__), "audit"],
-                        capture_output=True)
+                        capture_output=True, **NOWIN)
     chk(_r.returncode == EXIT_USAGE,
         "audit --roots 누락이 %d 를 냈다 — USAGE(%d) 여야 하고 NO_DENOM(%d) 과 겹치면 안 된다"
         % (_r.returncode, EXIT_USAGE, EXIT_NO_DENOM))
     _r2 = subprocess.run([sys.executable, "-I", "-B", os.path.abspath(__file__), "nosuchcmd"],
-                         capture_output=True)
+                         capture_output=True, **NOWIN)
     chk(_r2.returncode == EXIT_USAGE, "미지 서브커맨드가 USAGE 가 아니다(rc=%d)" % _r2.returncode)
 
     # ⒤ 네 종결 상태가 서로 다른 코드다 (★양성 통제 — 갈래마다 한 번은 돌려 본다)

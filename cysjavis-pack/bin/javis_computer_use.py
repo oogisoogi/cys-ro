@@ -42,6 +42,11 @@ import subprocess
 import sys
 import tempfile
 
+# Windows: 콘솔 없는 부모(cysd·pythonw 브리지·GUI) 아래에서 출력을 캡처하는 콘솔 자식(cys.exe·powershell·cmd)을
+# 숨김 없이 낳으면 자식마다 새 콘솔 창이 뜬다(TICKET=cysr-console-flicker-r2). 캡처하는 subprocess 호출에
+# **NOWIN 을 전개한다(출력을 터미널로 흘리는 호출은 제외 — 창을 숨기면 그 출력이 사라진다). 타 OS 무동작.
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 SRV = "computer-use"
 # The names cys reads its socket from, in priority order (src/lib.rs env_compat) - the same tuple as
 # javis_role.SOCKET_ENV_KEYS; the test cross-checks all three.
@@ -80,7 +85,7 @@ def claude_node_cwds(sock):
         env["CYS_SOCKET"] = sock
     try:
         p = subprocess.run(["cys", "list"], capture_output=True, text=True,
-                           timeout=25, env=env)
+                           timeout=25, env=env, **NOWIN)
     except (OSError, subprocess.SubprocessError):
         return None
     if p.returncode != 0:

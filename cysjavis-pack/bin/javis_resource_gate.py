@@ -3320,7 +3320,7 @@ def _ptmx_ceiling():
     """커널 PTY 상한 -> (값|None, 사유|None)."""
     try:
         out = subprocess.run(["sysctl", "-n", PTMX_SYSCTL],
-                             capture_output=True, text=True, timeout=5)
+                             capture_output=True, text=True, timeout=5, **NOWIN)
         if out.returncode == 0 and out.stdout.strip().isdigit():
             return int(out.stdout.strip()), None
     except (subprocess.SubprocessError, OSError):
@@ -3340,7 +3340,7 @@ def _ptmx_devices(bg_pids=frozenset(), run=None):
     try:
         out = (run or (lambda: subprocess.run(
             ["lsof", "-n", "-P", "/dev/ptmx"], capture_output=True, text=True,
-            timeout=20).stdout))()
+            timeout=20, **NOWIN).stdout))()
     except (subprocess.SubprocessError, OSError) as e:
         return None, None, "lsof_failed(%s)" % type(e).__name__
     all_dev, bg_dev = set(), set()
@@ -3489,7 +3489,7 @@ def _bg_parents_ps():
     """이 축 **자신의 ps 읽기 1회** -> (rows|None, state|None, reason|None)."""
     try:
         p = subprocess.run(["ps", "-axo", "pid=,ppid=,etime=,command="], capture_output=True,
-                           text=True, errors="replace", timeout=BG_PARENTS_PS_TIMEOUT_S)
+                           text=True, errors="replace", timeout=BG_PARENTS_PS_TIMEOUT_S, **NOWIN)
     except FileNotFoundError:
         return None, "unavailable", "ps 가 이 플랫폼에 없다"
     except subprocess.TimeoutExpired:

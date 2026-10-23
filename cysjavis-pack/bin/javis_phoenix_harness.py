@@ -312,7 +312,7 @@ def _capture_owned(roots, deadline=None):
         if not active:
             return
         r = subprocess.run(["ps", "-Ao", "pid=,ppid="], capture_output=True, text=True,
-                           timeout=_remaining(deadline))
+                           timeout=_remaining(deadline), **NOWIN)
         if r.returncode:
             raise _HarnessError("process_tree_unavailable")
         parents = {}

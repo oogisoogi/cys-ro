@@ -130,11 +130,14 @@ def _split_args(text):
 # How the CLI renders a printed argument: the raw string, or serde_json's display of the value. Nothing else is accepted.
 _ARG_STR = re.compile(r's\["(\w+)"\]\.as_str\(\)\.unwrap_or\("((?:[^"\\]|\\.)*)"\)')
 _ARG_JSON = re.compile(r's\["(\w+)"\]')
+# cysr(우리 판) v116-num: 보이는 번호 칸 `no=<n>`(없으면 `no=-`) — `s["display_no"].as_u64().map(|n| n.to_string())
+#   .unwrap_or_else(|| "-".into())`. 정수면 그 숫자, 아니면 기본 문자열(1.1.11 편입 TICKET=cysr-1111-vendor-01452-r2).
+_ARG_NUM = re.compile(r's\["(\w+)"\]\.as_u64\(\)\.map\(\|n\| n\.to_string\(\)\)\.unwrap_or_else\(\|\| "((?:[^"\\]|\\.)*)"\.into\(\)\)')
 # How the daemon makes each printed value in surface.list: a recognised expression over one Surface field (typed by the
 # struct) or the surface_ref() call. Any other expression is a moved producer.
 _DAEMON_EXPR = re.compile(r'(?:cys::)?surface_ref\(s\.id\)|s\.(\w+)(?:\.lock\(\)\.unwrap\(\)\.clone\(\)|\.load\(Ordering::Relaxed\))?')
 _RUST_KIND = {"String": "str", "Mutex<String>": "str", "Option<String>": "str|null", "Mutex<Option<String>>": "str|null",
-              "u32": "int", "u64": "int", "AtomicBool": "bool"}
+              "u32": "int", "u64": "int", "AtomicBool": "bool", "Option<u16>": "int|null"}
 
 
 def _daemon_kinds(keys):
@@ -188,8 +191,10 @@ def producer():
         raise ProducerMoved("src/bin/cys.rs: Command::List println not found")
     row_fmt, keys, render = _rust_str(m.group(1)), [], []
     for arg in _split_args(m.group(2)):
-        a, b = _ARG_STR.fullmatch(arg), _ARG_JSON.fullmatch(arg)
-        if a:
+        a, b, c = _ARG_STR.fullmatch(arg), _ARG_JSON.fullmatch(arg), _ARG_NUM.fullmatch(arg)
+        if c:
+            keys.append(c.group(1)); render.append(("num", _rust_str(c.group(2))))
+        elif a:
             keys.append(a.group(1)); render.append(("str", _rust_str(a.group(2))))
         elif b:
             keys.append(b.group(1)); render.append(("json", None))
@@ -304,7 +309,7 @@ class Rig(unittest.TestCase):
         else:
             title = self.prod["title_bare_fmt"].format(role=role, agent=agent)
         vals = {"surface_ref": self.prod["ref_fmt"].format(id=sid), "role": role, "pid": 4000 + sid, "exited": False,
-                "title": title, "cwd": cwd}
+                "title": title, "cwd": cwd, "display_no": 600 + sid}
         kind_of = {str: "str", int: "int", bool: "bool"}
         out = []
         for k, (how, default) in zip(self.prod["keys"], self.prod["render"]):
@@ -315,6 +320,8 @@ class Rig(unittest.TestCase):
                 raise ProducerMoved("daemon makes %r as %s, the stub has %s" % (k, self.prod["kinds"][k], kind_of[type(v)]))
             if how == "str":
                 out.append(v if isinstance(v, str) else default)
+            elif how == "num":                     # as_u64(): bool 아닌 음 아닌 정수만 숫자로
+                out.append(str(v) if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else default)
             else:                                   # serde_json display of a Value: compact JSON
                 out.append(json.dumps(v, ensure_ascii=False, separators=(",", ":")))
         parts = self.prod["row_fmt"].split("{}")

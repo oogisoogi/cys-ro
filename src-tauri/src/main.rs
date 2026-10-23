@@ -11981,48 +11981,9 @@ exit 0
         assert_ended_by_itself(holder, "wedged rig");
     }
 
-    /// ★A1 purpose test: with force true the guard asks nothing, so no connection reaches any rig and a hung daemon cannot
-    /// block it. With force false it is the base guard on every shape, including the base's block on a hung daemon
-    /// (UNCHANGED-BLOCKS: bounding it would change the force:false contract; not approved, head 2026-10-19).
-    /// The counter is `dept_live_session_count` on the rig socket: the same rule as `live_session_count` (which is
-    /// pinned to the default socket), so a rig, never the live daemon, answers.
-    #[cfg(unix)]
-    #[test]
-    fn a1_session_guard_force_true_asks_nothing_and_force_false_is_the_base_guard() {
-        use std::time::{Duration, Instant};
-        tauri::async_runtime::block_on(async {
-            let busy = RigDaemon::start("a1-busy", RigMode::Responsive { pid: Some(11), live: 2 });
-            let idle = RigDaemon::start("a1-idle", RigMode::Responsive { pid: Some(12), live: 0 });
-            let absent = RigDaemon::start("a1-absent", RigMode::DeadAbsent);
-            let hung = RigDaemon::start("a1-hung", RigMode::Hung);
-            tokio::time::sleep(Duration::from_millis(50)).await;
-
-            for rig in [&busy, &idle, &absent, &hung] {
-                let t = Instant::now();
-                assert_eq!(must_end("force=true guard", update_session_guard(true, || dept_live_session_count(&rig.sock))).await, Ok(()));
-                assert!(t.elapsed() < Duration::from_millis(1900), "force=true took {:?}", t.elapsed());
-                assert_eq!(rig.accepted(), 0, "force=true must not ask the daemon at all ({})", rig.sock.display());
-            }
-
-            assert_eq!(
-                update_session_guard(false, || dept_live_session_count(&busy.sock)).await,
-                Err("live_sessions:2".to_string())
-            );
-            assert_eq!(update_session_guard(false, || dept_live_session_count(&idle.sock)).await, Ok(()));
-            assert_eq!(
-                update_session_guard(false, || dept_live_session_count(&absent.sock)).await,
-                Ok(()),
-                "base: a failed count folds to 0"
-            );
-            let blocked = tokio::time::timeout(
-                Duration::from_secs(3),
-                update_session_guard(false, || dept_live_session_count(&hung.sock)),
-            )
-            .await;
-            assert!(blocked.is_err(), "force=false on a hung daemon still blocks, as in the base: {blocked:?}");
-            assert_eq!(hung.accepted(), 1);
-        });
-    }
+    // ★cysr 1.1.11 편입(원작자 0.14.52 d478d97f A1 · 해당 없음): 원작자 「A1 purpose test」(update_session_guard 의 force 거동)는
+    //   대상 함수가 우리 판에 없다 — 1.1.8 U4 가 인앱 install_update 를 제거했다(HANDOFF §1 「해당 없음」 행). 자동 병합이 시험만
+    //   들여와 src-tauri 시험 빌드가 E0425 로 멈췄다 → 시험을 들이지 않는다. A2(plan_daemon_stop · 실재)는 아래 그대로.
 
     /// ★A2 purpose test: the stop plan names a pid only when identify answered with one; a dead daemon is skipped at
     /// once (as in the base); a hung daemon is skipped at the 2 s deadline with the lock-file pid recorded for the log
@@ -12086,6 +12047,7 @@ exit 0
     /// UNCHANGED-BLOCKS). Base on a hung daemon: blocked forever at the first rpc (force=true included).
     #[cfg(unix)]
     #[test]
+    // cysr 1.1.11: 원작자 판은 셀마다 A1 세션 가드(update_session_guard)도 불렀다 — 우리 판에 없는 함수라 빼고 A2 정지 계획만 본다.
     fn a1_a2_install_update_daemon_steps_end_on_every_daemon_shape() {
         use std::time::{Duration, Instant};
         tauri::async_runtime::block_on(async {
@@ -12104,7 +12066,6 @@ exit 0
                 }
                 for (rig, want, bound) in cells {
                     let t = Instant::now();
-                    assert_eq!(must_end("session guard", update_session_guard(force, || dept_live_session_count(&rig.sock))).await, Ok(()));
                     assert_eq!(must_end("stop plan", plan_daemon_stop(&rig.sock)).await, want, "force={force} {}", rig.sock.display());
                     assert!(t.elapsed() < bound, "force={force} {}: {:?} >= {bound:?}", rig.sock.display(), t.elapsed());
                 }
@@ -12153,7 +12114,6 @@ exit 0
             ("enum Readiness", &[("killwords", 0)]),
             ("async fn plan_daemon_stop(", &[("killwords", 0)]),
             ("fn lock_file_pid(", &[("killwords", 0)]),
-            ("async fn update_session_guard<", &[("killwords", 0)]),
             ("enum DaemonStopPlan", &[("killwords", 0)]),
             ("enum IdentifyMiss", &[("killwords", 0)]),
             // Existing functions on the path: equal to base 4ed79fdd (measured with tools/capability_census.py).
@@ -12161,7 +12121,6 @@ exit 0
             ("async fn ensure_daemon(", &[("killwords", 0)]),
             ("fn spawn_bundled_cysd(", &[("killwords", 0), ("Command::new", 1), (".spawn(", 1)]),
             ("async fn rpc_oneshot(", &[("killwords", 0), ("rpc_oneshot(", 1)]),
-            ("async fn install_update(", &[("killwords", 0)]),
             (
                 "async fn stop_running_daemon(",
                 &[("killwords", 8), ("Command::new", 1), ("libc::", 2), (" rpc(", 3), ("\"ledger.", 2), ("\"system.", 1)],
@@ -12252,15 +12211,7 @@ exit 0
         assert!(first < retry && retry < retry_arm && retry_arm < ready, "first step -> retry loop -> daemon-ready");
         assert_eq!(main_fn.matches("boot_first_daemon_step(").count(), 1);
         assert_eq!(prod.matches("spawn_bundled_cysd").count(), 3, "the spawner: its definition, ensure_daemon and the boot step");
-        let install = wu_code(wu_seg("async fn install_update("));
-        assert!(install.contains("update_session_guard(force, live_session_count).await?;"), "A1: the guard with the real counter");
-        assert_eq!(install.matches("live_session_count").count(), 1, "install_update asks the count only through the guard");
-        assert!(
-            install.find("update_session_guard(").unwrap() < install.find("build_updater(&app)?").unwrap(),
-            "the guard runs before the download, as the base guard did"
-        );
-        let guard = wu_code(wu_seg("async fn update_session_guard<"));
-        assert!(guard.contains("    if force {\n        return Ok(());\n    }\n    let sessions = count().await.unwrap_or(0);"), "A1 shape");
+        // cysr 1.1.11: 원작자 A1 단언(install_update · update_session_guard 모양)은 대상 함수가 우리 판에 없어 들이지 않는다(위 A1 주석).
     }
 
     // ── 0.14.42 사용량 계정 병합·fan-out 재현 검체(수정 전 적색) ──────────────

@@ -1513,7 +1513,10 @@ jobs:
       #   보류 알림) · `cys boot --json` 지연 쌍 env `CYS_KEPT_PANE_NOTICE`·`CYS_KEPT_PANE_RECORDS_OUT`). 우리 판번 줄에서는
       #   이 표면이 이 병합 바이너리(1.1.11)에 처음 실린다 — 1.1.10 바이너리 + 새 팩 = 부트는 죽지 않으나 보류 알림 통로가
       #   사라진다(원작자 판단). 1.1.11 상향 여부는 판번 SOT 단계 결정(master 게이트 · pack-release.yml 과 동시).
-      PACK_MIN_BINARY: '1.1.10'
+      # ★1.1.11 상향(master 결정 ② 채택 · 2026-10-23 · TICKET=cysr-1111-vendor-01452-r2) — 위 표면(`cys kept-pane-notice`
+      #   · 지연 쌍 env)은 1.1.10 cys.rs 에 0건이고 이 병합 바이너리(1.1.11)에 처음 실린다 → 팩 하한 1.1.10 → 1.1.11.
+      #   pack-release.yml PACK_MIN_BINARY_OVERRIDE 와 동시 상향(두 값 동일 계약 · cys.rs 시험 핀).
+      PACK_MIN_BINARY: '1.1.11'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 

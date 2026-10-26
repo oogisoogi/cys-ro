@@ -60,9 +60,38 @@ agy 는 R1 12건 전부 해소로 판정하고 신규 2건을 냈다. codex R2 �
 
 - agy **R3 = ACCEPT**(revision 5f255f32 · verdict `…-r3-agy.json`): R2 2건 해소 · 기준 ①~⑦ 미달·신규 결함 0.
 
+## 리뷰 R2 처분(codex REVISE · revision 5f255f32 · verdict 정본 `~/.cys/pack/round/_reviews/hook-slim-1111__…-r2-codex.json`)
+codex 는 정본 경로 쓰기 거부(샌드박스)로 대체 경로 `/private/tmp/hook-slim-1111-r2-codex.json` 에 썼다 → 그대로 정본 경로에 복사(cmp 동일). major 4 · 전부 수용.
+| 지적 | 처분 | 상태 |
+|---|---|---|
+| I1 `CLAUDE_CONFIG_DIR=~/alias-config → ~/.claude` + 표지 없음 — 발견의 realpath 중복 제거가 원경로를 숨겨 별칭만 남고, 별칭 이름이 `.claude*` 가 아니라 개인 프로필 아님 → 팩 훅·statusLine 재등록 + 재직렬화 | 수용 — `_is_personal_profile_settings` 이름 규칙을 원래 경로·파일 실경로 폴더·폴더 실경로 셋에 건다(좌석 비교는 그대로 앞) · 모든 writer 가 `resolve_registration_targets` 하나를 거친다 | ✅ S12e(대상 탐침 · 수리 되돌리면 적 확인) · 뮤턴트 M29 |
+| I2 죽은 주인 「다시 읽고 rm」 비원자 — 두 회수자가 같은 죽은 pid 를 확인하면 뒤 회수자가 새 주인 잠금을 지워 둘 다 본문 진입(실 함수로 재현) · 빈 pid 회수도 같은 경합 | 수용 — 회수자 직렬화 `<이름>.lock.reap`(mkdir) 안에서 다시 읽고 지움 · 3초 넘게 남은 `.reap` 만 치움 · 해제 = 주인 토큰일 때만 | ✅ DT16(회수 중이면 기다림 3~8초) · DT16b(죽은 주인 잠금에 8개 동시 획득 = 보호 구간 겹침 0) · 뮤턴트 M23 |
+| I3 소비자 5초 < 생산자 스냅샷 상한 10초 — 7초 생산자면 5.8초 뒤 OLD 스냅샷을 최신처럼 주입 | 수용 — 대기 = 부를 때 있던 표(epoch ≤ 시작 시각)가 모두 처리될 때까지 · 상한 12초 · 넘기면 rc 1 → inject-context 는 이전 스냅샷 생략 + 1줄 고지 · 배수기 없는 고아 표는 한 번 깨움 | ✅ DT17·DT17b(12초 뒤 생략·고지)·DT17c(큐 비면 즉시 주입) · DT10d·DT10e · 뮤턴트 M16·M24·M25·M28 |
+| I4 같은 상태의 모든 세션이 이름 하나의 잠금 + 자식 120초 대기 뒤 입력 폐기 — 정상 상한 안의 reflect 셋이 겹치면 하나 유실(결과 손실 0 위반 · DT13 이 폐기를 성공으로 잠금) | 수용 — **영속 큐 + 배수기 하나**: 대기표 = 입력 원문 · 배수기는 기다리지 않고 잡아 보고 살아 있는 주인에 물러남 · 큐 끝까지 · 해제 뒤 재확인 → 대기 한도·폐기 0 · 동기 잠금 20초 실패 = 큐에 넘김(DT13 계약 반전) | ✅ DT15(긴 본문 중 3건 = 3줄 · 한 배수기) · DT13·DT13b(넘긴 입력이 주인 사망 뒤 처리) · DT18(동기 주인 해제 뒤 깨움) · DT19(해제 뒤 재확인) · 뮤턴트 M15·M17·M19·M19b·M26·M27 |
+| (비차단) 중첩 `{"metadata":{"hook_event_name":"Stop"}}` 가 최상위 PreCompact 를 Stop 으로 판정 | 기록만 — codex 도 실제 Claude 입력 발생 증거 없음으로 차단 결함 단정 안 함 · 판정은 글자 일치 그대로(파이썬 파싱 비용 회피) | — |
+
+## R2 수리 뒤 rebase(master d53e9107 · int/1111 = 2d32a22d)
+- 텍스트 충돌 0(8 커밋). 678 §5 예상 지점(cys.rs `run_init_pack`·`diag_hook_personal` · run_bootstrap_health.py 픽스처) 무충돌.
+- rebase 뒤 발견·수리 2건: ① lane-parity `--strict` 3단계 「사유 없는 미등재 test_hook_slim」 → 3완전 레인 5루프 등재(ci-branch 2 · release 2 · pack-release 1) ·
+  CI 팩 루프는 cys 빌드 전이라 바이너리 없으면 **셸 훅 부분(GT·DT)만** 재고 바이너리 경로(S·S12·PF)는 「SKIP(부분)」 명시(종전: 통째 SKIP = 조용한 통과)
+  ② `secret-scan --all` 18건 = 이 티켓 factory_reset.rs 시험 픽스처의 더미 사용자 `u`·`U`(허용 더미 = user|x|youruser|USERNAME|runner|home) → `user`(뜻 무변경).
+
+- rebase 뒤 게이트(맥 arm64 · 라이브 무접촉 = CYS_* 제거 · 팩 레인은 HOME·CYS_PACK_DIR 임시):
+  | 게이트 | 결과 |
+  |---|---|
+  | cargo `--lib` | 1133 / 0 / 2 ign |
+  | cargo `--bin cys` 전체 | 735 / 0 / 1 ign |
+  | cargo `--bin cysd`(CI 형식 `--test-threads=1 --skip hwmon::tests::snapshot_has_all_sections`) | 3217 / 0 / 15 ign |
+  | ci-branch mac 완전 레인 목록 144(doc-contract·pins·바이트 래칫 `test_cso_directive_rev`·test_hook_slim 포함) | **144 / 144 녹**(test_hook_slim 77 / 0) |
+  | 부트스트랩 건강성 전량 | 167 / 2 / 1 skip — 잔여 적 H-CLT-1·H-CLT-2(호스트 설치본 python · 678 §2-1 과 동일) |
+  | `scan-pack-secrets.sh` · `secret-scan.sh --all` | rc 0 · clean(1876 파일) |
+  | `lane-parity-rehearsal.sh --strict` · `--self-test` | rc 0 · 0 |
+  | 뮤턴트 `--rust` | 41 / 42 KILLED — 생존 R3(2차 방어선 · 위 agy R2 ② 처분: 구별 입력은 앞단 `dup_in_scope` 가 거부 · 알려진 구별 입력 없음) |
+  | 윈도우 실기 | 미측정(CI windows-build·windows-health 가 독립 검증) |
+
 ## 남은 일(다음 좌석 · 순서대로)
-1. codex **R2**(05:30 · revision 5f255f32 · R1·agy R2 처분 포함) → 지적 처분 → 필요 시 다음 라운드.
-2. 678(1111-merge01452) 병합 머리 위로 rebase + 게이트 재실행(아래 「재현」 전부 + scan-pack-secrets).
+1. push(`fix/1111-hookslim` · 실행직전확인요청 뒤) → CI 3종(ci-branch·windows-build·windows-health).
+2. codex R3(수리 커밋 기준) · agy R4 여부는 master 판단.
 3. 【확인요청】.
 - 미확정 유지: 1,059초 사례 원인(§2-5) · B2(1.1.12 BACKLOG · 아래).
 
@@ -83,5 +112,7 @@ python3 cysjavis-pack/bin/tests/test_hook_slim.py --diff-out /tmp/hookslim_diffs
 python3 cysjavis-pack/bin/tests/run_bootstrap_health.py
 python3 scripts/hookslim_mutants.py --rust
 bash scripts/scan-pack-secrets.sh            # 팩 발행 hard-gate(CI ci-branch·pack-release·release) — 이메일 모양·개인 홈경로 fail-closed
+bash scripts/secret-scan.sh --all            # 저장소 전체(H-SECRET-1) — 더미 사용자 이름은 허용 목록만
+bash scripts/lane-parity-rehearsal.sh --strict && bash scripts/lane-parity-rehearsal.sh --self-test
 python3 -I scripts/bench_pack_hooks.py --pack cysjavis-pack --transcript <기록.jsonl> --out r.json --n 20 [--scenario seat --round]
 ```

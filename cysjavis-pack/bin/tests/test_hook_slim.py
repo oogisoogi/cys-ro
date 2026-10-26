@@ -853,10 +853,14 @@ def main():
     out = None
     if "--diff-out" in sys.argv:
         out = sys.argv[sys.argv.index("--diff-out") + 1]
-    if not os.path.isfile(BIN):
-        print("SKIP — cys 바이너리 없음(%s) · cargo build --bin cys 후 재실행" % BIN)
-        return 0
     only = os.environ.get("HOOKSLIM_ONLY", "")       # 뮤턴트 실행용: "hooks" = 셸 훅 부분만 · "seat" = 좌석 프로필 상태표(S12)만
+    if not os.path.isfile(BIN):
+        # CI 팩 레인은 cys 를 빌드하기 전에 돈다 — 바이너리가 필요 없는 셸 훅 부분(GT·DT)은 그대로 재고, 바이너리 경로만 건너뛴다(조용한 통과 금지).
+        print("SKIP(부분) — cys 바이너리 없음(%s): 바이너리 경로 상태표(S·S12·PF)는 건너뛰고 셸 훅 부분만 잰다 · "
+              "전부 = cargo build --bin cys 후 재실행" % BIN)
+        if only == "seat":
+            return 0
+        only = "hooks"
     if only == "seat":
         seat_cases()
     else:

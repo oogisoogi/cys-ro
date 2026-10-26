@@ -121,6 +121,8 @@
   `~/.claude/settings.json → ~/.cys/claude/settings.json` 파일 링크 · `~/.claude → ~/.cys/claude` 폴더 링크 · `CYS_ACCOUNT_DIR=~/.claude` 셋 다
   여기 든다. Rust `pack::is_seat_profile_settings`(제거 경로·doctor) = 파이썬 `_is_personal_profile_settings`(등록 대상) 같은 술어 → 한쪽이 붙이고
   다른 쪽이 떼는 싸움 0. 한계: 데몬과 preflight 의 `CYS_ACCOUNT_DIR` env 가 다르면 두 쪽 판정이 갈린다(env 일치는 좌석 기동 계약).
+  ★R2 수리(codex major I1): 파이썬 이름 규칙은 원래 경로 **와** 해소 경로(파일 실경로의 폴더 · 폴더 실경로) 모두에 건다 — `CLAUDE_CONFIG_DIR=~/alias → ~/.claude`
+  면 발견의 realpath 중복 제거가 원경로를 숨기고 별칭만 남겨 표지 없이 재등록하던 결함(Rust 제거 경로는 홈 직하 `.claude*` 를 직접 열거해 같은 파일을 본다).
 - 경로 4개 모두 같은 술어:
   ① 데몬 기동·init-pack 공통 `pack::setup_isolated_config_dir` — 표지 없음이면 `strip_pack_registrations_from_personal_profiles`(★`--no-install-hook`
      = GUI 인앱 업데이트 갈래에서도 돈다 — 업데이트로 올라온 사용자에게 닿는 유일한 길) · 표지 있음이면 종전 각성 훅 병합.
@@ -144,20 +146,26 @@
   `cys_have_surface` 등 2키 검사 훅(session-start·role-bootstrap 등)은 기존 동작이라 범위 밖.
 
 ### 3-3. 답 뒤(Stop·SessionEnd) 관측 훅 분리 실행 — `_lib.sh` 5-a″ `cys_hook_detach`
-- save-state(Stop)·reflect-scan(Stop·SessionEnd): stdin 을 다 읽은 뒤 같은 스크립트를 `CYS_HOOK_DETACHED=1` 로 다시 띄우고 즉시 exit 0. 분리 묶음
-  전체(입력을 넘기는 printf 포함) stdout·stderr = /dev/null → Claude Code 가 기다릴 파이프 0. nohup 있으면 HUP 무시.
-- 같은 훅 본문끼리 `<state>/hook-detach/<이름>.lock`(mkdir 원자 · 주인 pid)으로 한 번에 하나 — 종전 턴 경계가 하던 직렬화. ★R1 수리(codex·agy major):
-  ① 대기표 `<이름>.q/<epoch>.<부모 pid>` 를 부모가 **반환 전에** 만들고(내용 = 띄운 묶음 pid) 자식이 끝나며 지운다 — 소비자는 대기표+잠금을 본다
-     (자식이 잠금을 잡기 전 틈 · 윈 프로세스 생성 지연) · 죽은 주인·주인 미기록 2초 초과 대기표는 소비자가 지운다.
-  ② 동기 본문(save-state PreCompact · 롤백 · 분리 실패)도 같은 잠금(대기 상한 20초 — PreCompact 선언 30초 안) → .state_log 회전·BOOT_SNAPSHOT 경합 0.
-  ③ 죽은 주인 회수(다시 읽어 같은 주인일 때만) · 주인 pid 2초 넘게 비면 회수(mkdir 직후 죽은 주인 — 종전 120초씩 영구 정체).
-  ④ 잠금 실패(자식 120초 · 동기 20초) = **본문 건너뜀** + hook-errors.log rc=124 1줄 — 무잠금 실행 폐지.
-  ⑤ 순서(FIFO)는 보장하지 않는다 — 정정: 각 본문이 자기 시각을 쓰고 reflect 는 멱등이라 순서가 바뀌어도 잃는 줄이 없다(종전 「순서 보장」 서술은 과장).
+- save-state(Stop)·reflect-scan(Stop·SessionEnd): stdin 을 다 읽은 뒤 입력을 큐에 넣고 배수기를 깨운 뒤 즉시 exit 0. 분리 묶음
+  전체 stdout·stderr = /dev/null → Claude Code 가 기다릴 파이프 0. nohup 있으면 HUP 무시.
+- ★R2 수리(codex major I2·I3·I4 — R1 의 「잠금 대기 120초 뒤 입력 폐기」를 폐기): **영속 큐 + 배수기 하나**.
+  ① 대기표 `<state>/hook-detach/<이름>.q/<epoch>.<pid>` = 입력 원문(임시 파일 → mv 원자 기록) — 부모가 **반환 전에** 쓴다.
+  ② 배수기(같은 스크립트를 `CYS_HOOK_DRAINER=1` 로) = `<이름>.lock`(mkdir · 주인 pid)을 **기다리지 않고** 잡아 본다 — 살아 있는 주인이 있으면 물러나고,
+     잡으면 큐가 빌 때까지 오래된 표부터 본문을 돈다(`CYS_HOOK_DRAIN_RUN=1` 로 스크립트를 다시 띄워 표를 stdin 으로 · 건당 150초 상한) → 표 삭제.
+     해제 **뒤** 큐를 다시 보고 남았으면 다시 잡는다(잠금에 막혀 물러난 깨우기의 표를 줍는다). → 대기 한도도 버리는 입력도 없다 · 처리 보장 = 적어도 한 번.
+  ③ 동기 본문(save-state PreCompact · 롤백 · 분리 실패)도 같은 잠금을 최대 20초(PreCompact 선언 30초 안) 기다려 잡고 그 자리에서 돈다 → .state_log 회전·
+     BOOT_SNAPSHOT 경합 0. 못 잡으면 입력을 큐에 넘기고 배수기를 깨운다(hook-errors rc=124 「큐에 넘김」 1줄 · 버리지 않는다). 해제 뒤 큐가 남았으면 깨운다.
+  ④ 회수: 죽은 주인 · 주인 pid 2초 넘게 빔. 회수자끼리 `<이름>.lock.reap`(mkdir)으로 줄 세운 뒤 다시 읽어 같을 때만 지운다(I2 — 두 회수자가 같은 죽은 pid 를
+     확인하고 뒤 회수자가 새 주인의 잠금을 지우던 경합) · 3초 넘게 남은 `.reap`(그 안에서 죽은 회수자)만 치운다 · 해제는 주인 토큰(pid = 내 pid)일 때만.
+     남는 위험(정직): 회수자가 수 ms 구간 안에서 3초 넘게 멈추면(SIGSTOP) 강제 정리와 겹칠 수 있다 · 주인이 mkdir 뒤 2초 넘게 pid 를 못 쓰면 회수된다.
+  ⑤ 순서(FIFO)는 대략만 — 큐는 오래된 표부터 돌지만 동기 본문은 큐를 거치지 않는다. 각 본문이 자기 시각을 쓰고 reflect 는 멱등이라 잃는 줄은 없다.
   ⑥ 본문 상한: reflect-scan scan 60초 · memory verify 30초 · save-state 스냅샷 10초(`cys_timeout_run` = 프로세스 그룹 종료 · 초과 rc=124 기록 ·
-     verify 시간 초과는 정합 경고로 쓰지 않는다). 파이썬 기동 자체가 멎는 경우는 래퍼도 같이 멎으므로 대상 아님.
-- 계측: 부모 `save-state 0s` + 자식 `save-state(bg) Ns` 두 줄.
+     verify 시간 초과는 정합 경고로 쓰지 않는다) + 배수기 건당 150초.
+- 계측: 부모 `save-state 0s` + 배수기 `save-state(drain) Ns` + 큐에서 돈 본문마다 `save-state(bg) Ns`.
 - 동기 유지: save-state PreCompact(압축 직전 기록) · grill-stop(GATE — exit 2 로 턴 종료를 막는 훅).
-- 소비자 정합: inject-context(SessionStart)는 BOOT_SNAPSHOT 을 읽기 전 진행 중 save-state 자식을 최대 5초 기다린다(스냅샷 쓰기는 원자 교체).
+- 소비자 정합(R2 codex I3): inject-context(SessionStart)는 BOOT_SNAPSHOT 을 읽기 전 **부를 때 있던 save-state 표**(epoch ≤ 시작 시각)가 모두 처리될 때까지
+  최대 12초(스냅샷 데드라인 10초 + 여유) 기다린다. 넘기면(`cys_hook_detach_wait` rc 1) 이전 세대 스냅샷을 싣지 않고 「스냅샷 생략」 1줄만 · 남은 표에
+  살아 있는 배수기가 없으면(배수기가 죽었다) 한 번 깨운다.
 - 롤백: `CYS_HOOK_STOP_SYNC=1`(분리만 끈다 · 잠금 참여는 그대로).
 - 이벤트 판정 = 페이로드의 `"hook_event_name":"<이벤트>"` 글자 일치(agy minor 반박) — JSON 문자열 안의 같은 글자는 `\"` 로 이스케이프돼 불일치(DT9).
 

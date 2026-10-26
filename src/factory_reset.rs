@@ -2993,7 +2993,7 @@ fn norm_path_token(p: &str) -> String {
 
 /// ★1.1.11 hook-slim(codex R1 major ③): **개인 프로필 제거 전용** 엄격 소유 판정 — 팩 등록기가 만드는 실행 형식만 팩 훅이다:
 /// `[VAR=값 …] <sh|bash|…/bash.exe> <팩>/hooks/<스크립트>` 그리고 **그 뒤에 아무것도 없다**. 팩 경로가 다른 명령의 인자이거나
-/// 다른 경로 아래 부분 문자열(`/backup/Users/u/.cys/pack/…`)이면 사용자 훅이다. 경로는 슬래시·MSYS 드라이브 표기를 맞추고
+/// 다른 경로 아래 부분 문자열(`/backup/Users/user/.cys/pack/…`)이면 사용자 훅이다. 경로는 슬래시·MSYS 드라이브 표기를 맞추고
 /// 윈에서는 대소문자를 가리지 않는다. 팩 루트는 원문·정규화(`resolve_for_compare`) 두 형태로 본다.
 pub(crate) fn personal_pack_command(cmd: &str, pack_root: &Path) -> bool {
     let w = shell_words(cmd);
@@ -4652,13 +4652,13 @@ mod tests {
         assert_eq!(restored_prev_statusline("sh /h/.cys/pack/hooks/cys-statusline.sh"), None);
         // ★R2(agy blocking) 반례: 윈 형식 + 이전 값 안의 ` sh ` · 역슬래시 bash.exe 런처
         assert_eq!(
-            restored_prev_statusline("CYS_PREV_STATUSLINE='env X=1 sh /u/my-status.sh' bash \"C:/Users/U/.cys/pack/hooks/cys-statusline.sh\"")
+            restored_prev_statusline("CYS_PREV_STATUSLINE='env X=1 sh /u/my-status.sh' bash \"C:/Users/user/.cys/pack/hooks/cys-statusline.sh\"")
                 .as_deref(),
             Some("env X=1 sh /u/my-status.sh")
         );
         assert_eq!(
             restored_prev_statusline(
-                "CYS_PREV_STATUSLINE='my-status --x' \"C:\\Program Files\\Git\\bin\\bash.exe\" \"C:\\Users\\U\\.cys\\pack\\hooks\\cys-statusline.sh\""
+                "CYS_PREV_STATUSLINE='my-status --x' \"C:\\Program Files\\Git\\bin\\bash.exe\" \"C:\\Users\\user\\.cys\\pack\\hooks\\cys-statusline.sh\""
             )
             .as_deref(),
             Some("my-status --x")
@@ -5161,29 +5161,29 @@ mod hookslim_tests {
     // codex R1 major ③⑦: 엄격 소유 판정.
     #[test]
     fn strict_personal_predicate() {
-        let pack = Path::new("/Users/u/.cys/pack");
+        let pack = Path::new("/Users/user/.cys/pack");
         for ok in [
-            "sh /Users/u/.cys/pack/hooks/save-state.sh",
-            "bash \"/Users/u/.cys/pack/hooks/x.sh\"",
-            "\"/c/Program Files/Git/bin/bash.exe\" \"/Users/u/.cys/pack/hooks/vibecoding/v.sh\"",
-            "CYS_PREV_STATUSLINE='my line --x' sh /Users/u/.cys/pack/hooks/cys-statusline.sh",
+            "sh /Users/user/.cys/pack/hooks/save-state.sh",
+            "bash \"/Users/user/.cys/pack/hooks/x.sh\"",
+            "\"/c/Program Files/Git/bin/bash.exe\" \"/Users/user/.cys/pack/hooks/vibecoding/v.sh\"",
+            "CYS_PREV_STATUSLINE='my line --x' sh /Users/user/.cys/pack/hooks/cys-statusline.sh",
         ] {
             assert!(personal_pack_command(ok, pack), "{ok}");
         }
         for no in [
-            "sh /backup/Users/u/.cys/pack/hooks/mine.sh",
-            "python3 /u/audit.py --root /Users/u/.cys/pack",
-            "sh /Users/u/.cys/pack/hooks/x.sh --extra",
-            "sh /Users/u/.cys/pack/hooks/../../evil.sh",
-            "sh /Users/u/.cys/pack-dept-a/hooks/x.sh",
-            "sh /Users/u/.cys/local/hooks/x.sh",
-            "node /Users/u/.cys/pack/hooks/x.sh",
+            "sh /backup/Users/user/.cys/pack/hooks/mine.sh",
+            "python3 /u/audit.py --root /Users/user/.cys/pack",
+            "sh /Users/user/.cys/pack/hooks/x.sh --extra",
+            "sh /Users/user/.cys/pack/hooks/../../evil.sh",
+            "sh /Users/user/.cys/pack-dept-a/hooks/x.sh",
+            "sh /Users/user/.cys/local/hooks/x.sh",
+            "node /Users/user/.cys/pack/hooks/x.sh",
         ] {
             assert!(!personal_pack_command(no, pack), "{no}");
         }
-        let win = Path::new("C:/Users/U/.cys/pack");
-        assert!(personal_pack_command("bash \"/c/Users/U/.cys/pack/hooks/save-state.sh\"", win), "MSYS 드라이브 표기");
-        assert!(personal_pack_command("bash \"C:\\\\Users\\\\U\\\\.cys\\\\pack\\\\hooks\\\\a.sh\"", win));
+        let win = Path::new("C:/Users/user/.cys/pack");
+        assert!(personal_pack_command("bash \"/c/Users/user/.cys/pack/hooks/save-state.sh\"", win), "MSYS 드라이브 표기");
+        assert!(personal_pack_command("bash \"C:\\\\Users\\\\user\\\\.cys\\\\pack\\\\hooks\\\\a.sh\"", win));
     }
 
     #[test]

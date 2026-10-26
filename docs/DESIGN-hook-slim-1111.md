@@ -153,8 +153,10 @@ cys-hook 의 데몬 RPC 상한 40초(`RPC_IDLE_TIMEOUT_SECS`)는 이 선언이 1
 ### 3-5. 사용자 settings 바이트 보존 — 제거 엔진 개편(`factory_reset.rs`)
 - 종전: serde_json `Value`(이 크레이트는 preserve_order 미사용 = 사전순 Map)로 통째 재직렬화 → 훅 한 줄을 지워도 **파일 전체 키 순서가 뒤섞였다**
   (실 파일은 `JSON.stringify(값, null, 2)` 형식 · 10-27 실측).
-- 신규: 순서 보존 값 `OJ` 로 판정·편집 → 최상위에서 **바뀐 멤버(hooks·statusLine)만** 원문에 갈아 끼움(`settings_surgery::scan_root` 재사용 · 그 줄
-  들여쓰기·LF/CRLF 이어받음 · 압축 파일은 압축) · 지운 멤버는 앞 쉼표째 · BOM 유지 · 재판독 값 ≠ 기대면 순서 보존 전체 직렬화로 물러남(거짓 성공 0).
+- 신규(R1 수리 반영): **중첩 외과 삭제** — 팩 hook 객체와 그 때문에 비게 된 entry·이벤트·hooks 멤버의 원문 구간만 걷어내고 남는 이웃은 원래
+  구분자로 다시 잇는다(`rejoin`) → 남는 사용자 훅의 이스케이프·숫자 표기·들여쓰기·줄바꿈까지 원문 그대로. statusLine 원복 값만 새로 쓴다.
+  BOM 유지 · 결과 재판독 값 ≠ 순서 보존 기대값(`OJ`)이면 **무변경 거부**(전체 재직렬화 폴백 폐지) · 손댈 자리 중복 키 = 거부.
+  개인 프로필 제거는 엄격 소유 판정(`personal_pack_command`: 런처 + `<팩>/hooks/` 스크립트 하나 · MSYS 드라이브 정규화)을 쓴다.
 - 개인 프로필 경로만: **읽기 전용 파일 존중**(고칠 것이 있어도 쓰지 않고 사유 1줄) · 사전 백업 `.bak-cys-hookslim-<unix초>`(반복해도 첫 원본 보존).
 - 공유 엔진이라 factory reset·hooks-prune 도 순서 보존의 덕을 본다(읽기 전용 존중은 그쪽엔 적용하지 않음 — 종전 계약 유지).
 
@@ -184,6 +186,6 @@ cys-hook 의 데몬 RPC 상한 40초(`RPC_IDLE_TIMEOUT_SECS`)는 이 선언이 1
 ## 6. 남은 것·한계(정직 목록)
 - 1,059초 사례 원인 미확정(§2-5) · 실기 log 의 10초 이상 꼬리 원인 미확정(부하 추정).
 - 잠금 파일 `settings.json.cys-lock` 은 사용자 폴더에 남는다(기존 엔진·파이썬 등록기 공통 동작 · 우리 맥엔 이미 있음).
-- serde_json 숫자 표기: 바뀐 멤버 안의 실수는 serde 표기로 다시 쓰인다(예 `1.50` → `1.5`) — 바뀌지 않은 멤버는 원문 그대로.
+- 리뷰 R1 남은 수리 5건 = HANDOFF「남은 일」.
 - 윈도우 실측 미수행 → 의뢰문 `docs/hook-slim-1111-win-measure-request.md`.
 - B2(좌석 settings 로 팩 훅 이동 · `~/.claude` 완전 무팩)는 1.1.12 BACKLOG(HANDOFF).

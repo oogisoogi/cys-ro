@@ -2417,7 +2417,7 @@ pub fn strip_pack_registrations_from_personal_profile(
         .parent()
         .ok_or_else(|| format!("pack root has no parent: {}", pack_root.display()))?
         .to_path_buf();
-    let matcher = |c: &str| command_points_into_pack_root(c, pack_root);
+    let matcher = |c: &str| personal_pack_command(c, pack_root);
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -2635,62 +2635,400 @@ impl serde::Serialize for OJ {
     }
 }
 
-/// ★1.1.11 hook-slim: 원문 `text` 에서 최상위 멤버 `keys` 만 `root`(편집 뒤 값)대로 갈아 끼우고 나머지는 **바이트 그대로**
-/// 둔다. 갈아 끼우는 값은 그 멤버 줄의 들여쓰기·줄바꿈(LF/CRLF)을 이어받아 2칸 pretty 로 쓴다(`JSON.stringify(값, null, 2)` 모양)
-/// — 한 줄짜리(압축) 파일이면 압축으로 쓴다. 지운 멤버는 앞 쉼표째 걷어낸다. 원문 스캔이 안 되거나(중복 키 등) 결과를 다시
-/// 읽은 값이 `root` 와 다르면 **순서 보존 전체 pretty 직렬화**로 물러난다(내용은 같고 모양만 다르다 — 거짓 성공 0).
-fn splice_changed_members(text: &str, root: &OJ, keys: &[&str]) -> Result<String, String> {
-    let full = || serde_json::to_string_pretty(root).map_err(|e| e.to_string());
-    let Ok(scan) = crate::settings_surgery::scan_root(text) else {
-        return full();
+/// ★1.1.11 hook-slim(codex·agy R1 blocking·major 수리): 제거 **계획** — 순수·읽기 전용. 탐지(doctor)와 제거가 같은 판정을 쓴다.
+///
+/// 반환 `(라벨, Some(새 파일 바이트))` · 지울 것이 없으면 `(빈, None)`. 원칙: **남는 것은 원문 바이트 그대로**다.
+///  · 지우는 단위는 원문 구간이다 — 팩 hook 객체, 그 때문에 비게 된 entry·이벤트·hooks 멤버만 걷어내고(남는 이웃은 원래
+///    구분자로 다시 잇는다 · `rejoin`), 남는 사용자 hook 의 이스케이프·숫자 표기·들여쓰기·줄바꿈은 손대지 않는다.
+///  · 원래 비어 있던 entry·이벤트는 사용자 소유라 그대로 둔다(우리가 비운 것만 걷어낸다).
+///  · statusLine 은 팩 것이면 지우거나(`CYS_PREV_STATUSLINE` 체인이면) 사용자 이전 값으로 바꾼다 — 그 값만 새로 쓴다.
+///  · BOM 은 그대로 · 결과를 다시 읽은 값이 순서 보존 기대값(`OJ` 편집)과 다르면 **무변경 거부**(Err) — 종전의 전체
+///    재직렬화 폴백은 없다(증명 못 한 쓰기를 하지 않는다). 손대야 할 자리에 중복 키가 있어도 거부.
+fn plan_strip_bytes(
+    raw: &[u8],
+    matcher: &dyn Fn(&str) -> bool,
+    strip_statusline: bool,
+) -> Result<(Vec<String>, Option<Vec<u8>>), String> {
+    let (bom, body) = match raw.strip_prefix(b"\xef\xbb\xbf") {
+        Some(rest) => (true, rest),
+        None => (false, raw),
     };
-    for k in keys {
-        if scan.members.iter().filter(|m| m.key == *k).count() > 1 {
-            return full();
+    let text = std::str::from_utf8(body).map_err(|e| format!("read error: not UTF-8 ({e})"))?;
+    let root: OJ = serde_json::from_str(text).map_err(|e| format!("parse error: {e}"))?;
+    if !matches!(root, OJ::Obj(_)) {
+        return Err("settings root is not an object".into());
+    }
+    let (want, removed) = expected_after_strip(&root, matcher, strip_statusline);
+    if removed.is_empty() {
+        return Ok((removed, None));
+    }
+    let new_text = surgical_strip(text, &root, &want, matcher)?;
+    match serde_json::from_str::<OJ>(&new_text) {
+        Ok(back) if back == want => {}
+        _ => return Err("편집 결과가 기대값과 다르다 — 손대지 않는다(바이트 보존을 증명하지 못한 쓰기 거부)".into()),
+    }
+    let mut out = Vec::with_capacity(new_text.len() + 3);
+    if bom {
+        out.extend_from_slice(b"\xef\xbb\xbf");
+    }
+    out.extend_from_slice(new_text.as_bytes());
+    Ok((removed, Some(out)))
+}
+
+/// 순서 보존 값 위의 기대 편집(검증용 정답) + 제거 라벨. 규칙은 `surgical_strip` 과 같다.
+fn expected_after_strip(root: &OJ, matcher: &dyn Fn(&str) -> bool, strip_statusline: bool) -> (OJ, Vec<String>) {
+    let mut root = root.clone();
+    let mut removed: Vec<String> = Vec::new();
+    let mut hooks_emptied = false;
+    if let Some(OJ::Obj(hooks)) = root.get_mut("hooks") {
+        let mut drop_ev: Vec<String> = Vec::new();
+        for (ev, arr) in hooks.iter_mut() {
+            let OJ::Arr(arr) = arr else { continue };
+            let mut emptied_any = false;
+            let mut keep: Vec<bool> = Vec::with_capacity(arr.len());
+            for entry in arr.iter_mut() {
+                let mut k = true;
+                if let Some(OJ::Arr(inner)) = entry.get_mut("hooks") {
+                    let before = inner.len();
+                    inner.retain(|h| !h.get("command").and_then(OJ::as_str).map(matcher).unwrap_or(false));
+                    let n = before - inner.len();
+                    if n > 0 {
+                        removed.push(format!("{ev}×{n}"));
+                        if inner.is_empty() {
+                            k = false;
+                            emptied_any = true;
+                        }
+                    }
+                }
+                keep.push(k);
+            }
+            let mut it = keep.iter();
+            arr.retain(|_| *it.next().unwrap_or(&true));
+            if emptied_any && arr.is_empty() {
+                drop_ev.push(ev.clone());
+            }
+        }
+        let had = !drop_ev.is_empty();
+        hooks.retain(|(ev, _)| !drop_ev.contains(ev));
+        hooks_emptied = had && hooks.is_empty();
+    }
+    if hooks_emptied {
+        root.remove("hooks");
+    }
+    if strip_statusline {
+        if let Some(cmd) = root.get("statusLine").and_then(|s| s.get("command")).and_then(OJ::as_str).map(str::to_string) {
+            if matcher(&cmd) {
+                match restored_prev_statusline(&cmd) {
+                    Some(prev) => {
+                        root.set(
+                            "statusLine",
+                            OJ::Obj(vec![
+                                ("type".into(), OJ::Str("command".into())),
+                                ("command".into(), OJ::Str(prev)),
+                            ]),
+                        );
+                        removed.push("statusLine(이전 값 원복)".into());
+                    }
+                    None => {
+                        root.remove("statusLine");
+                        removed.push("statusLine".into());
+                    }
+                }
+            }
         }
     }
-    let one_line = !text[scan.open..scan.close].contains('\n');
-    // (시작, 끝, 대체문) — 뒤에서부터 적용한다.
-    let mut edits: Vec<(usize, usize, String)> = Vec::new();
-    for k in keys {
-        let Some(i) = scan.members.iter().position(|m| m.key == *k) else {
-            continue; // 원문에 없던 키를 새로 쓰는 일은 이 엔진에 없다(원복도 기존 자리 교체다)
-        };
-        let m = &scan.members[i];
-        match root.get(k) {
-            Some(v) => {
-                let rendered = if one_line {
-                    serde_json::to_string(v).map_err(|e| e.to_string())?
+    (root, removed)
+}
+
+/// `CYS_PREV_STATUSLINE=<따옴표 값> <런처> <팩 상태줄>` 체인에서 사용자 이전 상태줄을 되살린다(없으면 None).
+fn restored_prev_statusline(cmd: &str) -> Option<String> {
+    // ★W1(성찰 확정): 구분자는 OS별 훅 명령 형식과 1:1 이다 —
+    // unix `sh <abs>` / Windows `bash "<정슬래시 abs>"`(javis_preflight._cys_hook_cmd·
+    // pack::hook_command_for). `" sh "` 만 찾으면 Windows 에서 항상 원복 실패 →
+    // 사용자의 기존 statusLine 이 무음 삭제된다. 두 형식을 모두 인식한다.
+    cmd.strip_prefix("CYS_PREV_STATUSLINE=")
+        .and_then(|rest| {
+            rest.rfind(" sh ")
+                .or_else(|| rest.rfind(" bash "))
+                // win-hooks-no-bash 폴백 형식: ` <절대경로>/bash.exe "<script>"`
+                .or_else(|| {
+                    // 따옴표 런처(공백 경로)면 여는 따옴표 앞 공백, 맨 경로면 직전 공백.
+                    let head = &rest[..rest.rfind("/bash.exe")?];
+                    match head.rfind(" \"") {
+                        Some(q) if !head[q + 2..].contains('"') => Some(q),
+                        _ => head.rfind(' '),
+                    }
+                })
+                .map(|i| rest[..i].to_string())
+        })
+        .and_then(|q| shell_unquote_single(&q))
+}
+
+/// 컨테이너(`{…}`/`[…]`) 재조립 — `parts[i]` = Some(그 항목의 새 원문 · 대개 원문 그대로) / None(지움).
+/// 남는 항목은 **원래 그 앞에 있던 구분자**로 잇고, 여는 괄호 뒤·마지막 항목 뒤 원문은 그대로 둔다 → 지운 항목과 그 앞
+/// 쉼표만 사라진다. 전부 지우면 빈 괄호(`{}`·`[]` = JSON.stringify 모양).
+fn rejoin(text: &str, open: usize, close: usize, items: &[(usize, usize)], parts: &[Option<String>]) -> String {
+    let kept: Vec<usize> = (0..items.len()).filter(|&i| parts[i].is_some()).collect();
+    if kept.is_empty() {
+        return format!("{}{}", &text[open..open + 1], &text[close..close + 1]);
+    }
+    let mut out = String::with_capacity(close + 1 - open);
+    out.push_str(&text[open..items[0].0]);
+    for (n, &i) in kept.iter().enumerate() {
+        if n > 0 {
+            out.push_str(&text[items[i - 1].1..items[i].0]);
+        }
+        out.push_str(parts[i].as_deref().unwrap_or(""));
+    }
+    out.push_str(&text[items[items.len() - 1].1..close + 1]);
+    out
+}
+
+fn dup_keys(scan: &crate::settings_surgery::RootScan, key: &str) -> bool {
+    scan.members.iter().filter(|m| m.key == key).count() > 1
+}
+
+/// 원문 외과 삭제(규칙 = `expected_after_strip`). `want` 는 statusLine 대체 값을 꺼내는 데만 쓴다.
+fn surgical_strip(text: &str, root: &OJ, want: &OJ, matcher: &dyn Fn(&str) -> bool) -> Result<String, String> {
+    use crate::settings_surgery::{line_indent, scan_array_at, scan_object_at, scan_root};
+    let rs = scan_root(text)?;
+    if dup_keys(&rs, "hooks") || dup_keys(&rs, "statusLine") {
+        return Err("hooks·statusLine 이 중복 키다 — 손대지 않는다".into());
+    }
+    let nl = if text.contains("\r\n") { "\r\n" } else { "\n" }; // 윈 편집기 CRLF 파일은 CRLF 로
+    let mut parts: Vec<Option<String>> = Vec::with_capacity(rs.members.len());
+    for m in &rs.members {
+        let whole = text[m.key_start..m.val_end].to_string();
+        let head = &text[m.key_start..m.val_start];
+        match m.key.as_str() {
+            "hooks" if matches!(root.get("hooks"), Some(OJ::Obj(_))) => {
+                let hs = scan_object_at(text, m.val_start)?;
+                let mut ev_parts: Vec<Option<String>> = Vec::new();
+                let mut ev_items: Vec<(usize, usize)> = Vec::new();
+                let mut hooks_changed = false;
+                for em in &hs.members {
+                    ev_items.push((em.key_start, em.val_end));
+                    let ewhole = text[em.key_start..em.val_end].to_string();
+                    if text.as_bytes().get(em.val_start) != Some(&b'[') {
+                        ev_parts.push(Some(ewhole));
+                        continue;
+                    }
+                    let (ao, ac, entries) = scan_array_at(text, em.val_start)?;
+                    let mut en_parts: Vec<Option<String>> = Vec::new();
+                    let mut emptied_any = false;
+                    let mut ev_changed = false;
+                    for &(es, ee) in &entries {
+                        let etext = text[es..ee].to_string();
+                        if text.as_bytes().get(es) != Some(&b'{') {
+                            en_parts.push(Some(etext));
+                            continue;
+                        }
+                        let os = scan_object_at(text, es)?;
+                        if dup_keys(&os, "hooks") {
+                            return Err("entry 안 hooks 가 중복 키다 — 손대지 않는다".into());
+                        }
+                        let Some(hm) = os.members.iter().find(|x| x.key == "hooks") else {
+                            en_parts.push(Some(etext));
+                            continue;
+                        };
+                        if text.as_bytes().get(hm.val_start) != Some(&b'[') {
+                            en_parts.push(Some(etext));
+                            continue;
+                        }
+                        let (io, ic, hitems) = scan_array_at(text, hm.val_start)?;
+                        let mut h_parts: Vec<Option<String>> = Vec::new();
+                        let mut n = 0usize;
+                        for &(hs0, he0) in &hitems {
+                            let ht = &text[hs0..he0];
+                            let ours = serde_json::from_str::<OJ>(ht)
+                                .ok()
+                                .and_then(|v| v.get("command").and_then(OJ::as_str).map(matcher))
+                                .unwrap_or(false);
+                            if ours {
+                                n += 1;
+                                h_parts.push(None);
+                            } else {
+                                h_parts.push(Some(ht.to_string()));
+                            }
+                        }
+                        if n == 0 {
+                            en_parts.push(Some(etext));
+                        } else if n == hitems.len() {
+                            en_parts.push(None);
+                            emptied_any = true;
+                            ev_changed = true;
+                        } else {
+                            let new_arr = rejoin(text, io, ic, &hitems, &h_parts);
+                            let mut e2 = String::new();
+                            e2.push_str(&text[es..io]);
+                            e2.push_str(&new_arr);
+                            e2.push_str(&text[ic + 1..ee]);
+                            en_parts.push(Some(e2));
+                            ev_changed = true;
+                        }
+                    }
+                    if !ev_changed {
+                        ev_parts.push(Some(ewhole));
+                        continue;
+                    }
+                    hooks_changed = true;
+                    if emptied_any && en_parts.iter().all(Option::is_none) {
+                        ev_parts.push(None);
+                    } else {
+                        let new_arr = rejoin(text, ao, ac, &entries, &en_parts);
+                        ev_parts.push(Some(format!("{}{}{}", &text[em.key_start..ao], new_arr, &text[ac + 1..em.val_end])));
+                    }
+                }
+                if !hooks_changed {
+                    parts.push(Some(whole));
+                } else if ev_parts.iter().all(Option::is_none) {
+                    parts.push(None);
                 } else {
-                    let ind = crate::settings_surgery::line_indent(text, m.key_start).unwrap_or("");
-                    let nl = if text.contains("\r\n") { "\r\n" } else { "\n" }; // 윈 편집기 CRLF 파일은 CRLF 로
-                    serde_json::to_string_pretty(v)
-                        .map_err(|e| e.to_string())?
-                        .replace('\n', &format!("{nl}{ind}"))
-                };
-                edits.push((m.val_start, m.val_end, rendered));
+                    let new_obj = rejoin(text, hs.open, hs.close, &ev_items, &ev_parts);
+                    parts.push(Some(format!("{head}{new_obj}{}", &text[hs.close + 1..m.val_end])));
+                }
             }
-            None => {
-                let (a, b) = if i > 0 {
-                    (scan.members[i - 1].val_end, m.val_end)
-                } else if scan.members.len() > 1 {
-                    (m.key_start, scan.members[1].key_start)
-                } else {
-                    (scan.open + 1, scan.close)
-                };
-                edits.push((a, b, String::new()));
-            }
+            "statusLine" => match (root.get("statusLine"), want.get("statusLine")) {
+                (Some(a), Some(b)) if a == b => parts.push(Some(whole)),
+                (Some(_), None) => parts.push(None),
+                (Some(_), Some(b)) => {
+                    let one_line = !text[rs.open..rs.close].contains('\n');
+                    let rendered = if one_line {
+                        serde_json::to_string(b).map_err(|e| e.to_string())?
+                    } else {
+                        let ind = line_indent(text, m.key_start).unwrap_or("");
+                        serde_json::to_string_pretty(b)
+                            .map_err(|e| e.to_string())?
+                            .replace('\n', &format!("{nl}{ind}"))
+                    };
+                    parts.push(Some(format!("{head}{rendered}")));
+                }
+                _ => parts.push(Some(whole)),
+            },
+            _ => parts.push(Some(whole)),
         }
     }
-    edits.sort_by(|x, y| y.0.cmp(&x.0));
-    let mut out = text.to_string();
-    for (a, b, r) in edits {
-        out.replace_range(a..b, &r);
+    let _ = matcher;
+    let items: Vec<(usize, usize)> = rs.members.iter().map(|m| (m.key_start, m.val_end)).collect();
+    if items.is_empty() {
+        return Ok(text.to_string());
     }
-    match serde_json::from_str::<OJ>(&out) {
-        Ok(back) if back == *root => Ok(out),
-        _ => full(),
+    let mut out = String::with_capacity(text.len());
+    out.push_str(&text[..rs.open]);
+    out.push_str(&rejoin(text, rs.open, rs.close, &items, &parts));
+    out.push_str(&text[rs.close + 1..]);
+    Ok(out)
+}
+
+/// ★1.1.11 hook-slim: 읽기 전용 탐지판 — 개인 프로필에서 지울 팩 등록 라벨(훅 + statusLine). 제거판과 **같은 계획 함수**다
+/// (codex·agy R1: 종전 탐지는 BOM 파일을 못 읽고 statusLine 을 보지 않았다). 파일 부재 = 빈 목록.
+pub fn pack_registrations_in_personal_profile(settings_path: &Path, pack_root: &Path) -> Result<Vec<String>, String> {
+    let cys_base = pack_root
+        .parent()
+        .ok_or_else(|| format!("pack root has no parent: {}", pack_root.display()))?;
+    let target = resolve_symlinked_settings(settings_path, cys_base)?;
+    let raw = match std::fs::read(&target) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(e) => return Err(format!("read error: {e}")),
+    };
+    let matcher = |c: &str| personal_pack_command(c, pack_root);
+    plan_strip_bytes(&raw, &matcher, true).map(|(r, _)| r)
+}
+
+/// 셸 낱말 나누기(최소) — 홑따옴표(이스케이프 없음)·겹따옴표(`\"`·`\\` 만 이스케이프)·공백 구분. 따옴표 밖 역슬래시는 글자 그대로
+/// (윈 경로). 훅 명령의 **형식 판정**용이지 셸 해석기가 아니다.
+fn shell_words(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut has = false;
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        match c {
+            '\'' => {
+                has = true;
+                for d in it.by_ref() {
+                    if d == '\'' {
+                        break;
+                    }
+                    cur.push(d);
+                }
+            }
+            '"' => {
+                has = true;
+                while let Some(d) = it.next() {
+                    match d {
+                        '"' => break,
+                        '\\' if matches!(it.peek(), Some('"') | Some('\\')) => {
+                            if let Some(n) = it.next() {
+                                cur.push(n);
+                            }
+                        }
+                        _ => cur.push(d),
+                    }
+                }
+            }
+            c if c.is_whitespace() => {
+                if has || !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                    has = false;
+                }
+            }
+            _ => cur.push(c),
+        }
     }
+    if has || !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// 경로 낱말 정규화 — 역슬래시→슬래시 · MSYS/Cygwin 드라이브(`/c/…`·`/cygdrive/c/…`)→`C:/…`.
+fn norm_path_token(p: &str) -> String {
+    let s = p.replace('\\', "/");
+    let s = s.strip_prefix("/cygdrive").map(str::to_string).unwrap_or(s);
+    let b = s.as_bytes();
+    if b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b'/' {
+        return format!("{}:{}", (b[1] as char).to_ascii_uppercase(), &s[2..]);
+    }
+    if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+        return format!("{}{}", (b[0] as char).to_ascii_uppercase(), &s[1..]);
+    }
+    s
+}
+
+/// ★1.1.11 hook-slim(codex R1 major ③): **개인 프로필 제거 전용** 엄격 소유 판정 — 팩 등록기가 만드는 실행 형식만 팩 훅이다:
+/// `[VAR=값 …] <sh|bash|…/bash.exe> <팩>/hooks/<스크립트>` 그리고 **그 뒤에 아무것도 없다**. 팩 경로가 다른 명령의 인자이거나
+/// 다른 경로 아래 부분 문자열(`/backup/Users/u/.cys/pack/…`)이면 사용자 훅이다. 경로는 슬래시·MSYS 드라이브 표기를 맞추고
+/// 윈에서는 대소문자를 가리지 않는다. 팩 루트는 원문·정규화(`resolve_for_compare`) 두 형태로 본다.
+pub(crate) fn personal_pack_command(cmd: &str, pack_root: &Path) -> bool {
+    let w = shell_words(cmd);
+    let mut i = 0;
+    while i < w.len() {
+        let t = &w[i];
+        let is_assign = t.find('=').map(|e| {
+            e > 0 && t[..e].chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !t[..1].chars().all(|c| c.is_ascii_digit())
+        });
+        if is_assign != Some(true) {
+            break;
+        }
+        i += 1;
+    }
+    if i + 2 != w.len() {
+        return false;
+    }
+    let launcher = norm_path_token(&w[i]);
+    let base = launcher.rsplit('/').next().unwrap_or("").to_ascii_lowercase();
+    if !matches!(base.as_str(), "sh" | "bash" | "sh.exe" | "bash.exe") {
+        return false;
+    }
+    let script = norm_path_token(&w[i + 1]);
+    let roots = [pack_root.to_path_buf(), crate::pack::resolve_for_compare(pack_root)];
+    roots.iter().any(|r| {
+        let pre = format!("{}/hooks/", norm_path_token(&r.to_string_lossy()).trim_end_matches('/'));
+        let (a, b) = if cfg!(windows) { (script.to_lowercase(), pre.to_lowercase()) } else { (script.clone(), pre) };
+        a.len() > b.len() && a.starts_with(&b) && !a[b.len()..].split('/').any(|seg| seg == "..")
+    })
 }
 
 fn strip_settings_matching(
@@ -2723,95 +3061,7 @@ fn strip_settings_matching(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
         Err(e) => return Err(format!("read error: {e}")),
     };
-    let (bom, body_bytes) = match raw_bytes.strip_prefix(b"\xef\xbb\xbf") {
-        Some(rest) => (true, rest),
-        None => (false, raw_bytes.as_slice()),
-    };
-    let text = std::str::from_utf8(body_bytes).map_err(|e| format!("read error: not UTF-8 ({e})"))?;
-    let mut root: OJ = serde_json::from_str(text).map_err(|e| format!("parse error: {e}"))?;
-    if !matches!(root, OJ::Obj(_)) {
-        return Err("settings root is not an object".into());
-    }
-    let mut removed: Vec<String> = Vec::new();
-    let mut hooks_changed = false;
-
-    if let Some(OJ::Obj(hooks)) = root.get_mut("hooks") {
-        for (ev, arr) in hooks.iter_mut() {
-            let OJ::Arr(arr) = arr else {
-                continue;
-            };
-            for entry in arr.iter_mut() {
-                let Some(OJ::Arr(inner)) = entry.get_mut("hooks") else {
-                    continue;
-                };
-                let before = inner.len();
-                inner.retain(|h| !h.get("command").and_then(OJ::as_str).map(matcher).unwrap_or(false));
-                let n = before - inner.len();
-                if n > 0 {
-                    removed.push(format!("{ev}×{n}"));
-                }
-            }
-            // hooks 배열이 없는 이형 entry 는 사용자 소유 — 불가침.
-            arr.retain(|entry| !matches!(entry.get("hooks"), Some(OJ::Arr(a)) if a.is_empty()));
-        }
-        let before = hooks.len();
-        hooks.retain(|(_, arr)| !matches!(arr, OJ::Arr(a) if a.is_empty()));
-        hooks_changed = !removed.is_empty() || hooks.len() != before;
-    }
-    if hooks_changed && matches!(root.get("hooks"), Some(OJ::Obj(h)) if h.is_empty()) {
-        root.remove("hooks");
-    }
-
-    let mut status_changed = false;
-    if let Some(cmd) = root
-        .get("statusLine")
-        .and_then(|s| s.get("command"))
-        .and_then(OJ::as_str)
-        .map(str::to_string)
-        .filter(|_| strip_statusline)
-    {
-        if matcher(&cmd) {
-            // ★W1(성찰 확정): 구분자는 OS별 훅 명령 형식과 1:1 이다 —
-            // unix `sh <abs>` / Windows `bash "<정슬래시 abs>"`(javis_preflight._cys_hook_cmd·
-            // pack::hook_command_for). `" sh "` 만 찾으면 Windows 에서 항상 원복 실패 →
-            // 사용자의 기존 statusLine 이 무음 삭제된다. 두 형식을 모두 인식한다.
-            let restored = cmd
-                .strip_prefix("CYS_PREV_STATUSLINE=")
-                .and_then(|rest| {
-                    rest.rfind(" sh ")
-                        .or_else(|| rest.rfind(" bash "))
-                        // win-hooks-no-bash 폴백 형식: ` <절대경로>/bash.exe "<script>"`
-                        .or_else(|| {
-                            // 따옴표 런처(공백 경로)면 여는 따옴표 앞 공백, 맨 경로면 직전 공백.
-                            let head = &rest[..rest.rfind("/bash.exe")?];
-                            match head.rfind(" \"") {
-                                Some(q) if !head[q + 2..].contains('"') => Some(q),
-                                _ => head.rfind(' '),
-                            }
-                        })
-                        .map(|i| rest[..i].to_string())
-                })
-                .and_then(|q| shell_unquote_single(&q));
-            match restored {
-                Some(prev) => {
-                    root.set(
-                        "statusLine",
-                        OJ::Obj(vec![
-                            ("type".into(), OJ::Str("command".into())),
-                            ("command".into(), OJ::Str(prev)),
-                        ]),
-                    );
-                    removed.push("statusLine(이전 값 원복)".into());
-                }
-                None => {
-                    root.remove("statusLine");
-                    removed.push("statusLine".into());
-                }
-            }
-            status_changed = true;
-        }
-    }
-
+    let (removed, planned) = plan_strip_bytes(&raw_bytes, matcher, strip_statusline)?;
     if removed.is_empty() {
         return Ok(removed);
     }
@@ -2835,26 +3085,28 @@ fn strip_settings_matching(
                 .map_err(|e| format!("backup failed: {e}"))?;
         }
         StripBackup::Suffix(sfx) => {
-            let backup = format!("{}{sfx}", settings_path.display());
-            std::fs::copy(settings_path, &backup).map_err(|e| format!("backup failed: {e}"))?;
+            // ★1.1.11 hook-slim(codex R1 minor): 같은 이름의 백업이 이미 있으면 덮지 않는다 — `-1`·`-2`… 를 붙여 새 파일로
+            //   만든다(create_new). 종전 `fs::copy` 는 같은 초에 두 번 돌면 첫 원본 백업을 덮었다.
+            let base = format!("{}{sfx}", settings_path.display());
+            let mut n = 0u32;
+            loop {
+                let cand = if n == 0 { base.clone() } else { format!("{base}-{n}") };
+                match std::fs::OpenOptions::new().write(true).create_new(true).open(&cand) {
+                    Ok(mut f) => {
+                        use std::io::Write as _;
+                        f.write_all(&raw_bytes).and_then(|_| f.sync_all()).map_err(|e| format!("backup failed: {e}"))?;
+                        break;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && n < 1000 => n += 1,
+                    Err(e) => return Err(format!("backup failed: {e}")),
+                }
+            }
         }
     }
     // ★P1-1 ⑤: write_atomic 은 tmp+rename 이라 **원본 권한이 사라진다** — 읽기 전용(0444)으로
     // 잠가 둔 설정이 조용히 쓰기 가능해졌다. 교체 후 원래 권한을 복원한다.
     let orig_perm = std::fs::metadata(settings_path).ok().map(|m| m.permissions());
-    let mut changed_keys: Vec<&str> = Vec::new();
-    if hooks_changed {
-        changed_keys.push("hooks");
-    }
-    if status_changed {
-        changed_keys.push("statusLine");
-    }
-    let body = splice_changed_members(text, &root, &changed_keys)?;
-    let mut out = Vec::with_capacity(body.len() + 3);
-    if bom {
-        out.extend_from_slice(b"\xef\xbb\xbf");
-    }
-    out.extend_from_slice(body.as_bytes());
+    let out = planned.ok_or("내부 오류: 제거 라벨은 있는데 새 본문이 없다")?;
     crate::pack::write_atomic(settings_path, &out).map_err(|e| e.to_string())?;
     if let Some(perm) = orig_perm {
         let _ = std::fs::set_permissions(settings_path, perm);
@@ -4835,13 +5087,93 @@ mod hookslim_tests {
     }
 
     #[test]
-    fn splice_falls_back_to_ordered_full_render_on_duplicate_keys() {
-        let root: OJ = serde_json::from_str("{\"b\":1,\"hooks\":{},\"a\":2}").unwrap();
-        let mut r = root.clone();
-        r.remove("hooks");
-        // 원문에 hooks 가 두 번 — 스캔 갈아 끼우기를 쓰지 않고 순서 보존 전체 직렬화로 물러난다
-        let out = splice_changed_members("{\"b\":1,\"hooks\":{},\"hooks\":{},\"a\":2}", &r, &["hooks"]).unwrap();
-        assert_eq!(out, "{\n  \"b\": 1,\n  \"a\": 2\n}");
+    fn duplicate_keys_are_refused_without_writing() {
+        let root: OJ = serde_json::from_str("{\"hooks\":{\"Stop\":[{\"hooks\":[{\"command\":\"sh /h/.cys/pack/hooks/a.sh\"}]}]}}").unwrap();
+        let m = |c: &str| c.contains("/.cys/pack/");
+        let (want, _) = expected_after_strip(&root, &m, true);
+        let r = surgical_strip("{\"hooks\":{},\"hooks\":{\"Stop\":[]}}", &root, &want, &m);
+        assert!(r.is_err(), "중복 키 = 거부: {r:?}");
+    }
+
+    // codex·agy R1 blocking: 첫 두 멤버(hooks·statusLine)가 둘 다 지워지는 pretty·CRLF·2키 파일 — panic 없이 바르게.
+    #[test]
+    fn leading_two_members_both_removed() {
+        let (base, pack, s) = lab("lead2");
+        let p = pack.display().to_string();
+        for (before, want) in [
+            (format!("{{\n  \"hooks\": {{\n    \"Stop\": [\n      {{\n        \"hooks\": [\n          {{\n            \"type\": \"command\",\n            \"command\": \"sh {p}/hooks/save-state.sh\"\n          }}\n        ]\n      }}\n    ]\n  }},\n  \"statusLine\": {{\n    \"type\": \"command\",\n    \"command\": \"sh {p}/hooks/cys-statusline.sh\"\n  }}\n}}"), "{}".to_string()),
+            (format!("{{\r\n  \"hooks\": {{\"Stop\": [{{\"hooks\": [{{\"command\": \"sh {p}/hooks/a.sh\"}}]}}]}},\r\n  \"statusLine\": {{\"command\": \"sh {p}/hooks/cys-statusline.sh\"}},\r\n  \"permissions\": {{\"allow\": [\"Bash(ls:*)\"]}},\r\n  \"env\": {{\"Z\": \"1\", \"A\": \"2\"}}\r\n}}"),
+             "{\r\n  \"permissions\": {\"allow\": [\"Bash(ls:*)\"]},\r\n  \"env\": {\"Z\": \"1\", \"A\": \"2\"}\r\n}".to_string()),
+        ] {
+            std::fs::write(&s, &before).unwrap();
+            strip_pack_registrations_from_personal_profile(&s, &pack).unwrap();
+            assert_eq!(std::fs::read_to_string(&s).unwrap(), want);
+        }
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    // codex R1 major ①: 남는 사용자 훅의 이스케이프·숫자 표기·비표준 들여쓰기는 그대로.
+    #[test]
+    fn remaining_user_hook_bytes_are_untouched() {
+        let (base, pack, s) = lab("esc");
+        let p = pack.display().to_string();
+        let before = format!("{{\"hooks\":{{\"Stop\":[{{\"hooks\":[{{\"command\":\"sh {p}/hooks/save-state.sh\"}},   {{\"command\":\"echo \\u0061\",\"timeout\":1.50}}]}}]}},\n\t\"x\" :  1e3}}");
+        std::fs::write(&s, &before).unwrap();
+        assert_eq!(strip_pack_registrations_from_personal_profile(&s, &pack).unwrap(), vec!["Stop×1"]);
+        assert_eq!(
+            std::fs::read_to_string(&s).unwrap(),
+            "{\"hooks\":{\"Stop\":[{\"hooks\":[{\"command\":\"echo \\u0061\",\"timeout\":1.50}]}]},\n\t\"x\" :  1e3}"
+        );
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    // codex R1 major ③⑦: 엄격 소유 판정.
+    #[test]
+    fn strict_personal_predicate() {
+        let pack = Path::new("/Users/u/.cys/pack");
+        for ok in [
+            "sh /Users/u/.cys/pack/hooks/save-state.sh",
+            "bash \"/Users/u/.cys/pack/hooks/x.sh\"",
+            "\"/c/Program Files/Git/bin/bash.exe\" \"/Users/u/.cys/pack/hooks/vibecoding/v.sh\"",
+            "CYS_PREV_STATUSLINE='my line --x' sh /Users/u/.cys/pack/hooks/cys-statusline.sh",
+        ] {
+            assert!(personal_pack_command(ok, pack), "{ok}");
+        }
+        for no in [
+            "sh /backup/Users/u/.cys/pack/hooks/mine.sh",
+            "python3 /u/audit.py --root /Users/u/.cys/pack",
+            "sh /Users/u/.cys/pack/hooks/x.sh --extra",
+            "sh /Users/u/.cys/pack/hooks/../../evil.sh",
+            "sh /Users/u/.cys/pack-dept-a/hooks/x.sh",
+            "sh /Users/u/.cys/local/hooks/x.sh",
+            "node /Users/u/.cys/pack/hooks/x.sh",
+        ] {
+            assert!(!personal_pack_command(no, pack), "{no}");
+        }
+        let win = Path::new("C:/Users/U/.cys/pack");
+        assert!(personal_pack_command("bash \"/c/Users/U/.cys/pack/hooks/save-state.sh\"", win), "MSYS 드라이브 표기");
+        assert!(personal_pack_command("bash \"C:\\\\Users\\\\U\\\\.cys\\\\pack\\\\hooks\\\\a.sh\"", win));
+    }
+
+    #[test]
+    fn detection_sees_bom_and_statusline_only() {
+        let (base, pack, s) = lab("det");
+        std::fs::write(&s, format!("\u{feff}{{\"statusLine\":{{\"type\":\"command\",\"command\":\"sh {}/hooks/cys-statusline.sh\"}}}}", pack.display())).unwrap();
+        assert_eq!(pack_registrations_in_personal_profile(&s, &pack).unwrap(), vec!["statusLine"]);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn same_second_backups_do_not_clobber() {
+        let (base, pack, s) = lab("bk2");
+        let p = pack.display().to_string();
+        for marker in ["A", "B"] {
+            std::fs::write(&s, format!("{{\"m\":\"{marker}\",\"hooks\":{{\"Stop\":[{{\"hooks\":[{{\"command\":\"sh {p}/hooks/a.sh\"}}]}}]}}}}")).unwrap();
+            strip_pack_registrations_from_personal_profile(&s, &pack).unwrap();
+        }
+        let bodies: Vec<String> = backups(&s).iter().map(|b| std::fs::read_to_string(b).unwrap()).collect();
+        assert!(bodies.iter().any(|b| b.contains("\"A\"")) && bodies.iter().any(|b| b.contains("\"B\"")), "{bodies:?}");
+        let _ = std::fs::remove_dir_all(base);
     }
 }
 

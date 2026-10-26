@@ -9730,7 +9730,7 @@ fn diag_hook_personal(ctx: &DoctorCtx, fix: bool) -> DiagItem {
             .settings_paths
             .iter()
             .filter_map(|p| {
-                match cys::factory_reset::hooks_pointing_into_pack(std::path::Path::new(p), &ctx.pack_dir) {
+                match cys::factory_reset::pack_registrations_in_personal_profile(std::path::Path::new(p), &ctx.pack_dir) {
                     Ok(v) if v.is_empty() => None,
                     Ok(v) => Some(format!("{p}: {}", v.join(","))),
                     Err(e) => Some(format!("{p}: 판정 불가({e})")),

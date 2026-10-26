@@ -42,7 +42,7 @@ RUST = [
     ("R1 옵트인 표지 존재를 무시", "src/pack.rs", "        Ok(_) => Some(true),", "        Ok(_) => Some(false),"),
     ("R2 판독 불가를 부재로 접음", "src/pack.rs", "        Err(_) => None,\n    }\n}", "        Err(_) => Some(false),\n    }\n}"),
     ("R3 갈아끼우기 대신 전체 재직렬화", "src/factory_reset.rs",
-     "        Ok(back) if back == *root => Ok(out),", "        Ok(back) if false && back == *root => Ok(out),"),
+     "        Ok(back) if back == want => {}", "        Ok(_) => {}"),
     ("R4 BOM 버림", "src/factory_reset.rs", "    if bom {\n        out.extend_from_slice", "    if false && bom {\n        out.extend_from_slice"),
     ("R5 읽기 전용 무시", "src/factory_reset.rs", "    if respect_readonly {", "    if false && respect_readonly {"),
     ("R6 CRLF 무시", "src/factory_reset.rs", 'let nl = if text.contains("\\r\\n") { "\\r\\n" } else { "\\n" };', 'let nl = "\\n";'),

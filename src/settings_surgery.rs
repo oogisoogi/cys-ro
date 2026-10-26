@@ -85,8 +85,14 @@ fn skip_value(b: &[u8], i: usize) -> Result<usize, String> {
 
 /// 최상위 객체의 멤버 위치를 잰다. 입력은 이미 serde_json 으로 유효성이 확인된 텍스트(BOM 제거 뒤)다.
 pub(crate) fn scan_root(t: &str) -> Result<RootScan, String> {
+    let i = skip_ws(t.as_bytes(), 0);
+    scan_object_at(t, i)
+}
+
+/// ★1.1.11 hook-slim: `t[i]` 가 `{` 인 객체의 멤버 위치(중첩 객체용 · `scan_root` 와 같은 규칙).
+pub(crate) fn scan_object_at(t: &str, i: usize) -> Result<RootScan, String> {
     let b = t.as_bytes();
-    let mut i = skip_ws(b, 0);
+    let mut i = i;
     if b.get(i) != Some(&b'{') {
         return Err("루트가 객체가 아니다".into());
     }
@@ -113,6 +119,31 @@ pub(crate) fn scan_root(t: &str) -> Result<RootScan, String> {
             Some(b',') => i = skip_ws(b, i + 1),
             Some(b'}') => return Ok(RootScan { open, close: i, members }),
             _ => return Err("멤버 구분자가 없다".into()),
+        }
+    }
+}
+
+/// ★1.1.11 hook-slim: `t[i]` 가 `[` 인 배열의 (여는 위치, 닫는 위치, 원소 (시작, 끝) 목록).
+pub(crate) fn scan_array_at(t: &str, i: usize) -> Result<(usize, usize, Vec<(usize, usize)>), String> {
+    let b = t.as_bytes();
+    if b.get(i) != Some(&b'[') {
+        return Err("배열이 아니다".into());
+    }
+    let open = i;
+    let mut i = skip_ws(b, i + 1);
+    let mut items = Vec::new();
+    if b.get(i) == Some(&b']') {
+        return Ok((open, i, items));
+    }
+    loop {
+        let start = i;
+        let end = skip_value(b, i)?;
+        items.push((start, end));
+        i = skip_ws(b, end);
+        match b.get(i) {
+            Some(b',') => i = skip_ws(b, i + 1),
+            Some(b']') => return Ok((open, i, items)),
+            _ => return Err("원소 구분자가 없다".into()),
         }
     }
 }

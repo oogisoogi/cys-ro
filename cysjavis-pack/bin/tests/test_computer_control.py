@@ -330,6 +330,28 @@ class TestVerdicts(Base):
         rc, d, _ = self.run_cli("scan")
         self.assertEqual(self.item(d, "script:win")["tier"], "not_now")
 
+    def win_desktop_say(self):
+        os.environ["CYS_CC_PLATFORM"] = "win"
+        self.m._run = lambda argv: subprocess.CompletedProcess(argv, 1, "", "")
+        rc, d, _ = self.run_cli("scan")
+        self.assertEqual(rc, 0)
+        return self.item(d, "screen") and d["say"]
+
+    def test_win_claude_desktop_msix(self):
+        # 윈 실기 10-26 ③: MSIX 설치(WindowsApps) — 사용자 자료 폴더가 근거 · 목록 거부면 「?」 · 목록에 없으면 못 찾음.
+        la = os.path.join(self.tmp, "la")
+        pf = os.path.join(self.tmp, "pf")
+        os.environ["LOCALAPPDATA"] = la
+        os.environ["ProgramFiles"] = pf
+        os.makedirs(os.path.join(la, "Packages", "Claude_pzs8sxrjxfjjc"))
+        self.assertIn("데스크톱 앱: 이 컴퓨터에 설치돼 있습니다", self.win_desktop_say())
+        shutil.rmtree(os.path.join(la, "Packages"))
+        self.assertIn("데스크톱 앱: ? — 설치돼 있는지 확인하지 못했습니다", self.win_desktop_say())   # WindowsApps 못 읽음
+        os.makedirs(os.path.join(pf, "WindowsApps", "Other_1.0.0.0_x64__pzs8sxrjxfjjc"))
+        self.assertIn("데스크톱 앱: 찾지 못했습니다", self.win_desktop_say())
+        os.makedirs(os.path.join(pf, "WindowsApps", "Claude_2.19675.0.0_x64__pzs8sxrjxfjjc"))
+        self.assertIn("데스크톱 앱: 이 컴퓨터에 설치돼 있습니다", self.win_desktop_say())
+
     def test_say_line_cap(self):
         self.m.MAX_SAY_LINES = 5
         self.make_protected()
@@ -467,6 +489,48 @@ class TestBoundaries(Base):
             self.m.subprocess.run = orig
         self.assertIs(seen.get("stdin"), subprocess.DEVNULL)
         self.assertEqual(seen.get("timeout"), self.m.SUBPROC_TIMEOUT)
+
+
+    def test_cp949_stdout_scan_utf8(self):
+        # 윈 실기 10-26 ①: 콘솔 코드페이지 cp949(UTF-8 모드 꺼짐)에서도 scan rc 0 · 출력은 UTF-8(마스터가 읽는 쪽).
+        os.environ["CYS_CC_PLATFORM"] = "win"
+        os.environ["LOCALAPPDATA"] = os.path.join(self.tmp, "la")
+        env = dict(os.environ, PYTHONIOENCODING="cp949", PYTHONUTF8="0", PATH="")
+        r = subprocess.run([sys.executable, MOD_PATH, "scan"], env=env, capture_output=True,
+                           stdin=subprocess.DEVNULL, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout[-300:] + r.stderr[-300:])
+        d = json.loads(r.stdout.decode("utf-8"))
+        self.assertTrue(d["ok"])
+        self.assertIn("—", d["say"])
+        self.assertIn("윈도우", d["say"])
+
+    def test_reg_output_cp949_decoded(self):
+        # 윈 실기 10-26 ②: reg 출력(cp949 바이트)은 UTF-8 모드여도 OEM/ANSI 로 푼다 · 못 풀어도 칸 판정을 바꾸지 않는다.
+        host = os.path.join(self.tmp, "홍길동", "chrome-native-host.exe")
+        os.makedirs(os.path.dirname(host))
+        open(host, "w").close()
+        manifest = os.path.join(self.tmp, "홍길동", "nmh.json")
+        with open(manifest, "w", encoding="utf-8") as f:
+            json.dump({"name": "x", "path": host}, f)
+        reg_out = {"rc": 0, "out": ("\r\nHKEY_CURRENT_USER\\x\r\n    (기본값)    REG_SZ    %s\r\n\r\n" % manifest).encode("cp949")}
+
+        def fake_run(argv, **kw):
+            out = reg_out["out"]
+            if kw.get("text"):   # UTF-8 모드의 text=True 와 같게 — 못 풀면 읽기 스레드가 죽고 stdout 은 None
+                try:
+                    out = out.decode("utf-8")
+                except UnicodeDecodeError:
+                    out = None
+            return subprocess.CompletedProcess(argv, reg_out["rc"], out, b"" if not kw.get("text") else "")
+        orig = self.m.subprocess.run
+        self.m.subprocess.run = fake_run
+        self.m._sys_codecs = lambda: ["cp949", "cp949"]
+        try:
+            self.assertIs(self.m._nmh_ok("win", self.ud), True)
+            reg_out.update(rc=1, out=b"\xbf\xff\xbf")          # 어느 코드페이지로도 안 풀리는 바이트 + 키 없음
+            self.assertIs(self.m._nmh_ok("win", self.ud), False)
+        finally:
+            self.m.subprocess.run = orig
 
 
 # ───────────────────────── 장부 ─────────────────────────

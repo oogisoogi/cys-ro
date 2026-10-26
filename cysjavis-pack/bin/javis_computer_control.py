@@ -37,6 +37,15 @@ import time
 
 NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
 
+# ★로케일 비의존 출력(선례 javis_detect.py G9): 윈 파이프의 기본 stdout 은 ANSI 코드페이지(cp949)라 「—」(U+2014)
+#   같은 글자에서 UnicodeEncodeError → scan 이 rc 1 로 죽는다(윈 실기 10-26 ①). 마스터의 Bash·PowerShell 도구는
+#   이 출력을 UTF-8 로 읽으므로 UTF-8 로 고정한다(콘솔 코드페이지로 쓰면 죽지 않아도 마스터 쪽에서 한글이 깨진다).
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 MEASURED_ON = "2.1.310"            # S9 computer-use 켜짐 기록(enabledMcpServers) 실측 판본
 CLAUDE_EXT_ID = "fcoeoabgfenejglbffodgkkbkcdhcgfn"      # Claude in Chrome (S4 실측)
 PLAYWRIGHT_EXT_ID = "mmlmfjhmonkocbjadbfplnigmagldckm"  # Playwright Extension (VM-LOG V13)
@@ -88,6 +97,10 @@ WIN_APPS = [   # (ID, 이름, ((환경변수, 경로 조각…), …)) — 존�
     ("office", "오피스(Word·Excel·PowerPoint)", (("ProgramFiles", "Microsoft Office"),
                                                ("ProgramFiles(x86)", "Microsoft Office"))),
 ]
+# Claude 데스크톱 앱 MSIX 패키지 = 이름 + 게시자 ID(윈 실기 10-26 Get-AppxPackage: Claude_2.19675.0.0_x64__pzs8sxrjxfjjc).
+# 패키지 앱의 사용자 자료 폴더 = %LOCALAPPDATA%\Packages\<이름>_<게시자 ID>(Microsoft Learn · MSIX 문서).
+WIN_MSIX_NAME = "Claude"
+WIN_MSIX_PUBLISHER = "pzs8sxrjxfjjc"
 # 맥이 보호하는 폴더 — 존재만 본다(내용을 열면 그 자체가 맥의 허락 창을 띄운다).
 MAC_PROTECTED = [("desktop", "바탕화면", "Desktop"), ("documents", "문서", "Documents"), ("downloads", "다운로드", "Downloads")]
 
@@ -178,14 +191,40 @@ def _trim_ledger(path):
     os.replace(tmp, path)
 
 
-def _run(argv):
-    """외부 호출 1회 · 5초 상한 · 표준입력 없음(윈 콘솔 없는 상속 핸들 방지). 실패 = None."""
+def _sys_codecs():
+    """윈 시스템 명령(reg 등) 출력의 코드페이지 — OEM → ANSI 순. 파이썬 UTF-8 모드·로케일이 아니라 운영체제에 묻는다."""
+    if os.name != "nt":
+        return ["utf-8"]
     try:
-        r = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        import ctypes
+        k = ctypes.windll.kernel32
+        return ["cp%d" % k.GetOEMCP(), "cp%d" % k.GetACP()]
+    except Exception:
+        return ["utf-8"]
+
+
+def _decode(b):
+    """바이트 → 문자열. 어느 코드페이지로도 안 풀리면 대체 문자로(디코드 실패가 칸 판정을 바꾸지 않는다)."""
+    for enc in _sys_codecs():
+        try:
+            return b.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return b.decode("utf-8", "replace")
+
+
+def _run(argv):
+    """외부 호출 1회 · 5초 상한 · 표준입력 없음(윈 콘솔 없는 상속 핸들 방지). 실패 = None.
+    ★출력은 바이트로 받아 _decode 로 푼다 — text=True 는 UTF-8 모드(PYTHONUTF8=1 · 좌석 기본)에서 reg 의 cp949 출력에
+    UnicodeDecodeError 를 낸다(윈 실기 10-26 ②)."""
+    try:
+        r = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True,
                            timeout=SUBPROC_TIMEOUT, **NOWIN)
-        return r
     except (OSError, subprocess.SubprocessError):
         return None
+    r.stdout = _decode(r.stdout) if isinstance(r.stdout, bytes) else (r.stdout or "")
+    r.stderr = _decode(r.stderr) if isinstance(r.stderr, bytes) else (r.stderr or "")
+    return r
 
 
 # ───────────────────────── 탐지(전부 읽기·팝업 없음) ─────────────────────────
@@ -283,13 +322,24 @@ def claude_cfg():
         "readable": True,
         "logged_in": isinstance(oa, dict),
         "plan": plan if isinstance(plan, str) else None,
-        "chrome_default": d.get("claudeInChromeDefaultEnabled") if isinstance(d.get("claudeInChromeDefaultEnabled"), bool) else None,
+        "chrome_default": _chrome_default(d),
         "connectors": [str(x) for x in ever if isinstance(x, str)] if isinstance(ever, list) else [],
         "project_cu": {k: ("computer-use" in v.get("enabledMcpServers"))
                        for k, v in projects.items()
                        if isinstance(v, dict) and isinstance(v.get("enabledMcpServers"), list)},
         "project_keys": [k for k in projects.keys() if isinstance(k, str)],
     }
+
+
+def _chrome_default(d):
+    """크롬 「Enabled by default」 — True/False/None(값이 이상함).
+    ★키 없음 = 꺼짐(윈 실기 10-26: 좌석 설정 폴더에 키가 없어 「모름」이던 것). 근거 = Claude Code 2.1.310 시작 판정
+    (--chrome → CLAUDE_CODE_ENABLE_CFC → 이 키 · 없으면 false) · 공식 문서는 --chrome 없이 켜려면 /chrome 의 Enabled by default 를
+    고르라고 한다 · cysr 좌석은 --chrome 없이 뜬다(agents.json cmd). 좌석이 쓰는 설정(CLAUDE_CONFIG_DIR)만 본다."""
+    if "claudeInChromeDefaultEnabled" not in d:
+        return False
+    v = d["claudeInChromeDefaultEnabled"]
+    return v if isinstance(v, bool) else None
 
 
 def _git_root(path):
@@ -451,9 +501,21 @@ def probe_apps(plat):
 
 
 def _win_claude_desktop():
+    """Claude 데스크톱 앱 설치 — True/False/None(확인 못 함). 폴더 존재·이름만 본다.
+    사용자 쪽 근거(설치 폴더 · MSIX 사용자 자료 폴더)가 먼저 · 없으면 WindowsApps 이름 목록(권한 거부가 흔하다 → None)."""
     la = os.environ.get("LOCALAPPDATA") or ""
-    cands = [os.path.join(la, "AnthropicClaude"), os.path.join(la, "Programs", "Claude")]
-    return any(os.path.isdir(c) for c in cands if la)
+    cands = [os.path.join(la, "AnthropicClaude"), os.path.join(la, "Programs", "Claude"),
+             os.path.join(la, "Packages", "%s_%s" % (WIN_MSIX_NAME, WIN_MSIX_PUBLISHER))]
+    if la and any(os.path.isdir(c) for c in cands):
+        return True
+    pf = os.environ.get("ProgramFiles") or ""
+    if not pf:
+        return None
+    try:
+        names = os.listdir(os.path.join(pf, "WindowsApps"))
+    except OSError:
+        return None
+    return any(n.startswith(WIN_MSIX_NAME + "_") and n.endswith("_" + WIN_MSIX_PUBLISHER) for n in names)
 
 
 # ───────────────────────── 판정(순수 함수 · self-test 전수) ─────────────────────────
@@ -563,7 +625,9 @@ def raw_items(plat, project, cfg=None):
     else:
         st, su, sm, sr = verdict_screen(plat, plan, None, None, None)
         if plat == "win":
-            sr += " (Claude 데스크톱 앱: %s)" % ("이 컴퓨터에 설치돼 있습니다" if _win_claude_desktop()
+            dk = _win_claude_desktop()
+            sr += " (Claude 데스크톱 앱: %s)" % ("이 컴퓨터에 설치돼 있습니다" if dk
+                                              else "? — 설치돼 있는지 확인하지 못했습니다" if dk is None
                                               else "찾지 못했습니다 — 설치 위치가 다를 수 있습니다")
     apps = probe_apps(plat)
     if plat == "darwin":

@@ -69,15 +69,19 @@ Rust 앱 쪽은 리셋 목록 1줄 말고는 손대지 않는다(UI 카드·사�
 
 ### 3-2. 윈도우(★실기 0 — 아래 탐지 경로는 공식 문서·관례 근거의 가정 · 윈 master 실기로 확정할 때까지 「?」 판정으로 출고 가능)
 
+> **정정(2026-10-26 · TICKET=cu-1111-win-fix · 커밋 621977c6)** — 윈 master 1차 실기(10-26 19:4x · 박사님 윈 노트북)에서 결함 3건이 나와 아래 표의 `chrome`·`screen` 줄과 표 밑 「출력 인코딩」을 고쳤다. 나머지 줄은 여전히 가정이다.
+
 | ID | 탐지 | 판정 |
 |---|---|---|
-| `chrome` | `%LOCALAPPDATA%\Google\Chrome\User Data\<프로필>\Extensions\fcoeoab…` · 연결 파일 = 레지스트리 `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.anthropic.claude_code_browser_extension`(`reg query` · 읽기) · `claudeInChromeDefaultEnabled` | 맥과 같은 규칙 · WSL 안이면 안 됨(W6) |
+| `chrome` | `%LOCALAPPDATA%\Google\Chrome\User Data\<프로필>\Extensions\fcoeoab…` · 연결 파일 = 레지스트리 `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.anthropic.claude_code_browser_extension`(`reg query` · 읽기 · ★출력은 바이트로 받아 OEM → ANSI 코드페이지(`GetOEMCP`·`GetACP`)로 푼다 — 끝내 안 풀리면 대체 문자 · 디코드 실패가 판정을 바꾸지 않는다) · `claudeInChromeDefaultEnabled` | 맥과 같은 규칙 · WSL 안이면 안 됨(W6) |
 | `connectors` | 맥과 같음 | 맥과 같음 |
-| `screen` | — | **안 됨**: 「윈도우에서는 이 칸의 마스터가 화면을 조작할 수 없습니다(공식 · G8·W1). Claude 데스크톱 앱에서는 가능합니다 — 그 앱에 직접 시키셔야 합니다.」 + 데스크톱 앱 설치 여부만 덧붙임(경로 후보 = 윈 실기로 확정) |
+| `screen` | — | **안 됨**: 「윈도우에서는 이 칸의 마스터가 화면을 조작할 수 없습니다(공식 · G8·W1). Claude 데스크톱 앱에서는 가능합니다 — 그 앱에 직접 시키셔야 합니다.」 + 데스크톱 앱 설치 여부만 덧붙임 — 근거 순서: ⑴`%LOCALAPPDATA%\AnthropicClaude`·`%LOCALAPPDATA%\Programs\Claude` ⑵MSIX 사용자 자료 폴더 `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc`(실기: MSIX 설치 `C:\Program Files\WindowsApps\Claude_2.19675.0.0_x64__pzs8sxrjxfjjc` · 패키지 앱 자료 = `LocalAppData\Packages\<패밀리 이름>` = Microsoft Learn MSIX 문서) ⑶`%ProgramFiles%\WindowsApps` 이름 목록(`Claude_*_pzs8sxrjxfjjc`) — 목록 권한 거부가 흔하므로 거부면 「?」(확인 못 함) · 목록을 읽었는데 없으면 「찾지 못했습니다」 |
 | `apps` | 카탈로그 앱 존재(시작 메뉴 바로가기·알려진 설치 경로) | `screen` 이 안 됨이므로 「화면 조작 불가 · 스크립트 길은 아래」 |
 | `script` | 한글 = 공식 자동화(OLE · `HWPFrame.HwpObject`) · 오피스 = COM — **존재 판정만**(레지스트리 ProgID 읽기) | 1.1.11 = **?** 고정(「윈도우 스크립트 길은 확인 중」) — 실제 COM 호출은 윈 실기 뒤 별 티켓(보안 모듈 창·UIPI W3 확인 필요) |
 | `files` | 경로 존재만 | 바로(윈도우는 폴더 보호 창이 없다 — 단 「제어된 폴더 액세스」가 켜져 있으면 차단될 수 있음 → 윈 실기 확인 항목) |
 | `browser-alt` | 맥과 같음 | 맥과 같음 |
+
+**출력 인코딩(정정 · 윈 실기 ①)**: 윈 파이프의 파이썬 기본 stdout 은 ANSI 코드페이지(cp949)라 「—」(U+2014 · cp949 에 없음)에서 `UnicodeEncodeError` → `scan` rc 1 이었다. 도구는 stdout·stderr 를 **UTF-8 로 고정**한다 — 마스터의 Bash 도구(Git Bash)·PowerShell 도구는 출력을 UTF-8 로 읽으므로 콘솔 코드페이지로 쓰면 죽지 않아도 마스터 쪽 한글이 깨진다. cysr 좌석은 `PYTHONUTF8=1` 로 뜨므로(`src/lib.rs` `spawn_env_pairs`) 실경로에서 드러나는 쪽은 오히려 위 `reg query` 디코드 결함이다.
 
 ### 3-3. 출력에 싣지 않는 것(개인정보 최소화 — 출력은 마스터 대화로 들어가므로 곧 모델 제공자에게 간다)
 이메일·이름·조직 이름·크롬 프로필 이름·방문 기록·쿠키·메일 본문·파일 이름 목록·앱 전체 목록(카탈로그 밖). 실리는 것 = 항목 ID·판정·이유 문장·카탈로그 앱 이름·「프로필 n개 중 k개」·커넥터 서비스 이름(S8).

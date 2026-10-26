@@ -8891,6 +8891,28 @@ fn run_init_pack(force: bool, no_install_hook: bool, claude_settings: Option<Str
                 );
                 return 0;
             }
+            // ★1.1.11 hook-slim(master 결정 5ea965af = A): 개인 프로필 등록은 옵트인 표지가 있을 때만이다
+            //   (`pack::personal_profile_hooks_opted_in` — 데몬 경로와 같은 술어). 표지가 없으면(판독 불가 포함)
+            //   이 팩의 격리 config(좌석이 실제로 읽는 프로필)만 대상으로 한다 — 신규 머신 폴백도 ~/.claude 가 아니다.
+            if cys::pack::personal_profile_hooks_opted_in() != Some(true) {
+                let Some(cfg) = cys::pack::config_dir_for(
+                    cys::env_compat(cys::pack::ENV_CONFIG_DIR).as_deref(),
+                    None,
+                    std::env::var("CYS_ACCOUNT_DIR").ok().as_deref(),
+                    &dir,
+                ) else {
+                    return 0;
+                };
+                println!(
+                    "개인 프로필(~/.claude*) 훅 등록 생략 — 옵트인 표지 없음({}/{} 또는 {}=1 이면 등록). \
+                     대상 = 격리 config {}",
+                    cys::pack::local_dir().display(),
+                    cys::pack::PERSONAL_HOOKS_OPT_IN_FILE,
+                    cys::pack::ENV_HOOKS_PERSONAL,
+                    cfg.display()
+                );
+                vec![cfg.join("settings.json").to_string_lossy().into_owned()]
+            } else {
             let found = discover_claude_settings();
             if found.is_empty() {
                 // 신규 머신: Claude Code 기본 경로에 생성해 "켜는 순간부터 활성화"를 보장.
@@ -8901,6 +8923,7 @@ fn run_init_pack(force: bool, no_install_hook: bool, claude_settings: Option<Str
                     .into_owned()]
             } else {
                 found
+            }
             }
         }
     };
@@ -9697,6 +9720,70 @@ fn diag_hook_with_consumed(ctx: &DoctorCtx, personal: DiagItem) -> DiagItem {
 
 /// (종전 base arm 본문 그대로) 개인 프로필(~/.claude*) 대조와 `--fix` 재등록.
 fn diag_hook_personal(ctx: &DoctorCtx, fix: bool) -> DiagItem {
+    // ★1.1.11 hook-slim(master 결정 5ea965af = A): 옵트인 표지가 없으면 개인 프로필은 **등록 대상이 아니다** —
+    //   '미등록'은 정상이고, 남아 있는 팩 등록(옛 판 잔재)이 결손이다. --fix 는 재등록이 아니라 그 잔재를 걷어낸다
+    //   (데몬 기동 경로 `pack::strip_pack_registrations_from_personal_profiles` 와 같은 엔진 · 사전 백업).
+    //   표지 판독 불가(None)는 읽기만 한다(쓰지 않는다 — 판정 불가 위에서 사용자 파일을 고치지 않는다).
+    let opted = cys::pack::personal_profile_hooks_opted_in();
+    if opted != Some(true) {
+        let residue: Vec<String> = ctx
+            .settings_paths
+            .iter()
+            .filter_map(|p| {
+                match cys::factory_reset::hooks_pointing_into_pack(std::path::Path::new(p), &ctx.pack_dir) {
+                    Ok(v) if v.is_empty() => None,
+                    Ok(v) => Some(format!("{p}: {}", v.join(","))),
+                    Err(e) => Some(format!("{p}: 판정 불가({e})")),
+                }
+            })
+            .collect();
+        if residue.is_empty() {
+            return DiagItem {
+                name: "hook",
+                status: DiagStatus::Ok,
+                detail: "개인 프로필 팩 훅 0(옵트인 표지 없음 = 등록 안 함이 정상)".into(),
+                action: String::new(),
+            };
+        }
+        if fix && opted == Some(false) {
+            let mut done = Vec::new();
+            let mut errs = Vec::new();
+            for p in &ctx.settings_paths {
+                match cys::factory_reset::strip_pack_registrations_from_personal_profile(
+                    std::path::Path::new(p),
+                    &ctx.pack_dir,
+                ) {
+                    Ok(v) if v.is_empty() => {}
+                    Ok(v) => done.push(format!("{p}: {}", v.join(","))),
+                    Err(e) => errs.push(format!("{p}: {e}")),
+                }
+            }
+            return DiagItem {
+                name: "hook",
+                status: if errs.is_empty() { DiagStatus::Ok } else { DiagStatus::Warn },
+                detail: format!("개인 프로필 팩 등록 잔재({}) — 제거 시도", residue.join(" | ")),
+                action: format!(
+                    "제거 {}건(사전 백업 .bak-cys-hookslim-*){}",
+                    done.len(),
+                    if errs.is_empty() { String::new() } else { format!(", 실패: {}", errs.join("; ")) }
+                ),
+            };
+        }
+        return DiagItem {
+            name: "hook",
+            status: DiagStatus::Warn,
+            detail: format!(
+                "개인 프로필에 팩 훅 잔재({}){}",
+                residue.join(" | "),
+                if opted.is_none() { " · 옵트인 표지 판독 불가 — 쓰지 않음" } else { "" }
+            ),
+            action: format!(
+                "cys doctor --fix 또는 데몬 재기동으로 제거 · 개인 프로필 등록을 원하면 {}/{} 생성",
+                cys::pack::local_dir().display(),
+                cys::pack::PERSONAL_HOOKS_OPT_IN_FILE
+            ),
+        };
+    }
     // ★W3(A9): 진단 대상 = **소망 훅 집합 전체**(SessionStart + UserPromptSubmit). 종전엔 SessionStart
     //   하나만 봐서, 각성 훅(role-bootstrap)이 빠진 기계를 doctor 가 "OK"로 보고했다(보고≠실측).
     let missing_in = |path: &str| -> Vec<&'static str> {

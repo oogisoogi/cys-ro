@@ -34,6 +34,9 @@ done
 T=$(mktemp -d "${TMPDIR:-/tmp}/test-pre-dispatch.XXXXXX") || exit 1
 trap 'rm -rf "$T"' EXIT INT TERM
 
+# ★1.1.11 hook-slim: cys-hook.sh 는 좌석 env 가 없으면 cys 를 부르지 않는다(좌석 아닌 세션 즉시 탈출) — 이 행렬은
+#   좌석 세션의 사용량 1건 계약을 재므로 좌석 env 를 명시한다(호출자 env 에 기대지 않는다).
+export CYS_SURFACE_ID=1
 export INVOKE_LOG="$T/invoke.log"
 export CYS_LOG="$T/cys.log"
 export REAL_HOOKS

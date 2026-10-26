@@ -753,6 +753,27 @@ HOOK_TIMEOUT_S = {
     #   (초과 시 출력이 폐기되고 도구는 정상 권한 흐름으로 간다) 훅이 좌석을 붙잡지 않게 하는
     #   상한이다 — 그래서 넉넉하되 무한이 아니어야 한다.
     ("role-capability-gate.sh", "PreToolUse"): 15,
+    # ★1.1.11 hook-slim(TICKET=hook-slim-1111): 도구 호출마다·답 뒤에 도는 팩 훅은 **미선언 = 하네스 기본 600초**였다
+    #   (걸리는 순간 도구 한 번·턴 끝 한 번이 최대 10분 멈춘다). 실측(맥 · 격리 HOME · 20회) p95 = 도구 훅 ≤42ms ·
+    #   Stop 훅 ≤0.32초(34MB 기록) · PreCompact 0.22초 → 10초(윈 인터프리터 냉시작 여유 포함) · PreCompact 만 30초
+    #   (동기 유지 · 안의 스냅샷 데드라인 cys_timeout_run 10 + 앞뒤 처리). 내부 블로킹 지점 점검(:737 원칙):
+    #   cys-hook 의 데몬 RPC 상한 40초(RPC_IDLE_TIMEOUT_SECS)는 이 선언이 10초로 자른다(관측 훅 · 출력 없음 → 무해) ·
+    #   GATE 훅(appbuild·grill)은 초과 시 출력이 버려져 **통과(fail-open)** 방향이다 · Stop 관측 훅 2개는 분리 실행이라
+    #   부모가 수 ms 에 끝난다(본문 상한은 자식이 진다 · `cys_hook_detach_stop`).
+    ("cys-hook.sh", "PreToolUse"): 10,
+    ("cys-hook.sh", "PostToolUse"): 10,
+    ("cys-hook.sh", "PermissionRequest"): 10,
+    ("appbuild-gate.sh", "PreToolUse"): 10,
+    ("grill-gate.sh", "PreToolUse"): 10,
+    ("grill-count.sh", "PostToolUse"): 10,
+    ("grill-arm.sh", "PreToolUse"): 10,
+    ("grill-stop.sh", "Stop"): 10,
+    ("commit-memory-nudge.sh", "PostToolUse"): 10,
+    ("pack-guard.sh", "PostToolUse"): 10,
+    ("save-state.sh", "Stop"): 10,
+    ("save-state.sh", "PreCompact"): 30,
+    ("reflect-scan.sh", "Stop"): 10,
+    ("reflect-scan.sh", "SessionEnd"): 10,
 }
 
 # ★U-21 롤백 스위치(축 1지점) — Rust `pack::hook_timeout_axis_legacy_from` 의 파이썬 미러.
@@ -1589,22 +1610,72 @@ def discover_skill_profiles():
     return sorted(profs)
 
 
+# ★1.1.11 hook-slim(TICKET=hook-slim-1111 · master 결정 5ea965af = A) — 개인 프로필(`~/.claude*`) 등록 **옵트인 표지**.
+#   Rust 정본 = src/pack.rs `PERSONAL_HOOKS_OPT_IN_FILE`·`ENV_HOOKS_PERSONAL`·`personal_profile_hooks_opted_in_from`
+#   (같은 이름·같은 3값 · 표지 위치 = local_dir = ${CYS_LOCAL_DIR:-<팩 부모>/local}). 개인 프로필 잔재 **제거**는
+#   Rust 단일 엔진(데몬 기동 · `cys doctor --fix`)이 한다 — 이 파일은 등록 대상에서 빼기만 한다(제거 엔진 단일 원칙).
+PERSONAL_HOOKS_OPT_IN_FILE = "hooks-personal-profiles"
+ENV_HOOKS_PERSONAL = "CYS_HOOKS_PERSONAL"
+
+
+def personal_profile_hooks_opted_in_from(env_value, marker_path):
+    """순수 코어 — True 옵트인 · False 증명된 부재 · None 판독 불가(등록 대상에서는 뺀다)."""
+    if env_value == "1":
+        return True
+    try:
+        os.lstat(marker_path)
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+
+
+def personal_profile_hooks_opted_in():
+    local = os.environ.get("CYS_LOCAL_DIR") or os.path.join(
+        os.path.dirname(os.path.normpath(pack_dir())), "local")
+    return personal_profile_hooks_opted_in_from(
+        os.environ.get(ENV_HOOKS_PERSONAL), os.path.join(local, PERSONAL_HOOKS_OPT_IN_FILE))
+
+
+def _is_personal_profile_settings(path):
+    """settings 경로가 홈 직하 개인 프로필(`~/.claude` · `~/.claude-*`)의 것인가 — Rust `personal_profile_dirs_under` 와 같은 이름 규칙."""
+    d = os.path.dirname(os.path.abspath(path))
+    n = os.path.basename(d)
+    if not (n == ".claude" or n.startswith(".claude-")):
+        return False
+    try:
+        return os.path.realpath(os.path.dirname(d)) == os.path.realpath(os.path.expanduser("~"))
+    except OSError:
+        return True   # 판정 불가 = 개인 프로필로 본다(쓰지 않는 방향)
+
+
 def resolve_registration_targets():
     """훅 **등록(쓰기)** 대상 해소 — `(targets, forbidden_reason)`.
 
     · `forbidden_reason` 이 not-None 이면 **글로벌 폴백 금지**다(targets 는 좁힌 목록 또는 빈 목록).
-    · None 이면 targets 는 발견 목록이며, 순수 미발견(신규 머신)일 때만 기본 프로필
-      `~/.claude/settings.json` **한 건**으로 폴백한다(등록기가 생성한다).
+    · None 이면 targets 는 발견 목록이며, 순수 미발견(신규 머신)일 때만 기본 대상 **한 건**으로 폴백한다
+      (등록기가 생성한다).
     ★G1: 이 반환 계약이 '금지'와 '미발견'의 융합을 절단한다 — 종전 `discover() or [기본]` 관용구는
       금지 컨텍스트에서도 기본 프로필로 폴백해 격리를 무효화했다(H-EXIT-8).
+    ★1.1.11 hook-slim: 개인 프로필(`~/.claude*`)은 옵트인 표지가 있을 때만 대상이다. 표지가 없으면(판독 불가
+      포함) 발견 목록에서 빼고, 신규 머신 폴백도 `~/.claude` 가 아니라 이 팩의 계정 config(좌석이 읽는 프로필 ·
+      ${CYS_ACCOUNT_DIR:-<팩 부모>/claude})다. 사용자가 cys 와 무관하게 쓰는 Claude 세션이 팩 훅을 타지 않게 한다.
     """
     reason, narrow = _discover_isolation_block()
     if reason is not None:
         return (list(narrow or []), reason)
+    opted = personal_profile_hooks_opted_in()
     targets = discover_claude_settings()
+    if opted is not True:
+        targets = [t for t in targets if not _is_personal_profile_settings(t)]
     if targets:
         return (targets, None)
-    return ([os.path.join(os.path.expanduser("~"), ".claude", "settings.json")], None)
+    if opted is True:
+        return ([os.path.join(os.path.expanduser("~"), ".claude", "settings.json")], None)
+    account_dir = os.environ.get("CYS_ACCOUNT_DIR") or os.path.join(
+        os.path.dirname(os.path.normpath(pack_dir())), "claude")
+    return ([os.path.join(account_dir, "settings.json")], None)
 
 
 # ── settings.json read-modify-write 의 단일 소유자 (G16 · W3) ────────────────────
@@ -2666,7 +2737,8 @@ class Preflight:
             return
         # 프로필×이벤트 단위로 미등록 항목 수집
         pending = [(t, ev) for t in targets for ev in self.EVENT_HOOK_EVENTS
-                   if not self._event_hook_registered(t, ev, self.EVENT_HOOK)]
+                   if not self._event_hook_registered(t, ev, self.EVENT_HOOK,
+                                                      hook_timeout_for(self.EVENT_HOOK, ev))]
         if not pending:
             self.add(cid, PASS,
                      "%d개 프로필 PreToolUse/PostToolUse 이벤트 hook 등록됨 (claude 재시작 후 적용)"
@@ -2675,7 +2747,8 @@ class Preflight:
         if self.fix:
             done, errs = [], []
             for t, ev in pending:
-                err = self._register_event_hook(t, ev, self.EVENT_HOOK, matcher="")
+                err = self._register_event_hook(t, ev, self.EVENT_HOOK, matcher="",
+                                                timeout=hook_timeout_for(self.EVENT_HOOK, ev))
                 errs.append("%s/%s: %s" % (os.path.basename(os.path.dirname(t)), ev, err)) \
                     if err else done.append("%s/%s" % (os.path.basename(os.path.dirname(t)), ev))
             if errs:
@@ -4811,12 +4884,16 @@ class Preflight:
                 warns.append("등록 대상 없음 — %s" % forbidden)
                 targets = []
             reg = 0
+            _ab_to = hook_timeout_for(APPBUILD_HOOK, "PreToolUse")   # ★hook-slim: 선언 timeout 축
             for t in targets:
-                if self._appbuild_hook_registered(t):
+                if self._appbuild_hook_registered(t) and self._event_hook_registered(
+                        t, "PreToolUse", APPBUILD_HOOK, _ab_to):
                     reg += 1
                     continue
                 if self.fix:
-                    err = self._register_appbuild_hook(t)
+                    # 미등록 = matcher 포함 추가 · 등록됨(timeout 미달) = timeout 키만 올림(U-21 교체 경로) — 한 호출.
+                    err = self._register_event_hook(t, "PreToolUse", APPBUILD_HOOK,
+                                                    matcher="Edit|Write|NotebookEdit", timeout=_ab_to)
                     if err:
                         warns.append("hook 등록 실패(%s): %s" % (os.path.basename(t), err))
                     else:
@@ -5430,10 +5507,11 @@ class Preflight:
                     fixed.append("%s 실행권한" % hname)
             unreg = 0
             for t in targets:
-                if self._event_hook_registered(t, hevent, hname):
+                if self._event_hook_registered(t, hevent, hname, hook_timeout_for(hname, hevent)):
                     continue
                 if self.fix:
-                    err = self._register_event_hook(t, hevent, hname, matcher=hmatcher)
+                    err = self._register_event_hook(t, hevent, hname, matcher=hmatcher,
+                                                    timeout=hook_timeout_for(hname, hevent))
                     if err:
                         warns.append("%s 등록 실패(%s): %s"
                                      % (hname, os.path.basename(t), err))

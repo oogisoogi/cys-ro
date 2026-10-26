@@ -431,12 +431,15 @@ try:
               "DEPT-SS-MARKER" in rl.stdout and os.path.exists(fxl["chk"])
               and "master 소관" not in rl.stdout, rl.stdout[:300])
 
-    # ⑪ 역할 미상 — 중립 문안 · 본문 유지(복원 생명선)
+    # ⑪ 역할 미상
+    # ★1.1.11 hook-slim(master 재결정 02da1acc = B1) 계약 변경: 좌석 env 가 **없는** 세션(신원 없음 + env 없음)은 사용자 개인
+    #   Claude·cmux 페인·데스크톱 앱이다 — 팩 훅은 아무것도 주입하지 않는다(종전 「중립 문안 + 본부 작업기억 = 복원 생명선」 폐기 ·
+    #   근거 = 10-27 기록 실측: 그 경로가 cmux master 에 넣은 것은 「작업기억 미발견」 112회뿐 · 실사용 0). 좌석인데 역할만 미상인
+    #   경우(아래 11c)는 종전 그대로다.
     fx = gate_fixture(os.path.join(tmp, "g11a"), daemon=None)
     r = gate_run(fx, role_env=None, source="clear", surface=False)       # 신원 없음 + env 없음
-    check("11a 미상(신원·env 없음) — 중립 문안 · 자율 착수 0",
-          bool(NOTE) and NOTE in r.stdout and all(w not in r.stdout for w in SELF_START), r.stdout[-300:])
-    check("11b 미상 — 본부 작업기억 본문 유지", "HUB-SS-MARKER" in r.stdout, r.stdout[:300])
+    check("11a 좌석 아님(신원·env 없음) — 주입 0 · exit 0(B1)", r.returncode == 0 and r.stdout == "", r.stdout[-300:])
+    check("11b 좌석 아님 — 본부 작업기억도 주입하지 않는다(B1)", "HUB-SS-MARKER" not in r.stdout, r.stdout[:300])
     fx = gate_fixture(os.path.join(tmp, "g11c"), dept=True, daemon="")      # 권위 무역할
     r = gate_run(fx, role_env=None, source="startup")
     check("11c 부서 미상(권위 무역할) — 본문 유지(부서장일 수 있다) · 중립 문안",

@@ -89,7 +89,8 @@ class Case(object):
                if not k.startswith("CYS_") and not k.startswith("_CYS_")}
         env.update({"PATH": self.bindir + os.pathsep + "/usr/bin" + os.pathsep + "/bin",
                     "HOME": self.home, "CYS_PACK_DIR": self.pack, "CYS_ROOT": self.tmp,
-                    "TMPDIR": self.tmp, "CYS_ROLE": "master"})
+                    "TMPDIR": self.tmp, "CYS_ROLE": "master",
+                    "CYS_SURFACE_ID": "7"})   # hook-slim B1: 좌석 아닌 세션은 즉시 탈출 — 좌석 master 본문을 잰다
         payload = json.dumps({"source": source, "cwd": self.cwd})
         r = subprocess.run([BASH, HOOK], input=payload, capture_output=True, text=True,
                            encoding="utf-8", env=env, timeout=60)

@@ -526,6 +526,74 @@ _cys_hook_timing_end() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 5-a″. 답 뒤(Stop·SessionEnd) **관측** 훅 분리 실행 (★1.1.11 hook-slim · TICKET=hook-slim-1111)
+# ─────────────────────────────────────────────────────────────────────────────
+# 왜: Claude Code 는 Stop 훅이 끝나야 턴을 닫는다 — 실기 hook-timing.log(10-22~10-27 · Stop 1,720회) reflect-scan
+#   10초 이상 19회 · 최장 818초. 그동안 사용자는 「답은 했는데 계속 작업 중」을 본다(원작자 진단과 같다).
+# 어떻게: 부모 훅은 stdin 을 다 읽은 뒤 같은 스크립트를 CYS_HOOK_DETACHED=1 로 다시 띄워 입력을 넘기고 곧바로 끝난다.
+#   분리 묶음 전체(입력을 넘기는 printf 포함)의 stdout·stderr 는 /dev/null — Claude Code 가 기다릴 파이프가 남지 않는다. nohup 이 있으면 끊김(HUP)도 무시.
+#   같은 훅의 자식끼리는 `<상태 dir>/hook-detach/<이름>.lock`(mkdir 원자 잠금 · 주인 pid · 죽은 주인 회수 · 대기 상한
+#   120초)으로 차례를 지킨다 — 종전에는 턴 경계가 순서를 지켜 줬다(.state_log 회전 경합으로 줄을 잃지 않게).
+# 대상: 차단 능력이 없는 관측 훅만(save-state·reflect-scan). GATE 훅(grill-stop 의 exit 2)은 동기여야 한다.
+# 롤백: CYS_HOOK_STOP_SYNC=1 → 종전 동기 실행(이 함수가 1 을 돌려준다).
+# 사용: `INPUT=$(cat)` 직후 `cys_hook_detach <이름> "$0" "$INPUT" Stop SessionEnd && exit 0`
+#   반환 0 = 분리했다(호출자는 끝낸다) · 1 = 이 프로세스가 본문을 돈다(분리된 자식 · 대상 이벤트 아님 · 롤백 · 실패).
+#   cys_hook_timing 뒤에 불러야 한다 — 자식은 EXIT trap 을 「잠금 해제 + 계측 줄(이름(bg))」로 바꿔 건다.
+cys_hook_detach() {
+  _cys_hd_name="${1:-?}"; _cys_hd_self="${2-}"; _cys_hd_in="${3-}"
+  shift 3 2>/dev/null || return 1
+  if [ -n "${CYS_HOOK_DETACHED:-}" ]; then
+    cys_hook_detach_lock "$_cys_hd_name"
+    return 1
+  fi
+  [ "${CYS_HOOK_STOP_SYNC:-}" = "1" ] && return 1
+  _cys_hd_hit=""
+  for _cys_hd_e in "$@"; do
+    case "$_cys_hd_in" in
+      *"\"hook_event_name\":\"$_cys_hd_e\""*|*"\"hook_event_name\": \"$_cys_hd_e\""*) _cys_hd_hit=1; break ;;
+    esac
+  done
+  [ -n "$_cys_hd_hit" ] || return 1
+  [ -f "$_cys_hd_self" ] || return 1
+  if command -v nohup >/dev/null 2>&1; then
+    { printf '%s' "$_cys_hd_in" | CYS_HOOK_DETACHED=1 nohup sh "$_cys_hd_self" >/dev/null 2>&1; } >/dev/null 2>&1 &
+  else
+    { printf '%s' "$_cys_hd_in" | CYS_HOOK_DETACHED=1 sh "$_cys_hd_self" >/dev/null 2>&1; } >/dev/null 2>&1 &
+  fi
+  return 0
+}
+cys_hook_detach_lockdir() { printf '%s' "${CYS_STATE_DIR:-$HOME/.cys/state}/hook-detach/${1:-?}.lock"; }
+cys_hook_detach_lock() {
+  _cys_hd_l="$(cys_hook_detach_lockdir "${1:-?}")"
+  mkdir -p "$(dirname "$_cys_hd_l")" 2>/dev/null
+  _cys_hd_n=0
+  while ! mkdir "$_cys_hd_l" 2>/dev/null; do
+    _cys_hd_p="$(cat "$_cys_hd_l/pid" 2>/dev/null)"
+    if [ -n "$_cys_hd_p" ] && ! kill -0 "$_cys_hd_p" 2>/dev/null; then
+      rm -rf "$_cys_hd_l" 2>/dev/null; continue      # 죽은 주인 — 회수
+    fi
+    _cys_hd_n=$((_cys_hd_n + 1))
+    [ "$_cys_hd_n" -ge 120 ] && { _cys_hd_l=""; break; }   # 상한 — 잠금 없이 진행(멈춤보다 낫다)
+    sleep 1
+  done
+  [ -n "$_cys_hd_l" ] && printf '%s' "$$" > "$_cys_hd_l/pid" 2>/dev/null
+  _cys_hd_held="$_cys_hd_l"
+  _cys_ht_name="${_cys_ht_name:-${1:-?}}(bg)"
+  trap '[ -n "${_cys_hd_held:-}" ] && rm -rf "$_cys_hd_held" 2>/dev/null; _cys_hook_timing_end' EXIT
+  return 0
+}
+# 분리된 자식이 끝나기를 최대 N초 기다린다(소비자용 — 직후에 그 산출물을 읽는 훅). 늘 0.
+cys_hook_detach_wait() {
+  _cys_hw_l="$(cys_hook_detach_lockdir "${1:-?}")"; _cys_hw_n=0
+  while [ -d "$_cys_hw_l" ] && [ "$_cys_hw_n" -lt "${2:-5}" ]; do
+    _cys_hw_p="$(cat "$_cys_hw_l/pid" 2>/dev/null)"
+    [ -n "$_cys_hw_p" ] && ! kill -0 "$_cys_hw_p" 2>/dev/null && break
+    sleep 1; _cys_hw_n=$((_cys_hw_n + 1))
+  done
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 5-a′. 훅 실패 기록 (★D9-b · 1.1.8 — 윈 실측: 훅 오류 로그가 없어 rc 127 을 사후 판정할 수 없었다)
 # ─────────────────────────────────────────────────────────────────────────────
 # 훅은 계약상 언제나 exit 0 이라 안쪽 실패(rc≠0)가 화면 고지 한 줄로만 남고 파일에는 없었다. 실패 한 건마다

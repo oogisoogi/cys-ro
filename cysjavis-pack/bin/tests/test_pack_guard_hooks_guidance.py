@@ -45,6 +45,7 @@ def run_hook(rel, own="system"):
         os.makedirs(os.path.join(pack, "hooks"))
         env = {k: v for k, v in os.environ.items() if not k.startswith("CYS_") and not k.startswith("_CYS_")}
         env.update({"HOME": os.path.join(tmp, "home"), "CYS_PACK_DIR": pack, "TMPDIR": os.path.join(tmp, "stamps"),
+                    "CYS_SURFACE_ID": "7",   # hook-slim B1: 좌석 아닌 세션은 즉시 탈출 — 좌석 본문을 잰다
                     "PATH": binp + os.pathsep + "/usr/bin" + os.pathsep + "/bin"})
         payload = json.dumps({"tool_input": {"file_path": os.path.join(pack, rel)}, "session_id": "s1"})
         r = subprocess.run([BASH, HOOK], input=payload, capture_output=True, text=True, encoding="utf-8", env=env, timeout=60)

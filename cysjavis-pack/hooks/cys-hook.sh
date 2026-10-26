@@ -19,6 +19,15 @@
 #     읽지 않고 실패하면(구 바이너리의 인자 오류 등) rc≠0 이라 `|| cat` 이 남은 입력을 소진한다 — 큰 PostToolUse 입력에서
 #     Claude Code 쪽 쓰기가 EPIPE 를 받지 않는다(검체 CH-6). 정상 경로 비용 0. cys 부재면 cat 이 소진한다.
 #   ★Windows(Git Bash · cygpath 실재)는 종전 경로 그대로다(네이티브 cys.exe 에 훅 stdin 을 직접 물리는 조합은 실측 없음).
+# ★(1.1.11 hook-slim · master 재결정 02da1acc = B1) 좌석 아닌 세션 즉시 탈출 — **맨 앞**. 좌석 env(CYS_/JAVIS_/AITERM_SURFACE_ID
+#   · Rust `env_compat` 와 같은 3키·같은 '비어 있지 않음' 규칙)가 없으면 cys 는 입력을 파싱만 하고 버린다(`run_usage_event_stdin`
+#   → `target_surface` Err → RPC 0) — 그 cys 기동과 오버레이 글롭을 건너뛴다(사용자 개인 세션·cmux 페인·데스크톱 앱).
+#   ⚠동작 변화: 사용자 로컬 오버레이(`<이벤트>.d`)도 이제 **좌석 세션에서만** 돈다(좌석 아닌 세션의 팩 훅은 아무것도 하지
+#   않는다는 B1 원칙 · 10-27 실측 cso 페인 866초 취소 사례). stdin 은 cat 이 소진한다(단말이면 읽지 않는다).
+if [ -z "${CYS_SURFACE_ID:-}${JAVIS_SURFACE_ID:-}${AITERM_SURFACE_ID:-}" ]; then
+  [ -t 0 ] || cat >/dev/null 2>&1
+  exit 0
+fi
 _ov=""
 for _d in "${CYS_LOCAL_DIR:-$HOME/.cys/local}/hooks/"*.d; do
   [ -d "$_d" ] && { _ov=1; break; }

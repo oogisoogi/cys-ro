@@ -7,6 +7,11 @@
 # 안전: graceful, 반드시 exit 0
 set +e
 
+# ★1.1.11 hook-slim(master 재결정 02da1acc = B1): 좌석 아닌 세션(사용자 개인 Claude·cmux 페인·데스크톱 앱) 즉시 탈출 —
+#   좌석 env 3키(CYS_/JAVIS_/AITERM_SURFACE_ID · Rust env_compat 와 같은 '비어 있지 않음' 규칙)가 없으면 이 훅은 할 일이 없다
+#   (10-27 기록 실측: 할 일 0인 cso 페인에서 Stop 1,059초·도구 866초 붙잡고 취소된 사례). 프리루드 **앞**이라 비용 = 셸 기동뿐.
+#   인자 호출(--self-test 등)은 제외 · stdin 은 소진한다(Claude Code 쪽 쓰기 EPIPE 방지 · 단말이면 읽지 않는다).
+[ $# -eq 0 ] && [ -z "${CYS_SURFACE_ID:-}${JAVIS_SURFACE_ID:-}${AITERM_SURFACE_ID:-}" ] && { [ -t 0 ] || cat >/dev/null 2>&1; exit 0; }
 # ── 공용 프리루드(CS-4①) — loud-skip: 소실 시 조용히 꺼지지 않고 stderr 1줄 후 강등 ──
 . "$(dirname "$0")/_lib.sh" 2>/dev/null \
   || . "${CYS_PACK_DIR:-$HOME/.cys/pack}/hooks/_lib.sh" 2>/dev/null \
@@ -15,6 +20,8 @@ command -v cys_lane_redirect >/dev/null 2>&1 && cys_lane_redirect "$@"
 cys_hook_timing save-state   # v113 Q1 계측(경과 시간 1줄 · 관측만)
 
 INPUT=$(cat 2>/dev/null)
+# ★1.1.11 hook-slim: 답 뒤 대기 0 — Stop 는 분리 실행한다(_lib.sh 5-a″ · 롤백 CYS_HOOK_STOP_SYNC=1). PreCompact 는 압축 직전 기록이라 동기 그대로다.
+command -v cys_hook_detach >/dev/null 2>&1 && cys_hook_detach save-state "$0" "$INPUT" Stop && exit 0
 # 인터프리터 해소는 프리루드(python3→python→py) — 기존 계약(비어 있으면 안 됨)은 명시 폴백.
 # ★U15(0.14.41): 개발자 도구(CLT) 없는 맥(`cys_py_shim_risk`)에서는 폴백하지 않는다(그 `python3` 는 설치 창
 #   셔임 — 빈 값 호출은 graceful 갈래) · 윈도우·리눅스·CLT 있는 맥은 종전 폴백 그대로.

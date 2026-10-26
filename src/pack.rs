@@ -1222,6 +1222,74 @@ pub fn personal_profile_dirs_under(home: &Path) -> Vec<PathBuf> {
     dirs_found
 }
 
+/// ★1.1.11 hook-slim(TICKET=hook-slim-1111 · master 결정 5ea965af = A): 개인 프로필(`~/.claude*`) 팩 등록 **옵트인 표지**.
+///
+/// 왜: 팩 훅을 개인 프로필에 걸면 사용자가 cys 와 무관하게 쓰는 모든 Claude 세션이 그 훅을 탄다 — 도구 호출마다
+/// 훅, 답 뒤 Stop 훅 대기, 좌석 아닌 세션에도 SessionStart 주입(inject-context 「대기로 자기보고」). cys 좌석은
+/// 좌석 env 로 `CLAUDE_CONFIG_DIR=~/.cys/claude`(격리 config)를 받으므로(cysd state.rs 스폰 합류점) 개인 프로필
+/// 등록이 필요한 기계는 사람이 선언한다. 제품 안에는 그 필요(예: 좌석 아닌 cmux 페인이 팩 훅을 쓰는 맥)를
+/// 결정론으로 알 신호가 없다(10-27 실측).
+/// 표지 = `<local_dir>/hooks-personal-profiles`(파일·내용 무관 · `~/.cys/local` = 업데이트 불가침 사용자 영역)
+/// 또는 env `CYS_HOOKS_PERSONAL=1`. 파이썬 미러 = javis_preflight `personal_profile_hooks_opted_in`(같은 이름·같은 3값).
+pub const PERSONAL_HOOKS_OPT_IN_FILE: &str = "hooks-personal-profiles";
+pub const ENV_HOOKS_PERSONAL: &str = "CYS_HOOKS_PERSONAL";
+
+/// 순수 코어 — `Some(true)` 옵트인 · `Some(false)` 증명된 부재 · `None` 판독 불가(병합도 제거도 하지 않는다).
+/// env 는 `"1"` 엄격 비교(형제 축 규약). 표지는 `symlink_metadata` — 링크 자체가 있으면 선언으로 본다.
+pub fn personal_profile_hooks_opted_in_from(env: Option<&str>, marker: &Path) -> Option<bool> {
+    if env == Some("1") {
+        return Some(true);
+    }
+    match std::fs::symlink_metadata(marker) {
+        Ok(_) => Some(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
+        Err(_) => None,
+    }
+}
+
+pub fn personal_profile_hooks_opted_in() -> Option<bool> {
+    let env = std::env::var(ENV_HOOKS_PERSONAL).ok();
+    personal_profile_hooks_opted_in_from(env.as_deref(), &local_dir().join(PERSONAL_HOOKS_OPT_IN_FILE))
+}
+
+/// ★1.1.11 hook-slim: 옵트인이 **증명된 부재**(`Some(false)`)일 때 개인 프로필에서 base 팩 등록(훅·팩 statusLine)을
+/// 걷어낸다 — 사용자 훅·다른 키 불가침 · 변경 시에만 시각 붙은 사전 백업(`factory_reset::
+/// strip_pack_registrations_from_personal_profile`). 범위 = base 팩(`~/.cys/pack`)에서만(부서·임시·테스트 팩은
+/// 개인 프로필 무접촉 — 병합과 같은 범위 게이트). `--no-install-hook`(GUI 인앱 업데이트) 갈래에서도 돈다:
+/// 업데이트로 올라온 사용자가 이 수리를 받는 유일한 길이 그것이다(U-19 도달성 규약).
+/// best-effort — 실패해도 팩 설치는 유효(로그만).
+pub fn strip_pack_registrations_from_personal_profiles() -> Vec<(String, Vec<String>)> {
+    if cfg!(test) {
+        return vec![]; // 테스트 빌드는 실 HOME 을 절대 만지지 않는다
+    }
+    if personal_profile_hooks_opted_in() != Some(false) {
+        return vec![];
+    }
+    let pack = pack_dir();
+    if pack != home_default_pack_dir() {
+        return vec![];
+    }
+    let mut out = vec![];
+    for settings in personal_profile_settings_paths() {
+        match crate::factory_reset::strip_pack_registrations_from_personal_profile(&settings, &pack) {
+            Ok(removed) if removed.is_empty() => {}
+            Ok(removed) => {
+                eprintln!(
+                    "[pack] 개인 프로필 팩 등록 제거(옵트인 표지 없음 · 사전 백업 .bak-cys-hookslim-*): {} ({})",
+                    settings.display(),
+                    removed.join(", ")
+                );
+                out.push((settings.display().to_string(), removed));
+            }
+            Err(e) => eprintln!(
+                "[pack] ⚠ 개인 프로필 팩 등록 제거 건너뜀: {} — {e}",
+                settings.display()
+            ),
+        }
+    }
+    out
+}
+
 /// ★T-0147-1 레거시 각성 경로 — 개인 프로필(`~/.claude*`)에 **각성 훅만** 멱등 병합한다.
 ///
 /// 왜(오너 명시 요구 · P0): preflight C28의 home-glob 등록은 이미 있었지만 **닭·달걀**이었다 —
@@ -1246,6 +1314,10 @@ pub fn merge_awakening_hooks_into_personal_profiles() -> Vec<(String, Vec<String
         .map(|v| v == "1")
         .unwrap_or(false)
     {
+        return vec![];
+    }
+    // ★1.1.11 hook-slim: 개인 프로필 병합은 **옵트인일 때만**(표지 판독 불가 = 병합도 제거도 하지 않는다).
+    if personal_profile_hooks_opted_in() != Some(true) {
         return vec![];
     }
     let pack = pack_dir();
@@ -1572,6 +1644,10 @@ fn setup_isolated_config_dir(install_hooks: bool) {
     //   클로버 · 활성 프로필 재직렬화)를 하지 않는다: 칸이 비었을 때 **한 번** 외과 수술로 한 칸만 쓰고, 그 뒤로는
     //   무동작이다(연결 기록). 자기 노브(`CYS_AGY_STATUSLINE=0` · `~/.cys/agy-statusline-off`)가 따로 있다.
     reconcile_agy_statusline_at_install();
+    // ★1.1.11 hook-slim: 옵트인 표지가 없으면 개인 프로필(~/.claude*)의 base 팩 등록을 걷어낸다 — `install_hooks`
+    //   조기 return **위**다(GUI 인앱 업데이트 = `--no-install-hook` 로 올라온 사용자에게 닿는 유일한 길 · U-19 도달성).
+    //   설치가 아니라 제거라서 그 플래그가 막으려는 '훅 몰래 등록'과 무관하다. 무변경이면 무쓰기(멱등).
+    let _ = strip_pack_registrations_from_personal_profiles();
     if !install_hooks {
         // ★G3(--no-install-hook 일관성): 종전엔 이 플래그가 ~/.claude 대상만 막고 격리 config dir
         // 훅 병합(아래)은 그대로 돌았다 — 훅 억제를 요청한 운영자에게 훅이 몰래 등록되는 비일관.
@@ -12006,4 +12082,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(outside);
     }
 
+}
+
+// ★1.1.11 hook-slim: 개인 프로필 옵트인 표지 3값 핀(파이썬 미러 javis_preflight.personal_profile_hooks_opted_in_from 과 같은 표).
+#[cfg(test)]
+mod hookslim_opt_in_tests {
+    use super::*;
+
+    #[test]
+    fn opt_in_is_env_one_or_marker_presence() {
+        let d = std::env::temp_dir().join(format!("cys-hookslim-optin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let m = d.join(PERSONAL_HOOKS_OPT_IN_FILE);
+        assert_eq!(personal_profile_hooks_opted_in_from(None, &m), Some(false), "표지 없음 = 증명된 부재");
+        assert_eq!(personal_profile_hooks_opted_in_from(Some("0"), &m), Some(false));
+        assert_eq!(personal_profile_hooks_opted_in_from(Some("true"), &m), Some(false), "엄격 \"1\"");
+        assert_eq!(personal_profile_hooks_opted_in_from(Some("1"), &m), Some(true));
+        std::fs::write(&m, "").unwrap();
+        assert_eq!(personal_profile_hooks_opted_in_from(None, &m), Some(true), "빈 파일도 선언");
+        std::fs::remove_file(&m).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(d.join("nowhere"), &m).unwrap();
+            assert_eq!(personal_profile_hooks_opted_in_from(None, &m), Some(true), "끊긴 링크도 선언(링크 자체)");
+            std::fs::remove_file(&m).unwrap();
+            // 판독 불가: 표지 자리의 부모가 파일이면 ENOTDIR → None(병합도 제거도 하지 않는다)
+            let f = d.join("file");
+            std::fs::write(&f, "").unwrap();
+            assert_eq!(personal_profile_hooks_opted_in_from(None, &f.join(PERSONAL_HOOKS_OPT_IN_FILE)), None);
+        }
+        let _ = std::fs::remove_dir_all(d);
+    }
 }

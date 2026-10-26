@@ -160,7 +160,8 @@ def main():
         return base, pk, work, h
 
     def run_hook(hook, base, pk, work, h, role, payload=None):
-        env = {"PATH": "/usr/bin:/bin", "HOME": h, "CYS_PACK_DIR": pk, "CYS_ROOT": h,
+        # ★1.1.11 hook-slim: Stop 관측 훅은 분리 실행이 기본 — 이 시험은 본문의 기록 자리를 재므로 동기 노브로 돈다.
+        env = {"PATH": "/usr/bin:/bin", "HOME": h, "CYS_PACK_DIR": pk, "CYS_ROOT": h, "CYS_HOOK_STOP_SYNC": "1",
                "TMPDIR": base, "CYS_ROLE": role, "CYS_SURFACE_ID": "7", "CYS_PY": PY,
                "LANG": "C.UTF-8"}
         payload = payload or json.dumps({"source": "startup", "cwd": work})

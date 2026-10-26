@@ -423,6 +423,12 @@ def _sh_which(cmd, path):
     return None
 
 
+# ★1.1.11 hook-slim(master 재결정 02da1acc = B1): 팩 훅은 좌석 env(CYS_/JAVIS_/AITERM_SURFACE_ID)가 없으면 프리루드 앞에서
+#   즉시 끝난다. `_base_env` 는 좌석 env 를 지우는 것이 계약이므로(검체가 조건을 스스로 만든다), **좌석 세션의 훅 본문**을 재는
+#   검체는 이 1키를 명시 주입한다. 좌석 아닌 세션 동작은 test_hook_slim(GT1·GT2)이 잰다.
+_HOOK_SEAT = {"CYS_SURFACE_ID": "7"}
+
+
 def _base_env(extra=None, drop=()):
     env = dict(os.environ)
     for k in ("CYS_SURFACE_ID", "AITERM_SURFACE_ID", "CYS_SOCKET", "CYS_PACK_DIR",
@@ -1068,7 +1074,8 @@ def g_prelude():
         os.makedirs(os.path.join(proj2, "_round"), exist_ok=True)
         r1 = _run([BASH, os.path.join(fake, "save-state.sh")],
                   input=json.dumps({"cwd": proj2, "hook_event_name": "Stop"}),
-                  env=_base_env({"HOME": os.path.join(tmp, "h2"), "CYS_PACK_DIR": fakepack}))
+                  env=_base_env({**_HOOK_SEAT, "HOME": os.path.join(tmp, "h2"), "CYS_PACK_DIR": fakepack,
+                                 "CYS_HOOK_STOP_SYNC": "1"}))   # hook-slim: Stop 분리 실행 → 본문 동기 재기
         need(r1.returncode == 0, "2단 폴백 경로에서 훅이 비0 종료: %d" % r1.returncode)
         need("_lib.sh 소실" not in r1.stderr,
              "팩 경로에 프리루드가 있는데도 loud-skip 했다(2단 폴백 미작동): %r" % r1.stderr[:300])
@@ -1076,7 +1083,7 @@ def g_prelude():
              "2단 폴백 경로에서 훅 본체가 동작하지 않았다")
         # loud-skip 규약: **양 단계 모두** 실패 → stderr 1줄 + exit 0 + stdout 무오염
         r2 = _run([BASH, os.path.join(fake, "save-state.sh")], input="{}",
-                  env=_base_env({"HOME": os.path.join(tmp, "h3"),
+                  env=_base_env({**_HOOK_SEAT, "HOME": os.path.join(tmp, "h3"),
                                  "CYS_PACK_DIR": os.path.join(tmp, "nowhere")}))
         need(r2.returncode == 0, "loud-skip 이 exit 0 아님: %d" % r2.returncode)
         need("_lib.sh 소실" in r2.stderr, "loud-skip stderr 문구 부재: %r" % r2.stderr[:200])
@@ -1136,7 +1143,7 @@ def g_smoke():
         os.makedirs(os.path.join(proj, "_round"), exist_ok=True)
         _w(os.path.join(proj, "_round", "SESSION_STATE.md"),
            "# S\n> 최종 갱신: old\nSMOKE-STATE-MARKER\n", 0o644)
-        env = _base_env({"HOME": os.path.join(tmp, "home"), "CYS_PACK_DIR": os.path.join(tmp, "nopack")})
+        env = _base_env({**_HOOK_SEAT, "HOME": os.path.join(tmp, "home"), "CYS_PACK_DIR": os.path.join(tmp, "nopack")})
         payload = json.dumps({"source": "clear", "cwd": proj, "hook_event_name": "PreCompact"})
         # ① inject-context: 작업기억 주입 + exit 0
         r = _run([BASH, _hook("inject-context.sh")], input=payload, env=env)
@@ -2632,14 +2639,24 @@ def h_exit_8():
     with tempfile.TemporaryDirectory() as tmp, _temp_guard_double(PF, "SNAPMARK"):
         home = os.path.join(tmp, "home")
         os.makedirs(home, exist_ok=True)
-        # ⓐ 순수 미발견(신규 머신·base 팩) → 폴백 1건 허용·금지 사유 없음
+        # ⓐ 순수 미발견(신규 머신·base 팩) → 폴백 1건 허용·금지 사유 없음.
+        #   ★1.1.11 hook-slim(master 결정 5ea965af = A): 폴백 대상은 옵트인 표지가 정한다 — 표지 없음 = 이 팩의
+        #   계정 config(<팩 부모>/claude) · 표지 있음(CYS_HOOKS_PERSONAL=1) = 종전 기본 프로필 ~/.claude.
         with _env_patch(HOME=home, CYS_PACK_DIR=os.path.join(home, ".cys", "pack"),
-                        CYS_ACCOUNT_DIR=None, CLAUDE_CONFIG_DIR=None):
+                        CYS_ACCOUNT_DIR=None, CLAUDE_CONFIG_DIR=None, CYS_HOOKS_PERSONAL=None,
+                        CYS_LOCAL_DIR=None):
             targets, forbidden = PF.resolve_registration_targets()
             need(forbidden is None, "순수 미발견인데 금지로 판정: %r" % forbidden)
-            need(len(targets) == 1 and targets[0].endswith(os.path.join(".claude", "settings.json")),
-                 "신규 머신 폴백(기본 프로필 1건)이 사라졌다: %r" % targets)
-            notes.append("미발견=폴백 1건")
+            need(targets == [os.path.join(home, ".cys", "claude", "settings.json")],
+                 "표지 없는 신규 머신 폴백이 계정 config 1건이 아니다: %r" % targets)
+        with _env_patch(HOME=home, CYS_PACK_DIR=os.path.join(home, ".cys", "pack"),
+                        CYS_ACCOUNT_DIR=None, CLAUDE_CONFIG_DIR=None, CYS_HOOKS_PERSONAL="1",
+                        CYS_LOCAL_DIR=None):
+            targets, forbidden = PF.resolve_registration_targets()
+            need(forbidden is None and len(targets) == 1
+                 and targets[0].endswith(os.path.join(".claude", "settings.json")),
+                 "옵트인 신규 머신 폴백(기본 프로필 1건)이 사라졌다: %r" % targets)
+            notes.append("미발견=폴백 1건(표지 없음=계정 config · 표지=~/.claude)")
         # ⓑ 부서 팩(account dir 미상) → **글로벌 등록 0** + 금지 사유
         with _env_patch(HOME=home, CYS_PACK_DIR=os.path.join(home, ".cys", "pack-dept-d1"),
                         CYS_ACCOUNT_DIR=None, CLAUDE_CONFIG_DIR=None):
@@ -2664,6 +2681,34 @@ def h_exit_8():
             targets, forbidden = PF.resolve_registration_targets()
             need(forbidden and targets == [], "임시 팩이 실 config 등록 대상을 가졌다: %r" % targets)
             notes.append("임시 팩=등록 0")
+        # ⓕ ★1.1.11 hook-slim: base 팩 · 개인 프로필(~/.claude · ~/.claude-x · CLAUDE_CONFIG_DIR=~/.claude-x)과 계정
+        #   config 가 함께 있을 때 — 표지 없음 = 계정 config 만 · 표지 파일(<local>/hooks-personal-profiles) = 개인 포함.
+        cys_acct = os.path.join(home, ".cys", "claude")
+        os.makedirs(cys_acct, exist_ok=True)
+        os.makedirs(os.path.join(home, ".claude-x"), exist_ok=True)
+        base_env = dict(HOME=home, CYS_PACK_DIR=os.path.join(home, ".cys", "pack"), CYS_ACCOUNT_DIR=None,
+                        CLAUDE_CONFIG_DIR=os.path.join(home, ".claude-x"), CYS_HOOKS_PERSONAL=None,
+                        CYS_LOCAL_DIR=None)
+        with _env_patch(**base_env):
+            targets, forbidden = PF.resolve_registration_targets()
+            need(forbidden is None and targets == [os.path.join(cys_acct, "settings.json")],
+                 "표지 없는데 개인 프로필이 등록 대상에 남았다: %r" % targets)
+        for _v in ("0", "true", ""):   # 엄격 "1" 비교(Rust 와 같은 표) — 그 밖의 값은 옵트인이 아니다
+            with _env_patch(**dict(base_env, CYS_HOOKS_PERSONAL=_v)):
+                targets, _f = PF.resolve_registration_targets()
+                need(targets == [os.path.join(cys_acct, "settings.json")],
+                     "CYS_HOOKS_PERSONAL=%r 를 옵트인으로 읽었다: %r" % (_v, targets))
+        marker = os.path.join(home, ".cys", "local", PF.PERSONAL_HOOKS_OPT_IN_FILE)
+        os.makedirs(os.path.dirname(marker), exist_ok=True)
+        open(marker, "w").close()
+        try:
+            with _env_patch(**base_env):
+                targets, forbidden = PF.resolve_registration_targets()
+                got = sorted(os.path.basename(os.path.dirname(t)) for t in targets)
+                need(got == [".claude", ".claude-x", "claude"], "표지 파일인데 개인 프로필이 빠졌다: %r" % targets)
+        finally:
+            os.remove(marker)
+        notes.append("개인 프로필=표지 있을 때만")
     # ⓔ 구 관용구(`discover() or [기본]`) 잔존 0 — 폴백 소유자는 resolve 하나다
     src = _read(os.path.join(BIN_DIR, "javis_preflight.py"))
     need("discover_claude_settings() or [" not in _code_lines(src),
@@ -3875,7 +3920,9 @@ def h_win_2():
         _w(os.path.join(projroot, "_round", "SESSION_STATE.md"), "WIN-STATE-MARKER\n", 0o644)
         pack = os.path.join(tmp, "pack")
         _w(os.path.join(pack, "bin", "javis_memory.py"), "import sys; sys.exit(1)\n", 0o644)
-        env = _base_env({"HOME": os.path.join(tmp, "home"), "CYS_PACK_DIR": pack})
+        # ★1.1.11 hook-slim: Stop 관측 훅은 분리 실행이 기본이다 — 이 검체는 드라이브 cwd 판정을 재므로 본문을
+        #   동기로 돌린다(롤백 노브 = 종전 동기 경로 · 분리 경로는 test_hook_slim 이 잰다).
+        env = _base_env({**_HOOK_SEAT, "HOME": os.path.join(tmp, "home"), "CYS_PACK_DIR": pack, "CYS_HOOK_STOP_SYNC": "1"})
         for cwd in cwds:
             payload = json.dumps({"source": "clear", "cwd": cwd, "hook_event_name": "Stop",
                                   "transcript_path": ""})
@@ -3911,13 +3958,13 @@ def h_win_3():
         proj = os.path.join(tmp, "proj")
         os.makedirs(os.path.join(proj, "_round"), exist_ok=True)
         _w(os.path.join(proj, "_round", "SESSION_STATE.md"), "MAIN-LANE-MARKER\n", 0o644)
-        env = _base_env({"HOME": os.path.join(tmp, "home"), "CYS_PACK_DIR": dept})
+        env = _base_env({**_HOOK_SEAT, "HOME": os.path.join(tmp, "home"), "CYS_PACK_DIR": dept})
         r = _run([BASH, _hook("inject-context.sh")], env=env,
                  input=json.dumps({"source": "clear", "cwd": proj}))
         need("DEPT-ROUND-MARKER" in r.stdout, "명명 부서 팩이 부서 정본을 주입하지 않았다(G4)")
         need("MAIN-LANE-MARKER" not in r.stdout, "명명 부서 레인에 메인 레인 작업기억이 오주입됐다(격리 파괴)")
         # ② Windows named pipe 소켓(백슬래시) → 부서 컨텍스트로 인식
-        env2 = _base_env({"HOME": os.path.join(tmp, "home"),
+        env2 = _base_env({**_HOOK_SEAT, "HOME": os.path.join(tmp, "home"),
                           "CYS_PACK_DIR": os.path.join(tmp, "pack"),
                           "CYS_SOCKET": r"\\.\pipe\cys-dept-sales"})
         r2 = _run([BASH, _hook("inject-context.sh")], env=env2,
@@ -4071,7 +4118,7 @@ def h_win_5():
         proj = os.path.join(tmp, "proj")
         os.makedirs(os.path.join(proj, "_round"), exist_ok=True)
         _w(os.path.join(proj, "_round", "SESSION_STATE.md"), "NOPY3-MARKER\n", 0o644)
-        env = _base_env({"HOME": os.path.join(tmp, "home"), "PATH": iso_path,
+        env = _base_env({**_HOOK_SEAT, "HOME": os.path.join(tmp, "home"), "PATH": iso_path,
                          "CYS_PACK_DIR": os.path.join(tmp, "nopack")})
         need(shutil.which("python3", path=iso_path) is None, "격리 PATH 에 python3 가 남아 있다")
         payload = json.dumps({"source": "clear", "cwd": proj, "hook_event_name": "PreCompact"})
@@ -4094,7 +4141,7 @@ def h_win_6():
     with tempfile.TemporaryDirectory() as tmp:
         binp = os.path.join(tmp, "bin")
         _mock_cys(binp, tmp, 'case "$1" in pack-ownership) echo system; exit 0;; esac')
-        env = _base_env({"HOME": os.path.join(tmp, "home"),
+        env = _base_env({**_HOOK_SEAT, "HOME": os.path.join(tmp, "home"),
                          "PATH": binp + os.pathsep + os.environ.get("PATH", ""),
                          "CYS_PACK_DIR": "C:/Users/x/.cys/pack",
                          "TMPDIR": os.path.join(tmp, "stamps")})
@@ -5801,7 +5848,7 @@ def h_win_12():
                                                                      "BOOT_SNAPSHOT.md", ".state_log"))
         repo_snap = os.path.join(PACK_DIR, "round", "BOOT_SNAPSHOT.md")
         repo_before = os.path.exists(repo_snap) and os.path.getmtime(repo_snap)
-        env = _base_env({"HOME": os.path.join(tmp, "home"),
+        env = _base_env({**_HOOK_SEAT, "HOME": os.path.join(tmp, "home"),
                          "CYS_PACK_DIR": pack,
                          "CYS_STATE_DIR": os.path.join(tmp, "state"),
                          "CYS_ROLE": "master",
@@ -5910,7 +5957,7 @@ def h_win_14():
         nopack = os.path.join(tmp, "nopack")
 
         def run(role, source, pack, hook=None):
-            env = _base_env({"HOME": os.path.join(tmp, "home"), "CYS_PACK_DIR": pack})
+            env = _base_env({**_HOOK_SEAT, "HOME": os.path.join(tmp, "home"), "CYS_PACK_DIR": pack})
             if role:
                 env["CYS_ROLE"] = role
             return _run([BASH, hook or _hook("inject-context.sh")], env=env, cwd=tmp,
@@ -6592,7 +6639,7 @@ def h_win_17():
         def run(soul_bytes, hook=None):
             with open(os.path.join(pack, "soul.md"), "wb") as f:
                 f.write(soul_bytes)
-            env = _base_env({"HOME": os.path.join(tmp, "home"), "CYS_PACK_DIR": pack, "CYS_ROLE": "master"})
+            env = _base_env({**_HOOK_SEAT, "HOME": os.path.join(tmp, "home"), "CYS_PACK_DIR": pack, "CYS_ROLE": "master"})
             return _run([BASH, hook or _hook("inject-context.sh")], env=env, cwd=tmp,
                         input=json.dumps({"source": "startup", "cwd": proj}))
 
@@ -12104,7 +12151,7 @@ def _a1_mock_env(tmp):
        'else\n'
        '  awk -F"\\t" \'{print "p" $1; print "n" $4}\' "' + fx + '"\n'
        'fi\n')
-    env = _base_env({"HOME": os.path.join(tmp, "home"),
+    env = _base_env({**_HOOK_SEAT, "HOME": os.path.join(tmp, "home"),
                      "CYS_PACK_DIR": os.path.join(tmp, "nopack"),
                      "PATH": binp + os.pathsep + os.environ.get("PATH", "")})
     return env, proj
@@ -12159,7 +12206,7 @@ def h_soul_lane_1():
         _w(os.path.join(lane, "soul.md"),
            "# lane\n## [LANE-ANCHOR] LANE-SOUL-MARKER\nbody\n", 0o644)
         payload = json.dumps({"source": "startup", "cwd": proj})
-        env = _base_env({"HOME": home, "CYS_PACK_DIR": lane})
+        env = _base_env({**_HOOK_SEAT, "HOME": home, "CYS_PACK_DIR": lane})
         r = _run([BASH, _hook("inject-context.sh")], env=env, input=payload)
         need(r.returncode == 0, "훅이 비0 종료(%d)" % r.returncode)
         need("LANE-SOUL-MARKER" in r.stdout, "레인 soul 이 주입되지 않았다: %r" % r.stdout[:400])
@@ -12171,7 +12218,7 @@ def h_soul_lane_1():
         nosoul = os.path.join(tmp, "lanepack-nosoul")
         os.makedirs(nosoul, exist_ok=True)
         r2 = _run([BASH, _hook("inject-context.sh")],
-                  env=_base_env({"HOME": home, "CYS_PACK_DIR": nosoul}), input=payload)
+                  env=_base_env({**_HOOK_SEAT, "HOME": home, "CYS_PACK_DIR": nosoul}), input=payload)
         need("HQ-SOUL-MARKER" in r2.stdout,
              "레인 soul 부재 시 레거시 폴백이 끊겼다(회귀): %r" % r2.stdout[:400])
         # 계측 타당성: 구 훅은 같은 조건에서 **본부 soul** 을 주입해야 한다(결함 재현)

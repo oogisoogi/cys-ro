@@ -8,6 +8,11 @@
 #   때만 — 마커 부재·TTL 만료·passed/done/abandoned·python 부재·크래시 전부 fail-OPEN.
 #   마커는 surface별 격리라 grill 중인 pane 밖의 세션은 영향이 없다.
 
+# ★1.1.11 hook-slim(master 재결정 02da1acc = B1): 좌석 아닌 세션(사용자 개인 Claude·cmux 페인·데스크톱 앱) 즉시 탈출 —
+#   좌석 env 3키(CYS_/JAVIS_/AITERM_SURFACE_ID · Rust env_compat 와 같은 '비어 있지 않음' 규칙)가 없으면 이 훅은 할 일이 없다
+#   (10-27 기록 실측: 할 일 0인 cso 페인에서 Stop 1,059초·도구 866초 붙잡고 취소된 사례). 프리루드 **앞**이라 비용 = 셸 기동뿐.
+#   인자 호출(--self-test 등)은 제외 · stdin 은 소진한다(Claude Code 쪽 쓰기 EPIPE 방지 · 단말이면 읽지 않는다).
+[ $# -eq 0 ] && [ -z "${CYS_SURFACE_ID:-}${JAVIS_SURFACE_ID:-}${AITERM_SURFACE_ID:-}" ] && { [ -t 0 ] || cat >/dev/null 2>&1; exit 0; }
 # ── 공용 프리루드(CS-4①) — loud-skip: 소실 시 조용히 꺼지지 않고 stderr 1줄 후 강등 ──
 . "$(dirname "$0")/_lib.sh" 2>/dev/null \
   || . "${CYS_PACK_DIR:-$HOME/.cys/pack}/hooks/_lib.sh" 2>/dev/null \

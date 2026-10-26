@@ -6,6 +6,11 @@
 # 경로: SOUL·ROOT는 환경변수(CYS_SOUL·CYS_ROOT)로 오버라이드 가능. 미설정 시 portable 기본값(아래).
 set +e
 
+# ★1.1.11 hook-slim(master 재결정 02da1acc = B1): 좌석 아닌 세션(사용자 개인 Claude·cmux 페인·데스크톱 앱) 즉시 탈출 —
+#   좌석 env 3키(CYS_/JAVIS_/AITERM_SURFACE_ID · Rust env_compat 와 같은 '비어 있지 않음' 규칙)가 없으면 이 훅은 할 일이 없다
+#   (10-27 기록 실측: 할 일 0인 cso 페인에서 Stop 1,059초·도구 866초 붙잡고 취소된 사례). 프리루드 **앞**이라 비용 = 셸 기동뿐.
+#   인자 호출(--self-test 등)은 제외 · stdin 은 소진한다(Claude Code 쪽 쓰기 EPIPE 방지 · 단말이면 읽지 않는다).
+[ $# -eq 0 ] && [ -z "${CYS_SURFACE_ID:-}${JAVIS_SURFACE_ID:-}${AITERM_SURFACE_ID:-}" ] && { [ -t 0 ] || cat >/dev/null 2>&1; exit 0; }
 # ── 공용 프리루드(CS-4①) — loud-skip: 소실 시 조용히 꺼지지 않고 stderr 1줄 후 강등 ──
 . "$(dirname "$0")/_lib.sh" 2>/dev/null \
   || . "${CYS_PACK_DIR:-$HOME/.cys/pack}/hooks/_lib.sh" 2>/dev/null \
@@ -296,6 +301,10 @@ fi
 # 스냅샷은 SESSION_STATE 동일 _round에 산출된다(save-state.sh) — STATE_DIR은 master에서 프로젝트루트라 부적합(RSI_DIR 동일 규약).
 # mtime 판정은 python 경유(Windows find.exe 충돌·-mmin 가정 회피) · 경로는 cygpath 변환(CHK·GATE 동일 규약).
 if [ -n "$STATE" ]; then
+  # ★1.1.11 hook-slim: save-state(Stop)는 이제 분리 실행이다 — 직전 턴의 스냅샷 생성이 아직 돌고 있으면(/clear 가
+  #   턴 끝 직후에 오는 순환) 최대 5초 기다린 뒤 읽는다(쓰기는 원자 교체라 반쪽 파일은 없다 · 기다림 상한 = 종전 동기
+  #   실행이 턴 끝에 걸던 시간보다 짧다). 잠금이 없으면 즉시 통과.
+  command -v cys_hook_detach_wait >/dev/null 2>&1 && cys_hook_detach_wait save-state 5
   SNAP="$(dirname "$STATE")/BOOT_SNAPSHOT.md"
   SNAP_PY="${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_snapshot.py"
   if command -v cygpath >/dev/null 2>&1; then

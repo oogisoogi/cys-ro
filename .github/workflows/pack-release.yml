@@ -90,7 +90,11 @@ jobs:
       #   1.1.10 신설 휴지통(데몬 trash.* · 앱 Control Center)으로 지시한다(근거 = release.yml PACK_MIN_BINARY 주석).
       #   release.yml 과 동시 상향. ⚠이 레인의 하한 검증기는 태그 v$MIN_BINARY 를 빌드한다(아래 「하한 검증기」 스텝) —
       #   v1.1.10 태그가 서기 전의 팩 전용 릴리스(pack-v*)는 그 태그가 없어 멈춘다(1.1.10 태그 뒤에는 해당 없음).
-      PACK_MIN_BINARY_OVERRIDE: '1.1.10'
+      # ★1.1.11 편입(원작자 0.14.52 병합 · 2026-10-23 · TICKET=cysr-1111-vendor-01452) — 원작자 줄은 이 값을 0.14.52 로
+      #   올렸다(근거 = release.yml PACK_MIN_BINARY 주석 · 원작자 9b438ee2). 1.1.11 상향 여부는 판번 SOT 단계 결정(release.yml 과 동시).
+      # ★1.1.11 상향(master 결정 ② 채택 · 2026-10-23 · TICKET=cysr-1111-vendor-01452-r2) — 근거 = release.yml PACK_MIN_BINARY 주석.
+      #   release.yml 과 동시 상향. ⚠하한 검증기는 태그 v1.1.11 을 빌드한다 — 그 태그가 서기 전의 팩 전용 릴리스(pack-v*)는 멈춘다.
+      PACK_MIN_BINARY_OVERRIDE: '1.1.11'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 
@@ -342,7 +346,7 @@ jobs:
                    test_refl_inject_context_role_canon test_refl_round_lock_ownership \
                    test_refl_rsi_state_ownership test_refl_stagnation_budget_ledger \
                    test_refl_wakeup_expiry_attribution \
-                   test_phoenix_fresh_honest test_phoenix_f1_production_path \
+                   test_phoenix_fresh_honest test_phoenix_f1_production_path test_phoenix_c6_due test_reap_exited_matrix \
                    test_phoenix_r32_restore_budget test_phoenix_encoding_default \
                    test_report_ctx_axis test_formation_tick_visibility \
                    test_resource_gate_boot_anchor test_ctx_divergence \
@@ -356,7 +360,7 @@ jobs:
                    test_dept_create_progress \
                    test_default_fleet_formation test_formation test_nowin_periodic_spawns test_hud_bridge_unwatched_no_spawn test_nowin_captured_spawns test_awaken_enter test_resource_gate_notify_rule test_phoenix_a3_ps_axis test_dept_request test_d1_dept_ready_probe test_dbg_d3_dept_path_precedence test_dbg_d3_d11_shared_profile_hooks test_dbg_d3_f4_answer_classifier test_dbg_d3_f5_dept_intent test_d1_4_orphan_reap test_v116_rb1_formation test_v116_auto_restore_status test_v116_phoenix_midrun_tomb test_v116_num_cys_list_compat test_win_dept_spawn \
                    test_awaken_seat_fold test_awaken_status_lane test_boot_preflight_degraded test_c82_win_isolation test_dept_tick_stdin test_dept_tombstone_no_autostart test_dept_win_python_resolve test_hook_fail_log test_mission_anomaly_provenance test_preflight_fresh_full_json test_report_gate_win_na test_resource_gate_win_roster test_session_state_canon test_javis_counsel \
-                   test_hud_bridge_0144_bootjs test_hud_bridge_0144_specimen test_hud_bridge_0144_unit; do
+                   test_hud_bridge_0144_bootjs test_hud_bridge_0144_specimen test_hud_bridge_0144_unit test_intake_exit_contract test_mission_anomaly_emit test_resource_gate_bg_class test_computer_use_audit; do
             f="cysjavis-pack/bin/tests/$t.py"
             [ -f "$f" ] || { echo "선언·유령집계 테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
             echo "== [pack-only] declared-state test: $t =="

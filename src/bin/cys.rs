@@ -27,6 +27,20 @@ struct Cli {
     command: Command,
 }
 
+/// `cys reap-due <surface>` arguments (see [`VendorAuxCommand::ReapDue`]).
+#[derive(clap::Args)]
+struct ReapDueArgs {
+    surface: String,
+}
+
+/// `cys kept-pane-notice` arguments (see [`VendorAuxCommand::KeptPaneNotice`]).
+#[derive(clap::Args)]
+struct KeptPaneNoticeArgs {
+    /// the input JSON file, or `-` for stdin: {"command", "records": [...], "ready_withheld": null | {...}}
+    #[arg(long)]
+    input: String,
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Ping the daemon
@@ -449,6 +463,11 @@ enum Command {
     /// 이 거대한 `Command` 의 clap 조립 함수 스택 프레임이 변형마다 커져 시험 스레드(2MB)에서 넘친다(rqfix_f10 실측).
     #[command(flatten)]
     DormantTeam(DormantTeamCommand),
+    /// ★1.1.11 편입(원작자 0.14.52 새 동사 `reap-due` · `kept-pane-notice`) — [`VendorAuxCommand`] 로 평탄화한다(위 DormantTeam 과 같은
+    /// 이유 · 같은 꼴). 우리 판 `Command` 는 원작자보다 커서 0.14.52 의 두 변형을 여기 그대로 두면 debug 파싱 프레임이 2 MiB 시험 스레드를
+    /// 넘었다(실측: `tests::j3_…` 기준 int/1111 = 2048 KiB 에서 통과 · 병합 직후 = 2048 KiB 실패·2100 KiB 통과). 최상위 동사 이름은 그대로다.
+    #[command(flatten)]
+    VendorAux(VendorAuxCommand),
     /// RSI 학습 루프 — 사람 직접 명령(제안 생성) 또는 현재 학습 라운드 상태 조회
     Learn {
         /// 학습 주제 (생략하고 --status면 상태 조회)
@@ -1077,16 +1096,634 @@ fn is_recover_refusal(e: &str) -> bool {
 /// authoritative_caller_ok = master/cso pane 자손 ∨ restore-root 자손)는 분리 호출자(setsid 부트의
 /// `cys boot` · GUI start_master 체인 · watchdog 자식 node-recover)에서 거짓이라 이 접기가 호출자
 /// 무관한 1선 방어다.
+///
+/// ★(B-360) A writer-journal refusal (zero bytes) is folded the same way: killing and relaunching the seat cannot
+/// heal the journal, and the relaunch's own directive would be refused again — rc 79, nothing reclaimed.
 fn recover_refusal_from_input_guard(e: String) -> String {
     if is_typing_guard_err(&e) && !is_recover_refusal(&e) {
         format!(
             "{RECOVER_REFUSED_TOKEN} 좌석 입력줄에 사람 활동(초안·타이핑) 관측 — 선정리·재기동 보류 \
              (회수·파괴 0 · 사람이 그 pane 에서 줄을 비운 뒤(Ctrl-U) 재부트): {e}"
         )
+    } else if is_journal_refusal(&e) && !is_recover_refusal(&e) {
+        format!(
+            "{RECOVER_REFUSED_TOKEN} writer journal refused the recovery write (zero bytes) — no reclaim, no kill; \
+             make the daemon's writer journal writable, then boot again: {e}"
+        )
+    } else {
+        // ★(B-360 R2 revise · S60) an UNKNOWN is NOT folded into the 79 token any more: node-recover exits 91 for it
+        //   (distinct from REFUSED / a human draft / agent-alive), and run_boot's inverted consumer (B-406) maps 91 to
+        //   the non-destructive `recover_unknown` — no reclaim, no kill, no re-send.
+        e
+    }
+}
+
+/// ★(B-360) Did the daemon refuse this direct write at the writer journal (zero bytes typed)? Pure; the code is
+/// `cys::ERR_JOURNAL_UNAVAILABLE` as `rpc_roundtrip` renders it (`<code>: <message>`).
+fn is_journal_refusal(e: &str) -> bool {
+    e.contains(&format!("{}: ", cys::ERR_JOURNAL_UNAVAILABLE))
+}
+
+/// ★(B-360 R2) Is this the daemon's UNKNOWN outcome for a direct write (`cys::ERR_WRITE_OUTCOME_UNKNOWN`): still queued,
+/// may still be typed, not safe to retry? Pure; matches the code as `rpc_roundtrip` renders it (`<code>: <message>`).
+fn is_write_outcome_unknown(e: &str) -> bool {
+    e.contains(&format!("{}: ", cys::ERR_WRITE_OUTCOME_UNKNOWN))
+}
+
+/// ★(B-360 R2) The process exit code for an error that reached the top of a command: 91 for an UNKNOWN write outcome,
+/// 1 otherwise (refused-with-zero-bytes stays 1: it is safe to retry). Used by `run()` and `run_reinject`.
+fn exit_for_error(e: &str) -> i32 {
+    if is_write_outcome_unknown(e) {
+        EXIT_WRITE_OUTCOME_UNKNOWN
+    } else {
+        1
+    }
+}
+
+/// ★(B-360 R2 revise · which write) Prefix put on a REFUSED / UNKNOWN error of a LAUNCH-command write of
+/// `boot_agent_on_surface` (the launch text, its Return, the folder-trust confirm) — i.e. NOT the directive. The code
+/// text survives (both predicates are substring tests), so every 90/91 decision is unchanged; callers read it only to
+/// say which write it was (an unknown launch write may mean no agent was ever started: the pane may be a bare shell).
+const LAUNCH_WRITE_TAG: &str = "[launch-write]";
+
+/// Tags a REFUSED / UNKNOWN launch-command write (pure; idempotent; other errors unchanged).
+fn tag_launch_write(e: String) -> String {
+    if (is_write_outcome_unknown(&e) || is_journal_refusal(&e)) && !e.contains(LAUNCH_WRITE_TAG) {
+        format!("{LAUNCH_WRITE_TAG} {e}")
     } else {
         e
     }
 }
+
+/// Was this REFUSED / UNKNOWN error a launch-command write (not the directive)?
+fn is_launch_write_err(e: &str) -> bool {
+    e.contains(LAUNCH_WRITE_TAG)
+}
+
+/// ★(B-360 R2 revise · head decision) Which write a kept pane's REFUSED / UNKNOWN came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeptWrite {
+    Launch,
+    Directive,
+    Adoption,
+    Recover,
+}
+
+impl KeptWrite {
+    fn as_str(self) -> &'static str {
+        match self {
+            KeptWrite::Launch => "launch",
+            KeptWrite::Directive => "directive",
+            KeptWrite::Adoption => "adoption",
+            KeptWrite::Recover => "recover",
+        }
+    }
+
+    /// The launch write if `e` carries the launch tag, else `other`.
+    fn of(e: &str, other: KeptWrite) -> KeptWrite {
+        if is_launch_write_err(e) {
+            KeptWrite::Launch
+        } else {
+            other
+        }
+    }
+}
+
+/// ★(B-360 R3 · option 2 · §1a) The outcome of the write a pane was kept after — the record's `outcome` string. A new
+/// variant is a compile error (E0004) here and in [`kept_record_withholds_ready`]: both match with NO wildcard (B-406).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeptOutcome {
+    /// REFUSED: the writer journal refused the write — zero bytes were typed.
+    Refused,
+    /// UNKNOWN: still queued, it may still land.
+    Unknown,
+    /// node-recover returned a code run_boot does not know (`recover_unrecognised`): nothing about the seat is measured.
+    Unrecognised,
+}
+
+impl KeptOutcome {
+    fn as_str(self) -> &'static str {
+        match self {
+            KeptOutcome::Refused => "refused",
+            KeptOutcome::Unknown => "unknown",
+            KeptOutcome::Unrecognised => "unrecognised",
+        }
+    }
+
+    /// The R2 rule every existing caller recorded by: UNKNOWN for `write_outcome_unknown`, REFUSED otherwise.
+    fn of_err(e: &str) -> KeptOutcome {
+        if is_write_outcome_unknown(e) {
+            KeptOutcome::Unknown
+        } else {
+            KeptOutcome::Refused
+        }
+    }
+}
+
+/// ★(B-360 R3 · option 2 · §1b) Does this kept pane withhold the bootstrap's ready marker (durably: while its pane is
+/// alive, `javis_bootstrap._kept_pane_records_withheld`)? Every (write × outcome) pair, NO wildcard — a new variant of
+/// either enum is E0004 here (the B-406 pattern). Written into the record as `withholds_ready`.
+fn kept_record_withholds_ready(write: KeptWrite, outcome: KeptOutcome) -> bool {
+    match (write, outcome) {
+        (KeptWrite::Launch, KeptOutcome::Unknown) => true,
+        (KeptWrite::Launch, KeptOutcome::Unrecognised) => true,
+        // REFUSED is a KNOWN zero-byte outcome, already carried by the fatal / degrade columns (exit code, kept_pane label).
+        (KeptWrite::Launch, KeptOutcome::Refused) => false,
+        (KeptWrite::Directive, KeptOutcome::Unknown) => true,
+        (KeptWrite::Directive, KeptOutcome::Unrecognised) => true,
+        (KeptWrite::Directive, KeptOutcome::Refused) => false,
+        (KeptWrite::Adoption, KeptOutcome::Unknown) => true,
+        (KeptWrite::Adoption, KeptOutcome::Unrecognised) => true,
+        (KeptWrite::Adoption, KeptOutcome::Refused) => false,
+        (KeptWrite::Recover, KeptOutcome::Unknown) => true,
+        (KeptWrite::Recover, KeptOutcome::Unrecognised) => true,
+        (KeptWrite::Recover, KeptOutcome::Refused) => false,
+    }
+}
+
+/// ★(B-360 R3 · option 2 · §1c + A1/A2) Who a kept pane (or a pending unknown entry) belongs to, measured at write time
+/// from the daemon: the daemon INSTANCE (`daemon.started_at` — surface numbers are per instance; within one instance they
+/// are never reused: cysd's allocator is `next_id.fetch_add`, src/bin/cysd/state.rs), the seat's session
+/// (`registered_session_id`; null for codex / gemini seats) and its `created_at`. `measured` = the daemon answered AND
+/// named its instance AND listed the surface.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct SeatIdentity {
+    daemon_started_at: Option<f64>,
+    session_id: Option<String>,
+    surface_created_at: Option<f64>,
+    measured: bool,
+}
+
+/// [`SeatIdentity`] of surface `sid` in an `org.status` reply (`None` = the daemon did not answer). Pure.
+fn seat_identity_from_status(status: Option<&Value>, sid: u64) -> SeatIdentity {
+    let Some(st) = status else { return SeatIdentity::default() };
+    let daemon_started_at = st["daemon"]["started_at"].as_f64();
+    let seat = st["surfaces"].as_array().and_then(|a| a.iter().find(|s| s["surface_id"].as_u64() == Some(sid)));
+    SeatIdentity {
+        daemon_started_at,
+        session_id: seat.and_then(|s| s["registered_session_id"].as_str()).map(String::from),
+        surface_created_at: seat.and_then(|s| s["created_at"].as_f64()),
+        measured: daemon_started_at.is_some() && seat.is_some(),
+    }
+}
+
+/// [`SeatIdentity`] of surface `sid` from this command's daemon: ONE `org.status` through the bounded
+/// `request_on_timeout` (never `request()`, whose `connect()` can autostart a daemon or `process::exit`). Any failure
+/// is an unmeasured identity — the caller still writes its record.
+fn kept_pane_seat_identity(sid: u64) -> SeatIdentity {
+    let reply = request_on_timeout(
+        &socket_path(),
+        "org.status",
+        json!({}),
+        std::time::Duration::from_secs(KEPT_PANE_NOTICE_RPC_SECS),
+    );
+    seat_identity_from_status(reply.ok().as_ref(), sid)
+}
+
+/// The `owner` object of a record written now by this process (A1: the pid is attribution only, never liveness;
+/// `{socket, daemon_started_at}` is the durable lane-plus-instance key).
+fn kept_pane_owner(identity: &SeatIdentity) -> Value {
+    json!({"writer": "cys", "pid": std::process::id(), "socket": socket_path().to_string_lossy(),
+           "daemon_started_at": identity.daemon_started_at})
+}
+
+/// The append-only kept-pane record file (JSON lines) next to `.pack-reinject-pending.json`.
+fn kept_pane_records_path(base: &std::path::Path) -> std::path::PathBuf {
+    base.join(".kept-pane-records.jsonl")
+}
+
+/// ★(B-360 R2 revise) The command run that kept panes belong to: the OUTERMOST command (boot / restore / launch-agent /
+/// node-recover) opens it; an in-process launch or recovery inside it records under the outer command's name. Thread-
+/// local, so in-process specimens on different test threads never share it.
+struct KeptPaneRun {
+    command: &'static str,
+    records: Vec<Value>,
+}
+
+/// ★(B-360 R3 · option 2 · worker-7's veto of §1e/§1f) Who sends a run's one `[kept-pane]` notice. A caller that will
+/// send it itself (javis_bootstrap: ONE notice per bootstrap run, carrying the ready-marker withhold) sets BOTH
+/// `CYS_KEPT_PANE_NOTICE=caller` and `CYS_KEPT_PANE_RECORDS_OUT=<absolute path>`; the outermost command then sends
+/// nothing and writes this run's records to that path instead. Anything else is today's behaviour.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum KeptNoticeMode {
+    /// today: one queued notice to master (when the run kept a pane)
+    Send,
+    /// both vars set: write the run's records (possibly none) to this path, atomically; send nothing
+    Defer(std::path::PathBuf),
+    /// only one var set (or the path is not absolute): send as today, and say what is missing — never a silent drop
+    HalfConfigured(String),
+}
+
+/// The deferral pair's env names.
+const ENV_KEPT_PANE_NOTICE: &str = "CYS_KEPT_PANE_NOTICE";
+const ENV_KEPT_PANE_RECORDS_OUT: &str = "CYS_KEPT_PANE_RECORDS_OUT";
+
+/// [`KeptNoticeMode`] from the deferral pair (pure).
+fn kept_notice_mode(notice: Option<&str>, out: Option<&std::ffi::OsStr>) -> KeptNoticeMode {
+    let caller = notice == Some("caller");
+    let out = out.filter(|o| !o.is_empty()).map(std::path::PathBuf::from);
+    match (caller, out) {
+        (true, Some(p)) if p.is_absolute() => KeptNoticeMode::Defer(p),
+        (true, Some(p)) => KeptNoticeMode::HalfConfigured(format!(
+            "{ENV_KEPT_PANE_RECORDS_OUT}={} is not an absolute path",
+            p.display()
+        )),
+        (true, None) => KeptNoticeMode::HalfConfigured(format!("{ENV_KEPT_PANE_NOTICE}=caller but {ENV_KEPT_PANE_RECORDS_OUT} is not set")),
+        (false, Some(_)) => KeptNoticeMode::HalfConfigured(format!(
+            "{ENV_KEPT_PANE_RECORDS_OUT} is set but {ENV_KEPT_PANE_NOTICE} is not \"caller\""
+        )),
+        (false, None) => KeptNoticeMode::Send,
+    }
+}
+
+thread_local! {
+    static KEPT_PANE_RUN: std::cell::RefCell<Option<KeptPaneRun>> = const { std::cell::RefCell::new(None) };
+    /// ★(B-360 R3) how the open run's outermost command hands its records over (read once at open, taken by its Drop)
+    static KEPT_NOTICE_MODE: std::cell::RefCell<Option<KeptNoticeMode>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Scope of one command run's kept-pane records; `owner` = this scope opened the run (the outermost command).
+struct KeptPaneScope {
+    owner: bool,
+}
+
+impl KeptPaneScope {
+    /// Opens the run for `command` unless an outer command already did. The OUTERMOST command reads the deferral pair
+    /// once and takes it out of the process env: it addresses THIS process only — a `cys` the run spawns (a reclaim's
+    /// launch, say) must notify as today, not write its records over this run's out file.
+    fn open(command: &'static str) -> Self {
+        let owner = KEPT_PANE_RUN.with(|r| {
+            let mut r = r.borrow_mut();
+            if r.is_some() {
+                false
+            } else {
+                let notice = std::env::var(ENV_KEPT_PANE_NOTICE).ok();
+                let out = std::env::var_os(ENV_KEPT_PANE_RECORDS_OUT);
+                let mode = kept_notice_mode(notice.as_deref(), out.as_deref());
+                if notice.is_some() || out.is_some() {
+                    std::env::remove_var(ENV_KEPT_PANE_NOTICE);
+                    std::env::remove_var(ENV_KEPT_PANE_RECORDS_OUT);
+                }
+                KEPT_NOTICE_MODE.with(|m| *m.borrow_mut() = Some(mode));
+                *r = Some(KeptPaneRun { command, records: Vec::new() });
+                true
+            }
+        });
+        Self { owner }
+    }
+}
+
+impl Drop for KeptPaneScope {
+    fn drop(&mut self) {
+        if self.owner {
+            let run = KEPT_PANE_RUN.with(|r| r.borrow_mut().take());
+            let mode = KEPT_NOTICE_MODE.with(|m| m.borrow_mut().take()).unwrap_or(KeptNoticeMode::Send);
+            // ★(B-360 R3) the caller sends the run's one notice: hand it THIS run's records (possibly none) through the
+            //   out file — no RPC, so this is safe while unwinding too. The durable record file stays the source of truth.
+            if let (Some(KeptPaneRun { records, .. }), KeptNoticeMode::Defer(out)) = (&run, &mode) {
+                match cys::atomic_write_bytes(out, Value::Array(records.clone()).to_string().as_bytes()) {
+                    Ok(()) => eprintln!(
+                        "[kept-pane] notice deferred to the caller ({} record(s) written to {})",
+                        records.len(),
+                        out.display()
+                    ),
+                    Err(e) => eprintln!(
+                        "[kept-pane] notice deferred to the caller, but the records out file {} was NOT written: {e} — \
+                         the record file {} is the source of truth",
+                        out.display(),
+                        kept_pane_records_path(&pack_state_base()).display()
+                    ),
+                }
+                return;
+            }
+            if let KeptNoticeMode::HalfConfigured(why) = &mode {
+                // ★(B-360 R3 · REFLECTION-1 R1-R-1) say what happens, not "sent": a run that kept no pane sends nothing
+                eprintln!(
+                    "[kept-pane] notice deferral half-configured ({why}) — no deferral: today's behaviour (the run's \
+                     notice, if it kept a pane, goes to master)"
+                );
+            }
+            // ★(B-360 R2 revise · carrier A) the OUTERMOST command, at its end, sends at most one notice for its records.
+            //   While a panic unwinds, nothing is sent (no blocking, no second panic → never an abort); any panic of the
+            //   send itself is contained. The records are already on disk either way.
+            if let Some(run) = run.filter(|run| !run.records.is_empty()) {
+                if std::thread::panicking() {
+                    eprintln!(
+                        "[kept-pane] notice to master not sent: the command is unwinding a panic ({} record(s) on disk)",
+                        run.records.len()
+                    );
+                } else if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    kept_pane_notify_master(run.command, &run.records, None, false)
+                }))
+                .is_err()
+                {
+                    eprintln!("[kept-pane] notice to master not sent: the send panicked (contained; records on disk)");
+                }
+            }
+        }
+    }
+}
+
+/// ★(B-360 R2 revise · carrier A) The dedup key of the kept-pane notice: `#` + FNV-1a 64 as 16 hex over the record file's
+/// absolute path. A RE-IMPLEMENTATION in cys.rs of cysd's `opaque_label` / `fnv1a64` (src/bin/cysd/alert_route.rs — the
+/// producer of the `key=#…` / `rule=#…` tokens in queued notice bodies): that module lives in the cysd binary and is not
+/// reachable from cys; specimen `b360_r2r_c6…` pins both to the value cysd's own test pins (`rule=#ce4c6bff0d4d933a`
+/// for "cpu_high"). Same machine + same record file → same key, so master's queue holds at most one.
+fn kept_pane_notice_key(record_path: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in record_path.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("#{h:016x}")
+}
+
+/// ★(B-360 R3 · §1g + spec §10 + the head's basis note) The withheld clause a caller adds to the run's ONE notice: the
+/// ready marker it withheld (or could not remove), what is off while it is absent, and the reasons that are READINESS
+/// UNMEASURED (unmeasured is not a value: those are never called UNKNOWN or "not ready").
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReadyWithheld {
+    marker: String,
+    consequences: Vec<String>,
+    /// the stale marker's unlink failed (it is still on disk): say so, never "withheld"
+    remove_error: Option<String>,
+    /// the reasons whose basis is "unmeasured" (an unreadable boot JSON, status or record line)
+    unmeasured: Vec<String>,
+}
+
+/// The dedup key of a withheld notice: `#` + FNV-1a 64 over `<record path>|ready-withheld|<marker>` — distinct from the
+/// plain key, so a pending PLAIN notice (another run's) never swallows the withheld fact; coalescing is per exact key, so
+/// at most one plain + one withheld notice per marker are pending.
+fn kept_pane_withheld_key(record_path: &str, marker: &str) -> String {
+    kept_pane_notice_key(&format!("{record_path}|ready-withheld|{marker}"))
+}
+
+/// The notice text under `key` (pure): `[kept-pane] key=#… N pane(s) kept by `cys <command>` …`, the roles with their
+/// seats, the record file path and the check hints (R2's text; `0 pane(s)` and no write wording when the run kept none),
+/// plus the withheld clause when `withheld` is set.
+/// ★(B-360 R3 · REFLECTION-2 R2-R-1) `by_caller`: the notice is sent for a CALLER (`cys kept-pane-notice`), whose
+/// `command` names the caller (e.g. `bootstrap`), not a cys subcommand, and whose records may come from several commands
+/// (this run's boot plus durable records kept by `launch-agent` / `restore` / `node-recover` …). The head then says
+/// `kept (reported by <command>)` and each pane names the command that kept it (`kept by `cys <record.command>``). A
+/// command's own notice (`by_caller` false) is R2's text, byte for byte.
+fn kept_pane_notice_text_keyed(
+    key: &str,
+    command: &str,
+    by_caller: bool,
+    records: &[Value],
+    record_path: &str,
+    withheld: Option<&ReadyWithheld>,
+) -> String {
+    let panes: Vec<String> = records
+        .iter()
+        .map(|r| {
+            let sref = r["surface_id"].as_u64().map(surface_ref).unwrap_or_else(|| "?".into());
+            let kept_by = match (by_caller, r["command"].as_str()) {
+                (true, Some(c)) => format!(", kept by `cys {c}`"),
+                _ => String::new(),
+            };
+            format!(
+                "{} ({sref}: {} write {}{kept_by}; check `cys read-screen --surface {sref}`, then `cys reinject --role {} --check`)",
+                r["role"].as_str().unwrap_or("?"),
+                r["write"].as_str().unwrap_or("?"),
+                r["outcome"].as_str().unwrap_or("?"),
+                r["role"].as_str().unwrap_or("?")
+            )
+        })
+        .collect();
+    let kept = if by_caller { format!("kept (reported by {command})") } else { format!("kept by `cys {command}`") };
+    let mut text = if records.is_empty() {
+        format!("[kept-pane] key={key} 0 pane(s) {kept} — records: {record_path}")
+    } else {
+        format!(
+            "[kept-pane] key={key} {} pane(s) {kept} after a REFUSED (zero bytes) or UNKNOWN (may still land) write — \
+             nothing destroyed, nothing re-sent: {} — records: {record_path}",
+            records.len(),
+            panes.join("; ")
+        )
+    };
+    if let Some(w) = withheld {
+        match &w.remove_error {
+            Some(err) => text.push_str(&format!(" — READY MARKER COULD NOT BE REMOVED: {} ({err})", w.marker)),
+            None => text.push_str(&format!(" — READY MARKER WITHHELD: {}", w.marker)),
+        }
+        if !w.unmeasured.is_empty() {
+            text.push_str(&format!(" — readiness unmeasured ({})", w.unmeasured.join("; ")));
+        }
+        let lead = if w.remove_error.is_some() { "once it is removed" } else { "while it is absent" };
+        text.push_str(&format!(" — {lead}: {}", w.consequences.join("; ")));
+    }
+    text
+}
+
+/// Bound of each RPC of the kept-pane notice (s).
+const KEPT_PANE_NOTICE_RPC_SECS: u64 = 3;
+
+/// ★(B-360 R2 revise · carrier A, best effort) One QUEUED notice to the `master` role for this run's kept-pane records:
+/// resolve master → skip when its pending queue already carries this key (cross-run coalescing; the record file still has
+/// the new lines) → queued `surface.send_text` (the method and params `cys send --queued --to master` uses; never a
+/// direct write). Transport: `request_on_timeout` on the command's socket — a direct connect with a bounded deadline,
+/// NOT `request()`, whose `connect()` can autostart a daemon or `process::exit` on a dead socket. Every failure is one
+/// stderr line naming why; the command's exit code and stdout never depend on it.
+/// ★(B-360 R3) `withheld` = a caller's withheld clause (`cys kept-pane-notice`): the same transport, resolve and queue
+/// scan, under the withheld key. Returns whether the notice was queued (the subcommand's exit code reads it).
+/// `by_caller` = sent by `cys kept-pane-notice` for a caller (see [`kept_pane_notice_text_keyed`]); false from Drop.
+fn kept_pane_notify_master(command: &str, records: &[Value], withheld: Option<&ReadyWithheld>, by_caller: bool) -> bool {
+    let socket = socket_path();
+    let rpc = |method: &str, params: Value| {
+        request_on_timeout(&socket, method, params, std::time::Duration::from_secs(KEPT_PANE_NOTICE_RPC_SECS))
+    };
+    let record_path = kept_pane_records_path(&pack_state_base()).to_string_lossy().into_owned();
+    let key = match withheld {
+        Some(w) => kept_pane_withheld_key(&record_path, &w.marker),
+        None => kept_pane_notice_key(&record_path),
+    };
+    let not_sent = |why: String| {
+        eprintln!("[kept-pane] notice to master not sent ({} record(s) in {record_path}): {why}", records.len());
+        false
+    };
+    let sid = match request_on_timeout(
+        &socket,
+        "system.resolve_role",
+        json!({"role": "master"}),
+        std::time::Duration::from_secs(KEPT_PANE_NOTICE_RPC_SECS),
+    ) {
+        Ok(r) => match r["surface_id"].as_u64() {
+            Some(sid) => sid,
+            None => return not_sent("role_not_found: master resolved to no surface".into()),
+        },
+        Err(e) => return not_sent(e),
+    };
+    match request_on_timeout(
+        &socket,
+        "queue.list",
+        json!({"surface_id": sid, "full": true}),
+        std::time::Duration::from_secs(KEPT_PANE_NOTICE_RPC_SECS),
+    ) {
+        Ok(r) => {
+            let token = format!("key={key}");
+            let pending = r["entries"].as_array().is_some_and(|entries| {
+                entries.iter().any(|e| {
+                    e["text"].as_str().is_some_and(|t| t.contains(&token))
+                        || e["preview"].as_str().is_some_and(|t| t.contains(&token))
+                })
+            });
+            if pending {
+                return not_sent(format!("a notice with {token} is already pending for master (coalesced)"));
+            }
+        }
+        // without the queue we cannot bound the flood: do not add a possible duplicate
+        Err(e) => return not_sent(format!("master's queue unreadable, cannot coalesce: {e}")),
+    }
+    let from = send_from_param(
+        cys::env_compat(ENV_SURFACE_ID).and_then(|s| parse_surface_ref(&s)),
+        Some("kept-pane"),
+    );
+    let text = kept_pane_notice_text_keyed(&key, command, by_caller, records, &record_path, withheld);
+    match rpc("surface.send_text", json!({"surface_id": sid, "text": text, "from": from, "queued": true})) {
+        Ok(_) => {
+            eprintln!("[kept-pane] notice queued for master ({} record(s), key={key})", records.len());
+            true
+        }
+        Err(e) => not_sent(e),
+    }
+}
+
+/// Exit codes of `cys kept-pane-notice` (§1g): 0 queued · 3 not sent (coalesced / no master / unreadable queue / send
+/// error / nothing to report — the reason is on stderr) · 2 bad input.
+const KEPT_PANE_NOTICE_EXIT_NOT_SENT: i32 = 3;
+const KEPT_PANE_NOTICE_EXIT_BAD_INPUT: i32 = 2;
+
+/// Parses a `cys kept-pane-notice` input (pure): `{"command": str, "records": [object…], "ready_withheld": null |
+/// {"marker": str, "lane": "base"|"dept", "consequences": [str…], "remove_error"?: null|str, "unmeasured"?: [str…]}}`.
+fn parse_kept_pane_notice_input(raw: &str) -> Result<(String, Vec<Value>, Option<ReadyWithheld>), String> {
+    let v: Value = serde_json::from_str(raw).map_err(|e| format!("not JSON: {e}"))?;
+    let command = v["command"].as_str().filter(|c| !c.is_empty()).ok_or("`command` must be a non-empty string")?;
+    let records = v["records"].as_array().ok_or("`records` must be an array")?;
+    if records.iter().any(|r| !r.is_object()) {
+        return Err("every entry of `records` must be an object".into());
+    }
+    let strings = |x: &Value, what: &str| -> Result<Vec<String>, String> {
+        x.as_array()
+            .ok_or(format!("`ready_withheld.{what}` must be an array of strings"))?
+            .iter()
+            .map(|c| c.as_str().map(String::from).ok_or(format!("`ready_withheld.{what}` must be an array of strings")))
+            .collect()
+    };
+    let withheld = match &v["ready_withheld"] {
+        Value::Null => None,
+        w @ Value::Object(_) => {
+            let marker = w["marker"].as_str().filter(|m| !m.is_empty()).ok_or("`ready_withheld.marker` must be a non-empty string")?;
+            if !matches!(w["lane"].as_str(), Some("base") | Some("dept")) {
+                return Err("`ready_withheld.lane` must be \"base\" or \"dept\"".into());
+            }
+            let remove_error = match &w["remove_error"] {
+                Value::Null => None,
+                Value::String(e) => Some(e.clone()),
+                _ => return Err("`ready_withheld.remove_error` must be null or a string".into()),
+            };
+            let unmeasured = match &w["unmeasured"] {
+                Value::Null => Vec::new(),
+                u => strings(u, "unmeasured")?,
+            };
+            Some(ReadyWithheld { marker: marker.to_string(), consequences: strings(&w["consequences"], "consequences")?,
+                                 remove_error, unmeasured })
+        }
+        _ => return Err("`ready_withheld` must be null or an object".into()),
+    };
+    Ok((command.to_string(), records.clone(), withheld))
+}
+
+/// `cys kept-pane-notice --input <path|->` — see [`VendorAuxCommand::KeptPaneNotice`]. Reuses [`kept_pane_notify_master`] (the
+/// same bounded transport, resolve and queue scan); it never calls `request()`, so it never autostarts a daemon.
+fn run_kept_pane_notice(input: &str) -> i32 {
+    let raw = if input == "-" {
+        let mut buf = String::new();
+        std::io::stdin().read_to_string(&mut buf).map(|_| buf)
+    } else {
+        std::fs::read_to_string(input)
+    };
+    let raw = match raw {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[kept-pane] bad input ({input}): {e}");
+            return KEPT_PANE_NOTICE_EXIT_BAD_INPUT;
+        }
+    };
+    let (command, records, withheld) = match parse_kept_pane_notice_input(&raw) {
+        Ok(parsed) => parsed,
+        Err(why) => {
+            eprintln!("[kept-pane] bad input ({input}): {why}");
+            return KEPT_PANE_NOTICE_EXIT_BAD_INPUT;
+        }
+    };
+    if records.is_empty() && withheld.is_none() {
+        eprintln!("[kept-pane] notice to master not sent: nothing to report (no record and no withheld marker)");
+        return KEPT_PANE_NOTICE_EXIT_NOT_SENT;
+    }
+    if kept_pane_notify_master(&command, &records, withheld.as_ref(), true) {
+        0
+    } else {
+        KEPT_PANE_NOTICE_EXIT_NOT_SENT
+    }
+}
+
+/// ★(B-360 R2 revise · head decision) Appends ONE kept-pane record — a pane kept after a REFUSED (zero bytes), UNKNOWN
+/// (may still land) or unrecognised write — to `<pack state base>/.kept-pane-records.jsonl` (every lane's pack shares
+/// that base: lanes are told apart by `owner.socket`). Fields: the R2 set `{at, command, surface_id, role, agent,
+/// outcome: refused|unknown|unrecognised, write: launch|directive|adoption|recover, request_id|null}` plus, since
+/// B-360 R3 (schema 2): `schema`, `withholds_ready` ([`kept_record_withholds_ready`]), the seat identity measured now
+/// (`session_id`, `surface_created_at`, `identity_unmeasured`) and `owner {writer, pid, socket, daemon_started_at}`.
+/// The bootstrap reads it (`javis_bootstrap._kept_pane_records_withheld`): while a withholding record's pane is alive,
+/// the ready marker is withheld. Best-effort; a write failure is said on stderr. The single carrier point for kept panes.
+fn record_kept_pane(sid: u64, role: &str, agent: &str, e: &str, write: KeptWrite, outcome: KeptOutcome) {
+    let command = KEPT_PANE_RUN.with(|r| r.borrow().as_ref().map(|run| run.command)).unwrap_or("cys");
+    let identity = kept_pane_seat_identity(sid);
+    let rec = json!({
+        "at": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+        "command": command,
+        "surface_id": sid,
+        "role": role,
+        "agent": agent,
+        "outcome": outcome.as_str(),
+        "write": write.as_str(),
+        "request_id": request_id_from_unknown(e),
+        "schema": 2,
+        "withholds_ready": kept_record_withholds_ready(write, outcome),
+        "session_id": identity.session_id,
+        "surface_created_at": identity.surface_created_at,
+        "identity_unmeasured": !identity.measured,
+        "owner": kept_pane_owner(&identity),
+    });
+    let path = kept_pane_records_path(&pack_state_base());
+    let appended = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| writeln!(f, "{rec}"));
+    if let Err(w) = appended {
+        eprintln!("[kept-pane] ⚠ record not written ({}): {w} — {rec}", path.display());
+    }
+    KEPT_PANE_RUN.with(|r| {
+        if let Some(run) = r.borrow_mut().as_mut() {
+            run.records.push(rec);
+        }
+    });
+}
+
+/// ★(B-360) launch-agent: the agent started but its directive was refused at the writer journal (zero bytes). The
+/// pane is KEPT (closing it would destroy a running agent and a relaunch would be refused the same way); the
+/// boot tooling re-injects later (`javis_boot_node` VERIFY goes `--queued`). Not 0 (the directive did not land),
+/// not 1 (1 means "rolled back, pane closed"), not 78 (no first-run gate is involved). Free: 0·1·2·7·75·78·79·80-89.
+const EXIT_DIRECTIVE_REFUSED: i32 = 90;
+
+/// ★(B-360 R2) Exit code of any command whose direct write has an UNKNOWN outcome (`cys::ERR_WRITE_OUTCOME_UNKNOWN`):
+/// the write is still queued and may still be typed - do NOT retry, a retry can type it twice.
+/// Family: the direct-write OUTCOME codes of B-360 - 90 (`EXIT_DIRECTIVE_REFUSED`, launch-agent: zero bytes, pane kept)
+/// and 91 (any command: outcome unknown); passed = 0 and refused = 1 elsewhere. It sits right after 90 because it is the
+/// third outcome of the same write path. Neighbours for a reader scanning 80..91: 80-81 clear verification, 82-83
+/// verifier, 84-89 cycle-agent, then this family. 92-99 unassigned. Outside sysexits 64-78.
+const EXIT_WRITE_OUTCOME_UNKNOWN: i32 = 91;
 
 /// [결재 7ⓑ] `cycle-agent` 의 clear 는 **송신(행위)과 실효(결과)가 다르다.**
 ///
@@ -1661,6 +2298,8 @@ fn cycle_agent_exit(result: &Result<(), String>) -> i32 {
         Err(e) if e.starts_with(CYCLE_BUSY_TOKEN) => EXIT_CYCLE_BUSY,
         Err(e) if e.starts_with(VERIFIER_COLLISION_TOKEN) => EXIT_VERIFIER_COLLISION,
         Err(e) if e.starts_with(VERIFIER_UNRESOLVED_TOKEN) => EXIT_VERIFIER_UNRESOLVED,
+        // ★(B-360 R2) a write of the cycle has an unknown outcome (it may still land): stop, and do not let it read as 1
+        Err(e) if is_write_outcome_unknown(e) => EXIT_WRITE_OUTCOME_UNKNOWN,
         Err(_) => 1,
     }
 }
@@ -1856,6 +2495,40 @@ fn run_reap_surface(surface: &str) -> i32 {
             reap_surface_exit_code(&e)
         }
     }
+}
+
+fn run_reap_due(surface: &str) -> i32 {
+    // ★1.1.11 편입(우리 v116-num 일관성 핀): 좌석 인자는 해석기를 지난다 — `surface:N`·`N`(내부 번호 · 원작자 phoenix 호출)은 종전과
+    //   같은 값이고, 사람이 친 `#N`(보이는 번호)도 같은 좌석으로 푼다(직접 parse_surface_ref 는 `#N` 을 「invalid」로만 끝냈다).
+    let sid = match resolve_surface_arg(surface) {
+        Ok(sid) => sid,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    match request("surface.reap_due", json!({"surface_id": sid})) {
+        Ok(result) => match reap_due_json(&result, sid) {
+            Ok(output) => { println!("{output}"); 0 }
+            Err(e) => { eprintln!("error: {e}"); 1 }
+        },
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
+fn reap_due_json(result: &Value, sid: u64) -> Result<String, String> {
+    let valid_outcome = match result["outcome"].as_str() {
+        Some("reaped" | "gone") => true,
+        Some("deferred") => result["reason"].as_str().is_some_and(|r| !r.is_empty()),
+        _ => false,
+    };
+    if result["surface_id"].as_u64() != Some(sid) || !valid_outcome {
+        return Err("invalid surface.reap_due response".into());
+    }
+    Ok(result.to_string())
 }
 
 /// ★G1(W2-B): `cys queue list` 텍스트 행 렌더 — 열 계약의 단일 소유자.
@@ -2708,6 +3381,23 @@ enum FeedAction {
     },
 }
 
+
+/// ★1.1.11 편입 — 원작자 0.14.52 의 새 최상위 동사 2개(`Command` 에 평탄화 · 이름·도움말·숨김은 원작자 그대로).
+#[derive(Subcommand)]
+enum VendorAuxCommand {
+    /// Request automatic cleanup of one exited surface if its daemon grace has elapsed.
+    /// Prints JSON: outcome=reaped, deferred (with reason), or gone. Errors exit 1.
+    ReapDue(ReapDueArgs),
+    /// ★(B-360 R3) The single sender of a kept-pane notice for a caller that deferred it (`CYS_KEPT_PANE_NOTICE=caller`):
+    /// ONE queued `[kept-pane]` notice to master, optionally with the ready-marker withheld clause. Exit 0 queued ·
+    /// 3 not sent (reason on stderr) · 2 bad input. Never autostarts a daemon. Internal (javis_bootstrap; hidden).
+    /// ★The arguments live in their own `Args` struct ON PURPOSE: clap's derive inlines an inline variant's arg
+    ///   builders into the enum's one generated function, and that grew the in-process parse frame enough to overflow
+    ///   a 2 MiB test thread (`tests::j3_cys_send_carries_label_out_of_pane_and_number_in_pane` needed 2056 KiB with
+    ///   the inline form, 2044 KiB without the variant and with this form — measured, debug build).
+    #[command(name = "kept-pane-notice", hide = true)]
+    KeptPaneNotice(KeptPaneNoticeArgs),
+}
 
 /// ★1.1.8 휴면(master D-TEAM [master#36f48cf7] · judge 조건 ① [master#cd9e534c]) — 원작자 팀 만들기 동사 2개.
 /// `Command` 에 평탄화(`#[command(flatten)]`)되어 최상위 동사(`cys team-propose` · `cys team-token`)로 파싱된다.
@@ -3575,17 +4265,7 @@ fn surface_agent_in(rows: &[Value], sid: u64) -> Option<String> {
 
 /// 화면의 마지막 비공백 줄 `n` 개(진단 문안 전용). 보류 처방·에러 본문이 공유한다 — 이 계산을
 /// 호출부마다 다시 쓰면 "어떤 경로에서 보고된 꼬리인가"에 따라 길이·필터가 갈린다.
-fn screen_tail_lines(screen: &str, n: usize) -> String {
-    let lines: Vec<&str> = screen.lines().filter(|l| !l.trim().is_empty()).collect();
-    lines
-        .iter()
-        .rev()
-        .take(n)
-        .rev()
-        .cloned()
-        .collect::<Vec<_>>()
-        .join("\n")
-}
+use cys::terminal_screen::screen_tail_lines;
 
 /// pane 의 현재 화면(vt100 그리드) 관측. `None` = **관측 실패**(RPC 실패·응답 스키마 스큐).
 ///
@@ -5862,6 +6542,7 @@ fn run(command: Command) -> i32 {
         }
 
         Command::Status { json: as_json } => return run_status(as_json),
+        Command::VendorAux(VendorAuxCommand::KeptPaneNotice(args)) => return run_kept_pane_notice(&args.input),
         Command::Fleet { json: as_json } => return run_fleet(as_json),
 
         Command::Pause { reason } => request("system.pause", json!({"reason": reason}))
@@ -5912,10 +6593,15 @@ fn run(command: Command) -> i32 {
                             // ★⑯(1.1.7 precut ㉮ 형제) 무인 팬아웃 — 「승인 프롬프트 대기 중이면 무시하라」는 문안만으로는 그 창을
                             //   못 지킨다(붙여넣기 뒤 Return 이 선택지를 누른다). 창이 떠 있으면 데몬이 쓰기 전에 거부 → 아래 사유 출력.
                             if let Err(e) = inject_text_opts(sid, "[DRAIN] 업데이트 재시작이 임박했다. 승인 프롬프트 대기 중이면 이 메시지는 무시하라. 아니면 지금 _round/SESSION_STATE.md와 자기 TODO를 저장하고 작업을 멈춰라. 작업 재개는 복원 후 master 지시를 기다린다.", true) {
-                                eprintln!(
-                                    "[drain] {role} {} 저장 신호 미전달(계속 진행) — {e}",
-                                    surface_ref(sid)
-                                );
+                                // ★(B-360 R2) name the outcome: UNKNOWN may still be typed (never re-sent here), REFUSED typed nothing
+                                let what = if is_write_outcome_unknown(&e) {
+                                    "save signal outcome unknown (may still be typed — not re-sent)"
+                                } else if is_journal_refusal(&e) {
+                                    "save signal refused by the writer journal (zero bytes, nothing typed)"
+                                } else {
+                                    "저장 신호 미전달(계속 진행)"
+                                };
+                                eprintln!("[drain] {role} {} {what} — {e}", surface_ref(sid));
                             }
                             n += 1;
                         }
@@ -6554,6 +7240,7 @@ fn run(command: Command) -> i32 {
 
         // ★G4(W4-C): 수동 좌석 회수 — 게이트 거부는 exit 7(사유 stderr), 오류는 1.
         Command::ReapSurface { surface } => return run_reap_surface(&surface),
+        Command::VendorAux(VendorAuxCommand::ReapDue(args)) => return run_reap_due(&args.surface),
 
         Command::Tombstone { role, remove, dept } => {
             if dept {
@@ -6698,7 +7385,7 @@ fn run(command: Command) -> i32 {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("error: {e}");
-            1
+            exit_for_error(&e) // ★(B-360 R2) 91 for an unknown write outcome, else 1
         }
     }
 }
@@ -12857,11 +13544,18 @@ mod seat_latch_negation_tests {
         );
         // ★(리뷰 R3 · codex major) 표식 해제는 주입 절반의 **맨 앞이 아니라 제출 성공 뒤**다 —
         //   해제와 제출 사이의 중단·비보류 에러가 데몬의 복원 연속 지시를 지우던 창을 없앤다.
+        // ★(B-360 R2 revise · S29) two clear points now, BOTH after the submit: right after a PASSED submit (as before),
+        //   and after the ack proves that an UNKNOWN submit landed (an UNKNOWN is not a success, so it is not cleared at
+        //   submit time). The contract — never clear before the submit — is what this pin keeps.
         let inj = fn_body("inject_directive_after_ready");
-        let clear_at = inj.find("\n    clear_gate_pending(sid);").expect("주입 절반의 표식 해제");
         let inject_at = inj.find("inject_text(sid, &directive)").expect("제출 지점");
-        assert!(clear_at > inject_at, "표식 해제가 제출보다 앞이다 — 중단 시 [RESTORE] 가 소실된다");
-        assert_eq!(inj.matches("\n    clear_gate_pending(sid);").count(), 1, "표식 해제 지점이 1곳이 아니다");
+        let clears: Vec<usize> = inj.match_indices("clear_gate_pending(sid);").map(|(i, _)| i).collect();
+        assert_eq!(clears.len(), 2, "표식 해제 지점이 2곳(PASSED 직후 · UNKNOWN 의 ack 확인 뒤)이 아니다");
+        assert!(clears.iter().all(|&c| c > inject_at), "표식 해제가 제출보다 앞이다 — 중단 시 [RESTORE] 가 소실된다");
+        assert!(
+            inj.contains("if write_unknown.is_none() {\n        clear_gate_pending(sid);"),
+            "PASSED 제출 직후의 해제가 사라졌다"
+        );
         // 세 발신자가 지시를 넘긴다: restore in-seat · node-recover · restore 경유 launch-agent.
         assert!(fn_body("restore_in_seat_boot").contains("Some(restore_directive(role)),"), "restore in-seat 가 지시를 넘기지 않는다");
         assert!(fn_body("run_node_recover").contains("Some(recover_directive()),"), "node-recover 가 지시를 넘기지 않는다");
@@ -13849,6 +14543,8 @@ fn run_agent_detect(as_json: bool) -> i32 {
 }
 
 fn run_boot(cwd: Option<String>, as_json: bool) -> i32 {
+    // ★(B-360 R2 revise) every kept pane of this boot (adoption, launch, recovery) is recorded under command "boot"
+    let _kept_scope = KeptPaneScope::open("boot");
     // ★이중 boot 직렬화(오너 2026-07-15 적대검증 D-7 + 아키텍트 성찰): 마스터 팀 스폰 트리거가
     // 겹칠 수 있다(고전 경로=UserPromptSubmit 훅이 javis_bootstrap.py ④ boot 발화 · 버튼 경로=GUI
     // spawn_orchestra_boot · 마스터 LLM이 스스로 boot). 두 boot가 겹치면 각자 "역할 미가동" 스냅샷을
@@ -14074,6 +14770,29 @@ fn run_boot(cwd: Option<String>, as_json: bool) -> i32 {
                             "[boot] role={role} 재관측 채택 중 {why} — 보류 유지({other:?})"
                         );
                     }
+                    // ★(B-360 R2) UNKNOWN: the adoption payload may still land. A kept marker makes the next boot adopt
+                    //   and type it all again, so clear it as a successful adopt does; report the outcome (not fatal).
+                    // ★(B-360 R2 revise · option a) exit stays 0 (not fatal); the UNKNOWN is carried by the JSON outcome
+                    //   and one kept-pane record (write adoption) — one helper, so an extra carrier is one call there.
+                    Err(e) if is_write_outcome_unknown(&e) => {
+                        clear_gate_pending(sid);
+                        println!(
+                            "· {agent}: 역할 '{role}' directive outcome unknown (may still be typed — not re-sent) — \
+                             check the seat (`cys read-screen --surface {sref}`); `cys reinject --role {role} --check`"
+                        );
+                        boot_kept_pane(
+                            &mut outcomes,
+                            json!({"role": role, "agent": agent, "outcome": "directive_unknown",
+                                   "mandatory": mandatory, "surface_ref": sref,
+                                   "hint": format!("check the seat (`cys read-screen --surface {sref}`); `cys reinject --role {role} --check`"),
+                                   "reason": format!("directive outcome unknown — it may still land; not re-sent (gate marker \
+                                                      cleared: the next boot does not re-adopt): {e}")}),
+                            (sid, role, agent),
+                            &e,
+                            (KeptWrite::Adoption, KeptOutcome::of_err(&e)),
+                        );
+                        continue;
+                    }
                     Err(e) => {
                         eprintln!("[boot] role={role} 재관측 채택 실패 — 보류 유지(파괴 0): {e}");
                     }
@@ -14198,7 +14917,7 @@ fn run_boot(cwd: Option<String>, as_json: bool) -> i32 {
                 }
                 Ok(()) => {
                     println!("· {agent}: 역할 '{role}' 좌석 죽음 **확정**({why}) — node-recover 시도(비파괴)");
-                    let rc = run_node_recover(Some(sref.clone()), Some((*role).to_string()));
+                    let rc = boot_node_recover(&sref, role);
                     if rc == 0 {
                         outcomes.push(json!({"role": role, "agent": agent, "outcome": "recovered",
                                              "mandatory": mandatory, "surface_ref": sref,
@@ -14229,15 +14948,63 @@ fn run_boot(cwd: Option<String>, as_json: bool) -> i32 {
                     //   (0.14.39) 거부원이 둘로 늘었다 — 사람 활동 관측(recover_refusal_from_input_guard)도 같은 코드
                     if rc == EXIT_RECOVER_REFUSED {
                         println!(
-                            "· {agent}: 역할 '{role}' node-recover 안전 거부(재관측에서 에이전트 생존 · 또는 좌석 입력줄의 사람 활동) \
+                            "· {agent}: 역할 '{role}' node-recover 안전 거부(재관측에서 에이전트 생존 · 또는 좌석 입력줄의 사람 활동 · 또는 writer journal 거부) \
                              — 회수·파괴·스폰 0(원인은 위 'node-recover 안전 거부:' 줄)"
                         );
                         outcomes.push(json!({"role": role, "agent": agent,
                                              "outcome": "skipped_unconfirmed", "mandatory": mandatory,
                                              "surface_ref": sref, "liveness": "recover_refused",
-                                             "reason": "node-recover 전처리 안전 거부 — agent_alive 재관측 또는 좌석 입력줄의 사람 활동(타이핑 가드·초안 게이트)",
+                                             "reason": "node-recover 전처리 안전 거부 — agent_alive 재관측 또는 좌석 입력줄의 사람 활동(타이핑 가드·초안 게이트) 또는 writer journal 거부(B-360)",
                                              "hint": "파괴·중복 스폰 금지 — 되살아난 좌석이면 다음 부트가 재관측 · 사람 초안이면 그 pane 에서 줄을 비운 뒤(Ctrl-U) 재부트"}));
                         continue;
+                    }
+                    // ★(B-360 R2 revise · B-406) the guard is INVERTED: only rc 1 (a real launch failure) falls through to
+                    //   escalate_reclaim below. Every other code fails toward "do nothing" — 91 (the recovery write's
+                    //   outcome is unknown: it may still land) and ANY code this consumer does not know. No reclaim, no
+                    //   spawn; counted like skipped_unconfirmed (boot's exit class is unchanged).
+                    match boot_recover_disposition(rc) {
+                        RecoverDisposition::Escalate => {}
+                        RecoverDisposition::Unknown => {
+                            println!(
+                                "· {agent}: 역할 '{role}' node-recover write outcome unknown (it may still land) — no reclaim, \
+                                 no spawn, nothing re-sent; check the seat (`cys read-screen --surface {sref}`), then \
+                                 `cys reinject --role {role} --check`"
+                            );
+                            outcomes.push(json!({"role": role, "agent": agent,
+                                                 "outcome": "recover_unknown", "mandatory": mandatory,
+                                                 "surface_ref": sref,
+                                                 "reason": "node-recover write outcome unknown (exit 91) — it may still land; no reclaim, no spawn",
+                                                 "hint": format!("check the seat (`cys read-screen --surface {sref}`), then `cys reinject --role {role} --check`")}));
+                            continue;
+                        }
+                        RecoverDisposition::Recovered
+                        | RecoverDisposition::GatePending
+                        | RecoverDisposition::Refused
+                        | RecoverDisposition::Unrecognised(_) => {
+                            // (0/78/79 returned above; this arm is every code nobody taught this consumer)
+                            println!(
+                                "· {agent}: 역할 '{role}' node-recover returned an unrecognised code {rc} — no reclaim, no spawn \
+                                 (only rc 1 escalates); check the seat (`cys read-screen --surface {sref}`)"
+                            );
+                            let seat_sid = row["surface_id"].as_u64().or_else(|| parse_surface_ref(&sref));
+                            let reason = format!("node-recover exit {rc} (unrecognised) — no reclaim, no spawn");
+                            let row = json!({"role": role, "agent": agent,
+                                             "outcome": "recover_unrecognised", "mandatory": mandatory,
+                                             "surface_ref": sref,
+                                             "reason": reason,
+                                             "hint": format!("check the seat (`cys read-screen --surface {sref}`)")});
+                            // ★(B-360 R3 · §1d) the durable form of the 4th unknown-class variant: one kept-pane record
+                            //   (write recover, outcome unrecognised — withholds ready) through the single carrier point
+                            match seat_sid {
+                                Some(sid) => boot_kept_pane(&mut outcomes, row, (sid, role, agent), &reason,
+                                                            (KeptWrite::Recover, KeptOutcome::Unrecognised)),
+                                None => {
+                                    eprintln!("[kept-pane] ⚠ {role}: no surface id on the seat row — recover_unrecognised not recorded");
+                                    outcomes.push(row);
+                                }
+                            }
+                            continue;
+                        }
                     }
                     println!("· {agent}: node-recover 실패 — reclaim 에스컬레이션(파괴·hold-first 판정 내장)");
                     escalate_reclaim(role);
@@ -14280,6 +15047,12 @@ fn run_boot(cwd: Option<String>, as_json: bool) -> i32 {
         if launch_rc == 0 {
             outcomes.push(json!({"role": role, "agent": agent, "outcome": "launched",
                                  "mandatory": mandatory}));
+        } else if launch_rc == EXIT_DIRECTIVE_REFUSED || launch_rc == EXIT_WRITE_OUTCOME_UNKNOWN {
+            // ★(B-360 R2 revise · S23 · option a) launch-agent KEPT the pane (and recorded it). The outcome keeps the fatal
+            //   value `failed` (same fatal accounting in both channels: boot's exit AND javis_bootstrap's JSON verdict,
+            //   which reads only failed|missing); the kept pane is labelled in `kept_pane` with the right hint.
+            println!("· {agent}: 기동 — pane kept after a REFUSED / UNKNOWN write (not a broken install) — 나머지 노드는 계속 진행");
+            outcomes.push(boot_launch_kept_pane(role, agent, *mandatory, launch_rc));
         } else {
             println!("· {agent}: 기동 실패 — 나머지 노드는 계속 진행");
             outcomes.push(json!({"role": role, "agent": agent, "outcome": "failed",
@@ -14327,6 +15100,46 @@ fn run_boot(cwd: Option<String>, as_json: bool) -> i32 {
     //   존재(= `javis_bootstrap._boot_fatal_verdict` 의 판정). 두 채널이 갈리면 fail-open 이 생긴다
     //   (Rust 테스트 `boot_exit_matches_json_fatal_verdict` 가 이 동등성을 박제).
     boot_exit_code(fatal_failed as usize, fatal_gate_pending as usize, false)
+}
+
+/// ★(B-360 R2 revise · option a) A kept pane's boot record: the JSON outcome AND the kept-pane record in one call
+/// (the single carrier point for boot's kept panes — an extra carrier is one call here).
+fn boot_kept_pane(
+    outcomes: &mut Vec<Value>,
+    record: Value,
+    (sid, role, agent): (u64, &str, &str),
+    e: &str,
+    (write, outcome): (KeptWrite, KeptOutcome),
+) {
+    record_kept_pane(sid, role, agent, e, write, outcome);
+    outcomes.push(record);
+}
+
+/// ★(B-360 R2 revise · S23 · option a) The boot record of a launch whose pane launch-agent KEPT (rc 90 / 91): outcome
+/// `failed` (unchanged fatal value), `kept_pane` = directive_refused | directive_unknown | launch_refused | launch_unknown
+/// (which write, from the kept-pane record launch-agent just wrote in this run), the matching `hint` (no install hint).
+fn boot_launch_kept_pane(role: &str, agent: &str, mandatory: bool, rc: i32) -> Value {
+    let last = KEPT_PANE_RUN.with(|r| {
+        r.borrow().as_ref().and_then(|run| run.records.iter().rev().find(|x| x["role"] == role).cloned())
+    });
+    let write = last.as_ref().and_then(|x| x["write"].as_str()).unwrap_or("directive");
+    let sref = last
+        .as_ref()
+        .and_then(|x| x["surface_id"].as_u64())
+        .map(surface_ref)
+        .unwrap_or_else(|| "the new pane".to_string());
+    let unknown = rc == EXIT_WRITE_OUTCOME_UNKNOWN;
+    let (label, hint) = match (write, unknown) {
+        ("launch", true) => (
+            "launch_unknown",
+            format!("check the seat (`cys read-screen --surface {sref}`): an agent at its prompt needs `cys reinject --role {role}`, an empty shell needs `cys restore`"),
+        ),
+        ("launch", false) => ("launch_refused", "make the journal writable, then `cys restore` (the pane is an empty shell)".to_string()),
+        (_, true) => ("directive_unknown", format!("check the seat (`cys read-screen --surface {sref}`); `cys reinject --role {role} --check`")),
+        (_, false) => ("directive_refused", format!("make the journal writable, then cys reinject --role {role}")),
+    };
+    json!({"role": role, "agent": agent, "outcome": "failed", "mandatory": mandatory,
+           "kept_pane": label, "surface_ref": sref, "launch_rc": rc, "hint": hint})
 }
 
 /// `cys boot` bare exit 판정의 **순수 함수**(W4 · ★M3 에서 78 추가) — 0/1/75/78 네 의미의 단일
@@ -14383,6 +15196,11 @@ fn boot_summary_buckets(roles: &[Value]) -> serde_json::Map<String, Value> {
             "recovered" => "recovered",
             "gate_pending" => "gate_pending",
             "skipped_unconfirmed" => "skipped_unconfirmed",
+            // ★(B-360 R2) adopt paste outcome unknown — seat kept, marker cleared, not fatal
+            "directive_unknown" => "directive_unknown",
+            // ★(B-360 R2 revise · B-406) node-recover 91 / an unrecognised code — no reclaim, no spawn, not fatal
+            "recover_unknown" => "recover_unknown",
+            "recover_unrecognised" => "recover_unrecognised",
             "missing" => "missing",
             "failed" => "failed",
             _ => "unbucketed",
@@ -14423,6 +15241,9 @@ const BOOT_SUMMARY_BUCKETS: &[&str] = &[
     "recovered",
     "gate_pending",
     "skipped_unconfirmed",
+    "directive_unknown",
+    "recover_unknown",
+    "recover_unrecognised",
     "missing",
     "failed",
     "unbucketed",
@@ -14440,6 +15261,40 @@ fn boot_exit_code(fatal_failed: usize, fatal_gate_pending: usize, busy: bool) ->
     }
 }
 
+
+/// ★(B-360 R2 revise · B-406) What run_boot does with node-recover's exit code — the guard INVERTED: `Escalate`
+/// (escalate_reclaim = kill + fresh launch) is reached ONLY by rc 1 (a real launch failure / generic error). Every
+/// other code, including any code this list does not know, maps to a non-destructive disposition. Pure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecoverDisposition {
+    Recovered,
+    GatePending,
+    Refused,
+    Unknown,
+    Unrecognised(i32),
+    Escalate,
+}
+
+fn boot_recover_disposition(rc: i32) -> RecoverDisposition {
+    match rc {
+        0 => RecoverDisposition::Recovered,
+        cys::EXIT_GATE_PENDING => RecoverDisposition::GatePending,
+        EXIT_RECOVER_REFUSED => RecoverDisposition::Refused,
+        EXIT_WRITE_OUTCOME_UNKNOWN => RecoverDisposition::Unknown,
+        1 => RecoverDisposition::Escalate,
+        other => RecoverDisposition::Unrecognised(other),
+    }
+}
+
+/// run_boot's in-process node-recover (one call site). Test builds only: `CYS_B360_TEST_NODE_RECOVER_RC` stands in a
+/// return code, so the consumer's handling of codes node-recover cannot produce today (e.g. 57) is measurable.
+fn boot_node_recover(sref: &str, role: &str) -> i32 {
+    #[cfg(test)]
+    if let Some(rc) = std::env::var("CYS_B360_TEST_NODE_RECOVER_RC").ok().and_then(|v| v.parse::<i32>().ok()) {
+        return rc;
+    }
+    run_node_recover(Some(sref.to_string()), Some(role.to_string()))
+}
 
 /// 죽음 확정 좌석의 reclaim 에스컬레이션 — 팩 헬퍼(`javis_boot_node.py --reclaim`)에 위임한다.
 /// ★왜 위임인가: reclaim 은 kill 을 포함한 **파괴 행위**이고, 그 안전 판정(`_reclaim_verdict` 의
@@ -15003,23 +15858,7 @@ fn compose_directive(role: &str) -> Result<String, String> {
 /// 돌릴 수 있어야 한다. **OS 게이트는 호출부**(`screen_tail_is_shell_prompt_on`)에 있다:
 /// mac/Linux pane 의 워커가 Windows 안내문(`PS C:\Users\x>`)을 마지막 비공백 줄로 출력하면
 /// 건강한 pane 이 '죽은 셸' 로 오판돼 롤백 close 대상이 되기 때문이다(U-9 × 호출부 상호작용).
-fn windows_shell_prompt_shape(t: &str) -> bool {
-    let Some(body) = t.strip_suffix('>') else {
-        return false;
-    };
-    // ① PowerShell: `PS <위치>>` — 파일시스템/레지스트리/Env 공급자 공통, 축약 `PS>` 포함.
-    //    연속행 프롬프트 `PS C:\x>>` 도 body 가 `PS …>` 라 여기서 참이 된다(프롬프트 맞다).
-    if body == "PS" || body.starts_with("PS ") {
-        return true;
-    }
-    // ② cmd.exe: `<드라이브문자>:\<경로>>` — `C:\>` · `C:\Users\x>` · `D:\work\cys>`.
-    //    콜론+역슬래시까지 요구해 "3 > 2 이므로 a > b>" 류 산문을 배제한다.
-    let mut it = body.chars();
-    matches!(
-        (it.next(), it.next(), it.next()),
-        (Some(d), Some(':'), Some('\\')) if d.is_ascii_alphabetic()
-    )
-}
+use cys::terminal_screen::windows_shell_prompt_shape;
 
 /// 화면 마지막 비공백 줄이 셸 프롬프트로 끝나는지 판정 — marker 없는 에이전트의 시간 폴백
 /// 직전 검사다. TUI가 떴다면 끝줄이 셸 프롬프트일 수 없다; 셸 프롬프트가 남아 있으면
@@ -15042,23 +15881,7 @@ fn screen_tail_is_shell_prompt(text: &str) -> bool {
 /// 얼마든지 그릴 수 있다. 그래서 판정은 "형태 ∧ 실제 Windows" 로만 참이 된다.
 /// Unix 종결자 4종(`% $ # ❯`)은 게이트하지 않는다: Windows 콘솔에도 git-bash·WSL 프롬프트가
 /// 뜰 수 있어 가두면 그쪽에서 오부정(죽은 셸에 주입)이 생긴다 — 위험 방향이 반대다.
-fn screen_tail_is_shell_prompt_on(text: &str, windows: bool) -> bool {
-    let Some(last) = text.lines().rev().find(|l| !l.trim().is_empty()) else {
-        return false; // 화면 비어 있음 — 판단 보류(시간 폴백 유지)
-    };
-    let t = last.trim_end();
-    // zsh "...%" / bash·sh "...$" / root "#" / powerlevel10k·starship "❯" —
-    // 끝문자 기준(프롬프트 커스텀의 공통 꼬리). 오탐 효과는 '대기 후 명시 Err'(안전측).
-    // Windows(PowerShell `PS C:\…>` · cmd `C:\>`)는 `>` 로 끝나므로 형태 요건과 함께 추가한다
-    // (T-D4 / F4-cys-boot-launch-06 — 이게 빠져 Windows 에서 marker 없는 어댑터의 시간 폴백이
-    // 죽은 PowerShell 을 ready 로 선언하고 54KB 디렉티브를 셸 명령으로 제출했다).
-    // 판정 축은 그대로다 — '마지막 비공백 줄의 끝문자' 규칙을 유지한 채 종결자만 늘렸다.
-    t.ends_with('%')
-        || t.ends_with('$')
-        || t.ends_with('#')
-        || t.ends_with('❯')
-        || (windows && windows_shell_prompt_shape(t))
-}
+use cys::terminal_screen::screen_tail_is_shell_prompt_on;
 
 /// TUI 렌더 증거 문면 — **살아 있는 대화형 위젯**이 화면에 있음을 뜻하는 실측 문자열.
 ///
@@ -15086,7 +15909,7 @@ fn screen_tail_is_shell_prompt_on(text: &str, windows: bool) -> bool {
 /// ★관문 문면을 판정에 쓰는 자리는 이제 **관문 축 하나**(`readiness::gate_on_screen` ·
 ///   `first_run_gates` 코퍼스)다 — 같은 문자열이 '관문이다' 와 '살아있다' 를 동시에 뜻하던
 ///   모순을 없앤 것이 이 수리의 본체다.
-const TUI_RENDER_MARKS: &[&str] = &["for shortcuts"];
+use cys::terminal_screen::TUI_RENDER_MARKS;
 
 /// 프레임 **연속 길이** 하한(문자). 이 이상 이어져야 '프레임 자'로 인정한다.
 ///
@@ -15107,29 +15930,13 @@ const TUI_RENDER_MARKS: &[&str] = &["for shortcuts"];
 ///
 /// ★방향 확인: 이 축이 좁아지면 `screen_is_bare_shell_on` 은 **참이 더 자주** 되고 밸브는
 ///   **더 자주 닫힌다**. 즉 판정이 느슨해지는 방향이 아니라 조여지는 방향이다(주입 억제).
-const TUI_FRAME_RUN_MIN: usize = 8;
+use cys::terminal_screen::TUI_FRAME_RUN_MIN;
 
 /// 한 줄 안에 프레임 문자가 [`TUI_FRAME_RUN_MIN`] 이상 **연달아** 있는가.
 ///
 /// 줄 단위로 보는 이유: 프레임 자는 한 줄 안에서 이어진다. 화면 전량을 이어 붙여 세면
 /// 서로 다른 줄의 장식 문자가 합쳐져 없는 자를 만들어낸다.
-fn screen_has_frame_rule(text: &str) -> bool {
-    text.lines().any(|line| {
-        let mut run = 0usize;
-        for c in line.chars() {
-            // Box Drawing `U+2500..=U+257F` · Block Elements `U+2580..=U+259F`.
-            if matches!(c as u32, 0x2500..=0x259F) {
-                run += 1;
-                if run >= TUI_FRAME_RUN_MIN {
-                    return true;
-                }
-            } else {
-                run = 0;
-            }
-        }
-        false
-    })
-}
+use cys::terminal_screen::screen_has_frame_rule;
 
 /// 화면에 **TUI 가 렌더 중이라는 증거**가 있는가 — `screen_is_bare_shell_on` 의 AND 항.
 ///
@@ -15142,15 +15949,7 @@ fn screen_has_frame_rule(text: &str) -> bool {
 /// ★단서 하나가 화면에 **남아 있다**는 것과 TUI 가 **지금 그리고 있다**는 것은 다른 사실이다.
 ///   이 함수가 낼 수 있는 최선은 후자의 근사이고, 근사의 오차는 언제나 '주입하지 않는 쪽'
 ///   으로 접어야 한다 — 그래서 축은 넓히는 것이 아니라 **좁히는** 방향으로만 고친다.
-fn screen_has_tui_render_evidence(text: &str) -> bool {
-    if screen_has_frame_rule(text) {
-        return true;
-    }
-    let flat = cys::first_run_gates::flatten(text);
-    TUI_RENDER_MARKS
-        .iter()
-        .any(|m| flat.contains(&cys::first_run_gates::flatten(m)))
-}
+use cys::terminal_screen::screen_has_tui_render_evidence;
 
 /// ★(P3-0) **안전 밸브 전용** 술어 — 이 화면이 맨 셸인가.
 ///
@@ -15195,21 +15994,10 @@ fn screen_is_bare_shell(text: &str) -> bool {
 
 /// 사망 문면을 찾을 **꼬리 창**(비공백 줄 수). 화면 전량을 보면 50줄 전 잔상 하나가 살아있는
 /// TUI 를 맨 셸로 만든다 — 그 방향의 오판은 안전측(주입 안 함)이지만, 근거 없이 넓히지는 않는다.
-const BARE_SHELL_DEATH_TAIL_LINES: usize = 5;
+use cys::terminal_screen::BARE_SHELL_DEATH_TAIL_LINES;
 
 /// 위의 순수 본체 — `windows` 는 "이 pane 이 Windows 셸 위에서 도는가"(형제 술어와 같은 계약).
-fn screen_is_bare_shell_on(text: &str, windows: bool) -> bool {
-    if !screen_tail_is_shell_prompt_on(text, windows) {
-        return false;
-    }
-    // ★사망 문면(다중 방어 ②) — 꼬리에 `command not found` 류가 보이면 렌더 잔상과 무관하게
-    //   맨 셸이다. 판정 방향은 '주입 억제' 라 넓혀도 오살 위험이 없다.
-    let tail = screen_tail_lines(text, BARE_SHELL_DEATH_TAIL_LINES);
-    if screen_shows_launch_failure(&cys::first_run_gates::flatten(&tail)) {
-        return true;
-    }
-    !screen_has_tui_render_evidence(text)
-}
+use cys::terminal_screen::screen_is_bare_shell_on;
 
 // ★(U-13 · 핀 이사) readiness **안전 밸브**의 판정부는 `src/readiness.rs` 로 옮겼다.
 //
@@ -15232,16 +16020,7 @@ fn screen_is_bare_shell_on(text: &str, windows: bool) -> bool {
 /// readiness 폴링이 죽은 셸에 지침을 주입하는 것을 막는 사망 감지의 핵심 술어다.
 /// Unix sh/zsh/bash뿐 아니라 Windows PowerShell·cmd.exe의 표현까지 덮어
 /// 크로스플랫폼으로 동일하게 기동 실패를 잡는다(`hook_command` OS 대칭화와 짝).
-fn screen_shows_launch_failure(flat: &str) -> bool {
-    // Unix: sh/zsh/bash "command not found" / 직접 실행 시 "No such file or directory" / "not found in PATH"
-    flat.contains("commandnotfound")
-        || flat.contains("notfoundinPATH")
-        || flat.contains("Nosuchfileordirectory")
-        // Windows PowerShell: "... is not recognized as the name of a cmdlet, function, ..."
-        || flat.contains("isnotrecognizedasthenameofacmdlet")
-        // Windows cmd.exe: "... is not recognized as an internal or external command, ..."
-        || flat.contains("isnotrecognizedasaninternalorexternalcommand")
-}
+use cys::terminal_screen::screen_shows_launch_failure;
 
 /// (T2 · TICKET=v116-usage) 신규 출현분에 기동 실패 문면이 뜬 뒤, 그것을 **기동 실패 확증**으로 볼지(순수 — 진리표 핀).
 ///
@@ -16306,15 +17085,18 @@ fn boot_agent_on_surface(
     //   좌석 agent_bin 일 때만 통과시킨다(handlers.rs surface.send_text 빈 셸 가드).
     // ★(0.14.42 · 통합 minor 정리) node-recover 의 기존 좌석(에이전트 등록 유지)에 비권위 호출자가 기동 명령을 넣으면 제출
     //   정착 게이트를 지난다 — 정착 증명 거부는 `cys send` 와 같은 예산 안에서 다시 보낸다(권위 면제면 첫 요청 그대로).
+    // ★(B-360 R2 revise · which write) a REFUSED / UNKNOWN of these two launch writes is tagged as the launch write
     authoritative_paste_settled(
         |p| request("surface.send_text", p),
         // (1.1.8 병합: 우리 v116 표지를 한 줄 안·`authoritative` 앞에 둔다 — 원작자 소스 핀이 `"authoritative": true})` 줄을 센다.)
         json!({"surface_id": sid, "text": send, "quiet": true, (cys::AGENT_LAUNCH_KEY): true, "authoritative": true}),
-    )?;
+    )
+    .map_err(tag_launch_write)?;
     request(
         "surface.send_key",
         json!({"surface_id": sid, "key": "Return", "authoritative": true}),
-    )?;
+    )
+    .map_err(tag_launch_write)?;
     // ★Phase 5 ①a: agent_meta를 기동 직후(readiness 폴링 前)에 등록한다. 등록이 폴링 뒤(step 5)에만
     // 있으면 readiness 미확인·restore 중 stall 시 meta=None으로 남아 → 사망감지 스킵(governance.rs)
     // → agent_seen 영원히 false → status 허위 DEAD → task-prompt 생존게이트가 '미기동' 오판(DRILL_LIVE_1).
@@ -16586,7 +17368,8 @@ fn boot_agent_on_surface(
                 request(
                     "surface.send_key",
                     json!({"surface_id": sid, "key": "Return", "authoritative": true}),
-                )?;
+                )
+                .map_err(tag_launch_write)?; // ★(B-360 R2 revise) the folder-trust confirm is a launch write too
                 trust_sends += 1;
                 trust_seen_at = Some(delta_cursor);
                 std::thread::sleep(std::time::Duration::from_secs(BUDGET_TRUST_SETTLE_SECS));
@@ -17024,7 +17807,22 @@ fn inject_directive_after_ready(
     //   `?` 로 흘리면 호출부 3곳이 그것을 close·kill·좌석증식으로 번역한다 — 정확히 U-11 이
     //   막으려던 경로다. 위 typed 사전 판정과 붙여넣기 사이의 경합(가드 ②가 뒤늦게 발화)도
     //   같은 보류로 접는다.
-    if let Err(e) = inject_text(sid, &directive) {
+    // ★(B-360 R2 revise · S29) an UNKNOWN directive write may still land: the ACK wait below still runs — the ack
+    //   latch is affirmative evidence (continue as PASSED); without it the UNKNOWN is returned (91) after recording
+    //   `directive.verify` as not verified with the reason.
+    let mut write_unknown: Option<String> = None;
+    if let Err(e) = inject_text(sid, &directive).or_else(|e| {
+        if is_write_outcome_unknown(&e) {
+            eprintln!(
+                "[launch-agent] directive write outcome unknown (it may still land — not re-sent) — waiting for the ack \
+                 latch ({BUDGET_ACK_WAIT_SECS}s) before deciding: {e}"
+            );
+            write_unknown = Some(e);
+            Ok(())
+        } else {
+            Err(e)
+        }
+    }) {
         if !cys::inject_guard::is_hold_error(&e) {
             return Err(e);
         }
@@ -17045,7 +17843,10 @@ fn inject_directive_after_ready(
         ));
     }
     // ★제출이 성공한 지금이 표식 해제 지점이다(위 doc — 해제와 제출 사이에 창을 두지 않는다).
-    clear_gate_pending(sid);
+    // ★(B-360 R2 revise) an UNKNOWN submission is not a success: the marker is cleared only once the ack proves it landed
+    if write_unknown.is_none() {
+        clear_gate_pending(sid);
+    }
 
     // ── 3-b) 제출 실측 — ★(v112-restore ①) 붙여넣기 + Return 을 보냈다는 것은 **제출됐다는 증거가
     //   아니다**. 2026-09-21 윈 실기: 복원 글이 입력창에 붙기만 하고 5분간 미제출(watchdog pane.idle
@@ -17128,14 +17929,33 @@ fn inject_directive_after_ready(
             "ack 미확인({BUDGET_ACK_WAIT_SECS}s 창) · 화면 에코(신규 출현분)={}",
             if echoed { "관측" } else { "미관측" }
         );
-        eprintln!(
-            "[launch-agent] directive 주입 검증 미확인 — {verify_reason}. \
-             부트는 계속한다(치명 아님). 상태를 directive_verified=false 로 기록: \
-             `cys status --json` 또는 `cys read-screen --surface {}` 로 확인, \
-             필요하면 javis_boot_node.py --role <role> --agent <agent> 로 재각성하라",
-            surface_ref(sid)
-        );
+        if write_unknown.is_some() {
+            // ★(B-360 R2 revise · S29/B34) the bool cannot say "unknown"; the reason can (no daemon change needed)
+            verify_reason = format!(
+                "{}: the directive write's outcome is unknown and no ack came — it may still land (not re-sent) · {verify_reason}",
+                cys::ERR_WRITE_OUTCOME_UNKNOWN
+            );
+            eprintln!(
+                "[launch-agent] directive write outcome unknown and not acknowledged — {verify_reason} · check the seat \
+                 (`cys read-screen --surface {}`), then `cys reinject --role <role> --check`",
+                surface_ref(sid)
+            );
+        } else {
+            eprintln!(
+                "[launch-agent] directive 주입 검증 미확인 — {verify_reason}. \
+                 부트는 계속한다(치명 아님). 상태를 directive_verified=false 로 기록: \
+                 `cys status --json` 또는 `cys read-screen --surface {}` 로 확인, \
+                 필요하면 javis_boot_node.py --role <role> --agent <agent> 로 재각성하라",
+                surface_ref(sid)
+            );
+        }
     } else {
+        if write_unknown.is_some() {
+            // ★(B-360 R2 revise · S29) affirmative evidence: the UNKNOWN write landed — continue as PASSED
+            eprintln!("[launch-agent] the directive write's outcome was unknown, but the ack proves it landed — continuing");
+            verify_reason.push_str(" · write outcome was unknown, landed (ack)");
+            clear_gate_pending(sid);
+        }
         eprintln!(
             "[launch-agent] directive 주입 검증 확정 — {verify_reason} ({} bytes)",
             directive.len()
@@ -17160,6 +17980,10 @@ fn inject_directive_after_ready(
         } else {
             eprintln!("[launch-agent] directive_verified 상태 기록 실패(구 데몬?): {e}");
         }
+    }
+    // ★(B-360 R2 revise · S29) no evidence: the existing UNKNOWN (91 / directive_unknown upstream), recorded above
+    if let (Some(e), false) = (write_unknown, verified) {
+        return Err(e);
     }
 
     // 5) T2-5 에이전트 메타 등록은 ★Phase 5 ①a로 기동 직후(위)로 이동했다 — readiness 폴링/주입
@@ -19815,6 +20639,8 @@ fn run_launch_agent_opts(
     //   (javis_boot_node → boot-reviewers 경로)를 GUI/훅 `cys boot` 와 직렬화한다.
     //   run_boot 이 이미 쥐고 있으면 None(재진입 방어). Drop 에서 flock 자동 해제.
     let _launch_lock = acquire_launch_lock();
+    // ★(B-360 R2 revise) kept-pane records of this launch go under the outermost command's name
+    let _kept_scope = KeptPaneScope::open(if restore { "restore" } else { "launch-agent" });
     // 절대지침(앵커1-b): 워커는 워크플로우 폴더에서 산다 — cwd 미지정이면 호출 폴더가
     // 워크플로우 폴더다 (데몬 기본값 home에 맡기지 않는다. 명시 --cwd는 그대로 우선).
     // 빈 문자열은 None으로 정규화 — 구버전 topology의 "cwd": "" 가 PTY 생성을 깨거나
@@ -19939,6 +20765,56 @@ fn run_launch_agent_opts(
             }
             cys::EXIT_GATE_PENDING
         }
+        // ★(B-360) The directive was refused at the writer journal: zero bytes typed, the agent is running. Keep the
+        //   pane (no close · no role release) and say so; stdout keeps its contract (last line = surface ref).
+        Err(e) if created.is_some() && is_journal_refusal(&e) => {
+            let sid = created.expect("guarded above");
+            eprintln!("error: {e}");
+            if is_launch_write_err(&e) {
+                // ★(B-360 R2 revise · which write) zero bytes of the LAUNCH command: no agent was started
+                eprintln!(
+                    "[launch-agent] {} kept: the writer journal refused the launch command (zero bytes) — no agent was \
+                     started, the pane is an empty shell; make the journal writable, then `cys restore` / relaunch",
+                    surface_ref(sid)
+                );
+            } else {
+                eprintln!(
+                    "[launch-agent] {} kept: the agent is running WITHOUT its directive (writer journal refused it) — \
+                     make the journal writable, then re-inject (cys reinject --role {role})",
+                    surface_ref(sid)
+                );
+            }
+            record_kept_pane(sid, role, agent, &e, KeptWrite::of(&e, KeptWrite::Directive), KeptOutcome::of_err(&e));
+            println!("{}", surface_ref(sid));
+            EXIT_DIRECTIVE_REFUSED
+        }
+        // ★(B-360 R2) The directive's outcome is unknown: still queued, it may still land. Keep the pane, do not re-inject.
+        Err(e) if created.is_some() && is_write_outcome_unknown(&e) => {
+            let sid = created.expect("guarded above");
+            eprintln!("error: {e}");
+            if is_launch_write_err(&e) {
+                // ★(B-360 R2 revise · which write) the LAUNCH command's write is unknown (before the agent meta was set):
+                //   the agent may still start, or the pane may stay an empty shell — nothing was typed after it
+                eprintln!(
+                    "[launch-agent] {} kept: the launch command's write outcome is unknown (it may still be typed — the agent \
+                     may or may not start; no directive was sent) — do NOT relaunch or re-send; check the seat first \
+                     (cys read-screen --surface {}): an agent at its prompt needs `cys reinject --role {role}`, an empty \
+                     shell needs `cys restore`",
+                    surface_ref(sid),
+                    surface_ref(sid)
+                );
+            } else {
+                eprintln!(
+                    "[launch-agent] {} kept: the directive's outcome is unknown (it may still land) — do NOT re-inject yet; \
+                     check the seat first (cys read-screen --surface {}), then `cys reinject --role {role} --check`",
+                    surface_ref(sid),
+                    surface_ref(sid)
+                );
+            }
+            record_kept_pane(sid, role, agent, &e, KeptWrite::of(&e, KeptWrite::Directive), KeptOutcome::of_err(&e));
+            println!("{}", surface_ref(sid));
+            EXIT_WRITE_OUTCOME_UNKNOWN
+        }
         // ★(U-11) `LaunchFailed` 는 종전의 `Err`(데몬 왕복 실패 등 절차 미완)와 **완전히 같은
         //   귀결**이다 — or-패턴으로 합류시켜 롤백 close 블록을 한 벌로 유지한다. 두 벌이 되면
         //   한쪽만 고쳐지는 날 '실패했는데 좌석이 남는' 또는 '보류인데 닫히는' 비대칭이 생긴다.
@@ -19970,6 +20846,30 @@ fn run_launch_agent_opts(
 
 // ---------- 온보딩③: 상시 가동 등록 (launchd / Task Scheduler) ----------
 // plist 포맷·경로·LABEL은 `cys::launchd`(앱 자동등록과 단일 소스) 위임 — 드리프트 방지.
+
+/// ★C (0.14.52 update repair, design rev9 section 0, table row 7, report only): after `launchctl load`, "daemon up"
+/// means the daemon answers `system.identify`, not that its socket accepts. Each try: the old 100 ms pause, then one
+/// private connection with `request_on_timeout(.., per_try)`, per_try = the smaller of the time left and 2 s. What is
+/// bounded, precisely: the connect is NOT (Unix blocking connect; Windows busy-pipe retry, as before); `per_try` is a
+/// NO-PROGRESS (idle) limit on each read and write (`RpcDeadline`), not a whole-request deadline, so a reply that keeps
+/// trickling bytes can run past it; `budget` decides only whether another try STARTS. The per-try cap matters when a
+/// first try hangs and a later one would answer (`c_row7_first_try_unanswered_then_a_later_one_answers`). It only judges
+/// (`false` prints "unconfirmed"); rows 6 and 10 keep `connect_raw()`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn daemon_answers_within(socket: &std::path::Path, budget: std::time::Duration) -> bool {
+    let started = std::time::Instant::now();
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let left = budget.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            return false;
+        }
+        let per_try = left.min(std::time::Duration::from_secs(2));
+        if request_on_timeout(socket, "system.identify", json!({}), per_try).is_ok() {
+            return true;
+        }
+    }
+}
 
 fn run_daemon_cmd(action: DaemonAction) -> i32 {
     // ★D5: OS 무관 읽기 전용 조회 — 아래 OS 별 등록 관리 분기 앞에서 끝낸다.
@@ -20055,15 +20955,8 @@ fn run_daemon_cmd(action: DaemonAction) -> i32 {
                             String::from_utf8_lossy(&out.stderr).trim()
                         ));
                     }
-                    // 기동 확인
-                    let mut up = false;
-                    for _ in 0..40 {
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                        if connect_raw().is_ok() {
-                            up = true;
-                            break;
-                        }
-                    }
+                    // 기동 확인 — ★C (row 7, report only): up = the daemon answers identify, same 4 s budget.
+                    let up = daemon_answers_within(&socket_path(), std::time::Duration::from_secs(4));
                     println!(
                         "launchd 등록 완료: {} (로그인 자동 기동 + 사망 시 자동 재기동)",
                         path.display()
@@ -21158,6 +22051,10 @@ enum VerifyOutcome {
     DeliveryFailed,
     Unverifiable,
     SkippedRestoring,
+    /// ★(B-360 R2 revise) a write of the check (the save instruction or the corrective Return) has an UNKNOWN outcome and
+    /// the nonce was not seen: it may still land — nothing was re-sent. A distinct value at the type (census B10: it used
+    /// to survive only as prose in `detail`), counted in the summary and mapped to exit 91 by `drain_verify_exit_code`.
+    Unknown,
 }
 impl VerifyOutcome {
     fn as_str(&self) -> &'static str {
@@ -21167,9 +22064,16 @@ impl VerifyOutcome {
             VerifyOutcome::DeliveryFailed => "delivery_failed",
             VerifyOutcome::Unverifiable => "unverifiable",
             VerifyOutcome::SkippedRestoring => "skipped_restoring",
+            VerifyOutcome::Unknown => "unknown",
         }
     }
 }
+
+/// ★(B-360 R2 revise · census S41) Where a node's check stands, for the fan-out cap: a write in flight or with an UNKNOWN
+/// outcome (`VERIFY_WRITE_PENDING`) vs every write settled with a definite outcome (`VERIFY_WRITE_SETTLED`). If the cap
+/// fires while it is pending, the node is `Unknown`; if only the nonce poll was cut, it keeps today's `Timeout`.
+const VERIFY_WRITE_PENDING: u8 = 0;
+const VERIFY_WRITE_SETTLED: u8 = 1;
 
 /// verify 대상 1노드 — 소켓별 org.status에서 추출(surface_id는 데몬별 네임스페이스라 socket과 쌍으로 보유).
 #[derive(Clone)]
@@ -21379,6 +22283,9 @@ impl VerifyIo for RealVerifyIo {
 
 /// 1노드 검증: 복원 가드 → canonical 경로 → 저장 지시 주입 → 전달확정 게이트 → nonce 파일 폴링.
 /// 반환=(결과, 상세). 소켓 hung은 timeout(파일 폴링은 로컬 FS라 소켓 무관)·미제출 wedge는 delivery_failed로 구분.
+/// ★(B-360 R2 revise) production goes through `verify_one_node_tracked` (the fan-out passes its progress cell); this
+///   untracked form is what the node-level specimens call.
+#[cfg(test)]
 fn verify_one_node(
     io: &dyn VerifyIo,
     t: &VerifyTarget,
@@ -21386,7 +22293,27 @@ fn verify_one_node(
     timeout: std::time::Duration,
     now: u64,
 ) -> (VerifyOutcome, String) {
+    let progress = std::sync::atomic::AtomicU8::new(VERIFY_WRITE_PENDING);
+    verify_one_node_tracked(io, t, nonce_prefix, timeout, now, &progress)
+}
+
+/// `verify_one_node` that publishes where its writes stand (`VERIFY_WRITE_*`) for the fan-out cap.
+/// ★(B-360 R2 revise · census S39/S40) The outcome of EVERY write is tracked, including the corrective Return:
+///   - save instruction UNKNOWN → NO corrective Return (the bound Return may still be pending: a second one could submit
+///     twice); the nonce poll still runs — seen → `Saved`, else `Unknown`, even with a wedge visible. An unsubmitted
+///     body (a PASSED instruction whose text stays in the composer) is the only case a corrective Return is for.
+///   - corrective Return UNKNOWN → `Unknown` unless the nonce is seen; REFUSED → `DeliveryFailed` naming the journal.
+fn verify_one_node_tracked(
+    io: &dyn VerifyIo,
+    t: &VerifyTarget,
+    nonce_prefix: &str,
+    timeout: std::time::Duration,
+    now: u64,
+    progress: &std::sync::atomic::AtomicU8,
+) -> (VerifyOutcome, String) {
+    use std::sync::atomic::Ordering;
     use std::time::{Duration, Instant};
+    let settled = || progress.store(VERIFY_WRITE_SETTLED, Ordering::SeqCst);
     // 1) 복원 중 가드 — 각성 파손 방지(디렉티브 재주입과 "작업 중단"의 교차 차단). 사유를 JSON에 전달.
     //    ★(v112-restore) 단, 표지가 남아 있어도 **입력창이 비어 입력을 받는 자리**(❯ 실재)는 건너뛰지
     //    않는다 — 가드가 막으려던 것은 「복원 글을 받는 중인 자리에 끼어들기」이고, 빈 입력창은 그
@@ -21399,12 +22326,14 @@ fn verify_one_node(
             .map(|s| claude_input_empty(&s))
             .unwrap_or(false);
         if !live_prompt {
+            settled();
             return (VerifyOutcome::SkippedRestoring, reason);
         }
         guard_note = format!(" · 복원 표지 잔존({reason})이나 입력창 비어 있음(❯ 실측) → 진행");
     }
     // 2) canonical 경로 — live_cwd 미제공(구버전 부서 데몬)이면 검증불가(무음 cwd 폴백 금지)[A1-F6]
     let Some(cwd) = t.live_cwd.as_deref() else {
+        settled();
         return (
             VerifyOutcome::Unverifiable,
             "live_cwd 미제공(구버전 데몬) — 검증불가(무음 폴백 금지)".into(),
@@ -21432,6 +22361,7 @@ fn verify_one_node(
     let marker = checkpoint_marker(&nonce, now);
     // 이미 이 nonce가 있으면 즉시 통과(프로세스 내 재호출 idempotent)
     if let Some(hit) = marked(&file, &legacy) {
+        settled();
         return (
             VerifyOutcome::Saved,
             format!("nonce 마커 확인: {}", hit.display()),
@@ -21440,7 +22370,13 @@ fn verify_one_node(
     // 3) 저장 지시 주입 — nonce 마커 기입 + 작업 중단.
     let instr = drain_verify_instruction(&marker, &file.to_string_lossy());
     let io_to = std::cmp::min(timeout, Duration::from_secs(8));
-    if let Err(e) = io.inject(&t.socket, t.surface_id, &instr, io_to) {
+    // ★(B-360 R2) set when the instruction's outcome is unknown: it may still be typed, so the checks below still run
+    let mut unknown: Option<String> = None;
+    let injected = io.inject(&t.socket, t.surface_id, &instr, io_to);
+    if !injected.as_ref().is_err_and(|e| is_write_outcome_unknown(e)) {
+        settled(); // PASSED or a definite failure (an UNKNOWN keeps the node pending for the fan-out cap)
+    }
+    if let Err(e) = injected {
         // ★(U-14) 관문 보류는 소켓 hung 이 **아니다** — 소켓은 멀쩡했고 우리가 스스로 안 보냈다.
         //   둘을 같은 `timeout` 으로 접으면 사람이 소켓·데몬을 뒤지게 된다(진단이 거짓 방향을
         //   가리킨다). 안전 방향은 같다: 어느 쪽이든 Saved 가 아니므로 `all_saved` 가 거짓이 되고
@@ -21459,11 +22395,23 @@ fn verify_one_node(
                 format!("입력줄 점유 — 데몬이 저장 지시 직접 주입을 거부(D-12 · 쓰기 0 · Return 0발): {e}"),
             );
         }
-        // 소켓 hung(RPC 타임아웃) — delivery_failed(노드 wedge)와 구분해 timeout으로 분류
-        return (
-            VerifyOutcome::Timeout,
-            "소켓 hung — 저장 지시 RPC 타임아웃(전역 캡 내)".into(),
-        );
+        // ★(B-360 R2) the daemon answered: REFUSED wrote zero bytes (a re-send is safe) — not a hung socket
+        if is_journal_refusal(&e) {
+            return (
+                VerifyOutcome::DeliveryFailed,
+                format!("writer journal refused the save instruction (zero bytes, nothing typed — a re-send is safe): {e}"),
+            );
+        }
+        if is_write_outcome_unknown(&e) {
+            // ★(B-360 R2) UNKNOWN is not a hung socket either; never re-sent — the wedge gate and the poll below decide
+            unknown = Some(e);
+        } else {
+            // 소켓 hung(RPC 타임아웃) — delivery_failed(노드 wedge)와 구분해 timeout으로 분류
+            return (
+                VerifyOutcome::Timeout,
+                "소켓 hung — 저장 지시 RPC 타임아웃(전역 캡 내)".into(),
+            );
+        }
     }
     // 4) 전달확정 게이트 — 입력창을 실측해 제출 여부를 가른다(Submitted/NotSubmitted/Unmeasured).
     std::thread::sleep(Duration::from_millis(600));
@@ -21473,9 +22421,21 @@ fn verify_one_node(
         .as_deref()
         .map(|s| submit_probe(s, &nonce))
         .unwrap_or((SubmitProbe::Unmeasured, false));
-    if suspect {
+    // ★(B-360 R2 revise · 1.1.11 편입) the corrective Return's own outcome (UNKNOWN / REFUSED) — no longer discarded
+    let mut return_unknown: Option<String> = None;
+    let mut return_refused: Option<String> = None;
+    if suspect && unknown.is_none() {
         // ★행동은 종전대로 보수적(의심이면 Return 재전송) — 판정만 실측으로 좁혔다([V111-F2]).
-        let _ = io.send_return(&t.socket, t.surface_id, io_to);
+        //   ★(원작자 B-360 R2) 지시 결과가 UNKNOWN 이면 교정 Return 을 보내지 않는다(묶인 Return 이 아직 대기 중일 수 있다).
+        progress.store(VERIFY_WRITE_PENDING, Ordering::SeqCst);
+        match io.send_return(&t.socket, t.surface_id, io_to) {
+            Err(e) if is_write_outcome_unknown(&e) => return_unknown = Some(e),
+            Err(e) if is_journal_refusal(&e) => {
+                return_refused = Some(e);
+                settled();
+            }
+            _ => settled(),
+        }
         std::thread::sleep(Duration::from_millis(800));
         if let Ok(s2) = io.read_screen(&t.socket, t.surface_id, 24, io_to) {
             let (p2, _s2sus) = submit_probe(&s2, &nonce);
@@ -21522,6 +22482,39 @@ fn verify_one_node(
         return (
             VerifyOutcome::Saved,
             format!("{}{guard_note}", saved_detail(&hit, extended, timeout)),
+        );
+    }
+    // ★(B-360 R2 revise · 1.1.11 편입) UNKNOWN is examined BEFORE the wedge (census B11): a visible wedge does not settle a
+    //   write that may still be pending
+    if let Some(e) = unknown {
+        return (
+            VerifyOutcome::Unknown,
+            format!(
+                "save instruction outcome unknown (may still be typed — not re-sent, no corrective Return: a bound Return may \
+                 still be pending; wedge visible: {}) · nonce not seen within {}s: {} ({e})",
+                if probe == SubmitProbe::NotSubmitted { "yes" } else { "no" },
+                timeout.as_secs(),
+                file.display()
+            ),
+        );
+    }
+    if let Some(e) = return_unknown {
+        return (
+            VerifyOutcome::Unknown,
+            format!(
+                "corrective Return outcome unknown (it may still submit — not re-sent) · nonce not seen within {}s: {} ({e})",
+                timeout.as_secs(),
+                file.display()
+            ),
+        );
+    }
+    if let Some(e) = return_refused {
+        return (
+            VerifyOutcome::DeliveryFailed,
+            format!(
+                "입력 미제출(wedge) — the writer journal refused the corrective Return (zero bytes, nothing typed — a re-send is \
+                 safe once the journal is writable); 저장 미검출: {e}"
+            ),
         );
     }
     let waited = started.elapsed().as_secs();
@@ -22150,6 +23143,10 @@ fn drain_verify_fanout(
     let nonce_prefix = format!("{now}-{}", std::process::id());
     let (tx, rx) = std::sync::mpsc::channel::<(usize, VerifyOutcome, String)>();
     let total = targets.len();
+    // ★(B-360 R2 revise · S41) per node: is a write still in flight / of unknown outcome when the cap fires?
+    let progress: Vec<std::sync::Arc<std::sync::atomic::AtomicU8>> = (0..total)
+        .map(|_| std::sync::Arc::new(std::sync::atomic::AtomicU8::new(VERIFY_WRITE_PENDING)))
+        .collect();
     // surface_id는 데몬별 네임스페이스라 소켓 간 충돌 가능 → 인덱스로 키잉(nonce도 [F1] 소켓 구별자로 정합).
     let mut meta: HashMap<usize, VerifyTarget> = HashMap::new();
     for (idx, t) in targets.iter().enumerate() {
@@ -22159,8 +23156,9 @@ fn drain_verify_fanout(
         let tx = tx.clone();
         let io = io.clone();
         let np = nonce_prefix.clone();
+        let pr = std::sync::Arc::clone(&progress[idx]);
         std::thread::spawn(move || {
-            let (o, d) = verify_one_node(io.as_ref(), &t, &np, timeout, now);
+            let (o, d) = verify_one_node_tracked(io.as_ref(), &t, &np, timeout, now, &pr);
             let _ = tx.send((idx, o, d));
         });
     }
@@ -22182,20 +23180,28 @@ fn drain_verify_fanout(
     // 결과 JSON(원래 순서 안정) — 미도착 노드는 전역 캡 초과 timeout.
     let mut nodes: Vec<Value> = Vec::new();
     let mut pending_loss: Vec<Value> = Vec::new();
-    let (mut c_saved, mut c_timeout, mut c_deliv, mut c_unver, mut c_skip) = (0, 0, 0, 0, 0);
+    let (mut c_saved, mut c_timeout, mut c_deliv, mut c_unver, mut c_skip, mut c_unknown) = (0, 0, 0, 0, 0, 0);
     let mut all_saved = true;
     for idx in 0..total {
         let t = &meta[&idx];
-        let (outcome, detail) = results.get(&idx).cloned().unwrap_or((
-            VerifyOutcome::Timeout,
-            "전역 하드캡 초과 — 결과 미도착(timeout)".into(),
-        ));
+        let (outcome, detail) = results.get(&idx).cloned().unwrap_or_else(|| {
+            if progress[idx].load(std::sync::atomic::Ordering::SeqCst) == VERIFY_WRITE_PENDING {
+                // ★(B-360 R2 revise · S41) the cap fired before this node's write returned a definite outcome
+                (
+                    VerifyOutcome::Unknown,
+                    "전역 하드캡 초과 — 저장 지시 쓰기의 결과 미확정(write outcome unknown: it may still land — not re-sent)".into(),
+                )
+            } else {
+                (VerifyOutcome::Timeout, "전역 하드캡 초과 — 결과 미도착(timeout)".into())
+            }
+        });
         match outcome {
             VerifyOutcome::Saved => c_saved += 1,
             VerifyOutcome::Timeout => c_timeout += 1,
             VerifyOutcome::DeliveryFailed => c_deliv += 1,
             VerifyOutcome::Unverifiable => c_unver += 1,
             VerifyOutcome::SkippedRestoring => c_skip += 1,
+            VerifyOutcome::Unknown => c_unknown += 1,
         }
         if outcome != VerifyOutcome::Saved {
             all_saved = false;
@@ -22229,7 +23235,7 @@ fn drain_verify_fanout(
         "nodes": nodes,
         "summary": {
             "saved": c_saved, "timeout": c_timeout, "delivery_failed": c_deliv,
-            "unverifiable": c_unver, "skipped_restoring": c_skip,
+            "unverifiable": c_unver, "skipped_restoring": c_skip, "unknown": c_unknown,
         },
         // ★재시작 창 큐 보존[A3-F3]: 인메모리 pending_queue는 데몬 재시작에 소실된다(handlers.rs). 디스크
         // flush는 데몬 RPC가 필요해(handlers 무접촉 목표) 대신 유실 예정분을 정직하게 가시화한다(무음 유실 금지).
@@ -22462,8 +23468,21 @@ fn run_drain_verify(timeout: u64, only: &[String], hq_only: bool) -> i32 {
     drain_verify_merge_unreachable(&mut report, &unreachable);
     let all_saved = report["all_saved"].as_bool() == Some(true);
     println!("{}", serde_json::to_string_pretty(&report).unwrap());
+    drain_verify_exit_code(all_saved, &report)
+}
+
+/// ★(B-360 R2 revise · census S42/B15) `cys drain --verify`'s exit from the TYPED per-node outcome — never from the free
+/// text of `detail` (a code dropped from the prose must not change the exit): all saved → 0; any `unknown` node → 91
+/// (it may still land — no blind re-run: drain keeps no persistent unknown state, so 91 outranks the generic 1, as at
+/// 11717c44); otherwise 1.
+fn drain_verify_exit_code(all_saved: bool, report: &Value) -> i32 {
+    let unknown = report["nodes"]
+        .as_array()
+        .is_some_and(|nodes| nodes.iter().any(|n| n["outcome"] == VerifyOutcome::Unknown.as_str()));
     if all_saved {
         0
+    } else if unknown {
+        EXIT_WRITE_OUTCOME_UNKNOWN
     } else {
         1
     }
@@ -23287,6 +24306,10 @@ fn cycle_best_effort_reinject(
     let directive = match cycle_reinject_payload(false, resume, compose) {
         Ok(payload) => match inject(&payload) {
             Ok(()) => return "디렉티브+RESUME 한 제출 1건 송신".to_string(),
+            // ★(B-360 R2) UNKNOWN: the one submission may still be typed — RESUME alone again would type it twice
+            Err(e) if is_write_outcome_unknown(&e) => {
+                return format!("디렉티브+RESUME 한 제출 outcome unknown (may still be typed — RESUME not re-sent: {e})");
+            }
             Err(e) => format!("디렉티브+RESUME 한 제출 실패(부분 송신 가능: {e})"),
         },
         Err(e) => format!("디렉티브 0건(합성 실패: {e})"),
@@ -23312,6 +24335,13 @@ fn cycle_reinject_held(
     } else {
         cycle_best_effort_reinject(hooks_inject, resume, compose, inject)
     };
+    // ★(B-360 R2) a reinject write's outcome is unknown: not the 86 token — 91 (it may still land; nothing re-sent)
+    if is_write_outcome_unknown(&sent) {
+        return format!(
+            "clear 는 실효 확인됨(session_file 교체) · 재주입 보류 사유: {reason} · the reinject's outcome is unknown — it \
+             may still land: do not re-send; check the seat (`cys status --json` awakened_at, the screen): {sent}"
+        );
+    }
     format!(
         "{CYCLE_REINJECT_HELD_TOKEN} clear 는 실효 확인됨(session_file 교체) · 재주입 보류 사유: {reason} · \
          실제 송신 내역(재주입): {sent}. 손으로 다시 clear 하지 마라 — ★(REVIEW1 F4) [RESUME] 은 이제 \
@@ -23319,6 +24349,27 @@ fn cycle_reinject_held(
          화면 재주입 여부는 `cys status --json` 의 이 좌석 `awakened_at`/세션 파일 교체로 확인하고, \
          그것으로 이미 나간 재주입이 확인되면 다시 재주입하지 마라(중복 재주입 방지)"
     )
+}
+
+/// ★(B-360 R2) The reinject after a VERIFIED clear failed: the seat is cleared, so say so. REFUSED (zero bytes) → the 86
+/// token (cleared, reinject held — a resend is safe); UNKNOWN → a 91 message (it may still land — never re-sent).
+/// Any other error is returned unchanged (rc 1, as before).
+fn cycle_cleared_reinject_err(e: String, sid: u64, role: &str) -> String {
+    if is_journal_refusal(&e) {
+        format!(
+            "{CYCLE_REINJECT_HELD_TOKEN} clear 는 실효 확인됨(session_file 교체) · the writer journal refused the reinject \
+             (zero bytes, nothing typed): surface:{sid} ({role}) is cleared WITHOUT its directive — a resend is safe once \
+             the journal is writable: `cys reinject --role {role}`. 손으로 다시 clear 하지 마라: {e}"
+        )
+    } else if is_write_outcome_unknown(&e) {
+        format!(
+            "clear 는 실효 확인됨(session_file 교체) · the reinject's outcome is unknown — it may still land: do not \
+             re-send; check the seat (`cys read-screen --surface surface:{sid}`), then `cys reinject --role {role}` only if \
+             it did not land: {e}"
+        )
+    } else {
+        e
+    }
 }
 
 /// 저장 지시 → 저장 검증 → handshake → 턴 종료·빈 composer 확인 → clear → 실효 관측 → 재주입.
@@ -23637,7 +24688,15 @@ fn run_cycle_agent(
         // ★A′: 고정 산문 대신 감시 목록(files) 실경로 열거 — 지시 경로↔게이트 경로 정합.
         // ★⑯(1.1.7 precut ㉮) 저장 지시도 clear 입력과 같은 거부 — 질문·승인 창 위에 붙여넣고 Return 하면 그 창의
         //   선택지가 사람 손 없이 눌린다(VM r1001 3-5 재현 2/2). 거부 = 쓰기 0 · 기존 거부 분기와 같은 문구로 rc 1.
-        inject_text_opts(sid, &cycle_save_directive(&role_name, &files), true)?;
+        // ★(B-360 R2 revise · S48) an UNKNOWN save instruction may still land: the save-file gate below still decides
+        let save_unknown = match inject_text_opts(sid, &cycle_save_directive(&role_name, &files), true) {
+            Ok(()) => None,
+            Err(e) if is_write_outcome_unknown(&e) => {
+                eprintln!("[cycle 1/7] save instruction outcome unknown (it may still be typed — not re-sent) — the save-file gate decides: {e}");
+                Some(e)
+            }
+            Err(e) => return Err(e),
+        };
 
         // 2) 파일 변화 게이트 (화면 마커는 참고 신호일 뿐 — reward-hack·stale 마커 차단)
         match cycle_verify_plan(force_no_verify, baseline.len()) {
@@ -23654,11 +24713,25 @@ fn run_cycle_agent(
                     }
                 }
                 if !verified {
+                    if let Some(e) = &save_unknown {
+                        return Err(format!(
+                            "save instruction outcome unknown (it may still be typed — not re-sent) and the save files did \
+                             not change within {wait_secs}s — cycle stopped before /clear (clear 미실행): {e}"
+                        ));
+                    }
                     return Err(format!(
                         "저장 검증 실패 — {wait_secs}s 내 파일 갱신 없음. cycle 중단 (clear 미실행)"
                     ));
                 }
                 eprintln!("[cycle] 저장 검증 통과");
+            }
+            CycleVerifyPlan::SkipForced | CycleVerifyPlan::SkipNoFiles if save_unknown.is_some() => {
+                // no save-file check = no affirmative evidence that the UNKNOWN instruction landed: the existing 91
+                return Err(format!(
+                    "save instruction outcome unknown and no save-file check this run — no evidence it landed; cycle stopped \
+                     before /clear (clear 미실행): {}",
+                    save_unknown.unwrap_or_default()
+                ));
             }
             CycleVerifyPlan::SkipForced => {
                 eprintln!(
@@ -23699,7 +24772,15 @@ fn run_cycle_agent(
             // ★(수정 6회차 V42R-1) 검증자 좌석 주입 직렬화 — 붙여넣기~Return 을 좌석당 하나씩(동시 비동기 사이클의 요청 합체 차단).
             let vlock = InjectLock::acquire(vsid, deadline.min(std::time::Instant::now() + std::time::Duration::from_secs(20)));
             // ★⑯(precut ㉮) 검증자 좌석도 같은 거부 — CSO 에 허락·질문 창이 떠 있을 때 이 글의 Return 이 그 창을 누르지 않게.
-            inject_text_opts(vsid, &format!("[CYCLE-VERIFY] role '{role_name}'(surface:{sid})의 컨텍스트 순환 전 저장 검증 요청. SESSION_STATE/TODO 파일이 방금 갱신되었는지 확인하고 `cys feed reply {req_id} allow` 또는 `cys feed reply {req_id} deny`로 판정하라."), true)?;
+            // ★(B-360 R2 revise · S49) an UNKNOWN request may still be typed: the receipt poll below still decides
+            let verifier_unknown = match inject_text_opts(vsid, &format!("[CYCLE-VERIFY] role '{role_name}'(surface:{sid})의 컨텍스트 순환 전 저장 검증 요청. SESSION_STATE/TODO 파일이 방금 갱신되었는지 확인하고 `cys feed reply {req_id} allow` 또는 `cys feed reply {req_id} deny`로 판정하라."), true) {
+                Ok(()) => None,
+                Err(e) if is_write_outcome_unknown(&e) => {
+                    eprintln!("[cycle 3/7] verifier request outcome unknown (it may still be typed — not re-sent) — the receipt poll decides: {e}");
+                    Some(e)
+                }
+                Err(e) => return Err(e),
+            };
             drop(vlock);
             // ★W4-B(결함 7): 해소 항목을 발견해도 decision 문자열로 즉석 판정하지 않고 영수증
             // 검증(cycle_receipt_ok — resolver==지정 검증자 대조)에 넘긴다. Err 는 전부 clear
@@ -23738,7 +24819,16 @@ fn run_cycle_agent(
                     return Err(e);
                 }
                 // ★U10: 가드가 drop 에서 자기 요청을 cycle-timeout 으로 닫는다(반환 문구 무변경).
-                None => return Err("검증자 응답 없음 (timeout) — clear 중단".into()),
+                // ★(B-360 R2 revise · S49) no receipt after an UNKNOWN request: the existing 91, not the generic timeout
+                None => {
+                    if let Some(e) = verifier_unknown {
+                        return Err(format!(
+                            "verifier request outcome unknown (it may still be typed — not re-sent) and no receipt in the \
+                             window — clear 중단: {e}"
+                        ));
+                    }
+                    return Err("검증자 응답 없음 (timeout) — clear 중단".into());
+                }
             }
         } else {
             eprintln!("[cycle 3/7] (검증자 미지정 — handshake 생략)");
@@ -23788,6 +24878,8 @@ fn run_cycle_agent(
         //   데몬 가드는 not_cleared 를 사이클 끝으로 보지 않는다(발화를 풀지 않고 수준을 다시 재지 않는다).
         let mut outcome = CycleOutcome::Unknown;
         let clear_result = (|| -> Result<(), String> {
+            // ★(B-360 R2) set when the atomic clear's outcome is unknown (it may still be typed): the effect check decides
+            let mut clear_unknown: Option<String> = None;
             // 5) 입력 버퍼 정리 + clear를 한 writer arm에서 원자 송신한다.
             // 종전 3분할은 본문 뒤 사람 입력이 끼어 Return만 거부되면 clear와 초안이 섞였다.
             // ClearFirst 게이트 1회 → Ctrl-U·settle·paste·CR 순서를 데몬에 맡긴다(state.rs Inject).
@@ -23844,11 +24936,21 @@ fn run_cycle_agent(
                     })?;
                 }
                 Err(e) => {
-                    return Err(if is_typing_guard_err(&e) {
-                        format!("{CYCLE_HUMAN_DRAFT_TOKEN} clear 원자 송신 거부(송신 0건 · composer 무변경): 데몬이 사람 초안을 감지했다 — 초안을 제출·삭제한 뒤 해당 단계만 재시도 ({e})")
+                    if is_write_outcome_unknown(&e) {
+                        // ★(B-360 R2) never re-sent; the session_file check below sees a late landing
+                        eprintln!("[cycle 5/7] '{clear}' outcome unknown (may still be typed — not re-sent) — the effect check decides");
+                        clear_unknown = Some(e);
                     } else {
-                        e
-                    });
+                        // ★(B-360 R2) zero bytes at the writer journal: the clear was never typed — the guard hears not_cleared
+                        if is_journal_refusal(&e) {
+                            outcome = CycleOutcome::NotCleared;
+                        }
+                        return Err(if is_typing_guard_err(&e) {
+                            format!("{CYCLE_HUMAN_DRAFT_TOKEN} clear 원자 송신 거부(송신 0건 · composer 무변경): 데몬이 사람 초안을 감지했다 — 초안을 제출·삭제한 뒤 해당 단계만 재시도 ({e})")
+                        } else {
+                            e
+                        });
+                    }
                 }
             }
 
@@ -23872,6 +24974,24 @@ fn run_cycle_agent(
                     }
                 }
             };
+            // ★(B-360 R2) an unknown clear shows its landing only as the swap: seen → reinject as for any verified clear;
+            //   not seen in the window → stop with 91, visibly (if it lands later the seat is left without its directive).
+            if let Some(e) = clear_unknown.as_ref() {
+                if effect == ClearEffect::Verified {
+                    eprintln!("[cycle 6/7] the unknown '{clear}' landed (session_file swap observed) — reinjecting");
+                } else {
+                    let seen = if effect == ClearEffect::Unmeasurable {
+                        "cannot be observed (no statusline session_file)".to_string()
+                    } else {
+                        format!("was not observed within {clear_verify_window}s")
+                    };
+                    return Err(format!(
+                        "the /clear's outcome is unknown and its session_file swap {seen}; if it lands later \
+                         surface:{sid} ({role_name}) is cleared WITHOUT its directive — check the seat \
+                         (`cys read-screen --surface surface:{sid}`) and `cys reinject --role {role_name}`: {e}"
+                    ));
+                }
+            }
             match effect {
                 ClearEffect::Verified => {
                     outcome = CycleOutcome::Cleared;
@@ -23894,8 +25014,12 @@ fn run_cycle_agent(
                             //   Claude 큐 선두에 끼어 감독자 지시를 막던 경로(반박 M1)를 닫는다.
                             //   합성 실패는 종전대로 `?` 로 올린다(판정·보고 계약 불변).
                             // ★⑯(precut ㉮) clear 뒤 재주입도 같은 거부(순환의 어떤 입력도 창 위에 들어가지 않는다).
-                            inject_text_opts(sid, &cycle_reinject_payload(hooks_inject, &resume_text, &mut || compose_directive(&role_name))?, true)?;
-                            Ok(())
+                            let reinject = (|| -> Result<(), String> {
+                                inject_text_opts(sid, &cycle_reinject_payload(hooks_inject, &resume_text, &mut || compose_directive(&role_name))?, true)?;
+                                Ok(())
+                            })();
+                            // ★(B-360 R2) the seat IS cleared: REFUSED → 86 with the journal named · UNKNOWN → 91, never re-sent
+                            reinject.map_err(|e| cycle_cleared_reinject_err(e, sid, &role_name))
                         }
                         Err(e) => Err(cycle_reinject_held(
                             &e,
@@ -23918,6 +25042,8 @@ fn run_cycle_agent(
                     ))
                 }
                 ClearEffect::Unmeasurable => {
+                    // ★(B-360 R2) set when the reinject's outcome is unknown: 91, not 81 (RESUME was not re-sent)
+                    let mut reinject_unknown: Option<String> = None;
                     // statusline 미보고 어댑터는 화면 유휴로 부트 체인을 복원하되 rc81을 유지한다.
                     match wait_cycle_target_idle(
                         sid,
@@ -23940,14 +25066,23 @@ fn run_cycle_agent(
                                 &mut |text| inject_text_opts(sid, text, true),
                             );
                             eprintln!("[cycle] 측정 불능 — 화면 유휴 관측 후 재주입(실효 미확인): {sent}");
+                            if is_write_outcome_unknown(&sent) {
+                                reinject_unknown = Some(sent);
+                            }
                         }
                         Err(e) => eprintln!("[cycle] 측정 불능 + 재주입 보류: {e}"),
                     }
-                    Err(format!(
-                        "{CLEAR_UNMEASURABLE_TOKEN} clear 를 송신했으나 실효 측정 불능 — clear 직전 \
-                         statusline session_file 이 없다(statusline 미보고 에이전트 · usage 부재). \
-                         측정 불능은 통과가 아니다"
-                    ))
+                    match reinject_unknown {
+                        Some(sent) => Err(format!(
+                            "clear 를 송신했으나 실효 측정 불능 · the reinject's outcome is unknown — it may still land: do \
+                             not re-send; check the seat (`cys read-screen --surface surface:{sid}`): {sent}"
+                        )),
+                        None => Err(format!(
+                            "{CLEAR_UNMEASURABLE_TOKEN} clear 를 송신했으나 실효 측정 불능 — clear 직전 \
+                             statusline session_file 이 없다(statusline 미보고 에이전트 · usage 부재). \
+                             측정 불능은 통과가 아니다"
+                        )),
+                    }
                 }
             }
         })();
@@ -23979,6 +25114,9 @@ fn run_node_recover(surface: Option<String>, role: Option<String>) -> i32 {
     //   겨눈 두 node-recover(또는 node-recover ∥ restore in-seat)가 각자 `C-u` + 기동 커맨드를
     //   같은 pane 에 보내면 화면 파괴·이중 기동이다.
     let _recover_lock = acquire_launch_lock();
+    // ★(B-360 R2 revise) kept-pane records of this recovery go under the outermost command's name
+    let _kept_scope = KeptPaneScope::open("node-recover");
+    let mut seat: Option<(u64, String, String)> = None; // (sid, role, agent) once known — for the kept-pane record
     let result = (|| -> Result<BootVerdict, String> {
         let sid = resolve_role_or_surface(&role, &surface)?;
         let entry = surface_entry(sid)?;
@@ -24013,6 +25151,7 @@ fn run_node_recover(surface: Option<String>, role: Option<String>) -> i32 {
             ));
         }
         let role_name = entry["role"].as_str().unwrap_or("worker").to_string();
+        seat = Some((sid, role_name.clone(), agent.clone()));
         let spec = load_agent_spec(&agent)?;
         eprintln!("[node-recover] surface:{sid} 위에 {agent} 재기동 (role={role_name})");
         // 셸 입력 잔재 정리 후 기동 (resume 플래그로 대화 기억 복원 시도)
@@ -24081,7 +25220,29 @@ fn run_node_recover(surface: Option<String>, role: Option<String>) -> i32 {
         // ★(0.14.31 · 성찰 C4ⓑ) 전처리 안전 거부는 **비파괴 전용 코드**로 나간다.
         Err(e) if is_recover_refusal(&e) => {
             eprintln!("node-recover 안전 거부: {e}");
+            // ★(B-360 R2 revise) a writer-journal refusal keeps the pane (zero bytes): one kept-pane record
+            if let (true, Some((sid, role, agent))) = (is_journal_refusal(&e), &seat) {
+                record_kept_pane(*sid, role, agent, &e, KeptWrite::Recover, KeptOutcome::of_err(&e));
+            }
             EXIT_RECOVER_REFUSED
+        }
+        // ★(B-360 R2 revise · S60) the recovery write's outcome is unknown (it may still land): exit 91 — distinct from 79.
+        //   Nothing is reclaimed, killed or re-sent (run_boot's consumer maps 91 to `recover_unknown`, B-406).
+        Err(e) if is_write_outcome_unknown(&e) => {
+            eprintln!("error: {e}");
+            let (sref, role_name) = seat
+                .as_ref()
+                .map(|(sid, r, _)| (surface_ref(*sid), r.clone()))
+                .unwrap_or_else(|| ("?".into(), "<role>".into()));
+            eprintln!(
+                "node-recover: the recovery write's outcome is unknown (still queued, it may still land) — no reclaim, no \
+                 kill, no re-send; check the seat first (`cys read-screen --surface {sref}`); only if the directive did not \
+                 land, `cys reinject --role {role_name}` (or `cys reinject --role {role_name} --check`)"
+            );
+            if let Some((sid, role, agent)) = &seat {
+                record_kept_pane(*sid, role, agent, &e, KeptWrite::Recover, KeptOutcome::of_err(&e));
+            }
+            EXIT_WRITE_OUTCOME_UNKNOWN
         }
         Err(e) => {
             eprintln!("error: {e}");
@@ -24454,6 +25615,10 @@ fn run_restore(cwd: Option<String>, include_master: bool, no_resume: bool) -> i3
 }
 
 fn run_restore_with(cwd: Option<String>, include_master: bool, no_resume: bool, launcher: &mut dyn RestoreLauncher) -> i32 {
+    // ★(B-360 R2) in-seat seats kept after a REFUSED (90) / UNKNOWN (91) write — never a fresh fallback
+    // ★(B-360 R2 revise) and fresh launches that came back 90 / 91 (pane kept by launch-agent) — counted the same way
+    let (mut refused, mut unknown) = (0usize, 0usize);
+    let _kept_scope = KeptPaneScope::open("restore");
     let result = (|| -> Result<(usize, usize, usize), String> {
         let topo = request("system.topology", json!({}))?;
         // ★SEAT(2026-07-17 실사고 수리): '역할이 등록됨'과 '그 좌석에 누가 앉아 있음'을 구분한다.
@@ -24645,6 +25810,31 @@ fn run_restore_with(cwd: Option<String>, include_master: bool, no_resume: bool, 
                         // in-seat 실패는 치명이 아니다 — fresh 폴백이 가용성을 지킨다(정직히 알린다).
                         println!("· {role}: 좌석 내 재연결 실패({evidence}) — fresh 기동으로 폴백");
                     }
+                    // ★(B-360 R2) a write of the in-seat relaunch was REFUSED or has an UNKNOWN outcome: the in-seat agent
+                    //   may be running, so a fresh fallback would put a second agent on the role (and, for UNKNOWN, a
+                    //   second directive). Keep the seat, like launch-agent's 90/91.
+                    Err(e) if is_journal_refusal(&e) => {
+                        refused += 1;
+                        println!(
+                            "· {role}: 좌석 내 재연결 — the writer journal refused a write (zero bytes, nothing typed) — seat \
+                             surface:{sid} kept, no fresh launch. If the agent runs WITHOUT its directive, make the journal \
+                             writable and `cys reinject --role {role}`; if the seat is still an empty shell, `cys restore` again: {e}"
+                        );
+                        record_kept_pane(sid, role, agent, &e, KeptWrite::of(&e, KeptWrite::Directive), KeptOutcome::of_err(&e));
+                        continue;
+                    }
+                    Err(e) if is_write_outcome_unknown(&e) => {
+                        unknown += 1;
+                        // ★(B-360 R2 revise · minor) name the recovery: inspect first, re-inject only if it did not land
+                        println!(
+                            "· {role}: 좌석 내 재연결 — a write's outcome is unknown (it may still land) — seat surface:{sid} \
+                             kept, no fresh launch, nothing re-sent: check the seat first (`cys read-screen --surface \
+                             surface:{sid}`); only if the directive did not land, `cys reinject --role {role}` (or \
+                             `cys reinject --role {role} --check`): {e}"
+                        );
+                        record_kept_pane(sid, role, agent, &e, KeptWrite::of(&e, KeptWrite::Directive), KeptOutcome::of_err(&e));
+                        continue;
+                    }
                     Err(e) => {
                         // in-seat 실패는 치명이 아니다 — fresh 폴백이 가용성을 지킨다(정직히 알린다).
                         println!("· {role}: 좌석 내 재연결 실패({e}) — fresh 기동으로 폴백");
@@ -24704,6 +25894,22 @@ fn run_restore_with(cwd: Option<String>, include_master: bool, no_resume: bool, 
                         //   ★(v112-restore) 복원 1회 표식은 `run_launch_agent_opts` 가 **기동 전**에 잡는다.
                     }
                 }
+            } else if rc == EXIT_DIRECTIVE_REFUSED {
+                // ★(B-360 R2 revise · S62) launch-agent kept the pane (and recorded it): zero bytes of a write were typed.
+                //   No marker (the directive was not typed), not a failed launch.
+                refused += 1;
+                println!(
+                    "· {role}: 재기동 — the writer journal refused a write (zero bytes) — pane kept, no marker; make the \
+                     journal writable, then `cys reinject --role {role}` (an empty shell: `cys restore` again)"
+                );
+            } else if rc == EXIT_WRITE_OUTCOME_UNKNOWN {
+                // ★(B-360 R2 revise · S62) a write may still land: pane kept (recorded by launch-agent), nothing re-sent,
+                //   no marker seeded (that would say "delivered"), no pack-update entry (kept panes are record-only)
+                unknown += 1;
+                println!(
+                    "· {role}: 재기동 — a write's outcome is unknown (it may still land) — pane kept, nothing re-sent, no \
+                     marker: check the seat first; only if the directive did not land, `cys reinject --role {role} --check`"
+                );
             } else if request("system.topology", json!({}))
                 .is_ok_and(|t| role_held_by_live_seat(&t, role))
             {
@@ -24718,18 +25924,33 @@ fn run_restore_with(cwd: Option<String>, include_master: bool, no_resume: bool, 
     match result {
         Ok((ok, fail, gated)) => {
             println!(
-                "restore 완료: 재기동 {ok} · 실패 {fail} · 관문 보류 {gated} · 현황 `cys status`"
+                "restore 완료: 재기동 {ok} · 실패 {fail} · 관문 보류 {gated} · journal refused {refused} · outcome unknown \
+                 {unknown} · 현황 `cys status`"
             );
-            if fail > 0 || gated > 0 {
-                1
-            } else {
-                0
+            if refused > 0 || unknown > 0 {
+                println!("restore: 좌석 보존 — journal refused {refused} · outcome unknown {unknown} (fresh 폴백 0)");
             }
+            restore_exit_code(fail, gated, unknown, refused)
         }
         Err(e) => {
             eprintln!("error: {e}");
             1
         }
+    }
+}
+
+/// ★(B-360 R2 revise · aggregate precedence) `cys restore`'s exit: an existing real failure first (1: a failed launch or
+/// a gate-held seat — they demand action, and a re-run is safe because every unknown pane is kept and recorded), then
+/// 91 (any unknown), then 90 (any refused), then 0. Pure.
+fn restore_exit_code(fail: usize, gated: usize, unknown: usize, refused: usize) -> i32 {
+    if fail > 0 || gated > 0 {
+        1
+    } else if unknown > 0 {
+        EXIT_WRITE_OUTCOME_UNKNOWN
+    } else if refused > 0 {
+        EXIT_DIRECTIVE_REFUSED
+    } else {
+        0
     }
 }
 
@@ -25034,6 +26255,63 @@ fn reinject_check_action(fate: &Result<PingFate, String>, ack_only: bool) -> Rei
     }
 }
 
+/// ★(B-360 R2 revise) Is the role directive in the seat agent's context? The answer of a presence ping.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Presence {
+    /// The agent printed the ACK (on screen or in its transcript): the directive is in context.
+    Present,
+    /// The agent received the ping as a prompt and answered WITHOUT the ACK (`ReceivedNoAck`): affirmative absence —
+    /// the only evidence that authorises typing the directive (again).
+    Absent,
+    /// No evidence either way (busy, no trace, unreadable transcript, bare shell, the ping's own write failed — including
+    /// its REFUSED or UNKNOWN). Callers keep their unknown state and type nothing.
+    Undetermined(String),
+}
+
+/// Bound of one presence ping (s) — phoenix's `reinject --check` window, so a pass over several unknown seats stays short.
+const PRESENCE_PING_TIMEOUT_SECS: u64 = 6;
+
+/// ★(B-360 R2 revise) The presence check of `cys reinject --check`, as a value: nonce ping (`reinject_ping_nonce` /
+/// `reinject_ping_text`) → `surface.wait_for` the ACK since the cursor → the ping's fate in the transcript
+/// (`ping_fate_from_entry`) → `reinject_check_action(fate, false)`. It never injects the directive (callers decide) and
+/// does not consume the `reinject_check_claim` key (the callers' own persistent state bounds their attempts).
+/// A bare shell (no live agent: `reinject_check_should_skip_bare_shell`) gets no ping at all.
+fn directive_presence(sid: u64, timeout: u64) -> Presence {
+    let entry = match surface_entry(sid) {
+        Ok(e) => e,
+        Err(e) => return Presence::Undetermined(format!("seat unreadable: {e}")),
+    };
+    if reinject_check_should_skip_bare_shell(&entry) {
+        return Presence::Undetermined("bare shell (no live agent) — no ping typed".into());
+    }
+    let nonce = reinject_ping_nonce();
+    let cursor = match request("surface.read_text", json!({"surface_id": sid})) {
+        Ok(r) => r["latest_cursor"].as_u64().unwrap_or(0),
+        Err(e) => return Presence::Undetermined(format!("screen cursor unreadable: {e}")),
+    };
+    // ★1.1.11 편입(우리 ⑯ precut ㉮ 형제 · 원작자 0.14.52 새 무인 주입 지점): 팩 갱신의 존재 확인 핑도 사람 손 없이 친다 — 승인·질문 창 위에는
+    //   쓰지 않는다(거부 = 쓰기 0 → 아래 Undetermined 로 접힌다 · 재주입·표식 없음 = 원작자 UNKNOWN 규칙과 같은 안전 방향).
+    if let Err(e) = inject_text_opts(sid, &reinject_ping_text(&nonce), true) {
+        return Presence::Undetermined(format!("presence ping not delivered: {e}"));
+    }
+    match request(
+        "surface.wait_for",
+        json!({"surface_id": sid, "pattern": format!("DIRECTIVE-ACK-{nonce}"),
+               "timeout_secs": timeout, "since_line": cursor}),
+    ) {
+        Ok(r) if r["matched"].as_bool() == Some(true) => return Presence::Present,
+        Ok(_) => {}
+        Err(e) => eprintln!("[presence] surface:{sid} ACK wait failed ({e}) — reading the transcript"),
+    }
+    let fate = surface_entry(sid).and_then(|e| ping_fate_from_entry(&e, &nonce)).map(|(f, _)| f);
+    match reinject_check_action(&fate, false) {
+        ReinjectCheckAction::AckInTranscript => Presence::Present,
+        ReinjectCheckAction::Reinject => Presence::Absent,
+        ReinjectCheckAction::Busy => Presence::Undetermined("ping delivered, the agent is busy".into()),
+        ReinjectCheckAction::Undetermined(why) | ReinjectCheckAction::AckOnlyMiss(why) => Presence::Undetermined(why),
+    }
+}
+
 /// ★(U8 P0-M2) check 재주입 **좌석·세션당 1회** 멱등 키(원자 생성 · `create_new`).
 /// `Ok(true)` = 이번이 첫 재주입(키 확보) · `Ok(false)` = 이 좌석·세션에 이미 1회 소진 · `Err` = 기록 불가
 /// (멱등을 보장할 수 없으면 재주입하지 않는다 — 호출부가 판정 불가로 접는다).
@@ -25161,12 +26439,25 @@ fn run_reinject(
                 .unwrap_or(0);
             // ★⑯(precut ㉮ 형제 · codex 1R) phoenix 복원·사람 명령 모두 화면을 안 보고 쏜다 — 승인·질문 창 위에는 쓰지 않는다
             //   (거부 = rc 1 · phoenix 는 warn 으로 전진 · 무파괴).
-            inject_text_opts(sid, &reinject_ping_text(&nonce), true)?;
+            // ★(B-360 R2 revise · S63) an UNKNOWN ping may still land: the ACK wait and the transcript read still run —
+            //   ACK → alive (0); anything else → the existing 91, never a re-inject (the ping itself is unresolved)
+            let ping_unknown = match inject_text_opts(sid, &reinject_ping_text(&nonce), true) {
+                Ok(()) => None,
+                Err(e) if is_write_outcome_unknown(&e) => {
+                    eprintln!("[reinject] presence ping outcome unknown (it may still land — not re-sent) — waiting for the ACK: {e}");
+                    Some(e)
+                }
+                Err(e) => return Err(e),
+            };
             let r = request(
                 "surface.wait_for",
                 json!({"surface_id": sid, "pattern": marker,
                        "timeout_secs": timeout, "since_line": cursor}),
-            )?;
+            )
+            .map_err(|we| match &ping_unknown {
+                Some(e) => format!("{e} · ACK wait failed: {we}"),
+                None => we,
+            })?;
             if r["matched"].as_bool() == Some(true) {
                 cys::reinject_guard::record_ack(&mut guard, epoch_secs_now());
                 reinject_guard_save(sid, &guard);
@@ -25195,6 +26486,11 @@ fn run_reinject(
                 Err(e) => e.clone(),
             };
             eprintln!("[reinject] ACK 없음 ({timeout}s) — 핑 배달 판정(세션 기록): {fate_label}");
+            if let Some(e) = ping_unknown {
+                // ★(B-360 R2 revise · S63) no ACK after an UNKNOWN ping: not re-injected (no claim consumed) — 91
+                eprintln!("[reinject] the ping's outcome is unknown and no ACK came — nothing re-injected (surface:{sid})");
+                return Err(e);
+            }
             match action {
                 ReinjectCheckAction::AckInTranscript => unreachable!("위에서 반환"),
                 ReinjectCheckAction::Busy => {
@@ -25263,7 +26559,7 @@ fn run_reinject(
         Ok(()) => 0,
         Err(e) => {
             eprintln!("error: {e}");
-            1
+            exit_for_error(&e) // ★(B-360 R2) 91 for an unknown write outcome, else 1
         }
     }
 }
@@ -25331,14 +26627,187 @@ enum ReinjectDecision {
 
 /// run_pack_reinject 집계 보고. injected/skipped/deferred/failed 카운트에 더해, busy로 보류된
 /// 노드(surface_id, role) 목록을 함께 실어 pending 영속(다음 pack-update 재시도 가시화)에 쓴다.
+/// ★(B-360 R2 revise) `unknown` = nodes of this run whose directive write has an UNKNOWN outcome (it may still land):
+///   never counted in `injected`, never marked, persisted as unknown entries of the pending file (`unknown_entries`).
+///   `unknown_new` = those created by THIS run's injects (the rest were carried over, still unresolved); only new ones
+///   reach the exit class (head's exit rule: no permanent non-zero from an entry nobody can resolve).
 #[derive(Debug, Default, PartialEq, Eq)]
 struct ReinjectReport {
     injected: usize,
     skipped: usize,
     deferred: usize,
     failed: usize,
+    unknown: usize,
+    unknown_new: usize,
     /// Defer로 판정된 라이브 노드들 — pending 파일에 (surface_id, role)로 영속한다.
     deferred_nodes: Vec<(u64, String)>,
+    /// ★(B-360 R2 revise) the unknown entries counted in `unknown` (as persisted in the pending file's `unknown` list).
+    unknown_entries: Vec<ReinjectUnknownEntry>,
+}
+
+/// ★(B-360 R2 revise) One node whose directive write came back UNKNOWN (`write_outcome_unknown`): the text may still be
+/// typed. A distinct persistent state, separate from BOTH the delivered marker (`reinject.mark`) and the ordinary
+/// retryable `deferred` list: it is never re-sent blindly and never marked delivered without affirmative evidence.
+/// The next `cys pack-update` reconciles it with a presence ping (`directive_presence`): ACK → marked delivered;
+/// `ReceivedNoAck` (affirmative absence) → injected once; anything else → still unknown.
+/// Only pack-update's own writes create these (kept panes of launch/boot/restore/node-recover are record-only).
+/// Wire: `{"surface_id", "role", "directive_hash", "request_id" | null, "at"}` plus, since B-360 R3 (A6), the identity
+/// `{"owner": {"writer", "pid", "socket", "daemon_started_at"}, "session_id"}` (see [`PendingHere`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReinjectUnknownEntry {
+    surface_id: u64,
+    role: String,
+    /// sha256 of the directive text whose write is unknown (`sha256_hex(compose_directive(role))` at write time).
+    directive_hash: String,
+    /// the daemon's request id from the error text (`request <id>`), when it carries one.
+    request_id: Option<String>,
+    /// epoch seconds of the UNKNOWN reply.
+    at: u64,
+    /// ★(B-360 R3 · A6) the entry's whole wire object, written back VERBATIM: the file is shared by every lane, so an
+    ///   entry this lane does not own (or a key a newer binary added) must survive this lane's rewrite byte-for-byte.
+    wire: Value,
+}
+
+impl ReinjectUnknownEntry {
+    fn to_json(&self) -> Value {
+        self.wire.clone()
+    }
+
+    fn from_json(v: &Value) -> Option<Self> {
+        Some(Self {
+            surface_id: v["surface_id"].as_u64()?,
+            role: v["role"].as_str()?.to_string(),
+            directive_hash: v["directive_hash"].as_str().unwrap_or_default().to_string(),
+            request_id: v["request_id"].as_str().map(String::from),
+            at: v["at"].as_u64().unwrap_or(0),
+            wire: v.clone(),
+        })
+    }
+
+    /// An UNKNOWN reply `e` for `directive` typed into `sid` (role `role`), now, by this lane (`here`).
+    fn from_unknown_write(sid: u64, role: &str, directive: &str, e: &str, here: &PendingHere) -> Self {
+        let directive_hash = sha256_hex(directive);
+        let request_id = request_id_from_unknown(e);
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let wire = json!({"surface_id": sid, "role": role, "directive_hash": directive_hash,
+                          "request_id": request_id, "at": at, "owner": here.owner(),
+                          "session_id": here.session_of(sid)});
+        Self { surface_id: sid, role: role.to_string(), directive_hash, request_id, at, wire }
+    }
+
+    /// `owner.socket` as written (None: an R2 entry, or one without the key).
+    fn owner_socket(&self) -> Option<&str> {
+        self.wire["owner"]["socket"].as_str().filter(|s| !s.is_empty())
+    }
+
+    /// ★(A6 rule 1) Another lane's entry: its `owner.socket` is present and its lane key differs from `lane`. An entry
+    /// without an owner is never foreign (the safe side: it is checked by this lane's guards).
+    fn is_foreign_to(&self, lane: &str) -> bool {
+        self.owner_socket().is_some_and(|s| cys::lane::lane_key(std::path::Path::new(s)) != lane)
+    }
+
+    /// ★(A6 rule 2 + A2) Why the entry's pane is gone (None: it may still be there): a different daemon instance than
+    /// the one it was written under; for an entry without `owner.daemon_started_at`, a daemon that started after it
+    /// (`started_at > at + 1` — `at` is whole seconds); or (same instance) a different session on that surface.
+    fn gone_because(&self, here: &PendingHere) -> Option<String> {
+        let now = here.daemon_started_at?;
+        match self.wire["owner"]["daemon_started_at"].as_f64() {
+            Some(then) if then != now => {
+                return Some(format!("written under daemon instance {then}, the daemon is now instance {now}"))
+            }
+            Some(_) => {}
+            None if now > self.at as f64 + 1.0 => {
+                return Some(format!("the daemon (started {now}) is newer than the entry (at {})", self.at))
+            }
+            None => {}
+        }
+        match (self.wire["session_id"].as_str(), here.sessions.get(&self.surface_id).and_then(|s| s.as_deref())) {
+            (Some(then), Some(now)) if then != now => {
+                Some(format!("surface {} now holds session {now}, the entry was written for session {then}", self.surface_id))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// ★(B-360 R3 · A6) This lane and its daemon instance, as the pending pass and pack-update's node loop see them: the
+/// identity half of an unknown entry's key {owner.socket lane, owner.daemon_started_at, surface_id}. Measured with ONE
+/// bounded `org.status` (`request_on_timeout`, never `request()`).
+#[derive(Debug, Clone, Default, PartialEq)]
+struct PendingHere {
+    /// this command's socket (`socket_path()`); its lane key decides which entries are this lane's
+    socket: String,
+    /// `org.status` answered (false = unmeasured: nothing is pinged, typed or marked for an unknown entry)
+    status_read: bool,
+    /// the daemon instance now (`daemon.started_at`; None when the daemon does not say)
+    daemon_started_at: Option<f64>,
+    /// `registered_session_id` of every surface `org.status` lists (None = no session, e.g. codex / gemini)
+    sessions: std::collections::HashMap<u64, Option<String>>,
+}
+
+impl PendingHere {
+    /// From an `org.status` reply (`None` = unanswered). Pure.
+    fn from_status(socket: String, status: Option<&Value>) -> Self {
+        let Some(st) = status else { return Self { socket, ..Default::default() } };
+        let sessions = st["surfaces"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| Some((s["surface_id"].as_u64()?, s["registered_session_id"].as_str().map(String::from))))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self { socket, status_read: true, daemon_started_at: st["daemon"]["started_at"].as_f64(), sessions }
+    }
+
+    /// This command's lane and daemon instance, now.
+    fn measure() -> Self {
+        let socket = socket_path();
+        let reply = request_on_timeout(
+            &socket,
+            "org.status",
+            json!({}),
+            std::time::Duration::from_secs(KEPT_PANE_NOTICE_RPC_SECS),
+        );
+        Self::from_status(socket.to_string_lossy().into_owned(), reply.ok().as_ref())
+    }
+
+    fn lane(&self) -> String {
+        cys::lane::lane_key(std::path::Path::new(&self.socket))
+    }
+
+    /// The `owner` of an entry written now (A1: pid = attribution only).
+    fn owner(&self) -> Value {
+        json!({"writer": "cys", "pid": std::process::id(), "socket": self.socket,
+               "daemon_started_at": self.daemon_started_at})
+    }
+
+    fn session_of(&self, sid: u64) -> Option<String> {
+        self.sessions.get(&sid).cloned().flatten()
+    }
+}
+
+/// ★(B-360 R2 revise) The daemon's request id inside a `write_outcome_unknown` text (`… (request w1-2) …`). Pure.
+fn request_id_from_unknown(e: &str) -> Option<String> {
+    let at = e.find("request ")? + "request ".len();
+    let id: String = e[at..]
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':' | '.'))
+        .collect();
+    let id = id.trim_end_matches(['.', ':']).to_string();
+    (!id.is_empty()).then_some(id)
+}
+
+/// ★(B-360 R2 revise) The whole pending file: `{"pack_version", "deferred": [...], "unknown": [...]}`. A file without
+/// `"unknown"` (written by a binary older than this fix) reads as an empty unknown list.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct ReinjectPending {
+    pack_version: String,
+    deferred: Vec<(u64, String)>,
+    unknown: Vec<ReinjectUnknownEntry>,
 }
 
 /// deferred reinject 대상 영속 경로 — pack_state_base(=~/.cys) 아래 .pack-reinject-pending.json.
@@ -25346,62 +26815,123 @@ fn reinject_pending_path(base: &std::path::Path) -> std::path::PathBuf {
     base.join(".pack-reinject-pending.json")
 }
 
-/// deferred(busy) 노드를 pending 파일에 영속하거나(>0), 더 이상 없으면 stale pending을 제거한다(0).
-/// {pack_version, deferred:[{surface_id, role}]} 형식. 디스크 반영·reinject 성공 여부와 독립한
-/// 가시화/재시도 힌트라 best-effort(critical 아님)다. 다음 pack-update는 토폴로지 마커를 새로 읽어
-/// deferred 노드를 자연히 재평가(재주입)하므로, 이 파일은 외부 재시도·관측용 SOT다.
-fn persist_reinject_pending(
-    base: &std::path::Path,
-    pack_version: &str,
-    deferred_nodes: &[(u64, String)],
-) -> std::io::Result<()> {
-    let path = reinject_pending_path(base);
-    if deferred_nodes.is_empty() {
-        match std::fs::remove_file(&path) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e),
-        }
-    } else {
-        let nodes: Vec<serde_json::Value> = deferred_nodes
-            .iter()
-            .map(|(sid, role)| json!({"surface_id": sid, "role": role}))
-            .collect();
-        let doc = json!({"pack_version": pack_version, "deferred": nodes});
-        std::fs::write(&path, serde_json::to_string_pretty(&doc).unwrap_or_default())
-    }
-}
-
-/// pending 파일(.pack-reinject-pending.json)을 읽어 (pack_version, [(surface_id, role)])로 파싱한다.
-/// 파일 부재 → Ok(None). 손상(JSON 파싱 불가·pack_version 부재) → Ok(None)(best-effort: 손상 pending은
-/// 무시하고 다음 pack-update가 새로 기록). LOW#1 능동 소비 경로의 reader (persist_reinject_pending의 역).
-fn read_reinject_pending(
-    base: &std::path::Path,
-) -> std::io::Result<Option<(String, Vec<(u64, String)>)>> {
-    let path = reinject_pending_path(base);
-    let raw = match std::fs::read_to_string(&path) {
+/// ★(B-360 R2 revise) Reads the whole pending file. Missing → `Ok(None)`; damaged / no `pack_version` → `Ok(None)` (as
+/// `read_reinject_pending`); a missing `"unknown"` key → an empty unknown list.
+fn read_reinject_pending_doc(base: &std::path::Path) -> std::io::Result<Option<ReinjectPending>> {
+    let raw = match std::fs::read_to_string(reinject_pending_path(base)) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
     };
     let Ok(doc) = serde_json::from_str::<serde_json::Value>(&raw) else { return Ok(None) };
-    let ver = doc["pack_version"].as_str().unwrap_or_default().to_string();
-    if ver.is_empty() {
+    let pack_version = doc["pack_version"].as_str().unwrap_or_default().to_string();
+    if pack_version.is_empty() {
         return Ok(None);
     }
-    let nodes = doc["deferred"]
+    let deferred = doc["deferred"]
         .as_array()
         .map(|arr| {
             arr.iter()
-                .filter_map(|n| {
-                    let sid = n["surface_id"].as_u64()?;
-                    let role = n["role"].as_str()?.to_string();
-                    Some((sid, role))
-                })
+                .filter_map(|n| Some((n["surface_id"].as_u64()?, n["role"].as_str()?.to_string())))
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    Ok(Some((ver, nodes)))
+    let unknown = doc["unknown"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(ReinjectUnknownEntry::from_json).collect::<Vec<_>>())
+        .unwrap_or_default();
+    Ok(Some(ReinjectPending { pack_version, deferred, unknown }))
+}
+
+/// ★(B-360 R2 revise) Writes the whole pending file; removes it only when BOTH lists are empty.
+fn write_reinject_pending(base: &std::path::Path, doc: &ReinjectPending) -> std::io::Result<()> {
+    let path = reinject_pending_path(base);
+    if doc.deferred.is_empty() && doc.unknown.is_empty() {
+        return match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        };
+    }
+    let deferred: Vec<Value> =
+        doc.deferred.iter().map(|(sid, role)| json!({"surface_id": sid, "role": role})).collect();
+    let unknown: Vec<Value> = doc.unknown.iter().map(ReinjectUnknownEntry::to_json).collect();
+    let v = json!({"pack_version": doc.pack_version, "deferred": deferred, "unknown": unknown});
+    std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap_or_default())
+}
+
+/// ★(B-360 R2 revise) Read-modify-write of the pending file. `pack_version` is used only when no file exists yet.
+fn update_reinject_pending(
+    base: &std::path::Path,
+    pack_version: &str,
+    f: impl FnOnce(&mut ReinjectPending),
+) -> std::io::Result<()> {
+    let mut doc = read_reinject_pending_doc(base)?
+        .unwrap_or_else(|| ReinjectPending { pack_version: pack_version.to_string(), ..Default::default() });
+    f(&mut doc);
+    write_reinject_pending(base, &doc)
+}
+
+/// ★(B-360 R2 revise) Persists an UNKNOWN write as an unknown entry at once (durable before anything else happens), replacing
+/// an older entry for the same seat, and taking the seat off the `deferred` list. A failure is loud: the caller says so.
+fn record_reinject_unknown(
+    base: &std::path::Path,
+    pack_version: &str,
+    entry: &ReinjectUnknownEntry,
+) -> std::io::Result<()> {
+    // ★(B-360 R3 · A6) "the same seat" = the same number IN THE SAME LANE: another lane's entry for that number (the file
+    //   is shared by every lane) is kept as it is. An entry without an owner is this lane's (the R2 rule).
+    let lane = entry
+        .owner_socket()
+        .map(|s| cys::lane::lane_key(std::path::Path::new(s)))
+        .unwrap_or_else(|| cys::lane::lane_key(&socket_path()));
+    update_reinject_pending(base, pack_version, |doc| {
+        doc.unknown.retain(|u| u.surface_id != entry.surface_id || u.is_foreign_to(&lane));
+        doc.deferred.retain(|(sid, _)| *sid != entry.surface_id);
+        doc.unknown.push(entry.clone());
+    })
+}
+
+/// ★(B-360 R2 revise) Drops the unknown entries `drop` selects (a resolved or stale entry); no file → nothing to do.
+fn drop_reinject_unknown(
+    base: &std::path::Path,
+    pack_version: &str,
+    mut drop: impl FnMut(&ReinjectUnknownEntry) -> bool,
+) -> std::io::Result<()> {
+    if read_reinject_pending_doc(base)?.is_none() {
+        return Ok(());
+    }
+    update_reinject_pending(base, pack_version, |doc| doc.unknown.retain(|u| !drop(u)))
+}
+
+/// deferred(busy) 노드를 pending 파일에 영속하거나(>0), 더 이상 없으면 stale pending을 제거한다(0).
+/// {pack_version, deferred:[{surface_id, role}]} 형식. 디스크 반영·reinject 성공 여부와 독립한
+/// 가시화/재시도 힌트라 best-effort(critical 아님)다. 다음 pack-update는 토폴로지 마커를 새로 읽어
+/// deferred 노드를 자연히 재평가(재주입)하므로, 이 파일은 외부 재시도·관측용 SOT다.
+/// ★(B-360 R2 revise) It writes the `deferred` list only and carries the file's `unknown` list forward unchanged; the
+///   file is removed only when both are empty (an unknown entry must never vanish with a deferred rewrite).
+fn persist_reinject_pending(
+    base: &std::path::Path,
+    pack_version: &str,
+    deferred_nodes: &[(u64, String)],
+) -> std::io::Result<()> {
+    let unknown = read_reinject_pending_doc(base)?.map(|d| d.unknown).unwrap_or_default();
+    write_reinject_pending(
+        base,
+        &ReinjectPending { pack_version: pack_version.to_string(), deferred: deferred_nodes.to_vec(), unknown },
+    )
+}
+
+/// pending 파일(.pack-reinject-pending.json)을 읽어 (pack_version, [(surface_id, role)])로 파싱한다.
+/// 파일 부재 → Ok(None). 손상(JSON 파싱 불가·pack_version 부재) → Ok(None)(best-effort: 손상 pending은
+/// 무시하고 다음 pack-update가 새로 기록). LOW#1 능동 소비 경로의 reader (persist_reinject_pending의 역).
+/// ★(B-360 R2 revise) the deferred-only view of `read_reinject_pending_doc` (the production reader now); kept for the
+///   specimens that pin the old file format.
+#[cfg(test)]
+fn read_reinject_pending(
+    base: &std::path::Path,
+) -> std::io::Result<Option<(String, Vec<(u64, String)>)>> {
+    Ok(read_reinject_pending_doc(base)?.map(|d| (d.pack_version, d.deferred)))
 }
 
 /// ★U4-B2③ reinject 스킵 사유 토큰 — 공백 없는 고정 키(브리지가 공백으로 자른다 · 외부 문자열 금지).
@@ -25421,8 +26951,14 @@ fn pack_update_reinject_skipped_line(pack_version: &str, reason: &str) -> String
 
 /// reinject 집계 → pack-update 종료코드. failed>0이면 EXIT_REINJECT_DEGRADED(디스크는 반영됐으나
 /// 라이브 일부 미각성 — 성공 침묵 포장 금지), 아니면 0(deferred만 있어도 디스크 반영은 성공이라 0).
-fn reinject_exit_code(failed: usize) -> i32 {
-    if failed > 0 {
+/// ★(B-360 R2 revise · DESIGN §M1.5 + head's exit rule) `new_unknown` = UNKNOWN outcomes created by THIS run's writes
+///   (node loop or a pending-pass re-inject): degraded too (3, not 91: the disk pack WAS updated, and the app reads any
+///   other non-zero as a failed update). Carried-over unknown entries that stay undetermined are REPORTED (pending-pass
+///   line, `PACK_UPDATE_RESULT unknown=`) but are not passed here, so an entry nobody can resolve never makes every later
+///   run non-zero. This is the ONE place pack-update's exit class is decided: carrying UNKNOWN only in the result line
+///   instead would be the one-line change `if failed > 0 {` here.
+fn reinject_exit_code(failed: usize, new_unknown: usize) -> i32 {
+    if failed > 0 || new_unknown > 0 {
         cys::pack::EXIT_REINJECT_DEGRADED
     } else {
         0
@@ -26307,6 +27843,18 @@ fn adapter_ready(agent: &Option<String>, idle: bool, idle_secs: u64, scrollback_
     cys::readiness::judge(&obs).is_ready()
 }
 
+/// ★(B-360 R2) The visible note for a pack-update reinject whose outcome is unknown (rows 9 and 10 share it).
+/// ★(B-360 R2 revise) It is NOT marked delivered any more: it is kept as an unknown entry that the next pack-update
+///   checks with a presence ping (never typed twice, never silently skipped).
+fn reinject_unknown_note(sid: u64, role: &str, e: &str, pending: &std::path::Path) -> String {
+    format!(
+        "reinject outcome unknown (surface {sid}, role {role}) — it may still land, not re-sent, NOT marked delivered; kept \
+         as an unknown entry in {} that the next pack-update checks (presence ping) — check now: `cys reinject --role \
+         {role} --check`: {e}",
+        pending.display()
+    )
+}
+
 /// 살아있는 노드에 무중단 reinject(§7-②) — control.dashboard(state)·system.topology(마커)를 읽어
 /// reinject_decision으로 판정, Inject만 디렉티브 주입 후 reinject.mark RPC로 기록(P3).
 /// ★라이브 데몬 필요 — 실주입 검증은 P7. 여기선 결정 로직 배선만(베스트에포트).
@@ -26333,6 +27881,21 @@ fn run_pack_reinject(new_version: &str) -> Result<ReinjectReport, String> {
     let fleet = dash["fleet"].as_array().cloned().unwrap_or_default();
     let (mut injected, mut skipped, mut deferred, mut failed) = (0usize, 0usize, 0usize, 0usize);
     let mut deferred_nodes: Vec<(u64, String)> = Vec::new();
+    // ★(B-360 R2 revise) unknown entries left by the pending pass (checked there just now) or by another writer
+    let base = pack_state_base();
+    let pending_unknown = match read_reinject_pending_doc(&base) {
+        Ok(doc) => doc.map(|d| d.unknown).unwrap_or_default(),
+        Err(e) => {
+            // unreadable = cannot prove a seat has no unresolved write: refuse to inject anywhere rather than guess
+            return Err(format!("pending file unreadable ({}): {e}", reinject_pending_path(&base).display()));
+        }
+    };
+    let mut unknown_entries: Vec<ReinjectUnknownEntry> = Vec::new();
+    let mut unknown_new = 0usize;
+    // ★(B-360 R3 · A6) this lane + daemon instance: another lane's entry for the same number neither blocks this lane's
+    //   inject nor is dropped by it (the file is shared by every lane; surface numbers are per daemon)
+    let here = PendingHere::measure();
+    let lane = here.lane();
     for node in &fleet {
         let Some(sid) = node["surface_id"].as_u64() else { continue };
         let Some(role) = node["role"].as_str() else { continue };
@@ -26354,14 +27917,49 @@ fn run_pack_reinject(new_version: &str) -> Result<ReinjectReport, String> {
             .and_then(|r| r["text"].as_str().map(|s| s.to_string()))
             .unwrap_or_default();
         let ready = adapter_ready(&agent, idle, idle_secs, &tail);
+        // ★(B-360 R2 revise) a seat with an unresolved unknown write of THIS directive is not typed into: it could land twice
+        let mine: Vec<&ReinjectUnknownEntry> =
+            pending_unknown.iter().filter(|u| u.surface_id == sid && !u.is_foreign_to(&lane)).collect();
+        if let Some(open) = mine.iter().find(|u| u.directive_hash == new_hash) {
+            eprintln!(
+                "[pack-update] ⚠ surface {sid} ({role}): an earlier write of this directive has an unknown outcome — not \
+                 re-injected (it may land); the next pack-update checks it — check now: `cys reinject --role {role} --check`"
+            );
+            unknown_entries.push((*open).clone());
+            continue;
+        }
+        if !mine.is_empty() {
+            // an entry for a different directive: a different text is meant to be injected anyway (the duplicate risk
+            // concerns the same text twice) — drop it and decide normally
+            if let Err(e) = drop_reinject_unknown(&base, new_version, |u| u.surface_id == sid && !u.is_foreign_to(&lane)) {
+                return Err(format!("pending file write failed ({}): {e}", reinject_pending_path(&base).display()));
+            }
+        }
         match reinject_decision(markers.get(role), new_version, &new_hash, idle, self_idle, ready) {
             ReinjectDecision::Inject => {
                 // per-node 에러 격리(Fix3): 한 노드의 transient 실패가 나머지 건강 노드의 reinject를
                 // 중단시키지 않게 `?` 전파 대신 count+continue 한다.
                 // ★⑯(precut ㉮ 형제) 팩 갱신 뒤 무인 재주입 — 승인·질문 창 위에는 쓰지 않는다(실패 = 아래 사유 · 다음 노드).
                 if let Err(e) = inject_text_opts(sid, &directive, true) {
-                    eprintln!("[pack-update] reinject 주입 실패(surface {sid}, role {role}): {e} — 다음 노드로 계속");
-                    failed += 1;
+                    if !is_write_outcome_unknown(&e) {
+                        eprintln!("[pack-update] reinject 주입 실패(surface {sid}, role {role}): {e} — 다음 노드로 계속");
+                        failed += 1;
+                        continue;
+                    }
+                    // ★(B-360 R2 revise) UNKNOWN: it may still land. Not marked (a marker = delivered: a permanent silent
+                    //   skip if it never lands) and not retryable (a retry can type it twice) — an unknown entry, written
+                    //   at once so it survives this process; the next pack-update checks it with a presence ping.
+                    let entry = ReinjectUnknownEntry::from_unknown_write(sid, role, &directive, &e, &here);
+                    unknown_new += 1;
+                    eprintln!("[pack-update] ⚠ {}", reinject_unknown_note(sid, role, &e, &reinject_pending_path(&base)));
+                    if let Err(w) = record_reinject_unknown(&base, new_version, &entry) {
+                        eprintln!(
+                            "[pack-update] ⚠ the unknown entry could not be written ({}): {w} — surface {sid} ({role}) is NOT \
+                             tracked: check it by hand (`cys reinject --role {role} --check`) before any re-inject",
+                            reinject_pending_path(&base).display()
+                        );
+                    }
+                    unknown_entries.push(entry);
                     continue;
                 }
                 // 주입 성공 후에만 마커 기록(P3 단일 write path). 마커 기록 실패는 '이미 주입됨'을
@@ -26386,7 +27984,23 @@ fn run_pack_reinject(new_version: &str) -> Result<ReinjectReport, String> {
             }
         }
     }
-    Ok(ReinjectReport { injected, skipped, deferred, failed, deferred_nodes })
+    let unknown = unknown_entries.len();
+    Ok(ReinjectReport { injected, skipped, deferred, failed, unknown, unknown_new, deferred_nodes, unknown_entries })
+}
+
+/// ★(B-360 R2 revise) What one pending pass did — a struct, not the old `(resolved, kept)` tuple, which had no slot for
+/// UNKNOWN (census B04: an unknown node was counted `resolved`). `unknown` = unknown entries this pass checked and kept
+/// (or created): their directive may still land, nothing is re-sent until a presence ping proves absence.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct PendingConsumeReport {
+    resolved: usize,
+    kept: usize,
+    unknown: usize,
+    /// of `unknown`, the ones THIS pass created (a re-inject or a deferred inject that came back UNKNOWN) — the only
+    /// ones that reach the exit class; the rest were carried over and stay reported.
+    unknown_new: usize,
+    /// (surface_id, role) of every node counted in `unknown` — the warning names them.
+    unknown_nodes: Vec<(u64, String)>,
 }
 
 /// LOW#1 pending 소비 핵심 — 라이브 토폴로지(markers)·플릿(fleet)·주입을 인자/클로저로 받아
@@ -26395,27 +28009,39 @@ fn run_pack_reinject(new_version: &str) -> Result<ReinjectReport, String> {
 /// 노드 부재(닫힘)·합성 실패(비표준 역할)→해소(무한 잔존 방지) / Defer(여전히 busy)·주입·마크
 /// 실패→pending 잔존. 잔존 0이면 파일 삭제, 아니면 잔존 노드로 재기록(pack_version 보존).
 /// pending_ver를 새 버전으로 쓰므로(현재 디스크 팩 == 보류 당시 버전), version gate와 독립이다.
-/// 반환=(resolved, kept).
+/// ★(B-360 R2 revise · DESIGN §M1.3) The unknown entries (pack-update's own) are reconciled FIRST, each at most one
+///   presence ping: node gone / directive not composable → dropped; a different directive hash → ★(B-360 R3 · A6 hash
+///   guard) kept UNKNOWN, nothing pinged or typed — no longer an ordinary deferred node (pack-update's node loop decides
+///   that seat by its own role's directive on the next APPLIED version); not idle·self-idle·ready → kept, unknown; ACK →
+///   marked delivered, dropped, "verified landed" (a failed mark keeps it UNKNOWN — never an ordinary deferred entry);
+///   `ReceivedNoAck` → typed once (PASSED → marked; REFUSED → an ordinary deferred retry, zero bytes were typed;
+///   UNKNOWN → a new unknown entry); undetermined → kept, unknown. A deferred node whose inject comes back UNKNOWN
+///   becomes an unknown entry (no mark, not resolved, not retryable). No deferred inject goes to a seat that still has an
+///   unknown entry, and nothing this reconciliation decides is typed into a bare shell (`live_agent`).
 #[allow(clippy::too_many_arguments)]
 fn consume_reinject_pending_core(
     base: &std::path::Path,
     pending_ver: &str,
     pending_nodes: &[(u64, String)],
+    pending_unknown: &[ReinjectUnknownEntry],
     markers: &std::collections::HashMap<String, ReinjectMarker>,
     fleet: &[serde_json::Value],
     compose: impl Fn(&str) -> Result<String, String>,
     read_tail: impl Fn(u64) -> String,
     inject: impl Fn(u64, &str) -> Result<(), String>,
     mark: impl Fn(u64, &str, &str) -> Result<(), String>,
-) -> std::io::Result<(usize, usize)> {
+    presence: impl Fn(u64) -> Presence,
+    // ★(B-360 R2 revise) a live agent on the seat (not a bare shell: `reinject_check_should_skip_bare_shell`) — checked
+    //   again right before any inject that this reconciliation decides (pack-update's own node loop has no such gate)
+    live_agent: impl Fn(u64) -> bool,
+    // ★(B-360 R3 · A6) this lane and its daemon instance (`PendingHere::measure()` in production)
+    here: &PendingHere,
+) -> std::io::Result<PendingConsumeReport> {
+    let mut rep = PendingConsumeReport::default();
     let mut kept: Vec<(u64, String)> = Vec::new();
-    let mut resolved = 0usize;
-    for (sid, role) in pending_nodes {
-        // 라이브 플릿에서 해당 surface 조회 — 부재(닫힘)면 재시도 대상 자체가 없으므로 해소 처리.
-        let Some(node) = fleet.iter().find(|n| n["surface_id"].as_u64() == Some(*sid)) else {
-            resolved += 1;
-            continue;
-        };
+    let mut unknown_out: Vec<ReinjectUnknownEntry> = Vec::new();
+    // idle·self-idle·ready of a live node (the 3-signal gate of `reinject_decision`)
+    let gate = |node: &Value, sid: u64| {
         let agent = node["agent"].as_str().map(|s| s.to_string());
         let idle = node["state"].as_str() == Some("idle");
         let idle_secs = node["idle_secs"].as_u64().unwrap_or(0);
@@ -26424,46 +28050,218 @@ fn consume_reinject_pending_core(
             Some(st) => st != "working",
             None => false,
         };
-        // 디렉티브 합성 실패(비표준 역할)는 영영 주입 불가 → 해소(stale 잔존 방지).
+        let ready = adapter_ready(&agent, idle, idle_secs, &read_tail(sid));
+        (idle, self_idle, ready)
+    };
+    // ── unknown entries first ──
+    // ★(B-360 R3 · A6) before ANY ping, mark or inject, in this order: 1 lane · 2 daemon instance · 3 the number is
+    //   there · 4 ROLE GUARD · 5 DIRECTIVE-HASH GUARD. Only then today's presence ping → ACK mark / ReceivedNoAck inject.
+    let lane = here.lane();
+    let keep_unknown = |rep: &mut PendingConsumeReport, out: &mut Vec<ReinjectUnknownEntry>, e: ReinjectUnknownEntry| {
+        rep.unknown += 1;
+        rep.unknown_nodes.push((e.surface_id, e.role.clone()));
+        out.push(e);
+    };
+    for u in pending_unknown {
+        let (sid, role) = (u.surface_id, u.role.as_str());
+        // 1 · another lane's entry: not ours to resolve, drop or rewrite — carried into the file as it is, not counted
+        if u.is_foreign_to(&lane) {
+            eprintln!(
+                "[pack-update] pending unknown surface {sid} ({role}) belongs to another lane ({}) — left untouched",
+                u.owner_socket().unwrap_or("?")
+            );
+            unknown_out.push(u.clone());
+            continue;
+        }
+        // org.status unanswered: without the daemon instance nothing proves the number is still the same pane — type
+        //   nothing. ★(REFLECTION-2 R2-A6b-1/-2) The predicate is "unanswered", not "no instance": an ANSWERED status
+        //   without `daemon.started_at` goes on (rule 2 cannot fire — `gone_because` concludes nothing, x10) and the
+        //   role and hash guards stand alone. cysd has sent `daemon.started_at` in org.status since the initial commit
+        //   (src/bin/cysd/handlers.rs, the org.status `daemon` object), so only a non-cysd peer — e.g. a test fake that
+        //   answers `{}` — takes that path.
+        if !here.status_read {
+            eprintln!(
+                "[pack-update] pending unknown surface {sid} ({role}): the daemon instance is unmeasured (org.status \
+                 unreadable) — still UNKNOWN, nothing pinged or typed"
+            );
+            keep_unknown(&mut rep, &mut unknown_out, u.clone());
+            continue;
+        }
+        // 2 · a new daemon instance (or a session that ended): the pane is gone
+        if let Some(why) = u.gone_because(here) {
+            eprintln!("[pack-update] pending unknown surface {sid} ({role}): {why} — the pane is gone: resolved, nothing pinged");
+            rep.resolved += 1;
+            continue;
+        }
+        // 3 · same instance, the number is gone (or exited): nothing can land or be re-sent
+        let Some(node) = fleet.iter().find(|n| n["surface_id"].as_u64() == Some(sid)) else {
+            rep.resolved += 1;
+            continue;
+        };
+        // 4 · ROLE GUARD: role names are daemon-local, so the number must still hold the entry's role
+        if node["role"].as_str() != Some(role) {
+            eprintln!(
+                "[pack-update] ⚠ pending unknown surface {sid}: the seat holds role {:?}, the entry is for role {role} — \
+                 REFUSED: nothing pinged, typed or marked; still UNKNOWN",
+                node["role"].as_str().unwrap_or("")
+            );
+            keep_unknown(&mut rep, &mut unknown_out, u.clone());
+            continue;
+        }
         let Ok(directive) = compose(role) else {
-            resolved += 1;
+            rep.resolved += 1;
             continue;
         };
         let new_hash = sha256_hex(&directive);
-        let ready = adapter_ready(&agent, idle, idle_secs, &read_tail(*sid));
+        // 5 · DIRECTIVE-HASH GUARD: the text that would be typed is not the text whose write is unknown → never typed from
+        //   this loop (it stays UNKNOWN; pack-update's node loop decides the seat by ITS OWN role's directive)
+        if new_hash != u.directive_hash {
+            eprintln!(
+                "[pack-update] pending unknown surface {sid} ({role}): the directive changed since the unknown write — not \
+                 typed from the unknown reconciliation; still UNKNOWN (`cys reinject --role {role} --check`)"
+            );
+            keep_unknown(&mut rep, &mut unknown_out, u.clone());
+            continue;
+        }
+        let (idle, self_idle, ready) = gate(node, sid);
+        if !(idle && self_idle && ready) {
+            keep_unknown(&mut rep, &mut unknown_out, u.clone());
+            continue;
+        }
+        match presence(sid) {
+            Presence::Present => match mark(sid, pending_ver, &new_hash) {
+                Ok(()) => {
+                    println!(
+                        "[pack-update] pending unknown surface {sid} ({role}): verified landed (ACK) — marked delivered, \
+                         nothing typed"
+                    );
+                    rep.resolved += 1;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[pack-update] ⚠ surface {sid} ({role}): verified landed (ACK) but reinject.mark failed ({e}) — kept \
+                         UNKNOWN (never an ordinary retry: that would type it twice)"
+                    );
+                    keep_unknown(&mut rep, &mut unknown_out, u.clone());
+                }
+            },
+            Presence::Absent if !live_agent(sid) => {
+                eprintln!(
+                    "[pack-update] surface {sid} ({role}): absent, but the seat is now a bare shell — nothing typed, still UNKNOWN"
+                );
+                keep_unknown(&mut rep, &mut unknown_out, u.clone());
+            }
+            Presence::Absent => match inject(sid, &directive) {
+                Ok(()) => match mark(sid, pending_ver, &new_hash) {
+                    Ok(()) => {
+                        println!(
+                            "[pack-update] pending unknown surface {sid} ({role}): not in context (ReceivedNoAck) — \
+                             re-injected once, marked"
+                        );
+                        rep.resolved += 1;
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[pack-update] ⚠ surface {sid} ({role}): re-injected but reinject.mark failed ({e}) — kept \
+                             UNKNOWN so the next pass checks it (no blind second copy)"
+                        );
+                        keep_unknown(&mut rep, &mut unknown_out, u.clone());
+                    }
+                },
+                Err(e) if is_write_outcome_unknown(&e) => {
+                    eprintln!("[pack-update] ⚠ pending {}", reinject_unknown_note(sid, role, &e, &reinject_pending_path(base)));
+                    let entry = ReinjectUnknownEntry::from_unknown_write(sid, role, &directive, &e, here);
+                    let _ = record_reinject_unknown(base, pending_ver, &entry);
+                    rep.unknown_new += 1;
+                    keep_unknown(&mut rep, &mut unknown_out, entry);
+                }
+                Err(e) => {
+                    // REFUSED (zero bytes) or another definite failure: an ordinary retry is safe
+                    eprintln!("[pack-update] pending re-inject failed (surface {sid}, role {role}): {e} — kept for retry");
+                    kept.push((sid, role.to_string()));
+                }
+            },
+            Presence::Undetermined(why) => {
+                eprintln!(
+                    "[pack-update] surface {sid} ({role}): directive presence undetermined ({why}) — still UNKNOWN, nothing typed"
+                );
+                keep_unknown(&mut rep, &mut unknown_out, u.clone());
+            }
+        }
+    }
+    // ── ordinary deferred nodes (today's behaviour; the deferred list itself is OUT of B-360 R3) ──
+    //   ★(B-360 R3 · A6) a stale unknown entry is no longer "decided normally" here: the hash guard keeps it UNKNOWN.
+    let open_seats: std::collections::HashSet<u64> =
+        unknown_out.iter().filter(|u| !u.is_foreign_to(&lane)).map(|u| u.surface_id).collect();
+    for (sid, role) in pending_nodes.iter() {
+        // 라이브 플릿에서 해당 surface 조회 — 부재(닫힘)면 재시도 대상 자체가 없으므로 해소 처리.
+        let Some(node) = fleet.iter().find(|n| n["surface_id"].as_u64() == Some(*sid)) else {
+            rep.resolved += 1;
+            continue;
+        };
+        if open_seats.contains(sid) {
+            // an unresolved unknown write on this seat: never type into it before that is settled
+            kept.push((*sid, role.clone()));
+            continue;
+        }
+        // 디렉티브 합성 실패(비표준 역할)는 영영 주입 불가 → 해소(stale 잔존 방지).
+        let Ok(directive) = compose(role) else {
+            rep.resolved += 1;
+            continue;
+        };
+        let new_hash = sha256_hex(&directive);
+        let (idle, self_idle, ready) = gate(node, *sid);
         match reinject_decision(markers.get(role.as_str()), pending_ver, &new_hash, idle, self_idle, ready)
         {
             ReinjectDecision::Inject => {
                 // per-node 에러 격리 — 한 노드의 실패가 나머지 재시도를 막지 않게 잔존 처리 후 계속.
-                if inject(*sid, &directive).is_err() {
-                    kept.push((*sid, role.clone()));
+                if let Err(e) = inject(*sid, &directive) {
+                    if !is_write_outcome_unknown(&e) {
+                        kept.push((*sid, role.clone()));
+                        continue;
+                    }
+                    // ★(B-360 R2 revise) UNKNOWN: not marked (that would be a permanent skip if it never lands), not
+                    //   kept as an ordinary retry (that would type it twice) — an unknown entry, written at once
+                    eprintln!("[pack-update] ⚠ pending {}", reinject_unknown_note(*sid, role, &e, &reinject_pending_path(base)));
+                    let entry = ReinjectUnknownEntry::from_unknown_write(*sid, role, &directive, &e, here);
+                    let _ = record_reinject_unknown(base, pending_ver, &entry);
+                    rep.unknown += 1;
+                    rep.unknown_new += 1;
+                    rep.unknown_nodes.push((*sid, role.clone()));
+                    unknown_out.push(entry);
                     continue;
                 }
                 if mark(*sid, pending_ver, &new_hash).is_err() {
                     kept.push((*sid, role.clone()));
                     continue;
                 }
-                resolved += 1;
+                rep.resolved += 1;
             }
-            ReinjectDecision::SkipUnchanged | ReinjectDecision::SkipDedup => resolved += 1,
+            ReinjectDecision::SkipUnchanged | ReinjectDecision::SkipDedup => rep.resolved += 1,
             ReinjectDecision::Defer => kept.push((*sid, role.clone())),
         }
     }
-    persist_reinject_pending(base, pending_ver, &kept)?;
-    Ok((resolved, kept.len()))
+    rep.kept = kept.len();
+    write_reinject_pending(
+        base,
+        &ReinjectPending { pack_version: pending_ver.to_string(), deferred: kept, unknown: unknown_out },
+    )?;
+    Ok(rep)
 }
 
 /// LOW#1 능동 소비 진입점 — run_pack_update 착수 시 1회 호출. 디스크 pending이 있으면 지금 idle인
 /// 보류 노드에 reinject를 재시도한다(write-only였던 pending을 능동 소비). pending 부재/빈 목록 →
 /// no-op(데몬 접속 없이 즉시 반환). 데몬 미가동 → Err(호출자가 로깅·계속, pending 보존 = graceful).
-fn consume_reinject_pending(base: &std::path::Path) -> Result<(usize, usize), String> {
-    let Some((ver, nodes)) = read_reinject_pending(base).map_err(|e| e.to_string())? else {
-        return Ok((0, 0));
+/// ★(B-360 R2 revise) Returns a `PendingConsumeReport` (resolved / kept / unknown), not a tuple without an unknown slot.
+fn consume_reinject_pending(base: &std::path::Path) -> Result<PendingConsumeReport, String> {
+    let Some(doc) = read_reinject_pending_doc(base).map_err(|e| e.to_string())? else {
+        return Ok(PendingConsumeReport::default());
     };
-    if nodes.is_empty() {
+    let (ver, nodes, unknown) = (doc.pack_version, doc.deferred, doc.unknown);
+    if nodes.is_empty() && unknown.is_empty() {
         // 빈 deferred만 남은 stale 파일 → 정리(데몬 접속 불요).
         let _ = std::fs::remove_file(reinject_pending_path(base));
-        return Ok((0, 0));
+        return Ok(PendingConsumeReport::default());
     }
     // 라이브 토폴로지(마커)·플릿(상태) — 데몬 필요. 미가동이면 ?로 Err 전파(graceful 스킵·pending 보존).
     let topo = request("system.topology", json!({}))?;
@@ -26488,10 +28286,12 @@ fn consume_reinject_pending(base: &std::path::Path) -> Result<(usize, usize), St
     }
     let dash = request("control.dashboard", json!({}))?;
     let fleet = dash["fleet"].as_array().cloned().unwrap_or_default();
+    let here = PendingHere::measure();
     consume_reinject_pending_core(
         base,
         &ver,
         &nodes,
+        &unknown,
         &markers,
         &fleet,
         compose_directive,
@@ -26509,6 +28309,9 @@ fn consume_reinject_pending(base: &std::path::Path) -> Result<(usize, usize), St
             )
             .map(|_| ())
         },
+        |sid| directive_presence(sid, PRESENCE_PING_TIMEOUT_SECS),
+        |sid| surface_entry(sid).is_ok_and(|e| !reinject_check_should_skip_bare_shell(&e)),
+        &here,
     )
     .map_err(|e| e.to_string())
 }
@@ -28499,6 +30302,36 @@ fn skillscan_warn(skill_dir: &std::path::Path) {
     }
 }
 
+/// ★(B-360 R2 revise) The structured result line the app parses (`PACK_UPDATE_RESULT … failed=W unknown_new=N unknown=U`:
+/// `unknown` = all nodes whose reinject outcome is unknown, `unknown_new` = those created by this run — the other key
+/// does not start with `unknown=`, so readers of `unknown=` are unaffected). Pure.
+fn pack_update_result_line(pack_version: &str, rep: &ReinjectReport) -> String {
+    format!(
+        "{} pack_version={pack_version} injected={} skipped={} deferred={} failed={} unknown_new={} unknown={}",
+        cys::pack::REINJECT_RESULT_PREFIX,
+        rep.injected,
+        rep.skipped,
+        rep.deferred,
+        rep.failed,
+        rep.unknown_new,
+        rep.unknown
+    )
+}
+
+/// ★(B-360 R2 revise) The warning for unknown nodes: who, where the state is kept, and how to check now. Pure.
+fn pack_update_unknown_warning(base: &std::path::Path, nodes: &[(u64, String)]) -> String {
+    let who: Vec<String> = nodes.iter().map(|(sid, role)| format!("surface {sid} ({role})")).collect();
+    let check: Vec<String> = nodes.iter().map(|(_, role)| format!("`cys reinject --role {role} --check`")).collect();
+    format!(
+        "{} node(s) with a directive write of UNKNOWN outcome: {} — it may still land; nothing re-sent, nothing marked; kept \
+         in {} (the next pack-update checks it with a presence ping) — check now: {}",
+        nodes.len(),
+        who.join(", "),
+        reinject_pending_path(base).display(),
+        check.join(" · ")
+    )
+}
+
 fn run_pack_update(from: Option<String>, manifest_url: Option<String>, dry_run: bool) -> i32 {
     // 성공 경로는 종료코드(i32)를 싣는다: 0=완전 성공, EXIT_REINJECT_DEGRADED=디스크는 반영됐으나
     // 라이브 노드 reinject 실패(성공 침묵 포장 금지). 에러 경로(Err)는 외부에서 1로 매핑.
@@ -28517,12 +30350,21 @@ fn run_pack_update(from: Option<String>, manifest_url: Option<String>, dry_run: 
         // version gate 판정 전·독립(디스크 팩이 이미 그 버전이라 UpToDate여도 동작): 보류 당시 busy였던
         // 노드가 지금 idle이면 reinject를 완료하고 pending에서 제거한다. dry-run은 부작용 없음 계약이라
         // 생략. 데몬 미가동이면 graceful 스킵(Err 로깅·pending 보존).
+        // ★(B-360 R2 revise) the pass's unknown nodes are reported on every path; only the ones it CREATED
+        //   (`consumed_unknown_new`) reach the exit class (reinject_exit_code) — carried ones do not
+        let (mut consumed_unknown, mut consumed_unknown_new) = (0usize, 0usize);
         if !dry_run {
             match consume_reinject_pending(&base) {
-                Ok((resolved, kept)) if resolved > 0 || kept > 0 => {
+                Ok(c) if c.resolved > 0 || c.kept > 0 || c.unknown > 0 => {
                     println!(
-                        "[pack-update] pending reinject 소비: {resolved} 해소, {kept} 잔존."
+                        "[pack-update] pending reinject 소비: {} 해소, {} 잔존, {} 미확인(이번 실행 신규 {}).",
+                        c.resolved, c.kept, c.unknown, c.unknown_new
                     );
+                    if c.unknown > 0 {
+                        eprintln!("[pack-update] ⚠ {}", pack_update_unknown_warning(&base, &c.unknown_nodes));
+                    }
+                    consumed_unknown = c.unknown;
+                    consumed_unknown_new = c.unknown_new;
                 }
                 Ok(_) => {}
                 Err(e) => {
@@ -28566,6 +30408,16 @@ fn run_pack_update(from: Option<String>, manifest_url: Option<String>, dry_run: 
                     outcome.pack_version
                 );
                 println!("{}", cys::pack::pack_update_uptodate_line(&outcome.pack_version));
+                if consumed_unknown > 0 {
+                    // ★(B-360 R2 revise) no reinject ran, but the pending pass left nodes unknown: the app reads this
+                    //   count (only the measured one — no unmeasured injected/failed are printed as 0)
+                    println!(
+                        "{} pack_version={} unknown_new={consumed_unknown_new} unknown={consumed_unknown}",
+                        cys::pack::REINJECT_RESULT_PREFIX,
+                        outcome.pack_version
+                    );
+                    return Ok(reinject_exit_code(0, consumed_unknown_new));
+                }
                 return Ok(0);
             }
             VersionGate::BinaryTooOld => {
@@ -28602,19 +30454,17 @@ fn run_pack_update(from: Option<String>, manifest_url: Option<String>, dry_run: 
         match run_pack_reinject(&outcome.pack_version) {
             Ok(rep) => {
                 println!(
-                    "[pack-update] reinject: {} injected, {} skipped, {} deferred, {} failed.",
-                    rep.injected, rep.skipped, rep.deferred, rep.failed
+                    "[pack-update] reinject: {} injected, {} skipped, {} deferred, {} failed, {} unknown.",
+                    rep.injected, rep.skipped, rep.deferred, rep.failed, rep.unknown
                 );
                 // 구조화 출력(Tauri 브리지가 failed/deferred를 파싱해 update-warning emit).
-                println!(
-                    "{} pack_version={} injected={} skipped={} deferred={} failed={}",
-                    cys::pack::REINJECT_RESULT_PREFIX,
-                    outcome.pack_version,
-                    rep.injected,
-                    rep.skipped,
-                    rep.deferred,
-                    rep.failed
-                );
+                // ★(B-360 R2 revise) + `unknown=` — `injected` never includes an unknown outcome.
+                println!("{}", pack_update_result_line(&outcome.pack_version, &rep));
+                if rep.unknown > 0 {
+                    let nodes: Vec<(u64, String)> =
+                        rep.unknown_entries.iter().map(|u| (u.surface_id, u.role.clone())).collect();
+                    eprintln!("[pack-update] ⚠ {}", pack_update_unknown_warning(&base, &nodes));
+                }
                 // deferred(busy) 노드 pending 영속 / 없으면 stale 제거(가시화·재시도 SOT).
                 if let Err(e) =
                     persist_reinject_pending(&base, &outcome.pack_version, &rep.deferred_nodes)
@@ -28640,7 +30490,8 @@ fn run_pack_update(from: Option<String>, manifest_url: Option<String>, dry_run: 
                 if accepted_degraded {
                     return Ok(cys::pack::EXIT_ACCEPTED_DEGRADED);
                 }
-                Ok(reinject_exit_code(rep.failed))
+                // new unknowns of this run only: the node loop's + the pending pass's re-injects (head's exit rule)
+                Ok(reinject_exit_code(rep.failed, rep.unknown_new + consumed_unknown_new))
             }
             // 데몬 미가동 등으로 reinject 자체를 못 함 — 디스크 반영은 성공(무중단 정책상 0).
             Err(e) => {
@@ -28652,6 +30503,10 @@ fn run_pack_update(from: Option<String>, manifest_url: Option<String>, dry_run: 
                 );
                 if accepted_degraded {
                     return Ok(cys::pack::EXIT_ACCEPTED_DEGRADED);
+                }
+                if consumed_unknown_new > 0 {
+                    // ★(B-360 R2 revise) the pending pass created unknown outcomes this run: not a clean 0
+                    return Ok(reinject_exit_code(0, consumed_unknown_new));
                 }
                 Ok(0)
             }
@@ -29533,8 +31388,9 @@ mod tests {
         assert_eq!(body.matches("inject_text(").count(), 0, "순환에 거부 없는 주입이 있다");
         assert_eq!(body.matches("inject_text_opts(").count(), 5, "순환 주입 지점 수가 바뀌었다");
         for call in [
-            "inject_text_opts(sid, &cycle_save_directive(&role_name, &files), true)?;",
-            "판정하라.\"), true)?;",
+            // (1.1.11 편입 · 원작자 B-360 R2 revise S48·S49) 저장 지시·검증자 글은 결과 3값 판정 match 로 감싸였다 — 거부 옵션은 그대로.
+            "match inject_text_opts(sid, &cycle_save_directive(&role_name, &files), true) {",
+            "판정하라.\"), true) {",
             "inject_text_opts(sid, &cycle_reinject_payload(hooks_inject, &resume_text, &mut || compose_directive(&role_name))?, true)?;",
         ] {
             assert!(body.contains(call), "순환 주입에 거부 옵션이 꺼져 있다: {call}");
@@ -29560,7 +31416,8 @@ mod tests {
         let rb = &prod[ri..ri + prod[ri + 1..].find("\n}\n").unwrap() + 1];
         assert_eq!(rb.matches("inject_text(").count(), 0, "reinject(phoenix 핑·재주입)에 거부 없는 주입이 남았다");
         assert_eq!(rb.matches("inject_text_opts(").count(), 2, "reinject 핑·재주입 지점 수");
-        assert!(rb.contains("inject_text_opts(sid, &reinject_ping_text(&nonce), true)?;"), "reinject 핑에 거부 옵션");
+        // (1.1.11 편입 · 원작자 B-360 R2 revise S63) 핑은 결과 3값 판정 match 로 감싸였다 — 거부 옵션은 그대로.
+        assert!(rb.contains("match inject_text_opts(sid, &reinject_ping_text(&nonce), true) {"), "reinject 핑에 거부 옵션");
         assert!(rb.contains("inject_text_opts(sid, &directive, true)"), "reinject 재주입에 거부 옵션");
         // 거부로 끝나도 quiescing 은 풀린다(결과를 싣는 해제 · 원작자 RR1-ROLE-1) — 승인 창 거부는 not_cleared 로 접힌다.
         let release = body.find("let _ = end_surface_quiescing(sid, outcome);").expect("quiescing 해제");
@@ -31444,6 +33301,72 @@ mod tests {
     //   (소스 핀 `env_mutexes_are_poison_tolerant_source_pin` 이 집행).
     pub(super) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    #[test]
+    fn policy_r2_actual_cli_effective_spec_and_env_precedence() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        struct FixturePack {
+            path: std::path::PathBuf,
+            previous: Option<std::ffi::OsString>,
+        }
+        impl Drop for FixturePack {
+            fn drop(&mut self) {
+                match &self.previous {
+                    Some(value) => std::env::set_var(cys::pack::ENV_PACK_DIR, value),
+                    None => std::env::remove_var(cys::pack::ENV_PACK_DIR),
+                }
+                let _ = std::fs::remove_dir_all(&self.path);
+            }
+        }
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("cys-policy-r2-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        let fixture = FixturePack { path, previous: std::env::var_os(cys::pack::ENV_PACK_DIR) };
+        std::env::set_var(cys::pack::ENV_PACK_DIR, &fixture.path);
+        let embedded = embedded_agents_json().expect("embedded definitions");
+        let cmd = embedded["claude"]["cmd"].as_str().unwrap();
+        assert!(embedded["claude"]["env"].is_object(), "fixture needs vendor env to discriminate inheritance");
+        let write = |disk: &Value| std::fs::write(fixture.path.join("agents.json"), serde_json::to_vec(disk).unwrap()).unwrap();
+
+        assert!(load_agent_spec("claude").is_err(), "missing disk document must not synthesize embedded config");
+        write(&json!({}));
+        assert_eq!(load_agent_spec("claude").unwrap(), embedded["claude"]);
+        write(&Value::Null);
+        assert_eq!(load_agent_spec("claude").unwrap(), embedded["claude"], "parsed non-object has no adapter key");
+
+        write(&json!({"claude":{"cmd":cmd,"notes":"mine"}}));
+        let resolved = load_agent_spec("claude").unwrap();
+        assert_eq!(resolved["cmd"], json!(cmd));
+        assert!(resolved.get("env").is_none());
+        assert!(agent_env_pairs(&resolved).is_empty());
+        for absent in ["inject_delay_secs", "clear_cmd", "resume_arg"] {
+            assert!(resolved.get(absent).is_none(), "not a layered UI/hook field: {absent}");
+        }
+        for key in ["ready_marker", "approval_patterns", "first_run_gates", "prompt_marker", "composer_placeholder", "hooks_inject_directive"] {
+            assert_eq!(resolved.get(key), embedded["claude"].get(key));
+        }
+        assert_eq!(resolved["notes"], json!("mine"));
+
+        for record in [json!({}), json!({"cmd":null}), json!({"cmd":9}), Value::Null, json!("not-object")] {
+            write(&json!({"claude":record}));
+            let resolved = load_agent_spec("claude").unwrap();
+            assert!(resolved.get("cmd").and_then(Value::as_str).is_none(), "never inherit cmd inside existing adapter");
+        }
+        for env in [Value::Null, json!(7), json!("not-map"), json!([])] {
+            write(&json!({"claude":{"cmd":cmd,"env":env}}));
+            assert!(agent_env_pairs(&load_agent_spec("claude").unwrap()).is_empty());
+        }
+        write(&json!({"claude":{"cmd":cmd,"env":{"Z":"z","A":"a","BAD":false,"NUMBER":7}}}));
+        assert_eq!(agent_env_pairs(&load_agent_spec("claude").unwrap()), vec![("A".into(),"a".into()),("Z".into(),"z".into())]);
+
+        let mut explicit = json!({"cmd":cmd});
+        for key in ["ready_marker", "approval_patterns", "first_run_gates", "prompt_marker", "composer_placeholder", "hooks_inject_directive"] {
+            explicit[key] = Value::Null;
+        }
+        write(&json!({"claude":explicit}));
+        assert_eq!(load_agent_spec("claude").unwrap(), explicit, "explicit null must survive all six field layers");
+    }
+
+
     fn sha256_of(bytes: &[u8]) -> String {
         use sha2::{Digest, Sha256};
         format!("{:x}", Sha256::digest(bytes))
@@ -32569,13 +34492,13 @@ mod tests {
     /// failed==0이면 0(deferred만 있어도 디스크 반영은 성공이라 0). #3 핵심 신호 계약.
     #[test]
     fn reinject_failed_signals_degraded_exit() {
-        assert_eq!(reinject_exit_code(0), 0, "실패 0 → 성공(0)");
+        assert_eq!(reinject_exit_code(0, 0), 0, "실패 0 → 성공(0)");
         assert_eq!(
-            reinject_exit_code(1),
+            reinject_exit_code(1, 0),
             cys::pack::EXIT_REINJECT_DEGRADED,
             "실패>0 → degraded 종료코드(성공으로 침묵 포장 금지)"
         );
-        assert_eq!(reinject_exit_code(5), cys::pack::EXIT_REINJECT_DEGRADED);
+        assert_eq!(reinject_exit_code(5, 0), cys::pack::EXIT_REINJECT_DEGRADED);
         // 0(완전 성공)·1(일반 실패)과 구분되는 신호여야 호출자가 디스크 반영+미각성을 분간한다.
         assert_ne!(cys::pack::EXIT_REINJECT_DEGRADED, 0);
         assert_ne!(cys::pack::EXIT_REINJECT_DEGRADED, 1);
@@ -32644,10 +34567,12 @@ mod tests {
 
         let injected = std::cell::Cell::new(0u32);
         let marked = std::cell::Cell::new(0u32);
-        let (resolved, kept) = consume_reinject_pending_core(
+        // ★(B-360 R2 revise) the result is a struct now (+ the unknown list and the presence check, unused here)
+        let r = consume_reinject_pending_core(
             &base,
             &ver,
             &nodes,
+            &[],
             &markers,
             &fleet,
             |_role| Ok("DIRECTIVE-BODY".to_string()),
@@ -32660,8 +34585,13 @@ mod tests {
                 marked.set(marked.get() + 1);
                 Ok(())
             },
+            |_sid| Presence::Undetermined("no unknown entries in this case".into()),
+            |_sid| true,
+            &PendingHere::default(),
         )
         .unwrap();
+        let (resolved, kept) = (r.resolved, r.kept);
+        assert_eq!(r.unknown, 0);
 
         assert_eq!(resolved, 1, "idle 노드 1개 해소");
         assert_eq!(kept, 1, "busy 노드 1개 잔존");
@@ -32693,18 +34623,24 @@ mod tests {
             json!({"surface_id":7, "role":"worker", "state":"idle", "idle_secs":30, "agent_status":"idle"}),
         ];
         let markers = std::collections::HashMap::new();
-        let (resolved, kept) = consume_reinject_pending_core(
+        // ★(B-360 R2 revise) the result is a struct now (+ the unknown list and the presence check, unused here)
+        let r = consume_reinject_pending_core(
             &base,
             &ver,
             &nodes,
+            &[],
             &markers,
             &fleet,
             |_role| Ok("DIRECTIVE-BODY".to_string()),
             |_sid| String::new(),
             |_sid, _t| Ok(()),
             |_sid, _v, _h| Ok(()),
+            |_sid| Presence::Undetermined("no unknown entries in this case".into()),
+            |_sid| true,
+            &PendingHere::default(),
         )
         .unwrap();
+        let (resolved, kept) = (r.resolved, r.kept);
         assert_eq!(resolved, 1);
         assert_eq!(kept, 0);
         assert!(!path.exists(), "전부 해소 → pending 삭제");
@@ -32721,7 +34657,7 @@ mod tests {
         assert!(!reinject_pending_path(&base).exists());
         // 데몬 접속 없이 즉시 반환(요청 함수 호출 없음).
         let r = consume_reinject_pending(&base).unwrap();
-        assert_eq!(r, (0, 0));
+        assert_eq!(r, PendingConsumeReport::default()); // ★(B-360 R2 revise) a struct, was the (0, 0) tuple
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -36263,11 +38199,13 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         //   제출로 접었다. 계수는 우리 ⑯ `inject_text_opts` 판을 함께 센다.)
         //   ⚠줄어드는 방향의 개정이므로 근거 없이 다시 내리지 마라: 내리려면 「어느 주입이
         //   어디로 접혔는가」를 여기 적어야 한다(적을 수 없으면 그것이 침묵이다).
+        // ★(B-360 R2 revise · area P) 동결값 3 → 4: `directive_presence` 의 존재 확인 핑이 네 번째 지점이다 — 그 Err 는
+        //   버려지지 않고 `Presence::Undetermined("presence ping not delivered: {e}")` 로 호출부 문안에 실린다(침묵 0).
         assert_eq!(
             prod.matches("if let Err(e) = inject_text(").count()
                 + prod.matches("if let Err(e) = inject_text_opts(").count(),
-            3,
-            "주입 사유를 남기는 지점 수가 동결값(3)을 벗어났다 — 줄었다면 침묵이 되살아난 것이다"
+            4,
+            "주입 사유를 남기는 지점 수가 동결값(4)을 벗어났다 — 줄었다면 침묵이 되살아난 것이다"
         );
         // 그리고 각 지점이 자기 사유를 낸다(개수만으로는 이사를 못 잡는다).
         for marker in [
@@ -41948,7 +43886,16 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         let mut argv = vec!["cys", "send", "--surface", "surface:7"];
         argv.extend_from_slice(flags);
         argv.push("J3 본문");
-        let rc = run(Cli::parse_from(argv).command);
+        // ★1.1.11 편입: 시험 안 실행(파싱 + `run`)을 8 MiB 스레드에서 돈다 — debug 빌드의 이 경로는 int/1111 에서 이미 2048 KiB 경계(그 값에서 통과)
+        //   였고, 원작자 0.14.52 send 경로가 몇 KiB 를 더해 기본 2 MiB 시험 스레드를 넘었다(실측 2060 KiB 통과). 원작자 CI 도 cys 시험에 8 MiB 를 준다
+        //   (c8fd47ff). 실제 기본 스택(윈 주 스레드) 판정은 시험이 아니라 W-GATE(패키지 cys.exe --help) 몫이다. env 가드는 프로세스 전역이라 그대로 유효.
+        let argv: Vec<String> = argv.iter().map(|a| a.to_string()).collect();
+        let rc = std::thread::Builder::new()
+            .stack_size(8 << 20)
+            .spawn(move || run(Cli::parse_from(argv).command))
+            .expect("j3 시험 스레드")
+            .join()
+            .expect("j3 시험 스레드 종료");
         stop();
         let sends = calls
             .lock()
@@ -44167,9 +46114,11 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         let pre = body
             .find("verifier_precheck(caller_env.as_deref(), sid, v, &vsid)?;")
             .expect("run_cycle_agent 에 사전검사 배선 없음");
+        // ★(B-360 R2 revise · S48) the save write is no longer `?`-propagated (an UNKNOWN goes on to the save-file gate),
+        //   so the anchor is the call itself; the order contract (precheck before the first write) is unchanged.
         let save = body
-            // (1.1.8 합성) 우리 ⑯ 오버레이 — 저장 지시는 승인 창 거부 옵션을 싣는 `inject_text_opts(.., true)` 다.
-            .find("inject_text_opts(sid, &cycle_save_directive(&role_name, &files), true)?;")
+            // (1.1.8 합성 · 1.1.11 편입) 우리 ⑯ 오버레이 — 저장 지시는 승인 창 거부 옵션을 싣는 `inject_text_opts(.., true)` 다(원작자 B-360 이 결과 판정 match 로 감쌌다).
+            .find("inject_text_opts(sid, &cycle_save_directive(&role_name, &files), true)")
             .expect("저장 지시 주입 소실");
         assert!(pre < save, "사전검사가 저장 지시 뒤에 있다 — 쓰기 후 거부");
     }
@@ -50141,5 +52090,4785 @@ mod factory_reset_trash_notice_tests {
         }
         // 고르는 판정은 휴지통 삭제 판정 정본(lib) 하나다(cys-dept reap 의 윈 분기와 같은 값).
         assert!(body.contains("if cys::trash_delete_supported() {"), "CLI 가 격리분 수명 문장을 삭제 판정 정본으로 고르지 않는다");
+    }
+}
+
+#[cfg(test)]
+mod aid_s5_cli_tests {
+    use super::*;
+    #[test]
+    fn aid_s5_reap_due_is_explicit_and_json_is_validated() {
+        use clap::Parser;
+        assert!(Cli::try_parse_from(["cys", "reap-due"]).is_err());
+        assert!(Cli::try_parse_from(["cys", "reap-due", "surface:9", "--reap"]).is_err());
+        assert!(matches!(Cli::try_parse_from(["cys", "reap-due", "surface:9"]).unwrap().command, Command::VendorAux(VendorAuxCommand::ReapDue(_))));
+        for outcome in ["reaped", "gone", "deferred"] {
+            let result = json!({"surface_id":9, "outcome":outcome, "reason":"grace_not_elapsed"});
+            assert_eq!(serde_json::from_str::<Value>(&reap_due_json(&result, 9).unwrap()).unwrap(), result);
+        }
+        for bad in [json!({"outcome":"reaped"}), json!({"surface_id":true,"outcome":"gone"}),
+                    json!({"surface_id":10,"outcome":"reaped"}), json!({"surface_id":9,"outcome":"bad"}),
+                    json!({"surface_id":9,"outcome":"deferred"})] {
+            assert!(reap_due_json(&bad, 9).is_err(), "S5-CLI-MALFORMED: {bad}");
+        }
+    }
+}
+
+/// ★0.14.52 update repair C, design rev9 table row 7 (`cys daemon install` post-load "up", report only), and the CEO
+/// ruling 5 absolute condition (the probe never stops or signals a process). Rigs are fake daemons on temp sockets,
+/// never the live one.
+#[cfg(test)]
+mod update_repair_c_row7 {
+    /// The body of a top-level item from `anchor` to the next top-level item (whole-line `//` comments dropped).
+    fn item_code(src: &str, anchor: &str) -> String {
+        let start = src.find(anchor).unwrap_or_else(|| panic!("`{anchor}` is gone"));
+        let rest = &src[start..];
+        let end = ["\nfn ", "\n#[", "\n///", "\nconst ", "\nstruct ", "\nimpl", "\nmod "]
+            .iter()
+            .filter_map(|b| rest[1..].find(b).map(|i| i + 1))
+            .min()
+            .unwrap_or(rest.len());
+        rest[..end].lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n")
+    }
+
+    /// The same capability census as the app pin (src-tauri main.rs `capability_census`): kill and signal words
+    /// (case-insensitive), process launch and exit, raw OS calls, launchctl and osascript, every rpc / request form, and
+    /// rpc method families that act on seats or the daemon. ★R1-1: kill-words alone missed `surface.close` and friends.
+    fn capability_census(code: &str) -> Vec<(&'static str, usize)> {
+        const KILL_WORDS: &[&str] =
+            &["kill", "sigterm", "sigkill", "sigint", "sighup", "sigquit", "sigstop", "signal", "terminate", "raise("];
+        const CAPS: &[&str] = &[
+            "Command::new", ".spawn(", "process::exit", "libc::", "nix::", "launchctl", "osascript",
+            "rpc_oneshot(", "rpc_on(", " rpc(", "rpc_full", "conn_cell", "request(", "request_on(", "request_on_timeout(",
+            "\"surface.", "\"ledger.", "\"system.", "\"daemon.", "\"channel.",
+        ];
+        let low = code.to_lowercase();
+        let mut out = vec![("killwords", KILL_WORDS.iter().map(|t| low.matches(t).count()).sum())];
+        out.extend(CAPS.iter().map(|t| (*t, code.matches(t).count())).filter(|(_, n)| *n > 0));
+        out
+    }
+
+    /// A rig daemon: `Some(true)` answers every request line, `Some(false)` accepts and reads but never answers (hung),
+    /// `None` = nothing at the path (dead).
+    #[cfg(unix)]
+    fn rig(name: &str, answers: Option<bool>) -> (std::path::PathBuf, std::path::PathBuf) {
+        use std::io::{BufRead, Write};
+        let dir = std::env::temp_dir().join(format!("cys-ur7-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("d.sock");
+        if let Some(answer) = answers {
+            let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(stream) = stream else { return };
+                    std::thread::spawn(move || {
+                        let mut w = stream.try_clone().unwrap();
+                        let mut r = std::io::BufReader::new(stream);
+                        let mut line = String::new();
+                        while r.read_line(&mut line).map(|n| n > 0).unwrap_or(false) {
+                            if answer {
+                                let _ = w.write_all(b"{\"id\":1,\"ok\":true,\"result\":{\"daemon_pid\":4242,\"version\":\"0.0.0-rig\"}}\n");
+                                let _ = w.flush();
+                            }
+                            line.clear();
+                        }
+                    });
+                }
+            });
+        }
+        (dir, sock)
+    }
+
+    /// A rig whose FIRST accepted connection is read and never answered, and whose later connections are answered (the
+    /// shape that tells a per-try cap from none: codex R1 minor 1 on e18372bb, B7).
+    #[cfg(unix)]
+    fn rig_first_silent(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        use std::io::{BufRead, Write};
+        let dir = std::env::temp_dir().join(format!("cys-ur7-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("d.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        std::thread::spawn(move || {
+            for (i, stream) in listener.incoming().enumerate() {
+                let Ok(stream) = stream else { return };
+                std::thread::spawn(move || {
+                    let mut w = stream.try_clone().unwrap();
+                    let mut r = std::io::BufReader::new(stream);
+                    let mut line = String::new();
+                    while r.read_line(&mut line).map(|n| n > 0).unwrap_or(false) {
+                        if i > 0 {
+                            let _ = w.write_all(b"{\"id\":1,\"ok\":true,\"result\":{\"daemon_pid\":4242,\"version\":\"0.0.0-rig\"}}\n");
+                            let _ = w.flush();
+                        }
+                        line.clear();
+                    }
+                });
+            }
+        });
+        (dir, sock)
+    }
+
+    /// ★codex R1 minor 1 (e18372bb, B7): the first try hangs, a later one answers. With the 2 s per-try cap the first try
+    /// is cut at 2 s and the second finds the answer inside the 4 s budget (up, after about 2.2 s); without the cap the
+    /// first try takes the whole budget and the result is "not up". The total-silence specimen above stays as it is.
+    #[cfg(unix)]
+    #[test]
+    fn c_row7_first_try_unanswered_then_a_later_one_answers() {
+        use std::time::{Duration, Instant};
+        let (dir, sock) = rig_first_silent("first-silent");
+        let t = Instant::now();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(super::daemon_answers_within(&sock, Duration::from_secs(4)));
+        });
+        let up = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("daemon_answers_within on a first-silent rig did not end within 10 s");
+        let took = t.elapsed();
+        assert!(up, "the first try is cut at the 2 s per-try cap and a later try finds the answer inside the 4 s budget");
+        assert!(took >= Duration::from_millis(2000) && took < Duration::from_millis(3500), "first try cut at 2 s, second answered: {took:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// ★C row 7 purpose test: "up" on a responsive rig at the first try; `false` inside the budget on a dead rig and on
+    /// a hung rig (the old connect-only loop reported a hung daemon as "확인됨").
+    #[cfg(unix)]
+    #[test]
+    fn c_row7_daemon_answers_within_against_responsive_dead_and_hung_rigs() {
+        use std::time::{Duration, Instant};
+        let (d1, ok) = rig("ok", Some(true));
+        let (d2, dead) = rig("dead", None);
+        let (d3, hung) = rig("hung", Some(false));
+
+        let t = Instant::now();
+        assert!(super::daemon_answers_within(&ok, Duration::from_secs(4)), "a responsive rig is up");
+        assert!(t.elapsed() < Duration::from_millis(2000), "responsive took {:?}", t.elapsed());
+
+        let t = Instant::now();
+        assert!(!super::daemon_answers_within(&dead, Duration::from_secs(1)), "a dead rig is not up");
+        let took = t.elapsed();
+        assert!(took >= Duration::from_millis(950) && took < Duration::from_millis(2000), "dead, budget 1 s: {took:?}");
+
+        // The connect-only predicate this replaces says "up" here; the reply predicate does not.
+        assert!(std::os::unix::net::UnixStream::connect(&hung).is_ok(), "the hung rig accepts");
+        // ★R2-15: run on another thread under a 10 s watchdog, so a missing deadline fails this specimen instead of hanging it.
+        let t = Instant::now();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let hung2 = hung.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(super::daemon_answers_within(&hung2, Duration::from_secs(4)));
+        });
+        let up = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("daemon_answers_within on a hung rig did not end within 10 s: the deadline it relies on is missing");
+        assert!(!up, "a hung rig is not up");
+        let took = t.elapsed();
+        assert!(took >= Duration::from_millis(3900) && took < Duration::from_millis(5500), "hung, budget 4 s: {took:?}");
+        for d in [d1, d2, d3] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    /// Source pin (CEO ruling 5): the row-7 probe's capability census is only its one `system.identify` request;
+    /// `run_daemon_cmd` keeps exactly its base census (4ed79fdd: 2 kill-words = the row-6 takeover's `kill -TERM` /
+    /// `pkill` fallback, 10 `Command::new`, 7 launchctl, 1 `request(` for that takeover's identify), so a stop or signal
+    /// added on the row-7 path, by kill, by request or by launchctl, turns this red. Wiring: row 7 uses the probe;
+    /// rows 6, 8, 9 and the CLI transport (rows 10, 11) keep `connect_raw()` as the design table says.
+    #[test]
+    fn c_row7_probe_never_stops_a_process_and_rows_6_8_9_10_11_keep_presence() {
+        let src = include_str!("cys.rs");
+        let probe = item_code(src, "fn daemon_answers_within(");
+        assert_eq!(
+            capability_census(&probe),
+            vec![("killwords", 0), ("request_on_timeout(", 1), ("\"system.", 1)],
+            "the row-7 probe's capability census changed:\n{probe}"
+        );
+        assert!(
+            probe.contains("request_on_timeout(socket, \"system.identify\", json!({}), per_try)"),
+            "the row-7 probe is one identify on a private connection with a deadline"
+        );
+        let cmd = item_code(src, "fn run_daemon_cmd(");
+        assert_eq!(
+            capability_census(&cmd),
+            // (1.1.11 편입) 우리 판 run_daemon_cmd 의 원시 Command::new 는 7(원작자 base 4ed79fdd 는 10) — 우리 포크가 그 셋을 헬퍼로 옮긴 차이다.
+            //   이 핀의 뜻(행 7 수리가 능력을 늘리지 않는다)은 우리 판 기준값으로 지킨다.
+            vec![("killwords", 2), ("Command::new", 7), ("launchctl", 7), ("request(", 1), ("\"system.", 1)],
+            "run_daemon_cmd capability census changed from base 4ed79fdd"
+        );
+        assert!(cmd.contains("let up = daemon_answers_within(&socket_path(), std::time::Duration::from_secs(4));"), "row 7");
+        assert!(cmd.contains("let running = connect_raw().is_ok();"), "row 6 stays OWNERSHIP");
+        assert_eq!(cmd.matches("let alive = connect_raw().is_ok();").count(), 2, "rows 8 and 9 stay presence");
+        assert_eq!(cmd.matches("connect_raw().is_ok()").count(), 3, "only rows 6, 8, 9 keep the presence check here");
+        assert!(item_code(src, "fn connect() -> Result<ConnStream, String> {").contains("match connect_raw() {"), "row 10");
+        assert!(item_code(src, "fn poll_socket_ready(").contains("if let Ok(s) = connect_raw() {"), "row 11");
+    }
+}
+
+/// ★(B-360) A writer-journal refusal must not become seat destruction downstream.
+#[cfg(test)]
+mod b360_tests {
+    use super::*;
+
+    /// As `rpc_roundtrip` renders the daemon's error reply (`<code>: <message>`).
+    fn journal_err() -> String {
+        format!(
+            "{}: zero bytes written: the writer journal refused this write (journal:Is a directory (os error 21)); \
+             nothing was typed - send it again once the journal is writable",
+            cys::ERR_JOURNAL_UNAVAILABLE
+        )
+    }
+
+    #[test]
+    fn b360_a_journal_refusal_is_recognised_and_is_not_a_typing_guard() {
+        let e = journal_err();
+        assert!(is_journal_refusal(&e));
+        assert!(!is_typing_guard_err(&e), "must not divert to --queued");
+        assert!(!cys::inject_guard::is_hold_error(&e), "not a first-run gate hold");
+        assert!(!is_journal_refusal(&format!("{}: {}", cys::ERR_TYPING_GUARD, cys::MSG_TYPING_GUARD)));
+        assert!(!is_journal_refusal("rpc_timeout: no reply"));
+    }
+
+    /// node-recover: a journal refusal exits 79 (run_boot does not reclaim/kill); other errors are unchanged.
+    #[test]
+    fn b360_node_recover_folds_a_journal_refusal_into_the_non_destructive_code() {
+        let folded = recover_refusal_from_input_guard(journal_err());
+        assert!(is_recover_refusal(&folded), "{folded}");
+        assert!(folded.contains("journal:Is a directory"), "the reason survives the fold: {folded}");
+        assert_eq!(recover_refusal_from_input_guard(folded.clone()), folded, "idempotent");
+        assert_eq!(recover_refusal_from_input_guard("process_exited: gone".into()), "process_exited: gone");
+    }
+
+    /// launch-agent: the journal-refusal arm sits BEFORE the closing arm (match order decides) and does not close.
+    #[test]
+    fn b360_launch_agent_keeps_the_pane_on_a_journal_refusal_source_pin() {
+        let src = include_str!("cys.rs");
+        let arm = src.find("Err(e) if created.is_some() && is_journal_refusal(&e) => {").expect("journal arm");
+        let close = src.find("Ok(BootVerdict::LaunchFailed { evidence: e }) | Err(e) => {").expect("closing arm");
+        assert!(arm < close, "the journal arm must come first");
+        let body = &src[arm..close];
+        assert!(body.contains("EXIT_DIRECTIVE_REFUSED") && !body.contains("surface.close"), "{body}");
+        for used in [0, 1, 2, 7, 75, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89] {
+            assert_ne!(EXIT_DIRECTIVE_REFUSED, used);
+        }
+    }
+
+    // ── B-360 R2: three outcomes the CALLER can tell apart (exit code + error name), never a field nobody reads ──────
+    // Literals ("write_outcome_unknown", 91) on purpose: these specimens compile on eadce029 so their RED is measurable.
+
+    fn pending_err() -> String {
+        "write_outcome_unknown: outcome unknown: the seat's writer had not reached this write (request w1-2) within \
+         2000 ms; it is still queued and may still be typed. Do NOT send it again - a retry can type it twice."
+            .to_string()
+    }
+
+    /// A fake daemon that answers `surface.send_key` with `reply` (a whole response minus `id`) and anything else with
+    /// ok; records every method it was asked.
+    #[cfg(unix)]
+    fn send_key_daemon(reply: Value) -> (std::path::PathBuf, std::sync::Arc<std::sync::Mutex<Vec<String>>>, impl FnOnce()) {
+        use std::io::{BufRead, BufReader, Write};
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::{Arc, Mutex};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let sock = std::path::Path::new("/tmp").join(format!(".b360-{}-{}.sock", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let _ = std::fs::remove_file(&sock);
+        let listener = std::os::unix::net::UnixListener::bind(&sock).expect("fake socket bind");
+        let calls: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let rec = Arc::clone(&calls);
+        let server = std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { break };
+                let mut reader = BufReader::new(match stream.try_clone() { Ok(s) => s, Err(_) => break });
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() || line.trim().is_empty() {
+                    continue;
+                }
+                let req: Value = serde_json::from_str(line.trim()).unwrap_or(Value::Null);
+                let method = req["method"].as_str().unwrap_or("").to_string();
+                if method == "__stop" {
+                    break;
+                }
+                rec.lock().unwrap_or_else(|e| e.into_inner()).push(method.clone());
+                let mut resp = match method.as_str() {
+                    "surface.send_key" => reply.clone(),
+                    "surface.list" => json!({"ok": true, "result": {"surfaces": [{"surface_id": 7, "surface_ref": "surface:7", "exited": false}]}}),
+                    _ => json!({"ok": true, "result": {}}),
+                };
+                resp["id"] = req["id"].clone();
+                let mut w = stream;
+                let _ = writeln!(w, "{resp}");
+            }
+        });
+        let stop_sock = sock.clone();
+        let stop = move || {
+            if let Ok(mut s) = std::os::unix::net::UnixStream::connect(&stop_sock) {
+                use std::io::Write;
+                let _ = writeln!(s, "{}", json!({"id": 1, "method": "__stop", "params": {}}));
+            }
+            let _ = server.join();
+            let _ = std::fs::remove_file(&stop_sock);
+        };
+        (sock, calls, stop)
+    }
+
+    /// `cys send-key --surface surface:7 Return` against a fake daemon reply: the exit code the CALLER gets, and how
+    /// many `surface.send_key` requests were made (no automatic retry or queue fallback may follow an unknown outcome).
+    #[cfg(unix)]
+    fn caller_gets(reply: Value) -> (i32, usize) {
+        let _guard = super::tests::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = std::env::var_os(cys::ENV_SOCKET);
+        let (sock, calls, stop) = send_key_daemon(reply);
+        std::env::set_var(cys::ENV_SOCKET, &sock);
+        let rc = run(Command::SendKey { surface: Some("surface:7".into()), to: None, queued: false, keys: vec!["Return".into()] });
+        stop();
+        match &saved {
+            Some(v) => std::env::set_var(cys::ENV_SOCKET, v),
+            None => std::env::remove_var(cys::ENV_SOCKET),
+        }
+        let n = calls.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|m| *m == "surface.send_key").count();
+        (rc, n)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2_the_caller_tells_passed_refused_and_unknown_apart_by_exit_code() {
+        let passed = caller_gets(json!({"ok": true, "result": {"surface_id": 7, "key": "Return", "sent": true}}));
+        assert_eq!(passed, (0, 1), "PASSED -> 0");
+        let refused = caller_gets(json!({"ok": false, "error": {"code": cys::ERR_JOURNAL_UNAVAILABLE,
+            "message": "zero bytes written: the writer journal refused this write (journal:Is a directory (os error 21)); nothing was typed"}}));
+        assert_eq!(refused, (1, 1), "REFUSED (zero bytes, safe to retry) -> 1");
+        let (code, msg) = pending_err().split_once(": ").map(|(c, m)| (c.to_string(), m.to_string())).unwrap();
+        let unknown = caller_gets(json!({"ok": false, "error": {"code": code, "message": msg}}));
+        assert_eq!(unknown, (91, 1), "UNKNOWN (may still be typed, NOT safe to retry) -> 91, one request, no retry");
+    }
+
+    /// Record (not a gate): the eadce029 daemon answered a pending barrier with ok + `sent:true` + a field; a caller
+    /// sees 0 for that, because nothing at the caller ever read the field. The gate is the daemon specimen
+    /// `b360_r2_a_pending_barrier_is_not_sent_and_the_write_still_lands_exactly_once`, which makes that reply impossible.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2_record_the_eadce029_pending_reply_reads_as_success_at_the_caller() {
+        let old = caller_gets(json!({"ok": true, "result": {"surface_id": 7, "key": "Return", "sent": true, "journal_barrier": "pending"}}));
+        assert_eq!(old, (0, 1));
+    }
+
+    // ── ★(B-360 R2) the ten callers of FIX-SPEC-R2-callers.md, driven through their real code ───────────────────────
+    // Each specimen answers the caller's direct write with the daemon's REFUSED (`journal_unavailable`, zero bytes) or
+    // UNKNOWN (`write_outcome_unknown`, may still be typed) reply. Where a caller's stderr or exit code must be read, or the
+    // caller arms a process-wide hard exit (`cys drain`: 12 s), it runs in a child process: the ignored `b360_r2c_child`
+    // of this same binary. A `_control` specimen passes on d27e1066 too: it shows the fixture reaches the caller's write,
+    // so its sibling's red is not vacuous. Row numbers are the spec's; census rows and lines are at d27e1066.
+
+    #[cfg(unix)]
+    fn r2c_reply(rendered: &str) -> Value {
+        let (code, message) = rendered.split_once(": ").expect("<code>: <message>");
+        json!({"ok": false, "error": {"code": code, "message": message}})
+    }
+
+    #[cfg(unix)]
+    fn r2c_ok(result: Value) -> Value {
+        json!({"ok": true, "result": result})
+    }
+
+    /// What the CLI itself says: the part of a line before the daemon's echoed error text (`<code>: <message>`).
+    fn r2c_own(line: &str) -> &str {
+        let cut = [cys::ERR_JOURNAL_UNAVAILABLE, cys::ERR_WRITE_OUTCOME_UNKNOWN]
+            .iter()
+            .filter_map(|c| line.find(&format!("{c}: ")))
+            .min()
+            .unwrap_or(line.len());
+        &line[..cut]
+    }
+
+    #[cfg(unix)]
+    type R2cCalls = std::sync::Arc<std::sync::Mutex<Vec<(String, Value)>>>;
+
+    /// A scripted NDJSON fake daemon: `answer(method, params)` is the whole reply minus `id`; every request is recorded.
+    /// The socket sits in its own fresh directory, so the boot lock next to it (`boot_lock_path`) is private too.
+    #[cfg(unix)]
+    struct R2cDaemon {
+        dir: std::path::PathBuf,
+        sock: std::path::PathBuf,
+        calls: R2cCalls,
+        server: Option<std::thread::JoinHandle<()>>,
+    }
+
+    #[cfg(unix)]
+    impl R2cDaemon {
+        fn start(mut answer: impl FnMut(&str, &Value) -> Value + Send + 'static) -> Self {
+            use std::io::{BufRead, BufReader, Write};
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let dir = std::path::Path::new("/tmp")
+                .join(format!(".b360c-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("fake daemon dir");
+            let sock = dir.join("d.sock");
+            let listener = std::os::unix::net::UnixListener::bind(&sock).expect("fake socket bind");
+            let calls: R2cCalls = Default::default();
+            let rec = std::sync::Arc::clone(&calls);
+            let server = std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { break };
+                    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                    let mut line = String::new();
+                    if BufReader::new(&mut stream).read_line(&mut line).is_err() || line.trim().is_empty() {
+                        continue;
+                    }
+                    let req: Value = serde_json::from_str(line.trim()).unwrap_or(Value::Null);
+                    let method = req["method"].as_str().unwrap_or("").to_string();
+                    if method == "__stop" {
+                        break;
+                    }
+                    rec.lock().unwrap_or_else(|e| e.into_inner()).push((method.clone(), req["params"].clone()));
+                    let mut resp = answer(&method, &req["params"]);
+                    resp["id"] = req["id"].clone();
+                    let _ = writeln!(stream, "{resp}");
+                }
+            });
+            Self { dir, sock, calls, server: Some(server) }
+        }
+
+        fn calls(&self) -> Vec<(String, Value)> {
+            self.calls.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for R2cDaemon {
+        fn drop(&mut self) {
+            use std::io::Write;
+            if let Ok(mut s) = std::os::unix::net::UnixStream::connect(&self.sock) {
+                let _ = writeln!(s, "{}", json!({"id": 1, "method": "__stop", "params": {}}));
+            }
+            if let Some(server) = self.server.take() {
+                let _ = server.join();
+            }
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// A throwaway pack/config/local tree: the embedded agents.json plus `b360agent` (claude's spec, command
+    /// `b360-agent`, no env), a one-letter role directive, a `bin/claude` stub (so `cys boot` finds the CLI), and NO
+    /// SessionStart hook (so a cycle types directive + RESUME itself - the path of rows 5-7). Removed on drop.
+    #[cfg(unix)]
+    struct R2cPack {
+        dir: std::path::PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl R2cPack {
+        fn new() -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let dir = std::env::temp_dir()
+                .join(format!("b360c-pack-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+            let _ = std::fs::remove_dir_all(&dir);
+            for d in ["pack/directives", "pack/round", "config", "local", "bin", "_round"] {
+                std::fs::create_dir_all(dir.join(d)).expect("fixture dir");
+            }
+            let embedded = cys::pack::PACK_ALL.iter().find(|(p, _)| *p == "agents.json").map(|(_, b)| *b).expect("embedded agents.json");
+            let mut agents: Value = serde_json::from_str(embedded).expect("agents.json");
+            let mut fake = agents["claude"].clone();
+            fake["cmd"] = json!("b360-agent");
+            fake["inject_delay_secs"] = json!(1);
+            if let Some(o) = fake.as_object_mut() {
+                o.remove("env");
+            }
+            agents["b360agent"] = fake;
+            std::fs::write(dir.join("pack/agents.json"), agents.to_string()).unwrap();
+            std::fs::write(dir.join("pack/directives/WORKER_DIRECTIVE.md"), "W").unwrap();
+            std::fs::write(dir.join("pack/directives/RSI_LEARNING_DIRECTIVE.md"), "R").unwrap();
+            let stub = dir.join("bin/claude");
+            std::fs::write(&stub, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+            Self { dir }
+        }
+
+        fn envs(&self) -> Vec<(&'static str, std::ffi::OsString)> {
+            vec![
+                ("CYS_PACK_DIR", self.dir.join("pack").into_os_string()),
+                ("CYS_CONFIG_DIR", self.dir.join("config").into_os_string()),
+                ("CYS_LOCAL_DIR", self.dir.join("local").into_os_string()),
+            ]
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for R2cPack {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// Sets env vars for an in-process specimen (hold `ENV_LOCK`); restores them on drop, also after a RED panic.
+    #[cfg(unix)]
+    struct R2cEnv(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+    #[cfg(unix)]
+    impl R2cEnv {
+        fn set(pairs: Vec<(&'static str, std::ffi::OsString)>) -> Self {
+            let saved = pairs.iter().map(|(k, _)| (*k, std::env::var_os(k))).collect();
+            for (k, v) in &pairs {
+                std::env::set_var(k, v);
+            }
+            Self(saved)
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for R2cEnv {
+        fn drop(&mut self) {
+            for (k, v) in &self.0 {
+                match v {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+    }
+
+    /// Runs `body` in-process with `daemon`'s socket and `pack` in the environment, under `ENV_LOCK`.
+    #[cfg(unix)]
+    fn r2c_in_env<T>(daemon: &R2cDaemon, pack: &R2cPack, body: impl FnOnce() -> T) -> T {
+        let _guard = super::tests::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pairs = pack.envs();
+        pairs.push((cys::ENV_SOCKET, daemon.sock.clone().into_os_string()));
+        pairs.push(("CYS_NO_AUTOSTART", "1".into()));
+        let _env = R2cEnv::set(pairs);
+        body()
+    }
+
+    /// Arms the child specimen and names the caller it runs; unset = the child does nothing.
+    #[cfg(unix)]
+    const R2C_CHILD: &str = "CYS_B360_R2C_CHILD";
+
+    /// Runs the ignored `b360_r2c_child` of THIS test binary as a child process (caller `what`, `daemon`'s socket, plus
+    /// `envs`) and returns (exit code, stdout, stderr). Holds `ENV_LOCK`, so the child inherits a settled environment.
+    #[cfg(unix)]
+    fn r2c_child(what: &str, daemon: &R2cDaemon, envs: &[(&'static str, std::ffi::OsString)]) -> (i32, String, String) {
+        let _guard = super::tests::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let out = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["b360_tests::b360_r2c_child", "--exact", "--ignored", "--nocapture", "--test-threads=1"])
+            .env(R2C_CHILD, what)
+            .env(cys::ENV_SOCKET, &daemon.sock)
+            .env("CYS_NO_AUTOSTART", "1")
+            .envs(envs.iter().map(|(k, v)| (*k, v)))
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("spawn the child specimen");
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(stdout.contains("running 1 test"), "the child specimen did not run:\n{stdout}\n{stderr}");
+        (out.status.code().unwrap_or(-1), stdout, stderr)
+    }
+
+    /// The child half of the child-process specimens: runs the caller its parent names, then exits with its code.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "child process of the b360_r2c specimens; a no-op unless one of them starts it"]
+    fn b360_r2c_child() {
+        use std::io::Write;
+        let Ok(what) = std::env::var(R2C_CHILD) else { return };
+        CLEAR_VERIFY_SECS_OVERRIDE.store(2, std::sync::atomic::Ordering::Relaxed);
+        let rc = match what.as_str() {
+            "drain" => run(Command::Drain { verify: false, timeout: 20, only: vec![], hq_only: false }),
+            "cycle" => run_cycle_agent(None, Some("7".into()), None, vec![], None, None, 3, true, None),
+            "restore" => run_restore(None, false, true),
+            "boot" => run_boot(None, true),
+            // ★(B-360 R2 revise · area P) no `--from`: the command stops after its pending pass (exit 1)
+            "pack-update" => run_pack_update(None, None, false),
+            // ★(B-360 R2 revise · area D) the real `cys drain --verify` (exit computed by run_drain_verify)
+            "drain-verify" => run(Command::Drain { verify: true, timeout: 2, only: vec![], hq_only: false }),
+            // ★(B-360 R2 revise · area E) the save-file gate (S48) and the verifier handshake (S49), not forced
+            "cycle-save" => {
+                let file = std::env::var("CYS_B360_SAVE_FILE").expect("CYS_B360_SAVE_FILE");
+                run_cycle_agent(None, Some("7".into()), None, vec![file], None, None, 8, false, None)
+            }
+            "cycle-verify" => run_cycle_agent(None, Some("7".into()), Some("cso".into()), vec![], None, None, 8, true, None),
+            // ★(B-360 R3 · option 2) any CLI line, parsed by clap exactly as `main` parses it (`CYS_B360_CLI_ARGS` = the
+            //   argv as a JSON array). A subcommand this binary does not have is clap's usage error (exit 2) — so a
+            //   specimen of a NEW subcommand compiles on the tree before it and is RED there, not uncompilable.
+            "cli" => {
+                let argv: Vec<String> =
+                    serde_json::from_str(&std::env::var("CYS_B360_CLI_ARGS").expect("CYS_B360_CLI_ARGS")).expect("argv JSON");
+                match <Cli as clap::Parser>::try_parse_from(&argv) {
+                    Ok(cli) => run(cli.command),
+                    Err(e) => {
+                        eprint!("{e}");
+                        2
+                    }
+                }
+            }
+            other => panic!("unknown child caller {other}"),
+        };
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stderr().flush();
+        std::process::exit(rc);
+    }
+
+    // ── row 1 · `cys drain` save signal ──
+
+    /// Row 1 · `cys drain` save signal (census row 3, cys.rs:5610): the worker's signal gets UNKNOWN, the CSO's REFUSED.
+    /// RED on d27e1066: both lines say "저장 신호 미전달" (not delivered). For UNKNOWN that is false (it may still be typed);
+    /// for REFUSED the CLI's own words do not name the journal (only the echoed daemon text does).
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2c_1_drain_names_an_unknown_and_a_refused_save_signal() {
+        let daemon = R2cDaemon::start(|method, p| match method {
+            "system.topology" => r2c_ok(json!({"live": [{"role": "worker"}, {"role": "cso"}]})),
+            "system.resolve_role" => r2c_ok(json!({"surface_id": if p["role"] == "worker" { 7 } else { 8 }})),
+            "surface.list" => r2c_ok(json!({"surfaces": [
+                {"surface_id": 7, "surface_ref": "surface:7", "role": "worker", "exited": false},
+                {"surface_id": 8, "surface_ref": "surface:8", "role": "cso", "exited": false}]})),
+            "surface.send_text" if p["surface_id"] == 7 => r2c_reply(&pending_err()),
+            "surface.send_text" => r2c_reply(&journal_err()),
+            _ => r2c_ok(json!({})),
+        });
+        let (rc, _out, err) = r2c_child("drain", &daemon, &[]);
+        let line = |who: &str| {
+            err.lines()
+                .find(|l| l.starts_with(&format!("[drain] {who} ")))
+                .unwrap_or_else(|| panic!("no [drain] {who} line:\n{err}"))
+                .to_string()
+        };
+        let (unknown, refused) = (line("worker"), line("cso"));
+        let mut failures = Vec::new();
+        let own = r2c_own(&unknown);
+        if !(own.contains("outcome unknown") && own.contains("not re-sent")) || own.contains("미전달") {
+            failures.push(format!("UNKNOWN save signal is not reported as unknown + not re-sent: {unknown}"));
+        }
+        if !r2c_own(&refused).contains("journal") {
+            failures.push(format!("REFUSED save signal: the CLI's own words do not name the journal: {refused}"));
+        }
+        assert_eq!(rc, 0, "drain stays best-effort:\n{err}");
+        let sends = daemon.calls().iter().filter(|(m, _)| m == "surface.send_text").count();
+        assert_eq!(sends, 2, "one signal per node, nothing re-sent");
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    // ── row 2 · `cys boot` adopting a gate-pending seat ──
+
+    /// `cys boot --json` twice (children) against a gate-pending worker seat (surface:7) that re-observation adopts;
+    /// `reply` answers the adoption paste. The other roster seats are awake (skipped). Returns both reports + requests.
+    #[cfg(unix)]
+    fn r2c_boot_twice(reply: Value) -> (Vec<Value>, Vec<(String, Value)>) {
+        let pack = R2cPack::new();
+        let mut marked = true;
+        let daemon = R2cDaemon::start(move |method, p| match method {
+            "surface.list" => {
+                let awake = |sid: u64, role: &str, agent: &str| {
+                    json!({"surface_id": sid, "surface_ref": format!("surface:{sid}"), "role": role, "agent": agent,
+                           "exited": false, "awakened_at": 1.0, "agent_alive": true, "seat": "occupied"})
+                };
+                let mut worker = json!({"surface_id": 7, "surface_ref": "surface:7", "role": "worker", "agent": "claude",
+                                        "exited": false, "agent_alive": true, "seat": "occupied", "line_count": 40});
+                if marked {
+                    worker["gate_pending"] = json!({"gate": GATE_ID_UNIDENTIFIED, "followup": null});
+                }
+                r2c_ok(json!({"surfaces": [awake(3, "cso", "claude"), worker, awake(4, "reviewer-gemini", "gemini"),
+                                           awake(5, "reviewer-codex", "codex"), awake(6, "reviewer-grok", "grok")]}))
+            }
+            "surface.read_text" => r2c_ok(json!({"text": cys::first_run_gates::fixtures::LIVE_TUI_AT_PROMPT,
+                                                 "quiet_secs": 5.0, "line_count": 40, "next_cursor": 40})),
+            "surface.gate_pending" if p["clear"] == true && p["surface_id"] == 7 => {
+                marked = false;
+                r2c_ok(json!({}))
+            }
+            "surface.send_text" => reply.clone(),
+            "surface.create" => r2c_reply("b360_no_spawn: this fake daemon makes no new surface"),
+            _ => r2c_ok(json!({})),
+        });
+        let mut envs = pack.envs();
+        let mut path = std::ffi::OsString::from(pack.dir.join("bin"));
+        path.push(":");
+        path.push(std::env::var_os("PATH").unwrap_or_default());
+        envs.push(("PATH", path));
+        let boots = (0..2)
+            .map(|_| {
+                let (_rc, out, err) = r2c_child("boot", &daemon, &envs);
+                let line = out
+                    .lines()
+                    .find(|l| l.starts_with("{\"roles\""))
+                    .unwrap_or_else(|| panic!("no boot --json report:\n{out}\n{err}"));
+                serde_json::from_str::<Value>(line).expect("boot --json")
+            })
+            .collect();
+        (boots, daemon.calls())
+    }
+
+    #[cfg(unix)]
+    fn r2c_role<'a>(boot: &'a Value, role: &str) -> &'a Value {
+        boot["roles"]
+            .as_array()
+            .and_then(|a| a.iter().find(|r| r["role"] == role))
+            .unwrap_or_else(|| panic!("no {role} in {boot}"))
+    }
+
+    /// Row 2 control (REFUSED, unchanged path): zero bytes, the marker stays and the next boot's re-adopt is the safe
+    /// retry. Passes on d27e1066 as well: the fixture reaches the adoption paste.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2c_2_control_boot_adopt_refused_keeps_the_marker_and_the_next_boot_retries() {
+        let (boots, calls) = r2c_boot_twice(r2c_reply(&journal_err()));
+        let pastes = calls.iter().filter(|(m, _)| m == "surface.send_text").count();
+        assert_eq!(pastes, 2, "REFUSED wrote zero bytes: the next boot re-adopts (safe retry)");
+        assert!(!calls.iter().any(|(m, p)| m == "surface.gate_pending" && p["clear"] == true), "marker kept");
+        assert_eq!(r2c_role(&boots[0], "worker")["outcome"], "gate_pending");
+    }
+
+    // ── row 3 · `cys drain --verify` ──
+
+    /// Answers the save instruction with `err`. With `land`, the instruction is typed late anyway and the node writes its
+    /// nonce marker into `land` 300 ms later, i.e. during the nonce poll.
+    struct R2cVerifyIo {
+        err: String,
+        land: Option<std::path::PathBuf>,
+        screens: std::sync::atomic::AtomicUsize,
+    }
+
+    impl VerifyIo for R2cVerifyIo {
+        fn inject(&self, _: &std::path::Path, _: u64, text: &str, _: std::time::Duration) -> Result<(), String> {
+            if let Some(file) = self.land.clone() {
+                let at = text.find("<!-- cys-checkpoint:").expect("the instruction carries its marker");
+                let marker = text[at..at + text[at..].find("-->").expect("marker end") + 3].to_string();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    let _ = std::fs::write(&file, format!("# 상태\n{marker}\n"));
+                });
+            }
+            Err(self.err.clone())
+        }
+        fn read_screen(&self, _: &std::path::Path, _: u64, _: u64, _: std::time::Duration) -> Result<String, String> {
+            self.screens.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok("✻ Working…\n> ".into())
+        }
+        fn send_return(&self, _: &std::path::Path, _: u64, _: std::time::Duration) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// One `drain --verify` node (surface:7) whose save instruction gets `err`; returns (outcome, detail, screens read).
+    fn r2c_verify(err: String, lands: bool, secs: u64) -> (VerifyOutcome, String, usize) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let td = std::env::temp_dir()
+            .join(format!("b360c-dv-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let _ = std::fs::remove_dir_all(&td);
+        std::fs::create_dir_all(td.join("_round")).unwrap();
+        let file = td.join("_round/SESSION_STATE.md");
+        std::fs::write(&file, "# 상태\n").unwrap();
+        let io = R2cVerifyIo { err, land: lands.then(|| file.clone()), screens: Default::default() };
+        let t = VerifyTarget {
+            socket: td.join("cys.sock"),
+            dept: "dept-x".into(),
+            display: "dept-x".into(),
+            surface_id: 7,
+            surface_ref: "surface:7".into(),
+            role: "worker".into(),
+            live_cwd: Some(td.to_string_lossy().into_owned()),
+            pending_undelivered: 0,
+        };
+        let (o, d) = verify_one_node(&io, &t, "r2c", std::time::Duration::from_secs(secs), 100);
+        std::thread::sleep(std::time::Duration::from_millis(400)); // let a late writer finish before the dir goes
+        let _ = std::fs::remove_dir_all(&td);
+        (o, d, io.screens.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// Row 3 · `cys drain --verify` (census row 7, cys.rs:19699), REFUSED. RED on d27e1066: classified as a hung socket
+    /// ("소켓 hung", `timeout`) although the daemon answered and wrote zero bytes.
+    #[test]
+    fn b360_r2c_3_drain_verify_refused_is_a_journal_refusal_not_a_hung_socket() {
+        let (o, d, _) = r2c_verify(journal_err(), false, 1);
+        assert!(o != VerifyOutcome::Saved && o != VerifyOutcome::Timeout && !d.contains("소켓 hung"), "{o:?}: {d}");
+        let own = r2c_own(&d);
+        assert!(own.contains("journal") && own.contains("zero bytes"), "the classification must name the journal refusal: {d}");
+    }
+
+    /// Row 3, UNKNOWN, and the instruction lands late. RED on d27e1066: it returns "소켓 hung" before the wedge gate and the
+    /// nonce poll, so the save that lands during the poll is never seen (false `timeout`).
+    #[test]
+    fn b360_r2c_3_drain_verify_unknown_still_runs_the_poll_and_sees_a_landed_save() {
+        let (o, d, reads) = r2c_verify(pending_err(), true, 3);
+        assert_eq!(o, VerifyOutcome::Saved, "a save that landed during the poll was not seen: {d}");
+        assert!(reads > 0, "the wedge gate did not run");
+    }
+
+    /// Row 3, UNKNOWN, nothing lands. RED on d27e1066: "소켓 hung", and the detail drops the daemon's code, so the command
+    /// cannot tell an unknown outcome (91) from a plain failure.
+    #[test]
+    fn b360_r2c_3_drain_verify_unknown_not_seen_is_not_a_hung_socket_and_keeps_the_code() {
+        let (o, d, reads) = r2c_verify(pending_err(), false, 1);
+        assert!(o != VerifyOutcome::Saved && !d.contains("소켓 hung"), "{o:?}: {d}");
+        assert!(is_write_outcome_unknown(&d) && r2c_own(&d).contains("unknown"), "say unknown and keep the code: {d}");
+        assert!(reads > 0, "the wedge gate did not run");
+    }
+
+    /// Row 3, the command's exit: a node whose save instruction's outcome is unknown and that was not seen saved makes
+    /// `cys drain --verify` exit 91.
+    /// ★(B-360 R2 revise) CHANGED from `b360_r2c_3_drain_verify_exits_91_for_an_unknown_unsaved_node_source_pin`, which
+    /// required `run_drain_verify` to contain `is_write_outcome_unknown` — i.e. it pinned the free-text scan of `detail`
+    /// (census S42/B15: every path that dropped the code from the prose exited 1). Now: the exit comes from the typed
+    /// outcome through `drain_verify_exit_code`, which reads `nodes[].outcome` and never the detail text. Behaviour is
+    /// pinned by `b360_r2r_d6…` (the real command) and `b360_r2r_d7…` (no text scanning).
+    #[test]
+    fn b360_r2c_3_drain_verify_exits_91_from_the_typed_outcome_not_the_detail_text_source_pin() {
+        let src = include_str!("cys.rs");
+        let body = |name: &str| {
+            let head = format!("\nfn {name}(");
+            let at = src.find(&head).unwrap_or_else(|| panic!("{name}"));
+            src[at..at + src[at..].find("\n}\n").expect("end")].to_string()
+        };
+        let run = body("run_drain_verify");
+        let exit = body("drain_verify_exit_code");
+        assert!(run.contains("drain_verify_exit_code(all_saved, &report)"), "run_drain_verify does not use the typed exit:\n{run}");
+        assert!(
+            exit.contains("EXIT_WRITE_OUTCOME_UNKNOWN")
+                && exit.contains("n[\"outcome\"]")
+                && !exit.contains(&format!("{}(", "is_write_outcome_unknown"))
+                && !exit.contains("[\"detail\"]"),
+            "the exit must come from the typed outcome only:\n{exit}"
+        );
+    }
+
+    // ── rows 4-7 · `cys cycle-agent` ──
+
+    /// The cycle seat surface:7 (worker · claude). `clear` answers the atomic /clear, `reinject` every authoritative paste
+    /// after it. `swap`: the statusline session_file changes once the /clear was asked (it landed). `usage`: the seat
+    /// reports a statusline at all (false = unmeasurable). `busy_after_clear`: the new session never idles (held).
+    #[cfg(unix)]
+    struct R2cSeat {
+        clear: Value,
+        reinject: Value,
+        swap: bool,
+        usage: bool,
+        busy_after_clear: bool,
+    }
+
+    /// `cys cycle-agent --surface surface:7` in a child against `seat`: (exit code, last `error: ` line, requests).
+    #[cfg(unix)]
+    fn r2c_cycle(seat: R2cSeat) -> (i32, String, Vec<(String, Value)>) {
+        let pack = R2cPack::new();
+        let cwd = pack.dir.clone();
+        let mut cleared = false;
+        let daemon = R2cDaemon::start(move |method, p| match method {
+            "surface.list" => {
+                let mut row = json!({"surface_id": 7, "surface_ref": "surface:7", "role": "worker", "agent": "claude",
+                                     "exited": false, "awakened_at": 1.0, "cwd": cwd, "live_cwd": cwd});
+                if seat.usage {
+                    let file = if cleared && seat.swap { "S2" } else { "S1" };
+                    row["usage"] = json!({"source": "statusline", "session_file": file});
+                }
+                r2c_ok(json!({"surfaces": [row]}))
+            }
+            "surface.read_text" => {
+                let quiet = if cleared && seat.busy_after_clear { 0.0 } else { 5.0 };
+                r2c_ok(json!({"text": cys::first_run_gates::fixtures::LIVE_TUI_AT_PROMPT, "quiet_secs": quiet, "line_count": 40}))
+            }
+            "surface.send_text" if p["clear_first"] == true => {
+                cleared = true;
+                seat.clear.clone()
+            }
+            "surface.send_text" if cleared => seat.reinject.clone(),
+            _ => r2c_ok(json!({})),
+        });
+        let (rc, _out, err) = r2c_child("cycle", &daemon, &pack.envs());
+        let error = err.lines().filter(|l| l.starts_with("error: ")).last().unwrap_or_default().to_string();
+        (rc, error, daemon.calls())
+    }
+
+    /// How many authoritative pastes followed the atomic /clear (the reinject writes: directive + RESUME, RESUME alone).
+    #[cfg(unix)]
+    fn r2c_pastes_after_clear(calls: &[(String, Value)]) -> usize {
+        let Some(at) = calls.iter().position(|(m, p)| m == "surface.send_text" && p["clear_first"] == true) else {
+            return 0;
+        };
+        calls[at + 1..].iter().filter(|(m, p)| m == "surface.send_text" && p["authoritative"] == true).count()
+    }
+
+    /// The outcome the cycle handed the daemon's clear guard when it turned quiescing off.
+    #[cfg(unix)]
+    fn r2c_quiesce_outcome(calls: &[(String, Value)]) -> Option<String> {
+        calls
+            .iter()
+            .rev()
+            .find(|(m, p)| m == "surface.quiesce" && p["on"] == false)
+            .and_then(|(_, p)| p["outcome"].as_str().map(String::from))
+    }
+
+    /// Row 4 · cycle-agent atomic `/clear` (census row 11, cys.rs:21390), REFUSED. RED on d27e1066: the daemon's clear
+    /// guard is told `unknown` for a clear that was never typed (zero bytes); it must hear `not_cleared`.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2c_4_cycle_clear_refused_tells_the_daemon_not_cleared() {
+        let (rc, error, calls) = r2c_cycle(R2cSeat {
+            clear: r2c_reply(&journal_err()),
+            reinject: r2c_ok(json!({})),
+            swap: false,
+            usage: true,
+            busy_after_clear: false,
+        });
+        assert_eq!(r2c_quiesce_outcome(&calls).as_deref(), Some("not_cleared"), "{error}");
+        assert_eq!(rc, 1, "a refused clear stays a plain failure: {error}");
+        assert_eq!(r2c_pastes_after_clear(&calls), 0, "nothing typed after a refused clear");
+    }
+
+    /// Row 4, UNKNOWN, and the /clear lands: its session_file swap is observed. RED on d27e1066: the cycle returns 91 at
+    /// the clear, before the effect check, so the seat is cleared and never gets directive + RESUME (silent loss).
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2c_4_cycle_clear_unknown_then_swap_observed_reinjects() {
+        let (rc, error, calls) = r2c_cycle(R2cSeat {
+            clear: r2c_reply(&pending_err()),
+            reinject: r2c_ok(json!({})),
+            swap: true,
+            usage: true,
+            busy_after_clear: false,
+        });
+        assert_eq!((rc, r2c_pastes_after_clear(&calls)), (0, 1), "a landed clear must be followed by its reinject: {error}");
+        assert_eq!(r2c_quiesce_outcome(&calls).as_deref(), Some("cleared"));
+    }
+
+    /// Row 4, UNKNOWN, no swap in the window. RED on d27e1066: exit 91 straight from the clear without running the effect
+    /// check, and the message is the bare daemon text: it names neither the seat nor `cys reinject`.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2c_4_cycle_clear_unknown_swap_not_observed_exits_91_naming_the_seat() {
+        let (rc, error, calls) = r2c_cycle(R2cSeat {
+            clear: r2c_reply(&pending_err()),
+            reinject: r2c_ok(json!({})),
+            swap: false,
+            usage: true,
+            busy_after_clear: false,
+        });
+        let clear_at = calls
+            .iter()
+            .position(|(m, p)| m == "surface.send_text" && p["clear_first"] == true)
+            .expect("the clear was sent");
+        let polled = calls[clear_at + 1..].iter().filter(|(m, _)| m == "surface.list").count();
+        let own = r2c_own(&error);
+        let mut failures = Vec::new();
+        if rc != EXIT_WRITE_OUTCOME_UNKNOWN {
+            failures.push(format!("exit {rc}, want 91"));
+        }
+        if polled == 0 {
+            failures.push("the session_file effect check did not run after the unknown clear".to_string());
+        }
+        if !(own.contains("surface:7") && own.contains("cys reinject --role worker")) {
+            failures.push(format!("the 91 message names neither the seat nor the restore: {error}"));
+        }
+        if r2c_pastes_after_clear(&calls) != 0 {
+            failures.push("reinjected without an observed clear".to_string());
+        }
+        if r2c_quiesce_outcome(&calls).as_deref() != Some("unknown") {
+            failures.push(format!("clear guard outcome {:?}, want unknown", r2c_quiesce_outcome(&calls)));
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Row 5 · cycle-agent reinject after a VERIFIED clear (census row 15, cys.rs:21485), REFUSED. RED on d27e1066: exit 1
+    /// (generic) although the seat is cleared and holds no directive; it must be 86 (cleared, reinject held) and say the
+    /// journal refused it.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2c_5_cycle_reinject_refused_after_a_verified_clear_exits_86_naming_the_journal() {
+        let (rc, error, calls) = r2c_cycle(R2cSeat {
+            clear: r2c_ok(json!({})),
+            reinject: r2c_reply(&journal_err()),
+            swap: true,
+            usage: true,
+            busy_after_clear: false,
+        });
+        assert_eq!(rc, EXIT_CYCLE_REINJECT_HELD, "{error}");
+        assert!(r2c_own(&error).contains("journal"), "{error}");
+        assert_eq!(r2c_pastes_after_clear(&calls), 1, "nothing re-sent");
+        assert_eq!(r2c_quiesce_outcome(&calls).as_deref(), Some("cleared"));
+    }
+
+    /// Row 5, UNKNOWN. Exit 91 already on d27e1066; RED there: the message is the bare daemon text. It does not say the
+    /// reinject may still land, that it must not be re-sent, or which seat to check.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2c_5_cycle_reinject_unknown_after_a_verified_clear_says_it_may_still_land() {
+        let (rc, error, calls) = r2c_cycle(R2cSeat {
+            clear: r2c_ok(json!({})),
+            reinject: r2c_reply(&pending_err()),
+            swap: true,
+            usage: true,
+            busy_after_clear: false,
+        });
+        assert_eq!(rc, EXIT_WRITE_OUTCOME_UNKNOWN, "{error}");
+        let own = r2c_own(&error);
+        assert!(
+            own.contains("may still land") && own.contains("do not re-send") && own.contains("surface:7"),
+            "the 91 message must say it may still land, not to re-send, and which seat: {error}"
+        );
+        assert_eq!(r2c_pastes_after_clear(&calls), 1, "nothing re-sent");
+    }
+
+    /// Row 6 · cycle-agent held reinject (census row 16, cys.rs:21493): verified clear, the new session never idles, the
+    /// one submission gets UNKNOWN. RED on d27e1066: RESUME is typed again on its own (2 pastes: a duplicate RESUME and a
+    /// second submission) and the exit is 86, not 91.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2c_6_cycle_held_reinject_unknown_sends_no_second_resume_and_exits_91() {
+        let (rc, error, calls) = r2c_cycle(R2cSeat {
+            clear: r2c_ok(json!({})),
+            reinject: r2c_reply(&pending_err()),
+            swap: true,
+            usage: true,
+            busy_after_clear: true,
+        });
+        assert_eq!((rc, r2c_pastes_after_clear(&calls)), (EXIT_WRITE_OUTCOME_UNKNOWN, 1), "{error}");
+    }
+
+    /// Row 6 control: the same held path with an ok submission exits 86 with one paste, on d27e1066 too.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2c_6_control_cycle_held_reinject_ok_is_86_with_one_paste() {
+        let (rc, error, calls) = r2c_cycle(R2cSeat {
+            clear: r2c_ok(json!({})),
+            reinject: r2c_ok(json!({})),
+            swap: true,
+            usage: true,
+            busy_after_clear: true,
+        });
+        assert_eq!((rc, r2c_pastes_after_clear(&calls)), (EXIT_CYCLE_REINJECT_HELD, 1), "{error}");
+    }
+
+    /// Row 7 · cycle-agent unmeasurable reinject (census row 17, cys.rs:21528): no statusline (unmeasurable), the one
+    /// submission gets UNKNOWN. RED on d27e1066: RESUME is typed again on its own (2 pastes) and the exit is 81, not 91.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2c_7_cycle_unmeasurable_reinject_unknown_sends_no_second_resume_and_exits_91() {
+        let (rc, error, calls) = r2c_cycle(R2cSeat {
+            clear: r2c_ok(json!({})),
+            reinject: r2c_reply(&pending_err()),
+            swap: false,
+            usage: false,
+            busy_after_clear: false,
+        });
+        assert_eq!((rc, r2c_pastes_after_clear(&calls)), (EXIT_WRITE_OUTCOME_UNKNOWN, 1), "{error}");
+    }
+
+    /// Row 7 control: the same unmeasurable path with an ok submission exits 81 with one paste, on d27e1066 too.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2c_7_control_cycle_unmeasurable_reinject_ok_is_81_with_one_paste() {
+        let (rc, error, calls) = r2c_cycle(R2cSeat {
+            clear: r2c_ok(json!({})),
+            reinject: r2c_ok(json!({})),
+            swap: false,
+            usage: false,
+            busy_after_clear: false,
+        });
+        assert_eq!((rc, r2c_pastes_after_clear(&calls)), (EXIT_CLEAR_UNMEASURABLE, 1), "{error}");
+    }
+
+    // ── row 8 · `cys restore` in-seat ──
+
+    /// `cys restore` (no resume) in a child: role worker, whose seat surface:7 is an empty shell, is relaunched in-seat
+    /// with the fake agent `b360agent`. Paste 1 is the launch command (ok); `directive` answers paste 2, the directive.
+    #[cfg(unix)]
+    fn r2c_restore(directive: Value) -> (i32, String, Vec<(String, Value)>) {
+        let pack = R2cPack::new();
+        let cwd = pack.dir.clone();
+        let (mut pastes, mut acked) = (0, false);
+        let daemon = R2cDaemon::start(move |method, _| match method {
+            "system.topology" => r2c_ok(json!({
+                "live": [{"role": "worker", "seat": "empty", "surface_id": 7, "env_injected": true}],
+                "saved": [{"role": "worker", "agent": "b360agent", "cwd": cwd}],
+                "tombstones": []})),
+            "surface.list" => {
+                let mut row = json!({"surface_id": 7, "surface_ref": "surface:7", "role": "worker", "exited": false,
+                                     "agent_alive": true, "line_count": 40});
+                if acked {
+                    row["awakened_at"] = json!(1.0);
+                }
+                r2c_ok(json!({"surfaces": [row]}))
+            }
+            "surface.read_text" => r2c_ok(json!({"text": cys::first_run_gates::fixtures::LIVE_TUI_AT_PROMPT,
+                                                 "quiet_secs": 5.0, "line_count": 40, "next_cursor": 40})),
+            "surface.send_text" => {
+                pastes += 1;
+                if pastes == 1 {
+                    r2c_ok(json!({}))
+                } else {
+                    acked = directive["ok"] == true;
+                    directive.clone()
+                }
+            }
+            "surface.create" => r2c_reply("b360_no_spawn: this fake daemon makes no new surface"),
+            _ => r2c_ok(json!({})),
+        });
+        let (rc, out, _err) = r2c_child("restore", &daemon, &pack.envs());
+        (rc, out, daemon.calls())
+    }
+
+    /// Row 8 · `cys restore` in-seat reconnect (census row 20, cys.rs:21809): the in-seat relaunch's directive is REFUSED,
+    /// then (second run) UNKNOWN. Both must keep the seat and exit 90 / 91. RED on d27e1066: both take the fresh-launch
+    /// fallback (`surface.create`), i.e. a second agent for a role whose in-seat agent is already running.
+    /// If this ever fires, check the role for a second agent (two seats for one role) and the seat for a duplicate
+    /// directive (the fresh seat types it again while the in-seat one may still land).
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2c_8_restore_in_seat_never_falls_back_to_a_fresh_launch() {
+        let mut failures = Vec::new();
+        for (name, reply, want) in [
+            ("REFUSED", r2c_reply(&journal_err()), EXIT_DIRECTIVE_REFUSED),
+            ("UNKNOWN", r2c_reply(&pending_err()), EXIT_WRITE_OUTCOME_UNKNOWN),
+        ] {
+            let (rc, out, calls) = r2c_restore(reply);
+            let fresh = calls.iter().filter(|(m, _)| m == "surface.create").count();
+            let pastes = calls.iter().filter(|(m, _)| m == "surface.send_text").count();
+            if fresh != 0 {
+                failures.push(format!("{name}: took the fresh-launch fallback ({fresh}x surface.create) - a second agent on one role"));
+            }
+            if pastes != 2 {
+                failures.push(format!("{name}: {pastes} pastes (launch command + directive = 2; more = a duplicate directive)"));
+            }
+            if calls.iter().any(|(m, _)| m == "surface.close") {
+                failures.push(format!("{name}: the seat was closed"));
+            }
+            if rc != want {
+                failures.push(format!("{name}: exit {rc}, want {want}\n{out}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Row 8 control: an ok directive makes the in-seat relaunch Ready: exit 0, no fresh launch (on d27e1066 too).
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2c_8_control_restore_in_seat_ready_makes_no_fresh_launch() {
+        let (rc, out, calls) = r2c_restore(r2c_ok(json!({})));
+        assert_eq!(rc, 0, "{out}");
+        assert_eq!(calls.iter().filter(|(m, _)| m == "surface.create").count(), 0);
+        assert_eq!(calls.iter().filter(|(m, _)| m == "surface.send_text").count(), 2);
+    }
+
+    // ── rows 9-10 · `cys pack-update` ──
+
+    /// One idle worker seat (surface:7) for pack-update. `reply` answers its directive paste; `reinject.mark` is kept in
+    /// topology as the daemon persists it, so the NEXT pack-update's decision reads it.
+    #[cfg(unix)]
+    fn r2c_pack_daemon(reply: Value) -> R2cDaemon {
+        let mut marker = Value::Null;
+        R2cDaemon::start(move |method, p| match method {
+            "system.topology" => {
+                let mut row = json!({"role": "worker"});
+                if !marker.is_null() {
+                    row["pack_reinject"] = marker.clone();
+                }
+                r2c_ok(json!({"saved": [row]}))
+            }
+            "control.dashboard" => r2c_ok(json!({"fleet": [
+                {"surface_id": 7, "role": "worker", "state": "idle", "idle_secs": 60, "agent_status": "idle"}]})),
+            "surface.list" => r2c_ok(json!({"surfaces": [{"surface_id": 7, "surface_ref": "surface:7", "role": "worker", "exited": false}]})),
+            "surface.read_text" => r2c_ok(json!({"text": ""})),
+            "surface.send_text" => reply.clone(),
+            "reinject.mark" => {
+                marker = json!({"pack_version": p["pack_version"], "directive_hash": p["directive_hash"]});
+                r2c_ok(json!({}))
+            }
+            _ => r2c_ok(json!({})),
+        })
+    }
+
+    #[cfg(unix)]
+    fn r2c_count(calls: &[(String, Value)], method: &str) -> usize {
+        calls.iter().filter(|(m, _)| m == method).count()
+    }
+
+    /// Row 9 · `cys pack-update` node loop (census S65, cys.rs:23459@11717c44): two consecutive node loops for one idle
+    /// seat whose first inject got UNKNOWN.
+    /// ★(B-360 R2 revise) CHANGED from `b360_r2c_9_pack_update_unknown_is_marked_and_the_next_run_does_not_reinject`,
+    /// which pinned the wrong contract: `(injected, failed, skipped) == (1, 0, 1)` and one `reinject.mark` (UNKNOWN counted
+    /// as delivered and marked, so every later pack-update skipped the node: a permanent silent skip). Now: UNKNOWN is
+    /// never counted injected, never marked, and is persisted as an unknown entry in `.pack-reinject-pending.json`; the
+    /// second loop does not type it again (the entry's hash equals the directive it would inject).
+    /// RED on 11717c44: one mark, `injected` 1, no unknown entry.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_p1_pack_update_unknown_is_not_injected_not_marked_and_is_pending_as_unknown() {
+        let pack = R2cPack::new();
+        let daemon = r2c_pack_daemon(r2c_reply(&pending_err()));
+        let (first, second, hash) = r2c_in_env(&daemon, &pack, || {
+            let first = run_pack_reinject("9.9.9");
+            let second = run_pack_reinject("9.9.9");
+            (first, second, sha256_hex(&compose_directive("worker").expect("directive")))
+        });
+        let (first, second) = (first.expect("first pack-update"), second.expect("second pack-update"));
+        let calls = daemon.calls();
+        let mut failures = Vec::new();
+        let (pastes, marks) = (r2c_count(&calls, "surface.send_text"), r2c_count(&calls, "reinject.mark"));
+        if (pastes, marks) != (1, 0) {
+            failures.push(format!("pastes/marks over two loops = ({pastes}, {marks}), want (1, 0): UNKNOWN is never marked"));
+        }
+        if (first.injected, first.failed, second.injected, second.skipped) != (0, 0, 0, 0) {
+            failures.push(format!("UNKNOWN counted as injected/failed/skipped: first {first:?} · second {second:?}"));
+        }
+        for (name, rep) in [("first", format!("{first:?}")), ("second", format!("{second:?}"))] {
+            if !rep.contains("unknown: 1") {
+                failures.push(format!("the {name} report does not count the node unknown: {rep}"));
+            }
+        }
+        let unknown = r2p_unknown_entries(&pack.dir);
+        let entry_ok = unknown.len() == 1
+            && unknown[0]["surface_id"] == 7
+            && unknown[0]["role"] == "worker"
+            && unknown[0]["directive_hash"] == hash.as_str()
+            && unknown[0]["request_id"] == "w1-2"
+            && unknown[0]["at"].as_u64().is_some_and(|t| t > 0);
+        if !entry_ok {
+            failures.push(format!("pending file has no unknown entry {{7, worker, hash, w1-2, at}}: {unknown:?}"));
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Row 9 control (REFUSED, unchanged): zero bytes, no mark, the second pack-update re-injects (the safe retry).
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2c_9_control_pack_update_refused_is_not_marked_and_the_next_run_retries() {
+        let pack = R2cPack::new();
+        let daemon = r2c_pack_daemon(r2c_reply(&journal_err()));
+        let (first, _second) = r2c_in_env(&daemon, &pack, || (run_pack_reinject("9.9.9"), run_pack_reinject("9.9.9")));
+        let calls = daemon.calls();
+        assert_eq!((r2c_count(&calls, "surface.send_text"), r2c_count(&calls, "reinject.mark")), (2, 0));
+        assert_eq!(first.expect("first pack-update").failed, 1);
+    }
+
+    /// Row 10 · `cys pack-update` pending pass (census S66, cys.rs:23540@11717c44): a deferred node whose inject got
+    /// UNKNOWN, then the next pending pass.
+    /// ★(B-360 R2 revise) CHANGED from `b360_r2c_10_pending_unknown_is_marked_and_the_next_pack_update_does_not_reinject`,
+    /// which pinned the wrong contract: one `reinject.mark`, the pending file removed, and `Ok((1, 0))` (UNKNOWN counted as
+    /// resolved). Now: no mark, the node moves from `deferred` to `unknown` (not retryable, not resolved), the pass counts it
+    /// unknown, and the next pass checks it with a presence ping instead of typing it again (here the seat is a bare
+    /// shell, so no ping is typed: undetermined, still unknown).
+    /// RED on 11717c44: one mark, the file is removed, the pass returns `(1, 0)`.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_p2_pending_unknown_moves_to_the_unknown_list_and_is_never_marked_or_resolved() {
+        let pack = R2cPack::new();
+        let base = pack.dir.join("state");
+        std::fs::create_dir_all(&base).unwrap();
+        persist_reinject_pending(&base, "9.9.9", &[(7, "worker".to_string())]).unwrap();
+        let daemon = r2c_pack_daemon(r2c_reply(&pending_err()));
+        let (first, second) =
+            r2c_in_env(&daemon, &pack, || (consume_reinject_pending(&base), consume_reinject_pending(&base)));
+        let (first, second) = (format!("{first:?}"), format!("{second:?}"));
+        let calls = daemon.calls();
+        let mut failures = Vec::new();
+        let (pastes, marks) = (r2c_count(&calls, "surface.send_text"), r2c_count(&calls, "reinject.mark"));
+        if (pastes, marks) != (1, 0) {
+            failures.push(format!("pastes/marks over two passes = ({pastes}, {marks}), want (1, 0)"));
+        }
+        if !(first.contains("resolved: 0") && first.contains("unknown: 1")) || !second.contains("unknown: 1") {
+            failures.push(format!("UNKNOWN is not counted unknown (and not resolved): first {first} · second {second}"));
+        }
+        let unknown = r2p_unknown_entries(&base);
+        if unknown.len() != 1 || unknown[0]["surface_id"] != 7 || unknown[0]["request_id"] != "w1-2" {
+            failures.push(format!("the node is not pending as unknown: {unknown:?}"));
+        }
+        if !r2p_deferred_entries(&base).is_empty() {
+            failures.push("the unknown node is still an ordinary (retryable) deferred entry".to_string());
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Row 10 control (REFUSED, unchanged): zero bytes, the node stays pending and the next pass retries it (safe).
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2c_10_control_pending_refused_stays_pending_and_is_retried() {
+        let pack = R2cPack::new();
+        let base = pack.dir.join("state");
+        std::fs::create_dir_all(&base).unwrap();
+        persist_reinject_pending(&base, "9.9.9", &[(7, "worker".to_string())]).unwrap();
+        let daemon = r2c_pack_daemon(r2c_reply(&journal_err()));
+        let (first, _second) =
+            r2c_in_env(&daemon, &pack, || (consume_reinject_pending(&base), consume_reinject_pending(&base)));
+        let calls = daemon.calls();
+        assert_eq!((r2c_count(&calls, "surface.send_text"), r2c_count(&calls, "reinject.mark")), (2, 0));
+        assert!(reinject_pending_path(&base).exists(), "a refused node stays pending");
+        // ★(B-360 R2 revise) the pass result is a struct now (was the tuple `Ok((0, 1))`); same contract + unknown 0
+        assert_eq!(first.map(|r| (r.resolved, r.kept, r.unknown)), Ok((0, 1, 0)));
+    }
+
+    // ── ★(B-360 R2 revise) area P · pack-update: UNKNOWN is its own persistent state, checked by a presence ping ──────
+    // FIX-SPEC-R2-REVISE area P (census S65/S66/S69/S70, boundaries B01-B08). These specimens compile on 11717c44: they
+    // read the report through its existing fields or its Debug text (a count with no field on 11717c44 is read as
+    // "unknown: N"), the RPCs the fake daemon records, the pending file, and the CLI's own stdout.
+
+    /// The entries of one list of `.pack-reinject-pending.json` under `base` (empty when the file or the list is absent).
+    #[cfg(unix)]
+    fn r2p_list(base: &std::path::Path, list: &str) -> Vec<Value> {
+        std::fs::read_to_string(reinject_pending_path(base))
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .and_then(|d| d[list].as_array().cloned())
+            .unwrap_or_default()
+    }
+
+    #[cfg(unix)]
+    fn r2p_unknown_entries(base: &std::path::Path) -> Vec<Value> {
+        r2p_list(base, "unknown")
+    }
+
+    #[cfg(unix)]
+    fn r2p_deferred_entries(base: &std::path::Path) -> Vec<Value> {
+        r2p_list(base, "deferred")
+    }
+
+    /// How the next presence ping goes: the agent ACKs on screen, reads it and answers without the ACK (affirmative
+    /// absence: `ReceivedNoAck`), or leaves no trace (undetermined).
+    #[cfg(unix)]
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum R2pPing {
+        Ack,
+        NoAck,
+        NoTrace,
+    }
+
+    /// The seat's scripted behaviour; the test changes it between runs.
+    #[cfg(unix)]
+    struct R2pSeat {
+        directive: Value,
+        ping: R2pPing,
+        mark_ok: bool,
+    }
+
+    #[cfg(unix)]
+    type R2pCtl = std::sync::Arc<std::sync::Mutex<R2pSeat>>;
+
+    #[cfg(unix)]
+    fn r2p_ctl(directive: Value, ping: R2pPing, mark_ok: bool) -> R2pCtl {
+        std::sync::Arc::new(std::sync::Mutex::new(R2pSeat { directive, ping, mark_ok }))
+    }
+
+    #[cfg(unix)]
+    fn r2p_set(ctl: &R2pCtl, directive: Value, ping: R2pPing, mark_ok: bool) {
+        *ctl.lock().unwrap_or_else(|e| e.into_inner()) = R2pSeat { directive, ping, mark_ok };
+    }
+
+    /// One idle, live claude seat (surface:7 · worker) whose Claude transcript is `session`. A directive paste is answered
+    /// with `ctl.directive`; a presence ping (text carrying `REINJECT_PING_HEAD`) is answered ok and then: `Ack` matches
+    /// `surface.wait_for`, `NoAck` writes the ping as a user prompt plus an answer without the ACK into the transcript,
+    /// `NoTrace` writes nothing. `reinject.mark` is kept in topology as the daemon persists it (or refused, `mark_ok`).
+    #[cfg(unix)]
+    fn r2p_daemon(ctl: R2pCtl, session: std::path::PathBuf) -> R2cDaemon {
+        let mut marker = Value::Null;
+        R2cDaemon::start(move |method, p| {
+            let seat = ctl.lock().unwrap_or_else(|e| e.into_inner());
+            match method {
+                "system.topology" => {
+                    let mut row = json!({"role": "worker"});
+                    if !marker.is_null() {
+                        row["pack_reinject"] = marker.clone();
+                    }
+                    r2c_ok(json!({"saved": [row]}))
+                }
+                "control.dashboard" => r2c_ok(json!({"fleet": [
+                    {"surface_id": 7, "role": "worker", "state": "idle", "idle_secs": 60, "agent_status": "idle"}]})),
+                "surface.list" => r2c_ok(json!({"surfaces": [{
+                    "surface_id": 7, "surface_ref": "surface:7", "role": "worker", "agent": "claude", "exited": false,
+                    "agent_alive": true, "awakened_at": 1.0,
+                    "usage": {"source": "transcript", "session_file": session.to_string_lossy()}}]})),
+                "surface.read_text" => r2c_ok(json!({"text": "", "latest_cursor": 40, "line_count": 40})),
+                "surface.send_text" => {
+                    let text = p["text"].as_str().unwrap_or("");
+                    if !text.contains(REINJECT_PING_HEAD) {
+                        return seat.directive.clone();
+                    }
+                    if seat.ping == R2pPing::NoAck {
+                        use std::io::Write;
+                        let user = json!({"type": "user", "message": {"content": text}});
+                        let answer = json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "ok"}]}});
+                        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&session) {
+                            let _ = writeln!(f, "{user}\n{answer}");
+                        }
+                    }
+                    r2c_ok(json!({}))
+                }
+                "surface.wait_for" => r2c_ok(json!({"matched": seat.ping == R2pPing::Ack})),
+                "reinject.mark" if seat.mark_ok => {
+                    marker = json!({"pack_version": p["pack_version"], "directive_hash": p["directive_hash"]});
+                    r2c_ok(json!({}))
+                }
+                "reinject.mark" => r2c_reply("rpc_failed: the marker store refused the write"),
+                _ => r2c_ok(json!({})),
+            }
+        })
+    }
+
+    /// (directive pastes, presence pings) among `calls`.
+    #[cfg(unix)]
+    fn r2p_pastes(calls: &[(String, Value)]) -> (usize, usize) {
+        let sends: Vec<&Value> = calls.iter().filter(|(m, _)| m == "surface.send_text").map(|(_, p)| p).collect();
+        let pings = sends.iter().filter(|p| p["text"].as_str().is_some_and(|t| t.contains(REINJECT_PING_HEAD))).count();
+        (sends.len() - pings, pings)
+    }
+
+    /// Where the first UNKNOWN came from: the node loop (`run_pack_reinject`) or the pending pass of a deferred node.
+    #[cfg(unix)]
+    #[derive(Clone, Copy, Debug)]
+    enum R2pOrigin {
+        NodeLoop,
+        PendingPass,
+    }
+
+    /// Run 1 for `origin`: the directive paste gets UNKNOWN. Returns the Debug text of that run's report.
+    #[cfg(unix)]
+    fn r2p_first_run(origin: R2pOrigin, pack: &R2cPack) -> String {
+        match origin {
+            R2pOrigin::NodeLoop => format!("{:?}", run_pack_reinject("9.9.9")),
+            R2pOrigin::PendingPass => {
+                persist_reinject_pending(&pack.dir, "9.9.9", &[(7, "worker".to_string())]).unwrap();
+                format!("{:?}", consume_reinject_pending(&pack.dir))
+            }
+        }
+    }
+
+    /// Scratch transcript for one specimen (removed by the caller's pack dir drop: it lives inside it).
+    #[cfg(unix)]
+    fn r2p_session(pack: &R2cPack) -> std::path::PathBuf {
+        let s = pack.dir.join("session.jsonl");
+        std::fs::write(&s, "").unwrap();
+        s
+    }
+
+    /// Area P · after an UNKNOWN (from either origin), the next pending pass's presence ping gets the ACK: the directive is
+    /// in context. Mark once, type nothing, drop the entry; a third run (same version) decides SkipUnchanged.
+    /// RED on 11717c44: the first run already marked (no entry), so the next pass pings nothing.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_p3_unknown_then_ack_marks_once_types_nothing_and_never_types_twice() {
+        let mut failures = Vec::new();
+        for origin in [R2pOrigin::NodeLoop, R2pOrigin::PendingPass] {
+            let pack = R2cPack::new();
+            let ctl = r2p_ctl(r2c_reply(&pending_err()), R2pPing::Ack, true);
+            let daemon = r2p_daemon(ctl.clone(), r2p_session(&pack));
+            let (marks_after_first, second, third) = r2c_in_env(&daemon, &pack, || {
+                r2p_first_run(origin, &pack);
+                let marks = r2c_count(&daemon.calls(), "reinject.mark");
+                r2p_set(&ctl, r2c_ok(json!({})), R2pPing::Ack, true);
+                let second = format!("{:?}", consume_reinject_pending(&pack.dir));
+                let third = run_pack_reinject("9.9.9");
+                (marks, second, third)
+            });
+            let calls = daemon.calls();
+            let (directives, pings) = r2p_pastes(&calls);
+            let marks = r2c_count(&calls, "reinject.mark");
+            if (directives, pings, marks_after_first, marks) != (1, 1, 0, 1) {
+                failures.push(format!(
+                    "{origin:?}: directives {directives} pings {pings} marks after run 1 {marks_after_first} total {marks} \
+                     (want 1 directive ever, 1 ping, no mark on UNKNOWN, 1 mark after the ACK) · pass 2 {second}"
+                ));
+            }
+            if !r2p_unknown_entries(&pack.dir).is_empty() {
+                failures.push(format!("{origin:?}: the verified entry is still pending"));
+            }
+            match third {
+                Ok(rep) if rep.injected == 0 && rep.skipped == 1 => {}
+                other => failures.push(format!("{origin:?}: the run after the ACK did not skip the node: {other:?}")),
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Area P · late refusal: the first write was UNKNOWN (later refused by the writer: zero bytes), and the next pass's
+    /// presence ping says `ReceivedNoAck` (the agent read the ping and holds no directive) — the one authorised retry:
+    /// the directive is typed exactly once, then marked. RED on 11717c44: no ping, no second directive (marked in run 1).
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_p4_unknown_then_absent_types_the_directive_exactly_once() {
+        let mut failures = Vec::new();
+        for origin in [R2pOrigin::NodeLoop, R2pOrigin::PendingPass] {
+            let pack = R2cPack::new();
+            let ctl = r2p_ctl(r2c_reply(&pending_err()), R2pPing::NoAck, true);
+            let daemon = r2p_daemon(ctl.clone(), r2p_session(&pack));
+            let third = r2c_in_env(&daemon, &pack, || {
+                r2p_first_run(origin, &pack);
+                r2p_set(&ctl, r2c_ok(json!({})), R2pPing::NoAck, true);
+                let _ = consume_reinject_pending(&pack.dir);
+                run_pack_reinject("9.9.9")
+            });
+            let calls = daemon.calls();
+            let (directives, pings) = r2p_pastes(&calls);
+            let marks = r2c_count(&calls, "reinject.mark");
+            if (directives, pings, marks) != (2, 1, 1) {
+                failures.push(format!(
+                    "{origin:?}: directives {directives} pings {pings} marks {marks} (want the UNKNOWN one + exactly one \
+                     re-inject after ReceivedNoAck, one ping, one mark)"
+                ));
+            }
+            if !r2p_unknown_entries(&pack.dir).is_empty() {
+                failures.push(format!("{origin:?}: the re-injected entry is still pending"));
+            }
+            if !matches!(&third, Ok(rep) if rep.injected == 0) {
+                failures.push(format!("{origin:?}: a third run typed it again: {third:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Area P · the next pass's presence ping is undetermined (no ACK on screen, no trace in the transcript): nothing is
+    /// typed, the entry stays, the pass and a following node loop both count it unknown and type nothing.
+    /// RED on 11717c44: no entry, no ping, and the node loop of the same version decides by the (UNKNOWN-seeded) marker.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_p5_unknown_then_undetermined_types_nothing_and_stays_unknown() {
+        let mut failures = Vec::new();
+        for origin in [R2pOrigin::NodeLoop, R2pOrigin::PendingPass] {
+            let pack = R2cPack::new();
+            let ctl = r2p_ctl(r2c_reply(&pending_err()), R2pPing::NoTrace, true);
+            let daemon = r2p_daemon(ctl.clone(), r2p_session(&pack));
+            let (second, third) = r2c_in_env(&daemon, &pack, || {
+                r2p_first_run(origin, &pack);
+                r2p_set(&ctl, r2c_ok(json!({})), R2pPing::NoTrace, true);
+                (format!("{:?}", consume_reinject_pending(&pack.dir)), format!("{:?}", run_pack_reinject("9.9.9")))
+            });
+            let calls = daemon.calls();
+            let (directives, pings) = r2p_pastes(&calls);
+            let marks = r2c_count(&calls, "reinject.mark");
+            if (directives, pings, marks) != (1, 1, 0) {
+                failures.push(format!("{origin:?}: directives {directives} pings {pings} marks {marks} (want 1, 1, 0)"));
+            }
+            if !second.contains("unknown: 1") || !third.contains("unknown: 1") || third.contains("injected: 1") {
+                failures.push(format!("{origin:?}: not counted unknown after an undetermined ping: pass {second} · loop {third}"));
+            }
+            if r2p_unknown_entries(&pack.dir).len() != 1 {
+                failures.push(format!("{origin:?}: the entry was not kept"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Area P · the ping says Present but `reinject.mark` fails: the entry stays UNKNOWN (never an ordinary deferred entry,
+    /// which would be retried = a duplicate), and nothing is typed on this run or the next.
+    /// RED on 11717c44: the first run marks, nothing is pending, no ping.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_p6_mark_failure_after_present_keeps_it_unknown_and_types_nothing() {
+        let mut failures = Vec::new();
+        for origin in [R2pOrigin::NodeLoop, R2pOrigin::PendingPass] {
+            let pack = R2cPack::new();
+            let ctl = r2p_ctl(r2c_reply(&pending_err()), R2pPing::Ack, true);
+            let daemon = r2p_daemon(ctl.clone(), r2p_session(&pack));
+            let (after_two, deferred_after_two) = r2c_in_env(&daemon, &pack, || {
+                r2p_first_run(origin, &pack);
+                r2p_set(&ctl, r2c_ok(json!({})), R2pPing::Ack, false);
+                let _ = consume_reinject_pending(&pack.dir);
+                let state = (r2p_unknown_entries(&pack.dir).len(), r2p_deferred_entries(&pack.dir).len());
+                let _ = consume_reinject_pending(&pack.dir);
+                state
+            });
+            let calls = daemon.calls();
+            let (directives, pings) = r2p_pastes(&calls);
+            if directives != 1 || pings != 2 {
+                failures.push(format!("{origin:?}: directives {directives} pings {pings} (want 1 ever, one ping per later pass)"));
+            }
+            if (after_two, deferred_after_two) != (1, 0) {
+                failures.push(format!(
+                    "{origin:?}: after a failed mark: unknown {after_two} deferred {deferred_after_two} (want 1, 0)"
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Area P · a restart between runs. ★(B-360 R3 · A6) CHANGED (wrong contract): this specimen was
+    /// `b360_r2r_p7_the_unknown_entry_survives_a_restart`, which pinned "a restart still reconciles by ping": after a
+    /// first daemon wrote the entry, a SECOND daemon's pending pass had to ping it once and mark it (`(directives, pings,
+    /// marks) == (0, 1, 1)`). FIX-SPEC §8 A6 rule 2 makes that wrong — a new daemon instance means the pane is gone
+    /// (surface numbers are per instance), so the entry is RESOLVED and nothing is pinged. The old name now states a false
+    /// behaviour (the entry no longer "survives" a restart), so it is renamed. The restart is modelled on ONE socket (the
+    /// same lane, as a real restart is): run 1 writes the entry under daemon instance 100, then the daemon reports
+    /// instance 200. The entry's durability as a file between two commands is still pinned by p1 / p2.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_p7_a_restart_is_a_new_daemon_instance_that_resolves_the_unknown_entry_without_a_ping() {
+        let pack = R2cPack::new();
+        let ctl = r3p_ctl(r2c_reply(&pending_err()), R2pPing::Ack, Some(100.0), "worker");
+        let daemon = r3p_daemon(ctl.clone(), r2p_session(&pack));
+        r2c_in_env(&daemon, &pack, || run_pack_reinject("9.9.9").map(|_| ()).expect("first run"));
+        let on_disk = r2p_unknown_entries(&pack.dir);
+        let before = daemon.calls().len();
+        {
+            let mut seat = ctl.lock().unwrap_or_else(|e| e.into_inner());
+            seat.directive = r2c_ok(json!({}));
+            seat.started_at = Some(200.0);
+        }
+        let rep = r2c_in_env(&daemon, &pack, || format!("{:?}", consume_reinject_pending(&pack.dir)));
+        let calls: Vec<(String, Value)> = daemon.calls().into_iter().skip(before).collect();
+        let (directives, pings) = r2p_pastes(&calls);
+        let marks = r2c_count(&calls, "reinject.mark");
+        assert!(
+            on_disk.len() == 1
+                && on_disk[0]["owner"]["daemon_started_at"] == 100.0
+                && (directives, pings, marks) == (0, 0, 0)
+                && r2p_unknown_entries(&pack.dir).is_empty()
+                && rep.contains("resolved: 1"),
+            "entry on disk between runs {on_disk:?}; after the restart: directives {directives} pings {pings} marks {marks} \
+             · {rep}"
+        );
+    }
+
+    /// Area P · the pending file: every writer carries the other list forward, and the file is removed only when BOTH
+    /// lists are empty. RED on 11717c44 (a and b): `persist_reinject_pending` writes `deferred` only, so it removes or
+    /// overwrites a file that still holds an unknown entry. (c) is the positive control: an old file without "unknown"
+    /// reads as before (passes on 11717c44 too).
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_p8_the_pending_file_carries_the_unknown_list_through_every_writer() {
+        let pack = R2cPack::new();
+        let base = pack.dir.clone();
+        let entry = json!({"surface_id": 7, "role": "worker", "directive_hash": "H", "request_id": "w1-2", "at": 1});
+        let path = reinject_pending_path(&base);
+        std::fs::write(&path, json!({"pack_version": "9.9.9", "deferred": [], "unknown": [entry]}).to_string()).unwrap();
+        let mut failures = Vec::new();
+        persist_reinject_pending(&base, "9.9.9", &[]).unwrap();
+        if r2p_unknown_entries(&base) != vec![entry.clone()] {
+            failures.push(format!("(a) an empty deferred write dropped the unknown list: exists={}", path.exists()));
+        }
+        persist_reinject_pending(&base, "9.9.9", &[(8, "cso".to_string())]).unwrap();
+        if r2p_unknown_entries(&base) != vec![entry.clone()] || r2p_deferred_entries(&base).len() != 1 {
+            failures.push(format!("(b) a deferred write overwrote the unknown list: {:?}", std::fs::read_to_string(&path)));
+        }
+        std::fs::write(&path, json!({"pack_version": "9.9.9", "deferred": [{"surface_id": 9, "role": "cso"}]}).to_string())
+            .unwrap();
+        match read_reinject_pending(&base) {
+            Ok(Some((ver, nodes))) if ver == "9.9.9" && nodes == vec![(9, "cso".to_string())] => {}
+            other => failures.push(format!("(c) an old file without \"unknown\" no longer reads as before: {other:?}")),
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Area P · S69 through the real command: `cys pack-update` (child; no `--from`, so it stops after the pending pass with
+    /// exit 1) prints the pending pass line with an unknown count, and a warning naming the node, the pending path and
+    /// `cys reinject --role worker --check`. RED on 11717c44: the line says "1 해소" (the UNKNOWN node printed as resolved).
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_p9_the_pending_pass_line_of_the_real_command_counts_the_unknown() {
+        let pack = R2cPack::new();
+        persist_reinject_pending(&pack.dir, "9.9.9", &[(7, "worker".to_string())]).unwrap();
+        let daemon = r2c_pack_daemon(r2c_reply(&pending_err()));
+        let (_rc, out, err) = r2c_child("pack-update", &daemon, &pack.envs());
+        let line = out.lines().find(|l| l.contains("pending reinject 소비")).unwrap_or_default().to_string();
+        let mut failures = Vec::new();
+        if !(line.contains("0 해소") && line.contains("1 미확인")) {
+            failures.push(format!("pending pass line: {line:?}\n{out}"));
+        }
+        let warn = err.lines().find(|l| l.contains("cys reinject --role worker --check")).unwrap_or_default();
+        if !(warn.contains("surface 7") || warn.contains("surface:7")) || !warn.contains(".pack-reinject-pending.json") {
+            failures.push(format!("no warning naming the node, the pending path and the check: {err}"));
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Area P · an unknown entry whose hash differs from the directive composed now is dropped and the node is decided
+    /// normally (a different directive is meant to be injected anyway). RED on 11717c44: the entry is never read, so it is
+    /// never dropped (the injection itself happens on both).
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_p10_a_changed_directive_drops_the_stale_unknown_entry_and_decides_normally() {
+        let pack = R2cPack::new();
+        let entry = json!({"surface_id": 7, "role": "worker", "directive_hash": "OLD", "request_id": null, "at": 1});
+        std::fs::write(
+            reinject_pending_path(&pack.dir),
+            json!({"pack_version": "9.9.8", "deferred": [], "unknown": [entry]}).to_string(),
+        )
+        .unwrap();
+        let daemon = r2c_pack_daemon(r2c_ok(json!({})));
+        let rep = r2c_in_env(&daemon, &pack, || run_pack_reinject("9.9.9")).expect("node loop");
+        let calls = daemon.calls();
+        assert_eq!((r2c_count(&calls, "surface.send_text"), r2c_count(&calls, "reinject.mark"), rep.injected), (1, 1, 1));
+        assert!(r2p_unknown_entries(&pack.dir).is_empty(), "the stale unknown entry was kept: {:?}", r2p_unknown_entries(&pack.dir));
+    }
+
+    /// Area P · S70 / B07 / B08: the structured line and the exit class carry UNKNOWN, including the co-occurrence of a
+    /// REFUSED node (failed) and an UNKNOWN node in one run. Cannot be red on 11717c44: `pack_update_result_line` and the
+    /// two-argument `reinject_exit_code` do not exist there (the line was built inline in `run_pack_update`, whose reinject
+    /// phase a test cannot reach — the pack must be signed by the embedded release key). Positive control: a report with
+    /// one PASSED node renders `injected=1 … unknown=0` and exits 0.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_p11_pack_update_result_line_and_exit_carry_unknown_with_failed() {
+        let pack = R2cPack::new();
+        let mut marker = Value::Null;
+        let daemon = R2cDaemon::start(move |method, p| match method {
+            "system.topology" => r2c_ok(json!({"saved": [{"role": "worker", "pack_reinject": marker.clone()}]})),
+            "control.dashboard" => r2c_ok(json!({"fleet": [
+                {"surface_id": 7, "role": "worker", "state": "idle", "idle_secs": 60, "agent_status": "idle"},
+                {"surface_id": 8, "role": "cso", "state": "idle", "idle_secs": 60, "agent_status": "idle"}]})),
+            "surface.list" => r2c_ok(json!({"surfaces": [
+                {"surface_id": 7, "surface_ref": "surface:7", "role": "worker", "exited": false},
+                {"surface_id": 8, "surface_ref": "surface:8", "role": "cso", "exited": false}]})),
+            "surface.read_text" => r2c_ok(json!({"text": ""})),
+            "surface.send_text" if p["surface_id"] == 7 => r2c_reply(&pending_err()),
+            "surface.send_text" => r2c_reply(&journal_err()),
+            "reinject.mark" => {
+                marker = json!({"pack_version": p["pack_version"], "directive_hash": p["directive_hash"]});
+                r2c_ok(json!({}))
+            }
+            _ => r2c_ok(json!({})),
+        });
+        std::fs::write(pack.dir.join("pack/directives/CSO_DIRECTIVE.md"), "C").unwrap();
+        let rep = r2c_in_env(&daemon, &pack, || run_pack_reinject("9.9.9")).expect("node loop");
+        let line = pack_update_result_line("9.9.9", &rep);
+        let mut failures = Vec::new();
+        if (rep.injected, rep.failed, rep.unknown) != (0, 1, 1) {
+            failures.push(format!("one REFUSED + one UNKNOWN node: {rep:?}"));
+        }
+        if !(line.contains("injected=0") && line.contains("failed=1") && line.ends_with("unknown=1")) {
+            failures.push(format!("structured line: {line}"));
+        }
+        if reinject_exit_code(rep.failed, rep.unknown) != cys::pack::EXIT_REINJECT_DEGRADED {
+            failures.push(format!("exit {} for failed+unknown, want 3", reinject_exit_code(rep.failed, rep.unknown)));
+        }
+        if reinject_exit_code(0, 1) != cys::pack::EXIT_REINJECT_DEGRADED {
+            failures.push("unknown alone does not reach the degraded exit".into());
+        }
+        let ok = ReinjectReport { injected: 1, ..Default::default() };
+        let ok_line = pack_update_result_line("9.9.9", &ok);
+        if !(ok_line.contains("injected=1") && ok_line.ends_with("unknown=0")) || reinject_exit_code(ok.failed, ok.unknown) != 0 {
+            failures.push(format!("positive control: {ok_line}"));
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Area P · coordinator finding: no presence ping and no re-inject of this reconciliation reaches a bare shell (an
+    /// exited or agent-less pane: `reinject_check_should_skip_bare_shell`).
+    /// ★(B-360 R3 · A6) CHANGED (wrong contract) and restructured (worker-7). The old specimen also pinned the STALE
+    /// path: a hash-mismatched unknown entry was "decided normally" — typed exactly once on a LIVE seat (`(directives,
+    /// pings) == (1, 0)`, its positive control) and kept as an ordinary DEFERRED retry on a bare shell (`deferred` len
+    /// 1). The accepted A6 hash guard makes both wrong, and with a mismatch the hash guard alone would satisfy "nothing
+    /// typed", so the bare-shell guard is now measured with a hash MATCH. The name still states a true behaviour.
+    /// - (a) POSITIVE CONTROL: live agent + hash match + ReceivedNoAck → typed exactly once `(1, 1)` (the one remaining
+    ///   typing path of the unknown loop), entry resolved;
+    /// - (b1) bare shell from the start + hash match → no ping, nothing typed (`directive_presence`'s guard), UNKNOWN;
+    /// - (b2) the seat becomes a bare shell right after the ping is answered without the ACK → the ping only, nothing
+    ///   typed (the re-check right before the inject, `Presence::Absent if !live_agent`), UNKNOWN;
+    /// - (c) the A6 hash guard: a mismatch on the live seat and on the bare shell → `(0, 0)`, UNKNOWN, no deferred entry.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_p12_the_reconciliation_never_types_into_a_bare_shell() {
+        #[derive(Clone, Copy, PartialEq)]
+        enum Bare {
+            Never,
+            FromStart,
+            AfterPing,
+        }
+        let mut failures = Vec::new();
+        for (name, hash_match, bare, want, want_unknown) in [
+            ("(a) live + hash match + ReceivedNoAck", true, Bare::Never, (1usize, 1usize), 0usize),
+            ("(b1) bare shell from the start + hash match", true, Bare::FromStart, (0, 0), 1),
+            ("(b2) bare shell after the ping + hash match", true, Bare::AfterPing, (0, 1), 1),
+            ("(c) live + hash mismatch", false, Bare::Never, (0, 0), 1),
+            ("(c) bare shell + hash mismatch", false, Bare::FromStart, (0, 0), 1),
+        ] {
+            let pack = R2cPack::new();
+            let session = r2p_session(&pack);
+            let is_bare = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(bare == Bare::FromStart));
+            let flag = std::sync::Arc::clone(&is_bare);
+            let daemon = R2cDaemon::start(move |method, p| match method {
+                "system.topology" => r2c_ok(json!({"saved": [{"role": "worker"}]})),
+                "control.dashboard" => r2c_ok(json!({"fleet": [
+                    {"surface_id": 7, "role": "worker", "state": "idle", "idle_secs": 60, "agent_status": "idle"}]})),
+                "surface.list" => r2c_ok(json!({"surfaces": [{
+                    "surface_id": 7, "surface_ref": "surface:7", "role": "worker", "agent": "claude", "exited": false,
+                    "agent_alive": !flag.load(std::sync::atomic::Ordering::SeqCst), "awakened_at": 1.0,
+                    "usage": {"source": "transcript", "session_file": session.to_string_lossy()}}]})),
+                "surface.read_text" => r2c_ok(json!({"text": "", "latest_cursor": 40, "line_count": 40})),
+                "surface.send_text" => {
+                    let text = p["text"].as_str().unwrap_or("");
+                    if text.contains(REINJECT_PING_HEAD) {
+                        use std::io::Write;
+                        let user = json!({"type": "user", "message": {"content": text}});
+                        let answer = json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "ok"}]}});
+                        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&session) {
+                            let _ = writeln!(f, "{user}\n{answer}");
+                        }
+                        if bare == Bare::AfterPing {
+                            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                        }
+                    }
+                    r2c_ok(json!({}))
+                }
+                "surface.wait_for" => r2c_ok(json!({"matched": false})),
+                _ => r2c_ok(json!({})),
+            });
+            let base = pack.dir.clone();
+            let after = r2c_in_env(&daemon, &pack, || {
+                let hash = if hash_match { sha256_hex(&compose_directive("worker").expect("directive")) } else { "OLD".into() };
+                let entry = json!({"surface_id": 7, "role": "worker", "directive_hash": hash, "request_id": null, "at": 1});
+                std::fs::write(
+                    reinject_pending_path(&base),
+                    json!({"pack_version": "9.9.9", "deferred": [], "unknown": [entry]}).to_string(),
+                )
+                .unwrap();
+                let _ = consume_reinject_pending(&base);
+                (r2p_unknown_entries(&base), r2p_deferred_entries(&base))
+            });
+            let (directives, pings) = r2p_pastes(&daemon.calls());
+            if (directives, pings) != want {
+                failures.push(format!("{name}: (directives, pings) = ({directives}, {pings}), want {want:?}"));
+            }
+            if after.0.len() != want_unknown || !after.1.is_empty() {
+                failures.push(format!("{name}: unknown {:?} (want {want_unknown}) · deferred {:?} (want none)", after.0, after.1));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Area P · head condition (a): a bare-shell seat — the agent record is there but no live agent (`agent_alive` false)
+    /// or the pane exited, i.e. `reinject_check_should_skip_bare_shell` would skip it — holding an unknown entry of the
+    /// SAME directive is never pinged and never injected, and the entry stays unknown.
+    /// RED on 11717c44: the pending pass reads deferred entries only and removes the file, so the entry is lost.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_p13_a_bare_shell_seat_is_never_pinged_or_injected_and_stays_unknown() {
+        let mut failures = Vec::new();
+        for (name, alive, exited) in [("agent_alive=false", false, false), ("exited", true, true)] {
+            let pack = R2cPack::new();
+            let daemon = R2cDaemon::start(move |method, _| match method {
+                "system.topology" => r2c_ok(json!({"saved": [{"role": "worker"}]})),
+                "control.dashboard" => r2c_ok(json!({"fleet": [
+                    {"surface_id": 7, "role": "worker", "state": "idle", "idle_secs": 60, "agent_status": "idle"}]})),
+                "surface.list" => r2c_ok(json!({"surfaces": [{"surface_id": 7, "surface_ref": "surface:7", "role": "worker",
+                    "agent": "claude", "agent_alive": alive, "exited": exited, "awakened_at": 1.0}]})),
+                "surface.read_text" => r2c_ok(json!({"text": "", "latest_cursor": 40})),
+                "surface.wait_for" => r2c_ok(json!({"matched": true})),
+                _ => r2c_ok(json!({})),
+            });
+            let base = pack.dir.clone();
+            let after = r2c_in_env(&daemon, &pack, || {
+                let hash = sha256_hex(&compose_directive("worker").expect("directive"));
+                let entry = json!({"surface_id": 7, "role": "worker", "directive_hash": hash, "request_id": "w1-2", "at": 1});
+                std::fs::write(
+                    reinject_pending_path(&base),
+                    json!({"pack_version": "9.9.9", "deferred": [], "unknown": [entry]}).to_string(),
+                )
+                .unwrap();
+                let _ = consume_reinject_pending(&base);
+                r2p_unknown_entries(&base)
+            });
+            let calls = daemon.calls();
+            let typed = r2c_count(&calls, "surface.send_text") + r2c_count(&calls, "surface.send_key");
+            if typed != 0 || r2c_count(&calls, "reinject.mark") != 0 {
+                failures.push(format!("{name}: {typed} writes / marks to a bare shell (want none)"));
+            }
+            if after.len() != 1 || after[0]["request_id"] != "w1-2" {
+                failures.push(format!("{name}: the entry did not stay unknown: {after:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// The production text of this file with every comment, string, raw string, byte string and char literal blanked
+    /// (newlines and byte offsets kept), and the spans of every `#[cfg(test)]` item (brace-balanced on that text).
+    fn r2r_lex_production(src: &str) -> (Vec<u8>, Vec<(usize, usize)>) {
+        let b = src.as_bytes();
+        let mut out = b.to_vec();
+        let blank = |out: &mut Vec<u8>, from: usize, to: usize| {
+            for c in out.iter_mut().take(to).skip(from) {
+                if *c != b'\n' {
+                    *c = b' ';
+                }
+            }
+        };
+        let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+        let mut i = 0;
+        while i < b.len() {
+            let c = b[i];
+            if c == b'/' && b.get(i + 1) == Some(&b'/') {
+                let end = src[i..].find('\n').map(|n| i + n).unwrap_or(b.len());
+                blank(&mut out, i, end);
+                i = end;
+            } else if c == b'/' && b.get(i + 1) == Some(&b'*') {
+                let (mut depth, mut j) = (1, i + 2);
+                while j < b.len() && depth > 0 {
+                    if b[j] == b'/' && b.get(j + 1) == Some(&b'*') {
+                        depth += 1;
+                        j += 2;
+                    } else if b[j] == b'*' && b.get(j + 1) == Some(&b'/') {
+                        depth -= 1;
+                        j += 2;
+                    } else {
+                        j += 1;
+                    }
+                }
+                blank(&mut out, i, j);
+                i = j;
+            } else if (c == b'r' || (c == b'b' && b.get(i + 1) == Some(&b'r')))
+                && (i == 0 || !is_ident(b[i - 1]))
+                && {
+                    let k = if c == b'b' { i + 2 } else { i + 1 };
+                    let mut h = k;
+                    while b.get(h) == Some(&b'#') {
+                        h += 1;
+                    }
+                    b.get(h) == Some(&b'"')
+                }
+            {
+                let k = if c == b'b' { i + 2 } else { i + 1 };
+                let mut h = k;
+                while b[h] == b'#' {
+                    h += 1;
+                }
+                let close = format!("\"{}", "#".repeat(h - k));
+                let end = src[h + 1..].find(&close).map(|n| h + 1 + n + close.len()).unwrap_or(b.len());
+                blank(&mut out, i, end);
+                i = end;
+            } else if c == b'"' {
+                let mut j = i + 1;
+                while j < b.len() && b[j] != b'"' {
+                    j += if b[j] == b'\\' { 2 } else { 1 };
+                }
+                blank(&mut out, i, j + 1);
+                i = j + 1;
+            } else if c == b'\'' {
+                // char literal ('x', '\n', '\u{..}', multi-byte 'é') vs lifetime ('a)
+                let end = if b.get(i + 1) == Some(&b'\\') {
+                    src[i + 2..].find('\'').map(|n| i + 2 + n + 1)
+                } else {
+                    let ch_len = src[i + 1..].chars().next().map(char::len_utf8).unwrap_or(1);
+                    (b.get(i + 1 + ch_len) == Some(&b'\'')).then_some(i + 2 + ch_len)
+                };
+                match end {
+                    Some(e) => {
+                        blank(&mut out, i, e);
+                        i = e;
+                    }
+                    None => i += 1,
+                }
+            } else {
+                i += 1;
+            }
+        }
+        let text = String::from_utf8_lossy(&out).into_owned();
+        let mut tests = Vec::new();
+        let mut from = 0;
+        while let Some(n) = text[from..].find("#[cfg(test)]") {
+            let at = from + n;
+            let rest = &text[at..];
+            let semi = rest.find(';');
+            let brace = rest.find('{');
+            let end = match (brace, semi) {
+                (Some(br), Some(se)) if se < br => at + se + 1,
+                (Some(br), _) => {
+                    let mut depth = 0usize;
+                    let mut e = at + br;
+                    for (k, ch) in text[at + br..].char_indices() {
+                        if ch == '{' {
+                            depth += 1;
+                        } else if ch == '}' {
+                            depth -= 1;
+                            if depth == 0 {
+                                e = at + br + k + 1;
+                                break;
+                            }
+                        }
+                    }
+                    e
+                }
+                (None, Some(se)) => at + se + 1,
+                (None, None) => text.len(),
+            };
+            tests.push((at, end));
+            from = end.max(at + 1);
+        }
+        (out, tests)
+    }
+
+    /// Every production fn of the lexed text: (name, start, end-of-body).
+    fn r2r_fn_spans(text: &str, tests: &[(usize, usize)]) -> Vec<(String, usize, usize)> {
+        let in_tests = |p: usize| tests.iter().any(|&(a, e)| a <= p && p < e);
+        let mut fns = Vec::new();
+        let mut from = 0;
+        while let Some(n) = text[from..].find("fn ") {
+            let at = from + n;
+            from = at + 3;
+            if at > 0 && (text.as_bytes()[at - 1].is_ascii_alphanumeric() || text.as_bytes()[at - 1] == b'_') {
+                continue;
+            }
+            if in_tests(at) {
+                continue;
+            }
+            let name: String = text[at + 3..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+            if name.is_empty() {
+                continue;
+            }
+            let (Some(br), semi) = (text[at..].find('{'), text[at..].find(';')) else { continue };
+            if semi.is_some_and(|s| s < br) {
+                continue; // a declaration without a body
+            }
+            let mut depth = 0usize;
+            let mut end = at + br;
+            for (k, ch) in text[at + br..].char_indices() {
+                if ch == '{' {
+                    depth += 1;
+                } else if ch == '}' {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = at + br + k + 1;
+                        break;
+                    }
+                }
+            }
+            fns.push((name, at, end));
+        }
+        fns
+    }
+
+    /// The innermost production fns that mention the identifier `name` (definition excluded).
+    fn r2r_callers(text: &str, fns: &[(String, usize, usize)], tests: &[(usize, usize)], name: &str) -> Vec<String> {
+        let b = text.as_bytes();
+        let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+        let mut out = Vec::new();
+        let mut from = 0;
+        while let Some(n) = text[from..].find(name) {
+            let at = from + n;
+            from = at + name.len();
+            if (at > 0 && is_ident(b[at - 1])) || b.get(at + name.len()).is_some_and(|c| is_ident(*c)) {
+                continue;
+            }
+            if at >= 3 && &text[at - 3..at] == "fn " {
+                continue;
+            }
+            if tests.iter().any(|&(a, e)| a <= at && at < e) {
+                continue;
+            }
+            let inner = fns.iter().filter(|(_, a, e)| *a <= at && at < *e).min_by_key(|(_, a, e)| e - a);
+            if let Some((f, _, _)) = inner {
+                if !out.contains(f) {
+                    out.push(f.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// Area P · head condition (b): the pending pass's reconciliation (`consume_reinject_pending`, its core, and the
+    /// presence ping `directive_presence`) is NOT reachable from boot, restore, launch-agent or node-recover: kept panes are
+    /// record-only. A call-graph pin over the production region (comments/strings blanked, `#[cfg(test)]` items cut): the
+    /// transitive callers of the three, stopping at the `run` dispatch, contain none of `run_boot`, `run_restore`,
+    /// `run_launch_agent_opts`, `run_launch_agent`, `run_node_recover`.
+    /// Positive controls: the scanner finds the edges it must (run_pack_update → consume_reinject_pending →
+    /// directive_presence, and run_restore → run_launch_agent_opts — a root edge, so it would see a forbidden one).
+    /// RED on 11717c44: `directive_presence` does not exist there (its edge control fails); the exclusion itself holds.
+    #[test]
+    fn b360_r2r_p14_the_reconciliation_is_not_reachable_from_boot_restore_launch_or_node_recover() {
+        let src = include_str!("cys.rs");
+        let (lexed, tests) = r2r_lex_production(src);
+        let text = String::from_utf8_lossy(&lexed).into_owned();
+        let fns = r2r_fn_spans(&text, &tests);
+        let callers = |n: &str| r2r_callers(&text, &fns, &tests, n);
+        let mut failures = Vec::new();
+        if !callers("consume_reinject_pending").contains(&"run_pack_update".to_string()) {
+            failures.push(format!("control: run_pack_update → consume_reinject_pending not found: {:?}", callers("consume_reinject_pending")));
+        }
+        if !callers("directive_presence").contains(&"consume_reinject_pending".to_string()) {
+            failures.push(format!("control: consume_reinject_pending → directive_presence not found: {:?}", callers("directive_presence")));
+        }
+        // (1.1.11 편입) 우리 판 run_restore 는 run_restore_with(&mut ProdRestoreLauncher) 로 간접 호출한다 — fresh 폴백의 호출 지점은
+        //   `ProdRestoreLauncher::fresh` 다. 대조(통제)는 그 간선으로 보고, 뿌리에 우리 간접 층(run_restore_with·fresh·in_seat)을 더한다.
+        if !callers("run_launch_agent_opts").contains(&"fresh".to_string()) {
+            failures.push("control: ProdRestoreLauncher::fresh → run_launch_agent_opts not found (the scanner cannot see root edges)".into());
+        }
+        let roots = ["run_boot", "run_restore", "run_restore_with", "fresh", "in_seat", "run_launch_agent_opts", "run_launch_agent", "run_node_recover"];
+        let mut seen: Vec<String> = Vec::new();
+        let mut queue: Vec<String> =
+            ["consume_reinject_pending", "consume_reinject_pending_core", "directive_presence"].map(String::from).to_vec();
+        while let Some(f) = queue.pop() {
+            for c in callers(&f) {
+                if c == "run" || seen.contains(&c) {
+                    continue; // `run` is the dispatch (each arm is its own command)
+                }
+                seen.push(c.clone());
+                queue.push(c);
+            }
+        }
+        for r in roots {
+            if seen.iter().any(|s| s == r) {
+                failures.push(format!("{r} reaches the reconciliation (transitive callers: {seen:?})"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Area P · the head's exit rule: exit 3 reflects THIS run's write outcomes only. A run whose only unknown is CARRIED
+    /// (an entry from an earlier run) and stays undetermined after the check exits 0 and still reports the count; a pass
+    /// whose re-inject itself comes back UNKNOWN created a new unknown and exits 3. The source half pins that every exit
+    /// decision of `run_pack_update` passes only the `_new` counts to `reinject_exit_code`.
+    /// Cannot be red on 11717c44: there UNKNOWN never reaches any count (`unknown_new` and the two-argument
+    /// `reinject_exit_code` do not exist). Positive control: the re-inject-UNKNOWN pass (exit 3).
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_p15_only_this_runs_new_unknowns_reach_the_exit_carried_ones_are_reported() {
+        let mut failures = Vec::new();
+        for (name, ping, reinject, want_new, want_exit) in [
+            ("carried + undetermined", R2pPing::NoTrace, r2c_ok(json!({})), 0, 0),
+            ("carried + absent + re-inject UNKNOWN", R2pPing::NoAck, r2c_reply(&pending_err()), 1, cys::pack::EXIT_REINJECT_DEGRADED),
+        ] {
+            let pack = R2cPack::new();
+            let ctl = r2p_ctl(r2c_reply(&pending_err()), R2pPing::NoTrace, true);
+            let daemon = r2p_daemon(ctl.clone(), r2p_session(&pack));
+            let pass = r2c_in_env(&daemon, &pack, || {
+                run_pack_reinject("9.9.9").expect("run 1");
+                r2p_set(&ctl, reinject.clone(), ping, true);
+                consume_reinject_pending(&pack.dir).expect("run 2 pending pass")
+            });
+            if (pass.unknown, pass.unknown_new) != (1, want_new) {
+                failures.push(format!("{name}: unknown/new = ({}, {}), want (1, {want_new})", pass.unknown, pass.unknown_new));
+            }
+            if reinject_exit_code(0, pass.unknown_new) != want_exit {
+                failures.push(format!("{name}: exit {} want {want_exit}", reinject_exit_code(0, pass.unknown_new)));
+            }
+        }
+        let src = include_str!("cys.rs");
+        let head = format!("\nfn {}(", "run_pack_update");
+        let at = src.find(&head).expect("run_pack_update");
+        let body = &src[at..at + src[at..].find("\n}\n").expect("end")];
+        let calls: Vec<&str> = body.split("reinject_exit_code(").skip(1).map(|c| &c[..c.find(')').unwrap_or(c.len())]).collect();
+        if calls.len() < 3 || calls.iter().any(|args| !args.split(',').nth(1).is_some_and(|a| a.contains("_new"))) {
+            failures.push(format!("run_pack_update passes a non-new unknown count to the exit: {calls:?}"));
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    // ── ★(B-360 R2 revise) area D · `cys drain --verify`: every write's outcome is tracked; UNKNOWN is a typed outcome ──
+    // FIX-SPEC-R2-REVISE area D (census S39 19724, S40 19769, S41 19838, S42 20104; boundaries B10-B16). Compiled on
+    // 11717c44: outcomes are compared through `VerifyOutcome::as_str()` (the `Unknown` variant does not exist there).
+
+    /// A scripted drain-verify node. `inject` answers the save instruction (and, with `land`, the node writes its nonce
+    /// 300 ms later anyway); `wedge`: the instruction text stays in the composer (`> …`) on every screen read;
+    /// `ret` answers the corrective Return (counted in `returns`); `slow_ms` delays the inject (fan-out cap specimen);
+    /// `slow_screen_ms` delays every screen read.
+    struct R2dIo {
+        inject: Result<(), String>,
+        land: Option<std::path::PathBuf>,
+        wedge: bool,
+        ret: Result<(), String>,
+        slow_ms: u64,
+        slow_screen_ms: u64,
+        typed: std::sync::Mutex<String>,
+        returns: std::sync::atomic::AtomicUsize,
+    }
+
+    impl R2dIo {
+        fn new(inject: Result<(), String>, wedge: bool, ret: Result<(), String>) -> Self {
+            Self {
+                inject,
+                land: None,
+                wedge,
+                ret,
+                slow_ms: 0,
+                slow_screen_ms: 0,
+                typed: Default::default(),
+                returns: Default::default(),
+            }
+        }
+    }
+
+    impl VerifyIo for R2dIo {
+        fn inject(&self, _: &std::path::Path, _: u64, text: &str, _: std::time::Duration) -> Result<(), String> {
+            std::thread::sleep(std::time::Duration::from_millis(self.slow_ms));
+            *self.typed.lock().unwrap_or_else(|e| e.into_inner()) = text.to_string();
+            if let Some(file) = self.land.clone() {
+                let at = text.find("<!-- cys-checkpoint:").expect("the instruction carries its marker");
+                let marker = text[at..at + text[at..].find("-->").expect("marker end") + 3].to_string();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    let _ = std::fs::write(&file, format!("# 상태\n{marker}\n"));
+                });
+            }
+            self.inject.clone()
+        }
+        fn read_screen(&self, _: &std::path::Path, _: u64, _: u64, _: std::time::Duration) -> Result<String, String> {
+            std::thread::sleep(std::time::Duration::from_millis(self.slow_screen_ms));
+            if self.wedge {
+                Ok(format!("✻ Working…\n> {}", self.typed.lock().unwrap_or_else(|e| e.into_inner())))
+            } else {
+                Ok("✻ Working…\n> ".into())
+            }
+        }
+        fn send_return(&self, _: &std::path::Path, _: u64, _: std::time::Duration) -> Result<(), String> {
+            self.returns.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.ret.clone()
+        }
+    }
+
+    /// A drain-verify target (surface:`sid`) with its own checkpoint dir; returns (target, checkpoint file, dir).
+    fn r2d_target(sid: u64) -> (VerifyTarget, std::path::PathBuf, std::path::PathBuf) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let td = std::env::temp_dir()
+            .join(format!("b360r-dv-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let _ = std::fs::remove_dir_all(&td);
+        std::fs::create_dir_all(td.join("_round")).unwrap();
+        let file = td.join("_round/SESSION_STATE.md");
+        std::fs::write(&file, "# 상태\n").unwrap();
+        let t = VerifyTarget {
+            socket: td.join("cys.sock"),
+            dept: "dept-x".into(),
+            display: "dept-x".into(),
+            surface_id: sid,
+            surface_ref: format!("surface:{sid}"),
+            role: "worker".into(),
+            live_cwd: Some(td.to_string_lossy().into_owned()),
+            pending_undelivered: 0,
+        };
+        (t, file, td)
+    }
+
+    /// One node through `verify_one_node`: (outcome string, detail, corrective Returns sent).
+    fn r2d_verify(mut io: R2dIo, lands: bool, secs: u64) -> (String, String, usize) {
+        let (t, file, td) = r2d_target(7);
+        if lands {
+            io.land = Some(file);
+        }
+        let (o, d) = verify_one_node(&io, &t, "r2d", std::time::Duration::from_secs(secs), 100);
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let _ = std::fs::remove_dir_all(&td);
+        (o.as_str().to_string(), d, io.returns.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// Area D · S39/B11: the save instruction is UNKNOWN and the composer shows a persistent wedge. The bound Return may
+    /// still be pending, so NO corrective Return is sent, and without the nonce the node is `unknown` (91 class), not
+    /// `delivery_failed`. RED on 11717c44: a corrective Return is sent and the wedge selects DeliveryFailed (no code).
+    #[test]
+    fn b360_r2r_d1_unknown_inject_with_a_wedge_sends_no_corrective_return_and_is_unknown() {
+        let (o, d, returns) = r2d_verify(R2dIo::new(Err(pending_err()), true, Ok(())), false, 1);
+        assert_eq!((o.as_str(), returns), ("unknown", 0), "detail: {d}");
+    }
+
+    /// Area D · S40/B12: the save instruction PASSED but stays in the composer (an unsubmitted body), the corrective
+    /// Return comes back UNKNOWN, the nonce never appears → `unknown`. RED on 11717c44: the Return's result is discarded
+    /// and the wedge gives DeliveryFailed.
+    #[test]
+    fn b360_r2r_d2_passed_inject_wedge_and_unknown_corrective_return_is_unknown() {
+        let (o, d, returns) = r2d_verify(R2dIo::new(Ok(()), true, Err(pending_err())), false, 1);
+        assert_eq!((o.as_str(), returns), ("unknown", 1), "detail: {d}");
+    }
+
+    /// Area D · UNKNOWN inject, a visible wedge, and the nonce appears later (the pending write completed): saved, and
+    /// still no corrective Return. RED on 11717c44: it is saved there too, but only after a corrective Return.
+    #[test]
+    fn b360_r2r_d3_unknown_inject_then_the_nonce_appears_is_saved_without_a_corrective_return() {
+        let (o, d, returns) = r2d_verify(R2dIo::new(Err(pending_err()), true, Ok(())), true, 3);
+        assert_eq!((o.as_str(), returns), ("saved", 0), "detail: {d}");
+    }
+
+    /// Area D · the corrective Return is REFUSED by the writer journal (zero bytes): the existing failure, now naming the
+    /// journal. RED on 11717c44: the fixed wedge text ("Return 재전송에도 저장 미검출") claims a re-send that never happened.
+    #[test]
+    fn b360_r2r_d4_a_refused_corrective_return_is_a_journal_named_failure() {
+        let (o, d, returns) = r2d_verify(R2dIo::new(Ok(()), true, Err(journal_err())), false, 1);
+        assert_eq!((o.as_str(), returns), ("delivery_failed", 1), "detail: {d}");
+        assert!(r2c_own(&d).contains("journal") && r2c_own(&d).contains("zero bytes"), "the failure must name the journal: {d}");
+    }
+
+    /// Area D · S41/B13: the fan-out cap fires while a node's save instruction is still in flight (no definite outcome)
+    /// → that node is `unknown`; a node whose instruction PASSED and whose check was cut keeps today's `timeout`
+    /// (positive control). RED on 11717c44: both become the code-less `timeout`.
+    #[test]
+    fn b360_r2r_d5_the_fan_out_cap_makes_an_in_flight_write_unknown_and_keeps_timeout_after_a_pass() {
+        let (t1, _f1, d1) = r2d_target(7);
+        let (t2, _f2, d2) = r2d_target(8);
+        struct Two(R2dIo, R2dIo);
+        impl VerifyIo for Two {
+            fn inject(&self, s: &std::path::Path, sid: u64, text: &str, to: std::time::Duration) -> Result<(), String> {
+                if sid == 7 { self.0.inject(s, sid, text, to) } else { self.1.inject(s, sid, text, to) }
+            }
+            fn read_screen(&self, s: &std::path::Path, sid: u64, n: u64, to: std::time::Duration) -> Result<String, String> {
+                if sid == 7 { self.0.read_screen(s, sid, n, to) } else { self.1.read_screen(s, sid, n, to) }
+            }
+            fn send_return(&self, s: &std::path::Path, sid: u64, to: std::time::Duration) -> Result<(), String> {
+                if sid == 7 { self.0.send_return(s, sid, to) } else { self.1.send_return(s, sid, to) }
+            }
+        }
+        let mut in_flight = R2dIo::new(Ok(()), false, Ok(()));
+        in_flight.slow_ms = 8_000;
+        let mut passed = R2dIo::new(Ok(()), false, Ok(()));
+        passed.slow_screen_ms = 8_000;
+        let io: std::sync::Arc<dyn VerifyIo + Send + Sync> = std::sync::Arc::new(Two(in_flight, passed));
+        let report = drain_verify_fanout(io, vec![t1, t2], std::time::Duration::from_secs(1), 100);
+        let _ = (std::fs::remove_dir_all(&d1), std::fs::remove_dir_all(&d2));
+        let outcomes: Vec<String> =
+            report["nodes"].as_array().unwrap().iter().map(|n| n["outcome"].as_str().unwrap_or("").to_string()).collect();
+        assert_eq!(outcomes, vec!["unknown".to_string(), "timeout".to_string()], "{report}");
+    }
+
+    /// `cys drain --verify --timeout 2` in a child against a fake department daemon (the real `RealVerifyIo` path): two
+    /// worker nodes. surface:7's save paste gets `paste7`, its later screens show the pasted text left in the composer
+    /// (a wedge); surface:8 pastes fine and writes its nonce. Returns (exit, report JSON, requests).
+    #[cfg(unix)]
+    fn r2d_drain_verify(paste7: Value) -> (i32, Value, Vec<(String, Value)>) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir()
+            .join(format!("b360r-dvc-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let _ = std::fs::remove_dir_all(&root);
+        for sid in [7, 8] {
+            std::fs::create_dir_all(root.join(format!("n{sid}/_round"))).unwrap();
+            std::fs::write(root.join(format!("n{sid}/_round/SESSION_STATE.md")), "# 상태\n").unwrap();
+        }
+        let r = root.clone();
+        let mut typed7 = String::new();
+        let daemon = R2cDaemon::start(move |method, p| {
+            let sid = p["surface_id"].as_u64().unwrap_or(0);
+            match method {
+                "org.status" => {
+                    let rows: Vec<Value> = [7u64, 8].iter().map(|s| json!({
+                        "surface_id": s, "surface_ref": format!("surface:{s}"), "role": format!("worker-{s}"), "agent": "claude",
+                        "exited": false, "live_cwd": r.join(format!("n{s}")).to_string_lossy()})).collect();
+                    r2c_ok(json!({"surfaces": rows}))
+                }
+                "surface.list" => {
+                    let rows: Vec<Value> = [7u64, 8].iter().map(|s| json!({
+                        "surface_id": s, "surface_ref": format!("surface:{s}"), "agent": "claude", "exited": false,
+                        "awakened_at": 1.0})).collect();
+                    r2c_ok(json!({"surfaces": rows}))
+                }
+                "surface.send_text" if sid == 7 => {
+                    typed7 = p["text"].as_str().unwrap_or("").to_string();
+                    paste7.clone()
+                }
+                "surface.send_text" => {
+                    let text = p["text"].as_str().unwrap_or("");
+                    if let Some(at) = text.find("<!-- cys-checkpoint:") {
+                        let marker = &text[at..at + text[at..].find("-->").map(|e| e + 3).unwrap_or(0)];
+                        let _ = std::fs::write(r.join("n8/_round/SESSION_STATE.md"), format!("# 상태\n{marker}\n"));
+                    }
+                    r2c_ok(json!({}))
+                }
+                "surface.read_text" if sid == 7 => r2c_ok(json!({"text": format!("✻ Working…\n> {typed7}")})),
+                "surface.read_text" => r2c_ok(json!({"text": "✻ Working…\n> "})),
+                _ => r2c_ok(json!({})),
+            }
+        });
+        let reg = root.join("no-depts.json");
+        let (rc, out, err) = r2c_child("drain-verify", &daemon, &[("CYS_DEPTS_JSON", reg.into_os_string())]);
+        let at = out.find("{\n").unwrap_or_else(|| panic!("no drain --verify JSON:\n{out}\n{err}"));
+        let report = serde_json::Deserializer::from_str(&out[at..]).into_iter::<Value>().next().expect("json").expect("json");
+        let _ = std::fs::remove_dir_all(&root);
+        (rc, report, daemon.calls())
+    }
+
+    /// Area D · S42/B15/B16 through the real command: mixed nodes — surface:8 saved, surface:7's save paste UNKNOWN with
+    /// a persistent wedge — exit 91, both in the JSON (`saved`, `unknown`, summary `unknown: 1`), and no corrective
+    /// Return to surface:7 (only surface:8's own submission Return was sent).
+    /// RED on 11717c44: surface:7 becomes the code-less `delivery_failed` (wedge first) → exit 1, plus a corrective Return.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_d6_mixed_saved_and_unknown_nodes_exit_91_with_both_in_the_json() {
+        let (rc, report, calls) = r2d_drain_verify(r2c_reply(&pending_err()));
+        let outcome = |sid: u64| {
+            report["nodes"].as_array().unwrap().iter().find(|n| n["surface"] == format!("surface:{sid}").as_str())
+                .map(|n| n["outcome"].as_str().unwrap_or("").to_string()).unwrap_or_default()
+        };
+        let returns7 = calls.iter().filter(|(m, p)| m == "surface.send_key" && p["surface_id"] == 7).count();
+        let mut failures = Vec::new();
+        if rc != EXIT_WRITE_OUTCOME_UNKNOWN {
+            failures.push(format!("exit {rc}, want 91"));
+        }
+        if (outcome(7).as_str(), outcome(8).as_str()) != ("unknown", "saved") {
+            failures.push(format!("outcomes 7={} 8={}", outcome(7), outcome(8)));
+        }
+        if report["summary"]["unknown"] != 1 {
+            failures.push(format!("summary has no unknown count: {}", report["summary"]));
+        }
+        if returns7 != 0 {
+            failures.push(format!("{returns7} Return(s) sent to surface:7 after its UNKNOWN save paste"));
+        }
+        assert!(failures.is_empty(), "{}\n{report}", failures.join("\n"));
+    }
+
+    /// Area D · S42: the exit is computed without text scanning — an `unknown` node whose detail lost the daemon's code
+    /// still exits 91, and a `timeout` node whose detail happens to carry the code exits 1. Cannot be red on 11717c44
+    /// (`drain_verify_exit_code` does not exist there; its inline exit scanned the detail). Positive control: all saved → 0.
+    #[test]
+    fn b360_r2r_d7_the_drain_verify_exit_reads_the_typed_outcome_not_the_detail_text() {
+        let node = |outcome: &str, detail: &str| json!({"outcome": outcome, "detail": detail});
+        let unknown_no_code = json!({"all_saved": false, "nodes": [node("saved", ""), node("unknown", "no code here")]});
+        let timeout_with_code = json!({"all_saved": false, "nodes": [node("timeout", &pending_err())]});
+        let all_saved = json!({"all_saved": true, "nodes": [node("saved", "")]});
+        assert_eq!(
+            (
+                drain_verify_exit_code(false, &unknown_no_code),
+                drain_verify_exit_code(false, &timeout_with_code),
+                drain_verify_exit_code(true, &all_saved),
+            ),
+            (EXIT_WRITE_OUTCOME_UNKNOWN, 1, 0)
+        );
+    }
+
+    // ── ★(B-360 R2 revise) area R · `cys restore` fresh path: 90/91 distinct, panes kept, record-only ─────────────────
+    // FIX-SPEC-R2-REVISE area R (census S62 22014-22061, B26-B28) with the dept head's decisions: kept panes are RECORD
+    // ONLY (an append-only `<base>/.kept-pane-records.jsonl` line; no pack-update unknown entry, no marker, no ping), the
+    // launch-command write is told apart from the directive write, and the exit precedence is real failure > 91 > 90 > 0.
+
+    /// How a restored role comes back in the fixture.
+    #[cfg(unix)]
+    #[derive(Clone)]
+    enum R2rMode {
+        /// its empty seat (`sid`) exists: in-seat relaunch; `launch` answers the launch paste, `directive` the directive
+        InSeat { sid: u64, launch: Value, directive: Value },
+        /// no seat: a fresh surface (`sid`) is created; same two replies
+        Fresh { sid: u64, launch: Value, directive: Value },
+        /// no seat and `surface.create` fails: a real launch failure (rc 1)
+        FreshCreateFails,
+    }
+
+    /// `cys restore` (child, no resume) of `roles` (role, mode) with the fake agent `b360agent`. Returns (exit, stdout,
+    /// stderr, requests, kept-pane records).
+    #[cfg(unix)]
+    fn r2r_restore(roles: Vec<(&'static str, R2rMode)>) -> (i32, String, String, Vec<(String, Value)>, Vec<Value>) {
+        let pack = R2cPack::new();
+        std::fs::write(pack.dir.join("pack/directives/CSO_DIRECTIVE.md"), "C").unwrap();
+        let cwd = pack.dir.clone();
+        let live: Vec<Value> = roles
+            .iter()
+            .filter_map(|(r, m)| match m {
+                R2rMode::InSeat { sid, .. } => Some(json!({"role": r, "seat": "empty", "surface_id": sid, "env_injected": true})),
+                _ => None,
+            })
+            .collect();
+        let saved: Vec<Value> = roles.iter().map(|(r, _)| json!({"role": r, "agent": "b360agent", "cwd": cwd})).collect();
+        let modes: std::collections::HashMap<u64, (Value, Value)> = roles
+            .iter()
+            .filter_map(|(_, m)| match m {
+                R2rMode::InSeat { sid, launch, directive } | R2rMode::Fresh { sid, launch, directive } => {
+                    Some((*sid, (launch.clone(), directive.clone())))
+                }
+                R2rMode::FreshCreateFails => None,
+            })
+            .collect();
+        let create: std::collections::HashMap<&'static str, Option<u64>> = roles
+            .iter()
+            .filter_map(|(r, m)| match m {
+                R2rMode::Fresh { sid, .. } => Some((*r, Some(*sid))),
+                R2rMode::FreshCreateFails => Some((*r, None)),
+                R2rMode::InSeat { .. } => None,
+            })
+            .collect();
+        let mut pastes: std::collections::HashMap<u64, usize> = Default::default();
+        let mut acked: std::collections::HashSet<u64> = Default::default();
+        let sids: Vec<u64> = modes.keys().copied().collect();
+        let daemon = R2cDaemon::start(move |method, p| {
+            let sid = p["surface_id"].as_u64().unwrap_or(0);
+            match method {
+                "system.topology" => r2c_ok(json!({"live": live, "saved": saved, "tombstones": []})),
+                "surface.create" => match create.get(p["role"].as_str().unwrap_or("")) {
+                    Some(Some(new)) => r2c_ok(json!({"surface_id": new})),
+                    _ => r2c_reply("b360_no_spawn: this fake daemon makes no new surface for this role"),
+                },
+                "surface.list" => {
+                    let rows: Vec<Value> = sids
+                        .iter()
+                        .map(|s| {
+                            let mut row = json!({"surface_id": s, "surface_ref": format!("surface:{s}"), "exited": false,
+                                                 "agent_alive": true, "line_count": 40});
+                            if acked.contains(s) {
+                                row["awakened_at"] = json!(1.0);
+                            }
+                            row
+                        })
+                        .collect();
+                    r2c_ok(json!({"surfaces": rows}))
+                }
+                "surface.read_text" => r2c_ok(json!({"text": cys::first_run_gates::fixtures::LIVE_TUI_AT_PROMPT,
+                                                     "quiet_secs": 5.0, "line_count": 40, "next_cursor": 40})),
+                "surface.send_text" => {
+                    let n = pastes.entry(sid).or_insert(0);
+                    *n += 1;
+                    let Some((launch, directive)) = modes.get(&sid) else { return r2c_ok(json!({})) };
+                    if *n == 1 {
+                        launch.clone()
+                    } else {
+                        if directive["ok"] == true {
+                            acked.insert(sid);
+                        }
+                        directive.clone()
+                    }
+                }
+                _ => r2c_ok(json!({})),
+            }
+        });
+        let (rc, out, err) = r2c_child("restore", &daemon, &pack.envs());
+        let records: Vec<Value> = std::fs::read_to_string(pack.dir.join(".kept-pane-records.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+        (rc, out, err, daemon.calls(), records)
+    }
+
+    /// Checks one kept-pane record against the head's fields.
+    #[cfg(unix)]
+    fn r2r_record_ok(rec: &Value, command: &str, sid: u64, role: &str, outcome: &str, write: &str) -> bool {
+        rec["command"] == command
+            && rec["surface_id"] == sid
+            && rec["role"] == role
+            && rec["agent"] == "b360agent"
+            && rec["outcome"] == outcome
+            && rec["write"] == write
+            && rec["at"].as_u64().is_some_and(|t| t > 0)
+            && rec.get("request_id").is_some()
+    }
+
+    /// Area R · S62/B26/B27: a fresh restore whose directive is REFUSED (rc 90) / UNKNOWN (rc 91): the pane is kept (no
+    /// close), no marker is seeded, no pack-update unknown entry is written (record-only), the exit is 90 / 91, and one
+    /// kept-pane record names the directive write. RED on f45017d7: both are a generic launch failure → exit 1, no record.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_r1_fresh_restore_refused_and_unknown_keep_the_pane_exit_90_91_and_record_it() {
+        let mut failures = Vec::new();
+        for (name, reply, want, outcome) in [
+            ("REFUSED", r2c_reply(&journal_err()), EXIT_DIRECTIVE_REFUSED, "refused"),
+            ("UNKNOWN", r2c_reply(&pending_err()), EXIT_WRITE_OUTCOME_UNKNOWN, "unknown"),
+        ] {
+            let (rc, out, _err, calls, records) =
+                r2r_restore(vec![("worker", R2rMode::Fresh { sid: 9, launch: r2c_ok(json!({})), directive: reply })]);
+            if rc != want {
+                failures.push(format!("{name}: exit {rc}, want {want}\n{out}"));
+            }
+            for m in ["surface.close", "reinject.mark"] {
+                if r2c_count(&calls, m) != 0 {
+                    failures.push(format!("{name}: {m} was called"));
+                }
+            }
+            if records.len() != 1 || !r2r_record_ok(&records[0], "restore", 9, "worker", outcome, "directive") {
+                failures.push(format!("{name}: kept-pane records {records:?}"));
+            }
+            if !out.contains(&format!("cys reinject --role worker")) {
+                failures.push(format!("{name}: the restore line does not name `cys reinject --role worker`:\n{out}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Area R · co-occurrence (landing condition 3): (a) a real failure (a fresh launch whose surface cannot be created)
+    /// with an UNKNOWN (in-seat) → exit 1 (real failure first) and the summary line carries both counts; (b) an UNKNOWN
+    /// with a REFUSED (both fresh) → 91. RED on f45017d7: (a) exits 91 (91 outranked 1) and (b) exits 1 (fresh 90/91 were
+    /// generic failures).
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_r2_restore_precedence_holds_where_two_outcomes_meet() {
+        let mut failures = Vec::new();
+        let (rc, out, _, _, _) = r2r_restore(vec![
+            ("worker", R2rMode::InSeat { sid: 7, launch: r2c_ok(json!({})), directive: r2c_reply(&pending_err()) }),
+            ("cso", R2rMode::FreshCreateFails),
+        ]);
+        let summary = out.lines().find(|l| l.contains("restore 완료")).unwrap_or_default();
+        if rc != 1 {
+            failures.push(format!("(a) real failure + unknown: exit {rc}, want 1\n{out}"));
+        }
+        if !(summary.contains("실패 1") && summary.contains("unknown 1")) {
+            failures.push(format!("(a) the summary line does not carry both counts: {summary:?}"));
+        }
+        let (rc, out, _, _, records) = r2r_restore(vec![
+            ("worker", R2rMode::Fresh { sid: 9, launch: r2c_ok(json!({})), directive: r2c_reply(&pending_err()) }),
+            ("cso", R2rMode::Fresh { sid: 10, launch: r2c_ok(json!({})), directive: r2c_reply(&journal_err()) }),
+        ]);
+        let summary = out.lines().find(|l| l.contains("restore 완료")).unwrap_or_default();
+        if rc != EXIT_WRITE_OUTCOME_UNKNOWN {
+            failures.push(format!("(b) unknown + refused: exit {rc}, want 91\n{out}"));
+        }
+        if !(summary.contains("refused 1") && summary.contains("unknown 1")) || records.len() != 2 {
+            failures.push(format!("(b) summary {summary:?} · records {records:?}"));
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Area R · minor: the in-seat UNKNOWN message names `cys reinject --role <role>` (inspect first, re-inject only if
+    /// the directive did not land), and the in-seat kept pane gets its record. RED on f45017d7: the message names only
+    /// `cys read-screen`, and there is no record.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_r3_restore_in_seat_unknown_names_cys_reinject_and_is_recorded() {
+        let (rc, out, _, _, records) = r2r_restore(vec![(
+            "worker",
+            R2rMode::InSeat { sid: 7, launch: r2c_ok(json!({})), directive: r2c_reply(&pending_err()) },
+        )]);
+        let line = out.lines().find(|l| l.contains("좌석 내 재연결 —")).unwrap_or_default();
+        assert_eq!(rc, EXIT_WRITE_OUTCOME_UNKNOWN, "{out}");
+        assert!(line.contains("cys reinject --role worker"), "{line}");
+        assert!(
+            records.len() == 1 && r2r_record_ok(&records[0], "restore", 7, "worker", "unknown", "directive"),
+            "{records:?}"
+        );
+    }
+
+    /// Area R · which write (head): rc 91 because the LAUNCH command's write is UNKNOWN (before the agent meta is set)
+    /// says the launch command — not "the directive's outcome is unknown" — names the right check, and records
+    /// write=launch. RED on f45017d7: the message blames the directive and there is no record.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_r4_an_unknown_launch_write_is_named_as_the_launch_not_the_directive() {
+        let (rc, out, err, calls, records) =
+            r2r_restore(vec![("worker", R2rMode::Fresh { sid: 9, launch: r2c_reply(&pending_err()), directive: r2c_ok(json!({})) })]);
+        let mut failures = Vec::new();
+        if rc != EXIT_WRITE_OUTCOME_UNKNOWN {
+            failures.push(format!("exit {rc}, want 91\n{out}"));
+        }
+        let kept = err.lines().find(|l| l.contains("[launch-agent]") && l.contains("kept")).unwrap_or_default();
+        if !(kept.contains("launch command") && !kept.contains("the directive's outcome is unknown")) {
+            failures.push(format!("the kept-pane line blames the wrong write: {kept:?}\n{err}"));
+        }
+        if r2c_count(&calls, "surface.send_text") != 1 {
+            failures.push("something was typed after the unknown launch write".into());
+        }
+        if records.len() != 1 || !r2r_record_ok(&records[0], "restore", 9, "worker", "unknown", "launch") {
+            failures.push(format!("records {records:?}"));
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    // ── ★(B-360 R2 revise) area E · the effect check after an UNKNOWN write still runs ─────────────────────────────────
+    // FIX-SPEC-R2-REVISE area E (census §8: S29 15668, S48 21318, S49 21379, S63 22446 @11717c44; boundary B34). On
+    // UNKNOWN the check that follows the write still runs: affirmative evidence → continue as PASSED; none → the
+    // existing 91. Each row: evidence present (continues) and absent (91).
+
+    /// S29 fixture: `cys restore` (child) relaunches worker in-seat (surface:7); the launch paste is ok, the directive
+    /// paste gets `directive`; with `acks`, the seat's ack latch (`awakened_at`) appears after it anyway (it landed).
+    #[cfg(unix)]
+    fn r2e_restore(directive: Value, acks: bool) -> (i32, String, Vec<(String, Value)>) {
+        let pack = R2cPack::new();
+        let cwd = pack.dir.clone();
+        let (mut pastes, mut acked) = (0, false);
+        let daemon = R2cDaemon::start(move |method, _| match method {
+            "system.topology" => r2c_ok(json!({
+                "live": [{"role": "worker", "seat": "empty", "surface_id": 7, "env_injected": true}],
+                "saved": [{"role": "worker", "agent": "b360agent", "cwd": cwd}],
+                "tombstones": []})),
+            "surface.list" => {
+                let mut row = json!({"surface_id": 7, "surface_ref": "surface:7", "role": "worker", "exited": false,
+                                     "agent_alive": true, "line_count": 40});
+                if acked {
+                    row["awakened_at"] = json!(1.0);
+                }
+                r2c_ok(json!({"surfaces": [row]}))
+            }
+            "surface.read_text" => r2c_ok(json!({"text": cys::first_run_gates::fixtures::LIVE_TUI_AT_PROMPT,
+                                                 "quiet_secs": 5.0, "line_count": 40, "next_cursor": 40})),
+            "surface.send_text" => {
+                pastes += 1;
+                if pastes == 1 {
+                    r2c_ok(json!({}))
+                } else {
+                    acked = acks || directive["ok"] == true;
+                    directive.clone()
+                }
+            }
+            "surface.create" => r2c_reply("b360_no_spawn: this fake daemon makes no new surface"),
+            _ => r2c_ok(json!({})),
+        });
+        let (rc, out, _err) = r2c_child("restore", &daemon, &pack.envs());
+        (rc, out, daemon.calls())
+    }
+
+    /// Area E · S29 (`inject_directive_after_ready`): the directive paste is UNKNOWN but the ack latch appears → the
+    /// directive landed: the relaunch continues as Ready (restore exit 0, `directive.verify` verified). RED on f789cfc2:
+    /// 91 at the paste, the ACK wait never runs.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_e1_directive_unknown_but_acked_continues_as_ready() {
+        let (rc, out, calls) = r2e_restore(r2c_reply(&pending_err()), true);
+        let verify = calls.iter().find(|(m, _)| m == "directive.verify").map(|(_, p)| p.clone());
+        assert_eq!(rc, 0, "{out}");
+        assert_eq!(verify.as_ref().map(|p| p["verified"].clone()), Some(json!(true)), "{verify:?}");
+    }
+
+    /// Area E · S29, no ack within the window → the existing 91, and the verification is recorded as not verified with a
+    /// reason carrying `write_outcome_unknown` (B34: the bool cannot say unknown; the reason can, without a daemon change).
+    /// RED on f789cfc2: 91, but `directive.verify` is never called for an UNKNOWN.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_e2_directive_unknown_not_acked_is_91_and_recorded_as_not_verified() {
+        let (rc, out, calls) = r2e_restore(r2c_reply(&pending_err()), false);
+        let verify = calls.iter().find(|(m, _)| m == "directive.verify").map(|(_, p)| p.clone());
+        assert_eq!(rc, EXIT_WRITE_OUTCOME_UNKNOWN, "{out}");
+        let v = verify.unwrap_or_else(|| panic!("directive.verify not called after the UNKNOWN directive"));
+        assert!(
+            v["verified"] == false && v["reason"].as_str().is_some_and(|r| r.contains(cys::ERR_WRITE_OUTCOME_UNKNOWN)),
+            "{v}"
+        );
+    }
+
+    /// S48/S49 fixture: `cys cycle-agent` (child) on surface:7 (worker · claude, statusline swaps on /clear).
+    /// `save` answers the save instruction (and with `save_lands` the watched file changes 300 ms later);
+    /// `verifier`: Some(reply) runs the 2-phase handshake with verifier cso (surface:8): its paste gets `reply`, and
+    /// `receipt` says whether the verifier's allow receipt shows up in `feed.list`.
+    #[cfg(unix)]
+    fn r2e_cycle(save: Value, save_lands: bool, verifier: Option<Value>, receipt: bool) -> (i32, String, Vec<(String, Value)>) {
+        let pack = R2cPack::new();
+        let cwd = pack.dir.clone();
+        let save_file = pack.dir.join("save.md");
+        std::fs::write(&save_file, "# before\n").unwrap();
+        let sf = save_file.clone();
+        let mut cleared = false;
+        let what = if verifier.is_some() { "cycle-verify" } else { "cycle-save" };
+        let daemon = R2cDaemon::start(move |method, p| {
+            let sid = p["surface_id"].as_u64().unwrap_or(0);
+            match method {
+                "surface.list" => {
+                    let file = if cleared { "S2" } else { "S1" };
+                    r2c_ok(json!({"surfaces": [
+                        {"surface_id": 7, "surface_ref": "surface:7", "role": "worker", "agent": "claude", "exited": false,
+                         "awakened_at": 1.0, "cwd": cwd, "live_cwd": cwd, "usage": {"source": "statusline", "session_file": file}},
+                        {"surface_id": 8, "surface_ref": "surface:8", "role": "cso", "agent": "claude", "exited": false,
+                         "awakened_at": 1.0}]}))
+                }
+                "surface.read_text" => r2c_ok(json!({"text": cys::first_run_gates::fixtures::LIVE_TUI_AT_PROMPT,
+                                                     "quiet_secs": 5.0, "line_count": 40})),
+                "system.resolve_role" => r2c_ok(json!({"surface_id": 8})),
+                "feed.push" => r2c_ok(json!({"request_id": "r1"})),
+                "feed.list" if receipt => r2c_ok(json!({"items": [
+                    {"request_id": "r1", "status": "resolved", "decision": "allow", "resolver_surface": 8}]})),
+                "feed.list" => r2c_ok(json!({"items": []})),
+                "surface.send_text" if sid == 8 => verifier.clone().unwrap_or_else(|| r2c_ok(json!({}))),
+                "surface.send_text" if p["clear_first"] == true => {
+                    cleared = true;
+                    r2c_ok(json!({}))
+                }
+                "surface.send_text" if !cleared => {
+                    if save_lands {
+                        let f = sf.clone();
+                        std::thread::spawn(move || {
+                            std::thread::sleep(std::time::Duration::from_millis(300));
+                            let _ = std::fs::write(&f, "# saved\n");
+                        });
+                    }
+                    save.clone()
+                }
+                _ => r2c_ok(json!({})),
+            }
+        });
+        let mut envs = pack.envs();
+        envs.push(("CYS_B360_SAVE_FILE", save_file.into_os_string()));
+        let (rc, _out, err) = r2c_child(what, &daemon, &envs);
+        let error = err.lines().filter(|l| l.starts_with("error: ")).last().unwrap_or_default().to_string();
+        (rc, error, daemon.calls())
+    }
+
+    /// Area E · S48 (cycle save instruction): UNKNOWN, and the watched save file changes → the save landed; the cycle
+    /// continues (clear + reinject) and exits 0. RED on f789cfc2: 91 at the paste, before the save-file gate.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_e3_cycle_save_unknown_but_the_file_changed_continues() {
+        let (rc, error, calls) = r2e_cycle(r2c_reply(&pending_err()), true, None, false);
+        let cleared = calls.iter().any(|(m, p)| m == "surface.send_text" && p["clear_first"] == true);
+        assert_eq!((rc, cleared), (0, true), "{error}");
+    }
+
+    /// Area E · S48, the save file does not change in the window → 91, and the message says the save check ran (no
+    /// clear). RED on f789cfc2: 91 straight from the paste, the bare daemon text, no gate.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_e4_cycle_save_unknown_and_no_file_change_is_91_after_the_gate() {
+        let (rc, error, calls) = r2e_cycle(r2c_reply(&pending_err()), false, None, false);
+        let cleared = calls.iter().any(|(m, p)| m == "surface.send_text" && p["clear_first"] == true);
+        assert_eq!((rc, cleared), (EXIT_WRITE_OUTCOME_UNKNOWN, false), "{error}");
+        assert!(r2c_own(&error).contains("did not change"), "the 91 must say the save check ran: {error}");
+    }
+
+    /// Area E · S49 (cycle verifier request): the verifier's paste is UNKNOWN, but its allow receipt arrives → the
+    /// cycle continues and exits 0. RED on f789cfc2: 91 at the paste, before the receipt poll.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_e5_cycle_verifier_paste_unknown_but_receipt_arrives_continues() {
+        let (rc, error, calls) = r2e_cycle(r2c_ok(json!({})), false, Some(r2c_reply(&pending_err())), true);
+        let cleared = calls.iter().any(|(m, p)| m == "surface.send_text" && p["clear_first"] == true);
+        assert_eq!((rc, cleared), (0, true), "{error}");
+    }
+
+    /// Area E · S49, no receipt in the window → 91 after the poll ran (no clear). RED on f789cfc2: 91 at the paste and
+    /// `feed.list` is never polled.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_e6_cycle_verifier_paste_unknown_and_no_receipt_is_91_after_the_poll() {
+        let (rc, error, calls) = r2e_cycle(r2c_ok(json!({})), false, Some(r2c_reply(&pending_err())), false);
+        let polled = r2c_count(&calls, "feed.list");
+        let cleared = calls.iter().any(|(m, p)| m == "surface.send_text" && p["clear_first"] == true);
+        assert_eq!((rc, cleared), (EXIT_WRITE_OUTCOME_UNKNOWN, false), "{error}");
+        assert!(polled > 0, "the receipt poll did not run after the UNKNOWN verifier paste");
+    }
+
+    /// S63 fixture: `cys reinject --role worker --check --timeout 1` in-process; the ping paste gets UNKNOWN; `ack`:
+    /// whether the ACK shows on screen. Returns (exit, requests).
+    #[cfg(unix)]
+    fn r2e_reinject_check(ack: bool) -> (i32, Vec<(String, Value)>) {
+        let pack = R2cPack::new();
+        let session = pack.dir.join("session.jsonl");
+        std::fs::write(&session, "").unwrap();
+        let daemon = R2cDaemon::start(move |method, _| match method {
+            "system.resolve_role" => r2c_ok(json!({"surface_id": 7})),
+            "surface.list" => r2c_ok(json!({"surfaces": [{"surface_id": 7, "surface_ref": "surface:7", "role": "worker",
+                "agent": "claude", "exited": false, "agent_alive": true, "awakened_at": 1.0,
+                "usage": {"source": "transcript", "session_file": session.to_string_lossy()}}]})),
+            "surface.read_text" => r2c_ok(json!({"text": "", "latest_cursor": 40})),
+            "surface.send_text" => r2c_reply(&pending_err()),
+            "surface.wait_for" => r2c_ok(json!({"matched": ack})),
+            _ => r2c_ok(json!({})),
+        });
+        let rc = r2c_in_env(&daemon, &pack, || run_reinject(Some("worker".into()), None, true, 1, false));
+        (rc, daemon.calls())
+    }
+
+    /// Area E · S63 (`reinject --check` ping): the ping is UNKNOWN, but the ACK shows → the directive is alive: exit 0,
+    /// nothing re-injected. RED on f789cfc2: 91 at the ping, the ACK wait never runs.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_e7_reinject_check_ping_unknown_but_acked_is_alive() {
+        let (rc, calls) = r2e_reinject_check(true);
+        assert_eq!((rc, r2c_count(&calls, "surface.send_text")), (0, 1));
+    }
+
+    /// Area E · S63, no ACK → 91 after the wait ran, and no reinject (one paste: the ping). RED on f789cfc2: 91 without
+    /// waiting (`surface.wait_for` never asked).
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_e8_reinject_check_ping_unknown_not_acked_is_91_after_the_wait_and_no_reinject() {
+        let (rc, calls) = r2e_reinject_check(false);
+        assert_eq!((rc, r2c_count(&calls, "surface.send_text")), (EXIT_WRITE_OUTCOME_UNKNOWN, 1));
+        assert!(r2c_count(&calls, "surface.wait_for") > 0, "the ACK wait did not run after the UNKNOWN ping");
+    }
+
+    /// Area E · S48/S49 controls (pass on f789cfc2 too): with PASSED writes the same fixture reaches the clear and exits 0
+    /// — so e3/e5's red is the UNKNOWN handling, not the fixture.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_e3_e5_control_cycle_with_passed_writes_reaches_the_clear_and_exits_0() {
+        for (name, verifier, receipt) in [("save gate", None, false), ("verifier", Some(r2c_ok(json!({}))), true)] {
+            let (rc, error, calls) = r2e_cycle(r2c_ok(json!({})), true, verifier, receipt);
+            let cleared = calls.iter().any(|(m, p)| m == "surface.send_text" && p["clear_first"] == true);
+            assert_eq!((rc, cleared), (0, true), "{name}: {error}");
+        }
+    }
+
+    // ── ★(B-360 R2 revise) area B · `cys boot` under the head's option (a) ──────────────────────────────────────────
+    // `cys boot` keeps its exit class (0/1/75/78 as at 11717c44: javis_bootstrap step 4 exempts only 75/78). Kept panes
+    // are carried by the JSON and a kept-pane record (no ping, no re-adopt, no next-boot reconcile). node-recover's
+    // UNKNOWN exits 91 and run_boot maps it to `recover_unknown` — never escalate_reclaim, never a spawn.
+
+    /// The kept-pane records under a fixture's pack state base.
+    #[cfg(unix)]
+    fn r2b_records(pack: &R2cPack) -> Vec<Value> {
+        std::fs::read_to_string(pack.dir.join(".kept-pane-records.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect()
+    }
+
+    /// The `cys boot --json` report in a child's stdout.
+    #[cfg(unix)]
+    fn r2b_report(out: &str, err: &str) -> Value {
+        let line = out
+            .lines()
+            .find_map(|l| l.find("{\"roles\"").map(|at| &l[at..]))
+            .unwrap_or_else(|| panic!("no boot --json report:\n{out}\n{err}"));
+        serde_json::from_str::<Value>(line).expect("boot --json")
+    }
+
+    /// `cys boot --json` (child) where the worker seat (surface:7) is death-confirmed (empty seat, agent_alive false,
+    /// old), so boot runs node-recover on it; `launch` answers the recovery's launch paste. Returns (exit, report,
+    /// stdout+stderr, requests, records).
+    #[cfg(unix)]
+    fn r2b_boot_recover(launch: Value, extra: &[(&'static str, &str)]) -> (i32, Value, String, Vec<(String, Value)>, Vec<Value>) {
+        let pack = R2cPack::new();
+        let old = (chrono::Local::now().timestamp() - 3600) as f64;
+        let daemon = R2cDaemon::start(move |method, p| match method {
+            "surface.list" => r2c_ok(json!({"surfaces": [
+                {"surface_id": 3, "surface_ref": "surface:3", "role": "cso", "agent": "claude", "exited": false,
+                 "awakened_at": 1.0, "agent_alive": true, "seat": "occupied"},
+                {"surface_id": 7, "surface_ref": "surface:7", "role": "worker", "agent": "claude", "exited": false,
+                 "agent_alive": false, "seat": "empty", "created_at": old, "line_count": 40}]})),
+            "surface.read_text" => r2c_ok(json!({"text": cys::first_run_gates::fixtures::LIVE_TUI_AT_PROMPT,
+                                                 "quiet_secs": 5.0, "line_count": 40, "next_cursor": 40})),
+            "surface.send_text" if p["surface_id"] == 7 => launch.clone(),
+            "surface.create" => r2c_reply("b360_no_spawn: this fake daemon makes no new surface"),
+            // node-recover resolves its seat by role (without this it stops at resolution with a generic rc 1)
+            "system.resolve_role" => r2c_ok(json!({"surface_id": 7})),
+            _ => r2c_ok(json!({})),
+        });
+        let mut envs = pack.envs();
+        let mut path = std::ffi::OsString::from(pack.dir.join("bin"));
+        path.push(":");
+        path.push(std::env::var_os("PATH").unwrap_or_default());
+        envs.push(("PATH", path));
+        envs.extend(extra.iter().map(|(k, v)| (*k, std::ffi::OsString::from(v))));
+        let (rc, out, err) = r2c_child("boot", &daemon, &envs);
+        let report = r2b_report(&out, &err);
+        (rc, report, format!("{out}\n{err}"), daemon.calls(), r2b_records(&pack))
+    }
+
+    /// The env seam of `boot_node_recover` (test builds only): run_boot's in-process node-recover returns this code.
+    #[cfg(unix)]
+    const R2B_RECOVER_RC: &str = "CYS_B360_TEST_NODE_RECOVER_RC";
+
+    /// Area B · B-406 (the head's blocking constraint): run_boot's node-recover consumer escalates to escalate_reclaim
+    /// (kill + fresh launch) ONLY for rc 1. Any other code fails toward "do nothing": 91 → `recover_unknown`, an
+    /// unrecognised code (57) → a non-destructive outcome naming the code — neither reaches escalate_reclaim (its lines
+    /// "reclaim 에스컬레이션" / "reclaim 헬퍼" never appear) nor a fresh spawn (`surface.create` never asked); boot's exit
+    /// class is unchanged (0 here). Positive control: rc 1 DOES escalate (the guard still kills a real launch failure).
+    /// The code is stood in through `boot_node_recover`'s test-build seam (`CYS_B360_TEST_NODE_RECOVER_RC`).
+    /// RED on 02351e55: the seam does not exist there, so the real node-recover runs; the fixture's recovery write fails
+    /// generically (rc 1) and the guard escalates — the specimen sees escalate_reclaim. (11717c44's node-recover can only
+    /// return 0/1/78/79, so 57 is not observable there by any other route.) The guard itself is proven by the mutants in
+    /// the GREEN log (guard back to "spare only 0/78/79").
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_bi_boot_escalates_only_on_rc_1_and_an_unknown_or_unrecognised_recover_code_does_nothing() {
+        let generic = r2c_reply("rpc_failed: the fake daemon fails this write generically");
+        let mut failures = Vec::new();
+        for (code, want_outcome, want_text) in [("91", "recover_unknown", ""), ("57", "recover_unrecognised", "57")] {
+            let (rc, report, text, calls, _records) = r2b_boot_recover(generic.clone(), &[(R2B_RECOVER_RC, code)]);
+            let worker = r2c_role(&report, "worker");
+            let escalated = text.contains("reclaim 에스컬레이션") || text.contains("reclaim 헬퍼") || text.contains("[boot] reclaim(");
+            if escalated {
+                failures.push(format!("rc {code}: reached escalate_reclaim"));
+            }
+            if r2c_count(&calls, "surface.create") != 0 {
+                failures.push(format!("rc {code}: a fresh surface was asked for"));
+            }
+            if worker["outcome"] != want_outcome || !worker["reason"].as_str().unwrap_or("").contains(want_text) {
+                failures.push(format!("rc {code}: worker {worker}"));
+            }
+            if rc != 0 || report["summary"]["fatal_failed"] != 0 {
+                failures.push(format!("rc {code}: boot exit {rc} / summary {}", report["summary"]));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Area B · B-406 positive control (passes on 02351e55 too): rc 1 (a real launch failure of the recovery) still
+    /// escalates — so the specimen above can see escalate_reclaim when it happens.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_bi_control_rc_1_still_escalates() {
+        let generic = r2c_reply("rpc_failed: the fake daemon fails this write generically");
+        let (_rc, _report, text, _calls, _records) = r2b_boot_recover(generic, &[(R2B_RECOVER_RC, "1")]);
+        assert!(text.contains("reclaim 에스컬레이션"), "rc 1 did not escalate:\n{text}");
+    }
+    /// `cys boot --json` twice (children) against a gate-pending worker seat (surface:7) that re-observation adopts;
+    /// `reply` answers the adoption paste. Unlike `r2c_boot_twice`, it KEEPS each boot's exit code (the old helper dropped
+    /// it, census §10). Returns (exits, reports, requests, kept-pane records).
+    #[cfg(unix)]
+    fn r2b_boot_adopt_twice(reply: Value) -> (Vec<i32>, Vec<Value>, Vec<(String, Value)>, Vec<Value>) {
+        let pack = R2cPack::new();
+        let mut marked = true;
+        let daemon = R2cDaemon::start(move |method, p| match method {
+            "surface.list" => {
+                let awake = |sid: u64, role: &str, agent: &str| {
+                    json!({"surface_id": sid, "surface_ref": format!("surface:{sid}"), "role": role, "agent": agent,
+                           "exited": false, "awakened_at": 1.0, "agent_alive": true, "seat": "occupied"})
+                };
+                let mut worker = json!({"surface_id": 7, "surface_ref": "surface:7", "role": "worker", "agent": "claude",
+                                        "exited": false, "agent_alive": true, "seat": "occupied", "line_count": 40});
+                if marked {
+                    worker["gate_pending"] = json!({"gate": GATE_ID_UNIDENTIFIED, "followup": null});
+                }
+                r2c_ok(json!({"surfaces": [awake(3, "cso", "claude"), worker, awake(4, "reviewer-gemini", "gemini"),
+                                           awake(5, "reviewer-codex", "codex"), awake(6, "reviewer-grok", "grok")]}))
+            }
+            "surface.read_text" => r2c_ok(json!({"text": cys::first_run_gates::fixtures::LIVE_TUI_AT_PROMPT,
+                                                 "quiet_secs": 5.0, "line_count": 40, "next_cursor": 40})),
+            "surface.gate_pending" if p["clear"] == true && p["surface_id"] == 7 => {
+                marked = false;
+                r2c_ok(json!({}))
+            }
+            "surface.send_text" => reply.clone(),
+            "surface.create" => r2c_reply("b360_no_spawn: this fake daemon makes no new surface"),
+            _ => r2c_ok(json!({})),
+        });
+        let mut envs = pack.envs();
+        let mut path = std::ffi::OsString::from(pack.dir.join("bin"));
+        path.push(":");
+        path.push(std::env::var_os("PATH").unwrap_or_default());
+        envs.push(("PATH", path));
+        let mut exits = Vec::new();
+        let mut reports = Vec::new();
+        for _ in 0..2 {
+            let (rc, out, err) = r2c_child("boot", &daemon, &envs);
+            exits.push(rc);
+            reports.push(r2b_report(&out, &err));
+        }
+        (exits, reports, daemon.calls(), r2b_records(&pack))
+    }
+
+    /// Row 2 · `cys boot` adopting a gate-pending seat (census S21): the adoption paste gets UNKNOWN.
+    /// ★(B-360 R2 revise) CHANGED from `b360_r2c_2_boot_adopt_unknown_clears_the_marker_and_the_next_boot_does_not_reinject`,
+    /// which asserted the marker cleared and BOTH fatal counters 0 while its helper DROPPED the boot's exit code (census
+    /// §10: the exit 0 was never inspected). Now, under the head's option (a): the ACTUAL exit of each boot is 0 (boot
+    /// keeps its exit class), the first boot's JSON says `directive_unknown` with the check hint
+    /// (`cys reinject --role worker --check`), exactly one kept-pane record (command boot, write adoption, outcome
+    /// unknown) is written, and the payload is typed once over two boots (no re-adopt; marker cleared as today).
+    /// RED on b5b044af: no record, and the hint lacks the `--check` step.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_b1_boot_adopt_unknown_exits_0_reports_directive_unknown_records_it_and_never_re_adopts() {
+        let (exits, reports, calls, records) = r2b_boot_adopt_twice(r2c_reply(&pending_err()));
+        let first = r2c_role(&reports[0], "worker");
+        let pastes = calls.iter().filter(|(m, _)| m == "surface.send_text").count();
+        let cleared = calls.iter().any(|(m, p)| m == "surface.gate_pending" && p["clear"] == true);
+        let mut failures = Vec::new();
+        if exits != vec![0, 0] {
+            failures.push(format!("boot exits {exits:?}, want [0, 0] (the exit class is unchanged)"));
+        }
+        let hint = format!("{}{}", first["hint"].as_str().unwrap_or(""), first["reason"].as_str().unwrap_or(""));
+        if first["outcome"] != "directive_unknown" || !hint.contains("cys reinject --role worker --check") {
+            failures.push(format!("first boot JSON: {first}"));
+        }
+        if records.len() != 1
+            || !(records[0]["command"] == "boot"
+                && records[0]["surface_id"] == 7
+                && records[0]["role"] == "worker"
+                && records[0]["agent"] == "claude"
+                && records[0]["outcome"] == "unknown"
+                && records[0]["write"] == "adoption"
+                && records[0]["request_id"] == "w1-2")
+        {
+            failures.push(format!("kept-pane records: {records:?}"));
+        }
+        if pastes != 1 || !cleared {
+            failures.push(format!("payload typed {pastes} times over two boots (want 1), marker cleared: {cleared}"));
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// `cys boot --json` (child) where cso is awake and the worker role has NO seat, so boot launches it (fresh surface
+    /// :9 · fake agent `b360agent` registered as claude's binary). `launch` answers the launch paste, `directive` the
+    /// directive paste. Returns (exit, report, stderr, requests, records).
+    #[cfg(unix)]
+    fn r2b_boot_launch(launch: Value, directive: Value) -> (i32, Value, String, Vec<(String, Value)>, Vec<Value>) {
+        let pack = R2cPack::new();
+        let mut agents: Value =
+            serde_json::from_str(&std::fs::read_to_string(pack.dir.join("pack/agents.json")).unwrap()).unwrap();
+        agents["claude"] = agents["b360agent"].clone(); // boot plans claude; the fake keeps the launch harmless
+        std::fs::write(pack.dir.join("pack/agents.json"), agents.to_string()).unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let stub = pack.dir.join("bin/b360-agent");
+            std::fs::write(&stub, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::write(pack.dir.join("pack/directives/CSO_DIRECTIVE.md"), "C").unwrap();
+        let mut pastes = 0usize;
+        let mut created = false;
+        let daemon = R2cDaemon::start(move |method, p| match method {
+            "surface.list" => {
+                let mut rows = vec![json!({"surface_id": 3, "surface_ref": "surface:3", "role": "cso", "agent": "claude",
+                                           "exited": false, "awakened_at": 1.0, "agent_alive": true, "seat": "occupied"})];
+                if created {
+                    rows.push(json!({"surface_id": 9, "surface_ref": "surface:9", "exited": false, "agent_alive": true,
+                                     "line_count": 40}));
+                }
+                r2c_ok(json!({"surfaces": rows}))
+            }
+            "surface.create" => {
+                created = true;
+                r2c_ok(json!({"surface_id": 9}))
+            }
+            "surface.read_text" => r2c_ok(json!({"text": cys::first_run_gates::fixtures::LIVE_TUI_AT_PROMPT,
+                                                 "quiet_secs": 5.0, "line_count": 40, "next_cursor": 40})),
+            "surface.send_text" if p["surface_id"] == 9 => {
+                pastes += 1;
+                if pastes == 1 { launch.clone() } else { directive.clone() }
+            }
+            _ => r2c_ok(json!({})),
+        });
+        let mut envs = pack.envs();
+        let mut path = std::ffi::OsString::from(pack.dir.join("bin"));
+        path.push(":");
+        path.push(std::env::var_os("PATH").unwrap_or_default());
+        envs.push(("PATH", path));
+        let (rc, out, err) = r2c_child("boot", &daemon, &envs);
+        let report = r2b_report(&out, &err);
+        (rc, report, err, daemon.calls(), r2b_records(&pack))
+    }
+
+    /// Area B · S23 launch rc 90 / 91 for the MANDATORY worker: boot's exit is what it is today (1: a mandatory launch
+    /// that did not come up stays in the fatal counter), the outcome keeps the fatal value `failed` that
+    /// javis_bootstrap's `_boot_fatal_verdict` reads (a renamed outcome would flip its step 4 to non-fatal while the exit
+    /// stays 1), and the kept pane is labelled in a typed field: `kept_pane` = directive_refused / directive_unknown /
+    /// launch_unknown, with the right `hint` instead of the install hint, and one kept-pane record (command boot).
+    /// RED on b5b044af: no `kept_pane`, an install hint, no record.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_b2_boot_launch_90_91_keep_the_exit_and_fatal_value_label_the_kept_pane_and_record_it() {
+        let mut failures = Vec::new();
+        for (name, launch, directive, label, write, hint) in [
+            ("directive REFUSED", r2c_ok(json!({})), r2c_reply(&journal_err()), "directive_refused", "directive",
+             "make the journal writable, then cys reinject --role worker"),
+            ("directive UNKNOWN", r2c_ok(json!({})), r2c_reply(&pending_err()), "directive_unknown", "directive",
+             "cys reinject --role worker --check"),
+            ("launch UNKNOWN", r2c_reply(&pending_err()), r2c_ok(json!({})), "launch_unknown", "launch",
+             "cys read-screen --surface surface:9"),
+        ] {
+            let (rc, report, err, calls, records) = r2b_boot_launch(launch, directive);
+            let worker = r2c_role(&report, "worker");
+            if rc != 1 {
+                failures.push(format!("{name}: exit {rc}, want 1 (as today)"));
+            }
+            if worker["outcome"] != "failed" || report["summary"]["fatal_failed"] != 1 {
+                failures.push(format!("{name}: the fatal value changed: {worker} · {}", report["summary"]));
+            }
+            if worker["kept_pane"] != label || !worker["hint"].as_str().unwrap_or("").contains(hint) || worker.get("install_hint").is_some() {
+                failures.push(format!("{name}: kept pane not labelled / wrong hint: {worker}"));
+            }
+            if r2c_count(&calls, "surface.close") != 0 {
+                failures.push(format!("{name}: the kept pane was closed"));
+            }
+            if records.len() != 1 || records[0]["command"] != "boot" || records[0]["write"] != write || records[0]["surface_id"] != 9 {
+                failures.push(format!("{name}: records {records:?}\n{err}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Area B · S60 + S22 (same commit, fatal risk 4): node-recover's write is UNKNOWN → node-recover exits 91 (distinct
+    /// from 79) and run_boot records `recover_unknown`: NO escalate_reclaim (its lines "reclaim 에스컬레이션" / "reclaim
+    /// 헬퍼" never appear), no spawn (`surface.create` never asked), boot's exit class unchanged (0: counted like today's
+    /// `skipped_unconfirmed`), one kept-pane record (write recover).
+    /// RED on b5b044af: the UNKNOWN is folded into the 79 token → `skipped_unconfirmed`, no record.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_b3_node_recover_unknown_is_recover_unknown_never_reclaimed_and_keeps_the_exit_class() {
+        let (rc, report, text, calls, records) = r2b_boot_recover(r2c_reply(&pending_err()), &[]);
+        let worker = r2c_role(&report, "worker");
+        let mut failures = Vec::new();
+        if worker["outcome"] != "recover_unknown" {
+            failures.push(format!("worker outcome: {worker}"));
+        }
+        if text.contains("reclaim 에스컬레이션") || text.contains("reclaim 헬퍼") || text.contains("[boot] reclaim(") {
+            failures.push("an UNKNOWN node-recover reached escalate_reclaim (fatal risk 4)".to_string());
+        }
+        if r2c_count(&calls, "surface.create") != 0 {
+            failures.push("a new surface was asked for after an UNKNOWN recovery".to_string());
+        }
+        if rc != 0 || report["summary"]["fatal_failed"] != 0 {
+            failures.push(format!("boot exit {rc} / summary {} (the exit class must not change)", report["summary"]));
+        }
+        if records.len() != 1 || records[0]["write"] != "recover" || records[0]["outcome"] != "unknown" || records[0]["command"] != "boot" {
+            failures.push(format!("records {records:?}"));
+        }
+        if !text.contains("cys reinject --role worker") {
+            failures.push("node-recover's UNKNOWN message does not name `cys reinject --role worker` (minor)".to_string());
+        }
+        assert!(failures.is_empty(), "{}\n{text}", failures.join("\n"));
+    }
+
+    /// Area B · S60 control (passes on b5b044af too): a REFUSED recovery write keeps folding into the non-destructive 79
+    /// (skipped_unconfirmed, no reclaim) — the fixture reaches node-recover's launch write.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_b3_control_node_recover_refused_stays_79_and_is_not_reclaimed() {
+        let (_rc, report, text, _calls, _records) = r2b_boot_recover(r2c_reply(&journal_err()), &[]);
+        assert_eq!(r2c_role(&report, "worker")["outcome"], "skipped_unconfirmed", "{text}");
+        assert!(!text.contains("reclaim 에스컬레이션"), "{text}");
+    }
+
+    /// ★(B-360 R2 revise) CHANGED from `b360_r2_unknown_outcome_dispositions_never_destroy_and_never_retry`, which pinned
+    /// UNKNOWN folded into node-recover's 79 refusal token (census S60/B23: non-destructive but not distinct — 79 is
+    /// shared with REFUSED, a human draft and agent-alive). Now: UNKNOWN is NOT folded (node-recover exits 91); run_boot's
+    /// inverted consumer (B-406) maps 91 to the non-destructive `recover_unknown`; UNKNOWN is still never a typing guard
+    /// or a hold, cycle-agent still exits 91 on it, and launch-agent's UNKNOWN arm still comes before the closing arm.
+    /// RED on b5b044af: the fold.
+    #[test]
+    fn b360_r2r_b4_unknown_outcome_dispositions_never_destroy_never_retry_and_stay_distinct_from_79() {
+        assert_eq!(recover_refusal_from_input_guard(pending_err()), pending_err(), "UNKNOWN must not fold into the 79 token");
+        assert!(!is_recover_refusal(&recover_refusal_from_input_guard(pending_err())));
+        assert_eq!(boot_recover_disposition(EXIT_WRITE_OUTCOME_UNKNOWN), RecoverDisposition::Unknown);
+        assert_eq!(cycle_agent_exit(&Err(pending_err())), 91);
+        assert!(!is_typing_guard_err(&pending_err()));
+        assert!(!cys::inject_guard::is_hold_error(&pending_err()));
+        let src = include_str!("cys.rs");
+        // the needle is assembled so this test's own source does not contain it (the pin must not find itself)
+        let needle = format!("Err(e) if created.is_some() && {}(&e) => {{", "is_write_outcome_unknown");
+        let arm = src.find(&needle).expect("unknown arm");
+        let close = src.find("Ok(BootVerdict::LaunchFailed { evidence: e }) | Err(e) => {").expect("closing arm");
+        assert!(arm < close && !src[arm..close].contains("surface.close"));
+    }
+
+    // ── ★(B-360 R2 revise) carrier (A): one queued `[kept-pane]` notice to master per outermost command run ─────────────
+    // The head's approved extra carrier for codex issue 3 (the JSON field and the record file have no automated reader):
+    // a durable QUEUED notice to the `master` role (the queued send path `cys send --queued --to master` uses), text
+    // `[kept-pane] key=#<16 hex> …` — the key derived like cysd's opaque identifiers (FNV-1a 64 over the raw identity,
+    // `#{:016x}`; here the identity is the record file's absolute path) — with the count of THIS run's records, the command,
+    // the roles, the record file path and the check hints. Flood bound: one notice per outermost run (nested launches send
+    // none); skipped when master's queue already holds a pending item with the same `key=#`. Best effort: the exit code and
+    // stdout are identical whether the notice is sent or not; only a stderr line says why not.
+
+    /// FNV-1a 64 → `#{:016x}` — the derivation of cysd's `opaque_label` (alert_route.rs), recomputed here so this
+    /// compiles on ab8afa64.
+    fn r2n_key(raw: &str) -> String {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in raw.as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        format!("#{h:016x}")
+    }
+
+    /// How the fake daemon treats the notice.
+    #[cfg(unix)]
+    #[derive(Clone)]
+    enum R2nMaster {
+        /// master is surface:1, its queue is empty, the queued send is accepted
+        Ok,
+        /// master resolves, but the queued send gets this reply
+        SendFails(Value),
+        /// `system.resolve_role` for master fails
+        Unresolvable,
+        /// master's queue already holds a pending notice carrying this run's key
+        AlreadyPending,
+    }
+
+    /// `cys restore` (child) of `roles` with the master behaviour `master`. Returns (exit, stdout with the pack path
+    /// normalised, stderr, requests, the record path the child used).
+    #[cfg(unix)]
+    fn r2n_restore(roles: Vec<(&'static str, R2rMode)>, master: R2nMaster) -> (i32, String, String, Vec<(String, Value)>, String) {
+        let pack = R2cPack::new();
+        std::fs::write(pack.dir.join("pack/directives/CSO_DIRECTIVE.md"), "C").unwrap();
+        let record_path = pack.dir.join(".kept-pane-records.jsonl").to_string_lossy().into_owned();
+        let key = r2n_key(&record_path);
+        let cwd = pack.dir.clone();
+        let live: Vec<Value> = roles
+            .iter()
+            .filter_map(|(r, m)| match m {
+                R2rMode::InSeat { sid, .. } => Some(json!({"role": r, "seat": "empty", "surface_id": sid, "env_injected": true})),
+                _ => None,
+            })
+            .collect();
+        let saved: Vec<Value> = roles.iter().map(|(r, _)| json!({"role": r, "agent": "b360agent", "cwd": cwd})).collect();
+        let modes: std::collections::HashMap<u64, (Value, Value)> = roles
+            .iter()
+            .filter_map(|(_, m)| match m {
+                R2rMode::InSeat { sid, launch, directive } | R2rMode::Fresh { sid, launch, directive } => {
+                    Some((*sid, (launch.clone(), directive.clone())))
+                }
+                R2rMode::FreshCreateFails => None,
+            })
+            .collect();
+        let create: std::collections::HashMap<&'static str, Option<u64>> = roles
+            .iter()
+            .filter_map(|(r, m)| match m {
+                R2rMode::Fresh { sid, .. } => Some((*r, Some(*sid))),
+                R2rMode::FreshCreateFails => Some((*r, None)),
+                R2rMode::InSeat { .. } => None,
+            })
+            .collect();
+        let mut pastes: std::collections::HashMap<u64, usize> = Default::default();
+        let sids: Vec<u64> = modes.keys().copied().collect();
+        let daemon = R2cDaemon::start(move |method, p| {
+            let sid = p["surface_id"].as_u64().unwrap_or(0);
+            match method {
+                "system.topology" => r2c_ok(json!({"live": live, "saved": saved, "tombstones": []})),
+                "system.resolve_role" if p["role"] == "master" => match &master {
+                    R2nMaster::Unresolvable => r2c_reply("role_not_found: no live seat holds role master"),
+                    _ => r2c_ok(json!({"surface_id": 1})),
+                },
+                "queue.list" if sid == 1 => match &master {
+                    R2nMaster::AlreadyPending => r2c_ok(json!({"entries": [
+                        {"index": 0, "preview": format!("[kept-pane] key={key} 1 pane(s) kept"), "text": format!("[kept-pane] key={key} 1 pane(s) kept by an earlier run")}]})),
+                    _ => r2c_ok(json!({"entries": []})),
+                },
+                "surface.send_text" if sid == 1 => match &master {
+                    R2nMaster::SendFails(reply) => reply.clone(),
+                    _ => r2c_ok(json!({"queued": true})),
+                },
+                "surface.create" => match create.get(p["role"].as_str().unwrap_or("")) {
+                    Some(Some(new)) => r2c_ok(json!({"surface_id": new})),
+                    _ => r2c_reply("b360_no_spawn: this fake daemon makes no new surface for this role"),
+                },
+                "surface.list" => {
+                    let rows: Vec<Value> = sids
+                        .iter()
+                        .map(|s| json!({"surface_id": s, "surface_ref": format!("surface:{s}"), "exited": false,
+                                        "agent_alive": true, "line_count": 40}))
+                        .collect();
+                    r2c_ok(json!({"surfaces": rows}))
+                }
+                "surface.read_text" => r2c_ok(json!({"text": cys::first_run_gates::fixtures::LIVE_TUI_AT_PROMPT,
+                                                     "quiet_secs": 5.0, "line_count": 40, "next_cursor": 40})),
+                "surface.send_text" => {
+                    let n = pastes.entry(sid).or_insert(0);
+                    *n += 1;
+                    let Some((launch, directive)) = modes.get(&sid) else { return r2c_ok(json!({})) };
+                    if *n == 1 { launch.clone() } else { directive.clone() }
+                }
+                _ => r2c_ok(json!({})),
+            }
+        });
+        let (rc, out, err) = r2c_child("restore", &daemon, &pack.envs());
+        let out = out.replace(&pack.dir.to_string_lossy().into_owned(), "<pack>");
+        (rc, out, err, daemon.calls(), record_path)
+    }
+
+    /// The queued notices sent to master (surface:1).
+    #[cfg(unix)]
+    fn r2n_notices(calls: &[(String, Value)]) -> Vec<Value> {
+        calls.iter().filter(|(m, p)| m == "surface.send_text" && p["surface_id"] == 1).map(|(_, p)| p.clone()).collect()
+    }
+
+    /// Carrier (A) · success and the N-pane bound: one kept pane → exactly one QUEUED notice to master with the
+    /// `[kept-pane] key=#…` token (the key of this run's record path), the count, the command, the role, the record path
+    /// and the check hints; two kept panes (two nested fresh launches inside one restore) → still ONE notice, count 2.
+    /// RED on ab8afa64: no notice at all.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_c1_one_queued_kept_pane_notice_per_run_with_the_count_and_the_record_path() {
+        let mut failures = Vec::new();
+        for (name, roles, count) in [
+            ("one pane", vec![("worker", R2rMode::InSeat { sid: 7, launch: r2c_ok(json!({})), directive: r2c_reply(&pending_err()) })], 1),
+            ("two panes", vec![
+                ("worker", R2rMode::Fresh { sid: 9, launch: r2c_ok(json!({})), directive: r2c_reply(&pending_err()) }),
+                ("cso", R2rMode::Fresh { sid: 10, launch: r2c_ok(json!({})), directive: r2c_reply(&journal_err()) }),
+            ], 2),
+        ] {
+            let (_rc, _out, err, calls, record_path) = r2n_restore(roles, R2nMaster::Ok);
+            let notices = r2n_notices(&calls);
+            if notices.len() != 1 {
+                failures.push(format!("{name}: {} notices to master, want exactly 1\n{err}", notices.len()));
+                continue;
+            }
+            let n = &notices[0];
+            let text = n["text"].as_str().unwrap_or("");
+            let head = format!("[kept-pane] key={} {count} ", r2n_key(&record_path));
+            if n["queued"] != true || !text.starts_with(&head) {
+                failures.push(format!("{name}: not a queued `{head}…` notice: {n}"));
+            }
+            for must in [record_path.as_str(), "restore", "worker", "cys read-screen --surface", "cys reinject --role worker --check"] {
+                if !text.contains(must) {
+                    failures.push(format!("{name}: the notice does not carry {must:?}: {text}"));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Carrier (A) · best effort, pinned: the send fails (daemon unavailable), the queue refuses (blocked), master is not
+    /// resolvable, or master already has a pending notice with this key (skip) — each: the SAME exit and the SAME stdout as
+    /// the successful run, nothing sent (or the one failed attempt), and one stderr line naming why the notice was not sent.
+    /// RED on ab8afa64: no stderr line (there is no notice to fail).
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_c2_a_failed_or_skipped_notice_changes_neither_the_exit_nor_stdout_and_says_why() {
+        let roles = || vec![("worker", R2rMode::InSeat { sid: 7, launch: r2c_ok(json!({})), directive: r2c_reply(&pending_err()) })];
+        let (base_rc, base_out, _, base_calls, _) = r2n_restore(roles(), R2nMaster::Ok);
+        let mut failures = Vec::new();
+        if r2n_notices(&base_calls).len() != 1 {
+            failures.push("baseline: the successful run sent no notice".to_string());
+        }
+        for (name, master, why, attempts) in [
+            ("send unavailable", R2nMaster::SendFails(r2c_reply("rpc_unavailable: the daemon did not answer the queued send")), "rpc_unavailable", 1),
+            ("queue blocked", R2nMaster::SendFails(r2c_reply("queue_full: the master queue is blocked")), "queue_full", 1),
+            ("master unresolvable", R2nMaster::Unresolvable, "role_not_found", 0),
+            ("already pending", R2nMaster::AlreadyPending, "already pending", 0),
+        ] {
+            let (rc, out, err, calls, _) = r2n_restore(roles(), master);
+            if rc != base_rc || out != base_out {
+                failures.push(format!("{name}: exit {rc} vs {base_rc}, stdout differs: {}", out != base_out));
+            }
+            if r2n_notices(&calls).len() != attempts {
+                failures.push(format!("{name}: {} send attempts, want {attempts}", r2n_notices(&calls).len()));
+            }
+            let line = err.lines().find(|l| l.starts_with("[kept-pane]") && l.contains("not sent")).unwrap_or_default();
+            if !line.contains(why) {
+                failures.push(format!("{name}: no stderr line naming why ({why}): {line:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Carrier (A) · no kept-pane record in the run → no notice, and master is not even looked up (passes on ab8afa64 too:
+    /// the fixture's restore reaches a clean end).
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_c3_no_kept_pane_record_means_no_notice_and_no_master_lookup() {
+        let (rc, out, _err, calls, _) =
+            r2n_restore(vec![("worker", R2rMode::InSeat { sid: 7, launch: r2c_ok(json!({})), directive: r2c_ok(json!({})) })], R2nMaster::Ok);
+        assert_eq!(rc, 0, "{out}");
+        assert!(r2n_notices(&calls).is_empty());
+        assert!(!calls.iter().any(|(m, p)| m == "system.resolve_role" && p["role"] == "master"), "master looked up without a record");
+    }
+
+    /// `cys restore` (child) of one in-seat worker whose directive is UNKNOWN (one kept pane), master = surface:1.
+    /// `gone`: the daemon's socket path disappears while master is being resolved (rename), so every later connection
+    /// fails — the daemon is unreachable for the rest of the notice. The socket is put back before the daemon is dropped.
+    /// Returns (exit, stdout with the pack path normalised, stderr, requests).
+    #[cfg(unix)]
+    fn r2n_restore_min(gone: bool) -> (i32, String, String, Vec<(String, Value)>) {
+        let pack = R2cPack::new();
+        let cwd = pack.dir.clone();
+        let slot: std::sync::Arc<std::sync::Mutex<std::path::PathBuf>> = Default::default();
+        let sock_of = std::sync::Arc::clone(&slot);
+        let mut pastes = 0usize;
+        let daemon = R2cDaemon::start(move |method, p| {
+            let sid = p["surface_id"].as_u64().unwrap_or(0);
+            match method {
+                "system.topology" => r2c_ok(json!({
+                    "live": [{"role": "worker", "seat": "empty", "surface_id": 7, "env_injected": true}],
+                    "saved": [{"role": "worker", "agent": "b360agent", "cwd": cwd}], "tombstones": []})),
+                "system.resolve_role" if p["role"] == "master" => {
+                    if gone {
+                        let sock = sock_of.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                        let _ = std::fs::rename(&sock, sock.with_extension("gone"));
+                    }
+                    r2c_ok(json!({"surface_id": 1}))
+                }
+                "queue.list" => r2c_ok(json!({"entries": []})),
+                "surface.send_text" if sid == 1 => r2c_ok(json!({"queued": true})),
+                "surface.list" => r2c_ok(json!({"surfaces": [{"surface_id": 7, "surface_ref": "surface:7", "exited": false,
+                                                               "agent_alive": true, "line_count": 40}]})),
+                "surface.read_text" => r2c_ok(json!({"text": cys::first_run_gates::fixtures::LIVE_TUI_AT_PROMPT,
+                                                     "quiet_secs": 5.0, "line_count": 40, "next_cursor": 40})),
+                "surface.send_text" => {
+                    pastes += 1;
+                    if pastes == 1 { r2c_ok(json!({})) } else { r2c_reply(&pending_err()) }
+                }
+                "surface.create" => r2c_reply("b360_no_spawn: this fake daemon makes no new surface"),
+                _ => r2c_ok(json!({})),
+            }
+        });
+        *slot.lock().unwrap_or_else(|e| e.into_inner()) = daemon.sock.clone();
+        let (rc, out, err) = r2c_child("restore", &daemon, &pack.envs());
+        let _ = std::fs::rename(daemon.sock.with_extension("gone"), &daemon.sock);
+        let out = out.replace(&pack.dir.to_string_lossy().into_owned(), "<pack>");
+        (rc, out, err, daemon.calls())
+    }
+
+    /// Carrier (A) · coordinator hazard (best effort under a dead daemon): the daemon becomes unreachable while the notice
+    /// is being sent. The command's exit code and stdout are the same as the successful run; one stderr line says the
+    /// notice was not sent and why. RED on 95a597e0: there is no notice (no line).
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_c4_the_daemon_gone_at_notice_time_changes_neither_exit_nor_stdout_and_says_why() {
+        let (base_rc, base_out, _, base_calls) = r2n_restore_min(false);
+        let (rc, out, err, _calls) = r2n_restore_min(true);
+        let mut failures = Vec::new();
+        if r2n_notices(&base_calls).len() != 1 {
+            failures.push("baseline: no notice".to_string());
+        }
+        if (rc, &out) != (base_rc, &base_out) {
+            failures.push(format!("exit {rc} vs {base_rc}; stdout equal: {}", out == base_out));
+        }
+        let line = err.lines().find(|l| l.starts_with("[kept-pane]") && l.contains("not sent")).unwrap_or_default();
+        if !line.contains("connect") {
+            failures.push(format!("no stderr line naming the unreachable daemon: {line:?}\n{err}"));
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Carrier (A) · coordinator hazard (an exit path inside the outermost command): the only `process::exit` reachable
+    /// inside boot / restore / launch-agent / node-recover / pack-update is `connect()`'s autostart refusal on the first
+    /// failed connection (here forced by a `pack-dept-zz` pack whose socket lacks `cys-dept-zz`, so nothing is spawned).
+    /// KeptPaneScope's Drop does not run there, so no notice is sent — and none could be: the daemon is unreachable at
+    /// that moment. What must hold: every kept-pane record written before the exit is on disk (record_kept_pane appends
+    /// at the kept-pane exit), and nothing is attempted against master. Here: worker's in-seat directive is UNKNOWN
+    /// (recorded), then the socket disappears and cso's fresh launch hits the refusal → exit 2.
+    /// Cannot be red on 95a597e0: records already exist there (area R) and there is no notice to lose; it pins the
+    /// exit-path contract for the notice added on top.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r2r_c5_an_exit_inside_the_command_keeps_the_records_and_attempts_no_notice() {
+        let pack = R2cPack::new();
+        std::fs::write(pack.dir.join("pack/directives/CSO_DIRECTIVE.md"), "C").unwrap();
+        let dept_pack = pack.dir.join("pack-dept-zz");
+        std::fs::rename(pack.dir.join("pack"), &dept_pack).unwrap();
+        let cwd = pack.dir.clone();
+        let slot: std::sync::Arc<std::sync::Mutex<std::path::PathBuf>> = Default::default();
+        let sock_of = std::sync::Arc::clone(&slot);
+        let mut pastes = 0usize;
+        let daemon = R2cDaemon::start(move |method, p| {
+            let sid = p["surface_id"].as_u64().unwrap_or(0);
+            match method {
+                "system.topology" => r2c_ok(json!({
+                    "live": [{"role": "worker", "seat": "empty", "surface_id": 7, "env_injected": true}],
+                    "saved": [{"role": "worker", "agent": "b360agent", "cwd": cwd}, {"role": "cso", "agent": "b360agent", "cwd": cwd}],
+                    "tombstones": []})),
+                "directive.verify" => {
+                    // the worker's UNKNOWN directive is about to be recorded; after this the daemon is unreachable
+                    let sock = sock_of.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    let _ = std::fs::rename(&sock, sock.with_extension("gone"));
+                    r2c_ok(json!({}))
+                }
+                "surface.list" => r2c_ok(json!({"surfaces": [{"surface_id": 7, "surface_ref": "surface:7", "exited": false,
+                                                               "agent_alive": true, "line_count": 40}]})),
+                "surface.read_text" => r2c_ok(json!({"text": cys::first_run_gates::fixtures::LIVE_TUI_AT_PROMPT,
+                                                     "quiet_secs": 5.0, "line_count": 40, "next_cursor": 40})),
+                "surface.send_text" if sid == 7 => {
+                    pastes += 1;
+                    if pastes == 1 { r2c_ok(json!({})) } else { r2c_reply(&pending_err()) }
+                }
+                _ => r2c_ok(json!({})),
+            }
+        });
+        *slot.lock().unwrap_or_else(|e| e.into_inner()) = daemon.sock.clone();
+        let mut envs = pack.envs();
+        envs.retain(|(k, _)| *k != "CYS_PACK_DIR");
+        envs.push(("CYS_PACK_DIR", dept_pack.clone().into_os_string()));
+        envs.push(("CYS_NO_AUTOSTART", "0".into()));
+        let (rc, out, err) = r2c_child("restore", &daemon, &envs);
+        let _ = std::fs::rename(daemon.sock.with_extension("gone"), &daemon.sock);
+        let records: Vec<Value> = std::fs::read_to_string(pack.dir.join(".kept-pane-records.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+        let calls = daemon.calls();
+        let mut failures = Vec::new();
+        if rc != EXIT_AUTOSTART_REFUSED || !err.contains("autostart 거부") {
+            failures.push(format!("exit {rc} (want the autostart refusal {EXIT_AUTOSTART_REFUSED})\n{out}\n{err}"));
+        }
+        if records.len() != 1 || records[0]["role"] != "worker" || records[0]["outcome"] != "unknown" {
+            failures.push(format!("the record written before the exit is not on disk: {records:?}"));
+        }
+        if calls.iter().any(|(m, p)| (m == "system.resolve_role" && p["role"] == "master") || m == "queue.list") {
+            failures.push("a notice was attempted".to_string());
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Carrier (A) · coordinator hazards, source pin: the notice never goes through `request()` (whose `connect()` can
+    /// autostart a daemon or `process::exit`) — only through `request_on_timeout` (direct connect, bounded deadline); and
+    /// the owner scope's Drop skips the notice while unwinding a panic (`std::thread::panicking()`) and contains any panic
+    /// of the send (`catch_unwind`), so a notice can neither block an unwind nor turn a panic into an abort.
+    /// RED on 95a597e0: `kept_pane_notify_master` does not exist.
+    #[test]
+    fn b360_r2r_c7_the_notice_uses_the_bounded_transport_and_is_panic_safe_source_pin() {
+        let src = include_str!("cys.rs");
+        let body = |head: &str| {
+            let at = src.find(head).unwrap_or_else(|| panic!("{head} not found"));
+            src[at..at + src[at..].find("\n}\n").expect("end")].to_string()
+        };
+        let notify = body(&format!("\nfn {}(", "kept_pane_notify_master"));
+        let plain_request = notify.match_indices("request(").filter(|(i, _)| !notify[..*i].ends_with("_on_timeout") && !notify[..*i].ends_with('_')).count();
+        assert_eq!(plain_request, 0, "the notice calls request() (autostart / process::exit possible):\n{notify}");
+        assert!(notify.matches("request_on_timeout(").count() >= 3, "{notify}");
+        let drop = body("impl Drop for KeptPaneScope {");
+        assert!(drop.contains("std::thread::panicking()") && drop.contains("catch_unwind"), "{drop}");
+    }
+
+    /// Carrier (A) · the key derivation is a re-implementation of cysd's `opaque_label` (FNV-1a 64, `#{:016x}`,
+    /// src/bin/cysd/alert_route.rs) — that function lives in the cysd binary and is not reachable from a cys test, so both
+    /// are pinned to the same fixed value: cysd's own specimen pins `rule=#ce4c6bff0d4d933a` for "cpu_high"
+    /// (alert_route.rs, `("health.alert", json!({"rule": "cpu_high"}), "rule=#ce4c6bff0d4d933a")`).
+    /// Cannot be red on a4c234ac: `kept_pane_notice_key` does not exist there. Positive control: the test-local
+    /// recomputation `r2n_key` gives the same value.
+    #[test]
+    fn b360_r2r_c6_the_notice_key_matches_cysd_opaque_label_on_a_fixed_input() {
+        assert_eq!(kept_pane_notice_key("cpu_high"), "#ce4c6bff0d4d933a");
+        assert_eq!(r2n_key("cpu_high"), "#ce4c6bff0d4d933a");
+    }
+
+    // ── ★(B-360 R3 · option 2) area R: kept-pane record schema v2, the deferral pair, `cys kept-pane-notice` ─────────
+    // FIX-SPEC-option2-v2 §1, §7 A1/A2, and worker-7's veto of §1e (a records OUT FILE named by
+    // `CYS_KEPT_PANE_RECORDS_OUT`, not a boot-JSON key: the boot JSON is untouched). These specimens compile on af41d65c:
+    // they read the record file, the out file, the child's stderr, the RPCs the fake daemon records and a CLI line parsed
+    // by clap (`cli` child) — never a symbol the fix adds. The pure-function pins of the fix are in the fix commit.
+
+    /// The fake daemon's `org.status` (FIX-SPEC F5 shape): daemon instance 1234.5; surface:7 with session `sess-7`,
+    /// created 1000.25; master surface:1.
+    #[cfg(unix)]
+    fn r3_status() -> Value {
+        r2c_ok(json!({"daemon": {"started_at": 1234.5},
+                      "surfaces": [
+                          {"surface_id": 1, "role": "master", "registered_session_id": "sess-m", "created_at": 900.0, "exited": false},
+                          {"surface_id": 7, "role": "worker", "registered_session_id": "sess-7", "created_at": 1000.25, "exited": false}]}))
+    }
+
+    /// One `cys boot --json` child of [`r3_boot_adopt`].
+    #[cfg(unix)]
+    struct R3Run {
+        rc: i32,
+        err: String,
+        calls: Vec<(String, Value)>,
+        records: Vec<Value>,
+        /// the fake daemon's socket (= the child's `CYS_SOCKET`)
+        sock: String,
+        pack: R2cPack,
+    }
+
+    /// The requests the kept-pane notice makes to master: resolve master, scan its queue, send to surface:1.
+    #[cfg(unix)]
+    fn r3_master_calls(calls: &[(String, Value)]) -> usize {
+        calls
+            .iter()
+            .filter(|(m, p)| {
+                (m == "system.resolve_role" && p["role"] == "master")
+                    || m == "queue.list"
+                    || (m == "surface.send_text" && p["surface_id"] == 1)
+            })
+            .count()
+    }
+
+    /// `cys boot --json` (child) adopting the gate-pending worker seat surface:7 (cso and the reviewers awake): `reply`
+    /// answers the adoption paste, `status` answers `org.status`, master is surface:1 with an empty queue whose queued send
+    /// is accepted. `knobs` are extra env vars for the child; `{pack}` in a value is replaced by the fixture's dir.
+    #[cfg(unix)]
+    fn r3_boot_adopt(reply: Value, status: Value, knobs: &[(&'static str, &str)]) -> R3Run {
+        let pack = R2cPack::new();
+        let daemon = R2cDaemon::start(move |method, p| match method {
+            "surface.list" => {
+                let awake = |sid: u64, role: &str, agent: &str| {
+                    json!({"surface_id": sid, "surface_ref": format!("surface:{sid}"), "role": role, "agent": agent,
+                           "exited": false, "awakened_at": 1.0, "agent_alive": true, "seat": "occupied"})
+                };
+                let worker = json!({"surface_id": 7, "surface_ref": "surface:7", "role": "worker", "agent": "claude",
+                                    "exited": false, "agent_alive": true, "seat": "occupied", "line_count": 40,
+                                    "gate_pending": {"gate": GATE_ID_UNIDENTIFIED, "followup": null}});
+                r2c_ok(json!({"surfaces": [awake(3, "cso", "claude"), worker, awake(4, "reviewer-gemini", "gemini"),
+                                           awake(5, "reviewer-codex", "codex"), awake(6, "reviewer-grok", "grok")]}))
+            }
+            "surface.read_text" => r2c_ok(json!({"text": cys::first_run_gates::fixtures::LIVE_TUI_AT_PROMPT,
+                                                 "quiet_secs": 5.0, "line_count": 40, "next_cursor": 40})),
+            "org.status" => status.clone(),
+            "system.resolve_role" if p["role"] == "master" => r2c_ok(json!({"surface_id": 1})),
+            "queue.list" => r2c_ok(json!({"entries": []})),
+            "surface.send_text" if p["surface_id"] == 1 => r2c_ok(json!({"queued": true})),
+            "surface.send_text" => reply.clone(),
+            "surface.create" => r2c_reply("b360_no_spawn: this fake daemon makes no new surface"),
+            _ => r2c_ok(json!({})),
+        });
+        let mut envs = pack.envs();
+        let mut path = std::ffi::OsString::from(pack.dir.join("bin"));
+        path.push(":");
+        path.push(std::env::var_os("PATH").unwrap_or_default());
+        envs.push(("PATH", path));
+        let dir = pack.dir.to_string_lossy().into_owned();
+        envs.extend(knobs.iter().map(|(k, v)| (*k, std::ffi::OsString::from(v.replace("{pack}", &dir)))));
+        let (rc, _out, err) = r2c_child("boot", &daemon, &envs);
+        let records = r2b_records(&pack);
+        R3Run { rc, err, calls: daemon.calls(), records, sock: daemon.sock.to_string_lossy().into_owned(), pack }
+    }
+
+    /// Area R · §1c record schema v2 (+ A1): the kept-pane record `cys boot` writes for an adoption UNKNOWN on surface:7
+    /// carries `schema: 2`, `withholds_ready: true`, the seat identity from `org.status` (`session_id` = the surface's
+    /// `registered_session_id`, `surface_created_at` = its `created_at`), `identity_unmeasured: false`, and `owner: {writer:
+    /// "cys", pid, socket: this command's socket, daemon_started_at}`; every R2 field is unchanged. The pid is attribution
+    /// only (A1). Source half: the identity lookup never calls `request()` (autostart / process::exit) — only the bounded
+    /// `request_on_timeout`. RED on af41d65c: none of the v2 fields exist, nor the identity helper.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r3_k1_a_kept_pane_record_carries_schema_2_identity_owner_and_withholds_ready() {
+        let run = r3_boot_adopt(r2c_reply(&pending_err()), r3_status(), &[]);
+        let mut failures = Vec::new();
+        if run.rc != 0 || run.records.len() != 1 {
+            failures.push(format!("boot exit {} with {} record(s) (want 0 and 1)\n{}", run.rc, run.records.len(), run.err));
+        }
+        let r = run.records.first().cloned().unwrap_or(Value::Null);
+        for (k, want) in [("command", json!("boot")), ("surface_id", json!(7)), ("role", json!("worker")),
+                          ("agent", json!("claude")), ("outcome", json!("unknown")), ("write", json!("adoption")),
+                          ("request_id", json!("w1-2"))] {
+            if r[k] != want {
+                failures.push(format!("R2 field {k} = {} (want {want})", r[k]));
+            }
+        }
+        for (k, want) in [("schema", json!(2)), ("withholds_ready", json!(true)), ("session_id", json!("sess-7")),
+                          ("surface_created_at", json!(1000.25)), ("identity_unmeasured", json!(false))] {
+            if r[k] != want {
+                failures.push(format!("v2 field {k} = {} (want {want})", r[k]));
+            }
+        }
+        let o = &r["owner"];
+        if o["writer"] != "cys" || o["pid"].as_u64().is_none() || o["socket"] != run.sock.as_str() || o["daemon_started_at"] != 1234.5 {
+            failures.push(format!("owner {o} (want writer cys, a pid, socket {}, daemon_started_at 1234.5)", run.sock));
+        }
+        if r2c_count(&run.calls, "org.status") == 0 {
+            failures.push("the identity was not looked up through org.status".to_string());
+        }
+        let src = include_str!("cys.rs");
+        let head = format!("\nfn {}(", "kept_pane_seat_identity");
+        match src.find(&head) {
+            None => failures.push("no identity helper `kept_pane_seat_identity`".to_string()),
+            Some(at) => {
+                let body = &src[at..at + src[at..].find("\n}\n").expect("end")];
+                let plain = body.match_indices("request(").filter(|(i, _)| !body[..*i].ends_with('_')).count();
+                if plain != 0 || !body.contains("request_on_timeout(") {
+                    failures.push(format!("the identity lookup is not bounded-only:\n{body}"));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}\nrecord: {r}", failures.join("\n"));
+    }
+
+    /// Area R · §1c lookup failure: `org.status` answers an error → the record is STILL written, with `session_id`,
+    /// `surface_created_at` and `owner.daemon_started_at` null and `identity_unmeasured: true` (owner.writer / socket /
+    /// pid are known without the daemon). The time bound of the lookup is pinned on the helper in the fix commit (a
+    /// listener that never answers; it cannot compile here). RED on af41d65c: no such fields.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r3_k2_an_unreadable_identity_still_records_with_nulls_and_identity_unmeasured() {
+        let run = r3_boot_adopt(r2c_reply(&pending_err()), r2c_reply("rpc_failed: the fake daemon refuses org.status"), &[]);
+        let r = run.records.first().cloned().unwrap_or(Value::Null);
+        let ok = run.records.len() == 1
+            && r["schema"] == 2
+            && r["withholds_ready"] == true
+            && r["identity_unmeasured"] == true
+            && r["session_id"].is_null()
+            && r["surface_created_at"].is_null()
+            && r.get("session_id").is_some()
+            && r.get("surface_created_at").is_some()
+            && r["owner"]["daemon_started_at"].is_null()
+            && r["owner"].get("daemon_started_at").is_some()
+            && r["owner"]["writer"] == "cys"
+            && r["owner"]["socket"] == run.sock.as_str();
+        assert!(ok, "records {:?}\n{}", run.records, run.err);
+    }
+
+    /// Area R · §1b durable readiness through the REAL writers: every UNKNOWN / unrecognised record says
+    /// `withholds_ready: true`, every REFUSED (zero bytes) record says `false` — boot adoption UNKNOWN; boot's launch-agent
+    /// directive REFUSED / UNKNOWN and launch REFUSED / UNKNOWN; node-recover UNKNOWN / REFUSED; node-recover unrecognised
+    /// (57). The full write × outcome table is pinned on the pure function in the fix commit.
+    /// RED on af41d65c: no record carries `withholds_ready`, and the unrecognised recovery writes no record.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r3_k3_withholds_ready_is_true_for_every_unknown_and_unrecognised_and_false_for_refused() {
+        let generic = r2c_reply("rpc_failed: the fake daemon fails this write generically");
+        let mut cases: Vec<(&str, Vec<Value>, &str, &str, bool)> = Vec::new();
+        cases.push(("boot adoption UNKNOWN", r3_boot_adopt(r2c_reply(&pending_err()), r3_status(), &[]).records, "adoption", "unknown", true));
+        for (name, launch, directive, write, outcome, want) in [
+            ("launch-agent directive REFUSED", r2c_ok(json!({})), r2c_reply(&journal_err()), "directive", "refused", false),
+            ("launch-agent directive UNKNOWN", r2c_ok(json!({})), r2c_reply(&pending_err()), "directive", "unknown", true),
+            ("launch-agent launch REFUSED", r2c_reply(&journal_err()), r2c_ok(json!({})), "launch", "refused", false),
+            ("launch-agent launch UNKNOWN", r2c_reply(&pending_err()), r2c_ok(json!({})), "launch", "unknown", true),
+        ] {
+            cases.push((name, r2b_boot_launch(launch, directive).4, write, outcome, want));
+        }
+        cases.push(("node-recover UNKNOWN", r2b_boot_recover(r2c_reply(&pending_err()), &[]).4, "recover", "unknown", true));
+        cases.push(("node-recover REFUSED", r2b_boot_recover(r2c_reply(&journal_err()), &[]).4, "recover", "refused", false));
+        cases.push(("node-recover unrecognised 57", r2b_boot_recover(generic, &[(R2B_RECOVER_RC, "57")]).4, "recover", "unrecognised", true));
+        let mut failures = Vec::new();
+        for (name, records, write, outcome, want) in cases {
+            let ok = records.len() == 1
+                && records[0]["write"] == write
+                && records[0]["outcome"] == outcome
+                && records[0]["withholds_ready"] == want;
+            if !ok {
+                failures.push(format!("{name}: want one record {{write {write}, outcome {outcome}, withholds_ready {want}}}: {records:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Area R · §1d: node-recover returning a code run_boot does not know (57) → outcome `recover_unrecognised` AND one
+    /// kept-pane record {command boot, surface 7, role worker, write recover, outcome unrecognised, withholds_ready true}:
+    /// the durable form of the 4th unknown-class variant (FIX-SPEC F6). No reclaim, no spawn (unchanged).
+    /// RED on af41d65c: the arm writes no record.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r3_k4_an_unrecognised_recover_code_writes_one_unrecognised_record() {
+        let generic = r2c_reply("rpc_failed: the fake daemon fails this write generically");
+        let (rc, report, text, calls, records) = r2b_boot_recover(generic, &[(R2B_RECOVER_RC, "57")]);
+        let mut failures = Vec::new();
+        if r2c_role(&report, "worker")["outcome"] != "recover_unrecognised" || rc != 0 {
+            failures.push(format!("prerequisite: worker {} exit {rc}", r2c_role(&report, "worker")));
+        }
+        if text.contains("reclaim 에스컬레이션") || r2c_count(&calls, "surface.create") != 0 {
+            failures.push("prerequisite: an unrecognised code reached reclaim / a spawn".to_string());
+        }
+        let ok = records.len() == 1
+            && records[0]["command"] == "boot"
+            && records[0]["surface_id"] == 7
+            && records[0]["role"] == "worker"
+            && records[0]["write"] == "recover"
+            && records[0]["outcome"] == "unrecognised"
+            && records[0]["withholds_ready"] == true;
+        if !ok {
+            failures.push(format!("records {records:?}"));
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// The deferral pair (worker-7's veto of §1e/§1f).
+    #[cfg(unix)]
+    const R3_NOTICE_ENV: &str = "CYS_KEPT_PANE_NOTICE";
+    #[cfg(unix)]
+    const R3_OUT_ENV: &str = "CYS_KEPT_PANE_RECORDS_OUT";
+
+    /// Area R · deferral: with `CYS_KEPT_PANE_NOTICE=caller` AND `CYS_KEPT_PANE_RECORDS_OUT=<abs path>`, the outermost
+    /// command sends NOTHING to master (no resolve, no queue scan, no send), writes this run's records to the path as one
+    /// JSON array, and says so in one stderr line `[kept-pane] notice deferred to the caller (1 record(s) written to
+    /// <path>)`; a run with no kept pane writes `[]` (0 record(s)). Control: without the knob the notice is sent (today).
+    /// RED on af41d65c: the knob is ignored — the notice is sent and no file is written.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r3_k5_the_deferral_pair_writes_the_records_out_file_and_sends_nothing() {
+        let mut failures = Vec::new();
+        for (name, reply, count) in [("one kept pane", r2c_reply(&pending_err()), 1usize), ("no kept pane", r2c_ok(json!({})), 0)] {
+            let run = r3_boot_adopt(reply, r3_status(), &[(R3_NOTICE_ENV, "caller"), (R3_OUT_ENV, "{pack}/kp-out.json")]);
+            let out = run.pack.dir.join("kp-out.json");
+            if r3_master_calls(&run.calls) != 0 {
+                failures.push(format!("{name}: {} request(s) toward master although the caller deferred", r3_master_calls(&run.calls)));
+            }
+            let line = format!("[kept-pane] notice deferred to the caller ({count} record(s) written to {})", out.display());
+            if !run.err.lines().any(|l| l == line) {
+                failures.push(format!("{name}: no stderr line {line:?}\n{}", run.err));
+            }
+            match std::fs::read_to_string(&out).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()) {
+                Some(Value::Array(a)) if a.len() == count && (count == 0 || a[0] == run.records[0]) => {}
+                other => failures.push(format!("{name}: out file {other:?} (want an array of this run's {count} record(s))")),
+            }
+        }
+        let control = r3_boot_adopt(r2c_reply(&pending_err()), r3_status(), &[]);
+        if control.calls.iter().filter(|(m, p)| m == "surface.send_text" && p["surface_id"] == 1).count() != 1 {
+            failures.push(format!("control: no notice sent without the knob\n{}", control.err));
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Area R · deferral, half-configured: only ONE of the two vars set → today's behaviour (the notice IS sent; no out
+    /// file) plus one stderr line naming the missing var — never a silently dropped notice.
+    /// RED on af41d65c: the notice is sent, but no line names the missing var.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r3_k6_only_one_deferral_var_falls_back_to_sending_and_names_the_missing_var() {
+        let mut failures = Vec::new();
+        for (name, knobs, missing) in [
+            ("notice only", vec![(R3_NOTICE_ENV, "caller")], R3_OUT_ENV),
+            ("out only", vec![(R3_OUT_ENV, "{pack}/kp-out.json")], R3_NOTICE_ENV),
+        ] {
+            let run = r3_boot_adopt(r2c_reply(&pending_err()), r3_status(), &knobs);
+            if run.calls.iter().filter(|(m, p)| m == "surface.send_text" && p["surface_id"] == 1).count() != 1 {
+                failures.push(format!("{name}: the notice was not sent\n{}", run.err));
+            }
+            if run.pack.dir.join("kp-out.json").exists() {
+                failures.push(format!("{name}: an out file was written although the deferral is half-configured"));
+            }
+            if !run.err.lines().any(|l| l.starts_with("[kept-pane]") && l.contains(missing)) {
+                failures.push(format!("{name}: no [kept-pane] stderr line names {missing}\n{}", run.err));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// The result of one `cys kept-pane-notice` child.
+    #[cfg(unix)]
+    struct R3Notice {
+        rc: i32,
+        err: String,
+        calls: Vec<(String, Value)>,
+        record_path: String,
+    }
+
+    /// The queued notices to master (surface:1) among `calls`.
+    #[cfg(unix)]
+    fn r3_notices(calls: &[(String, Value)]) -> Vec<String> {
+        calls
+            .iter()
+            .filter(|(m, p)| m == "surface.send_text" && p["surface_id"] == 1)
+            .map(|(_, p)| p["text"].as_str().unwrap_or("").to_string())
+            .collect()
+    }
+
+    /// Runs `cys kept-pane-notice --input <file|->` as a child of THIS test binary (argv parsed by clap like `main`):
+    /// `input` is the JSON text (written to a file in the fixture, or piped to stdin when `stdin`), `pending` = the texts
+    /// already pending in master's queue (built from the fixture's record path), `master` = master resolves to surface:1
+    /// (else role_not_found).
+    #[cfg(unix)]
+    fn r3_notice(input: &str, stdin: bool, pending: impl FnOnce(&str) -> Vec<String>, master: bool) -> R3Notice {
+        use std::io::Write as _;
+        let pack = R2cPack::new();
+        let record_path = pack.dir.join(".kept-pane-records.jsonl").to_string_lossy().into_owned();
+        let pending = pending(&record_path);
+        let daemon = R2cDaemon::start(move |method, p| match method {
+            "system.resolve_role" if p["role"] == "master" => {
+                if master {
+                    r2c_ok(json!({"surface_id": 1}))
+                } else {
+                    r2c_reply("role_not_found: no live seat holds role master")
+                }
+            }
+            "queue.list" if p["surface_id"] == 1 => {
+                let entries: Vec<Value> =
+                    pending.iter().enumerate().map(|(i, t)| json!({"index": i, "preview": t, "text": t})).collect();
+                r2c_ok(json!({"entries": entries}))
+            }
+            "surface.send_text" if p["surface_id"] == 1 => r2c_ok(json!({"queued": true})),
+            _ => r2c_ok(json!({})),
+        });
+        let file = pack.dir.join("notice-in.json");
+        std::fs::write(&file, input).unwrap();
+        let arg = if stdin { "-".to_string() } else { file.to_string_lossy().into_owned() };
+        let argv = json!(["cys", "kept-pane-notice", "--input", arg]).to_string();
+        let _guard = super::tests::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut child = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["b360_tests::b360_r2c_child", "--exact", "--ignored", "--nocapture", "--test-threads=1"])
+            .env(R2C_CHILD, "cli")
+            .env("CYS_B360_CLI_ARGS", argv)
+            .env(cys::ENV_SOCKET, &daemon.sock)
+            .env("CYS_NO_AUTOSTART", "1")
+            .envs(pack.envs().into_iter())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn the child specimen");
+        {
+            let mut w = child.stdin.take().expect("stdin");
+            if stdin {
+                let _ = w.write_all(input.as_bytes());
+            }
+        }
+        let out = child.wait_with_output().expect("child output");
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(stdout.contains("running 1 test"), "the child specimen did not run:\n{stdout}");
+        R3Notice {
+            rc: out.status.code().unwrap_or(-1),
+            err: String::from_utf8_lossy(&out.stderr).into_owned(),
+            calls: daemon.calls(),
+            record_path,
+        }
+    }
+
+    /// The marker and consequences the specimens' withheld inputs name.
+    #[cfg(unix)]
+    const R3_MARKER: &str = "/h/.cys/.master-bootstrapped";
+
+    /// A `kept-pane-notice` input: one UNKNOWN adoption record of surface:7, and the withheld clause when `withheld`.
+    #[cfg(unix)]
+    fn r3_notice_input(withheld: bool) -> String {
+        let rw = if withheld {
+            json!({"marker": R3_MARKER, "lane": "base", "consequences": ["c-one", "c-two"]})
+        } else {
+            Value::Null
+        };
+        json!({"command": "bootstrap",
+               "records": [{"surface_id": 7, "role": "worker", "write": "adoption", "outcome": "unknown"}],
+               "ready_withheld": rw})
+        .to_string()
+    }
+
+    /// The withheld notice's key (§1g): `#` + FNV-1a 64 over `<record path>|ready-withheld|<marker>`.
+    #[cfg(unix)]
+    fn r3_withheld_key(record_path: &str) -> String {
+        r2n_key(&format!("{record_path}|ready-withheld|{R3_MARKER}"))
+    }
+
+    /// Area R · §1g `cys kept-pane-notice --input <file|->`, the single sender for a caller that deferred: ONE queued
+    /// notice to master whose text is today's `[kept-pane] key=… N pane(s) …` (command, count, record path) plus, when
+    /// `ready_withheld` is set, ` — READY MARKER WITHHELD: <marker> — while it is absent: <c1>; <c2>`, under the SECOND key
+    /// (`<record path>|ready-withheld|<marker>`); a plain input keeps the plain key and has no clause; stdin (`-`) works;
+    /// exit 0. Bad input → exit 2 with nothing asked of the daemon; master unresolvable → exit 3.
+    /// RED on af41d65c: the subcommand does not exist (clap usage error, exit 2, nothing sent).
+    /// ★(REFLECTION-2 R2-R-1) CHANGED (wrong contract, wording only): the head was "1 pane(s) kept by `cys bootstrap`"
+    /// — `bootstrap` is the caller, not a cys subcommand — and is now `1 pane(s) kept (reported by bootstrap)` (k9 / k10
+    /// alike); what each head asserts (key, count, clause, record path) is unchanged. The attribution is pinned by k15.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r3_k7_kept_pane_notice_sends_one_notice_with_the_withheld_clause_under_the_second_key() {
+        let mut failures = Vec::new();
+        let w = r3_notice(&r3_notice_input(true), false, |_| vec![], true);
+        let notices = r3_notices(&w.calls);
+        let head = format!("[kept-pane] key={} 1 pane(s) kept (reported by bootstrap)", r3_withheld_key(&w.record_path));
+        let clause = format!(" — READY MARKER WITHHELD: {R3_MARKER} — while it is absent: c-one; c-two");
+        if w.rc != 0 || notices.len() != 1 || !notices[0].starts_with(&head) || !notices[0].contains(&clause)
+            || !notices[0].contains(&w.record_path)
+        {
+            failures.push(format!("withheld: exit {} notices {notices:?} (want one starting {head:?} with {clause:?})\n{}", w.rc, w.err));
+        }
+        let p = r3_notice(&r3_notice_input(false), true, |_| vec![], true);
+        let notices = r3_notices(&p.calls);
+        let head = format!("[kept-pane] key={} 1 pane(s) kept (reported by bootstrap)", r2n_key(&p.record_path));
+        if p.rc != 0 || notices.len() != 1 || !notices[0].starts_with(&head) || notices[0].contains("READY MARKER WITHHELD") {
+            failures.push(format!("plain via stdin: exit {} notices {notices:?} (want one starting {head:?}, no clause)\n{}", p.rc, p.err));
+        }
+        for (name, input) in [("not JSON", "not json".to_string()), ("no records", json!({"command": "bootstrap"}).to_string())] {
+            let b = r3_notice(&input, false, |_| vec![], true);
+            if b.rc != 2 || !b.calls.is_empty() {
+                failures.push(format!("bad input ({name}): exit {} with {} request(s) (want 2 and none)", b.rc, b.calls.len()));
+            }
+        }
+        let m = r3_notice(&r3_notice_input(true), false, |_| vec![], false);
+        if m.rc != 3 || !r3_notices(&m.calls).is_empty() || !m.err.lines().any(|l| l.starts_with("[kept-pane]") && l.contains("not sent")) {
+            failures.push(format!("no master: exit {} (want 3, nothing sent, a reason on stderr)\n{}", m.rc, m.err));
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Area R · §1g coalescing is per EXACT key (bound: at most one plain + one withheld notice pending per marker): a
+    /// pending PLAIN notice does not swallow a withheld one (sent, exit 0); a pending WITHHELD notice with the same key
+    /// coalesces it (exit 3, nothing sent, "coalesced" on stderr); a plain input with a pending plain notice coalesces.
+    /// RED on af41d65c: the subcommand does not exist.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r3_k8_kept_pane_notice_coalesces_per_exact_key() {
+        let mut failures = Vec::new();
+        for (name, withheld, pending_withheld, want_rc, want_sent) in [
+            ("withheld vs pending plain", true, false, 0, 1usize),
+            ("withheld vs pending withheld", true, true, 3, 0),
+            ("plain vs pending plain", false, false, 3, 0),
+        ] {
+            let pending = move |record_path: &str| {
+                let key = if pending_withheld { r3_withheld_key(record_path) } else { r2n_key(record_path) };
+                vec![format!("[kept-pane] key={key} 1 pane(s) kept by an earlier run")]
+            };
+            let n = r3_notice(&r3_notice_input(withheld), false, pending, true);
+            let sent = r3_notices(&n.calls).len();
+            let coalesced = n.err.lines().any(|l| l.starts_with("[kept-pane]") && l.contains("coalesced"));
+            if n.rc != want_rc || sent != want_sent || (want_rc == 3 && !coalesced) {
+                failures.push(format!("{name}: exit {} sent {sent} coalesced-line {coalesced} (want {want_rc}, {want_sent})\n{}", n.rc, n.err));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Area R · worker-7's ruling on the decision point (spec §10): when the caller could NOT remove the stale ready
+    /// marker (`ready_withheld.remove_error` set), the notice must not claim it is withheld — it says `READY MARKER COULD
+    /// NOT BE REMOVED: <marker> (<error>)` and never `READY MARKER WITHHELD`, still under the withheld key, still one
+    /// notice with the count and the record path. RED on af41d65c: the subcommand does not exist.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r3_k9_kept_pane_notice_says_could_not_be_removed_when_the_marker_unlink_failed() {
+        let input = json!({"command": "bootstrap",
+                           "records": [{"surface_id": 7, "role": "worker", "write": "adoption", "outcome": "unknown"}],
+                           "ready_withheld": {"marker": R3_MARKER, "lane": "base", "consequences": ["c-one"],
+                                              "remove_error": "Permission denied (os error 13)"}})
+        .to_string();
+        let n = r3_notice(&input, false, |_| vec![], true);
+        let notices = r3_notices(&n.calls);
+        let head = format!("[kept-pane] key={} 1 pane(s) kept (reported by bootstrap)", r3_withheld_key(&n.record_path));
+        let said = format!("READY MARKER COULD NOT BE REMOVED: {R3_MARKER} (Permission denied (os error 13))");
+        assert!(
+            n.rc == 0
+                && notices.len() == 1
+                && notices[0].starts_with(&head)
+                && notices[0].contains(&said)
+                && notices[0].contains("c-one")
+                && !notices[0].contains("READY MARKER WITHHELD"),
+            "exit {} notices {notices:?} (want one starting {head:?} saying {said:?}, never WITHHELD)\n{}",
+            n.rc,
+            n.err
+        );
+    }
+
+    /// Area R · the head's note (unmeasured is not a value): a caller whose withhold rests on READINESS UNMEASURED (an
+    /// unreadable boot JSON, status or record line — `ready_withheld.unmeasured`) gets a clause that says `readiness
+    /// unmeasured (<why>)`; with no kept pane in the run the notice says `0 pane(s)` and never calls anything UNKNOWN or
+    /// "not ready". Still one notice under the withheld key, with the record path. RED on af41d65c: no subcommand.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r3_k10_kept_pane_notice_names_readiness_unmeasured_and_calls_nothing_unknown() {
+        let input = json!({"command": "bootstrap", "records": [],
+                           "ready_withheld": {"marker": R3_MARKER, "lane": "base", "consequences": ["c-one"],
+                                              "unmeasured": ["boot --json stdout unreadable (exit 124)"]}})
+        .to_string();
+        let n = r3_notice(&input, false, |_| vec![], true);
+        let notices = r3_notices(&n.calls);
+        let head = format!("[kept-pane] key={} 0 pane(s) kept (reported by bootstrap)", r3_withheld_key(&n.record_path));
+        let said = format!(
+            "READY MARKER WITHHELD: {R3_MARKER} — readiness unmeasured (boot --json stdout unreadable (exit 124)) — while it \
+             is absent: c-one"
+        );
+        assert!(
+            n.rc == 0
+                && notices.len() == 1
+                && notices[0].starts_with(&head)
+                && notices[0].contains(&said)
+                && notices[0].contains(&n.record_path)
+                && !notices[0].contains("UNKNOWN")
+                && !notices[0].to_lowercase().contains("not ready"),
+            "exit {} notices {notices:?} (want one starting {head:?} saying {said:?}, nothing UNKNOWN / not ready)\n{}",
+            n.rc,
+            n.err
+        );
+    }
+
+    /// Area R · REFLECTION-2 R2-R-1: a CALLER's notice says who reported it and which command kept each pane — its
+    /// `command` (`bootstrap`) is not a cys subcommand and its records come from several commands (this run's boot plus
+    /// durable records of `launch-agent` / `restore` / `node-recover`). Head `2 pane(s) kept (reported by bootstrap)`,
+    /// each pane `…, kept by `cys <record.command>`;…`, and nowhere "`cys bootstrap`". Its control is k16. RED before
+    /// R2-R-1: the head said "kept by `cys bootstrap`" and no pane named its command.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r3_k15_a_caller_notice_names_the_reporter_and_the_command_that_kept_each_pane() {
+        let input = json!({"command": "bootstrap",
+                           "records": [
+                               {"surface_id": 7, "role": "worker", "write": "adoption", "outcome": "unknown", "command": "boot"},
+                               {"surface_id": 9, "role": "cso", "write": "directive", "outcome": "unknown",
+                                "command": "launch-agent"}],
+                           "ready_withheld": {"marker": R3_MARKER, "lane": "base", "consequences": ["c-one"]}})
+        .to_string();
+        let n = r3_notice(&input, false, |_| vec![], true);
+        let notices = r3_notices(&n.calls);
+        let head = format!("[kept-pane] key={} 2 pane(s) kept (reported by bootstrap)", r3_withheld_key(&n.record_path));
+        assert!(
+            n.rc == 0
+                && notices.len() == 1
+                && notices[0].starts_with(&head)
+                && notices[0].contains("worker (surface:7: adoption write unknown, kept by `cys boot`; check")
+                && notices[0].contains("cso (surface:9: directive write unknown, kept by `cys launch-agent`; check")
+                && !notices[0].contains("`cys bootstrap`"),
+            "exit {} notices {notices:?} (want one starting {head:?}, each pane naming its command, no `cys bootstrap`)\n{}",
+            n.rc,
+            n.err
+        );
+    }
+
+    /// Area R · REFLECTION-2 R2-R-1, CONTROL (pure): a command's OWN notice (Drop, `by_caller` false) is R2's text byte
+    /// for byte — the caller wording of k15 must not leak into it. Passes before and after R2-R-1 (wording-wise).
+    #[test]
+    fn b360_r3_k16_a_commands_own_notice_keeps_the_r2_text_byte_for_byte() {
+        let rec = json!({"surface_id": 7, "role": "worker", "write": "adoption", "outcome": "unknown", "command": "boot"});
+        assert_eq!(
+            kept_pane_notice_text_keyed("#k", "boot", false, &[rec], "/p", None),
+            "[kept-pane] key=#k 1 pane(s) kept by `cys boot` after a REFUSED (zero bytes) or UNKNOWN (may still land) write — \
+             nothing destroyed, nothing re-sent: worker (surface:7: adoption write unknown; check `cys read-screen --surface \
+             surface:7`, then `cys reinject --role worker --check`) — records: /p"
+        );
+        assert_eq!(
+            kept_pane_notice_text_keyed("#k", "boot", false, &[], "/p", None),
+            "[kept-pane] key=#k 0 pane(s) kept by `cys boot` — records: /p"
+        );
+    }
+
+    // ── ★(B-360 R3 · option 2 · A6) the R2 unknown entries of `.pack-reinject-pending.json` are keyed ──────────────────
+    // FIX-SPEC-option2-v2 §8 A6 (+ FINDING-pending-file-shared-surface-number-attribution.md): the file is shared by every
+    // lane (`pack_state_base()` = the parent of the pack dir) and surface numbers are per daemon, so an unknown entry is
+    // identified by {owner.socket (lane), owner.daemon_started_at, surface_id}; role and directive hash are GUARDS. These
+    // specimens compile on af41d65c: they seed the file as JSON and read the fake daemon's RPC log and the file.
+
+    /// The scripted seat of [`r3p_daemon`]; the test changes it between runs.
+    #[cfg(unix)]
+    struct R3pSeat {
+        directive: Value,
+        ping: R2pPing,
+        /// `org.status` → `daemon.started_at` (None: the key is absent, as from an older daemon)
+        started_at: Option<f64>,
+        /// the role `control.dashboard` reports for surface:7
+        role: &'static str,
+    }
+
+    #[cfg(unix)]
+    type R3pCtl = std::sync::Arc<std::sync::Mutex<R3pSeat>>;
+
+    #[cfg(unix)]
+    fn r3p_ctl(directive: Value, ping: R2pPing, started_at: Option<f64>, role: &'static str) -> R3pCtl {
+        std::sync::Arc::new(std::sync::Mutex::new(R3pSeat { directive, ping, started_at, role }))
+    }
+
+    /// [`r2p_daemon`] plus `org.status` (daemon instance `ctl.started_at`) and a scripted fleet role for surface:7.
+    #[cfg(unix)]
+    fn r3p_daemon(ctl: R3pCtl, session: std::path::PathBuf) -> R2cDaemon {
+        let mut marker = Value::Null;
+        R2cDaemon::start(move |method, p| {
+            let seat = ctl.lock().unwrap_or_else(|e| e.into_inner());
+            match method {
+                "org.status" => {
+                    let mut daemon = json!({"version": "9.9.9"});
+                    if let Some(t) = seat.started_at {
+                        daemon["started_at"] = json!(t);
+                    }
+                    r2c_ok(json!({"daemon": daemon, "surfaces": [
+                        {"surface_id": 7, "role": seat.role, "registered_session_id": null, "created_at": 50.0, "exited": false}]}))
+                }
+                "system.topology" => {
+                    let mut row = json!({"role": seat.role});
+                    if !marker.is_null() {
+                        row["pack_reinject"] = marker.clone();
+                    }
+                    r2c_ok(json!({"saved": [row]}))
+                }
+                "control.dashboard" => r2c_ok(json!({"fleet": [
+                    {"surface_id": 7, "role": seat.role, "state": "idle", "idle_secs": 60, "agent_status": "idle"}]})),
+                "surface.list" => r2c_ok(json!({"surfaces": [{
+                    "surface_id": 7, "surface_ref": "surface:7", "role": seat.role, "agent": "claude", "exited": false,
+                    "agent_alive": true, "awakened_at": 1.0,
+                    "usage": {"source": "transcript", "session_file": session.to_string_lossy()}}]})),
+                "surface.read_text" => r2c_ok(json!({"text": "", "latest_cursor": 40, "line_count": 40})),
+                "surface.send_text" => {
+                    let text = p["text"].as_str().unwrap_or("");
+                    if !text.contains(REINJECT_PING_HEAD) {
+                        return seat.directive.clone();
+                    }
+                    if seat.ping == R2pPing::NoAck {
+                        use std::io::Write;
+                        let user = json!({"type": "user", "message": {"content": text}});
+                        let answer = json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "ok"}]}});
+                        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&session) {
+                            let _ = writeln!(f, "{user}\n{answer}");
+                        }
+                    }
+                    r2c_ok(json!({}))
+                }
+                "surface.wait_for" => r2c_ok(json!({"matched": seat.ping == R2pPing::Ack})),
+                "reinject.mark" => {
+                    marker = json!({"pack_version": p["pack_version"], "directive_hash": p["directive_hash"]});
+                    r2c_ok(json!({}))
+                }
+                _ => r2c_ok(json!({})),
+            }
+        })
+    }
+
+    /// Another lane's socket (a dept lane: `cys-dept-` component), as an owner field would carry it.
+    #[cfg(unix)]
+    const R3P_FOREIGN_SOCK: &str = "/x/.local/state/cys-dept-zz/cys.sock";
+
+    /// An unknown entry as the wire carries it; `owner` = None writes a legacy (R2, ownerless) entry.
+    #[cfg(unix)]
+    fn r3p_entry(role: &str, hash: &str, at: u64, owner: Option<(&str, f64)>) -> Value {
+        let mut e = json!({"surface_id": 7, "role": role, "directive_hash": hash, "request_id": "w1-2", "at": at});
+        if let Some((sock, started)) = owner {
+            e["owner"] = json!({"writer": "cys", "pid": 4242, "socket": sock, "daemon_started_at": started});
+            e["session_id"] = Value::Null;
+        }
+        e
+    }
+
+    /// Seeds the pending file with `unknown` (and no deferred node), in the layout `write_reinject_pending` writes.
+    #[cfg(unix)]
+    fn r3p_seed(base: &std::path::Path, unknown: Vec<Value>) -> String {
+        let doc = json!({"pack_version": "9.9.9", "deferred": [], "unknown": unknown});
+        let text = serde_json::to_string_pretty(&doc).unwrap();
+        std::fs::write(reinject_pending_path(base), &text).unwrap();
+        text
+    }
+
+    /// The pending pass over `entry` (seeded alone) against `ctl`: returns (pass report as Debug text, requests, the file's
+    /// unknown list after, the file text after, the file text seeded).
+    #[cfg(unix)]
+    fn r3p_consume(pack: &R2cPack, ctl: R3pCtl, entry: impl FnOnce() -> Value) -> (String, Vec<(String, Value)>, Vec<Value>, String, String) {
+        let daemon = r3p_daemon(ctl, r2p_session(pack));
+        let (rep, seeded) = r2c_in_env(&daemon, pack, || {
+            let seeded = r3p_seed(&pack.dir, vec![entry()]);
+            (format!("{:?}", consume_reinject_pending(&pack.dir)), seeded)
+        });
+        let after = std::fs::read_to_string(reinject_pending_path(&pack.dir)).unwrap_or_default();
+        (rep, daemon.calls(), r2p_unknown_entries(&pack.dir), after, seeded)
+    }
+
+    /// The worker directive's hash in `pack` (as the fix and today's code compute it).
+    #[cfg(unix)]
+    fn r3p_hash(role: &str) -> String {
+        sha256_hex(&compose_directive(role).expect("directive"))
+    }
+
+    /// A6 consume rule 1 · LANE: another lane's entry (owner.socket of a dept lane) is left UNTOUCHED — nothing pinged,
+    /// typed or marked, and its bytes in the file are identical after the pass (same instance, same number, same role,
+    /// same hash, and the seat would ACK: only the lane differs). RED on af41d65c: the pass pings, marks and drops it.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r3_x1_another_lanes_unknown_entry_is_left_untouched() {
+        let pack = R2cPack::new();
+        let ctl = r3p_ctl(r2c_ok(json!({})), R2pPing::Ack, Some(500.0), "worker");
+        let mut seeded_entry = Value::Null;
+        let (rep, calls, after, after_text, seeded_text) = r3p_consume(&pack, ctl, || {
+            seeded_entry = r3p_entry("worker", &r3p_hash("worker"), 1_000, Some((R3P_FOREIGN_SOCK, 500.0)));
+            seeded_entry.clone()
+        });
+        let mut failures = Vec::new();
+        let (directives, pings) = r2p_pastes(&calls);
+        if (directives, pings, r2c_count(&calls, "reinject.mark")) != (0, 0, 0) {
+            failures.push(format!("touched another lane's entry: directives {directives} pings {pings} marks {}", r2c_count(&calls, "reinject.mark")));
+        }
+        if after != vec![seeded_entry.clone()] || after_text != seeded_text {
+            failures.push(format!("the entry's bytes changed:\nseeded {seeded_text}\nafter  {after_text}"));
+        }
+        assert!(failures.is_empty(), "{}\n{rep}", failures.join("\n"));
+    }
+
+    /// A6 consume rule 2 · DAEMON INSTANCE: this lane's entry written under daemon instance 100, the daemon is now 200 →
+    /// the pane is gone: resolved (dropped), nothing pinged / typed / marked. RED on af41d65c: the pass pings the number.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r3_x2_a_new_daemon_instance_resolves_the_entry_without_a_ping() {
+        let pack = R2cPack::new();
+        let ctl = r3p_ctl(r2c_ok(json!({})), R2pPing::NoAck, Some(200.0), "worker");
+        let sock_slot: std::sync::Arc<std::sync::Mutex<String>> = Default::default();
+        let sock = std::sync::Arc::clone(&sock_slot);
+        let (rep, calls, after, _, _) = r3p_consume(&pack, ctl, move || {
+            let s = std::env::var(cys::ENV_SOCKET).unwrap_or_default();
+            *sock.lock().unwrap() = s.clone();
+            r3p_entry("worker", &r3p_hash("worker"), 1_000, Some((&s, 100.0)))
+        });
+        let (directives, pings) = r2p_pastes(&calls);
+        assert!(
+            (directives, pings, r2c_count(&calls, "reinject.mark")) == (0, 0, 0) && after.is_empty() && rep.contains("resolved: 1"),
+            "directives {directives} pings {pings} marks {} · unknown after {after:?} · {rep}",
+            r2c_count(&calls, "reinject.mark")
+        );
+    }
+
+    /// A6 consume rule 4 · ROLE GUARD: same lane, same instance, the number is present but the seat holds `worker` while
+    /// the entry is `cso` → REFUSED: nothing pinged, typed or marked; the entry stays UNKNOWN (in the file, counted). The
+    /// seat would answer the ping without the ACK, so without the guard the cso directive is typed into the worker seat
+    /// (fatal risk 3). RED on af41d65c: the pass pings and types the cso directive.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r3_x3_a_role_mismatch_is_refused_nothing_typed_still_unknown() {
+        let pack = R2cPack::new();
+        std::fs::write(pack.dir.join("pack/directives/CSO_DIRECTIVE.md"), "C").unwrap();
+        let ctl = r3p_ctl(r2c_ok(json!({})), R2pPing::NoAck, Some(500.0), "worker");
+        let (rep, calls, after, _, _) = r3p_consume(&pack, ctl, || {
+            let s = std::env::var(cys::ENV_SOCKET).unwrap_or_default();
+            r3p_entry("cso", &r3p_hash("cso"), 1_000, Some((&s, 500.0)))
+        });
+        let sends = r2c_count(&calls, "surface.send_text");
+        assert!(
+            sends == 0 && r2c_count(&calls, "reinject.mark") == 0 && after.len() == 1 && after[0]["role"] == "cso" && rep.contains("unknown: 1"),
+            "sends {sends} marks {} · unknown after {after:?} · {rep}",
+            r2c_count(&calls, "reinject.mark")
+        );
+    }
+
+    /// A6 consume rule 5 · DIRECTIVE-HASH GUARD: same lane, same instance, same role, but the entry's `directive_hash`
+    /// differs from the directive that would be injected → NEVER injected from the unknown loop (the accepted choice: it
+    /// stays UNKNOWN; nothing pinged, typed or marked). RED on af41d65c: the stale path (as_deferred → deferred loop →
+    /// Inject, src/bin/cys.rs:24465-24569@af41d65c) types the directive.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r3_x4_a_hash_mismatch_is_never_injected_from_the_unknown_loop() {
+        let pack = R2cPack::new();
+        let ctl = r3p_ctl(r2c_ok(json!({})), R2pPing::NoAck, Some(500.0), "worker");
+        let (rep, calls, after, _, _) = r3p_consume(&pack, ctl, || {
+            let s = std::env::var(cys::ENV_SOCKET).unwrap_or_default();
+            r3p_entry("worker", "0000-a-directive-that-changed-since", 1_000, Some((&s, 500.0)))
+        });
+        let (directives, pings) = r2p_pastes(&calls);
+        assert!(
+            (directives, pings, r2c_count(&calls, "reinject.mark")) == (0, 0, 0) && after.len() == 1 && rep.contains("unknown: 1"),
+            "directives {directives} pings {pings} marks {} · unknown after {after:?} · {rep}",
+            r2c_count(&calls, "reinject.mark")
+        );
+    }
+
+    /// A6 CONTROL (passes on af41d65c too): same lane, same instance, same role, same hash, the seat answers without the
+    /// ACK (`ReceivedNoAck`) → injected ONCE and marked; the entry is resolved (today's behaviour).
+    #[cfg(unix)]
+    #[test]
+    fn b360_r3_x5_control_same_lane_instance_role_and_hash_with_no_ack_is_injected_once() {
+        let pack = R2cPack::new();
+        let ctl = r3p_ctl(r2c_ok(json!({})), R2pPing::NoAck, Some(500.0), "worker");
+        let (rep, calls, after, _, _) = r3p_consume(&pack, ctl, || {
+            let s = std::env::var(cys::ENV_SOCKET).unwrap_or_default();
+            r3p_entry("worker", &r3p_hash("worker"), 1_000, Some((&s, 500.0)))
+        });
+        let (directives, pings) = r2p_pastes(&calls);
+        assert!(
+            (directives, pings, r2c_count(&calls, "reinject.mark")) == (1, 1, 1) && after.is_empty(),
+            "directives {directives} pings {pings} marks {} · unknown after {after:?} · {rep}",
+            r2c_count(&calls, "reinject.mark")
+        );
+    }
+
+    /// A6 legacy entry (written by R2, no owner): the `at` rule — (a) the daemon started after the entry (`started_at >
+    /// at + 1`) → gone, resolved, nothing pinged; (b) the daemon is older than the entry → same instance: today's ping →
+    /// ACK → marked (control half, passes on af41d65c too). RED on af41d65c: (a) pings.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r3_x6_a_legacy_entry_without_owner_uses_the_at_rule() {
+        let mut failures = Vec::new();
+        for (name, at, started_at, want) in [("daemon newer than the entry", 100u64, 200.0, (0, 0, 0)),
+                                            ("daemon older than the entry", 1_000, 100.0, (0, 1, 1))] {
+            let pack = R2cPack::new();
+            let ctl = r3p_ctl(r2c_ok(json!({})), R2pPing::Ack, Some(started_at), "worker");
+            let (rep, calls, after, _, _) = r3p_consume(&pack, ctl, || r3p_entry("worker", &r3p_hash("worker"), at, None));
+            let (directives, pings) = r2p_pastes(&calls);
+            let got = (directives, pings, r2c_count(&calls, "reinject.mark"));
+            if got != want || !after.is_empty() {
+                failures.push(format!("{name}: (directives, pings, marks) {got:?} want {want:?} · unknown after {after:?} · {rep}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// A6 · `run_pack_reinject` (codex-1 row 9) and its writer `record_reinject_unknown`: another lane's entry for the SAME
+    /// surface number neither blocks nor is dropped by this lane's node loop — (a) a foreign entry with this directive's
+    /// hash does not suppress this lane's inject (today: `open` skips it); (b) a foreign entry with another hash survives
+    /// this lane's normal decision (today: `drop_reinject_unknown` by number); (c) this lane's inject comes back UNKNOWN →
+    /// the file holds BOTH the foreign entry (bytes unchanged) and this lane's new entry (today: the same-number replace
+    /// drops the foreign one). RED on af41d65c: all three.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r3_x7_the_node_loop_neither_obeys_nor_drops_another_lanes_entry() {
+        let mut failures = Vec::new();
+        for (name, foreign_hash_is_current, reply, want_directives, want_unknown) in [
+            ("(a) foreign entry, current hash", true, r2c_ok(json!({})), 1usize, 1usize),
+            ("(b) foreign entry, other hash", false, r2c_ok(json!({})), 1, 1),
+            ("(c) foreign entry + this lane UNKNOWN", false, r2c_reply(&pending_err()), 1, 2),
+        ] {
+            let pack = R2cPack::new();
+            let ctl = r3p_ctl(reply, R2pPing::Ack, Some(500.0), "worker");
+            let daemon = r3p_daemon(ctl, r2p_session(&pack));
+            let (foreign, rep) = r2c_in_env(&daemon, &pack, || {
+                let hash = if foreign_hash_is_current { r3p_hash("worker") } else { "0000-other".to_string() };
+                let foreign = r3p_entry("worker", &hash, 1_000, Some((R3P_FOREIGN_SOCK, 500.0)));
+                r3p_seed(&pack.dir, vec![foreign.clone()]);
+                (foreign, format!("{:?}", run_pack_reinject("9.9.9")))
+            });
+            let calls = daemon.calls();
+            let (directives, _pings) = r2p_pastes(&calls);
+            let after = r2p_unknown_entries(&pack.dir);
+            if directives != want_directives {
+                failures.push(format!("{name}: {directives} directive paste(s), want {want_directives} · {rep}"));
+            }
+            if after.len() != want_unknown || !after.contains(&foreign) {
+                failures.push(format!("{name}: the foreign entry did not survive unchanged (want {want_unknown} entries): {after:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// A6 · the deferred-list writer `persist_reinject_pending` (unchanged) carries the unknown list forward; an entry it
+    /// does not own must come back with EVERY key it had (owner, session_id, and any key a newer binary added) — no
+    /// field is dropped by a round trip through this lane's types. RED on af41d65c: `to_json` re-emits five keys only.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r3_x8_an_entry_round_trips_through_every_writer_with_all_its_keys() {
+        let pack = R2cPack::new();
+        let mut foreign = r3p_entry("worker", "H", 1_000, Some((R3P_FOREIGN_SOCK, 500.0)));
+        foreign["future_key"] = json!({"added": "by a newer binary"});
+        r3p_seed(&pack.dir, vec![foreign.clone()]);
+        persist_reinject_pending(&pack.dir, "9.9.9", &[(8, "cso".to_string())]).unwrap();
+        let after = r2p_unknown_entries(&pack.dir);
+        assert_eq!(after, vec![foreign], "the deferred-list writer changed an entry it carries");
+    }
+
+    /// A6 · measurement failure is not a pass: when `org.status` cannot be read, nothing proves that surface:7 is still
+    /// the pane the entry was written for (the daemon instance is unknown), so the pass pings, types and marks NOTHING
+    /// for this lane's unknown entry and keeps it UNKNOWN — even though the seat would ACK. RED on af41d65c: the pass
+    /// never asks org.status; it pings the number, the ACK marks it and the entry is dropped.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r3_x11_an_unreadable_daemon_instance_types_nothing_and_keeps_the_entry_unknown() {
+        let pack = R2cPack::new();
+        let session = r2p_session(&pack);
+        let daemon = R2cDaemon::start(move |method, _p| match method {
+            "org.status" => r2c_reply("rpc_failed: the fake daemon refuses org.status"),
+            "system.topology" => r2c_ok(json!({"saved": [{"role": "worker"}]})),
+            "control.dashboard" => r2c_ok(json!({"fleet": [
+                {"surface_id": 7, "role": "worker", "state": "idle", "idle_secs": 60, "agent_status": "idle"}]})),
+            "surface.list" => r2c_ok(json!({"surfaces": [{
+                "surface_id": 7, "surface_ref": "surface:7", "role": "worker", "agent": "claude", "exited": false,
+                "agent_alive": true, "awakened_at": 1.0,
+                "usage": {"source": "transcript", "session_file": session.to_string_lossy()}}]})),
+            "surface.read_text" => r2c_ok(json!({"text": "", "latest_cursor": 40, "line_count": 40})),
+            "surface.wait_for" => r2c_ok(json!({"matched": true})),
+            _ => r2c_ok(json!({})),
+        });
+        let base = pack.dir.clone();
+        let (rep, after) = r2c_in_env(&daemon, &pack, || {
+            let hash = sha256_hex(&compose_directive("worker").expect("directive"));
+            let entry = json!({"surface_id": 7, "role": "worker", "directive_hash": hash, "request_id": "w1-2",
+                               "at": 1});
+            std::fs::write(
+                reinject_pending_path(&base),
+                json!({"pack_version": "9.9.9", "deferred": [], "unknown": [entry]}).to_string(),
+            )
+            .unwrap();
+            (format!("{:?}", consume_reinject_pending(&base)), r2p_unknown_entries(&base))
+        });
+        let calls = daemon.calls();
+        assert!(
+            r2c_count(&calls, "surface.send_text") == 0
+                && r2c_count(&calls, "reinject.mark") == 0
+                && after.len() == 1
+                && rep.contains("unknown: 1"),
+            "sends {} marks {} · unknown after {after:?} · {rep}",
+            r2c_count(&calls, "surface.send_text"),
+            r2c_count(&calls, "reinject.mark")
+        );
+    }
+
+    /// REFLECTION-1 R1-R-1: a half-configured deferral (`CYS_KEPT_PANE_NOTICE=caller` without the out path) in a run that
+    /// kept NO pane: one `[kept-pane]` stderr line names the missing var and says there is NO deferral — it must not claim
+    /// a notice was sent (nothing is sent: there is no record). RED on af41d65c: no such line at all.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r3_k14_a_half_configured_deferral_without_a_kept_pane_claims_no_send() {
+        let run = r3_boot_adopt(r2c_ok(json!({})), r3_status(), &[(R3_NOTICE_ENV, "caller")]);
+        let line = run
+            .err
+            .lines()
+            .find(|l| l.starts_with("[kept-pane]") && l.contains(R3_OUT_ENV))
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            run.records.is_empty()
+                && r3_master_calls(&run.calls) == 0
+                && line.contains("no deferral")
+                && !line.contains("is sent to master"),
+            "records {:?} · master calls {} · line {line:?}\n{}",
+            run.records,
+            r3_master_calls(&run.calls),
+            run.err
+        );
+    }
+
+    // ── ★(B-360 R3 · option 2) pins of the fix's pure functions (they cannot compile before the fix: new symbols) ──
+
+    /// §1b: the full write × outcome table — every UNKNOWN / unrecognised record withholds, every REFUSED one does not.
+    /// The match itself has no wildcard (a new variant of either enum is E0004 — proven once in the mutant log).
+    #[test]
+    fn b360_r3_k11_the_withholds_ready_table_covers_every_write_and_outcome() {
+        let writes = [KeptWrite::Launch, KeptWrite::Directive, KeptWrite::Adoption, KeptWrite::Recover];
+        let mut seen = 0;
+        for w in writes {
+            assert!(kept_record_withholds_ready(w, KeptOutcome::Unknown), "{w:?}/Unknown");
+            assert!(kept_record_withholds_ready(w, KeptOutcome::Unrecognised), "{w:?}/Unrecognised");
+            assert!(!kept_record_withholds_ready(w, KeptOutcome::Refused), "{w:?}/Refused");
+            seen += 3;
+        }
+        assert_eq!(seen, 12);
+        assert_eq!(
+            [KeptOutcome::Refused, KeptOutcome::Unknown, KeptOutcome::Unrecognised].map(KeptOutcome::as_str),
+            ["refused", "unknown", "unrecognised"]
+        );
+        // the R2 rule of every existing caller, unchanged
+        assert_eq!(KeptOutcome::of_err(&pending_err()), KeptOutcome::Unknown);
+        assert_eq!(KeptOutcome::of_err(&journal_err()), KeptOutcome::Refused);
+        assert_eq!(KeptOutcome::of_err("rpc_failed: other"), KeptOutcome::Refused);
+    }
+
+    /// §1c: the identity lookup is BOUNDED — a socket whose listener never answers (connect succeeds into the backlog,
+    /// no reply ever) returns an unmeasured identity within KEPT_PANE_NOTICE_RPC_SECS (+ slack), and a missing socket
+    /// returns at once. Pure reading of a reply: daemon instance + session + created_at; `measured` needs both.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r3_k12_the_identity_lookup_is_bounded_and_failure_is_unmeasured() {
+        let dir = std::env::temp_dir().join(format!("b360r3-k12-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("mute.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&sock).expect("bind");   // never accepted, never answered
+        let id = {
+            let _guard = super::tests::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let _env = R2cEnv::set(vec![(cys::ENV_SOCKET, sock.clone().into_os_string())]);
+            let t0 = std::time::Instant::now();
+            let id = kept_pane_seat_identity(7);
+            let took = t0.elapsed();
+            assert!(took <= std::time::Duration::from_secs(KEPT_PANE_NOTICE_RPC_SECS + 2), "unbounded: {took:?}");
+            let _env2 = R2cEnv::set(vec![(cys::ENV_SOCKET, dir.join("absent.sock").into_os_string())]);
+            let t1 = std::time::Instant::now();
+            let gone = kept_pane_seat_identity(7);
+            assert!(t1.elapsed() < std::time::Duration::from_secs(1), "a missing socket is not immediate");
+            assert_eq!(gone, SeatIdentity::default());
+            id
+        };
+        assert_eq!(id, SeatIdentity::default(), "a mute daemon must give an unmeasured identity");
+        let st = json!({"daemon": {"started_at": 5.5}, "surfaces": [
+            {"surface_id": 7, "registered_session_id": "s", "created_at": 1.25},
+            {"surface_id": 8, "registered_session_id": null, "created_at": 2.0}]});
+        assert_eq!(seat_identity_from_status(Some(&st), 7), SeatIdentity {
+            daemon_started_at: Some(5.5), session_id: Some("s".into()), surface_created_at: Some(1.25), measured: true });
+        assert_eq!(seat_identity_from_status(Some(&st), 8).session_id, None, "a codex/gemini seat has no session");
+        assert!(!seat_identity_from_status(Some(&st), 9).measured, "an unlisted surface is unmeasured");
+        assert!(!seat_identity_from_status(Some(&json!({"surfaces": []})), 7).measured, "no daemon instance = unmeasured");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Deferral pair, pure: only BOTH vars (and an absolute path) defer; one var, or a relative path, falls back to
+    /// sending and names what is missing; neither = today; any CYS_KEPT_PANE_NOTICE value but "caller" = today.
+    #[test]
+    fn b360_r3_k13_the_deferral_pair_table() {
+        use std::ffi::OsStr;
+        let abs = if cfg!(windows) { r"C:\t\out.json" } else { "/t/out.json" };
+        assert_eq!(kept_notice_mode(Some("caller"), Some(OsStr::new(abs))), KeptNoticeMode::Defer(abs.into()));
+        assert_eq!(kept_notice_mode(None, None), KeptNoticeMode::Send);
+        assert_eq!(kept_notice_mode(Some("other"), None), KeptNoticeMode::Send);
+        for (n, o, missing) in [(Some("caller"), None, ENV_KEPT_PANE_RECORDS_OUT), (None, Some(abs), ENV_KEPT_PANE_NOTICE),
+                                (Some("other"), Some(abs), ENV_KEPT_PANE_NOTICE),
+                                (Some("caller"), Some("relative/out.json"), ENV_KEPT_PANE_RECORDS_OUT)] {
+            match kept_notice_mode(n, o.map(OsStr::new)) {
+                KeptNoticeMode::HalfConfigured(why) => assert!(why.contains(missing), "{why}"),
+                other => panic!("{n:?}/{o:?} → {other:?}"),
+            }
+        }
+        assert_eq!(kept_notice_mode(Some("caller"), Some(OsStr::new(""))),
+                   kept_notice_mode(Some("caller"), None), "an empty path is no path");
+    }
+
+    /// A6 identity, pure: lane, instance, the `at` rule and the session guard of `gone_because` / `is_foreign_to`.
+    #[test]
+    fn b360_r3_x10_the_entry_identity_rules_are_the_a6_rules() {
+        let here = PendingHere {
+            socket: "/u/.local/state/cys/cys.sock".into(),
+            status_read: true,
+            daemon_started_at: Some(500.0),
+            sessions: [(7u64, Some("S".to_string()))].into_iter().collect(),
+        };
+        let entry = |owner: Value, at: u64, session: Value| {
+            ReinjectUnknownEntry::from_json(&json!({"surface_id": 7, "role": "worker", "directive_hash": "H",
+                                                    "request_id": null, "at": at, "owner": owner, "session_id": session}))
+            .expect("entry")
+        };
+        let lane = here.lane();
+        let mine = entry(json!({"socket": "/u/.local/state/cys/cys.sock", "daemon_started_at": 500.0}), 400, json!("S"));
+        assert!(!mine.is_foreign_to(&lane) && mine.gone_because(&here).is_none());
+        assert!(entry(json!({"socket": "/u/.local/state/cys-dept-zz/cys.sock"}), 400, Value::Null).is_foreign_to(&lane));
+        assert!(entry(json!({"socket": r"\\.\pipe\cys-dept-x"}), 400, Value::Null).is_foreign_to(&lane));
+        assert!(!entry(Value::Null, 400, Value::Null).is_foreign_to(&lane), "no owner = this lane (safe side)");
+        assert!(entry(json!({"daemon_started_at": 100.0}), 400, Value::Null).gone_because(&here).is_some(), "new instance");
+        assert!(entry(Value::Null, 100, Value::Null).gone_because(&here).is_some(), "legacy: daemon newer than at+1");
+        assert!(entry(Value::Null, 499, Value::Null).gone_because(&here).is_none(), "legacy: at+1 absorbs truncation");
+        assert!(entry(json!({"daemon_started_at": 500.0}), 400, json!("OTHER")).gone_because(&here).is_some(), "session");
+        let unmeasured = PendingHere { daemon_started_at: None, ..here.clone() };
+        assert!(entry(json!({"daemon_started_at": 100.0}), 1, Value::Null).gone_because(&unmeasured).is_none(),
+                "no current instance → nothing is concluded from the instance");
+        // the wire is written back verbatim, including keys this binary does not know
+        let wire = json!({"surface_id": 7, "role": "worker", "directive_hash": "H", "at": 1, "future": [1, 2]});
+        assert_eq!(ReinjectUnknownEntry::from_json(&wire).expect("entry").to_json(), wire);
+    }
+
+    /// Area H · H-OBS-2 behaviour (B-360 R3): a DELIVERED directive write (no UNKNOWN) whose ack latch never appears
+    /// within the ack window is NOT a failure — the in-seat relaunch continues (restore exit 0) and `directive.verify`
+    /// records `verified: false` (an observed state, not a fatal error: forbidden direction ③). Control: the latch
+    /// appears → `verified: true`. The UNKNOWN-without-evidence arm (exit 91) is pinned by e2.
+    #[cfg(unix)]
+    #[test]
+    fn b360_r3_h1_a_delivered_directive_without_an_ack_is_not_a_failure_and_records_not_verified() {
+        let run = |ack: bool| {
+            let pack = R2cPack::new();
+            let cwd = pack.dir.clone();
+            let (mut pastes, mut acked) = (0, false);
+            let daemon = R2cDaemon::start(move |method, _| match method {
+                "system.topology" => r2c_ok(json!({
+                    "live": [{"role": "worker", "seat": "empty", "surface_id": 7, "env_injected": true}],
+                    "saved": [{"role": "worker", "agent": "b360agent", "cwd": cwd}],
+                    "tombstones": []})),
+                "surface.list" => {
+                    let mut row = json!({"surface_id": 7, "surface_ref": "surface:7", "role": "worker", "exited": false,
+                                         "agent_alive": true, "line_count": 40});
+                    if acked {
+                        row["awakened_at"] = json!(1.0);
+                    }
+                    r2c_ok(json!({"surfaces": [row]}))
+                }
+                "surface.read_text" => r2c_ok(json!({"text": cys::first_run_gates::fixtures::LIVE_TUI_AT_PROMPT,
+                                                     "quiet_secs": 5.0, "line_count": 40, "next_cursor": 40})),
+                "surface.send_text" => {
+                    pastes += 1;
+                    if pastes > 1 {
+                        acked = ack; // the directive paste is delivered; the latch appears only when `ack`
+                    }
+                    r2c_ok(json!({}))
+                }
+                "surface.create" => r2c_reply("b360_no_spawn: this fake daemon makes no new surface"),
+                _ => r2c_ok(json!({})),
+            });
+            let (rc, out, _err) = r2c_child("restore", &daemon, &pack.envs());
+            let verify = daemon.calls().into_iter().find(|(m, _)| m == "directive.verify").map(|(_, p)| p);
+            (rc, out, verify)
+        };
+        let (rc, out, verify) = run(false);
+        assert_eq!(rc, 0, "a delivered directive without an ack must not fail the relaunch\n{out}");
+        assert_eq!(verify.as_ref().map(|p| p["verified"].clone()), Some(json!(false)), "{verify:?}");
+        let (rc, out, verify) = run(true);
+        assert_eq!(rc, 0, "{out}");
+        assert_eq!(verify.as_ref().map(|p| p["verified"].clone()), Some(json!(true)), "control: {verify:?}");
+    }
+
+    // ── ★(B-360 R3 · option 2 · §2c + A5) the Python readiness tables and the Rust vocabulary are ONE set ─────────────
+    // Python has no compile-time exhaustiveness, so the analogue of E0004 is this RUNTIME read of the Python source: a
+    // new boot outcome (BOOT_SUMMARY_BUCKETS) or a new kept_pane label (boot_launch_kept_pane) is a red `cargo test`
+    // until javis_bootstrap.py's table names it. Anchored on CONTENT between two fixed comment markers; comments are
+    // stripped first; key SETS are compared (no line numbers, no line counts).
+
+    const R3X_BEGIN: &str = "# ── BEGIN B-360 R3 READINESS TABLES";
+    const R3X_END: &str = "# ── END B-360 R3 READINESS TABLES";
+    const R3X_DIRECTION: &str = "this test reads cysjavis-pack/bin/javis_bootstrap.py at RUNTIME; red after an edit to either \
+        file means the Python readiness table and BOOT_SUMMARY_BUCKETS / the kept_pane labels drifted. Add the new value to \
+        the Python table (unknown → withhold); do not weaken this pin.";
+
+    /// `text` with every `#` comment removed (a `#` inside a double-quoted string is kept).
+    fn r3x_strip_comments(text: &str) -> String {
+        let mut out = String::new();
+        for line in text.lines() {
+            let mut quoted = false;
+            let mut kept = String::new();
+            for c in line.chars() {
+                if c == '"' {
+                    quoted = !quoted;
+                } else if c == '#' && !quoted {
+                    break;
+                }
+                kept.push(c);
+            }
+            out.push_str(&kept);
+            out.push('\n');
+        }
+        out
+    }
+
+    /// The keys of the Python dict literal `<name> = { "k": "v", … }` in `block` (comments already stripped).
+    fn r3x_dict_keys(block: &str, name: &str) -> Option<std::collections::BTreeSet<String>> {
+        let at = block.find(&format!("{name} = {{"))?;
+        let body = &block[at + name.len() + 4..];
+        let body = &body[..body.find('}')?];
+        let mut keys = std::collections::BTreeSet::new();
+        let mut rest = body;
+        while let Some(open) = rest.find('"') {
+            let after = &rest[open + 1..];
+            let close = after.find('"')?;
+            let word = &after[..close];
+            let tail = after[close + 1..].trim_start();
+            if tail.starts_with(':') {
+                keys.insert(word.to_string());
+            }
+            rest = &after[close + 1..];
+        }
+        Some(keys)
+    }
+
+    /// The Python table block of `src` (between the markers), comments stripped.
+    fn r3x_block(src: &str) -> String {
+        let begin = src.find(R3X_BEGIN).unwrap_or_else(|| panic!("no `{R3X_BEGIN}` marker — {R3X_DIRECTION}"));
+        let end = src[begin..].find(R3X_END).unwrap_or_else(|| panic!("no `{R3X_END}` marker — {R3X_DIRECTION}"));
+        r3x_strip_comments(&src[begin..begin + end])
+    }
+
+    /// Every `kept_pane` label `boot_launch_kept_pane` can emit — by CALLING it for each write a run's last record can
+    /// carry (launch / directive / adoption / recover / none) and both kept exit codes (90, 91). The run is set directly
+    /// on this thread (no KeptPaneScope: its Drop would try a notice) and cleared after.
+    fn r3x_kept_pane_labels() -> std::collections::BTreeSet<String> {
+        let mut labels = std::collections::BTreeSet::new();
+        for write in [Some("launch"), Some("directive"), Some("adoption"), Some("recover"), None] {
+            for rc in [EXIT_DIRECTIVE_REFUSED, EXIT_WRITE_OUTCOME_UNKNOWN] {
+                let records = write.map(|w| vec![json!({"role": "r3x", "write": w, "surface_id": 9})]).unwrap_or_default();
+                KEPT_PANE_RUN.with(|r| *r.borrow_mut() = Some(KeptPaneRun { command: "boot", records }));
+                let row = boot_launch_kept_pane("r3x", "claude", false, rc);
+                KEPT_PANE_RUN.with(|r| *r.borrow_mut() = None);
+                labels.insert(row["kept_pane"].as_str().expect("kept_pane label").to_string());
+            }
+        }
+        labels
+    }
+
+    /// §2c / A5 cross-language pin: the key set of javis_bootstrap.py's `_BOOT_OUTCOME_READINESS` == BOOT_SUMMARY_BUCKETS,
+    /// and the key set of `_BOOT_KEPT_PANE_READINESS` == every label `boot_launch_kept_pane` can emit.
+    /// RED on af41d65c: the Python tables (and their markers) do not exist.
+    #[test]
+    fn b360_r3_x9_the_python_readiness_tables_cover_every_boot_bucket_and_kept_pane_label() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/cysjavis-pack/bin/javis_bootstrap.py");
+        let src = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e} — {R3X_DIRECTION}"));
+        let block = r3x_block(&src);
+        let buckets: std::collections::BTreeSet<String> = BOOT_SUMMARY_BUCKETS.iter().map(|s| s.to_string()).collect();
+        let outcomes = r3x_dict_keys(&block, "_BOOT_OUTCOME_READINESS")
+            .unwrap_or_else(|| panic!("no `_BOOT_OUTCOME_READINESS = {{…}}` between the markers — {R3X_DIRECTION}"));
+        assert_eq!(outcomes, buckets, "_BOOT_OUTCOME_READINESS keys ≠ BOOT_SUMMARY_BUCKETS — {R3X_DIRECTION}");
+        let kept = r3x_dict_keys(&block, "_BOOT_KEPT_PANE_READINESS")
+            .unwrap_or_else(|| panic!("no `_BOOT_KEPT_PANE_READINESS = {{…}}` between the markers — {R3X_DIRECTION}"));
+        let labels = r3x_kept_pane_labels();
+        assert_eq!(kept, labels, "_BOOT_KEPT_PANE_READINESS keys ≠ boot_launch_kept_pane labels — {R3X_DIRECTION}");
+    }
+
+    /// A5 comment-only edit control: comments inside the table block (a whole commented-out entry, a trailing comment
+    /// after a value) change nothing the pin reads; and the label enumeration really calls the function (4 labels).
+    /// Passes wherever the parser works (no tree dependence).
+    #[test]
+    fn b360_r3_x9_control_the_pin_tolerates_comment_only_edits() {
+        let block = format!(
+            "{R3X_BEGIN} ──\n_BOOT_OUTCOME_READINESS = {{\n    \"launched\": \"ready\",   # a trailing comment\n    \
+             # \"commented_out\": \"withhold\",\n    \"failed\": \"by_kept_pane\",\n}}\n{R3X_END} ──\n"
+        );
+        let keys = r3x_dict_keys(&r3x_block(&block), "_BOOT_OUTCOME_READINESS").expect("parsed");
+        assert_eq!(keys.into_iter().collect::<Vec<_>>(), vec!["failed".to_string(), "launched".to_string()]);
+        assert_eq!(r3x_kept_pane_labels().len(), 4, "{:?}", r3x_kept_pane_labels());
     }
 }

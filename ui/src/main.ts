@@ -328,6 +328,8 @@ import {
 // ★U6(0.14.41) 모달 층 판정 — 모달·팔레트가 떠 있으면 xterm 에 포커스를 주지 않는다(작성 중 키가 pane 으로 새지 않게).
 //   (1.1.8) 원작자 피드백 창(feedbackmodal)은 받지 않았다 — 이 판정은 우리 피드백 창(.modal-overlay)에도 같이 걸린다.
 import { armDeferredPaneFocus, modalLayerOpen } from "./modalguard";
+import { activityExpiryMs, applyDotPaint, HIDDEN_DOT, projectActivity, RoleActivityStore } from "./roleactivity"; // ★F-01 역할 점 활동 표시(순수 판정·바뀐 것만 칠하기)
+import { SurfaceListTransport, type ListArrival } from "./surfacelist"; // ★F-01 끝점별 소유 원 호출 · 응답별 독립 투영
 
 declare global {
   interface Window {
@@ -389,7 +391,14 @@ const T_STOP = winScaled(20_000);
 // 즉시 화면을 세우고 나머지는 3초 틱에 맡긴다 — '늦게라도 전부'보다 '지금 보이고 곧 채워짐'이 낫다.
 const START_BUDGET = winScaled(45_000);
 
-const rpcT = <T,>(pr: Promise<T>, ms: number): Promise<T> => {
+// ★F-01: `own` = 원 호출(pr)을 끝날 때까지 붙잡을 호출자 훅(선택). 경주에서 진 원 호출은 취소되지 않으므로, 소유 가드는 그것의
+//   **실제 종료**를 봐야 한다(기동 list_surfaces → 첫 주기 디스패치 인계 · surfacelist.ts adoptStartup). 훅 실패는 호출을 막지 않는다.
+const rpcT = <T,>(pr: Promise<T>, ms: number, own?: (original: Promise<T>) => void): Promise<T> => {
+  try {
+    own?.(pr);
+  } catch {
+    /* 소유 기록 실패는 호출을 막지 않는다 */
+  }
   let t: ReturnType<typeof setTimeout> | undefined;
   return Promise.race([
     pr,
@@ -473,12 +482,21 @@ const paneKey = (sid: number, socket?: string): string => `${socket ?? ""}#${sid
 // (v116-num) paneKey → 데몬이 준 보이는 번호(null=「—」). 없으면 옛 데몬/미관측 → 알림은 내부 번호 그대로.
 const displayNoByKey = new Map<string, number | null>();
 
+/** Tauri accepts only confirmed close or exact not_found. Cleanup stays bound to
+ * this socket/SID even if the user switches workspace or focus during the await. */
+// ★1.1.11 편입: 원작자 판의 markClosing(구멍 보류 경합 표식)은 우리 판에 없다 — 우리 판은 구멍(U2) 대신 arrangeWs 배치라
+//   exited 경합이 「복원 대기 구멍」 을 만들지 않는다. 닫기 확인 계약(확인·정확한 not_found 만 성공)만 들인다.
+async function closePane(sid: number, socket?: string): Promise<void> {
+  await invoke("close_surface", { socket, surfaceId: sid });
+  detachPane(sid, socket);
+}
+
 interface PaneRuntime {
   sid: number;
   socket?: string;
   el: HTMLElement;
   termHost: HTMLElement;
-  roleEl: HTMLElement; // 제목 앞 역할 신호 점(깜박임) — refreshPaneTitles가 role로 채색
+  roleEl: HTMLElement; // 제목 앞 역할 신호 점 — 역할색 + 활동 표지(★F-01: 작업 중으로 관측될 때만 깜박임 · paintRoleDot 단일 렌더러)
   titleEl: HTMLElement;
   usageEl: HTMLElement;
   term: Terminal;
@@ -487,6 +505,8 @@ interface PaneRuntime {
   observer: ResizeObserver;
   // 바닥 고정 재적용 — 리사이즈(fitPane) 뒤 뷰포트가 바닥에서 밀려나면 복귀시킨다.
   snapToBottom: () => void;
+  // ★B-230(0.14.52 · U) 읽던 줄 보존 — fitPane 이 폭을 바꾸는 리플로우를 이 안에서 일으킨다(위를 읽는 중일 때만 작동).
+  keepReadingLine: (change: () => void) => void;
   // 마지막 PTY 출력 시각(ms) — 경로 주입의 스트리밍 가드(ftdrop.isStreaming)가 읽는다.
   lastOutputAt: () => number;
   // IME 조합 pending 여부 — 조합 중 주입의 순서 역전(자모 뒤섞임) 차단.
@@ -3531,15 +3551,117 @@ const imageExtFromMime = (mime: string): string => {
 function surfaceWorking(sid: number, socket: string | null | undefined): boolean {
   return nodeSig.get(`${socket}#${sid}`)?.working ?? false; // 미등록 = 비작동(안 깜빡·안전 기본)
 }
-function setRoleDot(el: HTMLElement, role: string | null, working = false) {
+
+// ---------- ★F-01(0.14.52 · U) pane 헤더 역할 점 — 역할색 + 활동 표지 + 접근 문구를 **한 렌더러**가 칠한다 ----------
+// 종전: 모든 역할 점이 무조건 깜박였다(style.css) — 좌석 CLI 가 실제로 일하는지와 무관했다. 이제 깜박임은 데몬이 관측한 '작업 중'에만 붙는다.
+//   입력 = surface.list 각 줄의 display_activity(데몬이 자기 6초 리스를 직렬화 때 집행) · 판정 = roleactivity.ts(순수) · 운반 = surfacelist.ts.
+// ★쓰기 지점은 셋뿐이고 모두 paintRoleDot 하나를 지난다: 제목 갱신·입양(setRoleDot) · 응답 도착(projectListArrival) · 국소 만료 쓸기(sweepRoleDots).
+//   역할만 쓰는 옛 쓰기(배경색·title='역할: …')가 따로 남으면 3초마다 활동 표지·사유·나이를 덮는다(설계 §4 단일 렌더 경로).
+// ★바뀐 클래스·속성만 쓴다 — render()·호스트 교체·포커스·스크롤·SeatSig·알림과 무관하다. 무역할 셸·종료 pane 은 종전처럼 숨긴다.
+const T_ACTIVITY = activityExpiryMs(T_LIST); // T = 3P + 2D + E — 31 s(mac) / 47 s(Windows) · 요청 시작에 묶인 하드 만료
+const roleActivity = new RoleActivityStore(T_ACTIVITY); // 키 = paneKey(sid, socket) · 끝점 수명·표시 세대·순번으로 거부
+const dotRoles = new WeakMap<PaneRuntime, string | null>(); // 런타임 → 마지막으로 받은 역할(종료 = null)
+const listTransport = new SurfaceListTransport({
+  now: () => performance.now(),
+  deadlineMs: T_LIST,
+  resolve: (endpoints) => invoke("resolve_list_endpoints", { endpoints }),
+  onArrival: (a) => projectListArrival(a),
+});
+
+function setRoleDot(rt: PaneRuntime, role: string | null) {
+  dotRoles.set(rt, role);
+  paintRoleDot(rt, performance.now());
+}
+
+function paintRoleDot(rt: PaneRuntime, nowMs: number) {
+  const role = dotRoles.get(rt) ?? null;
   const color = roleDotColor(role);
-  el.style.display = color ? "" : "none";
-  el.classList.toggle("working", !!color && working); // 작동 중일 때만 cc-blink(오너 요청 2026-07-14: 대기 시 정적)
-  if (color) {
-    el.style.background = color;
-    el.title = `역할: ${role}${working ? " · 작업중" : ""}`;
+  if (!color) {
+    applyDotPaint(rt.roleEl, HIDDEN_DOT);
+    return;
+  }
+  const p = projectActivity(roleActivity.get(paneKey(rt.sid, rt.socket)), nowMs, T_ACTIVITY);
+  // ★1.1.11 편입(우리 오너 요청 2026-07-14 「작동 중일 때만 깜박」 보존): 데몬 관측이 **없는** 좌석(F-01 미지원 CLI —
+  //   gemini·agy 등 · 관측 전 첫 몇 초)은 원작자 판에선 늘 빈 원(모름)이다. 그 경우에만 우리 신선한 자기보고(nodeSig ·
+  //   appearance.ts nodeWorking)가 작업 중이면 작업 중으로 칠하고, 문구에 근거(자기보고)를 밝힌다. 관측이 있으면(대기·입력
+  //   대기·지연 포함) 언제나 관측이 이긴다.
+  const selfWorking = p.view === "unknown" && surfaceWorking(rt.sid, rt.socket);
+  const view = selfWorking ? "working" : p.view;
+  const text = selfWorking ? "작업 중 · 자기보고(데몬 관측 없음)" : p.text;
+  applyDotPaint(rt.roleEl, { visible: true, color, view, label: `역할: ${role} · ${text}` });
+}
+
+// 칠하기가 실패한 pane 은 안전하게 칠할 수 있으면 '모름'으로 둔다 — 그것도 실패하면 그대로(호스트·스크롤·포커스는 건드리지 않는다).
+function paintUnknownSafely(rt: PaneRuntime) {
+  try {
+    const role = dotRoles.get(rt) ?? null;
+    const color = roleDotColor(role);
+    if (color) applyDotPaint(rt.roleEl, { visible: true, color, view: "unknown", label: `역할: ${role} · 상태 모름 · 표시 오류` });
+  } catch {
+    /* 표시만 못 할 뿐이다 */
   }
 }
+
+// 국소 만료 쓸기(L = 기존 3초 틱) — 응답이 오지 않아도 U4-5(9 s)·T(31/47 s)가 화면에 닿게 한다. pane 마다 따로 가둔다.
+function sweepRoleDots(nowMs: number) {
+  for (const rt of panes.values()) {
+    try {
+      paintRoleDot(rt, nowMs);
+    } catch {
+      paintUnknownSafely(rt);
+    }
+  }
+}
+
+// 응답 하나의 독립 투영 — 다른 끝점을 기다리지 않는다. 한 줄의 실패(형식 오류 포함)는 그 줄에서 끝나고, 입양용 스냅샷은 건드리지 않는다.
+function projectListArrival(a: ListArrival) {
+  const rows = (a.value as { surfaces?: unknown } | null)?.surfaces;
+  if (!Array.isArray(rows)) return;
+  for (const member of a.members) {
+    const socket = member === "" ? undefined : member;
+    const seen = new Set<string>();
+    for (const row of rows) {
+      try {
+        const sid = (row as { surface_id?: unknown }).surface_id;
+        if (typeof sid !== "number") continue;
+        const key = paneKey(sid, socket);
+        seen.add(key);
+        roleActivity.accept(key, a.lifetime, a.startMs, a.receivedMs, (row as { display_activity?: unknown }).display_activity);
+        const rt = panes.get(key);
+        if (rt) paintRoleDot(rt, a.receivedMs);
+      } catch {
+        /* 그 줄만 건너뛴다 — 형제 줄의 점은 계속 갱신된다 */
+      }
+    }
+    const prefix = `${member}#`;
+    roleActivity.prune((k) => !k.startsWith(prefix) || seen.has(k)); // 사라진 좌석의 기록을 남기지 않는다(유계)
+  }
+}
+
+// 활동 패스 — refreshPaneTitles 가 **바쁨 가드 앞**, 자기 바깥 catch 안에서 부른다. 끝점마다 소유 원 호출 1개를 독립으로 보내고(launch 는
+// 호출부의 list_surfaces 한 줄), 로스터에서 빠진 소켓의 기록을 거둔 뒤, 디스패치가 던져도 국소 만료 쓸기는 반드시 돈다(finally).
+function pumpRoleActivity(launch: (socket: string | undefined) => Promise<unknown>) {
+  try {
+    const roster = workspaces.map((w) => w.socket);
+    listTransport.setRoster(roster);
+    listTransport.dispatch(launch);
+    const members = new Set(roster.map((x) => x ?? ""));
+    roleActivity.prune((k) => members.has(k.slice(0, k.lastIndexOf("#"))));
+  } finally {
+    sweepRoleDots(performance.now());
+  }
+}
+
+// 가려졌다 돌아올 때 — 옛 '작업 중'을 보이기 전에 만료를 동기로 먼저 판정한다(갱신·리스 연장 없음). 실패는 표시에서 끝난다.
+function onVisibilityReturn() {
+  if (document.visibilityState !== "visible") return;
+  try {
+    sweepRoleDots(performance.now());
+  } catch {
+    /* 다음 3초 틱이 다시 쓴다 */
+  }
+}
+document.addEventListener("visibilitychange", onVisibilityReturn);
 
 // 주기적으로 데몬에 물어 자동 제목 pane의 현재 디렉토리(cd 추적)를 갱신.
 // + 외부(CLI launch-agent·cys boot)에서 생성된 역할 노드 surface를 pane으로 자동 입양 —
@@ -3581,7 +3703,8 @@ let deptSeen: Set<string> | null = null;
 // ⚠반대 극단도 막는다: 영원히 끝나지 않는 데몬 때문에 그 소켓이 **영구 skip** 되면 자가치유가
 // 그 소켓에서만 죽는다(A③). 그래서 INFLIGHT_RETRY_MS 가 지나면 한 번 더 시도한다 —
 // 목적은 '재시도 금지'가 아니라 '재시도 간격을 3초에서 그 값으로 늦추는 것'이다.
-// 키 = `list:<socket>` / `org:<socket>` → 아직 끝나지 않은 요청을 보낸 시각(ms).
+// 키 = `org:<socket>` 등 → 아직 끝나지 않은 요청을 보낸 시각(ms). ★F-01: 3초 틱의 list 는 이 가드를 쓰지 않는다 — 나이로 대체·소유 확인 없는 삭제가
+//   없는 전용 소유 가드(surfacelist.ts SurfaceListTransport)로 옮겼다. 다른 손님(org·계정·프로브)의 정책은 그대로다.
 const inFlight = new Map<string, number>();
 const INFLIGHT_RETRY_MS = winScaled(60_000);
 function claimFlight(key: string): boolean {
@@ -3600,7 +3723,15 @@ async function refreshPaneTitles() {
   // 이 패스 동안의 무장 상태를 **한 번** 읽는다(패스 중간에 켜지면 다음 패스가 친다 — 반쪽 스윕 금지).
   const sweepArm = exitedSweepArm;
   const sweptSockets: string[] = []; // 이번 패스에서 청소 줄까지 도달한 소켓(= 무장에서 뺄 것)
-  if (!started || refreshing) return; // 겹친 호출의 이중 입양 방지
+  if (!started) return; // start()의 세션 복원이 끝나기 전에는 보내지 않는다(기동 list 원 호출은 adoptStartup 이 끝점 소유로 이어받는다)
+  // ★F-01(R3-4): 활동 패스 — 디스패치와 국소 만료는 **바쁨 가드 앞**, 자기 바깥 catch 안. 앞 틱의 입양이 아직 돌아도 점은 갱신된다.
+  //   요청은 끝점마다 소유 원 호출 하나(이 줄의 list_surfaces 가 유일한 발송 지점) · 응답마다 독립 투영 · 아래 소비자는 그 응답을 한 번씩만 꺼낸다.
+  try {
+    pumpRoleActivity((ep) => invoke("list_surfaces", { socket: ep }));
+  } catch {
+    /* 활동 표시의 실패는 표시에서 끝난다 — 아래 제목·입양·cwd·편성 소비는 그대로 돈다 */
+  }
+  if (refreshing) return; // 겹친 호출의 이중 입양 방지(입양·제목 소비는 직렬 하나)
   refreshing = true;
   let layoutChanged = false; // 이번 틱에서 워크스페이스/트리를 고쳤는가(render 필요 판정)
   const blockedTick: CwdBlockedEntry[] = []; // 이번 틱에 모든 소켓에서 모은 cwd_blocked
@@ -3633,12 +3764,15 @@ async function refreshPaneTitles() {
     for (const sk of sockets) {
       // ★소켓별 격리(벤더 f3493e93 재구현 · A2-2): 미응답 데몬 하나가 매 틱 같은 소켓에 요청을 쌓지 않게
       //   in-flight 가드 + 시간 상한(rpcT). 소켓별 실패 격리는 아래 기존 try/catch(codex [High])가 맡는다.
-      const flightKey = `list:${sk ?? ""}`;
-      if (!claimFlight(flightKey)) continue; // 직전 요청이 아직 안 끝났다 — 쌓지 않는다
+      // ★F-01(R3-4 · 원작자 0.14.52 · 1.1.11 편입) 소비자: 요청은 위 활동 패스가 이미 보냈다(끝점당 소유 원 호출 1개 — 위 격리의
+      //   in-flight 가드를 원작자 운반이 대신한다 · 상한·나이로 풀리거나 대체되지 않는다). 여기서는 **이번 회차에 보낸** 그 원 호출이
+      //   끝나기를 상한(T_LIST)까지만 기다리고, 끝점별 최신 미소비 스냅샷을 한 번만 꺼낸다. 상한을 넘기면 이 소켓은 이번 회차를 건너뛴다.
      try {
-      const listCall = invoke("list_surfaces", { socket: sk });
-      releaseFlightWhenSettled(flightKey, listCall);
-      const r = (await rpcT(listCall, T_LIST)) as {
+      const listCall = listTransport.settledFor(sk);
+      await rpcT(listCall, T_LIST);
+      const got = listTransport.take(sk);
+      if (!got) continue; // 받지 못했다(진행 중·시간 초과·오류·이미 소비) — 이 소켓은 이번 틱을 건너뛴다
+      const r = got.value as {
         surfaces: {
           surface_id: number;
           title: string;
@@ -3709,7 +3843,7 @@ async function refreshPaneTitles() {
         if (s.exited) exitedPaneKeys.add(paneKey(s.surface_id, sk));
         else exitedPaneKeys.delete(paneKey(s.surface_id, sk));
         renderUsage(rt.usageEl, s.exited ? null : s.usage); // 종료 pane은 배지 제거 (혼동 방지)
-        setRoleDot(rt.roleEl, s.exited ? null : s.role, !s.exited && surfaceWorking(s.surface_id, sk)); // 역할 점 + 작동중일 때만 깜빡, 동일 주기 갱신
+        setRoleDot(rt, s.exited ? null : s.role); // 역할 점 동일 주기 갱신(★F-01 단일 렌더러 — 관측 활동 · 관측 없으면 자기보고 폴백)
         rt.titleEl.style.color = (titleColorRole && !s.exited && roleDotColor(s.role)) ? (roleDotColor(s.role) as string) : ""; // 제목 글자색 = 역할 점색(오너 요청 2026-07-14·토글 시)
         if (rt.titleEl.isContentEditable) continue; // 이름 편집 중에는 덮어쓰지 않음
         // (v116-ui-close · D4 #13) 끝난 창 표시 = 「(끝남)」 — 종전 영어 「[exited]」. (r2 · D4 #12) 앞머리 · 전체 경로는 툴팁.
@@ -3737,7 +3871,7 @@ async function refreshPaneTitles() {
         const rt = await makePane(s.surface_id, s.title, sk);
         // ★런타임이 선 바로 그 자리에서 트리에 붙인다(다음 await 전) — 다음 좌석의 makePane 이 던져도 이 좌석은 화면에 있다.
         arrangeWs(ws, { add: [{ sid: s.surface_id }] });
-        setRoleDot(rt.roleEl, s.role, surfaceWorking(s.surface_id, sk)); // 입양 즉시 역할 점 채색 + 작동중 판정
+        setRoleDot(rt, s.role); // 입양 즉시 역할 점 채색(★F-01 같은 렌더러)
         adopted = true;
       }
       // ★cysr 1.0.2 B3: 입양이 루트를 매번 0.5 로 감싸 [[[셸|master]|cso]|worker] = 1/8·1/8·1/4·1/2 가 됐다
@@ -3772,9 +3906,13 @@ async function refreshPaneTitles() {
             )
               continue;
             placeholderSids.delete(sid); // 한 번 판정한 자리는 장부에서 뺀다(반복 시도 0)
-            await invoke("close_surface", { socket: ws.socket, surfaceId: sid }).catch(() => {});
-            destroyPaneRuntime(sid, ws.socket);
-            arrangeWs(ws, { remove: [sid] });
+            // ★1.1.11 편입(원작자 0.14.52 공지 ⑤): 데몬이 닫힘을 확인한 뒤에만 뗀다(closePane → detachPane = 런타임·배치·캐시) —
+            //   거부·불확실이면 자리표를 그대로 둔다(평범한 셸 창으로 남는다 · 장부에서는 이미 뺐으므로 재시도 0 · 종전 = 실패를 삼키고 화면만 뗐다).
+            try {
+              await closePane(sid, ws.socket);
+            } catch {
+              continue;
+            }
             if (focusedSid === sid) focusedSid = collectSids(ws.tree)[0] ?? null;
             layoutChanged = true;
           }
@@ -3954,13 +4092,12 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
       }, 2500);
       return;
     }
-    await invoke("close_surface", { socket, surfaceId: sid }).catch(() => {});
-    destroyPaneRuntime(sid, socket);
-    // (v116-auto-equalize · Opus 적대 1R F3) 기다리는 사이 탭을 옮겼으면 current() 는 다른 탭이다 — 그 창을 품은 탭을 짠다.
-    const ws =
-      workspaces.find((w) => (w.socket ?? undefined) === (socket ?? undefined) && collectSids(w.tree).includes(sid)) ?? current();
-    if (ws.tree) arrangeWs(ws, { remove: [sid] });
-    if (focusedSid === sid) focusedSid = collectSids(ws.tree)[0] ?? null;
+    try {
+      await closePane(sid, socket);
+    } catch (e) {
+      toast("watchdog", "pane 종료 실패", "데몬이 닫힘을 확인하지 않아 창을 그대로 두었습니다 — 다시 닫아 보세요.", undefined, String(e)); // D4 #14: 원문은 원문 칸으로만
+      return;
+    }
     render();
   });
   header.append(roleEl, titleEl, usageEl, closeBtn);
@@ -4040,6 +4177,24 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
   };
   const snapToBottom = () => {
     if (follow && !atBottom()) term.scrollToBottom();
+  };
+  // ★B-230(0.14.52 · U · FT-6): 폭이 바뀌는 리플로우에서 xterm 은 화면 위치를 **절대 행 번호**(viewportY)로 남긴다 — 줄이 두 행으로 접히면
+  //   같은 행 번호가 훨씬 오래된 글을 가리킨다(실측: L0646 을 읽다 분할 한 번에 L0324 · 휠 없음). 위를 읽는 중(follow=false)이면 화면 맨 위
+  //   **논리 줄**(접힘을 푼 한 줄)의 첫 행에 마커를 꽂고, 리플로우 뒤 그 줄로 돌아간다 — 마커는 xterm 이 리플로우·잘림 때 함께 옮긴다(잘려
+  //   나가 폐기됐으면 손대지 않는다). 바닥 고정(follow=true)은 종전대로 fitPane 의 snapToBottom 몫이고, 대체 화면은 앱이 제 역사를 가지므로 건드리지 않는다.
+  const keepReadingLine = (change: () => void) => {
+    const b = term.buffer.active;
+    if (follow || b.type !== "normal") return change();
+    let top = b.viewportY;
+    while (top > 0 && b.getLine(top)?.isWrapped) top--;
+    const cols = term.cols;
+    const marker = term.registerMarker(top - (b.baseY + b.cursorY));
+    try {
+      change();
+    } finally {
+      if (term.cols !== cols && !marker.isDisposed && marker.line >= 0) term.scrollToLine(marker.line);
+      marker.dispose();
+    }
   };
   termHost.addEventListener(
     "wheel",
@@ -4577,7 +4732,7 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
   // ★cancelSendFail 을 **맨 앞**에 둔다: destroyPaneRuntime 의 forEach 는 앞 항목이 던지면
   //  뒤를 실행하지 못하므로, 뒤에 두면 un1/un2 가 던졌을 때 예약된 토스트가 죽은 pane 이름으로
   //  최대 3초 뒤 떠버린다. 순서 외의 의미는 없다(세 훅은 서로 독립).
-  const rt: PaneRuntime = { sid, socket, el, termHost, roleEl, titleEl, usageEl, term, fit, unlisten: [cancelSendFail, un1, un2], observer, snapToBottom, lastOutputAt: () => outStamp.t, imeBusy: () => imeState.pending !== "", trackFilter };
+  const rt: PaneRuntime = { sid, socket, el, termHost, roleEl, titleEl, usageEl, term, fit, unlisten: [cancelSendFail, un1, un2], observer, snapToBottom, keepReadingLine, lastOutputAt: () => outStamp.t, imeBusy: () => imeState.pending !== "", trackFilter };
   panes.set(paneKey(sid, socket), rt);
   return rt;
 }
@@ -4585,9 +4740,23 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
 /// Fit only when actually laid out — a detached/hidden pane must not shrink the PTY.
 function fitPane(rt: PaneRuntime) {
   if (rt.termHost.offsetWidth < 60 || rt.termHost.offsetHeight < 40) return;
-  rt.fit.fit();
+  rt.keepReadingLine(() => rt.fit.fit()); // ★B-230: 위를 읽던 사람은 폭 리플로우 뒤에도 읽던 줄에 남는다(keepReadingLine)
   rt.snapToBottom(); // 리사이즈 리플로우가 뷰포트를 바닥에서 밀어내는 경우 복귀
   invoke("resize_surface", { socket: rt.socket, surfaceId: rt.sid, rows: rt.term.rows, cols: rt.term.cols }).catch(() => {});
+}
+
+/// ★B-230(0.14.52 · U · H1): render() 는 보이는 pane 호스트를 전부 떼었다 다시 붙인다. WebKit 은 다시 붙인 `.xterm-viewport` 의 스크롤 위치를
+///   0 으로 되돌리는데 xterm 은 제 위치(viewportY)를 그대로 갖고, 자기 캐시 값이 바뀔 때만 DOM 을 다시 맞춘다(xterm 5.5.0 Viewport.syncScrollArea).
+///   그래서 크기가 같은 render 뒤에는 아무것도 고쳐지지 않았고, 다음 아래쪽 휠 한 칸(트랙패드 +1px 도)이 0 에서 계산돼 **첫 대화로 점프**했다
+///   (B230-REPRO-REPORT · P0·P1 5/5). 한 행 갔다 오는 스크롤은 xterm 이 **자기** 갱신을 돌리게 하는 공개 API 길이다 — 위치는 xterm 의 지금
+///   모델에서 다시 나오고(저장해 둔 옛 오프셋을 되살리지 않는다), 떠나 있던 동안 쌓인 출력도 그 모델에 이미 들어 있다. 한 태스크 안이라 중간
+///   화면은 그려지지 않는다. 스크롤백이 없으면(대체 화면 포함) 할 일이 없다.
+function resyncViewport(term: Terminal) {
+  const b = term.buffer.active;
+  if (b.baseY <= 0) return;
+  const step = b.viewportY > 0 ? -1 : 1;
+  term.scrollLines(step);
+  term.scrollLines(-step);
 }
 
 function destroyPaneRuntime(sid: number, socket?: string) {
@@ -4721,6 +4890,7 @@ async function transferPaneToWs(sid: number, destWsId: number) {
 // 어느 단계든 실패 시 원본 무접촉(전출 실패=현상 유지). 원본 정리는 재기동 성공 후에만.
 async function transferCrossDept(sid: number, srcWs: Workspace, destWs: Workspace) {
   const srcSock = srcWs.socket;
+  const destSock = destWs.socket;
   if (!panes.has(paneKey(sid, srcSock))) {
     toast("watchdog", "전출 불가", "pane이 이미 종료되었습니다");
     return;
@@ -4741,7 +4911,7 @@ async function transferCrossDept(sid: number, srcWs: Workspace, destWs: Workspac
   //   (기동 0 · 적재 0 · 문서 0). 계획은 순수 함수(`transferRetryAction`)가 낸다.
   const recKey = paneKey(sid, srcSock);
   const prior = transfersInFlight.get(recKey);
-  switch (transferRetryAction(prior, destWs.socket)) {
+  switch (transferRetryAction(prior, destSock)) {
     case "busy":
       toast("watchdog", "전출 진행 중", "이 pane 의 전출이 아직 진행 중입니다 — 중복 실행하지 않습니다");
       return;
@@ -4798,7 +4968,7 @@ async function transferCrossDept(sid: number, srcWs: Workspace, destWs: Workspac
   if (isAgent) {
     transfersInFlight.set(recKey, {
       state: "in-progress",
-      destSocket: destWs.socket,
+      destSocket: destSock,
       destSid: -1,
       launcherSid: null,
       handoffPath: "",
@@ -4862,7 +5032,7 @@ async function transferCrossDept(sid: number, srcWs: Workspace, destWs: Workspac
     }
     // ③ 대상 부서에 새 surface 생성 + 트리 편입(같은 경로에서 시작 — 루트류 cwd는 승계하지
     //    않고 데몬 기본값(home)으로: 루트 cwd pane 재생산 차단)
-    const newSid = await newSurface(rootish ? null : cwd, destWs.socket);
+    const newSid = await newSurface(rootish ? null : cwd, destSock);
     // 목적지 **에이전트** 좌석(런처 셸과 다르다). 확정 전에는 null 이고, 확정 전에 원본을
     // 닫는 경로는 없다.
     let agentSid: number | null = null;
@@ -4881,7 +5051,7 @@ async function transferCrossDept(sid: number, srcWs: Workspace, destWs: Workspac
         //   세션은 사라졌다(리뷰어 blocking). 이제 런치 **전** id 집합을 스냅샷하고, 뒤에
         //   나타난 **그 역할·에이전트 관측된 새 좌석이 정확히 하나**일 때만 목적지로 확정한다.
         const beforeIds = (
-          ((await invoke("list_surfaces", { socket: destWs.socket }).catch(() => null)) as {
+          ((await invoke("list_surfaces", { socket: destSock }).catch(() => null)) as {
             surfaces: SurfaceRow[];
           } | null)?.surfaces ?? []
         ).map((x) => x.surface_id);
@@ -4889,7 +5059,7 @@ async function transferCrossDept(sid: number, srcWs: Workspace, destWs: Workspac
         // ④ 에이전트 기동(노드 재기동 처방과 동일 명령) — UI 가 조립한 명령이므로 machineOrigin
         launchSent = true;
         await invoke("send_input", {
-          socket: destWs.socket,
+          socket: destSock,
           surfaceId: newSid,
           data: `${launchCmd}\r`,
           machineOrigin: true,
@@ -4900,7 +5070,7 @@ async function transferCrossDept(sid: number, srcWs: Workspace, destWs: Workspac
         const readyBy = Date.now() + 60_000;
         while (Date.now() < readyBy) {
           await new Promise((res) => setTimeout(res, 3000));
-          const rr = (await invoke("list_surfaces", { socket: destWs.socket }).catch(() => null)) as {
+          const rr = (await invoke("list_surfaces", { socket: destSock }).catch(() => null)) as {
             surfaces: SurfaceRow[];
           } | null;
           const picked = pickLaunchedAgentSid(
@@ -4923,7 +5093,7 @@ async function transferCrossDept(sid: number, srcWs: Workspace, destWs: Workspac
         //   인수 확인 파일 쓰기를 요구한다(`handoffInstruction` — 원본 종료의 유일한 신호).
         const receipt = parseEnqueueReceipt(
           await invoke("send_input", {
-            socket: destWs.socket,
+            socket: destSock,
             surfaceId: agentSid,
             data: handoffInstruction(srcRole, handoffPath!),
             queued: true,
@@ -4940,7 +5110,7 @@ async function transferCrossDept(sid: number, srcWs: Workspace, destWs: Workspac
         // ⑤ 인계가 적재됐다 — 여기서부터는 **전출 기록**이 진실이다(재시도 = 관측 재개).
         const rec: TransferRecord = {
           state: "in-progress",
-          destSocket: destWs.socket,
+          destSocket: destSock,
           destSid: agentSid,
           launcherSid: newSid,
           handoffPath: handoffPath!,
@@ -4957,7 +5127,7 @@ async function transferCrossDept(sid: number, srcWs: Workspace, destWs: Workspac
         return;
       }
       // 셸 pane: 인계할 맥락이 없다 — 같은 경로의 새 셸이 만들어졌으므로 원본을 정리한다.
-      await invoke("close_surface", { socket: srcSock, surfaceId: sid });
+      await closePane(sid, srcSock);
     } catch (e) {
       // 보상 롤백: 런처 셸은 **기동 명령을 보내지 않았을 때만** 회수한다.
       // ★(R2 · codex blocking) 종전에는 실패 경로에서 무조건 런처 셸을 닫았는데, 그 close 는
@@ -4965,10 +5135,13 @@ async function transferCrossDept(sid: number, srcWs: Workspace, destWs: Workspac
       //   있는 `cys launch-agent` 가 있고, 그것을 죽이면 **지침 없는 역할 좌석**이 남는다
       //   (성공 경로만 고쳤다면 같은 치명 경로가 catch 로 이사했을 뿐이다).
       //   런치를 보낸 뒤에는 셸을 남기고 사람에게 알린다 — 우리가 모르는 것을 죽이지 않는다.
+      let rollbackError: string | null = null;
       if (!launchSent) {
-        await invoke("close_surface", { socket: destWs.socket, surfaceId: newSid }).catch(() => {});
-        destroyPaneRuntime(newSid, destWs.socket);
-        if (destWs.tree) destWs.tree = replaceNode(destWs.tree, newSid, () => null);
+        try {
+          await closePane(newSid, destWs.socket);
+        } catch (rollback) {
+          rollbackError = String(rollback).slice(0, 300);
+        }
       }
       render();
       // ★(0.14.43 · J2 · I6 N2) 사유는 번역기를 거친다 — 데몬 원문의 'retry later or use --queued' 같은 처방은 GUI 사용자가 실행할 수 없다.
@@ -4978,7 +5151,9 @@ async function transferCrossDept(sid: number, srcWs: Workspace, destWs: Workspac
         "watchdog",
         "전출 실패",
         !launchSent
-          ? `${why} — 원본 pane은 보존되고 새 pane은 회수했습니다`
+          ? rollbackError !== null
+            ? `${why} — 원본 pane은 보존됩니다. 새 pane surface:${newSid} 회수 실패(${rollbackError}) — 목적지 pane도 남겨 두었습니다.`
+            : `${why} — 원본 pane은 보존되고 새 pane은 회수했습니다`
           : agentSid == null
             ? `${why} — 원본 pane은 보존됩니다. 목적지 런처 셸 surface:${newSid} 는 기동이 진행 중일 수 있어 남겨 두었습니다(확인 후 정리하세요)`
             : `${why} — 원본 pane은 보존됩니다. 목적지에 기동된 surface:${agentSid} 와 런처 셸 surface:${newSid} 는 살아 있으니 확인 후 정리하세요`,
@@ -4987,9 +5162,6 @@ async function transferCrossDept(sid: number, srcWs: Workspace, destWs: Workspac
       );
       return;
     }
-    destroyPaneRuntime(sid, srcSock);
-    if (srcWs.tree) srcWs.tree = replaceNode(srcWs.tree, sid, () => null);
-    if (focusedSid === sid) focusedSid = collectSids(current()?.tree ?? null)[0] ?? null;
     render();
     toast("feed", "부서 전출 완료", `→ ${wsLabel(destWs)} (surface:${newSid})`);
   } catch (e) {
@@ -5026,6 +5198,7 @@ async function awaitHandoffAck(
   recKey: string,
 ) {
   const srcSock = srcWs.socket;
+  const destSock = rec.destSocket;
   const ackPath = handoffAckPath(rec.handoffPath);
   transfersInFlight.set(recKey, { ...rec, state: "in-progress" });
   stickyToast(
@@ -5057,7 +5230,7 @@ async function awaitHandoffAck(
     for (;;) {
       const head = (await invoke("read_text_head", { path: ackPath }).catch(() => null)) as string | null;
       const acked = !!head && head.trim().length > 0;
-      const rr = (await invoke("list_surfaces", { socket: destWs.socket }).catch(() => null)) as {
+      const rr = (await invoke("list_surfaces", { socket: destSock }).catch(() => null)) as {
         surfaces: SurfaceRow[];
       } | null;
       verdict = originCloseVerdict({
@@ -5088,7 +5261,7 @@ async function awaitHandoffAck(
   if (verdict.close) {
     // ⑥ 인수 확인 + 좌석 수신 가능 재확인 뒤에만 원본 정리. 기록은 여기서 끝난다.
     try {
-      await invoke("close_surface", { socket: srcSock, surfaceId: sid });
+      await closePane(sid, srcSock);
     } catch (e) {
       // 목적지는 인수했고 원본은 **열린 채**다 — 되돌릴 것이 없으므로 인수 대기로 남겨 재시도가
       // 종료만 다시 하게 한다(기동 0 · 적재 0). 여기서 나가면 그 pane 은 영영 `busy` 다.
@@ -5099,9 +5272,6 @@ async function awaitHandoffAck(
       return;
     }
     transfersInFlight.delete(recKey);
-    destroyPaneRuntime(sid, srcSock);
-    if (srcWs.tree) srcWs.tree = replaceNode(srcWs.tree, sid, () => null);
-    if (focusedSid === sid) focusedSid = collectSids(current()?.tree ?? null)[0] ?? null;
     render();
     toast(
       "feed",
@@ -5230,6 +5400,11 @@ function render() {
   else if (ws?.pending) root.appendChild(renderDeptPending(ws)); // WP-10: 부서 준비 중 빈 pane 스피너·안내(★0.14.43 GU: 경과·단계 문구)
   else if (ws) root.appendChild(renderIdleWorkspace(ws)); // pane 0개 — 백지 대신 안내+손잡이
   renderWsTabs();
+  // ★B-230(H1): 방금 다시 붙인 pane 의 뷰포트를 xterm 의 지금 위치에 다시 맞춘다(resyncViewport) — 크기가 같아 아래 fit 이 아무것도 안 할 때도.
+  for (const sid of collectSids(current()?.tree ?? null)) {
+    const rt = panes.get(paneKey(sid, current()?.socket));
+    if (rt?.el.isConnected) resyncViewport(rt.term);
+  }
   requestAnimationFrame(() => {
     for (const sid of collectSids(current()?.tree ?? null)) {
       const rt = panes.get(paneKey(sid, current()?.socket));
@@ -5904,6 +6079,7 @@ function buildTab(ws: Workspace): HTMLElement {
     ]);
   });
   close.addEventListener("click", async () => {
+    const socket = ws.socket;
     // ★완전 삭제 확인(오너 2026-07-15 — 발견 불가 UX 수리): 숨은 2-click 무장 패턴을 설명형
     // 확인 다이얼로그로 교체(WKWebView confirm() 무동작 → 기존 confirmModal 재사용). 초보자가
     // "무엇이 어떻게 삭제되는지" 읽고 결정한다. pane 개별 ×(저위험)는 종전 2-click 유지.
@@ -5933,7 +6109,7 @@ function buildTab(ws: Workspace): HTMLElement {
       // ★WP-3 의도 선기록(제1행위): teardown 이전에 base 데몬에 dept 묘비 기록 — 이후 체인이
       // 무음 실패해도 재시작 부활을 차단한다. 실패=가시화(같은 탭 재삭제가 재시도 — 무음 삼킴 금지).
       let tombRecorded = false; // ★D1: 아래 종료 실패 문구가 사실이 되게 — 묘비 기록 성공 여부를 기억한다
-      if (ws.socket) {
+      if (socket) {
         try {
           // ★G3-b(2026-09-17 10라운드 · codex 5차 ④): 묘비에 넣는 이름은 **해소된 이름**(등재 키 우선)이다 —
           //   종전에는 Rust dept_tombstone_by_socket 이 소켓 파서(dept_name_from_socket)로 이름을 뽑아
@@ -5941,25 +6117,36 @@ function buildTab(ws: Workspace): HTMLElement {
           //   저장 소켓 `\\.\pipe\cys-dept-DEPT-2`(같은 파이프)에서 기록자는 `DEPT-2`, 판독기는 `dept-2` 를
           //   보므로 **지운 부서가 다음 기동에 되살아났다**. 기록자와 판독기가 같은 식별자를 쓰게 한다.
           //   이름을 못 구하면 null 을 넘겨 Rust 가 종전대로 소켓에서 파생한다(동작 후퇴 없음).
-          const tombName = await resolveDeptLaunchName(ws.socket, async () => {
+          const tombName = await resolveDeptLaunchName(socket, async () => {
             const r = (await rpcT(invoke("list_depts"), T_REG)) as { depts?: Record<string, { socket?: string }> };
             return r.depts ?? {};
           });
-          await invoke("dept_tombstone_by_socket", { socket: ws.socket, name: tombName.name });
+          await invoke("dept_tombstone_by_socket", { socket, name: tombName.name });
           tombRecorded = true;
         } catch (e) {
           toast("watchdog", "부서 삭제 의도 기록 실패", "삭제는 계속 진행되지만 앱을 다시 켜면 이 부서가 되살아날 수 있습니다. 같은 탭을 다시 삭제하면 재시도됩니다.", undefined, String(e));
         }
       }
+      const closeFailures: string[] = [];
       for (const sid of collectSids(ws.tree)) {
-        // pane 개별 close 실패는 관용(묘비가 이미 부활 차단 — per-pane 토스트는 스팸).
-        await invoke("close_surface", { socket: ws.socket, surfaceId: sid }).catch(() => {});
-        destroyPaneRuntime(sid, ws.socket);
+        try {
+          await closePane(sid, socket);
+        } catch (e) {
+          closeFailures.push(`surface:${sid}: ${String(e).slice(0, 200)}`);
+        }
+      }
+      if (closeFailures.length) {
+        toast("watchdog", "부서 삭제 일부 실패",
+          `${closeFailures.join(" · ").slice(0, 600)} — 실패한 pane과 탭은 보존됩니다. ` +
+          (tombRecorded ? "삭제 의도는 기록되어 있습니다. " : "삭제 의도 기록은 확인되지 않았습니다. ") +
+          "탭에서 다시 시도하세요.");
+        render();
+        return; // A refused pane cannot be bypassed by stopping its daemon.
       }
       if (workspaces.indexOf(ws) < 0) { render(); return; } // 이미 제거된 ws 재클릭 — no-op
       // 부서 데몬 teardown은 '그 socket을 쓰는 마지막 탭'일 때만(중복 탭 잔존 시 다른 탭 보호).
       // ★자기 자신은 아직 목록에 있다 — splice 를 종료 뒤로 미뤘으므로 `w !== ws` 로 제외하고 센다.
-      const stillUsed = !!ws.socket && workspaces.some((w) => w !== ws && w.socket === ws.socket);
+      const stillUsed = !!socket && workspaces.some((w) => w !== ws && w.socket === socket);
       // socket 기준 teardown(order 8) — ws rename으로 name↔socket이 끊겨도 정확히 종료.
       // ★D1(2026-09-17 4라운드 · codex 2차 ③): Rust stop_dept_daemon_by_socket 이 spawn·join 실패와 비0 rc 를 Err 로
       //   전달한다. 레지스트리 판독 실패(우리 판 rc 12 · 원작자 원판 rc 10)는 kill 도 등재 제거도 확인되지 않은 '종료 완료 미확인'이다.
@@ -5971,11 +6158,11 @@ function buildTab(ws: Workspace): HTMLElement {
       //   판정(성공/실패 후 탭 상태·문구)은 순수부 deptCloseAfterStop 이 낸다 — 여기는 배선이다.
       let stopped: DeptStopResult = "not-needed";
       let stopErr = "";
-      if (ws.socket && !stillUsed) {
+      if (socket && !stillUsed) {
         // ★G4+I2: 진행 표시(…·aria-busy)와 입양 가드(`deleting`)는 **확인 직후**에 이미 서 있다 —
         //   여기서 다시 세우지 않는다(해제는 이 핸들러의 finally 한 곳뿐이다).
         try {
-          await rpcT(invoke("stop_dept_daemon_by_socket", { socket: ws.socket }), T_STOP);
+          await rpcT(invoke("stop_dept_daemon_by_socket", { socket }), T_STOP);
           stopped = "ok";
         } catch (e) {
           stopped = "failed";
@@ -6199,6 +6386,7 @@ async function confirmDeleteGroup(g: GroupMeta) {
   }
   groupDeleteArm = null;
   const members = workspaces.filter((w) => w.groupId === g.id);
+  const memberSockets = new Map(members.map((ws) => [ws, ws.socket]));
   // ★I2(2026-09-17 13라운드 · opus 11R minor m1): 탭 닫기와 **동형** — '삭제 중'은 확인 직후에
   //   멤버 전원에 선다. 종전에는 부서마다 stop 직전에야 섰는데, 그보다 앞의 묘비 기록 왕복
   //   (list_depts · T_REG · mac 8s/win 16s)과 `await invoke("close_surface"…)` 루프가 이벤트 루프를
@@ -6225,9 +6413,10 @@ async function confirmDeleteGroup(g: GroupMeta) {
       grpReg = null; // 조회 실패를 빈 레지스트리로 접으면 등재 키 우선 규칙이 '미등재'로 둔갑한다
     }
     for (const ws of members) {
-      if (!ws.socket) continue;
+      const socket = memberSockets.get(ws);
+      if (!socket) continue;
       try {
-        await invoke("dept_tombstone_by_socket", { socket: ws.socket, name: deptLaunchName(ws.socket, grpReg) });
+        await invoke("dept_tombstone_by_socket", { socket, name: deptLaunchName(socket, grpReg) });
         tombRecordedIds.add(ws.id);
       } catch (e) {
         toast(
@@ -6239,23 +6428,33 @@ async function confirmDeleteGroup(g: GroupMeta) {
     }
     const stopFailed: string[] = []; // ★D1: 종료 실패를 부서마다 토스트하지 않고 그룹 단위로 모아 1회
     for (const ws of members) {
+      const socket = memberSockets.get(ws);
+      const closeFailures: string[] = [];
       for (const sid of collectSids(ws.tree)) {
-        await invoke("close_surface", { socket: ws.socket, surfaceId: sid }).catch(() => {});
-        destroyPaneRuntime(sid, ws.socket);
+        try {
+          await closePane(sid, socket);
+        } catch (e) {
+          closeFailures.push(`surface:${sid}: ${String(e).slice(0, 200)}`);
+        }
+      }
+      if (closeFailures.length) {
+        stopFailed.push(`${ws.name}: ${closeFailures.join(" · ").slice(0, 600)} — ` +
+          (tombRecordedIds.has(ws.id) ? "삭제 의도는 기록되어 있습니다." : "삭제 의도 기록은 확인되지 않았습니다."));
+        continue; // Continue independent workspaces, never stop this refused one.
       }
       if (workspaces.indexOf(ws) < 0) continue;
       // 부서 데몬 teardown은 '그 socket을 쓰는 마지막 탭'일 때만(close 핸들러와 동일 정합).
       // ★F3: splice 를 종료 뒤로 미뤘으므로 자기 자신(`w !== ws`)을 빼고 센다.
-      const stillUsed = !!ws.socket && workspaces.some((w) => w !== ws && w.socket === ws.socket);
+      const stillUsed = !!socket && workspaces.some((w) => w !== ws && w.socket === socket);
       // ★F3(2026-09-17 8라운드): 탭 닫기와 같은 계약 — **종료가 확인된 뒤에** 탭을 지운다(낙관적 splice 금지).
       //   실패하면 탭이 남아 다음 기동의 탭 기반 복원 정리가 같은 부서에 down 을 재시도한다(별도 reaper 불요).
       let stopped: DeptStopResult = "not-needed";
       let stopErr = "";
-      if (ws.socket && !stillUsed) {
+      if (socket && !stillUsed) {
         // ★G4+I2: 진행 표시(buildTab 의 …·aria-busy)와 입양 가드(refreshPaneTitles 의 `!w.deleting`)는
         //   **확인 직후**에 멤버 전원에 서 있다 — 여기서 다시 세우지 않는다(해제는 아래 finally 한 곳뿐).
         try {
-          await rpcT(invoke("stop_dept_daemon_by_socket", { socket: ws.socket }), T_STOP);
+          await rpcT(invoke("stop_dept_daemon_by_socket", { socket }), T_STOP);
           stopped = "ok";
         } catch (e) {
           stopped = "failed";
@@ -6277,8 +6476,8 @@ async function confirmDeleteGroup(g: GroupMeta) {
     if (stopFailed.length) {
       toast(
         "watchdog",
-        `부서 데몬 종료 실패 ${stopFailed.length}건`,
-        `${stopFailed.join(" · ").slice(0, 600)} 종료하지 못한 부서의 탭은 그대로 남겨 두었습니다 — 그 탭을 다시 닫으면 재시도하고, 앱을 다시 켜도 복원이 같은 종료를 재시도합니다.`,
+        `부서 삭제 일부 실패 ${stopFailed.length}건`,
+        `${stopFailed.join(" · ").slice(0, 600)} 실패한 pane과 부서 탭은 남겨 두었습니다 — 그 탭에서 다시 시도하세요.`,
       );
     }
     if (workspaces.length === 0) {
@@ -7117,19 +7316,24 @@ async function actionClose() {
     if (!ws.tree || !collectSids(ws.tree).includes(sid)) return;
   }
   closingPaneKeys.add(key);
+  // ★1.1.11 편입(원작자 0.14.52 c3ce3272 · 공지 ⑤): 데몬이 닫힘을 **확인한 뒤에만** 화면에서 뗀다(closePane → detachPane —
+  //   런타임·배치(arrangeWs remove)·캐시를 함께) · 거부·불확실이면 창을 남기고 알린다(종전 = 실패를 삼키고 화면만 뗐다).
   try {
-    await invoke("close_surface", { socket: ws.socket, surfaceId: sid }).catch(() => {});
+    await closePane(sid, ws.socket);
+  } catch (e) {
+    toast("watchdog", "pane 종료 실패", "데몬이 닫힘을 확인하지 않아 창을 그대로 두었습니다 — 다시 닫아 보세요.", undefined, String(e)); // D4 #14: 원문은 원문 칸으로만
+    return;
   } finally {
     closingPaneKeys.delete(key);
   }
-  destroyPaneRuntime(sid, ws.socket);
-  if (ws.tree) arrangeWs(ws, { remove: [sid] });
   // (Fable MINOR-3) 그사이 다른 탭으로 옮겨 갔으면 포커스는 지금 보이는 탭의 것을 건드리지 않는다.
   if (ws !== current()) {
     render();
     return;
   }
-  focusedSid = collectSids(ws.tree)[0] ?? null;
+  // ★1.1.11 편입(원작자 0.14.52 S6 검체 「newer focus survives」): 닫힘 확인을 기다리는 사이 사람이 다른 창을 골랐으면 그 선택을 지킨다 —
+  //   닫힌 창의 포커스 이동은 detachPane 이 맡았다. 포커스가 비었거나 이 탭 밖을 가리킬 때만 첫 창으로 둔다(종전: 늘 첫 창으로 덮었다).
+  if (focusedSid == null || !collectSids(ws.tree).includes(focusedSid)) focusedSid = collectSids(ws.tree)[0] ?? null;
   render();
   if (focusedSid != null) setFocus(focusedSid);
 }
@@ -7140,10 +7344,8 @@ async function actionClose() {
 // pane 하나를 트리에서 떼고 런타임·포커스·신호 캐시를 함께 정리한다(렌더는 호출측 몫).
 // ★왜 뽑았나: 유령 수렴이 트리에서만 떼고 focus·신호 캐시를 정리하지 않아, 활성 워크스페이스의
 // pane 이 전부 정리되면 focusedSid 가 파괴된 pane 을 계속 가리켰다(이후 split·입력이 그 위로 간다).
-// ★적용 범위(과장 금지): 지금 이 함수를 쓰는 곳은 **유령 수렴과 removeDeadPane 둘**이다.
-// 탭 close·그룹 삭제·purgeDept·actionClose·transferCrossDept 는 여전히 인라인 정리를 쓴다 —
-// 그쪽은 사용자가 직접 닫는 경로라 직후 render/focus 처리가 따로 있어 증상이 없었다. 옮기려면
-// 각 경로의 후처리를 함께 봐야 하므로 이번 판의 범위 밖으로 둔다(남은 빚을 여기 적어 둔다).
+// Confirmed user close and purge share this socket-qualified cleanup with lifecycle
+// events. A failed close never reaches it; another workspace's newer focus survives.
 function detachPane(sid: number, socket?: string): void {
   const sameSock = (w: Workspace) => (w.socket ?? undefined) === (socket ?? undefined);
   destroyPaneRuntime(sid, socket);
@@ -8349,7 +8551,7 @@ type DrainVerifyNode = {
   dept?: string;
   department?: string;
   surface: string;
-  outcome: string; // saved | timeout | delivery_failed | unverifiable | skipped_restoring
+  outcome: string; // saved | timeout | delivery_failed | unverifiable | skipped_restoring | unknown(1.1.11 · 원작자 f45017d7)
   detail: string;
   pending_undelivered?: number;
 };
@@ -9282,7 +9484,8 @@ function purgeConfirmModal(
 // ★기능2: 부서 완전 폐역 실행 — 프리뷰(크기·mtime·마지막여부) 조회 → 타이핑 확인 → purge → 탭 제거.
 // 기존 close(2-click 대체) 경로와 별개: 이건 대화기억까지 격리하고 부활을 영구 차단한다(javis_org destroy).
 async function purgeDept(ws: Workspace) {
-  if (!ws.socket) return;
+  const socket = ws.socket;
+  if (!socket) return;
   // ★[F3] 데몬 교대(restart)·완전 초기화가 진행/완료 상태면 같은 부서 데몬 경합을 피해 거부·안내.
   if (daemonActionBlocked()) return;
   let info: {
@@ -9294,7 +9497,7 @@ async function purgeDept(ws: Workspace) {
     exists?: boolean;
   } = {};
   try {
-    info = (await invoke("dept_purge_preview_by_socket", { socket: ws.socket })) as typeof info;
+    info = (await invoke("dept_purge_preview_by_socket", { socket })) as typeof info;
   } catch (e) {
     toast("watchdog", "삭제 미리보기 실패", "지울 내용을 확인하지 못해 삭제를 멈췄습니다. 다시 시도해 주세요.", undefined, String(e));
     return;
@@ -9331,19 +9534,18 @@ async function purgeDept(ws: Workspace) {
   try {
     // ★D2b(purge-safety 2026-07-16): 실패는 8초 자동소멸 toast가 아니라 sticky — 실사고에서 사용자가
     // 실패 사실 자체를 인지하지 못했다("눌러도 무반응"). 재시도 진입 시 이전 실패는 갱신/해소된다.
-    const failId = `purge-fail-${ws.socket}`;
+    const failId = `purge-fail-${socket}`;
     try {
-      await invoke("purge_dept_daemon_by_socket", { socket: ws.socket });
+      await invoke("purge_dept_daemon_by_socket", { socket });
     } catch (e) {
       stickyToast(failId, "watchdog", "부서 완전 삭제 실패", `${nm} 부서는 삭제되지 않았습니다. 다시 시도해 주세요.`, undefined, String(e));
       return;
     }
     dismissToast(failId);
     toast("watchdog", "부서 완전 삭제 완료", `${nm} — 대화기억은 격리 보관(복구 가능)·재시작 부활 차단.`);
-    // 프론트 pane·탭 정리(데몬은 이미 down — close_surface 실패는 관용).
+    // Purge itself confirmed removal. No close RPC to the already stopped daemon.
     for (const sid of collectSids(ws.tree)) {
-      await invoke("close_surface", { socket: ws.socket, surfaceId: sid }).catch(() => {});
-      destroyPaneRuntime(sid, ws.socket);
+      detachPane(sid, socket);
     }
     const i = workspaces.indexOf(ws);
     if (i < 0) {
@@ -11166,7 +11368,9 @@ async function start() {
     try {
       // 두 판을 **합성**한다: 이쪽의 상한(rpcT · 느린 소켓이 복원을 묶지 않게) + 저쪽의 role 칸
       // (B16 배치가 역할을 필요로 한다). 하나를 고르면 다른 한쪽의 기능이 조용히 사라진다.
-      const r = (await rpcT(invoke("list_surfaces", { socket: sk }), T_LIST)) as {
+      // ★F-01: 상한(T_LIST)이 이 원 호출을 포기해도 원 호출 자체는 계속 돈다 — 그 끝점의 소유를 3초 틱의 목록 운반에 넘겨, 첫 주기 디스패치가
+      //   같은 끝점에 둘째 원 호출을 얹지 않게 한다(실제로 끝날 때 그 자신의 소유만 풀린다). 이 응답의 데이터는 종전대로 복원만 쓴다.
+      const r = (await rpcT(invoke("list_surfaces", { socket: sk }), T_LIST, (original) => listTransport.adoptStartup(sk, original))) as {
         surfaces: { surface_id: number; title: string; exited: boolean; role: string | null }[];
       };
       const liveList = r.surfaces.filter((s) => !s.exited);

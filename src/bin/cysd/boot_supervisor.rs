@@ -2061,20 +2061,120 @@ fn pane_hold_is_transient(h: crate::governance::MachineHold) -> bool {
 }
 
 /// pane 통보 줄 1건 쓰기 — ★원장 선기록이 주입보다 앞(delivery.rs 불변식 ① — dispatch_one 과 같은 순서).
-fn pane_notice_line(daemon: &Arc<Daemon>, s: &Arc<crate::state::Surface>, text: String) {
-    // ★원장 선기록이 주입보다 앞(delivery.rs 불변식 ① — seat_inject_guarded 안에서 지킨다).
-    // ★v115-restore(A3): 좌석 입력 주입 단일 입구(빈 에이전트 좌석 = 타이핑 대신 큐 보류).
-    // 채널 포화면 조용히 포기 — 통보는 best-effort 이고 feed·이벤트가
-    // 이미 사실을 남겼다(고지 실패가 유계를 흔들면 안 된다).
-    let _ = crate::governance::seat_inject_guarded(
-        daemon,
-        s,
-        &text,
-        120,
-        crate::delivery::Origin::Supervisor,
-        None,
-        "boot_supervisor.no_spawn",
+/// ★(0.14.52 · S-a C6c) The notice is ONE checked agent request (body + its own Return, cr 120 as before); its settlement
+/// ([`NoticeSettle`]) reports what was written: a late notice announces `pane_notice_delivered_late` only after its Return;
+/// zero bytes or a part-way stop -> `pane_notice_skipped` (no retry and no notice about the refusal - design 4.3; the
+/// `bootstrap-fail` feed entry written before any pane write stays the floor; boot never waits for this write).
+fn pane_notice_line(daemon: &Arc<Daemon>, s: &Arc<crate::state::Surface>, text: String, ctx: NoticeCtx) {
+    // ★v115-restore(A3) · 1.1.11 편입(원작자 0.14.52 S-a C6c 위에 유지): 빈 에이전트 좌석은 타이핑 대신 큐 보류 —
+    //   좌석 입력 주입 단일 입구가 원장 선기록·보류를 맡는다(delivery.rs 불변식 ①). 에이전트가 있는 좌석만 원작자의
+    //   검사된 에이전트 쓰기(본문+Return 1요청 · 결판 이벤트)로 간다.
+    if crate::governance::agent_seat_vacant_now(s) {
+        let reason = match crate::governance::seat_inject_guarded(
+            daemon,
+            s,
+            &text,
+            120,
+            crate::delivery::Origin::Supervisor,
+            None,
+            "boot_supervisor.no_spawn",
+        ) {
+            // 보류(큐가 배달) · 판정 사이 에이전트가 서서 종전 주입 — 원작자 결판 이벤트 대상 아님(종전 동작).
+            crate::governance::SeatInject::Injected | crate::governance::SeatInject::HeldVacant(Some(_)) => return,
+            crate::governance::SeatInject::HeldVacant(None) => "vacant_seat_queue_full",
+            crate::governance::SeatInject::WriterUnavailable => "refused_no_write:writer_unavailable",
+        };
+        // ★1.1.11 편입(codex 1R ⓓ): 쓰지도 싣지도 못했다 — 원작자 계약대로 생략 사실을 남긴다(재시도 없음 · feed 가 바닥).
+        let NoticeCtx { intent, why, .. } = ctx;
+        publish(
+            daemon,
+            "boot_supervisor.pane_notice_skipped",
+            json!({"intent": intent, "reason": reason, "surface_id": s.id, "why": why,
+                   "note": "The pane notice was neither written nor held for the vacant seat; it is not retried - feed(bootstrap-fail) already holds the fact"}),
+        );
+        return;
+    }
+    crate::delivery::record_audited(daemon, s.id, &text, crate::delivery::Origin::Supervisor, None);
+    let request = crate::agent_write::Request::new(
+        crate::agent_write::new_request_id((daemon.started_at * 1000.0) as u64),
+        s.id,
+        "supervisor",
+        crate::delivery::digest_text(&text),
     );
+    let handle = request.clone();
+    // 1.1.11 편입(codex 2R ⓓ ⑶): 인계 실패 시 생략 결판에 쓸 사본(결판 클로저가 ctx 를 가져간다).
+    let (intent, why) = (ctx.intent.clone(), ctx.why.clone());
+    let settle = NoticeSettle { daemon: Arc::downgrade(daemon), sid: s.id, ctx };
+    let job = crate::agent_write::AgentJob {
+        attempt: None,
+        request,
+        plan: crate::agent_write::Plan::paste(&text).with_submit(120, 0),
+        proof: s.agent_proof(),
+        journal: Some(daemon.agent_journal()),
+        resume: None,
+        settle: Some(Box::new(move |t: &crate::agent_write::Terminal| settle.run(t))),
+        guard: None, // 큐 배달 아님 — 인계 가드 없음(종전 동작)
+        note_body: true, // the old Inject arm recorded every notice body (owner None)
+        body_owner: None,
+    };
+    // try_send: 채널 포화면 조용히 포기 — 통보는 best-effort 이고 feed·이벤트가
+    // 이미 사실을 남겼다(고지 실패가 유계를 흔들면 안 된다).
+    if s.write_tx.try_send(crate::state::WriteReq::Agent(Box::new(job))).is_ok() {
+        crate::agent_write::test_wait_settled(&handle);
+    } else {
+        // ★1.1.11 편입(codex 2R ⓓ ⑶): 넘기지 못했다 = 결판이 영영 오지 않는다 — 원작자 계약(쓰이지 않은 통보는
+        //   pane_notice_skipped)대로 생략 사실을 남긴다(재시도 없음 · 포기 자체는 종전 그대로).
+        publish(
+            daemon,
+            "boot_supervisor.pane_notice_skipped",
+            json!({"intent": intent, "reason": "refused_no_write:writer_channel_unavailable", "surface_id": s.id, "why": why,
+                   "note": "The pane notice could not be handed to the seat's writer; it is not retried - feed(bootstrap-fail) already holds the fact"}),
+        );
+    }
+}
+
+/// Which notice a pane write carries (for its settlement's events).
+struct NoticeCtx {
+    intent: String,
+    why: String,
+    /// A deferred notice written late (`retry_deferred_pane_notices`).
+    late: bool,
+}
+
+/// ★(0.14.52 · S-a C6c) Settlement of one supervisor pane notice (writer thread). Never retries, never writes again.
+struct NoticeSettle {
+    daemon: std::sync::Weak<Daemon>,
+    sid: u64,
+    ctx: NoticeCtx,
+}
+
+impl NoticeSettle {
+    fn run(self, t: &crate::agent_write::Terminal) {
+        use crate::agent_write::Terminal as T;
+        let Some(daemon) = self.daemon.upgrade() else { return };
+        let NoticeCtx { intent, why, late } = self.ctx;
+        let reason = match t {
+            T::WrittenSubmitted { .. } => {
+                if late {
+                    publish(
+                        &daemon,
+                        "boot_supervisor.pane_notice_delivered_late",
+                        json!({"intent": intent, "surface_id": self.sid, "why": why}),
+                    );
+                }
+                return;
+            }
+            T::RefusedNoWrite { reason } => format!("refused_no_write:{reason}"),
+            T::CancelledBeforeWrite => "refused_no_write:cancelled".to_string(),
+            T::WrittenBody { .. } | T::PartialExact { .. } | T::PartialUnknown { .. } => "partial_write".to_string(),
+        };
+        publish(
+            &daemon,
+            "boot_supervisor.pane_notice_skipped",
+            json!({"intent": intent, "reason": reason, "surface_id": self.sid, "why": why,
+                   "note": "The pane notice was not written whole (receiver not proven, or stopped part-way); it is not retried - feed(bootstrap-fail) already holds the fact"}),
+        );
+    }
 }
 
 /// ★(0.14.42 · R3SH-3) 미룬 pane 통보를 이번 틱에 다시 본다 — 순간 축이 풀렸으면 쓰고, 여전히 순간 축이면 수명 안에서
@@ -2098,12 +2198,9 @@ fn retry_deferred_pane_notices(daemon: &Arc<Daemon>, st: &mut SupState, pane_bud
         match pane_notice_hold(daemon, &s) {
             None if *pane_budget > 0 => {
                 *pane_budget -= 1;
-                publish(
-                    daemon,
-                    "boot_supervisor.pane_notice_delivered_late",
-                    json!({"intent": d.intent, "surface_id": d.sid, "why": d.why}),
-                );
-                pane_notice_line(daemon, &s, d.text);
+                // ★(0.14.52 · S-a C6c) `pane_notice_delivered_late` now comes from the settlement, after the written Return.
+                let ctx = NoticeCtx { intent: d.intent.clone(), why: d.why.clone(), late: true };
+                pane_notice_line(daemon, &s, d.text, ctx);
             }
             None => st.deferred_pane.push(d),
             Some(h) if pane_hold_is_transient(h) && now < d.until => st.deferred_pane.push(d),
@@ -2217,7 +2314,8 @@ fn notify_no_spawn(
                     );
                     return;
                 }
-                pane_notice_line(daemon, &s, text);
+                let ctx = NoticeCtx { intent: it.id.clone(), why: why.to_string(), late: false };
+                pane_notice_line(daemon, &s, text, ctx);
             }
         }
     }
@@ -5933,10 +6031,12 @@ mod tests {
         //   dispatch_one + notify_no_spawn **정확히 2곳**이 됐다. 여전히 닫힌 집합 단언이다 —
         //   제3 지점 유입은 이 핀이 계속 적색으로 잡는다(구현 갈라짐 차단 목적 불변).
         // ★(R3SH-3) 통보 줄 쓰기는 `pane_notice_line` 하나로 모였다(즉시·미룬 재시도 공용) — 지정 지점은 여전히 2곳.
+        // ★1.1.11 편입(원작자 0.14.52 S-a C6c × 우리 v115-restore A3): pane_notice_line 안에 유래 지정이 2개가 됐다 — 빈 좌석
+        //   갈래의 단일 입구 인자와, 에이전트 좌석 갈래의 원작자 원장 선기록(record_audited). 함수 집합은 그대로 2곳(닫힌 집합).
         assert_eq!(
             prod.matches("crate::delivery::Origin::Supervisor").count(),
-            2,
-            "감독자 원장 유래 지정 지점은 정확히 2곳(dispatch_one·pane_notice_line)이어야 한다"
+            3,
+            "감독자 원장 유래 지정 지점은 dispatch_one 1 + pane_notice_line 2(빈 좌석 입구 · 에이전트 좌석 선기록)여야 한다"
         );
         // 통보 줄 쪽도 순서 불변식이 같다 — 원장 기록이 주입(try_send)보다 앞.
         let nat = prod.find("fn pane_notice_line(").expect("pane_notice_line 소실");
@@ -5946,7 +6046,11 @@ mod tests {
         let nend = nbody.find("\n}\n").expect("notify_no_spawn 끝");
         let nb = &nbody[..nend];
         assert!(nb.contains("crate::governance::seat_inject_guarded("), "소진 통보가 단일 입구를 안 지난다");
-        assert!(!nb.contains("write_tx.try_send("), "소진 통보에 직접 주입이 되살아났다 — 기계 push 오너 임무 오인 창");
+        // ★1.1.11 편입 재조준: 에이전트 좌석은 원작자의 검사된 쓰기(write_tx.try_send)를 직접 넘긴다 — 빈 좌석 입구가 그보다
+        //   앞이고, 그 직접 쓰기 앞에 같은 유래의 원장 선기록이 있어야 한다(기계 push 오너 임무 오인 창 0).
+        let (g, w) = (nb.find("crate::governance::seat_inject_guarded(").unwrap(), nb.find("write_tx.try_send(").expect("직접 쓰기"));
+        let r = nb.find("crate::delivery::record_audited(").expect("에이전트 좌석 갈래 원장 선기록 소실");
+        assert!(g < r && r < w, "통보 줄: 빈 좌석 입구 → 원장 선기록 → 직접 쓰기 순서가 깨졌다");
     }
 
     /// ★(R2) provenance 상속 절단이 **실재 배선**인가 — 소스 단언.
@@ -6249,6 +6353,74 @@ mod tests {
         notify_no_spawn(&d, &mut st, &it, "schema_mismatch", &mut budget);
         assert_eq!(crate::governance::h_ledger_count(&d, "supervisor"), 1);
         assert!(h5_skipped(&d).is_empty());
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    // ── ★(0.14.52 · S-a C6c) the supervisor pane notice settles on the writer's terminal (design 3.3 / 4.3) ──
+
+    /// Refuses every admission: zero bytes.
+    struct C6cRefuse;
+    impl crate::agent_write::Proof for C6cRefuse {
+        fn admit(&self) -> Result<(), crate::receiver::ProofLoss> {
+            Err(crate::receiver::ProofLoss::Unknown("test_refuse".into()))
+        }
+        fn recheck(&self, _: crate::agent_write::Phase) -> Result<(), crate::receiver::ProofLoss> {
+            Ok(())
+        }
+    }
+
+    fn c6c_late(d: &Arc<Daemon>, intent: &str) -> usize {
+        d.bus
+            .tail(500)
+            .into_iter()
+            .filter(|e| e["name"] == "boot_supervisor.pane_notice_delivered_late" && e["payload"]["intent"] == intent)
+            .count()
+    }
+
+    /// T-c3: a deferred notice whose late write is refused is NOT announced as delivered late; it is reported skipped once
+    /// (`refused_no_write:...`), never retried, and the feed entry stays the floor.
+    #[test]
+    fn c6c_refused_late_notice_is_skipped_not_delivered() {
+        let d = tmp_daemon("c6c-late-refused");
+        let s = h5_seat(&d, crate::governance::H_IDLE_SCREEN);
+        *s.last_human_input.lock().unwrap() = Some(std::time::Instant::now());
+        let mut it = intent("c6c-late-r");
+        it.surface_id = Some(s.id);
+        let mut st = SupState::default();
+        let mut budget = MAX_RETIRE_NOTIFY_PER_TICK;
+        notify_no_spawn(&d, &mut st, &it, "claim_stale", &mut budget);
+        assert_eq!(st.deferred_pane.len(), 1, "premise: deferred");
+        *s.last_human_input.lock().unwrap() = None;
+        *s.receiver_proof.lock().unwrap() = Some(Arc::new(C6cRefuse));
+        let mut budget = MAX_RETIRE_NOTIFY_PER_TICK;
+        retry_deferred_pane_notices(&d, &mut st, &mut budget);
+        assert_eq!(c6c_late(&d, "c6c-late-r"), 0, "a refused late notice was announced as delivered");
+        let sk: Vec<_> = h5_skipped(&d).into_iter().filter(|e| e["payload"]["intent"] == "c6c-late-r").collect();
+        assert_eq!(sk.len(), 1, "{sk:?}");
+        assert!(sk[0]["payload"]["reason"].as_str().is_some_and(|r| r.starts_with("refused_no_write")), "{sk:?}");
+        assert!(s.inject_track.last_body().is_none(), "a refused notice was recorded as written");
+        assert!(st.deferred_pane.is_empty(), "a refused notice was re-deferred (retry)");
+        assert_eq!(h5_feed_fails(&d), 1, "the feed floor changed");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// T-c3b: the same late notice written whole is announced as delivered late after its Return, once.
+    #[test]
+    fn c6c_written_late_notice_is_announced_after_its_return() {
+        let d = tmp_daemon("c6c-late-written");
+        let s = h5_seat(&d, crate::governance::H_IDLE_SCREEN);
+        *s.last_human_input.lock().unwrap() = Some(std::time::Instant::now());
+        let mut it = intent("c6c-late-w");
+        it.surface_id = Some(s.id);
+        let mut st = SupState::default();
+        let mut budget = MAX_RETIRE_NOTIFY_PER_TICK;
+        notify_no_spawn(&d, &mut st, &it, "claim_stale", &mut budget);
+        *s.last_human_input.lock().unwrap() = None;
+        let mut budget = MAX_RETIRE_NOTIFY_PER_TICK;
+        retry_deferred_pane_notices(&d, &mut st, &mut budget);
+        assert_eq!(c6c_late(&d, "c6c-late-w"), 1);
+        assert_eq!(s.inject_track.last_body().map(|b| b.norm.contains("cys-supervisor")), Some(true), "notice not written");
+        assert!(h5_skipped(&d).iter().all(|e| e["payload"]["intent"] != "c6c-late-w"));
         let _ = s.child.lock().unwrap().kill();
     }
 }

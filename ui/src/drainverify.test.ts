@@ -86,6 +86,20 @@ describe("drainVerifyNotice — 확인 창 폐기 후의 사후 알림 1줄", ()
     expect(/[()]/.test(n!.body)).toBe(false);
     expect(n!.body).not.toContain("surface:");
   });
+  // ★1.1.11 편입(원작자 f45017d7): drain --verify 의 `unknown`(exit 91 · 지시가 쓰였는지 모름)은 저장 확인이 아니다 —
+  //   미확인 자리로 세고, 영어 원문이 아니라 사람 말 라벨로 붙는다.
+  it("unknown 결과는 미확인 자리로 세고 사람 말 라벨로 붙는다", () => {
+    const n = drainVerifyNotice({
+      all_saved: false,
+      total: 2,
+      summary: { saved: 1 },
+      nodes: [node("master", "saved"), node("cso", "unknown")],
+    });
+    expect(n).not.toBeNull();
+    expect(n!.body).toContain("자리 1개");
+    expect(n!.body).toContain("cso — 저장 지시가 전달됐는지 알 수 없음");
+    expect(n!.body).not.toContain("unknown");
+  });
   it("all_saved=false 인데 나열할 노드가 없으면(0노드) 알리지 않는다", () => {
     expect(drainVerifyNotice({ all_saved: false, total: 0, summary: { saved: 0 }, nodes: [] })).toBeNull();
   });

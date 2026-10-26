@@ -1554,6 +1554,9 @@ fn collect_for(
         if pin.is_none() || !heuristic {
             if let Some(sid) = extract_session_id(agent, &path) {
                 if pin.as_deref() != Some(sid.as_str()) {
+                    // F-01 (U4-4 · 원작자 0.14.52 · 1.1.11 편입): 세션 핀이 바뀌는 순간(None→Some · 우리 등록 경로의 교체 포함)이
+                    //   새 표시 관측 세대의 시작이다(한 번 찍는 캡처 · 연속 세션 흐름 아님).
+                    let _display_write = crate::activity::IdentityWrite::begin(s);
                     *pin = Some(sid);
                 }
             }

@@ -716,11 +716,13 @@ describe("호출부 — 열기·닫기 9경로 + 정렬 단추가 같은 함수"
   });
   const paths: [string, string, string, string][] = [
     ["자동 입양(3초 틱)", "async function refreshPaneTitles() {", "\n}\n", "arrangeWs(ws, { add: [{ sid: s.surface_id }] });"],
-    ["자리표 회수(틱 안)", "── ③ 빈 자리표 회수", "const masterSids", "arrangeWs(ws, { remove: [sid] });"],
+    // ★1.1.11 편입(원작자 0.14.52 c3ce3272 확인 닫기): 사용자·자리표 닫기 세 경로는 closePane(데몬 확인) → detachPane → arrangeWs(remove) 를 지난다 —
+    //   배치 호출은 detachPane 한 곳에 있고(아래 「외부 닫힘·유령·스윕(detachPane)」 줄이 핀) closePane → detachPane 사슬은 아래 별도 핀이 잡는다.
+    ["자리표 회수(틱 안)", "── ③ 빈 자리표 회수", "const masterSids", "await closePane(sid, ws.socket);"],
     ["새 창", "async function actionNew() {", "\n}\n", "arrangeWs(ws, { add: [{ sid }] });"],
     ["분할", "async function actionSplit(", "\n}\n", "arrangeWs(ws, { add: [{ sid, after: target, dir }] });"],
-    ["닫기(Close·⌘W·팔레트)", "async function actionClose() {", "\n}\n", "arrangeWs(ws, { remove: [sid] });"],
-    ["창 머리 ×", 'closeBtn.dataset.arm !== "1"', "header.append(", "arrangeWs(ws, { remove: [sid] });"],
+    ["닫기(Close·⌘W·팔레트)", "async function actionClose() {", "\n}\n", "await closePane(sid, ws.socket);"],
+    ["창 머리 ×", 'closeBtn.dataset.arm !== "1"', "header.append(", "await closePane(sid, socket);"],
     ["외부 닫힘·유령·스윕(detachPane)", "function detachPane(", "\n}\n", "arrangeWs(ws, { remove: [sid] });"],
     ["복원 때 죽은 좌석 정리", "const dead = deadLiveSids(", "workspaces = workspaces.filter", "if (dead.length) arrangeWs(ws, { remove: dead });"],
     ["복원 입양", "재시작(복원) 경로도 **같은 함수**", "plain 셸 1개로 충전", "arrangeWs(ws, { add: [{ sid: s.surface_id }] });"],
@@ -734,6 +736,18 @@ describe("호출부 — 열기·닫기 9경로 + 정렬 단추가 같은 함수"
       expect(/a: ws\.tree, b:/.test(b)).toBe(false);
     });
   }
+  // ★1.1.11 편입: 위 닫기 세 경로의 배치는 closePane → detachPane → arrangeWs(remove) 사슬이다 — 사슬의 고리 하나라도 빠지면(확인 뒤 떼지 않거나 ·
+  //   떼면서 배치를 손으로 자르면) 닫기 경로가 arrangeWs 를 비껴간다.
+  it("닫기 사슬 — closePane 은 데몬 확인 뒤 detachPane 으로만 떼고 · detachPane 은 그 창을 품은 탭을 arrangeWs(remove) 로 짠다", () => {
+    const cp = code(fnBody("async function closePane(", "\n}\n"));
+    const iClose = cp.indexOf('await invoke("close_surface", { socket, surfaceId: sid });');
+    const iDetach = cp.indexOf("detachPane(sid, socket);");
+    expect({ 확인: iClose > -1, 뗌: iDetach > -1, 확인뒤: iDetach > iClose }).toEqual({ 확인: true, 뗌: true, 확인뒤: true });
+    expect(cp).not.toContain("replaceNode(");
+    const dp = code(fnBody("function detachPane(", "\n}\n"));
+    expect(dp).toContain("if (sameSock(ws) && ws.tree != null && collectSids(ws.tree).includes(sid)) {");
+    expect(dp).toContain("arrangeWs(ws, { remove: [sid] });");
+  });
   // (1.1.8 병합 X12 = 원작자 WP-4) 전출 확인 대기가 원작자 새 함수 awaitHandoffAck 로 갈라져 나왔다 — 같은 창 옮기기(전출) 경로라 허용 목록에 더한다.
   it("replaceNode 호출은 창 옮기기 함수(movePane·transferCrossDept·전출 확인 awaitHandoffAck)에만 남는다 — 열기·닫기 경로 0", () => {
     const calls = [...code(main).matchAll(/replaceNode\(/g)].map((m) => m.index!);
@@ -787,8 +801,15 @@ describe("호출부 — 입양은 런타임이 선 그 자리에서 트리에 �
     expect(b).toContain("if (!next.has(sid) && onScreen.has(sid)) next.set(sid, role);");
   });
   it("창 머리 × = 그 창을 품은 탭을 짠다(기다리는 사이 탭을 옮겨도)", () => {
+    // ★1.1.11 편입: 머리 × 는 이제 closePane(sid, socket) 만 부르고 탭을 스스로 고르지 않는다 — 탭 선택은 detachPane 이 (socket, sid) 로
+    //   그 창을 품은 탭을 찾아 한다(지금 보는 탭 current() 가 아니다). 그래서 기다리는 사이 탭을 옮겨도 그 창의 탭이 짜인다.
     const b = code(fnBody('closeBtn.dataset.arm !== "1"', "header.append("));
-    expect(b).toContain("collectSids(w.tree).includes(sid)) ?? current();");
+    expect(b).toContain("await closePane(sid, socket);");
+    expect(b).not.toContain("current()");
+    const dp = code(fnBody("function detachPane(", "\n}\n"));
+    expect(dp).toContain("for (const ws of workspaces) {");
+    expect(dp).toContain("if (sameSock(ws) && ws.tree != null && collectSids(ws.tree).includes(sid)) {");
+    expect(dp).not.toMatch(/arrangeWs\(current\(\)/);
   });
 });
 

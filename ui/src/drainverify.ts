@@ -60,6 +60,9 @@ export const OUTCOME_LABEL: Record<string, string> = {
   delivery_failed: "저장 지시가 전달되지 않음",
   unverifiable: "옛 판이라 확인할 수 없음",
   skipped_restoring: "복원 중이라 건너뜀",
+  // ★1.1.11 편입(원작자 0.14.52 f45017d7 · drain --verify 결과 `unknown` · exit 91): 저장 지시가 입력칸에 쓰였는지 모른다 —
+  //   다시 보내지 않았다(같은 지시가 두 번 들어갈 수 있어서). 저장 안 됨으로 단정하지 않고 「알 수 없음」 그대로 말한다.
+  unknown: "저장 지시가 전달됐는지 알 수 없음",
 };
 
 // 재시작 뒤 알림 — 전원 마커 확인이면 null(알릴 것이 없다 · 조용한 성공).

@@ -1588,10 +1588,16 @@ def cmd_chrome_enable(a):
     has, v = read_chrome_key()
     if has is None:
         return fail("클로드 설정 파일을 읽지 못해 크롬 연결을 켜지 못했습니다.", "claude_json", 1)
+    def keep_prior():
+        # 처음 손대기 전의 원래 값만 기억한다(되돌리기 = 이 값) · ★codex R1: 되돌리기 정보가 바꾸기보다 먼저 디스크에
+        # ★codex R3: 키가 이미 켜져 있어 연결 파일만 만들 때도 기억한다(안 그러면 끄기가 원래 true 를 false 로 씀) ·
+        #   새로 켜면 앞선 끄기의 「키 되돌림 끝」 표지를 지운다(안 그러면 다음 끄기가 키 되돌리기를 건너뜀)
+        if "prior_key" not in st or st.get("key_restored"):
+            st.setdefault("prior_key", {"present": has, "value": v})
+            st.pop("key_restored", None)
+            _write_json(_p(CHROME_STATE), st)
     if v is not True:
-        if "prior_key" not in st:                 # 처음 켠 때의 원래 값만 기억한다(되돌리기 = 이 값)
-            st["prior_key"] = {"present": has, "value": v}
-            _write_json(_p(CHROME_STATE), st)     # ★codex R1: 되돌리기 정보가 키보다 먼저 디스크에(실패면 키 불변)
+        keep_prior()
         _ledger({"event": "chrome_enable_key", "prior": {"present": has, "value": v}})   # 기록 먼저
         if not write_chrome_key(True):
             return fail("크롬 기본 켜기를 저장하지 못했습니다(그 사이 다른 프로그램이 설정을 고쳐 써서 손대지 않았습니다 — 잠시 뒤 다시 하겠습니다).",
@@ -1600,7 +1606,8 @@ def cmd_chrome_enable(a):
     # ② 연결 파일 — ★codex R1·R2: 처음 만들 때 Claude Code 가 크롬에 「다시 연결」 탭을 연다(바이너리 문자열) → 크롬이 켜져 있든
     #   꺼져 있든(꺼져 있으면 크롬이 떠오른다) 앞으로 나온 창에 타이핑이 샐 수 있으므로 유휴 관문 뒤에만 만든다(못 채우면 미룸)
     was_running = chrome_running(plat)
-    if _nmh_ok(plat, _chrome_userdata(plat)) is not True and not wait_idle(plat, a.wait):   # ★codex R2: 꺼진 크롬도 탭이 크롬을 띄울 수 있다
+    nmh_missing = _nmh_ok(plat, _chrome_userdata(plat)) is not True
+    if nmh_missing and not wait_idle(plat, a.wait):   # ★codex R2: 꺼진 크롬도 탭이 크롬을 띄울 수 있다
         # 연결 파일이 아직 없으니 크롬 재시작 빚은 없다(다음 호출이 만들고 그때 판단) · 좌석 재시작만 빚으로
         if (done and a.seat_restart == "auto") or a.seat_restart == "now":
             st["pending_seat_restart"] = True
@@ -1609,6 +1616,8 @@ def cmd_chrome_enable(a):
         head = "크롬 기본 켜기를 켰습니다." if done else "크롬 연결은 준비 중입니다."
         return out({"ok": True, "done": done, "pending": ["nmh"], "nmh": False,
                     "say": head + " 지금 키보드·마우스를 쓰고 계셔서 연결 파일 만들기는 잠시 미뤘습니다 — 손을 쉬실 때 다시 하겠습니다."})
+    if nmh_missing:
+        keep_prior()
     nmh, created = _ensure_nmh(plat)
     if created:
         man = _nmh_manifest_path(plat)
@@ -1839,6 +1848,7 @@ CATEGORIES = {
 TERMS_SERVICES = {"naver": "네이버", "네이버": "네이버"}   # 약관 위험 서비스(로그인·게재 자동화 금지)
 DECISIONS = "decisions.json"
 MAX_DECISIONS = 5000
+MAX_CONDITION = 2000        # 조건 글자 한도 — 넘으면 자르지 않고 거절(codex R3) · 옛 판은 300자에서 잘라 저장했다
 
 
 def _norm(s):
@@ -1855,6 +1865,25 @@ def mask(s, limit=80):
     return _LONGNUM.sub("<번호>", s)[:limit]
 
 
+def _idents(s):
+    """이메일·긴 번호(숫자만) 집합 — 조건 대조를 이 컴퓨터 안에서 한다(원문은 출력하지 않는다 · codex R3)."""
+    s = s or ""
+    return {e.lower() for e in _EMAIL.findall(s)} | {re.sub(r"\D", "", n) for n in _LONGNUM.findall(_EMAIL.sub(" ", s))}
+
+
+def anon(s):
+    """조건 표시용 — 이메일·긴 번호를 차례 자리표(<이메일1>·<번호1> · 같은 값 = 같은 자리표)로 바꾼다. 자르지 않는다."""
+    seen = {}
+
+    def sub(kind, val):
+        k = (kind, val)
+        if k not in seen:
+            seen[k] = "<%s%d>" % (kind, 1 + sum(1 for x in seen if x[0] == kind))
+        return seen[k]
+    s = _EMAIL.sub(lambda m: sub("이메일", m.group(0).lower()), s or "")
+    return _LONGNUM.sub(lambda m: sub("번호", re.sub(r"\D", "", m.group(0))), s)
+
+
 def decision_key(cat, subject):
     """상시 기록 키 = 유형 + 대상의 해시(대상 원문을 파일에 남기지 않는다 · 같은 대상은 같은 키).
     목록 밖 새 유형은 유형 이름도 해시(마스터가 지은 이름에 개인정보가 섞여도 키·출력에 원문 0 · codex R2)."""
@@ -1863,10 +1892,19 @@ def decision_key(cat, subject):
     return "%s:%s" % (head, hashlib.sha256(n.encode("utf-8")).hexdigest()[:16] if n else "")
 
 
+def _legacy_keys(cat, subject):
+    """옛 판 키 — ad474d66 판 `유형 원문:대상 해시`(새 유형만 지금과 다르다) · 92c47060 판 `유형:정규화 원문`(codex R2·R3)."""
+    n = _norm(subject)
+    return ["%s:%s" % (cat, hashlib.sha256(n.encode("utf-8")).hexdigest()[:16] if n else ""), "%s:%s" % (cat, n)]
+
+
 def _lookup(decisions, cat, subject):
-    """상시 기록 조회 — 지금 키, 없으면 옛 키(92c47060 판 `유형:정규화 원문`)도 본다(codex R2 · 기록을 잃지 않는다)."""
+    """상시 기록 조회 — 지금 키, 없으면 옛 판 키도 본다(기록을 잃지 않는다)."""
     d = decisions or {}
-    return d.get(decision_key(cat, subject)) or d.get("%s:%s" % (cat, _norm(subject)))
+    for k in [decision_key(cat, subject)] + _legacy_keys(cat, subject):
+        if d.get(k):
+            return d[k]
+    return None
 
 
 def load_decisions():
@@ -1913,19 +1951,40 @@ def _toks(s):
     return [t for t in re.split(r"[\s/.,:;·→()\[\]_\-@]+", _norm(s)) if t]
 
 
+_DOMAIN = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}")
+_SLD = {"co", "or", "go", "ne", "ac", "re", "pe", "com", "net", "org", "gov", "edu"}   # naver.co.kr · example.com.au
+
+
+def _domain_label(subject):
+    """대상에 도메인이 있으면 그 등록 이름(「mail.gmail.com」 → gmail · 「word.example.invalid」 → example) · 없으면 None."""
+    m = _DOMAIN.search(_norm(subject))
+    if not m:
+        return None
+    parts = m.group(0).split(".")[:-1]                  # 맨 끝(최상위) 떼기
+    if len(parts) > 1 and parts[-1] in _SLD:
+        parts = parts[:-1]
+    return parts[-1]
+
+
 def _in_use(subject, usage):
     """그 서비스·앱을 이미 쓰는가 — True(근거 문장)/None(모름). ★codex R2: 임의 부분 문자열이 아니라 **낱말** 대조
-    (「카카오톡 로그인」 = 카카오톡 · 「wordpress.com」 ≠ Word) — 이름의 낱말이 전부 대상 낱말 안에 있어야 일치."""
+    (「카카오톡 로그인」 = 카카오톡 · 「wordpress.com」 ≠ Word) — 이름의 낱말이 전부 대상 낱말 안에 있어야 일치.
+    ★codex R3: 대상에 도메인이 있으면 하위 이름(word.example.invalid 의 word)이 아니라 **등록 이름 하나**가 이름과 같아야 일치."""
     st = set(_toks(subject))
     if not st:
         return None, ""
+    label = _domain_label(subject)
+
+    def hit(nt):
+        if not nt:
+            return False
+        return "".join(nt) == label if label is not None else set(nt) <= st
     for n in usage.get("services", []):
-        nt = _toks(n)
-        if nt and set(nt) <= st:
+        if hit(_toks(n)):
             return True, "커넥터로 연결해 쓰는 서비스(%s)" % n
     for aid, v in (usage.get("apps") or {}).items():
         names = [_toks(aid), _toks(v.get("name"))]
-        if any(nt and set(nt) <= st for nt in names):
+        if any(hit(nt) for nt in names):
             d = v.get("last_used_days")
             return True, "이 컴퓨터에 설치된 앱(%s%s)" % (v.get("name"), "" if d is None else " · %d일 전 사용" % d)
     return None, ""
@@ -1945,6 +2004,9 @@ def judge(cat, subject="", in_use=None, usage=None, decisions=None, condition_me
         return d2, "precedent:" + s2, "처음 쓰는 서비스입니다 — " + l2
     rec = _lookup(decisions, cat, subject)
     if isinstance(rec, dict) and rec.get("meaning") in ("allow", "deny", "conditional"):
+        if rec["meaning"] == "conditional" and not rec.get("full") and len(rec.get("condition") or "") >= 300:
+            # ★codex R3: 옛 판은 조건을 300자에서 잘라 저장했다 — 잘렸을 수 있는 조건으로는 do 를 내지 않는다(이번 건만 묻기)
+            return EACH, "standing:%s" % rec.get("at", ""), "전에 붙이신 조건이 잘려 저장됐을 수 있습니다 — 이번 건만 여쭙니다."
         if rec["meaning"] == "conditional" and condition_met is not True:
             # ★codex R2: 조건부 허락은 이번 건이 그 조건에 맞는다는 확인이 있어야 do — 모르면 확인(check) · 아니면 이번만 묻기
             if condition_met is False:
@@ -1989,7 +2051,13 @@ def cmd_decide(a):
         res["ask"] = "「%s%s」 — %s 이번 건을 진행할까요?" % (name, subj, line)
     elif d == CHECK:
         rec = _lookup(dec, a.cat, a.subject) or {}
-        res["condition"] = rec.get("condition", "")     # 사용자 자신의 답(대화에서 온 글) — 마스터가 대조할 원문
+        cond = rec.get("condition", "")
+        # ★codex R3: 저장된 조건은 뒤 대화에서 다시 읽히므로 이메일·번호는 자리표로만 내보내고, 이번 건(--what)의 이메일·번호가
+        #   조건 안에 있는지는 이 컴퓨터에서 대조해 참/거짓만 준다 · 조건 원문은 로컬 기록에만
+        res["condition"] = anon(cond)
+        ids = _idents(a.what)
+        if ids:
+            res["what_ids_in_condition"] = ids <= _idents(cond)
         res["say"] = line
     else:
         res["say"] = "「%s%s」은(는) 하지 않습니다 — %s" % (name, subj, line)
@@ -2009,9 +2077,13 @@ def cmd_remember(a):
         return fail("사용자 답이 비어 있습니다 — 여쭌 뒤에 기록해 주세요.", "empty_answer", 2)
     if a.meaning == "conditional" and not (a.condition or "").strip():
         return fail("조건부 허락은 조건을 함께 적어야 합니다.", "condition", 2)
+    cond = (a.condition or "").strip()
+    if len(cond) > MAX_CONDITION:
+        # ★codex R3: 조건을 잘라 저장하면 끝에 붙은 제한(「외부 수신자 금지」 등)이 조용히 사라진다 — 자르지 않고 거절
+        return fail("붙이신 조건이 너무 길어(%d자 · 한도 %d자) 기록하지 않았습니다 — 조건을 줄여 다시 말씀해 주세요."
+                    % (len(cond), MAX_CONDITION), "condition_too_long", 2)
     d = load_decisions()
     key = decision_key(a.cat, a.subject)
-    legacy = "%s:%s" % (a.cat, _norm(a.subject))
     if _lookup(d["items"], a.cat, a.subject) is not None and not a.user_changed:
         # 재질문 금지 — 이미 정해진 항목을 다시 묻고 기록하는 것은 마스터의 실수다(사용자가 스스로 바꾼 때만 --user-changed)
         return fail("이미 정해 주신 항목입니다 — 다시 여쭙지 않고 그 결정을 따릅니다.", "already_decided", 7)
@@ -2020,14 +2092,15 @@ def cmd_remember(a):
         _ledger({"event": "decisions_full", "count": len(d["items"])})
         return fail("정해 두신 결정이 너무 많아(%d) 더 적어 두지 못했습니다 — 이번 결정은 따르되 기록은 하지 못했습니다."
                     % MAX_DECISIONS, "decisions_full", 7)
-    rec = {"meaning": a.meaning, "condition": (a.condition or "").strip()[:300], "at": _iso(),
+    rec = {"meaning": a.meaning, "condition": cond, "full": True, "at": _iso(),
            "label": mask("%s %s" % (a.cat, a.subject)),
            "answer_sha256": hashlib.sha256(ans.encode("utf-8")).hexdigest()}
     _ledger({"event": "decision", "key": key, "meaning": a.meaning, "changed": bool(a.user_changed),
              "answer_sha256": rec["answer_sha256"]})              # 기록 먼저
     d["items"][key] = rec
-    if legacy != key:
-        d["items"].pop(legacy, None)                 # 옛 판 키는 새 키로 옮긴다(사용자가 바꾼 때)
+    for legacy in _legacy_keys(a.cat, a.subject):
+        if legacy != key:
+            d["items"].pop(legacy, None)             # 옛 판 키는 새 키로 옮긴다(사용자가 바꾼 때)
     _write_json(_p(DECISIONS), d)
     word = {"allow": "허락", "deny": "안 함", "conditional": "조건부 허락(%s)" % mask(rec["condition"])}[a.meaning]
     return out({"ok": True, "key": key, "say": "알겠습니다 — 앞으로 「%s」은(는) %s 으로 계속 따르겠습니다. 다시 여쭙지 않습니다."

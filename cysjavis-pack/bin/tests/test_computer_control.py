@@ -6,6 +6,7 @@
 뮤턴트 하네스(mut_computer_control.py)는 CC_MODULE 로 변이 사본을 가리키고 이 파일을 그대로 돌린다.
 """
 import builtins
+import hashlib
 import importlib.util
 import io
 import json
@@ -1063,6 +1064,40 @@ class TestChromeEnable(Base):
         self.assertIs(self.cfg()["claudeInChromeDefaultEnabled"], True)   # 다시 끄기는 연결 파일만 — 사용자 선택을 덮지 않는다
         self.assertFalse(os.path.exists(os.path.join(self.state, "chrome-enable.json")))
 
+    def test_reenable_after_failed_delete_restores_key(self):
+        # codex R3 major: 삭제 실패로 남은 「키 되돌림 끝」 표지를 다시 켜기가 지워야 다음 끄기가 키를 원래 값으로 되돌린다
+        for prior in (None, False, True):     # (subTest 를 쓰지 않는다 — 뮤턴트 하네스는 verbose 의 시험 줄만 읽는다)
+            for f in (os.path.join(self.state, "chrome-enable.json"), self.manifest):
+                if os.path.exists(f):
+                    os.remove(f)
+            self.make_chrome(nmh=False)
+            self.write_cfg(chrome_default=prior)
+            self.set_probes(act={"nmh": self.nmh_touch()})
+            self.run_cli("chrome-enable", "--seat-restart", "no")
+            self.set_probes(act={"nmh_remove": {"rc": 1}})
+            self.run_cli("chrome-disable")
+            self.set_probes(act={"nmh": self.nmh_touch()})
+            self.run_cli("chrome-enable", "--seat-restart", "no")
+            self.assertIs(self.cfg()["claudeInChromeDefaultEnabled"], True)
+            self.set_probes(act={"nmh_remove": {"rc": 0}})
+            self.run_cli("chrome-disable")
+            if prior is None:
+                self.assertNotIn("claudeInChromeDefaultEnabled", self.cfg(), prior)
+            else:
+                self.assertIs(self.cfg()["claudeInChromeDefaultEnabled"], prior, prior)
+
+    def test_prior_true_nmh_only_round_trip(self):
+        # codex R3 major: 키가 원래 켜져 있고 연결 파일만 만든 뒤 끄면 키는 원래 true 그대로
+        self.make_chrome(nmh=False)
+        self.write_cfg(chrome_default=True)
+        self.set_probes(act={"nmh": self.nmh_touch()})
+        rc, d, _ = self.run_cli("chrome-enable", "--seat-restart", "no")
+        self.assertEqual(d["done"], ["nmh"])
+        self.assertEqual(jload(os.path.join(self.state, "chrome-enable.json"))["prior_key"], {"present": True, "value": True})
+        rc, d, _ = self.run_cli("chrome-disable")
+        self.assertIs(self.cfg()["claudeInChromeDefaultEnabled"], True)
+        self.assertIn("nmh_remove", self.kinds())
+
     def test_win_round_trip_enable_then_disable(self):
         # codex R2 major: 윈 생성 기록에 실제 매니페스트(등록값) sha 가 들어가야 끄기가 자기 등록을 지운다
         os.environ["CYS_CC_PLATFORM"] = "win"
@@ -1453,6 +1488,74 @@ class TestPrecedent(Base):
         rc, r, _ = self.run_cli("remember", "external_send", "--subject", "보고서 → 팀 드라이브",
                                 "--answer-file", self.answer("응"), "--meaning", "allow")
         self.assertEqual((rc, r["reason"]), (7, "already_decided"))
+
+    def test_r2_format_new_type_key_honored(self):
+        # codex R3 blocking: ad474d66 판 새 유형 키(`유형 원문:대상 해시`)로 남은 허락·거부·조건부도 그대로 따른다
+        os.makedirs(self.state, exist_ok=True)
+        h = lambda x: hashlib.sha256(x.encode("utf-8")).hexdigest()[:16]
+        with open(os.path.join(self.state, "decisions.json"), "w") as f:
+            json.dump({"items": {"custom_export:" + h("a"): {"meaning": "allow", "at": "t"},
+                                 "custom_export:" + h("b"): {"meaning": "deny", "at": "t"},
+                                 "custom_export:" + h("c"): {"meaning": "conditional", "condition": "팀 안", "at": "t"}}}, f)
+        got = [self.run_cli("decide", "custom_export", "--subject", x)[1]["decision"] for x in "abc"]
+        self.assertEqual(got, ["do", "never", "check"])
+        rc, r, _ = self.run_cli("remember", "custom_export", "--subject", "a", "--answer-file", self.answer("응"),
+                                "--meaning", "allow")
+        self.assertEqual((rc, r["reason"]), (7, "already_decided"))
+        rc, r, _ = self.run_cli("remember", "custom_export", "--subject", "a", "--answer-file", self.answer("응"),
+                                "--meaning", "deny", "--user-changed")
+        self.assertEqual(rc, 0, r)
+        self.assertEqual(set(self.dec()), {self.m.decision_key("custom_export", "a"), "custom_export:" + h("b"),
+                                           "custom_export:" + h("c")})          # 바꾼 것만 새 키로 옮겨지고 옛 키는 지워진다
+        self.assertEqual(self.run_cli("decide", "custom_export", "--subject", "a")[1]["decision"], "never")
+
+    def test_check_hides_condition_identifiers_and_matches_locally(self):
+        # codex R3 major: 저장된 조건은 뒤 대화에서 다시 읽힌다 — check 출력에 이메일·번호 원문 0 · 이번 건 대조는 로컬 참/거짓
+        cond = "%s 와 010-1234-5678 로만 · 외부 수신자 금지" % EMAIL
+        self.run_cli("remember", "external_send", "--subject", "보고서", "--answer-file", self.answer("응"),
+                     "--meaning", "conditional", "--condition", cond)
+        rc, d, _ = self.run_cli("decide", "external_send", "--subject", "보고서")
+        self.assertEqual(d["decision"], "check")
+        self.assertEqual(d["condition"], "<이메일1> 와 <번호1> 로만 · 외부 수신자 금지")
+        self.assertNotIn("what_ids_in_condition", d)
+        rc, d, _ = self.run_cli("decide", "external_send", "--subject", "보고서", "--what", "%s 에게 보냄" % EMAIL.lower())
+        self.assertIs(d["what_ids_in_condition"], True)
+        rc, d, _ = self.run_cli("decide", "external_send", "--subject", "보고서", "--what", "other@example.invalid 에게 보냄")
+        self.assertIs(d["what_ids_in_condition"], False)
+        blob = json.dumps(d, ensure_ascii=False)
+        for x in (EMAIL, "010-1234-5678", "other@example.invalid"):
+            self.assertNotIn(x, blob)
+
+    def test_condition_too_long_rejected_not_truncated(self):
+        # codex R3 major: 조건을 잘라 저장하면 끝의 제한이 사라진다 — 한도를 넘으면 기록하지 않는다
+        cond = "가" * self.m.MAX_CONDITION + " 외부 수신자 금지"
+        rc, r, _ = self.run_cli("remember", "external_send", "--subject", "s", "--answer-file", self.answer("응"),
+                                "--meaning", "conditional", "--condition", cond)
+        self.assertEqual((rc, r["reason"]), (2, "condition_too_long"))
+        self.assertEqual(self.dec(), {})
+        cond = "가" * 395 + " 외부 수신자 금지"
+        rc, r, _ = self.run_cli("remember", "external_send", "--subject", "s", "--answer-file", self.answer("응"),
+                                "--meaning", "conditional", "--condition", cond)
+        self.assertEqual(rc, 0, r)
+        self.assertEqual(list(self.dec().values())[0]["condition"], cond)       # 끝까지 그대로
+
+    def test_legacy_truncated_condition_never_do(self):
+        # codex R3 major: 옛 판이 300자에서 잘라 둔 조건으로는 조건 확인이 있어도 do 를 내지 않는다
+        os.makedirs(self.state, exist_ok=True)
+        with open(os.path.join(self.state, "decisions.json"), "w") as f:
+            json.dump({"items": {self.m.decision_key("external_send", "s"):
+                                 {"meaning": "conditional", "condition": "가" * 300, "at": "t"}}}, f)
+        rc, d, _ = self.run_cli("decide", "external_send", "--subject", "s", "--condition-met", "yes")
+        self.assertEqual(d["decision"], "each")
+
+    def test_word_subdomain_is_not_word_app(self):
+        # codex R3 major: 도메인 안의 하위 이름(word.example.invalid 의 word)은 Word 사용 근거가 아니다 · 등록 이름 일치만
+        os.makedirs(os.path.join(self.apps, "Microsoft Word.app"))
+        rc, d, _ = self.run_cli("decide", "login", "--subject", "word.example.invalid")
+        self.assertEqual(d["decision"], "ask")
+        rc, d, _ = self.run_cli("decide", "login", "--subject", "mail.gmail.com")
+        self.assertEqual(d["decision"], "do")                          # 커넥터 Gmail = 등록 이름 gmail
+        self.assertEqual(self.m._domain_label("login.naver.co.kr"), "naver")   # 2단계 국가 도메인
 
     def test_word_app_does_not_match_wordpress(self):
         os.makedirs(os.path.join(self.apps, "Microsoft Word.app"))

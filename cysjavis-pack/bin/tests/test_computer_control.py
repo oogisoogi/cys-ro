@@ -22,7 +22,7 @@ BIN = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MOD_PATH = os.environ.get("CC_MODULE") or os.path.join(BIN, "javis_computer_control.py")
 REAL_STATE = os.path.join(os.path.expanduser("~"), ".cys", "computer-control")
 
-EMAIL = "CC-TEST-EMAIL@example.invalid"
+EMAIL = "CC-TEST-EMAIL@example.com"
 NAME = "CC-TEST-NAME"
 ORG = "CC-TEST-ORG"
 PROFILE = "CC-TEST-PROFILE"

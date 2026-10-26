@@ -1137,7 +1137,7 @@ def cmd_request_prompt(a):
 
 
 # ───────────────────────── self-test ─────────────────────────
-FORBIDDEN_MARKS = ("CC-TEST-EMAIL@example.invalid", "CC-TEST-NAME", "CC-TEST-ORG", "CC-TEST-PROFILE")
+FORBIDDEN_MARKS = ("CC-TEST-EMAIL@example.com", "CC-TEST-NAME", "CC-TEST-ORG", "CC-TEST-PROFILE")
 
 
 def self_test():

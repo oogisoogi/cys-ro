@@ -230,6 +230,8 @@ codex 가 못 한 것(정직): 읽기 전용 샌드박스라 단위 시험을 �
 
 **codex R2**(revision 02c171d4 · verdict REVISE · major 1 · 정본 `…-r2-codex.json`): 1R 3건 해소 확인(목록 바인딩·감사 기록 순서 「확인했다」). 새 major 1 = **1R 반영이 만든 결함** — `recheck` 가 합친 ID 의 상태를 첫 구성원으로 대표해 ① 거둔 구성원까지 「맡습니다」라고 말하고 ② 첫 구성원이 active 면 다음 pending 구성원을 활성화하지 않았다. 반영 = 구성원마다 장부 보유·상태를 따로 계산(`states` 반환 · 맡기지 않은 구성원은 「맡기지 않으셨습니다」로 분리) · 회귀 `test_recheck_merged_reports_per_member` · `test_recheck_merged_activates_all_pending_members` · M27·M28. 시험 47 · 뮤턴트 28/28.
 
+**codex R3**(revision f3ab895a · verdict **ACCEPT** · major 0 · 정본 `…-r3-codex.json`): R2 두 실패 시나리오 해소 확인 · 추가 수정 요구 없음. 정직 고지: 세 라운드 모두 codex 는 읽기 전용 샌드박스에서 메모리 대체 검증만 했고(R3 = 41건) 실제 OS 탐지·저장은 돌리지 않았다.
+
 ### 12-5. 1.1.12 후보(BACKLOG 한 줄 — master TODO 에 옮겨 적을 것)
 - D1-ⓑ 장부 + 훅 차단: 장부가 있는 기계에서 본부 master 의 `mcp__computer-use__*`·`mcp__claude-in-chrome__*` 를 장부 밖이면 거부(role-capability-gate 에 본부 master 축).
 - (실기 E2 ⑷) computer-use 가 cysr 을 터미널로 못 알아봐 「Claude desktop app」 이라고 안내하는 문제 — 스킬 `computer-control` 에 「cysr 로 바꿔 말하라」 고지를 넣었다(커밋 이 줄과 같은 커밋) · 2.1강 「안 되는 것」 표 반영은 master 경유(이 워커 범위 밖) · 근본(벤더 터미널 표)은 우리 밖.

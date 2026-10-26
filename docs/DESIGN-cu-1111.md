@@ -176,3 +176,49 @@ codex(또는 agy) — 범위 = 이 문서 §3·§6 + 구현 diff · 초점 = 권
 - S6 요금제 값 어휘 중 `claude_pro`·`claude_team`·`claude_enterprise` 는 실물 미확인(이름 추정) — 모르는 값은 「?」.
 - S9 는 Claude Code 내부 구현이다 — 판본이 바뀌면 깨질 수 있다(`measured_on: 2.1.310` 핀 · 다르면 「?」 + 「/mcp 에서 직접 확인」 안내).
 - 「바로」 판정의 크롬은 「확장·연결 파일·기본 켜짐이 다 있다」까지다 — **확장의 로그인 계정이 마스터와 같은 조직인지는 확장 저장소를 열어야 알 수 있어 열지 않는다** → 첫 사용 때 「not connected」가 나면 G4 안내로 내려간다.
+
+---
+
+## 12. 구현 기록(2단계 · 2026-10-26 · 승인 = master#8d930a12 09:14 · 재개 = master#a30df3f1 18:40)
+
+### 12-1. 만든 것
+| 파일 | 내용 |
+|---|---|
+| `cysjavis-pack/bin/javis_computer_control.py` | 동사 9개(scan·grant·guide·recheck·revoke·status·open-settings·request-prompt·self-test) · 표준 라이브러리 + ctypes |
+| `cysjavis-pack/skills/computer-control/SKILL.md` | 마스터 절차(dept-by-chat 서식) |
+| `cysjavis-pack/bin/javis_preflight.py` | `HARNESS_SKILLS` += `computer-control`(좌석 exec 전 스킬 링크) |
+| `src/factory_reset.rs` | `CYS_BASE_EXACT` += `computer-control`(배열 28→29) |
+| `cysjavis-pack/bin/tests/test_computer_control.py` · `mut_computer_control.py` | 시험 39 · 뮤턴트 20 |
+
+### 12-2. 승인 설계와 달라진 것(전부 이 문서 §3·§4 대비 · 이유 = 실측)
+1. **앱 줄을 화면 조작 줄로 접음**(§3-1 `apps` 항목 → 없음): 호스트 실측에서 앱 8개가 화면 조작과 같은 판정·같은 안내를 8번 반복해 목록이 20줄이 됐다. 화면 조작 줄 제목에 「이 컴퓨터의 앱: 카카오톡·한글·…」로 싣고 카톡·한글 고지는 그 줄의 note 로 옮겼다. 넘김 단위 = 화면 조작 1개.
+2. **같은 판정의 스크립트·폴더 줄을 한 줄로 합침**: ID = `script:mail,calendar` 형태. `recheck`·`guide`·`status` 는 합친 ID 의 구성원을 **지금 판정으로 다시 합친다**(가장 나쁜 칸 · 모름 하나면 모름).
+3. **「처음 쓸 때 맥이 묻는 것」은 넘기면 바로 active**: 보호 폴더·아직 안 물은 앱 자동화(-1744)는 지금 할 일이 없어 `recheck` 로 영원히 안 바뀐다(pending 고착). 칸은 그대로 「손 한 번」으로 보이고, 넘길 때 그 한 번(「허용」)을 안내한다.
+4. **윈 스크립트 = 「지금은 안 됨」**(§3-2 는 「?」): 「?」는 손 칸에 놓이고 `recheck` 로 풀릴 것처럼 보이는데 1.1.11 에서는 풀 길이 없다 — 「다음 판에서 엽니다」로 정직하게.
+5. **computer-use 기록 대조 = 그 폴더 또는 git 최상위만**: 처음 스파이크는 「가장 가까운 상위 폴더」였으나, 상위(예: 홈)는 다른 프로젝트의 기록이라 빌려 쓰면 「바로」 오판이 난다(뮤턴트 M13).
+6. **`request-prompt` 는 사용자 답 원문 파일을 요구**(D2 「네」 뒤에만의 기계 벨트 — 빈 파일 exit 2).
+7. **`grant --folder <경로>`**: 사용자가 목록 밖 폴더를 말할 때(맥 보호 폴더 아래면 「처음 열 때 허용」).
+8. **MASTER_DIRECTIVE 1~2줄 = 넣지 못함**(D3 일부 미이행 · 📌 master 결정): `test_cso_directive_rev.test_directive_byte_budget_ratchet` 가 `MASTER_DIRECTIVE.md` 를 84,987B 상한으로 묶고 HEAD 가 정확히 84,987B 다(여유 0) — 853B 절을 넣자 그 시험과 CEO_TEMPLATE 합성 등가 시험(`test_bootv2_doc_contract` ⑤)이 적색. 예산을 올리거나 다른 절을 줄이는 것은 이 티켓 범위 밖이라 되돌렸다. 지금 입구 = 스킬 등록만(스킬 설명이 마스터의 스킬 목록에 늘 실린다).
+9. 「안 됨」 번호만 고르면 exit 5 · 섞여 있으면 나머지는 처리하고 거부 문장을 함께 낸다.
+
+### 12-3. 동사 계약(구현 그대로)
+- `scan` → `{"ok", "platform", "groups": {ready|hand|not_now: [번호]}, "items": [{n, id, tier, unknown}], "say"}` · `scan.json` 기록.
+- `grant --pick 1,3 --answer-file F [--folder P]` → `{"ok", "active": [ID], "pending": [ID], "refused": [ID], "next_guide", "say"}` · scan 없음/30분 지남 = exit 7(`no_scan`·`stale_scan`) · 없는 번호 = exit 4 · 숫자 아님·빈 답 = exit 2 · 장부 기록에 답 원문은 sha256 만.
+- `guide <ID> [--step n]` → `{"ok", "step", "total", "last", "say"}`(지금 빠진 단계만 · n 은 1..total 로 자름) · 바로 칸이면 `done: true`.
+- `recheck <ID>` → `{"ok", "tier", "state", "say"}` — 바로가 되면 장부 pending → active.
+- `revoke <ID>` → 장부에서 빼고 끄는 곳 안내 · 없으면 exit 4.
+- `status` → `{"ok", "rows": [{id, state, now}], "say"}` — active 인데 지금 꺼져 있으면 경고 문장.
+- `open-settings accessibility|screen|automation`(맥만 · 허용 목록 밖 exit 5) · `request-prompt ax|sc --answer-file F`(맥만).
+- 상태 폴더 = `~/.cys/computer-control/`(`CYS_CC_STATE` 로 바꿈) · 시험 주입 = `CYS_CC_FAKE_PROBES` · `CYS_CC_PLATFORM` · `CYS_CC_PROJECT` · `CYS_CC_APP_ROOTS`.
+
+### 12-4. 실기
+| # | 어디서 | 무엇 | 결과 |
+|---|---|---|---|
+| E1 | 박사님 맥 · 이 좌석 · 상태 폴더 = scratchpad(실 `~/.cys/computer-control` 무접촉) | scan → grant 1,4,6 → guide → recheck → status → revoke · 거부 경로 | 전 동사 기대대로. 판정 = 크롬·커넥터·Finder/PowerPoint 자동화 바로 · 화면 조작 손(남은 것: /mcp · 화면 기록) — DIAGNOSIS §1(이 맥 cysr 좌석 화면 기록 꺼짐)과 일치 |
+| E2 | 박사님 맥 · **원 계정 좌석**(CLAUDE_CONFIG_DIR=~/.cys/claude) · 전용 시험 폴더 `~/axdev/.wt/cu-r1-test` | **R1**: `/mcp` → computer-use Enable → 도구가 그 폴더에서 켜짐 판정(남은 것 = 화면 기록 1개) → 시험 세션에 request_access(Finder)·screenshot 시킴 | ⑴ `/mcp` 화면 = 「Built-in MCPs … ◯ computer-use」(기본 꺼짐 확인) · Enable 뒤 `.claude.json` 그 폴더 `enabledMcpServers = ["computer-use"]`(S9 실증) · ⑵ claude-in-chrome 은 `--chrome` 없이 켜짐(S7 실증) · ⑶ computer-use 는 cysr 안에서 **기동한다** — 자체 권한 화면 「Computer Use needs macOS permissions · Accessibility: ✔ granted · Screen Recording: ✘ not granted」 = 이 도구의 S1·S2 판정과 같다 · ⑷ request_access 결과 원문: 「… permissions need to be granted in **the Claude desktop app** on the computer where it's running」 → 시험 세션도 「Claude 앱을 켜 주세요」라고 안내 — **cysr 안에서는 틀린 이름**(스위치 이름 = cysr · VM-LOG V4). R1(터미널 미탐지)의 실제 증상 = 이 오안내다. 이 기능의 안내 문장은 cysr 로 적었다 · ⑸ 화면 기록을 켜는 것은 박사님 전역 설정이라 여기서 멈춤(실제 스크린샷은 미실측) · ⑹ 원복: `/mcp` → Disable → `enabledMcpServers = []` 확인 · 시험 좌석 close · 폴더 삭제. 원래 「그 폴더 기록 없음」이었고 지금은 「기록 있음·computer-use 꺼짐」(`.claude.json` 전역 파일 손편집은 하지 않았다) |
+| E3 | 새 VM(tart clone `ws-perm-1025-a` → `cu-1111-vm` · cysr 1.1.10 · 크롬 · claude 로그인 없음 · 끝나고 삭제) | 도구를 **cysr 좌석 안에서** 실행(sha256 대조) | self-test ok · scan 7줄: Finder 자동화 바로 · 크롬 손(확장 없음·연결 파일 없음 + 기본 켜짐 모름) · 예비 길 손 · 커넥터 확인 필요(로그인 없음) · 화면 조작 확인 필요 · 메일·캘린더 확인 필요(앱 꺼짐) · 보호 폴더 손. **교정 1건**: 모름뿐인 줄에 「남은 것:」이 붙던 문장 → 「확인할 것:」(커밋 4ee2eac0 · 시험 추가) · `open-settings screen` → 시스템 설정 프로세스 0→1 |
+| E4 | 같은 VM | 「보호 폴더 열람 0」을 TCC 로그로 확인 | **판정 불가**: 양성 대조(좌석에서 일부러 `ls ~/Desktop`)도 `log show` TCC 줄 0 — 이 VM 은 바탕화면 허락이 이미 있었고/또는 로그가 권한 없이 안 보인다. 이 주장의 근거는 단위 시험의 열람 감시(`test_no_protected_or_secret_reads`) + 코드(존재 확인 `os.path.isdir` 만)뿐이다 |
+
+### 12-5. 1.1.12 후보(BACKLOG 한 줄 — master TODO 에 옮겨 적을 것)
+- D1-ⓑ 장부 + 훅 차단: 장부가 있는 기계에서 본부 master 의 `mcp__computer-use__*`·`mcp__claude-in-chrome__*` 를 장부 밖이면 거부(role-capability-gate 에 본부 master 축).
+- (실기 E2 ⑷) computer-use 가 cysr 을 터미널로 못 알아봐 「Claude desktop app」 이라고 안내하는 문제 — 스킬·2.1강에 「cysr 이라고 읽으세요」 고지는 넣었고, 근본(벤더 터미널 표)은 우리 밖.

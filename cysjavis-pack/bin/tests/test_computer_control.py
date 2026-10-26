@@ -133,6 +133,14 @@ class Base(unittest.TestCase):
         txt = buf.getvalue().strip()
         return rc, (json.loads(txt) if txt else None), txt
 
+    def seen_scan_id(self):
+        sp = os.path.join(self.state, "scan.json")
+        return jload(sp).get("scan_id") if os.path.exists(sp) else "none"
+
+    def grant_cli(self, *argv):
+        """grant = 사용자가 본(마지막) 목록의 scan_id 를 함께 낸다(codex 1R #1)."""
+        return self.run_cli("grant", "--scan", self.seen_scan_id(), *argv)
+
     def answer(self, text="1번 맡겨 줘"):
         p = os.path.join(self.tmp, "answer.txt")
         with open(p, "w", encoding="utf-8") as f:
@@ -334,8 +342,9 @@ class TestVerdicts(Base):
 class TestBoundaries(Base):
     def _all_verbs(self):
         outs = []
-        for argv in (("scan",), ("grant", "--pick", "1,2,3", "--answer-file", self.answer()),
+        for argv in (("scan",), ("grant", "--scan", "__SEEN__", "--pick", "1,2,3", "--answer-file", self.answer()),
                      ("status",), ("guide", "screen"), ("recheck", "chrome"), ("revoke", "chrome")):
+            argv = tuple(self.seen_scan_id() if x == "__SEEN__" else x for x in argv)
             outs.append(self.run_cli(*argv)[2])
         return outs
 
@@ -428,15 +437,20 @@ class TestBoundaries(Base):
         self.assertEqual(rc, 5)
         self.assertEqual(len(calls), 1)
 
+    def test_request_prompt_needs_meaning_yes(self):
+        rc, d, _ = self.run_cli("request-prompt", "ax", "--answer-file", self.answer("아니요, 띄우지 마세요"),
+                                "--meaning", "no")
+        self.assertEqual((rc, d["reason"]), (5, "not_yes"))
+
     def test_request_prompt_requires_user_answer(self):
         empty = os.path.join(self.tmp, "empty.txt")
         open(empty, "w").close()
-        rc, d, _ = self.run_cli("request-prompt", "ax", "--answer-file", empty)
+        rc, d, _ = self.run_cli("request-prompt", "ax", "--answer-file", empty, "--meaning", "yes")
         self.assertEqual(rc, 2)
-        rc, d, _ = self.run_cli("request-prompt", "sc", "--answer-file", self.answer("네 띄워 주세요"))
+        rc, d, _ = self.run_cli("request-prompt", "sc", "--answer-file", self.answer("네 띄워 주세요"), "--meaning", "yes")
         self.assertEqual(rc, 0)
         os.environ["CYS_CC_PLATFORM"] = "win"
-        rc, d, _ = self.run_cli("request-prompt", "sc", "--answer-file", self.answer("네"))
+        rc, d, _ = self.run_cli("request-prompt", "sc", "--answer-file", self.answer("네"), "--meaning", "yes")
         self.assertEqual(rc, 5)
 
     def test_subprocess_stdin_devnull(self):
@@ -464,33 +478,33 @@ class TestGrants(Base):
         self.make_chrome()
         rc, d, _ = self.run_cli("scan")
         n_chrome = self.item(d, "chrome")["n"]
-        rc, g, _ = self.run_cli("grant", "--pick", str(n_chrome), "--answer-file", self.answer())
+        rc, g, _ = self.grant_cli("--pick", str(n_chrome), "--answer-file", self.answer())
         self.assertEqual(rc, 0, g)
         self.assertEqual(sorted(self.grants()), ["chrome"])
 
     def test_grant_gates(self):
-        rc, d, _ = self.run_cli("grant", "--pick", "1", "--answer-file", self.answer())
+        rc, d, _ = self.grant_cli("--pick", "1", "--answer-file", self.answer())
         self.assertEqual((rc, d["reason"]), (7, "no_scan"))
         self.run_cli("scan")
-        rc, d, _ = self.run_cli("grant", "--pick", "99", "--answer-file", self.answer())
+        rc, d, _ = self.grant_cli("--pick", "99", "--answer-file", self.answer())
         self.assertEqual(rc, 4)
-        rc, d, _ = self.run_cli("grant", "--pick", "1", "--answer-file", self.answer(" \n"))
+        rc, d, _ = self.grant_cli("--pick", "1", "--answer-file", self.answer(" \n"))
         self.assertEqual(rc, 2)
-        rc, d, _ = self.run_cli("grant", "--pick", "다", "--answer-file", self.answer())
+        rc, d, _ = self.grant_cli("--pick", "다", "--answer-file", self.answer())
         self.assertEqual(rc, 2)
         sp = os.path.join(self.state, "scan.json")
         s = jload(sp)
         s["ts"] = time.time() - 31 * 60
         with open(sp, "w") as f:
             json.dump(s, f)
-        rc, d, _ = self.run_cli("grant", "--pick", "1", "--answer-file", self.answer())
+        rc, d, _ = self.grant_cli("--pick", "1", "--answer-file", self.answer())
         self.assertEqual((rc, d["reason"]), (7, "stale_scan"))
 
     def test_not_now_refused(self):
         self.write_cfg(plan="claude_team")
         rc, d, _ = self.run_cli("scan")
         n = self.item(d, "screen")["n"]
-        rc, g, _ = self.run_cli("grant", "--pick", str(n), "--answer-file", self.answer())
+        rc, g, _ = self.grant_cli("--pick", str(n), "--answer-file", self.answer())
         self.assertEqual(rc, 5)
         self.assertFalse(os.path.exists(os.path.join(self.state, "grants.json")))
 
@@ -498,7 +512,7 @@ class TestGrants(Base):
         self.set_probes(sc=False)
         rc, d, _ = self.run_cli("scan")
         n = self.item(d, "screen")["n"]
-        rc, g, _ = self.run_cli("grant", "--pick", str(n), "--answer-file", self.answer())
+        rc, g, _ = self.grant_cli("--pick", str(n), "--answer-file", self.answer())
         self.assertEqual(g["pending"], ["screen"])
         self.assertIn("1단계", g["say"])
         self.assertEqual(self.grants()["screen"]["state"], "pending")
@@ -514,8 +528,9 @@ class TestGrants(Base):
         rc, d, _ = self.run_cli("scan")
         it = self.item(d, "files:desktop,documents,downloads")
         self.assertEqual(it["tier"], "hand")
-        rc, g, _ = self.run_cli("grant", "--pick", str(it["n"]), "--answer-file", self.answer())
-        self.assertEqual(self.grants()[it["id"]]["state"], "active")
+        rc, g, _ = self.grant_cli("--pick", str(it["n"]), "--answer-file", self.answer())
+        for mid in ("files:desktop", "files:documents", "files:downloads"):
+            self.assertEqual(self.grants()[mid]["state"], "active", mid)
 
     def test_guide_steps_only_missing(self):
         self.set_probes(ax=True, sc=False)
@@ -529,7 +544,7 @@ class TestGrants(Base):
     def test_revoke_removes(self):
         self.make_chrome()
         rc, d, _ = self.run_cli("scan")
-        self.run_cli("grant", "--pick", str(self.item(d, "chrome")["n"]), "--answer-file", self.answer())
+        self.grant_cli("--pick", str(self.item(d, "chrome")["n"]), "--answer-file", self.answer())
         rc, r, _ = self.run_cli("revoke", "chrome")
         self.assertEqual(rc, 0)
         self.assertEqual(self.grants(), {})
@@ -539,7 +554,7 @@ class TestGrants(Base):
     def test_status_warns_when_active_turns_off(self):
         self.run_cli("scan")
         rc, d, _ = self.run_cli("scan")
-        self.run_cli("grant", "--pick", str(self.item(d, "screen")["n"]), "--answer-file", self.answer())
+        self.grant_cli("--pick", str(self.item(d, "screen")["n"]), "--answer-file", self.answer())
         self.set_probes(ax=False)
         rc, s, _ = self.run_cli("status")
         self.assertIn("꺼져 있습니다", s["say"])
@@ -552,10 +567,73 @@ class TestGrants(Base):
         for argv in (("grant", "--pick", str(self.item(d, "chrome")["n"]), "--answer-file", self.answer()),
                      ("revoke", "chrome"),
                      ("grant", "--pick", str(self.item(d, "chrome")["n"]), "--answer-file", self.answer())):
-            self.run_cli(*argv)
+            (self.grant_cli(*argv[1:]) if argv[0] == "grant" else self.run_cli(*argv))
             sizes.append(os.path.getsize(lp))
         self.assertEqual(sizes, sorted(sizes))
         self.assertEqual(len(lines(lp)), 3)
+
+    # ── codex 1R 회귀 ──
+    def test_grant_bound_to_seen_list(self):
+        self.make_chrome(ext=False)              # A 목록: chrome 은 손, connectors 는 바로
+        rc, a, _ = self.run_cli("scan")
+        seen = a["scan_id"]
+        n_chrome = self.item(a, "chrome")["n"]
+        self.run_cli("scan")                     # 다른 대화가 다시 살펴봄(목록 교체)
+        rc, d, _ = self.run_cli("grant", "--scan", seen, "--pick", str(n_chrome), "--answer-file", self.answer())
+        self.assertEqual((rc, d["reason"]), (7, "scan_replaced"))
+        self.assertFalse(os.path.exists(os.path.join(self.state, "grants.json")))
+        rc, b, _ = self.run_cli("scan")
+        os.environ["CYS_CC_PROJECT"] = os.path.join(self.home, "other-folder")
+        rc, d, _ = self.run_cli("grant", "--scan", b["scan_id"], "--pick", "1", "--answer-file", self.answer())
+        self.assertEqual((rc, d["reason"]), (7, "scan_replaced"), "다른 폴더에서 본 목록으로 넘기지 않는다")
+
+    def test_member_revoke_removes_everywhere(self):
+        self.set_probes(ae={"com.apple.finder": 0, "com.apple.mail": 0, "com.apple.iCal": 0})
+        rc, d, _ = self.run_cli("scan")
+        merged = self.item(d, "script:finder,mail,calendar")
+        self.grant_cli("--pick", str(merged["n"]), "--answer-file", self.answer())
+        self.assertEqual(sorted(self.grants()), ["script:calendar", "script:finder", "script:mail"])
+        self.set_probes(ae={"com.apple.finder": 0, "com.apple.mail": -1744, "com.apple.iCal": 0})
+        rc, d, _ = self.run_cli("scan")
+        self.grant_cli("--pick", str(self.item(d, "script:mail")["n"]), "--answer-file", self.answer())
+        rc, r, _ = self.run_cli("revoke", "script:mail")
+        self.assertEqual(rc, 0)
+        self.assertNotIn("script:mail", self.grants())
+        self.assertEqual(sorted(self.grants()), ["script:calendar", "script:finder"])
+        rc, r, _ = self.run_cli("revoke", "script:finder,calendar")
+        self.assertEqual(self.grants(), {})
+
+    def test_legacy_merged_key_normalized(self):
+        os.makedirs(self.state, exist_ok=True)
+        with open(os.path.join(self.state, "grants.json"), "w") as f:
+            json.dump({"items": {"script:mail,calendar": {"state": "active", "title": "x"}}}, f)
+        rc, r, _ = self.run_cli("revoke", "script:mail")
+        self.assertEqual(rc, 0)
+        self.assertEqual(sorted(self.grants()), ["script:calendar"])
+
+    def test_ledger_failure_leaves_no_active(self):
+        self.make_chrome()
+        rc, d, _ = self.run_cli("scan")
+
+        def boom(event):
+            raise PermissionError("ledger")
+        self.m._ledger = boom
+        rc, g, _ = self.grant_cli("--pick", str(self.item(d, "chrome")["n"]), "--answer-file", self.answer())
+        self.assertEqual(rc, 1)
+        self.assertFalse(os.path.exists(os.path.join(self.state, "grants.json")), "기록 실패인데 장부가 바뀜")
+
+    def test_recheck_ledger_failure_keeps_pending(self):
+        self.set_probes(sc=False)
+        rc, d, _ = self.run_cli("scan")
+        self.grant_cli("--pick", str(self.item(d, "screen")["n"]), "--answer-file", self.answer())
+        self.set_probes(sc=True)
+
+        def boom(event):
+            raise PermissionError("ledger")
+        self.m._ledger = boom
+        rc, r, _ = self.run_cli("recheck", "screen")
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.grants()["screen"]["state"], "pending")
 
     def test_ledger_cap(self):
         self.m.MAX_LEDGER_LINES = 4

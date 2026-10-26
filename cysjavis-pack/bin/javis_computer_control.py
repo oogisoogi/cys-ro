@@ -523,7 +523,7 @@ def verdict_folder(plat, protected):
 # ───────────────────────── 항목 만들기 ─────────────────────────
 def _item(iid, title, tier, unknown, missing, reason, note=""):
     return {"id": iid, "title": title, "tier": tier, "unknown": bool(unknown),
-            "missing": list(missing), "reason": reason, "note": note}
+            "missing": list(missing), "reason": reason, "note": note, "members": [[iid, title]]}
 
 
 MISSING_LABEL = {
@@ -608,8 +608,10 @@ def _merge(group):
     for it in group:
         missing += [m for m in it["missing"] if m not in missing]
     title = ("%s 자동화(스크립트)" if kind == "script" else "파일·폴더: %s") % "·".join(names)
-    return dict(_item(kind + ":" + ",".join(it["id"].split(":", 1)[1] for it in group), title, worst["tier"],
-                      any(it["unknown"] for it in group), missing, worst["reason"]), name="·".join(names))
+    merged = dict(_item(kind + ":" + ",".join(it["id"].split(":", 1)[1] for it in group), title, worst["tier"],
+                        any(it["unknown"] for it in group), missing, worst["reason"]), name="·".join(names))
+    merged["members"] = [m for it in group for m in it["members"]]   # ★codex 1R #2: 저장·철회 단위 = 구성원
+    return merged
 
 
 def merge_items(items):
@@ -733,10 +735,28 @@ def steps_for(it):
 
 
 # ───────────────────────── 장부 ─────────────────────────
+def member_ids(iid):
+    """`script:mail,calendar` → [`script:mail`, `script:calendar`] · 단일 ID 는 그대로."""
+    kind, _, rest = iid.partition(":")
+    if kind in MERGE_KINDS and "," in rest:
+        return [kind + ":" + x for x in rest.split(",") if x]
+    return [iid]
+
+
 def load_grants():
+    """장부 — 키는 언제나 구성원 ID 다(codex 1R #2). 옛 합친 키는 읽을 때 구성원으로 펼친다(active 가 이긴다)."""
     g = _read_json(_p("grants.json"))
     if not isinstance(g, dict) or not isinstance(g.get("items"), dict):
         return {"items": {}}
+    items = {}
+    for k, v in g["items"].items():
+        if not isinstance(v, dict):
+            continue
+        for mid in member_ids(k):
+            cur = items.get(mid)
+            if cur is None or (v.get("state") == "active" and cur.get("state") != "active"):
+                items[mid] = dict(v)
+    g["items"] = items
     return g
 
 
@@ -783,9 +803,10 @@ def render_scan(items):
 def cmd_scan(a):
     plat = platform()
     items = number_items(build_items(plat, _project()))
+    scan_id = "s" + os.urandom(4).hex()   # ★codex 1R #1: 사용자가 본 목록 = 이 ID(grant 가 같은 ID 를 내야 한다)
     _write_json(_p("scan.json"), {"ts": _now(), "at": _iso(), "platform": plat, "measured_on": MEASURED_ON,
-                                  "items": items})
-    return out({"ok": True, "platform": plat,
+                                  "scan_id": scan_id, "project": os.path.realpath(_project()), "items": items})
+    return out({"ok": True, "scan_id": scan_id, "platform": plat,
                 "groups": {t: [it["n"] for it in items if it["tier"] == t] for t in (READY, HAND, NOT_NOW)},
                 "items": [{k: it[k] for k in ("n", "id", "tier", "unknown")} for it in items],
                 "say": render_scan(items)})
@@ -802,13 +823,16 @@ def _parse_pick(s):
     return nums
 
 
-def _fresh_scan():
+def _fresh_scan(scan_id=None):
     s = load_scan()
     if s is None:
         return None, fail("먼저 컴퓨터를 한 번 살펴봐야 합니다 — 「내 컴퓨터에서 맡을 수 있는 걸 찾아 줘」라고 말씀해 주세요.",
                           "no_scan", 7)
     if _now() - float(s.get("ts") or 0) > SCAN_TTL_SEC:
         return None, fail("살펴본 지 시간이 좀 지났습니다 — 다시 한 번 살펴본 뒤 고르시게 할게요.", "stale_scan", 7)
+    if scan_id != s.get("scan_id") or os.path.realpath(_project()) != s.get("project"):
+        # ★codex 1R #1: 그 사이 다른 대화·폴더에서 다시 살펴봐 번호가 바뀌었을 수 있다 — 옛 번호로 넘기지 않는다
+        return None, fail("보여 드린 목록이 그 사이 바뀌었습니다 — 다시 살펴본 목록에서 골라 주세요.", "scan_replaced", 7)
     return s, None
 
 
@@ -823,7 +847,7 @@ def cmd_grant(a):
     picks = _parse_pick(a.pick)
     if not picks:
         return fail("번호를 알아듣지 못했습니다 — 맡기실 번호를 숫자로 말씀해 주세요.", "pick", 2)
-    s, err = _fresh_scan()
+    s, err = _fresh_scan(a.scan)
     if err is not None:
         return err
     by_n = {it["n"]: it for it in s["items"]}
@@ -839,7 +863,8 @@ def cmd_grant(a):
             said.append("%d. %s — 지금은 안 됩니다: %s" % (n, it["title"], it["reason"]))
             continue
         state = "active" if it["tier"] == READY or first_use_only(it) else "pending"
-        g["items"][it["id"]] = {"state": state, "title": it["title"], "at": _iso()}
+        for mid, mtitle in it.get("members") or [[it["id"], it["title"]]]:
+            g["items"][mid] = {"state": state, "title": mtitle, "at": _iso()}
         (granted if state == "active" else pending).append(it)
     if a.folder:
         fp = os.path.realpath(os.path.expanduser(a.folder))
@@ -851,11 +876,12 @@ def cmd_grant(a):
         said.append("폴더 %s — %s" % (os.path.basename(fp) or fp, r))
     if not granted and not pending and not a.folder:
         return fail("\n".join(said), "not_now", 5)
-    save_grants(g)
-    _ledger({"event": "grant", "picks": sorted(set(picks)),
+    # ★codex 1R #3: 감사 기록이 먼저다 — 기록이 실패하면(예외) 장부는 바뀌지 않는다(기록 없는 active 0)
+    _ledger({"event": "grant", "scan_id": s.get("scan_id"), "picks": sorted(set(picks)),
              "active": [it["id"] for it in granted], "pending": [it["id"] for it in pending],
              "refused": [it["id"] for it in refused],
              "answer_sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest()})
+    save_grants(g)
     lines = []
     if granted:
         lines.append("지금부터 제가 맡겠습니다: " + ", ".join(it["title"].split("(")[0].strip() for it in granted) + ".")
@@ -916,16 +942,20 @@ def cmd_recheck(a):
     if it is None:
         return fail("그 항목을 찾지 못했습니다.", "not_found", 4)
     g = load_grants()
-    cur = g["items"].get(a.id)
+    mids = member_ids(a.id)
+    held = [m for m in mids if m in g["items"]]
+    cur = g["items"].get(held[0]) if held else None
     if first_use_only(it):
         return out({"ok": True, "tier": it["tier"], "state": (cur or {}).get("state"),
                     "say": "이건 지금 하실 것이 없습니다 — %s" % it["reason"]})
     if it["tier"] == READY:
         if cur is not None and cur.get("state") != "active":
-            cur["state"] = "active"
-            cur["at"] = _iso()
+            flip = [m for m in held if g["items"][m].get("state") != "active"]
+            _ledger({"event": "activate", "ids": flip})          # ★codex 1R #3: 기록 먼저 · 실패면 장부 불변
+            for m in flip:
+                g["items"][m]["state"] = "active"
+                g["items"][m]["at"] = _iso()
             save_grants(g)
-            _ledger({"event": "activate", "id": a.id})
         head = "확인했습니다. 「%s」은(는) 이제 제가 맡습니다." % it["title"].split("(")[0].strip() if cur is not None \
             else "확인했습니다. 「%s」은(는) 준비돼 있습니다(아직 맡기지는 않으셨습니다)." % it["title"].split("(")[0].strip()
         return out({"ok": True, "tier": READY, "state": (cur or {}).get("state"), "say": head})
@@ -937,16 +967,17 @@ def cmd_recheck(a):
 
 def cmd_revoke(a):
     g = load_grants()
-    if a.id not in g["items"] and a.id not in g.get("folders", {}):
+    mids = [m for m in member_ids(a.id) if m in g["items"]]   # ★codex 1R #2: 합친 ID 면 구성원 전부를 거둔다
+    if not mids and a.id not in g.get("folders", {}):
         return fail("그 항목은 맡고 있지 않습니다.", "not_found", 4)
-    v = g["items"].pop(a.id, None)
-    if v is None:
-        g.get("folders", {}).pop(a.id, None)
-        title, hint = "폴더 " + (os.path.basename(a.id) or a.id), REVOKE_HINT["files"]
+    if mids:
+        titles = [(g["items"].pop(m).get("title") or m).split("(")[0].strip() for m in mids]
+        title, hint = "·".join(titles), REVOKE_HINT.get(_kind(a.id), "")
     else:
-        title, hint = (v.get("title") or a.id).split("(")[0].strip(), REVOKE_HINT.get(_kind(a.id), "")
-    save_grants(g)
-    _ledger({"event": "revoke", "id": a.id if v is not None else "folder"})
+        g["folders"].pop(a.id, None)
+        title, hint = "폴더 " + (os.path.basename(a.id) or a.id), REVOKE_HINT["files"]
+    save_grants(g)   # 거둠은 저장이 먼저다 — 기록이 실패해도 남는 쪽이 안전한 상태(맡지 않음)
+    _ledger({"event": "revoke", "ids": mids or ["folder"]})
     return out({"ok": True, "say": "알겠습니다. 「%s」은(는) 이제 맡지 않겠습니다. %s" % (title, hint)})
 
 
@@ -992,6 +1023,10 @@ def cmd_request_prompt(a):
         return fail("사용자 답을 읽지 못했습니다.", "io", 2)
     if not ans.strip():
         return fail("창을 띄우기 전에 사용자께 먼저 여쭤 주세요.", "empty_answer", 2)
+    if a.meaning != "yes":
+        # ★codex 1R(논쟁점): 「아니요」도 빈 답이 아니다 — 승낙의 뜻은 마스터가 판단해 명시하고, yes 가 아니면 띄우지 않는다
+        _ledger({"event": "request_prompt_declined", "which": a.which, "meaning": a.meaning})
+        return fail("알겠습니다. 요청 창은 띄우지 않겠습니다.", "not_yes", 5)
     if os.environ.get("CYS_CC_FAKE_PROBES"):
         shown = True
     else:
@@ -1089,6 +1124,7 @@ def main(argv=None):
     sp.add_parser("scan")
     g = sp.add_parser("grant")
     g.add_argument("--pick", required=True)
+    g.add_argument("--scan", required=True, help="사용자가 본 목록의 scan_id(scan 출력)")
     g.add_argument("--answer-file", required=True)
     g.add_argument("--folder")
     for name in ("guide", "recheck", "revoke"):
@@ -1102,6 +1138,7 @@ def main(argv=None):
     rp = sp.add_parser("request-prompt")
     rp.add_argument("which", choices=("ax", "sc"))
     rp.add_argument("--answer-file", required=True)
+    rp.add_argument("--meaning", required=True, choices=("yes", "no", "unclear"))
     sp.add_parser("self-test")
     try:
         a = ap.parse_args(argv)

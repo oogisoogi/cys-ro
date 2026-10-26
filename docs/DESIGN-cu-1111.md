@@ -203,12 +203,12 @@ codex(또는 agy) — 범위 = 이 문서 §3·§6 + 구현 diff · 초점 = 권
 
 ### 12-3. 동사 계약(구현 그대로)
 - `scan` → `{"ok", "platform", "groups": {ready|hand|not_now: [번호]}, "items": [{n, id, tier, unknown}], "say"}` · `scan.json` 기록.
-- `grant --pick 1,3 --answer-file F [--folder P]` → `{"ok", "active": [ID], "pending": [ID], "refused": [ID], "next_guide", "say"}` · scan 없음/30분 지남 = exit 7(`no_scan`·`stale_scan`) · 없는 번호 = exit 4 · 숫자 아님·빈 답 = exit 2 · 장부 기록에 답 원문은 sha256 만.
+- `grant --scan <scan_id> --pick 1,3 --answer-file F [--folder P]` → `{"ok", "active": [ID], "pending": [ID], "refused": [ID], "next_guide", "say"}` · scan 없음/30분 지남 = exit 7(`no_scan`·`stale_scan`) · **보인 목록과 다른 목록(scan_id 불일치)·다른 폴더 = exit 7 `scan_replaced`** · 없는 번호 = exit 4 · 숫자 아님·빈 답 = exit 2 · 장부 기록에 답 원문은 sha256 만 · **감사 기록(ledger)을 먼저 쓰고 장부를 바꾼다**(기록 실패 = 장부 불변) · 장부 키 = 구성원 ID(`script:mail` — 합친 줄을 넘기면 구성원 각각).
 - `guide <ID> [--step n]` → `{"ok", "step", "total", "last", "say"}`(지금 빠진 단계만 · n 은 1..total 로 자름) · 바로 칸이면 `done: true`.
 - `recheck <ID>` → `{"ok", "tier", "state", "say"}` — 바로가 되면 장부 pending → active.
-- `revoke <ID>` → 장부에서 빼고 끄는 곳 안내 · 없으면 exit 4.
+- `revoke <ID>` → 장부에서 빼고 끄는 곳 안내(합친 ID 면 구성원 전부 · 저장 먼저 → 기록) · 없으면 exit 4. 옛 판의 합친 키는 읽을 때 구성원으로 펼친다.
 - `status` → `{"ok", "rows": [{id, state, now}], "say"}` — active 인데 지금 꺼져 있으면 경고 문장.
-- `open-settings accessibility|screen|automation`(맥만 · 허용 목록 밖 exit 5) · `request-prompt ax|sc --answer-file F`(맥만).
+- `open-settings accessibility|screen|automation`(맥만 · 허용 목록 밖 exit 5) · `request-prompt ax|sc --answer-file F --meaning yes|no|unclear`(맥만 · yes 아니면 exit 5 `not_yes`).
 - 상태 폴더 = `~/.cys/computer-control/`(`CYS_CC_STATE` 로 바꿈) · 시험 주입 = `CYS_CC_FAKE_PROBES` · `CYS_CC_PLATFORM` · `CYS_CC_PROJECT` · `CYS_CC_APP_ROOTS`.
 
 ### 12-4. 실기
@@ -218,6 +218,15 @@ codex(또는 agy) — 범위 = 이 문서 §3·§6 + 구현 diff · 초점 = 권
 | E2 | 박사님 맥 · **원 계정 좌석**(CLAUDE_CONFIG_DIR=~/.cys/claude) · 전용 시험 폴더 `~/axdev/.wt/cu-r1-test` | **R1**: `/mcp` → computer-use Enable → 도구가 그 폴더에서 켜짐 판정(남은 것 = 화면 기록 1개) → 시험 세션에 request_access(Finder)·screenshot 시킴 | ⑴ `/mcp` 화면 = 「Built-in MCPs … ◯ computer-use」(기본 꺼짐 확인) · Enable 뒤 `.claude.json` 그 폴더 `enabledMcpServers = ["computer-use"]`(S9 실증) · ⑵ claude-in-chrome 은 `--chrome` 없이 켜짐(S7 실증) · ⑶ computer-use 는 cysr 안에서 **기동한다** — 자체 권한 화면 「Computer Use needs macOS permissions · Accessibility: ✔ granted · Screen Recording: ✘ not granted」 = 이 도구의 S1·S2 판정과 같다 · ⑷ request_access 결과 원문: 「… permissions need to be granted in **the Claude desktop app** on the computer where it's running」 → 시험 세션도 「Claude 앱을 켜 주세요」라고 안내 — **cysr 안에서는 틀린 이름**(스위치 이름 = cysr · VM-LOG V4). R1(터미널 미탐지)의 실제 증상 = 이 오안내다. 이 기능의 안내 문장은 cysr 로 적었다 · ⑸ 화면 기록을 켜는 것은 박사님 전역 설정이라 여기서 멈춤(실제 스크린샷은 미실측) · ⑹ 원복: `/mcp` → Disable → `enabledMcpServers = []` 확인 · 시험 좌석 close · 폴더 삭제. 원래 「그 폴더 기록 없음」이었고 지금은 「기록 있음·computer-use 꺼짐」(`.claude.json` 전역 파일 손편집은 하지 않았다) |
 | E3 | 새 VM(tart clone `ws-perm-1025-a` → `cu-1111-vm` · cysr 1.1.10 · 크롬 · claude 로그인 없음 · 끝나고 삭제) | 도구를 **cysr 좌석 안에서** 실행(sha256 대조) | self-test ok · scan 7줄: Finder 자동화 바로 · 크롬 손(확장 없음·연결 파일 없음 + 기본 켜짐 모름) · 예비 길 손 · 커넥터 확인 필요(로그인 없음) · 화면 조작 확인 필요 · 메일·캘린더 확인 필요(앱 꺼짐) · 보호 폴더 손. **교정 1건**: 모름뿐인 줄에 「남은 것:」이 붙던 문장 → 「확인할 것:」(커밋 4ee2eac0 · 시험 추가) · `open-settings screen` → 시스템 설정 프로세스 0→1 |
 | E4 | 같은 VM | 「보호 폴더 열람 0」을 TCC 로그로 확인 | **판정 불가**: 양성 대조(좌석에서 일부러 `ls ~/Desktop`)도 `log show` TCC 줄 0 — 이 VM 은 바탕화면 허락이 이미 있었고/또는 로그가 권한 없이 안 보인다. 이 주장의 근거는 단위 시험의 열람 감시(`test_no_protected_or_secret_reads`) + 코드(존재 확인 `os.path.isdir` 만)뿐이다 |
+
+### 12-4b. 적대 검토 codex 1R(2026-10-26 · revision 4ee2eac0 · verdict REVISE · major 3 · 정본 = `~/.cys/pack/round/_reviews/cu-1111_…-r1-codex.json`)
+| # | 지적(재현) | 반영 | 회귀 시험 · 뮤턴트 |
+|---|---|---|---|
+| 1 major | 사용자가 본 목록과 grant 가 푸는 목록이 묶이지 않음 — 다른 대화가 그 사이 scan 하면 「1번」이 다른 항목으로 넘어감 | scan 마다 `scan_id`+폴더 기록 · grant 는 `--scan` 필수 · 다르면 exit 7 `scan_replaced` | `test_grant_bound_to_seen_list` · M21 |
+| 2 major | 합친 ID 그대로 저장 → 개별 거둠 뒤에도 묶음으로 권한 유지 | 장부 키 = 구성원 ID · 합친 ID 거둠 = 구성원 전부 · 옛 키 읽을 때 펼침 | `test_member_revoke_removes_everywhere` · `test_legacy_merged_key_normalized` · M22·M23·M24 |
+| 3 major | 장부 저장 뒤 감사 기록 → 기록 실패해도 active 남음 | grant·recheck 활성화 = 기록 먼저(실패면 장부 불변) · revoke = 저장 먼저(실패해도 안전한 쪽) | `test_ledger_failure_leaves_no_active` · `test_recheck_ledger_failure_keeps_pending` · M25 |
+| 논쟁점 | request-prompt 가 「아니요」 답도 통과 | `--meaning yes|no|unclear` 필수 · yes 아니면 exit 5 | `test_request_prompt_needs_meaning_yes` · M26 |
+codex 가 못 한 것(정직): 읽기 전용 샌드박스라 단위 시험을 돌리지 못했다(메모리 대체 검증만) — 시험은 이 워커가 돌렸다(45 · 뮤턴트 26/26).
 
 ### 12-5. 1.1.12 후보(BACKLOG 한 줄 — master TODO 에 옮겨 적을 것)
 - D1-ⓑ 장부 + 훅 차단: 장부가 있는 기계에서 본부 master 의 `mcp__computer-use__*`·`mcp__claude-in-chrome__*` 를 장부 밖이면 거부(role-capability-gate 에 본부 master 축).

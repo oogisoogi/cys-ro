@@ -15,7 +15,29 @@ export CYS_NO_AUTOSTART=1
 # 격리 데몬으로만 가는 cys 대역(스크립트가 부르는 cys = 이것)
 cat > "$ROOT/bin/cys" <<EOF
 #!/bin/bash
-exec env -u CYS_SURFACE_ID -u CYS_ROLE CYS_SOCKET="$SOCK" CYS_STATE_DIR="$ROOT/state" CYS_PACK_DIR="$ROOT/pack" "$BIN/cys" --socket "$SOCK" "\$@"
+REAL=(env -u CYS_SURFACE_ID -u CYS_ROLE CYS_SOCKET="$SOCK" CYS_STATE_DIR="$ROOT/state" CYS_PACK_DIR="$ROOT/pack" "$BIN/cys" --socket "$SOCK")
+PROJ="$PROJ"; WORK="$ROOT/work"
+EOF
+# HS_SESSION_SHIM=1(CYCML 단계만) — 좌석이 --setting-sources project 라 세션 보고가 없어 격리 데몬 status 의
+#   usage.session_file 이 빈다(→ --cycle 판정 undetermined_대상세션_미상 · 재주입 블록 미실행). 빈 칸만 좌석 프로젝트
+#   폴더의 최신 jsonl 로 채운다(채운 값은 실 claude 가 /clear 때 만든 파일 · 데몬 값이 있으면 손대지 않는다).
+cat >> "$ROOT/bin/cys" <<'EOF'
+if [ "${1:-}" = status ] && [ "${HS_SESSION_SHIM:-0}" = 1 ]; then
+  "${REAL[@]}" "$@" | python3 -c '
+import json,sys,os,glob,re
+proj,work=sys.argv[1:3]; raw=sys.stdin.read()
+try: d=json.loads(raw)
+except Exception: sys.stdout.write(raw); raise SystemExit
+enc=lambda p: re.sub(r"[^A-Za-z0-9]","-",p)
+for s in d.get("surfaces",[]):
+    u=s.get("usage") or {}
+    if u.get("session_file"): continue
+    c=[f for p in {work,os.path.realpath(work)} for f in glob.glob(os.path.join(proj,enc(p),"*.jsonl"))]
+    if c: u["session_file"]=max(c,key=os.path.getmtime); s["usage"]=u
+print(json.dumps(d))' "$PROJ" "$WORK"
+  exit "${PIPESTATUS[0]}"
+fi
+exec "${REAL[@]}" "$@"
 EOF
 chmod +x "$ROOT/bin/cys"; C="$ROOT/bin/cys"
 # 실 채널의 보조 판정기(읽기 전용 사본) — 격리 HOME 안에서 격리 cys 로만 묻는다
@@ -120,6 +142,20 @@ PYH
       printf '%s\n' "[master] cycle restore pointer test — reply with exactly RESTORED." > "$ROOT/tpl.md"
       out=$("${MSENV[@]}" MSEND_FORCE_CYCLE=1 MSEND_CYCLE_TEMPLATE="$ROOT/tpl.md" GATE_CYS="$C" GATE_PROJECT_ROOTS="$PROJ" MSEND_FORCE_HUMAN_GATE=1 bash "$SDIR/master-send.sh" --cycle "$REF" 2>&1); rc=$?
       say "CYC rc=$rc restored_records=$(urec RESTORED) | $(lastled) | $(printf '%s' "$out" | grep -E '순환 판정|복원 재주입|제출=' | tr '\n' ' ' | cut -c1-300)" ;;
+    CYCML)
+      # 복원 재주입 블록 실좌석(master#47eb5e7f) — 실 순환과 같은 여러 줄 템플릿(화면엔 접힌 붙여넣기) + 재개 줄
+      idle
+      { printf '%s\n' "[master] cycle restore pointer test (multi-line) — do nothing else."
+        for i in 1 2 3 4 5 6 7 8 9 10; do printf '%s\n' "$i. filler restore line $(pad 90)"; done
+        printf '%s\n' "Reply with exactly RESTORED."; } > "$ROOT/tpl-ml.md"
+      out=$("${MSENV[@]}" HS_SESSION_SHIM=1 MSEND_FORCE_CYCLE=1 MSEND_CYCLE_TEMPLATE="$ROOT/tpl-ml.md" MSEND_CYCLE_RESUME="reply RESTORED only" GATE_CYS="$C" GATE_PROJECT_ROOTS="$PROJ" MSEND_FORCE_HUMAN_GATE=1 bash "$SDIR/master-send.sh" --cycle "$REF" 2>&1); rc=$?
+      RN=$(python3 -c 'import json,sys;L=[json.loads(l) for l in open(sys.argv[1],encoding="utf-8") if l.strip()];r=[x for x in L if x.get("kind")=="cycle_reinject"];print(r[-1].get("nonce","") if r else "")' "$ROOT/ledger.jsonl" 2>/dev/null)
+      sleep 3
+      say "CYCML rc=$rc reinject_nonce_user_records=$(urec "[master#${RN:-none}]") | $(python3 -c 'import json,sys
+L=[json.loads(l) for l in open(sys.argv[1],encoding="utf-8") if l.strip()]
+c=[x for x in L if x.get("kind")=="cycle"][-1:]; r=[x for x in L if x.get("kind")=="cycle_reinject"][-1:]
+print("cycle: submitted=%s cycle_verified=%s %s->%s | reinject=%s verdict_by=%s err=%s nonce=%s"%(c[0].get("submitted") if c else None,c[0].get("cycle_verified") if c else None,c[0].get("session_before") if c else None,c[0].get("session_after") if c else None,r[0].get("reinject") if r else None,r[0].get("verdict_by") if r else None,r[0].get("error_detail") if r else None,r[0].get("nonce") if r else None))' "$ROOT/ledger.jsonl" 2>&1) | $(printf '%s' "$out" | grep -E '순환 판정|복원 재주입' | tr '\n' ' ' | cut -c1-300)"
+      say "  screen: $(scr | grep -E 'Pasted|RESTORED|master#' | tail -3 | tr '\n' ' ' | cut -c1-200)" ;;
   esac
 done
 say "TOTAL user_records(MS+SW)=$TOTAL"

@@ -472,7 +472,7 @@ def verdict_screen(plat, plan, cu, ax, sc):
         return READY, False, [], "화면 조작 도구와 맥 권한(손쉬운 사용·화면 기록)이 모두 켜져 있습니다."
     if unknown and not missing:
         return HAND, True, [k for k, v in (("cu", cu), ("ax", ax), ("sc", sc)) if v is None], \
-            "켜져 있는지 제가 확인하지 못한 부분이 있습니다 — 한 번 같이 확인해 주세요."
+            UNKNOWN_HEAD + " 부분이 있습니다 — 한 번 같이 확인해 주세요."
     return HAND, unknown, missing, "몇 가지만 켜 주시면 됩니다."
 
 
@@ -489,7 +489,7 @@ def verdict_chrome(plat, c):
     if not missing and not unknown:
         return READY, False, [], "크롬의 Claude 확장과 연결이 준비돼 있습니다."
     if unknown and not missing:
-        return HAND, True, [k for k, v in parts if v is None], "크롬 연결 상태를 제가 다 확인하지 못했습니다 — 한 번 같이 확인해 주세요."
+        return HAND, True, [k for k, v in parts if v is None], UNKNOWN_HEAD + " 크롬 연결 부분이 있습니다 — 한 번 같이 확인해 주세요."
     return HAND, unknown, missing, "크롬에 Claude 확장을 연결하는 단계가 남아 있습니다."
 
 
@@ -531,11 +531,15 @@ MISSING_LABEL = {
     "ext": "Claude 확장 설치·켜기", "default_on": "/chrome 기본 켜기", "nmh": "크롬 다시 켜기(연결 파일)",
 }
 MERGE_KINDS = ("script", "files")
+UNKNOWN_HEAD = "켜져 있는지 제가 확인하지 못한"
 
 
-def _with_missing(reason, missing):
+def _with_missing(reason, missing, unknown=False):
+    """빠진 것 이름을 붙인다. 판정 = 모름뿐(꺼짐 확인 0)이면 「남은 것」이 아니라 「확인할 것」이다(VM 실기 교정)."""
     names = [MISSING_LABEL[m] for m in missing if m in MISSING_LABEL]
-    return reason + (" 남은 것: " + " · ".join(names) + "." if names else "")
+    if not names:
+        return reason
+    return reason + (" 확인할 것: " if unknown and reason.startswith(UNKNOWN_HEAD) else " 남은 것: ") + " · ".join(names) + "."
 
 
 def raw_items(plat, project, cfg=None):
@@ -545,7 +549,7 @@ def raw_items(plat, project, cfg=None):
     c = probe_chrome(plat, cfg)
     t, u, m, r = verdict_chrome(plat, c)
     items.append(_item("chrome", "크롬으로 웹 일(로그인된 지메일·구글 문서·클라우드플레어 화면 등)", t, u, m,
-                       _with_missing(r, m)))
+                       _with_missing(r, m, u)))
     if t != READY and c.get("app"):
         items.append(_item("browser-alt", "예비 브라우저 길(Playwright 확장 — 강사와 함께)", HAND, False,
                            ["alt"], "크롬 확장이 끝내 안 될 때만 쓰는 예비 길입니다. 확장의 보호 규칙이 같다는 보장은 없습니다."))
@@ -569,7 +573,7 @@ def raw_items(plat, project, cfg=None):
         names = [name for aid, name, _p in WIN_APPS if aid in apps]
         notes = []
     title = "데스크톱 앱 화면 조작" + ("(이 컴퓨터의 앱: %s)" % "·".join(names) if names else "")
-    items.append(_item("screen", title, st, su, sm, _with_missing(sr, sm), " ".join(notes)))
+    items.append(_item("screen", title, st, su, sm, _with_missing(sr, sm, su), " ".join(notes)))
 
     if plat == "darwin":
         for sid, name, bundle, need in MAC_SCRIPT:

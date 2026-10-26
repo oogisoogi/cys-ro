@@ -187,6 +187,14 @@ class TestVerdicts(Base):
         self.assertIn("화면 기록 권한", d["say"])
         self.assertIn("/mcp", d["say"])
 
+    def test_unknown_parts_say_check_not_missing(self):
+        # VM 실기 교정: 로그인 전(설정 기록 없음)은 「꺼짐」이 아니라 「확인 못 함」 — 「남은 것」이라 말하지 않는다
+        os.environ["CYS_CC_PROJECT"] = os.path.join(self.home, "elsewhere")
+        rc, d, _ = self.run_cli("scan")
+        line = [l for l in d["say"].splitlines() if "화면 조작" in l][0]
+        self.assertIn("확인할 것", line)
+        self.assertNotIn("남은 것", line)
+
     def test_team_plan_not_now(self):
         for plan in ("claude_team", "claude_enterprise"):
             self.write_cfg(plan=plan)

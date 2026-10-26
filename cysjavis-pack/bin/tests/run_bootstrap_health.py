@@ -6347,6 +6347,8 @@ _U5_PACK_CREATIONFLAGS = {
     "javis_cli_probe.py":               1,
     "javis_compete.py":                 1,
     "javis_completion_guard.py":        3,   # NOWIN 정의 + CREATE_NEW_PROCESS_GROUP 에 OR 로 합친 명시 키워드(창 정책 + 트리 분리)
+    "javis_computer_control.py":        1,   # cu-1111(1.1.11) — 탐지 캡처 스폰 `_run` 1곳(reg·defaults 등 · test_nowin_captured_spawns)
+    "javis_computer_use.py":            1,   # 0.14.52 편입 r2(3e7ae36c) — 원작자 새 파일의 캡처 스폰에 우리 NOWIN 정본 정의
     "javis_ctx_relay.py":               1,
     "javis_cycle_autopilot.py":         2,   # NOWIN + 원작자 _CAPTURE_SPAWN_KW 상수(선언만 · 미사용)
     "javis_cycle_verifier.py":          1,
@@ -6360,6 +6362,7 @@ _U5_PACK_CREATIONFLAGS = {
     "javis_hud_bridge.py":              1,   # NOWIN 원조 처방(0.12.44~)
     "javis_idempotency.py":             1,
     "javis_idle_audit.py":              1,
+    "javis_intake.py":                  1,   # 0.14.52 편입 r2(3e7ae36c) — 원작자 새/변경 캡처 스폰 4곳에 우리 NOWIN 정본 정의(정의 1)
     "javis_learn.py":                   1,
     "javis_lock.py":                    1,
     "javis_merge_check.py":             1,
@@ -15829,8 +15832,21 @@ def _u23_bound_violations(sup, delivery, gov=None):
     #   그대로 '선언했는데 무반응'이다(R2 정적 적대검증 must_fix).
     # ★(0.14.42 · R3SH-3) 통보 줄 쓰기(원장 선기록 → 주입)는 즉시 경로와 미룬 재시도 경로가 공유하는 `pane_notice_line` 한 곳으로
     #   모였다 — 지정 지점은 여전히 2곳(dispatch_one·pane_notice_line)이고, notify_no_spawn 은 그 함수를 부른다.
-    if c.count("crate::delivery::Origin::Supervisor") != 2:
-        v.append("감독자 원장 유래 지정 지점이 정확히 2곳(dispatch_one·pane_notice_line)이 아니다")
+    # ★1.1.11 편입(원작자 0.14.52 S-a C6c × 우리 v115-restore A3 · TICKET=cysr-1111-merge-01452): pane_notice_line 안에 유래
+    #   지정이 2개가 됐다 — 빈 좌석 갈래의 단일 입구 인자와 에이전트 좌석 갈래의 원작자 원장 선기록. Rust 짝 핀
+    #   (boot_supervisor `ledger_record_precedes_the_action` · r2 1d809b14)과 같은 계약: 개수 3 + **함수 집합 2곳**(닫힌 집합).
+    _sup_tok = "crate::delivery::Origin::Supervisor"
+    def _fn_span(name):
+        a = c.find("fn %s(" % name)
+        if a < 0:
+            return None
+        b = c.find("\nfn ", a + 1)
+        return (a, b if b >= 0 else len(c))
+    _spans = {n: _fn_span(n) for n in ("dispatch_one", "pane_notice_line")}
+    _per = {n: (c[sp[0]:sp[1]].count(_sup_tok) if sp else 0) for n, sp in _spans.items()}
+    if c.count(_sup_tok) != 3 or _per != {"dispatch_one": 1, "pane_notice_line": 2}:
+        v.append("감독자 원장 유래 지정 지점이 dispatch_one 1 + pane_notice_line 2(빈 좌석 입구 · 에이전트 좌석 선기록)가 아니다"
+                 " — 실측 전체 %d · %s" % (c.count(_sup_tok), _per))
     ni = c.find("fn notify_no_spawn(")
     pi = c.find("fn pane_notice_line(")
     if ni < 0:
@@ -15850,7 +15866,21 @@ def _u23_bound_violations(sup, delivery, gov=None):
         ne = nbody.find("\n}\n")
         nfn = nbody[:ne if ne > 0 else len(nbody)]
         gcall = nfn.find("crate::governance::seat_inject_guarded(")
-        if "write_tx.try_send(" in nfn or gcall < 0:
+        if gcall >= 0 and "write_tx.try_send(" in nfn:
+            # ★1.1.11 편입 혼성 형상(원작자 0.14.52 S-a C6c × 우리 v115-restore A3 · TICKET=cysr-1111-merge-01452):
+            #   빈 좌석 갈래 = 단일 입구(ⓑ) · 에이전트 좌석 갈래 = 원작자 원장 선기록 → 검사된 직접 쓰기(ⓐ). 두 형상을 **둘 다** 잰다
+            #   (한쪽만 재면 다른 갈래의 '원장 후행' 변조가 초록이 된다 — 합성 변조 3종이 실제로 그렇게 새어 나갔다).
+            #   순서 = 입구 → 원장 선기록 → 직접 쓰기(Rust 짝 핀 ledger_record_precedes_the_action 과 같은 단언).
+            cend = nfn.find(");", gcall)
+            if "crate::delivery::Origin::Supervisor" not in nfn[gcall:cend if cend > 0 else len(nfn)]:
+                v.append("무스폰 통보가 단일 입구에 Origin::Supervisor 를 넘기지 않는다 — 원장 유래 오기")
+            for gv in _u23_guarded_entry_order(gov):
+                v.append("무스폰 통보의 원장 기록이 주입보다 앞이 아니다(단일 입구) — %s" % gv)
+            hrec = nfn.find("crate::delivery::record_audited(", gcall)
+            hinj = nfn.find("write_tx.try_send(")
+            if not (gcall < hrec < hinj):
+                v.append("무스폰 통보 혼성 형상의 순서(빈 좌석 입구 → 원장 선기록 → 직접 쓰기)가 깨졌다 — 기계 push 오너 임무 오인 창")
+        elif "write_tx.try_send(" in nfn or gcall < 0:
             nrec, ninj = nbody.find("record_audited("), nbody.find("write_tx.try_send(")
             if nrec < 0 or ninj < 0 or nrec > ninj:
                 v.append("무스폰 통보의 원장 기록이 주입보다 앞이 아니다 — 기계 push 오너 임무 오인 창")
@@ -16015,12 +16045,19 @@ def h_boot_sup_1():
             .replace("        Ok(()) => SeatInject::Injected,",
                      "        Ok(()) => { crate::delivery::record_audited(daemon, s.id, text, origin, "
                      "from_surface); SeatInject::Injected }")),
+        # ★1.1.11 편입: 입구 호출 꼴이 `let reason = match crate::governance::seat_inject_guarded(` 로 바뀌어 종전 치환
+        #   (`let _ = …`)이 적용되지 않았다(변조본 = 원본 · 아래 무효 변조 가드가 이제 그것을 적색으로 잡는다).
         ("무스폰 통보 직접 주입 복귀(원장 없음)",
-         sup.replace("let _ = crate::governance::seat_inject_guarded(",
-                     "let _ = s.write_tx.try_send(0); let _ = crate::governance::seat_inject_guarded("),
+         sup.replace("let reason = match crate::governance::seat_inject_guarded(",
+                     "let _ = s.write_tx.try_send(0); let reason = match crate::governance::seat_inject_guarded("),
          delivery),
         ("단일 입구 판독 불능(governance 부재)", sup, delivery, ""),
     ]
+    # ★무효 변조 가드(TICKET=cysr-1111-merge-01452): 치환 문자열이 소스에서 사라지면 변조본 = 원본이 되어 「못 잡음」과
+    #   「변조가 안 걸림」이 구별되지 않는다 — 원본과 같은 변조본은 그 자체로 적색이다.
+    noop = [m[0] for m in mutants
+            if m[1] == sup and m[2] == delivery and (m[3] if len(m) > 3 else gov) == gov]
+    need(not noop, "합성 변조가 소스에 적용되지 않았다(치환 문자열 소실 — 변조본 = 원본): %s" % ", ".join(noop))
     blind = [m[0] for m in mutants
              if not _u23_bound_violations(m[1], m[2], m[3] if len(m) > 3 else gov)]
     need(not blind, "합성 변조본을 못 잡았다(탐지기 고장): %s" % ", ".join(blind))
@@ -17069,8 +17106,11 @@ def alive(pid):
         return True
     except OSError:
         return False
-h.harness_daemon_pids = lambda: [daemon.pid] if daemon.poll() is None else []
-h.close_all_surfaces = lambda: []
+# ★1.1.11 편입(원작자 0.14.52 하네스 소유 정리 · TICKET=cysr-1111-merge-01452): 두 함수가 `deadline=None` 인자를 받게 됐다
+#   (teardown 이 `harness_daemon_pids(deadline)`·`close_all_surfaces(…)` 로 부른다) — 대역이 인자를 받지 않으면 teardown 이
+#   TypeError 로 끊겨 아무것도 끝내지 못한다(시험 꼴 낡음 · 제품 회귀 아님).
+h.harness_daemon_pids = lambda *_a, **_k: [daemon.pid] if daemon.poll() is None else []
+h.close_all_surfaces = lambda *_a, **_k: []
 # 안전 그물: 이 시험 안에서 누가 이름 일치 종료 도구를 부르면 진짜 도구 대신 이 가짜가 받는다 — 호출을 적고,
 # 이름 일치가 했을 일(같은 이름 전부 종료)을 **이 시험이 띄운 두 pid 에만** 흉내 낸다(머신의 다른 프로세스 무접촉).
 os.environ["PKILL_SHIM_LOG"] = shim_log
@@ -17125,6 +17165,10 @@ def h_py_pkill_2():
     harness = os.path.join(PACK_DIR, "bin", "javis_phoenix_harness.py")
     need(os.path.isfile(harness), "하네스가 없다: %s" % harness)
     with tempfile.TemporaryDirectory(prefix="pypkill2-") as td:
+        # ★1.1.11 편입(원작자 0.14.52 `_harness_paths` · TICKET=cysr-1111-merge-01452): 하네스 루트가 별칭이면 소유 정리가
+        #   `aliased_harness_root` 로 거부된다(원작자 주석 「tmp 별칭은 정본 루트를 넘겨라」) — 맥 $TMPDIR(/var → /private/var)가
+        #   바로 그 별칭이라 가짜 데몬이 안 죽고 stub 은 좀비로 남았다(시험 꼴 · 제품 회귀 아님). 정본 경로로 넘긴다.
+        td = os.path.realpath(td)
         shim_dir = os.path.join(td, "shim")
         os.makedirs(shim_dir)
         shim = os.path.join(shim_dir, "pkill")

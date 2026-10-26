@@ -1248,8 +1248,29 @@ pub fn personal_profile_hooks_opted_in_from(env: Option<&str>, marker: &Path) ->
 }
 
 pub fn personal_profile_hooks_opted_in() -> Option<bool> {
+    personal_profile_hooks_opted_in_for_pack(&pack_dir())
+}
+
+/// 지정 팩 기준 판정 — 표지 자리 = `CYS_LOCAL_DIR`(있으면) 또는 그 팩의 형제 `local`(`local_dir` 과 같은 규칙을 팩 인자로).
+/// doctor·init-pack 처럼 **자기 팩 경로를 들고 있는** 소비자가 쓴다(env 전역 상태에 기대지 않는다 — 시험 결정론).
+pub fn personal_profile_hooks_opted_in_for_pack(pack: &Path) -> Option<bool> {
     let env = std::env::var(ENV_HOOKS_PERSONAL).ok();
-    personal_profile_hooks_opted_in_from(env.as_deref(), &local_dir().join(PERSONAL_HOOKS_OPT_IN_FILE))
+    // 표지 자리 2곳(그 팩의 형제 `local/` · `CYS_LOCAL_DIR` 덮어쓰기) 중 하나라도 선언이면 옵트인 · 판독 불가가 섞이면 None.
+    let mut spots = vec![pack.parent().map(|p| p.join("local")).unwrap_or_else(|| PathBuf::from("local"))];
+    if let Some(d) = crate::env_compat("CYS_LOCAL_DIR") {
+        spots.push(PathBuf::from(d));
+    }
+    let got: Vec<Option<bool>> = spots
+        .iter()
+        .map(|l| personal_profile_hooks_opted_in_from(env.as_deref(), &l.join(PERSONAL_HOOKS_OPT_IN_FILE)))
+        .collect();
+    if got.contains(&Some(true)) {
+        Some(true)
+    } else if got.contains(&None) {
+        None
+    } else {
+        Some(false)
+    }
 }
 
 /// ★1.1.11 hook-slim: 옵트인이 **증명된 부재**(`Some(false)`)일 때 개인 프로필에서 base 팩 등록(훅·팩 statusLine)을

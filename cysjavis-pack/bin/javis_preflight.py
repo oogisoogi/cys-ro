@@ -1632,10 +1632,18 @@ def personal_profile_hooks_opted_in_from(env_value, marker_path):
 
 
 def personal_profile_hooks_opted_in():
-    local = os.environ.get("CYS_LOCAL_DIR") or os.path.join(
-        os.path.dirname(os.path.normpath(pack_dir())), "local")
-    return personal_profile_hooks_opted_in_from(
-        os.environ.get(ENV_HOOKS_PERSONAL), os.path.join(local, PERSONAL_HOOKS_OPT_IN_FILE))
+    """Rust `personal_profile_hooks_opted_in_for_pack` 미러 — 표지 자리 2곳(팩 형제 `local/` · `CYS_LOCAL_DIR`) 중 하나라도
+    선언이면 True · 판독 불가가 섞이면 None · 아니면 False."""
+    spots = [os.path.join(os.path.dirname(os.path.normpath(pack_dir())), "local")]
+    if os.environ.get("CYS_LOCAL_DIR"):
+        spots.append(os.environ["CYS_LOCAL_DIR"])
+    got = [personal_profile_hooks_opted_in_from(os.environ.get(ENV_HOOKS_PERSONAL),
+                                                os.path.join(d, PERSONAL_HOOKS_OPT_IN_FILE)) for d in spots]
+    if True in got:
+        return True
+    if None in got:
+        return None
+    return False
 
 
 def _is_personal_profile_settings(path):

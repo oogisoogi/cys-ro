@@ -42,7 +42,9 @@ codex 는 샌드박스 탓에 정본 경로에 못 써 `/private/tmp/hook-slim-1
 
 ## 남은 일(다음 좌석 · 순서대로)
 1. 위 ⏳ 5건(심링크·계정 dir 좌석 판정 · 분리 대기표/PreCompact 잠금/빈 pid/무잠금 금지 · 자식 데드라인 · 하네스 노브 · role-capability-gate 탈출 + 이벤트 판정 시험) → `cargo test --lib hookslim` · `test_hook_slim.py` · `run_bootstrap_health.py` · `scripts/hookslim_mutants.py --rust`(R3 은 검증 방어선이라 정상 코드에선 살아남는 등가 뮤턴트일 수 있음 — 판정 기록).
-2. `cargo test --bin cys` · `--bin cysd`(수리 후 미실행 — 첫 시도는 셸 인용 실수로 미실행).
+2. (완료 01:4x) `cargo test --bin cys` 628/628(doctor 옛 시험 3개는 옵트인 표지를 시험 폴더에 둬 옛 경로를 잰다 · 옵트인 판정 =
+   `personal_profile_hooks_opted_in_for_pack` = 팩 형제 `local/` ∪ `CYS_LOCAL_DIR` — 병렬 시험 env 경합 회피) · `--bin cysd` 2709/2709(R1 수리 전 코드)
+   · `--lib` 1110(R1 수리 전) → R1 수리 뒤 `--lib` 전체·`--bin cysd` 는 재실행 필요.
 3. codex·agy **R2**(같은 기준 · revision = 수리 커밋).
 4. 678(1111-merge01452) 병합 머리 위로 rebase + 게이트 재실행.
 5. 【확인요청】.

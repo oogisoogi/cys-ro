@@ -8894,7 +8894,7 @@ fn run_init_pack(force: bool, no_install_hook: bool, claude_settings: Option<Str
             // ★1.1.11 hook-slim(master 결정 5ea965af = A): 개인 프로필 등록은 옵트인 표지가 있을 때만이다
             //   (`pack::personal_profile_hooks_opted_in` — 데몬 경로와 같은 술어). 표지가 없으면(판독 불가 포함)
             //   이 팩의 격리 config(좌석이 실제로 읽는 프로필)만 대상으로 한다 — 신규 머신 폴백도 ~/.claude 가 아니다.
-            if cys::pack::personal_profile_hooks_opted_in() != Some(true) {
+            if cys::pack::personal_profile_hooks_opted_in_for_pack(&dir) != Some(true) {
                 let Some(cfg) = cys::pack::config_dir_for(
                     cys::env_compat(cys::pack::ENV_CONFIG_DIR).as_deref(),
                     None,
@@ -9724,7 +9724,7 @@ fn diag_hook_personal(ctx: &DoctorCtx, fix: bool) -> DiagItem {
     //   '미등록'은 정상이고, 남아 있는 팩 등록(옛 판 잔재)이 결손이다. --fix 는 재등록이 아니라 그 잔재를 걷어낸다
     //   (데몬 기동 경로 `pack::strip_pack_registrations_from_personal_profiles` 와 같은 엔진 · 사전 백업).
     //   표지 판독 불가(None)는 읽기만 한다(쓰지 않는다 — 판정 불가 위에서 사용자 파일을 고치지 않는다).
-    let opted = cys::pack::personal_profile_hooks_opted_in();
+    let opted = cys::pack::personal_profile_hooks_opted_in_for_pack(&ctx.pack_dir);
     if opted != Some(true) {
         let residue: Vec<String> = ctx
             .settings_paths
@@ -40563,12 +40563,21 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         assert!(hook_missing_evidence(&root, pack, &[]).is_empty());
     }
 
+    /// ★1.1.11 hook-slim: 시험 팩의 형제 `local/` 에 개인 프로필 옵트인 표지를 둔다(env 전역 상태를 쓰지 않는다 — 병렬 시험 결정론).
+    fn hookslim_opt_in_marker(pack: &std::path::Path) {
+        let local = pack.parent().unwrap().join("local");
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::write(local.join(cys::pack::PERSONAL_HOOKS_OPT_IN_FILE), "").unwrap();
+    }
+
     #[test]
     fn doctor_hook_missing_then_fix() {
         let base = std::env::temp_dir().join(format!("cys-doc-hook-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         let ctx = doctor_ctx_at(&base);
+        // ★1.1.11 hook-slim: 개인 프로필 재등록·판정은 옵트인 표지가 있을 때의 동작이다(표지 없음 경로 = test_hook_slim S6·S10).
+        hookslim_opt_in_marker(&ctx.pack_dir);
         std::fs::create_dir_all(&ctx.pack_dir).unwrap();
         std::fs::write(&ctx.settings_paths[0], "{}").unwrap();
         // 미등록 → WARN
@@ -40724,6 +40733,8 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         let ctx = doctor_ctx_at(&base);
+        // ★1.1.11 hook-slim: 개인 프로필 재등록·판정은 옵트인 표지가 있을 때의 동작이다(표지 없음 경로 = test_hook_slim S6·S10).
+        hookslim_opt_in_marker(&ctx.pack_dir);
         std::fs::create_dir_all(&ctx.pack_dir).unwrap();
         std::fs::write(ctx.pack_dir.join(".pack-version"), env!("CARGO_PKG_VERSION")).unwrap();
         std::fs::write(&ctx.socket_path, b"x").unwrap(); // 고아 소켓
@@ -50292,6 +50303,8 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
     fn doctor_hook_checks_consumed_config_dir_not_any_profile() {
         let base = b2_tmp("hook");
         let mut ctx = doctor_ctx_at(&base);
+        // ★1.1.11 hook-slim: 개인 프로필 재등록·판정은 옵트인 표지가 있을 때의 동작이다(표지 없음 경로 = test_hook_slim S6·S10).
+        hookslim_opt_in_marker(&ctx.pack_dir);
         std::fs::create_dir_all(&ctx.pack_dir).unwrap();
         let personal = base.join("personal").join("settings.json");
         std::fs::create_dir_all(personal.parent().unwrap()).unwrap();

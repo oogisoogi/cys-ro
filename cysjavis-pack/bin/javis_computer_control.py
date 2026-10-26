@@ -1905,9 +1905,13 @@ def _rank(rec):
 
 
 def _found(decisions, cat, subject):
-    """같은 대상의 기록 전부 — 지금 키와 옛 판 키 [(키, 기록)]."""
+    """같은 대상의 기록 전부 — 지금 키와 옛 판 키 [(키, 기록)]. 지금 판 기록은 자기 대상(`for` = 그 대상의 지금 키)을 적어 둔다 —
+    옛 판 키 자리에서 `for` 가 다른 기록은 **다른 대상**의 것이다(120자 대상의 지금 키 = 더 긴 대상의 옛 키) — 조회·삭제 대상이
+    아니다(codex R9). `for` 없는 기록 = 옛 판(그대로 따른다)."""
     d = decisions or {}
-    return [(k, d[k]) for k in dict.fromkeys([decision_key(cat, subject)] + _legacy_keys(cat, subject)) if d.get(k)]
+    cur = decision_key(cat, subject)
+    return [(k, d[k]) for k in dict.fromkeys([cur] + _legacy_keys(cat, subject))
+            if d.get(k) and (not isinstance(d[k], dict) or d[k].get("for", cur) == cur)]
 
 
 def _lookup(decisions, cat, subject):
@@ -1979,19 +1983,22 @@ def _hosts(subject):
     """대상 글 속 접속 대상 이름 — URL 은 파서의 실제 hostname(사용자정보·경로·쿼리의 도메인 모양은 대상이 아니다 · codex R5),
     그 밖은 도메인 모양. 둘 이상이거나 URL 이 깨졌으면 대상이 모호하다(호출 쪽이 「모름」)."""
     s = (subject or "").lower()
-    if re.search(r"[a-z][a-z0-9+.\-]*://(?!\S)", s):
+    if re.search(r"[a-z][a-z0-9+.\-]*://(?![^ \t\r\n])", s):
         return ["?"]                                 # 호스트 없이 끊긴 `://` = 뒤 글이 대상인지 모른다(codex R8)
     hosts, rest = [], s
-    # URL = 공백 전까지 통째로(호스트 뒤 비ASCII 를 잘라 앞부분만 대조하지 않는다 · codex R7)
-    for m in re.finditer(r"[a-z][a-z0-9+.\-]*://\S+", s):
+    # URL = 글의 낱말 경계(ASCII 공백·탭·줄바꿈) 전까지 통째로 — 호스트 뒤 비ASCII 를 잘라 앞부분만 대조하지 않고(codex R7),
+    #   그 밖의 공백류(VT · FF · U+3000 …)는 URL 안에 남겨 호스트 꼴 검사에서 모름이 되게 한다(codex R9)
+    for m in re.finditer(r"[a-z][a-z0-9+.\-]*://[^ \t\r\n]+", s):
         url = m.group(0).rstrip(").,;:!?]}>'\"")              # 문장 속 URL 뒤 구분 부호는 URL 이 아니다(codex R6)
         try:
             u = urllib.parse.urlsplit(url)
             u.port                                       # 잘못된 포트 = ValueError
             h = None if "\\" in url else u.hostname          # 역슬래시 = 브라우저는 경로 구분으로 읽어 호스트가 갈린다(codex R6)
             h = h[:-1] if h and h.endswith(".") else h
-            if h and not _HOST_OK.fullmatch(h):
-                h = None                                 # 허용 꼴 밖 호스트(%·비ASCII·빈 라벨·금지 문자 …) = 모름(codex R8)
+            if h and (not _HOST_OK.fullmatch(h) or any(x.startswith("xn--") for x in h.split("."))):
+                # 허용 꼴 밖 호스트(%·비ASCII·빈 라벨·금지 문자 …) = 모름(codex R8) · 퓨니코드 라벨은 이 컴퓨터가 유효성을 못 잰다
+                #   (잘못된 A-label 을 브라우저는 거절) — 정식 도메인 목록에 xn-- 이 없으니 모름으로 잃는 do 는 없다(codex R9)
+                h = None
         except ValueError:
             h = None
         hosts.append(h or "?")
@@ -2133,7 +2140,7 @@ def cmd_remember(a):
     # 보완 = 잘린 기록을 **그 키 자리에서** 바꾼다(개수 그대로 · 공존하는 온전한 기록·다른 뜻 기록은 손대지 않는다 · codex R6·R7)
     # 그 밖 = 지금 키에 쓰고 옛 판 키는 지운다(사용자가 바꾼 때)
     dest = cuts if supp else [key]
-    drop = [] if supp else [k for k in _legacy_keys(a.cat, a.subject) if k != key and k in d["items"]]
+    drop = [] if supp else [k for k, _r in found if k != key]       # 옛 판 키 중 이 대상 것만(_found 가 남의 지금 키를 뺀다)
     left = len(d["items"]) - len(set(drop) - {key})
     if not supp and key not in d["items"] and left >= MAX_DECISIONS:
         # ★codex R1: 상한에서 옛 결정을 지우면 그 항목을 다시 묻게 된다 — 지우지 않고 새 기록을 거절한다(4군① 상한은 유지)
@@ -2143,6 +2150,7 @@ def cmd_remember(a):
     rec = {"meaning": a.meaning, "condition": cond, "at": _iso(),
            "label": mask("%s %s" % (a.cat, a.subject)),
            "answer_sha256": hashlib.sha256(ans.encode("utf-8")).hexdigest()}
+    rec["for"] = key                                 # 이 기록의 대상 = 지금 키(해시 · 원문 0) — 옛 판 키 자리에서 남의 기록과 구별(codex R9)
     if a.meaning == "conditional":
         rec["full"] = True                           # 자르지 않은 원문(옛 판 300자 기록과 구별)
     _ledger({"event": "decision", "key": key, "meaning": a.meaning, "changed": bool(a.user_changed),
@@ -2283,15 +2291,16 @@ def self_test():
         n += 1
         if judge("external_send", "x", None, {}, cut, cm)[0] != EACH:
             errs.append("judge 잘린 옛 조건 condition_met=%r" % (cm,))
-    # ★codex R8: 정식 URL 의 호스트 자리에 글자 하나를 끼운 모든 꼴(ASCII 128 + 비ASCII 표본) — do 는 브라우저가 같은 호스트로
-    #   읽는 자리(맨 앞 `@` = 빈 사용자정보 · 맨 끝 `:`(빈 포트)·`.`(끝점)·`/`·`?`·`#`·공백)에서만. 그 밖은 전부 모름
+    # ★codex R8·R9: 정식 URL 의 호스트 자리에 글자 하나를 끼운 모든 꼴(ASCII 128 + 비ASCII 표본 10) — do 는 같은 호스트로 읽히는
+    #   자리(맨 앞 `@` = 빈 사용자정보 · 맨 끝 `:`(빈 포트)·`.`(끝점)·`/`·`?`·`#` · 글의 낱말 경계 ASCII 공백·탭·줄바꿈)에서만.
+    #   그 밖은 전부 모름 — 기대값은 고정 목록이다(구현의 공백 분류를 빌리지 않는다)
     base, a0, a1 = "https://mail.google.com/", 8, 23
     gmail = {"services": ["Gmail"], "apps": {}}
     for pos in range(a0, a1 + 1):
-        for c in [chr(i) for i in range(128)] + ["é", "。", "．", "\u200b", "\u3000", "ｍ", "\ufeff"]:
+        for c in [chr(i) for i in range(128)] + ["é", "。", "．", "\u200b", "\u3000", "ｍ", "\ufeff", "\u00a0", "\u0085", "\u2028"]:
             n += 1
             sub = base[:pos] + c + base[pos:]
-            ok = (pos == a0 and c == "@") or (pos == a1 and (c in ":./?#" or c.isspace()))
+            ok = (pos == a0 and c == "@") or (pos == a1 and c in ":./?# \t\r\n")   # 낱말 경계 = ASCII 공백·탭·줄바꿈만(목록 고정)
             if (_in_use(sub, gmail)[0] is True) and not ok:
                 errs.append("host 끼움 do %r" % (sub,))
     n += 1

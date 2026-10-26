@@ -1721,6 +1721,32 @@ class TestPrecedent(Base):
                         self.assertEqual(after, items, tag)
         self.assertEqual(n, 150)
 
+    def test_key_space_boundary_120(self):
+        # codex R9: 정규화 120자 대상의 지금 키 = 그 뒤에 글을 붙인 더 긴 대상의 옛 판(앞 120자) 키 — 지금 판 기록이 옛 키
+        #   별칭으로 남에게 옮거나(허락 전이) 남의 「사용자 변경」이 지우면 안 된다. 길이 119·120·121 × 아는 유형·새 유형(이름
+        #   120·121자) × 기록 차례 둘 · 새 기록만 있는 상태 전수
+        new120, new121 = "t" * 120, "t" * 121
+        for cat in ("external_send", "login", new120, new121):
+            for la in (119, 120, 121):
+                a = ("가" * la)
+                b = a + " 추가"
+                for first, second in ((a, b), (b, a)):
+                    self._put({})
+                    extra = ("--in-use", "yes") if cat == "login" else ()
+                    rc, r, _ = self.run_cli("remember", cat, "--subject", first, "--answer-file", self.answer("안 돼"),
+                                            "--meaning", "deny")
+                    self.assertEqual(rc, 0, r)
+                    tag = (cat[:14], la, first == a)
+                    got = self.run_cli("decide", cat, "--subject", second, *extra)[1]["decision"]
+                    self.assertNotEqual(got, "never", tag)                       # 첫 대상의 거절이 둘째로 옮지 않는다
+                    for uc in ((), ("--user-changed",)):                             # 처음 기록 · 사용자 변경 둘 다
+                        rc, r, _ = self.run_cli("remember", cat, "--subject", second, "--answer-file", self.answer("응"),
+                                                "--meaning", "allow", *uc)
+                        self.assertEqual(rc, 0, (tag, uc, r))                     # 둘째 대상엔 제 기록이 없다(already_decided 0)
+                    self.assertEqual(self.run_cli("decide", cat, "--subject", first, *extra)[1]["decision"], "never", tag)
+                    self.assertEqual(self.run_cli("decide", cat, "--subject", second, *extra)[1]["decision"], "do", tag)
+                    self.assertEqual(len(self.dec()), 2, tag)                     # 둘 다 남는다
+
     def test_domain_matches_only_official_domains(self):
         # codex R3·R4: 도메인 대상은 이름 닮음(word.invalid · gmail.invalid · word.example.invalid)이 아니라 정식 도메인 목록으로만
         os.makedirs(os.path.join(self.apps, "Microsoft Word.app"))
@@ -1749,7 +1775,12 @@ class TestPrecedent(Base):
                            ("https://unrelated.invalid\u0001.mail.google.com/", "ask"),
                            ("https://unrelated.invalid\u007f.mail.google.com/", "ask"),
                            ("https://mail%2egoogle.com/", "ask"), ("https:// mail.google.com/", "ask"),
-                           ("https://mail.google.com./", "do")):
+                           ("https://mail.google.com./", "do"),
+                           # codex R9: 퓨니코드 라벨(잘못된 A-label 은 브라우저가 거절) = 모름 · 낱말 경계 밖 공백류는 URL 안 → 모름
+                           ("https://xn--a.mail.google.com./", "ask"), ("https://xn--a.mail.google.com/", "ask"),
+                           ("https://mail.google.com\u000b/", "ask"), ("https://mail.google.com\u3000/", "ask"),
+                           ("https://mail.google.com\u00a0로그인", "ask"),
+                           ("https://mail.google.com 로그인", "do")):                # ASCII 공백 = 글의 낱말 경계(주소 끝)
             rc, d, _ = self.run_cli("decide", "login", "--subject", subj)
             self.assertEqual(d["decision"], want, subj)
 

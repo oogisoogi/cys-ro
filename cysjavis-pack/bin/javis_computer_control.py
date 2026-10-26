@@ -1856,8 +1856,12 @@ MAX_CONDITION = 2000        # 조건 글자 한도 — 넘으면 자르지 않�
 LEGACY_CUT = 300            # 옛 판 자르기 길이 — `full` 표지 없는 조건이 이 길이 이상이면 끝이 잘렸을 수 있다
 
 
+KEY_CUT = 120               # 옛 판 키는 정규화한 글의 앞 120자로 만들었다(뒤가 다른 두 대상이 한 키 · 120자 뒤 「네이버」 못 봄)
+
+
 def _norm(s):
-    return re.sub(r"\s+", " ", (s or "").strip().lower())[:120]
+    """대상 정규화(공백 하나·소문자) — 자르지 않는다(codex R8 뒤 자가 발견: 자르면 키 충돌·약관 서비스 누락)."""
+    return re.sub(r"\s+", " ", (s or "").strip().lower())
 
 
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
@@ -1879,9 +1883,12 @@ def decision_key(cat, subject):
 
 
 def _legacy_keys(cat, subject):
-    """옛 판 키 — ad474d66 판 `유형 원문:대상 해시`(새 유형만 지금과 다르다) · 92c47060 판 `유형:정규화 원문`(codex R2·R3)."""
-    n = _norm(subject)
-    return ["%s:%s" % (cat, hashlib.sha256(n.encode("utf-8")).hexdigest()[:16] if n else ""), "%s:%s" % (cat, n)]
+    """옛 판 키(전부 정규화 앞 120자) — 지난 판 지금 꼴 · ad474d66 판 `유형 원문:대상 해시`(새 유형만 지금과 다르다) ·
+    92c47060 판 `유형:정규화 원문`(codex R2·R3). 120자 이하 대상은 첫째가 지금 키와 같다."""
+    n = _norm(subject)[:KEY_CUT]
+    head = cat if cat in CATEGORIES else "new-" + hashlib.sha256(_norm(cat)[:KEY_CUT].encode("utf-8")).hexdigest()[:12]
+    h = hashlib.sha256(n.encode("utf-8")).hexdigest()[:16] if n else ""
+    return ["%s:%s" % (head, h), "%s:%s" % (cat, h), "%s:%s" % (cat, n)]
 
 
 def _cut(rec):
@@ -1956,6 +1963,8 @@ def _toks(s):
 
 
 _DOMAIN = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}")
+# URL 호스트의 허용 꼴 = ASCII 글자·숫자·하이픈 라벨(1~63자)을 점으로 이은 것 — 이 꼴 밖은 전부 모름(codex R8 · 금지 목록 아닌 허용 목록)
+_HOST_OK = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}")
 # 정식 도메인 목록(커넥터 이름·카탈로그 앱 ID → 그 서비스의 로그인 도메인) — 목록에 없는 도메인은 이름이 닮아도 「모름」(codex R4)
 _MS = ("office.com", "microsoft365.com", "login.microsoftonline.com", "login.live.com")
 SERVICE_DOMAINS = {
@@ -1970,6 +1979,8 @@ def _hosts(subject):
     """대상 글 속 접속 대상 이름 — URL 은 파서의 실제 hostname(사용자정보·경로·쿼리의 도메인 모양은 대상이 아니다 · codex R5),
     그 밖은 도메인 모양. 둘 이상이거나 URL 이 깨졌으면 대상이 모호하다(호출 쪽이 「모름」)."""
     s = (subject or "").lower()
+    if re.search(r"[a-z][a-z0-9+.\-]*://(?!\S)", s):
+        return ["?"]                                 # 호스트 없이 끊긴 `://` = 뒤 글이 대상인지 모른다(codex R8)
     hosts, rest = [], s
     # URL = 공백 전까지 통째로(호스트 뒤 비ASCII 를 잘라 앞부분만 대조하지 않는다 · codex R7)
     for m in re.finditer(r"[a-z][a-z0-9+.\-]*://\S+", s):
@@ -1978,6 +1989,9 @@ def _hosts(subject):
             u = urllib.parse.urlsplit(url)
             u.port                                       # 잘못된 포트 = ValueError
             h = None if "\\" in url else u.hostname          # 역슬래시 = 브라우저는 경로 구분으로 읽어 호스트가 갈린다(codex R6)
+            h = h[:-1] if h and h.endswith(".") else h
+            if h and not _HOST_OK.fullmatch(h):
+                h = None                                 # 허용 꼴 밖 호스트(%·비ASCII·빈 라벨·금지 문자 …) = 모름(codex R8)
         except ValueError:
             h = None
         hosts.append(h or "?")
@@ -2269,6 +2283,17 @@ def self_test():
         n += 1
         if judge("external_send", "x", None, {}, cut, cm)[0] != EACH:
             errs.append("judge 잘린 옛 조건 condition_met=%r" % (cm,))
+    # ★codex R8: 정식 URL 의 호스트 자리에 글자 하나를 끼운 모든 꼴(ASCII 128 + 비ASCII 표본) — do 는 브라우저가 같은 호스트로
+    #   읽는 자리(맨 앞 `@` = 빈 사용자정보 · 맨 끝 `:`(빈 포트)·`.`(끝점)·`/`·`?`·`#`·공백)에서만. 그 밖은 전부 모름
+    base, a0, a1 = "https://mail.google.com/", 8, 23
+    gmail = {"services": ["Gmail"], "apps": {}}
+    for pos in range(a0, a1 + 1):
+        for c in [chr(i) for i in range(128)] + ["é", "。", "．", "\u200b", "\u3000", "ｍ", "\ufeff"]:
+            n += 1
+            sub = base[:pos] + c + base[pos:]
+            ok = (pos == a0 and c == "@") or (pos == a1 and (c in ":./?#" or c.isspace()))
+            if (_in_use(sub, gmail)[0] is True) and not ok:
+                errs.append("host 끼움 do %r" % (sub,))
     n += 1
     if judge("brand-new-type")[0] != ASK:
         errs.append("judge 새 유형이 ask 가 아니다")

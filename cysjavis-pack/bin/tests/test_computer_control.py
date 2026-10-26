@@ -1658,6 +1658,69 @@ class TestPrecedent(Base):
         self.assertEqual(rc, 0, r)                                               # 옛 키 → 지금 키 옮김도 개수 그대로라 한도 안
         self.assertEqual((len(self.dec()), self.run_cli("decide", "external_send", "--subject", "s")[1]["decision"]), (3, "never"))
 
+    def test_long_subject_not_cut(self):
+        # codex R8 뒤 자가 발견: 대상을 120자에서 자르면 뒤가 다른 두 대상이 한 결정을 나눠 갖고 120자 뒤 「네이버」를 못 본다
+        head = "보고서 " * 30                                          # 정규화 뒤 120자 넘음
+        rc, r, _ = self.run_cli("remember", "external_send", "--subject", head + "팀 드라이브", "--answer-file",
+                                self.answer("응"), "--meaning", "allow")
+        self.assertEqual(rc, 0, r)
+        self.assertEqual(self.run_cli("decide", "external_send", "--subject", head + "팀 드라이브")[1]["decision"], "do")
+        self.assertEqual(self.run_cli("decide", "external_send", "--subject", head + "외부 메일")[1]["decision"], "ask")
+        rc, d, _ = self.run_cli("decide", "login", "--subject", head + "naver", "--in-use", "yes")
+        self.assertEqual(d["decision"], "each")                                  # 약관 서비스는 길이와 무관
+        h = lambda x: hashlib.sha256(x.encode("utf-8")).hexdigest()[:16]
+        old = "external_send:" + h(self.m._norm(head + "옛 기록")[:120])        # 지난 판(앞 120자) 키 기록도 따른다
+        self._put({old: {"meaning": "deny", "at": "t"}})
+        self.assertEqual(self.run_cli("decide", "external_send", "--subject", head + "옛 기록")[1]["decision"], "never")
+        nt = "new-" + hashlib.sha256(b"drone_flight").hexdigest()[:12]           # 새 유형의 지난 판 지금 꼴 키(앞 120자)
+        self._put({nt + ":" + h(self.m._norm(head + "옛 기록")[:120]): {"meaning": "deny", "at": "t"}})
+        self.assertEqual(self.run_cli("decide", "drone_flight", "--subject", head + "옛 기록")[1]["decision"], "never")
+
+    def test_record_states_exhaustive(self):
+        # R8 단락의 전수 방안 ⑤ — 지금 키·옛 키 × {없음·허락·안 함·조건·잘린 조건} × 뜻 3 × 사용자 변경 여부 = 150 꼴을
+        #   구현과 독립인 판정식과 대조: 조회 = 가장 좁은 것(안 함 > 잘린 조건 > 조건 > 허락) · 보완 = 조건부로만 · 잘린 자리만
+        #   그 자리에서 · 개수 불변 · 사용자 변경 = 지금 키에 쓰고 옛 키 지움 · 그 밖 기록 있음 = 재기록 거절(무변경)
+        cur, old = self.m.decision_key("external_send", "s"), "external_send:s"
+        states = {None: None, "allow": {"meaning": "allow", "at": "t"}, "deny": {"meaning": "deny", "at": "t"},
+                  "cond": {"meaning": "conditional", "condition": "팀 안", "full": True, "at": "t"},
+                  "cut": {"meaning": "conditional", "condition": "가" * 300, "at": "t"}}
+        rank = {"deny": 0, "cut": 1, "cond": 2, "allow": 3}
+        want_decide = {"deny": "never", "cut": "each", "cond": "check", "allow": "do"}
+        n = 0
+        for a, b in [(a, b) for a in states for b in states]:
+            for meaning in ("allow", "deny", "conditional"):
+                for uc in (False, True):
+                    n += 1
+                    items = {k: v for k, v in ((cur, states[a]), (old, states[b])) if v is not None}
+                    self._put(items)
+                    present = [x for x in (a, b) if x]
+                    if present:
+                        got = self.run_cli("decide", "external_send", "--subject", "s")[1]["decision"]
+                        self.assertEqual(got, want_decide[min(present, key=rank.get)], (a, b))
+                    argv = ["remember", "external_send", "--subject", "s", "--answer-file", self.answer("응"),
+                            "--meaning", meaning] + (["--condition", "새 조건"] if meaning == "conditional" else [])
+                    rc, r, _ = self.run_cli(*(argv + (["--user-changed"] if uc else [])))
+                    after, tag = self.dec(), (a, b, meaning, uc)
+                    cuts = [k for k, x in ((cur, a), (old, b)) if x == "cut"]
+                    if not present or uc:
+                        self.assertEqual(rc, 0, (tag, r))
+                        self.assertEqual(list(after), [cur], tag)                    # 지금 키 하나 · 옛 키 지움
+                        self.assertEqual(after[cur]["meaning"], meaning, tag)
+                    elif cuts and meaning != "conditional":
+                        self.assertEqual((rc, r["reason"]), (7, "supplement_meaning"), tag)
+                        self.assertEqual(after, items, tag)
+                    elif cuts:
+                        self.assertEqual(rc, 0, (tag, r))
+                        self.assertEqual(set(after), set(items), tag)                # 개수·키 그대로
+                        for k in items:                                              # 잘린 자리만 바뀐다
+                            self.assertEqual(after[k].get("condition") == "새 조건", k in cuts, (tag, k))
+                            if k not in cuts:
+                                self.assertEqual(after[k], items[k], (tag, k))
+                    else:
+                        self.assertEqual((rc, r["reason"]), (7, "already_decided"), tag)
+                        self.assertEqual(after, items, tag)
+        self.assertEqual(n, 150)
+
     def test_domain_matches_only_official_domains(self):
         # codex R3·R4: 도메인 대상은 이름 닮음(word.invalid · gmail.invalid · word.example.invalid)이 아니라 정식 도메인 목록으로만
         os.makedirs(os.path.join(self.apps, "Microsoft Word.app"))
@@ -1680,7 +1743,13 @@ class TestPrecedent(Base):
                            ("https://mail.google.com:443/mail.", "do"),
                            # codex R7: 호스트 자리의 비ASCII 는 브라우저가 다른 호스트로 정규화 — 앞부분만 잘라 대조하지 않는다
                            ("https://mail.google.comé/", "ask"), ("https://mail.google.com。invalid/", "ask"),
-                           ("https://mail.google.com/mail에서", "do")):
+                           ("https://mail.google.com/mail에서", "do"),
+                           # codex R8: 호스트의 제어 문자(NUL·SOH·DEL)·% 인코딩·끊긴 :// = 모름 · 끝점 호스트는 같은 호스트
+                           ("https://unrelated.invalid\u0000.mail.google.com/", "ask"),
+                           ("https://unrelated.invalid\u0001.mail.google.com/", "ask"),
+                           ("https://unrelated.invalid\u007f.mail.google.com/", "ask"),
+                           ("https://mail%2egoogle.com/", "ask"), ("https:// mail.google.com/", "ask"),
+                           ("https://mail.google.com./", "do")):
             rc, d, _ = self.run_cli("decide", "login", "--subject", subj)
             self.assertEqual(d["decision"], want, subj)
 

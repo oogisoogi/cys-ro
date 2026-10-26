@@ -1,7 +1,7 @@
 # 우리 배선 영향표 — vendor v0.14.52 (B-360 · S-a C5b) 대비
 
 조사 범위: `~/.claude/channels/*.sh|*.py`(하위 2단 포함 · `*.bak*`·`test-*`·`_cand*`·`.msc-drill-harness` 제외), `~/.cys/pack/bin/*`, `~/.cys/local/**`.
-벤더 근거: `git -C /Users/oogisoogi/cys-terminal-src show v0.14.5{1,2}:<path>`(읽기 전용). 줄 번호는 모두 해당 태그의 파일 기준이다.
+벤더 근거: `git -C ~/cys-terminal-src show v0.14.5{1,2}:<path>`(읽기 전용). 줄 번호는 모두 해당 태그의 파일 기준이다.
 실측 근거로 쓴 읽기 전용 명령: `ps`, `cys list`, `.master-send-ledger.jsonl` 꼬리, bash 3.2 명령 치환 부모 pid 실험(§0-3).
 
 ---

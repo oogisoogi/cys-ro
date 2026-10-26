@@ -1,10 +1,10 @@
 #!/bin/bash
 # 격리 하네스 — 0.14.52 직접 보내기 60초 보류 × 우리 2단계(send + 별도 send-key) 실측. 실 좌석·실 데몬 무접촉.
 set -u
-WT=/Users/oogisoogi/cys-terminal-src-wt/rebase-01452
+WT="${WT:-$HOME/cys-terminal-src-wt/rebase-01452}"
 CYS=$WT/target/debug/cys; CYSD=$WT/target/debug/cysd
 ROOT=$WT/target/h60-$$; mkdir -p "$ROOT"/{home,pack,state,work}
-SOCK=$ROOT/d.sock; REALHOME=/Users/oogisoogi
+SOCK=$ROOT/d.sock; REALHOME="${REALHOME:-$HOME}"
 LOG=$ROOT/run.log; : > "$LOG"
 say(){ echo "[$(date +%T)] $*" | tee -a "$LOG"; }
 export CYS_NO_AUTOSTART=1

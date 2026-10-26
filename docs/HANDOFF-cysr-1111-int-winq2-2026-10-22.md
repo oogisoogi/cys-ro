@@ -22,7 +22,7 @@
 ## 2. WINQ-2 — 윈 fullscreen 좌석 `--queued` 무기한 보류
 
 ### 2-1. 윈 실측(수집 · 원문은 윈 기기)
-`~/axdev/master/SESSION_STATE.md:201` — 「WINQ-2 전체화면 좌석 --queued 95s+ 미배달(layout_why=no_marker_row · repaint_requested_at null · 테두리와 ❯ 한 줄)」. 원문 = 윈 `C:\Users\oogis\w1110\e-*.txt`(저장소 밖 · 이 티켓에서 원문 화면 사본은 못 봤다).
+`~/axdev/master/SESSION_STATE.md:201` — 「WINQ-2 전체화면 좌석 --queued 95s+ 미배달(layout_why=no_marker_row · repaint_requested_at null · 테두리와 ❯ 한 줄)」. 원문 = 윈 `%USERPROFILE%\w1110\e-*.txt`(저장소 밖 · 이 티켓에서 원문 화면 사본은 못 봤다).
 
 ### 2-2. 원인(확신도: 코드 경로 = High · ConPTY 가 실제로 그렇게 보낸다는 부분 = Med — 아래 한계)
 - `no_marker_row` 는 `composer_layout_why`(`src/readiness.rs` 판정부 경계 아래)가 **선두가 `❯` 인 줄을 하나도 못 찾을 때만** 나온다(`leading_marker_index` = 앞 공백만 벗기고 마커로 시작하는가). 그런데 화면에는 `❯` 가 보였다(「테두리와 ❯ 한 줄」).

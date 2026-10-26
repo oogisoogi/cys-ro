@@ -35,7 +35,7 @@
 - 코드: `src/bin/cysd/schedule.rs:209` `schedule_path() = pack::pack_dir().join("schedule.json")` · 쓰기 모드 락 `<schedule.json>.cys-lock`(`:891`·`:1031`·`:1608`). 즉 **`CYS_PACK_DIR` 을 쥔 데몬이 스케줄 틱마다** 그 자리에 락을 만든다.
 - 인과 실측(내가 띄운 고아 32058 · HOME 일치 확인 뒤 그 pid 만 SIGTERM): 데몬 생존 중 락 삭제 → **~30초 만에 재생성** / 데몬 종료 뒤 삭제 → **90초 동안 0**.
 - 「시험 밖에서도 다시 생김」(577 HANDOFF)의 정체: 1111-int 시험 1·2회차가 띄운 고아들이 **지금도 살아 있다**(18:3x 실측) —
-  - `CYS_PACK_DIR=/Users/oogisoogi/cys-terminal-src-wt/1111-int/cysjavis-pack/bin` 을 쥔 cysd: **35254**(16:59:49) · **47888**(17:01:37) · **42824**(17:28:50) · **56642** — 1111-int 의 `bin/schedule.json.cys-lock` 이 18:32 에도 갱신돼 있었다.
+  - `CYS_PACK_DIR=~/cys-terminal-src-wt/1111-int/cysjavis-pack/bin` 을 쥔 cysd: **35254**(16:59:49) · **47888**(17:01:37) · **42824**(17:28:50) · **56642** — 1111-int 의 `bin/schedule.json.cys-lock` 이 18:32 에도 갱신돼 있었다.
   - 그 밖에 임시 팩 자리를 쥔 고아 cysd: 16628 · 17759 · 37524 · 45503 · 72303 · 82189 · 85963 · 87626(HOME = `/var/folders/…/T/tmp.*` · cwd = 1111-int / 1111-deptflake / deptflake scratchpad).
   - **내 것이 아니라 종료하지 않았다**(자기 pid 만 · 지침 §1-4). 정리는 master 판단 — 각 pid 의 `ps eww` 로 HOME 이 임시 폴더임을 확인하고 그 pid 만 종료하면 된다.
 - 소스 트리에 락이 생기면 안 되는 이유: 락은 「살아 있는 데몬이 이 폴더를 팩으로 쓰고 있다」는 흔적이다 — 그 데몬은 팩 시드(986파일)·스케줄 재적재·잡 실행을 소스 트리에서 하고, `pyseal_census` 같은 소스 계수 시험을 적으로 만들며, 고아라 시험이 끝나도 계속 쓴다.

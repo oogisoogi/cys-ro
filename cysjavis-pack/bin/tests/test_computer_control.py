@@ -1106,6 +1106,15 @@ class TestPrecedent(Base):
         rc, d, _ = self.run_cli("decide", "drone_flight")
         self.assertEqual((d["decision"], d["basis"]), ("ask", "new_type"))
 
+    def test_new_type_answer_is_remembered_no_reask(self):
+        rc, d, _ = self.run_cli("decide", "drone_flight", "--subject", "교회 행사 촬영")
+        self.assertEqual(d["decision"], "ask")
+        rc, r, _ = self.run_cli("remember", "drone_flight", "--subject", "교회 행사 촬영",
+                                "--answer-file", self.answer("그건 해도 돼"), "--meaning", "allow")
+        self.assertEqual(rc, 0, r)
+        rc, d, _ = self.run_cli("decide", "drone_flight", "--subject", "교회 행사 촬영")
+        self.assertEqual((d["decision"], d["basis"][:9]), ("do", "standing:"))   # 새 유형도 한 번 물은 것은 다시 묻지 않는다
+
     def test_external_send_conditional(self):
         rc, d, _ = self.run_cli("decide", "external_send", "--subject", "당회록 → 교회 드라이브")
         self.assertEqual(d["decision"], "ask")

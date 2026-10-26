@@ -1672,21 +1672,23 @@ def _in_use(subject, usage):
 
 
 def judge(cat, subject="", in_use=None, usage=None, decisions=None):
-    """유형 + 대상 → (결정, 근거, 문장). 순수 판정(쓰기 0) — self-test 가 전수로 돈다."""
-    if cat not in CATEGORIES:
-        return ASK, "new_type", "선례로 갈리지 않는 새 유형입니다 — 한 번 여쭙고 답을 계속 따르겠습니다."
-    name, default, src, line = CATEGORIES[cat]
-    if cat in ("login", "external_send") and any(k in _norm(subject) for k in TERMS_SERVICES):
+    """유형 + 대상 → (결정, 근거, 문장). 순수 판정(쓰기 0) — self-test 가 전수로 돈다.
+    순서: 약관 서비스 → 건마다·안 함(상시 기록으로 안 바뀜) → 상시 기록(새 유형 포함 — 한 번 물은 것은 다시 묻지 않는다) → 새 유형 = ask."""
+    known = cat in CATEGORIES
+    if known and cat in ("login", "external_send") and any(k in _norm(subject) for k in TERMS_SERVICES):
         n2, d2, s2, l2 = CATEGORIES["terms_risk"]
         return d2, "precedent:" + s2, l2
-    if default in (EACH, NEVER):                     # 건마다·안 함 = 상시 기록으로 바뀌지 않는다
-        return default, "precedent:" + src, line
+    if known and CATEGORIES[cat][1] in (EACH, NEVER):   # 건마다·안 함 = 상시 기록으로 바뀌지 않는다
+        return CATEGORIES[cat][1], "precedent:" + CATEGORIES[cat][2], CATEGORIES[cat][3]
     rec = (decisions or {}).get("%s:%s" % (cat, _norm(subject)))
     if isinstance(rec, dict) and rec.get("meaning") in ("allow", "deny", "conditional"):
         dec = DO if rec["meaning"] in ("allow", "conditional") else NEVER
         cond = (" · 조건: " + rec["condition"]) if rec.get("condition") else ""
         return dec, "standing:%s" % rec.get("at", ""), "전에 정해 주신 대로 합니다(%s%s)." % (
             {"allow": "허락", "deny": "안 함", "conditional": "조건부 허락"}[rec["meaning"]], cond)
+    if not known:
+        return ASK, "new_type", "선례로 갈리지 않는 새 유형입니다 — 한 번 여쭙고 답을 계속 따르겠습니다."
+    name, default, src, line = CATEGORIES[cat]
     if cat == "login":
         if in_use is None:
             in_use, why = _in_use(subject, usage or {})

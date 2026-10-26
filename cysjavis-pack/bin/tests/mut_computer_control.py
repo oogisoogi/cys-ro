@@ -219,8 +219,8 @@ M = [
   ["test_act_stdin_devnull_and_cwd"]),
  # ── cu-1111-precedent 2단계: 선례 기반 이양 ──
  ("M52-each-overridable", "건마다 유형(결제·가입·비밀번호)을 상시 기록으로 do 로 뒤집을 수 있음",
-  "    if default in (EACH, NEVER):                     # 건마다·안 함",
-  "    if default == NEVER:                     # 건마다·안 함",
+  "    if known and CATEGORIES[cat][1] in (EACH, NEVER):",
+  "    if known and CATEGORIES[cat][1] == NEVER:",
   ["test_each_and_never_not_recordable", "test_self_test_passes"]),
  ("M53-each-recordable", "건마다·안 함 유형도 상시 기록 허용",
   "    if a.cat in CATEGORIES and CATEGORIES[a.cat][1] in (EACH, NEVER):",
@@ -247,7 +247,7 @@ M = [
   "        return DO, \"precedent:\" + src, \"이 서비스를",
   ["test_unknown_login_asks_once_then_remembers_no_reask", "test_self_test_passes"]),
  ("M59-terms-off", "약관 위험 서비스(네이버) 판정 끄기",
-  "    if cat in (\"login\", \"external_send\") and any(k in _norm(subject) for k in TERMS_SERVICES):",
+  "    if known and cat in (\"login\", \"external_send\") and any(k in _norm(subject) for k in TERMS_SERVICES):",
   "    if False and any(k in _norm(subject) for k in TERMS_SERVICES):",
   ["test_terms_service_is_each", "test_self_test_passes"]),
  ("M60-adopt-takes-hand", "adopt 가 손 칸까지 가져옴",
@@ -274,6 +274,10 @@ M = [
   "        if at < bt:",
   "        if False:",
   ["test_tab_count_compared_and_loss_reported"]),
+ ("M66-new-type-reask", "새 유형은 상시 기록이 있어도 다시 물음(재질문)",
+  "    rec = (decisions or {}).get(\"%s:%s\" % (cat, _norm(subject)))",
+  "    if not known:\n        return ASK, \"new_type\", \"\"\n    rec = (decisions or {}).get(\"%s:%s\" % (cat, _norm(subject)))",
+  ["test_new_type_answer_is_remembered_no_reask"]),
 ]
 
 

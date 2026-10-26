@@ -76,6 +76,11 @@ RUST = [
     ("R10 doctor 가 좌석 프로필을 안 거름", "src/bin/cys.rs",
      ".filter(|p| !cys::pack::is_seat_profile_settings(std::path::Path::new(p.as_str()), &seats))",
      ".filter(|_| true)", SEAT_BIN),
+    ("R11 판정 범위 중복 키 거부 제거(agy R2)", "src/factory_reset.rs", "    if dup_in_scope(&root) {", "    if false {"),
+    ("R12 이전 상태줄 원복이 부분 문자열 경계로 회귀(agy R2)", "src/factory_reset.rs",
+     '    w[0].strip_prefix("CYS_PREV_STATUSLINE=").filter(|v| !v.is_empty()).map(str::to_string)',
+     '    cmd.strip_prefix("CYS_PREV_STATUSLINE=").and_then(|r| r.rfind(" sh ").map(|i| r[..i].trim_matches(\'\\\'\').to_string()))',
+     ["cargo", "test", "--lib", "restored_prev_statusline"]),
 ]
 
 

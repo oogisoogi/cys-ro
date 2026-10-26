@@ -2237,20 +2237,6 @@ fn command_points_into_quarantined(command: &str, cys_base: &Path, include_local
     false
 }
 
-/// `shlex.quote` 단일따옴표 출력의 역변환(CYS_PREV_STATUSLINE 원복용).
-/// 형식 밖 입력은 None — 호출부는 안전 기본값(제거)으로 처리한다.
-fn shell_unquote_single(s: &str) -> Option<String> {
-    let t = s.trim();
-    if !t.starts_with('\'') || !t.ends_with('\'') || t.len() < 2 {
-        // 따옴표 불필요 토큰(공백·특수문자 없음)은 shlex.quote 가 그대로 내보낸다.
-        if !t.is_empty() && !t.contains('\'') && !t.contains(' ') {
-            return Some(t.to_string());
-        }
-        return None;
-    }
-    Some(t[1..t.len() - 1].replace("'\"'\"'", "'"))
-}
-
 /// settings.json 에서 **cys 팩을 가리키는 훅·statusLine 만** 제거한다.
 ///
 /// 계약(merge_desired_hooks 대칭):
@@ -2509,7 +2495,8 @@ fn resolve_symlinked_settings(settings_path: &Path, cys_base: &Path) -> Result<P
 
 /// ★1.1.11 hook-slim: **순서 보존** JSON 값 — 사용자 settings 를 고칠 때 바뀌지 않은 부분의 키 순서를 지킨다.
 /// serde_json `Value` 는 이 크레이트에서 사전순 Map 이다(preserve_order 기능 미사용 · 크레이트 전역 기능이라 켜지 않는다).
-/// 중복 키는 JSON.parse 처럼 **뒤 값이 이기되 자리는 처음 것**이다.
+/// 중복 키는 **모두 그대로 보존**한다(덮어쓰지 않는다 · R2 agy major) — 판정 범위(`hooks`·`statusLine` 하위) 안에 중복이
+/// 있으면 계획 단계에서 거부하고(`dup_in_scope`), 그 밖의 중복은 원문 그대로 남아 재판독 대조(`back == want`)에서 정확히 비교된다.
 #[derive(Clone, Debug, PartialEq)]
 enum OJ {
     Null,
@@ -2597,10 +2584,7 @@ impl<'de> serde::Deserialize<'de> for OJ {
             fn visit_map<A: serde::de::MapAccess<'de>>(self, mut a: A) -> Result<OJ, A::Error> {
                 let mut m: Vec<(String, OJ)> = Vec::new();
                 while let Some((k, v)) = a.next_entry::<String, OJ>()? {
-                    match m.iter_mut().find(|(key, _)| *key == k) {
-                        Some(slot) => slot.1 = v,
-                        None => m.push((k, v)),
-                    }
+                    m.push((k, v));
                 }
                 Ok(OJ::Obj(m))
             }
@@ -2657,6 +2641,11 @@ fn plan_strip_bytes(
     let root: OJ = serde_json::from_str(text).map_err(|e| format!("parse error: {e}"))?;
     if !matches!(root, OJ::Obj(_)) {
         return Err("settings root is not an object".into());
+    }
+    // ★R2(agy major): 판정 범위 안 중복 키는 JSON.parse(뒤 값이 이김)와 우리 판정이 갈릴 수 있다 — 탐지·제거 모두 거부(fail-closed ·
+    //   doctor 는 「판정 불가」로 보인다). 예: 첫 `hooks` 에만 팩 훅 → 종전 덮어쓰기 모델은 「없음」으로 접어 doctor 가 OK 로 오판.
+    if dup_in_scope(&root) {
+        return Err("hooks·statusLine 안에 중복 키 — 손대지 않는다(JSON.parse 와 판정이 갈릴 수 있다)".into());
     }
     let (want, removed) = expected_after_strip(&root, matcher, strip_statusline);
     if removed.is_empty() {
@@ -2741,27 +2730,16 @@ fn expected_after_strip(root: &OJ, matcher: &dyn Fn(&str) -> bool, strip_statusl
 }
 
 /// `CYS_PREV_STATUSLINE=<따옴표 값> <런처> <팩 상태줄>` 체인에서 사용자 이전 상태줄을 되살린다(없으면 None).
+/// ★R2(agy blocking): 종전엔 ` sh `·` bash `·`/bash.exe` 를 **부분 문자열로 뒤에서** 찾아 값 끝을 정했다 — 윈 형식
+/// (`… bash "C:/…"`)에서 이전 값 안에 ` sh ` 가 있거나(`'env X=1 sh /u/s.sh'`) 런처가 역슬래시 `…\bash.exe` 면 경계를 잘못
+/// 잡아 None → 사용자 상태줄이 원복 대신 **삭제**됐다. 이제 소유 판정(`personal_pack_command`)과 같은 셸 낱말 분해로 첫 낱말
+/// (할당)의 값을 꺼낸다 — 홑따옴표·`shlex.quote` 의 `'"'"'` 이어 붙이기·겹따옴표를 낱말 규칙대로 푼다. 런처·경로 표기와 무관.
 fn restored_prev_statusline(cmd: &str) -> Option<String> {
-    // ★W1(성찰 확정): 구분자는 OS별 훅 명령 형식과 1:1 이다 —
-    // unix `sh <abs>` / Windows `bash "<정슬래시 abs>"`(javis_preflight._cys_hook_cmd·
-    // pack::hook_command_for). `" sh "` 만 찾으면 Windows 에서 항상 원복 실패 →
-    // 사용자의 기존 statusLine 이 무음 삭제된다. 두 형식을 모두 인식한다.
-    cmd.strip_prefix("CYS_PREV_STATUSLINE=")
-        .and_then(|rest| {
-            rest.rfind(" sh ")
-                .or_else(|| rest.rfind(" bash "))
-                // win-hooks-no-bash 폴백 형식: ` <절대경로>/bash.exe "<script>"`
-                .or_else(|| {
-                    // 따옴표 런처(공백 경로)면 여는 따옴표 앞 공백, 맨 경로면 직전 공백.
-                    let head = &rest[..rest.rfind("/bash.exe")?];
-                    match head.rfind(" \"") {
-                        Some(q) if !head[q + 2..].contains('"') => Some(q),
-                        _ => head.rfind(' '),
-                    }
-                })
-                .map(|i| rest[..i].to_string())
-        })
-        .and_then(|q| shell_unquote_single(&q))
+    let w = shell_words(cmd);
+    if w.len() < 2 {
+        return None; // 할당 뒤에 실행할 명령(런처 + 팩 상태줄)이 없으면 체인이 아니다
+    }
+    w[0].strip_prefix("CYS_PREV_STATUSLINE=").filter(|v| !v.is_empty()).map(str::to_string)
 }
 
 /// 컨테이너(`{…}`/`[…]`) 재조립 — `parts[i]` = Some(그 항목의 새 원문 · 대개 원문 그대로) / None(지움).
@@ -2782,6 +2760,22 @@ fn rejoin(text: &str, open: usize, close: usize, items: &[(usize, usize)], parts
     }
     out.push_str(&text[items[items.len() - 1].1..close + 1]);
     out
+}
+
+/// 루트의 `hooks`·`statusLine` 이 두 번 이상 나오거나, 그 값 아래 어느 객체든 같은 키가 두 번 이상이면 참.
+fn dup_in_scope(root: &OJ) -> bool {
+    fn has_dup(v: &OJ) -> bool {
+        match v {
+            OJ::Obj(m) => {
+                m.iter().enumerate().any(|(i, (k, _))| m[..i].iter().any(|(k2, _)| k2 == k)) || m.iter().any(|(_, x)| has_dup(x))
+            }
+            OJ::Arr(a) => a.iter().any(has_dup),
+            _ => false,
+        }
+    }
+    let OJ::Obj(top) = root else { return false };
+    ["hooks", "statusLine"].iter().any(|k| top.iter().filter(|(x, _)| x == k).count() > 1)
+        || top.iter().any(|(k, v)| (k == "hooks" || k == "statusLine") && has_dup(v))
 }
 
 fn dup_keys(scan: &crate::settings_surgery::RootScan, key: &str) -> bool {
@@ -4648,14 +4642,27 @@ mod tests {
     }
 
     #[test]
-    fn shell_unquote_single_variants() {
-        assert_eq!(shell_unquote_single("'my status'").as_deref(), Some("my status"));
-        assert_eq!(shell_unquote_single("plain").as_deref(), Some("plain"));
+    fn restored_prev_statusline_variants() {
+        let r = |prev: &str| restored_prev_statusline(&format!("CYS_PREV_STATUSLINE={prev} sh /h/.cys/pack/hooks/cys-statusline.sh"));
+        assert_eq!(r("'my status'").as_deref(), Some("my status"));
+        assert_eq!(r("plain").as_deref(), Some("plain"));
+        assert_eq!(r("'it'\"'\"'s ok'").as_deref(), Some("it's ok"), "shlex.quote 의 홑따옴표 이어 붙이기");
+        assert_eq!(r("''"), None, "빈 값 = 원복할 것 없음");
+        assert_eq!(restored_prev_statusline("CYS_PREV_STATUSLINE='x'"), None, "뒤에 명령이 없으면 체인 아님");
+        assert_eq!(restored_prev_statusline("sh /h/.cys/pack/hooks/cys-statusline.sh"), None);
+        // ★R2(agy blocking) 반례: 윈 형식 + 이전 값 안의 ` sh ` · 역슬래시 bash.exe 런처
         assert_eq!(
-            shell_unquote_single("'it'\"'\"'s ok'").as_deref(),
-            Some("it's ok")
+            restored_prev_statusline("CYS_PREV_STATUSLINE='env X=1 sh /u/my-status.sh' bash \"C:/Users/U/.cys/pack/hooks/cys-statusline.sh\"")
+                .as_deref(),
+            Some("env X=1 sh /u/my-status.sh")
         );
-        assert_eq!(shell_unquote_single(""), None);
+        assert_eq!(
+            restored_prev_statusline(
+                "CYS_PREV_STATUSLINE='my-status --x' \"C:\\Program Files\\Git\\bin\\bash.exe\" \"C:\\Users\\U\\.cys\\pack\\hooks\\cys-statusline.sh\""
+            )
+            .as_deref(),
+            Some("my-status --x")
+        );
     }
 }
 
@@ -5100,6 +5107,23 @@ mod hookslim_tests {
         let (want, _) = expected_after_strip(&root, &m, true);
         let r = surgical_strip("{\"hooks\":{},\"hooks\":{\"Stop\":[]}}", &root, &want, &m);
         assert!(r.is_err(), "중복 키 = 거부: {r:?}");
+        // ★R2(agy major) 반례 3종 — 판정 범위 안 중복 = 계획 단계 거부(Err · 쓰기 0). 종전: ①은 검증 방어선만이 막았고(R3 비등가)
+        //   ②는 중복 Stop 을 남긴 채 통과 · ③은 첫 hooks 의 팩 훅을 「없음」으로 접어 doctor 가 OK 로 오판.
+        let pk = "sh /h/.cys/pack/hooks/save-state.sh";
+        for raw in [
+            format!("{{\"hooks\":{{\"Stop\":[{{\"hooks\":[{{\"command\":\"echo user\"}}]}}],\"Stop\":[{{\"hooks\":[{{\"command\":\"{pk}\"}}]}}]}}}}"),
+            format!("{{\"hooks\":{{\"Stop\":[{{\"hooks\":[{{\"command\":\"echo u1\"}}]}}],\"Stop\":[{{\"hooks\":[{{\"command\":\"{pk}\"}},{{\"command\":\"echo u2\"}}]}}]}}}}"),
+            format!("{{\"hooks\":{{\"Stop\":[{{\"hooks\":[{{\"type\":\"command\",\"command\":\"{pk}\"}}]}}]}},\"hooks\":{{\"Stop\":[]}}}}"),
+            format!("{{\"statusLine\":{{\"command\":\"x\",\"command\":\"sh /h/.cys/pack/hooks/cys-statusline.sh\"}}}}"),
+        ] {
+            let r = plan_strip_bytes(raw.as_bytes(), &m, true);
+            assert!(r.is_err(), "판정 범위 안 중복 키 = 거부: {raw} → {r:?}");
+        }
+        // 범위 밖 중복(permissions)은 원문 그대로 남고 팩 훅은 지워진다(바이트 보존 · 재판독 대조 통과).
+        let raw = format!("{{\"permissions\":{{\"a\":1,\"a\":2}},\"hooks\":{{\"Stop\":[{{\"hooks\":[{{\"command\":\"{pk}\"}}]}}]}}}}");
+        let (removed, out) = plan_strip_bytes(raw.as_bytes(), &m, true).unwrap();
+        assert_eq!(removed, vec!["Stop×1"]);
+        assert_eq!(String::from_utf8(out.unwrap()).unwrap(), "{\"permissions\":{\"a\":1,\"a\":2}}");
     }
 
     // codex·agy R1 blocking: 첫 두 멤버(hooks·statusLine)가 둘 다 지워지는 pretty·CRLF·2키 파일 — panic 없이 바르게.

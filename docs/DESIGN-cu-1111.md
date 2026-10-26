@@ -36,6 +36,8 @@
 
 ★「바로 가능 → 자동으로 가져온다」의 정확한 뜻(정직 고지): 이 기능이 하는 「자동」은 **사용자 확인 뒤 넘김 장부에 올려 마스터가 바로 쓰기 시작하는 것**이다. 맥 권한·크롬 확장·`/mcp` 토글처럼 **사용자 쪽 설정을 마스터가 대신 켜는 일은 하지 않는다** — 그것은 「손 한 번」 칸이다(경계 §6). 따라서 「바로 가능」 = 「이미 다 켜져 있어서 추가로 할 일이 없는 것」이다.
 
+> **개정(2026-10-26 · TICKET=cu-1111-precedent · 근거 = 박사님 원문)** — 위 문단은 크롬에 한해 뒤집혔다. 박사님 원문(10-26 21:0x): 「크롬 조작을 위해 /chrome 실행, 크롬 껐다켜기 같은 작업을 주인에게 시키지 말고 마스터가 직접 하는 방법을 찾아라.」 · (21:3x) 「보안 관련해서 사용자가 계속 승인을 해주어야 하는 일이 발생하면 사실상 자비스를 사용하는 의미가 많이 퇴색한다.」 → 「바로 가능」 = **이미 켜져 있거나, 마스터가 직접 켤 수 있는 것**이다. 크롬의 기본 켜기·연결 파일·크롬 다시 켜기·좌석 재시작은 마스터가 `chrome-enable` 로 한다(§13). 사용자 손으로 남는 것 = 맥 권한 스위치(OS 가 사람만 누르게 막음) · 확장 설치·로그인 · 비밀번호 입력. 무엇을 묻고 무엇을 먼저 정하는지는 §14(선례 기반 이양).
+
 ## 2. 파일 위치
 
 | 경로 | 무엇 |
@@ -59,7 +61,7 @@ Rust 앱 쪽은 리셋 목록 1줄 말고는 손대지 않는다(UI 카드·사�
 
 | ID | 항목 | 탐지(전부 팝업 없음·읽기만) | 판정 규칙 | 손 칸 안내 요지(근거) |
 |---|---|---|---|---|
-| `chrome` | 로그인된 크롬으로 웹 일(지메일·구글 문서·클라우드플레어 화면 등) | ⑴크롬 앱 존재(`/Applications`·`~/Applications`) ⑵확장 ID `fcoeoab…` 폴더가 어느 프로필에 있는지(프로필 **이름은 출력하지 않고** 「프로필 n개 중 k개」) ⑶확장 켜짐(`Preferences` 의 그 ID 항목 `state`·`disable_reasons` 만) ⑷연결 파일 S5 존재 + 가리키는 실행 파일 존재 ⑸`claudeInChromeDefaultEnabled` | ⑴없음 → 안 됨(「크롬이 없습니다」 + 설치는 사용자 선택) · ⑵~⑸ 전부 참 → 바로 · 하나라도 거짓 → 손 · 값을 못 읽음 → ? | 웹 스토어 설치·로그인·압정(C2) → 마스터 칸 `/chrome` → Enabled by default(C1·G2) → 크롬 완전 종료 후 다시 켜기(G3) → cysr ↻ 재시작 → 마스터가 `recheck chrome`. 「Browser extension is not connected」면 `/status` Organization ↔ 확장 계정 맞추기(G4·C3). 로그인·보안문자·결제·영구 삭제는 사람이(C5·C6) |
+| `chrome` | 로그인된 크롬으로 웹 일(지메일·구글 문서·클라우드플레어 화면 등) | ⑴크롬 앱 존재(`/Applications`·`~/Applications`) ⑵확장 ID `fcoeoab…` 폴더가 어느 프로필에 있는지(프로필 **이름은 출력하지 않고** 「프로필 n개 중 k개」) ⑶확장 켜짐(`Preferences` 의 그 ID 항목 `state`·`disable_reasons` 만) ⑷연결 파일 S5 존재 + 가리키는 실행 파일 존재 ⑸`claudeInChromeDefaultEnabled` | ⑴없음 → 안 됨(「크롬이 없습니다」 + 설치는 사용자 선택) · ⑵~⑸ 전부 참 → 바로 · ★(개정 cu-1111-precedent) ⑵⑶ 참이고 거짓이 ⑷·⑸뿐 → **바로**(「제가 할 것: 크롬 기본 켜기 · 연결 파일·크롬 다시 켜기」 → 넘기면 마스터가 `chrome-enable`) · ⑵⑶ 거짓 → 손 · 값을 못 읽음 → ? | 손 칸 = 웹 스토어 설치·로그인·압정(C2)만. ~~마스터 칸 `/chrome` → Enabled by default(C1·G2) → 크롬 완전 종료 후 다시 켜기(G3) → cysr ↻ 재시작~~ → **마스터가 직접(§13)**. 「Browser extension is not connected」면 먼저 마스터가 좌석 재시작(§13 ④) → 그래도면 `/status` Organization ↔ 확장 계정 맞추기(G4·C3 · 확장 로그인 = 사람). 로그인·보안문자·결제·영구 삭제는 §14 표를 따른다 |
 | `connectors` | 커넥터(지메일·캘린더·드라이브·노션 등 — 메일·일정 내용은 커넥터로) | `claudeAiMcpEverConnected` 서비스 이름 | 목록 있음 → 서비스별로 바로(「연결 기록 있음」이라고 정직하게 · 지금 연결 확인은 사용 첫 회) · 없음 → 손 · 요금제 키가 API 키 로그인이면 → 안 됨(P3) | claude.ai → 설정 → 커넥터 → 「+」(EVIDENCE §2) · CLI 에서 따로 로그인하지 않는다 · 단체 계정은 「Access blocked」면 관리자 |
 | `screen` | 데스크톱 앱 화면 조작(카톡·한글·어도비·오피스 등) | ⑴요금제 S6 ⑵computer-use 켜짐 S9(마스터 폴더의 `enabledMcpServers`) ⑶손쉬운 사용 S1 ⑷화면 기록 S2 | ⑴Team·Enterprise → 안 됨(「이 요금제에서는 화면 조작이 없습니다」 · P1) · ⑴모르는 값 → ? · ⑵~⑷ 전부 참 → 바로 · 그 밖 → 손(빠진 것만 단계로) | ⑵마스터 칸 `/mcp` → computer-use → Enable(G1·M1) ⑶·⑷ 시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용 / 화면 및 시스템 오디오 녹음 → cysr 켜기 · **맥 로그인 암호를 묻는 것이 정상**(G5·M5) · 목록에 cysr 이 없으면 「+」(손쉬운 사용 한정 · M4) · 「종료 및 다시 열기」 눌러도 대화 유지(M6) · 「cysd」 이름 창 = cysr 엔진 → 허용(G6·M7) · 그래도 안 되면 ↻ 재시작(M9) · 다른 칸이 잠금을 쥐면 그 칸 대화 끝내기(M10) |
 | `apps` | 앱 목록(카탈로그 한정) | 정해진 목록만 존재 확인 — KakaoTalk · 한글(Hancom Office HWP) · Word·Excel·PowerPoint · Adobe(Photoshop·Illustrator·Acrobat 등 이름 접두) · 메일·캘린더·Finder(기본) | 각 앱 판정 = `screen` 판정을 따른다(화면 조작 경로) · 앱이 없으면 그 줄을 싣지 않는다 · **카톡 = 「보이는 만큼 읽기·직접 보내기」 한정 고지**(M14) · **맥 한글 = 화면 조작만**(M13) | `screen` 안내를 따른다 |
@@ -73,7 +75,7 @@ Rust 앱 쪽은 리셋 목록 1줄 말고는 손대지 않는다(UI 카드·사�
 
 | ID | 탐지 | 판정 |
 |---|---|---|
-| `chrome` | `%LOCALAPPDATA%\Google\Chrome\User Data\<프로필>\Extensions\fcoeoab…` · 연결 파일 = 레지스트리 `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.anthropic.claude_code_browser_extension`(`reg query` · 읽기 · ★출력은 바이트로 받아 OEM → ANSI 코드페이지(`GetOEMCP`·`GetACP`)로 푼다 — 끝내 안 풀리면 대체 문자 · 디코드 실패가 판정을 바꾸지 않는다) · `claudeInChromeDefaultEnabled`(좌석 설정 폴더 `CLAUDE_CONFIG_DIR` 의 것만 · ★키 없음 = 꺼짐 → 손 칸 단계 「/chrome 기본 켜기」 — 근거: Claude Code 2.1.310 시작 판정 `--chrome` → `CLAUDE_CODE_ENABLE_CFC` → 이 키 → 없으면 false · 공식 문서 code.claude.com/docs/en/chrome 「Enable Chrome by default」 · cysr 좌석은 `--chrome` 없이 뜬다(`agents.json` cmd · 실측 ps) · 윈 실기 r2) | 맥과 같은 규칙 · WSL 안이면 안 됨(W6) |
+| `chrome` | `%LOCALAPPDATA%\Google\Chrome\User Data\<프로필>\Extensions\fcoeoab…` · 연결 파일 = 레지스트리 `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.anthropic.claude_code_browser_extension`(`reg query` · 읽기 · ★출력은 바이트로 받아 OEM → ANSI 코드페이지(`GetOEMCP`·`GetACP`)로 푼다 — 끝내 안 풀리면 대체 문자 · 디코드 실패가 판정을 바꾸지 않는다) · `claudeInChromeDefaultEnabled`(좌석 설정 폴더 `CLAUDE_CONFIG_DIR` 의 것만 · ★키 없음 = 꺼짐 → 손 칸 단계 「/chrome 기본 켜기」 — 근거: Claude Code 2.1.310 시작 판정 `--chrome` → `CLAUDE_CODE_ENABLE_CFC` → 이 키 → 없으면 false · 공식 문서 code.claude.com/docs/en/chrome 「Enable Chrome by default」 · cysr 좌석은 `--chrome` 없이 뜬다(`agents.json` cmd · 실측 ps) · 윈 실기 r2) · ★(개정 cu-1111-precedent) 키 없음·꺼짐·연결 키 없음 = 「손 칸 /chrome」이 아니라 **바로(마스터가 `chrome-enable`)** — 윈 실기(10-26 20:3x) `claude -p --chrome`(좌석 `CLAUDE_CONFIG_DIR`) 1회로 연결 키 자동 생성 실측 | 맥과 같은 규칙 · WSL 안이면 안 됨(W6) |
 | `connectors` | 맥과 같음 | 맥과 같음 |
 | `screen` | — | **안 됨**: 「윈도우에서는 이 칸의 마스터가 화면을 조작할 수 없습니다(공식 · G8·W1). Claude 데스크톱 앱에서는 가능합니다 — 그 앱에 직접 시키셔야 합니다.」 + 데스크톱 앱 설치 여부만 덧붙임 — 근거 순서: ⑴`%LOCALAPPDATA%\AnthropicClaude`·`%LOCALAPPDATA%\Programs\Claude` ⑵MSIX 사용자 자료 폴더 `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc`(실기: MSIX 설치 `C:\Program Files\WindowsApps\Claude_2.19675.0.0_x64__pzs8sxrjxfjjc` · 패키지 앱 자료 = `LocalAppData\Packages\<패밀리 이름>` = Microsoft Learn MSIX 문서) ⑶`%ProgramFiles%\WindowsApps` 이름 목록(`Claude_*_pzs8sxrjxfjjc`) — 목록 권한 거부가 흔하므로 거부면 「?」(확인 못 함) · 목록을 읽었는데 없으면 「찾지 못했습니다」 |
 | `apps` | 카탈로그 앱 존재(시작 메뉴 바로가기·알려진 설치 경로) | `screen` 이 안 됨이므로 「화면 조작 불가 · 스크립트 길은 아래」 |
@@ -135,7 +137,7 @@ Rust 앱 쪽은 리셋 목록 1줄 말고는 손대지 않는다(UI 카드·사�
 | 자격증명 대행·비밀번호 저장/전달 | 도구에 입력 칸이 없다 · 암호 창은 「맥 로그인 암호를 직접 넣으세요」 안내만 · 키체인·`Login Data`·쿠키 파일을 열지 않는다(시험: 열기 감시로 단언) |
 | 백신·보안 설정 우회 | TCC 데이터베이스 읽기·쓰기 0 · `tccutil` 0 · 윈 SmartScreen·UAC 는 안내만(W4·W5) · 「제어된 폴더 액세스」 예외 추가 안 함 |
 | OS 권한 창 자동 클릭 | 클릭·키 입력 코드 없음 · 탐지 API 는 전부 「묻지 않는」 판(`askUserIfNeeded=false` · preflight) — 뮤턴트가 `true` 로 바꾸면 시험이 죽는다 |
-| 사용자 설정을 대신 켜기 | `.claude.json`·크롬 `Preferences`·`agents.json` 은 **읽기만** · `/mcp`·`/chrome` 토글은 사용자 손 · 기본값 = 「묻고 나서」 |
+| 사용자 설정을 대신 켜기 | ~~`.claude.json`·크롬 `Preferences`·`agents.json` 은 **읽기만** · `/mcp`·`/chrome` 토글은 사용자 손 · 기본값 = 「묻고 나서」~~ → **개정(cu-1111-precedent · 박사님 10-26 21:0x 「/chrome 실행, 크롬 껐다켜기 같은 작업을 주인에게 시키지 말고 마스터가 직접 하는 방법을 찾아라」 · 21:5x 「우리 선례를 1.1.11에 적용하여 컴퓨터 유즈 자동화 기능을 보완하자」)**: 쓰기는 `chrome-enable`·`chrome-disable` 두 동작만 · 좌석 `.claude.json` 의 `claudeInChromeDefaultEnabled` **한 키**(공식 `/chrome`·`/config` 토글이 쓰는 같은 키 · 다른 칸 무변경 · 원래 값 기록 → 되돌리기) · 연결 파일은 Claude Code 자신이 만든다(헤드리스 1회) · 크롬 `Preferences`·`agents.json` 은 여전히 읽기만 · `/mcp`(computer-use)는 사용자 손 유지(§14 후보) · 기본값 = 「마스터가 정하고 보고」(§14) · 그 밖 동사(scan·grant·guide·recheck·revoke·status)는 여전히 읽기 전용(시험 `test_settings_files_unchanged_and_writes_only_state`) |
 | 개인정보 외부 전송 | 분석 = 「무엇이 있고 연결됐는가」까지 · 출력 금지 목록 §3-3 · 보호 폴더 열람 0 · 네트워크 호출 0 |
 
 ## 7. 치명 위험 4군(cys 개발자 ABSOLUTE ANCHOR)
@@ -145,7 +147,7 @@ Rust 앱 쪽은 리셋 목록 1줄 말고는 손대지 않는다(UI 카드·사�
 | ①폭주(재시도·큐 상한) | 도구 = 사람 말 1회당 1회 실행 · 재시도 루프 없음 · 스케줄 잡·백그라운드 프로세스 없음 · 외부 호출은 `reg query`·`open` 1회씩(각 5초 상한) · 탐지 대상 = 고정 카탈로그(앱 ≤ 20 · 크롬 프로필 ≤ 20 · 넘으면 앞 20개 + 「더 있음」) · 장부 줄 수 상한(1,000 — 넘으면 오래된 거둠 기록부터 정리) | 해당 없음에 가깝다(상한 명시) |
 | ②무clear(컨텍스트 무한 증가) | `say` 상한(목록 ≤ 25줄 · 안내 1단계 ≤ 8줄) · 훅 없음(D3) → 매 턴 주입 0 | 해당 없음(상한 명시) |
 | ③자가치유 전멸 시 페일백 | 탐지 하나가 실패해도 그 항목만 「?」(전체 실패 0) · ctypes 로드 실패·파이썬 없음 → 마스터가 정적 안내(워크숍 「처음 한 번 준비」 페이지)로 폴백 · 장부 손상 → 읽기 실패 시 장부 없음으로 보고 `ledger.jsonl` 은 보존(덮어쓰기 0) | 페일백 경로 명시 |
-| ④전 pane 사망 | 프로세스 종료·재시작 코드 0 · ↻ 재시작·크롬 재시작은 **사용자에게 안내만** · `open` 은 설정 앱만 연다(허용 목록) | 해당 없음 |
+| ④전 pane 사망 | ~~프로세스 종료·재시작 코드 0 · ↻ 재시작·크롬 재시작은 **사용자에게 안내만**~~ → 개정(§13): 크롬 = 정상 종료 1회만(안 닫히면 그대로 · 강제 0 · 재시도 0) · 좌석 재시작 = 앱 ↻ 와 같은 `cys rotate --skip-depts`(저장 검증 → 복원)를 **이 턴 뒤 30초 지연·분리 프로세스 1개**로 · 「할 일 없음」이면 외부 명령 0(시험 `test_enable_already_on_is_noop`) · `open` 은 설정 앱·크롬만 | 재시작 경로 = 이미 쓰는 ↻ 경로 재사용(새 재시작 코드 0) |
 
 윈도우는 맥 통과가 근거가 아니다 — 윈 칸은 실기 전까지 「?」로 출고하는 설계이고, 윈 실기 목록은 §8-3.
 
@@ -242,3 +244,46 @@ codex 가 못 한 것(정직): 읽기 전용 샌드박스라 단위 시험을 �
 ### 12-5. 1.1.12 후보(BACKLOG 한 줄 — master TODO 에 옮겨 적을 것)
 - D1-ⓑ 장부 + 훅 차단: 장부가 있는 기계에서 본부 master 의 `mcp__computer-use__*`·`mcp__claude-in-chrome__*` 를 장부 밖이면 거부(role-capability-gate 에 본부 master 축).
 - (실기 E2 ⑷) computer-use 가 cysr 을 터미널로 못 알아봐 「Claude desktop app」 이라고 안내하는 문제 — 스킬 `computer-control` 에 「cysr 로 바꿔 말하라」 고지를 넣었다(커밋 이 줄과 같은 커밋) · 2.1강 「안 되는 것」 표 반영은 master 경유(이 워커 범위 밖) · 근본(벤더 터미널 표)은 우리 밖.
+
+---
+
+## 13. 크롬 = 마스터가 직접 켜고 다시 켠다 (TICKET=cu-1111-precedent 1단계 · 2026-10-26 · 브리프 `~/axdev/master/briefs/2026-10-26-chrome-auto-enable.md` 흡수)
+
+박사님 원문(10-26 21:0x): 「크롬 조작을 위해 /chrome 실행, 크롬 껐다켜기 같은 작업을 주인에게 시키지 말고 마스터가 직접 하는 방법을 찾아라.」
+
+### 13-1. 켜기 경로 비교(실측 · 맥 · 격리 설정 폴더)
+측정 방법: 임시 HOME·임시 `CLAUDE_CONFIG_DIR`·가짜 API 키로 `claude -p --output-format stream-json --verbose` 를 띄워 시작 이벤트(`system/init`)의 도구 목록만 본다(실 설정·실 크롬 무접촉 · 스크립트 = scratchpad `cfc/probe.py`).
+
+| # | 경로 | 실측·근거 | 판정 |
+|---|---|---|---|
+| ⓐ | 좌석 `settings.json` `env.CLAUDE_CODE_ENABLE_CFC="1"` | 격리 실측 = 크롬 도구 0 — 그러나 **⓪(아무것도 안 함)·ⓒ(`--chrome`)도 0** → 원인은 경로가 아니라 가짜 키: 바이너리 문자열 「[Claude in Chrome] Disabled: OAuth token has no scope accepted by /api/oauth/validate (… env-var and setup-token sessions default to user:inference only)」. 정적 근거: 「Claude Code ignored CLAUDE_CODE_ENABLE_CFC in this project's settings: a project can't turn on Claude in Chrome」(**프로젝트** 설정만 무시 · 원격·Cowork 세션 필터 `R6e`) → 사용자 설정은 막히지 않을 것으로 보이나 **행동 실측 불가**(구독 OAuth 가 필요 · 워커는 실 설정 폴더로 띄우지 않는다) | 비권고 — 미실측 · 그리고 환경 값이 키보다 앞서므로(판정 순서 ②) 사용자가 `/chrome` 에서 꺼도 다시 켜진다(사용자 통제 상실) |
+| ⓑ | 좌석 `.claude.json` `claudeInChromeDefaultEnabled=true` | 시작 판정(2.1.310 바이너리 원문): `--chrome`/`--no-chrome` → `CLAUDE_CODE_ENABLE_CFC` → 원격이면 무시 → **이 키** → 없으면 false. 공식 토글 2곳이 같은 키를 **갱신 함수로** 쓴다: `/chrome` 의 `toggle-default` = `Re(_=>({..._,claudeInChromeDefaultEnabled:c}))` · `/config` 「Claude in Chrome enabled by default」 = 같은 꼴. 행동 근거 = 맥 실기 E2⑵(키 true → `--chrome` 없이 켜짐) · 윈 실기 3단계(좌석 키 True → claude-in-chrome 노출) | **권고** — 공식 토글과 같은 키 · 사용자가 언제든 `/chrome` 에서 끌 수 있음 · 되돌리기 = 원래 값 |
+| ⓒ | `agents.json` cmd 에 `--chrome` | 판정 순서 ①(가장 강함) — 사용자가 `/chrome` 에서 꺼도 매번 켜짐 · 앱(Rust)의 좌석 명령 생성부를 바꿔야 함 | 비권고 — 범위·사용자 통제 상실 |
+
+실행 중 세션과의 경합(우리가 키를 쓴 뒤 살아 있는 좌석이 옛 사본으로 파일을 덮는가): 격리 세션(SessionStart 훅 8초 대기) 도중 키를 써 보니 세션이 그 뒤 파일을 다시 쓰지 않아 **판정 불가**(키는 남음). 공식 토글이 갱신 함수(읽은 현재값에 키만 덮음) 꼴이라 덮어쓸 가능성은 낮다고 보지만 Med — 완화: 키는 좌석 재시작 직전에 쓰고, 재시작 뒤 `recheck chrome`/`scan` 이 키를 다시 확인한다(사라졌으면 「제가 할 것」으로 다시 뜬다).
+
+### 13-2. 연결 파일(NMH)
+- 실물(맥 · 읽기만): `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.anthropic.claude_code_browser_extension.json` → `path` = **좌석 설정 폴더**의 `chrome/chrome-native-host`(셸 래퍼 · `exec …/claude --chrome-native-host` · 「Generated by Claude Code - do not edit manually」). 사용자당 1개 파일이라 **마지막으로 크롬 연동을 켠 설정 폴더**를 가리킨다.
+- 만드는 주체 = Claude Code(크롬 연동이 켜진 채 **시작**할 때 · 바이너리 「Installed native host manifest at:」·윈 「Registered native host for … in Windows registry」). 우리는 파일을 손으로 쓰지 않고 좌석 설정으로 `claude -p --chrome --max-turns 1 --tools "" --disallowedTools mcp__claude-in-chrome "<무해 문장>"` 를 상태 폴더에서 1회 돌린다(윈 실기 10-26 20:3x 의 같은 길 · 도구 0 · 응답 1회 비용).
+- ⚠ 부수 효과(바이너리 문자열): 「First-time install detected, opening reconnect page in browser」 — 확장이 깔려 있으면 처음 만들 때 크롬에 「다시 연결」 탭이 하나 열린다(사용자 화면에 보임 · 해롭지 않음 · 실기 확인 항목).
+- 격리 실측에서는 가짜 키 세션이 크롬 연동을 시작 전에 끄므로 생성 0 — 생성 실측은 윈 실기(성공)와 맥 실기(의뢰) 몫.
+
+### 13-3. 크롬 다시 켜기(필요할 때만)
+- 조건 = **이번 실행에서 연결 파일이 새로 생겼고 크롬이 그 전부터 켜져 있었다**(공식 문서: 「Chrome reads this file on startup, so if the extension isn't detected on your first attempt, restart Chrome」). 그 밖에는 크롬을 건드리지 않는다.
+- 순서 = 사용자 입력 유휴 ≥ 20초(맥 `ioreg` HIDIdleTime · 윈 `GetLastInputInfo` · 선례 `hancom-front-needs-idle-gate`) → 못 채우면 기다림(최대 `--wait` 초 · 상한 540) 뒤 「미뤘습니다」로 끝(`pending: chrome_restart` · 다음 턴 재호출) → 화면 알림 1줄(`cys feed push --kind computer-control --tier d` · 정보성) → 정상 종료 → 닫힘 확인(20초) → `--restore-last-session` 으로 켬 → 창 수 전후 대조.
+- 정상 종료(선례 `never-kill-user-app-without-consent` · 강제 종료 0): 맥 = 크롬 자동화 허락(S3 = 0)이 있으면 AppleScript `quit` · 없으면 이 사용자의 크롬 **본 프로세스 pid 하나**에 SIGTERM(크롬이 정상 종료로 처리 · 이름 일괄 종료 `pkill` 금지 = 워커 지침 §1-4) · 윈 = 창마다 `CloseMainWindow()`(닫기 단추와 같음). 20초 안에 안 닫히면 **그대로 둔다**(「강제로 끄지 않습니다」 + 사용자가 닫았다 켜면 연결됨).
+- 창 수: 맥은 자동화 허락이 있을 때만 셈(없으면 허락 창을 띄우지 않으려고 「확인 못 함」) · 윈은 `MainWindowHandle` 있는 크롬 프로세스 수(근사). 줄었으면 「최근 닫은 탭」 안내.
+
+### 13-4. 마스터 좌석 재시작(마스터가 스스로)
+- 크롬 연동은 **시작할 때** 정해진다(키 = 「이후 시작하는 세션」). 실행 중 좌석에 붙이는 길은 터미널에 없다(IDE 호스트 전용 `claude_in_chrome_at_startup` 만 존재 — 바이너리).
+- 데몬 경로 조사: `cys cycle-agent` = `/clear` 사이클(프로세스 재시작 아님) · `cys node-recover` = **죽은** 좌석만 · `cys restore --include-master` = 죽은 역할 일괄 재기동 · **`cys rotate` = 앱 ↻ 재시작 단추(rotate_daemon)와 같은 5단(저장 검증 → 데몬 교체 → 복귀 표식 → 팩 반영 → 조직 복원)** — 사용자에게 「↻ 눌러 주세요」라고 하던 바로 그 일이다.
+- 집행 = `chrome-enable` 이 끝날 때 **분리된 프로세스 1개**가 30초 뒤 `cys rotate --skip-depts`(맥 `start_new_session` · 윈 DETACHED|NEW_PROCESS_GROUP) → 그 사이 마스터 턴이 끝나고, rotate 의 저장 검증([DRAIN])이 마스터에게 저장을 시킨 뒤 재시작·이어하기. 마스터 지침: `chrome-enable` 뒤 새 일을 시작하지 않고 턴을 끝낸다(스킬).
+- 최소 대안(1.1.12 후보 · 미구현): 마스터 좌석만 정상 종료 → `cys restore --include-master`(resume) — 다른 좌석을 건드리지 않지만 「살아 있는 좌석 1개만 재시작」 RPC 가 없어 새 데몬 코드가 필요하다.
+- 실기 확인 항목: ① 분리 프로세스가 좌석 pty 종료 뒤에도 살아 rotate 를 끝까지 하는지(맥·윈) ② 윈 좌석이 작업 개체(job)에 묶여 분리가 막히는지.
+
+### 13-5. 되돌리기 `chrome-disable`
+켤 때 기록한 **원래 값**으로(원래 키가 없었으면 키를 지움) · 우리가 만든 연결 파일만 지움(만들 때 sha256 기록 → 그 사이 다른 프로그램이 고쳐 썼으면 두고 알림 · 윈 = 연결 레지스트리 키 삭제) · 기록이 없으면 키를 false 로 · 좌석 재시작은 기본 안 함(`--seat-restart auto` 로 요청).
+
+### 13-6. 시험·뮤턴트(이 단계)
+시험 52 → 68(크롬 판정 4 개정·신설 + `TestChromeEnable` 15 + `_act` 표준입력 1) · 뮤턴트 34 → 51(M35~M51 · 51/51 KILLED). 외부 명령은 전부 `_act` 하나를 지나고 시험은 `CYS_CC_FAKE_ACT` 기록 파일로 대체한다(실제 크롬·좌석·`claude` 무접촉). 단언: 키 하나만 바뀜·권한 유지 · 할 일 없으면 외부 명령 0 · 재시작은 분리·지연 · 헤드리스 claude 는 상태 폴더에서 · 「새 연결 파일 ∧ 크롬 켜져 있었음」일 때만 크롬 재시작 · 알림 → 종료 → 켬 순서 · 강제 종료 문자열 0(`-9`·`KILL`·`pkill`·`killall`·`taskkill`·`Stop-Process`·`Force`) · 유휴 관문 · 안 닫히면 그대로 · 기다림 상한 · 기록 실패면 키 불변 · 되돌리기 원래 값·남이 고친 파일 보존.
+

@@ -939,12 +939,20 @@ def cmd_grant(a):
         said.append("폴더 %s — %s" % (os.path.basename(fp) or fp, r))
     if not granted and not pending and not a.folder:
         return fail("\n".join(said), "not_now", 5)
+    # 사용자가 직접 고른 것 = 전에 「빼라」 한 상시 기록을 푼다
+    d = load_decisions()
+    lift = [k for it in granted + pending for m, _t in (it.get("members") or [[it["id"], it["title"]]])
+            for k in ["take:%s" % m] if k in d["items"]]
     # ★codex 1R #3: 감사 기록이 먼저다 — 기록이 실패하면(예외) 장부는 바뀌지 않는다(기록 없는 active 0)
     _ledger({"event": "grant", "scan_id": s.get("scan_id"), "picks": sorted(set(picks)),
              "active": [it["id"] for it in granted], "pending": [it["id"] for it in pending],
              "refused": [it["id"] for it in refused],
              "answer_sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest()})
     save_grants(g)
+    if lift:
+        for k in lift:
+            d["items"].pop(k, None)
+        _write_json(_p(DECISIONS), d)
     lines = []
     if granted:
         lines.append("지금부터 제가 맡겠습니다: " + ", ".join(it["title"].split("(")[0].strip() for it in granted) + ".")
@@ -1050,6 +1058,11 @@ def cmd_revoke(a):
         title, hint = "폴더 " + (os.path.basename(a.id) or a.id), REVOKE_HINT["files"]
     save_grants(g)   # 거둠은 저장이 먼저다 — 기록이 실패해도 남는 쪽이 안전한 상태(맡지 않음)
     _ledger({"event": "revoke", "ids": mids or ["folder"]})
+    if mids:          # 상시 기록 — adopt 가 다음에 다시 가져오지 않는다(사용자가 고르면 grant 가 지운다)
+        d = load_decisions()
+        for m in mids:
+            d["items"]["take:%s" % m] = {"meaning": "deny", "condition": "", "at": _iso(), "by": "revoke"}
+        _write_json(_p(DECISIONS), d)
     return out({"ok": True, "say": "알겠습니다. 「%s」은(는) 이제 맡지 않겠습니다. %s" % (title, hint)})
 
 
@@ -1293,20 +1306,28 @@ def idle_seconds(plat):
     return None
 
 
+CHROME_COUNT_SCRIPT = ('tell application "Google Chrome"\nset t to 0\nrepeat with w in windows\n'
+                       'set t to t + (count tabs of w)\nend repeat\nreturn ((count windows) as text) & " " & (t as text)\nend tell')
+
+
 def chrome_windows(plat):
-    """창 수(전후 대조용) — 맥 = 크롬 자동화 허락(0)이 있을 때만 osascript 로 센다(없으면 None · 허락 창을 띄우지 않는다)."""
+    """(창 수, 탭 수) — 전후 대조용. 모르면 None. 맥 = 크롬 자동화 허락(0)이 있을 때만 osascript 로 센다(없으면 허락 창을
+    띄우지 않으려고 세지 않는다) · 윈 = 창 손잡이가 있는 크롬 프로세스 수(근사) · 탭은 셀 길이 없음(None)."""
     if _has_fake("windows"):
-        return _fake_seq("windows")
+        v = _fake_seq("windows")
+        return (v, None) if isinstance(v, int) else (tuple(v) if isinstance(v, list) else (None, None))
     if plat == "darwin":
         if probe_ae("com.google.Chrome") != 0:
-            return None
-        r = _act("windows", ["/usr/bin/osascript", "-e", 'tell application "Google Chrome" to count windows'])
-        return int(r.stdout.strip()) if r and r.returncode == 0 and r.stdout.strip().isdigit() else None
+            return None, None
+        r = _act("windows", ["/usr/bin/osascript", "-e", CHROME_COUNT_SCRIPT])
+        m = re.match(r"\s*(\d+)\s+(\d+)\s*$", (r.stdout if r and r.returncode == 0 else "") or "")
+        return (int(m.group(1)), int(m.group(2))) if m else (None, None)
     if plat == "win":
         r = _act("windows", ["powershell", "-NoProfile", "-Command",
                              "(Get-Process chrome -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowHandle -ne 0}).Count"])
-        return int(r.stdout.strip()) if r and r.returncode == 0 and r.stdout.strip().isdigit() else None
-    return None
+        w = (r.stdout or "").strip() if r and r.returncode == 0 else ""
+        return (int(w) if w.isdigit() else None), None
+    return None, None
 
 
 def _chrome_exe():
@@ -1468,7 +1489,7 @@ def restart_chrome(plat, wait):
     before = chrome_windows(plat)
     notify("크롬을 잠깐 다시 켭니다", "Claude 연결을 붙이려고 크롬을 닫았다가 바로 다시 켭니다. 열린 탭은 그대로 돌아옵니다.")
     _sleep(3)
-    _ledger({"event": "chrome_quit", "windows_before": before})
+    _ledger({"event": "chrome_quit", "before": list(before)})
     quit_chrome(plat)
     t = 0
     while chrome_running(plat):
@@ -1484,12 +1505,18 @@ def restart_chrome(plat, wait):
         t += 1
     _sleep(3)
     after = chrome_windows(plat)
-    _ledger({"event": "chrome_reopened", "windows_before": before, "windows_after": after})
-    if before is None or after is None:
-        return "크롬을 다시 켰습니다(창 수는 확인하지 못했습니다 — 탭이 안 보이면 크롬 메뉴의 「최근 닫은 탭」에서 되살릴 수 있습니다)."
-    if after < before:
-        return "크롬을 다시 켰는데 창이 %d개 → %d개입니다 — 크롬 메뉴의 「최근 닫은 탭」에서 나머지를 되살릴 수 있습니다." % (before, after)
-    return "크롬을 다시 켰습니다(창 %d개 그대로)." % after
+    _ledger({"event": "chrome_reopened", "before": list(before), "after": list(after)})
+    restore_hint = " — 크롬 메뉴의 「방문 기록 → 최근에 닫은 탭」에서 되살릴 수 있습니다."
+    (bw, bt), (aw, at) = before, after
+    if bt is not None and at is not None:
+        if at < bt:
+            return "크롬을 다시 켰는데 탭이 %d개 → %d개입니다%s" % (bt, at, restore_hint)
+        return "크롬을 다시 켰습니다(창 %d개 · 탭 %d개 그대로)." % (aw, at)
+    if bw is not None and aw is not None:
+        if aw < bw:
+            return "크롬을 다시 켰는데 창이 %d개 → %d개입니다%s" % (bw, aw, restore_hint)
+        return "크롬을 다시 켰습니다(창 %d개 그대로 · 탭 수는 확인하지 못했습니다)." % aw
+    return "크롬을 다시 켰습니다(창·탭 수는 확인하지 못했습니다 — 탭이 안 보이면%s)" % restore_hint.lstrip(" —")
 
 
 def cmd_chrome_disable(a):
@@ -1524,6 +1551,262 @@ def cmd_chrome_disable(a):
             said.append("%d초 뒤 cysr 가 잠깐 다시 시작합니다(대화는 이어집니다)." % SEAT_RESTART_DELAY_SEC)
     head = "크롬 연결을 처음 상태로 되돌렸습니다." if prior else "크롬 기본 켜기를 껐습니다."
     return out({"ok": True, "say": " ".join([head] + said)})
+
+
+# ───────────────────────── 선례 기반 이양 (TICKET=cu-1111-precedent 2단계 · 설계 §14) ─────────────────────────
+# 박사님 원문(10-26 21:4x) 「기계적인 적용은 피해야 한다 … 사용자의 컴퓨터 유즈 상황과 패턴을 가능한 파악해서 맞춤형으로 적용해야
+#   한다.」 · (21:5x) 「사람이 인공지능을 사용할 때는 보다 고차원의 분석과 판단을 통해 주인의 필요에 맞는 선택과 결정을 기대하는
+#   것이다.」 → 「좋다. 보고는 하자. 그리고 우리 선례를 1.1.11에 적용하여 컴퓨터 유즈 자동화 기능을 보완하자.」
+# 결정 4가지: do = 마스터가 정하고 한 뒤 짧게 보고(묻지 않음 · 기본값) · ask = 선례로 갈리지 않는 새 유형 — 한 번 묻고 답을 상시 기록
+#   (같은 항목 재질문 금지) · each = 그 건마다 사람(결제·서명 제출·새 가입·비밀번호 입력 — 상시 기록 불가) · never = 안 함(사유).
+DO, ASK, EACH, NEVER = "do", "ask", "each", "never"
+PRECEDENT_SRC = {   # 선례 = 박사님 맥 운영 판례(원문은 각 파일 · 경로 = ~/.claude/projects/-Users-oogisoogi-axdev/memory/)
+    "login": "test-login-approval-master-does(10-01·10-02 「필요에 의한 로그인, 권한 인증 … 마스터가 알아서 진행하라」)",
+    "exception1": "~/axdev/CLAUDE.md 예외 1(결제·서명 제출·새 서비스 가입 = 건마다 허락)",
+    "expand": "domain-management-master-delegated(10-20 「필요성이 확인되는대로 계속 권한을 확대」) · release-work-fully-autonomous(10-11)",
+    "church": "jarvis-purpose-no-repeated-approvals 정정 절(10-26 21:4x 디모데·당회록 = 맥락 조건부 자동화 · 새 유형 1회 묻기)",
+    "nokill": "never-kill-user-app-without-consent(10-01 한글 손실 · 정상 종료만)",
+    "idle": "hancom-front-needs-idle-gate(10-25 · 키보드 유휴 20초 관문)",
+    "install3": "install-convenience-security-boundary(원격 명령 통로·자격증명 대행·백신 우회 = 절대 금지)",
+    "terms": "SESSION_STATE 10-26 20:0x(네이버 약관 2026-10-01 자동화 수단 로그인·게재 금지)",
+    "kakao": "SESSION_STATE 10-26 20:3x(카톡 PC 로그인 = 한 대 · 다른 기기 밀림)",
+    "appsec": "SESSION_STATE 10-26 22:3x(한컴 자동화 보안 창 = 공식 보안모듈 상시 설정으로 해소)",
+    "universal": "winparity REPORT §10-2·§10-4(일부러 막힌 부류 = 우회 안 함 · 처음 보는 대화상자의 비가역 선택 = 정지·질문)",
+}
+# 유형(category) → (이름, 기본 결정, 선례 키, 보고·질문에 붙는 한 줄)
+CATEGORIES = {
+    "login": ("이미 쓰는 서비스 로그인·「허용」·만료 인증 갱신", DO, "login",
+              "비밀번호·2단계 인증·지문 입력이 실제로 뜨면 그 한 번만 부탁드립니다."),
+    "credential_input": ("비밀번호·2단계 인증 코드·생체 인증 입력", EACH, "login",
+                         "이것은 사람 손이 물리적으로 필요합니다 — 제가 받거나 저장하지 않습니다."),
+    "payment": ("결제", EACH, "exception1", "결제는 건마다 여쭙니다."),
+    "sign_submit": ("서명 제출·약관 동의 제출", EACH, "exception1", "서명·동의 제출은 건마다 여쭙니다."),
+    "signup": ("새 서비스 가입", EACH, "exception1", "새 서비스 가입은 건마다 여쭙니다."),
+    "send_as_owner": ("주인 이름으로 남에게 보내는 메시지·게시·삭제", EACH, "login",
+                      "주인 이름으로 남에게 나가는 것은 건마다 여쭙니다."),
+    "external_send": ("자료를 바깥(다른 서비스·사람)으로 보내기", ASK, "church",
+                      "자료 종류만 보고 막지 않습니다 — 누가·무엇을·어디로·실제로 안전한 환경인지 한 번 여쭙고, 답은 앞으로 계속 따릅니다."),
+    "settings_change": ("cysr·클로드 좌석 설정 바꾸기(크롬 켜기 등)", DO, "expand",
+                        "필요가 확인되면 넓히는 방향이 선례입니다 — 되돌릴 수 있게 원래 값을 적어 둡니다."),
+    "app_quit": ("사용자 앱 다시 켜기·닫기(정상 종료)", DO, "nokill",
+                 "정상 종료만 합니다(저장 확인 · 강제 종료 안 함 · 안 닫히면 그대로)."),
+    "app_force_quit": ("멈춘 앱 강제 종료", EACH, "nokill",
+                       "자동 저장본을 먼저 확보하고, 저장 안 된 작업이 있는지 여쭌 뒤에만 합니다."),
+    "screen_op": ("화면 조작(앱을 앞으로 불러 누르기·입력)", DO, "idle",
+                  "사용자 손이 20초 쉴 때만 하고, 결과는 파일·내용·창 제목으로 확인합니다."),
+    "app_security_dialog": ("앱 자동화 보안 창", DO, "appsec",
+                            "앱의 공식 상시 설정(예: 한컴 보안모듈)으로 창 자체를 없애는 길을 먼저 씁니다."),
+    "kakao_login": ("카카오톡 PC 로그인", DO, "kakao",
+                    "카톡 PC 로그인은 한 대만 됩니다 — 다른 컴퓨터의 카톡이 로그아웃될 수 있습니다."),
+    "terms_risk": ("약관이 자동화를 금지한 서비스(예: 네이버 자동 로그인·게재)", EACH, "terms",
+                   "약관 위반은 계정 정지로 되돌릴 수 없습니다 — 그 건마다 여쭙니다."),
+    "update_dialog": ("업데이트가 끼운 처음 보는 창의 설치·동의·결제·로그아웃 선택", EACH, "universal",
+                      "멈추고 무엇이 떴는지 그대로 여쭙니다."),
+    "blocked": ("일부러 막힌 것(관리자 권한 창·UAC·화면 캡처 차단·키보드 보안·안티치트·보안문자)", NEVER, "universal",
+                "우회하지 않습니다 — 「사람 손 1회 필요: 무엇」으로 알려 드립니다."),
+    "install_boundary": ("원격 명령 통로·자격증명 대행·백신 우회", NEVER, "install3",
+                         "편리함과 바꾸지 않는 선입니다(수습 불가)."),
+}
+TERMS_SERVICES = {"naver": "네이버", "네이버": "네이버"}   # 약관 위험 서비스(로그인·게재 자동화 금지)
+DECISIONS = "decisions.json"
+MAX_DECISIONS = 500
+
+
+def _norm(s):
+    return re.sub(r"\s+", " ", (s or "").strip().lower())[:120]
+
+
+def load_decisions():
+    d = _read_json(_p(DECISIONS))
+    return d if isinstance(d, dict) and isinstance(d.get("items"), dict) else {"items": {}}
+
+
+def usage_pattern(plat=None, cfg=None):
+    """맞춤 판단의 근거 — 「무엇을 이미 쓰는가」만(존재·빈도). 값(계정·내용)은 읽지 않는다 · 개인 프로필 대리 읽기 0.
+    services = 커넥터 연결 기록 이름(S8) · apps = 카탈로그 앱 설치 여부 + 마지막 사용(맥 Spotlight 앱 메타데이터 → 일 수 구간)."""
+    plat = plat or platform()
+    cfg = cfg if cfg is not None else claude_cfg()
+    fk = _fake("usage")
+    if isinstance(fk, dict):
+        return fk
+    services = [n.replace("claude.ai ", "") for n in (cfg.get("connectors") or [])]
+    apps = {}
+    if plat == "darwin":
+        for aid, name, prefixes, _n in MAC_APPS:
+            path = next((os.path.join(r, n) for r in _app_roots() for n in (_listdir(r))
+                         if any(n.startswith(px) for px in prefixes)), None)
+            if not path:
+                continue
+            r = _run(["/usr/bin/mdls", "-raw", "-name", "kMDItemLastUsedDate", path])
+            days = None
+            m = re.match(r"(\d{4}-\d{2}-\d{2})", (r.stdout if r else "") or "")
+            if m:
+                days = (datetime.date.today() - datetime.date.fromisoformat(m.group(1))).days
+            apps[aid] = {"name": name, "last_used_days": days}
+    elif plat == "win":
+        for aid in probe_apps(plat):
+            apps[aid] = {"name": dict((a, n) for a, n, _p in WIN_APPS).get(aid, aid), "last_used_days": None}
+    return {"services": services, "apps": apps}
+
+
+def _listdir(root):
+    try:
+        return os.listdir(root)
+    except OSError:
+        return []
+
+
+def _in_use(subject, usage):
+    """그 서비스·앱을 이미 쓰는가 — True(근거 문장)/None(모름). 이름 대조만."""
+    s = _norm(subject)
+    if not s:
+        return None, ""
+    for n in usage.get("services", []):
+        if s in _norm(n) or _norm(n) in s:
+            return True, "커넥터로 연결해 쓰는 서비스(%s)" % n
+    for aid, v in (usage.get("apps") or {}).items():
+        if s in (aid, _norm(v.get("name"))):
+            d = v.get("last_used_days")
+            return True, "이 컴퓨터에 설치된 앱(%s%s)" % (v.get("name"), "" if d is None else " · %d일 전 사용" % d)
+    return None, ""
+
+
+def judge(cat, subject="", in_use=None, usage=None, decisions=None):
+    """유형 + 대상 → (결정, 근거, 문장). 순수 판정(쓰기 0) — self-test 가 전수로 돈다."""
+    if cat not in CATEGORIES:
+        return ASK, "new_type", "선례로 갈리지 않는 새 유형입니다 — 한 번 여쭙고 답을 계속 따르겠습니다."
+    name, default, src, line = CATEGORIES[cat]
+    if cat in ("login", "external_send") and any(k in _norm(subject) for k in TERMS_SERVICES):
+        n2, d2, s2, l2 = CATEGORIES["terms_risk"]
+        return d2, "precedent:" + s2, l2
+    if default in (EACH, NEVER):                     # 건마다·안 함 = 상시 기록으로 바뀌지 않는다
+        return default, "precedent:" + src, line
+    rec = (decisions or {}).get("%s:%s" % (cat, _norm(subject)))
+    if isinstance(rec, dict) and rec.get("meaning") in ("allow", "deny", "conditional"):
+        dec = DO if rec["meaning"] in ("allow", "conditional") else NEVER
+        cond = (" · 조건: " + rec["condition"]) if rec.get("condition") else ""
+        return dec, "standing:%s" % rec.get("at", ""), "전에 정해 주신 대로 합니다(%s%s)." % (
+            {"allow": "허락", "deny": "안 함", "conditional": "조건부 허락"}[rec["meaning"]], cond)
+    if cat == "login":
+        if in_use is None:
+            in_use, why = _in_use(subject, usage or {})
+        else:
+            why = "마스터 관측"
+        if in_use is True:
+            return DO, "precedent:" + src, "%s — %s %s" % (name, why, line)
+        if in_use is False:
+            n2, d2, s2, l2 = CATEGORIES["signup"]
+            return d2, "precedent:" + s2, "처음 쓰는 서비스입니다 — " + l2
+        return ASK, "precedent:" + src, "이 서비스를 이미 쓰고 계신지 확인하지 못했습니다 — 한 번 여쭙고 답을 계속 따르겠습니다."
+    return default, "precedent:" + src, line
+
+
+def cmd_decide(a):
+    """유형 판정 1회 — 쓰기 0. do 면 마스터가 하고 report 를 말한다 · ask 면 ask 를 그대로 묻고 답을 remember 로 기록."""
+    dec = load_decisions()["items"]
+    in_use = {"yes": True, "no": False}.get(a.in_use)
+    usage = usage_pattern() if a.cat == "login" and in_use is None else {}
+    d, basis, line = judge(a.cat, a.subject, in_use, usage, dec)
+    name = CATEGORIES.get(a.cat, (a.cat,))[0]
+    subj = (" — " + a.subject) if a.subject else ""
+    res = {"ok": True, "decision": d, "basis": basis, "category": a.cat}
+    if d == DO:
+        what = a.what or "%s%s" % (name, subj)
+        res["report"] = "이렇게 했습니다: %s. %s 다르게 원하시면 말씀해 주세요." % (what, line)
+    elif d == ASK:
+        res["ask"] = "「%s%s」 — %s 맡겨 주시겠어요? (허락 · 안 함 · 조건을 붙여 허락 중에서 말씀해 주세요)" % (name, subj, line)
+    elif d == EACH:
+        res["ask"] = "「%s%s」 — %s 이번 건을 진행할까요?" % (name, subj, line)
+    else:
+        res["say"] = "「%s%s」은(는) 하지 않습니다 — %s" % (name, subj, line)
+    return out(res)
+
+
+def cmd_remember(a):
+    """한 번 물은 답을 상시 기록 — 같은 항목은 다시 묻지 않는다. 건마다·안 함 유형은 기록하지 않는다(exit 5)."""
+    if a.cat in CATEGORIES and CATEGORIES[a.cat][1] in (EACH, NEVER):
+        return fail("이 유형은 건마다 여쭙거나 하지 않는 것이라 상시로 정해 둘 수 없습니다.", "not_recordable", 5)
+    try:
+        with open(a.answer_file, encoding="utf-8") as f:
+            ans = f.read()
+    except OSError:
+        return fail("사용자 답을 읽지 못했습니다.", "io", 2)
+    if not ans.strip():
+        return fail("사용자 답이 비어 있습니다 — 여쭌 뒤에 기록해 주세요.", "empty_answer", 2)
+    if a.meaning == "conditional" and not (a.condition or "").strip():
+        return fail("조건부 허락은 조건을 함께 적어야 합니다.", "condition", 2)
+    d = load_decisions()
+    key = "%s:%s" % (a.cat, _norm(a.subject))
+    if key in d["items"] and not a.user_changed:
+        # 재질문 금지 — 이미 정해진 항목을 다시 묻고 기록하는 것은 마스터의 실수다(사용자가 스스로 바꾼 때만 --user-changed)
+        return fail("이미 정해 주신 항목입니다 — 다시 여쭙지 않고 그 결정을 따릅니다.", "already_decided", 7)
+    rec = {"meaning": a.meaning, "condition": (a.condition or "").strip()[:300], "at": _iso(),
+           "answer_sha256": hashlib.sha256(ans.encode("utf-8")).hexdigest()}
+    _ledger({"event": "decision", "key": key, "meaning": a.meaning, "changed": bool(a.user_changed),
+             "answer_sha256": rec["answer_sha256"]})              # 기록 먼저
+    d["items"][key] = rec
+    if len(d["items"]) > MAX_DECISIONS:                             # 4군① 상한 — 오래된 것부터
+        for k in sorted(d["items"], key=lambda k: d["items"][k].get("at", ""))[:len(d["items"]) - MAX_DECISIONS]:
+            d["items"].pop(k)
+    _write_json(_p(DECISIONS), d)
+    word = {"allow": "허락", "deny": "안 함", "conditional": "조건부 허락(%s)" % rec["condition"]}[a.meaning]
+    return out({"ok": True, "key": key, "say": "알겠습니다 — 앞으로 「%s」은(는) %s 으로 계속 따르겠습니다. 다시 여쭙지 않습니다."
+                                              % ((CATEGORIES.get(a.cat, (a.cat,))[0] + (" — " + a.subject if a.subject else "")), word)})
+
+
+def cmd_adopt(a):
+    """기본값 = 마스터가 먼저 정하고 보고(박사님 10-26 21:5x). 지금 바로 맡을 수 있는 칸은 묻지 않고 장부에 올리고
+    「이렇게 했습니다 · 다르면 말씀」으로 보고 · 손 칸은 안내 제안 · 사용자가 전에 「빼라」 한 항목(take:<ID> = deny)은 가져오지 않는다."""
+    plat = platform()
+    items = number_items(build_items(plat, _project()))
+    scan_id = "s" + os.urandom(4).hex()
+    _write_json(_p("scan.json"), {"ts": _now(), "at": _iso(), "platform": plat, "measured_on": MEASURED_ON,
+                                  "scan_id": scan_id, "project": os.path.realpath(_project()), "items": items})
+    dec = load_decisions()["items"]
+    g = load_grants()
+    took, skipped, hand, nope, auto = [], [], [], [], False
+    for it in items:
+        mids = [m for m, _t in (it.get("members") or [[it["id"], it["title"]]])]
+        if any((dec.get("take:%s" % m) or {}).get("meaning") == "deny" for m in mids):
+            skipped.append(it)
+            continue
+        if it["tier"] == READY or first_use_only(it):
+            if all((g["items"].get(m) or {}).get("state") == "active" for m in mids):
+                continue
+            took.append(it)
+            auto = auto or (it["id"] == "chrome" and bool(it["missing"]))
+        elif it["tier"] == HAND:
+            hand.append(it)
+        else:
+            nope.append(it)
+    if took:
+        _ledger({"event": "adopt", "scan_id": scan_id, "active": [it["id"] for it in took],
+                 "basis": "precedent:default-take-ready"})       # 기록 먼저
+        for it in took:
+            for mid, mtitle in it.get("members") or [[it["id"], it["title"]]]:
+                g["items"][mid] = {"state": "active", "title": mtitle, "at": _iso(), "by": "adopt"}
+        save_grants(g)
+    short = lambda it: it["title"].split("(")[0].strip()
+    lines = []
+    if took:
+        lines.append("이렇게 했습니다: 지금 바로 맡을 수 있는 %s 을(를) 제가 맡았습니다." % ", ".join(short(it) for it in took))
+        if auto:
+            lines.append("크롬 연결 설정은 제가 바로 켜겠습니다.")
+    else:
+        lines.append("새로 맡을 것은 없습니다 — 이미 맡고 있는 것 그대로입니다.")
+    if hand:
+        lines.append("손이 한 번 필요한 것: %s — 원하시면 「%s 안내해 줘」라고 말씀해 주세요." % (
+            ", ".join("%d. %s" % (it["n"], short(it)) for it in hand), short(hand[0])))
+    if nope:
+        lines.append("지금은 안 되는 것: " + ", ".join(short(it) for it in nope) + ".")
+    if skipped:
+        lines.append("전에 빼라고 하신 것은 가져오지 않았습니다: " + ", ".join(short(it) for it in skipped) + ".")
+    if took:
+        lines.append("다르게 원하시면 말씀해 주세요(예: 「%s은 빼」)." % short(took[0]))
+    return out({"ok": True, "scan_id": scan_id, "active": [it["id"] for it in took],
+                "hand": [it["id"] for it in hand], "not_now": [it["id"] for it in nope],
+                "skipped": [it["id"] for it in skipped], "next_action": "chrome-enable" if auto else None,
+                "say": "\n".join(lines[:MAX_SAY_LINES])})
 
 
 # ───────────────────────── self-test ─────────────────────────
@@ -1571,6 +1854,24 @@ def self_test():
             errs.append("script %r" % (code,))
     if ASK_USER_IF_NEEDED is not False:
         errs.append("askUserIfNeeded 가 False 가 아니다")
+    # 선례 판정: 건마다·안 함 유형은 상시 기록·사용 패턴이 있어도 do 가 되지 않는다 · 모르는 유형 = ask · 약관 서비스 = each
+    allow = {"meaning": "allow", "at": "t"}
+    use = {"services": ["Gmail"], "apps": {"kakaotalk": {"name": "카카오톡", "last_used_days": 1}}}
+    for cat, (_n, default, _s, _l) in CATEGORIES.items():
+        for subj in ("", "gmail", "naver", "카카오톡"):
+            for iu in (True, False, None):
+                n += 1
+                dd = {"%s:%s" % (cat, _norm(subj)): allow}
+                got = judge(cat, subj, iu, use, dd)[0]
+                if default in (EACH, NEVER) and got == DO:
+                    errs.append("judge %s 건마다·안 함 → do" % cat)
+                if "naver" in subj and cat in ("login", "external_send") and got != EACH:
+                    errs.append("judge 약관 서비스 %s" % cat)
+    n += 1
+    if judge("brand-new-type")[0] != ASK:
+        errs.append("judge 새 유형이 ask 가 아니다")
+    if judge("login", "unknown-service", None, {"services": [], "apps": {}}, {})[0] != ASK:
+        errs.append("judge 모르는 서비스 로그인이 ask 가 아니다")
     return {"ok": not errs, "combos": n, "errors": errs[:20]}
 
 
@@ -1607,6 +1908,19 @@ def main(argv=None):
     ce.add_argument("--seat-restart", choices=("auto", "now", "no"), default="auto")
     cd = sp.add_parser("chrome-disable")
     cd.add_argument("--seat-restart", choices=("auto", "now", "no"), default="no")
+    sp.add_parser("adopt")
+    dc = sp.add_parser("decide")
+    dc.add_argument("cat")
+    dc.add_argument("--subject", default="")
+    dc.add_argument("--in-use", choices=("yes", "no", "unknown"), default="unknown")
+    dc.add_argument("--what", default="", help="한 일 한 줄(보고 문장에 넣는다)")
+    rm = sp.add_parser("remember")
+    rm.add_argument("cat")
+    rm.add_argument("--subject", default="")
+    rm.add_argument("--answer-file", required=True)
+    rm.add_argument("--meaning", required=True, choices=("allow", "deny", "conditional"))
+    rm.add_argument("--condition", default="")
+    rm.add_argument("--user-changed", action="store_true", help="사용자가 스스로 결정을 바꾼 때만")
     try:
         a = ap.parse_args(argv)
     except SystemExit as e:
@@ -1614,7 +1928,8 @@ def main(argv=None):
     fn = {"scan": cmd_scan, "grant": cmd_grant, "guide": cmd_guide, "recheck": cmd_recheck,
           "revoke": cmd_revoke, "status": cmd_status, "open-settings": cmd_open_settings,
           "request-prompt": cmd_request_prompt, "self-test": cmd_self_test,
-          "chrome-enable": cmd_chrome_enable, "chrome-disable": cmd_chrome_disable}.get(a.cmd)
+          "chrome-enable": cmd_chrome_enable, "chrome-disable": cmd_chrome_disable,
+          "adopt": cmd_adopt, "decide": cmd_decide, "remember": cmd_remember}.get(a.cmd)
     if a.cmd == "chrome-enable":
         a.wait = max(0, min(a.wait, 540))    # 4군① — 한 번 부를 때 Bash 도구 상한(600초) 안
     if fn is None:

@@ -398,7 +398,8 @@ class TestBoundaries(Base):
     def _all_verbs(self):
         outs = []
         for argv in (("scan",), ("grant", "--scan", "__SEEN__", "--pick", "1,2,3", "--answer-file", self.answer()),
-                     ("status",), ("guide", "screen"), ("recheck", "chrome"), ("revoke", "chrome")):
+                     ("status",), ("guide", "screen"), ("recheck", "chrome"), ("revoke", "chrome"),
+                     ("adopt",), ("decide", "login", "--subject", "gmail")):
             argv = tuple(self.seen_scan_id() if x == "__SEEN__" else x for x in argv)
             outs.append(self.run_cli(*argv)[2])
         return outs
@@ -866,6 +867,26 @@ class TestChromeEnable(Base):
         self.assertIn("chrome_restart", d["done"])
         self.assertIn("창 3개 그대로", d["say"])
 
+    def test_tab_count_compared_and_loss_reported(self):
+        self.make_chrome(nmh=False)
+        self.set_probes(chrome_running=[True, False, True], windows=[[2, 9], [2, 7]], act={"nmh": self.nmh_touch()})
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertIn("탭이 9개 → 7개", d["say"])
+        self.assertIn("최근에 닫은 탭", d["say"])
+        rows = [json.loads(x) for x in lines(os.path.join(self.state, "ledger.jsonl"))]
+        ro = [r for r in rows if r.get("event") == "chrome_reopened"][0]
+        self.assertEqual((ro["before"], ro["after"]), ([2, 9], [2, 7]))
+
+    def test_mac_count_script_parsed(self):
+        self.make_chrome(nmh=False)
+        self.set_probes(chrome_running=[True, False, True],
+                        act={"nmh": self.nmh_touch(), "windows": [{"out": "2 9\n"}, {"out": "2 9\n"}]})
+        p = dict(self.probes)
+        p.pop("windows")
+        os.environ["CYS_CC_FAKE_PROBES"] = json.dumps(p)
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertIn("탭 9개 그대로", d["say"])
+
     def test_restart_without_automation_permission_terms_one_pid(self):
         self.make_chrome(nmh=False)
         self.set_probes(ae={"com.google.Chrome": -1744}, chrome_running=[True, False, True],
@@ -981,3 +1002,153 @@ class TestChromeEnable(Base):
         self.assertEqual((g["active"], g["next_action"]), (["chrome"], "chrome-enable"))
         self.assertIn("제가 바로 켜겠습니다", g["say"])
         self.assertIs(self.cfg()["claudeInChromeDefaultEnabled"], False)   # grant 자체는 쓰지 않는다(쓰기 = chrome-enable 만)
+
+
+# ───────────────────────── 선례 기반 이양 (cu-1111-precedent 2단계) ─────────────────────────
+class TestPrecedent(Base):
+    def setUp(self):
+        super().setUp()
+        self.make_chrome()
+
+    def dec(self):
+        p = os.path.join(self.state, "decisions.json")
+        return jload(p)["items"] if os.path.exists(p) else {}
+
+    def test_adopt_takes_ready_and_reports(self):
+        self.set_probes(sc=False)                       # 화면 조작 = 손 칸
+        rc, d, _ = self.run_cli("adopt")
+        self.assertEqual(rc, 0, d)
+        self.assertIn("chrome", d["active"])
+        self.assertIn("connectors", d["active"])
+        self.assertIn("screen", d["hand"])
+        self.assertNotIn("screen", d["active"])         # 손 칸은 가져오지 않는다
+        self.assertTrue(d["say"].startswith("이렇게 했습니다"))
+        self.assertIn("다르게 원하시면 말씀해 주세요", d["say"])
+        g = jload(os.path.join(self.state, "grants.json"))["items"]
+        self.assertEqual(g["chrome"]["state"], "active")
+        self.assertNotIn("screen", g)
+
+    def test_adopt_idempotent(self):
+        self.run_cli("adopt")
+        rc, d, _ = self.run_cli("adopt")
+        self.assertEqual(d["active"], [])
+        self.assertIn("새로 맡을 것은 없습니다", d["say"])
+
+    def test_adopt_respects_revoke_and_grant_lifts(self):
+        self.run_cli("adopt")
+        self.run_cli("revoke", "connectors")
+        self.assertEqual(self.dec()["take:connectors"]["meaning"], "deny")
+        rc, d, _ = self.run_cli("adopt")
+        self.assertIn("connectors", d["skipped"])        # 빼라고 한 것은 다시 가져오지 않는다
+        self.assertNotIn("connectors", d["active"])
+        rc, s1, _ = self.run_cli("scan")
+        n = self.item(s1, "connectors")["n"]
+        self.grant_cli("--pick", str(n), "--answer-file", self.answer())
+        self.assertNotIn("take:connectors", self.dec())   # 사용자가 직접 고르면 푼다
+        rc, d, _ = self.run_cli("adopt")
+        self.assertNotIn("connectors", d["skipped"])
+
+    def test_adopt_chrome_auto_next_action(self):
+        self.write_cfg(chrome_default=False)
+        rc, d, _ = self.run_cli("adopt")
+        self.assertEqual(d["next_action"], "chrome-enable")
+        self.assertIn("크롬 연결 설정은 제가 바로 켜겠습니다", d["say"])
+        self.assertIs(jload(os.path.join(self.ccd, ".claude.json"))["claudeInChromeDefaultEnabled"], False)
+
+    def test_each_and_never_not_recordable(self):
+        for cat, want in (("payment", "each"), ("signup", "each"), ("credential_input", "each"),
+                          ("blocked", "never"), ("install_boundary", "never")):
+            rc, d, _ = self.run_cli("decide", cat)
+            self.assertEqual(d["decision"], want, cat)
+            rc, r, _ = self.run_cli("remember", cat, "--answer-file", self.answer("네 항상 해"), "--meaning", "allow")
+            self.assertEqual((rc, r["reason"]), (5, "not_recordable"), cat)
+        os.makedirs(self.state, exist_ok=True)
+        with open(os.path.join(self.state, "decisions.json"), "w") as f:     # 손으로 넣은 상시 기록도 못 뒤집는다
+            json.dump({"items": {"payment:": {"meaning": "allow", "at": "t"}}}, f)
+        rc, d, _ = self.run_cli("decide", "payment")
+        self.assertEqual(d["decision"], "each")
+
+    def test_login_in_use_from_usage_is_do_with_report(self):
+        rc, d, _ = self.run_cli("decide", "login", "--subject", "gmail", "--what", "지메일 재로그인")
+        self.assertEqual(d["decision"], "do")
+        self.assertIn("이렇게 했습니다: 지메일 재로그인", d["report"])
+        self.assertIn("커넥터", d["report"])
+        self.assertIn("다르게 원하시면", d["report"])
+        rc, d, _ = self.run_cli("decide", "login", "--subject", "brandnew.example", "--in-use", "no")
+        self.assertEqual(d["decision"], "each")          # 처음 쓰는 서비스 = 가입 = 건마다
+
+    def test_unknown_login_asks_once_then_remembers_no_reask(self):
+        rc, d, _ = self.run_cli("decide", "login", "--subject", "hosting.kr")
+        self.assertEqual(d["decision"], "ask")
+        self.assertIn("한 번 여쭙고", d["ask"])
+        rc, r, _ = self.run_cli("remember", "login", "--subject", "hosting.kr", "--answer-file", self.answer("응 맡아"),
+                                "--meaning", "allow")
+        self.assertEqual(rc, 0, r)
+        self.assertIn("다시 여쭙지 않습니다", r["say"])
+        rc, d, _ = self.run_cli("decide", "login", "--subject", "Hosting.KR")
+        self.assertEqual((d["decision"], d["basis"][:9]), ("do", "standing:"))
+        rc, r, _ = self.run_cli("remember", "login", "--subject", "hosting.kr", "--answer-file", self.answer("응"),
+                                "--meaning", "deny")
+        self.assertEqual((rc, r["reason"]), (7, "already_decided"))   # 재질문·재기록 금지
+        rc, r, _ = self.run_cli("remember", "login", "--subject", "hosting.kr", "--answer-file", self.answer("이제 그만"),
+                                "--meaning", "deny", "--user-changed")
+        self.assertEqual(rc, 0)
+        rc, d, _ = self.run_cli("decide", "login", "--subject", "hosting.kr")
+        self.assertEqual(d["decision"], "never")
+
+    def test_terms_service_is_each(self):
+        for cat in ("login", "external_send"):
+            rc, d, _ = self.run_cli("decide", cat, "--subject", "네이버 블로그")
+            self.assertEqual(d["decision"], "each", cat)
+            self.assertIn("약관", d["ask"])
+
+    def test_new_type_asks(self):
+        rc, d, _ = self.run_cli("decide", "drone_flight")
+        self.assertEqual((d["decision"], d["basis"]), ("ask", "new_type"))
+
+    def test_external_send_conditional(self):
+        rc, d, _ = self.run_cli("decide", "external_send", "--subject", "당회록 → 교회 드라이브")
+        self.assertEqual(d["decision"], "ask")
+        rc, r, _ = self.run_cli("remember", "external_send", "--subject", "당회록 → 교회 드라이브",
+                                "--answer-file", self.answer("교회 안에서만이면 돼"), "--meaning", "conditional")
+        self.assertEqual((rc, r["reason"]), (2, "condition"))
+        rc, r, _ = self.run_cli("remember", "external_send", "--subject", "당회록 → 교회 드라이브",
+                                "--answer-file", self.answer("교회 안에서만이면 돼"), "--meaning", "conditional",
+                                "--condition", "교회 내부 공유 드라이브 한정")
+        self.assertEqual(rc, 0, r)
+        rc, d, _ = self.run_cli("decide", "external_send", "--subject", "당회록 → 교회 드라이브")
+        self.assertEqual(d["decision"], "do")
+        self.assertIn("조건: 교회 내부 공유 드라이브 한정", d["report"])
+
+    def test_remember_ledger_first(self):
+        def boom(_e):
+            raise OSError("ledger")
+        self.m._ledger = boom
+        rc, r, _ = self.run_cli("remember", "external_send", "--subject", "x", "--answer-file", self.answer("네"),
+                                "--meaning", "allow")
+        self.assertEqual(rc, 1)
+        self.assertFalse(os.path.exists(os.path.join(self.state, "decisions.json")))
+
+    def test_decisions_cap(self):
+        self.m.MAX_DECISIONS = 3
+        for i in range(5):
+            self.run_cli("remember", "external_send", "--subject", "s%d" % i, "--answer-file", self.answer("네"),
+                         "--meaning", "allow")
+        self.assertLessEqual(len(self.dec()), 3)
+        self.assertIn("external_send:s4", self.dec())     # 오래된 것부터 정리
+
+    def test_decide_writes_nothing(self):
+        before = os.path.exists(self.state) and sorted(os.listdir(self.state))
+        self.run_cli("decide", "login", "--subject", "gmail")
+        self.run_cli("decide", "external_send", "--subject", "y")
+        after = os.path.exists(self.state) and sorted(os.listdir(self.state))
+        self.assertEqual(before, after)
+
+    def test_usage_installed_app_counts_as_in_use(self):
+        os.makedirs(os.path.join(self.apps, "KakaoTalk.app"))
+        u = self.m.usage_pattern("darwin")
+        self.assertIn("kakaotalk", u["apps"])
+        self.assertEqual(u["services"], ["Gmail"])          # 커넥터 이름만(계정·내용 0)
+        rc, d, _ = self.run_cli("decide", "login", "--subject", "카카오톡")
+        self.assertEqual(d["decision"], "do")
+        self.assertIn("설치된 앱(카카오톡", d["report"])

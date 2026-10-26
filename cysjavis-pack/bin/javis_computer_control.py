@@ -1195,7 +1195,9 @@ def _act(kind, argv, timeout=SUBPROC_TIMEOUT, detach=False, cwd=None):
         try:
             kw = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
             if os.name == "nt":
-                kw["creationflags"] = 0x00000008 | 0x00000200 | 0x08000000   # DETACHED · NEW_PROCESS_GROUP · NO_WINDOW
+                # NEW_PROCESS_GROUP · NO_WINDOW — 숨은 새 콘솔이라 좌석 콘솔이 닫혀도 살고 자손(cys 호출)이 그 콘솔을 물려받는다
+                #   (콘솔 떼기는 자손마다 새 창이 뜬다 = U5-WIN-FLASH · H-WIN-16)
+                kw["creationflags"] = 0x00000200 | 0x08000000
             else:
                 kw["start_new_session"] = True     # 좌석 pty 가 닫혀도 살아남는다(재시작이 그 pty 를 닫는다)
             subprocess.Popen(argv, **kw)
@@ -1882,23 +1884,31 @@ def _legacy_keys(cat, subject):
     return ["%s:%s" % (cat, hashlib.sha256(n.encode("utf-8")).hexdigest()[:16] if n else ""), "%s:%s" % (cat, n)]
 
 
-_STRICT = {"deny": 0, "conditional": 1, "allow": 2}
-
-
 def _cut(rec):
     """옛 판이 300자에서 잘라 둔 조건인가(출처 사실 — 뜻은 보지 않는다): 원문 표지(full) 없고 길이가 자르기 길이 이상."""
     return (isinstance(rec, dict) and rec.get("meaning") == "conditional" and not rec.get("full")
             and len(rec.get("condition") or "") >= LEGACY_CUT)
 
 
-def _lookup(decisions, cat, subject):
-    """상시 기록 조회 — 지금 키와 옛 판 키를 다 본다(기록을 잃지 않는다). 같은 대상에 뜻이 다른 기록이 함께 남아 있으면
-    더 좁은 쪽(안 함 > 조건부 > 허락)을 따른다 — 허락이 금지를 가리지 않는다(codex R5 · master#6528f666)."""
+def _rank(rec):
+    """좁은 차례 — 안 함 0 · 잘린 조건 1 · 조건 2 · 허락 3 · 그 밖 4(codex R5·R6)."""
+    if _cut(rec):
+        return 1
+    return {"deny": 0, "conditional": 2, "allow": 3}.get(rec.get("meaning") if isinstance(rec, dict) else None, 4)
+
+
+def _found(decisions, cat, subject):
+    """같은 대상의 기록 전부 — 지금 키와 옛 판 키 [(키, 기록)]."""
     d = decisions or {}
-    found = [d[k] for k in dict.fromkeys([decision_key(cat, subject)] + _legacy_keys(cat, subject)) if d.get(k)]
-    if not found:
-        return None
-    return min(found, key=lambda r: _STRICT.get(r.get("meaning") if isinstance(r, dict) else None, 3))
+    return [(k, d[k]) for k in dict.fromkeys([decision_key(cat, subject)] + _legacy_keys(cat, subject)) if d.get(k)]
+
+
+def _lookup(decisions, cat, subject):
+    """상시 기록 조회 — 지금 키와 옛 판 키를 다 본다(기록을 잃지 않는다). 같은 대상에 기록이 여럿 남아 있으면 키 자리와
+    무관하게 가장 좁은 쪽(안 함 > 잘린 조건 > 조건 > 허락)을 따른다 — 허락이 금지를, 온전한 조건이 잘린 조건을 가리지 않는다
+    (codex R5·R6 · master#6528f666)."""
+    found = _found(decisions, cat, subject)
+    return min((r for _k, r in found), key=_rank) if found else None
 
 
 def load_decisions():
@@ -1961,9 +1971,12 @@ def _hosts(subject):
     그 밖은 도메인 모양. 둘 이상이거나 URL 이 깨졌으면 대상이 모호하다(호출 쪽이 「모름」)."""
     s = (subject or "").lower()
     hosts, rest = [], s
-    for m in re.finditer(r"[a-z][a-z0-9+.\-]*://\S+", s):
+    for m in re.finditer(r"[a-z][a-z0-9+.\-]*://[\x21-\x7e]+", s):
+        url = m.group(0).rstrip(").,;:!?]}>'\"")              # 문장 속 URL 뒤 구분 부호는 URL 이 아니다(codex R6)
         try:
-            h = urllib.parse.urlsplit(m.group(0)).hostname
+            u = urllib.parse.urlsplit(url)
+            u.port                                       # 잘못된 포트 = ValueError
+            h = None if "\\" in url else u.hostname          # 역슬래시 = 브라우저는 경로 구분으로 읽어 호스트가 갈린다(codex R6)
         except ValueError:
             h = None
         hosts.append(h or "?")
@@ -2093,11 +2106,24 @@ def cmd_remember(a):
                     % (len(cond), MAX_CONDITION), "condition_too_long", 2)
     d = load_decisions()
     key = decision_key(a.cat, a.subject)
-    prev = _lookup(d["items"], a.cat, a.subject)
-    if prev is not None and not a.user_changed and not _cut(prev):
+    found = _found(d["items"], a.cat, a.subject)
+    cuts = [k for k, r in found if _cut(r)]
+    supp = bool(cuts) and not a.user_changed         # 잘린 옛 조건 다시 적기(보완) — 그 기록만 바꾼다(codex R5·R6)
+    if supp and a.meaning != "conditional":
+        return fail("끝이 잘린 조건은 조건부 허락으로만 다시 적습니다 — 허락·안 함으로 바꾸신 것이면 사용자 변경으로 적어 주세요.",
+                    "supplement_meaning", 7)
+    if found and not a.user_changed and not supp:
         # 재질문 금지 — 이미 정해진 항목을 다시 묻고 기록하는 것은 마스터의 실수다(사용자가 스스로 바꾼 때만 --user-changed)
         return fail("이미 정해 주신 항목입니다 — 다시 여쭙지 않고 그 결정을 따릅니다.", "already_decided", 7)
-    if key not in d["items"] and len(d["items"]) >= MAX_DECISIONS:
+    if supp:
+        drop = cuts
+        cur = d["items"].get(key)
+        # 지금 키에 온전한 조건·안 함이 있으면 보존(잘린 기록만 정리) · 허락 위엔 사용자가 방금 다시 말한 더 좁은 조건을 쓴다
+        write = cur is None or key in cuts or _rank(cur) > 2
+    else:
+        drop, write = [k for k in _legacy_keys(a.cat, a.subject) if k != key and k in d["items"]], True
+    left = len(d["items"]) - len(set(drop) - {key})
+    if write and key not in d["items"] and left >= MAX_DECISIONS:
         # ★codex R1: 상한에서 옛 결정을 지우면 그 항목을 다시 묻게 된다 — 지우지 않고 새 기록을 거절한다(4군① 상한은 유지)
         _ledger({"event": "decisions_full", "count": len(d["items"])})
         return fail("정해 두신 결정이 너무 많아(%d) 더 적어 두지 못했습니다 — 이번 결정은 따르되 기록은 하지 못했습니다."
@@ -2108,12 +2134,16 @@ def cmd_remember(a):
     if a.meaning == "conditional":
         rec["full"] = True                           # 자르지 않은 원문(옛 판 300자 기록과 구별)
     _ledger({"event": "decision", "key": key, "meaning": a.meaning, "changed": bool(a.user_changed),
+             "supplement": supp, "written": write, "dropped": len(drop),
              "answer_sha256": rec["answer_sha256"]})              # 기록 먼저
-    d["items"][key] = rec
-    for legacy in _legacy_keys(a.cat, a.subject):
-        if legacy != key:
-            d["items"].pop(legacy, None)             # 옛 판 키는 새 키로 옮긴다(사용자가 바꾼 때)
+    for k in drop:
+        d["items"].pop(k, None)                      # 옛 판 키는 새 키로 옮긴다(사용자가 바꾼 때) · 보완이면 잘린 기록만
+    if write:
+        d["items"][key] = rec
     _write_json(_p(DECISIONS), d)
+    if not write:
+        return out({"ok": True, "key": key, "say": "끝이 잘린 옛 기록은 정리했습니다 — 같은 일에 온전히 적어 두신 결정이 있어 "
+                                                  "그것을 계속 따릅니다. 바꾸시려면 말씀해 주세요."})
     word = {"allow": "허락", "deny": "안 함", "conditional": "조건부 허락(%s)" % mask(cond)}[a.meaning]
     return out({"ok": True, "key": key, "say": "알겠습니다 — 앞으로 「%s」은(는) %s 으로 계속 따르겠습니다. 다시 여쭙지 않습니다."
                                               % ((CATEGORIES.get(a.cat, (mask(a.cat),))[0] + (" — " + mask(a.subject) if a.subject else "")), word)})

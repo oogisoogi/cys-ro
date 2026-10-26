@@ -29,7 +29,7 @@ description: 사용자가 「내 컴퓨터에서 네가 맡을 수 있는 걸 �
   답은 상시 기록이다 — **같은 항목을 다시 묻지 않는다**(`already_decided` 가 나오면 그 결정을 따른다 · 사용자가 스스로 바꾼 때만 `--user-changed`).
   조건부 허락은 사용자가 한 말을 **그대로** `--condition` 에 적는다 — 낱말 목록·문법으로 바꾸지 않는다(도구는 조건의 뜻을 해석하지 않는다 · D16). 원문은 이 컴퓨터의 기록 파일에만 남고 원장에는 해시만 간다(2,000자 이하 · 넘으면 자르지 않고 `condition_too_long`).
 - `decision: check` → 전에 사용자가 **조건을 붙여** 허락한 것이다 — `condition`(사용자가 한 말 원문)을 읽고 이번 건이 그 조건에 맞는지 **네가 말뜻으로** 판단한다. 맞으면 `--condition-met yes`(= do) · 맞지 않으면 `no`(= 이번만 묻기) · 애매할 때만 사용자에게 한 번 묻는다. 확인 없이 하지 않는다. 조건 원문은 판단에만 쓰고 보고·다른 좌석·외부로 옮기지 않는다.
-- `decision: each` 에 `supplement: true` 가 붙으면 옛 판이 조건 끝을 잘라 둔 기록이다 — `ask` 대로 묻고, 사용자가 다시 말한 조건을 `remember … --meaning conditional --condition "<그 말>"` 로 적는다(이 기록만은 `--user-changed` 없이 덮인다 · 그 뒤로 다시 묻지 않는다).
+- `decision: each` 에 `supplement: true` 가 붙으면 옛 판이 조건 끝을 잘라 둔 기록이다 — `ask` 대로 묻고, 사용자가 다시 말한 조건을 `remember … --meaning conditional --condition "<그 말>"` 로 적는다(잘린 기록만 `--user-changed` 없이 바뀐다 · 그 뒤로 다시 묻지 않는다). 사용자가 조건 없이 허락·안 함으로 바꾸면 그것은 사용자 변경이다 — `--user-changed`(없으면 `supplement_meaning`).
 - `decision: each` → 그 건만 `ask` 대로 묻는다(결제·서명 제출·새 가입·비밀번호/2단계/생체 입력·주인 이름으로 남에게 보내기·약관이 자동화를 금지한 서비스 · 기록하지 않는다).
 - `decision: never` → `say` 대로 하지 않는다(일부러 막힌 창 · 원격 명령 통로·자격증명 대행·백신 우회).
 - 유형: `login` `credential_input` `payment` `sign_submit` `signup` `send_as_owner` `external_send` `settings_change` `app_quit`

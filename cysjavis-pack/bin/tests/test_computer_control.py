@@ -1600,6 +1600,62 @@ class TestPrecedent(Base):
                                  {"meaning": "conditional", "condition": "가" * 299, "at": "t"}}}, f)
         self.assertEqual(self.run_cli("decide", "external_send", "--subject", "t")[1]["decision"], "check")   # 300자 미만 = 안 잘림
 
+    def _put(self, items):
+        os.makedirs(self.state, exist_ok=True)
+        with open(os.path.join(self.state, "decisions.json"), "w") as f:
+            json.dump({"items": items}, f)
+
+    def test_cut_condition_wins_regardless_of_key_position(self):
+        # codex R6: 잘린 조건과 온전한 조건이 함께 있으면 키 자리와 무관하게 보완 관문(each + supplement) — 확인으로 do 0
+        cur, old = self.m.decision_key("external_send", "s"), "external_send:s"
+        cut = {"meaning": "conditional", "condition": "가" * 300, "at": "t"}
+        full = {"meaning": "conditional", "condition": "팀 안", "full": True, "at": "t"}
+        for items in ({cur: full, old: cut}, {cur: cut, old: full}):
+            self._put(items)
+            for cm in ("yes", "unknown"):
+                rc, d, _ = self.run_cli("decide", "external_send", "--subject", "s", "--condition-met", cm)
+                self.assertEqual((d["decision"], d.get("supplement")), ("each", True), (list(items.values()), cm))
+
+    def test_supplement_only_replaces_cut_records(self):
+        # codex R6: --user-changed 없는 보완 = 조건부로만 · 잘린 기록만 바꾸고 온전한 기록은 보존
+        cur, old = self.m.decision_key("external_send", "s"), "external_send:s"
+        cut = {"meaning": "conditional", "condition": "가" * 300, "at": "t"}
+        full = {"meaning": "conditional", "condition": "팀 안", "full": True, "at": "t"}
+        base = ("remember", "external_send", "--subject", "s", "--answer-file", self.answer("응"))
+        self._put({cur: cut})
+        rc, r, _ = self.run_cli(*(base + ("--meaning", "allow")))
+        self.assertEqual((rc, r["reason"]), (7, "supplement_meaning"))           # 허락으로 덮기 = 사용자 변경 경로만
+        self.assertEqual(self.dec(), {cur: cut})
+        self._put({cur: cut, old: full})                                           # 잘린 것이 지금 키 → 바꾸고 옛 온전한 것 보존
+        rc, r, _ = self.run_cli(*(base + ("--meaning", "conditional", "--condition", "모임 안")))
+        self.assertEqual(rc, 0, r)
+        self.assertEqual((self.dec()[cur]["condition"], self.dec()[old]), ("모임 안", full))
+        self._put({cur: full, old: cut})                                           # 잘린 것이 옛 키 → 그것만 정리 · 지금 키 보존
+        rc, r, _ = self.run_cli(*(base + ("--meaning", "conditional", "--condition", "모임 안")))
+        self.assertEqual(rc, 0, r)
+        self.assertEqual(self.dec(), {cur: full})
+        self.assertEqual(self.run_cli("decide", "external_send", "--subject", "s")[1]["condition"], "팀 안")
+        allow = {"meaning": "allow", "at": "t"}
+        self._put({cur: allow, old: cut})                                          # 허락 위엔 방금 다시 말한 조건(더 좁음)
+        rc, r, _ = self.run_cli(*(base + ("--meaning", "conditional", "--condition", "모임 안")))
+        self.assertEqual(rc, 0, r)
+        self.assertEqual(list(self.dec()), [cur])
+        self.assertEqual(self.run_cli("decide", "external_send", "--subject", "s")[1]["decision"], "check")
+
+    def test_supplement_at_cap_replaces_in_place(self):
+        # codex R6: 한도에서도 옛 키 잘린 기록 보완은 개수가 늘지 않으므로 된다 — 재질문 고리 0
+        self.m.MAX_DECISIONS = 3
+        self._put({"external_send:s": {"meaning": "conditional", "condition": "가" * 300, "at": "t"},
+                   "x:1": {"meaning": "allow", "at": "t"}, "x:2": {"meaning": "allow", "at": "t"}})
+        rc, r, _ = self.run_cli("remember", "external_send", "--subject", "s", "--answer-file", self.answer("응"),
+                                "--meaning", "conditional", "--condition", "팀 안")
+        self.assertEqual(rc, 0, r)
+        self.assertEqual(len(self.dec()), 3)
+        self.assertEqual(self.run_cli("decide", "external_send", "--subject", "s")[1]["decision"], "check")
+        rc, r, _ = self.run_cli("remember", "external_send", "--subject", "new", "--answer-file", self.answer("응"),
+                                "--meaning", "allow")
+        self.assertEqual((rc, r["reason"]), (7, "decisions_full"))              # 새 항목은 여전히 한도 거절
+
     def test_domain_matches_only_official_domains(self):
         # codex R3·R4: 도메인 대상은 이름 닮음(word.invalid · gmail.invalid · word.example.invalid)이 아니라 정식 도메인 목록으로만
         os.makedirs(os.path.join(self.apps, "Microsoft Word.app"))
@@ -1615,7 +1671,11 @@ class TestPrecedent(Base):
         for subj, want in (("https://" + at, "ask"), ("https://mail.google.com/mail/u/0", "do"),
                            ("https://unrelated.invalid/?next=mail.google.com", "ask"), ("https://10.0.0.1/mail.google.com", "ask"),
                            (at, "ask"), ("gmail.com 과 unrelated.invalid", "ask"),
-                           ("https://[::1/ gmail", "ask")):
+                           ("https://[::1/ gmail", "ask"),
+                           # codex R6: 역슬래시(브라우저는 경로로 읽음)·잘못된 포트 = 모호 · 문장 속 괄호는 URL 이 아니다
+                           ("https://unrelated.invalid\\" + "@" + "mail.google.com/", "ask"), ("https://mail.google.com:bad/", "ask"),
+                           ("https://mail.google.com:999999/", "ask"), ("Gmail (https://mail.google.com)", "do"),
+                           ("https://mail.google.com:443/mail.", "do")):
             rc, d, _ = self.run_cli("decide", "login", "--subject", subj)
             self.assertEqual(d["decision"], want, subj)
 

@@ -6347,7 +6347,7 @@ _U5_PACK_CREATIONFLAGS = {
     "javis_cli_probe.py":               1,
     "javis_compete.py":                 1,
     "javis_completion_guard.py":        3,   # NOWIN 정의 + CREATE_NEW_PROCESS_GROUP 에 OR 로 합친 명시 키워드(창 정책 + 트리 분리)
-    "javis_computer_control.py":        1,   # cu-1111(1.1.11) — 탐지 캡처 스폰 `_run` 1곳(reg·defaults 등 · test_nowin_captured_spawns)
+    "javis_computer_control.py":        2,   # cu-1111(1.1.11) — 탐지 캡처 스폰 `_run` NOWIN 정의 1 + cu-1111-precedent 좌석 재시작 대기의 분리 스폰 1(NEW_PROCESS_GROUP|NO_WINDOW — 숨은 콘솔 · 콘솔 떼기 0)
     "javis_computer_use.py":            1,   # 0.14.52 편입 r2(3e7ae36c) — 원작자 새 파일의 캡처 스폰에 우리 NOWIN 정본 정의
     "javis_ctx_relay.py":               1,
     "javis_cycle_autopilot.py":         2,   # NOWIN + 원작자 _CAPTURE_SPAWN_KW 상수(선언만 · 미사용)

@@ -281,7 +281,7 @@ codex 가 못 한 것(정직): 읽기 전용 샌드박스라 단위 시험을 �
 ### 13-4. 마스터 좌석 재시작(마스터가 스스로)
 - 크롬 연동은 **시작할 때** 정해진다(키 = 「이후 시작하는 세션」). 실행 중 좌석에 붙이는 길은 터미널에 없다(IDE 호스트 전용 `claude_in_chrome_at_startup` 만 존재 — 바이너리).
 - 데몬 경로 조사: `cys cycle-agent` = `/clear` 사이클(프로세스 재시작 아님) · `cys node-recover` = **죽은** 좌석만 · `cys restore --include-master` = 죽은 역할 일괄 재기동 · **`cys rotate` = 앱 ↻ 재시작 단추(rotate_daemon)와 같은 5단(저장 검증 → 데몬 교체 → 복귀 표식 → 팩 반영 → 조직 복원)** — 사용자에게 「↻ 눌러 주세요」라고 하던 바로 그 일이다.
-- 집행 = `chrome-enable` 이 끝날 때 **분리된 프로세스 1개**(이 도구의 `seat-restart-wait` · 맥 `start_new_session` · 윈 DETACHED|NEW_PROCESS_GROUP)가 30초 뒤부터 5초 간격으로 **턴 종료 두 신호가 두 번 연속** 맞을 때만 `cys rotate --skip-depts`: ① 좌석 출력 유휴(`cys status --json` 의 그 좌석 `idle_secs` ≥ 20) ② 좌석 자신의 세션 기록(`registered_session_id` → `<좌석 설정>/projects/*/<id>.jsonl`)의 마지막 대화 줄 = `assistant` · `stop_reason: end_turn`(읽는 칸 = type·stop_reason 뿐 · 내용 0). 출력이 조용해도 도구 응답을 기다리는 중이면 마지막 줄이 `tool_use` 라 재시작하지 않는다(codex R2 blocking). rotate 의 저장 검증([DRAIN])이 마스터에게 저장을 시킨 뒤 재시작·이어하기(⚠ rotate 는 저장 확인 실패에도 끝까지 간다 — `ROTATE_RC_DRAIN_PARTIAL` · 그래서 턴 종료 확인이 이 대기 쪽에 있어야 한다).
+- 집행 = `chrome-enable` 이 끝날 때 **분리된 프로세스 1개**(이 도구의 `seat-restart-wait` · 맥 `start_new_session` · 윈 NEW_PROCESS_GROUP|NO_WINDOW — 숨은 새 콘솔 · 콘솔 떼기(DETACHED)는 자손마다 새 창이라 쓰지 않는다 · H-WIN-16)가 30초 뒤부터 5초 간격으로 **턴 종료 두 신호가 두 번 연속** 맞을 때만 `cys rotate --skip-depts`: ① 좌석 출력 유휴(`cys status --json` 의 그 좌석 `idle_secs` ≥ 20) ② 좌석 자신의 세션 기록(`registered_session_id` → `<좌석 설정>/projects/*/<id>.jsonl`)의 마지막 대화 줄 = `assistant` · `stop_reason: end_turn`(읽는 칸 = type·stop_reason 뿐 · 내용 0). 출력이 조용해도 도구 응답을 기다리는 중이면 마지막 줄이 `tool_use` 라 재시작하지 않는다(codex R2 blocking). rotate 의 저장 검증([DRAIN])이 마스터에게 저장을 시킨 뒤 재시작·이어하기(⚠ rotate 는 저장 확인 실패에도 끝까지 간다 — `ROTATE_RC_DRAIN_PARTIAL` · 그래서 턴 종료 확인이 이 대기 쪽에 있어야 한다).
 - 좌석 ID(`CYS_SURFACE_ID`)가 없거나 15분 안에 턴 종료를 확인 못 하거나 rotate 가 중단 코드로 끝나면 **재시작하지 않고 빚**(`pending_seat_restart`)으로 남긴다 — 빚은 예약 성공이 아니라 **재시작 성공**에서만 지운다 · 예약이 살아 있는 동안(`seat_restart_scheduled_at` · 17분) 다음 `chrome-enable` 은 중복 예약하지 않는다(codex R2). 마스터 지침: `chrome-enable` 뒤 새 일을 시작하지 않고 턴을 끝낸다(스킬).
 - 최소 대안(1.1.12 후보 · 미구현): 마스터 좌석만 정상 종료 → `cys restore --include-master`(resume) — 다른 좌석을 건드리지 않지만 「살아 있는 좌석 1개만 재시작」 RPC 가 없어 새 데몬 코드가 필요하다.
 - 실기 확인 항목: ① 분리 프로세스가 좌석 pty 종료 뒤에도 살아 rotate 를 끝까지 하는지(맥·윈) ② 윈 좌석이 작업 개체(job)에 묶여 분리가 막히는지.
@@ -347,8 +347,8 @@ codex 가 못 한 것(정직): 읽기 전용 샌드박스라 단위 시험을 �
 - 판정 순서(`judge` · 자가 발견 + codex R1 반영): 네이버 대상 login/external_send → each(약관) · each/never 유형 → 그대로(상시 기록 무시) · `login` 인데 `--in-use no`(처음 쓰는 서비스) → each(가입 · 상시 허락보다 먼저) · 상시 기록 있음(새 유형 포함) → 그 결정 · 모르는 유형 → ask(new_type) · login → 사용 패턴 · 그 밖 → 표의 기본 결정.
 - 출력에 싣는 대상·한 일·조건 문자열은 이메일·긴 번호 모양을 `<이메일>`·`<번호>` 로 가린다(§3-3 · codex R1) · 기록 키 = 유형 + 대상 해시(목록 밖 새 유형은 유형 이름도 해시) · 조건 원문은 **기록 파일에만**(원장엔 답 해시만 · 가리면 허락 범위를 잃는다 · codex R2 #9) · 조건은 자르지 않는다(2,000자 넘으면 기록 거절 `condition_too_long` — codex R3) · 새 조건부 기록엔 원문 표지 `full` · ★조건은 **사용자 말 그대로** 기록한다 — 범위 낱말·받는 사람 목록 같은 조건 문법을 강제하지 않는다(§16-5 · D16) · 표지 없이 300자 이상인 옛 판 조건(끝이 잘렸을 수 있음)은 조건 확인이 있어도 each + `supplement: true`(그 답으로 다시 적으면 `--user-changed` 없이 덮인다 · 재질문 고리 0).
 - 조건부 상시 허락 = `decide … --condition-met yes|no|unknown`(마스터가 이번 건을 조건과 대조): yes → do · no → each(이번만 묻기) · unknown(기본) → **check**(`condition` = 사용자가 한 말 원문 · 이번 건이 맞는지는 **마스터가 말뜻으로** 판단하고 다시 부른다 · 애매하면 그때만 사용자에게 1회 · §16-5) — 조건 확인 없이 do 를 내지 않는다(codex R2).
-- 「이미 쓰는가」 대조 = **낱말 단위**(이름의 낱말이 전부 대상의 낱말 안에 있어야 일치 · 「카카오톡 로그인」 = 카카오톡 · 「wordpress.com」 ≠ Word · codex R2) · 대상의 접속 이름 = URL 은 파서의 실제 hostname(사용자정보·경로·쿼리 속 도메인은 대상이 아니다) · 그 밖은 도메인 모양 · 둘 이상이거나 깨진 URL = 모름 → ask(codex R5) · 대상에 도메인이 있으면 이름 닮음이 아니라 **정식 도메인 목록**(`SERVICE_DOMAINS` · 커넥터 이름·카탈로그 앱 ID → 로그인 도메인 · 점 경계 뒤끝 일치)으로만 일치 — `word.invalid`·`gmail.invalid`·`word.example.invalid`·`evilgmail.com` = 모름 → ask(codex R3·R4).
-- 옛 판 키도 조회해 따른다 — 92c47060 판 `유형:정규화 원문` · ad474d66 판 `유형 원문:대상 해시`(새 유형만 지금과 다름 · codex R3) · 같은 항목 재기록 금지도 옛 키까지 본다 · 사용자가 바꾸면 새 키로 옮긴다(codex R2) · 같은 대상에 지금 키·옛 키로 뜻이 다른 기록이 함께 있으면 더 좁은 쪽(안 함 > 조건부 > 허락 · codex R5).
+- 「이미 쓰는가」 대조 = **낱말 단위**(이름의 낱말이 전부 대상의 낱말 안에 있어야 일치 · 「카카오톡 로그인」 = 카카오톡 · 「wordpress.com」 ≠ Word · codex R2) · 대상의 접속 이름 = URL 은 파서의 실제 hostname(사용자정보·경로·쿼리 속 도메인은 대상이 아니다 · URL 은 ASCII 인쇄 문자까지 · 끝 문장부호 제외) · 그 밖은 도메인 모양 · 둘 이상이거나 깨진 URL(잘못된 포트 · 브라우저와 호스트가 갈리는 역슬래시) = 모름 → ask(codex R5·R6) · 대상에 도메인이 있으면 이름 닮음이 아니라 **정식 도메인 목록**(`SERVICE_DOMAINS` · 커넥터 이름·카탈로그 앱 ID → 로그인 도메인 · 점 경계 뒤끝 일치)으로만 일치 — `word.invalid`·`gmail.invalid`·`word.example.invalid`·`evilgmail.com` = 모름 → ask(codex R3·R4).
+- 옛 판 키도 조회해 따른다 — 92c47060 판 `유형:정규화 원문` · ad474d66 판 `유형 원문:대상 해시`(새 유형만 지금과 다름 · codex R3) · 같은 항목 재기록 금지도 옛 키까지 본다 · 사용자가 바꾸면 새 키로 옮긴다(codex R2) · 같은 대상에 지금 키·옛 키로 기록이 여럿 있으면 키 자리와 무관하게 가장 좁은 쪽(안 함 > 잘린 조건 > 조건 > 허락 · codex R5·R6) · 잘린 조건 보완(`supplement`)은 조건부로만(`supplement_meaning`) · 잘린 기록만 바꾸고 온전한 기록은 보존(지금 키에 온전한 조건·안 함이 있으면 잘린 옛 기록만 정리 · 허락 위엔 다시 받은 조건) · 한도는 정리될 키를 뺀 뒤 개수로(codex R6).
 
 ### 14-5. 범용 조작 원칙(675 REPORT §10-4 · 박사님 22:0x 「업데이트와 관계 없이 항상 적용할 수 있는 범용적인 방법」 · 맥·윈 공통)
 1. **저장 좌표·선택자 0** — 좌표는 그 동작 직전 스냅샷에서만 · **스냅샷 1장 = 상태를 바꾸는 동작 1개**(windows-mcp label 은 마지막 스냅샷 좌표) · 그 뒤 반드시 다시 찍는다.
@@ -485,3 +485,18 @@ R4 반영 뒤 누계: 시험 117 녹(`-W error`) · self-test 565 조합 · 뮤�
 | 4 | major — `_host` = 첫 도메인 모양(사용자정보 속 정식 도메인으로 do) | 실재(R4 반영이 만든 회귀) | `_hosts`: URL = `urllib.parse` hostname · 그 밖 도메인 모양 · 둘 이상·깨진 URL = 모름 → ask | `test_url_target_is_real_hostname`(7건) · M108·M109·M110 |
 
 R5 반영 뒤 누계: 시험 118 녹(`-W error`) · self-test 568 조합 · 뮤턴트 109/109 KILLED(M54·M88·M95·M96·M101·M104~M108 다시 씀 · M109·M110 신설). 바뀐·새 시험 8개는 db9b3d97 원본에서 전부 적색(실측). `scan-pack-secrets` = R4 시험 이메일 자리표 11곳 소멸(받는 사람 목록 제거) · 남은 2곳은 기반 `CC-TEST-EMAIL`(678 수리분 · rebase 때 흡수). codex R6 범위 = 결정론 축만(대상 식별·기록 공존·재질문 고리·잘린 옛 기록).
+
+### 16-6. R6 (revision c09d8a13 · rebase 뒤 · 범위 = 결정론 축만)
+- **codex R6 = REVISE**(blocking 0 · major 4 · minor 1 · R5 ② 해소 판정 · D16 의 뜻 판정·원문 반환은 지시대로 검토 제외 · 정본 `…-r6-codex.json`) — 처분:
+
+| # | 지적 | 판정 | 반영 | 회귀 시험 · 뮤턴트 |
+|---|---|---|---|---|
+| 1 | major — urllib hostname ≠ 브라우저 호스트: `https://a.invalid\@mail.google.com/` = mail.google.com(브라우저는 a.invalid) · 잘못된 포트(`:bad`·`:999999`)도 do | 실재 | 역슬래시가 있는 URL = 모름 · `port` 판독 실패 = 깨진 URL = 모름 | `test_url_target_is_real_hostname`(+5건) · M116·M117 |
+| 2 | major — 보완 예외가 잘린 기록만이 아니라 대상 전체를 바꿈(허락으로 덮기 · 공존하는 온전한 옛 기록 삭제) | 실재 | 보완 = 조건부로만(그 밖 = `supplement_meaning` · 사용자 변경 경로) · 지우는 것은 잘린 기록뿐 · 지금 키의 온전한 조건·안 함 보존(허락 위엔 방금 다시 받은 더 좁은 조건) | `test_supplement_only_replaces_cut_records` · M112·M113·M114 |
+| 3 | major — 조건끼리 같은 순위라 키 배치에 따라 잘린 조건이 가려짐(확인으로 do) | 실재 | 순위 = 안 함 0 · 잘린 조건 1 · 조건 2 · 허락 3 — 키 자리 무관 | `test_cut_condition_wins_regardless_of_key_position`(두 배치 × yes·unknown) · M111 |
+| 4 | major — 5,000 한도에서 옛 키 잘린 기록 보완이 `decisions_full`(개수가 늘지 않는데 거절 → 재질문 고리) | 실재 | 한도 = 정리될 키를 뺀 뒤 개수 | `test_supplement_at_cap_replaces_in_place`(새 항목은 여전히 거절) · M115 · M78(갱신) |
+| 5 | minor — 「Gmail (https://mail.google.com)」 의 닫는 괄호를 호스트에 붙여 과잉 ask | 실재 | URL = ASCII 인쇄 문자까지 · 끝 `).,;:!?]}>'"` 제외 | 같은 시험 · M118 |
+
+- **rebase 뒤 건강성 전량에서 자가 발견(H-WIN-16 · U5-WIN-FLASH)**: 좌석 재시작 대기의 윈 분리 스폰이 `DETACHED_PROCESS`(0x8 · 콘솔 떼기) — 콘솔 없는 프로세스가 `cys` 를 부를 때마다 새 창이 뜬다(1.1.7 「1분마다 검은 창」 부류). `NEW_PROCESS_GROUP|NO_WINDOW` 로(숨은 새 콘솔 — 좌석 콘솔이 닫혀도 살고 자손이 물려받음) · 팩 creationflags 동결표 `javis_computer_control.py` 1 → 2(사유 기재 · `run_bootstrap_health.py`). 앞 라운드 리뷰 4회가 못 본 것은 건강성 전량을 rebase 전 가지에서 돌리지 않았기 때문이다(게이트 목록 누락 — 이번부터 매 반영 뒤 `--only H-WIN-16` 포함).
+
+R6 반영 뒤 누계: 시험 121 녹(`-W error`) · self-test 568 조합 · 뮤턴트 117/117 KILLED(M54·M78·M88·M105·M106 다시 씀 · M111~M118 신설). 바뀐·새 시험 4개는 c09d8a13 원본에서 전부 적색(실측) · H-WIN-16 녹(`--only`).

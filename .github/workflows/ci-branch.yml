@@ -2066,7 +2066,9 @@ jobs:
           done
 
       - name: Setup Rust for Unix PTY vendor tests
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d  # stable
+        with:
+          toolchain: stable  # SHA 핀이면 ref 이름으로 판을 못 고른다 — 명시
 
       - name: Unix PTY allocator tests (Linux, blocking)
         shell: bash

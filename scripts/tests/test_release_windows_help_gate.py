@@ -60,6 +60,10 @@ SIDECAR = "src-tauri/binaries/cys-x86_64-pc-windows-msvc.exe"
 UPLOAD_ACTIONS = ("tauri-apps/tauri-action", "actions/upload-artifact", "actions/upload-release-asset",
                   "softprops/action-gh-release", "ncipollo/release-action", "svenstaro/upload-release-action")
 # Not recognised (stated, not covered): scp, cloud CLIs, curl -T to a non-GitHub host.
+# 우리 포크(TICKET=cysr-1111-merge-01452): 릴리스 **목록 조회만** 하는 선행 잡 — A7 의 needs 단언 대신 쓰기 표지 0 을 단언한다.
+READ_ONLY_RELEASE_JOBS = ("draft-guard",)
+RELEASE_WRITE_RUN = re.compile(r"gh\s+release\s+(upload|create|edit|delete)\b|uploads\.github\.com"
+                               r"|(-X|--method)\s*(POST|PUT|PATCH|DELETE)\b|\s(-f|-F|--field|--raw-field|--input)\s")
 UPLOAD_RUN = re.compile(r"gh\s+release\s+(upload|create|edit)\b|uploads\.github\.com|gh\s+api\b[^\n]*\breleases\b"
                         r"|api\.github\.com/repos/\S*/releases")
 
@@ -497,6 +501,15 @@ class HelpGatePin(unittest.TestCase):
         checked = 0
         for job in jobs:
             if job == RELEASE_JOB:
+                continue
+            if job in READ_ONLY_RELEASE_JOBS:
+                # 우리 포크 draft-guard(1.1.9 B1 · d293960c): build 의 **선행** 잡(build needs draft-guard)이라 needs: [build] 는
+                # 순환이다. `gh api …releases` 는 목록 GET 이다 — 쓰기 표지(쓰기 메서드·필드·업로드·생성)가 없음을 여기서 재고 넘어간다.
+                for step in list_steps(text, job):
+                    self.assertIsNone(RELEASE_WRITE_RUN.search(step.get("run") or ""),
+                                      "A7: read-only job %s now writes to releases - it must need [%s]" % (job, RELEASE_JOB))
+                    self.assertNotIn((step.get("uses") or "").split("@")[0].lower(), UPLOAD_ACTIONS,
+                                     "A7: read-only job %s now uses an upload action" % job)
                 continue
             if any(is_upload(s) for s in list_steps(text, job)):
                 checked += 1

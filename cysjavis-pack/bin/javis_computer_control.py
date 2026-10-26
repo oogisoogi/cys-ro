@@ -1592,8 +1592,9 @@ def cmd_chrome_enable(a):
         # 처음 손대기 전의 원래 값만 기억한다(되돌리기 = 이 값) · ★codex R1: 되돌리기 정보가 바꾸기보다 먼저 디스크에
         # ★codex R3: 키가 이미 켜져 있어 연결 파일만 만들 때도 기억한다(안 그러면 끄기가 원래 true 를 false 로 씀) ·
         #   새로 켜면 앞선 끄기의 「키 되돌림 끝」 표지를 지운다(안 그러면 다음 끄기가 키 되돌리기를 건너뜀)
+        # ★codex R4: 앞 주기의 키를 이미 되돌렸으면 새 주기다 — 원래 값 = 지금 값(그 사이 사용자가 바꾼 값을 옛 값으로 덮지 않는다)
         if "prior_key" not in st or st.get("key_restored"):
-            st.setdefault("prior_key", {"present": has, "value": v})
+            st["prior_key"] = {"present": has, "value": v}
             st.pop("key_restored", None)
             _write_json(_p(CHROME_STATE), st)
     if v is not True:
@@ -1866,22 +1867,36 @@ def mask(s, limit=80):
 
 
 def _idents(s):
-    """이메일·긴 번호(숫자만) 집합 — 조건 대조를 이 컴퓨터 안에서 한다(원문은 출력하지 않는다 · codex R3)."""
+    """글 속 이메일·긴 번호(숫자만)를 나온 차례대로(중복 없이) — 조건 대조를 이 컴퓨터 안에서 한다(codex R3·R4)."""
     s = s or ""
-    return {e.lower() for e in _EMAIL.findall(s)} | {re.sub(r"\D", "", n) for n in _LONGNUM.findall(_EMAIL.sub(" ", s))}
+    found = [e.lower() for e in _EMAIL.findall(s)] + [re.sub(r"\D", "", n) for n in _LONGNUM.findall(_EMAIL.sub(" ", s))]
+    return list(dict.fromkeys(found))
 
 
-def anon(s):
-    """조건 표시용 — 이메일·긴 번호를 차례 자리표(<이메일1>·<번호1> · 같은 값 = 같은 자리표)로 바꾼다. 자르지 않는다."""
-    seen = {}
+def _id_hash(x):
+    return hashlib.sha256(("id:" + x).encode("utf-8")).hexdigest()[:16]
 
-    def sub(kind, val):
-        k = (kind, val)
-        if k not in seen:
-            seen[k] = "<%s%d>" % (kind, 1 + sum(1 for x in seen if x[0] == kind))
-        return seen[k]
-    s = _EMAIL.sub(lambda m: sub("이메일", m.group(0).lower()), s or "")
-    return _LONGNUM.sub(lambda m: sub("번호", re.sub(r"\D", "", m.group(0))), s)
+
+# 조건부 허락의 범위 = 정해 둔 낱말만(자유 글은 출력하지 않는다 — 저장된 글은 뒤 대화에서 다시 읽히므로 이름·조직도 새면 안 된다 · codex R4)
+SCOPES = {
+    "listed_recipients": "허용 목록에 적은 받는 사람에게만",
+    "owner_storage": "주인 자신의 저장소·드라이브 안에서만",
+    "group_shared": "주인이 속한 모임·단체의 공유 공간 안에서만",
+    "no_public": "공개 게시 없이(전체 공개·링크 공개 금지)",
+}
+
+
+def _structured(rec):
+    return bool(rec.get("scope") or rec.get("allow_ids") or rec.get("deny_ids"))
+
+
+def _cond_words(rec):
+    w = [SCOPES[t] for t in rec.get("scope") or [] if t in SCOPES]
+    if rec.get("allow_ids"):
+        w.append("허용 받는 사람 %d" % len(rec["allow_ids"]))
+    if rec.get("deny_ids"):
+        w.append("금지 받는 사람 %d" % len(rec["deny_ids"]))
+    return " · ".join(w)
 
 
 def decision_key(cat, subject):
@@ -1952,39 +1967,40 @@ def _toks(s):
 
 
 _DOMAIN = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}")
-_SLD = {"co", "or", "go", "ne", "ac", "re", "pe", "com", "net", "org", "gov", "edu"}   # naver.co.kr · example.com.au
+# 정식 도메인 목록(커넥터 이름·카탈로그 앱 ID → 그 서비스의 로그인 도메인) — 목록에 없는 도메인은 이름이 닮아도 「모름」(codex R4)
+_MS = ("office.com", "microsoft365.com", "login.microsoftonline.com", "login.live.com")
+SERVICE_DOMAINS = {
+    "gmail": ("gmail.com", "mail.google.com"), "google calendar": ("calendar.google.com",),
+    "google drive": ("drive.google.com",), "notion": ("notion.so", "notion.com"), "slack": ("slack.com",),
+    "kakaotalk": ("kakao.com",), "word": _MS, "excel": _MS, "powerpoint": _MS, "office": _MS,
+    "photoshop": ("adobe.com",), "illustrator": ("adobe.com",), "acrobat": ("adobe.com",),
+}
 
 
-def _domain_label(subject):
-    """대상에 도메인이 있으면 그 등록 이름(「mail.gmail.com」 → gmail · 「word.example.invalid」 → example) · 없으면 None."""
+def _host(subject):
     m = _DOMAIN.search(_norm(subject))
-    if not m:
-        return None
-    parts = m.group(0).split(".")[:-1]                  # 맨 끝(최상위) 떼기
-    if len(parts) > 1 and parts[-1] in _SLD:
-        parts = parts[:-1]
-    return parts[-1]
+    return m.group(0) if m else None
 
 
 def _in_use(subject, usage):
     """그 서비스·앱을 이미 쓰는가 — True(근거 문장)/None(모름). ★codex R2: 임의 부분 문자열이 아니라 **낱말** 대조
     (「카카오톡 로그인」 = 카카오톡 · 「wordpress.com」 ≠ Word) — 이름의 낱말이 전부 대상 낱말 안에 있어야 일치.
-    ★codex R3: 대상에 도메인이 있으면 하위 이름(word.example.invalid 의 word)이 아니라 **등록 이름 하나**가 이름과 같아야 일치."""
+    ★codex R3·R4: 대상에 도메인이 있으면 이름 닮음이 아니라 **그 서비스의 정식 도메인 목록**(SERVICE_DOMAINS)으로만 대조
+    (word.invalid · gmail.invalid · word.example.invalid = 모름)."""
     st = set(_toks(subject))
     if not st:
         return None, ""
-    label = _domain_label(subject)
+    host = _host(subject)
 
-    def hit(nt):
-        if not nt:
-            return False
-        return "".join(nt) == label if label is not None else set(nt) <= st
+    def hit(key, nt):
+        if host is not None:
+            return any(host == d or host.endswith("." + d) for d in SERVICE_DOMAINS.get(key, ()))
+        return bool(nt) and set(nt) <= st
     for n in usage.get("services", []):
-        if hit(_toks(n)):
+        if hit(_norm(n), _toks(n)):
             return True, "커넥터로 연결해 쓰는 서비스(%s)" % n
     for aid, v in (usage.get("apps") or {}).items():
-        names = [_toks(aid), _toks(v.get("name"))]
-        if any(hit(nt) for nt in names):
+        if hit(aid, _toks(aid)) or (host is None and hit(aid, _toks(v.get("name")))):
             d = v.get("last_used_days")
             return True, "이 컴퓨터에 설치된 앱(%s%s)" % (v.get("name"), "" if d is None else " · %d일 전 사용" % d)
     return None, ""
@@ -2004,9 +2020,10 @@ def judge(cat, subject="", in_use=None, usage=None, decisions=None, condition_me
         return d2, "precedent:" + s2, "처음 쓰는 서비스입니다 — " + l2
     rec = _lookup(decisions, cat, subject)
     if isinstance(rec, dict) and rec.get("meaning") in ("allow", "deny", "conditional"):
-        if rec["meaning"] == "conditional" and not rec.get("full") and len(rec.get("condition") or "") >= 300:
-            # ★codex R3: 옛 판은 조건을 300자에서 잘라 저장했다 — 잘렸을 수 있는 조건으로는 do 를 내지 않는다(이번 건만 묻기)
-            return EACH, "standing:%s" % rec.get("at", ""), "전에 붙이신 조건이 잘려 저장됐을 수 있습니다 — 이번 건만 여쭙니다."
+        if rec["meaning"] == "conditional" and not _structured(rec):
+            # ★codex R3·R4: 자유 글로만 남은 조건(옛 판 · 300자에서 잘렸을 수도)은 이 컴퓨터가 대조할 수 없고 다시 내보낼 수도
+            #   없다 — 원문 출력·임의 일반화·자동 실행 없이 이번 건만 묻는다
+            return EACH, "standing:%s" % rec.get("at", ""), "전에 붙이신 조건을 제가 대조할 수 있는 모양으로 적어 두지 못했습니다 — 이번 건만 여쭙니다."
         if rec["meaning"] == "conditional" and condition_met is not True:
             # ★codex R2: 조건부 허락은 이번 건이 그 조건에 맞는다는 확인이 있어야 do — 모르면 확인(check) · 아니면 이번만 묻기
             if condition_met is False:
@@ -2051,13 +2068,16 @@ def cmd_decide(a):
         res["ask"] = "「%s%s」 — %s 이번 건을 진행할까요?" % (name, subj, line)
     elif d == CHECK:
         rec = _lookup(dec, a.cat, a.subject) or {}
-        cond = rec.get("condition", "")
-        # ★codex R3: 저장된 조건은 뒤 대화에서 다시 읽히므로 이메일·번호는 자리표로만 내보내고, 이번 건(--what)의 이메일·번호가
-        #   조건 안에 있는지는 이 컴퓨터에서 대조해 참/거짓만 준다 · 조건 원문은 로컬 기록에만
-        res["condition"] = anon(cond)
-        ids = _idents(a.what)
-        if ids:
-            res["what_ids_in_condition"] = ids <= _idents(cond)
+        # ★codex R3·R4: 조건 글은 내보내지 않는다 — 정해 둔 범위 낱말 + 이번 건(--what)의 이메일·번호가 허용·금지 목록의
+        #   몇 번째와 맞는지(익명 자리표)만. 목록 원문은 해시로만 로컬에 있다
+        res["scope"] = [{"token": t, "means": SCOPES[t]} for t in rec.get("scope") or [] if t in SCOPES]
+        res["allow_ids"], res["deny_ids"] = len(rec.get("allow_ids") or []), len(rec.get("deny_ids") or [])
+        res["what_ids"] = []
+        for i, x in enumerate(_idents(a.what), 1):
+            h = _id_hash(x)
+            al, dn = rec.get("allow_ids") or [], rec.get("deny_ids") or []
+            m = ("<허용%d>" % (al.index(h) + 1)) if h in al else ("<금지%d>" % (dn.index(h) + 1)) if h in dn else "목록 밖"
+            res["what_ids"].append({"this": "<이번%d>" % i, "match": m})
         res["say"] = line
     else:
         res["say"] = "「%s%s」은(는) 하지 않습니다 — %s" % (name, subj, line)
@@ -2077,6 +2097,18 @@ def cmd_remember(a):
         return fail("사용자 답이 비어 있습니다 — 여쭌 뒤에 기록해 주세요.", "empty_answer", 2)
     if a.meaning == "conditional" and not (a.condition or "").strip():
         return fail("조건부 허락은 조건을 함께 적어야 합니다.", "condition", 2)
+    scope, allow_ids, deny_ids = list(dict.fromkeys(a.scope or [])), [], []
+    for raw, dst in [(x, allow_ids) for x in a.allow_id or []] + [(x, deny_ids) for x in a.deny_id or []]:
+        ids = _idents(raw)
+        if len(ids) != 1:
+            return fail("받는 사람은 이메일이나 전화번호 하나씩 적어 주세요.", "bad_id", 2)
+        if _id_hash(ids[0]) not in dst:
+            dst.append(_id_hash(ids[0]))
+    if a.meaning == "conditional" and (not (scope or allow_ids or deny_ids)
+                                       or ("listed_recipients" in scope and not allow_ids)):
+        # ★codex R4: 자유 글 조건만으로는 다음 대화에서 대조할 수 없다(글을 다시 내보내면 이름·조직이 샌다) — 범위 낱말·받는 사람 목록으로
+        return fail("조건을 정해 둔 범위(--scope)나 받는 사람 목록(--allow-id·--deny-id)으로 함께 적어 주세요.",
+                    "condition_structure", 2)
     cond = (a.condition or "").strip()
     if len(cond) > MAX_CONDITION:
         # ★codex R3: 조건을 잘라 저장하면 끝에 붙은 제한(「외부 수신자 금지」 등)이 조용히 사라진다 — 자르지 않고 거절
@@ -2092,9 +2124,11 @@ def cmd_remember(a):
         _ledger({"event": "decisions_full", "count": len(d["items"])})
         return fail("정해 두신 결정이 너무 많아(%d) 더 적어 두지 못했습니다 — 이번 결정은 따르되 기록은 하지 못했습니다."
                     % MAX_DECISIONS, "decisions_full", 7)
-    rec = {"meaning": a.meaning, "condition": cond, "full": True, "at": _iso(),
+    rec = {"meaning": a.meaning, "condition": cond, "at": _iso(),
            "label": mask("%s %s" % (a.cat, a.subject)),
            "answer_sha256": hashlib.sha256(ans.encode("utf-8")).hexdigest()}
+    if a.meaning == "conditional":
+        rec.update({"scope": scope, "allow_ids": allow_ids, "deny_ids": deny_ids})
     _ledger({"event": "decision", "key": key, "meaning": a.meaning, "changed": bool(a.user_changed),
              "answer_sha256": rec["answer_sha256"]})              # 기록 먼저
     d["items"][key] = rec
@@ -2102,7 +2136,7 @@ def cmd_remember(a):
         if legacy != key:
             d["items"].pop(legacy, None)             # 옛 판 키는 새 키로 옮긴다(사용자가 바꾼 때)
     _write_json(_p(DECISIONS), d)
-    word = {"allow": "허락", "deny": "안 함", "conditional": "조건부 허락(%s)" % mask(rec["condition"])}[a.meaning]
+    word = {"allow": "허락", "deny": "안 함", "conditional": "조건부 허락(%s)" % _cond_words(rec)}[a.meaning]
     return out({"ok": True, "key": key, "say": "알겠습니다 — 앞으로 「%s」은(는) %s 으로 계속 따르겠습니다. 다시 여쭙지 않습니다."
                                               % ((CATEGORIES.get(a.cat, (mask(a.cat),))[0] + (" — " + mask(a.subject) if a.subject else "")), word)})
 
@@ -2222,7 +2256,8 @@ def self_test():
                     errs.append("judge %s 건마다·안 함 → do" % cat)
                 if "naver" in subj and cat in ("login", "external_send") and got != EACH:
                     errs.append("judge 약관 서비스 %s" % cat)
-    cond = {decision_key("external_send", "x"): {"meaning": "conditional", "condition": "c", "at": "t"}}
+    cond = {decision_key("external_send", "x"): {"meaning": "conditional", "condition": "c", "scope": ["group_shared"],
+                                                 "at": "t"}}
     for cm, want in ((None, CHECK), (False, EACH), (True, DO)):
         n += 1
         if judge("external_send", "x", None, {}, cond, cm)[0] != want:
@@ -2284,7 +2319,10 @@ def main(argv=None):
     rm.add_argument("--subject", default="")
     rm.add_argument("--answer-file", required=True)
     rm.add_argument("--meaning", required=True, choices=("allow", "deny", "conditional"))
-    rm.add_argument("--condition", default="")
+    rm.add_argument("--condition", default="", help="사용자가 한 말 그대로(로컬 기록에만 · 출력하지 않는다)")
+    rm.add_argument("--scope", action="append", choices=tuple(SCOPES), help="조건부 허락의 범위 낱말(여러 번)")
+    rm.add_argument("--allow-id", action="append", help="허용 받는 사람 이메일·전화번호 하나(여러 번 · 해시로만 기록)")
+    rm.add_argument("--deny-id", action="append", help="금지 받는 사람 이메일·전화번호 하나(여러 번 · 해시로만 기록)")
     rm.add_argument("--user-changed", action="store_true", help="사용자가 스스로 결정을 바꾼 때만")
     try:
         a = ap.parse_args(argv)

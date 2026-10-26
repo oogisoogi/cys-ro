@@ -25,10 +25,10 @@ description: 사용자가 「내 컴퓨터에서 네가 맡을 수 있는 걸 �
 로그인·「허용」, 자료 바깥 보내기, 결제·서명·가입, 앱 닫기, 화면 조작, 설정 바꾸기, 앱 보안 창, 처음 보는 업데이트 창처럼
 「물어야 하나?」 싶은 일이 생기면 묻기 전에 `"$PY" "$C" decide <유형> --subject "<대상>" [--in-use yes|no] [--what "<한 일 한 줄>"] [--condition-met yes|no]`.
 - `decision: do` → 묻지 않고 하고, 끝나면 `report` 를 그대로 말한다(「이렇게 했습니다 … 다르게 원하시면 말씀해 주세요」).
-- `decision: ask` → `ask` 를 그대로 묻고, 답 원문을 파일로 쓴 뒤 `"$PY" "$C" remember <유형> --subject "<대상>" --answer-file <파일> --meaning allow|deny|conditional [--condition "<조건>"]`.
+- `decision: ask` → `ask` 를 그대로 묻고, 답 원문을 파일로 쓴 뒤 `"$PY" "$C" remember <유형> --subject "<대상>" --answer-file <파일> --meaning allow|deny|conditional [--condition "<사용자가 한 말>" --scope <범위>… --allow-id <이메일·번호>… --deny-id <이메일·번호>…]`.
   답은 상시 기록이다 — **같은 항목을 다시 묻지 않는다**(`already_decided` 가 나오면 그 결정을 따른다 · 사용자가 스스로 바꾼 때만 `--user-changed`).
-  `--condition` 은 사용자가 붙인 범위를 **역할·범위 낱말**로 적는다(사람 이름·조직 이름·크롬 프로필 이름 대신 「교회 안」「팀 드라이브」 · 2,000자 이하 — 넘으면 `condition_too_long` 이니 줄여 다시 묻는다).
-- `decision: check` → 전에 사용자가 **조건을 붙여** 허락한 것이다 — `condition`(이메일·번호는 `<이메일1>`·`<번호1>` 자리표)과 이번 건을 대조해 `--condition-met yes|no` 로 다시 부른다(yes = do · no = 이번만 묻기). 이번 건의 받는 사람 등을 `--what` 에 넣으면 그 이메일·번호가 조건 안에 있는지를 `what_ids_in_condition`(참/거짓)으로 알려 준다. 확인 없이 하지 않는다.
+  조건부 허락은 **정해 둔 범위 낱말**(`--scope` = `listed_recipients` 허용 목록의 받는 사람에게만 · `owner_storage` 주인 자신의 저장소 안 · `group_shared` 주인이 속한 모임·단체의 공유 공간 안 · `no_public` 공개 게시 없이)이나 **받는 사람 목록**(`--allow-id`·`--deny-id` 에 이메일·전화번호 하나씩 · 해시로만 기록)으로 함께 적는다 — 없으면 `condition_structure`. `--condition`(사용자가 한 말)은 이 컴퓨터에만 남고 다시 출력되지 않는다(2,000자 이하 · 넘으면 `condition_too_long`).
+- `decision: check` → 전에 사용자가 **조건을 붙여** 허락한 것이다 — `scope`(범위 낱말)와 이번 건을 대조하고, 이번 건의 받는 사람을 `--what` 에 넣어 다시 부르면 `what_ids` 가 각 사람이 `<허용n>`·`<금지n>`·「목록 밖」 중 어디인지 알려 준다. 범위 안이고 금지·목록 밖(허용 목록이 있을 때)이 없을 때만 `--condition-met yes`(= do) · 아니면 `no`(= 이번만 묻기). 확인 없이 하지 않는다. 범위 낱말로 적어 두지 않은 옛 조건부 허락은 `each`(이번 건만 묻기).
 - `decision: each` → 그 건만 `ask` 대로 묻는다(결제·서명 제출·새 가입·비밀번호/2단계/생체 입력·주인 이름으로 남에게 보내기·약관이 자동화를 금지한 서비스 · 기록하지 않는다).
 - `decision: never` → `say` 대로 하지 않는다(일부러 막힌 창 · 원격 명령 통로·자격증명 대행·백신 우회).
 - 유형: `login` `credential_input` `payment` `sign_submit` `signup` `send_as_owner` `external_send` `settings_change` `app_quit`

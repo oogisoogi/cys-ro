@@ -58,8 +58,10 @@ agy 는 R1 12건 전부 해소로 판정하고 신규 2건을 냈다. codex R2 �
 | ① blocking: `restored_prev_statusline` 이 ` sh `·` bash `·`/bash.exe` 부분 문자열을 뒤에서 찾아 경계를 정함 — 윈 형식에서 이전 값에 ` sh ` 가 있거나 런처가 역슬래시 `…\bash.exe` 면 None → 사용자 상태줄이 원복 대신 삭제(이 함수는 티켓 전부터 있었으나 이 티켓이 개인 프로필에 자동 적용) | 수용 — 소유 판정과 같은 `shell_words` 낱말 분해로 첫 할당 낱말의 값을 꺼낸다(`shlex.quote` 이어 붙이기·겹따옴표 포함) · 유일 호출처가 사라진 `shell_unquote_single` 제거 | ✅ restored_prev_statusline_variants(반례 2 포함) · 뮤턴트 R12 |
 | ② major: `OJ` 가 중복 키를 덮어써 판정이 JSON.parse 와 갈림 — 첫 `hooks` 에만 팩 훅이면 「없음」(doctor OK 오판) · 중복 `Stop` 을 남긴 채 통과 · R3 「등가」 주장 반박(중복 이벤트 키에서 R3 만 통과) | 수용 — `OJ` 는 중복을 모두 보존 · 판정 범위(`hooks`·`statusLine` 하위) 안 중복 = 계획 단계 거부(`dup_in_scope` · 탐지·제거 공통 → doctor 「판정 불가」) · 범위 밖 중복은 원문 그대로 남고 재판독 대조로 정확 비교. R3: 21d45a70 에서는 **비등가였다**(agy 옳음) — 수리 뒤 그 입력 부류는 앞단에서 거부되어 R3 은 2차 방어선(알려진 구별 입력 없음) | ✅ duplicate_keys_are_refused_without_writing(반례 4 + 범위 밖 중복 통과) · 뮤턴트 R11 |
 
+- agy **R3 = ACCEPT**(revision 5f255f32 · verdict `…-r3-agy.json`): R2 2건 해소 · 기준 ①~⑦ 미달·신규 결함 0.
+
 ## 남은 일(다음 좌석 · 순서대로)
-1. codex **R2**(05:30 · revision = R2 수리 커밋) → 지적 처분 → 필요 시 R3.
+1. codex **R2**(05:30 · revision 5f255f32 · R1·agy R2 처분 포함) → 지적 처분 → 필요 시 다음 라운드.
 2. 678(1111-merge01452) 병합 머리 위로 rebase + 게이트 재실행(아래 「재현」 전부 + scan-pack-secrets).
 3. 【확인요청】.
 - 미확정 유지: 1,059초 사례 원인(§2-5) · B2(1.1.12 BACKLOG · 아래).

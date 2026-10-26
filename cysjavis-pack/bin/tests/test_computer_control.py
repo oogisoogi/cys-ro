@@ -1435,12 +1435,12 @@ class TestPrecedent(Base):
         self.assertEqual((rc, r["reason"]), (2, "condition"))
         rc, r, _ = self.run_cli("remember", "external_send", "--subject", "당회록 → 교회 드라이브",
                                 "--answer-file", self.answer("교회 안에서만이면 돼"), "--meaning", "conditional",
-                                "--condition", "교회 내부 공유 드라이브 한정", "--scope", "group_shared")
+                                "--condition", "교회 내부 공유 드라이브 한정")
         self.assertEqual(rc, 0, r)
         rc, d, _ = self.run_cli("decide", "external_send", "--subject", "당회록 → 교회 드라이브")
         self.assertEqual(d["decision"], "check")                     # codex R2: 조건 확인 전에는 do 아님
-        self.assertEqual(d["scope"], [{"token": "group_shared", "means": self.m.SCOPES["group_shared"]}])
-        self.assertNotIn("condition", d)                              # codex R4: 조건 글은 내보내지 않는다
+        # master#6528f666(D16): 조건의 뜻은 도구가 해석하지 않는다 — 원문을 마스터에게 돌려준다
+        self.assertEqual(d["condition"], "교회 내부 공유 드라이브 한정")
         rc, d, _ = self.run_cli("decide", "external_send", "--subject", "당회록 → 교회 드라이브", "--condition-met", "yes")
         self.assertEqual(d["decision"], "do")
         rc, d, _ = self.run_cli("decide", "external_send", "--subject", "당회록 → 교회 드라이브", "--condition-met", "no")
@@ -1481,8 +1481,7 @@ class TestPrecedent(Base):
         rc, d, _ = self.run_cli("decide", "external_send", "--subject", subj)
         self.assertNotIn(EMAIL, json.dumps(d, ensure_ascii=False))
         rc, r, _ = self.run_cli("remember", "external_send", "--subject", subj, "--answer-file", self.answer("응"),
-                                "--meaning", "conditional", "--condition", "010-1234-5678 로만",
-                                "--scope", "listed_recipients", "--allow-id", "010-1234-5678")
+                                "--meaning", "conditional", "--condition", "010-1234-5678 로만")
         blob = json.dumps(r, ensure_ascii=False)
         for root, _d, files in os.walk(self.state):
             for f in files:
@@ -1493,7 +1492,8 @@ class TestPrecedent(Base):
         self.assertEqual(d["decision"], "do")
         self.assertNotIn(EMAIL, blob)                               # 대상 원문은 출력·파일 어디에도 없다(키 = 해시)
         out_only = json.dumps(r, ensure_ascii=False) + json.dumps(d, ensure_ascii=False)
-        self.assertNotIn("010-1234-5678", out_only)                 # 조건 원문은 로컬 상태 파일에만(대조용) · 출력은 가림
+        self.assertNotIn("010-1234-5678", out_only)                 # 기록 말·do 보고는 가림(조건 원문은 check 때만 마스터에게)
+        self.assertNotIn("010-1234-5678", "\n".join(lines(os.path.join(self.state, "ledger.jsonl"))))   # 원장엔 해시만
 
     def test_new_type_key_hashed(self):
         cat = "send-to-%s" % EMAIL
@@ -1526,7 +1526,7 @@ class TestPrecedent(Base):
                                  "custom_export:" + h("b"): {"meaning": "deny", "at": "t"},
                                  "custom_export:" + h("c"): {"meaning": "conditional", "condition": "팀 안", "at": "t"}}}, f)
         got = [self.run_cli("decide", "custom_export", "--subject", x)[1]["decision"] for x in "abc"]
-        self.assertEqual(got, ["do", "never", "each"])        # 자유 글로만 남은 옛 조건부 = 대조 불가 → 이번 건만 묻기(codex R4)
+        self.assertEqual(got, ["do", "never", "check"])       # 옛 조건부도 그대로 조건부(원문을 마스터가 대조 · codex R5)
         rc, r, _ = self.run_cli("remember", "custom_export", "--subject", "a", "--answer-file", self.answer("응"),
                                 "--meaning", "allow")
         self.assertEqual((rc, r["reason"]), (7, "already_decided"))
@@ -1537,49 +1537,42 @@ class TestPrecedent(Base):
                                            "custom_export:" + h("c")})          # 바꾼 것만 새 키로 옮겨지고 옛 키는 지워진다
         self.assertEqual(self.run_cli("decide", "custom_export", "--subject", "a")[1]["decision"], "never")
 
-    def test_check_hides_condition_text_and_matches_locally(self):
-        # codex R3·R4: 저장된 조건은 뒤 대화에서 다시 읽힌다 — check 출력에 조건 글(이름·조직·프로필·이메일·번호) 0 ·
-        #   이번 건의 받는 사람이 허용·금지 목록의 몇 번째인지는 로컬 대조 뒤 익명 자리표로만
-        cond = "%s · %s · %s 안에서만, allow@example.invalid 에만 허용, deny@example.invalid 에게는 금지" % (NAME, ORG, PROFILE)
+    def test_free_text_condition_recorded_and_returned_verbatim(self):
+        # master#6528f666(D16): 조건 문법(범위 낱말·받는 사람 목록)을 강제하지 않는다 — 사용자 말 그대로 기록하고 check 때
+        #   원문을 마스터에게 · 원장엔 원문 0(답 해시만)
+        cond = "%s · %s · %s 안에서만, 다음 달까지" % (NAME, ORG, PROFILE)
         rc, r, _ = self.run_cli("remember", "external_send", "--subject", "보고서", "--answer-file", self.answer("응"),
-                                "--meaning", "conditional", "--condition", cond, "--scope", "listed_recipients",
-                                "--allow-id", "allow@example.invalid", "--deny-id", "deny@example.invalid")
+                                "--meaning", "conditional", "--condition", cond)
         self.assertEqual(rc, 0, r)
-        outs = [r]
-        for what, want in (("", []), ("Allow@example.invalid 에게 보냄", ["<허용1>"]), ("deny@example.invalid 에게 보냄", ["<금지1>"]),
-                           ("other@example.invalid · allow@example.invalid", ["목록 밖", "<허용1>"])):
-            rc, d, _ = self.run_cli("decide", "external_send", "--subject", "보고서", "--what", what)
-            self.assertEqual(d["decision"], "check")
-            self.assertEqual([x["match"] for x in d["what_ids"]], want, what)
-            self.assertEqual((d["allow_ids"], d["deny_ids"]), (1, 1))
-            outs.append(d)
-        blob = json.dumps(outs, ensure_ascii=False)
-        for x in MARKS + ("allow@example.invalid", "deny@example.invalid", "other@example.invalid"):
-            self.assertNotIn(x, blob)
+        rc, d, _ = self.run_cli("decide", "external_send", "--subject", "보고서")
+        self.assertEqual((d["decision"], d["condition"]), ("check", cond))
+        self.assertTrue(self.dec()[self.m.decision_key("external_send", "보고서")]["full"])
+        led = "\n".join(lines(os.path.join(self.state, "ledger.jsonl")))
+        for x in (NAME, ORG, PROFILE):
+            self.assertNotIn(x, led)
 
-    def test_conditional_needs_structure(self):
-        # codex R4: 자유 글 조건만으로는 다음 대화에서 대조할 수 없다 → 범위 낱말이나 받는 사람 목록이 있어야 기록
-        base = ("remember", "external_send", "--subject", "s", "--answer-file", self.answer("응"), "--meaning", "conditional",
-                "--condition", "팀 안에서만")
-        self.assertEqual(self.run_cli(*base)[1]["reason"], "condition_structure")
-        self.assertEqual(self.run_cli(*(base + ("--scope", "listed_recipients")))[1]["reason"], "condition_structure")
-        self.assertEqual(self.run_cli(*(base + ("--allow-id", "두 사람")))[1]["reason"], "bad_id")
-        self.assertEqual(self.dec(), {})
-        rc, r, _ = self.run_cli(*(base + ("--scope", "owner_storage")))
-        self.assertEqual(rc, 0, r)
-        self.assertIn(self.m.SCOPES["owner_storage"], r["say"])
-        self.assertNotIn("팀 안에서만", r["say"])
+    def test_conflicting_records_strictest_wins(self):
+        # codex R5: 같은 대상에 지금 키·옛 판 키로 뜻이 다른 기록이 함께 있으면 더 좁은 쪽 — 허락이 금지를 가리지 않는다
+        os.makedirs(self.state, exist_ok=True)
+        k = self.m.decision_key("external_send", "s")
+        old = "external_send:s"
+        for cur, leg, want in (("allow", "deny", "never"), ("deny", "allow", "never"), ("allow", "conditional", "check"),
+                               ("conditional", "allow", "check"), ("allow", "allow", "do")):
+            recs = {m: {"meaning": m, "condition": "c", "at": "t"} for m in (cur, leg)}
+            with open(os.path.join(self.state, "decisions.json"), "w") as f:
+                json.dump({"items": {k: recs[cur], old: recs[leg]}}, f)
+            self.assertEqual(self.run_cli("decide", "external_send", "--subject", "s")[1]["decision"], want, (cur, leg))
 
     def test_condition_too_long_rejected_not_truncated(self):
         # codex R3 major: 조건을 잘라 저장하면 끝의 제한이 사라진다 — 한도를 넘으면 기록하지 않는다
         cond = "가" * self.m.MAX_CONDITION + " 외부 수신자 금지"
         rc, r, _ = self.run_cli("remember", "external_send", "--subject", "s", "--answer-file", self.answer("응"),
-                                "--meaning", "conditional", "--condition", cond, "--scope", "no_public")
+                                "--meaning", "conditional", "--condition", cond)
         self.assertEqual((rc, r["reason"]), (2, "condition_too_long"))
         self.assertEqual(self.dec(), {})
         cond = "가" * 395 + " 외부 수신자 금지"
         rc, r, _ = self.run_cli("remember", "external_send", "--subject", "s", "--answer-file", self.answer("응"),
-                                "--meaning", "conditional", "--condition", cond, "--scope", "no_public")
+                                "--meaning", "conditional", "--condition", cond)
         self.assertEqual(rc, 0, r)
         self.assertEqual(list(self.dec().values())[0]["condition"], cond)       # 끝까지 그대로
 
@@ -1589,8 +1582,23 @@ class TestPrecedent(Base):
         with open(os.path.join(self.state, "decisions.json"), "w") as f:
             json.dump({"items": {self.m.decision_key("external_send", "s"):
                                  {"meaning": "conditional", "condition": "가" * 300, "at": "t"}}}, f)
-        rc, d, _ = self.run_cli("decide", "external_send", "--subject", "s", "--condition-met", "yes")
-        self.assertEqual(d["decision"], "each")
+        for cm in ("yes", "unknown", "no"):
+            rc, d, _ = self.run_cli("decide", "external_send", "--subject", "s", "--condition-met", cm)
+            self.assertEqual((d["decision"], d.get("supplement")), ("each", True), cm)
+        # codex R5: 이 기록만은 다시 받은 조건으로 --user-changed 없이 덮는다(재질문 고리 차단) — 그 뒤는 보통 조건부
+        rc, r, _ = self.run_cli("remember", "external_send", "--subject", "s", "--answer-file", self.answer("응 팀 안에서만"),
+                                "--meaning", "conditional", "--condition", "팀 안에서만")
+        self.assertEqual(rc, 0, r)
+        rc, d, _ = self.run_cli("decide", "external_send", "--subject", "s")
+        self.assertEqual((d["decision"], d["condition"], d.get("supplement")), ("check", "팀 안에서만", None))
+        rc, r, _ = self.run_cli("remember", "external_send", "--subject", "s", "--answer-file", self.answer("응"),
+                                "--meaning", "allow")
+        self.assertEqual((rc, r["reason"]), (7, "already_decided"))       # 다시 적은 뒤에는 보통 항목처럼 재기록 막힘
+        os.makedirs(self.state, exist_ok=True)
+        with open(os.path.join(self.state, "decisions.json"), "w") as f:
+            json.dump({"items": {self.m.decision_key("external_send", "t"):
+                                 {"meaning": "conditional", "condition": "가" * 299, "at": "t"}}}, f)
+        self.assertEqual(self.run_cli("decide", "external_send", "--subject", "t")[1]["decision"], "check")   # 300자 미만 = 안 잘림
 
     def test_domain_matches_only_official_domains(self):
         # codex R3·R4: 도메인 대상은 이름 닮음(word.invalid · gmail.invalid · word.example.invalid)이 아니라 정식 도메인 목록으로만
@@ -1598,6 +1606,16 @@ class TestPrecedent(Base):
         for subj, want in (("word.example.invalid", "ask"), ("word.invalid", "ask"), ("gmail.invalid", "ask"),
                            ("gmail.example.invalid", "ask"), ("evilgmail.com", "ask"), ("mail.google.com", "do"), ("gmail.com", "do"),
                            ("login.microsoftonline.com", "do")):
+            rc, d, _ = self.run_cli("decide", "login", "--subject", subj)
+            self.assertEqual(d["decision"], want, subj)
+
+    def test_url_target_is_real_hostname(self):
+        # codex R5: URL 의 사용자정보·경로·쿼리에 정식 도메인이 있어도 실제 접속 대상이 아니다 · 대상이 둘 이상이면 모름
+        at = "mail.google.com" + "@" + "unrelated.invalid"          # 사용자정보 꼴(이메일 모양 리터럴은 팩 발행 스캐너가 막는다)
+        for subj, want in (("https://" + at, "ask"), ("https://mail.google.com/mail/u/0", "do"),
+                           ("https://unrelated.invalid/?next=mail.google.com", "ask"), ("https://10.0.0.1/mail.google.com", "ask"),
+                           (at, "ask"), ("gmail.com 과 unrelated.invalid", "ask"),
+                           ("https://[::1/ gmail", "ask")):
             rc, d, _ = self.run_cli("decide", "login", "--subject", subj)
             self.assertEqual(d["decision"], want, subj)
 

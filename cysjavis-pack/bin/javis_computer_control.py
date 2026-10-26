@@ -34,6 +34,7 @@ import subprocess
 import sys
 sys.dont_write_bytecode = True
 import time
+import urllib.parse
 
 NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
 
@@ -1850,6 +1851,7 @@ TERMS_SERVICES = {"naver": "네이버", "네이버": "네이버"}   # 약관 위
 DECISIONS = "decisions.json"
 MAX_DECISIONS = 5000
 MAX_CONDITION = 2000        # 조건 글자 한도 — 넘으면 자르지 않고 거절(codex R3) · 옛 판은 300자에서 잘라 저장했다
+LEGACY_CUT = 300            # 옛 판 자르기 길이 — `full` 표지 없는 조건이 이 길이 이상이면 끝이 잘렸을 수 있다
 
 
 def _norm(s):
@@ -1866,39 +1868,6 @@ def mask(s, limit=80):
     return _LONGNUM.sub("<번호>", s)[:limit]
 
 
-def _idents(s):
-    """글 속 이메일·긴 번호(숫자만)를 나온 차례대로(중복 없이) — 조건 대조를 이 컴퓨터 안에서 한다(codex R3·R4)."""
-    s = s or ""
-    found = [e.lower() for e in _EMAIL.findall(s)] + [re.sub(r"\D", "", n) for n in _LONGNUM.findall(_EMAIL.sub(" ", s))]
-    return list(dict.fromkeys(found))
-
-
-def _id_hash(x):
-    return hashlib.sha256(("id:" + x).encode("utf-8")).hexdigest()[:16]
-
-
-# 조건부 허락의 범위 = 정해 둔 낱말만(자유 글은 출력하지 않는다 — 저장된 글은 뒤 대화에서 다시 읽히므로 이름·조직도 새면 안 된다 · codex R4)
-SCOPES = {
-    "listed_recipients": "허용 목록에 적은 받는 사람에게만",
-    "owner_storage": "주인 자신의 저장소·드라이브 안에서만",
-    "group_shared": "주인이 속한 모임·단체의 공유 공간 안에서만",
-    "no_public": "공개 게시 없이(전체 공개·링크 공개 금지)",
-}
-
-
-def _structured(rec):
-    return bool(rec.get("scope") or rec.get("allow_ids") or rec.get("deny_ids"))
-
-
-def _cond_words(rec):
-    w = [SCOPES[t] for t in rec.get("scope") or [] if t in SCOPES]
-    if rec.get("allow_ids"):
-        w.append("허용 받는 사람 %d" % len(rec["allow_ids"]))
-    if rec.get("deny_ids"):
-        w.append("금지 받는 사람 %d" % len(rec["deny_ids"]))
-    return " · ".join(w)
-
-
 def decision_key(cat, subject):
     """상시 기록 키 = 유형 + 대상의 해시(대상 원문을 파일에 남기지 않는다 · 같은 대상은 같은 키).
     목록 밖 새 유형은 유형 이름도 해시(마스터가 지은 이름에 개인정보가 섞여도 키·출력에 원문 0 · codex R2)."""
@@ -1913,13 +1882,23 @@ def _legacy_keys(cat, subject):
     return ["%s:%s" % (cat, hashlib.sha256(n.encode("utf-8")).hexdigest()[:16] if n else ""), "%s:%s" % (cat, n)]
 
 
+_STRICT = {"deny": 0, "conditional": 1, "allow": 2}
+
+
+def _cut(rec):
+    """옛 판이 300자에서 잘라 둔 조건인가(출처 사실 — 뜻은 보지 않는다): 원문 표지(full) 없고 길이가 자르기 길이 이상."""
+    return (isinstance(rec, dict) and rec.get("meaning") == "conditional" and not rec.get("full")
+            and len(rec.get("condition") or "") >= LEGACY_CUT)
+
+
 def _lookup(decisions, cat, subject):
-    """상시 기록 조회 — 지금 키, 없으면 옛 판 키도 본다(기록을 잃지 않는다)."""
+    """상시 기록 조회 — 지금 키와 옛 판 키를 다 본다(기록을 잃지 않는다). 같은 대상에 뜻이 다른 기록이 함께 남아 있으면
+    더 좁은 쪽(안 함 > 조건부 > 허락)을 따른다 — 허락이 금지를 가리지 않는다(codex R5 · master#6528f666)."""
     d = decisions or {}
-    for k in [decision_key(cat, subject)] + _legacy_keys(cat, subject):
-        if d.get(k):
-            return d[k]
-    return None
+    found = [d[k] for k in dict.fromkeys([decision_key(cat, subject)] + _legacy_keys(cat, subject)) if d.get(k)]
+    if not found:
+        return None
+    return min(found, key=lambda r: _STRICT.get(r.get("meaning") if isinstance(r, dict) else None, 3))
 
 
 def load_decisions():
@@ -1977,9 +1956,20 @@ SERVICE_DOMAINS = {
 }
 
 
-def _host(subject):
-    m = _DOMAIN.search(_norm(subject))
-    return m.group(0) if m else None
+def _hosts(subject):
+    """대상 글 속 접속 대상 이름 — URL 은 파서의 실제 hostname(사용자정보·경로·쿼리의 도메인 모양은 대상이 아니다 · codex R5),
+    그 밖은 도메인 모양. 둘 이상이거나 URL 이 깨졌으면 대상이 모호하다(호출 쪽이 「모름」)."""
+    s = (subject or "").lower()
+    hosts, rest = [], s
+    for m in re.finditer(r"[a-z][a-z0-9+.\-]*://\S+", s):
+        try:
+            h = urllib.parse.urlsplit(m.group(0)).hostname
+        except ValueError:
+            h = None
+        hosts.append(h or "?")
+        rest = rest.replace(m.group(0), " ")
+    hosts += _DOMAIN.findall(rest)
+    return list(dict.fromkeys(hosts))
 
 
 def _in_use(subject, usage):
@@ -1990,7 +1980,10 @@ def _in_use(subject, usage):
     st = set(_toks(subject))
     if not st:
         return None, ""
-    host = _host(subject)
+    hosts = _hosts(subject)
+    if len(hosts) > 1:
+        return None, ""                              # 접속 대상이 둘 이상·깨진 URL = 어느 쪽인지 모름 → 묻는다
+    host = hosts[0] if hosts else None
 
     def hit(key, nt):
         if host is not None:
@@ -2020,10 +2013,11 @@ def judge(cat, subject="", in_use=None, usage=None, decisions=None, condition_me
         return d2, "precedent:" + s2, "처음 쓰는 서비스입니다 — " + l2
     rec = _lookup(decisions, cat, subject)
     if isinstance(rec, dict) and rec.get("meaning") in ("allow", "deny", "conditional"):
-        if rec["meaning"] == "conditional" and not _structured(rec):
-            # ★codex R3·R4: 자유 글로만 남은 조건(옛 판 · 300자에서 잘렸을 수도)은 이 컴퓨터가 대조할 수 없고 다시 내보낼 수도
-            #   없다 — 원문 출력·임의 일반화·자동 실행 없이 이번 건만 묻는다
-            return EACH, "standing:%s" % rec.get("at", ""), "전에 붙이신 조건을 제가 대조할 수 있는 모양으로 적어 두지 못했습니다 — 이번 건만 여쭙니다."
+        if _cut(rec):
+            # ★codex R3·R5: 끝이 잘렸을 수 있는 옛 조건으로는 확인이 있어도 do 하지 않는다 — 이번에 조건을 한 번 다시 받아
+            #   적어 두면(remember 가 이 기록만은 --user-changed 없이 덮는다) 다음부터 다시 묻지 않는다
+            return EACH, "standing:%s" % rec.get("at", ""), ("전에 붙이신 조건이 끝까지 적혀 있지 않습니다 — 이번 건을 진행할지와 "
+                                                             "그 조건을 한 번만 다시 말씀해 주시면 적어 두고 다시 여쭙지 않겠습니다.")
         if rec["meaning"] == "conditional" and condition_met is not True:
             # ★codex R2: 조건부 허락은 이번 건이 그 조건에 맞는다는 확인이 있어야 do — 모르면 확인(check) · 아니면 이번만 묻기
             if condition_met is False:
@@ -2066,18 +2060,13 @@ def cmd_decide(a):
         res["ask"] = "「%s%s」 — %s 맡겨 주시겠어요? (허락 · 안 함 · 조건을 붙여 허락 중에서 말씀해 주세요)" % (name, subj, line)
     elif d == EACH:
         res["ask"] = "「%s%s」 — %s 이번 건을 진행할까요?" % (name, subj, line)
+        if _cut(_lookup(dec, a.cat, a.subject)):
+            res["supplement"] = True             # 답의 조건을 remember 로 적으면 이 항목은 다시 묻지 않는다
     elif d == CHECK:
         rec = _lookup(dec, a.cat, a.subject) or {}
-        # ★codex R3·R4: 조건 글은 내보내지 않는다 — 정해 둔 범위 낱말 + 이번 건(--what)의 이메일·번호가 허용·금지 목록의
-        #   몇 번째와 맞는지(익명 자리표)만. 목록 원문은 해시로만 로컬에 있다
-        res["scope"] = [{"token": t, "means": SCOPES[t]} for t in rec.get("scope") or [] if t in SCOPES]
-        res["allow_ids"], res["deny_ids"] = len(rec.get("allow_ids") or []), len(rec.get("deny_ids") or [])
-        res["what_ids"] = []
-        for i, x in enumerate(_idents(a.what), 1):
-            h = _id_hash(x)
-            al, dn = rec.get("allow_ids") or [], rec.get("deny_ids") or []
-            m = ("<허용%d>" % (al.index(h) + 1)) if h in al else ("<금지%d>" % (dn.index(h) + 1)) if h in dn else "목록 밖"
-            res["what_ids"].append({"this": "<이번%d>" % i, "match": m})
+        # ★master#6528f666(D16): 조건 글의 뜻은 도구가 해석하지 않는다 — 사용자 자신의 말 원문을 마스터에게 돌려주고,
+        #   이번 건이 그 조건에 맞는지는 마스터가 자연어로 판단한다(애매하면 그때만 사용자에게 1회)
+        res["condition"] = rec.get("condition", "")   # 끝이 잘렸을 수 있는 옛 기록은 여기 오지 않는다(judge 가 each)
         res["say"] = line
     else:
         res["say"] = "「%s%s」은(는) 하지 않습니다 — %s" % (name, subj, line)
@@ -2097,18 +2086,6 @@ def cmd_remember(a):
         return fail("사용자 답이 비어 있습니다 — 여쭌 뒤에 기록해 주세요.", "empty_answer", 2)
     if a.meaning == "conditional" and not (a.condition or "").strip():
         return fail("조건부 허락은 조건을 함께 적어야 합니다.", "condition", 2)
-    scope, allow_ids, deny_ids = list(dict.fromkeys(a.scope or [])), [], []
-    for raw, dst in [(x, allow_ids) for x in a.allow_id or []] + [(x, deny_ids) for x in a.deny_id or []]:
-        ids = _idents(raw)
-        if len(ids) != 1:
-            return fail("받는 사람은 이메일이나 전화번호 하나씩 적어 주세요.", "bad_id", 2)
-        if _id_hash(ids[0]) not in dst:
-            dst.append(_id_hash(ids[0]))
-    if a.meaning == "conditional" and (not (scope or allow_ids or deny_ids)
-                                       or ("listed_recipients" in scope and not allow_ids)):
-        # ★codex R4: 자유 글 조건만으로는 다음 대화에서 대조할 수 없다(글을 다시 내보내면 이름·조직이 샌다) — 범위 낱말·받는 사람 목록으로
-        return fail("조건을 정해 둔 범위(--scope)나 받는 사람 목록(--allow-id·--deny-id)으로 함께 적어 주세요.",
-                    "condition_structure", 2)
     cond = (a.condition or "").strip()
     if len(cond) > MAX_CONDITION:
         # ★codex R3: 조건을 잘라 저장하면 끝에 붙은 제한(「외부 수신자 금지」 등)이 조용히 사라진다 — 자르지 않고 거절
@@ -2116,7 +2093,8 @@ def cmd_remember(a):
                     % (len(cond), MAX_CONDITION), "condition_too_long", 2)
     d = load_decisions()
     key = decision_key(a.cat, a.subject)
-    if _lookup(d["items"], a.cat, a.subject) is not None and not a.user_changed:
+    prev = _lookup(d["items"], a.cat, a.subject)
+    if prev is not None and not a.user_changed and not _cut(prev):
         # 재질문 금지 — 이미 정해진 항목을 다시 묻고 기록하는 것은 마스터의 실수다(사용자가 스스로 바꾼 때만 --user-changed)
         return fail("이미 정해 주신 항목입니다 — 다시 여쭙지 않고 그 결정을 따릅니다.", "already_decided", 7)
     if key not in d["items"] and len(d["items"]) >= MAX_DECISIONS:
@@ -2128,7 +2106,7 @@ def cmd_remember(a):
            "label": mask("%s %s" % (a.cat, a.subject)),
            "answer_sha256": hashlib.sha256(ans.encode("utf-8")).hexdigest()}
     if a.meaning == "conditional":
-        rec.update({"scope": scope, "allow_ids": allow_ids, "deny_ids": deny_ids})
+        rec["full"] = True                           # 자르지 않은 원문(옛 판 300자 기록과 구별)
     _ledger({"event": "decision", "key": key, "meaning": a.meaning, "changed": bool(a.user_changed),
              "answer_sha256": rec["answer_sha256"]})              # 기록 먼저
     d["items"][key] = rec
@@ -2136,7 +2114,7 @@ def cmd_remember(a):
         if legacy != key:
             d["items"].pop(legacy, None)             # 옛 판 키는 새 키로 옮긴다(사용자가 바꾼 때)
     _write_json(_p(DECISIONS), d)
-    word = {"allow": "허락", "deny": "안 함", "conditional": "조건부 허락(%s)" % _cond_words(rec)}[a.meaning]
+    word = {"allow": "허락", "deny": "안 함", "conditional": "조건부 허락(%s)" % mask(cond)}[a.meaning]
     return out({"ok": True, "key": key, "say": "알겠습니다 — 앞으로 「%s」은(는) %s 으로 계속 따르겠습니다. 다시 여쭙지 않습니다."
                                               % ((CATEGORIES.get(a.cat, (mask(a.cat),))[0] + (" — " + mask(a.subject) if a.subject else "")), word)})
 
@@ -2256,12 +2234,16 @@ def self_test():
                     errs.append("judge %s 건마다·안 함 → do" % cat)
                 if "naver" in subj and cat in ("login", "external_send") and got != EACH:
                     errs.append("judge 약관 서비스 %s" % cat)
-    cond = {decision_key("external_send", "x"): {"meaning": "conditional", "condition": "c", "scope": ["group_shared"],
-                                                 "at": "t"}}
+    cond = {decision_key("external_send", "x"): {"meaning": "conditional", "condition": "c", "at": "t"}}
     for cm, want in ((None, CHECK), (False, EACH), (True, DO)):
         n += 1
         if judge("external_send", "x", None, {}, cond, cm)[0] != want:
             errs.append("judge 조건부 허락 condition_met=%r" % (cm,))
+    cut = {decision_key("external_send", "x"): {"meaning": "conditional", "condition": "c" * LEGACY_CUT, "at": "t"}}
+    for cm in (None, False, True):
+        n += 1
+        if judge("external_send", "x", None, {}, cut, cm)[0] != EACH:
+            errs.append("judge 잘린 옛 조건 condition_met=%r" % (cm,))
     n += 1
     if judge("brand-new-type")[0] != ASK:
         errs.append("judge 새 유형이 ask 가 아니다")
@@ -2319,10 +2301,7 @@ def main(argv=None):
     rm.add_argument("--subject", default="")
     rm.add_argument("--answer-file", required=True)
     rm.add_argument("--meaning", required=True, choices=("allow", "deny", "conditional"))
-    rm.add_argument("--condition", default="", help="사용자가 한 말 그대로(로컬 기록에만 · 출력하지 않는다)")
-    rm.add_argument("--scope", action="append", choices=tuple(SCOPES), help="조건부 허락의 범위 낱말(여러 번)")
-    rm.add_argument("--allow-id", action="append", help="허용 받는 사람 이메일·전화번호 하나(여러 번 · 해시로만 기록)")
-    rm.add_argument("--deny-id", action="append", help="금지 받는 사람 이메일·전화번호 하나(여러 번 · 해시로만 기록)")
+    rm.add_argument("--condition", default="", help="사용자가 한 말 그대로(기록 파일에만 · 원장엔 해시 · check 때 마스터에게 원문)")
     rm.add_argument("--user-changed", action="store_true", help="사용자가 스스로 결정을 바꾼 때만")
     try:
         a = ap.parse_args(argv)

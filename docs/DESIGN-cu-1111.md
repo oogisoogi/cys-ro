@@ -221,4 +221,4 @@ codex(또는 agy) — 범위 = 이 문서 §3·§6 + 구현 diff · 초점 = 권
 
 ### 12-5. 1.1.12 후보(BACKLOG 한 줄 — master TODO 에 옮겨 적을 것)
 - D1-ⓑ 장부 + 훅 차단: 장부가 있는 기계에서 본부 master 의 `mcp__computer-use__*`·`mcp__claude-in-chrome__*` 를 장부 밖이면 거부(role-capability-gate 에 본부 master 축).
-- (실기 E2 ⑷) computer-use 가 cysr 을 터미널로 못 알아봐 「Claude desktop app」 이라고 안내하는 문제 — 스킬·2.1강에 「cysr 이라고 읽으세요」 고지는 넣었고, 근본(벤더 터미널 표)은 우리 밖.
+- (실기 E2 ⑷) computer-use 가 cysr 을 터미널로 못 알아봐 「Claude desktop app」 이라고 안내하는 문제 — 스킬 `computer-control` 에 「cysr 로 바꿔 말하라」 고지를 넣었다(커밋 이 줄과 같은 커밋) · 2.1강 「안 되는 것」 표 반영은 master 경유(이 워커 범위 밖) · 근본(벤더 터미널 표)은 우리 밖.

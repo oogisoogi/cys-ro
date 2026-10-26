@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// ~/.cys 직하에서 격리하는 정확 이름. (pack·조직 레지스트리·상태·마커·토글 전부)
-const CYS_BASE_EXACT: [&str; 28] = [
+const CYS_BASE_EXACT: [&str; 29] = [
     "pack",
     "pack.prev",
     ".pack-download",
@@ -37,6 +37,7 @@ const CYS_BASE_EXACT: [&str; 28] = [
     "dept-missions",
     "dept-snapshots",
     "dept-requests",
+    "computer-control", // cu-1111(1.1.11): 컴퓨터 통제권 넘김 장부(scan·grants·ledger)
     "accounts.json",
     "policy.json",
     "profile.json",

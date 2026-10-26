@@ -9726,8 +9726,16 @@ fn diag_hook_personal(ctx: &DoctorCtx, fix: bool) -> DiagItem {
     //   표지 판독 불가(None)는 읽기만 한다(쓰지 않는다 — 판정 불가 위에서 사용자 파일을 고치지 않는다).
     let opted = cys::pack::personal_profile_hooks_opted_in_for_pack(&ctx.pack_dir);
     if opted != Some(true) {
-        let residue: Vec<String> = ctx
+        // 좌석 프로필과 같은 파일로 해소되는 경로(심링크 · CYS_ACCOUNT_DIR=~/.claude)는 개인 프로필이 아니다 —
+        //   그 팩 훅은 좌석 훅이라 잔재도 아니고 지우지도 않는다(데몬 경로 `pack::is_seat_profile_settings` 와 같은 술어).
+        let mut seats = cys::pack::seat_profile_settings_paths_for(&ctx.pack_dir);
+        seats.push(ctx.consumed_config_dir.join("settings.json"));
+        let personal: Vec<&String> = ctx
             .settings_paths
+            .iter()
+            .filter(|p| !cys::pack::is_seat_profile_settings(std::path::Path::new(p.as_str()), &seats))
+            .collect();
+        let residue: Vec<String> = personal
             .iter()
             .filter_map(|p| {
                 match cys::factory_reset::pack_registrations_in_personal_profile(std::path::Path::new(p), &ctx.pack_dir) {
@@ -9748,7 +9756,7 @@ fn diag_hook_personal(ctx: &DoctorCtx, fix: bool) -> DiagItem {
         if fix && opted == Some(false) {
             let mut done = Vec::new();
             let mut errs = Vec::new();
-            for p in &ctx.settings_paths {
+            for p in &personal {
                 match cys::factory_reset::strip_pack_registrations_from_personal_profile(
                     std::path::Path::new(p),
                     &ctx.pack_dir,

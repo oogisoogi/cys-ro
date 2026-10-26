@@ -54,15 +54,22 @@ fi
 
 NOW=$(date -Iseconds 2>/dev/null || date)
 
+# ★1.1.11 hook-slim(codex R1 major): 분리 실행 뒤에는 턴 끝이 본문을 끊어 주지 않는다 — 단계마다 데드라인을 건다
+#   (scan 60초 · verify 30초 · cys_timeout_run = 프로세스 그룹 종료 · 초과는 hook-errors.log 에 rc=124 1줄).
 # ① 반복신호 light scan → RSI_LEDGER.md SHADOW 후보 (임계3·멱등·자동적용0)
 if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ] && [ -f "$PACK/bin/javis_reflect.py" ]; then
-  "$CYS_PY" "$(cys_native_path "$PACK/bin/javis_reflect.py")" scan --transcript "$TRANSCRIPT" \
+  cys_timeout_run 60 "$CYS_PY" "$(cys_native_path "$PACK/bin/javis_reflect.py")" scan --transcript "$TRANSCRIPT" \
     --ledger "$RD/RSI_LEDGER.md" >/dev/null 2>&1
+  [ $? -eq 124 ] && cys_hook_fail reflect-scan 124 "reflect scan 60초 데드라인 초과"
 fi
 
-# ③ 종료 시 장기기억 정합 verify — 깨졌으면 .state_log에 경고만(자동수정 0)
+# ③ 종료 시 장기기억 정합 verify — 깨졌으면 .state_log에 경고만(자동수정 0) · 데드라인 초과는 정합 판정이 아니다(hook-errors 만)
 if [ -f "$PACK/bin/javis_memory.py" ]; then
-  if ! "$CYS_PY" "$(cys_native_path "$PACK/bin/javis_memory.py")" verify >/dev/null 2>&1; then
+  cys_timeout_run 30 "$CYS_PY" "$(cys_native_path "$PACK/bin/javis_memory.py")" verify >/dev/null 2>&1
+  _RS_RC=$?
+  if [ "$_RS_RC" -eq 124 ]; then
+    cys_hook_fail reflect-scan 124 "memory verify 30초 데드라인 초과"
+  elif [ "$_RS_RC" -ne 0 ]; then
     echo "$NOW	WARN:memory	장기기억 색인↔파일 정합 깨짐 — javis_memory.py verify 확인 필요" \
       >> "$RD/.state_log" 2>/dev/null
   fi

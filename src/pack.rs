@@ -1278,10 +1278,17 @@ pub fn personal_profile_hooks_opted_in_for_pack(pack: &Path) -> Option<bool> {
 /// strip_pack_registrations_from_personal_profile`). 범위 = base 팩(`~/.cys/pack`)에서만(부서·임시·테스트 팩은
 /// 개인 프로필 무접촉 — 병합과 같은 범위 게이트). `--no-install-hook`(GUI 인앱 업데이트) 갈래에서도 돈다:
 /// 업데이트로 올라온 사용자가 이 수리를 받는 유일한 길이 그것이다(U-19 도달성 규약).
-/// best-effort — 실패해도 팩 설치는 유효(로그만).
+/// best-effort — 실패해도 팩 설치는 유효(로그만). 하네스 노브 `CYS_NO_PERSONAL_HOOK_MERGE=1` 이면 무동작(병합과 같은
+/// 「개인 설정 무접촉」 약속 · agy R1). 좌석 프로필과 같은 파일로 해소되는 개인 프로필 경로는 건너뛴다(`is_seat_profile_settings`).
 pub fn strip_pack_registrations_from_personal_profiles() -> Vec<(String, Vec<String>)> {
     if cfg!(test) {
         return vec![]; // 테스트 빌드는 실 HOME 을 절대 만지지 않는다
+    }
+    if std::env::var("CYS_NO_PERSONAL_HOOK_MERGE")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
+        return vec![];
     }
     if personal_profile_hooks_opted_in() != Some(false) {
         return vec![];
@@ -1290,8 +1297,16 @@ pub fn strip_pack_registrations_from_personal_profiles() -> Vec<(String, Vec<Str
     if pack != home_default_pack_dir() {
         return vec![];
     }
+    let seats = seat_profile_settings_paths_for(&pack);
     let mut out = vec![];
     for settings in personal_profile_settings_paths() {
+        if is_seat_profile_settings(&settings, &seats) {
+            eprintln!(
+                "[pack] 개인 프로필 팩 등록 제거 건너뜀: {} — 좌석 프로필과 같은 파일(심링크·CYS_ACCOUNT_DIR)",
+                settings.display()
+            );
+            continue;
+        }
         match crate::factory_reset::strip_pack_registrations_from_personal_profile(&settings, &pack) {
             Ok(removed) if removed.is_empty() => {}
             Ok(removed) => {
@@ -1309,6 +1324,32 @@ pub fn strip_pack_registrations_from_personal_profiles() -> Vec<(String, Vec<Str
         }
     }
     out
+}
+
+/// ★1.1.11 hook-slim(codex R1 major ③④): **좌석 프로필** settings 후보 — 좌석이 실제로 읽는 config 의 settings.json.
+/// ① 이 팩의 설치 표적 `config_dir_for`(CYS_CONFIG_DIR · 부서면 CYS_ACCOUNT_DIR · 아니면 `<팩 부모>/claude`)
+/// ② 실소비 `resolve_claude_config_dir`(`${CYS_ACCOUNT_DIR:-~/.cys/claude}`). 명시 계정 dir 이 `~/.claude` 여도 그건 좌석
+/// 프로필이다 — 파이썬 `_is_personal_profile_settings` 와 같은 규칙(두 언어가 같은 파일을 두고 싸우지 않는다).
+pub fn seat_profile_settings_paths_for(pack: &Path) -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    if let Some(c) = config_dir_for(
+        crate::env_compat(ENV_CONFIG_DIR).as_deref(),
+        dept_scope_of(pack).as_deref(),
+        std::env::var("CYS_ACCOUNT_DIR").ok().as_deref(),
+        pack,
+    ) {
+        v.push(c.join("settings.json"));
+    }
+    v.push(PathBuf::from(crate::resolve_claude_config_dir()).join("settings.json"));
+    v
+}
+
+/// settings 경로가 좌석 프로필과 **같은 파일**인가 — 실파일·부모 심링크를 해소해 비교한다(`resolve_for_compare` =
+/// 존재하는 가장 긴 접두를 canonicalize). `~/.claude/settings.json → ~/.cys/claude/settings.json` 파일 심링크와
+/// `~/.claude → ~/.cys/claude` 폴더 심링크를 둘 다 잡는다(그 파일의 팩 훅은 좌석 훅이다 — 지우면 좌석 회귀).
+pub fn is_seat_profile_settings(settings: &Path, seats: &[PathBuf]) -> bool {
+    let a = resolve_for_compare(settings);
+    seats.iter().any(|s| resolve_for_compare(s) == a)
 }
 
 /// ★T-0147-1 레거시 각성 경로 — 개인 프로필(`~/.claude*`)에 **각성 훅만** 멱등 병합한다.
@@ -12132,6 +12173,38 @@ mod hookslim_opt_in_tests {
             let f = d.join("file");
             std::fs::write(&f, "").unwrap();
             assert_eq!(personal_profile_hooks_opted_in_from(None, &f.join(PERSONAL_HOOKS_OPT_IN_FILE)), None);
+        }
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// ★R1(codex major ③④): 개인 프로필 경로가 좌석 프로필과 같은 파일로 해소되면(파일 심링크 · 폴더 심링크 · 같은 경로)
+    /// 좌석 프로필이다 — 제거 경로가 건너뛴다. 다른 파일이면 개인 프로필 그대로.
+    #[test]
+    fn seat_profile_predicate_sees_through_symlinks() {
+        let d = std::env::temp_dir().join(format!("cys-hookslim-seat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let seat_dir = d.join(".cys").join("claude");
+        std::fs::create_dir_all(&seat_dir).unwrap();
+        let seat = seat_dir.join("settings.json");
+        std::fs::write(&seat, "{}").unwrap();
+        let seats = vec![seat.clone()];
+        assert!(is_seat_profile_settings(&seat, &seats), "같은 경로");
+        let plain = d.join(".claude").join("settings.json");
+        std::fs::create_dir_all(plain.parent().unwrap()).unwrap();
+        std::fs::write(&plain, "{}").unwrap();
+        assert!(!is_seat_profile_settings(&plain, &seats), "다른 실파일 = 개인 프로필");
+        #[cfg(unix)]
+        {
+            let f = d.join(".claude-link").join("settings.json");
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(&seat, &f).unwrap();
+            assert!(is_seat_profile_settings(&f, &seats), "파일 심링크 → 좌석 settings");
+            let dl = d.join(".claude-dirlink");
+            std::os::unix::fs::symlink(&seat_dir, &dl).unwrap();
+            assert!(is_seat_profile_settings(&dl.join("settings.json"), &seats), "폴더 심링크 → 좌석 config");
+            // 좌석 settings 가 아직 없어도(신규) 폴더 심링크면 같은 자리다.
+            std::fs::remove_file(&seat).unwrap();
+            assert!(is_seat_profile_settings(&dl.join("settings.json"), &seats), "부재 파일도 부모 해소로 판정");
         }
         let _ = std::fs::remove_dir_all(d);
     }

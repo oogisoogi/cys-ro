@@ -5059,6 +5059,13 @@ mod hookslim_tests {
             std::fs::read_to_string(&s).unwrap(),
             "{\n  \"statusLine\": {\n    \"type\": \"command\",\n    \"command\": \"my-line --x\"\n  },\n  \"z\": true\n}"
         );
+        // CRLF 파일: 새로 쓰는 원복 값(여러 줄)도 CRLF 로 — 남는 바이트는 원문이라 이 갈래만 줄바꿈을 새로 만든다(뮤턴트 R6).
+        std::fs::write(&s, before.replace('\n', "\r\n")).unwrap();
+        strip_pack_registrations_from_personal_profile(&s, &pack).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&s).unwrap(),
+            "{\r\n  \"statusLine\": {\r\n    \"type\": \"command\",\r\n    \"command\": \"my-line --x\"\r\n  },\r\n  \"z\": true\r\n}"
+        );
         let _ = std::fs::remove_dir_all(base);
     }
 

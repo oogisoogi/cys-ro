@@ -20,7 +20,8 @@ command -v cys_lane_redirect >/dev/null 2>&1 && cys_lane_redirect "$@"
 cys_hook_timing save-state   # v113 Q1 계측(경과 시간 1줄 · 관측만)
 
 INPUT=$(cat 2>/dev/null)
-# ★1.1.11 hook-slim: 답 뒤 대기 0 — Stop 는 분리 실행한다(_lib.sh 5-a″ · 롤백 CYS_HOOK_STOP_SYNC=1). PreCompact 는 압축 직전 기록이라 동기 그대로다.
+# ★1.1.11 hook-slim: 답 뒤 대기 0 — Stop 는 분리 실행한다(_lib.sh 5-a″ · 롤백 CYS_HOOK_STOP_SYNC=1). PreCompact 는 압축 직전 기록이라 동기 그대로다
+#   (분리된 Stop 본문과 같은 잠금을 잡고 돈다 — .state_log 회전·BOOT_SNAPSHOT 경합 0 · 대기 상한 20초 · 못 잡으면 건너뜀 + hook-errors).
 command -v cys_hook_detach >/dev/null 2>&1 && cys_hook_detach save-state "$0" "$INPUT" Stop && exit 0
 # 인터프리터 해소는 프리루드(python3→python→py) — 기존 계약(비어 있으면 안 됨)은 명시 폴백.
 # ★U15(0.14.41): 개발자 도구(CLT) 없는 맥(`cys_py_shim_risk`)에서는 폴백하지 않는다(그 `python3` 는 설치 창

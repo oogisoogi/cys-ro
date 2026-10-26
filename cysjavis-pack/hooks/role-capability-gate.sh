@@ -81,6 +81,11 @@
 # - reviewer의 tmp/로그 write는 과도차단 방지를 위해 허용(검증 대상 경로 한정 — propmap T6-P3 §5).
 # - 검증: 내장 배터리 --self-test.
 
+# ★1.1.11 hook-slim(agy R1 minor · master 재결정 02da1acc = B1): 좌석 아닌 세션 즉시 탈출 — 단 이 GATE 는 surface 없이도
+#   `CYS_ROLE` 폴백으로 집행한다(아래 capgate_resolve_role 「env-cys-role」 · 검체 test_env_role_denies_without_daemon) —
+#   그래서 탈출 조건은 좌석 env 3키 **와 CYS_ROLE 이 모두 비었을 때**다. 그때 해소 역할은 언제나 빈 값(= 통과)이므로
+#   동작은 같고 파이썬 판정기 기동만 줄인다. 인자 호출(--self-test)은 제외 · stdin 은 소진한다(단말이면 읽지 않는다).
+[ $# -eq 0 ] && [ -z "${CYS_SURFACE_ID:-}${JAVIS_SURFACE_ID:-}${AITERM_SURFACE_ID:-}${CYS_ROLE:-}" ] && { [ -t 0 ] || cat >/dev/null 2>&1; exit 0; }
 # ── 공용 프리루드(CS-4①) — loud-skip: 소실 시 조용히 꺼지지 않고 stderr 1줄 후 강등 ──
 . "$(dirname "$0")/_lib.sh" 2>/dev/null \
   || . "${CYS_PACK_DIR:-$HOME/.cys/pack}/hooks/_lib.sh" 2>/dev/null \

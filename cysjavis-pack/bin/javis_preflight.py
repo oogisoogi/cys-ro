@@ -759,7 +759,7 @@ HOOK_TIMEOUT_S = {
     #   (동기 유지 · 안의 스냅샷 데드라인 cys_timeout_run 10 + 앞뒤 처리). 내부 블로킹 지점 점검(:737 원칙):
     #   cys-hook 의 데몬 RPC 상한 40초(RPC_IDLE_TIMEOUT_SECS)는 이 선언이 10초로 자른다(관측 훅 · 출력 없음 → 무해) ·
     #   GATE 훅(appbuild·grill)은 초과 시 출력이 버려져 **통과(fail-open)** 방향이다 · Stop 관측 훅 2개는 분리 실행이라
-    #   부모가 수 ms 에 끝난다(본문 상한은 자식이 진다 · `cys_hook_detach_stop`).
+    #   부모가 수 ms 에 끝난다(본문 상한은 자식 안의 단계별 데드라인 · `_lib.sh` 5-a″ `cys_hook_detach`).
     ("cys-hook.sh", "PreToolUse"): 10,
     ("cys-hook.sh", "PostToolUse"): 10,
     ("cys-hook.sh", "PermissionRequest"): 10,
@@ -1646,8 +1646,35 @@ def personal_profile_hooks_opted_in():
     return False
 
 
+def _seat_profile_settings_paths():
+    """Rust `pack::seat_profile_settings_paths_for` 미러 — 좌석이 실제로 읽는 config 의 settings.json 후보.
+    ① 설치 표적 `config_dir_for`: CYS_CONFIG_DIR(호환 접두) · 부서 팩(basename `pack-dept-*`)이면 CYS_ACCOUNT_DIR · 아니면 <팩 부모>/claude
+    ② 실소비 `resolve_claude_config_dir`: ${CYS_ACCOUNT_DIR:-~/.cys/claude}."""
+    env = lambda k: next((os.environ[x] for x in (k, k.replace("CYS_", "JAVIS_", 1), k.replace("CYS_", "AITERM_", 1))
+                          if os.environ.get(x)), None)
+    acct = os.environ.get("CYS_ACCOUNT_DIR") or None
+    pk = os.path.normpath(pack_dir())
+    if env("CYS_CONFIG_DIR"):
+        install = env("CYS_CONFIG_DIR")
+    elif os.path.basename(pk).startswith("pack-dept-") and len(os.path.basename(pk)) > len("pack-dept-"):
+        install = acct
+    else:
+        install = os.path.join(os.path.dirname(pk), "claude")
+    consumed = acct or os.path.join(os.path.expanduser("~"), ".cys", "claude")
+    return [os.path.join(d, "settings.json") for d in (install, consumed) if d]
+
+
 def _is_personal_profile_settings(path):
-    """settings 경로가 홈 직하 개인 프로필(`~/.claude` · `~/.claude-*`)의 것인가 — Rust `personal_profile_dirs_under` 와 같은 이름 규칙."""
+    """settings 경로가 홈 직하 개인 프로필(`~/.claude` · `~/.claude-*`)의 것인가 — Rust `personal_profile_dirs_under` 와 같은 이름 규칙.
+    ★R1(codex major ③④): 실파일·부모 심링크를 풀어 **좌석 프로필과 같은 파일**이면 개인 프로필이 아니다(좌석 프로필) —
+      `~/.claude/settings.json → ~/.cys/claude/settings.json` 링크 · `CYS_ACCOUNT_DIR=~/.claude`. Rust 제거 경로
+      (`pack::is_seat_profile_settings`)와 같은 술어라 한쪽이 붙이고 다른 쪽이 떼는 싸움이 없다."""
+    try:
+        real = os.path.realpath(path)
+        if any(real == os.path.realpath(sp) for sp in _seat_profile_settings_paths()):
+            return False
+    except OSError:
+        pass
     d = os.path.dirname(os.path.abspath(path))
     n = os.path.basename(d)
     if not (n == ".claude" or n.startswith(".claude-")):

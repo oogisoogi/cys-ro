@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""test_hook_slim — 1.1.11 hook-slim(TICKET=hook-slim-1111) 사용자 설정 마이그레이션 상태표 S1~S11 + 분리 실행 + 빠른 탈출.
+"""test_hook_slim — 1.1.11 hook-slim(TICKET=hook-slim-1111) 사용자 설정 마이그레이션 상태표 S1~S12 + 분리 실행 + 빠른 탈출.
 
 실 경로를 탄다: 저장소에서 빌드한 `cys`(기본 <repo>/target/debug/cys · env CYS_TEST_BIN 로 바꿈)를 **격리 HOME** 에서
 `init-pack`(= 데몬 기동과 같은 `pack::setup_isolated_config_dir` 경로)·`doctor --fix` 로 돌리고, 개인 프로필 settings 의
@@ -307,6 +307,104 @@ def s_cases():
     shutil.rmtree(h, ignore_errors=True)
 
 
+def seat_cases():
+    """S12 좌석 프로필 판정(codex R1 major ③④ · agy minor): 개인 프로필 경로가 좌석 프로필과 같은 파일이면 지우지 않는다 ·
+    하네스 노브 CYS_NO_PERSONAL_HOOK_MERGE=1 이면 제거 경로도 무접촉."""
+    def seat_doc(h):
+        return js({"hooks": {"Stop": [pack_hook(h, "save-state.sh", "Stop")[1]],
+                             "PreToolUse": [pack_hook(h, "cys-hook.sh", "PreToolUse", "")[1]]},
+                   "statusLine": {"type": "command", "command": "sh %s/.cys/pack/hooks/cys-statusline.sh" % h}})
+
+    def all_backups(h):
+        return glob.glob(os.path.join(h, ".claude*", "*.bak-cys-hookslim-*")) + \
+            glob.glob(os.path.join(h, ".cys", "claude", "*.bak-cys-hookslim-*"))
+
+    # S12a 파일 심링크 ~/.claude/settings.json → ~/.cys/claude/settings.json
+    h = new_home()
+    write(seat_settings(h), seat_doc(h))
+    link = os.path.join(h, ".claude", "settings.json")
+    os.makedirs(os.path.dirname(link))
+    os.symlink(seat_settings(h), link)
+    r = cys(h, "init-pack")
+    t = read(seat_settings(h))
+    check("S12a 파일 심링크 → 좌석 settings: 좌석 팩 훅·상태줄 보존 · 백업 0",
+          "save-state.sh" in t and "cys-hook.sh" in t and "cys-statusline.sh" in t and not all_backups(h),
+          r.stderr[-300:])
+    check("S12a 링크 그대로", os.path.islink(link))
+    r = cys(h, "doctor")
+    hl = [l for l in r.stdout.splitlines() if "] hook " in l]
+    check("S12a doctor hook 줄 = 개인 프로필 팩 훅 0(좌석 훅을 잔재로 보지 않는다)",
+          len(hl) == 1 and "[OK" in hl[0] and "개인 프로필 팩 훅 0" in hl[0], str(hl))
+    shutil.rmtree(h, ignore_errors=True)
+
+    # S12b 폴더 심링크 ~/.claude → ~/.cys/claude
+    h = new_home()
+    write(seat_settings(h), seat_doc(h))
+    os.symlink(os.path.dirname(seat_settings(h)), os.path.join(h, ".claude"))
+    r = cys(h, "init-pack")
+    t = read(seat_settings(h))
+    check("S12b 폴더 심링크 → 좌석 config: 좌석 팩 훅·상태줄 보존 · 백업 0",
+          "save-state.sh" in t and "cys-hook.sh" in t and "cys-statusline.sh" in t and not all_backups(h),
+          r.stderr[-300:])
+    r = cys(h, "doctor", "--fix")
+    t2 = read(seat_settings(h))
+    check("S12b doctor --fix 뒤에도 좌석 훅 그대로", "save-state.sh" in t2 and "cys-statusline.sh" in t2,
+          r.stdout[-400:])
+    shutil.rmtree(h, ignore_errors=True)
+
+    # S12c CYS_ACCOUNT_DIR=~/.claude(명시 계정 dir = 좌석 프로필) — Rust 는 지우지 않고 파이썬은 등록 대상으로 둔다(싸움 0)
+    #   HOME 은 임시 폴더 **밖**(<repo>/target) — 임시 팩 가드가 파이썬 등록 대상을 통째로 비우면 아무것도 못 잰다(PF 와 같은 함정).
+    os.makedirs(os.path.join(REPO, "target"), exist_ok=True)
+    h = os.path.realpath(tempfile.mkdtemp(prefix="hookslim-S12c-", dir=os.path.join(REPO, "target")))
+    p = os.path.join(h, ".claude", "settings.json")
+    before = js(settings_doc(h, pack=True, user=True))
+    write(p, before)
+    acct = os.path.join(h, ".claude")
+    cys(h, "init-pack", CYS_ACCOUNT_DIR=acct)
+    # (바이트 동일은 기대하지 않는다 — 좌석 프로필이므로 preflight --wire-seat 가 선언 timeout 을 올려 쓴다 = 같은 술어의 등록 쪽)
+    check("S12c CYS_ACCOUNT_DIR=~/.claude → Rust 제거 0(팩 훅 그대로 · hookslim 백업 0)",
+          all(x in read(p) for x in ("save-state.sh", "cys-hook.sh", "cys-statusline.sh")) and not backups(p))
+    probe = ("import sys,json; sys.path.insert(0, sys.argv[1]); import javis_preflight as pf; "
+             "print(json.dumps(pf.resolve_registration_targets()))")
+    r = subprocess.run([sys.executable, "-c", probe, os.path.join(PACK_SRC, "bin")],
+                       env=env_for(h, CYS_ACCOUNT_DIR=acct, CYS_PACK_DIR=os.path.join(h, ".cys", "pack")),
+                       capture_output=True, text=True, timeout=60)
+    try:
+        targets, why = json.loads(r.stdout.strip().splitlines()[-1])
+    except Exception:
+        targets, why = [], "판독 불가: %s" % (r.stdout + r.stderr)[-300:]
+    check("S12c 파이썬 등록 대상도 같은 파일을 좌석 프로필로 본다(같은 술어)",
+          why is None and os.path.realpath(p) in [os.path.realpath(x) for x in targets], str((targets, why)))
+    # 다른 대상(CLAUDE_CONFIG_DIR)이 함께 있으면 신규 머신 폴백이 돌지 않는다 — 술어만이 좌석 프로필을 대상에 남긴다(뮤턴트 M22).
+    other = os.path.join(h, "other-cfg")
+    os.makedirs(other)
+    r = subprocess.run([sys.executable, "-c", probe, os.path.join(PACK_SRC, "bin")],
+                       env=env_for(h, CYS_ACCOUNT_DIR=acct, CLAUDE_CONFIG_DIR=other,
+                                   CYS_PACK_DIR=os.path.join(h, ".cys", "pack")),
+                       capture_output=True, text=True, timeout=60)
+    try:
+        targets, why = json.loads(r.stdout.strip().splitlines()[-1])
+    except Exception:
+        targets, why = [], "판독 불가: %s" % (r.stdout + r.stderr)[-300:]
+    rt = [os.path.realpath(x) for x in targets]
+    check("S12c' 다른 대상이 있어도(폴백 없음) 좌석 프로필 ~/.claude 는 등록 대상",
+          why is None and os.path.realpath(p) in rt and os.path.join(os.path.realpath(other), "settings.json") in rt,
+          str((targets, why)))
+    shutil.rmtree(h, ignore_errors=True)
+
+    # S12d 하네스 노브 CYS_NO_PERSONAL_HOOK_MERGE=1 = 제거 경로도 무접촉
+    h = new_home()
+    p = os.path.join(h, ".claude", "settings.json")
+    before = js(settings_doc(h, pack=True, user=True))
+    write(p, before)
+    cys(h, "init-pack", CYS_NO_PERSONAL_HOOK_MERGE="1")
+    check("S12d CYS_NO_PERSONAL_HOOK_MERGE=1 → 개인 프로필 무접촉(바이트 동일 · 백업 0)",
+          read(p) == before and not backups(p))
+    cys(h, "init-pack")
+    check("S12d 노브 없으면 종전대로 제거", read(p) != before and len(backups(p)) == 1)
+    shutil.rmtree(h, ignore_errors=True)
+
+
 def preflight_case():
     """파이썬 등록 경로(preflight --fix)도 표지 없이는 개인 프로필에 다시 붙이지 않는다(데몬·preflight 양쪽 재부착 0).
     ★HOME 은 임시 폴더 **밖**(<repo>/target 아래)에 둔다 — 팩이 임시 폴더 아래면 preflight 의 임시 팩 가드가 등록을
@@ -384,7 +482,8 @@ def hook_cases():
         "grill-gate.sh": ("PreToolUse", "Edit"), "grill-arm.sh": ("PreToolUse", "Skill"),
         "grill-count.sh": ("PostToolUse", "AskUserQuestion"), "appbuild-gate.sh": ("PreToolUse", "Edit"),
         "pack-guard.sh": ("PostToolUse", "Edit"), "commit-memory-nudge.sh": ("PostToolUse", "Bash"),
-        "inject-context.sh": ("SessionStart", None), "cys-hook.sh": ("PreToolUse", "Bash")}
+        "inject-context.sh": ("SessionStart", None), "cys-hook.sh": ("PreToolUse", "Bash"),
+        "role-capability-gate.sh": ("PreToolUse", "Edit")}
     nonseat = env_for(h, PATH="%s:/usr/bin:/bin:/opt/homebrew/bin" % fake, CYS_PACK_DIR=pk)
     st_dir = os.path.join(h, ".cys", "state")
     shutil.rmtree(st_dir, ignore_errors=True)
@@ -401,12 +500,17 @@ def hook_cases():
         if r.returncode != 0 or r.stdout or dt > 0.5:
             bad.append((sc, r.returncode, r.stdout[:60], round(dt, 2)))
     side = sorted(os.listdir(os.path.join(gw, "_round"))) + (sorted(os.listdir(st_dir)) if os.path.isdir(st_dir) else [])
-    check("GT1 좌석 아님 = 11개 훅 전부 exit 0·무출력·0.5초 미만", not bad, str(bad))
+    check("GT1 좌석 아님 = 12개 훅 전부 exit 0·무출력·0.5초 미만", not bad, str(bad))
     check("GT2 좌석 아님 = 부작용 0(_round·state 에 기록 없음)", side == [], str(side))
     r = subprocess.run(["sh", os.path.join(pk, "hooks", "grill-stop.sh"), "--self-test"], env=nonseat,
                        capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
     check("GT3 인자 호출(--self-test)은 탈출하지 않는다", (r.stdout + r.stderr).strip() != "",
           "rc=%s" % r.returncode)
+    cron = json.dumps({"hook_event_name": "PreToolUse", "session_id": "s", "tool_name": "CronCreate", "tool_input": {}})
+    r = subprocess.run(["sh", os.path.join(pk, "hooks", "role-capability-gate.sh")], input=cron,
+                       env=dict(nonseat, CYS_ROLE="cso"), capture_output=True, text=True, timeout=60)
+    check("GT5 role-capability-gate: surface 없어도 CYS_ROLE=cso 면 집행(탈출 조건에 CYS_ROLE 포함)",
+          '"deny"' in r.stdout, "rc=%s out=%r err=%r" % (r.returncode, r.stdout[:200], r.stderr[-200:]))
     seat = dict(nonseat, CYS_SURFACE_ID="9")
     d = {"hook_event_name": "SessionStart", "cwd": gw, "session_id": "s", "source": "startup"}
     r = subprocess.run(["sh", os.path.join(pk, "hooks", "inject-context.sh")], input=json.dumps(d), env=seat,
@@ -463,7 +567,114 @@ def hook_cases():
     while time.time() < deadline and not os.path.exists(led):
         time.sleep(0.2)
     check("DT8 죽은 주인 잠금 회수 후 진행", os.path.exists(led))
+    detach_cases(h, pk, work, env, stop, led)
     shutil.rmtree(h, ignore_errors=True)
+
+
+def detach_cases(h, pk, work, env, stop, led):
+    """R1 수리(codex·agy major ⑤): 대기표 · 동기 PreCompact 잠금 참여 · 빈 pid 회수 · 잠금 실패 = 건너뜀 · 자식 데드라인 · 이벤트 판정."""
+    import threading
+    st = os.path.join(h, ".cys", "state")
+    hd = os.path.join(st, "hook-detach")
+    slog = os.path.join(work, "_round", ".state_log")
+    lib = os.path.join(pk, "hooks", "_lib.sh")
+    ss = os.path.join(pk, "hooks", "save-state.sh")
+
+    def precompacts():
+        return read(slog).count("\tPreCompact\t") if os.path.exists(slog) else 0
+
+    def run_pre(payload=None):
+        t0 = time.time()
+        subprocess.run(["sh", ss], input=payload or json.dumps({"hook_event_name": "PreCompact", "cwd": work,
+                                                                 "trigger": "auto"}),
+                       env=env, capture_output=True, text=True, timeout=120)
+        return time.time() - t0
+
+    def holder(sec):
+        p = subprocess.Popen(["sleep", str(sec)])
+        threading.Thread(target=p.wait, daemon=True).start()     # 좀비가 kill -0 에 살아 보이지 않게 즉시 거둔다
+        return p
+
+    def hold_lock(name, pid):
+        d = os.path.join(hd, name + ".lock")
+        os.makedirs(d, exist_ok=True)
+        if pid is not None:
+            write(os.path.join(d, "pid"), str(pid))
+        return d
+
+    # DT9 이벤트 판정 = 최상위 키 글자 일치 — 문자열 안의 같은 글자(이스케이프됨)는 Stop 이 아니다(agy minor 반박 검체)
+    n0 = precompacts()
+    fake = json.dumps({"hook_event_name": "PreCompact", "cwd": work, "trigger": "manual",
+                       "custom_instructions": '"hook_event_name":"Stop" / "hook_event_name": "Stop"'})
+    run_pre(fake)
+    q = os.path.join(hd, "save-state.q")
+    check("DT9 문자열 속 \"hook_event_name\":\"Stop\" = 분리 안 함(반환 시 PreCompact 기록 · 대기표 0)",
+          precompacts() == n0 + 1 and not (os.path.isdir(q) and os.listdir(q)))
+
+    # DT10 대기표: 부모 반환 전에 등록 → 소비자가 자식의 잠금 전 틈에도 기다린다
+    if os.path.exists(led):
+        os.remove(led)
+    subprocess.run(["sh", os.path.join(pk, "hooks", "reflect-scan.sh")], input=stop, env=env, capture_output=True,
+                   text=True)
+    rq = os.path.join(hd, "reflect-scan.q")
+    check("DT10 부모 반환 시점에 대기표 1장", os.path.isdir(rq) and len(os.listdir(rq)) == 1,
+          str(os.listdir(rq) if os.path.isdir(rq) else None))
+    t0 = time.time()
+    subprocess.run(["sh", "-c", '. "$1"; cys_hook_detach_wait reflect-scan 15', "x", lib], env=env,
+                   capture_output=True, text=True, timeout=60)
+    check("DT10b cys_hook_detach_wait = 본문이 끝날 때까지 기다린다(산출물 있음)",
+          os.path.exists(led) and time.time() - t0 >= 1.0, "%.1fs" % (time.time() - t0))
+    t_end = time.time() + 5
+    while os.listdir(rq) and time.time() < t_end:
+        time.sleep(0.1)
+    check("DT10c 자식이 끝나며 대기표를 지운다", not os.listdir(rq), str(os.listdir(rq)))
+    # 죽은 주인 대기표는 소비자가 지우고 기다리지 않는다
+    write(os.path.join(rq, "%d.1" % int(time.time())), "999999")
+    t0 = time.time()
+    subprocess.run(["sh", "-c", '. "$1"; cys_hook_detach_wait reflect-scan 10', "x", lib], env=env,
+                   capture_output=True, text=True, timeout=60)
+    check("DT10d 죽은 주인 대기표 = 즉시 정리 · 대기 0", time.time() - t0 < 1.5 and not os.listdir(rq))
+
+    # DT11 동기 PreCompact 도 같은 잠금에 참여한다(살아 있는 주인이 풀 때까지 기다린 뒤 기록)
+    n0 = precompacts()
+    sl = holder(3)
+    lk = hold_lock("save-state", sl.pid)
+    dt = run_pre()
+    check("DT11 PreCompact = 잠금 대기 후 기록(분리 본문과 직렬화)", dt >= 2.0 and precompacts() == n0 + 1,
+          "%.1fs" % dt)
+    check("DT11b 잠금 해제", not os.path.exists(lk))
+
+    # DT12 주인 pid 미기록 잠금(mkdir 직후 죽은 주인) = 2초 넘으면 회수
+    n0 = precompacts()
+    lk = hold_lock("save-state", None)
+    dt = run_pre()
+    check("DT12 빈 pid 잠금 회수(2~6초) 후 기록", 2.0 <= dt < 6.0 and precompacts() == n0 + 1, "%.1fs" % dt)
+
+    # DT13 잠금을 못 잡으면 건너뜀 + hook-errors 1줄(무잠금 실행 금지) — 동기 상한 20초
+    n0 = precompacts()
+    sl = holder(40)
+    lk = hold_lock("save-state", sl.pid)
+    dt = run_pre()
+    errs = read(os.path.join(st, "hook-errors.log")) if os.path.exists(os.path.join(st, "hook-errors.log")) else ""
+    check("DT13 잠금 대기 20초 초과 = 본문 건너뜀(기록 0) · hook-errors rc=124",
+          19 <= dt < 30 and precompacts() == n0 and "save-state" in errs and "rc=124" in errs and "잠금 대기" in errs,
+          "%.1fs · %s" % (dt, errs[-200:]))
+    sl.kill()
+    shutil.rmtree(lk, ignore_errors=True)
+
+    # DT14 자식 본문 데드라인: memory verify 가 멎어도 30초에 끊고 hook-errors 124 · 정합 경고(WARN:memory)는 쓰지 않는다
+    mem = os.path.join(pk, "bin", "javis_memory.py")
+    shutil.copyfile(mem, mem + ".orig")
+    with open(mem, "w") as f:
+        f.write("import time\ntime.sleep(45)\n")
+    t0 = time.time()
+    subprocess.run(["sh", os.path.join(pk, "hooks", "reflect-scan.sh")], input=stop,
+                   env=dict(env, SLOW="0", CYS_HOOK_STOP_SYNC="1"), capture_output=True, text=True, timeout=120)
+    dt = time.time() - t0
+    errs = read(os.path.join(st, "hook-errors.log")) if os.path.exists(os.path.join(st, "hook-errors.log")) else ""
+    check("DT14 memory verify 30초 데드라인 → 124 기록 · WARN:memory 없음",
+          28 <= dt < 40 and "memory verify 30초" in errs and "WARN:memory" not in read(slog), "%.1fs" % dt)
+    shutil.move(mem + ".orig", mem)
 
 
 def main():
@@ -473,11 +684,15 @@ def main():
     if not os.path.isfile(BIN):
         print("SKIP — cys 바이너리 없음(%s) · cargo build --bin cys 후 재실행" % BIN)
         return 0
-    only = os.environ.get("HOOKSLIM_ONLY", "")       # 뮤턴트 실행용: "hooks" 면 셸 훅 부분만
-    if only != "hooks":
-        s_cases()
-        preflight_case()
-    hook_cases()
+    only = os.environ.get("HOOKSLIM_ONLY", "")       # 뮤턴트 실행용: "hooks" = 셸 훅 부분만 · "seat" = 좌석 프로필 상태표(S12)만
+    if only == "seat":
+        seat_cases()
+    else:
+        if only != "hooks":
+            s_cases()
+            seat_cases()
+            preflight_case()
+        hook_cases()
     if out:
         with open(out, "w", encoding="utf-8") as f:
             f.write("# hook-slim 상태표 전후 diff (격리 HOME · %s)\n\n" % time.strftime("%Y-%m-%dT%H:%M:%S%z"))

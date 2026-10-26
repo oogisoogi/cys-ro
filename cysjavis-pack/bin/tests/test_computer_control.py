@@ -905,6 +905,44 @@ class TestChromeEnable(Base):
             self.assertNotIn(k, self.kinds())
         self.assertEqual(d["pending"], ["chrome_restart"])
 
+    def test_deferred_restart_is_owed_and_paid_next_call(self):
+        # agy R1 blocking: 미룬 크롬 재시작·좌석 재시작이 다음 호출에서 빠지지 않는다
+        self.make_chrome(nmh=False)
+        self.write_cfg(chrome_default=False)
+        self.set_probes(chrome_running=True, idle=3, act={"nmh": self.nmh_touch()})
+        rc, d, _ = self.run_cli("chrome-enable", "--wait", "4")
+        self.assertEqual(d["pending"], ["chrome_restart"])
+        self.assertNotIn("seat_restart", self.kinds())
+        st = jload(os.path.join(self.state, "chrome-enable.json"))
+        self.assertTrue(st["pending_chrome_restart"] and st["pending_seat_restart"])
+        self.set_probes(chrome_running=[True, False, True], idle=60, act={})
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertIn("chrome_restart", d["done"])
+        self.assertIn("seat_restart", d["done"])
+        k = self.kinds()
+        self.assertLess(k.index("quit"), k.index("seat_restart"))      # 크롬 먼저, 좌석은 그 뒤
+        st = jload(os.path.join(self.state, "chrome-enable.json"))
+        self.assertNotIn("pending_chrome_restart", st)
+        self.assertNotIn("pending_seat_restart", st)
+        self.assertIn("prior_key", st)                                  # 되돌리기 기록은 그대로
+        n = len(self.acts())
+        self.set_probes(chrome_running=True, idle=60)
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertEqual((d["done"], d["pending"]), ([], []))           # 빚을 갚은 뒤 = 할 일 없음
+        self.assertNotIn("quit", [a["kind"] for a in self.acts()[n:]])
+
+    def test_owed_restart_cleared_when_chrome_closed_meanwhile(self):
+        self.make_chrome(nmh=False)
+        self.write_cfg(chrome_default=False)
+        self.set_probes(chrome_running=True, idle=3, act={"nmh": self.nmh_touch()})
+        self.run_cli("chrome-enable", "--wait", "4")
+        self.set_probes(chrome_running=False, idle=60, act={})
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertNotIn("quit", self.kinds())                          # 그 사이 사용자가 크롬을 껐다 = 다시 켤 필요 없음
+        self.assertIn("seat_restart", d["done"])
+        st = jload(os.path.join(self.state, "chrome-enable.json"))
+        self.assertNotIn("pending_chrome_restart", st)
+
     def test_wait_is_capped(self):
         self.make_chrome(nmh=False)
         self.set_probes(chrome_running=True, idle=[0], act={"nmh": self.nmh_touch()})
@@ -1152,6 +1190,11 @@ class TestPrecedent(Base):
         self.run_cli("decide", "external_send", "--subject", "y")
         after = os.path.exists(self.state) and sorted(os.listdir(self.state))
         self.assertEqual(before, after)
+
+    def test_usage_app_name_with_extra_words(self):
+        os.makedirs(os.path.join(self.apps, "KakaoTalk.app"))
+        rc, d, _ = self.run_cli("decide", "login", "--subject", "카카오톡 로그인")
+        self.assertEqual(d["decision"], "do")                         # agy R1 minor: 덧붙은 말이 있어도 설치 앱으로 본다
 
     def test_usage_installed_app_counts_as_in_use(self):
         os.makedirs(os.path.join(self.apps, "KakaoTalk.app"))

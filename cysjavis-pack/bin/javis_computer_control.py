@@ -1444,9 +1444,12 @@ def cmd_chrome_enable(a):
         done.append("nmh")
     elif nmh is not True:
         said.append("크롬 연결 파일을 만들지 못했습니다 — 다음 대화를 시작할 때 다시 해 보겠습니다.")
-    # ③ 크롬 다시 켜기 — 연결 파일이 새로 생겼고 크롬이 그 전부터 켜져 있을 때만
+    # ③ 크롬 다시 켜기 — 연결 파일이 새로 생겼고 크롬이 그 전부터 켜져 있을 때만, 또는 앞 호출이 미뤄 둔 재시작(빚)
+    #   ★agy R1 blocking: 미룬 뒤 다음 턴에 다시 부르면 키·연결 파일이 이미 있어 created=False → 재시작이 영영 빠졌다.
+    #   빚은 상태 파일(pending_chrome_restart · pending_seat_restart)에 남기고 갚을 때 지운다.
     pending = []
-    if created and was_running:
+    owed = bool(st.get("pending_chrome_restart"))
+    if (created or owed) and was_running:
         r = restart_chrome(plat, a.wait)
         if r == "deferred":
             pending.append("chrome_restart")
@@ -1457,16 +1460,30 @@ def cmd_chrome_enable(a):
         else:
             done.append("chrome_restart")
             said.append(r)
-    # ④ 좌석 재시작 — 이번에 켠 것이 있으면(설정은 새로 시작하는 대화부터 적용된다)
-    restart = a.seat_restart == "now" or (a.seat_restart == "auto" and ("default_on" in done or "nmh" in done))
-    if restart and "chrome_restart" not in pending:
-        r = schedule_seat_restart(SEAT_RESTART_DELAY_SEC)
-        if r is None:
-            said.append("cysr 재시작 예약에 실패했습니다 — 위쪽 ↻ 재시작으로도 됩니다.")
-        else:
-            _ledger({"event": "seat_restart_scheduled", "delay": SEAT_RESTART_DELAY_SEC})
-            done.append("seat_restart")
-            said.append("%d초 뒤 cysr 가 잠깐 다시 시작합니다(지금 대화는 저장하고 이어집니다)." % SEAT_RESTART_DELAY_SEC)
+    elif (created or owed) and was_running is None:
+        pending.append("chrome_restart")
+        said.append("크롬이 켜져 있는지 확인하지 못해 다시 켜기는 미뤘습니다.")
+    # (owed ∧ 크롬이 그 사이 꺼짐 = 다음에 켤 때 연결 파일을 읽는다 → 빚 청산)
+    # ④ 좌석 재시작 — 이번에 켠 것이 있거나 앞 호출이 미뤄 둔 재시작이 있으면(설정은 새로 시작하는 대화부터 적용된다)
+    changed = "default_on" in done or "nmh" in done
+    want_seat = a.seat_restart == "now" or (a.seat_restart == "auto" and (changed or bool(st.get("pending_seat_restart"))))
+    if "chrome_restart" in pending:
+        st["pending_chrome_restart"] = True
+        if want_seat:
+            st["pending_seat_restart"] = True       # 크롬을 다시 켠 뒤에 좌석을 재시작한다(순서 보존)
+    else:
+        st.pop("pending_chrome_restart", None)
+        if want_seat:
+            r = schedule_seat_restart(SEAT_RESTART_DELAY_SEC)
+            if r is None:
+                said.append("cysr 재시작 예약에 실패했습니다 — 위쪽 ↻ 재시작으로도 됩니다.")
+            else:
+                _ledger({"event": "seat_restart_scheduled", "delay": SEAT_RESTART_DELAY_SEC})
+                st.pop("pending_seat_restart", None)
+                done.append("seat_restart")
+                said.append("%d초 뒤 cysr 가 잠깐 다시 시작합니다(지금 대화는 저장하고 이어집니다)." % SEAT_RESTART_DELAY_SEC)
+    if owed or changed or "chrome_restart" in pending or st != _load_chrome_state():
+        _write_json(_p(CHROME_STATE), st)
     head = ("크롬 연결을 켰습니다(기본 켜기%s)." % (" · 연결 파일" if "nmh" in done else "")
             if ("default_on" in done or "nmh" in done) else "크롬 연결은 이미 켜져 있습니다.")
     tail = "" if not done else " 다르게 하시려면 말씀해 주세요 — 되돌릴 수 있습니다."
@@ -1665,7 +1682,7 @@ def _in_use(subject, usage):
         if s in _norm(n) or _norm(n) in s:
             return True, "커넥터로 연결해 쓰는 서비스(%s)" % n
     for aid, v in (usage.get("apps") or {}).items():
-        if s in (aid, _norm(v.get("name"))):
+        if s in (aid, _norm(v.get("name"))) or aid in s or (_norm(v.get("name")) and _norm(v.get("name")) in s):
             d = v.get("last_used_days")
             return True, "이 컴퓨터에 설치된 앱(%s%s)" % (v.get("name"), "" if d is None else " · %d일 전 사용" % d)
     return None, ""

@@ -322,13 +322,24 @@ def claude_cfg():
         "readable": True,
         "logged_in": isinstance(oa, dict),
         "plan": plan if isinstance(plan, str) else None,
-        "chrome_default": d.get("claudeInChromeDefaultEnabled") if isinstance(d.get("claudeInChromeDefaultEnabled"), bool) else None,
+        "chrome_default": _chrome_default(d),
         "connectors": [str(x) for x in ever if isinstance(x, str)] if isinstance(ever, list) else [],
         "project_cu": {k: ("computer-use" in v.get("enabledMcpServers"))
                        for k, v in projects.items()
                        if isinstance(v, dict) and isinstance(v.get("enabledMcpServers"), list)},
         "project_keys": [k for k in projects.keys() if isinstance(k, str)],
     }
+
+
+def _chrome_default(d):
+    """크롬 「Enabled by default」 — True/False/None(값이 이상함).
+    ★키 없음 = 꺼짐(윈 실기 10-26: 좌석 설정 폴더에 키가 없어 「모름」이던 것). 근거 = Claude Code 2.1.310 시작 판정
+    (--chrome → CLAUDE_CODE_ENABLE_CFC → 이 키 · 없으면 false) · 공식 문서는 --chrome 없이 켜려면 /chrome 의 Enabled by default 를
+    고르라고 한다 · cysr 좌석은 --chrome 없이 뜬다(agents.json cmd). 좌석이 쓰는 설정(CLAUDE_CONFIG_DIR)만 본다."""
+    if "claudeInChromeDefaultEnabled" not in d:
+        return False
+    v = d["claudeInChromeDefaultEnabled"]
+    return v if isinstance(v, bool) else None
 
 
 def _git_root(path):

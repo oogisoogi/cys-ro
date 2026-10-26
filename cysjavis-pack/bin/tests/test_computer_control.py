@@ -81,9 +81,10 @@ class Base(unittest.TestCase):
 
     def write_cfg(self, plan="claude_max", cu=True, chrome_default=True, connectors=("claude.ai Gmail",),
                   logged_in=True, extra_projects=None):
-        d = {"claudeInChromeDefaultEnabled": chrome_default,
-             "claudeAiMcpEverConnected": list(connectors),
+        d = {"claudeAiMcpEverConnected": list(connectors),
              "projects": {self.proj: {"enabledMcpServers": ["computer-use"] if cu else []}}}
+        if chrome_default is not None:   # None = 키 없음(좌석 설정 폴더에 /chrome 을 한 번도 안 한 경우)
+            d["claudeInChromeDefaultEnabled"] = chrome_default
         if extra_projects:
             d["projects"].update(extra_projects)
         if logged_in:
@@ -258,6 +259,18 @@ class TestVerdicts(Base):
         rc, d, _ = self.run_cli("scan")
         self.assertEqual(self.item(d, "chrome")["tier"], "hand")
         self.assertIn("/chrome", d["say"])
+
+    def test_chrome_default_key_absent_is_off(self):
+        # 윈 실기 10-26 r2: 키 없음 = 공식 기본값(꺼짐) → 「모름」이 아니라 손 칸 단계 「/chrome 기본 켜기」
+        self.make_chrome()
+        self.write_cfg(chrome_default=None)
+        rc, d, _ = self.run_cli("scan")
+        it = self.item(d, "chrome")
+        self.assertEqual((it["tier"], it["unknown"]), ("hand", False))
+        self.assertIn("/chrome 기본 켜기", d["say"])
+        self.write_cfg(chrome_default="yes")             # 값이 이상하면 여전히 모름
+        rc, d, _ = self.run_cli("scan")
+        self.assertTrue(self.item(d, "chrome")["unknown"])
 
     def test_browser_alt_only_when_chrome_not_ready(self):
         self.make_chrome()

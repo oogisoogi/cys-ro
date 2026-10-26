@@ -144,6 +144,10 @@ M = [
   "    except OSError:\n        return None\n    return any(n.startswith(WIN_MSIX_NAME",
   "    except OSError:\n        return False\n    return any(n.startswith(WIN_MSIX_NAME",
   ["test_win_claude_desktop_msix"]),
+ ("M34-default-absent-unknown", "윈 r2 — 크롬 기본 켜기 키 없음을 다시 「모름」으로",
+  "    if \"claudeInChromeDefaultEnabled\" not in d:\n        return False",
+  "    if \"claudeInChromeDefaultEnabled\" not in d:\n        return None",
+  ["test_chrome_default_key_absent_is_off"]),
 ]
 
 

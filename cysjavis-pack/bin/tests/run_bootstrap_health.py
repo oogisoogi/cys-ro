@@ -16052,6 +16052,12 @@ def h_boot_sup_1():
                      "let _ = s.write_tx.try_send(0); let reason = match crate::governance::seat_inject_guarded("),
          delivery),
         ("단일 입구 판독 불능(governance 부재)", sup, delivery, ""),
+        # ★1.1.11 편입(codex R3 반증 시도 고정): 에이전트 좌석 갈래 원장 선기록을 **주석으로** 바꾸면 적이어야 한다 —
+        #   판정 대상 c = _rs_prod(sup)(줄주석 제거)라 계수·순서 둘 다 깨진다(Rust 짝 핀 strip_line_comments 와 같은 규율).
+        ("에이전트 갈래 원장 선기록 주석화",
+         sup.replace("    crate::delivery::record_audited(daemon, s.id, &text, crate::delivery::Origin::Supervisor, None);\n",
+                     "    // crate::delivery::record_audited(daemon, s.id, &text, crate::delivery::Origin::Supervisor, None);\n"),
+         delivery),
     ]
     # ★무효 변조 가드(TICKET=cysr-1111-merge-01452): 치환 문자열이 소스에서 사라지면 변조본 = 원본이 되어 「못 잡음」과
     #   「변조가 안 걸림」이 구별되지 않는다 — 원본과 같은 변조본은 그 자체로 적색이다.
@@ -17109,8 +17115,8 @@ def alive(pid):
 # ★1.1.11 편입(원작자 0.14.52 하네스 소유 정리 · TICKET=cysr-1111-merge-01452): 두 함수가 `deadline=None` 인자를 받게 됐다
 #   (teardown 이 `harness_daemon_pids(deadline)`·`close_all_surfaces(…)` 로 부른다) — 대역이 인자를 받지 않으면 teardown 이
 #   TypeError 로 끊겨 아무것도 끝내지 못한다(시험 꼴 낡음 · 제품 회귀 아님).
-h.harness_daemon_pids = lambda *_a, **_k: [daemon.pid] if daemon.poll() is None else []
-h.close_all_surfaces = lambda *_a, **_k: []
+h.harness_daemon_pids = lambda deadline=None: [daemon.pid] if daemon.poll() is None else []
+h.close_all_surfaces = lambda deadline=None: []
 # 안전 그물: 이 시험 안에서 누가 이름 일치 종료 도구를 부르면 진짜 도구 대신 이 가짜가 받는다 — 호출을 적고,
 # 이름 일치가 했을 일(같은 이름 전부 종료)을 **이 시험이 띄운 두 pid 에만** 흉내 낸다(머신의 다른 프로세스 무접촉).
 os.environ["PKILL_SHIM_LOG"] = shim_log

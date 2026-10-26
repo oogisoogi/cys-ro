@@ -260,7 +260,7 @@ codex 가 못 한 것(정직): 읽기 전용 샌드박스라 단위 시험을 �
 | ⓑ | 좌석 `.claude.json` `claudeInChromeDefaultEnabled=true` | 시작 판정(2.1.310 바이너리 원문): `--chrome`/`--no-chrome` → `CLAUDE_CODE_ENABLE_CFC` → 원격이면 무시 → **이 키** → 없으면 false. 공식 토글 2곳이 같은 키를 **갱신 함수로** 쓴다: `/chrome` 의 `toggle-default` = `Re(_=>({..._,claudeInChromeDefaultEnabled:c}))` · `/config` 「Claude in Chrome enabled by default」 = 같은 꼴. 행동 근거 = 맥 실기 E2⑵(키 true → `--chrome` 없이 켜짐) · 윈 실기 3단계(좌석 키 True → claude-in-chrome 노출) | **권고** — 공식 토글과 같은 키 · 사용자가 언제든 `/chrome` 에서 끌 수 있음 · 되돌리기 = 원래 값 |
 | ⓒ | `agents.json` cmd 에 `--chrome` | 판정 순서 ①(가장 강함) — 사용자가 `/chrome` 에서 꺼도 매번 켜짐 · 앱(Rust)의 좌석 명령 생성부를 바꿔야 함 | 비권고 — 범위·사용자 통제 상실 |
 
-**우리 쓰기가 좌석의 쓰기를 덮는가(codex R1 blocking)**: `write_chrome_key` = 비교-교체 — 읽은 원본 바이트를 교체 **직전** 다시 읽어 같을 때만 원자 교체 · 다르면 처음부터(최대 3회) · 끝내 다르면 손대지 않고 실패(「그 사이 다른 프로그램이 설정을 고쳐 써서 손대지 않았습니다」). 남는 창 = 재확인 ↔ 교체 사이 마이크로초 — Claude Code 는 설정 저장에 자체 잠금(`saveConfigWithLock` · `CONFIG_LOCK_RETRY_DELAYS_MS` 문자열 실재)을 쓰지만 잠금 파일 이름은 축소된 바이너리에서 확정하지 못해 그 잠금에 참여하지 않는다(정직 고지 · 실기 R8 로 관측).
+**우리 쓰기가 좌석의 쓰기를 덮는가(codex R1·R2 blocking)**: Claude Code 2.1.310 바이너리 원문(`saveConfigWithLock`) = `let P=${y}.lock`(y = 전역 설정 파일 `getGlobalClaudeFile()`) 로 proper-lockfile 잠금(`lockfilePath:P`) → **잠금 안에서 파일을 다시 읽고**(`Sd()`) 갱신 함수 적용 → 0600 으로 쓰기. 그래서 `write_chrome_key` 는 **같은 잠금**(`<.claude.json>.lock` 폴더 mkdir · 원자적)을 쥔 채 잠금 안에서 다시 읽고 → 키 하나 → 원자 교체 → 잠금 해제한다. 그동안 Claude 는 재시도하며 기다리고, 풀리면 우리 결과를 다시 읽어 그 위에 쓴다(우리 키 보존 · 우리도 그들 것을 덮지 않음). 남이 쥔 잠금은 지우지 않는다(오래된 것 포함) — 5초 안에 못 잡으면 쓰지 않고 실패. 덧붙여 교체 직전 원본 바이트 재확인(잠금을 안 지키는 다른 작성자 대비 · 3회).
 
 반대 방향 — 실행 중 세션이 우리 키를 옛 사본으로 덮는가: 격리 세션(SessionStart 훅 8초 대기) 도중 키를 써 보니 세션이 그 뒤 파일을 다시 쓰지 않아 **판정 불가**(키는 남음). 공식 토글이 갱신 함수(읽은 현재값에 키만 덮음) 꼴이라 덮어쓸 가능성은 낮다고 보지만 Med — 완화: 키는 좌석 재시작 직전에 쓰고, 재시작 뒤 `recheck chrome`/`scan` 이 키를 다시 확인한다(사라졌으면 「제가 할 것」으로 다시 뜬다).
 
@@ -273,7 +273,7 @@ codex 가 못 한 것(정직): 읽기 전용 샌드박스라 단위 시험을 �
 ### 13-3. 크롬 다시 켜기(필요할 때만)
 - 조건 = **이번 실행에서 연결 파일이 새로 생겼고 크롬이 그 전부터 켜져 있었다**(공식 문서: 「Chrome reads this file on startup, so if the extension isn't detected on your first attempt, restart Chrome」). 그 밖에는 크롬을 건드리지 않는다.
 - 순서 = 사용자 입력 유휴 ≥ 20초(맥 `ioreg` HIDIdleTime · 윈 `GetLastInputInfo` · 선례 `hancom-front-needs-idle-gate`) → 못 채우면 기다림(최대 `--wait` 초 · 상한 540) 뒤 「미뤘습니다」로 끝(`pending: chrome_restart` · 다음 턴 재호출) → 화면 알림 1줄(`cys feed push --kind computer-control --tier d` · 정보성) → 3초 → **유휴 재확인**(알림을 보고 손을 댔으면 닫지 않고 미룸 · codex R1 blocking) → 정상 종료 → 닫힘 확인(20초) → `--restore-last-session` 으로 켬 → 창·탭 수 전후 대조.
-- **연결 파일 만들기에도 같은 관문**(codex R1 blocking): 처음 만들 때 Claude Code 가 크롬에 「다시 연결」 탭을 열 수 있어(§13-2) 크롬이 켜져 있고 유휴가 아니면 만들기 자체를 미룬다(`pending: nmh`).
+- **연결 파일 만들기에도 같은 관문**(codex R1·R2 blocking): 처음 만들 때 Claude Code 가 크롬에 「다시 연결」 탭을 열 수 있어(§13-2) — 크롬이 꺼져 있어도 그 탭이 크롬을 띄울 수 있으므로 **크롬 상태와 무관하게** 유휴가 아니면 만들기 자체를 미룬다(`pending: nmh`).
 - **미룬 일은 빚으로 남는다**(agy R1 blocking): 상태 파일 `pending_chrome_restart`·`pending_seat_restart` → 다음 `chrome-enable` 이 크롬이 켜져 있으면 재시작 → 좌석 재시작 순으로 갚고 지운다 · 그 사이 크롬이 꺼졌으면 크롬 빚 청산(다음에 켤 때 연결 파일을 읽는다) · 크롬 상태를 모르면 계속 미룸.
 - 정상 종료(선례 `never-kill-user-app-without-consent` · 강제 종료 0): 맥 = 크롬 자동화 허락(S3 = 0)이 있으면 AppleScript `quit` · 없으면 이 사용자의 크롬 **본 프로세스 pid 하나**에 SIGTERM(크롬이 정상 종료로 처리 · 이름 일괄 종료 `pkill` 금지 = 워커 지침 §1-4) · 윈 = 창마다 `CloseMainWindow()`(닫기 단추와 같음). 20초 안에 안 닫히면 **그대로 둔다**(「강제로 끄지 않습니다」 + 사용자가 닫았다 켜면 연결됨).
 - 창 수: 맥은 자동화 허락이 있을 때만 셈(없으면 허락 창을 띄우지 않으려고 「확인 못 함」) · 윈은 `MainWindowHandle` 있는 크롬 프로세스 수(근사). 줄었으면 「최근 닫은 탭」 안내.
@@ -281,7 +281,8 @@ codex 가 못 한 것(정직): 읽기 전용 샌드박스라 단위 시험을 �
 ### 13-4. 마스터 좌석 재시작(마스터가 스스로)
 - 크롬 연동은 **시작할 때** 정해진다(키 = 「이후 시작하는 세션」). 실행 중 좌석에 붙이는 길은 터미널에 없다(IDE 호스트 전용 `claude_in_chrome_at_startup` 만 존재 — 바이너리).
 - 데몬 경로 조사: `cys cycle-agent` = `/clear` 사이클(프로세스 재시작 아님) · `cys node-recover` = **죽은** 좌석만 · `cys restore --include-master` = 죽은 역할 일괄 재기동 · **`cys rotate` = 앱 ↻ 재시작 단추(rotate_daemon)와 같은 5단(저장 검증 → 데몬 교체 → 복귀 표식 → 팩 반영 → 조직 복원)** — 사용자에게 「↻ 눌러 주세요」라고 하던 바로 그 일이다.
-- 집행 = `chrome-enable` 이 끝날 때 **분리된 프로세스 1개**(이 도구의 `seat-restart-wait` · 맥 `start_new_session` · 윈 DETACHED|NEW_PROCESS_GROUP)가 30초 뒤부터 **좌석 출력 유휴**(`cys status --json` 의 그 좌석 `idle_secs` ≥ 20 · 5초 간격 두 번 연속 = 턴이 실제로 끝남)를 확인하고 `cys rotate --skip-depts` → rotate 의 저장 검증([DRAIN])이 마스터에게 저장을 시킨 뒤 재시작·이어하기. 15분 안에 턴이 안 끝나면 재시작하지 않고 빚(`pending_seat_restart`)으로 남긴다(다음 `chrome-enable` 이 다시 예약). 좌석 ID(`CYS_SURFACE_ID`)가 없으면 고정 지연 폴백. 마스터 지침: `chrome-enable` 뒤 새 일을 시작하지 않고 턴을 끝낸다(스킬). ★codex R1 논쟁점(고정 30초는 긴 턴을 끊을 수 있다) 반영.
+- 집행 = `chrome-enable` 이 끝날 때 **분리된 프로세스 1개**(이 도구의 `seat-restart-wait` · 맥 `start_new_session` · 윈 DETACHED|NEW_PROCESS_GROUP)가 30초 뒤부터 5초 간격으로 **턴 종료 두 신호가 두 번 연속** 맞을 때만 `cys rotate --skip-depts`: ① 좌석 출력 유휴(`cys status --json` 의 그 좌석 `idle_secs` ≥ 20) ② 좌석 자신의 세션 기록(`registered_session_id` → `<좌석 설정>/projects/*/<id>.jsonl`)의 마지막 대화 줄 = `assistant` · `stop_reason: end_turn`(읽는 칸 = type·stop_reason 뿐 · 내용 0). 출력이 조용해도 도구 응답을 기다리는 중이면 마지막 줄이 `tool_use` 라 재시작하지 않는다(codex R2 blocking). rotate 의 저장 검증([DRAIN])이 마스터에게 저장을 시킨 뒤 재시작·이어하기(⚠ rotate 는 저장 확인 실패에도 끝까지 간다 — `ROTATE_RC_DRAIN_PARTIAL` · 그래서 턴 종료 확인이 이 대기 쪽에 있어야 한다).
+- 좌석 ID(`CYS_SURFACE_ID`)가 없거나 15분 안에 턴 종료를 확인 못 하거나 rotate 가 중단 코드로 끝나면 **재시작하지 않고 빚**(`pending_seat_restart`)으로 남긴다 — 빚은 예약 성공이 아니라 **재시작 성공**에서만 지운다 · 예약이 살아 있는 동안(`seat_restart_scheduled_at` · 17분) 다음 `chrome-enable` 은 중복 예약하지 않는다(codex R2). 마스터 지침: `chrome-enable` 뒤 새 일을 시작하지 않고 턴을 끝낸다(스킬).
 - 최소 대안(1.1.12 후보 · 미구현): 마스터 좌석만 정상 종료 → `cys restore --include-master`(resume) — 다른 좌석을 건드리지 않지만 「살아 있는 좌석 1개만 재시작」 RPC 가 없어 새 데몬 코드가 필요하다.
 - 실기 확인 항목: ① 분리 프로세스가 좌석 pty 종료 뒤에도 살아 rotate 를 끝까지 하는지(맥·윈) ② 윈 좌석이 작업 개체(job)에 묶여 분리가 막히는지.
 
@@ -344,7 +345,10 @@ codex 가 못 한 것(정직): 읽기 전용 샌드박스라 단위 시험을 �
 - `decide <유형> [--subject] [--in-use yes|no|unknown] [--what]` → `{"decision": do|ask|each|never, "basis": precedent:<키>|standing:<시각>|new_type, "report"|"ask"|"say"}` · **쓰기 0**(시험 `test_decide_writes_nothing`).
 - `remember <유형> --subject --answer-file --meaning allow|deny|conditional [--condition] [--user-changed]` → 상시 기록(키 = `유형:대상 정규화 sha256 앞 16자` — 대상 원문을 파일에 남기지 않음 · 표시용 `label` 은 가린 문자열) · each/never 유형 = exit 5 `not_recordable` · 이미 있음 = exit 7 `already_decided` · 조건부인데 조건 없음 = exit 2 · 답 원문은 sha256 만 · 감사 기록 먼저 · 상한 5,000 — **도달하면 옛 결정을 지우지 않고 새 기록을 거절**(exit 7 `decisions_full` · 지우면 그 항목을 다시 묻게 된다 · codex R1).
 - 판정 순서(`judge` · 자가 발견 + codex R1 반영): 네이버 대상 login/external_send → each(약관) · each/never 유형 → 그대로(상시 기록 무시) · `login` 인데 `--in-use no`(처음 쓰는 서비스) → each(가입 · 상시 허락보다 먼저) · 상시 기록 있음(새 유형 포함) → 그 결정 · 모르는 유형 → ask(new_type) · login → 사용 패턴 · 그 밖 → 표의 기본 결정.
-- 출력·기록에 싣는 대상·한 일·조건 문자열은 이메일·긴 번호 모양을 `<이메일>`·`<번호>` 로 가린다(§3-3 · codex R1).
+- 출력에 싣는 대상·한 일·조건 문자열은 이메일·긴 번호 모양을 `<이메일>`·`<번호>` 로 가린다(§3-3 · codex R1) · 기록 키 = 유형 + 대상 해시(목록 밖 새 유형은 유형 이름도 해시) · 조건 원문은 **로컬 상태 파일에만**(대조용 · codex R2 #9 — 가리면 허락 범위를 잃는다).
+- 조건부 상시 허락 = `decide … --condition-met yes|no|unknown`(마스터가 이번 건을 조건과 대조): yes → do · no → each(이번만 묻기) · unknown(기본) → **check**(`condition` 칸에 사용자가 붙인 조건 원문 · 마스터가 대조한 뒤 다시 부른다) — 조건 확인 없이 do 를 내지 않는다(codex R2).
+- 「이미 쓰는가」 대조 = **낱말 단위**(이름의 낱말이 전부 대상의 낱말 안에 있어야 일치 · 「카카오톡 로그인」 = 카카오톡 · 「wordpress.com」 ≠ Word · codex R2).
+- 옛 판(92c47060) 키(`유형:정규화 원문`)도 조회해 따른다 · 같은 항목 재기록 금지도 옛 키까지 본다 · 사용자가 바꾸면 새 키로 옮긴다(codex R2).
 
 ### 14-5. 범용 조작 원칙(675 REPORT §10-4 · 박사님 22:0x 「업데이트와 관계 없이 항상 적용할 수 있는 범용적인 방법」 · 맥·윈 공통)
 1. **저장 좌표·선택자 0** — 좌표는 그 동작 직전 스냅샷에서만 · **스냅샷 1장 = 상태를 바꾸는 동작 1개**(windows-mcp label 은 마지막 스냅샷 좌표) · 그 뒤 반드시 다시 찍는다.
@@ -384,7 +388,7 @@ codex 가 못 한 것(정직): 읽기 전용 샌드박스라 단위 시험을 �
 | R2-m | (맥 전용 · master 지시) R2 를 **크롬 자동화 허락이 없는 상태**(S3 ≠ 0)에서 | 같음 | 크롬 본 pid 에 SIGTERM 이 갔는지(ledger `chrome_quit`) · **세션이 복원되는지(--restore-last-session)** · 「정상 종료 안 됨」 경고 여부 | 복원 = 탭 수 같음 · 경고 0 — 경고가 뜨면 이 경로를 「크롬을 닫아 주세요」 손 칸으로 되돌리는 결정을 master 에 올린다 |
 | R3 | R2 중 사용자가 키보드를 계속 침 | `chrome-enable --wait 30` → 손을 쉰 뒤 한 번 더 `chrome-enable` | 1회차: 크롬 무접촉 · 연결 파일 미생성 · `pending: ["nmh"]` · 「다시 연결」 탭 0 / 알림 직후 손을 대면 `pending: ["chrome_restart"]` · 2회차: 미룬 크롬·좌석 재시작을 갚음 | 1회차 크롬 종료 0 · 2회차 재시작 완수 |
 | R4 | 크롬 확장 **미설치**(맥: 시험 프로필 · 윈: 확장 끈 프로필) | `scan` → `guide chrome` | 크롬 줄 = 손 칸 · 안내 = 웹 스토어 「추가」·확장 로그인만 · `/chrome` 단어 0 | 손 칸 · `/chrome` 안내 0 |
-| R5 | 좌석 재시작 | `chrome-enable`(기본 `--seat-restart auto`) 뒤 턴 종료 | 30초 뒤 `cys rotate --skip-depts` 가 끝까지 도는지(분리 프로세스가 pty 종료 뒤 생존 · 윈 작업 개체 분리) · 재시작 뒤 마스터에 `mcp__claude-in-chrome__*` 도구 노출 · 대화 이어짐 | 도구 노출 · 대화 이어짐 · 다른 좌석 복원 |
+| R5 | 좌석 재시작 | `chrome-enable`(기본 `--seat-restart auto`) 뒤 턴 종료 · 대조: 같은 호출 뒤 일부러 긴 명령(예: `sleep 90`)을 돌려 턴을 끌기 | 턴이 끝난 뒤에만 `cys rotate --skip-depts` 가 끝까지 도는지(분리 프로세스가 pty 종료 뒤 생존 · 윈 작업 개체 분리) · 긴 명령 중에는 재시작 0 · ledger `seat_restart_rotate` rc · 재시작 뒤 `mcp__claude-in-chrome__*` 도구 노출 · 대화 이어짐 | 턴 중 재시작 0 · 도구 노출 · 대화 이어짐 · 다른 좌석 복원 |
 | R6 | 되돌리기 | `chrome-disable` | 키 = 원래 값(없었으면 없음) · 우리가 만든 연결 파일만 삭제(그 사이 바뀌었으면 보존) | 사본과 diff 0 |
 | R7 | 이양 표 재질문 0 | ① `adopt` 2회(두 번째 = 「새로 맡을 것은 없습니다」) ② `decide login --subject <이미 쓰는 서비스>` = do ③ `decide external_send --subject "<새 유형>"` = ask → 답 → `remember` → 같은 `decide` = do(standing) → 같은 `remember` = exit 7 ④ `decide payment` = each · `remember payment` = exit 5 ⑤ `revoke connectors` → `adopt` = skipped | stdout JSON 전부 | 재질문 0 · 기록 1 |
 | R8 | 경합(살아 있는 좌석이 키를 덮는가 · §13-1 Med) | 마스터 좌석이 살아 있는 동안 `chrome-enable --seat-restart no` → 10분 뒤 `.claude.json` 키 재확인 | 키 유지 여부 | 유지 |
@@ -416,3 +420,25 @@ codex 가 못 한 것(정직): 읽기 전용 샌드박스라 단위 시험을 �
 codex 가 못 한 것(정직): 읽기 전용 샌드박스에서 임시 폴더를 못 만들어 단위 시험·뮤턴트를 돌리지 못했다(메모리 재현만) — 시험은 이 워커가 돌렸다.
 
 R1 반영 뒤 누계: 시험 97 녹(3회 연속) · self-test 562 조합 · 뮤턴트 79/79 KILLED(M62 = 「상한에서 오래된 결정 삭제」를 끄는 뮤턴트였는데 그 코드가 R1 #5 로 없어져 퇴역 · 반대 방향을 M78 이 잰다 · M40·M43·M66 찾는 문자열 갱신).
+
+### 16-2. R2 (revision ad474d66)
+- **agy R2 = ACCEPT**(issues 0 · R1 2건 해소 확인 · 반영 diff 신규 결함 없음 · 정본 `…-r2-agy.json`).
+- **codex R2 = REVISE**(blocking 4 · major 6 · R1-1·2·3·5·7 해소 확인 · 정본 `…-r2-codex.json`) — 처분:
+
+| # | 지적 | 판정 | 반영 | 회귀 시험 · 뮤턴트 |
+|---|---|---|---|---|
+| 1 | blocking — 재확인↔교체 창이 남아 다른 키 손실 0 미충족 | 실재 | Claude Code 와 **같은 설정 잠금**(`.claude.json.lock` · 바이너리 원문 근거 §13-1) + 잠금 안 재읽기 | `test_config_lock_respected` · M81 |
+| 2 | blocking — 꺼진 크롬이면 연결 파일 생성 관문 생략 | 실재 | 크롬 상태 무관 관문 | `test_nmh_gate_even_when_chrome_off` · M82 |
+| 3 | blocking — 출력 유휴 ≠ 턴 종료 · 좌석 ID 없으면 관문 생략 | 실재 | 세션 기록 마지막 줄 `end_turn` 확인 · 좌석 ID 없으면 재시작 0(빚) | `test_seat_waiter_quiet_tool_wait_is_not_turn_end` · `test_seat_waiter_without_surface_owes` · M83·M84 |
+| 4 | blocking — 키 형식 변경이 옛 결정을 잃음 | 실재(이 가지 안에서만 존재한 형식이지만 재질문 0 원칙상 보존) | 옛 키 조회·재기록 금지·바꿀 때 이관 | `test_legacy_key_still_honored` · M88 |
+| 5 | major — 윈 생성 기록 sha 가 늘 null → 자기 등록도 못 지움 · 기록까지 버림 | 실재 | 등록값이 가리키는 매니페스트 sha 기록 · sha 없으면 지우지도 기록을 버리지도 않음 | `test_win_round_trip_enable_then_disable` · M93 |
+| 6 | major — 삭제 실패 뒤 다시 끄기가 키를 false 로 다시 씀 | 실재 | `key_restored` 표지 · 원래 값 보존 | `test_disable_retry_does_not_rewrite_key` · M92 |
+| 7 | major — 가림이 이메일·번호만(이름·조직·프로필 이름 미보호) · 새 유형 이름 원문이 키에 | **부분 수용** | 새 유형 이름 해시(수용) · 이름류 가림은 기각 — 근거 아래 | `test_new_type_key_hashed` · M89 |
+| 8 | major — 「word」 부분 일치가 wordpress.com 을 쓰는 서비스로 오인 | 실재 | 낱말 단위 대조 | `test_word_app_does_not_match_wordpress` · M90 |
+| 9 | major — 조건을 가려 저장해 허락 범위를 잃음 | 실재(R1 #10 반영의 과잉) | 조건 원문 로컬 보존 · 조건부는 `--condition-met` 확인 뒤에만 do(모르면 check) | `test_external_send_conditional` · self-test 3조합 · M91 |
+| 10 | major — 좌석 재시작 예약 실패·rotate 실패면 빚이 사라짐 | 실재 | 빚은 재시작 성공에서만 해제 · 중복 예약 방지 | `test_schedule_failure_keeps_seat_debt` · `test_seat_waiter_rotate_failure_keeps_debt_success_clears` · M85·M86·M87 |
+
+**#7 이름류 가림 기각 근거**: §3-3 의 출력 금지 목록은 「이 도구가 컴퓨터에서 **읽어 온** 값」(`.claude.json` 의 이메일·이름·조직 · 크롬 프로필 이름 · 방문 기록 등)이 마스터 대화로 새지 않게 하는 규칙이다. `decide`·`remember` 의 대상·한 일·조건 문자열은 도구가 읽어 온 것이 아니라 **마스터가 대화 안에서 이미 쓴 글**(또는 사용자가 대화에서 말한 조건)을 되돌려 주는 것이라 새 노출이 생기지 않는다. 이름은 모양으로 가릴 수도 없다(일반 낱말과 구별 불가) — 이메일·긴 번호 가림은 그래도 남겨 두는 방어 겹이다. 도구가 컴퓨터에서 읽어 오는 값의 출력 금지(§3-3 원래 범위)는 그대로 시험한다(`test_privacy_no_markers_in_any_output` — `adopt`·`decide` 포함).
+
+R2 반영 뒤 누계: 시험 108 녹(`-W error`) · self-test 565 조합 · 뮤턴트 92/92 KILLED(M1~M93 · M62 퇴역 · R1·R2 반영으로 어긋난 찾는 문자열 6개 갱신 · M92 는 처음 생존 → 「두 끄기 사이 사용자가 /chrome 에서 다시 켬」 반례로 시험 강화 뒤 KILLED). codex R3 = 다음 좌석(HANDOFF).
+

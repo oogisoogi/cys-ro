@@ -1241,45 +1241,76 @@ def _read_raw(path):
 
 
 CAS_TRIES = 3
+LOCK_WAIT_SEC = 5
+
+
+def _config_lock(path):
+    """Claude Code 와 같은 설정 잠금 — `<.claude.json>.lock` 폴더 mkdir(원자적 · proper-lockfile 방식).
+    근거(2.1.310 바이너리 원문): saveConfigWithLock 이 `let P=${y}.lock`(템플릿 문자열 · y = 전역 설정 파일)로 잠그고, 잠금 **안에서 파일을
+    다시 읽어** 갱신 함수를 적용한 뒤 쓴다 → 우리가 잠근 동안 Claude 는 기다리고, 풀리면 우리 결과를 다시 읽는다.
+    남이 쥔 잠금은 지우지 않는다(오래된 것 포함) — 5초 안에 못 잡으면 쓰지 않는다. 반환 = 잠금 경로 · None."""
+    lock = path + ".lock"
+    waited = 0.0
+    while True:
+        try:
+            os.mkdir(lock)
+            return lock
+        except FileExistsError:
+            if waited >= LOCK_WAIT_SEC:
+                return None
+            time.sleep(0.1)
+            waited += 0.1
+        except OSError:
+            return None
 
 
 def write_chrome_key(value):
     """좌석 .claude.json 의 크롬 키 **하나만** 바꾼다(value=None 이면 키를 지운다 = 원래 없던 상태). 나머지 칸은 읽은 그대로.
-    ★codex R1(동시 쓰기): 비교-교체 — 읽은 원본 바이트를 교체 **직전** 다시 읽어 같을 때만 바꾼다. 다르면(살아 있는 좌석이
-    그 사이 고쳐 씀) 처음부터 다시(최대 3회) · 끝내 다르면 손대지 않고 실패. 파일 권한 유지 · 쓴 뒤 다시 읽어 확인. 성공 = True.
-    남는 창 = 「교체 직전 재확인 ↔ 교체」 사이 마이크로초(Claude Code 의 설정 잠금 이름은 바이너리에서 확정 못 함 — 설계 §13-1)."""
+    ★codex R1·R2(동시 쓰기): Claude Code 와 같은 잠금(`.claude.json.lock`)을 쥔 채 **잠금 안에서** 다시 읽고 → 키 하나 바꾸고 →
+    원자 교체 → 잠금 해제. 덧붙여 교체 직전 원본 바이트 재확인(잠금을 안 지키는 작성자 대비 · 최대 3회 · 끝내 다르면 무변경 실패).
+    파일 권한 유지 · 쓴 뒤 다시 읽어 확인. 성공 = True."""
     path = _claude_json()
-    for _try in range(CAS_TRIES):
-        raw = _read_raw(path)
-        if raw is None or len(raw) > MAX_JSON_BYTES:
-            return False
+    lock = _config_lock(path)
+    if lock is None:
+        _ledger({"event": "chrome_key_lock_busy"})
+        return False
+    try:
+        for _try in range(CAS_TRIES):
+            raw = _read_raw(path)
+            if raw is None or len(raw) > MAX_JSON_BYTES:
+                return False
+            try:
+                d = json.loads(raw.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                return False
+            if not isinstance(d, dict):
+                return False
+            if value is None:
+                d.pop(CHROME_KEY, None)
+            else:
+                d[CHROME_KEY] = value
+            try:
+                mode = os.stat(path).st_mode & 0o777
+            except OSError:
+                return False
+            tmp = "%s.cc-tmp-%d" % (path, os.getpid())
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(d, f, ensure_ascii=False, indent=2)
+            os.chmod(tmp, mode)
+            _cas_hook()
+            if _read_raw(path) != raw:          # 그 사이 누가 고쳐 썼다 — 덮지 않는다
+                os.remove(tmp)
+                continue
+            os.replace(tmp, path)
+            has, v = read_chrome_key()
+            return (not has) if value is None else (has and v is value)
+        _ledger({"event": "chrome_key_conflict", "tries": CAS_TRIES})
+        return False
+    finally:
         try:
-            d = json.loads(raw.decode("utf-8"))
-        except (ValueError, UnicodeDecodeError):
-            return False
-        if not isinstance(d, dict):
-            return False
-        if value is None:
-            d.pop(CHROME_KEY, None)
-        else:
-            d[CHROME_KEY] = value
-        try:
-            mode = os.stat(path).st_mode & 0o777
+            os.rmdir(lock)
         except OSError:
-            return False
-        tmp = "%s.cc-tmp-%d" % (path, os.getpid())
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(d, f, ensure_ascii=False, indent=2)
-        os.chmod(tmp, mode)
-        _cas_hook()
-        if _read_raw(path) != raw:          # 그 사이 누가 고쳐 썼다 — 덮지 않는다
-            os.remove(tmp)
-            continue
-        os.replace(tmp, path)
-        has, v = read_chrome_key()
-        return (not has) if value is None else (has and v is value)
-    _ledger({"event": "chrome_key_conflict", "tries": CAS_TRIES})
-    return False
+            pass
 
 
 def _cas_hook():
@@ -1435,7 +1466,8 @@ def schedule_seat_restart(delay):
     return _act("seat_restart", argv, detach=True)
 
 
-def _seat_idle_secs(sid):
+def _seat_status(sid):
+    """그 좌석의 (출력 유휴 초, 세션 ID) — `cys status --json`. 못 읽으면 (None, None)."""
     r = _act("seat_status", [_cys_bin(), "status", "--json"], timeout=15)
     try:
         d = json.loads(r.stdout) if r and r.returncode == 0 else None
@@ -1444,30 +1476,78 @@ def _seat_idle_secs(sid):
     for srf in (d or {}).get("surfaces") or []:
         if str(srf.get("surface_id")) == sid.replace("surface:", "") or srf.get("surface_ref") == sid:
             v = srf.get("idle_secs")
-            return v if isinstance(v, (int, float)) else None
+            return (v if isinstance(v, (int, float)) else None), srf.get("registered_session_id")
+    return None, None
+
+
+def _turn_ended(session_id):
+    """★codex R2: 출력이 조용한 것은 턴 종료의 증거가 아니다(도구 대기 중에도 조용하다). 좌석 자신의 세션 기록 마지막 대화 줄이
+    「assistant · stop_reason = end_turn」이어야 턴이 끝난 것이다. 읽는 칸 = type·stop_reason 뿐(내용 0). True/False/None(못 읽음)."""
+    if not session_id or not re.match(r"^[0-9a-fA-F-]{8,64}$", str(session_id)):
+        return None
+    root = os.path.join(claude_config_dir(), "projects")
+    hit = None
+    for dirpath in _listdir(root):
+        cand = os.path.join(root, dirpath, "%s.jsonl" % session_id)
+        if os.path.isfile(cand):
+            hit = cand
+            break
+    if not hit:
+        return None
+    try:
+        with open(hit, "rb") as f:
+            f.seek(max(0, os.path.getsize(hit) - 256 * 1024))
+            tail = f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return None
+    for line in reversed(tail):
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        t = e.get("type") if isinstance(e, dict) else None
+        if t == "assistant":
+            msg = e.get("message") if isinstance(e.get("message"), dict) else {}
+            return msg.get("stop_reason") == "end_turn"
+        if t == "user":
+            return False
     return None
 
 
 def cmd_seat_restart_wait(a):
-    """(분리된 프로세스 전용) 좌석 턴이 끝나길 기다렸다가 재시작. 못 기다리면 빚(pending_seat_restart)으로 남긴다."""
+    """(분리된 프로세스 전용) 좌석 턴이 **끝난 것이 확인되면** 재시작. 좌석·세션을 모르거나 15분 안에 확인 못 하면 재시작하지 않고
+    빚(pending_seat_restart)으로 남긴다 · rotate 가 실패해도 빚은 남는다(성공해야 지운다 · codex R2)."""
+    def owe(why):
+        st = _load_chrome_state()
+        st["pending_seat_restart"] = True
+        st.pop("seat_restart_scheduled_at", None)
+        _write_json(_p(CHROME_STATE), st)
+        _ledger({"event": "seat_restart_not_done", "why": why})
+        return out({"ok": False, "say": "", "reason": why}, 0)
+    if not a.surface:
+        return owe("no_surface")
     _sleep(a.min_delay)
     quiet, waited = 0, a.min_delay
-    while a.surface:
-        v = _seat_idle_secs(a.surface)
-        quiet = quiet + 1 if (v is not None and v >= SEAT_IDLE_SEC) else 0
+    while True:
+        idle, sess = _seat_status(a.surface)
+        ok = idle is not None and idle >= SEAT_IDLE_SEC and _turn_ended(sess) is True
+        quiet = quiet + 1 if ok else 0
         if quiet >= 2:
             break
         if waited >= SEAT_WAIT_MAX_SEC:
-            st = _load_chrome_state()
-            st["pending_seat_restart"] = True
-            _write_json(_p(CHROME_STATE), st)
-            _ledger({"event": "seat_restart_gave_up", "waited": waited})
-            return out({"ok": False, "say": "좌석이 계속 일하고 있어 재시작을 미뤘습니다.", "reason": "busy"}, 0)
+            return owe("busy")
         _sleep(5)
         waited += 5
     r = _act("rotate", [_cys_bin(), "rotate", "--skip-depts"], timeout=600)
-    _ledger({"event": "seat_restart_rotate", "rc": None if r is None else r.returncode})
-    return out({"ok": r is not None and r.returncode == 0, "say": ""}, 0)
+    rc = None if r is None else r.returncode
+    _ledger({"event": "seat_restart_rotate", "rc": rc})
+    if rc not in (0, 21, 25):          # 21·25 = rotate 의 「끝까지 돌았지만 일부 부족」(중단 아님 · cys.rs rotate_rc 표)
+        return owe("rotate_rc_%s" % rc)
+    st = _load_chrome_state()
+    st.pop("pending_seat_restart", None)
+    st.pop("seat_restart_scheduled_at", None)
+    _write_json(_p(CHROME_STATE), st)
+    return out({"ok": True, "say": ""}, 0)
 
 
 def _load_chrome_state():
@@ -1517,10 +1597,10 @@ def cmd_chrome_enable(a):
             return fail("크롬 기본 켜기를 저장하지 못했습니다(그 사이 다른 프로그램이 설정을 고쳐 써서 손대지 않았습니다 — 잠시 뒤 다시 하겠습니다).",
                         "write_failed", 1)
         done.append("default_on")
-    # ② 연결 파일 — ★codex R1: 처음 만들 때 Claude Code 가 크롬에 「다시 연결」 탭을 연다(바이너리 문자열) → 크롬이 켜져 있으면
-    #   그 탭이 앞으로 나와 타이핑이 샐 수 있으므로 같은 유휴 관문 뒤에만 만든다(못 채우면 미룸 = 다음 호출이 이어서)
+    # ② 연결 파일 — ★codex R1·R2: 처음 만들 때 Claude Code 가 크롬에 「다시 연결」 탭을 연다(바이너리 문자열) → 크롬이 켜져 있든
+    #   꺼져 있든(꺼져 있으면 크롬이 떠오른다) 앞으로 나온 창에 타이핑이 샐 수 있으므로 유휴 관문 뒤에만 만든다(못 채우면 미룸)
     was_running = chrome_running(plat)
-    if was_running is not False and _nmh_ok(plat, _chrome_userdata(plat)) is not True and not wait_idle(plat, a.wait):
+    if _nmh_ok(plat, _chrome_userdata(plat)) is not True and not wait_idle(plat, a.wait):   # ★codex R2: 꺼진 크롬도 탭이 크롬을 띄울 수 있다
         # 연결 파일이 아직 없으니 크롬 재시작 빚은 없다(다음 호출이 만들고 그때 판단) · 좌석 재시작만 빚으로
         if (done and a.seat_restart == "auto") or a.seat_restart == "now":
             st["pending_seat_restart"] = True
@@ -1532,8 +1612,9 @@ def cmd_chrome_enable(a):
     nmh, created = _ensure_nmh(plat)
     if created:
         man = _nmh_manifest_path(plat)
-        st["nmh_created"] = {"path": man, "sha256": _sha_file(man) if man else None, "plat": plat,
-                             "reg": _nmh_reg_value() if plat == "win" else None}
+        reg = _nmh_reg_value() if plat == "win" else None     # ★codex R2: 윈 매니페스트 = 등록값이 가리키는 파일
+        st["nmh_created"] = {"path": man, "sha256": _sha_file(man or reg) if (man or reg) else None, "plat": plat,
+                             "reg": reg}
         _write_json(_p(CHROME_STATE), st)
         _ledger({"event": "chrome_enable_nmh", "path": man})
         done.append("nmh")
@@ -1568,16 +1649,21 @@ def cmd_chrome_enable(a):
             st["pending_seat_restart"] = True       # 크롬을 다시 켠 뒤에 좌석을 재시작한다(순서 보존)
     else:
         st.pop("pending_chrome_restart", None)
-        if want_seat:
+        sched = st.get("seat_restart_scheduled_at")
+        if want_seat and isinstance(sched, (int, float)) and _now() - sched < SEAT_WAIT_MAX_SEC + 120:
+            said.append("cysr 재시작은 이미 예약돼 있습니다(이 대화가 끝나면 합니다).")
+        elif want_seat:
+            # ★codex R2: 빚은 예약 성공이 아니라 재시작 성공(waiter)에서 지운다 — 예약 실패·rotate 실패면 다음 호출이 다시
+            st["pending_seat_restart"] = True
             r = schedule_seat_restart(SEAT_RESTART_DELAY_SEC)
             if r is None:
-                said.append("cysr 재시작 예약에 실패했습니다 — 위쪽 ↻ 재시작으로도 됩니다.")
+                said.append("cysr 재시작 예약에 실패했습니다 — 다음에 다시 하겠습니다(위쪽 ↻ 재시작으로도 됩니다).")
             else:
+                st["seat_restart_scheduled_at"] = _now()
                 _ledger({"event": "seat_restart_scheduled", "delay": SEAT_RESTART_DELAY_SEC})
-                st.pop("pending_seat_restart", None)
                 done.append("seat_restart")
-                said.append("%d초 뒤 cysr 가 잠깐 다시 시작합니다(지금 대화는 저장하고 이어집니다)." % SEAT_RESTART_DELAY_SEC)
-    if owed or changed or "chrome_restart" in pending or st != _load_chrome_state():
+                said.append("이 대화가 끝나면 cysr 가 잠깐 다시 시작합니다(지금 대화는 저장하고 이어집니다).")
+    if owed or changed or want_seat or "chrome_restart" in pending or st != _load_chrome_state():
         _write_json(_p(CHROME_STATE), st)
     head = ("크롬 연결을 켰습니다(기본 켜기%s)." % (" · 연결 파일" if "nmh" in done else "")
             if ("default_on" in done or "nmh" in done) else "크롬 연결은 이미 켜져 있습니다.")
@@ -1650,9 +1736,11 @@ def cmd_chrome_disable(a):
     target = (prior["value"] if prior.get("present") else None) if isinstance(prior, dict) else False
     if target is not None and not isinstance(target, bool):
         target = False
-    _ledger({"event": "chrome_disable_key", "to": "absent" if target is None else target})
-    if not write_chrome_key(target):
-        return fail("크롬 기본 켜기를 되돌리지 못했습니다.", "write_failed", 1)
+    if not st.get("key_restored"):              # ★codex R2: 연결 파일 삭제를 다시 시도할 때 키를 또 바꾸지 않는다
+        _ledger({"event": "chrome_disable_key", "to": "absent" if target is None else target})
+        if not write_chrome_key(target):
+            return fail("크롬 기본 켜기를 되돌리지 못했습니다(설정이 잠겨 있거나 그 사이 바뀌어 손대지 않았습니다).", "write_failed", 1)
+        st["key_restored"] = True
     nm = st.get("nmh_created")
     keep_state = False
     if isinstance(nm, dict):
@@ -1663,7 +1751,7 @@ def cmd_chrome_disable(a):
             argv = ["/bin/rm", "-f", nm["path"]]
         elif plat == "win":
             cur = _nmh_reg_value()
-            mine = bool(nm.get("reg")) and cur == nm.get("reg") and _sha_file(cur) == nm.get("sha256")
+            mine = bool(nm.get("reg")) and bool(nm.get("sha256")) and cur == nm.get("reg") and _sha_file(cur) == nm.get("sha256")
             argv = ["reg", "delete", NMH_REG_KEY, "/f"]
         else:
             mine, argv = False, None
@@ -1674,11 +1762,13 @@ def cmd_chrome_disable(a):
             else:
                 keep_state = True
                 said.append("제가 만든 연결 파일을 지우지 못했습니다 — 다음에 다시 지우겠습니다.")
+        elif argv and plat == "win" and not nm.get("sha256"):
+            keep_state = True                           # 소유권을 확인할 근거가 없다 — 지우지도, 기록을 버리지도 않는다
+            said.append("연결 등록이 제가 만든 것인지 확인하지 못해 그대로 두었습니다.")
         elif argv:
             said.append("연결 파일은 그 사이 다른 프로그램이 고쳐 써서 그대로 두었습니다.")
     if keep_state:
-        st.pop("prior_key", None)
-        _write_json(_p(CHROME_STATE), st)
+        _write_json(_p(CHROME_STATE), st)           # prior_key·key_restored 그대로 — 다음 끄기는 연결 파일만 다시
     else:
         try:
             os.remove(_p(CHROME_STATE))
@@ -1698,6 +1788,7 @@ def cmd_chrome_disable(a):
 # 결정 4가지: do = 마스터가 정하고 한 뒤 짧게 보고(묻지 않음 · 기본값) · ask = 선례로 갈리지 않는 새 유형 — 한 번 묻고 답을 상시 기록
 #   (같은 항목 재질문 금지) · each = 그 건마다 사람(결제·서명 제출·새 가입·비밀번호 입력 — 상시 기록 불가) · never = 안 함(사유).
 DO, ASK, EACH, NEVER = "do", "ask", "each", "never"
+CHECK = "check"     # 조건부 상시 허락 — 이번 건이 그 조건에 맞는지 마스터가 확인하고 --condition-met 으로 다시 부른다
 PRECEDENT_SRC = {   # 선례 = 박사님 맥 운영 판례(원문은 각 파일 · 경로 = ~/.claude/projects/-Users-oogisoogi-axdev/memory/)
     "login": "test-login-approval-master-does(10-01·10-02 「필요에 의한 로그인, 권한 인증 … 마스터가 알아서 진행하라」)",
     "exception1": "~/axdev/CLAUDE.md 예외 1(결제·서명 제출·새 서비스 가입 = 건마다 허락)",
@@ -1765,9 +1856,17 @@ def mask(s, limit=80):
 
 
 def decision_key(cat, subject):
-    """상시 기록 키 = 유형 + 대상의 해시(대상 원문을 파일에 남기지 않는다 · 같은 대상은 같은 키)."""
+    """상시 기록 키 = 유형 + 대상의 해시(대상 원문을 파일에 남기지 않는다 · 같은 대상은 같은 키).
+    목록 밖 새 유형은 유형 이름도 해시(마스터가 지은 이름에 개인정보가 섞여도 키·출력에 원문 0 · codex R2)."""
     n = _norm(subject)
-    return "%s:%s" % (cat, hashlib.sha256(n.encode("utf-8")).hexdigest()[:16] if n else "")
+    head = cat if cat in CATEGORIES else "new-" + hashlib.sha256(_norm(cat).encode("utf-8")).hexdigest()[:12]
+    return "%s:%s" % (head, hashlib.sha256(n.encode("utf-8")).hexdigest()[:16] if n else "")
+
+
+def _lookup(decisions, cat, subject):
+    """상시 기록 조회 — 지금 키, 없으면 옛 키(92c47060 판 `유형:정규화 원문`)도 본다(codex R2 · 기록을 잃지 않는다)."""
+    d = decisions or {}
+    return d.get(decision_key(cat, subject)) or d.get("%s:%s" % (cat, _norm(subject)))
 
 
 def load_decisions():
@@ -1810,22 +1909,29 @@ def _listdir(root):
         return []
 
 
+def _toks(s):
+    return [t for t in re.split(r"[\s/.,:;·→()\[\]_\-@]+", _norm(s)) if t]
+
+
 def _in_use(subject, usage):
-    """그 서비스·앱을 이미 쓰는가 — True(근거 문장)/None(모름). 이름 대조만."""
-    s = _norm(subject)
-    if not s:
+    """그 서비스·앱을 이미 쓰는가 — True(근거 문장)/None(모름). ★codex R2: 임의 부분 문자열이 아니라 **낱말** 대조
+    (「카카오톡 로그인」 = 카카오톡 · 「wordpress.com」 ≠ Word) — 이름의 낱말이 전부 대상 낱말 안에 있어야 일치."""
+    st = set(_toks(subject))
+    if not st:
         return None, ""
     for n in usage.get("services", []):
-        if s in _norm(n) or _norm(n) in s:
+        nt = _toks(n)
+        if nt and set(nt) <= st:
             return True, "커넥터로 연결해 쓰는 서비스(%s)" % n
     for aid, v in (usage.get("apps") or {}).items():
-        if s in (aid, _norm(v.get("name"))) or aid in s or (_norm(v.get("name")) and _norm(v.get("name")) in s):
+        names = [_toks(aid), _toks(v.get("name"))]
+        if any(nt and set(nt) <= st for nt in names):
             d = v.get("last_used_days")
             return True, "이 컴퓨터에 설치된 앱(%s%s)" % (v.get("name"), "" if d is None else " · %d일 전 사용" % d)
     return None, ""
 
 
-def judge(cat, subject="", in_use=None, usage=None, decisions=None):
+def judge(cat, subject="", in_use=None, usage=None, decisions=None, condition_met=None):
     """유형 + 대상 → (결정, 근거, 문장). 순수 판정(쓰기 0) — self-test 가 전수로 돈다.
     순서: 약관 서비스 → 건마다·안 함(상시 기록으로 안 바뀜) → 상시 기록(새 유형 포함 — 한 번 물은 것은 다시 묻지 않는다) → 새 유형 = ask."""
     known = cat in CATEGORIES
@@ -1837,12 +1943,16 @@ def judge(cat, subject="", in_use=None, usage=None, decisions=None):
     if known and cat == "login" and in_use is False:      # ★codex R1: 처음 쓰는 서비스 = 가입 = 건마다(상시 기록보다 먼저)
         n2, d2, s2, l2 = CATEGORIES["signup"]
         return d2, "precedent:" + s2, "처음 쓰는 서비스입니다 — " + l2
-    rec = (decisions or {}).get(decision_key(cat, subject))
+    rec = _lookup(decisions, cat, subject)
     if isinstance(rec, dict) and rec.get("meaning") in ("allow", "deny", "conditional"):
+        if rec["meaning"] == "conditional" and condition_met is not True:
+            # ★codex R2: 조건부 허락은 이번 건이 그 조건에 맞는다는 확인이 있어야 do — 모르면 확인(check) · 아니면 이번만 묻기
+            if condition_met is False:
+                return EACH, "standing:%s" % rec.get("at", ""), "전에 붙이신 조건에 맞지 않는 건입니다 — 이번 건만 여쭙니다."
+            return CHECK, "standing:%s" % rec.get("at", ""), "전에 조건을 붙여 허락하셨습니다 — 이번 건이 그 조건에 맞는지 확인한 뒤 진행합니다."
         dec = DO if rec["meaning"] in ("allow", "conditional") else NEVER
-        cond = (" · 조건: " + mask(rec["condition"])) if rec.get("condition") else ""
-        return dec, "standing:%s" % rec.get("at", ""), "전에 정해 주신 대로 합니다(%s%s)." % (
-            {"allow": "허락", "deny": "안 함", "conditional": "조건부 허락"}[rec["meaning"]], cond)
+        return dec, "standing:%s" % rec.get("at", ""), "전에 정해 주신 대로 합니다(%s)." % (
+            {"allow": "허락", "deny": "안 함", "conditional": "조건부 허락 · 조건 확인됨"}[rec["meaning"]])
     if not known:
         return ASK, "new_type", "선례로 갈리지 않는 새 유형입니다 — 한 번 여쭙고 답을 계속 따르겠습니다."
     name, default, src, line = CATEGORIES[cat]
@@ -1865,7 +1975,8 @@ def cmd_decide(a):
     dec = load_decisions()["items"]
     in_use = {"yes": True, "no": False}.get(a.in_use)
     usage = usage_pattern() if a.cat == "login" and in_use is None else {}
-    d, basis, line = judge(a.cat, a.subject, in_use, usage, dec)
+    cm = {"yes": True, "no": False}.get(a.condition_met)
+    d, basis, line = judge(a.cat, a.subject, in_use, usage, dec, cm)
     name = CATEGORIES.get(a.cat, (mask(a.cat),))[0]
     subj = (" — " + mask(a.subject)) if a.subject else ""
     res = {"ok": True, "decision": d, "basis": basis, "category": mask(a.cat)}
@@ -1876,6 +1987,10 @@ def cmd_decide(a):
         res["ask"] = "「%s%s」 — %s 맡겨 주시겠어요? (허락 · 안 함 · 조건을 붙여 허락 중에서 말씀해 주세요)" % (name, subj, line)
     elif d == EACH:
         res["ask"] = "「%s%s」 — %s 이번 건을 진행할까요?" % (name, subj, line)
+    elif d == CHECK:
+        rec = _lookup(dec, a.cat, a.subject) or {}
+        res["condition"] = rec.get("condition", "")     # 사용자 자신의 답(대화에서 온 글) — 마스터가 대조할 원문
+        res["say"] = line
     else:
         res["say"] = "「%s%s」은(는) 하지 않습니다 — %s" % (name, subj, line)
     return out(res)
@@ -1896,7 +2011,8 @@ def cmd_remember(a):
         return fail("조건부 허락은 조건을 함께 적어야 합니다.", "condition", 2)
     d = load_decisions()
     key = decision_key(a.cat, a.subject)
-    if key in d["items"] and not a.user_changed:
+    legacy = "%s:%s" % (a.cat, _norm(a.subject))
+    if _lookup(d["items"], a.cat, a.subject) is not None and not a.user_changed:
         # 재질문 금지 — 이미 정해진 항목을 다시 묻고 기록하는 것은 마스터의 실수다(사용자가 스스로 바꾼 때만 --user-changed)
         return fail("이미 정해 주신 항목입니다 — 다시 여쭙지 않고 그 결정을 따릅니다.", "already_decided", 7)
     if key not in d["items"] and len(d["items"]) >= MAX_DECISIONS:
@@ -1904,12 +2020,14 @@ def cmd_remember(a):
         _ledger({"event": "decisions_full", "count": len(d["items"])})
         return fail("정해 두신 결정이 너무 많아(%d) 더 적어 두지 못했습니다 — 이번 결정은 따르되 기록은 하지 못했습니다."
                     % MAX_DECISIONS, "decisions_full", 7)
-    rec = {"meaning": a.meaning, "condition": mask((a.condition or "").strip(), 300), "at": _iso(),
+    rec = {"meaning": a.meaning, "condition": (a.condition or "").strip()[:300], "at": _iso(),
            "label": mask("%s %s" % (a.cat, a.subject)),
            "answer_sha256": hashlib.sha256(ans.encode("utf-8")).hexdigest()}
     _ledger({"event": "decision", "key": key, "meaning": a.meaning, "changed": bool(a.user_changed),
              "answer_sha256": rec["answer_sha256"]})              # 기록 먼저
     d["items"][key] = rec
+    if legacy != key:
+        d["items"].pop(legacy, None)                 # 옛 판 키는 새 키로 옮긴다(사용자가 바꾼 때)
     _write_json(_p(DECISIONS), d)
     word = {"allow": "허락", "deny": "안 함", "conditional": "조건부 허락(%s)" % mask(rec["condition"])}[a.meaning]
     return out({"ok": True, "key": key, "say": "알겠습니다 — 앞으로 「%s」은(는) %s 으로 계속 따르겠습니다. 다시 여쭙지 않습니다."
@@ -2031,6 +2149,11 @@ def self_test():
                     errs.append("judge %s 건마다·안 함 → do" % cat)
                 if "naver" in subj and cat in ("login", "external_send") and got != EACH:
                     errs.append("judge 약관 서비스 %s" % cat)
+    cond = {decision_key("external_send", "x"): {"meaning": "conditional", "condition": "c", "at": "t"}}
+    for cm, want in ((None, CHECK), (False, EACH), (True, DO)):
+        n += 1
+        if judge("external_send", "x", None, {}, cond, cm)[0] != want:
+            errs.append("judge 조건부 허락 condition_met=%r" % (cm,))
     n += 1
     if judge("brand-new-type")[0] != ASK:
         errs.append("judge 새 유형이 ask 가 아니다")
@@ -2081,6 +2204,8 @@ def main(argv=None):
     dc.add_argument("--subject", default="")
     dc.add_argument("--in-use", choices=("yes", "no", "unknown"), default="unknown")
     dc.add_argument("--what", default="", help="한 일 한 줄(보고 문장에 넣는다)")
+    dc.add_argument("--condition-met", choices=("yes", "no", "unknown"), default="unknown",
+                    help="조건부 상시 허락일 때 이번 건이 그 조건에 맞는가(마스터 판단)")
     rm = sp.add_parser("remember")
     rm.add_argument("cat")
     rm.add_argument("--subject", default="")

@@ -932,7 +932,8 @@ class TestChromeEnable(Base):
         self.assertLess(k.index("quit"), k.index("seat_restart"))      # 크롬 먼저, 좌석은 그 뒤
         st = jload(os.path.join(self.state, "chrome-enable.json"))
         self.assertNotIn("pending_chrome_restart", st)
-        self.assertNotIn("pending_seat_restart", st)
+        self.assertTrue(st["pending_seat_restart"])                     # codex R2: 좌석 빚은 재시작 성공(waiter)에서만 지운다
+        self.assertIn("seat_restart_scheduled_at", st)                  # 중복 예약 방지 표지
         self.assertIn("prior_key", st)                                  # 되돌리기 기록은 그대로
         n = len(self.acts())
         self.set_probes(chrome_running=True, idle=60)
@@ -952,11 +953,26 @@ class TestChromeEnable(Base):
         st = jload(os.path.join(self.state, "chrome-enable.json"))
         self.assertNotIn("pending_chrome_restart", st)
 
+    SID = "0a1b2c3d-1111-2222-3333-444455556666"
+
     def _status(self, idle):
-        return {"out": json.dumps({"surfaces": [{"surface_id": 4242, "surface_ref": "surface:4242", "idle_secs": idle}]})}
+        return {"out": json.dumps({"surfaces": [{"surface_id": 4242, "surface_ref": "surface:4242", "idle_secs": idle,
+                                                 "registered_session_id": self.SID}]})}
+
+    def _transcript(self, last):
+        d = os.path.join(self.ccd, "projects", "-x-proj")
+        os.makedirs(d, exist_ok=True)
+        rows = [{"type": "user", "message": {"role": "user", "content": "hi"}}]
+        if last == "end_turn":
+            rows.append({"type": "assistant", "message": {"stop_reason": "end_turn", "content": []}})
+        elif last == "tool_use":
+            rows.append({"type": "assistant", "message": {"stop_reason": "tool_use", "content": []}})
+        with open(os.path.join(d, self.SID + ".jsonl"), "w") as f:
+            f.write("\n".join(json.dumps(r) for r in rows) + "\n")
 
     def test_seat_waiter_rotates_only_after_turn_ends(self):
-        # codex R1 논쟁점: 고정 지연이 아니라 좌석 출력이 두 번 연속 조용할 때만
+        # codex R1·R2: 출력 유휴 두 번 연속 ∧ 좌석 세션의 마지막 대화 줄 = end_turn 일 때만
+        self._transcript("end_turn")
         self.set_probes(act={"seat_status": [self._status(0), self._status(25), self._status(0),
                                              self._status(30), self._status(31)]})
         rc, d, _ = self.run_cli("seat-restart-wait", "--surface", "surface:4242", "--min-delay", "0")
@@ -966,7 +982,107 @@ class TestChromeEnable(Base):
         rot = [x for x in self.acts() if x["kind"] == "rotate"][0]["argv"]
         self.assertEqual(rot[1:], ["rotate", "--skip-depts"])
 
+    def test_seat_waiter_quiet_tool_wait_is_not_turn_end(self):
+        # codex R2 blocking: 도구 응답을 기다리는 동안(출력 없음)은 턴이 안 끝났다 → 재시작하지 않고 빚
+        self._transcript("tool_use")
+        self.m.SEAT_WAIT_MAX_SEC = 10
+        self.set_probes(act={"seat_status": self._status(120)})
+        self.run_cli("seat-restart-wait", "--surface", "surface:4242", "--min-delay", "0")
+        self.assertNotIn("rotate", self.kinds())
+        self.assertTrue(jload(os.path.join(self.state, "chrome-enable.json"))["pending_seat_restart"])
+
+    def test_seat_waiter_without_surface_owes(self):
+        self.run_cli("seat-restart-wait", "--min-delay", "0")
+        self.assertNotIn("rotate", self.kinds())
+        self.assertNotIn("seat_status", self.kinds())
+        self.assertTrue(jload(os.path.join(self.state, "chrome-enable.json"))["pending_seat_restart"])
+
+    def test_seat_waiter_rotate_failure_keeps_debt_success_clears(self):
+        self._transcript("end_turn")
+        self.set_probes(act={"seat_status": self._status(60), "rotate": {"rc": 3}})
+        self.run_cli("seat-restart-wait", "--surface", "surface:4242", "--min-delay", "0")
+        self.assertTrue(jload(os.path.join(self.state, "chrome-enable.json"))["pending_seat_restart"])
+        self.set_probes(act={"seat_status": self._status(60), "rotate": {"rc": 0}})
+        self.run_cli("seat-restart-wait", "--surface", "surface:4242", "--min-delay", "0")
+        self.assertNotIn("pending_seat_restart", jload(os.path.join(self.state, "chrome-enable.json")))
+
+    def test_schedule_failure_keeps_seat_debt(self):
+        self.make_chrome()
+        self.write_cfg(chrome_default=False)
+        orig = self.m.schedule_seat_restart
+        self.m.schedule_seat_restart = lambda _d: None
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertNotIn("seat_restart", d["done"])
+        self.assertTrue(jload(os.path.join(self.state, "chrome-enable.json"))["pending_seat_restart"])
+        self.m.schedule_seat_restart = orig
+        rc, d, _ = self.run_cli("chrome-enable")                     # 다음 호출이 다시 예약
+        self.assertIn("seat_restart", d["done"])
+        rc, d, _ = self.run_cli("chrome-enable")                     # 예약이 살아 있는 동안 중복 예약 0
+        self.assertEqual(self.kinds().count("seat_restart"), 1)
+
+    def test_config_lock_respected(self):
+        # codex R2 blocking: Claude Code 와 같은 잠금(.claude.json.lock)을 쥔 작성자가 있으면 쓰지 않는다 · 쓴 뒤 잠금을 푼다
+        self.make_chrome()
+        self.write_cfg(chrome_default=False)
+        p = os.path.join(self.ccd, ".claude.json")
+        raw = rb(p)
+        os.mkdir(p + ".lock")
+        self.m.LOCK_WAIT_SEC = 0.2
+        rc, d, _ = self.run_cli("chrome-enable", "--seat-restart", "no")
+        self.assertEqual(rc, 1)
+        self.assertEqual(rb(p), raw)
+        self.assertTrue(os.path.isdir(p + ".lock"))                  # 남의 잠금을 지우지 않는다
+        os.rmdir(p + ".lock")
+        rc, d, _ = self.run_cli("chrome-enable", "--seat-restart", "no")
+        self.assertEqual(rc, 0)
+        self.assertFalse(os.path.exists(p + ".lock"))                # 내 잠금은 풀었다
+
+    def test_nmh_gate_even_when_chrome_off(self):
+        # codex R2 blocking: 꺼진 크롬도 「다시 연결」 탭이 크롬을 띄울 수 있다 → 입력 중이면 만들지 않는다
+        self.make_chrome(nmh=False)
+        self.set_probes(chrome_running=False, idle=[3], act={"nmh": self.nmh_touch()})
+        rc, d, _ = self.run_cli("chrome-enable", "--wait", "0")
+        self.assertNotIn("nmh", self.kinds())
+        self.assertEqual(d["pending"], ["nmh"])
+
+    def test_disable_retry_does_not_rewrite_key(self):
+        # codex R2 major: 연결 파일 삭제 실패 뒤 다시 끄면 키를 또 바꾸지 않는다(원래 없던 키가 false 로 생기지 않음)
+        self.make_chrome(nmh=False)
+        self.write_cfg(chrome_default=None)
+        self.set_probes(act={"nmh": self.nmh_touch()})
+        self.run_cli("chrome-enable", "--seat-restart", "no")
+        self.set_probes(act={"nmh_remove": {"rc": 1}})
+        self.run_cli("chrome-disable")
+        self.assertNotIn("claudeInChromeDefaultEnabled", self.cfg())
+        c = self.cfg()
+        c["claudeInChromeDefaultEnabled"] = True                     # 그 사이 사용자가 /chrome 에서 다시 켬
+        with open(os.path.join(self.ccd, ".claude.json"), "w") as f:
+            json.dump(c, f)
+        self.set_probes(act={"nmh_remove": {"rc": 0}})
+        rc, d, _ = self.run_cli("chrome-disable")
+        self.assertIs(self.cfg()["claudeInChromeDefaultEnabled"], True)   # 다시 끄기는 연결 파일만 — 사용자 선택을 덮지 않는다
+        self.assertFalse(os.path.exists(os.path.join(self.state, "chrome-enable.json")))
+
+    def test_win_round_trip_enable_then_disable(self):
+        # codex R2 major: 윈 생성 기록에 실제 매니페스트(등록값) sha 가 들어가야 끄기가 자기 등록을 지운다
+        os.environ["CYS_CC_PLATFORM"] = "win"
+        man = os.path.join(self.tmp, "ChromeNativeHost", "com.anthropic.claude_code_browser_extension.json")
+        os.makedirs(os.path.dirname(man))
+        with open(man, "w") as f:
+            f.write('{"path": "x"}')
+        reg = {"out": "    (기본값)    REG_SZ    %s\n" % man}
+        self.set_probes(chrome={"app": True, "profiles": 1, "with_ext": 1, "ext_enabled": True,
+                                "nmh": False, "default_on": False, "playwright_ext": False},
+                        chrome_running=False, act={"nmh_reg_query": reg})
+        self.m._nmh_ok = lambda plat, ud, _s=[False, False, True]: _s.pop(0) if len(_s) > 1 else _s[0]
+        self.run_cli("chrome-enable", "--seat-restart", "no")
+        nm = jload(os.path.join(self.state, "chrome-enable.json"))["nmh_created"]
+        self.assertEqual((nm["reg"], nm["sha256"]), (man, self.m._sha_file(man)))
+        rc, d, _ = self.run_cli("chrome-disable")
+        self.assertIn("nmh_remove", self.kinds())
+
     def test_seat_waiter_gives_up_and_owes(self):
+        self._transcript("end_turn")
         self.m.SEAT_WAIT_MAX_SEC = 10
         self.set_probes(act={"seat_status": self._status(0)})
         rc, d, _ = self.run_cli("seat-restart-wait", "--surface", "surface:4242", "--min-delay", "0")
@@ -1261,8 +1377,12 @@ class TestPrecedent(Base):
                                 "--condition", "교회 내부 공유 드라이브 한정")
         self.assertEqual(rc, 0, r)
         rc, d, _ = self.run_cli("decide", "external_send", "--subject", "당회록 → 교회 드라이브")
+        self.assertEqual(d["decision"], "check")                     # codex R2: 조건 확인 전에는 do 아님
+        self.assertEqual(d["condition"], "교회 내부 공유 드라이브 한정")
+        rc, d, _ = self.run_cli("decide", "external_send", "--subject", "당회록 → 교회 드라이브", "--condition-met", "yes")
         self.assertEqual(d["decision"], "do")
-        self.assertIn("조건: 교회 내부 공유 드라이브 한정", d["report"])
+        rc, d, _ = self.run_cli("decide", "external_send", "--subject", "당회록 → 교회 드라이브", "--condition-met", "no")
+        self.assertEqual(d["decision"], "each")
 
     def test_remember_ledger_first(self):
         def boom(_e):
@@ -1304,11 +1424,40 @@ class TestPrecedent(Base):
         for root, _d, files in os.walk(self.state):
             for f in files:
                 blob += "\n".join(lines(os.path.join(root, f)))
-        rc, d, _ = self.run_cli("decide", "external_send", "--subject", subj, "--what", "%s 에게 보냄" % EMAIL)
+        rc, d, _ = self.run_cli("decide", "external_send", "--subject", subj, "--what", "%s 에게 보냄" % EMAIL,
+                                "--condition-met", "yes")
         blob += json.dumps(d, ensure_ascii=False)
         self.assertEqual(d["decision"], "do")
-        self.assertNotIn(EMAIL, blob)
-        self.assertNotIn("010-1234-5678", blob)
+        self.assertNotIn(EMAIL, blob)                               # 대상 원문은 출력·파일 어디에도 없다(키 = 해시)
+        out_only = json.dumps(r, ensure_ascii=False) + json.dumps(d, ensure_ascii=False)
+        self.assertNotIn("010-1234-5678", out_only)                 # 조건 원문은 로컬 상태 파일에만(대조용) · 출력은 가림
+
+    def test_new_type_key_hashed(self):
+        cat = "send-to-%s" % EMAIL
+        rc, r, _ = self.run_cli("remember", cat, "--subject", "x", "--answer-file", self.answer("응"), "--meaning", "allow")
+        self.assertEqual(rc, 0, r)
+        self.assertNotIn(EMAIL, json.dumps(r, ensure_ascii=False) + json.dumps(self.dec(), ensure_ascii=False))
+        rc, d, _ = self.run_cli("decide", cat, "--subject", "x")
+        self.assertEqual(d["decision"], "do")
+
+    def test_legacy_key_still_honored(self):
+        # codex R2 blocking: 92c47060 판 키(`유형:정규화 원문`)로 남은 결정도 그대로 따른다
+        os.makedirs(self.state, exist_ok=True)
+        with open(os.path.join(self.state, "decisions.json"), "w") as f:
+            json.dump({"items": {"external_send:보고서 → 팀 드라이브": {"meaning": "allow", "at": "t"},
+                                 "settings_change:크롬 끄기": {"meaning": "deny", "at": "t"}}}, f)
+        rc, d, _ = self.run_cli("decide", "external_send", "--subject", "보고서 → 팀 드라이브")
+        self.assertEqual(d["decision"], "do")
+        rc, d, _ = self.run_cli("decide", "settings_change", "--subject", "크롬 끄기")
+        self.assertEqual(d["decision"], "never")
+        rc, r, _ = self.run_cli("remember", "external_send", "--subject", "보고서 → 팀 드라이브",
+                                "--answer-file", self.answer("응"), "--meaning", "allow")
+        self.assertEqual((rc, r["reason"]), (7, "already_decided"))
+
+    def test_word_app_does_not_match_wordpress(self):
+        os.makedirs(os.path.join(self.apps, "Microsoft Word.app"))
+        rc, d, _ = self.run_cli("decide", "login", "--subject", "wordpress.com")
+        self.assertEqual(d["decision"], "ask")                       # codex R2: Word 설치 ≠ WordPress 사용
 
     def test_decide_writes_nothing(self):
         before = os.path.exists(self.state) and sorted(os.listdir(self.state))

@@ -81,10 +81,12 @@ MAC_SCRIPT = [
     ("excel", "Excel", "com.microsoft.Excel", ("Microsoft Excel",)),
     ("powerpoint", "PowerPoint", "com.microsoft.Powerpoint", ("Microsoft PowerPoint",)),
 ]
-WIN_APPS = [
-    ("kakaotalk", "카카오톡", (r"%ProgramFiles(x86)%\Kakao\KakaoTalk\KakaoTalk.exe", r"%ProgramFiles%\Kakao\KakaoTalk\KakaoTalk.exe")),
-    ("hwp", "한글", (r"%ProgramFiles(x86)%\HNC", r"%ProgramFiles%\HNC", r"%ProgramFiles(x86)%\Hnc", r"%ProgramFiles%\Hnc")),
-    ("office", "오피스(Word·Excel·PowerPoint)", (r"%ProgramFiles%\Microsoft Office", r"%ProgramFiles(x86)%\Microsoft Office")),
+WIN_APPS = [   # (ID, 이름, ((환경변수, 경로 조각…), …)) — 존재만 본다(★윈 실기 전 가정 · 설계 §3-2)
+    ("kakaotalk", "카카오톡", (("ProgramFiles(x86)", "Kakao", "KakaoTalk", "KakaoTalk.exe"),
+                              ("ProgramFiles", "Kakao", "KakaoTalk", "KakaoTalk.exe"))),
+    ("hwp", "한글", (("ProgramFiles(x86)", "HNC"), ("ProgramFiles", "HNC"))),
+    ("office", "오피스(Word·Excel·PowerPoint)", (("ProgramFiles", "Microsoft Office"),
+                                               ("ProgramFiles(x86)", "Microsoft Office"))),
 ]
 # 맥이 보호하는 폴더 — 존재만 본다(내용을 열면 그 자체가 맥의 허락 창을 띄운다).
 MAC_PROTECTED = [("desktop", "바탕화면", "Desktop"), ("documents", "문서", "Documents"), ("downloads", "다운로드", "Downloads")]
@@ -323,6 +325,14 @@ def plan_state(cfg):
     return None
 
 
+def _app_roots():
+    """맥 앱 자리 — 시험은 CYS_CC_APP_ROOTS(: 구분)로 바꾼다(호스트 /Applications 에 기대지 않게)."""
+    env = os.environ.get("CYS_CC_APP_ROOTS")
+    if env:
+        return [r for r in env.split(os.pathsep) if r]
+    return ["/Applications", os.path.join(home(), "Applications")]
+
+
 def _chrome_userdata(plat):
     if plat == "darwin":
         return os.path.join(home(), "Library", "Application Support", "Google", "Chrome")
@@ -334,8 +344,7 @@ def _chrome_userdata(plat):
 
 def _chrome_app(plat):
     if plat == "darwin":
-        return any(os.path.isdir(os.path.join(r, "Google Chrome.app"))
-                   for r in ("/Applications", os.path.join(home(), "Applications")))
+        return any(os.path.isdir(os.path.join(r, "Google Chrome.app")) for r in _app_roots())
     if plat == "win":
         cands = [os.path.join(os.environ.get(v, ""), "Google", "Chrome", "Application", "chrome.exe")
                  for v in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA") if os.environ.get(v)]
@@ -414,7 +423,7 @@ def probe_chrome(plat, cfg):
 
 
 def _mac_app_installed(prefixes):
-    for root in ("/Applications", os.path.join(home(), "Applications")):
+    for root in _app_roots():
         try:
             names = os.listdir(root)
         except OSError:
@@ -436,7 +445,7 @@ def probe_apps(plat):
                 found.append(aid)
     elif plat == "win":
         for aid, _name, paths in WIN_APPS:
-            if any(os.path.exists(os.path.expandvars(p)) for p in paths):
+            if any(os.environ.get(p[0]) and os.path.exists(os.path.join(os.environ[p[0]], *p[1:])) for p in paths):
                 found.append(aid)
     return found
 

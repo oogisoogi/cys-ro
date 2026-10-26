@@ -811,7 +811,9 @@ WORK_SKILLS = ["hallucination-guard", "grill-me"]
 # ★D2(1.1.5 6차): dept-by-chat 편입 — 「교육 부서 만들어 줘」의 절차 스킬인데 어느 프로필에도
 # Skill 로 등록돼 있지 않아 본부 master 가 `Unknown skill: dept-by-chat` 으로 대화 폴백했다
 # (2026-09-22 윈 실기 · 실체는 pack/skills/dept-by-chat 에 있었다 — 빠진 것은 등록뿐).
-HARNESS_SKILLS = ["harness-engineering", "dept-by-chat"]
+# ★cu-1111(1.1.11): computer-control 편입 — 「내 컴퓨터에서 맡을 수 있는 것」 절차 스킬(dept-by-chat 과 같은 이유 ·
+# 좌석 exec 전 링크가 없으면 첫 master 가 Unknown skill 로 대화 폴백한다).
+HARNESS_SKILLS = ["harness-engineering", "dept-by-chat", "computer-control"]
 # 스킬 본문 핀 — frontmatter만 남기고 본문이 비워지면(전담 기능 소실) 결정론 검출한다.
 WORK_SKILL_PINS = {
     # "원출처까지 간다"는 본문 고유 문구 — "출처 진실성"은 frontmatter description과

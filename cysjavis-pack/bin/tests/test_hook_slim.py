@@ -404,6 +404,29 @@ def seat_cases():
     check("S12d 노브 없으면 종전대로 제거", read(p) != before and len(backups(p)) == 1)
     shutil.rmtree(h, ignore_errors=True)
 
+    # S12e(codex R2 major I1) 별칭 config: CLAUDE_CONFIG_DIR=~/alias-config → ~/.claude · 표지 없음 = 개인 프로필이다
+    #   (발견의 realpath 중복 제거가 원경로를 숨겨도 등록 대상에서 빠져야 한다) — init-pack(preflight)→doctor --fix 반복에도 바이트 동일.
+    h = os.path.realpath(tempfile.mkdtemp(prefix="hookslim-S12e-", dir=os.path.join(REPO, "target")))
+    p = os.path.join(h, ".claude", "settings.json")
+    before = '{\n  "x": 1e3,\n  "hooks": {\n    "Stop": []\n  }\n}\n'
+    write(p, before)
+    alias = os.path.join(h, "alias-config")
+    os.symlink(os.path.join(h, ".claude"), alias)
+    r = subprocess.run([sys.executable, "-c", probe, os.path.join(PACK_SRC, "bin")],
+                       env=env_for(h, CLAUDE_CONFIG_DIR=alias, CYS_PACK_DIR=os.path.join(h, ".cys", "pack")),
+                       capture_output=True, text=True, timeout=60)
+    try:
+        targets, why = json.loads(r.stdout.strip().splitlines()[-1])
+    except Exception:
+        targets, why = None, "판독 불가: %s" % (r.stdout + r.stderr)[-300:]
+    check("S12e 별칭 config(→ ~/.claude) = 개인 프로필 → 등록 대상 아님",
+          targets is not None and os.path.realpath(p) not in [os.path.realpath(x) for x in targets], str((targets, why)))
+    for _ in range(2):
+        cys(h, "init-pack", CLAUDE_CONFIG_DIR=alias)
+        cys(h, "doctor", "--fix", CLAUDE_CONFIG_DIR=alias)
+    check("S12e init-pack·doctor --fix 2회 반복 뒤 개인 파일 바이트 동일(재부착·재직렬화 0)", read(p) == before, read(p)[:300])
+    shutil.rmtree(h, ignore_errors=True)
+
 
 def preflight_case():
     """파이썬 등록 경로(preflight --fix)도 표지 없이는 개인 프로필에 다시 붙이지 않는다(데몬·preflight 양쪽 재부착 0).
@@ -612,11 +635,14 @@ def detach_cases(h, pk, work, env, stop, led):
           precompacts() == n0 + 1 and not (os.path.isdir(q) and os.listdir(q)))
 
     # DT10 대기표: 부모 반환 전에 등록 → 소비자가 자식의 잠금 전 틈에도 기다린다
+    rq = os.path.join(hd, "reflect-scan.q")
+    t_end = time.time() + 15                     # 앞 검체(DT8)의 표가 처리를 끝낼 때까지
+    while os.path.isdir(rq) and os.listdir(rq) and time.time() < t_end:
+        time.sleep(0.2)
     if os.path.exists(led):
         os.remove(led)
     subprocess.run(["sh", os.path.join(pk, "hooks", "reflect-scan.sh")], input=stop, env=env, capture_output=True,
                    text=True)
-    rq = os.path.join(hd, "reflect-scan.q")
     check("DT10 부모 반환 시점에 대기표 1장", os.path.isdir(rq) and len(os.listdir(rq)) == 1,
           str(os.listdir(rq) if os.path.isdir(rq) else None))
     t0 = time.time()
@@ -628,12 +654,18 @@ def detach_cases(h, pk, work, env, stop, led):
     while os.listdir(rq) and time.time() < t_end:
         time.sleep(0.1)
     check("DT10c 자식이 끝나며 대기표를 지운다", not os.listdir(rq), str(os.listdir(rq)))
-    # 죽은 주인 대기표는 소비자가 지우고 기다리지 않는다
-    write(os.path.join(rq, "%d.1" % int(time.time())), "999999")
-    t0 = time.time()
-    subprocess.run(["sh", "-c", '. "$1"; cys_hook_detach_wait reflect-scan 10', "x", lib], env=env,
-                   capture_output=True, text=True, timeout=60)
-    check("DT10d 죽은 주인 대기표 = 즉시 정리 · 대기 0", time.time() - t0 < 1.5 and not os.listdir(rq))
+    # 배수기가 죽어 남은 표(고아) — 스크립트를 넘기지 않은 소비자는 상한까지 기다리고 rc 1 · 넘긴 소비자는 한 번 깨워 처리시킨다
+    os.remove(led)
+    write(os.path.join(rq, "%d.1" % int(time.time())), stop)
+    rs = os.path.join(pk, "hooks", "reflect-scan.sh")
+    r = subprocess.run(["sh", "-c", '. "$1"; cys_hook_detach_wait reflect-scan 3', "x", lib], env=env,
+                       capture_output=True, text=True, timeout=60)
+    check("DT10d 고아 표 + 깨울 스크립트 없음 = 상한 뒤 rc 1(처리됐다고 말하지 않는다)",
+          r.returncode == 1 and len(os.listdir(rq)) == 1 and not os.path.exists(led), "rc=%s" % r.returncode)
+    r = subprocess.run(["sh", "-c", '. "$1"; cys_hook_detach_wait reflect-scan 15 "$2"', "x", lib, rs], env=env,
+                       capture_output=True, text=True, timeout=60)
+    check("DT10e 고아 표 + 스크립트 = 배수기를 깨워 처리 → rc 0 · 산출물 · 큐 빔",
+          r.returncode == 0 and os.path.exists(led) and not os.listdir(rq), "rc=%s" % r.returncode)
 
     # DT11 동기 PreCompact 도 같은 잠금에 참여한다(살아 있는 주인이 풀 때까지 기다린 뒤 기록)
     n0 = precompacts()
@@ -650,16 +682,22 @@ def detach_cases(h, pk, work, env, stop, led):
     dt = run_pre()
     check("DT12 빈 pid 잠금 회수(2~6초) 후 기록", 2.0 <= dt < 6.0 and precompacts() == n0 + 1, "%.1fs" % dt)
 
-    # DT13 잠금을 못 잡으면 건너뜀 + hook-errors 1줄(무잠금 실행 금지) — 동기 상한 20초
+    # DT13 잠금을 못 잡으면(동기 상한 20초) 무잠금 실행도 폐기도 아니다 — 입력을 큐에 넘기고 hook-errors 1줄(R2 codex I4)
     n0 = precompacts()
     sl = holder(40)
     lk = hold_lock("save-state", sl.pid)
     dt = run_pre()
     errs = read(os.path.join(st, "hook-errors.log")) if os.path.exists(os.path.join(st, "hook-errors.log")) else ""
-    check("DT13 잠금 대기 20초 초과 = 본문 건너뜀(기록 0) · hook-errors rc=124",
-          19 <= dt < 30 and precompacts() == n0 and "save-state" in errs and "rc=124" in errs and "잠금 대기" in errs,
-          "%.1fs · %s" % (dt, errs[-200:]))
+    sq = os.path.join(hd, "save-state.q")
+    check("DT13 잠금 대기 20초 초과 = 그 자리 실행 0 · 입력은 큐에 1장 · hook-errors rc=124 「큐에 넘김」",
+          19 <= dt < 30 and precompacts() == n0 and os.path.isdir(sq) and len(os.listdir(sq)) == 1
+          and "save-state" in errs and "rc=124" in errs and "큐에 넘김" in errs,
+          "%.1fs · %s · %s" % (dt, os.listdir(sq) if os.path.isdir(sq) else None, errs[-200:]))
     sl.kill()
+    r = subprocess.run(["sh", "-c", '. "$1"; cys_hook_detach_wait save-state 15 "$2"', "x", lib, ss], env=env,
+                       capture_output=True, text=True, timeout=60)
+    check("DT13b 주인이 죽은 뒤 넘긴 입력이 처리된다(유실 0 · 죽은 주인 잠금 회수)",
+          r.returncode == 0 and precompacts() == n0 + 1 and not os.listdir(sq), "rc=%s" % r.returncode)
     shutil.rmtree(lk, ignore_errors=True)
 
     # DT14 자식 본문 데드라인: memory verify 가 멎어도 30초에 끊고 hook-errors 124 · 정합 경고(WARN:memory)는 쓰지 않는다
@@ -675,6 +713,140 @@ def detach_cases(h, pk, work, env, stop, led):
     check("DT14 memory verify 30초 데드라인 → 124 기록 · WARN:memory 없음",
           28 <= dt < 40 and "memory verify 30초" in errs and "WARN:memory" not in read(slog), "%.1fs" % dt)
     shutil.move(mem + ".orig", mem)
+    detach_queue_cases(h, pk, work, env, stop, led)
+
+
+def detach_queue_cases(h, pk, work, env, stop, led):
+    """R2 수리(codex major I2·I3·I4): 영속 큐 + 배수기 하나 · 회수자 직렬화 · 소비자 세대 대조."""
+    import threading
+    st = os.path.join(h, ".cys", "state")
+    hd = os.path.join(st, "hook-detach")
+    lib = os.path.join(pk, "hooks", "_lib.sh")
+    rs = os.path.join(pk, "hooks", "reflect-scan.sh")
+    ss = os.path.join(pk, "hooks", "save-state.sh")
+    slog = os.path.join(work, "_round", ".state_log")
+    errf = os.path.join(st, "hook-errors.log")
+
+    def errs():
+        return read(errf) if os.path.exists(errf) else ""
+
+    def lines():
+        return read(led).splitlines() if os.path.exists(led) else []
+
+    def until(pred, sec):
+        end = time.time() + sec
+        while time.time() < end and not pred():
+            time.sleep(0.2)
+        return pred()
+
+    # DT15(I4) 긴 본문 중에 들어온 표는 버려지지 않는다 — 깨우기는 살아 있는 배수기에 물러나고, 그 배수기가 큐를 끝까지 돈다
+    if os.path.exists(led):
+        os.remove(led)
+    e0 = errs().count("rc=124")
+    tl = os.path.join(st, "hook-timing.log")
+    t_0 = len(read(tl).splitlines()) if os.path.exists(tl) else 0
+    for _ in range(3):
+        subprocess.run(["sh", rs], input=stop, env=dict(env, SLOW="3"), capture_output=True, text=True, timeout=30)
+    ok = until(lambda: len(lines()) == 3, 30)
+
+    def drains():
+        new_tl = read(tl).splitlines()[t_0:] if os.path.exists(tl) else []
+        return [l for l in new_tl if "reflect-scan(drain)" in l]
+
+    def long_drain():
+        return [l for l in drains() if l.rsplit(" ", 1)[-1].rstrip("s").isdigit()
+                and int(l.rsplit(" ", 1)[-1].rstrip("s")) >= 5]
+    until(long_drain, 10)                        # 배수기의 계측 줄은 마지막 본문 뒤 해제·재확인을 마치고 남는다
+    check("DT15 연속 Stop 3건(본문 3초) = 산출물 3줄 · 한 배수기가 뒤 표까지 돈다 · 잠금 대기 오류 0",
+          ok and long_drain() and errs().count("rc=124") == e0, "%s · %s" % (lines(), drains()))
+
+    # DT16(I2) 회수자 직렬화 — 다른 회수자가 안에 있는 동안(.reap) 죽은 주인 잠금을 지우지 않는다 · 3초 넘게 남은 .reap 만 치운다
+    n0 = read(slog).count("\tPreCompact\t")
+    lk = os.path.join(hd, "save-state.lock")
+    os.makedirs(lk, exist_ok=True)
+    write(os.path.join(lk, "pid"), "999999")
+    os.makedirs(lk + ".reap", exist_ok=True)
+    t0 = time.time()
+    subprocess.run(["sh", ss], input=json.dumps({"hook_event_name": "PreCompact", "cwd": work, "trigger": "auto"}),
+                   env=env, capture_output=True, text=True, timeout=60)
+    dt = time.time() - t0
+    check("DT16 회수 중인 회수자가 있으면 기다린다(3~8초) → 남은 .reap 치우고 회수 · 기록 1",
+          3.0 <= dt < 8.0 and read(slog).count("\tPreCompact\t") == n0 + 1 and not os.path.exists(lk + ".reap"),
+          "%.1fs" % dt)
+    # 동시 진입 0 — 죽은 주인 잠금 하나를 8개가 동시에 회수·획득해도 보호 구간이 겹치지 않는다
+    os.makedirs(lk, exist_ok=True)
+    write(os.path.join(lk, "pid"), "999999")
+    trace = os.path.join(h, "dt16.trace")
+    body = ('. "$1"; cys_hook_detach_acquire save-state 30 || exit 3; echo "+ $$" >> "$2"; sleep 0.3; '
+            'echo "- $$" >> "$2"; cys_hook_detach_release')
+    ps = [subprocess.Popen(["sh", "-c", body, "x", lib, trace], env=env) for _ in range(8)]
+    rcs = [p.wait(timeout=90) for p in ps]
+    tr_lines = read(trace).splitlines() if os.path.exists(trace) else []
+    paired = len(tr_lines) == 16 and all(tr_lines[i][0] == "+" and tr_lines[i + 1] == "-" + tr_lines[i][1:]
+                                         for i in range(0, len(tr_lines), 2))
+    check("DT16b 죽은 주인 잠금에 8개 동시 획득 = 보호 구간 겹침 0 · 전원 획득 · 잠금 해제",
+          paired and rcs == [0] * 8 and not os.path.exists(lk), "%s %s" % (rcs, tr_lines[:6]))
+
+    # DT17(I3) 소비자 세대 대조 — 시작 시각 이전 표가 처리 중이면(살아 있는 주인) 상한 뒤 rc 1 · inject-context 는 이전 스냅샷을 싣지 않는다
+    sq = os.path.join(hd, "save-state.q")
+    os.makedirs(sq, exist_ok=True)
+    sl = subprocess.Popen(["sleep", "40"])
+    threading.Thread(target=sl.wait, daemon=True).start()
+    os.makedirs(lk, exist_ok=True)
+    write(os.path.join(lk, "pid"), str(sl.pid))
+    tk = os.path.join(sq, "%d.1" % (int(time.time()) - 1))
+    write(tk, json.dumps({"hook_event_name": "Stop", "cwd": work, "session_id": "s"}))
+    r = subprocess.run(["sh", "-c", '. "$1"; cys_hook_detach_wait save-state 3', "x", lib], env=env,
+                       capture_output=True, text=True, timeout=60)
+    check("DT17 처리 중인 이전 표 = 상한 뒤 rc 1", r.returncode == 1, "rc=%s" % r.returncode)
+    write(os.path.join(work, "_round", "SESSION_STATE.md"), "# state\n")
+    write(os.path.join(work, "_round", "BOOT_SNAPSHOT.md"), "OLD-SNAPSHOT-MARK\n")
+    snp = os.path.join(pk, "bin", "javis_snapshot.py")
+    shutil.copyfile(snp, snp + ".orig")
+    with open(snp, "w") as f:
+        f.write("import sys\nsys.exit(0)\n")
+    ic = os.path.join(pk, "hooks", "inject-context.sh")
+    ssn = json.dumps({"hook_event_name": "SessionStart", "cwd": work, "session_id": "s", "source": "clear"})
+    t0 = time.time()
+    r = subprocess.run(["sh", ic], input=ssn, env=env, capture_output=True, text=True, timeout=60)
+    dt = time.time() - t0
+    check("DT17b inject-context: save-state 가 12초 안에 안 끝나면 이전 스냅샷 생략 + 고지",
+          "OLD-SNAPSHOT-MARK" not in r.stdout and "스냅샷 생략" in r.stdout and 11.0 <= dt < 25.0,
+          "%.1fs · %s" % (dt, r.stdout[-300:]))
+    sl.kill()
+    sl.wait()
+    os.remove(tk)
+    r = subprocess.run(["sh", ic], input=ssn, env=env, capture_output=True, text=True, timeout=60)
+    check("DT17c 큐가 비면 즉시 스냅샷 주입(종전대로)", "OLD-SNAPSHOT-MARK" in r.stdout, r.stdout[-300:])
+    shutil.move(snp + ".orig", snp)
+    os.remove(os.path.join(work, "_round", "SESSION_STATE.md"))
+    shutil.rmtree(lk, ignore_errors=True)
+
+    # DT18 동기 주인은 해제 뒤 큐를 다시 본다 — 동기 본문 중에 들어온 Stop 표(깨우기가 물러남)를 배수기를 깨워 처리시킨다
+    if os.path.exists(led):
+        os.remove(led)
+    pa = subprocess.Popen(["sh", rs], stdin=subprocess.PIPE, env=dict(env, CYS_HOOK_STOP_SYNC="1", SLOW="3"),
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True)
+    pa.stdin.write(stop)
+    pa.stdin.close()
+    time.sleep(1.0)
+    subprocess.run(["sh", rs], input=stop, env=dict(env, SLOW="0"), capture_output=True, text=True, timeout=30)
+    pa.wait(timeout=60)
+    check("DT18 동기 본문 중 들어온 Stop 표 = 동기 주인이 해제 뒤 깨워 처리(산출물 2줄)",
+          until(lambda: len(lines()) == 2, 15), str(lines()))
+
+    # DT19 배수기는 해제 뒤 큐를 다시 본다 — 마지막 확인과 해제 사이에 들어온 표(그 깨우기는 잠금에 막혀 물러났다)를 줍는다
+    fake = os.path.join(h, "fake-hook.sh")
+    out = os.path.join(h, "dt19.out")
+    write(fake, '#!/bin/sh\ncat >> "%s"; echo >> "%s"\n' % (out, out))
+    harness = ('. "$1"; _n=0; '
+               'cys_hook_detach_release() { [ -n "${_cys_hd_held:-}" ] && rm -rf "$_cys_hd_held"; _cys_hd_held=""; '
+               'if [ "$_n" -eq 0 ]; then _n=1; cys_hook_detach_enqueue dt19 LATE >/dev/null; fi; }; '
+               'cys_hook_detach_enqueue dt19 FIRST >/dev/null; cys_hook_detach_drain dt19 "$2"')
+    r = subprocess.run(["sh", "-c", harness, "x", lib, fake], env=env, capture_output=True, text=True, timeout=60)
+    got = read(out).split() if os.path.exists(out) else []
+    check("DT19 해제 뒤 재확인 — 마지막 확인 뒤 들어온 표도 처리(FIRST·LATE)",
+          got == ["FIRST", "LATE"], "%s · %s" % (got, r.stderr[-200:]))
 
 
 def main():

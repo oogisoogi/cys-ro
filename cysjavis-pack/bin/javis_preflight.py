@@ -1675,14 +1675,24 @@ def _is_personal_profile_settings(path):
             return False
     except OSError:
         pass
-    d = os.path.dirname(os.path.abspath(path))
-    n = os.path.basename(d)
-    if not (n == ".claude" or n.startswith(".claude-")):
-        return False
+    # ★R2(codex major I1): 이름 규칙을 원래 경로 **와** 해소 경로 둘 다에 건다 — `CLAUDE_CONFIG_DIR=~/alias → ~/.claude` 면
+    #   발견의 realpath 중복 제거가 원경로를 숨기고 별칭만 남는다(별칭 이름은 `.claude*` 가 아니라 표지 없이 재등록되던 결함).
+    #   역방향(`~/.claude/settings.json → 다른 곳` 링크)은 원래 경로 쪽이 잡는다. Rust 제거 경로는 홈 직하 `.claude*` 를 직접 열거해 같은 파일을 본다.
     try:
-        return os.path.realpath(os.path.dirname(d)) == os.path.realpath(os.path.expanduser("~"))
+        home = os.path.realpath(os.path.expanduser("~"))
     except OSError:
         return True   # 판정 불가 = 개인 프로필로 본다(쓰지 않는 방향)
+    for d in (os.path.dirname(os.path.abspath(path)), os.path.dirname(os.path.realpath(path)),
+              os.path.realpath(os.path.dirname(os.path.abspath(path)))):
+        n = os.path.basename(d)
+        if not (n == ".claude" or n.startswith(".claude-")):
+            continue
+        try:
+            if os.path.realpath(os.path.dirname(d)) == home:
+                return True
+        except OSError:
+            return True
+    return False
 
 
 def resolve_registration_targets():

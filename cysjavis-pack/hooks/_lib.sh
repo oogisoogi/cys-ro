@@ -530,29 +530,42 @@ _cys_hook_timing_end() {
 # ─────────────────────────────────────────────────────────────────────────────
 # 왜: Claude Code 는 Stop 훅이 끝나야 턴을 닫는다 — 실기 hook-timing.log(10-22~10-27 · Stop 1,720회) reflect-scan
 #   10초 이상 19회 · 최장 818초. 그동안 사용자는 「답은 했는데 계속 작업 중」을 본다(원작자 진단과 같다).
-# 어떻게: 부모 훅은 stdin 을 다 읽은 뒤 같은 스크립트를 CYS_HOOK_DETACHED=1 로 다시 띄워 입력을 넘기고 곧바로 끝난다.
-#   분리 묶음 전체(입력을 넘기는 printf 포함)의 stdout·stderr 는 /dev/null — Claude Code 가 기다릴 파이프가 남지 않는다. nohup 이 있으면 끊김(HUP)도 무시.
-#   같은 훅의 본문끼리는 `<상태 dir>/hook-detach/<이름>.lock`(mkdir 원자 잠금 · 주인 pid)으로 한 번에 하나만 돈다 —
-#   종전에는 턴 경계가 그걸 지켜 줬다(.state_log 회전 경합으로 줄을 잃지 않게). ★R1 수리(codex·agy major):
-#   ① 대기표: 부모는 **반환 전에** `<이름>.q/<epoch>.<부모 pid>` 를 만들고(내용 = 띄운 묶음의 pid) 자식이 끝나며 지운다 —
-#      소비자(`cys_hook_detach_wait`)는 대기표와 잠금을 함께 본다(자식이 잠금을 잡기 전 틈에도 기다린다).
-#   ② 동기 본문(save-state 의 PreCompact · 롤백 · 분리 실패)도 같은 잠금에 참여한다(대기 상한 20초 — PreCompact 선언 30초 안).
-#   ③ 죽은 주인 회수 + 주인 pid 가 2초 넘게 비어 있으면(mkdir 직후 죽은 주인) 회수.
-#   ④ 잠금을 못 잡으면(자식 120초 · 동기 20초) **본문을 건너뛴다** — 무잠금 실행 금지 · hook-errors.log 1줄.
-#   순서(FIFO)는 보장하지 않는다 — 각 본문이 자기 시각을 쓰고(save-state) reflect 는 멱등이라 순서가 뒤바뀌어도 잃는 줄은 없다.
-#   본문 상한은 각 훅이 단계별로 건다(reflect-scan: scan 60초 · verify 30초 · save-state: 스냅샷 10초 — cys_timeout_run · 초과 124 기록).
+# 어떻게(★R2 codex major I2·I3·I4 — 「잠금 대기 후 건너뜀」을 폐기하고 **영속 큐 + 배수기 하나**로 바꿨다):
+#   ① 부모 훅은 stdin 을 다 읽은 뒤 입력을 대기표 `<상태 dir>/hook-detach/<이름>.q/<epoch>.<pid>` 에 원자 기록(임시 파일 → mv)하고,
+#      배수기를 깨운 뒤(같은 스크립트를 CYS_HOOK_DRAINER=1 로 띄운다 · stdout·stderr = /dev/null · nohup) 곧바로 끝난다.
+#   ② 배수기 = `<이름>.lock`(mkdir 원자 · 주인 pid)을 **기다리지 않고** 잡아 본 뒤(살아 있는 주인이 있으면 물러난다), 큐가 빌 때까지
+#      가장 오래된 표부터 한 건씩 본문을 돈다(CYS_HOOK_DRAIN_RUN=1 로 스크립트를 다시 띄워 표를 stdin 으로 · 건당 150초 상한) → 표 삭제.
+#      해제한 **뒤** 큐를 다시 보고, 남았으면 다시 잡는다 — 잠금에 막혀 물러난 깨우기의 표는 주인이 해제 뒤 줍는다. 그래서 대기 한도도,
+#      건너뛰는 입력도 없다(종전: 120초 대기 뒤 입력 폐기 = 같은 상태의 긴 작업 셋이 겹치면 하나를 잃었다 — I4).
+#   ③ 동기 본문(save-state 의 PreCompact · 롤백 · 분리 실패)도 같은 잠금을 최대 20초 기다려 잡고 그 자리에서 돈다. 못 잡으면 입력을
+#      큐에 넘기고 배수기를 깨운다(버리지 않는다 · hook-errors 1줄). 해제 뒤 큐가 남았으면 배수기를 깨운다.
+#   ④ 회수: 죽은 주인 · 주인 pid 2초 넘게 빔(mkdir 직후 죽은 주인). 「다시 읽고 지우기」는 원자적이지 않으므로 회수자끼리
+#      `<이름>.lock.reap`(mkdir)으로 줄 세운다 — 두 회수자가 같은 죽은 pid 를 확인하고 뒤 회수자가 새 주인의 잠금을 지우던 경합(I2) 차단.
+#      회수 잠금은 수 ms 구간이라 3초 넘게 남으면(그 안에서 죽은 회수자) 치운다. 해제는 주인 토큰(pid 파일 = 내 pid)일 때만.
+#   ⑤ 소비자(`cys_hook_detach_wait`)는 **부를 때 있던 표**(epoch ≤ 시작 시각)가 모두 처리될 때까지 기다리고, 상한을 넘기면 rc 1 —
+#      소비자는 이전 세대 산출물을 최신처럼 쓰지 않는다(I3). 남은 표에 살아 있는 배수기가 없으면(배수기가 죽었다) 한 번 깨운다.
+#   순서(FIFO)는 대략만 — 큐는 오래된 표부터 돌지만 동기 본문은 큐를 거치지 않는다. 각 본문이 자기 시각을 쓰고(save-state)
+#   reflect 는 멱등이라 순서가 바뀌어도 잃는 줄은 없다. 처리 보장 = 적어도 한 번(본문 도중 배수기가 죽으면 그 표는 다음 배수기가 다시 돈다).
+#   본문 상한은 각 훅이 단계별로 건다(reflect-scan: scan 60초 · verify 30초 · save-state: 스냅샷 10초) + 배수기의 건당 150초.
 # 대상: 차단 능력이 없는 관측 훅만(save-state·reflect-scan). GATE 훅(grill-stop 의 exit 2)은 동기여야 한다.
 # 롤백: CYS_HOOK_STOP_SYNC=1 → 종전 동기 실행(분리하지 않는다 · 잠금 참여는 그대로).
 # 사용: `INPUT=$(cat)` 직후 `cys_hook_detach <이름> "$0" "$INPUT" Stop SessionEnd && exit 0`
-#   반환 0 = 호출자는 끝낸다(분리했다 · 또는 잠금을 못 잡아 건너뛴다) · 1 = 이 프로세스가 잠금을 쥐고 본문을 돈다.
-#   cys_hook_timing 뒤에 불러야 한다 — EXIT trap 을 「잠금 해제 + (자식이면) 대기표 정리 + 계측 줄」로 바꿔 건다(자식 이름 = 이름(bg)).
+#   반환 0 = 호출자는 끝낸다(큐에 넣었다 · 배수기였다 · 큐에 넘겼다) · 1 = 이 프로세스가 본문을 돈다.
+#   cys_hook_timing 뒤에 불러야 한다 — 동기 주인은 EXIT trap 을 「해제 + 큐 재확인 + 계측 줄」로 바꿔 건다
+#   (계측 이름: 배수기 = 이름(drain) · 큐에서 돈 본문 = 이름(bg)).
 # 이벤트 판정: 페이로드의 `"hook_event_name":"<이벤트>"` 글자 일치 — JSON 문자열 **안**의 같은 글자는 `\"` 로 이스케이프돼
 #   일치하지 않는다(검체 test_hook_slim DT9).
 cys_hook_detach() {
   _cys_hd_name="${1:-?}"; _cys_hd_self="${2-}"; _cys_hd_in="${3-}"
   shift 3 2>/dev/null || return 1
-  if [ -n "${CYS_HOOK_DETACHED:-}" ]; then
-    cys_hook_detach_lock "$_cys_hd_name" 120 "(bg)" && return 1
+  if [ -n "${CYS_HOOK_DRAIN_RUN:-}" ]; then
+    _cys_ht_name="${_cys_ht_name:-$_cys_hd_name}(bg)"     # 배수기가 띄운 본문 1건 — 잠금은 배수기가 쥐고 있다
+    return 1
+  fi
+  if [ -n "${CYS_HOOK_DRAINER:-}" ]; then
+    _cys_ht_name="${_cys_ht_name:-$_cys_hd_name}(drain)"
+    trap 'cys_hook_detach_release; _cys_hook_timing_end' EXIT
+    cys_hook_detach_drain "$_cys_hd_name" "$_cys_hd_self"
     return 0
   fi
   _cys_hd_hit=""
@@ -563,105 +576,150 @@ cys_hook_detach() {
       esac
     done
   fi
-  if [ -n "$_cys_hd_hit" ] && [ -f "$_cys_hd_self" ] && _cys_hd_t="$(cys_hook_detach_ticket "$_cys_hd_name")"; then
-    if command -v nohup >/dev/null 2>&1; then
-      { printf '%s' "$_cys_hd_in" | CYS_HOOK_DETACHED=1 CYS_HOOK_DETACH_TICKET="$_cys_hd_t" nohup sh "$_cys_hd_self" >/dev/null 2>&1; } >/dev/null 2>&1 &
-    else
-      { printf '%s' "$_cys_hd_in" | CYS_HOOK_DETACHED=1 CYS_HOOK_DETACH_TICKET="$_cys_hd_t" sh "$_cys_hd_self" >/dev/null 2>&1; } >/dev/null 2>&1 &
-    fi
-    _cys_hd_bg=$!
-    # 자식이 벌써 끝나 대기표를 지웠으면 다시 만들지 않는다(남더라도 죽은 pid 라 소비자가 지운다).
-    [ -f "$_cys_hd_t" ] && printf '%s' "$_cys_hd_bg" > "$_cys_hd_t" 2>/dev/null
+  if [ -n "$_cys_hd_hit" ] && [ -f "$_cys_hd_self" ] && cys_hook_detach_enqueue "$_cys_hd_name" "$_cys_hd_in" >/dev/null; then
+    cys_hook_detach_kick "$_cys_hd_self"
     return 0
   fi
-  cys_hook_detach_lock "$_cys_hd_name" 20 "" && return 1
+  # 동기 — 같은 잠금을 최대 20초(PreCompact 선언 30초 안) 기다려 잡고 이 자리에서 돈다.
+  _cys_hd_l="$(cys_hook_detach_lockdir "$_cys_hd_name")"
+  if ! mkdir -p "${_cys_hd_l%/*}" 2>/dev/null || [ ! -w "${_cys_hd_l%/*}" ]; then
+    # 상태 폴더를 못 쓰면 큐도 못 만든다 = 배수기가 생길 수 없다 → 잠금 없이 돈다.
+    cys_hook_fail "$_cys_hd_name" 73 "hook-detach 잠금 폴더 쓰기 불가 — 무잠금 동기 실행"
+    return 1
+  fi
+  if cys_hook_detach_acquire "$_cys_hd_name" 20; then
+    trap 'cys_hook_detach_release; cys_hook_detach_next "$_cys_hd_name" >/dev/null && cys_hook_detach_kick "$_cys_hd_self"; _cys_hook_timing_end' EXIT
+    return 1
+  fi
+  if [ -f "$_cys_hd_self" ] && cys_hook_detach_enqueue "$_cys_hd_name" "$_cys_hd_in" >/dev/null; then
+    cys_hook_detach_kick "$_cys_hd_self"
+    cys_hook_fail "$_cys_hd_name" 124 "hook-detach 잠금 대기 20초 초과 — 동기 실행 대신 큐에 넘김(배수기가 처리)"
+  else
+    cys_hook_fail "$_cys_hd_name" 124 "hook-detach 잠금 대기 20초 초과 · 큐 등록 불가 — 본문 건너뜀"
+  fi
   return 0
 }
 cys_hook_detach_lockdir() { printf '%s' "${CYS_STATE_DIR:-$HOME/.cys/state}/hook-detach/${1:-?}.lock"; }
 cys_hook_detach_qdir() { printf '%s' "${CYS_STATE_DIR:-$HOME/.cys/state}/hook-detach/${1:-?}.q"; }
-# 대기표 1장 등록 — stdout = 경로 · rc≠0 = 등록 불가(호출자는 분리하지 않고 동기로 돈다).
-cys_hook_detach_ticket() {
+# 대기표 1장 = 입력 원문(임시 파일 → mv 원자 교체 · 배수기는 숫자로 시작하는 이름만 본다) — stdout = 경로 · rc≠0 = 등록 불가.
+cys_hook_detach_enqueue() {
   _cys_hq_d="$(cys_hook_detach_qdir "${1:-?}")"
   mkdir -p "$_cys_hq_d" 2>/dev/null || return 1
   _cys_hq_t="$_cys_hq_d/$(date +%s 2>/dev/null || printf 0).$$"
-  : > "$_cys_hq_t" 2>/dev/null || return 1
+  if ! { printf '%s' "${2-}" > "$_cys_hq_d/.w.$$" && mv -f "$_cys_hq_d/.w.$$" "$_cys_hq_t"; } 2>/dev/null; then
+    rm -f "$_cys_hq_d/.w.$$" 2>/dev/null
+    return 1
+  fi
   printf '%s' "$_cys_hq_t"
 }
-# 살아 있는 대기표가 있는가(rc 0 = 있다). 주인이 죽은 대기표 · 주인 미기록 2초 초과 대기표는 지운다.
-cys_hook_detach_pending() {
-  _cys_hp_d="$(cys_hook_detach_qdir "${1:-?}")"
-  [ -d "$_cys_hp_d" ] || return 1
-  _cys_hp_now="$(date +%s 2>/dev/null || printf 0)"
-  _cys_hp_rc=1
-  for _cys_hp_t in "$_cys_hp_d"/*; do
-    [ -f "$_cys_hp_t" ] || continue
-    _cys_hp_p="$(cat "$_cys_hp_t" 2>/dev/null)"
-    if [ -n "$_cys_hp_p" ]; then
-      kill -0 "$_cys_hp_p" 2>/dev/null && { _cys_hp_rc=0; continue; }
-    else
-      _cys_hp_s="${_cys_hp_t##*/}"; _cys_hp_s="${_cys_hp_s%%.*}"
-      case "$_cys_hp_s" in ''|*[!0-9]*) _cys_hp_s=0 ;; esac
-      [ $((_cys_hp_now - _cys_hp_s)) -le 2 ] && { _cys_hp_rc=0; continue; }
-    fi
-    rm -f "$_cys_hp_t" 2>/dev/null
+# 가장 오래된 대기표(stdout) · rc 1 = 큐 빔.
+cys_hook_detach_next() {
+  for _cys_hn_t in "$(cys_hook_detach_qdir "${1:-?}")"/[0-9]*; do
+    [ -f "$_cys_hn_t" ] && { printf '%s' "$_cys_hn_t"; return 0; }
   done
-  return $_cys_hp_rc
+  return 1
 }
-# $1=이름 $2=대기 상한(초) $3=계측 이름 꼬리 → rc 0 = 잡았다 · 1 = 못 잡았다(hook-errors 1줄 · 호출자는 본문을 건너뛴다).
-cys_hook_detach_lock() {
-  _cys_hd_l="$(cys_hook_detach_lockdir "${1:-?}")"
-  _cys_hd_held=""
-  _cys_hd_tk=""; [ -n "${CYS_HOOK_DETACHED:-}" ] && _cys_hd_tk="${CYS_HOOK_DETACH_TICKET:-}"
-  _cys_ht_name="${_cys_ht_name:-${1:-?}}${3-}"
-  trap '[ -n "${_cys_hd_held:-}" ] && rm -rf "$_cys_hd_held" 2>/dev/null; [ -n "${_cys_hd_tk:-}" ] && rm -f "$_cys_hd_tk" 2>/dev/null; _cys_hook_timing_end' EXIT
-  if ! mkdir -p "$(dirname "$_cys_hd_l")" 2>/dev/null || [ ! -w "$(dirname "$_cys_hd_l")" ]; then
-    # 상태 폴더를 못 쓰면 대기표도 못 만든다 = 분리된 형제가 생길 수 없다 → 동기 본문은 잠금 없이 돈다 · 자식은 건너뛴다.
-    cys_hook_fail "${1:-?}" 73 "hook-detach 잠금 폴더 쓰기 불가"
-    [ -z "${CYS_HOOK_DETACHED:-}" ]
-    return $?
+# 배수기 깨우기 — $1 = 훅 스크립트. 분리 묶음 전체 stdout·stderr = /dev/null(Claude Code 가 기다릴 파이프 0) · nohup 있으면 HUP 무시.
+cys_hook_detach_kick() {
+  if command -v nohup >/dev/null 2>&1; then
+    { CYS_HOOK_DRAINER=1 nohup sh "$1" </dev/null >/dev/null 2>&1; } >/dev/null 2>&1 &
+  else
+    { CYS_HOOK_DRAINER=1 sh "$1" </dev/null >/dev/null 2>&1; } >/dev/null 2>&1 &
   fi
-  _cys_hd_n=0; _cys_hd_e=0
-  while ! mkdir "$_cys_hd_l" 2>/dev/null; do
-    _cys_hd_n=$((_cys_hd_n + 1))
-    if [ "$_cys_hd_n" -gt "${2:-120}" ]; then
-      cys_hook_fail "${1:-?}" 124 "hook-detach 잠금 대기 ${2:-120}초 초과 — 본문 건너뜀"
-      return 1
-    fi
-    _cys_hd_p="$(cat "$_cys_hd_l/pid" 2>/dev/null)"
-    if [ -n "$_cys_hd_p" ]; then
-      _cys_hd_e=0
-      if ! kill -0 "$_cys_hd_p" 2>/dev/null; then
-        # 죽은 주인 회수 — 다시 읽어 같은 주인일 때만(그 사이 새 주인이 잡았으면 건드리지 않는다).
-        [ "$(cat "$_cys_hd_l/pid" 2>/dev/null)" = "$_cys_hd_p" ] && rm -rf "$_cys_hd_l" 2>/dev/null
-        continue
+}
+# 배수 — 잠금을 기다리지 않고 잡아 본다. 살아 있는 주인이 있으면 물러난다(그 주인이 해제 뒤 재확인한다).
+cys_hook_detach_drain() {
+  while cys_hook_detach_acquire "${1:-?}" 0; do
+    while _cys_hd_t="$(cys_hook_detach_next "${1:-?}")"; do
+      cys_timeout_run 150 env CYS_HOOK_DRAINER= CYS_HOOK_DRAIN_RUN=1 sh "${2-}" < "$_cys_hd_t" >/dev/null 2>&1
+      [ $? -eq 124 ] && cys_hook_fail "${1:-?}" 124 "hook-detach 본문 150초 상한 초과 — 그룹 종료"
+      rm -f "$_cys_hd_t" 2>/dev/null
+      if [ -e "$_cys_hd_t" ]; then
+        cys_hook_fail "${1:-?}" 73 "hook-detach 대기표 삭제 불가 — 배수 중단"
+        return 0
       fi
-    elif [ -d "$_cys_hd_l" ]; then
-      _cys_hd_e=$((_cys_hd_e + 1))
-      if [ "$_cys_hd_e" -gt 2 ]; then
-        rm -rf "$_cys_hd_l" 2>/dev/null; _cys_hd_e=0   # 주인 pid 2초 넘게 비어 있음 = mkdir 직후 죽은 주인
-        continue
-      fi
-    else
-      continue   # 그 사이 풀렸다 — 곧바로 다시 잡는다(시도 횟수는 위 상한에 든다)
-    fi
-    sleep 1
+    done
+    cys_hook_detach_release
+    cys_hook_detach_next "${1:-?}" >/dev/null || return 0   # 해제 뒤 재확인
   done
-  printf '%s' "$$" > "$_cys_hd_l/pid" 2>/dev/null
-  _cys_hd_held="$_cys_hd_l"
   return 0
 }
-# 분리된 본문이 끝나기를 최대 N초 기다린다(소비자용 — 직후에 그 산출물을 읽는 훅). 살아 있는 대기표 또는 잠금이 있으면 기다린다. 늘 0.
+# $1=이름 $2=살아 있는 주인을 기다릴 상한(초 · 0 = 바로 물러남) → rc 0 = 잡았다(_cys_hd_held) · 1 = 못 잡았다.
+cys_hook_detach_acquire() {
+  _cys_ha_l="$(cys_hook_detach_lockdir "${1:-?}")"
+  _cys_ha_n=0; _cys_ha_e=0; _cys_ha_b=0
+  mkdir -p "${_cys_ha_l%/*}" 2>/dev/null
+  while ! mkdir "$_cys_ha_l" 2>/dev/null; do
+    [ "$_cys_ha_n" -ge $(( ${2:-0} + 8 )) ] && return 1
+    _cys_ha_p="$(cat "$_cys_ha_l/pid" 2>/dev/null)"
+    _cys_ha_x=""
+    if [ -n "$_cys_ha_p" ]; then
+      _cys_ha_e=0
+      if kill -0 "$_cys_ha_p" 2>/dev/null; then
+        [ "$_cys_ha_n" -ge "${2:-0}" ] && return 1
+      else
+        _cys_ha_x="$_cys_ha_p"; _cys_ha_e=3          # 죽은 주인 → 회수
+      fi
+    elif [ -d "$_cys_ha_l" ]; then
+      _cys_ha_e=$((_cys_ha_e + 1))                     # 주인 pid 2초 넘게 빔 = mkdir 직후 죽은 주인 → 회수
+    else
+      continue                                         # 그 사이 풀렸다 — 곧바로 다시 잡는다
+    fi
+    if [ "$_cys_ha_e" -gt 2 ]; then
+      cys_hook_detach_reap "$_cys_ha_l" "$_cys_ha_x"
+      case $? in
+        0) _cys_ha_e=0; _cys_ha_b=0; continue ;;
+        2) _cys_ha_b=$((_cys_ha_b + 1))
+           [ "$_cys_ha_b" -gt 3 ] && { rm -rf "$_cys_ha_l.reap" 2>/dev/null; _cys_ha_b=0; } ;;   # 3초 넘게 남은 회수 잠금
+      esac
+    fi
+    sleep 1; _cys_ha_n=$((_cys_ha_n + 1))
+  done
+  printf '%s' "$$" > "$_cys_ha_l/pid" 2>/dev/null
+  _cys_hd_held="$_cys_ha_l"
+  return 0
+}
+# 회수 — $1 잠금 $2 확인한 주인 pid(빈 값 = 빈 pid). 회수자끼리 `.reap` 으로 줄 세운 뒤 다시 읽어 같을 때만 지운다.
+#   rc 0 = 회수했다 · 1 = 그 사이 주인이 바뀌었다 · 2 = 다른 회수자가 안에 있다.
+cys_hook_detach_reap() {
+  mkdir "$1.reap" 2>/dev/null || return 2
+  _cys_hr_rc=1
+  if [ -d "$1" ] && [ "$(cat "$1/pid" 2>/dev/null)" = "${2-}" ]; then
+    rm -rf "$1" 2>/dev/null && _cys_hr_rc=0
+  fi
+  rm -rf "$1.reap" 2>/dev/null
+  return $_cys_hr_rc
+}
+# 해제 — 주인 토큰(pid 파일 = 내 pid)일 때만 지운다.
+cys_hook_detach_release() {
+  [ -n "${_cys_hd_held:-}" ] || return 0
+  [ "$(cat "$_cys_hd_held/pid" 2>/dev/null)" = "$$" ] && rm -rf "$_cys_hd_held" 2>/dev/null
+  _cys_hd_held=""
+  return 0
+}
+# 소비자 대기 — $1=이름 $2=상한(초) $3=훅 스크립트(선택 · 배수기가 없을 때 깨운다).
+#   부를 때 있던 표(epoch ≤ 시작 시각)가 모두 처리되면 rc 0 · 상한을 넘기면 rc 1(호출자는 이전 세대 산출물을 최신처럼 쓰지 않는다).
 cys_hook_detach_wait() {
-  _cys_hw_l="$(cys_hook_detach_lockdir "${1:-?}")"; _cys_hw_n=0
-  while [ "$_cys_hw_n" -lt "${2:-5}" ]; do
-    if ! cys_hook_detach_pending "${1:-?}"; then
-      [ -d "$_cys_hw_l" ] || break
+  _cys_hw_d="$(cys_hook_detach_qdir "${1:-?}")"; _cys_hw_l="$(cys_hook_detach_lockdir "${1:-?}")"
+  _cys_hw_s="$(date +%s 2>/dev/null || printf 0)"; _cys_hw_n=0; _cys_hw_k=""
+  while :; do
+    _cys_hw_r=""
+    for _cys_hw_t in "$_cys_hw_d"/[0-9]*; do
+      [ -f "$_cys_hw_t" ] || continue
+      _cys_hw_e="${_cys_hw_t##*/}"; _cys_hw_e="${_cys_hw_e%%.*}"
+      case "$_cys_hw_e" in ''|*[!0-9]*) _cys_hw_e=0 ;; esac
+      [ "$_cys_hw_e" -le "$_cys_hw_s" ] && { _cys_hw_r=1; break; }
+    done
+    [ -n "$_cys_hw_r" ] || return 0
+    [ "$_cys_hw_n" -ge "${2:-5}" ] && return 1
+    if [ -n "${3-}" ] && [ -z "$_cys_hw_k" ] && [ "$_cys_hw_n" -ge 2 ]; then
       _cys_hw_p="$(cat "$_cys_hw_l/pid" 2>/dev/null)"
-      [ -n "$_cys_hw_p" ] && ! kill -0 "$_cys_hw_p" 2>/dev/null && break
+      if [ ! -d "$_cys_hw_l" ] || { [ -n "$_cys_hw_p" ] && ! kill -0 "$_cys_hw_p" 2>/dev/null; }; then
+        cys_hook_detach_kick "$3"; _cys_hw_k=1          # 남은 표에 살아 있는 배수기가 없다(배수기가 죽었다) — 한 번 깨운다
+      fi
     fi
     sleep 1; _cys_hw_n=$((_cys_hw_n + 1))
   done
-  return 0
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

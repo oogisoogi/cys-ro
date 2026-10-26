@@ -301,10 +301,14 @@ fi
 # 스냅샷은 SESSION_STATE 동일 _round에 산출된다(save-state.sh) — STATE_DIR은 master에서 프로젝트루트라 부적합(RSI_DIR 동일 규약).
 # mtime 판정은 python 경유(Windows find.exe 충돌·-mmin 가정 회피) · 경로는 cygpath 변환(CHK·GATE 동일 규약).
 if [ -n "$STATE" ]; then
-  # ★1.1.11 hook-slim: save-state(Stop)는 이제 분리 실행이다 — 직전 턴의 스냅샷 생성이 아직 돌고 있으면(/clear 가
-  #   턴 끝 직후에 오는 순환) 최대 5초 기다린 뒤 읽는다(쓰기는 원자 교체라 반쪽 파일은 없다 · 기다림 상한 = 종전 동기
-  #   실행이 턴 끝에 걸던 시간보다 짧다). 잠금이 없으면 즉시 통과.
-  command -v cys_hook_detach_wait >/dev/null 2>&1 && cys_hook_detach_wait save-state 5
+  # ★1.1.11 hook-slim: save-state(Stop)는 이제 분리 실행이다 — 직전 턴의 스냅샷 생성이 아직 큐에 있거나 돌고 있으면(/clear 가
+  #   턴 끝 직후에 오는 순환) 최대 12초(스냅샷 데드라인 10초 + 여유) 기다린 뒤 읽는다(쓰기는 원자 교체라 반쪽 파일은 없다).
+  #   ★R2(codex major I3): 그 안에 끝나지 않으면 이전 세대 스냅샷을 최신처럼 싣지 않는다 — 생략하고 그 사실만 한 줄 적는다.
+  #   큐가 비어 있으면 즉시 통과. 배수기가 죽어 남은 표는 대기 함수가 한 번 깨운다(세 번째 인자).
+  _IC_SNAP_FRESH=1
+  if command -v cys_hook_detach_wait >/dev/null 2>&1; then
+    cys_hook_detach_wait save-state 12 "$(dirname "$0")/save-state.sh" || _IC_SNAP_FRESH=""
+  fi
   SNAP="$(dirname "$STATE")/BOOT_SNAPSHOT.md"
   SNAP_PY="${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_snapshot.py"
   if command -v cygpath >/dev/null 2>&1; then
@@ -316,10 +320,14 @@ if [ -n "$STATE" ]; then
 try: sys.exit(0 if (time.time()-os.path.getmtime(sys.argv[1]))<172800 else 1)
 except Exception: sys.exit(1)" "$SNAP" 2>/dev/null \
      && cys_timeout_run 5 "$CYS_PY" "$SNAP_PY" is-master >/dev/null 2>&1; then
-    OUT="${OUT}■ 도구 산출 스냅샷(BOOT_SNAPSHOT · 관측·비임무 — 임무 판정은 javis_mission status)\n"
-    # 도구 계약상 이미 ≤4KB — head -c 8192는 계약 위반 시 컨텍스트 예산 보호용 방어 캡(SESSION_STATE 발췌 동일 파이프라인).
-    # 말미 tr -d '\r' — 네이티브 Windows python(_gate) 파이프 CRLF 방어(상단 :33 기존 규약과 동일).
-    OUT="${OUT}$(cat "$SNAP" | _gate | head -c 8192 | sed 's/\\/\\\\/g' | tr -d '\r')\n\n"
+    if [ -z "$_IC_SNAP_FRESH" ]; then
+      OUT="${OUT}■ 도구 산출 스냅샷 생략 — 직전 턴의 save-state 가 12초 안에 끝나지 않았다(이전 세대를 최신처럼 싣지 않는다 · 필요하면 직접: cat $(_esc "$SNAP"))\n\n"
+    else
+      OUT="${OUT}■ 도구 산출 스냅샷(BOOT_SNAPSHOT · 관측·비임무 — 임무 판정은 javis_mission status)\n"
+      # 도구 계약상 이미 ≤4KB — head -c 8192는 계약 위반 시 컨텍스트 예산 보호용 방어 캡(SESSION_STATE 발췌 동일 파이프라인).
+      # 말미 tr -d '\r' — 네이티브 Windows python(_gate) 파이프 CRLF 방어(상단 :33 기존 규약과 동일).
+      OUT="${OUT}$(cat "$SNAP" | _gate | head -c 8192 | sed 's/\\/\\\\/g' | tr -d '\r')\n\n"
+    fi
   fi
 fi
 

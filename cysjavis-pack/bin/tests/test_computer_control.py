@@ -635,6 +635,33 @@ class TestGrants(Base):
         self.assertEqual(rc, 1)
         self.assertEqual(self.grants()["screen"]["state"], "pending")
 
+    def test_recheck_merged_reports_per_member(self):
+        # codex R2 재현 ①: 묶음을 맡기고 메일만 거둔 뒤 옛 묶음 ID 로 recheck → 메일을 맡는다고 말하면 안 된다
+        self.set_probes(ae={"com.apple.finder": 0, "com.apple.mail": 0, "com.apple.iCal": 0})
+        rc, d, _ = self.run_cli("scan")
+        merged = self.item(d, "script:finder,mail,calendar")
+        self.grant_cli("--pick", str(merged["n"]), "--answer-file", self.answer())
+        self.run_cli("revoke", "script:mail")
+        rc, r, _ = self.run_cli("recheck", "script:finder,mail,calendar")
+        self.assertNotIn("script:mail", r["states"])
+        self.assertNotIn("script:mail", self.grants())
+        held_line = r["say"].split("이제 제가 맡습니다")[0]
+        self.assertNotIn("메일", held_line)
+        self.assertIn("맡기지 않으셨습니다", r["say"])
+
+    def test_recheck_merged_activates_all_pending_members(self):
+        # codex R2 재현 ②: 첫 구성원 active · 다음 구성원 pending → recheck 가 pending 도 활성화·기록
+        os.makedirs(self.state, exist_ok=True)
+        with open(os.path.join(self.state, "grants.json"), "w") as f:
+            json.dump({"items": {"script:finder": {"state": "active", "title": "Finder"},
+                                 "script:mail": {"state": "pending", "title": "메일"}}}, f)
+        self.set_probes(ae={"com.apple.finder": 0, "com.apple.mail": 0, "com.apple.iCal": 0})
+        rc, r, _ = self.run_cli("recheck", "script:finder,mail")
+        self.assertEqual(self.grants()["script:mail"]["state"], "active")
+        self.assertEqual(r["states"], {"script:finder": "active", "script:mail": "active"})
+        led = lines(os.path.join(self.state, "ledger.jsonl"))
+        self.assertTrue(any('"activate"' in l and "script:mail" in l for l in led))
+
     def test_ledger_cap(self):
         self.m.MAX_LEDGER_LINES = 4
         for _ in range(7):

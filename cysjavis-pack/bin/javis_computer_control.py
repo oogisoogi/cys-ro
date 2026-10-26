@@ -942,26 +942,31 @@ def cmd_recheck(a):
     if it is None:
         return fail("그 항목을 찾지 못했습니다.", "not_found", 4)
     g = load_grants()
-    mids = member_ids(a.id)
-    held = [m for m in mids if m in g["items"]]
-    cur = g["items"].get(held[0]) if held else None
+    titles = {mid: (t or mid).split("(")[0].strip() for mid, t in (it.get("members") or [[it["id"], it["title"]]])}
+    # ★codex R2: 합친 줄의 상태를 첫 구성원으로 대표하지 않는다 — 구성원마다 장부에 실제로 있는지·상태를 따로 본다
+    held = [m for m in member_ids(a.id) if m in g["items"]]
     if first_use_only(it):
-        return out({"ok": True, "tier": it["tier"], "state": (cur or {}).get("state"),
+        return out({"ok": True, "tier": it["tier"], "states": {m: g["items"][m].get("state") for m in held},
                     "say": "이건 지금 하실 것이 없습니다 — %s" % it["reason"]})
     if it["tier"] == READY:
-        if cur is not None and cur.get("state") != "active":
-            flip = [m for m in held if g["items"][m].get("state") != "active"]
+        flip = [m for m in held if g["items"][m].get("state") != "active"]
+        if flip:
             _ledger({"event": "activate", "ids": flip})          # ★codex 1R #3: 기록 먼저 · 실패면 장부 불변
             for m in flip:
                 g["items"][m]["state"] = "active"
                 g["items"][m]["at"] = _iso()
             save_grants(g)
-        head = "확인했습니다. 「%s」은(는) 이제 제가 맡습니다." % it["title"].split("(")[0].strip() if cur is not None \
-            else "확인했습니다. 「%s」은(는) 준비돼 있습니다(아직 맡기지는 않으셨습니다)." % it["title"].split("(")[0].strip()
-        return out({"ok": True, "tier": READY, "state": (cur or {}).get("state"), "say": head})
+        not_held = [m for m in member_ids(a.id) if m not in held]
+        lines = []
+        if held:
+            lines.append("확인했습니다. 「%s」은(는) 이제 제가 맡습니다." % "·".join(titles.get(m, m) for m in held))
+        if not_held:
+            lines.append("「%s」은(는) 준비돼 있지만 맡기지 않으셨습니다." % "·".join(titles.get(m, m) for m in not_held))
+        return out({"ok": True, "tier": READY, "states": {m: g["items"][m].get("state") for m in held},
+                    "say": " ".join(lines)})
     st = steps_for(it)
     tail = (" 남은 단계: " + st[0]) if st else ""
-    return out({"ok": True, "tier": it["tier"], "state": (cur or {}).get("state"),
+    return out({"ok": True, "tier": it["tier"], "states": {m: g["items"][m].get("state") for m in held},
                 "say": "아직 덜 됐습니다 — %s%s" % (it["reason"], tail)})
 
 

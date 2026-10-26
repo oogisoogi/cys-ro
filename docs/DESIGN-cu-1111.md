@@ -205,7 +205,7 @@ codex(또는 agy) — 범위 = 이 문서 §3·§6 + 구현 diff · 초점 = 권
 - `scan` → `{"ok", "platform", "groups": {ready|hand|not_now: [번호]}, "items": [{n, id, tier, unknown}], "say"}` · `scan.json` 기록.
 - `grant --scan <scan_id> --pick 1,3 --answer-file F [--folder P]` → `{"ok", "active": [ID], "pending": [ID], "refused": [ID], "next_guide", "say"}` · scan 없음/30분 지남 = exit 7(`no_scan`·`stale_scan`) · **보인 목록과 다른 목록(scan_id 불일치)·다른 폴더 = exit 7 `scan_replaced`** · 없는 번호 = exit 4 · 숫자 아님·빈 답 = exit 2 · 장부 기록에 답 원문은 sha256 만 · **감사 기록(ledger)을 먼저 쓰고 장부를 바꾼다**(기록 실패 = 장부 불변) · 장부 키 = 구성원 ID(`script:mail` — 합친 줄을 넘기면 구성원 각각).
 - `guide <ID> [--step n]` → `{"ok", "step", "total", "last", "say"}`(지금 빠진 단계만 · n 은 1..total 로 자름) · 바로 칸이면 `done: true`.
-- `recheck <ID>` → `{"ok", "tier", "state", "say"}` — 바로가 되면 장부 pending → active.
+- `recheck <ID>` → `{"ok", "tier", "states": {구성원 ID: 상태}, "say"}` — 바로가 되면 장부에 있는 구성원 중 pending → active(구성원마다 · 기록 먼저).
 - `revoke <ID>` → 장부에서 빼고 끄는 곳 안내(합친 ID 면 구성원 전부 · 저장 먼저 → 기록) · 없으면 exit 4. 옛 판의 합친 키는 읽을 때 구성원으로 펼친다.
 - `status` → `{"ok", "rows": [{id, state, now}], "say"}` — active 인데 지금 꺼져 있으면 경고 문장.
 - `open-settings accessibility|screen|automation`(맥만 · 허용 목록 밖 exit 5) · `request-prompt ax|sc --answer-file F --meaning yes|no|unclear`(맥만 · yes 아니면 exit 5 `not_yes`).
@@ -227,6 +227,8 @@ codex(또는 agy) — 범위 = 이 문서 §3·§6 + 구현 diff · 초점 = 권
 | 3 major | 장부 저장 뒤 감사 기록 → 기록 실패해도 active 남음 | grant·recheck 활성화 = 기록 먼저(실패면 장부 불변) · revoke = 저장 먼저(실패해도 안전한 쪽) | `test_ledger_failure_leaves_no_active` · `test_recheck_ledger_failure_keeps_pending` · M25 |
 | 논쟁점 | request-prompt 가 「아니요」 답도 통과 | `--meaning yes|no|unclear` 필수 · yes 아니면 exit 5 | `test_request_prompt_needs_meaning_yes` · M26 |
 codex 가 못 한 것(정직): 읽기 전용 샌드박스라 단위 시험을 돌리지 못했다(메모리 대체 검증만) — 시험은 이 워커가 돌렸다(45 · 뮤턴트 26/26).
+
+**codex R2**(revision 02c171d4 · verdict REVISE · major 1 · 정본 `…-r2-codex.json`): 1R 3건 해소 확인(목록 바인딩·감사 기록 순서 「확인했다」). 새 major 1 = **1R 반영이 만든 결함** — `recheck` 가 합친 ID 의 상태를 첫 구성원으로 대표해 ① 거둔 구성원까지 「맡습니다」라고 말하고 ② 첫 구성원이 active 면 다음 pending 구성원을 활성화하지 않았다. 반영 = 구성원마다 장부 보유·상태를 따로 계산(`states` 반환 · 맡기지 않은 구성원은 「맡기지 않으셨습니다」로 분리) · 회귀 `test_recheck_merged_reports_per_member` · `test_recheck_merged_activates_all_pending_members` · M27·M28. 시험 47 · 뮤턴트 28/28.
 
 ### 12-5. 1.1.12 후보(BACKLOG 한 줄 — master TODO 에 옮겨 적을 것)
 - D1-ⓑ 장부 + 훅 차단: 장부가 있는 기계에서 본부 master 의 `mcp__computer-use__*`·`mcp__claude-in-chrome__*` 를 장부 밖이면 거부(role-capability-gate 에 본부 master 축).

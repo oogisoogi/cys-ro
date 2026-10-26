@@ -347,8 +347,8 @@ codex 가 못 한 것(정직): 읽기 전용 샌드박스라 단위 시험을 �
 - 판정 순서(`judge` · 자가 발견 + codex R1 반영): 네이버 대상 login/external_send → each(약관) · each/never 유형 → 그대로(상시 기록 무시) · `login` 인데 `--in-use no`(처음 쓰는 서비스) → each(가입 · 상시 허락보다 먼저) · 상시 기록 있음(새 유형 포함) → 그 결정 · 모르는 유형 → ask(new_type) · login → 사용 패턴 · 그 밖 → 표의 기본 결정.
 - 출력에 싣는 대상·한 일·조건 문자열은 이메일·긴 번호 모양을 `<이메일>`·`<번호>` 로 가린다(§3-3 · codex R1) · 기록 키 = 유형 + 대상 해시(목록 밖 새 유형은 유형 이름도 해시) · 조건 원문은 **기록 파일에만**(원장엔 답 해시만 · 가리면 허락 범위를 잃는다 · codex R2 #9) · 조건은 자르지 않는다(2,000자 넘으면 기록 거절 `condition_too_long` — codex R3) · 새 조건부 기록엔 원문 표지 `full` · ★조건은 **사용자 말 그대로** 기록한다 — 범위 낱말·받는 사람 목록 같은 조건 문법을 강제하지 않는다(§16-5 · D16) · 표지 없이 300자 이상인 옛 판 조건(끝이 잘렸을 수 있음)은 조건 확인이 있어도 each + `supplement: true`(그 답으로 다시 적으면 `--user-changed` 없이 덮인다 · 재질문 고리 0).
 - 조건부 상시 허락 = `decide … --condition-met yes|no|unknown`(마스터가 이번 건을 조건과 대조): yes → do · no → each(이번만 묻기) · unknown(기본) → **check**(`condition` = 사용자가 한 말 원문 · 이번 건이 맞는지는 **마스터가 말뜻으로** 판단하고 다시 부른다 · 애매하면 그때만 사용자에게 1회 · §16-5) — 조건 확인 없이 do 를 내지 않는다(codex R2).
-- 「이미 쓰는가」 대조 = **낱말 단위**(이름의 낱말이 전부 대상의 낱말 안에 있어야 일치 · 「카카오톡 로그인」 = 카카오톡 · 「wordpress.com」 ≠ Word · codex R2) · 대상의 접속 이름 = URL 은 파서의 실제 hostname(사용자정보·경로·쿼리 속 도메인은 대상이 아니다 · URL 은 ASCII 인쇄 문자까지 · 끝 문장부호 제외) · 그 밖은 도메인 모양 · 둘 이상이거나 깨진 URL(잘못된 포트 · 브라우저와 호스트가 갈리는 역슬래시) = 모름 → ask(codex R5·R6) · 대상에 도메인이 있으면 이름 닮음이 아니라 **정식 도메인 목록**(`SERVICE_DOMAINS` · 커넥터 이름·카탈로그 앱 ID → 로그인 도메인 · 점 경계 뒤끝 일치)으로만 일치 — `word.invalid`·`gmail.invalid`·`word.example.invalid`·`evilgmail.com` = 모름 → ask(codex R3·R4).
-- 옛 판 키도 조회해 따른다 — 92c47060 판 `유형:정규화 원문` · ad474d66 판 `유형 원문:대상 해시`(새 유형만 지금과 다름 · codex R3) · 같은 항목 재기록 금지도 옛 키까지 본다 · 사용자가 바꾸면 새 키로 옮긴다(codex R2) · 같은 대상에 지금 키·옛 키로 기록이 여럿 있으면 키 자리와 무관하게 가장 좁은 쪽(안 함 > 잘린 조건 > 조건 > 허락 · codex R5·R6) · 잘린 조건 보완(`supplement`)은 조건부로만(`supplement_meaning`) · 잘린 기록만 바꾸고 온전한 기록은 보존(지금 키에 온전한 조건·안 함이 있으면 잘린 옛 기록만 정리 · 허락 위엔 다시 받은 조건) · 한도는 정리될 키를 뺀 뒤 개수로(codex R6).
+- 「이미 쓰는가」 대조 = **낱말 단위**(이름의 낱말이 전부 대상의 낱말 안에 있어야 일치 · 「카카오톡 로그인」 = 카카오톡 · 「wordpress.com」 ≠ Word · codex R2) · 대상의 접속 이름 = URL 은 파서의 실제 hostname(사용자정보·경로·쿼리 속 도메인은 대상이 아니다 · URL = 공백 전까지 통째로 파싱 · 끝 문장부호 제외 — 호스트 뒤 비ASCII 를 잘라 앞부분만 대조하지 않는다) · 그 밖은 도메인 모양 · 둘 이상이거나 깨진 URL(잘못된 포트 · 브라우저와 호스트가 갈리는 역슬래시) = 모름 → ask(codex R5·R6) · 대상에 도메인이 있으면 이름 닮음이 아니라 **정식 도메인 목록**(`SERVICE_DOMAINS` · 커넥터 이름·카탈로그 앱 ID → 로그인 도메인 · 점 경계 뒤끝 일치)으로만 일치 — `word.invalid`·`gmail.invalid`·`word.example.invalid`·`evilgmail.com` = 모름 → ask(codex R3·R4).
+- 옛 판 키도 조회해 따른다 — 92c47060 판 `유형:정규화 원문` · ad474d66 판 `유형 원문:대상 해시`(새 유형만 지금과 다름 · codex R3) · 같은 항목 재기록 금지도 옛 키까지 본다 · 사용자가 바꾸면 새 키로 옮긴다(codex R2) · 같은 대상에 지금 키·옛 키로 기록이 여럿 있으면 키 자리와 무관하게 가장 좁은 쪽(안 함 > 잘린 조건 > 조건 > 허락 · codex R5·R6) · 잘린 조건 보완(`supplement`)은 조건부로만(`supplement_meaning`) · 잘린 기록을 **그 키 자리에서만** 바꾸고 공존하는 온전한 기록(허락 포함)은 손대지 않는다(개수 그대로라 한도 무관) · 사용자 변경의 옛 키 → 지금 키 옮김은 정리될 키를 뺀 개수로 한도 판정(codex R6·R7).
 
 ### 14-5. 범용 조작 원칙(675 REPORT §10-4 · 박사님 22:0x 「업데이트와 관계 없이 항상 적용할 수 있는 범용적인 방법」 · 맥·윈 공통)
 1. **저장 좌표·선택자 0** — 좌표는 그 동작 직전 스냅샷에서만 · **스냅샷 1장 = 상태를 바꾸는 동작 1개**(windows-mcp label 은 마지막 스냅샷 좌표) · 그 뒤 반드시 다시 찍는다.
@@ -393,7 +393,7 @@ codex 가 못 한 것(정직): 읽기 전용 샌드박스라 단위 시험을 �
 | R7 | 이양 표 재질문 0 | ① `adopt` 2회(두 번째 = 「새로 맡을 것은 없습니다」) ② `decide login --subject <이미 쓰는 서비스>` = do ③ `decide external_send --subject "<새 유형>"` = ask → 답 → `remember` → 같은 `decide` = do(standing) → 같은 `remember` = exit 7 ④ `decide payment` = each · `remember payment` = exit 5 ⑤ `revoke connectors` → `adopt` = skipped | stdout JSON 전부 | 재질문 0 · 기록 1 |
 | R8 | 경합(살아 있는 좌석이 키를 덮는가 · §13-1 Med) | 마스터 좌석이 살아 있는 동안 `chrome-enable --seat-restart no` → 10분 뒤 `.claude.json` 키 재확인 | 키 유지 여부 | 유지 |
 
-윈 전용 확인: `chrome-enable` 의 헤드리스 `claude -p --chrome` 가 `claude.exe` 로 풀리는지 · `CloseMainWindow` 로 모든 크롬 창이 닫히는지(백그라운드 앱 「계속 실행」 설정이 켜져 있으면 프로세스가 남아 not_quit 이 나는지) · 연결 등록 삭제(`reg delete`) 후 크롬 연동 끊김.
+윈 전용 확인: `chrome-enable` 의 헤드리스 `claude -p --chrome` 가 `claude.exe` 로 풀리는지 · `CloseMainWindow` 로 모든 크롬 창이 닫히는지(백그라운드 앱 「계속 실행」 설정이 켜져 있으면 프로세스가 남아 not_quit 이 나는지) · 연결 등록 삭제(`reg delete`) 후 크롬 연동 끊김 · 좌석 재시작 대기(`seat-restart-wait` · NEW_PROCESS_GROUP|NO_WINDOW)가 5초마다 `cys` 를 부르는 동안 검은 창이 한 번도 뜨지 않는지(H-WIN-16 의 실기 짝).
 맥 전용 확인: `ioreg` HIDIdleTime 이 실제 유휴 초와 맞는지 · osascript 탭 세기 스크립트가 자동화 허락 0 에서 「창 탭」 두 숫자를 내는지.
 
 ---
@@ -500,3 +500,15 @@ R5 반영 뒤 누계: 시험 118 녹(`-W error`) · self-test 568 조합 · 뮤�
 - **rebase 뒤 건강성 전량에서 자가 발견(H-WIN-16 · U5-WIN-FLASH)**: 좌석 재시작 대기의 윈 분리 스폰이 `DETACHED_PROCESS`(0x8 · 콘솔 떼기) — 콘솔 없는 프로세스가 `cys` 를 부를 때마다 새 창이 뜬다(1.1.7 「1분마다 검은 창」 부류). `NEW_PROCESS_GROUP|NO_WINDOW` 로(숨은 새 콘솔 — 좌석 콘솔이 닫혀도 살고 자손이 물려받음) · 팩 creationflags 동결표 `javis_computer_control.py` 1 → 2(사유 기재 · `run_bootstrap_health.py`). 앞 라운드 리뷰 4회가 못 본 것은 건강성 전량을 rebase 전 가지에서 돌리지 않았기 때문이다(게이트 목록 누락 — 이번부터 매 반영 뒤 `--only H-WIN-16` 포함).
 
 R6 반영 뒤 누계: 시험 121 녹(`-W error`) · self-test 568 조합 · 뮤턴트 117/117 KILLED(M54·M78·M88·M105·M106 다시 씀 · M111~M118 신설). 바뀐·새 시험 4개는 c09d8a13 원본에서 전부 적색(실측) · H-WIN-16 녹(`--only`).
+
+### 16-7. R7 (revision ffe37487 · 범위 = 결정론 축만)
+- **codex R7 = REVISE**(blocking 0 · major 2 · R6 #1·#3·#4·#5 해소 · #2 일부 미해소 · 정본 `…-r7-codex.json`) — 처분:
+
+| # | 지적 | 판정 | 반영 | 회귀 시험 · 뮤턴트 |
+|---|---|---|---|---|
+| 1 | major — URL 을 ASCII 인쇄 문자까지만 잘라 `https://mail.google.comé/`·`https://mail.google.com。invalid/` 를 mail.google.com 으로 → do(R6 반영이 만든 회귀) | 실재 | URL = 공백 전까지 통째로 파싱(비ASCII 가 붙은 호스트 `mail.google.comé` 는 정식 도메인과 달라 모름 → ask · 경로의 한글은 그대로 허용) — 따로 넣었던 「호스트 비ASCII = 모름」 검사는 이 위에서 관찰 차이 0(뮤턴트 등가 생존 실측)이라 뺐다 | `test_url_target_is_real_hostname`(+3건) · M119(ASCII 자르기 되살림) · M116(갱신) |
+| 2 | major — 지금 키 = 허락 · 옛 키 = 잘린 조건이면 보완이 온전한 허락을 덮는다(§14-4 「허락 위엔 다시 받은 조건」 예외가 SKILL 「잘린 기록만」과 불일치) | 실재 | 보완 = 잘린 기록을 **그 키 자리에서** 교체(지금 키·다른 기록 무접촉 · 개수 그대로) — 예외 문구 삭제 · 조회는 순위대로(잘린 것이 바뀐 뒤 조건 2 < 허락 3 → check) | `test_supplement_only_replaces_cut_records`(온전한 조건·허락 × 옛 키 잘림 → 둘 다 보존) · `test_supplement_at_cap_replaces_in_place`(+사용자 변경 옮김 한도 안) · M113·M114·M78(갱신) |
+
+- 논쟁점(issue 아님) — 「NEW_PROCESS_GROUP|NO_WINDOW 스폰이 좌석 콘솔이 닫힌 뒤에도 사는지는 H-WIN-16 통과로 입증되지 않는다」: 맞다. H-WIN-16 은 창 정책(콘솔 떼기 0)만 잰다. 생존은 윈 실기 항목으로 §15 의뢰문에 있다(좌석 재시작 1회 뒤 대기 프로세스가 끝까지 돌아 재시작을 집행하는가) — 이 컴퓨터(맥)에서는 잴 수 없다(정직 고지).
+
+R7 반영 뒤 누계: 시험 121 녹(`-W error`) · self-test 568 조합 · 뮤턴트 118/118 KILLED(M78·M113·M114·M116 다시 씀 · M119 신설) · 바뀐 시험 2개는 ffe37487 원본에서 적색(실측) · 건강성 전량(ffe37487) 167/2/1skip = 678 기준선과 같음(잔여 적 H-CLT-1·2 = 호스트 의존) · H-WIN-16 녹.

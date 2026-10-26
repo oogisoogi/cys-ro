@@ -1617,7 +1617,7 @@ class TestPrecedent(Base):
                 self.assertEqual((d["decision"], d.get("supplement")), ("each", True), (list(items.values()), cm))
 
     def test_supplement_only_replaces_cut_records(self):
-        # codex R6: --user-changed 없는 보완 = 조건부로만 · 잘린 기록만 바꾸고 온전한 기록은 보존
+        # codex R6·R7: --user-changed 없는 보완 = 조건부로만 · 잘린 기록을 그 키 자리에서만 바꾸고 온전한 기록은 보존
         cur, old = self.m.decision_key("external_send", "s"), "external_send:s"
         cut = {"meaning": "conditional", "condition": "가" * 300, "at": "t"}
         full = {"meaning": "conditional", "condition": "팀 안", "full": True, "at": "t"}
@@ -1630,17 +1630,13 @@ class TestPrecedent(Base):
         rc, r, _ = self.run_cli(*(base + ("--meaning", "conditional", "--condition", "모임 안")))
         self.assertEqual(rc, 0, r)
         self.assertEqual((self.dec()[cur]["condition"], self.dec()[old]), ("모임 안", full))
-        self._put({cur: full, old: cut})                                           # 잘린 것이 옛 키 → 그것만 정리 · 지금 키 보존
-        rc, r, _ = self.run_cli(*(base + ("--meaning", "conditional", "--condition", "모임 안")))
-        self.assertEqual(rc, 0, r)
-        self.assertEqual(self.dec(), {cur: full})
-        self.assertEqual(self.run_cli("decide", "external_send", "--subject", "s")[1]["condition"], "팀 안")
         allow = {"meaning": "allow", "at": "t"}
-        self._put({cur: allow, old: cut})                                          # 허락 위엔 방금 다시 말한 조건(더 좁음)
-        rc, r, _ = self.run_cli(*(base + ("--meaning", "conditional", "--condition", "모임 안")))
-        self.assertEqual(rc, 0, r)
-        self.assertEqual(list(self.dec()), [cur])
-        self.assertEqual(self.run_cli("decide", "external_send", "--subject", "s")[1]["decision"], "check")
+        for keep in (full, allow):                                                 # 잘린 것이 옛 키 → 그 자리만 바꾸고 지금 키 보존
+            self._put({cur: keep, old: cut})
+            rc, r, _ = self.run_cli(*(base + ("--meaning", "conditional", "--condition", "모임 안")))
+            self.assertEqual(rc, 0, r)
+            self.assertEqual((self.dec()[cur], self.dec()[old]["condition"], len(self.dec())), (keep, "모임 안", 2))
+            self.assertEqual(self.run_cli("decide", "external_send", "--subject", "s")[1]["decision"], "check")
 
     def test_supplement_at_cap_replaces_in_place(self):
         # codex R6: 한도에서도 옛 키 잘린 기록 보완은 개수가 늘지 않으므로 된다 — 재질문 고리 0
@@ -1655,6 +1651,12 @@ class TestPrecedent(Base):
         rc, r, _ = self.run_cli("remember", "external_send", "--subject", "new", "--answer-file", self.answer("응"),
                                 "--meaning", "allow")
         self.assertEqual((rc, r["reason"]), (7, "decisions_full"))              # 새 항목은 여전히 한도 거절
+        self._put({"external_send:s": {"meaning": "allow", "at": "t"}, "x:1": {"meaning": "allow", "at": "t"},
+                   "x:2": {"meaning": "allow", "at": "t"}})
+        rc, r, _ = self.run_cli("remember", "external_send", "--subject", "s", "--answer-file", self.answer("이젠 안 돼"),
+                                "--meaning", "deny", "--user-changed")
+        self.assertEqual(rc, 0, r)                                               # 옛 키 → 지금 키 옮김도 개수 그대로라 한도 안
+        self.assertEqual((len(self.dec()), self.run_cli("decide", "external_send", "--subject", "s")[1]["decision"]), (3, "never"))
 
     def test_domain_matches_only_official_domains(self):
         # codex R3·R4: 도메인 대상은 이름 닮음(word.invalid · gmail.invalid · word.example.invalid)이 아니라 정식 도메인 목록으로만
@@ -1675,7 +1677,10 @@ class TestPrecedent(Base):
                            # codex R6: 역슬래시(브라우저는 경로로 읽음)·잘못된 포트 = 모호 · 문장 속 괄호는 URL 이 아니다
                            ("https://unrelated.invalid\\" + "@" + "mail.google.com/", "ask"), ("https://mail.google.com:bad/", "ask"),
                            ("https://mail.google.com:999999/", "ask"), ("Gmail (https://mail.google.com)", "do"),
-                           ("https://mail.google.com:443/mail.", "do")):
+                           ("https://mail.google.com:443/mail.", "do"),
+                           # codex R7: 호스트 자리의 비ASCII 는 브라우저가 다른 호스트로 정규화 — 앞부분만 잘라 대조하지 않는다
+                           ("https://mail.google.comé/", "ask"), ("https://mail.google.com。invalid/", "ask"),
+                           ("https://mail.google.com/mail에서", "do")):
             rc, d, _ = self.run_cli("decide", "login", "--subject", subj)
             self.assertEqual(d["decision"], want, subj)
 

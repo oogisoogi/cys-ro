@@ -1971,7 +1971,8 @@ def _hosts(subject):
     그 밖은 도메인 모양. 둘 이상이거나 URL 이 깨졌으면 대상이 모호하다(호출 쪽이 「모름」)."""
     s = (subject or "").lower()
     hosts, rest = [], s
-    for m in re.finditer(r"[a-z][a-z0-9+.\-]*://[\x21-\x7e]+", s):
+    # URL = 공백 전까지 통째로(호스트 뒤 비ASCII 를 잘라 앞부분만 대조하지 않는다 · codex R7)
+    for m in re.finditer(r"[a-z][a-z0-9+.\-]*://\S+", s):
         url = m.group(0).rstrip(").,;:!?]}>'\"")              # 문장 속 URL 뒤 구분 부호는 URL 이 아니다(codex R6)
         try:
             u = urllib.parse.urlsplit(url)
@@ -2115,15 +2116,12 @@ def cmd_remember(a):
     if found and not a.user_changed and not supp:
         # 재질문 금지 — 이미 정해진 항목을 다시 묻고 기록하는 것은 마스터의 실수다(사용자가 스스로 바꾼 때만 --user-changed)
         return fail("이미 정해 주신 항목입니다 — 다시 여쭙지 않고 그 결정을 따릅니다.", "already_decided", 7)
-    if supp:
-        drop = cuts
-        cur = d["items"].get(key)
-        # 지금 키에 온전한 조건·안 함이 있으면 보존(잘린 기록만 정리) · 허락 위엔 사용자가 방금 다시 말한 더 좁은 조건을 쓴다
-        write = cur is None or key in cuts or _rank(cur) > 2
-    else:
-        drop, write = [k for k in _legacy_keys(a.cat, a.subject) if k != key and k in d["items"]], True
+    # 보완 = 잘린 기록을 **그 키 자리에서** 바꾼다(개수 그대로 · 공존하는 온전한 기록·다른 뜻 기록은 손대지 않는다 · codex R6·R7)
+    # 그 밖 = 지금 키에 쓰고 옛 판 키는 지운다(사용자가 바꾼 때)
+    dest = cuts if supp else [key]
+    drop = [] if supp else [k for k in _legacy_keys(a.cat, a.subject) if k != key and k in d["items"]]
     left = len(d["items"]) - len(set(drop) - {key})
-    if write and key not in d["items"] and left >= MAX_DECISIONS:
+    if not supp and key not in d["items"] and left >= MAX_DECISIONS:
         # ★codex R1: 상한에서 옛 결정을 지우면 그 항목을 다시 묻게 된다 — 지우지 않고 새 기록을 거절한다(4군① 상한은 유지)
         _ledger({"event": "decisions_full", "count": len(d["items"])})
         return fail("정해 두신 결정이 너무 많아(%d) 더 적어 두지 못했습니다 — 이번 결정은 따르되 기록은 하지 못했습니다."
@@ -2134,16 +2132,13 @@ def cmd_remember(a):
     if a.meaning == "conditional":
         rec["full"] = True                           # 자르지 않은 원문(옛 판 300자 기록과 구별)
     _ledger({"event": "decision", "key": key, "meaning": a.meaning, "changed": bool(a.user_changed),
-             "supplement": supp, "written": write, "dropped": len(drop),
+             "supplement": supp, "written": len(dest), "dropped": len(drop),
              "answer_sha256": rec["answer_sha256"]})              # 기록 먼저
     for k in drop:
-        d["items"].pop(k, None)                      # 옛 판 키는 새 키로 옮긴다(사용자가 바꾼 때) · 보완이면 잘린 기록만
-    if write:
-        d["items"][key] = rec
+        d["items"].pop(k, None)                      # 옛 판 키는 새 키로 옮긴다(사용자가 바꾼 때)
+    for k in dest:
+        d["items"][k] = rec
     _write_json(_p(DECISIONS), d)
-    if not write:
-        return out({"ok": True, "key": key, "say": "끝이 잘린 옛 기록은 정리했습니다 — 같은 일에 온전히 적어 두신 결정이 있어 "
-                                                  "그것을 계속 따릅니다. 바꾸시려면 말씀해 주세요."})
     word = {"allow": "허락", "deny": "안 함", "conditional": "조건부 허락(%s)" % mask(cond)}[a.meaning]
     return out({"ok": True, "key": key, "say": "알겠습니다 — 앞으로 「%s」은(는) %s 으로 계속 따르겠습니다. 다시 여쭙지 않습니다."
                                               % ((CATEGORIES.get(a.cat, (mask(a.cat),))[0] + (" — " + mask(a.subject) if a.subject else "")), word)})

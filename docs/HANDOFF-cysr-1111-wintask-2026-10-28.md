@@ -15,3 +15,4 @@
 ## 1.1.12 후보(BACKLOG 한 줄 — master TODO 에 옮겨 적을 것)
 
 - **R1-05 COM 초기화 수명**: `src/update/win_task.rs` `com::service()` 가 호출마다 `CoInitializeEx` 를 부르고 `CoUninitialize` 로 상쇄하지 않는다(기존 결함 · 1.1.11 수리 무관) → 초기화 HRESULT 를 쥔 apartment 가드(S_OK·S_FALSE 만 해제 · RPC_E_CHANGED_MODE 는 해제 의무 없음)를 인터페이스 해제 뒤 Drop 하게. 윈 실기 회귀 시험 동반.
+- **cysd 감독자 축 윈 패닉 150+건 · 스텝 30분 절단 · 원인 미규명**: windows-health 「cargo test --bin cysd 감독자 축」(비차단) 스텝이 런마다 패닉 152~172건(40589719076 = 154 · 기준선 40413658930·40409222350·40401921561)을 내고 스텝 상한 30분에 절단된다 — 절단 지점이 런마다 달라 패닉 집합도 다르다. 대표 사유 = return_absorb_tests 「시험 좌석에 `sleep 30` 가 10s 안에 뜨지 않았다」(governance.rs:15050). 결함 후보 · 1.1.11 수리 무관(cysd 소스 win_task 참조 0).

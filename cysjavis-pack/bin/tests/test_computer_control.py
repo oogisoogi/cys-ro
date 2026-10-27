@@ -1503,39 +1503,25 @@ class TestPrecedent(Base):
         rc, d, _ = self.run_cli("decide", cat, "--subject", "x")
         self.assertEqual(d["decision"], "do")
 
-    def test_legacy_key_still_honored(self):
-        # codex R2 blocking: 92c47060 판 키(`유형:정규화 원문`)로 남은 결정도 그대로 따른다
-        os.makedirs(self.state, exist_ok=True)
-        with open(os.path.join(self.state, "decisions.json"), "w") as f:
-            json.dump({"items": {"external_send:보고서 → 팀 드라이브": {"meaning": "allow", "at": "t"},
-                                 "settings_change:크롬 끄기": {"meaning": "deny", "at": "t"}}}, f)
-        rc, d, _ = self.run_cli("decide", "external_send", "--subject", "보고서 → 팀 드라이브")
-        self.assertEqual(d["decision"], "do")
-        rc, d, _ = self.run_cli("decide", "settings_change", "--subject", "크롬 끄기")
-        self.assertEqual(d["decision"], "never")
-        rc, r, _ = self.run_cli("remember", "external_send", "--subject", "보고서 → 팀 드라이브",
-                                "--answer-file", self.answer("응"), "--meaning", "allow")
-        self.assertEqual((rc, r["reason"]), (7, "already_decided"))
-
-    def test_r2_format_new_type_key_honored(self):
-        # codex R3 blocking: ad474d66 판 새 유형 키(`유형 원문:대상 해시`)로 남은 허락·거부·조건부도 그대로 따른다
+    def test_legacy_keys_not_followed(self):
+        # master#7d1b6e77(codex R10 · 설계 B): 옛 판 키 호환 삭제 — decide/remember 는 이 티켓에서 처음 생겨 발행·설치 0(옛 기록 =
+        #   개발 시험 기록뿐). 옛 판 꼴(92c47060 `유형:정규화 원문` · ad474d66 `유형 원문:대상 해시` · 앞 120자 해시) 기록은 따르지 않는다
         os.makedirs(self.state, exist_ok=True)
         h = lambda x: hashlib.sha256(x.encode("utf-8")).hexdigest()[:16]
-        with open(os.path.join(self.state, "decisions.json"), "w") as f:
-            json.dump({"items": {"custom_export:" + h("a"): {"meaning": "allow", "at": "t"},
-                                 "custom_export:" + h("b"): {"meaning": "deny", "at": "t"},
-                                 "custom_export:" + h("c"): {"meaning": "conditional", "condition": "팀 안", "at": "t"}}}, f)
-        got = [self.run_cli("decide", "custom_export", "--subject", x)[1]["decision"] for x in "abc"]
-        self.assertEqual(got, ["do", "never", "check"])       # 옛 조건부도 그대로 조건부(원문을 마스터가 대조 · codex R5)
-        rc, r, _ = self.run_cli("remember", "custom_export", "--subject", "a", "--answer-file", self.answer("응"),
-                                "--meaning", "allow")
-        self.assertEqual((rc, r["reason"]), (7, "already_decided"))
-        rc, r, _ = self.run_cli("remember", "custom_export", "--subject", "a", "--answer-file", self.answer("응"),
-                                "--meaning", "deny", "--user-changed")
-        self.assertEqual(rc, 0, r)
-        self.assertEqual(set(self.dec()), {self.m.decision_key("custom_export", "a"), "custom_export:" + h("b"),
-                                           "custom_export:" + h("c")})          # 바꾼 것만 새 키로 옮겨지고 옛 키는 지워진다
-        self.assertEqual(self.run_cli("decide", "custom_export", "--subject", "a")[1]["decision"], "never")
+        head = "보고서 " * 30
+        self._put({"external_send:보고서 → 팀 드라이브": {"meaning": "allow", "at": "t"},
+                   "settings_change:크롬 끄기": {"meaning": "deny", "at": "t"},
+                   "custom_export:" + h("a"): {"meaning": "deny", "at": "t"},
+                   "external_send:" + h(self.m._norm(head + "옛 기록")[:120]): {"meaning": "deny", "at": "t"}})
+        self.assertEqual(self.run_cli("decide", "external_send", "--subject", "보고서 → 팀 드라이브")[1]["decision"], "ask")
+        self.assertEqual(self.run_cli("decide", "settings_change", "--subject", "크롬 끄기")[1]["decision"],
+                         self.m.judge("settings_change", "크롬 끄기")[0])           # 표의 기본 결정 그대로
+        self.assertEqual(self.run_cli("decide", "custom_export", "--subject", "a")[1]["decision"], "ask")
+        self.assertEqual(self.run_cli("decide", "external_send", "--subject", head + "옛 기록")[1]["decision"], "ask")
+        rc, r, _ = self.run_cli("remember", "external_send", "--subject", "보고서 → 팀 드라이브",
+                                "--answer-file", self.answer("응"), "--meaning", "deny")
+        self.assertEqual(rc, 0, r)                                               # 옛 꼴 기록은 재기록을 막지도 않는다
+        self.assertEqual(self.run_cli("decide", "external_send", "--subject", "보고서 → 팀 드라이브")[1]["decision"], "never")
 
     def test_free_text_condition_recorded_and_returned_verbatim(self):
         # master#6528f666(D16): 조건 문법(범위 낱말·받는 사람 목록)을 강제하지 않는다 — 사용자 말 그대로 기록하고 check 때
@@ -1550,18 +1536,6 @@ class TestPrecedent(Base):
         led = "\n".join(lines(os.path.join(self.state, "ledger.jsonl")))
         for x in (NAME, ORG, PROFILE):
             self.assertNotIn(x, led)
-
-    def test_conflicting_records_strictest_wins(self):
-        # codex R5: 같은 대상에 지금 키·옛 판 키로 뜻이 다른 기록이 함께 있으면 더 좁은 쪽 — 허락이 금지를 가리지 않는다
-        os.makedirs(self.state, exist_ok=True)
-        k = self.m.decision_key("external_send", "s")
-        old = "external_send:s"
-        for cur, leg, want in (("allow", "deny", "never"), ("deny", "allow", "never"), ("allow", "conditional", "check"),
-                               ("conditional", "allow", "check"), ("allow", "allow", "do")):
-            recs = {m: {"meaning": m, "condition": "c", "at": "t"} for m in (cur, leg)}
-            with open(os.path.join(self.state, "decisions.json"), "w") as f:
-                json.dump({"items": {k: recs[cur], old: recs[leg]}}, f)
-            self.assertEqual(self.run_cli("decide", "external_send", "--subject", "s")[1]["decision"], want, (cur, leg))
 
     def test_condition_too_long_rejected_not_truncated(self):
         # codex R3 major: 조건을 잘라 저장하면 끝의 제한이 사라진다 — 한도를 넘으면 기록하지 않는다
@@ -1605,43 +1579,24 @@ class TestPrecedent(Base):
         with open(os.path.join(self.state, "decisions.json"), "w") as f:
             json.dump({"items": items}, f)
 
-    def test_cut_condition_wins_regardless_of_key_position(self):
-        # codex R6: 잘린 조건과 온전한 조건이 함께 있으면 키 자리와 무관하게 보완 관문(each + supplement) — 확인으로 do 0
-        cur, old = self.m.decision_key("external_send", "s"), "external_send:s"
-        cut = {"meaning": "conditional", "condition": "가" * 300, "at": "t"}
-        full = {"meaning": "conditional", "condition": "팀 안", "full": True, "at": "t"}
-        for items in ({cur: full, old: cut}, {cur: cut, old: full}):
-            self._put(items)
-            for cm in ("yes", "unknown"):
-                rc, d, _ = self.run_cli("decide", "external_send", "--subject", "s", "--condition-met", cm)
-                self.assertEqual((d["decision"], d.get("supplement")), ("each", True), (list(items.values()), cm))
-
     def test_supplement_only_replaces_cut_records(self):
-        # codex R6·R7: --user-changed 없는 보완 = 조건부로만 · 잘린 기록을 그 키 자리에서만 바꾸고 온전한 기록은 보존
-        cur, old = self.m.decision_key("external_send", "s"), "external_send:s"
+        # codex R6·R7: --user-changed 없는 보완 = 조건부로만 · 잘린 기록 자리에서 바꾼다
+        cur = self.m.decision_key("external_send", "s")
         cut = {"meaning": "conditional", "condition": "가" * 300, "at": "t"}
-        full = {"meaning": "conditional", "condition": "팀 안", "full": True, "at": "t"}
         base = ("remember", "external_send", "--subject", "s", "--answer-file", self.answer("응"))
         self._put({cur: cut})
         rc, r, _ = self.run_cli(*(base + ("--meaning", "allow")))
         self.assertEqual((rc, r["reason"]), (7, "supplement_meaning"))           # 허락으로 덮기 = 사용자 변경 경로만
         self.assertEqual(self.dec(), {cur: cut})
-        self._put({cur: cut, old: full})                                           # 잘린 것이 지금 키 → 바꾸고 옛 온전한 것 보존
         rc, r, _ = self.run_cli(*(base + ("--meaning", "conditional", "--condition", "모임 안")))
         self.assertEqual(rc, 0, r)
-        self.assertEqual((self.dec()[cur]["condition"], self.dec()[old]), ("모임 안", full))
-        allow = {"meaning": "allow", "at": "t"}
-        for keep in (full, allow):                                                 # 잘린 것이 옛 키 → 그 자리만 바꾸고 지금 키 보존
-            self._put({cur: keep, old: cut})
-            rc, r, _ = self.run_cli(*(base + ("--meaning", "conditional", "--condition", "모임 안")))
-            self.assertEqual(rc, 0, r)
-            self.assertEqual((self.dec()[cur], self.dec()[old]["condition"], len(self.dec())), (keep, "모임 안", 2))
-            self.assertEqual(self.run_cli("decide", "external_send", "--subject", "s")[1]["decision"], "check")
+        self.assertEqual((list(self.dec()), self.dec()[cur]["condition"]), ([cur], "모임 안"))
+        self.assertEqual(self.run_cli("decide", "external_send", "--subject", "s")[1]["decision"], "check")
 
     def test_supplement_at_cap_replaces_in_place(self):
-        # codex R6: 한도에서도 옛 키 잘린 기록 보완은 개수가 늘지 않으므로 된다 — 재질문 고리 0
+        # codex R6: 한도에서도 잘린 기록 보완은 그 자리 교체라 개수가 늘지 않으므로 된다 — 재질문 고리 0
         self.m.MAX_DECISIONS = 3
-        self._put({"external_send:s": {"meaning": "conditional", "condition": "가" * 300, "at": "t"},
+        self._put({self.m.decision_key("external_send", "s"): {"meaning": "conditional", "condition": "가" * 300, "at": "t"},
                    "x:1": {"meaning": "allow", "at": "t"}, "x:2": {"meaning": "allow", "at": "t"}})
         rc, r, _ = self.run_cli("remember", "external_send", "--subject", "s", "--answer-file", self.answer("응"),
                                 "--meaning", "conditional", "--condition", "팀 안")
@@ -1651,12 +1606,6 @@ class TestPrecedent(Base):
         rc, r, _ = self.run_cli("remember", "external_send", "--subject", "new", "--answer-file", self.answer("응"),
                                 "--meaning", "allow")
         self.assertEqual((rc, r["reason"]), (7, "decisions_full"))              # 새 항목은 여전히 한도 거절
-        self._put({"external_send:s": {"meaning": "allow", "at": "t"}, "x:1": {"meaning": "allow", "at": "t"},
-                   "x:2": {"meaning": "allow", "at": "t"}})
-        rc, r, _ = self.run_cli("remember", "external_send", "--subject", "s", "--answer-file", self.answer("이젠 안 돼"),
-                                "--meaning", "deny", "--user-changed")
-        self.assertEqual(rc, 0, r)                                               # 옛 키 → 지금 키 옮김도 개수 그대로라 한도 안
-        self.assertEqual((len(self.dec()), self.run_cli("decide", "external_send", "--subject", "s")[1]["decision"]), (3, "never"))
 
     def test_long_subject_not_cut(self):
         # codex R8 뒤 자가 발견: 대상을 120자에서 자르면 뒤가 다른 두 대상이 한 결정을 나눠 갖고 120자 뒤 「네이버」를 못 본다
@@ -1668,58 +1617,37 @@ class TestPrecedent(Base):
         self.assertEqual(self.run_cli("decide", "external_send", "--subject", head + "외부 메일")[1]["decision"], "ask")
         rc, d, _ = self.run_cli("decide", "login", "--subject", head + "naver", "--in-use", "yes")
         self.assertEqual(d["decision"], "each")                                  # 약관 서비스는 길이와 무관
-        h = lambda x: hashlib.sha256(x.encode("utf-8")).hexdigest()[:16]
-        old = "external_send:" + h(self.m._norm(head + "옛 기록")[:120])        # 지난 판(앞 120자) 키 기록도 따른다
-        self._put({old: {"meaning": "deny", "at": "t"}})
-        self.assertEqual(self.run_cli("decide", "external_send", "--subject", head + "옛 기록")[1]["decision"], "never")
-        nt = "new-" + hashlib.sha256(b"drone_flight").hexdigest()[:12]           # 새 유형의 지난 판 지금 꼴 키(앞 120자)
-        self._put({nt + ":" + h(self.m._norm(head + "옛 기록")[:120]): {"meaning": "deny", "at": "t"}})
-        self.assertEqual(self.run_cli("decide", "drone_flight", "--subject", head + "옛 기록")[1]["decision"], "never")
 
     def test_record_states_exhaustive(self):
-        # R8 단락의 전수 방안 ⑤ — 지금 키·옛 키 × {없음·허락·안 함·조건·잘린 조건} × 뜻 3 × 사용자 변경 여부 = 150 꼴을
-        #   구현과 독립인 판정식과 대조: 조회 = 가장 좁은 것(안 함 > 잘린 조건 > 조건 > 허락) · 보완 = 조건부로만 · 잘린 자리만
-        #   그 자리에서 · 개수 불변 · 사용자 변경 = 지금 키에 쓰고 옛 키 지움 · 그 밖 기록 있음 = 재기록 거절(무변경)
-        cur, old = self.m.decision_key("external_send", "s"), "external_send:s"
+        # 기록 상태 전수 — 한 키 × {없음·허락·안 함·조건·잘린 조건} × 뜻 3 × 사용자 변경 여부 = 30 꼴을 구현과 독립인 판정식과 대조:
+        #   조회 = 그 기록 · 보완 = 잘린 조건 + 조건부로만 그 자리 교체 · 사용자 변경·없음 = 씀 · 그 밖 = 무변경 거절
+        cur = self.m.decision_key("external_send", "s")
         states = {None: None, "allow": {"meaning": "allow", "at": "t"}, "deny": {"meaning": "deny", "at": "t"},
                   "cond": {"meaning": "conditional", "condition": "팀 안", "full": True, "at": "t"},
                   "cut": {"meaning": "conditional", "condition": "가" * 300, "at": "t"}}
-        rank = {"deny": 0, "cut": 1, "cond": 2, "allow": 3}
         want_decide = {"deny": "never", "cut": "each", "cond": "check", "allow": "do"}
         n = 0
-        for a, b in [(a, b) for a in states for b in states]:
+        for st in states:
             for meaning in ("allow", "deny", "conditional"):
                 for uc in (False, True):
                     n += 1
-                    items = {k: v for k, v in ((cur, states[a]), (old, states[b])) if v is not None}
+                    items = {cur: states[st]} if st else {}
                     self._put(items)
-                    present = [x for x in (a, b) if x]
-                    if present:
+                    if st:
                         got = self.run_cli("decide", "external_send", "--subject", "s")[1]["decision"]
-                        self.assertEqual(got, want_decide[min(present, key=rank.get)], (a, b))
+                        self.assertEqual(got, want_decide[st], st)
                     argv = ["remember", "external_send", "--subject", "s", "--answer-file", self.answer("응"),
                             "--meaning", meaning] + (["--condition", "새 조건"] if meaning == "conditional" else [])
                     rc, r, _ = self.run_cli(*(argv + (["--user-changed"] if uc else [])))
-                    after, tag = self.dec(), (a, b, meaning, uc)
-                    cuts = [k for k, x in ((cur, a), (old, b)) if x == "cut"]
-                    if not present or uc:
+                    after, tag = self.dec(), (st, meaning, uc)
+                    if not st or uc or (st == "cut" and meaning == "conditional"):
                         self.assertEqual(rc, 0, (tag, r))
-                        self.assertEqual(list(after), [cur], tag)                    # 지금 키 하나 · 옛 키 지움
-                        self.assertEqual(after[cur]["meaning"], meaning, tag)
-                    elif cuts and meaning != "conditional":
-                        self.assertEqual((rc, r["reason"]), (7, "supplement_meaning"), tag)
-                        self.assertEqual(after, items, tag)
-                    elif cuts:
-                        self.assertEqual(rc, 0, (tag, r))
-                        self.assertEqual(set(after), set(items), tag)                # 개수·키 그대로
-                        for k in items:                                              # 잘린 자리만 바뀐다
-                            self.assertEqual(after[k].get("condition") == "새 조건", k in cuts, (tag, k))
-                            if k not in cuts:
-                                self.assertEqual(after[k], items[k], (tag, k))
+                        self.assertEqual((list(after), after[cur]["meaning"]), ([cur], meaning), tag)
+                    elif st == "cut":
+                        self.assertEqual((rc, r["reason"], after), (7, "supplement_meaning", items), tag)
                     else:
-                        self.assertEqual((rc, r["reason"]), (7, "already_decided"), tag)
-                        self.assertEqual(after, items, tag)
-        self.assertEqual(n, 150)
+                        self.assertEqual((rc, r["reason"], after), (7, "already_decided", items), tag)
+        self.assertEqual(n, 30)
 
     def test_key_space_boundary_120(self):
         # codex R9: 정규화 120자 대상의 지금 키 = 그 뒤에 글을 붙인 더 긴 대상의 옛 판(앞 120자) 키 — 지금 판 기록이 옛 키
@@ -1746,6 +1674,37 @@ class TestPrecedent(Base):
                     self.assertEqual(self.run_cli("decide", cat, "--subject", first, *extra)[1]["decision"], "never", tag)
                     self.assertEqual(self.run_cli("decide", cat, "--subject", second, *extra)[1]["decision"], "do", tag)
                     self.assertEqual(len(self.dec()), 2, tag)                     # 둘 다 남는다
+
+    def test_two_subjects_non_interference(self):
+        # master#7d1b6e77(codex R10 반례 포함): 두 대상 A(정규화 120·121자) · B = A + 「 추가」 — A 의 키 자리에 무엇이 있든(없음·허락·
+        #   안 함·조건·잘린 조건 = R10 의 옛 잘린 기록 자리) 한 대상의 기록 쓰기(뜻 3 × 사용자 변경 여부)는 다른 대상의 판정을 바꾸지
+        #   않는다 · 차례 둘(A→B · B→A) · 유형 = 아는 유형 2(login 은 사용 근거 있음 — R10 반례의 do 경로). 판정식 = 「쓰기 전후 상대
+        #   판정 같음」(구현과 독립) · 키가 대상 하나에 하나라 길이 경계(120)는 반례 자리 하나로 충분(옛 판 앞 120자 키는 없앴다)
+        cut = {"meaning": "conditional", "condition": "가" * 300, "at": "t"}
+        states = [None, {"meaning": "allow", "at": "t"}, {"meaning": "deny", "at": "t"},
+                  {"meaning": "conditional", "condition": "팀 안", "full": True, "at": "t"}, cut]
+        ops = [(m, uc) for m in ("allow", "deny", "conditional") for uc in (False, True)]
+        n = 0
+        for cat in ("external_send", "login"):
+            extra = ("--in-use", "yes") if cat == "login" else ()
+            for la in (120,):
+                a = "gmail " + "가" * (la - 6)
+                b = a + " 추가"
+                dec = lambda x: self.run_cli("decide", cat, "--subject", x, *extra)[1]["decision"]
+                for st in states:
+                    for (m1, u1) in ops:
+                        for (m2, u2) in (("allow", False), ("allow", True), ("conditional", False)):
+                            for x, y in ((a, b), (b, a)):
+                                n += 1
+                                self._put({self.m.decision_key(cat, a): st} if st else {})
+                                for subj, m, uc in ((x, m1, u1), (y, m2, u2)):
+                                    other = b if subj == a else a
+                                    before = dec(other)
+                                    self.run_cli("remember", cat, "--subject", subj, "--answer-file", self.answer("응"),
+                                                 "--meaning", m, *(["--condition", "새"] if m == "conditional" else []),
+                                                 *(["--user-changed"] if uc else []))
+                                    self.assertEqual(dec(other), before, (cat[:13], la, st and st["meaning"], subj == a, m, uc))
+        self.assertEqual(n, 2 * 1 * 5 * 6 * 3 * 2)
 
     def test_domain_matches_only_official_domains(self):
         # codex R3·R4: 도메인 대상은 이름 닮음(word.invalid · gmail.invalid · word.example.invalid)이 아니라 정식 도메인 목록으로만

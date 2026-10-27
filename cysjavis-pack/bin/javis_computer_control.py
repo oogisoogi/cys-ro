@@ -1856,7 +1856,6 @@ MAX_CONDITION = 2000        # 조건 글자 한도 — 넘으면 자르지 않�
 LEGACY_CUT = 300            # 옛 판 자르기 길이 — `full` 표지 없는 조건이 이 길이 이상이면 끝이 잘렸을 수 있다
 
 
-KEY_CUT = 120               # 옛 판 키는 정규화한 글의 앞 120자로 만들었다(뒤가 다른 두 대상이 한 키 · 120자 뒤 「네이버」 못 봄)
 
 
 def _norm(s):
@@ -1882,44 +1881,18 @@ def decision_key(cat, subject):
     return "%s:%s" % (head, hashlib.sha256(n.encode("utf-8")).hexdigest()[:16] if n else "")
 
 
-def _legacy_keys(cat, subject):
-    """옛 판 키(전부 정규화 앞 120자) — 지난 판 지금 꼴 · ad474d66 판 `유형 원문:대상 해시`(새 유형만 지금과 다르다) ·
-    92c47060 판 `유형:정규화 원문`(codex R2·R3). 120자 이하 대상은 첫째가 지금 키와 같다."""
-    n = _norm(subject)[:KEY_CUT]
-    head = cat if cat in CATEGORIES else "new-" + hashlib.sha256(_norm(cat)[:KEY_CUT].encode("utf-8")).hexdigest()[:12]
-    h = hashlib.sha256(n.encode("utf-8")).hexdigest()[:16] if n else ""
-    return ["%s:%s" % (head, h), "%s:%s" % (cat, h), "%s:%s" % (cat, n)]
-
-
 def _cut(rec):
     """옛 판이 300자에서 잘라 둔 조건인가(출처 사실 — 뜻은 보지 않는다): 원문 표지(full) 없고 길이가 자르기 길이 이상."""
     return (isinstance(rec, dict) and rec.get("meaning") == "conditional" and not rec.get("full")
             and len(rec.get("condition") or "") >= LEGACY_CUT)
 
 
-def _rank(rec):
-    """좁은 차례 — 안 함 0 · 잘린 조건 1 · 조건 2 · 허락 3 · 그 밖 4(codex R5·R6)."""
-    if _cut(rec):
-        return 1
-    return {"deny": 0, "conditional": 2, "allow": 3}.get(rec.get("meaning") if isinstance(rec, dict) else None, 4)
-
-
-def _found(decisions, cat, subject):
-    """같은 대상의 기록 전부 — 지금 키와 옛 판 키 [(키, 기록)]. 지금 판 기록은 자기 대상(`for` = 그 대상의 지금 키)을 적어 둔다 —
-    옛 판 키 자리에서 `for` 가 다른 기록은 **다른 대상**의 것이다(120자 대상의 지금 키 = 더 긴 대상의 옛 키) — 조회·삭제 대상이
-    아니다(codex R9). `for` 없는 기록 = 옛 판(그대로 따른다)."""
-    d = decisions or {}
-    cur = decision_key(cat, subject)
-    return [(k, d[k]) for k in dict.fromkeys([cur] + _legacy_keys(cat, subject))
-            if d.get(k) and (not isinstance(d[k], dict) or d[k].get("for", cur) == cur)]
-
-
 def _lookup(decisions, cat, subject):
-    """상시 기록 조회 — 지금 키와 옛 판 키를 다 본다(기록을 잃지 않는다). 같은 대상에 기록이 여럿 남아 있으면 키 자리와
-    무관하게 가장 좁은 쪽(안 함 > 잘린 조건 > 조건 > 허락)을 따른다 — 허락이 금지를, 온전한 조건이 잘린 조건을 가리지 않는다
-    (codex R5·R6 · master#6528f666)."""
-    found = _found(decisions, cat, subject)
-    return min((r for _k, r in found), key=_rank) if found else None
+    """상시 기록 조회 — 키 하나(유형 + 자르지 않은 대상 해시). ★옛 판 키 호환은 없다(master#7d1b6e77 · codex R10): 이 기능은 이
+    티켓에서 처음 생겼고 발행·설치 0 이라 옛 판 기록 = 개발 커밋의 시험 기록뿐 — 호환 층은 대상 간 슬롯 공유(120자 별칭)
+    위험만 남겼다. 한 대상 = 한 키 = 한 기록이라 다른 대상의 기록 쓰기는 이 대상의 판정을 바꾸지 못한다."""
+    r = (decisions or {}).get(decision_key(cat, subject))
+    return r or None
 
 
 def load_decisions():
@@ -2128,21 +2101,15 @@ def cmd_remember(a):
                     % (len(cond), MAX_CONDITION), "condition_too_long", 2)
     d = load_decisions()
     key = decision_key(a.cat, a.subject)
-    found = _found(d["items"], a.cat, a.subject)
-    cuts = [k for k, r in found if _cut(r)]
-    supp = bool(cuts) and not a.user_changed         # 잘린 옛 조건 다시 적기(보완) — 그 기록만 바꾼다(codex R5·R6)
+    prev = d["items"].get(key)
+    supp = _cut(prev) and not a.user_changed         # 잘린 옛 조건 다시 적기(보완) — 그 기록 자리에서 바꾼다(codex R5·R6)
     if supp and a.meaning != "conditional":
         return fail("끝이 잘린 조건은 조건부 허락으로만 다시 적습니다 — 허락·안 함으로 바꾸신 것이면 사용자 변경으로 적어 주세요.",
                     "supplement_meaning", 7)
-    if found and not a.user_changed and not supp:
+    if prev and not a.user_changed and not supp:
         # 재질문 금지 — 이미 정해진 항목을 다시 묻고 기록하는 것은 마스터의 실수다(사용자가 스스로 바꾼 때만 --user-changed)
         return fail("이미 정해 주신 항목입니다 — 다시 여쭙지 않고 그 결정을 따릅니다.", "already_decided", 7)
-    # 보완 = 잘린 기록을 **그 키 자리에서** 바꾼다(개수 그대로 · 공존하는 온전한 기록·다른 뜻 기록은 손대지 않는다 · codex R6·R7)
-    # 그 밖 = 지금 키에 쓰고 옛 판 키는 지운다(사용자가 바꾼 때)
-    dest = cuts if supp else [key]
-    drop = [] if supp else [k for k, _r in found if k != key]       # 옛 판 키 중 이 대상 것만(_found 가 남의 지금 키를 뺀다)
-    left = len(d["items"]) - len(set(drop) - {key})
-    if not supp and key not in d["items"] and left >= MAX_DECISIONS:
+    if key not in d["items"] and len(d["items"]) >= MAX_DECISIONS:
         # ★codex R1: 상한에서 옛 결정을 지우면 그 항목을 다시 묻게 된다 — 지우지 않고 새 기록을 거절한다(4군① 상한은 유지)
         _ledger({"event": "decisions_full", "count": len(d["items"])})
         return fail("정해 두신 결정이 너무 많아(%d) 더 적어 두지 못했습니다 — 이번 결정은 따르되 기록은 하지 못했습니다."
@@ -2150,16 +2117,12 @@ def cmd_remember(a):
     rec = {"meaning": a.meaning, "condition": cond, "at": _iso(),
            "label": mask("%s %s" % (a.cat, a.subject)),
            "answer_sha256": hashlib.sha256(ans.encode("utf-8")).hexdigest()}
-    rec["for"] = key                                 # 이 기록의 대상 = 지금 키(해시 · 원문 0) — 옛 판 키 자리에서 남의 기록과 구별(codex R9)
     if a.meaning == "conditional":
         rec["full"] = True                           # 자르지 않은 원문(옛 판 300자 기록과 구별)
     _ledger({"event": "decision", "key": key, "meaning": a.meaning, "changed": bool(a.user_changed),
-             "supplement": supp, "written": len(dest), "dropped": len(drop),
+             "supplement": bool(supp),
              "answer_sha256": rec["answer_sha256"]})              # 기록 먼저
-    for k in drop:
-        d["items"].pop(k, None)                      # 옛 판 키는 새 키로 옮긴다(사용자가 바꾼 때)
-    for k in dest:
-        d["items"][k] = rec
+    d["items"][key] = rec
     _write_json(_p(DECISIONS), d)
     word = {"allow": "허락", "deny": "안 함", "conditional": "조건부 허락(%s)" % mask(cond)}[a.meaning]
     return out({"ok": True, "key": key, "say": "알겠습니다 — 앞으로 「%s」은(는) %s 으로 계속 따르겠습니다. 다시 여쭙지 않습니다."

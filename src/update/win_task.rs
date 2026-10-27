@@ -273,6 +273,14 @@ impl Refusal {
         Refusal { read_error: true, reasons: vec![format!("읽기 오류: {what}")], task_sddl: None, folder_sddl: None, xml: None }
     }
 
+    /// 읽기 도중 실패해도 그때까지 읽은 원문은 증거로 남긴다(codex R1-02).
+    pub fn with_read(mut self, xml: Option<&str>, task_sddl: Option<&str>, folder_sddl: Option<&str>) -> Refusal {
+        self.xml = xml.map(str::to_string).or(self.xml);
+        self.task_sddl = task_sddl.map(str::to_string).or(self.task_sddl);
+        self.folder_sddl = folder_sddl.map(str::to_string).or(self.folder_sddl);
+        self
+    }
+
     /// 한 줄 사유(오류 문자열 · 잡 기록에 실린다).
     pub fn summary(&self) -> String {
         self.reasons.join(" · ")
@@ -507,16 +515,20 @@ mod com {
         Ok(Com(p))
     }
 
-    fn task_xml_sddl(task: &Com) -> Result<(String, String), String> {
+    fn read_task_xml(task: &Com) -> Result<String, String> {
         let mut x: BSTR = std::ptr::null_mut();
-        // IRegisteredTask::get_Xml = 20 · GetSecurityDescriptor = 21
+        // IRegisteredTask::get_Xml = 20
         let gx: extern "system" fn(Raw, *mut BSTR) -> HRESULT = unsafe { std::mem::transmute(slot(task.0, 20)) };
         hr(gx(task.0, &mut x), "get_Xml")?;
-        let xml = take_bstr(x);
+        Ok(take_bstr(x))
+    }
+
+    fn read_task_sddl(task: &Com) -> Result<String, String> {
         let mut s: BSTR = std::ptr::null_mut();
+        // IRegisteredTask::GetSecurityDescriptor = 21
         let gs: extern "system" fn(Raw, i32, *mut BSTR) -> HRESULT = unsafe { std::mem::transmute(slot(task.0, 21)) };
         hr(gs(task.0, SI_OWNER_DACL, &mut s), "Task.GetSecurityDescriptor")?;
-        Ok((xml, take_bstr(s)))
+        Ok(take_bstr(s))
     }
 
     /// ★2판(윈 CI): 갱신 폴더는 호출자가 준다 — 여기서 `state_dir()` 을 다시 구하지 않는다(시험 격리 봉인 · `--check` 가 넘긴 폴더와
@@ -548,12 +560,15 @@ mod com {
         let svc = service().map_err(Refusal::read)?;
         let folder = our_folder(dir, &svc, false, "").map_err(Refusal::read)?;
         let task = get_task(&folder, name).map_err(Refusal::read)?;
-        let (xml, sddl) = task_xml_sddl(&task).map_err(Refusal::read)?;
-        let fsddl = folder_sddl(&folder).map_err(Refusal::read)?;
+        let xml = read_task_xml(&task).map_err(Refusal::read)?;
+        let sddl = read_task_sddl(&task).map_err(|e| Refusal::read(e).with_read(Some(&xml), None, None))?;
+        let fsddl = folder_sddl(&folder).map_err(|e| Refusal::read(e).with_read(Some(&xml), Some(&sddl), None))?;
         judge(&xml, &sddl, &fsddl, runner, args, &me, logon)
     }
 
-    /// N14 용(종전 꼴): 통과 = Some(true) · 불일치 = Some(false) · 읽기 오류 = None.
+    /// N14 용: 통과 = Some(true) · 불일치 = Some(false) · 읽기 오류 = None. 종전과 같은 것은 반환형과 N14 최종 불리언
+    /// (`recover_task_ok` → `unwrap_or(false)`)이다 — Option 값은 두 경우가 바뀌었다(XML 해석 불가 None → Some(false) ·
+    /// 폴더 SDDL 읽기 오류 Some(false) → None · 둘 다 N14 = 보류 그대로 · codex R1-03).
     pub fn verify(dir: &Path, name: &str, runner: &Path, args: &[&str], logon: bool) -> Option<bool> {
         match verify_detail(dir, name, runner, args, logon) {
             Ok(()) => Some(true),
@@ -578,6 +593,10 @@ mod com {
         let folder = our_folder(dir, &svc, true, &sddl)?;
         let xml = task_xml(runner, args, &me, logon);
         let (bn, bx, bs) = (Bstr::new(name), Bstr::new(&xml), Bstr::new(&sddl));
+        // ★codex R1-01: 같은 이름의 옛 작업이 있으면 먼저 지운다 — 갱신(TASK_UPDATE)에선 0x10 이 「옛 주체 ACE 를 지우지 않는다」
+        //   (MS 문서)라 1.1.10 이 남긴 FR ACE 가 살아남을 수 있다. 새로 만들기만 하면 실측(0x16 = D:PAI 그대로)과 같은 경로다.
+        //   없는 작업 지우기 실패는 무시(정상).
+        let _ = delete(dir, name);
         let mut p: Raw = std::ptr::null_mut();
         // ITaskFolder::RegisterTask = 16
         let f: extern "system" fn(Raw, BSTR, BSTR, i32, VARIANT, VARIANT, i32, VARIANT, *mut Raw) -> HRESULT =
@@ -786,5 +805,23 @@ mod tests {
         // 판정 = 1.1.10 과 같다: 같은 주체 FA 중복은 통과 · DACL 없음은 거부.
         assert!(sddl_exactly(&format!("D:P(A;;FA;;;SY)(A;;FA;;;{me})(A;;FA;;;{me})"), me));
         assert_eq!(sddl_check("O:SYG:SY", me), Err(vec!["DACL(D:) 없음".to_string()]));
+        // codex R1-02: 읽기 도중 실패해도 앞서 읽은 원문이 증거로 남는다.
+        let p = Refusal::read("Folder.GetSecurityDescriptor hr=0x80070005".into()).with_read(Some("<Task/>"), Some("D:P(A;;FA;;;SY)"), None);
+        assert!(p.read_error);
+        assert_eq!((p.xml.as_deref(), p.task_sddl.as_deref(), p.folder_sddl.as_deref()), (Some("<Task/>"), Some("D:P(A;;FA;;;SY)"), None));
+        assert_eq!(p.evidence("recover", 1)["xml"], "<Task/>");
+    }
+
+    /// codex R1-04: 핀이 함수만 보지 않게 — 실제 RegisterTask 호출 인자가 `register_flags()` 이고, 등록 전에 옛 작업을 지운다
+    /// (소스 핀 · 윈 전용 com 모듈은 맥에서 실행되지 않으므로 글자로 묶는다).
+    #[test]
+    fn com_register_call_uses_register_flags_and_deletes_first() {
+        let src = include_str!("win_task.rs");
+        let com = &src[src.find("mod com {").unwrap()..src.find("mod tests {").unwrap()];
+        let reg = com.find("TASK_CREATE_OR_UPDATE, empty()").map(|_| ()).is_none();
+        assert!(reg, "RegisterTask 에 상수 6 직접 전달 금지");
+        let call = com.find("hr(f(folder.0, bn.0, bx.0, register_flags(), empty(), empty(), TASK_LOGON_INTERACTIVE_TOKEN").expect("RegisterTask 인자 = register_flags()");
+        let del = com.find("let _ = delete(dir, name);\n        let mut p: Raw").expect("등록 직전 옛 작업 지우기");
+        assert!(del < call, "지우기가 등록보다 먼저");
     }
 }

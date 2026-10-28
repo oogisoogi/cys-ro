@@ -167,7 +167,7 @@ cysr 팩은 에이전트를 다섯 역할로 조직한다. 각 역할은 기동 
 - 능력 모델(`src/bin/cysd/caps.rs`)은 deny-by-default — reviewer/planner는 읽기·검색만.
   에이전트 내부 도구는 PreToolUse 훅(`hooks/role-capability-gate.sh`)이 실 집행자다
   (리뷰어가 검토 대상을 직접 고쳐버리는 reward-hack 차단).
-- master 특권 탈취(라이브 master role claim), 워커 무한 증식(active-limit), 승인 자기결재
+- master 특권 탈취(라이브 master role claim), 워커 수 상한(active-limit · 기본 무제한, 운영자가 상한을 정하면 집행), 승인 자기결재
   (`feed.push`한 노드가 스스로 `feed.reply`)는 데몬이 거부한다.
 
 ---

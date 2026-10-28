@@ -72,3 +72,70 @@
 cd ui && bun install && bun test
 PW_CORE=~/axdev/vendor-survey/stephen/pw/node_modules/playwright-core node ui/e2e/render_parity/gate.mjs /tmp/rp
 ```
+
+---
+
+# 이어서 — JetBrains Mono 동봉 (TICKET=cysr-bundle-jetbrains-mono · 2026-10-29)
+
+박사님 원문(10-29 07:4x): 「권고대로 글꼴을 넣는다.」 · 같은 브랜치 `fix/1111-render-parity` 위 커밋. **push·병합·빌드 설치 안 함**.
+
+## 무엇을 넣었나
+| 파일(`ui/fonts/`) | 원본(릴리스 zip 안 경로) | 바이트 | sha256 |
+|---|---|---|---|
+| `JetBrainsMono-wght.ttf` | `fonts/variable/JetBrainsMono[wght].ttf` | 303,144 | `662a196d58f1183bf2d77428b6d5283fe3f45161ab021bea4036bc98e5cac016` |
+| `JetBrainsMono-Italic-wght.ttf` | `fonts/variable/JetBrainsMono-Italic[wght].ttf` | 308,888 | `f115aaa12113718c02ce72864fe6823b87241bc23d3e44cf1220155f861063f2` |
+| `OFL.txt` | `OFL.txt` | 4,399 | `30f0c136e3c88e422d0791acd97238870f9054a9729bc34cf2ff0d4ed8cac4ad` |
+
+- 출처 = 공식 `github.com/JetBrains/JetBrainsMono` **최신 릴리스 v2.304**(2023-01-14 게시 · GitHub API 실측) ·
+  `JetBrainsMono-2.304.zip` 5,622,857 B · sha256 `6f6376c6ed2960ea8a963cd7387ec9d76e3f629125bc33d1fdcd7eb7012f7bbf`.
+  빈 새 폴더(스크래치패드 `jbm-dl/`)에 받아 풀기만 했고 실행한 것 없음. 바이트는 원본 그대로(파일 이름의 `[wght]` 만 `-wght` 로).
+- 이 기기에 설치된 `~/Library/Fonts/JetBrainsMono[wght].ttf` 와 **sha256 동일**(같은 2.304).
+- 라이선스 = SIL OFL 1.1(무료 · 재배포 시 라이선스 동봉 의무 → `dist/fonts/OFL.txt` 로 앱에 함께 실림 · `NOTICE.md` 에 행 추가).
+- ★**woff2 대신 가변 TTF 를 고른 이유**: 화면 설정 「본문 굵기」 가 100~800 여덟 단계를 고르게 하고(박사님 저장값 = 300),
+  기울임은 Claude Code 의 생각 글 등에 쓰인다. 공식 릴리스의 woff2 는 **고정 굵기 낱개뿐**(가변 woff2 없음)이라 8 굵기 × 정자·기울임 =
+  16 파일 ≈ 1.5 MB. 가변 TTF 2개 = 0.6 MB 로 전 구간을 덮는다. woff2 로 바꾸면 원본 sha256 추적이 끊겨 바꾸지 않았다.
+
+## 어떻게 붙였나
+- `appearance.ts`: `BUNDLED_FONT_FAMILY = "cys JetBrains Mono"` — **설치 글꼴과 겹치지 않는 별명**. 기본 스택 맨 앞에 넣었다
+  (`'cys JetBrains Mono', 'JetBrains Mono', Menlo, 'SF Mono', 'Cascadia Mono', Consolas, 한글 대체…`).
+  사용자가 고른 글꼴(저장값 `cys-font-face`)은 종전처럼 그 앞에 붙으므로 **저장값이 우선**. 맥·윈 같은 묶음이라 윈도 기본 = 동봉 글꼴.
+  한글은 동봉 글꼴에 없으므로 종전대로 시스템 대체 글꼴(+ 앞 티켓의 1.214배 맞춤) — cmux 와 같다.
+- `termrender.ts loadBundledFont()`: `FontFace` 로 정자·기울임 2개를 굵기 `100 800` 으로 문서 글꼴 목록에 한 번만 올림.
+  못 올라오면(파일 없음) false → 스택 다음 글꼴(설치된 JetBrains Mono → Menlo/Cascadia)로 그려진다.
+- `main.ts`(9줄): 모듈 시작 때 `loadBundledFont().then(...)` — 그 전에 만든 창은 한글 배율을 다시 계산하고 `remeasureCells`
+  (칸 재측정 + 글자 폭 캐시 비움) 후 `fitPane`.
+- `build.sh`: `ui/fonts` 의 3 파일을 `dist/fonts/` 로 복사.
+
+## ★OffscreenCanvas 가 동봉 글꼴을 보는가 (브리프 3)
+헤드리스 WebKit(playwright-core 1.63 · webkit-2359) 실측 — `FontFace` 로 문서에 올린 글꼴은
+**OffscreenCanvas(메인 스레드 · 로드 전에 만든 것·뒤에 만든 것 모두)·문서에 안 붙은 캔버스·붙은 캔버스·span 모두가 본다**
+(「W」 100px = 60.000 = JetBrains 600/1000 · 대체 글꼴은 60.0098). 즉 앞 티켓 원인 ①(사용자 **설치** 글꼴을 못 봄)과 달리
+**문서에 올린 웹 글꼴은 xterm 원래 측정 경로로도 맞게 잰다**(span 측정 감싸기는 그대로 둠 — 사용자가 고른 설치 글꼴용).
+- 「워커 쪽」: 이 UI·xterm 5.5 는 Web Worker 를 쓰지 않는다(`new Worker` 0건 — src·xterm 원본 grep). 참고로 워커에서
+  `url()` 글꼴을 file:// 로 읽으면 NetworkError(헤드리스 실측) — 앞으로 워커를 쓰게 되면 ArrayBuffer 로 넘겨야 한다.
+
+## 시험
+- render_parity 게이트(`PW_CORE=… node ui/e2e/render_parity/gate.mjs <폴더>`) **9/9 PASS** — 종전 5 + 새 4:
+  - 「미설치 환경」(`new:@nosys` = 스택에서 설치 글꼴 이름 `'JetBrains Mono'` 를 빼 동봉 글꼴만 남김):
+    동봉 정자·기울임 loaded · **칸 8×17** · 한글 맞춤 1.214(동봉 글꼴 기준으로 다시 잼).
+  - 「글리프 = 동봉」: 미설치 그림 ↔ 설치 글꼴만 쓴 그림(`new:@sysonly`)의 글자 줄 0~4 **화소 완전 일치**.
+- 뮤턴트 ①(`GATE_MUTANT=nofonts` = 글꼴 파일 빼기) → **4 FAIL 검출**(적재 error · 칸 8×15 = Menlo · 배율 1.219 · 화소 불일치) · exit 1.
+- 뮤턴트 ②(하네스에서 `remeasureCells` 호출 제거) → **살아남음(검출 못 함)** — 정직 고지: 로드 뒤 한글 배율 이름이
+  1219→1214 로 바뀌어 그 자체로 xterm 이 다시 재기 때문. `remeasureCells` 는 「배율 이름이 우연히 같을 때」의 백스톱이며
+  단위 시험(호출 순서 measure→widths→refresh · 모양 다르면 무동작)으로만 잠갔다.
+- `cd ui && bun test` **3209 통과 · 0 실패**(85 skip 은 종전 그대로) · `bunx tsc -p tsconfig.check.json` **0**
+  (단위 시험이 쓰는 `node:crypto`·바이트 `readFileSync` 만 `src/bun-env.d.ts` 에 좁게 선언).
+- 실제 빌드 묶음 확인: `sh ui/build.sh` 뒤 `dist/index.html` 을 헤드리스 WebKit 에 가짜 출처로 물려(서버 없이 route) 열면
+  `./fonts/` 두 파일을 요청하고 두 글꼴 모두 loaded · 페이지 오류 0.
+
+## 앱 용량 증가
+- `ui/dist` 날 바이트 **+616,431 B(≈0.59 MiB)** = 글꼴 612,032 + OFL 4,399.
+- Tauri 는 묶음 자산을 brotli 로 압축해 실행 파일에 넣는다(`tauri-codegen` 2.6.2 가 brotli 의존 · tauri 기본 기능) —
+  brotli q11 실측 합 **261,797 B(≈0.25 MiB)**(정자 124,982 · 기울임 135,390 · OFL 1,425). 실제 .app/.msi 증가는 빌드로 확인 안 함(빌드 = master 게이트).
+
+## 알려진 차이·함정
+- **상자 문자(─ ╭ ╮) 이음매**: 같은 바이트인데도 웹 글꼴로 그리면 칸 이음매 화소가 설치 글꼴보다 밝다(65 화소 · 최대 48/255 ·
+  5~6 줄만). WebKit 이 웹 글꼴·설치 글꼴의 칸 밖 잉크를 다르게 겹치는 것으로 보임(원인 미확정). 그래서 화소 일치 판정은 글자 줄만.
+- 실제 앱(WKWebView `tauri://` · WebView2 `https://tauri.localhost`)에서 `./fonts/` 상대 경로 읽기는 헤드리스 가짜 출처로만 확인 —
+  박사님 기기·윈 실기 확인 필요.
+- 박사님 기기는 저장값 `cys-font-face=D2Coding` 이라 **이 변경으로 화면이 바뀌지 않는다**(저장값 우선). 기본값으로 되돌리면 동봉 글꼴.

@@ -11,6 +11,8 @@
 //     (0.865em = 11.2px)로 두 칸(15.6px)에 그려 글자 뒤에 4px 틈이 생긴다(「한글 자간 틈」).
 // 순수 계산은 이 파일 위쪽(termrender.test.ts), DOM·xterm 배선은 아래쪽이다.
 
+import { BUNDLED_FONT_FAMILY } from "./appearance";
+
 // ── 순수 계산 ─────────────────────────────────────────────
 
 // Ghostty Metrics.calc: cell = @round(face 값) — 장치 화소 단위. css px 로 되돌려 준다.
@@ -53,6 +55,29 @@ export function withHangulFit(stack: string, fitFamily: string | null): string {
 }
 
 // ── DOM·xterm 배선 ───────────────────────────────────────
+
+// 동봉 글꼴(TICKET=cysr-bundle-jetbrains-mono) — JetBrains Mono 2.304 공식 릴리스의 가변 굵기 글꼴(100~800 한 파일 ·
+// 본문 굵기 선택지 전 구간) 정자·기울임 2개. 바이트는 원본 그대로(이름만 [wght] → -wght) · OFL 1.1 = ui/fonts/OFL.txt.
+// 설치 글꼴과 겹치지 않는 별명(BUNDLED_FONT_FAMILY)으로 문서 글꼴 목록에 올린다 — 문서에 올린 글꼴은 문서 캔버스·
+// OffscreenCanvas·span 이 모두 본다(헤드리스 WebKit 실측 · 사용자 설치 글꼴과 다르다 = 메모리 webkit-offscreen-canvas-no-user-fonts).
+// 올라오기 전에 만든 창은 대체 글꼴로 칸을 쟀으므로, 호출측이 then 에서 칸·한글 배율을 다시 잰다(remeasureCells).
+export const BUNDLED_FONT_FILES = [
+  { url: "./fonts/JetBrainsMono-wght.ttf", style: "normal" },
+  { url: "./fonts/JetBrainsMono-Italic-wght.ttf", style: "italic" },
+] as const;
+let bundledLoading: Promise<boolean> | null = null;
+// 한 번만 올린다. 정자가 올라오면 true · 파일이 없거나 못 읽으면 false(스택 다음 글꼴로 그려진다).
+export function loadBundledFont(): Promise<boolean> {
+  if (bundledLoading) return bundledLoading;
+  if (typeof document === "undefined" || typeof FontFace === "undefined") return Promise.resolve(false);
+  const faces = BUNDLED_FONT_FILES.map(({ url, style }) => {
+    const f = new FontFace(BUNDLED_FONT_FAMILY, `url('${url}') format('truetype')`, { weight: "100 800", style });
+    document.fonts.add(f);
+    return f.load().then(() => true, () => false);
+  });
+  bundledLoading = Promise.all(faces).then(([upright]) => upright);
+  return bundledLoading;
+}
 
 const ASCII = Array.from({ length: 95 }, (_, i) => String.fromCharCode(32 + i)).join("");
 // ★측정 요소는 반드시 문서에 붙인다 — WebKit 은 문서에 안 붙은 캔버스·OffscreenCanvas 에서 사용자 설치 글꼴을
@@ -177,4 +202,11 @@ export function refreshGlyphWidths(term: unknown): void {
   const t = term as { _core?: { _renderService?: { handleCharSizeChanged?: () => void } }; refresh?: (a: number, b: number) => void; rows?: number };
   t._core?._renderService?.handleCharSizeChanged?.();
   t.refresh?.(0, (t.rows ?? 1) - 1);
+}
+
+// 칸 다시 재기 — 동봉 글꼴이 창을 만든 뒤에 올라왔을 때. 글꼴 설정 문자열이 그대로면 xterm 이 다시 재지 않으므로
+// CharSizeService.measure(감싼 측정 · snapCellsToDevicePixels)를 직접 부르고 글자 폭 캐시도 비운다.
+export function remeasureCells(term: unknown): void {
+  (term as TermLike)._core?._charSizeService?.measure();
+  refreshGlyphWidths(term);
 }

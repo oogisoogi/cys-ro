@@ -6,8 +6,12 @@
 // 기본 터미널 폰트 스택 — ★Windows: Latin 등폭폰트(Cascadia Mono/Consolas)를 CJK 폰트보다
 // 앞에 둔다. 아니면 Menlo/SF Mono 부재 시 xterm가 셀 폭을 CJK 전각폰트(Noto Sans KR)로 측정해
 // Latin 글자가 넓게 벌어진다(자간 이상).
+// ★맨 앞 = 앱에 동봉한 JetBrains Mono(ui/fonts · termrender.ts loadBundledFont · TICKET=cysr-bundle-jetbrains-mono
+// 2026-10-29) — 설치 글꼴과 이름이 겹치지 않는 별명이라 미설치 기기(맥·윈)도 cmux 와 같은 글꼴로 그려진다.
+// 동봉 글꼴이 못 올라오면 다음 줄(설치된 JetBrains Mono → Menlo/Cascadia)로 내려간다.
+export const BUNDLED_FONT_FAMILY = "cys JetBrains Mono";
 export const DEFAULT_FONT_STACK =
-  "'JetBrains Mono', Menlo, 'SF Mono', 'Cascadia Mono', Consolas, 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', monospace";
+  `'${BUNDLED_FONT_FAMILY}', 'JetBrains Mono', Menlo, 'SF Mono', 'Cascadia Mono', Consolas, 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', monospace`;
 
 // 선택 폰트를 기본 스택 '앞'에 합성 — 미설치 폰트는 브라우저가 체인 아래로 폴백하고
 // CJK 폴백(한글)은 항상 보존된다. null·공백 = 기본 스택 그대로.

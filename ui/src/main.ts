@@ -24,7 +24,7 @@ import {
 } from "./transfer";
 import { planRestartInject, restartInvokeFailureReason } from "./restartplan";
 import { DEFAULT_BG, readableForeground, termTheme } from "./theme";
-import { termFontStack, snapCellsToDevicePixels, refreshGlyphWidths } from "./termrender";
+import { termFontStack, snapCellsToDevicePixels, refreshGlyphWidths, loadBundledFont, remeasureCells } from "./termrender";
 import { reorderWorkspace, reorderGroup } from "./reorder";
 import {
   TOPBAR_LAYOUT_KEY, type TopbarItem, isTopbarPinned, defaultTopbarLayout, parseTopbarLayout, serializeTopbarLayout,
@@ -3106,6 +3106,15 @@ function applyFontFace(face: string | null) {
     fitPane(rt);
   }
 }
+// 동봉 JetBrains Mono(termrender.ts) — 올라오기 전에 만든 창은 대체 글꼴로 칸·한글 배율을 쟀으므로 다시 잰다.
+loadBundledFont().then((ok) => {
+  if (!ok) return;
+  for (const rt of panes.values()) {
+    rt.term.options.fontFamily = termFontStack(composeFontFamily(fontFace), () => refreshGlyphWidths(rt.term));
+    remeasureCells(rt.term);
+    fitPane(rt);
+  }
+});
 
 // ── 영역별 폰트 커스터마이징(오너 요청 2026-07-14): 제목/본문/메뉴 크기·굵기 + 제목=역할색. localStorage 영속.
 function setDocVar(cssVar: string, lsKey: string, value: string | null) {

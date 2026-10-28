@@ -16,3 +16,13 @@
 
 - **R1-05 COM 초기화 수명**: `src/update/win_task.rs` `com::service()` 가 호출마다 `CoInitializeEx` 를 부르고 `CoUninitialize` 로 상쇄하지 않는다(기존 결함 · 1.1.11 수리 무관) → 초기화 HRESULT 를 쥔 apartment 가드(S_OK·S_FALSE 만 해제 · RPC_E_CHANGED_MODE 는 해제 의무 없음)를 인터페이스 해제 뒤 Drop 하게. 윈 실기 회귀 시험 동반.
 - **cysd 감독자 축 윈 패닉 150+건 · 스텝 30분 절단 · 원인 미규명**: windows-health 「cargo test --bin cysd 감독자 축」(비차단) 스텝이 런마다 패닉 152~172건(40589719076 = 154 · 기준선 40413658930·40409222350·40401921561)을 내고 스텝 상한 30분에 절단된다 — 절단 지점이 런마다 달라 패닉 집합도 다르다. 대표 사유 = return_absorb_tests 「시험 좌석에 `sleep 30` 가 10s 안에 뜨지 않았다」(governance.rs:15050). 결함 후보 · 1.1.11 수리 무관(cysd 소스 win_task 참조 0).
+
+## 정지 지점 (2026-10-28 09:5x · master#cba069d0 계정 94% 전 좌석 정지)
+
+| 칸 | 내용 |
+|---|---|
+| 원격 `origin/fix/1111-wintask` | `29bc5f9e`(int/1111 `cb5dee6a` 위) · CI 3런 녹: ci-branch 40603430392 · windows-build 40603430418 · windows-health 40603430374(56분 4초 · 75분 상한 · UI 회귀 녹 · 스텝 16 은 여전히 30분) |
+| windows-build win_task | 40599417017 에서 윈 실기 8/8 · 블록 93초(+2분 이내 → health 스텝 8 이전 안 함 · master#c709308c) |
+| 로컬 (미push) | int/1111 `19655dd6` 위로 rebase 2 완료 · 충돌 0 · 내 변경 diff 동일 · int 15커밋과 파일 겹침 0 · 백업 `backup/1111-wintask-pre-rebase2-29bc5f9e` |
+| 끊긴 것 | rebase 2 뒤 로컬 게이트(lib · secret-scan --all · 윈 타깃 check · u2-mutants) — lib 도중 정지 · **결과 없음** |
+| 다음 첫 명령 | `cd ~/cys-terminal-src-wt/1111-wintask && git fetch origin int/1111 && git log --oneline -1 origin/int/1111` → int 가 또 움직였으면 rebase → 위 로컬 게이트 4종 녹 → master 에 강제 push 확인요청(`--force-with-lease=fix/1111-wintask:29bc5f9e`) |

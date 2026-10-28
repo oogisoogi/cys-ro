@@ -13,6 +13,12 @@ This file consolidates third-party attributions for discoverability.
 | insane-search | `cysjavis-pack/skills/insane-search/` | fivetaku/insane-search | MIT — see `cysjavis-pack/skills/THIRD_PARTY.md` |
 | skill collections (32 skills) | `cysjavis-pack/skills/` | NomaDamas/k-skill · obra/superpowers · mattpocock/skills | MIT — commit-pinned attributions in `cysjavis-pack/skills/THIRD_PARTY.md` |
 
+## Bundled fonts
+
+| Component | Path | Upstream | License |
+|---|---|---|---|
+| JetBrains Mono 2.304 (variable · upright + italic) | `ui/fonts/` | JetBrains/JetBrainsMono (release v2.304) | SIL Open Font License 1.1 — `ui/fonts/OFL.txt` (shipped with the app in `dist/fonts/`) |
+
 ## Design-only references (no code vendored)
 
 Voicebox (MIT) and TimesFM (Apache-2.0) informed designs; no code was copied.

@@ -23,7 +23,8 @@ import {
   type TransferRecord,
 } from "./transfer";
 import { planRestartInject, restartInvokeFailureReason } from "./restartplan";
-import { DEFAULT_BG, readableForeground } from "./theme";
+import { DEFAULT_BG, readableForeground, termTheme } from "./theme";
+import { termFontStack, snapCellsToDevicePixels, refreshGlyphWidths, loadBundledFont, remeasureCells } from "./termrender";
 import { reorderWorkspace, reorderGroup } from "./reorder";
 import {
   TOPBAR_LAYOUT_KEY, type TopbarItem, isTopbarPinned, defaultTopbarLayout, parseTopbarLayout, serializeTopbarLayout,
@@ -3102,10 +3103,19 @@ function applyFontFace(face: string | null) {
   const fam = composeFontFamily(fontFace);
   document.documentElement.style.setProperty("--ui-title-font", fam); // 제목·본문 폰트 통일(오너 요청 2026-07-14): pane-title이 이 변수를 따라 터미널 폰트와 동일
   for (const rt of panes.values()) {
-    rt.term.options.fontFamily = fam;
+    rt.term.options.fontFamily = termFontStack(fam, () => refreshGlyphWidths(rt.term)); // 한글 두 칸 맞춤(termrender.ts)
     fitPane(rt);
   }
 }
+// 동봉 JetBrains Mono(termrender.ts) — 올라오기 전에 만든 창은 대체 글꼴로 칸·한글 배율을 쟀으므로 다시 잰다.
+loadBundledFont().then((ok) => {
+  if (!ok) return;
+  for (const rt of panes.values()) {
+    rt.term.options.fontFamily = termFontStack(composeFontFamily(fontFace), () => refreshGlyphWidths(rt.term));
+    remeasureCells(rt.term);
+    fitPane(rt);
+  }
+});
 
 // ── 영역별 폰트 커스터마이징(오너 요청 2026-07-14): 제목/본문/메뉴 크기·굵기 + 제목=역할색. localStorage 영속.
 function setDocVar(cssVar: string, lsKey: string, value: string | null) {
@@ -3299,7 +3309,7 @@ function applyBgColor(color: string | null): void {
   const fg = readableForeground(bg);
   document.documentElement.style.setProperty("--bg", bg);
   document.documentElement.style.setProperty("--canvas-text", fg);
-  for (const rt of panes.values()) rt.term.options.theme = { background: bg, foreground: fg };
+  for (const rt of panes.values()) rt.term.options.theme = termTheme(bg); // cmux 팔레트(theme.ts)
   if (color === null) localStorage.removeItem("cys-bg-color");
   else localStorage.setItem("cys-bg-color", color);
 }
@@ -4020,11 +4030,11 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
     cols: 120,
     rows: 35,
     // 폰트: 기본 스택(Latin 등폭을 CJK보다 앞에 — 셀 폭 측정 왜곡 방지)·선택 폰트 합성 = appearance.ts.
-    fontFamily: composeFontFamily(fontFace),
+    fontFamily: termFontStack(composeFontFamily(fontFace), () => refreshGlyphWidths(term)), // 한글 두 칸 맞춤(termrender.ts)
     fontSize,
     fontWeight: (localStorage.getItem("cys-term-weight") || "normal") as any, // 본문 굵기 재시작 유지(오너 요청 2026-07-14)
     // 배경 테마: 하드코딩 리터럴 대신 현재 색 상태 참조 — 새 pane도 커스텀 색으로 생성된다.
-    theme: { background: currentBg(), foreground: readableForeground(currentBg()) },
+    theme: termTheme(currentBg()), // cmux 팔레트·선택색(theme.ts)
     scrollback: 5000,
     // ★복사 불가 수리(2026-08 현장 제보): Claude Code TUI가 마우스 트래킹을 켜면 xterm은
     // 선택(selection)을 끄고, mac에서 강제 선택의 유일한 통로가 Option+드래그 && 이 옵션이다
@@ -4037,6 +4047,7 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
   const fit = new FitAddon();
   term.loadAddon(fit);
   term.open(termHost);
+  snapCellsToDevicePixels(term); // 칸 크기 = cmux(Ghostty) 식 — 설치 글꼴 기준 측정 + 장치 화소 반올림(termrender.ts)
 
   // ── 출력 따라가기(바닥 고정) ──
   // xterm은 뷰포트가 정확히 바닥일 때만 새 출력을 따라간다 — 초기 크기(120x35)→fit 리플로우,

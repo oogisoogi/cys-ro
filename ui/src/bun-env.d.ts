@@ -112,6 +112,8 @@ declare module "node:fs" {
   /** mousefilter.test.ts 의 코퍼스 로딩(URL 경로 — cwd 비의존)만 쓴다. */
   export function existsSync(path: string | URL): boolean;
   export function readFileSync(path: string | URL, encoding: "utf8" | "utf-8"): string;
+  /** termrender.test.ts 의 동봉 글꼴 sha256 핀(바이트 그대로 읽기)만 쓴다. */
+  export function readFileSync(path: string | URL): Uint8Array;
   /**
    * clipath.test.ts 의 **문서 전수 스윕**만 쓴다(docs/ 아래 모든 .md + 리포 루트 .md).
    * 목록을 손으로 적으면 빠뜨린 파일이 남고, 실제로 그 빠뜨린 파일(docs/GUIDE-clean-reset-KR.md)이
@@ -122,6 +124,11 @@ declare module "node:fs" {
     path: string | URL,
     options: { withFileTypes: true },
   ): { name: string; isDirectory(): boolean; isFile(): boolean }[];
+}
+
+/** termrender.test.ts 의 동봉 글꼴 sha256 핀만 쓴다 — sha256·hex 한 형태만 선언한다. */
+declare module "node:crypto" {
+  export function createHash(algorithm: "sha256"): { update(data: Uint8Array): { digest(encoding: "hex"): string } };
 }
 
 /**

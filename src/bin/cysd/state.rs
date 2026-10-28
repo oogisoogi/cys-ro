@@ -13226,8 +13226,10 @@ mod tests {
             p["screen_diag"],
             json!({"cursor_row": null, "marker_row": null, "cursor_lead_cp": null, "last_parser_panic_at": null, "repaint_requested_at": null,
                    "cursor_col": null, "after_cursor_dim": null, "alt_screen": false, "human_idle_secs": null,
-                   "layout_why": null}),
-            "결측은 null(값이 아니다) — ★(0.14.47 · 계측) 추가형 키 넷 + ★(1.1.10 · cysr-1110-winqueue 축2) layout_why 는 screen_diag 객체 안이다(최상위 키 수 16 은 그대로)"
+                   "layout_why": null,
+                   "repaint_knob_off": false, "rows_too_small": false, "repaint_unresolved": false, "nudge_ineligible": false,
+                   "repaint_last_obs": null}),
+            "결측은 null(값이 아니다) — ★(0.14.47 · 계측) 추가형 키 넷 + ★(1.1.10 · cysr-1110-winqueue 축2) layout_why + ★(1.1.11 · win-qstarved-ctrl-bytes) 다시 그리기 사유 다섯은 screen_diag 객체 안이다(최상위 키 수 16 은 그대로)"
         );
         // 커서 뒤에 글자가 있으면(회색 제안인지 직접 쓴 글인지 모른다) 유령 단정이 아니라 `after_cursor_text`(표 7행) — 사람이 화면을 보고 가린다.
         let p_after = queue_starved_payload("surface:5", Some("cso".into()), &head, 4200, 3, blocked, &c5_diag_ga(Some(false), Some(true)));

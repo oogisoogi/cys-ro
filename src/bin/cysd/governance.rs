@@ -9946,6 +9946,9 @@ pub(crate) struct QueueBlockDiag {
     /// ★(codex 2차 검토 #4) 이 좌석은 다시 그리기 요청 **대상이 아니다** — 프롬프트 표지를 모르는 좌석(맨 셸·마커 미선언 어댑터 — 큐 틱의 마커 없는 경로는 nudge 를 부르지 않는다)
     /// 또는 전경이 에이전트가 아닌 대체 화면. 처방은 이 좌석에 요청을 약속하지 않는다.
     pub(crate) nudge_ineligible: bool,
+    /// ★(1.1.11 · win-qstarved-ctrl-bytes) 큐 틱이 마지막으로 매긴 다시 그리기 분류(`RepaintState::last_obs` · `"unreadable"`·`"readable"`·`"other"`) — **진단 전용**.
+    /// 다시 그리기 시계는 `"unreadable"` 에서만 간다. 처방이 요청을 약속하는데 이 값이 `"other"`·`"readable"` 이면 요청은 오지 않는다(윈 1.1.10 실기 48건의 빈칸 사유). 관측 전 = `None`.
+    pub(crate) repaint_last_obs: Option<&'static str>,
 }
 
 /// ★(0.14.45 · F3) 화면 동기 진단 묶음 — [`QueueBlockDiag`] 의 `cursor_row`·`marker_row`·`cursor_lead_cp`.
@@ -10212,9 +10215,13 @@ pub(crate) fn queue_block_diag_with(
     let (draft_visible, ghost_after_cursor) = seat_input_line_visibility_with(s, defs);
     let probe = seat_screen_probe_with(s, defs);
     let last_parser_panic_at = s.last_parser_panic.lock().unwrap_or_else(|e| e.into_inner()).map(|t| t.max(0.0) as u64);
-    let (repaint_requested_at, repaint_unresolved) = {
+    let (repaint_requested_at, repaint_unresolved, repaint_last_obs) = {
         let st = s.repaint.lock().unwrap_or_else(|e| e.into_inner());
-        (st.last_request_epoch.map(|t| t.max(0.0) as u64), st.last_request.is_some() && st.unrecovered > 0)
+        (
+            st.last_request_epoch.map(|t| t.max(0.0) as u64),
+            st.last_request.is_some() && st.unrecovered > 0,
+            st.last_obs.map(crate::repaint::ScreenObs::as_str),
+        )
     };
     // ★(성찰 M1·M2) 처방 문장의 사실 재료 — 출력 정적 초 · 대체 화면 ∧ 전경 에이전트 · 노브 · 화면 높이. 파서 락은 순간(크기만).
     let quiet_secs = Some(s.last_output.lock().unwrap_or_else(|e| e.into_inner()).elapsed().as_secs());
@@ -10251,6 +10258,7 @@ pub(crate) fn queue_block_diag_with(
         rows_too_small,
         repaint_unresolved,
         nudge_ineligible,
+        repaint_last_obs,
     }
 }
 
@@ -10269,6 +10277,13 @@ pub(crate) fn screen_diag_json(d: &QueueBlockDiag) -> Value {
         "human_idle_secs": d.human_idle_secs,
         // ★(1.1.10 · cysr-1110-winqueue 축2) 추가형 키 — 대체화면 마커 좌석의 레이아웃 판정 사유 코드(그 밖 null).
         "layout_why": d.layout_why,
+        // ★(1.1.11 · win-qstarved-ctrl-bytes) 추가형 키 다섯 — 다시 그리기가 **왜 안 걸렸는지**(윈 1.1.10 실기: `repaint_requested_at` None × 48 인데 사유 칸이 없었다).
+        //   네 불리언은 처방 문장(`repaint_promise`)이 이미 쓰던 사실 그대로 · `repaint_last_obs` = 큐 틱의 마지막 분류(시계는 "unreadable" 에서만 간다 · 관측 전 null).
+        "repaint_knob_off": d.repaint_knob_off,
+        "rows_too_small": d.rows_too_small,
+        "repaint_unresolved": d.repaint_unresolved,
+        "nudge_ineligible": d.nudge_ineligible,
+        "repaint_last_obs": d.repaint_last_obs,
     })
 }
 
@@ -22098,6 +22113,86 @@ mod tests {
         }
     }
 
+    /// ★(1.1.11 · win-qstarved-ctrl-bytes) xterm.js 5.5 가 질의에 **스스로** 보내는 응답 전부(`cys::mousereport` 의 전수 핀과 같은 목록) —
+    /// GUI 는 이것을 사람 키와 같은 `send_input(human=true)` 로 올린다. 뒤 넷이 종전 미인식이었다(DSR · ANSI DECRPM · DECRQSS · OSC 4).
+    const XTERM_JS_REPLIES: [&str; 16] = [
+        "\x1b[I",
+        "\x1b[O",
+        "\x1b[41;1R",
+        "\x1b[?41;1R",
+        "\x1b[?1;2c",
+        "\x1b[?6c",
+        "\x1b[>0;276;0c",
+        "\x1b[?1004;1$y",
+        "\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\",
+        "\x1b]10;rgb:d4d4/d4d4/d4d4\x1b\\",
+        "\x1b[0n",
+        "\x1b[4;2$y",
+        "\x1b[20;2$y",
+        "\x1bP1$r0m\x1b\\",
+        "\x1bP0$r\x1b\\",
+        "\x1b]4;1;rgb:cdcd/3131/3131\x1b\\",
+    ];
+
+    /// ★(1.1.11 · win-qstarved-ctrl-bytes) 계수 순수 함수 — 제어 응답만 사람 경로로 들어오면 계수·사람 몫 모두 0(두 모델 다) ·
+    /// 대조군(실제 글자 `abc`)은 사람 몫 3. 윈 기본 모델은 V2 라 V2 도 함께 잰다.
+    #[test]
+    fn qstarved_ctrl_replies_count_zero_human_bytes_but_letters_do() {
+        let now = std::time::Instant::now();
+        for model in [PendingInputModel::V2, PendingInputModel::V3] {
+            let mut st = PendingInputState::default();
+            for r in XTERM_JS_REPLIES {
+                st = pending_input_step_model(&st, r.as_bytes(), InputOrigin::Human, now, model);
+                assert_eq!((st.count, st.human), (0, 0), "{model:?}: 제어 응답 {r:?} 가 미제출 입력으로 세였다");
+            }
+            let st = pending_input_step_model(&st, b"abc", InputOrigin::Human, now, model);
+            assert_eq!((st.count, st.human), (3, 3), "{model:?}: 대조군 — 실제 글자는 사람 몫으로 센다");
+            // 글자를 친 줄 위에 응답이 와도 사람 몫은 그대로다(감산도 가산도 없다).
+            let st = pending_input_step_model(&st, b"\x1b[0n", InputOrigin::Human, now, model);
+            assert_eq!((st.count, st.human), (3, 3), "{model:?}: 초안 위 DSR 응답이 계수를 바꿨다");
+        }
+    }
+
+    /// ★(1.1.11 · win-qstarved-ctrl-bytes) 큐 틱 실주행 — 입력 0 인 창(GUI 에 제어 응답만 흐른 좌석)은 배달되고 `queue.starved` 가 없다 ·
+    /// 대조군(사람이 `abc` 를 친 좌석)은 `input_pending` 으로 막히고 기아 경보가 사람 몫 3 · 다시 그리기 분류(`repaint_last_obs`)를 싣는다.
+    #[test]
+    fn qstarved_ctrl_replies_do_not_starve_queue_but_letters_do() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pack = empty_pack_dir("qstarved-ctrl");
+        let _env = QueueEnvGuard::set(&[
+            ("CYS_PACK_DIR", pack.to_str().unwrap()),
+            ("CYS_QUEUE_MAX_WAIT_SECS", "0"),
+            ("CYS_QUEUE_STARVE_ALERT_SECS", "1"),
+        ]);
+        let (d_ctrl, s_ctrl) = qa_fixture_seat("qstarved-ctrl", QA_READY_AFTER_ESC);
+        let (d_text, s_text) = qa_fixture_seat("qstarved-text", QA_READY_AFTER_ESC);
+        // 틱 전 — 다시 그리기 분류는 관측 전이라 결측이다(값이 아니다).
+        assert_eq!(super::screen_diag_json(&queue_block_diag(&d_ctrl, &s_ctrl))["repaint_last_obs"], json!(null));
+        for r in XTERM_JS_REPLIES {
+            s_ctrl.apply_pending_input(r.as_bytes(), InputOrigin::Human);
+        }
+        s_text.apply_pending_input(b"abc", InputOrigin::Human);
+        assert_eq!(s_ctrl.pending_input_bytes.load(Ordering::Relaxed), 0, "제어 응답만 흐른 좌석에 계수가 남았다");
+        std::thread::sleep(std::time::Duration::from_millis(1300)); // 머리 대기 ≥ 기아 임계 1초
+        let starved = |d: &Arc<Daemon>| -> Vec<Value> {
+            d.bus.tail(200).into_iter().filter(|ev| ev["name"] == "queue.starved").collect()
+        };
+        qa_tick(&d_ctrl);
+        assert!(s_ctrl.pending_queue.lock().unwrap().is_empty(), "입력 0 인 좌석에 배달하지 않았다: {}", qa_blocked_reason(&s_ctrl));
+        assert!(starved(&d_ctrl).is_empty(), "입력 0 인 좌석에 queue.starved 가 났다");
+        qa_tick(&d_text);
+        assert_eq!(s_text.pending_queue.lock().unwrap().len(), 1, "대조군 — 사람 초안 위에 배달했다");
+        assert_eq!(qa_blocked_reason(&s_text), BLOCKED_INPUT_PENDING);
+        let ev = starved(&d_text).pop().expect("대조군 — 기아 경보가 나야 한다");
+        assert_eq!(ev["payload"]["pending_input_human_bytes"], json!(3), "{ev}");
+        let sd = &ev["payload"]["screen_diag"];
+        assert_eq!(sd["repaint_last_obs"], json!("readable"), "입력줄을 읽은 좌석 = 판독 가능 분류(시계 안 감 · 요청 없음의 사유): {sd}");
+        for k in ["repaint_knob_off", "rows_too_small", "repaint_unresolved", "nudge_ineligible"] {
+            assert_eq!(sd[k], json!(false), "{k}: {sd}");
+        }
+        assert!(sd["repaint_requested_at"].is_null(), "{sd}");
+    }
+
     fn qa_blocked_reason(s: &Arc<crate::state::Surface>) -> String {
         s.queue_blocked
             .lock()
@@ -31684,6 +31779,8 @@ mod tests {
         let want: std::collections::BTreeSet<&str> = [
             "cursor_row", "marker_row", "cursor_lead_cp", "last_parser_panic_at", "repaint_requested_at",
             "cursor_col", "after_cursor_dim", "alt_screen", "human_idle_secs", "layout_why",
+            // ★(1.1.11 · win-qstarved-ctrl-bytes) 다시 그리기 미발화 사유 다섯.
+            "repaint_knob_off", "rows_too_small", "repaint_unresolved", "nudge_ineligible", "repaint_last_obs",
         ]
         .into_iter()
         .collect();

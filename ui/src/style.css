@@ -18,13 +18,13 @@
   --z-drag-ghost:     2000;  /* 드래그 미리보기(pointer-events:none · 일시) */
 }
 :root {
-  --bg: #0d1117;
+  --bg: #1e1e1e; /* = theme.ts DEFAULT_BG(cmux 기본 배경 · 2026-10-29) — JS 적용 전 첫 화면도 같은 색 */
   --bar: #161b22;
   --border: #30363d;
   --hairline: #1c2128; /* pane 구분선 — 거의 안 보이는 미세 선 */
   --accent: #2f81f7;
   --text: #c9d1d9; /* 크롬(상단바·사이드바·모달 등 var(--bar) 표면) 고정 글자 — 배경색 커스텀과 무관 */
-  --canvas-text: #c9d1d9; /* 캔버스(var(--bg) 표면) 글자 — applyBgColor가 배경 휘도 따라 전환 */
+  --canvas-text: #ffffff; /* 캔버스(var(--bg) 표면) 글자 — applyBgColor가 배경 휘도 따라 전환(= theme.ts DARK_FG) */
   --warn: #d29922;
   --error: #f85149;
   --ok: #3fb950;

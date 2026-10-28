@@ -257,6 +257,7 @@ import {
   type DeptFormationState,
 } from "./deptprogress"; // 0.14.43 GU 「팀 직접 만들기」 대기 문구(경과·단계)·팀원 부팅 안내(순수 문구·판정 · 표시 전용) — R1F-UB: 완료 판정은 좌석 목록의 역할(deptLiveRoles·deptFormationVerdict)
 import { routeOnData } from "./mousefilter";
+import { armSelectionDragGuard } from "./selectiondrag"; // 선택 끌기 mouseup 유실 방어(TICKET=cysr-stuck-selection-drag)
 import {
   altWheelAction,
   altHintNext,
@@ -3494,6 +3495,15 @@ function recomputeDefaultLeft(): void {
 }
 
 // ---------- pane lifecycle ----------
+
+// 터미널 선택 끌기의 mouseup 을 웹뷰가 놓치면 xterm 은 단추를 뗀 뒤의 커서 이동마다 선택을 늘린다(박사님 영상 10-28).
+// 놓친 것을 보면 마지막으로 눌린 채 있던 자리에서 뗌을 대신 보낸다 — 판단 = selectiondrag.ts · 재현 = e2e/selection_drag_gate.py.
+armSelectionDragGuard({
+  win: window,
+  isTerminal: (t) => t instanceof Element && t.closest(".xterm") != null,
+  release: ({ clientX, clientY }) =>
+    document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, button: 0, buttons: 0, clientX, clientY })),
+});
 
 const b64ToBytes = (b64: string): Uint8Array => {
   const bin = atob(b64);

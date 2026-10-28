@@ -3916,12 +3916,39 @@ pub mod mousereport {
                 // 숫자로 시작하는 다른 CSI(urxvt 마우스 `…M` 등)는 위 ① 이 이미 걸렀고,
                 // 걸리지 않은 것은 종결자 불일치로 여기서 None 이 된다(보수적).
                 _ => {
+                    // ★(1.1.11 · win-qstarved-ctrl-bytes) DSR 상태 응답 `ESC[0n`(정상)·`ESC[3n`(고장) — `ESC[5n` 의 응답.
+                    //   한 자리 0·3 만 받는다(질의 `ESC[5n`·`ESC[6n` 은 응답이 아니다 · 키는 `n` 으로 끝나지 않는다).
+                    if let Some((v, i)) = read_digits(u, from + 2) {
+                        if i == from + 3 && matches!(v, 0 | 3) && ascii_at(u, i) == Some(b'n') {
+                            return Some(i + 1);
+                        }
+                    }
                     let (n, i) = read_params(u, from + 2)?;
-                    (n == 2 && ascii_at(u, i) == Some(b'R')).then_some(i + 1)
+                    match ascii_at(u, i)? {
+                        b'R' if n == 2 => Some(i + 1),
+                        // ★(1.1.11) ANSI 모드 DECRPM `ESC[<mode>;<value>$y` — `ESC[<mode>$p`(? 없는 모드 질의)의 응답.
+                        //   private 판(`ESC[?…$y`)은 위 `?` 갈래가 받는다 · `$y` 로 끝나는 키는 없다.
+                        b'$' if n == 2 && ascii_at(u, i + 1) == Some(b'y') => Some(i + 2),
+                        _ => None,
+                    }
                 }
             },
-            // ③ DCS 계열 — ESC P … ESC \  (DA3 / XTVERSION)
+            // ③ DCS 계열 — ESC P … ESC \  (DA3 / XTVERSION / DECRQSS)
             b'P' => {
+                // ★(1.1.11 · win-qstarved-ctrl-bytes) DECRQSS 응답 — `ESC P $ q <설정> ESC \`(설정값 질의)의 응답.
+                //   유효 `ESC P 1 $ r <설정값> ESC \`(본문 1자 이상) · 무효 `ESC P 0 $ r ESC \`(본문 없음 — xterm.js 5.5 형태).
+                //   본문은 인쇄가능 ASCII 만(DA3·XTVERSION 과 같은 좁힘 — 임의 바이트를 삼키면 사람 입력이 숨는다).
+                let valid = starts_with_ascii(u, from + 2, b"1$r");
+                if valid || starts_with_ascii(u, from + 2, b"0$r") {
+                    let mut i = from + 5;
+                    while matches!(ascii_at(u, i), Some(c) if (0x20..=0x7e).contains(&c)) {
+                        i += 1;
+                    }
+                    if valid == (i == from + 5) {
+                        return None; // 유효인데 본문 없음 · 무효인데 본문 있음 = 미인식
+                    }
+                    return starts_with_ascii(u, i, b"\x1b\\").then_some(i + 2);
+                }
                 let hex_only = if starts_with_ascii(u, from + 2, b"!|") {
                     true // DA3 `ESC P!|<hex>ESC\` — 16진 단말 유닛 ID.
                 } else if starts_with_ascii(u, from + 2, b">|") {
@@ -3949,21 +3976,30 @@ pub mod mousereport {
             }
             // ④ OSC 색 질의 응답 — ESC ] 1[012] ; <본문> (BEL | ESC \)
             //    10=전경 11=배경 12=커서. 종결자 두 형태를 모두 받는다(터미널마다 다름).
+            //    ★(1.1.11 · win-qstarved-ctrl-bytes) OSC 4 팔레트 응답 `ESC ] 4 ; <색 번호> ; <본문>` — `ESC]4;<n>;?` 의 응답(xterm.js 5.5 가 보낸다).
             b']' => {
-                if ascii_at(u, from + 2) != Some(b'1')
-                    || !matches!(ascii_at(u, from + 3), Some(b'0') | Some(b'1') | Some(b'2'))
-                    || ascii_at(u, from + 4) != Some(b';')
+                let body_from = if ascii_at(u, from + 2) == Some(b'1')
+                    && matches!(ascii_at(u, from + 3), Some(b'0') | Some(b'1') | Some(b'2'))
+                    && ascii_at(u, from + 4) == Some(b';')
                 {
+                    from + 5
+                } else if starts_with_ascii(u, from + 2, b"4;") {
+                    let (_, j) = read_digits(u, from + 4)?;
+                    if ascii_at(u, j) != Some(b';') {
+                        return None;
+                    }
+                    j + 1
+                } else {
                     return None;
-                }
-                let mut i = from + 5;
+                };
+                let mut i = body_from;
                 while let Some(c) = ascii_at(u, i) {
                     if !(0x20..=0x7e).contains(&c) {
                         break; // 제어문자(BEL·ESC 포함) = 본문 끝
                     }
                     i += 1;
                 }
-                if i == from + 5 {
+                if i == body_from {
                     return None; // 빈 본문 = 미인식
                 }
                 match ascii_at(u, i) {
@@ -3998,6 +4034,9 @@ pub mod mousereport {
     /// DECXCPR `ESC[?<n>;<n>[;<n>]R` · DA1 `ESC[?<n>(;<n>)*c` · DA2 `ESC[><n>(;<n>)*c` ·
     /// DA3 `ESC P!|<hex>ESC\` · XTVERSION `ESC P>|<텍스트>ESC\` · DECRPM `ESC[?<n>;<n>$y` ·
     /// kitty 키보드 플래그 `ESC[?<n>u` · OSC 10/11/12 색 응답 `ESC]1[012];<본문>(BEL|ESC\)`.
+    /// ★(1.1.11 · win-qstarved-ctrl-bytes) 추가 4종 — xterm.js 5.5 가 질의에 스스로 보내는데(`triggerDataEvent` 전수 대조) 종전 목록에 없어
+    /// **사람 입력으로 세였다**(윈 1.1.10 실기: 입력 0 인 창에 사람 계수 13 · `queue.starved` 4시간 — 그 13 바이트가 이 중 어느 것인지는 윈 실기 확인 전이다): DSR `ESC[0n`·`ESC[3n` ·
+    /// ANSI DECRPM `ESC[<n>;<n>$y` · DECRQSS `ESC P1$r<본문>ESC\`·`ESC P0$rESC\` · OSC 4 팔레트 `ESC]4;<n>;<본문>(BEL|ESC\)`.
     pub fn is_pure_terminal_autoreply(text: &str) -> bool {
         if text.is_empty() || text.starts_with(BRACKETED_PASTE_PREFIX) {
             return false;
@@ -6386,7 +6425,8 @@ mod tests {
             ("빈 본문 OSC", "\u{1b}]11;\u{7}"),
             ("빈 본문 DCS", "\u{1b}P>|\u{1b}\\"),
             ("DA3 본문이 16진이 아님", "\u{1b}P!|zz\u{1b}\\"),
-            ("허용 밖 OSC 코드(4=팔레트)", "\u{1b}]4;1;rgb:0/0/0\u{7}"),
+            // ★(1.1.11 · win-qstarved-ctrl-bytes) OSC 4 팔레트 응답은 이제 인식한다(아래 xterm.js 5.5 전수 핀) — 그 자리를 허용 밖 OSC 코드(52=클립보드)가 잇는다.
+            ("허용 밖 OSC 코드(52=클립보드)", "\u{1b}]52;c;aGk=\u{7}"),
             ("CPR 파라미터 1개", "\u{1b}[24R"),
             ("DECRPM 파라미터 1개", "\u{1b}[?2004$y"),
             ("kitty 플래그 파라미터 2개", "\u{1b}[?1;2u"),
@@ -6400,6 +6440,65 @@ mod tests {
         // 개행·CR 은 절대 자동 응답이 아니다 — 이게 참이 되면 제출 Enter 자체가 면제된다.
         for cr in ["\r", "\n", "\r\n", "\u{1b}[I\r"] {
             assert!(!pure(cr), "개행/CR 이 자동 응답으로 판정됐다: {cr:?}");
+        }
+    }
+
+    /// ★(1.1.11 · win-qstarved-ctrl-bytes) **xterm.js 5.5 자동 응답 전수 핀** — GUI 의 xterm.js 가 질의에 스스로 보내는(`coreService.triggerDataEvent`
+    /// · `wasUserInput` 없음) 시퀀스는 모두 `term.onData` → `send_input(human=true)` 로 데몬에 와서 사람 입력처럼 계수됐다. 그 목록을
+    /// `@xterm/xterm@5.5.0` `lib/xterm.js` 의 `triggerDataEvent(` 호출 전부와 대조해 적었다(우리 Terminal 옵션 = `windowOptions` 미설정이라
+    /// `ESC[4;…t`·`ESC[6;…t`·`ESC[8;…t` 창 보고는 나가지 않는다 — 목록 밖). 종전에 빠져 있던 넷(DSR·ANSI DECRPM·DECRQSS·OSC 4)이 여기서 참이어야 한다.
+    #[test]
+    fn terminal_autoreply_covers_every_xterm_js_5_5_reply() {
+        use mousereport::is_pure_terminal_autoreply as pure;
+        let shapes: [(&str, &str); 16] = [
+            ("포커스 획득", "\u{1b}[I"),
+            ("포커스 상실", "\u{1b}[O"),
+            ("CPR", "\u{1b}[41;1R"),
+            ("DECXCPR", "\u{1b}[?41;1R"),
+            ("DA1(xterm)", "\u{1b}[?1;2c"),
+            ("DA1(vt100 판)", "\u{1b}[?6c"),
+            ("DA2(xterm)", "\u{1b}[>0;276;0c"),
+            ("private DECRPM", "\u{1b}[?1004;1$y"),
+            ("OSC 11 배경색(ST)", "\u{1b}]11;rgb:1e1e/1e1e/1e1e\u{1b}\\"),
+            // ── 종전 미인식 4종(이번 수리) ──
+            ("DSR 정상", "\u{1b}[0n"),
+            ("ANSI DECRPM(? 없음)", "\u{1b}[4;2$y"),
+            ("ANSI DECRPM 두 자리 모드", "\u{1b}[20;2$y"),
+            ("DECRQSS 유효(SGR)", "\u{1b}P1$r0m\u{1b}\\"),
+            ("DECRQSS 유효(DECSTBM)", "\u{1b}P1$r1;41r\u{1b}\\"),
+            ("DECRQSS 무효 질의", "\u{1b}P0$r\u{1b}\\"),
+            ("OSC 4 팔레트(ST)", "\u{1b}]4;1;rgb:cdcd/3131/3131\u{1b}\\"),
+        ];
+        for (name, seq) in shapes {
+            assert!(pure(seq), "{name} 미인식: {seq:?} — xterm.js 가 스스로 보내는 응답이 사람 입력으로 세인다");
+        }
+        let joined: String = shapes.iter().map(|(_, s)| *s).collect();
+        assert!(pure(&joined), "xterm.js 응답 연접이 거짓");
+        assert!(pure("\u{1b}[3n"), "DSR 고장 응답");
+        assert!(pure("\u{1b}]4;255;rgb:eeee/eeee/eeee\u{7}"), "OSC 4 BEL 종결");
+        // 오면제 방어 — 질의 자체·절단·꼴이 어긋난 것은 여전히 사람 쪽이다.
+        for (why, bad) in [
+            ("DSR 질의(응답 아님)", "\u{1b}[5n"),
+            ("CPR 질의(응답 아님)", "\u{1b}[6n"),
+            ("DSR 다른 값", "\u{1b}[1n"),
+            ("DSR 두 자리", "\u{1b}[00n"),
+            ("DSR 파라미터 2개", "\u{1b}[0;0n"),
+            ("ANSI DECRPM 절단($ 만)", "\u{1b}[4;2$"),
+            ("ANSI DECRPM 파라미터 1개", "\u{1b}[4$y"),
+            ("ANSI DECRPM 파라미터 3개", "\u{1b}[4;2;1$y"),
+            ("DECRQSS 종결자 없음", "\u{1b}P1$r0m"),
+            ("DECRQSS 유효인데 본문 없음", "\u{1b}P1$r\u{1b}\\"),
+            ("DECRQSS 무효인데 본문 있음", "\u{1b}P0$r0m\u{1b}\\"),
+            ("DECRQSS 상태 2", "\u{1b}P2$r0m\u{1b}\\"),
+            ("DECRQSS 질의(응답 아님)", "\u{1b}P$qm\u{1b}\\"),
+            ("DECRQSS 본문 제어문자", "\u{1b}P1$r0\u{7}m\u{1b}\\"),
+            ("OSC 4 색 번호 없음", "\u{1b}]4;;rgb:0/0/0\u{7}"),
+            ("OSC 4 번호 뒤 ; 없음", "\u{1b}]4;1rgb:0/0/0\u{7}"),
+            ("OSC 4 빈 본문", "\u{1b}]4;1;\u{7}"),
+            ("OSC 4 종결자 없음", "\u{1b}]4;1;rgb:0/0/0"),
+            ("응답+글자 혼합", "\u{1b}[0nx"),
+        ] {
+            assert!(!pure(bad), "{why} 가 자동 응답으로 오면제됐다: {bad:?}");
         }
     }
 

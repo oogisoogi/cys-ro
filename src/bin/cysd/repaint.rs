@@ -100,6 +100,10 @@ pub(crate) struct RepaintState {
     pub(crate) unrecovered: u32,
     /// 마지막 요청 때의 좌석 파서 패닉 누계 — 이보다 크면 '새 패닉' 이다.
     pub(crate) panics_seen: u64,
+    /// ★(1.1.11 · win-qstarved-ctrl-bytes) 큐 틱이 마지막으로 이 좌석에 매긴 분류([`note_queue_screen`] 의 입력) — **진단 전용**(판정은 읽지 않는다).
+    /// 다시 그리기 시계는 `Unreadable` 에서만 간다 — 처방이 다시 그리기를 약속했는데 요청이 한 번도 없었다면(윈 1.1.10 실기 `repaint_requested_at` None × 48)
+    /// 이 값이 `Other`·`Readable` 이었다는 것이 그 이유다. `None` = 틱이 아직 이 좌석을 마커 경로로 관측하지 않았다(맨 셸·마커 없는 좌석 포함).
+    pub(crate) last_obs: Option<ScreenObs>,
 }
 
 /// ★(A2 · 성찰 2회차 M1) 좌석별 **반향 제외 창** 상태 — `Surface::repaint_echo`(leaf 락 · 다른 락을 쥔 채 잡아도 되지만 이 락을 쥔 채 다른 락은 잡지 않는다).
@@ -248,6 +252,17 @@ pub(crate) enum ScreenObs {
     Other,
 }
 
+impl ScreenObs {
+    /// ★(1.1.11 · win-qstarved-ctrl-bytes) 진단 표기(`screen_diag.repaint_last_obs`) — `"unreadable"` | `"readable"` | `"other"`.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            ScreenObs::Unreadable => "unreadable",
+            ScreenObs::Readable => "readable",
+            ScreenObs::Other => "other",
+        }
+    }
+}
+
 /// [`repaint_due`] 의 입력(순수 판정 재료).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RepaintFacts {
@@ -311,6 +326,7 @@ pub(crate) fn note_queue_screen(daemon: &Arc<Daemon>, s: &Arc<Surface>, obs: Scr
     let panics = s.parser_panics.load(Ordering::Relaxed);
     let (reason, unreadable_secs, attempt) = {
         let mut st = s.repaint.lock().unwrap_or_else(|e| e.into_inner());
+        st.last_obs = Some(obs); // ★(1.1.11) 진단 전용 기록 — 아래 판정은 읽지 않는다.
         match obs {
             ScreenObs::Readable => {
                 st.unreadable_since = None;

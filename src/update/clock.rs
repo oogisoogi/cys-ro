@@ -216,12 +216,17 @@ mod tests {
     }
 
     /// 맥 단조값 = mach_continuous_time 계열(잠 포함) — 같은 부팅 안에서 줄지 않고 벽시계와 같은 빠르기.
+    /// 하한 = 잠 30ms − 측정 오차 한 칸: 맥·리눅스는 ms 해상도라 엄격(≥ 25) · 윈 `GetTickCount64` 는 시스템 타이머 틱(≈15.6ms)
+    /// 단위로만 오르므로 두 번 읽은 차는 잠보다 틱 하나까지 작게 보인다 → 윈만 ≥ 30 − 16 = 14(윈 러너 실측 16ms 로 적이 난
+    /// 흔들림 · run 40588168801 · TICKET=cu-1111-precedent master#1e214dfa).
     #[test]
     fn mono_advances_like_wall() {
+        const SLEEP_MS: u64 = 30;
+        let floor = if cfg!(windows) { SLEEP_MS - 16 } else { SLEEP_MS - 5 };
         let a = mono_ms();
-        std::thread::sleep(std::time::Duration::from_millis(30));
+        std::thread::sleep(std::time::Duration::from_millis(SLEEP_MS));
         let b = mono_ms();
-        assert!(b >= a + 25 && b < a + 5_000, "{a} → {b}");
+        assert!(b >= a + floor && b < a + 5_000, "{a} → {b} (하한 +{floor}ms)");
     }
 
     #[test]

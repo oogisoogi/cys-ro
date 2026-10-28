@@ -267,6 +267,11 @@ pub struct HoldMark {
 }
 
 impl HoldMark {
+    /// 빈 표지 — 실린 보류 재생 항목이 없는 결판(1.1.11 편입 · 원작자 S-a 부분 쓰기 재개 실행: 첫 실행의 결판이 이미 표지를 끝냈다).
+    pub fn empty() -> HoldMark {
+        HoldMark { ids: vec![], done: false }
+    }
+
     /// 인계 성공 — 실제로 실린 id 는 `delivered` · 표지만 하고 안 실린 것은 `aborted`.
     pub fn delivered(mut self, merged_ids: &[String]) {
         self.done = true;

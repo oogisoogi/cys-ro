@@ -1045,7 +1045,7 @@ describe("부서 삭제 — 탭은 종료가 확인된 뒤에 지운다(F3)", ()
     const a = code.indexOf("let tombRecorded = false;");
     expect(a).toBeGreaterThan(0);
     const seg = code.slice(a, code.indexOf("return tab;", a));
-    const stop = seg.indexOf('rpcT(invoke("stop_dept_daemon_by_socket", { socket: ws.socket }), T_STOP)');
+    const stop = seg.indexOf('rpcT(invoke("stop_dept_daemon_by_socket", { socket }), T_STOP)');
     const verdict = seg.indexOf("deptCloseAfterStop({ stop: stopped, tombRecorded, error: stopErr })");
     const splice = seg.indexOf("workspaces.splice(i, 1);");
     expect(stop).toBeGreaterThan(0);
@@ -1054,14 +1054,14 @@ describe("부서 삭제 — 탭은 종료가 확인된 뒤에 지운다(F3)", ()
     expect((seg.match(/workspaces\.splice\(/g) ?? []).length).toBe(1); // 낙관적 splice 가 되살아나면 red
     expect(seg).toContain("if (!verdict.removeTab) {"); // 실패 → 탭 유지
     expect(seg).toContain("ws.tree = null;"); // 닫아 버린 pane 의 죽은 트리는 남기지 않는다
-    expect(seg).toContain("(w) => w !== ws && w.socket === ws.socket"); // 자기 자신은 아직 목록에 있다
+    expect(seg).toContain("(w) => w !== ws && w.socket === socket"); // 자기 자신은 아직 목록에 있다
   });
 
   it("★그룹 삭제도 같은 계약 — 실패한 부서만 탭을 남기고 사유는 모아서 1회", () => {
     const g = code.indexOf("async function confirmDeleteGroup(");
     expect(g).toBeGreaterThan(0);
     const seg = code.slice(g, code.indexOf("const UNTITLED", g));
-    const stop = seg.indexOf('rpcT(invoke("stop_dept_daemon_by_socket", { socket: ws.socket }), T_STOP)');
+    const stop = seg.indexOf('rpcT(invoke("stop_dept_daemon_by_socket", { socket }), T_STOP)');
     const splice = seg.indexOf("workspaces.splice(i, 1);");
     expect(stop).toBeGreaterThan(0);
     expect(splice).toBeGreaterThan(stop);
@@ -1078,7 +1078,7 @@ describe("부서 삭제 — 탭은 종료가 확인된 뒤에 지운다(F3)", ()
     expect(close).toBeGreaterThan(0);
     expect(grp).toBeGreaterThan(0);
     for (const seg of [code.slice(close, code.indexOf("return tab;", close)), code.slice(grp, code.indexOf("const UNTITLED", grp))]) {
-      expect(seg).toContain('rpcT(invoke("stop_dept_daemon_by_socket", { socket: ws.socket }), T_STOP)');
+      expect(seg).toContain('rpcT(invoke("stop_dept_daemon_by_socket", { socket }), T_STOP)');
       expect(seg).toContain("deptCloseAfterStop({");
     }
   });
@@ -1216,10 +1216,10 @@ describe("묘비 기록 — 소켓 파서가 아니라 해소된 이름을 넘�
     const a = code.indexOf("let tombRecorded = false;");
     expect(a).toBeGreaterThan(0);
     const seg = code.slice(a, code.indexOf("for (const sid of collectSids(ws.tree))", a));
-    expect(seg).toContain("resolveDeptLaunchName(ws.socket,");
-    expect(seg).toContain('invoke("dept_tombstone_by_socket", { socket: ws.socket, name: tombName.name })');
+    expect(seg).toContain("resolveDeptLaunchName(socket,");
+    expect(seg).toContain('invoke("dept_tombstone_by_socket", { socket, name: tombName.name })');
     // 해소 없이 소켓만 넘기는 옛 호출이 되살아나면 red.
-    expect(seg).not.toContain('invoke("dept_tombstone_by_socket", { socket: ws.socket })');
+    expect(seg).not.toContain('invoke("dept_tombstone_by_socket", { socket })');
   });
 
   it("★그룹 삭제: 등재 조회는 그룹당 1회이고 부서마다 deptLaunchName 으로 이름을 해소한다", () => {
@@ -1227,8 +1227,8 @@ describe("묘비 기록 — 소켓 파서가 아니라 해소된 이름을 넘�
     const seg = code.slice(g, code.indexOf("const stopFailed: string[] = []", g));
     expect(seg).toContain('rpcT(invoke("list_depts"), T_REG)');
     expect((seg.match(/invoke\("list_depts"\)/g) ?? []).length).toBe(1); // 부서마다 왕복하면 삭제가 N배 느려진다
-    expect(seg).toContain('invoke("dept_tombstone_by_socket", { socket: ws.socket, name: deptLaunchName(ws.socket, grpReg) })');
-    expect(seg).not.toContain('invoke("dept_tombstone_by_socket", { socket: ws.socket })');
+    expect(seg).toContain('invoke("dept_tombstone_by_socket", { socket, name: deptLaunchName(socket, grpReg) })');
+    expect(seg).not.toContain('invoke("dept_tombstone_by_socket", { socket })');
   });
 
   it("★Rust 기록자는 인자 이름을 우선하고, 없을 때만 소켓 파서로 폴백한다(계약 후퇴 없음)", () => {
@@ -1459,6 +1459,24 @@ describe("U2+U3 좌석 배치 배선 — (1.1.8 X1) 우리 균등 배치(formati
 
   it("(W24) +New 도 같은 배치 함수를 거친다(arrangeWs add — 화면 절반 부착 금지)", () => {
     expect(fnSeg("async function actionNew() {")).toContain("arrangeWs(ws, { add: [{ sid }] });");
+  });
+
+  // ★(원작자 0.14.52 S6 → 1.1.11 편입 · 우리 판 계수) 모든 닫기 소비자가 확인형 closePane 하나를 지난다(데몬이 닫힘을 확인한 뒤에만
+  //   detachPane) — 원작자 판의 markClosing·isClosingSid(구멍 보류 경합 표식)는 우리 판에 없어(arrangeWs 배치 · 구멍 없음) 그 단언은 뺐다.
+  //   계수는 우리 판 실측: (sid, socket) 3 = 창 머리 × · 탭 삭제 · 그룹 삭제 · (sid, ws.socket) 2 = ⌘W(닫기 확인 창 뒤) · 빈 자리표 회수.
+  //   실제 거부·부분 일괄 거동은 closecallbacks.test.ts 가 돈다.
+  it("★(F3·S6) 모든 닫기는 확인형 closePane 하나를 지난다 — 확인 전에는 화면에서 떼지 않는다", () => {
+    const codeOnly = code.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+    const closeCalls = [...codeOnly.matchAll(/invoke\("close_surface"/g)];
+    expect(closeCalls.length).toBe(1);
+    expect((code.match(/await closePane\(sid, socket\)/g) ?? []).length).toBe(3);
+    expect((code.match(/await closePane\(sid, srcSock\)/g) ?? []).length).toBe(2);
+    expect((code.match(/await closePane\(newSid, destWs\.socket\)/g) ?? []).length).toBe(1);
+    expect((code.match(/await closePane\(sid, ws\.socket\)/g) ?? []).length).toBe(2);
+    const guarded = code.slice(code.indexOf("async function closePane("), code.indexOf("interface PaneRuntime"));
+    expect(guarded.indexOf('await invoke("close_surface"')).toBeGreaterThan(0);
+    expect(guarded.indexOf('await invoke("close_surface"')).toBeLessThan(guarded.indexOf("detachPane(sid, socket);"));
+    expect(guarded).not.toContain(".catch(");
   });
 
   it("(W6) 칸을 뗄 때는 런타임을 반드시 회수한다(detachPane 첫 줄 destroyPaneRuntime)", () => {

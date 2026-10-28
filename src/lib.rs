@@ -48,6 +48,7 @@ pub mod paste_fence;
 /// 시드(U-19)는 로그인 화면을 **지우므로** 판정이 시드보다 먼저 있어야 한다. 판정은 순수함수
 /// 하나(`profile_gate::classify`)가 소유하고, `auth_class` 8값 중 `unknown` 은 **통과가 아니다**.
 pub mod profile_gate;
+pub mod process_observation;
 /// ready 술어 단일화(U-13) — `ready = 입력활성 증거 ∧ 관문 문면 부재`. 판정은 순수함수 하나가
 /// 소유하고(`readiness::judge`), 부트 폴링과 `adapter_ready` 두 소비처가 같은 술어를 경유한다.
 /// 종전엔 네 자리가 각자 ready 를 선언해 "마커 축만 고치면 아무것도 안 바뀌는" 상태였다.
@@ -58,6 +59,7 @@ pub mod restore_mark;
 /// 와 같은 규칙이며 두 구현이 골든 표 `cysjavis-pack/templates/seat-layout.json` 을 공유한다.
 pub mod seat;
 pub mod submit_probe;
+pub mod terminal_screen;
 pub mod agent_markers;
 pub mod packsig;
 pub mod overrides;
@@ -843,6 +845,17 @@ pub fn wait_named_pipe(path: &Path, timeout: std::time::Duration) -> bool {
 /// 조용히 죽는다(RC1 문자열 계약 드리프트). 그래서 상수로 못박고 양쪽이 이것만 쓴다.
 pub const ERR_TYPING_GUARD: &str = "typing_guard";
 pub const MSG_TYPING_GUARD: &str = "human is typing in this pane; retry later or use --queued";
+/// ★(B-360) Error code of a direct agent write the writer journal refused (zero bytes). Producer = cysd handlers
+/// (`journal_barrier_verdict`), consumers = the `cys` launch-agent / node-recover dispositions, which must keep the
+/// seat instead of closing or reclaiming it. Must never contain the typing-guard strings above (that would turn it
+/// into a `--queued` fallback).
+pub const ERR_JOURNAL_UNAVAILABLE: &str = "journal_unavailable";
+/// ★(B-360 R2) Error code of a direct agent write whose OUTCOME IS UNKNOWN: the seat's writer had not reached it within
+/// the barrier budget, so it is still queued and may yet be typed (or still be refused). NOT safe to retry - a retry can
+/// type it twice. Producer = cysd handlers (`journal_barrier_verdict`); consumers = `cys` `exit_for_error` (the exit code
+/// of `run()` and `run_reinject`), the launch-agent arm (pane kept), node-recover's fold (non-destructive rc 79) and
+/// `cycle_agent_exit`. Like the code above, it must never contain the typing-guard strings.
+pub const ERR_WRITE_OUTCOME_UNKNOWN: &str = "write_outcome_unknown";
 /// 직접 send 초안 거부의 사유 태그 — 기존 타이핑 가드 메시지 접두 뒤에 붙인다.
 pub const DRAFT_GATE_TAG: &str = "draft_gate";
 /// ★(0.14.43 · C5 · RQFIX I-8) 유령 계수 처방 — 데몬이 직접 send 거부 응답·강제 배달 거부 문구의 **맨 끝**에 덧붙이고(앞 문구·접두·태그의 위치·바이트는 불변),
@@ -4767,6 +4780,7 @@ mod tests {
             ("src/bin/cys.rs", 1),
             ("src/bin/cysd/boot_supervisor.rs", 1),
             ("src/bin/cysd/main.rs", 2),
+            ("src/bin/cysd/native_publication_transition_tests.rs", 1), // sealed isolated fixture supervisor
             ("src-tauri/src/main.rs", 4),
             // 1.1.9 T4(cysr-119-t4-app): 상담소 글 목록 = 아고라 클라이언트 `agora read` 1곳 · inject_runtime_path 봉인 + spawn_policy(Attached).
             ("src-tauri/src/counsel.rs", 1),
@@ -4809,6 +4823,7 @@ mod tests {
         for (rel, marker) in [
             ("src/bin/cysd/boot_supervisor.rs", "ENV_PY_NO_BYTECODE"),
             ("src/bin/cysd/main.rs", "ENV_PY_NO_BYTECODE"),
+            ("src/bin/cysd/native_publication_transition_tests.rs", "PYTHONDONTWRITEBYTECODE"),
             ("src-tauri/src/main.rs", "inject_runtime_path"),
             ("src-tauri/src/counsel.rs", "inject_runtime_path"),
         ] {
@@ -7115,6 +7130,9 @@ mod spawn_policy_tests {
         ("src/app_bundle.rs", 4),
         ("src/bin/cys.rs", 15),
         ("src/bin/cysd/accounts.rs", 2),
+        // 1.1.11 편입(원작자 0.14.52 시험 파일 3개 · 전부 #[cfg(test)] 격리 고정물 — 제품 스폰 0): F-01 U4-3 계측 하네스 2 ·
+        //   native publication 격리 감독자 2 · PTY 할당 입장 검체 1. 새 제품 스폰이 아니라 원작자 시험의 자식 프로세스다.
+        ("src/bin/cysd/activity_bench_tests.rs", 2),
         ("src/bin/cysd/boot_supervisor.rs", 1),
         ("src/bin/cysd/channels.rs", 2),
         // 1.1.8 병합: 원작자 cycle_jobs.rs(0.14.42) start() 의 cys 자식 — 체인에 SpawnPolicy 등급을 단다.
@@ -7122,6 +7140,8 @@ mod spawn_policy_tests {
         ("src/bin/cysd/governance.rs", 2),
         ("src/bin/cysd/hwmon.rs", 3),
         ("src/bin/cysd/main.rs", 1),
+        ("src/bin/cysd/native_publication_transition_tests.rs", 2),
+        ("src/bin/cysd/pty_admission_tests.rs", 1),
         ("src/bin/cysd/schedule.rs", 3),
         ("src/bin/cysd/state.rs", 3),
         ("src/bin/cysd/usage.rs", 3),

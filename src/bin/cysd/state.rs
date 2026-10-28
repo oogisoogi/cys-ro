@@ -3199,7 +3199,8 @@ pub struct Config {
     pub duplicate_endpoint_threshold: usize,
     pub auto_kill_duplicates: bool,
     pub idle_seconds: u64,
-    /// (E-a) 동시 살아있는 worker-* 한도. 0=무제한(하위호환 escape hatch).
+    /// (E-a) 동시 살아있는 worker-* 한도. 0=무제한 = **기본값**(오너 정책 2026-10-20 「워커 수 제한 없음」).
+    /// `CYS_MAX_ACTIVE_WORKERS=<N>` 을 주면 그 숫자를 상한으로 존중한다 — [`max_active_workers_from`].
     pub max_active_workers: usize,
     /// W3 CEO 자동결재 라우팅 게이트. 기본 OFF(미설정) — 현행 동작 100% 보존(C-4 부트스트랩
     /// 안전). ON일 때만 risk=auto 항목을 CEO 좌석으로 즉시 배달한다. `CYS_APPROVE_AUTO_ROUTE=1`.
@@ -3221,7 +3222,9 @@ impl Config {
                 .map(|v| v == "1")
                 .unwrap_or(false),
             idle_seconds: env_f64("CYS_IDLE_SECONDS", 300.0) as u64,
-            max_active_workers: env_f64("CYS_MAX_ACTIVE_WORKERS", 8.0) as usize,
+            max_active_workers: max_active_workers_from(
+                cys::env_compat("CYS_MAX_ACTIVE_WORKERS").as_deref(),
+            ),
             // 미설정=OFF(fail-safe). "1"만 ON — 그 외 값·부재는 현행 동작 보존.
             approve_auto_route: cys::env_compat("CYS_APPROVE_AUTO_ROUTE")
                 .map(|v| v == "1")
@@ -3448,6 +3451,20 @@ mod locale_tests {
 }
 
 /// CYS_* 우선, 구 JAVIS_*/AITERM_* 폴백 — README가 약속한 CYS_* 이름이 실제로 동작하게 한다
+/// 워커 동시 상한의 기본값 — 0 = 무제한. ★종전 8(원작자 기본값)은 오너 정책(2026-10-20 「제한을 없앤다.
+/// 무제한이다」)과 어긋났고, plist env 로 덮는 처방은 launchd 재등록 때마다 사라져(10-27·10-28 실측) 8 로 되돌아갔다.
+/// 절약은 상한이 아니라 운영(토큰 잔량에 따른 절약 모드)이 맡는다.
+pub const DEFAULT_MAX_ACTIVE_WORKERS: usize = 0;
+
+/// `CYS_MAX_ACTIVE_WORKERS` 값 → 상한(순수 함수 · 프로세스 env 무접촉이라 시험이 병렬 안전).
+/// 부재·빈 값·숫자 아님 = [`DEFAULT_MAX_ACTIVE_WORKERS`](무제한). 숫자는 종전 `env_f64` 해석 그대로 존중한다
+/// (`"64"`→64 · `"0"`→무제한 · 음수는 `as usize` 포화로 0 = 무제한).
+pub fn max_active_workers_from(raw: Option<&str>) -> usize {
+    raw.and_then(|v| v.parse::<f64>().ok())
+        .map(|v| v as usize)
+        .unwrap_or(DEFAULT_MAX_ACTIVE_WORKERS)
+}
+
 fn env_f64(key: &str, default: f64) -> f64 {
     cys::env_compat(key)
         .and_then(|v| v.parse().ok())
@@ -3778,7 +3795,9 @@ mod scrollback_freshness_tests {
 
 #[cfg(test)]
 mod dedup_tests {
-    use super::{dedup_worker_role, live_worker_count};
+    use super::{
+        dedup_worker_role, live_worker_count, max_active_workers_from, DEFAULT_MAX_ACTIVE_WORKERS,
+    };
     use std::collections::HashMap;
 
     fn roles(pairs: &[(&str, u64)]) -> HashMap<String, u64> {
@@ -3877,6 +3896,17 @@ mod dedup_tests {
         // master/cso/reviewer-*는 worker 한도에서 제외
         let r = roles(&[("master", 1), ("cso", 2), ("reviewer-gemini", 3), ("worker", 4)]);
         assert_eq!(live_worker_count(&r, |_| true), 1);
+    }
+
+    /// ★cysd-worker-cap-unlimited: 기본 = 무제한(0) · env 숫자는 존중. 종전 기본 8 로 되돌아가면 여기서 깨진다.
+    #[test]
+    fn max_active_workers_default_unlimited_and_env_number_respected() {
+        assert_eq!(DEFAULT_MAX_ACTIVE_WORKERS, 0, "기본 상한은 무제한(0)이어야 한다 — 오너 정책");
+        assert_eq!(max_active_workers_from(None), 0, "env 부재 = 무제한");
+        assert_eq!(max_active_workers_from(Some("64")), 64, "env 숫자는 그대로 상한");
+        assert_eq!(max_active_workers_from(Some("3")), 3);
+        assert_eq!(max_active_workers_from(Some("0")), 0, "명시 0 = 무제한");
+        assert_eq!(max_active_workers_from(Some("abc")), 0, "숫자 아님 = 기본(무제한) — 옛 8 로 떨어지지 않는다");
     }
 }
 

@@ -58,8 +58,94 @@ pub fn launchd_env_path(home: &Path) -> String {
     )
 }
 
+/// XML 엔티티 복원 — [`xml_escape`] 의 역 + plist 편집기(plutil·Xcode)가 쓰는 따옴표 엔티티.
+/// `&amp;` 를 마지막에 풀어야 `&amp;lt;` 가 `<` 로 이중 해석되지 않는다.
+fn xml_unescape(s: &str) -> String {
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
+/// ★cysd-worker-cap-unlimited(2026-10-29): 기존 plist `EnvironmentVariables` 의 **사용자 키**(PATH 밖)를
+/// (키, 값) 평문으로 뽑는다. PATH 는 cys 가 관리하는 값이라 뽑지 않는다([`launchd_env_path`] 가 매번 다시 쓴다).
+///
+/// 【무엇이 틀렸었나】 plist 를 다시 쓸 때(stale 판정·`cys daemon install`) 본문을 PATH 하나만으로 새로
+/// 만들어, 운영자가 넣어 둔 `CYS_MAX_ACTIVE_WORKERS=64` 가 재등록마다 사라졌다(10-22 넣음 → 10-27 cysd
+/// 재기동 = 기본 상한 적용 · 10-28 06:47 재추가 → 같은 날 10:21 재기록으로 또 소실 — 실측).
+///
+/// 판독은 의도적으로 좁다: dict 안의 `<key>K</key>` 바로 뒤(공백만 허용)에 `<string>V</string>` 또는
+/// `<string/>` 이 오는 쌍만 잡는다. launchd 환경값은 문자열뿐이라 그 밖의 형태는 버린다(추측 변환 금지).
+/// XML plist 가 아니거나(바이너리 plist 등) 키가 없으면 빈 목록 = 종전 동작.
+fn extract_user_env(content: &str) -> Vec<(String, String)> {
+    let Some(after) = content.split("<key>EnvironmentVariables</key>").nth(1) else {
+        return Vec::new();
+    };
+    let Some(open) = after.find("<dict>") else {
+        return Vec::new();
+    };
+    // `<dict>` 앞에는 공백만 와야 한다 — 아니면 EnvironmentVariables 의 값이 dict 가 아니다.
+    if !after[..open].trim().is_empty() {
+        return Vec::new();
+    }
+    let body = &after[open + "<dict>".len()..];
+    let Some(close) = body.find("</dict>") else {
+        return Vec::new();
+    };
+    let mut rest = &body[..close];
+    let mut out = Vec::new();
+    while let Some(k0) = rest.find("<key>") {
+        let after_k = &rest[k0 + "<key>".len()..];
+        let Some(k1) = after_k.find("</key>") else {
+            break;
+        };
+        let key = xml_unescape(&after_k[..k1]);
+        let tail = after_k[k1 + "</key>".len()..].trim_start();
+        let (value, next) = if let Some(v) = tail.strip_prefix("<string/>") {
+            (Some(String::new()), v)
+        } else if let Some(v) = tail.strip_prefix("<string>") {
+            match v.find("</string>") {
+                Some(e) => (Some(xml_unescape(&v[..e])), &v[e + "</string>".len()..]),
+                None => break,
+            }
+        } else {
+            (None, tail)
+        };
+        if let Some(value) = value {
+            if key != "PATH" && !key.is_empty() && !out.iter().any(|(k, _)| *k == key) {
+                out.push((key, value));
+            }
+        }
+        rest = next;
+    }
+    out
+}
+
 /// launchd plist 본문 — RunAtLoad(로그인 자동 기동) + KeepAlive(사망 시 재기동).
+/// 사용자 env 를 싣지 않는 형태(새 등록). 다시 쓰는 경로는 [`render_plist_preserving`] 을 쓴다.
 pub fn render_plist(daemon: &Path, log: &Path) -> String {
+    render_plist_with_env(daemon, log, &[])
+}
+
+/// 기존 plist 본문(`existing`)의 사용자 env(PATH 밖 `EnvironmentVariables` 키)를 **보존**한 채 plist 를
+/// 렌더한다. `existing = None`(첫 등록)이면 [`render_plist`] 와 같은 바이트다. PATH 는 언제나 cys 관리 값.
+pub fn render_plist_preserving(daemon: &Path, log: &Path, existing: Option<&str>) -> String {
+    let extra = existing.map(extract_user_env).unwrap_or_default();
+    render_plist_with_env(daemon, log, &extra)
+}
+
+fn render_plist_with_env(daemon: &Path, log: &Path, extra: &[(String, String)]) -> String {
+    let extra: String = extra
+        .iter()
+        .map(|(k, v)| {
+            format!(
+                "<key>{}</key><string>{}</string>",
+                xml_escape(k),
+                xml_escape(v)
+            )
+        })
+        .collect();
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -67,7 +153,7 @@ pub fn render_plist(daemon: &Path, log: &Path) -> String {
 <dict>
   <key>Label</key><string>{LAUNCHD_LABEL}</string>
   <key>ProgramArguments</key><array><string>{daemon}</string></array>
-  <key>EnvironmentVariables</key><dict><key>PATH</key><string>{path}</string></dict>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>{path}</string>{extra}</dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
@@ -79,6 +165,7 @@ pub fn render_plist(daemon: &Path, log: &Path) -> String {
         daemon = xml_escape(&daemon.display().to_string()),
         path = xml_escape(&launchd_env_path(&crate::home_dir())),
         log = xml_escape(&log.display().to_string()),
+        extra = extra,
     )
 }
 
@@ -162,13 +249,25 @@ pub fn launchd_will_serve(outcome: RegisterOutcome) -> bool {
 }
 
 /// plist를 ~/Library/LaunchAgents에 기록(부모 디렉터리 생성 포함). 기록한 경로 반환.
+/// 기존 plist 의 사용자 env 는 보존한다([`write_plist_at`]).
 pub fn write_plist(daemon: &Path) -> std::io::Result<PathBuf> {
     let path = plist_path();
+    write_plist_at(&path, daemon, &log_path())?;
+    Ok(path)
+}
+
+/// `path` 에 plist 를 기록한다 — 그 자리에 이미 plist 가 있으면 사용자 env(PATH 밖 키)를 읽어 새 본문에
+/// 다시 싣는다. 자동 등록(stale 재기록)과 수동 `cys daemon install` 이 같은 함수를 쓴다(보존 규칙 단일 소스).
+/// 경로를 인자로 받는 것은 시험이 실제 `~/Library/LaunchAgents` 를 건드리지 않게 하기 위해서다.
+pub fn write_plist_at(path: &Path, daemon: &Path, log: &Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&path, render_plist(daemon, &log_path()))?;
-    Ok(path)
+    let existing = std::fs::read_to_string(path).ok();
+    std::fs::write(
+        path,
+        render_plist_preserving(daemon, log, existing.as_deref()),
+    )
 }
 
 /// 자동등록 결과 — 호출자가 로그·UI 분기에 사용.
@@ -350,6 +449,102 @@ mod tests {
         assert!(plist.contains("/tmp/l&amp;g.log"));
         // 원시(미이스케이프) 앰퍼샌드가 <string> 안에 남으면 안 된다.
         assert!(!plist.contains("a&b<c>"));
+    }
+
+    /// 시험 전용 임시 디렉터리(프로세스·호출마다 고유) — 실제 ~/Library/LaunchAgents 무접촉.
+    fn scratch_plist(tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "cys-launchd-{tag}-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir.join("LaunchAgents").join(format!("{LAUNCHD_LABEL}.plist"))
+    }
+
+    /// ★cysd-worker-cap-unlimited: 재등록(stale 재기록·`cys daemon install`)이 운영자가 넣은 env 를
+    /// 지우지 않는다. 10-22·10-28 두 번 넣은 `CYS_MAX_ACTIVE_WORKERS=64` 가 재기록마다 사라진 결함의 재현.
+    #[test]
+    fn rewrite_preserves_user_env_and_refreshes_managed_keys() {
+        let path = scratch_plist("preserve");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // 옛 plist — 옛 cysd 경로(stale) + 옛 PATH + 운영자 env 2개(특수문자 포함).
+        let old = render_plist_with_env(
+            Path::new("/Applications/old.app/Contents/MacOS/cysd"),
+            Path::new("/tmp/old.log"),
+            &[
+                ("CYS_MAX_ACTIVE_WORKERS".into(), "64".into()),
+                ("CYS_NOTE".into(), "a&b<c>\"d'".into()),
+            ],
+        )
+        .replace(&xml_escape(&launchd_env_path(&crate::home_dir())), "/usr/bin:/bin");
+        std::fs::write(&path, &old).unwrap();
+
+        let daemon = Path::new("/Applications/cys.app/Contents/MacOS/cysd");
+        write_plist_at(&path, daemon, Path::new("/tmp/new.log")).unwrap();
+        let got = std::fs::read_to_string(&path).unwrap();
+
+        assert_eq!(
+            extract_user_env(&got),
+            vec![
+                ("CYS_MAX_ACTIVE_WORKERS".to_string(), "64".to_string()),
+                ("CYS_NOTE".to_string(), "a&b<c>\"d'".to_string()),
+            ],
+            "재기록이 운영자 env 를 지웠다: {got}"
+        );
+        // 관리 키는 새 값으로 — 경로 교정·PATH 갱신은 종전 그대로(fresh 판정이 다시 참이 된다).
+        assert_eq!(extract_program_path(&got).as_deref(), Some(daemon.to_str().unwrap()));
+        assert_eq!(
+            extract_env_path(&got),
+            Some(xml_escape(&launchd_env_path(&crate::home_dir()))),
+            "PATH 는 cys 관리 값으로 갱신돼야 한다(옛 PATH 보존 금지)"
+        );
+        assert!(!got.contains("/tmp/old.log"));
+
+        // 두 번째 재기록 — 같은 바이트(키 중복·누적 없음).
+        write_plist_at(&path, daemon, Path::new("/tmp/new.log")).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), got, "재기록이 멱등이 아니다");
+
+        // 실제 plist 문법 — macOS plutil 로 검사하고 값을 꺼낸다(launchd 가 읽는 형태 그대로인지).
+        let lint = std::process::Command::new("plutil").arg("-lint").arg(&path).output().unwrap();
+        assert!(lint.status.success(), "plutil -lint 실패: {}", String::from_utf8_lossy(&lint.stdout));
+        let v = std::process::Command::new("plutil")
+            .args(["-extract", "EnvironmentVariables.CYS_MAX_ACTIVE_WORKERS", "raw", "-o", "-"])
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&v.stdout).trim(), "64");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+    }
+
+    /// 첫 등록(파일 없음)은 종전 render_plist 와 같은 바이트 — 보존 경로가 새 기계의 plist 를 바꾸지 않는다.
+    #[test]
+    fn first_write_equals_plain_render() {
+        let path = scratch_plist("first");
+        let daemon = Path::new("/Applications/cys.app/Contents/MacOS/cysd");
+        let log = Path::new("/tmp/cysd.log");
+        write_plist_at(&path, daemon, log).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), render_plist(daemon, log));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+    }
+
+    /// 사람이 plutil·Xcode 로 다시 저장한 plist(여러 줄·탭 들여쓰기·`<string/>`)에서도 사용자 env 를 읽는다.
+    /// 문자열이 아닌 값·EnvironmentVariables 가 dict 가 아닌 경우는 버린다(추측 변환 금지).
+    #[test]
+    fn extract_user_env_reads_reformatted_plist_and_skips_non_strings() {
+        let pretty = "<dict>\n\t<key>EnvironmentVariables</key>\n\t<dict>\n\t\t<key>CYS_MAX_ACTIVE_WORKERS</key>\n\t\t<string>64</string>\n\t\t<key>PATH</key>\n\t\t<string>/x</string>\n\t\t<key>EMPTY</key>\n\t\t<string/>\n\t\t<key>NUM</key>\n\t\t<integer>3</integer>\n\t\t<key>Q</key>\n\t\t<string>a&amp;lt;b</string>\n\t</dict>\n\t<key>KeepAlive</key>\n\t<true/>\n</dict>";
+        assert_eq!(
+            extract_user_env(pretty),
+            vec![
+                ("CYS_MAX_ACTIVE_WORKERS".to_string(), "64".to_string()),
+                ("EMPTY".to_string(), String::new()),
+                ("Q".to_string(), "a&lt;b".to_string()),
+            ]
+        );
+        assert!(extract_user_env("<key>EnvironmentVariables</key><string>x</string>").is_empty());
+        assert!(extract_user_env(&render_plist(Path::new("/a/cysd"), Path::new("/a/l"))).is_empty());
     }
 
     #[test]

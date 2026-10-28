@@ -5891,6 +5891,7 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
             }
             // (2) active-limit: 살아있는 worker-* 수 한도. role=="worker" 요청에만 적용
             //     (master/cso는 위 하이재킹 게이트가, reviewer-*는 단일 latest-wins가 커버).
+            //     ★기본 0 = 무제한(오너 정책) — 이 거부는 운영자가 `CYS_MAX_ACTIVE_WORKERS` 로 상한을 **명시했을 때만** 난다.
             if param_str(&params, "role").as_deref() == Some("worker") {
                 let limit = daemon.config.max_active_workers;
                 if limit > 0 {
@@ -5917,7 +5918,8 @@ pub fn dispatch(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>) -> 
                             &id,
                             "worker_limit_exceeded",
                             &format!(
-                                "worker active-limit reached: {count}/{limit} (max_active_workers)"
+                                "worker active-limit reached: {count}/{limit} (max_active_workers · \
+                                 CYS_MAX_ACTIVE_WORKERS 로 명시한 상한 · 기본은 무제한)"
                             ),
                         ));
                     }
@@ -22409,6 +22411,38 @@ mod tests {
             "워커 한도 1인데 2번째 워커가 통과했다 (응답: {resp_w})"
         );
         assert_eq!(resp_w["error"]["code"], json!("worker_limit_exceeded"));
+    }
+
+    /// ★cysd-worker-cap-unlimited: **기본 설정이면 9번째 이상 워커도 허용**된다. 종전 기본 8 은 9번째를
+    /// `worker_limit_exceeded` 로 거부했다 — 오너 정책(무제한)과 어긋남. 상한은 env 를 명시할 때만 산다(위 두 시험).
+    /// 프로세스 env(이 기계의 셸은 launchctl setenv 로 64 를 물려받는다)를 읽지 않게 기본값 함수로 고정한다.
+    #[test]
+    fn worker_default_limit_allows_ninth_and_beyond() {
+        let mut daemon = claim_daemon();
+        set_max_active_workers(&mut daemon, crate::state::max_active_workers_from(None));
+
+        // 종전 기본 상한(8)을 채운다.
+        let _held: Vec<u64> = (0..8).map(|_| make_surface(&daemon, Some("worker"))).collect();
+        assert_eq!(
+            crate::state::live_worker_count(&daemon.roles.lock().unwrap(), |_| true),
+            8,
+            "8개 워커가 등록돼야 한다"
+        );
+
+        // 9번째·10번째 — 기본 설정이면 둘 다 통과해야 한다.
+        for (nth, pid) in [(9u32, 992_201_u32), (10, 992_202)] {
+            let resp = create_surface_rpc(&daemon, Some("worker"), Some(pid));
+            assert_eq!(
+                resp["ok"],
+                json!(true),
+                "기본 설정인데 {nth}번째 워커가 거부됐다 (응답: {resp})"
+            );
+        }
+        assert_eq!(
+            crate::state::live_worker_count(&daemon.roles.lock().unwrap(), |_| true),
+            10,
+            "9·10번째 워커가 역할 표에 올라야 한다"
+        );
     }
 
     /// 발견(멱등 기동): 같은 idempotency_key 재시도는 추가 spawn 없이 기존 surface를 재반환하고

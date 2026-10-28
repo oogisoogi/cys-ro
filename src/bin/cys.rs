@@ -19992,12 +19992,11 @@ fn run_daemon_cmd(action: DaemonAction) -> i32 {
                                 .into(),
                         );
                     }
-                    let plist = cys::launchd::render_plist(&daemon, &cys::launchd::log_path());
+                    // ★cysd-worker-cap-unlimited: 기존 plist 의 사용자 env(PATH 밖 키 — 예 CYS_MAX_ACTIVE_WORKERS)를
+                    //   보존하며 다시 쓴다. 종전 render_plist 직기록은 재설치마다 그 키를 지웠다.
                     let path = cys::launchd::plist_path();
-                    if let Some(parent) = path.parent() {
-                        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-                    }
-                    std::fs::write(&path, plist).map_err(|e| e.to_string())?;
+                    cys::launchd::write_plist_at(&path, &daemon, &cys::launchd::log_path())
+                        .map_err(|e| e.to_string())?;
                     if running && takeover {
                         // 소유권 이관: 기존 데몬 정상 종료 (SIGTERM — scoped 정리·소켓 제거).
                         eprintln!("[daemon] 기존 데몬 정지 중 (소유권 이관)…");

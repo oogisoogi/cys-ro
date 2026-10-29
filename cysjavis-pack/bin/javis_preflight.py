@@ -747,7 +747,9 @@ HOOK_TIMEOUT_S = {
     #   fail-open). 사건 훅은 모든 Bash 앞에서 돈다 — 미선언(기본 600초)이면 걸리는 순간 Bash 한 번이 10분 멈춘다.
     ("inject-background.sh", "SessionStart"): 5,
     ("directive-event-inject.sh", "PreToolUse"): 5,
-    ("dept-chat-inject.sh", "UserPromptSubmit"): 5,
+    # ★1.1.11 TICKET=win-dept-chat-inject-timeout: 5→10 — 훅 안쪽 상한을 4→8초로 올렸다(윈 rc124). 안쪽 < 바깥이어야
+    #   하네스가 먼저 자르지 않고 rc 기록이 남는다. 기존 설치는 「하한」 판정(max)으로 --fix 때 올라간다.
+    ("dept-chat-inject.sh", "UserPromptSubmit"): 10,
     # ★WP-3 A(0.14.31): 능력 게이트는 전 도구 호출에 붙는다 — 내부 데드라인(역할 조회 2s +
     #   TTL 승인 확인 5s)의 **바깥 겹**을 15s 로 선언한다. 하네스 timeout 은 차단 보증이 아니라
     #   (초과 시 출력이 폐기되고 도구는 정상 권한 흐름으로 간다) 훅이 좌석을 붙잡지 않게 하는

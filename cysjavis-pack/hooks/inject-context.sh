@@ -227,13 +227,19 @@ else
   #   프로젝트 세션(cys 밖 claude 포함)이 그 본문을 「작업기억(L2)」으로 받았다(경고 1줄은 붙어도 내용은 실렸다).
   #   루트 밖 cwd 는 종전 그대로 · 루트 아래 프로젝트 `_round`(하위 폴더에서의 상향 발견 포함)도 그대로다.
   #   비교는 키(_ic_pkey)로 한다 — Windows 는 cwd 가 `C:/…`, HOME 이 `/c/…` 라 문자열이 달라 경계가 안 걸렸다.
+  #   드라이브 변환·소문자화는 Windows(cygpath 실재 = MSYS)에서만 — POSIX 는 꼬리 `/` 만 떼고 대소문자를 보존한다
+  #   (POSIX `/a/Person` 과 `/A/Person` 은 다른 폴더다 · codex 1R minor).
+  _IC_MSYS=""; command -v cygpath >/dev/null 2>&1 && _IC_MSYS=1
   _ic_pkey() {
-    _ic_k="$(printf '%s' "${1:-}" | tr '\\' '/' | sed 's#//*$##')"
-    case "$_ic_k" in
-      /[A-Za-z]|/[A-Za-z]/*) _ic_k="${_ic_k#/}"; _ic_k="${_ic_k%%/*}:${_ic_k#?}" ;;
-    esac
-    case "$_ic_k" in [A-Za-z]:*) _ic_k="$(printf '%s' "$_ic_k" | tr 'A-Z' 'a-z')" ;; esac
-    printf '%s' "$_ic_k"
+    _ic_k="${1:-}"
+    if [ -n "$_IC_MSYS" ]; then
+      _ic_k="$(printf '%s' "$_ic_k" | tr '\\' '/')"
+      case "$_ic_k" in
+        /[A-Za-z]|/[A-Za-z]/*) _ic_k="${_ic_k#/}"; _ic_k="${_ic_k%%/*}:${_ic_k#?}" ;;
+      esac
+      case "$_ic_k" in [A-Za-z]:*) _ic_k="$(printf '%s' "$_ic_k" | tr 'A-Z' 'a-z')" ;; esac
+    fi
+    printf '%s' "$_ic_k" | sed 's#//*$##'
   }
   _IC_TOP_H="$(_ic_pkey "$HOME")"; _IC_TOP_R="$(_ic_pkey "$ROOT")"
   while [ -n "$DIR" ] && [ "$DIR" != "/" ] && [ "$DIR" != "$PREV" ]; do

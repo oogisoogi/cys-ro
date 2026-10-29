@@ -16,7 +16,8 @@
   H8 루트 밖 cwd(/outside/x/sub, 상위에 _round) → 종전 그대로 상향 발견
   H9 ACTIVE_PROJECT 폴백(명시 포인터)은 그대로 산다
   P1~P3 python 쌍둥이 legacy_candidates 같은 경계
-  K1 _ic_pkey: Windows `C:\\…`·`C:/…`·`/c/…` 가 같은 키 · POSIX 무변
+  K1~K3 _ic_pkey: MSYS 에서만 `C:\\…`·`C:/…`·`/c/…`·`/d/…` 를 같은 키로 · POSIX 는 대소문자 보존(codex 1R)
+  P4~P5 root_key(python 쌍둥이 키) 같은 규칙(codex 1R major)
 """
 import json
 import os
@@ -141,13 +142,26 @@ def main():
     src_txt = read(HOOK)
     m = re.search(r"^  _ic_pkey\(\) \{\n.*?^  \}\n", src_txt, re.S | re.M)
     check("K0 훅에 _ic_pkey 정의 실재", bool(m))
+    check("K0b 훅이 MSYS 판별(cygpath)로 키 규칙을 가른다", '_IC_MSYS=""; command -v cygpath' in src_txt)
     if m:
-        probe = m.group(0) + 'for p in "$@"; do printf "%s|" "$(_ic_pkey "$p")"; done'
-        r = subprocess.run([BASH, "-c", probe, "_", "C:\\Users\\X", "C:/Users/X/", "/c/Users/X", "/Users/x/", "/"],
-                           capture_output=True, text=True, timeout=30)
-        got = r.stdout.split("|")[:5]
-        check("K1 Windows 세 표기 같은 키", got[0] == got[1] == got[2] == "c:/users/x", got)
-        check("K2 POSIX 무변(꼬리 / 만 제거) · 루트 / 는 빈 키", got[3] == "/Users/x" and got[4] == "", got)
+        def keys(msys, *paths):
+            probe = '_IC_MSYS="%s"\n' % msys + m.group(0) + 'for p in "$@"; do printf "%s|" "$(_ic_pkey "$p")"; done'
+            r = subprocess.run([BASH, "-c", probe, "_"] + list(paths), capture_output=True, text=True, timeout=30)
+            return r.stdout.split("|")[:len(paths)]
+        got = keys("1", "C:\\Users\\X", "C:/Users/X/", "/c/Users/X", "/d/CYS", "D:/CYS")
+        check("K1 MSYS: Windows 세 표기 같은 키", got[0] == got[1] == got[2] == "c:/users/x", got)
+        check("K1b MSYS: /d/CYS == D:/CYS (codex 1R 재현)", got[3] == got[4] == "d:/cys", got)
+        got = keys("", "/Users/x/", "/", "/a/Person", "/A/Person")
+        check("K2 POSIX: 꼬리 / 만 제거 · 루트 / 는 빈 키", got[0] == "/Users/x" and got[1] == "", got)
+        check("K3 POSIX: 대소문자 보존 — /a/Person != /A/Person (codex 1R 재현)",
+              got[2] == "/a/Person" and got[3] == "/A/Person", got)
+
+    # ── python 쌍둥이 키(root_key) — 같은 규칙 ──
+    check("P4 root_key(nt): /d/CYS == D:/CYS == D:\\CYS\\ (codex 1R major 재현)",
+          JS.root_key("/d/CYS", nt=True) == JS.root_key("D:/CYS", nt=True) == JS.root_key("D:\\CYS\\", nt=True))
+    check("P5 root_key(posix): 대소문자 보존 · 꼬리 / 제거",
+          JS.root_key("/a/Person", nt=False) != JS.root_key("/A/Person", nt=False)
+          and JS.root_key("/a/Person/", nt=False) == "/a/Person")
 
     shutil.rmtree(root, ignore_errors=True)
     print("\n=== %s ===" % ("ALL PASS" if not fails else "FAIL %d: %s" % (len(fails), fails)))

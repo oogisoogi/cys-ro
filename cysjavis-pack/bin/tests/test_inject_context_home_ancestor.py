@@ -148,7 +148,7 @@ def main():
             probe = '_IC_MSYS="%s"\n' % msys + m.group(0) + 'for p in "$@"; do printf "%s|" "$(_ic_pkey "$p")"; done'
             r = subprocess.run([BASH, "-c", probe, "_"] + list(paths), capture_output=True, text=True, timeout=30)
             return r.stdout.split("|")[:len(paths)]
-        got = keys("1", "C:\\Users\\X", "C:/Users/X/", "/c/Users/X", "/d/CYS", "D:/CYS")
+        got = keys("1", "C:\\Users\\x", "C:/Users/x/", "/c/Users/x", "/d/CYS", "D:/CYS")
         check("K1 MSYS: Windows 세 표기 같은 키", got[0] == got[1] == got[2] == "c:/users/x", got)
         check("K1b MSYS: /d/CYS == D:/CYS (codex 1R 재현)", got[3] == got[4] == "d:/cys", got)
         got = keys("", "/Users/x/", "/", "/a/Person", "/A/Person")

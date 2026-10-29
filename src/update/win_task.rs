@@ -330,6 +330,122 @@ pub fn refusal_evidence_path(update_dir: &Path, task: &str) -> std::path::PathBu
     update_dir.join(format!("win-task-refusal-{task}.json"))
 }
 
+/// 작업 없음 = `HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)` — 없는 이름에 `GetTask` 가 돌려주는 값(MS 문서 미기재 · 윈 실기 시험
+/// `com_absent_task_hresult_is_file_not_found` 로 묶는다).
+pub const HR_TASK_ABSENT: u32 = 0x8007_0002;
+
+/// 스케줄러 호출 실패 — HRESULT 를 보존해 「없음」과 그 밖(접근 거부·폴더 실패 등)을 가른다(codex R2-01).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchedErr {
+    pub hr: u32,
+    pub what: String,
+}
+
+impl SchedErr {
+    /// 「작업 없음」만 참. 뮤턴트 `WT2` = 모든 오류를 없음으로(무시 범위 넓히기 — R2-01 이전).
+    pub fn absent(&self) -> bool {
+        super::mutant("WT2") || self.hr == HR_TASK_ABSENT
+    }
+}
+
+impl std::fmt::Display for SchedErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} hr=0x{:08x}", self.what, self.hr)
+    }
+}
+
+impl From<SchedErr> for String {
+    fn from(e: SchedErr) -> String {
+        e.to_string()
+    }
+}
+
+/// 등록 흐름이 부르는 스케줄러 조작(윈 = 우리 COM 폴더 · 시험 = 가짜 — 오류 종류·복원 경로를 모든 기판에서 시험한다).
+pub trait Sched {
+    /// 같은 이름 작업의 (XML, 작업 SDDL). 없으면 Err(없음).
+    fn read_task(&mut self, name: &str) -> Result<(String, String), SchedErr>;
+    fn folder_sddl(&mut self) -> Result<String, SchedErr>;
+    fn delete(&mut self, name: &str) -> Result<(), SchedErr>;
+    fn register(&mut self, name: &str, xml: &str, sddl: &str) -> Result<(), SchedErr>;
+    /// 등록 뒤 재독 대조([`judge`]).
+    fn verify(&mut self, name: &str) -> Result<(), Refusal>;
+    /// 거부 증거 기록(지우기 전) — 결과 한 줄(오류 문자열에 덧붙는다).
+    fn keep_evidence(&mut self, name: &str, r: &Refusal) -> String;
+}
+
+/// 등록 전 같은 이름 옛 작업.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Prior {
+    Absent,
+    /// 지금 기대와 다르다(재독 판정 거부) — 복원하지 않는다.
+    Invalid,
+    /// 지금 기대와 맞는다(재독 판정 통과) — 새 등록이 실패하면 이 XML 로 복원한다.
+    Valid(String),
+}
+
+/// 등록(★1.1.11 codex R2-01·R2-02): ① 같은 이름 옛 작업 읽기 — 「없음」만 정상 · 그 밖 오류 = 지우지도 등록하지도 않고 중단
+/// ② 옛 작업이 지금 기대와 맞으면([`judge`] 통과) 그 XML 을 복원본으로 쥔다 ③ 지우기 — 「없음」(그새 사라짐)만 정상 · 그 밖 = 중단
+/// (옛 작업 그대로) ④ 새로 등록(지운 뒤라 옛 주체 ACE 를 남기는 갱신 경로가 없다) ⑤ 재독 대조 — 거부면 증거 → 지움.
+/// ④ 실패·⑤ 거부면 복원본을 다시 등록·재독하고 그 결과를 오류에 적는다(유효한 복구기를 잃지 않는다 · 무효한 옛 작업은 복원 안 함).
+pub fn install<S: Sched>(s: &mut S, name: &str, runner: &Path, args: &[&str], me: &str, logon: bool) -> Result<(), String> {
+    let sddl = sddl_for(me);
+    let prior = match s.read_task(name) {
+        Err(e) if e.absent() => Prior::Absent,
+        Err(e) => return Err(format!("[{name}] 등록 전 옛 작업 읽기 실패 — 지우지 않고 중단: {e}")),
+        Ok((ox, os)) => {
+            let fs = s.folder_sddl().map_err(|e| format!("[{name}] 등록 전 폴더 SDDL 읽기 실패 — 지우지 않고 중단: {e}"))?;
+            match judge(&ox, &os, &fs, runner, args, me, logon) {
+                Ok(()) => Prior::Valid(ox),
+                Err(_) => Prior::Invalid,
+            }
+        }
+    };
+    if prior != Prior::Absent {
+        match s.delete(name) {
+            Ok(()) => {}
+            Err(e) if e.absent() => {}
+            Err(e) => return Err(format!("[{name}] 옛 작업 지우기 실패 — 옛 작업 그대로 · 등록 안 함: {e}")),
+        }
+    }
+    if let Err(e) = s.register(name, &task_xml(runner, args, me, logon), &sddl) {
+        return Err(format!("{e}{}", restore(s, name, &prior, &sddl)));
+    }
+    if let Err(r) = s.verify(name) {
+        // 증거 먼저(지우면 사라진다) — 기록 실패는 거부 사유에 덧붙을 뿐 거부 자체를 바꾸지 않는다.
+        let note = s.keep_evidence(name, &r);
+        let rest = match s.delete(name) {
+            Ok(()) => restore(s, name, &prior, &sddl),
+            Err(e) if e.absent() => restore(s, name, &prior, &sddl),
+            Err(e) => format!(" · 거부 작업 지우기 실패 — 복원 안 함: {e}"),
+        };
+        return Err(format!("update.win_task_refused: 다시 읽은 정의·SDDL 불일치 [{name}] {}{note}{rest}", r.summary()));
+    }
+    Ok(())
+}
+
+/// 복원(★codex R2-02) — 결과 한 줄. 뮤턴트 `WT3` = 복원 빼기.
+fn restore<S: Sched>(s: &mut S, name: &str, prior: &Prior, sddl: &str) -> String {
+    match prior {
+        Prior::Absent => " · 복원 대상 없음(옛 작업 없음)".into(),
+        Prior::Invalid => " · 복원 안 함(옛 작업이 기대와 달랐다)".into(),
+        Prior::Valid(_) if super::mutant("WT3") => String::new(),
+        Prior::Valid(ox) => match s.register(name, ox, sddl) {
+            Err(e) => format!(" · 옛 작업 복원 실패: {e}"),
+            Ok(()) => match s.verify(name) {
+                Ok(()) => " · 옛 작업 복원됨(재독 통과)".into(),
+                Err(r) => {
+                    let del = match s.delete(name) {
+                        Ok(()) => "지움".to_string(),
+                        Err(e) if e.absent() => "지움".to_string(),
+                        Err(e) => format!("지우기 실패 {e}"),
+                    };
+                    format!(" · 옛 작업 복원 재독 거부({del}): {}", r.summary())
+                }
+            },
+        },
+    }
+}
+
 /// 러너 일회 작업 등록 → 다시 읽어 대조 → 실행(즉시 반환).
 pub fn run_once(update_dir: &Path, runner: &Path, args: &[&str]) -> Result<(), String> {
     #[cfg(windows)]
@@ -451,14 +567,19 @@ mod com {
     }
 
     fn hr(h: HRESULT, what: &str) -> Result<(), String> {
+        hr_e(h, what).map_err(String::from)
+    }
+
+    /// HRESULT 를 보존하는 판(「없음」 판정용) — 문자열 꼴은 [`hr`] 와 같다.
+    fn hr_e(h: HRESULT, what: &str) -> Result<(), SchedErr> {
         if h < 0 {
-            Err(format!("{what} hr=0x{:08x}", h as u32))
+            Err(SchedErr { hr: h as u32, what: what.to_string() })
         } else {
             Ok(())
         }
     }
 
-    struct Com(Raw);
+    pub(super) struct Com(Raw);
     impl Drop for Com {
         fn drop(&mut self) {
             // SAFETY: AddRef 된 인터페이스 포인터.
@@ -466,7 +587,7 @@ mod com {
         }
     }
 
-    fn service() -> Result<Com, String> {
+    pub(super) fn service() -> Result<Com, String> {
         // SAFETY: COM 초기화(이미 됐으면 S_FALSE/RPC_E_CHANGED_MODE — 무시).
         unsafe { CoInitializeEx(std::ptr::null(), COINIT_MULTITHREADED as u32) };
         let mut p: Raw = std::ptr::null_mut();
@@ -479,7 +600,7 @@ mod com {
         Ok(svc)
     }
 
-    fn get_folder(svc: &Com, path: &str) -> Result<Com, String> {
+    pub(super) fn get_folder(svc: &Com, path: &str) -> Result<Com, String> {
         let b = Bstr::new(path);
         let mut p: Raw = std::ptr::null_mut();
         // ITaskService::GetFolder = 7
@@ -498,36 +619,36 @@ mod com {
         Ok(Com(p))
     }
 
-    fn folder_sddl(folder: &Com) -> Result<String, String> {
+    fn folder_sddl(folder: &Com) -> Result<String, SchedErr> {
         let mut out: BSTR = std::ptr::null_mut();
         // ITaskFolder::GetSecurityDescriptor = 18
         let f: extern "system" fn(Raw, i32, *mut BSTR) -> HRESULT = unsafe { std::mem::transmute(slot(folder.0, 18)) };
-        hr(f(folder.0, SI_OWNER_DACL, &mut out), "Folder.GetSecurityDescriptor")?;
+        hr_e(f(folder.0, SI_OWNER_DACL, &mut out), "Folder.GetSecurityDescriptor")?;
         Ok(take_bstr(out))
     }
 
-    fn get_task(folder: &Com, name: &str) -> Result<Com, String> {
+    pub(super) fn get_task(folder: &Com, name: &str) -> Result<Com, SchedErr> {
         let b = Bstr::new(name);
         let mut p: Raw = std::ptr::null_mut();
         // ITaskFolder::GetTask = 13
         let f: extern "system" fn(Raw, BSTR, *mut Raw) -> HRESULT = unsafe { std::mem::transmute(slot(folder.0, 13)) };
-        hr(f(folder.0, b.0, &mut p), "GetTask")?;
+        hr_e(f(folder.0, b.0, &mut p), "GetTask")?;
         Ok(Com(p))
     }
 
-    fn read_task_xml(task: &Com) -> Result<String, String> {
+    fn read_task_xml(task: &Com) -> Result<String, SchedErr> {
         let mut x: BSTR = std::ptr::null_mut();
         // IRegisteredTask::get_Xml = 20
         let gx: extern "system" fn(Raw, *mut BSTR) -> HRESULT = unsafe { std::mem::transmute(slot(task.0, 20)) };
-        hr(gx(task.0, &mut x), "get_Xml")?;
+        hr_e(gx(task.0, &mut x), "get_Xml")?;
         Ok(take_bstr(x))
     }
 
-    fn read_task_sddl(task: &Com) -> Result<String, String> {
+    fn read_task_sddl(task: &Com) -> Result<String, SchedErr> {
         let mut s: BSTR = std::ptr::null_mut();
         // IRegisteredTask::GetSecurityDescriptor = 21
         let gs: extern "system" fn(Raw, i32, *mut BSTR) -> HRESULT = unsafe { std::mem::transmute(slot(task.0, 21)) };
-        hr(gs(task.0, SI_OWNER_DACL, &mut s), "Task.GetSecurityDescriptor")?;
+        hr_e(gs(task.0, SI_OWNER_DACL, &mut s), "Task.GetSecurityDescriptor")?;
         Ok(take_bstr(s))
     }
 
@@ -559,10 +680,10 @@ mod com {
         let me = crate::update::current_user_sid_pub().map_err(Refusal::read)?;
         let svc = service().map_err(Refusal::read)?;
         let folder = our_folder(dir, &svc, false, "").map_err(Refusal::read)?;
-        let task = get_task(&folder, name).map_err(Refusal::read)?;
-        let xml = read_task_xml(&task).map_err(Refusal::read)?;
-        let sddl = read_task_sddl(&task).map_err(|e| Refusal::read(e).with_read(Some(&xml), None, None))?;
-        let fsddl = folder_sddl(&folder).map_err(|e| Refusal::read(e).with_read(Some(&xml), Some(&sddl), None))?;
+        let task = get_task(&folder, name).map_err(|e| Refusal::read(e.into()))?;
+        let xml = read_task_xml(&task).map_err(|e| Refusal::read(e.into()))?;
+        let sddl = read_task_sddl(&task).map_err(|e| Refusal::read(e.into()).with_read(Some(&xml), None, None))?;
+        let fsddl = folder_sddl(&folder).map_err(|e| Refusal::read(e.into()).with_read(Some(&xml), Some(&sddl), None))?;
         judge(&xml, &sddl, &fsddl, runner, args, &me, logon)
     }
 
@@ -580,10 +701,60 @@ mod com {
     pub fn delete(dir: &Path, name: &str) -> Result<(), String> {
         let svc = service()?;
         let folder = our_folder(dir, &svc, false, "")?;
+        Ok(delete_in(&folder, name)?)
+    }
+
+    pub(super) fn delete_in(folder: &Com, name: &str) -> Result<(), SchedErr> {
         let b = Bstr::new(name);
         // ITaskFolder::DeleteTask = 15
         let f: extern "system" fn(Raw, BSTR, i32) -> HRESULT = unsafe { std::mem::transmute(slot(folder.0, 15)) };
-        hr(f(folder.0, b.0, 0), "DeleteTask")
+        hr_e(f(folder.0, b.0, 0), "DeleteTask")
+    }
+
+    fn register_in(folder: &Com, name: &str, xml: &str, sddl: &str) -> Result<(), SchedErr> {
+        let (bn, bx, bs) = (Bstr::new(name), Bstr::new(xml), Bstr::new(sddl));
+        let mut p: Raw = std::ptr::null_mut();
+        // ITaskFolder::RegisterTask = 16
+        let f: extern "system" fn(Raw, BSTR, BSTR, i32, VARIANT, VARIANT, i32, VARIANT, *mut Raw) -> HRESULT =
+            unsafe { std::mem::transmute(slot(folder.0, 16)) };
+        hr_e(f(folder.0, bn.0, bx.0, register_flags(), empty(), empty(), TASK_LOGON_INTERACTIVE_TOKEN, vbstr(&bs), &mut p), "RegisterTask")?;
+        drop(Com(p));
+        Ok(())
+    }
+
+    /// [`install`] 의 윈 쪽 — 이미 연 우리 폴더에서 읽고·지우고·등록한다(재독은 [`verify_detail`] 새 연결).
+    struct ComSched<'a> {
+        dir: &'a Path,
+        folder: &'a Com,
+        runner: &'a Path,
+        args: &'a [&'a str],
+        logon: bool,
+    }
+
+    impl Sched for ComSched<'_> {
+        fn read_task(&mut self, name: &str) -> Result<(String, String), SchedErr> {
+            let t = get_task(self.folder, name)?;
+            Ok((read_task_xml(&t)?, read_task_sddl(&t)?))
+        }
+        fn folder_sddl(&mut self) -> Result<String, SchedErr> {
+            folder_sddl(self.folder)
+        }
+        fn delete(&mut self, name: &str) -> Result<(), SchedErr> {
+            delete_in(self.folder, name)
+        }
+        fn register(&mut self, name: &str, xml: &str, sddl: &str) -> Result<(), SchedErr> {
+            register_in(self.folder, name, xml, sddl)
+        }
+        fn verify(&mut self, name: &str) -> Result<(), Refusal> {
+            verify_detail(self.dir, name, self.runner, self.args, self.logon)
+        }
+        fn keep_evidence(&mut self, name: &str, r: &Refusal) -> String {
+            let ev = refusal_evidence_path(self.dir, name);
+            match crate::update::write_private(&ev, r.evidence(name, crate::update::clock::wall_now()).to_string().as_bytes()) {
+                Ok(()) => format!(" · 증거 {}", ev.display()),
+                Err(e) => format!(" · 증거 기록 실패 {e}"),
+            }
+        }
     }
 
     pub fn register_and_verify(dir: &Path, name: &str, runner: &Path, args: &[&str], logon: bool, run_now: bool) -> Result<(), String> {
@@ -591,30 +762,10 @@ mod com {
         let sddl = sddl_for(&me);
         let svc = service()?;
         let folder = our_folder(dir, &svc, true, &sddl)?;
-        let xml = task_xml(runner, args, &me, logon);
-        let (bn, bx, bs) = (Bstr::new(name), Bstr::new(&xml), Bstr::new(&sddl));
-        // ★codex R1-01: 같은 이름의 옛 작업이 있으면 먼저 지운다 — 갱신(TASK_UPDATE)에선 0x10 이 「옛 주체 ACE 를 지우지 않는다」
-        //   (MS 문서)라 1.1.10 이 남긴 FR ACE 가 살아남을 수 있다. 새로 만들기만 하면 실측(0x16 = D:PAI 그대로)과 같은 경로다.
-        //   없는 작업 지우기 실패는 무시(정상).
-        let _ = delete(dir, name);
-        let mut p: Raw = std::ptr::null_mut();
-        // ITaskFolder::RegisterTask = 16
-        let f: extern "system" fn(Raw, BSTR, BSTR, i32, VARIANT, VARIANT, i32, VARIANT, *mut Raw) -> HRESULT =
-            unsafe { std::mem::transmute(slot(folder.0, 16)) };
-        hr(f(folder.0, bn.0, bx.0, register_flags(), empty(), empty(), TASK_LOGON_INTERACTIVE_TOKEN, vbstr(&bs), &mut p), "RegisterTask")?;
-        let task = Com(p);
-        if let Err(r) = verify_detail(dir, name, runner, args, logon) {
-            // 증거 먼저(지우면 사라진다) — 기록 실패는 거부 사유에 덧붙일 뿐 거부 자체를 바꾸지 않는다.
-            let ev = refusal_evidence_path(dir, name);
-            let wrote = crate::update::write_private(&ev, r.evidence(name, crate::update::clock::wall_now()).to_string().as_bytes());
-            let _ = delete(dir, name);
-            let note = match wrote {
-                Ok(()) => format!(" · 증거 {}", ev.display()),
-                Err(e) => format!(" · 증거 기록 실패 {e}"),
-            };
-            return Err(format!("update.win_task_refused: 다시 읽은 정의·SDDL 불일치 [{name}] {}{note}", r.summary()));
-        }
+        // ★codex R2: 옛 작업 지우기·등록·재독·복원 = [`install`](오류 종류 구분 · 유효한 옛 작업 복원 — 가짜 Sched 로 모든 기판에서 시험).
+        install(&mut ComSched { dir, folder: &folder, runner, args, logon }, name, runner, args, &me, logon)?;
         if run_now {
+            let task = get_task(&folder, name)?;
             let mut rt: Raw = std::ptr::null_mut();
             // IRegisteredTask::Run = 12
             let run: extern "system" fn(Raw, VARIANT, *mut Raw) -> HRESULT = unsafe { std::mem::transmute(slot(task.0, 12)) };
@@ -812,16 +963,203 @@ mod tests {
         assert_eq!(p.evidence("recover", 1)["xml"], "<Task/>");
     }
 
-    /// codex R1-04: 핀이 함수만 보지 않게 — 실제 RegisterTask 호출 인자가 `register_flags()` 이고, 등록 전에 옛 작업을 지운다
+    /// codex R1-04·R2: 핀이 함수만 보지 않게 — 실제 RegisterTask 호출 인자가 `register_flags()` 이고, 윈 등록 경로가 [`install`]
+    /// (옛 작업 읽기·오류 종류 구분·지우기·복원)을 지난다 · 지우기 결과를 버리는 `let _ = delete` 가 등록 경로에 없다
     /// (소스 핀 · 윈 전용 com 모듈은 맥에서 실행되지 않으므로 글자로 묶는다).
     #[test]
-    fn com_register_call_uses_register_flags_and_deletes_first() {
+    fn com_register_call_uses_register_flags_and_goes_through_install() {
         let src = include_str!("win_task.rs");
         let com = &src[src.find("mod com {").unwrap()..src.find("mod tests {").unwrap()];
-        let reg = com.find("TASK_CREATE_OR_UPDATE, empty()").map(|_| ()).is_none();
-        assert!(reg, "RegisterTask 에 상수 6 직접 전달 금지");
-        let call = com.find("hr(f(folder.0, bn.0, bx.0, register_flags(), empty(), empty(), TASK_LOGON_INTERACTIVE_TOKEN").expect("RegisterTask 인자 = register_flags()");
-        let del = com.find("let _ = delete(dir, name);\n        let mut p: Raw").expect("등록 직전 옛 작업 지우기");
-        assert!(del < call, "지우기가 등록보다 먼저");
+        assert!(com.find("TASK_CREATE_OR_UPDATE, empty()").is_none(), "RegisterTask 에 상수 6 직접 전달 금지");
+        com.find("hr_e(f(folder.0, bn.0, bx.0, register_flags(), empty(), empty(), TASK_LOGON_INTERACTIVE_TOKEN").expect("RegisterTask 인자 = register_flags()");
+        let rv = &com[com.find("pub fn register_and_verify(").unwrap()..];
+        let inst = rv.find("install(&mut ComSched {").expect("윈 등록 = install 경유");
+        assert!(inst < rv.find("if run_now").unwrap(), "install 뒤에만 Run");
+        assert!(!rv[..inst].contains("register_in(") && !rv[..inst].contains("delete"), "install 앞에서 직접 지우기·등록 금지");
+        assert!(!com.contains("let _ = delete(dir, name)"), "지우기 결과 버리기 금지(R2-01)");
+    }
+
+    // ── codex R2: 등록 흐름(install) — 가짜 스케줄러로 오류 종류·복원 경로 ──
+    const ME: &str = "S-1-5-21-1-2-3-1001";
+    const ACCESS_DENIED: u32 = 0x8007_0005;
+
+    fn err(hr: u32, what: &str) -> SchedErr {
+        SchedErr { hr, what: what.into() }
+    }
+
+    /// 작업 1개 자리의 가짜 폴더. `*_err` = 다음 그 호출을 실패시킨다(한 번) · `mangle` = 다음 등록에 플래그 6 처럼 주체 FR ACE 를 붙인다.
+    #[derive(Default)]
+    struct Fake {
+        task: Option<(String, String)>,
+        read_err: Option<SchedErr>,
+        delete_err: Option<SchedErr>,
+        register_errs: Vec<SchedErr>,
+        mangle: bool,
+        calls: Vec<&'static str>,
+        evidence: usize,
+    }
+
+    impl Sched for Fake {
+        fn read_task(&mut self, _: &str) -> Result<(String, String), SchedErr> {
+            self.calls.push("read");
+            if let Some(e) = self.read_err.take() {
+                return Err(e);
+            }
+            self.task.clone().ok_or_else(|| err(HR_TASK_ABSENT, "GetTask"))
+        }
+        fn folder_sddl(&mut self) -> Result<String, SchedErr> {
+            Ok(sddl_for(ME))
+        }
+        fn delete(&mut self, _: &str) -> Result<(), SchedErr> {
+            self.calls.push("delete");
+            if let Some(e) = self.delete_err.take() {
+                return Err(e);
+            }
+            self.task.take().map(|_| ()).ok_or_else(|| err(HR_TASK_ABSENT, "DeleteTask"))
+        }
+        fn register(&mut self, _: &str, xml: &str, sddl: &str) -> Result<(), SchedErr> {
+            self.calls.push("register");
+            if !self.register_errs.is_empty() {
+                return Err(self.register_errs.remove(0));
+            }
+            let sd = if std::mem::take(&mut self.mangle) { PROBE_TASK_SDDL_F6.to_string() } else { sddl.to_string() };
+            self.task = Some((xml.to_string(), sd));
+            Ok(())
+        }
+        fn verify(&mut self, _: &str) -> Result<(), Refusal> {
+            self.calls.push("verify");
+            let (x, sd) = self.task.clone().ok_or_else(|| Refusal::read(format!("GetTask hr=0x{HR_TASK_ABSENT:08x}")))?;
+            judge(&x, &sd, &sddl_for(ME), Path::new(r"C:\u\runner\cys.exe"), &RECOVER_ARGS, ME, true)
+        }
+        fn keep_evidence(&mut self, _: &str, _: &Refusal) -> String {
+            self.evidence += 1;
+            " · 증거 E".into()
+        }
+    }
+
+    fn runner() -> &'static Path {
+        Path::new(r"C:\u\runner\cys.exe")
+    }
+
+    fn good() -> (String, String) {
+        (task_xml(runner(), &RECOVER_ARGS, ME, true), sddl_for(ME))
+    }
+
+    fn go(f: &mut Fake) -> Result<(), String> {
+        install(f, RECOVER_TASK, runner(), &RECOVER_ARGS, ME, true)
+    }
+
+    #[test]
+    fn install_absent_registers_without_delete_and_valid_prior_is_replaced() {
+        let mut f = Fake::default();
+        assert_eq!(go(&mut f), Ok(()));
+        assert_eq!(f.calls, ["read", "register", "verify"], "없음 = 정상 · 지우기 없음");
+        assert_eq!(f.task, Some(good()));
+        let mut f = Fake { task: Some(good()), ..Default::default() };
+        assert_eq!(go(&mut f), Ok(()));
+        assert_eq!(f.calls, ["read", "delete", "register", "verify"]);
+        // 지우기 = 「없음」(그새 사라짐) 이면 정상으로 이어 간다.
+        let mut f = Fake { task: Some(good()), delete_err: Some(err(HR_TASK_ABSENT, "DeleteTask")), ..Default::default() };
+        assert_eq!(go(&mut f), Ok(()));
+    }
+
+    /// R2-01 · 뮤턴트 WT2(모든 오류 = 없음) 이면 적.
+    #[test]
+    fn install_stops_on_non_absent_read_or_delete_error_and_keeps_old_task() {
+        let mut f = Fake { task: Some(good()), delete_err: Some(err(ACCESS_DENIED, "DeleteTask")), ..Default::default() };
+        let e = go(&mut f).unwrap_err();
+        assert!(e.contains("옛 작업 지우기 실패 — 옛 작업 그대로 · 등록 안 함") && e.contains("DeleteTask hr=0x80070005"), "{e}");
+        assert!(!f.calls.contains(&"register"), "지우기 실패면 등록하지 않는다: {:?}", f.calls);
+        assert_eq!(f.task, Some(good()), "옛 작업 그대로");
+        let mut f = Fake { task: Some(good()), read_err: Some(err(ACCESS_DENIED, "GetTask")), ..Default::default() };
+        let e = go(&mut f).unwrap_err();
+        assert!(e.contains("등록 전 옛 작업 읽기 실패 — 지우지 않고 중단") && e.contains("GetTask hr=0x80070005"), "{e}");
+        assert_eq!(f.calls, ["read"], "읽기 실패면 지우지도 등록하지도 않는다");
+        assert_eq!(f.task, Some(good()));
+        // 오류 종류 판정 = 없음(0x80070002)만.
+        assert!(err(HR_TASK_ABSENT, "x").absent());
+        for hr in [ACCESS_DENIED, 0x8007_0003, 0x8004_1319, 0x8000_4005, 0] {
+            assert!(!err(hr, "x").absent(), "0x{hr:08x}");
+        }
+    }
+
+    /// R2-02 · 뮤턴트 WT3(복원 빼기) 이면 적.
+    #[test]
+    fn install_register_failure_restores_valid_prior() {
+        let mut f = Fake { task: Some(good()), register_errs: vec![err(0x8004_1318, "RegisterTask")], ..Default::default() };
+        let e = go(&mut f).unwrap_err();
+        assert!(e.starts_with("RegisterTask hr=0x80041318") && e.ends_with(" · 옛 작업 복원됨(재독 통과)"), "{e}");
+        assert_eq!(f.calls, ["read", "delete", "register", "register", "verify"]);
+        assert_eq!(f.task, Some(good()), "유효한 복구기가 남는다");
+        assert!(f.verify(RECOVER_TASK).is_ok());
+        // 재독 거부(새 등록에 주체 ACE 덧붙음) 뒤에도 증거 → 지움 → 복원.
+        let mut f = Fake { task: Some(good()), mangle: true, ..Default::default() };
+        let e = go(&mut f).unwrap_err();
+        assert!(e.starts_with("update.win_task_refused: 다시 읽은 정의·SDDL 불일치 [recover] ") && e.contains(" · 증거 E") && e.ends_with(" · 옛 작업 복원됨(재독 통과)"), "{e}");
+        assert_eq!(f.evidence, 1);
+        assert_eq!(f.task, Some(good()));
+    }
+
+    #[test]
+    fn install_does_not_restore_invalid_or_absent_prior_and_reports_restore_failure() {
+        // 무효한 옛 작업(1.1.10 플래그 6 SD) 은 등록 실패에도 되살리지 않는다.
+        let bad = (good().0, PROBE_TASK_SDDL_F6.to_string());
+        let mut f = Fake { task: Some(bad), register_errs: vec![err(0x8004_1318, "RegisterTask")], ..Default::default() };
+        let e = go(&mut f).unwrap_err();
+        assert!(e.ends_with(" · 복원 안 함(옛 작업이 기대와 달랐다)"), "{e}");
+        assert_eq!(f.calls, ["read", "delete", "register"]);
+        assert_eq!(f.task, None);
+        let mut f = Fake { register_errs: vec![err(0x8004_1318, "RegisterTask")], ..Default::default() };
+        assert!(go(&mut f).unwrap_err().ends_with(" · 복원 대상 없음(옛 작업 없음)"));
+        // 복원 등록도 실패하면 그 사실을 적는다.
+        let mut f = Fake { task: Some(good()), register_errs: vec![err(0x8004_1318, "RegisterTask"), err(ACCESS_DENIED, "RegisterTask")], ..Default::default() };
+        let e = go(&mut f).unwrap_err();
+        assert!(e.ends_with(" · 옛 작업 복원 실패: RegisterTask hr=0x80070005"), "{e}");
+        // 거부 작업 지우기 실패 = 복원하지 않는다(이름 자리가 막혀 있다) — 첫 지우기(옛 작업) 는 성공 · 둘째(거부 작업) 는 접근 거부.
+        struct Two(Fake, usize);
+        impl Sched for Two {
+            fn read_task(&mut self, n: &str) -> Result<(String, String), SchedErr> {
+                self.0.read_task(n)
+            }
+            fn folder_sddl(&mut self) -> Result<String, SchedErr> {
+                self.0.folder_sddl()
+            }
+            fn delete(&mut self, n: &str) -> Result<(), SchedErr> {
+                self.1 += 1;
+                if self.1 == 2 {
+                    return Err(err(ACCESS_DENIED, "DeleteTask"));
+                }
+                self.0.delete(n)
+            }
+            fn register(&mut self, n: &str, x: &str, s: &str) -> Result<(), SchedErr> {
+                self.0.register(n, x, s)
+            }
+            fn verify(&mut self, n: &str) -> Result<(), Refusal> {
+                self.0.verify(n)
+            }
+            fn keep_evidence(&mut self, n: &str, r: &Refusal) -> String {
+                self.0.keep_evidence(n, r)
+            }
+        }
+        let mut t = Two(Fake { task: Some(good()), mangle: true, ..Default::default() }, 0);
+        let e = install(&mut t, RECOVER_TASK, runner(), &RECOVER_ARGS, ME, true).unwrap_err();
+        assert!(e.ends_with(" · 거부 작업 지우기 실패 — 복원 안 함: DeleteTask hr=0x80070005"), "{e}");
+        assert_eq!(t.0.calls.iter().filter(|c| **c == "register").count(), 1, "복원 등록 없음");
+    }
+
+    /// 윈 실기: 없는 작업 `GetTask` = 0x80070002(MS 문서 미기재 — [`HR_TASK_ABSENT`] 판정의 근거). 루트 폴더 읽기만 · 아무것도 만들지 않는다.
+    #[cfg(windows)]
+    #[test]
+    fn com_absent_task_hresult_is_file_not_found() {
+        let svc = com::service().unwrap();
+        let root = com::get_folder(&svc, "\\").unwrap();
+        let name = format!("cysr-absent-probe-{}-{}", std::process::id(), crate::update::clock::wall_now());
+        match com::get_task(&root, &name) {
+            Ok(_) => panic!("없는 작업이 읽혔다: {name}"),
+            Err(e) => {
+                assert_eq!(e.hr, HR_TASK_ABSENT, "{e}");
+                assert!(e.absent());
+            }
+        }
     }
 }

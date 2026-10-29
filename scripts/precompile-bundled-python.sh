@@ -62,6 +62,18 @@ PY="$RT/python/bin/python3"
 #   magic number 가 어긋나 동봉 python 이 그 `.pyc` 를 무시하고 새로 쓴다(= 갭 그대로).
 echo "== 동봉 Python 선컴파일 (unchecked-hash · 서명 전) =="
 echo "   대상: $RT   인터프리터: $("$PY" -c 'import sys;print(sys.version.split()[0])')"
+# ── SEAL-3: 동봉 pip 의 기본 설치처를 번들 밖(사용자 site)으로 ──
+# ★실측(2026-10-29 · fleet-anomaly-rca): cys 창 PATH 선두가 이 python/bin 이라 창에서 친
+#   `pip install X`·`pip3 install X` 가 **번들 site-packages 에 파일을 추가**한다 — app-seal(codesign
+#   file added:)과 runtime-seal(매니페스트 추가)이 동시에 깨진다. PYTHONDONTWRITEBYTECODE 도 못 막는다
+#   (pip 는 설치 때 .pyc 를 스스로 컴파일한다 · 같은 실측). 맥 기기 a738765c 의 10-25 이후 두 항목 동시 FAIL 과 같은 지문.
+# 처방 = pip **site 설정**(`<sys.prefix>/pip.conf`)에 `user = true` → 설치가 `~/.local` 로 간다(동봉 python 이
+#   그 사용자 site 를 import 경로에 싣는다 · 실측). site 설정은 sys.prefix 기준이라 venv(자기 prefix)에는 영향 0(실측).
+#   EXTERNALLY-MANAGED(PEP 668) 표식은 쓰지 않는다 — 설치를 막을 뿐 아니라 `--user` 설치와 제거까지 막는다(실측).
+# 잔여(정직): `pip install --no-user` · `--target`/`--prefix` 명시 · `uv pip install --system` 은 여전히 번들에 쓴다.
+printf '# cys: 동봉 python 에 설치하면 앱 봉인이 깨진다 — 기본 설치처를 사용자 site(~/.local)로 돌린다.\n[install]\nuser = true\n' \
+  > "$RT/python/pip.conf"
+
 before_pyc=$({ find "$RT" -name '*.pyc' 2>/dev/null || true; } | wc -l | tr -d ' ')
 before_kb=$(du -sk "$RT" | cut -f1)
 

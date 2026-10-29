@@ -4540,7 +4540,9 @@ class Preflight:
                 warns.append("FFmpeg 미설치(HyperFrames·합성 필요)")
             # (d) 공식 벤더 스킬 — `npx skills add`는 cwd의 .agents/skills/에 프로젝트-로컬 설치라
             # 자동 실행하지 않는다(엉뚱한 cwd 오염 방지). 영상 작업 폴더에서 1회 실행 안내.
-            warns.append("벤더 스킬은 영상 작업 폴더에서 1회: " + " · ".join(VIDEO_VENDOR_COMMANDS))
+            # ★안내문은 WARN 이 아니라 상세 꼬리다(2026-10-29 fleet-anomaly-rca): 이 줄은 조건 없이
+            #   붙어 **해소 수단이 없는 WARN** 이었다 — 실측 15/15 기기 C26 WARN 의 공통 몫.
+            vendor_note = "벤더 스킬은 영상 작업 폴더에서 1회: " + " · ".join(VIDEO_VENDOR_COMMANDS)
             # (e) 런타임 키 — 사람 단계(WARN 비차단)
             miss_keys = [k for k in VIDEO_RUNTIME_KEYS if not os.environ.get(k)]
             if miss_keys:
@@ -4551,6 +4553,8 @@ class Preflight:
             len(VIDEO_SKILLS) - len(missing), linked_profiles, len(profiles) or 0)
         if fixed:
             detail += " · " + "; ".join(fixed)
+        if not self.wire_only:
+            detail += " · " + vendor_note
         if warns:
             self.add(cid, WARN, detail + " · 전제: " + " | ".join(warns))
         else:

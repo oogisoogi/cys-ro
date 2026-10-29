@@ -222,7 +222,27 @@ if [ -n "$DEPT_CTX" ]; then
   fi
 else
   # ---------- L2: cwd 상향탐색 (메인/CEO 노드·회귀 0) ----------
+  # ★ctx-home-ancestor(1.1.11 · master 실측 2026-10-30): 상향탐색은 루트($ROOT·$HOME) **자신**에는 올라가지 않는다.
+  #   `$HOME/_round` 는 cwd 가 $HOME 인 본부 좌석의 기억이다 — 종전엔 자기 `_round` 가 없는 $HOME 아래 모든
+  #   프로젝트 세션(cys 밖 claude 포함)이 그 본문을 「작업기억(L2)」으로 받았다(경고 1줄은 붙어도 내용은 실렸다).
+  #   루트 밖 cwd 는 종전 그대로 · 루트 아래 프로젝트 `_round`(하위 폴더에서의 상향 발견 포함)도 그대로다.
+  #   비교는 키(_ic_pkey)로 한다 — Windows 는 cwd 가 `C:/…`, HOME 이 `/c/…` 라 문자열이 달라 경계가 안 걸렸다.
+  _ic_pkey() {
+    _ic_k="$(printf '%s' "${1:-}" | tr '\\' '/' | sed 's#//*$##')"
+    case "$_ic_k" in
+      /[A-Za-z]|/[A-Za-z]/*) _ic_k="${_ic_k#/}"; _ic_k="${_ic_k%%/*}:${_ic_k#?}" ;;
+    esac
+    case "$_ic_k" in [A-Za-z]:*) _ic_k="$(printf '%s' "$_ic_k" | tr 'A-Z' 'a-z')" ;; esac
+    printf '%s' "$_ic_k"
+  }
+  _IC_TOP_H="$(_ic_pkey "$HOME")"; _IC_TOP_R="$(_ic_pkey "$ROOT")"
   while [ -n "$DIR" ] && [ "$DIR" != "/" ] && [ "$DIR" != "$PREV" ]; do
+    if [ "$DIR" != "$CWD" ]; then
+      _IC_K="$(_ic_pkey "$DIR")"
+      if { [ -n "$_IC_TOP_H" ] && [ "$_IC_K" = "$_IC_TOP_H" ]; } || { [ -n "$_IC_TOP_R" ] && [ "$_IC_K" = "$_IC_TOP_R" ]; }; then
+        break
+      fi
+    fi
     if [ -f "$DIR/_round/SESSION_STATE.md" ]; then STATE="$DIR/_round/SESSION_STATE.md"; STATE_DIR="$DIR"; break; fi
     PREV="$DIR"
     DIR=$(dirname "$DIR")

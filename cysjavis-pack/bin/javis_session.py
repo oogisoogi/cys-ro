@@ -260,10 +260,18 @@ def legacy_candidates(cwd, root=None):
 
     1.1.7 까지 복원 훅이 이 자리를 작업기억으로 주입해 master 가 거기에 썼다. 이제 정본이 아니므로
     `adopt` 가 내용을 정본으로 옮기고 이 파일을 치운다(남아 있는 골격이 검증자를 조용히 오판시킨다).
+
+    ★ctx-home-ancestor(1.1.11): 상향탐색은 루트(root·HOME) **자신**에는 올라가지 않는다 — 셸 쌍둥이
+    (inject-context.sh L2)와 같은 경계. `$HOME/_round` 는 cwd 가 HOME 인 본부 좌석의 기억이라, 다른 프로젝트의
+    master 가 그것을 자기 정본으로 복사하면 남의 기억이 영속된다(2026-10-30 실측).
     """
     out = []
+    key = lambda p: os.path.normcase(os.path.normpath(p))
+    tops = {key(t) for t in (root, os.path.expanduser("~")) if t}
     d, prev = cwd, None
     while d and os.path.isabs(d) and d != prev and os.path.dirname(d) != d:
+        if d != cwd and key(d) in tops:
+            break
         f = os.path.join(d, "_round", "SESSION_STATE.md")
         if os.path.isfile(f):
             out.append(f)

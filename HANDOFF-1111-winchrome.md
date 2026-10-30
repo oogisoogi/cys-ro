@@ -21,7 +21,8 @@
 6. rotate rc·ledger: `~/.cys/computer-control/ledger.jsonl` 의 seat_restart_scheduled → seat_restart_rotate 순서.
 7. 관리자 좌석에서 대기가 뜨는지(`cys spawn-outside-job --probe` rc 0) · 크롬·대기가 cysd Job 밖인지.
 8. 재시작 대기가 CYS_BIN·CLAUDE_CONFIG_DIR 로 턴 종료를 읽는지(busy 로 900초 끝나지 않는지).
-9. CI 로그 `[measure]` 줄: BREAKAWAY_OK 상시 + Git Bash 자식 결과.
+9. R5c: 크롬이 켜졌다 곧 꺼지는 경우 → failed · 다음 호출 60초 안 = 다시 안 켬 · 3회 뒤 「그만두었습니다」 · 창이 반복해서 뜨지 않음. 곧 꺼질 때까지 걸린 시간 기록(안정 창 5초 조정 근거).
+10. CI 로그 `[measure]` 줄: BREAKAWAY_OK 상시 + Git Bash 자식 결과.
 
 ## 공개 노트 문장(윈 · 1안)
 **크롬 연결을 켤 때 크롬이 함께 꺼지던 문제를 고쳤습니다.** 이제 cysr 가 잠깐 다시 시작해도 크롬은 그대로 켜져 있습니다. 크롬 창이 여러 개 열려 있을 때는 탭을 잃지 않도록 cysr 가 크롬을 닫지 않습니다. 그럴 때는 안내에 따라 크롬 오른쪽 위 ⋮ 메뉴의 「종료」로 닫았다가 다시 켜 주세요.

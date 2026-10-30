@@ -1536,7 +1536,11 @@ REOPEN_SAY = {   # ★M4: 크롬을 닫은 뒤 다시 켜기가 끝나지 않았
     "failed": "크롬을 닫은 뒤 다시 켜지 못했습니다 — 크롬을 직접 켜 주시면 바로 연결됩니다(다음에 제가 다시 켜 보겠습니다).",
     "unknown": "크롬을 다시 켰는지 확인하지 못했습니다 — 창이 안 보이면 직접 켜 주세요(다음에 다시 확인하겠습니다).",
     "deferred": "지금 키보드·마우스를 쓰고 계셔서 크롬 다시 켜기는 잠시 미뤘습니다 — 손을 쉬실 때 다시 하겠습니다.",
+    "wait": "조금 전에 크롬을 다시 켜 봤습니다 — 잠시 뒤 다시 확인하겠습니다.",
 }
+REOPEN_STABLE_SEC = 5       # ★R5c: 켠 직후 1회 확인으로는 곧 꺼지는 크롬을 성공으로 쳤다 — 이만큼 계속 살아 있어야 ok
+REOPEN_MAX_TRIES = 3        # 다시 켜기 빚의 상한 — 넘으면 포기하고 안내(「크롬 창이 반복해서 뜬다」 차단 · 타이머 없음 · chrome-enable 호출 때만 갚는다)
+REOPEN_MIN_GAP_SEC = 60     # 같은 빚을 다시 켜 보는 최소 간격(턴마다 불려도 창이 연달아 뜨지 않게)
 SEAT_IDLE_SEC = 20          # 좌석 출력이 이만큼 조용하면 턴이 끝난 것으로 본다(두 번 연속)
 SEAT_WAIT_MAX_SEC = 900     # 그때까지 안 끝나면 재시작하지 않고 빚으로 남긴다(다음 chrome-enable 이 다시 예약)
 
@@ -1751,11 +1755,28 @@ def cmd_chrome_enable(a):
     owed = bool(st.get("pending_chrome_restart"))
     if st.get("pending_chrome_reopen") and not created:
         # ★M4: 앞 호출이 닫은 크롬을 다시 켜지 못했다 — 또 닫지 않고 켜기만 갚는다(켜져 있으면 닫힌 뒤 켜진 크롬이라 연결 파일을 이미 읽었다)
-        ro = "ok" if was_running else "unknown" if was_running is None else (
-            reopen_chrome(plat) if wait_idle(plat, a.wait) else "deferred")
+        tries = st.get("chrome_reopen_tries", 0)
+        gap = _now() - st.get("chrome_reopen_at", 0)
+        if was_running:
+            ro = "ok"
+        elif was_running is None:
+            ro = "unknown"
+        elif tries >= REOPEN_MAX_TRIES:
+            ro = "gave_up"
+        elif gap < REOPEN_MIN_GAP_SEC:
+            ro = "wait"
+        elif wait_idle(plat, a.wait):
+            ro = reopen_chrome(plat)
+            st["chrome_reopen_tries"] = tries + 1
+            st["chrome_reopen_at"] = _now()
+        else:
+            ro = "deferred"
         if ro == "ok":
             done.append("chrome_restart")
             said.append("크롬이 다시 켜졌습니다.")
+        elif ro == "gave_up":
+            _ledger({"event": "chrome_reopen_gave_up", "tries": tries})
+            said.append("크롬을 %d번 다시 켜 봤지만 곧 꺼져서 그만두었습니다 — 크롬을 직접 켜 주시면 바로 연결됩니다." % tries)
         else:
             pending.append("chrome_restart")
             said.append(REOPEN_SAY[ro])
@@ -1777,6 +1798,8 @@ def cmd_chrome_enable(a):
         elif r.startswith("not_reopened:"):
             pending.append("chrome_restart")
             st["pending_chrome_reopen"] = True
+            st["chrome_reopen_tries"] = 1
+            st["chrome_reopen_at"] = _now()
             said.append(REOPEN_SAY[r.split(":", 1)[1]])
         else:
             done.append("chrome_restart")
@@ -1793,8 +1816,8 @@ def cmd_chrome_enable(a):
         if want_seat:
             st["pending_seat_restart"] = True       # 크롬을 다시 켠 뒤에 좌석을 재시작한다(순서 보존)
     else:
-        st.pop("pending_chrome_restart", None)
-        st.pop("pending_chrome_reopen", None)
+        for k in ("pending_chrome_restart", "pending_chrome_reopen", "chrome_reopen_tries", "chrome_reopen_at"):
+            st.pop(k, None)
         sched = st.get("seat_restart_scheduled_at")
         if want_seat and isinstance(sched, (int, float)) and _now() - sched < SEAT_WAIT_MAX_SEC + 120:
             said.append("cysr 재시작은 이미 예약돼 있습니다(이 대화가 끝나면 합니다).")
@@ -1843,6 +1866,11 @@ def reopen_chrome(plat):
     while running is False and t < CHROME_QUIT_WAIT_SEC:
         _sleep(1)
         t += 1
+        running = chrome_running(plat)
+    for _ in range(REOPEN_STABLE_SEC):
+        if not running:
+            break
+        _sleep(1)
         running = chrome_running(plat)
     if running:
         return "ok"

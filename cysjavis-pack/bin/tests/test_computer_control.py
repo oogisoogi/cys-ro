@@ -1143,6 +1143,12 @@ class TestChromeEnable(Base):
         n = len(self.acts())
         self.m._seq_chrome_running = 0
         self.set_probes(chrome_running=[False, True], idle=60, act={})
+        sp = os.path.join(self.state, "chrome-enable.json")
+        st = jload(sp)
+        self.assertEqual(st["chrome_reopen_tries"], 1)
+        st["chrome_reopen_at"] = 0                                 # 최소 간격이 지난 뒤
+        with open(sp, "w", encoding="utf-8") as f:
+            json.dump(st, f)
         rc, d, _ = self.run_cli("chrome-enable")
         k = [a["kind"] for a in self.acts()[n:]]
         self.assertIn("open", k)
@@ -1469,6 +1475,43 @@ class TestChromeEnable(Base):
         self.win_restart_setup(chrome_running=[True] * 60, windows=[1, 1, 1])
         rc, d, _ = self.run_cli("chrome-enable")
         self.assertIn("그대로 두었습니다", d["say"])
+
+    def test_chrome_that_dies_right_after_reopen_is_failed(self):      # R5c
+        self.win_restart_setup(chrome_running=[True, False, True, True, False], windows=1)
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertIn("chrome_restart", d["pending"])
+        self.assertNotIn("chrome_restart", d["done"])
+        with open(os.path.join(self.state, "ledger.jsonl"), encoding="utf-8") as f:
+            self.assertIn("chrome_reopen_failed", f.read())
+        self.assertTrue(self.m._load_chrome_state().get("pending_chrome_reopen"))
+
+    def test_reopen_stable_window_accepts_only_full_span(self):
+        self.set_probes(chrome_running=[True] * self.m.REOPEN_STABLE_SEC + [False])
+        self.assertEqual(self.m.reopen_chrome("win"), "failed")
+        self.m._seq_chrome_running = 0
+        self.set_probes(chrome_running=[True] * (self.m.REOPEN_STABLE_SEC + 1) + [False])
+        self.assertEqual(self.m.reopen_chrome("win"), "ok")
+
+    def reopen_debt(self, **st):
+        os.makedirs(self.state, exist_ok=True)
+        with open(os.path.join(self.state, self.m.CHROME_STATE), "w", encoding="utf-8") as f:
+            json.dump(dict({"pending_chrome_reopen": True, "pending_chrome_restart": True}, **st), f)
+        self.win_restart_setup(chrome_running=[False], windows=1)
+        self.m._nmh_ok = lambda plat, ud: True
+
+    def test_reopen_debt_keeps_minimum_gap(self):
+        self.reopen_debt(chrome_reopen_tries=1, chrome_reopen_at=self.m._now())
+        rc, d, _ = self.run_cli("chrome-enable", "--seat-restart", "no")
+        self.assertNotIn("open", self.kinds())
+        self.assertIn("chrome_restart", d["pending"])
+
+    def test_reopen_debt_stops_at_cap(self):
+        self.reopen_debt(chrome_reopen_tries=self.m.REOPEN_MAX_TRIES, chrome_reopen_at=0)
+        rc, d, _ = self.run_cli("chrome-enable", "--seat-restart", "no")
+        self.assertNotIn("open", self.kinds())
+        self.assertNotIn("chrome_restart", d["pending"])
+        self.assertIn("그만두었습니다", d["say"])
+        self.assertFalse(self.m._load_chrome_state().get("pending_chrome_reopen"))
 
     def test_win_window_filter(self):
         ok = dict(cls="Chrome_WidgetWin_1", visible=True, owned=False, titled=True, tool=False, exe="chrome.exe")

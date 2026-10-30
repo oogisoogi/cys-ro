@@ -183,10 +183,10 @@ pub(crate) mod winjob {
         }
     }
 
-    /// 이탈 스폰이 될 수 있는가(스폰 없음).
+    /// 이탈 스폰이 될 수 있는가(스폰 없음). ★비트는 건드리지 않는다 — 켜는 순간마다 좌석 msys 자식이 빠져나갈 틈이 생긴다.
     pub fn probe_outside() -> Result<(), String> {
         if self_bound() {
-            cys::job_exit::probe(job()? as usize)
+            job().map(|_| ())
         } else {
             Ok(())
         }

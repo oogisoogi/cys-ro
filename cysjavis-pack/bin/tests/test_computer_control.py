@@ -1450,15 +1450,23 @@ class TestChromeEnable(Base):
         self.assertEqual([o["detach"] for o in opens], [False, True])
         with open(os.path.join(self.state, "ledger.jsonl"), encoding="utf-8") as f:
             self.assertIn("chrome_open_in_job", f.read())
+        self.assertNotIn("seat_restart", self.kinds())       # Job 안 크롬을 자동 재시작으로 죽이지 않는다
+        self.assertIn("↻", d["say"])
+
+    def test_win_window_opened_during_notice_is_not_closed(self):
+        self.win_restart_setup(chrome_running=[True], windows=[1, 2])
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertNotIn("quit", self.kinds())
+        self.assertIn("크롬 창이 2개 열려", d["say"])
 
     def test_win_background_chrome_is_described_truthfully(self):
-        self.win_restart_setup(chrome_running=[True] * 60, windows=[1, 0])
+        self.win_restart_setup(chrome_running=[True] * 60, windows=[1, 1, 0])
         rc, d, _ = self.run_cli("chrome-enable")
         self.assertIn("크롬 창은 닫혔지만", d["say"])
         self.assertNotIn("그대로 두었습니다", d["say"])
 
     def test_win_still_open_chrome_keeps_left_alone_sentence(self):
-        self.win_restart_setup(chrome_running=[True] * 60, windows=[1, 1])
+        self.win_restart_setup(chrome_running=[True] * 60, windows=[1, 1, 1])
         rc, d, _ = self.run_cli("chrome-enable")
         self.assertIn("그대로 두었습니다", d["say"])
 

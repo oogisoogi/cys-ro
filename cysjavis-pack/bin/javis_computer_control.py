@@ -1485,6 +1485,9 @@ def quit_chrome(plat):
                          "Get-Process chrome -ErrorAction SilentlyContinue | ForEach-Object { [void]$_.CloseMainWindow() }"])
 
 
+CHROME_IN_JOB = []     # 이번 실행에서 크롬을 좌석(Job 안)에서 켰다 — 자동 재시작이 그 크롬을 닫는다
+
+
 def _outside_job(act, kind, argv, env=None):
     """윈: 이 스폰만 데몬 Job 밖에서(cys spawn-outside-job) — 좌석 재시작이 데몬을 내릴 때 Job 이 닫혀도 산다. 실패 = None.
     좌석에서 직접 띄우면 Job 안이라 함께 죽는다(R5 A). 자식은 데몬이 낳으므로 필요한 환경변수는 넘겨 준다."""
@@ -1506,7 +1509,8 @@ def open_chrome(plat):
         return _act("open", ["/usr/bin/open", "-a", "Google Chrome", "--args", "--restore-last-session"])
     argv = [_chrome_exe(), "--restore-last-session"]
     r = _outside_job("open", "chrome", argv)
-    if r is None:                       # 재시작 때 함께 닫힐 수 있어도 닫아 둔 크롬은 켜 둔다
+    if r is None:                       # 재시작 때 함께 닫힐 수 있어도 닫아 둔 크롬은 켜 둔다 — 대신 자동 재시작을 하지 않는다
+        CHROME_IN_JOB.append(True)
         _ledger({"event": "chrome_open_in_job"})
         r = _act("open", argv, detach=True)
     return r
@@ -1794,6 +1798,10 @@ def cmd_chrome_enable(a):
         sched = st.get("seat_restart_scheduled_at")
         if want_seat and isinstance(sched, (int, float)) and _now() - sched < SEAT_WAIT_MAX_SEC + 120:
             said.append("cysr 재시작은 이미 예약돼 있습니다(이 대화가 끝나면 합니다).")
+        elif want_seat and CHROME_IN_JOB:
+            st["pending_seat_restart"] = True
+            said.append("다시 켠 크롬이 cysr 재시작 때 함께 닫힐 수 있어 재시작은 하지 않았습니다. 크롬을 ⋮ 메뉴의 「종료」로 닫았다가 직접 켠 뒤 "
+                        "위쪽 ↻ 재시작을 눌러 주세요.")
         elif want_seat:
             # ★codex R2: 빚은 예약 성공이 아니라 재시작 성공(waiter)에서 지운다 — 예약 실패·rotate 실패면 다음 호출이 다시
             st["pending_seat_restart"] = True
@@ -1874,6 +1882,11 @@ def restart_chrome(plat, wait):
     if idle is None or idle < IDLE_GATE_SEC:
         _ledger({"event": "chrome_restart_deferred", "after_notice": True})
         return "deferred"
+    if plat == "win":                # 알림 3초 사이에 창이 늘었으면 닫지 않는다(입력 없이 열린 창은 유휴 관문에 안 잡힌다)
+        now = chrome_windows(plat)[0]
+        if now != 1:
+            _ledger({"event": "chrome_restart_manual", "windows": now})
+            return "many_windows:%d" % now if now else "unknown_windows"
     _ledger({"event": "chrome_quit", "before": list(before)})
     quit_chrome(plat)
     t = 0

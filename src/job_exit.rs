@@ -39,7 +39,11 @@ pub fn validate(kind: &str, argv: &[String], env: &[(String, String)]) -> Result
             }
         }
         "seat_restart" => {
-            if argv.len() < 3 || file_name_lower(&argv[1]) != "javis_computer_control.py" || argv[2] != "seat-restart-wait" {
+            if argv.len() < 3
+                || !file_name_lower(&argv[0]).starts_with("python")
+                || file_name_lower(&argv[1]) != "javis_computer_control.py"
+                || argv[2] != "seat-restart-wait"
+            {
                 return Err("seat_restart: 인자는 <python> javis_computer_control.py seat-restart-wait … 뿐이다".into());
             }
         }
@@ -97,16 +101,9 @@ mod win {
         let _close = Close(job);
         cmd.spawn().map_err(|e| format!("스폰 실패: {e}"))
     }
-
-    /// 허용을 켰다 끌 수 있는가(스폰 없음) — 크롬을 닫기 **전에** 다시 켤 길이 있는지 본다.
-    pub fn probe(job: usize) -> Result<(), String> {
-        let _one = WINDOW.lock().unwrap_or_else(|p| p.into_inner());
-        set_breakaway(job, true).map_err(|e| format!("Job 이탈 허용 실패(GetLastError={e})"))?;
-        set_breakaway(job, false).map_err(|e| format!("Job 이탈 허용 끄기 실패(GetLastError={e})"))
-    }
 }
 #[cfg(windows)]
-pub use win::{probe, set_breakaway, spawn_breaking_away};
+pub use win::{set_breakaway, spawn_breaking_away};
 
 #[cfg(test)]
 mod tests {
@@ -133,6 +130,7 @@ mod tests {
         let wait = ["python", r"C:\p\bin\javis_computer_control.py", "seat-restart-wait", "--min-delay", "30"];
         assert!(validate("seat_restart", &s(&wait), &[]).is_ok());
         assert!(validate("seat_restart", &s(&["python", "evil.py", "seat-restart-wait"]), &[]).is_err());
+        assert!(validate("seat_restart", &s(&["cmd.exe", wait[1], "seat-restart-wait"]), &[]).is_err());
         assert!(validate("seat_restart", &s(&["python", wait[1], "chrome-enable"]), &[]).is_err());
         assert!(validate("shell", &s(&["cmd.exe"]), &[]).is_err());
     }

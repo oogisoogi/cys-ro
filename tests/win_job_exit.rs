@@ -112,9 +112,25 @@ fn parent_helper() {
     // 허용 구간이 끝났으면 같은 flag 의 스폰은 다시 거부돼야 한다.
     let mut late = sleeper();
     late.spawn_policy(cys::ChildLifetime::Survivor);
-    let denied = matches!(late.spawn(), Err(e) if e.raw_os_error() == Some(5));
+    let denied = match late.spawn() {
+        Err(e) => e.raw_os_error() == Some(5),
+        Ok(c) => {
+            kill(c.id());
+            false
+        }
+    };
     publish(&out, format!("{} {} {}", bound.id(), escaped.id(), denied));
     std::thread::sleep(Duration::from_secs(300));
+}
+
+/// 단언·시한 실패에도 부모·자식을 남기지 않는다.
+struct Reap(Vec<u32>);
+impl Drop for Reap {
+    fn drop(&mut self) {
+        for p in &self.0 {
+            kill(*p);
+        }
+    }
 }
 
 fn start_parent(mode: &str, out: &Path) -> std::process::Child {
@@ -149,16 +165,16 @@ fn scratch(name: &str) -> PathBuf {
 fn run_case(mode: &str) {
     let out = scratch(mode);
     let mut parent = start_parent(mode, &out);
+    let mut reap = Reap(vec![parent.id()]);
     let s = read_out(&out);
     let v: Vec<&str> = s.split_whitespace().collect();
     let (bound, escaped): (u32, u32) = (v[0].parse().unwrap(), v[1].parse().unwrap());
+    reap.0.extend([bound, escaped]);
     assert!(alive(bound) && alive(escaped), "부모를 죽이기 전에는 둘 다 살아 있어야 한다");
     kill(parent.id());
     let _ = parent.wait();
     let bound_died = wait_dead(bound, Duration::from_secs(10));
     let escaped_alive = alive(escaped);
-    kill(bound);
-    kill(escaped);
     assert!(bound_died, "[{mode}] 대조군: 이탈하지 않은 자식은 Job 과 함께 죽어야 한다(결박 유지)");
     assert!(escaped_alive, "[{mode}] 이탈 스폰 자식은 부모가 죽어도 살아야 한다(R5 A)");
     assert_eq!(v[2], "true", "[{mode}] 허용 구간 밖의 이탈은 다시 거부돼야 한다");
@@ -184,11 +200,12 @@ fn msys_child_stays_bound_when_breakaway_is_closed() {
     }
     let out = scratch("msys-closed");
     let mut parent = start_parent("msys-closed", &out);
+    let mut reap = Reap(vec![parent.id()]);
     let pid: u32 = read_out(&out).trim().parse().unwrap();
+    reap.0.push(pid);
     kill(parent.id());
     let _ = parent.wait();
     let died = wait_dead(pid, Duration::from_secs(10));
-    kill(pid);
     assert!(died, "이탈 비트가 꺼져 있으면 msys 자식도 Job 과 함께 죽어야 한다");
 }
 
@@ -201,11 +218,12 @@ fn measure_msys_child_with_breakaway_always_open() {
     }
     let out = scratch("msys-open");
     let mut parent = start_parent("msys-open", &out);
+    let mut reap = Reap(vec![parent.id()]);
     let pid: u32 = read_out(&out).trim().parse().unwrap();
+    reap.0.push(pid);
     kill(parent.id());
     let _ = parent.wait();
     let died = wait_dead(pid, Duration::from_secs(10));
-    kill(pid);
     eprintln!("[measure] BREAKAWAY_OK 상시 + Git Bash 자식: {}", if died { "함께 죽음" } else { "Job 이탈(생존)" });
 }
 

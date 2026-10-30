@@ -189,6 +189,8 @@ pub struct RealOps {
     /// S0 후보(행 포함) — 러너 시작 전에 호출자가 채운다(복구기 = `candidate.json`).
     pub cand: Candidate,
     pub old_version: String,
+    /// S4 시작 때의 좌석(저장 지시 대상) — S3 가 그 뒤 생긴 좌석을 가른다.
+    q0: Option<super::quiesce::Token>,
     q1: Option<super::quiesce::Token>,
     b0: Option<Baseline>,
     /// ★2판 C9: 마지막 `rotate` 자식의 실제 종료 코드(V3 restore_rc — 상수 0 대신).
@@ -224,6 +226,7 @@ impl RealOps {
             token,
             cand,
             old_version,
+            q0: None,
             q1: None,
             b0: None,
             last_rotate_rc: None,
@@ -641,11 +644,18 @@ impl Ops for RealOps {
         let v = (self.env.rpc)("update.quiesce", json!({"txn": self.token, "ttl_secs": super::quiesce::DEFAULT_TTL_SECS}))
             .map_err(|e| fail(ErrCode::RotateFailed, "S3", e))?;
         let t = serde_json::from_value::<super::quiesce::Token>(v).map_err(|e| fail(ErrCode::RotateFailed, "S3", e.to_string()))?;
+        // S7 은 `--skip-drain` 이다 — S4 뒤에 생긴 좌석은 저장 지시를 받은 적이 없으므로 이번 갱신을 접는다.
+        let q0 = self.q0.as_ref().ok_or_else(|| fail(ErrCode::RotateFailed, "S3", "S4 좌석 기록 없음"))?;
+        let late = super::quiesce::new_seats(q0, &t);
+        if !late.is_empty() {
+            return Err(fail(ErrCode::RotateFailed, "S3", format!("저장 뒤 새 좌석 {late:?}")));
+        }
         self.q1 = Some(self.settled_token(t)?);
         Ok(())
     }
 
     fn drain(&mut self, _j: &Journal) -> Step {
+        self.q0 = Some(self.token_now()?);
         let o = self.child(&self.env.old_cys, &["drain", "--verify", "--timeout", "60"])?;
         let v: Value = serde_json::from_slice(&o.stdout).map_err(|_| fail(ErrCode::RotateFailed, "S4", "drain 결과 없음"))?;
         if v["total"].as_u64() == Some(0) || v["all_saved"].as_bool() == Some(true) {
@@ -1233,7 +1243,7 @@ impl Ops for RealOps {
         let rid = format!("{}:{}", j.map(|j| j.txn_id.as_str()).unwrap_or("-"), kname);
         let stamp = super::clock::now_stamp();
         let _ = super::notify::update_state(&self.env.update_dir, |m| super::notify::apply(m, &o, &rid, now, Some(&stamp)));
-        if kind == Kind::Ok && self.last_rotate_rc == Some(verify::ROTATE_RC_RESTORE_PARTIAL) {
+        if self.last_rotate_rc == Some(verify::ROTATE_RC_RESTORE_PARTIAL) {
             let (rel, rc) = (o.release_seq, verify::ROTATE_RC_RESTORE_PARTIAL);
             let _ = super::notify::update_state(&self.env.update_dir, |m| {
                 m.insert("restore_partial".into(), json!({"release_seq": rel, "rc": rc, "at": now}));

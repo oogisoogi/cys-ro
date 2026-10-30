@@ -98,6 +98,11 @@ pub fn output_settled(a: &Token, b: &Token) -> bool {
     quiet(a, b) && b.seats.iter().all(|s| s.working != Some(true))
 }
 
+/// `now` 에 있고 `before` 에 없는 좌석(순수) — 저장 지시를 받지 못한 좌석.
+pub fn new_seats(before: &Token, now: &Token) -> Vec<u64> {
+    now.seats.iter().map(|s| s.surface_id).filter(|id| !before.seats.iter().any(|b| b.surface_id == *id)).collect()
+}
+
 /// 기준 토큰의 출력 세대만 `now` 로 옮긴다(순수 · 설계 §3-3 「drain 이 쓴 출력은 제외」) — 사람 입력·큐·미제출·보류 seq 칸은 정비 모드에 든
 /// 시점 값을 지켜, 정착을 기다린 동안의 입력도 S5 가 잡는다. 없어진 좌석은 그대로 두어 「좌석 집합 바뀜」 으로 남긴다.
 pub fn rebase_output(base: &mut Token, now: &Token) {
@@ -270,6 +275,10 @@ mod tests {
         let w = recheck_diff(&base, &later);
         assert!(!w.iter().any(|x| x.contains("새 출력")), "{w:?}");
         assert!(w.iter().any(|x| x.contains("사람 입력")) && w.iter().any(|x| x.contains("큐 증가")), "입력 증거 유지: {w:?}");
+        assert!(new_seats(&later, &first).is_empty());
+        let mut grown = first.clone();
+        grown.seats.push(seat(3));
+        assert_eq!(new_seats(&first, &grown), vec![3], "저장 뒤 새 좌석");
         let mut gone = later.clone();
         gone.seats.pop();
         assert!(!output_settled(&later, &gone), "좌석 집합 변화 = 미정착");

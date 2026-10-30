@@ -79,7 +79,7 @@ use State::*;
 
 impl State {
     pub const ALL: [State; 25] = [
-        Locked, Fetched, Quiesced, Drained, Rechecked, Baselined, Confirmed, Stopped, Snapshotted, CommitCheck, Swapped,
+        Locked, Fetched, Drained, Quiesced, Rechecked, Baselined, Confirmed, Stopped, Snapshotted, CommitCheck, Swapped,
         PayloadOk, Started, Committed, RbPrepared, RbSwapped, RbRestored, RbVerified, RbDone, RbFailed, PackApply,
         PackRollback, Done, Deferred, PackDone,
     ];
@@ -115,9 +115,8 @@ pub fn can_transition(from: Option<State>, to: State) -> bool {
     }
     match (from, to) {
         // 앞으로(본체)
-        // ★1.1.11: S4 → S3 → S5 가 러너의 순서다 · 옛 순서 칸은 옛 판 러너가 남긴 저널을 읽는 쪽 호환으로 둔다.
-        (Locked, Fetched) | (Fetched, Drained) | (Drained, Quiesced) | (Quiesced, Rechecked)
-        | (Fetched, Quiesced) | (Quiesced, Drained) | (Drained, Rechecked) | (Rechecked, Baselined)
+        // ★1.1.11: S4 → S3 → S5 가 러너의 순서다(이름의 번호는 호환용 · 옛 러너가 남긴 저널은 어느 쪽이든 보류 정리로 간다).
+        (Locked, Fetched) | (Fetched, Drained) | (Drained, Quiesced) | (Quiesced, Rechecked) | (Rechecked, Baselined)
         | (Baselined, Confirmed) | (Confirmed, Stopped) | (Stopped, Snapshotted) | (Snapshotted, CommitCheck)
         | (CommitCheck, Swapped) | (Swapped, PayloadOk) | (Swapped, Started) | (PayloadOk, Started)
         | (Started, Committed) | (Committed, Done) => true,
@@ -528,7 +527,7 @@ mod tests {
     /// 전이표: 앞으로 가는 길 · RB 하위 상태 · 팩 · 보류 · 금지 전이.
     #[test]
     fn transition_table() {
-        let mac = [Locked, Fetched, Quiesced, Drained, Rechecked, Baselined, Confirmed, Stopped, Snapshotted, CommitCheck, Swapped, Started, Committed, Done];
+        let mac = [Locked, Fetched, Drained, Quiesced, Rechecked, Baselined, Confirmed, Stopped, Snapshotted, CommitCheck, Swapped, Started, Committed, Done];
         let win = [Swapped, PayloadOk, Started];
         for w in mac.windows(2).chain(win.windows(2)) {
             assert!(can_transition(Some(w[0]), w[1]), "{:?}→{:?}", w[0], w[1]);
@@ -572,16 +571,16 @@ mod tests {
         let a: Journal = serde_json::from_slice(&std::fs::read(d.join(JOURNAL_FILE)).unwrap()).unwrap();
         let b: Journal = serde_json::from_slice(&std::fs::read(d.join(JOURNAL_PREV_FILE)).unwrap()).unwrap();
         assert_eq!((a.generation, a.state, b.generation, b.state), (1, Locked, 2, Fetched), "최신본 슬롯을 덮지 않고 다른 슬롯에");
-        advance(&d, T, 1, Quiesced, |_| {}).unwrap();
+        advance(&d, T, 1, Drained, |_| {}).unwrap();
         let a: Journal = serde_json::from_slice(&std::fs::read(d.join(JOURNAL_FILE)).unwrap()).unwrap();
-        assert_eq!((a.generation, a.state), (3, Quiesced), "다시 반대 슬롯");
+        assert_eq!((a.generation, a.state), (3, Drained), "다시 반대 슬롯");
         match read(&d) {
-            ReadOutcome::Ok(j) => assert_eq!((j.state, j.release_seq, j.generation), (Quiesced, 9, 3)),
+            ReadOutcome::Ok(j) => assert_eq!((j.state, j.release_seq, j.generation), (Drained, 9, 3)),
             o => panic!("{o:?}"),
         }
         // 옛 epoch · 다른 txn = 거부
-        assert_eq!(advance(&d, T, 0, Drained, |_| {}).unwrap_err(), AdvanceErr::Fenced);
-        assert_eq!(advance(&d, &"f".repeat(32), 1, Drained, |_| {}).unwrap_err(), AdvanceErr::Fenced);
+        assert_eq!(advance(&d, T, 0, Quiesced, |_| {}).unwrap_err(), AdvanceErr::Fenced);
+        assert_eq!(advance(&d, &"f".repeat(32), 1, Quiesced, |_| {}).unwrap_err(), AdvanceErr::Fenced);
         // 금지 전이
         assert!(matches!(advance(&d, T, 1, Swapped, |_| {}).unwrap_err(), AdvanceErr::Illegal { .. }));
         // 보류 정리 → 새 트랜잭션(다른 토큰 허용 · generation 은 계속 오른다)
@@ -618,7 +617,7 @@ mod tests {
     #[test]
     fn b7_post_side_effect_slot_corruption_never_runs_prev() {
         let d = tmp("b7");
-        for st in [Locked, Fetched, Quiesced, Drained, Rechecked, Baselined, Confirmed, Stopped, Snapshotted, CommitCheck, Swapped] {
+        for st in [Locked, Fetched, Drained, Quiesced, Rechecked, Baselined, Confirmed, Stopped, Snapshotted, CommitCheck, Swapped] {
             advance(&d, T, 1, st, |_| {}).unwrap();
         }
         // 최신(S9 Swapped)이 든 슬롯을 찾아 손상
@@ -640,7 +639,7 @@ mod tests {
         let d = tmp("b7s");
         advance(&d, T, 1, Locked, |_| {}).unwrap();
         assert!(matches!(read(&d), ReadOutcome::Ok(_)), "generation 1 단일 슬롯 = 정상");
-        for st in [Fetched, Quiesced, Drained, Rechecked, Baselined, Confirmed, Stopped, Snapshotted, CommitCheck, Swapped] {
+        for st in [Fetched, Drained, Quiesced, Rechecked, Baselined, Confirmed, Stopped, Snapshotted, CommitCheck, Swapped] {
             advance(&d, T, 1, st, |_| {}).unwrap();
         }
         let latest_slot = [JOURNAL_FILE, JOURNAL_PREV_FILE]
@@ -659,7 +658,7 @@ mod tests {
     fn recovery_table() {
         let j = |s| ReadOutcome::Ok(Journal { state: s, ..Journal::new(T, 1) });
         assert_eq!(recovery_for(&ReadOutcome::Absent, Os::Win), Recovery::Nothing);
-        for s in [Locked, Fetched, Quiesced, Drained, Rechecked, Baselined, Confirmed] {
+        for s in [Locked, Fetched, Drained, Quiesced, Rechecked, Baselined, Confirmed] {
             assert_eq!(recovery_for(&j(s), Os::Mac), Recovery::ReleaseAndDefer, "{s:?}");
         }
         for s in [Stopped, Snapshotted, CommitCheck] {

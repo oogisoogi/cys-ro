@@ -1596,7 +1596,7 @@ pub(crate) mod tests {
     fn takeover_writes_lineage_before_journal_token_and_stops_on_failure() {
         let d = tmp("takeorder");
         attempt_begin(&d, T).unwrap();
-        for st in [State::Locked, State::Fetched, State::Quiesced, State::Drained, State::Rechecked, State::Baselined, State::Confirmed, State::Stopped] {
+        for st in [State::Locked, State::Fetched, State::Drained, State::Quiesced, State::Rechecked, State::Baselined, State::Confirmed, State::Stopped] {
             journal::advance(&d, T, 1, st, |_| {}).unwrap();
         }
         std::fs::remove_file(d.join(ATTEMPT_FILE)).unwrap();
@@ -1635,7 +1635,7 @@ pub(crate) mod tests {
         journal::advance(&d, T, 1, State::Locked, |_| {}).unwrap();
         journal::advance(&d, T, 1, State::Fetched, |_| {}).unwrap();
         assert!(boot_blocked(&d).is_none(), "S2 = 정비 모드 TTL 구간(막지 않음)");
-        for st in [State::Quiesced, State::Drained, State::Rechecked, State::Baselined, State::Confirmed, State::Stopped] {
+        for st in [State::Drained, State::Quiesced, State::Rechecked, State::Baselined, State::Confirmed, State::Stopped] {
             journal::advance(&d, T, 1, st, |_| {}).unwrap();
         }
         assert!(boot_blocked(&d).unwrap().starts_with("recover_pending"), "잠금 없음(죽은 러너) = 막음");

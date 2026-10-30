@@ -2,7 +2,8 @@
 //! 보류)가 끝난 갱신을 되돌리지 않는다.
 //!
 //! 실물: 격리 HOME 의 cysd · `cys drain --verify` · 실 `Runner` · `RealOps` 의 quiesce/drain/recheck/baseline/start_new/post_verify.
-//! 대역: 내려받기·정지·스냅샷·교환(이 기기의 앱을 바꾸지 않는다) · 새 번들 = 애드혹 서명한 대본(`rotate` 만 지정 rc · 나머지는 실 `cys` 로 넘김).
+//! 대역: 내려받기·정지·스냅샷·교환·S11 commit(이 기기의 앱을 바꾸지 않는다) · 새 번들 = 애드혹 서명한 대본(`rotate` 만 지정 rc · 나머지는 실 `cys` 로 넘김).
+//! ∴ rotate 의 실제 복원·`.pending-restore`·S11 수용 기록은 이 시험이 증명하지 않는다 · 데몬이 그대로라 정비 모드 해제도 시험이 대신한다.
 #![cfg(target_os = "macos")]
 
 use cys::update::errors::ErrCode;
@@ -198,7 +199,7 @@ fn real_ops(f: &Fixture, token: &str, app: PathBuf, cdhash: &str) -> RealOps {
 }
 
 /// 실행층 혼합 — S3~S5b·S10·S11 = 실물 · 교체 쪽 = 대역(기록만).
-struct Hybrid {
+struct Hybrid<'a> {
     real: RealOps,
     sock: PathBuf,
     token: String,
@@ -207,9 +208,11 @@ struct Hybrid {
     send_after_quiesce: Option<u64>,
     held_ack: Option<Value>,
     swapped: bool,
+    /// S4 직후 · S3 전에 할 일(저장 지시를 못 받는 새 좌석 만들기).
+    after_drain: Option<Box<dyn FnMut() + 'a>>,
 }
 
-impl Ops for Hybrid {
+impl Ops for Hybrid<'_> {
     fn os(&self) -> Os {
         Os::Mac
     }
@@ -228,7 +231,11 @@ impl Ops for Hybrid {
     }
     fn drain(&mut self, j: &Journal) -> Step {
         self.log.push("drain".into());
-        self.real.drain(j)
+        self.real.drain(j)?;
+        if let Some(f) = &mut self.after_drain {
+            f();
+        }
+        Ok(())
     }
     fn recheck(&mut self, j: &Journal) -> Step {
         self.log.push("recheck".into());
@@ -331,24 +338,25 @@ fn seat_count(got: &Path, needle: &str) -> usize {
     std::fs::read_to_string(got).unwrap_or_default().matches(needle).count()
 }
 
-fn run_update(f: &Fixture, rotate_rc: i32, send_after_quiesce: Option<u64>) -> (Outcome, Vec<String>, Option<Value>) {
+fn run_update<'a>(f: &'a Fixture, rotate_rc: i32, send_after_quiesce: Option<u64>, after_drain: Option<Box<dyn FnMut() + 'a>>) -> (Outcome, Vec<String>, Option<Value>) {
     let (app, cd) = fake_bundle(f, rotate_rc);
     let guard = cys::update::lock::acquire(&f.upd, "runner").expect("잠금");
     let tok = guard.token();
-    let mut ops = Hybrid { real: real_ops(f, &tok.render(), app, &cd), sock: f.sock.clone(), token: tok.render(), log: vec![], send_after_quiesce, held_ack: None, swapped: false };
+    let mut ops = Hybrid { real: real_ops(f, &tok.render(), app, &cd), sock: f.sock.clone(), token: tok.render(), log: vec![], send_after_quiesce, held_ack: None, swapped: false, after_drain };
     let o = Runner::new(&f.upd, &tok.txn_id, tok.epoch, &mut ops).run();
     drop(guard);
     (o, ops.log, ops.held_ack)
 }
 
 /// ① 좌석 1개 · 저장 뒤 꼬리 출력 3초 · 정비 모드 · drain → 교체 → rotate rc 25 → 롤백 없음 → DONE.
-/// ② 같은 판에서 정비 모드 중 남의 입력 = 여전히 보류 + S5 가 보류로 끝(좌석 도달 0 · 교체 0).
+/// ② 저장 뒤 · 정비 모드 전에 생긴 좌석 = 저장 지시를 못 받았으므로 보류로 끝(교체 0).
+/// ③ 같은 판에서 정비 모드 중 남의 입력 = 여전히 보류 + S5 가 보류로 끝(좌석 도달 0 · 교체 0).
 #[test]
 fn live_seat_update_passes_drain_and_rc25_does_not_roll_back() {
     let f = fixture("e2e");
     let got = add_seat(&f, "worker-a", 3);
 
-    let (o, log, _) = run_update(&f, 25, None);
+    let (o, log, _) = run_update(&f, 25, None, None);
     assert!(matches!(o, Outcome::Done), "좌석 있는 기기의 갱신이 끝까지 가지 못함: {o:?} · {log:?}");
     assert_eq!(seat_count(&got, "[DRAIN-VERIFY]"), 1, "저장 지시 정확히 1회 도달");
     assert!(!log.iter().any(|l| l.starts_with("rb_") || l.contains("Rollback")), "롤백 0: {log:?}");
@@ -359,10 +367,16 @@ fn live_seat_update_passes_drain_and_rc25_does_not_roll_back() {
     let state: Value = serde_json::from_slice(&std::fs::read(f.upd.join("state.json")).unwrap()).unwrap();
     assert!(state.to_string().contains("restore_partial"), "rc 25 보류 기록 없음: {state}");
 
+    let (o3, log3, _) = run_update(&f, 0, None, Some(Box::new(|| {
+        add_seat(&f, "worker-b", 0);
+    })));
+    assert!(matches!(&o3, Outcome::Deferred(x) if x.step == "S3" && x.detail.contains("새 좌석")), "저장 안 한 좌석으로 교체로 가면 안 됨: {o3:?} · {log3:?}");
+    assert!(!log3.iter().any(|l| l == "swap"), "교체 0: {log3:?}");
+
     let org = rpc_on(&f.sock, "org.status", json!({})).unwrap();
     let sid = org["surfaces"].as_array().unwrap().iter().find(|s| s["role"] == "worker-a").unwrap()["surface_id"].as_u64().unwrap();
     let before = seat_count(&got, "남의 입력");
-    let (o2, log2, ack) = run_update(&f, 0, Some(sid));
+    let (o2, log2, ack) = run_update(&f, 0, Some(sid), None);
     assert_eq!(ack.as_ref().and_then(|a| a["held"].as_bool()), Some(true), "정비 모드가 남의 입력을 보류하지 않음: {ack:?}");
     assert!(matches!(&o2, Outcome::Deferred(x) if x.detail.contains("보류 로그")), "S5 가 잡아야 함: {o2:?} · {log2:?}");
     assert!(!log2.iter().any(|l| l == "swap"), "교체 0: {log2:?}");

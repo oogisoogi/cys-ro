@@ -154,9 +154,11 @@ pub fn subset(a: &Value, b: &Value) -> bool {
     }
 }
 
-/// 좌석 자리 = 역할·부서(세션을 뺀 키 · V3 의 rc 25 대조).
-fn seat_places(seats: &BTreeSet<SeatKey>) -> BTreeSet<(&str, &str)> {
-    seats.iter().map(|s| (s.role.as_str(), s.dept.as_str())).collect()
+/// 좌석 자리 = 역할·부서(세션을 뺀 키 · V3 의 rc 25 대조). 정렬 목록 = 같은 자리의 좌석 수까지 대조한다(역할 없는 좌석은 여럿일 수 있다).
+fn seat_places(seats: &BTreeSet<SeatKey>) -> Vec<(&str, &str)> {
+    let mut v: Vec<_> = seats.iter().map(|s| (s.role.as_str(), s.dept.as_str())).collect();
+    v.sort_unstable();
+    v
 }
 
 /// V1~V9 판정. `rollback` = 옛 판 기준 재검사(RB_VERIFIED) — 그때는 V9 를 기준선 팩과 대조한다.
@@ -437,6 +439,10 @@ mod tests {
             gone.restore_rc = 25;
             gone.seats = [SeatKey { role: "other".into(), ..seat("a") }].into();
             assert!(v3(&gone), "rc 25 · 자리 소실 = 실패");
+            let mut merged = p.clone();
+            merged.restore_rc = 25;
+            merged.seats = [seat("a")].into();
+            assert!(v3(&merged), "rc 25 · 같은 자리 좌석 수 감소 = 실패");
             for rc in [-1, 1, 21, 22, 23, 24, 26, 90, 91] {
                 let mut x = p.clone();
                 x.restore_rc = rc;

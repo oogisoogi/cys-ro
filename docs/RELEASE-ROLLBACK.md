@@ -104,9 +104,12 @@ gh release view -R oogisoogi/cys-ro --json tagName,isDraft   # 되읽어 확인
 4. 맥 launchd: 1.1.10 은 plist 를 다시 쓸 때 사용자 env 를 보존하지 않는다(보존은 1.1.11 부터 · `src/launchd.rs:252-270`).
    `~/Library/LaunchAgents/com.cysjavis.cysd.plist` 에 넣어 둔 env 는 내리기 전에 적어 두고 다시 넣는다.
 5. 수용 기록: `accepted-cysr-<채널>.json`(맥 `~/.cys/update/` · 윈 `%LOCALAPPDATA%\cys-update\`)에 내리기 전 설치 seq(1.1.11 = 6)가 남는다.
-   기록은 판정에 쓰이지 않고(판정 = 실행 바이너리의 seq · `src/update/check.rs:454`) uptodate 판정일 때만 다시 쓰인다
-   (`src/update/cli.rs:356-376`). 그때 「수용 기록 후퇴 거부」로 점검이 rc 3 이면(`src/update/feed.rs:799`) 데몬을 멈춘 뒤 그 파일을 지운다
-   — 부재 = 정상이고(`feed.rs` `read_accepted`) 다음 수용 때 새로 쓰인다.
+   후보 판정은 실행 바이너리의 seq 와 본문 seq 만 보고 이 칸은 보지 않는다(`src/update/check.rs:454` · `src/update/feed.rs:653`) — 내린 기기는
+   문제 판을 다시 후보로 본다(§2 ① 의 halt 경고). 기록의 `feed_rev`·봉투 sha256 은 판정에 쓰인다(재생 거부 · `src/update/feed.rs:575-584`).
+   기록은 설치 성공(S11 · `src/update/realops.rs:275`)과 uptodate 일 때의 `--record`(`src/update/cli.rs:356-376`)에서 쓰인다. 후자가
+   「수용 기록 후퇴 거부」로 rc 3 이면(`src/update/feed.rs:799` · 본문 seq ≤ 내린 seq 인 드문 경우) 데몬을 멈춘 뒤 그 파일을 지운다 —
+   부재 = 정상이고 다음 수용 때 새로 쓰인다. ⚠**대가: 지우면 그 기기의 `feed_rev` 재생 방어가 다음 수용까지 사라진다**(옛 봉투도 유효창 안이면 통한다).
+   rc 3 이 안 보이면 지우지 마라.
 
 ## 3. 되돌릴 수 있는 것 — 문제 릴리스 자체
 

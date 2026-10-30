@@ -768,10 +768,6 @@ class TestGrants(Base):
         self.assertEqual(len(lines(os.path.join(self.state, "ledger.jsonl"))), 4)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 # ───────────────────────── 크롬 켜기·끄기 = 마스터 직접 (cu-1111-precedent) ─────────────────────────
 class TestChromeEnable(Base):
     """실제 크롬·좌석 무접촉: 외부 명령은 전부 CYS_CC_FAKE_ACT 기록 파일로만 간다(더블)."""
@@ -812,7 +808,8 @@ class TestChromeEnable(Base):
         self.assertIs(after.pop("claudeInChromeDefaultEnabled"), True)
         before.pop("claudeInChromeDefaultEnabled")
         self.assertEqual(after, before)                       # 다른 칸은 그대로
-        self.assertEqual(os.stat(p).st_mode & 0o777, 0o600)   # 권한 유지
+        if os.name != "nt":                                   # NTFS 는 유닉스 권한 비트가 없다(st_mode 0o666 고정)
+            self.assertEqual(os.stat(p).st_mode & 0o777, 0o600)   # 권한 유지
         self.assertIn("default_on", d["done"])
         self.assertNotIn("quit", self.kinds())                # 연결 파일이 이미 있으면 크롬을 건드리지 않는다
         self.assertIn("되돌릴 수 있습니다", d["say"])
@@ -888,6 +885,7 @@ class TestChromeEnable(Base):
         rc, d, _ = self.run_cli("chrome-enable")
         self.assertIn("탭 9개 그대로", d["say"])
 
+    @unittest.skipIf(os.name == "nt", "맥 전용 경로의 os.getuid() — 윈 파이썬에 없다(제품 윈 경로는 quit_chrome 의 CloseMainWindow)")
     def test_restart_without_automation_permission_terms_one_pid(self):
         self.make_chrome(nmh=False)
         self.set_probes(ae={"com.google.Chrome": -1744}, chrome_running=[True, False, True],
@@ -1937,3 +1935,7 @@ class TestPrecedent(Base):
         rc, d, _ = self.run_cli("decide", "login", "--subject", "카카오톡")
         self.assertEqual(d["decision"], "do")
         self.assertIn("설치된 앱(카카오톡", d["report"])
+
+
+if __name__ == "__main__":
+    unittest.main()

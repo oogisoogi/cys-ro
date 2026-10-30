@@ -38,7 +38,7 @@ TICKET=cysr-1111-drainhold · 가지 fix/1111-update-drain-hold (기준 7ccab38c
 | `rollout_pct`·`halt` | 불가 | 받을지 말지만 정함 · 교착을 풀지 못함 |
 | `requires`·`min_from_release_seq` | 불가 | 판정 조건일 뿐 |
 | 정비 모드 TTL 조정 | 불가 | `ttl_secs`는 러너 상수 900(`quiesce.rs` DEFAULT_TTL_SECS) · 서버 값 아님 |
-| 지연 재시도 | 부분 | 재시도 시점에 에이전트 좌석 0이면 S4 통과(`realops.rs` total==0 · `cys.rs` 대상 = agent 메타 있는 좌석만). 단 사람이 좌석을 꺼 둬야 함 · 백오프 6h·12h·24h·48h 4회 뒤 그 릴리스 포기(`failures.rs:41-49`) |
+| 지연 재시도 | 부분 | 재시도 시점에 에이전트 좌석 0이면 S4 통과(`realops.rs` total==0 · `cys.rs` 대상 = agent 메타 있는 좌석만). 단 사람이 좌석을 꺼 둬야 함 · 교착은 보류(Deferred)로 끝나고 보류는 실패로 세지 않으므로(`notify.rs` `record_failure`) 백오프·포기 없이 6시간 주기 잡(`schedule.rs`)이 무한 재시도 |
 | 새 `release_seq` 발행 | 부분 | 재시도 횟수만 새로 생김 · 교착은 그대로 |
 | 사람 키보드 경로 | 불가 | `human`은 CLI가 정함 · 옛 drain은 비사람 · 서버가 못 바꿈 |
 | 팩 단독 갱신 | 불가(권고 안 함) | 정지 없이 팩은 바꿀 수 있으나 S3/S4는 바이너리 코드 · 팩으로 우회 스크립트를 심는 것은 서명 범위 밖 행동이라 권고하지 않음 |
@@ -83,7 +83,7 @@ TICKET=cysr-1111-drainhold · 가지 fix/1111-update-drain-hold (기준 7ccab38c
 
 | rc | 뜻 | 낸 곳 | 판정 |
 |---|---|---|---|
-| 0 | 완주 | `rotate_rc` | 성공 → V3 좌석 키 전부 대조 |
+| 0 | 완주 | `rotate_rc` | 성공 → V3 자리 + 채워진 세션 대조(세션 빈 좌석은 상한 60초까지 기다림) |
 | 21 | 저장 일부 미확인 | `rotate_rc` · `--stop-only` | S10은 `--skip-drain`이라 도달 불가 → 실패 유지 |
 | 22 | 데몬 교체 실패 | `run_rotate` ② | 실패(롤백) |
 | 23 | 새 데몬 응답 없음 | `run_rotate` ② | 실패(롤백) |
@@ -94,12 +94,14 @@ TICKET=cysr-1111-drainhold · 가지 fix/1111-update-drain-hold (기준 7ccab38c
 
 `restore_exit_code`(`cys.rs:25944`): 1 = 실패 또는 관문 보류, 91 = 쓰기 결과 불명(자리 유지), 90 = 지침 거부(자리 유지). 부서 교체·복원 실패도 25입니다.
 
+**V3 세션 규칙(rc 0 · master#a9c54875)**: 데몬은 `registered_session_id`를 재기동 너머로 보존하지 않고 SessionStart 훅 등록으로만 채웁니다. 새 데몬이 띄운 피닉스 복원을 `cys restore`가 「이미 가동 중」으로 건너뛰면 rc 0이 되고, 그 시점 좌석은 `claude|`(세션 빈 값)입니다. 그래서 `RealOps::settled_seats`가 세션만 빈 동안 0.5초 간격으로 상한 60초까지 다시 읽습니다. 나머지 관측은 그 뒤에 잽니다. 상한까지 비어 있으면 자리(주소·역할·부서·에이전트·좌석 수)가 같을 때 통과하고 `state.json.session_unverified`(`release_seq`·`roles`·`at`)를 남깁니다. 채워진 세션이 기준선과 다르면 곧바로 실패합니다. 기준선이 비어 있던 좌석은 대조할 값이 없어 통과합니다. 롤백 재검사(`post_verify(rollback=true)`)도 같습니다. rc 25는 세션을 대조하지 않으므로 기다리지 않습니다.
+
 **V3 규칙**: rc 25이면 세션이 아직 안 붙었을 수 있어 자리(역할·부서)만 대조합니다. 같은 자리의 좌석 수까지 봅니다(역할 없는 좌석이 여럿일 수 있다). 자리가 사라졌으면 V3 실패 → 롤백입니다. 90·91·관문 보류는 자리가 남으므로 통과하고, rc 1의 진짜 실패로 자리가 없어지면 롤백합니다. rc 25는 롤백 재검사에도 같은 표로 적용됩니다. 옛 판 재구동(`start_old`)·재구성은 rc 25를 「데몬이 떴다」로 받고 `restore_partial`을 남기되 좌석 대조는 하지 않습니다(이유: 바꾼 것이 없는 옛 판이고, 실패로 보면 데몬이 떠 있는데도 부팅 가드를 유지한 채 사람 필요로 끝납니다 · codex 1R MAJOR ②의 좌석 대조 요구는 기각).
 
 ## 6. 변경 파일
 
 - `src/update/runner.rs` — early 표 순서(S4→S3) · 트레이트 주석 · 행렬 시험 순서
-- `src/update/journal.rs` — 전이 3칸 추가(옛 칸 유지 = 옛 러너 저널 판독 호환)
+- `src/update/journal.rs` — 전이를 새 순서로 교체(옛 순서 칸 제거 · 읽기는 전이 이력을 검증하지 않고 `Quiesced`·`Drained → Deferred` 칸이 남아 옛 러너 저널도 보류로 정리됨)
 - `src/update/quiesce.rs` — `output_settled` · `rebase_output` · `TAIL_CAP_SECS` · 단위 시험
 - `src/update/realops.rs` — `quiesce`/`drain`/`settled_token` · `rotate` rc 25 · `restore_partial` 기록 · rc 표 시험
 - `src/update/verify.rs` — `ROTATE_RC_RESTORE_PARTIAL` · V3 표 · 시험
@@ -109,7 +111,7 @@ TICKET=cysr-1111-drainhold · 가지 fix/1111-update-drain-hold (기준 7ccab38c
 ## 7. 남은 위험 · 결정 대상
 
 1. **rc 25 + 자리 소실 = 여전히 롤백.** 그 롤백의 재검사도 같은 자리가 없으면 RB_FAILED(사람 필요)입니다. 수리 전부터 있던 길이지만, 이제 살아 있는 좌석 기기가 여기까지 옵니다. 자리 소실도 롤백하지 않게 바꿀지는 master 판단입니다.
-2. **rc 0의 V3는 `registered_session_id`까지 대조합니다.** 끝-끝 시험의 가짜 좌석은 세션이 비어 있어 이 칸을 증명하지 못합니다. 재개된 실제 Claude 좌석의 세션 값이 기준선과 같은지, V3 시점에 등록이 끝나는지 **미측정**입니다. 어긋나면 rc 0에서도 「끝난 갱신이 되돌려지는」 길이 됩니다. 살아 있는 좌석으로 S11까지 간 실제 기록이 없으므로 실기 관측 전까지 열린 위험입니다.
+2. **재개된 실제 Claude 좌석의 세션 값이 기준선과 같은지는 미측정입니다.** 등록이 늦은 경우는 끝-끝 시험(가짜 claude · 실 rotate)으로 고쳤습니다. 다만 실제 Claude의 `--resume`이 다른 세션 id로 등록하면 rc 0에서는 V3 실패 → 롤백입니다(rc 25는 세션을 보지 않아 통과). 발행 전 실기 1회 게이트가 이 칸을 봅니다.
 3. **자기신고 없는 좌석은 N1에서 영구 보류입니다**(`gates.rs` 「미보고 = false · 보수」). 자기신고를 안 하는 일반 좌석은 S4 전에 멈춥니다. 이번 범위 밖 · 기록만.
 4. 옛 판에서 S4 실패 뒤 보류된 저장 지시 재생: 해제 뒤 46초 관측에서 좌석 도달 0, 보류 로그 1335바이트 잔존. 그 뒤 재생 여부는 미측정입니다.
 5. 끝-끝 시험은 CI 레인에 등재돼 있지 않습니다(`cargo test --test`).

@@ -195,6 +195,8 @@ pub struct RealOps {
     b0: Option<Baseline>,
     /// ★2판 C9: 마지막 `rotate` 자식의 실제 종료 코드(V3 restore_rc — 상수 0 대신).
     last_rotate_rc: Option<i32>,
+    /// 마지막 V3 에서 상한까지 세션이 비어 있던 좌석의 역할(자리 대조로 통과 · `state.json` 기록).
+    session_unverified: Vec<String>,
     /// ★4판(Fable 3R M5): 재구성이 판정한 판의 `cys`(복원 뒤 재기동에 쓴다).
     recon_exe: Option<PathBuf>,
     /// ★후속 2판: 직전 재구성이 새 판으로 판정했나.
@@ -230,6 +232,7 @@ impl RealOps {
             q1: None,
             b0: None,
             last_rotate_rc: None,
+            session_unverified: Vec::new(),
             recon_exe: None,
             recon_new: false,
             pack_to: None,
@@ -357,6 +360,25 @@ impl RealOps {
     fn seats(&self) -> Result<std::collections::BTreeSet<SeatKey>, Fail> {
         let org = (self.env.rpc)("org.status", json!({})).map_err(|e| fail(ErrCode::VerifyFailed, "V3", e))?;
         Ok(seats_from_org(&org))
+    }
+
+    /// V3 좌석 — 새 데몬은 등록 세션을 물려받지 않아 SessionStart 훅이 다시 채울 때까지 빈 값이다. rotate 가 복원을 끝낸(rc 0) 뒤 세션만 빈 동안
+    /// 상한까지 기다린다 · 상한을 넘기면 지금 좌석으로 판정하고 그 역할을 기록한다(rc 25 는 세션을 대조하지 않으므로 한 번만 읽는다).
+    fn settled_seats(&mut self, b0: &Baseline) -> Result<std::collections::BTreeSet<SeatKey>, Fail> {
+        self.session_unverified.clear();
+        let cap = std::time::Instant::now() + SESSION_WAIT;
+        loop {
+            let seats = self.seats()?;
+            if self.last_rotate_rc != Some(0) {
+                return Ok(seats);
+            }
+            let verify::SeatMatch::SessionPending(roles) = verify::seat_match(&b0.seats, &seats) else { return Ok(seats) };
+            if std::time::Instant::now() >= cap {
+                self.session_unverified = roles;
+                return Ok(seats);
+            }
+            std::thread::sleep(SESSION_POLL);
+        }
     }
 
     /// ★2판(codex 1R C9): doctor 실행·판독 실패를 「FAIL 0」 으로 접지 않는다 — 관측 실패 = `doctor_unavailable` FAIL 1건(V4 실패 ·
@@ -899,6 +921,8 @@ impl Ops for RealOps {
                 Expect { release_seq: a.release_seq, build_id: a.build_id.clone(), target: a.target.clone(), bundled_pack: bp, platform_mark: mark, ..Default::default() },
             )
         };
+        // 좌석이 다 서고 나서 잰다(기다리는 동안 나머지 관측이 낡지 않게).
+        let seats = self.settled_seats(&b0)?;
         // ★2판(codex 1R C9): 아래 칸은 전부 **독립 관측**이다 — 상수·기준선 복사·기대값 복사 0. 관측 실패는 그 V 의 실패로 닫힌다.
         let bi = self.child(&exe, &["build-info", "--json"]).ok().filter(|o| o.status.success()).and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok());
         let ident = super::mac::Ident {
@@ -934,7 +958,7 @@ impl Ops for RealOps {
             platform_mark,
             ping_ok_streak: ping,
             cysd_procs: hq_daemon_count(&identify),
-            seats: self.seats()?,
+            seats,
             drain_seats: None,
             restore_rc: self.last_rotate_rc.unwrap_or(-1),
             doctor_fail: self.doctor_fail(&exe),
@@ -1249,6 +1273,12 @@ impl Ops for RealOps {
                 m.insert("restore_partial".into(), json!({"release_seq": rel, "rc": rc, "at": now}));
             });
         }
+        if !self.session_unverified.is_empty() {
+            let (rel, roles) = (o.release_seq, self.session_unverified.clone());
+            let _ = super::notify::update_state(&self.env.update_dir, |m| {
+                m.insert("session_unverified".into(), json!({"release_seq": rel, "roles": roles, "at": now}));
+            });
+        }
         if kind != Kind::Deferred {
             if let Some(cd) = self.env.counsel_dir.clone() {
                 let _ = super::notify::append_update(&cd, &o.from_version, &o.to_version, kname, now);
@@ -1426,6 +1456,9 @@ pub fn parse_pack_dry_run(rc_ok: bool, stdout: &str, stderr: &str) -> Option<boo
 }
 
 /// 재구성 뒤 재기동 생존 확인 상한.
+/// V3 세션 등록 기다림 상한 · 간격(`settled_seats`).
+const SESSION_WAIT: std::time::Duration = std::time::Duration::from_secs(if cfg!(test) { 1 } else { 60 });
+const SESSION_POLL: std::time::Duration = std::time::Duration::from_millis(if cfg!(test) { 20 } else { 500 });
 const RESTART_ALIVE_WAIT: std::time::Duration = std::time::Duration::from_secs(if cfg!(test) { 2 } else { 20 });
 
 /// ★5판(codex 4R MINOR 6): 팩 적용 공간식 = 전개 크기 × 2(파일 반영 + 팩 저널 백업) + 사용자 트리 사본 + 예약(N7 과 같은 2 GiB) ·
@@ -1829,6 +1862,57 @@ mod tests {
     #[cfg(unix)]
     pub(crate) fn calls(d: &Path) -> Vec<String> {
         std::fs::read_to_string(d.join("calls.log")).unwrap_or_default().lines().map(str::to_string).collect()
+    }
+
+    /// `settled_seats`: org.status 를 순서대로 답하는 시험 대역 · 마지막 답을 되풀이.
+    #[cfg(unix)]
+    fn seat_ops(rc: Option<i32>, sessions: &'static [&'static str]) -> (RealOps, Baseline, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (d, _upd, _root, mut ops) = recon_rig("seats");
+        let _ = std::fs::remove_dir_all(&d);
+        let n = std::sync::Arc::new(AtomicUsize::new(0));
+        let seen = n.clone();
+        let org = |sess: &str| json!({"surfaces": [{"role": "worker-a", "agent": "claude", "registered_session_id": sess}]});
+        ops.env.rpc = Box::new(move |m, _| {
+            assert_eq!(m, "org.status");
+            let i = seen.fetch_add(1, Ordering::SeqCst);
+            Ok(org(sessions[i.min(sessions.len() - 1)]))
+        });
+        ops.last_rotate_rc = rc;
+        let b0 = Baseline { seats: seats_from_org(&org("s1")), ..Default::default() };
+        (ops, b0, n)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settled_seats_waits_for_session_then_stops() {
+        use std::sync::atomic::Ordering;
+        let (mut ops, b0, n) = seat_ops(Some(0), &["", "", "s1"]);
+        assert_eq!(ops.settled_seats(&b0).unwrap(), b0.seats, "등록이 늦어도 같은 세션을 읽어 낸다");
+        assert_eq!(n.load(Ordering::SeqCst), 3);
+        assert!(ops.session_unverified.is_empty());
+
+        let (mut ops, b0, n) = seat_ops(Some(0), &["", "s2"]);
+        let seats = ops.settled_seats(&b0).unwrap();
+        assert_eq!(verify::seat_match(&b0.seats, &seats), verify::SeatMatch::Differ, "채워졌는데 다름 = 기다림 끝 · 판정은 실패");
+        assert_eq!(n.load(Ordering::SeqCst), 2);
+        assert!(ops.session_unverified.is_empty());
+
+        let (mut ops, b0, n) = seat_ops(Some(25), &[""]);
+        ops.settled_seats(&b0).unwrap();
+        assert_eq!(n.load(Ordering::SeqCst), 1, "rc 25 는 세션을 대조하지 않는다");
+
+        let (mut ops, b0, n) = seat_ops(Some(0), &[""]);
+        let t = std::time::Instant::now();
+        let seats = ops.settled_seats(&b0).unwrap();
+        assert!(t.elapsed() >= SESSION_WAIT, "상한까지 기다린다");
+        assert!(n.load(Ordering::SeqCst) > 2, "간격 짧게 다시 읽는다");
+        assert_eq!(ops.session_unverified, vec!["worker-a".to_string()], "상한 초과 = 기록");
+        assert_eq!(verify::seat_match(&b0.seats, &seats), verify::SeatMatch::SessionPending(vec!["worker-a".into()]));
+        let again = seat_ops(Some(0), &["s1"]).1;
+        ops.env.rpc = Box::new(|_, _| Ok(json!({"surfaces": [{"role": "worker-a", "agent": "claude", "registered_session_id": "s1"}]})));
+        ops.settled_seats(&again).unwrap();
+        assert!(ops.session_unverified.is_empty(), "다음 V3 가 세션을 확인하면 기록을 비운다");
     }
 
     /// 저널 두 슬롯을 못 읽게(전체 손상).

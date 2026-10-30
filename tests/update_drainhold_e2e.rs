@@ -4,6 +4,8 @@
 //! 실물: 격리 HOME 의 cysd · `cys drain --verify` · 실 `Runner` · `RealOps` 의 quiesce/drain/recheck/baseline/start_new/post_verify.
 //! 대역: 내려받기·정지·스냅샷·교환·S11 commit(이 기기의 앱을 바꾸지 않는다) · 새 번들 = 애드혹 서명한 대본(`rotate` 만 지정 rc · 나머지는 실 `cys` 로 넘김).
 //! ∴ rotate 의 실제 복원·`.pending-restore`·S11 수용 기록은 이 시험이 증명하지 않는다 · 데몬이 그대로라 정비 모드 해제도 시험이 대신한다.
+//! 예외 = 실 rotate 시나리오(`late_session_*`): 새 번들 대본이 실 `cys rotate` 로 넘겨 데몬 교체·피닉스 재개를 실물로 돌린다 · 좌석 = `launch-agent` + 가짜 claude.
+//! rotate 안의 `cys restore` 와 피닉스 복원은 경합이라 rc 가 0/25 로 갈린다 — 대본이 25 를 0 으로 접어 rc 0 갈래를 고정한다(`calls.log` 에 실제 rc 를 남긴다).
 #![cfg(target_os = "macos")]
 
 use cys::update::errors::ErrCode;
@@ -18,6 +20,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const CYS: &str = env!("CARGO_BIN_EXE_cys");
+const FAKE_CLAUDE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_claude.c");
+/// `fake_bundle` 의 rc 자리 — 지정 rc 대신 실 `cys rotate`.
+const REAL_ROTATE: i32 = -1;
+/// 시험마다 프로세스 env(HOME·소켓)를 바꾼다 — 같은 시험 바이너리의 시험을 한 줄로 세운다.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn rpc_on(sock: &Path, method: &str, params: Value) -> Result<Value, String> {
     let mut s = UnixStream::connect(sock).map_err(|e| e.to_string())?;
@@ -51,7 +58,9 @@ struct Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        if let Some(pid) = self.daemon_pid {
+        // 실 rotate 뒤에는 데몬이 바뀌어 있다 — 지금 소켓이 밝힌 pid 도 함께 끝낸다.
+        let now = rpc_on(&self.sock, "system.identify", json!({})).ok().and_then(|v| v["daemon_pid"].as_i64()).map(|p| p as i32);
+        for pid in [self.daemon_pid, now].into_iter().flatten() {
             let _ = std::process::Command::new("/bin/kill").args(["-9", &pid.to_string()]).status();
         }
         let _ = std::fs::remove_dir_all(&self.root);
@@ -87,7 +96,7 @@ fn fixture(tag: &str) -> Fixture {
             std::env::remove_var(k);
         }
     }
-    let root = PathBuf::from(format!("/tmp/cysdh-{tag}-{}", std::process::id()));
+    let root = PathBuf::from(format!("/private/tmp/cysdh-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let home = root.join("h");
     let upd = home.join(".cys/update");
@@ -98,7 +107,10 @@ fn fixture(tag: &str) -> Fixture {
     std::env::set_var("AITERM_SOCKET", &sock);
     std::env::set_var("XDG_STATE_HOME", home.join("st"));
     std::env::set_var("CYS_UPDATE_STATE_DIR", &upd);
-    std::env::set_var("PATH", "/usr/bin:/bin");
+    let fake = root.join("fake");
+    std::fs::create_dir_all(&fake).unwrap();
+    assert!(std::process::Command::new("/usr/bin/cc").args(["-w", "-o"]).arg(fake.join("claude")).arg(FAKE_CLAUDE).status().unwrap().success(), "가짜 claude 빌드 실패");
+    std::env::set_var("PATH", format!("{}:{}:/usr/bin:/bin", fake.display(), Path::new(CYS).parent().unwrap().display()));
     let mut f = Fixture { root, upd, sock, daemon_pid: None };
     let start = Instant::now();
     while !std::process::Command::new(CYS).arg("list").stdin(std::process::Stdio::null()).output().map(|o| o.status.success()).unwrap_or(false) {
@@ -147,7 +159,15 @@ fn fake_bundle(f: &Fixture, rotate_rc: i32) -> (PathBuf, String) {
     .unwrap();
     std::fs::write(
         &exe,
-        format!("#!/bin/sh\necho \"$*\" >> '{log}'\ncase \"$1\" in rotate) exit {rotate_rc};; esac\nexec '{CYS}' \"$@\"\n", log = f.root.join("calls.log").display()),
+        format!(
+            "#!/bin/sh\necho \"$*\" >> '{log}'\ncase \"$1\" in rotate) {rotate};; esac\nexec '{CYS}' \"$@\"\n",
+            log = f.root.join("calls.log").display(),
+            rotate = if rotate_rc == REAL_ROTATE {
+                format!("'{CYS}' \"$@\"; rc=$?; echo \"rotate-rc=$rc\" >> '{}'; [ $rc = 25 ] && exit 0; exit $rc", f.root.join("calls.log").display())
+            } else {
+                format!("exit {rotate_rc}")
+            },
+        ),
     )
     .unwrap();
     std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -353,6 +373,7 @@ fn run_update<'a>(f: &'a Fixture, rotate_rc: i32, send_after_quiesce: Option<u64
 /// ③ 같은 판에서 정비 모드 중 남의 입력 = 여전히 보류 + S5 가 보류로 끝(좌석 도달 0 · 교체 0).
 #[test]
 fn live_seat_update_passes_drain_and_rc25_does_not_roll_back() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let f = fixture("e2e");
     let got = add_seat(&f, "worker-a", 3);
 
@@ -381,4 +402,82 @@ fn live_seat_update_passes_drain_and_rc25_does_not_roll_back() {
     assert!(matches!(&o2, Outcome::Deferred(x) if x.detail.contains("보류 로그")), "S5 가 잡아야 함: {o2:?} · {log2:?}");
     assert!(!log2.iter().any(|l| l == "swap"), "교체 0: {log2:?}");
     assert_eq!(seat_count(&got, "남의 입력"), before, "보류 중 좌석 도달 0");
+}
+
+/// `launch-agent` 좌석 1개(가짜 claude)의 세션 등록까지 기다린다. 반환 = 등록된 세션 id.
+fn launch_seat(f: &Fixture, role: &str) -> String {
+    let cwd = f.root.join("wk");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let o = std::process::Command::new(CYS).args(["launch-agent", "--role", role, "--agent", "claude", "--cwd"]).arg(&cwd).stdin(std::process::Stdio::null()).output().unwrap();
+    assert!(o.status.success(), "좌석 기동 실패: {}", String::from_utf8_lossy(&o.stderr));
+    let start = Instant::now();
+    loop {
+        if let Some(s) = session_of(f, role).filter(|s| !s.is_empty()) {
+            return s;
+        }
+        assert!(start.elapsed() < Duration::from_secs(30), "세션 등록 없음: {:?}", rpc_on(&f.sock, "org.status", json!({})));
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+fn session_of(f: &Fixture, role: &str) -> Option<String> {
+    let org = rpc_on(&f.sock, "org.status", json!({})).ok()?;
+    let row = org["surfaces"].as_array()?.iter().find(|s| s["role"] == role && s["exited"].as_bool() != Some(true))?.clone();
+    Some(row["registered_session_id"].as_str().unwrap_or("").to_string())
+}
+
+fn calls(f: &Fixture) -> String {
+    std::fs::read_to_string(f.root.join("calls.log")).unwrap_or_default()
+}
+
+fn update_state(f: &Fixture) -> Value {
+    serde_json::from_slice(&std::fs::read(f.upd.join("state.json")).unwrap_or_default()).unwrap_or(Value::Null)
+}
+
+/// 재기동 뒤 세션 등록이 늦은 rc 0(1757 정본 조건 = 재개 기동 12초): 등록을 기다려 같은 세션을 확인하고 끝낸다(한 번 재고 되돌리지 않는다).
+#[test]
+fn late_session_registers_within_wait_and_update_finishes() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let boot = std::env::var("DH_BOOT").unwrap_or_else(|_| "12".into());
+    std::env::set_var("FAKE_BOOT", &boot);
+    std::env::remove_var("FAKE_NEW_SID");
+    let f = fixture("late");
+    let sid = launch_seat(&f, "worker-a");
+    let (o, log, _) = run_update(&f, REAL_ROTATE, None, None);
+    eprintln!("LATE boot={boot} {o:?} · {log:?} · {}", calls(&f).lines().filter(|l| l.starts_with("rotate-rc")).collect::<Vec<_>>().join(","));
+    assert!(matches!(o, Outcome::Done), "세션 등록이 늦다고 끝난 갱신을 되돌렸다: {o:?} · {log:?}");
+    assert!(!log.iter().any(|l| l.starts_with("rb_") || l.contains("Rollback")), "롤백 0: {log:?}");
+    assert_eq!(session_of(&f, "worker-a").as_deref(), Some(sid.as_str()), "V3 가 끝날 때 세션이 채워져 있어야 한다");
+    assert!(update_state(&f).get("session_unverified").is_none(), "상한 안에 채워졌으면 미확인 기록 0");
+}
+
+/// 상한까지 세션이 비어 있는 rc 0: 자리가 그대로면 끝내고 `session_unverified` 를 남긴다.
+#[test]
+fn late_session_past_cap_finishes_with_unverified_record() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    std::env::set_var("FAKE_BOOT", "300");
+    std::env::remove_var("FAKE_NEW_SID");
+    let f = fixture("cap");
+    launch_seat(&f, "worker-a");
+    let (o, log, _) = run_update(&f, REAL_ROTATE, None, None);
+    assert!(matches!(o, Outcome::Done), "자리가 그대로인데 되돌렸다: {o:?} · {log:?}");
+    assert_eq!(session_of(&f, "worker-a").as_deref(), Some(""), "시나리오 전제: 세션이 아직 비어 있다");
+    let state = update_state(&f);
+    assert_eq!(state["session_unverified"]["roles"], json!(["worker-a"]), "미확인 기록 없음: {state}");
+}
+
+/// 세션이 채워졌는데 기준선과 다른 rc 0: 기다림 없이 V3 실패 → 롤백 경로(커밋 0).
+#[test]
+fn filled_but_different_session_still_fails_v3() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    std::env::set_var("FAKE_BOOT", "1");
+    std::env::set_var("FAKE_NEW_SID", "1");
+    let f = fixture("diff");
+    let sid = launch_seat(&f, "worker-a");
+    let (o, log, _) = run_update(&f, REAL_ROTATE, None, None);
+    std::env::remove_var("FAKE_NEW_SID");
+    assert_ne!(session_of(&f, "worker-a").as_deref(), Some(sid.as_str()), "시나리오 전제: 세션이 바뀌었다");
+    assert!(!matches!(o, Outcome::Done), "다른 세션으로 끝내면 안 됨: {o:?} · {log:?}");
+    assert!(!log.iter().any(|l| l == "commit"), "커밋 0: {log:?}");
+    assert!(log.iter().any(|l| l == "post_verify rollback=false"), "{log:?}");
 }

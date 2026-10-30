@@ -1606,7 +1606,7 @@ class TestChromeEnable(Base):
         self.win_restart_setup(chrome_running=[True], windows=2, act={"seat_restart": {"out": "123"}}, proc_start="T")
         self.run_cli("chrome-enable")
         at = self.m._load_chrome_state()["chrome_manual_at"]
-        self.next_call(chrome_running=[True], windows=2, proc_start="T", act={"chrome_started": {"out": str(at - 500)}})
+        self.next_call(chrome_running=[True], windows=2, proc_start="T", act={"chrome_started": {"out": "%d" % (at - 500)}})
         rc, d, _ = self.run_cli("chrome-enable")
         self.assertIn("크롬 창이 2개 열려", d["say"])
         self.assertIn("chrome_restart", d["pending"])

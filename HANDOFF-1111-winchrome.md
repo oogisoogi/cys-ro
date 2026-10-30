@@ -7,6 +7,9 @@
 - 재시작 대기가 Job 밖이라 그 자식 rotate 도 밖이다 → rc·ledger·빚 정리까지 간다.
 - M3: 윈은 창 1개일 때만 닫는다. 창 수는 최상위 창 전수. 실패 문장을 사실별로 분리.
 
+## 게이트(맥 · 격리 HOME · CYS_* 해제)
+lib 1142/0 · cys 736/0(RUST_MIN_STACK=8388608 · 기본 스택은 aid_s5_cli_tests 에서 넘침 = 기존 환경 문제) · cysd 3222/0(1e35ac5f · 그 뒤 제품 Rust 변경 없음) · update_drainhold_e2e 4/4 · win-typecheck 오류 0(1e35ac5f) · 팩 test_computer_control 152/0 · test_dept_tick_stdin 8/0 · 뮤턴트 125 KILLED · lane-parity --strict rc 0 · secret-scan --all 깨끗. bun = ui 무변경이라 생략. `tests/win_job_exit.rs` 실행 = 미측정(CI windows-health 첫 실행).
+
 ## 함정
 - ⚠ BREAKAWAY_OK 를 상시로 켜지 말 것 — 동봉 Git Bash 가 모든 자식에 이탈 flag 를 붙인다(소스 핀 `breakaway_bit_stays_inside_this_module`).
 - 윈 실 프로세스 시험 `tests/win_job_exit.rs` 는 맥에서 0건이다. 컴파일은 win-typecheck 로 확인했고 **실행은 CI windows-health 가 처음이다**.

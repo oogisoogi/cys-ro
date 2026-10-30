@@ -7141,6 +7141,8 @@ mod spawn_policy_tests {
         // 1.1.8 병합: 원작자 cycle_jobs.rs(0.14.42) start() 의 cys 자식 — 체인에 SpawnPolicy 등급을 단다.
         ("src/bin/cysd/cycle_jobs.rs", 1),
         ("src/bin/cysd/governance.rs", 2),
+        // TICKET=cysr-1111-winchrome: 데몬 Job 밖 스폰 1곳 — `spawn_policy(Survivor)` 등급을 단다(허용 목록 = job_exit::validate).
+        ("src/bin/cysd/handlers.rs", 1),
         ("src/bin/cysd/hwmon.rs", 3),
         ("src/bin/cysd/main.rs", 1),
         ("src/bin/cysd/native_publication_transition_tests.rs", 2),

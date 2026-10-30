@@ -210,7 +210,7 @@ M = [
   "        return _act(\"quit\", [\"/usr/bin/pkill\", \"-TERM\", \"-x\", \"Google Chrome\"])",
   ["test_restart_without_automation_permission_terms_one_pid"]),
  ("M50-not-quit-retry-hard", "닫히지 않은 크롬을 그대로 다시 켜기(닫힘 확인 생략)",
-  "            _ledger({\"event\": \"chrome_not_quit\"})\n            return \"not_quit:%d\" % t",
+  "            return \"not_quit_background\" if left == 0 else \"not_quit:%d\" % t",
   "            break",
   ["test_not_quit_is_left_alone"]),
  ("M51-act-stdin-inherit", "크롬 동작의 하위 호출에 표준입력 상속(윈 콘솔 없는 좌석)",

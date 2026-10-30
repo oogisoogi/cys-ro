@@ -1201,8 +1201,8 @@ def _act(kind, argv, timeout=SUBPROC_TIMEOUT, detach=False, cwd=None):
                 kw["creationflags"] = 0x00000200 | 0x08000000
             else:
                 kw["start_new_session"] = True     # 좌석 pty 가 닫혀도 살아남는다(재시작이 그 pty 를 닫는다)
-            subprocess.Popen(argv, **kw)
-            return subprocess.CompletedProcess(argv, 0, "", "")
+            p = subprocess.Popen(argv, **kw)
+            return subprocess.CompletedProcess(argv, 0, str(p.pid), "")
         except OSError:
             return None
     try:
@@ -1563,6 +1563,59 @@ def schedule_seat_restart(delay, after_disable=False):
     return _act("seat_restart", argv, detach=True)
 
 
+def _proc_start(pid):
+    """살아 있는 프로세스의 시작 시각 표지 — 죽었거나 못 재면 None. pid 는 재사용되므로 시작 시각까지 대조한다."""
+    if _has_fake("proc_start"):
+        return _fake_seq("proc_start")
+    if platform() == "win":
+        try:
+            import ctypes
+            from ctypes import wintypes as wt
+            k = ctypes.WinDLL("kernel32", use_last_error=True)
+            k.OpenProcess.restype = wt.HANDLE
+            k.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
+            k.GetExitCodeProcess.argtypes = [wt.HANDLE, ctypes.POINTER(wt.DWORD)]
+            k.GetProcessTimes.argtypes = [wt.HANDLE] + [ctypes.POINTER(wt.FILETIME)] * 4
+            k.CloseHandle.argtypes = [wt.HANDLE]
+            h = k.OpenProcess(0x1000, False, int(pid))      # PROCESS_QUERY_LIMITED_INFORMATION
+            if not h:
+                return None
+            try:
+                code, t = wt.DWORD(), [wt.FILETIME() for _ in range(4)]
+                if not k.GetExitCodeProcess(h, ctypes.byref(code)) or code.value != 259:    # STILL_ACTIVE
+                    return None
+                if not k.GetProcessTimes(h, *[ctypes.byref(x) for x in t]):
+                    return None
+                return "%d.%d" % (t[0].dwHighDateTime, t[0].dwLowDateTime)
+            finally:
+                k.CloseHandle(h)
+        except Exception:
+            return None
+    r = _act("proc_start", ["/bin/ps", "-o", "lstart=", "-p", str(pid)])
+    return ((r.stdout or "").strip() or None) if r is not None and r.returncode == 0 else None
+
+
+def _waiter_mark(r):
+    """방금 띄운 재시작 대기의 pid·시작 시각(맥 = Popen pid · 윈 = 데몬 응답 JSON 의 pid)."""
+    m = re.search(r"(\d+)\D*$", (r.stdout or "") if r else "")
+    pid = int(m.group(1)) if m else None
+    return {"seat_restart_pid": pid, "seat_restart_start": _proc_start(pid) if pid else None}
+
+
+def _waiter_alive(st):
+    """★r3: 예약 시각만 보면 대기가 죽어도 17분 동안 「이미 예약돼 있습니다」였다 — 그 대기가 지금 살아 있어야 예약이다."""
+    pid = st.get("seat_restart_pid")
+    if not pid:
+        return False
+    now, then = _proc_start(pid), st.get("seat_restart_start")
+    return now is not None and then in (None, now)
+
+
+def _clear_waiter(st):
+    for k in ("seat_restart_scheduled_at", "seat_restart_pid", "seat_restart_start"):
+        st.pop(k, None)
+
+
 def _seat_status(sid):
     """그 좌석의 (출력 유휴 초, 세션 ID) — `cys status --json`. 못 읽으면 (None, None)."""
     r = _act("seat_status", [_cys_bin(), "status", "--json"], timeout=15)
@@ -1633,7 +1686,7 @@ def cmd_seat_restart_wait(a):
             return out({"ok": False, "say": "", "reason": why}, 0)
         st = _load_chrome_state()
         st["pending_seat_restart"] = True
-        st.pop("seat_restart_scheduled_at", None)
+        _clear_waiter(st)
         _write_json(_p(CHROME_STATE), st)
         _ledger({"event": "seat_restart_not_done", "why": why})
         return out({"ok": False, "say": "", "reason": why}, 0)
@@ -1663,7 +1716,7 @@ def cmd_seat_restart_wait(a):
     st = _load_chrome_state()
     if st:                                  # rotate 사이에 되돌렸으면 파일이 없다 — 빈 파일로 되살리지 않는다
         st.pop("pending_seat_restart", None)
-        st.pop("seat_restart_scheduled_at", None)
+        _clear_waiter(st)
         _write_json(_p(CHROME_STATE), st)
     return out({"ok": True, "say": ""}, 0)
 
@@ -1819,7 +1872,7 @@ def cmd_chrome_enable(a):
         for k in ("pending_chrome_restart", "pending_chrome_reopen", "chrome_reopen_tries", "chrome_reopen_at"):
             st.pop(k, None)
         sched = st.get("seat_restart_scheduled_at")
-        if want_seat and isinstance(sched, (int, float)) and _now() - sched < SEAT_WAIT_MAX_SEC + 120:
+        if want_seat and isinstance(sched, (int, float)) and _now() - sched < SEAT_WAIT_MAX_SEC + 120 and _waiter_alive(st):
             said.append("cysr 재시작은 이미 예약돼 있습니다(이 대화가 끝나면 합니다).")
         elif want_seat and CHROME_IN_JOB:
             st["pending_seat_restart"] = True
@@ -1833,6 +1886,7 @@ def cmd_chrome_enable(a):
                 said.append("cysr 재시작 예약에 실패했습니다 — 다음에 다시 하겠습니다(위쪽 ↻ 재시작으로도 됩니다).")
             else:
                 st["seat_restart_scheduled_at"] = _now()
+                st.update(_waiter_mark(r))
                 _ledger({"event": "seat_restart_scheduled", "delay": SEAT_RESTART_DELAY_SEC})
                 done.append("seat_restart")
                 said.append("이 대화가 끝나면 cysr 가 잠깐 다시 시작합니다(지금 대화는 저장하고 이어집니다).")
@@ -1986,7 +2040,7 @@ def cmd_chrome_disable(a):
             said.append("연결 파일은 그 사이 다른 프로그램이 고쳐 써서 그대로 두었습니다.")
     if keep_state:
         st.pop("pending_seat_restart", None)        # ★M5: 대기 중인 켜기 쪽 재시작을 취소(대기가 활성 기록 소멸을 보고 멈춘다)
-        st.pop("seat_restart_scheduled_at", None)
+        _clear_waiter(st)
         _write_json(_p(CHROME_STATE), st)           # prior_key·key_restored 그대로 — 다음 끄기는 연결 파일만 다시
     else:
         try:

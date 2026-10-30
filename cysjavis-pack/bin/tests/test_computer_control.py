@@ -923,7 +923,7 @@ class TestChromeEnable(Base):
         self.assertNotIn("seat_restart", self.kinds())
         st = jload(os.path.join(self.state, "chrome-enable.json"))
         self.assertTrue(st["pending_chrome_restart"] and st["pending_seat_restart"])
-        self.set_probes(chrome_running=[True, False, True], idle=60, act={})
+        self.set_probes(chrome_running=[True, False, True], idle=60, act={"seat_restart": {"out": "123"}}, proc_start="T")
         rc, d, _ = self.run_cli("chrome-enable")
         self.assertIn("chrome_restart", d["done"])
         self.assertIn("seat_restart", d["done"])
@@ -1186,6 +1186,8 @@ class TestChromeEnable(Base):
         self.assertNotIn("seat_restart", d["done"])
         self.assertTrue(jload(os.path.join(self.state, "chrome-enable.json"))["pending_seat_restart"])
         self.m.schedule_seat_restart = orig
+        self.set_probes(ae={"com.google.Chrome": 0}, chrome_running=False, idle=60, windows=3,
+                        act={"seat_restart": {"out": "123"}}, proc_start="T")
         rc, d, _ = self.run_cli("chrome-enable")                     # 다음 호출이 다시 예약
         self.assertIn("seat_restart", d["done"])
         rc, d, _ = self.run_cli("chrome-enable")                     # 예약이 살아 있는 동안 중복 예약 0
@@ -1512,6 +1514,63 @@ class TestChromeEnable(Base):
         self.assertNotIn("chrome_restart", d["pending"])
         self.assertIn("그만두었습니다", d["say"])
         self.assertFalse(self.m._load_chrome_state().get("pending_chrome_reopen"))
+
+    def test_chrome_gone_right_after_first_sighting_is_not_reopened(self):     # r3 실측: 켠 직후 닫힘 → chrome_reopened(실제 0개)
+        self.win_restart_setup(chrome_running=[True, False, True, False], windows=1)
+        rc, d, _ = self.run_cli("chrome-enable")
+        with open(os.path.join(self.state, "ledger.jsonl"), encoding="utf-8") as f:
+            events = [json.loads(x).get("event") for x in f]
+        self.assertNotIn("chrome_reopened", events)
+        self.assertIn("chrome_reopen_failed", events)
+        self.assertNotIn("chrome_restart", d["done"])
+        self.assertIn("chrome_restart", d["pending"])
+
+    def test_win_chrome_off_path_also_leaves_job(self):                        # R5-B: 크롬 0개 → 재시작 대기도 데몬 경유
+        self.win_restart_setup(chrome_running=False, windows=0, act={"seat_restart": {"out": '{"outside_job":true,"pid":4321}'}})
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertNotIn("quit", self.kinds())
+        sr = [a for a in self.acts() if a["kind"] == "seat_restart"]
+        self.assertEqual(len(sr), 1)
+        self.assertFalse(sr[0]["detach"])
+        self.assertIn("spawn-outside-job --kind seat_restart", " ".join(sr[0]["argv"]))
+        self.assertEqual(self.m._load_chrome_state()["seat_restart_pid"], 4321)
+
+    def waiter_recorded(self, **kw):
+        os.makedirs(self.state, exist_ok=True)
+        with open(os.path.join(self.state, self.m.CHROME_STATE), "w", encoding="utf-8") as f:
+            json.dump({"pending_seat_restart": True, "prior_key": {"present": False, "value": None},
+                       "seat_restart_scheduled_at": self.m._now(), "seat_restart_pid": 777, "seat_restart_start": "T1"}, f)
+        self.make_chrome()
+        self.write_cfg(chrome_default=True)
+        self.set_probes(ae={"com.google.Chrome": 0}, chrome_running=False, idle=60, windows=3,
+                        act={"seat_restart": {"out": "888"}}, **kw)
+        self.m._nmh_ok = lambda plat, ud: True
+
+    def test_live_waiter_stays_reserved(self):
+        self.waiter_recorded(proc_start="T1")
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertNotIn("seat_restart", self.kinds())
+        self.assertIn("이미 예약돼 있습니다", d["say"])
+
+    def test_dead_waiter_is_not_a_reservation(self):                           # r3: 17분 창
+        self.waiter_recorded(proc_start=[None, "T2"])
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertEqual(self.kinds().count("seat_restart"), 1)
+        self.assertNotIn("이미 예약돼 있습니다", d["say"])
+        st = self.m._load_chrome_state()
+        self.assertEqual((st["seat_restart_pid"], st["seat_restart_start"]), (888, "T2"))
+
+    def test_reused_pid_is_not_a_reservation(self):
+        self.waiter_recorded(proc_start=["OTHER", "T2"])
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertEqual(self.kinds().count("seat_restart"), 1)
+
+    def test_old_state_without_pid_is_not_a_reservation(self):
+        self.assertFalse(self.m._waiter_alive({"seat_restart_scheduled_at": self.m._now()}))
+
+    def test_mac_detach_returns_waiter_pid(self):
+        self.assertEqual(self.m._waiter_mark(subprocess.CompletedProcess([], 0, "4321", ""))["seat_restart_pid"], 4321)
+        self.assertEqual(self.m._waiter_mark(subprocess.CompletedProcess([], 0, '{"outside_job":true,"pid":55}\n', ""))["seat_restart_pid"], 55)
 
     def test_win_window_filter(self):
         ok = dict(cls="Chrome_WidgetWin_1", visible=True, owned=False, titled=True, tool=False, exe="chrome.exe")

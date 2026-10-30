@@ -96,7 +96,7 @@ fn parent_helper() {
         // 부모 Job 이 이탈을 허용하면 msys 가 자식에 이탈 flag 를 스스로 붙이는지 재는 모드 — 상시 허용을 버린 근거.
         enter(new_job(job_limits(mode == "msys-open")));
         let body = format!(
-            "ping -n 300 127.0.0.1 >/dev/null & cat /proc/$!/winpid > '{}'; wait",
+            "ping -n 300 127.0.0.1 >/dev/null 2>&1 & sleep 1; cat /proc/$!/winpid > '{}'; wait",
             out.to_string_lossy().replace('\\', "/")
         );
         Command::new(BASH).args(["-c", &body]).spawn().unwrap();

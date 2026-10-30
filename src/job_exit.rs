@@ -41,6 +41,7 @@ pub fn validate(kind: &str, argv: &[String], env: &[(String, String)]) -> Result
         "seat_restart" => {
             if argv.len() < 3
                 || !file_name_lower(&argv[0]).starts_with("python")
+                || argv[1].starts_with('-')
                 || file_name_lower(&argv[1]) != "javis_computer_control.py"
                 || argv[2] != "seat-restart-wait"
             {
@@ -131,6 +132,8 @@ mod tests {
         assert!(validate("seat_restart", &s(&wait), &[]).is_ok());
         assert!(validate("seat_restart", &s(&["python", "evil.py", "seat-restart-wait"]), &[]).is_err());
         assert!(validate("seat_restart", &s(&["cmd.exe", wait[1], "seat-restart-wait"]), &[]).is_err());
+        // 파이썬 `-c` 를 파일명처럼 위장하는 꼴(1760 F5)
+        assert!(validate("seat_restart", &s(&["python", "-cprint(1)#/javis_computer_control.py", "seat-restart-wait"]), &[]).is_err());
         assert!(validate("seat_restart", &s(&["python", wait[1], "chrome-enable"]), &[]).is_err());
         assert!(validate("shell", &s(&["cmd.exe"]), &[]).is_err());
     }

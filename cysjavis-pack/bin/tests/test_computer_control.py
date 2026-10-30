@@ -971,8 +971,15 @@ class TestChromeEnable(Base):
         with open(os.path.join(d, self.SID + ".jsonl"), "w") as f:
             f.write("\n".join(json.dumps(r) for r in rows) + "\n")
 
+    def _armed(self):
+        # 켜기가 남긴 활성 기록 — 켜기 대기는 이것이 있어야 돈다(M5)
+        os.makedirs(self.state, exist_ok=True)
+        with open(os.path.join(self.state, "chrome-enable.json"), "w", encoding="utf-8") as f:
+            json.dump({"pending_seat_restart": True, "seat_restart_scheduled_at": 1, "prior_key": {"present": False}}, f)
+
     def test_seat_waiter_rotates_only_after_turn_ends(self):
         # codex R1·R2: 출력 유휴 두 번 연속 ∧ 좌석 세션의 마지막 대화 줄 = end_turn 일 때만
+        self._armed()
         self._transcript("end_turn")
         self.set_probes(act={"seat_status": [self._status(0), self._status(25), self._status(0),
                                              self._status(30), self._status(31)]})
@@ -985,6 +992,7 @@ class TestChromeEnable(Base):
 
     def test_seat_waiter_quiet_tool_wait_is_not_turn_end(self):
         # codex R2 blocking: 도구 응답을 기다리는 동안(출력 없음)은 턴이 안 끝났다 → 재시작하지 않고 빚
+        self._armed()
         self._transcript("tool_use")
         self.m.SEAT_WAIT_MAX_SEC = 10
         self.set_probes(act={"seat_status": self._status(120)})
@@ -999,6 +1007,7 @@ class TestChromeEnable(Base):
         self.assertTrue(jload(os.path.join(self.state, "chrome-enable.json"))["pending_seat_restart"])
 
     def test_seat_waiter_rotate_failure_keeps_debt_success_clears(self):
+        self._armed()
         self._transcript("end_turn")
         self.set_probes(act={"seat_status": self._status(60), "rotate": {"rc": 3}})
         self.run_cli("seat-restart-wait", "--surface", "surface:4242", "--min-delay", "0")
@@ -1006,6 +1015,163 @@ class TestChromeEnable(Base):
         self.set_probes(act={"seat_status": self._status(60), "rotate": {"rc": 0}})
         self.run_cli("seat-restart-wait", "--surface", "surface:4242", "--min-delay", "0")
         self.assertNotIn("pending_seat_restart", jload(os.path.join(self.state, "chrome-enable.json")))
+
+    def test_m5_disable_cancels_waiter_before_rotate(self):
+        # 대기 시작 전에 이미 되돌림 = rotate 0 · 상태 파일 부활 0
+        self._transcript("end_turn")
+        self.set_probes(act={"seat_status": self._status(60)})
+        rc, d, _ = self.run_cli("seat-restart-wait", "--surface", "surface:4242", "--min-delay", "0")
+        self.assertEqual(d.get("reason"), "cancelled")
+        self.assertNotIn("rotate", self.kinds())
+        self.assertNotIn("seat_status", self.kinds())   # 주기 맨 앞에서 멈춘다 — 15분을 기다리지 않는다
+        self.assertFalse(os.path.exists(os.path.join(self.state, "chrome-enable.json")))
+
+    def _revoke_on_status(self, n):
+        # n 번째 좌석 조회가 끝난 순간 사용자가 되돌렸다(상태 파일 삭제) — 대기 프로세스 안에서 재현
+        orig, st, calls = self.m._seat_status, os.path.join(self.state, "chrome-enable.json"), []
+
+        def fake(sid):
+            calls.append(sid)
+            if len(calls) == n:
+                os.remove(st)
+            return 60, self.SID
+        self.m._seat_status = fake
+        self.addCleanup(setattr, self.m, "_seat_status", orig)
+
+    def test_m5_disable_during_wait_cancels_each_cycle(self):
+        self._armed()
+        self._transcript("tool_use")            # 턴이 안 끝나 다음 주기로 간다
+        self._revoke_on_status(2)
+        rc, d, _ = self.run_cli("seat-restart-wait", "--surface", "surface:4242", "--min-delay", "0")
+        self.assertEqual(d.get("reason"), "cancelled")
+        self.assertNotIn("rotate", self.kinds())
+
+    def test_m5_disable_just_before_rotate_cancels(self):
+        self._armed()
+        self._transcript("end_turn")
+        self._revoke_on_status(2)               # 두 번째 조용함 = 루프를 빠져나가 바로 rotate 자리
+        rc, d, _ = self.run_cli("seat-restart-wait", "--surface", "surface:4242", "--min-delay", "0")
+        self.assertEqual(d.get("reason"), "cancelled")
+        self.assertNotIn("rotate", self.kinds())
+
+    def test_m5_owe_does_not_revive_state_after_disable(self):
+        self._armed()
+        self._transcript("tool_use")
+        self.m.SEAT_WAIT_MAX_SEC = 0            # 첫 주기에 시간 끝 → owe("busy")
+        self._revoke_on_status(1)
+        self.run_cli("seat-restart-wait", "--surface", "surface:4242", "--min-delay", "0")
+        self.assertFalse(os.path.exists(os.path.join(self.state, "chrome-enable.json")))
+
+    def test_m5_rotate_success_does_not_revive_state(self):
+        self._transcript("end_turn")
+        self.set_probes(act={"seat_status": self._status(60)})
+        rc, d, _ = self.run_cli("seat-restart-wait", "--surface", "surface:4242", "--min-delay", "0", "--after-disable")
+        self.assertIn("rotate", self.kinds())   # 끄기가 띄운 대기는 파일이 없어도 돈다(되돌림 적용)
+        self.assertFalse(os.path.exists(os.path.join(self.state, "chrome-enable.json")))
+
+    def test_m5_after_disable_rotate_failure_does_not_revive_state(self):
+        self._transcript("end_turn")
+        self.set_probes(act={"seat_status": self._status(60), "rotate": {"rc": 3}})
+        self.run_cli("seat-restart-wait", "--surface", "surface:4242", "--min-delay", "0", "--after-disable")
+        self.assertFalse(os.path.exists(os.path.join(self.state, "chrome-enable.json")))
+
+    def test_m5_after_disable_waiter_yields_to_reenable(self):
+        self._armed()                           # 다시 켜서 활성 기록이 생겼다 — 재시작은 켜기 쪽 대기 몫
+        self._transcript("end_turn")
+        self.set_probes(act={"seat_status": self._status(60)})
+        rc, d, _ = self.run_cli("seat-restart-wait", "--surface", "surface:4242", "--min-delay", "0", "--after-disable")
+        self.assertEqual(d.get("reason"), "cancelled")
+        self.assertNotIn("rotate", self.kinds())
+        self.assertTrue(jload(os.path.join(self.state, "chrome-enable.json"))["pending_seat_restart"])
+
+    def test_m5_disable_keep_state_drops_seat_debt_and_marks_waiter(self):
+        # 연결 파일을 못 지워 상태 파일이 남는 끄기도 대기 쪽 활성 기록은 지운다 · 끄기 대기에 표지가 붙는다
+        self.make_chrome(nmh=False)
+        self.write_cfg(chrome_default=False)
+        self.set_probes(chrome_running=False, act={"nmh": self.nmh_touch()})
+        self.run_cli("chrome-enable", "--seat-restart", "auto")
+        p = os.path.join(self.state, "chrome-enable.json")
+        self.assertTrue(jload(p)["pending_seat_restart"])
+        self.set_probes(chrome_running=False, act={"nmh_remove": {"rc": 1}})
+        n = len(self.acts())
+        self.run_cli("chrome-disable", "--seat-restart", "auto")
+        st = jload(p)
+        self.assertTrue(st.get("nmh_created"))                     # 다음 끄기가 다시 지울 기록은 남고
+        self.assertNotIn("pending_seat_restart", st)               # 대기를 돌리는 활성 기록은 없다
+        self.assertNotIn("seat_restart_scheduled_at", st)
+        sr = [x for x in self.acts()[n:] if x["kind"] == "seat_restart"]
+        self.assertEqual(len(sr), 1)
+        self.assertIn("--after-disable", sr[0]["argv"])
+
+    def _restart_fails(self, running, open_act=None):
+        self.make_chrome(nmh=False)
+        self.write_cfg(chrome_default=False)
+        act = {"nmh": self.nmh_touch()}
+        act.update(open_act or {})
+        self.set_probes(chrome_running=running, act=act)
+        return self.run_cli("chrome-enable")
+
+    def test_m4_reopen_failed_keeps_debt(self):
+        rc, d, _ = self._restart_fails([True, False, False], {"open": {"rc": 1}})
+        self.assertNotIn("chrome_restart", d["done"])
+        self.assertIn("chrome_restart", d["pending"])
+        self.assertIn("다시 켜지 못했습니다", d["say"])
+        self.assertNotIn("seat_restart", d["done"])                # 좌석은 크롬 다음(순서 보존)
+        st = jload(os.path.join(self.state, "chrome-enable.json"))
+        self.assertTrue(st["pending_chrome_restart"] and st["pending_chrome_reopen"] and st["pending_seat_restart"])
+        rows = [json.loads(x) for x in lines(os.path.join(self.state, "ledger.jsonl"))]
+        self.assertEqual([r for r in rows if r.get("event") == "chrome_reopened"], [])
+        self.assertTrue([r for r in rows if r.get("event") == "chrome_reopen_failed"])
+
+    def test_m4_reopen_never_appeared_is_failed_even_if_open_rc0(self):
+        rc, d, _ = self._restart_fails([True, False, False])
+        self.assertIn("chrome_restart", d["pending"])
+        self.assertIn("다시 켜지 못했습니다", d["say"])
+
+    def test_m4_reopen_unknown_is_not_success(self):
+        rc, d, _ = self._restart_fails([True, False, None])
+        self.assertIn("chrome_restart", d["pending"])
+        self.assertIn("확인하지 못했습니다", d["say"])
+        self.assertTrue(jload(os.path.join(self.state, "chrome-enable.json"))["pending_chrome_restart"])
+
+    def test_m4_open_error_but_running_is_success(self):
+        # 켜기 명령은 실패했어도 크롬이 떠 있으면(사용자가 켰다) 빚 없음 — 결과는 실측이 정한다
+        rc, d, _ = self._restart_fails([True, False, True], {"open": {"rc": 1}})
+        self.assertIn("chrome_restart", d["done"])
+        self.assertNotIn("pending_chrome_restart", jload(os.path.join(self.state, "chrome-enable.json")))
+
+    def test_m4_debt_reopens_without_quitting_again(self):
+        self._restart_fails([True, False, False], {"open": {"rc": 1}})
+        n = len(self.acts())
+        self.m._seq_chrome_running = 0
+        self.set_probes(chrome_running=[False, True], idle=60, act={})
+        rc, d, _ = self.run_cli("chrome-enable")
+        k = [a["kind"] for a in self.acts()[n:]]
+        self.assertIn("open", k)
+        self.assertNotIn("quit", k)                                # 이미 닫혀 있다 — 닫기를 되풀이하지 않는다
+        self.assertIn("chrome_restart", d["done"])
+        self.assertIn("seat_restart", d["done"])                   # 크롬을 갚은 뒤 좌석
+        st = jload(os.path.join(self.state, "chrome-enable.json"))
+        self.assertNotIn("pending_chrome_restart", st)
+        self.assertNotIn("pending_chrome_reopen", st)
+
+    def test_m4_debt_running_meanwhile_does_not_quit(self):
+        self._restart_fails([True, False, False], {"open": {"rc": 1}})
+        n = len(self.acts())
+        self.set_probes(chrome_running=True, idle=60, act={})
+        rc, d, _ = self.run_cli("chrome-enable")
+        k = [a["kind"] for a in self.acts()[n:]]
+        self.assertNotIn("quit", k)                                # 크롬이 떠 있으면 사용자가 켠 것 — 다시 닫지 않는다
+        self.assertNotIn("open", k)
+        self.assertNotIn("pending_chrome_reopen", jload(os.path.join(self.state, "chrome-enable.json")))
+
+    def test_m4_debt_reopen_still_failing_keeps_debt(self):
+        self._restart_fails([True, False, False], {"open": {"rc": 1}})
+        self.set_probes(chrome_running=False, idle=60, act={"open": {"rc": 1}})
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertIn("chrome_restart", d["pending"])
+        st = jload(os.path.join(self.state, "chrome-enable.json"))
+        self.assertTrue(st["pending_chrome_restart"] and st["pending_chrome_reopen"])
 
     def test_schedule_failure_keeps_seat_debt(self):
         self.make_chrome()
@@ -1143,6 +1309,7 @@ class TestChromeEnable(Base):
         self.assertIn("nmh_remove", self.kinds())
 
     def test_seat_waiter_gives_up_and_owes(self):
+        self._armed()
         self._transcript("end_turn")
         self.m.SEAT_WAIT_MAX_SEC = 10
         self.set_probes(act={"seat_status": self._status(0)})

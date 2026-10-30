@@ -1454,11 +1454,16 @@ def _cys_bin():
     return os.environ.get("CYS_BIN") or "cys"
 
 
+REOPEN_SAY = {   # ★M4: 크롬을 닫은 뒤 다시 켜기가 끝나지 않았을 때(재시작 빚 유지 · 다음 호출이 켜기만 갚는다)
+    "failed": "크롬을 닫은 뒤 다시 켜지 못했습니다 — 크롬을 직접 켜 주시면 바로 연결됩니다(다음에 제가 다시 켜 보겠습니다).",
+    "unknown": "크롬을 다시 켰는지 확인하지 못했습니다 — 창이 안 보이면 직접 켜 주세요(다음에 다시 확인하겠습니다).",
+    "deferred": "지금 키보드·마우스를 쓰고 계셔서 크롬 다시 켜기는 잠시 미뤘습니다 — 손을 쉬실 때 다시 하겠습니다.",
+}
 SEAT_IDLE_SEC = 20          # 좌석 출력이 이만큼 조용하면 턴이 끝난 것으로 본다(두 번 연속)
 SEAT_WAIT_MAX_SEC = 900     # 그때까지 안 끝나면 재시작하지 않고 빚으로 남긴다(다음 chrome-enable 이 다시 예약)
 
 
-def schedule_seat_restart(delay):
+def schedule_seat_restart(delay, after_disable=False):
     """이 좌석의 턴이 **실제로 끝난 뒤** 재시작 — 분리된 프로세스(이 도구의 seat-restart-wait)가 delay 초 뒤부터 좌석 출력 유휴
     (`cys status --json` idle_secs ≥ 20 두 번 연속)를 확인하고 `cys rotate --skip-depts`(앱 ↻ 와 같은 저장 검증 → 복원)를 부른다.
     ★codex R1 논쟁점: 고정 30초만으로는 긴 턴을 끊을 수 있었다. 좌석 ID 를 모르면(좌석 밖) 고정 지연으로 폴백."""
@@ -1466,6 +1471,8 @@ def schedule_seat_restart(delay):
     argv = [sys.executable, os.path.abspath(__file__), "seat-restart-wait", "--min-delay", str(delay)]
     if sid:
         argv += ["--surface", sid]
+    if after_disable:
+        argv += ["--after-disable"]
     return _act("seat_restart", argv, detach=True)
 
 
@@ -1519,8 +1526,24 @@ def _turn_ended(session_id):
 
 def cmd_seat_restart_wait(a):
     """(분리된 프로세스 전용) 좌석 턴이 **끝난 것이 확인되면** 재시작. 좌석·세션을 모르거나 15분 안에 확인 못 하면 재시작하지 않고
-    빚(pending_seat_restart)으로 남긴다 · rotate 가 실패해도 빚은 남는다(성공해야 지운다 · codex R2)."""
-    def owe(why):
+    빚(pending_seat_restart)으로 남긴다 · rotate 가 실패해도 빚은 남는다(성공해야 지운다 · codex R2).
+    ★M5: chrome-disable 이 대기를 취소하지 않아 「되돌려 줘」 뒤에도 rotate 가 돌거나 chrome-enable.json 이 되살아났다 — 켜기 대기는
+    매 주기·rotate 직전·owe() 에서 활성 기록(pending_seat_restart)을 재확인해 사라졌으면 멈춘다. 끄기가 띄운 대기(--after-disable)는
+    반대로 빚이 생겼으면(다시 켬 → 그쪽 대기가 재시작한다) 멈추고, 상태 파일을 만들지 않는다."""
+    def revoked():
+        owed = bool(_load_chrome_state().get("pending_seat_restart"))
+        return owed if a.after_disable else not owed
+
+    def cancelled():
+        _ledger({"event": "seat_restart_cancelled", "after_disable": a.after_disable})
+        return out({"ok": True, "say": "", "reason": "cancelled"}, 0)
+
+    def owe(why, recheck=True):
+        if recheck and revoked():
+            return cancelled()
+        if a.after_disable:
+            _ledger({"event": "seat_restart_not_done", "why": why, "after_disable": True})
+            return out({"ok": False, "say": "", "reason": why}, 0)
         st = _load_chrome_state()
         st["pending_seat_restart"] = True
         st.pop("seat_restart_scheduled_at", None)
@@ -1528,10 +1551,12 @@ def cmd_seat_restart_wait(a):
         _ledger({"event": "seat_restart_not_done", "why": why})
         return out({"ok": False, "say": "", "reason": why}, 0)
     if not a.surface:
-        return owe("no_surface")
+        return owe("no_surface", recheck=False)     # 스폰 직후라 켜는 쪽이 아직 활성 기록을 안 썼을 수 있다
     _sleep(a.min_delay)
     quiet, waited = 0, a.min_delay
     while True:
+        if revoked():
+            return cancelled()
         idle, sess = _seat_status(a.surface)
         ok = idle is not None and idle >= SEAT_IDLE_SEC and _turn_ended(sess) is True
         quiet = quiet + 1 if ok else 0
@@ -1541,15 +1566,18 @@ def cmd_seat_restart_wait(a):
             return owe("busy")
         _sleep(5)
         waited += 5
+    if revoked():
+        return cancelled()
     r = _act("rotate", [_cys_bin(), "rotate", "--skip-depts"], timeout=600)
     rc = None if r is None else r.returncode
     _ledger({"event": "seat_restart_rotate", "rc": rc})
     if rc not in (0, 21, 25):          # 21·25 = rotate 의 「끝까지 돌았지만 일부 부족」(중단 아님 · cys.rs rotate_rc 표)
         return owe("rotate_rc_%s" % rc)
     st = _load_chrome_state()
-    st.pop("pending_seat_restart", None)
-    st.pop("seat_restart_scheduled_at", None)
-    _write_json(_p(CHROME_STATE), st)
+    if st:                                  # rotate 사이에 되돌렸으면 파일이 없다 — 빈 파일로 되살리지 않는다
+        st.pop("pending_seat_restart", None)
+        st.pop("seat_restart_scheduled_at", None)
+        _write_json(_p(CHROME_STATE), st)
     return out({"ok": True, "say": ""}, 0)
 
 
@@ -1638,7 +1666,17 @@ def cmd_chrome_enable(a):
     #   빚은 상태 파일(pending_chrome_restart · pending_seat_restart)에 남기고 갚을 때 지운다.
     pending = []
     owed = bool(st.get("pending_chrome_restart"))
-    if (created or owed) and was_running:
+    if st.get("pending_chrome_reopen") and not created:
+        # ★M4: 앞 호출이 닫은 크롬을 다시 켜지 못했다 — 또 닫지 않고 켜기만 갚는다(켜져 있으면 닫힌 뒤 켜진 크롬이라 연결 파일을 이미 읽었다)
+        ro = "ok" if was_running else "unknown" if was_running is None else (
+            reopen_chrome(plat) if wait_idle(plat, a.wait) else "deferred")
+        if ro == "ok":
+            done.append("chrome_restart")
+            said.append("크롬이 다시 켜졌습니다.")
+        else:
+            pending.append("chrome_restart")
+            said.append(REOPEN_SAY[ro])
+    elif (created or owed) and was_running:
         r = restart_chrome(plat, a.wait)
         if r == "deferred":
             pending.append("chrome_restart")
@@ -1646,6 +1684,10 @@ def cmd_chrome_enable(a):
         elif r.startswith("not_quit"):
             pending.append("chrome_restart")
             said.append("크롬이 스스로 닫히지 않아 그대로 두었습니다(강제로 끄지 않습니다). 크롬을 닫으셨다 켜시면 바로 연결됩니다.")
+        elif r.startswith("not_reopened:"):
+            pending.append("chrome_restart")
+            st["pending_chrome_reopen"] = True
+            said.append(REOPEN_SAY[r.split(":", 1)[1]])
         else:
             done.append("chrome_restart")
             said.append(r)
@@ -1662,6 +1704,7 @@ def cmd_chrome_enable(a):
             st["pending_seat_restart"] = True       # 크롬을 다시 켠 뒤에 좌석을 재시작한다(순서 보존)
     else:
         st.pop("pending_chrome_restart", None)
+        st.pop("pending_chrome_reopen", None)
         sched = st.get("seat_restart_scheduled_at")
         if want_seat and isinstance(sched, (int, float)) and _now() - sched < SEAT_WAIT_MAX_SEC + 120:
             said.append("cysr 재시작은 이미 예약돼 있습니다(이 대화가 끝나면 합니다).")
@@ -1698,8 +1741,25 @@ def wait_idle(plat, wait):
         waited += 2
 
 
+def reopen_chrome(plat):
+    """★M4: 크롬을 켜고 결과를 잰다 → "ok" · "failed" · "unknown". 켜졌는지 모르면 성공으로 치지 않는다(재시작 빚이 지워진다)."""
+    r = open_chrome(plat)
+    t = 0
+    running = chrome_running(plat)
+    while running is False and t < CHROME_QUIT_WAIT_SEC:
+        _sleep(1)
+        t += 1
+        running = chrome_running(plat)
+    if running:
+        return "ok"
+    res = "failed" if running is False or r is None or r.returncode != 0 else "unknown"
+    _ledger({"event": "chrome_reopen_" + res})
+    return res
+
+
 def restart_chrome(plat, wait):
-    """유휴 관문 → 알림 → (유휴 재확인) → 정상 종료 → 다시 켬 → 창·탭 수 대조. 반환 = say 문장 · "deferred" · "not_quit:…"."""
+    """유휴 관문 → 알림 → (유휴 재확인) → 정상 종료 → 다시 켬 → 창·탭 수 대조.
+    반환 = say 문장 · "deferred" · "not_quit:…" · "not_reopened:failed|unknown"."""
     if not wait_idle(plat, wait):
         _ledger({"event": "chrome_restart_deferred"})
         return "deferred"
@@ -1719,11 +1779,9 @@ def restart_chrome(plat, wait):
             return "not_quit:%d" % t
         _sleep(1)
         t += 1
-    open_chrome(plat)
-    t = 0
-    while not chrome_running(plat) and t < CHROME_QUIT_WAIT_SEC:
-        _sleep(1)
-        t += 1
+    res = reopen_chrome(plat)
+    if res != "ok":
+        return "not_reopened:" + res
     _sleep(3)
     after = chrome_windows(plat)
     _ledger({"event": "chrome_reopened", "before": list(before), "after": list(after)})
@@ -1781,6 +1839,8 @@ def cmd_chrome_disable(a):
         elif argv:
             said.append("연결 파일은 그 사이 다른 프로그램이 고쳐 써서 그대로 두었습니다.")
     if keep_state:
+        st.pop("pending_seat_restart", None)        # ★M5: 대기 중인 켜기 쪽 재시작을 취소(대기가 활성 기록 소멸을 보고 멈춘다)
+        st.pop("seat_restart_scheduled_at", None)
         _write_json(_p(CHROME_STATE), st)           # prior_key·key_restored 그대로 — 다음 끄기는 연결 파일만 다시
     else:
         try:
@@ -1788,7 +1848,7 @@ def cmd_chrome_disable(a):
         except OSError:
             pass
     if a.seat_restart in ("auto", "now"):
-        if schedule_seat_restart(SEAT_RESTART_DELAY_SEC) is not None:
+        if schedule_seat_restart(SEAT_RESTART_DELAY_SEC, after_disable=True) is not None:
             said.append("%d초 뒤 cysr 가 잠깐 다시 시작합니다(대화는 이어집니다)." % SEAT_RESTART_DELAY_SEC)
     head = "크롬 연결을 처음 상태로 되돌렸습니다." if prior else "크롬 기본 켜기를 껐습니다."
     return out({"ok": True, "say": " ".join([head] + said)})
@@ -2311,6 +2371,7 @@ def main(argv=None):
     sw = sp.add_parser("seat-restart-wait")
     sw.add_argument("--min-delay", type=int, default=SEAT_RESTART_DELAY_SEC)
     sw.add_argument("--surface", default="")
+    sw.add_argument("--after-disable", action="store_true", help="chrome-disable 이 띄운 대기(상태 파일을 만들지 않는다)")
     dc = sp.add_parser("decide")
     dc.add_argument("cat")
     dc.add_argument("--subject", default="")

@@ -103,7 +103,9 @@ def _line_is_exempt(line: str, ext: str) -> bool:
 def _scan_file(path: Path, root: Path) -> list[str]:
     """Return list of violation strings for this file."""
     rel = path.relative_to(root.parent)
-    if str(rel) in EXPLICIT_ALLOW_FILES:
+    # as_posix(): the allowlist is written with "/" — on Windows str(rel) uses "\\"
+    # and never matched, so phase0.py was flagged there (fleet C46 WARN · 2026-10-29).
+    if rel.as_posix() in EXPLICIT_ALLOW_FILES:
         return []
 
     ext = path.suffix.lower()
@@ -160,7 +162,7 @@ def _call_attr_name(func: ast.AST) -> str | None:
 def _scan_file_subprocess(path: Path, root: Path) -> list[str]:
     """Return env= violations for one .py file (Rule 2)."""
     rel = path.relative_to(root.parent)
-    if str(rel) in EXPLICIT_ALLOW_SUBPROCESS_FILES:
+    if rel.as_posix() in EXPLICIT_ALLOW_SUBPROCESS_FILES:
         return []
     try:
         src = path.read_text(encoding="utf-8", errors="strict")

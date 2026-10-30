@@ -55,6 +55,7 @@
 | L18 | 「1.1.10 으로」 조사를 1.1.11 로 그대로 옮기면 틀린다 — 「십일」 = ㄹ 받침 → **「로」** | 한국어 조사 규칙 | §6 notes-ko |
 | L19 | `test_phoenix_*.py` 는 태그 레인(release.yml:444)에서만 돈다 → 브랜치 CI 녹이어도 태그에서 처음 적이 된다(0.14.52 태그 런 39747056302 선례 · 이번 c6) | §I | 1-2c · §J |
 | L20 | phoenix 를 Python 3.9(/usr/bin/python3)로 돌리면 `test_phoenix_c6_reap` 이 8/8 거짓 적 — 3.9 에서 `socket.timeout` ≠ `TimeoutError` 라 `events()` 가 빈손이 된다. 태그 레인 = 3.12(release.yml:259-261) · 3.14 = 26/26 | §K | 1-2c 명령에 3.10 이상 PATH |
+| L22 | ★맥 자동 갱신이 기본 설치에서 apply 불가였다(1.1.8 부터 · 관측 0 인 채 세 판 공지) — 첫 관측 준비로 VM `--check` 를 읽고서야 드러났다 | §K-7 | 공개 문장 전부 제거 · 1.1.12 첫 항목 |
 | L21 | `pre-tag-ci-check` rc 0 이어도 비차단 주석이 남는다 — 1-1 의 「`trash::` 실패 이름 0」은 감독자 축이 30분 시간 초과로 끊겨 `trash::` 줄 자체가 0(통과 0·실패 0)이면 빈 판정이다 | §K | 1-1 확인 줄을 읽을 때 분모를 같이 본다 |
 
 ---
@@ -66,7 +67,7 @@
 | 0-1 | 머리 확정 = rel/1.1.11(이 문서 커밋 뒤 · master 재승인 push 뒤 CI 3런 같은 SHA) | `git log --oneline -3 rel/1.1.11` | 대기 |
 | 0-2 | 윈 실기 = **459d0cca 시험 판으로 통과**(10-30 20:2x · SS:1729 · ⓐ~ⓔ) | 원문 = 윈 master 회신 표 | 통과(병합 전 바이트) |
 | 0-3 | **윈 재실기** = r2 키트 7ccab38c windows-build 41066772814(wintest-v1.1.11-20261030b · 상담소 단추 · 첫 안내 · reap · 초기화 문구 + 실 크롬) · r3 키트 = 최종 머리 windows-build 런(바뀐 부분만 · master#10b2531d) · 발신 = master. ⚠그 레인은 release_seq 0 = 자동 갱신 대상 밖(1.1.10 0-3). ⚠갱신 경로(ⓑ)는 L16 대상 — 윈 1.1.10 → 1.1.11 은 어차피 수동 1회라 **설치기 경로로 올리는 1회**가 사용자 경로와 같다(태그 draft setup.exe) · 시행 여부 = master | 재실기 회신 표 | 대기 |
-| 0-4 | 자동 받기 **관측용 맥 1.1.10 기기 1대**를 손대지 않고 남긴다(L9) — 이 맥은 발행 뒤 손 교체 대상이라 관측 불가 · 어느 기기 = master · 윈은 수동 1회라 관측 대상 아님 | `cysr --version` · `build-info --json` `release_seq` 5 | 대기 |
+| 0-4 | **hold 사유 실측 기록용 VM** `jarvis-observe-1111`(공개 1.1.10 · 로그인 0 · 좌석 0 · 자격증명 복사 0)을 지우지 않고 유지한다(master#3e3039b5 · 목적 변경 = 「자동 받기 관측」 → 「hold 사유 실측 기록」) | `cysr --version` · `build-info --json` `release_seq` 5 · §K-7 | 준비됨 |
 | 0-5 | `release.yml` 자동 본문 = 1.1.10 에서 수리 · ⚠**윈 1.1.10 수동 1회는 말하지 않는다** → 3-2 에서 노트의 본문 초안으로 교체 판단 | 3-2 | 판단 대기 |
 | 0-6 | 발행 노트·공지·카톡 초안 확정 — 【발행 전 확인】 처리 = §8 | 박사님·master 확정 | 대기 |
 | 0-7 | `USER-MANUAL.md` v1.1.10→HEAD 변경 = `CYS_MAX_ACTIVE_WORKERS` 1행뿐 · ⚠컴퓨터 통제권·크롬 켜기 설명 0건(`grep 통제권` 0) | 설명서 보강 = master 판단(다음 판 가능) | 고지 |
@@ -99,7 +100,7 @@
 | # | 명령 | 확인 줄 | 롤백 |
 |---|---|---|---|
 | 3-1 | ★**순서 고정**(L3): ① 손대기 전 draft 사본 `~/cys-release-backup/v1.1.11-draft-before-r7/`(1.1.9 는 이 사본이 없고 `v1.1.9-assets/` 만 있었다) ② 맥 zip 2종 `gh release upload v1.1.11 …` ③ **구판 레인 tarball**: `bash scripts/make-darwin-updater-tarball.sh --app <arm64 cysr.app> --arch aarch64` · `… --arch x64`(A2 키 환경변수) → `gh release upload v1.1.11 cysr_{aarch64,x64}.app.tar.gz{,.sig} --clobber`(4종) ④ `python3 scripts/make-darwin-update-row.py --target darwin-aarch64 … --merge latest.json` · `--target darwin-x86_64 …` → `gh release upload … latest.json --clobber` ⑤ `python3 scripts/release-postprocess.py v1.1.11` → `… --apply` | 자산 14(1.1.9 공개 자산 = arm64·x64 zip · setup.exe/.sig/.zip · tar.gz 2 + .sig 2 · latest.json · pack 3종 · SHA256SUMS.txt) · ⚠`make-update-manifest.sh` 금지(윈 행 소실 · HANDOFF-118-r7:81) · zsh 는 `"${VAR}:…"` 중괄호 | 사본에서 복원 |
-| 3-2 | GitHub 본문 확인 — 0-5 수리로 자동 본문 설치 안내가 이제 사실대로 나온다(「cysr 터미널 v1.1.11. Windows는 -setup.exe, 맥은 cysr-macos-arm64(애플 실리콘)·cysr-macos-x64(인텔) zip을 … 앱 안 업데이트 단추는 없습니다 …」 + 출발지 줄) → **손 수정 불요가 기본**. 노트 초안의 「GitHub 릴리스 본문」 절(원작 판 0.14.51 표기 · A-1-3)로 바꾸고 싶으면 발행 **뒤** 편집(1.1.9 실제 = 발행 뒤 08:54 `gh release edit v1.1.9 -R oogisoogi/cys-ro --notes-file …` · draft 에서 `--tag` 동반 편집의 tag_name 영향 = 미확인) · 먼저 옛 본문 사본 `gh release view v1.1.11 -R oogisoogi/cys-ro --json body -q .body > r7/body-before.txt` | `gh release view v1.1.11 -R oogisoogi/cys-ro --json tagName,isDraft,body` = tagName v1.1.11 · body 에 「Update 버튼」 0 · 「윈도우 단독 배포」 0 · 3-8 뒤 `releases/latest/download/latest.json` 의 notes 도 같은 두 낱말 0 | `gh release edit v1.1.11 -R oogisoogi/cys-ro --notes-file r7/body-before.txt` |
+| 3-2 | GitHub 본문 교체 — ★**교체 확정**(master#bcc9056f ④ · #3e3039b5): 자동 본문 「1.1.8 이상은 자비스가 쉬는 시간에 새 판을 알아서 받고」(release.yml:1326)는 틀린 문장이다 → 노트 초안의 「GitHub 릴리스 본문」 절(윈·맥 줄 · 원작 판 0.14.52 표기 · A-1-3)로 발행 **뒤** 편집(1.1.9 실제 = 발행 뒤 08:54 `gh release edit v1.1.9 -R oogisoogi/cys-ro --notes-file …` · draft 에서 `--tag` 동반 편집의 tag_name 영향 = 미확인) · 먼저 옛 본문 사본 `gh release view v1.1.11 -R oogisoogi/cys-ro --json body -q .body > r7/body-before.txt` | `gh release view v1.1.11 -R oogisoogi/cys-ro --json tagName,isDraft,body` = tagName v1.1.11 · body 에 「Update 버튼」 0 · 「윈도우 단독 배포」 0 · 「알아서 받」 0(교체 뒤) · 3-8 뒤 `releases/latest/download/latest.json` 의 notes 도 같은 두 낱말 0 | `gh release edit v1.1.11 -R oogisoogi/cys-ro --notes-file r7/body-before.txt` |
 | 3-3 | 검증 = CI dry-run 의 verify 잡(1.1.9 실제 · 로컬 `release-verify.py`·`release-gate.py assets` 실행 기록 0) — 로컬로도 돌리면: `python3 scripts/release-verify.py --version 1.1.11 --release-dir r7/reviewed --prev-tauri-conf prev-conf.json --prev-pack-keyring prev-keys.json` · `python3 scripts/update/release-gate.py assets --release-dir r7/reviewed --pack-manifest r7/reviewed/pack-manifest.json` | 「릴리스 검증 통과 — 자산 13종(+SHA256SUMS.txt) · 업데이터 4행 전부 서명 일치 · 맥 자산 포함」 · 팩 replay 단조 위반 = E1 최소 재서명 → SUMS 재생성(RELEASE.md:98-117) | — |
 | 3-4 | `shasum -a 256 SHA256SUMS.txt`(3-1 ⑤ **뒤** 최종본 · 1.1.9 = 첫 dry-run 10febe52… → 최종 403a8be0…) = **release_bundle_sha256** | 기록 | — |
 | 3-7 | dry-run: `gh workflow run release-publish.yml -R oogisoogi/cys-ro --ref main -f tag=v1.1.11 -f release_bundle_sha256=<3-4> -f confirm=PUBLISH`(1.1.9 = `--ref main` 으로 통함 · 그때 main = 6fddbffe) — 지금 main = 502741c7(같은 계열 · dry_run 입력 있음 추정) · ⛔**422 가 나면 멈춤**(dry_run 을 빼고 다시 보내기 금지 · 메모리 reference_cys-release-publish-dryrun-needs-branch-ref) | 「SHA256SUMS.txt 다이제스트: … (입력과 일치)」 · 「맥 자산: 포함」 · 「✅ dry-run 완료 — … 발행은 하지 않았다」 | 바뀌는 것 없음 |
@@ -107,16 +108,16 @@
 | 2-5 ⛔ | (발행 직후) 보관소 게시 — §2 의 2-5 명령 | 2-5 확인 줄 | 2-5 |
 | 3-5 ⛔ | main 이동 — ★**이번엔 앞으로 감기**: `502741c7`(현 origin/main = v1.1.10)가 태그 후보의 조상(10-30 실측 `git merge-base --is-ancestor 502741c7 6690f9a8` = 참 · 복구 병합 덕) → cherry-pick·강제 push 불요. 집행 직전 재측: `git fetch origin && git merge-base --is-ancestor origin/main v1.1.11 && echo FF-OK` → 보존 가지 `git push origin 502741c7:refs/heads/archive/main-pre-1111-<발행일>` → `NEW=$(git rev-parse v1.1.11^{commit}); git push origin "${NEW}:refs/heads/main"`(강제 아님 · 중괄호 · L5) | 불변식 「main = 최신 발행 태그 커밋 + CI 전용 패치」 · `gh workflow list -R oogisoogi/cys-ro` 에 refresh-feed active · main 트리 `.github/workflows/refresh-feed.yml:66` `SITE: ${{ vars.CYS_FEED_FETCH_SITE \|\| …}}` 줄 | 보존 가지로: `git push --force-with-lease=main:${NEW} origin 502741c7:refs/heads/main` · FF-OK 가 안 나오면(누가 main 에 새 커밋) **멈춤** |
 | 3-6 | 봉투 재료(보관소 6 선행): `for ch in stable next; do gh workflow run refresh-feed.yml -R oogisoogi/cys-ro --ref main -f component=cysr -f channel=$ch -f release_seq=6 -f rollout_pct=100 -f halt=false -f first=false; done`(1.1.9 실제 명령 원문 T1 08:27:20 · seq 만 5) → `gh run download <run> -R oogisoogi/cys-ro -D r3s6/env/<run>` | 「Verify the NEW envelope」 초록 · 아티팩트 `envelope-cysr-stable`·`-next` · **feed_rev 값을 출력 그대로 기록**(A-5 · 추론 4) | 게시 전 — 무해 |
-| 3-9 ⛔ | 봉투 게시(stable·next 각각 · 먼저 `--dry-run`): `python3 scripts/update/publish-site.py envelope --r2 cysr-update --file r3s6/env/<run>/envelope-cysr-<ch>/env.json --cys <1.1.11 cys 바이너리> --dry-run` → 같은 명령 `--live-check https://jarvis.godmeyou.kr` | 「update-verify[…] 출발 seq 1,2,3,4,5,6 전부 허용 판정」 줄에 ★**macos-arm64 · macos-x64 · windows-x64 세 대상이 다 나오는지** — ⛔macos-x64 가 없으면 `--live-check` 로 넘어가지 말고 멈춤(1.1.9 는 macos-x64 가 없는데도 경고가 없었다 · L1) · 「라이브 대조 일치」 · `for f in cysr/stable.json cysr/stable.json.minisig cysr/next.json cysr/next.json.minisig; do printf '%s ' "$f"; curl -fsS "https://jarvis.godmeyou.kr/update/$f" \| shasum -a 256 \| cut -c1-64; done` = 아티팩트 sha 4 · 관측용 맥 1.1.10 기기(0-4)에서 `cysr self-update --check --json` = 새 판(seq 6) 있음 쪽 결과(정확 문구 미확인 — 1.1.9 때는 이미 올린 기기에서 `decision="uptodate"` 만 잼) | live-check 어긋남 = 자동 되돌림 rc 4/5 · 같은 rev 다른 내용 재게시 금지 · 비상 = refresh-feed `-f halt=true` → 게시(선례 미확인) · 이미 받은 기기는 못 되돌림 = 더 높은 판으로만(폐기문 = 사건 때만 R-RITUAL.md) |
+| 3-9 ⛔ | 봉투 게시(stable·next 각각 · 먼저 `--dry-run`): `python3 scripts/update/publish-site.py envelope --r2 cysr-update --file r3s6/env/<run>/envelope-cysr-<ch>/env.json --cys <1.1.11 cys 바이너리> --dry-run` → 같은 명령 `--live-check https://jarvis.godmeyou.kr` | 「update-verify[…] 출발 seq 1,2,3,4,5,6 전부 허용 판정」 줄에 ★**macos-arm64 · macos-x64 · windows-x64 세 대상이 다 나오는지** — ⛔macos-x64 가 없으면 `--live-check` 로 넘어가지 말고 멈춤(1.1.9 는 macos-x64 가 없는데도 경고가 없었다 · L1) · 「라이브 대조 일치」 · `for f in cysr/stable.json cysr/stable.json.minisig cysr/next.json cysr/next.json.minisig; do printf '%s ' "$f"; curl -fsS "https://jarvis.godmeyou.kr/update/$f" \| shasum -a 256 \| cut -c1-64; done` = 아티팩트 sha 4 · VM `jarvis-observe-1111`(0-4)에서 `cysr self-update --check --json` = ★**`decision="hold"` 예상**(feed verdict = apply · 발견 정상 · `gates.first_hold` = N6(VM 전원) · N5·N4 동반 · §K-7) — 값을 그대로 기록한다 · ⚠hold 는 실패가 아니다 | live-check 어긋남 = 자동 되돌림 rc 4/5 · 같은 rev 다른 내용 재게시 금지 · 비상 = refresh-feed `-f halt=true` → 게시(선례 미확인) · 이미 받은 기기는 못 되돌림 = 더 높은 판으로만(폐기문 = 사건 때만 R-RITUAL.md) |
 
 ## 4. 발행 뒤(설치기·사이트·알림)
 
 | # | 할 것 | 확인 줄 | 롤백 |
 |---|---|---|---|
 | 4-1 ⛔ | 설치기 핀 1.1.10 → 1.1.11(판·크기·sha256·CDHash 를 **발행 자산에서 다시 재서**) — 1.1.9 실제 = habitat `r8/publish-20261017` 143b821(설치기 0.3.40 → 0.3.41) · 라이브 핀 `bootstrap.sh:147` `CYS_FORK_VERSION="1.1.9"` · `bootstrap.ps1:141` `$CysVersion = '1.1.9'` → 공개 jarvis-install main 33447f8 → 16f67c4 · 이번 설치기 판 = **0.3.43** 차례(한 발행에 한 판 · H7:64-72) → `PUBLISH_CONFIRM=yes bash tools/publish-snapshot.sh --src . --dest ~/axdev/jarvis-install --push --terms-check tests/public-terms-check.sh --terms-list …` | 「SNAPSHOT-OK · 적중 0 · 삭제 (없음)」 · 핀 시험(맥·인텔·윈 · 1.1.9 = 17·0 / 11·0 / 12·0) · 함정(H7:64-72): 대상 clone origin = 공개 URL · 원격 git `PATH=/opt/homebrew/bin:$PATH` · x64 는 정적 검사만 · `.DS_Store` 지운 뒤 재실행 · 소요 1.1.9 = 기술 20분 + 라이브 5분 | 이전 핀 커밋으로 |
-| 4-2 ⛔ | 사이트(ai-jarvis): 공지 `site/notice/<발행일>/` · 손댈 자리 7(1.1.9 SITE-119 꼴: ①새 공지 index.html ②`site/notice/index.html` 목록 맨 위 ③`site/index.html` 머리 띠 ④`site/get/index.html` 머리 띠 — **끝 문단 링크만** `#install` 꼴이라 같은 치환을 두 파일에 쓰면 한쪽 0건 ⑤`site/devlog/index.html` 새 항목 + 시기 머리 ⑥`site/test/check-render.py` PAGES 한 줄 ⑦「최신 판」 숫자 스윕 `grep -rnI '1\.1\.[0-9]' site \| grep -v '^site/install/'`) → `bash site/test/gate.sh` → `bash web/build-web.sh` → 실렌더 6조합(대문·설치하기·공지 × 390/1440) → `cd web && wrangler deploy` · `bash web-install/deploy.sh --go`(npm ci 먼저) · ★**site/1111 가지를 site/hub 에 병합하고 push**(L11 — 안 하면 다음 배포가 옛 판으로 돌아감) | GATE=PASS · `/notice/<발행일>/` 200 · 띠 2곳 1.1.11 · 「최신 = 1.1.9」 잔존 0(첫 조회 엣지 HIT 가능 · 20초 뒤 재측) · 라이브↔빌드 대조 때 Cloudflare 주입 2조각 제외 · `/install/next` 404(실기 때 썼으면 삭제) · 공개 저장소 checks [사이트] 대조 붉은 창 0(H7:72) | 이전 커밋 재배포 |
+| 4-2 ⛔ | 사이트(ai-jarvis): 공지 `site/notice/<발행일>/` · 손댈 자리 7(1.1.9 SITE-119 꼴: ①새 공지 index.html ②`site/notice/index.html` 목록 맨 위 ③`site/index.html` 머리 띠 ④`site/get/index.html` 머리 띠 — **끝 문단 링크만** `#install` 꼴이라 같은 치환을 두 파일에 쓰면 한쪽 0건 ⑤`site/devlog/index.html` 새 항목 + 시기 머리 ⑥`site/test/check-render.py` PAGES 한 줄 ⑦「최신 판」 숫자 스윕 `grep -rnI '1\.1\.[0-9]' site \| grep -v '^site/install/'` ⑧★자동 갱신 문장 스윕 `grep -rnI '알아서 받\|쉬는 시간' site` — 대문·/get/ 「1.1.8이나 1.1.9를 쓰고 계시면 … 알아서 받아 둡니다」 교체 · 처분 §K-7) → `bash site/test/gate.sh` → `bash web/build-web.sh` → 실렌더 6조합(대문·설치하기·공지 × 390/1440) → `cd web && wrangler deploy` · `bash web-install/deploy.sh --go`(npm ci 먼저) · ★**site/1111 가지를 site/hub 에 병합하고 push**(L11 — 안 하면 다음 배포가 옛 판으로 돌아감) | GATE=PASS · `/notice/<발행일>/` 200 · 띠 2곳 1.1.11 · 「최신 = 1.1.9」 잔존 0(첫 조회 엣지 HIT 가능 · 20초 뒤 재측) · 라이브↔빌드 대조 때 Cloudflare 주입 2조각 제외 · `/install/next` 404(실기 때 썼으면 삭제) · 공개 저장소 checks [사이트] 대조 붉은 창 0(H7:72) | 이전 커밋 재배포 |
 | 4-3 | 카톡 문안 `docs/release-1111/KAKAO-1111.draft.md` → 라이브 공지와 대조 → 박사님 전달(발송 = 박사님) · ★보낸 **최종본을 그대로 파일로 커밋**(L10) | 링크 200 · 공지 앵커 | — |
-| 4-4 | 실기기 자동 받기 첫 관측(0-4 기기): 어댑터 연결 · 유휴 → 다음 점검 뒤 「자비스가 새 판으로 바뀌었어요」 알림 · `cysr --version` = 1.1.11 · `build-info --json` `release_seq` 6 — 관측 전이면 공지·카톡의 「알아서 받습니다」 = 대체 문장(노트·카톡 초안에 둘 다 준비) | 관측 기록 1줄 | — |
+| 4-4 | 자동 받기 관측 = **이번 판 해당 없음**(근거 `src/update/sched.rs:151-154`·`:217-229` · §K-7 · master#3e3039b5) · 공지·카톡에 자동 갱신 문장 0 | 3-9 의 hold 값 기록으로 갈음 | — |
 
 ## 5. 미확인 모음(집행 전 master 확정)
 
@@ -128,7 +129,7 @@
 |---|---|---|---|---|
 | `--release-seq` | 5 | **6** | A-5 | High |
 | `--min-from-release-seq` | 1(체크리스트 권고 · 실제 본문 대조 = R4 때) | **1** | 계약 `0 ≤ 값 < release_seq` · 열거 폭 6 ≤ 256 | Med |
-| `--state-migration` | none | **none 권고 — 판정 = master** | 전수 감사 = §K-1 · 개명·삭제·기존 타입 변경 0 · 새 파일·새 키 가산뿐(1.1.10 과 같은 기준) · 값 분기 코드 = `breaking` 하나뿐 | High(코드 판독 · 왕복 실기 0) |
+| `--state-migration` | none | **none**(master#bcc9056f ①) | 전수 감사 = §K-1 · 개명·삭제·기존 타입 변경 0 · 새 파일·새 키 가산뿐(1.1.10 과 같은 기준) · 값 분기 코드 = `breaking` 하나뿐 | High(코드 판독 · VM 왕복 1회) |
 | `--notes-ko` | `'cysr 1.1.10 으로 새로 갱신되었습니다.'` | **`'cysr 1.1.11 로 새로 갱신되었습니다.'`** | ≤80자 · 금지 어휘 0 · 조사 L18 | High |
 | `--requires-min-binary-for-pack` | 1.1.10 | **1.1.11** | 두 레인과 같은 값 · 빈 값 = 발행 거부 · 본문↔매니페스트 대조 게이트 없음 → 2-3 손 대조 | High |
 | `PACK_MIN_BINARY` = `PACK_MIN_BINARY_OVERRIDE` | 1.1.10 | **1.1.11**(459d0cca 에 있음) | release.yml:1521 · pack-release.yml:97 | High |
@@ -150,8 +151,8 @@
 
 | # | 자리 | 무엇을 보면 닫히나 | 언제·누가 | 지금 |
 |---|---|---|---|---|
-| N1 | 노트 받는 방법 첫 줄 · 카톡 ① | 윈 1.1.9 기기 복구기 상태 | master | ☐ |
-| N2 · K② | 노트 받는 방법 맥 줄 | 맥 실기기 자동 받기 관측 | 봉투 게시 뒤 → 기본 = 【대체 문장】 | ☐ |
+| N1 | 노트 받는 방법 첫 줄 · 카톡 ① | (닫힘) 윈·맥 통일 문장에 흡수 | master#3e3039b5 | ☑ |
+| N2 · K② | 노트 받는 방법 맥 줄 | (닫힘) 자동 문장 제거 · 윈·맥 통일 | master#3e3039b5 | ☑ |
 | N3 · K③ | 인텔 맥 | seq 6 x64 행(2-3) | R4 · master | ☐ |
 | N4 · K④ | 컴퓨터 맡기기 절 | 실 크롬 실기(§G ⚠) | master | ☐ |
 | N5 | 윈도우 줄별 근거 | 1.1.11 윈 실기 표 칸 대조 | master | ☐ |
@@ -256,7 +257,7 @@
 
 ### K-1. `--state-migration` 감사(v1.1.10..060cb75b)
 
-권고 = **none**(이 프로젝트 기준 「가산뿐이면 none」 · 브리프 · §6 · 1.1.10 선례). 글자 뜻으로는 `additive` 도 맞고, v1.1.8·1.1.9·1.1.10 클라이언트 모두 세 값을 받는다(`feed.rs` 대조). 그래도 none 을 권하는 까닭 = 값에 따라 갈리는 코드는 `breaking` 하나뿐이고(feed.rs:671), `additive` 는 공개된 적이 없는 값이라 얻는 것 없이 처음 쓰는 값이 된다.
+판정 = **none**(master#bcc9056f ① · 이 프로젝트 기준 「가산뿐이면 none」 · 브리프 · §6 · 1.1.10 선례). 글자 뜻으로는 `additive` 도 맞고, v1.1.8·1.1.9·1.1.10 클라이언트 모두 세 값을 받는다(`feed.rs` 대조). 그래도 none 인 까닭 = 값에 따라 갈리는 코드는 `breaking` 하나뿐이고(feed.rs:671), `additive` 는 공개된 적이 없는 값이라 얻는 것 없이 처음 쓰는 값이 된다.
 
 | 분류 | 항목 | 옛 → 새 | 새 → 옛(1.1.10) | 위험 |
 |---|---|---|---|---|
@@ -278,8 +279,8 @@
 
 | # | 판정 | 무엇이 있어야 닫히나 |
 |---|---|---|
-| N1 | **코드로 판정** — `src/update/win_task.rs` blob 이 v1.1.8·v1.1.9·v1.1.10 동일(b13d35233a · 플래그 6) → 같은 문제로 본다 · 기기 실측 0 | 문구를 「1.1.8 이상」으로 넓힐지 master 결정(노트·카톡 주석에 적음) |
-| N2 · K② | 불가 | 맥 1.1.10 기기 자동 받기 관측 · 문안 = A안 자리 · ⚠관측 기기는 **작업 창 0** 이어야 한다(작업 창이 있으면 옛 러너 S4 에서 보류) |
+| N1 | **닫힘** — `src/update/win_task.rs` blob 이 v1.1.8·v1.1.9·v1.1.10 동일(b13d35233a · 플래그 6) · 기기 실측 0 · 「1.1.8 이상」(master#bcc9056f ②)은 윈·맥 통일 문장에 흡수 | — |
+| N2 · K② | **닫힘** — 자동 문장 제거(§K-7) | — |
 | N3 · K③ | 불가 | seq 6 본문 자산 행 3(2-3) · 맥 x64 빌드 |
 | N4 · K④ | 불가 | 윈 = 크롬 수리 병합 뒤 r4 · 맥 실 크롬 실기 기록 |
 | N5 | 불가 | 윈 r3·r4 회신 표 칸 대조 |
@@ -289,13 +290,13 @@
 
 | # | 항목 | 판정 / 필요한 것 |
 |---|---|---|
-| 1 | 관측용 맥 지정 | master 지정 필요 · 조건 = 1.1.10 · 작업 창 0 · 전원 연결 |
+| 1 | 관측 VM | `jarvis-observe-1111` · 목적 = hold 사유 실측 기록(§K-7) · 자동 받기 관측 대상 없음 |
 | 2 | 윈 재실기 범위 | r3 진행 중 · 윈 master 회신 필요 · 갱신 경로 1회 시행 = master |
 | 3 | 윈 1.1.9 복구기 | K-2 N1 = 코드로 같음 |
 | 4 | 봉투 만료 | 실측 stable expires_at 1793970858 = **2026-11-06 22:14 KST** · 오늘 발행이면 무관 |
-| 5 | state_migration | none 권고(K-1) · master 판정 |
-| 6 | 캐너리(R8) | master 결정 필요 |
-| 7 | 자동 본문 교체(0-5) | **교체 권고** — release.yml:1326 자동 본문 「1.1.8 이상은 … 알아서 받고」는 윈도우에 틀린 문장이다(N1) · 발행 뒤 3-2 절차로 노트 본문 초안으로 교체 |
+| 5 | state_migration | **none 확정**(master#bcc9056f ①) |
+| 6 | 캐너리(R8) | **미시행 · rollout 100 으로 바로**(master#bcc9056f · 근거 = halt 스위치·`docs/RELEASE-ROLLBACK.md` 준비됨 · 1.1.10 선례 · 자동 갱신이 게이트에서 보류라 봉투로 유입되는 기기도 없다) |
+| 7 | 자동 본문 교체(0-5) | **교체 확정** — release.yml:1326 문장은 윈·맥 모두 틀렸다(§K-7) · 발행 뒤 3-2 절차 · 문장 = 노트 내부 본문 초안 |
 | 8 | §G ⚠ | 깨끗한 기기·phoenix 해소 · 실 크롬 실기만 남음(N4) |
 | 9 | `test_phoenix_c6_reap.py` | 해소(K 표) |
 
@@ -316,6 +317,31 @@
 
 ⚠닫히지 않은 것: ① 이 실기는 **설치기가 1.1.11 을 받는 경로가 아니다**(핀 1.1.10 · 1.1.11 설치기 핀은 발행 뒤 4-1) ② [5/10] 이후는 로그인이 필요해 설치기 본체로는 재지 않았다 ③ 시험 빌드는 `-dirty`(문서 변경분) · seq 미배정 ④ 맥 전용 · 인텔 미측정.
 관측 2: ⓐ 앱이 켜진 채 데몬만 바뀌면 상단 「엔진」 라벨이 옛 판을 유지한다 — 내 교체 스크립트가 데몬 작업을 내리지 않아 옛 데몬에 잠깐 붙은 것으로 추정(`left=3` · 앱만 다시 열면 맞다) · 발행 차단 아님 ⓑ 설치 안 된 CLT 안내가 첫 실행 경고로 뜨는 것은 설계대로.
+
+### K-7. 맥 자동 갱신 = 기본 설치에서 apply 불가(master#3e3039b5 결정 A · 전문 = 인박스 155275줄 2026-10-31T07:42:16+0900 【경고】【결정필요】)
+
+| 근거 | 내용 |
+|---|---|
+| `src/update/sched.rs:151-154` | `may_fire_within`: `every_minutes` 잡 = 무조건 true |
+| `:217-229` | 표식 없음·bulk:true 주기 잡 → `bulk_within_48h` · bulk:false 주기 잡 → `nonbulk_within_60m` · publish:true/없음 주기 잡 → `publish_within_48h` |
+| 기본 `schedule.json` | `agora-counsel` publish:true · every 30 / 내장 잡 대부분 표식 없음 / `self-update-check` 자신 = bulk:false · every 360 → N4 두 갈래·N5 ⓒ 상시 참 |
+| `check.rs decide` | Verdict::Apply ∧ 게이트 불통과 = hold · 러너 진행 없음 |
+| 판 범위 | v1.1.8·1.1.9·1.1.10·060cb75b 동일(세 파일 diff 0) → 이미 깔린 판은 1.1.11 을 자동으로 못 받는다 · 1.1.11 도 같은 코드 |
+| 한계 | VM 에 후보 판이 없어 지금 decision = uptodate(hold 는 코드 판정 · 게이트 보류는 실측) · `schedule.json` 을 손으로 고친 기기는 예외일 수 있다 · 자동 갱신이 일어난 기록은 못 찾았다(일어나지 않았다는 증명은 아님) |
+
+**이미 나간 문장(1.1.10 까지 · 정정 판단 = master)**: 라이브 `/notice/2026-10-23/` · 대문 「자비스가 쉬는 시간에 새 판을 알아서 받습니다」 · 대문·`/get/` 「1.1.8이나 1.1.9를 쓰고 계시면 … 알아서 받아 둡니다」 · 공지 목록 제목 「자비스 새 판 1.1.8 · 다음 판부터는 자비스가 알아서 받습니다」 · v1.1.10 GitHub 본문 「1.1.8 이상은 … 알아서 받고」 · 저장소 `README.md:464` · `USER-MANUAL.md:1454·1457` · `docs/index.html:62`(이 셋은 rel/1.1.11 에도 있다 · 이 티켓에서 안 고침).
+
+**VM `jarvis-observe-1111`**(새 복제본 · 공개 1.1.10 · sha·CDHash 핀 일치 · 로그인 0 · 자격증명 복사 0 · 앱 켜 둠 · 접속 admin 기본 계정): 점검 경로는 로그인 없이 돈다 — `self-update --auto --spawn` rc 0 · 러너 사본 기동 · 복구기 LaunchAgent 등록(N14 통과) · 주기 = 6시간 + 지터 0~45분 · `src/update/auto.rs`·`check.rs`·`gates.rs`·`feed.rs` 에 로그인 참조 0.
+잡 자가 발화 기록 = `self-update-check` last_fired 1793400048(07:40:48 KST · 손 실행 07:42 보다 앞) · ⚠result 칸은 빈 값이라 그 발화가 끝까지 돌았는지는 미확인 · 손 실행 뒤 러너 종료 · `state.json` = `{}`(후보 없음).
+
+| 시각(10-31) | 좌석 | os_idle | decision | 보류 게이트 |
+|---|---|---|---|---|
+| 07:40(첫 값) | 일반 pane 1 | 49초 | uptodate | N14 · N6 · N5 · N4 · N1 · N2 |
+| 07:42(복구기 등록 뒤) | pane 1 | 194초 | uptodate | N6 · N5 · N4 · N1 · N2 |
+| 07:58(좌석 0) | 0 | 1146초 | uptodate | N6 · N5 · N4 · N2 |
+| 08:00(N2 창 지남) | 0 | 1238초 | uptodate | **N6 · N5 · N4** |
+
+읽는 법: ⓐ N5·N4 = 모든 기본 설치 공통 · 영구 ⓑ N6 = VM 전용(`pmset -g adapter` = 「No adapter attached.」 · `pmset -g ps` 는 AC 라 읽지만 코드는 adapter 만 본다 · 배터리 없음) · 영구 ⓒ N1 = 일반 pane 은 자기신고가 없어 영구 보류 — 앱이 켜진 기기에서 pane 이 하나라도 있으면 막힌다(pane 을 닫아 0 으로 뒀다 · 재부팅·앱 재시작 때 pane 이 다시 생기면 N1 이 다시 나타난다). 발행 뒤 3-9 에서 feed verdict = apply 인데 decision = hold 가 나오는지 이 VM 으로 기록한다.
 
 ### K-5. CI 비차단 주석(060cb75b · rc 0 인데 남은 것)
 
@@ -340,6 +366,7 @@ python3 -c "import runpy,subprocess,sys,urllib.request as u;t=subprocess.check_o
 
 ## J. 1.1.12 BACKLOG(이 준비에서 나온 것)
 
+- [ ] ★**첫 항목 — 자동 갱신 게이트 수리 + 실기**: `may_fire_within` 주기 잡 판정 · 내장 잡 `bulk`·`publish` 표식 · `agora-counsel` publish 판정 + **S4 이후 전 구간 실기(맥 VM·윈)** — 이 경로는 공개 기기에서 한 번도 돈 기록이 없다 · 근거 전문 = 인박스 155275줄(2026-10-31T07:42:16+0900 · worker-relprep) · §K-7 · 공개 문장 `README.md:464`·`USER-MANUAL.md:1454·1457`·`docs/index.html:62`·release.yml:1326 을 함께 맞춘다.
 - [ ] **int 가지가 발행 태그를 조상으로 갖는지 게이트** — `scripts/pre-tag-ci-check.py` 에 is-ancestor 검사(최신 공개 태그 ∧ origin/main 이 태그 후보의 조상이 아니면 태그 금지 · master#e9af822d). 근거 = §H · L15.
 - [ ] 태그 레인 전용 시험(`test_phoenix_*.py`)을 태그 전에 돌리는 길 — 브랜치 CI 또는 pre-tag 수동 줄(L19).
 - [ ] **수용된 가지 편입 원장** — 수용 ≠ 편입 · 태그 전 수용 가지 전수 is-ancestor 검사(master#8fd148bb · fix/1111-backlog-misc·fix/1111-fable-fixes 실증).

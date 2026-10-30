@@ -50,14 +50,39 @@ v0.14.31 이었나」를 나중에 아무도 확정할 수 없기 때문이다. 
 - ⚠ 팩 채널(`pack-v*` 태그 → `pack-release.yml`)은 **별도 레인**이고 승인 게이트 없이 곧장 공개된다.
   본체 발행과 혼동하지 마라.
 
-## 2. 되돌릴 수 있는 것 — 업데이터 표면 (권장 1순위)
+## 2. 유입 멈추기 — ① 서명 봉투 halt ② `latest` 되돌리기 (이 순서로)
 
-앱의 updater 엔드포인트는 **`releases/latest/download/latest.json`** 이다
-(`src-tauri/tauri.conf.json`). 즉 **어느 릴리스가 `latest` 인가**가 배포 표면 전부를 결정한다.
-그래서 가장 빠르고 가장 안전한 롤백은 릴리스를 지우는 것이 아니라 **`latest` 를 되돌리는 것**이다.
+⛔**`latest` 되돌리기만으로는 자동 갱신이 멈추지 않는다.** 1.1.8 부터 새 판 판정은 데몬 자동 갱신(`cysr self-update`)이 하고,
+그것이 읽는 곳은 GitHub 가 아니라 **서명 봉투** `https://jarvis.godmeyou.kr/update/cysr/<stable|next>.json` 이다
+(`src/update/check.rs:420` · 봉투 게시 = `docs/update/HANDOFF-U3.md` §1 ③). 옛 봉투를 다시 올리는 길도 없다 —
+기기는 수용한 `feed_rev` 미만을 replay 로 거부하고(`src/update/feed.rs:580`) 생성기도 낮은 `release_seq` 를 거부한다
+(`scripts/update/make-envelope.py:67`). 정지 지렛대는 **`feed_rev`+1 의 halt 봉투** 하나다(`src/update/feed.rs:698` · 게이트 N9 =
+`src/update/gates.rs:175`).
+
+**① halt 봉투 게시 — 첫 단계.** stable·next 둘 다 한다(`release_seq`·`rollout_pct` 를 비우면 지금 봉투의 본문·비율을 이어받고
+`feed_rev` 는 워크플로가 +1 한다). 이 워크플로는 만들고 검증만 하고 게시는 **master 로컬**이다.
 
 ```bash
-# 직전 정상 릴리스를 다시 latest 로 —— 이것만으로 신규 업데이트 유입이 멈춘다
+for ch in stable next; do
+  gh workflow run refresh-feed.yml -R oogisoogi/cys-ro --ref main \
+    -f component=cysr -f channel=$ch -f halt=true -f first=false
+done
+# 런마다 아티팩트 envelope-cysr-<ch> 를 받아서(gh run download <RUN> -R oogisoogi/cys-ro -D <폴더>) 채널마다:
+python3 scripts/update/publish-site.py envelope --r2 cysr-update --file <폴더>/envelope-cysr-<ch>/env.json --cys <cys 바이너리> --dry-run
+python3 scripts/update/publish-site.py envelope --r2 cysr-update --file <폴더>/envelope-cysr-<ch>/env.json --cys <cys 바이너리> --live-check https://jarvis.godmeyou.kr
+# 되읽어 확인 — halt true · feed_rev 가 올랐는가
+curl -fsS https://jarvis.godmeyou.kr/update/cysr/<ch>.json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["feed_rev"], d["halt"])'
+```
+
+- halt 는 **설치판보다 새 후보**의 자동 설치만 막는다. 이미 올라간 기기는 그대로이고, 진행 중인 갱신을 끊지도 않는다(§4).
+- 주간 재서명(cron)은 halt 를 **이어받는다** — 멈춘 상태가 저절로 풀리지 않는다.
+- 푸는 것 = 같은 워크플로 `-f halt=false`. ⚠봉투가 문제 판을 실은 채 풀면 수동으로 내린 기기(§2-b)가 **문제 판으로 다시 올라간다**
+  (설치 seq < 본문 seq = 후보 · `src/update/feed.rs:653`). 고친 판(`-f release_seq=<고친 seq> -f halt=false`)으로 푼다.
+
+**② `latest` 되돌리기 — 나머지 표면.** 공개 다운로드 페이지(`docs/index.html` 이 최신 릴리스를 읽는다) · 팩 매니페스트
+(`releases/latest/download/pack-manifest.json` · `src/update/realops.rs:1364`) · 1.1.7 이하 앱의 `latest.json` 은 `latest` 를 따른다.
+
+```bash
 gh release edit v<이전> -R oogisoogi/cys-ro --tag v<이전> --latest
 gh release view -R oogisoogi/cys-ro --json tagName,isDraft   # 되읽어 확인
 ```
@@ -65,10 +90,28 @@ gh release view -R oogisoogi/cys-ro --json tagName,isDraft   # 되읽어 확인
 ⚠`--tag` 를 반드시 동봉한다 — `tag_name` 을 빠뜨린 릴리스 PATCH 는 태그를 `untagged-<sha>` 로
 리셋한 전례가 있고, 그러면 다운로드 URL 이 전부 어긋난다(`release-publish.yml` ④ 주석 참조).
 
+## 2-b. 이미 올라간 기기 되돌리기 — 수동 재설치뿐
+
+자동으로 내려가는 경로는 없다(§4). 그 기기에서 사람이 이전 판을 다시 설치한다. ⚠**이 절은 코드 대조로 쓴 것이고 왕복 리허설은 하지 않았다.**
+먼저 §2 ① 이 게시됐는지 확인한다 — 안 그러면 내린 기기가 다음 점검에서 다시 올라간다.
+
+1. **내리기 전에 큐를 비운다**(1.1.11 → 1.1.10): 1.1.11 의 UNKNOWN 보류 본문은 `queue-state.json` 에 남고 재전송 금지 표지는 별도
+   `queue-write-holds.json` 에만 있는데, 1.1.10 은 그 파일을 모른다 — 일반 미배달로 복원해 **같은 지시를 다시 보낼 수 있다**.
+   `cys queue list` 로 남은 항목을 보고 좌석마다 `cys queue clear surface:<N>`. 좌석 안에서 치면 남의 좌석은 거부되니 좌석 밖 터미널에서 한다.
+2. 재설치: 맥 = 릴리스의 `cysr-macos-<arm64|x64>-v<이전>.zip` 을 풀어 `cysr.app` 교체 · 윈 = `cysr_<이전>_x64-setup.exe` 실행.
+3. **팩을 함께 내린다**: 바이너리만 내리면 새 판 팩이 남는다 — 다운그레이드 차단(`src/pack.rs:4199-4215`)이 `init-pack` 을 막고 팩의
+   바이너리 하한 때문에 원격 팩 갱신도 안 온다. `cys init-pack --force`(사용자 수정본도 덮어쓴다 · `cys pack-rollback` 은 파일 단위 복원이다).
+4. 맥 launchd: 1.1.10 은 plist 를 다시 쓸 때 사용자 env 를 보존하지 않는다(보존은 1.1.11 부터 · `src/launchd.rs:252-270`).
+   `~/Library/LaunchAgents/com.cysjavis.cysd.plist` 에 넣어 둔 env 는 내리기 전에 적어 두고 다시 넣는다.
+5. 수용 기록: `accepted-cysr-<채널>.json`(맥 `~/.cys/update/` · 윈 `%LOCALAPPDATA%\cys-update\`)에 내리기 전 설치 seq(1.1.11 = 6)가 남는다.
+   기록은 판정에 쓰이지 않고(판정 = 실행 바이너리의 seq · `src/update/check.rs:454`) uptodate 판정일 때만 다시 쓰인다
+   (`src/update/cli.rs:356-376`). 그때 「수용 기록 후퇴 거부」로 점검이 rc 3 이면(`src/update/feed.rs:799`) 데몬을 멈춘 뒤 그 파일을 지운다
+   — 부재 = 정상이고(`feed.rs` `read_accepted`) 다음 수용 때 새로 쓰인다.
+
 ## 3. 되돌릴 수 있는 것 — 문제 릴리스 자체
 
-`latest` 를 되돌린 **뒤에** 판단한다. 순서를 바꾸지 마라 — 지우는 동안 그것이 latest 면 그 창에
-들어온 참가자가 404 를 본다.
+§2 의 halt 봉투와 `latest` 되돌리기 **뒤에** 판단한다. 순서를 바꾸지 마라 — 지우는 동안 그것이 latest 면 그 창에
+들어온 참가자가 404 를 보고, 봉투가 그 판을 가리키는 채로 내리면 기기는 후보로 판정한 뒤 자산 받기에서 실패한다.
 
 > ⚠**손대기 전에 먼저 확인하라 — 옛 릴리스 3개가 prerelease 상태인가?**
 > 아니라면 우리 릴리스를 draft 로 내리는 순간 `/releases/latest` 의 fallback 이
@@ -88,7 +131,8 @@ gh release delete v<문제> -R oogisoogi/cys-ro                            # 최
   **그 다음 후보**가 latest 가 된다. 실측(2026-09-09): 이 저장소에는 2026-07 의 옛 릴리스 3개가
   남아 있고 그중 `feat/tab-ui-font-blink` 가 **0.12.58 짜리 latest.json 을 자산으로 갖고 있다**.
   즉 롤백이 엔드포인트를 「업데이트 없음」이 아니라 **0.12.58 매니페스트**로 떨어뜨릴 수 있다.
-  롤백 직후 `curl -sL <endpoint>` 로 무엇이 나오는지 눈으로 보고, 아니면 §2 로 명시 복원하라.
+  롤백 직후 `curl -sL https://github.com/oogisoogi/cys-ro/releases/latest/download/latest.json` 으로 무엇이 나오는지
+  눈으로 보고, 아니면 §2 ② 로 명시 복원하라.
 - 삭제는 자산까지 사라진다. 사후 분석이 불가능해지므로 오너 지시가 있을 때만.
 - 태그(`refs/tags/vX.Y.Z`) 는 **남겨 둔다**. 태그를 지우고 같은 이름으로 다시 자르면
   이미 그 태그를 받아 간 클론과 이력이 갈린다.
@@ -122,11 +166,11 @@ done
 
 ## 4. 되돌릴 수 **없는** 것 — 정직하게 적는다
 
-- **이미 갱신된 참가자는 되돌아오지 않는다.** 업데이터는 내려받아 설치까지 끝냈고, 우리에게는
-  그들을 되돌릴 통로가 없다. `latest` 복원은 **앞으로의 유입만** 막는다.
-- 되돌리려면 **더 높은 버전으로 고쳐 올리는 것**이 유일한 길이다(vX.Y.Z+1 정방향 수복).
-  버전을 낮춰 재발행하는 경로는 없다 — updater 는 `release.version > current_version` 일 때만
-  움직인다(`tauri-plugin-updater` 2.10.1 `updater.rs`).
+- **이미 갱신된 참가자는 자동으로 되돌아오지 않는다.** 갱신기는 내려받아 설치까지 끝냈고, 우리에게는
+  그들을 원격으로 되돌릴 통로가 없다. §2 의 halt·`latest` 는 **앞으로의 유입만** 막는다(그 기기 하나를 내리는 길 = §2-b 수동 재설치).
+- 전체를 되돌리려면 **더 높은 순번으로 고쳐 올리는 것**이 유일한 길이다(vX.Y.Z+1 정방향 수복).
+  순번을 낮춰 재발행하는 경로는 없다 — 기기는 본문 `release_seq` 가 설치 seq 보다 클 때만 움직이고
+  (`src/update/feed.rs:653`), 낮은 seq 의 봉투는 생성기가 거부한다(`scripts/update/make-envelope.py:67`).
 - 공개된 순간 자산은 이미 내려받아졌을 수 있다. 서명키가 샜다면 롤백이 아니라 **키 교체**가 답이다.
 
 ## 5. 맥이 빠진 릴리스에서의 특이사항 (2026-09-09 현재)

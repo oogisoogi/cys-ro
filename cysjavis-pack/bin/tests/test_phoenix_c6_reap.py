@@ -92,6 +92,23 @@ def main():
                     reply = json.loads(stream.readline(2_000_000))
             assert reply.get('ok'), 'isolated RPC failed: %s %s' % (method, reply.get('error'))
             return reply['result']
+        def events(*names):
+            # events.stream replays the ring from after_seq; read what is there and stop at the first quiet gap.
+            assert endpoint.parent == root
+            lines, tail = [], b''
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.settimeout(0.3)
+                s.connect(str(endpoint))
+                s.sendall((json.dumps({'id':'s5-events','method':'events.stream','params':{'after_seq':0,'names':list(names),'categories':[]}})+'\n').encode())
+                try:
+                    while chunk := s.recv(65536):
+                        tail += chunk
+                except TimeoutError:
+                    pass
+            for line in tail.split(b'\n'):
+                with contextlib.suppress(ValueError):
+                    if isinstance(row := json.loads(line), dict) and row.get('name') in names: lines.append(row)
+            return lines
         def until(fn, seconds=8):
             deadline = time.monotonic() + seconds
             while time.monotonic() < deadline:
@@ -144,7 +161,10 @@ def main():
                 p.observe_and_persist_roster(str(endpoint))
                 until(lambda: any(s['surface_id'] == old and s['exited'] for s in surfaces()))
                 exited_observed = time.monotonic()
-                until(lambda: any(e['id'] == queue_id and e.get('restored') for e in rpc('queue.list')['entries']))
+                # Fork D7(2): an exiting role seat parks its queue on the role name and the next claim inherits it
+                # (upstream Q7 moves it to restored_queue). Parking follows the exited flag, so spawn must wait for it.
+                until(lambda: any(queue_id in e['payload'].get('queue_entry_ids', []) and e['payload'].get('role') == 'worker-s5-native'
+                                  for e in events('queue.parked')))
                 spawn_ids = []
                 def spawn(sock, role, observed, **kwargs):
                     assert sock == str(endpoint) and role == 'worker-s5-native'
@@ -167,6 +187,8 @@ def main():
                     second = p.run_restore(str(endpoint),ticket='s5-second',stub=True,no_breaker=True,print_result=False)
                     assert second['target_roles'] == [] and spawn_ids == [new], 'S5 duplicate restore'
                 until(lambda: any(e['id'] == queue_id and e.get('surface_id') == new and not e.get('restored') for e in rpc('queue.list')['entries']))
+                assert any(queue_id in e['payload'].get('queue_entry_ids', []) and e['payload'].get('to_surface') == new
+                           for e in events('queue.inherited')), 'S5 queue must be inherited by the replacement'
                 assert any(s['surface_id'] == live and not s['exited'] for s in surfaces()), 'S5 live control lost'
                 assert rpc('system.resolve_role',{'role':'worker-s5-native'})['surface_id'] == new
                 # Only this fixture waits; restore does not wait through grace.

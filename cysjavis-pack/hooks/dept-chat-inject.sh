@@ -62,7 +62,10 @@ T="$_H/../bin/javis_dept_request.py"
 [ -f "$T" ] || T="${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_dept_request.py"
 [ -n "$CYS_PY" ] && [ -f "$T" ] || exit 0
 
-OUT=$(printf '%s' "$HOOK_IN" | cys_timeout_run 4 "$CYS_PY" "$(cys_native_path "$T")" hook-prompt 2>/dev/null)
+# ★1.1.11 TICKET=win-dept-chat-inject-timeout: 상한 4→8초. 본체 일은 가볍다(맥 ~0.04초) — 윈 1.1.10 마스터 rc124(10-28·29)는
+#   해석기 기동(냉시작·백신 검사·같은 턴 role-bootstrap 파이썬과 동시 기동)이 4초를 먹은 것이다(추정 · 실기 미측정).
+#   바깥 하네스 선언(javis_preflight HOOK_TIMEOUT_S = 10)보다 작아야 rc 기록이 남는다(tests/test_dept_chat_inject_timeout.py).
+OUT=$(printf '%s' "$HOOK_IN" | cys_timeout_run 8 "$CYS_PY" "$(cys_native_path "$T")" hook-prompt 2>/dev/null)
 RC=$?
 if [ "$RC" -ne 0 ]; then
   echo "[cys-hook] 부서 대화 주입 실패(rc=$RC) — 주입 생략(dept-chat-inject)" >&2

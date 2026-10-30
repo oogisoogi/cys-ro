@@ -210,7 +210,7 @@ def default_runner(socket=None, timeout=12):
         if socket:
             env["CYS_SOCKET"] = socket
         try:
-            r = subprocess.run(cmd, capture_output=True, timeout=timeout, env=env, **NOWIN)
+            r = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout, env=env, **NOWIN)
             return r.returncode, r.stdout.decode("utf-8", "replace")
         except Exception:
             return 255, ""

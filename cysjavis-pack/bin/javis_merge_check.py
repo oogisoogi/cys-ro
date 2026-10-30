@@ -59,7 +59,7 @@ def _git(repo, args):
     만 호출하며, repo 를 변경하는 명령은 절대 넘기지 않는다.
     """
     return subprocess.run(
-        ["git", "-C", repo] + args,
+        ["git", "-C", repo] + args, stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         timeout=_TIMEOUT,

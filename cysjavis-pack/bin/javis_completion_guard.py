@@ -282,7 +282,7 @@ def _win_taskkill(pid):
     (고아 잔존). `taskkill /T` 가 자식 트리를 따라간다 — 도구 부재·이미 종료는 무해 통과.
     """
     with contextlib.suppress(Exception):
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], stdin=subprocess.DEVNULL,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, **NOWIN)
 
 
@@ -487,7 +487,7 @@ def _emit(evt_type, fields):
     env = dict(os.environ)
     env["CYS_NO_AUTOSTART"] = "1"
     with contextlib.suppress(Exception):
-        subprocess.run(argv, capture_output=True, text=True, timeout=5, env=env, **NOWIN)
+        subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5, env=env, **NOWIN)
 
 
 def _alert_once(sid, kind, evt_type, fields):
@@ -643,7 +643,7 @@ def _fetch_status_json():
     env = dict(os.environ)
     env["CYS_NO_AUTOSTART"] = "1"
     try:
-        r = subprocess.run([_cys_bin(), "status", "--json"], capture_output=True,
+        r = subprocess.run([_cys_bin(), "status", "--json"], stdin=subprocess.DEVNULL, capture_output=True,
                            text=True, timeout=5, env=env, **NOWIN)
     except (subprocess.SubprocessError, OSError):
         return None
@@ -724,7 +724,7 @@ def _resource_gate(ctx_pct):
     env = dict(os.environ)
     env["CYS_NO_AUTOSTART"] = "1"
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=10, env=env, **NOWIN)
+        r = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10, env=env, **NOWIN)
     except (subprocess.SubprocessError, OSError) as e:
         return "infra", "resource_gate 실행 실패: %s" % e, None
     rc = r.returncode
@@ -988,7 +988,7 @@ def _maybe_demote_calibrated(task_id, state, spec):
     env["CYS_NO_AUTOSTART"] = "1"
     with contextlib.suppress(Exception):
         subprocess.run([sys.executable, jt, "set-verify-spec", task_id,
-                        "--demote-calibrated"],
+                        "--demote-calibrated"], stdin=subprocess.DEVNULL,
                        capture_output=True, text=True, timeout=10, env=env, **NOWIN)
 
 
@@ -1397,7 +1397,7 @@ def _wakeup(argv_tail):
     env = dict(os.environ)
     env["CYS_NO_AUTOSTART"] = "1"
     with contextlib.suppress(Exception):
-        r = subprocess.run([sys.executable, wk] + argv_tail, capture_output=True,
+        r = subprocess.run([sys.executable, wk] + argv_tail, stdin=subprocess.DEVNULL, capture_output=True,
                            text=True, timeout=5, env=env, **NOWIN)
         return r.returncode in (0, 5)  # 5=EXIT_EMPTY(이미 배달·억제) — 성공 취급(autopilot 전례)
     return False
@@ -2029,7 +2029,7 @@ def self_test():
                         "PATH": shim_dir + os.pathsep + os.environ.get("PATH", "")})
             if env_extra:
                 env.update(env_extra)
-            r = subprocess.run([sys.executable, self_path] + list(args),
+            r = subprocess.run([sys.executable, self_path] + list(args), stdin=subprocess.DEVNULL,
                                capture_output=True, text=True, env=env, timeout=120, **NOWIN)
             return r.returncode, r.stdout, r.stderr
 
@@ -2339,7 +2339,7 @@ def self_test():
                        "JAVIS_VERIFY_GATE": "strict", "JAVIS_TASK_LIVENESS": "alive",
                        "PATH": shim_dir + os.pathsep + os.environ.get("PATH", "")})
         r_dc = subprocess.run([sys.executable, os.path.join(_SELF_DIR, "javis_task.py"),
-                               "checkout", "T1", "--owner", "w-b2"],
+                               "checkout", "T1", "--owner", "w-b2"], stdin=subprocess.DEVNULL,
                               capture_output=True, text=True, env=env_dc, timeout=60, **NOWIN)
         chk(r_dc.returncode == 0 and "calibrated 강등" in r_dc.stderr,
             "B2 강등 후 strict checkout 거동(통과+경고) 실패: rc=%s err=%s"
@@ -2679,7 +2679,7 @@ def self_test():
         g = globals()
         dl_saved = {"ROOT": g["ROOT"], "TASKS_DIR": g["TASKS_DIR"],
                     "hud": os.environ.get("HUD_STATE_DIR")}
-        p_track = subprocess.Popen(["sleep", "60"], start_new_session=True,
+        p_track = subprocess.Popen(["sleep", "60"], stdin=subprocess.DEVNULL, start_new_session=True,
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **NOWIN)
         try:
             g["ROOT"], g["TASKS_DIR"] = droot, dtasks
@@ -2781,11 +2781,11 @@ def self_test():
         env_jt.pop("AITERM_SURFACE_ID", None)
         env_jt.update({"JAVIS_ROOT": root, "CYS_NO_AUTOSTART": "1",
                        "PATH": shim_dir + os.pathsep + os.environ.get("PATH", "")})
-        r1 = subprocess.run([sys.executable, jt, "create", "TF3", "--id", "TF3"],
+        r1 = subprocess.run([sys.executable, jt, "create", "TF3", "--id", "TF3"], stdin=subprocess.DEVNULL,
                             capture_output=True, text=True, env=env_jt, timeout=60, **NOWIN)
         chk(r1.returncode == 0, "F3 create 실패: %s" % r1.stderr[:200])
         r2 = subprocess.run([sys.executable, jt, "checkout", "TF3", "--owner", "master",
-                             "--claim-surface", "7"],
+                             "--claim-surface", "7"], stdin=subprocess.DEVNULL,
                             capture_output=True, text=True, env=env_jt, timeout=60, **NOWIN)
         chk(r2.returncode == 0, "F3 checkout --claim-surface 실패: rc=%s %s"
             % (r2.returncode, r2.stderr[:300]))

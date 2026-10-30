@@ -275,7 +275,7 @@ def cys_agent_detect(timeout=10):
     cys = shutil.which("cys")
     if cys:
         try:
-            r = subprocess.run([cys, "agent-detect", "--json"],
+            r = subprocess.run([cys, "agent-detect", "--json"], stdin=subprocess.DEVNULL,
                                capture_output=True, timeout=timeout, **NOWIN)
             if r.returncode == 0:
                 d = json.loads((r.stdout or b"").decode("utf-8", "replace"))
@@ -430,7 +430,7 @@ def cys_status():
     if not cys:
         return None
     try:
-        r = subprocess.run([cys, "status", "--json"], capture_output=True,
+        r = subprocess.run([cys, "status", "--json"], stdin=subprocess.DEVNULL, capture_output=True,
                            timeout=_cys_status_timeout_s(), **NOWIN)
         if r.returncode != 0:
             return None
@@ -1825,7 +1825,7 @@ def resolve_manifest_phase(manifest, phase_id):
     if not os.path.isfile(tool):
         return None, []
     try:
-        r = subprocess.run([sys.executable, tool, "phase", manifest, "--phase", phase_id, "--json"],
+        r = subprocess.run([sys.executable, tool, "phase", manifest, "--phase", phase_id, "--json"], stdin=subprocess.DEVNULL,
                            capture_output=True, timeout=30, **NOWIN)
         if r.returncode != 0:
             return None, []
@@ -2755,7 +2755,7 @@ def cmd_round_log(args):
             # RC-6(D6): shell=True는 OS 기본 셸(unix=/bin/sh·Windows=cmd.exe)로 실행 — from_cmd는
             # OS중립 기계검증 명령(빌드·테스트) 전제다. bash 전용 문법을 넣으면 Windows cmd.exe에서
             # 실패하므로 RSI machine-eval 티켓은 OS중립 명령을 쓴다(저 consumer 영향·T3 실측 후 재판단).
-            r = subprocess.run(args.from_cmd, shell=True, capture_output=True, timeout=1800, **NOWIN)
+            r = subprocess.run(args.from_cmd, stdin=subprocess.DEVNULL, shell=True, capture_output=True, timeout=1800, **NOWIN)
             tail = (r.stdout or r.stderr or b"").decode("utf-8", "replace").strip()
             # ★G8(cokacdir 성찰 2026-07-04 · _round/NODE_MEASURED_CONTRACT.md §2):
             #   exit 0은 PASS의 필요조건일 뿐이다 — ①stdout 에러형상(agy는 에러문을 stdout에
@@ -4807,7 +4807,7 @@ def _cys_list_masters():
     if not cys:
         return None
     try:
-        r = subprocess.run([cys, "list"], capture_output=True, timeout=10, **NOWIN)
+        r = subprocess.run([cys, "list"], stdin=subprocess.DEVNULL, capture_output=True, timeout=10, **NOWIN)
     except Exception:
         return None
     if r.returncode != 0:

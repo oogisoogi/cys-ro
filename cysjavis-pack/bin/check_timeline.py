@@ -182,7 +182,7 @@ def probe_fps(video_path):
     try:
         out = subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=r_frame_rate", "-of", "default=nk=1:np=1", video_path],
+             "-show_entries", "stream=r_frame_rate", "-of", "default=nk=1:np=1", video_path], stdin=subprocess.DEVNULL,
             capture_output=True, text=True, timeout=30,
          **NOWIN)
     except FileNotFoundError:

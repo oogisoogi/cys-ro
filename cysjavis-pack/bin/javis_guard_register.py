@@ -240,7 +240,7 @@ def _capgate_eligibility(pack, timeout=6):
             missing.append("%s — alert_route 판정 불가(이 축은 데몬을 깨우지 않는다)" % _why)
         else:
             try:
-                r = subprocess.run([cys, "status", "--json"], capture_output=True, text=True,
+                r = subprocess.run([cys, "status", "--json"], stdin=subprocess.DEVNULL, capture_output=True, text=True,
                                    timeout=timeout, env=no_autostart_env(), **NOWIN)
                 doc = json.loads(r.stdout or "{}") if r.returncode == 0 else {}
                 ar = doc.get("alert_route") if isinstance(doc, dict) else None

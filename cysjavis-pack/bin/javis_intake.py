@@ -114,7 +114,7 @@ def _seat():
     auth = False
     try:
         import subprocess
-        out = subprocess.run(["cys", "identify"], capture_output=True, text=True, timeout=10, **NOWIN)
+        out = subprocess.run(["cys", "identify"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10, **NOWIN)
         if out.returncode == 0:
             j = json.loads(out.stdout)
             c = (j.get("caller") or {})
@@ -132,7 +132,7 @@ def _live_surfaces():
     못 읽으면 None(= 판정에 쓰지 않는다 · 측정 불가를 통과로 바꾸지 않는다)."""
     import subprocess
     try:
-        out = subprocess.run(["cys", "status", "--json"], capture_output=True, text=True, timeout=10, **NOWIN)
+        out = subprocess.run(["cys", "status", "--json"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10, **NOWIN)
         d = json.loads(out.stdout)
         return {str(x.get("surface_id")) for x in (d.get("surfaces") or []) if x.get("surface_id") is not None}
     except Exception:
@@ -642,12 +642,12 @@ def cmd_selftest(_a):
     import subprocess
     # -B: -I 는 환경변수의 캐시 금지 봉인을 무시하므로, 번들 python 이면 이 자식이 .pyc 를 번들 안에 쓸 수 있다
     #     (2026-10-20 수리 · 오너 규칙 — 번들 python 은 번들 안에 캐시를 쓰지 않는다).
-    _r = subprocess.run([sys.executable, "-I", "-B", os.path.abspath(__file__), "audit"],
+    _r = subprocess.run([sys.executable, "-I", "-B", os.path.abspath(__file__), "audit"], stdin=subprocess.DEVNULL,
                         capture_output=True, **NOWIN)
     chk(_r.returncode == EXIT_USAGE,
         "audit --roots 누락이 %d 를 냈다 — USAGE(%d) 여야 하고 NO_DENOM(%d) 과 겹치면 안 된다"
         % (_r.returncode, EXIT_USAGE, EXIT_NO_DENOM))
-    _r2 = subprocess.run([sys.executable, "-I", "-B", os.path.abspath(__file__), "nosuchcmd"],
+    _r2 = subprocess.run([sys.executable, "-I", "-B", os.path.abspath(__file__), "nosuchcmd"], stdin=subprocess.DEVNULL,
                          capture_output=True, **NOWIN)
     chk(_r2.returncode == EXIT_USAGE, "미지 서브커맨드가 USAGE 가 아니다(rc=%d)" % _r2.returncode)
 

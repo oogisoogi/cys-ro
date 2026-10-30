@@ -104,7 +104,7 @@ def _resolve_slug_from_socket():
 def _resolve_surface_ref():
     """`cys identify` → caller.surface_ref (P2-4). 실패·surface 밖이면 None."""
     try:
-        out = subprocess.run([CYS_BIN, "identify"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, **NOWIN)
+        out = subprocess.run([CYS_BIN, "identify"], stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, **NOWIN)
     except Exception:
         return None
     if out.returncode != 0:

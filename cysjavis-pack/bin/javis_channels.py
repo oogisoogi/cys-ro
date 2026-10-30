@@ -141,7 +141,7 @@ def run_live(channels):
                      "route": "coverage_battery(tests-제외·미배포)"}]
                 for c in channels}, "battery-absent"
     try:
-        r = subprocess.run([sys.executable, bp, "--json"] + list(channels),
+        r = subprocess.run([sys.executable, bp, "--json"] + list(channels), stdin=subprocess.DEVNULL,
                            capture_output=True, timeout=180, **NOWIN)
     except Exception as e:
         return {c: [{"ok": False, "status": 0, "error": "%s" % e,

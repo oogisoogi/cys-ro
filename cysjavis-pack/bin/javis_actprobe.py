@@ -119,7 +119,7 @@ def _resolve_caller(args):
     if env:
         return env
     try:
-        out = subprocess.run([CYS_BIN, "identify"], capture_output=True,
+        out = subprocess.run([CYS_BIN, "identify"], stdin=subprocess.DEVNULL, capture_output=True,
                              text=True, timeout=5, **NOWIN)
         if out.returncode == 0:
             ref = ((json.loads(out.stdout) or {}).get("caller") or {}).get("surface_ref")
@@ -211,7 +211,7 @@ class _ReadError(Exception):
 
 
 def _read_screen_live(ref):
-    out = subprocess.run([CYS_BIN, "read-screen", "--surface", ref],
+    out = subprocess.run([CYS_BIN, "read-screen", "--surface", ref], stdin=subprocess.DEVNULL,
                          capture_output=True, text=True, timeout=12, **NOWIN)
     if out.returncode != 0:
         raise _ReadError(f"cys read-screen exit {out.returncode}")
@@ -312,7 +312,7 @@ def _parse_ps(text):
 
 
 def _ps_live():
-    out = subprocess.run(["ps", "-axo", "pid,ppid,command"],
+    out = subprocess.run(["ps", "-axo", "pid,ppid,command"], stdin=subprocess.DEVNULL,
                          capture_output=True, text=True, timeout=12, **NOWIN)
     if out.returncode != 0:
         raise _ReadError(f"ps exit {out.returncode}")
@@ -423,7 +423,7 @@ def probe_verdict_match(args):
         pack = os.environ.get("CYS_PACK_DIR") or os.path.expanduser("~/.cys/pack")
         cli = [sys.executable, os.path.join(pack, "bin", "javis_verdict.py")]
     try:
-        vr = subprocess.run(cli + ["validate", args.file],
+        vr = subprocess.run(cli + ["validate", args.file], stdin=subprocess.DEVNULL,
                             capture_output=True, text=True, timeout=20, **NOWIN)
     except (OSError, subprocess.SubprocessError) as e:
         return EXIT_INDET, f"verdict validator unavailable: {e}"
@@ -446,7 +446,7 @@ def probe_verdict_match(args):
 def _load_status(args):
     if args.status_file:
         return json.loads(open(args.status_file, encoding="utf-8").read())
-    out = subprocess.run([CYS_BIN, "status", "--json"],
+    out = subprocess.run([CYS_BIN, "status", "--json"], stdin=subprocess.DEVNULL,
                          capture_output=True, text=True, timeout=12, **NOWIN)
     if out.returncode != 0:
         raise _ReadError(f"cys status exit {out.returncode}")

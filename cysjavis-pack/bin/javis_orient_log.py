@@ -129,7 +129,7 @@ def cmd_self_test(args):
     def run(root, argv):
         env = dict(os.environ)
         env["JAVIS_ROOT"] = root
-        r = subprocess.run([sys.executable, self_path] + argv,
+        r = subprocess.run([sys.executable, self_path] + argv, stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, env=env, **NOWIN)
         return r.returncode, r.stdout, r.stderr
 

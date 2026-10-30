@@ -174,7 +174,7 @@ def encrypt_file(plain_path, enc_path, passphrase):
     iv = os.urandom(16)
     key = _derive_key(passphrase, salt)
     r = subprocess.run([_openssl(), "enc", "-aes-256-cbc", "-K", key.hex(), "-iv", iv.hex(),
-                        "-in", plain_path, "-out", enc_path], capture_output=True, text=True, encoding="utf-8", errors="replace", **NOWIN)
+                        "-in", plain_path, "-out", enc_path], stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", **NOWIN)
     if r.returncode != 0:
         die("openssl 암호화 실패: %s" % (r.stderr or "").strip())
     return {"cipher": "aes-256-cbc", "kdf": "pbkdf2_hmac_sha256", "iterations": PBKDF2_ITERS,
@@ -186,7 +186,7 @@ def decrypt_file(enc_path, plain_path, passphrase, header):
     iv = bytes.fromhex(header["iv"])
     key = _derive_key(passphrase, salt, header.get("iterations", PBKDF2_ITERS))
     r = subprocess.run([_openssl(), "enc", "-d", "-aes-256-cbc", "-K", key.hex(), "-iv", iv.hex(),
-                        "-in", enc_path, "-out", plain_path], capture_output=True, text=True, encoding="utf-8", errors="replace", **NOWIN)
+                        "-in", enc_path, "-out", plain_path], stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", **NOWIN)
     if r.returncode != 0:
         die("openssl 복호화 실패(키 불일치 의심): %s" % (r.stderr or "").strip())
 

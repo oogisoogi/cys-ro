@@ -122,7 +122,7 @@ def _voice_mode():
         return override
     node_running = False
     try:
-        r = subprocess.run(["pgrep", "-f", "voice_node.py"], capture_output=True,
+        r = subprocess.run(["pgrep", "-f", "voice_node.py"], stdin=subprocess.DEVNULL, capture_output=True,
                            text=True, timeout=5, **NOWIN)
         node_running = bool(r.stdout.strip())
     except (subprocess.SubprocessError, OSError):

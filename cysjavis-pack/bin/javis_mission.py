@@ -2216,7 +2216,7 @@ def _owner_confirm(text):
              "--timeout-secs", str(SET_CONFIRM_TIMEOUT_S),
              "--title", "[임무 게이트] 자율 착수 임무 지정 확인",
              "--body", "이 세션의 임무로 아래를 기록할까요? 승인하면 자율 착수 게이트가 "
-                       "열립니다.\n\n%s" % text[:MISSION_MAX_CHARS]],
+                       "열립니다.\n\n%s" % text[:MISSION_MAX_CHARS]], stdin=subprocess.DEVNULL,
             capture_output=True, timeout=SET_CONFIRM_TIMEOUT_S + 30, **NOWIN)
     except Exception as e:
         return False, "오너 확인 채널 호출 실패(%s) — fail-closed" % e

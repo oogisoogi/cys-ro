@@ -147,7 +147,7 @@ def notice_text(role, sid, pct, thr, n=1):
 
 def cmd_tick():
     try:
-        p = subprocess.run([cys_bin(), "status", "--json"], capture_output=True, text=True, timeout=20, **NOWIN)
+        p = subprocess.run([cys_bin(), "status", "--json"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20, **NOWIN)
         surfaces = (json.loads(p.stdout) or {}).get("surfaces") or []
     except Exception as e:
         sys.stderr.write("[ctx-relay] status 판독 실패 %s — 이번 틱 보류\n" % type(e).__name__)
@@ -157,7 +157,7 @@ def cmd_tick():
     for sid, role, pct, n in notes:
         body = notice_text(role, sid, pct, thr, n)
         try:
-            subprocess.run([cys_bin(), "send", "--queued", "--to", "cso", body], capture_output=True, text=True,
+            subprocess.run([cys_bin(), "send", "--queued", "--to", "cso", body], stdin=subprocess.DEVNULL, capture_output=True, text=True,
                            timeout=20, **NOWIN)
         except Exception as e:
             sys.stderr.write("[ctx-relay] 통지 실패 %s\n" % type(e).__name__)

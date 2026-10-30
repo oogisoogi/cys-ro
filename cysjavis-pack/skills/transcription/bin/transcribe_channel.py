@@ -94,7 +94,7 @@ def _ytdlp_audio(url: str, out_wav: str, *, env, timeout: int = 600) -> str:
     subprocess.run(
         ["yt-dlp", "-x", "--audio-format", "wav",
          "--postprocessor-args", "ffmpeg:-ar 16000 -ac 1",
-         "-o", out_wav, url],
+         "-o", out_wav, url], stdin=subprocess.DEVNULL,
         capture_output=True, text=True, encoding="utf-8", errors="strict",
         env=env, timeout=timeout, check=True, **NOWIN,
     )

@@ -188,7 +188,7 @@ def judge_candidates(cand_verdicts, reelicited=False):
 def _run(cmd, cwd=None):
     """(rc, tail). 예외는 rc=-1 로 정규화."""
     try:
-        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=600, **NOWIN)
+        r = subprocess.run(cmd, stdin=subprocess.DEVNULL, cwd=cwd, capture_output=True, text=True, timeout=600, **NOWIN)
         tail = (r.stdout or "") + (r.stderr or "")
         return r.returncode, tail.strip()
     except (OSError, subprocess.SubprocessError) as e:

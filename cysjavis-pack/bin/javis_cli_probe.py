@@ -58,7 +58,7 @@ def _resolve_posix(name):
     sh = _login_shell()
     cmd = "command -v -- %s" % shlex.quote(name)
     try:
-        r = subprocess.run([sh, "-lc", cmd], capture_output=True, text=True,
+        r = subprocess.run([sh, "-lc", cmd], stdin=subprocess.DEVNULL, capture_output=True, text=True,
                            timeout=_PROBE_TIMEOUT, **NOWIN)
     except Exception:
         return None
@@ -80,7 +80,7 @@ def _resolve_windows(name):
     bash = shutil.which("bash")
     if bash:
         try:
-            r = subprocess.run([bash, "-lc", "command -v -- %s" % shlex.quote(name)],
+            r = subprocess.run([bash, "-lc", "command -v -- %s" % shlex.quote(name)], stdin=subprocess.DEVNULL,
                                capture_output=True, text=True, timeout=_PROBE_TIMEOUT, **NOWIN)
             if r.returncode == 0:
                 lines = [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
@@ -90,7 +90,7 @@ def _resolve_windows(name):
             pass
     # where 폴백
     try:
-        r = subprocess.run(["where", name], capture_output=True, text=True,
+        r = subprocess.run(["where", name], stdin=subprocess.DEVNULL, capture_output=True, text=True,
                            timeout=_PROBE_TIMEOUT, **NOWIN)
         if r.returncode == 0:
             lines = [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]

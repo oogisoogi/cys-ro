@@ -243,7 +243,7 @@ def _ytdlp_subs(url: str, timeout: int, langs: tuple[str, ...], auto: bool) -> d
     flag = "--write-auto-subs" if auto else "--write-subs"
     p = subprocess.run(
         ["yt-dlp", flag, "--skip-download", "--sub-format", "vtt",
-         "--sub-langs", ",".join(langs), "-o", "-", url],
+         "--sub-langs", ",".join(langs), "-o", "-", url], stdin=subprocess.DEVNULL,
         capture_output=True, text=True,
         encoding="utf-8", errors="strict",  # OPP-16: high-integrity child text — fail-loud
         env=utf8_env(),
@@ -295,7 +295,7 @@ def _youtube(url: str, timeout: int, *, subs: bool = False,
         # subtitles unavailable → fall through to metadata dump-json (non-terminal EMPTY)
     try:
         p = subprocess.run(
-            ["yt-dlp", "--dump-json", "--skip-download", url],
+            ["yt-dlp", "--dump-json", "--skip-download", url], stdin=subprocess.DEVNULL,
             capture_output=True, text=True,
             encoding="utf-8", errors="strict",  # OPP-16: yt-dlp JSON high-integrity — fail-loud (caught below → route fails)
             env=utf8_env(),

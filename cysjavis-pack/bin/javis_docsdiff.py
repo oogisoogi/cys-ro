@@ -88,7 +88,7 @@ def git_repo_root(cwd):
     if not git:
         return None
     try:
-        r = subprocess.run([git, "rev-parse", "--show-toplevel"],
+        r = subprocess.run([git, "rev-parse", "--show-toplevel"], stdin=subprocess.DEVNULL,
                            cwd=cwd, capture_output=True, timeout=10, **NOWIN)
         if r.returncode != 0:
             return None
@@ -107,7 +107,7 @@ def git_diff_for_path(root, base, path):
         # "문서 업데이트 후 변경분"이므로 git diff(작업트리 vs base)를 기본으로 한다.
         # 새 파일이 아직 add 안 됐으면 git이 추적하지 않아 diff가 비므로, intent-to-add를
         # 적용한 것과 동등하게 보이도록 --no-index 폴백을 추가한다(추적 안 된 신규 파일 대비).
-        r = subprocess.run([git, "diff", base, "--", path],
+        r = subprocess.run([git, "diff", base, "--", path], stdin=subprocess.DEVNULL,
                            cwd=root, capture_output=True, timeout=60, **NOWIN)
         text = r.stdout.decode("utf-8", "replace")
         if text.strip():
@@ -115,11 +115,11 @@ def git_diff_for_path(root, base, path):
         # 추적되지 않는 신규 파일: /dev/null 대비 --no-index로 전체를 추가 줄로 본다.
         abspath = path if os.path.isabs(path) else os.path.join(root, path)
         if os.path.isfile(abspath):
-            chk = subprocess.run([git, "ls-files", "--error-unmatch", "--", path],
+            chk = subprocess.run([git, "ls-files", "--error-unmatch", "--", path], stdin=subprocess.DEVNULL,
                                  cwd=root, capture_output=True, timeout=10, **NOWIN)
             if chk.returncode != 0:  # 추적되지 않음 → 신규 파일
                 ni = subprocess.run(
-                    [git, "diff", "--no-index", "--", os.devnull, abspath],
+                    [git, "diff", "--no-index", "--", os.devnull, abspath], stdin=subprocess.DEVNULL,
                     cwd=root, capture_output=True, timeout=60, **NOWIN)
                 return ni.stdout.decode("utf-8", "replace")
         return text

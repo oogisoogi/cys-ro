@@ -177,7 +177,7 @@ def mine_missed_savings(days, limit):
     for idiom in MANUAL_IDIOMS:
         try:
             r = subprocess.run([cys, "recall", idiom, "--days", str(days),
-                               "--limit", str(limit)], capture_output=True,
+                               "--limit", str(limit)], stdin=subprocess.DEVNULL, capture_output=True,
                               text=True, timeout=20, **NOWIN)
             hits = sum(1 for ln in r.stdout.splitlines() if "● Bash(" in ln)
         except Exception:
@@ -202,7 +202,7 @@ def pack_version_advisory():
         cys = shutil.which("cys")
         if not (os.path.isfile(semver) and cys):
             return None
-        out = subprocess.run([cys, "--version"], capture_output=True, text=True,
+        out = subprocess.run([cys, "--version"], stdin=subprocess.DEVNULL, capture_output=True, text=True,
                              timeout=15, **NOWIN).stdout
         m = re.search(r"(\d+\.\d+\.\d+\S*)", out or "")
         if not m:
@@ -213,7 +213,7 @@ def pack_version_advisory():
         if not os.path.isfile(cargo):
             return None
         r = subprocess.run([sys.executable, semver, "gate", "--local-file", cargo,
-                           "--remote", installed, "--field", "version", "--json"],
+                           "--remote", installed, "--field", "version", "--json"], stdin=subprocess.DEVNULL,
                           capture_output=True, text=True, timeout=15, **NOWIN)
         # exit 10=UPDATE_AVAILABLE 도 정상 advisory 신호(여기선 흡수·non-zero 전파 안 함).
         data = json.loads(r.stdout or "{}")
@@ -382,7 +382,7 @@ def push_to_master(text):
     if not cys:
         return False
     try:
-        subprocess.run([cys, "send", "--queued", "--to", "master", text],
+        subprocess.run([cys, "send", "--queued", "--to", "master", text], stdin=subprocess.DEVNULL,
                       capture_output=True, timeout=15, **NOWIN)
         return True
     except Exception:

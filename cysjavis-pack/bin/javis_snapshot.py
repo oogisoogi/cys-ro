@@ -803,7 +803,7 @@ def cmd_self_test():
     self_path = os.path.abspath(__file__)
 
     def run(args, extra):
-        r = subprocess.run([sys.executable, self_path] + args, capture_output=True,
+        r = subprocess.run([sys.executable, self_path] + args, stdin=subprocess.DEVNULL, capture_output=True,
                            text=True, timeout=60, env=_st_env(extra), cwd=_SELF_DIR, **NOWIN)
         outs.append(r.stdout)
         return r.returncode, r.stdout, r.stderr

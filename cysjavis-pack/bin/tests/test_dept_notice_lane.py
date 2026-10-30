@@ -371,7 +371,7 @@ class FormationBootNodeEnvInheritance(unittest.TestCase):
             stdout = "{}"
             stderr = ""
 
-        def _fake_run(argv, capture_output=True, text=True, timeout=None, env=None):
+        def _fake_run(argv, stdin=None, capture_output=True, text=True, timeout=None, env=None):
             calls.append({"argv": list(argv), "env": dict(env or {})})
             return _FakeResult()
 

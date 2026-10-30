@@ -178,7 +178,7 @@ def main():
     for name in CASES:
         tmp = tempfile.mkdtemp(prefix="phx-enc-")
         try:
-            r = subprocess.run([sys.executable, os.path.abspath(__file__), "--case", name, "--tmp", tmp],
+            r = subprocess.run([sys.executable, os.path.abspath(__file__), "--case", name, "--tmp", tmp], stdin=subprocess.DEVNULL,
                                env=env, capture_output=True, timeout=120, **NOWIN)
             ran += 1
             out = (r.stdout or b"").decode("utf-8", "backslashreplace").strip()

@@ -1587,7 +1587,7 @@ class Runner:
         """(ok, report_dict|None, err|None) — javis_report.py --json subprocess."""
         script = os.path.join(self.pack_bin, "javis_report.py")
         try:
-            r = subprocess.run([sys.executable, script, "--json"],
+            r = subprocess.run([sys.executable, script, "--json"], stdin=subprocess.DEVNULL,
                                capture_output=True, text=True, timeout=self.timeout, **NOWIN)
         except (subprocess.SubprocessError, OSError) as e:
             return False, None, "수집 실행 실패: %s" % e
@@ -1607,7 +1607,7 @@ class Runner:
             argv += ["--field", "%s=%s" % (k, val)]
         argv += ["--spool", "--surface", surface]
         try:
-            r = subprocess.run(argv, capture_output=True, text=True, timeout=self.timeout, **NOWIN)
+            r = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=self.timeout, **NOWIN)
             return r.returncode, r.stdout, r.stderr
         except (subprocess.SubprocessError, OSError) as e:
             return 1, "", str(e)
@@ -1624,7 +1624,7 @@ class Runner:
         if severity:
             argv += ["--severity", severity]
         try:
-            r = subprocess.run(argv, capture_output=True, text=True,
+            r = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
                                timeout=self.timeout, env=self.wk_env, **NOWIN)
         except (subprocess.SubprocessError, OSError):
             return 1, None
@@ -1646,7 +1646,7 @@ class Runner:
         if target:
             argv += ["--target", target]
         try:
-            r = subprocess.run(argv, capture_output=True, text=True,
+            r = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
                                timeout=self.timeout, env=self.wk_env, **NOWIN)
         except (subprocess.SubprocessError, OSError):
             return 1, 0
@@ -1742,7 +1742,7 @@ class Runner:
             return False, None, "javis_task.py 부재"
         env = dict(os.environ, JAVIS_ROOT=self.task_root)
         try:
-            r = subprocess.run([sys.executable, script, "list"],
+            r = subprocess.run([sys.executable, script, "list"], stdin=subprocess.DEVNULL,
                                capture_output=True, text=True, timeout=self.timeout, env=env, **NOWIN)
         except (subprocess.SubprocessError, OSError) as e:
             return False, None, "task list 실행 실패: %s" % e
@@ -1758,7 +1758,7 @@ class Runner:
         """레거시 직송 경로 — ★W5 I2 수렴으로 **게이트는 더 이상 호출하지 않는다**.
         (제거하지 않는 이유: 외부 대역·테스트가 이 표면을 참조하고, 표면 제거는 계약 파괴다.)"""
         try:
-            r = subprocess.run([self.cys_bin, "send", "--queued", "--to", to, body],
+            r = subprocess.run([self.cys_bin, "send", "--queued", "--to", to, body], stdin=subprocess.DEVNULL,
                                capture_output=True, text=True, timeout=self.timeout, **NOWIN)
             return r.returncode
         except (subprocess.SubprocessError, OSError):

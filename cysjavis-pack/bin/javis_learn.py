@@ -524,7 +524,7 @@ def _round_rec(state, rid):
 
 def _run(tool, args):
     """위임 도구 호출 — (rc, stdout, stderr). 환경(CYS_ROUND_DIR 등) 승계."""
-    r = subprocess.run([sys.executable, tool] + args, capture_output=True, text=True, env=dict(os.environ), **NOWIN)
+    r = subprocess.run([sys.executable, tool] + args, stdin=subprocess.DEVNULL, capture_output=True, text=True, env=dict(os.environ), **NOWIN)
     return r.returncode, r.stdout.strip(), r.stderr.strip()
 
 

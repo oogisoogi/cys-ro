@@ -369,8 +369,9 @@ pub trait Sched {
     fn register(&mut self, name: &str, xml: &str, sddl: &str) -> Result<(), SchedErr>;
     /// 등록 뒤 재독 대조([`judge`]).
     fn verify(&mut self, name: &str) -> Result<(), Refusal>;
-    /// 거부 증거 기록(지우기 전) — 결과 한 줄(오류 문자열에 덧붙는다).
-    fn keep_evidence(&mut self, name: &str, r: &Refusal) -> String;
+    /// 거부 증거 기록(지우기 전) — 결과 한 줄(오류 문자열에 덧붙는다). `stage` = 「new」(새 등록 재독) · 「restore」(복원 재독) —
+    /// 단계마다 다른 파일이라 두 거부 원문이 함께 남는다(codex R3-02).
+    fn keep_evidence(&mut self, name: &str, stage: &str, r: &Refusal) -> String;
 }
 
 /// 등록 전 같은 이름 옛 작업.
@@ -387,6 +388,8 @@ pub enum Prior {
 /// ② 옛 작업이 지금 기대와 맞으면([`judge`] 통과) 그 XML 을 복원본으로 쥔다 ③ 지우기 — 「없음」(그새 사라짐)만 정상 · 그 밖 = 중단
 /// (옛 작업 그대로) ④ 새로 등록(지운 뒤라 옛 주체 ACE 를 남기는 갱신 경로가 없다) ⑤ 재독 대조 — 거부면 증거 → 지움.
 /// ④ 실패·⑤ 거부면 복원본을 다시 등록·재독하고 그 결과를 오류에 적는다(유효한 복구기를 잃지 않는다 · 무효한 옛 작업은 복원 안 함).
+/// ⑤ 뒤 거부 작업 지우기가 실패해도 복원은 시도한다(codex R3-01 — 지우기 실패가 복원 등록 불가를 뜻하지 않는다 · 복원 결과는 재독이 판정).
+/// 뮤턴트 `WT4` = 그때 복원 빼기.
 pub fn install<S: Sched>(s: &mut S, name: &str, runner: &Path, args: &[&str], me: &str, logon: bool) -> Result<(), String> {
     let sddl = sddl_for(me);
     let prior = match s.read_task(name) {
@@ -412,18 +415,20 @@ pub fn install<S: Sched>(s: &mut S, name: &str, runner: &Path, args: &[&str], me
     }
     if let Err(r) = s.verify(name) {
         // 증거 먼저(지우면 사라진다) — 기록 실패는 거부 사유에 덧붙을 뿐 거부 자체를 바꾸지 않는다.
-        let note = s.keep_evidence(name, &r);
+        let note = s.keep_evidence(name, "new", &r);
         let rest = match s.delete(name) {
             Ok(()) => restore(s, name, &prior, &sddl),
             Err(e) if e.absent() => restore(s, name, &prior, &sddl),
-            Err(e) => format!(" · 거부 작업 지우기 실패 — 복원 안 함: {e}"),
+            Err(e) if super::mutant("WT4") => format!(" · 거부 작업 지우기 실패: {e}"),
+            Err(e) => format!(" · 거부 작업 지우기 실패: {e}{}", restore(s, name, &prior, &sddl)),
         };
         return Err(format!("update.win_task_refused: 다시 읽은 정의·SDDL 불일치 [{name}] {}{note}{rest}", r.summary()));
     }
     Ok(())
 }
 
-/// 복원(★codex R2-02) — 결과 한 줄. 뮤턴트 `WT3` = 복원 빼기.
+/// 복원(★codex R2-02) — 결과 한 줄. 복원 재독이 거부되면 증거(「restore」 단계) 먼저 → 지움(codex R3-02).
+/// 뮤턴트 `WT3` = 복원 빼기 · `WT5` = 복원 거부 증거 빼기.
 fn restore<S: Sched>(s: &mut S, name: &str, prior: &Prior, sddl: &str) -> String {
     match prior {
         Prior::Absent => " · 복원 대상 없음(옛 작업 없음)".into(),
@@ -434,12 +439,13 @@ fn restore<S: Sched>(s: &mut S, name: &str, prior: &Prior, sddl: &str) -> String
             Ok(()) => match s.verify(name) {
                 Ok(()) => " · 옛 작업 복원됨(재독 통과)".into(),
                 Err(r) => {
+                    let note = if super::mutant("WT5") { String::new() } else { s.keep_evidence(name, "restore", &r) };
                     let del = match s.delete(name) {
                         Ok(()) => "지움".to_string(),
                         Err(e) if e.absent() => "지움".to_string(),
                         Err(e) => format!("지우기 실패 {e}"),
                     };
-                    format!(" · 옛 작업 복원 재독 거부({del}): {}", r.summary())
+                    format!(" · 옛 작업 복원 재독 거부({del}): {}{note}", r.summary())
                 }
             },
         },
@@ -748,9 +754,12 @@ mod com {
         fn verify(&mut self, name: &str) -> Result<(), Refusal> {
             verify_detail(self.dir, name, self.runner, self.args, self.logon)
         }
-        fn keep_evidence(&mut self, name: &str, r: &Refusal) -> String {
-            let ev = refusal_evidence_path(self.dir, name);
-            match crate::update::write_private(&ev, r.evidence(name, crate::update::clock::wall_now()).to_string().as_bytes()) {
+        fn keep_evidence(&mut self, name: &str, stage: &str, r: &Refusal) -> String {
+            // 새 등록 거부 = 종전 파일 이름 그대로 · 복원 거부 = `-restore` 가 붙은 별도 파일(두 원문 공존).
+            let ev = refusal_evidence_path(self.dir, &if stage == "new" { name.to_string() } else { format!("{name}-{stage}") });
+            let mut body = r.evidence(name, crate::update::clock::wall_now());
+            body["stage"] = stage.into();
+            match crate::update::write_private(&ev, body.to_string().as_bytes()) {
                 Ok(()) => format!(" · 증거 {}", ev.display()),
                 Err(e) => format!(" · 증거 기록 실패 {e}"),
             }
@@ -979,7 +988,7 @@ mod tests {
         assert!(!com.contains("let _ = delete(dir, name)"), "지우기 결과 버리기 금지(R2-01)");
     }
 
-    // ── codex R2: 등록 흐름(install) — 가짜 스케줄러로 오류 종류·복원 경로 ──
+    // ── codex R2·R3: 등록 흐름(install) — 가짜 스케줄러로 오류 종류·복원 경로·증거 ──
     const ME: &str = "S-1-5-21-1-2-3-1001";
     const ACCESS_DENIED: u32 = 0x8007_0005;
 
@@ -987,16 +996,18 @@ mod tests {
         SchedErr { hr, what: what.into() }
     }
 
-    /// 작업 1개 자리의 가짜 폴더. `*_err` = 다음 그 호출을 실패시킨다(한 번) · `mangle` = 다음 등록에 플래그 6 처럼 주체 FR ACE 를 붙인다.
+    /// 작업 1개 자리의 가짜 폴더. `*_errs` = 호출 차례마다 앞에서 하나씩(`None` = 정상) · `mangle` = 다음 성공 등록에 플래그 6 처럼
+    /// 주체 FR ACE 를 붙인다 · `evidence` = (단계, 거부 원문) · `calls` = 호출 순서.
     #[derive(Default)]
     struct Fake {
         task: Option<(String, String)>,
         read_err: Option<SchedErr>,
-        delete_err: Option<SchedErr>,
+        delete_errs: Vec<Option<SchedErr>>,
         register_errs: Vec<SchedErr>,
         mangle: bool,
+        evidence_fail: bool,
         calls: Vec<&'static str>,
-        evidence: usize,
+        evidence: Vec<(String, Refusal)>,
     }
 
     impl Sched for Fake {
@@ -1012,8 +1023,10 @@ mod tests {
         }
         fn delete(&mut self, _: &str) -> Result<(), SchedErr> {
             self.calls.push("delete");
-            if let Some(e) = self.delete_err.take() {
-                return Err(e);
+            if !self.delete_errs.is_empty() {
+                if let Some(e) = self.delete_errs.remove(0) {
+                    return Err(e);
+                }
             }
             self.task.take().map(|_| ()).ok_or_else(|| err(HR_TASK_ABSENT, "DeleteTask"))
         }
@@ -1029,11 +1042,15 @@ mod tests {
         fn verify(&mut self, _: &str) -> Result<(), Refusal> {
             self.calls.push("verify");
             let (x, sd) = self.task.clone().ok_or_else(|| Refusal::read(format!("GetTask hr=0x{HR_TASK_ABSENT:08x}")))?;
-            judge(&x, &sd, &sddl_for(ME), Path::new(r"C:\u\runner\cys.exe"), &RECOVER_ARGS, ME, true)
+            judge(&x, &sd, &sddl_for(ME), runner(), &RECOVER_ARGS, ME, true)
         }
-        fn keep_evidence(&mut self, _: &str, _: &Refusal) -> String {
-            self.evidence += 1;
-            " · 증거 E".into()
+        fn keep_evidence(&mut self, _: &str, stage: &str, r: &Refusal) -> String {
+            self.calls.push("evidence");
+            if self.evidence_fail {
+                return " · 증거 기록 실패 디스크 가득".into();
+            }
+            self.evidence.push((stage.to_string(), r.clone()));
+            format!(" · 증거 {stage}")
         }
     }
 
@@ -1049,6 +1066,10 @@ mod tests {
         install(f, RECOVER_TASK, runner(), &RECOVER_ARGS, ME, true)
     }
 
+    fn registers(f: &Fake) -> usize {
+        f.calls.iter().filter(|c| **c == "register").count()
+    }
+
     #[test]
     fn install_absent_registers_without_delete_and_valid_prior_is_replaced() {
         let mut f = Fake::default();
@@ -1059,14 +1080,14 @@ mod tests {
         assert_eq!(go(&mut f), Ok(()));
         assert_eq!(f.calls, ["read", "delete", "register", "verify"]);
         // 지우기 = 「없음」(그새 사라짐) 이면 정상으로 이어 간다.
-        let mut f = Fake { task: Some(good()), delete_err: Some(err(HR_TASK_ABSENT, "DeleteTask")), ..Default::default() };
+        let mut f = Fake { task: Some(good()), delete_errs: vec![Some(err(HR_TASK_ABSENT, "DeleteTask"))], ..Default::default() };
         assert_eq!(go(&mut f), Ok(()));
     }
 
     /// R2-01 · 뮤턴트 WT2(모든 오류 = 없음) 이면 적.
     #[test]
     fn install_stops_on_non_absent_read_or_delete_error_and_keeps_old_task() {
-        let mut f = Fake { task: Some(good()), delete_err: Some(err(ACCESS_DENIED, "DeleteTask")), ..Default::default() };
+        let mut f = Fake { task: Some(good()), delete_errs: vec![Some(err(ACCESS_DENIED, "DeleteTask"))], ..Default::default() };
         let e = go(&mut f).unwrap_err();
         assert!(e.contains("옛 작업 지우기 실패 — 옛 작업 그대로 · 등록 안 함") && e.contains("DeleteTask hr=0x80070005"), "{e}");
         assert!(!f.calls.contains(&"register"), "지우기 실패면 등록하지 않는다: {:?}", f.calls);
@@ -1095,9 +1116,112 @@ mod tests {
         // 재독 거부(새 등록에 주체 ACE 덧붙음) 뒤에도 증거 → 지움 → 복원.
         let mut f = Fake { task: Some(good()), mangle: true, ..Default::default() };
         let e = go(&mut f).unwrap_err();
-        assert!(e.starts_with("update.win_task_refused: 다시 읽은 정의·SDDL 불일치 [recover] ") && e.contains(" · 증거 E") && e.ends_with(" · 옛 작업 복원됨(재독 통과)"), "{e}");
-        assert_eq!(f.evidence, 1);
+        assert!(e.starts_with("update.win_task_refused: 다시 읽은 정의·SDDL 불일치 [recover] ") && e.contains(" · 증거 new") && e.ends_with(" · 옛 작업 복원됨(재독 통과)"), "{e}");
+        assert_eq!(f.calls, ["read", "delete", "register", "verify", "evidence", "delete", "register", "verify"], "증거가 지우기보다 먼저");
+        assert_eq!(f.evidence.len(), 1);
         assert_eq!(f.task, Some(good()));
+    }
+
+    /// R3-01 · 뮤턴트 WT4(거부 작업 지우기 실패 = 복원 빼기) 이면 적.
+    #[test]
+    fn install_refused_then_cleanup_delete_fails_still_restores_valid_prior() {
+        // 첫 지우기(옛 작업) 정상 · 둘째(거부된 새 작업) 접근 거부 → 그래도 복원 등록·재독.
+        let mut f = Fake { task: Some(good()), mangle: true, delete_errs: vec![None, Some(err(ACCESS_DENIED, "DeleteTask"))], ..Default::default() };
+        let e = go(&mut f).unwrap_err();
+        assert!(e.contains(" · 증거 new · 거부 작업 지우기 실패: DeleteTask hr=0x80070005 · 옛 작업 복원됨(재독 통과)"), "{e}");
+        assert_eq!(registers(&f), 2, "복원 등록 시도: {:?}", f.calls);
+        assert_eq!(f.task, Some(good()), "유효한 복구기가 남는다");
+        // 복원 등록까지 실패하면 두 오류를 함께 적는다 — 첫 등록 성공(재독 거부) · 거부 작업 지우기 실패 · 복원 등록 실패.
+        let g = Fake { task: Some(good()), mangle: true, delete_errs: vec![None, Some(err(ACCESS_DENIED, "DeleteTask"))], ..Default::default() };
+        struct SecondRegisterFails(Fake, usize);
+        impl Sched for SecondRegisterFails {
+            fn read_task(&mut self, n: &str) -> Result<(String, String), SchedErr> {
+                self.0.read_task(n)
+            }
+            fn folder_sddl(&mut self) -> Result<String, SchedErr> {
+                self.0.folder_sddl()
+            }
+            fn delete(&mut self, n: &str) -> Result<(), SchedErr> {
+                self.0.delete(n)
+            }
+            fn register(&mut self, n: &str, x: &str, s: &str) -> Result<(), SchedErr> {
+                self.1 += 1;
+                if self.1 == 2 {
+                    self.0.calls.push("register");
+                    return Err(err(ACCESS_DENIED, "RegisterTask"));
+                }
+                self.0.register(n, x, s)
+            }
+            fn verify(&mut self, n: &str) -> Result<(), Refusal> {
+                self.0.verify(n)
+            }
+            fn keep_evidence(&mut self, n: &str, st: &str, r: &Refusal) -> String {
+                self.0.keep_evidence(n, st, r)
+            }
+        }
+        let mut t = SecondRegisterFails(g, 0);
+        let e = install(&mut t, RECOVER_TASK, runner(), &RECOVER_ARGS, ME, true).unwrap_err();
+        assert!(e.ends_with(" · 거부 작업 지우기 실패: DeleteTask hr=0x80070005 · 옛 작업 복원 실패: RegisterTask hr=0x80070005"), "{e}");
+        assert_eq!(registers(&t.0), 2);
+    }
+
+    /// R3-02 · 뮤턴트 WT5(복원 거부 증거 빼기) 이면 적 — 복원 재독 거부 = 증거(restore) 먼저 → 지움 · 앞선 거부 원문과 공존.
+    #[test]
+    fn restore_readback_refusal_keeps_evidence_before_delete() {
+        // 새 등록 실패 → 복원 등록 성공 → 복원 재독 불일치(주체 FR ACE).
+        let mut f = Fake { task: Some(good()), register_errs: vec![err(0x8004_1318, "RegisterTask")], mangle: true, ..Default::default() };
+        let e = go(&mut f).unwrap_err();
+        assert!(e.contains(" · 옛 작업 복원 재독 거부(지움): ") && e.ends_with(" · 증거 restore"), "{e}");
+        assert_eq!(f.calls, ["read", "delete", "register", "register", "verify", "evidence", "delete"], "증거 → 지움");
+        assert_eq!(f.evidence.len(), 1);
+        let (st, r) = &f.evidence[0];
+        assert_eq!(st, "restore");
+        assert!(!r.read_error);
+        assert_eq!(r.task_sddl.as_deref(), Some(PROBE_TASK_SDDL_F6), "읽은 원문 보존");
+        assert!(r.xml.as_deref().is_some_and(|x| x.contains("<LogonTrigger>")));
+        assert_eq!(f.task, None);
+        // 새 등록 재독 거부(불일치) → 복원 재독 부분 읽기 오류: 두 원문이 단계별로 함께 남는다.
+        let partial = Refusal::read("Task.GetSecurityDescriptor hr=0x80070005".into()).with_read(Some("<Task>복원본</Task>"), None, None);
+        let f = Fake { task: Some(good()), mangle: true, ..Default::default() };
+        // 첫 재독 = 가짜 판정(불일치) · 둘째 재독 = 부분 읽기 오류 주입.
+        struct SecondVerifyPartial(Fake, usize, Refusal);
+        impl Sched for SecondVerifyPartial {
+            fn read_task(&mut self, n: &str) -> Result<(String, String), SchedErr> {
+                self.0.read_task(n)
+            }
+            fn folder_sddl(&mut self) -> Result<String, SchedErr> {
+                self.0.folder_sddl()
+            }
+            fn delete(&mut self, n: &str) -> Result<(), SchedErr> {
+                self.0.delete(n)
+            }
+            fn register(&mut self, n: &str, x: &str, s: &str) -> Result<(), SchedErr> {
+                self.0.register(n, x, s)
+            }
+            fn verify(&mut self, n: &str) -> Result<(), Refusal> {
+                self.1 += 1;
+                if self.1 == 2 {
+                    self.0.calls.push("verify");
+                    return Err(self.2.clone());
+                }
+                self.0.verify(n)
+            }
+            fn keep_evidence(&mut self, n: &str, st: &str, r: &Refusal) -> String {
+                self.0.keep_evidence(n, st, r)
+            }
+        }
+        let mut t = SecondVerifyPartial(f, 0, partial.clone());
+        let e = install(&mut t, RECOVER_TASK, runner(), &RECOVER_ARGS, ME, true).unwrap_err();
+        assert!(e.contains(" · 증거 new") && e.contains(" · 옛 작업 복원 재독 거부(지움): 읽기 오류: Task.GetSecurityDescriptor hr=0x80070005 · 증거 restore"), "{e}");
+        let ev = &t.0.evidence;
+        assert_eq!(ev.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>(), ["new", "restore"]);
+        assert_eq!(ev[0].1.task_sddl.as_deref(), Some(PROBE_TASK_SDDL_F6), "첫 거부 원문");
+        assert_eq!(ev[1].1, partial, "복원 거부 = 부분 읽기 원문 그대로(read_error·XML)");
+        let c = &t.0.calls;
+        assert_eq!(&c[c.len() - 3..], ["verify", "evidence", "delete"], "복원 거부 증거 → 지움: {c:?}");
+        // 증거 기록 실패는 이유가 오류 문자열에 실린다.
+        let mut f = Fake { task: Some(good()), register_errs: vec![err(0x8004_1318, "RegisterTask")], mangle: true, evidence_fail: true, ..Default::default() };
+        assert!(go(&mut f).unwrap_err().ends_with(" · 증거 기록 실패 디스크 가득"));
     }
 
     #[test]
@@ -1115,36 +1239,12 @@ mod tests {
         let mut f = Fake { task: Some(good()), register_errs: vec![err(0x8004_1318, "RegisterTask"), err(ACCESS_DENIED, "RegisterTask")], ..Default::default() };
         let e = go(&mut f).unwrap_err();
         assert!(e.ends_with(" · 옛 작업 복원 실패: RegisterTask hr=0x80070005"), "{e}");
-        // 거부 작업 지우기 실패 = 복원하지 않는다(이름 자리가 막혀 있다) — 첫 지우기(옛 작업) 는 성공 · 둘째(거부 작업) 는 접근 거부.
-        struct Two(Fake, usize);
-        impl Sched for Two {
-            fn read_task(&mut self, n: &str) -> Result<(String, String), SchedErr> {
-                self.0.read_task(n)
-            }
-            fn folder_sddl(&mut self) -> Result<String, SchedErr> {
-                self.0.folder_sddl()
-            }
-            fn delete(&mut self, n: &str) -> Result<(), SchedErr> {
-                self.1 += 1;
-                if self.1 == 2 {
-                    return Err(err(ACCESS_DENIED, "DeleteTask"));
-                }
-                self.0.delete(n)
-            }
-            fn register(&mut self, n: &str, x: &str, s: &str) -> Result<(), SchedErr> {
-                self.0.register(n, x, s)
-            }
-            fn verify(&mut self, n: &str) -> Result<(), Refusal> {
-                self.0.verify(n)
-            }
-            fn keep_evidence(&mut self, n: &str, r: &Refusal) -> String {
-                self.0.keep_evidence(n, r)
-            }
-        }
-        let mut t = Two(Fake { task: Some(good()), mangle: true, ..Default::default() }, 0);
-        let e = install(&mut t, RECOVER_TASK, runner(), &RECOVER_ARGS, ME, true).unwrap_err();
-        assert!(e.ends_with(" · 거부 작업 지우기 실패 — 복원 안 함: DeleteTask hr=0x80070005"), "{e}");
-        assert_eq!(t.0.calls.iter().filter(|c| **c == "register").count(), 1, "복원 등록 없음");
+        // 무효한 옛 작업 + 거부 작업 지우기 실패 = 복원 시도 없음(복원 대상이 없다).
+        let bad = (good().0, PROBE_TASK_SDDL_F6.to_string());
+        let mut f = Fake { task: Some(bad), mangle: true, delete_errs: vec![None, Some(err(ACCESS_DENIED, "DeleteTask"))], ..Default::default() };
+        let e = go(&mut f).unwrap_err();
+        assert!(e.ends_with(" · 거부 작업 지우기 실패: DeleteTask hr=0x80070005 · 복원 안 함(옛 작업이 기대와 달랐다)"), "{e}");
+        assert_eq!(registers(&f), 1);
     }
 
     /// 윈 실기: 없는 작업 `GetTask` = 0x80070002(MS 문서 미기재 — [`HR_TASK_ABSENT`] 판정의 근거). 루트 폴더 읽기만 · 아무것도 만들지 않는다.

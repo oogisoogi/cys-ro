@@ -21,7 +21,9 @@ ensure의 corrupt 경로는 DUPLICATE append가 아니라 in-place REPAIR(깨진
 """
 import argparse
 import json
+import ntpath
 import os
+import posixpath
 import re
 import shutil
 import sys
@@ -255,15 +257,34 @@ def session_state_path(env=None, pack=None):
     return os.path.join(pack or lane_pack_dir(env), "round", "SESSION_STATE.md")
 
 
+def root_key(p, nt=None):
+    """루트 경계 비교 키 — 셸 쌍둥이 `_ic_pkey`(inject-context.sh L2)와 같은 규칙.
+    Windows 만 `\\`→`/` · MSYS `/d/…`→`d:/…` · 대소문자 무시(ntpath.normcase). POSIX 는 normpath 뿐(대소문자 보존)."""
+    nt = (os.name == "nt") if nt is None else nt
+    if not nt:
+        return posixpath.normpath(p)
+    p = p.replace("\\", "/")
+    if re.match(r"^/[A-Za-z](/|$)", p):
+        p = p[1] + ":" + (p[2:] or "/")
+    return ntpath.normcase(ntpath.normpath(p))
+
+
 def legacy_candidates(cwd, root=None):
     """정본이 아닌 옛 위치 `<…>/_round/SESSION_STATE.md` 후보 — cwd 상향탐색 + ACTIVE_PROJECT 포인터.
 
     1.1.7 까지 복원 훅이 이 자리를 작업기억으로 주입해 master 가 거기에 썼다. 이제 정본이 아니므로
     `adopt` 가 내용을 정본으로 옮기고 이 파일을 치운다(남아 있는 골격이 검증자를 조용히 오판시킨다).
+
+    ★ctx-home-ancestor(1.1.11): 상향탐색은 루트(root·HOME) **자신**에는 올라가지 않는다 — 셸 쌍둥이
+    (inject-context.sh L2)와 같은 경계. `$HOME/_round` 는 cwd 가 HOME 인 본부 좌석의 기억이라, 다른 프로젝트의
+    master 가 그것을 자기 정본으로 복사하면 남의 기억이 영속된다(2026-10-30 실측).
     """
     out = []
+    tops = {root_key(t) for t in (root, os.path.expanduser("~")) if t}
     d, prev = cwd, None
     while d and os.path.isabs(d) and d != prev and os.path.dirname(d) != d:
+        if d != cwd and root_key(d) in tops:
+            break
         f = os.path.join(d, "_round", "SESSION_STATE.md")
         if os.path.isfile(f):
             out.append(f)

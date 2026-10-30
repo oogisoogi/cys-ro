@@ -11839,11 +11839,11 @@ fn run_factory_reset(
             plan.trash_dir.display()
         );
         // ★1.1.10(S8): 자동 소거는 없어졌다 — 문장은 앱 정본(ui/src/resetconfirm.ts TRASH_KEEP_NOTICE)과 같게(시험 factory_reset_trash_notice_tests).
-        //   ★단 휴지통 삭제가 꺼진 빌드(윈도우 · master#4e61b71e Q1=B)는 cys-dept reap 이 1.1.9 처럼 14일 정리를 유지한다 — 그 문장은 TRASH_KEEP_NOTICE_WIN.
+        //   ★단 휴지통 삭제가 꺼진 빌드(윈도우)는 휴지통에서 지울 수도 없다 — 그 문장은 TRASH_KEEP_NOTICE_WIN(14일 자동 정리 약속은 거짓이라 뺐다 · cysr-1110-counsel-off ⓒ).
         if cys::trash_delete_supported() {
             println!("        격리본은 그대로 보관됩니다 — 이 제품은 더 이상 스스로 지우지 않습니다(삭제는 Control Center 의 휴지통에서 명령합니다).");
         } else {
-            println!("        격리본은 그대로 보관되고, 지난 판처럼 약 14일이 지나면 저절로 정리됩니다(윈도우 — 휴지통에서 직접 지우는 기능이 켜지는 판부터는 맥과 같아집니다).");
+            println!("        격리본은 그대로 보관되고 저절로 지워지지 않습니다(윈도우 — 이번 판은 휴지통에서 직접 지우는 기능이 아직 꺼져 있습니다. 그 기능이 켜지는 판부터는 맥처럼 휴지통에서 지울 수 있습니다).");
         }
     }
     // ★P0-6: 격리 목적지가 못 쓰는 상태면 **데몬을 건드리기 전에** 거부한다.
@@ -52075,6 +52075,8 @@ mod factory_reset_trash_notice_tests {
         let i = src.find("\nfn run_factory_reset(").expect("run_factory_reset 소실");
         let body = &src[i..i + src[i..].find("\n}\n").expect("fn 끝")];
         assert!(!body.contains("14일 뒤"), "CLI 초기화 계획이 아직 자동 소거(약 14일 뒤)를 약속한다 — S8 이후 거짓이다");
+        // ★(TICKET=cysr-1110-counsel-off ⓒ) 윈도우 문장 「약 14일이 지나면 저절로 정리됩니다」도 거짓이었다 — reap 자동 호출 0.
+        assert!(!body.contains("저절로 정리"), "CLI 초기화 계획(윈도우 갈래)이 아직 14일 자동 정리를 약속한다 — 자동 reap 호출 자리 0");
         let ui = include_str!("../../ui/src/resetconfirm.ts");
         let notice_of = |name: &str| -> String {
             let k = ui.find(&format!("export const {name} =")).unwrap_or_else(|| panic!("ui {name} 소실"));
@@ -52082,7 +52084,7 @@ mod factory_reset_trash_notice_tests {
             let a = rest.find('"').expect("문자열 시작") + 1;
             rest[a..a + rest[a..].find('"').expect("문자열 끝")].to_string()
         };
-        // ★두 문장 모두 — 삭제 켜진 빌드(맥) = TRASH_KEEP_NOTICE · 삭제 꺼진 빌드(윈 · Q1=B 14일 정리 유지) = TRASH_KEEP_NOTICE_WIN.
+        // ★두 문장 모두 — 삭제 켜진 빌드(맥) = TRASH_KEEP_NOTICE · 삭제 꺼진 빌드(윈 · 휴지통 삭제도 자동 정리도 없음) = TRASH_KEEP_NOTICE_WIN.
         for name in ["TRASH_KEEP_NOTICE", "TRASH_KEEP_NOTICE_WIN"] {
             let notice = notice_of(name);
             assert!(body.contains(&notice), "CLI 초기화 계획의 격리분 수명 안내가 앱 정본 문장({name})과 다르다: {notice}");

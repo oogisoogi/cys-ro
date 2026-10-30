@@ -11,10 +11,12 @@
 /// 이 문장은 **무엇이 일어나는가**만 말하고 누가 허용되는지는 말하지 않는다(r2 §8 문안 규칙).
 export const TRASH_KEEP_NOTICE =
   "격리본은 그대로 보관됩니다 — 이 제품은 더 이상 스스로 지우지 않습니다(삭제는 Control Center 의 휴지통에서 명령합니다).";
-/// ★cysr 1.1.10(master#4e61b71e Q1=B): 휴지통 삭제가 꺼진 윈도우 빌드에서는 `cys-dept reap` 이 1.1.9 처럼 약 14일 지난 격리분을
-/// 정리한다 — 그 기계에 위 문장을 보이면 거짓이 된다. CLI(`src/bin/cys.rs` factory-reset 계획 출력)도 같은 두 문장을 쓴다(시험이 대조).
+/// ★cysr 1.1.10(master#4e61b71e Q1=B → TICKET=cysr-1110-counsel-off ⓒ 정정): 휴지통 삭제가 꺼진 윈도우 빌드 — 종전 문장은 「약 14일이
+/// 지나면 저절로 정리」였으나 `cys-dept reap` 을 자동으로 부르는 자리가 0이라 거짓이었다(윈 reap 도 이제 지우지 않는다 · master#9ce4ad21 A).
+/// 위 문장의 「Control Center 의 휴지통에서 명령」은 윈에서 아직 안 되므로 따로 둔다. CLI(`src/bin/cys.rs` factory-reset 계획 출력)도
+/// 같은 두 문장을 쓴다(시험이 대조).
 export const TRASH_KEEP_NOTICE_WIN =
-  "격리본은 그대로 보관되고, 지난 판처럼 약 14일이 지나면 저절로 정리됩니다(윈도우 — 휴지통에서 직접 지우는 기능이 켜지는 판부터는 맥과 같아집니다).";
+  "격리본은 그대로 보관되고 저절로 지워지지 않습니다(윈도우 — 이번 판은 휴지통에서 직접 지우는 기능이 아직 꺼져 있습니다. 그 기능이 켜지는 판부터는 맥처럼 휴지통에서 지울 수 있습니다).";
 /// 화면이 고르는 자리 — `windowsReclaim` = 윈도우 앱(지금 출하하는 윈 빌드는 전부 휴지통 삭제가 꺼져 있다 · `trash_win_validated`
 /// 를 켜는 판에서는 이 인자를 `trash.list` 의 `delete_supported` 로 바꿔야 한다 — HANDOFF 다음 판 후보).
 export function trashKeepNotice(windowsReclaim: boolean): string {

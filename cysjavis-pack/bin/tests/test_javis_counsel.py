@@ -509,6 +509,13 @@ class EnsureClient(Base):
             f.write(base64.encodebytes(data).decode("ascii"))
         return line
 
+    def joined(self):
+        """가입 기기(participant.json) — 아래 tick·일일 시험의 주제는 아고라 쪽 흐름이다. ★F9(cysr-1110-counsel-off) 뒤로
+        가입 없는 기기는 갱신기 id 가 없으면 재지 않는다 — 그 갈래는 HelpReport 가 잰다."""
+        os.makedirs(self.cfg, exist_ok=True)
+        with open(os.path.join(self.cfg, "participant.json"), "w") as f:
+            f.write("{}")
+
     def lib(self, *p):
         return os.path.join(self.cfg, "lib", *p)
 
@@ -564,6 +571,7 @@ class EnsureClient(Base):
 
     def test_tick_runs_agora_with_args_and_key(self):
         self.put(_zip([("bin/agora", self.AGORA)]))
+        self.joined()
         os.makedirs(self.cfg, exist_ok=True)
         key = os.path.join(self.cfg, "id_ed25519")
         with open(key, "w") as f:
@@ -599,6 +607,7 @@ class EnsureClient(Base):
         """꺼짐 = doctor·좌석 조회 0 · 그날(06:00 KST) 일일이 끝났고 pending 없음 = 0 · pending 남음 = 다시 모은다."""
         import datetime as _dt
         now = _dt.datetime(2026, 10, 6, 0, 30, tzinfo=_dt.timezone.utc)     # = 09:30 KST → 2026-10-06
+        self.joined()
         self.assertTrue(jc._daily_due(self.cfg, now))
         os.makedirs(os.path.join(self.cfg, "counsel"), exist_ok=True)
         st = os.path.join(self.cfg, "counsel", "state.json")
@@ -617,6 +626,7 @@ class EnsureClient(Base):
     def test_tick_facts_failure_still_runs_agora(self):
         """★리뷰 3R ③ — facts 쓰기 실패 = 로그 + agora 는 그대로 돈다 · 팩은 daily 완료 표식(state.json)을 쓰지 않는다."""
         self.put(_zip([("bin/agora", self.AGORA)]))
+        self.joined()
         empty = os.path.join(self.tmp, "emptybin")
         os.makedirs(empty)
         real = jc.collect_facts
@@ -1735,6 +1745,7 @@ class HelpReport(Base):
         os.environ["CYS_FEEDBACK_BASE"] = "http://127.0.0.1:%d/" % self.srv.server_address[1]   # Base 가 tearDown 에서 되돌린다
         import datetime as _dt
         self.now = _dt.datetime(2026, 10, 22, 1, 0, tzinfo=_dt.timezone.utc)   # 10:00 KST → 그날 2026-10-22
+        self.assertTrue(jc.mark_notice_seen(self.cfg))   # ★cysr-1110-counsel-off: 안내가 화면에 뜬 기기 — 안 뜬 기기는 test_no_send_before_notice_shown
 
     def tearDown(self):
         self.srv.shutdown()
@@ -1813,7 +1824,9 @@ class HelpReport(Base):
         self.assertEqual((p1, p2), ("/api/report", "/api/report"))
         for b in (sig, daily):
             self.assertEqual(sorted(b), ["day", "install_id", "installer_version", "kind", "os", "payload"])
-            self.assertEqual((b["install_id"], b["day"], b["installer_version"]), (self.IID, "2026-10-22", "1.1.8"))
+            # ★F7(cysr-1110-counsel-off): installer_version = 앱 판번(그날 facts 의 version.host · 서버 HELP-API §12 예시) —
+            #   종전엔 팩 판번(1.1.8)이 실려 보관 TSV 「version」 열에서 1.1.10 기기가 팩 판번으로 보였다. 팩 판번은 payload.version.pack.
+            self.assertEqual((b["install_id"], b["day"], b["installer_version"]), (self.IID, "2026-10-22", "1.1.10"))
             self.assertIn(b["os"], ("mac", "win", None))
         items = sig["payload"]["items"]
         self.assertEqual([(i["op"], i["count"]) for i in items], [("hook.session-start", 2), ("ensure-client", 1)])
@@ -1839,6 +1852,29 @@ class HelpReport(Base):
         self.put_signals(self.row("2026-10-22T00:10:00.000Z"))
         self.config(json.dumps({"counsel": {"auto": False}}))
         self.assertEqual(self.run_help(), "off")
+        self.assertEqual(self.got, [])
+
+    # ── 안내 화면 먼저(TICKET=cysr-1110-counsel-off ⓑ — 안내문이 기기 화면에 뜨기 전에는 보내지 않는다) ──
+    def test_no_send_before_notice_shown(self):
+        os.remove(os.path.join(self.cfg, "counsel", jc.NOTICE_FILE))
+        self.put_id()
+        self.put_facts()
+        self.put_signals(self.row("2026-10-22T00:10:00.000Z"))
+        self.assertEqual(self.run_help(), "notice-pending")
+        self.assertEqual(self.got, [])
+        self.assertEqual(self.help_state(), {}, "표식을 남겼다(안내 뒤 그날치를 못 보낸다)")
+        self.assertTrue(jc.mark_notice_seen(self.cfg))
+        self.assertEqual(self.run_help(), "ran")
+        self.assertEqual(self.kinds(), ["signal", "daily"])
+
+    def test_broken_notice_file_counts_as_not_shown(self):
+        self.put_id()
+        self.put_facts()
+        for text in ("{", "[]", '{"shown": 1}', "{}"):
+            with self.subTest(text):
+                with open(os.path.join(self.cfg, "counsel", jc.NOTICE_FILE), "w", encoding="utf-8") as f:
+                    f.write(text)
+                self.assertEqual(self.run_help(), "notice-pending")
         self.assertEqual(self.got, [])
 
     def test_registered_machine_left_to_agora(self):
@@ -1956,6 +1992,57 @@ class HelpReport(Base):
         self.assertEqual(self.kinds(), ["signal", "daily"])
         self.assertEqual(self.got[0][1]["payload"]["items"][0]["first_seen"], "2026-10-22T00:10:00.000Z")
 
+    def test_invalid_day_keeps_signal_cursor_like_cap(self):
+        """fleet-report F5 — 400 invalid_day(기기 시계가 서버 ±2일 밖) = 그날만 멈춤 · 신호 커서는 넘기지 않는다
+        (종전: refused 로 커서 전진 → 시계가 틀린 기기의 신호 줄이 매일 영구 폐기됐다)."""
+        import datetime as _dt
+        self.put_id()
+        self.put_facts()
+        self.put_signals(self.row("2026-10-22T00:10:00.000Z"))
+        bad = (400, "invalid_day")
+        self.codes[:] = [bad, bad]
+        self.assertEqual(jc.help_outcome(*bad), "cap")
+        self.run_help()
+        st = self.help_state()
+        self.assertEqual((st.get("signal_day"), st.get("daily_day"), st.get("signal_cursor_ts")), ("2026-10-22", "2026-10-22", None))
+        self.assertEqual(self.run_help(self.now + _dt.timedelta(hours=2)), "done", "같은 날 다시 보냈다(그날은 멈춘다)")
+        self.got.clear()
+        nxt = self.now + _dt.timedelta(days=1)
+        self.put_facts(at=nxt)
+        self.run_help(nxt)
+        self.assertEqual(self.kinds(), ["signal", "daily"])
+        self.assertEqual(self.got[0][1]["payload"]["items"][0]["first_seen"], "2026-10-22T00:10:00.000Z", "시계가 틀렸던 날의 신호 줄을 잃었다")
+        self.assertEqual(jc.help_outcome(400, "invalid_payload"), "refused", "다른 400 은 종전대로")
+
+    def test_401_403_refused_stops_for_the_day(self):
+        """fleet-report F8 — 401·403(엣지가 막음 · 인증 거부) = refused · 그날 다시 안 보낸다
+        (종전: retry 로 분류돼 30분마다 같은 거절을 받으며 표식 0 · 보고 0 인 채 조용히 돌았다)."""
+        import datetime as _dt
+        self.assertEqual([jc.help_outcome(c, None) for c in (401, 403)], ["refused", "refused"])
+        self.put_id()
+        self.put_facts()
+        self.put_signals(self.row("2026-10-22T00:10:00.000Z"))
+        self.codes[:] = [403, 401]
+        self.assertEqual(self.run_help(), "ran")
+        st = self.help_state()
+        self.assertEqual((st.get("signal_day"), st.get("daily_day")), ("2026-10-22", "2026-10-22"))
+        self.assertEqual(self.run_help(self.now + _dt.timedelta(minutes=30)), "done")
+        self.assertEqual(len(self.got), 2, "거절된 요청을 같은 날 다시 보냈다")
+
+    def test_installer_version_is_host_or_null_never_pack(self):
+        """F7 — 그날 facts 가 없거나 host 칸이 없으면 null(서버 §12: 선택 칸) · 팩 판번으로 메우지 않는다."""
+        self.put_id()
+        self.put_signals(self.row("2026-10-22T00:10:00.000Z"))
+        self.run_help()
+        self.assertEqual([(b["kind"], b["installer_version"]) for _p, b in self.got], [("signal", None)])
+        self.got.clear()
+        facts = self.put_facts()
+        facts["version"] = {"pack": "1.1.8"}
+        with open(os.path.join(self.cfg, "counsel", "facts.json"), "w") as f:
+            json.dump(facts, f)
+        self.run_help()
+        self.assertEqual([(b["kind"], b["installer_version"]) for _p, b in self.got], [("daily", None)])
+
     def test_200_already_received_counts_as_done(self):
         self.put_id()
         self.put_facts()
@@ -2039,7 +2126,19 @@ class HelpReport(Base):
         self.assertIn(re.sub(r"\s+", "", jc.HELP_NOTICE), re.sub(r"\s+", "", jc.__doc__ or ""), "도움말(모듈 설명)에 같은 문장이 없다")
 
     # ── _daily_due 수리 · tick 자리 ──
+    def test_daily_due_unregistered_without_updater_id_measures_nothing(self):
+        """fleet-report F9 — 가입 없는 기기의 사실 소비자는 help 하나뿐 · help 는 갱신기 id 가 없으면 보내지 않는다(no-id) →
+        보내지 않는 기기는 재지도 않는다(종전: 하루 1회 doctor ≤60초를 돌고 버렸다)."""
+        self.assertFalse(jc._daily_due(self.cfg, self.now))
+        with open(os.path.join(self.cfg, "participant.json"), "w") as f:
+            f.write("{}")
+        self.assertTrue(jc._daily_due(self.cfg, self.now), "가입 기기는 id 와 무관(아고라가 보낸다)")
+        os.remove(os.path.join(self.cfg, "participant.json"))
+        self.put_id()
+        self.assertTrue(jc._daily_due(self.cfg, self.now))
+
     def test_daily_due_unregistered_measures_once_per_day(self):
+        self.put_id()
         self.assertTrue(jc._daily_due(self.cfg, self.now))
         self.put_facts()
         self.assertFalse(jc._daily_due(self.cfg, self.now), "가입 없는 기기가 같은 날 사실을 다시 잰다(30분마다 doctor)")
@@ -2088,6 +2187,84 @@ class HelpReport(Base):
         self.assertEqual(json.loads(r.stdout), [jc.signal_signature(*c) for c in cases])
 
 
+class AutoSwitch(Base):
+    """앱 「상담소 끄기/켜기」 단추·첫 안내(TICKET=cysr-1110-counsel-off) — 앱은 아고라 설정을 직접 쓰지 않고 이 동사들만 부른다.
+    끄기 = `agora counsel off` 와 같은 상태(클라이언트가 있으면 그 명령 그대로 · 없으면 같은 두 칸 `auto=false`·`purge_due`)."""
+
+    def cfg_doc(self):
+        return json.loads(rd(os.path.join(self.cfg, "config.json"), encoding="utf-8"))
+
+    def test_status_needs_notice_only_when_help_would_send(self):
+        self.assertEqual(jc.auto_status(self.cfg), {"auto": True, "notice_seen": False, "needs_notice": True})
+        self.assertTrue(jc.mark_notice_seen(self.cfg))
+        self.assertEqual(jc.auto_status(self.cfg), {"auto": True, "notice_seen": True, "needs_notice": False})
+        os.remove(os.path.join(self.cfg, "counsel", jc.NOTICE_FILE))
+        with open(os.path.join(self.cfg, "participant.json"), "w") as f:
+            f.write("{}")
+        self.assertFalse(jc.auto_status(self.cfg)["needs_notice"], "가입 기기 = 아고라 몫(help 가 안 보낸다)")
+        os.remove(os.path.join(self.cfg, "participant.json"))
+        self.config(json.dumps({"counsel": {"auto": False}}))
+        self.assertEqual(jc.auto_status(self.cfg), {"auto": False, "notice_seen": False, "needs_notice": False})
+
+    def test_notice_file_keeps_the_exact_text(self):
+        self.assertTrue(jc.mark_notice_seen(self.cfg))
+        doc = json.loads(rd(os.path.join(self.cfg, "counsel", jc.NOTICE_FILE), encoding="utf-8"))
+        self.assertEqual(doc["notice"], jc.HELP_NOTICE)
+        self.assertRegex(doc["shown"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$")
+
+    def test_off_without_client_writes_agora_fields_and_stops_everything(self):
+        self.config(json.dumps({"keep": 1, "counsel": {"other": "x"}}))
+        self.assertTrue(jc.mark_notice_seen(self.cfg))
+        res = jc.set_auto(self.cfg, False)
+        self.assertFalse(res["auto"])
+        doc = self.cfg_doc()
+        self.assertEqual((doc["keep"], doc["counsel"]["other"]), (1, "x"), "다른 칸을 건드렸다")
+        self.assertIs(doc["counsel"]["auto"], False)
+        self.assertRegex(doc["counsel"]["purge_due"], r"^[0-9a-f]{16}$", "지우기 표식 없음 — 클라이언트가 생긴 뒤 옛 줄을 보낸다")
+        self.assertEqual(jc.help_report(self.cfg), "off")
+        self.assertEqual(jc.write_signals("worker", [("hook.session-start", "hook.rc1")], cfg=self.cfg), 0)
+        self.assertEqual(self.sig_lines(), [])
+        self.assertFalse(jc._daily_due(self.cfg))
+
+    def test_off_never_overwrites_unreadable_config(self):
+        self.config("{broken")
+        self.assertFalse(jc.set_auto(self.cfg, False)["auto"])
+        self.assertEqual(rd(os.path.join(self.cfg, "config.json"), encoding="utf-8"), "{broken")
+
+    def test_on_without_client_stays_off(self):
+        self.config(json.dumps({"counsel": {"auto": False, "purge_due": "ab" * 8}}))
+        res = jc.set_auto(self.cfg, True)
+        self.assertEqual((res["auto"], res.get("error")), (False, "no-client"))
+        self.assertIs(self.cfg_doc()["counsel"]["auto"], False)
+
+    def test_with_bundled_client_off_and_on_are_agora_counsel_off_on(self):
+        bundled_client(os.path.join(self.cfg, "lib"))
+        self.assertEqual(jc.write_signals("worker", [("hook.session-start", "hook.rc1")], cfg=self.cfg), 1)
+        res = jc.set_auto(self.cfg, False)
+        self.assertFalse(res["auto"])
+        sec = self.cfg_doc()["counsel"]
+        self.assertIs(sec["auto"], False)
+        self.assertNotIn("purge_due", sec, "아고라가 지우기를 끝내고 표식을 뺐어야 한다")
+        self.assertEqual(self.sig_lines(), [], "대기열(신호 줄)이 남았다")
+        res = jc.set_auto(self.cfg, True)
+        self.assertTrue(res["auto"])
+        self.assertIs(self.cfg_doc()["counsel"]["auto"], True)
+
+    def test_cli_verbs_print_one_json_line_and_exit_0(self):
+        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+
+        def run(*argv):
+            r = subprocess.run([sys.executable, SCRIPT, *argv], capture_output=True, timeout=120, env=env)
+            self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace")[-400:])
+            return r.stdout.decode("utf-8")
+        self.assertEqual(json.loads(run("auto-status"))["needs_notice"], True)
+        self.assertEqual(json.loads(run("notice-seen")), {"ok": True})
+        self.assertEqual(json.loads(run("auto-set", "off"))["auto"], False)
+        self.assertEqual(json.loads(run("auto-status")), {"auto": False, "notice_seen": True, "needs_notice": False})
+        self.assertEqual(json.loads(run("auto-set", "sideways")), {"error": "usage"})
+        self.assertEqual(run("tick-nope"), "", "그 밖 동사는 종전대로 무출력")
+
+
 REAL_BASE = os.environ.get("CYS_HELP_REAL_BASE", "").strip()
 
 
@@ -2112,6 +2289,7 @@ class HelpReportRealServer(Base):
         with open(os.path.join(d, "install_id"), "w") as f:
             f.write(self.iid)
         self.now = _dt.datetime.now(_dt.timezone.utc)
+        self.assertTrue(jc.mark_notice_seen(self.cfg))   # 안내가 화면에 뜬 기기(cysr-1110-counsel-off)
 
     def help_log(self):
         return [e for e in map(json.loads, rd(os.path.join(self.cfg, "counsel", "tick.log")).splitlines())

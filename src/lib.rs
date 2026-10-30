@@ -4783,7 +4783,8 @@ mod tests {
             ("src/bin/cysd/native_publication_transition_tests.rs", 1), // sealed isolated fixture supervisor
             ("src-tauri/src/main.rs", 4),
             // 1.1.9 T4(cysr-119-t4-app): 상담소 글 목록 = 아고라 클라이언트 `agora read` 1곳 · inject_runtime_path 봉인 + spawn_policy(Attached).
-            ("src-tauri/src/counsel.rs", 1),
+            // 1.1.10(cysr-1110-counsel-off): 「상담소 끄기/켜기」·첫 안내 = 팩 `javis_counsel.py` 앱 동사(pack_verb_command) +1 · 같은 봉인(-I -B).
+            ("src-tauri/src/counsel.rs", 2),
         ];
 
         let mut found: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
@@ -7117,7 +7118,8 @@ mod spawn_policy_tests {
         //   opener_command 의 open/explorer/xdg-open(cfg 3갈래 · 끝에 no_console) + Mail `open -a`(macOS cfg · no_console).
         // 1.1.9 T4(cysr-119-t4-app): 상담소 글 목록 `agora read`(번들 python · 맥·윈 공통) 1곳 — ⓐ윈에서 돈다 → ⓑ체인에
         //   `spawn_policy(ChildLifetime::Attached)`(= GUI no_console 과 같은 등급) 를 단다 · 봉인 = inject_runtime_path(python 열거 핀에도 등재).
-        ("src-tauri/src/counsel.rs", 1),
+        // 1.1.10(cysr-1110-counsel-off): 팩 앱 동사 pack_verb_command(번들 python · 맥·윈 공통) +1 — ⓐ윈에서 돈다 → ⓑ같은 Attached 등급 · 봉인 동일.
+        ("src-tauri/src/counsel.rs", 2),
         ("src-tauri/src/feedback.rs", 6),
         // v114-dept-fd: cys-dept 직접 스폰 3곳 → run_dept_tool_direct 1곳(-2) · 1.1.8 병합 +1 = 원작자
         //   open_privacy_settings `/usr/bin/open`(macOS cfg) · smart_app_control_state `reg.exe`(windows cfg · no_console).

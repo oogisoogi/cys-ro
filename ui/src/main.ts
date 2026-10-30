@@ -175,10 +175,16 @@ import {
   UNREAD_CACHE0,
   UNREAD_NONE,
   UNREAD_POLL_MS,
+  AUTO_COPY,
+  REPORT_NOTICE,
+  autoLine,
+  autoNotice,
+  autoToggle,
   badgeText,
   buildCounselView,
   commentCountLabel,
   counselTooltip,
+  parseAutoStatus,
   fmtWhen,
   newAnswersLine,
   statusCopy,
@@ -1628,7 +1634,7 @@ function renderTrash(payload: {
   const notes: string[] = [];
   // cysr 1.1.10(master#4e61b71e Q1=B): 삭제가 꺼진 빌드(= 윈도우 · trash_win_validated 꺼짐)에서는 cys-dept reap 이 1.1.9 처럼
   //   약 14일 지난 항목을 정리한다(판정 정본 = lib `trash_delete_supported` 한 곳 — 이 칸과 그 갈래가 같은 값을 쓴다).
-  if (!supported) notes.push("이 빌드에서는 삭제가 꺼져 있습니다 — 목록과 표시는 그대로 동작하고, 오래된 항목은 지난 판처럼 약 14일이 지나면 저절로 정리됩니다.");
+  if (!supported) notes.push("이 빌드에서는 삭제가 꺼져 있습니다 — 목록과 표시는 그대로 동작하고, 격리본은 저절로 지워지지 않고 그대로 보관됩니다.");
   if (payload.ledger_writable === false)
     notes.push("기록 파일을 쓸 수 없어 삭제 명령이 진행되지 않습니다 — 기록할 수 없는 삭제는 하지 않습니다.");
   for (const s of payload.strays ?? []) notes.push(`${s.name}: ${s.why} — 목록에서 다루지 않습니다.`);
@@ -9450,7 +9456,7 @@ function purgeConfirmModal(
       // 현실에서 "작업물 격리" 고지는 홈 격리 약속이 되는 오도였다. GUI는 --purge-workdir 미요청.
       "삭제되는 것: 부서 데몬 종료 + 대화기억·pack 격리 + 재시작 부활 영구 차단(묘비 존치). 작업 폴더(cwd)는 보존됩니다.",
       info.isLast ? "⚠ 이 부서가 마지막입니다 — 삭제 시 CEO가 표준 master로 강등됩니다." : "",
-      "복구: 즉시 삭제가 아니라 ~/.local/state/cys-trash/ 로 격리 보관되어 되돌릴 수 있습니다. " + trashKeepNotice(IS_WINDOWS), // cysr 1.1.10 Q1=B: 윈 = 14일 정리 유지
+      "복구: 즉시 삭제가 아니라 ~/.local/state/cys-trash/ 로 격리 보관되어 되돌릴 수 있습니다. " + trashKeepNotice(IS_WINDOWS), // 윈 = 휴지통 삭제 꺼짐 · 저절로 지워지지도 않음(cysr-1110-counsel-off ⓒ)
       `계속하려면 아래에 부서명 "${name}" 을 정확히 입력하세요.`,
     ]
       .filter(Boolean)
@@ -12226,12 +12232,15 @@ function openCounselPanel() {
   ov.className = "modal-overlay";
   ov.innerHTML =
     `<div class="modal counsel-modal"><h3 class="counsel-h"></h3>` +
-    `<p class="counsel-notice"></p><p class="counsel-newline" hidden></p>` +
+    `<p class="counsel-notice"></p>` +
+    `<p class="counsel-auto"><span class="counsel-auto-state"></span><button class="counsel-auto-toggle"></button></p>` +
+    `<p class="counsel-auto-notice"></p><p class="counsel-newline" hidden></p>` +
     `<p class="counsel-status"></p><div class="counsel-list"></div>` +
     `<div class="modal-btns"><button class="counsel-refresh"></button><button class="modal-no counsel-close"></button></div></div>`;
   const q = <T extends Element>(sel: string) => ov.querySelector(sel) as T;
   q<HTMLElement>(".counsel-h").textContent = COUNSEL_COPY.heading;
   q<HTMLElement>(".counsel-notice").textContent = COUNSEL_COPY.notice;
+  q<HTMLElement>(".counsel-auto-notice").textContent = REPORT_NOTICE;
   const lines = [
     newAnswersLine(counselUnread.count),
     counselUnread.needsUpdate ? COUNSEL_COPY.needsUpdate : null,
@@ -12254,8 +12263,63 @@ function openCounselPanel() {
   q<HTMLButtonElement>(".counsel-refresh").addEventListener("click", () => void loadCounselList(ov));
   document.body.appendChild(ov);
   closeBtn.focus();
+  void loadCounselAuto(ov);
   void loadCounselList(ov);
 }
+// 「상담소 끄기/켜기」(TICKET=cysr-1110-counsel-off ⓐ) — 끄기 = 팩이 동봉 클라이언트의 `agora counsel off` 를 그대로 부른다
+// (보내기·모은 줄·재시도 전부 멈춤). 앱은 설정 파일을 직접 쓰지 않는다 — Rust counsel_auto_set → 팩 `javis_counsel.py auto-set`.
+async function loadCounselAuto(ov: HTMLElement, next?: boolean) {
+  const state = ov.querySelector(".counsel-auto-state") as HTMLElement;
+  const btn = ov.querySelector(".counsel-auto-toggle") as HTMLButtonElement;
+  btn.disabled = true;
+  btn.textContent = AUTO_COPY.busy;
+  let res: any;
+  try {
+    res = next === undefined ? await invoke("counsel_auto_status") : await invoke("counsel_auto_set", { on: next });
+  } catch {
+    res = null;
+  }
+  if (!ov.isConnected) return;
+  const st = parseAutoStatus(res);
+  state.textContent = autoLine(st.auto);
+  (ov.querySelector(".counsel-auto-notice") as HTMLElement).textContent = autoNotice(st.auto);
+  if (next === true && st.auto !== true) state.textContent += " " + AUTO_COPY.notTurnedOn;
+  const t = autoToggle(st.auto);
+  btn.textContent = t.label;
+  btn.disabled = false;
+  btn.onclick = () => void loadCounselAuto(ov, t.next);
+}
+// 첫 안내(TICKET=cysr-1110-counsel-off ⓑ) — 하루 1통을 보내기 전에 안내문을 이 화면에 한 번 띄운다. 팩은 「봤음」 표식
+// (counsel_notice_seen) 전에는 보내지 않는다. 「상담소 끄기」를 눌렀으면 꺼진 것이 확인된 뒤에만 표식을 남긴다
+// (못 껐으면 표식 0 → 보내지 않은 채 다음 확인 때 다시 묻는다). Escape·바깥 클릭 = 「확인」(끄기는 명시 클릭으로만).
+const REPORT_NOTICE_FIRST_MS = 5_000;
+const REPORT_NOTICE_POLL_MS = 30 * 60_000;
+let reportNoticeOpen = false;
+async function maybeShowReportNotice() {
+  if (reportNoticeOpen) return;
+  let st;
+  try {
+    st = parseAutoStatus(await invoke("counsel_auto_status"));
+  } catch {
+    return;
+  }
+  if (!st.needsNotice) return;
+  reportNoticeOpen = true;
+  try {
+    if (await confirmModal(AUTO_COPY.noticeTitle, REPORT_NOTICE, AUTO_COPY.turnOff, AUTO_COPY.ok)) {
+      let res: unknown = null;
+      try {
+        res = await invoke("counsel_auto_set", { on: false });
+      } catch {}
+      if (parseAutoStatus(res).auto !== false) return;
+    }
+    await invoke("counsel_notice_seen").catch(() => {});
+  } finally {
+    reportNoticeOpen = false;
+  }
+}
+setTimeout(() => void maybeShowReportNotice(), REPORT_NOTICE_FIRST_MS);
+setInterval(() => void maybeShowReportNotice(), REPORT_NOTICE_POLL_MS);
 document.getElementById("btn-counsel")!.addEventListener("click", () => openCounselPanel());
 // 「아고라」 = 별도 창(Rust open_agora_window · 보기 전용 · 아고라 주소만 · 앱 명령 호출 0). 참여는 마스터에게 말로.
 document.getElementById("btn-agora")!.addEventListener("click", () => {

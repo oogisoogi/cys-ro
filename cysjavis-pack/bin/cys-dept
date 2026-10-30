@@ -3485,35 +3485,22 @@ EOF
     #   '오래됨' 판정의 정본은 데몬의 `trash.list`(이름의 스탬프 기준 · D-r2-9)다.
     #   ★알려진 결과(설계 R-1 이 받아들인 비용): 아무 것도 스스로 공간을 회수하지 않는다.
     #   휴지통이 커지는 것은 오너가 명령할 때까지 **그대로 둔다** — 자동 삭제를 되살릴 사유가 아니다.
-    #   ★cysr 1.1.10 윈도우 예외(master#4e61b71e Q1=B · 판정표 G9 ⓑ): **윈도우이고 이 빌드에서 앱 휴지통 삭제가 꺼져 있으면**
-    #   (원작자 `trash_win_validated` feature 꺼짐 = `cys build-info --json` 의 `"trash_delete_supported":true` 가 없음 ·
-    #   1.1.9 이하 바이너리는 그 칸 자체가 없다) 1.1.9 와 같이 TTL 초과분을 정리한다 — 그 빌드에는 지우는 길이 하나도
-    #   없어 transcripts.db(부서당 최대 324MB)가 무한 누적되기 때문이다. 그 feature 가 켜지는 판부터는 자동으로 위 S8
-    #   동작(표시만)이다. 맥·리눅스는 언제나 S8 동작이다.
-    _trash_reclaim=0
-    case "$(uname -s 2>/dev/null)" in
-      MINGW*|MSYS*|CYGWIN*)
-        case "$("${CYS_BIN:-cys}" build-info --json 2>/dev/null)" in
-          *'"trash_delete_supported":true'*) _trash_reclaim=0 ;;
-          *) _trash_reclaim=1 ;;
-        esac ;;
-    esac
-    nt=0; ne=0
+    #   ★윈도우도 같다(TICKET=cysr-1110-counsel-off ⓓ · master#9ce4ad21 A). 종전 윈도우 예외(master#4e61b71e Q1=B)는
+    #   `cys build-info --json` 에 `"trash_delete_supported":true` 가 없으면 TTL 초과분을 rm -rf 했다 — 판정을 못 해도
+    #   (cys 없음·실패·빈 출력) 지우는 fail-open 이었고, 그 정리를 자동으로 부르는 자리도 0이었다(앱·CLI 문장만 「약 14일
+    #   뒤 저절로 정리」를 약속). 지우지 않는 쪽은 되돌릴 수 있고 지우는 쪽은 못 되돌린다 — 윈도우 격리분도 알리기만 한다.
+    nt=0
     if [ -d "$TRASH_ROOT" ]; then
       ttl="${CYS_TRASH_TTL_DAYS:-14}"
       while IFS= read -r _td; do
         [ -n "$_td" ] || continue
-        if [ "$_trash_reclaim" = 1 ]; then
-          if [ "$dry" = 1 ]; then echo "[cys-dept] reap(dry): TRASH-EXPIRE $_td (>${ttl}d · windows - app trash delete is off in this build)"
-          else rm -rf "$_td" && ne=$((ne+1)) && echo "[cys-dept] reap: TRASH-EXPIRE $_td (>${ttl}d · windows - app trash delete is off in this build)"; fi
-          continue; fi
         nt=$((nt+1))
         if [ "$dry" = 1 ]; then echo "[cys-dept] reap(dry): TRASH-OLD $_td (>${ttl}d · kept - this tool no longer deletes it; delete from Control Center > Trash)"
         else echo "[cys-dept] reap: TRASH-OLD $_td (>${ttl}d · kept - this tool no longer deletes it; delete from Control Center > Trash)"; fi
       done < <(find "$TRASH_ROOT" -mindepth 1 -maxdepth 1 -type d -mtime +"$ttl" 2>/dev/null)
     fi
     _dept_count="$(reg_count)" || exit $?
-    echo "[cys-dept] reap 완료(dry=$dry): DEAD=$nd IDLE=$ni SKIP=$ns HOLD=$nh TRASH-OLD=$nt$([ "$_trash_reclaim" = 1 ] && echo " TRASH-EXPIRE=$ne"). 부서 수=$_dept_count"
+    echo "[cys-dept] reap 완료(dry=$dry): DEAD=$nd IDLE=$ni SKIP=$ns HOLD=$nh TRASH-OLD=$nt. 부서 수=$_dept_count"
     ;;
   promote-ceo)
     # 오너 지명 경로(2026-07-14): 오너/CSO가 기본 데몬 master를 CEO로 직접 지명 — 호출 자체가 동의.

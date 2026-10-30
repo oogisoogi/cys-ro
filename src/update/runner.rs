@@ -56,10 +56,10 @@ pub trait Ops {
     fn os(&self) -> Os;
     /// S2 — 내려받기·검증·stage(저널 칸 `release_seq`·`target`·`stage_path`·`stage_tree_sha256` 채움).
     fn fetch(&mut self, j: &mut Journal) -> Step;
-    /// S3 — 「하지 않는 조건」 재판정 통과 → 정비 모드 진입(세대 토큰).
-    fn quiesce(&mut self, j: &Journal) -> Step;
-    /// S4 — `drain --verify` all_saved.
+    /// S4 — `drain --verify` all_saved(★S3 **앞** · 정비 모드 안에서는 저장 지시가 보류된다).
     fn drain(&mut self, j: &Journal) -> Step;
+    /// S3 — 「하지 않는 조건」 재판정 통과 → 정비 모드 진입(세대 토큰 · 저장의 꼬리 출력이 잦아든 뒤의 기준).
+    fn quiesce(&mut self, j: &Journal) -> Step;
     /// S5 — 토큰 이후 사람 입력·새 출력·큐·working·unknown 재검사.
     fn recheck(&mut self, j: &Journal) -> Step;
     /// S5b — 기준선 B0(`attempt.json`).
@@ -279,11 +279,13 @@ impl<'a, O: Ops> Runner<'a, O> {
         let mut j: Journal;
         self.enter(State::Locked, |_| {})?;
         // S1~S6: 아직 아무것도 안 바꿈 — 실패 = 보류(정비 모드 해제 · stage 삭제)
+        // ★1.1.11(TICKET=cysr-1111-drainhold): 저장 지시도 비사람 입력이라 정비 모드 **안**에서는 보류돼 좌석에 닿지 않는다(좌석 있는 기기 = S4 영구 보류).
+        //   그래서 S4(저장)를 S3(정비 모드) **앞**에 둔다 — 그 틈에 든 입력은 S5 재검사가 잡는다. 저널 이름의 번호는 호환을 위해 그대로다.
         type Phase<O> = fn(&mut O, &mut Journal) -> Step;
         let early: [(State, Phase<O>); 6] = [
             (State::Fetched, |o, j| o.fetch(j)),
-            (State::Quiesced, |o, j| o.quiesce(j)),
             (State::Drained, |o, j| o.drain(j)),
+            (State::Quiesced, |o, j| o.quiesce(j)),
             (State::Rechecked, |o, j| o.recheck(j)),
             (State::Baselined, |o, j| o.baseline(j)),
             (State::Confirmed, |o, j| o.confirm(j)),
@@ -1313,7 +1315,7 @@ pub(crate) mod tests {
     #[test]
     fn kill_matrix_every_state_before_and_after_recovers_to_one_consistent_version() {
         let forward = [
-            State::Locked, State::Fetched, State::Quiesced, State::Drained, State::Rechecked, State::Baselined, State::Confirmed,
+            State::Locked, State::Fetched, State::Drained, State::Quiesced, State::Rechecked, State::Baselined, State::Confirmed,
             State::Stopped, State::Snapshotted, State::CommitCheck, State::Swapped, State::PayloadOk, State::Started,
             State::Committed, State::Done,
         ];

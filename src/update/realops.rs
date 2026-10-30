@@ -302,7 +302,8 @@ impl RealOps {
         if !stop_only {
             self.last_rotate_rc = Some(o.status.code().unwrap_or(-1));
         }
-        if o.status.success() {
+        // ★1.1.11: rc 25 = 끝까지 돌았고 복원만 일부 보류(`cys restore` 1·90·91 · 부서) — 교체는 끝났다. 판정은 V3 가 좌석을 재서 한다.
+        if o.status.success() || (!stop_only && o.status.code() == Some(verify::ROTATE_RC_RESTORE_PARTIAL)) {
             Ok(())
         } else {
             Err(fail(ErrCode::RotateFailed, if stop_only { "S7" } else { "S10" }, format!("rotate rc {:?}", o.status.code())))
@@ -325,6 +326,23 @@ impl RealOps {
     fn expect_old(&self) -> super::mac::Ident {
         let b = super::buildinfo::build_info();
         super::mac::Ident { release_seq: b.release_seq, build_id: b.build_id.clone(), target: b.target.to_string() }
+    }
+
+    /// S3 기준 토큰 — 저장을 마친 좌석이 턴을 끝내며 내는 꼬리 출력이 정착 창만큼 잦아든 뒤의 출력 세대(설계 §3-3 「drain 이 쓴 출력은 제외」).
+    /// 상한을 넘겨도 판단은 S5 몫이다(계속 출력 중이면 거기서 보류).
+    fn settled_token(&self, mut base: super::quiesce::Token) -> Result<super::quiesce::Token, Fail> {
+        let cap = std::time::Instant::now() + std::time::Duration::from_secs(super::quiesce::TAIL_CAP_SECS);
+        let mut prev = base.clone();
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(self.env.settle_secs));
+            let now = self.token_now()?;
+            let done = super::quiesce::output_settled(&prev, &now) || std::time::Instant::now() >= cap;
+            super::quiesce::rebase_output(&mut base, &now);
+            if done {
+                return Ok(base);
+            }
+            prev = now;
+        }
     }
 
     fn token_now(&self) -> Result<super::quiesce::Token, Fail> {
@@ -622,7 +640,8 @@ impl Ops for RealOps {
     fn quiesce(&mut self, _j: &Journal) -> Step {
         let v = (self.env.rpc)("update.quiesce", json!({"txn": self.token, "ttl_secs": super::quiesce::DEFAULT_TTL_SECS}))
             .map_err(|e| fail(ErrCode::RotateFailed, "S3", e))?;
-        serde_json::from_value::<super::quiesce::Token>(v).map_err(|e| fail(ErrCode::RotateFailed, "S3", e.to_string()))?;
+        let t = serde_json::from_value::<super::quiesce::Token>(v).map_err(|e| fail(ErrCode::RotateFailed, "S3", e.to_string()))?;
+        self.q1 = Some(self.settled_token(t)?);
         Ok(())
     }
 
@@ -630,7 +649,6 @@ impl Ops for RealOps {
         let o = self.child(&self.env.old_cys, &["drain", "--verify", "--timeout", "60"])?;
         let v: Value = serde_json::from_slice(&o.stdout).map_err(|_| fail(ErrCode::RotateFailed, "S4", "drain 결과 없음"))?;
         if v["total"].as_u64() == Some(0) || v["all_saved"].as_bool() == Some(true) {
-            self.q1 = Some(self.token_now()?);
             Ok(())
         } else {
             Err(fail(ErrCode::RotateFailed, "S4", "all_saved 아님"))
@@ -640,7 +658,7 @@ impl Ops for RealOps {
     fn recheck(&mut self, _j: &Journal) -> Step {
         std::thread::sleep(std::time::Duration::from_secs(self.env.settle_secs));
         let t2 = self.token_now()?;
-        let t1 = self.q1.clone().ok_or_else(|| fail(ErrCode::RotateFailed, "S5", "S4 토큰 없음"))?;
+        let t1 = self.q1.clone().ok_or_else(|| fail(ErrCode::RotateFailed, "S5", "S3 토큰 없음"))?;
         let why = super::quiesce::recheck_diff(&t1, &t2);
         if why.is_empty() {
             self.q1 = Some(t2);
@@ -1215,6 +1233,12 @@ impl Ops for RealOps {
         let rid = format!("{}:{}", j.map(|j| j.txn_id.as_str()).unwrap_or("-"), kname);
         let stamp = super::clock::now_stamp();
         let _ = super::notify::update_state(&self.env.update_dir, |m| super::notify::apply(m, &o, &rid, now, Some(&stamp)));
+        if kind == Kind::Ok && self.last_rotate_rc == Some(verify::ROTATE_RC_RESTORE_PARTIAL) {
+            let (rel, rc) = (o.release_seq, verify::ROTATE_RC_RESTORE_PARTIAL);
+            let _ = super::notify::update_state(&self.env.update_dir, |m| {
+                m.insert("restore_partial".into(), json!({"release_seq": rel, "rc": rc, "at": now}));
+            });
+        }
         if kind != Kind::Deferred {
             if let Some(cd) = self.env.counsel_dir.clone() {
                 let _ = super::notify::append_update(&cd, &o.from_version, &o.to_version, kname, now);
@@ -1724,6 +1748,23 @@ mod tests {
             assert!(o.status.success(), "ad-hoc 재서명 실패");
         }
         p
+    }
+
+    /// ★1.1.11 S10 rc 표: 끝까지 돈 rotate 의 25 = 성공 쪽(rc 는 V3 재료로 남는다) · 0 = 성공 · 그 밖 = 실패 · `--stop-only` 는 25 도 실패(그 길에 그런 rc 없음).
+    #[cfg(unix)]
+    #[test]
+    fn rotate_rc_table_at_s10_and_s7() {
+        use std::os::unix::fs::PermissionsExt;
+        let (d, _upd, _root, mut ops) = recon_rig("rctable");
+        let exe = d.join("rc-cys");
+        for (rc, stop_only, ok) in [(0, false, true), (25, false, true), (21, false, false), (22, false, false), (23, false, false), (24, false, false), (26, false, false), (1, false, false), (0, true, true), (25, true, false)] {
+            std::fs::write(&exe, format!("#!/bin/sh\nexit {rc}\n")).unwrap();
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+            ops.last_rotate_rc = None;
+            assert_eq!(ops.rotate(&exe, stop_only).is_ok(), ok, "rc {rc} stop_only {stop_only}");
+            assert_eq!(ops.last_rotate_rc, if stop_only { None } else { Some(rc) });
+        }
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// 재구성 종단 시험 틀: 격리 갱신 폴더·`~/.cys`·가짜 `cys`(인자를 기록하고 rc 0) · 상담소 = 격리. ★5판: 본부 데몬 = `<d>/daemon.up`

@@ -30,6 +30,8 @@ pub const SESSION_FILE: &str = "hold-session.json";
 /// 기본 TTL(설계 `ttl_secs: 900`).
 pub const DEFAULT_TTL_SECS: u64 = 900;
 pub const ORIGIN: &str = "update_hold";
+/// S3 기준 토큰이 저장의 꼬리 출력을 기다리는 상한(초).
+pub const TAIL_CAP_SECS: u64 = 120;
 
 /// 좌석 하나의 관측(세대 토큰 칸).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +90,22 @@ pub fn recheck_diff(t1: &Token, t2: &Token) -> Vec<String> {
         why.push("보류 로그 증가".to_string());
     }
     why
+}
+
+/// S3 기준 토큰 정착(순수): 앞뒤 관측에서 좌석 집합·출력 세대가 그대로이고 working 자기신고가 없는가 — S4 저장의 꼬리 출력이 끝났는가.
+pub fn output_settled(a: &Token, b: &Token) -> bool {
+    let quiet = |x: &Token, y: &Token| x.seats.len() == y.seats.len() && x.seats.iter().zip(&y.seats).all(|(p, q)| p.surface_id == q.surface_id && p.output_gen == q.output_gen);
+    quiet(a, b) && b.seats.iter().all(|s| s.working != Some(true))
+}
+
+/// 기준 토큰의 출력 세대만 `now` 로 옮긴다(순수 · 설계 §3-3 「drain 이 쓴 출력은 제외」) — 사람 입력·큐·미제출·보류 seq 칸은 정비 모드에 든
+/// 시점 값을 지켜, 정착을 기다린 동안의 입력도 S5 가 잡는다. 없어진 좌석은 그대로 두어 「좌석 집합 바뀜」 으로 남긴다.
+pub fn rebase_output(base: &mut Token, now: &Token) {
+    for s in &mut base.seats {
+        if let Some(n) = now.seats.iter().find(|n| n.surface_id == s.surface_id) {
+            s.output_gen = n.output_gen;
+        }
+    }
 }
 
 /// 데몬이 RPC 토큰을 받아들이는 조건: 소유자 기록 `txn_id`·`epoch` 일치 · 묘비 아님 · 잠금이 실제로 잡혀 있음.
@@ -231,6 +249,32 @@ mod tests {
             let w = recheck_diff(&t1, &t2);
             assert!(w.iter().any(|x| x.contains(want)), "{want}: {w:?}");
         }
+    }
+
+    /// ★1.1.11: 꼬리 출력을 기다린 동안의 사람 입력·큐는 기준에서 지워지지 않는다(출력 세대만 옮긴다) · working·출력 변화 = 미정착.
+    #[test]
+    fn settling_rebases_output_only_and_keeps_input_evidence() {
+        let first = tok(vec![seat(1), seat(2)]);
+        let mut later = first.clone();
+        later.seats[0].output_gen = 50;
+        later.seats[1].human_input_mono_ms = Some(99);
+        later.seats[1].queue_len = 2;
+        assert!(!output_settled(&first, &later), "출력 변화 = 미정착");
+        let mut still = later.clone();
+        assert!(output_settled(&later, &still));
+        still.seats[0].working = Some(true);
+        assert!(!output_settled(&later, &still), "working = 미정착");
+        let mut base = first.clone();
+        rebase_output(&mut base, &later);
+        assert_eq!(base.seats[0].output_gen, 50);
+        let w = recheck_diff(&base, &later);
+        assert!(!w.iter().any(|x| x.contains("새 출력")), "{w:?}");
+        assert!(w.iter().any(|x| x.contains("사람 입력")) && w.iter().any(|x| x.contains("큐 증가")), "입력 증거 유지: {w:?}");
+        let mut gone = later.clone();
+        gone.seats.pop();
+        assert!(!output_settled(&later, &gone), "좌석 집합 변화 = 미정착");
+        rebase_output(&mut base, &gone);
+        assert!(recheck_diff(&base, &gone).iter().any(|x| x.contains("좌석 집합")));
     }
 
     /// ★B8 crash 행렬(U1 이관): 보류 로그(ACK 뒤 내구) → 재생 ① 의 각 지점에서 죽어도 같은 줄이 두 번 큐에 들어가지 않고 사라지지도

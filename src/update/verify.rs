@@ -105,6 +105,8 @@ pub struct Check {
 
 /// 정책 §6-7 금지 내장 잡.
 pub const FORBIDDEN_JOBS: &[&str] = &["formation-ensure-10min"];
+/// `cys rotate` rc 25 — 끝까지 돌았고 조직 복원만 일부 실패·보류(자식 `cys restore` 의 1·90·91 · 부서 교체·복원 실패가 모두 이 값으로 접힌다).
+pub const ROTATE_RC_RESTORE_PARTIAL: i32 = 25;
 
 fn v5(b: &UserTree, p: &UserTree) -> Result<(), String> {
     for (k, h) in &b.bytes {
@@ -152,6 +154,11 @@ pub fn subset(a: &Value, b: &Value) -> bool {
     }
 }
 
+/// 좌석 자리 = 역할·부서(세션을 뺀 키 · V3 의 rc 25 대조).
+fn seat_places(seats: &BTreeSet<SeatKey>) -> BTreeSet<(&str, &str)> {
+    seats.iter().map(|s| (s.role.as_str(), s.dept.as_str())).collect()
+}
+
 /// V1~V9 판정. `rollback` = 옛 판 기준 재검사(RB_VERIFIED) — 그때는 V9 를 기준선 팩과 대조한다.
 pub fn judge(b0: &Baseline, post: &Post, exp: &Expect, rollback: bool) -> Vec<Check> {
     let mut out = Vec::new();
@@ -176,7 +183,13 @@ pub fn judge(b0: &Baseline, post: &Post, exp: &Expect, rollback: bool) -> Vec<Ch
         },
     );
     push("V2", if post.ping_ok_streak >= 3 && post.cysd_procs == 1 { Ok(()) } else { Err(format!("ping {} · cysd {}개", post.ping_ok_streak, post.cysd_procs)) });
-    let seats_ok = post.seats == b0.seats && post.drain_seats.as_ref().map(|d| d == &b0.seats).unwrap_or(true) && post.restore_rc == 0;
+    // ★1.1.11: rc 25(복원 일부 보류)의 좌석은 세션이 아직 안 붙었을 수 있다 — 자리(역할·부서)가 그대로면 통과 · 자리가 사라졌으면 그대로 실패.
+    let seats_same = match post.restore_rc {
+        0 => post.seats == b0.seats,
+        ROTATE_RC_RESTORE_PARTIAL => seat_places(&post.seats) == seat_places(&b0.seats),
+        _ => false,
+    };
+    let seats_ok = seats_same && post.drain_seats.as_ref().map(|d| d == &b0.seats).unwrap_or(true);
     let hold_ok = post.hold_lost == 0 && post.hold_delivered_seq <= post.hold_last_seq && post.hold_last_seq >= b0.hold_seq;
     push(
         "V3",
@@ -400,6 +413,36 @@ mod tests {
         assert!(v5(&b0, &post3).unwrap_err().contains(w), "미수정본 + 매니페스트 불일치 = V5");
         assert_eq!(user_tree_digest(&d).unwrap(), { let mut t = post3.clone(); t.pristine.clear(); crate::update::feed::sha256_hex(&serde_json::to_vec(&t).unwrap()) });
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★1.1.11 rotate rc 표: 0 = 좌석 키 전부 대조 · 25 = 자리(역할·부서)만 대조(세션 어긋남 통과 · 자리 소실 실패) · 그 밖 = V3 실패. 롤백 재검사도 같은 표.
+    #[test]
+    fn v3_follows_rotate_rc_table() {
+        let (b, mut p, e) = fixture();
+        p.drain_seats = None;
+        for rollback in [false, true] {
+            let v3 = |p: &Post| failed(&judge(&b, p, &e, rollback)).contains(&"V3");
+            let mut q = p.clone();
+            q.restore_rc = 25;
+            assert!(!v3(&q), "rc 25 · 같은 좌석 = 통과");
+            let mut resumed: BTreeSet<SeatKey> = q.seats.clone();
+            let moved = resumed.pop_first().unwrap();
+            resumed.insert(SeatKey { session_id: String::new(), ..moved });
+            q.seats = resumed;
+            assert!(!v3(&q), "rc 25 · 세션만 어긋남(보류 좌석) = 통과");
+            let mut r = p.clone();
+            r.seats = r.seats.iter().cloned().map(|s| SeatKey { session_id: String::new(), ..s }).collect();
+            assert!(v3(&r), "rc 0 은 세션까지 대조");
+            let mut gone = p.clone();
+            gone.restore_rc = 25;
+            gone.seats = [SeatKey { role: "other".into(), ..seat("a") }].into();
+            assert!(v3(&gone), "rc 25 · 자리 소실 = 실패");
+            for rc in [-1, 1, 21, 22, 23, 24, 26, 90, 91] {
+                let mut x = p.clone();
+                x.restore_rc = rc;
+                assert!(v3(&x), "rc {rc} = 실패");
+            }
+        }
     }
 
     /// §7-1 사후 검증 시험 행(V3 같은 수·다른 좌석 · V5 job 소실 · cmd 변경 · local 1바이트 · V7 누락 · V9 더 새 독립 팩).

@@ -115,7 +115,9 @@ pub fn can_transition(from: Option<State>, to: State) -> bool {
     }
     match (from, to) {
         // 앞으로(본체)
-        (Locked, Fetched) | (Fetched, Quiesced) | (Quiesced, Drained) | (Drained, Rechecked) | (Rechecked, Baselined)
+        // ★1.1.11: S4 → S3 → S5 가 러너의 순서다 · 옛 순서 칸은 옛 판 러너가 남긴 저널을 읽는 쪽 호환으로 둔다.
+        (Locked, Fetched) | (Fetched, Drained) | (Drained, Quiesced) | (Quiesced, Rechecked)
+        | (Fetched, Quiesced) | (Quiesced, Drained) | (Drained, Rechecked) | (Rechecked, Baselined)
         | (Baselined, Confirmed) | (Confirmed, Stopped) | (Stopped, Snapshotted) | (Snapshotted, CommitCheck)
         | (CommitCheck, Swapped) | (Swapped, PayloadOk) | (Swapped, Started) | (PayloadOk, Started)
         | (Started, Committed) | (Committed, Done) => true,

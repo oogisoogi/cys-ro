@@ -178,7 +178,7 @@ def _git_trailer_receipts(project):
     if not os.path.isdir(os.path.join(project, ".git")):
         return []
     try:
-        r = subprocess.run(["git", "-C", project, "log", "--format=%(trailers:key=Vibe-Rule,valueonly)"],
+        r = subprocess.run(["git", "-C", project, "log", "--format=%(trailers:key=Vibe-Rule,valueonly)"], stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, timeout=15, **NOWIN)
     except (OSError, subprocess.SubprocessError):
         return []

@@ -114,7 +114,7 @@ def send_alert(role, msg):
         sys.stderr.write("[serena-probe] cys 미발견 — alert 미전송: %s\n" % msg)
         return False
     try:
-        subprocess.run([cys, "send", "--queued", "--to", role, msg],
+        subprocess.run([cys, "send", "--queued", "--to", role, msg], stdin=subprocess.DEVNULL,
                        capture_output=True, timeout=15, **NOWIN)
         return True
     except Exception as e:

@@ -247,7 +247,7 @@ def _target_alive(target):
         #   라이벌 데몬으로 띄운다. 죽은 데몬은 dead/unknown 판정이 정답이지 부활 트리거가
         #   아니다(javis_org.dept_status 의 동형 봉인 · 회귀 핀 = lib.rs
         #   pack_wakeup_liveness_probe_seals_autostart).
-        proc = subprocess.run([cys, "list"], capture_output=True, text=True, timeout=10,
+        proc = subprocess.run([cys, "list"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10,
                               env={**os.environ, "CYS_NO_AUTOSTART": "1"}, **NOWIN)
         out = proc.stdout
         # ★★측정 실패 fail-safe(R1 라운드1 2026-08-29 · 드리프트 fail-safe 의 나머지 반쪽):
@@ -710,7 +710,7 @@ def cmd_drain(a):
                 # ★(0.14.31 · 성찰 Q9) **바이트**로 받는다 — `text=True` 는 로캘(cp949 등)로
                 #   디코딩하다 `UnicodeDecodeError` 를 `run()` 안에서 올렸고, 그것은 아래 except 에
                 #   잡히지 않아 drain 이 죽었다(전송은 이미 성공 → pending 잔존 → 재전송 = 중복).
-                cp = subprocess.run(cmd, check=True, timeout=15, capture_output=True, **NOWIN)
+                cp = subprocess.run(cmd, stdin=subprocess.DEVNULL, check=True, timeout=15, capture_output=True, **NOWIN)
                 if _load_failcount().get(target):
                     _bump_failcount(target, reset=True)  # 성공 = 연속실패 해소
             except (subprocess.SubprocessError, OSError, FileNotFoundError) as e:

@@ -107,7 +107,7 @@ def collect_procs():
     """
     try:
         out = subprocess.run(
-            ['ps', '-axo', 'pid,ppid,%cpu,etime,stat,tty,command'],
+            ['ps', '-axo', 'pid,ppid,%cpu,etime,stat,tty,command'], stdin=subprocess.DEVNULL,
             capture_output=True, text=True, timeout=CYS_TIMEOUT,
          **NOWIN).stdout
     except (OSError, subprocess.TimeoutExpired):
@@ -129,7 +129,7 @@ def collect_procs():
 def _run_cys(args):
     """cys 서브커맨드 실행. (ok, stdout). 실패·부재면 (False, '')."""
     try:
-        r = subprocess.run(['cys'] + args, capture_output=True,
+        r = subprocess.run(['cys'] + args, stdin=subprocess.DEVNULL, capture_output=True,
                            text=True, timeout=CYS_TIMEOUT, **NOWIN)
     except (OSError, subprocess.TimeoutExpired):
         return False, ''

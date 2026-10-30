@@ -400,7 +400,7 @@ def intake_ok(surfaces, idle_max=600):
 
 def dept_status(socket):
     """부서 소켓의 cys status --json 회수."""
-    r = subprocess.run(["cys", "--socket", socket, "status", "--json"],
+    r = subprocess.run(["cys", "--socket", socket, "status", "--json"], stdin=subprocess.DEVNULL,
                        capture_output=True, text=True, env={**os.environ, "CYS_NO_AUTOSTART": "1"}, **NOWIN)
     if r.returncode != 0: return None
     try: return json.loads(r.stdout)
@@ -458,7 +458,7 @@ def _audit_daemon_status(socket=None):
     else:
         cmd = ["cys", "--socket", socket, "status", "--json"]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=10, **NOWIN)
+        r = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, env=env, timeout=10, **NOWIN)
     except FileNotFoundError:
         return None, "cys-not-found"
     except subprocess.TimeoutExpired:
@@ -760,7 +760,7 @@ def destroy_dept(name, mission_key, purge=False, purge_workdir=False, purge_stat
         actions.append(("down", 127))
         sys.stderr.write("[destroy] %s: %s — down 불가\n" % (name, e))
         return actions  # down 실패로 cmd_destroy가 비0 판정
-    r = subprocess.run(down_cmd, capture_output=True, text=True,
+    r = subprocess.run(down_cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True,
                        env={**os.environ, "CYS_TRASH_STAMP": ts, "CYS_DEPT_EXPECT_GEN": expect_gen or ""}, **NOWIN)
     actions.append(("down", r.returncode))
     # ★B11: 울타리 거부(9 세대 불일치 · 10 다른 닫기 진행 중 · 11 잠금 실패) = teardown 이 시작되지 않았다 —
@@ -831,7 +831,7 @@ def destroy_dept(name, mission_key, purge=False, purge_workdir=False, purge_stat
         dept_roster = expand("~/.local/state/cys/phoenix/dept_roster.json")
         vr = subprocess.run(["python3", verifier, "--dept", name,
                              "--state-root", state_root, "--depts-json", DEPTS,
-                             "--dept-roster", dept_roster], capture_output=True, text=True, **NOWIN)
+                             "--dept-roster", dept_roster], stdin=subprocess.DEVNULL, capture_output=True, text=True, **NOWIN)
         actions.append(("verify", vr.returncode))
         if vr.returncode != 0:
             sys.stderr.write("[destroy] %s: 사후 검증 실패(rc=%d) — %s\n"
@@ -902,7 +902,7 @@ def apply_plan(m):
 def create_dept(key):
     """cys-dept create 위임. 부서장 각성·미션주입·격리·멱등 전부 cys-dept 책임."""
     require_cso()  # 게이트를 효과 함수에 (R1 REVISE-1) — import 직접호출 우회 차단
-    r = subprocess.run(["cys-dept", "create", key], capture_output=True, text=True,
+    r = subprocess.run(["cys-dept", "create", key], stdin=subprocess.DEVNULL, capture_output=True, text=True,
                        env={**os.environ}, **NOWIN)  # 부모 role 상속(require_cso로 cso 보장·하류 가드 유지)
     return r.returncode, (r.stdout or "") + (r.stderr or "")
 
@@ -912,7 +912,7 @@ def dispatch_task(t):
            "--task", t["task"], "--scope", t["scope"], "--to", t.get("to","worker")]
     if t.get("success"): cmd += ["--success", t["success"]]
     if t.get("dont"): cmd += ["--dont", t["dont"]]
-    r = subprocess.run(cmd, capture_output=True, text=True, **NOWIN)
+    r = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, **NOWIN)
     return r.returncode, (r.stdout or "") + (r.stderr or "")
 
 def apply_manifest(m):

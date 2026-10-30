@@ -75,8 +75,8 @@ def _req_timeout():
 
 
 def _nostdin():
-    """자식에게 표준입력을 물려주지 않는다(수명줄 파이프가 자식에게 새지 않게). 윈도우 종전은 그대로."""
-    return {} if _legacy_win() else {"stdin": subprocess.DEVNULL}
+    """자식에게 표준입력을 물려주지 않는다(수명줄 파이프가 자식에게 새지 않게 · 윈 무콘솔 세대의 WinError 6 도 막는다 — M1)."""
+    return {"stdin": subprocess.DEVNULL}
 
 
 def _has_escape(s):

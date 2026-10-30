@@ -783,7 +783,7 @@ def _run(cmd, timeout=120, env=None):
     env=None 이면 상속(종전 계약 그대로) — 명시 dict 는 ⑦ 부서 레인 신호처럼 스크럽이 계약인
     호출부 전용(additive · 기존 호출자 무영향)."""
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+        r = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout,
                            encoding="utf-8", errors="replace", env=env, **NOWIN)
         return r.returncode, (r.stdout or "") + (r.stderr or "")
     except FileNotFoundError:
@@ -802,8 +802,9 @@ def _run_split(cmd, timeout=120, env=None, input_text=None):
       `so + se` is byte-identical to `_run`'s merged text, including the 127 / 124 strings (both put them after an
       empty stdout)."""
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                           encoding="utf-8", errors="replace", env=env, input=input_text, **NOWIN)
+        r = subprocess.run(cmd, stdin=subprocess.DEVNULL if input_text is None else None, capture_output=True,
+                           text=True, timeout=timeout, encoding="utf-8", errors="replace", env=env,
+                           input=input_text, **NOWIN)
         return r.returncode, (r.stdout or ""), (r.stderr or "")
     except FileNotFoundError:
         return 127, "", "명령 없음: %s" % cmd[0]
@@ -917,7 +918,7 @@ def _notify_loud(title, body):
         ("send", ["cys", "send", "--queued", "--to", "master", "[부트 중단] %s — %s" % (title, body)]),
     ):
         try:
-            r = subprocess.run(cmd, capture_output=True, timeout=10, **NOWIN)
+            r = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, timeout=10, **NOWIN)
             if r.returncode == 0:
                 return name
         except Exception:
@@ -1823,7 +1824,7 @@ def _run_env(cmd, env, timeout=120):
     """_run 의 env 지정판 — (exit, stdout, stderr) **분리** 반환(cys-dept allocate 의
     'stdout 마지막 줄=부서명' 계약을 병합 텍스트에서 긁는 오파싱 방지)."""
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+        r = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout,
                            encoding="utf-8", errors="replace", env=env, **NOWIN)
         return r.returncode, (r.stdout or ""), (r.stderr or "")
     except FileNotFoundError:
@@ -3330,7 +3331,7 @@ def _cys_dept_name_ok_batch(names):
                       "인식한다). `_extract_dept_name_ok_def` 를 그 형태에 맞춰 고쳐라")
     script = fndef + '\nfor n in "$@"; do dept_name_ok "$n" && echo Y || echo N; done\n'
     try:
-        r = subprocess.run([bash, "-c", script, "_"] + list(names),
+        r = subprocess.run([bash, "-c", script, "_"] + list(names), stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, timeout=30, **NOWIN)
     except Exception as e:
         return None, ("drift", "추출한 dept_name_ok 실행에 실패했다(%s: %s)"

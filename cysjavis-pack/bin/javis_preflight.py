@@ -987,7 +987,7 @@ def clt_stub(path):
     if not os.access(xs, os.X_OK):
         return True
     try:
-        return subprocess.run([xs, "-p"], capture_output=True, timeout=10,
+        return subprocess.run([xs, "-p"], stdin=subprocess.DEVNULL, capture_output=True, timeout=10,
                               **NOWIN).returncode != 0
     except Exception:
         return True
@@ -1197,7 +1197,7 @@ def _c82_fake_resolves(which, fake, sh, env, is_win):
     if not is_win or not sh:
         return False, which
     try:
-        r = subprocess.run([sh, "-c", "command -v cys"], capture_output=True, text=True, encoding="utf-8",
+        r = subprocess.run([sh, "-c", "command -v cys"], stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8",
                            errors="replace", env=env, timeout=10, **NOWIN)
     except (OSError, subprocess.SubprocessError):
         return False, which
@@ -1885,7 +1885,7 @@ class Preflight:
             return False
         try:
             r = subprocess.run(
-                [cys, "init-pack", "--no-install-hook"],
+                [cys, "init-pack", "--no-install-hook"], stdin=subprocess.DEVNULL,
                 capture_output=True, timeout=30, **NOWIN,
             )
             self._init_pack_ran = r.returncode == 0
@@ -3160,7 +3160,7 @@ class Preflight:
         def ping():
             try:
                 return subprocess.run(
-                    [cys, "ping"], capture_output=True, timeout=5, **NOWIN
+                    [cys, "ping"], stdin=subprocess.DEVNULL, capture_output=True, timeout=5, **NOWIN
                 ).returncode == 0
             except Exception:
                 return False
@@ -3172,7 +3172,7 @@ class Preflight:
         if self.fix and cysd:
             log = open("/tmp/cysd-preflight.log", "ab") if os.name == "posix" else subprocess.DEVNULL
             subprocess.Popen(
-                [cysd], stdout=log, stderr=subprocess.STDOUT,
+                [cysd], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                 start_new_session=True, **NOWIN,
             )
             for _ in range(10):
@@ -3339,7 +3339,7 @@ class Preflight:
         if os.name == "posix" and not os.stat(p).st_mode & stat.S_IXUSR and self.fix:
             os.chmod(p, 0o755)
         try:
-            r = subprocess.run([sys.executable, p, "--self-test"],
+            r = subprocess.run([sys.executable, p, "--self-test"], stdin=subprocess.DEVNULL,
                                capture_output=True, timeout=30, env=_utf8_env(), **NOWIN)
         except Exception as e:
             self.add(cid, FAIL, "%s --self-test 실행 불가: %s" % (fname, e))
@@ -3438,7 +3438,7 @@ class Preflight:
             return
         try:
             if self.fix:
-                r = subprocess.run([sys.executable, orch, "silent-failure-catalog"],
+                r = subprocess.run([sys.executable, orch, "silent-failure-catalog"], stdin=subprocess.DEVNULL,
                                    capture_output=True, timeout=30, env=_utf8_env(), **NOWIN)
                 if r.returncode == 0:
                     self.add(cid, FIXED, "무음실패 카탈로그 재생성: %s" % cat)
@@ -3446,7 +3446,7 @@ class Preflight:
                     tail = (r.stderr or r.stdout or b"").decode("utf-8", "replace").strip()
                     self.add(cid, WARN, "무음실패 카탈로그 재생성 실패: %s" % tail[-200:])
                 return
-            r = subprocess.run([sys.executable, orch, "silent-failure-catalog", "--check"],
+            r = subprocess.run([sys.executable, orch, "silent-failure-catalog", "--check"], stdin=subprocess.DEVNULL,
                                capture_output=True, timeout=30, env=_utf8_env(), **NOWIN)
             if r.returncode == 0:
                 self.add(cid, PASS, "무음실패 카탈로그 정합 (런타임 파생·D5 거버넌스)")
@@ -3473,7 +3473,7 @@ class Preflight:
             return
         try:
             # --root로 lint 대상을 preflight가 보는 pack에 핀(env 재유도 분기 차단).
-            r = subprocess.run([sys.executable, reg, "verify", "--root", pack_dir(), "--json"],
+            r = subprocess.run([sys.executable, reg, "verify", "--root", pack_dir(), "--json"], stdin=subprocess.DEVNULL,
                                capture_output=True, timeout=30, env=_utf8_env(), **NOWIN)
             data = json.loads((r.stdout or b"").decode("utf-8", "replace") or "{}")
         except Exception as e:
@@ -3498,7 +3498,7 @@ class Preflight:
             self.add(cid, WARN, "javis_manifest.py 부재 — 타입드 워크플로우 매니페스트 미설치(opt-in·README 폴백)")
             return
         try:
-            r = subprocess.run([sys.executable, p, "--self-test"],
+            r = subprocess.run([sys.executable, p, "--self-test"], stdin=subprocess.DEVNULL,
                                capture_output=True, timeout=30, env=_utf8_env(), **NOWIN)
         except Exception as e:
             self.add(cid, WARN, "javis_manifest.py --self-test 실행 불가 — 보류: %s" % e)
@@ -3520,7 +3520,7 @@ class Preflight:
         # 실 데이터 정합 — MEMORY.md 색인과 메모리 파일의 기계검증.
         # 자동 수리 없음: 기억 내용은 오너·노드 소관이라 preflight가 임의 재작성하지 않는다.
         try:
-            r = subprocess.run([sys.executable, p, "verify", "--json"],
+            r = subprocess.run([sys.executable, p, "verify", "--json"], stdin=subprocess.DEVNULL,
                                capture_output=True, timeout=15, env=_utf8_env(), **NOWIN)
         except Exception as e:
             self.add(cid, FAIL, "javis_memory verify 실행 불가: %s" % e)
@@ -3538,7 +3538,7 @@ class Preflight:
         if not nlm:
             return None, None
         try:
-            out = subprocess.run([nlm, "--version"], capture_output=True,
+            out = subprocess.run([nlm, "--version"], stdin=subprocess.DEVNULL, capture_output=True,
                                  timeout=15, **NOWIN).stdout.decode("utf-8", "replace")
             m = re.search(r"(\d+)\.(\d+)\.(\d+)", out)
             return nlm, (tuple(int(x) for x in m.groups()) if m else None)
@@ -3557,7 +3557,7 @@ class Preflight:
                            "--upgrade", NLM_PIN])
         for cmd in candidates:
             try:
-                if subprocess.run(cmd, capture_output=True, timeout=600, **NOWIN).returncode == 0:
+                if subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, timeout=600, **NOWIN).returncode == 0:
                     return True
             except Exception:
                 continue
@@ -3757,7 +3757,7 @@ class Preflight:
             miss.append("probe 부재")
         else:
             try:
-                rc = subprocess.run([sys.executable, probe, "--self-test"],
+                rc = subprocess.run([sys.executable, probe, "--self-test"], stdin=subprocess.DEVNULL,
                                     capture_output=True, timeout=30, env=_utf8_env(), **NOWIN).returncode
                 if rc != 0:
                     miss.append("probe --self-test 실패")
@@ -3895,7 +3895,7 @@ class Preflight:
                      "(opt-in·자율주행 ESCALATE 게이트 보완)")
             return
         try:
-            r = subprocess.run([sys.executable, p, "--self-test"],
+            r = subprocess.run([sys.executable, p, "--self-test"], stdin=subprocess.DEVNULL,
                                capture_output=True, timeout=30, env=_utf8_env(), **NOWIN)
         except Exception as e:
             self.add(cid, WARN, "javis_semver.py --self-test 실행 불가 — 보류: %s" % e)
@@ -3925,7 +3925,7 @@ class Preflight:
         try:
             # --root = 스킬 루트(engine 의 부모). bias_check 가 engine/·references/ 를 스캔한다.
             skill_root = os.path.dirname(engine)
-            r = subprocess.run([sys.executable, bc, "--root", skill_root],
+            r = subprocess.run([sys.executable, bc, "--root", skill_root], stdin=subprocess.DEVNULL,
                                capture_output=True, timeout=30, env=_utf8_env(), **NOWIN)
         except Exception as e:
             self.add(cid, WARN, "bias_check 실행 불가 — 보류: %s" % e)
@@ -3949,7 +3949,7 @@ class Preflight:
             self.add(cid, WARN, "transcribe_channel.py 부재(%s) — URL→자막/전사 단일 채널 미설치(OPP-09)" % p)
             return
         try:
-            r = subprocess.run([sys.executable, p, "--self-test"],
+            r = subprocess.run([sys.executable, p, "--self-test"], stdin=subprocess.DEVNULL,
                                capture_output=True, timeout=30, env=_utf8_env(), **NOWIN)
         except Exception as e:
             self.add(cid, WARN, "transcribe_channel --self-test 실행 불가 — 보류: %s" % e)
@@ -3983,7 +3983,7 @@ class Preflight:
             % engine
         )
         try:
-            r = subprocess.run([sys.executable, "-c", driver],
+            r = subprocess.run([sys.executable, "-c", driver], stdin=subprocess.DEVNULL,
                                capture_output=True, timeout=20, env=_utf8_env(), **NOWIN)
         except Exception as e:
             self.add(cid, WARN, "disk_signal 실행 불가 — 보류: %s" % e)
@@ -4127,7 +4127,7 @@ class Preflight:
         # (c) 인증 — 사람 전용 단계: 기계는 상태와 다음 명령만 정확히 알린다
         auth_ok = False
         try:
-            auth_ok = subprocess.run([nlm, "login", "--check"], capture_output=True,
+            auth_ok = subprocess.run([nlm, "login", "--check"], stdin=subprocess.DEVNULL, capture_output=True,
                                      timeout=45, **NOWIN).returncode == 0
         except Exception:
             pass
@@ -4185,16 +4185,16 @@ class Preflight:
                 denylist_class="external_install",
                 present="%s 불완전" % dst if os.path.isdir(dst) else None):
             try:
-                ok = subprocess.run([gitbin, "clone", HARNESS_REPO, dst],
+                ok = subprocess.run([gitbin, "clone", HARNESS_REPO, dst], stdin=subprocess.DEVNULL,
                                     capture_output=True, timeout=300, **NOWIN).returncode == 0
                 if ok:
                     # 핀은 검증돼야 핀이다 — checkout rc와 HEAD==핀을 기계 확인하지
                     # 않으면 핀 부재(force-push·레포 교체) 시 조용히 moving HEAD로
                     # 남아 FIXED가 거짓 핀 주장이 된다(공급망 표면).
-                    co = subprocess.run([gitbin, "-C", dst, "checkout", HARNESS_PIN],
+                    co = subprocess.run([gitbin, "-C", dst, "checkout", HARNESS_PIN], stdin=subprocess.DEVNULL,
                                         capture_output=True, timeout=60, **NOWIN).returncode
                     head = subprocess.run(
-                        [gitbin, "-C", dst, "rev-parse", "HEAD"],
+                        [gitbin, "-C", dst, "rev-parse", "HEAD"], stdin=subprocess.DEVNULL,
                         capture_output=True, timeout=15, **NOWIN).stdout.decode().strip()
                     ok = co == 0 and head == HARNESS_PIN
             except Exception:
@@ -4319,7 +4319,7 @@ class Preflight:
         if cli is None:
             return None, None
         try:
-            out = subprocess.run([cli, "--version"], capture_output=True,
+            out = subprocess.run([cli, "--version"], stdin=subprocess.DEVNULL, capture_output=True,
                                  timeout=15, **NOWIN).stdout.decode("utf-8", "replace")
             m = re.search(r"(\d+)\.(\d+)\.(\d+)", out)
             return cli, (tuple(int(x) for x in m.groups()) if m else None)
@@ -4347,7 +4347,7 @@ class Preflight:
                     "korean-law MCP CLI 전역 설치(핀 %s)" % KLAW_PIN,
                     denylist_class="external_install", present=cur if cli else None):
                 try:
-                    if subprocess.run(["npm", "install", "-g", KLAW_PIN],
+                    if subprocess.run(["npm", "install", "-g", KLAW_PIN], stdin=subprocess.DEVNULL,
                                       capture_output=True, timeout=600, **NOWIN).returncode == 0:
                         cli, ver = self._klaw_version()
                 except Exception:
@@ -4572,7 +4572,7 @@ class Preflight:
         if not node:
             return None
         try:
-            out = subprocess.run([node, "-v"], capture_output=True,
+            out = subprocess.run([node, "-v"], stdin=subprocess.DEVNULL, capture_output=True,
                                  timeout=15, **NOWIN).stdout.decode("utf-8", "replace")
             m = re.search(r"v(\d+)\.", out)
             return int(m.group(1)) if m else None
@@ -4886,7 +4886,7 @@ class Preflight:
         try:
             # ★부트 창 예산(R1 minor): 이 축은 WARN-only 이고 데몬이 기동 중이면 상한까지
             #   끌려간다 — 판정 품질을 떨어뜨리지 않는 선에서 짧게 잡는다(15s→6s).
-            r = subprocess.run([cys, "status", "--json"], capture_output=True,
+            r = subprocess.run([cys, "status", "--json"], stdin=subprocess.DEVNULL, capture_output=True,
                                text=True, timeout=6, env=_no_autostart_env(), **NOWIN)
         except (OSError, subprocess.SubprocessError) as e:
             return None, "`cys status --json` 조회 실패(%s) — 판정 불능" % e
@@ -5405,7 +5405,7 @@ class Preflight:
             fails.append("엔진 %s 미설치 — `cys init-pack`" % GRILL_ENGINE)
         else:
             try:
-                r = subprocess.run([sys.executable, engine, "--self-test"],
+                r = subprocess.run([sys.executable, engine, "--self-test"], stdin=subprocess.DEVNULL,
                                    capture_output=True, text=True, timeout=30,
                                    env=_utf8_env(), **NOWIN)
                 if r.returncode != 0:
@@ -5839,7 +5839,7 @@ class Preflight:
         r = subprocess.run(
             [sys.executable, "-c",
              "import sys; sys.path.insert(0, %r); import javis_memory as m; "
-             "sys.exit(0 if m._skillscan is not None else 3)" % os.path.join(pack_dir(), "bin")],
+             "sys.exit(0 if m._skillscan is not None else 3)" % os.path.join(pack_dir(), "bin")], stdin=subprocess.DEVNULL,
             capture_output=True, timeout=60, **NOWIN)
         if r.returncode != 0:
             probs.append("memory 포이즌 스캐너 다운(_skillscan=None · fail-open 상태)")
@@ -5850,7 +5850,7 @@ class Preflight:
         acked_note = ""
         try:
             scan_tool = os.path.join(pack_dir(), "bin", "javis_skillscan.py")
-            r = subprocess.run([sys.executable, scan_tool, "all", "--json"],
+            r = subprocess.run([sys.executable, scan_tool, "all", "--json"], stdin=subprocess.DEVNULL,
                                capture_output=True, text=True, timeout=120, **NOWIN)
             data = json.loads(r.stdout or "{}")
             blocked = data.get("blocked") or []
@@ -5867,7 +5867,7 @@ class Preflight:
                     if s in acks:
                         rc = subprocess.run(
                             [sys.executable, scan_tool, "card",
-                             os.path.join(pack_dir(), "skills", s), "--json"],
+                             os.path.join(pack_dir(), "skills", s), "--json"], stdin=subprocess.DEVNULL,
                             capture_output=True, text=True, timeout=60, **NOWIN)
                         try:
                             fp = json.loads(rc.stdout).get("fingerprint")
@@ -5896,7 +5896,7 @@ class Preflight:
                 skill = os.path.join(pack_dir(), "skills", f[:-5])
                 r = subprocess.run(
                     [sys.executable, os.path.join(pack_dir(), "bin", "javis_mcpgate.py"),
-                     "diff", skill, "--store", store, "--json"],
+                     "diff", skill, "--store", store, "--json"], stdin=subprocess.DEVNULL,
                     capture_output=True, text=True, timeout=60, **NOWIN)
                 if r.returncode != 0:
                     changed.append(f[:-5])
@@ -6012,7 +6012,7 @@ class Preflight:
             return
         try:
             # WARN-only 축이라 부트 창에서 오래 붙잡지 않는다(15s→6s · R1 minor).
-            r = subprocess.run([cys, "gate-corpus", "--json"], capture_output=True,
+            r = subprocess.run([cys, "gate-corpus", "--json"], stdin=subprocess.DEVNULL, capture_output=True,
                                text=True, timeout=6, **NOWIN)
         except (OSError, subprocess.SubprocessError) as e:
             self.add(cid, SKIP, "cys gate-corpus 호출 불가(%s)" % e, unmeasured=True)
@@ -6052,7 +6052,7 @@ class Preflight:
         claude = shutil.which("claude")
         if claude:
             try:
-                v = subprocess.run([claude, "--version"], capture_output=True, text=True, timeout=8, **NOWIN)
+                v = subprocess.run([claude, "--version"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=8, **NOWIN)
                 if v.returncode == 0:
                     m = re.search(r"\d+\.\d+\.\d+", v.stdout or "")
                     live = m.group(0) if m else (v.stdout or "").strip()
@@ -6211,7 +6211,7 @@ class Preflight:
                      "--task", "merge-review",
                      "--reason", "병합 원장 기한 초과 %d건(최장 %.0f일) — 워커에 pack-merge 검토 위임 필요"
                                  % (len(stale), oldest),
-                     "--idempotency-key", "merge-review-" + fingerprint],
+                     "--idempotency-key", "merge-review-" + fingerprint], stdin=subprocess.DEVNULL,
                     capture_output=True, text=True, timeout=10, env=_utf8_env(), **NOWIN)
                 enq = "wakeup enqueue %s" % ("OK" if r.returncode == 0 else "실패(%d)" % r.returncode)
             except Exception as e:
@@ -6252,7 +6252,7 @@ class Preflight:
             self.add(cid, WARN, "cys 바이너리 미발견(번들 sidecar·CYS_BIN·PATH 모두) — drain --verify 능력 확인 불가")
             return
         try:
-            r = subprocess.run([cys, "drain", "--help"], capture_output=True, text=True, timeout=15, **NOWIN)
+            r = subprocess.run([cys, "drain", "--help"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15, **NOWIN)
             help_text = (r.stdout or "") + (r.stderr or "")
             if "--verify" in help_text:
                 self.add(cid, PASS, "cys drain --verify 지원 (GUI 저장후재시작 검증 흐름 가용 · 검사=%s)" % cys)
@@ -6336,7 +6336,7 @@ class Preflight:
         cys = shutil.which("cys") or os.environ.get("CYS_BIN")
         if cys:
             try:
-                r = subprocess.run([cys, "gate-check"], capture_output=True, timeout=10, **NOWIN)
+                r = subprocess.run([cys, "gate-check"], stdin=subprocess.DEVNULL, capture_output=True, timeout=10, **NOWIN)
                 if r.returncode == 4:
                     self.add(cid, PASS, "kill-switch pause 중 — 게이트 대장 최신성 검사 skip(정체 정상)")
                     return
@@ -6385,7 +6385,7 @@ class Preflight:
             return
         label = "gui/%d/com.cysjavis.cysd" % os.getuid()
         try:
-            r = subprocess.run([launchctl, "print", label],
+            r = subprocess.run([launchctl, "print", label], stdin=subprocess.DEVNULL,
                                capture_output=True, timeout=10, env=_utf8_env(), **NOWIN)
         except Exception as e:
             self.add(cid, SKIP, "launchctl print 실행 실패 — 판정 불가: %s" % e, unmeasured=True)
@@ -6970,7 +6970,7 @@ class Preflight:
                                 "(AA33(a) 능력 게이트에서 등록 거부된다) · `cys init-pack` 으로 설치")
             return
         try:
-            r = subprocess.run([sys.executable, p, "--self-test"],
+            r = subprocess.run([sys.executable, p, "--self-test"], stdin=subprocess.DEVNULL,
                                capture_output=True, timeout=60, env=_utf8_env(), **NOWIN)
         except Exception as e:
             self.add(cid, WARN, "javis_radio.py --self-test 실행 불가: %s "
@@ -7006,7 +7006,7 @@ class Preflight:
             self.add(cid, SKIP, "PATH 에 cys 없음 — 데몬 판정 조회 불가(C11 소관)", unmeasured=True)
             return
         try:
-            r = subprocess.run([cys, "status", "--json"], capture_output=True,
+            r = subprocess.run([cys, "status", "--json"], stdin=subprocess.DEVNULL, capture_output=True,
                                text=True, timeout=15, env=_utf8_env(), **NOWIN)
         except Exception as e:  # noqa: BLE001
             self.add(cid, SKIP, "cys status --json 실행 불가(%s) — 미측정" % e, unmeasured=True)
@@ -7096,7 +7096,7 @@ class Preflight:
             try:
                 # --ensure = 멱등 게이트(P0-1): 이 서브프로세스 안에서 실재+신선을 재판정하고
                 # 건강하면 no-op — preflight 와 워치독 잡이 겹쳐 떠도 중복 pane 0.
-                r = subprocess.run([sys.executable, script, "bootstrap-verifier", "--ensure"],
+                r = subprocess.run([sys.executable, script, "bootstrap-verifier", "--ensure"], stdin=subprocess.DEVNULL,
                                    capture_output=True, text=True, timeout=60, env=_utf8_env(), **NOWIN)
             except Exception as e:  # noqa: BLE001
                 self.add(cid, WARN, "%s — bootstrap-verifier --ensure 실행 불가(%s) · "
@@ -7135,7 +7135,7 @@ class Preflight:
         # 없으면 "a sealed resource is missing or invalid" 한 줄뿐이라 원인 파일을 못 말한다(실측).
         # --deep 은 쓰지 않는다(이번 파손은 최상위 sealed resource · deep 은 느리다).
         try:
-            r = subprocess.run([tool, "--verify", "--strict", "--verbose", bundle],
+            r = subprocess.run([tool, "--verify", "--strict", "--verbose", bundle], stdin=subprocess.DEVNULL,
                                capture_output=True, timeout=60, env=_utf8_env(), **NOWIN)
         except subprocess.TimeoutExpired:
             self.add(cid, SKIP, "codesign 시간초과(60s) — 판정 불가", unmeasured=True)
@@ -7922,7 +7922,7 @@ def _trusted_exact(data, cwd_key):
 def _run_capture(cmd, timeout=15):
     """subprocess 러너 — (rc, stdout, stderr). 예외도 rc 127 로 정규화(판정 불가 → 호출자가 None 으로 접는다)."""
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **NOWIN)
+        p = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout, **NOWIN)
         return p.returncode, p.stdout or "", p.stderr or ""
     except Exception as e:  # noqa: BLE001 — 러너는 예외를 올리지 않는다
         return 127, "", "runner error: %s" % e

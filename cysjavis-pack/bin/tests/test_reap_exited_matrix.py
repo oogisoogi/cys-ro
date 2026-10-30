@@ -100,7 +100,7 @@ class TestReapExitedMatrix(unittest.TestCase):
             # 우리 포크 NOWIN 규칙(6411cdd4 · 캡처 스폰 창 숨김 · nt 에서만 CREATE_NO_WINDOW) — 모듈 상수를 그대로 기대값에 펼쳐
             # 플랫폼마다 정확 일치를 유지한다(맥 = 원작자 판과 같은 3키 · 윈 = 창 숨김 키 필수). TICKET=cysr-1111-merge-01452(윈 CI 63 적).
             for options in runner.options:
-                self.assertEqual(options, {"capture_output": True, "text": True,
+                self.assertEqual(options, {"stdin": R.subprocess.DEVNULL, "capture_output": True, "text": True,
                                            "timeout": 20, **R.NOWIN})
         return document, exited.exception.code, runner.calls
 

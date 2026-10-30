@@ -376,12 +376,12 @@ def _self_test():
         # ③ 보유 중 다른 프로세스는 busy
         code = ("import sys,os;sys.path.insert(0,%r);import javis_lock as L;"
                 "lk=L.FileLock(%r);print(lk.acquire())" % (os.path.dirname(os.path.abspath(__file__)), lp))
-        r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=30, **NOWIN)
+        r = subprocess.run([sys.executable, "-c", code], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30, **NOWIN)
         if r.stdout.strip() != BUSY:
             fails.append("보유 중 타 프로세스가 busy 아님: %r %s" % (r.stdout.strip(), r.stderr[-200:]))
         lk.release()
         # ④ 해제 후 재획득 가능
-        r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=30, **NOWIN)
+        r = subprocess.run([sys.executable, "-c", code], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30, **NOWIN)
         if r.stdout.strip() != ACQUIRED:
             fails.append("해제 후 타 프로세스 재획득 실패: %r" % r.stdout.strip())
 
@@ -418,7 +418,7 @@ def _self_test():
                  "except L.LockError as e: print('LOCKERROR', e.status)\n"
                  "with L.FileLock(%r, soft=True) as s: print('SOFT', s.status)\n"
                  % (os.path.dirname(os.path.abspath(__file__)), hp, hp))
-        r = subprocess.run([sys.executable, "-c", code2], capture_output=True, text=True, timeout=30, **NOWIN)
+        r = subprocess.run([sys.executable, "-c", code2], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30, **NOWIN)
         if "LOCKERROR busy" not in r.stdout or "SOFT busy" not in r.stdout:
             fails.append("컨텍스트 매니저 3상 계약 위반: %r %s" % (r.stdout, r.stderr[-200:]))
         held.release()

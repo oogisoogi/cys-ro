@@ -1075,11 +1075,11 @@ class T15NoTimeoutLengthened(unittest.TestCase):
     LITERALS = {
         "cysjavis-pack/bin/javis_resource_gate.py": [
             'DEPT_STATUS_TIMEOUT = 5 ', 'LEDGER_TIMEOUT = 5 ', 'SOCKET_PROBE_TIMEOUT = 0.3 ',
-            '["ps", "-axo", "pid,pcpu,command"], capture_output=True,\n'
+            '["ps", "-axo", "pid,pcpu,command"], stdin=subprocess.DEVNULL, capture_output=True,\n'
             '                           text=True, errors="replace", timeout=10, **NOWIN)',  # v0.14.51 편입: 우리 NOWIN(윈 콘솔 창 숨김)
             'PRODUCT_CPU_PS_TIMEOUT_S = 1.5 ', 'PRODUCT_CPU_CHILD_DEADLINE_S = 3.0 '],
         "cysjavis-pack/bin/javis_completion_guard.py": [
-            'r = subprocess.run(argv, capture_output=True, text=True, timeout=10, env=env, **NOWIN)'],  # v0.14.51 편입: 우리 NOWIN
+            'r = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10, env=env, **NOWIN)'],  # v0.14.51 편입: 우리 NOWIN
         "cysjavis-pack/bin/javis_formation.py": ['kw = {"timeout": 30}',
                                                  'RESOURCE_RETRY_TIMEOUT_S = 15\n'],
         "cysjavis-pack/bin/javis_bootstrap.py": ['timeout=_budget_leaf("RPC_SLACK_S", 10) * 3)'],

@@ -914,7 +914,7 @@ def _emit_evt(evt_type, **fields):
     for k, v in fields.items():
         cmd += ["--field", "%s=%s" % (k, v)]
     try:
-        r = subprocess.run(cmd, capture_output=True, timeout=8, **NOWIN)  # ★(0.14.48 · A) 종료코드만 쓴다 — 출력을 글자로 풀지 않는다
+        r = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, timeout=8, **NOWIN)  # ★(0.14.48 · A) 종료코드만 쓴다 — 출력을 글자로 풀지 않는다
         return r.returncode == 0
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return False
@@ -1078,6 +1078,8 @@ def _run_decoded(cmd, dec=_decode_captured, **kw):
     UnicodeDecodeError 로 복원 본체에 닿기도 전에 죽었다(실측). 반환은 `subprocess.run` 과 같은 꼴이고
     stdout·stderr 만 문자열이다. TimeoutExpired 등 예외는 그대로 올린다(호출처의 기존 처리 유지)."""
     # cysr X-NOWIN: 캡처 스폰은 전부 콘솔 창 없이(호출처는 NOWIN 을 넘기지 않는다 — 여기 한 곳이 싣는다).
+    if "input" not in kw:
+        kw.setdefault("stdin", subprocess.DEVNULL)      # ★M1: 윈 무콘솔 세대의 무효 stdin 복제(WinError 6) 차단
     r = subprocess.run(cmd, capture_output=True, **NOWIN, **kw)
     r.stdout = dec(r.stdout)
     r.stderr = dec(r.stderr)
@@ -4520,7 +4522,7 @@ def _schtasks_has_restart_on_failure(task):
     """schtasks /Query /XML 에 RestartOnFailure 존재 여부(=진짜 KeepAlive 켜짐 · Rust cys daemon install 이 심는 XML).
     ★null 바이트 제거로 UTF-16/UTF-8 출력 모두에서 ASCII 태그를 안정 검출(UTF-16LE 는 ASCII 사이에 0x00 이 낀다)."""
     try:
-        r = subprocess.run(["schtasks", "/Query", "/TN", task, "/XML"], capture_output=True, timeout=8, **NOWIN)
+        r = subprocess.run(["schtasks", "/Query", "/TN", task, "/XML"], stdin=subprocess.DEVNULL, capture_output=True, timeout=8, **NOWIN)
         raw = (r.stdout or b"").replace(b"\x00", b"")
         return b"RestartOnFailure" in raw
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):

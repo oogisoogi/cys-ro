@@ -226,7 +226,7 @@ def cys_status():
     if not cys:
         return None
     try:
-        r = subprocess.run([cys, "status", "--json"], capture_output=True, timeout=10, **NOWIN)
+        r = subprocess.run([cys, "status", "--json"], stdin=subprocess.DEVNULL, capture_output=True, timeout=10, **NOWIN)
         if r.returncode != 0:
             return None
         return json.loads(r.stdout.decode("utf-8", "replace"))

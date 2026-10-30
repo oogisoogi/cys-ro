@@ -200,7 +200,7 @@ ROLE_DIRECTIVE = {
 # ───────────────────────── cys 호출 ─────────────────────────
 def run(args, timeout=15):
     try:
-        r = subprocess.run(args, capture_output=True, timeout=timeout, **NOWIN)
+        r = subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout, **NOWIN)
         return r.returncode, r.stdout.decode("utf-8", "replace"), r.stderr.decode("utf-8", "replace")
     except Exception as e:
         return 255, "", str(e)
@@ -1134,7 +1134,7 @@ def _seat_event(role, old_ref, action, cwd):
                                "승계 뒤 옛 좌석 보존 ") + action.split(":", 1)[-1]), cwd or "(데몬 기본)")
     try:
         r = subprocess.run([sys.executable or "python3", mod, "emit", "agent.error",
-                            "--field", "agent=%s" % role, "--field", "summary=%s" % summary],
+                            "--field", "agent=%s" % role, "--field", "summary=%s" % summary], stdin=subprocess.DEVNULL,
                            capture_output=True, timeout=8, **NOWIN)
         return r.returncode == 0
     except Exception:

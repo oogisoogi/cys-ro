@@ -394,7 +394,7 @@ def cys_send_queued(target, text):
     if not exe:
         return False, "cys 미가용(경로 부재 또는 비활성)"
     try:
-        r = subprocess.run([exe, "send", "--queued", "--to", target, text],
+        r = subprocess.run([exe, "send", "--queued", "--to", target, text], stdin=subprocess.DEVNULL,
                            capture_output=True, timeout=20, **NOWIN)
     except Exception as e:
         return False, "cys send 실행 불가: %s" % e
@@ -411,7 +411,7 @@ def probe_injected(target):
     if not exe:
         return False
     try:
-        r = subprocess.run([exe, "status", "--json"], capture_output=True, timeout=15, **NOWIN)
+        r = subprocess.run([exe, "status", "--json"], stdin=subprocess.DEVNULL, capture_output=True, timeout=15, **NOWIN)
         if r.returncode != 0:
             return False
         data = json.loads((r.stdout or b"").decode("utf-8", "replace"))
@@ -464,7 +464,7 @@ def notify_master(ticket, reason, text, urgent=False, idem=None):
         try:
             r = subprocess.run([sys.executable, wk, "enqueue", "--to", "master",
                                 "--task", "radio-%s" % _safe(reason),
-                                "--reason", body, "--idempotency-key", _safe(key)],
+                                "--reason", body, "--idempotency-key", _safe(key)], stdin=subprocess.DEVNULL,
                                capture_output=True, timeout=20, **NOWIN)
             if r.returncode == 0:
                 return True

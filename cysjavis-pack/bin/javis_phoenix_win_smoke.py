@@ -171,7 +171,7 @@ def teardown_daemon(pipe, state_dir=None, tracked=None):
         if i >= 0:
             pid = json.loads(txt[i:]).get("daemon_pid")
             if isinstance(pid, int):
-                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], stdin=subprocess.DEVNULL,
                                capture_output=True, text=True, timeout=10, **NOWIN)
     except Exception:
         pass
@@ -219,7 +219,7 @@ def _proc_table():
     """Windows: {pid: (ppid, name)} — Win32_Process 전수(CIM · 읽기 전용). 실패 = {}(진단 전용 · 판정 근거 아님)."""
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-Command",
-                            "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name | ConvertTo-Json -Compress"],
+                            "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name | ConvertTo-Json -Compress"], stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, timeout=30, **NOWIN)
         rows = json.loads(r.stdout or "[]")
         if isinstance(rows, dict):
@@ -443,7 +443,7 @@ def case7_keepalive_respawn():
     installed = False
     try:
         # 클린 시작: 잔류 cysd 제거 + 기존 태스크 해제
-        subprocess.run(["taskkill", "/IM", "cysd.exe", "/F"], capture_output=True, timeout=15, **NOWIN)
+        subprocess.run(["taskkill", "/IM", "cysd.exe", "/F"], stdin=subprocess.DEVNULL, capture_output=True, timeout=15, **NOWIN)
         _PH.cys("daemon", "uninstall", socket=None, timeout=20)
         time.sleep(1)
         inst = _PH.cys("daemon", "install", socket=None, timeout=30)
@@ -470,7 +470,7 @@ def case7_keepalive_respawn():
         # ★비정상 종료(crash 시뮬레이션): taskkill /F → action exit≠0 → 스케줄러 RestartOnFailure
         _cp("⑦ taskkill (crash)")
         if isinstance(pid, int):
-            subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, text=True, timeout=15, **NOWIN)
+            subprocess.run(["taskkill", "/PID", str(pid), "/F"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15, **NOWIN)
         t0 = time.time()
         # ★순수 관측: 재기동 유발(cys list·schtasks /Run) 없이 ping(autostart 안 함)만 폴링 — 되살리면 스케줄러 뿐.
         #   ★판정 재정의(CI run 28736698338 교훈): Task Scheduler 실전 재기동 지연은 PT1M 설정보다 길다(실측 ~4분·
@@ -513,13 +513,13 @@ def case7_keepalive_respawn():
         _cp("⑦ teardown")
         if installed:
             _PH.cys("daemon", "uninstall", socket=None, timeout=20)  # ★태스크 먼저 제거(추가 respawn 차단)
-        subprocess.run(["taskkill", "/IM", "cysd.exe", "/F"], capture_output=True, timeout=15, **NOWIN)
+        subprocess.run(["taskkill", "/IM", "cysd.exe", "/F"], stdin=subprocess.DEVNULL, capture_output=True, timeout=15, **NOWIN)
 
 
 def _alive_pid(pid):
     """Windows: PID 생존 여부(tasklist 필터). 죽었으면 'No tasks' 출력(pid 미포함)."""
     try:
-        r = subprocess.run(["tasklist", "/FI", "PID eq %d" % pid, "/NH"],
+        r = subprocess.run(["tasklist", "/FI", "PID eq %d" % pid, "/NH"], stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, timeout=10, **NOWIN)
         return str(pid) in (r.stdout or "")
     except Exception:
@@ -583,7 +583,7 @@ def case9_job_kill_on_close():
         check("⑨ 손자 생존(kill 전)", _alive_pid(gpid), "gpid=%s" % gpid)
         # ★cysd 만 /F kill(자식 트리 /T 아님) → Job KILL_ON_JOB_CLOSE 로만 손자가 죽어야 한다.
         _cp("⑨ taskkill cysd (no /T)")
-        subprocess.run(["taskkill", "/PID", str(tracked.pid), "/F"], capture_output=True, timeout=10, **NOWIN)
+        subprocess.run(["taskkill", "/PID", str(tracked.pid), "/F"], stdin=subprocess.DEVNULL, capture_output=True, timeout=10, **NOWIN)
         dead = False
         for _ in range(30):  # ~15s
             _cp("⑨ waiting grandchild co-death")
@@ -597,7 +597,7 @@ def case9_job_kill_on_close():
         _cp("⑨ teardown")
         try:
             if gpid and _alive_pid(gpid):
-                subprocess.run(["taskkill", "/PID", str(gpid), "/F"], capture_output=True, timeout=8, **NOWIN)
+                subprocess.run(["taskkill", "/PID", str(gpid), "/F"], stdin=subprocess.DEVNULL, capture_output=True, timeout=8, **NOWIN)
         except Exception:
             pass
         teardown_daemon(pipe, state_dir=sd, tracked=tracked)

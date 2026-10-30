@@ -214,7 +214,9 @@ def run(cmd, timeout=RUN_TIMEOUT, stdin_text=None):
     """subprocess 러너 — (rc, stdout, stderr). 예외도 rc!=0 로 정규화(fail-soft)."""
     try:
         # 창 정책은 블록 밖 `_CAPTURE_SPAWN_KW`(파일별 정의 — autopilot=nt NOWIN · verifier=빈 dict).
-        p = subprocess.run(cmd, capture_output=True, text=True,
+        # ★M1(1.1.11): 입력 없는 호출은 stdin=DEVNULL — 윈 무콘솔 세대는 부모 stdin 복제가 WinError 6 으로 죽어 gate-check 가 fail-closed 로 닫혔다.
+        p = subprocess.run(cmd, stdin=subprocess.DEVNULL if stdin_text is None else None,
+                           capture_output=True, text=True,
                            timeout=timeout, input=stdin_text, **NOWIN)
         return p.returncode, p.stdout or "", p.stderr or ""
     except Exception as e:  # noqa: BLE001 — 러너는 절대 예외를 올리지 않는다

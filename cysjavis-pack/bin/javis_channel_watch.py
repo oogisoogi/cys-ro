@@ -87,7 +87,7 @@ def measure(channels):
         return {}, "channels-tool-absent"
     argv = [sys.executable, tool, "--json"] + list(channels)
     try:
-        r = subprocess.run(argv, capture_output=True, timeout=200, **NOWIN)
+        r = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, timeout=200, **NOWIN)
         d = json.loads((r.stdout or b"{}").decode("utf-8", "replace"))
     except (OSError, ValueError, subprocess.SubprocessError):
         return {}, "measure-failed"

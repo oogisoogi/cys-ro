@@ -70,7 +70,7 @@ def _log_dir():
 def _run(cmd, timeout=TIMEOUT):
     """subprocess 러너 — (rc, stdout, stderr). 예외도 rc!=0로 정규화(fail-soft)."""
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **NOWIN)
+        p = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout, **NOWIN)
         return p.returncode, p.stdout or "", p.stderr or ""
     except Exception as e:
         return 127, "", "runner error: %s" % e

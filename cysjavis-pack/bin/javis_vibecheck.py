@@ -121,7 +121,7 @@ def _scan_file_secrets(path):
 def _git(project, *args, timeout=60):
     """git 서브프로세스 실행. (ok, stdout). git 부재·비저장소·실패 시 (False, "")."""
     try:
-        p = subprocess.run(["git", "-C", project, *args], capture_output=True,
+        p = subprocess.run(["git", "-C", project, *args], stdin=subprocess.DEVNULL, capture_output=True,
                            text=True, errors="ignore", timeout=timeout, **NOWIN)
     except (OSError, subprocess.SubprocessError):
         return False, ""

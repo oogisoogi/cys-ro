@@ -490,7 +490,7 @@ def _emit(evt_type, fields):
     if not env.get("HUD_STATE_DIR") and _ROOT_FROM_ENV:
         env["HUD_STATE_DIR"] = os.path.join(ROOT, "_round", "hud")
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=10, env=env, **NOWIN)
+        r = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10, env=env, **NOWIN)
         return r.returncode == 0
     except (subprocess.SubprocessError, OSError):
         return False
@@ -1038,7 +1038,7 @@ def _run_wakeup(args, timeout=20):
     env = dict(os.environ)
     env["CYS_NO_AUTOSTART"] = "1"
     try:
-        return subprocess.run([sys.executable, wk] + args, capture_output=True,
+        return subprocess.run([sys.executable, wk] + args, stdin=subprocess.DEVNULL, capture_output=True,
                               text=True, timeout=timeout, env=env, **NOWIN)
     except (subprocess.SubprocessError, OSError):
         return None
@@ -1513,7 +1513,7 @@ def _daemon_fingerprint():
     env = dict(os.environ)
     env["CYS_NO_AUTOSTART"] = "1"
     try:
-        r = subprocess.run([_cys_bin(), "status", "--json"], capture_output=True,
+        r = subprocess.run([_cys_bin(), "status", "--json"], stdin=subprocess.DEVNULL, capture_output=True,
                            text=True, timeout=5, env=env, **NOWIN)
     except (subprocess.SubprocessError, OSError):
         return None
@@ -2608,12 +2608,12 @@ def self_test(a=None):
             return env
 
         def run_q(root, argv, env_extra=None, now=None, timeout=120):
-            r = subprocess.run([sys.executable, self_path] + argv, capture_output=True,
+            r = subprocess.run([sys.executable, self_path] + argv, stdin=subprocess.DEVNULL, capture_output=True,
                                text=True, env=env_for(root, env_extra, now), timeout=timeout, **NOWIN)
             return r.returncode, r.stdout, r.stderr
 
         def popen_q(root, argv, env_extra=None, now=None):
-            return subprocess.Popen([sys.executable, self_path] + argv,
+            return subprocess.Popen([sys.executable, self_path] + argv, stdin=subprocess.DEVNULL,
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                     env=env_for(root, env_extra, now), **NOWIN)
 
@@ -3348,7 +3348,7 @@ def self_test(a=None):
         for cmd_, want in (("submit", EXIT_USAGE), ("tick", EXIT_USAGE), ("list", EXIT_OK)):
             argvK = ([cmd_, "--request-id", "Z1", "--class", "approval", "--source", "s1",
                       "--summary", "x"] if cmd_ == "submit" else [cmd_])
-            r = subprocess.run([sys.executable, self_path] + argvK, capture_output=True,
+            r = subprocess.run([sys.executable, self_path] + argvK, stdin=subprocess.DEVNULL, capture_output=True,
                                text=True, env=envK, cwd=cwdK, timeout=60, **NOWIN)
             chk(r.returncode == want,
                 "ⓚJAVIS_ROOT 미설정 %s 처리 오류: rc=%s(기대 %s) %s"

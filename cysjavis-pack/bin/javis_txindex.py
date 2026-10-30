@@ -701,7 +701,7 @@ def _transcript_effort(pack_bin, project_dir):
         env["CYS_SESSION_PROJECT_DIR"] = project_dir
     try:
         p = subprocess.run(
-            [sys.executable, script, "--latest", "--oneline"],
+            [sys.executable, script, "--latest", "--oneline"], stdin=subprocess.DEVNULL,
             capture_output=True, text=True, timeout=15, env=env, **NOWIN,
         )
     except (OSError, subprocess.SubprocessError):

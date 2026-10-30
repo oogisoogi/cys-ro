@@ -152,7 +152,7 @@ def _run(argv, timeout=30, env=None):
 
     ★env(0.14.31 R2): 지정하면 그 환경으로 스폰한다(미지정 = 상속 · 종전 동작 그대로)."""
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env, **NOWIN)
+        r = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout, env=env, **NOWIN)
         return r.returncode, (r.stdout or ""), (r.stderr or "")
     except Exception as e:
         return 127, "", str(e)
@@ -485,14 +485,14 @@ def _live_roles(socket, require_live_agent=True):
     if socket:
         env["CYS_SOCKET"] = socket
     try:
-        r = subprocess.run(["cys", "status", "--json"], capture_output=True, text=True,
+        r = subprocess.run(["cys", "status", "--json"], stdin=subprocess.DEVNULL, capture_output=True, text=True,
                            timeout=15, env=env, **NOWIN)
         if r.returncode == 0:
             return _roster_from_status(json.loads(r.stdout or "{}"), require_live_agent)
     except Exception:
         pass
     try:
-        r = subprocess.run(["cys", "list"], capture_output=True, text=True,
+        r = subprocess.run(["cys", "list"], stdin=subprocess.DEVNULL, capture_output=True, text=True,
                            timeout=15, env=env, **NOWIN)
     except Exception:
         return None
@@ -538,7 +538,7 @@ def _master_seat_cwd(socket):
     if socket:
         env["CYS_SOCKET"] = socket
     try:
-        r = subprocess.run(["cys", "status", "--json"], capture_output=True, text=True,
+        r = subprocess.run(["cys", "status", "--json"], stdin=subprocess.DEVNULL, capture_output=True, text=True,
                            timeout=15, env=env, **NOWIN)
         if r.returncode == 0:
             return _master_seat_cwd_from_status(json.loads(r.stdout or "{}"))
@@ -843,7 +843,7 @@ def _boot_node(role, socket, cwd=None, timeout=200):
     if socket:
         env["CYS_SOCKET"] = socket
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env, **NOWIN)
+        r = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout, env=env, **NOWIN)
         return r.returncode == 0, _boot_verdict_text(r.stdout) or (r.stdout or r.stderr or "").strip()[:200]
     except Exception as e:
         return False, "boot_node 예외: %s" % e
@@ -1314,7 +1314,7 @@ def _cys_bytes(argv, env, timeout=15):
     ★출력은 **바이트로 받아 UTF-8(replace)로** 푼다 — `_run` 의 text 모드는 로케일 코덱(한국어 Windows cp949)으로 풀어
     한글 한 바이트에 UnicodeDecodeError → rc 127 로 접힌다. 알림 경로에서 그것은 '보내지 못함' 오판 → 재시도 → 중복 배달이다."""
     try:
-        r = subprocess.run(argv, capture_output=True, timeout=timeout, env=env, **NOWIN)   # 1.1.8 병합 오버레이: 우리 주기 잡 창 숨김 규칙(test_nowin_periodic_spawns)
+        r = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout, env=env, **NOWIN)   # 1.1.8 병합 오버레이: 우리 주기 잡 창 숨김 규칙(test_nowin_periodic_spawns)
     except subprocess.TimeoutExpired:
         return None
     except OSError:
@@ -1717,7 +1717,7 @@ def _cys_env(socket):
 def _daemon_down(socket):
     """그 소켓의 데몬이 응답하지 않는가(`cys ping` · 자동 기동 봉인). 판정 불가(cys 부재)도 down 으로 보지 않는다."""
     try:
-        r = subprocess.run(["cys", "ping"], capture_output=True, text=True, timeout=10,
+        r = subprocess.run(["cys", "ping"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10,
                            env=_cys_env(socket), **NOWIN)
     except FileNotFoundError:
         return False
@@ -1818,7 +1818,7 @@ def _revive_dept(socket, prev_obj, now=None):
     try:
         # ★precut-fix3 형제 스윕: 윈은 bash 전체 경로(문자 그대로의 "bash" = System32 WSL 스텁) · bash 없음 = 아래 except 가 127.
         import javis_org
-        r = subprocess.run(javis_org.dept_cmd(tool, ["launch", name], posix_bash=True), capture_output=True, text=True,
+        r = subprocess.run(javis_org.dept_cmd(tool, ["launch", name], posix_bash=True), stdin=subprocess.DEVNULL, capture_output=True, text=True,
                            timeout=REVIVE_TIMEOUT_S, env=env, **NOWIN)
         rc, tail = r.returncode, ((r.stdout or "") + (r.stderr or "")).strip()[-200:]
     except Exception as e:
@@ -1836,7 +1836,7 @@ def _revive_dept(socket, prev_obj, now=None):
 
 def _status_obj(socket):
     try:
-        r = subprocess.run(["cys", "status", "--json"], capture_output=True, text=True, timeout=15,
+        r = subprocess.run(["cys", "status", "--json"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15,
                            env=_cys_env(socket), **NOWIN)
         if r.returncode == 0:
             return json.loads(r.stdout or "{}")
@@ -1891,7 +1891,7 @@ def _reap_orphans(socket):
     if not os.path.isfile(node):
         return None
     try:
-        r = subprocess.run([sys.executable or "python3", node, "--reap-orphans", "--json"],
+        r = subprocess.run([sys.executable or "python3", node, "--reap-orphans", "--json"], stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, timeout=60, env=_cys_env(socket), **NOWIN)
     except Exception:
         return None

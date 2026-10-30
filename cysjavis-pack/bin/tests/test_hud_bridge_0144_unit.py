@@ -62,7 +62,7 @@ class WindowsFake(unittest.TestCase):
                 self.assertTrue(HB._is_windows(), (name, plat))
                 self.assertTrue(HB._legacy_win(), (name, plat))
                 self.assertIsNone(HB._req_timeout(), "윈도우 종전은 시간 제한 없음 %s/%s" % (name, plat))
-                self.assertEqual(HB._nostdin(), {}, "윈도우 종전은 자식 표준입력 그대로 %s/%s" % (name, plat))
+                self.assertEqual(HB._nostdin(), {"stdin": HB.subprocess.DEVNULL}, "M1 윈도우 종전도 stdin 차단 %s/%s" % (name, plat))
 
     def test_win_new_switch_turns_new_behavior_on(self):
         with self._env(HUD_WIN_NEW="1"), mock.patch.object(HB.os, "name", "nt"), mock.patch.object(HB.sys, "platform", "win32"):

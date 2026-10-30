@@ -593,7 +593,7 @@ def _notify_verify_missing(task_id, why, waiver=False):
     with contextlib.suppress(Exception):
         r = subprocess.run(base + ["enqueue", "--to", "master", "--task", task_key,
                                    "--reason", reason,
-                                   "--idempotency-key", task_id, "--severity", "warn"],
+                                   "--idempotency-key", task_id, "--severity", "warn"], stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, timeout=5, env=env, **NOWIN)
         enq_ok = (r.returncode == 0)
     if enq_ok:
@@ -601,7 +601,7 @@ def _notify_verify_missing(task_id, why, waiver=False):
             with open(mark, "w", encoding="utf-8") as f:
                 f.write(_now() + "\n")
     with contextlib.suppress(Exception):
-        subprocess.run(base + ["drain", "--deliver", "--target", "master"],
+        subprocess.run(base + ["drain", "--deliver", "--target", "master"], stdin=subprocess.DEVNULL,
                        capture_output=True, text=True, timeout=5, env=env, **NOWIN)
 
 
@@ -1357,7 +1357,7 @@ def _resolve_caller():
         return env
     try:
         import subprocess  # E1 self-test 관례(지역 import) — 모듈 상단 결합 회피
-        out = subprocess.run([os.environ.get("CYS_BIN", "cys"), "identify"],
+        out = subprocess.run([os.environ.get("CYS_BIN", "cys"), "identify"], stdin=subprocess.DEVNULL,
                              capture_output=True, text=True, timeout=5, **NOWIN)
         if out.returncode == 0:
             ref = ((json.loads(out.stdout) or {}).get("caller") or {}).get("surface_ref")
@@ -1443,7 +1443,7 @@ def _radio_done_gate(task_id, task, radio_node, refs):
     if refs:
         argv += ["--refs", refs]
     try:
-        r = subprocess.run(argv, capture_output=True, timeout=120, **NOWIN)
+        r = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, timeout=120, **NOWIN)
     except Exception as e:
         msg = "radio done-check 실행 불가: %s" % e
         if mode == "strict":
@@ -2015,7 +2015,7 @@ def cmd_self_test(args):
         env["CYS_NO_AUTOSTART"] = "1"
         if env_extra:
             env.update(env_extra)
-        r = subprocess.run([sys.executable, self_path] + argv,
+        r = subprocess.run([sys.executable, self_path] + argv, stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, env=env, **NOWIN)
         return r.returncode, r.stdout, r.stderr
 

@@ -208,7 +208,7 @@ def decide_floor(request_text):
     if request_text and os.path.isfile(rp):
         try:
             out = subprocess.run(
-                [sys.executable, rp, "--request", request_text],
+                [sys.executable, rp, "--request", request_text], stdin=subprocess.DEVNULL,
                 capture_output=True, text=True, timeout=15, **NOWIN)
             data = json.loads(out.stdout or "{}")
             mode = data.get("mode")

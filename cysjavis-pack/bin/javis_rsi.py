@@ -57,7 +57,7 @@ def rsi_dir():
 
 def _git(args, cwd=None, check=True):
     """git 호출 — (rc, stdout). check=True면 실패 시 RuntimeError."""
-    r = subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True, **NOWIN)
+    r = subprocess.run(["git"] + args, stdin=subprocess.DEVNULL, cwd=cwd, capture_output=True, text=True, **NOWIN)
     if check and r.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} 실패: {r.stderr.strip()}")
     return r.returncode, r.stdout.strip()

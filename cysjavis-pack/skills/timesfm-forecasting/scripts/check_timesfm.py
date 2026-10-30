@@ -97,7 +97,7 @@ def get_total_ram_gb() -> float:
             import subprocess
 
             out = subprocess.run(
-                ["sysctl", "-n", "hw.memsize"],
+                ["sysctl", "-n", "hw.memsize"], stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 check=True, **NOWIN,

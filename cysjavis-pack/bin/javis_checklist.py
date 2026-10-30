@@ -45,7 +45,7 @@ def run_preflight(cmd, timeout=PREFLIGHT_TIMEOUT):
     어떤 경우에도 예외를 밖으로 던지지 않는다(크래시 금지).
     """
     try:
-        proc = subprocess.run(cmd, shell=isinstance(cmd, str), capture_output=True,
+        proc = subprocess.run(cmd, stdin=subprocess.DEVNULL, shell=isinstance(cmd, str), capture_output=True,
                               text=True, timeout=timeout, **NOWIN)
     except subprocess.TimeoutExpired:
         return ('timeout', None)

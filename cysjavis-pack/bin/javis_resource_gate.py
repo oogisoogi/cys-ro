@@ -714,7 +714,7 @@ def _dept_sockets(windows=None):
 def _base_live_seats():
     """본부 데몬의 살아 있는 좌석 수(`cys status --json` 비-exited surfaces) — 실패 = None(측정 불능)."""
     try:
-        p = subprocess.run(["cys", "status", "--json"], capture_output=True, encoding="utf-8",
+        p = subprocess.run(["cys", "status", "--json"], stdin=subprocess.DEVNULL, capture_output=True, encoding="utf-8",
                            errors="replace", timeout=DEPT_STATUS_TIMEOUT, **NOWIN)
         if p.returncode != 0:
             return None
@@ -759,7 +759,7 @@ def _dept_roster(override=None, status_sink=None):
             roster["errors"].append("dept(%s)" % name)
             continue
         try:
-            p = subprocess.run(["cys", "status", "--json", "--socket", sock],
+            p = subprocess.run(["cys", "status", "--json", "--socket", sock], stdin=subprocess.DEVNULL,
                                capture_output=True, encoding="utf-8", errors="replace",
                                timeout=DEPT_STATUS_TIMEOUT, **NOWIN)
             if p.returncode != 0:
@@ -816,7 +816,7 @@ def _roster_override_arg(raw):
 def _ps_lines():
     # 측정 실패는 None으로 신호(빈 리스트로 위장하면 '0=건강'으로 조용히 통과 — P-ORCH-1).
     try:
-        out = subprocess.run(["ps", "-axo", "pid,command"], capture_output=True,
+        out = subprocess.run(["ps", "-axo", "pid,command"], stdin=subprocess.DEVNULL, capture_output=True,
                              text=True, timeout=10, **NOWIN).stdout
         return out.splitlines()[1:]
     except (subprocess.SubprocessError, OSError):
@@ -968,7 +968,7 @@ def _ps_cpu_lines():
         #   **최상위 경계까지 올라가 exit 70** 이 된다 — Windows 분류(unavailable)에 닿지도 못하고
         #   stdout 이 아예 없어서 소비자는 '내부 오류'로 읽는다(formation 은 재시도 후 자원 판정
         #   없이 진행). ps 출력의 pid·pcpu 열은 ASCII 라 대체문자가 파싱을 바꾸지 않는다.
-        p = subprocess.run(["ps", "-axo", "pid,pcpu,command"], capture_output=True,
+        p = subprocess.run(["ps", "-axo", "pid,pcpu,command"], stdin=subprocess.DEVNULL, capture_output=True,
                            text=True, errors="replace", timeout=10, **NOWIN)
     except FileNotFoundError:
         return None, "absent"            # Windows 기본 — 이 플랫폼엔 이 축이 없다
@@ -2416,7 +2416,7 @@ def _rate_accounts(a):
             return None
     else:
         try:
-            out = subprocess.run(["cys", "usage-accounts", "--json"],
+            out = subprocess.run(["cys", "usage-accounts", "--json"], stdin=subprocess.DEVNULL,
                                  capture_output=True, text=True, timeout=3, **NOWIN).stdout
             data = json.loads(out)
         except (subprocess.SubprocessError, OSError, ValueError):
@@ -2726,7 +2726,7 @@ def _server_procs(lines=None, collapse=True):
 def _ppid_map():
     """pid → ppid. 조회 실패는 None(체인 접기 불가 — 호출부가 measure_errors 로 신호한다)."""
     try:
-        out = subprocess.run(["ps", "-Ao", "pid=,ppid="], capture_output=True,
+        out = subprocess.run(["ps", "-Ao", "pid=,ppid="], stdin=subprocess.DEVNULL, capture_output=True,
                              text=True, timeout=10, **NOWIN).stdout
     except (subprocess.SubprocessError, OSError):
         return None
@@ -2793,7 +2793,7 @@ def _ledger_servers(override=None, socket_path=None):
                 seen[pid] = cmd
 
     def _run_ps(argv):
-        p = subprocess.run(argv, capture_output=True, encoding="utf-8",
+        p = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, encoding="utf-8",
                            errors="replace", timeout=LEDGER_TIMEOUT, **NOWIN)
         if p.returncode != 0:
             raise ValueError("rc=%d" % p.returncode)
@@ -2829,7 +2829,7 @@ def _ledger_servers(override=None, socket_path=None):
 def _descendants(roots):
     """pid/ppid 체인 전(全) 자손 — phoenix_harness._descendants 동형(문자열 매칭 아님·collateral 0)."""
     try:
-        out = subprocess.run(["ps", "-Ao", "pid=,ppid="], capture_output=True,
+        out = subprocess.run(["ps", "-Ao", "pid=,ppid="], stdin=subprocess.DEVNULL, capture_output=True,
                              text=True, timeout=10, **NOWIN).stdout
     except (subprocess.SubprocessError, OSError):
         return set()
@@ -2850,7 +2850,7 @@ def _descendants(roots):
 def _proc_age_sec(pid):
     """ps etime([[dd-]hh:]mm:ss) → 초. 조회 불가 시 None."""
     try:
-        et = subprocess.run(["ps", "-o", "etime=", "-p", str(pid)],
+        et = subprocess.run(["ps", "-o", "etime=", "-p", str(pid)], stdin=subprocess.DEVNULL,
                             capture_output=True, text=True, timeout=10, **NOWIN).stdout.strip()
         if not et:
             return None
@@ -2906,7 +2906,7 @@ def cmd_enforce(a):
         time.sleep(1)
         for v in victims:
             try:
-                st = subprocess.run(["ps", "-o", "pid=", "-p", str(v)],
+                st = subprocess.run(["ps", "-o", "pid=", "-p", str(v)], stdin=subprocess.DEVNULL,
                                     capture_output=True, text=True, timeout=10, **NOWIN).stdout.strip()
             except (subprocess.SubprocessError, OSError):
                 st = ""
@@ -2918,7 +2918,7 @@ def cmd_enforce(a):
         time.sleep(0.3)
         for v in victims:  # 좀비 인지 집계 — kill(v,0) 프로브는 좀비에 성공해 잔존으로 오판(G5 동형)
             try:
-                st = subprocess.run(["ps", "-o", "state=", "-p", str(v)],
+                st = subprocess.run(["ps", "-o", "state=", "-p", str(v)], stdin=subprocess.DEVNULL,
                                     capture_output=True, text=True, timeout=10, **NOWIN).stdout.strip()
             except (subprocess.SubprocessError, OSError):
                 st = ""
@@ -3095,7 +3095,7 @@ def _pc_parse_ps(text):
 def _pc_read_ps():
     """The ONE own ps read of `product-cpu` -> (rows|None, state|None, reason|None)."""
     try:
-        p = subprocess.run(["ps", "-axo", "pid=,ppid=,pcpu=,command="], capture_output=True,
+        p = subprocess.run(["ps", "-axo", "pid=,ppid=,pcpu=,command="], stdin=subprocess.DEVNULL, capture_output=True,
                            text=True, errors="replace", timeout=PRODUCT_CPU_PS_TIMEOUT_S, **NOWIN)  # v0.14.51 편입: 우리 NOWIN(윈 콘솔 창 숨김)
     except FileNotFoundError:
         return None, "unavailable", "ps absent on this platform"
@@ -3319,7 +3319,7 @@ _DEVNO_RE = re.compile(r"^\d+,\d+$")
 def _ptmx_ceiling():
     """커널 PTY 상한 -> (값|None, 사유|None)."""
     try:
-        out = subprocess.run(["sysctl", "-n", PTMX_SYSCTL],
+        out = subprocess.run(["sysctl", "-n", PTMX_SYSCTL], stdin=subprocess.DEVNULL,
                              capture_output=True, text=True, timeout=5, **NOWIN)
         if out.returncode == 0 and out.stdout.strip().isdigit():
             return int(out.stdout.strip()), None
@@ -3339,7 +3339,7 @@ def _ptmx_devices(bg_pids=frozenset(), run=None):
     """/dev/ptmx 의 **고유 장치** 수 -> (전체|None, bg분|None, 사유|None). run 은 테스트 주입구."""
     try:
         out = (run or (lambda: subprocess.run(
-            ["lsof", "-n", "-P", "/dev/ptmx"], capture_output=True, text=True,
+            ["lsof", "-n", "-P", "/dev/ptmx"], stdin=subprocess.DEVNULL, capture_output=True, text=True,
             timeout=20, **NOWIN).stdout))()
     except (subprocess.SubprocessError, OSError) as e:
         return None, None, "lsof_failed(%s)" % type(e).__name__
@@ -3488,7 +3488,7 @@ def _bg_parse_ps_rows(text):
 def _bg_parents_ps():
     """이 축 **자신의 ps 읽기 1회** -> (rows|None, state|None, reason|None)."""
     try:
-        p = subprocess.run(["ps", "-axo", "pid=,ppid=,etime=,command="], capture_output=True,
+        p = subprocess.run(["ps", "-axo", "pid=,ppid=,etime=,command="], stdin=subprocess.DEVNULL, capture_output=True,
                            text=True, errors="replace", timeout=BG_PARENTS_PS_TIMEOUT_S, **NOWIN)
     except FileNotFoundError:
         return None, "unavailable", "ps 가 이 플랫폼에 없다"

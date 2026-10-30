@@ -627,7 +627,7 @@ def _query_daemon():
         return "", False
 
     try:
-        p = subprocess.run([exe, "surface-role"], capture_output=True, text=True,
+        p = subprocess.run([exe, "surface-role"], stdin=subprocess.DEVNULL, capture_output=True, text=True,
                            encoding="utf-8", errors="replace",
                            timeout=QUERY_TIMEOUT_S, env=env, **NOWIN)
     except Exception:

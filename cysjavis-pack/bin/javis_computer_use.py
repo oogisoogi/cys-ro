@@ -84,7 +84,7 @@ def claude_node_cwds(sock):
     if sock:
         env["CYS_SOCKET"] = sock
     try:
-        p = subprocess.run(["cys", "list"], capture_output=True, text=True,
+        p = subprocess.run(["cys", "list"], stdin=subprocess.DEVNULL, capture_output=True, text=True,
                            timeout=25, env=env, **NOWIN)
     except (OSError, subprocess.SubprocessError):
         return None

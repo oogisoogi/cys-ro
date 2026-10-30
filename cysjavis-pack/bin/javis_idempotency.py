@@ -428,7 +428,7 @@ def _cys_actions_surface():
     if not cys:
         return None
     try:
-        r = subprocess.run([cys, "actions"], capture_output=True, timeout=10, **NOWIN)
+        r = subprocess.run([cys, "actions"], stdin=subprocess.DEVNULL, capture_output=True, timeout=10, **NOWIN)
         if r.returncode != 0:
             return None
     except Exception:

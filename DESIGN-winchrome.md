@@ -35,7 +35,7 @@ msys2-runtime `winsup/cygwin/spawn.cc`(동봉 PortableGit 의 msys-2.0.dll 계�
 ### 2-3. 채택 — ⓒ 데몬 대행 + 순간 허용
 
 - 평소 Job = `KILL_ON_JOB_CLOSE` 만(지금과 같다). msys 의 조회에도 「이탈 불가」로 보인다.
-- 좌석은 스스로 이탈하지 못한다. `cys spawn-outside-job` → RPC `system.spawn_outside_job` 으로 **데몬에게 맡긴다**.
+- 좌석은 스스로 이탈하지 못한다. `cys spawn-outside-job`(clap 최상위 열거형 밖에서 처리 · 변형을 더하면 시험 스택이 넘친다) → RPC `system.spawn_outside_job` 으로 **데몬에게 맡긴다**.
 - 데몬은 허용 목록을 검사하고(`cys::job_exit::validate` · `chrome <chrome.exe> --restore-last-session` · `seat_restart <python> javis_computer_control.py seat-restart-wait …` · 환경변수 6종), 잠금 안에서 비트 켬 → 스폰(`ChildLifetime::Survivor`) → 비트 끔. 끄기는 Drop 이 맡아 스폰 실패에도 꺼진다.
 - 비트를 켜는 코드는 `src/job_exit.rs` 뿐이다(소스 핀). SILENT_BREAKAWAY_OK 는 쓰지 않는다.
 - rotate 는 재시작 대기의 자식이라 대기가 Job 밖이면 함께 밖이다. 그래서 cysd 를 죽인 뒤에도 끝까지 돌아 rc·ledger·빚 정리까지 간다.

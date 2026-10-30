@@ -26,6 +26,33 @@ pub const fn job_limits(allow_breakaway: bool) -> u32 {
 pub const ENV_ALLOW: [&str; 6] =
     ["CYS_BIN", "CYS_PACK_DIR", "CYS_SOCKET", "CLAUDE_CONFIG_DIR", "CYS_ACCOUNT_DIR", "CYS_CC_STATE"];
 
+/// 내부 CLI 동사. clap 최상위 열거형 밖에서 처리한다(`cys.rs` main · 변형을 더하면 기본 2MB 시험 스레드에서 스택이 넘친다).
+pub const CLI_VERB: &str = "spawn-outside-job";
+
+/// `cys spawn-outside-job [--probe] [--kind K] [--env KEY=VALUE]… [-- argv…]` → RPC 인자(순수).
+pub fn cli_params(args: &[String]) -> Result<serde_json::Value, String> {
+    let (mut probe, mut kind) = (false, String::new());
+    let mut env = serde_json::Map::new();
+    let mut it = args.iter();
+    let mut argv: Vec<String> = Vec::new();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--probe" => probe = true,
+            "--kind" => kind = it.next().ok_or("--kind 값 없음")?.clone(),
+            "--env" => {
+                let e = it.next().ok_or("--env 값 없음")?;
+                let (k, v) = e.split_once('=').ok_or("--env 는 KEY=VALUE")?;
+                env.insert(k.to_string(), serde_json::Value::from(v));
+            }
+            "--" => {
+                argv = it.by_ref().cloned().collect();
+            }
+            other => return Err(format!("모르는 인자: {other}")),
+        }
+    }
+    Ok(serde_json::json!({"probe": probe, "kind": kind, "argv": argv, "env": env}))
+}
+
 fn file_name_lower(p: &str) -> String {
     p.rsplit(['/', '\\']).next().unwrap_or("").to_lowercase()
 }
@@ -112,6 +139,25 @@ mod tests {
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn cli_args_become_rpc_params() {
+        let v = cli_params(&s(&["--kind", "seat_restart", "--env", "CYS_BIN=C:\\a=b\\cys.exe", "--", "python", "x.py", "--min-delay", "30"])).unwrap();
+        assert_eq!(v["kind"], "seat_restart");
+        assert_eq!(v["probe"], false);
+        assert_eq!(v["env"]["CYS_BIN"], "C:\\a=b\\cys.exe", "값의 = 는 보존");
+        assert_eq!(v["argv"], serde_json::json!(["python", "x.py", "--min-delay", "30"]), "-- 뒤는 그대로");
+        assert_eq!(cli_params(&s(&["--probe"])).unwrap()["probe"], true);
+        for bad in [&["--kind"][..], &["--env"], &["--env", "NOEQ"], &["--nope"]] {
+            assert!(cli_params(&s(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    /// 스택 핀: 이 동사가 clap 최상위 열거형으로 돌아가면 aid_s5_cli_tests 가 기본 스택에서 넘친다(CI 41141594121).
+    #[test]
+    fn verb_stays_outside_clap_enum() {
+        assert!(!include_str!("bin/cys.rs").contains(&format!("{}{}", "SpawnOutside", "Job {")));
     }
 
     #[test]

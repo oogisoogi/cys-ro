@@ -105,6 +105,8 @@ pub struct Check {
 
 /// 정책 §6-7 금지 내장 잡.
 pub const FORBIDDEN_JOBS: &[&str] = &["formation-ensure-10min"];
+/// `cys rotate` rc 25 — 끝까지 돌았고 조직 복원만 일부 실패·보류(자식 `cys restore` 의 1·90·91 · 부서 교체·복원 실패가 모두 이 값으로 접힌다).
+pub const ROTATE_RC_RESTORE_PARTIAL: i32 = 25;
 
 fn v5(b: &UserTree, p: &UserTree) -> Result<(), String> {
     for (k, h) in &b.bytes {
@@ -152,6 +154,55 @@ pub fn subset(a: &Value, b: &Value) -> bool {
     }
 }
 
+/// 좌석 자리 = 역할·부서(세션을 뺀 키 · V3 의 rc 25 대조). 정렬 목록 = 같은 자리의 좌석 수까지 대조한다(역할 없는 좌석은 여럿일 수 있다).
+fn seat_places(seats: &BTreeSet<SeatKey>) -> Vec<(&str, &str)> {
+    let mut v: Vec<_> = seats.iter().map(|s| (s.role.as_str(), s.dept.as_str())).collect();
+    v.sort_unstable();
+    v
+}
+
+/// V3 좌석 대조 결과(rc 0).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SeatMatch {
+    Same,
+    /// 자리는 그대로고 세션만 아직 비어 있다 — 값은 이 좌석들의 역할.
+    SessionPending(Vec<String>),
+    Differ,
+}
+
+/// `에이전트|세션`(`seats_from_org`) 칸을 가른다 — 구분자 없는 값은 세션만.
+fn agent_session(s: &SeatKey) -> (&str, &str) {
+    s.session_id.rsplit_once('|').unwrap_or(("", &s.session_id))
+}
+
+/// 기준선과 대조한다. 데몬은 등록 세션을 재기동 너머로 보존하지 않는다(SessionStart 훅이 다시 채운다) — 세션이 **비어 있으면** 아직 모르는 것이고,
+/// 어긋남 = 자리(주소·역할·부서·에이전트·좌석 수)가 다르거나 **채워진** 세션이 기준선에 없는 값일 때뿐이다. 기준선이 비어 있던 좌석은 대조할 값이 없다.
+pub fn seat_match(b0: &BTreeSet<SeatKey>, post: &BTreeSet<SeatKey>) -> SeatMatch {
+    fn slot(s: &SeatKey) -> (&str, &str, &str, &str) {
+        (&s.surface_uuid, &s.role, &s.dept, agent_session(s).0)
+    }
+    fn slots(seats: &BTreeSet<SeatKey>) -> Vec<(&str, &str, &str, &str)> {
+        let mut v: Vec<_> = seats.iter().map(slot).collect();
+        v.sort_unstable();
+        v
+    }
+    if slots(b0) != slots(post) {
+        return SeatMatch::Differ;
+    }
+    let gone: Vec<&SeatKey> = b0.difference(post).collect();
+    let came: Vec<&SeatKey> = post.difference(b0).collect();
+    let count = |seats: &[&SeatKey], at: &SeatKey, empty: bool| seats.iter().filter(|s| slot(s) == slot(at) && agent_session(s).1.is_empty() == empty).count();
+    if came.iter().any(|s| count(&came, s, false) > count(&gone, s, true)) {
+        return SeatMatch::Differ;
+    }
+    let pending: Vec<String> = came.iter().filter(|s| agent_session(s).1.is_empty()).map(|s| s.role.clone()).collect();
+    if pending.is_empty() {
+        SeatMatch::Same
+    } else {
+        SeatMatch::SessionPending(pending)
+    }
+}
+
 /// V1~V9 판정. `rollback` = 옛 판 기준 재검사(RB_VERIFIED) — 그때는 V9 를 기준선 팩과 대조한다.
 pub fn judge(b0: &Baseline, post: &Post, exp: &Expect, rollback: bool) -> Vec<Check> {
     let mut out = Vec::new();
@@ -176,7 +227,14 @@ pub fn judge(b0: &Baseline, post: &Post, exp: &Expect, rollback: bool) -> Vec<Ch
         },
     );
     push("V2", if post.ping_ok_streak >= 3 && post.cysd_procs == 1 { Ok(()) } else { Err(format!("ping {} · cysd {}개", post.ping_ok_streak, post.cysd_procs)) });
-    let seats_ok = post.seats == b0.seats && post.drain_seats.as_ref().map(|d| d == &b0.seats).unwrap_or(true) && post.restore_rc == 0;
+    // ★1.1.11: rc 25(복원 일부 보류)의 좌석은 세션이 아직 안 붙었을 수 있다 — 자리(역할·부서)가 그대로면 통과 · 자리가 사라졌으면 그대로 실패.
+    //   rc 0 의 세션 빈 좌석은 호출자가 상한까지 기다린 뒤의 값이다(`RealOps::settled_seats`) — 채워졌는데 다를 때만 실패.
+    let seats_same = match post.restore_rc {
+        0 => seat_match(&b0.seats, &post.seats) != SeatMatch::Differ,
+        ROTATE_RC_RESTORE_PARTIAL => seat_places(&post.seats) == seat_places(&b0.seats),
+        _ => false,
+    };
+    let seats_ok = seats_same && post.drain_seats.as_ref().map(|d| d == &b0.seats).unwrap_or(true);
     let hold_ok = post.hold_lost == 0 && post.hold_delivered_seq <= post.hold_last_seq && post.hold_last_seq >= b0.hold_seq;
     push(
         "V3",
@@ -400,6 +458,60 @@ mod tests {
         assert!(v5(&b0, &post3).unwrap_err().contains(w), "미수정본 + 매니페스트 불일치 = V5");
         assert_eq!(user_tree_digest(&d).unwrap(), { let mut t = post3.clone(); t.pristine.clear(); crate::update::feed::sha256_hex(&serde_json::to_vec(&t).unwrap()) });
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★1.1.11 rotate rc 표: 0 = 자리 + 채워진 세션 대조 · 25 = 자리(역할·부서)만 대조(세션 어긋남 통과 · 자리 소실 실패) · 그 밖 = V3 실패. 롤백 재검사도 같은 표.
+    #[test]
+    fn v3_follows_rotate_rc_table() {
+        let (b, mut p, e) = fixture();
+        p.drain_seats = None;
+        for rollback in [false, true] {
+            let v3 = |p: &Post| failed(&judge(&b, p, &e, rollback)).contains(&"V3");
+            let mut q = p.clone();
+            q.restore_rc = 25;
+            assert!(!v3(&q), "rc 25 · 같은 좌석 = 통과");
+            let mut resumed: BTreeSet<SeatKey> = q.seats.clone();
+            let moved = resumed.pop_first().unwrap();
+            resumed.insert(SeatKey { session_id: String::new(), ..moved });
+            q.seats = resumed;
+            assert!(!v3(&q), "rc 25 · 세션만 어긋남(보류 좌석) = 통과");
+            let mut r = p.clone();
+            r.seats = r.seats.iter().cloned().map(|s| SeatKey { session_id: String::new(), ..s }).collect();
+            assert!(!v3(&r), "rc 0 · 세션 빈 좌석 = 자리 대조로 통과(기다림은 호출자 몫)");
+            r.seats = p.seats.iter().cloned().map(|s| SeatKey { session_id: format!("{}-다른", s.session_id), ..s }).collect();
+            assert!(v3(&r), "rc 0 · 세션이 채워졌는데 다름 = 실패");
+            let mut gone = p.clone();
+            gone.restore_rc = 25;
+            gone.seats = [SeatKey { role: "other".into(), ..seat("a") }].into();
+            assert!(v3(&gone), "rc 25 · 자리 소실 = 실패");
+            let mut merged = p.clone();
+            merged.restore_rc = 25;
+            merged.seats = [seat("a")].into();
+            assert!(v3(&merged), "rc 25 · 같은 자리 좌석 수 감소 = 실패");
+            for rc in [-1, 1, 21, 22, 23, 24, 26, 90, 91] {
+                let mut x = p.clone();
+                x.restore_rc = rc;
+                assert!(v3(&x), "rc {rc} = 실패");
+            }
+        }
+    }
+
+    /// 세션 칸 = `에이전트|세션`. 빈 세션 = 대기 · 채워진 다른 값 = 어긋남 · 기준선이 비었던 좌석은 대조할 값 없음 · 자리·에이전트·좌석 수 어긋남 = 어긋남.
+    #[test]
+    fn seat_match_tells_pending_from_differ() {
+        let at = |role: &str, sess: &str| SeatKey { surface_uuid: format!("role:{role}"), role: role.into(), dept: String::new(), session_id: sess.into() };
+        let b: BTreeSet<SeatKey> = [at("w", "claude|s1"), at("x", "codex|")].into();
+        assert_eq!(seat_match(&b, &b), SeatMatch::Same);
+        assert_eq!(seat_match(&b, &[at("w", "claude|"), at("x", "codex|")].into()), SeatMatch::SessionPending(vec!["w".into()]));
+        assert_eq!(seat_match(&b, &[at("w", "claude|s2"), at("x", "codex|")].into()), SeatMatch::Differ, "채워졌는데 다름");
+        assert_eq!(seat_match(&b, &[at("w", "codex|"), at("x", "codex|")].into()), SeatMatch::Differ, "에이전트 교체");
+        assert_eq!(seat_match(&b, &[at("w", "claude|")].into()), SeatMatch::Differ, "좌석 소실");
+        assert_eq!(seat_match(&b, &[at("w", "claude|"), at("x", "codex|"), at("y", "claude|")].into()), SeatMatch::Differ, "좌석 추가");
+        assert_eq!(seat_match(&b, &[at("w", "claude|s1"), at("x", "codex|new")].into()), SeatMatch::Same, "기준선이 비었던 좌석");
+        // 같은 자리 좌석이 여럿(역할 없음): 비었던 칸 수까지만 새 값을 받는다
+        let many: BTreeSet<SeatKey> = [at("", "claude|"), at("", "claude|s1")].into();
+        assert_eq!(seat_match(&many, &[at("", "claude|s1"), at("", "claude|s2")].into()), SeatMatch::Same);
+        assert_eq!(seat_match(&many, &[at("", "claude|s2"), at("", "claude|s3")].into()), SeatMatch::Differ);
     }
 
     /// §7-1 사후 검증 시험 행(V3 같은 수·다른 좌석 · V5 job 소실 · cmd 변경 · local 1바이트 · V7 누락 · V9 더 새 독립 팩).

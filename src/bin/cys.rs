@@ -22565,7 +22565,7 @@ const ROTATE_RC_DRAIN_PARTIAL: i32 = 21;
 const ROTATE_RC_DAEMON: i32 = 22;
 const ROTATE_RC_DAEMON_UP: i32 = 23;
 const ROTATE_RC_PACK: i32 = 24;
-const ROTATE_RC_RESTORE: i32 = 25;
+const ROTATE_RC_RESTORE: i32 = cys::update::verify::ROTATE_RC_RESTORE_PARTIAL;
 /// ★1.1.8 U2: 자동 갱신 트랜잭션 잠금을 얻지 못함(다른 트랜잭션 진행 · 토큰 불일치) — 재시도 0.
 const ROTATE_RC_TXN_BUSY: i32 = 26;
 

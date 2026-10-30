@@ -1729,6 +1729,15 @@ jobs:
           trap 'rm -rf "${CYS_TMP:?}" 2>/dev/null || { chmod -R u+w "${CYS_TMP:?}" 2>/dev/null; rm -rf "${CYS_TMP:?}" || echo "::warning::임시 팩 폴더 정리 실패: ${CYS_TMP}"; }' EXIT
           CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" cargo test --lib -- --test-threads=1
 
+      # ★1.1.11(cysr-1111-drainhold · 독립 확인 D4): 자동 갱신 끝-끝 시험 — 격리 HOME 의 실 cysd · 실 Runner · 실 rotate 로 S4 교착·S10 rc 25·
+      #   세션 늦은 V3 를 잰다. 저장 뒤 새 좌석·꼬리 출력 정착·`restore_partial` 기록 뮤턴트는 이 시험만 잡는다(lib 생존 · 1757 뮤턴트 표).
+      #   맥 전용(`codesign` · 가짜 claude 를 `cc` 로 빌드) · 시험이 격리 env 를 스스로 세운다. 릴리스 레인은 A10 대로 1사이클 green 뒤 승격.
+      - name: cargo test --test update_drainhold_e2e (자동 갱신 끝-끝 · macOS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --test update_drainhold_e2e -- --test-threads=1 --nocapture
+
       # ★W-CI2(2026-08-21 · Wave 2): `cargo test -p cys-app --bins` — GUI env 대칭 핀 편입.
       #   전수 실측(cargo test grep): cys-app(src-tauri) 크레이트 테스트를 돌리는 CI 레인이
       #   **0곳**이었다 — release.yml 은 루트 크레이트만(--bin cysd·--lib·--bin cys ×2잡),

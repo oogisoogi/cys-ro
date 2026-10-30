@@ -26,3 +26,16 @@
 | 로컬 (미push) | int/1111 `19655dd6` 위로 rebase 2 완료 · 충돌 0 · 내 변경 diff 동일 · int 15커밋과 파일 겹침 0 · 백업 `backup/1111-wintask-pre-rebase2-29bc5f9e` |
 | 끊긴 것 | rebase 2 뒤 로컬 게이트(lib · secret-scan --all · 윈 타깃 check · u2-mutants) — lib 도중 정지 · **결과 없음** |
 | 다음 첫 명령 | `cd ~/cys-terminal-src-wt/1111-wintask && git fetch origin int/1111 && git log --oneline -1 origin/int/1111` → int 가 또 움직였으면 rebase → 위 로컬 게이트 4종 녹 → master 에 강제 push 확인요청(`--force-with-lease=fix/1111-wintask:29bc5f9e`) |
+
+## wintask-r2-fix (2026-10-30 · worker-7 surface:1736 · codex R2 REVISE major 2 → R3 REVISE major 2 → R4 진행)
+
+| 칸 | 내용 |
+|---|---|
+| 가지 기준 | 원격 줄 위 빨리감기 — `29bc5f9e` → `cf1a941d`(3fb9ebc0 HANDOFF 문서 cherry-pick) → `ffa0772a`(R2 수리) → `cb29c3d1`(R3 수리) · rebase 2 줄 + R2 수리 = `backup/1111-wintask-rebase2-r2fix`(bb14a35a) · int 로 다시 얹기 = master/1731(int/1111 도 12커밋 전진 · fec48a8a) |
+| push | `ffa0772a` 만(master#006f154d 재승인 · 원장 4요건) · `cb29c3d1` = 로컬 · 별도 재승인 필요 |
+| 수리 | `install<S: Sched>`(순수 · 윈 = `com::ComSched` · 시험 = `Fake`): 옛 작업 읽기·지우기 = 없음(`HR_TASK_ABSENT` 0x80070002)만 정상 · 그 밖 = 중단(옛 작업 그대로) · 유효한(judge 통과) 옛 작업만 복원(새 등록 실패·재독 거부 · 거부 작업 지우기 실패여도 시도) · 복원 재독 거부 = 증거(`win-task-refusal-<작업>-restore.json` · stage 칸) 먼저 → 지움 |
+| 시험·뮤턴트 | win_task 14(맥) + 윈 전용 1(`com_absent_task_hresult_is_file_not_found` · 루트 GetTask 읽기만) · WT2 무시 범위 넓히기 · WT3 복원 빼기 · WT4 지우기 실패 시 복원 빼기 · WT5 복원 거부 증거 빼기 — WT1~5 녹/적 손 확인 · u2-mutants 등재 · windows-build 이름 15건 |
+| 로컬 게이트 | ffa0772a: lib 1127/0 · win-typecheck 0 · secret-scan clean · cb29c3d1: win_task 14/14 · win-typecheck 0 · secret-scan clean · u2-mutants·lib 전체 = 결과는 【확인요청】 참조 |
+| 함정 | ① macOS 에 `timeout` 없음 → codex 는 `perl -e 'alarm shift; exec @ARGV' 1800 codex exec …` ② zsh `set -- $m` 은 단어 분리 안 함(뮤턴트 루프는 bash) ③ u2-mutants 도중 src 편집 금지(1차 실행이 내 편집으로 오염 → 녹=1 다수 · 중지·재실행) ④ 「없음」 HRESULT 는 MS 문서 미기재 — 윈 실기 시험이 유일 근거 |
+| 미결 | codex R4 판정 · windows-build(ffa0772a) 윈 실기 결과 · cb29c3d1 push 재승인 · DeleteTask 없음 HRESULT 실측 0(흐름상 GetTask 없음이면 지우기 안 부름) |
+| 재현 | `cargo test -q --lib update::win_task` · `bash -c` 로 `CYS_U1_MUTANT=WT<n> cargo test -q --lib update::win_task::tests::<시험> -- --exact` · `sh scripts/win-typecheck.sh` |

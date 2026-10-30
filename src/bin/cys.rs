@@ -229,6 +229,20 @@ enum Command {
         #[arg(long)]
         skip_depts: bool,
     },
+    /// (내부) 윈도우 데몬 Job 밖 스폰 — 크롬·재시작 대기만(허용 목록 = `cys::job_exit::validate`).
+    #[command(hide = true)]
+    SpawnOutsideJob {
+        /// 스폰하지 않고 될 수 있는지만 본다(크롬을 닫기 전 확인).
+        #[arg(long)]
+        probe: bool,
+        #[arg(long, default_value = "")]
+        kind: String,
+        /// `KEY=VALUE` — 허용 목록(`cys::job_exit::ENV_ALLOW`) 안의 값만.
+        #[arg(long = "env")]
+        envs: Vec<String>,
+        #[arg(last = true)]
+        argv: Vec<String>,
+    },
     /// preflight 게이트: exit 0 = running, 4 = paused (자율주행 매 action 전 확인용)
     GateCheck,
     /// 미배달 큐 검사·철회 (kill-switch의 짝)
@@ -6555,6 +6569,25 @@ fn run(command: Command) -> i32 {
 
         Command::Drain { verify, timeout, only, hq_only } if verify => {
             return run_drain_verify(timeout, &only, hq_only);
+        }
+
+        Command::SpawnOutsideJob { probe, kind, envs, argv } => {
+            let env: serde_json::Map<String, Value> = envs
+                .iter()
+                .filter_map(|e| e.split_once('='))
+                .map(|(k, v)| (k.to_string(), json!(v)))
+                .collect();
+            let params = json!({"probe": probe, "kind": kind, "argv": argv, "env": env});
+            return match request("system.spawn_outside_job", params) {
+                Ok(v) => {
+                    println!("{v}");
+                    0
+                }
+                Err(e) => {
+                    eprintln!("spawn-outside-job: {e}");
+                    1
+                }
+            };
         }
 
         Command::Rotate { timeout, skip_drain, skip_depts } => {

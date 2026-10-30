@@ -30,6 +30,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 sys.dont_write_bytecode = True
@@ -1389,7 +1390,7 @@ CHROME_COUNT_SCRIPT = ('tell application "Google Chrome"\nset t to 0\nrepeat wit
 
 def chrome_windows(plat):
     """(창 수, 탭 수) — 전후 대조용. 모르면 None. 맥 = 크롬 자동화 허락(0)이 있을 때만 osascript 로 센다(없으면 허락 창을
-    띄우지 않으려고 세지 않는다) · 윈 = 창 손잡이가 있는 크롬 프로세스 수(근사) · 탭은 셀 길이 없음(None)."""
+    띄우지 않으려고 세지 않는다) · 윈 = 크롬 최상위 창 전수(프로세스당 창 하나로 세면 창 2개가 1개가 된다 = R5b) · 탭은 셀 길이 없음(None)."""
     if _has_fake("windows"):
         v = _fake_seq("windows")
         return (v, None) if isinstance(v, int) else (tuple(v) if isinstance(v, list) else (None, None))
@@ -1400,11 +1401,63 @@ def chrome_windows(plat):
         m = re.match(r"\s*(\d+)\s+(\d+)\s*$", (r.stdout if r and r.returncode == 0 else "") or "")
         return (int(m.group(1)), int(m.group(2))) if m else (None, None)
     if plat == "win":
-        r = _act("windows", ["powershell", "-NoProfile", "-Command",
-                             "(Get-Process chrome -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowHandle -ne 0}).Count"])
-        w = (r.stdout or "").strip() if r and r.returncode == 0 else ""
-        return (int(w) if w.isdigit() else None), None
+        return _win_chrome_window_count(), None
     return None, None
+
+
+def _is_chrome_window(cls, visible, owned, titled, tool, exe):
+    """크롬 최상위 창인가(순수). 같은 창 종류를 쓰는 말풍선·풍선 도움말은 소유자가 있거나 제목이 없다 · 다른 Chromium 앱은 실행 파일이 다르다."""
+    return cls == "Chrome_WidgetWin_1" and visible and not owned and titled and not tool and exe == "chrome.exe"
+
+
+def _win_chrome_window_count():
+    """화면의 크롬 최상위 창 수. 못 세면 None(지켜보는 쪽이 「모름」으로 처리한다)."""
+    try:
+        import ctypes
+        from ctypes import wintypes as wt
+        u = ctypes.WinDLL("user32", use_last_error=True)
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        u.GetWindow.restype = wt.HWND
+        u.GetWindow.argtypes = [wt.HWND, wt.UINT]
+        u.GetWindowLongW.argtypes = [wt.HWND, ctypes.c_int]
+        u.GetClassNameW.argtypes = [wt.HWND, wt.LPWSTR, ctypes.c_int]
+        u.GetWindowTextLengthW.argtypes = [wt.HWND]
+        u.IsWindowVisible.argtypes = [wt.HWND]
+        u.GetWindowThreadProcessId.argtypes = [wt.HWND, ctypes.POINTER(wt.DWORD)]
+        k.OpenProcess.restype = wt.HANDLE
+        k.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
+        k.QueryFullProcessImageNameW.argtypes = [wt.HANDLE, wt.DWORD, wt.LPWSTR, ctypes.POINTER(wt.DWORD)]
+        k.CloseHandle.argtypes = [wt.HANDLE]
+        exes = {}
+
+        def exe_of(hwnd):
+            pid = wt.DWORD()
+            u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value not in exes:
+                name = ""
+                h = k.OpenProcess(0x1000, False, pid.value)     # PROCESS_QUERY_LIMITED_INFORMATION
+                if h:
+                    buf, n = ctypes.create_unicode_buffer(1024), wt.DWORD(1024)
+                    if k.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n)):
+                        name = buf.value.rsplit("\\", 1)[-1].lower()
+                    k.CloseHandle(h)
+                exes[pid.value] = name
+            return exes[pid.value]
+        count = [0]
+
+        def visit(hwnd, _lp):
+            buf = ctypes.create_unicode_buffer(64)
+            u.GetClassNameW(hwnd, buf, 64)
+            if _is_chrome_window(buf.value, bool(u.IsWindowVisible(hwnd)), bool(u.GetWindow(hwnd, 4)),      # GW_OWNER
+                                 u.GetWindowTextLengthW(hwnd) > 0, bool(u.GetWindowLongW(hwnd, -20) & 0x80),   # WS_EX_TOOLWINDOW
+                                 exe_of(hwnd)):
+                count[0] += 1
+            return True
+        if not u.EnumWindows(ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)(visit), 0):
+            return None
+        return count[0]
+    except Exception:
+        return None
 
 
 def _chrome_exe():
@@ -1432,10 +1485,31 @@ def quit_chrome(plat):
                          "Get-Process chrome -ErrorAction SilentlyContinue | ForEach-Object { [void]$_.CloseMainWindow() }"])
 
 
+def _outside_job(act, kind, argv, env=None):
+    """윈: 이 스폰만 데몬 Job 밖에서(cys spawn-outside-job) — 좌석 재시작이 데몬을 내릴 때 Job 이 닫혀도 산다. 실패 = None.
+    좌석에서 직접 띄우면 Job 안이라 함께 죽는다(R5 A). 자식은 데몬이 낳으므로 필요한 환경변수는 넘겨 준다."""
+    cmd = [_cys_bin(), "spawn-outside-job", "--kind", kind]
+    for k, v in (env or {}).items():
+        cmd += ["--env", "%s=%s" % (k, v)]
+    r = _act(act, cmd + ["--"] + argv, timeout=15)
+    return r if r is not None and r.returncode == 0 else None
+
+
+def job_exit_ok():
+    """Job 밖 스폰이 되는가 — 옛 데몬(요청을 모른다)·거부면 False. 크롬을 닫기 **전에** 본다: 다시 켠 크롬이 곧 죽을 길이면 닫지 않는다."""
+    r = _act("job_exit_probe", [_cys_bin(), "spawn-outside-job", "--probe"], timeout=15)
+    return r is not None and r.returncode == 0
+
+
 def open_chrome(plat):
     if plat == "darwin":
         return _act("open", ["/usr/bin/open", "-a", "Google Chrome", "--args", "--restore-last-session"])
-    return _act("open", [_chrome_exe(), "--restore-last-session"], detach=True)
+    argv = [_chrome_exe(), "--restore-last-session"]
+    r = _outside_job("open", "chrome", argv)
+    if r is None:                       # 재시작 때 함께 닫힐 수 있어도 닫아 둔 크롬은 켜 둔다
+        _ledger({"event": "chrome_open_in_job"})
+        r = _act("open", argv, detach=True)
+    return r
 
 
 def notify(title, body):
@@ -1473,6 +1547,11 @@ def schedule_seat_restart(delay, after_disable=False):
         argv += ["--surface", sid]
     if after_disable:
         argv += ["--after-disable"]
+    if platform() == "win":             # ★R5 A: 대기·rotate 가 Job 안이면 데몬을 내리는 순간 rotate 도 죽어 rc·빚 정리가 없다
+        env = {k: os.environ[k] for k in ("CYS_PACK_DIR", "CYS_SOCKET", "CLAUDE_CONFIG_DIR", "CYS_ACCOUNT_DIR", "CYS_CC_STATE")
+               if os.environ.get(k)}
+        env["CYS_BIN"] = shutil.which(_cys_bin()) or _cys_bin()     # 데몬의 PATH 에는 cys 가 없을 수 있다
+        return _outside_job("seat_restart", "seat_restart", argv, env)
     return _act("seat_restart", argv, detach=True)
 
 
@@ -1681,6 +1760,13 @@ def cmd_chrome_enable(a):
         if r == "deferred":
             pending.append("chrome_restart")
             said.append("지금 키보드·마우스를 쓰고 계셔서 크롬 다시 켜기는 잠시 미뤘습니다 — 손을 쉬실 때 다시 하겠습니다.")
+        elif r in WIN_RESTART_SAY:
+            pending.append("chrome_restart")
+            said.append(WIN_RESTART_SAY[r])
+        elif r.startswith("many_windows:"):
+            pending.append("chrome_restart")
+            said.append("크롬 창이 %s개 열려 있어 닫지 않았습니다(하나씩 닫으면 마지막 창만 되살아납니다). 크롬 오른쪽 위 ⋮ 메뉴의 「종료」로 닫았다가 "
+                        "다시 켜 주시면 바로 연결됩니다." % r.split(":", 1)[1])
         elif r.startswith("not_quit"):
             pending.append("chrome_restart")
             said.append("크롬이 스스로 닫히지 않아 그대로 두었습니다(강제로 끄지 않습니다). 크롬을 닫으셨다 켜시면 바로 연결됩니다.")
@@ -1757,13 +1843,31 @@ def reopen_chrome(plat):
     return res
 
 
+WIN_RESTART_SAY = {
+    "unknown_windows": "크롬 창이 몇 개인지 확인하지 못해 닫지 않았습니다. 크롬 오른쪽 위 ⋮ 메뉴의 「종료」로 닫았다가 다시 켜 주시면 바로 연결됩니다.",
+    "no_job_exit": "지금은 크롬을 다시 켜도 cysr 재시작 때 함께 닫힐 수 있어 닫지 않았습니다. 크롬 오른쪽 위 ⋮ 메뉴의 「종료」로 닫았다가 직접 켜 주시면 "
+                   "바로 연결됩니다.",
+    "not_quit_background": "크롬 창은 닫혔지만 크롬이 뒤에서 계속 돌고 있어 다시 켜지 못했습니다. 작업 표시줄 오른쪽 아래 크롬 아이콘에서 「종료」를 누른 뒤 "
+                           "크롬을 켜 주시면 바로 연결됩니다.",
+}
+
+
 def restart_chrome(plat, wait):
     """유휴 관문 → 알림 → (유휴 재확인) → 정상 종료 → 다시 켬 → 창·탭 수 대조.
-    반환 = say 문장 · "deferred" · "not_quit:…" · "not_reopened:failed|unknown"."""
+    반환 = say 문장 · "deferred" · "many_windows:N" · WIN_RESTART_SAY 의 키 · "not_quit:…" · "not_reopened:failed|unknown".
+    ★R5b: 윈은 창이 하나일 때만 닫는다. 크롬은 다른 창이 남아 있을 때 닫힌 창을 세션에서 바로 지운다(session_service.cc WindowClosing) —
+    창을 하나씩 닫으면 마지막 창만 되살아나고 탭 수는 윈에서 셀 길이가 없어 그 손실을 알 수도 없다. 맥의 quit 은 메뉴 「종료」라 해당 없다."""
     if not wait_idle(plat, wait):
         _ledger({"event": "chrome_restart_deferred"})
         return "deferred"
     before = chrome_windows(plat)
+    if plat == "win":
+        if before[0] != 1:
+            _ledger({"event": "chrome_restart_manual", "windows": before[0]})
+            return "many_windows:%d" % before[0] if before[0] else "unknown_windows"
+        if not job_exit_ok():
+            _ledger({"event": "chrome_restart_manual", "why": "no_job_exit"})
+            return "no_job_exit"
     notify("크롬을 잠깐 다시 켭니다", "Claude 연결을 붙이려고 크롬을 닫았다가 바로 다시 켭니다. 열린 탭은 그대로 돌아옵니다.")
     _sleep(3)
     idle = idle_seconds(plat)        # ★codex R1: 알림을 보고 다시 손을 댔으면 닫지 않는다(관문 통과 뒤 3초 사이)
@@ -1775,8 +1879,9 @@ def restart_chrome(plat, wait):
     t = 0
     while chrome_running(plat):
         if t >= CHROME_QUIT_WAIT_SEC:
-            _ledger({"event": "chrome_not_quit"})
-            return "not_quit:%d" % t
+            left = chrome_windows(plat)[0] if plat == "win" else None
+            _ledger({"event": "chrome_not_quit", "windows": left})
+            return "not_quit_background" if left == 0 else "not_quit:%d" % t
         _sleep(1)
         t += 1
     res = reopen_chrome(plat)

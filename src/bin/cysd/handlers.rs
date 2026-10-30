@@ -39,6 +39,50 @@ pub enum Reply {
     },
 }
 
+/// `system.spawn_outside_job` — `{"probe":true}` = 될 수 있는가만 · 그 밖 = 허용 목록 스폰 1회(`cys::job_exit::validate`).
+/// 윈 전용 — 다른 기판은 `setsid` 로 이미 부모 수명에서 떨어지므로 호출부가 부르지 않는다.
+fn spawn_outside_job(params: &Value) -> Result<Value, String> {
+    let probe = params.get("probe").and_then(Value::as_bool).unwrap_or(false);
+    let kind = param_str(params, "kind").unwrap_or_default();
+    let argv: Vec<String> = params
+        .get("argv")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    let env: Vec<(String, String)> = params
+        .get("env")
+        .and_then(Value::as_object)
+        .map(|m| m.iter().filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string()))).collect())
+        .unwrap_or_default();
+    if !probe {
+        cys::job_exit::validate(&kind, &argv, &env)?;
+    }
+    #[cfg(windows)]
+    {
+        use cys::SpawnPolicy;
+        if probe {
+            crate::state::winjob::probe_outside()?;
+            return Ok(json!({"ok": true}));
+        }
+        let mut build = |breakaway: bool| {
+            let mut c = std::process::Command::new(&argv[0]);
+            c.args(&argv[1..]);
+            c.envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+            c.spawn_policy(cys::ChildLifetime::Survivor);
+            if !breakaway {
+                c.relax_job_breakaway(cys::ChildLifetime::Survivor);
+            }
+            c
+        };
+        let (child, outside) = crate::state::winjob::spawn_outside(&mut build)?;
+        Ok(json!({"pid": child.id(), "outside_job": outside}))
+    }
+    #[cfg(not(windows))]
+    {
+        Err("윈도우 전용".to_string())
+    }
+}
+
 fn param_str(params: &Value, key: &str) -> Option<String> {
     params
         .get(key)
@@ -6720,6 +6764,11 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
         "update.quiesce" | "update.seat_token" | "update.release" => Reply::Single(match crate::update_hold::rpc(daemon, req.method.as_str(), &params) {
             Ok(v) => ok_response(&id, v),
             Err((code, msg)) => err_response(&id, code, &msg),
+        }),
+        // ★TICKET=cysr-1111-winchrome: 크롬·재시작 대기만 데몬 Job 밖으로(허용 목록 = cys::job_exit::validate).
+        "system.spawn_outside_job" => Reply::Single(match spawn_outside_job(&params) {
+            Ok(v) => ok_response(&id, v),
+            Err(msg) => err_response(&id, "invalid_params", &msg),
         }),
         "system.identify" => {
             let caller = params.get("caller").cloned().unwrap_or(Value::Null);
@@ -36220,6 +36269,20 @@ mod v116_num_rpc_tests {
         }
         assert_eq!(d.surfaces.lock().unwrap().len(), 1);
         let _ = crate::governance::close_surface(&d, 17, crate::governance::CloseCause::OwnerClose);
+    }
+
+    /// 데몬 Job 밖 스폰 = 허용 목록만 · 맥·리눅스는 이 경로가 없다(호출부가 setsid 로 띄운다).
+    #[test]
+    fn spawn_outside_job_refuses_unnamed_and_is_windows_only() {
+        let bad = spawn_outside_job(&json!({"kind": "shell", "argv": ["cmd.exe"]})).unwrap_err();
+        assert!(bad.contains("허용되지 않은 종류"), "{bad}");
+        let env = spawn_outside_job(&json!({
+            "kind": "chrome", "argv": ["chrome.exe", "--restore-last-session"], "env": {"CYS_SEAT_TOKEN": "x"}
+        }))
+        .unwrap_err();
+        assert!(env.contains("허용되지 않은 환경변수"), "{env}");
+        #[cfg(not(windows))]
+        assert_eq!(spawn_outside_job(&json!({"probe": true})).unwrap_err(), "윈도우 전용");
     }
 
     /// T3b 소스 고정 핀 — handlers.rs 제품부에서 `display_no` 를 **요청에서 읽는** 곳은

@@ -1401,14 +1401,105 @@ class TestChromeEnable(Base):
         os.environ["CYS_CC_PLATFORM"] = "win"
         self.set_probes(chrome={"app": True, "profiles": 1, "with_ext": 1, "ext_enabled": True,
                                 "nmh": False, "default_on": False, "playwright_ext": False},
-                        chrome_running=[True, False, True])
+                        chrome_running=[True, False, True], windows=1)
         self.m.platform = lambda: "win"
         self.m._nmh_ok = lambda plat, ud, _s=[False, False, True]: _s.pop(0) if len(_s) > 1 else _s[0]
         rc, d, _ = self.run_cli("chrome-enable")
         quit = " ".join([a for a in self.acts() if a["kind"] == "quit"][0]["argv"])
         self.assertIn("CloseMainWindow", quit)
         op = [a for a in self.acts() if a["kind"] == "open"][0]
-        self.assertTrue(op["detach"])
+        self.assertFalse(op["detach"])                       # 좌석에서 직접 띄우면 Job 안이라 재시작 때 함께 죽는다(R5 A)
+        self.assertEqual(op["argv"][1:4], ["spawn-outside-job", "--kind", "chrome"])
+        self.assertEqual(op["argv"][-1], "--restore-last-session")
+        self.assertLess(self.kinds().index("job_exit_probe"), self.kinds().index("quit"))    # 닫기 전에 본다
+
+    def win_restart_setup(self, **kw):
+        os.environ["CYS_CC_PLATFORM"] = "win"
+        self.set_probes(chrome={"app": True, "profiles": 1, "with_ext": 1, "ext_enabled": True,
+                                "nmh": False, "default_on": False, "playwright_ext": False}, **kw)
+        self.m.platform = lambda: "win"
+        self.m._nmh_ok = lambda plat, ud, _s=[False, False, True]: _s.pop(0) if len(_s) > 1 else _s[0]
+
+    def test_win_many_windows_are_left_open_and_said_so(self):     # R5b
+        self.win_restart_setup(chrome_running=[True], windows=2)
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertNotIn("quit", self.kinds())
+        self.assertNotIn("open", self.kinds())
+        self.assertIn("크롬 창이 2개 열려", d["say"])
+        self.assertIn("「종료」", d["say"])
+        self.assertIn("chrome_restart", d["pending"])
+
+    def test_win_unknown_window_count_is_not_closed(self):
+        self.win_restart_setup(chrome_running=[True], windows=[None, None])
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertNotIn("quit", self.kinds())
+        self.assertIn("확인하지 못해 닫지 않았습니다", d["say"])
+
+    def test_win_old_daemon_means_chrome_is_not_closed(self):
+        self.win_restart_setup(chrome_running=[True], windows=1, act={"job_exit_probe": {"rc": 1}})
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertNotIn("quit", self.kinds())
+        self.assertIn("닫지 않았습니다", d["say"])
+        self.assertIn("chrome_restart", d["pending"])
+
+    def test_win_refused_job_exit_still_reopens_closed_chrome(self):
+        self.win_restart_setup(chrome_running=[True, False, True], windows=1,
+                               act={"open": [{"rc": 1}, {"rc": 0}]})
+        rc, d, _ = self.run_cli("chrome-enable")
+        opens = [a for a in self.acts() if a["kind"] == "open"]
+        self.assertEqual([o["detach"] for o in opens], [False, True])
+        with open(os.path.join(self.state, "ledger.jsonl"), encoding="utf-8") as f:
+            self.assertIn("chrome_open_in_job", f.read())
+
+    def test_win_background_chrome_is_described_truthfully(self):
+        self.win_restart_setup(chrome_running=[True] * 60, windows=[1, 0])
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertIn("크롬 창은 닫혔지만", d["say"])
+        self.assertNotIn("그대로 두었습니다", d["say"])
+
+    def test_win_still_open_chrome_keeps_left_alone_sentence(self):
+        self.win_restart_setup(chrome_running=[True] * 60, windows=[1, 1])
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertIn("그대로 두었습니다", d["say"])
+
+    def test_win_window_filter(self):
+        ok = dict(cls="Chrome_WidgetWin_1", visible=True, owned=False, titled=True, tool=False, exe="chrome.exe")
+        self.assertTrue(self.m._is_chrome_window(**ok))
+        for k, v in (("cls", "Chrome_WidgetWin_0"), ("visible", False), ("owned", True), ("titled", False), ("tool", True),
+                     ("exe", "msedge.exe")):
+            self.assertFalse(self.m._is_chrome_window(**dict(ok, **{k: v})), k)
+
+    def test_win_seat_restart_goes_through_daemon_with_seat_free_env(self):
+        os.environ["CYS_CC_PLATFORM"] = "win"
+        self.m.platform = lambda: "win"
+        os.environ["CYS_SURFACE_ID"] = "surface:7"
+        os.environ["CYS_SEAT_TOKEN"] = "secret"
+        os.environ["CLAUDE_CONFIG_DIR"] = self.ccd
+        self.set_probes()
+        self.assertIsNotNone(self.m.schedule_seat_restart(30))
+        a = [x for x in self.acts() if x["kind"] == "seat_restart"][0]
+        self.assertFalse(a["detach"])
+        joined = " ".join(a["argv"])
+        self.assertIn("spawn-outside-job --kind seat_restart", joined)
+        self.assertIn("seat-restart-wait", joined)
+        self.assertIn("--surface surface:7", joined)
+        self.assertIn("CYS_BIN=", joined)
+        self.assertIn("CLAUDE_CONFIG_DIR=", joined)
+        self.assertNotIn("secret", joined)
+        self.assertNotIn("CYS_SEAT_TOKEN", joined)
+
+    def test_win_refused_seat_restart_reports_failure_not_success(self):
+        os.environ["CYS_CC_PLATFORM"] = "win"
+        self.m.platform = lambda: "win"
+        self.set_probes(act={"seat_restart": {"rc": 1}})
+        self.assertIsNone(self.m.schedule_seat_restart(30))     # 좌석 안에서 띄우면 rotate 가 또 함께 죽는다 — 빚으로 남긴다
+
+    def test_mac_spawns_are_untouched(self):
+        self.set_probes()
+        self.assertIsNotNone(self.m.schedule_seat_restart(30))
+        self.assertTrue([x for x in self.acts() if x["kind"] == "seat_restart"][0]["detach"])
+        self.assertEqual(self.m.open_chrome("darwin").returncode, 0)
+        self.assertNotIn("job_exit_probe", self.kinds())
 
     def test_ledger_failure_leaves_key_untouched(self):
         self.make_chrome()

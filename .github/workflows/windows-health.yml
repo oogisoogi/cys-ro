@@ -565,6 +565,9 @@ jobs:
           #   실패 = 적색(머지 조건). 이 두 줄에도 `if:` 를 달지 마라.
           cargo_filter_count --lib update::
           CYS_PACK_DIR="$(mktemp -d)" cargo test --lib update:: -- --test-threads=1
+          # ★TICKET=cysr-1111-winchrome: 데몬 Job 안 부모 taskkill → 이탈 자식 생존 · 묶인 자식 소멸(R5 A 실 프로세스 재현).
+          cargo_filter_count --test win_job_exit
+          CYS_PACK_DIR="$(mktemp -d)" cargo test --test win_job_exit -- --test-threads=1 --nocapture
           # ★(0.14.45) 일곱째 모듈 `agy_statusline::` 편입 — Windows Antigravity 상태줄 자동 연결. 이 모듈의 **윈도우 전용 검체**
           #   `windows_cmd_wrapper_runs_under_cmd_c_like_agy` 는 팩의 LF `.cmd` 래퍼를 agy 와 같은 방식(`cmd /c` + Go `EscapeArg`
           #   인용 · 창 없음 · 5초 상한)으로 실제 실행해, 가짜 `cys.cmd` 가 PATH 에 있으면 통과 · 없으면 실패(구별)임을 잰다.

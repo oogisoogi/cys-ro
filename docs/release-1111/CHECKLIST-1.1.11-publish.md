@@ -6,6 +6,7 @@
 게이트 = `~/axdev/master/briefs/2026-10-27-cysr-1111-release-gate.md` · 통합표 = `~/axdev/master/HANDOFF-cysr-1111-integrate-2026-10-30.md` · 문안 초안 = 같은 폴더 `RELEASE-NOTES-1.1.11.draft.md` · `KAKAO-1111.draft.md`.
 
 ★**1.1.10 12커밋 병합 누락 → 발행 준비에서 적발·복구**(2026-10-30 21:5x · master#e9af822d): int/1111 의 v1.1.10 공통 조상이 3ce93329 라 459d0cca 에는 공개 태그 12커밋이 없었다 → rel/1.1.11 = 459d0cca 위 `git merge --no-ff v1.1.10` = **6690f9a8** · 표 = §H.
+★**수용·미편입 2가지 복구**(2026-10-30 23:0x · master#8fd148bb · 1753 적발): fix/1111-backlog-misc 5ebc8d14(130c8079) · fix/1111-fable-fixes caeaab38(dc9f1de7) · 고유 9커밋 조상 · 충돌 1(문서 1줄 `~`/`$HOME` · 뜻 같음 → rel 쪽 유지).
 
 실측 출발점(2026-10-30 21:5x · 읽기만):
 - 공개 latest = v1.1.10(2026-10-23T13:08:45Z) · 보관소 `releases/5.json` 200 · **`releases/6.json` 404** · 저장소 변수 `CYSR_RELEASE_SEQ` = 5(→ 6 = master · 1-3) · stable/next 봉투 feed_rev **4** · rollout 100 · halt false.
@@ -62,7 +63,7 @@
 |---|---|---|---|
 | 0-1 | 머리 확정 = rel/1.1.11(이 문서 커밋 뒤 · master 재승인 push 뒤 CI 3런 같은 SHA) | `git log --oneline -3 rel/1.1.11` | 대기 |
 | 0-2 | 윈 실기 = **459d0cca 시험 판으로 통과**(10-30 20:2x · SS:1729 · ⓐ~ⓔ) | 원문 = 윈 master 회신 표 | 통과(병합 전 바이트) |
-| 0-3 | **윈 재실기(병합 뒤 변경분)** = 상담소 단추 · 첫 안내 · reap · 초기화 문구 짧은 확인(master#e9af822d · master 가 윈 master 에 발신) · 키트 = 새 windows-build 런 산출. ⚠그 레인은 release_seq 0 = 자동 갱신 대상 밖(1.1.10 0-3). ⚠갱신 경로(ⓑ)는 L16 대상 — 윈 1.1.10 → 1.1.11 은 어차피 수동 1회라 **설치기 경로로 올리는 1회**가 사용자 경로와 같다(태그 draft setup.exe) · 시행 여부 = master | 재실기 회신 표 | 대기 |
+| 0-3 | **윈 재실기** = r2 키트 7ccab38c windows-build 41066772814(wintest-v1.1.11-20261030b · 상담소 단추 · 첫 안내 · reap · 초기화 문구 + 실 크롬) · r3 키트 = 최종 머리 windows-build 런(바뀐 부분만 · master#10b2531d) · 발신 = master. ⚠그 레인은 release_seq 0 = 자동 갱신 대상 밖(1.1.10 0-3). ⚠갱신 경로(ⓑ)는 L16 대상 — 윈 1.1.10 → 1.1.11 은 어차피 수동 1회라 **설치기 경로로 올리는 1회**가 사용자 경로와 같다(태그 draft setup.exe) · 시행 여부 = master | 재실기 회신 표 | 대기 |
 | 0-4 | 자동 받기 **관측용 맥 1.1.10 기기 1대**를 손대지 않고 남긴다(L9) — 이 맥은 발행 뒤 손 교체 대상이라 관측 불가 · 어느 기기 = master · 윈은 수동 1회라 관측 대상 아님 | `cysr --version` · `build-info --json` `release_seq` 5 | 대기 |
 | 0-5 | `release.yml` 자동 본문 = 1.1.10 에서 수리 · ⚠**윈 1.1.10 수동 1회는 말하지 않는다** → 3-2 에서 노트의 본문 초안으로 교체 판단 | 3-2 | 판단 대기 |
 | 0-6 | 발행 노트·공지·카톡 초안 확정 — 【발행 전 확인】 처리 = §8 | 박사님·master 확정 | 대기 |
@@ -100,7 +101,7 @@
 | 3-3 | 검증 = CI dry-run 의 verify 잡(1.1.9 실제 · 로컬 `release-verify.py`·`release-gate.py assets` 실행 기록 0) — 로컬로도 돌리면: `python3 scripts/release-verify.py --version 1.1.11 --release-dir r7/reviewed --prev-tauri-conf prev-conf.json --prev-pack-keyring prev-keys.json` · `python3 scripts/update/release-gate.py assets --release-dir r7/reviewed --pack-manifest r7/reviewed/pack-manifest.json` | 「릴리스 검증 통과 — 자산 13종(+SHA256SUMS.txt) · 업데이터 4행 전부 서명 일치 · 맥 자산 포함」 · 팩 replay 단조 위반 = E1 최소 재서명 → SUMS 재생성(RELEASE.md:98-117) | — |
 | 3-4 | `shasum -a 256 SHA256SUMS.txt`(3-1 ⑤ **뒤** 최종본 · 1.1.9 = 첫 dry-run 10febe52… → 최종 403a8be0…) = **release_bundle_sha256** | 기록 | — |
 | 3-7 | dry-run: `gh workflow run release-publish.yml -R oogisoogi/cys-ro --ref main -f tag=v1.1.11 -f release_bundle_sha256=<3-4> -f confirm=PUBLISH`(1.1.9 = `--ref main` 으로 통함 · 그때 main = 6fddbffe) — 지금 main = 502741c7(같은 계열 · dry_run 입력 있음 추정) · ⛔**422 가 나면 멈춤**(dry_run 을 빼고 다시 보내기 금지 · 메모리 reference_cys-release-publish-dryrun-needs-branch-ref) | 「SHA256SUMS.txt 다이제스트: … (입력과 일치)」 · 「맥 자산: 포함」 · 「✅ dry-run 완료 — … 발행은 하지 않았다」 | 바뀌는 것 없음 |
-| 3-8 ⛔ | 발행: 3-7 명령 + `-f dry_run=false` → 런이 **승인 대기**(L4 · environment `release-production` · 1.1.9 확정) → `gh api repos/oogisoogi/cys-ro/actions/runs/<RUN>/pending_deployments`(env id 조회 · 1.1.9 = 21524450364) → `gh api -X POST repos/oogisoogi/cys-ro/actions/runs/<RUN>/pending_deployments -F 'environment_ids[]=<id>' -f state=approved -f comment='cysr 1.1.11 발행'` · watch 는 600초를 넘을 수 있다 → 백그라운드 | 로그 「✅ 공개 발행 완료 — tag_name=v1.1.11 · isDraft=false」 · 공개 SUMS 13줄 OK · `releases/latest/download/latest.json` version 1.1.11 · 행 4 · `setup.exe.sig` 200 | ①`gh release edit v1.1.10 -R oogisoogi/cys-ro --tag v1.1.10 --latest` ②`gh release edit v1.1.11 -R oogisoogi/cys-ro --tag v1.1.11 --draft=true` · 삭제 = 최후·오너 지시만 · tag_name 리셋 = PATCH `{"tag_name":"v1.1.11"}`(RELEASE-ROLLBACK.md:53-130) |
+| 3-8 ⛔ | 발행: 3-7 명령 + `-f dry_run=false` → 런이 **승인 대기**(L4 · environment `release-production` · 1.1.9 확정) → `gh api repos/oogisoogi/cys-ro/actions/runs/<RUN>/pending_deployments`(env id 조회 · 1.1.9 = 21524450364) → `gh api -X POST repos/oogisoogi/cys-ro/actions/runs/<RUN>/pending_deployments -F 'environment_ids[]=<id>' -f state=approved -f comment='cysr 1.1.11 발행'` · watch 는 600초를 넘을 수 있다 → 백그라운드 | 로그 「✅ 공개 발행 완료 — tag_name=v1.1.11 · isDraft=false」 · 공개 SUMS 13줄 OK · `releases/latest/download/latest.json` version 1.1.11 · 행 4 · `setup.exe.sig` 200 | ★**`docs/RELEASE-ROLLBACK.md` 를 따른다**(ADV4 M2 · 1755 수리 · halt 봉투 먼저 · 수동 재설치) — 서명 봉투 갱신기는 `latest` 되돌림으로 유입이 멈추지 않는다 · draft 되돌림 명령은 그 문서 절차 안에서만 · 삭제 = 최후·오너 지시만 |
 | 2-5 ⛔ | (발행 직후) 보관소 게시 — §2 의 2-5 명령 | 2-5 확인 줄 | 2-5 |
 | 3-5 ⛔ | main 이동 — ★**이번엔 앞으로 감기**: `502741c7`(현 origin/main = v1.1.10)가 태그 후보의 조상(10-30 실측 `git merge-base --is-ancestor 502741c7 6690f9a8` = 참 · 복구 병합 덕) → cherry-pick·강제 push 불요. 집행 직전 재측: `git fetch origin && git merge-base --is-ancestor origin/main v1.1.11 && echo FF-OK` → 보존 가지 `git push origin 502741c7:refs/heads/archive/main-pre-1111-<발행일>` → `NEW=$(git rev-parse v1.1.11^{commit}); git push origin "${NEW}:refs/heads/main"`(강제 아님 · 중괄호 · L5) | 불변식 「main = 최신 발행 태그 커밋 + CI 전용 패치」 · `gh workflow list -R oogisoogi/cys-ro` 에 refresh-feed active · main 트리 `.github/workflows/refresh-feed.yml:66` `SITE: ${{ vars.CYS_FEED_FETCH_SITE \|\| …}}` 줄 | 보존 가지로: `git push --force-with-lease=main:${NEW} origin 502741c7:refs/heads/main` · FF-OK 가 안 나오면(누가 main 에 새 커밋) **멈춤** |
 | 3-6 | 봉투 재료(보관소 6 선행): `for ch in stable next; do gh workflow run refresh-feed.yml -R oogisoogi/cys-ro --ref main -f component=cysr -f channel=$ch -f release_seq=6 -f rollout_pct=100 -f halt=false -f first=false; done`(1.1.9 실제 명령 원문 T1 08:27:20 · seq 만 5) → `gh run download <run> -R oogisoogi/cys-ro -D r3s6/env/<run>` | 「Verify the NEW envelope」 초록 · 아티팩트 `envelope-cysr-stable`·`-next` · **feed_rev 값을 출력 그대로 기록**(A-5 · 추론 4) | 게시 전 — 무해 |
@@ -167,15 +168,15 @@
 | test-hygiene · adv-fixes | 있음 | abc137c0 · HANDOFF-cysr-1111-adv-fixes |
 | cu-1111 · cu-1111-win-fix | 있음 | ae41322c codex R3 · 6d8d4468 윈 r3 통과 |
 | cu-1111-precedent — 코드·디렉티브 +≤400B | 있음 | 19655dd6 · 커밋 제목 +395B |
-| cu-1111-precedent — **실 크롬 실기(맥·윈 · 켜짐/꺼짐 · 탭 복원 · 경고)** | ⚠**기록 없음** | SS:1419 「§15 실기 = 절단 전 묶음으로 이월」 · TODO:235 ⑥ 미체크 · 윈 실기 ⓐ~ⓔ 에 크롬 칸 없음(검색어 chrome-enable · 크롬 재시작 · §15) |
+| cu-1111-precedent — **실 크롬 실기(맥·윈 · 켜짐/꺼짐 · 탭 복원 · 경고)** | ⚠**기록 없음** · 윈 = r2 목록(master#1be35b1b) · 맥 = 발행 바이트 뒤 | SS:1419 「§15 실기 = 절단 전 묶음으로 이월」 · TODO:235 ⑥ 미체크 · 윈 실기 ⓐ~ⓔ 에 크롬 칸 없음(검색어 chrome-enable · 크롬 재시작 · §15) |
 | hook-slim 677 | **해당 없음(제외)** | 통합표 |
 | 윈 복구기 675 | 있음 | 9cb4268d · R4 ACCEPT · 윈 실기 ⓐ 기준선 4·refusal 0 |
 | master-send 배선 | 있음 · TODO:87 칸은 미체크 | SS:1166 격리 하네스 3/3·1/1 · 후속 판정기 SS:1178 |
 | §3 맥 실기 | 발행 뒤(§7) | 재빌드 금지 판정 SS:1751 |
 | §3 윈 실기 | 통과(459d0cca) · **병합 뒤 재확인 대기** | SS:1729 · 0-3 |
-| §3 깨끗한 기기 새 설치 | ⚠**기록 없음** | 검색어 「깨끗한 기기」 · SS:1202 는 계획 줄 |
-| §4 통합 3자 적대 검토(전체 diff · codex·Fable·agy) | ⚠**기록 없음** | TODO:40 은 계획 줄 · 통합표에 칸 없음(검색어 통합 3자 · 통합 심층) |
-| §4 발견 처분표 | ⚠기록 없음(위와 같음) | — |
+| §3 깨끗한 기기 새 설치 | ⚠**기록 없음 · 태그 전 필수** · master 처리 | master#1be35b1b |
+| §4 통합 3자 적대 검토(전체 diff · codex·Fable·agy) | 있음 | `~/cys-terminal-src-wt/1111-adv4` 0c8b5ab2 ADV4-FINDINGS.md · blocking B1·B2 처분 = master |
+| §4 발견 처분표 | 있음 | 같은 파일 |
 | 태그 레인 전용 phoenix 시험 | ⚠**c6 적 1**(그 밖 전부 통과) | §I |
 | §5 절단 범위 동결 · 롤백 판(1.1.10 봉투 유지) | 집행 때 | 2-1 · 3-9 |
 | 윈 이상 2(RunLevel 재등록 · preflight --fix 백업 없음) | 1.1.12 BACKLOG(§J) · 발행 차단 아님 = master 판정 | TODO:83 |
@@ -204,43 +205,46 @@
 파일 바이트: `javis_counsel.py` · `counsel.rs` · `counsel.ts` · `resetconfirm.ts` · `test_javis_counsel.py` = v1.1.10 과 동일(diff 0) · `cys-dept` 차이 = int 쪽 `boot_lock_winner` 추가 24줄(삭제 갈래 아님 · `rm -rf "$_td"` 0건).
 3e89de97 핀 대조 = §I(cargo-lib · cysd · bun · test_pyseal_census).
 
-## I. 로컬 정본 게이트(6690f9a8)
+## I. 로컬 정본 게이트(dc9f1de7)
 
-실행 = 21:56~22:45 · 머리 6690f9a8 · 격리(가짜 HOME · `CYS_*` 해제 · 운영 파일 무접촉) · 원문 = 워커 스크래치(발췌는 HANDOFF).
+실행 = 23:05~23:49 · 격리(가짜 HOME · `CYS_*` 해제 · 운영 파일 무접촉 · `JAVIS_ROOT`·`CYS_PROBE_RUNS` 시험별 · 태그 레인과 같은 PHOENIX 변수).
 
-| 게이트 | 결과 |
-|---|---|
-| version-check v1.1.11 | rc 0(8곳 · 벤더 태그 동명 충돌 없음) |
-| lane-parity `--strict` · `--self-test`(bash) | rc 0 · rc 0 |
-| scan-pack-secrets · secret-scan --all · H-SECRET-1 | rc 0 · rc 0 · rc 0 |
-| ui bun test | 3307 pass · 88 skip · 0 fail |
-| tsc(`typescript@7.0.2 -p tsconfig.check.json`) | rc 0 |
-| win-typecheck | rc 0 |
-| cargo test --lib | 1133 passed · 0 failed |
-| cargo test --bin cys | 735 passed · 0 failed |
-| cargo test --bin cysd --test-threads=1 | 3222 passed · 0 failed |
-| cargo test -p cys-app --bins --test-threads=1(CI 와 같은 준비) | 337 passed · 0 failed |
-| 건강성 전체 | 167 PASS · 2 FAIL · 1 SKIP — 적 H-CLT-1·2 = 기존(wintask HANDOFF 게이트 줄과 같음 · 개발 맥 CLT 있음·설치본 경로 해소 차이) |
-| 팩 py 전수 199 | 1차 적 7 = 환경 6(`JAVIS_ROOT`·`CYS_PROBE_RUNS` 미설정 2 · macOS 임시 경로 별칭 3 · `CYS_AGORA_ZIP_DIR` 미지정 1) + c6 1 · 환경 맞춰 재실행 = 6건 OK · **남은 적 = c6 1건(아래)** |
+| 게이트 | 6690f9a8(1차) | dc9f1de7 |
+|---|---|---|
+| version-check · lane strict · lane self-test | rc 0 | rc 0 |
+| scan-pack-secrets · secret-scan --all · H-SECRET-1 | rc 0 | rc 0(1895파일 clean) |
+| test_release_trigger_split(draft-guard · test_24 포함) | — | 17 OK |
+| ui bun test · tsc · win-typecheck | 3307 pass · 0 fail · rc 0 · rc 0 | 같음(0 fail · rc 0 · rc 0) |
+| F1 `f1_cycle_idle_reads_physical_rows_of_a_wrapped_composer`(cys) | — | 1 passed |
+| F2 `list_maps_a_live_and_a_dead_producer_pid_to_running_and_interrupted`(cysd) | — | 1 passed |
+| cargo --lib | 1133/0 | 1133/0 |
+| cargo --bin cys | 735/0 | 736/0(`--test-threads=1` = CI 형식 · F1 시험 1 추가분) |
+| cargo --bin cysd 직렬 | 3222/0 | 3222/0 |
+| cargo -p cys-app --bins 직렬 | 337/0 | 337/0 |
+| 건강성 전체 | 167/2/1 | 167/2/1 · 적 ID·사유 1차와 diff 0 = H-CLT-1·2(이 맥 설치본 경로 · wintask HANDOFF 기록과 같음) |
+| 팩 py 전수 199 | 환경 맞춘 뒤 c6 1 | 196 녹 · 적 3 = 환경 2(TMPDIR 을 홈 아래로 옮긴 탓 · 기본 TMPDIR 재실행 OK) + test_hook_r34(시간 경계 플레이크 · 부하 12 에서 2회 중 1회 · 1.1.10 통합 때도 기록) |
+| 태그 레인 phoenix 27종 | c6 적 | 27 녹(c6 = 수리 시험 67cd1370 1/1 · 분포는 아래) |
 
-### ⚠태그 레인 전용 시험 적 — `test_phoenix_c6_reap.py`
+- caeaab38 CI 적 2건 정체: windows-build secret-scan 2 = HANDOFF 2파일 개인 경로(int-winq2:25 · test-hygiene:38) · ci-branch boot-health-full = **H-SECRET-1 1건**(런 39834404344 · pass 167 fail 1 · 같은 뿌리) → rel 쪽은 26759e7b 에서 이미 고쳐져 dc9f1de7 = 0건 · 추가 수리 커밋 불필요. H-CLT-1·2 와는 다른 실패다.
+- cargo --bin cys 를 `--test-threads=1` 없이 돌리면 `a3_strip_hook_digits…` 가 기본 2MB 스택을 넘친다(dc9f1de7 3/3 · 4MB 이상 통과 · wintask HANDOFF 기록과 같은 시험) · CI·태그 레인 형식(`--test-threads=1`)은 통과.
+
+### 태그 레인 시험 `test_phoenix_c6_reap.py` — 수리 진행(TICKET=cysr-1111-c6-reap · 재개 예정)
 
 | 대상 | 결과 |
 |---|---|
-| 6690f9a8 | 4/4 적 · line 147 `queue.list` 의 `restored` 대기 8초 초과 |
-| 459d0cca(병합 전) | 2/2 적 · 같은 줄 → **이번 v1.1.10 병합 회귀 아님** |
-| bad42c73(0.14.52 편입 병합) | 1/1 적 · 같은 줄 |
-| 원작자 v0.14.52 | 1/1 **통과** |
-| 공개 v1.1.10 트리 | 2/2 적이나 이유가 다르다 — 옛 판 시험 · 격리 데몬 15.1초 미응답(별건) · 직접 비교 불가 |
-| 6690f9a8 + 임시 사본에서 line 147 한 줄 제거 | 2/3 통과 · 1회 line 168(새 좌석 재배치 8초 대기) 적 |
+| 459d0cca · bad42c73 · 6690f9a8 원 시험 | 적 7/7 · line 147(`restored` 대기) |
+| 원작자 v0.14.52 원 시험 | 13/13 통과(대조군 12 + 1) |
+| 수리 시험(67cd1370 · 병렬 3묶음) | 9/12 · 적 3 = 전부 line 150(데몬 첫 응답 30초) · 묶음 B 와 같은 초에 동시 발생 |
+| 주차 대기 없는 변형(묶음 B · 병렬) | 9/12 · 같은 line 150 · 통과 9회 전부 순서 = queue.parked → surface.exited → 새 좌석 → queue.inherited · line 168 재현 0 |
 
-판독(확신 Med-High): 시험은 원작자 전제(역할 좌석 종료 → `restored_queue`)를 기다리는데 우리 포크는 1.1.5 D7⑵ 부터 역할 좌석 큐를 `parked_queues` 로 주차하고 `claim_role` 이 상속한다(`src/bin/cysd/governance.rs:34783` 주석 · `handlers.rs:905`). 0.14.52 편입이 시험을 들여오며 만난 차이다. 브랜치 CI 는 이 시험을 안 돌린다(`.github/workflows/release.yml:444` 글롭 `test_phoenix_*.py` · macOS arm64 레그 · `set -euo pipefail` → 태그 레인 적). line 168 1회 적의 원인은 미규명. 처분 = master(시험 수정 · 태그 전).
-
+판독: line 147 = 원작자 전제(`restored_queue`) ↔ 우리 D7⑵ 주차(`state.rs:8379` 주석 · 잠정 판정 S1). 수리 = 단언을 `queue.parked` + `queue.inherited` 로 교체. line 168 1회 적 = 미재현 · 후보 = `state.rs:8362` exited 표시 뒤 최대 1초 주차 지연(제품 경합 가능성 · 미입증). line 150 = 병렬 산물 후보 · 직렬 분포 대기.
 
 ## J. 1.1.12 BACKLOG(이 준비에서 나온 것)
 
 - [ ] **int 가지가 발행 태그를 조상으로 갖는지 게이트** — `scripts/pre-tag-ci-check.py` 에 is-ancestor 검사(최신 공개 태그 ∧ origin/main 이 태그 후보의 조상이 아니면 태그 금지 · master#e9af822d). 근거 = §H · L15.
 - [ ] 태그 레인 전용 시험(`test_phoenix_*.py`)을 태그 전에 돌리는 길 — 브랜치 CI 또는 pre-tag 수동 줄(L19).
+- [ ] **수용된 가지 편입 원장** — 수용 ≠ 편입 · 태그 전 수용 가지 전수 is-ancestor 검사(master#8fd148bb · fix/1111-backlog-misc·fix/1111-fable-fixes 실증).
+- [ ] 통합 검토 이월 = `~/cys-terminal-src-wt/1111-adv4/ADV4-FINDINGS.md`(0c8b5ab2) major M3·M4(실기 결과에 따라)·M6~M13 · minor N1~N10 · X1~X3.
 - [ ] 판번 검사(`version-check.sh`)가 `docs/index.html` 을 보지 않는다(L14).
 - [ ] (윈 실기 이월 · TODO:83) `\cysd` 재등록이 LeastPrivilege 로 RunLevel Highest 를 덮음 · preflight --fix 가 `~/.claude/settings.json` 을 백업 없이 고침 · ConPTY 꽉 찬 줄 composer 사람 눈 1회 · self-update-check 새 데몬 뒤 첫 발화.
 - [ ] (통합표) `d7_prime_seat_cache_never_overwrites_a_tick_value` 상한 5초 플레이크.

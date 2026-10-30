@@ -2466,7 +2466,9 @@ fn producer_mark_state(p: &Path, alive: &dyn Fn(u32, &str) -> Option<bool>) -> P
 /// 삭제 가능" 경로가 영구히 사라진다(토큰이 실린 모든 표식이 '살아 있음'이 되므로). 그래서 **주석을
 /// 코드에 맞췄다.** 남는 한계는 정직하게 적는다: **pid 재사용**은 '살아 있다'로 오판될 수 있고,
 /// 그 오판의 방향은 거부(안전)다. 세 writer 는 토큰을 기록만 해 둔다(나중에 대조할 수 있게).
-/// 윈도우에서는 `kill(0)` 이 없어 판정 불가다(★윈도우에서 다르게 도는 자리 3).
+/// 윈도우에서는 `kill(0)` 대신 [`crate::state::pid_alive`](OpenProcess + 0ms 대기)로 잰다(★윈도우에서 다르게
+/// 도는 자리 3 · 1.1.11 F2 — 종전 `None` 은 「open + 죽은 pid」 항목을 윈에서 영구 `판정 불가`로 막아 「크기 미리 보기」가
+/// 영영 안 나왔다). 그 함수의 방향 = 접근 거부·대기 실패는 「있다」, 그 밖의 열기 실패는 「없다」.
 pub fn real_alive(pid: u32, _start_token: &str) -> Option<bool> {
     if pid == 0 {
         return None;
@@ -2486,7 +2488,7 @@ pub fn real_alive(pid: u32, _start_token: &str) -> Option<bool> {
     }
     #[cfg(not(unix))]
     {
-        None
+        Some(crate::state::pid_alive(pid))
     }
 }
 
@@ -2868,9 +2870,8 @@ mod tests {
     /// ★성찰 A-1 의 수정: 같은 줄의 `producer_chip` 과 `deletable` 은 **한 번의 판독**에서 나와야
     /// 서로 모순될 수 없다 — 아래의 **불변식**이 그 일치를 잠근다(막는 표지 ⇒ 고를 수 없다).
     /// ★S68 ②: 살아 있는 pid / 죽은 pid 의 **리터럴 매핑은 이 검체가 더 이상 주장하지 않는다** —
-    /// non-unix 에서 `real_alive` 가 모든 pid 에 `None` 을 돌려 성립하지 않기 때문이다(D2).
-    /// 그 리터럴은 바로 아래 `list_maps_a_live_and_a_dead_producer_pid_to_running_and_interrupted_unix`
-    /// (`#[cfg(unix)]`)가 지킨다.
+    /// 그 리터럴은 바로 아래 `list_maps_a_live_and_a_dead_producer_pid_to_running_and_interrupted`
+    /// 가 지킨다(1.1.11 F2 로 D2 가 고쳐져 전 플랫폼).
     #[test]
     fn list_hides_dot_files_and_never_contradicts_itself_about_the_producer() {
         let root = rig("dotfiles");
@@ -2915,9 +2916,8 @@ mod tests {
         let g = ents.iter().find(|e| e["name"] == "dept-9-1760000000").unwrap();
         assert_eq!(g["children_depth1"].as_array().unwrap()[0], "state");
         // (2) ★같은 줄이 스스로를 반박하지 않는다 — **막는 표지**(돌고 있다·판정 불가)이면서
-        //     고를 수 있는 줄은 있을 수 없다. 리터럴 두 개가 아니라 **불변식**으로 적는다:
-        //     윈도우에서는 생산자 생존이 `None`(판정 불가)이라 리터럴 쪽이 구조적으로 성립하지 않는다
-        //     (D2 · S68 ②) — 그 리터럴은 아래 `#[cfg(unix)]` 절반이 지킨다.
+        //     고를 수 있는 줄은 있을 수 없다. 리터럴 두 개가 아니라 **불변식**으로 적는다
+        //     (S68 ②) — 그 리터럴은 아래 pid 매핑 절반이 지킨다.
         let mut blocking_rows = 0usize;
         for e in ents {
             let chip = e["producer_chip"].as_str().unwrap();
@@ -2934,8 +2934,7 @@ mod tests {
         // ★불변식이 **공허하지 않음**을 같은 자리에서 단언한다(이 묶음의 추가분 · 리그 probe 에는
         //   없었다): 막는 표지가 한 줄도 없으면 위 루프는 무엇도 거부할 수 없고, 표식 쓰기가
         //   조용히 깨진 날에도 초록이 난다. 거부할 수 없는 게이트는 게이트가 아니다.
-        //   살아 있는 pid 는 unix 에서 `돌고 있다`·non-unix 에서 `판정 불가`이고 **둘 다 막는 표지**라
-        //   이 단언은 전 플랫폼에서 성립한다.
+        //   살아 있는 pid 는 `돌고 있다`(막는 표지)라 이 단언은 전 플랫폼에서 성립한다.
         assert!(
             blocking_rows >= 1,
             "막는 표지가 한 줄도 없다 = 위 불변식이 공허하다(표식 픽스처가 깨졌는지 보라)"
@@ -2952,13 +2951,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// ★S68 ② 의 분할된 절반 — **pid 생존 매핑**은 unix 에서만 성립한다. `real_alive` 가
-    /// non-unix 에서 **모든 pid 에 `None`** 을 돌려 표지가 `판정 불가`가 되기 때문이다(D2).
-    /// 이름이 그 사실을 말한다 — 위 크로스플랫폼 절반은 pid 매핑을 약속하지 않는다.
-    /// ★D2 가 고쳐지면 이 절반은 `cfg` 없이 전 플랫폼으로 돌아온다(그것이 진짜 수리다).
-    #[cfg(unix)]
+    /// ★S68 ② 의 분할된 절반 — **pid 생존 매핑**. 종전엔 `real_alive` 가 non-unix 에서 **모든 pid 에 `None`**
+    /// 을 돌려(D2) `#[cfg(unix)]` 였다. ★(1.1.11 · cysr-1111-fable-fixes F2) D2 를 고쳐 `cfg` 없이 전 플랫폼으로
+    /// 돌아왔다 — 윈 「크기 미리 보기」가 「open + 죽은 pid」 항목을 `판정 불가`로 영구 거부하던 원인이다.
     #[test]
-    fn list_maps_a_live_and_a_dead_producer_pid_to_running_and_interrupted_unix() {
+    fn list_maps_a_live_and_a_dead_producer_pid_to_running_and_interrupted() {
         let root = rig("dotfiles-unix");
         let state = root.join("sd");
         std::fs::create_dir_all(&state).unwrap();
@@ -2988,6 +2985,11 @@ mod tests {
         assert_eq!(d["producer_chip"], producer_chip(&ProducerState::InterruptedOpen));
         assert_eq!(d["deletable"], true, "끝내지 못한 생산자는 타이핑 확인 뒤 지울 수 있다");
         assert_eq!(d["children_depth1"].as_array().unwrap().len(), 1);
+        // 윈 분기 핀 — 맥 빌드는 윈 분기를 컴파일하지 않으므로 본문으로 잠근다(판정 불가 `None` 회귀 금지).
+        let src = include_str!("trash.rs");
+        let body = &src[src.find("pub fn real_alive(").unwrap()..src.find("pub fn producer_blocks(").unwrap()];
+        let win = &body[body.find("#[cfg(not(unix))]").expect("윈 분기")..];
+        assert!(win.contains("Some(crate::state::pid_alive(pid))"), "윈 생존 판정이 pid_alive 가 아니다(D2 회귀)");
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -328,9 +328,13 @@ mk "$N11/outside/keep/LICENSE" 'outside'
 ln -s "$(cd "$N11/outside" && pwd)/keep" "$N11/inst2/$SP/pip-26.2.0.dist-info"
 mkdir -p "$N11/inst2/$SP/pip-25.0.dist-info"; ln -s "$(cd "$N11/outside" && pwd)/keep" "$N11/inst2/$SP/pip-25.0.dist-info/inner"
 mkdir -p "$N11/inst3"; cp -R "$N11/inst/." "$N11/inst3/"; rm -f "$N11/inst3/runtime-manifest.json"
+# (1.1.11 · cysr-1111-fable-fixes F4b) the same prune under ConstrainedLanguage (AppLocker/WDAC run %TEMP% scripts there):
+# a static .NET call ([IO.File]::ReadAllText) or a non-core method (DirectoryInfo.GetFileSystemInfos) stops it = prune 0.
+mkdir -p "$N11/inst4"; cp -R "$N11/inst/." "$N11/inst4/"
 "$PWSH" -NoProfile -File "$PRUNE" "$N11/inst"  > "$N11/out1.log" 2>&1 || true
 "$PWSH" -NoProfile -File "$PRUNE" "$N11/inst2" > "$N11/out2.log" 2>&1 || true
 "$PWSH" -NoProfile -File "$PRUNE" "$N11/inst3" > "$N11/out3.log" 2>&1 || true
+"$PWSH" -NoProfile -Command "\$ExecutionContext.SessionState.LanguageMode='ConstrainedLanguage'; if (\$ExecutionContext.SessionState.LanguageMode -ne 'ConstrainedLanguage') { exit 9 }; & '$PRUNE' '$N11/inst4'" > "$N11/out4.log" 2>&1 || true
 n11_after=$(n11_seal)
 n11_bad=""
 [ "$n11_before" = "1" ] || n11_bad="$n11_bad residue-not-seen-by-seal(rc=$n11_before)"
@@ -348,11 +352,13 @@ n11_bad=""
 [ -e "$N11/inst3/$SP/pip-26.2.2.dist-info/METADATA" ] || n11_bad="$n11_bad pruned-without-manifest"
 grep -q '^cys-runtime-prune: skipped (no runtime-manifest.json' "$N11/out3.log" || n11_bad="$n11_bad no-manifest-not-a-deliberate-skip"
 grep -q 'cys-runtime-prune: stale-dist-info removed=3 failed=0' "$N11/out1.log" || n11_bad="$n11_bad summary-line($(tail -1 "$N11/out1.log"))"
+grep -q 'cys-runtime-prune: stale-dist-info removed=3 failed=0' "$N11/out4.log" || n11_bad="$n11_bad constrained-language-summary($(tail -1 "$N11/out4.log"))"
+[ -e "$N11/inst4/$SP/pip-26.2.2.dist-info" ] && n11_bad="$n11_bad constrained-language-residue-kept"
 if [ -n "$n11_bad" ]; then
   echo "FAIL[N11]: stale dist-info prune contract broken:$n11_bad" >&2
   exit 1
 fi
-echo "nsis-hook-compile: N11 OK (prune wired after cys_post_ok; seal FAIL with residue → PASS after prune; user dist-info · package code · links kept; no manifest = no-op)"
+echo "nsis-hook-compile: N11 OK (prune wired after cys_post_ok; seal FAIL with residue → PASS after prune; user dist-info · package code · links kept; no manifest = no-op; ConstrainedLanguage removed=3)"
 
 # ── re-verify the positive with restored inputs (negatives must leave no residue) ──
 "$MAKENSIS" -V2 -WX -INPUTCHARSET UTF8 harness.nsi >/dev/null

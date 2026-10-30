@@ -1958,10 +1958,12 @@ fn cycle_target_observation(
     // ★(라운드3) 장수 좌석 = Site::Reinject — judge 와 같은 생애 창을 건다(전사된 문면은 역사다).
     let gate_or_modal = screen_text
         .is_some_and(|t| cys::readiness::gate_or_modal_foreground(t, gates, marker));
+    // ★(1.1.11 · F1 · WINQ-2 동형 ⓑ) 마커 해소·편집 영역 판정은 물리 행 재료로([`carry_layout`]) — 관문·모달 판독은 `text` 그대로.
+    let layout = screen.as_ref().zip(screen_text).map(|(r, t)| carry_layout(r, t));
     let resolved_marker =
-        screen_text.and_then(|text| cys::agent_markers::pick_marker_leading_on_screen(marker, text));
+        layout.and_then(|text| cys::agent_markers::pick_marker_leading_on_screen(marker, text));
     let state = cycle_target_state(&CycleTargetObs {
-        screen: screen_text,
+        screen: layout,
         gate_or_modal,
         quiet: cys::readiness::idle_quiet_from(
             screen.as_ref().and_then(|r| r["quiet_secs"].as_f64()),
@@ -47202,6 +47204,38 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         assert!(draft < failure, "세 번째 RPC 실패에도 사람 초안을 먼저 보호해야 한다");
         assert!(body[draft..failure].contains("return Err(format!("));
         assert!(body[draft..failure].contains("CYCLE_HUMAN_DRAFT_TOKEN"));
+    }
+
+    /// ★(1.1.11 · cysr-1111-fable-fixes F1 · WINQ-2 동형 ⓑ) 윈 fullscreen 좌석 — 꽉 찬 괘선 뒤 composer 가 이어 붙은
+    /// `text`(`────…❯ …` 한 줄)로 순환 유휴를 판정하면 두 방향으로 틀린다: ⓐ 앞 전사의 선두 `❯` 행(지난 지시)이 마커 행으로
+    /// 잡혀 초안으로 읽힘 = 빈 composer 인데 영구 보류 ⓑ 계수 0/0 인 화면 초안이 마커 없음 축으로 유휴 = 초안 위 clear.
+    /// 마커 해소·편집 영역 판정은 물리 행 재료(`layout_text`)로, 관문·모달 판독은 `text` 그대로다.
+    #[test]
+    fn f1_cycle_idle_reads_physical_rows_of_a_wrapped_composer() {
+        let rule = "─".repeat(80);
+        let marker = vec!["❯".to_string()];
+        let counted_zero = || Ok(json!({"pending_input_bytes": 0, "pending_input_human_bytes": 0}));
+        let observe = |text: String, layout: Option<String>| {
+            let mut r = json!({"text": text, "quiet_secs": 60.0});
+            if let Some(l) = layout {
+                r["layout_text"] = json!(l);
+            }
+            cycle_target_observation(Ok(r), counted_zero(), &marker, None, &[]).state
+        };
+        // ⓐ = 앞 전사에 선두 `❯` 행이 있는 빈 composer · ⓑ = 선두 `❯` 행이 없는 화면의 초안.
+        for (prior, draft, want) in [
+            ("❯ 지난 지시 문면\n\n● 처리 완료.\n", "", CycleTargetState::Idle),
+            ("● 처리 완료.\n", "사람이 치던 초안", CycleTargetState::HumanDraft),
+        ] {
+            let text = format!("{prior}{rule}❯ {draft}\n{rule}  ? for shortcuts\n");
+            let layout = format!("{prior}{rule}\n❯ {draft}\n{rule}\n  ? for shortcuts\n");
+            assert_eq!(observe(layout.clone(), None), want, "검체 전제 붕괴 — 물리 행 화면 자체의 판정이 다르다");
+            assert_eq!(observe(text.clone(), Some(layout)), want, "순환 유휴 판정이 물리 행 재료(layout_text)를 쓰지 않는다 · 초안={draft:?}");
+            assert_ne!(observe(text.clone(), None), want, "검체 전제 붕괴 — 이어 붙인 화면에서도 맞게 판정된다(윈 증상을 재지 못한다)");
+        }
+        let body = strip_line_comments(refl_fn_body(include_str!("cys.rs"), "cycle_target_observation"));
+        assert!(body.contains("gate_or_modal_foreground(t, gates, marker)"), "관문·모달 판독 재료가 바뀌었다");
+        assert!(body.contains("carry_layout(r, t)"), "물리 행 재료를 뽑지 않는다");
     }
 
     #[test]

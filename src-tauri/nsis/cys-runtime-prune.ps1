@@ -22,6 +22,7 @@
 # Output: one summary line (logged by nsExec::ExecToLog). Exit 0 always except bad arguments (2) -
 # the installer result does not depend on it; leftovers stay visible to the seal.
 # This file must stay pure ASCII: Windows PowerShell 5.1 reads a BOM-less script in the ANSI code page.
+# It must also run under ConstrainedLanguage: cmdlets, core types ([string] [regex]) and properties only.
 param([string]$Root)
 $ErrorActionPreference = 'Stop'
 if ([string]::IsNullOrEmpty($Root)) { Write-Output 'cys-runtime-prune: no install root given'; exit 2 }
@@ -38,9 +39,10 @@ function Get-DistKey([string]$DirName) {
 function Test-HasReparse([IO.DirectoryInfo]$Dir) {
   # own walk, never through a link (5.1 Get-ChildItem -Recurse / Remove-Item -Recurse may follow junctions)
   if ($Dir.Attributes -band [IO.FileAttributes]::ReparsePoint) { return $true }
-  foreach ($e in $Dir.GetFileSystemInfos()) {
+  # Get-ChildItem without -Recurse lists one level only (a cmdlet: ConstrainedLanguage blocks DirectoryInfo methods)
+  foreach ($e in @(Get-ChildItem -LiteralPath $Dir.FullName -Force)) {
     if ($e.Attributes -band [IO.FileAttributes]::ReparsePoint) { return $true }
-    if ($e -is [IO.DirectoryInfo] -and (Test-HasReparse $e)) { return $true }
+    if ($e.PSIsContainer -and (Test-HasReparse $e)) { return $true }
   }
   return $false
 }
@@ -54,7 +56,8 @@ try {
     Write-Output 'cys-runtime-prune: skipped (no runtime-manifest.json or no runtime folder)'
     exit 0
   }
-  $text = [IO.File]::ReadAllText($man)
+  # a cmdlet, not [IO.File]::ReadAllText: ConstrainedLanguage (AppLocker/WDAC) blocks static .NET calls outside core types
+  $text = Get-Content -LiteralPath $man -Raw
   # shipped[parent lowercased] = @{ path = parent as written ; keys = dist names ; dirs = dist-info folder names }
   $shipped = @{}
   foreach ($m in [regex]::Matches($text, '"((?:[^"/\\]+/)*)([^"/\\]+\.dist-info)/')) {

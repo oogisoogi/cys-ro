@@ -445,11 +445,11 @@ node's self-approval. Repeated-risk commands are passed by signing once with
 - `cysr send --queued` = **followup**: delivered one item per beat once the target has
   been quiet for 3+ seconds.
 
-## Getting new versions — auto update (1.1.8+)
+## Getting new versions
 
-cysr updates itself while it is idle (plugged in, or battery above half). To turn this off, tell Jarvis "turn off auto update". To update right away, paste the one-line install link again.
+This release does not update itself. On Windows and Mac, paste the one-line install you first used. Your work and login stay as they are.
 
-The result is shown as one notice line the next time you open the app window. If a "disk has the new version, process is
+If a "disk has the new version, process is
 the old daemon" skew remains after reinstall, it resolves via a badge-click handover or
 idle auto-handover (when there are 0 live sessions — lossless). Diagnose/repair with
 `cysr doctor [--fix]`; self-diagnose the installed build's code-signing seal with

@@ -383,10 +383,10 @@ describe("공개 문서(README 링크 전부 + 다운로드 페이지) — 현�
     }
   });
   it("도움말 1줄(설계 §5-4)이 한국어 문서 셋에 그대로 있다", () => {
-    const line = "새 판은 자비스가 쉬는 시간에 알아서 받아 둡니다(어댑터가 꽂혀 있거나 배터리가 절반 넘게 남았을 때).";
+    const line = "이번 판은 자동으로 바뀌지 않습니다. 윈도우와 맥 모두 처음 설치하실 때 쓴 한 줄을 다시 붙여 넣어 주세요. 하던 일과 로그인은 그대로 남습니다.";
     for (const d of ["../../README.md", "../../USER-MANUAL.md"]) expect({ d, 있음: read(d).includes(line) }).toEqual({ d, 있음: true });
     expect(read("../../docs/index.html").includes(line)).toBe(true);
-    expect(read("../../README.en.md").includes("cysr updates itself while it is idle (plugged in, or battery above half).")).toBe(true);
+    expect(read("../../README.en.md").includes("This release does not update itself. On Windows and Mac, paste the one-line install you first used. Your work and login stay as they are.")).toBe(true);
   });
   it("수집기 반례 5종(codex 최종 MINOR-1) — 폴더 링크·참조식·HTML·제목 달린 링크·괄호 든 파일명 · 꺾쇠형 · 외부/앵커 제외", () => {
     const md = [

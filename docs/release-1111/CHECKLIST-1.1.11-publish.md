@@ -329,7 +329,7 @@
 | 판 범위 | v1.1.8·1.1.9·1.1.10·060cb75b 동일(세 파일 diff 0) → 이미 깔린 판은 1.1.11 을 자동으로 못 받는다 · 1.1.11 도 같은 코드 |
 | 한계 | VM 에 후보 판이 없어 지금 decision = uptodate(hold 는 코드 판정 · 게이트 보류는 실측) · `schedule.json` 을 손으로 고친 기기는 예외일 수 있다 · 자동 갱신이 일어난 기록은 못 찾았다(일어나지 않았다는 증명은 아님) |
 
-**이미 나간 문장(1.1.10 까지 · 정정 판단 = master)**: 라이브 `/notice/2026-10-23/` · 대문 「자비스가 쉬는 시간에 새 판을 알아서 받습니다」 · 대문·`/get/` 「1.1.8이나 1.1.9를 쓰고 계시면 … 알아서 받아 둡니다」 · 공지 목록 제목 「자비스 새 판 1.1.8 · 다음 판부터는 자비스가 알아서 받습니다」 · v1.1.10 GitHub 본문 「1.1.8 이상은 … 알아서 받고」 · 저장소 `README.md:464` · `USER-MANUAL.md:1454·1457` · `docs/index.html:62`(이 셋은 rel/1.1.11 에도 있다 · 이 티켓에서 안 고침).
+**이미 나간 문장(1.1.10 까지 · 정정 판단 = master)**: 라이브 `/notice/2026-10-23/` · 대문 「자비스가 쉬는 시간에 새 판을 알아서 받습니다」 · 대문·`/get/` 「1.1.8이나 1.1.9를 쓰고 계시면 … 알아서 받아 둡니다」 · 공지 목록 제목 「자비스 새 판 1.1.8 · 다음 판부터는 자비스가 알아서 받습니다」 · v1.1.10 GitHub 본문 「1.1.8 이상은 … 알아서 받고」 · 저장소 README·USER-MANUAL·`docs/index.html` 은 태그 전에 고쳤다(master#c8df5271 · README.en·ARCHITECTURE·RELEASE·`publicdocs.test.ts` 고정값 포함 · 다음 판에서 게이트를 고치면 되돌린다) · 옛 공지 = 그대로 · 대문·`/get/` = 4-2 ⑧ · `release.yml:1326` = 3-2 교체(다음 판에서 수리).
 
 **VM `jarvis-observe-1111`**(새 복제본 · 공개 1.1.10 · sha·CDHash 핀 일치 · 로그인 0 · 자격증명 복사 0 · 앱 켜 둠 · 접속 admin 기본 계정): 점검 경로는 로그인 없이 돈다 — `self-update --auto --spawn` rc 0 · 러너 사본 기동 · 복구기 LaunchAgent 등록(N14 통과) · 주기 = 6시간 + 지터 0~45분 · `src/update/auto.rs`·`check.rs`·`gates.rs`·`feed.rs` 에 로그인 참조 0.
 잡 자가 발화 기록 = `self-update-check` last_fired 1793400048(07:40:48 KST · 손 실행 07:42 보다 앞) · ⚠result 칸은 빈 값이라 그 발화가 끝까지 돌았는지는 미확인 · 손 실행 뒤 러너 종료 · `state.json` = `{}`(후보 없음).
@@ -366,7 +366,7 @@ python3 -c "import runpy,subprocess,sys,urllib.request as u;t=subprocess.check_o
 
 ## J. 1.1.12 BACKLOG(이 준비에서 나온 것)
 
-- [ ] ★**첫 항목 — 자동 갱신 게이트 수리 + 실기**: `may_fire_within` 주기 잡 판정 · 내장 잡 `bulk`·`publish` 표식 · `agora-counsel` publish 판정 + **S4 이후 전 구간 실기(맥 VM·윈)** — 이 경로는 공개 기기에서 한 번도 돈 기록이 없다 · 근거 전문 = 인박스 155275줄(2026-10-31T07:42:16+0900 · worker-relprep) · §K-7 · 공개 문장 `README.md:464`·`USER-MANUAL.md:1454·1457`·`docs/index.html:62`·release.yml:1326 을 함께 맞춘다.
+- [ ] ★**첫 항목 — 자동 갱신 게이트 수리 + 실기**: `may_fire_within` 주기 잡 판정 · 내장 잡 `bulk`·`publish` 표식 · `agora-counsel` publish 판정 + **S4 이후 전 구간 실기(맥 VM·윈)** — 이 경로는 공개 기기에서 한 번도 돈 기록이 없다 · 근거 전문 = 인박스 155275줄(2026-10-31T07:42:16+0900 · worker-relprep) · §K-7 · 수리 뒤 공개 문장을 다시 맞춘다: README(한/영) 「새 판 받기」 · `USER-MANUAL.md` §11 · `docs/index.html` 안내 · `ui/src/publicdocs.test.ts` 도움말 고정값 · release.yml:1326(이번 판에서 뺀 줄 포함 · 커밋 이력 참조).
 - [ ] **int 가지가 발행 태그를 조상으로 갖는지 게이트** — `scripts/pre-tag-ci-check.py` 에 is-ancestor 검사(최신 공개 태그 ∧ origin/main 이 태그 후보의 조상이 아니면 태그 금지 · master#e9af822d). 근거 = §H · L15.
 - [ ] 태그 레인 전용 시험(`test_phoenix_*.py`)을 태그 전에 돌리는 길 — 브랜치 CI 또는 pre-tag 수동 줄(L19).
 - [ ] **수용된 가지 편입 원장** — 수용 ≠ 편입 · 태그 전 수용 가지 전수 is-ancestor 검사(master#8fd148bb · fix/1111-backlog-misc·fix/1111-fable-fixes 실증).

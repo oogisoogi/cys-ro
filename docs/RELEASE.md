@@ -433,7 +433,7 @@ bash scripts/check-no-ioreport-link.sh <cysd 바이너리 경로>
 - [ ] **★Windows 자동 갱신 실기 — 상태 정본 = `docs/update/U2-FIELD-TESTS.md`(윈 W1~W4) · `docs/update/WIN-NSIS-0A-FIELD.md`(8 시나리오 「결과」 칸) (1.1.8~)**
       0.14.43 에서 이 자리에 있던 행(앱 안 [본체 패치 설치] 단추로 받는 동안 시도 기록 파일의 `at` 을 설치 파일이 뜬 시각으로 다시 쓰는 동작 ·
       릴리스 노트 0.14.43 §13-4)은 **대상이 1.1.8 에서 없어졌다** — 그 단추와 시도 기록 파일은 삭제됐다(옛 판이 남긴 기록 파일은 완전 초기화가
-      격리할 뿐이다 · `src/factory_reset.rs`). 지금 윈도우의 새 판은 데몬이 쉬는 시간에 받는다: 자동 갱신 집행(`cysr self-update` · `src/update/auto.rs`)이
+      격리할 뿐이다 · `src/factory_reset.rs`). 지금 윈도우의 새 판은 설계상 데몬이 받는다(⚠1.1.11 까지 기본 설치는 게이트 N4·N5 상시 보류 · 체크리스트 1.1.11 §K-7): 자동 갱신 집행(`cysr self-update` · `src/update/auto.rs`)이
       설치기를 `/S /P /UPDATE /CYSTXN=<txn>:<epoch> /D=<설치 폴더>` 로 실행하고(`src/update/win_install.rs`), 결과는 갱신 상태 폴더 `state.json` 의
       `last_result` 에 남아 앱이 1줄로 알린다(`src/update/notify.rs`). 갱신 뒤 첫 앱 기동에서는 판 스탬프가 달라졌으므로 `decide_pending_update` 가
       팩 반영과 좌석 복원을 돈다(`src-tauri/src/main.rs`). 실기 확인은 위 두 문서의 판정 기준을 따르고, PASS 기록 전까지 이 행은 닫지 않는다.

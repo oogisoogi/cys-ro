@@ -228,16 +228,17 @@
 - caeaab38 CI 적 2건 정체: windows-build secret-scan 2 = HANDOFF 2파일 개인 경로(int-winq2:25 · test-hygiene:38) · ci-branch boot-health-full = **H-SECRET-1 1건**(런 39834404344 · pass 167 fail 1 · 같은 뿌리) → rel 쪽은 26759e7b 에서 이미 고쳐져 dc9f1de7 = 0건 · 추가 수리 커밋 불필요. H-CLT-1·2 와는 다른 실패다.
 - cargo --bin cys 를 `--test-threads=1` 없이 돌리면 `a3_strip_hook_digits…` 가 기본 2MB 스택을 넘친다(dc9f1de7 3/3 · 4MB 이상 통과 · wintask HANDOFF 기록과 같은 시험) · CI·태그 레인 형식(`--test-threads=1`)은 통과.
 
-### 태그 레인 시험 `test_phoenix_c6_reap.py` — 수리 진행(TICKET=cysr-1111-c6-reap · 재개 예정)
+### 태그 레인 시험 `test_phoenix_c6_reap.py` — 수리 끝(TICKET=cysr-1111-c6-reap)
 
 | 대상 | 결과 |
 |---|---|
 | 459d0cca · bad42c73 · 6690f9a8 원 시험 | 적 7/7 · line 147(`restored` 대기) |
 | 원작자 v0.14.52 원 시험 | 13/13 통과(대조군 12 + 1) |
 | 수리 시험(67cd1370 · 병렬 3묶음) | 9/12 · 적 3 = 전부 line 150(데몬 첫 응답 30초) · 묶음 B 와 같은 초에 동시 발생 |
+| **수리 시험 직렬(10-31 00:0x)** | **13/13 통과**(36~48초) → line 150 = 병렬 산물 |
 | 주차 대기 없는 변형(묶음 B · 병렬) | 9/12 · 같은 line 150 · 통과 9회 전부 순서 = queue.parked → surface.exited → 새 좌석 → queue.inherited · line 168 재현 0 |
 
-판독: line 147 = 원작자 전제(`restored_queue`) ↔ 우리 D7⑵ 주차(`state.rs:8379` 주석 · 잠정 판정 S1). 수리 = 단언을 `queue.parked` + `queue.inherited` 로 교체. line 168 1회 적 = 미재현 · 후보 = `state.rs:8362` exited 표시 뒤 최대 1초 주차 지연(제품 경합 가능성 · 미입증). line 150 = 병렬 산물 후보 · 직렬 분포 대기.
+판독: line 147 = 원작자 전제(`restored_queue`) ↔ 우리 D7⑵ 주차(`state.rs:8379` 주석 · 잠정 판정 S1). 수리 = 단언을 `queue.parked` + `queue.inherited` 로 교체. line 168 1회 적 = 미재현 · 후보 = `state.rs:8362` exited 표시 뒤 최대 1초 주차 지연(제품 경합 가능성 · 미입증). line 150 = 병렬 산물(직렬 13/13 · 두 묶음 동시 발생). 태그 전 1-2c 로 최종 머리에서 phoenix 전건 재확인.
 
 ## J. 1.1.12 BACKLOG(이 준비에서 나온 것)
 
@@ -245,6 +246,7 @@
 - [ ] 태그 레인 전용 시험(`test_phoenix_*.py`)을 태그 전에 돌리는 길 — 브랜치 CI 또는 pre-tag 수동 줄(L19).
 - [ ] **수용된 가지 편입 원장** — 수용 ≠ 편입 · 태그 전 수용 가지 전수 is-ancestor 검사(master#8fd148bb · fix/1111-backlog-misc·fix/1111-fable-fixes 실증).
 - [ ] 통합 검토 이월 = `~/cys-terminal-src-wt/1111-adv4/ADV4-FINDINGS.md`(0c8b5ab2) major M3·M4(실기 결과에 따라)·M6~M13 · minor N1~N10 · X1~X3.
+- [ ] `cargo test --bin cys`(--test-threads=1 없이) `a3_strip_hook_digits…` 기본 2MB 스택 경계 이동(dc9f1de7 3/3 넘침 · 4MB 이상 통과 · CI 형식은 통과 · master#75c7ef79).
 - [ ] 판번 검사(`version-check.sh`)가 `docs/index.html` 을 보지 않는다(L14).
 - [ ] (윈 실기 이월 · TODO:83) `\cysd` 재등록이 LeastPrivilege 로 RunLevel Highest 를 덮음 · preflight --fix 가 `~/.claude/settings.json` 을 백업 없이 고침 · ConPTY 꽉 찬 줄 composer 사람 눈 1회 · self-update-check 새 데몬 뒤 첫 발화.
 - [ ] (통합표) `d7_prime_seat_cache_never_overwrites_a_tick_value` 상한 5초 플레이크.

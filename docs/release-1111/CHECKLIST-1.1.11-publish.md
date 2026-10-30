@@ -54,6 +54,8 @@
 | L17 | `--stamp` 는 윈 ⓑ 통과 뒤(seq 보호) · 순서 = R4 → 윈 ⓑ → R5 | SS:744 | 2-4 앞 |
 | L18 | 「1.1.10 으로」 조사를 1.1.11 로 그대로 옮기면 틀린다 — 「십일」 = ㄹ 받침 → **「로」** | 한국어 조사 규칙 | §6 notes-ko |
 | L19 | `test_phoenix_*.py` 는 태그 레인(release.yml:444)에서만 돈다 → 브랜치 CI 녹이어도 태그에서 처음 적이 된다(0.14.52 태그 런 39747056302 선례 · 이번 c6) | §I | 1-2c · §J |
+| L20 | phoenix 를 Python 3.9(/usr/bin/python3)로 돌리면 `test_phoenix_c6_reap` 이 8/8 거짓 적 — 3.9 에서 `socket.timeout` ≠ `TimeoutError` 라 `events()` 가 빈손이 된다. 태그 레인 = 3.12(release.yml:259-261) · 3.14 = 26/26 | §K | 1-2c 명령에 3.10 이상 PATH |
+| L21 | `pre-tag-ci-check` rc 0 이어도 비차단 주석이 남는다 — 1-1 의 「`trash::` 실패 이름 0」은 감독자 축이 30분 시간 초과로 끊겨 `trash::` 줄 자체가 0(통과 0·실패 0)이면 빈 판정이다 | §K | 1-1 확인 줄을 읽을 때 분모를 같이 본다 |
 
 ---
 
@@ -79,7 +81,7 @@
 | 1-1 | 가지 push(미러) → CI **dispatch** 3런(`rel/**` 는 push 트리거 밖 — ci-branch `['feat/**','fix/**']` · windows-build `['feat/windows-x64-dist','fix/**']` · windows-health `['feat/**','fix/**']` + tags `v*`): `for w in ci-branch.yml windows-build.yml windows-health.yml; do gh workflow run "$w" -R oogisoogi/cys-ro --ref rel/1.1.11; done` ≈45분 · ⚠push 전 `bash scripts/secret-scan.sh --all` rc 0(RELEASE.md:10-21 「밀기 전 게이트 — 전 ref 공통」) | 3런 success(같은 SHA · 1.1.9 = 38910007412 · 38910011842 · 38910016488 꼴) · windows-health 「cysd 감독자 축」(:580)은 continue-on-error → 로그의 `trash::` 실패 이름 0 을 따로 확인(WIN-FIELD V9·V11) | 가지만 — 무해 |
 | 1-2 | `PATH=/usr/bin:$PATH sh scripts/version-check.sh v1.1.11` · `sh scripts/win-typecheck.sh`(A-2-6) · `python3 scripts/pre-tag-ci-check.py --wait 70`(**dispatch 뒤에** · L12) · `bash scripts/scan-pack-secrets.sh` · `python3 cysjavis-pack/bin/tests/run_bootstrap_health.py --only H-SECRET-1`(통합 때 GREEN 853파일 · 메모리 release-cut-gate-run-health-specimens-locally) | 다섯 다 rc 0(pre-tag rc 2 = 판정 불가 ≠ 통과 · 「58초 태그 금지」 RELEASE.md:171-230) | — |
 | 1-2b | ★(L15 · 도구 수리 전 손 검사) `git fetch origin && git merge-base --is-ancestor v1.1.10 <태그 커밋> && git merge-base --is-ancestor origin/main <태그 커밋> && echo ANC-OK` | ANC-OK · 안 나오면 태그 금지 | — |
-| 1-2c | ★(L19) 태그 레인 전용: `cargo build --bin cys --bin cysd` 뒤 `test_phoenix_*.py` 전건(release.yml:428-447 꼴 · 격리 HOME·TMPDIR) | 전건 rc 0 · 지금 = c6 적(§I) | — |
+| 1-2c | ★(L19) 태그 레인 전용: `cargo build --bin cys --bin cysd` 뒤 `test_phoenix_*.py` 전건(release.yml:428-447 꼴 · 격리 HOME·TMPDIR) | 전건 rc 0 · 060cb75b = 26/26(§K) · 최종 머리 재실행 = §K 명령 | — |
 | 1-3 | `gh variable set CYSR_RELEASE_SEQ -R oogisoogi/cys-ro --body 6`(1.1.9 실제 꼴 · T1 23:37:22) | `gh variable list -R oogisoogi/cys-ro` = 6 | 다시 set |
 
 ## 2. 태그(절단) → draft → 자동 갱신 재료
@@ -126,7 +128,7 @@
 |---|---|---|---|---|
 | `--release-seq` | 5 | **6** | A-5 | High |
 | `--min-from-release-seq` | 1(체크리스트 권고 · 실제 본문 대조 = R4 때) | **1** | 계약 `0 ≤ 값 < release_seq` · 열거 폭 6 ≤ 256 | Med |
-| `--state-migration` | none | **미판정 — master** | ⚠0.14.52 편입 182커밋 + 설정·장부 신규(컴퓨터 통제권 장부 · 선례 기록)가 있다. 가산이면 none · 1.1.10 은 가산 감사만 했다. 이 준비에서 전수 감사 안 함 | 미확인 |
+| `--state-migration` | none | **none 권고 — 판정 = master** | 전수 감사 = §K-1 · 개명·삭제·기존 타입 변경 0 · 새 파일·새 키 가산뿐(1.1.10 과 같은 기준) · 값 분기 코드 = `breaking` 하나뿐 | High(코드 판독 · 왕복 실기 0) |
 | `--notes-ko` | `'cysr 1.1.10 으로 새로 갱신되었습니다.'` | **`'cysr 1.1.11 로 새로 갱신되었습니다.'`** | ≤80자 · 금지 어휘 0 · 조사 L18 | High |
 | `--requires-min-binary-for-pack` | 1.1.10 | **1.1.11** | 두 레인과 같은 값 · 빈 값 = 발행 거부 · 본문↔매니페스트 대조 게이트 없음 → 2-3 손 대조 | High |
 | `PACK_MIN_BINARY` = `PACK_MIN_BINARY_OVERRIDE` | 1.1.10 | **1.1.11**(459d0cca 에 있음) | release.yml:1521 · pack-release.yml:97 | High |
@@ -174,10 +176,10 @@
 | master-send 배선 | 있음 · TODO:87 칸은 미체크 | SS:1166 격리 하네스 3/3·1/1 · 후속 판정기 SS:1178 |
 | §3 맥 실기 | 발행 뒤(§7) | 재빌드 금지 판정 SS:1751 |
 | §3 윈 실기 | 통과(459d0cca) · **병합 뒤 재확인 대기** | SS:1729 · 0-3 |
-| §3 깨끗한 기기 새 설치 | ⚠**기록 없음 · 태그 전 필수** · master 처리 | master#1be35b1b |
+| §3 깨끗한 기기 새 설치 | **있음(060cb75b 시험 빌드 · 로그인 직전까지)** · 1.1.11 설치기 핀 판은 발행 뒤 | §K-4 |
 | §4 통합 3자 적대 검토(전체 diff · codex·Fable·agy) | 있음 | `~/cys-terminal-src-wt/1111-adv4` 0c8b5ab2 ADV4-FINDINGS.md · blocking B1·B2 처분 = master |
 | §4 발견 처분표 | 있음 | 같은 파일 |
-| 태그 레인 전용 phoenix 시험 | ⚠**c6 적 1**(그 밖 전부 통과) | §I |
+| 태그 레인 전용 phoenix 시험 | **있음 — 060cb75b 26/26**(c6 수리 67cd1370 포함 · Python 3.14) · 최종 머리 재실행 대기 | §K |
 | §5 절단 범위 동결 · 롤백 판(1.1.10 봉투 유지) | 집행 때 | 2-1 · 3-9 |
 | 윈 이상 2(RunLevel 재등록 · preflight --fix 백업 없음) | 1.1.12 BACKLOG(§J) · 발행 차단 아님 = master 판정 | TODO:83 |
 
@@ -240,6 +242,102 @@
 
 판독: line 147 = 원작자 전제(`restored_queue`) ↔ 우리 D7⑵ 주차(`state.rs:8379` 주석 · 잠정 판정 S1). 수리 = 단언을 `queue.parked` + `queue.inherited` 로 교체. line 168 1회 적 = 미재현 · 후보 = `state.rs:8362` exited 표시 뒤 최대 1초 주차 지연(제품 경합 가능성 · 미입증). line 150 = 병렬 산물(직렬 13/13 · 두 묶음 동시 발생). 태그 전 1-2c 로 최종 머리에서 phoenix 전건 재확인.
 
+## K. 태그 전 게이트 판정(TICKET=cysr-1111-relprep · 2026-10-31 · worker-relprep · 기준 = 060cb75b)
+
+머리와 무관한 것은 여기서 닫혔고, 머리 의존 3가지(1-2b · 1-2c · pre-tag)는 §K-6 명령을 최종 머리에서 다시 돌리면 된다.
+
+| 항목 | 결과 | 근거 |
+|---|---|---|
+| 1-2b | **ANC-OK**(v1.1.10 ∧ origin/main = 502741c7 둘 다 조상) | `git fetch` 뒤 060cb75b |
+| 1-2c phoenix | **26/26 rc 0** · Python 3.14.7 · c6 추가 직렬 5/5 · 내 시험 데몬 잔재 0 | 격리 HOME·TMPDIR · CYS_* 해제 |
+| pre-tag | **rc 0**(토큰 경로 · API 소모 4) | 3런 41103104106 · 41103108864 · 41103113724 |
+| §6 state-migration | **none 권고** | §K-1 |
+| 깨끗한 기기(맥) | **통과**(로그인 직전까지) | §K-4 |
+
+### K-1. `--state-migration` 감사(v1.1.10..060cb75b)
+
+권고 = **none**(이 프로젝트 기준 「가산뿐이면 none」 · 브리프 · §6 · 1.1.10 선례). 글자 뜻으로는 `additive` 도 맞고, v1.1.8·1.1.9·1.1.10 클라이언트 모두 세 값을 받는다(`feed.rs` 대조). 그래도 none 을 권하는 까닭 = 값에 따라 갈리는 코드는 `breaking` 하나뿐이고(feed.rs:671), `additive` 는 공개된 적이 없는 값이라 얻는 것 없이 처음 쓰는 값이 된다.
+
+| 분류 | 항목 | 옛 → 새 | 새 → 옛(1.1.10) | 위험 |
+|---|---|---|---|---|
+| 새 파일 | `queue-write-holds.json`(state.rs:1544) · `submit-held.json`(:1560) · `submit-held-undelivered.jsonl`(handlers.rs:4058) · `writer-journal.jsonl`(state.rs:1593) | 없으면 빈 값 | 무시 · 보류 항목은 `queue-state.json` 에 남아 처음부터 재배달될 수 있음 | 낮음~중(수동 내림만) |
+| 새 파일 | `.kept-pane-records.jsonl`(cys.rs:1292) · `ready-withheld*.json`(javis_lane.py:156) · `win-task-refusal-*.json`(win_task.rs:330) · `round/_intake/*.json`(javis_intake.py:70) | 없으면 정상 | 무시 | 낮음 |
+| 새 폴더 | `computer-control/`(팩) · 초기화 목록 28→29(factory_reset.rs:19) | 새 폴더 | 폴더는 무시되나 옛 팩에 원복 도구가 없다 | 중(켠 뒤 수동 내림) |
+| 미배선 | `pending-requests.json`(schema 5 · deny_unknown_fields) | `PendingStore::open` 호출 = 시험뿐 | 파일이 안 생김 | 없음 |
+| 새 키 | `.pack-reinject-pending.json` `unknown`(cys.rs:26840) · 갱신 state.json `restore_partial`·`session_unverified`(realops.rs:1270-1280) · 세대 manifest `canonical_cards` | 없으면 기본값 | 무시 · 옛 판이 다시 쓰면 `unknown` 소실 | 낮음 |
+| 뜻 변경 | 워커 상한 기본 8→0(state.rs:3761 · 저장값 없음 · 명시 env 존중 · 파싱 불가 값은 8 → 무제한) · 훅 timeout 5→10(하한 판정) · 기본 배경색·글꼴(저장값 우선) · 세대 GC 레인 풀 · plist 사용자 env 보존 | 저장 형식 변경 없음 | 내리면 옛 기본으로 복귀 · plist env 재기록 때 소실 | 낮음 |
+| 저널 | S3/S4 순서(journal.rs:82·118 · 구조체·상태 이름·crc 입력 동일) · 옛 저널이 QUIESCED·DRAINED 어디에 멈췄어도 새 판 = ReleaseAndDefer(journal.rs:453) | 재개 없이 보류 정리 | 복구 규칙 동일 · 정비 모드 없는 DRAINED 를 옛 `release` 가 무해하게 처리하는지 = **미확인** | 낮음 |
+| 개명·삭제 | 0건 | — | — | — |
+
+찾은 방법(재현용): serde derive 타입 전수 두 판 비교(v1.1.10 102개 변경 0·삭제 0·새 타입 66) · `deny_unknown_fields` 추가 26곳 = 전부 v1.1.10 에 없는 타입(대상 이름별 `git grep` 재측) · `git diff --diff-filter=DR` 0 · `ui/src` localStorage 호출 변경 0 · 파일명 문자열 두 판 비교.
+실기(§K-4 VM): 1.1.10 → 1.1.11 교체 기동 정상 · 1.1.11 → 1.1.10 내림도 `submit-held.json` 을 안고 정상 기동. ⚠그 실기는 좌석 1개·큐 0 이다(보류 항목 재배달은 재지 않았다).
+미확인: 윈도우 런타임 · `javis_computer_control` 기록 키 전수 · 큐가 찬 상태의 왕복.
+곁가지 발견: `.kept-pane-records.jsonl` 은 `factory_reset.rs` 목록에 없어 공장 초기화 뒤에도 남는다(§J).
+
+### K-2. 【발행 전 확인】 §8 판정
+
+| # | 판정 | 무엇이 있어야 닫히나 |
+|---|---|---|
+| N1 | **코드로 판정** — `src/update/win_task.rs` blob 이 v1.1.8·v1.1.9·v1.1.10 동일(b13d35233a · 플래그 6) → 같은 문제로 본다 · 기기 실측 0 | 문구를 「1.1.8 이상」으로 넓힐지 master 결정(노트·카톡 주석에 적음) |
+| N2 · K② | 불가 | 맥 1.1.10 기기 자동 받기 관측 · 문안 = A안 자리 · ⚠관측 기기는 **작업 창 0** 이어야 한다(작업 창이 있으면 옛 러너 S4 에서 보류) |
+| N3 · K③ | 불가 | seq 6 본문 자산 행 3(2-3) · 맥 x64 빌드 |
+| N4 · K④ | 불가 | 윈 = 크롬 수리 병합 뒤 r4 · 맥 실 크롬 실기 기록 |
+| N5 | 불가 | 윈 r3·r4 회신 표 칸 대조 |
+| K⑤ | 불가 | 라이브 공지 배포 뒤 |
+
+### K-3. 미확인 §5 판정
+
+| # | 항목 | 판정 / 필요한 것 |
+|---|---|---|
+| 1 | 관측용 맥 지정 | master 지정 필요 · 조건 = 1.1.10 · 작업 창 0 · 전원 연결 |
+| 2 | 윈 재실기 범위 | r3 진행 중 · 윈 master 회신 필요 · 갱신 경로 1회 시행 = master |
+| 3 | 윈 1.1.9 복구기 | K-2 N1 = 코드로 같음 |
+| 4 | 봉투 만료 | 실측 stable expires_at 1793970858 = **2026-11-06 22:14 KST** · 오늘 발행이면 무관 |
+| 5 | state_migration | none 권고(K-1) · master 판정 |
+| 6 | 캐너리(R8) | master 결정 필요 |
+| 7 | 자동 본문 교체(0-5) | **교체 권고** — release.yml:1326 자동 본문 「1.1.8 이상은 … 알아서 받고」는 윈도우에 틀린 문장이다(N1) · 발행 뒤 3-2 절차로 노트 본문 초안으로 교체 |
+| 8 | §G ⚠ | 깨끗한 기기·phoenix 해소 · 실 크롬 실기만 남음(N4) |
+| 9 | `test_phoenix_c6_reap.py` | 해소(K 표) |
+
+실측 재확인(06:4x): 보관소 `releases/6.json` 404 · `CYSR_RELEASE_SEQ` 5 · stable feed_rev 4 · rollout 100 · halt false · latest = v1.1.10.
+
+### K-4. 깨끗한 기기(맥 · tart 복제본 relprep-1031-a · 원본 jarvis-clean-vanilla 불변 · 복제본 삭제 완료)
+
+| 단계 | 결과 |
+|---|---|
+| 기준선 | macOS 26.6.2 arm64 · 앱 = Safari·Utilities · `~/.cys`·`~/.claude` 없음 · CLT 없음 · `CRED_ABSENT` · 키체인 claude/anthropic/cys/github 적중 0 |
+| 설치 한 줄(공개 그대로 · 설치기 0.3.43 · 핀 1.1.10) | [1/10]·[2/10] 통과(클로드 2.1.308) · **21초에 [3/10] 로그인 입력 대기 도달**(06:36:33 → bootstrap.log 21:36:54Z) · 막힘 0 · 진단 코드 0 |
+| 전송 레버 | `JARVIS_NO_PROGRESS=1` · `JARVIS_HELP_API_URL=http://127.0.0.1:9`(시험이 운영 기록·도움 사례로 안 나가게) |
+| [5/10] 대역(로그인 뒤 단계라 손으로 같은 순서) | 공개 zip 14초 · 크기·sha256·CDHash = 핀 3개 일치 · ditto → xattr → codesign strict 통과 → 기동 |
+| 1.1.10 기동 | 앱 · cysd · 첫 안내 · cysr 창 안 `claude` = 로그인 방법 선택 화면 |
+| 1.1.11(060cb75b · cys-local · 시험 전용 · sha d8d4e0f0… 218,749,527B) 교체 | `cys --version` 1.1.11 · 데몬 build_id 060cb75b · 팩 1.1.10 → 1.1.11 · `init-pack` 신판 항목 1건 추가 · 로그인 방법 선택 화면 도달 · 로그인 0 |
+| 1.1.10 내림 | 정상 기동 · 팩은 1.1.11 로 남는다(내림이 팩을 되돌리지 않음) |
+| 뒷정리 | `CRED_ABSENT` 재확인 · 정상 종료 → 삭제 · 원본 disk.img mtime 9/6 그대로 |
+
+⚠닫히지 않은 것: ① 이 실기는 **설치기가 1.1.11 을 받는 경로가 아니다**(핀 1.1.10 · 1.1.11 설치기 핀은 발행 뒤 4-1) ② [5/10] 이후는 로그인이 필요해 설치기 본체로는 재지 않았다 ③ 시험 빌드는 `-dirty`(문서 변경분) · seq 미배정 ④ 맥 전용 · 인텔 미측정.
+관측 2: ⓐ 앱이 켜진 채 데몬만 바뀌면 상단 「엔진」 라벨이 옛 판을 유지한다 — 내 교체 스크립트가 데몬 작업을 내리지 않아 옛 데몬에 잠깐 붙은 것으로 추정(`left=3` · 앱만 다시 열면 맞다) · 발행 차단 아님 ⓑ 설치 안 된 CLT 안내가 첫 실행 경고로 뜨는 것은 설계대로.
+
+### K-5. CI 비차단 주석(060cb75b · rc 0 인데 남은 것)
+
+| 주석 | 판정 |
+|---|---|
+| windows-build `T3-3 FAIL`(env 주입 스텁 · send rc=1) | 459d0cca · 7ccab38c 와 같음 · 이번 머리에서 생긴 것 아님 · 원인 미조사 |
+| windows-health 감독자 축 30분 시간 초과 | 7ccab38c 와 같은 30분 |
+| ⚠1-1 「`trash::` 실패 이름 0」 | 로그에 `trash::` 시험 줄 자체가 0 — 통과도 실패도 없는 **빈 판정**이다(L21) · 이 확인 줄만으로 윈 trash 시험이 돌았다고 말할 수 없다 |
+
+### K-6. 최종 머리 재실행 묶음(`<SHA>` 만 넣는다 · 쓰기 0)
+
+```
+# 1-2b
+git fetch origin && git merge-base --is-ancestor v1.1.10 <SHA> && git merge-base --is-ancestor origin/main <SHA> && echo ANC-OK
+# 1-2c (bash · 머리 체크아웃 뒤 · 약 3분 · rc = 적 개수)
+bash -c 'set -u; cd ~/cys-terminal-src-wt/rel-1111 || exit 9; for v in $(env | grep -oE "^(CYS|CMUX|JAVIS)_[A-Za-z0-9_]*"); do unset "$v"; done; rm -f target/debug/cys target/debug/cysd; PATH="$HOME/.cargo/bin:$PATH" cargo build --bin cys --bin cysd >/dev/null 2>&1 || exit 8; R=/private/tmp/rp$$; mkdir -p $R/h $R/t; export HOME=$R/h TMPDIR=$R/t PHOENIX_HARNESS_CYSD=$PWD/target/debug/cysd PHOENIX_CYS=$PWD/target/debug/cys PATH=$PWD/target/debug:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin; python3 --version; f=0; n=0; for t in cysjavis-pack/bin/tests/test_phoenix_*.py; do n=$((n+1)); CYS_PACK_DIR=$(mktemp -d $TMPDIR/p.XXXXXX) python3 $t >$R/$(basename $t).log 2>&1 || { f=$((f+1)); echo FAIL $t; }; done; echo "phoenix n=$n fail=$f logs=$R"; [ $f = 0 ] && rm -rf $R; exit $f'
+# pre-tag (gh 토큰을 api.github.com 요청에만 붙인다 · 스크립트 무수정 · 익명 rc 2 회피)
+python3 -c "import runpy,subprocess,sys,urllib.request as u;t=subprocess.check_output(['gh','auth','token'],text=True).strip();o=u.urlopen;u.urlopen=lambda r,*a,**k:(r.add_header('Authorization','Bearer '+t) if r.full_url.startswith('https://api.github.com/') else None,o(r,*a,**k))[1];sys.argv=['pre-tag-ci-check.py','<SHA>','--wait','70'];runpy.run_path('scripts/pre-tag-ci-check.py',run_name='__main__')"
+```
+
+⚠1-2c 는 `rm -f target/debug/cys target/debug/cysd` 뒤 재빌드한다(함정 ①) · 그 줄의 python3 = 3.10 이상이어야 한다(L20) · 판 빌드(`build-macos-local.sh`) 뒤에는 한 번 더 확인.
+
 ## J. 1.1.12 BACKLOG(이 준비에서 나온 것)
 
 - [ ] **int 가지가 발행 태그를 조상으로 갖는지 게이트** — `scripts/pre-tag-ci-check.py` 에 is-ancestor 검사(최신 공개 태그 ∧ origin/main 이 태그 후보의 조상이 아니면 태그 금지 · master#e9af822d). 근거 = §H · L15.
@@ -251,3 +349,4 @@
 - [ ] (윈 실기 이월 · TODO:83) `\cysd` 재등록이 LeastPrivilege 로 RunLevel Highest 를 덮음 · preflight --fix 가 `~/.claude/settings.json` 을 백업 없이 고침 · ConPTY 꽉 찬 줄 composer 사람 눈 1회 · self-update-check 새 데몬 뒤 첫 발화.
 - [ ] (통합표) `d7_prime_seat_cache_never_overwrites_a_tick_value` 상한 5초 플레이크.
 - [ ] 677 hook-slim(R3 REVISE) · 윈 휴지통 삭제.
+- [ ] (relprep) `test_phoenix_c6_reap.py:101` `except TimeoutError` → Python 3.9 에서 거짓 적(L20) · `.kept-pane-records.jsonl` 공장 초기화 목록 누락 · windows-build T3-3 적 원인 · windows-health 감독자 축 30분 시간 초과로 `trash::` 줄 0(L21) · 앱이 켜진 채 데몬이 바뀌면 「엔진」 라벨 미갱신.

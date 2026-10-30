@@ -69,6 +69,11 @@ U2-WITHIN update::runner::tests::pack_backup_cleanup_deletes_only_inside_backup_
 U2-S2FILL update::realops::tests::win_s2_fetches_rollback_assets_before_candidate_download_and_daemon_stop
 U2-N7FILL update::auto::tests::n7_hold_on_windows_triggers_archive_fill_then_recheck_or_reasoned_hold
 U2-N7LOCK update::auto::tests::n7_archive_fill_writes_only_while_holding_the_global_lock
+WT1 update::win_task::tests::register_flags_pin_dont_add_principal_ace
+WT2 update::win_task::tests::install_stops_on_non_absent_read_or_delete_error_and_keeps_old_task
+WT3 update::win_task::tests::install_register_failure_restores_valid_prior
+WT4 update::win_task::tests::install_refused_then_cleanup_delete_fails_still_restores_valid_prior
+WT5 update::win_task::tests::restore_readback_refusal_keeps_evidence_before_delete
 U2-HOLDMEMO bin:tests::pack_auto_hold_memo_skips_download_until_inputs_change
 U2-TXNGLUE bin:tests::pack_update_txn_glue_holds_in_a_real_process
 U2-MEMOCHECK bin:tests::pack_auto_hold_memo_rejects_forged_unreadable_and_clears_on_manual_apply

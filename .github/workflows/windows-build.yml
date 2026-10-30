@@ -184,6 +184,23 @@ jobs:
             echo "$out" | grep -q "^test updnotice::tests::$t \.\.\. ok$" || { echo "::error::잠금 시험 $t 가 윈에서 ok 로 실행되지 않았다(이름 불일치·필터 0건·skip)"; exit 1; }
           done
           echo "OK: updnotice 윈 실기 — $summary · 잠금 시험 3건 ok"
+          # ★(1.1.11 · TICKET=win-selfupdate-recover · master#87121535) 윈 작업 등록(update::win_task) 시험 8건도 이 스텝에서 윈 실기로 돈다 —
+          #   이전엔 어느 워크플로에도 이름으로 걸려 있지 않았다(빈칸). 새 잡 금지·이 스텝에 붙임. 같은 fail-closed 꼴: 이름 8건이 전부 ok 여야 한다.
+          #   ★(TICKET=wintask-r2-fix · codex R2·R3) 15건: install 흐름 6건(오류 종류·복원·복원 거부 증거) + 윈 전용 실기 1건(없는 작업 GetTask = 0x80070002 · 루트 읽기만).
+          t0=$SECONDS
+          if out="$(cargo test -p cys-terminal --lib update::win_task 2>&1)"; then rc=0; else rc=$?; fi
+          out="$(printf '%s\n' "$out" | tr -d '\r')"
+          echo "$out" | grep -E '^test |^test result:' || true
+          summary="$(echo "$out" | grep -E '^test result:' | tail -1 || true)"
+          if [ -z "$summary" ] || [ "$rc" -ne 0 ] || ! echo "$summary" | grep -q '^test result: ok\.'; then
+            echo "$out" | tail -60
+            echo "::error::win_task 윈 실기 적색(rc=$rc · ${summary:-test result 요약 없음})"
+            exit 1
+          fi
+          for t in args_roundtrip_through_windows_rules xml_roundtrip_and_tamper_detection sddl_structural_compare probe_flag6_readback_is_refused_with_field_reasons probe_flag16_readback_passes register_flags_pin_dont_add_principal_ace read_error_is_not_a_mismatch_and_every_field_reason_is_reported com_register_call_uses_register_flags_and_goes_through_install install_absent_registers_without_delete_and_valid_prior_is_replaced install_stops_on_non_absent_read_or_delete_error_and_keeps_old_task install_register_failure_restores_valid_prior install_refused_then_cleanup_delete_fails_still_restores_valid_prior restore_readback_refusal_keeps_evidence_before_delete install_does_not_restore_invalid_or_absent_prior_and_reports_restore_failure com_absent_task_hresult_is_file_not_found; do
+            echo "$out" | grep -q "^test update::win_task::tests::$t \.\.\. ok$" || { echo "::error::win_task 시험 $t 가 윈에서 ok 로 실행되지 않았다(이름 불일치·필터 0건·skip)"; exit 1; }
+          done
+          echo "OK: win_task 윈 실기 — $summary · 이름 15건 ok · 소요 $((SECONDS - t0))s"
 
       # W-GATE pre-tag dry run (0.14.52 · CEO ruling 2026-10-22): the SAME step name and a byte-identical run body as the
       #   blocking release.yml step of that name (Windows leg, between the VERSIONINFO gate and tauri-action). It runs the

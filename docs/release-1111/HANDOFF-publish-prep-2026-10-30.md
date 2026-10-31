@@ -1,7 +1,16 @@
 # HANDOFF — cysr 1.1.11 발행 준비 (TICKET=cysr-1111-publish-prep · cysr-1111-c6-reap · 2026-10-30~31 · worker-rel surface:1752)
 
 브리프 = `~/axdev/master/briefs/2026-10-30-cysr-1111-publish-prep.md` · 판정 = master#e9af822d · #1be35b1b · #8fd148bb · #10b2531d · #b45fa9ea · #75c7ef79.
-정본 = 같은 폴더 `CHECKLIST-1.1.11-publish.md`(§G 증거 · §H 12커밋 · §I 게이트 · §J BACKLOG) · 초안 = `RELEASE-NOTES-1.1.11.draft.md` · `KAKAO-1111.draft.md`.
+정본 = 같은 폴더 `CHECKLIST-1.1.11-publish.md`(§G 증거 · §H 12커밋 · §I 게이트 · §J BACKLOG · §K 태그 전 판정) · 초안 = `RELEASE-NOTES-1.1.11.draft.md` · `KAKAO-1111.draft.md`.
+
+## 최신 상태(2026-10-31 · worker-relprep surface:1761 · TICKET=cysr-1111-relprep) — 아래 옛 절보다 이 절이 우선
+
+- **태그 머리 = 0fde41c6 고정**(master#8d598191) · 원격 rel/1.1.11 = 0fde41c6 · 태그 0.
+- 게이트 전부 통과: 3런 41158073931 · 41158076438 · 41158078742 success · pre-tag rc 0 · 1-2b ANC-OK · phoenix 26/26 · CI 형식 cys 736/0 · 수치 전체 = 체크리스트 §K · §K-8.
+- **로컬 전용 문서 커밋**(0fde41c6 위 · BACKLOG · §K · §K-8 · 노트 D17 · 이 HANDOFF): 태그를 붙인 뒤 master 지시로만 push. 먼저 push 하면 3런·pre-tag 를 다시 돌려야 하고, 태그는 그래도 0fde41c6 이다.
+- 다음 = 밤 윈 r4 회신(키트 aac1b477 · 휴지통 1줄 = master 가 넣음) → r4 결과가 곧 태그 판정 → 태그부터는 master/박사님 게이트. 워커는 대기.
+- 미닫힘: 윈 `trash::` CI 빈 판정(r4 로) · 맨 `cargo test --bin cys` 넘침 060cb75b 0/2 ↔ 0fde41c6 2/2 원인 미상(발행 형식 밖 · §J) · release 스택 여유 미측정(§J) · 노트 「창이 여러 개」 대조 = master.
+- 함정 추가: ⑦ `rel/**` 는 push 트리거 밖 → push 뒤 dispatch 필수(체크리스트 1-1) ⑧ 임시 트리를 `/private/tmp` 아래 두면 `dbg_r12…skill_links` 결정적 적·긴 TMPDIR 이면 SUN_LEN 7건 ⑨ a3 넘침은 단독·소묶음으로 재현 안 된다 → 비교는 맨 명령 전체(약 10분) ⑩ 맥에 `timeout` 없음 · 시험 줄과 `FAILED` 줄이 윈 로그에서 갈라져 찍혀 `... FAILED` grep 은 0 이 나온다.
 
 ## 끝난 것
 

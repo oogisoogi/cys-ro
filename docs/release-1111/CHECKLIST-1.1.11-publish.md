@@ -243,15 +243,18 @@
 
 판독: line 147 = 원작자 전제(`restored_queue`) ↔ 우리 D7⑵ 주차(`state.rs:8379` 주석 · 잠정 판정 S1). 수리 = 단언을 `queue.parked` + `queue.inherited` 로 교체. line 168 1회 적 = 미재현 · 후보 = `state.rs:8362` exited 표시 뒤 최대 1초 주차 지연(제품 경합 가능성 · 미입증). line 150 = 병렬 산물(직렬 13/13 · 두 묶음 동시 발생). 태그 전 1-2c 로 최종 머리에서 phoenix 전건 재확인.
 
-## K. 태그 전 게이트 판정(TICKET=cysr-1111-relprep · 2026-10-31 · worker-relprep · 기준 = 060cb75b)
+## K. 태그 전 게이트 판정(TICKET=cysr-1111-relprep · 2026-10-31 · worker-relprep · 기준 = 0fde41c6 · 태그 머리 고정 = master#8d598191)
 
-머리와 무관한 것은 여기서 닫혔고, 머리 의존 3가지(1-2b · 1-2c · pre-tag)는 §K-6 명령을 최종 머리에서 다시 돌리면 된다.
+⛔태그 = **0fde41c6** 고정. 그 뒤 로컬 문서 커밋(BACKLOG · 이 §K · 노트 D17)은 태그를 붙인 뒤 master 지시로 push 한다 — 먼저 push 하면 3런·pre-tag 를 다시 돌려야 한다. 태그 판정 = 밤 윈 r4 실기(키트 aac1b477 · 휴지통 1줄 포함 · master).
 
 | 항목 | 결과 | 근거 |
 |---|---|---|
-| 1-2b | **ANC-OK**(v1.1.10 ∧ origin/main = 502741c7 둘 다 조상) | `git fetch` 뒤 060cb75b |
-| 1-2c phoenix | **26/26 rc 0** · Python 3.14.7 · c6 추가 직렬 5/5 · 내 시험 데몬 잔재 0 | 격리 HOME·TMPDIR · CYS_* 해제 |
-| pre-tag | **rc 0**(토큰 경로 · API 소모 4) | 3런 41103104106 · 41103108864 · 41103113724 |
+| 1-2b | **ANC-OK**(v1.1.10 ∧ origin/main 둘 다 조상) | `git fetch` 뒤 0fde41c6 |
+| 1-2c phoenix | **26/26 rc 0** · Python 3.14.7 · 내 시험 데몬 잔재 0 | e306568d(제품 코드 = 0fde41c6 · 문서 1파일 차이) · 격리 HOME·TMPDIR · CYS_* 해제 · 060cb75b 도 26/26 |
+| pre-tag | **rc 0**(토큰 경로) · 비차단 주석 = §K-8 | 3런 41158073931 · 41158076438 · 41158078742 전부 success(060cb75b = 41103104106 · 41103108864 · 41103113724) |
+| 로컬 게이트 | `cargo test --bin cys -- --test-threads=1` 736/0/1무시 · lib job_exit 6/0 · win-typecheck 오류 0 · lane-parity --strict rc 0 · secret-scan --all clean 1909파일 | 0fde41c6 · 게이트 기준 = CI·release.yml 형식(master#e6c18df7) |
+| 윈 실 프로세스 | `tests/win_job_exit.rs` 6/0 | windows-health 41158078742 · 첫 실행 |
+| release 스택 | 세 명령 `native-exit=0x00000000 overflow=no` · 060cb75b 런과 차이 0 · 수용(master#8d598191) | §K-8 · ⚠넘침 여부만 · 여유 미측정(§J) |
 | §6 state-migration | **none 권고** | §K-1 |
 | 깨끗한 기기(맥) | **통과**(로그인 직전까지) | §K-4 |
 
@@ -364,6 +367,22 @@ python3 -c "import runpy,subprocess,sys,urllib.request as u;t=subprocess.check_o
 
 ⚠1-2c 는 `rm -f target/debug/cys target/debug/cysd` 뒤 재빌드한다(함정 ①) · 그 줄의 python3 = 3.10 이상이어야 한다(L20) · 판 빌드(`build-macos-local.sh`) 뒤에는 한 번 더 확인.
 
+### K-8. 0fde41c6 CI 읽기(비차단 주석 · 스택 · 060cb75b 런 대조)
+
+| 항목 | 0fde41c6 | 060cb75b | 읽기 |
+|---|---|---|---|
+| `[release-stack]` 세 명령 | `overflow=no` | `overflow=no` | 차이 0 · 여유는 미측정 |
+| T3-3 FAIL(env주입 스텁 send rc=1) | 있음 | 같은 문구 | 전부터 |
+| cysd 감독자 축 30분 시간 초과 | 30분 10초 | 30분 11초 | 전부터 · 비차단 |
+| `trash::` | 통과 0 · 실패 0 | 같음 | **빈 판정(L21)** · CI 가 못 재는 축 → 밤 r4 휴지통 1줄(master#8d598191) |
+| 감독자 축 패닉 | 146건 | 175건 | 대부분 윈 시험 좌석 `sleep 30` 10초 미기동 · 기준에만 32건 · 새 런에만 3건 |
+
+새 런에만 있는 3건 = `governance::tests::deliver_head_locked_pops_by_id_and_reports_remaining` · `qa_bypass_disclaimer_window_blocks_queue_and_force` · `qa_permission_dialog_classic_blocks_as_approval_pending`(뒤 둘 = busy(출력 중)). 기준 런에서는 통과 · `governance.rs` 병합 변경 0 · 시간 초과로 끊긴 위치가 달라 두 집합을 온전히 비교할 수 없다 · 플레이크로 단정하지 않는다.
+
+r4 키트 aac1b477 ↔ 0fde41c6 차이 = 10파일(문서 9 · `ui/src/publicdocs.test.ts` 시험 1) · 코드 변경 0. `USER-MANUAL.md` 의 `include_str!` 5곳은 전부 `mod tests` 안 · 번들 자원 아님.
+
+맨 `cargo test --bin cys`(병렬 · 기본 스택) 넘침 집계 = 060cb75b 0/2 · 0fde41c6 2/2 · 4MB 736/0 · 원인 미상 · 발행 형식 밖(§J · master#7a17878b).
+
 ## J. 1.1.12 BACKLOG(이 준비에서 나온 것)
 
 - [ ] ★**첫 항목 — 자동 갱신 게이트 수리 + 실기**: `may_fire_within` 주기 잡 판정 · 내장 잡 `bulk`·`publish` 표식 · `agora-counsel` publish 판정 + **S4 이후 전 구간 실기(맥 VM·윈)** — 이 경로는 공개 기기에서 한 번도 돈 기록이 없다 · 근거 전문 = 인박스 155275줄(2026-10-31T07:42:16+0900 · worker-relprep) · §K-7 · 수리 뒤 공개 문장을 다시 맞춘다: README(한/영) 「새 판 받기」 · `USER-MANUAL.md` §11 · `docs/index.html` 안내 · `ui/src/publicdocs.test.ts` 도움말 고정값 · release.yml:1326(이번 판에서 뺀 줄 포함 · 커밋 이력 참조).
@@ -372,6 +391,7 @@ python3 -c "import runpy,subprocess,sys,urllib.request as u;t=subprocess.check_o
 - [ ] **수용된 가지 편입 원장** — 수용 ≠ 편입 · 태그 전 수용 가지 전수 is-ancestor 검사(master#8fd148bb · fix/1111-backlog-misc·fix/1111-fable-fixes 실증).
 - [ ] 통합 검토 이월 = `~/cys-terminal-src-wt/1111-adv4/ADV4-FINDINGS.md`(0c8b5ab2) major M3·M4(실기 결과에 따라)·M6~M13 · minor N1~N10 · X1~X3.
 - [ ] 병렬 기본 스택 `a3_strip_hook_digits…` 넘침 · 4MB 통과 · 시험 스레드 스택 고정 또는 무거운 시험 분리(master#7a17878b). 실측: 맨 `cargo test --bin cys`(--test-threads=1 없이) dc9f1de7 3/3 넘침 · 060cb75b 0/2 · 0fde41c6 2/2 · `RUST_MIN_STACK=4194304` 0fde41c6 736/0 · CI 형식 0fde41c6 736/0 · 단독·소묶음은 두 머리 모두 통과 · 병합의 파싱 경로 변경 0 · 원인 미상(master#75c7ef79).
+- [ ] release `cys.exe` 스택 여유 측정 — `[release-stack]` 은 `--help` 세 명령의 넘침 여부만 본다 · 윈 주 스레드 1MB 에서 남은 여유·머리 간 증감은 미측정(0fde41c6 차이 0 은 넘침 0 뜻뿐 · master#8d598191).
 - [ ] `dbg_r12_init_pack_wires_profile_skill_links` 는 저장소가 임시 폴더 아래면 결정적으로 실패한다 — 시험이 `CARGO_MANIFEST_DIR/target` 아래 팩을 쓰는데 `javis_preflight.py:1494` 임시 팩 가드가 등록을 거부(코드 판독 · /private/tmp 임시 worktree 060cb75b 4/4 적 · 정상 위치 0fde41c6 통과 · 제품 결함 아님 · master#7a17878b).
 - [ ] 판번 검사(`version-check.sh`)가 `docs/index.html` 을 보지 않는다(L14).
 - [ ] (윈 실기 이월 · TODO:83) `\cysd` 재등록이 LeastPrivilege 로 RunLevel Highest 를 덮음 · preflight --fix 가 `~/.claude/settings.json` 을 백업 없이 고침 · ConPTY 꽉 찬 줄 composer 사람 눈 1회 · self-update-check 새 데몬 뒤 첫 발화.

@@ -3495,6 +3495,25 @@ fn main() {
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
+    // ★TICKET=cysr-1111-winchrome: 내부 동사 spawn-outside-job 도 최상위 `Command` 밖 — 변형을 더하면 아래 갱신 3동사 주석의 스택 넘침이
+    //   다시 난다(CI 41141594121 · aid_s5_cli_tests). 데몬에게 맡기는 요청이라 데몬이 없으면 띄우지 않고 실패한다.
+    {
+        let args: Vec<String> = std::env::args_os().map(|a| a.to_string_lossy().into_owned()).collect();
+        if args.get(1).map(String::as_str) == Some(cys::job_exit::CLI_VERB) {
+            AUTOSTART.store(false, std::sync::atomic::Ordering::Relaxed);
+            let r = cys::job_exit::cli_params(&args[2..]).and_then(|p| request("system.spawn_outside_job", p));
+            std::process::exit(match r {
+                Ok(v) => {
+                    println!("{v}");
+                    0
+                }
+                Err(e) => {
+                    eprintln!("spawn-outside-job: {e}");
+                    1
+                }
+            });
+        }
+    }
     // ★1.1.8 U1(AUTO-UPDATE-118 §6-2·§4-2·§8): 갱신 3동사(update-verify·build-info·self-update)는 최상위 `Command` **밖**에서
     //   먼저 처리한다 — 최상위 clap 열거형에 변형을 더하면 j3 시험이 기본 2MB 시험 스레드에서 스택 넘침(1.1.8 W1 실측 ·
     //   DaemonAction::DeptStatus 주석과 같은 이유). 셋 다 판정·자기 보고라 데몬 자동 기동 0.

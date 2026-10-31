@@ -41,7 +41,6 @@ pub(crate) mod winjob {
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
         JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows_sys::Win32::System::Threading::{
         OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
@@ -73,7 +72,7 @@ pub(crate) mod winjob {
                 Err(windows_sys::Win32::Foundation::GetLastError())
             } else {
                 let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                info.BasicLimitInformation.LimitFlags = cys::job_exit::job_limits(false);
                 if SetInformationJobObject(
                     h,
                     JobObjectExtendedLimitInformation,
@@ -164,6 +163,33 @@ pub(crate) mod winjob {
     /// 데몬 자신이 Job 에 결박됐는가(=자손이 상속으로 결박되는가).
     pub fn self_bound() -> bool {
         SELF_BOUND.load(Ordering::Relaxed)
+    }
+
+    /// 이 스폰만 데몬 Job 밖으로(`cys::job_exit`). 데몬이 Job 에 없으면(강등 모드) 잠글 것이 없어 그대로 띄운다 — 바깥 Job 이
+    /// 이탈을 막으면 생성 flag 가 거부되므로(ERROR_ACCESS_DENIED) `spawn_detached_daemon` 처럼 이탈 없이 1회 재시도한다.
+    /// 반환 = (자식, Job 밖인가).
+    pub fn spawn_outside(
+        cmd: &mut impl FnMut(bool) -> std::process::Command,
+    ) -> Result<(std::process::Child, bool), String> {
+        if self_bound() {
+            return cys::job_exit::spawn_breaking_away(job()? as usize, &mut cmd(true)).map(|c| (c, true));
+        }
+        match cmd(true).spawn() {
+            Ok(c) => Ok((c, true)),
+            Err(e) if e.raw_os_error() == Some(5) => {
+                cmd(false).spawn().map(|c| (c, false)).map_err(|e| format!("스폰 실패: {e}"))
+            }
+            Err(e) => Err(format!("스폰 실패: {e}")),
+        }
+    }
+
+    /// 이탈 스폰이 될 수 있는가(스폰 없음). ★비트는 건드리지 않는다 — 켜는 순간마다 좌석 msys 자식이 빠져나갈 틈이 생긴다.
+    pub fn probe_outside() -> Result<(), String> {
+        if self_bound() {
+            job().map(|_| ())
+        } else {
+            Ok(())
+        }
     }
 
     /// PTY 자식(pid)을 데몬 소유 Job(KILL_ON_JOB_CLOSE)에 편입 — 데몬 사후 자식·손자 동반사망(mac SIGKILL 대칭).

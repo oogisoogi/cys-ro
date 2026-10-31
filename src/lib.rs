@@ -27,6 +27,7 @@ pub mod edit_kinds;
 /// 첫기동 관문 코퍼스 — **코드 임베드 정본**(U-12 · K-1). `agents.json` 값 수정은 사용자 소유
 /// 파일 계층에 막혀 기존 설치 기계에 도달하지 못하므로, 관문 데이터의 진실원천은 코드다.
 pub mod first_run_gates;
+pub mod job_exit;
 /// 주입·제출 관문 가드(U-14) + 폴더신뢰 Return 정책(U-15) — "지금 이 pane 에 키를 보내도 되는가".
 /// ready 를 잘못 선언했을 때 실제로 좌석을 죽이는 것은 **제출 Return** 이므로, 판정(U-13)과 별개로
 /// 전송 직전에 한 번 더 화면을 본다. 생애 창은 첫 각성 ack 이전으로 상한이 걸려 있다.
@@ -341,7 +342,7 @@ pub const WIN_CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
 ///   열은 **unix 기준**으로 읽고, Windows 는 콘솔 Ctrl-C 축만 이 flag 가 다룬다고 읽어라.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChildLifetime {
-    /// 부모(CLI)가 죽어도 살아남아야 하는 자식. **유일 사례 = `cys` → `cysd` 기동.**
+    /// 부모가 죽어도 살아남아야 하는 자식. `cys` → `cysd` 기동 · 데몬 Job 밖 스폰(`job_exit` · 크롬·재시작 대기).
     /// 새 세션(unix)·새 프로세스 그룹(Windows) + 콘솔 없음 + **부모 파이프 무점유**.
     Survivor,
     /// 시그널 그룹에서는 떼되 **원장이 pgid 로 회수**하는 장수 자식(채널 브리지).
@@ -7140,6 +7141,8 @@ mod spawn_policy_tests {
         // 1.1.8 병합: 원작자 cycle_jobs.rs(0.14.42) start() 의 cys 자식 — 체인에 SpawnPolicy 등급을 단다.
         ("src/bin/cysd/cycle_jobs.rs", 1),
         ("src/bin/cysd/governance.rs", 2),
+        // TICKET=cysr-1111-winchrome: 데몬 Job 밖 스폰 1곳 — `spawn_policy(Survivor)` 등급을 단다(허용 목록 = job_exit::validate).
+        ("src/bin/cysd/handlers.rs", 1),
         ("src/bin/cysd/hwmon.rs", 3),
         ("src/bin/cysd/main.rs", 1),
         ("src/bin/cysd/native_publication_transition_tests.rs", 2),

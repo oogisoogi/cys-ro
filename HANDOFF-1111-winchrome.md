@@ -2,6 +2,29 @@
 
 가지 fix/1111-win-chrome-job · 기준 060cb75b · 설계 = DESIGN-winchrome.md
 
+## ★현재 판 = 크롬 미리 켜기(TICKET=cysr-1111-chrome-preset · 설계 docs/DESIGN-cu-1111.md §13-7)
+설치·업데이트 때 키를 미리 쓰고, 런타임은 키만 다룬다. 보조 claude · 좌석 재시작 예약 · 크롬 닫기/다시 켜기는 팩에서 코드째 없앴다(맥·윈). 아래 절의 C안·C+ 안내·r4~r6 항목은 **이력**이다.
+
+r6 결과(9124e18b · 윈): r6-1·r5-1·r5-6 통과 · r6-2 실패(보조 claude 훅이 좌석 등록 덮어씀 · events seq 108702/108730) · r6-4 = Ctrl + Shift + T 창마다 1회(새 탭 창 1개 남음) · E2 통과(메뉴 종료 + Job 밖 --restore-last-session = 탭 4/4) · E1' 판정 불가(확장 미로그인).
+r6b(보조 claude `disableAllHooks`)는 커밋하지 않고 버렸다. 그때 재서 남길 것: 옛 인자 `--disallowedTools` 가 끝 문장까지 먹어 보조는 늘 rc 1 · 모델 호출 0 이었고, 연결 파일은 입력 확인 전 시작 단계에서 생겼다.
+
+### 게이트(맥 · 격리 HOME · CYS_* 해제 · 윈 실기 0)
+lib 1153/0 · cys 736/0 · cysd pack 필터 12/0(전체 미실행 · `seed_chrome_preset` 경로만 바뀜) · 크롬 시드 단위 9/0 · 팩 test_computer_control 103/0(191 → 103 = 없앤 경로 시험 정리) · test_dept_tick_stdin 8/0 · 뮤턴트 98 KILLED · 생존 0(없앤 경로 72 삭제 · M200~M212 신설) · lane-parity --strict rc 0 · secret-scan --all 깨끗.
+실제 `cys init-pack --no-install-hook` 격리 실행: 새 설치 = 키 true · 0600 · 표지 · 사용자 false 보존 · 표지 뒤 키 없음 = 다시 안 씀 · 일반 init-pack 기존 프로필 = 다른 칸 보존.
+
+### r7 실기 항목(master 키트)
+- r7-1. 업데이트(`--no-install-hook` 경로) → 좌석 시작 → 좌석 `.claude.json` 키 true · `.cys-chrome-preset` 생김 · 연결 파일(맥)/레지스트리(윈) 생김 · 좌석에 `mcp__claude-in-chrome__*` 노출 · ledger 에 `seat_restart_scheduled`·`chrome_quit` 없음.
+- r7-2. 크롬 꺼진 채/켜진 채 각각: 업데이트 뒤 연결되는가 · 안 되면 크롬을 다음에 켠 뒤 붙는가 · 시각을 적는다. 켜진 채 안 붙으면 공식 문서 문장이 맞는 것이니 그대로 적는다(이번 판은 도구가 닫지 않는다).
+- r7-3. `/chrome` 으로 끈 false → 업데이트 → false 유지. `chrome-disable` 로 키가 없어진 경우도 → 업데이트 → 그대로.
+- r7-4. 맥 1회: r7-1 과 같다 · 처음 연결 파일이 생길 때 「다시 연결」 탭이 뜨는지 적는다.
+- r7-5. 윈 새 설치: 첫 시작 로그인 뒤 다음 시작에서 연결되는가(첫 시작은 OAuth 전이라 연동이 시작되지 않는다 · 바이너리 판정).
+- r7-6. 윈 크롬 꺼짐 + 첫 연결 파일 + 확장 설치됨: 다시 연결 탭이 크롬을 띄우면 그 크롬의 Job 소속(`in-caller-job`) · ↻ 뒤 생존을 적는다.
+
+### 공개 노트 초안(762 몫 · 초안만)
+**크롬 연결을 미리 켜 둡니다.** 업데이트하면 cysr 가 크롬 연결을 켜 두고 다시 시작합니다 — 크롬을 껐다 켜거나 설정을 바꿀 일이 없습니다. `/chrome` 에서 끄신 분은 그대로 꺼져 있습니다.
+
+아래 「공개 노트 문장(윈 · 1안)」은 폐기다(안내 경로가 없어졌다).
+
 ## 끝난 것
 - 데몬 Job 은 평소처럼 이탈 불가. 크롬·재시작 대기만 데몬이 스폰 1회 동안 이탈을 허용해 띄운다(`src/job_exit.rs` · RPC `system.spawn_outside_job` · 숨은 CLI `cys spawn-outside-job`).
 - 재시작 대기가 Job 밖이라 그 자식 rotate 도 밖이다 → rc·ledger·빚 정리까지 간다.
@@ -85,5 +108,10 @@ r5 결과(b3f51379): 통과 r5-1a·1b·3·5·6a · r5-6b 예약 통과(rotate �
 - **Job 밖 크롬 스폰 재사용**: C+ 로 팩의 `--probe` 호출·`chrome_outside` 기록이 빠졌다. Rust 쪽 `--probe`·`--kind chrome` 은 남겼고, `--kind chrome` 은 이전 판 켜기 빚에만 쓴다. A안 때 살릴지 지울지 정한다.
 - **도구 rotate 뒤 권한 강등**(윈 r5 · R8 동형): 도구 rotate 뒤 `\cysd` 가 Highest → Limited 로 바뀌었다(파일 시각 = 새 cysd 시작). 앱 ↻ 2회에서는 유지됐다.
 - **등록을 되살린 뒤 끄기**(윈 r5): 등록을 잃었다가 enable 로 되살린 사용자가 끄면 다시 등록 없음 상태로 돌아간다. enable 이 `nmh_created` 로 적어 disable 이 「내가 만든 것」으로 지우기 때문이다. master 판정 = 제품 논리상 원상 복귀(r5-2 「등록 삭제」 절차의 인공물 성격) · 발행 차단 아님. 끌 때 등록을 지우지 말고 남길지 결정한다.
+- **좌석별 크롬 분리·확장 경합**(master 처분 A · 1.1.11 은 공유 유지): master·워커가 같은 `~/.cys/claude` 라 키를 켜면 전 좌석에 크롬 도구가 뜨고 한 확장을 다툴 수 있다. B안 = 워커 좌석에만 `CLAUDE_CODE_ENABLE_CFC=false` 주입 — 2.1.316 판정 순서 `--chrome` → env → 키라서 env 가 키보다 앞선다. 다만 `agents.json` claude 어댑터가 역할 구분 없이 1개라 launch 쪽 역할 분기가 필요하다.
+- **다시 연결 탭 · 좌석 Job 크롬**(chrome-preset): 처음 연결 파일이 생길 때 Claude Code 가 크롬에 탭을 연다. 끄는 공개 env·설정 없음(2.1.316 판독 · 설계 §13-7). 윈에서 크롬이 꺼져 있었으면 그 크롬은 좌석 Job 안이라 ↻ 때 함께 죽는다 → rotate 관문과 같이 푼다.
+- **Job 밖 스폰 잔재**: `src/job_exit.rs` · `cys spawn-outside-job`(`--kind chrome`·`seat_restart`)을 이제 팩이 전혀 부르지 않는다. 첫 절단 동결로 남겼다. 제거하거나 E2(메뉴 종료 + Job 밖 복원) 재사용에 쓴다.
+- **cys 쪽 보조 claude**(r6b 스윕): 팩 안의 헤드리스 claude 는 `_ensure_nmh` 하나였고 이제 없다. `src/bin/cys.rs:30215` AI 병합 제안의 `claude -p` 는 훅을 끄지 않아 좌석 안에서 부르면 같은 등록 덮어쓰기가 난다.
+- **부서 좌석 미리 켜기**: 설치 시드는 base 팩만이다. 부서 계정 폴더는 `chrome-enable` 을 직접 불러야 켜진다.
 - **끄기 경로 장부**: `chrome-disable` 의 재시작 예약은 ledger 에 `seat_restart_scheduled` 를 쓰지 않는다(enable 은 쓴다). 관찰 일관성을 맞춘다.
 - **G2 겹친 대기의 기록 충돌**: 측정이 한 번 실패하면 대기가 둘 뜨고, 앞 대기의 `owe` 가 뒤 대기의 예약 기록을 지운다. 뒤 대기는 앞 대기 성공 뒤 멈춘다. 예약별 식별자가 필요하다.

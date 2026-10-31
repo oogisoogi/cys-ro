@@ -154,7 +154,7 @@
 | N1 | 노트 받는 방법 첫 줄 · 카톡 ① | (닫힘) 윈·맥 통일 문장에 흡수 | master#3e3039b5 | ☑ |
 | N2 · K② | 노트 받는 방법 맥 줄 | (닫힘) 자동 문장 제거 · 윈·맥 통일 | master#3e3039b5 | ☑ |
 | N3 · K③ | 인텔 맥 | seq 6 x64 행(2-3) | R4 · master | ☐ |
-| N4 · K④ | 컴퓨터 맡기기 절 | 실 크롬 실기(§G ⚠) | master | ☐ |
+| N4 · K④ | 컴퓨터 맡기기 절 | 실 크롬 실기(§G ⚠): 윈 = r4 A2·2·11 + r5 · **맥 실 크롬 1회 = 아침**(master · 박사님 기기 앞 · §K-9) | master | ☐ |
 | N5 | 윈도우 줄별 근거 | 1.1.11 윈 실기 표 칸 대조 | master | ☐ |
 | K⑤ | 카톡 3줄 순서 | 라이브 공지 | 공지 배포 뒤 | ☐ |
 
@@ -393,13 +393,21 @@ r4 키트 aac1b477 ↔ 0fde41c6 차이 = 10파일(문서 9 · `ui/src/publicdocs
 | ☐ 다시 | 1-2 version-check · win-typecheck · pre-tag(+§K-8 주석 읽기) · scan-pack-secrets · H-SECRET-1 | 머리 의존 · 팩 변경 = 비밀 스캔 대상 |
 | ☐ 다시 | 1-2b ANC · 1-2c phoenix 전건 | 머리 의존(§K-6) |
 | ☐ 다시 | 병합 트리에서 `test_computer_control.py` · `mut_computer_control.py` · lane-parity --strict | 바뀐 시험이 합쳐진 트리에서도 그대로인지 |
-| ☐ 다시 | §K-1 `--state-migration` 판독을 크롬 가지까지 연장 | 감사 범위 = v1.1.10..060cb75b · 크롬 가지의 상태 키(`chrome_outside` · `seat_guided_daemon` 등)는 감사 밖 |
+| ☑ 닫힘 | §K-1 `--state-migration` 판독을 크롬 가지까지 연장 | **none**(아래 연장 판독 · master#5f91545d ③) · 병합 뒤 크롬 가지에 새 커밋이 더해지면 그 차이만 다시 |
 | ☐ 다시 | 스택 대조 · win_job_exit 줄 = 새 windows-health 로그에서 읽기만 | Rust 0 → 값 불변 예상 · 측정은 런에 포함 |
 | ☐ 다시 | r5 키트 ↔ 최종 머리 파일 차이 1줄(§K-8 r4 문단 대체) | r5 결과를 태그 판정에 쓰는 근거 |
 | ☐ 조건 | 노트 안내 문장 끝 자리 표시 = r5-2 크롬 생존 확인 뒤에만 · 노트 §G 칸 · 카톡 ④ | 윈 r5 결과 의존 |
-| ☐ 조건 | `trash::` 휴지통 = r5 실기 줄 유지 여부 master 확인 | r4 1번에서 r5 로 넘어가며 빠지지 않게 · CI 빈 판정 |
+| ☐ 옮겨 적기 | **r5 결과 표에 휴지통 줄을 옮겨 적는다**: 윈 r4 15번 = 통과(비우기 꺼짐 · 되살리기 단추 없음 · 윈 master 22:0x 보고) | CI `trash::` 빈 판정의 대체 근거 · 휴지통 코드 변경 0(`060cb75b..b3f51379` 파일·diff 줄 0 · Rust·ui 포함 실측) 이라 r4 결과 승계(master#5f91545d ④) · 최종 키트가 b3f51379 와 다르면 그 차이로 다시 확인 |
+| ☐ 조건 | **맥 실 크롬 1회 = 아침**(켜 둔 때 · 꺼 둔 때) · 내일 아침 master 가 박사님 기기 앞 시간에 | 윈 = r4 A2·2·11 + r5 · 맥 = 기록 없음 · 무인 교회 맥에서 박사님 로그인 크롬을 재시작하지 않는다(master#5f91545d ⑤) · 없으면 노트 크롬 첫 항목을 뺀다 |
 | 그대로 | 1-0 판번 · §6 칸(none 은 위 연장 판독이 뒤집지 않는 한) · 0-8 팩 하한 · §K-7 · 깨끗한 기기 §K-4(맥 불변 · 설치기 무변경 · 판단) | 변경이 닿지 않음 |
 | 그대로 | 로컬 `cargo test --bin cys` CI 형식 | Rust 0 · ci-branch 와 태그 레인이 돌린다 |
+
+**§K-1 연장 판독(060cb75b..b3f51379 · 크롬 가지 전체) = none.**
+
+- 새 상태는 `~/.cys/computer-control/chrome-enable.json` 한 파일의 키뿐이다: `chrome_outside` · `chrome_in_job` · `seat_guided_daemon` · `seat_restart_pid` · `seat_restart_start` 등. 이 파일을 쓰는 제품 코드는 `javis_computer_control.py` 하나이고 그 도구 자체가 1.1.11 신규다 → 개명·삭제·기존 타입 변경 0. Rust 쪽 추가는 RPC·CLI 동사뿐이고 저장 형식 변경 0(state.rs·handlers.rs·cys.rs·job_exit.rs diff 판독).
+- **1.1.10 으로 내림**: `git grep` v1.1.10 = 파일명·키 0건 → 남아도 읽는 코드가 없어 무해. 팩이 1.1.11 로 남은 채 옛 바이너리면 `spawn-outside-job` 이 없어 `job_exit_ok()` 가 False → 크롬을 닫지 않고 안내(`no_job_exit` · 윈만).
+- **다시 올림**: `_load_chrome_state` 는 dict 만 받고 모르는 키를 무시한다. pid 키는 `_same_proc`(pid + 시작 시각) 대조라 옛 값은 죽은 것으로 읽혀 `_chrome_tied_to_seat` = True(재시작 안 함 · 안내) · 대기 기록 무효 · `seat_guided_daemon` 은 데몬 pid 가 달라 빚을 지운다. `pending_seat_restart` 는 남아 있으면 다음 켜기에서 갚는다(설계대로).
+- ⚠근거 = 코드 판독. 이 키가 든 상태로 내림·올림을 왕복 실측한 적은 없다(§6 의 VM 왕복 1회는 이 가지 이전). `factory_reset` 목록에 `computer-control` 있음.
 
 ## J. 1.1.12 BACKLOG(이 준비에서 나온 것)
 

@@ -243,9 +243,9 @@
 
 판독: line 147 = 원작자 전제(`restored_queue`) ↔ 우리 D7⑵ 주차(`state.rs:8379` 주석 · 잠정 판정 S1). 수리 = 단언을 `queue.parked` + `queue.inherited` 로 교체. line 168 1회 적 = 미재현 · 후보 = `state.rs:8362` exited 표시 뒤 최대 1초 주차 지연(제품 경합 가능성 · 미입증). line 150 = 병렬 산물(직렬 13/13 · 두 묶음 동시 발생). 태그 전 1-2c 로 최종 머리에서 phoenix 전건 재확인.
 
-## K. 태그 전 게이트 판정(TICKET=cysr-1111-relprep · 2026-10-31 · worker-relprep · 기준 = 0fde41c6 · 태그 머리 고정 = master#8d598191)
+## K. 태그 전 게이트 판정(TICKET=cysr-1111-relprep · 2026-10-31 · worker-relprep · 아래 표 = 0fde41c6 수치 · ⚠태그 머리 아님)
 
-⛔태그 = **0fde41c6** 고정. 그 뒤 로컬 문서 커밋(BACKLOG · 이 §K · 노트 D17)은 태그를 붙인 뒤 master 지시로 push 한다 — 먼저 push 하면 3런·pre-tag 를 다시 돌려야 한다. 태그 판정 = 밤 윈 r4 실기(키트 aac1b477 · 휴지통 1줄 포함 · master).
+⛔「태그 = 0fde41c6 고정」(master#8d598191)은 윈 r4 1번 실패로 무효(master#c26704d3). 계획 = 윈 r5 통과 → rel/1.1.11 ← fix/1111-win-chrome-job(b3f51379) 병합 → 최종 머리에서 §K-9 재실행 → 태그. 아래 표는 그 재실행의 대조 기준이다.
 
 | 항목 | 결과 | 근거 |
 |---|---|---|
@@ -382,6 +382,24 @@ python3 -c "import runpy,subprocess,sys,urllib.request as u;t=subprocess.check_o
 r4 키트 aac1b477 ↔ 0fde41c6 차이 = 10파일(문서 9 · `ui/src/publicdocs.test.ts` 시험 1) · 코드 변경 0. `USER-MANUAL.md` 의 `include_str!` 5곳은 전부 `mod tests` 안 · 번들 자원 아님.
 
 맨 `cargo test --bin cys`(병렬 · 기본 스택) 넘침 집계 = 060cb75b 0/2 · 0fde41c6 2/2 · 4MB 736/0 · 원인 미상 · 발행 형식 밖(§J · master#7a17878b).
+
+### K-9. b3f51379(C안) 병합 뒤 다시 돌릴 항목(master#c26704d3 ③)
+
+변경 = 팩 Python·SKILL 4파일 + 문서 3파일(`aac1b477..b3f51379` · Rust 0 · 맥 불변 · 시험 194 OK · 뮤턴트 155 KILLED = 1758 수치). 병합 시험 = 충돌 0(`git merge-tree` · 트리 61321c3e · 커밋 안 함). 로컬 문서 커밋(0fde41c6 위)도 함께 머리에 들어가므로 §K 의 「태그 뒤 push」 대신 최종 머리에 같이 올라간다.
+
+| 재실행 | 항목 | 까닭 |
+|---|---|---|
+| ☐ 다시 | 0-1 머리 확정 · 1-1 `secret-scan --all` → push → **dispatch 3런** | 머리 의존 · `rel/**` push 트리거 밖 |
+| ☐ 다시 | 1-2 version-check · win-typecheck · pre-tag(+§K-8 주석 읽기) · scan-pack-secrets · H-SECRET-1 | 머리 의존 · 팩 변경 = 비밀 스캔 대상 |
+| ☐ 다시 | 1-2b ANC · 1-2c phoenix 전건 | 머리 의존(§K-6) |
+| ☐ 다시 | 병합 트리에서 `test_computer_control.py` · `mut_computer_control.py` · lane-parity --strict | 바뀐 시험이 합쳐진 트리에서도 그대로인지 |
+| ☐ 다시 | §K-1 `--state-migration` 판독을 크롬 가지까지 연장 | 감사 범위 = v1.1.10..060cb75b · 크롬 가지의 상태 키(`chrome_outside` · `seat_guided_daemon` 등)는 감사 밖 |
+| ☐ 다시 | 스택 대조 · win_job_exit 줄 = 새 windows-health 로그에서 읽기만 | Rust 0 → 값 불변 예상 · 측정은 런에 포함 |
+| ☐ 다시 | r5 키트 ↔ 최종 머리 파일 차이 1줄(§K-8 r4 문단 대체) | r5 결과를 태그 판정에 쓰는 근거 |
+| ☐ 조건 | 노트 안내 문장 끝 자리 표시 = r5-2 크롬 생존 확인 뒤에만 · 노트 §G 칸 · 카톡 ④ | 윈 r5 결과 의존 |
+| ☐ 조건 | `trash::` 휴지통 = r5 실기 줄 유지 여부 master 확인 | r4 1번에서 r5 로 넘어가며 빠지지 않게 · CI 빈 판정 |
+| 그대로 | 1-0 판번 · §6 칸(none 은 위 연장 판독이 뒤집지 않는 한) · 0-8 팩 하한 · §K-7 · 깨끗한 기기 §K-4(맥 불변 · 설치기 무변경 · 판단) | 변경이 닿지 않음 |
+| 그대로 | 로컬 `cargo test --bin cys` CI 형식 | Rust 0 · ci-branch 와 태그 레인이 돌린다 |
 
 ## J. 1.1.12 BACKLOG(이 준비에서 나온 것)
 

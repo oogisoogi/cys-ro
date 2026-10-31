@@ -5,11 +5,11 @@
 
 ## 최신 상태(2026-10-31 · worker-relprep surface:1761 · TICKET=cysr-1111-relprep) — 아래 옛 절보다 이 절이 우선
 
-- **태그 머리 = 0fde41c6 고정**(master#8d598191) · 원격 rel/1.1.11 = 0fde41c6 · 태그 0.
-- 게이트 전부 통과: 3런 41158073931 · 41158076438 · 41158078742 success · pre-tag rc 0 · 1-2b ANC-OK · phoenix 26/26 · CI 형식 cys 736/0 · 수치 전체 = 체크리스트 §K · §K-8.
-- **로컬 전용 문서 커밋**(0fde41c6 위 · BACKLOG · §K · §K-8 · 노트 D17 · 이 HANDOFF): 태그를 붙인 뒤 master 지시로만 push. 먼저 push 하면 3런·pre-tag 를 다시 돌려야 하고, 태그는 그래도 0fde41c6 이다.
-- 다음 = 밤 윈 r4 회신(키트 aac1b477 · 휴지통 1줄 = master 가 넣음) → r4 결과가 곧 태그 판정 → 태그부터는 master/박사님 게이트. 워커는 대기.
-- 미닫힘: 윈 `trash::` CI 빈 판정(r4 로) · 맨 `cargo test --bin cys` 넘침 060cb75b 0/2 ↔ 0fde41c6 2/2 원인 미상(발행 형식 밖 · §J) · release 스택 여유 미측정(§J) · 노트 「창이 여러 개」 대조 = master.
+- **태그 머리 미정**: 「0fde41c6 고정」은 윈 r4 1번 실패(좌석 크롬 Job 안 · 재현 2/2)로 무효(master#c26704d3). 원격 rel/1.1.11 = 0fde41c6 · 태그 0.
+- 0fde41c6 게이트 수치(대조 기준): 3런 41158073931 · 41158076438 · 41158078742 success · pre-tag rc 0 · 1-2b ANC-OK · phoenix 26/26 · CI 형식 cys 736/0 · 전체 = 체크리스트 §K · §K-8.
+- **로컬 전용 문서 커밋**(0fde41c6 위): BACKLOG · §K · §K-8 · §K-9 · 노트 윈 크롬 1안 · 카톡 주석 · 이 HANDOFF. push = master 지시로만.
+- 다음 = 윈 r5 통과 → rel/1.1.11 ← fix/1111-win-chrome-job(b3f51379) 병합(충돌 0 시험 완료 · 트리 61321c3e · 커밋 안 함) → §K-9 재실행 → 태그부터는 master/박사님 게이트. 워커는 대기.
+- 미닫힘: 윈 `trash::` CI 빈 판정(r5 줄 유지 확인) · 맨 `cargo test --bin cys` 넘침 060cb75b 0/2 ↔ 0fde41c6 2/2 원인 미상(발행 형식 밖 · §J) · release 스택 여유 미측정(§J) · 노트 안내 끝 문장 = r5-2 생존 확인 뒤 · §K-1 감사를 크롬 가지까지 연장.
 - 함정 추가: ⑦ `rel/**` 는 push 트리거 밖 → push 뒤 dispatch 필수(체크리스트 1-1) ⑧ 임시 트리를 `/private/tmp` 아래 두면 `dbg_r12…skill_links` 결정적 적·긴 TMPDIR 이면 SUN_LEN 7건 ⑨ a3 넘침은 단독·소묶음으로 재현 안 된다 → 비교는 맨 명령 전체(약 10분) ⑩ 맥에 `timeout` 없음 · 시험 줄과 `FAILED` 줄이 윈 로그에서 갈라져 찍혀 `... FAILED` grep 은 0 이 나온다.
 
 ## 끝난 것

@@ -1161,7 +1161,7 @@ def cmd_request_prompt(a):
 #     Claude Code 2.1.310 시작 판정 --chrome → CLAUDE_CODE_ENABLE_CFC → 이 키). 다른 키는 읽은 그대로 되쓴다.
 # ② = 좌석 설정으로 `claude -p --chrome` 1회(Claude Code 가 연결 파일을 만든다 · 윈 실기 10-26 20:3x 실측 길).
 # ③ = 「연결 파일을 이번에 새로 만들었고 크롬이 그 전부터 켜져 있었다」일 때만. 키보드·마우스 유휴 ≥ 20초 관문 → 화면 알림 1줄 →
-#     정상 종료(맥 quit · 윈 CloseMainWindow — 강제 종료 0) → --restore-last-session 으로 다시 켬 → 창 수 전후 대조.
+#     정상 종료(맥 quit — 강제 종료 0) → --restore-last-session 으로 다시 켬 → 창 수 전후 대조. 윈은 닫지 않고 안내만 한다(restart_chrome).
 # ④ = 이 좌석의 대화가 끝난 뒤(지연) `cys rotate --skip-depts`(앱 ↻ 재시작 단추와 같은 저장 검증 → 복원 · 대화 이어짐).
 # 외부 명령은 전부 _act 를 지난다 — 시험은 CYS_CC_FAKE_ACT(기록 파일)로 실제 크롬·좌석을 건드리지 않는다.
 IDLE_GATE_SEC = 20
@@ -1472,7 +1472,7 @@ def _chrome_exe():
 def quit_chrome(plat):
     """정상 종료만(강제 종료 0). 맥 = 크롬 자동화 허락이 있으면 AppleScript quit, 없으면 이 사용자의 크롬 **본 프로세스 pid 하나**에
     종료 신호(SIGTERM — 크롬이 정상 종료로 처리해 세션을 저장한다 · SIGKILL 아님 · 이름 일치 일괄 종료(pkill) 금지 = 워커 지침 §1-4).
-    윈 = 창마다 CloseMainWindow(닫기 단추와 같다)."""
+    윈은 부르지 않는다(restart_chrome ★r5-2)."""
     if plat == "darwin":
         if probe_ae("com.google.Chrome") == 0:
             return _act("quit", ["/usr/bin/osascript", "-e", 'tell application "Google Chrome" to quit'])
@@ -1481,12 +1481,9 @@ def quit_chrome(plat):
         if not pid.isdigit():
             return None
         return _act("quit", ["/bin/kill", "-TERM", pid])
-    return _act("quit", ["powershell", "-NoProfile", "-Command",
-                         "Get-Process chrome -ErrorAction SilentlyContinue | ForEach-Object { [void]$_.CloseMainWindow() }"])
 
 
 CHROME_IN_JOB = []     # 이번 실행에서 좌석(Job 안)에서 켠 크롬 — cmd_chrome_enable 이 상태 파일(chrome_in_job)로 옮긴다
-CHROME_OUTSIDE = []    # 이번 실행에서 데몬이 Job 밖에 켠 크롬 — cmd_chrome_enable 이 상태 파일(chrome_outside)로 옮긴다
 
 
 def _outside_job(act, kind, argv, env=None):
@@ -1499,12 +1496,6 @@ def _outside_job(act, kind, argv, env=None):
     return r if r is not None and r.returncode == 0 else None
 
 
-def job_exit_ok():
-    """Job 밖 스폰이 되는가 — 옛 데몬(요청을 모른다)·거부면 False. 크롬을 닫기 **전에** 본다: 다시 켠 크롬이 곧 죽을 길이면 닫지 않는다."""
-    r = _act("job_exit_probe", [_cys_bin(), "spawn-outside-job", "--probe"], timeout=15)
-    return r is not None and r.returncode == 0
-
-
 def open_chrome(plat):
     if plat == "darwin":
         return _act("open", ["/usr/bin/open", "-a", "Google Chrome", "--args", "--restore-last-session"])
@@ -1515,9 +1506,6 @@ def open_chrome(plat):
         r = _act("open", argv, detach=True)
         m = _waiter_mark(r)
         CHROME_IN_JOB.append({"pid": m["seat_restart_pid"], "start": m["seat_restart_start"]})
-    elif re.search(r'"outside_job"\s*:\s*true', r.stdout or ""):
-        m = _waiter_mark(r)
-        CHROME_OUTSIDE.append({"pid": m["seat_restart_pid"], "start": m["seat_restart_start"]})
     return r
 
 
@@ -1624,13 +1612,10 @@ def _in_job_chrome_alive(rec, running):
     return _same_proc(rec.get("pid"), rec.get("start")) if rec.get("pid") else bool(running)
 
 
-def _chrome_tied_to_seat(plat, st):
+def _chrome_tied_to_seat(plat):
     """★r4 1번: 좌석이 띄운 크롬은 Job 안이라 재시작 때 함께 꺼진다(rotate 가 cysd 를 내린 0.7초 뒤 크롬 0개 · 실행 중 프로세스는 Job 에서 못 뺀다).
-    Job 소속을 재는 길이 아직 없으므로 도구가 Job 밖에서 켠 바로 그 크롬이 아니면 켜진 크롬은 위험으로 본다(모르면 재시작하지 않는 쪽 · 맥 해당 없음)."""
-    if plat != "win" or chrome_running(plat) is False:
-        return False
-    rec = st.get("chrome_outside")
-    return not (isinstance(rec, dict) and _same_proc(rec.get("pid"), rec.get("start")))
+    Job 소속을 재는 길이 아직 없으므로 윈은 크롬이 꺼졌다고 확인될 때만 재시작한다(모르면 재시작하지 않는 쪽 · 맥 해당 없음)."""
+    return plat == "win" and chrome_running(plat) is not False
 
 
 def _daemon_pid():
@@ -1907,7 +1892,6 @@ def cmd_chrome_enable(a):
                         "다시 켜 주시면 바로 연결됩니다." % r.split(":", 1)[1])
         elif r.startswith("not_quit"):
             pending.append("chrome_restart")
-            manual = plat == "win"
             said.append("크롬이 스스로 닫히지 않아 그대로 두었습니다(강제로 끄지 않습니다). 크롬을 닫으셨다 켜시면 바로 연결됩니다.")
         elif r.startswith("not_reopened:"):
             pending.append("chrome_restart")
@@ -1925,9 +1909,6 @@ def cmd_chrome_enable(a):
     if CHROME_IN_JOB:
         st["chrome_in_job"] = CHROME_IN_JOB[-1]
         del CHROME_IN_JOB[:]
-    if CHROME_OUTSIDE:
-        st["chrome_outside"] = CHROME_OUTSIDE[-1]
-        del CHROME_OUTSIDE[:]
     in_job = _in_job_chrome_alive(st.get("chrome_in_job"), chrome_running(plat) if st.get("chrome_in_job") else None)
     if not in_job:
         st.pop("chrome_in_job", None)
@@ -1945,7 +1926,7 @@ def cmd_chrome_enable(a):
         sched = st.get("seat_restart_scheduled_at")
         if want_seat and isinstance(sched, (int, float)) and _now() - sched < SEAT_WAIT_MAX_SEC + 120 and _waiter_alive(st):
             said.append("cysr 재시작은 이미 예약돼 있습니다(이 대화가 끝나면 합니다).")
-        elif want_seat and (in_job or _chrome_tied_to_seat(plat, st)):
+        elif want_seat and (in_job or _chrome_tied_to_seat(plat)):
             st["pending_seat_restart"] = True
             st["seat_guided_daemon"] = st.get("seat_guided_daemon") or _daemon_pid()
             seat_manual = True
@@ -1964,6 +1945,8 @@ def cmd_chrome_enable(a):
                 _ledger({"event": "seat_restart_scheduled", "delay": SEAT_RESTART_DELAY_SEC})
                 done.append("seat_restart")
                 said.append("이 대화가 끝나면 cysr 가 잠깐 다시 시작합니다(지금 대화는 저장하고 이어집니다).")
+    if manual and not seat_manual:
+        said.append(WIN_TAB_SAY)
     if owed or changed or want_seat or "chrome_restart" in pending or st != _load_chrome_state():
         _write_json(_p(CHROME_STATE), st)
     head = ("크롬 연결을 켰습니다(기본 켜기%s)." % (" · 연결 파일" if "nmh" in done else "")
@@ -2012,24 +1995,22 @@ def reopen_chrome(plat):
 
 
 WIN_RESTART_SAY = {
+    "one_window": "크롬이 켜져 있어 닫지 않았습니다. 크롬 오른쪽 위 ⋮ 메뉴의 「종료」로 닫았다가 다시 켜 주시면 바로 연결됩니다.",
     "unknown_windows": "크롬 창이 몇 개인지 확인하지 못해 닫지 않았습니다. 크롬 오른쪽 위 ⋮ 메뉴의 「종료」로 닫았다가 다시 켜 주시면 바로 연결됩니다.",
     "zero_windows": "크롬 창을 찾지 못했습니다. 크롬이 뒤에서 돌고 있다면 작업 표시줄 오른쪽 아래 크롬 아이콘에서 「종료」를 누른 뒤 크롬을 켜 주시면 바로 연결됩니다.",
-    "no_job_exit": "지금은 크롬을 다시 켜도 cysr 재시작 때 함께 닫힐 수 있어 닫지 않았습니다. 크롬 오른쪽 위 ⋮ 메뉴의 「종료」로 닫았다가 직접 켜 주시면 "
-                   "바로 연결됩니다.",
-    "not_quit_background": "크롬 창은 닫혔지만 크롬이 뒤에서 계속 돌고 있어 다시 켜지 못했습니다. 작업 표시줄 오른쪽 아래 크롬 아이콘에서 「종료」를 누른 뒤 "
-                           "크롬을 켜 주시면 바로 연결됩니다.",
 }
 
 
+WIN_TAB_SAY = "크롬을 다시 켠 뒤 Ctrl + Shift + T 를 누르면 닫혔던 창과 탭이 돌아옵니다."       # 윈 r5-3/4: 크롬 기본 설정은 다시 켜도 「새 탭」만 연다
 WIN_SEAT_SAY = ("cysr 를 다시 시작하면 지금 켜진 크롬도 같이 꺼질 수 있어 다시 시작은 잠시 미뤘습니다. 이 순서로 해 주세요. "
                 "① %s의 「종료」로 크롬을 닫습니다. ② cysr 위쪽 ↻ 재시작을 누릅니다. ③ 크롬은 시작 메뉴나 바탕 화면 아이콘으로 켭니다. "
-                "크롬 창이 여러 개여도 창을 하나씩 닫지 말고 이 순서대로 해 주세요.")
+                "크롬 창이 여러 개여도 창을 하나씩 닫지 말고 이 순서대로 해 주세요. " + WIN_TAB_SAY)
 SEAT_MANUAL_RC = 6          # 할 일은 했지만 좌석 재시작은 사용자 몫 — `--seat-restart now` 가 재시작을 못 했음을 호출자가 구분한다
 
 
 def _seat_chrome_say(r=""):
     """좌석 재시작을 사용자에게 맡기는 안내. r = restart_chrome 결과(창이 없으면 ⋮ 메뉴가 없어 트레이 아이콘으로 닫는다)."""
-    return WIN_SEAT_SAY % ("작업 표시줄 오른쪽 아래 크롬 아이콘" if r in ("zero_windows", "not_quit_background") else "크롬 오른쪽 위 ⋮ 메뉴")
+    return WIN_SEAT_SAY % ("작업 표시줄 오른쪽 아래 크롬 아이콘" if r == "zero_windows" else "크롬 오른쪽 위 ⋮ 메뉴")
 
 
 def _manual(n):
@@ -2039,30 +2020,22 @@ def _manual(n):
 def restart_chrome(plat, wait, st, want_seat):
     """유휴 관문 → 알림 → (유휴 재확인) → 정상 종료 → 다시 켬 → 창·탭 수 대조.
     반환 = say 문장 · "deferred" · "many_windows:N" · WIN_RESTART_SAY 의 키 · "not_quit:…" · "not_reopened:failed|unknown".
-    ★R5b: 윈은 창이 하나일 때만 닫는다. 크롬은 다른 창이 남아 있을 때 닫힌 창을 세션에서 바로 지운다(session_service.cc WindowClosing) —
-    창을 하나씩 닫으면 마지막 창만 되살아나고 탭 수는 윈에서 셀 길이가 없어 그 손실을 알 수도 없다. 맥의 quit 은 메뉴 「종료」라 해당 없다."""
+    ★r5-2: 윈은 켜진 크롬을 닫지 않는다 — 창 1개를 닫고 다시 켜 보니 탭이 돌아오지 않았고 다시 켠 크롬도 자동 재시작으로 이어지지 못했다(스폰한 chrome.exe 가
+    본체를 따로 띄우고 끝난다). 창 수는 안내 문장을 고르는 데만 쓴다."""
+    if plat == "win":
+        n = chrome_windows(plat)[0]
+        _ledger({"event": "chrome_restart_manual", "windows": n})
+        return "one_window" if n == 1 else _manual(n)
     if not wait_idle(plat, wait):
         _ledger({"event": "chrome_restart_deferred"})
         return "deferred"
     before = chrome_windows(plat)
-    if plat == "win":
-        if before[0] != 1:
-            _ledger({"event": "chrome_restart_manual", "windows": before[0]})
-            return _manual(before[0])
-        if not job_exit_ok():
-            _ledger({"event": "chrome_restart_manual", "why": "no_job_exit"})
-            return "no_job_exit"
     notify("크롬을 잠깐 다시 켭니다", "Claude 연결을 붙이려고 크롬을 닫았다가 바로 다시 켭니다. 열린 탭은 그대로 돌아옵니다.")
     _sleep(3)
     idle = idle_seconds(plat)        # ★codex R1: 알림을 보고 다시 손을 댔으면 닫지 않는다(관문 통과 뒤 3초 사이)
     if idle is None or idle < IDLE_GATE_SEC:
         _ledger({"event": "chrome_restart_deferred", "after_notice": True})
         return "deferred"
-    if plat == "win":                # 알림 3초 사이에 창이 늘었으면 닫지 않는다(입력 없이 열린 창은 유휴 관문에 안 잡힌다)
-        now = chrome_windows(plat)[0]
-        if now != 1:
-            _ledger({"event": "chrome_restart_manual", "windows": now})
-            return _manual(now)
     # ★F3: 닫은 뒤 끊겨도 크롬이 닫힌 채 잊히지 않게 빚·시도 횟수를 **닫기 전에** 디스크에 둔다
     st.update(pending_chrome_restart=True, pending_chrome_reopen=True, chrome_reopen_tries=1, chrome_reopen_at=_now())
     if want_seat:
@@ -2073,11 +2046,10 @@ def restart_chrome(plat, wait, st, want_seat):
     t = 0
     while chrome_running(plat):
         if t >= CHROME_QUIT_WAIT_SEC:
-            left = chrome_windows(plat)[0] if plat == "win" else None
-            _ledger({"event": "chrome_not_quit", "windows": left})
+            _ledger({"event": "chrome_not_quit"})
             for k in ("pending_chrome_reopen", "chrome_reopen_tries", "chrome_reopen_at"):
                 st.pop(k, None)              # 닫히지 않았다 — 켜기 빚이 아니다
-            return "not_quit_background" if left == 0 else "not_quit:%d" % t
+            return "not_quit:%d" % t
         _sleep(1)
         t += 1
     res = reopen_chrome(plat)
@@ -2150,7 +2122,7 @@ def cmd_chrome_disable(a):
             pass
     seat_manual = False
     if a.seat_restart in ("auto", "now"):
-        if _chrome_tied_to_seat(plat, st):
+        if _chrome_tied_to_seat(plat):
             seat_manual = True
             said.append(_seat_chrome_say())
         elif schedule_seat_restart(SEAT_RESTART_DELAY_SEC, after_disable=True) is not None:

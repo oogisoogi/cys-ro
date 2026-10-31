@@ -17,19 +17,27 @@ lib 1142/0 · cys 736/0(기본 스택 · CI 동조건) · cysd 3222/0(1e35ac5f �
 - ⚠ `cys spawn-outside-job` 을 clap 최상위 `Command` 변형으로 넣지 말 것 — 파서 프레임이 커져 aid_s5_cli_tests 가 기본 2MB 시험 스레드에서 넘친다(CI 41141594121 · `cys.rs` main 의 갱신 3동사 주석과 같은 이유). main 앞단에서 처리한다.
 - ⚠ BREAKAWAY_OK 를 상시로 켜지 말 것 — 동봉 Git Bash 가 모든 자식에 이탈 flag 를 붙인다(소스 핀 `breakaway_bit_stays_inside_this_module`).
 - 윈 실 프로세스 시험 `tests/win_job_exit.rs` 는 맥에서 0건이다. 컴파일은 win-typecheck 로 확인했고 **실행은 CI windows-health 가 처음이다**.
-- 팩만 새것이고 데몬이 옛것이면 `--probe` 가 실패해 크롬을 닫지 않고 안내한다(rotate 뒤 정상).
+- C+ 뒤로 팩은 윈에서 크롬을 닫지 않아 `--probe` 를 부르지 않는다. 대기 스폰(`--kind seat_restart`)·이전 판이 남긴 켜기 빚(`--kind chrome`)만 Job 밖 스폰을 쓴다.
+
+## 윈 실기 항목(r6 · C+ · 설치본은 master 가 새로 만든다)
+r5 결과(b3f51379): 통과 r5-1a·1b·3·5·6a · r5-6b 예약 통과(rotate 대기) · 실패 r5-2 · r5-4 기록(탭 미복원 · restore_on_startup 기본). r5-1·r5-6 은 코드 경로가 같아 r6-1 뒤 한 번 더 본다.
+
+- r6-1. r5-2 대체: 크롬 0개 → 좌석에서 창 1개 → 연결 파일 등록 지움 → `chrome-enable` → 크롬 닫기 0(같은 본체 pid · 탭 그대로) · 다시 켜기 0 · 예약 0 · rc 0 · `seat_restart_manual:true` · `pending` 에 `chrome_restart` · 순서 문장. ledger 에 `chrome_quit`·`seat_restart_scheduled` 없음. `--seat-restart now` 면 rc 6.
+- r6-2. 이어서 크롬을 ⋮ 「종료」로 닫아 크롬 0개 → `chrome-enable` → 예약 1 · rotate rc ∈ {0,21,25} · 좌석 복원 · 빚 없음.
+- r6-4. 한 줄 대조(윈 r5-3/4 근거): 안내 순서대로 ⋮ 「종료」 → ↻ → 시작 메뉴에서 켠 뒤 Ctrl + Shift + T → 닫혔던 창·탭이 돌아오는지(창 수·탭 수 적기). 이 문장의 효과는 아직 재지 않았다. 돌아오지 않으면 문장을 뺀다.
+- r6-3. 맥 회귀: S3(창 1개 + 연결 파일 새로 만들기) → 닫고 다시 켬 · 예약 1. 맥 코드는 바꾸지 않았고 가짜 시험 `test_r5_mac_s3_still_closes_reopens_and_restarts` 로만 확인했다.
 
 ## 윈 실기 항목(r5 · 코드가 달라진 것 먼저)
 모든 재현은 **크롬 프로세스 0개에서** 시작한다(도구 크롬이 남아 있으면 좌석에서 띄워도 Job 밖 크롬이 쓰인다). Job 소속은 `in-caller-job`(jobq.ps1)으로 재고 anyjob 은 근거로 쓰지 않는다.
 
 - r5-1. 1번 재시험: 좌석에서 크롬 + `chrome-enable --seat-restart now`(윈 재현과 같은 호출) → rc 6 · `seat_restart_manual:true` · ledger 에 `seat_restart_scheduled` 없음 · rotate 없음 · 크롬 그대로 · 순서 문장. `--seat-restart auto` + 키 꺼짐(S1)은 rc 0 · 나머지 같음.
-- r5-2. S3 대조: 크롬 0개 → 좌석에서 창 1개 → 연결 파일 등록 지움 → chrome-enable → 닫고 다시 켬 · 예약 1 · rotate rc ∈ {0,21,25} · 크롬 **생존**. `chrome-enable.json` 의 `chrome_outside.pid` 가 크롬 본체(`--type=` 없는 chrome.exe)인지 확인. 다르면 스폰 pid 가 곧 끝나는 프로세스라 S3 도 안내로 떨어진다(안전하지만 자동 재시작이 사라진다).
+- ~~r5-2. S3 대조~~ **r5 실패 → C+ 로 대체(r6-1·r6-2)**. 원문: 크롬 0개 → 좌석에서 창 1개 → 연결 파일 등록 지움 → chrome-enable → 닫고 다시 켬 · 예약 1 · rotate rc ∈ {0,21,25} · 크롬 **생존**. `chrome-enable.json` 의 `chrome_outside.pid` 가 크롬 본체(`--type=` 없는 chrome.exe)인지 확인. 다르면 스폰 pid 가 곧 끝나는 프로세스라 S3 도 안내로 떨어진다(안전하지만 자동 재시작이 사라진다).
 - r5-3. 12번 개정: 창 2개 → 안내(예약 0) → ⋮ 「종료」 → ↻ → 시작 메뉴에서 켬 → chrome-enable → 「새로 켜신 것을 확인」 · 안내 되풀이 없음 · 빚 없음(`seat_guided_daemon`·`pending_seat_restart` 없음). 그 크롬이 in-caller-job=False 이고 다음 ↻ 뒤에도 **생존**하는지.
 - r5-4. 탭 복원 재기: 안내 순서를 따른 뒤 ③ 으로 켠 크롬의 창·탭(강제 사망 때는 2창 2탭 → 1창 1탭이었다). 크롬 「시작 그룹」 설정에 따라 다를 수 있어 설정값도 적는다.
 - r5-5. 6·10 회귀: 6번은 크롬 0개 또는 S3 상태에서 · 10번은 대기를 죽인 뒤 크롬 0개에서(켜진 크롬이 있으면 이제 예약 대신 안내가 나온다).
 - r5-6. `chrome-disable --seat-restart auto` + 좌석 크롬 → 예약 0 · ↻ 안내. 크롬 0개 → 예약 1.
 
-아래 r4 항목 중 1번은 위로 대체됐고, 나머지는 판이 바뀌었으니 필요한 것만 다시 본다. 4번 「창 1개 → 닫고 다시 켬」은 연결 파일을 새로 만들 때만 일어난다.
+아래 r4 항목 중 1번은 위로 대체됐고, 나머지는 판이 바뀌었으니 필요한 것만 다시 본다. 4번 「창 1개 → 닫고 다시 켬」은 C+ 로 윈에서 없어졌다.
 
 ## 윈 실기 항목(r4)
 1. ~~R5 A: 좌석에서 띄운 크롬 + chrome-enable → 좌석 재시작. 크롬 생존.~~ **r4 실패 · 재현 2/2**(S8 · cysd 종료 0.7초 뒤 크롬 0개 · 2창 2탭 → 1창 1탭). r5-1·r5-2 로 대체.
@@ -48,9 +56,9 @@ lib 1142/0 · cys 736/0(기본 스택 · CI 동조건) · cysd 3222/0(1e35ac5f �
 14. CI 로그 `[measure]` 줄: BREAKAWAY_OK 상시 + Git Bash 자식 결과.
 
 ## 공개 노트 문장(윈 · 1안)
-**크롬 연결을 켤 때 크롬이 꺼질 수 있는 경우, cysr 가 먼저 안내합니다.** 안내가 나오면 크롬 오른쪽 위 ⋮ 메뉴의 「종료」로 크롬을 닫고, cysr 위쪽 ↻ 재시작을 누른 뒤, 크롬은 시작 메뉴나 바탕 화면에서 켜 주세요. cysr 가 켠 크롬은 cysr 가 다시 시작해도 켜져 있습니다.
+**크롬 연결을 켤 때 크롬이 꺼질 수 있는 경우, cysr 가 먼저 안내합니다.** 안내가 나오면 크롬 오른쪽 위 ⋮ 메뉴의 「종료」로 크롬을 닫고, cysr 위쪽 ↻ 재시작을 누른 뒤, 크롬은 시작 메뉴나 바탕 화면에서 켜 주세요. 크롬을 다시 켠 뒤 Ctrl + Shift + T 를 누르면 닫혔던 창과 탭이 돌아옵니다.
 
-(마지막 문장은 r5-2 생존 확인 뒤에만 쓴다. 옛 문장 「그대로 켜져 있습니다」는 r4 1번으로 거짓이 확인돼 폐기했다.)
+(옛 문장 「그대로 켜져 있습니다」는 r4 1번으로, 「cysr 가 켠 크롬은 cysr 가 다시 시작해도 켜져 있습니다」는 C+ 로 그 길이 없어져 폐기했다.)
 
 증류: memory `win-job-breakaway-msys-auto` · `chrome-window-close-session-loss`.
 
@@ -71,4 +79,11 @@ lib 1142/0 · cys 736/0(기본 스택 · CI 동조건) · cysd 3222/0(1e35ac5f �
 - **rotate 관문**: 앱 ↻ · 좌석에서 친 `cys rotate` 는 chrome-enable 을 거치지 않아 좌석 크롬을 안내 없이 죽인다(윈 실측 = 탭 손실). rotate 앞에 Job 안 크롬 확인이 필요하다.
 - **바깥 Job 의문**: 도구 크롬은 in-caller-job=False 인데 anyjob=J 다. 설계 §2-3 의 바깥 Job 에 남은 것일 수 있다. 그 Job 의 정체와 닫힐 때 크롬이 어떻게 되는지 미확인이다(r4 A2 에서 rotate 는 견뎠다).
 - **↻ 인지 오판**: 안내 뒤 데몬이 사용자의 ↻ 말고 다른 이유(충돌·갱신)로 바뀌어도 빚을 지운다. 그 경우 좌석 재시작 안내가 한 번 빠진다.
+- **본체 재부모 pid**(윈 r5-2): 데몬이 띄운 chrome.exe(24116)는 곧 끝나고 본체(19556 · `--type=` 없음 · Medium)가 따로 뜬다. 스폰 pid 로는 본체를 못 가리킨다. 원인은 High 좌석에서 Medium 으로 내려가는 재실행으로 본다(본체 명령줄 `--do-not-de-elevate`). 닫고 다시 켜기를 되살리려면 본체를 찾아 기록해야 한다. A안과 함께 고친다.
+- **탭 복원**(윈 r5-2): 창 1개를 닫고 `--restore-last-session` 으로 켰더니 탭 3개(example.com 포함)가 「새 탭」 1개로 줄었다. 원인 미특정이다. 후보 = `exit_type=Crashed` 유지 · 크롬 시작 설정 · 강제 종료 경로. 「`--profile-directory` 누락으로 다른 프로필이 열렸다」는 가설은 기각됐다(재오픈 크롬 = Profile 6 · Preferences·History·Cookies 00:24~25 갱신 · Default 는 10-26 뒤 변화 없음).
+- **Profile 6 exit_type=Crashed**(윈 r5-2): 재오픈 뒤에도 Crashed 가 유지됐다. 이전 강제 종료의 흔적인지, 크롬이 왜 정상 기록으로 못 돌아오는지 재고 탭 복원 건과 함께 본다.
+- **Job 밖 크롬 스폰 재사용**: C+ 로 팩의 `--probe` 호출·`chrome_outside` 기록이 빠졌다. Rust 쪽 `--probe`·`--kind chrome` 은 남겼고, `--kind chrome` 은 이전 판 켜기 빚에만 쓴다. A안 때 살릴지 지울지 정한다.
+- **도구 rotate 뒤 권한 강등**(윈 r5 · R8 동형): 도구 rotate 뒤 `\cysd` 가 Highest → Limited 로 바뀌었다(파일 시각 = 새 cysd 시작). 앱 ↻ 2회에서는 유지됐다.
+- **등록을 되살린 뒤 끄기**(윈 r5): 등록을 잃었다가 enable 로 되살린 사용자가 끄면 다시 등록 없음 상태로 돌아간다. enable 이 `nmh_created` 로 적어 disable 이 「내가 만든 것」으로 지우기 때문이다. master 판정 = 제품 논리상 원상 복귀(r5-2 「등록 삭제」 절차의 인공물 성격) · 발행 차단 아님. 끌 때 등록을 지우지 말고 남길지 결정한다.
+- **끄기 경로 장부**: `chrome-disable` 의 재시작 예약은 ledger 에 `seat_restart_scheduled` 를 쓰지 않는다(enable 은 쓴다). 관찰 일관성을 맞춘다.
 - **G2 겹친 대기의 기록 충돌**: 측정이 한 번 실패하면 대기가 둘 뜨고, 앞 대기의 `owe` 가 뒤 대기의 예약 기록을 지운다. 뒤 대기는 앞 대기 성공 뒤 멈춘다. 예약별 식별자가 필요하다.

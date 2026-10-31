@@ -90,6 +90,18 @@ r4 윈 실측: 좌석에서 띄운 크롬 + `chrome-enable --seat-restart now` �
 - **`:814` 계약과 충돌 없음**: C 는 크롬을 닫지 않으므로 「연결 파일이 있으면 크롬을 건드리지 않는다」는 그대로다(충돌은 A안의 몫이다).
 - **맥**: `_chrome_tied_to_seat` 가 첫 줄에서 False · `seat_guided_daemon` 을 쓰는 곳은 관문 안이라 identify 호출도 0.
 
+## 3-5. r5-2 실패 → C+(master 처분)
+윈 r5-2: S3(창 1개 + 연결 파일 새로 만들기)에서 도구가 크롬을 닫고 다시 켰지만 예약은 0이고 탭 3개가 「새 탭」 1개가 됐다. 데몬이 띄운 chrome.exe 는 곧 끝나고 본체가 따로 떠서 `chrome_outside` 기록이 본체를 못 가리켰다. 크롬을 닫았다 켜서 탭을 잃고 재시작도 못 하는 조합이다.
+
+1.1.11 윈 규칙: **크롬이 켜져 있으면 도구가 닫지 않고, 크롬이 꺼졌다고 확인될 때만 재시작을 예약한다.**
+
+- `restart_chrome` 은 윈에서 창 수로 안내 문장만 고른다(`one_window`·`many_windows:N`·`zero_windows`·`unknown_windows`). 유휴를 기다리지 않는다.
+- `_chrome_tied_to_seat` = 윈 ∧ 크롬이 꺼졌다고 확인되지 않음. `chrome_outside` 기록과 예외를 뺐다.
+- 윈 닫기 경로(`quit_chrome` 윈 분기 · `job_exit_ok` · 알림 뒤 창 재확인 · `not_quit_background`)는 도달할 길이 없어 지웠다. 되살릴 때는 b3f51379 를 본다.
+- 이전 판이 남긴 켜기 빚은 그대로 갚는다(`open_chrome` · Job 밖 스폰 유지). 다시 켠 크롬이 켜져 있으면 예약하지 않고 안내한다.
+- 안내 끝에 `WIN_TAB_SAY`(Ctrl + Shift + T)를 붙인다. 크롬 기본 설정은 다시 켜도 「새 탭」만 연다(윈 r5-3/4 · restore_on_startup 값 없음). 재시작 없는 안내(`--seat-restart no`)에도 붙고, 맥은 안내 경로가 없어 넣지 않는다.
+- 맥은 바뀌지 않는다.
+
 ## 4. 범위 밖 · 기록만
 
 - **R5 B 경로**: 크롬이 꺼져 있을 때 `claude -p --chrome` 이 크롬을 띄우면 그 크롬은 Job 안이다. 사용자의 기존 탭은 없지만 좌석 재시작 때 닫힐 수 있다. 실기 R5 B 로 재고, 재현되면 1.1.12.

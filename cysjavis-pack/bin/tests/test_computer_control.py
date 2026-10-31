@@ -769,6 +769,9 @@ class TestGrants(Base):
 
 
 # ───────────────────────── 크롬 켜기·끄기 = 마스터 직접 (cu-1111-precedent) ─────────────────────────
+TAB_SAY = "크롬을 다시 켠 뒤 Ctrl + Shift + T 를 누르면 닫혔던 창과 탭이 돌아옵니다."     # 문구 고정(master r5-3/4)
+
+
 class TestChromeEnable(Base):
     """실제 크롬·좌석 무접촉: 외부 명령은 전부 CYS_CC_FAKE_ACT 기록 파일로만 간다(더블)."""
     def setUp(self):
@@ -1405,22 +1408,6 @@ class TestChromeEnable(Base):
         self.assertNotIn("open", self.kinds())
         self.assertIn("강제로 끄지 않습니다", d["say"])
 
-    def test_win_quit_is_close_main_window(self):
-        os.environ["CYS_CC_PLATFORM"] = "win"
-        self.set_probes(chrome={"app": True, "profiles": 1, "with_ext": 1, "ext_enabled": True,
-                                "nmh": False, "default_on": False, "playwright_ext": False},
-                        chrome_running=[True, False, True], windows=1)
-        self.m.platform = lambda: "win"
-        self.m._nmh_ok = lambda plat, ud, _s=[False, False, True]: _s.pop(0) if len(_s) > 1 else _s[0]
-        rc, d, _ = self.run_cli("chrome-enable")
-        quit = " ".join([a for a in self.acts() if a["kind"] == "quit"][0]["argv"])
-        self.assertIn("CloseMainWindow", quit)
-        op = [a for a in self.acts() if a["kind"] == "open"][0]
-        self.assertFalse(op["detach"])                       # 좌석에서 직접 띄우면 Job 안이라 재시작 때 함께 죽는다(R5 A)
-        self.assertEqual(op["argv"][1:4], ["spawn-outside-job", "--kind", "chrome"])
-        self.assertEqual(op["argv"][-1], "--restore-last-session")
-        self.assertLess(self.kinds().index("job_exit_probe"), self.kinds().index("quit"))    # 닫기 전에 본다
-
     def win_restart_setup(self, **kw):
         os.environ["CYS_CC_PLATFORM"] = "win"
         self.set_probes(chrome={"app": True, "profiles": 1, "with_ext": 1, "ext_enabled": True,
@@ -1443,16 +1430,8 @@ class TestChromeEnable(Base):
         self.assertNotIn("quit", self.kinds())
         self.assertIn("확인하지 못해 닫지 않았습니다", d["say"])
 
-    def test_win_old_daemon_means_chrome_is_not_closed(self):
-        self.win_restart_setup(chrome_running=[True], windows=1, act={"job_exit_probe": {"rc": 1}})
-        rc, d, _ = self.run_cli("chrome-enable")
-        self.assertNotIn("quit", self.kinds())
-        self.assertIn("닫지 않았습니다", d["say"])
-        self.assertIn("chrome_restart", d["pending"])
-
     def test_win_refused_job_exit_still_reopens_closed_chrome(self):
-        self.win_restart_setup(chrome_running=[True, False, True], windows=1,
-                               act={"open": [{"rc": 1}, {"rc": 0}]})
+        self.reopen_debt(running=[False, True], act={"open": [{"rc": 1}, {"rc": 0}]}, chrome_reopen_tries=1, chrome_reopen_at=0, pending_seat_restart=True)
         rc, d, _ = self.run_cli("chrome-enable")
         opens = [a for a in self.acts() if a["kind"] == "open"]
         self.assertEqual([o["detach"] for o in opens], [False, True])
@@ -1461,25 +1440,8 @@ class TestChromeEnable(Base):
         self.assertNotIn("seat_restart", self.kinds())       # Job 안 크롬을 자동 재시작으로 죽이지 않는다
         self.assertIn("↻", d["say"])
 
-    def test_win_window_opened_during_notice_is_not_closed(self):
-        self.win_restart_setup(chrome_running=[True], windows=[1, 2])
-        rc, d, _ = self.run_cli("chrome-enable")
-        self.assertNotIn("quit", self.kinds())
-        self.assertIn("크롬 창이 2개 열려", d["say"])
-
-    def test_win_background_chrome_is_described_truthfully(self):
-        self.win_restart_setup(chrome_running=[True] * 60, windows=[1, 1, 0])
-        rc, d, _ = self.run_cli("chrome-enable")
-        self.assertIn("크롬 창은 닫혔지만", d["say"])
-        self.assertNotIn("그대로 두었습니다", d["say"])
-
-    def test_win_still_open_chrome_keeps_left_alone_sentence(self):
-        self.win_restart_setup(chrome_running=[True] * 60, windows=[1, 1, 1])
-        rc, d, _ = self.run_cli("chrome-enable")
-        self.assertIn("그대로 두었습니다", d["say"])
-
     def test_chrome_that_dies_right_after_reopen_is_failed(self):      # R5c
-        self.win_restart_setup(chrome_running=[True, False, True, True, False], windows=1)
+        self.reopen_debt(running=[False, True, True, False], chrome_reopen_tries=1, chrome_reopen_at=0)
         rc, d, _ = self.run_cli("chrome-enable")
         self.assertIn("chrome_restart", d["pending"])
         self.assertNotIn("chrome_restart", d["done"])
@@ -1494,11 +1456,11 @@ class TestChromeEnable(Base):
         self.set_probes(chrome_running=[True] * (self.m.REOPEN_STABLE_SEC + 1) + [False])
         self.assertEqual(self.m.reopen_chrome("win"), "ok")
 
-    def reopen_debt(self, **st):
+    def reopen_debt(self, running=(False,), act=None, **st):
         os.makedirs(self.state, exist_ok=True)
         with open(os.path.join(self.state, self.m.CHROME_STATE), "w", encoding="utf-8") as f:
             json.dump(dict({"pending_chrome_reopen": True, "pending_chrome_restart": True}, **st), f)
-        self.win_restart_setup(chrome_running=[False], windows=1)
+        self.win_restart_setup(chrome_running=list(running), windows=1, act=act or {})
         self.m._nmh_ok = lambda plat, ud: True
 
     def test_reopen_debt_keeps_minimum_gap(self):
@@ -1516,7 +1478,8 @@ class TestChromeEnable(Base):
         self.assertFalse(self.m._load_chrome_state().get("pending_chrome_reopen"))
 
     def test_chrome_gone_right_after_first_sighting_is_not_reopened(self):     # r3 실측: 켠 직후 닫힘 → chrome_reopened(실제 0개)
-        self.win_restart_setup(chrome_running=[True, False, True, False], windows=1)
+        self.make_chrome(nmh=False)
+        self.set_probes(chrome_running=[True, False, True, False], act={"nmh": self.nmh_touch()})
         rc, d, _ = self.run_cli("chrome-enable")
         with open(os.path.join(self.state, "ledger.jsonl"), encoding="utf-8") as f:
             events = [json.loads(x).get("event") for x in f]
@@ -1592,14 +1555,6 @@ class TestChromeEnable(Base):
         self.assertTrue(st["pending_seat_restart"])
         self.assertTrue(d["seat_restart_manual"])
 
-    def test_f1_chrome_recorded_outside_job_lets_seat_restart_go(self):       # F1 계약: 크롬 빚과 뗀 좌석 재시작은 Job 밖 기록이 있는 크롬만 간다
-        self.win_restart_setup(chrome_running=[True], windows=2, act={"seat_restart": {"out": "123"}}, proc_start="T")
-        self.state_with({"chrome_outside": {"pid": 9, "start": "T"}})
-        rc, d, _ = self.run_cli("chrome-enable")
-        self.assertIn("크롬 창이 2개 열려", d["say"])
-        self.assertEqual(self.kinds().count("seat_restart"), 1)
-        self.assertNotIn("seat_restart_manual", d)
-
     def test_f1_user_restart_after_guidance_clears_debt_without_closing(self):
         self.win_restart_setup(chrome_running=[True], windows=2, act={"seat_restart": {"out": "123"}}, proc_start="T")
         self.run_cli("chrome-enable")
@@ -1624,11 +1579,11 @@ class TestChromeEnable(Base):
         self.assertEqual(self.m._load_chrome_state()["chrome_manual_at"], at)  # 처음 안내 시각 유지
 
     def in_job_first_call(self, **kw):
-        self.win_restart_setup(chrome_running=[True, False, True], windows=1,
-                               act={"open": [{"rc": 1}, {"rc": 0, "out": "321"}]}, **kw)
+        self.reopen_debt(running=[False, True], act={"open": [{"rc": 1}, {"rc": 0, "out": "321"}]}, chrome_reopen_tries=1, chrome_reopen_at=0, pending_seat_restart=True)
+        self.set_probes(**kw)
         return self.run_cli("chrome-enable")
 
-    # ── r4 1번: 도구가 Job 밖에서 켠 기록이 없는 크롬이 켜져 있으면 재시작을 예약하지 않는다(윈 실측 = cysd 종료 0.7초 뒤 크롬 0개) ──
+    # ── r4 1번·r5-2: 윈은 크롬이 켜져 있으면 닫지도 재시작을 예약하지도 않는다(실측 = cysd 종료 0.7초 뒤 크롬 0개 · 닫고 다시 켜니 탭 3 → 1) ──
     def state_with(self, st):
         os.makedirs(self.state, exist_ok=True)
         with open(os.path.join(self.state, self.m.CHROME_STATE), "w", encoding="utf-8") as f:
@@ -1655,7 +1610,10 @@ class TestChromeEnable(Base):
         self.assertLess(d["say"].index("↻"), d["say"].index("시작 메뉴"))
         self.assertNotIn("예약", d["say"])
         self.assertNotIn("이 대화가 끝나면", d["say"])
-        self.assertNotIn("탭이", d["say"])                                    # 겁주지 않는다 — 순서만
+        self.assertEqual(d["say"].count(TAB_SAY), 1)
+        self.assertLess(d["say"].index("시작 메뉴"), d["say"].index(TAB_SAY))
+        for bad in ("사라", "잃", "손실", "위험"):                              # 겁주지 않는다
+            self.assertNotIn(bad, d["say"])
 
     def test_r4_s1_key_only_with_seat_chrome_is_not_restarted(self):
         self.seat_setup([True], key=False)
@@ -1710,45 +1668,80 @@ class TestChromeEnable(Base):
         rc, d, _ = self.run_cli("chrome-enable")
         self.assertEqual(self.kinds().count("seat_restart"), 0)
 
-    def test_r4_s3_reopened_outside_job_is_restarted_and_recorded(self):
-        act = {"seat_restart": {"out": "55"}, "open": {"out": '{"outside_job":true,"pid":999}'}}
-        self.seat_setup([False, False, True], key=False, chrome_running=[True, False, True], act=act, proc_start="C9")
+    def test_r5_s3_one_window_is_not_closed_and_books_nothing(self):         # 윈 r5-2 의 그 분기
+        self.seat_setup([False, False, True], key=False)
         rc, d, _ = self.run_cli("chrome-enable")
         self.assertEqual(rc, 0)
-        self.assertEqual(self.kinds().count("seat_restart"), 1)
-        self.assertIn("quit", self.kinds())
-        self.assertNotIn("seat_restart_manual", d)
-        self.assertEqual(self.m._load_chrome_state()["chrome_outside"], {"pid": 999, "start": "C9"})
+        self.assert_seat_guided(d)
+        for kind in ("open", "notify"):
+            self.assertNotIn(kind, self.kinds())
+        self.assertEqual(d["done"], ["default_on", "nmh"])
+        self.assertIn("chrome_restart", d["pending"])
+        self.assertIn("크롬이 켜져 있어 닫지 않았습니다.", d["say"])
+        self.assertNotIn("다시 켜 주시면", d["say"])
 
-    def test_r4_recorded_chrome_stays_trusted_on_next_call(self):
+    def test_r5_s3_now_says_restart_was_not_done(self):
+        self.seat_setup([False, False, True], key=False)
+        rc, d, _ = self.run_cli("chrome-enable", "--seat-restart", "now")
+        self.assertEqual(rc, 6)
+        self.assert_seat_guided(d)
+
+    def test_r5_s3_guides_without_waiting_for_idle_hands(self):              # 닫지 않으니 유휴를 기다릴 일도 없다 · 「손을 쉬실 때 하겠습니다」는 거짓이 된다
+        self.seat_setup([True], idle=0)
+        self.state_with({"pending_chrome_restart": True})
+        rc, d, _ = self.run_cli("chrome-enable", "--seat-restart", "now")
+        self.assertEqual(rc, 6)
+        self.assert_seat_guided(d)
+        self.assertNotIn("손을 쉬실 때", d["say"])
+
+    def test_r5_s3_without_seat_restart_keeps_plain_close_sentence(self):
+        self.seat_setup([False, False, True], key=False)
+        rc, d, _ = self.run_cli("chrome-enable", "--seat-restart", "no")
+        self.assertEqual(rc, 0)
+        self.assertNotIn("quit", self.kinds())
+        self.assertNotIn("seat_restart_manual", d)
+        self.assertIn("「종료」로 닫았다가 다시 켜 주시면 바로 연결됩니다", d["say"])
+        self.assertIn(TAB_SAY, d["say"])
+
+    def test_r5_closing_chrome_after_guidance_lets_restart_go(self):         # 안내 ① 뒤에 다시 부르면 크롬 0개 = 예약 1
+        self.seat_setup([False, False, True], key=False)
+        self.run_cli("chrome-enable")
+        self.next_call(chrome_running=[False], windows=0, proc_start="T", act={"seat_restart": {"out": "55"}, "daemon_pid": {"out": '{"daemon_pid": 100}'}})
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertEqual(self.kinds().count("seat_restart"), 1)
+        self.assertNotIn("quit", self.kinds())
+        self.assertNotIn("seat_restart_manual", d)
+        self.assertEqual(d["pending"], [])
+
+    def test_r5_alive_outside_record_does_not_open_the_gate(self):           # 이전 판이 남긴 기록 — 켜진 크롬 위로 예약하지 않는다
         self.seat_setup([True])
         self.state_with({"chrome_outside": {"pid": 999, "start": "C9"}})
         self.set_probes(proc_start="C9")
         rc, d, _ = self.run_cli("chrome-enable", "--seat-restart", "now")
-        self.assertEqual(rc, 0)
-        self.assertEqual(self.kinds().count("seat_restart"), 1)
-
-    def test_r4_recorded_chrome_gone_or_replaced_is_not_trusted(self):
-        for now in ("OTHER", None):                                          # pid 재사용 · 이미 죽음
-            self.seat_setup([True])
-            self.state_with({"chrome_outside": {"pid": 999, "start": "C9"}})
-            self.set_probes(proc_start=now)
-            rc, d, _ = self.run_cli("chrome-enable", "--seat-restart", "now")
-            self.assertEqual(rc, 6, now)
-            self.assertEqual(self.kinds().count("seat_restart"), 0, now)
-
-    def test_r4_record_without_start_time_is_not_trusted(self):
-        self.seat_setup([True])
-        self.state_with({"chrome_outside": {"pid": 999, "start": None}})
-        rc, d, _ = self.run_cli("chrome-enable", "--seat-restart", "now")
         self.assertEqual(rc, 6)
-
-    def test_r4_outside_job_false_answer_is_not_a_record(self):              # 강등 모드 데몬의 폴백 = Job 밖이 아니다
-        act = {"seat_restart": {"out": "55"}, "open": {"out": '{"outside_job":false,"pid":999}'}}
-        self.seat_setup([False, False, True], key=False, chrome_running=[True, False, True], act=act)
-        rc, d, _ = self.run_cli("chrome-enable")
         self.assertEqual(self.kinds().count("seat_restart"), 0)
-        self.assertNotIn("chrome_outside", self.m._load_chrome_state())
+
+    def test_r5_old_reopen_debt_ends_in_guidance(self):                      # 이전 판이 닫고 남긴 켜기 빚은 갚되 다시 켠 크롬 위로 예약하지 않는다
+        act = {"open": {"out": '{"outside_job":true,"pid":999}'}, "seat_restart": {"out": "55"}, "daemon_pid": {"out": '{"daemon_pid": 100}'}}
+        self.reopen_debt(running=[False, True], act=act, chrome_reopen_tries=1, chrome_reopen_at=0, pending_seat_restart=True)
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertIn("open", self.kinds())
+        self.assertNotIn("quit", self.kinds())
+        self.assertEqual(self.kinds().count("seat_restart"), 0)
+        self.assertTrue(d["seat_restart_manual"])
+
+    def test_r5_mac_s3_still_closes_reopens_and_restarts(self):              # 맥 불변
+        self.make_chrome(nmh=False)
+        self.set_probes(chrome_running=[True, False, True], act={"nmh": self.nmh_touch()})
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertEqual(rc, 0)
+        k = self.kinds()
+        self.assertLess(k.index("notify"), k.index("quit"))
+        self.assertLess(k.index("quit"), k.index("open"))
+        self.assertLess(k.index("open"), k.index("seat_restart"))
+        self.assertNotIn("seat_restart_manual", d)
+        self.assertIn("chrome_restart", d["done"])
+        self.assertNotIn("Shift + T", d["say"])                              # 맥은 안내 경로가 없다
 
     def test_r4_chrome_off_still_restarts(self):                             # R5-B 회귀: 꺼진 크롬은 죽을 것이 없다
         self.seat_setup([True], key=False, chrome_running=[False])
@@ -1791,6 +1784,7 @@ class TestChromeEnable(Base):
         self.assertEqual(self.kinds().count("seat_restart"), 0)
         self.assertTrue(d["seat_restart_manual"])
         self.assertIn("↻", d["say"])
+        self.assertIn(TAB_SAY, d["say"])
         rc, d, _ = self.run_cli("chrome-disable", "--seat-restart", "now")
         self.assertEqual(rc, 6)
 
@@ -1809,7 +1803,7 @@ class TestChromeEnable(Base):
         self.assertEqual(self.kinds().count("seat_restart"), 1)
         self.assertNotIn("daemon_pid", self.kinds())
         self.assertNotIn("seat_restart_manual", d)
-        self.assertFalse(self.m._chrome_tied_to_seat("darwin", {}))
+        self.assertFalse(self.m._chrome_tied_to_seat("darwin"))
 
     def test_f2_next_call_keeps_in_job_chrome_alive(self):
         self.in_job_first_call(proc_start="C1")
@@ -1834,7 +1828,8 @@ class TestChromeEnable(Base):
         self.assertEqual(self.kinds().count("seat_restart"), 1)
 
     def test_f3_debt_is_on_disk_before_chrome_closes(self):
-        self.win_restart_setup(chrome_running=[True, False, True], windows=1)
+        self.make_chrome(nmh=False)
+        self.set_probes(chrome_running=[True, False, True], act={"nmh": self.nmh_touch()})
         seen = {}
         real = self.m.quit_chrome
         def cut(plat):
@@ -1856,7 +1851,8 @@ class TestChromeEnable(Base):
         self.assertIn("chrome_restart", d["done"])
 
     def test_f3_chrome_that_never_closed_is_not_a_reopen_debt(self):
-        self.win_restart_setup(chrome_running=[True] * 60, windows=[1, 1, 1])
+        self.make_chrome(nmh=False)
+        self.set_probes(chrome_running=True, act={"nmh": self.nmh_touch()})
         self.run_cli("chrome-enable")
         self.assertFalse(self.m._load_chrome_state().get("pending_chrome_reopen"))
 
@@ -1968,7 +1964,6 @@ class TestChromeEnable(Base):
         self.assertIsNotNone(self.m.schedule_seat_restart(30))
         self.assertTrue([x for x in self.acts() if x["kind"] == "seat_restart"][0]["detach"])
         self.assertEqual(self.m.open_chrome("darwin").returncode, 0)
-        self.assertNotIn("job_exit_probe", self.kinds())
 
     def test_ledger_failure_leaves_key_untouched(self):
         self.make_chrome()

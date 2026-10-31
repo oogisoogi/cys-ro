@@ -371,7 +371,8 @@ python3 -c "import runpy,subprocess,sys,urllib.request as u;t=subprocess.check_o
 - [ ] 태그 레인 전용 시험(`test_phoenix_*.py`)을 태그 전에 돌리는 길 — 브랜치 CI 또는 pre-tag 수동 줄(L19).
 - [ ] **수용된 가지 편입 원장** — 수용 ≠ 편입 · 태그 전 수용 가지 전수 is-ancestor 검사(master#8fd148bb · fix/1111-backlog-misc·fix/1111-fable-fixes 실증).
 - [ ] 통합 검토 이월 = `~/cys-terminal-src-wt/1111-adv4/ADV4-FINDINGS.md`(0c8b5ab2) major M3·M4(실기 결과에 따라)·M6~M13 · minor N1~N10 · X1~X3.
-- [ ] `cargo test --bin cys`(--test-threads=1 없이) `a3_strip_hook_digits…` 기본 2MB 스택 경계 이동(dc9f1de7 3/3 넘침 · 4MB 이상 통과 · CI 형식은 통과 · master#75c7ef79).
+- [ ] 병렬 기본 스택 `a3_strip_hook_digits…` 넘침 · 4MB 통과 · 시험 스레드 스택 고정 또는 무거운 시험 분리(master#7a17878b). 실측: 맨 `cargo test --bin cys`(--test-threads=1 없이) dc9f1de7 3/3 넘침 · 060cb75b 0/2 · 0fde41c6 2/2 · `RUST_MIN_STACK=4194304` 0fde41c6 736/0 · CI 형식 0fde41c6 736/0 · 단독·소묶음은 두 머리 모두 통과 · 병합의 파싱 경로 변경 0 · 원인 미상(master#75c7ef79).
+- [ ] `dbg_r12_init_pack_wires_profile_skill_links` 는 저장소가 임시 폴더 아래면 결정적으로 실패한다 — 시험이 `CARGO_MANIFEST_DIR/target` 아래 팩을 쓰는데 `javis_preflight.py:1494` 임시 팩 가드가 등록을 거부(코드 판독 · /private/tmp 임시 worktree 060cb75b 4/4 적 · 정상 위치 0fde41c6 통과 · 제품 결함 아님 · master#7a17878b).
 - [ ] 판번 검사(`version-check.sh`)가 `docs/index.html` 을 보지 않는다(L14).
 - [ ] (윈 실기 이월 · TODO:83) `\cysd` 재등록이 LeastPrivilege 로 RunLevel Highest 를 덮음 · preflight --fix 가 `~/.claude/settings.json` 을 백업 없이 고침 · ConPTY 꽉 찬 줄 composer 사람 눈 1회 · self-update-check 새 데몬 뒤 첫 발화.
 - [ ] (통합표) `d7_prime_seat_cache_never_overwrites_a_tick_value` 상한 5초 플레이크.

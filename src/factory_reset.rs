@@ -1137,11 +1137,11 @@ fn now_unix() -> u64 {
 }
 
 #[cfg(unix)]
-fn pid_alive(pid: u32) -> bool {
+pub(crate) fn pid_alive(pid: u32) -> bool {
     pid != 0 && unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
 }
 #[cfg(not(unix))]
-fn pid_alive(pid: u32) -> bool {
+pub(crate) fn pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
@@ -1153,7 +1153,7 @@ fn pid_alive(pid: u32) -> bool {
 /// 센티널 기록(형식: `<unix_ts> <pid>`). 실패는 무시 — 센티널은 **보조** 방어층이고,
 /// 이걸 못 써서 리셋 자체가 막히면 안 된다(주 방어는 정지 실측 + quiescent 게이트).
 /// 이 pid 가 cys 계열 프로세스인가(리셋을 실행할 수 있는 주체) — 센티널 소유자 검증용.
-fn pid_is_cys_family(pid: u32) -> bool {
+pub(crate) fn pid_is_cys_family(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }

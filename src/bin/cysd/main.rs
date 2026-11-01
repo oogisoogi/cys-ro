@@ -2339,6 +2339,8 @@ fn spawn_auto_restore(
     let opted_out = cys::env_compat("CYS_NO_AUTORESTORE")
         .map(|v| v == "1")
         .unwrap_or(false);
+    // 재시작이 띄운 기동 = 팩 반영 뒤 재시작이 직접 복원한다. 여기서 좌석을 띄우면 윈도우에서 팩 교체가 막힌다(rotate ④ · rc 24).
+    let held = cys::restore_hold::held(socket_path);
     // exe_dir(데몬 바이너리 디렉터리) — PHOENIX_CYS·PATH 계산 기준.
     let exe_dir = std::env::current_exe()
         .ok()
@@ -2346,7 +2348,10 @@ fn spawn_auto_restore(
     let current_path = std::env::var("PATH").unwrap_or_default();
     let exe_dir_ref = exe_dir.as_deref().unwrap_or_else(|| std::path::Path::new("."));
     let socket = socket_path.to_string_lossy();
-    match decide_auto_restore(&cys::pack::pack_dir(), opted_out, exe_dir_ref, &current_path, &socket) {
+    match decide_auto_restore(&cys::pack::pack_dir(), opted_out || held, exe_dir_ref, &current_path, &socket) {
+        AutoRestore::OptedOut if held => {
+            eprintln!("[cysd] auto-restore skipped (재시작이 팩 반영 뒤 복원한다)");
+        }
         AutoRestore::OptedOut => {
             eprintln!("[cysd] auto-restore skipped (CYS_NO_AUTORESTORE=1)");
         }

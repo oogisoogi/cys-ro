@@ -8213,12 +8213,32 @@ async fn rotate_daemon(app: AppHandle, force: bool, skip_drain: bool) -> Result<
         .await;
     }
     let _ = std::fs::write(pending_restore_path(), "");
+    let hold = hold_auto_restore();
     stop_running_daemon().await;
     ensure_daemon().await?;
     // init-pack이 blocking Command::status()라 blocking 풀에서 실행(위 drain 패턴과 일치).
     let app2 = app.clone();
     let _ = tokio::task::spawn_blocking(move || maybe_apply_pending_update(&app2)).await;
+    restore_after_held_boot(&app, hold);
     Ok(())
+}
+
+/// 윈도우에서 새 데몬의 자동 복원을 팩 반영 뒤로 미룬다 — 좌석이 먼저 뜨면 훅이 연 팩을 rename 하지 못한다(r8-1 · rotate ④ 와 같은 처리).
+/// 맥은 launchd 가 데몬을 소유하고 rename 이 막히지 않아 그대로 둔다.
+fn hold_auto_restore() -> Option<cys::restore_hold::RestoreHold> {
+    if cfg!(windows) {
+        cys::restore_hold::RestoreHold::arm(&default_socket())
+    } else {
+        None
+    }
+}
+
+/// 자동 복원을 쉬게 한 기동에서 팩 반영이 끝나지 않았으면(복귀 표식 잔류) 좌석은 여기서 돌려놓는다 — 쉬기 전에도 자동 복원이 돌려놓던 몫이다.
+fn restore_after_held_boot(app: &AppHandle, hold: Option<cys::restore_hold::RestoreHold>) {
+    if hold.is_some() && pending_restore_path().exists() {
+        drop(hold);
+        spawn_org_restore(app.clone());
+    }
 }
 
 /// [F5] drain --verify JSON 부재 시 실패 원인 분류 — ①구버전 미지원(clap unknown-flag) vs ②크래시/하드캡
@@ -8612,6 +8632,8 @@ fn main() {
                 // ★C-LOUD (option ii, head 2026-10-19): rows 5/3 in one step. A daemon that accepts but does not answer
                 // is announced (daemon-error + one stderr line) and the boot goes on as base did: no spawn, no retry
                 // loop, daemon-ready below, then the UI's degraded mode (ui/src/main.ts "handler 가 먹통" block).
+                // 지난 재시작의 팩 반영이 끝나지 않았으면(rc 24) 이 기동이 재시도한다 — 자동 복원과 겹치면 또 실패한다.
+                let boot_hold = if pending_restore_path().exists() { hold_auto_restore() } else { None };
                 let mut result = boot_first_daemon_step(
                     &default_socket(),
                     launchd_owns,
@@ -8730,6 +8752,7 @@ fn main() {
                 }
                 // 업데이트 재시작 시: 새 팩(새 기능) 반영 + 노드 자동복귀(마커가 있을 때만).
                 maybe_apply_pending_update(&handle);
+                restore_after_held_boot(&handle, boot_hold);
                 // ★TCC 처방(오너 2026-07-15): 폴더 권한 선제 트리거·거부 감지 안내.
                 // ★v116-app-firstrun(A-3): 새 설치 첫 실행이면 여기서 부르지 않는다 — UI 가 안내를 먼저 그린 뒤
                 // request_folder_access 로 부른다(설명 없는 권한 창 제거 · ui_drives_folder_access).
@@ -11222,6 +11245,14 @@ exit 0
             let rest = &src[i..];
             &rest[..rest.find("\n}\n").expect("함수 끝")]
         };
+        // r8-1 — 앱 ↻ 과 재시도 기동도 rotate ④ 와 같다: 데몬 기동 앞에서 자동 복원을 쉬게 하고, 팩 반영이 안 끝나면 좌석을 돌려놓는다 · 맥은 건드리지 않는다.
+        let rotate = body_at("async fn rotate_daemon(app: AppHandle, force: bool, skip_drain: bool)");
+        let hold = rotate.find("let hold = hold_auto_restore();").expect("rotate_daemon 표식");
+        assert!(hold < rotate.find("stop_running_daemon().await;").unwrap(), "옛 데몬 정지 앞");
+        assert!(rotate.find("maybe_apply_pending_update(&app2)").unwrap() < rotate.find("restore_after_held_boot(&app, hold);").expect("뒷정리"));
+        assert!(body_at("fn hold_auto_restore()").contains("if cfg!(windows) {"), "맥 갈래 무변경");
+        let held = body_at("fn restore_after_held_boot(");
+        assert!(held.contains("hold.is_some() && pending_restore_path().exists()") && held.contains("spawn_org_restore(app.clone());"));
         let apply = body_at("fn maybe_apply_pending_update(app: &AppHandle) {");
         assert!(
             apply.contains("prior_install_evidence(gui_onboarded_before_boot(), &list_depts())"),
@@ -11239,6 +11270,9 @@ exit 0
             .find(r#"std::fs::write(gui_onboarded_path(), env!("CARGO_PKG_VERSION"))"#)
             .expect("온보딩 마커 쓰기");
         let apply_call = setup.find("maybe_apply_pending_update(&handle);").expect("복원 판정 호출");
+        let boot_hold = setup.find("let boot_hold = if pending_restore_path().exists() { hold_auto_restore() } else { None };").expect("재시도 기동 표식");
+        assert!(boot_hold < setup.find("let mut result = boot_first_daemon_step(").unwrap(), "첫 데몬 기동 앞");
+        assert!(apply_call < setup.find("restore_after_held_boot(&handle, boot_hold);").expect("재시도 기동 뒷정리"));
         assert!(snap < first_await, "스냅숏은 setup 의 어떤 대기보다도 먼저여야 한다");
         assert!(snap < marker_write && snap < apply_call, "스냅숏은 온보딩 마커 쓰기·복원 판정보다 먼저여야 한다");
         let nudge_call = setup.find("nudge_folder_permissions(&handle);").expect("nudge 호출");

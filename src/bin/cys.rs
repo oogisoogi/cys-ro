@@ -22925,6 +22925,8 @@ fn run_rotate(timeout: u64, skip_drain: bool, skip_depts: bool) -> i32 {
     //   부서·격리 데몬(비-기본 소켓)에 launchd 이관을 걸면 라이브 기본 데몬을 건드린다 → 정지+자동 기동 경로.
     let base = cys::lane::socket_is_base(&cys::socket_path().to_string_lossy());
     let mac_takeover = cfg!(target_os = "macos") && base;
+    // 새 데몬의 자동 복원을 ④ 뒤로 미룬다 — ⑤ 가 복원하고, 좌석이 먼저 뜨면 윈도우는 팩 교체가 막힌다(rc 24 · r8-1). launchd 갈래는 데몬이 먼저 뜨고 맥 rename 은 막히지 않아 그대로 둔다.
+    let hold = if mac_takeover { None } else { cys::restore_hold::RestoreHold::arm(&cys::socket_path()) };
     if mac_takeover {
         let ok = run(&["daemon", "install", "--takeover"]).map(|o| o.status.success()).unwrap_or(false);
         if !ok {
@@ -23018,8 +23020,14 @@ fn run_rotate(timeout: u64, skip_drain: bool, skip_depts: bool) -> i32 {
         }
         output_via_file(cmd).map(|o| o.status.success()).unwrap_or(false)
     };
+    let auto_restore_held = hold.is_some();
+    drop(hold);
     if !init_ok {
         eprintln!("[rotate] ④ 새 팩 반영 실패 — 복귀 표식을 남겼다(앱 다음 기동이 재시도)");
+        // 자동 복원을 쉬게 했으니 좌석은 여기서 돌려놓는다(종전에도 rc 24 뒤 좌석은 자동 복원으로 돌아왔다).
+        if auto_restore_held {
+            let _ = run(&["restore", "--include-master"]);
+        }
         return ROTATE_RC_PACK;
     }
     let _ = std::fs::remove_file(&marker);
@@ -31105,6 +31113,25 @@ mod tests {
     }
 
     /// 배선 핀 — rotate 의 단계 호출이 파이프 캡처(`.output()`)로 되돌아가지 않는다.
+    /// r8-1 — 표식은 옛 데몬을 내리기 전에 걸고 ④ 뒤 ⑤ 앞에서 푼다 · launchd 갈래는 걸지 않는다 · ④ 실패 때도 좌석을 돌려놓는다.
+    #[test]
+    fn rotate_holds_auto_restore_across_the_pack_step() {
+        let src = include_str!("cys.rs");
+        let body = &src[src.find("fn run_rotate(timeout").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let at = |n: &str| body.find(n).unwrap_or_else(|| panic!("없음: {n}"));
+        let arm = at("let hold = if mac_takeover { None } else { cys::restore_hold::RestoreHold::arm(&cys::socket_path()) };");
+        assert!(arm < at(r#"c.args(["/PID", &pid.to_string(), "/F"]);"#), "옛 데몬 정지 앞");
+        assert!(arm < at(r#"run(&["identify"])"#), "새 데몬 기동 앞");
+        let release = at("drop(hold);");
+        assert!(at("let init_ok = {") < release, "④ 뒤");
+        assert!(release < at("if !init_ok {"), "④ 판정 앞에서 풀어야 실패 갈래 복원이 표식 없이 돈다");
+        let fail = &body[at("if !init_ok {")..at("let _ = std::fs::remove_file(&marker);")];
+        assert!(fail.contains(r#"run(&["restore", "--include-master"])"#), "④ 실패 = 좌석을 돌려놓는다");
+        assert!(fail.contains("return ROTATE_RC_PACK;"), "rc 24 는 그대로");
+        assert!(release < at("let hq_restore_ok ="), "⑤ 앞");
+    }
+
     #[test]
     fn rotate_run_uses_file_capture() {
         let src = include_str!("cys.rs");

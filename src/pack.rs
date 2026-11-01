@@ -5089,6 +5089,7 @@ pub fn pack_prev_dir(dir: &Path) -> PathBuf {
 
 /// 재귀 디렉터리 복사(파일=fs::copy로 권한 보존, 하위 dir 재귀). 팩엔 심링크가 없다(오너 결정 —
 /// 심링크 마이그레이션 안 함). staging 전량 복사로 상태파일·user-edit·비임베드·디렉티브를 보존한다.
+/// FIFO·소켓·장치(심링크로 가리키는 것 포함)는 건너뛰고 기록한다 — fs::copy 가 여는 순간 멈춘다. 옛 팩째 prev 에 남는다.
 fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
@@ -5098,6 +5099,8 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
         let to = dst.join(entry.file_name());
         if ft.is_dir() {
             copy_dir_all(&from, &to)?;
+        } else if std::fs::metadata(&from).is_ok_and(|m| !m.is_file() && !m.is_dir()) {
+            eprintln!("[pack] ⚠ 일반 파일이 아니라 복사하지 않았다: {}", from.display());
         } else {
             std::fs::copy(&from, &to)?;
         }
@@ -5159,6 +5162,36 @@ fn pack_is_complete(dir: &Path) -> bool {
     dir.join(PACK_VERSION_FILE).is_file() && dir.join(INSTALL_MANIFEST).is_file()
 }
 
+/// 일반 파일만 바이트로 읽는다 — `read_pack_text_bounded` 와 같은 형태: `O_NONBLOCK` 로 열어 핸들의 stat 을 본다. 쓰는 쪽 없는 FIFO 도,
+/// 검사 뒤 FIFO 로 바뀐 경우도 멈추지 않는다.
+fn read_regular_nonblocking(p: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NONBLOCK);
+    }
+    let mut f = opts.open(p)?;
+    if !f.metadata()?.is_file() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "비정규 파일(FIFO·소켓·장치 등)은 읽지 않는다"));
+    }
+    let mut bytes = Vec::new();
+    f.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// 둘 다 일반 파일이고 내용이 같은가 — 심링크·FIFO·소켓·장치는 읽지 않고 다름으로 친다(다름 = 보존 쪽). 길이가 다르면 읽지 않는다.
+fn same_regular_file(a: &Path, b: &Path) -> bool {
+    match (std::fs::symlink_metadata(a), std::fs::symlink_metadata(b)) {
+        (Ok(x), Ok(y)) if x.is_file() && y.is_file() && x.len() == y.len() => {
+            matches!((read_regular_nonblocking(a), read_regular_nonblocking(b)), (Ok(p), Ok(q)) if p == q)
+        }
+        _ => false,
+    }
+}
+
 /// `from` 의 파일이 `to` 에 **같은 내용으로** 전부 있는가 — 이름만 보면 hold 에만 있던 수정본을 직전 세대로 밀어 지운다(독립 재확인 n1).
 /// 못 읽으면 false(모름 = 지우지 않는 쪽).
 fn tree_contained(from: &Path, to: &Path) -> bool {
@@ -5169,12 +5202,11 @@ fn tree_contained(from: &Path, to: &Path) -> bool {
         let Ok(entry) = entry else {
             return false;
         };
-        let (src, dst) = (entry.path(), to.join(entry.file_name()));
-        let same = if src.is_dir() {
-            tree_contained(&src, &dst)
-        } else {
-            matches!((std::fs::read(&src), std::fs::read(&dst)), (Ok(a), Ok(b)) if a == b)
+        let Ok(ft) = entry.file_type() else {
+            return false;
         };
+        let (src, dst) = (entry.path(), to.join(entry.file_name()));
+        let same = if ft.is_dir() { tree_contained(&src, &dst) } else { same_regular_file(&src, &dst) };
         if !same {
             return false;
         }
@@ -11038,6 +11070,161 @@ mod tests {
         assert!(!hold.exists());
         assert!(asides(&base).is_empty());
         assert_eq!(std::fs::read_to_string(pack_prev_dir(&pd).join("memory/mine.md")).unwrap(), "mine");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 시한 안에 되찾기가 끝나야 한다 — 비교가 FIFO 를 읽으면 영구 대기해 데몬이 소켓 bind 앞에서 멈춘다(재검증 b2.4).
+    #[cfg(unix)]
+    fn fifo_recover_bounded(pd: &Path, fifo: &Path) {
+        let p2 = pd.to_path_buf();
+        let got = f10_bounded(5, move || recover_interrupted_swap(&p2));
+        if got.is_none() {
+            f10_release_fifo(fifo);
+        }
+        got.expect("FIFO 에서 되찾기가 5초 안에 끝나지 않았다").unwrap();
+    }
+
+    #[cfg(unix)]
+    fn is_fifo(p: &Path) -> bool {
+        use std::os::unix::fs::FileTypeExt;
+        std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_fifo())
+    }
+
+    /// hold 에만 있는 FIFO — 읽지 않고 「다름」 → hold 째 보존. 활성 팩은 그대로.
+    #[cfg(unix)]
+    #[test]
+    fn fifo_in_hold_is_kept_without_blocking_recover() {
+        let (base, pd, hold) = b1_fixture("fifo-hold-kept");
+        copy_dir_all(&hold, &pd).unwrap();
+        let fifo = hold.join("memory/local.pipe");
+        f10_mkfifo(&fifo);
+        fifo_recover_bounded(&pd, &fifo);
+        assert!(!hold.exists());
+        let aside = asides(&base);
+        assert_eq!(aside.len(), 1, "지우지 않고 보존한다");
+        assert!(is_fifo(&aside[0].join("memory/local.pipe")));
+        assert_eq!(std::fs::read_to_string(pack_prev_dir(&pd).join("a.txt")).unwrap(), "older", "prev 를 밀지 않는다");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 같은 이름의 hold 일반 파일 ↔ 팩 FIFO · hold 의 FIFO 심링크 — 어느 쪽이든 읽지 않고 「다름」.
+    #[cfg(unix)]
+    #[test]
+    fn fifo_on_pack_side_and_behind_symlink_do_not_block_recover() {
+        let (base, pd, hold) = b1_fixture("fifo-pack-same-name");
+        copy_dir_all(&hold, &pd).unwrap();
+        std::fs::remove_file(pd.join("memory/mine.md")).unwrap();
+        let fifo = pd.join("memory/mine.md");
+        f10_mkfifo(&fifo);
+        fifo_recover_bounded(&pd, &fifo);
+        assert_eq!(asides(&base).len(), 1);
+        assert_eq!(std::fs::read_to_string(asides(&base)[0].join("memory/mine.md")).unwrap(), "mine");
+        let _ = std::fs::remove_dir_all(&base);
+
+        let (base, pd, hold) = b1_fixture("fifo-link");
+        copy_dir_all(&hold, &pd).unwrap();
+        let fifo = base.join("outside.pipe");
+        f10_mkfifo(&fifo);
+        std::os::unix::fs::symlink(&fifo, hold.join("via-link")).unwrap();
+        std::os::unix::fs::symlink(&fifo, pd.join("via-link")).unwrap();
+        fifo_recover_bounded(&pd, &fifo);
+        assert_eq!(asides(&base).len(), 1, "심링크는 같아도 읽지 않고 보존 쪽");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 심링크는 가리키는 내용이 같아도 같은 파일로 치지 않는다 — hold 쪽 · 팩 쪽 어느 쪽이든 보존(팩엔 심링크가 없다 · 있으면 사람이 만든 것).
+    #[cfg(unix)]
+    #[test]
+    fn recover_treats_symlink_as_different_on_either_side() {
+        for hold_side in [true, false] {
+            let (base, pd, hold) = b1_fixture(if hold_side { "link-hold" } else { "link-pack" });
+            copy_dir_all(&hold, &pd).unwrap();
+            let side = if hold_side { &hold } else { &pd };
+            std::fs::remove_file(side.join("memory/mine.md")).unwrap();
+            std::fs::write(base.join("same.md"), "mine").unwrap();
+            std::os::unix::fs::symlink(base.join("same.md"), side.join("memory/mine.md")).unwrap();
+            recover_interrupted_swap(&pd).unwrap();
+            assert_eq!(asides(&base).len(), 1, "hold_side={hold_side}");
+            let _ = std::fs::remove_dir_all(&base);
+        }
+    }
+
+    /// 핸들 stat 확인 — 검사 뒤 FIFO 로 바뀌어도 열기·읽기가 멈추지 않는다.
+    #[cfg(unix)]
+    #[test]
+    fn read_regular_nonblocking_refuses_fifo_at_once() {
+        let base = std::env::temp_dir().join(format!("cys-swap-fifo-read-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let fifo = base.join("p");
+        f10_mkfifo(&fifo);
+        let f2 = fifo.clone();
+        let got = f10_bounded(5, move || read_regular_nonblocking(&f2).is_err());
+        if got.is_none() {
+            f10_release_fifo(&fifo);
+        }
+        assert_eq!(got, Some(true));
+        std::fs::write(base.join("r"), "x").unwrap();
+        assert_eq!(read_regular_nonblocking(&base.join("r")).unwrap(), b"x");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// FIFO·FIFO 심링크는 건너뛰고 나머지는 복사한다. 일반 파일 심링크는 종전대로 내용 복사 · 끊긴 심링크는 종전대로 오류.
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_all_skips_fifo_and_keeps_the_rest() {
+        let base = std::env::temp_dir().join(format!("cys-swap-fifo-copy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (src, dst) = (base.join("src"), base.join("dst"));
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("sub/a.txt"), "a").unwrap();
+        let fifo = src.join("sub/p.pipe");
+        f10_mkfifo(&fifo);
+        std::os::unix::fs::symlink(&fifo, src.join("via-link")).unwrap();
+        std::os::unix::fs::symlink(src.join("sub/a.txt"), src.join("file-link")).unwrap();
+        let (s2, d2) = (src.clone(), dst.clone());
+        let got = f10_bounded(5, move || copy_dir_all(&s2, &d2));
+        if got.is_none() {
+            f10_release_fifo(&fifo);
+        }
+        got.expect("FIFO 에서 복사가 5초 안에 끝나지 않았다").unwrap();
+        assert_eq!(std::fs::read_to_string(dst.join("sub/a.txt")).unwrap(), "a");
+        assert_eq!(std::fs::read_to_string(dst.join("file-link")).unwrap(), "a");
+        assert!(!dst.join("sub/p.pipe").exists() && std::fs::symlink_metadata(dst.join("via-link")).is_err());
+        std::os::unix::fs::symlink(base.join("gone"), src.join("dangling")).unwrap();
+        assert!(copy_dir_all(&src, &base.join("dst2")).is_err(), "끊긴 심링크는 종전대로 설치를 멈춘다");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 데몬 설치 경로 전체 — 활성 팩 · hold 양쪽에 FIFO 가 있어도 install_staged 가 끝나고 FIFO 는 옛 세대에 남는다.
+    #[cfg(unix)]
+    #[test]
+    fn install_staged_finishes_with_fifo_in_pack_and_hold() {
+        let _g = PACK_ENV_LOCK.lock().unwrap();
+        let (base, pd, hold) = b1_fixture("fifo-install");
+        let _env = set_pack_env(&pd, base.join("claude"));
+        std::fs::remove_dir_all(&hold).unwrap();
+        install_staged(false, None).unwrap();
+        let fifo = pd.join("memory/local.pipe");
+        f10_mkfifo(&fifo);
+        let got = f10_bounded(120, || install_staged(false, None).map(|_| ()));
+        if got.is_none() {
+            f10_release_fifo(&fifo);
+        }
+        got.expect("활성 팩 FIFO 에서 설치가 끝나지 않았다").unwrap();
+        assert!(is_fifo(&pack_prev_dir(&pd).join("memory/local.pipe")), "옛 세대에 남는다");
+        assert!(!pd.join("memory/local.pipe").exists());
+
+        std::fs::remove_dir_all(pack_prev_dir(&pd)).unwrap();
+        copy_dir_all(&pd, &hold).unwrap();
+        let fifo = hold.join("memory/local.pipe");
+        f10_mkfifo(&fifo);
+        let got = f10_bounded(120, || install_staged(false, None).map(|_| ()));
+        if got.is_none() {
+            f10_release_fifo(&fifo);
+        }
+        got.expect("hold FIFO 에서 설치가 끝나지 않았다").unwrap();
+        assert!(!hold.exists());
+        assert!(is_fifo(&asides(&base)[0].join("memory/local.pipe")));
         let _ = std::fs::remove_dir_all(&base);
     }
 

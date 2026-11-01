@@ -5159,8 +5159,9 @@ fn pack_is_complete(dir: &Path) -> bool {
     dir.join(PACK_VERSION_FILE).is_file() && dir.join(INSTALL_MANIFEST).is_file()
 }
 
-/// `from` 의 파일이 `to` 에 전부 있는가 — 교체를 끝낸 팩은 hold 를 복사해 만들었으니 갖추고 있다. 못 읽으면 false(모름 = 지우지 않는 쪽).
-fn tree_covers(from: &Path, to: &Path) -> bool {
+/// `from` 의 파일이 `to` 에 **같은 내용으로** 전부 있는가 — 이름만 보면 hold 에만 있던 수정본을 직전 세대로 밀어 지운다(독립 재확인 n1).
+/// 못 읽으면 false(모름 = 지우지 않는 쪽).
+fn tree_contained(from: &Path, to: &Path) -> bool {
     let Ok(rd) = std::fs::read_dir(from) else {
         return false;
     };
@@ -5169,7 +5170,12 @@ fn tree_covers(from: &Path, to: &Path) -> bool {
             return false;
         };
         let (src, dst) = (entry.path(), to.join(entry.file_name()));
-        if !(if src.is_dir() { tree_covers(&src, &dst) } else { dst.exists() }) {
+        let same = if src.is_dir() {
+            tree_contained(&src, &dst)
+        } else {
+            matches!((std::fs::read(&src), std::fs::read(&dst)), (Ok(a), Ok(b)) if a == b)
+        };
+        if !same {
             return false;
         }
     }
@@ -5179,9 +5185,10 @@ fn tree_covers(from: &Path, to: &Path) -> bool {
 /// 끊긴 교체 되찾기 — hold 폴더가 남아 있다 = 지난 교체가 죽었다. 설치 경로 전부(init-pack · 데몬 부트 · pack-update)가 팩에 쓰기 **전에** 부른다.
 /// pack_dir 없음을 새 설치로 읽으면 상태 파일을 잃기 때문이다.
 ///  ① pack_dir 없음 → hold 가 유일한 팩 → 되돌린다.
-///  ② pack_dir 가 완전하고 hold 의 파일을 전부 갖춤 → 교체가 끝난 뒤 죽었다 → hold = 직전 세대.
+///  ② pack_dir 가 완전하고 hold 의 파일을 **같은 내용으로** 전부 갖춤 → hold 에만 있는 것이 없다 → hold = 직전 세대.
 ///  ③ pack_dir 가 불완전(표지 없음) → 폴더만 다시 생긴 것 → hold 가 진짜 팩이다. 부분 팩은 옆으로 치우고 hold 를 되돌린다.
-///  ④ pack_dir 는 완전한데 hold 에만 있는 파일이 있음 → 어느 쪽이 맞는지 모른다 → hold 를 옆으로 치워 **보존**하고 경고만 한다.
+///  ④ pack_dir 는 완전한데 hold 에만 있는 파일·내용이 있음 → 어느 쪽이 맞는지 모른다 → hold 를 옆으로 치워 **보존**하고 경고만 한다.
+///     새 판이 파일을 고친 정상 교체도 보관 전에 죽었으면 여기로 온다 — 지우지 않는 쪽을 택한 값이다(master#6aa19b60).
 /// ★어느 갈래도 지우지 않는다(②의 옛 prev 는 이미 지울 세대). hold 가 폴더가 아니면 우리 것이 아니다 — 건드리지 않는다.
 fn recover_interrupted_swap(dir: &Path) -> Result<(), String> {
     let hold = pack_swap_hold_dir(dir);
@@ -5197,7 +5204,7 @@ fn recover_interrupted_swap(dir: &Path) -> Result<(), String> {
         return Err(format!("{} 이 폴더가 아니다 — 옛 팩은 {} 에 그대로 둔다", dir.display(), hold.display()));
     }
     let complete = pack_is_complete(dir);
-    if complete && tree_covers(&hold, dir) {
+    if complete && tree_contained(&hold, dir) {
         retire_swap_hold(&hold, &pack_prev_dir(dir), &rename, SWAP_RENAME_WAIT);
         return Ok(());
     }
@@ -5205,7 +5212,7 @@ fn recover_interrupted_swap(dir: &Path) -> Result<(), String> {
     if complete {
         rename_with_retry(&hold, &aside, &rename, SWAP_RENAME_WAIT)
             .map_err(|e| format!("끊긴 교체 보존 실패(옛 팩은 {} 에 있다): {e}", hold.display()))?;
-        eprintln!("[pack] ⚠ 끊긴 교체의 옛 팩을 보존했다 — 지금 팩에 없는 파일이 있어 판단을 사람에게 남긴다: {}", aside.display());
+        eprintln!("[pack] ⚠ 끊긴 교체의 옛 팩을 보존했다 — 지금 팩과 다른 파일이 있어 판단을 사람에게 남긴다: {}", aside.display());
         return Ok(());
     }
     rename_with_retry(dir, &aside, &rename, SWAP_RENAME_WAIT)
@@ -10897,14 +10904,17 @@ mod tests {
     #[test]
     fn atomic_swap_retire_failure_keeps_new_pack_and_next_install_finishes() {
         let (base, dir, staging) = swap_fixture("retire");
-        for rel in ["bin/b.txt", PACK_VERSION_FILE, INSTALL_MANIFEST] {
+        // 옛 팩과 내용이 같은 새 팩 — hold 에만 있는 것이 없다.
+        std::fs::write(staging.join("a.txt"), "old").unwrap();
+        std::fs::write(staging.join("bin/b.txt"), "old-b").unwrap();
+        for rel in [PACK_VERSION_FILE, INSTALL_MANIFEST] {
             std::fs::write(staging.join(rel), "new").unwrap();
         }
         let hold = pack_swap_hold_dir(&dir);
         let prev = pack_prev_dir(&dir);
         let calls = std::rc::Rc::new(std::cell::Cell::new(0));
         atomic_swap_with(&dir, &staging, &fail_rename_to(prev.clone(), calls), std::time::Duration::ZERO).unwrap();
-        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(dir.join(PACK_VERSION_FILE)).unwrap(), "new");
         assert_eq!(file_count(&hold), 2, "옛 팩은 hold 에 온전");
         recover_interrupted_swap(&dir).unwrap();
         assert!(!hold.exists());
@@ -10993,6 +11003,57 @@ mod tests {
         assert_eq!(std::fs::read_to_string(aside[0].join("memory/mine.md")).unwrap(), "mine");
         assert_eq!(std::fs::read_to_string(pd.join(PACK_VERSION_FILE)).unwrap(), "1.1.11");
         assert_eq!(std::fs::read_to_string(pack_prev_dir(&pd).join("a.txt")).unwrap(), "older", "prev 를 밀지 않는다");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// ★n1 재현(bw): 완전한 팩 mine=SNAP + 그 사본 hold mine=NEWER — 이름은 같고 내용만 다르다. NEWER 가 init-pack 뒤에도 살아 있어야 한다
+    /// (이름만 보던 때 = hold 가 prev 로 밀려 같은 설치가 지웠다 · pack=SNAP · prev=SNAP).
+    #[test]
+    fn n1_same_name_different_content_keeps_newer_through_init_pack() {
+        let _g = PACK_ENV_LOCK.lock().unwrap();
+        let (base, pd, hold) = b1_fixture("n1");
+        let _env = set_pack_env(&pd, base.join("claude"));
+        std::fs::remove_dir_all(&hold).unwrap();
+        install_staged(false, None).unwrap();
+        std::fs::create_dir_all(pd.join("memory")).unwrap();
+        std::fs::write(pd.join("memory/mine.md"), "SNAP").unwrap();
+        std::fs::remove_dir_all(pack_prev_dir(&pd)).unwrap();
+        copy_dir_all(&pd, &hold).unwrap();
+        std::fs::write(hold.join("memory/mine.md"), "NEWER").unwrap();
+        install_staged(false, None).unwrap();
+        assert!(!hold.exists());
+        let aside = asides(&base);
+        assert_eq!(aside.len(), 1, "지우지 않고 보존한다");
+        assert_eq!(std::fs::read_to_string(aside[0].join("memory/mine.md")).unwrap(), "NEWER");
+        assert_eq!(std::fs::read_to_string(pd.join("memory/mine.md")).unwrap(), "SNAP", "활성 팩은 그대로");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 내용이 같으면 hold 에만 있는 것이 없다 → 직전 세대로(보존 폴더를 쓸데없이 늘리지 않는다).
+    #[test]
+    fn recover_same_content_retires_hold_to_prev() {
+        let (base, pd, hold) = b1_fixture("same");
+        copy_dir_all(&hold, &pd).unwrap();
+        recover_interrupted_swap(&pd).unwrap();
+        assert!(!hold.exists());
+        assert!(asides(&base).is_empty());
+        assert_eq!(std::fs::read_to_string(pack_prev_dir(&pd).join("memory/mine.md")).unwrap(), "mine");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 읽지 못하는 hold 폴더 = 모름 → 지우지 않는 쪽(보존).
+    #[cfg(unix)]
+    #[test]
+    fn recover_unreadable_hold_is_kept_not_retired() {
+        use std::os::unix::fs::PermissionsExt;
+        let (base, pd, hold) = b1_fixture("unreadable");
+        copy_dir_all(&hold, &pd).unwrap();
+        std::fs::set_permissions(hold.join("memory"), std::fs::Permissions::from_mode(0o000)).unwrap();
+        recover_interrupted_swap(&pd).unwrap();
+        let aside = asides(&base);
+        assert_eq!(aside.len(), 1, "못 읽으면 보존");
+        assert_eq!(std::fs::read_to_string(pack_prev_dir(&pd).join("a.txt")).unwrap(), "older");
+        std::fs::set_permissions(aside[0].join("memory"), std::fs::Permissions::from_mode(0o755)).unwrap();
         let _ = std::fs::remove_dir_all(&base);
     }
 

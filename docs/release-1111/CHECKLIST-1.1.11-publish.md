@@ -394,8 +394,11 @@ r4 키트 aac1b477 ↔ 0fde41c6 차이 = 10파일(문서 9 · `ui/src/publicdocs
 | 8893402d | fix/1111-atomic-swap 9fafe435 | 팩 교체 무손상(1cc1a8fd) · 끊긴 교체 복구 B1 고침(9fafe435 · 777·codex 반려분) · n1 내용 비교·n5 보존 폴더 격리(6d3155c2 · 786 재확인분) · `tests/win_pack_swap.rs` |
 | 0a9cccfe | fix/1112-noderecover-ctrlu 751a379d | 윈 node-recover `^U`(17943406) · L1 cys restore 출력 전문을 phoenix-restore.log 에(1122d062 · 관측 전용) · R2 세션 핀 변경 즉시 topology 영속(751a379d · 759 대조 = native_publication 2건은 기준선도 실패 · 회귀 아님) |
 | 5d3fccd5 | fix/1111-atomic-swap e60ec3bb | 끊긴 교체 복구 · 팩 복사가 FIFO 에서 멈추지 않는다(0835ad3d · 786 재검증 b2.4 · 양쪽 일반 파일 확인 · O_NONBLOCK + 핸들 stat) · 786 회귀 시험 3e561cef(원 d0515b97) |
+| 1fb9e2e2 | fix/1111-claim-epoch 3f8cf7b4 | 복원 claim 데몬 세대(759 R3 · 792 PASS · 배선 핀 V2·V7·V8·V10 · master#39578c1c) |
+| 4aec167e | fix/1111-paste-sanitize bd29e8dd | 사람 붙여넣기 본문 살균(793 1차 PASS · master#a9a9fe6c) |
+| 9f3fc35d | fix/1111-gate-followup-auth b4bdd373 | gate followup 고정 문안 · 채택은 저장값을 믿지 않는다(ebb13bf4 위 · 793 2차 PASS · MAJOR-1·2 닫힘 · master#a9a9fe6c) · 대가 C6·f6 = 노트 「판 표기」 |
 
-수리 3 = ① 팩 교체 ② `^U` ③ 복원 뒤 워커 교체 원인 — L1·R2 까지다 · R3(claim 10분 잔류) = 1.1.12 라 좌석 교체 끊김이 다 없어지지는 않는다(751a379d 본문). 충돌 0 · 두 가지 겹침 파일 = 이 체크리스트뿐. 이 머리에서 아래 표 전체를 다시 돌리고 r8 키트로 r7 항목을 다시 본다.
+수리 3 = ① 팩 교체 ② `^U` ③ 복원 뒤 워커 교체 원인 — L1·R2 + R3(claim 세대 · 1fb9e2e2) · 좌석 살린 채 claim 해제 기존 결함은 남아 좌석 교체 끊김이 다 없어지지는 않는다(§J). 보안 수리 2 = 붙여넣기 살균 · gate followup. 충돌 0 · 두 가지 겹침 파일 = 이 체크리스트뿐. 이 머리에서 아래 표 전체를 다시 돌리고 r8 키트로 r7 항목을 다시 본다.
 
 **병합 대상(master#415438c7 · 끝)**:
 
@@ -512,6 +515,7 @@ find "$H" -name six.py
 - [ ] `test_hook_r34` 시한 3.0s 경계 — 부하 3회 머리·기준 모두 적(RCF-3·RCF-4a·NZ-3·DL-1b · 3.02~3.83s) · 머리·기준 동시 8회 각 7회 적 · 혼자 돌면 통과. 경계를 넓히거나 직렬 칸으로 옮긴다.
 - [ ] `test_dept_notice_lane` 1c — 전수 -P 3 에서 머리 1회 IndexError(fmlog 빈 줄 · 존재만 보고 읽음) · 머리·기준 동시 8회 각 무실패 · 시험·대상 코드 기준선 diff 0. 도우미가 내용까지 기다리게 고친다.
 - [ ] `copy_dir_all` 검사~fs::copy 사이 FIFO 교체 틈 — tree_contained 는 O_NONBLOCK+핸들 stat 으로 닫았고 복사는 권한 보존 때문에 fs::copy 유지(0835ad3d). 같은 형태로 닫는다.
+- [ ] 좌석 살린 채 claim 해제 — 실제 복원 루프에서 재현 · 1.1.10 에도 같은 코드 · claim-epoch 가 만든 것 아님 · 1.1.12 별 티켓 권고(792 §1-3).
 - [ ] FIFO g1 — 임베드 경로(soul.md 등)에 FIFO 면 pack.rs install_into read_to_string 에서 데몬 bind 전 멈춘다(v1.1.9 부터 · 회귀 아님 · 생성 코드 0 · 실팩 특수 파일 0 · 786 3차 · master#7efb49e4 이관).
 - [ ] 같은 UID 고의 교체 경쟁 — `read_regular_nonblocking` 에 O_NOFOLLOW 강화(codex BLOCKER 2 → MINOR 강등 · master#7efb49e4 이관).
 - [ ] 판번 검사(`version-check.sh`)가 `docs/index.html` 을 보지 않는다(L14).

@@ -8,6 +8,7 @@
 - **발행 = 11-07(토)**(master#6ac5d378) · 범위 = 현 1.1.11 + 수리 3 · 새 기능 0. ⛔seq 5 봉투 만료 11-06 22:14 KST 전에 재게시(master).
 - 윈 r7 6회차 pack 소실 = `atomic_swap` 복사·삭제 폴백(1.1.10 과 같은 코드) → fix/1111-atomic-swap 1cc1a8fd + 9fafe435(B1) + 6d3155c2(n1·n5) + 0835ad3d(FIFO b2.4) · 이름 `pack.swap` 은 교체 중에만 있다. 겹침(rotate ②→④) = §J 1.1.12.
 - r8 = 로컬 merge/1111-r8(8893402d atomic-swap + 고침 9fafe435 · 6d3155c2 · 0a9cccfe ^U·L1·R2 · 5d3fccd5 FIFO) · §K-9 r8 편입 표. 다음 = 【확인요청】 → 786 재검증 → master push·CI·r8 키트. 윈 실제 잠금 시험 win_pack_swap 은 49a1f974 까지 2/2 · 뒤 커밋은 push 후 CI.
+- r8 추가 편입: 1fb9e2e2 claim-epoch(R3) · 4aec167e 붙여넣기 살균 · 9f3fc35d gate followup(master#39578c1c · #a9a9fe6c) · 노트 D22~D24 · 판 표기 C6·f6 · 그 머리에서 전체 게이트 1회 → 【push 직전】 · push = master.
 - **태그 머리 미정**: 「0fde41c6 고정」은 윈 r4 1번 실패(좌석 크롬 Job 안 · 재현 2/2)로 무효(master#c26704d3). 원격 rel/1.1.11 = 0fde41c6 · 태그 0.
 - 0fde41c6 게이트 수치(대조 기준): 3런 41158073931 · 41158076438 · 41158078742 success · pre-tag rc 0 · 1-2b ANC-OK · phoenix 26/26 · CI 형식 cys 736/0 · 전체 = 체크리스트 §K · §K-8.
 - **로컬 전용 문서 커밋**(0fde41c6 위): BACKLOG · §K · §K-8 · §K-9 · 노트 윈 크롬 1안 · 카톡 주석 · 이 HANDOFF. push = master 지시로만.

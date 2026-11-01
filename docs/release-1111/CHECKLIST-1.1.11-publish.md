@@ -443,6 +443,33 @@ r4 키트 aac1b477 ↔ 0fde41c6 차이 = 10파일(문서 9 · `ui/src/publicdocs
 
 r8 추가 확인(키트 구성 = master): ① 업데이트 반복 — r7 6회차 재현 조건에서 팩 파일 수 불변 · rc 24 면 팩 무손상 · 재시도 성공 ② r7-7 재시험 — 윈 `^Uclaude` CommandNotFound 0 ③ 좌석 교체 시 phoenix-restore.log 에 cys restore 출력 전문 · topology session_id 유지.
 
+**r8 CI(rel/1.1.11 0958d0bb · 06:02 dispatch · 07:14 완주 · master#732293bc · 수용 master#a6f6ec6a):**
+
+| 워크플로 | 머리 런 | 결과 | 기준 런(93fb8e08) |
+|---|---|---|---|
+| ci-branch | 41349912419 | success | 41278029502 |
+| windows-build | 41349915458 | success | 41278031239 |
+| windows-health | 41349918237 | success | 41278032989 |
+
+win_pack_swap = **2/2 · 윈 첫 실행 @0958d0bb**(filter-count 2건 · `locked_file_fails_the_swap_and_deletes_nothing` = Err `Access is denied. (os error 5)` · 팩 무손상 · `lock_released_during_retry_completes_the_swap` ok). pre-tag rc 0 · annotation 머리↔기준 차이 = Node 경고의 잡 나열 순서뿐(T3-3 FAIL·생성 거부 3·감독자 축 시간 초과 = 기준 공통).
+
+감독자 축(비차단 · 양쪽 30분에 잘림) = 머리 123 ↔ 기준 116 · 공통 113 · 머리 전용 10(잘린 위치 5 · `busy(출력 중)` 5) · 기준 전용 3 · `governance.rs` diff 0 → **비차단 · 회귀 근거 없음 판정(master#a6f6ec6a)**. 잘려서 두 집합을 온전히 비교할 수 없고 플레이크로 단정하지는 않는다. `qa_question_dialog_blocks_queue_and_force` 만 비교한 4런(0958d0bb · 93fb8e08 · 0fde41c6 · 060cb75b) 중 이번 머리 전용 → r8-8 관찰 · §J 감시. `trash::` = CI 빈 판정(L21) → r8-7 로 잰다.
+
+**r8 키트 = prerelease `wintest-v1.1.11-20261102`(oogisoogi/jarvis-install · pre=true · latest 미노출 · 정식 태그 0 · master#a6f6ec6a):** `cysr_1.1.11_x64-setup.exe` 153,584,464B · sha256 `4cc8872c26353a046fcf02aa1e07b2df1dae7234a14c43bde42928ffc9f7df5c`(아티팩트 13101303080 다이제스트 일치 · 게시 뒤 재내려받기 왕복 일치) · 원천 = windows-build 41349915458 @0958d0bb · Authenticode 미서명 · 실기 뒤 삭제 = master.
+
+**r8 실기 항목(r7-0~7 은 위 표 그대로 다시 · 결과 칸 = 실기 회신으로 채운다):**
+
+| # | 항목 | 할 일 | 합격 | 결과 |
+|---|---|---|---|---|
+| r8-1 | 팩 교체 | r7 6회차 재현 조건으로 업데이트 반복(팩 파일을 잡고 있는 프로세스 있음·없음 각각) | 팩 파일 수 불변 · rc 24 면 팩 무손상 · 해제 뒤 재시도 성공 · 끝나면 `pack.swap` 없음 · `pack.swap-<초>-<pid>` 생기면 경로 기록 | ☐ |
+| r8-2 | 윈 FIFO | ⚠윈에는 유닉스 FIFO 가 없어 O_NONBLOCK 갈래는 윈에서 돌지 않는다 · 재는 것은 일반 파일 아닌 항목이 복구·설치를 막지 않는가. Git Bash `mkfifo` 로 팩 `memory/` 에 하나 만들고 만들어진 실물 유형을 `Get-Item` 으로 기록 → 업데이트 1회 | 멈춤 0 · 나머지 파일 무손상 · 못 만들면 「해당 없음」으로 적는다(통과로 세지 않는다) | ☐ |
+| r8-3 | `^U` | 워커 node-recover 3회(r7-7 재현 조건) | `^Uclaude` CommandNotFound 0 · 좌석 기동 | ☐ |
+| r8-4 | 붙여넣기 살균 | PowerShell 좌석에서 `Set-Clipboard ("첫줄" + [char]27 + "[201~echo R8TEST" + [char]3 + " 한글 끝")` 뒤 Ctrl+V · 안전한 echo 만 쓴다 · 이어서 한글·탭·여러 줄 글 붙여넣기 | R8TEST 가 실행되지 않고 입력줄에 남음 · 제어문자 자리는 공백 · 한글·탭·줄바꿈 그대로 · Enter 전 Esc 로 지운다 | ☐ |
+| r8-5 | gate followup | ① 관문에 걸린 좌석을 `cys boot` 로 채택(정당 경로) ② 시험 좌석에서 원시 RPC `surface.gate_pending` 에 고정 문안 밖 followup | ① 전문 + 좌석 역할 지시 · 유실 0 · 전문 겹침 크기 기록(판 표기 C6) ② `gate_followup_denied` 거부 · 제출 0 · 시험 좌석만 | ☐ |
+| r8-6 | 복원 연달아 | 데몬이 바뀌도록 앱 재시작 뒤 `cys restore`·rotate 를 연달아 2회 | 두 번째 복원이 앞 claim 에 막히지 않음(10분 대기 0) · 같은 대화 이음 · 좌석 중복 0 · `phoenix-restore.log` 에 출력 전문 · topology session_id 유지 | ☐ |
+| r8-7 | 휴지통 | r4 15번과 같다 · 「크기 미리 보기」 열기 | 비우기 꺼짐 · 되살리기 단추 없음 · 크기 표시 · CI `trash::` 빈 판정의 대체 근거 | ☐ |
+| r8-8 | qa_question_dialog 관찰 | 좌석에 질문 창을 띄운 채 `cys send --queued` · `queue_list` 로 보류 사유를 읽는다 · 합격 판정 없는 관찰 | 사유가 승인 대기인지 `busy(출력 중)` 인지 시각과 함께 기록 · 배달 0 이어야 한다 · 배달되면 즉시 보고 | ☐ |
+
 **발행 뒤 첫 확인(master#9312bc1c ②):**
 
 | 시점 | 항목 | 실패 시 | 결과 |
@@ -516,6 +543,7 @@ find "$H" -name six.py
 - [ ] `test_dept_notice_lane` 1c — 전수 -P 3 게이트 2회(@cebf7851 · @7e85792b) 각 1회 같은 IndexError. 원인 = 시험 경합: 스텁이 `open(...,'a').write()` 로 fmlog 를 만든 뒤 flush 전에 `launch()` 의 `os.path.exists` 가 참이 되어 빈 파일을 읽는다 · 제품 경로 아님. 3중 동시 8회차 머리·기준 각 24/24 통과(재현 안 됨) · 시험·대상 코드 기준선 diff 0. 도우미가 내용까지 기다리게 고친다(1.1.12 · master#d8a90b3e).
 - [ ] `copy_dir_all` 검사~fs::copy 사이 FIFO 교체 틈 — tree_contained 는 O_NONBLOCK+핸들 stat 으로 닫았고 복사는 권한 보존 때문에 fs::copy 유지(0835ad3d). 같은 형태로 닫는다.
 - [ ] 좌석 살린 채 claim 해제 — 실제 복원 루프에서 재현 · 1.1.10 에도 같은 코드 · claim-epoch 가 만든 것 아님 · 1.1.12 별 티켓 권고(792 §1-3).
+- [ ] `qa_question_dialog_blocks_queue_and_force` 감시 — r8 CI 감독자 축(비차단)에서 비교한 4런 중 0958d0bb 전용 · 사유 `busy(출력 중)` · governance.rs diff 0 · 다음 판 런마다 본다(master#a6f6ec6a).
 - [ ] FIFO g1 — 임베드 경로(soul.md 등)에 FIFO 면 pack.rs install_into read_to_string 에서 데몬 bind 전 멈춘다(v1.1.9 부터 · 회귀 아님 · 생성 코드 0 · 실팩 특수 파일 0 · 786 3차 · master#7efb49e4 이관).
 - [ ] 같은 UID 고의 교체 경쟁 — `read_regular_nonblocking` 에 O_NOFOLLOW 강화(codex BLOCKER 2 → MINOR 강등 · master#7efb49e4 이관).
 - [ ] 판번 검사(`version-check.sh`)가 `docs/index.html` 을 보지 않는다(L14).

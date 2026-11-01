@@ -16,9 +16,10 @@ use std::path::{Path, PathBuf};
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// ~/.cys 직하에서 격리하는 정확 이름. (pack·조직 레지스트리·상태·마커·토글 전부)
-const CYS_BASE_EXACT: [&str; 29] = [
+const CYS_BASE_EXACT: [&str; 30] = [
     "pack",
     "pack.prev",
+    "pack.swap",
     ".pack-download",
     ".pack-journal",
     ".pack-accepted.json",
@@ -83,8 +84,9 @@ const CYS_BASE_EXACT2: [&str; 12] = [
 
 /// ~/.cys 직하에서 격리하는 접두. `pack-dept-<name>`(유령 `pack-dept---help` 포함),
 /// `claude-<acct>`, `.pack-staging`(+`-init-<pid>`), `.master-bootstrapped`(+`-<lane>`).
-const CYS_BASE_PREFIX: [&str; 4] = [
+const CYS_BASE_PREFIX: [&str; 5] = [
     "pack-dept-",
+    "pack.swap-", // 끊긴 교체 복구가 남긴 보존 폴더(pack.rs recover_interrupted_swap)
     "claude-",
     ".pack-staging",
     ".master-bootstrapped",
@@ -2761,6 +2763,8 @@ mod tests {
         mk(&r.cys_base.join("pack/round"));
         mk(&r.cys_base.join("pack-dept-dept-1"));
         mk(&r.cys_base.join("pack-dept---help")); // 유령 부서 잔재도 접두로 잡힌다.
+        mk(&r.cys_base.join("pack.swap-1793970858-4242")); // 끊긴 교체의 보존 폴더
+        touch(&r.cys_base.join("pack.swap-notes.md"), "x"); // 같은 접두의 파일은 사용자 것 — 보존
         mk(&r.cys_base.join("claude-default-dept-1"));
         mk(&r.cys_base.join("state-generations/20260811T002345Z"));
         touch(&r.cys_base.join("depts.json"), "{}");
@@ -2793,6 +2797,8 @@ mod tests {
         let r = seed_practice_tree(&td);
         let plan = build_plan(&r, &ResetOptions { purge_license: false, purge_local: false, purge_round: false });
         let q: Vec<String> = plan.quarantine.iter().map(|i| norm(&i.path)).collect();
+        assert!(q.iter().any(|p| p.ends_with("pack.swap-1793970858-4242")), "보존 폴더는 격리: {q:?}");
+        assert!(!q.iter().any(|p| p.ends_with("pack.swap-notes.md")), "같은 접두의 파일은 사용자 것: {q:?}");
         // 알려진 상태는 전부 격리 목록에.
         for must in [
             ".cys/pack",
@@ -4321,6 +4327,8 @@ mod r2f_dm_factory_reset {
     #[test]
     fn r2f_dm_factory_reset_inventory_lists_carry_the_new_persistent_files() {
         assert_eq!(CYS_BASE_EXACT2.len(), 12, "~/.cys 직하 정확 이름 목록(2차)의 길이");
+        assert!(CYS_BASE_EXACT.contains(&"pack.swap"), "끊긴 교체의 옛 팩 — 빠지면 초기화 뒤 다음 설치가 되살린다");
+        assert!(CYS_BASE_PREFIX.contains(&"pack.swap-"), "복구의 보존 폴더 — 빠지면 초기화 뒤에도 사용자 상태가 남는다");
         assert!(CYS_BASE_EXACT2.contains(&"claude-tui-written.json") && crate::claude_tui::LEDGER_FILE.ends_with("/claude-tui-written.json"), "claude tui 원장이 기본 격리 목록에 없다");
         assert!(CYS_BASE_EXACT2.contains(&".update-attempt.json"), "~/.cys/.update-attempt.json(인앱 업데이트 시도 기록)이 기본 격리 목록에 없다");
         assert_eq!(WIN_STATE_EXACT.len(), 25, "윈도우 상태 폴더 정확 이름 목록의 길이");

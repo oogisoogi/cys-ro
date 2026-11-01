@@ -5059,6 +5059,9 @@ pub fn install_from_iter<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
     auth: Option<PackWriteAuth>,
 ) -> Result<(usize, usize), String> {
     let dir = pack_dir();
+    // 데몬 부트가 팩을 새로 깔기 전에 끊긴 교체를 되찾는다 — 먼저 깔면 hold 의 사용자 상태가 새 팩 뒤로 밀린다(atomic-swap 독립 검증 B1).
+    authorize_pack_write(&dir, auth)?;
+    recover_interrupted_swap(&dir)?;
     // ★G3 축2: 스코프는 실 pack_dir 에서 산출(부서 데몬 자동설치가 이 경로 — dept soul 승계·불가침).
     let scope = pack_scope_of(&dir);
     install_into(dir, items, force, target_version, transactional, true, scope, auth, None)
@@ -5102,45 +5105,167 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// cross-device 대비 rename(§3.1-5) — 같은 볼륨이면 원자 rename, 실패 시 copy 후 원본 삭제
-/// fallback(EXDEV 등). staging은 pack_dir 형제라 정상 경로는 원자 rename이다(Windows도 동일 볼륨 전제).
-fn rename_dir_or_move(src: &Path, dst: &Path) -> std::io::Result<()> {
-    if std::fs::rename(src, dst).is_ok() {
-        return Ok(());
-    }
-    // rename 불가(cross-device 등) — copy 후 원본 삭제 fallback(src 부재면 여기서 loud Err).
-    copy_dir_all(src, dst)?;
-    std::fs::remove_dir_all(src)
+/// 교체 중 옛 팩을 잠시 두는 자리(`<pack_dir>.swap` — pack_dir 형제). 교체가 끝나면 pack_dir.prev 로 바뀌어 남지 않는다.
+/// 프로세스가 교체 도중 죽었을 때만 남고, 다음 설치가 [`recover_interrupted_swap`] 으로 되찾는다.
+pub fn pack_swap_hold_dir(dir: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.swap", dir.display()))
 }
 
-/// 원자 교체(§3.1-3): pack_dir→pack_dir.prev, staging→pack_dir. 2번째 rename 실패 시 역rename으로
-/// pre-state 복구. pack_dir.prev는 1세대만 보존. 반환 Err = 교체 안 됨(기존 팩 온전).
-///
-/// L6 전제 명문화: 두 rename 사이엔 pack_dir가 잠깐 **부재하는 창**이 있다(원자 교체지만 순간 공백).
-/// 이는 **데몬 미가동/init 시점**(팩을 읽는 상주 소비자가 없는 때)을 전제로 안전하다 — 무중단
-/// 업데이트 경로(deploy_gate --execute)는 이 함수를 데몬이 팩을 읽지 않는 시점에만 호출한다.
-/// 상주 데몬이 그 창에 팩을 읽으면 일시적 not-found가 날 수 있으므로, 라이브 교체는 이 전제를
-/// 지키는 호출자 책임이다(코드 변경 불요·전제 고지).
-pub fn atomic_swap(dir: &Path, staging: &Path) -> Result<(), String> {
-    let prev = pack_prev_dir(dir);
-    // 직전 세대 정리(1세대 보존).
-    let _ = std::fs::remove_dir_all(&prev);
-    let had_old = dir.exists();
-    if had_old {
-        rename_dir_or_move(dir, &prev)
-            .map_err(|e| format!("pack_dir→prev rename 실패(교체 안 함): {e}"))?;
-    }
-    match rename_dir_or_move(staging, dir) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            // 역rename 복구: (실패한 fallback이 만든 부분/빈 dir 정리 후) prev→pack_dir 복원.
-            if had_old {
-                let _ = std::fs::remove_dir_all(dir);
-                let _ = rename_dir_or_move(&prev, dir);
+/// 라이브 팩 rename 재시도 — 윈도우는 폴더 안 파일 하나만 열려 있어도 폴더 rename 이 실패한다(좌석 훅·백신이 잠깐 쥔다).
+const SWAP_RENAME_TRIES: u32 = 25;
+const SWAP_RENAME_WAIT: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// rename 만 쓴다 — ★복사 후 원본 삭제로 넘어가지 않는다(윈 r7: rename 실패 → 복사 → 원본 삭제가 잠긴 파일에서 멈춰 ~/.cys/pack 이
+/// 반쯤 지워졌다 · 복구 코드 0). 대상이 없으면(NotFound) 기다려도 소용없으니 바로 실패한다.
+fn rename_with_retry(
+    src: &Path,
+    dst: &Path,
+    rename: &dyn Fn(&Path, &Path) -> std::io::Result<()>,
+    wait: std::time::Duration,
+) -> std::io::Result<()> {
+    let mut tries = 1;
+    loop {
+        match rename(src, dst) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound || tries >= SWAP_RENAME_TRIES => return Err(e),
+            Err(_) => {
+                tries += 1;
+                std::thread::sleep(wait);
             }
-            Err(format!("staging→pack_dir rename 실패(pre-state 복구 시도): {e}"))
         }
     }
+}
+
+/// 끝난 교체의 옛 팩(hold)을 pack_dir.prev 로 — 옛 prev 는 **이 시점에야** 지운다. 이미 새 팩이 선 뒤라 실패해도 설치 실패가 아니고
+/// hold 가 남을 뿐이다(다음 설치가 다시 마무리한다).
+fn retire_swap_hold(hold: &Path, prev: &Path, rename: &dyn Fn(&Path, &Path) -> std::io::Result<()>, wait: std::time::Duration) {
+    if !hold.is_dir() {
+        return; // 이미 정리됐다(동시 설치) — 이때 prev 를 지우면 보존본만 사라진다.
+    }
+    let _ = std::fs::remove_dir_all(prev);
+    if let Err(e) = rename_with_retry(hold, prev, rename, wait) {
+        eprintln!("[pack] 직전 팩 보관 실패(새 팩은 정상 · 다음 설치가 다시 정리): {} → {}: {e}", hold.display(), prev.display());
+    }
+}
+
+/// 복구가 옆으로 치운 팩을 두는 자리 — 지우지 않고 남긴다(코드가 읽지 않는 이름 · 사용자가 확인한다).
+fn pack_swap_aside_dir(dir: &Path) -> PathBuf {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    PathBuf::from(format!("{}.swap-{secs}-{}", dir.display(), std::process::id()))
+}
+
+/// `pack` 이 설치를 끝낸 팩인가 — 표지 2개. 데몬·훅이 폴더만 다시 만든 부분 팩은 여기서 걸린다.
+fn pack_is_complete(dir: &Path) -> bool {
+    dir.join(PACK_VERSION_FILE).is_file() && dir.join(INSTALL_MANIFEST).is_file()
+}
+
+/// `from` 의 파일이 `to` 에 **같은 내용으로** 전부 있는가 — 이름만 보면 hold 에만 있던 수정본을 직전 세대로 밀어 지운다(독립 재확인 n1).
+/// 못 읽으면 false(모름 = 지우지 않는 쪽).
+fn tree_contained(from: &Path, to: &Path) -> bool {
+    let Ok(rd) = std::fs::read_dir(from) else {
+        return false;
+    };
+    for entry in rd {
+        let Ok(entry) = entry else {
+            return false;
+        };
+        let (src, dst) = (entry.path(), to.join(entry.file_name()));
+        let same = if src.is_dir() {
+            tree_contained(&src, &dst)
+        } else {
+            matches!((std::fs::read(&src), std::fs::read(&dst)), (Ok(a), Ok(b)) if a == b)
+        };
+        if !same {
+            return false;
+        }
+    }
+    true
+}
+
+/// 끊긴 교체 되찾기 — hold 폴더가 남아 있다 = 지난 교체가 죽었다. 설치 경로 전부(init-pack · 데몬 부트 · pack-update)가 팩에 쓰기 **전에** 부른다.
+/// pack_dir 없음을 새 설치로 읽으면 상태 파일을 잃기 때문이다.
+///  ① pack_dir 없음 → hold 가 유일한 팩 → 되돌린다.
+///  ② pack_dir 가 완전하고 hold 의 파일을 **같은 내용으로** 전부 갖춤 → hold 에만 있는 것이 없다 → hold = 직전 세대.
+///  ③ pack_dir 가 불완전(표지 없음) → 폴더만 다시 생긴 것 → hold 가 진짜 팩이다. 부분 팩은 옆으로 치우고 hold 를 되돌린다.
+///  ④ pack_dir 는 완전한데 hold 에만 있는 파일·내용이 있음 → 어느 쪽이 맞는지 모른다 → hold 를 옆으로 치워 **보존**하고 경고만 한다.
+///     새 판이 파일을 고친 정상 교체도 보관 전에 죽었으면 여기로 온다 — 지우지 않는 쪽을 택한 값이다(master#6aa19b60).
+/// ★어느 갈래도 지우지 않는다(②의 옛 prev 는 이미 지울 세대). hold 가 폴더가 아니면 우리 것이 아니다 — 건드리지 않는다.
+fn recover_interrupted_swap(dir: &Path) -> Result<(), String> {
+    let hold = pack_swap_hold_dir(dir);
+    if !hold.is_dir() {
+        return Ok(());
+    }
+    let rename = |a: &Path, b: &Path| std::fs::rename(a, b);
+    if !dir.exists() {
+        return rename_with_retry(&hold, dir, &rename, SWAP_RENAME_WAIT)
+            .map_err(|e| format!("끊긴 교체 되찾기 실패(옛 팩은 {} 에 있다): {e}", hold.display()));
+    }
+    if !dir.is_dir() {
+        return Err(format!("{} 이 폴더가 아니다 — 옛 팩은 {} 에 그대로 둔다", dir.display(), hold.display()));
+    }
+    let complete = pack_is_complete(dir);
+    if complete && tree_contained(&hold, dir) {
+        retire_swap_hold(&hold, &pack_prev_dir(dir), &rename, SWAP_RENAME_WAIT);
+        return Ok(());
+    }
+    let aside = pack_swap_aside_dir(dir);
+    if complete {
+        rename_with_retry(&hold, &aside, &rename, SWAP_RENAME_WAIT)
+            .map_err(|e| format!("끊긴 교체 보존 실패(옛 팩은 {} 에 있다): {e}", hold.display()))?;
+        eprintln!("[pack] ⚠ 끊긴 교체의 옛 팩을 보존했다 — 지금 팩과 다른 파일이 있어 판단을 사람에게 남긴다: {}", aside.display());
+        return Ok(());
+    }
+    rename_with_retry(dir, &aside, &rename, SWAP_RENAME_WAIT)
+        .map_err(|e| format!("부분 팩 이동 실패(옛 팩은 {} 에 있다): {e}", hold.display()))?;
+    if let Err(e) = rename_with_retry(&hold, dir, &rename, SWAP_RENAME_WAIT) {
+        let _ = rename(&aside, dir);
+        return Err(format!("끊긴 교체 되찾기 실패(옛 팩은 {} 에 있다): {e}", hold.display()));
+    }
+    eprintln!("[pack] ⚠ 끊긴 교체의 옛 팩을 되찾았다 — 그 사이 생긴 부분 팩은 {} 에 남겼다", aside.display());
+    Ok(())
+}
+
+/// 팩 교체(§3.1-3): pack_dir→hold → staging→pack_dir → (성공 뒤에만) 옛 prev 삭제 + hold→prev.
+/// 반환 Err = 교체 안 됨. 어느 단계가 실패해도 pack_dir 와 pack_dir.prev 는 손대기 전 그대로다 — 단 하나, 되돌리기까지 실패하면
+/// 옛 팩은 hold 에 온전히 있고 오류 문구가 그 자리를 말한다(다음 설치가 되찾는다).
+/// 잠금이 재시도 동안 풀리지 않으면 실패한다 — rotate 는 rc 24 로 멈추고 다음 기동이 다시 한다.
+///
+/// L6 전제 명문화: 두 rename 사이엔 pack_dir가 잠깐 **부재하는 창**이 있다(rename 2회라 순간 공백).
+/// 상주 소비자가 그 창에 팩을 읽으면 일시적 not-found가 난다. ⚠rotate 는 새 데몬이 좌석을 복원하는 동안 이 함수를 부른다 — 그 겹침을
+/// 없애는 수리는 1.1.12(체크리스트 §J) · 겹쳐도 팩이 지워지지 않게 하는 것이 이 함수의 몫이다.
+pub fn atomic_swap(dir: &Path, staging: &Path) -> Result<(), String> {
+    atomic_swap_with(dir, staging, &|a: &Path, b: &Path| std::fs::rename(a, b), SWAP_RENAME_WAIT)
+}
+
+/// [`atomic_swap`] 본체 — rename 을 주입받는다(시험이 단계별 실패를 낸다).
+fn atomic_swap_with(
+    dir: &Path,
+    staging: &Path,
+    rename: &dyn Fn(&Path, &Path) -> std::io::Result<()>,
+    wait: std::time::Duration,
+) -> Result<(), String> {
+    let prev = pack_prev_dir(dir);
+    let hold = pack_swap_hold_dir(dir);
+    let had_old = dir.exists();
+    if had_old {
+        rename_with_retry(dir, &hold, rename, wait)
+            .map_err(|e| format!("pack_dir 이동 실패(교체 안 함 · 팩 그대로): {e}"))?;
+    }
+    if let Err(e) = rename_with_retry(staging, dir, rename, wait) {
+        if had_old {
+            if let Err(back) = rename_with_retry(&hold, dir, rename, wait) {
+                return Err(format!(
+                    "staging→pack_dir rename 실패: {e} · 되돌리기도 실패(옛 팩은 {} 에 온전 · 다음 설치가 되찾는다): {back}",
+                    hold.display()
+                ));
+            }
+        }
+        return Err(format!("staging→pack_dir rename 실패(팩 그대로): {e}"));
+    }
+    if had_old {
+        retire_swap_hold(&hold, &prev, rename, wait);
+    }
+    Ok(())
 }
 
 /// staging 검증(§3.1-2): 임베드 전 파일이 staging에 실재하는가(파일 수·존재). pack-update의
@@ -5192,6 +5317,7 @@ pub fn install_staged(
     // ★W0-d: 최종 commit/rename(atomic_swap)이 라이브 기본 경로를 원자 교체하므로, 어떤 staging
     // 작업보다 먼저 인가를 검사한다(비라이브 대상·인가 보유는 통과 — 테스트는 temp 대상이라 무영향).
     authorize_pack_write(&dir, auth)?;
+    recover_interrupted_swap(&dir)?;
     let staging = init_staging_dir(&dir);
     // 잔여 staging(같은 pid 재사용·직전 실패) 선정리.
     let _ = std::fs::remove_dir_all(&staging);
@@ -5227,7 +5353,7 @@ pub fn install_staged(
         let _ = std::fs::remove_dir_all(&staging);
         return Err(e);
     }
-    // ④ 원자 교체(실패 시 pre-state 복구·staging 정리).
+    // ④ 교체(실패 시 팩 그대로·staging 정리).
     if let Err(e) = atomic_swap(&dir, &staging) {
         let _ = std::fs::remove_dir_all(&staging);
         return Err(e);
@@ -5456,6 +5582,8 @@ where
     let dir = pack_dir();
     // ★W0-d: 저널·파일 반영 어떤 부수효과보다 먼저 라이브 인가 검사(비라이브·인가 보유는 통과).
     authorize_pack_write(&dir, auth)?;
+    // 저널이 찍을 pre-state 를 확정한다 — 끊긴 교체가 남았으면 저널보다 먼저 되찾는다.
+    recover_interrupted_swap(&dir)?;
     // ① backup set = 새 manifest.files(=items) ∪ 현재 install-manifest 키(prune·overwrite 대상)
     //    ∪ .install-manifest.json ∪ .pack-state.json(v4 — rollback이 state도 pre-state로 복원).
     let mut backup_set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -10644,6 +10772,346 @@ mod tests {
             "pre-state 온전(반쯤 쓰인 팩 없음)"
         );
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 시험 팩 한 벌 — pack(a.txt·bin/b.txt) · staging · pack.prev.
+    fn swap_fixture(tag: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let base = std::env::temp_dir().join(format!("cys-swap-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let dir = base.join("pack");
+        let staging = base.join("staging");
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::write(dir.join("a.txt"), "old").unwrap();
+        std::fs::write(dir.join("bin/b.txt"), "old-b").unwrap();
+        std::fs::create_dir_all(staging.join("bin")).unwrap();
+        std::fs::write(staging.join("a.txt"), "new").unwrap();
+        let prev = pack_prev_dir(&dir);
+        std::fs::create_dir_all(&prev).unwrap();
+        std::fs::write(prev.join("a.txt"), "older").unwrap();
+        (base, dir, staging)
+    }
+
+    fn file_count(d: &Path) -> usize {
+        std::fs::read_dir(d).map_or(0, |rd| {
+            rd.flatten().map(|e| if e.path().is_dir() { file_count(&e.path()) } else { 1 }).sum()
+        })
+    }
+
+    /// 그 대상으로 가는 rename 만 늘 실패(잠금 흉내) · 시도 횟수를 센다.
+    fn fail_rename_to(blocked: PathBuf, calls: std::rc::Rc<std::cell::Cell<u32>>) -> impl Fn(&Path, &Path) -> std::io::Result<()> {
+        move |a: &Path, b: &Path| {
+            if b == blocked {
+                calls.set(calls.get() + 1);
+                return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+            }
+            std::fs::rename(a, b)
+        }
+    }
+
+    /// ★윈 r7 회귀 핀: 1단계 rename 이 잠금으로 실패하면 **아무것도 지우지 않는다**(종전 = 복사 뒤 원본 삭제가 잠긴 파일에서 멈춤).
+    #[test]
+    fn atomic_swap_first_rename_blocked_leaves_pack_and_prev_untouched() {
+        let (base, dir, staging) = swap_fixture("step1");
+        let hold = pack_swap_hold_dir(&dir);
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let r = atomic_swap_with(&dir, &staging, &fail_rename_to(hold.clone(), calls.clone()), std::time::Duration::ZERO);
+        let e = r.unwrap_err();
+        assert!(e.contains("교체 안 함"), "{e}");
+        assert_eq!(calls.get(), SWAP_RENAME_TRIES, "잠금은 정해진 횟수만큼 다시 본다");
+        assert_eq!(file_count(&dir), 2, "팩 파일 수 불변");
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "old");
+        assert_eq!(std::fs::read_to_string(pack_prev_dir(&dir).join("a.txt")).unwrap(), "older", "직전 세대 불변");
+        assert!(staging.join("a.txt").exists(), "새 팩도 그대로");
+        assert!(!hold.exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 2단계 실패: 옛 팩이 제자리로 돌아오고 pack.prev 는 지워지지 않는다(종전 = 맨 앞에서 prev 삭제).
+    #[test]
+    fn atomic_swap_second_rename_blocked_restores_pack_and_keeps_prev() {
+        let (base, dir, staging) = swap_fixture("step2");
+        let blocked = dir.clone();
+        let hold = pack_swap_hold_dir(&dir);
+        let staging2 = staging.clone();
+        let rename = move |a: &Path, b: &Path| {
+            if a == staging2 && b == blocked {
+                return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+            }
+            std::fs::rename(a, b)
+        };
+        let e = atomic_swap_with(&dir, &staging, &rename, std::time::Duration::ZERO).unwrap_err();
+        assert!(e.contains("팩 그대로"), "{e}");
+        assert_eq!(file_count(&dir), 2);
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "old");
+        assert_eq!(std::fs::read_to_string(pack_prev_dir(&dir).join("a.txt")).unwrap(), "older");
+        assert!(!hold.exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 되돌리기까지 실패: 옛 팩은 hold 에 온전하고 문구가 그 자리를 말한다 · 다음 설치가 되찾는다.
+    #[test]
+    fn atomic_swap_failed_restore_keeps_old_pack_in_hold_and_recovers() {
+        let (base, dir, staging) = swap_fixture("hold");
+        let hold = pack_swap_hold_dir(&dir);
+        let blocked = dir.clone();
+        let rename = move |a: &Path, b: &Path| {
+            if b == blocked {
+                return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+            }
+            std::fs::rename(a, b)
+        };
+        let e = atomic_swap_with(&dir, &staging, &rename, std::time::Duration::ZERO).unwrap_err();
+        assert!(e.contains(&hold.display().to_string()), "옛 팩 자리를 말한다: {e}");
+        assert!(!dir.exists());
+        assert_eq!(file_count(&hold), 2, "옛 팩 온전");
+        recover_interrupted_swap(&dir).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "old");
+        assert!(!hold.exists());
+        assert_eq!(std::fs::read_to_string(pack_prev_dir(&dir).join("a.txt")).unwrap(), "older");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 재시도 안에 잠금이 풀리면 교체가 끝난다 · 대상 없음은 기다리지 않는다.
+    #[test]
+    fn atomic_swap_retry_outlasts_a_short_lock_and_not_found_fails_at_once() {
+        let (base, dir, staging) = swap_fixture("retry");
+        let hold = pack_swap_hold_dir(&dir);
+        let calls = std::cell::Cell::new(0);
+        let rename = |a: &Path, b: &Path| {
+            if b == hold && calls.get() < 3 {
+                calls.set(calls.get() + 1);
+                return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+            }
+            std::fs::rename(a, b)
+        };
+        atomic_swap_with(&dir, &staging, &rename, std::time::Duration::ZERO).unwrap();
+        assert_eq!(calls.get(), 3);
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(pack_prev_dir(&dir).join("a.txt")).unwrap(), "old", "새 직전 세대");
+        assert!(!hold.exists());
+
+        let n = std::cell::Cell::new(0);
+        let missing = |_: &Path, _: &Path| {
+            n.set(n.get() + 1);
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+        };
+        assert!(rename_with_retry(&base.join("x"), &base.join("y"), &missing, std::time::Duration::ZERO).is_err());
+        assert_eq!(n.get(), 1, "없는 대상은 다시 보지 않는다");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 보관 단계 실패는 설치 실패가 아니다 — 새 팩은 서 있고 hold 가 남아 다음 설치가 마무리한다.
+    #[test]
+    fn atomic_swap_retire_failure_keeps_new_pack_and_next_install_finishes() {
+        let (base, dir, staging) = swap_fixture("retire");
+        // 옛 팩과 내용이 같은 새 팩 — hold 에만 있는 것이 없다.
+        std::fs::write(staging.join("a.txt"), "old").unwrap();
+        std::fs::write(staging.join("bin/b.txt"), "old-b").unwrap();
+        for rel in [PACK_VERSION_FILE, INSTALL_MANIFEST] {
+            std::fs::write(staging.join(rel), "new").unwrap();
+        }
+        let hold = pack_swap_hold_dir(&dir);
+        let prev = pack_prev_dir(&dir);
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        atomic_swap_with(&dir, &staging, &fail_rename_to(prev.clone(), calls), std::time::Duration::ZERO).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join(PACK_VERSION_FILE)).unwrap(), "new");
+        assert_eq!(file_count(&hold), 2, "옛 팩은 hold 에 온전");
+        recover_interrupted_swap(&dir).unwrap();
+        assert!(!hold.exists());
+        assert_eq!(std::fs::read_to_string(prev.join("a.txt")).unwrap(), "old");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 없는 옛 팩(새 설치): pack.prev 를 건드리지 않는다.
+    #[test]
+    fn atomic_swap_without_old_pack_keeps_prev() {
+        let (base, dir, staging) = swap_fixture("fresh");
+        std::fs::remove_dir_all(&dir).unwrap();
+        atomic_swap(&dir, &staging).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(pack_prev_dir(&dir).join("a.txt")).unwrap(), "older");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// B1 시작 상태 — pack 없음 · hold 에 옛 팩(사용자 파일 memory/mine.md) · pack.prev 있음.
+    fn b1_fixture(tag: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let base = std::env::temp_dir().join(format!("cys-swap-b1-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let pd = base.join("pack");
+        let hold = pack_swap_hold_dir(&pd);
+        std::fs::create_dir_all(hold.join("memory")).unwrap();
+        std::fs::write(hold.join("memory/mine.md"), "mine").unwrap();
+        std::fs::write(hold.join(PACK_VERSION_FILE), "1.1.10").unwrap();
+        std::fs::write(hold.join(INSTALL_MANIFEST), "{}").unwrap();
+        let prev = pack_prev_dir(&pd);
+        std::fs::create_dir_all(&prev).unwrap();
+        std::fs::write(prev.join("a.txt"), "older").unwrap();
+        (base, pd, hold)
+    }
+
+    fn asides(base: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(base).unwrap().flatten().map(|e| e.path())
+            .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with("pack.swap-")).collect()
+    }
+
+    /// ★B1 재현 순서: 데몬 자동 설치 → init-pack. 사용자 파일이 살아 있어야 한다(종전 = pack·prev·swap 셋 다에서 소실).
+    #[test]
+    fn b1_daemon_install_first_then_init_pack_keeps_user_state() {
+        let _g = PACK_ENV_LOCK.lock().unwrap();
+        let (base, pd, hold) = b1_fixture("daemon");
+        let _env = set_pack_env(&pd, base.join("claude"));
+        super::install(false, None).unwrap();
+        assert!(!hold.exists(), "설치 앞에서 되찾았다");
+        assert_eq!(std::fs::read_to_string(pd.join("memory/mine.md")).unwrap(), "mine");
+        install_staged(false, None).unwrap();
+        assert_eq!(std::fs::read_to_string(pd.join("memory/mine.md")).unwrap(), "mine");
+        assert!(pack_prev_dir(&pd).join("memory/mine.md").is_file(), "직전 세대에도 있다");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// ★B1: 폴더만 다시 생긴 부분 팩(`round/x.log` · 빈 `round/`) + init-pack — 옛 팩을 되찾고 부분 팩은 옆에 남는다.
+    #[test]
+    fn b1_partial_pack_then_init_pack_keeps_user_state_and_the_partial() {
+        let _g = PACK_ENV_LOCK.lock().unwrap();
+        for (tag, log) in [("log", true), ("empty", false)] {
+            let (base, pd, _hold) = b1_fixture(tag);
+            std::fs::create_dir_all(pd.join("round")).unwrap();
+            if log {
+                std::fs::write(pd.join("round/x.log"), "x").unwrap();
+            }
+            let _env = set_pack_env(&pd, base.join("claude"));
+            install_staged(false, None).unwrap();
+            assert_eq!(std::fs::read_to_string(pd.join("memory/mine.md")).unwrap(), "mine", "{tag}");
+            let aside = asides(&base);
+            assert_eq!(aside.len(), 1, "{tag}: 부분 팩을 지우지 않는다");
+            assert_eq!(aside[0].join("round/x.log").is_file(), log, "{tag}");
+            let _ = std::fs::remove_dir_all(&base);
+        }
+    }
+
+    /// 완전해 보이는 팩인데 hold 에만 파일이 있다 = 판단 불가 → hold 를 보존하고 pack·prev 는 그대로.
+    #[test]
+    fn recover_undecidable_keeps_both_and_deletes_nothing() {
+        let (base, pd, hold) = b1_fixture("undecided");
+        std::fs::create_dir_all(&pd).unwrap();
+        std::fs::write(pd.join(PACK_VERSION_FILE), "1.1.11").unwrap();
+        std::fs::write(pd.join(INSTALL_MANIFEST), "{}").unwrap();
+        recover_interrupted_swap(&pd).unwrap();
+        assert!(!hold.exists());
+        let aside = asides(&base);
+        assert_eq!(aside.len(), 1);
+        assert_eq!(std::fs::read_to_string(aside[0].join("memory/mine.md")).unwrap(), "mine");
+        assert_eq!(std::fs::read_to_string(pd.join(PACK_VERSION_FILE)).unwrap(), "1.1.11");
+        assert_eq!(std::fs::read_to_string(pack_prev_dir(&pd).join("a.txt")).unwrap(), "older", "prev 를 밀지 않는다");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// ★n1 재현(bw): 완전한 팩 mine=SNAP + 그 사본 hold mine=NEWER — 이름은 같고 내용만 다르다. NEWER 가 init-pack 뒤에도 살아 있어야 한다
+    /// (이름만 보던 때 = hold 가 prev 로 밀려 같은 설치가 지웠다 · pack=SNAP · prev=SNAP).
+    #[test]
+    fn n1_same_name_different_content_keeps_newer_through_init_pack() {
+        let _g = PACK_ENV_LOCK.lock().unwrap();
+        let (base, pd, hold) = b1_fixture("n1");
+        let _env = set_pack_env(&pd, base.join("claude"));
+        std::fs::remove_dir_all(&hold).unwrap();
+        install_staged(false, None).unwrap();
+        std::fs::create_dir_all(pd.join("memory")).unwrap();
+        std::fs::write(pd.join("memory/mine.md"), "SNAP").unwrap();
+        std::fs::remove_dir_all(pack_prev_dir(&pd)).unwrap();
+        copy_dir_all(&pd, &hold).unwrap();
+        std::fs::write(hold.join("memory/mine.md"), "NEWER").unwrap();
+        install_staged(false, None).unwrap();
+        assert!(!hold.exists());
+        let aside = asides(&base);
+        assert_eq!(aside.len(), 1, "지우지 않고 보존한다");
+        assert_eq!(std::fs::read_to_string(aside[0].join("memory/mine.md")).unwrap(), "NEWER");
+        assert_eq!(std::fs::read_to_string(pd.join("memory/mine.md")).unwrap(), "SNAP", "활성 팩은 그대로");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 내용이 같으면 hold 에만 있는 것이 없다 → 직전 세대로(보존 폴더를 쓸데없이 늘리지 않는다).
+    #[test]
+    fn recover_same_content_retires_hold_to_prev() {
+        let (base, pd, hold) = b1_fixture("same");
+        copy_dir_all(&hold, &pd).unwrap();
+        recover_interrupted_swap(&pd).unwrap();
+        assert!(!hold.exists());
+        assert!(asides(&base).is_empty());
+        assert_eq!(std::fs::read_to_string(pack_prev_dir(&pd).join("memory/mine.md")).unwrap(), "mine");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 읽지 못하는 hold 폴더 = 모름 → 지우지 않는 쪽(보존).
+    #[cfg(unix)]
+    #[test]
+    fn recover_unreadable_hold_is_kept_not_retired() {
+        use std::os::unix::fs::PermissionsExt;
+        let (base, pd, hold) = b1_fixture("unreadable");
+        copy_dir_all(&hold, &pd).unwrap();
+        std::fs::set_permissions(hold.join("memory"), std::fs::Permissions::from_mode(0o000)).unwrap();
+        recover_interrupted_swap(&pd).unwrap();
+        let aside = asides(&base);
+        assert_eq!(aside.len(), 1, "못 읽으면 보존");
+        assert_eq!(std::fs::read_to_string(pack_prev_dir(&pd).join("a.txt")).unwrap(), "older");
+        std::fs::set_permissions(aside[0].join("memory"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// hold 자리가 폴더가 아니면 우리 것이 아니다 · pack 이 파일이면 멈춘다 — 둘 다 아무것도 바꾸지 않는다.
+    #[test]
+    fn recover_ignores_foreign_hold_and_stops_on_file_pack() {
+        let (base, pd, hold) = b1_fixture("foreign");
+        std::fs::remove_dir_all(&hold).unwrap();
+        std::fs::write(&hold, "user file").unwrap();
+        recover_interrupted_swap(&pd).unwrap();
+        assert!(!pd.exists(), "파일을 팩으로 되돌리지 않는다");
+        assert_eq!(std::fs::read_to_string(&hold).unwrap(), "user file");
+        assert_eq!(std::fs::read_to_string(pack_prev_dir(&pd).join("a.txt")).unwrap(), "older");
+        let _ = std::fs::remove_dir_all(&base);
+
+        let (base, pd, hold) = b1_fixture("filepack");
+        std::fs::write(&pd, "x").unwrap();
+        assert!(recover_interrupted_swap(&pd).is_err());
+        assert!(hold.join("memory/mine.md").is_file());
+        assert_eq!(std::fs::read_to_string(pack_prev_dir(&pd).join("a.txt")).unwrap(), "older");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 동시 설치가 hold 를 먼저 가져갔으면 보관은 prev 를 지우지 않는다.
+    #[test]
+    fn retire_without_hold_leaves_prev() {
+        let (base, pd, hold) = b1_fixture("nohold");
+        std::fs::remove_dir_all(&hold).unwrap();
+        let rename = |a: &Path, b: &Path| std::fs::rename(a, b);
+        retire_swap_hold(&hold, &pack_prev_dir(&pd), &rename, std::time::Duration::ZERO);
+        assert_eq!(std::fs::read_to_string(pack_prev_dir(&pd).join("a.txt")).unwrap(), "older");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 설치 입구 둘 다 되찾기를 지난다 — pack-update 는 저널 **앞**이다(저널이 부재를 pre-state 로 찍으면 되돌리기가 팩을 비운다).
+    #[test]
+    fn install_entries_recover_before_writing() {
+        let src = include_str!("pack.rs");
+        let fn_body = |name: &str| {
+            let b = &src[src.find(name).unwrap()..];
+            b[..b.find("\n}\n").unwrap()].to_string()
+        };
+        let iter = fn_body("pub fn install_from_iter<");
+        assert!(iter.find("recover_interrupted_swap(&dir)?").expect("데몬 부트 길") < iter.find("install_into(dir").unwrap());
+        let txn = fn_body("pub fn apply_pack_transactional<");
+        assert!(txn.find("recover_interrupted_swap(&dir)?").expect("pack-update 길") < txn.find("write_journal(").unwrap());
+        assert!(txn.find("authorize_pack_write(&dir, auth)?").unwrap() < txn.find("recover_interrupted_swap(&dir)?").unwrap());
+    }
+
+    /// 끊긴 교체(두 rename 사이에서 죽음)를 install_staged 가 staging 복사 **앞**에서 되찾는다 — 상태 파일이 살아 있다.
+    #[test]
+    fn install_staged_recovers_interrupted_swap_before_copying() {
+        let src = include_str!("pack.rs");
+        let body = &src[src.find("pub fn install_staged(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let at = body.find("recover_interrupted_swap(&dir)").expect("되찾기가 없다");
+        assert!(at < body.find("copy_dir_all(&dir, &staging)").unwrap(), "복사 앞이어야 한다");
+        assert!(body.find("authorize_pack_write(&dir, auth)").unwrap() < at, "인가 뒤여야 한다");
     }
 
     /// 검증 실패 = 임베드 파일 누락 시 Err(교체 전 차단 방어선).

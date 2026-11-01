@@ -1068,7 +1068,7 @@ pub const RESTORE_DIRECTIVE_MASTER: &str = "[RESTORE] 조직 복원 절차다(ma
 pub const RESTORE_DIRECTIVE_NODE: &str = "[RESTORE] 조직 복원 절차다. _round/SESSION_STATE.md와 자기 TODO를 읽고 상태를 복원하라. ★작업 재개는 하지 말고 master의 지시를 기다려라(임무 판정의 주체는 master의 임무 게이트다).";
 /// 재기동 복귀 지시.
 pub const RECOVER_DIRECTIVE: &str = "[RECOVER] 너는 방금 재기동되었다. _round/SESSION_STATE.md와 자기 TODO 파일을 읽어 작업 기억을 복원한 뒤 master에게 복귀를 1줄 push로 보고하라. 작업 재개는 master 지시를 따른다.";
-/// 표식 `followup` 앞의 디렉티브 종류 마커(봉투 메타 · 주입 문안 아님).
+/// 구판 CLI 가 표식 `followup` 앞에 붙이던 마커 — 판 혼용 때문에 받기만 하고, 채택은 벗겨서 버린다(`cys.rs` `gate_pending_adopt`).
 pub const GATE_MARK_DIRECTIVE_HELD: &str = "@cys:directive-held";
 /// `surface.gate_pending` 의 `followup` 이 고정 문안이 아닐 때의 오류 코드.
 pub const ERR_GATE_FOLLOWUP_DENIED: &str = "gate_followup_denied";

@@ -653,7 +653,7 @@ def render_create_card(r, gate, n_live):
 def render_close_card(r):
     last = r.get("last_dept")
     keep = ("[Windows] 대화 기록은 이 컴퓨터에 그대로 남습니다(자동 정리되지 않습니다)."
-            if os.name == "nt" else "대화 기록은 14일 보관됩니다.")
+            if os.name == "nt" else "대화 기록은 휴지통에 보관됩니다(저절로 지워지지 않습니다).")
     s = ("「%s」(%s)를 닫습니다. 꺼지는 것: 그 부서의 Claude 3개와 부서 프로그램. %s "
          "그대로 남는 것: 폴더(%s)의 파일 전부." % (r["display"], r["target"], keep, r.get("cwd") or "-"))
     if last:

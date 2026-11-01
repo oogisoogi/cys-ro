@@ -11244,6 +11244,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// 비교하는 어느 쪽이 FIFO 여도 복구가 멈추지 않는다 — 복구는 소켓 bind 앞 데몬 자동 설치에서 돈다(멈추면 데몬이 안 뜬다). 일반 파일이 아니면 모름 → 보존.
+    /// 시험 자체도 멈추지 않는다: 시한을 넘기면 막힌 open 을 O_NONBLOCK 쓰기로 풀어 주고 실패한다.
+    #[cfg(unix)]
+    #[test]
+    fn recover_fifo_on_either_side_is_bounded_and_kept() {
+        use std::os::unix::fs::FileTypeExt;
+        for hold_side in [true, false] {
+            let (base, pd, hold) = b1_fixture(if hold_side { "fifo-hold" } else { "fifo-pack" });
+            copy_dir_all(&hold, &pd).unwrap();
+            let fifo = if hold_side {
+                hold.join("zz.pipe")
+            } else {
+                std::fs::write(hold.join("zz.pipe"), "x").unwrap();
+                pd.join("zz.pipe")
+            };
+            f10_mkfifo(&fifo);
+            let p2 = pd.clone();
+            let got = f10_bounded(5, move || recover_interrupted_swap(&p2));
+            if got.is_none() {
+                for _ in 0..25 {
+                    f10_release_fifo(&fifo);
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            }
+            got.expect("FIFO 에서 복구가 5초 안에 끝나지 않았다(블로킹 읽기)").unwrap();
+            let aside = asides(&base);
+            assert_eq!(aside.len(), 1, "일반 파일이 아니면 보존 (hold_side={hold_side})");
+            assert!(!hold.exists());
+            assert_eq!(std::fs::read_to_string(pack_prev_dir(&pd).join("a.txt")).unwrap(), "older", "직전 세대로 밀지 않는다");
+            assert!(pack_is_complete(&pd));
+            if hold_side {
+                assert!(std::fs::symlink_metadata(aside[0].join("zz.pipe")).unwrap().file_type().is_fifo());
+            } else {
+                assert_eq!(std::fs::read_to_string(aside[0].join("zz.pipe")).unwrap(), "x");
+            }
+            let _ = std::fs::remove_dir_all(&base);
+        }
+    }
+
     /// hold 자리가 폴더가 아니면 우리 것이 아니다 · pack 이 파일이면 멈춘다 — 둘 다 아무것도 바꾸지 않는다.
     #[test]
     fn recover_ignores_foreign_hold_and_stops_on_file_pack() {

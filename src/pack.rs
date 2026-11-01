@@ -11220,7 +11220,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    /// 데몬 설치 경로 전체 — 활성 팩 · hold 양쪽에 FIFO 가 있어도 install_staged 가 끝나고 FIFO 는 옛 세대에 남는다.
+    /// install_staged 전체(`cys init-pack` 길 · 데몬 자동 설치 install_into 길은 아니다) — 활성 팩 · hold 양쪽에 FIFO 가 있어도 끝나고 FIFO 는 옛 세대에 남는다.
     #[cfg(unix)]
     #[test]
     fn install_staged_finishes_with_fifo_in_pack_and_hold() {

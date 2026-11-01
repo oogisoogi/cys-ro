@@ -396,6 +396,7 @@ r4 키트 aac1b477 ↔ 0fde41c6 차이 = 10파일(문서 9 · `ui/src/publicdocs
 | ☐ 다시 | 병합 트리에서 `test_computer_control.py` · `mut_computer_control.py` · lane-parity --strict | 바뀐 시험이 합쳐진 트리에서도 그대로인지 |
 | ☐ 다시 | 스택 대조 · win_job_exit 줄 = 새 windows-health 로그에서 읽기만 | Rust 변경 있음 → 값이 달라지면 master 판정 |
 | ☐ 다시 | 깨끗한 기기 §K-4 보충: 새 설치에서 키 한 칸짜리 `.claude.json` 뒤 첫 시작 · 로그인 관문이 그대로인지 | 새 설치 때 이 파일이 생긴다 · §K-4 는 그 전 빌드(060cb75b) · 맥 첫 시작 영향 판단 근거 = 설계 §13-7 격리 실측뿐 |
+| ☐ 다시 | **맥 빌드 게이트 SEAL-3**: 앱 안 pip.conf · codesign 전후 · 동봉 pip 설치 뒤 새 파일 0(아래 명령) | aa1c7cb6 이 빌드 산출물에 실린 것을 잰 기록 없음 · master#f35a4fd3 |
 | ☐ 다시 | r7 키트 ↔ 최종 머리 파일 차이 1줄(§K-8 r4 문단 대체) | r7 결과를 태그 판정에 쓰는 근거 |
 | ☐ 조건 | 노트 자리 표시(r7-2) · 노트 §G 칸 · 카톡 ④ | r7 결과 의존 |
 | ☐ 조건 | §K-10 사이트 세미나 묶음 = 4-2 에 포함 | 발행 뒤 사이트 갱신 |
@@ -425,6 +426,32 @@ r4 키트 aac1b477 ↔ 0fde41c6 차이 = 10파일(문서 9 · `ui/src/publicdocs
 - **기기 주의**: r7 판을 깐 노트북은 표지가 이미 있어 시드 경로를 안 지난다(`seed_chrome_default_at` = AlreadyDone). 표지·키가 없는 상태에서 돌려야 이 확인이 뜻이 있다.
 
 ✔판정(master#9312bc1c ①): 확장 설치·로그인 안내는 도구 쪽에 그대로 둔다(`javis_computer_control.py` ext · 「Chrome에 추가」 · 같은 계정 로그인). 공개 문장 = 노트 37줄로 확정. 확장 없는 사용자는 노트 문장대로 켜져도 연결되지 않고 자비스가 그때 안내한다. r7 항목은 전부 확장 있는 기기를 전제로 한다. 「크롬을 껐다 켤 일이 없습니다」는 r7-2 를 본 뒤 정한다.
+
+**맥 빌드 게이트 SEAL-3(master#f35a4fd3 · 사용자 보고 fleet a738765c · `pip` 가 앱 묶음 안에 써서 봉인 2종 실패 → aa1c7cb6 이 `<runtime>/python/pip.conf` 를 심음):** 「빌드된 앱에 실제로 실리는지」 재본 기록이 없어 게이트로 둔다. 대상 = 최종 머리로 만든 맥 앱(§K-4 꼴 시험 빌드 또는 2-2 산출 zip). ⛔`/Applications` 의 라이브 앱에 돌리지 않는다 — 격리 폴더에 푼 사본이나 VM 복제본에서만. ① = arm64·x64 zip 각각 · ② = arm64 1회.
+
+```bash
+# 준비: 격리 폴더에 푼다(라이브 무접촉)
+W=$(mktemp -d); ditto -x -k cysr-macos-arm64-v1.1.11.zip "$W"; APP="$W/cysr.app"
+PY="$APP/Contents/Resources/runtime/python"
+
+# ① pip.conf 실재 + 내용 — 기대: 경로 1줄(…/runtime/python/pip.conf) · 끝에 [install] 과 user = true
+find "$APP" -name pip.conf -print
+cat "$PY/pip.conf"
+
+# ② 봉인 전후 + 동봉 pip 설치 뒤 묶음 안 새 파일 0건
+#    기대: before rc=0 · pip rc=0 · new=0 · after rc=0 · six.py 가 격리 HOME 의 .local 아래
+unset PIP_USER PIP_CONFIG_FILE PYTHONUSERBASE
+codesign --verify --deep --strict "$APP"; echo "before rc=$?"
+H=$(mktemp -d); M="$W/mark"; touch "$M"; sleep 1
+HOME="$H" "$PY/bin/pip3" install --no-input --no-cache-dir --disable-pip-version-check six; echo "pip rc=$?"
+echo "new=$(find "$APP" -newer "$M" | wc -l | tr -d ' ')"
+codesign --verify --deep --strict "$APP"; echo "after rc=$?"
+find "$H" -name six.py
+```
+
+- 리허설(2026-11-01 · 명령 흐름만 · ⚠빌드 산출물 아님): 라이브 앱의 격리 사본(558M)에 같은 pip.conf 를 넣고 ad-hoc 재서명 → before rc 0 · pip rc 0 · new=0 · after rc 0 · `six.py` = 격리 HOME `.local/lib/python3.12/site-packages`. 음성 대조 `--no-user` = new=35 · codesign rc 1 → 이 명령이 번들 쓰기를 잡는다. 사본 삭제. 라이브 설치본에는 pip.conf 가 없다(옛 판).
+- 실패 시: ① 없음 = 실림 실패 · 태그 전이면 빌드 경로 수리 ② new≥1 또는 after rc≠0 = 봉인 깨짐 · master 판정. 알려진 잔여(aa1c7cb6): `--no-user` · `--target`/`--prefix` · `uv pip install --system` 은 여전히 번들에 쓴다.
+- 결과 칸: ① arm64 ☐ · x64 ☐ · ② ☐
 
 **§K-1 연장 판독(060cb75b..a5e1ab03 · 크롬 가지 전체) = none.**
 

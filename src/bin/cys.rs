@@ -25188,6 +25188,13 @@ fn run_node_recover(surface: Option<String>, role: Option<String>) -> i32 {
         // ★(0.14.39 · WP-C-input 라운드 3→4 · 리뷰 major 1) authoritative 는 master/cso pane·phoenix 에서 부를 때 면제이고, 분리 호출자(setsid 부트·GUI 버튼 체인·watchdog 자식)에서는 면제가 없다 — 그 거부(타이핑 가드·초안 게이트 · 코드 typing_guard)는 사람 관측이지 파괴 근거가 아니므로 RECOVER_REFUSED_TOKEN 으로 접어 rc 79(run_boot skipped_unconfirmed) 로 낸다.
         request("surface.send_key", json!({"surface_id": sid, "key": "C-u", "authoritative": true}))
             .map_err(recover_refusal_from_input_guard)?;
+        // ★1.1.12 윈 PowerShell 프롬프트는 0x15 를 줄 지우기로 받지 않고 글자로 넣는다 — 뒤 명령이 `^Uclaude` 가 돼 CommandNotFound(윈 r7-7 3/3).
+        //   C-u 를 빼면 안 된다: 이 요청이 사람 초안 관문을 겸한다(handlers.rs exempt_draft_kind · 거부면 rc 79). 들어간 한 글자만 지운다 ·
+        //   Escape 가 아닌 이유: agent_alive 가 모름이면 여기까지 오고, 살아 있는 Claude 에서 Esc 는 턴을 끊는다.
+        if cfg!(windows) {
+            request("surface.send_key", json!({"surface_id": sid, "key": "Backspace", "authoritative": true}))
+                .map_err(recover_refusal_from_input_guard)?;
+        }
         std::thread::sleep(std::time::Duration::from_millis(200));
         // (4b) topology에 영속된 session_id가 있으면 정확한 세션 재개(없으면 fallback)
         let sess = entry["session_id"].as_str().map(String::from);
@@ -49069,8 +49076,15 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         let boot = rec.find("boot_agent_on_surface(").expect("기동 호출부");
         assert!(cu < boot, "C-u 가 기동보다 앞이어야 한다");
         let folds: Vec<usize> = rec.match_indices("recover_refusal_from_input_guard").map(|(i, _)| i).collect();
-        assert!(folds.len() >= 2, "접기 배선이 2곳(C-u · 기동 send) 미만: {}", folds.len());
+        assert!(folds.len() >= 3, "접기 배선이 3곳(C-u · 윈 Backspace · 기동 send) 미만: {}", folds.len());
         assert!(folds.iter().any(|&i| i > cu && i < boot), "C-u 의 map_err 접기가 없다");
+        // ②-1 윈 Backspace — C-u 의 거부(사람 초안)가 먼저 끊고, 윈에서만, 같은 접기를 지나 기동 앞에 간다.
+        let win = rec.find("if cfg!(windows) {\n            request(\"surface.send_key\"").expect("윈 한정 Backspace 분기");
+        let bs = rec.find(r#""key": "Backspace", "authoritative": true"#).expect("Backspace 호출부");
+        assert!(cu < win && win < bs && bs < boot, "순서 = C-u → 윈 분기 → Backspace → 기동");
+        assert!(folds.iter().any(|&i| i > bs && i < boot), "Backspace 의 map_err 접기가 없다");
+        assert_eq!(rec.matches(r#""key": "C-u""#).count(), 1, "C-u 는 한 번 · 빼면 사람 초안 관문이 사라진다");
+        assert_eq!(cys::key_to_bytes("Backspace"), Some(vec![0x7f]), "CancelKey(0x15·0x03) 축이 아니다 — 초안 관문은 C-u 몫");
         assert!(folds.iter().any(|&i| i > boot), "boot_agent_on_surface 의 Err 접기가 없다");
         // ③ run_boot 의 79 분기 문안이 agent_alive 만 말하지 않는다(사람 초안 보존도 같은 코드로 온다).
         let rb = refl_fn_body(src, "run_boot");

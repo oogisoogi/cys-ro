@@ -1549,8 +1549,9 @@ fn collect_for(
     // ★dbg-D2 R2(제안): **등록 경로**(SessionStart 훅이 명시 — `/clear`·순환 뒤 재발화)는 세션
     //   교체를 따라간다. 1회 핀은 휴리스틱 발견에만 남긴다(동일 cwd 동시세션 오핀 방어의 원 취지).
     //   종전엔 등록 경로도 1회 핀이라 순환 뒤 topology 에 옛 세션이 영속 → 재시작이 순환 전 대화를 resume.
-    {
+    let pin_changed = {
         let mut pin = s.agent_session_id.lock().unwrap();
+        let mut changed = false;
         if pin.is_none() || !heuristic {
             if let Some(sid) = extract_session_id(agent, &path) {
                 if pin.as_deref() != Some(sid.as_str()) {
@@ -1558,9 +1559,18 @@ fn collect_for(
                     //   새 표시 관측 세대의 시작이다(한 번 찍는 캡처 · 연속 세션 흐름 아님).
                     let _display_write = crate::activity::IdentityWrite::begin(s);
                     *pin = Some(sid);
+                    changed = true;
                 }
             }
         }
+        changed
+    };
+    // ★R2(1.1.11 · cysr-1111-worker-swap): 핀이 바뀌면 곧바로 영속한다. 새 좌석은 역할을 쥐는 순간 topology session_id 를
+    //   null 로 덮는데(`persist_topology`) 핀은 메모리에만 돌아와, 다음 영속 계기 전에 좌석이 죽으면 대화 id 가 사라졌다
+    //   (윈 r7 19:40 no_session). 역할 좌석만 topology 에 실린다 — 가드는 별도 문장(핀·역할 락을 쥔 채 부르면 자기 교착).
+    let has_role = s.role.lock().unwrap().is_some();
+    if pin_changed && has_role {
+        crate::governance::persist_topology(daemon);
     }
 
     // tail 상태 초기화/전환: 경로가 바뀌었으면 영속 오프셋(없으면 파일 끝 창)에서 새로 시작
@@ -3965,6 +3975,61 @@ mod tests {
         assert_eq!(c.sessions.len(), 1, "세션도 리셋");
         assert!((c.today_cost_usd - 0.2).abs() < 1e-9, "비용도 리셋");
         assert_eq!(c.model_tokens.len(), 1, "모델믹스도 리셋");
+    }
+
+    /// ★R2(1.1.11 · cysr-1111-worker-swap): 핀이 바뀐 수집 1틱이 **혼자서** topology session_id 를 영속한다.
+    /// 틱 뒤 별도 persist 없이 파일을 읽는다 — 종전엔 다음 영속 계기까지 null 이라 그 사이 죽은 좌석의 대화 id 가 사라졌다.
+    /// 핀이 그대로인 틱은 쓰지 않고(핀 판정 무시 뮤턴트 = 적) · 역할 없는 좌석도 쓰지 않는다(역할 판정 무시 뮤턴트 = 적).
+    #[test]
+    fn r2_pin_change_persists_topology_by_itself() {
+        use std::sync::atomic::AtomicU64;
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("cys-r2pin-{}-{}", std::process::id(), n));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let daemon = crate::state::Daemon::new(dir.join("cysd.sock"));
+        let topo = crate::state::state_dir(&daemon.socket_path).join("topology.json");
+        let mk = |role: Option<String>| {
+            // ★v116-flake-pty ⑵: PTY 고갈(ENXIO)만 상한 재시도 · 넘기면 「PTY 고갈 — 결함 판정 보류」 문구로 실패.
+            let s = crate::pty_test_support::retry_on_pty_exhaustion("r2 seat", || {
+                daemon.create_surface(None, Some("sleep 30".into()), None, role.clone(), 24, 80)
+            })
+            .expect("create surface");
+            daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+            *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+            s
+        };
+        let register = |s: &std::sync::Arc<crate::state::Surface>, id: &str| {
+            let p = dir.join(format!("{id}.jsonl"));
+            std::fs::write(&p, "").unwrap();
+            *s.registered_transcript.lock().unwrap() = Some(p.to_string_lossy().into_owned());
+        };
+        let mut tails = std::collections::HashMap::new();
+        let mut attempts = std::collections::HashMap::new();
+        // 역할 없는 좌석: 핀은 잡히되 파일은 생기지 않는다.
+        let bare = mk(None);
+        register(&bare, "dddddddd-0000-4000-8000-0000000000dd");
+        super::collect_for(&daemon, &bare, "claude", "claude", &mut tails, &mut attempts);
+        let bare_pinned = bare.agent_session_id.lock().unwrap().is_some();
+        let bare_wrote = topo.exists();
+        // 역할 좌석: 핀 변경 = 파일에 그 id.
+        let s = mk(Some("worker".into()));
+        register(&s, "eeeeeeee-0000-4000-8000-0000000000ee");
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        let persisted = std::fs::read_to_string(&topo).unwrap_or_default();
+        // 핀 그대로 = 다시 쓰지 않는다.
+        let _ = std::fs::remove_file(&topo);
+        super::collect_for(&daemon, &s, "claude", "claude", &mut tails, &mut attempts);
+        let rewrote = topo.exists();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(bare_pinned, "역할 없는 좌석의 핀이 안 잡혔다 — 측정 실패");
+        assert!(!bare_wrote, "역할 없는 좌석의 핀 변경이 topology 를 썼다");
+        assert!(
+            persisted.contains("eeeeeeee-0000-4000-8000-0000000000ee"),
+            "핀 변경 틱이 topology 에 session_id 를 남기지 않았다 — 좌석이 죽으면 대화 id 소실: {persisted}"
+        );
+        assert!(!rewrote, "핀이 그대로인 틱이 topology 를 다시 썼다(수집 틱마다 fsync)");
     }
 
     // ─────────── ★dbg-D2(2026-09-23 · 1.1.5 정밀 디버깅 D2 · 검출 시험): 순환 뒤 세션 핀 ───────────

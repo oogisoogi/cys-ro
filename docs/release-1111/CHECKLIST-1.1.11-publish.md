@@ -393,6 +393,7 @@ r4 키트 aac1b477 ↔ 0fde41c6 차이 = 10파일(문서 9 · `ui/src/publicdocs
 |---|---|---|
 | 8893402d | fix/1111-atomic-swap 9fafe435 | 팩 교체 무손상(1cc1a8fd) · 끊긴 교체 복구 B1 고침(9fafe435 · 777·codex 반려분) · n1 내용 비교·n5 보존 폴더 격리(6d3155c2 · 786 재확인분) · `tests/win_pack_swap.rs` |
 | 0a9cccfe | fix/1112-noderecover-ctrlu 751a379d | 윈 node-recover `^U`(17943406) · L1 cys restore 출력 전문을 phoenix-restore.log 에(1122d062 · 관측 전용) · R2 세션 핀 변경 즉시 topology 영속(751a379d · 759 대조 = native_publication 2건은 기준선도 실패 · 회귀 아님) |
+| 5d3fccd5 | fix/1111-atomic-swap e60ec3bb | 끊긴 교체 복구 · 팩 복사가 FIFO 에서 멈추지 않는다(0835ad3d · 786 재검증 b2.4 · 양쪽 일반 파일 확인 · O_NONBLOCK + 핸들 stat) · 786 회귀 시험 3e561cef(원 d0515b97) |
 
 수리 3 = ① 팩 교체 ② `^U` ③ 복원 뒤 워커 교체 원인 — L1·R2 까지다 · R3(claim 10분 잔류) = 1.1.12 라 좌석 교체 끊김이 다 없어지지는 않는다(751a379d 본문). 충돌 0 · 두 가지 겹침 파일 = 이 체크리스트뿐. 이 머리에서 아래 표 전체를 다시 돌리고 r8 키트로 r7 항목을 다시 본다.
 
@@ -507,6 +508,8 @@ find "$H" -name six.py
 - [ ] atomic-swap 검증 이월(무손상 · master#6aa19b60 · 근거 = ~/axdev/master/reports/2026-11-01-cysr-1111-atomic-swap-verify.md · -b1-verify.md): m3 prev 가 잠겨 hold 가 남으면 다음 교체 rc 24 · m4 prev 일부 삭제 뒤 보관 실패면 반쯤 지워진 prev 가 pack-rollback 재료로 남음 · m5 교차 볼륨은 이제 실패 · m7 재시도 대기를 맥에서 지키는 시험 없음 · m8 `had_old` 시험 없음 · n2 동시 복구 둘이 prev 를 지울 수 있음 · n3 pack-update 채널·버전 판정이 복구 앞 · n4 새 팩 표지 1개 부재 시 활성 팩이 옛 팩으로 후퇴(새 팩은 보존 폴더) · n6 빈 `pack.swap` + 완전 팩이면 prev 가 빈 폴더가 됨 · n7 파일 `pack.swap` 은 교체가 매번 약 9초 뒤 실패 · n8 부분 팩 되돌리기 줄 시험 없음 · n9 보존 폴더가 스냅샷·`doctor --lanes`·pack-rollback 과 어긋남.
 - [ ] rotate 겹침 — ② 새 데몬이 소켓을 연 직후 콜드부트 복원을 발화해(`cysd/main.rs:2310` · 표식 조건 없음) ④ init-pack 과 겹친다. 1.1.11 은 겹쳐도 팩이 지워지지 않게만 고쳤다(atomic_swap · 윈 r7 · master#85a5002d). 잠금이 안 풀리면 rc 24 로 끝난다. 복원을 ④ 뒤로 미루는 수리 = cysd·rotate.
 - [ ] `cargo test --bin cysd native_publication::` 병렬 불안정 — 기본 병렬에서 2건 실패 · 단독과 `--test-threads=1` 은 통과 · 기준선도 같은 ID(759 대조 · master#e8ff936f · 회귀 아님). 시험 간 공유 자원을 찾아 고친다.
+- [ ] cysd 전체 병렬 간헐 — 짝 10회(ccfcb9e7 · 93fb8e08) · 무실패 각 2회. 머리·기준 공통 = native_publication 2건 · settle_hold · v116(연쇄: 패닉이 PACK_ENV_LOCK 독살 → unwrap PoisonError). 한쪽 1회씩 = s4_1 · qstarved · rqfix2 · np_different_builtin · c8aftercare 2건 · c8protocol · k17 · refused_hand_off(s4_1·qstarved 표적 부하 반복 75회 양쪽 무재현). 전체 직렬 = 머리 3회 무실패 · 기준 2회 중 k17 1건. 머리 큐 경로 코드 변경 0. PACK_ENV_LOCK 잡은 시험의 `.unwrap()` 을 `unwrap_or_else(into_inner)` 로 바꿔 연쇄부터 끊고, 시한 경계를 넓힌다.
+- [ ] `test_hook_r34` 시한 3.0s 경계 — 부하 3회 머리·기준 모두 적(RCF-3·RCF-4a·NZ-3·DL-1b · 3.02~3.83s) · 단독 통과. 경계를 넓히거나 직렬 칸으로 옮긴다.
 - [ ] 판번 검사(`version-check.sh`)가 `docs/index.html` 을 보지 않는다(L14).
 - [ ] (윈 실기 이월 · TODO:83) `\cysd` 재등록이 LeastPrivilege 로 RunLevel Highest 를 덮음 · preflight --fix 가 `~/.claude/settings.json` 을 백업 없이 고침 · ConPTY 꽉 찬 줄 composer 사람 눈 1회 · self-update-check 새 데몬 뒤 첫 발화.
 - [ ] (통합표) `d7_prime_seat_cache_never_overwrites_a_tick_value` 상한 5초 플레이크.

@@ -115,7 +115,7 @@
 | # | 할 것 | 확인 줄 | 롤백 |
 |---|---|---|---|
 | 4-1 ⛔ | 설치기 핀 1.1.10 → 1.1.11(판·크기·sha256·CDHash 를 **발행 자산에서 다시 재서**) — 1.1.9 실제 = habitat `r8/publish-20261017` 143b821(설치기 0.3.40 → 0.3.41) · 라이브 핀 `bootstrap.sh:147` `CYS_FORK_VERSION="1.1.9"` · `bootstrap.ps1:141` `$CysVersion = '1.1.9'` → 공개 jarvis-install main 33447f8 → 16f67c4 · 이번 설치기 판 = **0.3.43** 차례(한 발행에 한 판 · H7:64-72) → `PUBLISH_CONFIRM=yes bash tools/publish-snapshot.sh --src . --dest ~/axdev/jarvis-install --push --terms-check tests/public-terms-check.sh --terms-list …` | 「SNAPSHOT-OK · 적중 0 · 삭제 (없음)」 · 핀 시험(맥·인텔·윈 · 1.1.9 = 17·0 / 11·0 / 12·0) · 함정(H7:64-72): 대상 clone origin = 공개 URL · 원격 git `PATH=/opt/homebrew/bin:$PATH` · x64 는 정적 검사만 · `.DS_Store` 지운 뒤 재실행 · 소요 1.1.9 = 기술 20분 + 라이브 5분 | 이전 핀 커밋으로 |
-| 4-2 ⛔ | 사이트(ai-jarvis): 공지 `site/notice/<발행일>/` · 손댈 자리 7(1.1.9 SITE-119 꼴: ①새 공지 index.html ②`site/notice/index.html` 목록 맨 위 ③`site/index.html` 머리 띠 ④`site/get/index.html` 머리 띠 — **끝 문단 링크만** `#install` 꼴이라 같은 치환을 두 파일에 쓰면 한쪽 0건 ⑤`site/devlog/index.html` 새 항목 + 시기 머리 ⑥`site/test/check-render.py` PAGES 한 줄 ⑦「최신 판」 숫자 스윕 `grep -rnI '1\.1\.[0-9]' site \| grep -v '^site/install/'` ⑧★자동 갱신 문장 스윕 `grep -rnI '알아서 받\|쉬는 시간' site` — 대문·/get/ 「1.1.8이나 1.1.9를 쓰고 계시면 … 알아서 받아 둡니다」 교체 · 처분 §K-7) → `bash site/test/gate.sh` → `bash web/build-web.sh` → 실렌더 6조합(대문·설치하기·공지 × 390/1440) → `cd web && wrangler deploy` · `bash web-install/deploy.sh --go`(npm ci 먼저) · ★**site/1111 가지를 site/hub 에 병합하고 push**(L11 — 안 하면 다음 배포가 옛 판으로 돌아감) | GATE=PASS · `/notice/<발행일>/` 200 · 띠 2곳 1.1.11 · 「최신 = 1.1.9」 잔존 0(첫 조회 엣지 HIT 가능 · 20초 뒤 재측) · 라이브↔빌드 대조 때 Cloudflare 주입 2조각 제외 · `/install/next` 404(실기 때 썼으면 삭제) · 공개 저장소 checks [사이트] 대조 붉은 창 0(H7:72) | 이전 커밋 재배포 |
+| 4-2 ⛔ | 사이트(ai-jarvis): 공지 `site/notice/<발행일>/` · 손댈 자리 7(1.1.9 SITE-119 꼴: ①새 공지 index.html ②`site/notice/index.html` 목록 맨 위 ③`site/index.html` 머리 띠 ④`site/get/index.html` 머리 띠 — **끝 문단 링크만** `#install` 꼴이라 같은 치환을 두 파일에 쓰면 한쪽 0건 ⑤`site/devlog/index.html` 새 항목 + 시기 머리 ⑥`site/test/check-render.py` PAGES 한 줄 ⑦「최신 판」 숫자 스윕 `grep -rnI '1\.1\.[0-9]' site \| grep -v '^site/install/'` ⑧★자동 갱신 문장 스윕 `grep -rnI '알아서 받\|쉬는 시간' site` — 대문·/get/ 「1.1.8이나 1.1.9를 쓰고 계시면 … 알아서 받아 둡니다」 교체 · 처분 §K-7) → `bash site/test/gate.sh` → `bash web/build-web.sh` → 실렌더 6조합(대문·설치하기·공지 × 390/1440) → `cd web && wrangler deploy` · `bash web-install/deploy.sh --go`(npm ci 먼저) · 세미나 묶음 f63bcd1 포함(§K-10) · ★**site/1111 가지를 site/hub 에 병합하고 push**(L11 — 안 하면 다음 배포가 옛 판으로 돌아감) | GATE=PASS · `/notice/<발행일>/` 200 · 띠 2곳 1.1.11 · 「최신 = 1.1.9」 잔존 0(첫 조회 엣지 HIT 가능 · 20초 뒤 재측) · 라이브↔빌드 대조 때 Cloudflare 주입 2조각 제외 · `/install/next` 404(실기 때 썼으면 삭제) · 공개 저장소 checks [사이트] 대조 붉은 창 0(H7:72) | 이전 커밋 재배포 |
 | 4-3 | 카톡 문안 `docs/release-1111/KAKAO-1111.draft.md` → 라이브 공지와 대조 → 박사님 전달(발송 = 박사님) · ★보낸 **최종본을 그대로 파일로 커밋**(L10) | 링크 200 · 공지 앵커 | — |
 | 4-4 | 자동 받기 관측 = **이번 판 해당 없음**(근거 `src/update/sched.rs:151-154`·`:217-229` · §K-7 · master#3e3039b5) · 공지·카톡에 자동 갱신 문장 0 | 3-9 의 hold 값 기록으로 갈음 | — |
 
@@ -385,7 +385,7 @@ r4 키트 aac1b477 ↔ 0fde41c6 차이 = 10파일(문서 9 · `ui/src/publicdocs
 
 ### K-9. a5e1ab03(크롬 미리 켜기) 병합 뒤 다시 돌릴 항목(master#c110b17a · 옛 b3f51379 C안 · r5 계획을 대체)
 
-⛔병합 = 독립 검증 뒤 master 지시로만. 변경 = rel 머리 대비 `aac1b477..a5e1ab03` 9파일(코드 4 = `src/pack.rs` · 팩 도구 · 시험 2 + SKILL · 문서 · +724 −1987). ★이번에는 **Rust 변경 있음 · 맥도 바뀜**(옛 C안의 「Rust 0 · 맥 불변」 전제가 없어졌다). 크롬 가지 HANDOFF 수치(맥 · 격리 HOME · 윈 실기 0 · ⚠독립 검증 중 · 이 좌석이 재지 않았다): lib 1153/0 · cys 736/0 · cysd pack 필터 12/0(**전체 미실행**) · 크롬 시드 9/0 · 팩 103/0 · test_dept_tick_stdin 8/0 · 뮤턴트 98 KILLED · lane-parity rc 0 · secret-scan 깨끗. 병합 시험 = 충돌 0(`git merge-tree` · e6ca043d 기준 트리 fa81665f · 커밋 안 함). 로컬 문서 커밋(0fde41c6 위)도 함께 머리에 들어가므로 §K 의 「태그 뒤 push」 대신 최종 머리에 같이 올라간다.
+⛔병합 = 독립 검증 뒤 master 지시로만. **병합 대상 2가지(master#266c929d ①)**: ① fix/1111-win-chrome-job a5e1ab03 ② docs/1111-seminar 90a372d2(0fde41c6 기준 · `cysjavis-pack/skills/grill-me/SKILL.md` 1줄 · 한글 그대로 쓰기 · 776 산출). 병합 시험 = 72f3c383 기준 각각 충돌 0(①트리 88b8b51c · ②트리 7ff99e03 · 두 가지의 파일 겹침 0 · 커밋 안 함). 함께 들어가는 rel 로컬 커밋 72f3c383 = 맥 부서 닫기 카드 문장(`javis_dept_request.py:656` · 「14일 보관」→「휴지통에 보관 · 저절로 지워지지 않음」 · 근거 `ui/src/resetconfirm.ts:12-13` · `cys-dept:3490` · 닫기 = `destroy --purge --purge-state` · 시험 고정 문자열 0 · test_dept_request 112/0 · lane-parity --strict rc 0). ①의 변경 = rel 머리 대비 `aac1b477..a5e1ab03` 9파일(코드 4 = `src/pack.rs` · 팩 도구 · 시험 2 + SKILL · 문서 · +724 −1987). ★이번에는 **Rust 변경 있음 · 맥도 바뀜**(옛 C안의 「Rust 0 · 맥 불변」 전제가 없어졌다). 크롬 가지 HANDOFF 수치(맥 · 격리 HOME · 윈 실기 0 · ⚠독립 검증 중 · 이 좌석이 재지 않았다): lib 1153/0 · cys 736/0 · cysd pack 필터 12/0(**전체 미실행**) · 크롬 시드 9/0 · 팩 103/0 · test_dept_tick_stdin 8/0 · 뮤턴트 98 KILLED · lane-parity rc 0 · secret-scan 깨끗. 병합 시험 = 충돌 0(`git merge-tree` · e6ca043d 기준 트리 fa81665f · 커밋 안 함). 로컬 문서 커밋(0fde41c6 위)도 함께 머리에 들어가므로 §K 의 「태그 뒤 push」 대신 최종 머리에 같이 올라간다.
 
 | 재실행 | 항목 | 까닭 |
 |---|---|---|
@@ -398,6 +398,7 @@ r4 키트 aac1b477 ↔ 0fde41c6 차이 = 10파일(문서 9 · `ui/src/publicdocs
 | ☐ 다시 | 깨끗한 기기 §K-4 보충: 새 설치에서 키 한 칸짜리 `.claude.json` 뒤 첫 시작 · 로그인 관문이 그대로인지 | 새 설치 때 이 파일이 생긴다 · §K-4 는 그 전 빌드(060cb75b) · 맥 첫 시작 영향 판단 근거 = 설계 §13-7 격리 실측뿐 |
 | ☐ 다시 | r7 키트 ↔ 최종 머리 파일 차이 1줄(§K-8 r4 문단 대체) | r7 결과를 태그 판정에 쓰는 근거 |
 | ☐ 조건 | 노트 자리 표시(r7-2) · 노트 §G 칸 · 카톡 ④ | r7 결과 의존 |
+| ☐ 조건 | §K-10 사이트 세미나 묶음 = 4-2 에 포함 | 발행 뒤 사이트 갱신 |
 | ☐ 옮겨 적기 | **r7 결과 표에 휴지통 줄을 옮겨 적는다**: 윈 r4 15번 = 통과(비우기 꺼짐 · 되살리기 단추 없음 · 윈 master 22:0x 보고) | CI `trash::` 빈 판정의 대체 근거 · 휴지통 코드 변경 0(`060cb75b..a5e1ab03` 파일·diff 줄 0 · 재실측) 이라 r4 결과 승계(master#5f91545d ④) · 최종 키트가 a5e1ab03 과 다르면 그 차이로 다시 확인 |
 | ☑ 닫힘 | §K-1 `--state-migration` 판독을 a5e1ab03 까지 연장 | **none**(아래 연장 판독) · 병합 뒤 크롬 가지에 새 커밋이 더해지면 그 차이만 다시 |
 | 그대로 | 1-0 판번 · §6 칸(none 은 위 연장 판독이 뒤집지 않는 한) · 0-8 팩 하한 · §K-7 | 변경이 닿지 않음 |
@@ -419,7 +420,7 @@ r4 키트 aac1b477 ↔ 0fde41c6 차이 = 10파일(문서 9 · `ui/src/publicdocs
 |---|---|---|---|
 | ⛔발행 뒤 · 4-1 핀 1.1.11 라이브 확인 직후 | 태그 직후 윈 노트북에서 **공개 한 줄 설치 1회** = 발행 후 첫 확인: 설치 전 `.cys-chrome-preset` 없음 · `claudeInChromeDefaultEnabled` 키 없음 확인 → 한 줄 설치 → cysr 1.1.11 · 키 true · 표지 · 레지스트리 · 좌석에 크롬 도구 | 즉시 핫픽스 | ☐ |
 
-- **r7-7 을 못 넣는 근거**: 공개 한 줄 설치는 판 지정이 없다. 라이브 설치기 0.3.43 `bootstrap.ps1:42-45`(인자 = `-DetectOnly`·`-DryRun` 뿐) · `:143` `$CysVersion = '1.1.10'` · `:154` 파일 이름 고정, 맥 `bootstrap.sh:150` `CYS_FORK_VERSION="1.1.10"`. 판을 바꾸는 환경변수 0(라이브 두 파일 전수) · 받은 파일은 스크립트의 sha256 과 대조한다. ai-jarvis `site/install` 사본은 0.3.42 라 줄 번호가 다르다.
+- **r7-7 을 못 넣는 근거**: 공개 한 줄 설치는 판 지정이 없다. 라이브 설치기 0.3.43 `bootstrap.ps1:42-45`(인자 = `-DetectOnly`·`-DryRun` 뿐) · `:143` `$CysVersion = '1.1.10'` · `:154` 파일 이름 고정, 맥 `bootstrap.sh:150` `CYS_FORK_VERSION="1.1.10"`. 판을 바꾸는 환경변수 0(라이브 두 파일 전수) · 받은 파일은 스크립트의 sha256 과 대조한다. 줄 번호는 라이브 기준이다(ai-jarvis 현재 작업트리 사본은 0.3.42 · origin/site/hub 사본이 0.3.43).
 - **시점 주의**: 설치기 핀은 발행 뒤 4-1 에서 오른다. 태그 직후에 그대로 돌리면 공개 한 줄은 1.1.10 을 깐다. 그래서 4-1 라이브 확인 뒤에 돌린다.
 - **기기 주의**: r7 판을 깐 노트북은 표지가 이미 있어 시드 경로를 안 지난다(`seed_chrome_default_at` = AlreadyDone). 표지·키가 없는 상태에서 돌려야 이 확인이 뜻이 있다.
 
@@ -433,6 +434,12 @@ r4 키트 aac1b477 ↔ 0fde41c6 차이 = 10파일(문서 9 · `ui/src/publicdocs
 - 팩 1.1.11 + 옛 바이너리: 팩의 `spawn-outside-job` 호출 0(a5e1ab03 실측)이라 Job 이탈 의존이 없어졌다.
 - 초기화: `factory_reset` 목록에 `claude`(키·표지가 든 폴더) · `computer-control` 있음.
 - ⚠근거 = 코드 판독. 이 키가 든 상태로 내림·올림을 왕복 실측한 적은 없다(§6 의 VM 왕복 1회는 이 가지 이전).
+
+### K-10. 사이트 세미나 묶음(master#266c929d ② · 4-2 에 같이 올린다 · 배포 아직 아님)
+
+- **대상**: ai-jarvis 가지 docs/1111-seminar f63bcd1(origin/site/hub f669aac 바로 위 · 작업트리 `~/axdev/.wt/ai-jarvis-seminar-docs`). `site/howto/dept.html` 9절 정정·닫는 길 표 · `site/howto/manual.html` 2줄 · `site/howto/first-screen.html` 입력칸 세 가지 · `docs/shots/` 그림 3장. 776 보고 = check-links·facts·tap PASS(이 좌석이 재지 않았다).
+- **절차(기존 기록)**: 집행 = master(push · wrangler deploy · web-install deploy · 공지 = master · 카톡 = 박사님 · `docs/HANDOFF-site-119-prep-2026-10-16.md:4`). 순서 = 4-2 그대로: site/1111 에 f63bcd1 병합 → `bash site/test/gate.sh` → `bash web/build-web.sh` → 실렌더 → `cd web && wrangler deploy` **먼저** → `bash web-install/deploy.sh --go`(같은 문서 :16) → site/1111 을 site/hub 에 병합·push(L11).
+- **주의**: site/1111 가지는 아직 없다(로컬·원격 `site/*` 실측). 4-1 설치 사본 동기 전에는 공지 판번과 핀이 달라 gate ⑧ 이 붉다(`check-release-pin.py` · 같은 문서 :38·:67 · 의도된 차단). 그래서 묶음 배포는 4-1 뒤다.
 
 ## J. 1.1.12 BACKLOG(이 준비에서 나온 것)
 

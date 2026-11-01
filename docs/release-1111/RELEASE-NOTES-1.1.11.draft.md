@@ -113,6 +113,7 @@ cysr 는 cys 터미널(github.com/idoforgod/cys-terminal)에서 출발했습니�
 | D12 | 입력 오인 | xterm 자동 응답 4종 비사람 분류 · starved 진단 5키 | `91664b1b` | 맥 시험 High · 윈 13바이트 정체 = 추정 |
 | D16 | 자동 갱신 교착(통합 검토 B1) | S4 저장 지시를 S3 정지 앞으로 · S10 rc 25 = 완주+복원 보류(성공) · V3 세션 등록 대기 60초 + 자리 대조 · 끝-끝 시험 CI 등재 | `21137d29` · `7c1f5e30` · 병합 060cb75b · codex 1R 처분 · 독립 확인 1757 a1cc15b3 · e2e 4/4 | 코드 High · ⚠공개 효과 0 — 자동 갱신이 게이트 N4·N5 에서 먼저 막혀 이 경로에 닿지 않는다(개발록 ★) · 살아 있는 좌석 S11 실기 0 |
 | D17 | 크롬 연결 미리 켜기 | 설치·업데이트 때 `claudeInChromeDefaultEnabled` 가 없을 때만 true · 1회 표지 `.cys-chrome-preset` · base 팩만 · 사용자 false 유지 · 런타임 보조 claude·좌석 재시작 예약·크롬 닫고 켜기 제거(맥·윈) · 윈 Job 이탈(`src/job_exit.rs`)은 0fde41c6 으로 들어와 있으나 팩이 부르지 않음 | a5e1ab03(박사님 11-01 · 옛 C안 b3f51379 · C+ 9124e18b 대체) · HANDOFF 수치 lib 1153/0 · cys 736/0 · 크롬 시드 9/0 · 팩 103/0 · 뮤턴트 98 KILLED · ⚠독립 검증 중 · rel 미병합 | 윈·맥 r7 실기 전 |
+| D18 | 세미나 반영 | 맥 부서 닫기 카드 「대화 기록은 14일 보관」→ 휴지통 보관 · 저절로 지워지지 않음 · grill-me 한글 그대로 쓰기 1줄 | 72f3c383 · 90a372d2(⚠rel 미병합) · test_dept_request 112/0 | 코드 High |
 | D13 | preflight 소음 | C26 해소 수단 없는 WARN 제거 · C46 윈 경로 구분자 | doctor-fleet 1f6ca66d · R3 ACCEPT | High |
 
 ### 사용자에게 안 보이는 것(내부)

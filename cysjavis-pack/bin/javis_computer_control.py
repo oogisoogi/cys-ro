@@ -1047,24 +1047,30 @@ def cmd_recheck(a):
                 "say": "아직 덜 됐습니다 — %s%s" % (it["reason"], tail)})
 
 
-def _revoke_preset_chrome():
-    """★chrome-preset: 설치가 미리 켠 크롬은 장부에 없다 — 「크롬은 빼 줘」가 「맡고 있지 않습니다」로 끝나면 켜진 채 남는다.
-    거부 기록이 먼저다(키를 못 꺼도 adopt 가 다시 가져오지 않는다)."""
+def _revoke_unledgered_chrome():
+    """★chrome-preset: 설치가 미리 켠 크롬은 장부에 없다 — 「크롬은 빼 줘」가 「맡고 있지 않습니다」로 끝나면 켜진 채 남고, 이미 꺼져 있어도
+    기록이 없으면 다음 adopt 가 다시 가져간다. 거부 기록이 먼저다(키를 못 꺼도 adopt 가 다시 가져오지 않는다).
+    말은 쓴 값이 아니라 다시 읽은 키를 따른다 — 옛 기록의 원래 값이 true 면 켜진 채다."""
     d = load_decisions()
     d["items"]["take:chrome"] = {"meaning": "deny", "condition": "", "at": _iso(), "by": "revoke"}
     _write_json(_p(DECISIONS), d)
     _ledger({"event": "revoke", "ids": ["chrome"], "preset": True})
+    said = "알겠습니다. 「크롬」은(는) 이제 맡지 않겠습니다."
+    if read_chrome_key()[1] is False:
+        return out({"ok": True, "say": said})
     if _chrome_key_off() is None:
         return fail("크롬은 앞으로 맡지 않겠습니다. 다만 크롬 기본 켜기를 끄지 못했습니다(설정이 잠겨 있거나 그 사이 바뀌어 손대지 않았습니다) — 잠시 뒤 다시 하겠습니다.",
                     "write_failed", 1)
-    return out({"ok": True, "say": "알겠습니다. 「크롬」은(는) 이제 맡지 않겠습니다. 크롬 기본 켜기를 껐습니다." + CHROME_OFF_SAY})
+    if read_chrome_key()[1] is True:
+        return out({"ok": True, "say": said + " 크롬 기본 켜기는 켜기 전 값대로 켜진 채입니다."})
+    return out({"ok": True, "say": said + " 크롬 기본 켜기를 껐습니다." + CHROME_OFF_SAY})
 
 
 def cmd_revoke(a):
     g = load_grants()
     mids = [m for m in member_ids(a.id) if m in g["items"]]   # ★codex 1R #2: 합친 ID 면 구성원 전부를 거둔다
-    if not mids and a.id == "chrome" and read_chrome_key()[1] is True:
-        return _revoke_preset_chrome()
+    if not mids and a.id == "chrome":
+        return _revoke_unledgered_chrome()
     if not mids and a.id not in g.get("folders", {}):
         return fail("그 항목은 맡고 있지 않습니다.", "not_found", 4)
     if mids:
@@ -1290,13 +1296,22 @@ def _load_chrome_state():
     return s if isinstance(s, dict) else {}
 
 
+def _hq_master_seat():
+    """이 좌석이 본부 master 인가 — 부서 master 도 역할은 master 다(부서 데몬 소켓 `cys-dept-*` · 부서 팩 `pack-dept-*`)."""
+    if os.environ.get("CYS_ROLE", "master") != "master":
+        return False
+    sock = re.split(r"[/\\]", os.environ.get("CYS_SOCKET") or "")
+    pack = os.path.basename((os.environ.get("CYS_PACK_DIR") or "").rstrip("/\\"))
+    return not any(c.startswith("cys-dept-") for c in sock) and not pack.startswith("pack-dept-")
+
+
 def cmd_chrome_enable(a):
     """키가 꺼져 있으면 켠다 — 그것뿐이다. 연결은 그 키로 **시작하는** 좌석에서 Claude Code 가 붙인다(실행 중 좌석에 붙이는 길은 없다)."""
     plat = platform()
     if plat not in ("darwin", "win"):
         return fail("이 컴퓨터에서는 크롬 연결을 제가 켤 수 없습니다.", "platform", 5)
-    if os.environ.get("CYS_ROLE", "master") != "master":    # 크롬 도구는 master 좌석에만 뜬다(cys claude_seat_settings) — 키를 켜도 이 좌석에는 안 붙는다
-        return fail("크롬 연결은 마스터 좌석에서만 씁니다 — 마스터에게 맡겨 주세요.", "not_master_seat", 5)
+    if not _hq_master_seat():    # 크롬 도구는 본부 master 좌석에만 뜬다(cys chrome_allowed_for) — 키를 켜도 이 좌석에는 안 붙는다
+        return fail("크롬 연결은 본부 마스터 좌석에서만 씁니다 — 본부 마스터에게 맡겨 주세요.", "not_master_seat", 5)
     if not probe_chrome(plat, claude_cfg()).get("app"):
         return fail("이 컴퓨터에서 크롬을 찾지 못했습니다. 크롬을 설치하시면 다시 살펴볼게요.", "no_chrome", 5)
     st = _load_chrome_state()

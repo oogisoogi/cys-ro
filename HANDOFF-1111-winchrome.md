@@ -11,6 +11,7 @@ r6b(보조 claude `disableAllHooks`)는 커밋하지 않고 버렸다. 그때 �
 ### 게이트(맥 · 격리 HOME · CYS_* 해제 · 윈 실기 0 · 1회 고침 뒤)
 lib 1157/0 · cys 737/0 · cysd 필터(pack·rc_guard) 15/0 · 크롬 시드 단위 12건 포함 · 팩 test_computer_control 108/0 · 뮤턴트 104 KILLED · 생존 0 · 건강성 러너 전수 167 PASS / 2 FAIL / 1 SKIP(FAIL = H-CLT-1·2 · 독립 검증이 부모 커밋에서도 FAIL 로 재현 · 이 맥의 설치본 python 경로 · H-WIN-16 PASS) · lane-parity --strict rc 0 · secret-scan --all 깨끗 · win-typecheck 오류 0 · RELEASED 표 재생성.
 격리 pty(2.1.316 · 키 true · skip-permissions): 대조 = 연결 파일 0.12초 · env false = 0 · `--settings` env false = 0 · 키 없음 = 0. 대화형 시작만 쟀고 실 크롬 연결은 재지 않았다.
+마지막 작은 고침 뒤(CYS_* 해제 · 팩·주석만): 팩 test_computer_control 110/0 · test_dept_tick_stdin 8/0 · 뮤턴트 109 KILLED · 생존 0 · lib 필터(chrome·d25·pack::) 164/0 · cys 필터(chrome·seat_settings) 2/0 · 건강성 전수 167 PASS / 2 FAIL / 1 SKIP(H-CLT-1·2 판정 줄 이전과 동일) · secret-scan --all 깨끗.
 실제 `cys init-pack --no-install-hook` 격리 실행(a5e1ab03 때): 새 설치 = 키 true · 0600 · 표지 · 사용자 false 보존 · 표지 뒤 키 없음 = 다시 안 씀 · 일반 init-pack 기존 프로필 = 다른 칸 보존.
 
 ### r7 실기 항목(master 키트)
@@ -111,11 +112,16 @@ r5 결과(b3f51379): 통과 r5-1a·1b·3·5·6a · r5-6b 예약 통과(rotate �
 - **Job 밖 크롬 스폰 재사용**: C+ 로 팩의 `--probe` 호출·`chrome_outside` 기록이 빠졌다. Rust 쪽 `--probe`·`--kind chrome` 은 남겼고, `--kind chrome` 은 이전 판 켜기 빚에만 쓴다. A안 때 살릴지 지울지 정한다.
 - **도구 rotate 뒤 권한 강등**(윈 r5 · R8 동형): 도구 rotate 뒤 `\cysd` 가 Highest → Limited 로 바뀌었다(파일 시각 = 새 cysd 시작). 앱 ↻ 2회에서는 유지됐다.
 - **등록을 되살린 뒤 끄기**(윈 r5): 등록을 잃었다가 enable 로 되살린 사용자가 끄면 다시 등록 없음 상태로 돌아간다. enable 이 `nmh_created` 로 적어 disable 이 「내가 만든 것」으로 지우기 때문이다. master 판정 = 제품 논리상 원상 복귀(r5-2 「등록 삭제」 절차의 인공물 성격) · 발행 차단 아님. 끌 때 등록을 지우지 말고 남길지 결정한다.
-- **워커에 크롬을 주는 길**(chrome-preset M1): 1.1.11 은 master 좌석만이고 사용자 값도 덮는다. 사용자가 워커 크롬을 원할 때의 경로·`policy.json` 허용 역할은 1.1.12 결정.
 - **좌석별 키 분리**: 키가 공유 폴더 한 칸이라 master 가 `/chrome` 으로 끄면 그 값이 곧 전체다. 워커는 env 로 눌러 둘 뿐 설정이 분리된 것은 아니다.
-- **남은 독립 검증 MINOR**: m2 비기본 `CYS_ACCOUNT_DIR` 좌석 미도달(시드 표적 = `pack.parent()/claude`) · m3 잠금 유지 갱신·소유 확인 없음 · 버려진 잠금이면 다음 업데이트까지 지연 · m4 떠 있는 옛 `seat-restart-wait` 미취소(시험판 한정 · r7-0) · m8 크롬·확장 없는 기계에도 키를 쓴다(화면 영향 미측정) · m6 R9 되읽기 불일치 경로 시험 없음(주입점 없음 · 방어 코드).
-- **장부에 있는 크롬 거둠**: `revoke chrome` 이 장부에서 지울 때는 종전대로 안내만 하고 키는 그대로다(독립 검증 판단 수용). 다시 거두면 키를 끈다. 한 번에 끄는 쪽으로 합칠지 결정.
-- **부서 master 의 chrome-enable**: `CYS_ROLE=master` 라 팩 거절을 지나 키를 쓴다. 좌석 env 가 눌러 도구는 뜨지 않지만 「연결됩니다」 문장은 틀리다.
+- **워커에 크롬을 주는 길**(chrome-preset · codex r2 #1·#2): 기본 구성은 master 좌석만이다. 사용자가 고친 어댑터는 샌다 — cmd 에 `--chrome` = 인자가 env 보다 앞서 켜짐(사용자 의도로 존중 · 실측) · 사용자 `--settings` + settings env true · 윈 기존 pane 재기동 + 사용자 `--settings` 또는 설정 파일 쓰기 실패(판독) · 이름이 다른 실행 파일 감싸개. 사용자가 워커 크롬을 원할 때의 경로·`policy.json` 허용 역할은 1.1.12 결정.
+- **링크 검사 뒤 교체 경쟁**(codex r2 #3): `symlink_metadata`/`islink` 뒤 원자 교체 사이에 파일이 링크로 바뀌면 링크를 덮는다. 같은 사용자가 수 밀리초 안에 바꿔야 한다.
+- **장부에 있는 크롬 거둠**(codex r2 #5): `revoke chrome` 이 장부에서 지울 때는 안내만 하고 키는 그대로다 · 장부에 없으면 끈다. 상태별 동작을 하나로 합칠지 결정.
+- **표지 쓰기 시점**(codex r2 #8): 표지를 잠금 해제 뒤에 쓴다. 그 틈에 키를 지우면 다시 켜질 수 있다.
+- **시험의 CYS_ROLE 의존**(codex r2 #9): 팩 시험 `Base` 가 `CYS_ROLE` 을 지우지 않아 워커 좌석에서 그대로 돌리면 거짓 적색이다(실패 9 · 오류 5). 게이트는 해제하고 돈다.
+- **claim-role 마스터**: 기동 때 역할이 terminal 이면 env false 로 떠서 다음 시작까지 도구가 없다 · `chrome-enable` 도 `CYS_ROLE` env 만 봐서 거절한다(데몬 권위 역할을 안 본다 · 안전한 쪽).
+- **데몬 env 오염**: CFC=false 를 물려받은 데몬에서 띄운 master 가 꺼진다. `scrub_claude_session_env`(`src/bin/cysd/main.rs:1120`) 목록에 이 키를 넣으면 된다(안전한 쪽 실패).
+- **Rust 되읽기 뮤턴트 N11 생존**: 되읽기 불일치 경로 시험 없음(m6 R9 와 같은 칸).
+- **남은 독립 검증 MINOR**: m2 비기본 `CYS_ACCOUNT_DIR` 좌석 미도달(시드 표적 = `pack.parent()/claude`) · m3 잠금 유지 갱신·소유 확인 없음 · 버려진 잠금이면 다음 업데이트까지 지연 · m4 떠 있는 옛 `seat-restart-wait` 미취소(시험판 한정 · r7-0) · m8 크롬·확장 없는 기계에도 키를 쓴다(화면 영향 미측정).
 - **다시 연결 탭 · 좌석 Job 크롬**(chrome-preset): 처음 연결 파일이 생길 때 Claude Code 가 크롬에 탭을 연다. 끄는 공개 env·설정 없음(2.1.316 판독 · 설계 §13-7). 윈에서 크롬이 꺼져 있었으면 그 크롬은 좌석 Job 안이라 ↻ 때 함께 죽는다 → rotate 관문과 같이 푼다.
 - **Job 밖 스폰 잔재**: `src/job_exit.rs` · `cys spawn-outside-job`(`--kind chrome`·`seat_restart`)을 이제 팩이 전혀 부르지 않는다. 첫 절단 동결로 남겼다. 제거하거나 E2(메뉴 종료 + Job 밖 복원) 재사용에 쓴다.
 - **cys 쪽 보조 claude**(r6b 스윕): 팩 안의 헤드리스 claude 는 `_ensure_nmh` 하나였고 이제 없다. `src/bin/cys.rs:30215` AI 병합 제안의 `claude -p` 는 훅을 끄지 않아 좌석 안에서 부르면 같은 등록 덮어쓰기가 난다.

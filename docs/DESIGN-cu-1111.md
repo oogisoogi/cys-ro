@@ -307,7 +307,7 @@ codex 가 못 한 것(정직): 읽기 전용 샌드박스라 단위 시험을 �
 - base 팩만. 부서 계정 폴더에는 쓰지 않는다. `.claude.json` 이 심볼릭 링크면 거절한다(Claude Code 는 링크 너머로 쓴다 · 원자 교체는 링크를 끊는다 · 표지 없음 · `seat::seed_trust` 와 같은 동작).
 - 파일이 없으면(새 설치) 키 한 칸짜리 파일을 만든다. 격리 실측(2.1.316 · pty · 가짜 자격 · 네트워크 차단): 키만 있는 파일로 대화형 시작 → 연결 파일 생김 · 키 유지 · 온보딩 전 단계에서도 같음. `profile_gate` 는 온보딩 키가 없으면 부재와 같은 관문으로 본다.
 
-**런타임**: `chrome-enable` = 키 확인·(켜져 있지 않으면 쓰기) + 보고만 · `chrome-disable` = 키 되돌리기만 · 「크롬은 빼 줘」(`revoke chrome`)는 장부에 없어도 키가 켜져 있으면 거부 기록을 먼저 남기고 끈다(설치가 켠 크롬은 장부에 없다). 보조 claude(`_ensure_nmh`) · 좌석 재시작 예약(`seat-restart-wait`) · 크롬 닫기/다시 켜기(`restart_chrome`) · 유휴 관문 · 창 세기를 코드째 지웠다(맥·윈 공통 · 인자 `--wait`·`--seat-restart` 도 없앰). 옛 판의 빚(`pending_*` 등)은 읽어도 행동 0 · 만나면 지운다.
+**런타임**: `chrome-enable` = 키 확인·(켜져 있지 않으면 쓰기) + 보고만 · `chrome-disable` = 키 되돌리기만 · 「크롬은 빼 줘」(`revoke chrome`)는 장부에 없어도 거부 기록을 먼저 남기고, 키가 켜져 있으면 끈다(설치가 켠 크롬은 장부에 없다 · 이미 꺼져 있어도 기록이 있어야 adopt 가 다시 가져가지 않는다). 보조 claude(`_ensure_nmh`) · 좌석 재시작 예약(`seat-restart-wait`) · 크롬 닫기/다시 켜기(`restart_chrome`) · 유휴 관문 · 창 세기를 코드째 지웠다(맥·윈 공통 · 인자 `--wait`·`--seat-restart` 도 없앰). 옛 판의 빚(`pending_*` 등)은 읽어도 행동 0 · 만나면 지운다.
 
 **연결 파일을 끄기가 지우지 않는 이유**: Claude Code 가 만든 파일이고(바이너리 `LH` — 다음에 켜고 시작할 때 같은 내용이면 건드리지 않고 다르면 다시 쓴다) 사용자당 1개라 같은 맥의 다른 설정 폴더 세션도 쓴다. 키가 꺼진 좌석은 크롬 연동을 시작하지 않으므로 파일이 남아도 도구가 켜지지 않는다.
 
@@ -317,7 +317,7 @@ codex 가 못 한 것(정직): 읽기 전용 샌드박스라 단위 시험을 �
 
 **크롬 도구는 master 좌석만(master#46fd9892 · 앞선 처분 A 를 정정)**: master·워커 좌석은 같은 `~/.cys/claude` 를 쓰므로 키만으로는 나눌 수 없다. 좌석은 `--dangerously-skip-permissions` 로 떠서 크롬 연결이 `skip_all_permission_checks` 로 돈다 — 사이트 허락 없이 로그인된 크롬을 다룬다. 공개 사용자는 그 전에 키가 없었으므로 전 좌석 공개는 새 위험이다(독립 검증 M1). 박사님께 올린 문안도 「마스터 좌석에는 … 일반 작업 좌석에는 켜지 않습니다」였다.
 집행 = `cys::chrome_allowed_for`(본부 `master` 만 · 부서 master 제외) 밖의 Claude 좌석에 `CLAUDE_CODE_ENABLE_CFC=false`. 시작 판정이 `--chrome` → env → 키 순이라 키가 true 여도 꺼진다. 격리 pty 실측(2.1.316 · 키 true · skip-permissions): 대조 = 연결 파일 0.12초 · env false = 0 · `--settings` 의 env false = 0 · 키 없음 = 0.
-두 길로 싣는다 — `claude_seat_settings` 의 `env`(전 OS · `boot_agent_on_surface` = launch-agent·node-recover·restore 공용 · Windows 기존 pane 재기동까지) + 좌석 env(`inject_claude_chrome_off_env` · 사용자 cmd 에 `--settings` 가 있어도 닿는다). 사용자 값도 덮는다 — 워커에 크롬을 켜는 길은 1.1.11 에 없다. 팩 `chrome-enable` 도 master 밖 좌석에서 거절한다.
+두 길로 싣는다 — `claude_seat_settings` 의 `env`(전 OS · `boot_agent_on_surface` = launch-agent·node-recover·restore 공용 · Windows 기존 pane 재기동까지) + 좌석 env(`inject_claude_chrome_off_env` · 사용자 cmd 에 `--settings` 가 있어도 닿는다). 어댑터 `env` 의 이 키도 덮는다. 단 사용자가 어댑터 cmd 에 `--chrome` 을 직접 넣으면 인자가 env 보다 앞서 켜진다 — 사용자 의도로 존중한다(기본 `agents.json` 에는 없다). 팩 `chrome-enable` 도 본부 master 밖 좌석(부서 master 포함)에서 거절한다.
 
 ---
 

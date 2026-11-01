@@ -2821,8 +2821,9 @@ pub fn chrome_allowed_for(role: &str, dept_socket: bool) -> bool {
     !dept_socket && role == "master"
 }
 
-/// master 밖 Claude 좌석 env 에 `CLAUDE_CODE_ENABLE_CFC=false` 를 넣는다. ⚠다른 기본값 주입과 달리 **사용자 값도 덮는다** — 워커에 크롬을 켜는 길은
-/// 1.1.11 에 두지 않는다(master#46fd9892). 재정렬 금지 · append 또는 제자리 교체.
+/// master 밖 Claude 좌석 env 에 `CLAUDE_CODE_ENABLE_CFC=false` 를 넣는다. ⚠다른 기본값 주입과 달리 어댑터 `env` 의 이 키도 덮는다. 단 사용자가 어댑터 cmd 에
+/// `--chrome` 을 직접 넣으면 인자가 env 보다 먼저 판정돼 그 좌석은 켜진다 — 사용자 의도로 존중한다(막지 않는다 · 기본 `agents.json` 에는 없다).
+/// 재정렬 금지 · append 또는 제자리 교체.
 pub fn inject_claude_chrome_off_env(env_pairs: &mut Vec<(String, String)>, role: &str, dept_socket: bool, agent: &str, bin: &str) {
     if !is_claude_seat(agent, bin) || chrome_allowed_for(role, dept_socket) {
         return;

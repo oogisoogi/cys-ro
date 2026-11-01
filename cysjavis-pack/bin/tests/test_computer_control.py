@@ -648,8 +648,7 @@ class TestGrants(Base):
         rc, r, _ = self.run_cli("revoke", "chrome")
         self.assertEqual(rc, 0)
         self.assertEqual(self.grants(), {})
-        self.write_cfg(chrome_default=False)                  # 키가 켜져 있으면 설치가 켠 크롬으로 본다(test_revoke_preset_chrome_*)
-        rc, r, _ = self.run_cli("revoke", "chrome")
+        rc, r, _ = self.run_cli("revoke", "connectors")        # 크롬은 장부에 없어도 거둔다(test_revoke_chrome_*)
         self.assertEqual(rc, 4)
 
     def test_status_warns_when_active_turns_off(self):
@@ -932,6 +931,20 @@ class TestChromeEnable(Base):
         rc, d, _ = self.run_cli("chrome-enable")
         self.assertEqual((rc, d["done"]), (0, ["default_on"]))
 
+    def test_dept_master_is_told_only_hq_master_seat(self):
+        # 독립 검증 n7(codex #7): 부서 master 는 역할이 master 라도 좌석 env 로 꺼진다 — 「연결됩니다」는 거짓이다
+        self.make_chrome()
+        self.write_cfg(chrome_default=False)
+        raw = rb(os.path.join(self.ccd, ".claude.json"))
+        os.environ["CYS_ROLE"] = "master"
+        for k, v in (("CYS_SOCKET", "/h/.cys/cys-dept-9.sock"), ("CYS_PACK_DIR", "/h/.cys/pack-dept-sales/")):
+            os.environ[k] = v
+            rc, d, _ = self.run_cli("chrome-enable")
+            self.assertEqual((rc, d["reason"]), (5, "not_master_seat"), k)
+            self.assertEqual(d["say"], "크롬 연결은 본부 마스터 좌석에서만 씁니다 — 본부 마스터에게 맡겨 주세요.")
+            del os.environ[k]
+        self.assertEqual(rb(os.path.join(self.ccd, ".claude.json")), raw)
+
     @unittest.skipIf(os.name == "nt", "심볼릭 링크 권한")
     def test_symlinked_config_is_refused_not_replaced(self):
         # 독립 검증 M2: Claude Code 는 이 파일을 링크 너머로 쓴다 — 원자 교체는 링크를 끊어 설정을 갈라 놓는다
@@ -970,11 +983,28 @@ class TestChromeEnable(Base):
         self.assertIs(self.cfg()["claudeInChromeDefaultEnabled"], True)
         self.assertEqual(jload(os.path.join(self.state, "decisions.json"))["items"]["take:chrome"]["meaning"], "deny")
 
-    def test_revoke_chrome_with_key_off_is_still_not_found(self):
+    def test_revoke_chrome_with_key_off_records_deny_so_adopt_stays_away(self):
+        # 독립 검증 n6(codex #6): 공개 노트 「크롬은 빼 줘 = 다시 가져가지 않는다」 — 이미 꺼져 있어도 기록이 있어야 한다
         self.make_chrome()
         self.write_cfg(chrome_default=False)
+        raw = rb(os.path.join(self.ccd, ".claude.json"))
         rc, d, _ = self.run_cli("revoke", "chrome")
-        self.assertEqual((rc, d["reason"]), (4, "not_found"))
+        self.assertEqual(rc, 0, d)
+        self.assertEqual(d["say"], "알겠습니다. 「크롬」은(는) 이제 맡지 않겠습니다.")
+        rc, a, _ = self.run_cli("adopt")
+        self.assertNotIn("chrome", a["active"])
+        self.assertIsNone(a["next_action"])
+        self.assertEqual(rb(os.path.join(self.ccd, ".claude.json")), raw)      # 키 false 유지
+
+    def test_revoke_says_the_key_it_reads_back_not_the_one_it_meant(self):
+        # 독립 검증 n4(codex #4): 옛 기록의 원래 값이 true 면 키는 켜진 채다 — 「껐습니다」라고 하지 않는다
+        self.make_chrome()
+        self.write_state(prior_key={"present": True, "value": True})
+        rc, d, _ = self.run_cli("revoke", "chrome")
+        self.assertEqual(rc, 0, d)
+        self.assertIs(self.cfg()["claudeInChromeDefaultEnabled"], True)
+        self.assertNotIn("껐습니다", d["say"])
+        self.assertIn("켜진 채입니다", d["say"])
 
     def test_new_cycle_prior_is_value_just_before(self):
         # codex R4 major: 앞 주기를 되돌린 뒤 사용자가 키를 바꾸고 다시 켜면, 새 주기의 원래 값 = 바꾼 그 값

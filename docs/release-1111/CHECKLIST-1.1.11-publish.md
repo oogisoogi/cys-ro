@@ -490,6 +490,7 @@ find "$H" -name six.py
 - [ ] 병렬 기본 스택 `a3_strip_hook_digits…` 넘침 · 4MB 통과 · 시험 스레드 스택 고정 또는 무거운 시험 분리(master#7a17878b). 실측: 맨 `cargo test --bin cys`(--test-threads=1 없이) dc9f1de7 3/3 넘침 · 060cb75b 0/2 · 0fde41c6 2/2 · `RUST_MIN_STACK=4194304` 0fde41c6 736/0 · CI 형식 0fde41c6 736/0 · 단독·소묶음은 두 머리 모두 통과 · 병합의 파싱 경로 변경 0 · 원인 미상(master#75c7ef79).
 - [ ] release `cys.exe` 스택 여유 측정 — `[release-stack]` 은 `--help` 세 명령의 넘침 여부만 본다 · 윈 주 스레드 1MB 에서 남은 여유·머리 간 증감은 미측정(0fde41c6 차이 0 은 넘침 0 뜻뿐 · master#8d598191).
 - [ ] `dbg_r12_init_pack_wires_profile_skill_links` 는 저장소가 임시 폴더 아래면 결정적으로 실패한다 — 시험이 `CARGO_MANIFEST_DIR/target` 아래 팩을 쓰는데 `javis_preflight.py:1494` 임시 팩 가드가 등록을 거부(코드 판독 · /private/tmp 임시 worktree 060cb75b 4/4 적 · 정상 위치 0fde41c6 통과 · 제품 결함 아님 · master#7a17878b).
+- [ ] rotate 겹침 — ② 새 데몬이 소켓을 연 직후 콜드부트 복원을 발화해(`cysd/main.rs:2310` · 표식 조건 없음) ④ init-pack 과 겹친다. 1.1.11 은 겹쳐도 팩이 지워지지 않게만 고쳤다(atomic_swap · 윈 r7 · master#85a5002d). 잠금이 안 풀리면 rc 24 로 끝난다. 복원을 ④ 뒤로 미루는 수리 = cysd·rotate.
 - [ ] 판번 검사(`version-check.sh`)가 `docs/index.html` 을 보지 않는다(L14).
 - [ ] (윈 실기 이월 · TODO:83) `\cysd` 재등록이 LeastPrivilege 로 RunLevel Highest 를 덮음 · preflight --fix 가 `~/.claude/settings.json` 을 백업 없이 고침 · ConPTY 꽉 찬 줄 composer 사람 눈 1회 · self-update-check 새 데몬 뒤 첫 발화.
 - [ ] (통합표) `d7_prime_seat_cache_never_overwrites_a_tick_value` 상한 5초 플레이크.

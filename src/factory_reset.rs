@@ -16,9 +16,10 @@ use std::path::{Path, PathBuf};
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// ~/.cys 직하에서 격리하는 정확 이름. (pack·조직 레지스트리·상태·마커·토글 전부)
-const CYS_BASE_EXACT: [&str; 29] = [
+const CYS_BASE_EXACT: [&str; 30] = [
     "pack",
     "pack.prev",
+    "pack.swap",
     ".pack-download",
     ".pack-journal",
     ".pack-accepted.json",

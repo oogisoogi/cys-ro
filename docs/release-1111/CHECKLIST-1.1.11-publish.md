@@ -509,7 +509,9 @@ find "$H" -name six.py
 - [ ] rotate 겹침 — ② 새 데몬이 소켓을 연 직후 콜드부트 복원을 발화해(`cysd/main.rs:2310` · 표식 조건 없음) ④ init-pack 과 겹친다. 1.1.11 은 겹쳐도 팩이 지워지지 않게만 고쳤다(atomic_swap · 윈 r7 · master#85a5002d). 잠금이 안 풀리면 rc 24 로 끝난다. 복원을 ④ 뒤로 미루는 수리 = cysd·rotate.
 - [ ] `cargo test --bin cysd native_publication::` 병렬 불안정 — 기본 병렬에서 2건 실패 · 단독과 `--test-threads=1` 은 통과 · 기준선도 같은 ID(759 대조 · master#e8ff936f · 회귀 아님). 시험 간 공유 자원을 찾아 고친다.
 - [ ] cysd 전체 병렬 간헐 — 짝 10회(ccfcb9e7 · 93fb8e08) · 무실패 각 2회. 머리·기준 공통 = native_publication 2건 · settle_hold · v116(연쇄: 패닉이 PACK_ENV_LOCK 독살 → unwrap PoisonError). 한쪽 1회씩 = s4_1 · qstarved · rqfix2 · np_different_builtin · c8aftercare 2건 · c8protocol · k17 · refused_hand_off(s4_1·qstarved 표적 부하 반복 75회 양쪽 무재현). 전체 직렬 = 머리 3회 무실패 · 기준 2회 중 k17 1건. 머리 큐 경로 코드 변경 0. PACK_ENV_LOCK 잡은 시험의 `.unwrap()` 을 `unwrap_or_else(into_inner)` 로 바꿔 연쇄부터 끊고, 시한 경계를 넓힌다.
-- [ ] `test_hook_r34` 시한 3.0s 경계 — 부하 3회 머리·기준 모두 적(RCF-3·RCF-4a·NZ-3·DL-1b · 3.02~3.83s) · 단독 통과. 경계를 넓히거나 직렬 칸으로 옮긴다.
+- [ ] `test_hook_r34` 시한 3.0s 경계 — 부하 3회 머리·기준 모두 적(RCF-3·RCF-4a·NZ-3·DL-1b · 3.02~3.83s) · 머리·기준 동시 8회 각 7회 적 · 혼자 돌면 통과. 경계를 넓히거나 직렬 칸으로 옮긴다.
+- [ ] `test_dept_notice_lane` 1c — 전수 -P 3 에서 머리 1회 IndexError(fmlog 빈 줄 · 존재만 보고 읽음) · 머리·기준 동시 8회 각 무실패 · 시험·대상 코드 기준선 diff 0. 도우미가 내용까지 기다리게 고친다.
+- [ ] `copy_dir_all` 검사~fs::copy 사이 FIFO 교체 틈 — tree_contained 는 O_NONBLOCK+핸들 stat 으로 닫았고 복사는 권한 보존 때문에 fs::copy 유지(0835ad3d). 같은 형태로 닫는다.
 - [ ] 판번 검사(`version-check.sh`)가 `docs/index.html` 을 보지 않는다(L14).
 - [ ] (윈 실기 이월 · TODO:83) `\cysd` 재등록이 LeastPrivilege 로 RunLevel Highest 를 덮음 · preflight --fix 가 `~/.claude/settings.json` 을 백업 없이 고침 · ConPTY 꽉 찬 줄 composer 사람 눈 1회 · self-update-check 새 데몬 뒤 첫 발화.
 - [ ] (통합표) `d7_prime_seat_cache_never_overwrites_a_tick_value` 상한 5초 플레이크.

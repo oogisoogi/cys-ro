@@ -2491,6 +2491,17 @@ def _spawn_heartbeat(budget_s, what):
     return stop
 
 
+def log_restore_output(r):
+    """★L1(1.1.11 · cysr-1111-worker-swap): `cys restore` 출력 전문을 로그(→ phoenix-restore.log)에 남긴다 — 관측 전용.
+    저널에 남는 `out` 은 stdout 이 있으면 stderr 를 버리고 800자로 잘려(저널 event 는 다시 300자) 「resume 생략」·
+    「fresh 각성」(stderr)·「이미 다른 좌석이 잇는 중」 줄이 사라졌다 — 윈 r7 에서 좌석 교체 원인을 로그로 못 갈랐다.
+    타임아웃이면 `stderr` 는 진단 문안이라 원문 `stderr_raw` 를 쓴다. 줄 머리를 붙여 `^[launch-agent]` 분류기와 겹치지 않는다."""
+    for name, text in (("stdout", getattr(r, "stdout", "")),
+                       ("stderr", getattr(r, "stderr_raw", "") or getattr(r, "stderr", ""))):
+        for line in (text or "").splitlines():
+            log("cys restore %s| %s" % (name, line))
+
+
 def spawn_production(socket, pending_roles, include_master=False, cwd=None, units=None, hang_suspected=False):
     """실 프리미티브 재사용: cys restore 로 죽은 역할 일괄 재기동(세션핀 resume 경로).
     ★R3-2: `units` = 이 `cys restore` 가 치를 기동 단위 수(호출부가 restore_workload_units 로 센다 · None 이면
@@ -2521,6 +2532,7 @@ def spawn_production(socket, pending_roles, include_master=False, cwd=None, unit
     finally:
         _CYS_STALL_S = prev_stall
         stop_beat()
+    log_restore_output(r)
     stalled = bool(getattr(r, "stalled", False))
     if stalled:
         log("spawn: cys restore 무출력 %ds — 행 의심으로 끊음(rc 124 · 이후 회차 종전 %ds) · 공유 lease 보유 창을 줄인다"
@@ -2794,6 +2806,7 @@ def spawn_in_seat_production(socket, include_master=False, cwd=None, units=None)
     #   units = 호출부가 세는 기동 대상 역할 수(None·0 이면 1단위 = 하한 쪽).
     budget, why = restore_spawn_timeout_s(units or 1)
     r = cys(*args, socket=socket, timeout=budget)
+    log_restore_output(r)
     return {"rc": r.returncode, "out": (r.stdout or r.stderr or "").strip()[:400], "timeout_s": budget, "timeout_why": why}
 
 

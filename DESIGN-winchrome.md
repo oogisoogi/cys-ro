@@ -105,7 +105,7 @@ r4 윈 실측: 좌석에서 띄운 크롬 + `chrome-enable --seat-restart now` �
 ## 3-6. r6-2 실패 → 미리 켜 두기(박사님 11-01 · TICKET=cysr-1111-chrome-preset)
 r6-2 는 재시작 대기가 `busy` 로 끝났다 — 보조 `claude -p --chrome` 의 SessionStart 훅이 좌석 등록을 chrome-probe 세션으로 덮었다(events seq 108702·108730). 훅을 끄는 수리(r6b)는 커밋하지 않았다. 박사님 결정으로 보조 실행 자체를 없앴다.
 
-크롬 연결은 설치·업데이트 때 키를 미리 쓰고, 런타임은 키만 다룬다(설계 = docs/DESIGN-cu-1111.md §13-7). 이 문서의 §3 ~ §3-5 안내·재시작 분기는 팩에서 코드째 사라졌다. Rust `job_exit`·`cys spawn-outside-job` 은 첫 절단 동결로 남겼지만 이제 팩이 부르지 않는다(1.1.12 처분).
+크롬 연결은 설치·업데이트 때 키를 미리 쓰고, 런타임은 키만 다룬다 · 크롬 도구는 master 좌석만(설계 = docs/DESIGN-cu-1111.md §13-7). 이 문서의 §3 ~ §3-5 안내·재시작 분기는 팩에서 코드째 사라졌다. Rust `job_exit`·`cys spawn-outside-job` 은 첫 절단 동결로 남겼지만 이제 팩이 부르지 않는다(1.1.12 처분).
 
 ## 4. 범위 밖 · 기록만
 

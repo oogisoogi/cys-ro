@@ -2101,7 +2101,8 @@ pub fn seed_chrome_default_at(cfg: &Path, lock_wait: std::time::Duration) -> Chr
             Err(e) => return ChromePreset::Failed(format!("{}: {e}", lock.display())),
         }
     }
-    let outcome = seed_chrome_key_locked(&path);
+    // 잠금을 기다리는 사이 다른 설치가 끝냈을 수 있다 — 그 뒤 사용자가 지운 키를 다시 켜지 않는다
+    let outcome = if marker.exists() { ChromePreset::AlreadyDone } else { seed_chrome_key_locked(&path, &|| {}) };
     let _ = std::fs::remove_dir(&lock);
     if matches!(outcome, ChromePreset::Seeded | ChromePreset::Kept) {
         let _ = write_atomic(&marker, env!("CARGO_PKG_VERSION").as_bytes());
@@ -2109,8 +2110,12 @@ pub fn seed_chrome_default_at(cfg: &Path, lock_wait: std::time::Duration) -> Chr
     outcome
 }
 
-/// 잠금 안의 본체 — 읽고 → 키 판단 → 원자 교체 → 되읽기 확인.
-fn seed_chrome_key_locked(path: &Path) -> ChromePreset {
+/// 잠금 안의 본체 — 읽고 → 키 판단 → 원자 교체 → 되읽기 확인. `before_swap` = 시험 주입점(교체 직전에 다른 쓰기를 끼워 넣는다).
+fn seed_chrome_key_locked(path: &Path, before_swap: &dyn Fn()) -> ChromePreset {
+    // Claude Code 는 이 파일을 링크 너머로 쓴다 — 원자 교체는 링크를 일반 파일로 바꿔 설정을 갈라 놓는다(`seat::seed_trust` 와 같은 거절)
+    if std::fs::symlink_metadata(path).map(|m| m.file_type().is_symlink()).unwrap_or(false) {
+        return ChromePreset::Refused(format!("symlink 거부: {}", path.display()));
+    }
     let raw = match std::fs::read(path) {
         Ok(b) => Some(b),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -2132,6 +2137,7 @@ fn seed_chrome_key_locked(path: &Path) -> ChromePreset {
         Ok(b) => b,
         Err(e) => return ChromePreset::Failed(e.to_string()),
     };
+    before_swap();
     // 잠금을 안 지키는 작성자 대비 — 교체 직전 원본 바이트 재확인(`write_chrome_key` 와 같은 방어)
     if std::fs::read(path).ok() != raw {
         return ChromePreset::Busy;
@@ -11174,6 +11180,56 @@ mod tests {
         );
         #[cfg(unix)]
         assert_eq!(existing_file_mode(&cfg), Some(0o600));
+    }
+
+    /// 설정 파일이 링크면 거절한다 — 원자 교체가 링크를 일반 파일로 바꿔 설정이 갈라진다. 끊어진 링크도 같다.
+    #[cfg(unix)]
+    #[test]
+    fn chrome_preset_refuses_symlinks_and_leaves_no_marker() {
+        for (tag, make_target) in [("link", true), ("dangling", false)] {
+            let (td, cfg) = chrome_seed(tag, None);
+            let real = td.join("real.json");
+            if make_target {
+                std::fs::write(&real, "{}").unwrap();
+            }
+            std::os::unix::fs::symlink(&real, &cfg).unwrap();
+            assert!(matches!(seed_chrome_default_at(&td, NO_WAIT), ChromePreset::Refused(_)), "{tag}");
+            assert!(std::fs::symlink_metadata(&cfg).unwrap().file_type().is_symlink(), "링크를 일반 파일로 바꿨다");
+            if make_target {
+                assert_eq!(std::fs::read_to_string(&real).unwrap(), "{}");
+            }
+            assert!(!td.join(CHROME_PRESET_MARKER).exists());
+            assert!(!td.join(".claude.json.lock").exists());
+        }
+    }
+
+    /// 잠금을 안 지키는 작성자가 교체 직전에 끼어들면 덮지 않는다(그 사람의 칸이 산다) · 표지 없음.
+    #[test]
+    fn chrome_preset_does_not_overwrite_a_writer_that_ignored_the_lock() {
+        let (td, cfg) = chrome_seed("cas", Some("{}"));
+        let c2 = cfg.clone();
+        let late = move || std::fs::write(&c2, r#"{"numStartups":9}"#).unwrap();
+        assert_eq!(seed_chrome_key_locked(&cfg, &late), ChromePreset::Busy);
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), r#"{"numStartups":9}"#);
+    }
+
+    /// 잠금을 기다리는 사이 다른 설치가 표지를 남겼으면 쓰지 않는다.
+    #[test]
+    fn chrome_preset_rechecks_marker_after_waiting_for_the_lock() {
+        let (td, cfg) = chrome_seed("remark", Some("{}"));
+        let lock = td.join(".claude.json.lock");
+        std::fs::create_dir(&lock).unwrap();
+        let (l2, m2) = (lock.clone(), td.join(CHROME_PRESET_MARKER));
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            std::fs::write(&m2, "x").unwrap();
+            std::fs::remove_dir(&l2).unwrap();
+        });
+        let r = seed_chrome_default_at(&td, std::time::Duration::from_secs(5));
+        t.join().unwrap();
+        assert_eq!(r, ChromePreset::AlreadyDone);
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), "{}");
+        assert!(!lock.exists());
     }
 
     #[cfg(unix)]

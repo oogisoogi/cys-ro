@@ -1047,9 +1047,24 @@ def cmd_recheck(a):
                 "say": "아직 덜 됐습니다 — %s%s" % (it["reason"], tail)})
 
 
+def _revoke_preset_chrome():
+    """★chrome-preset: 설치가 미리 켠 크롬은 장부에 없다 — 「크롬은 빼 줘」가 「맡고 있지 않습니다」로 끝나면 켜진 채 남는다.
+    거부 기록이 먼저다(키를 못 꺼도 adopt 가 다시 가져오지 않는다)."""
+    d = load_decisions()
+    d["items"]["take:chrome"] = {"meaning": "deny", "condition": "", "at": _iso(), "by": "revoke"}
+    _write_json(_p(DECISIONS), d)
+    _ledger({"event": "revoke", "ids": ["chrome"], "preset": True})
+    if _chrome_key_off() is None:
+        return fail("크롬은 앞으로 맡지 않겠습니다. 다만 크롬 기본 켜기를 끄지 못했습니다(설정이 잠겨 있거나 그 사이 바뀌어 손대지 않았습니다) — 잠시 뒤 다시 하겠습니다.",
+                    "write_failed", 1)
+    return out({"ok": True, "say": "알겠습니다. 「크롬」은(는) 이제 맡지 않겠습니다. 크롬 기본 켜기를 껐습니다." + CHROME_OFF_SAY})
+
+
 def cmd_revoke(a):
     g = load_grants()
     mids = [m for m in member_ids(a.id) if m in g["items"]]   # ★codex 1R #2: 합친 ID 면 구성원 전부를 거둔다
+    if not mids and a.id == "chrome" and read_chrome_key()[1] is True:
+        return _revoke_preset_chrome()
     if not mids and a.id not in g.get("folders", {}):
         return fail("그 항목은 맡고 있지 않습니다.", "not_found", 4)
     if mids:
@@ -1162,6 +1177,7 @@ def cmd_request_prompt(a):
 CHROME_STATE = "chrome-enable.json"
 CHROME_KEY = "claudeInChromeDefaultEnabled"
 CHROME_NEXT_SAY = "다음에 cysr 를 다시 시작하거나 업데이트할 때 연결됩니다."
+CHROME_OFF_SAY = " 다음에 cysr 를 다시 시작하거나 업데이트할 때부터 적용됩니다."
 # 옛 판이 남긴 빚·기록 — 읽어도 행동 0 · 만나면 지운다(prior_key·key_restored 만 되돌리기에 쓴다)
 OLD_CHROME_STATE_KEYS = ("pending_seat_restart", "pending_chrome_restart", "pending_chrome_reopen", "chrome_reopen_tries",
                          "chrome_reopen_at", "chrome_manual_at", "chrome_in_job", "seat_guided_daemon", "seat_restart_scheduled_at",
@@ -1218,6 +1234,9 @@ def write_chrome_key(value):
     원자 교체 → 잠금 해제. 덧붙여 교체 직전 원본 바이트 재확인(잠금을 안 지키는 작성자 대비 · 최대 3회 · 끝내 다르면 무변경 실패).
     파일 권한 유지 · 쓴 뒤 다시 읽어 확인. 성공 = True."""
     path = _claude_json()
+    if os.path.islink(path):      # Claude Code 는 이 파일을 링크 너머로 쓴다 — 원자 교체는 링크를 끊어 설정을 갈라 놓는다
+        _ledger({"event": "chrome_key_symlink"})
+        return False
     lock = _config_lock(path)
     if lock is None:
         _ledger({"event": "chrome_key_lock_busy"})
@@ -1276,6 +1295,8 @@ def cmd_chrome_enable(a):
     plat = platform()
     if plat not in ("darwin", "win"):
         return fail("이 컴퓨터에서는 크롬 연결을 제가 켤 수 없습니다.", "platform", 5)
+    if os.environ.get("CYS_ROLE", "master") != "master":    # 크롬 도구는 master 좌석에만 뜬다(cys claude_seat_settings) — 키를 켜도 이 좌석에는 안 붙는다
+        return fail("크롬 연결은 마스터 좌석에서만 씁니다 — 마스터에게 맡겨 주세요.", "not_master_seat", 5)
     if not probe_chrome(plat, claude_cfg()).get("app"):
         return fail("이 컴퓨터에서 크롬을 찾지 못했습니다. 크롬을 설치하시면 다시 살펴볼게요.", "no_chrome", 5)
     st = _load_chrome_state()
@@ -1293,7 +1314,7 @@ def cmd_chrome_enable(a):
         _write_json(_p(CHROME_STATE), st)
         _ledger({"event": "chrome_enable_key", "prior": {"present": has, "value": v}})   # 기록 먼저
         if not write_chrome_key(True):
-            return fail("크롬 기본 켜기를 저장하지 못했습니다(그 사이 다른 프로그램이 설정을 고쳐 써서 손대지 않았습니다 — 잠시 뒤 다시 하겠습니다).",
+            return fail("크롬 기본 켜기를 저장하지 못했습니다(설정 파일을 지금 쓸 수 없어 손대지 않았습니다 — 잠시 뒤 다시 하겠습니다).",
                         "write_failed", 1)
         done.append("default_on")
     elif stale:
@@ -1302,31 +1323,37 @@ def cmd_chrome_enable(a):
     if done:
         say = "크롬 연결을 켰습니다. %s 다르게 하시려면 말씀해 주세요 — 되돌릴 수 있습니다." % CHROME_NEXT_SAY
     elif nmh is True:
-        say = "크롬 연결은 이미 켜져 있습니다."
+        say = "크롬 연결은 이미 켜져 있습니다. 이 대화에 크롬 도구가 보이지 않으면 " + CHROME_NEXT_SAY
     else:
         say = "크롬 연결은 켜 두었습니다. " + CHROME_NEXT_SAY
     return out({"ok": True, "done": done, "pending": [], "nmh": nmh, "say": say})
 
 
-def cmd_chrome_disable(a):
-    """되돌리기 = 키만 — 켤 때 기억한 원래 값으로(기억이 없으면 끔).
-    연결 파일은 손대지 않는다: Claude Code 가 만든 파일이고(다음에 켜고 시작할 때 다시 쓴다) 사용자당 1개라 같은 맥의 다른 설정 폴더 세션도
-    쓴다. 키가 꺼진 좌석은 크롬 연동을 시작하지 않으므로 파일이 남아 있어도 도구가 켜지지 않는다."""
-    st = _load_chrome_state()
-    prior = st.get("prior_key")
+def _chrome_key_off():
+    """크롬 키를 켤 때 기억한 원래 값으로(기억이 없으면 끔) · 기록을 지운다. 반환 = 기억이 있었나 · 못 쓰면 None."""
+    prior = _load_chrome_state().get("prior_key")
     target = (prior["value"] if prior.get("present") else None) if isinstance(prior, dict) else False
     if target is not None and not isinstance(target, bool):
         target = False
-    if not st.get("key_restored"):              # 옛 판이 키를 되돌린 뒤 연결 파일을 못 지워 남긴 기록 — 키를 또 바꾸지 않는다
-        _ledger({"event": "chrome_disable_key", "to": "absent" if target is None else target})
-        if not write_chrome_key(target):
-            return fail("크롬 기본 켜기를 되돌리지 못했습니다(설정이 잠겨 있거나 그 사이 바뀌어 손대지 않았습니다).", "write_failed", 1)
+    _ledger({"event": "chrome_disable_key", "to": "absent" if target is None else target})
+    if not write_chrome_key(target):
+        return None
     try:
         os.remove(_p(CHROME_STATE))
     except OSError:
         pass
-    head = "크롬 연결을 처음 상태로 되돌렸습니다." if prior else "크롬 기본 켜기를 껐습니다."
-    return out({"ok": True, "say": head + " 다음에 cysr 를 다시 시작하거나 업데이트할 때부터 적용됩니다."})
+    return bool(prior)
+
+
+def cmd_chrome_disable(a):
+    """되돌리기 = 키만.
+    연결 파일은 손대지 않는다: Claude Code 가 만든 파일이고(다음에 켜고 시작할 때 다시 쓴다) 사용자당 1개라 같은 맥의 다른 설정 폴더 세션도
+    쓴다. 키가 꺼진 좌석은 크롬 연동을 시작하지 않으므로 파일이 남아 있어도 도구가 켜지지 않는다."""
+    had_prior = _chrome_key_off()
+    if had_prior is None:
+        return fail("크롬 기본 켜기를 되돌리지 못했습니다(설정이 잠겨 있거나 그 사이 바뀌어 손대지 않았습니다).", "write_failed", 1)
+    head = "크롬 연결을 처음 상태로 되돌렸습니다." if had_prior else "크롬 기본 켜기를 껐습니다."
+    return out({"ok": True, "say": head + CHROME_OFF_SAY})
 
 
 # ───────────────────────── 선례 기반 이양 (TICKET=cu-1111-precedent 2단계 · 설계 §14) ─────────────────────────

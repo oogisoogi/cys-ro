@@ -17061,6 +17061,8 @@ fn boot_agent_on_surface(
     cys::inject_claude_prompt_suggestion_default(&mut env_pairs, extract_bin(&cmd, agent));
     // ★v116-seat N-4: Claude 좌석 effort = env(키 부재 시에만 high) — lib `inject_claude_effort_env` doc.
     cys::inject_claude_effort_env(&mut env_pairs, agent, extract_bin(&cmd, agent));
+    // ★chrome-preset: 크롬 도구는 master 좌석만 — lib `chrome_allowed_for` doc(Windows 재기동은 아래 --settings 가 닿는다).
+    cys::inject_claude_chrome_off_env(&mut env_pairs, role, cys::is_dept_socket(&cys::socket_path()), agent, extract_bin(&cmd, agent));
     // ★D25·D24ⓒ(1.1.8): claude 좌석 기동 설정 파일(RC 끄기 두 키 · 정책 allow 목록) — 사용자 cmd 에 --settings 가
     //   이미 있으면 붙이지 않는다(병합 방식 미실측 · 기동 뒤 cysd rc 감시만 동작).
     apply_seat_settings_arg(&mut cmd, role, agent);
@@ -20712,7 +20714,15 @@ fn run_launch_agent_opts(
         //   boot_agent_on_surface 는 env 를 폐기하고, Tauri GUI 의 create_surface 는 env 를 아예
         //   넘기지 않는다: src-tauri/src/main.rs 의 surface.create 페이로드 참조).
         //   그래서 이것은 '벨트'이고 본체는 UI 가드(ui/src/wheelgate.ts)다 — lib 헬퍼 주석 정본.
-        let create_env_pairs = launch_create_env_pairs(&spec, agent);
+        let mut create_env_pairs = launch_create_env_pairs(&spec, agent);
+        // ★chrome-preset: 크롬 도구는 master 좌석만 — 역할을 아는 자리라 여기서 싣는다(lib `chrome_allowed_for` doc).
+        cys::inject_claude_chrome_off_env(
+            &mut create_env_pairs,
+            role,
+            cys::is_dept_socket(&cys::socket_path()),
+            agent,
+            extract_bin(spec["cmd"].as_str().unwrap_or(""), agent),
+        );
         let (_, inject_env) = render_launch("", &create_env_pairs);
         let env_obj: serde_json::Map<String, Value> = inject_env
             .into_iter()
@@ -45737,6 +45747,22 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
     }
 
     /// 좌석 기동 줄(unix 인라인)과 윈 surface.create env 맵 두 소비처가 effort env 를 싣는다.
+    /// 크롬 끄기 env 가 좌석을 띄우는 두 길에 모두 있다 — 새 surface(Windows 는 이 맵만 pane 에 닿는다) · 기동 줄(launch-agent·node-recover·restore 공용).
+    #[test]
+    fn chrome_off_env_is_on_both_launch_paths() {
+        let src = include_str!("cys.rs");
+        let la = src.find("\nfn run_launch_agent_opts(").expect("run_launch_agent_opts");
+        let boot = src.find("\nfn boot_agent_on_surface(").expect("boot_agent_on_surface");
+        let call = "cys::inject_claude_chrome_off_env(";
+        let la_body = &src[la..la + src[la + 1..].find("\nfn ").unwrap()];
+        let at = la_body.find(call).expect("surface.create env 에 크롬 끄기가 없다");
+        assert!(la_body.find("launch_create_env_pairs(&spec, agent)").unwrap() < at, "조립 뒤에 넣어야 한다");
+        assert!(at < la_body.find("render_launch(\"\", &create_env_pairs)").unwrap(), "렌더 앞에 넣어야 한다");
+        let boot_body = &src[boot..boot + src[boot + 1..].find("\nfn ").unwrap()];
+        assert!(boot_body.contains(call), "기동 줄에 크롬 끄기가 없다");
+        assert!(boot_body.contains("apply_seat_settings_arg(&mut cmd, role, agent);"), "기존 pane 재기동 경로(--settings)가 빠졌다");
+    }
+
     #[test]
     fn v116_effort_env_reaches_launch_line_and_windows_create_env() {
         // ① 윈도 경로: surface.create env 맵(= pane builder.env) — 이 조립 함수가 호출부의 유일한 원천이다

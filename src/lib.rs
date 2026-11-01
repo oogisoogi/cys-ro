@@ -1059,6 +1059,32 @@ pub fn gate_pending_from_wire_with(enabled: bool, v: &Value) -> bool {
 /// (`BUDGET_*` · `javis_budget.LEAF_FLOORS`)는 어느 것도 건드리지 않는다.
 pub const GATE_PENDING_TTL_SECS: f64 = 1800.0;
 
+/// 좌석 복원 지시(master) — `cys restore`·관문 보류 채택이 쓴다. 근거는 `src/bin/cys.rs` `restore_directive`.
+pub const RESTORE_DIRECTIVE_MASTER: &str = "[RESTORE] 조직 복원 절차다(master). _round/RECOVERY.md → SESSION_STATE.md → 자기 TODO → memory → git 순으로 읽고, 노드 재기동·surface 재매핑·directive 각성 후 상태를 복원하라. \
+         ★이어서 진행할지는 **임무 게이트가 정한다 — 네 판단이 아니다**: `python3 \"${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_mission.py\" status` 를 실행하고 그 **종료코드만** 근거로 삼아라(화면·기억·추정 금지). \
+         0=오너 임무 있음 → 그 임무를 이어서 진행한다. 1(임무 없음)·2(판독 불가=없음 취급) → 한 줄로 상태만 보고하고 **대기**하라. \
+         ⛔임무가 없을 때 스스로 티켓을 만들어 CSO·워커를 가동하는 것은 자율 착수이며 금지다(2026-09-21 실기: 임무 0 함대가 자기발의 티켓으로 세 자리를 60%+ 로 태웠다).";
+/// 좌석 복원 지시(master 밖).
+pub const RESTORE_DIRECTIVE_NODE: &str = "[RESTORE] 조직 복원 절차다. _round/SESSION_STATE.md와 자기 TODO를 읽고 상태를 복원하라. ★작업 재개는 하지 말고 master의 지시를 기다려라(임무 판정의 주체는 master의 임무 게이트다).";
+/// 재기동 복귀 지시.
+pub const RECOVER_DIRECTIVE: &str = "[RECOVER] 너는 방금 재기동되었다. _round/SESSION_STATE.md와 자기 TODO 파일을 읽어 작업 기억을 복원한 뒤 master에게 복귀를 1줄 push로 보고하라. 작업 재개는 master 지시를 따른다.";
+/// 구판 CLI 가 표식 `followup` 앞에 붙이던 마커 — 판 혼용 때문에 받기만 하고, 채택은 벗겨서 버린다(`cys.rs` `gate_pending_adopt`).
+pub const GATE_MARK_DIRECTIVE_HELD: &str = "@cys:directive-held";
+/// `surface.gate_pending` 의 `followup` 이 고정 문안이 아닐 때의 오류 코드.
+pub const ERR_GATE_FOLLOWUP_DENIED: &str = "gate_followup_denied";
+
+/// 표식 `followup` 와이어 값이 **고정 문안 셋 중 하나**인가(마커는 있어도 된다 · TICKET=cysr-ghsa-check).
+///
+/// 【왜】 이 값은 `cys boot` 채택 때 좌석에 제출된다. 생산자는 위 문안 셋뿐이라 자유 문장일 이유가 없다. 호출자를 가리는 대신
+/// 값을 닫는다 — 어느 호출자가 무엇을 들고 와도 고정 문안 밖의 글은 좌석에 닿지 못한다. 글자 하나라도 다르면 거짓이다.
+pub fn gate_followup_allowed(wire: &str) -> bool {
+    let body = wire
+        .strip_prefix(GATE_MARK_DIRECTIVE_HELD)
+        .and_then(|r| r.strip_prefix('\n'))
+        .unwrap_or(wire);
+    body == RESTORE_DIRECTIVE_MASTER || body == RESTORE_DIRECTIVE_NODE || body == RECOVER_DIRECTIVE
+}
+
 /// ★★M2 수리(2026-08-24 자기성찰 3회전) — TTL 만료 좌석의 **`gate` 라벨 정본**.
 ///
 /// ## 무엇이 틀렸었는가 — 만료가 '침묵 복귀' 였다

@@ -513,7 +513,7 @@ find "$H" -name six.py
 - [ ] `cargo test --bin cysd native_publication::` 병렬 불안정 — 기본 병렬에서 2건 실패 · 단독과 `--test-threads=1` 은 통과 · 기준선도 같은 ID(759 대조 · master#e8ff936f · 회귀 아님). 시험 간 공유 자원을 찾아 고친다.
 - [ ] cysd 전체 병렬 간헐 — 짝 10회(ccfcb9e7 · 93fb8e08) · 무실패 각 2회. 머리·기준 공통 = native_publication 2건 · settle_hold · v116(연쇄: 패닉이 PACK_ENV_LOCK 독살 → unwrap PoisonError). 한쪽 1회씩 = s4_1 · qstarved · rqfix2 · np_different_builtin · c8aftercare 2건 · c8protocol · k17 · refused_hand_off(s4_1·qstarved 표적 부하 반복 75회 양쪽 무재현). 전체 직렬 = 머리 3회 무실패 · 기준 2회 중 k17 1건. 머리 큐 경로 코드 변경 0. PACK_ENV_LOCK 잡은 시험의 `.unwrap()` 을 `unwrap_or_else(into_inner)` 로 바꿔 연쇄부터 끊고, 시한 경계를 넓힌다.
 - [ ] `test_hook_r34` 시한 3.0s 경계 — 부하 3회 머리·기준 모두 적(RCF-3·RCF-4a·NZ-3·DL-1b · 3.02~3.83s) · 머리·기준 동시 8회 각 7회 적 · 혼자 돌면 통과. 경계를 넓히거나 직렬 칸으로 옮긴다.
-- [ ] `test_dept_notice_lane` 1c — 전수 -P 3 에서 머리 1회 IndexError(fmlog 빈 줄 · 존재만 보고 읽음) · 머리·기준 동시 8회 각 무실패 · 시험·대상 코드 기준선 diff 0. 도우미가 내용까지 기다리게 고친다.
+- [ ] `test_dept_notice_lane` 1c — 전수 -P 3 게이트 2회(@cebf7851 · @7e85792b) 각 1회 같은 IndexError. 원인 = 시험 경합: 스텁이 `open(...,'a').write()` 로 fmlog 를 만든 뒤 flush 전에 `launch()` 의 `os.path.exists` 가 참이 되어 빈 파일을 읽는다 · 제품 경로 아님. 3중 동시 8회차 머리·기준 각 24/24 통과(재현 안 됨) · 시험·대상 코드 기준선 diff 0. 도우미가 내용까지 기다리게 고친다(1.1.12 · master#d8a90b3e).
 - [ ] `copy_dir_all` 검사~fs::copy 사이 FIFO 교체 틈 — tree_contained 는 O_NONBLOCK+핸들 stat 으로 닫았고 복사는 권한 보존 때문에 fs::copy 유지(0835ad3d). 같은 형태로 닫는다.
 - [ ] 좌석 살린 채 claim 해제 — 실제 복원 루프에서 재현 · 1.1.10 에도 같은 코드 · claim-epoch 가 만든 것 아님 · 1.1.12 별 티켓 권고(792 §1-3).
 - [ ] FIFO g1 — 임베드 경로(soul.md 등)에 FIFO 면 pack.rs install_into read_to_string 에서 데몬 bind 전 멈춘다(v1.1.9 부터 · 회귀 아님 · 생성 코드 0 · 실팩 특수 파일 0 · 786 3차 · master#7efb49e4 이관).

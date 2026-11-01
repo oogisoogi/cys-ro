@@ -11149,6 +11149,31 @@ mod tests {
         }
     }
 
+    /// 파일 단위 읽기 실패(권한 거부) = 모름 → 같은 길이·같은 내용이어도 보존 쪽. hold 쪽 · 팩 쪽 모두.
+    #[cfg(unix)]
+    #[test]
+    fn recover_keeps_hold_when_a_file_cannot_be_read() {
+        use std::os::unix::fs::PermissionsExt;
+        for hold_side in [true, false] {
+            let (base, pd, hold) = b1_fixture(if hold_side { "denied-hold" } else { "denied-pack" });
+            copy_dir_all(&hold, &pd).unwrap();
+            let file = if hold_side { hold.join("memory/mine.md") } else { pd.join("memory/mine.md") };
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+            if std::fs::read(&file).is_ok() {
+                let _ = std::fs::remove_dir_all(&base); // root 로 도는 환경 — 권한이 막지 않는다
+                return;
+            }
+            recover_interrupted_swap(&pd).unwrap();
+            assert!(!hold.exists());
+            assert_eq!(asides(&base).len(), 1, "hold_side={hold_side}");
+            assert_eq!(std::fs::read_to_string(pack_prev_dir(&pd).join("a.txt")).unwrap(), "older", "prev 를 밀지 않는다");
+            for p in [asides(&base)[0].join("memory/mine.md"), pd.join("memory/mine.md")] {
+                std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+            }
+            let _ = std::fs::remove_dir_all(&base);
+        }
+    }
+
     /// 핸들 stat 확인 — 검사 뒤 FIFO 로 바뀌어도 열기·읽기가 멈추지 않는다.
     #[cfg(unix)]
     #[test]

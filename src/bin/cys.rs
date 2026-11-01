@@ -25369,17 +25369,24 @@ struct RestoreClaim<'a> {
     busy: Option<&'a std::cell::RefCell<std::collections::HashSet<String>>>,
     id: Option<String>,
     file: Option<(std::path::PathBuf, String)>,
+    /// ★1.1.11 claim-epoch: 기동 성공 때 claim 을 그 좌석이 앉은 데몬 세대로 다시 적는 조회.
+    daemon_gen: Option<&'a dyn Fn() -> Option<String>>,
     kept: bool,
 }
 
 impl RestoreClaim<'_> {
     fn none() -> Self {
-        RestoreClaim { busy: None, id: None, file: None, kept: false }
+        RestoreClaim { busy: None, id: None, file: None, daemon_gen: None, kept: false }
     }
 
     /// 이 좌석이 대화를 잇는다(기동 성공·관문 보류) — 유지(파일은 TTL 로 자연 만료).
+    /// ★1.1.11 claim-epoch(codex R1 BLOCK): 기동은 획득 뒤에 일어나 그 사이 데몬이 바뀔 수 있다 — 지금 세대로 다시 적어
+    /// claim 을 좌석이 실제로 앉은 데몬에 묶는다.
     fn commit(mut self) {
         self.kept = true;
+        if let (Some((f, token)), Some(daemon_gen)) = (&self.file, self.daemon_gen) {
+            restore_claim_rebind(f, token, daemon_gen);
+        }
     }
 }
 
@@ -25428,12 +25435,16 @@ fn restore_claims_lock(dir: &std::path::Path) -> Option<std::fs::File> {
 /// ① `create_new` 로 `<토큰> <epoch>` 기록 ② EEXIST 면 [`restore_claim_sweep`](내용 epoch 가 TTL 안 = 점유 → 진다 ·
 /// TTL 지난 것만 rename 으로 치우고 버린다) ③ 치운 뒤 `create_new` **한 번** — EEXIST 면 그 사이 남이 잡은 것 = **내가 진 것**
 /// (resume 끔 · fail-closed · 다시 치우지 않는다).
-/// ★1.1.11 claim-epoch: `daemon_gen` = 지금 데몬 세대([`restore_daemon_gen`]) — 새 claim 에 적고, 치우기 판정에 넘긴다.
-fn restore_claim_file_acquire(f: &std::path::Path, token: &str, now: u64, daemon_gen: Option<&str>) -> bool {
+/// ★1.1.11 claim-epoch: `daemon_gen` = 지금 데몬 세대 조회([`restore_daemon_gen`]) — 새 claim 에 적고, 치우기 판정에 넘긴다.
+/// ★codex R1 BLOCK: **잠금을 잡은 뒤에** 읽는다 — 잠금 앞에서 읽은 값으로 비교하면, 잠금을 기다리는 사이 데몬이 바뀌어
+/// 새 세대의 정상 claim 이 「세대 다름 · 복원기 끝남」으로 보여 빼앗긴다(10-09 동시 쓰기).
+fn restore_claim_file_acquire(f: &std::path::Path, token: &str, now: u64, daemon_gen: &dyn Fn() -> Option<String>) -> bool {
     // ★1.1.10 ⑨: 전역 잠금 못 잡으면 진다(resume 끔 · fail-closed — 저장소 없음과 같은 쪽).
     let Some(_g) = f.parent().and_then(restore_claims_lock) else {
         return false;
     };
+    let daemon_gen = daemon_gen();
+    let daemon_gen = daemon_gen.as_deref();
     if let Some(created) = restore_claim_try_create(f, token, now, daemon_gen) {
         return created; // None = EEXIST → 아래 치우기
     }
@@ -25441,6 +25452,27 @@ fn restore_claim_file_acquire(f: &std::path::Path, token: &str, now: u64, daemon
         return false;
     }
     restore_claim_create_after_sweep(f, token, now, daemon_gen)
+}
+
+/// ★1.1.11 claim-epoch: 내 claim 의 세대 칸을 지금 세대로 다시 적는다(잠금 안 · 내 토큰일 때만 · 시각 칸 유지).
+/// 세대를 모르면 칸을 뺀다 = TTL 로만 풀린다(안전 쪽). 쓰다 끊겨 비면 내용 없음 = mtime · 점유.
+fn restore_claim_rebind(f: &std::path::Path, token: &str, daemon_gen: &dyn Fn() -> Option<String>) {
+    let Some(_g) = f.parent().and_then(restore_claims_lock) else {
+        return;
+    };
+    let content = std::fs::read_to_string(f).unwrap_or_default();
+    let mut cols = content.split_whitespace();
+    let (Some(owner), Some(at)) = (cols.next(), cols.next()) else {
+        return;
+    };
+    if owner != token {
+        return;
+    }
+    let line = match daemon_gen() {
+        Some(g) => format!("{token} {at} {g}\n"),
+        None => format!("{token} {at}\n"),
+    };
+    let _ = std::fs::write(f, line);
 }
 
 /// ★4판 ①: 치운 뒤 `create_new` **한 번** — EEXIST(그 사이 남이 잡음)·쓰기 실패 = 진다(다시 치우지 않는다).
@@ -25581,6 +25613,7 @@ fn restore_claims_dir() -> Option<std::path::PathBuf> {
     std::fs::create_dir_all(&d).ok().map(|_| d)
 }
 
+/// ★1.1.11 claim-epoch(codex R1 BLOCK): ② `live` 는 **claim 을 쥔 뒤에** 조회한다 — 옛 조회로는 그 사이 앉은 좌석을 못 본다.
 /// ★2판 ②④ · ★3판 ②③(순수 + 파일): 이 좌석이 `sess` 를 이어도 되는가. 셋 중 하나라도 점유면 이어 붙이지 않는다 —
 /// ① 같은 회차 앞 좌석(`busy`) ② 데몬 재조회의 점유 좌석(`live`) ③ 다른 `cys restore` 프로세스의 원자 파일
 /// (`<상태>/restore-claims/<sha256(id)>` · [`restore_claim_file_acquire`]). 반환 = (이을 sess, 중복인가, 되돌림 가드).
@@ -25588,15 +25621,15 @@ fn restore_claims_dir() -> Option<std::path::PathBuf> {
 fn restore_claim_for_launch<'a>(
     sess: Option<String>,
     busy: &'a std::cell::RefCell<std::collections::HashSet<String>>,
-    live: &std::collections::HashSet<String>,
+    live: &dyn Fn() -> std::collections::HashSet<String>,
     dir: Option<&std::path::Path>,
     now: u64,
-    daemon_gen: Option<&str>,
+    daemon_gen: &'a dyn Fn() -> Option<String>,
 ) -> (Option<String>, bool, RestoreClaim<'a>) {
     let Some(id) = sess.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(String::from) else {
         return (sess, false, RestoreClaim::none());
     };
-    if busy.borrow().contains(&id) || live.contains(&id) {
+    if busy.borrow().contains(&id) {
         return (None, true, RestoreClaim::none());
     }
     let Some(d) = dir else {
@@ -25607,8 +25640,12 @@ fn restore_claim_for_launch<'a>(
     if !restore_claim_file_acquire(&f, &token, now, daemon_gen) {
         return (None, true, RestoreClaim::none());
     }
+    if live().contains(&id) {
+        restore_claim_file_release(&f, &token);
+        return (None, true, RestoreClaim::none());
+    }
     busy.borrow_mut().insert(id.clone());
-    (sess, false, RestoreClaim { busy: Some(busy), id: Some(id), file: Some((f, token)), kept: false })
+    (sess, false, RestoreClaim { busy: Some(busy), id: Some(id), file: Some((f, token)), daemon_gen: Some(daemon_gen), kept: false })
 }
 
 /// ★D-mac-2(1.1.9): 이 역할로 새 좌석을 만들면 데몬이 이름을 바꾸는가 — 순수. 데몬의 `dedup_worker_role` 은
@@ -25810,16 +25847,14 @@ fn run_restore_with(cwd: Option<String>, include_master: bool, no_resume: bool, 
             //   `--continue` 폴백도 같은 폴더의 최신 대화를 집어 같은 사고를 내므로 함께 끈다).
             // ★2판 ②④(codex 1R): claim = 기동 직전(여기 = in-seat·fresh 두 기동 모두 이 아래) · 프로세스 내 집합 +
             //   데몬 재조회(live 세션) + 상태 폴더 원자 파일(다른 `cys restore` 프로세스와의 경쟁) · 보류·실패 시 해제.
-            let live_now = restore_live_sessions();
             let claim_dir = restore_claims_dir();
-            let daemon_gen = restore_daemon_gen();
             let (sess, resume_dup, claim) = restore_claim_for_launch(
                 sess,
                 &busy_sessions,
-                &live_now,
+                &restore_live_sessions,
                 claim_dir.as_deref(),
                 restore_now_secs(),
-                daemon_gen.as_deref(),
+                &restore_daemon_gen,
             );
             // ★3판 ⑥: 여기부터 `claim` 은 되돌림 가드다 — 기동 성공·관문 보류에서만 `commit()` · 그 밖의 모든 `continue`
             //   (spec 실패 · 주입 표식 겹침 · 개명 보류 · 기동 실패)는 가드가 버려지며 집합·파일을 되돌린다.
@@ -32993,36 +33028,36 @@ mod tests {
         let now = restore_now_secs();
         let live: std::collections::HashSet<String> = ["live-1".to_string()].into_iter().collect();
         let busy = std::cell::RefCell::new(std::collections::HashSet::new());
-        let (s, dup, _) = restore_claim_for_launch(Some("live-1".into()), &busy, &live, Some(&dir), now, None);
+        let (s, dup, _) = restore_claim_for_launch(Some("live-1".into()), &busy, &|| live.clone(), Some(&dir), now, &|| None);
         assert_eq!((s, dup), (None, true), "점유 좌석의 대화");
-        let (s, dup, a) = restore_claim_for_launch(Some("s-a".into()), &busy, &live, Some(&dir), now, None);
+        let (s, dup, a) = restore_claim_for_launch(Some("s-a".into()), &busy, &|| live.clone(), Some(&dir), now, &|| None);
         assert_eq!((s.as_deref(), dup), (Some("s-a"), false), "첫 좌석");
         let fa = dir.join(restore_claim_file_name("s-a"));
         assert!(fa.exists(), "원자 파일(이름 = sha256)");
-        let (s, dup, _) = restore_claim_for_launch(Some("s-a".into()), &busy, &live, Some(&dir), now, None);
+        let (s, dup, _) = restore_claim_for_launch(Some("s-a".into()), &busy, &|| live.clone(), Some(&dir), now, &|| None);
         assert_eq!((s, dup), (None, true), "같은 회차 두 번째 좌석");
         // 다른 프로세스 = 새 busy 집합 · 같은 파일 → 중복 · 그 가드가 버려져도 남의(내 것 아닌) 파일은 안 지운다
         let other = std::cell::RefCell::new(std::collections::HashSet::new());
-        let (s, dup, g) = restore_claim_for_launch(Some("s-a".into()), &other, &live, Some(&dir), now, None);
+        let (s, dup, g) = restore_claim_for_launch(Some("s-a".into()), &other, &|| live.clone(), Some(&dir), now, &|| None);
         assert_eq!((s, dup), (None, true), "다른 restore 프로세스의 claim");
         drop(g);
         assert!(fa.exists(), "남의 claim 파일을 지웠다");
         // 되돌림(⑥) → 같은 회차 뒤 좌석이 다시 잡는다 · 내 토큰 파일만 지운다
         drop(a);
         assert!(!busy.borrow().contains("s-a") && !fa.exists(), "가드가 되돌리지 않았다");
-        let (_, dup, b) = restore_claim_for_launch(Some("s-a".into()), &busy, &live, Some(&dir), now, None);
+        let (_, dup, b) = restore_claim_for_launch(Some("s-a".into()), &busy, &|| live.clone(), Some(&dir), now, &|| None);
         assert!(!dup, "해제 뒤에도 막혔다");
         b.commit();
         assert!(busy.borrow().contains("s-a") && fa.exists(), "commit 한 claim 이 사라졌다");
         // TTL 지난 claim = rename 으로 치우고 잡는다(다른 프로세스 · 미래 시각)
-        let (_, dup, c) = restore_claim_for_launch(Some("s-a".into()), &other, &live, Some(&dir), now + RESTORE_CLAIM_TTL_SECS + 5, None);
+        let (_, dup, c) = restore_claim_for_launch(Some("s-a".into()), &other, &|| live.clone(), Some(&dir), now + RESTORE_CLAIM_TTL_SECS + 5, &|| None);
         assert!(!dup, "TTL 지난 잔재가 막았다");
         drop(c);
-        assert_eq!(restore_claim_for_launch(None, &busy, &live, Some(&dir), now, None).1, false, "핀 없음 = 판정 밖");
+        assert_eq!(restore_claim_for_launch(None, &busy, &|| live.clone(), Some(&dir), now, &|| None).1, false, "핀 없음 = 판정 밖");
         // ③ 저장소 없음 = fail-closed · 허용 문자 밖 id 도 해시 파일로 claim
-        let (s, dup, _) = restore_claim_for_launch(Some("s-z".into()), &busy, &live, None, now, None);
+        let (s, dup, _) = restore_claim_for_launch(Some("s-z".into()), &busy, &|| live.clone(), None, now, &|| None);
         assert_eq!((s, dup), (None, true), "claim 저장소 없음인데 이어 붙였다");
-        let (s, dup, d) = restore_claim_for_launch(Some("thread.123/../x".into()), &busy, &live, Some(&dir), now, None);
+        let (s, dup, d) = restore_claim_for_launch(Some("thread.123/../x".into()), &busy, &|| live.clone(), Some(&dir), now, &|| None);
         assert_eq!((s.as_deref(), dup), (Some("thread.123/../x"), false));
         assert!(dir.join(restore_claim_file_name("thread.123/../x")).exists(), "점 섞인 id 의 원자 파일 없음");
         drop(d);
@@ -33038,17 +33073,17 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("c");
         let now = 2_000_000u64;
-        assert!(restore_claim_file_acquire(&f, "A", now, None), "빈 자리");
-        assert!(!restore_claim_file_acquire(&f, "B", now + 1, None), "살아 있는 claim 을 빼앗았다");
+        assert!(restore_claim_file_acquire(&f, "A", now, &|| None), "빈 자리");
+        assert!(!restore_claim_file_acquire(&f, "B", now + 1, &|| None), "살아 있는 claim 을 빼앗았다");
         restore_claim_file_release(&f, "B");
         assert!(f.exists(), "남의 토큰 파일을 지웠다");
         assert_eq!(std::fs::read_to_string(&f).unwrap().split_whitespace().next(), Some("A"));
         // 쓰는 중(내용 비었음) + mtime 신선 = 점유로 본다
         std::fs::write(&f, "").unwrap();
-        assert!(!restore_claim_file_acquire(&f, "B", restore_now_secs(), None), "쓰는 중 claim 을 낡았다고 봤다");
+        assert!(!restore_claim_file_acquire(&f, "B", restore_now_secs(), &|| None), "쓰는 중 claim 을 낡았다고 봤다");
         // 낡은 claim = 치우고 잡는다 · 비켜 놓은 파일 잔재 0
         std::fs::write(&f, format!("OLD {}\n", now)).unwrap();
-        assert!(restore_claim_file_acquire(&f, "B", now + RESTORE_CLAIM_TTL_SECS + 1, None));
+        assert!(restore_claim_file_acquire(&f, "B", now + RESTORE_CLAIM_TTL_SECS + 1, &|| None));
         assert_eq!(std::fs::read_to_string(&f).unwrap().split_whitespace().next(), Some("B"));
         let left = std::fs::read_dir(&dir).unwrap().filter(|e| e.as_ref().unwrap().file_name() != ".lock").count();
         assert_eq!(left, 1, "비켜 놓은 낡은 파일이 남았다"); // ★1.1.10 ⑨: 전역 잠금 파일(.lock)은 영속 · 셈에서 뺀다
@@ -33071,7 +33106,7 @@ mod tests {
         assert_eq!(restore_claim_sweep(&f, "B", late, None), ClaimSweep::Swept, "B: 낡은 A 를 치움");
         assert_eq!(restore_claim_try_create(&f, "C", late, None), Some(true), "C: 빈 자리를 잡음");
         assert!(!restore_claim_create_after_sweep(&f, "B", late, None), "B: 치운 뒤 한 번 — EEXIST = 진다");
-        assert!(!restore_claim_file_acquire(&f, "D", late, None), "D: C 의 살아 있는 claim 앞에서 진다");
+        assert!(!restore_claim_file_acquire(&f, "D", late, &|| None), "D: C 의 살아 있는 claim 앞에서 진다");
         let winners = ["B", "C", "D"]
             .iter()
             .filter(|t| std::fs::read_to_string(&f).unwrap().split_whitespace().next() == Some(**t))
@@ -33103,7 +33138,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let f2 = f.clone();
         let t = std::thread::spawn(move || {
-            tx.send(restore_claim_file_acquire(&f2, "B", 4_000_000, None)).unwrap();
+            tx.send(restore_claim_file_acquire(&f2, "B", 4_000_000, &|| None)).unwrap();
         });
         assert!(
             rx.recv_timeout(std::time::Duration::from_millis(400)).is_err(),
@@ -33135,7 +33170,7 @@ mod tests {
                     std::thread::spawn(move || {
                         let tok = format!("R{round}-{i}");
                         b.wait();
-                        (restore_claim_file_acquire(&f, &tok, late, None), tok)
+                        (restore_claim_file_acquire(&f, &tok, late, &|| None), tok)
                     })
                 })
                 .collect();
@@ -33173,7 +33208,7 @@ mod tests {
         let f = dir.join("c");
         let now = 6_000_000u64;
         std::fs::write(&f, format!("{}-1-0 {now} 10-1.5\n", claim_dead_pid())).unwrap();
-        assert!(restore_claim_file_acquire(&f, "20-2-0", now + 1, Some("11-2.5")), "옛 세대 · 죽은 복원기 claim 이 막았다");
+        assert!(restore_claim_file_acquire(&f, "20-2-0", now + 1, &|| Some("11-2.5".into())), "옛 세대 · 죽은 복원기 claim 이 막았다");
         assert_eq!(std::fs::read_to_string(&f).unwrap(), format!("20-2-0 {} 11-2.5\n", now + 1), "내 토큰·지금 세대");
         let left = std::fs::read_dir(&dir).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().contains("stale-")).count();
         assert_eq!(left, 0, "비켜 놓은 잔재");
@@ -33195,7 +33230,7 @@ mod tests {
             ("다른 세대 · 산 복원기", format!("{}-1-0 {now} 9-0.5\n", std::process::id())),
         ] {
             std::fs::write(&f, &c).unwrap();
-            assert!(!restore_claim_file_acquire(&f, "20-2-0", now + 1, Some("10-1.5")), "{what}: 빼앗았다");
+            assert!(!restore_claim_file_acquire(&f, "20-2-0", now + 1, &|| Some("10-1.5".into())), "{what}: 빼앗았다");
             assert_eq!(std::fs::read_to_string(&f).unwrap(), c, "{what}: claim 이 바뀌었다");
         }
         let _ = std::fs::remove_dir_all(&dir);
@@ -33227,8 +33262,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("c");
         std::fs::write(&f, format!("{c}\n")).unwrap();
-        assert!(!restore_claim_file_acquire(&f, "20-2-0", now + 1, None), "세대 모름에 빼앗았다");
-        assert!(restore_claim_file_acquire(&f, "20-2-0", now + RESTORE_CLAIM_TTL_SECS, None), "세대 모름 + TTL 지남 = 종전대로");
+        assert!(!restore_claim_file_acquire(&f, "20-2-0", now + 1, &|| None), "세대 모름에 빼앗았다");
+        assert!(restore_claim_file_acquire(&f, "20-2-0", now + RESTORE_CLAIM_TTL_SECS, &|| None), "세대 모름 + TTL 지남 = 종전대로");
         assert_eq!(std::fs::read_to_string(&f).unwrap(), format!("20-2-0 {}\n", now + RESTORE_CLAIM_TTL_SECS), "세대 모름 = 세대 칸 없이 쓴다");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -33242,20 +33277,21 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let now = 9_000_000u64;
         let dead = claim_dead_pid();
+        let cur = || Some("11-2.5".to_string());
         let stale = |id: &str| std::fs::write(dir.join(restore_claim_file_name(id)), format!("{dead}-1-0 {now} 10-1.5\n")).unwrap();
         stale("s-live");
         stale("s-a");
         let live: std::collections::HashSet<String> = ["s-live".to_string()].into_iter().collect();
         let busy = std::cell::RefCell::new(std::collections::HashSet::new());
-        let (s, dup, _) = restore_claim_for_launch(Some("s-live".into()), &busy, &live, Some(&dir), now, Some("11-2.5"));
+        let (s, dup, _) = restore_claim_for_launch(Some("s-live".into()), &busy, &|| live.clone(), Some(&dir), now, &cur);
         assert_eq!((s, dup), (None, true), "점유 좌석의 대화를 이어받았다");
-        let (s, dup, a) = restore_claim_for_launch(Some("s-a".into()), &busy, &live, Some(&dir), now, Some("11-2.5"));
+        let (s, dup, a) = restore_claim_for_launch(Some("s-a".into()), &busy, &|| live.clone(), Some(&dir), now, &cur);
         assert_eq!((s.as_deref(), dup), (Some("s-a"), false), "옛 세대 claim 을 이어받지 못했다");
-        let (s, dup, _) = restore_claim_for_launch(Some("s-a".into()), &busy, &live, Some(&dir), now, Some("11-2.5"));
+        let (s, dup, _) = restore_claim_for_launch(Some("s-a".into()), &busy, &|| live.clone(), Some(&dir), now, &cur);
         assert_eq!((s, dup), (None, true), "같은 회차 두 번째 좌석");
         a.commit();
         let other = std::cell::RefCell::new(std::collections::HashSet::new());
-        let (s, dup, _) = restore_claim_for_launch(Some("s-a".into()), &other, &live, Some(&dir), now, Some("11-2.5"));
+        let (s, dup, _) = restore_claim_for_launch(Some("s-a".into()), &other, &|| live.clone(), Some(&dir), now, &cur);
         assert_eq!((s, dup), (None, true), "다른 복원 프로세스(같은 세대 · 내가 소유자 = 살아 있음)");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -33341,6 +33377,123 @@ mod tests {
             ("w-old", false, None),            // 세대 칸 없는 claim = TTL 로만 풀린다
         ]);
         assert!(on_disk.trim_end().ends_with(&format!(" {cur}")), "새 claim 에 지금 세대가 없다: {on_disk:?}");
+    }
+
+    /// ★1.1.11 claim-epoch(codex R1 BLOCK) — 지연된 복원기: 세대는 **잠금을 잡은 뒤에** 읽는다. 남이 잠금을 쥔 동안 조회 0회 · 풀린 뒤 1회.
+    /// 잠금 앞에서 읽으면(뮤턴트) 잠금을 기다리는 사이 데몬이 바뀐 것을 모른 채 새 세대의 정상 claim 을 빼앗는다.
+    #[test]
+    fn restore_claim_generation_is_read_inside_the_lock() {
+        let dir = std::env::temp_dir().join(format!("cys-claimi-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("c");
+        let now = 9_500_000u64;
+        // B: 새 세대 D1 에서 잡고 끝난 복원기(좌석은 살아 있다)
+        std::fs::write(&f, format!("{}-1-0 {now} D1\n", claim_dead_pid())).unwrap();
+        let held = restore_claims_lock(&dir).expect("전역 잠금");
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (f2, r2) = (f.clone(), reads.clone());
+        let t = std::thread::spawn(move || {
+            let probe = move || {
+                r2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Some("D1".to_string()) // 잠금 안에서 읽으면 지금 세대 = D1
+            };
+            tx.send(restore_claim_file_acquire(&f2, "30-3-0", now + 1, &probe)).unwrap();
+        });
+        assert!(rx.recv_timeout(std::time::Duration::from_millis(300)).is_err(), "잠금을 기다리지 않았다");
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 0, "잠금 앞에서 세대를 읽었다");
+        drop(held);
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(10)), Ok(false), "새 세대의 정상 claim 을 빼앗았다");
+        t.join().unwrap();
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(std::fs::read_to_string(&f).unwrap().ends_with(" D1\n"), "claim 이 바뀌었다");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★1.1.11 claim-epoch(codex R1 BLOCK) — 획득 뒤 데몬이 바뀌어 좌석이 새 데몬에 앉았다: commit 이 claim 을 그 세대로 다시 적는다.
+    /// 그 뒤 같은 세대의 다른 복원기는 진다(복원기가 끝나도 좌석이 살아 있다). 세대를 모르면 칸을 뺀다(TTL 로만 풀림).
+    #[test]
+    fn restore_claim_commit_binds_to_the_daemon_the_seat_sits_on() {
+        let dir = std::env::temp_dir().join(format!("cys-claimj-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = 9_600_000u64;
+        let busy = std::cell::RefCell::new(std::collections::HashSet::new());
+        let gen = std::cell::RefCell::new(Some("D0".to_string()));
+        let read = || gen.borrow().clone();
+        let none = std::collections::HashSet::new;
+        let (_, dup, a) = restore_claim_for_launch(Some("s-a".into()), &busy, &none, Some(&dir), now, &read);
+        assert!(!dup);
+        let f = dir.join(restore_claim_file_name("s-a"));
+        assert!(std::fs::read_to_string(&f).unwrap().ends_with(" D0\n"));
+        *gen.borrow_mut() = Some("D1".to_string());
+        a.commit();
+        let c = std::fs::read_to_string(&f).unwrap();
+        assert!(c.ends_with(&format!(" {now} D1\n")), "좌석이 앉은 세대로 안 적혔다: {c:?}");
+        let dead = claim_dead_pid();
+        std::fs::write(&f, c.replacen(c.split('-').next().unwrap(), &dead.to_string(), 1)).unwrap();
+        assert!(!restore_claim_file_acquire(&f, "40-4-0", now + 1, &|| Some("D1".into())), "새 데몬의 좌석 claim 을 빼앗았다");
+        // 남의 토큰은 건드리지 않는다 · 세대 모름 = 칸 빼기
+        let before = std::fs::read_to_string(&f).unwrap();
+        restore_claim_rebind(&f, "남의토큰", &|| Some("D9".into()));
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), before, "남의 claim 을 고쳐 썼다");
+        let owner = before.split_whitespace().next().unwrap().to_string();
+        restore_claim_rebind(&f, &owner, &|| None);
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), format!("{owner} {now}\n"), "세대 모름인데 세대 칸이 남았다");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★1.1.11 claim-epoch(codex R1 BLOCK) — 점유 좌석 조회는 claim 을 쥔 **뒤에** 한다: 조회 시점에 파일이 있어야 하고, 점유면 내 claim 을 되돌린다.
+    #[test]
+    fn restore_claim_live_view_is_taken_after_holding_the_claim() {
+        let dir = std::env::temp_dir().join(format!("cys-claimk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join(restore_claim_file_name("s-a"));
+        let busy = std::cell::RefCell::new(std::collections::HashSet::new());
+        let seen = std::cell::Cell::new(false);
+        let live = || {
+            seen.set(f.exists());
+            ["s-a".to_string()].into_iter().collect()
+        };
+        let (s, dup, _) = restore_claim_for_launch(Some("s-a".into()), &busy, &live, Some(&dir), 9_700_000, &|| Some("D1".into()));
+        assert_eq!((s, dup), (None, true), "점유 좌석의 대화를 이었다");
+        assert!(seen.get(), "claim 을 쥐기 전에 점유를 조회했다");
+        assert!(!f.exists() && !busy.borrow().contains("s-a"), "점유인데 claim 을 안 되돌렸다");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★1.1.11 claim-epoch(herdr 보고서 §3 「복원 표식 600초」) — 600초 안 연속 2회 복원: 데몬이 바뀌면 둘 다 잇는다.
+    /// 데몬이 그대로면 둘째는 진다(이 수리의 범위 밖 · 같은 세대 = 좌석이 살아 있을 수 있다 · 훅 전에는 `live` 가 못 본다).
+    #[test]
+    fn restore_twice_within_ttl_across_daemon_swap_both_resume() {
+        let dir = std::env::temp_dir().join(format!("cys-claiml-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = 9_800_000u64;
+        let f = dir.join(restore_claim_file_name("s-a"));
+        let none = std::collections::HashSet::new;
+        let dead = claim_dead_pid();
+        // 복원 프로세스마다 새 busy 집합 · 끝나면 토큰의 pid 는 죽어 있다
+        let round = |gen: &'static str, at: u64| {
+            let busy = std::cell::RefCell::new(std::collections::HashSet::new());
+            let read = move || Some(gen.to_string());
+            let (s, dup, c) = restore_claim_for_launch(Some("s-a".into()), &busy, &none, Some(&dir), at, &read);
+            let ok = s.as_deref() == Some("s-a") && !dup;
+            c.commit();
+            if ok {
+                let c = std::fs::read_to_string(&f).unwrap();
+                let cols: Vec<&str> = c.split_whitespace().collect();
+                std::fs::write(&f, format!("{dead}-1-0 {} {}\n", cols[1], cols[2])).unwrap();
+            }
+            ok
+        };
+        assert!(round("D1", now), "첫 복원");
+        assert!(round("D2", now + 20), "데몬 교체 뒤 둘째 복원이 끊겼다");
+        assert!(round("D3", now + 40), "데몬 교체 뒤 셋째 복원이 끊겼다");
+        assert!(!round("D3", now + 60), "같은 데몬 안 재복원 = 범위 밖 · 종전대로 끈다");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

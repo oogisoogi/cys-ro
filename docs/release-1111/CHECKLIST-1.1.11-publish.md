@@ -494,4 +494,5 @@ find "$H" -name six.py
 - [ ] (윈 실기 이월 · TODO:83) `\cysd` 재등록이 LeastPrivilege 로 RunLevel Highest 를 덮음 · preflight --fix 가 `~/.claude/settings.json` 을 백업 없이 고침 · ConPTY 꽉 찬 줄 composer 사람 눈 1회 · self-update-check 새 데몬 뒤 첫 발화.
 - [ ] (통합표) `d7_prime_seat_cache_never_overwrites_a_tick_value` 상한 5초 플레이크.
 - [ ] 677 hook-slim(R3 REVISE) · 윈 휴지통 삭제.
+- [ ] **윈 node-recover `^Uclaude`**(가지 fix/1112-noderecover-ctrlu · 커밋만 · 1.1.10 이전부터) — 현상 = 윈 PowerShell 창에 `^Uclaude …` 가 입력돼 CommandNotFound · 좌석이 빈 셸로 남음 · 데몬 자동 재기동도 같은 길. 원인 = `src/bin/cys.rs:25189` 선정리 C-u(0x15)를 프롬프트가 글자로 받음. 수리 = 윈 한정 C-u 뒤 Backspace 1회(관문 불변). 재시험 3종 = r7-7 3/3 · 초안 창 거부 유지 · claude.exe kill 뒤 데몬 자동 재기동.
 - [ ] (relprep) `test_phoenix_c6_reap.py:101` `except TimeoutError` → Python 3.9 에서 거짓 적(L20) · `.kept-pane-records.jsonl` 공장 초기화 목록 누락 · windows-build T3-3 적 원인 · windows-health 감독자 축 30분 시간 초과로 `trash::` 줄 0(L21) · 앱이 켜진 채 데몬이 바뀌면 「엔진」 라벨 미갱신.

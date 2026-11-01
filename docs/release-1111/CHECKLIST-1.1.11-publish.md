@@ -154,7 +154,7 @@
 | N1 | 노트 받는 방법 첫 줄 · 카톡 ① | (닫힘) 윈·맥 통일 문장에 흡수 | master#3e3039b5 | ☑ |
 | N2 · K② | 노트 받는 방법 맥 줄 | (닫힘) 자동 문장 제거 · 윈·맥 통일 | master#3e3039b5 | ☑ |
 | N3 · K③ | 인텔 맥 | seq 6 x64 행(2-3) | R4 · master | ☐ |
-| N4 · K④ | 컴퓨터 맡기기 절 | 실 크롬 실기(§G ⚠) = r7-1~6(§K-9) · 맥 = r7-4(master · 박사님 기기 앞) | master | ☐ |
+| N4 · K④ | 컴퓨터 맡기기 절 | 실 크롬 실기(§G ⚠) = r7-0~7(§K-9) · 맥 = r7-4(master · 박사님 기기 앞) | master | ☐ |
 | N5 | 윈도우 줄별 근거 | 1.1.11 윈 실기 표 칸 대조 | master | ☐ |
 | K⑤ | 카톡 3줄 순서 | 라이브 공지 | 공지 배포 뒤 | ☐ |
 
@@ -171,7 +171,7 @@
 | test-hygiene · adv-fixes | 있음 | abc137c0 · HANDOFF-cysr-1111-adv-fixes |
 | cu-1111 · cu-1111-win-fix | 있음 | ae41322c codex R3 · 6d8d4468 윈 r3 통과 |
 | cu-1111-precedent — 코드·디렉티브 +≤400B | 있음 | 19655dd6 · 커밋 제목 +395B |
-| cu-1111-precedent — **실 크롬 실기(맥·윈 · 크롬 꺼진 채/켜진 채)** | ⚠**기록 없음** · 새 설계 = r7-1~6(§K-9 · master#c110b17a) · 옛 탭 복원·경고 칸은 도구가 크롬을 닫지 않아 없어졌다 · 옛 r2 목록(master#1be35b1b)·r4·r5·r6 = 이력 | SS:1419 「§15 실기 = 절단 전 묶음으로 이월」 · TODO:235 ⑥ 미체크 · 윈 실기 ⓐ~ⓔ 에 크롬 칸 없음(검색어 chrome-enable · 크롬 재시작 · §15) |
+| cu-1111-precedent — **실 크롬 실기(맥·윈 · 크롬 꺼진 채/켜진 채)** | ⚠**기록 없음** · 새 설계 = r7-0~7(§K-9 · master#c110b17a) · 옛 탭 복원·경고 칸은 도구가 크롬을 닫지 않아 없어졌다 · 옛 r2 목록(master#1be35b1b)·r4·r5·r6 = 이력 | SS:1419 「§15 실기 = 절단 전 묶음으로 이월」 · TODO:235 ⑥ 미체크 · 윈 실기 ⓐ~ⓔ 에 크롬 칸 없음(검색어 chrome-enable · 크롬 재시작 · §15) |
 | hook-slim 677 | **해당 없음(제외)** | 통합표 |
 | 윈 복구기 675 | 있음 | 9cb4268d · R4 ACCEPT · 윈 실기 ⓐ 기준선 4·refusal 0 |
 | master-send 배선 | 있음 · TODO:87 칸은 미체크 | SS:1166 격리 하네스 3/3·1/1 · 후속 판정기 SS:1178 |
@@ -245,7 +245,7 @@
 
 ## K. 태그 전 게이트 판정(TICKET=cysr-1111-relprep · 2026-10-31 · worker-relprep · 아래 표 = 0fde41c6 수치 · ⚠태그 머리 아님)
 
-⛔「태그 = 0fde41c6 고정」(master#8d598191)은 윈 r4 1번 실패로 무효(master#c26704d3). 계획(master#c110b17a) = a5e1ab03 독립 검증 → master 지시로 rel/1.1.11 ← fix/1111-win-chrome-job 병합 → 최종 머리에서 §K-9 재실행 · r7 실기 → 태그. 아래 표는 그 재실행의 대조 기준이다.
+⛔「태그 = 0fde41c6 고정」(master#8d598191)은 윈 r4 1번 실패로 무효(master#c26704d3). 계획(master#415438c7) = rel/1.1.11 ← 57bce92e · 90a372d2 병합 끝(a431e8a3 · c79011b9) → 최종 머리에서 §K-9 재실행 · r7 실기 → 태그. 아래 표는 그 재실행의 대조 기준이다.
 
 | 항목 | 결과 | 근거 |
 |---|---|---|
@@ -285,7 +285,7 @@
 | N1 | **닫힘** — `src/update/win_task.rs` blob 이 v1.1.8·v1.1.9·v1.1.10 동일(b13d35233a · 플래그 6) · 기기 실측 0 · 「1.1.8 이상」(master#bcc9056f ②)은 윈·맥 통일 문장에 흡수 | — |
 | N2 · K② | **닫힘** — 자동 문장 제거(§K-7) | — |
 | N3 · K③ | 불가 | seq 6 본문 자산 행 3(2-3) · 맥 x64 빌드 |
-| N4 · K④ | 불가 | a5e1ab03 병합 뒤 r7-1~6(§K-9) |
+| N4 · K④ | 불가 | r7-0~7(§K-9) |
 | N5 | 불가 | 윈 r3·r4 회신 표 칸 대조 |
 | K⑤ | 불가 | 라이브 공지 배포 뒤 |
 
@@ -383,9 +383,18 @@ r4 키트 aac1b477 ↔ 0fde41c6 차이 = 10파일(문서 9 · `ui/src/publicdocs
 
 맨 `cargo test --bin cys`(병렬 · 기본 스택) 넘침 집계 = 060cb75b 0/2 · 0fde41c6 2/2 · 4MB 736/0 · 원인 미상 · 발행 형식 밖(§J · master#7a17878b).
 
-### K-9. a5e1ab03(크롬 미리 켜기) 병합 뒤 다시 돌릴 항목(master#c110b17a · 옛 b3f51379 C안 · r5 계획을 대체)
+### K-9. 57bce92e(크롬 미리 켜기) · 90a372d2 병합 뒤 다시 돌릴 항목(master#415438c7 · 옛 b3f51379 C안 · r5 계획을 대체)
 
-⛔병합 = 독립 검증 뒤 master 지시로만. **병합 대상 2가지(master#266c929d ①)**: ① fix/1111-win-chrome-job a5e1ab03 ② docs/1111-seminar 90a372d2(0fde41c6 기준 · `cysjavis-pack/skills/grill-me/SKILL.md` 1줄 · 한글 그대로 쓰기 · 776 산출). 병합 시험 = 72f3c383 기준 각각 충돌 0(①트리 88b8b51c · ②트리 7ff99e03 · 두 가지의 파일 겹침 0 · 커밋 안 함). 함께 들어가는 rel 로컬 커밋 72f3c383 = 맥 부서 닫기 카드 문장(`javis_dept_request.py:656` · 「14일 보관」→「휴지통에 보관 · 저절로 지워지지 않음」 · 근거 `ui/src/resetconfirm.ts:12-13` · `cys-dept:3490` · 닫기 = `destroy --purge --purge-state` · 시험 고정 문자열 0 · test_dept_request 112/0 · lane-parity --strict rc 0). ①의 변경 = rel 머리 대비 `aac1b477..a5e1ab03` 9파일(코드 4 = `src/pack.rs` · 팩 도구 · 시험 2 + SKILL · 문서 · +724 −1987). ★이번에는 **Rust 변경 있음 · 맥도 바뀜**(옛 C안의 「Rust 0 · 맥 불변」 전제가 없어졌다). 크롬 가지 HANDOFF 수치(맥 · 격리 HOME · 윈 실기 0 · ⚠독립 검증 중 · 이 좌석이 재지 않았다): lib 1153/0 · cys 736/0 · cysd pack 필터 12/0(**전체 미실행**) · 크롬 시드 9/0 · 팩 103/0 · test_dept_tick_stdin 8/0 · 뮤턴트 98 KILLED · lane-parity rc 0 · secret-scan 깨끗. 병합 시험 = 충돌 0(`git merge-tree` · e6ca043d 기준 트리 fa81665f · 커밋 안 함). 로컬 문서 커밋(0fde41c6 위)도 함께 머리에 들어가므로 §K 의 「태그 뒤 push」 대신 최종 머리에 같이 올라간다.
+**병합 대상(master#415438c7 · 끝)**:
+
+| 병합 커밋 | 대상 | 근거 |
+|---|---|---|
+| a431e8a3 | fix/1111-win-chrome-job 57bce92e | 777 독립 재확인 PASS(b9ad43fc) + 마지막 작은 고침 · CI windows-build 41263079971 · windows-health 41263079972 · ci-branch 41263079920(1차 macos-rust-pack d7_prime_seat_cache 타이밍 1건 적 → 실패 잡 재실행 녹) |
+| c79011b9 | docs/1111-seminar 90a372d2 | `cysjavis-pack/skills/grill-me/SKILL.md` 1줄(한글 그대로 쓰기) |
+
+함께 들어간 rel 로컬 커밋 = 72f3c383(맥 부서 닫기 카드 `javis_dept_request.py:656` · 근거 `ui/src/resetconfirm.ts:12-13` · `cys-dept:3490` · 닫기 = `destroy --purge --purge-state`). 노트 충돌 1건 = 확정 37줄 + 「마스터 좌석에서만 크롬을 다루고, 일반 작업 좌석에는 켜지 않습니다」 1문장 · 759 문구 3종 미채택.
+
+범위 재측정: `0fde41c6..c79011b9` 22파일 +1204 −2022 · 코드·표 10파일 = `src/pack.rs` · `src/lib.rs` · `src/bin/cys.rs` · `src/released_directive_hashes.rs` · `javis_computer_control.py` · `javis_dept_request.py` · 시험 3 · `RELEASED_MASTER_DIRECTIVE.sha256`. `src/bin/cysd` 0건. ★**Rust 변경 있음 · 맥도 바뀜 · MASTER_DIRECTIVE 문구 변경 + RELEASED 해시 표 재생성.** 로컬 문서 커밋(0fde41c6 위)도 함께 머리에 들어가므로 §K 의 「태그 뒤 push」 대신 최종 머리에 같이 올라간다.
 
 | 재실행 | 항목 | 까닭 |
 |---|---|---|
@@ -400,28 +409,30 @@ r4 키트 aac1b477 ↔ 0fde41c6 차이 = 10파일(문서 9 · `ui/src/publicdocs
 | ☐ 다시 | r7 키트 ↔ 최종 머리 파일 차이 1줄(§K-8 r4 문단 대체) | r7 결과를 태그 판정에 쓰는 근거 |
 | ☐ 조건 | 노트 자리 표시(r7-2) · 노트 §G 칸 · 카톡 ④ | r7 결과 의존 |
 | ☐ 조건 | §K-10 사이트 세미나 묶음 = 4-2 에 포함 | 발행 뒤 사이트 갱신 |
-| ☐ 옮겨 적기 | **r7 결과 표에 휴지통 줄을 옮겨 적는다**: 윈 r4 15번 = 통과(비우기 꺼짐 · 되살리기 단추 없음 · 윈 master 22:0x 보고) | CI `trash::` 빈 판정의 대체 근거 · 휴지통 코드 변경 0(`060cb75b..a5e1ab03` 파일·diff 줄 0 · 재실측) 이라 r4 결과 승계(master#5f91545d ④) · 최종 키트가 a5e1ab03 과 다르면 그 차이로 다시 확인 |
-| ☑ 닫힘 | §K-1 `--state-migration` 판독을 a5e1ab03 까지 연장 | **none**(아래 연장 판독) · 병합 뒤 크롬 가지에 새 커밋이 더해지면 그 차이만 다시 |
+| ☐ 옮겨 적기 | **r7 결과 표에 휴지통 줄을 옮겨 적는다**: 윈 r4 15번 = 통과(비우기 꺼짐 · 되살리기 단추 없음 · 윈 master 22:0x 보고) | CI `trash::` 빈 판정의 대체 근거 · 휴지통 코드 변경 0(`060cb75b..57bce92e` 파일·diff 줄 0 · 재실측 · 72f3c383 은 카드 문장 1줄뿐) 이라 r4 결과 승계(master#5f91545d ④) · 최종 키트가 이 머리와 다르면 그 차이로 다시 확인 |
+| ☑ 닫힘 | §K-1 `--state-migration` 판독을 57bce92e 까지 연장 | **none**(아래 연장 판독) · 병합 뒤 크롬 가지에 새 커밋이 더해지면 그 차이만 다시 |
 | 그대로 | 1-0 판번 · §6 칸(none 은 위 연장 판독이 뒤집지 않는 한) · 0-8 팩 하한 · §K-7 | 변경이 닿지 않음 |
 
 **r7 실기(master 키트 · 항목 정본 = `~/cys-terminal-src-wt/1111-winchrome/HANDOFF-1111-winchrome.md` 「r7 실기 항목」 · 결과 칸 = 실기 회신으로 채운다):**
 
 | # | 항목(요약) | 닫는 것 | 결과 |
 |---|---|---|---|
-| r7-1 | 업데이트(`--no-install-hook` 경로) → 좌석 시작 → 키 true · `.cys-chrome-preset` · 연결 파일(맥)/레지스트리(윈) · `mcp__claude-in-chrome__*` 노출 · ledger 에 `seat_restart_scheduled`·`chrome_quit` 없음 | 노트 크롬 문장 · §G · N4 | ☐ |
+| r7-0 | 윈 노트북: r7 앞에 떠 있는 옛 `seat-restart-wait` 프로세스 유무(있으면 옛 코드로 rotate 할 수 있다) | 시험 전제 | ☐ |
+| r7-1 | 업데이트(`--no-install-hook` 경로) → 좌석 시작 → 키 true · `.cys-chrome-preset` · 연결 파일(맥)/레지스트리(윈) · **크롬 도구 `mcp__claude-in-chrome__*` = 본부 master 좌석만 · 워커·CSO·리뷰어·부서 좌석(부서 master 포함) 0** · ledger 에 `seat_restart_scheduled`·`chrome_quit` 없음 | 노트 크롬 문장 · 「마스터 좌석에서만」 · §G · N4 | ☐ |
 | r7-2 | 크롬 꺼진 채/켜진 채 각각: 업데이트 뒤 연결 · 안 되면 크롬을 다음에 켠 뒤 붙는지 · 시각 | 노트 자리 표시(「껐다 켤 일이 없습니다」) | ☐ |
-| r7-3 | `/chrome` 으로 끈 false → 업데이트 → false 유지 · `chrome-disable` 로 키 없어진 경우 → 그대로 | 노트 「그대로 꺼져 있습니다」 | ☐ |
-| r7-4 | 맥 1회: r7-1 과 같음 · 처음 연결 파일이 생길 때 「다시 연결」 탭이 뜨는지 | N4 맥 쪽(맥 실기 기록 0 · 무인 교회 맥에서 박사님 로그인 크롬을 재시작하지 않는다 · master#5f91545d ⑤) | ☐ |
+| r7-3 | `/chrome` 으로 끈 false → 업데이트 → false 유지 · `chrome-disable` 로 키 없어진 경우 → 그대로 · 「크롬은 빼 줘」(장부 없음 · 키 true) → 키 꺼짐 · 다음 시작부터 도구 0 · adopt 가 다시 안 가져감 | 노트 「그대로 꺼져 있습니다」 · 「크롬은 빼 줘」 | ☐ |
+| r7-4 | 맥 1회: r7-1 과 같음 · 처음 연결 파일이 생길 때 「다시 연결」 탭이 뜨는지 · 조직 복원 첫 시작의 탭 개수(master 만 켜므로 1개여야 한다) | N4 맥 쪽(맥 실기 기록 0 · 무인 교회 맥에서 박사님 로그인 크롬을 재시작하지 않는다 · master#5f91545d ⑤) | ☐ |
 | r7-5 | 윈 새 설치: 첫 시작 로그인 뒤 다음 시작에서 연결(첫 시작은 OAuth 전이라 연동 미시작) | 새 설치 사용자 문장 | ☐ |
-| r7-6 | 윈 크롬 꺼짐 + 첫 연결 파일 + 확장 설치됨: 다시 연결 탭이 띄운 크롬의 Job 소속(`in-caller-job`) · ↻ 뒤 생존 | 기록 · 1.1.12 rotate 관문(HANDOFF BACKLOG) · 발행 차단 여부 = master | ☐ |
+| r7-6 | 윈 크롬 꺼짐 + 첫 연결 파일 + 확장 설치됨: 다시 연결 탭 개수 · 탭이 크롬을 띄우면 그 크롬의 Job 소속(`in-caller-job`) · ↻ 뒤 생존 | 기록 · 1.1.12 rotate 관문(HANDOFF BACKLOG) · 발행 차단 여부 = master | ☐ |
+| r7-7 | 좌석 재기동 경로: 워커를 node-recover·`cys restore`·rotate 복원으로 다시 띄운 뒤에도 크롬 도구 0(윈 = 기존 pane 재기동은 `--settings` 만 닿는다 · `~/.cys/seat-settings/<역할>.json` 의 env 확인) | 「일반 작업 좌석에는 켜지 않습니다」 | ☐ |
 
-**발행 뒤 첫 확인(master#9312bc1c ② · r7-7 대신):**
+**발행 뒤 첫 확인(master#9312bc1c ②):**
 
 | 시점 | 항목 | 실패 시 | 결과 |
 |---|---|---|---|
 | ⛔발행 뒤 · 4-1 핀 1.1.11 라이브 확인 직후 | 태그 직후 윈 노트북에서 **공개 한 줄 설치 1회** = 발행 후 첫 확인: 설치 전 `.cys-chrome-preset` 없음 · `claudeInChromeDefaultEnabled` 키 없음 확인 → 한 줄 설치 → cysr 1.1.11 · 키 true · 표지 · 레지스트리 · 좌석에 크롬 도구 | 즉시 핫픽스 | ☐ |
 
-- **r7-7 을 못 넣는 근거**: 공개 한 줄 설치는 판 지정이 없다. 라이브 설치기 0.3.43 `bootstrap.ps1:42-45`(인자 = `-DetectOnly`·`-DryRun` 뿐) · `:143` `$CysVersion = '1.1.10'` · `:154` 파일 이름 고정, 맥 `bootstrap.sh:150` `CYS_FORK_VERSION="1.1.10"`. 판을 바꾸는 환경변수 0(라이브 두 파일 전수) · 받은 파일은 스크립트의 sha256 과 대조한다. 줄 번호는 라이브 기준이다(ai-jarvis 현재 작업트리 사본은 0.3.42 · origin/site/hub 사본이 0.3.43).
+- **한 줄 설치를 r7 에 못 넣는 근거**(9312bc1c 의 가정 「r7-7 = 한 줄 설치」는 쓰지 않았다 · 위 r7-7 = 크롬 가지 HANDOFF 의 좌석 재기동): 공개 한 줄 설치는 판 지정이 없다. 라이브 설치기 0.3.43 `bootstrap.ps1:42-45`(인자 = `-DetectOnly`·`-DryRun` 뿐) · `:143` `$CysVersion = '1.1.10'` · `:154` 파일 이름 고정, 맥 `bootstrap.sh:150` `CYS_FORK_VERSION="1.1.10"`. 판을 바꾸는 환경변수 0(라이브 두 파일 전수) · 받은 파일은 스크립트의 sha256 과 대조한다. 줄 번호는 라이브 기준이다(ai-jarvis 현재 작업트리 사본은 0.3.42 · origin/site/hub 사본이 0.3.43).
 - **시점 주의**: 설치기 핀은 발행 뒤 4-1 에서 오른다. 태그 직후에 그대로 돌리면 공개 한 줄은 1.1.10 을 깐다. 그래서 4-1 라이브 확인 뒤에 돌린다.
 - **기기 주의**: r7 판을 깐 노트북은 표지가 이미 있어 시드 경로를 안 지난다(`seed_chrome_default_at` = AlreadyDone). 표지·키가 없는 상태에서 돌려야 이 확인이 뜻이 있다.
 
@@ -453,12 +464,13 @@ find "$H" -name six.py
 - 실패 시: ① 없음 = 실림 실패 · 태그 전이면 빌드 경로 수리 ② new≥1 또는 after rc≠0 = 봉인 깨짐 · master 판정. 알려진 잔여(aa1c7cb6): `--no-user` · `--target`/`--prefix` · `uv pip install --system` 은 여전히 번들에 쓴다.
 - 결과 칸: ① arm64 ☐ · x64 ☐ · ② ☐
 
-**§K-1 연장 판독(060cb75b..a5e1ab03 · 크롬 가지 전체) = none.**
+**§K-1 연장 판독(060cb75b..57bce92e · 크롬 가지 전체) = none.**
 
-- 기존 상태의 개명·삭제·타입 변경 0. 새로 쓰는 것 = `<cfg>/.claude.json` 의 `claudeInChromeDefaultEnabled` 키 1칸(Claude Code 공식 토글 · 키 없을 때만 · 다른 칸 보존 · Claude 와 같은 잠금) · 표지 `<cfg>/.cys-chrome-preset`. `~/.cys/computer-control/chrome-enable.json` 은 그 도구가 1.1.11 신규이고 옛 빚 키(`OLD_CHROME_STATE_KEYS`)는 읽어도 행동 0 · 만나면 지운다. Rust 쪽 RPC·CLI 추가는 저장 형식 변경 0(state.rs·handlers.rs·cys.rs·job_exit.rs diff 판독 · 앞 연장과 같음).
-- **1.1.10 으로 내림**: `git grep` v1.1.10 `src`·`cysjavis-pack` = 키·표지 0건 → cys 쪽은 읽지 않아 무해. ⚠단 키는 Claude Code 가 읽으므로 내려도 크롬 연결은 켜진 채 남는다(되돌리는 코드 0 · `/chrome` 으로 끌 수 있다). 저장 형식 문제는 아니고 동작 잔재다.
+- 기존 상태의 개명·삭제·타입 변경 0. 새로 쓰는 것 = `<cfg>/.claude.json` 의 `claudeInChromeDefaultEnabled` 키 1칸(Claude Code 공식 토글 · 키 없을 때만 · 다른 칸 보존 · Claude 와 같은 잠금 · 심볼릭 링크면 거절) · 표지 `<cfg>/.cys-chrome-preset`. `~/.cys/computer-control/` 의 `chrome-enable.json` · `decisions.json`(「크롬은 빼 줘」 = `take:chrome` deny 항목)은 그 도구가 1.1.11 신규다. 옛 빚 키(`OLD_CHROME_STATE_KEYS`)는 읽어도 행동 0 · 만나면 지운다.
+- 좌석 쪽 = 저장 상태 아님: `CLAUDE_CODE_ENABLE_CFC=false` 는 좌석 env 와 `~/.cys/seat-settings/<역할>.json` 의 `env` 칸으로만 간다(v1.1.10 도 있는 파일에 칸 추가 · 본부 master 좌석은 칸 없음). RELEASED 해시 표 = 판 내장 상수.
+- **1.1.10 으로 내림**: `git grep` v1.1.10 `src`·`cysjavis-pack` = 키·표지·`CLAUDE_CODE_ENABLE_CFC` 0건 → cys 쪽은 읽지 않아 무해. ⚠단 키는 Claude Code 가 읽는다: 내리면 env 를 얹는 코드가 없어져 **키가 true 인 채 모든 좌석에 크롬 도구가 뜰 수 있다**(되돌리는 코드 0 · `/chrome` 으로 끌 수 있다 · 좌석 재기동 뒤 seat-settings 칸이 어떻게 되는지는 미측정). 저장 형식 문제는 아니고 동작 잔재다.
 - **다시 올림**: 표지가 있으면 파일을 읽지 않는다 → 내린 동안 사용자가 끈 값·지운 키가 그대로 남는다. 표지 내용(판번)은 읽지 않고 존재만 본다.
-- 팩 1.1.11 + 옛 바이너리: 팩의 `spawn-outside-job` 호출 0(a5e1ab03 실측)이라 Job 이탈 의존이 없어졌다.
+- 팩 1.1.11 + 옛 바이너리: 팩의 `spawn-outside-job` 호출 0 이라 Job 이탈 의존이 없어졌다. 단 좌석 env 는 바이너리 몫이라 옛 바이너리면 좌석 차단도 없다(팩 하한 1.1.11 이 막는 조합).
 - 초기화: `factory_reset` 목록에 `claude`(키·표지가 든 폴더) · `computer-control` 있음.
 - ⚠근거 = 코드 판독. 이 키가 든 상태로 내림·올림을 왕복 실측한 적은 없다(§6 의 VM 왕복 1회는 이 가지 이전).
 

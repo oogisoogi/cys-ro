@@ -13531,10 +13531,17 @@ mod seat_latch_negation_tests {
         assert_eq!(gate_followup_from_row(&json!({"gate_pending": {"gate": "unknown-modal"}})), None);
         assert_eq!(gate_followup_from_row(&json!({"gate_pending": {"gate": "unknown-modal", "followup": "  "}})), None);
         assert_eq!(
-            gate_followup_from_row(&json!({"gate_pending": {"gate": "gate_pending_stale", "followup": "[RESTORE] x"}})).as_deref(),
-            Some("[RESTORE] x"),
+            gate_followup_from_row(&json!({"gate_pending": {"gate": "gate_pending_stale", "followup": cys::RESTORE_DIRECTIVE_NODE}})).as_deref(),
+            Some(cys::RESTORE_DIRECTIVE_NODE),
             "만료(stale) 표식도 지시를 공급한다(좌석이 복원 좌석이라는 사실은 시간이 지나도 변하지 않는다)"
         );
+        // ★(TICKET=cysr-ghsa-check) 저장된 표식이 고정 문안이 아니면 좌석에 넘기지 않고 종류 축도 믿지 않는다(topology 에 남은 옛 위조).
+        for bad in ["touch /tmp/owned".to_string(), format!("{} 위조", cys::RECOVER_DIRECTIVE),
+                    format!("{}\ntouch /tmp/owned", cys::GATE_MARK_DIRECTIVE_HELD)] {
+            let row = json!({"gate_pending": {"gate": "g", "followup": bad}});
+            assert_eq!(gate_followup_from_row(&row), None, "{bad:?}");
+            assert!(!gate_directive_held_from_row(&row), "{bad:?}");
+        }
         // ② 채택 페이로드 — 전문 뒤 한 제출. 지시가 없으면 전문 그대로(byte-identical).
         let full = "# WORKER 절대지침\n…\n[안전핵 재선언]\n\n";
         assert_eq!(adoption_payload(full, None), full);
@@ -13603,7 +13610,7 @@ mod seat_latch_negation_tests {
         assert!(!gate_followup_malformed(&json!({"gate_pending": {"gate": "g"}})));
         assert!(!gate_followup_malformed(&json!({"gate_pending": {"gate": "g", "followup": null}})));
         assert!(!gate_followup_malformed(&json!({"gate_pending": {"gate": "g", "followup": "  "}})));
-        assert!(!gate_followup_malformed(&json!({"gate_pending": {"gate": "g", "followup": "[RESTORE] x"}})));
+        assert!(!gate_followup_malformed(&json!({"gate_pending": {"gate": "g", "followup": cys::RESTORE_DIRECTIVE_NODE}})));
         for bad in [json!(3), json!(true), json!(["[RESTORE] x"]), json!({"t": "[RESTORE] x"})] {
             assert!(
                 gate_followup_malformed(&json!({"gate_pending": {"gate": "g", "followup": bad}})),
@@ -13722,7 +13729,7 @@ mod seat_latch_negation_tests {
         let pending = json!({"surface_id": 1, "exited": false, "agent_alive": true,
                              "awakened_at": 0.0,
                              "gate_pending": {"gate": "folder-trust", "since": 1.0,
-                                              "followup": "[RESTORE] x"}});
+                                              "followup": cys::RESTORE_DIRECTIVE_NODE}});
         assert_eq!(
             seat_liveness(&pending).0,
             SeatLiveness::GatePending,
@@ -13753,7 +13760,7 @@ mod seat_latch_negation_tests {
     fn adopt_read_is_bounded_by_an_absolute_deadline_not_by_retry_count() {
         use std::time::{Duration, Instant};
         let sid = 7u64;
-        let row = json!([{"surface_id": 7, "gate_pending": {"gate": "g", "followup": "[RESTORE] x"}}]);
+        let row = json!([{"surface_id": 7, "gate_pending": {"gate": "g", "followup": cys::RESTORE_DIRECTIVE_NODE}}]);
         let rows_of = |v: &Value| v.as_array().cloned().unwrap_or_default();
 
         // ⓐ 전 시도 실패 — 정확히 tries 회 시도하고, 간격만큼만 잔다(예산은 충분).
@@ -16707,7 +16714,16 @@ fn mark_gate_pending(sid: u64, gate: &str, tail: &str, followup: Option<&str>, d
     if let Some(f) = gate_mark_wire(followup, directive_held) {
         params["followup"] = json!(f);
     }
-    if let Err(e) = request("surface.gate_pending", params) {
+    let mut sent = request("surface.gate_pending", params.clone());
+    // ★(TICKET=cysr-ghsa-check) 데몬이 고정 문안과 다르다고 하면(판 차이) 지시 없이 표식만 남긴다 — 표식이 없으면 좌석이 보류로 안 보인다.
+    if sent.as_ref().err().is_some_and(|e| e.contains(cys::ERR_GATE_FOLLOWUP_DENIED)) {
+        eprintln!("[launch-agent] 복원 연속 지시를 데몬이 받지 않았다 — 지시 없이 표식만 남긴다(좌석 보존 · 채택은 전문만)");
+        if let Some(o) = params.as_object_mut() {
+            o.remove("followup");
+        }
+        sent = request("surface.gate_pending", params);
+    }
+    if let Err(e) = sent {
         eprintln!(
             "[launch-agent] 관문 보류 상태 기록 실패(구 데몬?): {e} — 좌석은 그대로 보존된다"
         );
@@ -18563,7 +18579,7 @@ fn gate_mark_id(row: Option<&Value>) -> Option<String> {
 ///
 /// 【실패 방향】 마커를 못 읽으면 `false` = **전문 디렉티브**(오늘의 거동). 즉 스큐·손상은
 /// "토큰 2배" 로 끝나고 "지침 없는 좌석" 으로는 절대 가지 않는다.
-const GATE_MARK_DIRECTIVE_HELD: &str = "@cys:directive-held";
+const GATE_MARK_DIRECTIVE_HELD: &str = cys::GATE_MARK_DIRECTIVE_HELD;
 
 /// 표식에 실을 `followup` **와이어 값**(순수) — 지시 문자열에 종류 축 마커를 접두한다.
 ///
@@ -18585,7 +18601,7 @@ fn gate_mark_wire(followup: Option<&str>, directive_held: bool) -> Option<String
 fn gate_directive_held_from_row(row: &Value) -> bool {
     row["gate_pending"]["followup"]
         .as_str()
-        .map(|f| f.starts_with(GATE_MARK_DIRECTIVE_HELD))
+        .map(|f| f.starts_with(GATE_MARK_DIRECTIVE_HELD) && cys::gate_followup_allowed(f))
         .unwrap_or(false)
 }
 
@@ -18599,7 +18615,15 @@ fn gate_followup_from_row(row: &Value) -> Option<String> {
         .strip_prefix(GATE_MARK_DIRECTIVE_HELD)
         .map(|r| r.trim_start_matches('\n'))
         .unwrap_or(raw);
-    (!body.trim().is_empty()).then(|| body.to_string())
+    if body.trim().is_empty() {
+        return None;
+    }
+    // ★(TICKET=cysr-ghsa-check) 저장된 표식도 닫힌 어휘로 다시 본다 — topology 에 남은 옛 값·손댄 파일이 좌석에 제출되지 않게.
+    if !cys::gate_followup_allowed(raw) {
+        eprintln!("[boot] 표식의 복원 연속 지시가 고정 문안이 아니다 — 버린다(전문만 주입)");
+        return None;
+    }
+    Some(body.to_string())
 }
 
 /// ★(0.14.31 · 리뷰 R3 · codex major) 그 행의 표식이 **읽을 수 없는 형태**인가 — 참이면 "지시가 없다" 고
@@ -25290,12 +25314,9 @@ fn run_node_recover(surface: Option<String>, role: Option<String>) -> i32 {
 /// 인라인 중복이면 한쪽만 고쳐지는 드리프트가 난다(복원 계약은 경로와 무관하게 하나다).
 fn restore_directive(role: &str) -> &'static str {
     if role == "master" {
-        "[RESTORE] 조직 복원 절차다(master). _round/RECOVERY.md → SESSION_STATE.md → 자기 TODO → memory → git 순으로 읽고, 노드 재기동·surface 재매핑·directive 각성 후 상태를 복원하라. \
-         ★이어서 진행할지는 **임무 게이트가 정한다 — 네 판단이 아니다**: `python3 \"${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_mission.py\" status` 를 실행하고 그 **종료코드만** 근거로 삼아라(화면·기억·추정 금지). \
-         0=오너 임무 있음 → 그 임무를 이어서 진행한다. 1(임무 없음)·2(판독 불가=없음 취급) → 한 줄로 상태만 보고하고 **대기**하라. \
-         ⛔임무가 없을 때 스스로 티켓을 만들어 CSO·워커를 가동하는 것은 자율 착수이며 금지다(2026-09-21 실기: 임무 0 함대가 자기발의 티켓으로 세 자리를 60%+ 로 태웠다)."
+        cys::RESTORE_DIRECTIVE_MASTER
     } else {
-        "[RESTORE] 조직 복원 절차다. _round/SESSION_STATE.md와 자기 TODO를 읽고 상태를 복원하라. ★작업 재개는 하지 말고 master의 지시를 기다려라(임무 판정의 주체는 master의 임무 게이트다)."
+        cys::RESTORE_DIRECTIVE_NODE
     }
 }
 
@@ -25351,7 +25372,7 @@ fn restore_inject_claim(sid: u64) -> bool {
 /// node-recover 의 복원 연속 지시 — Ready 면 즉시 주입하고, 보류면 표식 `followup` 으로 이월된다(리뷰 R2 ·
 /// `restore_directive` 와 같은 이유로 함수 하나에 둔다: 인라인 사본은 한쪽만 고쳐지는 드리프트).
 fn recover_directive() -> &'static str {
-    "[RECOVER] 너는 방금 재기동되었다. _round/SESSION_STATE.md와 자기 TODO 파일을 읽어 작업 기억을 복원한 뒤 master에게 복귀를 1줄 push로 보고하라. 작업 재개는 master 지시를 따른다."
+    cys::RECOVER_DIRECTIVE
 }
 
 /// T2-6 조직 복원: 토폴로지 스냅샷 기준으로 죽은 역할 일괄 재기동 (작업 재개는 master 판단)
@@ -49467,17 +49488,17 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         assert_eq!(gate_mark_wire(None, true), None, "마커만 실으면 재표식이 기존 지시를 덮는다");
         assert_eq!(gate_mark_wire(None, false), None);
         assert_eq!(gate_mark_wire(Some("   "), true), None);
-        assert_eq!(gate_mark_wire(Some("[RESTORE] x"), false).as_deref(), Some("[RESTORE] x"),
+        assert_eq!(gate_mark_wire(Some(cys::RESTORE_DIRECTIVE_NODE), false).as_deref(), Some(cys::RESTORE_DIRECTIVE_NODE),
                    "축이 거짓이면 종전 값과 byte-identical 이어야 한다");
-        let wire = gate_mark_wire(Some("[RESTORE] x"), true).expect("봉투");
-        assert!(wire.starts_with(GATE_MARK_DIRECTIVE_HELD) && wire.ends_with("[RESTORE] x"));
+        let wire = gate_mark_wire(Some(cys::RESTORE_DIRECTIVE_NODE), true).expect("봉투");
+        assert!(wire.starts_with(GATE_MARK_DIRECTIVE_HELD) && wire.ends_with(cys::RESTORE_DIRECTIVE_NODE));
         // ② 읽기 — 마커는 벗겨져 나오고 축은 따로 읽힌다. 종전 값(마커 없음)은 불변.
         let row_held = json!({"gate_pending": {"gate": "disclaimer", "followup": wire}});
-        assert_eq!(gate_followup_from_row(&row_held).as_deref(), Some("[RESTORE] x"),
+        assert_eq!(gate_followup_from_row(&row_held).as_deref(), Some(cys::RESTORE_DIRECTIVE_NODE),
                    "봉투 마커가 주입 문안으로 새어 나갔다");
         assert!(gate_directive_held_from_row(&row_held));
-        let row_plain = json!({"gate_pending": {"gate": "disclaimer", "followup": "[RECOVER] y"}});
-        assert_eq!(gate_followup_from_row(&row_plain).as_deref(), Some("[RECOVER] y"));
+        let row_plain = json!({"gate_pending": {"gate": "disclaimer", "followup": cys::RECOVER_DIRECTIVE}});
+        assert_eq!(gate_followup_from_row(&row_plain).as_deref(), Some(cys::RECOVER_DIRECTIVE));
         assert!(!gate_directive_held_from_row(&row_plain), "구 데몬·구 표식이 축을 참으로 읽혔다");
         // 결측·손상은 전부 거짓 = 전문 디렉티브(실패 방향: 토큰 2배이지 지침 0 이 아니다).
         for row in [json!({}), json!({"gate_pending": null}),
@@ -49489,7 +49510,7 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         let held = adoption_payload(&boot_directive_for("worker-1", true).expect("resume"),
                                     gate_followup_from_row(&row_held).as_deref());
         assert!(held.starts_with("[RESUME]"), "{held}");
-        assert!(held.ends_with("[RESTORE] x"), "{held}");
+        assert!(held.ends_with(cys::RESTORE_DIRECTIVE_NODE), "{held}");
         assert!(!held.contains(GATE_MARK_DIRECTIVE_HELD), "봉투 마커가 페이로드에 실렸다");
         // ④ 배선 — 채택이 `compose_directive` 를 **직접** 부르지 않고 부트와 같은 순수 함수를 쓴다.
         let src = include_str!("cys.rs");

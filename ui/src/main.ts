@@ -7,6 +7,7 @@ import { isPermissionGranted, requestPermission, sendNotification } from "@tauri
 import { deptRegistryUnreadableNote, readDeptRegistry } from "./deptreg";
 import { imeStep, initialImeState, isHangulText, type ImeEvent } from "./ime";
 import { shellQuote } from "./shellquote";
+import { sanitizePaste } from "./pastesafe";
 import { autoArrange, arrangeWithoutRoles, defaultLeftShare, LEFT_CHROME_FALLBACK_PX, migrateOldDefaultShare, type ArrangeChange, type LeftShareMode } from "./formation";
 import { baseName, insertionText, isStreaming, splitPath, classifyPathCheck, pathCheckToast } from "./ftdrop";
 import { dropPointToCss, dropPlatformFromUserAgent, dropDebugDetail, isDropDebugEnabled } from "./droppoint";
@@ -4424,7 +4425,7 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
       e.preventDefault();
       e.stopPropagation();
       if (text) {
-        term.paste(text);
+        term.paste(sanitizePaste(text));
         return;
       }
       // ★이미지 붙여넣기(F): 텍스트가 없고 클립보드에 이미지 파일이 있으면 임시 파일로 저장한 뒤

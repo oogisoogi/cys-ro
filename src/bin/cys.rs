@@ -33485,6 +33485,181 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// ★1.1.11 claim-epoch(792 독립 검증 V2) — commit 쪽도 잠금 안: 남이 잠금을 쥔 동안 세대 조회 0회 · 파일 그대로 · 풀린 뒤에 적는다
+    /// (`restore_claim_generation_is_read_inside_the_lock` 은 획득 쪽만 본다).
+    #[test]
+    fn restore_claim_rebind_waits_for_lock_and_reads_gen_inside() {
+        let dir = std::env::temp_dir().join(format!("cys-claimo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("c");
+        std::fs::write(&f, "T 100\n").unwrap();
+        let held = restore_claims_lock(&dir).expect("전역 잠금");
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (f2, r2) = (f.clone(), reads.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let t = std::thread::spawn(move || {
+            let probe = move || {
+                r2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Some("D7".to_string())
+            };
+            restore_claim_rebind(&f2, "T", &probe);
+            tx.send(()).unwrap();
+        });
+        assert!(rx.recv_timeout(std::time::Duration::from_millis(300)).is_err(), "잠금을 기다리지 않았다");
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 0, "잠금 밖에서 세대를 읽었다");
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "T 100\n");
+        drop(held);
+        rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        t.join().unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "T 100 D7\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★1.1.11 claim-epoch(792 독립 검증 V10) — rebind 쓰기 실패 주입(임시 경로를 폴더로 막음): claim 은 세대 칸 없는 채 그대로 = 이어받기 거부(안전 쪽).
+    #[test]
+    fn restore_claim_rebind_write_failure_keeps_unstamped_claim() {
+        let dir = std::env::temp_dir().join(format!("cys-claimt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("c");
+        std::fs::write(&f, "T 100\n").unwrap();
+        std::fs::create_dir(f.with_extension("gen-T")).unwrap();
+        restore_claim_rebind(&f, "T", &|| Some("D1".into()));
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "T 100\n");
+        assert!(!restore_claim_file_acquire(&f, "B", 101, &|| Some("D9".into())), "세대 칸 없는 claim 을 빼앗았다");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 기동 기록기 — (역할 · 갈래 · resume · 세션 · 기동 순간 claim 칸 수). `launched` = 첫 기동 뒤 가짜 데몬의 세대를 바꾸는 스위치.
+    #[cfg(unix)]
+    struct RestoreWiringRec {
+        dir: std::path::PathBuf,
+        launched: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        calls: Vec<(String, &'static str, bool, Option<String>, usize)>,
+    }
+    #[cfg(unix)]
+    impl RestoreWiringRec {
+        fn cols(&self, sess: Option<&str>) -> usize {
+            sess.and_then(|s| std::fs::read_to_string(self.dir.join("restore-claims").join(restore_claim_file_name(s))).ok())
+                .map(|c| c.split_whitespace().count()).unwrap_or(0)
+        }
+    }
+    #[cfg(unix)]
+    impl RestoreLauncher for RestoreWiringRec {
+        fn in_seat(&mut self, sid: u64, role: &str, _a: &str, resume: bool, sess: Option<&str>,
+                   _c: Option<&str>, _cfg: Option<&str>) -> Result<Result<BootVerdict, String>, String> {
+            let n = self.cols(sess);
+            self.calls.push((role.into(), "in-seat", resume, sess.map(String::from), n));
+            self.launched.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(match sid {
+                50 => Ok(BootVerdict::Ready),
+                51 => Ok(BootVerdict::GatePending { gate: "trust".into(), tail: String::new() }),
+                _ => Ok(BootVerdict::LaunchFailed { evidence: "stub".into() }),
+            })
+        }
+        fn fresh(&mut self, role: &str, _a: &str, _c: Option<String>, resume: bool, sess: Option<String>,
+                 _cfg: Option<String>, _t: Option<String>) -> i32 {
+            let n = self.cols(sess.as_deref());
+            self.calls.push((role.into(), "fresh", resume, sess, n));
+            self.launched.store(true, std::sync::atomic::Ordering::SeqCst);
+            if role == "w-gate" { cys::EXIT_GATE_PENDING } else { 0 }
+        }
+    }
+
+    /// 실제 `run_restore_with` + 가짜 데몬. `live_after_claim_of` 의 claim 파일이 서기 전 topology = `before` · 선 뒤 = `after`.
+    /// identify 세대는 첫 기동 뒤 77-1.5 → 77-2.5 로 바뀐다. 반환 = 기동 기록 · 끝난 뒤 claim 파일 내용.
+    #[cfg(unix)]
+    fn restore_wiring_run(saved: &[(&str, &str)], before: Value, after: Value, live_after_claim_of: Option<&str>)
+        -> (Vec<(String, &'static str, bool, Option<String>, usize)>, std::collections::HashMap<String, String>) {
+        use std::io::{BufRead, BufReader, Write};
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::path::PathBuf::from(format!("/tmp/rrcw-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() % 1_000_000_000));
+        std::fs::create_dir_all(dir.join("restore-claims")).unwrap();
+        let socket = dir.join("s.sock");
+        let cwd = dir.to_string_lossy().into_owned();
+        let e: Vec<Value> = saved.iter().map(|(r, s)| json!({"role": r, "agent": "claude", "session_id": s,
+                                                             "cwd": cwd, "claude_config_dir": "/cfg"})).collect();
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("가짜 소켓 bind");
+        let launched = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let l2 = launched.clone();
+        let watched = live_after_claim_of.map(|s| dir.join("restore-claims").join(restore_claim_file_name(s)));
+        let server = std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut line = String::new();
+                if BufReader::new(&mut stream).read_line(&mut line).is_err() {
+                    continue;
+                }
+                let req: Value = serde_json::from_str(line.trim()).unwrap_or(Value::Null);
+                let result = match req["method"].as_str().unwrap_or("") {
+                    "__stop" => break,
+                    "system.topology" => {
+                        let seen = watched.as_ref().is_some_and(|f| f.exists());
+                        json!({"saved": e, "tombstones": [], "live": if seen { after.clone() } else { before.clone() }})
+                    }
+                    "system.identify" => {
+                        let t = if l2.load(std::sync::atomic::Ordering::SeqCst) { 2.5 } else { 1.5 };
+                        json!({"daemon_pid": 77, "started_at": t})
+                    }
+                    "system.resolve_role" => json!({"surface_id": 99}),
+                    _ => json!({}),
+                };
+                let _ = writeln!(stream, "{}", json!({"id": req["id"], "ok": true, "result": result}));
+            }
+        });
+        let saved_env: Vec<_> = ["CYS_SOCKET", "CYS_NO_AUTOSTART"].into_iter().map(|k| (k, std::env::var_os(k))).collect();
+        std::env::set_var("CYS_SOCKET", &socket);
+        std::env::set_var("CYS_NO_AUTOSTART", "1");
+        let mut rec = RestoreWiringRec { dir: dir.clone(), launched, calls: vec![] };
+        let _ = run_restore_with(None, false, false, &mut rec);
+        let _ = std::os::unix::net::UnixStream::connect(&socket)
+            .and_then(|mut s| writeln!(s, "{}", json!({"id": 0, "method": "__stop"})));
+        let _ = server.join();
+        for (k, v) in saved_env {
+            match v { Some(v) => std::env::set_var(k, v), None => std::env::remove_var(k) }
+        }
+        let mut disk = std::collections::HashMap::new();
+        for (_, s) in saved {
+            if let Ok(c) = std::fs::read_to_string(dir.join("restore-claims").join(restore_claim_file_name(s))) {
+                disk.insert(s.to_string(), c);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        (rec.calls, disk)
+    }
+
+    /// ★1.1.11 claim-epoch(792 독립 검증 V7 · R1 BLOCK 의 배선 핀) — 회차 도중 앉은 좌석: 복원 루프는 claim 을 쥔 **뒤의** `live` 로 판정한다.
+    /// 좌석은 claim 파일이 선 뒤에야 보이게 해, claim 앞 스냅샷을 쓰는 루프(뮤턴트)는 못 본다. 함수 시험(`restore_claim_live_view_…`)은 루프를 안 지킨다.
+    #[cfg(unix)]
+    #[test]
+    fn restore_run_loop_requeries_live_after_claim() {
+        let after = json!([{"role": "other", "seat": "occupied", "surface_id": 40, "session_id": "s-x"}]);
+        let (calls, disk) = restore_wiring_run(&[("w-x", "s-x")], json!([]), after, Some("s-x"));
+        assert!(!calls[0].2, "회차 도중 앉은 좌석의 대화를 이었다: {calls:?}");
+        assert!(!disk.contains_key("s-x"), "점유인데 claim 을 안 되돌렸다");
+    }
+
+    /// ★1.1.11 claim-epoch(792 독립 검증 V8 · R2 BLOCK 의 배선 핀) — 기동 네 갈래(in-seat 성공 · in-seat 관문 · fresh · fresh 관문) 전부:
+    /// 기동 순간 claim 은 세대 칸 없음(2칸) · 기동 뒤 값으로 commit(3칸 · 바뀐 세대).
+    #[cfg(unix)]
+    #[test]
+    fn restore_run_loop_all_launch_arms_stamp_after_launch() {
+        let live = json!([{"role": "w-ready", "seat": "empty", "surface_id": 50}, {"role": "w-seatgate", "seat": "empty", "surface_id": 51}]);
+        let saved = [("w-ready", "s-1"), ("w-seatgate", "s-2"), ("w-fresh", "s-3"), ("w-gate", "s-4")];
+        let (calls, disk) = restore_wiring_run(&saved, live.clone(), live, None);
+        assert_eq!(calls.len(), 4, "{calls:?}");
+        for c in &calls {
+            assert_eq!(c.4, 2, "기동 순간에 세대가 이미 적혔다: {c:?}");
+            assert!(c.2, "{c:?}");
+        }
+        for (_, s) in &saved {
+            let c = disk.get(*s).unwrap_or_else(|| panic!("{s}: claim 없음"));
+            assert!(c.trim_end().ends_with(" 77-2.5"), "{s}: 기동 뒤 세대가 아니다: {c:?}");
+        }
+    }
+
     #[test]
     fn d_mac_4_restore_title_carries_saved_title() {
         // ★D-mac-4: 부활 = 옛 제목을 요청 → 데몬이 번호만 바꾸고 특성을 보존(initial_title 낡은 번호 갈래).

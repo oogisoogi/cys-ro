@@ -33465,6 +33465,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// ★1.1.11 claim-epoch — 10-09 그 사고의 회귀: 같은 회차 두 좌석이 같은 대화인데 회차 도중 데몬이 바뀌었다. 파일 claim 은 앞 좌석을
+    /// 「내려간 데몬」으로 보고 넘겨 주므로 `busy` 만이 막는다(뮤턴트 M9 생존으로 드러난 구멍).
+    #[test]
+    fn restore_claim_same_round_daemon_swap_still_refuses_second_seat() {
+        let dir = std::env::temp_dir().join(format!("cys-claimn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = 9_900_000u64;
+        let none = std::collections::HashSet::new;
+        let busy = std::cell::RefCell::new(std::collections::HashSet::new());
+        let d0 = || Some("D0".to_string());
+        let (_, dup, a) = restore_claim_for_launch(Some("s-a".into()), &busy, &none, Some(&dir), now, &d0);
+        assert!(!dup);
+        a.commit();
+        let d1 = || Some("D1".to_string());
+        let (s, dup, _) = restore_claim_for_launch(Some("s-a".into()), &busy, &none, Some(&dir), now + 1, &d1);
+        assert_eq!((s, dup), (None, true), "같은 회차 두 번째 좌석이 같은 대화를 이었다");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn d_mac_4_restore_title_carries_saved_title() {
         // ★D-mac-4: 부활 = 옛 제목을 요청 → 데몬이 번호만 바꾸고 특성을 보존(initial_title 낡은 번호 갈래).

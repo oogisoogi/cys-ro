@@ -2802,7 +2802,36 @@ pub fn claude_seat_settings(role: &str, dept_socket: bool, policy_allow: &[Strin
     if !policy_allow.is_empty() {
         v.insert("permissions".into(), serde_json::json!({ "allow": policy_allow }));
     }
+    if !chrome_allowed_for(role, dept_socket) {
+        v.insert("env".into(), serde_json::json!({ ENV_CLAUDE_CHROME: "false" }));
+    }
     serde_json::Value::Object(v)
+}
+
+/// Claude Code 크롬 연동 스위치 — 시작 판정 `--chrome` → 이 env → 설정 키(`claudeInChromeDefaultEnabled`) 순이라 키보다 앞선다(2.1.316 판독 `wvt`).
+pub const ENV_CLAUDE_CHROME: &str = "CLAUDE_CODE_ENABLE_CFC";
+
+/// 이 좌석이 크롬 도구를 가져도 되는가(순수) — 본부 master 좌석만(박사님 결정 문안 11-01 「마스터 좌석에는 크롬 도구가 늘 켜져 있게 됩니다 … 일반 작업
+/// 좌석에는 켜지 않습니다」). 좌석은 `--dangerously-skip-permissions` 로 떠서 크롬 연결이 사이트 허락 없이 돈다 — 좁히는 쪽이 기본이다.
+/// 설정 폴더가 공유라 키만으로는 나눌 수 없어 나머지 좌석을 env 로 끈다. 격리 pty 실측(2.1.316 · 키 true · skip-permissions): 대조 = 연결 파일 0.12초 ·
+/// env false = 0 · `--settings` 의 env false = 0.
+/// 두 길로 싣는다 — [`claude_seat_settings`](전 OS · 기존 pane 재기동까지 닿는다 · 사용자 cmd 에 `--settings` 가 있으면 빠진다) + [`inject_claude_chrome_off_env`]
+/// (좌석 env · Windows 는 surface.create 맵만 닿는다). 어느 하나만으로는 한 경로씩 빈다.
+pub fn chrome_allowed_for(role: &str, dept_socket: bool) -> bool {
+    !dept_socket && role == "master"
+}
+
+/// master 밖 Claude 좌석 env 에 `CLAUDE_CODE_ENABLE_CFC=false` 를 넣는다. ⚠다른 기본값 주입과 달리 어댑터 `env` 의 이 키도 덮는다. 단 사용자가 어댑터 cmd 에
+/// `--chrome` 을 직접 넣으면 인자가 env 보다 먼저 판정돼 그 좌석은 켜진다 — 사용자 의도로 존중한다(막지 않는다 · 기본 `agents.json` 에는 없다).
+/// 재정렬 금지 · append 또는 제자리 교체.
+pub fn inject_claude_chrome_off_env(env_pairs: &mut Vec<(String, String)>, role: &str, dept_socket: bool, agent: &str, bin: &str) {
+    if !is_claude_seat(agent, bin) || chrome_allowed_for(role, dept_socket) {
+        return;
+    }
+    match env_pairs.iter_mut().find(|(k, _)| k == ENV_CLAUDE_CHROME) {
+        Some((_, v)) => *v = "false".to_string(),
+        None => env_pairs.push((ENV_CLAUDE_CHROME.to_string(), "false".to_string())),
+    }
 }
 
 /// 이 좌석이 RC 를 켜도 되는가(순수) — 부서 데몬 좌석 = 아니오 · 그 밖은 역할명이 허용 목록에 있을 때만.
@@ -3073,6 +3102,30 @@ mod claude_effort_tests {
             "끝에 append · 기존 순서 불변"
         );
         assert!(inj(&[], "claude-fable", "claude").iter().any(|(k, v)| k == ENV_CLAUDE_EFFORT_LEVEL && v == "high"));
+    }
+
+    /// 크롬 도구는 본부 master 좌석만 — 나머지 Claude 좌석은 사용자 값이 있어도 false · Claude 가 아닌 좌석은 무접촉.
+    #[test]
+    fn chrome_off_env_only_master_keeps_chrome() {
+        assert_eq!(ENV_CLAUDE_CHROME, "CLAUDE_CODE_ENABLE_CFC");
+        let cfc = |pairs: &[(&str, &str)], role: &str, dept: bool, agent: &str, bin: &str| {
+            let mut v: Vec<(String, String)> = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            inject_claude_chrome_off_env(&mut v, role, dept, agent, bin);
+            v
+        };
+        let off = vec![(ENV_CLAUDE_CHROME.to_string(), "false".to_string())];
+        assert!(cfc(&[], "master", false, "claude", "claude").is_empty(), "master 는 키를 따른다");
+        for role in ["worker", "worker-7", "cso", "reviewer-claude-1", "reviewer-gemini", "terminal", ""] {
+            assert_eq!(cfc(&[], role, false, "claude", "claude"), off, "{role}");
+            assert_eq!(cfc(&[], role, false, "claude-fable", "claude"), off, "{role} 파생 어댑터");
+        }
+        assert_eq!(cfc(&[], "master", true, "claude", "claude"), off, "부서 master 도 끈다");
+        assert_eq!(cfc(&[(ENV_CLAUDE_CHROME, "true")], "worker", false, "claude", "claude"), off, "워커에 켜는 길은 없다");
+        let kept = cfc(&[("A", "1"), (ENV_CLAUDE_CHROME, "1"), ("Z", "2")], "worker", false, "claude", "claude");
+        assert_eq!(kept.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["A", ENV_CLAUDE_CHROME, "Z"], "재정렬 금지");
+        assert!(cfc(&[], "worker", false, "codex", "codex").is_empty(), "Claude 좌석만");
+        assert!(chrome_allowed_for("master", false));
+        assert!(!chrome_allowed_for("master-2", false), "이름이 비슷해도 master 가 아니다");
     }
 
     #[test]
@@ -5466,13 +5519,14 @@ mod tests {
     #[test]
     fn d25_claude_seat_settings_table() {
         let allowed = vec!["master".to_string(), "worker-5".to_string()];
-        let off = serde_json::json!({"remoteControlAtStartup": false, "disableRemoteControl": true});
-        for role in ["worker", "worker-2", "cso", "reviewer-codex"] {
-            assert_eq!(claude_seat_settings(role, false, &[], &allowed), off, "{role}: 허용 목록 밖 = 두 키");
+        let chrome_off = serde_json::json!({ENV_CLAUDE_CHROME: "false"});
+        let off = serde_json::json!({"remoteControlAtStartup": false, "disableRemoteControl": true, "env": chrome_off});
+        for role in ["worker", "worker-2", "cso", "reviewer-codex", "reviewer-claude-1", "terminal", ""] {
+            assert_eq!(claude_seat_settings(role, false, &[], &allowed), off, "{role}: 허용 목록 밖 = 두 키 + 크롬 끔");
         }
         assert_eq!(claude_seat_settings("master", false, &[], &allowed), serde_json::json!({}), "master = 키 0");
-        assert_eq!(claude_seat_settings("worker-5", false, &[], &allowed), serde_json::json!({}), "relay(허용 목록) = 키 0");
-        assert_eq!(claude_seat_settings("master", true, &[], &allowed), off, "부서 데몬 좌석 = RC 0");
+        assert_eq!(claude_seat_settings("worker-5", false, &[], &allowed), serde_json::json!({"env": chrome_off}), "relay(RC 허용) = 크롬만 끔");
+        assert_eq!(claude_seat_settings("master", true, &[], &allowed), off, "부서 데몬 좌석 = RC 0 · 크롬 끔");
         let allow = vec!["Bash(ls:*)".to_string()];
         assert_eq!(
             claude_seat_settings("master", false, &allow, &allowed),

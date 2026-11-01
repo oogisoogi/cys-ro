@@ -293,6 +293,32 @@ codex 가 못 한 것(정직): 읽기 전용 샌드박스라 단위 시험을 �
 시험 52 → 68(크롬 판정 4 개정·신설 + `TestChromeEnable` 15 + `_act` 표준입력 1) · 뮤턴트 34 → 51(M35~M51 · 51/51 KILLED). 외부 명령은 전부 `_act` 하나를 지나고 시험은 `CYS_CC_FAKE_ACT` 기록 파일로 대체한다(실제 크롬·좌석·`claude` 무접촉). 단언: 키 하나만 바뀜·권한 유지 · 할 일 없으면 외부 명령 0 · 재시작은 분리·지연 · 헤드리스 claude 는 상태 폴더에서 · 「새 연결 파일 ∧ 크롬 켜져 있었음」일 때만 크롬 재시작 · 알림 → 종료 → 켬 순서 · 강제 종료 문자열 0(`-9`·`KILL`·`pkill`·`killall`·`taskkill`·`Stop-Process`·`Force`) · 유휴 관문 · 안 닫히면 그대로 · 기다림 상한 · 기록 실패면 키 불변 · 되돌리기 원래 값·남이 고친 파일 보존.
 
 
+
+### 13-7. 개정 — 설치·업데이트 때 미리 켜 두기 (TICKET=cysr-1111-chrome-preset · 2026-11-01 · §13-1 ⓑ 만 남기고 §13-2 보조 실행 · §13-3 · §13-4 집행을 폐지)
+박사님 원문(11-01 08:2x): 「크롬은 권고대로 한다.」 · 배경 「사용자를 불편하게 하면 안 된다. 1.1.11에 넣어야 한다.」 · 10-26 「크롬 조작을 위해 /chrome 실행, 크롬 껐다켜기 같은 작업을 주인에게 시키지 말고 마스터가 직접 하는 방법을 찾아라.」
+
+**왜 바꾸는가**: 세션 도중 켜기는 사고를 계속 낳았다 — 윈 r4·r5(좌석 재시작이 Job 안 크롬을 죽임 · 닫은 크롬의 탭 미복원) · r6-2(보조 `claude -p` 의 SessionStart 훅이 좌석 등록을 덮어 재시작이 `busy` 로 끝남). 설치·업데이트는 원래 좌석을 다시 띄우므로(rotate ④ init-pack → ⑤ 조직 복원) 그 틈에 키를 쓰면 추가 재시작·보조 실행·크롬 조작이 모두 필요 없다.
+
+**설치 때**(`src/pack.rs` `seed_chrome_default_at` · `setup_isolated_config_dir` 의 `install_hooks` 조기 return 위 = GUI 업데이트 `init-pack --no-install-hook` 도 지남):
+- `<cfg>/.claude.json` 의 `claudeInChromeDefaultEnabled` 가 **없을 때만** `true`. 값이 있으면(사용자 `/chrome` 의 false 포함) 파일 무변경.
+- §13-1 의 같은 잠금(`<.claude.json>.lock` 폴더)을 쥔 채 다시 읽고 → 키 → 원자 교체(권한 유지 · 새 파일 0600) → 되읽기. 남의 잠금은 지우지 않는다(5초 뒤 포기 · 다음 설치가 다시 본다). 깨진 JSON·객체 아님 = 무변경.
+- 1회 표지 `<cfg>/.cys-chrome-preset` — `chrome-disable` 이 키를 지워 「없음」으로 돌아가도 다음 업데이트가 다시 켜지 않는다. 확정 결과(Seeded·Kept) 뒤에만 남긴다.
+- `CYS_FIRST_RUN_SEED` 와 무관: 그 스위치는 로그인·신뢰 관문을 지우는 시드를 지키고 기본 꺼짐이다. 이 키는 관문을 지우지 않는 사용자 토글이라 묶으면 켜지는 사용자가 없다.
+- base 팩만. 부서 계정 폴더에는 쓰지 않는다. `.claude.json` 이 심볼릭 링크면 거절한다(Claude Code 는 링크 너머로 쓴다 · 원자 교체는 링크를 끊는다 · 표지 없음 · `seat::seed_trust` 와 같은 동작).
+- 파일이 없으면(새 설치) 키 한 칸짜리 파일을 만든다. 격리 실측(2.1.316 · pty · 가짜 자격 · 네트워크 차단): 키만 있는 파일로 대화형 시작 → 연결 파일 생김 · 키 유지 · 온보딩 전 단계에서도 같음. `profile_gate` 는 온보딩 키가 없으면 부재와 같은 관문으로 본다.
+
+**런타임**: `chrome-enable` = 키 확인·(켜져 있지 않으면 쓰기) + 보고만 · `chrome-disable` = 키 되돌리기만 · 「크롬은 빼 줘」(`revoke chrome`)는 장부에 없어도 거부 기록을 먼저 남기고, 키가 켜져 있으면 끈다(설치가 켠 크롬은 장부에 없다 · 이미 꺼져 있어도 기록이 있어야 adopt 가 다시 가져가지 않는다). 보조 claude(`_ensure_nmh`) · 좌석 재시작 예약(`seat-restart-wait`) · 크롬 닫기/다시 켜기(`restart_chrome`) · 유휴 관문 · 창 세기를 코드째 지웠다(맥·윈 공통 · 인자 `--wait`·`--seat-restart` 도 없앰). 옛 판의 빚(`pending_*` 등)은 읽어도 행동 0 · 만나면 지운다.
+
+**연결 파일을 끄기가 지우지 않는 이유**: Claude Code 가 만든 파일이고(바이너리 `LH` — 다음에 켜고 시작할 때 같은 내용이면 건드리지 않고 다르면 다시 쓴다) 사용자당 1개라 같은 맥의 다른 설정 폴더 세션도 쓴다. 키가 꺼진 좌석은 크롬 연동을 시작하지 않으므로 파일이 남아도 도구가 켜지지 않는다.
+
+**크롬 재시작**: 「크롬 재시작 필요」의 근거는 공식 문서 한 문장(§13-3)뿐이고 실측은 없다(윈 E1' 판정 불가 — 확장 미로그인). 이번 판은 도구가 크롬을 닫거나 켜지 않는다 — 바로 안 붙으면 사용자가 크롬을 다음에 켤 때 붙는다(손 0 · 지연만). 윈 E2 실측(메뉴 종료 + Job 밖 `--restore-last-session` = 탭 4/4 복원)은 1.1.12 후보로 기록만.
+
+**다시 연결 탭(§13-2 ⚠)**: 2.1.316 판독 — 조건 = 이번 시작에 매니페스트를 새로 만듦 ∧ 어떤 브라우저 폴더에도 매니페스트가 없었음 ∧ `skipReconnectAutoOpen` 거짓 ∧ 확장 설치됨. 끄는 공개 env·설정은 없다. 있는 것은 내부 `CLAUDE_CODE_BRIDGE_CHILD_MACHINE_SETTINGS`(브리지 자식용 · `!bypass` 조건이라 `--dangerously-skip-permissions` 좌석에는 듣지 않는다 · 시작 판정에도 끼어든다) 하나뿐이라 쓰지 않는다. 윈은 `chrome.exe` 를 직접 띄워(`App Paths`) 크롬이 꺼져 있었다면 좌석 Job 안 크롬이 된다 → 1.1.12 rotate 관문 BACKLOG.
+
+**크롬 도구는 master 좌석만(master#46fd9892 · 앞선 처분 A 를 정정)**: master·워커 좌석은 같은 `~/.cys/claude` 를 쓰므로 키만으로는 나눌 수 없다. 좌석은 `--dangerously-skip-permissions` 로 떠서 크롬 연결이 `skip_all_permission_checks` 로 돈다 — 사이트 허락 없이 로그인된 크롬을 다룬다. 공개 사용자는 그 전에 키가 없었으므로 전 좌석 공개는 새 위험이다(독립 검증 M1). 박사님께 올린 문안도 「마스터 좌석에는 … 일반 작업 좌석에는 켜지 않습니다」였다.
+집행 = `cys::chrome_allowed_for`(본부 `master` 만 · 부서 master 제외) 밖의 Claude 좌석에 `CLAUDE_CODE_ENABLE_CFC=false`. 시작 판정이 `--chrome` → env → 키 순이라 키가 true 여도 꺼진다. 격리 pty 실측(2.1.316 · 키 true · skip-permissions): 대조 = 연결 파일 0.12초 · env false = 0 · `--settings` 의 env false = 0 · 키 없음 = 0.
+두 길로 싣는다 — `claude_seat_settings` 의 `env`(전 OS · `boot_agent_on_surface` = launch-agent·node-recover·restore 공용 · Windows 기존 pane 재기동까지) + 좌석 env(`inject_claude_chrome_off_env` · 사용자 cmd 에 `--settings` 가 있어도 닿는다). 어댑터 `env` 의 이 키도 덮는다. 단 사용자가 어댑터 cmd 에 `--chrome` 을 직접 넣으면 인자가 env 보다 앞서 켜진다 — 사용자 의도로 존중한다(기본 `agents.json` 에는 없다). 팩 `chrome-enable` 도 본부 master 밖 좌석(부서 master 포함)에서 거절한다.
+
 ---
 
 ## 14. 선례 기반 이양 — 마스터가 먼저 정하고 보고 (TICKET=cu-1111-precedent 2단계 · 2026-10-26~27)

@@ -555,7 +555,7 @@ def verdict_chrome(plat, c):
     if unknown and not missing:
         return HAND, True, [k for k, v in parts if v is None], UNKNOWN_HEAD + " 크롬 연결 부분이 있습니다 — 한 번 같이 확인해 주세요."
     if not unknown and set(missing) <= set(CHROME_AUTO):
-        # ★cu-1111-precedent(박사님 10-26 21:0x): 기본 켜기·연결 파일·크롬 다시 켜기 = 마스터가 직접(chrome-enable) → 바로
+        # ★cu-1111-precedent · chrome-preset: 기본 켜기 = 마스터가 직접(chrome-enable) · 연결 파일 = 다음 좌석 시작이 만든다 → 바로
         return READY, False, missing, "확장은 준비돼 있고, 남은 연결은 제가 직접 켭니다."
     return HAND, unknown, missing, "크롬에 Claude 확장을 연결하는 단계가 남아 있습니다."
 
@@ -593,10 +593,10 @@ def _item(iid, title, tier, unknown, missing, reason, note=""):
             "missing": list(missing), "reason": reason, "note": note, "members": [[iid, title]]}
 
 
-CHROME_AUTO = ("default_on", "nmh")    # 마스터가 chrome-enable 로 직접 하는 것(사용자 손 0)
+CHROME_AUTO = ("default_on", "nmh")    # 사용자 손 0(기본 켜기 = chrome-enable · 연결 파일 = 다음 좌석 시작)
 MISSING_LABEL = {
     "cu": "화면 조작 도구 켜기(/mcp)", "ax": "손쉬운 사용 권한", "sc": "화면 기록 권한",
-    "ext": "Claude 확장 설치·켜기", "default_on": "크롬 기본 켜기(제가 합니다)", "nmh": "연결 파일·크롬 다시 켜기(제가 합니다)",
+    "ext": "Claude 확장 설치·켜기", "default_on": "크롬 기본 켜기(제가 합니다)", "nmh": "연결 파일(cysr 를 다시 시작할 때 저절로 생깁니다)",
 }
 MERGE_KINDS = ("script", "files")
 UNKNOWN_HEAD = "켜져 있는지 제가 확인하지 못한"
@@ -734,7 +734,7 @@ STEPS = {
         "크롬에서 Chrome 웹 스토어의 「Claude」 확장을 찾아 「Chrome에 추가」를 누르세요.",
         "확장에 마스터와 **같은 Claude 계정**으로 로그인하고, 주소창 오른쪽 퍼즐 조각에서 Claude 를 압정으로 고정하세요.",
     ],
-    # ★(chrome, default_on)·(chrome, nmh) 손 단계는 없앴다 — 마스터가 chrome-enable 로 직접 한다(cu-1111-precedent).
+    # ★(chrome, default_on)·(chrome, nmh) 손 단계는 없앴다(cu-1111-precedent · chrome-preset).
     ("browser-alt", "alt"): [
         "이 길은 강사와 함께 하세요. 크롬 웹 스토어에서 「Playwright Extension」을 추가합니다.",
         "연결할 때마다 크롬에 「연결하려고 합니다」 탭이 뜨면 맡길 탭만 「Allow & select」로 고르세요. 화면에 보이는 토큰을 어디에도 붙여 넣지 마세요.",
@@ -1047,9 +1047,30 @@ def cmd_recheck(a):
                 "say": "아직 덜 됐습니다 — %s%s" % (it["reason"], tail)})
 
 
+def _revoke_unledgered_chrome():
+    """★chrome-preset: 설치가 미리 켠 크롬은 장부에 없다 — 「크롬은 빼 줘」가 「맡고 있지 않습니다」로 끝나면 켜진 채 남고, 이미 꺼져 있어도
+    기록이 없으면 다음 adopt 가 다시 가져간다. 거부 기록이 먼저다(키를 못 꺼도 adopt 가 다시 가져오지 않는다).
+    말은 쓴 값이 아니라 다시 읽은 키를 따른다 — 옛 기록의 원래 값이 true 면 켜진 채다."""
+    d = load_decisions()
+    d["items"]["take:chrome"] = {"meaning": "deny", "condition": "", "at": _iso(), "by": "revoke"}
+    _write_json(_p(DECISIONS), d)
+    _ledger({"event": "revoke", "ids": ["chrome"], "preset": True})
+    said = "알겠습니다. 「크롬」은(는) 이제 맡지 않겠습니다."
+    if read_chrome_key()[1] is False:
+        return out({"ok": True, "say": said})
+    if _chrome_key_off() is None:
+        return fail("크롬은 앞으로 맡지 않겠습니다. 다만 크롬 기본 켜기를 끄지 못했습니다(설정이 잠겨 있거나 그 사이 바뀌어 손대지 않았습니다) — 잠시 뒤 다시 하겠습니다.",
+                    "write_failed", 1)
+    if read_chrome_key()[1] is True:
+        return out({"ok": True, "say": said + " 크롬 기본 켜기는 켜기 전 값대로 켜진 채입니다."})
+    return out({"ok": True, "say": said + " 크롬 기본 켜기를 껐습니다." + CHROME_OFF_SAY})
+
+
 def cmd_revoke(a):
     g = load_grants()
     mids = [m for m in member_ids(a.id) if m in g["items"]]   # ★codex 1R #2: 합친 ID 면 구성원 전부를 거둔다
+    if not mids and a.id == "chrome":
+        return _revoke_unledgered_chrome()
     if not mids and a.id not in g.get("folders", {}):
         return fail("그 항목은 맡고 있지 않습니다.", "not_found", 4)
     if mids:
@@ -1154,74 +1175,19 @@ def cmd_request_prompt(a):
                                     "「시스템 설정 열기」를 눌러 cysr 스위치를 켜 주세요." % name})
 
 
-# ───────────────────────── 크롬 켜기·끄기 = 마스터가 직접 (TICKET=cu-1111-precedent · 설계 §6-2) ─────────────────────────
-# 박사님 원문(10-26 21:0x) 「크롬 조작을 위해 /chrome 실행, 크롬 껐다켜기 같은 작업을 주인에게 시키지 말고 마스터가 직접 하는
-#   방법을 찾아라.」 → 사용자 손 칸이던 ①「/chrome 기본 켜기」 ②연결 파일(NMH) ③크롬 다시 켜기 ④좌석 재시작을 이 동작이 한다.
-# ① = 좌석 설정 폴더 .claude.json 의 claudeInChromeDefaultEnabled **한 키만**(공식 /chrome·/config 토글이 쓰는 바로 그 키 —
-#     Claude Code 2.1.310 시작 판정 --chrome → CLAUDE_CODE_ENABLE_CFC → 이 키). 다른 키는 읽은 그대로 되쓴다.
-# ② = 좌석 설정으로 `claude -p --chrome` 1회(Claude Code 가 연결 파일을 만든다 · 윈 실기 10-26 20:3x 실측 길).
-# ③ = 「연결 파일을 이번에 새로 만들었고 크롬이 그 전부터 켜져 있었다」일 때만. 키보드·마우스 유휴 ≥ 20초 관문 → 화면 알림 1줄 →
-#     정상 종료(맥 quit · 윈 CloseMainWindow — 강제 종료 0) → --restore-last-session 으로 다시 켬 → 창 수 전후 대조.
-# ④ = 이 좌석의 대화가 끝난 뒤(지연) `cys rotate --skip-depts`(앱 ↻ 재시작 단추와 같은 저장 검증 → 복원 · 대화 이어짐).
-# 외부 명령은 전부 _act 를 지난다 — 시험은 CYS_CC_FAKE_ACT(기록 파일)로 실제 크롬·좌석을 건드리지 않는다.
-IDLE_GATE_SEC = 20
-SEAT_RESTART_DELAY_SEC = 30
-CHROME_QUIT_WAIT_SEC = 20
+# ───────────────────────── 크롬 켜기·끄기 = 한 키만 (TICKET=cysr-1111-chrome-preset · 설계 cu-1111 §13-7) ─────────────────────────
+# 박사님 원문(11-01 08:2x) 「크롬은 권고대로 한다.」 — 크롬 연결은 설치·업데이트 때 미리 켜 둔다(src/pack.rs seed_chrome_default_at).
+#   그 뒤 시작하는 좌석의 Claude Code 가 연결 파일을 스스로 만든다 → 이 도구는 보조 claude·좌석 재시작·크롬 닫고 켜기를 하지 않는다.
+# 여기서 하는 일 = 좌석 설정 폴더 .claude.json 의 claudeInChromeDefaultEnabled **한 키만**(공식 /chrome·/config 토글이 쓰는 바로 그 키 —
+#   Claude Code 시작 판정 --chrome → CLAUDE_CODE_ENABLE_CFC → 이 키). 다른 키는 읽은 그대로 되쓴다.
 CHROME_STATE = "chrome-enable.json"
-CLAUDE_HEADLESS_TIMEOUT = 90
 CHROME_KEY = "claudeInChromeDefaultEnabled"
-
-
-def _act(kind, argv, timeout=SUBPROC_TIMEOUT, detach=False, cwd=None):
-    """크롬 켜기 동작의 외부 명령 1회. 시험 = CYS_CC_FAKE_ACT(경로)에 기록만 하고 결과는 FAKE_PROBES["act"][kind] 로 낸다."""
-    log = os.environ.get("CYS_CC_FAKE_ACT")
-    if log:
-        with open(log, "a", encoding="utf-8") as f:
-            f.write(json.dumps({"kind": kind, "argv": argv, "detach": detach, "cwd": cwd}, ensure_ascii=False) + "\n")
-        acts = _fake("act") or {}
-        seq = acts.get(kind)
-        if isinstance(seq, list):     # 같은 kind 를 여러 번 부르면 차례대로(마지막 값 유지)
-            with open(log, encoding="utf-8") as f:
-                n = sum(1 for x in f if json.loads(x).get("kind") == kind)
-            seq = seq[min(n, len(seq)) - 1] if seq else None
-        r = seq if isinstance(seq, dict) else {}
-        hook = r.get("touch")         # 더블: 이 동작이 만들 파일(예: 헤드리스 claude 가 만드는 연결 파일)
-        if hook:
-            for path, body in hook.items():
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(body)
-        return subprocess.CompletedProcess(argv, r.get("rc", 0), r.get("out", ""), "")
-    if detach:
-        try:
-            kw = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
-            if os.name == "nt":
-                # NEW_PROCESS_GROUP · NO_WINDOW — 숨은 새 콘솔이라 좌석 콘솔이 닫혀도 살고 자손(cys 호출)이 그 콘솔을 물려받는다
-                #   (콘솔 떼기는 자손마다 새 창이 뜬다 = U5-WIN-FLASH · H-WIN-16)
-                kw["creationflags"] = 0x00000200 | 0x08000000
-            else:
-                kw["start_new_session"] = True     # 좌석 pty 가 닫혀도 살아남는다(재시작이 그 pty 를 닫는다)
-            p = subprocess.Popen(argv, **kw)
-            return subprocess.CompletedProcess(argv, 0, str(p.pid), "")
-        except OSError:
-            return None
-    try:
-        r = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout, cwd=cwd, **NOWIN)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    r.stdout = _decode(r.stdout) if isinstance(r.stdout, bytes) else (r.stdout or "")
-    return r
-
-
-def _fake_seq(key):
-    """시험 주입 값 — 목록이면 부를 때마다 다음 값(마지막 값 유지)."""
-    v = _fake(key)
-    if isinstance(v, list):
-        k = "_seq_" + key
-        i = globals().get(k, 0)
-        globals()[k] = i + 1
-        return v[min(i, len(v) - 1)] if v else None
-    return v
+CHROME_NEXT_SAY = "다음에 cysr 를 다시 시작하거나 업데이트할 때 연결됩니다."
+CHROME_OFF_SAY = " 다음에 cysr 를 다시 시작하거나 업데이트할 때부터 적용됩니다."
+# 옛 판이 남긴 빚·기록 — 읽어도 행동 0 · 만나면 지운다(prior_key·key_restored 만 되돌리기에 쓴다)
+OLD_CHROME_STATE_KEYS = ("pending_seat_restart", "pending_chrome_restart", "pending_chrome_reopen", "chrome_reopen_tries",
+                         "chrome_reopen_at", "chrome_manual_at", "chrome_in_job", "seat_guided_daemon", "seat_restart_scheduled_at",
+                         "seat_restart_pid", "seat_restart_start", "nmh_created")
 
 
 def _claude_json():
@@ -1274,6 +1240,9 @@ def write_chrome_key(value):
     원자 교체 → 잠금 해제. 덧붙여 교체 직전 원본 바이트 재확인(잠금을 안 지키는 작성자 대비 · 최대 3회 · 끝내 다르면 무변경 실패).
     파일 권한 유지 · 쓴 뒤 다시 읽어 확인. 성공 = True."""
     path = _claude_json()
+    if os.path.islink(path):      # Claude Code 는 이 파일을 링크 너머로 쓴다 — 원자 교체는 링크를 끊어 설정을 갈라 놓는다
+        _ledger({"event": "chrome_key_symlink"})
+        return False
     lock = _config_lock(path)
     if lock is None:
         _ledger({"event": "chrome_key_lock_busy"})
@@ -1322,791 +1291,84 @@ def _cas_hook():
     return None
 
 
-NMH_REG_KEY = r"HKCU\Software\Google\Chrome\NativeMessagingHosts\%s" % NMH_NAME
-
-
-def _nmh_reg_value():
-    """윈 연결 등록의 기본값(가리키는 매니페스트 경로) — 없으면 None."""
-    r = _act("nmh_reg_query", ["reg", "query", NMH_REG_KEY, "/ve"])
-    if r is None or r.returncode != 0:
-        return None
-    m = re.search(r"REG_SZ\s+(.+)$", r.stdout or "", re.M)
-    return m.group(1).strip() if m else None
-
-
-def _nmh_manifest_path(plat):
-    if plat == "darwin":
-        return os.path.join(_chrome_userdata(plat), "NativeMessagingHosts", NMH_NAME + ".json")
-    return None   # 윈 = 레지스트리 키가 가리키는 파일(Claude Code 가 만든다)
-
-
-def _sha_file(path):
-    try:
-        with open(path, "rb") as f:
-            return hashlib.sha256(f.read()).hexdigest()
-    except OSError:
-        return None
-
-
-def chrome_running(plat):
-    if _has_fake("chrome_running"):
-        return _fake_seq("chrome_running")
-    if plat == "darwin":
-        r = _act("chrome_running", ["/usr/bin/pgrep", "-x", "Google Chrome"])
-        return None if r is None else r.returncode == 0
-    if plat == "win":
-        r = _act("chrome_running", ["tasklist", "/FI", "IMAGENAME eq chrome.exe", "/NH"])
-        return None if r is None else "chrome.exe" in (r.stdout or "").lower()
-    return None
-
-
-def idle_seconds(plat):
-    """사용자 입력 유휴 초 — 맥 HIDIdleTime · 윈 GetLastInputInfo. 못 재면 None(→ 관문 닫힘 = 기다림)."""
-    if _has_fake("idle"):
-        return _fake_seq("idle")
-    if plat == "darwin":
-        r = _act("idle", ["/usr/sbin/ioreg", "-c", "IOHIDSystem", "-d", "4"])
-        m = re.search(r'"HIDIdleTime"\s*=\s*(\d+)', (r.stdout if r else "") or "")
-        return int(m.group(1)) / 1e9 if m else None
-    if plat == "win":
-        try:
-            import ctypes
-
-            class LII(ctypes.Structure):
-                _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
-            li = LII()
-            li.cbSize = ctypes.sizeof(LII)
-            if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(li)):
-                return None
-            return ((ctypes.windll.kernel32.GetTickCount() - li.dwTime) & 0xFFFFFFFF) / 1000.0
-        except Exception:
-            return None
-    return None
-
-
-CHROME_COUNT_SCRIPT = ('tell application "Google Chrome"\nset t to 0\nrepeat with w in windows\n'
-                       'set t to t + (count tabs of w)\nend repeat\nreturn ((count windows) as text) & " " & (t as text)\nend tell')
-
-
-def chrome_windows(plat):
-    """(창 수, 탭 수) — 전후 대조용. 모르면 None. 맥 = 크롬 자동화 허락(0)이 있을 때만 osascript 로 센다(없으면 허락 창을
-    띄우지 않으려고 세지 않는다) · 윈 = 크롬 최상위 창 전수(프로세스당 창 하나로 세면 창 2개가 1개가 된다 = R5b) · 탭은 셀 길이 없음(None)."""
-    if _has_fake("windows"):
-        v = _fake_seq("windows")
-        return (v, None) if isinstance(v, int) else (tuple(v) if isinstance(v, list) else (None, None))
-    if plat == "darwin":
-        if probe_ae("com.google.Chrome") != 0:
-            return None, None
-        r = _act("windows", ["/usr/bin/osascript", "-e", CHROME_COUNT_SCRIPT])
-        m = re.match(r"\s*(\d+)\s+(\d+)\s*$", (r.stdout if r and r.returncode == 0 else "") or "")
-        return (int(m.group(1)), int(m.group(2))) if m else (None, None)
-    if plat == "win":
-        return _win_chrome_window_count(), None
-    return None, None
-
-
-def _is_chrome_window(cls, visible, owned, titled, tool, exe):
-    """크롬 최상위 창인가(순수). 같은 창 종류를 쓰는 말풍선·풍선 도움말은 소유자가 있거나 제목이 없다 · 다른 Chromium 앱은 실행 파일이 다르다."""
-    return cls == "Chrome_WidgetWin_1" and visible and not owned and titled and not tool and exe == "chrome.exe"
-
-
-def _win_chrome_window_count():
-    """화면의 크롬 최상위 창 수. 못 세면 None(지켜보는 쪽이 「모름」으로 처리한다)."""
-    try:
-        import ctypes
-        from ctypes import wintypes as wt
-        u = ctypes.WinDLL("user32", use_last_error=True)
-        k = ctypes.WinDLL("kernel32", use_last_error=True)
-        u.GetWindow.restype = wt.HWND
-        u.GetWindow.argtypes = [wt.HWND, wt.UINT]
-        u.GetWindowLongW.argtypes = [wt.HWND, ctypes.c_int]
-        u.GetClassNameW.argtypes = [wt.HWND, wt.LPWSTR, ctypes.c_int]
-        u.GetWindowTextLengthW.argtypes = [wt.HWND]
-        u.IsWindowVisible.argtypes = [wt.HWND]
-        u.GetWindowThreadProcessId.argtypes = [wt.HWND, ctypes.POINTER(wt.DWORD)]
-        k.OpenProcess.restype = wt.HANDLE
-        k.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
-        k.QueryFullProcessImageNameW.argtypes = [wt.HANDLE, wt.DWORD, wt.LPWSTR, ctypes.POINTER(wt.DWORD)]
-        k.CloseHandle.argtypes = [wt.HANDLE]
-        exes = {}
-
-        def exe_of(hwnd):
-            pid = wt.DWORD()
-            u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-            if pid.value not in exes:
-                name = ""
-                h = k.OpenProcess(0x1000, False, pid.value)     # PROCESS_QUERY_LIMITED_INFORMATION
-                if h:
-                    buf, n = ctypes.create_unicode_buffer(1024), wt.DWORD(1024)
-                    if k.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n)):
-                        name = buf.value.rsplit("\\", 1)[-1].lower()
-                    k.CloseHandle(h)
-                exes[pid.value] = name
-            return exes[pid.value]
-        count = [0]
-
-        def visit(hwnd, _lp):
-            buf = ctypes.create_unicode_buffer(64)
-            u.GetClassNameW(hwnd, buf, 64)
-            if _is_chrome_window(buf.value, bool(u.IsWindowVisible(hwnd)), bool(u.GetWindow(hwnd, 4)),      # GW_OWNER
-                                 u.GetWindowTextLengthW(hwnd) > 0, bool(u.GetWindowLongW(hwnd, -20) & 0x80),   # WS_EX_TOOLWINDOW
-                                 exe_of(hwnd)):
-                count[0] += 1
-            return True
-        if not u.EnumWindows(ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)(visit), 0):
-            return None
-        return count[0]
-    except Exception:
-        return None
-
-
-def _chrome_exe():
-    for v in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"):
-        if os.environ.get(v):
-            c = os.path.join(os.environ[v], "Google", "Chrome", "Application", "chrome.exe")
-            if os.path.isfile(c):
-                return c
-    return "chrome.exe"
-
-
-def quit_chrome(plat):
-    """정상 종료만(강제 종료 0). 맥 = 크롬 자동화 허락이 있으면 AppleScript quit, 없으면 이 사용자의 크롬 **본 프로세스 pid 하나**에
-    종료 신호(SIGTERM — 크롬이 정상 종료로 처리해 세션을 저장한다 · SIGKILL 아님 · 이름 일치 일괄 종료(pkill) 금지 = 워커 지침 §1-4).
-    윈 = 창마다 CloseMainWindow(닫기 단추와 같다)."""
-    if plat == "darwin":
-        if probe_ae("com.google.Chrome") == 0:
-            return _act("quit", ["/usr/bin/osascript", "-e", 'tell application "Google Chrome" to quit'])
-        r = _act("chrome_pid", ["/usr/bin/pgrep", "-u", str(os.getuid()), "-o", "-x", "Google Chrome"])
-        pid = (r.stdout or "").strip() if r and r.returncode == 0 else ""
-        if not pid.isdigit():
-            return None
-        return _act("quit", ["/bin/kill", "-TERM", pid])
-    return _act("quit", ["powershell", "-NoProfile", "-Command",
-                         "Get-Process chrome -ErrorAction SilentlyContinue | ForEach-Object { [void]$_.CloseMainWindow() }"])
-
-
-CHROME_IN_JOB = []     # 이번 실행에서 좌석(Job 안)에서 켠 크롬 — cmd_chrome_enable 이 상태 파일(chrome_in_job)로 옮긴다
-
-
-def _outside_job(act, kind, argv, env=None):
-    """윈: 이 스폰만 데몬 Job 밖에서(cys spawn-outside-job) — 좌석 재시작이 데몬을 내릴 때 Job 이 닫혀도 산다. 실패 = None.
-    좌석에서 직접 띄우면 Job 안이라 함께 죽는다(R5 A). 자식은 데몬이 낳으므로 필요한 환경변수는 넘겨 준다."""
-    cmd = [_cys_bin(), "spawn-outside-job", "--kind", kind]
-    for k, v in (env or {}).items():
-        cmd += ["--env", "%s=%s" % (k, v)]
-    r = _act(act, cmd + ["--"] + argv, timeout=15)
-    return r if r is not None and r.returncode == 0 else None
-
-
-def job_exit_ok():
-    """Job 밖 스폰이 되는가 — 옛 데몬(요청을 모른다)·거부면 False. 크롬을 닫기 **전에** 본다: 다시 켠 크롬이 곧 죽을 길이면 닫지 않는다."""
-    r = _act("job_exit_probe", [_cys_bin(), "spawn-outside-job", "--probe"], timeout=15)
-    return r is not None and r.returncode == 0
-
-
-def open_chrome(plat):
-    if plat == "darwin":
-        return _act("open", ["/usr/bin/open", "-a", "Google Chrome", "--args", "--restore-last-session"])
-    argv = [_chrome_exe(), "--restore-last-session"]
-    r = _outside_job("open", "chrome", argv)
-    if r is None:                       # 재시작 때 함께 닫힐 수 있어도 닫아 둔 크롬은 켜 둔다 — 대신 자동 재시작을 하지 않는다
-        _ledger({"event": "chrome_open_in_job"})
-        r = _act("open", argv, detach=True)
-        m = _waiter_mark(r)
-        CHROME_IN_JOB.append({"pid": m["seat_restart_pid"], "start": m["seat_restart_start"]})
-    return r
-
-
-def notify(title, body):
-    """화면 알림 1줄(cysr Feed · 정보성 — 승인 요청 아님 · 채널 미러 금지 tier d). 실패해도 진행을 막지 않는다."""
-    return _act("notify", ["cys", "feed", "push", "--kind", "computer-control", "--tier", "d",
-                           "--title", title, "--body", body])
-
-
-def _sleep(sec):
-    if os.environ.get("CYS_CC_FAKE_ACT"):
-        return
-    time.sleep(sec)
-
-
-def _cys_bin():
-    return os.environ.get("CYS_BIN") or "cys"
-
-
-REOPEN_SAY = {   # ★M4: 크롬을 닫은 뒤 다시 켜기가 끝나지 않았을 때(재시작 빚 유지 · 다음 호출이 켜기만 갚는다)
-    "failed": "크롬을 닫은 뒤 다시 켜지 못했습니다 — 크롬을 직접 켜 주시면 바로 연결됩니다(다음에 제가 다시 켜 보겠습니다).",
-    "unknown": "크롬을 다시 켰는지 확인하지 못했습니다 — 창이 안 보이면 직접 켜 주세요(다음에 다시 확인하겠습니다).",
-    "deferred": "지금 키보드·마우스를 쓰고 계셔서 크롬 다시 켜기는 잠시 미뤘습니다 — 손을 쉬실 때 다시 하겠습니다.",
-    "wait": "조금 전에 크롬을 다시 켜 봤습니다 — 잠시 뒤 다시 확인하겠습니다.",
-}
-REOPEN_STABLE_SEC = 5       # ★R5c: 켠 직후 1회 확인으로는 곧 꺼지는 크롬을 성공으로 쳤다 — 이만큼 계속 살아 있어야 ok
-REOPEN_MAX_TRIES = 3        # 다시 켜기 빚의 상한 — 넘으면 포기하고 안내(「크롬 창이 반복해서 뜬다」 차단 · 타이머 없음 · chrome-enable 호출 때만 갚는다)
-REOPEN_MIN_GAP_SEC = 60     # 같은 빚을 다시 켜 보는 최소 간격(턴마다 불려도 창이 연달아 뜨지 않게)
-SEAT_IDLE_SEC = 20          # 좌석 출력이 이만큼 조용하면 턴이 끝난 것으로 본다(두 번 연속)
-SEAT_WAIT_MAX_SEC = 900     # 그때까지 안 끝나면 재시작하지 않고 빚으로 남긴다(다음 chrome-enable 이 다시 예약)
-
-
-def schedule_seat_restart(delay, after_disable=False):
-    """이 좌석의 턴이 **실제로 끝난 뒤** 재시작 — 분리된 프로세스(이 도구의 seat-restart-wait)가 delay 초 뒤부터 좌석 출력 유휴
-    (`cys status --json` idle_secs ≥ 20 두 번 연속)를 확인하고 `cys rotate --skip-depts`(앱 ↻ 와 같은 저장 검증 → 복원)를 부른다.
-    ★codex R1 논쟁점: 고정 30초만으로는 긴 턴을 끊을 수 있었다. 좌석 ID 를 모르면(좌석 밖) 고정 지연으로 폴백."""
-    sid = os.environ.get("CYS_SURFACE_ID") or ""
-    argv = [sys.executable, os.path.abspath(__file__), "seat-restart-wait", "--min-delay", str(delay)]
-    if sid:
-        argv += ["--surface", sid]
-    if after_disable:
-        argv += ["--after-disable"]
-    if platform() == "win":             # ★R5 A: 대기·rotate 가 Job 안이면 데몬을 내리는 순간 rotate 도 죽어 rc·빚 정리가 없다
-        env = {k: os.environ[k] for k in ("CYS_PACK_DIR", "CYS_SOCKET", "CLAUDE_CONFIG_DIR", "CYS_ACCOUNT_DIR", "CYS_CC_STATE")
-               if os.environ.get(k)}
-        env["CYS_BIN"] = shutil.which(_cys_bin()) or _cys_bin()     # 데몬의 PATH 에는 cys 가 없을 수 있다
-        return _outside_job("seat_restart", "seat_restart", argv, env)
-    return _act("seat_restart", argv, detach=True)
-
-
-def _proc_start(pid):
-    """살아 있는 프로세스의 시작 시각 표지 — 죽었거나 못 재면 None. pid 는 재사용되므로 시작 시각까지 대조한다."""
-    if _has_fake("proc_start"):
-        return _fake_seq("proc_start")
-    if platform() == "win":
-        try:
-            import ctypes
-            from ctypes import wintypes as wt
-            k = ctypes.WinDLL("kernel32", use_last_error=True)
-            k.OpenProcess.restype = wt.HANDLE
-            k.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
-            k.GetExitCodeProcess.argtypes = [wt.HANDLE, ctypes.POINTER(wt.DWORD)]
-            k.GetProcessTimes.argtypes = [wt.HANDLE] + [ctypes.POINTER(wt.FILETIME)] * 4
-            k.CloseHandle.argtypes = [wt.HANDLE]
-            h = k.OpenProcess(0x1000, False, int(pid))      # PROCESS_QUERY_LIMITED_INFORMATION
-            if not h:
-                return None
-            try:
-                code, t = wt.DWORD(), [wt.FILETIME() for _ in range(4)]
-                if not k.GetExitCodeProcess(h, ctypes.byref(code)) or code.value != 259:    # STILL_ACTIVE
-                    return None
-                if not k.GetProcessTimes(h, *[ctypes.byref(x) for x in t]):
-                    return None
-                return "%d.%d" % (t[0].dwHighDateTime, t[0].dwLowDateTime)
-            finally:
-                k.CloseHandle(h)
-        except Exception:
-            return None
-    r = _act("proc_start", ["/bin/ps", "-o", "lstart=", "-p", str(pid)])
-    return ((r.stdout or "").strip() or None) if r is not None and r.returncode == 0 else None
-
-
-def _waiter_mark(r):
-    """방금 띄운 재시작 대기의 pid·시작 시각(맥 = Popen pid · 윈 = 데몬 응답 JSON 의 pid)."""
-    m = re.search(r"(\d+)\D*$", (r.stdout or "") if r else "")
-    pid = int(m.group(1)) if m else None
-    return {"seat_restart_pid": pid, "seat_restart_start": _proc_start(pid) if pid else None}
-
-
-def _same_proc(pid, then):
-    """그 프로세스가 지금도 살아 있는가 — 시작 시각까지 같아야 한다(처음에 못 적었으면 pid 만으로 믿지 않는다)."""
-    return bool(pid) and then is not None and _proc_start(pid) == then
-
-
-def _waiter_alive(st):
-    """★r3: 예약 시각만 보면 대기가 죽어도 17분 동안 「이미 예약돼 있습니다」였다 — 그 대기가 지금 살아 있어야 예약이다."""
-    return _same_proc(st.get("seat_restart_pid"), st.get("seat_restart_start"))
-
-
-def _in_job_chrome_alive(rec, running):
-    """★F2: Job 안에서 켠 그 크롬이 아직 있는가(다음 호출도 안다 · 상태 파일). pid 를 모르면 크롬이 켜져 있는 동안은 있다고 친다."""
-    if not isinstance(rec, dict):
-        return False
-    return _same_proc(rec.get("pid"), rec.get("start")) if rec.get("pid") else bool(running)
-
-
-CHROME_START_SCRIPT = ("$p = Get-Process chrome -ErrorAction SilentlyContinue | Sort-Object StartTime | Select-Object -First 1; "
-                       "if ($p) { [int64]($p.StartTime.ToUniversalTime() - [datetime]'1970-01-01').TotalSeconds }")
-
-
-def _chrome_restarted_since(plat, ts):
-    """★F1: 안내 뒤 사용자가 크롬을 껐다 켰는가 — 가장 오래된 크롬 프로세스가 ts 보다 뒤에 시작했으면 그렇다(연결 파일을 이미 읽었다). 윈 전용 · 모르면 False."""
-    if plat != "win" or not isinstance(ts, (int, float)):
-        return False
-    r = _act("chrome_started", ["powershell", "-NoProfile", "-Command", CHROME_START_SCRIPT])
-    out = (r.stdout or "").strip() if r is not None and r.returncode == 0 else ""
-    return out.isdigit() and int(out) > ts
-
-
-def _clear_waiter(st):
-    for k in ("seat_restart_scheduled_at", "seat_restart_pid", "seat_restart_start"):
-        st.pop(k, None)
-
-
-def _seat_status(sid):
-    """그 좌석의 (출력 유휴 초, 세션 ID) — `cys status --json`. 못 읽으면 (None, None)."""
-    r = _act("seat_status", [_cys_bin(), "status", "--json"], timeout=15)
-    try:
-        d = json.loads(r.stdout) if r and r.returncode == 0 else None
-    except ValueError:
-        d = None
-    for srf in (d or {}).get("surfaces") or []:
-        if str(srf.get("surface_id")) == sid.replace("surface:", "") or srf.get("surface_ref") == sid:
-            v = srf.get("idle_secs")
-            return (v if isinstance(v, (int, float)) else None), srf.get("registered_session_id")
-    return None, None
-
-
-def _turn_ended(session_id):
-    """★codex R2: 출력이 조용한 것은 턴 종료의 증거가 아니다(도구 대기 중에도 조용하다). 좌석 자신의 세션 기록 마지막 대화 줄이
-    「assistant · stop_reason = end_turn」이어야 턴이 끝난 것이다. 읽는 칸 = type·stop_reason 뿐(내용 0). True/False/None(못 읽음)."""
-    if not session_id or not re.match(r"^[0-9a-fA-F-]{8,64}$", str(session_id)):
-        return None
-    root = os.path.join(claude_config_dir(), "projects")
-    hit = None
-    for dirpath in _listdir(root):
-        cand = os.path.join(root, dirpath, "%s.jsonl" % session_id)
-        if os.path.isfile(cand):
-            hit = cand
-            break
-    if not hit:
-        return None
-    try:
-        with open(hit, "rb") as f:
-            f.seek(max(0, os.path.getsize(hit) - 256 * 1024))
-            tail = f.read().decode("utf-8", "replace").splitlines()
-    except OSError:
-        return None
-    for line in reversed(tail):
-        try:
-            e = json.loads(line)
-        except ValueError:
-            continue
-        t = e.get("type") if isinstance(e, dict) else None
-        if t == "assistant":
-            msg = e.get("message") if isinstance(e.get("message"), dict) else {}
-            return msg.get("stop_reason") == "end_turn"
-        if t == "user":
-            return False
-    return None
-
-
-def cmd_seat_restart_wait(a):
-    """(분리된 프로세스 전용) 좌석 턴이 **끝난 것이 확인되면** 재시작. 좌석·세션을 모르거나 15분 안에 확인 못 하면 재시작하지 않고
-    빚(pending_seat_restart)으로 남긴다 · rotate 가 실패해도 빚은 남는다(성공해야 지운다 · codex R2).
-    ★M5: chrome-disable 이 대기를 취소하지 않아 「되돌려 줘」 뒤에도 rotate 가 돌거나 chrome-enable.json 이 되살아났다 — 켜기 대기는
-    매 주기·rotate 직전·owe() 에서 활성 기록(pending_seat_restart)을 재확인해 사라졌으면 멈춘다. 끄기가 띄운 대기(--after-disable)는
-    반대로 빚이 생겼으면(다시 켬 → 그쪽 대기가 재시작한다) 멈추고, 상태 파일을 만들지 않는다."""
-    def revoked():
-        owed = bool(_load_chrome_state().get("pending_seat_restart"))
-        return owed if a.after_disable else not owed
-
-    def cancelled():
-        _ledger({"event": "seat_restart_cancelled", "after_disable": a.after_disable})
-        return out({"ok": True, "say": "", "reason": "cancelled"}, 0)
-
-    def owe(why, recheck=True):
-        if recheck and revoked():
-            return cancelled()
-        if a.after_disable:
-            _ledger({"event": "seat_restart_not_done", "why": why, "after_disable": True})
-            return out({"ok": False, "say": "", "reason": why}, 0)
-        st = _load_chrome_state()
-        st["pending_seat_restart"] = True
-        _clear_waiter(st)
-        _write_json(_p(CHROME_STATE), st)
-        _ledger({"event": "seat_restart_not_done", "why": why})
-        return out({"ok": False, "say": "", "reason": why}, 0)
-    if not a.surface:
-        return owe("no_surface", recheck=False)     # 스폰 직후라 켜는 쪽이 아직 활성 기록을 안 썼을 수 있다
-    _sleep(a.min_delay)
-    quiet, waited = 0, a.min_delay
-    while True:
-        if revoked():
-            return cancelled()
-        idle, sess = _seat_status(a.surface)
-        ok = idle is not None and idle >= SEAT_IDLE_SEC and _turn_ended(sess) is True
-        quiet = quiet + 1 if ok else 0
-        if quiet >= 2:
-            break
-        if waited >= SEAT_WAIT_MAX_SEC:
-            return owe("busy")
-        _sleep(5)
-        waited += 5
-    if revoked():
-        return cancelled()
-    r = _act("rotate", [_cys_bin(), "rotate", "--skip-depts"], timeout=600)
-    rc = None if r is None else r.returncode
-    _ledger({"event": "seat_restart_rotate", "rc": rc})
-    if rc not in (0, 21, 25):          # 21·25 = rotate 의 「끝까지 돌았지만 일부 부족」(중단 아님 · cys.rs rotate_rc 표)
-        return owe("rotate_rc_%s" % rc)
-    st = _load_chrome_state()
-    if st:                                  # rotate 사이에 되돌렸으면 파일이 없다 — 빈 파일로 되살리지 않는다
-        st.pop("pending_seat_restart", None)
-        _clear_waiter(st)
-        _write_json(_p(CHROME_STATE), st)
-    return out({"ok": True, "say": ""}, 0)
-
-
 def _load_chrome_state():
     s = _read_json(_p(CHROME_STATE))
     return s if isinstance(s, dict) else {}
 
 
-def _ensure_nmh(plat):
-    """연결 파일이 없거나 끊겼으면 좌석 설정으로 헤드리스 `claude -p --chrome` 1회 → 만들어졌는지 다시 본다.
-    반환 (상태, 이번에 만들었나). 상태 = True/False/None."""
-    before = _nmh_ok(plat, _chrome_userdata(plat))
-    if before is True:
-        return True, False
-    claude = os.environ.get("CYS_CC_CLAUDE_BIN") or "claude"
-    work = os.path.join(state_dir(), "chrome-probe")
-    os.makedirs(work, exist_ok=True)
-    # 도구 0(--tools "") · 크롬 도구도 막음 — 연결 파일은 크롬 연동이 켜진 채 **시작**할 때 만들어진다(도구 호출 불필요)
-    argv = [claude, "-p", "--chrome", "--max-turns", "1", "--tools", "",
-            "--disallowedTools", "mcp__claude-in-chrome", "응답 없이 끝내세요."]
-    r = _act("nmh", argv, timeout=CLAUDE_HEADLESS_TIMEOUT, cwd=work)
-    if r is None:
-        return before, False
-    after = _nmh_ok(plat, _chrome_userdata(plat))
-    return after, (after is True and before is not True)
+def _hq_master_seat():
+    """이 좌석이 본부 master 인가 — 부서 master 도 역할은 master 다(부서 데몬 소켓 `cys-dept-*` · 부서 팩 `pack-dept-*`)."""
+    if os.environ.get("CYS_ROLE", "master") != "master":
+        return False
+    sock = re.split(r"[/\\]", os.environ.get("CYS_SOCKET") or "")
+    pack = os.path.basename((os.environ.get("CYS_PACK_DIR") or "").rstrip("/\\"))
+    return not any(c.startswith("cys-dept-") for c in sock) and not pack.startswith("pack-dept-")
 
 
 def cmd_chrome_enable(a):
+    """키가 꺼져 있으면 켠다 — 그것뿐이다. 연결은 그 키로 **시작하는** 좌석에서 Claude Code 가 붙인다(실행 중 좌석에 붙이는 길은 없다)."""
     plat = platform()
     if plat not in ("darwin", "win"):
         return fail("이 컴퓨터에서는 크롬 연결을 제가 켤 수 없습니다.", "platform", 5)
-    cfg = claude_cfg()
-    c = probe_chrome(plat, cfg)
-    if not c.get("app"):
+    if not _hq_master_seat():    # 크롬 도구는 본부 master 좌석에만 뜬다(cys chrome_allowed_for) — 키를 켜도 이 좌석에는 안 붙는다
+        return fail("크롬 연결은 본부 마스터 좌석에서만 씁니다 — 본부 마스터에게 맡겨 주세요.", "not_master_seat", 5)
+    if not probe_chrome(plat, claude_cfg()).get("app"):
         return fail("이 컴퓨터에서 크롬을 찾지 못했습니다. 크롬을 설치하시면 다시 살펴볼게요.", "no_chrome", 5)
     st = _load_chrome_state()
-    done, said = [], []
-    # ① 기본 켜기(한 키)
+    stale = [k for k in OLD_CHROME_STATE_KEYS if st.pop(k, None) is not None]
     has, v = read_chrome_key()
     if has is None:
         return fail("클로드 설정 파일을 읽지 못해 크롬 연결을 켜지 못했습니다.", "claude_json", 1)
-    def keep_prior():
+    done = []
+    if v is not True:
         # 처음 손대기 전의 원래 값만 기억한다(되돌리기 = 이 값) · ★codex R1: 되돌리기 정보가 바꾸기보다 먼저 디스크에
-        # ★codex R3: 키가 이미 켜져 있어 연결 파일만 만들 때도 기억한다(안 그러면 끄기가 원래 true 를 false 로 씀) ·
-        #   새로 켜면 앞선 끄기의 「키 되돌림 끝」 표지를 지운다(안 그러면 다음 끄기가 키 되돌리기를 건너뜀)
         # ★codex R4: 앞 주기의 키를 이미 되돌렸으면 새 주기다 — 원래 값 = 지금 값(그 사이 사용자가 바꾼 값을 옛 값으로 덮지 않는다)
         if "prior_key" not in st or st.get("key_restored"):
             st["prior_key"] = {"present": has, "value": v}
             st.pop("key_restored", None)
-            _write_json(_p(CHROME_STATE), st)
-    if v is not True:
-        keep_prior()
+        _write_json(_p(CHROME_STATE), st)
         _ledger({"event": "chrome_enable_key", "prior": {"present": has, "value": v}})   # 기록 먼저
         if not write_chrome_key(True):
-            return fail("크롬 기본 켜기를 저장하지 못했습니다(그 사이 다른 프로그램이 설정을 고쳐 써서 손대지 않았습니다 — 잠시 뒤 다시 하겠습니다).",
+            return fail("크롬 기본 켜기를 저장하지 못했습니다(설정 파일을 지금 쓸 수 없어 손대지 않았습니다 — 잠시 뒤 다시 하겠습니다).",
                         "write_failed", 1)
         done.append("default_on")
-    # ② 연결 파일 — ★codex R1·R2: 처음 만들 때 Claude Code 가 크롬에 「다시 연결」 탭을 연다(바이너리 문자열) → 크롬이 켜져 있든
-    #   꺼져 있든(꺼져 있으면 크롬이 떠오른다) 앞으로 나온 창에 타이핑이 샐 수 있으므로 유휴 관문 뒤에만 만든다(못 채우면 미룸)
-    was_running = chrome_running(plat)
-    nmh_missing = _nmh_ok(plat, _chrome_userdata(plat)) is not True
-    if nmh_missing and not wait_idle(plat, a.wait):   # ★codex R2: 꺼진 크롬도 탭이 크롬을 띄울 수 있다
-        # 연결 파일이 아직 없으니 크롬 재시작 빚은 없다(다음 호출이 만들고 그때 판단) · 좌석 재시작만 빚으로
-        if (done and a.seat_restart == "auto") or a.seat_restart == "now":
-            st["pending_seat_restart"] = True
+    elif stale:
         _write_json(_p(CHROME_STATE), st)
-        _ledger({"event": "chrome_nmh_deferred"})
-        head = "크롬 기본 켜기를 켰습니다." if done else "크롬 연결은 준비 중입니다."
-        return out({"ok": True, "done": done, "pending": ["nmh"], "nmh": False,
-                    "say": head + " 지금 키보드·마우스를 쓰고 계셔서 연결 파일 만들기는 잠시 미뤘습니다 — 손을 쉬실 때 다시 하겠습니다."})
-    if nmh_missing:
-        keep_prior()
-    nmh, created = _ensure_nmh(plat)
-    if created:
-        man = _nmh_manifest_path(plat)
-        reg = _nmh_reg_value() if plat == "win" else None     # ★codex R2: 윈 매니페스트 = 등록값이 가리키는 파일
-        st["nmh_created"] = {"path": man, "sha256": _sha_file(man or reg) if (man or reg) else None, "plat": plat,
-                             "reg": reg}
-        _write_json(_p(CHROME_STATE), st)
-        _ledger({"event": "chrome_enable_nmh", "path": man})
-        done.append("nmh")
-    elif nmh is not True:
-        said.append("크롬 연결 파일을 만들지 못했습니다 — 다음 대화를 시작할 때 다시 해 보겠습니다.")
-    # ③ 크롬 다시 켜기 — 연결 파일이 새로 생겼고 크롬이 그 전부터 켜져 있을 때만, 또는 앞 호출이 미뤄 둔 재시작(빚)
-    #   ★agy R1 blocking: 미룬 뒤 다음 턴에 다시 부르면 키·연결 파일이 이미 있어 created=False → 재시작이 영영 빠졌다.
-    #   빚은 상태 파일(pending_chrome_restart · pending_seat_restart)에 남기고 갚을 때 지운다.
-    pending = []
-    gave_up = manual = False          # manual = 크롬은 사용자 몫 — 도구가 건드리지 않으니 좌석 재시작을 기다리게 하지 않는다
-    owed = bool(st.get("pending_chrome_restart"))
-    if st.get("pending_chrome_reopen") and not created:
-        # ★M4: 앞 호출이 닫은 크롬을 다시 켜지 못했다 — 또 닫지 않고 켜기만 갚는다(켜져 있으면 닫힌 뒤 켜진 크롬이라 연결 파일을 이미 읽었다)
-        tries = st.get("chrome_reopen_tries", 0)
-        gap = _now() - st.get("chrome_reopen_at", 0)
-        if was_running:
-            ro = "ok"
-        elif was_running is None:
-            ro = "unknown"
-        elif tries >= REOPEN_MAX_TRIES:
-            ro = "gave_up"
-        elif gap < REOPEN_MIN_GAP_SEC:
-            ro = "wait"
-        elif wait_idle(plat, a.wait):
-            ro = reopen_chrome(plat)
-            st["chrome_reopen_tries"] = tries + 1
-            st["chrome_reopen_at"] = _now()
-        else:
-            ro = "deferred"
-        if ro == "ok":
-            done.append("chrome_restart")
-            said.append("크롬이 켜져 있습니다.")
-        elif ro == "gave_up":
-            gave_up = True
-            _ledger({"event": "chrome_reopen_gave_up", "tries": tries})
-            said.append("크롬을 %d번 다시 켜 봤지만 켜진 것을 확인하지 못해 그만두었습니다 — 크롬을 직접 켜 주시면 바로 연결됩니다." % tries)
-        else:
-            pending.append("chrome_restart")
-            said.append(REOPEN_SAY[ro])
-    elif owed and not created and was_running and _chrome_restarted_since(plat, st.get("chrome_manual_at")):
-        _ledger({"event": "chrome_restart_by_user"})          # ★F1: 안내대로 껐다 켰다 — 연결 파일을 읽은 크롬이므로 다시 닫지 않는다
-        done.append("chrome_restart")
-        said.append("크롬을 새로 켜신 것을 확인했습니다.")
-    elif (created or owed) and was_running:
-        r = restart_chrome(plat, a.wait, st, a.seat_restart == "now" or (a.seat_restart == "auto" and (
-            created or "default_on" in done or bool(st.get("pending_seat_restart")))))
-        if r == "deferred":
-            pending.append("chrome_restart")
-            said.append("지금 키보드·마우스를 쓰고 계셔서 크롬 다시 켜기는 잠시 미뤘습니다 — 손을 쉬실 때 다시 하겠습니다.")
-        elif r in WIN_RESTART_SAY:
-            pending.append("chrome_restart")
-            manual = True
-            said.append(WIN_RESTART_SAY[r])
-        elif r.startswith("many_windows:"):
-            pending.append("chrome_restart")
-            manual = True
-            said.append("크롬 창이 %s개 열려 있어 닫지 않았습니다(하나씩 닫으면 마지막 창만 되살아납니다). 크롬 오른쪽 위 ⋮ 메뉴의 「종료」로 닫았다가 "
-                        "다시 켜 주시면 바로 연결됩니다." % r.split(":", 1)[1])
-        elif r.startswith("not_quit"):
-            pending.append("chrome_restart")
-            manual = plat == "win"
-            said.append("크롬이 스스로 닫히지 않아 그대로 두었습니다(강제로 끄지 않습니다). 크롬을 닫으셨다 켜시면 바로 연결됩니다.")
-        elif r.startswith("not_reopened:"):
-            pending.append("chrome_restart")
-            said.append(REOPEN_SAY[r.split(":", 1)[1]])
-        else:
-            done.append("chrome_restart")
-            said.append(r)
-    elif (created or owed) and was_running is None:
-        pending.append("chrome_restart")
-        said.append("크롬이 켜져 있는지 확인하지 못해 다시 켜기는 미뤘습니다.")
-    # (owed ∧ 크롬이 그 사이 꺼짐 = 다음에 켤 때 연결 파일을 읽는다 → 빚 청산)
-    # ④ 좌석 재시작 — 이번에 켠 것이 있거나 앞 호출이 미뤄 둔 재시작이 있으면(설정은 새로 시작하는 대화부터 적용된다)
-    changed = "default_on" in done or "nmh" in done
-    want_seat = a.seat_restart == "now" or (a.seat_restart == "auto" and (changed or bool(st.get("pending_seat_restart"))))
-    if CHROME_IN_JOB:
-        st["chrome_in_job"] = CHROME_IN_JOB[-1]
-        del CHROME_IN_JOB[:]
-    in_job = _in_job_chrome_alive(st.get("chrome_in_job"), chrome_running(plat) if st.get("chrome_in_job") else None)
-    if not in_job:
-        st.pop("chrome_in_job", None)
-    if manual:
-        st.setdefault("chrome_manual_at", _now())
-    if "chrome_restart" in pending:
-        st["pending_chrome_restart"] = True
+    nmh = _nmh_ok(plat, _chrome_userdata(plat))
+    if done:
+        say = "크롬 연결을 켰습니다. %s 다르게 하시려면 말씀해 주세요 — 되돌릴 수 있습니다." % CHROME_NEXT_SAY
+    elif nmh is True:
+        say = "크롬 연결은 이미 켜져 있습니다. 이 대화에 크롬 도구가 보이지 않으면 " + CHROME_NEXT_SAY
     else:
-        for k in ("pending_chrome_restart", "pending_chrome_reopen", "chrome_reopen_tries", "chrome_reopen_at", "chrome_manual_at"):
-            st.pop(k, None)
-    if "chrome_restart" in pending and not manual:
-        if want_seat:
-            st["pending_seat_restart"] = True       # 크롬을 다시 켠 뒤에 좌석을 재시작한다(순서 보존)
-    else:
-        sched = st.get("seat_restart_scheduled_at")
-        if want_seat and isinstance(sched, (int, float)) and _now() - sched < SEAT_WAIT_MAX_SEC + 120 and _waiter_alive(st):
-            said.append("cysr 재시작은 이미 예약돼 있습니다(이 대화가 끝나면 합니다).")
-        elif want_seat and in_job:
-            st["pending_seat_restart"] = True
-            said.append("다시 켠 크롬이 cysr 재시작 때 함께 닫힐 수 있어 재시작은 하지 않았습니다. 크롬을 ⋮ 메뉴의 「종료」로 닫았다가 직접 켠 뒤 "
-                        "위쪽 ↻ 재시작을 눌러 주세요.")
-        elif want_seat:
-            # ★codex R2: 빚은 예약 성공이 아니라 재시작 성공(waiter)에서 지운다 — 예약 실패·rotate 실패면 다음 호출이 다시
-            st["pending_seat_restart"] = True
-            r = schedule_seat_restart(SEAT_RESTART_DELAY_SEC)
-            if r is None:
-                said.append("cysr 재시작 예약에 실패했습니다 — 다음에 다시 하겠습니다(위쪽 ↻ 재시작으로도 됩니다).")
-            else:
-                st["seat_restart_scheduled_at"] = _now()
-                st.update(_waiter_mark(r))
-                _ledger({"event": "seat_restart_scheduled", "delay": SEAT_RESTART_DELAY_SEC})
-                done.append("seat_restart")
-                said.append("이 대화가 끝나면 cysr 가 잠깐 다시 시작합니다(지금 대화는 저장하고 이어집니다).")
-    if owed or changed or want_seat or "chrome_restart" in pending or st != _load_chrome_state():
-        _write_json(_p(CHROME_STATE), st)
-    head = ("크롬 연결을 켰습니다(기본 켜기%s)." % (" · 연결 파일" if "nmh" in done else "")
-            if ("default_on" in done or "nmh" in done) else "크롬 연결은 이미 켜져 있습니다.")
-    tail = "" if not done else " 다르게 하시려면 말씀해 주세요 — 되돌릴 수 있습니다."
-    r = {"ok": True, "done": done, "pending": pending, "nmh": nmh, "say": " ".join([head] + said) + tail}
-    if gave_up:
-        r["reopen_gave_up"] = True
-    return out(r)
+        say = "크롬 연결은 켜 두었습니다. " + CHROME_NEXT_SAY
+    return out({"ok": True, "done": done, "pending": [], "nmh": nmh, "say": say})
 
 
-def wait_idle(plat, wait):
-    """사용자 입력 유휴 ≥ 20초가 될 때까지 최대 wait 초(2초 간격). 됐으면 True · 못 재거나 시간이 다 되면 False."""
-    waited = 0
-    while True:
-        idle = idle_seconds(plat)
-        if idle is not None and idle >= IDLE_GATE_SEC:
-            return True
-        if waited >= wait:
-            return False
-        _sleep(2)
-        waited += 2
-
-
-def reopen_chrome(plat):
-    """★M4: 크롬을 켜고 결과를 잰다 → "ok" · "failed" · "unknown". 켜졌는지 모르면 성공으로 치지 않는다(재시작 빚이 지워진다)."""
-    r = open_chrome(plat)
-    t = 0
-    running = chrome_running(plat)
-    while running is False and t < CHROME_QUIT_WAIT_SEC:
-        _sleep(1)
-        t += 1
-        running = chrome_running(plat)
-    for _ in range(REOPEN_STABLE_SEC):
-        if not running:
-            break
-        _sleep(1)
-        running = chrome_running(plat)
-    if running:
-        return "ok"
-    res = "failed" if running is False or r is None or r.returncode != 0 else "unknown"
-    _ledger({"event": "chrome_reopen_" + res})
-    return res
-
-
-WIN_RESTART_SAY = {
-    "unknown_windows": "크롬 창이 몇 개인지 확인하지 못해 닫지 않았습니다. 크롬 오른쪽 위 ⋮ 메뉴의 「종료」로 닫았다가 다시 켜 주시면 바로 연결됩니다.",
-    "zero_windows": "크롬 창을 찾지 못했습니다. 크롬이 뒤에서 돌고 있다면 작업 표시줄 오른쪽 아래 크롬 아이콘에서 「종료」를 누른 뒤 크롬을 켜 주시면 바로 연결됩니다.",
-    "no_job_exit": "지금은 크롬을 다시 켜도 cysr 재시작 때 함께 닫힐 수 있어 닫지 않았습니다. 크롬 오른쪽 위 ⋮ 메뉴의 「종료」로 닫았다가 직접 켜 주시면 "
-                   "바로 연결됩니다.",
-    "not_quit_background": "크롬 창은 닫혔지만 크롬이 뒤에서 계속 돌고 있어 다시 켜지 못했습니다. 작업 표시줄 오른쪽 아래 크롬 아이콘에서 「종료」를 누른 뒤 "
-                           "크롬을 켜 주시면 바로 연결됩니다.",
-}
-
-
-def _manual(n):
-    return "many_windows:%d" % n if n else "zero_windows" if n == 0 else "unknown_windows"
-
-
-def restart_chrome(plat, wait, st, want_seat):
-    """유휴 관문 → 알림 → (유휴 재확인) → 정상 종료 → 다시 켬 → 창·탭 수 대조.
-    반환 = say 문장 · "deferred" · "many_windows:N" · WIN_RESTART_SAY 의 키 · "not_quit:…" · "not_reopened:failed|unknown".
-    ★R5b: 윈은 창이 하나일 때만 닫는다. 크롬은 다른 창이 남아 있을 때 닫힌 창을 세션에서 바로 지운다(session_service.cc WindowClosing) —
-    창을 하나씩 닫으면 마지막 창만 되살아나고 탭 수는 윈에서 셀 길이가 없어 그 손실을 알 수도 없다. 맥의 quit 은 메뉴 「종료」라 해당 없다."""
-    if not wait_idle(plat, wait):
-        _ledger({"event": "chrome_restart_deferred"})
-        return "deferred"
-    before = chrome_windows(plat)
-    if plat == "win":
-        if before[0] != 1:
-            _ledger({"event": "chrome_restart_manual", "windows": before[0]})
-            return _manual(before[0])
-        if not job_exit_ok():
-            _ledger({"event": "chrome_restart_manual", "why": "no_job_exit"})
-            return "no_job_exit"
-    notify("크롬을 잠깐 다시 켭니다", "Claude 연결을 붙이려고 크롬을 닫았다가 바로 다시 켭니다. 열린 탭은 그대로 돌아옵니다.")
-    _sleep(3)
-    idle = idle_seconds(plat)        # ★codex R1: 알림을 보고 다시 손을 댔으면 닫지 않는다(관문 통과 뒤 3초 사이)
-    if idle is None or idle < IDLE_GATE_SEC:
-        _ledger({"event": "chrome_restart_deferred", "after_notice": True})
-        return "deferred"
-    if plat == "win":                # 알림 3초 사이에 창이 늘었으면 닫지 않는다(입력 없이 열린 창은 유휴 관문에 안 잡힌다)
-        now = chrome_windows(plat)[0]
-        if now != 1:
-            _ledger({"event": "chrome_restart_manual", "windows": now})
-            return _manual(now)
-    # ★F3: 닫은 뒤 끊겨도 크롬이 닫힌 채 잊히지 않게 빚·시도 횟수를 **닫기 전에** 디스크에 둔다
-    st.update(pending_chrome_restart=True, pending_chrome_reopen=True, chrome_reopen_tries=1, chrome_reopen_at=_now())
-    if want_seat:
-        st["pending_seat_restart"] = True
-    _write_json(_p(CHROME_STATE), st)
-    _ledger({"event": "chrome_quit", "before": list(before)})
-    quit_chrome(plat)
-    t = 0
-    while chrome_running(plat):
-        if t >= CHROME_QUIT_WAIT_SEC:
-            left = chrome_windows(plat)[0] if plat == "win" else None
-            _ledger({"event": "chrome_not_quit", "windows": left})
-            for k in ("pending_chrome_reopen", "chrome_reopen_tries", "chrome_reopen_at"):
-                st.pop(k, None)              # 닫히지 않았다 — 켜기 빚이 아니다
-            return "not_quit_background" if left == 0 else "not_quit:%d" % t
-        _sleep(1)
-        t += 1
-    res = reopen_chrome(plat)
-    if res != "ok":
-        return "not_reopened:" + res
-    _sleep(3)
-    after = chrome_windows(plat)
-    _ledger({"event": "chrome_reopened", "before": list(before), "after": list(after)})
-    restore_hint = " — 크롬 메뉴의 「방문 기록 → 최근에 닫은 탭」에서 되살릴 수 있습니다."
-    (bw, bt), (aw, at) = before, after
-    if bt is not None and at is not None:
-        if at < bt:
-            return "크롬을 다시 켰는데 탭이 %d개 → %d개입니다%s" % (bt, at, restore_hint)
-        return "크롬을 다시 켰습니다(창 %d개 · 탭 %d개 그대로)." % (aw, at)
-    if bw is not None and aw is not None:
-        if aw < bw:
-            return "크롬을 다시 켰는데 창이 %d개 → %d개입니다%s" % (bw, aw, restore_hint)
-        return "크롬을 다시 켰습니다(창 %d개 그대로 · 탭 수는 확인하지 못했습니다)." % aw
-    return "크롬을 다시 켰습니다(창·탭 수는 확인하지 못했습니다 — 탭이 안 보이면%s)" % restore_hint.lstrip(" —")
-
-
-def cmd_chrome_disable(a):
-    """되돌리기 = 켤 때 기억한 원래 값으로(기억이 없으면 끔) · 우리가 만든 연결 파일만 지운다(그 사이 바뀌었으면 두고 알림)."""
-    plat = platform()
-    st = _load_chrome_state()
-    said = []
-    prior = st.get("prior_key")
+def _chrome_key_off():
+    """크롬 키를 켤 때 기억한 원래 값으로(기억이 없으면 끔) · 기록을 지운다. 반환 = 기억이 있었나 · 못 쓰면 None."""
+    prior = _load_chrome_state().get("prior_key")
     target = (prior["value"] if prior.get("present") else None) if isinstance(prior, dict) else False
     if target is not None and not isinstance(target, bool):
         target = False
-    if not st.get("key_restored"):              # ★codex R2: 연결 파일 삭제를 다시 시도할 때 키를 또 바꾸지 않는다
-        _ledger({"event": "chrome_disable_key", "to": "absent" if target is None else target})
-        if not write_chrome_key(target):
-            return fail("크롬 기본 켜기를 되돌리지 못했습니다(설정이 잠겨 있거나 그 사이 바뀌어 손대지 않았습니다).", "write_failed", 1)
-        st["key_restored"] = True
-    nm = st.get("nmh_created")
-    keep_state = False
-    if isinstance(nm, dict):
-        # ★codex R1: 지우기 전에 지금 값이 「내가 만든 그대로」인지 대조(맥 = 파일 sha256 · 윈 = 등록값 + 그 매니페스트 sha256)
-        #   그 사이 다른 프로그램이 고쳐 썼으면 보존 · 지우기 실패면 되돌리기 기록을 남긴다(다음에 다시)
-        if plat == "darwin" and nm.get("path"):
-            mine = _sha_file(nm["path"]) == nm.get("sha256")
-            argv = ["/bin/rm", "-f", nm["path"]]
-        elif plat == "win":
-            cur = _nmh_reg_value()
-            mine = bool(nm.get("reg")) and bool(nm.get("sha256")) and cur == nm.get("reg") and _sha_file(cur) == nm.get("sha256")
-            argv = ["reg", "delete", NMH_REG_KEY, "/f"]
-        else:
-            mine, argv = False, None
-        if argv and mine:
-            r = _act("nmh_remove", argv)
-            if r is not None and r.returncode == 0:
-                said.append("제가 만든 연결 파일도 지웠습니다.")
-            else:
-                keep_state = True
-                said.append("제가 만든 연결 파일을 지우지 못했습니다 — 다음에 다시 지우겠습니다.")
-        elif argv and plat == "win" and not nm.get("sha256"):
-            keep_state = True                           # 소유권을 확인할 근거가 없다 — 지우지도, 기록을 버리지도 않는다
-            said.append("연결 등록이 제가 만든 것인지 확인하지 못해 그대로 두었습니다.")
-        elif argv:
-            said.append("연결 파일은 그 사이 다른 프로그램이 고쳐 써서 그대로 두었습니다.")
-    if keep_state:
-        st.pop("pending_seat_restart", None)        # ★M5: 대기 중인 켜기 쪽 재시작을 취소(대기가 활성 기록 소멸을 보고 멈춘다)
-        _clear_waiter(st)
-        _write_json(_p(CHROME_STATE), st)           # prior_key·key_restored 그대로 — 다음 끄기는 연결 파일만 다시
-    else:
-        try:
-            os.remove(_p(CHROME_STATE))
-        except OSError:
-            pass
-    if a.seat_restart in ("auto", "now"):
-        if schedule_seat_restart(SEAT_RESTART_DELAY_SEC, after_disable=True) is not None:
-            said.append("%d초 뒤 cysr 가 잠깐 다시 시작합니다(대화는 이어집니다)." % SEAT_RESTART_DELAY_SEC)
-        else:
-            said.append("cysr 재시작 예약에 실패했습니다 — 위쪽 ↻ 재시작을 눌러 주세요.")
-    head = "크롬 연결을 처음 상태로 되돌렸습니다." if prior else "크롬 기본 켜기를 껐습니다."
-    return out({"ok": True, "say": " ".join([head] + said)})
+    _ledger({"event": "chrome_disable_key", "to": "absent" if target is None else target})
+    if not write_chrome_key(target):
+        return None
+    try:
+        os.remove(_p(CHROME_STATE))
+    except OSError:
+        pass
+    return bool(prior)
+
+
+def cmd_chrome_disable(a):
+    """되돌리기 = 키만.
+    연결 파일은 손대지 않는다: Claude Code 가 만든 파일이고(다음에 켜고 시작할 때 다시 쓴다) 사용자당 1개라 같은 맥의 다른 설정 폴더 세션도
+    쓴다. 키가 꺼진 좌석은 크롬 연동을 시작하지 않으므로 파일이 남아 있어도 도구가 켜지지 않는다."""
+    had_prior = _chrome_key_off()
+    if had_prior is None:
+        return fail("크롬 기본 켜기를 되돌리지 못했습니다(설정이 잠겨 있거나 그 사이 바뀌어 손대지 않았습니다).", "write_failed", 1)
+    head = "크롬 연결을 처음 상태로 되돌렸습니다." if had_prior else "크롬 기본 켜기를 껐습니다."
+    return out({"ok": True, "say": head + CHROME_OFF_SAY})
 
 
 # ───────────────────────── 선례 기반 이양 (TICKET=cu-1111-precedent 2단계 · 설계 §14) ─────────────────────────
@@ -2530,7 +1792,7 @@ def self_test():
                         n += 1
                         c = {"app": app, "with_ext": with_ext, "ext_enabled": en, "default_on": d, "nmh": nmh}
                         t, u, _m, _r = verdict_chrome("darwin", c)
-                        # 바로 = 앱·확장(켜짐)이 있고 모름 0 — 기본 켜기·연결 파일 꺼짐은 마스터가 켠다(chrome-enable)
+                        # 바로 = 앱·확장(켜짐)이 있고 모름 0 — 기본 켜기·연결 파일 꺼짐은 사용자 손이 아니다(chrome-enable · 다음 좌석 시작)
                         if t == READY and (not app or not with_ext or en is not True or d is None or nmh is None):
                             errs.append("chrome 바로 오판 %r" % (c,))
                         if t == READY and _m and not set(_m) <= set(CHROME_AUTO):
@@ -2617,16 +1879,9 @@ def main(argv=None):
     rp.add_argument("--answer-file", required=True)
     rp.add_argument("--meaning", required=True, choices=("yes", "no", "unclear"))
     sp.add_parser("self-test")
-    ce = sp.add_parser("chrome-enable")
-    ce.add_argument("--wait", type=int, default=120, help="크롬 다시 켜기 전 사용자 유휴(20초)를 기다릴 최대 초(≤ 540)")
-    ce.add_argument("--seat-restart", choices=("auto", "now", "no"), default="auto")
-    cd = sp.add_parser("chrome-disable")
-    cd.add_argument("--seat-restart", choices=("auto", "now", "no"), default="no")
+    sp.add_parser("chrome-enable")
+    sp.add_parser("chrome-disable")
     sp.add_parser("adopt")
-    sw = sp.add_parser("seat-restart-wait")
-    sw.add_argument("--min-delay", type=int, default=SEAT_RESTART_DELAY_SEC)
-    sw.add_argument("--surface", default="")
-    sw.add_argument("--after-disable", action="store_true", help="chrome-disable 이 띄운 대기(상태 파일을 만들지 않는다)")
     dc = sp.add_parser("decide")
     dc.add_argument("cat")
     dc.add_argument("--subject", default="")
@@ -2649,10 +1904,7 @@ def main(argv=None):
           "revoke": cmd_revoke, "status": cmd_status, "open-settings": cmd_open_settings,
           "request-prompt": cmd_request_prompt, "self-test": cmd_self_test,
           "chrome-enable": cmd_chrome_enable, "chrome-disable": cmd_chrome_disable,
-          "adopt": cmd_adopt, "decide": cmd_decide, "remember": cmd_remember,
-          "seat-restart-wait": cmd_seat_restart_wait}.get(a.cmd)
-    if a.cmd == "chrome-enable":
-        a.wait = max(0, min(a.wait, 540))    # 4군① — 한 번 부를 때 Bash 도구 상한(600초) 안
+          "adopt": cmd_adopt, "decide": cmd_decide, "remember": cmd_remember}.get(a.cmd)
     if fn is None:
         ap.print_usage(sys.stderr)
         return 2

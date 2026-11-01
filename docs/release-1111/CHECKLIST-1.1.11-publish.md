@@ -387,7 +387,14 @@ r4 키트 aac1b477 ↔ 0fde41c6 차이 = 10파일(문서 9 · `ui/src/publicdocs
 
 ### K-9. 57bce92e(크롬 미리 켜기) · 90a372d2 병합 뒤 다시 돌릴 항목(master#415438c7 · 옛 b3f51379 C안 · r5 계획을 대체)
 
-**발행 전 추가 편입(master#85a5002d · #6ac5d378 · 병합 = master)**: ① fix/1111-atomic-swap 1cc1a8fd(팩 교체 · r7 pack 소실 · `tests/win_pack_swap.rs` windows-health) ② fix/1112-noderecover-ctrlu 17943406 ③ 복원 뒤 워커 교체 원인(커밋 미정). 세 가지가 머리에 들어가면 아래 표 전체를 그 머리에서 다시 돌리고, r8 키트로 r7 항목을 다시 본다.
+**r8 편입(master#fbb4cb14 · 로컬 가지 merge/1111-r8 · push = master)**:
+
+| 병합 커밋 | 대상 | 내용 |
+|---|---|---|
+| 8893402d | fix/1111-atomic-swap 9fafe435 | 팩 교체 무손상(1cc1a8fd) · 끊긴 교체 복구 B1 고침(9fafe435 · 777·codex 반려분) · n1 내용 비교·n5 보존 폴더 격리(6d3155c2 · 786 재확인분) · `tests/win_pack_swap.rs` |
+| 0a9cccfe | fix/1112-noderecover-ctrlu 751a379d | 윈 node-recover `^U`(17943406) · L1 cys restore 출력 전문을 phoenix-restore.log 에(1122d062 · 관측 전용) · R2 세션 핀 변경 즉시 topology 영속(751a379d · 759 대조 = native_publication 2건은 기준선도 실패 · 회귀 아님) |
+
+수리 3 = ① 팩 교체 ② `^U` ③ 복원 뒤 워커 교체 원인 — L1·R2 까지다 · R3(claim 10분 잔류) = 1.1.12 라 좌석 교체 끊김이 다 없어지지는 않는다(751a379d 본문). 충돌 0 · 두 가지 겹침 파일 = 이 체크리스트뿐. 이 머리에서 아래 표 전체를 다시 돌리고 r8 키트로 r7 항목을 다시 본다.
 
 **병합 대상(master#415438c7 · 끝)**:
 
@@ -429,6 +436,8 @@ r4 키트 aac1b477 ↔ 0fde41c6 차이 = 10파일(문서 9 · `ui/src/publicdocs
 | r7-5 | 윈 새 설치: 첫 시작 로그인 뒤 다음 시작에서 연결(첫 시작은 OAuth 전이라 연동 미시작) | 새 설치 사용자 문장 | ☐ |
 | r7-6 | 윈 크롬 꺼짐 + 첫 연결 파일 + 확장 설치됨: 다시 연결 탭 개수 · 탭이 크롬을 띄우면 그 크롬의 Job 소속(`in-caller-job`) · ↻ 뒤 생존 | 기록 · 1.1.12 rotate 관문(HANDOFF BACKLOG) · 발행 차단 여부 = master | ☐ |
 | r7-7 | 좌석 재기동 경로: 워커를 node-recover·`cys restore`·rotate 복원으로 다시 띄운 뒤에도 크롬 도구 0(윈 = 기존 pane 재기동은 `--settings` 만 닿는다 · `~/.cys/seat-settings/<역할>.json` 의 env 확인) | 「일반 작업 좌석에는 켜지 않습니다」 | ☐ |
+
+r8 추가 확인(키트 구성 = master): ① 업데이트 반복 — r7 6회차 재현 조건에서 팩 파일 수 불변 · rc 24 면 팩 무손상 · 재시도 성공 ② r7-7 재시험 — 윈 `^Uclaude` CommandNotFound 0 ③ 좌석 교체 시 phoenix-restore.log 에 cys restore 출력 전문 · topology session_id 유지.
 
 **발행 뒤 첫 확인(master#9312bc1c ②):**
 
@@ -475,7 +484,8 @@ find "$H" -name six.py
 - **1.1.10 으로 내림**: `git grep` v1.1.10 `src`·`cysjavis-pack` = 키·표지·`CLAUDE_CODE_ENABLE_CFC` 0건 → cys 쪽은 읽지 않아 무해. ⚠단 키는 Claude Code 가 읽는다: 내리면 env 를 얹는 코드가 없어져 **키가 true 인 채 모든 좌석에 크롬 도구가 뜰 수 있다**(되돌리는 코드 0 · `/chrome` 으로 끌 수 있다 · 좌석 재기동 뒤 seat-settings 칸이 어떻게 되는지는 미측정). 저장 형식 문제는 아니고 동작 잔재다.
 - **다시 올림**: 표지가 있으면 파일을 읽지 않는다 → 내린 동안 사용자가 끈 값·지운 키가 그대로 남는다. 표지 내용(판번)은 읽지 않고 존재만 본다.
 - 팩 1.1.11 + 옛 바이너리: 팩의 `spawn-outside-job` 호출 0 이라 Job 이탈 의존이 없어졌다. 단 좌석 env 는 바이너리 몫이라 옛 바이너리면 좌석 차단도 없다(팩 하한 1.1.11 이 막는 조합).
-- 초기화: `factory_reset` 목록에 `claude`(키·표지가 든 폴더) · `computer-control` 있음.
+- 초기화: `factory_reset` 목록에 `claude`(키·표지가 든 폴더) · `computer-control` · `pack.swap` 있음.
+- r8 연장(93fb8e08..merge/1111-r8) = none: `pack.swap` 은 교체 중에만 있는 폴더 · R2 는 기존 topology `session_id` 칸의 영속 시점만 앞당긴다 · L1 은 로그 내용만 늘린다.
 - ⚠근거 = 코드 판독. 이 키가 든 상태로 내림·올림을 왕복 실측한 적은 없다(§6 의 VM 왕복 1회는 이 가지 이전).
 
 ### K-10. 사이트 세미나 묶음(master#266c929d ② · 4-2 에 같이 올린다 · 배포 아직 아님)
@@ -494,7 +504,9 @@ find "$H" -name six.py
 - [ ] 병렬 기본 스택 `a3_strip_hook_digits…` 넘침 · 4MB 통과 · 시험 스레드 스택 고정 또는 무거운 시험 분리(master#7a17878b). 실측: 맨 `cargo test --bin cys`(--test-threads=1 없이) dc9f1de7 3/3 넘침 · 060cb75b 0/2 · 0fde41c6 2/2 · `RUST_MIN_STACK=4194304` 0fde41c6 736/0 · CI 형식 0fde41c6 736/0 · 단독·소묶음은 두 머리 모두 통과 · 병합의 파싱 경로 변경 0 · 원인 미상(master#75c7ef79).
 - [ ] release `cys.exe` 스택 여유 측정 — `[release-stack]` 은 `--help` 세 명령의 넘침 여부만 본다 · 윈 주 스레드 1MB 에서 남은 여유·머리 간 증감은 미측정(0fde41c6 차이 0 은 넘침 0 뜻뿐 · master#8d598191).
 - [ ] `dbg_r12_init_pack_wires_profile_skill_links` 는 저장소가 임시 폴더 아래면 결정적으로 실패한다 — 시험이 `CARGO_MANIFEST_DIR/target` 아래 팩을 쓰는데 `javis_preflight.py:1494` 임시 팩 가드가 등록을 거부(코드 판독 · /private/tmp 임시 worktree 060cb75b 4/4 적 · 정상 위치 0fde41c6 통과 · 제품 결함 아님 · master#7a17878b).
+- [ ] atomic-swap 검증 이월(무손상 · master#6aa19b60 · 근거 = ~/axdev/master/reports/2026-11-01-cysr-1111-atomic-swap-verify.md · -b1-verify.md): m3 prev 가 잠겨 hold 가 남으면 다음 교체 rc 24 · m4 prev 일부 삭제 뒤 보관 실패면 반쯤 지워진 prev 가 pack-rollback 재료로 남음 · m5 교차 볼륨은 이제 실패 · m7 재시도 대기를 맥에서 지키는 시험 없음 · m8 `had_old` 시험 없음 · n2 동시 복구 둘이 prev 를 지울 수 있음 · n3 pack-update 채널·버전 판정이 복구 앞 · n4 새 팩 표지 1개 부재 시 활성 팩이 옛 팩으로 후퇴(새 팩은 보존 폴더) · n6 빈 `pack.swap` + 완전 팩이면 prev 가 빈 폴더가 됨 · n7 파일 `pack.swap` 은 교체가 매번 약 9초 뒤 실패 · n8 부분 팩 되돌리기 줄 시험 없음 · n9 보존 폴더가 스냅샷·`doctor --lanes`·pack-rollback 과 어긋남.
 - [ ] rotate 겹침 — ② 새 데몬이 소켓을 연 직후 콜드부트 복원을 발화해(`cysd/main.rs:2310` · 표식 조건 없음) ④ init-pack 과 겹친다. 1.1.11 은 겹쳐도 팩이 지워지지 않게만 고쳤다(atomic_swap · 윈 r7 · master#85a5002d). 잠금이 안 풀리면 rc 24 로 끝난다. 복원을 ④ 뒤로 미루는 수리 = cysd·rotate.
+- [ ] `cargo test --bin cysd native_publication::` 병렬 불안정 — 기본 병렬에서 2건 실패 · 단독과 `--test-threads=1` 은 통과 · 기준선도 같은 ID(759 대조 · master#e8ff936f · 회귀 아님). 시험 간 공유 자원을 찾아 고친다.
 - [ ] 판번 검사(`version-check.sh`)가 `docs/index.html` 을 보지 않는다(L14).
 - [ ] (윈 실기 이월 · TODO:83) `\cysd` 재등록이 LeastPrivilege 로 RunLevel Highest 를 덮음 · preflight --fix 가 `~/.claude/settings.json` 을 백업 없이 고침 · ConPTY 꽉 찬 줄 composer 사람 눈 1회 · self-update-check 새 데몬 뒤 첫 발화.
 - [ ] (통합표) `d7_prime_seat_cache_never_overwrites_a_tick_value` 상한 5초 플레이크.

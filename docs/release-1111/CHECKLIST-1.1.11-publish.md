@@ -512,6 +512,8 @@ find "$H" -name six.py
 - [ ] `test_hook_r34` 시한 3.0s 경계 — 부하 3회 머리·기준 모두 적(RCF-3·RCF-4a·NZ-3·DL-1b · 3.02~3.83s) · 머리·기준 동시 8회 각 7회 적 · 혼자 돌면 통과. 경계를 넓히거나 직렬 칸으로 옮긴다.
 - [ ] `test_dept_notice_lane` 1c — 전수 -P 3 에서 머리 1회 IndexError(fmlog 빈 줄 · 존재만 보고 읽음) · 머리·기준 동시 8회 각 무실패 · 시험·대상 코드 기준선 diff 0. 도우미가 내용까지 기다리게 고친다.
 - [ ] `copy_dir_all` 검사~fs::copy 사이 FIFO 교체 틈 — tree_contained 는 O_NONBLOCK+핸들 stat 으로 닫았고 복사는 권한 보존 때문에 fs::copy 유지(0835ad3d). 같은 형태로 닫는다.
+- [ ] FIFO g1 — 임베드 경로(soul.md 등)에 FIFO 면 pack.rs install_into read_to_string 에서 데몬 bind 전 멈춘다(v1.1.9 부터 · 회귀 아님 · 생성 코드 0 · 실팩 특수 파일 0 · 786 3차 · master#7efb49e4 이관).
+- [ ] 같은 UID 고의 교체 경쟁 — `read_regular_nonblocking` 에 O_NOFOLLOW 강화(codex BLOCKER 2 → MINOR 강등 · master#7efb49e4 이관).
 - [ ] 판번 검사(`version-check.sh`)가 `docs/index.html` 을 보지 않는다(L14).
 - [ ] (윈 실기 이월 · TODO:83) `\cysd` 재등록이 LeastPrivilege 로 RunLevel Highest 를 덮음 · preflight --fix 가 `~/.claude/settings.json` 을 백업 없이 고침 · ConPTY 꽉 찬 줄 composer 사람 눈 1회 · self-update-check 새 데몬 뒤 첫 발화.
 - [ ] (통합표) `d7_prime_seat_cache_never_overwrites_a_tick_value` 상한 5초 플레이크.

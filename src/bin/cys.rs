@@ -17082,6 +17082,8 @@ fn boot_agent_on_surface(
     cys::inject_claude_effort_env(&mut env_pairs, agent, extract_bin(&cmd, agent));
     // ★chrome-preset: 크롬 도구는 master 좌석만 — lib `chrome_allowed_for` doc(Windows 재기동은 아래 --settings 가 닿는다).
     cys::inject_claude_chrome_off_env(&mut env_pairs, role, cys::is_dept_socket(&cys::socket_path()), agent, extract_bin(&cmd, agent));
+    // r9 F4: 윈 master 좌석 — 크롬이 꺼져 있고 연결 파일이 없으면 다시 연결 탭이 크롬을 좌석 Job 안에 띄우지 않게 한다(lib doc).
+    cys::hold_chrome_reconnect_tab(role, cys::is_dept_socket(&cys::socket_path()), agent, extract_bin(&cmd, agent));
     // ★D25·D24ⓒ(1.1.8): claude 좌석 기동 설정 파일(RC 끄기 두 키 · 정책 allow 목록) — 사용자 cmd 에 --settings 가
     //   이미 있으면 붙이지 않는다(병합 방식 미실측 · 기동 뒤 cysd rc 감시만 동작).
     apply_seat_settings_arg(&mut cmd, role, agent);
@@ -20694,6 +20696,13 @@ fn run_launch_agent_opts(
         // ★chrome-preset: 크롬 도구는 master 좌석만 — 역할을 아는 자리라 여기서 싣는다(lib `chrome_allowed_for` doc).
         cys::inject_claude_chrome_off_env(
             &mut create_env_pairs,
+            role,
+            cys::is_dept_socket(&cys::socket_path()),
+            agent,
+            extract_bin(spec["cmd"].as_str().unwrap_or(""), agent),
+        );
+        // r9 F4: 윈 master 좌석 — 크롬이 꺼져 있고 연결 파일이 없으면 다시 연결 탭을 막는다(lib `hold_chrome_reconnect_tab` doc).
+        cys::hold_chrome_reconnect_tab(
             role,
             cys::is_dept_socket(&cys::socket_path()),
             agent,
@@ -46421,6 +46430,10 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         let boot_body = &src[boot..boot + src[boot + 1..].find("\nfn ").unwrap()];
         assert!(boot_body.contains(call), "기동 줄에 크롬 끄기가 없다");
         assert!(boot_body.contains("apply_seat_settings_arg(&mut cmd, role, agent);"), "기존 pane 재기동 경로(--settings)가 빠졌다");
+        // r9 F4 — 다시 연결 탭 막기도 두 길에 모두 · 새 surface 길은 surface.create 앞(좌석 claude 가 뜨기 전).
+        let hold = "cys::hold_chrome_reconnect_tab(";
+        assert!(la_body.find(hold).expect("새 surface 길에 다시 연결 탭 막기가 없다") < la_body.find("\"surface.create\"").expect("surface.create"));
+        assert!(boot_body.contains(hold), "기동 줄 길에 다시 연결 탭 막기가 없다");
     }
 
     #[test]

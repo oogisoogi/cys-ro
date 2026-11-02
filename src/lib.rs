@@ -2862,6 +2862,71 @@ pub fn inject_claude_chrome_off_env(env_pairs: &mut Vec<(String, String)>, role:
     }
 }
 
+/// 윈 Claude Code 크롬 연결 파일(2.1.316 판독 `NH` — `%APPDATA%\Claude Code\ChromeNativeHost` 한 곳).
+pub const CHROME_NATIVE_HOST_MANIFEST: &str = "com.anthropic.claude_code_browser_extension.json";
+
+/// 「다시 연결」 탭을 막아야 하는가(순수 · r9 F4) — 연결 파일이 없고 크롬이 꺼져 있을 때만.
+/// Claude Code 는 연결 파일을 **새로** 만들 때 확장이 깔려 있으면 크롬에 다시 연결 탭을 연다(DESIGN-cu-1111 §13-7). 윈은 chrome.exe 를
+/// 좌석 아래에서 직접 띄워 그 크롬이 데몬 Job 안에 들고, 다음 재시작에 함께 죽으며 크롬 「마지막 세션」을 덮는다. 크롬이 켜져 있으면 탭은
+/// 사용자 크롬(Job 밖)에 열리니 그대로 둔다.
+pub fn should_hold_chrome_reconnect_tab(manifest_exists: bool, chrome_running: bool) -> bool {
+    !manifest_exists && !chrome_running
+}
+
+/// 윈 master 좌석 기동 직전 — 크롬이 꺼져 있고 연결 파일이 없으면 자리 파일을 둔다(r9 F4 · 반환 = 두었는가).
+/// Claude Code 는 연결 파일이 **있으면** 첫 설치로 보지 않아 크롬을 띄우지 않고, 내용이 다르면 제 내용으로 다시 쓴다 — 그래서 크롬 도구는
+/// 그대로 켜지고 사용자가 크롬을 켤 때 확장이 붙는다. 사용자가 끈 크롬을 업데이트·재시작이 켜지 않는다. 맥·리눅스는 해당 없음(false).
+pub fn hold_chrome_reconnect_tab(role: &str, dept_socket: bool, agent: &str, bin: &str) -> bool {
+    #[cfg(windows)]
+    {
+        if !is_claude_seat(agent, bin) || !chrome_allowed_for(role, dept_socket) {
+            return false;
+        }
+        let base = std::env::var_os("APPDATA")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home_dir().join("AppData").join("Local"));
+        let dir = base.join("Claude Code").join("ChromeNativeHost");
+        let path = dir.join(CHROME_NATIVE_HOST_MANIFEST);
+        if !should_hold_chrome_reconnect_tab(path.exists(), windows_process_running("chrome.exe")) {
+            return false;
+        }
+        let body = "{\"name\":\"com.anthropic.claude_code_browser_extension\",\"description\":\"cys placeholder — Claude Code rewrites this on start\"}\n";
+        std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, body)).is_ok()
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (role, dept_socket, agent, bin);
+        false
+    }
+}
+
+/// 이름(소문자 비교)이 같은 프로세스가 돌고 있는가 — Toolhelp 표. 표를 못 읽으면 true(모름 = 크롬이 켜져 있다고 보고 아무것도 하지 않는다).
+#[cfg(windows)]
+fn windows_process_running(exe: &str) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap == INVALID_HANDLE_VALUE {
+            return true;
+        }
+        let mut e: PROCESSENTRY32W = std::mem::zeroed();
+        e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut more = Process32FirstW(snap, &mut e) != 0;
+        let mut found = false;
+        while more && !found {
+            let n = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
+            found = String::from_utf16_lossy(&e.szExeFile[..n]).eq_ignore_ascii_case(exe);
+            more = Process32NextW(snap, &mut e) != 0;
+        }
+        CloseHandle(snap);
+        found
+    }
+}
+
 /// 이 좌석이 RC 를 켜도 되는가(순수) — 부서 데몬 좌석 = 아니오 · 그 밖은 역할명이 허용 목록에 있을 때만.
 /// 기동 인자(위)와 기동 뒤 검사(cysd rc 감시)가 같은 술어를 쓴다.
 pub fn rc_allowed_for(role: &str, dept_socket: bool, rc_allowed: &[String]) -> bool {
@@ -3154,6 +3219,18 @@ mod claude_effort_tests {
         assert!(cfc(&[], "worker", false, "codex", "codex").is_empty(), "Claude 좌석만");
         assert!(chrome_allowed_for("master", false));
         assert!(!chrome_allowed_for("master-2", false), "이름이 비슷해도 master 가 아니다");
+    }
+
+    /// r9 F4 — 다시 연결 탭은 연결 파일이 없고 크롬이 꺼져 있을 때만 막는다(켜져 있으면 탭이 사용자 크롬에 열려 해가 없다).
+    #[test]
+    fn chrome_reconnect_tab_is_held_only_when_chrome_is_closed_and_unlinked() {
+        assert!(should_hold_chrome_reconnect_tab(false, false));
+        assert!(!should_hold_chrome_reconnect_tab(false, true), "크롬이 켜져 있으면 그대로");
+        assert!(!should_hold_chrome_reconnect_tab(true, false), "연결 파일이 있으면 Claude Code 가 탭을 열지 않는다");
+        assert!(!should_hold_chrome_reconnect_tab(true, true));
+        if cfg!(not(windows)) {
+            assert!(!hold_chrome_reconnect_tab("master", false, "claude", "claude"), "맥·리눅스는 해당 없음");
+        }
     }
 
     #[test]

@@ -22951,6 +22951,9 @@ fn run_rotate(timeout: u64, skip_drain: bool, skip_depts: bool) -> i32 {
     let mac_takeover = cfg!(target_os = "macos") && base;
     // 새 데몬의 자동 복원을 ④ 뒤로 미룬다 — 좌석이 먼저 뜨면 윈도우는 팩 교체가 막힌다(rc 24 · r8-1). launchd 갈래는 데몬이 먼저 뜨고 맥 rename 은 막히지 않아 그대로 둔다.
     let hold = if mac_takeover { None } else { cys::restore_hold::RestoreHold::arm(&cys::socket_path()) };
+    // 옛 데몬 트리 — 윈은 ④ 직전에 팩 파일을 쥔 그 자손(옛 좌석의 훅)만 기다렸다 끝낸다(r9 F1 · 데몬이 죽은 뒤에는 고리를 다시 못 본다).
+    #[allow(unused_mut)]
+    let mut old_tree = cys::pack_holders::OldTree::default();
     if mac_takeover {
         let ok = run(&["daemon", "install", "--takeover"]).map(|o| o.status.success()).unwrap_or(false);
         if !ok {
@@ -22976,6 +22979,7 @@ fn run_rotate(timeout: u64, skip_drain: bool, skip_depts: bool) -> i32 {
         if let Some(pid) = pid {
             #[cfg(windows)]
             {
+                old_tree = cys::pack_holders::capture(pid as u32);
                 if let Ok(r) = request("ledger.list", json!({})) {
                     // 앱 scoped_pids_from_ledger_list 와 같은 규칙 — scoped 항목만(데몬이 생명주기를 보장한 것).
                     for e in r["entries"].as_array().cloned().unwrap_or_default() {
@@ -23036,14 +23040,19 @@ fn run_rotate(timeout: u64, skip_drain: bool, skip_depts: bool) -> i32 {
     // ④ 새 팩 반영
     // ★U2 2판(codex 1R C1): 자식 참가자에는 인자 `--txn` 과 env 를 함께 넘긴다(위임 계약 ⓪ — env 만으론 거부).
     // ★4판(Fable 3R N4): 토큰·깊이 env = 이 자식 Command 에만(txn_child_env) — 프로세스 env 에 심지 않는다.
-    let init_ok = {
+    // 반환 = (성공, init-pack stderr 끝) — 윈 갈래는 실패한 시도마다 사유를 남긴다(r9 F1 rc 24 는 사유 줄이 없어 원인을 못 갈랐다).
+    let init_pack = || {
         let mut cmd = cys::hidden_command(&exe);
         cmd.args(["init-pack", "--no-install-hook"]);
         if let Some(t) = txn_child_env(&mut cmd) {
             cmd.args(["--txn", &t]);
         }
-        output_via_file(cmd).map(|o| o.status.success()).unwrap_or(false)
+        match output_via_file(cmd) {
+            Some(o) => (o.status.success(), stderr_tail(&o.stderr)),
+            None => (false, "실행 실패".to_string()),
+        }
     };
+    let init_ok = if cfg!(windows) { init_pack_clearing_holders(&old_tree, init_pack) } else { init_pack().0 };
     drop(hold);
     if !init_ok {
         eprintln!("[rotate] ④ 새 팩 반영 실패 — 복귀 표식을 남겼다(앱 다음 기동이 재시도)");
@@ -23078,6 +23087,52 @@ fn run_rotate(timeout: u64, skip_drain: bool, skip_depts: bool) -> i32 {
         }
     );
     rc
+}
+
+/// rotate ④ 윈 갈래 — 시도마다 앞서 팩 파일을 쥔 옛 트리 자손을 기다렸다 끝내고, 실패하면 지수 백오프로 다시 한다(r9 F1).
+/// 그래도 실패하면 호출부가 종전처럼 복귀 표식을 남기고 rc 24 로 멈춘다. 옛 트리 밖 홀더는 건드리지 않고 기록만 한다.
+fn init_pack_clearing_holders(old_tree: &cys::pack_holders::OldTree, mut init_pack: impl FnMut() -> (bool, String)) -> bool {
+    let (ok, tries) = cys::pack_holders::retry_with_backoff(
+        |n| {
+            #[cfg(windows)]
+            {
+                let (sweep, others) = cys::pack_holders::clear_for_swap(&cys::pack::pack_dir(), old_tree);
+                if sweep != cys::pack_holders::Sweep::default() || !others.is_empty() {
+                    eprintln!(
+                        "[rotate] ④ {}회차 팩 홀더 — 옛 좌석 자손: 스스로 끝남 {} · 끝냄 {:?} · 남음 {:?} · 그 밖(건드리지 않음) {:?}",
+                        n + 1,
+                        sweep.exited,
+                        sweep.killed,
+                        sweep.left,
+                        others
+                    );
+                }
+            }
+            #[cfg(not(windows))]
+            let _ = (n, old_tree);
+        },
+        |n| {
+            let (ok, why) = init_pack();
+            if !ok {
+                eprintln!("[rotate] ④ {}회차 새 팩 반영 실패: {why}", n + 1);
+            }
+            ok
+        },
+        std::thread::sleep,
+        &cys::pack_holders::PACK_RETRY_BACKOFF,
+    );
+    if tries > 1 {
+        eprintln!("[rotate] ④ 새 팩 반영 {} — {tries}회 시도", if ok { "성공" } else { "실패" });
+    }
+    ok
+}
+
+/// 자식 stderr 의 끝 3줄(한 줄로) — 진단용.
+fn stderr_tail(err: &[u8]) -> String {
+    let s = String::from_utf8_lossy(err);
+    let lines: Vec<&str> = s.lines().filter(|l| !l.trim().is_empty()).collect();
+    let tail = lines[lines.len().saturating_sub(3)..].join(" | ");
+    if tail.is_empty() { "사유 출력 없음".to_string() } else { tail }
 }
 
 /// rotate ⑥ 대상 부서(순수) — 레지스트리(depts.json)에 있고 **지금 살아 있는** 부서만. 죽은 부서는 되살리지
@@ -31152,7 +31207,10 @@ mod tests {
         assert!(arm < at(r#"c.args(["/PID", &pid.to_string(), "/F"]);"#), "옛 데몬 정지 앞");
         assert!(arm < at(r#"run(&["identify"])"#), "새 데몬 기동 앞");
         let release = at("drop(hold);");
-        assert!(at("let init_ok = {") < release, "④ 뒤");
+        assert!(at("let init_ok = if cfg!(windows)") < release, "④ 뒤");
+        // r9 F1 — 옛 트리는 옛 데몬을 내리기 전에 찍는다 · 윈만 홀더 정리·재시도 · 맥은 종전 1회.
+        assert!(at("old_tree = cys::pack_holders::capture(pid as u32);") < at(r#"c.args(["/PID", &pid.to_string(), "/F"]);"#));
+        assert!(body.contains("let init_ok = if cfg!(windows) { init_pack_clearing_holders(&old_tree, init_pack) } else { init_pack().0 };"));
         assert!(release < at("if !init_ok {"), "④ 실패여도 표식을 풀어 데몬이 복원한다");
         let settled = at("let restore_pending = !wait_auto_restore_settled(rotate_restore_wait(TXN_CHILD.get().is_some()));");
         assert!(at("let _ = std::fs::remove_file(&marker);") < settled, "④ 성공 뒤");

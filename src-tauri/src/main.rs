@@ -4416,12 +4416,8 @@ fn spawn_org_restore(app: AppHandle) {
         // 본부(기본 소켓) — setup의 ensure_daemon으로 이미 가동 확정.
         // ★v113-restore: 첫 실행이 실패면 대기 후 1회 재실행 — 실패 알림은 재실행까지 실패일 때만.
         // 상한을 넘겨도 자동 복원이 돌면 사이드카를 돌리지 않는다 — 겹치면 같은 역할이 홈 폴더에 하나 더 선다(794 r2). 대기 초과는 복원 실패가 아니다.
-        let (hq_ok, hq_summary) = if wait_auto_restore_settled().await {
-            run_sidecar_restore_judged(None).await
-        } else {
-            let _ = app.emit("restore-progress", json!({"phase": "skip", "detail": "자동 복원이 진행 중 — 본부 좌석은 자동 복원이 이어서 세웁니다"}));
-            (true, None)
-        };
+        let hq_pending = !wait_auto_restore_settled().await;
+        let (hq_ok, hq_summary) = if hq_pending { (true, None) } else { run_sidecar_restore_judged(None).await };
         let hq_note = (!hq_ok).then(|| restore_note("본부", hq_summary));
         // ★WP-3 리바이버 게이트: base 데몬 dept 묘비 — 삭제-의도 부서는 재기동에서 제외(+생존 시 reap).
         //
@@ -4559,7 +4555,7 @@ fn spawn_org_restore(app: AppHandle) {
         // 이 작업의 목적). error 페이즈는 '본부 실패 + 부서 없음' 전면 실패만 담당(위).
         let _ = app.emit(
             "restore-progress",
-            json!({"phase": "done", "hq_ok": hq_ok, "hq_note": hq_note, "ok": ok, "fail": fail,
+            json!({"phase": "done", "hq_ok": hq_ok, "hq_pending": hq_pending, "hq_note": hq_note, "ok": ok, "fail": fail,
                    "depts_unreadable": depts_unreadable}),
         );
     });
@@ -11268,8 +11264,9 @@ exit 0
         let apply = body_at("fn maybe_apply_pending_update(app: &AppHandle, hold: Option<cys::restore_hold::RestoreHold>) {");
         assert!(apply.contains("drop(hold);\n    spawn_org_restore(app.clone());"), "표식을 먼저 풀고 데몬 복원 뒤에 돈다");
         let org = body_at("fn spawn_org_restore(app: AppHandle) {");
-        assert!(org.contains("let (hq_ok, hq_summary) = if wait_auto_restore_settled().await {\n            run_sidecar_restore_judged(None).await\n        } else {"), "사이드카는 데몬 복원 뒤 · 복원이 아직 돌면 돌지 않는다");
-        assert!(org.contains("(true, None)\n        };"), "대기 초과는 복원 실패가 아니다");
+        assert!(org.contains("let hq_pending = !wait_auto_restore_settled().await;"), "사이드카는 데몬 복원 뒤");
+        assert!(org.contains("let (hq_ok, hq_summary) = if hq_pending { (true, None) } else { run_sidecar_restore_judged(None).await };"), "복원이 아직 돌면 돌지 않는다 · 대기 초과는 복원 실패가 아니다");
+        assert!(org.contains(r#""hq_pending": hq_pending"#), "완료 알림이 진행 중을 말한다");
         let plan = body_at("fn pending_update_plan() -> PendingUpdatePlan {");
         assert!(apply.contains("match pending_update_plan() {"), "기동 앞 판단과 같은 답");
         assert!(

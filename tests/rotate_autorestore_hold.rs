@@ -18,6 +18,7 @@ struct Box_ {
     base: PathBuf,
     sock: PathBuf,
     path: String,
+    exe: PathBuf,
 }
 
 impl Box_ {
@@ -28,11 +29,11 @@ impl Box_ {
         let base = base.canonicalize().unwrap(); // 좌석이 적는 폴더는 실경로다(맥 /tmp → /private/tmp).
         std::fs::create_dir_all(base.join("run")).unwrap();
         let sock = base.join("run/cysd.sock");
-        Self { base, sock, path: std::env::var("PATH").unwrap_or_default() }
+        Self { base, sock, path: std::env::var("PATH").unwrap_or_default(), exe: CYS.into() }
     }
 
     fn cmd(&self, args: &[&str]) -> Command {
-        let mut c = Command::new(CYS);
+        let mut c = Command::new(&self.exe);
         c.args(args)
             .env_clear()
             .env("PATH", &self.path)
@@ -157,8 +158,8 @@ impl Box_ {
         std::fs::write(self.base.join("run/topology.json"), json!({"entries": entries}).to_string()).unwrap();
     }
 
-    /// 좌석 수 = 역할 수 · 전부 master 폴더에서 한 번씩 떴다(겹치면 같은 역할이 홈 폴더에 하나 더 선다 · 794 r2).
-    fn assert_one_seat_per_role(&self, proj: &Path, seats: usize) {
+    /// 좌석 수 = 역할 수 · 전부 master 폴더에서 떴다(겹치면 같은 역할이 홈 폴더에 하나 더 선다 · 794 r2).
+    fn assert_every_role_seated(&self, proj: &Path, seats: usize) {
         let org = self.rpc("org.status").unwrap();
         let mut got: Vec<String> = org["surfaces"]
             .as_array()
@@ -173,8 +174,41 @@ impl Box_ {
         want.sort();
         assert_eq!(got, want, "좌석 수 = 역할 수");
         let log = self.claude_log();
-        assert_eq!(log.lines().count(), seats, "한 번씩 떴다: {log}");
         assert!(log.lines().all(|l| l == format!("cwd={}", proj.display())), "홈에서 뜬 좌석이 없다: {log}");
+    }
+
+    /// 거기에 스폰도 역할마다 한 번이다.
+    fn assert_one_seat_per_role(&self, proj: &Path, seats: usize) {
+        self.assert_every_role_seated(proj, seats);
+        assert_eq!(self.claude_log().lines().count(), seats, "한 번씩 떴다");
+    }
+
+    /// 깃발이 서면 phoenix 가 `secs` 초 뒤 exit 1 로 끝난다. self-test 와 깃발 전 복원은 진짜 python 이 돈다.
+    /// 빌드 폴더의 동봉 python 이 PATH 보다 앞서므로 실행 파일을 상자로 옮겨 띄운다.
+    fn fail_phoenix(&mut self, secs: u32) {
+        let bin = self.base.join("sbin");
+        std::fs::create_dir_all(&bin).unwrap();
+        for name in ["cys", "cysd"] {
+            std::fs::copy(PathBuf::from(CYS).with_file_name(name), bin.join(name)).unwrap();
+        }
+        self.exe = bin.join("cys");
+        let p = bin.join("python3");
+        let body = format!(
+            "#!/bin/sh\ncase \"$*\" in\n  *restore*) if [ -e {0}/phoenix-fails ]; then sleep {secs}; exit 1; fi;;\nesac\nPATH='{1}' exec python3 \"$@\"\n",
+            self.base.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        std::fs::write(&p, body).unwrap();
+        std::fs::set_permissions(&p, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        self.path = format!("{}:{}", bin.display(), self.path);
+    }
+
+    fn start_failing(&self) {
+        std::fs::write(self.base.join("phoenix-fails"), "").unwrap();
+    }
+
+    fn notices(&self) -> usize {
+        self.rpc("feed.list").unwrap()["items"].as_array().map_or(0, |a| a.iter().filter(|i| i["title"] == "자동 복원 확인 필요").count())
     }
 
     fn claude_log(&self) -> String {
@@ -277,6 +311,64 @@ fn a_restore_slower_than_the_wait_is_left_to_phoenix() {
     assert_eq!(b.phase().as_deref(), Some("running"), "상한을 넘겼다");
     assert_eq!(b.settled(420), "done");
     b.assert_one_seat_per_role(&proj, 17);
+}
+
+/// 794 r3 사유 ① — 복원 중에 다시 재시작해도(운영 기본값 · 3초 간격) 앞선 phoenix 와 겹치지 않고 새 데몬이 끝까지 세운다.
+#[test]
+fn a_second_rotate_during_the_restore_does_not_double_seats() {
+    let mut b = Box_::new("again");
+    let proj = b.seats(3);
+    b.up();
+    b.settled(120);
+    b.write_topology(&proj, 17);
+
+    let first = b.rotate().wait_with_output().unwrap();
+    rc_ok(&first);
+    assert!(String::from_utf8_lossy(&first.stdout).contains("조직 복원 진행 중"), "{}", String::from_utf8_lossy(&first.stdout));
+    std::thread::sleep(Duration::from_secs(3));
+    let second = b.rotate().wait_with_output().unwrap();
+    rc_ok(&second);
+    assert_eq!(b.settled(600), "done");
+    b.assert_every_role_seated(&proj, 17);
+    assert_eq!(b.notices(), 0, "실패가 아니다");
+}
+
+/// 794 r3 사유 ② — 대기 상한 뒤에 복원이 실패하면 rc 0 으로 끝난 뒤라도 알림 1건이 나간다.
+#[test]
+fn a_restore_failing_past_the_wait_raises_one_notice() {
+    let mut b = Box_::new("late");
+    let proj = b.seats(0);
+    b.fail_phoenix(8);
+    b.up();
+    b.settled(120);
+    b.write_topology(&proj, 5);
+    b.start_failing();
+
+    let o = b.rotate_cmd().env("CYS_ROTATE_RESTORE_WAIT_SEC", "3").env("CYS_AUTORESTORE_RETRY_DELAY_MS", "100").output().unwrap();
+    rc_ok(&o);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("조직 복원 진행 중"), "{}", String::from_utf8_lossy(&o.stdout));
+    assert_eq!(b.notices(), 0, "아직 끝나지 않았다");
+    assert_eq!(b.settled(60), "done");
+    assert_eq!(b.notices(), 1);
+    assert_eq!(b.claude_log(), "", "⑤ 가 돌지 않았다");
+}
+
+/// 재시도 대기(retry_wait)도 복원 중이다 — 기한에 걸리면 ⑤ 를 돌지 않는다(794 r3 M13).
+#[test]
+fn the_retry_wait_counts_as_a_restore_in_progress() {
+    let mut b = Box_::new("retry");
+    let proj = b.seats(0);
+    b.fail_phoenix(0);
+    b.up();
+    b.settled(120);
+    b.write_topology(&proj, 3);
+    b.start_failing();
+
+    let o = b.rotate_cmd().env("CYS_ROTATE_RESTORE_WAIT_SEC", "3").env("CYS_AUTORESTORE_RETRY_DELAY_MS", "15000").output().unwrap();
+    rc_ok(&o);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("조직 복원 진행 중"), "{}", String::from_utf8_lossy(&o.stdout));
+    assert_eq!(b.phase().as_deref(), Some("retry_wait"));
+    assert_eq!(b.claude_log(), "", "⑤ 가 돌지 않았다");
 }
 
 /// launchd 갈래와 같은 모양 — 표식이 없는 rotate 도 phoenix 가 끝나기 전에는 ⑤ 를 돌지 않는다(794 r2 선재 사항). 실 launchd 는 라이브라 재지 않는다.

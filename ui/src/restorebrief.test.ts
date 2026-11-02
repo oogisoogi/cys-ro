@@ -223,6 +223,13 @@ describe("v115 B5 — 복원 카드 시점 = 복원 완료 뒤", () => {
     expect(head.includes("maybeShowRestoreBrief();")).toBe(true);
     expect(src.includes("briefGate.graceElapsed = true;")).toBe(true);
   });
+  it("배선: 본부 복원이 아직 돌면 「완료」 라고 말하지 않고 옛 자리를 치우지 않는다(794 r3)", () => {
+    const src = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+    const pending = src.indexOf("else if (p.hq_pending) toast(");
+    expect(pending).toBeGreaterThan(0);
+    expect(pending).toBeLessThan(src.indexOf('"✅ 직원 복귀 완료"'));
+    expect(src.includes("if (!p.hq_pending)\n        exitedSweepArm = armSweep(")).toBe(true);
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────────────

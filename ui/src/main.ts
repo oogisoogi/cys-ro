@@ -10900,6 +10900,7 @@ async function start() {
     const p = (e.payload ?? {}) as {
       phase?: string;
       hq_ok?: boolean;
+      hq_pending?: boolean; // 대기 상한을 넘겨 본부 좌석을 자동 복원이 아직 세우는 중
       hq_note?: string | null;
       ok?: number;
       fail?: number;
@@ -10928,6 +10929,7 @@ async function start() {
       else if (fail > 0) toast("health", "⚠ 직원 복귀 일부 실패", `부서 복원 성공 ${ok} · 실패 ${fail} — 상태를 점검하세요.`);
       // ①(Fable R2 A) 부서 목록을 못 읽어 부서 복원을 건너뛰었으면 「완료」 가 아니다.
       else if (p.depts_unreadable) toast("health", "⚠ 부서 복원 건너뜀", deptRegistryUnreadableNote(p.depts_unreadable));
+      else if (p.hq_pending) toast("watchdog", "👥 직원 복귀 진행 중", "본부 좌석은 자동 복원이 이어서 세웁니다. 실패하면 알림으로 알려 드립니다.");
       else toast("watchdog", "✅ 직원 복귀 완료", `노드 세션 복원 완료 (부서 ${ok}).`);
       // ★(v112-restore ①) 카드는 앱 시작 직후 뜨고 복원 주입은 그 뒤 끝난다 — 미제출 실측 자리는
       //   복원이 끝난 이 시점에 알림 1줄로 정직하게 알린다(묻지 않는다 · 자동 조치는 이미 1회 했다).
@@ -10949,10 +10951,11 @@ async function start() {
       })();
       // ★B17: 복원이 끝난 지금이 옛 자리를 치울 유일한 시점이다(새 자리는 이미 섰다).
       //   다음 3초 틱이 한 번만 쓸고 스스로 무장을 내린다.
-      exitedSweepArm = armSweep(
-        workspaces.map((w) => [w.socket ?? "", collectSids(w.tree)] as const),
-        Date.now(),
-      );
+      if (!p.hq_pending)
+        exitedSweepArm = armSweep(
+          workspaces.map((w) => [w.socket ?? "", collectSids(w.tree)] as const),
+          Date.now(),
+        );
       // 3초를 기다리지 않는다 — 사용자가 보는 것은 "복원됐다"는 말 직후의 화면이다.
       // 이 틱 안에서 ①옛 자리 닫기 → ②새 roleBySid 생성 → ③formationIfRowOnly 배치가 그 순서로 돈다.
       void refreshPaneTitles();

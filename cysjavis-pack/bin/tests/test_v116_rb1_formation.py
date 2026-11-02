@@ -66,6 +66,7 @@ class P2RestoreVerdict(unittest.TestCase):
         cases = [
             ({"daemon": {"auto_restore": "running", "started_at": 900}}, "wait"),
             ({"daemon": {"auto_restore": "retry_wait", "started_at": 900}}, "wait"),
+            ({"daemon": {"auto_restore": "held", "started_at": 900}}, "wait"),
             ({"daemon": {"auto_restore": "running"}}, "wait"),                  # 나이 모름 = 기다림(상한은 대기 루프)
             ({"daemon": {"auto_restore": "running", "started_at": 1}}, "go"),   # Fable M-3: 999s = 걸린 복원 → 진행
             ({"daemon": {"auto_restore": "done", "started_at": 999}}, "go"),

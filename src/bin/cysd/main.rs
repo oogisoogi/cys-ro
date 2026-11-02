@@ -1917,16 +1917,19 @@ fn log_lock_loss(state_dir: &std::path::Path, lock_path: &std::path::Path, reaso
 /// 재부팅 뒤 편성(javis_formation)이 이 데몬의 복원과 **같은 순간** 좌석을 세워 master 이중 보유·worker 여분이
 /// 생겼다(VM r4 R-B1). 편성은 `org.status` `daemon.auto_restore` 가 running·retry_wait 인 동안 좌석을 세우지 않는다.
 /// 기본 OFF = 복원을 발화하지 않는 데몬(옵트아웃·시험 데몬) — 편성이 기다리지 않는다.
+/// HELD = 재시작의 팩 반영이 끝나기를 기다리는 중([`cys::restore_hold`]) — 좌석을 세우면 그 교체가 막히므로 편성도 기다린다.
 pub const AUTO_RESTORE_OFF: u8 = 0;
 pub const AUTO_RESTORE_RUNNING: u8 = 1;
 pub const AUTO_RESTORE_RETRY_WAIT: u8 = 2;
 pub const AUTO_RESTORE_DONE: u8 = 3;
+pub const AUTO_RESTORE_HELD: u8 = 4;
 
 pub fn auto_restore_phase_str(v: u8) -> &'static str {
     match v {
         AUTO_RESTORE_RUNNING => "running",
         AUTO_RESTORE_RETRY_WAIT => "retry_wait",
         AUTO_RESTORE_DONE => "done",
+        AUTO_RESTORE_HELD => "held",
         _ => "off",
     }
 }
@@ -2356,11 +2359,14 @@ fn spawn_auto_restore(
             let tail = args; // ["restore","--auto"]
             let log_path = state_dir.join("phoenix-restore.log");
             let state_dir = state_dir.to_path_buf();
+            // 재시작이 띄운 기동 = 팩 반영이 끝날 때까지 미룬다. 먼저 좌석을 띄우면 윈도우에서 팩 교체가 막힌다(rotate ④ · rc 24).
+            let held = cys::restore_hold::held(socket_path);
+            let hold_socket = socket_path.to_path_buf();
             // ★v116-pack(P2-b): accept 루프 시작 **전**(post_listen_boot 동기 구간)에 running 을 찍는다 —
             //   소켓이 요청을 받기 시작한 첫 순간부터 편성이 「복원 중」을 본다(0.1초 틈도 없게).
             daemon
                 .auto_restore_phase
-                .store(AUTO_RESTORE_RUNNING, std::sync::atomic::Ordering::Relaxed);
+                .store(if held { AUTO_RESTORE_HELD } else { AUTO_RESTORE_RUNNING }, std::sync::atomic::Ordering::Relaxed);
             let phase_daemon = daemon.clone();
             let daemon = daemon.clone();
             std::thread::spawn(move || {
@@ -2370,6 +2376,12 @@ fn spawn_auto_restore(
                 //   감싸 panic 을 삼키지 않고 stderr + phoenix-restore.log 에 **1회 기록**한다 — 무한 재스폰 금지
                 //   (재기동은 다음 데몬 부트/schtasks 소관). 이 웨이브가 죽이려는 '스레드 침묵사' 클래스의 구조 수리.
                 guard_restore_panic(&log_for_panic, || {
+                    if held {
+                        eprintln!("[cysd] auto-restore held (재시작의 팩 반영을 기다린다)");
+                        while cys::restore_hold::held(&hold_socket) {
+                            std::thread::sleep(std::time::Duration::from_millis(500));
+                        }
+                    }
                     // ★B1: 임베드 추출 실행 우선(바이너리=스크립트 동일 커밋 하드보장) → 실패 시 manifest-검증 디스크 폴백.
                     match resolve_phoenix_source(&state_dir, &disk_phoenix, &program, &daemon) {
                         PhoenixResolve::Ready { script, cleanup } => {
@@ -2607,12 +2619,20 @@ fn loop_auto_restore(
     let args = args.to_vec();
     let env = env.to_vec();
     let log_path = log_path.to_path_buf();
+    let state_dir = log_path.parent().map(|d| d.to_path_buf()).unwrap_or_default();
     let delay = autorestore_retry_delay();
+    let mut last = None;
     loop_auto_restore_with(
         |attempt| {
             let code = auto_restore_attempt(&daemon.auto_restore_phase, attempt, || {
+                // 앞선 데몬의 phoenix 가 돌면 먼저 시작해도 LEASE_HELD 로 빈손으로 끝나고, 그 phoenix 가 세운 좌석 일부는 재시작으로 이미 내려갔다 — 끝나기를 기다렸다가 이 데몬이 다시 세운다(794 r3).
+                let free = wait_restore_run_free(|| reclaim::restore_run_lock_held(&state_dir), FOREIGN_RESTORE_WAIT, std::time::Duration::from_millis(500));
+                if !free {
+                    daemon.push_feed_notification("error", RESTORE_NOTICE_TITLE, "앞선 자동 복원이 15분 넘게 끝나지 않습니다 — 좌석을 확인하고 필요하면 ↻ 재시작으로 다시 시도하세요.", None);
+                }
                 run_auto_restore_once(&daemon, &program, &args, &env, &log_path)
             });
+            last = code;
             // ★v115-restore(A4): 재시도 대기(기본 60초) 동안 master 자리가 비어 있으면 사용자는 아무 말도 못
             //   들었다(904 VM ↻-B1 · 본부 master 약 3분 공백 · 알림 0). 재시도 직전 1회만 알린다.
             let master_present = daemon.roles.lock().unwrap().contains_key("master");
@@ -2623,6 +2643,35 @@ fn loop_auto_restore(
         },
         delay,
     );
+    // rotate 는 복원이 끝나기 전에 rc 0 으로 돌아올 수 있다 — 이 복원이 끝내 실패하면 받아 줄 곳이 없으므로 여기서 알린다(794 r3).
+    if let Some(body) = restore_final_notice(last) {
+        daemon.push_feed_notification("error", RESTORE_NOTICE_TITLE, &body, None);
+    }
+}
+
+/// 앞선 데몬의 복원을 기다리는 상한 — 멈춘 phoenix 가 이 데몬의 복원을 영영 막지 않게 한다. rotate 의 최대 대기(`HOLD_MAX_SECS`)보다 길어야 rotate 기한이 먼저 끝나 ⑤ 생략이 유지된다(794 r4).
+const FOREIGN_RESTORE_WAIT: std::time::Duration = std::time::Duration::from_secs(960);
+const RESTORE_NOTICE_TITLE: &str = "자동 복원 확인 필요";
+
+/// `held` 가 풀리기를 기다린다 — 풀리면 true · 상한까지 잡혀 있으면 false.
+fn wait_restore_run_free(held: impl Fn() -> bool, cap: std::time::Duration, poll: std::time::Duration) -> bool {
+    let start = std::time::Instant::now();
+    while held() {
+        if start.elapsed() >= cap {
+            return false;
+        }
+        std::thread::sleep(poll);
+    }
+    true
+}
+
+/// 자동 복원의 마지막 결과 알림(순수) — 0 은 알리지 않는다 · 재시도 소진 · 5·6 · 스폰 실패는 1건.
+fn restore_final_notice(code: Option<i32>) -> Option<String> {
+    if code == Some(0) {
+        return None;
+    }
+    let exit = code.map_or("실행 실패".to_string(), |c| format!("exit {c}"));
+    Some(format!("자동 복원이 좌석을 다 확인하지 못하고 끝났습니다({exit}) — 좌석을 확인하고 필요하면 ↻ 재시작으로 다시 시도하세요."))
 }
 
 /// ★v115-restore(A4) 공백 알림 판정 — **순수**. 첫 실행이 재시도 대상 비0(5·6·0 제외)이고 master 좌석이
@@ -5565,7 +5614,8 @@ mod auto_restore_tests {
 
     use super::{
         restore_retry_notice,
-        auto_restore_attempt, auto_restore_phase_str, auto_restore_will_retry, AUTO_RESTORE_DONE, AUTO_RESTORE_OFF,
+        auto_restore_attempt, auto_restore_phase_str, auto_restore_will_retry, restore_final_notice, wait_restore_run_free, FOREIGN_RESTORE_WAIT,
+        AUTO_RESTORE_DONE, AUTO_RESTORE_HELD, AUTO_RESTORE_OFF,
         AUTO_RESTORE_RETRY_WAIT, AUTO_RESTORE_RUNNING,
         bundled_python3, disk_fallback_verify, extract_phoenix_embed, phoenix_embed_files,
         phoenix_self_test,
@@ -5807,6 +5857,7 @@ mod auto_restore_tests {
         // ★v116-pack(R-B1 P2-b): 편성(javis_formation.restore_settle_verdict)이 읽는 wire 값 — 이름이 바뀌면 편성이
         //   「옛 데몬」 폴백으로 떨어진다(대기 90초). 이름을 여기서 고정한다.
         assert_eq!(auto_restore_phase_str(AUTO_RESTORE_OFF), "off");
+        assert_eq!(auto_restore_phase_str(AUTO_RESTORE_HELD), "held");
         assert_eq!(auto_restore_phase_str(AUTO_RESTORE_RUNNING), "running");
         assert_eq!(auto_restore_phase_str(AUTO_RESTORE_RETRY_WAIT), "retry_wait");
         assert_eq!(auto_restore_phase_str(AUTO_RESTORE_DONE), "done");
@@ -5868,6 +5919,23 @@ mod auto_restore_tests {
     fn success_runs_once() {
         let runs = loop_auto_restore_with(|_a| Some(0), Duration::from_millis(0));
         assert_eq!(runs, 1);
+    }
+
+    /// 794 r3 — 자동 복원의 끝이 비0 이면 알린다 · 0 은 조용하다 · 멈춘 앞선 복원은 상한에서 놓는다.
+    #[test]
+    fn restore_final_notice_and_foreign_wait() {
+        assert_eq!(restore_final_notice(Some(0)), None);
+        for code in [Some(1), Some(3), Some(5), Some(6), None] {
+            assert!(restore_final_notice(code).is_some(), "{code:?}");
+        }
+        assert_eq!(FOREIGN_RESTORE_WAIT, Duration::from_secs(960));
+        let left = std::cell::Cell::new(3);
+        let held = || {
+            left.set(left.get() - 1);
+            left.get() > 0
+        };
+        assert!(wait_restore_run_free(held, Duration::from_secs(5), Duration::from_millis(1)));
+        assert!(!wait_restore_run_free(|| true, Duration::from_millis(5), Duration::from_millis(1)));
     }
 
     /// ★스폰 실패(None)도 비0 클래스 — 1회 재시도 후 소진(2회).

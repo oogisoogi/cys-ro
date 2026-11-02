@@ -493,7 +493,15 @@ fn canonical_state_dir(state_dir: &Path) -> PathBuf {
 /// 락 영역은 phoenix 와 정확히 같아야 한다: unix `flock`(파일 전체) · Windows 는
 /// `msvcrt.locking(LK_NBLCK, 1)` 이 seek(0) 뒤 **byte 0 한 바이트**를 잠그므로 같은 범위를 쓴다.
 pub fn try_hold_restore_lease(state_dir: &Path) -> (LeaseState, Option<LeaseGuard>) {
-    let path = restore_lease_path(state_dir);
+    try_hold_lock(restore_lease_path(state_dir))
+}
+
+/// phoenix 의 `restore.run.lock` 이 지금 잡혀 있는가 — phoenix 는 데몬이 죽어도 살아남으므로 앞선 데몬의 복원이 아직 돌 수 있다. 판정 불가는 false(복원을 막지 않는다).
+pub fn restore_run_lock_held(state_dir: &Path) -> bool {
+    matches!(try_hold_lock(canonical_state_dir(state_dir).join("phoenix").join("restore.run.lock")).0, LeaseState::Held)
+}
+
+fn try_hold_lock(path: PathBuf) -> (LeaseState, Option<LeaseGuard>) {
     if let Some(dir) = path.parent() {
         if std::fs::create_dir_all(dir).is_err() {
             return (LeaseState::Unavailable, None);

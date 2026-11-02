@@ -5263,8 +5263,8 @@ fn recover_interrupted_swap(dir: &Path) -> Result<(), String> {
 /// 잠금이 재시도 동안 풀리지 않으면 실패한다 — rotate 는 rc 24 로 멈추고 다음 기동이 다시 한다.
 ///
 /// L6 전제 명문화: 두 rename 사이엔 pack_dir가 잠깐 **부재하는 창**이 있다(rename 2회라 순간 공백).
-/// 상주 소비자가 그 창에 팩을 읽으면 일시적 not-found가 난다. ⚠rotate 는 새 데몬이 좌석을 복원하는 동안 이 함수를 부른다 — 그 겹침을
-/// 없애는 수리는 1.1.12(체크리스트 §J) · 겹쳐도 팩이 지워지지 않게 하는 것이 이 함수의 몫이다.
+/// 상주 소비자가 그 창에 팩을 읽으면 일시적 not-found가 난다. rotate 는 맥 본부 launchd 갈래만 새 데몬이 좌석을 복원하는 동안 이 함수를 부른다
+/// (그 밖의 갈래는 [`crate::restore_hold`] 가 복원을 미룬다) · 겹쳐도 팩이 지워지지 않게 하는 것이 이 함수의 몫이다.
 pub fn atomic_swap(dir: &Path, staging: &Path) -> Result<(), String> {
     atomic_swap_with(dir, staging, &|a: &Path, b: &Path| std::fs::rename(a, b), SWAP_RENAME_WAIT)
 }

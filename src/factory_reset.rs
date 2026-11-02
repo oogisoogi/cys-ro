@@ -1137,11 +1137,11 @@ fn now_unix() -> u64 {
 }
 
 #[cfg(unix)]
-fn pid_alive(pid: u32) -> bool {
+pub(crate) fn pid_alive(pid: u32) -> bool {
     pid != 0 && unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
 }
 #[cfg(not(unix))]
-fn pid_alive(pid: u32) -> bool {
+pub(crate) fn pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
@@ -1153,7 +1153,7 @@ fn pid_alive(pid: u32) -> bool {
 /// 센티널 기록(형식: `<unix_ts> <pid>`). 실패는 무시 — 센티널은 **보조** 방어층이고,
 /// 이걸 못 써서 리셋 자체가 막히면 안 된다(주 방어는 정지 실측 + quiescent 게이트).
 /// 이 pid 가 cys 계열 프로세스인가(리셋을 실행할 수 있는 주체) — 센티널 소유자 검증용.
-fn pid_is_cys_family(pid: u32) -> bool {
+pub(crate) fn pid_is_cys_family(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
@@ -1161,11 +1161,14 @@ fn pid_is_cys_family(pid: u32) -> bool {
     sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[sysinfo::Pid::from_u32(pid)]), true);
     sys.process(sysinfo::Pid::from_u32(pid))
         .and_then(|p| p.name().to_str().map(|s| s.to_ascii_lowercase()))
-        .map(|b| {
-            let b = b.rsplit(['/', '\\']).next().unwrap_or(&b).to_string();
-            b == "cys" || b == "cys.exe" || b == "cys-app" || b == "cys-app.exe"
-        })
+        .map(|b| is_cys_family_name(&b))
         .unwrap_or(false)
+}
+
+/// 소문자 프로세스 이름이 cys 계열인가 — `cysr` 는 설치기가 같은 내용으로 복사해 두는 이름이다(nsis-hooks.nsh · USER-MANUAL).
+fn is_cys_family_name(name: &str) -> bool {
+    let b = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    matches!(b, "cys" | "cys.exe" | "cysr" | "cysr.exe" | "cys-app" | "cys-app.exe")
 }
 
 /// 부팅 식별자 — 재부팅하면 값이 바뀐다. 센티널이 재부팅을 건너 살아남는 것을 막는다.
@@ -2662,6 +2665,16 @@ pub fn remove_pack_skill_links(skills_dir: &Path, cys_base: &Path) -> usize {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cys_family_names_include_the_cysr_copy() {
+        for n in ["cys", "cys.exe", "cysr", "cysr.exe", "cys-app", "cys-app.exe", "/usr/local/bin/cysr", "c:\\x\\cysr.exe"] {
+            assert!(is_cys_family_name(n), "{n}");
+        }
+        for n in ["cysd", "python3", "cysrr", "bash"] {
+            assert!(!is_cys_family_name(n), "{n}");
+        }
+    }
+
     use super::*;
 
     /// ★P1-4: 경로를 문자열로 단언할 때 구분자를 정규화한다. Windows 는 `\\` 라

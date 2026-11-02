@@ -8926,7 +8926,7 @@ mod tests {
         assert!(first < gate && gate < wait && wait < retry, "첫 실행 → 판정 → 대기 → 재실행 순서가 아니다");
         assert_eq!(body.matches("run_sidecar_restore_report(").count(), 2, "재실행은 1회 상한");
         let org = &prod[prod.find("fn spawn_org_restore(").unwrap()..];
-        assert!(org[..1400].contains("run_sidecar_restore_judged(None).await"), "본부가 공용 판정 층을 안 거친다");
+        assert!(org[..org.find("\n}\n").unwrap()].contains("run_sidecar_restore_judged(None).await"), "본부가 공용 판정 층을 안 거친다");
     }
 
     /// ★Fable 1.1.3 M1: 관문 보류만 남으면 재실행하지 않는다(재실행이 보류를 「이미 가동 중」으로 접어 알림 0).

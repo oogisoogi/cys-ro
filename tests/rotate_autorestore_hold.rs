@@ -95,7 +95,14 @@ impl Box_ {
 impl Drop for Box_ {
     fn drop(&mut self) {
         self.down();
-        let _ = std::fs::remove_dir_all(&self.base);
+        // 소켓이 닫힌 뒤에도 데몬이 잠깐 상태 폴더에 쓴다.
+        for _ in 0..30 {
+            let _ = std::fs::remove_dir_all(&self.base);
+            std::thread::sleep(Duration::from_millis(100));
+            if !self.base.exists() {
+                break;
+            }
+        }
     }
 }
 

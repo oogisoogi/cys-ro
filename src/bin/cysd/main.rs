@@ -2649,8 +2649,8 @@ fn loop_auto_restore(
     }
 }
 
-/// 앞선 데몬의 복원을 기다리는 상한 — 멈춘 phoenix 가 이 데몬의 복원을 영영 막지 않게 한다(편성 `RESTORE_STALE_S` 와 같은 값).
-const FOREIGN_RESTORE_WAIT: std::time::Duration = std::time::Duration::from_secs(900);
+/// 앞선 데몬의 복원을 기다리는 상한 — 멈춘 phoenix 가 이 데몬의 복원을 영영 막지 않게 한다. rotate 의 최대 대기(`HOLD_MAX_SECS`)보다 길어야 rotate 기한이 먼저 끝나 ⑤ 생략이 유지된다(794 r4).
+const FOREIGN_RESTORE_WAIT: std::time::Duration = std::time::Duration::from_secs(960);
 const RESTORE_NOTICE_TITLE: &str = "자동 복원 확인 필요";
 
 /// `held` 가 풀리기를 기다린다 — 풀리면 true · 상한까지 잡혀 있으면 false.
@@ -5928,7 +5928,7 @@ mod auto_restore_tests {
         for code in [Some(1), Some(3), Some(5), Some(6), None] {
             assert!(restore_final_notice(code).is_some(), "{code:?}");
         }
-        assert_eq!(FOREIGN_RESTORE_WAIT, Duration::from_secs(900));
+        assert_eq!(FOREIGN_RESTORE_WAIT, Duration::from_secs(960));
         let left = std::cell::Cell::new(3);
         let held = || {
             left.set(left.get() - 1);

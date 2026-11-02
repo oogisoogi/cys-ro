@@ -1917,16 +1917,19 @@ fn log_lock_loss(state_dir: &std::path::Path, lock_path: &std::path::Path, reaso
 /// 재부팅 뒤 편성(javis_formation)이 이 데몬의 복원과 **같은 순간** 좌석을 세워 master 이중 보유·worker 여분이
 /// 생겼다(VM r4 R-B1). 편성은 `org.status` `daemon.auto_restore` 가 running·retry_wait 인 동안 좌석을 세우지 않는다.
 /// 기본 OFF = 복원을 발화하지 않는 데몬(옵트아웃·시험 데몬) — 편성이 기다리지 않는다.
+/// HELD = 재시작의 팩 반영이 끝나기를 기다리는 중([`cys::restore_hold`]) — 좌석을 세우면 그 교체가 막히므로 편성도 기다린다.
 pub const AUTO_RESTORE_OFF: u8 = 0;
 pub const AUTO_RESTORE_RUNNING: u8 = 1;
 pub const AUTO_RESTORE_RETRY_WAIT: u8 = 2;
 pub const AUTO_RESTORE_DONE: u8 = 3;
+pub const AUTO_RESTORE_HELD: u8 = 4;
 
 pub fn auto_restore_phase_str(v: u8) -> &'static str {
     match v {
         AUTO_RESTORE_RUNNING => "running",
         AUTO_RESTORE_RETRY_WAIT => "retry_wait",
         AUTO_RESTORE_DONE => "done",
+        AUTO_RESTORE_HELD => "held",
         _ => "off",
     }
 }
@@ -2339,8 +2342,6 @@ fn spawn_auto_restore(
     let opted_out = cys::env_compat("CYS_NO_AUTORESTORE")
         .map(|v| v == "1")
         .unwrap_or(false);
-    // 재시작이 띄운 기동 = 팩 반영 뒤 재시작이 직접 복원한다. 여기서 좌석을 띄우면 윈도우에서 팩 교체가 막힌다(rotate ④ · rc 24).
-    let held = cys::restore_hold::held(socket_path);
     // exe_dir(데몬 바이너리 디렉터리) — PHOENIX_CYS·PATH 계산 기준.
     let exe_dir = std::env::current_exe()
         .ok()
@@ -2348,10 +2349,7 @@ fn spawn_auto_restore(
     let current_path = std::env::var("PATH").unwrap_or_default();
     let exe_dir_ref = exe_dir.as_deref().unwrap_or_else(|| std::path::Path::new("."));
     let socket = socket_path.to_string_lossy();
-    match decide_auto_restore(&cys::pack::pack_dir(), opted_out || held, exe_dir_ref, &current_path, &socket) {
-        AutoRestore::OptedOut if held => {
-            eprintln!("[cysd] auto-restore skipped (재시작이 팩 반영 뒤 복원한다)");
-        }
+    match decide_auto_restore(&cys::pack::pack_dir(), opted_out, exe_dir_ref, &current_path, &socket) {
         AutoRestore::OptedOut => {
             eprintln!("[cysd] auto-restore skipped (CYS_NO_AUTORESTORE=1)");
         }
@@ -2361,11 +2359,14 @@ fn spawn_auto_restore(
             let tail = args; // ["restore","--auto"]
             let log_path = state_dir.join("phoenix-restore.log");
             let state_dir = state_dir.to_path_buf();
+            // 재시작이 띄운 기동 = 팩 반영이 끝날 때까지 미룬다. 먼저 좌석을 띄우면 윈도우에서 팩 교체가 막힌다(rotate ④ · rc 24).
+            let held = cys::restore_hold::held(socket_path);
+            let hold_socket = socket_path.to_path_buf();
             // ★v116-pack(P2-b): accept 루프 시작 **전**(post_listen_boot 동기 구간)에 running 을 찍는다 —
             //   소켓이 요청을 받기 시작한 첫 순간부터 편성이 「복원 중」을 본다(0.1초 틈도 없게).
             daemon
                 .auto_restore_phase
-                .store(AUTO_RESTORE_RUNNING, std::sync::atomic::Ordering::Relaxed);
+                .store(if held { AUTO_RESTORE_HELD } else { AUTO_RESTORE_RUNNING }, std::sync::atomic::Ordering::Relaxed);
             let phase_daemon = daemon.clone();
             let daemon = daemon.clone();
             std::thread::spawn(move || {
@@ -2375,6 +2376,12 @@ fn spawn_auto_restore(
                 //   감싸 panic 을 삼키지 않고 stderr + phoenix-restore.log 에 **1회 기록**한다 — 무한 재스폰 금지
                 //   (재기동은 다음 데몬 부트/schtasks 소관). 이 웨이브가 죽이려는 '스레드 침묵사' 클래스의 구조 수리.
                 guard_restore_panic(&log_for_panic, || {
+                    if held {
+                        eprintln!("[cysd] auto-restore held (재시작의 팩 반영을 기다린다)");
+                        while cys::restore_hold::held(&hold_socket) {
+                            std::thread::sleep(std::time::Duration::from_millis(500));
+                        }
+                    }
                     // ★B1: 임베드 추출 실행 우선(바이너리=스크립트 동일 커밋 하드보장) → 실패 시 manifest-검증 디스크 폴백.
                     match resolve_phoenix_source(&state_dir, &disk_phoenix, &program, &daemon) {
                         PhoenixResolve::Ready { script, cleanup } => {
@@ -5570,7 +5577,7 @@ mod auto_restore_tests {
 
     use super::{
         restore_retry_notice,
-        auto_restore_attempt, auto_restore_phase_str, auto_restore_will_retry, AUTO_RESTORE_DONE, AUTO_RESTORE_OFF,
+        auto_restore_attempt, auto_restore_phase_str, auto_restore_will_retry, AUTO_RESTORE_DONE, AUTO_RESTORE_HELD, AUTO_RESTORE_OFF,
         AUTO_RESTORE_RETRY_WAIT, AUTO_RESTORE_RUNNING,
         bundled_python3, disk_fallback_verify, extract_phoenix_embed, phoenix_embed_files,
         phoenix_self_test,
@@ -5812,6 +5819,7 @@ mod auto_restore_tests {
         // ★v116-pack(R-B1 P2-b): 편성(javis_formation.restore_settle_verdict)이 읽는 wire 값 — 이름이 바뀌면 편성이
         //   「옛 데몬」 폴백으로 떨어진다(대기 90초). 이름을 여기서 고정한다.
         assert_eq!(auto_restore_phase_str(AUTO_RESTORE_OFF), "off");
+        assert_eq!(auto_restore_phase_str(AUTO_RESTORE_HELD), "held");
         assert_eq!(auto_restore_phase_str(AUTO_RESTORE_RUNNING), "running");
         assert_eq!(auto_restore_phase_str(AUTO_RESTORE_RETRY_WAIT), "retry_wait");
         assert_eq!(auto_restore_phase_str(AUTO_RESTORE_DONE), "done");

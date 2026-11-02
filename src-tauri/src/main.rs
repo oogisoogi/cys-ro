@@ -4126,6 +4126,17 @@ fn decide_pending_update(
     }
 }
 
+/// 이번 기동의 복원 판정 — 데몬을 띄우기 전 표식 판단과 팩 반영이 같은 답을 쓴다.
+fn pending_update_plan() -> PendingUpdatePlan {
+    let stamp = std::fs::read_to_string(last_app_version_path())
+        .ok()
+        .map(|s| s.trim().to_string());
+    // 기존 설치 증거 — ★v116-app-firstrun: `.pack-version` 이 아니다(새 설치도 판정 전에 생김 ·
+    // prior_install_evidence 주석). 이 기동 전 GUI 온보딩 마커 + 부서 레지스트리.
+    let prior_state = prior_install_evidence(gui_onboarded_before_boot(), &list_depts());
+    decide_pending_update(pending_restore_path().exists(), stamp.as_deref(), env!("CARGO_PKG_VERSION"), prior_state)
+}
+
 /// 판 변경 뒤 첫 기동(새 판 설치 · 옛 인앱 갱신은 1.1.8 에서 삭제됨)이면 두 가지를 한다:
 ///  ① 새 기능 배포 — 새 cys 바이너리에 embed된 팩(pack.rs include_str! + build.rs PACK_SKILLS)을
 ///     `cys init-pack --no-install-hook`으로 ~/.cys/pack에 반영한다. --no-install-hook: hook 등록은
@@ -4133,22 +4144,16 @@ fn decide_pending_update(
 ///     백업 파괴·활성 프로필 재직렬화 방지 — 적대검증 serious). force 없이 호출하므로 preserve-gate가
 ///     사용자 수정 파일을 보존하고 비수정·신규만 갱신한다.
 ///  ② 자동복귀 — 팩 반영 성공 시에만 조직 전체(본부+등록 부서) 노드를 복원(T2 spawn_org_restore).
-///     init-pack 실패 시 마커·스탬프를 보존하고 복원을 보류해, 노드가 구 디렉티브로 조용히 각성하는
-///     침묵 실패를 막는다(적대검증 fatal). restore는 멱등(run_restore).
-fn maybe_apply_pending_update(app: &AppHandle) {
+///     init-pack 실패 시 마커·스탬프를 보존하고 이 복원을 하지 않는다 — 데몬의 자동 복원이 좌석을 돌려놓고 사용자에게 실패를 알린다.
+///     restore는 멱등(run_restore).
+/// `hold` = 이 기동의 자동 복원을 미뤄 둔 표식. 어느 길로 나가든 여기서 풀리고 데몬이 복원을 시작한다.
+fn maybe_apply_pending_update(app: &AppHandle, hold: Option<cys::restore_hold::RestoreHold>) {
     // ★W-2 결정 A: 팩 반영(init-pack)이 도는 동안 초기화 관문을 닫는다 — setup 밖 호출(rotate_daemon)도 같은 관문.
     let _boot_guard = BootWorkGuard::enter();
     let marker = pending_restore_path();
     let stamp_path = last_app_version_path();
     let current = env!("CARGO_PKG_VERSION");
-    let marker_exists = marker.exists();
-    let stamp = std::fs::read_to_string(&stamp_path)
-        .ok()
-        .map(|s| s.trim().to_string());
-    // 기존 설치 증거 — ★v116-app-firstrun: `.pack-version` 이 아니다(새 설치도 판정 전에 생김 ·
-    // prior_install_evidence 주석). 이 기동 전 GUI 온보딩 마커 + 부서 레지스트리.
-    let prior_state = prior_install_evidence(gui_onboarded_before_boot(), &list_depts());
-    match decide_pending_update(marker_exists, stamp.as_deref(), current, prior_state) {
+    match pending_update_plan() {
         PendingUpdatePlan::Skip => return,
         PendingUpdatePlan::RecordStampOnly => {
             // 최초 설치 — 복원할 topology가 없다. 스탬프만 기록해 다음 재시작을 정상상태로 만든다.
@@ -4172,18 +4177,30 @@ fn maybe_apply_pending_update(app: &AppHandle) {
         .map(|s| s.success())
         .unwrap_or(false);
     if !pack_ok {
-        // 실패 — 마커·스탬프를 보존(다음 재시작에 재시도)하고 노드 복원을 보류한다. 구 디렉티브로
-        // 조용히 각성하는 것을 막고 사용자에게 알린다.
+        // 실패 — 마커·스탬프를 보존(다음 재시작에 재시도)하고 사용자에게 알린다. 좌석은 데몬의 자동 복원이 돌려놓는다.
         let _ = app.emit(
             "update-error",
-            "새 팩 반영(init-pack) 실패 — 노드 복원 보류, 다음 재시작에 재시도",
+            "새 팩 반영(init-pack) 실패 — 다음 재시작에 재시도(좌석은 자동 복원으로 돌아옵니다)",
         );
         return;
     }
     // 성공 후에만 마커 제거 + 스탬프 전진 + 조직 복원. (마커 없는 버전변경 경로면 remove_file은 no-op.)
     let _ = std::fs::remove_file(&marker);
     let _ = std::fs::write(&stamp_path, current);
-    spawn_org_restore(app.clone());
+    let settle = hold.is_some();
+    drop(hold);
+    spawn_org_restore(app.clone(), settle);
+}
+
+/// 미룬 자동 복원이 끝나기를 기다린다(유계) — 사이드카가 먼저 돌면 맨 restore 가 좌석을 세워 phoenix 의 폴더 보정이 빠진다(794 F2 · rotate ⑤ 와 같다).
+async fn wait_auto_restore_settled() {
+    for _ in 0..240 {
+        let phase = rpc("org.status", json!({})).await.ok().and_then(|v| v["daemon"]["auto_restore"].as_str().map(str::to_string));
+        if !matches!(phase.as_deref(), Some("held" | "running" | "retry_wait")) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
 }
 
 /// (T2) `cys restore --include-master`를 사이드카로 돌리고 **판정 층**을 거친 결과를 낸다 — 본부·부서 한 규칙.
@@ -4389,13 +4406,16 @@ fn dept_restore_action(
     }
 }
 
-fn spawn_org_restore(app: AppHandle) {
+fn spawn_org_restore(app: AppHandle, settle: bool) {
     // ★W-2 (결정 A): 조직 복원이 도는 동안 초기화 관문을 닫는다 — 초기화가 방금 죽인 부서 데몬을 복원이
     // 되살리는 경합 차단(spawn 전에 무장 · 태스크가 끝나면 Drop).
     let boot_guard = BootWorkGuard::enter();
     tauri::async_runtime::spawn(async move {
         let _boot_guard = boot_guard;
         let _ = app.emit("restore-progress", json!({"phase": "start"}));
+        if settle {
+            wait_auto_restore_settled().await;
+        }
         // 본부(기본 소켓) — setup의 ensure_daemon으로 이미 가동 확정.
         // ★v113-restore: 첫 실행이 실패면 대기 후 1회 재실행 — 실패 알림은 재실행까지 실패일 때만.
         let (hq_ok, hq_summary) = run_sidecar_restore_judged(None).await;
@@ -8218,26 +8238,18 @@ async fn rotate_daemon(app: AppHandle, force: bool, skip_drain: bool) -> Result<
     ensure_daemon().await?;
     // init-pack이 blocking Command::status()라 blocking 풀에서 실행(위 drain 패턴과 일치).
     let app2 = app.clone();
-    let _ = tokio::task::spawn_blocking(move || maybe_apply_pending_update(&app2)).await;
-    restore_after_held_boot(&app, hold);
+    let _ = tokio::task::spawn_blocking(move || maybe_apply_pending_update(&app2, hold)).await;
     Ok(())
 }
 
 /// 윈도우에서 새 데몬의 자동 복원을 팩 반영 뒤로 미룬다 — 좌석이 먼저 뜨면 훅이 연 팩을 rename 하지 못한다(r8-1 · rotate ④ 와 같은 처리).
+/// 표식은 [`maybe_apply_pending_update`] 가 푼다.
 /// 맥은 launchd 가 데몬을 소유하고 rename 이 막히지 않아 그대로 둔다.
 fn hold_auto_restore() -> Option<cys::restore_hold::RestoreHold> {
     if cfg!(windows) {
         cys::restore_hold::RestoreHold::arm(&default_socket())
     } else {
         None
-    }
-}
-
-/// 자동 복원을 쉬게 한 기동에서 팩 반영이 끝나지 않았으면(복귀 표식 잔류) 좌석은 여기서 돌려놓는다 — 쉬기 전에도 자동 복원이 돌려놓던 몫이다.
-fn restore_after_held_boot(app: &AppHandle, hold: Option<cys::restore_hold::RestoreHold>) {
-    if hold.is_some() && pending_restore_path().exists() {
-        drop(hold);
-        spawn_org_restore(app.clone());
     }
 }
 
@@ -8632,8 +8644,8 @@ fn main() {
                 // ★C-LOUD (option ii, head 2026-10-19): rows 5/3 in one step. A daemon that accepts but does not answer
                 // is announced (daemon-error + one stderr line) and the boot goes on as base did: no spawn, no retry
                 // loop, daemon-ready below, then the UI's degraded mode (ui/src/main.ts "handler 가 먹통" block).
-                // 지난 재시작의 팩 반영이 끝나지 않았으면(rc 24) 이 기동이 재시도한다 — 자동 복원과 겹치면 또 실패한다.
-                let boot_hold = if pending_restore_path().exists() { hold_auto_restore() } else { None };
+                // 이 기동이 팩을 반영한다면(판 변경 · rc 24 재시도) 자동 복원과 겹치면 실패한다 — 판정은 팩 반영과 같은 답을 쓴다.
+                let boot_hold = if pending_update_plan() == PendingUpdatePlan::Apply { hold_auto_restore() } else { None };
                 let mut result = boot_first_daemon_step(
                     &default_socket(),
                     launchd_owns,
@@ -8751,8 +8763,7 @@ fn main() {
                     }
                 }
                 // 업데이트 재시작 시: 새 팩(새 기능) 반영 + 노드 자동복귀(마커가 있을 때만).
-                maybe_apply_pending_update(&handle);
-                restore_after_held_boot(&handle, boot_hold);
+                maybe_apply_pending_update(&handle, boot_hold);
                 // ★TCC 처방(오너 2026-07-15): 폴더 권한 선제 트리거·거부 감지 안내.
                 // ★v116-app-firstrun(A-3): 새 설치 첫 실행이면 여기서 부르지 않는다 — UI 가 안내를 먼저 그린 뒤
                 // request_folder_access 로 부른다(설명 없는 권한 창 제거 · ui_drives_folder_access).
@@ -11249,13 +11260,16 @@ exit 0
         let rotate = body_at("async fn rotate_daemon(app: AppHandle, force: bool, skip_drain: bool)");
         let hold = rotate.find("let hold = hold_auto_restore();").expect("rotate_daemon 표식");
         assert!(hold < rotate.find("stop_running_daemon().await;").unwrap(), "옛 데몬 정지 앞");
-        assert!(rotate.find("maybe_apply_pending_update(&app2)").unwrap() < rotate.find("restore_after_held_boot(&app, hold);").expect("뒷정리"));
+        assert!(rotate.contains("maybe_apply_pending_update(&app2, hold)"), "표식은 팩 반영이 푼다");
         assert!(body_at("fn hold_auto_restore()").contains("if cfg!(windows) {"), "맥 갈래 무변경");
-        let held = body_at("fn restore_after_held_boot(");
-        assert!(held.contains("hold.is_some() && pending_restore_path().exists()") && held.contains("spawn_org_restore(app.clone());"));
-        let apply = body_at("fn maybe_apply_pending_update(app: &AppHandle) {");
+        let apply = body_at("fn maybe_apply_pending_update(app: &AppHandle, hold: Option<cys::restore_hold::RestoreHold>) {");
+        assert!(apply.contains("let settle = hold.is_some();\n    drop(hold);\n    spawn_org_restore(app.clone(), settle);"), "표식을 먼저 풀고 데몬 복원 뒤에 돈다");
+        let org = body_at("fn spawn_org_restore(app: AppHandle, settle: bool) {");
+        assert!(org.find("wait_auto_restore_settled().await").unwrap() < org.find("run_sidecar_restore_judged(None).await").unwrap(), "사이드카는 데몬 복원 뒤");
+        let plan = body_at("fn pending_update_plan() -> PendingUpdatePlan {");
+        assert!(apply.contains("match pending_update_plan() {"), "기동 앞 판단과 같은 답");
         assert!(
-            apply.contains("prior_install_evidence(gui_onboarded_before_boot(), &list_depts())"),
+            plan.contains("prior_install_evidence(gui_onboarded_before_boot(), &list_depts())"),
             "복원 판정이 새 증거(이 기동 전 온보딩 마커 + 부서 레지스트리)를 읽어야 한다"
         );
         assert!(
@@ -11269,10 +11283,9 @@ exit 0
         let marker_write = setup
             .find(r#"std::fs::write(gui_onboarded_path(), env!("CARGO_PKG_VERSION"))"#)
             .expect("온보딩 마커 쓰기");
-        let apply_call = setup.find("maybe_apply_pending_update(&handle);").expect("복원 판정 호출");
-        let boot_hold = setup.find("let boot_hold = if pending_restore_path().exists() { hold_auto_restore() } else { None };").expect("재시도 기동 표식");
+        let apply_call = setup.find("maybe_apply_pending_update(&handle, boot_hold);").expect("복원 판정 호출");
+        let boot_hold = setup.find("let boot_hold = if pending_update_plan() == PendingUpdatePlan::Apply { hold_auto_restore() } else { None };").expect("팩 반영 기동 표식");
         assert!(boot_hold < setup.find("let mut result = boot_first_daemon_step(").unwrap(), "첫 데몬 기동 앞");
-        assert!(apply_call < setup.find("restore_after_held_boot(&handle, boot_hold);").expect("재시도 기동 뒷정리"));
         assert!(snap < first_await, "스냅숏은 setup 의 어떤 대기보다도 먼저여야 한다");
         assert!(snap < marker_write && snap < apply_call, "스냅숏은 온보딩 마커 쓰기·복원 판정보다 먼저여야 한다");
         let nudge_call = setup.find("nudge_folder_permissions(&handle);").expect("nudge 호출");
@@ -16320,7 +16333,7 @@ osascript 를 실행할 수 없어 건너뜁니다({e}) — macOS 가 아닌 환
     #[test]
     fn t2_spawn_org_restore_routes_through_decision_and_holds_before_launch() {
         let src = include_str!("main.rs");
-        let start = src.find("fn spawn_org_restore(app: AppHandle) {").expect("spawn_org_restore");
+        let start = src.find("fn spawn_org_restore(app: AppHandle, settle: bool) {").expect("spawn_org_restore");
         let body = &src[start..];
         let body = &body[..body.find("\n}\n").expect("fn end")];
         assert!(body.contains("dept_restore_action(tombs.as_ref(), name, alive)"), "판정 함수 미경유");

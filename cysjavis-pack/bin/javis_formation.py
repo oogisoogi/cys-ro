@@ -1846,7 +1846,7 @@ def _status_obj(socket):
 
 
 def restore_settle_verdict(obj, now):
-    """`org.status` → ("wait"|"go", 사유) — **순수**. 복원이 도는 동안(running·retry_wait) wait ·
+    """`org.status` → ("wait"|"go", 사유) — **순수**. 복원이 돌거나 미뤄진 동안(running·retry_wait·held) wait ·
     칸 없는 옛 데몬은 데몬 나이 RESTORE_OLD_DAEMON_SETTLE_S 까지 wait · 판독 불가 = go(종전 흐름 · 편성을 멈추지 않는다)."""
     d = (obj or {}).get("daemon") if isinstance(obj, dict) else None
     if not isinstance(d, dict):
@@ -1854,7 +1854,7 @@ def restore_settle_verdict(obj, now):
     phase = d.get("auto_restore")
     sa = d.get("started_at")
     age = (now - sa) if isinstance(sa, (int, float)) and not isinstance(sa, bool) else None
-    if phase in ("running", "retry_wait"):
+    if phase in ("running", "retry_wait", "held"):  # held = 재시작의 팩 반영을 기다리는 중 — 좌석을 세우면 그 교체가 막힌다(r8-1)
         # ★Fable 1R M-3: phoenix 자식 대기에 데드라인이 없어 걸리면 running 이 영구히 남는다 — 종전(좌석을 세움)보다
         #   나빠지지 않게, 데몬 기동 뒤 RESTORE_STALE_S 가 지나면 걸린 것으로 보고 진행한다.
         if age is not None and age > RESTORE_STALE_S:

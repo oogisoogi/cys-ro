@@ -4187,20 +4187,20 @@ fn maybe_apply_pending_update(app: &AppHandle, hold: Option<cys::restore_hold::R
     // 성공 후에만 마커 제거 + 스탬프 전진 + 조직 복원. (마커 없는 버전변경 경로면 remove_file은 no-op.)
     let _ = std::fs::remove_file(&marker);
     let _ = std::fs::write(&stamp_path, current);
-    let settle = hold.is_some();
     drop(hold);
-    spawn_org_restore(app.clone(), settle);
+    spawn_org_restore(app.clone());
 }
 
-/// 미룬 자동 복원이 끝나기를 기다린다(유계) — 사이드카가 먼저 돌면 맨 restore 가 좌석을 세워 phoenix 의 폴더 보정이 빠진다(794 F2 · rotate ⑤ 와 같다).
-async fn wait_auto_restore_settled() {
+/// 자동 복원이 끝나기를 기다린다(유계) — 끝나면 true · 상한까지 진행 중이면 false. 사이드카가 먼저 돌면 맨 restore 가 좌석을 세워 phoenix 의 폴더 보정이 빠진다(794 F2 · rotate ⑤ 와 같다).
+async fn wait_auto_restore_settled() -> bool {
     for _ in 0..240 {
         let phase = rpc("org.status", json!({})).await.ok().and_then(|v| v["daemon"]["auto_restore"].as_str().map(str::to_string));
         if !matches!(phase.as_deref(), Some("held" | "running" | "retry_wait")) {
-            return;
+            return true;
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
+    false
 }
 
 /// (T2) `cys restore --include-master`를 사이드카로 돌리고 **판정 층**을 거친 결과를 낸다 — 본부·부서 한 규칙.
@@ -4406,19 +4406,22 @@ fn dept_restore_action(
     }
 }
 
-fn spawn_org_restore(app: AppHandle, settle: bool) {
+fn spawn_org_restore(app: AppHandle) {
     // ★W-2 (결정 A): 조직 복원이 도는 동안 초기화 관문을 닫는다 — 초기화가 방금 죽인 부서 데몬을 복원이
     // 되살리는 경합 차단(spawn 전에 무장 · 태스크가 끝나면 Drop).
     let boot_guard = BootWorkGuard::enter();
     tauri::async_runtime::spawn(async move {
         let _boot_guard = boot_guard;
         let _ = app.emit("restore-progress", json!({"phase": "start"}));
-        if settle {
-            wait_auto_restore_settled().await;
-        }
         // 본부(기본 소켓) — setup의 ensure_daemon으로 이미 가동 확정.
         // ★v113-restore: 첫 실행이 실패면 대기 후 1회 재실행 — 실패 알림은 재실행까지 실패일 때만.
-        let (hq_ok, hq_summary) = run_sidecar_restore_judged(None).await;
+        // 상한을 넘겨도 자동 복원이 돌면 사이드카를 돌리지 않는다 — 겹치면 같은 역할이 홈 폴더에 하나 더 선다(794 r2). 대기 초과는 복원 실패가 아니다.
+        let (hq_ok, hq_summary) = if wait_auto_restore_settled().await {
+            run_sidecar_restore_judged(None).await
+        } else {
+            let _ = app.emit("restore-progress", json!({"phase": "skip", "detail": "자동 복원이 진행 중 — 본부 좌석은 자동 복원이 이어서 세웁니다"}));
+            (true, None)
+        };
         let hq_note = (!hq_ok).then(|| restore_note("본부", hq_summary));
         // ★WP-3 리바이버 게이트: base 데몬 dept 묘비 — 삭제-의도 부서는 재기동에서 제외(+생존 시 reap).
         //
@@ -11263,9 +11266,10 @@ exit 0
         assert!(rotate.contains("maybe_apply_pending_update(&app2, hold)"), "표식은 팩 반영이 푼다");
         assert!(body_at("fn hold_auto_restore()").contains("if cfg!(windows) {"), "맥 갈래 무변경");
         let apply = body_at("fn maybe_apply_pending_update(app: &AppHandle, hold: Option<cys::restore_hold::RestoreHold>) {");
-        assert!(apply.contains("let settle = hold.is_some();\n    drop(hold);\n    spawn_org_restore(app.clone(), settle);"), "표식을 먼저 풀고 데몬 복원 뒤에 돈다");
-        let org = body_at("fn spawn_org_restore(app: AppHandle, settle: bool) {");
-        assert!(org.find("wait_auto_restore_settled().await").unwrap() < org.find("run_sidecar_restore_judged(None).await").unwrap(), "사이드카는 데몬 복원 뒤");
+        assert!(apply.contains("drop(hold);\n    spawn_org_restore(app.clone());"), "표식을 먼저 풀고 데몬 복원 뒤에 돈다");
+        let org = body_at("fn spawn_org_restore(app: AppHandle) {");
+        assert!(org.contains("let (hq_ok, hq_summary) = if wait_auto_restore_settled().await {\n            run_sidecar_restore_judged(None).await\n        } else {"), "사이드카는 데몬 복원 뒤 · 복원이 아직 돌면 돌지 않는다");
+        assert!(org.contains("(true, None)\n        };"), "대기 초과는 복원 실패가 아니다");
         let plan = body_at("fn pending_update_plan() -> PendingUpdatePlan {");
         assert!(apply.contains("match pending_update_plan() {"), "기동 앞 판단과 같은 답");
         assert!(
@@ -16333,7 +16337,7 @@ osascript 를 실행할 수 없어 건너뜁니다({e}) — macOS 가 아닌 환
     #[test]
     fn t2_spawn_org_restore_routes_through_decision_and_holds_before_launch() {
         let src = include_str!("main.rs");
-        let start = src.find("fn spawn_org_restore(app: AppHandle, settle: bool) {").expect("spawn_org_restore");
+        let start = src.find("fn spawn_org_restore(app: AppHandle) {").expect("spawn_org_restore");
         let body = &src[start..];
         let body = &body[..body.find("\n}\n").expect("fn end")];
         assert!(body.contains("dept_restore_action(tombs.as_ref(), name, alive)"), "판정 함수 미경유");

@@ -22877,19 +22877,28 @@ fn sweep_rotate_leftovers(dir: &std::path::Path, now: std::time::SystemTime) -> 
 
 /// 앱 [재시작] 단추와 같은 5단을 CLI 한 번으로(TICKET=v112-restore ④ · master [master#990243f6]).
 /// 단계마다 **자기 자신의 하위명령**을 부른다 — 로직 사본 0(두 경로가 갈라지지 않게). 사후 알림 1줄.
-/// 미룬 자동 복원이 끝나기를 기다리는 상한 — 넘기면 ⑤ 가 멱등 보조로 겹친다(맥과 같다). 설치 링크의 재시작 벽시계 안에 든다.
-const ROTATE_RESTORE_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+/// 자동 복원이 끝나기를 기다리는 상한. `--txn`(갱신)은 rotate 가 끝나면 V3 가 좌석을 바로 재서 모자라면 되돌리므로 표식 상한까지 기다린다.
+fn rotate_restore_wait(in_txn: bool) -> std::time::Duration {
+    if in_txn {
+        return std::time::Duration::from_secs(cys::restore_hold::HOLD_MAX_SECS);
+    }
+    let v = std::env::var("CYS_ROTATE_RESTORE_WAIT_SEC").ok().and_then(|s| s.trim().parse::<u64>().ok());
+    std::time::Duration::from_secs(v.filter(|n| (1..=3600).contains(n)).unwrap_or(120))
+}
 
-fn wait_auto_restore_settled() {
+/// 자동 복원이 끝나면 true · 상한까지 진행 중이면 false. 데몬이 답하지 않으면 true(⑤ 가 실패를 그대로 알린다).
+fn wait_auto_restore_settled(wait: std::time::Duration) -> bool {
     let start = std::time::Instant::now();
-    while start.elapsed() < ROTATE_RESTORE_WAIT {
+    loop {
         let phase = request("org.status", json!({})).ok().and_then(|v| v["daemon"]["auto_restore"].as_str().map(str::to_string));
         if !matches!(phase.as_deref(), Some("held" | "running" | "retry_wait")) {
-            return;
+            return true;
+        }
+        if start.elapsed() >= wait {
+            return false;
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
-    eprintln!("[rotate] 자동 복원이 {}초 안에 끝나지 않아 ⑤ 를 이어서 돈다", ROTATE_RESTORE_WAIT.as_secs());
 }
 
 fn run_rotate(timeout: u64, skip_drain: bool, skip_depts: bool) -> i32 {
@@ -23035,7 +23044,6 @@ fn run_rotate(timeout: u64, skip_drain: bool, skip_depts: bool) -> i32 {
         }
         output_via_file(cmd).map(|o| o.status.success()).unwrap_or(false)
     };
-    let auto_restore_held = hold.is_some();
     drop(hold);
     if !init_ok {
         eprintln!("[rotate] ④ 새 팩 반영 실패 — 복귀 표식을 남겼다(앱 다음 기동이 재시도)");
@@ -23043,12 +23051,11 @@ fn run_rotate(timeout: u64, skip_drain: bool, skip_depts: bool) -> i32 {
     }
     let _ = std::fs::remove_file(&marker);
     let _ = std::fs::write(root.join(".last-app-version"), env!("CARGO_PKG_VERSION"));
-    // 표식이 풀려 데몬이 phoenix 를 돈다. ⑤ 가 먼저 돌면 맨 restore 가 좌석을 세워 phoenix 의 폴더 보정이 빠진다(794 F2).
-    if auto_restore_held {
-        wait_auto_restore_settled();
-    }
+    // 표식이 풀려 데몬이 phoenix 를 돈다(launchd 갈래는 이미 돈다). ⑤ 가 먼저 돌면 맨 restore 가 좌석을 세워 phoenix 의 폴더 보정이 빠진다(794 F2).
+    // 상한을 넘겨도 돌고 있으면 ⑤ 를 돌지 않는다 — 겹치면 같은 역할이 홈 폴더에 하나 더 선다(794 r2 · 17좌석 → 21). 대기 초과는 복원 실패가 아니라 rc 0 이다.
+    let restore_pending = !wait_auto_restore_settled(rotate_restore_wait(TXN_CHILD.get().is_some()));
     // ⑤ 조직 복원(겹치는 콜드부트 복원과는 복원 1회 표식이 한 번만 말하게 한다)
-    let hq_restore_ok = run(&["restore", "--include-master"]).map(|o| o.status.success()).unwrap_or(false);
+    let hq_restore_ok = restore_pending || run(&["restore", "--include-master"]).map(|o| o.status.success()).unwrap_or(false);
     // ⑥ 부서 순회 — 앱 [재시작](restartAllDaemons → rotate_dept_daemon)과 같은 순서·같은 도구.
     //   본부 rotate 에서만 돈다(부서 소켓으로 부른 rotate 가 다른 부서를 건드리지 않게).
     let (dept_note, depts_ok) = if !base {
@@ -23062,7 +23069,13 @@ fn run_rotate(timeout: u64, skip_drain: bool, skip_depts: bool) -> i32 {
     let rc = rotate_rc(drain_ok, restore_ok);
     println!(
         "재시작 완료 — {drain_note} · 데몬 교체 · 새 팩 반영 · 조직 복원 {}{dept_note} (rc={rc})",
-        if hq_restore_ok { "성공" } else { "실패·보류 — 창을 확인하세요" }
+        if restore_pending {
+            "진행 중 — 자동 복원이 이어서 세웁니다"
+        } else if hq_restore_ok {
+            "성공"
+        } else {
+            "실패·보류 — 창을 확인하세요"
+        }
     );
     rc
 }
@@ -31141,10 +31154,18 @@ mod tests {
         let release = at("drop(hold);");
         assert!(at("let init_ok = {") < release, "④ 뒤");
         assert!(release < at("if !init_ok {"), "④ 실패여도 표식을 풀어 데몬이 복원한다");
-        let settled = at("wait_auto_restore_settled();");
+        let settled = at("let restore_pending = !wait_auto_restore_settled(rotate_restore_wait(TXN_CHILD.get().is_some()));");
         assert!(at("let _ = std::fs::remove_file(&marker);") < settled, "④ 성공 뒤");
-        assert!(settled < at("let hq_restore_ok ="), "⑤ 는 데몬 복원 뒤");
-        assert!(body[at("if auto_restore_held {")..].starts_with("if auto_restore_held {\n        wait_auto_restore_settled();"), "표식을 건 길만 기다린다");
+        assert!(settled < at("let hq_restore_ok = restore_pending || run("), "⑤ 는 데몬 복원 뒤 · 복원이 아직 돌면 돌지 않는다");
+        assert!(!body.contains("if auto_restore_held"), "launchd 갈래(표식 없음)도 같은 판정을 탄다");
+    }
+
+    #[test]
+    fn rotate_waits_for_the_restore_until_the_hold_limit_inside_an_update() {
+        assert_eq!(rotate_restore_wait(true), std::time::Duration::from_secs(cys::restore_hold::HOLD_MAX_SECS), "V3 가 좌석을 바로 잰다");
+        if std::env::var_os("CYS_ROTATE_RESTORE_WAIT_SEC").is_none() {
+            assert_eq!(rotate_restore_wait(false), std::time::Duration::from_secs(120));
+        }
     }
 
     #[test]

@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::os::fd::AsRawFd;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
@@ -45,8 +46,14 @@ impl Box_ {
         self.cmd(args).output().unwrap()
     }
 
+    fn rotate_cmd(&self) -> Command {
+        let mut c = self.cmd(&["rotate", "--skip-drain", "--skip-depts"]);
+        c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        c
+    }
+
     fn rotate(&self) -> Child {
-        self.cmd(&["rotate", "--skip-drain", "--skip-depts"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
+        self.rotate_cmd().spawn().unwrap()
     }
 
     fn rpc(&self, method: &str) -> Result<Value, String> {
@@ -84,13 +91,24 @@ impl Box_ {
             if let Some(p) = self.pid() {
                 return p;
             }
-            assert!(t.elapsed() < Duration::from_secs(60), "identify: {}", String::from_utf8_lossy(&o.stderr));
+            // 첫 부트가 여럿 겹치면 60초를 넘긴다(794 r2-3).
+            assert!(t.elapsed() < Duration::from_secs(180), "identify: {}", String::from_utf8_lossy(&o.stderr));
             std::thread::sleep(Duration::from_millis(200));
         }
     }
 
+    /// 아직 응답하지 않는 데몬도 잡는다 — 잠금이 잡혀 있으면(flock) 적힌 pid 는 이 상자의 산 데몬이다.
+    fn locked_pid(&self) -> Option<u64> {
+        let p = self.sock.with_extension("lock");
+        let f = std::fs::File::open(&p).ok()?;
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return None;
+        }
+        std::fs::read_to_string(&p).ok()?.trim().parse().ok()
+    }
+
     fn down(&self) {
-        let Some(pid) = self.pid() else { return };
+        let Some(pid) = self.pid().or_else(|| self.locked_pid()) else { return };
         unsafe { libc::kill(pid as i32, libc::SIGTERM) };
         let t = Instant::now();
         while UnixStream::connect(&self.sock).is_ok() && t.elapsed() < Duration::from_secs(10) {
@@ -119,23 +137,44 @@ impl Box_ {
         self.base.join("home/.cys/.pending-restore")
     }
 
-    /// 가짜 claude(세션 등록까지 한다 · 앞의 대본이 시작 폴더를 적는다) · 좌석 폴더는 master = proj · worker = 홈(phoenix 만 proj 로 보정한다).
-    fn seats(&mut self) -> PathBuf {
+    /// 가짜 claude(세션 등록까지 한다 · 앞의 대본이 시작 폴더를 적고 `slow` 초 뒤에 뜬다) · 좌석 폴더는 master = proj · worker = 홈(phoenix 만 proj 로 보정한다).
+    fn seats(&mut self, slow: u32) -> PathBuf {
         let (bin, real) = (self.base.join("sbin"), self.base.join("real"));
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::create_dir_all(&real).unwrap();
         assert!(Command::new("/usr/bin/cc").args(["-w", "-o"]).arg(real.join("claude")).arg(FAKE_CLAUDE).status().unwrap().success());
         let p = bin.join("claude");
-        std::fs::write(&p, format!("#!/bin/sh\necho \"cwd=$PWD\" >> {0}/claude.log\nexec {0}/real/claude \"$@\"\n", self.base.display())).unwrap();
+        std::fs::write(&p, format!("#!/bin/sh\necho \"cwd=$PWD\" >> {0}/claude.log\nsleep {slow}\nexec {0}/real/claude \"$@\"\n", self.base.display())).unwrap();
         std::fs::set_permissions(&p, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         self.path = format!("{}:{}:{}", bin.display(), PathBuf::from(CYS).parent().unwrap().display(), self.path);
         self.base.join("proj")
     }
 
-    fn write_topology(&self, proj: &Path) {
+    fn write_topology(&self, proj: &Path, seats: usize) {
         std::fs::create_dir_all(proj).unwrap();
-        let e = json!({"entries": [{"role": "master", "agent": "claude", "cwd": proj}, {"role": "worker", "agent": "claude", "cwd": self.base.join("home")}]});
-        std::fs::write(self.base.join("run/topology.json"), e.to_string()).unwrap();
+        let mut entries = vec![json!({"role": "master", "agent": "claude", "cwd": proj})];
+        entries.extend((1..seats).map(|n| json!({"role": format!("worker-{n}"), "agent": "claude", "cwd": self.base.join("home")})));
+        std::fs::write(self.base.join("run/topology.json"), json!({"entries": entries}).to_string()).unwrap();
+    }
+
+    /// 좌석 수 = 역할 수 · 전부 master 폴더에서 한 번씩 떴다(겹치면 같은 역할이 홈 폴더에 하나 더 선다 · 794 r2).
+    fn assert_one_seat_per_role(&self, proj: &Path, seats: usize) {
+        let org = self.rpc("org.status").unwrap();
+        let mut got: Vec<String> = org["surfaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|s| s["exited"].as_bool() != Some(true))
+            .map(|s| s["role"].as_str().unwrap_or("").to_string())
+            .collect();
+        got.sort();
+        let mut want = vec!["master".to_string()];
+        want.extend((1..seats).map(|n| format!("worker-{n}")));
+        want.sort();
+        assert_eq!(got, want, "좌석 수 = 역할 수");
+        let log = self.claude_log();
+        assert_eq!(log.lines().count(), seats, "한 번씩 떴다: {log}");
+        assert!(log.lines().all(|l| l == format!("cwd={}", proj.display())), "홈에서 뜬 좌석이 없다: {log}");
     }
 
     fn claude_log(&self) -> String {
@@ -167,7 +206,7 @@ impl Drop for Box_ {
 }
 
 fn rc_ok(o: &Output) {
-    assert!(matches!(o.status.code(), Some(0) | Some(25)), "rotate rc={:?}\n{}", o.status.code(), String::from_utf8_lossy(&o.stderr));
+    assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
 }
 
 /// 끝날 때까지 단계를 표본으로 모은다.
@@ -188,6 +227,7 @@ fn phases_until_exit(b: &Box_, mut c: Child) -> (Output, Vec<String>) {
 fn rotate_defers_auto_restore_past_the_pack_step_and_normal_boots_do_not() {
     let b = Box_::new("order");
     let first = b.up();
+    assert_eq!(b.locked_pid(), Some(first), "응답 전 데몬도 잠금으로 찾는다(794 r2-3 고아)");
     assert_ne!(b.phase().as_deref(), Some("held"));
     assert_eq!(b.settled(120), "done", "일반 기동은 자동 복원을 돌린다");
 
@@ -200,6 +240,7 @@ fn rotate_defers_auto_restore_past_the_pack_step_and_normal_boots_do_not() {
 
     // 다음 일반 기동은 미루지 않는다.
     b.down();
+    assert_eq!(b.locked_pid(), None, "죽은 데몬의 pid 는 잡지 않는다");
     b.up();
     assert_ne!(b.phase().as_deref(), Some("held"));
     assert_eq!(b.settled(120), "done");
@@ -209,18 +250,51 @@ fn rotate_defers_auto_restore_past_the_pack_step_and_normal_boots_do_not() {
 #[test]
 fn rotate_restores_through_phoenix_so_home_seats_keep_the_project_folder() {
     let mut b = Box_::new("seats");
-    let proj = b.seats();
+    let proj = b.seats(0);
     b.up();
     b.settled(120);
-    b.write_topology(&proj);
+    b.write_topology(&proj, 2);
 
     let o = b.rotate().wait_with_output().unwrap();
     rc_ok(&o);
     b.settled(180);
-    let log = b.claude_log();
-    assert!(log.contains(&format!("cwd={}", proj.display())), "좌석이 떴다: {log}");
-    assert!(!log.contains(&format!("cwd={}\n", b.base.join("home").display())), "홈에서 뜬 좌석이 없다: {log}");
+    b.assert_one_seat_per_role(&proj, 2);
     assert!(b.base.join("run/phoenix/journal-default.json").is_file(), "phoenix 원장");
+}
+
+/// 794 r2 겹침 ② — 복원이 대기 상한을 넘겨도 ⑤ 를 돌지 않는다 · rc 25 가 아니다 · 좌석은 phoenix 가 끝까지 세운다(17좌석 · 상한 120초 값은 단위 시험이 고정한다).
+#[test]
+fn a_restore_slower_than_the_wait_is_left_to_phoenix() {
+    let mut b = Box_::new("slow");
+    let proj = b.seats(2);
+    b.up();
+    b.settled(120);
+    b.write_topology(&proj, 17);
+
+    let o = b.rotate_cmd().env("CYS_ROTATE_RESTORE_WAIT_SEC", "30").spawn().unwrap().wait_with_output().unwrap();
+    rc_ok(&o);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("조직 복원 진행 중"), "{}", String::from_utf8_lossy(&o.stdout));
+    assert_eq!(b.phase().as_deref(), Some("running"), "상한을 넘겼다");
+    assert_eq!(b.settled(420), "done");
+    b.assert_one_seat_per_role(&proj, 17);
+}
+
+/// launchd 갈래와 같은 모양 — 표식이 없는 rotate 도 phoenix 가 끝나기 전에는 ⑤ 를 돌지 않는다(794 r2 선재 사항). 실 launchd 는 라이브라 재지 않는다.
+#[test]
+fn a_rotate_without_a_hold_does_not_overlap_the_daemon_restore() {
+    let mut b = Box_::new("nohold");
+    let proj = b.seats(3);
+    b.up();
+    b.settled(120);
+    b.write_topology(&proj, 5);
+    std::fs::create_dir_all(b.hold()).unwrap(); // 폴더가 막아 표식을 못 쓴다.
+
+    let (o, seen) = phases_until_exit(&b, b.rotate_cmd().env("CYS_ROTATE_RESTORE_WAIT_SEC", "2").spawn().unwrap());
+    rc_ok(&o);
+    assert!(!seen.iter().any(|p| p == "held"), "표식 없는 기동: {seen:?}");
+    assert!(String::from_utf8_lossy(&o.stdout).contains("조직 복원 진행 중"), "{}", String::from_utf8_lossy(&o.stdout));
+    assert_eq!(b.settled(180), "done");
+    b.assert_one_seat_per_role(&proj, 5);
 }
 
 /// 794 F3 — 새 데몬이 뜬 순간 rotate 가 죽어도 그 데몬이 스스로 복원한다.
@@ -282,10 +356,10 @@ fn a_hold_left_by_a_dead_rotate_does_not_stop_the_next_boot() {
 #[test]
 fn a_failed_pack_step_still_lets_the_daemon_restore() {
     let mut b = Box_::new("fail4");
-    let proj = b.seats();
+    let proj = b.seats(0);
     b.up();
     b.settled(120);
-    b.write_topology(&proj);
+    b.write_topology(&proj, 2);
     let pack = b.base.join("home/.cys/pack");
     let chflags = |f: &str| assert!(Command::new("chflags").arg(f).arg(&pack).status().unwrap().success());
     chflags("uchg");
@@ -294,7 +368,7 @@ fn a_failed_pack_step_still_lets_the_daemon_restore() {
     assert_eq!(o.status.code(), Some(24), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(b.pending().exists(), "앱 다음 기동이 재시도한다");
     assert_eq!(b.settled(180), "done");
-    assert!(b.claude_log().contains(&format!("cwd={}", proj.display())), "좌석이 돌아왔다: {}", b.claude_log());
+    b.assert_one_seat_per_role(&proj, 2);
 }
 
 fn write_hold(p: &Path, ts: u64, pid: u32) {

@@ -5,6 +5,7 @@
 //! 그래서 ④ 직전에 팩 파일을 쥔 프로세스 중 **② 가 내린 옛 데몬의 자손**만 골라 상한까지 끝나기를 기다리고, 넘으면 그것만 끝낸다.
 //! 그 밖의 홀더(사용자 앱 · 백신 · 다른 데몬)는 건드리지 않고 기록만 한다. 자손 판정은 (pid, 시작 시각) 쌍이라 pid 재사용에 걸리지 않고,
 //! 끝내기 직전에 시작 시각을 다시 대조한다. 맥·리눅스는 rename 이 열린 파일에 막히지 않아 이 경로를 타지 않는다.
+//! ★전제: 사용자·다른 프로세스를 죽이지 않는다 — 판정이 애매하면 남으로 본다(기다리지도 끝내지도 않고 기록만 · 막히면 종전처럼 rc 24).
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -22,7 +23,7 @@ pub struct Proc {
 pub struct OldTree {
     /// 옛 데몬과 그 자손의 (pid, 시작 시각).
     pub tree: HashSet<(u32, u64)>,
-    /// 찍은 순간의 전체 표 — 그 뒤 죽은 중간 부모(좌석 claude)의 고리를 잇는다.
+    /// 찍은 순간의 전체 표 — `tree` 를 고른 근거(로그·시험용). 위로 걷기에는 쓰지 않는다([`is_ours`] doc).
     pub snapshot: Vec<Proc>,
 }
 
@@ -51,28 +52,20 @@ pub fn descendants(snapshot: &[Proc], root: u32) -> HashSet<(u32, u64)> {
 }
 
 /// 홀더가 옛 트리 자손인가(순수) — 홀더에서 위로 올라가며 옛 트리의 (pid, 시작 시각)을 만나면 참.
-/// 부모는 지금 표(`now`)에서 먼저 찾고 없으면 옛 표에서 찾는다(데몬이 죽은 뒤 고아 훅이 띄운 자식도 잡는다).
+/// 고리는 **지금 표(`now`)에서만** 잇는다 — 부모가 이미 죽었으면 그 pid 를 옛 표에서 찾지 않는다. 옛 표의 같은 pid 주인이 진짜 부모였다는
+/// 증거가 없다: ② 에서 옛 좌석이 한꺼번에 죽어 pid 가 풀리면 그 pid 를 받아 곧 끝난 중간 프로세스(identify · 부서 훅 bash)의 자식, 곧 새 cysd·
+/// 부서 훅 손자가 옛 트리로 잡힌다(r9 fix D1 · 799 H1·H1b). 잃는 것은 「부모가 죽은 옛 훅의 손자」뿐이고 그것은 남으로 기록만 된다.
+/// 지금 표에서 부모는 자식보다 먼저 태어났어야 한다 — 늦게 태어난 같은 pid 주인은 진짜 부모가 죽은 뒤 그 pid 를 받은 남이다.
 pub fn is_ours(holder: (u32, u64), now: &[Proc], old: &OldTree) -> bool {
-    let find = |pid: u32, start: u64| {
-        now.iter()
-            .chain(old.snapshot.iter())
-            .find(|p| p.pid == pid && p.start == start)
-            .copied()
-    };
     let mut cur = holder;
     for _ in 0..64 {
         if old.tree.contains(&cur) {
             return true;
         }
-        let Some(me) = find(cur.0, cur.1) else {
+        let Some(me) = now.iter().find(|p| p.pid == cur.0 && p.start == cur.1) else {
             return false;
         };
-        let parent = now
-            .iter()
-            .chain(old.snapshot.iter())
-            .filter(|p| p.pid == me.parent && p.pid != me.pid && p.start <= me.start)
-            .max_by_key(|p| p.start);
-        let Some(p) = parent else {
+        let Some(p) = now.iter().find(|p| p.pid == me.parent && p.pid != me.pid && p.start <= me.start) else {
             return false;
         };
         cur = (p.pid, p.start);
@@ -198,6 +191,7 @@ mod win {
     use windows_sys::Win32::System::RestartManager::{
         RmEndSession, RmGetList, RmRegisterResources, RmStartSession, CCH_RM_SESSION_KEY, RM_PROCESS_INFO,
     };
+    use windows_sys::Win32::System::SystemInformation::GetSystemTimeAsFileTime;
     use windows_sys::Win32::System::Threading::{
         GetProcessTimes, OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
         PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
@@ -221,9 +215,15 @@ mod win {
     }
 
     /// 전체 프로세스 표 — 시작 시각을 못 읽는 것(시스템·권한 밖)은 뺀다(우리 자손이 아니다).
+    /// 시작 시각은 표를 찍은 뒤 pid 마다 읽는다 — 그 사이 pid 가 죽고 재사용되면 「옛 부모 + 새 시작 시각」이 섞인다(r9 fix D1 · codex F1-2).
+    /// 표에 든 프로세스는 표보다 먼저 태어났으니 찍기 전 시각(`t0`) 이후에 태어난 줄은 버린다. `t0` 는 거친 시계라 같은 틱에 태어난 줄도
+    /// 버려진다 — 남으로 보는 쪽이라 안전하고, 홀더 표본은 500ms 마다 다시 찍는다.
     pub fn snapshot() -> Vec<Proc> {
         let mut out = Vec::new();
         unsafe {
+            let mut t0: FILETIME = std::mem::zeroed();
+            GetSystemTimeAsFileTime(&mut t0);
+            let t0 = ft(t0);
             let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
             if snap == INVALID_HANDLE_VALUE {
                 return out;
@@ -232,7 +232,7 @@ mod win {
             e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
             let mut more = Process32FirstW(snap, &mut e) != 0;
             while more {
-                if let Some(start) = start_of(e.th32ProcessID) {
+                if let Some(start) = start_of(e.th32ProcessID).filter(|&s| s < t0) {
                     out.push(Proc { pid: e.th32ProcessID, parent: e.th32ParentProcessID, start });
                 }
                 more = Process32NextW(snap, &mut e) != 0;
@@ -357,6 +357,47 @@ mod tests {
         assert!(!is_ours((30, 900), &reused, &o), "pid 재사용");
         // 모르는 홀더.
         assert!(!is_ours((77, 5), &now, &o));
+    }
+
+    /// r9 fix D1(799 H1): ② 뒤 옛 훅 555 가 죽고 그 pid 를 받은 identify 가 새 cysd 900 을 띄우고 끝났다 — 900 의 부모 칸은 555 지만
+    /// 옛 표의 555 는 진짜 부모가 아니다. 새 cysd 는 남이다.
+    #[test]
+    fn a_dead_parent_pid_reused_after_the_snapshot_does_not_pull_the_new_daemon_in() {
+        let snap = vec![p(1, 0, 1), p(10, 1, 100), p(20, 10, 200), p(555, 20, 250), p(999, 1, 260)];
+        let o = OldTree { tree: descendants(&snap, 10), snapshot: snap };
+        let now = vec![p(1, 0, 1), p(999, 1, 260), p(900, 555, 5000)];
+        assert!(!is_ours((900, 5000), &now, &o), "새 cysd");
+        let child = vec![p(1, 0, 1), p(900, 555, 5000), p(901, 900, 5100)];
+        assert!(!is_ours((901, 5100), &child, &o), "새 cysd 의 자손");
+    }
+
+    /// r9 fix D1(799 H1b): 부서 좌석 claude 71(옛 트리 밖)이 띄운 중간 bash 가 옛 훅의 pid 556 을 받아 손자 800 을 띄우고 끝났다.
+    #[test]
+    fn a_dept_hook_grandchild_under_a_reused_pid_is_not_ours() {
+        let snap = vec![p(1, 0, 1), p(10, 1, 100), p(20, 10, 200), p(556, 20, 260), p(70, 1, 50), p(71, 70, 60)];
+        let o = OldTree { tree: descendants(&snap, 10), snapshot: snap };
+        assert!(o.tree.contains(&(556, 260)));
+        let now = vec![p(1, 0, 1), p(70, 1, 50), p(71, 70, 60), p(800, 556, 6000)];
+        assert!(!is_ours((800, 6000), &now, &o), "부서 훅 손자");
+    }
+
+    /// 지금 표의 부모 칸 pid 주인이 홀더보다 늦게 태어났으면 그 주인은 부모가 아니다(진짜 부모가 죽은 뒤 pid 를 받은 남).
+    /// 여기서는 그 늦은 주인이 하필 옛 훅 30 이다 — 시작 시각 대조가 없으면 남의 홀더 70 을 끝낸다.
+    #[test]
+    fn a_parent_born_after_the_holder_is_not_its_parent() {
+        let o = old();
+        let now = vec![p(30, 20, 300), p(70, 30, 120)];
+        assert!(!is_ours((70, 120), &now, &o));
+    }
+
+    /// 홀더는 Restart Manager 가 본 (pid, 시작 시각) 그대로 찾는다 — 그 사이 pid 가 재사용돼 지금 표의 같은 pid 가 옛 훅의 자식이어도
+    /// 쥐고 있던 프로세스는 그것이 아니다.
+    #[test]
+    fn a_holder_is_matched_by_its_own_start_time() {
+        let o = old();
+        let now = vec![p(30, 20, 300), p(60, 30, 400)];
+        assert!(!is_ours((60, 10), &now, &o), "pid 60 의 지금 주인은 옛 훅 자식이지만 쥔 것은 시작 시각 10 의 남");
+        assert!(is_ours((60, 400), &now, &o));
     }
 
     #[test]

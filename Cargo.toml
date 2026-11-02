@@ -110,6 +110,7 @@ windows-sys = { version = "0.59", features = [
     # ★1.1.11 r9 F1: rotate ④ 직전 팩 홀더 정리(src/pack_holders.rs) — 프로세스 표(Toolhelp) · 파일 홀더(Restart Manager).
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_RestartManager",
+    "Win32_System_SystemInformation",  # r9 fix D1: GetSystemTimeAsFileTime — 표를 찍은 뒤 재사용된 pid 의 시작 시각을 거른다
 ] }
 
 # Windows 전용(호스트 게이트): cys.exe·cysd.exe(순수 Rust CLI)에 PE 버전리소스·매니페스트·아이콘을

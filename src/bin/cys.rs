@@ -22799,24 +22799,40 @@ fn rotate_state_root(pack_dir: &std::path::Path) -> std::path::PathBuf {
 /// rotate 의 출력 파이프를 쥔 채 살아 있으니 rotate 가 영원히 읽기 대기에 걸린다(데몬은 섰는데 rotate 는 모름).
 /// 맥은 표준 입출력이 null 로 덮이고 나머지 fd 가 CLOEXEC 라 같은 일이 안 난다(맥 85s 합격과의 차이).
 /// 파일은 EOF 를 기다리지 않는다 — 자식이 끝나면 읽는다. 손자가 핸들을 쥐고 있어도 무해하다.
-/// stderr 는 종전(캡처 후 버림)과 같게 버린다.
-fn output_via_file(mut cmd: std::process::Command) -> Option<std::process::Output> {
+/// stderr 는 종전(캡처 후 버림)과 같게 버린다 — init-pack 만 [`output_and_err_via_file`] 로 받는다.
+fn output_via_file(cmd: std::process::Command) -> Option<std::process::Output> {
+    capture_via_files(cmd, false)
+}
+
+/// [`output_via_file`] 에 stderr 도 파일로 받는다(r9 fix D2) — ④ init-pack 실패 사유 줄이 「사유 출력 없음」만 남겨 rc 24 원인을 못 갈랐다.
+fn output_and_err_via_file(cmd: std::process::Command) -> Option<std::process::Output> {
+    capture_via_files(cmd, true)
+}
+
+fn capture_via_files(mut cmd: std::process::Command, keep_err: bool) -> Option<std::process::Output> {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!("cys-rotate-{}-{n}.out", std::process::id()));
+    // 이름 끝 `.out` = 지우지 못하면 rotate 시작 청소가 함께 걷는다(`-c{n}` 과 같은 규약).
+    let err_path = std::env::temp_dir().join(format!("cys-rotate-{}-e{n}.out", std::process::id()));
     let file = std::fs::File::create(&path).ok()?;
+    let err = if keep_err { std::fs::File::create(&err_path).ok() } else { None };
+    let kept_err = err.is_some();
     let status = cmd
         .stdin(std::process::Stdio::null())
         .stdout(file)
-        .stderr(std::process::Stdio::null())
+        .stderr(err.map(std::process::Stdio::from).unwrap_or_else(std::process::Stdio::null))
         .status();
     drop(cmd);
     let stdout = std::fs::read(&path).unwrap_or_default();
-    if let Err(e) = std::fs::remove_file(&path) {
-        // (Fable 1.1.3 L4) 윈도에서 손자 데몬이 핸들을 쥐면 지우지 못한다 — 다음 rotate 시작 청소가 걷는다.
-        eprintln!("[rotate] 임시 파일 삭제 실패(다음 재시작 때 정리): {} — {e}", path.display());
+    let stderr = if kept_err { std::fs::read(&err_path).unwrap_or_default() } else { Vec::new() };
+    for p in [&path].into_iter().chain(kept_err.then_some(&err_path)) {
+        if let Err(e) = std::fs::remove_file(p) {
+            // (Fable 1.1.3 L4) 윈도에서 손자 데몬이 핸들을 쥐면 지우지 못한다 — 다음 rotate 시작 청소가 걷는다.
+            eprintln!("[rotate] 임시 파일 삭제 실패(다음 재시작 때 정리): {} — {e}", p.display());
+        }
     }
-    Some(std::process::Output { status: status.ok()?, stdout, stderr: Vec::new() })
+    Some(std::process::Output { status: status.ok()?, stdout, stderr })
 }
 
 /// 상한 있는 파일 캡처(⑥ 부서 순회용). 상한 안에 끝나면 `Some(성공 여부)` · 넘기면 **기다리기만 멈추고** `None`.
@@ -23056,7 +23072,7 @@ fn run_rotate(timeout: u64, skip_drain: bool, skip_depts: bool) -> i32 {
         if let Some(t) = txn_child_env(&mut cmd) {
             cmd.args(["--txn", &t]);
         }
-        match output_via_file(cmd) {
+        match output_and_err_via_file(cmd) {
             Some(o) => (o.status.success(), stderr_tail(&o.stderr)),
             None => (false, "실행 실패".to_string()),
         }
@@ -31202,6 +31218,26 @@ mod tests {
         assert!(out.status.success());
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "{\"total\":0}", "출력을 못 받았다");
         assert!(dt < std::time::Duration::from_secs(6), "손자가 끝날 때까지 기다렸다: {dt:?}");
+    }
+
+    /// r9 fix D2: ④ init-pack 은 stderr 도 받아 실패 사유 끝 줄을 남긴다 — 다른 단계 호출은 종전처럼 버린다 · 임시 파일은 남기지 않는다.
+    #[cfg(unix)]
+    #[test]
+    fn init_pack_step_keeps_stderr_for_the_failure_reason() {
+        let sh = |s: &str| {
+            let mut c = std::process::Command::new("sh");
+            c.args(["-c", s]);
+            c
+        };
+        let out = output_and_err_via_file(sh("echo ok; echo 'error: staging 복사 실패' >&2; exit 3")).expect("자식 실행");
+        assert_eq!(out.status.code(), Some(3));
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ok");
+        assert_eq!(stderr_tail(&out.stderr), "error: staging 복사 실패");
+        assert!(output_via_file(sh("echo x >&2")).unwrap().stderr.is_empty(), "다른 단계 호출은 종전처럼 stderr 를 버린다");
+        let src = include_str!("cys.rs");
+        let body = &src[src.find("fn run_rotate(timeout").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        assert!(body.contains("match output_and_err_via_file(cmd) {\n            Some(o) => (o.status.success(), stderr_tail(&o.stderr)),"));
     }
 
     /// 배선 핀 — rotate 의 단계 호출이 파이프 캡처(`.output()`)로 되돌아가지 않는다.

@@ -2892,7 +2892,11 @@ pub fn hold_chrome_reconnect_tab(role: &str, dept_socket: bool, agent: &str, bin
             return false;
         }
         let body = "{\"name\":\"com.anthropic.claude_code_browser_extension\",\"description\":\"cys placeholder — Claude Code rewrites this on start\"}\n";
-        std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, body)).is_ok()
+        // create_new — 위 확인과 쓰기 사이에 다른 Claude 가 정식 파일을 썼으면 덮지 않는다(r9 fix · codex F4-2).
+        std::fs::create_dir_all(&dir)
+            .and_then(|_| std::fs::OpenOptions::new().write(true).create_new(true).open(&path))
+            .and_then(|mut f| std::io::Write::write_all(&mut f, body.as_bytes()))
+            .is_ok()
     }
     #[cfg(not(windows))]
     {

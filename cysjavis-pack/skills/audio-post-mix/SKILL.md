@@ -1,9 +1,12 @@
 ---
 name: audio-post-mix
 description: 배경음악을 나레이션 아래로 덕킹하고 라우드니스를 정규화하는 하위 스킬 — 사이드체인 덕킹·구간 페이드·유튜브 라우드니스 타깃(약 -14 LUFS)으로 최종 믹스 사양을 만든다. audio-post 믹스 관문. "오디오 믹스 / 덕킹 / 라우드니스 정규화 / 페이드" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # audio-post-mix
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 음악과 나레이션이 같은 크기로 싸우면 말이 안 들린다. 음악을 말 아래로 깔고 레벨을 고른다.
 

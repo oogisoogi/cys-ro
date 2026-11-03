@@ -1,9 +1,11 @@
 ---
 name: heygen-avatar-render
-description: ElevenLabs 나레이션 오디오를 HeyGen Avatar V로 말하는 아바타 영상으로 렌더하는 대표 스킬 — 오디오 자산 업로드, v3 API의 avatar_v 엔진·audio_asset_id 구동, 적격성 확인, 폴링·다운로드·립싱크 QC. "아바타 영상 / heygen 렌더 / avatar 5 / talking avatar" 트리거, 또는 youtube-video-pipeline 3단계로 발동.
+description: 나레이션 오디오를 HeyGen 아바타가 말하는 영상으로 렌더한다. 「헤이젠 / 아바타 영상 / talking avatar」 요청 때.
 ---
 
 # heygen-avatar-render
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 나레이션 오디오를 받아 말하는 아바타 영상을 만든다. 우리 파이프라인은 **오디오 우선**
 (ElevenLabs로 음성을 먼저 만든다) — HeyGen은 그 오디오로 립싱크만 한다.
@@ -49,3 +51,7 @@ audio 필드의 정확한 JSON 위치가 v3 reference(요청 본문 최상위)�
 `avatar/clip-NN.mp4`(세그먼트별, 오디오 길이와 일치) + `avatar/render-manifest.json`
 (video_id·engine·avatar_id·status). 전 클립 completed·다운로드 완료해야 상위
 `[[youtube-video-pipeline]]`가 합성 단계로 진행.
+
+## 원 설명 (목록 상주 설명 축소 전 원문 · 1.1.12 cysr-1112-skill-fold)
+
+ElevenLabs 나레이션 오디오를 HeyGen Avatar V로 말하는 아바타 영상으로 렌더하는 대표 스킬 — 오디오 자산 업로드, v3 API의 avatar_v 엔진·audio_asset_id 구동, 적격성 확인, 폴링·다운로드·립싱크 QC. "아바타 영상 / heygen 렌더 / avatar 5 / talking avatar" 트리거, 또는 youtube-video-pipeline 3단계로 발동.

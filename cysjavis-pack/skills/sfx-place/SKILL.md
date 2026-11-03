@@ -1,6 +1,6 @@
 ---
 name: sfx-place
-description: 효과음(SFX)을 영상 타임라인의 적절한 지점에 배치하는 대표 스킬 — provider는 하드코딩하지 않고 javis_select로 결정론 선택(무키 로컬 SFX 라이브러리 바닥부터, deny-by-default). 현 audio-post가 BGM(배경음악)만 다룬다면 이 스킬은 *효과음 배치*를 담당한다. "효과음 / SFX / 사운드이펙트 / 효과음 배치 / 휙 효과음 / whoosh / foley / freesound" 트리거, 또는 cinematic·screen-demo 아키타입의 assets 단계로 발동.
+description: 효과음(SFX)을 영상 타임라인의 알맞은 지점에 배치한다. 「효과음 / 휙 소리 / SFX 넣어」 요청 때.
 cys:
   capability: sfx-place
   stability: beta
@@ -60,3 +60,7 @@ javis_select rank --catalog "${CYS_PACK_DIR:-$HOME/.cys/pack}/round/video_provid
 - 아키타입 매니페스트(D4) assets 단계 success_criteria 예:
   `{"kind":"json_valid"}` + `{"kind":"field_present","value":"placements"}`.
 - cost_class=light: 배치 계획은 가벼움(실제 오디오 처리는 audio-post 소관).
+
+## 원 설명 (목록 상주 설명 축소 전 원문 · 1.1.12 cysr-1112-skill-fold)
+
+효과음(SFX)을 영상 타임라인의 적절한 지점에 배치하는 대표 스킬 — provider는 하드코딩하지 않고 javis_select로 결정론 선택(무키 로컬 SFX 라이브러리 바닥부터, deny-by-default). 현 audio-post가 BGM(배경음악)만 다룬다면 이 스킬은 *효과음 배치*를 담당한다. "효과음 / SFX / 사운드이펙트 / 효과음 배치 / 휙 효과음 / whoosh / foley / freesound" 트리거, 또는 cinematic·screen-demo 아키타입의 assets 단계로 발동.

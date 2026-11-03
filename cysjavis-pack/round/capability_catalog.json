@@ -2,7 +2,7 @@
   "_generated": "javis_registry.py build — 손편집 금지(재생성: python3 javis_registry.py build)",
   "capabilities": [
     {
-      "description": "웹/앱을 기획→검증→자율빌드로 만드는 대표 오케스트레이터 스킬. 기획(plan)→화면명세(screen-spec)→작업목록(tasks)→★감독관 검증루프(supervisor)→게이트 통과까지 자율빌드(orchestrate)를 순서대로 굴린다. cysjavis 워커가 웹/앱을 만들 때 **필수**. \"웹/앱 만들어 / 앱 빌드 / 스펙 기반 개발 / appbuild / 코드부터 짜지 말고 기획부터\" 트리거, 또는 워커가 신규 웹/앱 구현을 시작할 때 발동.",
+      "description": "웹/앱을 코드 전에 기획→화면명세→작업목록→감독관 검증→자율빌드 순서로 만든다. 「앱·웹 만들어 / 앱 기획·PRD / 화면 명세 / 기획 검증 / 코드부터 짜지 말고 기획부터」 요청이나 신규 웹/앱 구현 착수 때.",
       "id": "skill:appbuild",
       "kind": "skill",
       "name": "appbuild",
@@ -142,7 +142,7 @@
       "path": "skills/appbuild-tasks-slice/SKILL.md"
     },
     {
-      "description": "영상의 배경음악·효과음을 마련하고 나레이션 아래로 믹싱하는 대표 오디오 포스트 스킬 — 음악 베드 선택/생성과 덕킹·레벨 정규화를 하위 스킬로 오케스트레이션한다. 프로페셔널 영상 감의 핵심 레이어. \"배경음악 / 음악 믹스 / 덕킹 / 오디오 포스트 / bgm\" 트리거, 또는 youtube-video-pipeline 음악 단계로 발동.",
+      "description": "영상 배경음악을 마련하고 나레이션 아래로 덕킹·라우드니스 정규화한다. 「배경음악 / BGM / 덕킹 / 음악 믹스」 요청 때.",
       "id": "skill:audio-post",
       "kind": "skill",
       "name": "audio-post",
@@ -173,7 +173,7 @@
       "best_for": "전사 텍스트↔음성 단어 단위 forced-alignment로 자막 큐 타이밍 생성 — 자막·더빙 싱크의 토대",
       "capability": "caption-align",
       "cost_class": "wall-heavy",
-      "description": "전사 텍스트를 음성에 단어 단위로 정렬해 자막 타이밍(큐)을 생성하는 대표 스킬 — provider는 하드코딩하지 않고 javis_select로 결정론 선택(무키 whisperx forced-alignment 바닥부터, deny-by-default). 현 video-stitch-captions의 audio-sync가 *검사*만 한다면 이 스킬은 타이밍을 *생성*한다. \"자막 정렬 / 캡션 타이밍 / forced alignment / 단어 싱크 / 자막 큐 / subtitle timing / SRT 타임코드\" 트리거, 또는 localization-dub·podcast-repurpose 아키타입의 assets 단계로 발동.",
+      "description": "전사 텍스트를 음성에 단어 단위로 정렬해 자막 타이밍(SRT 큐)을 만든다. 「자막 타이밍 / 자막 싱크 맞춰 / forced alignment」 요청 때.",
       "id": "skill:caption-align",
       "kind": "skill",
       "name": "caption-align",
@@ -184,12 +184,19 @@
       "best_for": "ASR 전사 오인식을 원본 대본 ground-truth로 정정(타임스탬프 불변·텍스트만 교정) — 자막 정확도의 빠진 게이트",
       "capability": "caption-correct",
       "cost_class": "light",
-      "description": "ASR 전사 텍스트를 검증된 원본 대본(ground-truth)에 맞춰 정정하는 대표 스킬 — 타임스탬프는 절대 불변, 오인식 단어만 대본 철자로 교정한다. provider는 하드코딩하지 않고 javis_select로 결정론 선택(무키 로컬 시퀀스 정렬 바닥부터, deny-by-default). transcription이 들은 대로 받아적었다면 이 스킬은 대본대로 고쳐쓴다 — caption-align(타이밍 부여) *이전* 단계. \"자막 교정 / SRT 정정 / 전사 오인식 수정 / 대본 대조 / ASR correction / transcript correction / 동음이의 교정\" 트리거, 또는 검증된 대본이 있는 아키타입(talking-head·screen-demo 등 대본→나레이션→전사 체인)의 transcription과 caption-align 사이로 발동.",
+      "description": "ASR 전사의 오인식 단어를 원본 대본 기준으로 고친다(타임스탬프는 그대로). 「자막 교정 / 전사 오인식 수정 / 대본 대조」 요청 때.",
       "id": "skill:caption-correct",
       "kind": "skill",
       "name": "caption-correct",
       "path": "skills/caption-correct/SKILL.md",
       "stability": "beta"
+    },
+    {
+      "description": "마스터에게 컴퓨터 통제권(크롬·커넥터·화면 조작·앱·폴더)을 넘기고 거두고 묻는 절차, 그리고 로그인·결제·자료 내보내기 전 사용자 확인 판단(javis_computer_control.py · say 를 그대로 말한다). 「내 컴퓨터 맡겨도 돼 / 크롬·카톡·한글 다뤄 줘 / 뭘 켜야 해」 요청 때.",
+      "id": "skill:computer-control",
+      "kind": "skill",
+      "name": "computer-control",
+      "path": "skills/computer-control/SKILL.md"
     },
     {
       "description": "종량제 외부 API(HeyGen 분당·ElevenLabs·fal.ai 초당/장당)를 실행하기 전에 예상 비용을 산출·표시하고 사용자 확인을 받는 공통 규약 스킬. 평판 리스크 옆의 비용 리스크를 막는다. \"비용 미리보기 / 사전 비용 확인 / 종량제 가드 / cost preview\" 맥락에서 참조.",
@@ -206,14 +213,21 @@
       "path": "skills/daishin-report-search/SKILL.md"
     },
     {
-      "description": "확정된 디자인 원형(master.html 최상위 원형 + 토큰 실파일)을 N개 페이지에 일관 전파하는 빌드 하네스: 컴포넌트 인벤토리 추출→공유 CSS 분리→페이지맵→토큰/컴포넌트 링크→한 페이지씩 조립·헤드리스 렌더 검증→일관성 게이트(토큰만·하드코딩hex 0·radius0·다크기본·대비계산·주석*/점검·양테마). design-token-system(토큰층)+vibe-design(원칙) 위에 구성. cys-homepage R3 7페이지 전파에 재사용.",
+      "description": "사용자가 말로 부서(팀)를 만들고 닫고 상태를 물을 때 본부 마스터가 따르는 절차(javis_dept_request.py · say 를 그대로 말한다). 「OO 부서 만들어 / 팀 꾸려 / OO부 닫아 / 부서 어떻게 됐어」 또는 [부서결과]·[부서가동] 입력 때.",
+      "id": "skill:dept-by-chat",
+      "kind": "skill",
+      "name": "dept-by-chat",
+      "path": "skills/dept-by-chat/SKILL.md"
+    },
+    {
+      "description": "확정된 디자인 원형(토큰·컴포넌트)을 여러 페이지에 일관 전파하고 일관성 게이트로 검증한다. 「디자인 원형을 페이지들에 적용 / 디자인 전파」 요청 때.",
       "id": "skill:design-system-propagate",
       "kind": "skill",
       "name": "design-system-propagate",
       "path": "skills/design-system-propagate/SKILL.md"
     },
     {
-      "description": "구조적 디자인 시스템 토큰·그리드·다크모드를 근거기반으로 구축: 2-tier(primitive→semantic) DTCG 토큰·테마=alias 재지정·APCA/WCAG2 대비 실측·타입단위 파생 Swiss 그리드+모듈러 스케일·데이터를 정체성으로(generative)·헤드리스 렌더 실측(+CSS주석 */ 트랩 점검). design 워커가 디자인 시스템/토큰/다크모드를 만들 때 발동.",
+      "description": "디자인 토큰·그리드·다크모드를 근거 기반으로 구축한다(DTCG 2단 토큰·대비 실측·헤드리스 렌더). 「디자인 시스템 / 디자인 토큰 / 다크모드」 요청 때.",
       "id": "skill:design-token-system",
       "kind": "skill",
       "name": "design-token-system",
@@ -225,6 +239,13 @@
       "kind": "skill",
       "name": "dispatching-parallel-agents",
       "path": "skills/dispatching-parallel-agents/SKILL.md"
+    },
+    {
+      "description": "여러 라운드 개선에서 검증된 이득만 남기는 eval 주도 자기개선 — 자기채점·지표 게이밍·멈출 때를 다룬다. 산출물을 반복 개선하거나 RSI 이득을 판정할 때.",
+      "id": "skill:eval-driven-self-improvement",
+      "kind": "skill",
+      "name": "eval-driven-self-improvement",
+      "path": "skills/eval-driven-self-improvement/SKILL.md"
     },
     {
       "description": "GeekNews public RSS/Atom feed로 긱뉴스 게시물을 조회, 검색, 상세 확인하는 읽기 전용 스킬.",
@@ -241,7 +262,7 @@
       "path": "skills/git-guardrails-claude-code/SKILL.md"
     },
     {
-      "description": "지시·계획의 의도 파악이 불충분할 때 합의에 이를 때까지 구조화 질문을 반복하는 의도 합의 스킬(work management 앵커 c). \"의도 확인 / 의도 합의 / grill me / 계획 검증 질문 / 뭘 원하는지 모르겠다\" 트리거로 발동",
+      "description": "지시·계획의 의도가 애매할 때 합의에 이를 때까지 구조화 질문을 반복한다. 「의도 정리 / 의도 확인 / grill me / 뭘 원하는지 모르겠다」 요청 때.",
       "id": "skill:grill-me",
       "kind": "skill",
       "name": "grill-me",
@@ -255,7 +276,7 @@
       "path": "skills/grill-with-docs/SKILL.md"
     },
     {
-      "description": "출처 진실성·근거·논리오류 분석·팩트체크 전담 검증 스킬(work management 앵커 b) — 판단·보고·산출 전 환각 안전장치 게이트. \"출처 검증 / 팩트체크 / 환각 방지 / 근거 점검 / hallucination guard\" 트리거로 발동",
+      "description": "출처 진실성·근거 적합성·논리오류·팩트체크로 환각을 막는 검증 게이트. 「팩트체크 / 출처 검증 / 근거 점검 / 환각 방지」 요청이나 판단·보고 전 때.",
       "id": "skill:hallucination-guard",
       "kind": "skill",
       "name": "hallucination-guard",
@@ -269,21 +290,21 @@
       "path": "skills/handoff/SKILL.md"
     },
     {
-      "description": "\"도메인 한 문장을 검증된·비용통제된·재개가능한 풀스택 Claude 프리미티브 하네스(orchestrator skill + .claude/agents + Sub-agents + Agent Teams + Hooks + .claude/skills + 장기기억)로 변환하는 메타스킬(CYS Harness Creator). '하네스 만들어줘/구성/설계', '에이전트 팀 설계', '이 도메인 자동화', '하네스 점검·감사·확장·진화·동기화' 요청 시 사용. 후속: 재실행·수정·보완·부분재생성·이전결과개선·드리프트수정·유지보수 요청 시에도 반드시 이 스킬을 사용.\"",
+      "description": "도메인 한 문장을 에이전트 팀·훅·스킬로 된 Claude 하네스로 만들고 점검·확장·진화시킨다. 「하네스 만들어 / 에이전트 팀 설계 / 이 업무 자동화」 요청 때.",
       "id": "skill:harness-creator",
       "kind": "skill",
       "name": "harness-creator",
       "path": "skills/harness-creator/SKILL.md"
     },
     {
-      "description": "|",
+      "description": "에이전트를 오래 자율주행시키는 하네스 운영 7기법(세션 포크·phase 순차 위임·압축 서브에이전트·docs-diff·ADR·코드리뷰 하네스) 길잡이. 「하네스 엔지니어링·운영 / 컨텍스트 보존 위임 / phase 분해 / ADR / docs-diff」 요청 때.",
       "id": "skill:harness-engineering",
       "kind": "skill",
       "name": "harness-engineering",
       "path": "skills/harness-engineering/SKILL.md"
     },
     {
-      "description": "ElevenLabs 나레이션 오디오를 HeyGen Avatar V로 말하는 아바타 영상으로 렌더하는 대표 스킬 — 오디오 자산 업로드, v3 API의 avatar_v 엔진·audio_asset_id 구동, 적격성 확인, 폴링·다운로드·립싱크 QC. \"아바타 영상 / heygen 렌더 / avatar 5 / talking avatar\" 트리거, 또는 youtube-video-pipeline 3단계로 발동.",
+      "description": "나레이션 오디오를 HeyGen 아바타가 말하는 영상으로 렌더한다. 「헤이젠 / 아바타 영상 / talking avatar」 요청 때.",
       "id": "skill:heygen-avatar-render",
       "kind": "skill",
       "name": "heygen-avatar-render",
@@ -316,6 +337,13 @@
       "kind": "skill",
       "name": "improve-codebase-architecture",
       "path": "skills/improve-codebase-architecture/SKILL.md"
+    },
+    {
+      "description": ">",
+      "id": "skill:insane-search",
+      "kind": "skill",
+      "name": "insane-search",
+      "path": "skills/insane-search/SKILL.md"
     },
     {
       "description": "Search Joseon Dynasty Annals records from the official sillok.history.go.kr site with keyword search plus optional king/year narrowing.",
@@ -381,7 +409,7 @@
       "path": "skills/library-book-search/SKILL.md"
     },
     {
-      "description": "fal.ai 애그리게이터로 생성형 비주얼을 만드는 대표 스킬 — 텍스트→이미지·참조 편집·이미지→영상(시네마틱 B-roll)·업스케일·썸네일을 하위 스킬로 오케스트레이션한다. 모델을 경로로 지정해 새 모델도 코드 변경 없이 채택. \"이미지 생성 / B-roll 생성 / 영상 생성 / 업스케일 / 썸네일 / fal\" 트리거, 또는 youtube-video-pipeline B-roll 단계로 발동.",
+      "description": "fal.ai로 이미지 생성·참조 편집·이미지→영상(B-roll)·업스케일·썸네일을 만든다. 「이미지·썸네일·B-roll 만들어 / 화질 올려 / 사진 움직이게」 요청 때.",
       "id": "skill:media-gen",
       "kind": "skill",
       "name": "media-gen",
@@ -430,6 +458,13 @@
       "path": "skills/naver-blog-research/SKILL.md"
     },
     {
+      "description": "grill-me 부서 합의 문서를 실제 부서 생성·첫 프로젝트 착수까지 가동한다. 「이 문서대로 부서 만들어·편성해 / 합의대로 부서 가동 / 부서 재편성」 요청 때.",
+      "id": "skill:org-provision",
+      "kind": "skill",
+      "name": "org-provision",
+      "path": "skills/org-provision/SKILL.md"
+    },
+    {
       "description": "Build a throwaway prototype to flesh out a design before committing to it. Routes between two branches — a runnable terminal app for state/business-logic questions, or several radically different UI variations toggleable from one route. Use when the user wants to prototype, sanity-check a data model or state machine, mock up a UI, explore design options, or says \"prototype this\", \"let me play with it\", \"try a few designs\".",
       "id": "skill:prototype",
       "kind": "skill",
@@ -451,10 +486,17 @@
       "path": "skills/rhwp-edit/SKILL.md"
     },
     {
+      "description": "RSI 5단계 학습 루프(검색→추출→잠근 eval 평가→저장→도구화)를 돌린다. 「학습하라 / 공부하라 / RSI하라 / 재귀적 자기개선」 명령이나 학습 티켓 실행 때.",
+      "id": "skill:rsi-learning-loop",
+      "kind": "skill",
+      "name": "rsi-learning-loop",
+      "path": "skills/rsi-learning-loop/SKILL.md"
+    },
+    {
       "best_for": "콘텐츠 인지 shot-detect·침묵 트림·자동 편집점 — 점프컷·클립 경계·몽타주 컷의 공통 편집 토대",
       "capability": "scene-cut",
       "cost_class": "wall-heavy",
-      "description": "영상에서 콘텐츠 인지 shot-detect·침묵 트림으로 자동 편집점(컷)을 산출하는 대표 스킬 — provider는 하드코딩하지 않고 javis_select로 결정론 선택(무키 ffmpeg silencedetect/scene-detect 바닥부터, deny-by-default). 점프컷·클립 경계·몽타주 컷의 공통 편집 토대. \"씬컷 / 점프컷 / 컷편집 / 무음제거 / silence trim / shot detection / scene detect / 자동 편집점\" 트리거, 또는 clip-factory·cinematic·documentary-montage·screen-demo·talking-head 아키타입의 scene-plan/edit 단계로 발동.",
+      "description": "영상의 무음 구간·장면 전환을 찾아 자동 편집점(컷)을 낸다. 「무음 제거 / 점프컷 / 컷 편집 / 장면 감지」 요청 때.",
       "id": "skill:scene-cut",
       "kind": "skill",
       "name": "scene-cut",
@@ -462,7 +504,7 @@
       "stability": "beta"
     },
     {
-      "description": "영상 주제 한 문장 → 사실 기반의 2~4분 유튜브 나레이션 대본을 만드는 대표 스킬. 리서치→구조 설계→사실검증→음성 청크 분절 4단계를 하위 스킬로 오케스트레이션한다. \"영상 대본 / 스크립트 작성 / 나레이션 대본 / youtube script\" 트리거, 또는 youtube-video-pipeline 1단계로 발동.",
+      "description": "영상 주제로 사실 검증된 2~4분 나레이션 대본을 쓴다(리서치·구조·팩트체크·음성 청크). 「영상 대본 / 스크립트 / 나레이션 대본 써줘」 요청 때.",
       "id": "skill:script-writer",
       "kind": "skill",
       "name": "script-writer",
@@ -497,7 +539,7 @@
       "path": "skills/script-writer-voice-prep/SKILL.md"
     },
     {
-      "description": "코드·난제를 객관 성공기준까지 자율로 끌어올리는 적대적 자기교정 루프 — eval LOCK 후 implement→독립채점→적대적검증 반복. \"self-correction loop / 자가 교정 루프 / 코드 자율 디버깅 / 자율 디버깅\" 트리거로 발동",
+      "description": "코드·난제를 잠근 객관 기준까지 구현→독립채점→적대검증으로 반복 교정한다. 「자가 교정 루프 / 자율 디버깅 / self-correction loop」 요청 때.",
       "id": "skill:self-correction-loops",
       "kind": "skill",
       "name": "self-correction-loops",
@@ -507,7 +549,7 @@
       "best_for": "효과음(SFX)을 타임라인 지점에 결정론 배치 — 트레일러 임팩트·데모 콜아웃 사운드의 토대",
       "capability": "sfx-place",
       "cost_class": "light",
-      "description": "효과음(SFX)을 영상 타임라인의 적절한 지점에 배치하는 대표 스킬 — provider는 하드코딩하지 않고 javis_select로 결정론 선택(무키 로컬 SFX 라이브러리 바닥부터, deny-by-default). 현 audio-post가 BGM(배경음악)만 다룬다면 이 스킬은 *효과음 배치*를 담당한다. \"효과음 / SFX / 사운드이펙트 / 효과음 배치 / 휙 효과음 / whoosh / foley / freesound\" 트리거, 또는 cinematic·screen-demo 아키타입의 assets 단계로 발동.",
+      "description": "효과음(SFX)을 영상 타임라인의 알맞은 지점에 배치한다. 「효과음 / 휙 소리 / SFX 넣어」 요청 때.",
       "id": "skill:sfx-place",
       "kind": "skill",
       "name": "sfx-place",
@@ -520,6 +562,13 @@
       "kind": "skill",
       "name": "skill-writing",
       "path": "skills/skill-writing/SKILL.md"
+    },
+    {
+      "description": "정적 검사(javis_skillscan)가 못 잡는 스킬의 의미 위협(우회 주입·기만)을 LLM으로 판정한다. 스킬·외부 저장소 채택 전 정밀 검사나 「스킬 시맨틱 스캔」 요청 때.",
+      "id": "skill:skillscan-semantic",
+      "kind": "skill",
+      "name": "skillscan-semantic",
+      "path": "skills/skillscan-semantic/SKILL.md"
     },
     {
       "description": "Use when executing implementation plans with independent tasks in the current session",
@@ -543,6 +592,13 @@
       "path": "skills/systematic-debugging/SKILL.md"
     },
     {
+      "description": "Test-driven development with a red-green-refactor loop. Use when the user wants TDD, test-first development, or integration tests for a feature or bug fix.",
+      "id": "skill:tdd",
+      "kind": "skill",
+      "name": "tdd",
+      "path": "skills/tdd/SKILL.md"
+    },
+    {
       "description": "Use when implementing any feature or bugfix, before writing implementation code",
       "id": "skill:test-driven-development",
       "kind": "skill",
@@ -550,10 +606,17 @@
       "path": "skills/test-driven-development/SKILL.md"
     },
     {
+      "description": "TimesFM으로 학습 없이 시계열(매출·수요·센서 등)의 점예측과 예측구간을 낸다. 「시계열 예측 / 다음 N개월 매출 예측 / 수요 예측」 요청 때.",
+      "id": "skill:timesfm-forecasting",
+      "kind": "skill",
+      "name": "timesfm-forecasting",
+      "path": "skills/timesfm-forecasting/SKILL.md"
+    },
+    {
       "best_for": "음성·영상 전사와 단어 단위 타임스탬프 — 자막·번역·클립 추출·점프컷의 공통 전처리",
       "capability": "transcription",
       "cost_class": "wall-heavy",
-      "description": "음성·영상을 단어 단위 타임스탬프가 붙은 텍스트로 전사(ASR)하는 대표 스킬 — provider는 하드코딩하지 않고 javis_select로 결정론 선택(무료·로컬 whisperx 바닥부터, deny-by-default). 자막·번역·클립 추출·점프컷의 공통 전처리. \"전사 / 받아쓰기 / 자막 텍스트 / 타임스탬프 / transcribe / ASR / whisper\" 트리거, 또는 clip-factory·localization-dub·podcast-repurpose·screen-demo·talking-head·hybrid 아키타입의 script 단계로 발동.",
+      "description": "음성·영상을 단어 타임스탬프가 붙은 텍스트로 전사한다(로컬 whisperx 우선). 「받아쓰기 / 전사 / transcribe / 자막 텍스트」 요청 때.",
       "id": "skill:transcription",
       "kind": "skill",
       "name": "transcription",
@@ -575,7 +638,70 @@
       "path": "skills/verification-before-completion/SKILL.md"
     },
     {
-      "description": "아바타 클립·HyperFrames 모션그래픽·생성형 B-roll·자막·배경음악을 하나의 완성 영상으로 합성하는 대표 편집 스킬 — 컴포지팅(아바타 항상 노출)·B-roll 배치·자막 번인을 하위 스킬로 오케스트레이션하고 FFmpeg로 마스터 렌더한다. \"영상 합성 / 편집 / 클립 결합 / 컴포지팅 / 자막\" 트리거, 또는 youtube-video-pipeline 합성 단계로 발동.",
+      "description": "자연어 코딩을 Level 판정→문서 세트→구현 위임→검증 게이트로 굴린다. 「바이브코딩 / Level 판정 / 상태관리·TDD·외부연동 경계 설계 / 변경 런북」 요청 때.",
+      "id": "skill:vibecoding",
+      "kind": "skill",
+      "name": "vibecoding",
+      "path": "skills/vibecoding/SKILL.md"
+    },
+    {
+      "description": "경계의 정의(Boundary Definition) 전담 스킬 — requirement 직후·PRD 전 필수 타이밍(4가지 이유)·SDK/API/Webhook 분류·인증/보안 선설계·/docs/external/서비스.md 산출·공식문서 우선+최근 3개월 블로그 교차검증. 핵심 명제 \"requirement는 내가 할 일, external-integration은 내가 하지 않을 일(외부 의존)을 정의한다\". \"경계 정의 / 외부 연동 / external integration / SDK 연동 / API 경계 / 웹훅 / 인증 설계\" 트리거, 또는 바이브코딩 파이프라인 requirement→PRD 사이 단계로 발동.",
+      "id": "skill:vibecoding-boundary",
+      "kind": "skill",
+      "name": "vibecoding-boundary",
+      "path": "skills/vibecoding-boundary/SKILL.md"
+    },
+    {
+      "description": "NLC \"Spec/Doc driven 10단계\" 28문서를 프로젝트에 인스턴스화하는 문서 파이프라인 스킬. assets/templates의 헌법(rules)~실행(implement) 28템플릿을 Level별 필수 세트로 깔고, 각 문서 생성 후 doc-critic(20년차 시니어 기준 확대해석·스코프크립 감사)을 거쳐, CLAUDE.md 브릿지 부트스트랩 설치와 세션 sanity check까지 수행한다. \"문서 세트 만들어 / 헌법 문서 깔아줘 / spec 문서 생성 / 28문서 템플릿 / rules·root-sot 인스턴스화\", 또는 [[vibecoding]] 2단계로 발동.",
+      "id": "skill:vibecoding-docs",
+      "kind": "skill",
+      "name": "vibecoding-docs",
+      "path": "skills/vibecoding-docs/SKILL.md"
+    },
+    {
+      "description": "바이브코딩 체계의 실력을 자기채점 없이 측정하는 eval 하네스 절차. \"public benchmarks are a filter, internal evals are the verdict\" 원칙 위에서 threat model 6종·격리 실행·사전등록 A/B protocol(PR-ABEVAL-001)·integrity gate strict flow·auditor trajectory 감사·mutation 검산(PR-MUTOPS-001)을 굴린다. \"체계 효과 측정, A/B eval, 벤치 말고 내부 eval, reward hacking 방지, mutation 검산, 개선이 진짜냐 검증\" 트리거, 또는 신·구 체계 비교나 개선 라운드의 이득을 증명해야 할 때 발동.",
+      "id": "skill:vibecoding-eval",
+      "kind": "skill",
+      "name": "vibecoding-eval",
+      "path": "skills/vibecoding-eval/SKILL.md"
+    },
+    {
+      "description": "최윤식 박사 NLC 교본 + 세계 최전선 리서치를 담은 바이브코딩 살아있는 지식 베이스. 코딩 중 \"이 개념의 정본이 뭐냐\"를 온디맨드로 조회하는 참조형 스킬. Level 체계·상태관리 이론·TDD 위치론·Git 철학·경계의 정의·컨텍스트 엔지니어링·헌법 계층론·SDD 생태계·보안 실패 포스트모템·compounding·ACE-FCA를 원전 절 단위로 색인한다. \"바이브코딩 원칙/정본 확인, NLC 교본 근거, 이 규칙 왜, Level 몇이냐, 상태관리/경계/헌법 계층 이론\" 트리거, 또는 vibecoding 설계·라우팅·리뷰 중 근거가 필요할 때 발동.",
+      "id": "skill:vibecoding-knowledge",
+      "kind": "skill",
+      "name": "vibecoding-knowledge",
+      "path": "skills/vibecoding-knowledge/SKILL.md"
+    },
+    {
+      "description": "NLC 시행령(ruler/*.md) 10종을 상황에 맞춰 라우팅하는 런북 스킬. 코드 변경 유형(coding·refactor·hotfix·migration·test-only·doc-sync·state·security·integration·release)별로 Applicability→Mandatory Context→Output Contract→규칙→Verification→Checklist→Stop Conditions 골격의 실행 런북을 assets/runbooks/에서 고른다. \"이 변경 어떻게 진행 / 리팩터 런북 / 핫픽스 절차 / 마이그레이션 규칙 / 이건 rules인가 ruler인가\", 또는 [[vibecoding]] 구현 단계에서 작업 유형별 시행령이 필요할 때 발동.",
+      "id": "skill:vibecoding-runbook",
+      "kind": "skill",
+      "name": "vibecoding-runbook",
+      "path": "skills/vibecoding-runbook/SKILL.md"
+    },
+    {
+      "description": "상태관리(State Management)를 설계 전담하는 스킬 — State=기억(변수 아님) 판별·State=f(action) 원칙·Flux 단방향 규율·Context는 항상 마지막·페이지 상태 매핑. 핵심 명제 \"AI는 상태의 경계를 정의하지 못한다\"에 따라 상태 경계·전이 규칙 확정은 인간(doctor) DECISION block으로만 받고 에이전트는 전사만 한다. \"상태관리 설계 / state management / 상태 경계 / Flux 설계 / 페이지 상태 매핑 / state-management.md 작성\" 트리거, 또는 바이브코딩 파이프라인 layer 7(spec 직후) 단계로 발동.",
+      "id": "skill:vibecoding-state",
+      "kind": "skill",
+      "name": "vibecoding-state",
+      "path": "skills/vibecoding-state/SKILL.md"
+    },
+    {
+      "description": "바이브코딩 TDD 전담 스킬 — 위치론(spec 후·plan 전 3대 논리)·문서 체인 5종(test-e2e→test-report→test-setup-orchestrator→tdd.md 법전→test.md→test-plan.md)·Red-Green-Refactor·FIRST·AAA·Test Pyramid 70/20/10·Smoke Test·integrity gate 연동. \"TDD 설계 / 테스트 우선 / test.md 작성 / test-plan / 테스트 문서 체인 / 테스트 피라미드\" 트리거, 또는 바이브코딩 파이프라인 layer 8~9(spec 직후) 단계로 발동.",
+      "id": "skill:vibecoding-tdd",
+      "kind": "skill",
+      "name": "vibecoding-tdd",
+      "path": "skills/vibecoding-tdd/SKILL.md"
+    },
+    {
+      "description": "구현 검증 전담 스킬 — 6단계 검증 체크리스트(UX·Test·App·Stress·Code·Implementation)·fresh verifier 서브에이전트(구현자≠검증자·blackbox)·시각 self-loop 6단계(수정→실행→스크린샷→디자인문서 대조→불일치·콘솔에러→재검증)·design-reviewer 에이전트·mutation 검산(operator 5종 N=5, vacuous pass 시 검증기 수리). \"검증 / verify / 시각 검증 / 디자인 리뷰 / mutation 테스트 / 검증기 무결성 / 회귀 검증\" 트리거, 또는 구현 done 전 검증 게이트로 발동.",
+      "id": "skill:vibecoding-verify",
+      "kind": "skill",
+      "name": "vibecoding-verify",
+      "path": "skills/vibecoding-verify/SKILL.md"
+    },
+    {
+      "description": "아바타·B-roll·모션그래픽·자막·음악을 한 영상으로 합성·편집한다. 「영상 합치기 / 편집 / 자막 번인 / 컴포지팅」 요청 때.",
       "id": "skill:video-stitch",
       "kind": "skill",
       "name": "video-stitch",
@@ -603,7 +729,7 @@
       "path": "skills/video-stitch-compositing/SKILL.md"
     },
     {
-      "description": "완성 영상을 업로드 전 시각적으로 검증·승인하는 대표 스킬 — 프레임 추출 후 비전 검수로 시각 품질·모션그래픽 타이밍·오디오 싱크·대본 사실성 4관문을 돌려 전부 GO일 때만 출고한다. \"영상 검증 / 시각 검수 / 영상 QA / 업로드 전 확인 / verify video\" 트리거, 또는 youtube-video-pipeline 5단계로 발동.",
+      "description": "완성 영상을 업로드 전에 화면·모션 타이밍·립싱크·사실성 4관문으로 검수한다. 「영상 검수 / 업로드 전 확인 / 영상 QA」 요청 때.",
       "id": "skill:video-verify",
       "kind": "skill",
       "name": "video-verify",
@@ -638,7 +764,7 @@
       "path": "skills/video-verify-visual/SKILL.md"
     },
     {
-      "description": "검증된 대본 청크를 ElevenLabs로 일관된 나레이션 오디오로 합성하는 대표 스킬 — 음성 클론(voice_id) 확보, 글자수 한도 청킹, request stitching 연속성, 잠금된 settings·seed, 문자 타임스탬프까지. \"음성 합성 / 보이스 클론 / 나레이션 / elevenlabs tts\" 트리거, 또는 youtube-video-pipeline 2단계로 발동.",
+      "description": "대본을 ElevenLabs 클론 음성으로 일관되게 합성한다(청킹·이어붙임·타임스탬프). 「보이스 클론 / 일레븐랩스 / 나레이션 음성 합성」 요청 때.",
       "id": "skill:voice-clone-elevenlabs",
       "kind": "skill",
       "name": "voice-clone-elevenlabs",
@@ -659,7 +785,7 @@
       "path": "skills/voice-clone-elevenlabs-synth-qc/SKILL.md"
     },
     {
-      "description": "텍스트를 100% 온디바이스 로컬 TTS로 합성하는 대표 스킬 — 종량제 API 0(기본 제약 \"구독제만·종량제 금지\" 부합). 엔진을 필요(한국어·클로닝·CPU·표현)별로 선택, 무제한 길이 문장경계 청킹+크로스페이드, TTS 아티팩트 trim, 경계 음질 QC, 후처리는 audio-post로 위임. voice-clone-elevenlabs(종량제 API)의 로컬 대체. \"로컬 음성 합성 / 온디바이스 tts / 종량제 없이 나레이션 / 한국어 음성 / 로컬 보이스 클론 / voice-local\" 트리거. ★기본 음성 라우팅 절체는 오너 결정(ESCALATE).",
+      "description": "종량제 API 없이 내 컴퓨터의 로컬 TTS로 나레이션을 합성한다. 「로컬 음성 합성 / 온디바이스 TTS / 종량제 없이 한국어 음성」 요청 때.",
       "id": "skill:voice-local",
       "kind": "skill",
       "name": "voice-local",
@@ -694,7 +820,7 @@
       "path": "skills/writing-shape/SKILL.md"
     },
     {
-      "description": "주제 한 문장 → 완성된 유튜브 영상(아바타 + 모션그래픽 + 생성형 B-roll + 음악 + 썸네일)을 end-to-end로 자동 제작하는 대표 오케스트레이터 스킬. 대본→음성→아바타→생성형 비주얼→모션그래픽→음악→합성→검증의 기둥을 순서대로 굴린다. \"유튜브 영상 만들어 / AI 영상 자동 제작 / 아바타 영상 파이프라인 / make a youtube video / hyperframes avatar video\" 트리거, 또는 /goal 이 영상 제작 목표를 받을 때 발동.",
+      "description": "주제 한 문장으로 유튜브 영상(대본·음성·아바타·B-roll·음악·합성·검증)을 끝까지 자동 제작한다. 「유튜브 영상 만들어 / AI 영상 자동 제작」 요청 때.",
       "id": "skill:youtube-video-pipeline",
       "kind": "skill",
       "name": "youtube-video-pipeline",
@@ -711,11 +837,11 @@
   "counts": {
     "orphan_memory": 0,
     "orphan_skill": 0,
-    "skills": 98
+    "skills": 116
   },
   "orphans": {
     "memory": [],
     "skill": []
   },
-  "pack_dir": "cysjavis-pack"
+  "pack_dir": "."
 }

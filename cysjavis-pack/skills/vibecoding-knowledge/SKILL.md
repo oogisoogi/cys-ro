@@ -1,9 +1,12 @@
 ---
 name: vibecoding-knowledge
 description: 최윤식 박사 NLC 교본 + 세계 최전선 리서치를 담은 바이브코딩 살아있는 지식 베이스. 코딩 중 "이 개념의 정본이 뭐냐"를 온디맨드로 조회하는 참조형 스킬. Level 체계·상태관리 이론·TDD 위치론·Git 철학·경계의 정의·컨텍스트 엔지니어링·헌법 계층론·SDD 생태계·보안 실패 포스트모템·compounding·ACE-FCA를 원전 절 단위로 색인한다. "바이브코딩 원칙/정본 확인, NLC 교본 근거, 이 규칙 왜, Level 몇이냐, 상태관리/경계/헌법 계층 이론" 트리거, 또는 vibecoding 설계·라우팅·리뷰 중 근거가 필요할 때 발동.
+disable-model-invocation: true
 ---
 
 # vibecoding-knowledge
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 바이브코딩 체계의 **참조형 지식 베이스**(설계 제안서 §4-F). 절차를 굴리는 스킬이 아니라,
 코딩·라우팅·리뷰 도중 "이 개념의 정본이 무엇이냐"를 물을 때 **원전 절 단위로 조회**하는

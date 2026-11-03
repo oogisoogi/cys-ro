@@ -1,9 +1,12 @@
 ---
 name: appbuild-plan-interview
 description: 소크라테스식 인터뷰로 웹/앱 요구를 캐내는 기획 모드 하위 스킬 — 분기 질문으로 가정·모서리·완료 조건을 합의에 이를 때까지 끌어낸다(grill-me 배선). appbuild-plan 모드 1. "기획 인터뷰 / 요구 캐기 / 소크라테스 기획" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # appbuild-plan-interview
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 사용자의 머릿속 의도를 질문으로 끌어내 빠짐없는 요구로 만든다. 한 번에 다 묻지 않고
 **분기마다 합의**에 이를 때까지 캐묻는다 — `[[grill-me]]`(가정 명시·분기 질문·모서리 사냥·

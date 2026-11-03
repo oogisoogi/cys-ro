@@ -1,6 +1,6 @@
 ---
 name: design-system-propagate
-description: 확정된 디자인 원형(master.html 최상위 원형 + 토큰 실파일)을 N개 페이지에 일관 전파하는 빌드 하네스: 컴포넌트 인벤토리 추출→공유 CSS 분리→페이지맵→토큰/컴포넌트 링크→한 페이지씩 조립·헤드리스 렌더 검증→일관성 게이트(토큰만·하드코딩hex 0·radius0·다크기본·대비계산·주석*/점검·양테마). design-token-system(토큰층)+vibe-design(원칙) 위에 구성. cys-homepage R3 7페이지 전파에 재사용.
+description: 확정된 디자인 원형(토큰·컴포넌트)을 여러 페이지에 일관 전파하고 일관성 게이트로 검증한다. 「디자인 원형을 페이지들에 적용 / 디자인 전파」 요청 때.
 ---
 
 # design-system-propagate
@@ -52,3 +52,7 @@ description: 확정된 디자인 원형(master.html 최상위 원형 + 토큰 �
 - ★★실 CWV(FCP/LCP)·render-blocking 판정은 ★반드시 throttle에서(R7 RSI): http 서버(`cys run -- python3 -m http.server <port>`·측정직후 force-kill·고아0) + Playwright `ctx.newCDPSession(page)`→`Network.emulateNetworkConditions`(Slow4G: download 180000 B/s·latency 562.5ms)·cacheDisabled·FCP=`getEntriesByName('first-contentful-paint')`·N median. ★localhost(RTT≈0)는 외부 CSS 왕복비용을 0으로 ★은닉=render-blocking headroom 오판("작음") 유발 — R7 실증(localhost FCP 96ms→Slow4G 1652ms). ★render-blocking 페널티=RTT 지배(바이트 아님): minify 51%↓도 FCP −124ms뿐·왕복제거(inline/critical CSS)는 −688ms=강한 레버. 라이브 권고=critical inline+async full(FCP↑+캐싱보존). [[frontend-perf-content-visibility]].
 - ★critical CSS 패턴 검증(R8 RSI): inline-min(concat→minify→head 인라인·외부link 제거)=render-blocking 제거 라이브 권고(Slow4G FCP −832ms/−50.9% 실측·axe+computed-style byte-identical 무회귀·FOUC0). ★critical+async 분할 전 CSS 얽힘 감사 필수: a11y(skip-link/focus/forced-colors)+반응형+모션이 한 파일이면 분할 시 async 윈도우 FOUC 위험>이득→소규모(≲50KB)는 inline-all이 안전. ★axe 검증은 룰셋 명시: 기본 룰셋=best-practice(heading-order 등) 포함이라 "axe 0"는 ★WCAG 한정(`runOnly:["wcag2a","wcag2aa"]`)인지 best-practice 포함인지 구분해 보고(혼동 방지).
 - ★CWV 결론은 프로덕션 프로토콜(HTTP/2)서 적대적 재검증(R9 RSI): localhost 측정은 HTTP/1.1(python http.server)이나 정적호스트(GitHub Pages·Netlify)는 HTTP/2 → 하네스 `_h2server.mjs`(Node http2 TLS·self-signed·ALPN h2·`nextHopProtocol` 확인)로 재측정. ★render-blocking=RTT-gated=프로토콜 무관(H2 다중화는 소수 파일엔 무이점·H1.1도 병렬 6커넥션)→inline 이득 H1.1≈H2(−824 vs −832ms). 결론을 프로덕션 조건서 검증해야 권고가 robust.
+
+## 원 설명 (목록 상주 설명 축소 전 원문 · 1.1.12 cysr-1112-skill-fold)
+
+확정된 디자인 원형(master.html 최상위 원형 + 토큰 실파일)을 N개 페이지에 일관 전파하는 빌드 하네스: 컴포넌트 인벤토리 추출→공유 CSS 분리→페이지맵→토큰/컴포넌트 링크→한 페이지씩 조립·헤드리스 렌더 검증→일관성 게이트(토큰만·하드코딩hex 0·radius0·다크기본·대비계산·주석*/점검·양테마). design-token-system(토큰층)+vibe-design(원칙) 위에 구성. cys-homepage R3 7페이지 전파에 재사용.

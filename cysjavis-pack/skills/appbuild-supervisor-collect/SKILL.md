@@ -1,9 +1,12 @@
 ---
 name: appbuild-supervisor-collect
 description: 감독관 검증의 입력을 수집·정규화하는 하위 스킬 — 01~04 문서와 기능↔화면↔데이터↔작업 매핑·ID를 모아 검증 가능한 형태로 만든다. appbuild-supervisor 수집 관문. "기획 문서 수집 / 매핑 정규화 / 검증 입력 준비" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # appbuild-supervisor-collect
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 검증 전에 자료를 모은다. 흩어진 문서를 **추적 가능한 한 장의 그림**으로 정규화한다.
 

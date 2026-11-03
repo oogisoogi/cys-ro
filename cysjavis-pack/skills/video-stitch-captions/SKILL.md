@@ -1,9 +1,12 @@
 ---
 name: video-stitch-captions
 description: 나레이션 타임스탬프 기반으로 동기 자막을 영상에 번인하는 하위 스킬 — ElevenLabs 문자 정렬(timestamps.json)로 단어 단위 동기, 가독성·세이프영역·아바타 비가림을 보장한다. video-stitch 자막 관문. "자막 번인 / 동기 캡션 / 서브타이틀 / synced captions" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # video-stitch-captions
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 말과 정확히 맞는 자막을 굽는다. 자막은 리텐션·접근성에 크고, 어긋나면 즉시 티가 난다.
 

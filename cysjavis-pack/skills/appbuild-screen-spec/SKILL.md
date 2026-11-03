@@ -1,9 +1,12 @@
 ---
 name: appbuild-screen-spec
 description: 웹/앱 화면 명세(02-screens)를 만드는 대표 스킬 — 화면 흐름·내비게이션과 화면별 상세(레이아웃·상태·컴포넌트·데이터)를 하위 스킬로 작성한다. appbuild 2단계. "화면 명세 / 스크린 스펙 / UI 명세 / 화면 설계" 트리거, 또는 appbuild 파이프라인 2단계로 발동.
+disable-model-invocation: true
 ---
 
 # appbuild-screen-spec
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 PRD의 기능을 **화면**으로 번역한다. 산출물 `.appbuild/02-screens.md`. 화면이 빠지면 기능이
 구현될 자리가 없다 — 감독관의 추적성 검증이 "기능↔화면"을 대조하므로 빠짐없이 명세한다.

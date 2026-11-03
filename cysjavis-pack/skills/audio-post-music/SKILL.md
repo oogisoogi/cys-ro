@@ -1,9 +1,12 @@
 ---
 name: audio-post-music
 description: 영상 톤에 맞는 배경음악 베드를 저작권 안전하게 마련하는 하위 스킬 — 생성 음악(ElevenLabs Music 등)·로열티프리·보유 라이선스 중에서 확보하고 출처·라이선스를 기록한다. audio-post 음악 관문. "배경음악 선택 / 음악 생성 / 로열티프리 / bgm 소스" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # audio-post-music
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 톤에 맞는 음악 베드를 **저작권 안전하게** 확보한다. 유튜브는 저작권 음악에 클레임·수익화
 차단을 건다 — 평판·수익 리스크라 출처가 깨끗한 것만 쓴다.

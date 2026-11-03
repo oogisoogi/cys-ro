@@ -1,9 +1,12 @@
 ---
 name: vibecoding-eval
 description: 바이브코딩 체계의 실력을 자기채점 없이 측정하는 eval 하네스 절차. "public benchmarks are a filter, internal evals are the verdict" 원칙 위에서 threat model 6종·격리 실행·사전등록 A/B protocol(PR-ABEVAL-001)·integrity gate strict flow·auditor trajectory 감사·mutation 검산(PR-MUTOPS-001)을 굴린다. "체계 효과 측정, A/B eval, 벤치 말고 내부 eval, reward hacking 방지, mutation 검산, 개선이 진짜냐 검증" 트리거, 또는 신·구 체계 비교나 개선 라운드의 이득을 증명해야 할 때 발동.
+disable-model-invocation: true
 ---
 
 # vibecoding-eval
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 바이브코딩 체계가 실제로 더 낫다는 것을 **측정으로 증명**하는 하네스(설계 제안서 §C7·§4-G).
 자기채점·자랑성 벤치 인용은 금지. 원칙 한 줄:

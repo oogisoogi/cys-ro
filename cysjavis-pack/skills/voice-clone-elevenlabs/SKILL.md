@@ -1,9 +1,11 @@
 ---
 name: voice-clone-elevenlabs
-description: 검증된 대본 청크를 ElevenLabs로 일관된 나레이션 오디오로 합성하는 대표 스킬 — 음성 클론(voice_id) 확보, 글자수 한도 청킹, request stitching 연속성, 잠금된 settings·seed, 문자 타임스탬프까지. "음성 합성 / 보이스 클론 / 나레이션 / elevenlabs tts" 트리거, 또는 youtube-video-pipeline 2단계로 발동.
+description: 대본을 ElevenLabs 클론 음성으로 일관되게 합성한다(청킹·이어붙임·타임스탬프). 「보이스 클론 / 일레븐랩스 / 나레이션 음성 합성」 요청 때.
 ---
 
 # voice-clone-elevenlabs
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 대본을 멀티분 나레이션으로 합성한다. 핵심 난제는 **여러 청크를 이어붙여도 같은 목소리처럼
 들리게** 하는 것 — ElevenLabs의 검증된 방식(request stitching + 설정 잠금)으로 해결한다.
@@ -46,3 +48,7 @@ description: 검증된 대본 청크를 ElevenLabs로 일관된 나레이션 오
 - `audio/timestamps.json` — 문자 단위 alignment(이후 립싱크·자막 정렬용)
 - `audio/synth-manifest.json` — `[{id, request_id, voice_id, model_id, seed, settings}]`(재현·stitching 추적)
 - 경계 음질 QC 결과. 상위 `[[youtube-video-pipeline]]`로 반환 → `[[heygen-avatar-render]]` 입력.
+
+## 원 설명 (목록 상주 설명 축소 전 원문 · 1.1.12 cysr-1112-skill-fold)
+
+검증된 대본 청크를 ElevenLabs로 일관된 나레이션 오디오로 합성하는 대표 스킬 — 음성 클론(voice_id) 확보, 글자수 한도 청킹, request stitching 연속성, 잠금된 settings·seed, 문자 타임스탬프까지. "음성 합성 / 보이스 클론 / 나레이션 / elevenlabs tts" 트리거, 또는 youtube-video-pipeline 2단계로 발동.

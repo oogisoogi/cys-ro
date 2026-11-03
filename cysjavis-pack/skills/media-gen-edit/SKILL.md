@@ -1,9 +1,12 @@
 ---
 name: media-gen-edit
 description: 참조 이미지를 보존·편집하는 하위 스킬 — 입력 이미지를 URL로 전달해 정체성(얼굴 등)을 유지한 채 편집/합성한다(nano-banana-pro/edit, image_urls 배열). media-gen 편집 관문. "이미지 편집 / 참조 이미지 / 정체성 보존 / image edit / reference" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # media-gen-edit
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 레퍼런스 이미지를 주고 편집한다. 핵심은 **정체성 보존** — 얼굴/대상을 망가뜨리지 않고
 편집한다(원본 영상의 "참조 이미지를 다른 사람으로 만들지 않는" 처리).

@@ -1,9 +1,12 @@
 ---
 name: video-verify-final-gate
 description: 출고 직전 최종 관문 하위 스킬 — 화면 자막·텍스트의 사실성을 대본 사실대장과 재대조하고, 앞 3관문 결과를 종합해 업로드 go/no-go를 판정한다. video-verify 4관문·출고 게이트. "최종 검증 / 사실성 재확인 / 업로드 승인 / go no-go" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # video-verify-final-gate
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 마지막 관문. 두 가지를 본다: (1) **화면에 뜬 글자**가 사실인가 (2) 4관문 종합 판정.
 영상 자막·차트 수치는 음성과 별개로 화면에 박히므로, 여기서 사실성을 한 번 더 막는다.

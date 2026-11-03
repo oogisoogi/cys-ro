@@ -1,9 +1,12 @@
 ---
 name: media-gen-image
 description: 텍스트 설명에서 이미지를 생성하는 하위 스킬 — 사용자의 거친 의도를 모델 최적 프롬프트로 재작성한 뒤 fal.ai 이미지 모델(nano-banana-pro 등)로 생성한다. media-gen 이미지 관문. "이미지 생성 / text to image / 프롬프트 재작성 / nano banana" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # media-gen-image
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 설명에서 이미지를 만든다. 핵심은 **프롬프트 재작성** — 사용자의 거친 한 줄을 모델이 가장 잘
 이해하는 프롬프트로 Claude가 다시 쓴 뒤 생성한다(원본 영상의 핵심 기법).

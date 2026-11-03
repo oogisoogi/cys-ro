@@ -1,9 +1,12 @@
 ---
 name: voice-clone-elevenlabs-chunk
 description: 대본 세그먼트를 ElevenLabs 모델 글자수 한도에 맞춰 확정하고 request stitching 체인(순서·이웃 관계)을 구성하는 하위 스킬. 시간이 아니라 글자수로 자르고 문장 경계를 지킨다. voice-clone-elevenlabs 1단계. "음성 청킹 / stitching 체인 / 글자수 분할" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # voice-clone-elevenlabs-chunk
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 `script.chunks.json`(대본 측 세그먼트)을 받아 합성 단위로 확정한다. **자르는 축은 시간이
 아니라 글자수**다(API 제한이 글자 기준). 그리고 청크 간 연속성을 위해 stitching 체인을 짠다.

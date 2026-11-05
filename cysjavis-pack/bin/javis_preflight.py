@@ -5406,6 +5406,9 @@ class Preflight:
                 if os.path.islink(lk) and not _link_target_under(lk, cys_root):
                     kept.append(s)   # 같은 이름 사용자 링크(다른 대상) — 불가침 · 매 실행 할 일 0
                     continue
+                if os.path.exists(lk) and not os.path.islink(lk):
+                    kept.append(s)   # 같은 이름 실디렉토리(사용자 보유 — 예: master 프로필 원본 스킬) — 불가침 · 할 일 0
+                    continue
                 need.append(s)
             stale = []
             try:
@@ -5443,7 +5446,7 @@ class Preflight:
         detail = "산출물 스킬 %d종 + 로컬 스킬 %d종 · 프로필 %d/%d 배선" % (
             len(OUTPUT_SKILLS) - len(missing), n_local, linked, len(profiles) or 0)
         if kept:
-            notes.append("같은 이름 사용자 링크 %d건 보존(%s)" % (len(kept), ", ".join(sorted(set(kept))[:3])))
+            notes.append("같은 이름 사용자 링크·실디렉토리 %d건 보존(%s)" % (len(kept), ", ".join(sorted(set(kept))[:3])))
         if notes:
             detail += " · " + "; ".join(notes)
         if fixed:

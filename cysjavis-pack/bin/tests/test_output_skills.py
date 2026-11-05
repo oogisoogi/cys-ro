@@ -140,6 +140,7 @@ class C84WiringTest(unittest.TestCase):
         os.makedirs(real)
         self._run()
         self.assertFalse(os.path.islink(real))
+        self.assertEqual(self._run(fix=False)["status"], pf.PASS, "실디렉토리 때문에 매번 미배선 경고가 나면 안 된다")
 
     def test_same_name_user_link_is_kept_and_idempotent(self):
         """codex 1R major: want 에 든 이름이라도 남의 대상 링크는 갈아 끼우지 않는다."""
@@ -150,7 +151,7 @@ class C84WiringTest(unittest.TestCase):
         os.symlink(mine, os.path.join(sk, "ppt-styles"))
         r = self._run()
         self.assertEqual(os.path.realpath(os.path.join(sk, "ppt-styles")), os.path.realpath(mine))
-        self.assertIn("사용자 링크 1건 보존", r["detail"])
+        self.assertIn("1건 보존", r["detail"])
         self.assertEqual(self._run()["status"], pf.PASS, "보존한 링크 때문에 매번 FIXED 가 나면 안 된다")
 
     def test_relative_and_escaping_links(self):

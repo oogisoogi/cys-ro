@@ -108,6 +108,9 @@
 | frontend-slides | github.com/zarazhangrui/frontend-slides | 200 | MIT(LICENSE 동봉) | ⑴ |
 | Anthropic pptx `validate.py` | github.com/anthropics/skills/…/pptx | 200 | 공개돼 있지만 오픈소스 아님(재배포 불가로 읽힘) | **의존 끊기**(동봉도 참조도 안 함) |
 | Pretendard | github.com/orioncactus/pretendard | 200 | SIL OFL 1.1 | ⑴(글꼴 파일 + LICENSE 동봉 가능) |
+| 오빠두엑셀 노션 프롬프트 모음 | (신청 안 함) | — | 조건부(좋아요·댓글) 자료 | **⑶** (master#0a47f970 분류) |
+
+> 원본 시점 고정(master#0a47f970): 팩판은 08:1x 갱신본을 원본으로 한다 — `~/.claude/skills/motion-graphics-prompt/SKILL.md`(내레이션 기반 갈래 · 덕킹 믹스 명령) · `assets/motion-graphics-prompt/BRIEF-TEMPLATE.md`(6칸 GSAP seek · 4칸 글꼴 동봉 · 8칸 내레이션 신설) · `assets/portrait-cutout/README.md`(AI 그림 초록 바탕 오리기 절). 제작 착수 때 mtime·해시를 다시 재서 그 시점본을 쓴다.
 
 ---
 

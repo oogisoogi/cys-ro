@@ -12,6 +12,7 @@ description: 경험을 재사용 가능한 스킬(SKILL.md)로 영속하는 방�
 ## 순서
 1. `cys skill new <kebab-name> --description "<한 줄 표지>"` 로 골격 생성
 2. 4칸을 채운다: ①언제 쓰나 ②순서 ③주의할 점 ④확인하는 방법
+2-1. 실제 입력 2~3개(지저분한 입력 1개 포함)로 돌려 보고, 중요하면 스킬 없이도 한 번 돌려 차이를 본다(정식 = 공식 skill-creator Test Cases)
 3. 표지(description)는 수백 개 중에서 골라낼 수 있게 구체적으로 — "도서관 책 제목"
 4. 신규 스킬은 `cys feed push --wait --title "스킬 등록 승인" --body "<name>: <요지>"` 로 master 승인
 5. 다음 작업부터 `cys skill list` → 관련 스킬 `show` 로 재사용
@@ -24,3 +25,4 @@ description: 경험을 재사용 가능한 스킬(SKILL.md)로 영속하는 방�
 ## 확인하는 방법 (검증 — 겪을 때마다 한 줄씩 누적하라)
 - `cys skill show <name>` 출력이 frontmatter(name/description)와 4칸을 모두 갖췄는가
 - 표지만 읽고도 "언제 꺼낼 스킬인지" 판별 가능한가 (동료 노드에게 표지만 보여 판별 테스트)
+- 시험 입력 결과가 있는가 — 건너뛰었으면 그 사실을 적는다

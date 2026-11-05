@@ -62,6 +62,27 @@ function bad(msg) {
   process.exit(2);
 }
 
+const MAX_DURATION = 600;               // 초 — 이보다 긴 인트로는 이 도구의 용도가 아니다(무한·오타 값으로 디스크를 채우지 않게)
+const SCRATCH_MARK = ".cys-render-tmp"; // 이 도구가 만든 임시 하위 폴더라는 표지 — 표지가 있는 폴더만 지우고 다시 만든다
+
+// dir 을 지워도 되는지 미리 본다 — 없거나 비었거나 표지가 있을 때만 통과, 아니면 코드 2(남의 폴더를 지우지 않는다)
+function scratchCheck(dir) {
+  if (!fs.existsSync(dir) && !isLink(dir)) return;
+  const st = fs.lstatSync(dir);
+  if (st.isSymbolicLink() || !st.isDirectory()) bad(`${dir} 는 폴더가 아니거나 바로가기(심볼릭 링크)다 — 다른 --out 을 쓴다`);
+  if (fs.readdirSync(dir).length && !fs.existsSync(path.join(dir, SCRATCH_MARK)))
+    bad(`${dir} 에 이 도구가 만들지 않은 파일이 있다(표지 ${SCRATCH_MARK} 없음) — 지우지 않고 멈춘다. 다른 --out 을 쓰거나 그 폴더를 직접 옮긴다`);
+}
+function isLink(p) {
+  try { return fs.lstatSync(p).isSymbolicLink(); } catch (e) { return false; }
+}
+function scratchMake(dir) {
+  scratchCheck(dir);
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(dir, SCRATCH_MARK), "");
+}
+
 (async () => {
   const o = args(process.argv.slice(2));
   if (!o.page || !o.out || (!o.stills && !o.duration)) {
@@ -70,11 +91,13 @@ function bad(msg) {
   }
   if (!fs.existsSync(o.page)) bad(`페이지 파일이 없다: ${o.page}`);
   for (const k of ["fps", "subframes", "width", "height"]) if (!(o[k] > 0) || !Number.isFinite(o[k])) bad(`--${k} 는 0보다 큰 수여야 한다`);
-  if (o.duration !== undefined && !(o.duration > 0)) bad("--duration 은 0보다 큰 초여야 한다");
+  if (o.duration !== undefined && !(Number.isFinite(o.duration) && o.duration > 0 && o.duration <= MAX_DURATION))
+    bad(`--duration 은 0초보다 크고 ${MAX_DURATION}초 이하인 수여야 한다: ${o.duration}`);
   const ts = o.stills ? String(o.stills).split(",").map(s => s.trim()).filter(Boolean).map(Number) : [];
   if (o.stills && (!ts.length || ts.some(t => !Number.isFinite(t) || t < 0))) bad(`--stills 는 쉼표로 나눈 0 이상의 초여야 한다: ${o.stills}`);
   if (o.audio && !fs.existsSync(o.audio)) bad(`배경음 파일이 없다: ${o.audio}`);
   if (o.duration) {
+    scratchCheck(path.join(o.out, "frames"));   // 브라우저를 띄우기 전에 「남의 폴더를 지우게 되는가」부터 본다
     const miss = ["ffmpeg", "ffprobe"].filter(b => !hasBin(b));
     if (miss.length) need([
       `없음 ${miss.join("·")} — 영상(--duration)을 만들려면 필요하다(스틸만이면 없어도 된다).`,
@@ -138,8 +161,7 @@ function bad(msg) {
     const rate = o.fps * o.subframes;
     const n = Math.round(o.duration * rate);
     const fdir = path.join(o.out, "frames");
-    fs.rmSync(fdir, { recursive: true, force: true });
-    fs.mkdirSync(fdir);
+    scratchMake(fdir);
     for (let i = 0; i < n; i++) fs.writeFileSync(path.join(fdir, `${String(i).padStart(6, "0")}.png`), await shot(i / rate));
     const mp4 = path.join(o.out, "out.mp4");
     const vf = o.subframes > 1 ? [`tmix=frames=${o.subframes}`, `framestep=${o.subframes}`, "format=yuv420p"] : ["format=yuv420p"];

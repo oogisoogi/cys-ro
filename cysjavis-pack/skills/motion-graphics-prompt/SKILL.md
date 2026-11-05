@@ -90,3 +90,8 @@ S="${CYS_PACK_DIR:-$HOME/.cys/pack}/skills/motion-graphics-prompt"
   - 지저분한 입력: 상태가 새는 사본 → `결정론=FAIL` 2줄 코드 1 · seek 없는 페이지 → 코드 3 · `--stills 1,abc` → 입력 오류 코드 2 · `ref_frames.sh` 에 없는 파일·초당장수 `abc`/`0` → 코드 2.
   - `ref_frames.sh https://prompt-motion.com/tequilafunks-97f6c9` → 원 프롬프트 화면 출력 · 15.1초 · 낱장 15장 + 모아보기 · 출력폴더에 영상·페이지·프롬프트 파일 0 · 임시 폴더 지워짐. 의존 폴더에 playwright 없음 → 「없음 playwright … 의존 폴더에 한 번 설치」 코드 4 · 크롬 없음 → 「npx playwright install chromium」 코드 4 · PATH 를 비우면 「없음 ffmpeg」 코드 4.
 - 의존 폴더 이관 재시험(2026-11-06 · 조정자): 스킬 폴더에 node_modules 없이 `CYS_SKILL_DEPS=<설치 폴더>` 로 `--stills 0.6,3.5` → 두 장 결정론=OK(sha 61859d694cc9 · 438701eb5fa2) · 의존 폴더 비었을 때 → 설치 명령 1줄 + 코드 4.
+- codex 2R 결함 수정 재시험(2026-11-06 · 스크래치 · `CYS_SKILL_DEPS=<설치 폴더>`):
+  - `--duration Infinity` · `--duration 601` → 「입력 오류 --duration 은 0초보다 크고 600초 이하인 수여야 한다」 코드 2(무한 렌더 차단).
+  - 사용자 파일이 든 `frames/` 가 있는 폴더에서 `--out . --duration 1` → 「이 도구가 만들지 않은 파일이 있다(표지 .cys-render-tmp 없음) — 지우지 않고 멈춘다」 코드 2 · 파일 그대로 · `frames` 가 심볼릭 링크 → 코드 2 · 도구가 만든 `frames/`(표지 있음)는 재실행 때 다시 써서 1초 영상 `1920,1080,30/1 | 1.000000` 코드 0 · 견본 스틸 결정론=OK 그대로.
+  - `ref_frames.sh` 에 화면 없는 소리 파일(a.wav) → 「실패 낱장을 뽑지 못했다 … 옛 낱장은 그대로 둔다」 코드 2 · 옛 f_001~004·contact 보존 / 출력폴더가 심볼릭 링크 → 코드 2 · 링크 대상에 0장 / 옛 `f_001.png` 가 바깥 파일을 가리키는 링크 → 링크만 새 파일로 바뀌고 바깥 파일 내용 그대로.
+  - 4초 영상 초당 260장 → `낱장 1040장` · 파일 1040개(f_1000.png 이후 포함) · contact 1920×70200 / 같은 폴더에 초당 1장 재실행 → f_001~004 + contact 만 남음(옛 1000번대도 정리).

@@ -34,9 +34,17 @@ case "$src" in
     [ -f "$src" ] || { echo "입력 오류 로컬 파일이 없다: $src" >&2; exit 2; } ;;
 esac
 
+# 출력폴더 검사(받기 전에): 바로가기(심볼릭 링크)·파일이면 거부 · 같은 이름의 폴더가 낱장 자리를 차지하고 있어도 거부
+if [ -L "$out" ] || { [ -e "$out" ] && [ ! -d "$out" ]; }; then
+  echo "입력 오류 출력폴더가 폴더가 아니거나 바로가기(심볼릭 링크)다: $out" >&2; exit 2
+fi
+if [ -d "$out" ] && [ -n "$(find "$out" -maxdepth 1 \( -name 'f_[0-9]*.png' -o -name contact.png \) -type d)" ]; then
+  echo "입력 오류 출력폴더에 낱장 이름과 같은 폴더가 있다(f_*.png · contact.png): $out" >&2; exit 2
+fi
+
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/ref_frames.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
-mkdir -p "$out"
+mkdir -p "$out" "$tmp/frames"
 vid="$tmp/ref.mp4"
 case "$src" in
   https://prompt-motion.com/*)
@@ -62,12 +70,17 @@ PY
   *) vid="$src" ;;
 esac
 dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$vid") || { echo "실패 영상으로 읽을 수 없다: $src" >&2; exit 2; }
-rm -f "$out"/f_[0-9][0-9][0-9].png "$out/contact.png"
-ffmpeg -loglevel error -y -i "$vid" -vf "fps=$per,scale=640:-2" "$out/f_%03d.png"
-n=$(find "$out" -maxdepth 1 -name 'f_[0-9][0-9][0-9].png' | wc -l | tr -d ' ')
+# 낱장·모아보기는 임시 폴더에 먼저 만들고, 둘 다 성공했을 때만 출력폴더의 옛 낱장을 바꿔 넣는다(실패해도 옛 것은 그대로)
+ffmpeg -loglevel error -y -i "$vid" -vf "fps=$per,scale=640:-2" "$tmp/frames/f_%03d.png" \
+  || { echo "실패 낱장을 뽑지 못했다(영상 화면이 없는 파일일 수 있다): $src — 출력폴더의 옛 낱장은 그대로 둔다" >&2; exit 2; }
+n=$(find "$tmp/frames" -maxdepth 1 -name 'f_[0-9]*.png' | wc -l | tr -d ' ')   # 1000장 넘으면 f_1000.png — 자릿수에 기대지 않고 센다
+[ "$n" -ge 1 ] || { echo "실패 낱장을 한 장도 못 뽑았다: $src" >&2; exit 2; }
 cols=4; rows=$(( (n + cols - 1) / cols ))
-[ "$rows" -ge 1 ] || rows=1
 # 모아보기: 왼쪽 위부터 가로로 읽는다 · k 번째 칸(1부터) = (k-1)/per 초 (drawtext 가 없는 ffmpeg 도 있어 시각 글자는 안 찍는다)
-ffmpeg -loglevel error -y -i "$vid" -vf "fps=$per,scale=480:-2,tile=${cols}x${rows}" -frames:v 1 "$out/contact.png"
+ffmpeg -loglevel error -y -i "$vid" -vf "fps=$per,scale=480:-2,tile=${cols}x${rows}" -frames:v 1 "$tmp/frames/contact.png" \
+  || { echo "실패 모아보기를 만들지 못했다: $src — 출력폴더의 옛 낱장은 그대로 둔다" >&2; exit 2; }
+# 바꿔 넣기: 옛 낱장(파일·바로가기 자체만 · 링크 대상은 건드리지 않음)을 지우고 새 것을 옮긴다
+find "$out" -maxdepth 1 \( -name 'f_[0-9]*.png' -o -name contact.png \) \( -type f -o -type l \) -exec rm -f {} +
+mv "$tmp/frames"/f_[0-9]*.png "$tmp/frames/contact.png" "$out"/
 echo "영상 길이 ${dur}s · 낱장 ${n}장($per/초 · f_001 = 0초) → $out/f_*.png · 모아보기 ${cols}열 → $out/contact.png"
 echo "다 본 뒤에는 $out 을 지운다(참고용 낱장은 쌓아 두지 않는다)."

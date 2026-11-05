@@ -128,13 +128,19 @@ if a.green:
     sys.exit(0)
 
 # ── 사진(맥 Vision) ──
-tmp = tempfile.mkdtemp(); sp = os.path.join(tmp, 'src.png'); mp = os.path.join(tmp, 'mask.png'); src.save(sp)
-res = subprocess.run([swift, str(SWIFT_SCRIPT), sp, mp, 'foreground'], capture_output=True, text=True)
-if res.returncode != 0 or not os.path.isfile(mp):
-    msg = (res.stdout + res.stderr).strip().splitlines()
-    die(1, 'Apple Vision 가림 뽑기에 실패했습니다' + (f': {msg[-1]}' if msg else '') + '.',
-        '「앞 물체 0」이면 앞에 선 물체를 찾지 못한 것입니다 — 인물·사물이 또렷한 사진인지, --crop 범위가 맞는지 확인하세요.')
-M = Image.open(mp).convert('L').resize(src.size)
+# 임시 폴더(사용자 사진 사본 src.png · 가림 mask.png)는 가림을 메모리로 읽는 즉시 지운다 — 성공·실패·예외 모든 길에서.
+tmp = tempfile.mkdtemp(prefix='portrait-cutout-')
+try:
+    sp = os.path.join(tmp, 'src.png'); mp = os.path.join(tmp, 'mask.png'); src.save(sp)
+    res = subprocess.run([swift, str(SWIFT_SCRIPT), sp, mp, 'foreground'], capture_output=True, text=True,
+                         env={**os.environ, 'TMPDIR': tmp})   # swift 자체 임시 폴더도 같은 곳에 → 함께 지워진다
+    if res.returncode != 0 or not os.path.isfile(mp):
+        msg = (res.stdout + res.stderr).strip().splitlines()
+        die(1, 'Apple Vision 가림 뽑기에 실패했습니다' + (f': {msg[-1]}' if msg else '') + '.',
+            '「앞 물체 0」이면 앞에 선 물체를 찾지 못한 것입니다 — 인물·사물이 또렷한 사진인지, --crop 범위가 맞는지 확인하세요.')
+    M = Image.open(mp).convert('L').resize(src.size)   # convert 가 화소를 메모리로 읽는다 → 아래부터 임시 파일 불필요
+finally:
+    shutil.rmtree(tmp, ignore_errors=True)
 hard = M.point(lambda v: 255 if v >= 128 else 0); er = hard.filter(ImageFilter.MinFilter(7)); inner = hard.filter(ImageFilter.MinFilter(15))
 num = Image.composite(src, Image.new('RGB', src.size, (0, 0, 0)), inner)
 nb = num.filter(ImageFilter.BoxBlur(12)).load(); wb = inner.filter(ImageFilter.BoxBlur(12)).load()

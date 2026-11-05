@@ -127,3 +127,7 @@ python3 "$S/bin/build.py" --deck "$S/example/deck.example.json" --out <임시폴
   - 지저분한 입력: 모르는 type `piechart` · 공백뿐인 문장 · 깨진 JSON · 없는 파일 → 각각 「입력 오류 …」 코드 2 · `--tts robot` → argparse 코드 2.
   - 의존 안내: 의존 폴더에 playwright 없음 → 「없음 playwright … 의존 폴더에 한 번 설치」 코드 4 · PATH 를 비우면 「없음 ffmpeg / ffprobe / node」 코드 4 · `--tts elevenlabs` 키 없음 → 「ElevenLabs API 키 미설정」 코드 4 · 맥이 아닌 기기 흉내(`sys.platform=linux`)에서 auto·키 없음 → 「say 목소리는 맥 전용입니다」 코드 4. ElevenLabs 실제 호출은 건너뜀(키·과금).
 - 의존 폴더 이관 재시험(2026-11-06 · 조정자): 스킬 폴더에 node_modules 없이 `CYS_SKILL_DEPS=<설치 폴더>` 로 예시 덱(say) → 31.1초 mp4(1,161,315바이트).
+- codex 2R 결함 수정 재시험(2026-11-06 · 스크래치 · `CYS_SKILL_DEPS=<설치 폴더>` · say):
+  - 다른 cwd 에서 상대 경로 + 작은따옴표 폴더: `cd caller && build.py --deck ../small.json --out "../o'q dir/rep.mp4"` → `seconds 9.4` 코드 0 · mp4·srt·rep-work 가 `o'q dir` 에 생김 · caller 에는 0개 · video.txt 첫 줄 `file '/…/o'\''q dir/rep-work/frames/f00000.png'`(절대 경로 + ffconcat 이스케이프).
+  - 사용자 파일이 든 `frames/` 또는 `padded/` 가 있는 폴더에서 `--work .` → 「이 도구가 만들지 않은 파일이 있다(표지 .cys-render-tmp 없음) — 지우지 않고 멈춘다」 코드 2(목소리 합성 전에 멈춤) · 파일 그대로. 도구가 만든 rep-work 는 재실행 때 다시 써서 코드 0.
+  - 캐시 이름: 같은 문장을 목소리 A·A·B·B+모델 eleven_v3 로 → 파일 이름 3가지(56badbb5… · 5c86f4ab… · a6450ef6…) · 합성 호출 3회(A 두 번째만 캐시) — 목소리·모델을 바꾸면 옛 소리를 다시 쓰지 않는다(합성 함수는 가짜로 바꿔 시험 · 실제 ElevenLabs 호출 0).

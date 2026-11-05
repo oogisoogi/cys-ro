@@ -51,6 +51,33 @@ def run(cmd, **kw):
     subprocess.run(cmd, check=True, **kw)
 
 
+SCRATCH_MARK = ".cys-render-tmp"   # 이 도구가 만든 임시 하위 폴더라는 표지 — 표지가 있는 폴더만 지우고 다시 만든다
+
+
+def scratch_check(d):
+    """d 를 지워도 되는지 미리 본다 — 이 도구가 만든 폴더(표지 있음)이거나 비어 있거나 없을 때만 통과, 아니면 코드 2."""
+    if os.path.islink(d) or (os.path.exists(d) and not os.path.isdir(d)):
+        print("입력 오류 %s 는 폴더가 아니거나 바로가기(심볼릭 링크)다 — 다른 --work 를 쓴다." % d, file=sys.stderr)
+        sys.exit(2)
+    if os.path.isdir(d) and os.listdir(d) and not os.path.exists(os.path.join(d, SCRATCH_MARK)):
+        print("입력 오류 %s 에 이 도구가 만들지 않은 파일이 있다(표지 %s 없음) — 지우지 않고 멈춘다. 다른 --work 를 쓰거나 그 폴더를 직접 옮긴다."
+              % (d, SCRATCH_MARK), file=sys.stderr)
+        sys.exit(2)
+
+
+def scratch_make(d):
+    """scratch_check 를 통과한 폴더만 비우고 표지와 함께 새로 만든다."""
+    scratch_check(d)
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d)
+    open(os.path.join(d, SCRATCH_MARK), "w").close()
+
+
+def concat_line(path):
+    """ffconcat 의 file 줄 — 절대 경로 · 작은따옴표는 '\\'' 로 이스케이프(목록 파일 위치 기준 재해석·구문 깨짐 방지)."""
+    return "file '%s'\n" % os.path.abspath(path).replace("'", "'\\''")
+
+
 def need_deps():
     """없는 의존을 한 번에 모아 설치 안내를 찍고 코드 4 로 멈춘다(자동 설치하지 않는다)."""
     miss = []
@@ -108,18 +135,23 @@ def main():
     deck = load_deck(a.deck)
     need_deps()
     engine = tts.pick(a.tts)
-    work = a.work or os.path.splitext(a.out)[0] + "-work"
-    os.makedirs(work + "/audio", exist_ok=True)
-    frames_dir = work + "/frames"
-    shutil.rmtree(frames_dir, ignore_errors=True)
-    os.makedirs(frames_dir)
+    # 경로는 처음에 모두 절대 경로로 고정한다(render.js 는 스킬 폴더에서 돌고, ffconcat 은 목록 파일 기준으로 상대 경로를 푼다)
+    a.out = os.path.abspath(a.out)
+    work = os.path.abspath(a.work or os.path.splitext(a.out)[0] + "-work")
+    frames_dir = os.path.join(work, "frames")
+    padded = os.path.join(work, "padded")
+    for d in (frames_dir, padded):   # 비싼 목소리 합성 전에 「남의 폴더를 지우게 되는가」부터 본다
+        scratch_check(d)
+    os.makedirs(os.path.dirname(a.out), exist_ok=True)
+    os.makedirs(os.path.join(work, "audio"), exist_ok=True)
+    scratch_make(frames_dir)
 
     # 1) 목소리
     lines = []
     for si, sc in enumerate(deck["scenes"]):
         for k, ln in enumerate(sc["lines"]):
             ln = ln if isinstance(ln, dict) else {"say": ln}
-            audio, dur = tts.synth(ln["say"], work + "/audio", engine)
+            audio, dur = tts.synth(ln["say"], os.path.join(work, "audio"), engine)
             last = k == len(sc["lines"]) - 1
             lines.append({"scene": si, "k": k, "say": ln["say"], "step": ln.get("step", k), "audio": audio, "dur": dur,
                           "len": dur + PAD + (SCENE_PAD if last else 0)})
@@ -165,10 +197,11 @@ def main():
         f["png"] = keyed[key]
     uniq = {f["png"]: f for f in frames}
     plan = {"deck": deck.get("deck", {}), "scenes": deck["scenes"], "frames": list(uniq.values())}
-    json.dump(plan, open(work + "/plan.json", "w"), ensure_ascii=False)
+    plan_path = os.path.join(work, "plan.json")
+    json.dump(plan, open(plan_path, "w", encoding="utf-8"), ensure_ascii=False)
     env = dict(os.environ)
     env.pop("NODE_OPTIONS", None)
-    r = subprocess.run(["node", os.path.join(HERE, "render.js"), work + "/plan.json", frames_dir], env=env, cwd=os.path.dirname(HERE))
+    r = subprocess.run(["node", os.path.join(HERE, "render.js"), plan_path, frames_dir], env=env, cwd=os.path.dirname(HERE))
     if r.returncode:
         sys.exit(r.returncode)   # render.js 가 이미 이유를 찍었다(4 = playwright·크롬 없음)
 
@@ -201,26 +234,25 @@ def main():
     frames = seq
 
     # 3) 영상(프레임 + 길이) · 소리(문장 + 쉼) · 자막
-    with open(work + "/video.txt", "w") as f:
+    video_list, audio_list = os.path.join(work, "video.txt"), os.path.join(work, "audio.txt")
+    with open(video_list, "w", encoding="utf-8") as f:
         for fr in frames:
-            f.write("file '%s/%s'\nduration %.4f\n" % (frames_dir, fr["png"], fr["dur"]))
-        f.write("file '%s/%s'\n" % (frames_dir, frames[-1]["png"]))
-    padded = work + "/padded"
-    shutil.rmtree(padded, ignore_errors=True)
-    os.makedirs(padded)
-    with open(work + "/audio.txt", "w") as f:
+            f.write(concat_line(os.path.join(frames_dir, fr["png"])) + "duration %.4f\n" % fr["dur"])
+        f.write(concat_line(os.path.join(frames_dir, frames[-1]["png"])))
+    scratch_make(padded)
+    with open(audio_list, "w", encoding="utf-8") as f:
         for i, ln in enumerate(lines):
-            p = "%s/a%04d.wav" % (padded, i)
+            p = os.path.join(padded, "a%04d.wav" % i)
             run(["ffmpeg", "-v", "error", "-y", "-i", ln["audio"], "-af", "apad=whole_dur=%.4f" % ln["len"], "-t", "%.4f" % ln["len"],
                  "-ar", "48000", "-ac", "1", p])
-            f.write("file '%s'\n" % p)
+            f.write(concat_line(p))
     total = sum(ln["len"] for ln in lines)
     srt = os.path.splitext(a.out)[0] + ".srt"
     with open(srt, "w", encoding="utf-8") as f:
         for i, ln in enumerate(lines):
             f.write("%d\n%s --> %s\n%s\n\n" % (i + 1, srt_time(ln["start"]), srt_time(ln["start"] + ln["dur"]), ln["say"]))
-    run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", work + "/video.txt",
-         "-f", "concat", "-safe", "0", "-i", work + "/audio.txt", "-i", srt,
+    run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", video_list,
+         "-f", "concat", "-safe", "0", "-i", audio_list, "-i", srt,
          "-map", "0:v", "-map", "1:a", "-map", "2", "-vf", "fps=30,format=yuv420p",
          "-c:v", "libx264", "-preset", "medium", "-crf", "19", "-c:a", "aac", "-b:a", "160k",
          "-c:s", "mov_text", "-metadata:s:s:0", "language=kor", "-t", "%.3f" % total, "-movflags", "+faststart", a.out])

@@ -96,6 +96,43 @@ def slide_order(z):
     return out, size
 
 
+SHAPES = ("sp", "pic", "graphicFrame", "cxnSp")
+IDENT = (1.0, 0.0, 1.0, 0.0)  # 슬라이드 좌표 = (ax·x + bx, ay·y + by)
+
+
+def local(el):
+    return el.tag.split("}")[1] if "}" in el.tag else el.tag
+
+
+def group_transform(grp, T):
+    """그룹(grpSp)의 a:xfrm(off·ext = 부모 좌표 · chOff·chExt = 자식 좌표)로 자식 좌표 → 슬라이드 좌표 변환을 합성."""
+    xf = grp.find("p:grpSpPr/a:xfrm", NS)
+    if xf is None:
+        return T
+    off, ext, cho, che = (xf.find(f"a:{k}", NS) for k in ("off", "ext", "chOff", "chExt"))
+    if off is None or ext is None:
+        return T
+    ox, oy, ex, ey = int(off.get("x")), int(off.get("y")), int(ext.get("cx")), int(ext.get("cy"))
+    cx, cy = (int(cho.get("x")), int(cho.get("y"))) if cho is not None else (ox, oy)
+    cw, ch = (int(che.get("cx")), int(che.get("cy"))) if che is not None else (ex, ey)
+    sx, sy = (ex / cw if cw else 1.0), (ey / ch if ch else 1.0)
+    ax, bx, ay, by = T
+    # 부모 좌표 = ox + (x - cx)·sx → 슬라이드 = ax·(부모) + bx
+    return (ax * sx, ax * (ox - cx * sx) + bx, ay * sy, ay * (oy - cy * sy) + by)
+
+
+def shapes_with_transform(el, T=IDENT):
+    """도형(sp·pic·graphicFrame·cxnSp)을 그룹 변환(중첩 그룹 합성)과 함께 문서 순서로 낸다."""
+    for c in el:
+        tag = local(c)
+        if tag in SHAPES:
+            yield c, tag, T
+        elif tag == "grpSp":
+            yield from shapes_with_transform(c, group_transform(c, T))
+        else:
+            yield from shapes_with_transform(c, T)
+
+
 def analyze(path):
     z = zipfile.ZipFile(path)
     theme, tfonts = theme_info(z)
@@ -118,14 +155,13 @@ def analyze(path):
         bg = root.find(".//p:bg//a:solidFill", NS)
         s["bg"] = color_of(bg, theme)
         xs = []
-        for sp in root.iter():
-            tag = sp.tag.split("}")[1] if "}" in sp.tag else sp.tag
-            if tag not in ("sp", "pic", "graphicFrame", "cxnSp"):
-                continue
+        for sp, tag, (ax, bx, ay, by) in shapes_with_transform(root):
             off = sp.find(".//a:off", NS)
             ext = sp.find(".//a:ext", NS)
             if off is not None and ext is not None and ext.get("cx"):
-                x, y, w, h = pt(off.get("x")), pt(off.get("y")), pt(ext.get("cx")), pt(ext.get("cy"))
+                # 그룹 안 도형은 그룹 변환을 적용해 슬라이드 좌표로(중첩 그룹 합성)
+                x, y = pt(ax * int(off.get("x")) + bx), pt(ay * int(off.get("y")) + by)
+                w, h = pt(ax * int(ext.get("cx"))), pt(ay * int(ext.get("cy")))
                 if w > 0 and h > 0:
                     xs.append((x, y, x + w, y + h))
                     s["box_area_pt2"] += w * h

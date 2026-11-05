@@ -74,11 +74,21 @@ def _say(text, out, voice=SAY_VOICE, rate=SAY_RATE):
     os.remove(aiff)
 
 
+EL_SETTINGS = {"stability": 0.5, "similarity_boost": 0.75}
+
+
+def _el_params():
+    """ElevenLabs 결과를 바꾸는 값 전부(키 제외) — 합성 요청과 캐시 이름이 같은 값을 쓴다."""
+    return {"voice": os.environ.get("ELEVENLABS_VOICE_ID", "").strip(),
+            "model": os.environ.get("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2"),
+            "settings": EL_SETTINGS}
+
+
 def _elevenlabs(text, out):
     key = os.environ["ELEVENLABS_API_KEY"].strip()
-    voice = os.environ["ELEVENLABS_VOICE_ID"].strip()
-    body = json.dumps({"text": text, "model_id": os.environ.get("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2"),
-                       "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}}).encode()
+    prm = _el_params()
+    voice = prm["voice"]
+    body = json.dumps({"text": text, "model_id": prm["model"], "voice_settings": prm["settings"]}).encode()
     req = urllib.request.Request("https://api.elevenlabs.io/v1/text-to-speech/%s?output_format=mp3_44100_128" % voice,
                                  data=body, headers={"xi-api-key": key, "Content-Type": "application/json"})
     mp3 = out[:-4] + ".mp3"
@@ -95,8 +105,11 @@ def _elevenlabs(text, out):
 
 
 def synth(text, outdir, engine):
-    """같은 문장·엔진이면 다시 만들지 않는다(문장만 고쳐 재합성할 때 시간 절약)."""
-    key = hashlib.sha1((engine + "|" + str(SAY_RATE if engine == "say" else "") + "|" + text).encode()).hexdigest()[:12]
+    """같은 문장·같은 목소리 설정이면 다시 만들지 않는다(문장만 고쳐 재합성할 때 시간 절약).
+    캐시 이름에 결과를 바꾸는 값(say = 목소리·속도 · elevenlabs = 목소리 id·모델·voice_settings)을 모두 넣는다 —
+    목소리를 바꾼 뒤 옛 소리를 다시 쓰지 않게."""
+    prm = {"voice": SAY_VOICE, "rate": SAY_RATE} if engine == "say" else _el_params()
+    key = hashlib.sha1((engine + "|" + json.dumps(prm, sort_keys=True) + "|" + text).encode()).hexdigest()[:12]
     out = os.path.join(outdir, "%s-%s.m4a" % (engine, key))
     if not os.path.exists(out):
         (_elevenlabs if engine == "elevenlabs" else _say)(text, out)

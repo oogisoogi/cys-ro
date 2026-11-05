@@ -435,6 +435,9 @@ jobs:
         if: matrix.target == 'aarch64-apple-darwin'
         run: |
           set -euo pipefail
+          # ★1.1.12(v1.1.11 태그 런 42123965385 적색): macOS 러너 TMPDIR 는 /var/…(= /private/var 별칭)이라 phoenix 하네스가
+          #   aliased_harness_root 로 거부한다(javis_phoenix_harness.py:166 · 하네스 홈 = tempfile.mkdtemp) → 정규 경로로 바꿔 둔다(CI 만).
+          export TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
           # ★v116-flake-pty ⑶: 팩 임시 폴더를 한 루트 아래 모으고 스텝이 어떻게 끝나든 지운다.
           #   macOS `mktemp -d`(템플릿 없음)는 TMPDIR 를 무시하고 사용자 임시 폴더에 tmp.* 를 남긴다 —
           #   로컬 gate_runner 재실행마다 잔재가 쌓였다. trap 은 실패하지 않는다(set -e 아래 rm 실패가
@@ -501,6 +504,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # ★1.1.12(v1.1.11 태그 런 42123965385 적색): macOS 러너 TMPDIR 는 /var/…(= /private/var 별칭)이라 phoenix 하네스가
+          #   aliased_harness_root 로 거부한다(javis_phoenix_harness.py:166 · 하네스 홈 = tempfile.mkdtemp) → 정규 경로로 바꿔 둔다(CI 만).
+          export TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
           # ★v116-flake-pty ⑶: 팩 임시 폴더를 한 루트 아래 모으고 스텝이 어떻게 끝나든 지운다.
           #   macOS `mktemp -d`(템플릿 없음)는 TMPDIR 를 무시하고 사용자 임시 폴더에 tmp.* 를 남긴다 —
           #   로컬 gate_runner 재실행마다 잔재가 쌓였다. trap 은 실패하지 않는다(set -e 아래 rm 실패가

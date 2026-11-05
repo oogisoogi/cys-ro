@@ -2651,11 +2651,49 @@ pub fn remove_pack_skill_links(skills_dir: &Path, cys_base: &Path) -> usize {
 /// 남겨 두면 프로필 스킬 목록에 깨진 항목이 남는다(asset-skills-for-seats). 오버레이를 보존하는
 /// 기본 초기화에서는 부르지 않는다(링크가 그대로 유효).
 pub fn remove_local_skill_links(skills_dir: &Path, cys_base: &Path) -> usize {
-    let needle = format!(
-        "{}/{LOCAL_OVERLAY}/skills/",
-        cys_base.to_string_lossy().replace('\\', "/")
-    );
-    remove_skill_links_containing(skills_dir, &needle)
+    // ★codex 1R: 부분 문자열 비교는 `/backup/<home>/.cys/local/skills/x`·`…/local/skills/../../y` 같은
+    //   남의 링크까지 지운다 — 대상을 링크 폴더 기준으로 풀고 `..` 를 어휘적으로 정리한 뒤 경로 구성요소로 잰다.
+    let root = lexical_normalize(&cys_base.join(LOCAL_OVERLAY).join("skills"));
+    let mut n = 0usize;
+    let Ok(rd) = std::fs::read_dir(skills_dir) else {
+        return 0;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        let is_link = std::fs::symlink_metadata(&p).map(|m| m.file_type().is_symlink()).unwrap_or(false);
+        if !is_link {
+            continue;
+        }
+        let Ok(t) = std::fs::read_link(&p) else {
+            continue;
+        };
+        let t_str = t.to_string_lossy();
+        let t = PathBuf::from(t_str.strip_prefix(r"\\?\").unwrap_or(&t_str));
+        let abs = if t.is_absolute() { t } else { skills_dir.join(t) };
+        let abs = lexical_normalize(&abs);
+        if abs != root
+            && abs.starts_with(&root)
+            && (std::fs::remove_file(&p).is_ok() || std::fs::remove_dir(&p).is_ok())
+        {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// 파일 시스템을 보지 않고 `.`·`..` 를 정리한다(끊긴 링크 대상도 판정할 수 있게).
+fn lexical_normalize(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 fn remove_skill_links_containing(skills_dir: &Path, needle: &str) -> usize {
@@ -3364,8 +3402,18 @@ mod tests {
         std::os::unix::fs::symlink(cys_base.join("local/skills/mine-local"), skills.join("mine-local"))
             .unwrap();
         assert_eq!(remove_pack_skill_links(&skills, &cys_base), 0, "pack 제거는 로컬 링크 불가침");
-        assert_eq!(remove_local_skill_links(&skills, &cys_base), 1);
+        // 남의 경로(접두만 닮은 백업 · `..` 탈출)는 로컬 정리 대상이 아니다(codex 1R).
+        let backup = td.join("backup").join(cys_base.strip_prefix("/").unwrap_or(&cys_base)).join("local/skills/bk");
+        mk(&backup);
+        std::os::unix::fs::symlink(&backup, skills.join("bk")).unwrap();
+        std::os::unix::fs::symlink(cys_base.join("local/skills/../../../esc"), skills.join("esc")).unwrap();
+        std::os::unix::fs::symlink("../../.cys/local/skills/rel-gone", skills.join("rel-gone")).unwrap();
+        // 지워지는 것 = 절대 대상 mine-local + 상대 대상 rel-gone(home/.claude/skills 기준 → home/.cys/local/skills)
+        assert_eq!(remove_local_skill_links(&skills, &cys_base), 2);
         assert!(!skills.join("mine-local").exists());
+        assert!(std::fs::symlink_metadata(skills.join("rel-gone")).is_err(), "끊긴 상대 로컬 링크 제거");
+        assert!(std::fs::symlink_metadata(skills.join("bk")).is_ok(), "백업 경로 링크 보존");
+        assert!(std::fs::symlink_metadata(skills.join("esc")).is_ok(), "`..` 탈출 링크 보존");
         assert!(skills.join("mine").exists(), "user symlink must survive local purge");
     }
 

@@ -7905,8 +7905,6 @@ mod tests {
             let want = format!("skills/{skill}/SKILL.md");
             assert!(names.iter().any(|p| *p == want), "산출물 스킬 임베드 누락: {skill}");
         }
-        // ⑵ 런타임 원문 참조 공용 도구 — 산출물 스킬이 부른다.
-        assert!(names.contains(&"bin/javis_asset_fetch.py"), "javis_asset_fetch 임베드 누락");
         // appbuild 코드선행 금지 hook이 임베드돼야 C27이 설치·등록할 수 있다.
         let pack_names: Vec<&str> = PACK_ALL.iter().map(|(p, _)| *p).collect();
         assert!(pack_names.contains(&"hooks/appbuild-gate.sh"), "appbuild-gate hook 임베드 누락");

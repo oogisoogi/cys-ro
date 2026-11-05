@@ -953,6 +953,30 @@ def _local_overlay_dir():
     return os.path.join(os.path.dirname(os.path.normpath(pack_dir())), "local")
 
 
+def _link_target_under(link, root):
+    """심링크 `link` 의 선언 대상이 `root` 아래인가 — 끊긴 링크도 판정한다(존재 여부 비의존).
+
+    상대 대상은 링크가 있는 폴더 기준으로 풀고, `..` 를 어휘적으로 정리한 뒤 경로 구성요소 단위로
+    비교한다(부분 문자열 비교 금지 — /backup/…/.cys/local 같은 남의 경로 오인 차단 · codex 1R).
+    Windows 확장 접두사(\\\\?\\)·대소문자는 normcase/접두 제거로 맞춘다.
+    """
+    try:
+        tgt = os.readlink(link)
+    except OSError:
+        return False
+    for pre in ("\\\\?\\", "\\??\\"):
+        if tgt.startswith(pre):
+            tgt = tgt[len(pre):]
+    if not os.path.isabs(tgt):
+        tgt = os.path.join(os.path.dirname(os.path.abspath(link)), tgt)
+    t = os.path.normcase(os.path.normpath(os.path.abspath(tgt)))
+    r = os.path.normcase(os.path.normpath(os.path.abspath(root)))
+    try:
+        return os.path.commonpath([t, r]) == r and t != r
+    except ValueError:      # 다른 드라이브(Windows)
+        return False
+
+
 def base_pack_dir():
     """C11b 심링크 타깃 전용 — 항상 **base 팩**을 돌려준다(기본 배치에선 `~/.cys/pack`).
 
@@ -5368,20 +5392,28 @@ class Preflight:
         if shadowed:
             notes.append("팩 동명 로컬 %d건 링크 생략(%s)" % (len(shadowed), ", ".join(shadowed[:3])))
         n_local = len(want) - (len(OUTPUT_SKILLS) - len(missing))
+        cys_root = os.path.dirname(os.path.normpath(pack_dir()))
+        kept = []
         profiles = discover_skill_profiles()
         linked = 0
         for prof in profiles:
             sdir = os.path.join(prof, "skills")
-            need = [s for s, src in sorted(want.items())
-                    if not self._symlink_ok(os.path.join(sdir, s), src)]
+            need = []
+            for s, src in sorted(want.items()):
+                lk = os.path.join(sdir, s)
+                if self._symlink_ok(lk, src):
+                    continue
+                if os.path.islink(lk) and not _link_target_under(lk, cys_root):
+                    kept.append(s)   # 같은 이름 사용자 링크(다른 대상) — 불가침 · 매 실행 할 일 0
+                    continue
+                need.append(s)
             stale = []
             try:
                 for e in os.listdir(sdir):
                     p = os.path.join(sdir, e)
                     if e in want or not os.path.islink(p) or os.path.exists(p):
                         continue
-                    tgt = os.readlink(p)
-                    if os.path.normpath(os.path.dirname(tgt)) == os.path.normpath(local_root):
+                    if _link_target_under(p, local_root):
                         stale.append(p)
             except OSError:
                 pass
@@ -5396,7 +5428,7 @@ class Preflight:
                     for s in need:
                         link = os.path.join(sdir, s)
                         if os.path.islink(link):
-                            os.unlink(link)
+                            os.unlink(link)   # 우리 링크(cys 기반 폴더 아래 대상)만 여기 온다(need 거름)
                         elif os.path.exists(link):
                             continue  # 실디렉(사용자 보유) — 덮지 않음
                         os.symlink(want[s], link)
@@ -5410,6 +5442,8 @@ class Preflight:
                              % (os.path.basename(prof), len(need), len(stale)))
         detail = "산출물 스킬 %d종 + 로컬 스킬 %d종 · 프로필 %d/%d 배선" % (
             len(OUTPUT_SKILLS) - len(missing), n_local, linked, len(profiles) or 0)
+        if kept:
+            notes.append("같은 이름 사용자 링크 %d건 보존(%s)" % (len(kept), ", ".join(sorted(set(kept))[:3])))
         if notes:
             detail += " · " + "; ".join(notes)
         if fixed:

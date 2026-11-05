@@ -141,6 +141,32 @@ class C84WiringTest(unittest.TestCase):
         self._run()
         self.assertFalse(os.path.islink(real))
 
+    def test_same_name_user_link_is_kept_and_idempotent(self):
+        """codex 1R major: want 에 든 이름이라도 남의 대상 링크는 갈아 끼우지 않는다."""
+        sk = os.path.join(self.prof, "skills")
+        os.makedirs(sk)
+        mine = os.path.join(self.root, "user-own-ppt")
+        os.makedirs(mine)
+        os.symlink(mine, os.path.join(sk, "ppt-styles"))
+        r = self._run()
+        self.assertEqual(os.path.realpath(os.path.join(sk, "ppt-styles")), os.path.realpath(mine))
+        self.assertIn("사용자 링크 1건 보존", r["detail"])
+        self.assertEqual(self._run()["status"], pf.PASS, "보존한 링크 때문에 매번 FIXED 가 나면 안 된다")
+
+    def test_relative_and_escaping_links(self):
+        """codex 1R minor: 상대 링크도 우리 오버레이면 정리 · `..` 로 밖을 가리키면 우리 것 아님."""
+        self._run()
+        sk = os.path.join(self.prof, "skills")
+        local_skills = os.path.join(self.local, "skills")
+        rel_ours = os.path.relpath(os.path.join(local_skills, "gone-skill"), sk)
+        os.symlink(rel_ours, os.path.join(sk, "gone-skill"))                 # 끊긴 상대 링크(우리 것)
+        esc = os.path.join(local_skills, "..", "..", "..", "elsewhere-skill")  # 오버레이 밖으로 탈출
+        os.symlink(esc, os.path.join(sk, "escaped"))
+        self._run()
+        self.assertFalse(os.path.lexists(os.path.join(sk, "gone-skill")), "끊긴 상대 로컬 링크 정리")
+        self.assertTrue(os.path.islink(os.path.join(sk, "escaped")), "탈출 경로는 우리 링크가 아니다")
+        self.assertFalse(pf._link_target_under(os.path.join(sk, "escaped"), local_skills))
+
     def test_local_dir_env_override(self):
         alt = os.path.join(self.root, "alt-local")
         self._mk(os.path.join(alt, "skills", "alt-skill"))

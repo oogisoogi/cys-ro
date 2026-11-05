@@ -14,15 +14,19 @@ function need(lines) {
   process.exit(4);
 }
 
-// playwright 는 이 스킬 폴더의 node_modules 에서 보통 방식으로 찾는다
+// playwright 는 사용자 기기의 의존 폴더(CYS_SKILL_DEPS, 기본 ~/.cys/deps/video-report-deck)에서 찾는다.
+// 팩 폴더 안에는 node_modules 를 두지 않는다 — 팩 갱신은 팩 폴더를 통째로 갈아 끼워 그 안의 설치분이 사라진다
+// (ppt-styles 와 같은 규약 · 다른 스킬 폴더를 빌려 쓰지 않는다).
+const DEPS_DIR = process.env.CYS_SKILL_DEPS || path.join(require("os").homedir(), ".cys", "deps", "video-report-deck");
+const SETUP = `mkdir -p "${DEPS_DIR}" && cp "${path.join(SKILL_DIR, "package.json")}" "${DEPS_DIR}/" && cd "${DEPS_DIR}" && npm i && npx playwright install chromium`;
 let chromium;
 try {
-  ({ chromium } = require("playwright"));
+  ({ chromium } = require(require.resolve("playwright", { paths: [DEPS_DIR, SKILL_DIR] })));
 } catch (e) {
   if (e && e.code !== "MODULE_NOT_FOUND") throw e;
   need([
-    "없음 playwright(Node 모듈) — 이 스킬 폴더에서 한 번 설치한다:",
-    `  cd "${SKILL_DIR}" && npm i && npx playwright install chromium`,
+    `없음 playwright(Node 모듈) — 의존 폴더(${DEPS_DIR})에 한 번 설치한다:`,
+    `  ${SETUP}`,
   ]);
 }
 
@@ -36,16 +40,16 @@ try {
   // 브라우저는 playwright 가 자기 버전에 맞춰 받아 둔 것을 쓴다(경로를 손으로 고정하지 않는다)
   const exe = chromium.executablePath();
   if (!exe || !fs.existsSync(exe)) need([
-    "없음 playwright 용 크롬 — 이 스킬 폴더에서 한 번 받는다:",
-    `  cd "${SKILL_DIR}" && npx playwright install chromium`,
+    "없음 playwright 용 크롬 — 의존 폴더에서 한 번 받는다:",
+    `  cd "${DEPS_DIR}" && npx playwright install chromium`,
   ]);
   let browser;
   try {
     browser = await chromium.launch();
   } catch (e) {
     if (/Executable doesn't exist|playwright install/i.test(String(e && e.message))) need([
-      "없음 playwright 용 헤드리스 크롬 — 이 스킬 폴더에서 한 번 받는다:",
-      `  cd "${SKILL_DIR}" && npx playwright install chromium`,
+      "없음 playwright 용 헤드리스 크롬 — 의존 폴더에서 한 번 받는다:",
+      `  cd "${DEPS_DIR}" && npx playwright install chromium`,
     ]);
     throw e;
   }

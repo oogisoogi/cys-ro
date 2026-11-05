@@ -33,7 +33,7 @@ S="${CYS_PACK_DIR:-$HOME/.cys/pack}/skills/video-report-deck"
 
 ### 0. 준비(처음 한 번)
 1. 필요한 것: `python3` + Pillow(`python3 -m pip install Pillow`) · `node` 18 이상 · `ffmpeg`·`ffprobe`.
-2. 렌더 의존은 스킬 폴더에 설치한다: `cd "$S" && npm i && npx playwright install chromium`.
+2. 렌더 의존은 사용자 기기의 의존 폴더에 한 번 설치한다(팩 폴더 안에는 두지 않는다 — 팩 갱신이 팩 폴더를 통째로 갈아 끼운다): `D="${CYS_SKILL_DEPS:-$HOME/.cys/deps/video-report-deck}"; mkdir -p "$D" && cp "$S/package.json" "$D/" && cd "$D" && npm i && npx playwright install chromium`.
 3. 글꼴(선택): 팩에는 글꼴 파일이 없다. Pretendard 를 쓰려면 https://github.com/orioncactus/pretendard/releases/tag/v1.3.9 에서 `Pretendard-1.3.9.zip` 을 받아 `web/static/woff2/` 의 Regular·Medium·SemiBold·Bold·ExtraBold·Black 6개를 `"$S/fonts/"` 에 둔다(SIL OFL 1.1 · https://github.com/orioncactus/pretendard/blob/main/LICENSE). 기기에 설치돼 있어도 된다. 없으면 시스템 고딕으로 찍고 렌더러가 받는 곳을 알린다.
 4. 목소리(둘 중 하나):
    - ElevenLabs: `export ELEVENLABS_API_KEY=<당신의 키> ELEVENLABS_VOICE_ID=<목소리 id>`(선택 `ELEVENLABS_MODEL_ID` · 기본 `eleven_multilingual_v2`). 키는 환경변수로만 받는다 — 팩 규약 `suite-runtime-keys`.
@@ -109,7 +109,7 @@ python3 "$S/bin/build.py" --deck "$S/example/deck.example.json" --out <임시폴
 - ⛔ 장면 JSON 에 손으로 숫자 적기(분석 출력에서 코드로 끼운다).
 - ⛔ 키를 파일·로그·화면에 쓰기. ElevenLabs 가입·결제를 이 스킬이 시도하지 않는다. ElevenLabs 는 글자 수 종량제라, 긴 덱은 `cost-preview-confirm` 규약으로 먼저 확인한다.
 - ⛔ 개인 원자료가 들어간 덱·영상을 공개 경로·저장소에 두는 것.
-- `npm i` 로 생긴 `node_modules` 와 사용자가 둔 `fonts/` 는 스킬 폴더에 남는다(팩 갱신이 지우지 않는 사용자 설치분).
+- `node_modules` 는 `~/.cys/deps/video-report-deck`(또는 `CYS_SKILL_DEPS`)에 둔다 — 스킬 폴더에 설치하면 다음 팩 갱신 때 사라진다. 글꼴은 기기에 설치하는 것이 안전하다(스킬 폴더 `fonts/` 도 같은 이유로 갱신 때 사라질 수 있다).
 - 소요(실측 2026-10-20 · 맥 · say): 69문장 · 8분 38초 영상 = 처음 약 3분 30초(목소리 합성 포함) · 문장 그대로 재렌더 약 3~4분.
 - 아직 안 되는 것:
   - 자막의 「말하는 낱말만 밝게」(가라오케)는 낱말 시각이 필요하다 — 지금은 2~4어절 조각을 글자 수 비례로 나눠 보인다(소리와 ±0.5초 어긋날 수 있음 · ElevenLabs with-timestamps 연결은 미구현).
@@ -125,4 +125,5 @@ python3 "$S/bin/build.py" --deck "$S/example/deck.example.json" --out <임시폴
 - 시험 입력 결과(2026-11-06 · 스크래치 폴더 · 맥 · say · playwright 1.63.0 · Pretendard 없음):
   - 예시 덱 → `{"engine": "say", "lines": 10, "scenes": 5, "frames": 125, … "seconds": 31.1}` 코드 0 · 약 12초 · ffprobe `h264 1920×1080 · aac · mov_text`. 가상 상점 2장면 덱 → `seconds 9.4` 코드 0 · 표 장면 낱장에서 강조 행 연두·흐린 행 확인. 두 번 다 「알림 Pretendard 글꼴이 없어 시스템 고딕으로 찍는다」 + 받는 곳 안내.
   - 지저분한 입력: 모르는 type `piechart` · 공백뿐인 문장 · 깨진 JSON · 없는 파일 → 각각 「입력 오류 …」 코드 2 · `--tts robot` → argparse 코드 2.
-  - 의존 안내: node_modules 없는 폴더 → 「없음 playwright … npm i」 코드 4 · PATH 를 비우면 「없음 ffmpeg / ffprobe / node」 코드 4 · `--tts elevenlabs` 키 없음 → 「ElevenLabs API 키 미설정」 코드 4 · 맥이 아닌 기기 흉내(`sys.platform=linux`)에서 auto·키 없음 → 「say 목소리는 맥 전용입니다」 코드 4. ElevenLabs 실제 호출은 건너뜀(키·과금).
+  - 의존 안내: 의존 폴더에 playwright 없음 → 「없음 playwright … 의존 폴더에 한 번 설치」 코드 4 · PATH 를 비우면 「없음 ffmpeg / ffprobe / node」 코드 4 · `--tts elevenlabs` 키 없음 → 「ElevenLabs API 키 미설정」 코드 4 · 맥이 아닌 기기 흉내(`sys.platform=linux`)에서 auto·키 없음 → 「say 목소리는 맥 전용입니다」 코드 4. ElevenLabs 실제 호출은 건너뜀(키·과금).
+- 의존 폴더 이관 재시험(2026-11-06 · 조정자): 스킬 폴더에 node_modules 없이 `CYS_SKILL_DEPS=<설치 폴더>` 로 예시 덱(say) → 31.1초 mp4(1,161,315바이트).

@@ -2,7 +2,7 @@
   "name": "motion-graphics-prompt",
   "version": "1.0.0",
   "private": true,
-  "description": "window.seek(t) HTML 페이지를 스틸·mp4 로 찍는 도구(tools/seek_render.js)의 의존 — 이 폴더에서 npm i 후 npx playwright install chromium",
+  "description": "window.seek(t) HTML 페이지를 스틸·mp4 로 찍는 도구(tools/seek_render.js)의 의존 — 이 파일을 ~/.cys/deps/<스킬명> 에 복사해 그곳에서 npm i 후 npx playwright install chromium",
   "license": "UNLICENSED",
   "dependencies": {
     "playwright": "1.63.0"

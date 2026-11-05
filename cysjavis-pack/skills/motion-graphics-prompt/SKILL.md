@@ -34,7 +34,7 @@ S="${CYS_PACK_DIR:-$HOME/.cys/pack}/skills/motion-graphics-prompt"
 ## 순서
 
 ### 0. 준비(처음 한 번)
-- `node`(18 이상)가 필요하다. 렌더 도구 의존은 스킬 폴더에 설치한다: `cd "$S" && npm i && npx playwright install chromium`.
+- `node`(18 이상)가 필요하다. 렌더 도구 의존은 사용자 기기의 의존 폴더에 한 번 설치한다(팩 폴더 안에는 두지 않는다 — 팩 갱신이 팩 폴더를 통째로 갈아 끼운다): `D="${CYS_SKILL_DEPS:-$HOME/.cys/deps/motion-graphics-prompt}"; mkdir -p "$D" && cp "$S/package.json" "$D/" && cd "$D" && npm i && npx playwright install chromium`.
 - 영상(mp4)까지 만들려면 `ffmpeg`·`ffprobe`, 레퍼런스 낱장을 뽑으려면 `ffmpeg` + (주소에 따라) `curl`·`python3`·`yt-dlp`.
 - 없으면 도구가 「없음 … — 설치 방법」 1~3줄을 찍고 코드 4로 끝난다. 그 안내를 사용자에게 그대로 전한다(자동 설치하지 않는다).
 
@@ -77,15 +77,16 @@ S="${CYS_PACK_DIR:-$HOME/.cys/pack}/skills/motion-graphics-prompt"
 - 실존 인물의 이름·사진이 들어가는 영상은 당사자 동의를 받고, 공개 범위(행사장 스크린 1회 / 온라인 게시)를 먼저 정한다. 온라인 게시는 사용자가 정한다.
 - 외부 결제·가입은 이 스킬에서 하지 않는다(필요하면 `media-gen` + `cost-preview-confirm`).
 - 웹 글꼴 주소만 쓰면 오프라인·샌드박스에서 대체 글꼴로 찍힌다 — 글꼴 파일을 페이지 옆에 두고 `@font-face` 로 연결한다.
-- `npm i` 로 생긴 `node_modules` 는 스킬 폴더에 남는다(팩 갱신이 지우지 않는 사용자 설치분).
+- `node_modules` 는 `~/.cys/deps/motion-graphics-prompt`(또는 `CYS_SKILL_DEPS`)에 둔다 — 스킬 폴더에 설치하면 다음 팩 갱신 때 사라진다.
 - 영상 한 편 렌더는 길이·`--subframes` 에 비례해 오래 걸린다(4초 · 30fps · 서브프레임 3 = 프레임 360장). 그래서 스틸에서 먼저 고친다.
 
 ## 확인하는 방법
 
 - 견본 스틸: `node "$S/tools/seek_render.js" "$S/examples/sample-seek.html" --out <임시폴더> --stills 0.6,3.5` → 두 줄 모두 `결정론=OK` · 코드 0.
 - 견본 영상: 같은 견본 `--duration 4 --subframes 3` → ffprobe `1920,1080,30/1 | 4.000000`.
-- 의존 안내: playwright 가 없는 폴더·PATH 에서 돌리면 「없음 playwright … npm i」와 코드 4.
+- 의존 안내: 의존 폴더에 playwright 가 없으면 「없음 playwright … 의존 폴더에 한 번 설치」와 설치 명령 1줄, 코드 4.
 - 시험 입력 결과(2026-11-06 · 스크래치 폴더 · playwright 1.63.0 + 받아 둔 크롬):
   - 견본 스틸 0.6·3.5초 → `결정론=OK` 2줄 · 코드 0 / 견본 4초 영상(서브프레임 3) → 360장 · `1920,1080,30/1 | 4.000000` · 코드 0 · 약 50초.
   - 지저분한 입력: 상태가 새는 사본 → `결정론=FAIL` 2줄 코드 1 · seek 없는 페이지 → 코드 3 · `--stills 1,abc` → 입력 오류 코드 2 · `ref_frames.sh` 에 없는 파일·초당장수 `abc`/`0` → 코드 2.
-  - `ref_frames.sh https://prompt-motion.com/tequilafunks-97f6c9` → 원 프롬프트 화면 출력 · 15.1초 · 낱장 15장 + 모아보기 · 출력폴더에 영상·페이지·프롬프트 파일 0 · 임시 폴더 지워짐. playwright 없는 폴더 → 「없음 playwright … npm i」 코드 4 · 크롬 없음 → 「npx playwright install chromium」 코드 4 · PATH 를 비우면 「없음 ffmpeg」 코드 4.
+  - `ref_frames.sh https://prompt-motion.com/tequilafunks-97f6c9` → 원 프롬프트 화면 출력 · 15.1초 · 낱장 15장 + 모아보기 · 출력폴더에 영상·페이지·프롬프트 파일 0 · 임시 폴더 지워짐. 의존 폴더에 playwright 없음 → 「없음 playwright … 의존 폴더에 한 번 설치」 코드 4 · 크롬 없음 → 「npx playwright install chromium」 코드 4 · PATH 를 비우면 「없음 ffmpeg」 코드 4.
+- 의존 폴더 이관 재시험(2026-11-06 · 조정자): 스킬 폴더에 node_modules 없이 `CYS_SKILL_DEPS=<설치 폴더>` 로 `--stills 0.6,3.5` → 두 장 결정론=OK(sha 61859d694cc9 · 438701eb5fa2) · 의존 폴더 비었을 때 → 설치 명령 1줄 + 코드 4.

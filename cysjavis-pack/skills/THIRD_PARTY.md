@@ -147,3 +147,18 @@ Unless required by applicable law or agreed to in writing, software distributed
 under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
 CONDITIONS OF ANY KIND, either express or implied. See the License for the
 specific language governing permissions and limitations under the License.
+
+## 산출물 스킬 외부 유래 고지 (asset-skills-for-seats · 2026-11-06)
+
+- `ppt-design-system/references/heidi-guideline.md` — 헤이디 「나만의 디자인 시스템 만들기 프로젝트 지침」 원문.
+  원문 주소 https://app.notion.com/p/3f671a693e5480b2afeee6776d6ec9e2 (공개 노션 · 2026-11-06 수신본).
+  동봉 근거 = 지은이가 소개 영상(https://www.youtube.com/watch?v=nbs8JtlY27s)에서 「이 지침은 제가 다 드릴
+  겁니다 … 직접 작성하실 필요 없이 제가 공유드릴테니까 그냥 복사 붙여 넣기만 진행하시면 됩니다」라고
+  누구나 복사해 쓰도록 내놓은 것. 출처(지은이·주소)를 지워 재배포하지 않는다.
+- `ppt-styles/vendor/anthropics-theme-factory/` — anthropics/skills `skills/theme-factory`
+  (Apache License 2.0 · 동봉 `LICENSE.txt` · 원 파일명 SKILL.md 를 `theme-factory-SKILL.md` 로만 바꿈 —
+  하위 폴더가 별도 스킬로 잡히지 않게. 변경 고지 = `ppt-styles/vendor/README.md`, Apache-2.0 §4(b)).
+- `ppt-styles/vendor/frontend-slides/STYLE_PRESETS.md` — zarazhangrui/frontend-slides (MIT · 동봉 `LICENSE`).
+- 그 밖의 산출물 스킬(motion-graphics-prompt · video-report-deck · portrait-cutout · ppt-styles 스타일 코드)은
+  우리가 쓴 절차·코드다. 참고한 영상·사이트(Prompt Motion · 헤이디 모션 프롬프트 · 커리어해커 등)는 원문을 싣지
+  않고 우리 말 요약과 출처 주소만 둔다. 글꼴(Pretendard 등 · SIL OFL 1.1)은 동봉하지 않고 받는 곳만 안내한다.

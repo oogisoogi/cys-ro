@@ -828,6 +828,22 @@ WORK_SKILLS = ["hallucination-guard", "grill-me"]
 # ★cu-1111(1.1.11): computer-control 편입 — 「내 컴퓨터에서 맡을 수 있는 것」 절차 스킬(dept-by-chat 과 같은 이유 ·
 # 좌석 exec 전 링크가 없으면 첫 master 가 Unknown skill 로 대화 폴백한다).
 HARNESS_SKILLS = ["harness-engineering", "dept-by-chat", "computer-control"]
+# 산출물(문서·차트·영상·PPT) 스킬 — C84가 발견된 전 프로필에 자동 심링크(C26/C27/C29와 동일 규약).
+# ★asset-skills-for-seats(2026-11-06 · 박사님 「자산에서 확보하거나 제작한 스킬·도구를 가져와 쓰게」):
+#   ⓐ 자산에서 승격한 스킬 5 + ⓑ 팩에 있었으나 어느 목록에도 없어 좌석에 안 보이던 산출물 스킬 13.
+#   팩 스킬 **전부**를 걸지 않는다 — Claude Code 스킬 목록 설명 예산(컨텍스트 1% · 넘치면 덜 쓴 스킬부터
+#   설명 삭제)이 이미 경계라, 산출물 일에 쓰는 것만 건다. 합계·겹침은 tests/test_output_skills.py 가 잰다.
+#   새 스킬 추가 시 이 목록·pack.rs 임베드 불변식·예산 시험을 함께 갱신한다.
+OUTPUT_SKILLS = [
+    # ⓐ 자산 승격
+    "motion-graphics-prompt", "video-report-deck", "ppt-design-system", "ppt-styles",
+    "portrait-cutout",
+    # ⓑ 기존 산출물 스킬(문서·한글 글쓰기)
+    "hwp", "rhwp-edit", "korean-humanizer", "korean-spell-check", "korean-character-count",
+    # ⓑ 기존 산출물 스킬(디자인·영상 갭)
+    "design-token-system", "design-system-propagate",
+    "transcription", "scene-cut", "caption-align", "caption-correct", "sfx-place", "voice-local",
+]
 # 스킬 본문 핀 — frontmatter만 남기고 본문이 비워지면(전담 기능 소실) 결정론 검출한다.
 WORK_SKILL_PINS = {
     # "원출처까지 간다"는 본문 고유 문구 — "출처 진실성"은 frontmatter description과
@@ -923,6 +939,18 @@ def pack_dir():
         if v:
             return v
     return os.path.join(os.path.expanduser("~"), ".cys/pack")
+
+
+def _local_overlay_dir():
+    """사용자 오버레이(~/.cys/local) — src/pack.rs local_dir() 미러(CYS_/JAVIS_/AITERM_LOCAL_DIR → pack 부모/local).
+
+    부서 팩(~/.cys/pack-dept-<n>)도 부모가 ~/.cys 라 같은 오버레이를 본다(Rust 와 동형).
+    """
+    for key in ("CYS_LOCAL_DIR", "JAVIS_LOCAL_DIR", "AITERM_LOCAL_DIR"):
+        v = os.environ.get(key, "")
+        if v:
+            return v
+    return os.path.join(os.path.dirname(os.path.normpath(pack_dir())), "local")
 
 
 def base_pack_dir():
@@ -5304,6 +5332,93 @@ class Preflight:
         else:
             self.add(cid, FIXED if fixed else PASS, detail)
 
+    # ── C84 산출물 스킬 + 사용자 로컬 스킬 프로필 배선 (asset-skills-for-seats · 2026-11-06) ──
+    # (a) OUTPUT_SKILLS 를 C29 와 같은 규약으로 링크한다.
+    # (b) 사용자 오버레이 `<local>/skills/*`(cys skill new 기본 위치 · 업데이트 불가침)도 링크한다 —
+    #     종전엔 `cys skill list/show` 만 읽어 사용자가 만든 스킬이 네이티브 Skill 목록에 없었다(master D4).
+    #     · 팩에 같은 이름이 있으면 로컬은 **링크하지 않는다**(팩 링크와 번갈아 덮는 진동 차단 · 팩 우선).
+    #     · 로컬 스킬을 지워 끊긴 링크(대상이 <local>/skills 아래이고 없음)는 걷어 낸다.
+    #     · 실디렉토리·다른 대상 링크는 불가침(C26/C27/C29 와 같음).
+    # FAIL 없음(산출물 스킬은 옵트인 능력 · 배선 실패가 부트를 막지 않는다).
+    def c84_output_skills(self):
+        cid = "C84.output-skills"
+        if self.skipped(cid):
+            return
+        fixed, warns, notes = [], [], []
+        pack_skills = os.path.join(pack_dir(), "skills")
+        missing = [s for s in OUTPUT_SKILLS
+                   if not os.path.isfile(os.path.join(pack_skills, s, "SKILL.md"))]
+        if missing:
+            warns.append("pack 스킬 미설치(%s) — init-pack 재실행" % ", ".join(missing))
+        want = {s: os.path.join(pack_skills, s) for s in OUTPUT_SKILLS if s not in missing}
+        local_root = os.path.join(_local_overlay_dir(), "skills")
+        shadowed = []
+        try:
+            names = sorted(os.listdir(local_root))
+        except OSError:
+            names = []
+        for n in names:
+            src = os.path.join(local_root, n)
+            if n.startswith(".") or not os.path.isfile(os.path.join(src, "SKILL.md")):
+                continue
+            if os.path.isdir(os.path.join(pack_skills, n)):
+                shadowed.append(n)   # 팩 동명 — 팩 우선(로컬은 cys skill show 에서만 이긴다)
+                continue
+            want[n] = src
+        if shadowed:
+            notes.append("팩 동명 로컬 %d건 링크 생략(%s)" % (len(shadowed), ", ".join(shadowed[:3])))
+        n_local = len(want) - (len(OUTPUT_SKILLS) - len(missing))
+        profiles = discover_skill_profiles()
+        linked = 0
+        for prof in profiles:
+            sdir = os.path.join(prof, "skills")
+            need = [s for s, src in sorted(want.items())
+                    if not self._symlink_ok(os.path.join(sdir, s), src)]
+            stale = []
+            try:
+                for e in os.listdir(sdir):
+                    p = os.path.join(sdir, e)
+                    if e in want or not os.path.islink(p) or os.path.exists(p):
+                        continue
+                    tgt = os.readlink(p)
+                    if os.path.normpath(os.path.dirname(tgt)) == os.path.normpath(local_root):
+                        stale.append(p)
+            except OSError:
+                pass
+            if not need and not stale:
+                linked += 1
+                continue
+            if self.fix:
+                try:
+                    os.makedirs(sdir, exist_ok=True)
+                    for p in stale:
+                        os.unlink(p)
+                    for s in need:
+                        link = os.path.join(sdir, s)
+                        if os.path.islink(link):
+                            os.unlink(link)
+                        elif os.path.exists(link):
+                            continue  # 실디렉(사용자 보유) — 덮지 않음
+                        os.symlink(want[s], link)
+                    linked += 1
+                    fixed.append("%s/skills ← 산출물·로컬 스킬 %d · 끊긴 로컬 링크 %d 정리"
+                                 % (os.path.basename(prof), len(need), len(stale)))
+                except OSError as e:
+                    warns.append("%s 심링크 실패: %s" % (os.path.basename(prof), e))
+            else:
+                warns.append("%s/skills 산출물·로컬 스킬 미배선 %d · 끊긴 링크 %d(--fix)"
+                             % (os.path.basename(prof), len(need), len(stale)))
+        detail = "산출물 스킬 %d종 + 로컬 스킬 %d종 · 프로필 %d/%d 배선" % (
+            len(OUTPUT_SKILLS) - len(missing), n_local, linked, len(profiles) or 0)
+        if notes:
+            detail += " · " + "; ".join(notes)
+        if fixed:
+            detail += " · " + "; ".join(fixed)
+        if warns:
+            self.add(cid, WARN, detail + " · " + " | ".join(warns))
+        else:
+            self.add(cid, FIXED if fixed else PASS, detail)
+
     # ── C30 git 결정론 점검 (2026-06-14 — git 온보딩) ──
     # git은 기여자 clone·harness-creator(C21) 툴체인 자동설치·RSI 자기개선 push에 필요하다.
     # 일반 .dmg 사용자 기본 기능엔 불필요 → 부재는 FAIL이 아니라 WARN(기능별 필수).
@@ -7499,6 +7614,8 @@ class Preflight:
             self.c82_gate_corpus_drift,
             # C83 — 레인 훅 조기 종료·좌석 설정 대조(읽기 전용 · C62 앞).
             self.c83_lane_guard_tripped,
+            # C84(asset-skills-for-seats) — 산출물 스킬 + 사용자 로컬 스킬 프로필 배선. FAIL 없음 · C62 앞.
+            self.c84_output_skills,
             # C62는 마지막 고정 — 같은 런의 --fix가 남긴 치유 원장까지 이 런에서 보이게.
             # C68은 C62 직후(원장 소비 강제 게이트 — 같은 런의 최신 원장 기준으로 기한 판정).
             self.c62_pack_heal_ledger,
@@ -11077,7 +11194,8 @@ def wire_seat():
         except OSError:
             pass
     pf = Preflight(fix=True, skips=[], mode="fix", wire_only=True)
-    for fn in (pf.c26_video_creator, pf.c27_appbuild, pf.c29_harness_engineering):
+    for fn in (pf.c26_video_creator, pf.c27_appbuild, pf.c29_harness_engineering,
+               pf.c84_output_skills):
         try:
             fn()
         except Exception as e:  # 배선 실패는 기동을 막지 않는다 — 결과에만 남긴다

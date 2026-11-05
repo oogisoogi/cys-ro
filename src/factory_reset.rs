@@ -1957,6 +1957,12 @@ pub fn execute_quarantine(
         if n > 0 {
             stripped.push(format!("{}: pack 스킬 심링크 {n}개 제거", dir.display()));
         }
+        if plan.purge_local {
+            let n = remove_local_skill_links(dir, &roots.cys_base);
+            if n > 0 {
+                stripped.push(format!("{}: 로컬 스킬 심링크 {n}개 제거(--purge-local)", dir.display()));
+            }
+        }
     }
     // defaults 도메인은 cfprefsd 캐시가 있어 파일 격리만으론 안 지워진다 — 병행 삭제.
     // ★v115-restore(B6): 대상은 루트가 지정한다(live = macOS 앱 도메인 · 시험 루트 = None = 실행 안 함).
@@ -2637,6 +2643,22 @@ fn strip_settings_matching(
 /// 실디렉토리·타 대상 링크 불가침(preflight 심링크 파밍의 역연산). 반환: 제거 수.
 pub fn remove_pack_skill_links(skills_dir: &Path, cys_base: &Path) -> usize {
     let needle = format!("{}/pack", cys_base.to_string_lossy().replace('\\', "/"));
+    remove_skill_links_containing(skills_dir, &needle)
+}
+
+/// `--purge-local` 전용: 대상이 사용자 오버레이 스킬(`~/.cys/local/skills/…`)인 심링크만 제거한다.
+/// preflight C84 가 좌석 프로필에 거는 로컬 스킬 링크의 역연산 — 오버레이를 지우면 끊길 링크라
+/// 남겨 두면 프로필 스킬 목록에 깨진 항목이 남는다(asset-skills-for-seats). 오버레이를 보존하는
+/// 기본 초기화에서는 부르지 않는다(링크가 그대로 유효).
+pub fn remove_local_skill_links(skills_dir: &Path, cys_base: &Path) -> usize {
+    let needle = format!(
+        "{}/{LOCAL_OVERLAY}/skills/",
+        cys_base.to_string_lossy().replace('\\', "/")
+    );
+    remove_skill_links_containing(skills_dir, &needle)
+}
+
+fn remove_skill_links_containing(skills_dir: &Path, needle: &str) -> usize {
     let mut n = 0usize;
     if let Ok(rd) = std::fs::read_dir(skills_dir) {
         for e in rd.flatten() {
@@ -2648,7 +2670,7 @@ pub fn remove_pack_skill_links(skills_dir: &Path, cys_base: &Path) -> usize {
                 continue;
             }
             let target_hits = std::fs::read_link(&p)
-                .map(|t| t.to_string_lossy().replace('\\', "/").contains(&needle))
+                .map(|t| t.to_string_lossy().replace('\\', "/").contains(needle))
                 .unwrap_or(false);
             // ★W2(성찰 확정): Windows 는 **디렉토리 심링크**를 remove_file 로 지울 수 없다
             // (RemoveDirectory 필요). unix 는 unlink 라 첫 시도에서 성공하므로 무영향.
@@ -3337,6 +3359,14 @@ mod tests {
         assert!(!skills.join("appbuild").exists());
         assert!(skills.join("mine").exists(), "user symlink must survive");
         assert!(skills.join("real-dir").exists(), "real dir must survive");
+        // asset-skills-for-seats: 로컬 오버레이 스킬 링크는 --purge-local 때만(별도 함수) 지운다.
+        mk(&cys_base.join("local/skills/mine-local"));
+        std::os::unix::fs::symlink(cys_base.join("local/skills/mine-local"), skills.join("mine-local"))
+            .unwrap();
+        assert_eq!(remove_pack_skill_links(&skills, &cys_base), 0, "pack 제거는 로컬 링크 불가침");
+        assert_eq!(remove_local_skill_links(&skills, &cys_base), 1);
+        assert!(!skills.join("mine-local").exists());
+        assert!(skills.join("mine").exists(), "user symlink must survive local purge");
     }
 
     /// ★W1 회귀: Windows 훅 형식(`bash "C:/…"`)에서도 이전 statusLine 이 원복된다.

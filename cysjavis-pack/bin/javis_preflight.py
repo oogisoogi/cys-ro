@@ -953,28 +953,56 @@ def _local_overlay_dir():
     return os.path.join(os.path.dirname(os.path.normpath(pack_dir())), "local")
 
 
-def _link_target_under(link, root):
-    """심링크 `link` 의 선언 대상이 `root` 아래인가 — 끊긴 링크도 판정한다(존재 여부 비의존).
+def _link_target_abs(link):
+    """심링크 `link` 의 선언 대상을 절대·정규화 경로로(끊긴 링크도 · 존재 여부 비의존) — 실패 시 None.
 
-    상대 대상은 링크가 있는 폴더 기준으로 풀고, `..` 를 어휘적으로 정리한 뒤 경로 구성요소 단위로
-    비교한다(부분 문자열 비교 금지 — /backup/…/.cys/local 같은 남의 경로 오인 차단 · codex 1R).
-    Windows 확장 접두사(\\\\?\\)·대소문자는 normcase/접두 제거로 맞춘다.
+    상대 대상은 링크가 있는 폴더 기준으로 풀고 `..` 를 어휘적으로 정리한다. Windows 확장 접두
+    (`\\\\?\\` · `\\??\\` · `\\\\?\\UNC\\` → `\\\\`)를 벗기고 normcase 로 대소문자를 맞춘다(codex 1R·2R).
     """
     try:
         tgt = os.readlink(link)
     except OSError:
-        return False
-    for pre in ("\\\\?\\", "\\??\\"):
+        return None
+    for pre, rep in (("\\\\?\\UNC\\", "\\\\"), ("\\??\\UNC\\", "\\\\"),
+                     ("\\\\?\\", ""), ("\\??\\", "")):
         if tgt.startswith(pre):
-            tgt = tgt[len(pre):]
+            tgt = rep + tgt[len(pre):]
+            break
     if not os.path.isabs(tgt):
         tgt = os.path.join(os.path.dirname(os.path.abspath(link)), tgt)
-    t = os.path.normcase(os.path.normpath(os.path.abspath(tgt)))
+    return os.path.normcase(os.path.normpath(os.path.abspath(tgt)))
+
+
+def _path_under(t, root):
     r = os.path.normcase(os.path.normpath(os.path.abspath(root)))
     try:
         return os.path.commonpath([t, r]) == r and t != r
     except ValueError:      # 다른 드라이브(Windows)
         return False
+
+
+def _link_target_under(link, root):
+    """심링크 `link` 의 선언 대상이 `root` 아래인가(경로 구성요소 비교 · 부분 문자열 비교 금지)."""
+    t = _link_target_abs(link)
+    return t is not None and _path_under(t, root)
+
+
+def _is_our_skill_link(link, pack_skills, local_skills):
+    """우리가 거는 스킬 링크인가 — 대상이 ①이 팩 skills/ ②오버레이 skills/ ③형제 팩 폴더(`<팩 부모>/pack*/skills/<이름>`
+    — 옛 팩·부서 팩) 아래일 때만. 팩 부모 폴더 전체를 우리 것으로 보면 사용자 지정 팩 경로
+    (예: CYS_PACK_DIR=/work/pack)에서 `/work/user-skills/x` 같은 사용자 링크를 지운다(codex 2R major).
+    """
+    t = _link_target_abs(link)
+    if t is None:
+        return False
+    if _path_under(t, pack_skills) or _path_under(t, local_skills):
+        return True
+    base = os.path.dirname(os.path.normpath(os.path.abspath(pack_skills)))   # 팩 폴더
+    parent = os.path.dirname(base)                                             # 팩 부모
+    if not _path_under(t, parent):
+        return False
+    parts = os.path.relpath(t, os.path.normcase(os.path.normpath(parent))).split(os.sep)
+    return len(parts) >= 3 and parts[0].startswith("pack") and parts[1] == "skills"
 
 
 def base_pack_dir():
@@ -5392,7 +5420,6 @@ class Preflight:
         if shadowed:
             notes.append("팩 동명 로컬 %d건 링크 생략(%s)" % (len(shadowed), ", ".join(shadowed[:3])))
         n_local = len(want) - (len(OUTPUT_SKILLS) - len(missing))
-        cys_root = os.path.dirname(os.path.normpath(pack_dir()))
         kept = []
         profiles = discover_skill_profiles()
         linked = 0
@@ -5403,7 +5430,7 @@ class Preflight:
                 lk = os.path.join(sdir, s)
                 if self._symlink_ok(lk, src):
                     continue
-                if os.path.islink(lk) and not _link_target_under(lk, cys_root):
+                if os.path.islink(lk) and not _is_our_skill_link(lk, pack_skills, local_root):
                     kept.append(s)   # 같은 이름 사용자 링크(다른 대상) — 불가침 · 매 실행 할 일 0
                     continue
                 if os.path.exists(lk) and not os.path.islink(lk):
@@ -5431,7 +5458,7 @@ class Preflight:
                     for s in need:
                         link = os.path.join(sdir, s)
                         if os.path.islink(link):
-                            os.unlink(link)   # 우리 링크(cys 기반 폴더 아래 대상)만 여기 온다(need 거름)
+                            os.unlink(link)   # 우리 링크(_is_our_skill_link)만 여기 온다(need 에서 거름)
                         elif os.path.exists(link):
                             continue  # 실디렉(사용자 보유) — 덮지 않음
                         os.symlink(want[s], link)

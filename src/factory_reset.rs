@@ -2668,17 +2668,41 @@ pub fn remove_local_skill_links(skills_dir: &Path, cys_base: &Path) -> usize {
             continue;
         };
         let t_str = t.to_string_lossy();
-        let t = PathBuf::from(t_str.strip_prefix(r"\\?\").unwrap_or(&t_str));
+        // Windows 확장 접두: `\\?\UNC\srv\share` → `\\srv\share` · `\\?\C:\…` → `C:\…`(codex 2R)
+        let t = if let Some(rest) = t_str.strip_prefix(r"\\?\UNC\") {
+            PathBuf::from(format!(r"\\{rest}"))
+        } else {
+            PathBuf::from(t_str.strip_prefix(r"\\?\").unwrap_or(&t_str))
+        };
         let abs = if t.is_absolute() { t } else { skills_dir.join(t) };
         let abs = lexical_normalize(&abs);
-        if abs != root
-            && abs.starts_with(&root)
+        if !same_path(&abs, &root)
+            && path_starts_with(&abs, &root)
             && (std::fs::remove_file(&p).is_ok() || std::fs::remove_dir(&p).is_ok())
         {
             n += 1;
         }
     }
     n
+}
+
+/// Windows 는 경로 대소문자를 구분하지 않는다 — 구성요소를 소문자로 맞춰 비교한다(codex 2R).
+fn path_key(p: &Path) -> Vec<String> {
+    p.components()
+        .map(|c| {
+            let s = c.as_os_str().to_string_lossy().into_owned();
+            if cfg!(windows) { s.to_lowercase() } else { s }
+        })
+        .collect()
+}
+
+fn same_path(a: &Path, b: &Path) -> bool {
+    path_key(a) == path_key(b)
+}
+
+fn path_starts_with(p: &Path, root: &Path) -> bool {
+    let (p, r) = (path_key(p), path_key(root));
+    p.len() >= r.len() && p[..r.len()] == r[..]
 }
 
 /// 파일 시스템을 보지 않고 `.`·`..` 를 정리한다(끊긴 링크 대상도 판정할 수 있게).

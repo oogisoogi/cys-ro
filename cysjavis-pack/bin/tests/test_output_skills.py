@@ -168,6 +168,36 @@ class C84WiringTest(unittest.TestCase):
         self.assertTrue(os.path.islink(os.path.join(sk, "escaped")), "탈출 경로는 우리 링크가 아니다")
         self.assertFalse(pf._link_target_under(os.path.join(sk, "escaped"), local_skills))
 
+    def test_custom_pack_path_user_link_next_to_pack_is_kept(self):
+        """codex 2R major: 팩 부모 폴더 아래라도 pack*/skills·local/skills 가 아니면 사용자 링크다."""
+        sk = os.path.join(self.prof, "skills")
+        os.makedirs(sk)
+        user = os.path.join(self.home, ".cys", "user-skills", "ppt-styles")   # 팩 부모(~/.cys) 아래 · 우리 것 아님
+        os.makedirs(user)
+        os.symlink(user, os.path.join(sk, "ppt-styles"))
+        old_pack = os.path.join(self.home, ".cys", "pack.prev", "skills", "hwp")  # 옛 팩 = 우리 것
+        os.makedirs(old_pack)
+        os.symlink(old_pack, os.path.join(sk, "hwp"))
+        self._run()
+        self.assertEqual(os.path.realpath(os.path.join(sk, "ppt-styles")), os.path.realpath(user))
+        self.assertEqual(self._target("hwp"), os.path.realpath(os.path.join(self.pack, "skills", "hwp")),
+                         "옛 팩을 가리키던 우리 링크는 현 팩으로 갈아 끼운다")
+
+    def test_windows_extended_prefixes_normalized(self):
+        cases = {"\\\\?\\UNC\\srv\\share\\x": "\\\\srv\\share\\x",
+                 "\\\\?\\C:\\u\\x": "C:\\u\\x", "\\??\\C:\\u\\x": "C:\\u\\x"}
+        real = pf.os.readlink
+        try:
+            for raw, want in cases.items():
+                pf.os.readlink = lambda _p, raw=raw: raw
+                got = pf._link_target_abs("/x/link")
+                self.assertTrue(got.endswith(want.replace("\\", os.sep)) or want in got or
+                                got.endswith(os.path.normcase(os.path.normpath(want))), (raw, got))
+                self.assertNotIn("?", got, "확장 접두가 남으면 안 된다")
+                self.assertNotIn("UNC", got)
+        finally:
+            pf.os.readlink = real
+
     def test_local_dir_env_override(self):
         alt = os.path.join(self.root, "alt-local")
         self._mk(os.path.join(alt, "skills", "alt-skill"))

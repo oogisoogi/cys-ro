@@ -1,0 +1,10 @@
+{
+  "name": "video-report-deck",
+  "version": "1.1.0",
+  "private": true,
+  "description": "장면 JSON → 보고 영상 렌더러(bin/render.js)의 의존 — 이 폴더에서 npm i 후 npx playwright install chromium",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "playwright": "1.63.0"
+  }
+}

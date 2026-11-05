@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><title>seek 계약 견본 (가상 행사)</title>
+<style>
+  html,body{margin:0;width:1920px;height:1080px;overflow:hidden;background:#0b0b0f}
+  #stage{position:absolute;inset:0;font-family:"Pretendard","Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",sans-serif;color:#fff}
+  .shape{position:absolute;left:960px;top:540px;width:240px;height:240px;margin:-120px 0 0 -120px;background:#ff6a1a}
+  .title{position:absolute;left:0;right:0;top:470px;text-align:center;font-size:120px;font-weight:800;letter-spacing:-2px;line-height:1.1}
+  .title em{font-family:"Times New Roman",serif;font-style:italic;font-weight:400}
+  .sub{position:absolute;left:0;right:0;top:640px;text-align:center;font-size:40px;color:#bbb}
+</style></head>
+<body><div id="stage">
+  <div class="shape" id="sq"></div>
+  <div class="title" id="ti">생각이 <em>화면</em>이 되는 순간</div>
+  <div class="sub" id="su">LAUNCH WEEK 2027 · OPENING</div>
+</div>
+<script>
+// 시간 고정 계약: 화면의 모든 값은 t(초)만으로 계산한다 — 타이머·CSS 애니메이션·누적 상태 없음.
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const expo = x => (x >= 1 ? 1 : 1 - Math.pow(2, -10 * x));                 // 지수 감속
+const spring = x => 1 - Math.exp(-6 * x) * Math.cos(9 * x);                // 감쇠 스프링
+const sq = document.getElementById("sq"), ti = document.getElementById("ti"), su = document.getElementById("su");
+window.seek = t => {
+  // 0~1.5초: 사각형이 튀어나와 돌며 원으로 바뀐다
+  const a = clamp(t / 1.5);
+  const up = expo(clamp((t - 1.5) / 0.8));                                  // 제목 자리를 비켜 위로
+  sq.style.transform = `translateY(${-300 * up}px) scale(${spring(a) * (1 - 0.6 * up)}) rotate(${expo(a) * 180}deg)`;
+  sq.style.borderRadius = `${expo(a) * 50}%`;
+  sq.style.background = t < 2 ? "#ff6a1a" : "#2f6bff";
+  // 1.5~2.5초: 제목이 아래에서 올라온다(움직임만큼 흐림)
+  const b = clamp((t - 1.5) / 1.0), v = 1 - expo(b);
+  ti.style.opacity = b;
+  ti.style.transform = `translateY(${v * 120}px)`;
+  ti.style.filter = `blur(${v * 12}px)`;
+  // 2.5초~: 행사명 고정(끝 장면은 멈춘 채로 끝난다)
+  su.style.opacity = clamp((t - 2.5) / 0.5);
+};
+window.seek(0);
+</script></body></html>

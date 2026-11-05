@@ -198,6 +198,46 @@ class C84WiringTest(unittest.TestCase):
         finally:
             pf.os.readlink = real
 
+    def _synced(self, prof, names):
+        for n in names:
+            self._mk(os.path.join(prof, "skills", "synced", "bucket-1", n))
+
+    def test_synced_skills_set_name_only_respecting_user_values(self):
+        """master#7bdbbeb4 K1⑵: claude.ai 동기 스킬은 목록에 이름만 · 사용자가 정한 값·다른 키는 그대로."""
+        import json as _j
+        self._synced(self.prof, ["pdf", "card-news-qa", "morning"])
+        with open(os.path.join(self.prof, "settings.json"), "w") as f:
+            _j.dump({"keep": 1, "skillOverrides": {"pdf": "on"}}, f)
+        r = self._run()
+        d = _j.load(open(os.path.join(self.prof, "settings.json")))
+        self.assertEqual(d["keep"], 1)
+        self.assertEqual(d["skillOverrides"], {"pdf": "on", "card-news-qa": "name-only", "morning": "name-only"})
+        self.assertIn("동기 스킬 3개 = 목록 이름만", r["detail"])
+        self.assertEqual(self._run()["status"], pf.PASS, "두 번째는 할 일 없음")
+        self.assertEqual(self._run(fix=False)["status"], pf.PASS)
+
+    def test_synced_override_only_in_cys_seat_profiles(self):
+        """사용자 개인 프로필(~/.claude — 팩 부모 밖)의 설정은 건드리지 않는다."""
+        import json as _j
+        personal = os.path.join(self.home, ".claude")
+        os.makedirs(personal)
+        open(os.path.join(personal, "settings.json"), "w").write("{}\n")
+        self._synced(personal, ["pdf"])
+        self._synced(self.prof, ["pdf"])
+        pf.discover_skill_profiles = lambda: [personal, self.prof]
+        self._run()
+        self.assertEqual(_j.load(open(os.path.join(personal, "settings.json"))), {})
+        self.assertEqual(_j.load(open(os.path.join(self.prof, "settings.json")))["skillOverrides"], {"pdf": "name-only"})
+
+    def test_synced_override_malformed_value_left_alone(self):
+        import json as _j
+        self._synced(self.prof, ["pdf"])
+        with open(os.path.join(self.prof, "settings.json"), "w") as f:
+            _j.dump({"skillOverrides": ["weird"]}, f)
+        r = self._run()
+        self.assertEqual(r["status"], pf.WARN)
+        self.assertEqual(_j.load(open(os.path.join(self.prof, "settings.json"))), {"skillOverrides": ["weird"]})
+
     def test_local_dir_env_override(self):
         alt = os.path.join(self.root, "alt-local")
         self._mk(os.path.join(alt, "skills", "alt-skill"))

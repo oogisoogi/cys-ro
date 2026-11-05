@@ -987,6 +987,27 @@ def _link_target_under(link, root):
     return t is not None and _path_under(t, root)
 
 
+def _synced_skill_names(profile):
+    """프로필의 claude.ai 동기 스킬 이름들 — `<프로필>/skills/synced/<버킷>/<이름>/SKILL.md` 의 폴더 이름."""
+    root = os.path.join(profile, "skills", "synced")
+    out = []
+    try:
+        buckets = os.listdir(root)
+    except OSError:
+        return out
+    for bk in buckets:
+        bd = os.path.join(root, bk)
+        if bk.startswith(".") or not os.path.isdir(bd):
+            continue
+        try:
+            for n in os.listdir(bd):
+                if not n.startswith(".") and os.path.isfile(os.path.join(bd, n, "SKILL.md")):
+                    out.append(n)
+        except OSError:
+            continue
+    return out
+
+
 def _is_our_skill_link(link, pack_skills, local_skills):
     """우리가 거는 스킬 링크인가 — 대상이 ①이 팩 skills/ ②오버레이 skills/ ③형제 팩 폴더(`<팩 부모>/pack*/skills/<이름>`
     — 옛 팩·부서 팩) 아래일 때만. 팩 부모 폴더 전체를 우리 것으로 보면 사용자 지정 팩 경로
@@ -5470,10 +5491,55 @@ class Preflight:
             else:
                 warns.append("%s/skills 산출물·로컬 스킬 미배선 %d · 끊긴 링크 %d(--fix)"
                              % (os.path.basename(prof), len(need), len(stale)))
+        # (c) claude.ai 동기 스킬 = 목록에 「이름만」(master#7bdbbeb4 K1⑵) — 좌석 스킬 설명 예산(30,000자 ·
+        #     실측 2026-11-06 본부 좌석 45,159→32,119자)을 넘기면 덜 부른 스킬부터 설명이 지워진다.
+        #     · 대상 = cys 좌석 프로필(팩 부모 아래 — ~/.cys/claude*)만. 사용자 개인 ~/.claude 는 건드리지 않는다.
+        #     · 키 = 그 프로필 skills/synced/*/<이름>/SKILL.md 의 폴더 이름(짧은 이름 · 공식 문서의 매칭 규칙).
+        #     · 이미 있는 키(사용자가 정한 값)는 바꾸지 않는다 — 없는 이름만 "name-only" 로 넣는다(C83 과 같은 존중).
+        ovr_fixed, ovr_warns, ovr_total = [], [], 0
+        cys_base = os.path.normcase(os.path.normpath(os.path.dirname(os.path.normpath(pack_dir()))))
+        for prof in profiles:
+            if not _path_under(os.path.normcase(os.path.normpath(os.path.abspath(prof))), cys_base):
+                continue
+            synced = sorted({n for n in _synced_skill_names(prof)})
+            if not synced:
+                continue
+            sp = os.path.join(prof, "settings.json")
+            try:
+                with open(sp, encoding="utf-8") as f:
+                    cur = (json.load(f) or {}).get("skillOverrides") or {}
+            except (OSError, ValueError, AttributeError):
+                cur = {}
+            missing_o = [n for n in synced if not isinstance(cur, dict) or n not in cur]
+            ovr_total += len(synced)
+            if not missing_o:
+                continue
+            if not self.fix:
+                ovr_warns.append("%s 동기 스킬 %d개 이름만 미설정(--fix)" % (os.path.basename(prof), len(missing_o)))
+                continue
+
+            def _mutate(data, missing_o=missing_o):
+                o = data.get("skillOverrides")
+                if o is None:
+                    o = data["skillOverrides"] = {}
+                if not isinstance(o, dict):
+                    return "skillOverrides 가 객체가 아니다 — 사용자 값 보존(무쓰기)"
+                for n in missing_o:
+                    o.setdefault(n, "name-only")
+                return None
+            err = _settings_rmw(sp, _mutate)
+            if err:
+                ovr_warns.append("%s 동기 스킬 이름만 설정 실패: %s" % (os.path.basename(prof), err))
+            else:
+                ovr_fixed.append("%s 동기 스킬 %d개 이름만" % (os.path.basename(prof), len(missing_o)))
+        fixed += ovr_fixed
+        warns += ovr_warns
         detail = "산출물 스킬 %d종 + 로컬 스킬 %d종 · 프로필 %d/%d 배선" % (
             len(OUTPUT_SKILLS) - len(missing), n_local, linked, len(profiles) or 0)
         if kept:
             notes.append("같은 이름 사용자 링크·실디렉토리 %d건 보존(%s)" % (len(kept), ", ".join(sorted(set(kept))[:3])))
+        if ovr_total:
+            notes.append("claude.ai 동기 스킬 %d개 = 목록 이름만(skillOverrides)" % ovr_total)
         if notes:
             detail += " · " + "; ".join(notes)
         if fixed:

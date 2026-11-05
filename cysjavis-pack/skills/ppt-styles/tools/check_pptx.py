@@ -134,6 +134,34 @@ def est_height(body, w_pt):
     return total
 
 
+def group_transform(grp, T):
+    """그룹(grpSp)의 a:xfrm — off·ext(부모 좌표) · chOff·chExt(자식 좌표) — 로 자식 → 슬라이드 좌표 변환을 합성한다.
+    T = (ax, bx, ay, by) · 슬라이드 x = ax·x + bx."""
+    xf = grp.find("p:grpSpPr/a:xfrm", NS)
+    if xf is None:
+        return T
+    off, ext, cho, che = (xf.find(f"a:{k}", NS) for k in ("off", "ext", "chOff", "chExt"))
+    if off is None or ext is None:
+        return T
+    ox, oy, ex, ey = int(off.get("x")), int(off.get("y")), int(ext.get("cx")), int(ext.get("cy"))
+    cx, cy = (int(cho.get("x")), int(cho.get("y"))) if cho is not None else (ox, oy)
+    cw, ch = (int(che.get("cx")), int(che.get("cy"))) if che is not None else (ex, ey)
+    sx, sy = (ex / cw if cw else 1.0), (ey / ch if ch else 1.0)
+    ax, bx, ay, by = T
+    return (ax * sx, ax * (ox - cx * sx) + bx, ay * sy, ay * (oy - cy * sy) + by)
+
+
+def shapes_on_slide(el, T=(1.0, 0.0, 1.0, 0.0)):
+    """p:sp 를 그 도형에 걸린 그룹 변환(중첩 그룹 합성)과 함께 낸다."""
+    for c in el:
+        if c.tag == f"{{{NS['p']}}}sp":
+            yield c, T
+        elif c.tag == f"{{{NS['p']}}}grpSp":
+            yield from shapes_on_slide(c, group_transform(c, T))
+        else:
+            yield from shapes_on_slide(c, T)
+
+
 def check(path, want, strict, do_pdf):
     errs, warns = [], []
     try:
@@ -160,10 +188,26 @@ def check(path, want, strict, do_pdf):
     sz = pres.find("p:sldSz", NS)
     W, H = (int(sz.get("cx")), int(sz.get("cy"))) if sz is not None else (9144000, 5143500)
     slides = []
-    for s in pres.findall("p:sldIdLst/p:sldId", NS):
-        t = rid.get(s.get(f"{{{NS['r']}}}id"), "")
+    rid_attr = f"{{{NS['r']}}}id"
+    for k, s in enumerate(pres.findall("p:sldIdLst/p:sldId", NS), 1):
+        t = rid.get(s.get(rid_attr), "")
+        if not t:
+            errs.append(f"장 목록 {k}번째 항목의 관계(r:id={s.get(rid_attr)})가 presentation.xml.rels 에 없음")
+            continue
         t = t.lstrip("/")
         slides.append("ppt/" + (t[4:] if t.startswith("ppt/") else t))
+    # 장 목록(presentation.xml) ↔ 실제 장 파일(ppt/slides/slideN.xml) 대조 — 어긋나면 실패
+    actual = {n for n in names if re.match(r"ppt/slides/slide\d+\.xml$", n)}
+    listed = set(slides)
+    orphan = sorted(actual - listed, key=lambda n: int(re.search(r"(\d+)\.xml$", n).group(1)))
+    if orphan:
+        errs.append(f"장 목록에 없는 장 파일 {len(orphan)}개: {', '.join(orphan)} — 파워포인트에서 보이지 않거나 「복구」 창이 뜬다")
+    if len(listed) != len(slides):
+        errs.append("장 목록에 같은 장 파일이 두 번 들어 있음")
+    if not slides:
+        errs.append("장 목록이 비어 있음(장 0개)")
+    missing = [n for n in slides if n not in names]
+    listcheck = "일치" if not orphan and not missing and slides and len(listed) == len(slides) else "불일치"
     faces = set()
     for i, name in enumerate(slides, 1):
         if name not in names:
@@ -182,7 +226,7 @@ def check(path, want, strict, do_pdf):
                 tf = f.get("typeface")
                 if tf and not tf.startswith("+"):
                     faces.add(tf)
-        for sp in root.iter(f"{{{NS['p']}}}sp"):
+        for sp, (ax, bx, ay, by) in shapes_on_slide(root):
             xf = sp.find("p:spPr/a:xfrm", NS)
             body = sp.find("p:txBody", NS)
             txt = "".join(t.text or "" for t in sp.iter(f"{{{NS['a']}}}t")).strip()
@@ -190,7 +234,9 @@ def check(path, want, strict, do_pdf):
             if xf is None:
                 continue
             off, ext = xf.find("a:off", NS), xf.find("a:ext", NS)
-            x, y, w, h = int(off.get("x")), int(off.get("y")), int(ext.get("cx")), int(ext.get("cy"))
+            # 그룹 안 도형은 그룹 변환을 적용한 슬라이드 좌표로 본다(글자 크기·안쪽 여백은 변환되지 않는다)
+            x, y = ax * int(off.get("x")) + bx, ay * int(off.get("y")) + by
+            w, h = ax * int(ext.get("cx")), ay * int(ext.get("cy"))
             if txt and (x < -EMU_PT or y < -EMU_PT or x + w > W * 1.005 or y + h > H * 1.005):  # 글 없는 장식 도형의 의도된 걸침은 빼고
                 warns.append(f"{i}장: 상자가 화면 밖으로 나감 «{txt[:24]}» (x {x/914400:.2f}in · 오른쪽 끝 {(x+w)/914400:.2f}in / 화면 {W/914400:.2f}in)")
             if body is not None and len(txt) > 2:  # 큰 따옴표·번호 같은 1~2자 장식 글자는 빼고
@@ -223,7 +269,7 @@ def check(path, want, strict, do_pdf):
     for w_ in warns:
         print(f"[경고] {w_}")
     ok = not errs and (not strict or not warns)
-    print(f"{'PASS' if ok else 'FAIL'} {Path(path).name} 장 {len(slides)} · 글꼴 {', '.join(sorted(faces)) or '-'} · 경고 {len(warns)} · 실패 {len(errs)}")
+    print(f"{'PASS' if ok else 'FAIL'} {Path(path).name} 장 {len(slides)} · 장 목록↔파일 {listcheck}({len(actual)}개 파일) · 글꼴 {', '.join(sorted(faces)) or '-'} · 경고 {len(warns)} · 실패 {len(errs)}")
     if code == 3:
         return 3
     return 0 if ok else 1

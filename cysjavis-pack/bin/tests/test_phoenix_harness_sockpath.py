@@ -6,7 +6,8 @@ macOS 상한(sun_path 104 = 103 + NUL)을 넘는다 → connect 가 errno 없는
 endpoint_unobserved → `_fresh_harness` FATAL. 데몬을 띄우지 않고(바이너리 불요) 세 갈래를 잰다:
   ① 하네스가 스스로 고른 홈은 긴 TMPDIR 아래서도 소켓이 상한 안(정규 /tmp 로 다시 고름)
   ② 명시 PHOENIX_HARNESS_HOME 이 길면 바꾸지 않고 guard_isolation 이 사유와 함께 exit 2
-  ③ _harness_paths 는 긴 소켓을 transport_error 가 아니라 고정 사유 socket_path_too_long 으로 거부
+  ③ 전송 _harness_rpc 는 긴 소켓을 transport_error 가 아니라 고정 사유 socket_path_too_long 으로 거부(소켓 무접촉) —
+     소유 경계 _harness_paths 는 길이로 거부하지 않는다(거부하면 teardown 이 제 데몬을 pid 로도 못 끝냄 · H-PY-PKILL-2)
   ④ 진단 줄(residual_diag)이 4항목 판정과 소켓 길이를 함께 남긴다
 """
 import os
@@ -32,6 +33,19 @@ elif mode == "paths":
         h._harness_paths(); print("ok")
     except h._HarnessError as e:
         print(str(e))
+elif mode == "rpc":
+    calls = []
+    class _Spy:
+        def __init__(self, *a, **k): calls.append("socket")
+        def settimeout(self, t): pass
+        def connect(self, p): calls.append("connect"); raise OSError("AF_UNIX path too long")
+        def close(self): pass
+    h._socket.socket = _Spy
+    try:
+        h._harness_rpc("system.ping"); reason = "returned"
+    except h._HarnessError as e:
+        reason = str(e)
+    print(json.dumps({"reason": reason, "calls": calls}))
 elif mode == "guard":
     h.guard_isolation(); print("guard-passed")
 elif mode == "bounds":
@@ -117,11 +131,18 @@ class SockPath(unittest.TestCase):
         self.assertIn("유닉스 소켓 상한", r.stderr)
         self.assertEqual(os.path.realpath(home), home)
 
-    def test_3_paths_fixed_reason_not_transport_error(self):
+    def test_3_rpc_fixed_reason_not_transport_error_and_paths_boundary_unaffected(self):
+        import json
         home = os.path.join(self.long, "phoenix-harn-home-explicit")
         os.makedirs(home)
+        # 소유 경계는 길이와 무관 — teardown 의 pid 정리가 막히지 않는다.
         r = self._run("paths", PHOENIX_HARNESS_HOME=home)
-        self.assertEqual(r.stdout.strip(), "socket_path_too_long", r.stderr)
+        self.assertEqual(r.stdout.strip(), "ok", r.stderr)
+        r = self._run("rpc", PHOENIX_HARNESS_HOME=home)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        d = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertEqual(d["reason"], "socket_path_too_long", d)
+        self.assertEqual(d["calls"], [], d)
 
     def test_5_exact_byte_boundary(self):
         import json

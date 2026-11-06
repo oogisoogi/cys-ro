@@ -96,7 +96,7 @@ LIVE_SOCK = os.path.join(LIVE_STATE, "cys.sock")
 #   (`/private/var/folders/<2>/<28>/T` · release.yml 1.1.12 수리) 하네스 소켓이 111바이트가 되어 connect 가
 #   `AF_UNIX path too long`(errno 없음)으로 실패하고 → transport_error → endpoint_unobserved → `_fresh_harness` FATAL 이었다
 #   (로컬 같은 길이 결정적 재현 · 짧은 경로 = clean). 그래서 하네스가 **스스로 고른** 임시 홈이 상한을 넘으면 정규 `/tmp`
-#   아래로 다시 고른다(격리·별칭 검사는 그대로 · 명시한 PHOENIX_HARNESS_HOME 은 바꾸지 않고 `_harness_paths` 가 고정 사유로 거부).
+#   아래로 다시 고른다(격리·별칭 검사는 그대로 · 명시한 PHOENIX_HARNESS_HOME 은 바꾸지 않고 `guard_isolation` 이 멈추며 전송 `_harness_rpc` 가 고정 사유로 거부).
 _SUN_PATH_MAX = 103 if (sys.platform == "darwin" or "bsd" in sys.platform) else 107  # NUL 뺀 바이트
 _HARN_SOCK_TAIL = os.path.join(".cys", "state-harness", "cys.sock")
 
@@ -205,9 +205,6 @@ def _harness_paths(endpoint=None):
         expected = os.path.join(root, "cys.sock")
         if os.path.realpath(endpoint) != expected:
             raise _HarnessError("socket_outside_harness")
-        if not _sock_path_fits(expected):
-            # connect 의 errno 없는 OSError 가 transport_error 로 뭉개지지 않게 고정 사유로 먼저 거부한다.
-            raise _HarnessError("socket_path_too_long")
         state = os.path.dirname(endpoint)
     token = os.path.join(state, "operator.token")
     for path in (state, HARN_STATE, token):
@@ -223,6 +220,10 @@ def _harness_rpc(method, params=None, deadline=None):
         # The surrounding lifecycle is Unix-only (setsid/pgrep/PTY). No blocking pipe
         # file I/O or abandoned timeout thread masquerading as Windows support.
         raise _HarnessError("windows_transport_unsupported")
+    if not _sock_path_fits(endpoint):
+        # connect 의 errno 없는 OSError 가 transport_error 로 뭉개지지 않게 고정 사유로 먼저 거부한다. ★소유 경계
+        #   `_harness_paths` 에 두지 않는다 — 거기서 거부하면 teardown 이 제 데몬·자손을 pid 로도 못 끝낸다(H-PY-PKILL-2 적색 실측).
+        raise _HarnessError("socket_path_too_long")
     if method not in ("surface.close", "surface.list", "system.ping"):
         raise _HarnessError("unsupported_method")
     deadline = deadline if deadline is not None else time.monotonic() + _CLOSE_TIMEOUT

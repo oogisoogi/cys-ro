@@ -91,6 +91,8 @@ LIVE_SOCK = os.path.join(LIVE_STATE, "cys.sock")
 #   종전엔 데몬이 부른 쪽 HOME 을 물려받아 첫 기동 팩 설치를 `$HOME/.cys/pack` 에 깔았다(개발 맥 = 실 홈 · CI·순차 실행 =
 #   같은 HOME 을 쓰는 다음 시험(f1 = `$HOME/.cys/pack/agents.json` 을 읽는다)이 그 팩을 보고 58/63). 실 홈(LIVE_*)은 보호 대상이라
 #   그대로 실 HOME 에 둔다. `PHOENIX_HARNESS_HOME` 으로 고정 가능(여러 프로세스가 같은 하네스 데몬을 공유할 때).
+# ★1.1.13 진단: 유닉스 소켓 경로 상한(sun_path · NUL 뺀 바이트) — residual_diag 가 소켓 길이와 함께 남긴다.
+_SUN_PATH_MAX = 103 if (sys.platform == "darwin" or "bsd" in sys.platform) else 107
 HARN_HOME = os.environ.get("PHOENIX_HARNESS_HOME") or tempfile.mkdtemp(prefix="phoenix-harn-home-")
 HARN_DIR = os.path.join(HARN_HOME, ".cys", "state-harness")
 HARN_SOCK = os.path.join(HARN_DIR, "cys.sock")
@@ -873,6 +875,62 @@ def _residual_zero():
     return residual_report()["clean"]
 
 
+def residual_diag(report, out=None):
+    """판정(report)과 그 근거 원출력 요약을 stderr 에 남긴다 — 판정을 바꾸지 않는 관측 전용.
+    토큰·응답 본문은 싣지 않는다(연결 실패의 OS 사유·pgrep/lsof 종료코드·우리 경로 일치 줄만)."""
+    out = out or sys.stderr
+    ev = {"verdict": {k: report.get(k) for k in ("clean", "harness_daemon_pids", "owned_process_pids",
+                                                   "unobserved_owned", "harness_ping")},
+          "counters": {k: report.get(k) for k in _cleanup_counts},
+          "sock": {"path": HARN_SOCK, "bytes": len(os.fsencode(HARN_SOCK)), "max": _SUN_PATH_MAX,
+                   "exists": os.path.exists(HARN_SOCK)}}
+    try:
+        _harness_paths()
+        ev["paths"] = "ok"
+    except _HarnessError as e:
+        ev["paths"] = str(e)
+    if os.name != "nt":
+        try:
+            s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+            try:
+                s.settimeout(_CLOSE_TIMEOUT)
+                s.connect(HARN_SOCK)
+                ev["connect"] = "connected"
+            finally:
+                s.close()
+        except OSError as e:
+            ev["connect"] = "%s errno=%s %s" % (type(e).__name__, e.errno, e.strerror or (e.args[0] if e.args else ""))
+    try:
+        r = subprocess.run(["pgrep", "-x", "cysd"], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                           timeout=10, **NOWIN)
+        pids = [p for p in r.stdout.split() if p.isdigit()]
+        ev["pgrep"] = {"rc": r.returncode, "pids": pids}
+        root = os.path.realpath(HARN_DIR)
+        lsof = []
+        for pid in pids[:20]:
+            lr = subprocess.run(["lsof", "-p", pid, "-Fn"], stdin=subprocess.DEVNULL, capture_output=True,
+                                text=True, timeout=10, **NOWIN)
+            names = [l[1:] for l in lr.stdout.splitlines() if l.startswith("n")]
+            ours = [n for n in names if os.path.realpath(n) == root or os.path.realpath(n).startswith(root + os.sep)]
+            lsof.append({"pid": pid, "rc": lr.returncode, "names": len(names), "ours": ours[:5],
+                         "stderr": (lr.stderr or "").strip()[:200]})
+        ev["lsof"] = lsof
+    except (OSError, subprocess.TimeoutExpired) as e:
+        ev["pgrep"] = "unavailable:%s" % type(e).__name__
+    ev["owned"] = [{"pid": pid, "alive_same": bool((lambda i: i and i[0] == ident)(_safe_info(pid)))}
+                   for pid, ident in sorted(_owned_processes.items())][:20]
+    out.write("[harness][diag] %s\n" % json.dumps(ev, ensure_ascii=False, sort_keys=True))
+    out.flush()
+    return ev
+
+
+def _safe_info(pid):
+    try:
+        return _process_info(pid)
+    except _HarnessError:
+        return None
+
+
 def _wipe_daemon_state():
     """격리 데몬의 영속 surface 상태만 제거(topology·analytics·큐 등). ★phoenix/ dept-root/ 는 건드리지 않는다
     — 그건 phoenix 의 보호집합 roster 라 재기동을 넘어 보존돼야 한다(부활 단일 진실). HARN_DIR 만."""
@@ -891,7 +949,10 @@ def _fresh_harness():
     ★HARN_DIR(격리 스크래치)만 건드린다 — guard_isolation 이 라이브 상태와의 분리를 보장한다."""
     guard_isolation()
     teardown()
-    if not _residual_zero():
+    report = residual_report()
+    if not report["clean"]:
+        # ★1.1.13: 종전엔 FATAL 한 줄뿐이라 4항목 중 무엇이 거짓인지 러너 로그로 가릴 수 없었다(v1.1.12 태그 런 2회).
+        residual_diag(report)
         die("격리 정리 미확인 — 상태 삭제/새 데몬 기동 거부")
     _wipe_daemon_state()
     import shutil as _sh

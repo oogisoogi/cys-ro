@@ -435,25 +435,21 @@ jobs:
         if: matrix.target == 'aarch64-apple-darwin'
         run: |
           set -euo pipefail
-          # ★1.1.12(v1.1.11 태그 런 42123965385 적색): macOS 러너 TMPDIR 는 /var/…(= /private/var 별칭)이라 phoenix 하네스가
-          #   aliased_harness_root 로 거부한다(javis_phoenix_harness.py:166 · 하네스 홈 = tempfile.mkdtemp) → 정규 경로로 바꿔 둔다(CI 만).
-          export TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
-          # ★v116-flake-pty ⑶: 팩 임시 폴더를 한 루트 아래 모으고 스텝이 어떻게 끝나든 지운다.
-          #   macOS `mktemp -d`(템플릿 없음)는 TMPDIR 를 무시하고 사용자 임시 폴더에 tmp.* 를 남긴다 —
-          #   로컬 gate_runner 재실행마다 잔재가 쌓였다. trap 은 실패하지 않는다(set -e 아래 rm 실패가
-          #   초록 스텝을 붉히지 않게 · 정리 실패는 경고 1줄).
+          # ★1.1.14(TICKET=cysr-1113-release · v1.1.13 태그 런 42160662015 적색): 파이썬 phoenix 부분 = 한 정의
+          #   scripts/ci/phoenix-host-gate.sh(ci-branch `phoenix-host-gate` 잡도 같은 파일만 부른다 · 레인 대조 =
+          #   scripts/tests/test_phoenix_host_gate_lane.py). 정규화 TMPDIR(/private/var/…)은 그 스크립트의 파이썬 루프
+          #   서브셸 안에만 걸린다 — v1.1.12 수리(b95e54ff)가 이 스텝 머리에서 export 해 아래 `cargo test --bin cys`
+          #   시험 3건(src/bin/cys.rs 소켓 경로 8바이트 증가 → SUN_LEN)까지 붉혔다. 아래 cargo 줄은 러너 기본 TMPDIR 그대로다.
+          # ★글롭은 여기(워크플로 문면)에 둔다 — 레인 대조 스캐너가 `test_phoenix_` 토큰을 워크플로에서 읽는다.
+          bash scripts/ci/phoenix-host-gate.sh cysjavis-pack/bin/tests/test_phoenix_*.py
+          # ↓ cargo 시험 3줄의 환경 = 종전 이 스텝과 같다(TMPDIR 만 정규화 없음) — 팩 임시 루트·debug 바이너리 PATH·PHOENIX_*.
+          #   (cysd 줄은 C8 재고 계약상 이 run 본문에 직접 있어야 한다 — scripts/tests/test_c8_ci_consumer.py GATED_CYSD_LEGS)
+          # ★v116-flake-pty ⑶: 팩 임시 폴더를 한 루트 아래 모으고 스텝이 어떻게 끝나든 지운다(정리 실패는 경고 1줄).
           CYS_TMP="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/cys-pack.XXXXXX")"
           trap 'rm -rf "${CYS_TMP:?}" 2>/dev/null || { chmod -R u+w "${CYS_TMP:?}" 2>/dev/null; rm -rf "${CYS_TMP:?}" || echo "::warning::임시 팩 폴더 정리 실패: ${CYS_TMP}"; }' EXIT
-          cargo build --bin cys --bin cysd
           export PHOENIX_HARNESS_CYSD="$PWD/target/debug/cysd"
           export PATH="$PWD/target/debug:$PATH"
           export PHOENIX_CYS="$PWD/target/debug/cys"
-          # ★커밋된 phoenix 테스트 전건 실행(glob) — 하드코딩 리스트는 신규 웨이브 테스트(w2/w3/c6/as3 …)를 조용히
-          #   누락시키는 위험이 있어 tests/ 디렉터리를 스캔한다(정직성: 게이트가 실제 커밋 테스트 전부를 돈다).
-          for t in cysjavis-pack/bin/tests/test_phoenix_*.py; do
-            echo "== phoenix test: $(basename "$t") =="
-            CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" python3 "$t"
-          done
           # Rust auto-restore 단위(재시도 seam·env 주입·B1·B3) + pack 소유권(B2).
           # ★--skip hwmon:: — hwmon 테스트는 실 GPU 전제(gpu.cores>0 단언)라 가상 러너에서 환경 FAIL
           #   (v0.12.21 release run 28792111282 실증 — phoenix 게이트와 무관한 host 하드웨어 의존).

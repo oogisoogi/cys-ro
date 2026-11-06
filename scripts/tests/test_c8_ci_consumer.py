@@ -381,6 +381,10 @@ class ReaderFixture(unittest.TestCase):
         (self.root / "scripts").mkdir()
         for name in ["c8_native_measurement.py", "c8_native_names.py", "c8_native_tests.json"]:
             shutil.copyfile(ROOT / "scripts" / name, self.root / "scripts" / name)
+        # release 「phoenix host-level 로직 게이트」 run 본문이 부르는 phoenix 파이썬 부분의 한 정의(1.1.14 · TICKET=cysr-1113-release).
+        # 이 본문을 실행하는 시험(test_release_cargo_capture_…)이 같은 파일을 쓰게 한다 — 판정 로직 무변경 · 고정물 복사만.
+        (self.root / "scripts/ci").mkdir()
+        shutil.copyfile(ROOT / "scripts/ci/phoenix-host-gate.sh", self.root / "scripts/ci/phoenix-host-gate.sh")
         self.bin = self.root / "bin"
         self.bin.mkdir()
         for name in ["python", "python3"]:

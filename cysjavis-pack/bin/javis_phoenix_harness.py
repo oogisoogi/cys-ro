@@ -914,17 +914,20 @@ def residual_diag(report, out=None):
           "counters": {k: report.get(k) for k in _cleanup_counts},
           "sock": {"path": HARN_SOCK, "bytes": len(os.fsencode(HARN_SOCK)), "max": _SUN_PATH_MAX,
                    "exists": os.path.exists(HARN_SOCK)}}
+    endpoint = None
     try:
-        _harness_paths()
+        endpoint, _ = _harness_paths()
         ev["paths"] = "ok"
     except _HarnessError as e:
         ev["paths"] = str(e)
-    if os.name != "nt":
+    if endpoint is None:
+        ev["connect"] = "skipped:paths_refused"  # 경계가 거부한 소켓은 진단도 접촉하지 않는다(codex 1R major)
+    elif os.name != "nt":
         try:
             s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
             try:
                 s.settimeout(_CLOSE_TIMEOUT)
-                s.connect(HARN_SOCK)
+                s.connect(endpoint)
                 ev["connect"] = "connected"
             finally:
                 s.close()

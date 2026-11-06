@@ -34,6 +34,31 @@ elif mode == "paths":
         print(str(e))
 elif mode == "guard":
     h.guard_isolation(); print("guard-passed")
+elif mode == "bounds":
+    out = {}
+    for lim in (103, 107):
+        h._SUN_PATH_MAX = lim
+        out[str(lim)] = [h._sock_path_fits("/" + "a" * (lim - 2)), h._sock_path_fits("/" + "a" * (lim - 1)),
+                         h._sock_path_fits("/" + "a" * lim),
+                         h._sock_path_fits("/" + "가" * ((lim + 2) // 3))]  # 글자 수는 짧아도 바이트는 상한 초과
+    print(json.dumps(out))
+elif mode == "diag_refused":
+    import socket as _s
+    calls = []
+    class _Spy:
+        def __init__(self, *a, **k): calls.append("socket")
+        def settimeout(self, t): pass
+        def connect(self, p): calls.append("connect")
+        def close(self): pass
+    h._socket.socket = _Spy
+    for reason in ("aliased_harness_root", "socket_outside_harness", "live_overlap"):
+        def _refuse(endpoint=None, _r=reason):
+            raise h._HarnessError(_r)
+        h._harness_paths = _refuse
+        buf = io.StringIO()
+        ev = h.residual_diag({"clean": False}, out=buf)
+        print(json.dumps({"reason": reason, "paths": ev["paths"], "connect": ev.get("connect"), "calls": calls}))
+        calls.clear()
 elif mode == "diag":
     buf = io.StringIO()
     ev = h.residual_diag(h.residual_report(), out=buf)
@@ -97,6 +122,30 @@ class SockPath(unittest.TestCase):
         os.makedirs(home)
         r = self._run("paths", PHOENIX_HARNESS_HOME=home)
         self.assertEqual(r.stdout.strip(), "socket_path_too_long", r.stderr)
+
+    def test_5_exact_byte_boundary(self):
+        import json
+        home = os.path.realpath(tempfile.mkdtemp(prefix="phoenix-harn-home-", dir=os.path.realpath("/tmp")))
+        self.made.append(home)
+        r = self._run("bounds", PHOENIX_HARNESS_HOME=home)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        d = json.loads(r.stdout)
+        # 상한-1 · 상한 = 허용 / 상한+1 · 다중바이트 초과 = 거부 (비교 방향 <= 와 상한 값을 잠근다)
+        self.assertEqual(d["103"], [True, True, False, False], d)
+        self.assertEqual(d["107"], [True, True, False, False], d)
+
+    def test_6_diag_never_touches_refused_endpoint(self):
+        import json
+        home = os.path.realpath(tempfile.mkdtemp(prefix="phoenix-harn-home-", dir=os.path.realpath("/tmp")))
+        self.made.append(home)
+        r = self._run("diag_refused", PHOENIX_HARNESS_HOME=home)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rows = [json.loads(l) for l in r.stdout.splitlines() if l.startswith("{")]
+        self.assertEqual(len(rows), 3, r.stdout)
+        for row in rows:
+            self.assertEqual(row["paths"], row["reason"], row)
+            self.assertEqual(row["connect"], "skipped:paths_refused", row)
+            self.assertEqual(row["calls"], [], row)
 
     def test_4_diag_carries_verdict_and_sock_length(self):
         import json

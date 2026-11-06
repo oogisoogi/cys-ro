@@ -44240,7 +44240,9 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
     #[test]
     fn request_on_timeout_terminates_on_hung_socket() {
         use std::time::{Duration, Instant};
-        let dir = std::env::temp_dir().join(format!(
+        // ★1.1.14(TICKET=cysr-1113-release): 소켓 디렉터리 뿌리 = /tmp(temp_dir() 아님) — 정규화된 macOS TMPDIR(/private/var/folders/…/T)
+        //   에서는 이 경로가 sun_path 상한(104B)을 넘어 bind 가 SUN_LEN 으로 실패했다(v1.1.13 태그 런 42160662015). 아래 같은 꼴 시험들과 같은 규약.
+        let dir = std::path::Path::new("/tmp").join(format!(
             "cys-u6-hung-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
@@ -44284,7 +44286,8 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         use std::sync::{Arc, Mutex};
         use std::time::Duration;
         let run = |screens: Vec<&'static str>| -> (Result<(), String>, Vec<String>) {
-            let dir = std::env::temp_dir().join(format!(
+            // ★1.1.14(TICKET=cysr-1113-release): 소켓 디렉터리 뿌리 = /tmp — 정규화 TMPDIR 에서 sun_path 상한 초과(SUN_LEN · v1.1.13 태그 런).
+            let dir = std::path::Path::new("/tmp").join(format!(
                 "cys-r2-inject-{}-{}",
                 std::process::id(),
                 std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
@@ -44837,7 +44840,8 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
     #[test]
     fn no_deadline_means_no_bound_instrument_validity() {
         use std::time::{Duration, Instant};
-        let dir = std::env::temp_dir().join(format!(
+        // ★1.1.14(TICKET=cysr-1113-release): 소켓 디렉터리 뿌리 = /tmp — 정규화 TMPDIR 에서 sun_path 상한 초과(SUN_LEN · v1.1.13 태그 런).
+        let dir = std::path::Path::new("/tmp").join(format!(
             "cys-u6-nobound-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()

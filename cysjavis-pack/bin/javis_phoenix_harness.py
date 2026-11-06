@@ -91,9 +91,32 @@ LIVE_SOCK = os.path.join(LIVE_STATE, "cys.sock")
 #   종전엔 데몬이 부른 쪽 HOME 을 물려받아 첫 기동 팩 설치를 `$HOME/.cys/pack` 에 깔았다(개발 맥 = 실 홈 · CI·순차 실행 =
 #   같은 HOME 을 쓰는 다음 시험(f1 = `$HOME/.cys/pack/agents.json` 을 읽는다)이 그 팩을 보고 58/63). 실 홈(LIVE_*)은 보호 대상이라
 #   그대로 실 HOME 에 둔다. `PHOENIX_HARNESS_HOME` 으로 고정 가능(여러 프로세스가 같은 하네스 데몬을 공유할 때).
-# ★1.1.13 진단: 유닉스 소켓 경로 상한(sun_path · NUL 뺀 바이트) — residual_diag 가 소켓 길이와 함께 남긴다.
-_SUN_PATH_MAX = 103 if (sys.platform == "darwin" or "bsd" in sys.platform) else 107
-HARN_HOME = os.environ.get("PHOENIX_HARNESS_HOME") or tempfile.mkdtemp(prefix="phoenix-harn-home-")
+# ★1.1.13(v1.1.12 태그 런 42135725605 arm64 적색 · TICKET=cysr-1113-phoenix-residual): 유닉스 소켓 경로는 커널 상한이 있다
+#   (sockaddr_un.sun_path = macOS·BSD 104바이트 · 리눅스 108바이트, 끝의 NUL 포함). 러너 TMPDIR 를 정규 경로로 바꾸면
+#   (`/private/var/folders/<2>/<28>/T` · release.yml 1.1.12 수리) 하네스 소켓이 111바이트가 되어 connect 가
+#   `AF_UNIX path too long`(errno 없음)으로 실패하고 → transport_error → endpoint_unobserved → `_fresh_harness` FATAL 이었다
+#   (로컬 같은 길이 결정적 재현 · 짧은 경로 = clean). 그래서 하네스가 **스스로 고른** 임시 홈이 상한을 넘으면 정규 `/tmp`
+#   아래로 다시 고른다(격리·별칭 검사는 그대로 · 명시한 PHOENIX_HARNESS_HOME 은 바꾸지 않고 `_harness_paths` 가 고정 사유로 거부).
+_SUN_PATH_MAX = 103 if (sys.platform == "darwin" or "bsd" in sys.platform) else 107  # NUL 뺀 바이트
+_HARN_SOCK_TAIL = os.path.join(".cys", "state-harness", "cys.sock")
+
+
+def _sock_path_fits(path):
+    return len(os.fsencode(path)) <= _SUN_PATH_MAX
+
+
+def _pick_harness_home():
+    home = os.environ.get("PHOENIX_HARNESS_HOME")
+    if home:
+        return home
+    home = tempfile.mkdtemp(prefix="phoenix-harn-home-")
+    if os.name != "nt" and not _sock_path_fits(os.path.join(home, _HARN_SOCK_TAIL)):
+        os.rmdir(home)  # 방금 만든 빈 폴더만
+        home = tempfile.mkdtemp(prefix="phoenix-harn-home-", dir=os.path.realpath("/tmp"))
+    return home
+
+
+HARN_HOME = _pick_harness_home()
 HARN_DIR = os.path.join(HARN_HOME, ".cys", "state-harness")
 HARN_SOCK = os.path.join(HARN_DIR, "cys.sock")
 # ★하네스 데몬의 **상태 디렉터리**(원장·표식). 소켓만 격리하면 여기가 라이브로 떨어진다 —
@@ -182,6 +205,9 @@ def _harness_paths(endpoint=None):
         expected = os.path.join(root, "cys.sock")
         if os.path.realpath(endpoint) != expected:
             raise _HarnessError("socket_outside_harness")
+        if not _sock_path_fits(expected):
+            # connect 의 errno 없는 OSError 가 transport_error 로 뭉개지지 않게 고정 사유로 먼저 거부한다.
+            raise _HarnessError("socket_path_too_long")
         state = os.path.dirname(endpoint)
     token = os.path.join(state, "operator.token")
     for path in (state, HARN_STATE, token):
@@ -435,6 +461,10 @@ def guard_isolation():
     """격리 경로가 라이브 상태 디렉터리와 겹치지 않는지 하드 가드 — 겹치면 즉시 중단.
     ★C5/P1-10(W3): 라이브 상태/소켓을 타깃하는 것은 **CYS_PHOENIX_ALLOW_LIVE=1 명시 opt-in** 이 있을 때만
     허용한다(없으면 LIVE write 거부). 하네스는 격리가 기본이며, 라이브 접촉은 사고가 아니라 의도된 예외여야 한다."""
+    if os.name != "nt" and not _sock_path_fits(HARN_SOCK):
+        # ★1.1.13: 상한 초과 소켓은 데몬 bind·우리 connect 가 모두 실패한다 — 잔여 판정 FATAL 로 둔갑하기 전에 사유로 멈춘다.
+        die("하네스 소켓 경로 %d바이트 > 유닉스 소켓 상한 %d바이트 — %s (PHOENIX_HARNESS_HOME/TMPDIR 를 짧은 정규 경로로)"
+            % (len(os.fsencode(HARN_SOCK)), _SUN_PATH_MAX, HARN_SOCK))
     hd = os.path.realpath(HARN_DIR)
     ls = os.path.realpath(LIVE_STATE)
     allow_live = os.environ.get("CYS_PHOENIX_ALLOW_LIVE") == "1"

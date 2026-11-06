@@ -37,7 +37,15 @@ NORM_TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
 #   로컬 gate_runner 재실행마다 잔재가 쌓였다. trap 은 실패하지 않는다(set -e 아래 rm 실패가
 #   초록을 붉히지 않게 · 정리 실패는 경고 1줄). 루트 = 종전 스텝과 같은 값(RUNNER_TEMP 우선 · 없으면 정규 TMPDIR).
 CYS_TMP="$(mktemp -d "${RUNNER_TEMP:-$NORM_TMPDIR}/cys-pack.XXXXXX")"
-trap 'rm -rf "${CYS_TMP:?}" 2>/dev/null || { chmod -R u+w "${CYS_TMP:?}" 2>/dev/null; rm -rf "${CYS_TMP:?}" || echo "::warning::임시 팩 폴더 정리 실패: ${CYS_TMP}"; }' EXIT
+# ★정리는 rc 를 바꾸지 않는다(codex 1R major): 진입 rc 를 먼저 잡고 set -e 를 끈 채 지운 뒤 그 rc 로 끝낸다 —
+#   종전 trap 은 chmod 실패가 set -e 를 당겨 재시도·경고를 건너뛰고 시험 rc(0·7 …)를 덮어썼다.
+cleanup() {
+  local rc=$?
+  set +e
+  rm -rf "${CYS_TMP:?}" 2>/dev/null || { chmod -R u+w "${CYS_TMP:?}" 2>/dev/null; rm -rf "${CYS_TMP:?}" 2>/dev/null || echo "::warning::임시 팩 폴더 정리 실패: ${CYS_TMP}"; }
+  exit "$rc"
+}
+trap cleanup EXIT
 
 cargo build --bin cys --bin cysd
 export PHOENIX_HARNESS_CYSD="$PWD/target/debug/cysd"
@@ -49,6 +57,9 @@ export PHOENIX_CYS="$PWD/target/debug/cys"
   export TMPDIR="$NORM_TMPDIR"
   for t in "$@"; do
     echo "== phoenix test: $(basename "$t") =="
-    CYS_PACK_DIR="$(mktemp -d "$CYS_TMP/p.XXXXXX")" python3 "$t"
+    # ★할당을 따로 둔다(codex 1R major): `CYS_PACK_DIR="$(mktemp …)" python3` 꼴은 python3 의 rc 만 남겨
+    #   mktemp 실패가 빈 CYS_PACK_DIR 로 시험을 돌리고도 초록이 됐다 — 이제 set -e 가 그 자리에서 끊는다.
+    pack_dir="$(mktemp -d "$CYS_TMP/p.XXXXXX")"
+    CYS_PACK_DIR="$pack_dir" python3 "$t"
   done
 )

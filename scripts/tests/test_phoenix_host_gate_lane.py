@@ -109,7 +109,14 @@ class Behaviour(unittest.TestCase):
         bin_.mkdir()
         (bin_ / "cargo").write_text('#!/bin/sh\nprintf "cargo %s|TMPDIR=%s\\n" "$1" "$TMPDIR" >> "$CALLS"\nexit 0\n', encoding="utf-8")
         (bin_ / "python3").write_text('#!/bin/sh\nprintf "python3 %s|TMPDIR=%s\\n" "$(basename "$1")" "$TMPDIR" >> "$CALLS"\n'
+                                      'printf "env %s|%s|%s|%s\\n" "$CYS_PACK_DIR" "$PHOENIX_HARNESS_CYSD" "$PHOENIX_CYS" "${PATH%%:*}" >> "$CALLS"\n'
+                                      '[ -d "$CYS_PACK_DIR" ] || exit 99\n'
                                       'case "$1" in *"$FAIL_ON"*) exit 7;; esac\nexit 0\n', encoding="utf-8")
+        # 실패 주입용 대역(기본은 꺼짐 — 각 시험이 env 로 켠다): 시험별 팩 mktemp 실패 · 정리(rm/chmod) 실패
+        (bin_ / "mktemp").write_text('#!/bin/sh\ncase "$*" in *"/p.XXXXXX"*) [ -n "$FAIL_PACK_MKTEMP" ] && exit 42;; esac\n'
+                                     'exec /usr/bin/mktemp "$@"\n', encoding="utf-8")
+        for tool in ("rm", "chmod"):
+            (bin_ / tool).write_text('#!/bin/sh\n[ -n "$FAIL_CLEANUP" ] && exit 1\nexec /bin/%s "$@"\n' % tool, encoding="utf-8")
         for f in bin_.iterdir():
             f.chmod(0o755)
         self.env = {"PATH": str(bin_) + ":/usr/bin:/bin", "HOME": str(real), "TMPDIR": self.alias,
@@ -132,6 +139,19 @@ class Behaviour(unittest.TestCase):
         py = [c for c in calls if c.startswith("python3 ")]
         self.assertEqual([c.split("|")[0] for c in py], ["python3 test_phoenix_a.py", "python3 test_phoenix_b.py"])
         self.assertTrue(all(c.endswith("|TMPDIR=" + self.norm) for c in py), py)
+        build = [c for c in calls if c.startswith("cargo build")]
+        self.assertEqual(build, ["cargo build|TMPDIR=" + self.alias], "debug 빌드도 부른 쪽 TMPDIR 로 돈다(정규화는 파이썬 루프만)")
+        envs = [c[len("env "):].split("|") for c in calls if c.startswith("env ")]
+        self.assertEqual(len(envs), 2, calls)
+        packs = [e[0] for e in envs]
+        self.assertEqual(len(set(packs)), 2, "시험마다 새 CYS_PACK_DIR")
+        for pack, cysd, cys, first in envs:
+            self.assertTrue(pack.startswith(str(self.rt) + "/cys-pack."), pack)
+            self.assertEqual(cysd, str(self.root / "target/debug/cysd"))
+            self.assertEqual(cys, str(self.root / "target/debug/cys"))
+            self.assertEqual(first, str(self.root / "target/debug"), "debug 바이너리가 PATH 맨 앞")
+        self.assertFalse([p for p in packs if os.path.exists(p)], "스크립트 끝에 시험별 팩 폴더가 남았다")
+        self.assertFalse(list(self.rt.glob("cys-pack.*")), "임시 팩 루트 잔해")
         tests = [c for c in calls if c.startswith("cargo test")]
         self.assertEqual(len(tests), 3, calls)
         self.assertTrue(all(c.endswith("|TMPDIR=" + self.alias) for c in tests),
@@ -143,6 +163,26 @@ class Behaviour(unittest.TestCase):
         self.assertEqual(r.returncode, 7, r.stdout + r.stderr)
         self.assertFalse([c for c in calls if c.startswith("cargo test")], calls)
         self.assertFalse([c for c in calls if "test_phoenix_b.py" in c], "실패 뒤 다음 시험으로 넘어가면 안 된다")
+
+    def run_script(self, **extra):
+        self.calls.unlink(missing_ok=True)
+        r = subprocess.run([BASH, SCRIPT, "cysjavis-pack/bin/tests/test_phoenix_a.py", "cysjavis-pack/bin/tests/test_phoenix_b.py"],
+                           cwd=self.root, env=dict(self.env, **extra), capture_output=True, text=True, timeout=60)
+        return r, (self.calls.read_text().splitlines() if self.calls.exists() else [])
+
+    def test_pack_mktemp_failure_stops_the_gate_before_any_python(self):
+        # codex 1R major: 종전 `CYS_PACK_DIR="$(mktemp …)" python3` 은 mktemp 실패를 삼키고 rc 0 이었다
+        r, calls = self.run_script(FAIL_PACK_MKTEMP="1")
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse([c for c in calls if c.startswith("python3 ")], calls)
+
+    def test_cleanup_failure_keeps_the_gate_rc_and_warns(self):
+        # codex 1R major: 종전 trap 은 chmod 실패가 set -e 를 당겨 rc 를 덮었다(0·7 → 9)
+        for fail_on, want in (("__none__", 0), ("test_phoenix_a.py", 7)):
+            with self.subTest(want=want):
+                r, _ = self.run_script(FAIL_CLEANUP="1", FAIL_ON=fail_on)
+                self.assertEqual(r.returncode, want, r.stdout + r.stderr)
+                self.assertIn("::warning::임시 팩 폴더 정리 실패", r.stdout + r.stderr)
 
     def test_script_refuses_no_args_and_an_unmatched_glob(self):
         for args in ([], ["cysjavis-pack/bin/tests/test_phoenix_zzz*.py"]):

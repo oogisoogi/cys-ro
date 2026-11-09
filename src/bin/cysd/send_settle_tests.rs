@@ -1672,30 +1672,83 @@ fn qps_retry_cancel_probe_refuses_on_each_broken_premise() {
     assert!(probe(), "인계 뒤 새 기계 본문");
 }
 
-/// ★(codex 2R) 결합 검체 — 마지막 재전송을 인계한 뒤 writer 가 밀리고(쓰기 전) 그 사이 기록이 닫히면 그 CR 은 쓰이지 않는다.
-/// writer 를 실제로 붙잡을 수 없으므로 탐침이 거부 쪽으로 판정하는 시점(기록 닫힘)을 인계 전에 만들고 실 writer 가 소비하게 한다.
+/// ★(codex 2R·3R) writer 결합 검체의 장벽 — 실제 `queue_retry_cancel_probe` 를 감싸 writer 가 **탐침을 부르는 순간** 알리고, 시험이 놓아 줄 때까지
+/// 그 자리에서 기다리게 한다(순서 = 채널 · sleep 에 맡기지 않는다). 놓인 뒤 실제 탐침을 그대로 위임 실행한다.
+fn barrier_refuse(
+    inner: crate::state::SafetyProbe,
+) -> (crate::state::SafetyProbe, std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+    let (resume_tx, resume_rx) = std::sync::mpsc::channel::<()>();
+    let (entered_tx, resume_rx) = (std::sync::Mutex::new(entered_tx), std::sync::Mutex::new(resume_rx));
+    let probe: crate::state::SafetyProbe = Arc::new(move || {
+        let _ = entered_tx.lock().unwrap().send(());
+        // 상한 — 시험이 실패해도 writer 스레드를 영구히 붙잡지 않는다(놓이지 않으면 쓰지 않는 쪽).
+        if resume_rx.lock().unwrap().recv_timeout(Duration::from_secs(5)).is_err() {
+            return true;
+        }
+        inner()
+    });
+    (probe, entered_rx, resume_tx)
+}
+
+/// 살아 있는 기록·우리 본문 화면에서 재전송 CR 을 실제 writer 에 인계하고, writer 가 탐침에 들어온 순간 `between` 을 실행한 뒤 놓아 준다.
+/// 반환 = (쓴 바이트 요청 수 변화, 소비 뒤 관측).
+fn hand_retry_and_mutate_mid_flight(fx: &Fx, t: &Arc<Surface>, between: impl FnOnce()) -> (u64, crate::state::SubmitSettleObs) {
+    let c = t.inject_track.submit_check().expect("전제: 살아 있는 기록");
+    let inner = crate::governance::queue_retry_cancel_probe(&fx.daemon, t, &c, vec!["❯".into()]);
+    assert!(!inner(), "전제: 인계 시점에는 쓸 수 있다(조기 거부 위양성 배제)");
+    let (refuse, entered, resume) = barrier_refuse(inner);
+    let w0 = t.inject_track.wrote();
+    t.inject_track.submit_handed();
+    assert!(
+        t.write_tx
+            .try_send(crate::state::WriteReq::SubmitAfterGap { bytes: b"\r".to_vec(), min_gap_ms: 0, withhold: None, refuse: Some(refuse) })
+            .is_ok(),
+        "인계"
+    );
+    entered.recv_timeout(Duration::from_secs(5)).expect("writer 가 탐침에 들어왔다");
+    between();
+    resume.send(()).expect("놓아 줌");
+    let o = wait_submit_consumed(t);
+    (t.inject_track.wrote() - w0, o)
+}
+
+/// ★(codex 2R R2-2 · 3R) 인계 → writer 가 탐침에서 대기 → 그 사이 기록이 닫힘(포기·기록 확인) → 재개: 그 CR 은 쓰이지 않고 보류 기록도 없다.
 #[test]
 fn qps_handed_retry_cr_not_written_after_record_closed() {
     let fx = fx("qps-closed-handed");
     let t = swallowed_seat(&fx, P + 380);
-    let c = t.inject_track.submit_check().unwrap();
-    let w0 = t.inject_track.wrote();
-    let refuse = crate::governance::queue_retry_cancel_probe(&fx.daemon, &t, &c, vec!["❯".into()]);
-    let _ = t.inject_track.take_submit_check_if(c.armed_at); // 포기·기록 확인으로 닫힘
-    t.inject_track.submit_handed();
-    t.write_tx
-        .try_send(crate::state::WriteReq::SubmitAfterGap {
-            bytes: b"\r".to_vec(),
-            min_gap_ms: 0,
-            withhold: None,
-            refuse: Some(refuse),
-        })
-        .ok()
-        .expect("인계");
-    let o = wait_submit_consumed(&t);
-    assert_eq!(o.since_written_ms, None, "닫힌 기록의 CR 을 썼다: {o:?}");
-    assert_eq!(t.inject_track.wrote(), w0, "쓰기 0");
+    let armed_at = t.inject_track.submit_check().unwrap().armed_at;
+    let (wrote, o) = hand_retry_and_mutate_mid_flight(&fx, &t, || {
+        assert!(t.inject_track.take_submit_check_if(armed_at).is_some(), "인계 뒤 기록 닫힘");
+    });
+    assert_eq!(wrote, 0, "닫힌 기록의 CR 을 썼다");
+    assert_eq!(o.since_written_ms, None, "{o:?}");
     assert!(t.inject_track.withheld().is_none(), "거부는 보류 기록을 세우지 않는다");
+}
+
+/// ★(codex 2R R2-3 · 3R) 인계 → writer 대기 → 그 사이 승인 대기만 섬(화면은 여전히 우리 본문 · 보류 탐침이 못 보는 꼴) → 재개: CR 0 · 보류 기록 0.
+#[test]
+fn qps_handed_retry_cr_not_written_after_approval_rose() {
+    let fx = fx("qps-approval-handed");
+    let t = swallowed_seat(&fx, P + 390);
+    let (wrote, o) = hand_retry_and_mutate_mid_flight(&fx, &t, || {
+        fx.daemon.push_feed_notification("approval", "claude 승인 대기 감지", "Do you want to proceed?", Some(t.id));
+        assert!(!fx.daemon.pending_daemon_approvals(t.id).is_empty(), "인계 뒤 승인 대기");
+    });
+    assert_eq!(wrote, 0, "승인 대기 위에 CR 을 썼다 — 오승인");
+    assert_eq!(o.since_written_ms, None, "{o:?}");
+    assert!(t.inject_track.withheld().is_none(), "거부는 보류 기록을 세우지 않는다");
+}
+
+/// 양성 대조(같은 전제 · 같은 장벽): 그 사이 아무것도 바뀌지 않으면 실제 writer 가 CR 을 쓴다 — 위 두 검체가 조기 거부로 초록이 된 것이 아님.
+#[test]
+fn qps_handed_retry_cr_written_when_nothing_changed() {
+    let fx = fx("qps-handed-positive");
+    let t = swallowed_seat(&fx, P + 400);
+    let (wrote, o) = hand_retry_and_mutate_mid_flight(&fx, &t, || {});
+    assert_eq!(wrote, 1, "전제가 그대로인데 쓰지 않았다");
+    assert!(o.since_written_ms.is_some(), "{o:?}");
 }
 
 /// 배선: 실제 큐 배달(강제 배달 경로 = 같은 결판)이 Return 을 쓰면 제출 확인 기록이 선다.

@@ -7803,7 +7803,7 @@ pub(crate) fn submit_check_step(o: &SubmitCheckObs) -> SubmitCheckStep {
     Resend
 }
 
-/// 순수 — 세션 기록 한 줄이 그 본문의 user 레코드인가(대조는 공백을 모두 지운 공간에서 · 문자열 content ∨ text 조각 배열).
+/// 순수 — 세션 기록 한 줄이 그 본문의 user 레코드인가(공백을 모두 지운 공간에서 **동일** · 문자열 content ∨ text 조각 배열).
 pub(crate) fn transcript_line_is_user_with(line: &str, needle: &str) -> bool {
     if needle.is_empty() || !line.contains("\"user\"") {
         return false;
@@ -7819,7 +7819,9 @@ pub(crate) fn transcript_line_is_user_with(line: &str, needle: &str) -> bool {
         Some(Value::Array(a)) => a.iter().filter_map(|x| x.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join(""),
         _ => return false,
     };
-    text.chars().filter(|c| !c.is_whitespace()).collect::<String>().contains(needle)
+    // ★(codex 2R) **동일성**이다(부분 문자열 아님) — 프롬프트 경계(빈 입력줄)에서 붙인 본문이 그대로 제출되므로 제출 레코드의
+    //   content 는 그 본문과 공백만 다르다. contains 면 B 가 A 의 접두부·인용일 때 A 의 늦은 레코드가 B 를 제출로 닫았다.
+    text.chars().filter(|c| !c.is_whitespace()).eq(needle.chars())
 }
 
 /// IO — 세션 기록의 `offset` 뒤에 그 본문의 user 레코드가 붙었는가. 파일이 없거나 짧아졌으면(교체·잘림) None(판정 불능).
@@ -7875,7 +7877,7 @@ pub(crate) fn arm_queue_submit_check(
 
 /// ★(cysr-queued-paste-submit · codex 1R QPS-3) 재전송 Return 의 **쓰기 직전 거부 탐침**(writer 스레드 · `SubmitAfterGap::refuse`) —
 /// 관측~인계~쓰기 사이에 전제가 깨졌으면 그 CR 을 쓰지 않는다(보류 기록도 세우지 않는다 · 거부 ≠ 보류): kill-switch pause ·
-/// 좌석 등급 Off(에이전트 사망 등) · 에이전트/대화 세대 바뀜 · 새 기계 본문 · 사람 바이트 ∨ 본문 뒤 사람 입력 · 커서가 든 입력 블록이
+/// 이 CR 을 허가한 기록이 닫힘·교체됨 · 승인/관문 대기 · 좌석 등급 Off(에이전트 사망 등) · 에이전트/대화 세대 바뀜 · 새 기계 본문 · 사람 바이트 ∨ 본문 뒤 사람 입력 · 커서가 든 입력 블록이
 /// 더는 그 본문이 아님(이미 제출됐거나 누가 지웠다). 좌석·데몬 소멸·관측 패닉 = 쓰지 않는다(재전송은 선택적 행동이라 실패 방향 = 0).
 pub(crate) fn queue_retry_cancel_probe(
     daemon: &Arc<Daemon>,
@@ -7884,12 +7886,18 @@ pub(crate) fn queue_retry_cancel_probe(
     markers: Vec<String>,
 ) -> crate::state::SafetyProbe {
     let (wd, ws) = (Arc::downgrade(daemon), Arc::downgrade(s));
-    let (body_at, agent_epoch, conversation_epoch) = (c.body_at, c.agent_epoch, c.conversation_epoch);
+    let (body_at, agent_epoch, conversation_epoch, armed_at) = (c.body_at, c.agent_epoch, c.conversation_epoch, c.armed_at);
     Arc::new(move || {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let (Some(d), Some(s)) = (wd.upgrade(), ws.upgrade()) else {
                 return true;
             };
+            // ★(codex 2R) 이 CR 을 허가한 기록이 **아직 살아 있어야** 쓴다 — 인계 뒤 writer 가 밀린 사이 기록이 닫혔으면(포기·기록 확인·
+            //   사람 손·새 배달의 덮어쓰기) 이미 넘긴 CR 도 취소다. 승인·관문 대기가 인계 뒤에 섰으면 쓰지 않는다(보류 탐침은 화면 창만 본다 ·
+            //   `inject_safety_probe` ⓑ와 같은 판독 — writer 스레드 poison 관용 읽기).
+            if s.inject_track.submit_check().map(|x| x.armed_at) != Some(armed_at) || approval_or_gate_pending(&d, s.id) {
+                return true;
+            }
             if d.paused.load(Ordering::Relaxed)
                 || s.agent_epoch.load(Ordering::Acquire) != agent_epoch
                 || s.conversation_epoch.load(Ordering::Acquire) != conversation_epoch
@@ -32129,7 +32137,10 @@ mod tests {
     fn qps_transcript_line_matching() {
         use super::{transcript_line_is_user_with as m, transcript_user_since};
         let needle = crate::state::SubmitCheck::needle_of("[QPS] 큐 배달 본문 머리\n01 첫째 줄");
-        assert!(m(r#"{"type":"user","message":{"content":"[QPS] 큐  배달 본문\n머리 01 첫째 줄 더"}}"#, &needle));
+        assert!(m(r#"{"type":"user","message":{"content":"[QPS] 큐  배달 본문\n머리 01 첫째 줄"}}"#, &needle), "공백만 다르면 같은 본문");
+        // ★(codex 2R) 꼬리가 더 붙은 레코드(다른 본문 · 우리 본문이 그 접두부)는 증거가 아니다.
+        assert!(!m(r#"{"type":"user","message":{"content":"[QPS] 큐  배달 본문\n머리 01 첫째 줄 더"}}"#, &needle), "접두부 일치는 동일성이 아니다");
+        assert!(!m(r#"{"type":"user","message":{"content":"인용: [QPS] 큐 배달 본문 머리 01 첫째 줄"}}"#, &needle), "인용은 동일성이 아니다");
         assert!(m(r#"{"type":"user","message":{"content":[{"type":"text","text":"[QPS] 큐 배달 본문 머리"},{"type":"text","text":"01 첫째 줄"}]}}"#, &needle));
         assert!(!m(r#"{"type":"assistant","message":{"content":"[QPS] 큐 배달 본문 머리 01 첫째 줄"}}"#, &needle));
         assert!(!m(r#"{"type":"user","message":{"content":"다른 글"}}"#, &needle));

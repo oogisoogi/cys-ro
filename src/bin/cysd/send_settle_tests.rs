@@ -1651,8 +1651,51 @@ fn qps_retry_cancel_probe_refuses_on_each_broken_premise() {
     paint_empty_prompt(&t);
     assert!(probe(), "입력줄이 더는 그 본문이 아니다(이미 제출됐거나 지워졌다)");
     paint_folded_own(&t);
+    assert!(!probe(), "되돌리면 다시 쓴다(2)");
+    // ★(codex 2R) 인계 뒤 승인 대기가 섰다(화면은 아직 우리 본문) — 보류 탐침은 화면 창만 보므로 이 탐침이 막아야 한다.
+    fx.daemon.push_feed_notification("approval", "claude 승인 대기 감지", "Do you want to proceed?", Some(t.id));
+    assert!(probe(), "인계 뒤 승인 대기");
+    for id in fx.daemon.pending_daemon_approvals(t.id) {
+        let _ = fx.daemon.resolve_feed_item(&id, "allow");
+    }
+    assert!(fx.daemon.pending_daemon_approvals(t.id).is_empty(), "전제: 승인 대기 해소");
+    assert!(!probe(), "되돌리면 다시 쓴다(3)");
+    // ★(codex 2R) 이 CR 을 허가한 기록이 닫혔다(포기·기록 확인 등) — 이미 인계한 CR 도 쓰지 않는다.
+    let gone = t.inject_track.take_submit_check_if(c.armed_at);
+    assert!(gone.is_some());
+    assert!(probe(), "기록이 닫힌 뒤의 CR");
+    // 새 배달이 기록을 덮어써도(다른 armed_at) 옛 CR 은 쓰지 않는다.
+    std::thread::sleep(Duration::from_millis(2));
+    crate::governance::arm_queue_submit_check(&t, QPS_BODY, Some(99), "q-test.next", None);
+    assert!(probe(), "다른 기록으로 바뀐 뒤의 옛 CR");
     t.inject_track.note_body("다른 기계 본문", None);
     assert!(probe(), "인계 뒤 새 기계 본문");
+}
+
+/// ★(codex 2R) 결합 검체 — 마지막 재전송을 인계한 뒤 writer 가 밀리고(쓰기 전) 그 사이 기록이 닫히면 그 CR 은 쓰이지 않는다.
+/// writer 를 실제로 붙잡을 수 없으므로 탐침이 거부 쪽으로 판정하는 시점(기록 닫힘)을 인계 전에 만들고 실 writer 가 소비하게 한다.
+#[test]
+fn qps_handed_retry_cr_not_written_after_record_closed() {
+    let fx = fx("qps-closed-handed");
+    let t = swallowed_seat(&fx, P + 380);
+    let c = t.inject_track.submit_check().unwrap();
+    let w0 = t.inject_track.wrote();
+    let refuse = crate::governance::queue_retry_cancel_probe(&fx.daemon, &t, &c, vec!["❯".into()]);
+    let _ = t.inject_track.take_submit_check_if(c.armed_at); // 포기·기록 확인으로 닫힘
+    t.inject_track.submit_handed();
+    t.write_tx
+        .try_send(crate::state::WriteReq::SubmitAfterGap {
+            bytes: b"\r".to_vec(),
+            min_gap_ms: 0,
+            withhold: None,
+            refuse: Some(refuse),
+        })
+        .ok()
+        .expect("인계");
+    let o = wait_submit_consumed(&t);
+    assert_eq!(o.since_written_ms, None, "닫힌 기록의 CR 을 썼다: {o:?}");
+    assert_eq!(t.inject_track.wrote(), w0, "쓰기 0");
+    assert!(t.inject_track.withheld().is_none(), "거부는 보류 기록을 세우지 않는다");
 }
 
 /// 배선: 실제 큐 배달(강제 배달 경로 = 같은 결판)이 Return 을 쓰면 제출 확인 기록이 선다.

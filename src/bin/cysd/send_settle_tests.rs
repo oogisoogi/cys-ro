@@ -1453,6 +1453,7 @@ fn c7d_withheld_return_is_not_resubmitted_after_a_foreign_count_write() {
 // 【재현 모형】 큐 인계는 본문 → 400ms → Return 한 번이다. TUI 가 붙여넣기 처리를 늦게 끝내면 Return 이 빈 줄을 누르고 본문은
 // `[Pasted text #N +M lines]` 로 입력줄에 미제출로 남는다(윈 dept-1 11-09 · 벤더 #28137). 검체는 그 **뒤의 화면**(입력줄 = 우리
 // 본문의 접힘 자리표시)을 직접 그리고, 결판이 세운 기록으로 watchdog 틱 함수를 구동한다. 시계는 `now` 를 앞당겨 싣는다.
+// 윈도우에서도 돈다(현장 결함이 윈도우다) — 같은 좌석 픽스처의 f1_plain_composer_submit_is_written 등 20건이 윈도우 CI 에서 도는 것과 같은 조건.
 
 const QPS_BODY: &str = "[QPS] 큐 배달 본문 머리\n01 첫째 줄\n02 둘째 줄\n03 셋째 줄";
 
@@ -1483,7 +1484,6 @@ fn step_at(fx: &Fx, t: &Arc<Surface>, base: Instant, ms: u64) -> &'static str {
 /// 그래도 남으면 `queue.submit_unconfirmed` **정확히 1건** 뒤 기록을 닫는다(이후 틱은 쓰기 0 = 폭주 0 · 종전 보류로 복귀).
 /// 종전: 기록·재시도가 없어 그 좌석 큐 전체가 사람 Enter 를 기다리다 TTL 에 만료됐다.
 #[test]
-#[cfg_attr(not(unix), ignore = "S21 제출 정착·창 위 CR 보류는 유닉스 한정(send_settle_applies)")]
 fn qps_swallowed_queue_return_retried_three_times_then_alerts_once() {
     let fx = fx("qps-retry");
     let t = swallowed_seat(&fx, P + 300);
@@ -1523,7 +1523,6 @@ fn qps_swallowed_queue_return_retried_three_times_then_alerts_once() {
 
 /// 재시도 뒤 입력줄이 비면(제출됨) 기록을 닫고 `queue.submit_recovered` 1건 — 더 쓰지 않는다.
 #[test]
-#[cfg_attr(not(unix), ignore = "S21 제출 정착·창 위 CR 보류는 유닉스 한정(send_settle_applies)")]
 fn qps_retry_recovers_when_line_empties() {
     let fx = fx("qps-recover");
     let t = swallowed_seat(&fx, P + 310);
@@ -1541,7 +1540,6 @@ fn qps_retry_recovers_when_line_empties() {
 /// 정상 배달(Return 이 먹히지 않음): 입력줄이 비어 있으면 정착 창(6초) 뒤 **조용히** 닫는다 — 이벤트 0 · 쓰기 0.
 /// 정착 창 안의 빈 줄로는 닫지 않는다(먹힌 Return 뒤 붙여넣기가 늦게 그려지는 창).
 #[test]
-#[cfg_attr(not(unix), ignore = "S21 제출 정착·창 위 CR 보류는 유닉스 한정(send_settle_applies)")]
 fn qps_normal_delivery_closes_silently_after_settle() {
     let fx = fx("qps-normal");
     let t = swallowed_seat(&fx, P + 320);
@@ -1560,7 +1558,6 @@ fn qps_normal_delivery_closes_silently_after_settle() {
 /// 음성 대조(실례 ③ — 오너가 직접 붙인 글): 사람 손이 닿은 줄에는 쓰지 않고 기록을 닫는다.
 /// kill-switch pause 중에는 쓰지도 닫지도 않는다(기록 유지).
 #[test]
-#[cfg_attr(not(unix), ignore = "S21 제출 정착·창 위 CR 보류는 유닉스 한정(send_settle_applies)")]
 fn qps_yields_to_human_and_pause() {
     let fx = fx("qps-human");
     let t = swallowed_seat(&fx, P + 330);
@@ -1578,7 +1575,6 @@ fn qps_yields_to_human_and_pause() {
 
 /// 세션 기록(user 레코드)이 이미 제출을 말하면 화면이 낡아 우리 본문으로 보여도 쓰지 않는다(판정원 = 기록 · 화면 ≠ 제출).
 #[test]
-#[cfg_attr(not(unix), ignore = "S21 제출 정착·창 위 CR 보류는 유닉스 한정(send_settle_applies)")]
 fn qps_transcript_user_record_vetoes_resend() {
     let fx = fx("qps-transcript");
     let t = agent_pane_settled(&fx, "worker-1", P + 340);
@@ -1600,7 +1596,6 @@ fn qps_transcript_user_record_vetoes_resend() {
 
 /// 배선: 실제 큐 배달(강제 배달 경로 = 같은 결판)이 Return 을 쓰면 제출 확인 기록이 선다.
 #[test]
-#[cfg_attr(not(unix), ignore = "S21 제출 정착·창 위 CR 보류는 유닉스 한정(send_settle_applies)")]
 fn qps_queue_delivery_arms_submit_check() {
     let fx = fx("qps-arm");
     let t = agent_pane_settled(&fx, "worker-1", P + 350);

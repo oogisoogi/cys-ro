@@ -22634,7 +22634,10 @@ mod tests {
             //   and LOWERS the exempt marker (`take_esc_exempt`, as `deliver_head_locked` does); its failed hand-off restores
             //   count and marker together (`restore_esc_exempt`, the rollback rule). A re-hold restores both in `hold_partial_write`.
             // ★1.1.11 편입: 우리 +2 clear(적대 R2 F2 · 에이전트 사망 시 미제출 계수 비움 등 · 1.1.10 값 3) 를 원작자 값 위에 더한다.
-            ("governance", 6, 4, 1),
+            // ★(cysr-queued-paste-submit) +1 apply: `recheck_queue_submit_one` — 먹힌 큐 Return 의 재전송은 보류 CR 재제출
+            //   (`resubmit_withheld_one` · 종전 1)과 같은 꼴(Return 한 바이트 · InputOrigin::Machine · input_gate 안 인계 직후)이다.
+            //   본문은 큐 인계 때 이미 계상됐고(set 0) 이 CR 은 계수를 0 으로 다시 확인할 뿐이라 면제 표식 규칙은 종전 재제출과 같다.
+            ("governance", 6, 4, 2),
             // ★(0.14.52 · S-a C5b) +1 clear, +1 apply: the direct agent write's settlement (`DirectSettle::run`) applies the
             //   SAME clear-first reset / accepted-bytes step the handler applied at hand-off - moved to after the terminal.
             ("handlers", 0, 2, 3),
@@ -33484,6 +33487,8 @@ mod tests {
             "cursor_col", "after_cursor_dim", "alt_screen", "human_idle_secs", "layout_why",
             // ★(1.1.11 · win-qstarved-ctrl-bytes) 다시 그리기 미발화 사유 다섯.
             "repaint_knob_off", "rows_too_small", "repaint_unresolved", "nudge_ineligible", "repaint_last_obs",
+            // ★(cysr-queued-paste-submit) 입력줄 잔여가 데몬 마지막 배달 본문인가(처방 3′행의 재료 · 추가형).
+            "composer_machine_body",
         ]
         .into_iter()
         .collect();

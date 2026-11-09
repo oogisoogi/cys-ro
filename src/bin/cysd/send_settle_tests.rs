@@ -1447,3 +1447,177 @@ fn c7d_withheld_return_is_not_resubmitted_after_a_foreign_count_write() {
     assert_eq!(settle_obs(&t).since_written_ms, None, "resubmitted over a foreign count write");
     assert!(named(&fx, "queue.submit_resubmitted").is_empty());
 }
+
+// ═══════════ ★(cysr-queued-paste-submit) 큐 배달 Return 이 먹힌 뒤의 제출 확인 · 상한 있는 재시도 ═══════════
+//
+// 【재현 모형】 큐 인계는 본문 → 400ms → Return 한 번이다. TUI 가 붙여넣기 처리를 늦게 끝내면 Return 이 빈 줄을 누르고 본문은
+// `[Pasted text #N +M lines]` 로 입력줄에 미제출로 남는다(윈 dept-1 11-09 · 벤더 #28137). 검체는 그 **뒤의 화면**(입력줄 = 우리
+// 본문의 접힘 자리표시)을 직접 그리고, 결판이 세운 기록으로 watchdog 틱 함수를 구동한다. 시계는 `now` 를 앞당겨 싣는다.
+
+const QPS_BODY: &str = "[QPS] 큐 배달 본문 머리\n01 첫째 줄\n02 둘째 줄\n03 셋째 줄";
+
+/// 입력줄 = 우리 본문의 접힘 자리표시(실 claude 2.1.3xx 가 그리는 꼴).
+fn paint_folded_own(t: &Arc<Surface>) {
+    paint(t, &["────────", "❯ [Pasted text #9 +3 lines] ", "────────"], 1, 40);
+}
+
+fn paint_empty_prompt(t: &Arc<Surface>) {
+    paint(t, &["────────", "❯ ", "────────"], 1, 2);
+}
+
+/// 큐 결판이 막 Return 을 쓴 좌석 — 마지막 기계 본문 = QPS_BODY · 제출 확인 기록 1건 · 입력줄에 접힘 잔여.
+fn swallowed_seat(fx: &Fx, pid: u32) -> Arc<Surface> {
+    let t = agent_pane_settled(fx, "worker-1", pid);
+    t.inject_track.note_body(QPS_BODY, None);
+    crate::governance::arm_queue_submit_check(&t, QPS_BODY, Some(99), "q-test.1");
+    assert!(t.inject_track.submit_check().is_some(), "전제: 기록이 섰다");
+    paint_folded_own(&t);
+    t
+}
+
+fn step_at(fx: &Fx, t: &Arc<Surface>, base: Instant, ms: u64) -> &'static str {
+    crate::governance::recheck_queue_submit_one(&fx.daemon, t, base + Duration::from_millis(ms))
+}
+
+/// 적색→녹색: Return 이 먹혀 입력줄에 우리 본문이 남으면 Return 을 다시 쓴다 — 간격(2·4·8초)을 지키고 상한 3회,
+/// 그래도 남으면 `queue.submit_unconfirmed` **정확히 1건** 뒤 기록을 닫는다(이후 틱은 쓰기 0 = 폭주 0 · 종전 보류로 복귀).
+/// 종전: 기록·재시도가 없어 그 좌석 큐 전체가 사람 Enter 를 기다리다 TTL 에 만료됐다.
+#[test]
+#[cfg_attr(not(unix), ignore = "S21 제출 정착·창 위 CR 보류는 유닉스 한정(send_settle_applies)")]
+fn qps_swallowed_queue_return_retried_three_times_then_alerts_once() {
+    let fx = fx("qps-retry");
+    let t = swallowed_seat(&fx, P + 300);
+    let base = Instant::now();
+    assert_eq!(step_at(&fx, &t, base, 500), "spacing", "첫 간격(2초) 전에는 쓰지 않는다");
+    let w0 = t.inject_track.wrote();
+    let mut at = 2_100;
+    for (i, gap) in [4_100u64, 8_100, 0].iter().enumerate() {
+        paint_folded_own(&t);
+        assert_eq!(step_at(&fx, &t, base, at), "resent", "{}번째 재시도", i + 1);
+        let o = wait_submit_consumed(&t);
+        assert!(o.since_written_ms.is_some(), "재시도 Return 을 PTY 에 썼다: {o:?}");
+        paint_folded_own(&t);
+        if *gap > 0 {
+            assert_eq!(step_at(&fx, &t, base, at + 500), "spacing", "간격 안에서는 다시 쓰지 않는다");
+        }
+        at += gap;
+    }
+    assert_eq!(t.inject_track.wrote() - w0, 3, "재시도 Return 은 정확히 3번");
+    assert_eq!(named(&fx, "queue.submit_retried").len(), 3);
+    // 상한 소진 — 마지막 Return 결과 대기(8초) 전에는 경보도 쓰기도 없다.
+    assert_eq!(step_at(&fx, &t, base, at + 1_000), "final");
+    assert_eq!(step_at(&fx, &t, base, at + 8_100), "unconfirmed");
+    let ev = named(&fx, "queue.submit_unconfirmed");
+    assert_eq!(ev.len(), 1, "경보 1건: {ev:?}");
+    assert_eq!(ev[0]["payload"]["tries"], json!(3), "{ev:?}");
+    assert_eq!(ev[0]["payload"]["queue_entry_id"], json!("q-test.1"), "{ev:?}");
+    assert!(t.inject_track.submit_check().is_none(), "기록이 닫혔다");
+    // 이후 틱 — 쓰기 0 · 경보 0(같은 항목 1회).
+    for k in 0..5 {
+        assert_eq!(step_at(&fx, &t, base, at + 20_000 + k * 10_000), "none");
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(t.inject_track.wrote() - w0, 3, "상한 뒤 Return 을 더 썼다 — 폭주");
+    assert_eq!(named(&fx, "queue.submit_unconfirmed").len(), 1, "경보를 되풀이했다");
+}
+
+/// 재시도 뒤 입력줄이 비면(제출됨) 기록을 닫고 `queue.submit_recovered` 1건 — 더 쓰지 않는다.
+#[test]
+#[cfg_attr(not(unix), ignore = "S21 제출 정착·창 위 CR 보류는 유닉스 한정(send_settle_applies)")]
+fn qps_retry_recovers_when_line_empties() {
+    let fx = fx("qps-recover");
+    let t = swallowed_seat(&fx, P + 310);
+    let base = Instant::now();
+    assert_eq!(step_at(&fx, &t, base, 2_100), "resent");
+    wait_submit_consumed(&t);
+    paint_empty_prompt(&t);
+    assert_eq!(step_at(&fx, &t, base, 7_000), "line_empty");
+    let ev = named(&fx, "queue.submit_recovered");
+    assert_eq!(ev.len(), 1, "{ev:?}");
+    assert_eq!(ev[0]["payload"]["tries"], json!(1), "{ev:?}");
+    assert!(t.inject_track.submit_check().is_none());
+}
+
+/// 정상 배달(Return 이 먹히지 않음): 입력줄이 비어 있으면 정착 창(6초) 뒤 **조용히** 닫는다 — 이벤트 0 · 쓰기 0.
+/// 정착 창 안의 빈 줄로는 닫지 않는다(먹힌 Return 뒤 붙여넣기가 늦게 그려지는 창).
+#[test]
+#[cfg_attr(not(unix), ignore = "S21 제출 정착·창 위 CR 보류는 유닉스 한정(send_settle_applies)")]
+fn qps_normal_delivery_closes_silently_after_settle() {
+    let fx = fx("qps-normal");
+    let t = swallowed_seat(&fx, P + 320);
+    paint_empty_prompt(&t);
+    let base = Instant::now();
+    let w0 = t.inject_track.wrote();
+    assert_eq!(step_at(&fx, &t, base, 1_000), "line", "정착 창 안에서는 닫지 않는다");
+    assert_eq!(step_at(&fx, &t, base, 6_500), "line_empty");
+    assert!(t.inject_track.submit_check().is_none());
+    assert_eq!(t.inject_track.wrote(), w0, "쓰기 0");
+    for n in ["queue.submit_retried", "queue.submit_recovered", "queue.submit_unconfirmed"] {
+        assert!(named(&fx, n).is_empty(), "정상 배달에 {n} 를 냈다");
+    }
+}
+
+/// 음성 대조(실례 ③ — 오너가 직접 붙인 글): 사람 손이 닿은 줄에는 쓰지 않고 기록을 닫는다.
+/// kill-switch pause 중에는 쓰지도 닫지도 않는다(기록 유지).
+#[test]
+#[cfg_attr(not(unix), ignore = "S21 제출 정착·창 위 CR 보류는 유닉스 한정(send_settle_applies)")]
+fn qps_yields_to_human_and_pause() {
+    let fx = fx("qps-human");
+    let t = swallowed_seat(&fx, P + 330);
+    let w0 = t.inject_track.wrote();
+    fx.daemon.paused.store(true, Ordering::SeqCst);
+    crate::governance::recheck_queue_submits(&fx.daemon);
+    assert!(t.inject_track.submit_check().is_some(), "pause 중 기록 유지");
+    fx.daemon.paused.store(false, Ordering::SeqCst);
+    *t.last_human_input.lock().unwrap() = Some(Instant::now());
+    assert_eq!(step_at(&fx, &t, Instant::now(), 2_100), "human");
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(t.inject_track.wrote(), w0, "사람 손이 닿은 줄에 Return 을 썼다");
+    assert!(t.inject_track.submit_check().is_none());
+}
+
+/// 세션 기록(user 레코드)이 이미 제출을 말하면 화면이 낡아 우리 본문으로 보여도 쓰지 않는다(판정원 = 기록 · 화면 ≠ 제출).
+#[test]
+#[cfg_attr(not(unix), ignore = "S21 제출 정착·창 위 CR 보류는 유닉스 한정(send_settle_applies)")]
+fn qps_transcript_user_record_vetoes_resend() {
+    let fx = fx("qps-transcript");
+    let t = agent_pane_settled(&fx, "worker-1", P + 340);
+    let tr = fx.dir.join("sess.jsonl");
+    std::fs::write(&tr, "{\"type\":\"user\",\"message\":{\"content\":\"이전 대화\"}}\n").unwrap();
+    *t.registered_transcript.lock().unwrap() = Some(tr.to_string_lossy().into_owned());
+    t.inject_track.note_body(QPS_BODY, None);
+    crate::governance::arm_queue_submit_check(&t, QPS_BODY, None, "q-test.2");
+    paint_folded_own(&t);
+    // 배달 뒤 붙은 user 레코드 = 이 본문.
+    use std::io::Write as _;
+    let line = json!({"type": "user", "message": {"content": QPS_BODY}}).to_string();
+    std::fs::OpenOptions::new().append(true).open(&tr).unwrap().write_all(format!("{line}\n").as_bytes()).unwrap();
+    let w0 = t.inject_track.wrote();
+    assert_eq!(step_at(&fx, &t, Instant::now(), 2_100), "confirmed_transcript");
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(t.inject_track.wrote(), w0, "제출된 본문에 Return 을 다시 썼다");
+}
+
+/// 배선: 실제 큐 배달(강제 배달 경로 = 같은 결판)이 Return 을 쓰면 제출 확인 기록이 선다.
+#[test]
+#[cfg_attr(not(unix), ignore = "S21 제출 정착·창 위 CR 보류는 유닉스 한정(send_settle_applies)")]
+fn qps_queue_delivery_arms_submit_check() {
+    let fx = fx("qps-arm");
+    let t = agent_pane_settled(&fx, "worker-1", P + 350);
+    // 좌석 판정이 끝난 에이전트 좌석(watchdog 틱이 찍는 값) — 생성 직후 첫 틱 전 보류(seat_unknown)를 넘긴다.
+    t.seat_cache.store(crate::governance::SeatState::Occupied.as_u8(), Ordering::Relaxed);
+    paint_empty_prompt(&t);
+    let r = rpc(&fx, None, "surface.send_text", json!({"surface_id": t.id, "text": QPS_BODY, "queued": true, "from": "surface:99"}));
+    assert_eq!(r["ok"], json!(true), "{r}");
+    let id = t.pending_queue.lock().unwrap().front().map(|e| e.id.clone()).expect("enqueued");
+    let fd = crate::governance::force_deliver_entry(&fx.daemon, &t, Some(&id), false);
+    let fd_dbg = format!("{:?}", fd.as_ref().err());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while named(&fx, "queue.delivered").is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(named(&fx, "queue.delivered").len(), 1, "전제: 배달됐다 · 강제 배달 거부={fd_dbg}");
+    let c = t.inject_track.submit_check().expect("Return 을 쓴 큐 배달이 제출 확인 기록을 세웠다");
+    assert_eq!(c.entry_id, id);
+    assert_eq!(c.tries, 0);
+}

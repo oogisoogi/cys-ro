@@ -324,6 +324,7 @@ import { nextFollow, shouldShowFoldHint, FOLD_HINT_TITLE, FOLD_HINT_BODY } from 
 import { shouldClosePlaceholder } from "./placeholderclose";
 import { placeholderScreenLines } from "./placeholderclose";
 import { queueDropNotice } from "./queuedropnotice";
+import { queueExpiredItem, queueExpiredNotice, type QueueExpiredItem } from "./queueexpirednotice";
 import {
   permWarningToast,
   cwdBlockedNotices,
@@ -10157,6 +10158,28 @@ function daemonOsBanner(title: string, body: string): void {
   if (alertsQuiet("osBanner")) return;
   void osBanner(title, body);
 }
+/// ★(cysr-queued-paste-submit ⓒ) 큐 만료(유실) 알림 — 같은 좌석의 동시 만료(한 틱에 여러 건)는 1.5초 창으로 묶어 **좌석당 1줄**(토스트 + OS 배너).
+///   데몬 `queue.expired` 는 항목당 1회(래치)라 이 창이 알림 수의 상한이다. 문구·거름 = queueexpirednotice.ts · 데몬 출처 래퍼(경보 숨김 스위치를 따른다).
+const expiredBatch = new Map<string, { item: QueueExpiredItem; n: number }>();
+function noteQueueExpired(socketSlug: unknown, payload: unknown): void {
+  const item = queueExpiredItem(payload);
+  if (!item) return;
+  const key = `${String(socketSlug ?? "")}|${item.surfaceRef}`;
+  const cur = expiredBatch.get(key);
+  if (cur) {
+    cur.n += 1;
+    return;
+  }
+  expiredBatch.set(key, { item, n: 1 });
+  setTimeout(() => {
+    const b = expiredBatch.get(key);
+    expiredBatch.delete(key);
+    if (!b) return;
+    const msg = queueExpiredNotice(b.item, b.n);
+    daemonToast("feed", msg.title, msg.detail);
+    daemonOsBanner(msg.title, msg.detail);
+  }, 1500);
+}
 /// ★0.14.43(UI2): 그 좌석의 대기·막힘 토스트를 거두고 구간을 끝낸다(없으면 무동작) — id 의 모양은 starvednotice.ts 한 곳이 정한다.
 function dismissStarvedToast(socketSlug: unknown, surfaceId: unknown): void {
   const id = starvedDismissId(socketSlug, surfaceId);
@@ -10359,6 +10382,8 @@ function onDaemonEvent(event: Record<string, unknown>) {
   if (name === "queue.expired" || name === "queue.revived") {
     // ★0.14.48(D · F1-R): 기억한 머리가 만료·되살림되면 그 구간은 끝났다 — 같은 id 가 되살아나 다시 기다리면 새 구간 첫 팝업이 나가야 한다. 다른 처리는 없다(종전과 같이 이어서 흐른다).
     forgetStarvedHead(event.socket_slug, sid, payload.queue_entry_id);
+    // ★(cysr-queued-paste-submit ⓒ) 만료 = 그 메시지는 이제 배달되지 않는다 — 종전엔 화면 0 이었다(윈 base 10-13 실례). 좌석당 묶어 1줄.
+    if (name === "queue.expired") noteQueueExpired(event.socket_slug, payload);
   }
   if (name === "queue.delivered") {
     // ★0.14.43(UI2): 그 좌석의 큐가 움직였다 = 막힘이 풀렸다 — 같은 좌석의 '큐 막힘' 토스트를 거둔다(없으면 무동작). 다른 처리는 없다

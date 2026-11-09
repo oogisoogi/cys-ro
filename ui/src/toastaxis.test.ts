@@ -301,6 +301,17 @@ function sideEffectList(sb: Sandbox): string[] {
 }
 
 describe("TOAST 축 T-1 — 데몬 이벤트가 밀어 올린 사람 싱크 0", () => {
+  // ★(cysr-queued-paste-submit ⓒ) 만료(유실)는 오너에게 알린다 — onDaemonEvent 는 묶음 함수(noteQueueExpired · 스파이)에 slug·payload 를 그대로 넘긴다.
+  //   묶음 함수는 데몬 출처 래퍼(daemonToast·daemonOsBanner)만 부르므로 quiet 이면 이 축의 「싱크 0」이 그대로 성립한다(아래 전수 · 퍼즈).
+  test("queue.expired → noteQueueExpired 1회 · queue.revived → 0회", async () => {
+    const sb = build({ quiet: false });
+    const p = { surface_ref: "surface:61", role: "master", queue_entry_id: "q1" };
+    sb.fn.onDaemonEvent({ name: "queue.expired", category: "queue", surface_id: 61, socket_slug: "dept-1", payload: p });
+    sb.fn.onDaemonEvent({ name: "queue.revived", category: "queue", surface_id: 61, socket_slug: "dept-1", payload: p });
+    await flush();
+    expect(sb.calls["noteQueueExpired"]?.length ?? 0).toBe(1);
+    expect(sb.calls["noteQueueExpired"][0]).toEqual(["dept-1", p]);
+  });
   for (const c of EVENTS.filter((e) => !KEPT_IDS.includes(e.id))) {
     test(`quiet: ${c.id} → 박스 0 · OS 배너 0 · 알람 이력 0 · Feed 전환 0`, async () => {
       const sb = build({ quiet: true });

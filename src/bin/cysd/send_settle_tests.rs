@@ -1470,7 +1470,7 @@ fn paint_empty_prompt(t: &Arc<Surface>) {
 fn swallowed_seat(fx: &Fx, pid: u32) -> Arc<Surface> {
     let t = agent_pane_settled(fx, "worker-1", pid);
     t.inject_track.note_body(QPS_BODY, None);
-    crate::governance::arm_queue_submit_check(&t, QPS_BODY, Some(99), "q-test.1");
+    crate::governance::arm_queue_submit_check(&t, QPS_BODY, Some(99), "q-test.1", None);
     assert!(t.inject_track.submit_check().is_some(), "전제: 기록이 섰다");
     paint_folded_own(&t);
     t
@@ -1574,24 +1574,85 @@ fn qps_yields_to_human_and_pause() {
 }
 
 /// 세션 기록(user 레코드)이 이미 제출을 말하면 화면이 낡아 우리 본문으로 보여도 쓰지 않는다(판정원 = 기록 · 화면 ≠ 제출).
+/// ★(codex 1R QPS-1) 기준점은 **인계 순간** 스냅숏이다 — 레코드가 Return 과 결판(arm) **사이**에 붙어도 증거로 센다.
 #[test]
 fn qps_transcript_user_record_vetoes_resend() {
+    use std::io::Write as _;
     let fx = fx("qps-transcript");
     let t = agent_pane_settled(&fx, "worker-1", P + 340);
     let tr = fx.dir.join("sess.jsonl");
     std::fs::write(&tr, "{\"type\":\"user\",\"message\":{\"content\":\"이전 대화\"}}\n").unwrap();
     *t.registered_transcript.lock().unwrap() = Some(tr.to_string_lossy().into_owned());
+    let snap = crate::governance::transcript_snapshot(&t); // 인계 순간
+    assert!(snap.is_some(), "전제: 기록 경로·길이를 안다");
     t.inject_track.note_body(QPS_BODY, None);
-    crate::governance::arm_queue_submit_check(&t, QPS_BODY, None, "q-test.2");
-    paint_folded_own(&t);
-    // 배달 뒤 붙은 user 레코드 = 이 본문.
-    use std::io::Write as _;
+    // Return 이 처리돼 user 레코드가 결판(arm) **전에** 붙었다.
     let line = json!({"type": "user", "message": {"content": QPS_BODY}}).to_string();
     std::fs::OpenOptions::new().append(true).open(&tr).unwrap().write_all(format!("{line}\n").as_bytes()).unwrap();
+    crate::governance::arm_queue_submit_check(&t, QPS_BODY, None, "q-test.2", snap);
+    paint_folded_own(&t); // 낡은 화면 사본 — 우리 본문으로 보인다
     let w0 = t.inject_track.wrote();
     assert_eq!(step_at(&fx, &t, Instant::now(), 2_100), "confirmed_transcript");
     std::thread::sleep(Duration::from_millis(200));
     assert_eq!(t.inject_track.wrote(), w0, "제출된 본문에 Return 을 다시 썼다");
+}
+
+/// ★(codex 1R QPS-4) 마지막 재전송이 실제로 제출됐으면(기록에 user 레코드) 포기 직전에도 기록을 본다 — unconfirmed 가 아니라 recovered.
+#[test]
+fn qps_giveup_checks_transcript_first() {
+    use std::io::Write as _;
+    let fx = fx("qps-giveup-tr");
+    let t = agent_pane_settled(&fx, "worker-1", P + 360);
+    let tr = fx.dir.join("sess.jsonl");
+    std::fs::write(&tr, "").unwrap();
+    *t.registered_transcript.lock().unwrap() = Some(tr.to_string_lossy().into_owned());
+    let snap = crate::governance::transcript_snapshot(&t);
+    t.inject_track.note_body(QPS_BODY, None);
+    crate::governance::arm_queue_submit_check(&t, QPS_BODY, None, "q-test.3", snap);
+    let base = Instant::now();
+    let mut at = 2_100;
+    for gap in [4_100u64, 8_100, 0] {
+        paint_folded_own(&t);
+        assert_eq!(step_at(&fx, &t, base, at), "resent");
+        wait_submit_consumed(&t);
+        at += gap;
+    }
+    let line = json!({"type": "user", "message": {"content": QPS_BODY}}).to_string();
+    std::fs::OpenOptions::new().append(true).open(&tr).unwrap().write_all(format!("{line}\n").as_bytes()).unwrap();
+    paint_folded_own(&t); // 화면은 낡아 그대로
+    assert_eq!(step_at(&fx, &t, base, at + 8_100), "confirmed_transcript");
+    assert!(named(&fx, "queue.submit_unconfirmed").is_empty(), "제출된 배달에 unconfirmed 를 냈다");
+    let ev = named(&fx, "queue.submit_recovered");
+    assert_eq!(ev.len(), 1, "{ev:?}");
+    assert_eq!(ev[0]["payload"]["basis"], json!("confirmed_transcript"));
+}
+
+/// ★(codex 1R QPS-3) 쓰기 직전 거부 탐침 — 관측~인계~쓰기 사이에 전제가 깨지면 그 CR 을 쓰지 않는다(탐침 하나하나 뒤집는다).
+#[test]
+fn qps_retry_cancel_probe_refuses_on_each_broken_premise() {
+    let fx = fx("qps-cancel");
+    let t = swallowed_seat(&fx, P + 370);
+    let c = t.inject_track.submit_check().unwrap();
+    let probe = crate::governance::queue_retry_cancel_probe(&fx.daemon, &t, &c, vec!["❯".into()]);
+    assert!(!probe(), "전제가 그대로면 쓴다");
+    fx.daemon.paused.store(true, Ordering::SeqCst);
+    assert!(probe(), "인계 뒤 kill-switch pause");
+    fx.daemon.paused.store(false, Ordering::SeqCst);
+    *t.last_human_input.lock().unwrap() = Some(Instant::now());
+    assert!(probe(), "인계 뒤 사람 입력");
+    *t.last_human_input.lock().unwrap() = None;
+    t.agent_epoch.fetch_add(1, Ordering::AcqRel);
+    assert!(probe(), "인계 뒤 에이전트 세대 바뀜(다른 프로세스)");
+    t.agent_epoch.fetch_sub(1, Ordering::AcqRel);
+    t.conversation_epoch.fetch_add(1, Ordering::AcqRel);
+    assert!(probe(), "인계 뒤 대화 세대 바뀜(/clear 등)");
+    t.conversation_epoch.fetch_sub(1, Ordering::AcqRel);
+    assert!(!probe(), "되돌리면 다시 쓴다");
+    paint_empty_prompt(&t);
+    assert!(probe(), "입력줄이 더는 그 본문이 아니다(이미 제출됐거나 지워졌다)");
+    paint_folded_own(&t);
+    t.inject_track.note_body("다른 기계 본문", None);
+    assert!(probe(), "인계 뒤 새 기계 본문");
 }
 
 /// 배선: 실제 큐 배달(강제 배달 경로 = 같은 결판)이 Return 을 쓰면 제출 확인 기록이 선다.

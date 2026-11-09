@@ -1737,22 +1737,20 @@ pub(crate) struct SubmitCheck {
     pub(crate) from: Option<u64>,
     /// 배달 항목 id(이벤트 표기 — 대조축).
     pub(crate) entry_id: String,
-    /// 본문 머리 대조 열쇠 — 공백을 모두 지운 본문 앞 [`SUBMIT_CHECK_NEEDLE_CHARS`] 자(세션 기록의 user 레코드 대조용).
+    /// 본문 대조 열쇠 — 공백을 모두 지운 **본문 전체**(세션 기록 user 레코드 대조 · 머리만 같은 다른 배달을 제출 증거로 오인하지 않는다 · codex 1R QPS-2).
     pub(crate) needle: String,
-    /// Return 을 쓴 순간의 좌석 세션 기록 경로와 그때 길이 — 이 뒤에 붙은 user 레코드만 이 배달의 제출 증거다. 모르면 None.
+    /// 인계 순간(첫 바이트 전)의 좌석 세션 기록 경로와 그때 길이 — 이 뒤에 붙은 user 레코드만 이 배달의 제출 증거다. 모르면 None.
     pub(crate) transcript: Option<(String, u64)>,
     /// 배달 시점의 에이전트·대화 세대 — 다르면 다른 프로세스·다른 대화다(같은 pid·같은 좌석에만 다시 쓴다).
     pub(crate) agent_epoch: u64,
     pub(crate) conversation_epoch: u64,
 }
 
-/// 세션 기록 대조 열쇠 길이(공백 제거 글자 수) — 큐 다이제스트 머리(발신 표기 포함)가 배달마다 갈리기에 충분하다.
-pub(crate) const SUBMIT_CHECK_NEEDLE_CHARS: usize = 48;
-
 impl SubmitCheck {
-    /// 순수 — 본문에서 대조 열쇠를 만든다(공백 전부 제거 · 앞 N 자).
+    /// 순수 — 본문에서 대조 열쇠를 만든다(공백 전부 제거 · **전체**). 머리만 대조하면 같은 발신자의 연속 다이제스트(머리 공통)끼리
+    /// 서로의 제출 증거가 된다(codex 1R QPS-2). 붙여넣기 본문은 큐 다이제스트 상한 안이라 길이가 유계다.
     pub(crate) fn needle_of(body: &str) -> String {
-        body.chars().filter(|c| !c.is_whitespace()).take(SUBMIT_CHECK_NEEDLE_CHARS).collect()
+        body.chars().filter(|c| !c.is_whitespace()).collect()
     }
 }
 

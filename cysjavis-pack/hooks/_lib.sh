@@ -541,11 +541,32 @@ cys_hook_fail() {
   _cys_hf_cat=no; command -v cat >/dev/null 2>&1 && _cys_hf_cat=yes
   _cys_hf_path="${PATH:-}"
   [ "${#_cys_hf_path}" -le 160 ] 2>/dev/null || _cys_hf_path="$(printf '%.160s' "$_cys_hf_path")…"
+  # ★윈 훅 시간 초과(rc124) 원인 가름용 두 칸 — 셸 내장만(외부 프로세스 0).
+  #   took   = 훅 셸 시작 뒤 지난 초(bash SECONDS). 상한 근처 = 그만큼 멈춤 · 상한보다 훨씬 큼 = 훅 도중 잠듦/복귀.
+  #   dstart = 데몬 시작 시각(delivery-base.epoch.json 의 started · 데몬 write_epoch). 없음·이상 = 「-」.
+  #   (-f 거름 = FIFO 로 바뀐 파일에 read 가 매달리지 않게 · 앞 512자만 읽는다(read -n · 실물 ≈150바이트 —
+  #    거대 파일이 실패 기록을 또 늦추지 않게) · 닫는 따옴표까지 갖춘 ISO 값만 채택(잘린 파일 = 「-」))
+  #   dash 처럼 SECONDS·read -n 이 없는 셸 = took=- · dstart=- 로 강등(종료 코드·stdout 불변).
+  _cys_hf_took="${SECONDS:-}"
+  case "$_cys_hf_took" in ''|*[!0-9]*) _cys_hf_took="-" ;; *) _cys_hf_took="${_cys_hf_took}s" ;; esac
+  _cys_hf_ds="-"; _cys_hf_el=""
+  _cys_hf_ef="${CYS_STATE_DIR:-$HOME/.cys/state}/delivery-base.epoch.json"
+  if [ -f "$_cys_hf_ef" ]; then
+    IFS= read -r -n 512 _cys_hf_el < "$_cys_hf_ef" 2>/dev/null || :
+    case "$_cys_hf_el" in
+      *'"started":"'[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'"'*)
+        _cys_hf_ds="${_cys_hf_el#*\"started\":\"}"; _cys_hf_ds="${_cys_hf_ds%%\"*}" ;;
+    esac
+    case "$_cys_hf_ds" in
+      [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) ;;
+      *) _cys_hf_ds="-" ;;
+    esac
+  fi
   {
     [ -d "$(dirname "$_cys_hf_f" 2>/dev/null)" ] || mkdir -p "$(dirname "$_cys_hf_f")"
     if [ -f "$_cys_hf_f" ] && [ "$(wc -c < "$_cys_hf_f")" -gt 262144 ]; then mv -f "$_cys_hf_f" "$_cys_hf_f.1"; fi
-    printf '%s %s role=%s surface=%s rc=%s why=%s py=%s cys=%s cat=%s path=%s\n' "$_cys_hf_ts" "${1:-?}" \
-      "${CYS_ROLE:-?}" "${CYS_SURFACE_ID:-?}" "${2:-?}" "${3:--}" "${CYS_PY:-미해소}" \
+    printf '%s %s role=%s surface=%s rc=%s took=%s dstart=%s why=%s py=%s cys=%s cat=%s path=%s\n' "$_cys_hf_ts" "${1:-?}" \
+      "${CYS_ROLE:-?}" "${CYS_SURFACE_ID:-?}" "${2:-?}" "$_cys_hf_took" "$_cys_hf_ds" "${3:--}" "${CYS_PY:-미해소}" \
       "$_cys_hf_cys" "$_cys_hf_cat" "$_cys_hf_path" >> "$_cys_hf_f"
   } >/dev/null 2>&1
   # ★T3(agora-t3-pack-collector): 같은 실패를 상담소 신호 한 줄로도 남긴다(끔·형식 밖·잠금 2초 초과 = 그 도구가 버림).

@@ -23,6 +23,12 @@ path = "src/bin/cysd/main.rs"
 name = "cys"
 path = "src/bin/cys.rs"
 
+# ★T2 시제품(TICKET=cysr-seatkeep-t2 · 설계 = master/reports/2026-11-11-cysr-holder-design/DESIGN.md): 좌석 보유 장치.
+#   cysd 미연결 · 제품 경로에서 아직 아무도 띄우지 않는다. 이름에 MacOS/cysd 가 들어가지 않게 별도 실행 파일(master 결정 ⓐ).
+[[bin]]
+name = "cys-seatkeep"
+path = "src/bin/cys-seatkeep/main.rs"
+
 [features]
 # ★S8 D-r2-8: 윈도우 휴지통 삭제는 **검증된 빌드에서만** 켜진다. 이 feature 는 default 에 없다 —
 #   들어 있지 않다는 사실이 "12.W 가 돌지 않았으면 삭제는 꺼진 채로 출하된다"를 집행한다.

@@ -112,6 +112,8 @@ ti = data.get("tool_input")
 ti = ti if isinstance(ti, dict) else {}
 command = ti.get("command") if isinstance(ti.get("command"), str) else ""
 file_path = ti.get("file_path") if isinstance(ti.get("file_path"), str) else ""
+if not file_path and isinstance(ti.get("notebook_path"), str):   # NotebookEdit 는 notebook_path(독립 검증 m4)
+    file_path = ti.get("notebook_path")
 
 WRITE_TOOLS = ("Write", "Edit", "NotebookEdit", "MultiEdit")
 
@@ -986,6 +988,16 @@ AGY_DOOR_SED_SCRIPT = re.compile(r"^(\$|[0-9]+)?(,(\$|[0-9]+))?p$")
 AGY_DOOR_JSONTOOL_OPTS = {"--sort-keys", "--compact", "--no-ensure-ascii", "--json-lines", "--tab", "--no-indent"}
 
 def agy_door_read_only(p, args):
+    if p == "git":
+        # 독립 검증 m2: 읽기 하위 명령(log·diff·show·grep·blame·status)은 문 이름을 검색어로 받아도 읽기다 —
+        #   출력 파일·페이저·외부 diff 옵션(--output · -o · -O · --open-files-in-pager · --ext-diff)은 제외.
+        sub, rest = l_git_sub(args)
+        return (sub in ("log", "diff", "show", "grep", "blame", "status")
+                and not any(a.startswith(("--output", "-o", "-O", "--open-files", "--ext-diff")) for a in rest))
+    if p in ("python3", "python") and args[:1] == ["-c"]:
+        # 독립 검증 m2: `python3 -c "json.load(open('<문 파일>'))"` 꼴 읽기만(인자 한 개 open · 쓰기 낱말 없음)
+        code = " ".join(args[1:])
+        return bool(re.fullmatch(r"(import json\s*;?\s*)?(print\()?json\.load\(open\([^,()]+\)\)\)?(\[[^\]]*\])*\)?", code))
     if p == "rg" and any(a.startswith("--pre") for a in args):   # rg --pre <prog> = 파일마다 프로그램 실행(독립 재검 minor)
         return False
     if p in AGY_DOOR_READ_OK:
@@ -1071,6 +1083,78 @@ def agy_door_bash_write(cmd, depth=0, forced=False):
             if p is not None and not agy_door_read_only(p.lower(), a):
                 return True
     return False
+
+# ★agy 실행(독립 검증 B2 · 모드 무관): Claude 가 자기 Bash 로 agy 를 실행하거나 `cys send` 로 좌석에 agy 를 쳐 넣는 것을
+#   막는다 — 판정 = Rust 판정기(`cys agy-door-check` · 문 상태 포함 · launch-agent 와 같은 것) · 문이 열려 있으면 통과.
+#   ★한계(실수 경로 차단 · 고의 우회 아님): 이름 바꾼 사본·심링크·변수·eval·글롭은 문자열로 원리상 못 막는다(USER-MANUAL 「알려진 한계」).
+AGY_RUN_DENY = ("Claude 는 agy(Antigravity CLI)를 실행하거나 좌석에 쳐 넣을 수 없다 — 구글 개인 요금제 약관상 다른 프로그램이 "
+                "agy 를 부리면 계정이 정지될 수 있다. agy 는 사람이 새 탭에서 직접 치세요. 기업 요금제 등 허용된 경우에만 사람이 "
+                "앱 명령 팔레트 「Antigravity(agy) 좌석 열기」로 문을 엽니다.")
+AGY_SEND_VAL_OPTS = {"--surface", "--to", "--socket", "--workspace", "--role", "--delay-ms", "--submit-delay-ms"}
+
+def agy_mentioned(c):
+    return re.search(r"agy|antigravity", re.sub(r"[\\'\"^]", "", c).lower()) is not None
+
+def agy_check_cmd(c):
+    """True = 문 닫힘 + agy 실행 · False = 아님 · None = 판정기를 못 부름."""
+    import subprocess
+    try:
+        r = subprocess.run(["cys", "agy-door-check", "--cmd", c], capture_output=True, stdin=subprocess.DEVNULL,
+                           timeout=max(1.0, min(budget_left(), PROBE_CAP_S)))
+    except Exception:
+        return None
+    return True if r.returncode == 76 else (False if r.returncode == 0 else None)
+
+def agy_bare_word(c):
+    try:
+        import shlex
+        toks = shlex.split(c)
+    except Exception:
+        toks = c.split()
+    return any(re.sub(r"[\\^]", "", t).rsplit("/", 1)[-1].lower().split(".")[0] in ("agy", "antigravity") for t in toks)
+
+AGY_SEND_HEADS = {"agy", "antigravity", "env", "sh", "bash", "zsh", "dash", "ksh", "nohup", "timeout", "exec", "sudo",
+                  "doas", "cmd", "cmd.exe", "powershell", "pwsh", "find", "xargs", "command", "nice", "caffeinate", "script"}
+
+def agy_send_head(t):
+    """좌석에 쳐 넣을 글의 첫 낱말이 agy 또는 실행 래퍼·셸인가 — 프롬프트 글(「please review agy docs」)은 대상이 아니다."""
+    try:
+        import shlex
+        ws = shlex.split(t)
+    except Exception:
+        ws = t.split()
+    ws = [w for w in ws if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w)]
+    return bool(ws) and re.sub(r"[\\^]", "", ws[0]).rsplit("/", 1)[-1].lower() in AGY_SEND_HEADS
+
+def agy_bash_runs(cmd):
+    if not agy_mentioned(cmd):
+        return False
+    texts = [cmd]
+    try:
+        import shlex
+        toks = shlex.split(cmd)
+    except Exception:
+        toks = []
+    for i, t in enumerate(toks):
+        if t.rsplit("/", 1)[-1] == "cys" and toks[i + 1:i + 2] in (["send"], ["send-text"]):
+            j = i + 2
+            while j < len(toks) and toks[j] not in (";", "&&", "||", "|"):
+                a = toks[j]
+                if a in AGY_SEND_VAL_OPTS:
+                    j += 2; continue
+                if not a.startswith("-") and agy_send_head(a):
+                    texts.append(a)
+                j += 1
+    for t in texts:
+        if not agy_mentioned(t):
+            continue
+        r = agy_check_cmd(t)
+        if r is True or (r is None and agy_bare_word(t)):
+            return True
+    return False
+
+if tool == "Bash" and command and agy_bash_runs(command):
+    out_deny("[AGY-RUN] " + AGY_RUN_DENY)
 
 if tool == "Bash" and command and agy_door_bash_write(command):
     out_deny("[AGY-DOOR] " + AGY_DOOR_DENY)

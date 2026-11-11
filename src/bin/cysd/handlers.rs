@@ -7842,6 +7842,25 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             //   표식이 있으면 토큰이 유효해도 **기록**한다(origin=gui_auto 로 감사에서 구별).
             //   ★불변식 ② 는 그대로다 — 표식 없는 실키 입력(sendRaw)은 여전히 무기록이다.
             let human_verified = human && !machine_origin && operator_token_ok(daemon, &params);
+            // ★agy 좌석 문(독립 검증 M3): 문이 닫혀 있으면 agy 좌석으로 가는 **자동** 지시(send·queued·GUI 자동 문안)를 막는다 —
+            //   사람이 자판으로 친 입력(human_verified)은 그대로 · 좌석을 끄지는 않는다(설명서 「닫기」 절과 같은 말).
+            if !human_verified {
+                let key = surface.agent_meta.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|(a, _)| a.clone());
+                let cmd = (!surface.cmd.trim().is_empty()).then_some(surface.cmd.as_str());
+                if (key.is_some() || cmd.is_some())
+                    && cys::agy_door::launch_refusal(key.as_deref().unwrap_or(""), cmd).is_some()
+                {
+                    return Reply::Single(reject_send(
+                        daemon,
+                        sid,
+                        "surface.send_text",
+                        cys::agy_door::REFUSE_CODE,
+                        "agy 좌석 문이 닫혀 있어 이 agy 좌석으로 자동 지시를 보내지 않는다(사람이 그 좌석에 직접 치는 것은 된다)",
+                        caller_pid,
+                        &id,
+                    ));
+                }
+            }
             if human_verified && verified_from.is_some() {
                 // 오퍼레이터 토큰이 **pane 에서** 왔다. GUI(Tauri)는 어떤 surface 의 자손도 아니므로
                 // 정상 경로에서는 나올 수 없는 조합이다 — 토큰 파일을 읽은 동일 UID 프로세스일

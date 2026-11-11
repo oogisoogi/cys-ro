@@ -209,6 +209,59 @@ class C_PhoenixPolicySplit(unittest.TestCase):
         self.assertIn('pub const REFUSE_CODE: &str = "%s";' % self.ph.AGY_POLICY_CODE, rs)
 
 
+class E_AgyRunGuardAndRoundLog(unittest.TestCase):
+    """독립 검증 B2 — Claude 자기 Bash 의 agy 실행·좌석에 쳐 넣기 거부 · round-log --from-cmd 거부(이 빌드의 cys 판정기)."""
+
+    def setUp(self):
+        b = _cys_bin()
+        if not b:
+            self.skipTest("cys 바이너리 없음")
+        self.td = tempfile.mkdtemp(prefix="agyrun-")
+        self.pbin = os.path.join(self.td, "pbin")
+        os.makedirs(self.pbin)
+        os.symlink(b, os.path.join(self.pbin, "cys"))
+        os.makedirs(os.path.join(self.td, "home", ".cys"))
+
+    def tearDown(self):
+        shutil.rmtree(self.td, ignore_errors=True)
+
+    def g(self, cmd):
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("CYS_", "AUTOPILOT", "GUARD_"))}
+        env.update({"GUARD_TEST_MODE": "1", "CYS_HOOK_LANE_GUARD": "0", "HOME": os.path.join(self.td, "home"),
+                    "PATH": self.pbin + os.pathsep + env.get("PATH", "/usr/bin:/bin")})
+        r = subprocess.run(["bash", GUARD], input=json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}}),
+                           env=env, capture_output=True, text=True, timeout=60)
+        return r.returncode, r.stderr
+
+    def test_agy_run_denied(self):
+        for cmd in ["agy -p 'review this diff'", "cd /tmp && agy", ">/dev/null agy", "cys send --surface surface:3 'agy -p hi'",
+                    "cys send --to worker 'sh -c agy'"]:
+            rc, err = self.g(cmd)
+            self.assertEqual(rc, 2, "%r 통과: %s" % (cmd, err[-300:]))
+            self.assertIn("AGY-RUN", err, cmd)
+
+    def test_not_agy_run_allowed(self):
+        for cmd in ["grep -rn agy src/", "ls ~/axdev/.wt/cys-agy-policy", "cys send --surface surface:3 'please review agy docs'",
+                    "git log --grep agy-seat-door", "git diff HEAD~1 | grep agy-seat-door",
+                    "python3 -c \"json.load(open('/Users/x/.cys/agy-seat-door.json'))\"", "echo agy"]:
+            rc, err = self.g(cmd)
+            self.assertEqual(rc, 0, "%r 막힘: %s" % (cmd, err[-300:]))
+
+    def test_round_log_refuses_agy(self):
+        import javis_orchestra as o
+        os.environ["CYS_CYS_BIN"] = os.path.join(self.pbin, "cys")
+        old_home = os.environ.get("HOME")
+        os.environ["HOME"] = os.path.join(self.td, "home")
+        try:
+            self.assertTrue(o.agy_door_refusal("agy -p review"))
+            self.assertTrue(o.agy_door_refusal("2>&1 agy -p review"))
+            self.assertIsNone(o.agy_door_refusal("cargo test --lib"))
+        finally:
+            os.environ.pop("CYS_CYS_BIN", None)
+            if old_home is not None:
+                os.environ["HOME"] = old_home
+
+
 def _cys_bin():
     b = os.environ.get("CYS_TEST_BIN") or os.path.join(REPO, "target", "debug", "cys")
     return b if os.path.isfile(b) and os.access(b, os.X_OK) else None

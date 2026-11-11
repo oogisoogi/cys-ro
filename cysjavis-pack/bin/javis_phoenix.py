@@ -2780,7 +2780,7 @@ AGY_POLICY_CODE = "agy_consumer_policy"   # 정본 = Rust cys::agy_door::REFUSE_
 AGY_POLICY_RC = 76                        # 정본 = Rust cys::agy_door::EXIT_AGY_POLICY_REFUSED
 
 
-def agy_door_split(roles, entries, detect=None):
+def agy_door_split(roles, entries, detect=None, status=None):
     """★agy 좌석 문(TICKET=cysr-agy-policy-exposure) — 부활 대상에서 「문이 닫혀 띄우지 않을」 agy 역할을 가른다.
     판정은 이 파일이 하지 않는다: `cys agent-detect --json` 오라클(Rust apply_agy_door)이 reason 머리에
     `agy_consumer_policy` 를 낸 어댑터만 가른다(문 상태·agy 판정의 정본 = Rust 한 곳). 오라클을 못 부르면
@@ -2801,6 +2801,8 @@ def agy_door_split(roles, entries, detect=None):
                     detect[k] = str(v.get("reason") or "")
         except Exception:
             detect = {}
+        if status is not None:
+            status["oracle_ok"] = bool(detect)
     keep, skipped = [], []
     for role in roles:
         agent = str((entries.get(role) or {}).get("agent") or "")
@@ -3428,7 +3430,8 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
     _tomb_skipped = [r for r in _requested if r in _tombstones]
     # ★R4-4: 부활 대상 = 'dead' 만. 'unknown' 은 따로 모아 정직 보고한다(맹목 재스폰도 침묵 생존 취급도 아님).
     target_roles = [r for r in _requested if _role_liveness(r) == "dead" and r not in _tombstones]
-    target_roles, _agy_skipped = agy_door_split(target_roles, entries)  # ★agy 좌석 문(기본 닫힘) — 실패 아님
+    _agy_oracle = {"oracle_ok": True}
+    target_roles, _agy_skipped = agy_door_split(target_roles, entries, status=_agy_oracle)  # ★agy 좌석 문(기본 닫힘) — 실패 아님
     liveness_unknown_roles = [r for r in _requested
                               if r not in _tombstones and _role_liveness(r) == "unknown"]
     for _r in liveness_unknown_roles:
@@ -3496,7 +3499,10 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
         log("부활 대상 죽은 역할 0 — restore 무작업(멱등).")
         if not no_breaker:
             breaker_reset(socket)
-    elif not no_breaker:
+    elif not no_breaker and not (not _agy_oracle.get("oracle_ok", True)
+                                 and all(str((entries.get(r) or {}).get("agent") or "") == "gemini" for r in target_roles)):
+        # ★agy 좌석 문(codex 3R major): 오라클이 실패해 정책 여부를 모르는 gemini 좌석뿐이면 부활 시도로 기록하지 않는다 —
+        #   기록 뒤에 정책 건너뜀을 알게 되면 기존 실패 이력을 지우지 않고는 되돌릴 수 없다(종전 리셋 = 진짜 실패 이력 소실).
         opened, attempts = breaker_check_and_record(socket)
         if opened:
             log("★M5 회로차단기 OPEN — %ss 내 %d회 부활 시도(임계 %d). 자동 부활 정지." % (
@@ -4081,8 +4087,6 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
     any_unver = any(outcomes.get(r) == "unverified" for r in target_roles)
     if not target_roles:
         final = "NOOP"
-        if _agy_skipped and not no_breaker:
-            breaker_reset(socket)   # ★agy 좌석 문: 대상이 정책 건너뜀뿐이면 부활 시도가 아니었다(NOOP 과 같은 창 리셋)
     elif all_verified:
         final = "VERIFIED"
         breaker_reset(socket)  # 성공 부활은 차단기 창 리셋

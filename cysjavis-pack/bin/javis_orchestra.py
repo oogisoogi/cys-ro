@@ -1287,6 +1287,25 @@ def cmd_check(args):
     return check_exit_code(axes, ack)
 
 
+def agy_door_refusal(cmd):
+    """★agy 좌석 문(독립 검증 B2 · round-log --from-cmd): Rust 판정기(`cys agy-door-check`)로 셸 문을 재고, 문이 닫혔고
+    agy 를 실행하는 문이면 사유 문자열을 돌려준다(아니면 None). cys 를 못 부르면 agy 낱말이 있을 때만 안전 쪽으로 거부."""
+    cys = os.environ.get("CYS_CYS_BIN") or shutil.which("cys")
+    if cys:
+        try:
+            r = subprocess.run([cys, "agy-door-check", "--cmd", cmd], stdin=subprocess.DEVNULL,
+                               capture_output=True, text=True, timeout=15, **NOWIN)
+            if r.returncode == 76:
+                return (r.stderr or "").strip() or "agy_consumer_policy"
+            if r.returncode == 0:
+                return None
+        except Exception:
+            pass
+    if re.search(r"(?<![\w-])(agy|antigravity)(?![\w-])", cmd.replace("\\", ""), re.I):
+        return "agy_consumer_policy: 판정기를 부를 수 없어 agy 낱말이 든 명령을 실행하지 않는다(안전 쪽)"
+    return None
+
+
 # ── boot-reviewers: 리뷰어 감지→기동, 미감지 시 Claude 대체 자동 폴백(멈춤 없음) ──
 # ─────────────────── A12: 호출 exit 분류 (transient vs permanent) ───────────────────
 # ★재감사 A12: 674행 '죽은 초기화'가 설계 의도 소실의 물증이었다 — 모든 비0 을 뭉개 재시도하면
@@ -2754,6 +2773,10 @@ def cmd_round_log(args):
                   "`--evaluator machine` 이다(G8·REVIEWER_VERDICT_CONTRACT §2)." % args.evaluator,
                   file=sys.stderr)
             return 2
+        _refuse = agy_door_refusal(args.from_cmd)
+        if _refuse:
+            print("[round-log] 거부: %s" % _refuse, file=sys.stderr)
+            return 76
         try:
             # RC-6(D6): shell=True는 OS 기본 셸(unix=/bin/sh·Windows=cmd.exe)로 실행 — from_cmd는
             # OS중립 기계검증 명령(빌드·테스트) 전제다. bash 전용 문법을 넣으면 Windows cmd.exe에서

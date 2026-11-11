@@ -46,7 +46,7 @@ def load_src(src, name, d):
     return mod
 
 
-def scenario(src, tmp, tag, roles, fresh_fallback=True, runs=1, no_breaker=True):
+def scenario(src, tmp, tag, roles, fresh_fallback=True, runs=1, no_breaker=True, skip_line=True, breaker_seed=0):
     d = tempfile.mkdtemp(prefix=tag + "-", dir=tmp)
     m = load_src(src, "ph_" + tag, d)
     sockdir = os.path.join(d, "sock")
@@ -82,7 +82,8 @@ def scenario(src, tmp, tag, roles, fresh_fallback=True, runs=1, no_breaker=True)
         out = ""
         for i, r in enumerate(need):
             if agents[r] == "gemini":
-                out += SKIP          # 실 cys restore: 문 닫힘 → 건너뜀 줄 · 좌석 안 만듦
+                if skip_line:
+                    out += SKIP      # 실 cys restore: 문 닫힘 → 건너뜀 줄 · 좌석 안 만듦(skip_line=False = 건너뜀 줄 없는 구 cys)
                 continue
             st["live"][r] = [{"surface": "surface:%d" % (10 + i), "pid": None, "exited": False,
                               "agent_alive": True, "seat": "occupied"}]
@@ -108,11 +109,20 @@ def scenario(src, tmp, tag, roles, fresh_fallback=True, runs=1, no_breaker=True)
     m.surface_agent_verdict = lambda s, surf, agent: "alive"
     m.SPAWN_SETTLE = 0.0
     m.SPAWN_BACKOFF = 0.0
+    if breaker_seed:
+        import time as _t
+        with open(m.breaker_file(sock), "w") as f:
+            json.dump({"attempts": [_t.time() - 5 * k for k in range(breaker_seed)]}, f)
     res = None
     for _ in range(runs):
         res = m.run_restore(sock, ticket="agy", stub=False, no_breaker=no_breaker, print_result=False,
                             include_master=True)
     counts = m.load_respawn_counts(sock, "EPOCH-AGY")
+    try:
+        with open(m.breaker_file(sock)) as f:
+            counts["__breaker__"] = len(json.load(f).get("attempts", []))
+    except (OSError, ValueError):
+        counts["__breaker__"] = 0
     return calls, res, counts
 
 
@@ -132,6 +142,16 @@ def axes(src, tmp, tag, sink=None):
         check("%s: 재스폰 계수 — reviewer-gemini 0 · worker 1" % label,
               counts.get("reviewer-gemini", 0) == 0 and counts.get("worker") == 1, counts, sink)
 
+    c, res, counts = scenario(src, tmp, tag + "P4", ["reviewer-gemini", "worker"], skip_line=False)
+    check("P4 건너뜀 줄 없는 구 cys → fresh launch-agent rc 76 소비: agy_policy_skipped ∋ · 실패·미완 아님",
+          c["fresh"] == ["reviewer-gemini"] and res.get("agy_policy_skipped_roles") == ["reviewer-gemini"]
+          and res.get("completeness") == "COMPLETE" and res.get("phoenix_restore") not in ("FAILED", "UNVERIFIED")
+          and counts.get("reviewer-gemini", 0) == 0,
+          (c, res.get("agy_policy_skipped_roles"), res.get("completeness"), res.get("phoenix_restore"), counts), sink)
+    c, res, counts = scenario(src, tmp, tag + "P5", ["reviewer-gemini"], no_breaker=False, breaker_seed=2)
+    check("P5 차단기: 기존 실패 이력 2(임계 3) + 정책 좌석뿐 → BREAKER_OPEN 아님 · 이력 그대로 2(지우지도 늘리지도 않음)",
+          res.get("phoenix_restore") != "BREAKER_OPEN" and counts["__breaker__"] == 2,
+          (res.get("phoenix_restore"), counts), sink)
     c, res, counts = scenario(src, tmp, tag + "P3", ["reviewer-gemini"], runs=6, no_breaker=False)
     check("P3 정책 건너뜀뿐인 런 6회 연속 → BREAKER_OPEN 아님 · 재스폰 계수 0",
           res.get("phoenix_restore") != "BREAKER_OPEN" and counts.get("reviewer-gemini", 0) == 0,
@@ -155,6 +175,11 @@ def main():
          "", "P1"),
         ("M2 재스폰 계수 되돌림 제거",
          "            _respawn_counts[role] -= 1\n", "            pass\n", "재스폰 계수"),
+        ("M3 fresh rc 76 소비 제거(독립 검증 뮤턴트 M15)",
+         '                if res.get("rc") == AGY_POLICY_RC:', '                if False:', "P4"),
+        ("M4 차단기 기록 조건 제거(codex 3R)",
+         '    elif not no_breaker and not (not _agy_oracle.get("oracle_ok", True)',
+         '    elif not no_breaker and not (False', "P5"),
     ]
     for name, old, new, axis in mutants:
         assert src.count(old) == 1, "변이 대상 부재/중복: " + name

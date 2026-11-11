@@ -806,6 +806,17 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// ★agy 좌석 문 판정만(아무것도 실행하지 않는다) — 팩 훅(guard)·팩 스크립트가 Rust 판정기를 그대로 쓰는 입구.
+    /// 문 닫힘 + agy 실행이면 76 + 사유(stderr) · 그 밖 0. `--cmd '<셸 문>'` 또는 `-- <argv…>`.
+    #[command(name = "agy-door-check", hide = true)]
+    AgyDoorCheck {
+        #[arg(long)]
+        cmd: Option<String>,
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(last = true)]
+        argv: Vec<String>,
+    },
     /// 어댑터 CLI 설치 감지 — agents.json 의 각 어댑터가 **지금 기동 가능한가**(바이너리 실재+실행권).
     /// 부트·python(detect_reviewer)·GUI 가 공유하는 단일 오라클(CS-1③). 데몬 무의존.
     #[command(name = "agent-detect")]
@@ -7227,6 +7238,20 @@ fn run(command: Command) -> i32 {
         }
         Command::Boot { cwd, json } => return run_boot(cwd, json),
         Command::AgentDetect { json } => return run_agent_detect(json),
+        Command::AgyDoorCheck { cmd, agent, argv } => {
+            let m = if argv.is_empty() {
+                cys::agy_door::launch_refusal(agent.as_deref().unwrap_or(""), cmd.as_deref())
+            } else {
+                cys::agy_door::launch_refusal_argv(&argv)
+            };
+            return match m {
+                Some(m) => {
+                    eprintln!("{m}");
+                    cys::agy_door::EXIT_AGY_POLICY_REFUSED
+                }
+                None => 0,
+            };
+        }
         Command::GateCorpus { json, agent, detected_version } => {
             return run_gate_corpus(&agent, json, detected_version.as_deref())
         }
@@ -7994,7 +8019,13 @@ fn run_channel(action: ChannelAction) -> i32 {
     }
     let (method, params): (&str, Value) = match action {
         ChannelAction::Start { channel, cmd } => (
-            "channel.start",
+            {
+                if let Some(m) = cmd.as_deref().and_then(|c| cys::agy_door::launch_refusal("", Some(c))) {
+                    eprintln!("[channel] {m}");
+                    std::process::exit(cys::agy_door::EXIT_AGY_POLICY_REFUSED); // ★agy 좌석 문(재사용 브리지는 데몬 spawn_bridge 가 판정)
+                }
+                "channel.start"
+            },
             json!({"channel": channel, "cmd": cmd}),
         ),
         ChannelAction::Stop { channel } => ("channel.stop", json!({"channel": channel})),
@@ -8620,6 +8651,10 @@ fn run_schedule(action: ScheduleAction) -> i32 {
                         || cwd.is_some())
                 {
                     return Err("--command cannot be combined with --to/--if-absent-launch/--fresh/--agent/--cwd (these apply only to --text push jobs)".into());
+                }
+                if let Some(m) = command.as_deref().and_then(|c| cys::agy_door::launch_refusal("", Some(c))) {
+                    eprintln!("[schedule] {m}");
+                    std::process::exit(cys::agy_door::EXIT_AGY_POLICY_REFUSED); // ★agy 좌석 문 — 등록 때(발화 때는 데몬이 한 번 더)
                 }
                 // --time(반복)·--in(원샷)·--every(주기) 정확히 하나
                 let mode_count = time.is_some() as u8 + in_dur.is_some() as u8 + every.is_some() as u8;

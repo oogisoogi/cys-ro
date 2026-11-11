@@ -3215,6 +3215,10 @@ async fn fire_command(daemon: &Arc<Daemon>, job: &Job) -> Result<String, String>
         .command
         .as_deref()
         .ok_or("command job missing 'command'")?;
+    // ★agy 좌석 문(독립 검증 B1): 발화 때마다 판정 — 등록 뒤 문이 닫혔거나 파일을 손으로 고친 일정도 막는다.
+    if let Some(m) = cys::agy_door::launch_refusal("", Some(command)) {
+        return Err(m);
+    }
     let (shell, flag) = command_shell();
     #[cfg(windows)]
     warn_shell_fallback(daemon, flag);

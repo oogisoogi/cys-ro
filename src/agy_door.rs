@@ -57,7 +57,22 @@ fn is_agy_name(p: &str) -> bool {
 
 /// 낱말이 agy 실행 파일 이름인가 — 경로·확장자를 걷고, 셸 이스케이프(`ag\y`)를 지운 꼴도 본다.
 fn is_agy_word(t: &str) -> bool {
-    is_agy_name(&basename_lc(t)) || is_agy_name(&basename_lc(&t.replace('\\', "")))
+    // 셸 이스케이프(`ag\y`) · cmd 의 캐럿(`a^gy`) · zsh 등호 확장(`=agy`)을 걷어 낸 꼴까지 본다.
+    let t = t.strip_prefix('=').unwrap_or(t);
+    is_agy_name(&basename_lc(t)) || is_agy_name(&basename_lc(&t.replace(['\\', '^'], "")))
+}
+
+/// 리다이렉트 낱말이면 건너뛸 낱말 수(대상이 붙어 있으면 1 · 연산자만이면 대상까지 2) — `>/dev/null agy` · `2>&1 agy` · `< f agy`.
+fn redirect_skip(t: &Tok) -> Option<usize> {
+    if t.quoted {
+        return None;
+    }
+    let s = t.text.trim_start_matches(|c: char| c.is_ascii_digit());
+    let op_len = ["&>>", ">>", "&>", ">&", "<&", "<<", ">", "<", ">|"].iter().find(|o| s.starts_with(**o))?.len();
+    if s.starts_with("<<<") {
+        return None;   // here-string 은 셸 갈래가 읽는다
+    }
+    Some(if s.len() == op_len { 2 } else { 1 })
 }
 
 fn mentions_agy(s: &str) -> bool {
@@ -153,10 +168,15 @@ fn lex(s: &str) -> Vec<Vec<Tok>> {
                 any = true;
             }
             None if c == '\'' || c == '"' => {
+                if cur == "$" {
+                    cur.clear();   // ANSI-C `$'…'` — 따옴표 앞 `$` 는 이름의 일부가 아니다
+                }
                 q = Some(c);
                 any = true;
                 quoted = true;
             }
+            // 리다이렉트 속 `&`(`2>&1` · `&>f`)는 명령 경계가 아니다
+            None if c == '&' && (cur.ends_with('>') || cur.ends_with('<') || it.peek() == Some(&'>')) => cur.push(c),
             None if matches!(c, ';' | '&' | '|' | '(' | ')' | '\n') => {
                 flush(&mut out, &mut cur, &mut any, &mut quoted);
                 if !out.is_empty() {
@@ -191,8 +211,14 @@ fn scan(cmd: &str, depth: u8) -> Vec<String> {
     for seg in lex(&outer) {
         out.extend(seg_programs(&seg, depth));
     }
+    // `echo agy | sh` — 표준 입력을 스크립트로 읽는 셸이 있고 문에 agy 낱말이 있으면 agy(파이프 내용은 정적으로 못 읽음 · 안전 쪽)
+    if out.iter().any(|p| p == STDIN_SHELL) && mentions_agy(cmd) {
+        out.push("agy".into());
+    }
     out
 }
+
+const STDIN_SHELL: &str = "<stdin-shell>";
 
 /// 조회·출력만 하는 프로그램 — 인자 속 agy 낱말을 실행으로 세지 않는다.
 const NON_EXEC: [&str; 17] = ["echo", "printf", "which", "type", "whereis", "test", "[", "ls", "cat", "grep", "rg", "man",
@@ -202,7 +228,7 @@ fn seg_programs(w: &[Tok], depth: u8) -> Vec<String> {
     let (mut progs, nonexec) = program_of(w, depth);
     if !nonexec
         && !progs.iter().any(|p| is_agy_name(p))
-        && w.iter().any(|t| !t.quoted && !is_assignment(&t.text) && is_agy_word(&t.text))
+        && w.iter().any(|t| !t.quoted && !is_assignment(&t.text) && redirect_skip(t).is_none() && is_agy_word(&t.text))
     {
         progs.push("agy".into());
     }
@@ -237,18 +263,26 @@ fn wrapper_spec(base: &str) -> Option<(&'static str, &'static [&'static str], us
                                      "--delimiter", "--arg-file"], 0),
         "script" => ("Ft", &[], 1),
         "arch" => ("", &["-arch", "-e"], 0),
+        "busybox" => ("", &[], 0),
+        "repeat" => ("", &[], 1),   // zsh `repeat N 명령`
         _ => return None,
     })
 }
 
 /// 명령 단위 하나 → (실행될 프로그램들, 조회 전용인가).
 fn program_of(w: &[Tok], depth: u8) -> (Vec<String>, bool) {
-    const KW: [&str; 10] = ["!", "{", "}", "then", "do", "else", "elif", "if", "while", "until"];
+    // 예약어 · zsh 앞말(noglob·nocorrect·builtin·coproc·`-`)
+    const KW: [&str; 15] = ["!", "{", "}", "then", "do", "else", "elif", "if", "while", "until", "noglob", "nocorrect",
+                            "builtin", "coproc", "-"];
     let mut i = 0;
     while i < w.len() {
         let t = &w[i].text;
-        if (!w[i].quoted && is_assignment(t)) || KW.contains(&t.as_str()) {
+        if (!w[i].quoted && is_assignment(t)) || (!w[i].quoted && KW.contains(&t.as_str())) {
             i += 1;
+            continue;
+        }
+        if let Some(n) = redirect_skip(&w[i]) {
+            i += n;
             continue;
         }
         let base = basename_lc(t);
@@ -298,7 +332,12 @@ fn program_of(w: &[Tok], depth: u8) -> (Vec<String>, bool) {
             }
             continue;
         }
-        if matches!(base.as_str(), "sh" | "bash" | "zsh" | "dash" | "ksh") {
+        if base == "su" {
+            if let Some(k) = rest.iter().position(|t| t.text == "-c" || t.text == "--command") {
+                return (rest.get(k + 1).map(|t| scan(&t.text, depth + 1)).unwrap_or_default(), false);
+            }
+        }
+        if matches!(base.as_str(), "sh" | "bash" | "zsh" | "dash" | "ksh" | "csh" | "tcsh" | "fish" | "mksh" | "yash") {
             // here-string(`bash <<< '문'`) = 표준 입력 스크립트
             if let Some(k) = rest.iter().position(|t| t.text.starts_with("<<<")) {
                 let v = rest[k].text[3..].to_string();
@@ -329,7 +368,9 @@ fn program_of(w: &[Tok], depth: u8) -> (Vec<String>, bool) {
                 }
                 j += 1;
             }
-            return (vec![base], false);
+            // 스크립트 파일 없이 뜬 셸 = 표준 입력을 실행한다(파이프 `… | sh`)
+            let script = rest[j.min(rest.len())..].iter().any(|t| redirect_skip(t).is_none());
+            return (vec![if script { base } else { STDIN_SHELL.into() }], false);
         }
         if base == "cmd" {
             // cmd.exe /c 문 · /k 문 — 뒤 전부가 실행될 명령
@@ -572,6 +613,46 @@ mod tests {
         assert!(launch_refusal_argv_with(&argv(&["env", "-iSagy"]), false).is_some());
         assert!(launch_refusal_argv_with(&argv(&["timeout", "5", "agy"]), false).is_some());
         assert!(launch_refusal_argv_with(&argv(&["true", "&&", "agy"]), false).is_some());
+    }
+
+    #[test]
+    fn every_other_entry_is_gated_source_pin() {
+        // 독립 검증 B1·B2·M3: 문 판정 없이 셸 문을 실행하던 입구 — 판정 줄을 지우면 붉다(배선 핀).
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let pins: [(&str, &str); 7] = [
+            ("src/bin/cysd/schedule.rs", "if let Some(m) = cys::agy_door::launch_refusal(\"\", Some(command)) {"),
+            ("src/bin/cysd/channels.rs", "if let Some(m) = cys::agy_door::launch_refusal(\"\", Some(bridge_cmd)) {"),
+            ("src/bin/cysd/accounts.rs", "if cys::agy_door::launch_refusal(\"\", Some(&cmd)).is_some() {"),
+            ("src/bin/cysd/handlers.rs", "&& cys::agy_door::launch_refusal(key.as_deref().unwrap_or(\"\"), cmd).is_some()"),
+            ("src/bin/cys.rs", "if let Some(m) = command.as_deref().and_then(|c| cys::agy_door::launch_refusal(\"\", Some(c))) {"),
+            ("src/bin/cys.rs", "if let Some(m) = cmd.as_deref().and_then(|c| cys::agy_door::launch_refusal(\"\", Some(c))) {"),
+            ("cysjavis-pack/bin/javis_orchestra.py", "_refuse = agy_door_refusal(args.from_cmd)"),
+        ];
+        for (f, needle) in pins {
+            let src = std::fs::read_to_string(root.join(f)).unwrap();
+            assert!(src.contains(needle), "{f}: 문 판정 줄 부재 — {needle}");
+        }
+        // 발화 판정은 셸 스폰보다 앞
+        let sch = std::fs::read_to_string(root.join("src/bin/cysd/schedule.rs")).unwrap();
+        let f = sch.find("async fn fire_command").unwrap();
+        assert!(sch[f..].find("launch_refusal").unwrap() < sch[f..].find("command_shell()").unwrap());
+    }
+
+    #[test]
+    fn verify_966_reducible_bypasses() {
+        // 독립 검증(966) §3 「목록으로 줄일 수 있는 부류」 · 출하 키 gemini cmd 앞 리다이렉트
+        for agy in [">/dev/null agy", "2>&1 agy", "</dev/null agy", ">/dev/null ~/.local/bin/agy --dangerously-skip-permissions",
+                    "&>/dev/null agy", "noglob agy", "nocorrect agy", "builtin exec agy", "coproc agy", "repeat 1 agy", "=agy",
+                    "- agy", "csh -c 'agy'", "tcsh -c 'agy -p'", "fish -c 'agy'", "su -c 'agy' me", "busybox sh -c 'agy'",
+                    "$'agy'", "a^gy", "echo agy | sh", "printf agy | bash -s", "echo hi\nagy", "start agy", "call agy",
+                    "wsl agy", "watch agy", "flock /tmp/l agy", "tmux new -d agy", "screen -dm agy", "npx @google/antigravity",
+                    "sh -o errexit -c agy"] {
+            assert!(is_agy_adapter("claude", Some(agy)), "{agy}");
+        }
+        assert!(launch_refusal_with("gemini", Some(">/dev/null ~/.local/bin/agy --dangerously-skip-permissions"), false).is_some());
+        for ok in ["claude 2>&1", "claude >/tmp/agy.log", "cat x | sh", "echo agy | grep a", "claude --dangerously-skip-permissions 2>/dev/null"] {
+            assert!(!is_agy_adapter("claude", Some(ok)), "{ok}");
+        }
     }
 
     #[test]

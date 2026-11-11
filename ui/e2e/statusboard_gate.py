@@ -84,6 +84,7 @@ SHIM = r"""
     core: { invoke: (cmd, args) => new Promise((res, rej) => { try { res(respond(cmd, args ?? {})); } catch (e) { rej(e); } }) },
     event: { listen: (name, h) => { (listeners[name] ??= []).push(h); return Promise.resolve(() => {}); } },
   };
+  window.__emit = (name, payload) => { for (const h of listeners[name] ?? []) h({ payload }); return (listeners[name] ?? []).length; };
 })();
 """
 

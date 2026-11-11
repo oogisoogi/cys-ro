@@ -34,3 +34,19 @@
 | 끝남 | 점 숨김 | 「–」 → 빈 칸(흐린 줄) | 세지 않음 |
 
 한 화면에 뜻이 다른 ◆ 는 없다(종전 좌석 줄 ◆ = 대기 · 역할 점 마름모 = 입력 대기 가 겹치던 것 해소). 「승인 창」·「확인」 꼬리표는 글자 그대로 남는다.
+
+## 1e — 컨트롤 센터 단추 내리기 · 유일한 입구 6가지 도달 확인표(master#cc01161f · 감사 REPORT §2-1)
+
+단추를 숨겨도 컨트롤 센터 코드·탭·수집(analytics.db · control.dashboard)은 그대로다. 여는 길 = ① `화면 설정` 맨 위 「컨트롤 센터 열기」(setCcOpen(true) · ui/e2e/cc_button_gate.py 로 열림 확인) ② 말(마스터 → 명령 — **2d 에서 데몬·CLI 통로와 함께 넣는다 · 지금은 미구현**) ③ 「상단 단추」에서 Control Center 를 다시 켬(예전 그대로).
+자동 열림(approval.stalled → openFeed · 유예 뒤 자동 전환 scheduleFeedSwitchIfStillPending)은 손대지 않았다 — 단추 숨김 상태에서 approval.stalled 로 패널이 열림을 같은 게이트로 확인.
+
+| 컨트롤 센터가 유일한 입구(감사 #) | 들어가는 자리(패널 안) | ① 화면 설정 「컨트롤 센터 열기」 | ② 말 | 안내 문구 보완 |
+|---|---|---|---|---|
+| 휴지통 영구 삭제(#14) | 휴지통 탭 | 닿음(열고 → 휴지통 탭) | 2d 뒤 | resetconfirm.ts 「…휴지통에서 명령합니다 · 화면 설정 → 컨트롤 센터 열기」 |
+| 전문가 모드 토글(#6) | Live → 설정 `#cc-expert-toggle` | 닿음(열고 → Live) | 2d 뒤 | — (설명서 182줄은 「Control Center 에서 전문가 모드」 그대로 · 여는 길은 169줄에 적음) |
+| 계정 숨기기·🔒 가림(#5) | Live 계정 표 | 닿음(열고 → Live) | 2d 뒤 | — |
+| 셸에 cysr 설치(#13) | 패널 머리 `#btn-install-cli` | 닿음(열면 머리에 있음) | 2d 뒤 | USER-MANUAL 108줄에 여는 길 덧붙임 |
+| 알람 이력(#8) | 🔔 알람 탭 | 닿음(열고 → 알람 탭) | 2d 뒤 | toastttl.ts 104줄 · USER-MANUAL 69·112·563줄에 여는 길 덧붙임 |
+| 승인 Feed 의 부서 항목·Deny·알림 치우기(#2) | 승인 Feed 탭 | 닿음(열고 → 승인 Feed) + 상황판 「승인 대기 N」(좌석 없는 승인이면 openFeed) | 2d 뒤 | — |
+
+상단 단추 정의 = `ui/src/topbarlayout.ts`(우리 포크 파일 · TOPBAR_PINNED 1줄 · TOPBAR_DEFAULT_OFF 1줄) · 기대값을 바꾼 시험 = topbarlayout.test.ts 5건(보이는 단추 · 꺼진 단추 · 고정 1 · 손상 폴백 수 · ▲▼ 수) + screensettings.test.ts 2건(화면 설정 첫 줄 · 설명서 문장).

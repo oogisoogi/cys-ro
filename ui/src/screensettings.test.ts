@@ -408,7 +408,7 @@ describe("사용 설명서", () => {
   const manual = read("../../USER-MANUAL.md");
   it("상단 단추 켬끔·순서 안내 · 단추 이름 = 화면 설정(옛 이름으로 누르라는 안내 0)", () => {
     expect(manual).toContain("상단 단추는 `화면 설정` → 「상단 단추」에서 하나씩 켜고 끄고, 순서를 바꿉니다");
-    expect(manual).toContain("처음에는 `+ New` · `Split →` · `Split ↓` · `창 닫기` · `완전 초기화` 가 꺼져 있습니다");
+    expect(manual).toContain("처음에는 `+ New` · `Split →` · `Split ↓` · `창 닫기` · `Control Center` · `완전 초기화` 가 꺼져 있습니다"); // 1.1.15 1e
     expect(manual.includes("`테마` 버튼")).toBe(false);
   });
 });

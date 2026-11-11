@@ -7020,7 +7020,7 @@ function openThemePopover(anchor: HTMLElement) {
     mkNote("끈 단추는 상단에서만 숨겨집니다 — 여기서 다시 켜면 바로 보이고, 단축키는 그대로 됩니다."),
     tbList,
     tbUnsaved,
-    mkNote("「화면 설정」·「Control Center」는 끌 수 없습니다(순서만 바꿀 수 있어요). 목록의 위쪽이 상단의 왼쪽입니다."),
+    mkNote("「화면 설정」은 끌 수 없습니다(순서만 바꿀 수 있어요). Control Center 는 끄면 「컨트롤 센터 열기」(맨 위 줄)로 엽니다. 목록의 위쪽이 상단의 왼쪽입니다."),
     mkReset("이 구획만 기본값으로", resetBar),
   );
 

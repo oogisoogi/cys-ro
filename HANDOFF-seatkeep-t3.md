@@ -5,24 +5,27 @@
 - 시험대 = `~/axdev/terminal-ide-survey/2026-11-bench/seatkeep-t3/harness/`(t3life.py · t3a13.py · t3misc.py) · T2 시험대 사본 = `../t2copy/harness/`
 - 격리 시험 실행기 = scratchpad `run_tests.sh <label> <cargo test 인자>`(CYS_* 제거 · HOME/XDG 임시 · CYS_SEATKEEP 만 통과)
 
-## 상태 = 【갈무리】(2026-11-12 01:2x · CTX 55%→60% 매듭 · master#77162b13 허용) — 후임이 아래 「다음 첫 행동」부터
-- 최종 커밋 = 이 HANDOFF 커밋(코드 마지막 = f4b9b6ab) · push 0 · 라이브 무접촉.
+## 상태 = 【확인요청】 대기(후임 surface:2004 · 2026-11-12 02:4x) — 독립 검증 → 1회 고침 → codex 1R
+- 전임 = 【갈무리】(01:2x · CTX 60%) · 후임 브리프 = 원장 01:26:58(surface:2004 · kind brief).
+- 코드 마지막 = f3252d15(조종자 종속 모드) · push 0 · 라이브 무접촉.
+- A13 【결정필요】(02:38) = master#18c2e66e 결정 A 로 닫힘(판정선 = 물리 점유 합 ≤ 160MB) → 통과(아래 표).
 
 ## 다음 첫 행동(1줄)
-master#77162b13 「조종자 종속 모드」 구현: cys-seatkeep 의 `--end-on-controller-loss` 를 `--controller-bound` 로 넓혀(아래 결정 그대로) seat_proc.rs 기동 인자도 바꾸고, 시험 ①~④ 를 돌린다.
+독립 검증 좌석의 기록을 받으면 CONFIRMED 만 1회 고친다 → codex 1R(아래 「codex 1R 꼭 물을 것」)
 
-## master 결정(미구현 · 후임 몫) — master#77162b13 원문 요지
+## master 결정(구현됨 f3252d15 · 후임) — master#77162b13 원문 요지
 - 출력 폭주 = 결정 **A 를 「조종자 종속 모드」 안으로**(B 흐름 제어 프레임 · C 꼬리 늘리기 안 함). 기동 인자 하나(예 `--controller-bound` · 지금 `--end-on-controller-loss` 를 넓힘)가 있으면 seatkeep 은 **직접 PTY 처럼 투명하게**:
   ⑴ 조종자 연결이 끊기면 PTY 마스터를 닫고 끝남(지금 구현됨 · `end_for_controller_loss`)
   ⑵ 조종자가 밀리면 **PTY 읽기를 멈춘다**(커널 역압 → 자식이 조종자 속도에 맞춰 멈춤 · 유실 0) — 지금은 4MiB 큐 → 「밀림」 → 꼬리 따라잡기(T2)
   ⑶ **write_stalled 로 내보내지 않는다** — 연결이 살아 있는 한 기다린다(멈춘 cysd 아래서 자식도 멈춰 삶 = 직접 PTY 와 같음)
   인자가 없으면 **T2 동작 그대로 한 줄도 안 바뀜**(자식 안 멈춤 · 4MiB 큐 · 꼬리 따라잡기 · write_stalled 10초) — T2 시험 무수정 초록.
 - 시험(이 모드): ① 같은 204MB 폭주(`seat_flood_tests`) = 받은 바이트 204,000,011 · 구멍 0 · 순서 어긋남 0 · 시간·RSS 를 노브 끔과 나란히 ② 조종자(격리 cysd)를 SIGSTOP 15초 → SIGCONT = 좌석 생존 · 유실 0 · write_stalled 0 ③ 인자 없는 대조군 = 아래 표 「켬」 줄과 같은 동작(유실 있음 · 자식 안 멈춤) ④ 뮤턴트(역압 줄 · 내보내기 금지 줄 각각).
-- 구현 자리(코드 판독 전 · 추정): seatkeep `main.rs` 의 출력 경로(`read_loop` → 조종자 큐에 넣는 함수 · 「밀림」 표시 `behind`) · 쓰기 스레드의 `CTL_WRITE_TIMEOUT` 설정(`write_half.set_write_timeout`) · 쓰기 스레드 오류 갈래의 `evict write_stalled`. 제어 큐 상한(1MiB · `evict_ctl_full`)은 결정에 언급 없음 — 그대로 둘지 master 에 1줄 확인 권고.
+- 구현(f3252d15): `send_output` 의 밀림 갈래를 `!controller_bound` 로 막음 · `read_loop` 가 읽기 전에 `wait_for_room`(큐 ≥ `BOUND_QUEUE_BYTES` 256KiB 면 반 아래까지 기다림 · 첫 조종자 전 = 꼬리의 남은 칸만큼만 읽음) · 쓰기 스레드가 한 프레임 쓴 뒤 `wake_readers`(기다리는 수 > 0 이고 반 아래면 상태 잠금 잡고 깨움 — 「기다리는 쪽 = 수 올린 뒤 큐를 봄 / 깨우는 쪽 = 큐 내린 뒤 수를 봄」 SeqCst) · 조종자 종속이면 `set_write_timeout` 안 함. 제어 큐 상한은 그대로(master 답 = 끄지 않음 · 시험 ②에서 0 단언).
+- (전임 추정 · 이력) 구현 자리(코드 판독 전 · 추정): seatkeep `main.rs` 의 출력 경로(`read_loop` → 조종자 큐에 넣는 함수 · 「밀림」 표시 `behind`) · 쓰기 스레드의 `CTL_WRITE_TIMEOUT` 설정(`write_half.set_write_timeout`) · 쓰기 스레드 오류 갈래의 `evict write_stalled`. 제어 큐 상한(1MiB · `evict_ctl_full`)은 결정에 언급 없음 — 그대로 둘지 master 에 1줄 확인 권고.
 
-## T4 로 넘길 것(master#77162b13 지시)
-- 입양을 켤 때(T4) 「조종자가 붙어 있는 동안의 밀림 정책(역압 + 내보내기 vs 흐름 제어 프레임)」을 다시 정한다. 근거 표 = 아래 「출력 폭주」(T2 기본 동작 = 노브 켬 유실 95.3% · 194,422,979 / 204,000,011 바이트).
-- `--controller-bound`(지금 `--end-on-controller-loss`)를 빼는 자리 = `src/bin/cysd/seat_proc.rs` seatkeep 기동 인자(주석 있음).
+## T4 로 넘길 것(master#77162b13 지시 · 후임 확인함)
+- 입양을 켤 때(T4) 「조종자가 붙어 있는 동안의 밀림 정책(역압 + 내보내기 vs 흐름 제어 프레임)」을 다시 정한다. 근거 표 = 아래 「출력 폭주」(T2 기본 동작 = 노브 켬 유실 95.3% · 194,422,979 / 204,000,011 바이트) + 「후임 실측」(조종자 종속 = 유실 0 · ^C 뒤 바이트 · 재개 지연).
+- `--controller-bound` 를 빼는 자리 = `src/bin/cysd/seat_proc.rs` seatkeep 기동 인자(주석 있음 · f3252d15 에서 옛 `--end-on-controller-loss` 를 이 이름으로 바꿈). 빼면 ⑴ 끊김 종료 ⑵ 역압 ⑶ 쓰기 기한 없음 셋이 함께 빠진다 — 입양을 켜면서 ⑵만 남기려면 인자를 나눠야 한다.
 - 끝난 좌석 등록부 3파일(.json·.log·.lock) 정리 · 죽은 pid 의 prepare/committed 무시(T2 인계 7).
 - T2 인계 중 T4·T6·T7 몫(입양 규칙 · 번들·봉인·서명 · pkill 폴백 · 윈도우 컴파일) 그대로.
 
@@ -60,6 +63,68 @@ master#77162b13 「조종자 종속 모드」 구현: cys-seatkeep 의 `--end-on
 - 「옮기기 전」(a48d36e1) 값은 **미실측**(이 시험 파일이 그 커밋에 없음 · 옛 빌드에 시험을 얹어 다시 재야 함).
 - 전경 질의 0회 = 이 좌석(`cat`)은 에이전트 그룹 표식이 0 이라 V2 지름길(시스템 콜·소켓 왕복 없음). 에이전트 좌석(표식 섬)에서는 입력 계수마다 FOREGROUND 왕복 1회가 낀다 — **그 경우 지연은 미실측**.
 
+## 후임 실측(최종 코드 f3252d15 · 2026-11-12 01:3x~02:37)
+### 고치기 전/후 — 출력 폭주(seat_flood_tests · 204,000,011 바이트 · 디버그 빌드)
+| 회차 | 받은 바이트 | 유실 | 순서 어긋남 | 시간 | cysd RSS 최고 | seatkeep RSS 최고 | 좌석 |
+|---|---|---|---|---|---|---|---|
+| 켬 · 고치기 전(HEAD f4b9b6ab 코드) | 9,589,170 | 194,410,841 | 3 | 3.26초 | 116.6MB | 22.5MB | 생존 |
+| 켬 · 큐 4MiB(첫 구현) | 204,000,011 | 0 | 0 | 73.06초 | 230.2MB | 18.8MB | 생존 |
+| 켬 · 큐 256KiB(최종) | 204,000,011 | 0 | 0 | 73.72초 | 246.4MB | 13.3MB | 생존 |
+| 끔(같은 날) | 204,000,011 | 0 | 0 | 56.89초 | 267.1MB | — | 생존 |
+- 릴리스 실물 cysd(t3rate.py · 같은 204MB): 끔 4.83·5.11초(42.2·39.9MB/s) / 켬 5.61·5.81초(36.4·35.1MB/s) = 켬 약 14% 느림 · 4회 모두 화면 끝 2,000,000 + FLOODDONE · cysd 출력 구멍 줄 0 · cysd RSS 최고 끔 453~457MB / 켬 439~446MB · seatkeep 10~11MB.
+### 시험 ②③ + 직접 PTY 대조(seatkeep 단독 t3bound.py · 실물 cysd t3stop.py · 릴리스)
+| 경우 | 멈춘 동안 자식 | 유실 | 내보냄 | 재개 지연 | 끝까지 받음 |
+|---|---|---|---|---|---|
+| 실물 cysd SIGSTOP 15초 → SIGCONT(②) | 멈춤 | 0(구멍 줄 0 · 화면 끝 1,000,000) | 0(write_stalled·control_queue_full 0) | 13.3~18.3ms | 예 · 좌석·seatkeep·cysd 생존 |
+| seatkeep 조종자 종속 · 조종자 15초 안 읽음 | 멈춤 | 0 | 0 | 7~20ms(4MiB 때 110ms) | 예 |
+| 인자 없음(③ 대조군 = T2) | 안 멈춤 | 8.08~10.86MB | write_stalled | — | 아니오(내보내짐) |
+| 직접 PTY(seatkeep 없음) | 멈춤 | 0 | — | 0.2~1.1ms | 예 |
+| 첫 조종자 3초 늦게 · 조종자 종속 | 붙기 전 멈춤(진행 10,200 고정) | 0 | 0 | — | 예 |
+| 첫 조종자 3초 늦게 · 인자 없음 | 안 멈춤 | 29.55MB(꼬리 1MiB 밖) | — | — | — |
+- 역압 중 ^C(읽기 멈춘 채 INPUT ^C): 자식 끝나기까지 조종자 종속 607~637ms / 직접 PTY 612~644ms(같음 — 자식에 닿음). ^C 뒤 조종자에게 더 온 바이트: 직접 PTY 0(커널이 ^C 때 출력 큐 비움) / 조종자 종속 4MiB 큐 3.89~3.93MB → 256KiB 큐 250~252KB.
+### 전체 시험(f3252d15)
+- 노브 끔 cysd 전체: 3242 통과 · 2 실패(native_publication 2 = 기준선 a48d36e1 과 같음) · 17 무시 · rc 101(567.7초).
+- 노브 켬 cysd 전체: 3240 통과 · 4 실패 · 17 무시 · rc 101 — native_publication 2(기준선) + b3_status_usage… · settle_hold_denies…(뮤턴트 작업과 동시 실행 회차 · 따로 3회 = 3/3 초록). b3 실패 사유 = 「seatkeep 이 붙기 전에 끝남 rc 5」 + seatkeep stderr `spawn: No such file or directory` — PLAUSIBLE: 같은 시험 프로세스의 다른 시험들이 HOME 을 프로세스 전체로 바꾸고 지움(handlers.rs set_var("HOME") 12곳) → 좌석 작업 폴더 경합. 직접 PTY 도 같은 부류 · 미확정이라 안 고침.
+- seatkeep 단위 33/33(T2 27 + 전임 3 + 후임 3: bound_send_output_never_goes_behind · bound_reads_only_tail_room_before_first_controller · bound_reader_waits_at_cap_and_wakes_below_half).
+- T2 `t2.py all`(인자 없는 seatkeep = T2 동작): 판정 48행 · 실패 0 · rc 0(전임 회차는 시험대 결과 폴더 부재로 rc 1 — 폴더 만들고 다시 돌림).
+- M09 결정적 시험(reap_marks_before_reaping): 동시 빌드 부하(rustc 2~5 · load 약 11) 아래 10/10.
+- 좌석 수명(t3life · 릴리스): 켬 SIGKILL 6/6(91~384ms) · SIGTERM 6/6(160~260ms) — 사유 controller_lost ×12 · 등록부 ended_controller_lost / 끔 SIGKILL 6/6 · SIGTERM 6/6 = 24/24.
+- 좌석 100개 만들고 닫기(t3misc 고친 판 · 켬): 닫기 실패 0 · seatkeep 잔존 0 · 남는 파일 300(.json·.log·.lock 각 100) · 105,372 바이트 · .sock 0 · .exit 0 / 끔: 0. 40좌석 동시 생성·동시 닫기: 켬 1.25초/1.72초 · 끔 0.72초/1.10초 · 실패 0 · 시간 초과 0(교착 0).
+- A13 = 아래 「A13」 표(판정선 개정 뒤 다시 잼).
+### A13(master#18c2e66e 결정 A · 판정선 개정 02:38 — 「40좌석 RSS ≤ 320MB」 → **40좌석 seatkeep 물리 점유 합 ≤ 160MB** · 유휴 CPU ≤ 2% 불변 · 좌석당 RSS > 9MB = 경고(판정 아님))
+- 측정 명령: `python3 ~/axdev/terminal-ide-survey/2026-11-bench/seatkeep-t3/harness/t3a13.py <target/release> <on|off> 1 5 20 40`(격리 cysd · 합성 좌석 seat.py · quiet = 좌석당 5초에 1줄 / noisy = 50ms 간격 약 215B).
+- 물리 점유 = `proc_pid_rusage(pid, RUSAGE_INFO_V2)` 의 `ri_phys_footprint`(시험대 `t2copy/harness/a13.py` `footprint_mb` · 활성 상태 모니터 「메모리」 열과 같은 값) · seatkeep 칸 = 등록부 `seatkeep/*.json` 중 phase committed 이고 살아 있는 pid **전부(40좌석 = 40개)의 합** · 1초 표본 20초 창에서 그 합의 최댓값. RSS = `ps -o rss=` 같은 방식 합. cysd 칸 = cysd 1개의 같은 창 최댓값. CPU = 20초 창 누적 CPU 시간 차 ÷ 경과.
+| 노브 · 부하 · 좌석 | seatkeep RSS 합 | seatkeep 물리 점유 합 | 좌석당 RSS / 물리 점유 | seatkeep CPU | 스레드 | cysd RSS | cysd 물리 점유 | cysd CPU |
+|---|---|---|---|---|---|---|---|---|
+| 켬 quiet 1 | 8.1 | 3.2 | 8.11 / 3.22 | 0.0% | 7 | 41.8 | 9.2 | 0.38% |
+| 켬 quiet 5 | 40.4 | 16.0 | 8.08 / 3.20 | 0.0% | 35 | 43.5 | 10.9 | 0.30% |
+| 켬 quiet 20 | 161.3 | 63.5 | 8.07 / 3.18 | 0.0% | 140 | 52.0 | 19.4 | 0.58% |
+| **켬 quiet 40** | 324.4 | **127.6** | 8.11 / 3.19 | **0.0%** | 280 | 58.8 | 26.1 | 0.52% |
+| 켬 noisy 1 | 8.2 | 3.3 | 8.22 / 3.28 | 0.0% | 7 | 44.4 | 11.8 | 0.34% |
+| 켬 noisy 5 | 40.9 | 16.4 | 8.18 / 3.28 | 0.0% | 35 | 50.8 | 17.8 | 0.58% |
+| 켬 noisy 20 | 163.8 | 66.0 | 8.19 / 3.30 | 0.20% | 140 | 79.2 | 42.6 | 1.57% |
+| **켬 noisy 40** | 327.8 | **132.9** | 8.20 / 3.32 | 0.68% | 280 | 119.5 | 86.9 | 2.71% |
+| 끔 quiet 1·5·20·40 | — | — | — | — | — | 42.2·43.7·49.9·56.4 | 9.6·11.1·17.3·**23.8** | 0.53·0.43·0.48·0.78% |
+| 끔 noisy 1·5·20·40 | — | — | — | — | — | 43.4·49.3·75.6·112.7 | 10.7·16.0·42.7·**80.1** | 0.54·0.82·1.64·2.46% |
+(단위 MB · 2026-11-12 02:39~02:50 · 릴리스 · 최종 코드 f3252d15)
+- 판정: 40좌석 물리 점유 합 127.6MB(quiet) · 132.9MB(noisy) ≤ 160MB = **통과** · 유휴(quiet) CPU 0.0% ≤ 2% = **통과** · 좌석당 RSS 8.07~8.22MB < 9MB = 경고 없음.
+- 비례(조건 ⑵): 좌석당 물리 점유 1→5→20→40 = quiet 3.22→3.20→3.18→3.19 · noisy 3.28→3.28→3.30→3.32MB — 좌석 수가 늘어도 좌석당 값이 늘지 않음(noisy 1→40 +0.04MB).
+- cysd 쪽 증가분(조건 ⑷): 40좌석 cysd 물리 점유 켬 − 끔 = quiet 26.1 − 23.8 = **+2.3MB** · noisy 86.9 − 80.1 = **+6.8MB**(각 1회 · 잡음 폭 미측정). 노브 켬 40좌석 기기 부담 합(seatkeep + cysd 증가분) = quiet 약 129.9MB · noisy 약 139.7MB.
+- 근거의 약한 곳(조건 ⑶): 「RSS 는 공용 라이브러리 페이지를 프로세스마다 다시 센다」의 직접 관측 = vmmap **표본 1**(seatkeep 1개 · 조종자 없음 · RSS 6.5MB 중 물리 점유 1.86MB · 스레드 5개 스택 상주 합 144KB). 40개 전부의 vmmap 은 안 함. 각 칸은 1회 측정(반복 없음).
+- 이전 RSS 값(판정선 개정 전 같은 코드 02:22): quiet 40 = 323.7 · noisy 40 = 327.4(그때 판정선 320MB 초과 → 【결정필요】 02:38 → master#18c2e66e 결정 A).
+### 뮤턴트(t3mutants2.py · 별도 git 작업트리 · 기준 회차 14종 전부 초록 확인 뒤)
+| 뮤턴트 | 잡은 시험 | 놓친 시험 |
+|---|---|---|
+| T1~T9 · M09(전임 방어 줄 10) | 각 해당 시험(10/10 잡음) | — |
+| M1 조종자 종속에서 밀림 갈래 다시 열기 | 단위 bound_send_output… | bound · flood_on(256KiB 역압이 큐를 4MiB 아래로 묶어 이 줄에 닿지 않음 = 겹 방어) |
+| M2 역압 기다림 빼기 | bound(자식 안 멈춤 · 붙기 전 유실 10.79MB) · 실물 cysd stop(자식 안 멈춤) | flood_on(큐가 끝없이 커질 뿐 유실은 없음) |
+| M3 조종자 종속에도 쓰기 기한 | bound(write_stalled) · stop(좌석 사망 · controller_lost) | — |
+| M4 첫 조종자 전 꼬리 칸 제한 빼기 | 단위 · late_bound(유실 29.55MB) | — |
+| M5 깨우기 빼기 | 단위 · bound(멈춘 채 135초 시간 초과) | — |
+| M7 cysd 가 인자 안 줌 | stop(자식 안 멈춤 · write_stalled) · life(좌석 생존 = HUP 없음) | — |
+| M8 끊김 종료 빼기 | life(좌석 생존) | — |
+= 17/17 잡음(전임 표는 build.rs 「git 인덱스 부재」로 10/10 빌드 실패였음).
+
 ## 지시 없이 내린 판단
 1. 손잡이 얼굴 = portable-pty `MasterPty`/`Child` 트레이트(필드 타입 불변 · 시험 구역 86곳 무수정) — 메모 §2(master 수용 c125bc97).
 2. 운영 직접 접근 5곳(close_auth·handlers·repaint·governance·state)은 본문을 seat_proc 로 옮기고 옛 이름은 한 줄 위임으로 남김.
@@ -69,8 +134,20 @@ master#77162b13 「조종자 종속 모드」 구현: cys-seatkeep 의 `--end-on
 6. cysd 는 RELEASE 를 쓰지 않음(그룹 SIGHUP = 결정 B 와 어긋남 · T6 판 내림 몫).
 7. 시험 빌드 한정: seatkeep 상태 폴더 = 짧은 임시 폴더 `cskt-<pid>` · 조종자 잠금 = 그 안 `locks/<해시>.lock`(시험 데몬은 시작 잠금을 안 잡음 · 맥 소켓 104바이트) — 제품 경로(`state_dir` · `socket.with_extension("lock")`)와 다름.
 8. 시험 환경 변수 `CYS_SEATKEEP_TEST_COMMIT_DELAY_MS` = `cfg(debug_assertions)`(릴리스 빌드에 문장 없음 · 제거 아님 — T2 시험대가 디버그 빌드로 씀).
+9.(후임) 조종자 종속 모드 큐 상한 = `BOUND_QUEUE_BYTES` 256KiB(인자 없는 모드의 4MiB 와 따로) — 근거 = ^C 뒤 바이트 3.9MB→252KB · 재개 지연 110ms→7~20ms · 처리량 같음(위 표). 【중간】 01:46 에 알림.
+10.(후임) 첫 조종자 전에도 역압: 꼬리의 남은 칸만큼만 읽고 꼬리가 차면 멈춤(cysd 기동~WELCOME 사이에 1MiB 넘게 쏟는 자식의 앞부분 유실 방지 · 시험 late-bound).
+11.(후임) 붙을 때 따로 깨우는 줄은 넣지 않음 — 첫 프레임(WELCOME)을 쓴 쓰기 스레드의 `wake_readers` 가 깨움(넣었다가 뺌 · M5 가 깨우기 길 전체를 잡음).
+12.(후임) 옛 인자 이름 `--end-on-controller-loss` 는 별칭으로 남기지 않음(바꿈 · 모르는 인자 = rc 2) — 쓰는 곳 cysd 1곳뿐(grep).
+13.(후임) 전임 시험대 고침: t3misc 닫기 인자(`--surface N` → `surface:N` 위치 인자 · 시간 초과 셈) · t2copy/results 폴더 만듦 · 뮤턴트는 rsync 사본 대신 git 작업트리(`git worktree add --detach /private/tmp/sk3mut-wt` · 끝나고 제거함).
 
-## 확인 못 한 것 · 남은 것
+## 확인 못 한 것 · 남은 것(후임 갱신 — 아래 전임 줄 중 다시 잰 것은 위 「후임 실측」이 정본)
+- (후임) cysd 쪽 seatkeep 연결 채널(`OUT_QUEUE_CHUNKS` 64조각 × 최대 16KiB ≈ 1MiB)도 ^C 뒤 화면에 흐를 수 있음 — PLAUSIBLE · 미실측(seatkeep 쪽 252KB 만 잼).
+- (후임) 켬이 끔보다 느림: 릴리스 약 14% · 디버그 약 28% — 원인 미규명(seatkeep 한 단계 더 · cysd demux→채널 복사 추정).
+- (후임) 역압 중 FOREGROUND 질의는 출력 뒤에 줄 서므로 200ms 상한을 넘겨 「모름」이 될 수 있음(인자 없는 모드도 같음) · 입력 수신 확인도 그 뒤 — 미실측.
+- (후임) 100좌석 시험의 남은 .json·.log·.lock 300개 = T4 몫(그대로).
+- (후임) 이 맥에 T2 시험대(skt2-a13p5·p40)가 13시간 넘게 남긴 seatkeep 약 86개가 살아 있음(남의 것 · 안 건드림 · PTY 69개 사용 중 / 상한 511).
+- 윈도우·리눅스 컴파일 = 미실측(그대로).
+- (전임 줄 · 이력)
 - 노브 켬 **전체** 재실행(f4b9b6ab 이후) · t2 `all`(대조군 = 인자 없는 seatkeep 자식 생존 포함) · A13 1·5·20·40 · 100좌석 잔존 파일 · 40좌석 동시 생성/닫기 · 뮤턴트 표 — 결과 파일 = `seatkeep-t3/results/{t2-all-t3.out,t3a13-on.out,t3misc.out,t3-mutants.tsv}`(돌리는 중 01:24~).
 - M09 결정적 시험의 부하 아래 10/10(동시 빌드 중) — 미실행.
 - 윈도우·리눅스 컴파일 점검 = 미실측(T2 관측 그대로 · `cfg` 로 가름: seatkeep 경로 = macos 만 · 그 밖 노브 켬 = 생성 실패 + 이유).

@@ -61,7 +61,8 @@ pub(crate) fn resize(master: &Mutex<..>, rows, cols)                  // #13
   4. 연결 스레드 1개가 프레임을 나눈다: OUTPUT → 읽기 얼굴(오프셋 연속 확인 · 구멍이면 로그) · INPUT_ACK → 쓰기 대기자 깨움 · FOREGROUND_IS → 전경 대기자 · EXITED → 종료 상태 기록 + 읽기 EOF + **즉시 EXIT_ACK** · 연결 끊김 = 종료로 접음(`seatkeep_disconnected` — seatkeep 이 죽으면 마스터가 닫혀 자식도 SIGHUP 으로 끝난다 【코드 DESIGN §1-2】).
   5. 쓰기 = 256KiB 조각마다 INPUT(id = `시작 시각<<32 | 순번`) → INPUT_ACK 까지 기다림(직접 PTY 의 「write 가 돌아오면 PTY 에 들어감」과 같은 뜻 · 조각 상한 덕에 seatkeep 입력 대기 1MiB 를 넘지 않음) · 끊김·종료 = 오류.
   6. 크기 = RESIZE(확인 프레임 없음 · `get_size` = 마지막으로 보낸 값) · 전경 = FOREGROUND 왕복(상한 200ms · 넘으면 `None` = V2 종전 경로) · 신호/닫기(`Child::kill`) = **SIGNAL `{"sig":1,"target":"leader"}`** → 50ms×4 EXITED 확인 → SIGNAL `{"sig":9,"target":"leader"}`(직접 PTY 와 같은 대상 · §6 결정 B) · `wait` = EXITED 까지(끊김 = 오류로 끝). RELEASE(그룹 SIGHUP)는 결정 B 와 어긋나 T3 에서 쓰지 않는다(판 내림 = T6).
-  6-1. **좌석 수명 = 직접 PTY 와 같게**(master#c125bc97 ②): cysd 는 seatkeep 을 늘 `--end-on-controller-loss` 로 띄운다 → 조종자(cysd) 연결이 끊기면(또는 기동 뒤 15초 안에 아무도 안 붙으면) seatkeep 이 기록 1줄 · 등록부 `ended_controller_lost` 를 남기고 스스로 끝난다 = 커널이 PTY 마스터를 닫아 좌석에 SIGHUP(cysd 가 마스터를 쥐던 지금과 같은 경로). 인자 없으면 T2 동작 그대로. ⚠T4 가 입양을 켤 때 이 인자를 뺀다(`seat_proc.rs` 그 자리 주석). 그래서 위험 1(조종자 없이 사는 좌석)은 T3 에서 없다.
+  6-1. **좌석 수명 = 직접 PTY 와 같게**(master#c125bc97 ②): cysd 는 seatkeep 을 늘 `--controller-bound`(옛 `--end-on-controller-loss` 를 master#77162b13 로 넓힘 — 아래 6-1') 로 띄운다 → 조종자(cysd) 연결이 끊기면(또는 기동 뒤 15초 안에 아무도 안 붙으면) seatkeep 이 기록 1줄 · 등록부 `ended_controller_lost` 를 남기고 스스로 끝난다 = 커널이 PTY 마스터를 닫아 좌석에 SIGHUP(cysd 가 마스터를 쥐던 지금과 같은 경로). 인자 없으면 T2 동작 그대로. ⚠T4 가 입양을 켤 때 이 인자를 뺀다(`seat_proc.rs` 그 자리 주석). 그래서 위험 1(조종자 없이 사는 좌석)은 T3 에서 없다.
+  6-1'. **출력 폭주 = 조종자 종속 모드**(master#77162b13 · 후임 구현 f3252d15): 같은 인자가 있으면 ⑵ 조종자 큐가 `BOUND_QUEUE_BYTES`(256KiB)에 닿으면 seatkeep 이 PTY 읽기를 멈추고 반 아래에서 다시 읽는다(커널 역압 → 자식이 cysd 속도에 맞춰 멈춤 · 유실 0 · 첫 조종자 전에는 꼬리의 남은 칸만큼만 읽음) ⑶ 쓰기 기한 없음(`write_stalled` 없음 — 멈춘 cysd 아래서 자식도 멈춰 산다). 제어 큐 상한(`control_queue_full`)은 그대로. 상한을 4MiB 가 아니라 256KiB 로 둔 까닭 = ^C 뒤 흐르는 바이트·재개 지연 실측(HANDOFF 표).
   6-2. **출력 큐 상한**(master#c125bc97 ③): 연결 스레드 → 읽기 얼굴 큐 = 조각 64개(`sync_channel`) · 차면 연결 스레드가 기다린다 → seatkeep 쪽 밀림(꼬리)로 넘어간다. 상한 없는 큐를 두지 않는다. 폭주 실측 표 = HANDOFF.
   7. seatkeep 프로세스는 cysd 의 자식이다 → 연결 스레드가 끝날 때 `wait()`(좀비 방지). cysd 가 먼저 죽으면 launchd 로 넘어간다(설계 의도).
 
@@ -116,3 +117,8 @@ seatkeep 은 조종자 경로를 `SecCodeCopyGuestWithAttributes(audit)` → 코
 
 - 전수 표 계수 = scratchpad `regions.py`·`sites.py`·`fields.py`(커밋 ④ 에서 시험 안의 grep 게이트로 옮긴다).
 - 잠금 파일 독자 = §4 검색 줄.
+
+## A13 판정선 개정(master#18c2e66e · 2026-11-12 02:38)
+- 「40좌석 seatkeep 합 RSS ≤ 320MB」 → **40좌석 seatkeep 물리 점유(phys_footprint) 합 ≤ 160MB**(좌석당 4MB) · 유휴 CPU ≤ 2%(불변) · RSS 는 함께 적고 좌석당 RSS > 9MB 면 경고(회귀 감시 · 판정 아님).
+- 까닭(master) = 이 선의 목적은 사용자 기기의 메모리 부담 · RSS 는 공용 라이브러리 페이지를 프로세스마다 다시 셈(vmmap 표본 1: seatkeep RSS 6.5MB 중 물리 점유 1.86MB).
+- 측정 방법·표(1·5·20·40좌석 RSS·물리 점유 · cysd 쪽 증가분) = `HANDOFF-seatkeep-t3.md` 「A13」.

@@ -1,6 +1,6 @@
 # HANDOFF — TICKET=cysr-tabs-sidebar-impl (가지 feat/tabs-sidebar · 기준 270e3e21 v1.1.14)
 
-**다음 첫 행동 1줄**: codex 1R(docs/CODEX-R1-tabs-sidebar.txt · REVISE) 남은 4건부터 고친다 — 그 뒤 아래 원래 첫 행동.
+**다음 첫 행동 1줄**: 조각 **1h**(부서 0개 기기 = 부서 흔적 화면 0 · master#edd9d8a8 · 아래 미완 0번) → 2d → 2b-2(A안 40열) → 캡처 3·7·12. codex 1R 남은 4건 = **완료**(5a334ab8).
 
 (원래 첫 행동): 인박스에서 master 의 「두 줄 격자 기준」 답(A 40열 / B 80열 / C 격자 없음 · 10:06:45 【중간】 의 【결정필요】)을 확인하고, 답이 없으면 2c-2(아래)부터 착수한다.
 
@@ -24,6 +24,7 @@
 시험: `cd ui && bun test` = 3387 통과 0 실패 · `bunx tsc -p tsconfig.check.json` 0. 게이트 3종 PASS(아래 재현).
 
 ## 미완(순서)
+0. **1h**(master#edd9d8a8 · 박사님 「권고대로」): 부서 0개(본부만) = 「부서」 말·단추·안내 화면 0 · 1개 이상 = 지금 그대로 · 판정 = 부서 수(list_depts·deptSeen) · 감사 흔적 4(index.html:59 안내 줄 · main.ts:9152 팔레트 「부서 워크스페이스 추가」 · 「본부」 이름 · index.html:188 작업 탭 설명문) 다시 세어 표 · 만드는 길(dept-by-chat · 전문가 모드 단추)·openNewlyRegisteredDepts 무변경 · 코드 삭제 0 · 데몬·팩 무수정 · 캡처 0개/1개 · e2e 1. 감사 = ~/axdev/master/reports/2026-11-11-control-center-audit/REPORT.md §7-4 ㉯ · 부록 E §4.
 1. **2c-2**: ⓑ = **완료** — `tests/hidden_seat_screen.rs`(격리 데몬 · 구독 붙은 좌석 vs 없는 좌석 · read_text 같은 결과 줄 · 86b7bc83 + 정리 수리). 남은 것 = 막힘 표시 지연 실측 + codex 1R. (아래 원문은 이력)
    - 이력: ⓑ 숨은 탭 좌석 `cys send` → `cys read-screen` = 보이는 좌석과 같음 — 구조 근거만 있음(read-screen = 데몬 RPC `surface.read_text` handlers.rs:8763 · 숨김 = main.ts render() 의 `rt.el.remove()` DOM 떼기뿐 · 출력은 떼어진 xterm 에도 계속 씀). **격리 데몬 실측 시험이 아직 없다.** + 「승인 창이 숨은 탭에서 떴을 때 막힘 표시까지 걸린 시간」 실측 + codex 1R(숨은 탭 PTY·복원 조각 · `</dev/null` + timeout).
 2. **2d**: `cys seat-group --surface <번호> <묶음>`(데몬 메모리 필드 + 이벤트 `surface.group.changed` · 호출자 = master 또는 사람 CLI · 같은 값이면 이벤트 없음) + 앱이 `seatGroup` 에 영속(열쇠 = 소켓+역할, 없으면 소켓+cwd) + 앱 시작 때 surface.list 의 group 읽어 영속 + **말로 컨트롤 센터 열기 통로**(같은 통로 · master#b1b8d7df) · codex 1R. 치명 4군 점검 = 설계 §5.
@@ -36,6 +37,8 @@
 - 시험 장치(e2e) 계정 목록이 비면 사용량 막대가 안 그려진다(accountRates 는 updated_at 없는 계정 무시) — 결함 아님.
 - playwright = `/Users/oogisoogi/axdev/GlobalNews-Crawling-AgenticWorkflow/.venv/bin/python3`(읽기만) · 브라우저 판 불일치 → `CHROME_PATH=$HOME/Library/Caches/ms-playwright/chromium_headless_shell-1248/chrome-headless-shell-mac-arm64/chrome-headless-shell`.
 - 커밋 전에 `bunx tsc` 를 먼저(2693c9ab 를 한 번 바로잡았다).
+- cargo 는 PATH 에 없다 → `export PATH=$HOME/.cargo/bin:$PATH` · `cargo test --test hidden_seat_screen`(≈15초 · 끝나고 `pgrep -fl cys-hss` = 0).
+- dragdrop_gate.py 는 CHROME_PATH 를 안 받아 이 기계에서 브라우저 판 불일치로 못 돈다(환경 · 회귀 아님).
 
 ## 재현
 ```
@@ -46,15 +49,16 @@ for g in seatrows_gate statusboard_gate cc_button_gate; do cys run -- /Users/oog
 ```
 캡처 = `docs/evidence-tabs-sidebar/{1b,1d,1e}/`(커밋하지 않음).
 
-## 결정 대기(master/박사님)
-- 두 줄 격자 기준(A/B/C) — 10:06:45 【중간】.
-- 📌 상황판에서 「작업 중」·「대기」 가 둘 다 채운 원(작업 중만 깜박) — 정지 화면 구별 약함.
-- 📌 기본 폭 216px 에서 한도 한 줄 잘림(「…초기화까지 2…」).
+## master 결정(master#fcbc46fb · 확정)
+- 두 줄 격자 = A안(칸 최소 폭 40열 · 좌석 3·4개 나란히 · 5개부터 두 줄 · 시안 #C 유지).
+- 관찰 1 = 모양은 역할 점 정본 그대로 · 상황판 수 옆 글자 라벨(작업 중·대기) 항상 표시.
+- 관찰 2 = 216px 에서 한도 한 줄 = 「퍼센트 먼저 · 초기화 요일·시각 다음」 · 글자 중간 잘림 0(전문 = 펼침·툴팁).
+- 지시 없이 내린 판단 3건(사용량 칸 옮김 · 저장 배치 1회 끔 · 안내 문장 수정) = 수용.
 
-## codex 1R(2c · 숨은 탭 PTY·복원) = REVISE — 전문 docs/CODEX-R1-tabs-sidebar.txt
+## codex 1R(2c · 숨은 탭 PTY·복원) = REVISE → 6건 전부 처리(f79f175c · 5a334ab8) — 전문 docs/CODEX-R1-tabs-sidebar.txt
 - [고침] 차단: 활성 부서 pending·모델 없음 → refreshSeatRows→render 무한 마이크로태스크 고리 → 예약 가드(main.ts refreshSeatRows) + 시험.
 - [고침] 주요: refreshSeatRows 가 저장 tabs 를 정규화 없이 reconcileTabs 에 넘김 → normalizeTabState 적용.
-- [남음·주요] zoom 이 sid 로 저장돼 재부팅 뒤 번호가 바뀌면 다른 좌석을 넓게 봄 → 안정 열쇠(소켓+역할, 없으면 소켓+cwd)로 저장하거나 복원 때 zoom 해제(active 유지).
-- [남음·주요] tests/hidden_seat_screen.rs: spawn 직후부터 Child 소유 정리 가드 · KILL 뒤 wait · attach 성공 응답 확인 후 probe · 주장을 「구독 유무와 무관」으로 한정(DOM 숨김·PTY 크기 보존은 별도 — 2c-1 실측이 그 몫).
-- [남음·경미] mountTabBar: 래퍼(area)가 split 직계 자식인데 경계 끌기 클로저는 안쪽 right 의 flex 를 바꾼다 → 끌기 중 폭 어긋남 · area 를 갱신하게.
-- [논쟁] lastSentSize: 같은 런타임에서 데몬·PTY 만 바뀌는 재부착 때 기억을 지우는 근거 없음 → 재부착 경로에서 lastSentSize.delete(rt) 확인.
+- [고침 5a334ab8] zoom 이 sid 로 저장돼 재부팅 뒤 번호가 바뀌면 다른 좌석을 넓게 봄 → 안정 열쇠(소켓+역할, 없으면 소켓+cwd)로 저장하거나 복원 때 zoom 해제(active 유지).
+- [고침 5a334ab8] tests/hidden_seat_screen.rs: spawn 직후부터 Child 소유 정리 가드 · KILL 뒤 wait · attach 성공 응답 확인 후 probe · 주장을 「구독 유무와 무관」으로 한정(DOM 숨김·PTY 크기 보존은 별도 — 2c-1 실측이 그 몫).
+- [고침 5a334ab8] mountTabBar: 래퍼(area)가 split 직계 자식인데 경계 끌기 클로저는 안쪽 right 의 flex 를 바꾼다 → 끌기 중 폭 어긋남 · area 를 갱신하게.
+- [논쟁 → 근거로 반박 · 시험 못박음 5a334ab8] lastSentSize: 같은 런타임에서 데몬·PTY 만 바뀌는 재부착 때 기억을 지우는 근거 없음 → 재부착 경로에서 lastSentSize.delete(rt) 확인.

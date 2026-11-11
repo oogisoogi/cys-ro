@@ -12,6 +12,8 @@
   ⑦ 넓게 보기(좌석 줄 6 클릭) → 포커스 = 6 · ⌘W 확인 창 = 6 의 이름
   ⑧ 한글 조합 중(CDP imeSetComposition 「한」) 탭 전환 → 숨은 4 로 send_input 0 · 다음 글자 = 보이는 좌석(조합 중이던 글자가 버려지는지는 실측 출력만 ·
      헤드리스 Chromium IME ≠ 실앱 WKWebView → HANDOFF canary 확인 항목)
+  ⑨ (master#1dc9bd83) 좌석 4 에 입력 중 묶음 옮김 이벤트(4 → lms) → 탭이 lms 로 따라가고 포커스·입력 = 4 그대로 · 다른 좌석 send_input 0
+  ⑩ 같은 장면을 한글 조합 중에 → send_input 대상 = 4 뿐
 실행: CHROME_PATH=<chrome-headless-shell> [GATE_DIST=<다른 번들 폴더>] cys run -- <playwright python3> ui/e2e/focus_gate.py
   (GATE_DIST = 고치기 전 번들로 돌려 붉음을 재는 대조용)
 """
@@ -204,6 +206,45 @@ def main() -> int:
             sbg.check(not (m and "932" in m), f"⌘W 가 숨은 4 를 묻지 않는다 {m!r}")
             cancel_modal(pg)
             sbg.check(not any(c[1] == 4 for c in calls(pg, "close_surface")), "close_surface(4) 0")
+            sbg.check(not errs, f"오류 0 {errs[:2]}")
+            ctx.close()
+            MOVE4 = "() => window.__emit('daemon-event', { type: 'event', seq: 9, name: 'surface.group.changed', category: 'surface', surface_id: 4, socket_slug: 'base', payload: { surface_id: 4, group: 'lms', previous: null } })"
+            # ⑨ 묶음 옮김 = 좌석 따라가기
+            print("== ⑨ 입력 중 묶음 옮김(사람 손 아님) → 좌석 따라가기")
+            ctx, pg, errs = page()
+            pg.click('#root .pane[data-sid="4"] .xterm-screen')
+            pg.wait_for_timeout(300)
+            pg.evaluate("() => { window.__calls = []; }")
+            pg.keyboard.type("ab")
+            pg.wait_for_timeout(200)
+            pg.evaluate(MOVE4)
+            pg.wait_for_timeout(800)
+            st = pg.evaluate(STATE)
+            pg.keyboard.type("cd")
+            pg.wait_for_timeout(400)
+            sent = calls(pg, "send_input")
+            pg.screenshot(path=str(OUT / "follow-after-regroup.png"))
+            sbg.check(st["tab"] == "lms" and 4 in st["panes"] and st["focused"] == [4] and st["active"] == 4, f"탭이 4 의 새 묶음 lms 로 따라감 · 포커스 4 그대로 {st}")
+            sbg.check(sent and all(c[1] == 4 for c in sent) and "".join(c[2] for c in sent) == "abcd", f"입력 = 4 뿐 · 유실 0 {sent}")
+            sbg.check(not (st["modal"] or "").strip(), "확인 창 0")
+            sbg.check(not errs, f"오류 0 {errs[:2]}")
+            ctx.close()
+            # ⑩ 조합 중 묶음 옮김
+            print("== ⑩ 한글 조합 중 묶음 옮김")
+            ctx, pg, errs = page()
+            pg.click('#root .pane[data-sid="4"] .xterm-screen')
+            pg.wait_for_timeout(300)
+            pg.evaluate("() => { window.__calls = []; }")
+            cdp = ctx.new_cdp_session(pg)
+            cdp.send("Input.imeSetComposition", {"text": "한", "selectionStart": 1, "selectionEnd": 1})
+            pg.wait_for_timeout(200)
+            pg.evaluate(MOVE4)
+            pg.wait_for_timeout(800)
+            cdp.send("Input.insertText", {"text": "글"})
+            pg.wait_for_timeout(500)
+            sent = calls(pg, "send_input")
+            sbg.check(sent and all(c[1] == 4 for c in sent), f"조합 중 옮김 → 입력 대상 = 4 뿐 {sent}")
+            print(f"  (실측) 보낸 글자 = {''.join(c[2] for c in sent)!r}")
             sbg.check(not errs, f"오류 0 {errs[:2]}")
             ctx.close()
             # ⑧ 한글 조합 중 탭 전환

@@ -79,6 +79,16 @@ describe("(948 D3) 끝난 좌석의 옮긴 묶음 기록 지우기 — 같은 �
     expect(forgetSeatGroup(m, undefined, w4, [w4, { role: "worker-4", cwd: "/x" }]).changed).toBe(false);
     expect(forgetSeatGroup(m, "/d.sock", w4, others).changed).toBe(false); // 다른 소켓 열쇠는 건드리지 않는다
   });
+  test("(ChatGPT 1R #6) 같은 열쇠 좌석 B 가 있는 동안 기록 주인 A(데몬이 정한 묶음 = 기록 값)가 끝나면 지운다 — 남으면 B 가 혼자 남는 순간 A 의 묶음을 물려받는다", () => {
+    const k = "#cwd:/u/axdev/proj";
+    const a = { role: null, cwd: "/u/axdev/proj", group: "video", group_set: true };
+    const b = { role: null, cwd: "/u/axdev/proj", group: null, group_set: false };
+    expect(forgetSeatGroup({ [k]: "video" }, undefined, a, [a, b])).toEqual({ map: {}, changed: true });
+    // 주인이 아닌 쪽(B · 데몬 값 없음)이 끝나면 = 열쇠가 겹쳐 있으니 그대로(남의 기록 보존)
+    expect(forgetSeatGroup({ [k]: "video" }, undefined, b, [a, b]).changed).toBe(false);
+    // 주인 판정은 「데몬이 정한 값 = 기록 값」 일 때만 — 다른 묶음이면 주인 아님
+    expect(forgetSeatGroup({ [k]: "lms" }, undefined, a, [a, b]).changed).toBe(false);
+  });
   test("재시작 복원(끝 신호 없이 번호만 바뀜)은 이 함수를 부르지 않는다 — 기록이 남아 같은 역할 좌석이 그 묶음으로", () => {
     const m = { "#role:worker-4": "video" };
     const renumbered = { role: "worker-4", cwd: "/u/axdev/lms" };
@@ -89,6 +99,8 @@ describe("(948 D3) 끝난 좌석의 옮긴 묶음 기록 지우기 — 같은 �
 describe("(948 D7) 묶음 이름 = NFKC 뒤 Cc·Cf·Zl·Zp 거부(데몬 parse_seat_group 과 같은 규칙)", () => {
   test("폭 0 · BOM · 줄/문단 구분 · NEL · 방향 표시 · 소프트 하이픈 = 못 쓰는 이름(null)", () => {
     for (const bad of ["\u200Bsite", "\uFEFFsite", "si\u2028te", "si\u2029te", "si\u0085te", "a\u202Eb", "a\u2066b", "si\u00ADte", "x".repeat(65)]) expect(cleanGroupName(bad)).toBeNull();
+    // (ChatGPT 1R #9) 범주 밖 보이지 않는 문자(Default_Ignorable_Code_Point) · 고립 대리 문자(JS 만 가질 수 있음)
+    for (const bad of ["si\u034Fte", "site\uFE0F", "site\uFE0E", "\u3164site", "si\u115Fte", "site\uD800", "\uDC00site"]) expect(cleanGroupName(bad)).toBeNull();
   });
   test("NFKC 정규화 · 앞뒤 공백 · 결합 문자는 합침 · 한글 그대로 · 문자열 아님 = null", () => {
     expect(cleanGroupName("ｓｉｔｅ")).toBe("site");

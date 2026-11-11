@@ -2163,6 +2163,7 @@ describe("★S4 B1 — 실제 3초 틱(refreshPaneTitles 실제 본문)으로: �
       exitedSweepArm: null, sweepScopeFor: () => null, exitedSweepTargets: () => [], settleSweep: (a: unknown) => a,
       openNewlyRegisteredDepts: async () => false, rememberRoles: nothing, arrangeWs: nothing,
       displayNoByKey: new Map<string, unknown>(), exitedPaneKeys: new Set<string>(),
+      lastSeatRow: new Map<string, unknown>(), noteSeatSize: () => {}, forgetEndedSeatGroup: () => {}, // (948·1R) 좌석 끝 기록·크기 대조 — 이 검체의 축 밖
       surfaceWorking: () => false, titleColorRole: false, roleDotColor: () => null, paneTitleText: (sid: number) => String(sid), ruleTitleOf: () => null,
       placeholderSids: new Set<number>(), touchedPlaceholders: new Set<number>(), shouldClosePlaceholder: () => false, placeholderScreenLines: () => null,
       hqMasterSids: null, renderWsTabs: nothing, current: () => null,

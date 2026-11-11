@@ -327,7 +327,7 @@ function harness() {
     exitedSweepArm: null, sweepScopeFor: () => null, exitedSweepTargets: () => [], settleSweep: (a: unknown) => a,
     openNewlyRegisteredDepts: async () => false, rememberRoles: nothing, arrangeWs: nothing,
     displayNoByKey: new Map<string, unknown>(), exitedPaneKeys: new Set<string>(),
-    noteSeatSize: nothing, forgetEndedSeatGroup: nothing, // (948 D5·D3) 크기 기억 대조 · 끝난 좌석 묶음 기록 — 이 검체의 축 밖
+    noteSeatSize: nothing, forgetEndedSeatGroup: nothing, lastSeatRow: new Map<string, unknown>(), // (948 D5·D3) 크기 기억 대조 · 끝난 좌석 묶음 기록 — 이 검체의 축 밖
     surfaceWorking: () => false, titleColorRole: false, paneTitleText: (_sid: number, t: string): string => String(t), ruleTitleOf: () => null,
     placeholderSids: new Set<number>(), touchedPlaceholders: new Set<number>(), shouldClosePlaceholder: () => false, placeholderScreenLines: () => null,
     hqMasterSids: null, renderWsTabs: nothing,

@@ -603,7 +603,8 @@ fn surface_size_wire(s: &crate::state::Surface) -> Value {
 ///   「﻿site」 와 「site」 처럼 똑같이 보이는 다른 묶음 이름(속임)을 막는다. 앱(ui/src/seatgroup.ts cleanGroupName)과 같은 범주.
 fn has_hidden_or_break_char(t: &str) -> bool {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    RE.get_or_init(|| regex::Regex::new(r"[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]").expect("고정 정규식")).is_match(t)
+    // (ChatGPT 1R #9) + Default_Ignorable_Code_Point — 범주 밖 보이지 않는 문자(CGJ · 이체 선택자 · 한글 채움 문자). 앱 cleanGroupName 과 같다.
+    RE.get_or_init(|| regex::Regex::new(r"[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]").expect("고정 정규식")).is_match(t)
 }
 
 /// (tabs-sidebar 2d) 묶음 이름 판독 — 빈 값·null = 옮김 해제(None) · 앞뒤 공백 제거 · 64자 이하 · 제어·서식·줄/문단 구분 문자 금지.
@@ -36677,7 +36678,9 @@ mod seat_group_name_tests {
     // (948 D7) NFKC 뒤 범주 Cc·Cf·Zl·Zp 거부 — 똑같이 보이는 다른 묶음 이름(속임) 0.
     #[test]
     fn group_name_rejects_zero_width_bom_and_line_separators_after_nfkc() {
-        for bad in ["\u{200B}site", "\u{FEFF}site", "si\u{2028}te", "si\u{2029}te", "si\u{0085}te", "si\u{200D}te", "si\u{00AD}te", "a\u{202E}b", "a\u{2066}b"] {
+        for bad in ["\u{200B}site", "\u{FEFF}site", "si\u{2028}te", "si\u{2029}te", "si\u{0085}te", "si\u{200D}te", "si\u{00AD}te", "a\u{202E}b", "a\u{2066}b",
+                    // (ChatGPT 1R #9) Default_Ignorable_Code_Point — CGJ · 이체 선택자 · 한글 채움 문자
+                    "si\u{034F}te", "site\u{FE0F}", "site\u{FE0E}", "\u{3164}site", "si\u{115F}te"] {
             assert!(parse_seat_group(Some(&json!(bad))).is_err(), "거부해야 함: {bad:?}");
         }
     }

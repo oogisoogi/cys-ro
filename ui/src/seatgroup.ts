@@ -17,7 +17,9 @@ export function cleanGroupName(v: unknown): string | null {
   if (typeof v !== "string") return null;
   // 앞뒤 자르기 = 유니코드 White_Space 만(Rust str::trim 과 같은 정의) — JS trim() 은 BOM(U+FEFF)까지 잘라 데몬과 판정이 갈렸다.
   const t = v.normalize("NFKC").replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
-  if (!t || [...t].length > 64 || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(t)) return null;
+  // (ChatGPT 1R #9) + Default_Ignorable_Code_Point(CGJ U+034F · 이체 선택자 FE0E/FE0F · 한글 채움 3164/115F 등 범주 밖 보이지 않는 문자)
+  //   + Cs(고립 대리 문자 — JS 문자열만 가질 수 있고 데몬 UTF-8 에는 못 간다). 데몬 parse_seat_group 과 같은 규칙.
+  if (!t || [...t].length > 64 || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}\p{Default_Ignorable_Code_Point}]/u.test(t)) return null;
   return t;
 }
 export type SeatGroups = Record<string, string>;
@@ -98,7 +100,11 @@ export function effectiveGroup(m: SeatGroups, socket: string | null | undefined,
 export function forgetSeatGroup(m: SeatGroups, socket: string | null | undefined, ended: GroupRow | undefined, surfaces: readonly GroupRow[]): { map: SeatGroups; changed: boolean } {
   if (!ended) return { map: m, changed: false };
   const k = keyOf(socket, ended);
-  if (!k || !(k in m) || !uniqueKeys(socket, surfaces).has(k)) return { map: m, changed: false };
+  if (!k || !(k in m)) return { map: m, changed: false };
+  // (ChatGPT 1R #6) 끝난 좌석이 그 기록의 주인(데몬이 이번 기동 중 정한 묶음 = 기록 값)이면 열쇠가 겹쳐 있어도 지운다 —
+  //   남겨 두면 같은 열쇠의 다른 좌석이 혼자 남는 순간 이 좌석의 묶음을 물려받는다.
+  const owner = ended.group_set === true && cleanGroupName(ended.group) === m[k];
+  if (!owner && !uniqueKeys(socket, surfaces).has(k)) return { map: m, changed: false };
   const { [k]: _drop, ...rest } = m;
   return { map: rest, changed: true };
 }

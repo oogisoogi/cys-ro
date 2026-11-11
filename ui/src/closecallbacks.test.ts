@@ -103,7 +103,7 @@ function harness(workspaces = [ws(1, SOURCE, [42])]) {
     exitedPaneKeys: new Set<string>(), ccOpen: false, setCcOpen: (_open: boolean) => {},
     // (948 D1·D2·D3) 탭 없는 장면 = 보이는 좌석 = 트리 좌석(1.1.14) · 탭에서 만든 좌석 기억 · 끝난 좌석 묶음 기록(이 검체의 축 밖)
     seatVisible: (w: Any, sid: number) => { const out: number[] = []; const v = (n: Any): void => { if (!n) return; if (n.type === "pane") out.push(n.sid); else { v(n.a); v(n.b); } }; v(w.tree); return out.includes(sid); },
-    createdInTab: new Map<string, string>(), forgetEndedSeatGroup: (_sid: number, _socket?: string) => {},
+    createdInTab: new Map<string, string>(), forgetEndedSeatGroup: (_sid: number, _socket?: string) => {}, lastSeatRow: new Map<string, unknown>(),
     // 표시 이름 seam(우리 판 wsLabel = wsname.ts 판정) — 닫기를 결정하지 않는다.
     wsLabel: (w: Any) => String(w.name),
     // This translation seam returns the injected reason intact; it does not decide close.

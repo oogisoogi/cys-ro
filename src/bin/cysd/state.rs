@@ -2277,9 +2277,10 @@ pub struct Surface {
     pub boot_ack: Mutex<Option<BootAck>>,
     pub title: Mutex<String>,
     pub role: Mutex<Option<String>>,
-    /// (tabs-sidebar 2d · 설계 §5) 사람·master 가 `cys seat-group` 으로 옮긴 묶음 이름 — **메모리 전용**(영속·복원 무접촉 ·
-    /// 데몬 재시작이면 비고 앱의 자동 규칙(생성 폴더)으로 돌아간다). 앱이 `surface.group.changed`·`surface.list` 로 받아 영속한다.
-    pub group: Mutex<Option<String>>,
+    /// (tabs-sidebar 2d · 설계 §5) 사람·master 가 `cys seat-group` 으로 옮긴 묶음 — **메모리 전용**(영속·복원 무접촉).
+    /// 바깥 None = 이 데몬 기동 뒤 아무도 정하지 않음(데몬 재시작 포함 = 앱 기록을 쓴다) · Some(None) = 사람이 **해제함**(자동 규칙) ·
+    /// Some(Some(g)) = 묶음 g. 해제와 「모름」을 갈라야 앱이 놓친 해제를 목록으로 되살린다(codex 1R ③).
+    pub group: Mutex<Option<Option<String>>>,
     pub cmd: String,
     pub cwd: String,
     pub pid: u32,

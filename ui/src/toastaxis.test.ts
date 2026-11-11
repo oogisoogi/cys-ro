@@ -12,7 +12,6 @@
 //        AT-20  producer(handlers.rs)가 실제로 내는 feed.item.created 모양으로 소비자(onDaemonEvent)까지: 배너 정확히 1 · 토스트 0 · 전환 0 + 양성 대조(auto_route 항목 0 · approval.request 0)
 //   출처 핀  onDaemonEvent 본문의 직접 호출은 **넷뿐**(approval.stalled 의 toast/osBanner/openFeed 3 + feed.item.created 의 osBanner 1) · approval.request 는 직접 호출 0 · toast/sticky/osBanner 본문에 통짜 가드 0
 //   커버리지  소스의 alertsQuiet("<sink>") 개수 == EXPECTED_GUARDS · 런마다 선언 출력(채널 13 = UI 가드 11 + 경로 덮임 1 + CLI 군 1)
-import { applySeatGroup, seatGroupKey } from "./seatgroup"; // (tabs-sidebar 2d)
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
@@ -161,8 +160,6 @@ function build(opts: { quiet: boolean; ccOpen?: boolean; slugs?: Record<string, 
     panes: opts.panes ?? new Map(),
     seatListBySock: new Map(), // (tabs-sidebar 2d) surface.group.changed 분기 재료(좌석 목록 없음 = 열쇠 없음 = 무동작)
     seatGroups: {},
-    applySeatGroup, // 실제 판정(seatgroup.ts) — 대역 아님
-    seatGroupKey,
     socketForSlug: new Map(Object.entries(opts.slugs ?? {})),
     stickyToasts: new Map(),
     document: {

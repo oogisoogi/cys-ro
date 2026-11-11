@@ -83,9 +83,12 @@ impl Box_ {
             .output()
             .unwrap()
     }
-    fn group_of(&self, sid: u64) -> Value {
+    fn row(&self, sid: u64) -> Value {
         let l = self.ok("surface.list", json!({}));
-        l["surfaces"].as_array().unwrap().iter().find(|s| s["surface_id"].as_u64() == Some(sid)).expect("좌석")["group"].clone()
+        l["surfaces"].as_array().unwrap().iter().find(|s| s["surface_id"].as_u64() == Some(sid)).expect("좌석").clone()
+    }
+    fn group_of(&self, sid: u64) -> Value {
+        self.row(sid)["group"].clone()
     }
     fn read_until(&self, sid: u64, needle: &str) -> Option<String> {
         let t = Instant::now();
@@ -162,6 +165,8 @@ fn seat_group_caller_gate_events_and_list() {
         b.ok("surface.create", p)["surface_id"].as_u64().expect("surface_id")
     };
     let target = mk(None);
+    let untouched = mk(None);
+    assert_eq!(b.row(target)["group_set"], json!(false), "아무도 안 정한 좌석 = group_set false(모름)");
     let master = mk(Some("master"));
     let worker = mk(Some("worker"));
     let tref = format!("surface:{target}");
@@ -178,6 +183,10 @@ fn seat_group_caller_gate_events_and_list() {
     assert_eq!(b.rpc("surface.set_group", json!({"surface_id": target, "group": long}))["error"]["code"], "invalid_params");
     assert_eq!(b.rpc("surface.set_group", json!({"surface_id": target, "group": "a\u{7}b"}))["error"]["code"], "invalid_params");
     assert_eq!(b.rpc("surface.set_group", json!({"surface_id": target, "group": 3}))["error"]["code"], "invalid_params");
+    // (codex 1R ④) 표시 방향 제어 문자(RLO U+202E · RLI U+2067 · RLM U+200F) 거부
+    for bidi in ["a\u{202E}b", "a\u{2067}b", "a\u{200F}"] {
+        assert_eq!(b.rpc("surface.set_group", json!({"surface_id": target, "group": bidi}))["error"]["code"], "invalid_params", "bidi {bidi:?}");
+    }
     assert_eq!(b.group_of(target), json!("site"), "거부된 호출은 값을 바꾸지 않는다");
 
     // ④ 좌석 안: 워커 = forbidden · master = 허용(그 좌석 셸에서 같은 cys 를 실행 — 데몬은 peer pid 로 좌석을 푼다)
@@ -193,10 +202,18 @@ fn seat_group_caller_gate_events_and_list() {
     assert_eq!(m, "M_RC=0", "master 좌석 = 허용");
     assert_eq!(b.group_of(target), json!("lms"));
 
-    // ⑤ 빈 값 = 옮김 해제(null)
+    // ⑤ 빈 값 = 옮김 해제(null) · group_set 은 true 로 남는다(「해제함」 ≠ 「모름」 · codex 1R ③)
     let o = b.cys(&["seat-group", "--surface", &tref, ""]);
     assert!(o.status.success());
     assert_eq!(b.group_of(target), Value::Null);
+    assert_eq!(b.row(target)["group_set"], json!(true));
+    // ⑤-2 아무도 안 정한 좌석을 해제 = 「해제함」으로 바뀌며 이벤트 1건(앱이 놓친 해제를 되살리는 길) · 다시 해제 = 이벤트 0
+    let uref = format!("surface:{untouched}");
+    let o = b.cys(&["seat-group", "--surface", &uref, ""]);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("묶음 (자동"), "손대지 않은 좌석 해제 = 변화 있음: {}", String::from_utf8_lossy(&o.stdout));
+    assert_eq!(b.row(untouched)["group_set"], json!(true));
+    let o = b.cys(&["seat-group", "--surface", &uref, ""]);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("변화 없음"), "두 번째 해제 = 변화 없음: {}", String::from_utf8_lossy(&o.stdout));
 
     // ⑥ ui.open_panel — control-center 만 · 좌석 밖 CLI 허용 · 워커 좌석 거부
     assert_eq!(b.rpc("ui.open_panel", json!({"panel": "feed"}))["error"]["code"], "invalid_params");
@@ -206,17 +223,20 @@ fn seat_group_caller_gate_events_and_list() {
     let u = b.read_until(worker, "U_RC=").expect("워커 좌석 open-control-center 결과 줄");
     assert_eq!(u, "U_RC=1", "워커 좌석 open-control-center = 거부");
 
-    // 이벤트 수 = 실제로 값이 바뀐 횟수(site · lms · 해제 = 3) · 패널 열기 = 1(거부·같은 값은 0)
+    // 이벤트 수 = 실제로 값이 바뀐 횟수(target: site · lms · 해제 = 3 · untouched: 첫 해제 1) · 패널 열기 = 1(거부·같은 값은 0)
     let t = Instant::now();
-    while (events("surface.group.changed").len() < 3 || events("ui.open_panel").is_empty()) && t.elapsed() < Duration::from_secs(5) {
+    while (events("surface.group.changed").len() < 4 || events("ui.open_panel").is_empty()) && t.elapsed() < Duration::from_secs(5) {
         std::thread::sleep(Duration::from_millis(100));
     }
     std::thread::sleep(Duration::from_millis(500));
-    let g = events("surface.group.changed");
+    let all = events("surface.group.changed");
+    let g: Vec<Value> = all.iter().filter(|v| v["surface_id"].as_u64() == Some(target)).cloned().collect();
     let seq: Vec<Value> = g.iter().map(|v| v["payload"]["group"].clone()).collect();
     assert_eq!(seq, vec![json!("site"), json!("lms"), Value::Null], "group 이벤트 = 바뀐 값 3건만: {g:?}");
     assert_eq!(g[1]["payload"]["previous"], json!("site"));
-    assert!(g.iter().all(|v| v["surface_id"].as_u64() == Some(target)));
+    let u: Vec<Value> = all.iter().filter(|v| v["surface_id"].as_u64() == Some(untouched)).cloned().collect();
+    assert_eq!(u.len(), 1, "손대지 않은 좌석 해제 = 이벤트 1건(두 번째 해제 0): {u:?}");
+    assert_eq!(all.len(), 4, "그 밖의 좌석 이벤트 0: {all:?}");
     assert_eq!(events("ui.open_panel").len(), 1, "패널 열기 이벤트 = 허용된 1건");
     drop(ev);
 }

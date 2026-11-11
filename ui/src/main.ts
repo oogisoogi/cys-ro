@@ -343,7 +343,7 @@ import { approvalSeatKeys, buildSeatRows, namedSeatInputs, seatApprovalItems, se
 import { paintSeatRows, pruneSeatHosts, seatHost } from "./seatrowsdom"; // (tabs-sidebar 조각1) 좌석 줄 그리기
 import { fixedColumnSplit, GROUP_TABS_KEY, groupTabsOn, normalizeTabState, reconcileTabs, viewTree, zoomKeyOf, type TabState, type TabView } from "./grouptabs";
 import { buildTabBar } from "./tabbar";
-import { applySeatGroup, parseSeatGroups, SEAT_GROUP_KEY, seatGroupKey, syncSeatGroupsFromList, type SeatGroups } from "./seatgroup"; // (tabs-sidebar 2d) 옮긴 묶음 기록 // (tabs-sidebar 2b) 탭 머리 줄 // (tabs-sidebar 조각2) 묶음 탭 판정
+import { effectiveGroup, parseSeatGroups, SEAT_GROUP_KEY, syncSeatGroupsFromList, uniqueKeys, type SeatGroups } from "./seatgroup"; // (tabs-sidebar 2d) 옮긴 묶음 기록 // (tabs-sidebar 2b) 탭 머리 줄 // (tabs-sidebar 조각2) 묶음 탭 판정
 import type { SeatRowsModel } from "./seatrows";
 import { accountNeedsAction, BOARD_KEY, BOARD_OPEN_KEY, BOARD_POS_KEY, boardCounts, boardOpen, boardPos, boardVariant, limitLine, limitPct, limitTitle, nextSeat, paintBoard, type BoardState } from "./statusboard"; // (tabs-sidebar 1d) 상황판 시안
 
@@ -5905,13 +5905,14 @@ function refreshSeatRows(): void {
     if (ws.pending) continue;
     const sock = ws.socket;
     const list = seatListBySock.get(sock ?? "");
+    const uniq = uniqueKeys(sock, list ? [...list.values()] : []); // (tabs-sidebar 2d · codex 1R ②) 열쇠가 하나뿐인 좌석만 앱 기록을 쓴다
     // 이름 보고자(surface 없는 master·cso)는 본부 좌석 줄의 고정 줄로 합친다(종전 「페인 CTX」 칸의 이름 줄).
     const inputs: SeatInput[] = ws.id === hq ? namedSeatInputs(namedCtxRows(namedCache, Date.now() / 1000)) : [];
     for (const sid of collectSids(ws.tree)) {
       const p = projectActivity(roleActivity.get(paneKey(sid, sock)), nowMs, T_ACTIVITY);
       const self = seatSelf.get(`${sock}#${sid}`);
       const inp = seatInputOf(sid, list?.get(sid), seatDot(p.view, surfaceWorking(sid, sock), approvalSeats.has(`${sock}#${sid}`)), self, approvalSeats.has(`${sock}#${sid}`));
-      inp.group = seatGroups[seatGroupKey(sock, inp.role, inp.cwd) ?? ""] ?? null; // (tabs-sidebar 2d) 옮긴 묶음 > 폴더
+      inp.group = effectiveGroup(seatGroups, sock, list?.get(sid), uniq); // (tabs-sidebar 2d) 데몬이 정한 값 > 앱 기록 > 폴더
       inputs.push(inp);
     }
     const model = buildSeatRows(inputs);
@@ -10408,12 +10409,16 @@ function onDaemonEvent(event: Record<string, unknown>) {
     return;
   }
   // (tabs-sidebar 2d) `cys seat-group` — 좌석 묶음 옮김을 영속하고 좌석 줄·탭을 다시 그린다(같은 값이면 데몬이 이벤트를 내지 않는다).
+  //   이벤트는 그 좌석의 목록 칸(group·group_set)을 바로 고쳐 쓰고 목록 동기와 같은 판정을 탄다(codex 1R ③ — 목록이 아직 없으면 다음 3초 목록이 같은 값을 싣는다).
   if (name === "surface.group.changed") {
     const gsid = typeof payload.surface_id === "number" ? payload.surface_id : null;
-    const s = gsid === null ? undefined : seatListBySock.get(evSock ?? "")?.get(gsid);
-    const g = applySeatGroup(seatGroups, seatGroupKey(evSock, s?.role ?? null, s?.cwd ?? null), typeof payload.group === "string" ? payload.group : null);
-    if (g.changed) {
-      saveSeatGroups(g.map);
+    const sockList = seatListBySock.get(evSock ?? "");
+    const s = gsid === null ? undefined : sockList?.get(gsid);
+    if (s && sockList) {
+      s.group = typeof payload.group === "string" ? payload.group : null;
+      s.group_set = true;
+      const g = syncSeatGroupsFromList(seatGroups, evSock, [...sockList.values()]);
+      if (g.changed) saveSeatGroups(g.map);
       refreshSeatRows();
     }
     return;

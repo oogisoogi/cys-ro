@@ -507,7 +507,15 @@ fn revive_authority_role(r: &str) -> bool {
 /// master 역할이어야 한다(워커·CSO·리뷰어 좌석이 남의 화면 배치를 바꾸지 못하게). 좌석 밖(사람이 연 터미널의 CLI ·
 /// 익명 발신)은 통과 — 좌석 pane 의 peer pid 는 늘 자기 좌석으로 풀리므로 좌석이 익명을 흉내 낼 수 없다(surface.close 와 같은 근거).
 fn ui_command_caller_ok(daemon: &Arc<Daemon>, caller_pid: Option<u32>) -> Result<(), &'static str> {
-    let Some(cs) = caller_pid.and_then(|p| resolve_caller_surface(daemon, p)) else {
+    // (codex 1R ①) 판독 실패는 통과가 아니다 — 피어 pid 를 못 읽었거나(None) 그 프로세스를 들여다볼 수 없으면(시작 시각 판독 불가)
+    //   「좌석 밖이 확인된 호출자」가 아니므로 거부한다. 통과 = 판독된 프로세스이고 조상 중 좌석이 없을 때만.
+    let Some(pid) = caller_pid else {
+        return Err("caller process could not be identified");
+    };
+    if crate::state::peer_start_time(pid).is_none() {
+        return Err("caller process could not be inspected");
+    }
+    let Some(cs) = resolve_caller_surface(daemon, pid) else {
         return Ok(());
     };
     let role = daemon.get_surface(cs).and_then(|s| s.role.lock().unwrap().clone());
@@ -518,6 +526,11 @@ fn ui_command_caller_ok(daemon: &Arc<Daemon>, caller_pid: Option<u32>) -> Result
     }
 }
 
+/// (codex 1R ④) 표시 방향을 바꾸는 문자(LRM·RLM·ALM · LRE~RLO · LRI~PDI) — `char::is_control` 이 잡지 않는다.
+fn is_bidi_control(c: char) -> bool {
+    matches!(c, '\u{200E}' | '\u{200F}' | '\u{061C}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
 /// (tabs-sidebar 2d) 묶음 이름 판독 — 빈 값·null = 옮김 해제(None) · 앞뒤 공백 제거 · 64자 이하 · 제어문자 금지.
 fn parse_seat_group(v: Option<&Value>) -> Result<Option<String>, &'static str> {
     match v {
@@ -526,8 +539,8 @@ fn parse_seat_group(v: Option<&Value>) -> Result<Option<String>, &'static str> {
             let t = s.trim();
             if t.is_empty() {
                 Ok(None)
-            } else if t.chars().count() > 64 || t.chars().any(char::is_control) {
-                Err("group must be 1-64 chars without control characters")
+            } else if t.chars().count() > 64 || t.chars().any(|c| c.is_control() || is_bidi_control(c)) {
+                Err("group must be 1-64 chars without control or bidi-control characters")
             } else {
                 Ok(Some(t.to_string()))
             }
@@ -7337,7 +7350,9 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                         "title": s.title.lock().unwrap().clone(),
                         "role": s.role.lock().unwrap().clone(),
                         // (tabs-sidebar 2d) 옮긴 묶음(없으면 null = 앱 자동 규칙) — 앱이 시작 때 읽어 영속한다.
-                        "group": s.group.lock().unwrap().clone(),
+                        "group": s.group.lock().unwrap().clone().flatten(),
+                        // (codex 1R ③) 이번 기동 중 사람이 정했는가(해제 포함) — false 면 group null 은 「모름」(데몬 재시작) · true 면 「해제」.
+                        "group_set": s.group.lock().unwrap().is_some(),
                         "cmd": s.cmd,
                         "cwd": s.cwd,
                         "live_cwd": live_cwd,
@@ -9004,12 +9019,14 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                     &format!("surface {sid} not found"),
                 ));
             };
+            // 같은 「정한 값」이면 이벤트 0(폭주 없음). 아무도 안 정한 좌석(None)을 해제하면 Some(None) 으로 바뀌며 이벤트 1건 —
+            //   앱이 놓친 해제를 되살리는 길(codex 1R ③ · 해제를 다시 쳐도 막히지 않게).
             let previous = {
                 let mut g = surface.group.lock().unwrap();
-                if *g == group {
+                if *g == Some(group.clone()) {
                     return Reply::Single(ok_response(&id, json!({"surface_id": sid, "group": group, "changed": false})));
                 }
-                std::mem::replace(&mut *g, group.clone())
+                std::mem::replace(&mut *g, Some(group.clone())).flatten()
             };
             daemon.bus.publish(
                 "surface.group.changed",

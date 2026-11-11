@@ -46,6 +46,8 @@
 ## 원작자 병합 때 볼 것
 - 새 의존 1 = unicode-normalization =0.1.26(D7 · master#cb40d4a3 · Cargo.lock 변화 = 그 크레이트 1 항목 · 그 의존 tinyvec 은 이미 있음 · 저장소에 cargo deny·라이선스 검사 장치 없음 확인 · 라이선스 (MIT OR Apache-2.0) AND Unicode-3.0).
 - cysd surface.list 행에 size{rows,cols} 추가(순수 additive · D5).
+- (D4-b · master#8258a495) state.rs 의 parent_any_user·proc_stat_fields = fix/1115-caller-check(950) caller_class.rs 와 글자 그대로 같은 사본(handlers.rs 에 두면 소스 핀 live_cwd_goes_through_single_helper 「handlers.rs 운영 구간 libproc 직접 호출 0」 이 붉다 → proc_brief 옆 state.rs) — 그 가지가 들어오면 이쪽 사본을 지우고 caller_class::parent_any_user 를 부른다(handlers.rs parent_pid_of 한 곳).
+- handlers.rs 의 이 티켓 단위 시험 모듈(seat_group_name_tests·ui_caller_tests)은 파일 끝에 둔다 — 소스 핀 시험 여럿이 첫 #[cfg(test)] 앞을 운영 코드로 자른다(중간에 두면 14개가 붉다 · 실측).
 
 ## 함정
 - ★명령을 `&&` 로 이을 때 bun test 결과를 보지 않고 커밋으로 넘어가지 마라 — 6a8840c5 가 1 실패로 커밋돼 d5abef35 로 바로잡았다(그 뒤 커밋은 「tsc 0 ∧ 0 fail 일 때만」 조건문).

@@ -420,10 +420,14 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
 .ws-board-n { display: inline-flex; align-items: center; gap: .15em; background: none; border: none; padding: 1px 2px; font: inherit; font-size: 1.1em; font-weight: 700; color: var(--text); cursor: pointer; font-variant-numeric: tabular-nums; }
 .ws-board-acct { margin-top: 3px; font-size: .9em; color: var(--warn); }
 .ws-board-n.zero { opacity: .35; cursor: default; font-weight: 400; }
+/* (tabs-sidebar 1h · master#edd9d8a8) 부서 0개 기기 = 「부서」 안내·말을 숨긴다(요소·코드는 남음 · 부서가 생기면 main.ts applyDeptPresence 가 클래스를 뗀다) */
+body.no-depts .dept-only { display: none !important; }
+body.no-depts #ws-dept-row:has(> #ws-expert[hidden]) { display: none; } /* 안내 줄이 빠지고 전문가 칸도 꺼져 있으면 빈 줄 여백도 없앤다 */
+.ws-board-label { font-size: .75em; font-weight: 400; color: #8b949e; margin-left: .15em; white-space: nowrap; } /* (master#fcbc46fb ②) 수 옆 글자 라벨 */
 .ws-board-approvals { margin-top: 3px; background: none; border: 1px solid var(--error); border-radius: 4px; color: var(--error); font: inherit; font-size: .9em; padding: 0 .4em; cursor: pointer; }
 .ws-board-limit { display: flex; align-items: center; gap: .4em; width: 100%; margin-top: 3px; padding: 0; background: none; border: none; font: inherit; font-size: .9em; color: #8b949e; cursor: pointer; min-width: 0; }
-.ws-board-limit .cc-tbar-track { flex: 1 1 auto; min-width: 2em; }
-.ws-board-limit-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-board-limit .cc-tbar-track { flex: 1 1 auto; min-width: 1.5em; }
+.ws-board-limit-text { flex: none; white-space: nowrap; } /* (master#fcbc46fb ③) 글자는 줄이지 않는다(중간 잘림 0) — 막대가 줄어든다 */
 .ws-board-caret { flex: none; }
 .ws-board-more[hidden] { display: none; }
 .ws-board-more #ws-usage { border-top: none; padding: 4px 0 0; max-height: none; }

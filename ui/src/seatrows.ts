@@ -212,6 +212,28 @@ export function approvalSeatKeys(all: unknown): Set<string> {
   return out;
 }
 
+/** feed_list_all 응답 중 **지금 좌석 줄에 있는 좌석**에 걸린 대기 승인 요청 수(항목 단위) — 상황판 「승인 요청」은 전체에서 이것을 뺀다
+ *  (그 좌석은 이미 ◆ 막힘으로 세어진다 · master#ec9c8b30 ③ 겹쳐 세기 제거). 열쇠 모양 = approvalSeatKeys. */
+export function seatApprovalItems(all: unknown, shown: ReadonlySet<string>): number {
+  let n = 0;
+  const socks = (all as { sockets?: unknown } | null)?.sockets;
+  if (!Array.isArray(socks)) return 0;
+  for (const x of socks) {
+    if (!x || typeof x !== "object") continue;
+    const o = x as { socket?: unknown; dept?: unknown; items?: unknown };
+    if (!Array.isArray(o.items)) continue;
+    const sock = o.dept === null ? undefined : typeof o.socket === "string" ? o.socket : null;
+    if (sock === null) continue;
+    for (const it of o.items) {
+      const f = it as { kind?: unknown; status?: unknown; surface_id?: unknown } | null;
+      if (!f || f.kind !== "approval" || f.status !== "pending") continue;
+      if (typeof f.surface_id !== "number" || !Number.isSafeInteger(f.surface_id)) continue;
+      if (shown.has(`${sock}#${f.surface_id}`)) n++;
+    }
+  }
+  return n;
+}
+
 /** surface.list 원행 하나(+ 이미 판정한 활동 점 · 자기보고 · 승인 여부) → SeatInput. 원행이 없으면(아직 목록 전) 모름으로 둔다.
  *  CTX 는 ctxpick.pickCtx(측정값 우선 · 끝남/사망 = 판정 불가 · 결측 = null). */
 export function seatInputOf(

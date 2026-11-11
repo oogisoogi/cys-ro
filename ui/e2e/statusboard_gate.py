@@ -10,6 +10,7 @@
 import http.server
 import json
 import os
+import re
 import sys
 import threading
 from pathlib import Path
@@ -90,12 +91,17 @@ SHIM = r"""
 
 JS = r"""
 () => {
-  const n = (st) => +((document.querySelector(`[data-seat-host="board"] .ws-board-n.st-${st}`)?.textContent ?? '').split(' ').pop() || -1);
+  const n = (st) => +(document.querySelector(`[data-seat-host="board"] .ws-board-n.st-${st} .ws-board-num`)?.textContent ?? -1); // (master#fcbc46fb ②) 버튼엔 글자 라벨도 있다 — 수 칸만 읽는다
   const rowsBy = (st) => document.querySelectorAll(`.ws-seats[data-seat-host]:not([data-seat-host="board"]):not([data-seat-host^="n"]) .ws-seat.st-${st}:not(.named)`).length;
   const states = ['working', 'idle', 'blocked', 'unknown'];
   return { cards: document.querySelectorAll('#ws-tabs .ws-tab').length, hq: [...document.querySelectorAll('#ws-tabs .ws-name')].map((e) => e.textContent),
     board: states.map(n), rows: states.map(rowsBy), zeroDisabled: [...document.querySelectorAll('.ws-board-n.zero')].every((b) => b.disabled),
-    limit: document.querySelector('.ws-board-limit-text')?.textContent ?? null, perDept: document.querySelectorAll('[data-seat-host^="n"] .ws-board-counts').length,
+    limit: document.querySelector('.ws-board-limit-text')?.textContent ?? null,
+    limitCut: (() => { const t = document.querySelector('.ws-board-limit-text'), b = document.querySelector('.ws-board-limit'); return !t || !b ? null : t.scrollWidth > t.clientWidth + 1 || b.scrollWidth > b.clientWidth + 1 || t.getBoundingClientRect().right > b.getBoundingClientRect().right + 1; })(),
+    limitTitle: document.querySelector('.ws-board-limit')?.title ?? null,
+    labels: [...document.querySelectorAll('[data-seat-host="board"] .ws-board-n')].map((b) => b.querySelector('.ws-board-label')?.textContent ?? null),
+    labelCut: [...document.querySelectorAll('[data-seat-host="board"] .ws-board-label')].some((l) => l.scrollWidth > l.clientWidth + 1),
+    approvalsChip: document.querySelector('.ws-board-approvals')?.textContent ?? null, perDept: document.querySelectorAll('[data-seat-host^="n"] .ws-board-counts').length,
     usageInBoard: !!document.querySelector('[data-seat-host="board"] .ws-board-more #ws-usage'), usageShown: (() => { const m = document.querySelector('.ws-board-more'); return !!m && !m.hidden && document.querySelectorAll('#ws-usage .wsu-rate').length > 0; })(),
     usageCount: document.querySelectorAll('#ws-usage').length,
     pos: (() => { const b = document.querySelector('[data-seat-host="board"]'); if (!b) return null; const r = b.getBoundingClientRect(); const nav = document.getElementById('wsbar').getBoundingClientRect();
@@ -158,7 +164,13 @@ def main() -> int:
                                 check(st["cards"] == 0, f"부서 1개 = 본부 카드 없음 ({st['cards']} · {st['hq']})")
                             check(st["board"] == st["rows"], f"상황판 수 = 좌석 줄 상태 수 {st['board']} vs {st['rows']}")
                             check(st["zeroDisabled"], "0 인 상태 = 흐림·누를 수 없음")
-                            check(st["limit"] == "7d 86% · 초기화까지 2일 3시간", f"둘째 줄 한도 한 줄 {st['limit']}")
+                            # (master#fcbc46fb ③) 퍼센트 먼저 · 초기화 요일·시각 다음 · 글자 중간 잘림 0 · 전문 = 툴팁
+                            check(bool(re.fullmatch(r"86% · [일월화수목금토] \d\d:\d\d 초기화", st["limit"] or "")), f"둘째 줄 한도 한 줄 {st['limit']}")
+                            check(st["limitCut"] is False, f"한도 한 줄 잘림 0 @ {w}")
+                            check((st["limitTitle"] or "").startswith("7일 한도 86% 사용 · ") and "2일 3시간 남음" in (st["limitTitle"] or ""), f"한도 전문 = 툴팁 {st['limitTitle']!r}")
+                            # (master#fcbc46fb ②) 수 옆 글자 라벨 항상 · (master#ec9c8b30 ③) 좌석에 걸린 승인(934)은 ◆ 에만 — 상황판 칩 없음
+                            check(st["labels"] == ["작업 중", "대기", "막힘", "모름"] and not st["labelCut"], f"상황판 수 옆 글자 {st['labels']}")
+                            check(st["approvalsChip"] is None, f"좌석 밖 승인 요청 0 = 칩 없음(좌석 승인은 ◆ 막힘에) {st['approvalsChip']}")
                             check(st["usageInBoard"] and st["usageCount"] == 1, "사용량 칸 = 상황판 안 한 곳뿐(아래 따로 없음)")
                             check(st["usageShown"] == (op == "1"), f"펼침 {op} = 사용량 막대 보임 {st['usageShown']}")
                             check(st["pos"]["inTabs"] == (pos == "top"), f"위치 {pos} {st['pos']}")

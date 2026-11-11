@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Control Center 단추 내리기 게이트 — TICKET=cysr-tabs-sidebar-impl 조각 1e(master#b1b8d7df · 수동 실행).
-캡처: 단추 숨김(기본) · 단추 켬(저장 배치에서 사람이 켬) · 승인 대기 2(좌석 승인 1 + 좌석 없는 승인 1)인 상황판.
+캡처: 단추 숨김(기본) · 단추 켬(저장 배치에서 사람이 켬) · 승인 요청 2(좌석 승인 1 + 좌석 없는 승인 1 → 상황판 칩 = 좌석 밖 1)인 상황판.
 실행: CHROME_PATH=<chrome-headless-shell> cys run -- <playwright python3> ui/e2e/cc_button_gate.py
 """
 import importlib.util
@@ -52,12 +52,15 @@ def main() -> int:
                 chip = pg.evaluate("() => document.querySelector('.ws-board-approvals')?.textContent ?? null")
                 pg.screenshot(path=str(OUT / f"{case}-1920.png"))
                 sbg.check(hidden == (case != "user-turned-on"), f"Control Center 단추 숨김 = {hidden}")
-                sbg.check(chip == "승인 대기 2", f"상황판 승인 대기 수 {chip}")
+                # (master#ec9c8b30 ③) 좌석(934)에 걸린 요청은 ◆ 막힘에 이미 셈 → 상황판 칩 = 좌석 밖 요청 1건만 · 낱말 「승인 요청」
+                sbg.check(chip == "승인 요청 1", f"상황판 좌석 밖 승인 요청 수(전체 2 − 좌석 934 의 1) {chip}")
                 if case == "default-hidden":
                     pg.click(".ws-board-approvals")
                     pg.wait_for_timeout(400)
-                    vis = pg.evaluate("() => [...document.querySelectorAll('#root .pane')].map((p) => +p.dataset.sid)")
-                    sbg.check(6 in vis, f"승인 대기 누름 = 승인 창 좌석(934)으로 {vis}")
+                    feed = pg.evaluate("() => !document.getElementById('cc-panel').hidden")
+                    sbg.check(feed, "승인 요청 누름 = 승인 목록(Control Center 승인 Feed) 열림")
+                    pg.evaluate("() => document.getElementById('btn-cc').click()")  # 닫아 두고 아래 자동 열림을 따로 잰다
+                    pg.wait_for_timeout(300)
                     # 감사 §2-1 #4(master#cc01161f ①): 단추가 숨어 있어도 approval.stalled 자동 열림(openFeed)은 그대로다
                     n = pg.evaluate("() => window.__emit('daemon-event', { type: 'event', seq: 1, name: 'approval.stalled', category: 'feed', surface_id: 6, payload: { surface_ref: 'surface:6', age_secs: 300 } })")
                     pg.wait_for_timeout(500)

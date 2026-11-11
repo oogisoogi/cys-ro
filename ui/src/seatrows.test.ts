@@ -6,6 +6,7 @@
 import { expect, test } from "bun:test";
 import {
   approvalSeatKeys,
+  seatApprovalItems,
   buildSeatRows,
   folderKey,
   seatName,
@@ -209,4 +210,20 @@ test("화면 활동 점 — 관측 우선 · 관측이 모름일 때만 자기�
   // 승인 피드 대기 = 입력 대기(관측이 무엇이든)
   expect(seatDot("working", false, true)).toBe("input");
   expect(seatDot("unknown", true, true)).toBe("input");
+});
+
+test("(master#ec9c8b30 ③) 좌석에 걸린 승인 요청 수(항목 단위) — 상황판 「승인 요청」 = 전체 − 이것 · 좌석 없음·좌석 줄 밖·승인 아님은 빼고 · 형식 오류 = 0", () => {
+  const all = { sockets: [
+    { socket: "/b.sock", dept: null, ok: true, items: [
+      { kind: "approval", status: "pending", surface_id: 6 },
+      { kind: "approval", status: "pending", surface_id: 6 },
+      { kind: "approval", status: "pending", surface_id: null },
+      { kind: "approval", status: "pending", surface_id: 99 },
+      { kind: "notice", status: "pending", surface_id: 6 },
+    ] },
+    { socket: "/d.sock", dept: "lms", ok: true, items: [{ kind: "approval", status: "pending", surface_id: 21 }] },
+  ] };
+  expect(seatApprovalItems(all, new Set(["undefined#6", "/d.sock#21"]))).toBe(3);
+  expect(seatApprovalItems(all, new Set())).toBe(0);
+  expect(seatApprovalItems(null, new Set(["undefined#6"]))).toBe(0);
 });

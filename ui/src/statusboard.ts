@@ -47,21 +47,42 @@ export function nextSeat(xs: readonly SeatRef[], prev: number): { seat: SeatRef;
   return { seat: xs[index], index };
 }
 
-/** (나) 한도 한 줄 — 계정 7d 창 중 가장 높은 소진율 + 초기화까지 남은 시간. 7d 가 없으면 null. */
-export function limitLine(rows: readonly { label: string; usedPct: number; resetsAt: number | null }[], nowSecs: number): string | null {
+type RateRow = { label: string; usedPct: number; resetsAt: number | null };
+const top7d = (rows: readonly RateRow[]): RateRow | null => {
   const d7 = rows.filter((r) => r.label === "7d" && Number.isFinite(r.usedPct));
-  if (!d7.length) return null;
-  const top = d7.reduce((a, b) => (b.usedPct > a.usedPct ? b : a));
-  const pct = `7d ${Math.round(top.usedPct)}%`;
+  return d7.length ? d7.reduce((a, b) => (b.usedPct > a.usedPct ? b : a)) : null;
+};
+const DAY = ["일", "월", "화", "수", "목", "금", "토"];
+/** 초기화 시각 → 「금 06:00」(이 기기 시간대). */
+export function resetDayTime(resetsAtSecs: number): string {
+  const t = new Date(resetsAtSecs * 1000);
+  return `${DAY[t.getDay()]} ${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}`;
+}
+/** (나) 한도 한 줄 — 계정 7d 창 중 가장 높은 소진율 + 초기화 요일·시각. 7d 가 없으면 null.
+ *  (master#fcbc46fb 결정 ③) 기본 폭 216px 에서 글자 중간 잘림 0 = 「퍼센트 먼저 · 초기화 요일·시각 다음」의 짧은 꼴 · 전문은 limitTitle(툴팁)·펼침. */
+export function limitLine(rows: readonly RateRow[], _nowSecs: number): string | null {
+  const top = top7d(rows);
+  if (!top) return null;
+  const pct = `${Math.round(top.usedPct)}%`;
+  if (top.resetsAt == null || !Number.isFinite(top.resetsAt)) return pct;
+  return `${pct} · ${resetDayTime(top.resetsAt)} 초기화`;
+}
+/** 한도 한 줄의 전문(툴팁) — 7일 한도 · 사용률 · 초기화 요일·시각 · 남은 시간. */
+export function limitTitle(rows: readonly RateRow[], nowSecs: number): string | null {
+  const top = top7d(rows);
+  if (!top) return null;
+  const pct = `7일 한도 ${Math.round(top.usedPct)}% 사용`;
   if (top.resetsAt == null || !Number.isFinite(top.resetsAt)) return pct;
   const left = Math.max(0, Math.floor(top.resetsAt - nowSecs));
   const d = Math.floor(left / 86400), h = Math.floor((left % 86400) / 3600), m = Math.floor((left % 3600) / 60);
-  return `${pct} · 초기화까지 ${d > 0 ? `${d}일 ${h}시간` : `${h}시간 ${m}분`}`;
+  return `${pct} · ${resetDayTime(top.resetsAt)} 초기화(${d > 0 ? `${d}일 ${h}시간` : `${h}시간 ${m}분`} 남음)`;
 }
 
 export interface BoardPaintOpts {
   variant: Exclude<BoardVariant, "off">;
   limit: string | null;
+  /** 한도 한 줄 전문(툴팁 · limitTitle). */
+  limitTitle?: string | null;
   /** (1g) 한도 막대 값(%) · 펼침 상태 · 누르면 펼침/접힘. */
   limitPct?: number | null;
   open?: boolean;
@@ -71,7 +92,7 @@ export interface BoardPaintOpts {
   onGo: (state: BoardState) => void;
   /** 부서 카드 아래 작은 줄(부서별 수) — 제목 없이 숫자만. */
   compact?: boolean;
-  /** (1e) 승인 대기 수(전 부서 feed.pending 합) — 0 이면 그리지 않는다. */
+  /** (1e) 좌석 밖 승인 요청 수(전 부서 feed.pending 합 − 좌석에 걸린 요청 · ◆ 막힘에 이미 든 것은 빼고) — 0 이면 그리지 않는다. */
   approvals?: number;
   onApprovals?: () => void;
 }
@@ -98,6 +119,13 @@ export function paintBoard(host: HTMLElement, c: BoardCounts, o: BoardPaintOpts)
     num.className = "ws-board-num";
     num.textContent = String(n);
     b.append(dot, num);
+    if (!o.compact) {
+      // (master#fcbc46fb 결정 ②) 모양은 역할 점 정본 그대로 · 수 옆에 글자를 늘 붙여 정지 화면에서도 무엇의 수인지 읽힌다.
+      const lab = document.createElement("span");
+      lab.className = "ws-board-label";
+      lab.textContent = SEAT_STATE_LABEL[st];
+      b.appendChild(lab);
+    }
     b.title = n === 0 ? `${SEAT_STATE_LABEL[st]} 0` : `${SEAT_STATE_LABEL[st]} ${n} — 누르면 그 좌석으로(여럿이면 차례로)`;
     b.disabled = n === 0;
     b.addEventListener("click", (e) => {
@@ -111,8 +139,9 @@ export function paintBoard(host: HTMLElement, c: BoardCounts, o: BoardPaintOpts)
     const ap = document.createElement("button");
     ap.type = "button";
     ap.className = "ws-board-approvals";
-    ap.textContent = `승인 대기 ${o.approvals}`;
-    ap.title = "누르면 승인 창이 뜬 좌석으로 — 좌석 화면이 아닌 승인 요청이면 승인 목록(Control Center 승인 Feed)으로";
+    // (master#ec9c8b30 ③) 낱말을 가른다 — 좌석 화면에 뜬 「승인 창」은 ◆ 막힘 수에 이미 들어 있다 · 여기는 좌석에 걸리지 않은 「승인 요청」만.
+    ap.textContent = `승인 요청 ${o.approvals}`;
+    ap.title = "좌석 화면 밖의 승인 요청 — 누르면 승인 목록(Control Center 승인 Feed). 좌석 화면에 뜬 승인 창은 ◆ 막힘 수에 들어 있습니다.";
     ap.addEventListener("click", (e) => {
       e.stopPropagation();
       o.onApprovals?.();
@@ -125,7 +154,7 @@ export function paintBoard(host: HTMLElement, c: BoardCounts, o: BoardPaintOpts)
     lim.type = "button";
     lim.className = "ws-board-limit";
     lim.setAttribute("aria-expanded", String(!!o.open));
-    lim.title = o.open ? "사용량 접기" : "사용량 펼치기(모델별 7d · 5h · 가장 낡음)";
+    lim.title = `${o.limitTitle ? `${o.limitTitle}\n` : ""}${o.open ? "사용량 접기" : "사용량 펼치기(모델별 7d · 5h · 가장 낡음)"}`;
     const caret = document.createElement("span");
     caret.className = "ws-board-caret";
     caret.textContent = o.open ? "▾" : "▸";

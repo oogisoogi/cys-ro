@@ -339,12 +339,12 @@ import {
 import { armDeferredPaneFocus, modalLayerOpen } from "./modalguard";
 import { activityExpiryMs, applyDotPaint, HIDDEN_DOT, projectActivity, RoleActivityStore } from "./roleactivity"; // ★F-01 역할 점 활동 표시(순수 판정·바뀐 것만 칠하기)
 import { SurfaceListTransport, type ListArrival } from "./surfacelist"; // ★F-01 끝점별 소유 원 호출 · 응답별 독립 투영
-import { approvalSeatKeys, buildSeatRows, namedSeatInputs, seatDot, seatInputOf, type SeatInput } from "./seatrows"; // (tabs-sidebar 조각1) 좌석 줄 판정·묶음
+import { approvalSeatKeys, buildSeatRows, namedSeatInputs, seatApprovalItems, seatDot, seatInputOf, type SeatInput } from "./seatrows"; // (tabs-sidebar 조각1) 좌석 줄 판정·묶음
 import { paintSeatRows, pruneSeatHosts, seatHost } from "./seatrowsdom"; // (tabs-sidebar 조각1) 좌석 줄 그리기
 import { fixedColumnSplit, GROUP_TABS_KEY, groupTabsOn, normalizeTabState, reconcileTabs, viewTree, zoomKeyOf, type TabState, type TabView } from "./grouptabs";
 import { buildTabBar } from "./tabbar"; // (tabs-sidebar 2b) 탭 머리 줄 // (tabs-sidebar 조각2) 묶음 탭 판정
 import type { SeatRowsModel } from "./seatrows";
-import { accountNeedsAction, BOARD_KEY, BOARD_OPEN_KEY, BOARD_POS_KEY, boardCounts, boardOpen, boardPos, boardVariant, limitLine, limitPct, nextSeat, paintBoard, type BoardState } from "./statusboard"; // (tabs-sidebar 1d) 상황판 시안
+import { accountNeedsAction, BOARD_KEY, BOARD_OPEN_KEY, BOARD_POS_KEY, boardCounts, boardOpen, boardPos, boardVariant, limitLine, limitPct, limitTitle, nextSeat, paintBoard, type BoardState } from "./statusboard"; // (tabs-sidebar 1d) 상황판 시안
 
 declare global {
   interface Window {
@@ -3229,6 +3229,7 @@ const nodeSig = new Map<string, NodeSig>(); // 키 = `${socket}#${surface_id}`
 const seatListBySock = new Map<string, Map<number, any>>();
 const seatSelf = new Map<string, { state: string | null; task: string | null }>();
 let approvalSeats = new Set<string>();
+let approvalFeedAll: unknown = null; // (master#ec9c8b30 ③) 마지막 feed_list_all 응답 — 상황판 「승인 요청」 = 전체 − 좌석에 걸린 요청
 // ★0.14.45 좌석별 계정 캐시 — org.status 좌석 행의 `account` 가산 키(같은 10초 틱 · 새 RPC·타이머 0). 키는 nodeSig 와 같다. 표시 전용.
 const seatAccts = new Map<string, SeatAcctSig>();
 // 신호 낡음 창(3×폴링 주기). 재부팅 직후 Windows 는 같은 조회가 더 걸리므로 그 축에서만 2배(winScaled 관례) —
@@ -5868,13 +5869,16 @@ async function refreshSidebarStatus() {
 async function refreshApprovalSeats(): Promise<void> {
   if (pendingApprovals === 0) {
     approvalSeats = new Set();
+    approvalFeedAll = null;
     return;
   }
   if (!claimFlight("seat-approvals")) return;
   try {
     const call = invoke("feed_list_all", { status: "pending" });
     releaseFlightWhenSettled("seat-approvals", call);
-    approvalSeats = approvalSeatKeys(await rpcT(call, T_LIST));
+    const all = await rpcT(call, T_LIST);
+    approvalSeats = approvalSeatKeys(all);
+    approvalFeedAll = all;
   } catch {
     /* 직전 값 유지 */
   }
@@ -5942,14 +5946,17 @@ function paintStatusBoard(): void {
     if (ws) gotoSeat(ws, n.seat.sid);
   };
   if (statusBoard === "off") return;
-  // (1e) 승인 대기 수(옛 Control Center 단추의 빨간 수 = cc-pending-badge) — 누르면 승인 창이 뜬 좌석으로, 좌석이 없는 승인이면 승인 Feed 로.
-  const onApprovals = () => (counts.blocked.length ? onGo("blocked") : openFeed());
+  // (1e → master#ec9c8b30 ③) 「승인 요청」 = 전 소켓 대기 승인(feed.pending 합) − 지금 좌석 줄의 좌석에 걸린 요청(그 좌석은 ◆ 막힘에 이미 셈).
+  //   목록을 못 읽었으면(approvalFeedAll = null) 전체를 그대로 보인다(요청을 숨기는 쪽으로 틀리지 않게) · 누르면 승인 목록.
+  const shownSeats = new Set(live.flatMap((w) => { const m = seatModels.get(w.id); return m ? [...m.fixed, ...m.groups.flatMap((g) => g.rows)].filter((r) => !r.named).map((r) => `${w.socket}#${r.sid}`) : []; }));
+  const offSeatApprovals = Math.max(0, pendingApprovals - (approvalFeedAll === null ? 0 : seatApprovalItems(approvalFeedAll, shownSeats)));
+  const onApprovals = () => openFeed();
   // (1g · master#17b20312) 사용량 통합 — 둘째 줄 = 한도 한 줄(막대) · 펼치면 종전 사용량 칸(#ws-usage) 그 요소를 상황판 안에 그대로 담는다
   //   (그리기 = renderSidebarUsage 무변경 · 같은 정보 두 곳 0). 위치 = 위(목록 맨 위) / 아래(막대 맨 아래 고정 · 좌석 줄이 스크롤).
   const board = seatHost("board");
   const open = boardOpen(localStorage.getItem(BOARD_OPEN_KEY));
   const onToggle = () => { localStorage.setItem(BOARD_OPEN_KEY, open ? "0" : "1"); paintStatusBoard(); };
-  paintBoard(board, counts, { variant: statusBoard, limit, limitPct: limitPct(rateRows), open, onToggle, acctWarn, onGo, approvals: pendingApprovals, onApprovals });
+  paintBoard(board, counts, { variant: statusBoard, limit, limitTitle: limitTitle(rateRows, nowSecs), limitPct: limitPct(rateRows), open, onToggle, acctWarn, onGo, approvals: offSeatApprovals, onApprovals });
   boardMore.hidden = !open;
   if (usageEl) boardMore.appendChild(usageEl);
   board.appendChild(boardMore);
@@ -6095,6 +6102,7 @@ function buildWsAcctLine(ws: Workspace): HTMLElement | null {
 }
 
 function renderWsTabs() {
+  applyDeptPresence(); // (tabs-sidebar 1h) 10초 사이드바 갱신·탭 변화마다 부서 수를 다시 본다
   const bar = document.getElementById("ws-tabs")!;
   // (v116-ui-close · Fable 적대 2R) 탭 이름을 고치는 중이면 다시 그리지 않는다 — innerHTML 을 비우면 편집 중인
   //   글자가 확정(blur) 없이 사라진다. 10초 주기 사이드바 갱신·본부 판정 갱신이 모두 이 함수를 부른다(창 제목 쪽
@@ -6684,7 +6692,17 @@ function wsLabel(ws: Workspace): string {
     workspaces.map((w) => ({ id: w.id, socket: w.socket, pending: w.pending, sids: collectSids(w.tree) })),
     hqMasterSids,
   );
-  return wsDisplayName(ws.name, UNTITLED, ws.id === hq);
+  // (tabs-sidebar 1h · master#edd9d8a8) 부서가 0개면 「본부」라는 말도 쓰지 않는다(이름 없는 탭 = 「새 화면」) — 부서가 생기면 다시 「본부」.
+  return wsDisplayName(ws.name, UNTITLED, ws.id === hq && deptsPresent());
+}
+// (tabs-sidebar 1h · master#edd9d8a8 · 박사님 「권고대로」) 부서가 하나라도 있는가 — 판정 = 부서 수(전문가 모드 아님).
+//   재료 = 레지스트리에서 본 부서(deptSeen · 시작 대조·3초 틱이 심는다) + 지금 열린 부서 탭(ws.socket). 둘 다 없으면 0개.
+function deptsPresent(): boolean {
+  return (deptSeen?.size ?? 0) > 0 || workspaces.some((w) => !!w.socket);
+}
+// 부서 0개 = body.no-depts → style.css 가 「부서」 안내(.dept-only)를 숨긴다(요소는 남는다 · 코드 삭제 0). 부서가 생기면 그대로 보인다.
+function applyDeptPresence(): void {
+  document.body.classList.toggle("no-depts", !deptsPresent());
 }
 
 // 커스텀 컨텍스트 메뉴 (WKWebView 기본 메뉴 대체) — 싱글톤, 바깥 클릭·Esc로 닫힘.
@@ -9303,11 +9321,15 @@ async function buildPaletteItems(): Promise<PaletteItem[]> {
     { id: "act:equalize", title: "패널 균등화", keywords: "equalize 균등", action: () => actionEqualize() },
     { id: "act:cc", title: "Control Center 토글", keywords: "control center dashboard 대시보드", action: () => setCcOpen(!ccOpen) },
     { id: "act:feed-panel", title: "승인 Feed 탭 열기", keywords: "feed panel 피드 패널 승인 control center", action: () => openFeed() },
-    // ★v110-sidebar ⓒ: 팔레트도 **같은 문**으로 들어간다(launchDept). 종전엔 addDeptWorkspace 를
-    //   직접 불러 확인 창은 물론 연타 차단까지 통째로 비껴갔다 — 단추에만 가드를 달면 단추 없이
-    //   같은 일을 하는 이 경로가 조용히 남는다(B22 의 구조). daemonActionBlocked 도 launchDept 가 건다.
-    { id: "act:dept", title: "부서 워크스페이스 추가 (독립 부서장·전용 데몬)", keywords: "dept workspace 부서 부서장 master", action: () => { void launchDept(); } },
   );
+  // (tabs-sidebar 1h · master#edd9d8a8) 부서 0개 기기 = 팔레트에도 「부서」 항목을 내지 않는다 — 부서가 있거나 전문가 모드(직접 조작 단추를 켠 사람)면 그대로.
+  if (deptsPresent() || expertModeOn(localStorage.getItem(EXPERT_KEY)))
+    items.push(
+      // ★v110-sidebar ⓒ: 팔레트도 **같은 문**으로 들어간다(launchDept). 종전엔 addDeptWorkspace 를
+      //   직접 불러 확인 창은 물론 연타 차단까지 통째로 비껴갔다 — 단추에만 가드를 달면 단추 없이
+      //   같은 일을 하는 이 경로가 조용히 남는다(B22 의 구조). daemonActionBlocked 도 launchDept 가 건다.
+      { id: "act:dept", title: "부서 워크스페이스 추가 (독립 부서장·전용 데몬)", keywords: "dept workspace 부서 부서장 master", action: () => { void launchDept(); } },
+    );
   return items;
 }
 

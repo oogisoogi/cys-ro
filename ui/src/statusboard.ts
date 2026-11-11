@@ -57,6 +57,9 @@ export interface BoardPaintOpts {
   onGo: (state: BoardState) => void;
   /** 부서 카드 아래 작은 줄(부서별 수) — 제목 없이 숫자만. */
   compact?: boolean;
+  /** (1e) 승인 대기 수(전 부서 feed.pending 합) — 0 이면 그리지 않는다. */
+  approvals?: number;
+  onApprovals?: () => void;
 }
 
 /** 상태 수 칸 그리기 — 0 인 상태는 흐리게(누를 수 없음). */
@@ -85,6 +88,18 @@ export function paintBoard(host: HTMLElement, c: BoardCounts, o: BoardPaintOpts)
     line.appendChild(b);
   }
   frag.appendChild(line);
+  if (!o.compact && (o.approvals ?? 0) > 0) {
+    const ap = document.createElement("button");
+    ap.type = "button";
+    ap.className = "ws-board-approvals";
+    ap.textContent = `승인 대기 ${o.approvals}`;
+    ap.title = "누르면 승인 창이 뜬 좌석으로 — 좌석 화면이 아닌 승인 요청이면 승인 목록(Control Center 승인 Feed)으로";
+    ap.addEventListener("click", (e) => {
+      e.stopPropagation();
+      o.onApprovals?.();
+    });
+    frag.appendChild(ap);
+  }
   if (o.variant === "b" && o.limit && !o.compact) {
     const lim = document.createElement("div");
     lim.className = "ws-board-limit";

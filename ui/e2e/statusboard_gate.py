@@ -70,9 +70,10 @@ SHIM = r"""
       case 'list_surfaces': return { surfaces: mine(a.socket).map(row) };
       case 'org_status': return { surfaces: mine(a.socket).map((s) => ({ surface_id: s.sid, role: s.role, exited: false, idle_secs: s.act === 'unknown' ? 999 : 1, agent_alive: true,
         usage: row(s).usage, status: s.self || s.task ? { state: s.self ?? 'working', context_pct: null, task: s.task, age_secs: 5 } : null })),
-        feed: { pending: mine(a.socket).filter((s) => s.approval).length } };
+        feed: { pending: mine(a.socket).filter((s) => s.approval).length + ((a.socket ?? BASE) === BASE ? (window.__EXTRA_PENDING ?? 0) : 0) } };
       case 'feed_list_all': return { sockets: [{ socket: BASE, dept: null, ok: true,
-        items: SEATS.filter((s) => s.approval).map((s, i) => ({ request_id: 'r' + i, kind: 'approval', status: 'pending', surface_id: s.sid, title: 't', body: 'b' })) }] };
+        items: [...SEATS.filter((s) => s.approval).map((s, i) => ({ request_id: 'r' + i, kind: 'approval', status: 'pending', surface_id: s.sid, title: 't', body: 'b' })),
+          ...Array.from({ length: window.__EXTRA_PENDING ?? 0 }, (_, i) => ({ request_id: 'x' + i, kind: 'approval', status: 'pending', surface_id: null, title: '워커 승인 요청', body: 'b' }))] }] };
       case 'usage_named_reporters': return { named: [] };
       case 'usage_accounts_all': return { accounts: [{ account_id: 'acct-1', label: 'sim@example.com', provider: 'claude', updated_at: Date.now() / 1000,
         rate: [{ label: '7d', used_pct: 86, resets_at: Date.now() / 1000 + 2 * 86400 + 3 * 3600 + 120, stale: false }] }] };

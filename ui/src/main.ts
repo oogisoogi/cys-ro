@@ -28,7 +28,7 @@ import { DEFAULT_BG, readableForeground, termTheme } from "./theme";
 import { termFontStack, snapCellsToDevicePixels, refreshGlyphWidths, loadBundledFont, remeasureCells } from "./termrender";
 import { reorderWorkspace, reorderGroup } from "./reorder";
 import {
-  TOPBAR_LAYOUT_KEY, type TopbarItem, isTopbarPinned, defaultTopbarLayout, parseTopbarLayout, serializeTopbarLayout,
+  TOPBAR_LAYOUT_KEY, type TopbarItem, isTopbarPinned, defaultTopbarLayout, parseTopbarLayout, serializeTopbarLayout, ccButtonOffOnce, CC_BTN_OFF_ONCE_KEY,
   setTopbarItemOn, moveTopbarItem, canMoveTopbarItem, dropTopbarItem,
 } from "./topbarlayout";
 import {
@@ -3141,6 +3141,12 @@ function topbarSavedRaw(): string | null {
   }
 }
 let topbarLayout: TopbarItem[] = parseTopbarLayout(topbarSavedRaw(), TOPBAR_DOM_IDS);
+// (1e) 저장된 배치에도 Control Center 단추를 한 번 끈다(표지 1회 · 그 뒤 사람이 켜면 그대로).
+try {
+  const m = ccButtonOffOnce(topbarLayout, localStorage.getItem(CC_BTN_OFF_ONCE_KEY) === "1");
+  localStorage.setItem(CC_BTN_OFF_ONCE_KEY, "1");
+  if (m.changed && topbarSavedRaw()) { topbarLayout = m.items; localStorage.setItem(TOPBAR_LAYOUT_KEY, serializeTopbarLayout(m.items)); }
+} catch { /* 저장소 막힘 — 기본값 경로(이미 끔)에 맡긴다 */ }
 // persist: true = 저장 · false = 화면에만(시작 복원) · null = 저장을 지운다(기본값 복원 — 다음 판의 기본값을 그대로 따른다).
 // 돌려주는 값 = 저장까지 됐는가. ★저장이 실패해도(codex 1R LOW · QuotaExceeded 등) 화면에는 끝까지 바른다 — 되돌리면
 //   저장소가 막힌 기기에서는 단추를 켤 길이 없어진다(윈에서 창 만들기의 보이는 길이 이 토글이다). 부르는 쪽이 false 를
@@ -5919,7 +5925,9 @@ function paintStatusBoard(): void {
     if (ws) gotoSeat(ws, n.seat.sid);
   };
   if (statusBoard === "off") return;
-  paintBoard(seatHost("board"), counts, { variant: statusBoard, limit, extra, onGo });
+  // (1e) 승인 대기 수(옛 Control Center 단추의 빨간 수 = cc-pending-badge) — 누르면 승인 창이 뜬 좌석으로, 좌석이 없는 승인이면 승인 Feed 로.
+  const onApprovals = () => (counts.blocked.length ? onGo("blocked") : openFeed());
+  paintBoard(seatHost("board"), counts, { variant: statusBoard, limit, extra, onGo, approvals: pendingApprovals, onApprovals });
   if (live.length > 1)
     for (const m of models) paintBoard(seatHost(`n${m.wsId}`), boardCounts([m]), { variant: statusBoard, limit: null, extra: null, onGo, compact: true });
 }
@@ -6876,6 +6884,10 @@ function openThemePopover(anchor: HTMLElement) {
   const titleColorRow = document.createElement("label"); titleColorRow.className = "theme-pop-row"; titleColorRow.textContent = "제목=역할색";
   const tcCb = document.createElement("input"); tcCb.type = "checkbox"; tcCb.checked = titleColorRole;
   tcCb.addEventListener("change", () => applyTitleColorRole(tcCb.checked)); titleColorRow.appendChild(tcCb);
+  // (1e) 컨트롤 센터 여는 길 — 상단 단추를 기본으로 내렸으므로 여기 한 줄(+ 말).
+  const ccOpenRow = document.createElement("div"); ccOpenRow.className = "theme-pop-row";
+  const ccOpenBtn = document.createElement("button"); ccOpenBtn.type = "button"; ccOpenBtn.textContent = "컨트롤 센터 열기";
+  ccOpenBtn.addEventListener("click", () => setCcOpen(true)); ccOpenRow.appendChild(ccOpenBtn);
   const groupTabsRow = document.createElement("label"); groupTabsRow.className = "theme-pop-row"; groupTabsRow.textContent = "묶음 탭";
   const gtCb = document.createElement("input"); gtCb.type = "checkbox"; gtCb.checked = groupTabs;
   gtCb.addEventListener("change", () => applyGroupTabs(gtCb.checked)); groupTabsRow.appendChild(gtCb);
@@ -6907,7 +6919,7 @@ function openThemePopover(anchor: HTMLElement) {
 
   // ① 글자·배경 — 종전 「테마」 항목 전부 그대로.
   const look = mkSection("look", "글자·배경");
-  look.body.append(row, fontRow, titleSizeRow, titleWeightRow, titleColorRow, groupTabsRow, termWeightRow, menuWeightRow, menuSizeRow,
+  look.body.append(ccOpenRow, row, fontRow, titleSizeRow, titleWeightRow, titleColorRow, groupTabsRow, termWeightRow, menuWeightRow, menuSizeRow,
     mkReset("이 구획만 기본값으로", resetLook));
 
   // ② 상단 단추 — 줄 = [≡ 끌기 손잡이] [이름] [▲] [▼] [켬/끔]. 목록의 위 → 아래 = 상단의 왼쪽 → 오른쪽.

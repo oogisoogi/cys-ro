@@ -419,6 +419,7 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
 .ws-board-n.st-blocked { color: var(--error); }
 .ws-board-n.st-unknown { color: #8b949e; }
 .ws-board-n.zero { opacity: .35; cursor: default; }
+.ws-board-approvals { margin-top: 3px; background: none; border: 1px solid var(--error); border-radius: 4px; color: var(--error); font: inherit; font-size: .9em; padding: 0 .4em; cursor: pointer; }
 .ws-board-limit { margin-top: 3px; font-size: .9em; color: #8b949e; }
 [data-seat-host^="n"] { padding: 0 6px 0 10px; font-size: calc(13px * var(--wsbar-font, 1)); }
 .ws-seat.tagged { flex-wrap: wrap; row-gap: 0; }

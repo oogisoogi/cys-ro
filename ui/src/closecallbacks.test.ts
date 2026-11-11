@@ -177,14 +177,14 @@ function harness(workspaces = [ws(1, SOURCE, [42])]) {
     "destroyPaneRuntime", "detachPane", "closePane", "actionClose", "transferCrossDept", "awaitHandoffAck",
     "confirmDeleteGroup", "purgeDept",
     // (codex 3R #3·#4) 전출 중 작업공간 삭제 재검사 · 거두지 못한 새 좌석의 삭제 확정 뒤 재판정
-    "wsGoneOrGoing", "dropSeatOfGoneWs", "whenWsDeleteSettled", "settleWsDelete"];
+    "wsGoneOrGoing", "dropSeatOfGoneWs", "whenWsDeleteSettled", "settleWsDelete", "noteDeptDaemonUp"];
   const prelude = ["paneKey", "closingPaneKeys", "closeConfirmOpen", "arrangeRolesBySocket",
     "transfersInFlight", "groupDeleteArm", "TRANSFER_ACK_WAIT_SECS",
     "wsDeleteWaiters", "deptDaemonStopped"].map(declaration).join("\n");
   const transpiler = new Bun.Transpiler({ loader: "ts" });
   const body = transpiler.transformSync(prelude + "\n" + names.map(fnText).join("\n"));
   const api = new Function("scope", `with (scope) {\n${body}\nreturn {
-    ${names.join(", ")}, transfersInFlight,
+    ${names.join(", ")}, transfersInFlight, deptDaemonStopped,
     // ★1.1.11 편입: 원작자 isClosingSid 자리 = 우리 판 「닫는 중」 표식(closingPaneKeys · socket+SID 열쇠)이 남지 않았는가.
     isClosingSid: (sid, socket) => closingPaneKeys.has(paneKey(sid, socket)),
     armGroup: id => { groupDeleteArm = id; },
@@ -427,6 +427,49 @@ describe("S6 actual transfer and compensation", () => {
       expect(h.runtimes.get(key(42, SOURCE))).toBe(rt);
       expect(h.api.transfersInFlight.get(key(42, SOURCE)).state).toBe("awaiting-ack"); // 다시 전출하면 관측만 재개
     }
+  });
+
+  test("(ChatGPT F3) 두 번째 닫기를 기다리는 사이 같은 데몬 작업공간이 생기면 거기 붙인다 · 데몬이 꺼지면 런타임만 거둔다 — 새 작업공간 0", async () => {
+    for (const meanwhile of ["new-home", "daemon-stopped"] as const) {
+      const gone = ws(2, DEST, []); const keep = ws(1, SOURCE, [42]); const h = harness([keep]);
+      h.addRuntime(90, DEST);
+      const second = deferred<never>();
+      let closes = 0;
+      h.script((cmd, args) => {
+        if (cmd === "close_surface" && args.surfaceId === 90) return ++closes === 1 ? new Error(DENIED) : second.promise;
+      });
+      const run = h.api.dropSeatOfGoneWs(gone, 90);
+      for (let i = 0; i < 10 && closes < 2; i++) await Promise.resolve();
+      expect({ meanwhile, closes }).toEqual({ meanwhile, closes: 2 });
+      const home = ws(3, DEST, [91]);
+      if (meanwhile === "new-home") h.scope.workspaces.push(home);
+      else h.api.deptDaemonStopped.add(DEST);
+      second.reject(new Error(DENIED));
+      await run;
+      const ids = h.scope.workspaces.map((w: Any) => w.id);
+      expect({ meanwhile, ids }).toEqual({ meanwhile, ids: meanwhile === "new-home" ? [1, 3] : [1] }); // 새 작업공간(100) 0
+      if (meanwhile === "new-home") expect(JSON.stringify(home.tree)).toContain('"sid":90');
+      else expect(h.runtimes.has(key(90, DEST))).toBe(false);
+    }
+  });
+
+  test("(ChatGPT F7) 같은 소켓 부서 데몬이 다시 뜨면(noteDeptDaemonUp) 옛 종료 기록으로 산 좌석 런타임을 지우지 않는다", async () => {
+    for (const relaunched of [false, true]) {
+      const gone = ws(2, DEST, []); const keep = ws(1, SOURCE, [42]); const h = harness([keep]);
+      h.addRuntime(90, DEST);
+      h.api.deptDaemonStopped.add(DEST); // 앞선 삭제가 이 소켓 데몬을 끈 기록
+      if (relaunched) h.api.noteDeptDaemonUp(DEST); // 같은 소켓으로 다시 뜸
+      h.script((cmd, args) => { if (cmd === "close_surface" && args.surfaceId === 90) return new Error(DENIED); });
+      await h.api.dropSeatOfGoneWs(gone, 90);
+      // 옛 기록이 남으면 = 런타임만 지움(산 좌석이 화면에서 사라짐) · 지웠으면 = 다시 닫기 → 새 작업공간에 보이게
+      expect({ relaunched, runtime: h.runtimes.has(key(90, DEST)) }).toEqual({ relaunched, runtime: relaunched });
+      expect({ relaunched, closes: h.closeCalls().length }).toEqual({ relaunched, closes: relaunched ? 2 : 1 });
+    }
+  });
+
+  test("(ChatGPT F7·F6) 배선 — 부서 데몬이 뜨는 네 자리에서 옛 종료 기록을 지운다 · 기동 복원은 makePane 전에 있던 런타임을 지우지 않는다", () => {
+    expect((SRC.match(/noteDeptDaemonUp\(/g) ?? []).length).toBe(5); // 정의 1 + 부르는 곳 4(새 부서 · 지금 켜기 · 기동 재기동 · 켜진 동안 등재)
+    expect(SRC).toContain("if (!hadRuntime) destroyPaneRuntime(s.surface_id, sk);");
   });
 
   test("acknowledged handoff close rejection remains retryable and retry performs close only", async () => {

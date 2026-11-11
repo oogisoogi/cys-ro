@@ -516,6 +516,7 @@ describe("addDeptWorkspace — 실제 본문 실행(진행 id · createdAt 은 �
       },
       collectSids: (tree: unknown): number[] => (tree ? [1] : []),
       setFocus: (): void => void events.push("focus"),
+      noteDeptDaemonUp: (): void => {}, // (ChatGPT F7) 같은 소켓 재기동 때 옛 종료 기록 지우기 — 이 검체의 축 밖
       showDeptFormation: (ws: unknown, state: string, seated: unknown): void => {
         events.push("show");
         shown.push({ ws, state, seated });

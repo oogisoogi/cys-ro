@@ -4098,6 +4098,7 @@ async function openNewlyRegisteredDepts(): Promise<boolean> {
   deptSeen = step.seen;
   for (const spec of step.open) {
     const ws: Workspace = { id: wsCounter++, name: spec.name ?? UNTITLED, tree: null, socket: spec.socket };
+    noteDeptDaemonUp(spec.socket); // (ChatGPT F7) 켜진 동안 새로 등재된 부서
     ws.autoCreated = true; // 사용자가 연 적 없는 탭(시작 대조와 같은 표식)
     const g = groups.find((gg) => gg.anchorSocket === spec.socket);
     if (g) ws.groupId = g.id;
@@ -5544,6 +5545,13 @@ function render() {
     else if (renderHeld === "no") renderHeld = "auto";
     return;
   }
+  // (ChatGPT F5) 편집 없이 정상으로 그리면 밀린 표식도 여기서 소비한다 — 편집 대상이 확정 처리기를 안 거치고 사라진 경우(런타임 파기) 옛 표식이
+  //   나중 다른 편집의 확정 때 엉뚱한 render 를 부르지 않게. 밀린 것이 사람 손이었으면 사람 손으로 그린다.
+  if (renderHeld !== "no") {
+    const held = renderHeld;
+    renderHeld = "no";
+    if (held === "user" && !viewByUser) return renderByUser();
+  }
   const kbHeld = paneHoldingKeyboard(); // (codex 2R #4) 떼기 전 실제 키보드 포커스 좌석
   for (const rt of panes.values()) rt.el.remove();
   root.innerHTML = "";
@@ -5703,6 +5711,7 @@ function renderIdleWorkspace(ws: Workspace): HTMLElement {
         };
         if (r?.socket_slug && r?.socket) socketForSlug.set(r.socket_slug, r.socket);
         if (r?.socket) ws.socket = r.socket;
+        noteDeptDaemonUp(ws.socket); // (ChatGPT F7) 「지금 켜기」 성공
         ws.autoCreated = undefined; // 사용자가 직접 켰다 — 다음 기동부터 회차 상한 면제
         // ★G5: `cys-dept launch` 는 말미에 묘비를 해소한다 = **삭제가 취소됐다**. 안내도 같이 내린다
         //   (표식을 남기면 살아난 부서 탭이 계속 '종료 실패'라고 말한다).
@@ -7494,6 +7503,7 @@ async function addDeptWorkspace(catalogKey?: string, teamSpec?: TeamSpec): Promi
     // 자동입양이 그 master(빈 셸)를 '첫 pane'으로 채운다(rolePri master=0 → 좌측·focus). 별도 UI 셸 0·더블 surface 0.
     // 탭이 await 중 닫혀도(close 핸들러가 socket 기준 데몬 teardown) 좀비 없음 — 별도 plain-셸 회수 불필요.
     ws.socket = info.socket;
+    noteDeptDaemonUp(info.socket); // (ChatGPT F7)
     ws.pending = false;
     // ★0.14.43(GU): 이 세션에서 **새로 만든** 팀 표지(표시 전용) — 성공 분기에서만 세운다(멱등 합류·취소·실패 분기에는 세우지 않는다). render() 보다 먼저 서야
     //   빈 탭이 '아직 켜지 않았습니다'(방금 만든 팀에는 거짓)를 잠깐 비추지 않는다. 첫 안내는 성공 직후 한 번 — 표시 실패가 생성 성공을 뒤집지 않게 가둔다.
@@ -7782,19 +7792,28 @@ async function dropSeatOfGoneWs(ws: Workspace, sid: number): Promise<void> {
   await whenWsDeleteSettled(ws);
   const sock = ws.socket;
   const sameSock = (w: Workspace) => (w.socket ?? undefined) === (sock ?? undefined);
-  if (!panes.has(paneKey(sid, sock))) return; // 그사이 끝 이벤트 등 다른 경로가 거뒀다
-  if (workspaces.some((w) => sameSock(w) && collectSids(w.tree).includes(sid))) return; // 이미 어딘가에 붙어 보인다
-  const home = workspaces.includes(ws) && !ws.pending ? ws : workspaces.find((w) => !w.deleting && !w.pending && sameSock(w));
-  if (home) {
-    arrangeWs(home, { add: [{ sid }] });
-    render();
-    toast("watchdog", "새 좌석 닫기 실패", `좌석을 만드는 사이 그 작업공간이 지워졌는데 좌석을 닫지 못해 「${wsLabel(home)}」 에 붙였어요 — 직접 닫아 주세요.`, undefined, String(err));
-    return;
-  }
-  if (sock && deptDaemonStopped.has(sock)) {
-    destroyPaneRuntime(sid, sock); // 그 부서 데몬이 꺼졌다 = 좌석도 끝났다 — 남은 화면 기억만 거둔다
-    return;
-  }
+  // (ChatGPT F3) 판정과 트리 편입을 await 없는 한 동기 구간에서 — 두 번째 닫기를 기다린 뒤에도 같은 판정을 다시 한다
+  //   (그사이 같은 데몬 작업공간이 생겼거나 · 그 부서 데몬이 꺼졌거나 · 좌석이 다른 경로로 끝났을 수 있다).
+  // (ChatGPT F6) 런타임 없음 = 좌석이 끝났다: 이 role-less 새 좌석의 런타임을 지우는 경로는 데몬이 끝을 확인한 것뿐이다
+  //   (closePane · 유령 수렴(데몬이 모름 2연속) · 끝남 목록·이벤트) — 데몬 좌석을 살려 둔 채 런타임만 지우는 경로(입양·기동 복원·첫 좌석 단언)는
+  //   제가 방금 만든 런타임에만 손댄다(기동 복원은 makePane 전에 이미 있던 런타임을 지우지 않는다 — 아래 start() 주석).
+  const settled = (): boolean => {
+    if (!panes.has(paneKey(sid, sock))) return true;
+    if (workspaces.some((w) => sameSock(w) && collectSids(w.tree).includes(sid))) return true; // 이미 어딘가에 붙어 보인다
+    const home = workspaces.includes(ws) && !ws.pending && !ws.deleting ? ws : workspaces.find((w) => !w.deleting && !w.pending && sameSock(w));
+    if (home) {
+      arrangeWs(home, { add: [{ sid }] });
+      render();
+      toast("watchdog", "새 좌석 닫기 실패", `좌석을 만드는 사이 그 작업공간이 지워졌는데 좌석을 닫지 못해 「${wsLabel(home)}」 에 붙였어요 — 직접 닫아 주세요.`, undefined, String(err));
+      return true;
+    }
+    if (sock && deptDaemonStopped.has(sock)) {
+      destroyPaneRuntime(sid, sock); // 그 부서 데몬이 꺼졌다 = 좌석도 끝났다 — 남은 화면 기억만 거둔다
+      return true;
+    }
+    return false;
+  };
+  if (settled()) return;
   try {
     await closePane(sid, sock);
     toast("watchdog", "새 좌석 닫음", "좌석을 만드는 사이 그 작업공간이 지워져서, 화면에 없는 좌석으로 남지 않게 닫았어요.");
@@ -7802,7 +7821,7 @@ async function dropSeatOfGoneWs(ws: Workspace, sid: number): Promise<void> {
   } catch (e) {
     err = e;
   }
-  if (!panes.has(paneKey(sid, sock))) return;
+  if (settled()) return; // (ChatGPT F3) 두 번째 await 뒤 재판정
   const nw: Workspace = { id: wsCounter++, name: UNTITLED, tree: null, socket: sock };
   workspaces.push(nw);
   arrangeWs(nw, { add: [{ sid }] });
@@ -7813,6 +7832,11 @@ async function dropSeatOfGoneWs(ws: Workspace, sid: number): Promise<void> {
 //   deptDaemonStopped = 삭제가 종료를 확인한 부서 데몬 소켓(그 데몬의 좌석은 함께 끝났다).
 const wsDeleteWaiters = new Map<Workspace, (() => void)[]>();
 const deptDaemonStopped = new Set<string>();
+// (ChatGPT F7) 같은 소켓 경로로 부서 데몬이 다시 뜨면(새로 만들기 · 「지금 켜기」 · 기동 재기동 · 켜진 동안 새로 등재) 옛 종료 기록을 지운다 —
+//   남겨 두면 새 데몬의 산 좌석을 「데몬이 꺼졌다」 로 읽어 런타임만 지운다.
+function noteDeptDaemonUp(sock: string | undefined): void {
+  if (sock) deptDaemonStopped.delete(sock);
+}
 function whenWsDeleteSettled(ws: Workspace): Promise<void> {
   if (!ws.deleting) return Promise.resolve();
   return new Promise((res) => {
@@ -11933,6 +11957,7 @@ async function start() {
       const info = (await rpcT(invoke("launch_dept_daemon", { name: launchName }), T_LAUNCH)) as { socket: string; socket_slug?: string };
       if (info.socket_slug && info.socket) socketForSlug.set(info.socket_slug, info.socket);
       if (info.socket) ws.socket = info.socket; // 재-launch된 실제 socket 반영(이후 집계·prune·병합 정합)
+      noteDeptDaemonUp(ws.socket); // (ChatGPT F7) 기동 재기동 성공
     } catch (e) {
       // 데몬 확보 실패 — 등록된 ws는 빈 채 보존(저장본 삭제 금지).
       // ★C4-b(2026-09-17 3라운드): 종전 `catch {}` 는 cys-dept 의 stderr(소켓 경로 상한 등 sock_len_diag 사유)를
@@ -12079,12 +12104,13 @@ async function start() {
     //   다음 makePane 이 던져도 앞 좌석은 트리에 있다 — Opus 적대 1R F2). 붙는 좌석이 없으면 저장된 배치를 건드리지 않는다.
     for (const s of lb.list) {
       if (startHaltedByReset(info)) return; // ★W-3-b(R3-M1): pane 을 붙이기 전마다 초기화 진행·완료를 다시 본다
+      const hadRuntime = panes.has(paneKey(s.surface_id, sk)); // (ChatGPT F6) 이미 있던 런타임은 그 주인(새 좌석 거두기 등)의 것 — 여기서 지우지 않는다
       await makePane(s.surface_id, s.title, sk);
       // (codex 3R 전수 표 · blocking 2 와 같은 모양) 기동 복원 중에도 탭은 이미 그려져(위 renderWsTabs) 사람이 지울 수 있다 — 붙이기를 기다린 사이
       //   그 작업공간이 지워졌거나 지워지는 중이면 같은 데몬의 살아 있는 작업공간에 · 없으면 런타임만 파기(데몬 좌석 = 닫지 않는다 · 다음 틱이 다시 입양 가능).
       if (ws && wsGoneOrGoing(ws)) ws = workspaces.find((w) => !w.pending && !w.deleting && (w.socket ?? undefined) === (sk ?? undefined));
       if (!ws) {
-        destroyPaneRuntime(s.surface_id, sk);
+        if (!hadRuntime) destroyPaneRuntime(s.surface_id, sk);
         continue;
       }
       if (ws && !collectSids(ws.tree).includes(s.surface_id)) {

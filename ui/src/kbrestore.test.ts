@@ -143,6 +143,17 @@ describe("③ render — 좌석 이름 편집 중이면 떼지 않고 미룬다 
     expect(w.log).toContain("root.clear");
     expect(w.scope.renderHeld).toBe("no");
   });
+  it("(ChatGPT F5) 편집 없이 정상으로 그리면 밀린 표식을 소비한다 — user 면 사람 손으로 다시 그리고 끝 · auto 면 그대로 그린다", () => {
+    for (const held of ["user", "auto"] as const) {
+      const w = renderWorld(false, false);
+      const calls: string[] = [];
+      w.scope.renderHeld = held;
+      w.scope.renderByUser = () => calls.push("renderByUser");
+      w.render();
+      expect({ held, after: w.scope.renderHeld, calls, drew: w.log.includes("root.clear") })
+        .toEqual({ held, after: "no", calls: held === "user" ? ["renderByUser"] : [], drew: held === "auto" });
+    }
+  });
   it("flushHeldRender — auto = render 1회 · user = renderByUser 1회 · no = 0 · 표시는 no 로", () => {
     for (const [held, want] of [["auto", ["render"]], ["user", ["renderByUser"]], ["no", []]] as const) {
       const calls: string[] = [];

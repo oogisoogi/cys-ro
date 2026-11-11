@@ -181,7 +181,9 @@ def main() -> int:
                         # (2b · master#357e735a) 탭 머리 줄 = 고정 기둥 오른쪽 영역 위에만 · 탭 3개 · 탭 누름 = 그 묶음 + 고정 좌석 그대로
                         tb = pg.evaluate("""() => { const b = document.querySelector('#root .group-tabbar'); const m = document.querySelector('#root .pane[data-sid="1"]');
                           if (!b || !m) return null; return { left: Math.round(b.getBoundingClientRect().left), mRight: Math.round(m.getBoundingClientRect().right),
-                          tabs: [...b.querySelectorAll('.group-tab-name')].map((x) => x.textContent), active: b.querySelector('.group-tab.active .group-tab-name')?.textContent }; }""")
+                          tabs: [...b.querySelectorAll('.group-tab-name')].map((x) => x.textContent), active: b.querySelector('.group-tab.active .group-tab-name')?.textContent,
+                          over: b.scrollWidth > b.clientWidth + 1, cut: [...b.querySelectorAll('.group-tab-name')].some((x) => x.scrollWidth > x.clientWidth + 1) }; }""")
+                        check(tb is not None and not tb["over"] and not tb["cut"], f"탭 줄 넘침·이름 잘림 0 @ {w} {tb and (tb['over'], tb['cut'])}")
                         check(tb is not None and tb["left"] >= tb["mRight"] and tb["tabs"] == ["site", "lms", "video"] and tb["active"] == "site", f"탭 줄 = 고정 기둥 오른쪽 위 {tb}")
                         if w == 1920:
                             pg.screenshot(path=str(OUT / f"{name}-{w}-tabs.png"))

@@ -503,6 +503,39 @@ fn revive_authority_role(r: &str) -> bool {
     r == "master"
 }
 
+/// (tabs-sidebar 2d) 앱 화면 명령(`surface.set_group` · `ui.open_panel`)의 호출자 게이트 — 좌석 안에서 부르면 그 좌석이
+/// master 역할이어야 한다(워커·CSO·리뷰어 좌석이 남의 화면 배치를 바꾸지 못하게). 좌석 밖(사람이 연 터미널의 CLI ·
+/// 익명 발신)은 통과 — 좌석 pane 의 peer pid 는 늘 자기 좌석으로 풀리므로 좌석이 익명을 흉내 낼 수 없다(surface.close 와 같은 근거).
+fn ui_command_caller_ok(daemon: &Arc<Daemon>, caller_pid: Option<u32>) -> Result<(), &'static str> {
+    let Some(cs) = caller_pid.and_then(|p| resolve_caller_surface(daemon, p)) else {
+        return Ok(());
+    };
+    let role = daemon.get_surface(cs).and_then(|s| s.role.lock().unwrap().clone());
+    if role.as_deref().is_some_and(revive_authority_role) {
+        Ok(())
+    } else {
+        Err("caller seat must be master (or run from a terminal outside cys seats)")
+    }
+}
+
+/// (tabs-sidebar 2d) 묶음 이름 판독 — 빈 값·null = 옮김 해제(None) · 앞뒤 공백 제거 · 64자 이하 · 제어문자 금지.
+fn parse_seat_group(v: Option<&Value>) -> Result<Option<String>, &'static str> {
+    match v {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => {
+            let t = s.trim();
+            if t.is_empty() {
+                Ok(None)
+            } else if t.chars().count() > 64 || t.chars().any(char::is_control) {
+                Err("group must be 1-64 chars without control characters")
+            } else {
+                Ok(Some(t.to_string()))
+            }
+        }
+        _ => Err("group must be a string or null"),
+    }
+}
+
 /// ★(성찰 A5) 그 항목의 **발신 표기**(`QueueEntry::from`)를 소재에서 읽는다.
 ///
 /// 이 파일은 종전에 `from` 을 **한 번도 참조하지 않았다** — 그래서 revive 인가가 발신 축을
@@ -7303,6 +7336,8 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                         "display_no": s.display_no,
                         "title": s.title.lock().unwrap().clone(),
                         "role": s.role.lock().unwrap().clone(),
+                        // (tabs-sidebar 2d) 옮긴 묶음(없으면 null = 앱 자동 규칙) — 앱이 시작 때 읽어 영속한다.
+                        "group": s.group.lock().unwrap().clone(),
                         "cmd": s.cmd,
                         "cwd": s.cwd,
                         "live_cwd": live_cwd,
@@ -8947,6 +8982,56 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             };
             *surface.title.lock().unwrap() = title.clone();
             Reply::Single(ok_response(&id, json!({"surface_id": sid, "title": title})))
+        }
+
+        // (tabs-sidebar 2d · 설계 §5) 좌석 묶음 옮기기 — 메모리 필드 1개 + 이벤트 1건. 호출자 = master 좌석 또는 좌석 밖 사람 CLI.
+        //   치명 4군: 같은 값이면 이벤트 0(폭주 없음) · 입력·PTY·프로세스·영속·복원 무접촉.
+        "surface.set_group" => {
+            let Some(sid) = resolve_surface_id(&params) else {
+                return Reply::Single(err_response(&id, "invalid_params", "missing surface_id"));
+            };
+            let group = match parse_seat_group(params.get("group")) {
+                Ok(g) => g,
+                Err(m) => return Reply::Single(err_response(&id, "invalid_params", m)),
+            };
+            if let Err(m) = ui_command_caller_ok(daemon, caller_pid) {
+                return Reply::Single(err_response(&id, "forbidden", &format!("surface.set_group: {m}")));
+            }
+            let Some(surface) = daemon.get_surface(sid) else {
+                return Reply::Single(err_response(
+                    &id,
+                    "not_found",
+                    &format!("surface {sid} not found"),
+                ));
+            };
+            let previous = {
+                let mut g = surface.group.lock().unwrap();
+                if *g == group {
+                    return Reply::Single(ok_response(&id, json!({"surface_id": sid, "group": group, "changed": false})));
+                }
+                std::mem::replace(&mut *g, group.clone())
+            };
+            daemon.bus.publish(
+                "surface.group.changed",
+                "surface",
+                Some(sid),
+                json!({"surface_id": sid, "group": group, "previous": previous}),
+            );
+            Reply::Single(ok_response(&id, json!({"surface_id": sid, "group": group, "changed": true})))
+        }
+
+        // (tabs-sidebar 2d · master#b1b8d7df) 말로 앱 패널 열기 — 상태 없음 · 이벤트 1건(앱이 받아 그 패널을 연다).
+        //   지금 여는 패널 = control-center 하나. 호출자 = master 좌석 또는 좌석 밖 사람 CLI(surface.set_group 과 같은 게이트).
+        "ui.open_panel" => {
+            let panel = param_str(&params, "panel").unwrap_or_default();
+            if panel != "control-center" {
+                return Reply::Single(err_response(&id, "invalid_params", "panel must be control-center"));
+            }
+            if let Err(m) = ui_command_caller_ok(daemon, caller_pid) {
+                return Reply::Single(err_response(&id, "forbidden", &format!("ui.open_panel: {m}")));
+            }
+            daemon.bus.publish("ui.open_panel", "ui", None, json!({"panel": panel}));
+            Reply::Single(ok_response(&id, json!({"panel": panel})))
         }
 
         "surface.close" => {

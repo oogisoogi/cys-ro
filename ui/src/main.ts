@@ -342,7 +342,8 @@ import { SurfaceListTransport, type ListArrival } from "./surfacelist"; // ★F-
 import { approvalSeatKeys, buildSeatRows, namedSeatInputs, seatApprovalItems, seatDot, seatInputOf, type SeatInput } from "./seatrows"; // (tabs-sidebar 조각1) 좌석 줄 판정·묶음
 import { paintSeatRows, pruneSeatHosts, seatHost } from "./seatrowsdom"; // (tabs-sidebar 조각1) 좌석 줄 그리기
 import { fixedColumnSplit, GROUP_TABS_KEY, groupTabsOn, normalizeTabState, reconcileTabs, viewTree, zoomKeyOf, type TabState, type TabView } from "./grouptabs";
-import { buildTabBar } from "./tabbar"; // (tabs-sidebar 2b) 탭 머리 줄 // (tabs-sidebar 조각2) 묶음 탭 판정
+import { buildTabBar } from "./tabbar";
+import { applySeatGroup, parseSeatGroups, SEAT_GROUP_KEY, seatGroupKey, syncSeatGroupsFromList, type SeatGroups } from "./seatgroup"; // (tabs-sidebar 2d) 옮긴 묶음 기록 // (tabs-sidebar 2b) 탭 머리 줄 // (tabs-sidebar 조각2) 묶음 탭 판정
 import type { SeatRowsModel } from "./seatrows";
 import { accountNeedsAction, BOARD_KEY, BOARD_OPEN_KEY, BOARD_POS_KEY, boardCounts, boardOpen, boardPos, boardVariant, limitLine, limitPct, limitTitle, nextSeat, paintBoard, type BoardState } from "./statusboard"; // (tabs-sidebar 1d) 상황판 시안
 
@@ -3227,6 +3228,12 @@ type NodeSig = SeatSig & { working: boolean };
 const nodeSig = new Map<string, NodeSig>(); // 키 = `${socket}#${surface_id}`
 // (tabs-sidebar 조각1) 좌석 줄 재료 — 3초 surface.list 원행(소켓 → sid → 행) · 10초 org.status 자기보고 · 승인 창 좌석. 키 모양 = nodeSig.
 const seatListBySock = new Map<string, Map<number, any>>();
+// (tabs-sidebar 2d) 사람·master 가 `cys seat-group` 으로 옮긴 묶음(열쇠 = 소켓 + 역할, 없으면 소켓 + 생성 폴더 · 판정 = seatgroup.ts).
+let seatGroups: SeatGroups = parseSeatGroups(localStorage.getItem(SEAT_GROUP_KEY));
+function saveSeatGroups(next: SeatGroups): void {
+  seatGroups = next;
+  try { localStorage.setItem(SEAT_GROUP_KEY, JSON.stringify(next)); } catch { /* 저장 실패 = 이번 실행 동안만 기억 */ }
+}
 const seatSelf = new Map<string, { state: string | null; task: string | null }>();
 let approvalSeats = new Set<string>();
 let approvalFeedAll: unknown = null; // (master#ec9c8b30 ③) 마지막 feed_list_all 응답 — 상황판 「승인 요청」 = 전체 − 좌석에 걸린 요청
@@ -3771,6 +3778,7 @@ async function refreshPaneTitles() {
         }[];
       };
       seatListBySock.set(sk ?? "", new Map(r.surfaces.map((s) => [s.surface_id, s]))); // (tabs-sidebar 조각1) 좌석 줄 재료
+      { const g = syncSeatGroupsFromList(seatGroups, sk, r.surfaces); if (g.changed) saveSeatGroups(g.map); } // (tabs-sidebar 2d) 앱이 꺼져 있던 동안 옮긴 값도 영속
       rememberRoles(sk, r.surfaces); // 자동 정렬 역할 표 — 이 틱의 닫기·입양 배치가 전부 이 값을 쓴다
       seatRolesTick.set(sk ?? "", deptLiveRoles(r.surfaces)); // ★R1F-UB(S4 B1): 목록을 **받은 뒤에만** 적는다 — 받지 못하면(시간 초과·오류) 이 줄에 닿지 않아 그 소켓의 판정을 건너뛴다
       blockedTick.push(...collectCwdBlocked(r.surfaces, sk ?? ""));
@@ -5902,7 +5910,9 @@ function refreshSeatRows(): void {
     for (const sid of collectSids(ws.tree)) {
       const p = projectActivity(roleActivity.get(paneKey(sid, sock)), nowMs, T_ACTIVITY);
       const self = seatSelf.get(`${sock}#${sid}`);
-      inputs.push(seatInputOf(sid, list?.get(sid), seatDot(p.view, surfaceWorking(sid, sock), approvalSeats.has(`${sock}#${sid}`)), self, approvalSeats.has(`${sock}#${sid}`)));
+      const inp = seatInputOf(sid, list?.get(sid), seatDot(p.view, surfaceWorking(sid, sock), approvalSeats.has(`${sock}#${sid}`)), self, approvalSeats.has(`${sock}#${sid}`));
+      inp.group = seatGroups[seatGroupKey(sock, inp.role, inp.cwd) ?? ""] ?? null; // (tabs-sidebar 2d) 옮긴 묶음 > 폴더
+      inputs.push(inp);
     }
     const model = buildSeatRows(inputs);
     seatModels.set(ws.id, model);
@@ -10395,6 +10405,22 @@ function onDaemonEvent(event: Record<string, unknown>) {
     // 토스트·OS 배너·사이드바 배지로만 알린다(feed.item.created의 유예 경로와 정합).
     refreshFeed();
     refreshSidebarStatus(); // 사이드바 ⚠ 배지 갱신 (B3)
+    return;
+  }
+  // (tabs-sidebar 2d) `cys seat-group` — 좌석 묶음 옮김을 영속하고 좌석 줄·탭을 다시 그린다(같은 값이면 데몬이 이벤트를 내지 않는다).
+  if (name === "surface.group.changed") {
+    const gsid = typeof payload.surface_id === "number" ? payload.surface_id : null;
+    const s = gsid === null ? undefined : seatListBySock.get(evSock ?? "")?.get(gsid);
+    const g = applySeatGroup(seatGroups, seatGroupKey(evSock, s?.role ?? null, s?.cwd ?? null), typeof payload.group === "string" ? payload.group : null);
+    if (g.changed) {
+      saveSeatGroups(g.map);
+      refreshSeatRows();
+    }
+    return;
+  }
+  // (tabs-sidebar 2d · master#b1b8d7df) 말로 열기 — `cys open-control-center` → 데몬 이벤트 → 컨트롤 센터 열기(단추가 숨어 있어도).
+  if (name === "ui.open_panel") {
+    if (payload.panel === "control-center") setCcOpen(true);
     return;
   }
   if (name === "approval.stalled") {

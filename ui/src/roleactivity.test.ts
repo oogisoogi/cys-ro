@@ -331,7 +331,8 @@ function harness() {
     placeholderSids: new Set<number>(), touchedPlaceholders: new Set<number>(), shouldClosePlaceholder: () => false, placeholderScreenLines: () => null,
     hqMasterSids: null, renderWsTabs: nothing,
     lastSurfacesBySocket: new Map<string, unknown>(), refreshUsageAccounts: () => Promise.resolve(), refreshNamedReporters: () => Promise.resolve(), renderSidebarUsage: nothing,
-      seatListBySock: new Map<string, unknown>(), refreshSeatRows: nothing, seatDot, approvalSeats: new Set<string>(), // 실제 판정 함수(seatrows.seatDot) — 대역 아님 // (tabs-sidebar 조각1) 좌석 줄 재료·그리기 — 이 검체의 축과 무관(무동작)
+      seatListBySock: new Map<string, unknown>(), seatGroups: {}, syncSeatGroupsFromList: () => ({ changed: false }), saveSeatGroups: nothing, refreshSeatRows: nothing, seatDot, approvalSeats: new Set<string>(), // (tabs-sidebar 2d) 옮긴 묶음 동기 = 무관(무동작)
+      // 실제 판정 함수(seatrows.seatDot) — 대역 아님 // (tabs-sidebar 조각1) 좌석 줄 재료·그리기 — 이 검체의 축과 무관(무동작)
   };
   const loaded = loadWith(FNS, deps);
   fns = loaded.fns;

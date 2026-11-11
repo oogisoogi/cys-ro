@@ -2167,7 +2167,8 @@ describe("★S4 B1 — 실제 3초 틱(refreshPaneTitles 실제 본문)으로: �
       placeholderSids: new Set<number>(), touchedPlaceholders: new Set<number>(), shouldClosePlaceholder: () => false, placeholderScreenLines: () => null,
       hqMasterSids: null, renderWsTabs: nothing, current: () => null,
       lastSurfacesBySocket: new Map<string, unknown>(), refreshUsageAccounts: () => Promise.resolve(), refreshNamedReporters: () => Promise.resolve(), renderSidebarUsage: nothing,
-      seatListBySock: new Map<string, unknown>(), refreshSeatRows: nothing, seatDot, approvalSeats: new Set<string>(), // 실제 판정 함수(seatrows.seatDot) — 대역 아님 // (tabs-sidebar 조각1) 좌석 줄 재료·그리기 — 이 검체의 축과 무관(무동작)
+      seatListBySock: new Map<string, unknown>(), seatGroups: {}, syncSeatGroupsFromList: () => ({ changed: false }), saveSeatGroups: nothing, refreshSeatRows: nothing, seatDot, approvalSeats: new Set<string>(), // (tabs-sidebar 2d) 옮긴 묶음 동기 = 무관(무동작)
+      // 실제 판정 함수(seatrows.seatDot) — 대역 아님 // (tabs-sidebar 조각1) 좌석 줄 재료·그리기 — 이 검체의 축과 무관(무동작)
       // ── ★F-01 활동 패스(실제 pumpRoleActivity) — 요청은 바쁨 가드 앞에서 끝점마다 소유 원 호출 1개로 나가고, 위 본문은 그 응답을 소비한다.
       //   해석기 대역은 항등(기본 데몬 null 은 미해석 → 종전 인자 그대로 undefined) · 점 칠하기는 이 검체의 대상이 아니다(sweepRoleDots 무동작).
       listTransport: new SurfaceListTransport({ now: () => clock.now, deadlineMs: 8000, resolve: (eps) => Promise.resolve(eps), onArrival: nothing }),

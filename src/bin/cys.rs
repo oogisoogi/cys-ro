@@ -3384,6 +3384,16 @@ enum FeedAction {
 }
 
 
+/// `cys seat-group --surface <좌석> <묶음>` 인자.
+#[derive(clap::Args)]
+struct SeatGroupArgs {
+    /// 옮길 좌석(#보이는번호 · surface:N · 내부 번호) — 반드시 적는다(자기 좌석 폴백 없음)
+    #[arg(long)]
+    surface: String,
+    /// 묶음 이름(1~64자) · "" = 옮김 해제
+    group: String,
+}
+
 /// ★1.1.11 편입 — 원작자 0.14.52 의 새 최상위 동사 2개(`Command` 에 평탄화 · 이름·도움말·숨김은 원작자 그대로).
 #[derive(Subcommand)]
 enum VendorAuxCommand {
@@ -3399,6 +3409,14 @@ enum VendorAuxCommand {
     ///   the inline form, 2044 KiB without the variant and with this form — measured, debug build).
     #[command(name = "kept-pane-notice", hide = true)]
     KeptPaneNotice(KeptPaneNoticeArgs),
+    /// (tabs-sidebar 2d) 좌석을 앱의 다른 묶음(탭)으로 옮긴다 — master 좌석 또는 좌석 밖 터미널에서만. 묶음 이름을 비우면("") 옮김 해제(자동 = 생성 폴더).
+    /// ★여기(평탄화 열거) 둔 이유: `Command` 에 변형을 하나라도 더하면(별도 평탄화 열거로도) debug 파싱 프레임이 2 MiB 시험 스레드를 넘었다
+    ///   (실측: `aid_s5_reap_due_is_explicit_and_json_is_validated` 스택 넘침 · HEAD 판 통과 · RUST_MIN_STACK 8 MiB 통과). 최상위 동사 이름은 그대로다.
+    #[command(name = "seat-group")]
+    SeatGroup(SeatGroupArgs),
+    /// (tabs-sidebar 2d) 앱의 컨트롤 센터를 연다(말로 열기 통로) — master 좌석 또는 좌석 밖 터미널에서만.
+    #[command(name = "open-control-center")]
+    OpenControlCenter,
 }
 
 /// ★1.1.8 휴면(master D-TEAM [master#36f48cf7] · judge 조건 ① [master#cd9e534c]) — 원작자 팀 만들기 동사 2개.
@@ -6522,6 +6540,22 @@ fn run(command: Command) -> i32 {
                 )
                 .map(|_| println!("OK"))
             })
+        }
+
+        Command::VendorAux(VendorAuxCommand::SeatGroup(SeatGroupArgs { surface, group })) => resolve_surface_arg(&surface).and_then(|sid| {
+            let g = group.trim();
+            request("surface.set_group", json!({"surface_id": sid, "group": if g.is_empty() { Value::Null } else { json!(g) }})).map(|r| {
+                let shown = r["group"].as_str().unwrap_or("(자동 · 생성 폴더)");
+                if r["changed"].as_bool() == Some(true) {
+                    println!("OK surface:{sid} → 묶음 {shown}");
+                } else {
+                    println!("OK surface:{sid} 이미 묶음 {shown} (변화 없음)");
+                }
+            })
+        }),
+
+        Command::VendorAux(VendorAuxCommand::OpenControlCenter) => {
+            request("ui.open_panel", json!({"panel": "control-center"})).map(|_| println!("OK 컨트롤 센터 열기 요청을 앱에 보냈습니다"))
         }
 
         Command::UsageRegister { transcript, surface, source } => {
@@ -11862,7 +11896,7 @@ fn run_factory_reset(
         // ★1.1.10(S8): 자동 소거는 없어졌다 — 문장은 앱 정본(ui/src/resetconfirm.ts TRASH_KEEP_NOTICE)과 같게(시험 factory_reset_trash_notice_tests).
         //   ★단 휴지통 삭제가 꺼진 빌드(윈도우)는 휴지통에서 지울 수도 없다 — 그 문장은 TRASH_KEEP_NOTICE_WIN(14일 자동 정리 약속은 거짓이라 뺐다 · cysr-1110-counsel-off ⓒ).
         if cys::trash_delete_supported() {
-            println!("        격리본은 그대로 보관됩니다 — 이 제품은 더 이상 스스로 지우지 않습니다(삭제는 Control Center 의 휴지통에서 명령합니다).");
+            println!("        격리본은 그대로 보관됩니다 — 이 제품은 더 이상 스스로 지우지 않습니다(삭제는 Control Center 의 휴지통에서 명령합니다 · 화면 설정 → 컨트롤 센터 열기).");
         } else {
             println!("        격리본은 그대로 보관되고 저절로 지워지지 않습니다(윈도우 — 이번 판은 휴지통에서 직접 지우는 기능이 아직 꺼져 있습니다. 그 기능이 켜지는 판부터는 맥처럼 휴지통에서 지울 수 있습니다).");
         }

@@ -977,6 +977,30 @@ AGY_DOOR_READ_OK = {"cat", "ls", "stat", "test", "[", "head", "tail", "wc", "fil
 AGY_DOOR_DENY = ("agy 좌석 문 파일(agy-seat-door.json)은 에이전트가 만들거나 쓸 수 없다 — 구글 개인 요금제 약관 때문에 "
                  "cysr 은 agy 좌석을 기본으로 띄우지 않으며, 여는 것은 사람이 앱 명령 팔레트 확인 창에서만 한다.")
 
+# 읽기 거짓 양성 해소(codex 1R minor): `sed -n 1p <문 파일>` · `python3 -m json.tool <문 파일>` 은 읽기다.
+#   좁게만 연다 — sed = 옵션 -n/-e/-E/-r/--quiet/--silent 만 · 스크립트 = 줄 범위 + p 만(w·e·-i 같은 쓰기 길 불가) ·
+#   json.tool = 위치 인자 1개(문 파일 = 입력)만(두 번째 위치 인자 = 출력 파일이라 거부). 그 밖 모양은 종전대로 거부(안전 쪽).
+AGY_DOOR_SED_OPTS = {"-n", "-e", "-E", "-r", "--quiet", "--silent"}
+AGY_DOOR_SED_SCRIPT = re.compile(r"^(\$|[0-9]+)?(,(\$|[0-9]+))?p$")
+AGY_DOOR_JSONTOOL_OPTS = {"--sort-keys", "--compact", "--no-ensure-ascii", "--json-lines", "--tab", "--no-indent"}
+
+def agy_door_read_only(p, args):
+    if p in AGY_DOOR_READ_OK:
+        return True
+    if p == "sed":
+        for a in args:
+            if a.startswith("-"):
+                if a not in AGY_DOOR_SED_OPTS:
+                    return False
+            elif AGY_DOOR_WORD not in a and not AGY_DOOR_SED_SCRIPT.match(a):
+                return False
+        return True
+    if p in ("python3", "python") and args[:2] == ["-m", "json.tool"]:
+        pos = [a for a in args[2:] if not a.startswith("-")]
+        return (len(pos) == 1 and AGY_DOOR_WORD in pos[0]
+                and all(a in AGY_DOOR_JSONTOOL_OPTS for a in args[2:] if a.startswith("-")))
+    return False
+
 def agy_door_bash_write(cmd):
     ns = [norm_loose(cmd).lower(), norm_loose_slash(cmd).lower()]
     if not any(AGY_DOOR_WORD in n for n in ns):
@@ -986,8 +1010,8 @@ def agy_door_bash_write(cmd):
         if ">" in toks or ">>" in toks or any(w.startswith(">") for w in toks):
             return True
         for s in l_segments(n):
-            p, _a = l_cmd_word(s)
-            if p is not None and p.lower() not in AGY_DOOR_READ_OK:
+            p, a = l_cmd_word(s)
+            if p is not None and not agy_door_read_only(p.lower(), a):
                 return True
     return False
 

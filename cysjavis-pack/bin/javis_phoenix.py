@@ -2811,6 +2811,17 @@ def agy_door_split(roles, entries, detect=None):
     return keep, skipped
 
 
+def manual_seat_roles(live_end, policy_skipped=()):
+    """★SEAT 빈 좌석 잔존 역할 — 좌석은 있으나 에이전트가 앉지 않은 역할(정직 보고 · 사람 개입 필요).
+    ★agy 좌석 문(codex 1R minor): 문이 닫혀 **정책으로 건너뛴** 역할은 뺀다 — 같은 좌석을 「건너뜀(고장 아님)」과
+    「빈 좌석 · 사람이 그 pane 에서 실행해야」로 두 번, 서로 다른 말로 보고하지 않는다(정책 쪽은 agy_policy_skipped_roles)."""
+    skip = set(policy_skipped or ())
+    return sorted({
+        role for role, ss in live_end.items()
+        if role != "-" and role not in skip and any((not s["exited"]) and s.get("seat") == "empty" for s in ss)
+    })
+
+
 def spawn_fresh_production(socket, role, agent, cwd=None):
     """★Phase11 독약세션 fresh-fallback(prod): 무 resume 로 새 세션 기동(cys launch-agent).
     cys restore 는 topology 의 session_id 를 resume 하므로 독약 세션이면 계속 실패한다 → 세션핀을 버리고
@@ -4077,10 +4088,7 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
     #   role=master 를 쥔 빈 셸이 있는데도 COMPLETE 가 선언됐다 — 시스템이 자기 실패를 몰랐다.
     #   이제 좌석 사실을 다시 읽어, 비어 있는 역할이 남았으면 그 사실을 verdict 에 싣는다.
     #   (구 데몬은 seat 키가 없어 항상 빈 목록 → 종전 동작과 동일하게 degrade.)
-    manual_seats = sorted({
-        role for role, ss in live_end.items()
-        if role != "-" and any((not s["exited"]) and s.get("seat") == "empty" for s in ss)
-    })
+    manual_seats = manual_seat_roles(live_end, _agy_skipped)
     if not target_roles:
         completeness = "NOOP"
     elif not incomplete_roles:
@@ -4104,6 +4112,10 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
                     "실행'해야 채워지는 상태이거나, agent 미상(claim-role 등록 pane)이라 무엇을 띄울지 "
                     "결정론으로 알 수 없는 상태다. 좌석 앞 큐 메시지는 배달 보류(보존)된다 — 침묵 성공 "
                     "아님." % manual_seats)
+    if _agy_skipped:
+        honesty += (" ★agy 좌석 문 닫힘=%s: 구글 개인 요금제 약관 때문에 cysr 은 Antigravity(agy) 좌석을 다시 띄우지 "
+                    "않았다 — 고장·부활 실패가 아니다(완결성·빈 좌석 집계에서 뺐다). 여는 길 = 사람이 앱 명령 팔레트 "
+                    "「Antigravity(agy) 좌석 열기」." % sorted(_agy_skipped))
     if _mid_tomb:
         honesty += (" ★런 도중 묘비=%s: 부활을 진행하는 사이 사람이 닫아(묘비) 스폰하지 않았다 — 부활 실패가 "
                     "아니라 의도 삭제이므로 완결성·판정 집계에서 뺐다(재편입 = untomb)." % _mid_tomb)
@@ -4139,7 +4151,8 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
         "incomplete_roles": incomplete_roles,  # ★Phase10: 미부활 역할 정직 명시(침묵 성공 금지)
         "manual_seats": manual_seats,          # ★SEAT: 좌석은 있으나 에이전트 부재(사람 개입 필요) — 정직 명시
         "liveness_unknown_roles": liveness_unknown_roles,  # ★R4-4: 생존·사망 확정 불가(부활 보류 · 생존 취급 아님)
-        "tombstoned_mid_run_roles": _mid_tomb,  # ★v116-pack: 런 도중 묘비 → 스폰 안 함(INCOMPLETE 미집계)
+        "tombstoned_mid_run_roles": _mid_tomb,
+        "agy_policy_skipped_roles": sorted(_agy_skipped),  # ★agy 좌석 문 닫힘 → 띄우지 않음(실패·빈 좌석 아님)  # ★v116-pack: 런 도중 묘비 → 스폰 안 함(INCOMPLETE 미집계)
         "fresh_fallback_roles": fresh_fallback_roles,  # ★Phase11: 독약 세션→fresh 강등 역할 정직 명시(독약만 · 리뷰 R2)
         # ★F-1(0.14.31): fresh 사유를 역할별로 공개(기존 enum 유지). `fresh_roles` = outcome fresh 전부(독약 ∪ F-1).
         "fresh_roles": fresh_roles,

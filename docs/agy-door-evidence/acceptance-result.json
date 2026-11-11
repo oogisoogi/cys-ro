@@ -1,16 +1,27 @@
 {
  "ok": true,
- "at": "2026-11-11T12:35:17+0900",
+ "at": "2026-11-11T13:10:21+0900",
  "results": [
   {
    "id": "②E1",
    "entry": "문 열림 · cys launch-agent --agent gemini (종전대로 뜸)",
    "rc": 0,
+   "expect_rc": 0,
    "agy_runs_before": 0,
    "agy_runs_after": 1,
    "expect_delta": 1,
+   "expect_in": [
+    "[launch-agent] ready"
+   ],
+   "expect_not_in": [
+    "agy_consumer_policy"
+   ],
+   "checks": [],
    "pass": true,
+   "fails": [],
    "tail": [
+    "surface:1",
+    "[launch-agent] surface:1 created (role=reviewer-gemini)",
     "[launch-agent] gemini starting… (polling readiness, max 60s)",
     "[launch-agent] ready(신규 출현분에 마커) — 주입 안전",
     "[launch-agent] directive 주입 검증 미확인 — ack 미확인(8s 창) · 화면 에코(신규 출현분)=관측. 부트는 계속한다(치명 아님). 상태를 directive_verified=false 로 기록: `cys status --json` 또는 `cys read-screen --surface surface:1` 로 확인, 필요하면 javis_boot_node.py --role <role> --agent <agent> 로 재각성하라"
@@ -20,10 +31,17 @@
    "id": "E1",
    "entry": "cys launch-agent --role reviewer-gemini --agent gemini",
    "rc": 76,
+   "expect_rc": 76,
    "agy_runs_before": 1,
    "agy_runs_after": 1,
    "expect_delta": 0,
+   "expect_in": [
+    "[launch-agent] agy_consumer_policy"
+   ],
+   "expect_not_in": [],
+   "checks": [],
    "pass": true,
+   "fails": [],
    "tail": [
     "[launch-agent] agy_consumer_policy: cysr 은 Antigravity(agy) 좌석을 띄우지 않습니다 — 개인 요금제에서 다른 프로그램이 agy 를 부리면 구글 약관상 계정이 정지될 수 있기 때문입니다. agy 를 직접 쓰려면 새 탭에서 `agy` 를 치세요(괜찮습니다). 기업 요금제 등 허용된 경우에만, 사람이 앱 명령 팔레트의 「Antigravity(agy) 좌석 열기」로 열 수 있습니다."
    ]
@@ -32,10 +50,17 @@
    "id": "E2",
    "entry": "cys node-recover --role reviewer-gemini(빈 좌석 · boot_agent_on_surface)",
    "rc": 1,
+   "expect_rc": 1,
    "agy_runs_before": 1,
    "agy_runs_after": 1,
    "expect_delta": 0,
+   "expect_in": [
+    "error: agy_consumer_policy"
+   ],
+   "expect_not_in": [],
+   "checks": [],
    "pass": true,
+   "fails": [],
    "tail": [
     "[node-recover] surface:1 위에 gemini 재기동 (role=reviewer-gemini)",
     "error: agy_consumer_policy: cysr 은 Antigravity(agy) 좌석을 띄우지 않습니다 — 개인 요금제에서 다른 프로그램이 agy 를 부리면 구글 약관상 계정이 정지될 수 있기 때문입니다. agy 를 직접 쓰려면 새 탭에서 `agy` 를 치세요(괜찮습니다). 기업 요금제 등 허용된 경우에만, 사람이 앱 명령 팔레트의 「Antigravity(agy) 좌석 열기」로 열 수 있습니다."
@@ -45,10 +70,18 @@
    "id": "E3",
    "entry": "cys restore(빈 좌석 = 좌석 내 재연결 갈래)",
    "rc": 0,
+   "expect_rc": 0,
    "agy_runs_before": 1,
    "agy_runs_after": 1,
    "expect_delta": 0,
+   "expect_in": [
+    "reviewer-gemini: 건너뜀(agy_consumer_policy)",
+    "실패 0"
+   ],
+   "expect_not_in": [],
+   "checks": [],
    "pass": true,
+   "fails": [],
    "tail": [
     "· reviewer-gemini: 건너뜀(agy_consumer_policy) — 구글 개인 요금제 약관 때문에 cysr 은 Antigravity(agy) 좌석을 다시 띄우지 않습니다. 고장이 아닙니다 · 검토가 필요하면 Claude 대체 검토자가 대신합니다.",
     "restore 완료: 재기동 0 · 실패 0 · 관문 보류 0 · journal refused 0 · outcome unknown 0 · 현황 `cys status`"
@@ -58,24 +91,53 @@
    "id": "E4",
    "entry": "javis_phoenix.py restore(앱 재시작·업데이트 복원기)",
    "rc": 0,
+   "expect_rc": 0,
    "agy_runs_before": 1,
    "agy_runs_after": 1,
    "expect_delta": 0,
+   "expect_in": [
+    "agy 좌석 문 닫힘"
+   ],
+   "expect_not_in": [],
+   "checks": [
+    "결과 JSON 판독",
+    "agy_policy_skipped_roles ∋ reviewer-gemini",
+    "manual_seats ∌ reviewer-gemini(정책 건너뜀을 빈 좌석으로 재보고하지 않음)",
+    "incomplete_roles ∌ reviewer-gemini(부활 실패 아님)"
+   ],
    "pass": true,
+   "fails": [],
    "tail": [
-    "  \"honesty_note\": \"★M9: phoenix_restore 값만 신뢰하라. UNVERIFIED/FAILED 는 정상 완료가 아니다 (자기채점 금지·무출력을 정상으로 해석 금지). 세션 대조가 일치할 때만 VERIFIED. ★완결성: COMPLETE 는 roster 전원이 실 ready_marker 로 응답 가능함을 뜻한다. ★빈 좌석 잔존=['reviewer-gemini']: 이 역할들은 surface(좌석)는 있으나 **에이전트가 앉아 있지 않다**(자손 프로세스 0 — 커널 사실). 부활이 아니라 '사람이 그 pane 에서 직접 agent 를 실행'해야 채워지는 상태이거나, agent 미상(claim-role 등록 pane)이라 무엇을 띄울지 결정론으로 알 수 없는 상태다. 좌석 앞 큐 메시지는 배달 보류(보존)된다 — 침묵 성공 아님.\"",
+    "  \"target_roles\": [],",
+    "  \"per_role_outcome\": {},",
+    "  \"c6_stale_surfaces\": [],",
+    "  \"c6_reaped\": [],",
+    "  \"c6_reap_deferred\": [],",
+    "  \"c6_reap_gone\": [],",
+    "  \"c6_reap_failed\": [],",
+    "  \"cys_identity\": \"verified\",",
+    "  \"journal\": \"/private/tmp/phoenix-harn-home-2iptk67z/.cys/state-harness/phoenix/journal-default.json\",",
+    "  \"honesty_note\": \"★M9: phoenix_restore 값만 신뢰하라. UNVERIFIED/FAILED 는 정상 완료가 아니다 (자기채점 금지·무출력을 정상으로 해석 금지). 세션 대조가 일치할 때만 VERIFIED. ★완결성: COMPLETE 는 roster 전원이 실 ready_marker 로 응답 가능함을 뜻한다. ★agy 좌석 문 닫힘=['reviewer-gemini']: 구글 개인 요금제 약관 때문에 cysr 은 Antigravity(agy) 좌석을 다시 띄우지 않았다 — 고장·부활 실패가 아니다(완결성·빈 좌석 집계에서 뺐다). 여는 길 = 사람이 앱 명령 팔레트 「Antigravity(agy) 좌석 열기」.\"",
     "}",
-    "[phoenix] cys 채택(PHOENIX_CYS): /Users/oogisoogi/axdev/.wt/cys-agy-policy/target/debug/cys — 3중 identity match(build_id=8f4140726604.20261111T0325Z proto=1)"
+    "[phoenix] cys 채택(PHOENIX_CYS): ~/axdev/.wt/cys-agy-policy/target/debug/cys — 3중 identity match(build_id=2caaeb45e5a4-dirty.20261111T0340Z proto=1)"
    ]
   },
   {
    "id": "E5",
    "entry": "cys restore(좌석 없음 · topology 만 = fresh 갈래)",
    "rc": 0,
+   "expect_rc": 0,
    "agy_runs_before": 1,
    "agy_runs_after": 1,
    "expect_delta": 0,
+   "expect_in": [
+    "reviewer-gemini: 건너뜀(agy_consumer_policy)",
+    "실패 0"
+   ],
+   "expect_not_in": [],
+   "checks": [],
    "pass": true,
+   "fails": [],
    "tail": [
     "· reviewer-gemini: 건너뜀(agy_consumer_policy) — 구글 개인 요금제 약관 때문에 cysr 은 Antigravity(agy) 좌석을 다시 띄우지 않습니다. 고장이 아닙니다 · 검토가 필요하면 Claude 대체 검토자가 대신합니다.",
     "restore 완료: 재기동 0 · 실패 0 · 관문 보류 0 · journal refused 0 · outcome unknown 0 · 현황 `cys status`"
@@ -85,11 +147,30 @@
    "id": "E6",
    "entry": "javis_orchestra.py boot-reviewers --spawn(지휘자·토론 스킬 길)",
    "rc": 1,
+   "expect_rc": 1,
    "agy_runs_before": 1,
    "agy_runs_after": 1,
    "expect_delta": 0,
+   "expect_in": [
+    "gemini 미감지(cys agent-detect: agy_consumer_policy",
+    "reviewer-claude-1(Claude) 대체 기동"
+   ],
+   "expect_not_in": [],
+   "checks": [
+    "Claude 대체가 실제로 기동됨(가짜 claude 실행 +1 이상)"
+   ],
    "pass": true,
+   "fails": [],
    "tail": [
+    "[boot-node:poll] surface:4 idle=8s 안착 — 주입",
+    "[boot-node:inject] 주입 큐 등록(자동 Return 배달·시도 1)",
+    "[boot-node:verify] ack 미확인 → 배달 분기=pending (큐에 주입문 잔존(미배달·대기) — 재전송 금지)",
+    "[boot-reviewers] --spawn — 리뷰어 슬롯 기동 (미감지/각성실패 시 Claude 대체로 자동 폴백):",
+    "  ⚠ gemini 미감지(cys agent-detect: agy_consumer_policy: Antigravity(agy) 좌석 문 닫힘(기본 · 구글 개인 요금제 약관) — 실행 파일 판정: 실행가능 /private/tmp/phoenix-harn-home-2iptk67z/.local/bin/agy) — reviewer-claude-1(Claude) 대체 기동",
+    "  ✗ reviewer-claude-1  ← claude — boot_node(reviewer-claude-1) 실패(exit 1) — 실측 미확정, 보수적으로 재시도 대상",
+    "  ⚠ reviewer-codex 기동/각성 실패(boot_node(reviewer-codex) 실패(exit 1) — 실측 미확정, 보수적으로 재시도 대상) — reviewer-claude-2(Claude) 대체로 2차 폴백",
+    "  ✗ reviewer-claude-2  ← claude — boot_node(reviewer-claude-2) 실패(exit 1) — 실측 미확정, 보수적으로 재시도 대상",
+    "종합: 리뷰어 0/2 각성 (Claude 대체 포함) — 부족: master 가 점검·수동 재기동",
     "[boot-node:launch] launch-agent 기동(상한 80s) (남은 예산 114s)",
     "[boot-node:launch] launch-agent 기동(상한 80s) (남은 예산 114s)",
     "[boot-node:launch] launch-agent 기동(상한 80s) (남은 예산 114s)"
@@ -99,10 +180,18 @@
    "id": "E7",
    "entry": "javis_boot_node.py --role reviewer-gemini --agent gemini",
    "rc": 1,
+   "expect_rc": 1,
    "agy_runs_before": 1,
    "agy_runs_after": 1,
    "expect_delta": 0,
+   "expect_in": [
+    "launch-agent rc=76",
+    "\"reason\": \"launch_failed\""
+   ],
+   "expect_not_in": [],
+   "checks": [],
    "pass": true,
+   "fails": [],
    "tail": [
     "{\"role\": \"reviewer-gemini\", \"result\": \"no_surface\", \"reason\": \"launch_failed\", \"surface\": null, \"log\": [{\"stage\": \"launch\", \"msg\": \"launch-agent rc=76 (실패 텍스트 무시·cys list 재조회)\"}, {\"stage\": \"fail\", \"msg\": \"launch 후에도 reviewer-gemini surface 생성 안 됨\"}]}",
     "[boot-node:launch] launch-agent 기동(상한 80s) (남은 예산 90s)"
@@ -112,13 +201,32 @@
    "id": "E8",
    "entry": "cys boot(기본 함대 · agy 행 없음)",
    "rc": 78,
+   "expect_rc": 78,
    "agy_runs_before": 1,
    "agy_runs_after": 1,
    "expect_delta": 0,
+   "expect_in": [],
+   "expect_not_in": [
+    "agy_consumer_policy"
+   ],
+   "checks": [
+    "boot --json roles 줄 판독",
+    "부트 대상 = cso·worker 뿐(claude)"
+   ],
    "pass": true,
+   "fails": [],
    "tail": [
+    "[boot] 진행 중 74s 경과 — 다음 대상 role=worker",
+    "[launch-agent] surface:6 created (role=worker)",
+    "[launch-agent] claude starting… (polling readiness, max 60s)",
+    "[launch-agent] ★관문 보류(gate=unknown) — surface:6 을(를) **닫지 않았다**. 데몬이 'claude' 프로세스 생존을 관측했다(role=worker).",
+    "사람이 1회 조치하면 이 좌석을 그대로 쓴다:",
+    "  1) `cys read-screen --surface surface:6` 로 화면을 확인하라 — 첫기동 관문 순서는 테마 → 로그인방식 → OAuth → 폴더신뢰 → 면책 → 새기능안내다.",
+    "  2) ★폴더신뢰(2.1.261+)·면책(Bypass) 창 **둘 다** 기본 포커스가 `No, exit` 다 — 그대로 Return 하면 노드가 종료된다. 아래 방향키 1회 뒤 Return(또는 숫자 `2`)으로 통과하라. 버전을 모르면 라벨로 확인하라: `Yes, I trust this folder`/`Yes, I accept` 위에 커서를 두고 Return — `No, exit` 위에서는 Return 금지.",
+    "  3) 통과한 뒤 `cys boot` 을 다시 실행하면 이 좌석이 그대로 쓰인다 — 재부트가 **스폰 없이**(read_text 1회 + 판정 1회) 관문 통과를 확인하고 이 좌석에 절대지침을 주입한다(M2 재관측 경로). **새 pane 을 만들지 마라**(역할은 이미 이 좌석이 쥐고 있어 새 기동은 claim_denied 다).",
+    "  · 종전처럼 즉시 닫으려면: CYS_GATE_PENDING_CLOSE=1 (한 지점 롤백)",
     "마지막 화면 꼬리:",
-    "oogisoogi@oogisoogiui-MacBookPro ~ % CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=\"false\" CLAUDE_CONFIG_DIR=\"${CYS_ACCOUNT_DIR:-$HOME/.cys/claude}\" CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=\"1\" CLAUDE_CODE_EFFORT_LEVEL=\"high\" CLAUDE_CODE_ENABLE_CFC=\"false\" claude --dangerously-skip-permissions --settings '/private/tmp/phoenix-harn-home-4d49wld2/.cys/seat-settings/worker.json'",
+    "<user>@<host> ~ % CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=\"false\" CLAUDE_CONFIG_DIR=\"${CYS_ACCOUNT_DIR:-$HOME/.cys/claude}\" CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=\"1\" CLAUDE_CODE_EFFORT_LEVEL=\"high\" CLAUDE_CODE_ENABLE_CFC=\"false\" claude --dangerously-skip-permissions --settings '/private/tmp/phoenix-harn-home-2iptk67z/.cys/seat-settings/worker.json'",
     "❯"
    ]
   },
@@ -126,10 +234,17 @@
    "id": "E10",
    "entry": "cys new-surface --cmd agy --agent gemini(launch-agent 우회 길)",
    "rc": 76,
+   "expect_rc": 76,
    "agy_runs_before": 1,
    "agy_runs_after": 1,
    "expect_delta": 0,
+   "expect_in": [
+    "[new-surface] agy_consumer_policy"
+   ],
+   "expect_not_in": [],
+   "checks": [],
    "pass": true,
+   "fails": [],
    "tail": [
     "[new-surface] agy_consumer_policy: cysr 은 Antigravity(agy) 좌석을 띄우지 않습니다 — 개인 요금제에서 다른 프로그램이 agy 를 부리면 구글 약관상 계정이 정지될 수 있기 때문입니다. agy 를 직접 쓰려면 새 탭에서 `agy` 를 치세요(괜찮습니다). 기업 요금제 등 허용된 경우에만, 사람이 앱 명령 팔레트의 「Antigravity(agy) 좌석 열기」로 열 수 있습니다."
    ]
@@ -138,10 +253,17 @@
    "id": "E11",
    "entry": "cys new-surface --cmd agy(어댑터 선언 없이)",
    "rc": 76,
+   "expect_rc": 76,
    "agy_runs_before": 1,
    "agy_runs_after": 1,
    "expect_delta": 0,
+   "expect_in": [
+    "[new-surface] agy_consumer_policy"
+   ],
+   "expect_not_in": [],
+   "checks": [],
    "pass": true,
+   "fails": [],
    "tail": [
     "[new-surface] agy_consumer_policy: cysr 은 Antigravity(agy) 좌석을 띄우지 않습니다 — 개인 요금제에서 다른 프로그램이 agy 를 부리면 구글 약관상 계정이 정지될 수 있기 때문입니다. agy 를 직접 쓰려면 새 탭에서 `agy` 를 치세요(괜찮습니다). 기업 요금제 등 허용된 경우에만, 사람이 앱 명령 팔레트의 「Antigravity(agy) 좌석 열기」로 열 수 있습니다."
    ]
@@ -150,26 +272,42 @@
    "id": "E9",
    "entry": "앱 팔레트 재기동 명령을 셸 탭에 입력(UI 길)",
    "rc": 0,
+   "expect_rc": 0,
    "agy_runs_before": 1,
    "agy_runs_after": 1,
    "expect_delta": 0,
+   "expect_in": [
+    "[launch-agent] agy_consumer_policy"
+   ],
+   "expect_not_in": [],
+   "checks": [],
    "pass": true,
+   "fails": [],
    "tail": [
-    "oogisoogi@oogisoogiui-MacBookPro ~ % /Users/oogisoogi/axdev/.wt/cys-agy-policy/target/debug/cys --socket /private/tmp/phoenix-harn-home-4d49wld2/.cys/state-harness/cys.sock launch-agent --role reviewer-gemini --agent gemini",
+    "<user>@<host> ~ % ~/axdev/.wt/cys-agy-policy/target/debug/cys --socket /private/tmp/phoenix-harn-home-2iptk67z/.cys/state-harness/cys.sock launch-agent --role reviewer-gemini --agent gemini",
     "[launch-agent] agy_consumer_policy: cysr 은 Antigravity(agy) 좌석을 띄우지 않습니다 — 개인 요금제에서 다른 프로그램이 agy 를 부리면 구글 약관상 계정이 정지될 수 있기 때문입니다. agy 를 직접 쓰려면 새 탭에서 `agy` 를 치세요(괜찮습니다). 기업 요금제 등 허용된 경우에만, 사람이 앱 명령 팔레트의 「Antigravity(agy) 좌석 열기」로 열 수 있습니다.",
-    "oogisoogi@oogisoogiui-MacBookPro ~ %"
+    "<user>@<host> ~ %"
    ]
   },
   {
    "id": "③",
    "entry": "사람이 셸 탭에서 직접 `agy` 입력(허용)",
    "rc": 0,
+   "expect_rc": 0,
    "agy_runs_before": 1,
    "agy_runs_after": 2,
    "expect_delta": 1,
+   "expect_in": [
+    "? for shortcuts"
+   ],
+   "expect_not_in": [],
+   "checks": [],
    "pass": true,
+   "fails": [],
    "tail": [
-    "oogisoogi@oogisoogiui-MacBookPro ~ % agy",
+    "<user>@<host> ~ % ~/axdev/.wt/cys-agy-policy/target/debug/cys --socket /private/tmp/phoenix-harn-home-2iptk67z/.cys/state-harness/cys.sock launch-agent --role reviewer-gemini --agent gemini",
+    "[launch-agent] agy_consumer_policy: cysr 은 Antigravity(agy) 좌석을 띄우지 않습니다 — 개인 요금제에서 다른 프로그램이 agy 를 부리면 구글 약관상 계정이 정지될 수 있기 때문입니다. agy 를 직접 쓰려면 새 탭에서 `agy` 를 치세요(괜찮습니다). 기업 요금제 등 허용된 경우에만, 사람이 앱 명령 팔레트의 「Antigravity(agy) 좌석 열기」로 열 수 있습니다.",
+    "<user>@<host> ~ % agy",
     "? for shortcuts",
     ">"
    ]
@@ -178,11 +316,35 @@
    "id": "②E5",
    "entry": "문 열림 · cys restore(종전대로 다시 뜸)",
    "rc": 0,
+   "expect_rc": [
+    0,
+    1
+   ],
    "agy_runs_before": 2,
    "agy_runs_after": 3,
    "expect_delta": 1,
+   "expect_in": [
+    "created (role=reviewer-gemini)",
+    "[launch-agent] ready"
+   ],
+   "expect_not_in": [
+    "건너뜀(agy_consumer_policy)"
+   ],
+   "checks": [
+    "rc 1 이면 원인 = reviewer-codex 관문 보류(문과 무관)"
+   ],
    "pass": true,
+   "fails": [],
    "tail": [
+    "· worker: 이미 가동 중 — 건너뜀",
+    "· reviewer-codex: 이미 가동 중 — 건너뜀",
+    "· reviewer-claude-2: 이미 가동 중 — 건너뜀",
+    "· reviewer-claude-1: 이미 가동 중 — 건너뜀",
+    "· reviewer-gemini: gemini 재기동…",
+    "surface:8",
+    "restore 완료: 재기동 1 · 실패 0 · 관문 보류 0 · journal refused 0 · outcome unknown 0 · 현황 `cys status`",
+    "[launch-agent] surface:8 created (role=reviewer-gemini)",
+    "[launch-agent] fresh 각성(role=reviewer-gemini · agent=gemini): resume 이 요청됐으나 이어받을 세션이 없다 — 전문 디렉티브를 주입한다([RESTORE] 복원 지시는 전문 뒤에 한 제출로 잇는다)",
     "[launch-agent] gemini starting… (polling readiness, max 20s)",
     "[launch-agent] ready(신규 출현분에 마커) — 주입 안전",
     "[launch-agent] directive 주입 검증 미확인 — ack 미확인(8s 창) · 화면 에코(신규 출현분)=관측. 부트는 계속한다(치명 아님). 상태를 directive_verified=false 로 기록: `cys status --json` 또는 `cys read-screen --surface surface:8` 로 확인, 필요하면 javis_boot_node.py --role <role> --agent <agent> 로 재각성하라"

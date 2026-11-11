@@ -5,18 +5,43 @@
   가짜 폴더 + 이 트리 target/debug + 시스템 폴더만(실 사용자 ~/.local/bin 제외) · 시작·끝에 실 agy 실행 파일을 돌리는
   프로세스가 0 인지 ps 로 잰다. 가짜 agy 는 실행될 때마다 $HOME/AGY_RAN 에 한 줄을 남긴다 = 「agy 프로세스 생성」 계수.
 
+판정(2R 강화): 입구마다 agy 실행 횟수 차이 + 기대 rc + 「문에 도달했다」는 사유 낱말을 함께 단언한다(record 주석).
 순서: ⓪ 문 열림 → E1 launch-agent 로 reviewer-gemini 좌석을 실제로 세움(②: 종전대로 뜬다 · 기존 사용자의 topology 재현)
       → 문 닫음 → 그 좌석의 가짜 agy 프로세스만 죽여 「빈 좌석」을 만든다 → 아래 11 입구를 차례로 두드리며 계수(①)
       → ③ 사람처럼 셸 탭에서 `agy` 를 치면 뜬다 → 문 다시 열고 E5 cys restore 가 종전대로 띄우는지(②).
 실행: python3 docs/agy-door-evidence/acceptance.py   (저장소 뿌리에서 · cargo build --bin cys --bin cysd 선행)
 """
+import getpass
 import json
 import os
+import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
+
+
+def redact(text):
+    """결과 파일은 저장소에 커밋된다 — 실행한 사람의 홈 경로·계정 이름·기기 이름을 지운다(scripts/secret-scan.sh 규칙 1·6 ·
+    발행 차단 게이트 H-SECRET-1). 판정에 쓰는 낱말(rc·사유)은 건드리지 않는다."""
+    home = os.path.expanduser("~")
+    text = text.replace(home, "~")
+    text = re.sub(r"/Users/[A-Za-z0-9._-]+", "/Users/<user>", text)
+    for word, tag in ((socket.gethostname().split(".")[0], "<host>"), (getpass.getuser(), "<user>")):
+        if word and len(word) >= 3:
+            text = re.sub(re.escape(word), tag, text, flags=re.IGNORECASE)
+    return text
+
+
+if __name__ == "__main__" and sys.argv[1:2] == ["--redact"]:   # 이미 쓴 결과 파일을 제자리에서 지운다(하네스 기동 없음)
+    for _p in sys.argv[2:]:
+        with open(_p, encoding="utf-8") as _f:
+            _t = _f.read()
+        with open(_p, "w", encoding="utf-8") as _f:
+            _f.write(redact(_t))
+    sys.exit(0)
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BIN = os.path.join(REPO, "cysjavis-pack", "bin")
@@ -60,6 +85,11 @@ ENV = {k: v for k, v in os.environ.items()}
 ENV.update({"HOME": HOME, "AITERM_SOCKET": SOCK, "CYS_SOCKET": SOCK, "CYS_STATE_DIR": h.HARN_STATE,
             "CYS_PACK_DIR": os.path.join(HOME, ".cys", "pack"), "CYS_NO_AUTOSTART": "1", "PATH": SAFE_PATH})
 DOOR = os.path.join(HOME, ".cys", "agy-seat-door.json")
+LOGDIR = os.environ.get("AGY_ACCEPT_LOGDIR")   # 있으면 입구별 전체 출력을 남긴다(진단용 · 커밋 안 함)
+if LOGDIR:
+    os.makedirs(LOGDIR, exist_ok=True)
+POLICY = "agy_consumer_policy"
+SKIP_LINE = "건너뜀(agy_consumer_policy)"
 results = []
 
 
@@ -110,12 +140,63 @@ def surfaces():
             return []
 
 
-def record(eid, what, before, out, rc, expect_delta=0):
+def record(eid, what, before, out, rc, expect_delta=0, expect_rc=None, expect_in=(), expect_not_in=(), checks=()):
+    """판정 = ⑴ agy 실행 횟수 차이 ⑵ 입구별 기대 rc ⑶ 그 입구가 문에 「도달」했다는 사유 낱말(expect_in) ⑷ 있으면 안 될
+    낱말(expect_not_in) ⑸ 추가 단언(checks = (이름, 참/거짓)). codex 1R: ⑴만 보면 문과 무관한 이유(인자 오류·기동 실패)로
+    agy 가 안 떠도 PASS 가 된다 — 그래서 각 입구가 **어디서 왜** 멈췄는지를 함께 단언한다."""
     after = ran()
-    ok = (after - before) == expect_delta
-    results.append({"id": eid, "entry": what, "rc": rc, "agy_runs_before": before, "agy_runs_after": after,
-                    "expect_delta": expect_delta, "pass": ok, "tail": out.strip().splitlines()[-3:]})
-    print("%s %-4s %-58s rc=%-4s agy %d→%d (기대 +%d)" % ("PASS" if ok else "FAIL", eid, what, rc, before, after, expect_delta))
+    fails = []
+    if (after - before) != expect_delta:
+        fails.append("agy %d→%d (기대 +%d)" % (before, after, expect_delta))
+    if expect_rc is not None and rc not in (expect_rc if isinstance(expect_rc, tuple) else (expect_rc,)):
+        fails.append("rc=%s (기대 %s)" % (rc, expect_rc))
+    for w in expect_in:
+        if w not in out:
+            fails.append("사유 없음: %r" % w)
+    for w in expect_not_in:
+        if w in out:
+            fails.append("있으면 안 됨: %r" % w)
+    for name, ok_ in checks:
+        if not ok_:
+            fails.append("단언 실패: %s" % name)
+    ok = not fails
+    results.append({"id": eid, "entry": what, "rc": rc, "expect_rc": expect_rc, "agy_runs_before": before,
+                    "agy_runs_after": after, "expect_delta": expect_delta, "expect_in": list(expect_in),
+                    "expect_not_in": list(expect_not_in), "checks": [n for n, _ in checks], "pass": ok,
+                    "fails": fails, "tail": out.strip().splitlines()[-12:]})
+    if LOGDIR:
+        with open(os.path.join(LOGDIR, "%s.log" % eid), "w") as f:
+            f.write("rc=%s\n%s" % (rc, out))
+    print("%s %-4s %-58s rc=%-4s agy %d→%d (기대 +%d)%s" % ("PASS" if ok else "FAIL", eid, what, rc, before, after,
+                                                         expect_delta, "" if ok else " · " + " · ".join(fails)))
+
+
+def last_json(out):
+    """출력 속 마지막 여러 줄 JSON 객체(phoenix 결과 = 줄머리 「{」 … 줄머리 「}」)를 읽는다 — 뒤에 로그 줄이 붙어도 된다.
+    없으면 None."""
+    lines = out.splitlines()
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i] != "{":
+            continue
+        for k in range(i + 1, len(lines)):
+            if lines[k] == "}":
+                try:
+                    return json.loads("\n".join(lines[i:k + 1]))
+                except ValueError:
+                    break
+    return None
+
+
+def json_line(out, key):
+    """한 줄 JSON 중 key 를 가진 마지막 것(cys boot --json 의 roles 줄) — 없으면 None."""
+    for l in reversed(out.splitlines()):
+        l = l.strip()
+        if l.startswith("{") and key in l:
+            try:
+                return json.loads(l)
+            except ValueError:
+                continue
+    return None
 
 
 def kill_fake_agy():
@@ -143,7 +224,8 @@ def main():
     # ⓪ 문 열림 — 기존 사용자 재현: reviewer-gemini 좌석을 세운다(② E1)
     door(True)
     b = ran(); rc, out = cys("launch-agent", "--role", "reviewer-gemini", "--agent", "gemini", timeout=180)
-    record("②E1", "문 열림 · cys launch-agent --agent gemini (종전대로 뜸)", b, out, rc, expect_delta=1)
+    record("②E1", "문 열림 · cys launch-agent --agent gemini (종전대로 뜸)", b, out, rc, expect_delta=1,
+           expect_rc=0, expect_in=("[launch-agent] ready",), expect_not_in=(POLICY,))
     time.sleep(2)
     door(False)
     kill_fake_agy()   # pane(셸)은 남기고 가짜 agy 만 → reviewer-gemini 를 쥔 빈 좌석
@@ -151,32 +233,61 @@ def main():
 
     # ① 문 닫힘(기본) — 11 입구
     b = ran(); rc, out = cys("launch-agent", "--role", "reviewer-gemini", "--agent", "gemini")
-    record("E1", "cys launch-agent --role reviewer-gemini --agent gemini", b, out, rc)
+    record("E1", "cys launch-agent --role reviewer-gemini --agent gemini", b, out, rc,
+           expect_rc=76, expect_in=("[launch-agent] " + POLICY,))
     b = ran(); rc, out = cys("node-recover", "--role", "reviewer-gemini")
-    record("E2", "cys node-recover --role reviewer-gemini(빈 좌석 · boot_agent_on_surface)", b, out, rc)
+    # node-recover 는 하위 오류를 「error: <사유>」 + rc 1 로 낸다(76 을 따로 전파하지 않음) — 사유 낱말로 도달을 단언
+    record("E2", "cys node-recover --role reviewer-gemini(빈 좌석 · boot_agent_on_surface)", b, out, rc,
+           expect_rc=1, expect_in=("error: " + POLICY,))
     b = ran(); rc, out = cys("restore")
-    record("E3", "cys restore(빈 좌석 = 좌석 내 재연결 갈래)", b, out, rc)
+    record("E3", "cys restore(빈 좌석 = 좌석 내 재연결 갈래)", b, out, rc,
+           expect_rc=0, expect_in=("reviewer-gemini: " + SKIP_LINE, "실패 0"))
     b = ran(); rc, out = run([sys.executable, os.path.join(BIN, "javis_phoenix.py"), "--socket", SOCK, "restore"], timeout=300)
-    record("E4", "javis_phoenix.py restore(앱 재시작·업데이트 복원기)", b, out, rc)
+    ph = last_json(out)
+    record("E4", "javis_phoenix.py restore(앱 재시작·업데이트 복원기)", b, out, rc, expect_rc=0,
+           expect_in=("agy 좌석 문 닫힘",),
+           checks=(("결과 JSON 판독", ph is not None),
+                   ("agy_policy_skipped_roles ∋ reviewer-gemini", "reviewer-gemini" in (ph or {}).get("agy_policy_skipped_roles", [])),
+                   ("manual_seats ∌ reviewer-gemini(정책 건너뜀을 빈 좌석으로 재보고하지 않음)",
+                    "reviewer-gemini" not in (ph or {}).get("manual_seats", ["reviewer-gemini"])),
+                   ("incomplete_roles ∌ reviewer-gemini(부활 실패 아님)",
+                    "reviewer-gemini" not in (ph or {}).get("incomplete_roles", ["reviewer-gemini"]))))
     # 좌석을 통째로 닫아 topology 에만 남긴다 → fresh 갈래
     for s in surfaces():
         if s.get("role") == "reviewer-gemini":
             cys("close-surface", s.get("surface_ref") or ("surface:%s" % s.get("surface_id")), "--reap")
     time.sleep(2)
     b = ran(); rc, out = cys("restore")
-    record("E5", "cys restore(좌석 없음 · topology 만 = fresh 갈래)", b, out, rc)
-    b = ran(); rc, out = run([sys.executable, os.path.join(BIN, "javis_orchestra.py"), "boot-reviewers", "--spawn"], timeout=400)
-    record("E6", "javis_orchestra.py boot-reviewers --spawn(지휘자·토론 스킬 길)", b, out, rc)
+    record("E5", "cys restore(좌석 없음 · topology 만 = fresh 갈래)", b, out, rc,
+           expect_rc=0, expect_in=("reviewer-gemini: " + SKIP_LINE, "실패 0"))
+    b = ran(); bc = ran("claude")
+    rc, out = run([sys.executable, os.path.join(BIN, "javis_orchestra.py"), "boot-reviewers", "--spawn"], timeout=400)
+    # 문에 도달 = 오라클 사유로 gemini 슬롯이 Claude 대체(reviewer-claude-1)로 갔고 그 대체가 실제로 기동됐다(가짜 claude +1 이상).
+    # rc 1 = 「리뷰어 2기 각성 미달」(가짜 에이전트는 각성 ack 를 못 낸다 — 문과 무관 · 아래 E6 주석 참조).
+    record("E6", "javis_orchestra.py boot-reviewers --spawn(지휘자·토론 스킬 길)", b, out, rc, expect_rc=1,
+           expect_in=("gemini 미감지(cys agent-detect: " + POLICY, "reviewer-claude-1(Claude) 대체 기동"),
+           checks=(("Claude 대체가 실제로 기동됨(가짜 claude 실행 +1 이상)", ran("claude") > bc),))
     b = ran(); rc, out = run([sys.executable, os.path.join(BIN, "javis_boot_node.py"), "--role", "reviewer-gemini", "--agent", "gemini", "--json"], timeout=300)
-    record("E7", "javis_boot_node.py --role reviewer-gemini --agent gemini", b, out, rc)
+    # boot_node 는 launch-agent 의 76 을 「launch_failed」로 묶어 rc 1 을 낸다 — 하위 rc=76 기록으로 문 도달을 단언
+    record("E7", "javis_boot_node.py --role reviewer-gemini --agent gemini", b, out, rc, expect_rc=1,
+           expect_in=("launch-agent rc=76", '"reason": "launch_failed"'))
     b = ran(); rc, out = cys("boot", "--json", timeout=300)
-    record("E8", "cys boot(기본 함대 · agy 행 없음)", b, out, rc)
+    # rc 78 = EXIT_GATE_PENDING — 가짜 claude 는 첫기동 관문을 못 넘는다(문과 무관). 단언 = 부트 대상 행에 agy 가 없다.
+    # (출력의 「[alert] surface.exited … role=reviewer-gemini」 는 앞 단계에서 죽인 좌석의 이벤트 다이제스트라 판정에 안 쓴다)
+    bj = json_line(out, '"roles"')
+    rows = (bj or {}).get("roles") or []
+    record("E8", "cys boot(기본 함대 · agy 행 없음)", b, out, rc, expect_rc=78, expect_not_in=(POLICY,),
+           checks=(("boot --json roles 줄 판독", bool(rows)),
+                   ("부트 대상 = cso·worker 뿐(claude)", sorted((r.get("role"), r.get("agent")) for r in rows)
+                    == [("cso", "claude"), ("worker", "claude")])))
     b = ran(); rc, out = cys("new-surface", "--cmd", "~/.local/bin/agy --dangerously-skip-permissions", "--agent", "gemini", "--role", "reviewer-gemini")
     time.sleep(4)
-    record("E10", "cys new-surface --cmd agy --agent gemini(launch-agent 우회 길)", b, out, rc)
+    record("E10", "cys new-surface --cmd agy --agent gemini(launch-agent 우회 길)", b, out, rc,
+           expect_rc=76, expect_in=("[new-surface] " + POLICY,))
     b = ran(); rc, out = cys("new-surface", "--cmd", "agy")
     time.sleep(4)
-    record("E11", "cys new-surface --cmd agy(어댑터 선언 없이)", b, out, rc)
+    record("E11", "cys new-surface --cmd agy(어댑터 선언 없이)", b, out, rc,
+           expect_rc=76, expect_in=("[new-surface] " + POLICY,))
     # E9 = 앱 팔레트 「재기동 → reviewer-gemini」·「부서 간 전출」 이 하는 일 — 빈 셸에 그 명령을 쳐 넣는다
     rc, out = cys("new-surface", "--cwd", HOME)
     ref = next((w for w in out.split() if w.startswith("surface:")), None)
@@ -187,19 +298,27 @@ def main():
     cys("send", "--surface", ref, line); cys("send-key", "--surface", ref, "Return")
     time.sleep(25)
     rc, out = cys("read-screen", "--surface", ref)
-    record("E9", "앱 팔레트 재기동 명령을 셸 탭에 입력(UI 길)", b, out, rc)
+    record("E9", "앱 팔레트 재기동 명령을 셸 탭에 입력(UI 길)", b, out, rc, expect_rc=0,
+           expect_in=("[launch-agent] " + POLICY,))
 
     # ③ 사람이 셸 탭에서 직접 agy — 막지 않는다
     b = ran()
     cys("send", "--surface", ref, "agy"); cys("send-key", "--surface", ref, "Return")
     time.sleep(5)
     rc, out = cys("read-screen", "--surface", ref)
-    record("③", "사람이 셸 탭에서 직접 `agy` 입력(허용)", b, out, rc, expect_delta=1)
+    record("③", "사람이 셸 탭에서 직접 `agy` 입력(허용)", b, out, rc, expect_delta=1, expect_rc=0,
+           expect_in=("? for shortcuts",))
 
     # ② 문 다시 열면 복원이 종전대로 띄운다
     door(True)
     b = ran(); rc, out = cys("restore")
-    record("②E5", "문 열림 · cys restore(종전대로 다시 뜸)", b, out, rc, expect_delta=1)
+    # restore 에는 역할 필터가 없다 — E6 이 남긴 reviewer-codex 좌석(가짜 codex)도 같이 되살리려 들고, 그 몫이 관문
+    #   보류에 걸리면 rc 1 이 된다(실측 2회: 한 번 1 · 한 번 0 = 비결정 · 문과 무관). 그래서 rc 는 0, 또는 「1 이면 그
+    #   원인이 reviewer-codex 관문 보류」로 단언하고, gemini 몫은 따로 단언한다: 좌석이 새로 서고 ready · 건너뜀 줄 없음.
+    record("②E5", "문 열림 · cys restore(종전대로 다시 뜸)", b, out, rc, expect_delta=1, expect_rc=(0, 1),
+           expect_in=("created (role=reviewer-gemini)", "[launch-agent] ready"), expect_not_in=(SKIP_LINE,),
+           checks=(("rc 1 이면 원인 = reviewer-codex 관문 보류(문과 무관)",
+                    rc == 0 or ("관문 보류" in out and "(role=reviewer-codex)" in out)),))
 
     real = real_agy_procs()
     results.append({"id": "real-agy", "entry": "실 agy 실행 파일 프로세스", "pass": not real, "procs": real})
@@ -218,6 +337,7 @@ if __name__ == "__main__":
             print("teardown:", e)
     ok = all(r["pass"] for r in res)
     with open(out_path, "w") as f:
-        json.dump({"ok": ok, "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "results": res}, f, ensure_ascii=False, indent=1)
+        f.write(redact(json.dumps({"ok": ok, "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "results": res},
+                                  ensure_ascii=False, indent=1)))
     print("종합:", "PASS" if ok else "FAIL", "·", out_path)
     sys.exit(0 if ok else 1)

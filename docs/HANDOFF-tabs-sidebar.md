@@ -1,6 +1,6 @@
 # HANDOFF — TICKET=cysr-tabs-sidebar-impl (가지 feat/tabs-sidebar · 기준 270e3e21 v1.1.14)
 
-**다음 첫 행동 1줄**: master 의 【중간】(10:5x · 캡처 6장) 답을 확인 → 답이 없으면 **2d**(아래 미완 2) 착수. 상황판 지적 3 + 1h = 완료(476e73e3).
+**다음 첫 행동 1줄**: 2d codex 1R 결과(docs/CODEX-R1-2d-tabs-sidebar.txt · 마지막 말 = docs/CODEX-R1-2d-last.txt · 정본 JSON = ~/.cys/pack/round/_reviews/cysr_묶음_탭_2d_…-r1-reviewer1.json)를 읽고 REVISE 항목을 고친다 → cysd 단위 시험 결과 확인 → 【중간】 → 2b-2(A안 40열).
 
 (원래 첫 행동): 인박스에서 master 의 「두 줄 격자 기준」 답(A 40열 / B 80열 / C 격자 없음 · 10:06:45 【중간】 의 【결정필요】)을 확인하고, 답이 없으면 2c-2(아래)부터 착수한다.
 
@@ -21,6 +21,7 @@
 | 2b-1 | ef176ecd | `ui/src/tabbar.ts` 탭 머리 줄 = 고정 기둥 오른쪽 위에만 · 고정 기둥 폭 탭 간 유지 |
 | 2c-1 | c99378c6 | fitPane 같은 크기 재전송 0(탭 20회 왕복 resize 131 → 4 실측) |
 | codex 1R | f79f175c · 5a334ab8 | REVISE 6건 처리 |
+| 2d | cfbe352d | `cys seat-group --surface <좌석> <묶음>`("" = 해제) · `cys open-control-center` · 데몬 Surface.group(메모리) + RPC surface.set_group·ui.open_panel(호출자 = master 좌석 또는 좌석 밖) + 이벤트 · 앱 seatgroup.ts(열쇠 = 소켓+역할/폴더 · localStorage cys-seat-group) · `tests/seat_group.rs` · `ui/e2e/seatgroup_gate.py` |
 | 상황판 3 · 1h | 476e73e3 | 수 옆 글자 라벨 · 한도 줄 「86% · 금 06:00 초기화」(전문 = 툴팁) · 「승인 요청 N」 = 좌석 밖 요청만 · 부서 0개 = body.no-depts(.dept-only 숨김 · 팔레트 부서 항목 = 부서 있거나 전문가 모드만 · 「본부」→「새 화면」) · `ui/e2e/nodept_gate.py` |
 
 시험: `cd ui && bun test` = 3387 통과 0 실패 · `bunx tsc -p tsconfig.check.json` 0. 게이트 3종 PASS(아래 재현).
@@ -29,7 +30,7 @@
 0. ✅ **1h 완료(476e73e3)** — 원 지시: (master#edd9d8a8 · 박사님 「권고대로」): 부서 0개(본부만) = 「부서」 말·단추·안내 화면 0 · 1개 이상 = 지금 그대로 · 판정 = 부서 수(list_depts·deptSeen) · 감사 흔적 4(index.html:59 안내 줄 · main.ts:9152 팔레트 「부서 워크스페이스 추가」 · 「본부」 이름 · index.html:188 작업 탭 설명문) 다시 세어 표 · 만드는 길(dept-by-chat · 전문가 모드 단추)·openNewlyRegisteredDepts 무변경 · 코드 삭제 0 · 데몬·팩 무수정 · 캡처 0개/1개 · e2e 1. 감사 = ~/axdev/master/reports/2026-11-11-control-center-audit/REPORT.md §7-4 ㉯ · 부록 E §4.
 1. **2c-2**: ⓑ = **완료** — `tests/hidden_seat_screen.rs`(격리 데몬 · 구독 붙은 좌석 vs 없는 좌석 · read_text 같은 결과 줄 · 86b7bc83 + 정리 수리). 남은 것 = 막힘 표시 지연 실측 + codex 1R. (아래 원문은 이력)
    - 이력: ⓑ 숨은 탭 좌석 `cys send` → `cys read-screen` = 보이는 좌석과 같음 — 구조 근거만 있음(read-screen = 데몬 RPC `surface.read_text` handlers.rs:8763 · 숨김 = main.ts render() 의 `rt.el.remove()` DOM 떼기뿐 · 출력은 떼어진 xterm 에도 계속 씀). **격리 데몬 실측 시험이 아직 없다.** + 「승인 창이 숨은 탭에서 떴을 때 막힘 표시까지 걸린 시간」 실측 + codex 1R(숨은 탭 PTY·복원 조각 · `</dev/null` + timeout).
-2. **2d**: `cys seat-group --surface <번호> <묶음>`(데몬 메모리 필드 + 이벤트 `surface.group.changed` · 호출자 = master 또는 사람 CLI · 같은 값이면 이벤트 없음) + 앱이 `seatGroup` 에 영속(열쇠 = 소켓+역할, 없으면 소켓+cwd) + 앱 시작 때 surface.list 의 group 읽어 영속 + **말로 컨트롤 센터 열기 통로**(같은 통로 · master#b1b8d7df) · codex 1R. 치명 4군 점검 = 설계 §5.
+2. ✅ **2d 구현 완료(cfbe352d) · codex 1R 진행 중** — 원 지시: `cys seat-group --surface <번호> <묶음>`(데몬 메모리 필드 + 이벤트 `surface.group.changed` · 호출자 = master 또는 사람 CLI · 같은 값이면 이벤트 없음) + 앱이 `seatGroup` 에 영속(열쇠 = 소켓+역할, 없으면 소켓+cwd) + 앱 시작 때 surface.list 의 group 읽어 영속 + **말로 컨트롤 센터 열기 통로**(같은 통로 · master#b1b8d7df) · codex 1R. 치명 4군 점검 = 설계 §5.
 3. **2b-2**: 한 묶음 다수 좌석 두 줄 격자 — 위 【결정필요】 답대로. 1280 폭 탭 이름 넘침 점검.
 4. **캡처 3·7·12**(ⓐ) + 1280 + 워커 0·1 「새 단추 0 · 새 질문 0」 + 앱 종료→재실행 탭 배치 동일(ⓒ — 순수 시험 `grouptabs.test.ts` 「재부팅 뒤 번호 재발급」 은 있음 · 실앱 기록 없음) + 실제 빌드 앱 격리 프로필 캡처(박사님 화면 금지).
 
@@ -41,6 +42,8 @@
 - 커밋 전에 `bunx tsc` 를 먼저(2693c9ab 를 한 번 바로잡았다).
 - cargo 는 PATH 에 없다 → `export PATH=$HOME/.cargo/bin:$PATH` · `cargo test --test hidden_seat_screen`(≈15초 · 끝나고 `pgrep -fl cys-hss` = 0).
 - 상황판 수를 읽는 e2e 는 `.ws-board-num` 만 읽는다(버튼엔 글자 라벨도 있다 · 476e73e3 에서 한 번 NaN).
+- ★clap: `Command` 열거에 변형을 하나라도 더하면(별도 평탄화 열거로도) debug 시험 스레드(2 MiB) 스택이 넘친다 — 새 최상위 동사는 기존 `VendorAuxCommand` 안에 + 인자는 따로 둔 Args 구조체(cfbe352d 실측).
+- `cargo test` 여러 대상을 한 번에 돌리면 첫 실패에서 멈춘다 → `--no-fail-fast`. `cargo test --bin cys` ≈ 13분(부하 시).
 - dragdrop_gate.py 는 CHROME_PATH 를 안 받아 이 기계에서 브라우저 판 불일치로 못 돈다(환경 · 회귀 아님).
 
 ## 재현
@@ -48,7 +51,7 @@
 cd ~/axdev/.wt/cys-tabs-sidebar/ui && bun install --silent && bun test && bunx tsc -p tsconfig.check.json
 cd .. && sh ui/build.sh
 export CHROME_PATH=$HOME/Library/Caches/ms-playwright/chromium_headless_shell-1248/chrome-headless-shell-mac-arm64/chrome-headless-shell
-for g in seatrows_gate statusboard_gate cc_button_gate nodept_gate; do cys run -- /Users/oogisoogi/axdev/GlobalNews-Crawling-AgenticWorkflow/.venv/bin/python3 ui/e2e/$g.py; done
+for g in seatrows_gate statusboard_gate cc_button_gate nodept_gate seatgroup_gate; do cys run -- /Users/oogisoogi/axdev/GlobalNews-Crawling-AgenticWorkflow/.venv/bin/python3 ui/e2e/$g.py; done
 ```
 캡처 = `docs/evidence-tabs-sidebar/{1b,1d,1e,1h}/`(커밋하지 않음).
 

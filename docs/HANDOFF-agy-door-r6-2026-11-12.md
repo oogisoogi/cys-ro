@@ -83,3 +83,24 @@ H=<머리 커밋>; S=/tmp/r6-snap-$$; git -C ~/axdev/.wt/cys-agy-policy worktree
 
 ## 미완
 - ChatGPT 닫힘 확인(master 가 건다 · 위 3줄) · push 0 · 릴리스 노트 반영(master)
+
+## 2회차(master#17469565 · ChatGPT BLOCK 처분 · 05:10~ · 원장 대조 성립 05:09:49)
+판정문 = `~/axdev/chatgpt-desk/runs/2026-11-12/REVIEW-cysr-agy-r6-cd094675.md`
+
+| 건 | 처분 | 고친 줄(1cb4685b 기준) | 시험 |
+|---|---|---|---|
+| F1 blocking 배달 시점 재판정 | **고침** — 배달 직전 `drop_agy_door_closed`(닫힌 문 agy 좌석행 기계 항목 · agy 기동 줄 → 폐기 + 원장 묘비 `agy_consumer_policy` + `queue.dropped`) · 사람 자판 적재 = 출처 `send_human` 통과 | `governance.rs:4600-4636`(상수·함수) · `:12419`(호출 = `deliver_head_locked` 머리 — 틱·queue.deliver 공통) · `handlers.rs:7595`(출처 표기) | acceptance E26(고치기 전 붉음 = PTY 에 쓰임 · `r6-prefix-red/e26-before-F1.txt`) · 소스 핀 3 |
+| F2 blocking 셔뱅 env -S | **고침** — `shebang_interpreter`(env 옵션 건너뜀) | `agy_door.rs:216-245` · `:257` | 단위 `shebang_env_split_and_options_chatgpt_f2`(9꼴 거부 · env python3 통과) |
+| F3 major 읽기 상한 | **고침** — 일반 파일만 · 비차단 열기 + 핸들 재확인 · `take(상한+1)` 한 번 읽기(머리·본문 같은 핸들) · 같은 대상 1회 · 서로 다른 대상 64 초과 = 거부 쪽 · 스크립트 64KiB 초과 = 거부 쪽(명령 상한과 같은 방향) · 바이너리는 크기 무관 이름만 | `agy_door.rs:193-` `read_capped` · `judge_file` · `resolve_judgements` | 단위 `bounded_reads_and_target_caps_chatgpt_f3`(4,000 같은 낱말 · 4,000 서로 다른 낱말 각 3초 상한 · FIFO 막힘 없음) |
+| F4 minor `$0` 거짓 양성 | **고침**(15분 안) — `$0` 자리는 글이 `$0` 을 쓸 때만 | `program_of` 셸 갈래 · `uses_dollar0` | 단위 `dollar0_only_when_used_chatgpt_f4` · 남는 보수적 거짓 양성 1종(`sh -c 'echo "$1"' sh agy`) = §6/§2 위치 인자 절에 정책으로 |
+| F5 minor 세 갈래 | **고침** — `Judge::{Agy,NotAgy,Unread}` · 직접 실행 파일 머리 읽기 실패도 Unread(통과+표시) | `judge_file` | 단위 `direct_exec_unreadable_is_unread_chatgpt_f5` |
+| F6 minor 잠금 대기 | **고침** — 5초 상한 try 반복 · 읽기 전용 잠금 파일 = 읽기 핸들 · 왕초보 오류 2종 · 지우라는 안내 없음 | `agy_door.rs:854-` `door_os_lock` | 단위 `lock_wait_capped_and_readonly_lock_file_chatgpt_f6` |
+| 답 ① 표 밖 0 | grep 범위 확장(src 전체 · 생성 API 10종) = 199줄 · 운영 60줄 전부 분류 · 새 입구 0 → ENTRY-MODES §7-1 · 지연 실행 전수 = §7-2 | — | — |
+| 답 ② File::lock 판 | Rust 1.89.0 안정화(releases.rs 1.89.0) · 저장소 고정 없음(rust-toolchain·rust-version 없음 · CI dtolnay stable) · 이 기계 1.97.0 | — | — |
+
+- 뮤턴트 11/11 적색(처음 10/11 — 「일반 파일 확인 둘 다 제거」 녹색: `locate_target` 이 이미 FIFO 를 거르므로 시험이 읽기 함수에 안 닿음 → `read_capped(FIFO)` 직접 단언 추가 후 적색)
+- acceptance 동시 5회(1cb4685b · 05:24:23~05:36:28) = 5/5 PASS · 각 34항목(E26 추가) · `concurrent-5-r6b/`
+- CTX 45.7%(jsonl 라이브 · 05:24)
+- 전체 단위(1092a635 · 순차): lib **1237/0**(2 ignored · 05:38~05:44) · cysd **3227/0**(15 ignored · 05:44~05:55) · cys bin agy 13/0 · cys bin 전체는 2회차에 cys.rs 무변경이라 안 돌림(1회차 759/0)
+- master 재현 = 1회차 「master 재현」 한 덩이와 같음(acceptance 가 E26 포함 34항목 · 약 16분) · E26 단독 = `python3 docs/agy-door-evidence/acceptance.py --only-e26`(약 1분)
+- 걸린 시간 2회차: 05:10 → 05:56(46분 · 상한 75분 안)

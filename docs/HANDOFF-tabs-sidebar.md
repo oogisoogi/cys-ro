@@ -1,6 +1,6 @@
 # HANDOFF — TICKET=cysr-tabs-sidebar-impl (가지 feat/tabs-sidebar · 기준 270e3e21 v1.1.14)
 
-**다음 첫 행동 1줄**: cysd 전체 단위 시험(수리본 05ab8f1b) 결과 확인 → 【중간】(2d + codex 1R 반영) → **2b-2**(두 줄 격자 A안: 칸 최소 40열 · 좌석 3·4개 나란히 · 5개부터 두 줄 · 시안 #C).
+**다음 첫 행동 1줄**: cysd 전체 단위 시험(05ab8f1b 이후) 결과 확인 → 【중간】(2d·codex 반영·2b-2 + 격자 【결정필요】) → 남은 4번(1280 · 워커 0·1 「새 단추 0」 · 앱 재실행 배치 동일 실앱 · 격리 프로필 실앱 캡처).
 
 (원래 첫 행동): 인박스에서 master 의 「두 줄 격자 기준」 답(A 40열 / B 80열 / C 격자 없음 · 10:06:45 【중간】 의 【결정필요】)을 확인하고, 답이 없으면 2c-2(아래)부터 착수한다.
 
@@ -23,6 +23,7 @@
 | codex 1R | f79f175c · 5a334ab8 | REVISE 6건 처리 |
 | 2d | cfbe352d | `cys seat-group --surface <좌석> <묶음>`("" = 해제) · `cys open-control-center` · 데몬 Surface.group(메모리) + RPC surface.set_group·ui.open_panel(호출자 = master 좌석 또는 좌석 밖) + 이벤트 · 앱 seatgroup.ts(열쇠 = 소켓+역할/폴더 · localStorage cys-seat-group) · `tests/seat_group.rs` · `ui/e2e/seatgroup_gate.py` |
 | 2d codex 1R | 05ab8f1b | 호출자 판독 실패 = 거부 · group_set(해제 ≠ 모름) · 같은 열쇠 좌석은 앱 기록 안 씀 · 양방향 제어 문자 거부 · 원문 docs/CODEX-R1-2d-tabs-sidebar.txt |
+| 2b-2 | 353fe297 | grouptabs.gridColumns·gridView(4개 이하 한 줄 · 5개부터 두 줄+ · 칸 최소 40열×12줄 · 못 지키면 가장 덜 모자란 격자) · 탭 화면에서만 · fitPane 이 글자 칸 기억(noteGridCell) · `ui/e2e/grid_gate.py` · 캡처 2b-2/ |
 | 상황판 3 · 1h | 476e73e3 | 수 옆 글자 라벨 · 한도 줄 「86% · 금 06:00 초기화」(전문 = 툴팁) · 「승인 요청 N」 = 좌석 밖 요청만 · 부서 0개 = body.no-depts(.dept-only 숨김 · 팔레트 부서 항목 = 부서 있거나 전문가 모드만 · 「본부」→「새 화면」) · `ui/e2e/nodept_gate.py` |
 
 시험: `cd ui && bun test` = 3387 통과 0 실패 · `bunx tsc -p tsconfig.check.json` 0. 게이트 3종 PASS(아래 재현).
@@ -32,7 +33,7 @@
 1. **2c-2**: ⓑ = **완료** — `tests/hidden_seat_screen.rs`(격리 데몬 · 구독 붙은 좌석 vs 없는 좌석 · read_text 같은 결과 줄 · 86b7bc83 + 정리 수리). 남은 것 = 막힘 표시 지연 실측 + codex 1R. (아래 원문은 이력)
    - 이력: ⓑ 숨은 탭 좌석 `cys send` → `cys read-screen` = 보이는 좌석과 같음 — 구조 근거만 있음(read-screen = 데몬 RPC `surface.read_text` handlers.rs:8763 · 숨김 = main.ts render() 의 `rt.el.remove()` DOM 떼기뿐 · 출력은 떼어진 xterm 에도 계속 씀). **격리 데몬 실측 시험이 아직 없다.** + 「승인 창이 숨은 탭에서 떴을 때 막힘 표시까지 걸린 시간」 실측 + codex 1R(숨은 탭 PTY·복원 조각 · `</dev/null` + timeout).
 2. ✅ **2d 완료(cfbe352d) · codex 1R REVISE 4건 반영(05ab8f1b)** — 원 지시: `cys seat-group --surface <번호> <묶음>`(데몬 메모리 필드 + 이벤트 `surface.group.changed` · 호출자 = master 또는 사람 CLI · 같은 값이면 이벤트 없음) + 앱이 `seatGroup` 에 영속(열쇠 = 소켓+역할, 없으면 소켓+cwd) + 앱 시작 때 surface.list 의 group 읽어 영속 + **말로 컨트롤 센터 열기 통로**(같은 통로 · master#b1b8d7df) · codex 1R. 치명 4군 점검 = 설계 §5.
-3. **2b-2**: 한 묶음 다수 좌석 두 줄 격자 — 위 【결정필요】 답대로. 1280 폭 탭 이름 넘침 점검.
+3. ✅ **2b-2 완료(353fe297)** · 【결정필요】 A안 세 조건 충돌(아래) — 원 지시: 한 묶음 다수 좌석 두 줄 격자 — 위 【결정필요】 답대로. 1280 폭 탭 이름 넘침 점검.
 4. **캡처 3·7·12**(ⓐ) + 1280 + 워커 0·1 「새 단추 0 · 새 질문 0」 + 앱 종료→재실행 탭 배치 동일(ⓒ — 순수 시험 `grouptabs.test.ts` 「재부팅 뒤 번호 재발급」 은 있음 · 실앱 기록 없음) + 실제 빌드 앱 격리 프로필 캡처(박사님 화면 금지).
 
 ## 함정
@@ -56,6 +57,9 @@ export CHROME_PATH=$HOME/Library/Caches/ms-playwright/chromium_headless_shell-12
 for g in seatrows_gate statusboard_gate cc_button_gate nodept_gate seatgroup_gate; do cys run -- /Users/oogisoogi/axdev/GlobalNews-Crawling-AgenticWorkflow/.venv/bin/python3 ui/e2e/$g.py; done
 ```
 캡처 = `docs/evidence-tabs-sidebar/{1b,1d,1e,1h}/`(커밋하지 않음).
+
+## 결정 대기
+- 📌 격자 A안 세 조건 충돌(1920 실측: 고정 기둥이 최소 90열로 43% → 오른쪽 975px · 3개 나란히 = 칸 38열 · 4개 = 약 29열). 기본값 = 「4개 이하 한 줄(시안 #C) 우선 · 5개부터 40열×12줄」 — 【중간】으로 올림.
 
 ## master 결정(master#fcbc46fb · 확정)
 - 두 줄 격자 = A안(칸 최소 폭 40열 · 좌석 3·4개 나란히 · 5개부터 두 줄 · 시안 #C 유지).

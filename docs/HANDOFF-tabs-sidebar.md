@@ -1,6 +1,6 @@
 # HANDOFF — TICKET=cysr-tabs-sidebar-impl (가지 feat/tabs-sidebar · 기준 270e3e21 v1.1.14)
 
-**다음 첫 행동 1줄**: `cargo test --bin cys` 전체 재실행 숫자 확인 → 【확인요청】 송신(2a·2c 독립 검증 좌석은 master 가 띄움) → 답 대기. 남은 것 = 실제 앱(Tauri) 격리 프로필 캡처 1건뿐(창이 박사님 화면에 뜨므로 master 판단).
+**다음 첫 행동 1줄**: 【확인요청】(12:59) 에 대한 master 답 대기 — 결정 1(cys 시험 스택 · 권고 A = .cargo/config.toml [env] RUST_MIN_STACK 4MiB) · 결정 2(실앱 격리 프로필 캡처 자리). 답 오면 그대로 집행.
 
 (원래 첫 행동): 인박스에서 master 의 「두 줄 격자 기준」 답(A 40열 / B 80열 / C 격자 없음 · 10:06:45 【중간】 의 【결정필요】)을 확인하고, 답이 없으면 2c-2(아래)부터 착수한다.
 

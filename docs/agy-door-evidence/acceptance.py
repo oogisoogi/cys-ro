@@ -311,6 +311,40 @@ def refused(r):
     return r.get("ok") is not True and POLICY in dumps(r)
 
 
+def e26_queue_delivery_recheck():
+    """E26(r6 2회차 · ChatGPT F1): 문 열림에서 agy 좌석에 queued 자동 지시를 적재 → 배달 전 문 닫힘 → watchdog 배달 시점 재판정.
+    배달을 붙잡아 두는 법 = 입력줄에 미제출 글(기계 타이핑 · Return 없음)을 남긴다(큐는 미제출 바이트가 있으면 배달하지 않는다) →
+    적재 → 문 닫기 → 사람 자판 Ctrl-U 로 입력줄을 비운다(사람 자판은 닫힌 문에서도 통과) → 배달이 가능해진 뒤 관측."""
+    mark = "queued-while-open-%d" % (time.monotonic_ns() % 100000)
+    door(True)
+    b = ran()
+    rc_ = raw_rpc("surface.create", {"cmd": os.path.join(FAKE, "agy") + " -p e26", "cwd": HOME})
+    sid = (rc_.get("result") or {}).get("surface_id")
+    for _ in range(20):
+        if ran() > b:
+            break
+        time.sleep(0.5)
+    time.sleep(2)
+    draft = raw_rpc("surface.send_text", {"surface_id": sid, "text": "draft-hold"})          # 미제출 바이트 = 배달 보류
+    enq = raw_rpc("surface.send_text", {"surface_id": sid, "text": mark, "queued": True})   # 문 열림 = 적재 허용
+    door(False)
+    led0 = len(ledger_lines())
+    clr = raw_rpc("surface.send_text", {"surface_id": sid, "text": "\u0015", "human": True})  # 사람 자판 Ctrl-U
+    time.sleep(40)   # 큐의 사람 입력 식힘(CYS_QUEUE_HUMAN_QUIET_SECS 기본 30초)이 지나야 배달이 시도된다
+    rc_s, scr = cys("read-screen", "--surface", "surface:%s" % sid, timeout=20)
+    rc_q, ql = cys("queue", "list", "--surface", "surface:%s" % sid, "--json", timeout=20)
+    new_led = ledger_lines()[led0:]
+    res = {"id": "E26", "entry": "문 열림 적재(queued) → 배달 전 문 닫힘 → 배달 시점 재판정(ChatGPT F1)",
+           "create_ok": rc_.get("ok"), "draft_ok": draft.get("ok"), "enqueue_ok": enq.get("ok"), "clear_ok": clr.get("ok"),
+           "delivered_to_pty": mark in scr, "queue_left": mark in ql, "queue_tail": ql.strip()[-500:], "screen_tail": scr.strip()[-300:],
+           "ledger_reason": [l.strip()[:300] for l in new_led if POLICY in l][:3]}
+    res["pass"] = bool(sid) and enq.get("ok") is True and clr.get("ok") is True and not res["delivered_to_pty"] \
+        and not res["queue_left"] and bool(res["ledger_reason"])
+    results.append(res)
+    print("%s E26 enqueue_ok=%s delivered_to_pty=%s queue_left=%s ledger_reason=%d" % (
+        "PASS" if res["pass"] else "FAIL", enq.get("ok"), res["delivered_to_pty"], res["queue_left"], len(res["ledger_reason"])))
+
+
 def main():
     assert not real_agy_procs(), "시작 전 실 agy 프로세스가 이미 있다 — 대조가 흐려지므로 중단"
     pid = h.start_daemon(wait=120)
@@ -373,6 +407,7 @@ def main():
                     "started": started, "rpc": r21, "rpc_queued": r21q, "cli_rc": rc21, "cli_tail": out21.strip().splitlines()[-2:]})
     print("%s E21 started=%s rpc=%s queued=%s cli_rc=%s" % ("PASS" if results[-1]["pass"] else "FAIL", started,
           refused(r21), refused(r21q), rc21))
+    e26_queue_delivery_recheck()
     kill_fake_agy()   # pane(셸)은 남기고 가짜 agy 만 → reviewer-gemini 를 쥔 빈 좌석
     time.sleep(6)     # 데몬 워치독이 agent_alive=false 를 보도록
 
@@ -598,6 +633,15 @@ def main():
     print("%s 실 agy(%s) 프로세스 %d개" % ("PASS" if not real else "FAIL", REAL_AGY, len(real)))
     return results
 
+
+if __name__ == "__main__" and sys.argv[1:2] == ["--only-e26"]:   # 2회차 재현 단독(붉음 먼저 · 데몬 1기)
+    try:
+        assert h.start_daemon(wait=120), "하네스 데몬 기동 실패"
+        e26_queue_delivery_recheck()
+    finally:
+        h.teardown()
+    print(json.dumps(redact(results), ensure_ascii=False, indent=1))
+    sys.exit(0 if all(r["pass"] for r in results) else 1)
 
 if __name__ == "__main__":
     out_path = os.environ.get("AGY_ACCEPT_OUT") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "acceptance-result.json")

@@ -177,17 +177,75 @@ fn real_name_is_agy(p: &Path) -> bool {
     std::fs::canonicalize(p).is_ok_and(|r| is_agy_word(&r.to_string_lossy()))
 }
 
-/// 글 파일 한 번 읽기(상한 64KiB · 넘거나 못 읽으면 None).
-fn read_script(p: &Path) -> Option<String> {
-    let m = std::fs::metadata(p).ok()?;
-    if !m.is_file() || m.len() > MAX_JUDGE_BYTES as u64 {
-        return None;
-    }
-    String::from_utf8(std::fs::read(p).ok()?).ok()
+/// 실체 확인 결과 — 세 갈래(ChatGPT F5: 직접 실행 파일의 머리 읽기 실패도 「못 읽음」으로 드러낸다).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Judge {
+    Agy,
+    NotAgy,
+    Unread,
 }
 
-/// 스크립트 본문(이미 읽은 글)이 agy 를 실행하는가 — 셔뱅 줄은 낱말 검사 · 본문은 **셸 글일 때만**(`sh x` 로 넘긴 파일 또는 셔뱅이
-/// 셸) 줄 머리 `#` 주석을 걷고 실행 자리 검사(더 깊이 읽지 않는다). 파이썬 등 다른 언어 본문은 셸로 읽으면 거짓 양성이 나므로 셔뱅 줄만.
+/// 한 번의 판정에서 찾아볼 **서로 다른** 실행 대상 수 상한(ChatGPT F3) — 넘으면 64KiB 를 넘는 명령과 같은 방향(agy 로 보고 문 닫힘에서 거부).
+pub const MAX_RESOLVE_TARGETS: usize = 64;
+
+/// 파일 하나를 **한 핸들로** 읽는다(ChatGPT F3) — 일반 파일이 아니면 열지 않는다 · 유닉스는 비차단으로 열고(바꿔치기된 FIFO 에서
+/// 막히지 않게) 연 핸들이 일반 파일인지 다시 본다 · 읽기 자체를 상한+1 바이트로 자른다. 반환 = (읽은 바이트, 상한 초과인가) · Err = 못 읽음.
+fn read_capped(p: &Path) -> Result<(Vec<u8>, bool), ()> {
+    if !std::fs::metadata(p).map_err(|_| ())?.is_file() {
+        return Err(());
+    }
+    let mut o = std::fs::OpenOptions::new();
+    o.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.custom_flags(libc::O_NONBLOCK);
+    }
+    let f = o.open(p).map_err(|_| ())?;
+    if !f.metadata().map_err(|_| ())?.is_file() {
+        return Err(());
+    }
+    let mut buf = Vec::new();
+    std::io::Read::read_to_end(&mut std::io::Read::take(f, MAX_JUDGE_BYTES as u64 + 1), &mut buf).map_err(|_| ())?;
+    let over = buf.len() > MAX_JUDGE_BYTES;
+    Ok((buf, over))
+}
+
+/// 셔뱅 줄(`#!` 뒤) → 실제 인터프리터 이름(소문자 · 마지막 이름) — `env` 는 옵션(`-S`·`-i`·`-u NAME`·`-C 폴더`·`NAME=값`·`--`)을
+/// 건너뛰고 첫 프로그램 낱말을 고른다(ChatGPT F2: `#!/usr/bin/env -S bash` 는 셋째 낱말이 셸).
+fn shebang_interpreter(line: &str) -> String {
+    let mut w = line.split_whitespace();
+    let Some(first) = w.next() else { return String::new() };
+    let base = basename_lc(first);
+    if base != "env" {
+        return base;
+    }
+    let rest: Vec<&str> = w.collect();
+    let mut i = 0;
+    while i < rest.len() {
+        let a = rest[i];
+        if a == "--" {
+            i += 1;
+            break;
+        }
+        if let Some(v) = a.strip_prefix("-S").filter(|v| !v.is_empty() && !v.starts_with('-')) {
+            return basename_lc(v);   // `-Sbash`
+        }
+        if matches!(a, "-u" | "--unset" | "-C" | "--chdir" | "-P" | "-a" | "--argv0") {
+            i += 2;
+            continue;
+        }
+        if a.starts_with('-') || is_assignment(a) {
+            i += 1;
+            continue;
+        }
+        break;
+    }
+    rest.get(i).map(|a| basename_lc(a)).unwrap_or_default()
+}
+
+/// 스크립트 본문(이미 읽은 글)이 agy 를 실행하는가 — 셔뱅 줄은 낱말 검사 · 본문은 **셸 글일 때만**(`sh x` 로 넘긴 파일 또는 셔뱅의
+/// 인터프리터가 셸) 줄 머리 `#` 주석을 걷고 실행 자리 검사(더 깊이 읽지 않는다). 파이썬 등 다른 언어 본문은 셸로 읽으면 거짓 양성이 나므로 셔뱅 줄만.
 fn script_body_runs_agy(body: &str, run_by_shell: bool) -> bool {
     let (shebang, rest) = match body.strip_prefix("#!") {
         Some(b) => b.split_once('\n').unwrap_or((b, "")),
@@ -196,7 +254,7 @@ fn script_body_runs_agy(body: &str, run_by_shell: bool) -> bool {
     if names_agy(shebang) {
         return true;
     }
-    let shell_text = run_by_shell || shebang.split_whitespace().take(2).any(|w| SHELLS.contains(&basename_lc(w).as_str()));
+    let shell_text = run_by_shell || SHELLS.contains(&shebang_interpreter(shebang).as_str());
     let code: String = rest.lines().filter(|l| !l.trim_start().starts_with('#')).collect::<Vec<_>>().join("\n");
     shell_text && runs_agy(&code)
 }
@@ -204,26 +262,28 @@ fn script_body_runs_agy(body: &str, run_by_shell: bool) -> bool {
 /// 셸 글을 읽는 프로그램(셸 갈래 · 셔뱅 판정 공용).
 const SHELLS: [&str; 10] = ["sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "fish", "mksh", "yash"];
 
-/// 판정할 파일 하나 → Some(agy 인가) · 읽을 대상이 아니면(바이너리·셔뱅 없음) Some(false) · 못 읽음 = None.
-fn file_runs_agy(p: &Path, must_read: bool) -> Option<bool> {
+/// 판정할 파일 하나(한 핸들 · 한 번 읽기). 셸에 넘긴 파일(`must_read`)이 아니면 셔뱅(`#!`)으로 시작할 때만 스크립트로 본다(바이너리 = 이름만).
+/// 스크립트가 64KiB 를 넘으면 명령 상한과 같은 방향으로 agy(거부 쪽) · 못 읽으면 Unread(통과 + 표시).
+fn judge_file(p: &Path, must_read: bool) -> Judge {
     if real_name_is_agy(p) {
-        return Some(true);
+        return Judge::Agy;
     }
-    let head = std::fs::File::open(p).ok().and_then(|mut f| {
-        let mut b = [0u8; 2];
-        std::io::Read::read_exact(&mut f, &mut b).ok().map(|_| b)
-    });
-    if !must_read && head != Some(*b"#!") {
-        return Some(false);   // 셔뱅 없는 실행 파일(바이너리 등) = 이름만 본다
+    let Ok((bytes, over)) = read_capped(p) else { return Judge::Unread };
+    if !must_read && !bytes.starts_with(b"#!") {
+        return Judge::NotAgy;
     }
-    read_script(p).map(|b| script_body_runs_agy(&b, must_read))
+    if over {
+        return Judge::Agy;
+    }
+    if script_body_runs_agy(&String::from_utf8_lossy(&bytes), must_read) { Judge::Agy } else { Judge::NotAgy }
 }
 
-/// 실행 자리 프로그램 목록(내부 값 걸러 냄) → (판정 대상 파일, 반드시 읽을 스크립트인가).
+/// 실행 자리 프로그램 목록(내부 값 걸러 냄 · 같은 대상은 한 번) → (판정 대상, 반드시 읽을 스크립트인가).
 fn resolve_targets(cmd: &str) -> Vec<(String, bool)> {
     if cmd.len() > MAX_JUDGE_BYTES {
         return Vec::new();
     }
+    let mut seen = std::collections::HashSet::new();
     scan(cmd, 0)
         .into_iter()
         .filter(|p| p != STDIN_SHELL && p != "?" && !p.is_empty())
@@ -231,24 +291,41 @@ fn resolve_targets(cmd: &str) -> Vec<(String, bool)> {
             Some(s) => (s.to_string(), true),
             None => (p, false),
         })
+        .filter(|t| seen.insert(t.clone()))
+        .collect()
+}
+
+/// 대상마다 판정(대상 수 상한을 넘으면 파일을 하나도 찾지 않고 Agy 한 줄).
+fn resolve_judgements(cmd: &str) -> Vec<(String, Judge)> {
+    let targets = resolve_targets(cmd);
+    if targets.len() > MAX_RESOLVE_TARGETS {
+        return vec![(format!("<실행 대상 {}개 — 상한 {MAX_RESOLVE_TARGETS}>", targets.len()), Judge::Agy)];
+    }
+    targets
+        .into_iter()
+        .map(|(t, must)| {
+            let j = match locate_target(&t, must) {
+                Some(p) => judge_file(&p, must),
+                None if must => Judge::Unread,   // 셸에 넘긴 파일을 못 찾음 = 못 읽음
+                None => Judge::NotAgy,           // 찾을 수 없는 프로그램 = 실행되지 않는다(이름은 낱말 검사가 이미 봤다)
+            };
+            (t, j)
+        })
         .collect()
 }
 
 /// ⓐⓑ 실체 한 단계 확인 — 실행 자리 프로그램(심링크 해소 이름) 또는 셸에 넘긴·셔뱅 스크립트 파일 안 실행 자리에 agy 가 있으면 참.
 pub fn resolves_to_agy(cmd: &str) -> bool {
-    resolve_targets(cmd).iter().any(|(t, must)| locate_target(t, *must).and_then(|p| file_runs_agy(&p, *must)).unwrap_or(false))
+    resolve_judgements(cmd).iter().any(|(_, j)| *j == Judge::Agy)
 }
 
-/// 문이 닫혀 있을 때 판정하려 했으나 **못 읽은** 스크립트 파일(통과시켰음 — 원장·출력에 표시할 것). 문 열림이면 빈 목록.
+/// 문이 닫혀 있을 때 판정하려 했으나 **못 읽은** 파일(셸에 넘긴 스크립트 · 직접 실행 파일 머리 — 통과시켰음 · 원장·출력에 표시할 것).
+/// 문 열림이면 빈 목록.
 pub fn unread_scripts(cmd: &str) -> Vec<String> {
     if door_open() {
         return Vec::new();
     }
-    resolve_targets(cmd)
-        .into_iter()
-        .filter(|(t, must)| *must && locate_target(t, true).is_none_or(|p| file_runs_agy(&p, true).is_none()))
-        .map(|(t, _)| t)
-        .collect()
+    resolve_judgements(cmd).into_iter().filter(|(_, j)| *j == Judge::Unread).map(|(t, _)| t).collect()
 }
 
 fn is_agy_name(p: &str) -> bool {
@@ -583,11 +660,13 @@ fn program_of(w: &[Tok], depth: u8) -> (Vec<String>, bool) {
                     // ★codex 5R major 4: `sh -c 'exec "$@"' sh agy` — 글이 위치 인자(`$0`·`$1`…·`$@`·`$*`)를 쓰면 위치 인자가 명령이 된다.
                     //   $1 부터를 명령 단위로 판정하고, $0 을 포함한 위치 인자 낱말 하나 전체가 agy 이름이면 agy(안전망).
                     let pos = &rest[k + 1..];
+                    //   ★ChatGPT F4: `$0` 자리 낱말은 글이 `$0` 을 쓸 때만 본다(`sh -c 'echo "$1"' agy x` = agy 를 실행하지 않음).
                     if uses_positional(&body.text) && !pos.is_empty() {
                         if pos.len() > 1 {
                             progs.extend(seg_programs(&pos[1..], depth + 1));
                         }
-                        if pos.iter().any(|t| is_agy_word(&t.text)) {
+                        let from = if uses_dollar0(&body.text) { 0 } else { 1 };
+                        if pos.iter().skip(from).any(|t| is_agy_word(&t.text)) {
                             progs.push("agy".into());
                         }
                     }
@@ -702,6 +781,11 @@ fn uses_positional(s: &str) -> bool {
     })
 }
 
+/// 셸 글이 `$0`(`${0}`)을 쓰는가 — `$0` 뒤에 숫자가 이어지면(`$01` 은 셸에서 `$0`+`1`) 그래도 `$0` 이다.
+fn uses_dollar0(s: &str) -> bool {
+    s.contains("$0") || s.contains("${0}")
+}
+
 fn basename_lc(tok: &str) -> String {
     strip_ext(&tok.rsplit(['/', '\\']).next().unwrap_or(tok).to_ascii_lowercase())
 }
@@ -758,16 +842,42 @@ pub fn write_door(open: bool) -> Result<bool, String> {
 static DOOR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static DOOR_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// 문 잠금 대기 상한(ChatGPT F6) — 다른 앱 창이 잠금을 오래 쥐고 있어도 이 시간 뒤에는 오류로 돌아온다.
+const DOOR_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// 잠금을 얻지 못했을 때의 말(왕초보 말투 · 잠금 파일을 지우라고 하지 않는다 — 지우고 다시 만들면 서로 다른 파일에 잠금을 거는 경합이 생긴다).
+pub const DOOR_LOCK_BUSY: &str = "다른 창이 지금 agy 좌석 문을 여닫는 중이에요. 잠시 뒤 다시 눌러 주세요.";
+pub const DOOR_LOCK_UNAVAILABLE: &str = "agy 좌석 문을 바꾸지 못했어요(문 잠금 파일을 열 수 없음). 문은 그대로입니다. 잠시 뒤 다시 눌러 주세요.";
+
+/// 옆 잠금 파일의 OS 배타 잠금(앱 두 벌 사이 직렬화 · codex 5R minor 6) — 읽기·쓰기로 열되 쓰기 권한이 없으면 읽기 전용으로 연다
+/// (잠금은 읽기 핸들로도 걸린다) · 대기는 `wait` 까지 짧게 거듭 시도(ChatGPT F6). 반환 핸들이 살아 있는 동안 잠금 유지.
+fn door_os_lock(path: &Path, wait: std::time::Duration) -> Result<std::fs::File, String> {
+    let lock_path = path.with_file_name(format!("{DOOR_FILE}.lock"));
+    let f = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).open(&lock_path)
+        .or_else(|_| std::fs::OpenOptions::new().read(true).open(&lock_path))
+        .map_err(|e| format!("{DOOR_LOCK_UNAVAILABLE} ({}: {e})", lock_path.display()))?;
+    let until = std::time::Instant::now() + wait;
+    loop {
+        match f.try_lock() {
+            Ok(()) => return Ok(f),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < until => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(std::fs::TryLockError::WouldBlock) => return Err(DOOR_LOCK_BUSY.to_string()),
+            Err(std::fs::TryLockError::Error(e)) => {
+                return Err(format!("{DOOR_LOCK_UNAVAILABLE} ({}: {e})", lock_path.display()))
+            }
+        }
+    }
+}
+
 pub fn write_door_at(path: &Path, open: bool) -> Result<bool, String> {
     let _g = DOOR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // 앱 두 벌(다른 프로세스) 사이의 직렬화 = 옆 잠금 파일의 OS 배타 잠금(codex 5R minor 6) — 프로세스가 죽으면 OS 가 푼다.
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
-    let lock_path = path.with_file_name(format!("{DOOR_FILE}.lock"));
-    let lock_file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&lock_path)
-        .map_err(|e| format!("{}: {e}", lock_path.display()))?;
-    lock_file.lock().map_err(|e| format!("{}: {e}", lock_path.display()))?;
+    let _lock = door_os_lock(path, DOOR_LOCK_WAIT)?;
     if !open {
         return match std::fs::remove_file(path) {
             Ok(()) => Ok(door_open_at(path)),
@@ -930,7 +1040,7 @@ mod tests {
     fn every_other_entry_is_gated_source_pin() {
         // 독립 검증 B1·B2·M3: 문 판정 없이 셸 문을 실행하던 입구 — 판정 줄을 지우면 붉다(배선 핀).
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let pins: [(&str, &str); 15] = [
+        let pins: [(&str, &str); 18] = [
             ("src/bin/cysd/schedule.rs", "if let Some(m) = cys::agy_door::launch_refusal(\"\", Some(command)) {"),
             ("src/bin/cysd/channels.rs", "if let Some(m) = cys::agy_door::launch_refusal(\"\", Some(bridge_cmd)) {"),
             ("src/bin/cysd/accounts.rs", "if cys::agy_door::launch_refusal(\"\", Some(&cmd)).is_some() {"),
@@ -940,6 +1050,9 @@ mod tests {
             ("src/bin/cysd/handlers.rs", "if !human_typed_q && agy_door_blocks_auto_send(&surface, &params, &text) {"),
             ("src/bin/cysd/state.rs", "agy_kind: cys::agy_door::seat_kind_is_agy(agent.as_deref(), cmd_for_kind.as_deref()),"),
             ("src/bin/cysd/handlers.rs", "&& cys::agy_door::launch_refusal(\"\", Some(text)).is_some())"),
+            ("src/bin/cysd/governance.rs", "let dropped = drop_stale_launch_lines(daemon, s, seat_bin.as_deref()) + drop_agy_door_closed(daemon, s);"),
+            ("src/bin/cysd/governance.rs", "crate::delivery::record_queue_tombstones(daemon, s.id, &dropped, cys::agy_door::REFUSE_CODE, now_epoch());"),
+            ("src/bin/cysd/handlers.rs", "let q_origin = if human_typed_q {"),
             ("src/bin/cysd/schedule.rs", "if let Some(m) = cys::agy_door::launch_refusal(\"\", Some(cmd)) {"),
             ("src/bin/cys.rs", "if let Some(m) = command.as_deref().and_then(|c| cys::agy_door::launch_refusal(\"\", Some(c))) {"),
             ("src/bin/cys.rs", "if let Some(m) = cmd.as_deref().and_then(|c| cys::agy_door::launch_refusal(\"\", Some(c))) {"),
@@ -1452,5 +1565,114 @@ mod tests {
             }
         }
         assert!(n == 7 * 3 * 9 * 6 && bad.is_empty(), "변이 {n} · 실패 {}: {:?}", bad.len(), &bad[..bad.len().min(5)]);
+    }
+
+    // ── r6 2회차(ChatGPT BLOCK 처분) ──
+
+    #[cfg(unix)]
+    fn exe(d: &Path, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let p = d.join(name);
+        std::fs::write(&p, body).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shebang_env_split_and_options_chatgpt_f2() {
+        let d = td("f2");
+        for (name, she) in [("a", "/bin/bash"), ("b", "/usr/bin/env bash"), ("c", "/usr/bin/env -S bash"), ("e", "/usr/bin/env -S bash -eu"),
+                            ("f", "/usr/bin/env -i bash"), ("g", "/usr/bin/env -Sbash"), ("h", "/usr/bin/env -u HOME zsh"),
+                            ("i", "/usr/bin/env FOO=1 sh"), ("j", "/usr/bin/env -- dash")] {
+            let p = exe(&d, name, &format!("#!{she}\nexec agy -p hi\n"));
+            assert!(resolves_to_agy(&p.to_string_lossy()), "셔뱅 {she} = 셸 글 → 본문 agy 거부");
+        }
+        let py = exe(&d, "py", "#!/usr/bin/env python3\nagy = 1\n");
+        assert!(!resolves_to_agy(&py.to_string_lossy()), "env python3 = 셸 아님 → 본문 안 봄(통과)");
+        assert_eq!(shebang_interpreter("/usr/bin/env -S bash -eu"), "bash");
+        assert_eq!(shebang_interpreter("/usr/bin/env -i -u X python3"), "python3");
+        assert_eq!(shebang_interpreter("/bin/sh -e"), "sh");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_reads_and_target_caps_chatgpt_f3() {
+        let d = td("f3");
+        // 64KiB 를 넘는 셸 스크립트 = 명령 상한과 같은 방향(거부 쪽)
+        let big = d.join("big.sh");
+        std::fs::write(&big, format!("echo hi\n{}", "#".repeat(MAX_JUDGE_BYTES + 10))).unwrap();
+        assert!(resolves_to_agy(&format!("sh {}", big.display())), "상한 초과 스크립트 = 거부 쪽");
+        // 64KiB 를 넘는 바이너리(셔뱅 없음) = 이름만(상한 규칙 적용 안 함)
+        let bin = exe(&d, "bigbin", &"x".repeat(MAX_JUDGE_BYTES + 10));
+        assert!(!resolves_to_agy(&bin.to_string_lossy()));
+        // FIFO 는 열지 않는다(막히지 않음) · 셸에 넘긴 FIFO = 못 읽음
+        let fifo = d.join("pipe.sh");
+        let c = std::ffi::CString::new(fifo.to_string_lossy().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o644) }, 0);
+        let t0 = std::time::Instant::now();
+        let j = resolve_judgements(&format!("sh {}", fifo.display()));
+        assert!(t0.elapsed() < std::time::Duration::from_secs(2) && j.iter().any(|(_, j)| *j == Judge::Unread), "{j:?}");
+        // 실행 자리 낱말 4,000개(같은 이름) = 한 번만 찾는다 · 시간 상한
+        let many_same = vec!["notfound_xyz"; 4000].join(";");
+        let t0 = std::time::Instant::now();
+        assert!(!resolves_to_agy(&many_same));
+        assert!(t0.elapsed() < std::time::Duration::from_secs(3), "4,000 낱말 판정 {:?}", t0.elapsed());
+        // 서로 다른 대상이 상한을 넘으면 파일을 찾지 않고 거부 쪽
+        let many_distinct = (0..4000).map(|i| format!("nf_{i}")).collect::<Vec<_>>().join(";");
+        let t0 = std::time::Instant::now();
+        assert!(resolves_to_agy(&many_distinct) && launch_refusal_with("", Some(&many_distinct), false).is_some());
+        assert!(t0.elapsed() < std::time::Duration::from_secs(3), "4,000 서로 다른 낱말 판정 {:?}", t0.elapsed());
+        let ok_distinct = (0..MAX_RESOLVE_TARGETS).map(|i| format!("nf_{i}")).collect::<Vec<_>>().join(";");
+        assert!(!resolves_to_agy(&ok_distinct), "상한 안 = 종전대로");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn dollar0_only_when_used_chatgpt_f4() {
+        assert!(!runs_agy("sh -c 'echo \"$1\"' agy x"), "agy 는 $0 자리일 뿐(실행 안 됨)");
+        let argv = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(launch_refusal_argv_with(&argv(&["sh", "-c", "echo \"$1\"", "agy", "x"]), false).is_none());
+        assert!(runs_agy("sh -c '\"$0\" -p hi' agy") && runs_agy("sh -c 'exec ${0}' agy"), "글이 $0 을 쓰면 $0 자리도 본다");
+        assert!(runs_agy("sh -c 'exec \"$@\"' sh agy"), "5R major 4 원 재현 유지");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn direct_exec_unreadable_is_unread_chatgpt_f5() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = td("f5");
+        let p = exe(&d, "noread", "#!/bin/sh\nexec agy\n");
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o111)).unwrap();
+        let j = resolve_judgements(&p.to_string_lossy());
+        assert!(j.iter().any(|(_, j)| *j == Judge::Unread), "직접 실행 파일 머리 읽기 실패 = 못 읽음(통과 + 표시): {j:?}");
+        assert!(!resolves_to_agy(&p.to_string_lossy()));
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(resolves_to_agy(&p.to_string_lossy()), "읽히면 본문 agy = 거부");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lock_wait_capped_and_readonly_lock_file_chatgpt_f6() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = td("f6");
+        let p = door_path_under(&d);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        let lp = p.with_file_name(format!("{DOOR_FILE}.lock"));
+        let other = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&lp).unwrap();
+        other.lock().unwrap();
+        let t0 = std::time::Instant::now();
+        let e = door_os_lock(&p, std::time::Duration::from_millis(300)).unwrap_err();
+        assert!(e == DOOR_LOCK_BUSY && t0.elapsed() < std::time::Duration::from_secs(2), "{e}");
+        assert!(!e.contains("지우") && !e.contains("삭제"), "잠금 파일을 지우라고 하지 않는다");
+        other.unlock().unwrap();
+        drop(other);
+        std::fs::set_permissions(&lp, std::fs::Permissions::from_mode(0o444)).unwrap();
+        assert!(write_door_at(&p, true).unwrap(), "읽기 전용 잠금 파일이어도 잠금을 걸고 문을 연다");
+        assert!(!write_door_at(&p, false).unwrap());
+        std::fs::set_permissions(&lp, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

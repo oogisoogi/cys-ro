@@ -287,7 +287,7 @@ fn run_dept_tool_capped(tool: &std::path::Path, verb: &str, args: &[String], tim
 /// ★agy 좌석 문 — 이 좌석이 「닫힌 문의 agy 좌석」인가. agent_meta = (어댑터 키, 해석된 실행 파일) — 좌석 cmd 는 로그인 셸일 수 있어
 /// (launch-agent 는 셸에 명령을 친다) 실행 파일로 잰다. ★codex 5R blocking 3: 좌석 cmd 는 기계가 만든 실행 기록이라 실행 자리 검사로 다시
 /// 읽지 않고 **생성 때 확정한 종류**(`Surface.agy_kind` · 낱말 검사)를 쓴다.
-fn agy_door_seat_closed(surface: &crate::state::Surface) -> bool {
+pub(crate) fn agy_door_seat_closed(surface: &crate::state::Surface) -> bool {
     let meta = surface.agent_meta.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let by_meta = meta.as_ref().is_some_and(|(k, bin)| cys::agy_door::program_refused(k, bin));
     let by_kind = surface.agy_kind && !cys::agy_door::door_open();
@@ -297,7 +297,7 @@ fn agy_door_seat_closed(surface: &crate::state::Surface) -> bool {
 /// ★agy 좌석 문 — 사람 자판이 아닌 `surface.send_text`(직접·`queued`)를 막을 것인가: 닫힌 문의 agy 좌석이거나, 좌석 기동 줄 표지
 /// (`agent_launch`)가 붙은 글이 기계 입구 낱말 검사(①)에 걸리면(그 글 자체가 실행될 명령 — 구판 CLI·원시 RPC 가 빈 셸에 agy 기동 줄을
 /// 치는 길 · codex 5R blocking 2 의 데몬 입구 전수).
-fn agy_door_blocks_auto_send(surface: &crate::state::Surface, params: &Value, text: &str) -> bool {
+pub(crate) fn agy_door_blocks_auto_send(surface: &crate::state::Surface, params: &Value, text: &str) -> bool {
     agy_door_seat_closed(surface)
         || (params.get(cys::AGENT_LAUNCH_KEY).and_then(|v| v.as_bool()).unwrap_or(false)
             && cys::agy_door::launch_refusal("", Some(text)).is_some())
@@ -7590,7 +7590,16 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                             "pending queue cap (100) reached",
                         ));
                     }
-                    let entry = daemon.next_queue_entry(text.clone(), entry_from, "send");
+                    // ★agy 좌석 문(r6 2회차 · ChatGPT F1): 배달 시점 재판정이 갈래를 알 수 있게 출처를 적는다 —
+                    //   사람 자판(통과 유지)·좌석 기동 줄(낱말 재판정) · 그 밖은 종전 "send".
+                    let q_origin = if human_typed_q {
+                        crate::governance::AGY_ORIGIN_HUMAN
+                    } else if params.get(cys::AGENT_LAUNCH_KEY).and_then(|v| v.as_bool()).unwrap_or(false) {
+                        crate::governance::AGY_ORIGIN_LAUNCH
+                    } else {
+                        "send"
+                    };
+                    let entry = daemon.next_queue_entry(text.clone(), entry_from, q_origin);
                     q.push_back(entry.clone());
                     (entry, q.len())
                 };

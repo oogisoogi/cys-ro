@@ -43,16 +43,23 @@ codex 1R~4R 네 번 모두 같은 종류의 지적이 돌아왔다 — 셸 문�
 
 ### ①+ 실체 한 단계 확인(r6 · 5R blocking 1 — 모든 기계 입구 ① 에 덧붙음 · `resolves_to_agy`)
 - ⓐ 실행 자리 프로그램이 파일로 있으면(경로 꼴이면 그 파일 · 맨 이름이면 `PATH`) **심링크를 해소한 실제 파일의 마지막 이름**도 본다(`gem-review` → `agy`).
-- ⓑ `sh|bash|zsh|dash|… <파일>` · `source <파일>` · `. <파일>` · 셔뱅 있는 글 파일을 직접 실행 = 그 파일을 **한 번만** 읽는다(64KiB 상한).
-  셔뱅 줄은 낱말 검사 · 본문은 셸 글일 때만(셸에 넘겼거나 셔뱅이 셸) 줄 머리 `#` 주석을 걷고 ② 실행 자리 검사. 파이썬 등 다른 언어 본문은
-  셸로 읽으면 거짓 양성이 나므로 셔뱅 줄만 본다. 더 깊이(그 파일이 부르는 파일) 읽지 않는다.
-- 못 읽은 스크립트는 **통과** + 표시: 일정 등록 = stderr 「알림: 스크립트 … 를 읽지 못해」 · 일정 발화 = 데몬 이벤트 `schedule.agy_door_unread`.
+- ⓑ `sh|bash|zsh|dash|… <파일>` · `source <파일>` · `. <파일>` · 셔뱅 있는 글 파일을 직접 실행 = 그 파일을 **한 번만** 읽는다.
+  셔뱅 줄은 낱말 검사 · 본문은 셸 글일 때만(셸에 넘겼거나 셔뱅의 **인터프리터**가 셸 — `env` 의 `-S`·`-i`·`-u NAME`·`NAME=값`·`--` 를 건너뛰고
+  고른다 · ChatGPT F2) 줄 머리 `#` 주석을 걷고 ② 실행 자리 검사. 파이썬 등 다른 언어 본문은 셸로 읽으면 거짓 양성이 나므로 셔뱅 줄만 본다.
+  더 깊이(그 파일이 부르는 파일) 읽지 않는다.
+- 읽기 방식(ChatGPT F3): 일반 파일이 아니면 열지 않는다 · 유닉스는 비차단으로 열고 **연 핸들**이 일반 파일인지 다시 본다 · 머리(`#!`)와 본문을
+  **같은 핸들에서 한 번** 읽고 읽기 자체를 64KiB+1 바이트로 자른다. 같은 대상은 한 번만 찾는다.
+- 상한(ChatGPT F3 · 64KiB 초과 명령과 **같은 방향 = 거부 쪽**): 셸 스크립트가 64KiB 를 넘으면 agy 로 본다 · 한 번의 판정에서 서로 다른 실행 대상이
+  64개(`MAX_RESOLVE_TARGETS`)를 넘으면 파일을 하나도 찾지 않고 agy 로 본다(문 닫힘에서 거부). 셔뱅 없는 실행 파일(바이너리)은 크기와 무관하게 이름만.
+- 못 읽은 파일은 **통과** + 표시(셸에 넘긴 스크립트 · 직접 실행 파일의 머리 읽기 실패 둘 다 — 판정 결과 세 갈래 Agy/NotAgy/Unread · ChatGPT F5):
+  일정 등록 = stderr 「알림: 스크립트 … 를 읽지 못해」 · 일정 발화 = 데몬 이벤트 `schedule.agy_door_unread`.
 - 판정 시점: 일정은 등록(CLI)·발화(데몬) 둘 다(acceptance E23 · E13 의 `agyfirescript`) · 채널·계정·launch 어댑터·round-log·new-surface·`surface.create` 는 그 입구의 판정 때.
 
 ### ② 의 위치 인자(r6 · 5R major 4)
-`sh -c '<글>' <위치 인자…>` 에서 글이 `$0`·`$1`…·`$@`·`$*`(중괄호 꼴 포함)를 쓰면, `$1` 부터를 명령 단위로 판정하고 `$0` 을 포함한 위치
-인자 낱말 하나 전체가 agy 이름이면 agy(`cys run -- sh -c 'exec "$@"' sh agy` 거부 · `sh -c 'echo "$1"' sh agy-notes` 통과 · bash·zsh·dash·
-`env … sh -c` 같은 갈래). 글이 위치 인자를 쓰지 않으면 위치 인자는 보지 않는다(종전).
+`sh -c '<글>' <위치 인자…>` 에서 글이 `$0`·`$1`…·`$@`·`$*`(중괄호 꼴 포함)를 쓰면, `$1` 부터를 명령 단위로 판정하고 위치 인자 낱말 하나 전체가
+agy 이름이면 agy — 단 `$0` 자리 낱말은 글이 `$0` 을 쓸 때만 본다(ChatGPT F4: `sh -c 'echo "$1"' agy x` 통과). (`cys run -- sh -c 'exec "$@"' sh agy`
+거부 · `sh -c 'echo "$1"' sh agy-notes` 통과 · bash·zsh·dash·`env … sh -c` 같은 갈래). 글이 위치 인자를 쓰지 않으면 위치 인자는 보지 않는다(종전).
+남는 보수적 거짓 양성: 글이 `$1` 을 **자료로만** 써도(`sh -c 'echo "$1"' sh agy`) 위치 인자 낱말 agy 는 막힌다(실행 문맥 구분은 셸 해석이라 하지 않음).
 
 ### ① 낱말 검사 규칙(셸을 해석하지 않는다)
 - 영숫자·`.`·`_`·`-` 밖의 모든 글자(따옴표·괄호·역슬래시·경로 구분자·`$`·`=`·`:`·`;` …)를 구분자로 본다.
@@ -142,8 +149,11 @@ codex 1R~4R 네 번 모두 같은 종류의 지적이 돌아왔다 — 셸 문�
 4. **맨 셸 좌석에 글로 쳐 넣기** — 표지(`agent_launch`) 없이 빈 셸 좌석에 `agy` 를 입력하는 자동 지시(데몬은 지시 글 내용을 판정하지 않는다 —
    걸면 「agy」 낱말이 든 모든 지시가 막힌다). 표지가 있는 기동 줄은 막는다(E25).
 5. **같은 사용자 권한의 고의** — 문 파일 직접 쓰기(표지 = 공개 상수) · 소켓에 사람 표시(`human:true`)를 위조한 요청.
-6. **앱 두 벌 동시 문 조작 경합** — r6 에서 옆 잠금 파일의 OS 배타 잠금(`agy-seat-door.json.lock`)으로 직렬화했다(5R minor 6). 남는 것: 잠금을
-   지원하지 않는 파일 시스템(네트워크 홈 등)에서는 잠금 실패 = 문 쓰기 실패로 보고된다(닫힘 유지 · 안전 쪽).
+6. **앱 두 벌 동시 문 조작 경합** — r6 에서 옆 잠금 파일의 OS 배타 잠금(`agy-seat-door.json.lock`)으로 직렬화했다(5R minor 6). 잠금 대기는
+   5초 상한(넘으면 「다른 창이 지금 agy 좌석 문을 여닫는 중이에요. 잠시 뒤 다시 눌러 주세요.」) · 잠금 파일이 읽기 전용이면 읽기 핸들로 잠근다 ·
+   열 수 없으면 「문을 바꾸지 못했어요 … 문은 그대로입니다」(ChatGPT F6 · 잠금 파일을 지우라고 안내하지 않는다). 남는 것: 잠금을 지원하지 않는
+   파일 시스템(네트워크 홈 등)에서는 잠금 실패 = 문 쓰기 실패로 보고된다(닫힘 유지 · 안전 쪽). `File::lock`/`try_lock` = Rust 1.89.0 안정화 —
+   저장소에 `rust-toolchain`·`rust-version` 고정 없음 · CI 는 `dtolnay/rust-toolchain` stable · 이 기계 1.97.0.
 7. **판정 때와 실행 때의 차이** — 일정 등록 뒤 스크립트 내용이 바뀌면 발화 때 다시 읽는다(한 단계). 발화 판정과 실제 실행 사이의 짧은 틈에
    파일을 바꾸는 것은 막지 않는다. 데몬이 쓰는 `PATH`·현재 폴더가 실제 셸(로그인 프로파일)의 것과 다를 수 있다 — 못 찾은 파일은 통과.
 8. **윈도우 실기** — PowerShell·`call`/`start`·`cmd /c` 갈래는 코드 경로만 맞췄고 윈도 실기에서 확인하지 않았다.
@@ -175,3 +185,25 @@ codex 1R~4R 네 번 모두 같은 종류의 지적이 돌아왔다 — 셸 문�
 | 고정 프로그램만 띄우는 자리(판정 불요 — 사용자 글이 실행 파일이 되지 않음): `boot_supervisor.rs`·`main.rs`(동봉 python + 팩 스크립트) · `cycle_jobs.rs`(cys cycle-agent) · `state.rs`(python `--wire-seat`) · `handlers.rs` `dept.run`(cys-dept) · `system.spawn_outside_job`(윈 허용 목록 chrome·seat_restart · `job_exit::validate`) · hwmon·locale·taskkill | — | — | — |
 
 표에 없는 데몬 프로세스·PTY 생성 자리 = 0(위 grep 범위 · 시험 파일 `*_tests.rs` 와 `#[cfg(test)]` 모듈 제외).
+
+### §7-1 범위 넓혀 다시(r6 2회차 · ChatGPT 「표 밖 0 입증 불가」에 대한 답)
+명령: `grep -rEn 'Command::new\(|hidden_command\(|python_command\(|\.spawn_command\(|\.openpty\(|posix_spawn|libc::exec|libc::fork|execvp|CommandBuilder::new\(' src --include='*.rs'`
+(`src/bin/cys.rs`(CLI — 입구별 판정은 §2 표)·`*_tests.rs` 제외) = **199줄** · 그중 시험 모듈 앞(운영 코드) **60줄**을 감싼 함수로 전부 분류했다:
+- 사용자·파일 글이 실행 파일이 되는 자리 = `accounts.rs` `spawn_custom_adapters`(sh/cmd 2) · `channels.rs` `spawn_bridge`(2) · `schedule.rs` `fire_command`·
+  `run_text_command` · `state.rs` PTY(`create_surface_with_env` — 위 grep 의 `.openpty`/`spawn_command` 는 같은 함수) → **전부 판정 있음**(§7 표).
+- 고정 프로그램 = `boot_supervisor.rs`·`main.rs`(동봉 python + 팩 스크립트 · auto-restore = 팩 phoenix 복원기 → agent-detect 판정)·`teamtoken.rs`(python)·
+  `cycle_jobs.rs`·`governance.rs`(cys node-recover · taskkill)·`schedule.rs` `launch_via_cli`(cys launch-agent → CLI 판정)·`handlers.rs`(`spawn_outside_job` 윈 허용 목록 ·
+  `dept.run` = cys-dept)·`hwmon`·`usage`(lsof)·`state.rs`(defaults·locale)·`pty_test_support`.
+- 라이브러리(`src/*.rs` · `src/update/*`) = 업데이터·초기화·launchd·앱 묶음(launchctl·codesign·ditto·curl·unzip 등 고정 도구) · `lib.rs` 의 `hidden_command`/`python_command`
+  (래퍼 자체 — 호출부가 위 목록) · `agy_statusline.rs` `probe_spawn`(윈도우 전용 · cys 자기 상태줄 훅을 agy 와 같은 방식으로 한 번 실행 — agy 실행 아님).
+- **새 입구 0** — 단, grep 은 완전성 증명이 아니다(함수 포인터·동적 조립 인자는 위 함수들 안의 값으로만 들어온다는 것까지가 확인 범위).
+
+### §7-2 지연 실행 전수(적재·등록 때만 판정하고 실행 때 재판정이 없는 꼴 · ChatGPT F1)
+| 지연 실행 | 적재·등록 때 판정 | 실행 때 판정 |
+|---|---|---|
+| 자동 지시 큐(`send_text {queued}` · 빈 좌석 보류 `hold_for_vacant_seat` · 정비 모드 보류 재생 `update_hold` · 알림 등 큐 생산자 전부) → watchdog 틱·`queue.deliver` | 있음(`queued` 갈래) | **r6 2회차 신설** — `governance.rs` `deliver_head_locked` 머리의 `drop_agy_door_closed`(PTY 쓰기 전 · 폐기 + 원장 묘비 `agy_consumer_policy` + `queue.dropped`) · 사람 자판 적재(`send_human`)는 통과 · acceptance **E26** |
+| 일정 `--command` 발화 | 있음(CLI) | 있음(`fire_command`) |
+| push 일정 `text_command` | (등록 경로 없음) | 있음(`run_text_command`) |
+| 채널 브리지 재스폰 | 있음(CLI) | 있음(`spawn_bridge` 매 스폰) |
+| 계정 어댑터 주기 실행 | (파일) | 있음(주기마다) |
+| 복구 기동(node-recover · auto-restore · phoenix) | — | 있음(실행 때 CLI·오라클 판정 + 데몬 `agent_launch` 기동 줄 판정) |

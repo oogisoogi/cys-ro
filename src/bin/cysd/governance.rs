@@ -4596,6 +4596,45 @@ pub fn hold_for_vacant_seat(
 /// 폐기 대상 = `launch_line_matches_seat` 일치분뿐 — 다른 보류 글(DRAIN·master 지시 등)은 순서 그대로 남는다.
 /// 조용히 지우지 않는다: `queue.dropped`(reason `stale_launch_line` · 좌석 · 개수 · 줄 sha256 앞 8자) + 영속.
 /// 반환 = 폐기 개수.
+/// 큐 항목 출처 — 사람 자판(human ∧ ¬machine_origin)이 queued 로 적재한 것(agy 좌석 문 배달 재판정에서 통과).
+pub(crate) const AGY_ORIGIN_HUMAN: &str = "send_human";
+/// 큐 항목 출처 — 좌석 기동 줄 표지(`agent_launch`)가 붙은 queued 적재(배달 때 기계 입구 낱말 재판정).
+pub(crate) const AGY_ORIGIN_LAUNCH: &str = "send_agent_launch";
+
+/// ★agy 좌석 문(r6 2회차 · ChatGPT F1) — 배달 직전 재판정. 문이 닫혀 있으면 ⑴ 닫힌 문의 agy 좌석(메타·생성 때 종류)으로 가는 항목 중
+/// 사람 자판 출처가 아닌 것 ⑵ 어느 좌석이든 agy 를 가리키는 좌석 기동 줄 항목을 큐에서 빼고, 배달 원장에 묘비(사유 `agy_consumer_policy`)와
+/// `queue.dropped` 이벤트를 남긴다. 문이 열려 있으면 아무것도 하지 않는다(파일 상태 1회 확인).
+pub(crate) fn drop_agy_door_closed(daemon: &Daemon, s: &crate::state::Surface) -> usize {
+    if cys::agy_door::door_open() {
+        return 0;
+    }
+    let seat_closed = crate::handlers::agy_door_seat_closed(s);
+    let refuse = |e: &crate::state::QueueEntry| {
+        e.origin != AGY_ORIGIN_HUMAN
+            && (seat_closed
+                || (e.origin == AGY_ORIGIN_LAUNCH && cys::agy_door::launch_refusal("", Some(&e.text)).is_some()))
+    };
+    let (dropped, now_empty) = {
+        let mut q = s.pending_queue.lock().unwrap();
+        if !q.iter().any(&refuse) {
+            return 0;
+        }
+        let (drop, keep): (Vec<_>, Vec<_>) = q.drain(..).partition(|e| refuse(e));
+        q.extend(keep);
+        (drop, q.is_empty())
+    };
+    if now_empty {
+        *s.queue_blocked.lock().unwrap() = None;
+    }
+    crate::delivery::record_queue_tombstones(daemon, s.id, &dropped, cys::agy_door::REFUSE_CODE, now_epoch());
+    let mut payload = crate::state::queue_dropped_payload(cys::agy_door::REFUSE_CODE, &dropped, None);
+    payload["surface_ref"] = json!(cys::surface_ref(s.id));
+    daemon.bus.publish("queue.dropped", "queue", Some(s.id), payload);
+    daemon.persist_queue_state();
+    eprintln!("[cysd] {} agy 좌석 문 닫힘 — 큐 {}건 배달 직전 폐기", cys::surface_ref(s.id), dropped.len());
+    dropped.len()
+}
+
 pub(crate) fn drop_stale_launch_lines(
     daemon: &Daemon,
     s: &crate::state::Surface,
@@ -12375,7 +12414,9 @@ pub(crate) fn deliver_head_locked(
     let seat_bin = s.agent_meta.lock().unwrap().as_ref().map(|(_, b)| b.clone());
     let head_id = |s: &Arc<crate::state::Surface>| s.pending_queue.lock().unwrap().front().map(|e| e.id.clone());
     let head_before = head_id(s);
-    let dropped = drop_stale_launch_lines(daemon, s, seat_bin.as_deref());
+    // ★agy 좌석 문(r6 2회차 · ChatGPT F1): 배달 시점 재판정 — 적재 뒤 문이 닫혔으면 닫힌 문의 agy 좌석으로 가는 기계 항목·agy 기동 줄을
+    //   PTY 에 쓰기 전에 폐기(원장 묘비 + 이벤트). 옛 기동 줄 폐기와 같은 자리·같은 「머리가 바뀌면 이번 틱은 거름」 규칙.
+    let dropped = drop_stale_launch_lines(daemon, s, seat_bin.as_deref()) + drop_agy_door_closed(daemon, s);
     // ★agy 3R 반례 ② → agy 4R B1: 틱 경로(조준 id 없음)는 폐기로 **머리가 바뀌었을 때만** 이번 배달을 거른다 —
     //   준비 판정(quiet·overdue·expect_pending)은 폐기 전 머리로 내려졌으므로 새 머리에 그대로 쓰면 안 된다(다음 틱이
     //   다시 판정). 머리가 그대로면(꼬리 쪽 옛 줄만 폐기) 판정도 그대로 유효하니 배달한다 — 무조건 거르면 꼬리에 옛 줄이

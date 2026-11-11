@@ -1,9 +1,17 @@
 # HANDOFF — TICKET=cysr-seatkeep-t2 (좌석 보유 장치 seatkeep 단독 시제품 · 맥 · cysd 미연결)
 
-- 상태 = **【확인요청 2】**(master#69b9fe37 · 2차 고침 + codex 2R 고침 + 재실측 끝) — 최종 코드 커밋 `0c3aff2d`(2b2b4d5c D1~D9 → 0c3aff2d codex 2R 5건) · push 0.
+- 상태 = **3차 고침 진행 중**(master#0b5810df · codex 3R REVISE minor 2) — 코드 커밋 `0aabfa02`(0c3aff2d 위) · `t2.py fixes` 재실측 대기(부하 10 미만에서) · push 0. 이전: 【확인요청 2】 = `0c3aff2d`.
 - 가지 = `feat/seatkeep-t2`(v1.1.14 `270e3e21` 위) · 커밋 2개(`0704dc03` 시제품 · 이 커밋 = codex 1R 고침 + 시험 결과) · push 0.
 - 설계·브리프 = `~/axdev/master/reports/2026-11-11-cysr-holder-design/`(DESIGN.md · T0-surface-state.md · briefs-draft/T2.md · master#a3db2868 결정 5).
 - codex 1R = 같은 폴더 `codex-t2-1R.prompt.md`(의뢰문) · `codex-t2-1R.verdict.json`(판정 BLOCK · 대상 `0704dc03`) · `codex-t2-1R.txt`(전 기록).
+
+## 3차 고침(codex 3R REVISE minor 2 · master#0b5810df · 판정문 = ~/axdev/master/reports/2026-11-11-cysr-holder-design/reviews/codex-t2-3r.md)
+- **① 제어 큐 1MiB 상한 = 단일 enqueue 경로**: `enqueue` 가 제어 프레임(OUTPUT 아닌 것) 상한을 재는 유일한 길 — 넘으면 넣지 않고(셈 불변) 거짓. `send_ctl`·`catch_up`(밀린 좌석의 EXITED)·최초 큐(`queue_initial` = WELCOME·재생·EXITED) 모두 이 길. 활성 연결 = `evict_ctl_full`(shutdown + `evict control_queue_full` 기록 1회) · 최초 재생 초과 = **accept 기록 전에** 접속 거절(`reject control_queue_full` · accept 줄이 없으니 A16 셈 불변). 재생 OUTPUT 은 전처럼 크기 무관(꼬리 64MiB 안).
+- **② 줄 남음 판정을 호출 단위로**: 공유 칸 `last_failure_kept_line` 제거 → `Ledger::line` 이 `LineError { error, kept_line }` 를 돌려준다(fsync 실패만 참 · 길이 읽기 실패·짧은 쓰기 = 거짓). accept 경로는 `e.kept_line` 일 때만 `accept_aborted`. 파일 연산은 `LedgerFile` 이음매(실제 = File · 시험 = 실패 주입 가짜).
+- **단위 회귀 시험 11개 추가**(16 → 27 · 27/27 통과): 제어 큐 포화 4(`enqueue_caps_control_frames_only` · `queue_initial_over_control_cap_is_refused` · `catch_up_exited_over_control_cap_evicts` = codex 순서 그대로 · `send_ctl_over_control_cap_evicts_once`) · fsync/길이 읽기/짧은 쓰기 구분 4(`line_fsync_failure_keeps_line` · `line_kept_flag_is_per_call` = codex 순서 그대로 · `line_short_write_rolled_back_is_not_kept` · `line_short_write_not_rolled_back_next_line_is_clean`) · 깨우기 경합 2(가능한 범위: 큐가 빈 채 밀림으로 간 출력이 스스로 따라잡음 · 쓰기 스레드 쪽 `written` 은 셈을 내린 뒤 표시를 봄) · 실패 시각 초기화 1(실패→성공·전부 확인·빈 목록 세 해소 경로 모두 지움 · 새 실패 = 새 시각).
+- **깨우기 경합의 한계**: 두 스레드의 실제 교차를 결정적으로 재현하는 시험은 아니다 — 각 쪽 절반(「표시를 세운 뒤 큐를 본다」 · 「내린 뒤 표시를 본다」)을 따로 고정한 것.
+- **단위 뮤턴트 13곳(U01~U13) 전부 잡음** = results/r3-unit-mutants.out · 스크립트 harness/unit_mutants.py. accept 경로의 `if e.kept_line` 자체(인라인)는 단위 시험 밖 — `vt_diskfull_ledger_boundary_errout`(A16 = WELCOME) 이 보는 자리.
+- **t2.py 끝 코드**: 판정 행 `pass_` 거짓이 1건 이상이면 rc 1(요약 1줄 출력) · `fixes` 도 시험별 예외를 판정 행으로 남김. 확인: 옛 실행 파일 `sameid` = rc 1 · 새 = rc 0. 고치기 전 사본 = results/t2.py.bak-before-r3-rc.
 
 ## 2차 고침(독립 검증 REVISE · master#69b9fe37)
 - **D1 안 읽는 조종자**: 프레임 개수(1024 ≈ 실제 1MB · 2ms 멈춤에 쫓겨남) 기준 폐기 → ⓐ **밀린 바이트 상한 4MiB/좌석**(`OUT_QUEUE_BYTES`) — 넘는 실시간 출력은 큐에 안 넣고 꼬리에 둔 채 「밀림」 표시 → 쓰기 스레드가 큐를 반 아래로 비우면 꼬리에서 그 오프셋부터 따라잡기(256KiB 조각) · 꼬리에서 이미 밀려난 부분은 오프셋 건너뜀(= 유실로 보임) · 밀린 좌석의 EXITED 는 따라잡기 뒤 ⓑ **멈춘 시간** = 소켓 쓰기가 10초 동안 진척 0 이면 `evict write_stalled` 후 닫음(EPIPE 등은 내보냄 아님). 값 근거 = 보통 좌석 출력 초당 약 11KB(A13 noisy) → 4MiB = 수 분 분량 · 쏟는 좌석(초당 약 150MB) 약 27ms 분량 · 메모리 = 좌석당 최대 4MiB(평소 0) · tmux `control.c` 도 시간으로 판정(300초 · 답장 버퍼 64MiB). 실측: `vt.py stall_tolerance` 500ms 멈춤 **10/10 생존**(내보냄 0) · 0~250ms 각 2/2 생존 · 영영 안 읽음(`t2.py evict`) = 10.0초에 `evict write_stalled` · 밀린 동안 RSS 증가 4.1~4.8MB(`behind_mem` 5/5) · 꼬리 64MiB 에서 300ms 멈춤 뒤 구멍 0·SEQ 역행 0(`behind` 3/3).

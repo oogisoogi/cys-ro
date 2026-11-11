@@ -42485,6 +42485,58 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
     /// ★(0.14.44 · A3) CLI `approval check` 의 끝 숫자 토큰 떼기 — 대상 동사 7종 × (`2` · `1` · `3` · `1 2`) 는 떼어지고, 숫자 셋 · 그대로 읽히는 명령 · 대상 밖 명령 ·
     /// 모르는 옵션 · 도움말 · 인자가 모자란 꼴은 **원문 그대로**. 그리고 7종의 완전한 명령 뒤에 인자 하나를 더 붙이면 "남는 인자" 오류다(성질 고정 — 동사 문법이 바뀌면 멈춘다).
     #[test]
+    /// ★스택 감시(TICKET=cysr-tabs-sidebar-impl · master#9278e6ab) — `.cargo/config.toml` 이 시험 스레드 스택을 4MiB 로 올렸다(거대 clap
+    /// `Command` 의 debug 파싱 프레임이 libtest 기본 2MiB 한도에 닿아 시험 프로세스가 통째로 죽은 사고 4회). 그 대신 이 시험 하나가
+    /// 「2MiB + 여유 64KiB」 스레드에서 파싱이 끝나는지 본다 — 예산이 정확히 2MiB 가 아닌 까닭: 오늘 실측 문턱이 2040~2044KiB(2d 전
+    /// 2032~2040KiB)라 2MiB 자체는 들쭉날쭉 붉어진다. 넘침은 프로세스를 죽이므로 자기 시험 바이너리를 자식으로 다시 띄워 그 안에서 잰다
+    /// → 프레임이 64KiB 넘게 더 커지면 **이 시험만** 붉어진다(다른 시험은 4MiB 로 계속 돈다). 붉어지면: 새 동사를 `VendorAuxCommand`
+    /// 처럼 평탄화 열거 + 따로 둔 Args 구조체로 옮겨 프레임을 줄이거나(cfbe352d 실측), 까닭을 적고 예산을 올린다.
+    fn cli_parse_fits_2mib_plus_64kib_stack_guard_because_cargo_config_raises_test_stack() {
+        let out = std::process::Command::new(std::env::current_exe().expect("시험 바이너리"))
+            .args(["--exact", "tests::cli_parse_stack_probe_child", "--ignored", "--nocapture", "--test-threads=1"])
+            .env("CYS_CLI_STACK_PROBE", "1")
+            .output()
+            .expect("자식 시험 실행");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success() && String::from_utf8_lossy(&out.stdout).contains("1 passed"),
+            "clap 파싱이 2MiB+64KiB 스레드를 넘쳤다(프레임이 커졌다): status={:?} stderr={}",
+            out.status,
+            err.chars().take(400).collect::<String>()
+        );
+    }
+
+    #[test]
+    #[ignore = "자식 프로세스 전용 — cli_parse_fits_2mib_plus_64kib_stack_guard_… 가 부른다"]
+    fn cli_parse_stack_probe_child() {
+        if std::env::var("CYS_CLI_STACK_PROBE").is_err() {
+            return;
+        }
+        let h = std::thread::Builder::new()
+            .stack_size((2048 + 64) * 1024)
+            .spawn(|| {
+                use clap::Parser;
+                // 넘침을 낸 적 있는 길(a3 의 완전한 명령 + 남는 인자 오류 · aid_s5 reap-due · 2d seat-group)
+                for c in [
+                    "cys kill 123",
+                    "cys close-surface surface:5",
+                    "cys launch-agent --role worker --agent claude --cwd /a/hq",
+                    "cys cycle-agent --surface surface:5",
+                    "cys reap-due surface:9",
+                    "cys seat-group --surface surface:5 lms",
+                    "cys open-control-center",
+                ] {
+                    let toks: Vec<&str> = c.split_whitespace().collect();
+                    assert!(Cli::try_parse_from(toks.iter()).is_ok(), "{c}");
+                    let more: Vec<&str> = toks.iter().copied().chain(std::iter::once("2")).collect();
+                    assert!(Cli::try_parse_from(more.iter()).is_err(), "{c} 2");
+                }
+            })
+            .expect("2MiB+64KiB 스레드");
+        h.join().expect("파싱 스레드");
+    }
+
+    #[test]
     fn a3_strip_hook_digits_only_for_the_seven_target_verbs_when_the_rest_is_leftover_args() {
         use clap::Parser;
         let complete = [

@@ -1,6 +1,6 @@
 # HANDOFF — TICKET=cysr-tabs-sidebar-impl (가지 feat/tabs-sidebar · 기준 270e3e21 v1.1.14)
 
-**다음 첫 행동 1줄**: 【확인요청】(12:59) 에 대한 master 답 대기 — 결정 1(cys 시험 스택 · 권고 A = .cargo/config.toml [env] RUST_MIN_STACK 4MiB) · 결정 2(실앱 격리 프로필 캡처 자리). 답 오면 그대로 집행.
+**다음 첫 행동 1줄**: (순환 뒤 새 문맥) 조각 **2b-3 고정 기둥 폭 규칙** — 지시서 ~/axdev/master/briefs/2026-11-11-cysr-pillar-width-rule.md 전문 Read 부터(master#62758908 · 박사님 13:1x 「권고대로 최소 폭을 낮추자 … 싱글/듀얼/노트북 모니터 상황에 맞추어 최적 비율」 · 기둥 = clamp(64, 영역 열 수×0.36, 96) · 워커 한 줄 칸 수 = 40열을 지키는 최대 · 「4개 이하 한 줄」 예외 폐지 — 번복 사유는 지시서). 병행 대기: 독립 검증 좌석(001dba76 스냅샷) 결함 표 → 1회 고침.
 
 (원래 첫 행동): 인박스에서 master 의 「두 줄 격자 기준」 답(A 40열 / B 80열 / C 격자 없음 · 10:06:45 【중간】 의 【결정필요】)을 확인하고, 답이 없으면 2c-2(아래)부터 착수한다.
 
@@ -62,7 +62,16 @@ for g in seatrows_gate statusboard_gate cc_button_gate nodept_gate seatgroup_gat
 ```
 캡처 = `docs/evidence-tabs-sidebar/{1b,1d,1e,1h}/`(커밋하지 않음).
 
-## master 결정(master#fcbc46fb · #608306ca · 확정)
+## canary 확인 항목 2 (master#9278e6ab · 1.1.15 묶음 빌드 canary 단계 · 동결 11-18 뒤 · master 집행 · 격리 프로필 실앱)
+1. 재실행 탭 배치 동일 — 앱 종료 → 재실행(+ 데몬 재부팅으로 좌석 번호 재발급) 뒤 활성 탭·넓게 보기 좌석·옮긴 묶음·탭 순서가 같다(헤드리스 대역 = ui/e2e/restart_gate.py · 실앱 미확인).
+2. 워커 0·1 새 단추 0 — v1.1.14 와 나란히 놓고 상단 막대 새 단추 0 · 질문 창 0(헤드리스 대역 = ui/e2e/baseline_gate.py · 실앱 미확인).
+
+## 알려진 한계
+- 역할·폴더가 둘 다 없는 좌석(외부 좌석)을 넓게 보다가 앱을 다시 켜면, 그 좌석의 정체를 끝내 알 수 없어 넓게 보기 저장값이 화면엔 안 보인 채 상태에만 남을 수 있다(화면 정상 · bf24c380 의 보존 규칙 탓 · master#9278e6ab 「알려진 한계」로 둠).
+
+## master 결정(master#fcbc46fb · #608306ca · #9278e6ab · 확정)
+- cys 시험 스택 = A + 감시 시험(master#9278e6ab): .cargo/config.toml [env] RUST_MIN_STACK 4MiB(force=false) + cys.rs `cli_parse_fits_2mib_plus_64kib_stack_guard_because_cargo_config_raises_test_stack`(자식 프로세스 · 예산 2MiB+64KiB — 정확히 2MiB 는 오늘 문턱 2040~2044KiB 라 들쭉날쭉 · 대조 = 예산 1900KiB 로 낮추면 이 시험만 FAILED 확인).
+- 실앱 캡처 = 이 티켓에서 안 함 → 위 canary 확인 항목 2.
 - 격자 = (가) 채택(master#608306ca): 4개 이하 한 줄 · 5개부터 40열×12줄 지키는 가장 적은 줄 · 못 지키면 가장 덜 모자란 격자 · 설계 §4 정정 1줄 반영 · 기둥 폭 규칙은 바꾸지 않는다.
 - 두 줄 격자 = A안(칸 최소 폭 40열 · 좌석 3·4개 나란히 · 5개부터 두 줄 · 시안 #C 유지).
 - 관찰 1 = 모양은 역할 점 정본 그대로 · 상황판 수 옆 글자 라벨(작업 중·대기) 항상 표시.

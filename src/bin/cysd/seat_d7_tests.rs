@@ -71,8 +71,20 @@ fn read_pids(out: &Path) -> Option<Vec<(String, i32)>> {
     )
 }
 
+/// 살아 있음 = 신호를 받을 수 있고 **좀비가 아님**(회수 전 좀비는 `kill(pid, 0)` 이 0 을 돌려준다 — 끝난 것으로 센다).
 fn alive(pid: i32) -> bool {
-    pid > 0 && unsafe { libc::kill(pid, 0) } == 0
+    if pid <= 0 || unsafe { libc::kill(pid, 0) } != 0 {
+        return false;
+    }
+    let st = std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output();
+    match st {
+        Ok(o) => {
+            let t = String::from_utf8_lossy(&o.stdout);
+            let t = t.trim();
+            !(t.is_empty() || t.starts_with('Z'))
+        }
+        Err(_) => true,
+    }
 }
 
 fn wait_for(limit: Duration, mut cond: impl FnMut() -> bool) -> bool {

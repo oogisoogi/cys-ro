@@ -22625,17 +22625,25 @@ mod tests {
         }
         let fpn = &st[st.find("pub fn foreground_pgid_now(&self) -> Option<i32> {").expect("전경 그룹 읽기(unix)")..];
         let fpn = &fpn[..fpn.find("\n    }\n").expect("끝")];
-        for needle in ["libc::tcgetpgrp(fd)", "self.pty_master_fd.load("] {
-            assert!(fpn.contains(needle), "⑦ 전경 그룹 읽기에 {needle} 가 없다");
+        // ★T3(cysr-seatkeep-t3): raw fd 읽기 본문은 좌석 프로세스 손잡이(seat_proc.rs)로 옮겼다 — 좌석 쪽은 캐시 칸을 넘기기만 한다.
+        assert!(fpn.contains("crate::seat_proc::foreground_pgid(&self.pty_master_fd"), "⑦ 전경 그룹 읽기는 손잡이에 캐시 칸을 넘긴다");
+        let sp = include_str!("seat_proc.rs");
+        let spf = &sp[sp.find("pub(crate) fn foreground_pgid(").expect("손잡이 전경 읽기")..];
+        let spf = &spf[..spf.find("\n}\n").expect("끝")];
+        for needle in ["libc::tcgetpgrp(fd)", "fd.load("] {
+            assert!(spf.contains(needle), "⑦ 전경 그룹 읽기(손잡이)에 {needle} 가 없다");
         }
+        assert!(!spf.contains(".lock("), "⑦ 손잡이 전경 읽기는 어떤 Mutex 도 잡지 않는다(seatkeep 연결 질의는 연결 안의 자기 잠금만)");
         assert!(
             !fgn.contains(".master.lock(") && !fpn.contains(".master.lock(") && !pm.contains(".master.lock("),
             "⑦ 입력 경로에서 master Mutex 를 잡지 않는다(raw fd 캐시)"
         );
         assert!(st.contains("#[cfg(not(unix))]\n    fn v3_foreground_group_now(&self) -> Option<i32> {"), "⑦ 비-unix 는 컴파일 분기 `cfg` 다(런타임 cfg! 안에 unix API 금지)");
         assert!(st.contains("#[cfg(unix)]\n    fn v3_foreground_group_now(&self) -> Option<i32> {"), "⑦ unix 분기");
-        assert_eq!(st.matches("pty_master_fd.load(").count(), 1, "⑦ raw fd 는 전경 그룹 읽기 한 곳에서만 읽는다");
-        assert!(st.contains("let pty_master_fd = pair.master.as_raw_fd().unwrap_or(-1);"), "⑦ fd 는 좌석 생성 때 한 번 캐시한다(master 를 Mutex 로 옮기기 전)");
+        assert_eq!(st.matches("pty_master_fd.load(").count(), 0, "⑦ raw fd 는 손잡이의 전경 그룹 읽기 한 곳에서만 읽는다(좌석 쪽 직접 읽기 0)");
+        assert_eq!(sp.matches("libc::tcgetpgrp(").count(), 1, "⑦ tcgetpgrp 는 손잡이 한 곳");
+        assert!(st.contains("let pty_master_fd = spawned.foreground_fd();"), "⑦ fd 는 좌석 생성 때 한 번 캐시한다(master 를 Mutex 로 옮기기 전)");
+        assert!(sp.contains("self.master.as_raw_fd().unwrap_or(-1)"), "⑦ 캐시 값 = master raw fd(모르면 −1)");
         let diag = &prod[prod.find("pub(crate) fn queue_block_diag_with(").expect("진단 본체")..];
         let diag = &diag[..diag.find("\n}\n").expect("진단 끝")];
         assert!(diag.contains("s.pending_input_model().as_str()"), "⑥ 진단 input_model 은 좌석 표식에서 온다");

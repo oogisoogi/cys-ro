@@ -4214,7 +4214,7 @@ mod startup_lock_retry_tests {
 //   파일 머리 모듈 목록에 두면 제품 부분이 잘려 H-TICK-ALIVE 가 붉는다(09-24 실측) — 시험 모듈 구역에 둔다.
 #[cfg(test)]
 mod pty_test_support;
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod seat_d7_tests;
 
 #[cfg(test)]

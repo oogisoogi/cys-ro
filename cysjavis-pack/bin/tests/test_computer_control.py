@@ -1141,6 +1141,42 @@ class TestPrecedent(Base):
         self.assertEqual(g["chrome"]["state"], "active")
         self.assertNotIn("screen", g)
 
+    # TICKET=cysr-1115-smalls ⑦: 조사는 낱말 끝 받침을 따른다(옛 출력 「Finder 자동화은 빼」).
+    #   시험 쪽 받침 판정은 모듈 함수를 쓰지 않고 따로 계산한다(같은 함수로 같은 함수를 재지 않는다).
+    @staticmethod
+    def _final(syl):
+        o = ord(syl)
+        return (o - 0xAC00) % 28 != 0
+
+    def test_josa_follows_final_consonant(self):
+        j = self.m._josa
+        self.assertEqual(j("로그인", "은는"), "로그인은")            # 받침 있음
+        self.assertEqual(j("Finder 자동화", "은는"), "Finder 자동화는")  # 받침 없음
+        self.assertEqual(j("로그인", "을를"), "로그인을")
+        self.assertEqual(j("Finder 자동화", "을를"), "Finder 자동화를")
+        self.assertEqual(j("결제", "이가"), "결제가")
+        self.assertEqual(j("크롬 연결", "과와"), "크롬 연결과")
+        self.assertEqual(j("「설정 바꾸기(크롬 켜기 등)」", "은는"), "「설정 바꾸기(크롬 켜기 등)」는")  # 괄호 앞 낱말 기준
+        self.assertEqual(j("Chrome", "은는"), "Chrome은(는)")       # 읽기가 갈리는 영문 끝 = 양형
+        self.assertEqual(j("CYSjavis", "을를"), "CYSjavis를")         # 영문 s 끝 = 스 → 받침 없음
+
+    def test_adopt_says_josa_matching_final(self):
+        import re as _re
+        self.set_probes(sc=False)
+        rc, d, _ = self.run_cli("adopt")
+        self.assertEqual(rc, 0, d)
+        say = d["say"]
+        m1 = _re.search(r"맡을 수 있는 (.+?)(을|를) 제가 맡았습니다", say)
+        m2 = _re.search(r"「(.+?)(은|는) 빼」", say)
+        self.assertTrue(m1 and m2, say)
+        checked = 0
+        for word, josa, final_form in ((m1.group(1), m1.group(2), "을"), (m2.group(1), m2.group(2), "은")):
+            if "\uac00" <= word[-1] <= "\ud7a3":       # 한글 끝 = 받침과 정확히 맞아야 한다
+                checked += 1
+                self.assertEqual(josa == final_form, self._final(word[-1]), "%r 뒤 조사 %r 가 받침과 어긋난다 — %s" % (word, josa, say))
+        self.assertGreaterEqual(checked, 1, "시험 전제: 한글 끝 낱말이 적어도 1개 — %s" % say)
+        self.assertNotIn("자동화은", say)                 # 옛 출력 그대로의 흠
+
     def test_adopt_idempotent(self):
         self.run_cli("adopt")
         rc, d, _ = self.run_cli("adopt")

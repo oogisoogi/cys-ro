@@ -458,6 +458,10 @@ M = [
   '    _write_json(_p(DECISIONS), d)\n    _ledger({"event": "revoke", "ids": ["chrome"], "preset": True})\n',
   '    _ledger({"event": "revoke", "ids": ["chrome"], "preset": True})\n',
   ["test_revoke_preset_chrome_turns_key_off_and_records_deny", "test_revoke_preset_chrome_keeps_deny_when_key_cannot_be_written"]),
+ ("M1115-josa-always-final", "조사 — 받침과 무관하게 받침 있는 꼴(옛 「Finder 자동화은 빼」)",
+  "    return word + (with_final if f else without)\n",
+  "    return word + with_final\n",
+  ["test_josa_follows_final_consonant", "test_adopt_says_josa_matching_final"]),
 ]
 
 

@@ -1444,6 +1444,44 @@ _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _LONGNUM = re.compile(r"\d[\d\- ]{6,}\d")
 
 
+_JOSA_PAIRS = {"은는": ("은", "는"), "이가": ("이", "가"), "을를": ("을", "를"), "과와": ("과", "와")}
+
+
+def _has_final(word):
+    """낱말 끝 받침 — True/False · 모르면 None(TICKET=cysr-1115-smalls ⑦).
+
+    끝의 괄호 덧말(「…(예: …)」)과 닫는 따옴표·문장부호는 떼고 본다 — 조사는 괄호 앞 낱말에 붙는다.
+    한글 = 음절 받침 · 숫자 = 우리말 읽기(영·일·삼·육·칠·팔 = 받침) · 영문 = l·m·n·ng 끝만 받침, a·i·o·u·y·s·x·z·f·v 끝은 없음,
+    그 밖 영문(Finder·Slack·Chrome 처럼 읽기가 갈리는 끝)은 None — 틀린 조사보다 양형 표기가 낫다."""
+    w = (word or "").rstrip(" 」』\"'.,!?")
+    while w.endswith(")") and "(" in w:
+        w = w[:w.rfind("(")].rstrip(" 」』\"'.,!?")
+    if not w:
+        return None
+    c = w[-1]
+    o = ord(c)
+    if 0xAC00 <= o <= 0xD7A3:
+        return (o - 0xAC00) % 28 != 0
+    if c.isdigit():
+        return c in "013678"
+    if c.isascii() and c.isalpha():
+        lw = w.lower()
+        if lw.endswith("ng") or c.lower() in "lmn":
+            return True
+        if c.lower() in "aiouysxzfv":            # 모음·스·즈·프·브 로 읽히는 끝(CYSjavis = …스) · e 끝은 묵음이 흔해 모름(Chrome = 크롬)
+            return False
+    return None
+
+
+def _josa(word, pair):
+    """낱말 + 받침에 맞는 조사(pair = 은는·이가·을를·과와) — 모르면 「은(는)」 양형."""
+    with_final, without = _JOSA_PAIRS[pair]
+    f = _has_final(word)
+    if f is None:
+        return "%s%s(%s)" % (word, with_final, without)
+    return word + (with_final if f else without)
+
+
 def mask(s, limit=80):
     """출력·기록에 싣는 대상 문자열에서 개인정보 모양(이메일·긴 번호)을 가린다(§3-3 · codex R1) · 길이 상한."""
     s = _EMAIL.sub("<이메일>", s or "")
@@ -1702,8 +1740,8 @@ def cmd_remember(a):
     d["items"][key] = rec
     _write_json(_p(DECISIONS), d)
     word = {"allow": "허락", "deny": "안 함", "conditional": "조건부 허락(%s)" % mask(cond)}[a.meaning]
-    return out({"ok": True, "key": key, "say": "알겠습니다 — 앞으로 「%s」은(는) %s 으로 계속 따르겠습니다. 다시 여쭙지 않습니다."
-                                              % ((CATEGORIES.get(a.cat, (mask(a.cat),))[0] + (" — " + mask(a.subject) if a.subject else "")), word)})
+    return out({"ok": True, "key": key, "say": "알겠습니다 — 앞으로 %s %s 으로 계속 따르겠습니다. 다시 여쭙지 않습니다."
+                                              % (_josa("「%s」" % (CATEGORIES.get(a.cat, (mask(a.cat),))[0] + (" — " + mask(a.subject) if a.subject else "")), "은는"), word)})
 
 
 def cmd_adopt(a):
@@ -1741,7 +1779,7 @@ def cmd_adopt(a):
     short = lambda it: it["title"].split("(")[0].strip()
     lines = []
     if took:
-        lines.append("이렇게 했습니다: 지금 바로 맡을 수 있는 %s 을(를) 제가 맡았습니다." % ", ".join(short(it) for it in took))
+        lines.append("이렇게 했습니다: 지금 바로 맡을 수 있는 %s 제가 맡았습니다." % _josa(", ".join(short(it) for it in took), "을를"))
         if auto:
             lines.append("크롬 연결 설정은 제가 바로 켜겠습니다.")
     else:
@@ -1754,7 +1792,7 @@ def cmd_adopt(a):
     if skipped:
         lines.append("전에 빼라고 하신 것은 가져오지 않았습니다: " + ", ".join(short(it) for it in skipped) + ".")
     if took:
-        lines.append("다르게 원하시면 말씀해 주세요(예: 「%s은 빼」)." % short(took[0]))
+        lines.append("다르게 원하시면 말씀해 주세요(예: 「%s 빼」)." % _josa(short(took[0]), "은는"))
     return out({"ok": True, "scan_id": scan_id, "active": [it["id"] for it in took],
                 "hand": [it["id"] for it in hand], "not_now": [it["id"] for it in nope],
                 "skipped": [it["id"] for it in skipped], "next_action": "chrome-enable" if auto else None,

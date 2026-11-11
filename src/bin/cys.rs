@@ -14485,7 +14485,7 @@ fn detect_agent_binary(agent: &str, agents: &Value) -> AgentDetection {
             (false, None, format!("PATH 미발견 {bin}"))
         }
     };
-    apply_windows_agent_fallback(
+    apply_agy_door(agent, apply_windows_agent_fallback(
         agent,
         AgentDetection {
             installed,
@@ -14494,7 +14494,42 @@ fn detect_agent_binary(agent: &str, agents: &Value) -> AgentDetection {
             reason,
             hint: install_hint(agent).to_string(),
         },
-    )
+    ))
+}
+
+/// ★agy 좌석 문(TICKET=cysr-agy-policy-exposure) — 문이 닫혀 있으면 agy 어댑터를 **미가용**으로 낸다(사유 머리
+/// `agy_consumer_policy`). 이 오라클을 1순위로 읽는 `javis_orchestra.detect_reviewer` 가 수정 없이 Claude 대체 검토자
+/// (reviewer-claude-1)로 폴백하고, `cys boot` 도 같은 판정으로 agy 행을 건너뛴다. 실행 파일 실재 여부는 사유에 남긴다.
+fn apply_agy_door(agent: &str, d: AgentDetection) -> AgentDetection {
+    if cys::agy_door::launch_refusal(agent, Some(&d.bin)).is_none() {
+        return d;
+    }
+    AgentDetection {
+        installed: false,
+        reason: format!(
+            "{}: Antigravity(agy) 좌석 문 닫힘(기본 · 구글 개인 요금제 약관) — 실행 파일 판정: {}",
+            cys::agy_door::REFUSE_CODE,
+            d.reason
+        ),
+        hint: "agy 를 직접 쓰려면 새 탭에서 `agy` 를 치세요. 기업 요금제 등 허용된 경우에만 사람이 앱 명령 팔레트                「Antigravity(agy) 좌석 열기」로 엽니다."
+            .to_string(),
+        ..d
+    }
+}
+
+/// launch-agent 의 agy 좌석 문 — 닫혀 있으면 사람 말 처방을 stderr 로 내고 [`cys::agy_door::EXIT_AGY_POLICY_REFUSED`].
+/// 좌석(pane)을 만들기 **전**이라 남는 것이 없다(스폰 0).
+fn agy_door_refuse_launch(agent: &str) -> Option<i32> {
+    let cmd = load_agent_spec(agent).ok().and_then(|s| s["cmd"].as_str().map(str::to_string));
+    let msg = cys::agy_door::launch_refusal(agent, cmd.as_deref())?;
+    eprintln!("[launch-agent] {msg}");
+    Some(cys::agy_door::EXIT_AGY_POLICY_REFUSED)
+}
+
+/// `cys restore` 의 agy 좌석 문 — 닫혀 있으면 건너뜀 한 줄(실패·관문 보류 어느 쪽으로도 세지 않는다).
+fn agy_door_restore_skip(role: &str, agent: &str) -> Option<String> {
+    let cmd = load_agent_spec(agent).ok().and_then(|s| s["cmd"].as_str().map(str::to_string));
+    cys::agy_door::restore_skip_line(role, agent, cmd.as_deref())
 }
 
 /// `cys agent-detect [--json]` — 어댑터별 설치 감지를 **한 곳에서** 판정해 내보낸다.
@@ -17004,6 +17039,7 @@ fn boot_agent_on_surface(
     //   대신 규칙은 `resume_guard_yields_to_followup`.
     followup: Option<&str>,
 ) -> Result<BootVerdict, String> {
+    if let Some(e) = cys::agy_door::launch_refusal(agent, spec["cmd"].as_str()) { return Err(e); } // ★agy 좌석 문
     let mut cmd = spec["cmd"].as_str().ok_or("agent cmd missing")?.to_string();
     // ★(0.14.31 · WP-1 F-1) `requested_resume`(호출부의 의도) 와 `effective_resume`(접미가 **실제로**
     //   붙었는가) 를 가른다. 종전엔 하나의 `resume` 가 둘을 겸해, 세션 파일이 없어 접미가 생략된
@@ -20636,6 +20672,7 @@ fn run_launch_agent_opts(
     //   낡은 번호」 갈래가 번호 칸만 새 번호로 바꾸고 특성(cwd 특성 등)을 보존한다. None = 종전(workflow_title).
     title_override: Option<String>,
 ) -> i32 {
+    if let Some(rc) = agy_door_refuse_launch(agent) { return rc; } // ★agy 좌석 문(기본 닫힘 · cys::agy_door)
     // ★(W2 · G12) LAUNCH 경로의 boot 락 참여 — 별도 프로세스로 도는 `cys launch-agent`
     //   (javis_boot_node → boot-reviewers 경로)를 GUI/훅 `cys boot` 와 직렬화한다.
     //   run_boot 이 이미 쥐고 있으면 None(재진입 방어). Drop 에서 flock 자동 해제.
@@ -25889,6 +25926,7 @@ fn run_restore_with(cwd: Option<String>, include_master: bool, no_resume: bool, 
                 println!("· {role}: agent 미상 — 건너뜀 (claim-role로 등록된 pane){hint}");
                 continue;
             };
+            if let Some(l) = agy_door_restore_skip(role, agent) { println!("{l}"); continue; } // ★agy 좌석 문 — 실패 아님
             // ★2R codex #2 수리(2026-09-11) — **항목별 override**: 전역 `--cwd`가 저장
             // 엔트리를 전부 이기던 자리다. 이제 저장 cwd가 **진짜 작업 폴더**면 그것이 이기고,
             // 홈·미지정("말해 주지 않은 값")일 때만 override가 채운다.

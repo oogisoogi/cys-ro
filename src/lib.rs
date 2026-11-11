@@ -5,6 +5,8 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 pub mod action_catalog;
+/// agy(Antigravity CLI) 좌석 문 — 구글 개인 요금제 약관 때문에 기본 닫힘 · 사람이 앱 화면에서만 연다(TICKET=cysr-agy-policy-exposure).
+pub mod agy_door;
 /// agy(Antigravity CLI) 상태줄 자동 연결(0.14.42 · 오너 승인 2026-09-24) — 설정 칸이 비었거나 없을 때만 넣고,
 /// 사용자 설정은 덮지 않으며, 표지 달린 cys 연결만 뺀다. 윈도우는 자동 연결 끔(안내만).
 pub mod agy_statusline;

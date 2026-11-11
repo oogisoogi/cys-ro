@@ -163,3 +163,15 @@ describe("(2b) 고정 기둥 판정 — 탭 줄은 오른쪽 영역 위에만", 
     expect(fixedColumnSplit(pane(1), [1])).toBe(false);
   });
 });
+
+describe("(2c) 같은 크기 재전송 0 — fitPane 배선", () => {
+  const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+  test("마지막으로 보낸 열·행과 같으면 resize_surface 를 보내지 않는다 · 실패면 기억을 지운다", () => {
+    const i = main.indexOf("function fitPane(");
+    const f = main.slice(i, main.indexOf("\n}\n", i));
+    expect(f).toContain("if (lastSentSize.get(rt) === size) return;");
+    expect(f.indexOf("if (lastSentSize.get(rt) === size) return;") < f.indexOf('invoke("resize_surface"')).toBe(true);
+    expect(f).toContain(".catch(() => lastSentSize.delete(rt));");
+    expect(f).toContain("if (rt.termHost.offsetWidth < 60 || rt.termHost.offsetHeight < 40) return;"); // 숨은 좌석 = PTY 마지막 크기 유지(기존 가드)
+  });
+});

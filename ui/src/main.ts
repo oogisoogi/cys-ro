@@ -4721,12 +4721,18 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
   return rt;
 }
 
+const lastSentSize = new WeakMap<PaneRuntime, string>(); // (tabs-sidebar 2c) 런타임 → 마지막으로 보낸 「열x행」
 /// Fit only when actually laid out — a detached/hidden pane must not shrink the PTY.
 function fitPane(rt: PaneRuntime) {
   if (rt.termHost.offsetWidth < 60 || rt.termHost.offsetHeight < 40) return;
   rt.keepReadingLine(() => rt.fit.fit()); // ★B-230: 위를 읽던 사람은 폭 리플로우 뒤에도 읽던 줄에 남는다(keepReadingLine)
   rt.snapToBottom(); // 리사이즈 리플로우가 뷰포트를 바닥에서 밀어내는 경우 복귀
-  invoke("resize_surface", { socket: rt.socket, surfaceId: rt.sid, rows: rt.term.rows, cols: rt.term.cols }).catch(() => {});
+  // (tabs-sidebar 2c · 설계 §3) 마지막으로 보낸 열·행과 같으면 보내지 않는다 — 탭 20회 왕복 실측 131회 중 122회가 같은 크기 재전송이었다.
+  //   런타임마다 따로 기억(WeakMap) · 보내기 실패면 기억을 지워 다음 맞춤 때 다시 보낸다.
+  const size = `${rt.term.cols}x${rt.term.rows}`;
+  if (lastSentSize.get(rt) === size) return;
+  lastSentSize.set(rt, size);
+  invoke("resize_surface", { socket: rt.socket, surfaceId: rt.sid, rows: rt.term.rows, cols: rt.term.cols }).catch(() => lastSentSize.delete(rt));
 }
 
 /// ★B-230(0.14.52 · U · H1): render() 는 보이는 pane 호스트를 전부 떼었다 다시 붙인다. WebKit 은 다시 붙인 `.xterm-viewport` 의 스크롤 위치를

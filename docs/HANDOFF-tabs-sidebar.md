@@ -1,6 +1,6 @@
 # HANDOFF — TICKET=cysr-tabs-sidebar-impl (가지 feat/tabs-sidebar · 기준 270e3e21 v1.1.14)
 
-**다음 첫 행동 1줄**: cysd 전체 단위 시험(05ab8f1b 이후) 결과 확인 → 【중간】(2d·codex 반영·2b-2 + 격자 【결정필요】) → 남은 4번(1280 · 워커 0·1 「새 단추 0」 · 앱 재실행 배치 동일 실앱 · 격리 프로필 실앱 캡처).
+**다음 첫 행동 1줄**: `cargo test --bin cys` 전체 재실행 숫자 확인 → 【확인요청】 송신(2a·2c 독립 검증 좌석은 master 가 띄움) → 답 대기. 남은 것 = 실제 앱(Tauri) 격리 프로필 캡처 1건뿐(창이 박사님 화면에 뜨므로 master 판단).
 
 (원래 첫 행동): 인박스에서 master 의 「두 줄 격자 기준」 답(A 40열 / B 80열 / C 격자 없음 · 10:06:45 【중간】 의 【결정필요】)을 확인하고, 답이 없으면 2c-2(아래)부터 착수한다.
 
@@ -25,6 +25,7 @@
 | 2d codex 1R | 05ab8f1b | 호출자 판독 실패 = 거부 · group_set(해제 ≠ 모름) · 같은 열쇠 좌석은 앱 기록 안 씀 · 양방향 제어 문자 거부 · 원문 docs/CODEX-R1-2d-tabs-sidebar.txt |
 | 2b-2 | 353fe297 | grouptabs.gridColumns·gridView(4개 이하 한 줄 · 5개부터 두 줄+ · 칸 최소 40열×12줄 · 못 지키면 가장 덜 모자란 격자) · 탭 화면에서만 · fitPane 이 글자 칸 기억(noteGridCell) · `ui/e2e/grid_gate.py` · 캡처 2b-2/ |
 | 2c-2 남은 것 | (이 커밋) | 숨은 탭 막힘 표시 지연 실측 `ui/e2e/hidden_block_gate.py` — 화면 승인 창 0.7~2.8초(3초 목록 고리) · 승인 요청 이벤트 즉시 · 실측 중 찾은 결함 수리 = 탭 머리 표지가 그릴 때 한 번만 만들어져 숨은 탭 막힘이 안 뜨던 것(refreshSeatRows 가 제자리 교체) · 1.1.14 기준 대조 `ui/e2e/baseline_gate.py` |
+| 남은 4번 | 95e6c6c9 · bf24c380 | 1.1.14 기준 대조 · 재실행(목록 전) 넓게 보기 기억 소실 수리 + restart_gate |
 | 상황판 3 · 1h | 476e73e3 | 수 옆 글자 라벨 · 한도 줄 「86% · 금 06:00 초기화」(전문 = 툴팁) · 「승인 요청 N」 = 좌석 밖 요청만 · 부서 0개 = body.no-depts(.dept-only 숨김 · 팔레트 부서 항목 = 부서 있거나 전문가 모드만 · 「본부」→「새 화면」) · `ui/e2e/nodept_gate.py` |
 
 시험: `cd ui && bun test` = 3387 통과 0 실패 · `bunx tsc -p tsconfig.check.json` 0. 게이트 3종 PASS(아래 재현).
@@ -35,7 +36,7 @@
    - 이력: ⓑ 숨은 탭 좌석 `cys send` → `cys read-screen` = 보이는 좌석과 같음 — 구조 근거만 있음(read-screen = 데몬 RPC `surface.read_text` handlers.rs:8763 · 숨김 = main.ts render() 의 `rt.el.remove()` DOM 떼기뿐 · 출력은 떼어진 xterm 에도 계속 씀). **격리 데몬 실측 시험이 아직 없다.** + 「승인 창이 숨은 탭에서 떴을 때 막힘 표시까지 걸린 시간」 실측 + codex 1R(숨은 탭 PTY·복원 조각 · `</dev/null` + timeout).
 2. ✅ **2d 완료(cfbe352d) · codex 1R REVISE 4건 반영(05ab8f1b)** — 원 지시: `cys seat-group --surface <번호> <묶음>`(데몬 메모리 필드 + 이벤트 `surface.group.changed` · 호출자 = master 또는 사람 CLI · 같은 값이면 이벤트 없음) + 앱이 `seatGroup` 에 영속(열쇠 = 소켓+역할, 없으면 소켓+cwd) + 앱 시작 때 surface.list 의 group 읽어 영속 + **말로 컨트롤 센터 열기 통로**(같은 통로 · master#b1b8d7df) · codex 1R. 치명 4군 점검 = 설계 §5.
 3. ✅ **2b-2 완료(353fe297)** · 【결정필요】 A안 세 조건 충돌(아래) — 원 지시: 한 묶음 다수 좌석 두 줄 격자 — 위 【결정필요】 답대로. 1280 폭 탭 이름 넘침 점검.
-4. **캡처 3·7·12**(ⓐ) + 1280 + 워커 0·1 「새 단추 0 · 새 질문 0」 + 앱 종료→재실행 탭 배치 동일(ⓒ — 순수 시험 `grouptabs.test.ts` 「재부팅 뒤 번호 재발급」 은 있음 · 실앱 기록 없음) + 실제 빌드 앱 격리 프로필 캡처(박사님 화면 금지).
+4. ✅(실앱 1건 제외) — 3·7·12 = 2b-2/ · 1280 = grid·seatrows·statusboard 게이트 · 워커 0·1 새 단추 0 = baseline_gate(95e6c6c9) · 재실행 배치 동일 = restart_gate(bf24c380 · 헤드리스) · ⛔남음 = 실제 빌드 앱 격리 프로필 캡처(박사님 화면에 창이 뜸 → master 판단). 원 지시: **캡처 3·7·12**(ⓐ) + 1280 + 워커 0·1 「새 단추 0 · 새 질문 0」 + 앱 종료→재실행 탭 배치 동일(ⓒ — 순수 시험 `grouptabs.test.ts` 「재부팅 뒤 번호 재발급」 은 있음 · 실앱 기록 없음) + 실제 빌드 앱 격리 프로필 캡처(박사님 화면 금지).
 
 ## 함정
 - 소스를 문자열로 떼어 돌리는 시험이 많다(`roleactivity.test.ts` · `deptprogresswiring.test.ts` · `b230scroll.test.ts` 의 대역 목록). main.ts 함수에 새 자유 이름을 쓰면 그 대역에 이름을 더해야 한다(ReferenceError 로 실패).

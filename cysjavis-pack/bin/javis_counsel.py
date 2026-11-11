@@ -17,8 +17,9 @@
                  옛 판의 신선한 facts.json 재사용 0(리뷰 3R ② 4판)
                  · ★1.1.10 help: 아고라를 띄우기 전에 가입 없는 기기(participant.json 없음)는 설치 도움 서버
                  `POST /api/report` 로 하루 신호 1통 + 일일 1통(기기 id = 갱신기 install_id · 없으면 안 보냄 · 끔이면 안 보냄)
-                 — 「cysr는 문제를 빨리 찾아 고치기 위해 하루 한 번 판번·운영체제·오류 횟수만 개발팀에 보냅니다(이름·파일·
-                 대화 내용은 보내지 않습니다). 끄려면 ‘상담소 끄기’를 누르세요.」
+                 — 「cysr는 문제를 빨리 찾아 고치기 위해 하루 한 번 기기 상태(판 번호·운영체제·좌석 수와 종류·부서 수·
+                 켜 둔 시간)와 오류 기록(횟수·종류·생긴 시각·점검 결과와 항목 이름)을 개발팀에 보냅니다. 기기를 구분하는
+                 무작위 번호가 함께 갑니다(사람 이름·파일·대화 내용은 보내지 않습니다). 끄려면 ‘상담소 끄기’를 누르세요.」
 
   ★1.1.10 앱 단추(TICKET=cysr-1110-counsel-off) — 앱(상단바 「상담소」 창 · 첫 안내 창)만 부르는 동사 셋:
   auto-status    {auto, notice_seen, needs_notice} 한 줄 JSON
@@ -1068,8 +1069,48 @@ HELP_BASE_DEFAULT = "https://jarvis-install.godmeyou.kr"
 UPDATE_STATE_ENV = "CYS_UPDATE_STATE_DIR"   # 갱신기 상태 폴더 덮어쓰기(src/update/buildinfo.rs 와 같은 이름 · 시험 격리용)
 INSTALL_ID_RE = re.compile(r"^[0-9a-f]{32}\Z", re.ASCII)   # buildinfo.rs ensure_install_id 꼴(소문자 16진 32자) = 서버 §12-2 가 받는 꼴만
 HELP_ERROR_RE = re.compile(r"^[a-z_]{1,40}\Z", re.ASCII)     # 서버 오류 이름(`daily_cap` 등) — 로그에 옮길 때 이 꼴만
-HELP_NOTICE = ("cysr는 문제를 빨리 찾아 고치기 위해 하루 한 번 판번·운영체제·오류 횟수만 개발팀에 보냅니다"
-               "(이름·파일·대화 내용은 보내지 않습니다). 끄려면 ‘상담소 끄기’를 누르세요.")
+HELP_NOTICE = ("cysr는 문제를 빨리 찾아 고치기 위해 하루 한 번 기기 상태(판 번호·운영체제·좌석 수와 종류·부서 수·켜 둔 시간)와 "
+               "오류 기록(횟수·종류·생긴 시각·점검 결과와 항목 이름)을 개발팀에 보냅니다. "
+               "기기를 구분하는 무작위 번호가 함께 갑니다(사람 이름·파일·대화 내용은 보내지 않습니다). "
+               "끄려면 ‘상담소 끄기’를 누르세요.")
+# ★안내문 ↔ 실제로 보내는 칸(TICKET=cysr-counsel-notice · 박사님 11-12 「7번 권고대로」 = 안내를 사실대로 · 칸은 그대로) —
+#   help 가 서버로 보내는 본문의 칸(점 경로 · 목록 = []) 하나하나가 안내문 속 어느 말로 알려지는지. None = 정보가 아닌 형식 칸.
+#   시험이 가짜 받는 곳에 실제로 보낸 본문의 칸 전부와 이 표를 맞추고, 값(말)이 HELP_NOTICE 안에 글자로 있는지 본다 —
+#   칸을 하나 더 보내게 고치면 이 표에 없어 붉어진다(표를 고칠 때 안내문도 같이 본다).
+HELP_SENT_FIELDS = {
+    "kind": None,                                    # signal·daily 구분(형식)
+    "install_id": "기기를 구분하는 무작위 번호",       # 갱신기 id(무작위 32자)
+    "day": "하루 한 번",                              # 보낸 날짜
+    "installer_version": "판 번호",
+    "os": "운영체제",
+    "payload.items[].signature": "종류",              # 아래 source·op·error_code·version 을 줄인 값
+    "payload.items[].count": "횟수",
+    "payload.items[].source": "종류",                 # 범주(master·worker·cso·pack·update)
+    "payload.items[].op": "종류",
+    "payload.items[].error_code": "종류",
+    "payload.items[].version": "판 번호",
+    "payload.items[].os": "운영체제",
+    "payload.items[].first_seen": "생긴 시각",
+    "payload.items[].last_seen": "생긴 시각",
+    "payload.version.host": "판 번호",
+    "payload.version.pack": "판 번호",
+    "payload.os": "운영체제",
+    "payload.seats.count": "좌석 수와 종류",
+    "payload.seats.roles[]": "좌석 수와 종류",        # 범주로 접은 값(seat_category)
+    "payload.doctor.ok": "점검 결과와 항목 이름",
+    "payload.doctor.warn": "점검 결과와 항목 이름",
+    "payload.doctor.fail": "점검 결과와 항목 이름",
+    "payload.doctor.skip": "점검 결과와 항목 이름",
+    "payload.doctor.warn_ids[]": "점검 결과와 항목 이름",
+    "payload.doctor.fail_ids[]": "점검 결과와 항목 이름",
+    "payload.depts.active": "부서 수",
+    "payload.depts.tombstones": "부서 수",            # 닫은 부서 수
+    "payload.uptime.last_boot": "켜 둔 시간",         # cysr 데몬이 켜진 시각
+    "payload.uptime.uptime_s": "켜 둔 시간",
+    "payload.errors.tick_errors": "횟수",
+    "payload.errors.hook_rc_nonzero": "횟수",
+    "payload.errors.signatures[]": "종류",
+}
 
 
 def update_state_dir(nt=None, env=None, home=None):

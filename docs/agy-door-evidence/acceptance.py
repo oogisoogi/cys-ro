@@ -23,24 +23,39 @@ import sys
 import time
 
 
-def redact(text):
-    """결과 파일은 저장소에 커밋된다 — 실행한 사람의 홈 경로·계정 이름·기기 이름을 지운다(scripts/secret-scan.sh 규칙 1·6 ·
-    발행 차단 게이트 H-SECRET-1). 판정에 쓰는 낱말(rc·사유)은 건드리지 않는다."""
+REDACT_KEYS = {"tail", "fails", "procs"}   # 출력 증거만 지운다 — 판정 낱말(expect_in·entry·id·checks)·키·불리언은 그대로(codex 2R)
+
+
+def redact_text(text):
+    """실행한 사람의 홈 경로·계정 이름·기기 이름을 지운다(scripts/secret-scan.sh 규칙 1·6 · 발행 차단 게이트 H-SECRET-1).
+    셸 프롬프트 「user@host 경로 %」 는 길이와 무관하게 통째로 · 맨 낱말 계정·기기 이름은 4자 이상일 때 낱말 경계로만."""
     home = os.path.expanduser("~")
     text = text.replace(home, "~")
     text = re.sub(r"/Users/[A-Za-z0-9._-]+", "/Users/<user>", text)
+    text = re.sub(r"[A-Za-z0-9._-]+@[A-Za-z0-9._-]+(?= \S* ?[%$#] )", "<user>@<host>", text)
     for word, tag in ((socket.gethostname().split(".")[0], "<host>"), (getpass.getuser(), "<user>")):
-        if word and len(word) >= 3:
-            text = re.sub(re.escape(word), tag, text, flags=re.IGNORECASE)
+        if word and len(word) >= 4:
+            text = re.sub(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(word), tag, text, flags=re.IGNORECASE)
     return text
+
+
+def redact(obj, key=None):
+    """결과 객체(JSON 구조)를 걸어 내려가며 REDACT_KEYS 아래 문자열만 지운다."""
+    if isinstance(obj, dict):
+        return {k: redact(v, k) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [redact(v, key) for v in obj]
+    if isinstance(obj, str) and key in REDACT_KEYS:
+        return redact_text(obj)
+    return obj
 
 
 if __name__ == "__main__" and sys.argv[1:2] == ["--redact"]:   # 이미 쓴 결과 파일을 제자리에서 지운다(하네스 기동 없음)
     for _p in sys.argv[2:]:
         with open(_p, encoding="utf-8") as _f:
-            _t = _f.read()
+            _d = json.load(_f)
         with open(_p, "w", encoding="utf-8") as _f:
-            _f.write(redact(_t))
+            json.dump(redact(_d), _f, ensure_ascii=False, indent=1)
     sys.exit(0)
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -187,6 +202,20 @@ def last_json(out):
     return None
 
 
+def launch_blocks(out):
+    """launch-agent 출력 → {role: 그 역할 블록 텍스트}. 블록 = 「[launch-agent] surface:N created (role=R)」 줄부터 다음 created 줄
+    앞까지(codex 2R: ready·관문 보류·실패를 출력 아무 데서나 찾지 말고 역할에 결속한다)."""
+    blocks, cur = {}, None
+    for l in out.splitlines():
+        m = re.search(r"\[launch-agent\] surface:\S+ created \(role=([^)]+)\)", l)
+        if m:
+            cur = m.group(1)
+            blocks[cur] = ""
+        if cur is not None:
+            blocks[cur] += l + "\n"
+    return blocks
+
+
 def json_line(out, key):
     """한 줄 JSON 중 key 를 가진 마지막 것(cys boot --json 의 roles 줄) — 없으면 None."""
     for l in reversed(out.splitlines()):
@@ -313,12 +342,16 @@ def main():
     door(True)
     b = ran(); rc, out = cys("restore")
     # restore 에는 역할 필터가 없다 — E6 이 남긴 reviewer-codex 좌석(가짜 codex)도 같이 되살리려 들고, 그 몫이 관문
-    #   보류에 걸리면 rc 1 이 된다(실측 2회: 한 번 1 · 한 번 0 = 비결정 · 문과 무관). 그래서 rc 는 0, 또는 「1 이면 그
-    #   원인이 reviewer-codex 관문 보류」로 단언하고, gemini 몫은 따로 단언한다: 좌석이 새로 서고 ready · 건너뜀 줄 없음.
+    #   보류에 걸리면 rc 1 이 된다(실측 2회: 한 번 1 · 한 번 0 = 비결정 · 문과 무관). 판정은 역할 블록에 결속한다(codex 2R):
+    #   gemini 블록 = ready · 관문 보류·실패 없음 · restore 요약 「실패 0」 · rc 1 이면 관문 보류가 **gemini 아닌** 블록에 있어야 한다.
+    blk = launch_blocks(out)
+    gem = blk.get("reviewer-gemini", "")
+    others_gate = any("관문 보류" in v for k, v in blk.items() if k != "reviewer-gemini")
     record("②E5", "문 열림 · cys restore(종전대로 다시 뜸)", b, out, rc, expect_delta=1, expect_rc=(0, 1),
-           expect_in=("created (role=reviewer-gemini)", "[launch-agent] ready"), expect_not_in=(SKIP_LINE,),
-           checks=(("rc 1 이면 원인 = reviewer-codex 관문 보류(문과 무관)",
-                    rc == 0 or ("관문 보류" in out and "(role=reviewer-codex)" in out)),))
+           expect_in=("실패 0",), expect_not_in=(SKIP_LINE, "· reviewer-gemini: 기동 실패"),
+           checks=(("reviewer-gemini 블록 = ready", "[launch-agent] ready" in gem),
+                   ("reviewer-gemini 블록에 관문 보류·오류 없음", gem and "관문 보류" not in gem and "error" not in gem.lower()),
+                   ("rc 1 이면 원인 = 다른 역할 블록의 관문 보류", rc == 0 or others_gate)))
 
     real = real_agy_procs()
     results.append({"id": "real-agy", "entry": "실 agy 실행 파일 프로세스", "pass": not real, "procs": real})
@@ -337,7 +370,7 @@ if __name__ == "__main__":
             print("teardown:", e)
     ok = all(r["pass"] for r in res)
     with open(out_path, "w") as f:
-        f.write(redact(json.dumps({"ok": ok, "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "results": res},
-                                  ensure_ascii=False, indent=1)))
+        json.dump(redact({"ok": ok, "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "results": res}),
+                  f, ensure_ascii=False, indent=1)
     print("종합:", "PASS" if ok else "FAIL", "·", out_path)
     sys.exit(0 if ok else 1)

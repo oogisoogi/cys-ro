@@ -104,6 +104,25 @@ fn program_of(w: &[String], depth: u8) -> Option<String> {
         if WRAP.contains(&base.as_str()) {
             i += 1;
             while i < w.len() && (w[i].starts_with('-') || is_assignment(&w[i])) {
+                // codex 2R blocking: `env -S '<문>'`·`-S<문>`·`--split-string=<문>` 의 값은 버릴 옵션 값이 아니라 **실행될 명령**이다
+                //   (env 가 그 문을 나눠 실행한다) — 값 + 남은 인자를 명령으로 다시 읽는다.
+                if base == "env" && depth < 3 {
+                    let a = w[i].as_str();
+                    let split = if a == "-S" || a == "--split-string" {
+                        Some((w.get(i + 1).cloned().unwrap_or_default(), i + 2))
+                    } else if let Some(v) = a.strip_prefix("--split-string=") {
+                        Some((v.to_string(), i + 1))
+                    } else if a.starts_with("-S") && a.len() > 2 {
+                        Some((a[2..].to_string(), i + 1))
+                    } else {
+                        None
+                    };
+                    if let Some((val, next)) = split {
+                        let mut rest = shell_words(&val);
+                        rest.extend(w.get(next..).unwrap_or(&[]).iter().cloned());
+                        return program_of(&rest, depth + 1);
+                    }
+                }
                 // env -u NAME · nice -n 5 · stdbuf -o L 처럼 값을 먹는 짧은 옵션
                 let takes = matches!(w[i].as_str(), "-u" | "-n" | "-C" | "-S" | "-P");
                 i += if takes { 2 } else { 1 };
@@ -194,6 +213,17 @@ pub fn launch_refusal(agent_key: &str, cmd: Option<&str>) -> Option<String> {
     launch_refusal_with(agent_key, cmd, door_open())
 }
 
+/// argv(이미 나뉜 실행 인자 — `cys run -- <argv>`) 판. 문자열로 다시 이어 붙이지 않는다(codex 2R: 인용 재조립은
+/// 따옴표가 든 인자에서 해석이 어긋난다). 어댑터 키가 없으므로 실행 프로그램으로만 판정한다.
+pub fn launch_refusal_argv(argv: &[String]) -> Option<String> {
+    launch_refusal_argv_with(argv, door_open())
+}
+
+pub fn launch_refusal_argv_with(argv: &[String], door_open: bool) -> Option<String> {
+    let is_agy = matches!(program_of(argv, 0).as_deref(), Some("agy") | Some("antigravity"));
+    if is_agy { launch_refusal_with("", Some("agy"), door_open) } else { None }
+}
+
 /// [`launch_refusal`] 의 순수판(문 상태 주입).
 pub fn launch_refusal_with(agent_key: &str, cmd: Option<&str>, door_open: bool) -> Option<String> {
     (is_agy_adapter(agent_key, cmd) && !door_open).then(|| {
@@ -239,6 +269,23 @@ mod tests {
         assert!(!is_agy_adapter("claude", Some("CLAUDE_CONFIG_DIR=/tmp/agy claude")), "대입 값 속 agy 는 프로그램이 아니다");
         assert!(!is_agy_adapter("gemini", Some("gemini --api-key-mode")), "같은 키라도 실행 프로그램이 agy 가 아니면 막지 않는다");
         assert!(is_agy_adapter("gemini", None), "cmd 가 없을 때만 키로 추정");
+    }
+
+    #[test]
+    fn codex_2r_env_split_string() {
+        for agy in ["env -S agy", "env -S 'agy -p hi'", "env -S'FOO=1 agy'", "env --split-string='agy x'",
+                    "env --split-string agy", "env -i -S agy", "/usr/bin/env -S \"nohup agy\"", "env -S 'env -S agy'"] {
+            assert!(is_agy_adapter("", Some(agy)), "{agy}");
+        }
+        assert!(!is_agy_adapter("", Some("env -S 'claude --x'")));
+        let argv = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        for a in [argv(&["agy"]), argv(&["env", "-S", "agy -p 'it''s'"]), argv(&["/x/agy", "it's"]),
+                  argv(&["nohup", "env", "A=1", "agy"]), argv(&["sh", "-c", "agy"])] {
+            assert!(launch_refusal_argv_with(&a, false).is_some(), "{a:?}");
+            assert!(launch_refusal_argv_with(&a, true).is_none(), "문 열림이면 거부 없음 {a:?}");
+        }
+        assert!(launch_refusal_argv_with(&argv(&["claude", "agy"]), false).is_none(), "인자 속 agy 는 프로그램이 아니다");
+        assert!(launch_refusal_argv_with(&argv(&["echo", "it's", "agy"]), false).is_none());
     }
 
     #[test]

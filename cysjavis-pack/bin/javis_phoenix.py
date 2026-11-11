@@ -2811,6 +2811,15 @@ def agy_door_split(roles, entries, detect=None):
     return keep, skipped
 
 
+AGY_SKIP_LINE_RE = re.compile(r"· (\S+): 건너뜀\(" + AGY_POLICY_CODE + r"\)")   # 정본 = Rust agy_door::restore_skip_line_with
+
+
+def agy_policy_skipped_in(out):
+    """`cys restore` 출력에서 문 닫힘으로 건너뛴 역할(순수) — codex 2R major: 오라클이 못 가른 정책 좌석을 **첫 restore
+    결과에서 곧바로** 소비해 재시도·fresh 강등·재스폰 계수·차단기에 넣지 않는다."""
+    return set(AGY_SKIP_LINE_RE.findall(out or ""))
+
+
 def manual_seat_roles(live_end, policy_skipped=()):
     """★SEAT 빈 좌석 잔존 역할 — 좌석은 있으나 에이전트가 앉지 않은 역할(정직 보고 · 사람 개입 필요).
     ★agy 좌석 문(codex 1R minor): 문이 닫혀 **정책으로 건너뛴** 역할은 뺀다 — 같은 좌석을 「건너뜀(고장 아님)」과
@@ -3598,6 +3607,18 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
                 jevent(j, _r, "spawn", "respawn_count",
                        "같은 세대 재스폰 %d/%d회" % (_respawn_counts[_r] - 1, RESPAWN_CAP))
         save_respawn_counts(socket, _ACTIVE_EPOCH, _respawn_counts)
+
+    def _agy_policy_consume(role, why):
+        """★agy 좌석 문(codex 2R major): 정책 건너뜀 = 실패도 발주도 아니다 — 건너뜀 목록에 넣고 이번 사이클의 재스폰
+        계수를 되돌린다(같은 세대 반복 복원이 캡·차단기에 걸리지 않게)."""
+        if role not in _agy_skipped:
+            _agy_skipped.append(role)
+        jevent(j, role, "spawn", "skip_agy_policy",
+               "%s — 문 닫힘이라 띄우지 않음(고장 아님 · 재시도·fresh 강등·재스폰 계수·실패 계상 밖)" % why)
+        if role in _acted and _respawn_counts.get(role, 0) > 0:
+            _acted.remove(role)
+            _respawn_counts[role] -= 1
+            save_respawn_counts(socket, _ACTIVE_EPOCH, _respawn_counts)
     # ★1R#2(2026-09-10): 기준 폴더를 **1회** 해소한다 — 라이브 master → 영속 토폴로지 master 순.
     #   `restore_cwd` 는 정상 복원(cys restore)에 실을 override 이고(전원 홈일 때만 · 다중
     #   프로젝트 함대 보호는 `restore_cwd_override` 주석), `master_cwd` 는 fresh 폴백이 개별
@@ -3684,6 +3705,9 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
             #   ⓒ 좌석이 빈 셸(seat=="empty")이 아닌 좌석만 센다(ⓒ = 905 A2 의 빈 좌석 제외 조건 흡수 · 이 줄 단독 소유 = 906).
             #   agent_alive 는 데몬 관측 주기라 막 뜬 좌석이 잠깐 None 일 수 있다 — ⓐ를 통과한 역할만 짧게 재관측한다.
             _failed_now = set(re.findall(r"· (\S+): 기동 실패", res.get("out") or ""))
+            for _r in [r for r in need if r in agy_policy_skipped_in(res.get("out"))]:
+                _agy_policy_consume(_r, "cys restore 출력 「건너뜀(%s)」(attempt %d)" % (AGY_POLICY_CODE, attempt))
+            need = [r for r in need if r not in _agy_skipped]
 
             def _revived_seat(s):
                 return (not s["exited"]) and s.get("agent_alive") is True and s.get("seat") != "empty"
@@ -3839,9 +3863,7 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
                 fresh_at = time.time()
                 res = spawn_fresh_production(socket, role, agent, cwd=fresh_cwd)
                 if res.get("rc") == AGY_POLICY_RC:   # ★agy 좌석 문 — 오라클이 못 가른 정책 좌석(codex 1R major): 실패 아님
-                    _agy_skipped.append(role)
-                    jevent(j, role, "spawn", "skip_agy_policy",
-                           "launch-agent rc=76 agy_consumer_policy — 문 닫힘이라 띄우지 않음(고장 아님 · 재시도·fresh 강등·실패 계상 밖)")
+                    _agy_policy_consume(role, "launch-agent rc=76 %s(fresh)" % AGY_POLICY_CODE)
                     continue
                 time.sleep(SPAWN_SETTLE)
                 alive = [s for s in live_role_surfaces(socket).get(role, []) if not s["exited"]]
@@ -4059,6 +4081,8 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
     any_unver = any(outcomes.get(r) == "unverified" for r in target_roles)
     if not target_roles:
         final = "NOOP"
+        if _agy_skipped and not no_breaker:
+            breaker_reset(socket)   # ★agy 좌석 문: 대상이 정책 건너뜀뿐이면 부활 시도가 아니었다(NOOP 과 같은 창 리셋)
     elif all_verified:
         final = "VERIFIED"
         breaker_reset(socket)  # 성공 부활은 차단기 창 리셋

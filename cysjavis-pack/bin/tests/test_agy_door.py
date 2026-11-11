@@ -63,6 +63,11 @@ class A_GuardDeniesDoorWrites(unittest.TestCase):
         ("Bash", {"command": "sed 's/a/b/' /tmp/x > ~/.cys/agy-seat-door.json"}),
         ("Bash", {"command": "python3 -m json.tool /tmp/x ~/.cys/agy-seat-door.json"}),
         ("Bash", {"command": "python3 -m json.tool ~/.cys/agy-seat-door.json ~/.cys/agy-seat-door.json"}),
+        # codex 2R major: 문 경로가 든 sed 스크립트(w 명령) · -e 여러 개
+        ("Bash", {"command": "printf '{\"open\":true}' | sed -n \"w$HOME/.cys/agy-seat-door.json\""}),
+        ("Bash", {"command": "printf x | sed -n -e 1p -e \"w$HOME/.cys/agy-seat-door.json\""}),
+        ("Bash", {"command": "sed -n -e 1p ~/.cys/agy-seat-door.json -e w/tmp/x"}),
+        ("Bash", {"command": "sed -n ~/.cys/agy-seat-door.json -e"}),
     ]
     ALLOW = [
         ("Bash", {"command": "cat ~/.cys/agy-seat-door.json"}),
@@ -73,6 +78,9 @@ class A_GuardDeniesDoorWrites(unittest.TestCase):
         ("Bash", {"command": "sed -n '1,$p' \"$HOME/.cys/agy-seat-door.json\""}),
         ("Bash", {"command": "python3 -m json.tool ~/.cys/agy-seat-door.json"}),
         ("Bash", {"command": "python3 -m json.tool --sort-keys ~/.cys/agy-seat-door.json | head -5"}),
+        ("Bash", {"command": "sed -n -e 1p -e '$p' ~/.cys/agy-seat-door.json"}),
+        # codex 2R minor: 이름에 낱말이 든 **다른 파일**(문서) 편집은 문 규칙 대상이 아니다
+        ("Bash", {"command": "sed -i '' 's/old/new/' docs/agy-seat-door.md"}),
         ("Write", {"file_path": "/Users/x/repo/docs/agy-seat-door.md", "content": "설명 문서"}),   # 문 파일 아님(codex 1R minor)
     ]
 
@@ -95,6 +103,15 @@ class A_GuardDeniesDoorWrites(unittest.TestCase):
                          ("Bash", {"command": "touch ~/.cys/agy-seat-door.json"})]:
             rc, err = g({"tool_name": tool, "tool_input": ti})
             self.assertEqual(rc, 2, "%s %s 백스톱 통과: %s" % (tool, ti, err[-300:]))
+            self.assertIn("AGY-DOOR", err)
+        # codex 2R major: 첫 낱말이 cat 이어도 복합 명령이면 거부
+        for cmd in ["cat /dev/null; cp /tmp/payload \"$HOME/.cys/agy-seat-door.json\"",
+                    "cat /dev/null && tee \"$HOME/.cys/agy-seat-door.json\" </tmp/payload",
+                    "cat /dev/null | tee ~/.cys/agy-seat-door.json",
+                    "cat $(cp /tmp/p ~/.cys/agy-seat-door.json)",
+                    "cat /dev/null\ncp /tmp/p ~/.cys/agy-seat-door.json"]:
+            rc, err = g({"tool_name": "Bash", "tool_input": {"command": cmd}})
+            self.assertEqual(rc, 2, "%r 백스톱 통과: %s" % (cmd, err[-300:]))
             self.assertIn("AGY-DOOR", err)
         rc, err = g({"tool_name": "Bash", "tool_input": {"command": "cat ~/.cys/agy-seat-door.json"}})
         self.assertEqual(rc, 0, err[-300:])

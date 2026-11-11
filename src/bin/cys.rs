@@ -30926,7 +30926,7 @@ fn run_scoped(surface: Option<String>, command: Vec<String>) -> Result<i32, Stri
     if command.is_empty() {
         return Err("no command given".into());
     }
-    if let Some(m) = cys::agy_door::launch_refusal("", Some(&command.iter().map(|a| if a.contains(char::is_whitespace) { format!("'{a}'") } else { a.clone() }).collect::<Vec<_>>().join(" "))) { return Err(m); } // ★agy 좌석 문(codex 1R)
+    if let Some(m) = cys::agy_door::launch_refusal_argv(&command) { return Err(m); } // ★agy 좌석 문(codex 1R · 2R argv 판정)
     let sid = parse_explicit_surface(&surface)?
         .or_else(|| cys::env_compat(ENV_SURFACE_ID).and_then(|s| parse_surface_ref(&s)));
 
@@ -57785,6 +57785,6 @@ mod agy_door_wiring_tests {
         assert!(d.contains("apply_agy_door(agent, apply_windows_agent_fallback("), "agent-detect 오라클이 문 판정을 거치지 않는다");
         let rs = &src[src.find("\nfn run_scoped(").expect("run_scoped")..];
         let spawn = rs.find("std::process::Command::new(&command[0])").expect("스폰");
-        assert!(rs[..spawn].contains("cys::agy_door::launch_refusal(\"\", Some(&command"), "cys run 이 스폰 전에 문 판정을 거치지 않는다(codex 1R blocking)");
+        assert!(rs[..spawn].contains("cys::agy_door::launch_refusal_argv(&command)"), "cys run 이 스폰 전에 문 판정을 거치지 않는다(codex 1R blocking)");
     }
 }

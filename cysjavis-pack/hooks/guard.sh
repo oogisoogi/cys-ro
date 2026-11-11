@@ -980,7 +980,7 @@ AGY_DOOR_DENY = ("agy 좌석 문 파일(agy-seat-door.json)은 에이전트가 �
 # 읽기 거짓 양성 해소(codex 1R minor): `sed -n 1p <문 파일>` · `python3 -m json.tool <문 파일>` 은 읽기다.
 #   좁게만 연다 — sed = 옵션 -n/-e/-E/-r/--quiet/--silent 만 · 스크립트 = 줄 범위 + p 만(w·e·-i 같은 쓰기 길 불가) ·
 #   json.tool = 위치 인자 1개(문 파일 = 입력)만(두 번째 위치 인자 = 출력 파일이라 거부). 그 밖 모양은 종전대로 거부(안전 쪽).
-AGY_DOOR_SED_OPTS = {"-n", "-e", "-E", "-r", "--quiet", "--silent"}
+AGY_DOOR_SED_OPTS = {"-n", "-r", "--quiet", "--silent"}   # -e 는 아래에서 스크립트 자리로 따로 처리(입력이 소문자라 -E 도 -e 로 읽혀 거부 쪽)
 AGY_DOOR_SED_SCRIPT = re.compile(r"^(\$|[0-9]+)?(,(\$|[0-9]+))?p$")
 AGY_DOOR_JSONTOOL_OPTS = {"--sort-keys", "--compact", "--no-ensure-ascii", "--json-lines", "--tab", "--no-indent"}
 
@@ -988,22 +988,47 @@ def agy_door_read_only(p, args):
     if p in AGY_DOOR_READ_OK:
         return True
     if p == "sed":
-        for a in args:
+        # codex 2R major: 스크립트 자리를 정확히 가른다 — `-e` 다음 낱말 · `-e` 가 없으면 첫 위치 인자. 스크립트는 전부
+        #   줄 범위+p 문법이어야 한다(경로 낱말이 들었다고 파일로 보지 않는다 · `w<문 파일>` 같은 쓰기 스크립트 차단).
+        scripts, pos, i = [], [], 0
+        while i < len(args):
+            a = args[i]
+            if a == "-e":
+                if i + 1 >= len(args):
+                    return False
+                scripts.append(args[i + 1]); i += 2; continue
             if a.startswith("-"):
                 if a not in AGY_DOOR_SED_OPTS:
                     return False
-            elif AGY_DOOR_WORD not in a and not AGY_DOOR_SED_SCRIPT.match(a):
+            else:
+                pos.append(a)
+            i += 1
+        if not scripts:
+            if not pos:
                 return False
-        return True
+            scripts.append(pos.pop(0))
+        return all(AGY_DOOR_SED_SCRIPT.match(x) for x in scripts)
     if p in ("python3", "python") and args[:2] == ["-m", "json.tool"]:
         pos = [a for a in args[2:] if not a.startswith("-")]
         return (len(pos) == 1 and AGY_DOOR_WORD in pos[0]
                 and all(a in AGY_DOOR_JSONTOOL_OPTS for a in args[2:] if a.startswith("-")))
     return False
 
+# codex 2R minor: `docs/agy-seat-door.md` 같은 **다른 파일**만 이름에 낱말이 든 경우는 문 규칙 대상이 아니다
+#   (Write/Edit 의 basename 판정과 같은 경계). 문 파일 = basename 이 agy-seat-door.json 으로 시작 · 그 밖 낱말 출현
+#   (변수 조립 조각 등)은 종전대로 문 규칙 대상(안전 쪽).
+AGY_DOOR_OTHER_FILE = re.compile(r"agy-seat-[a-z0-9._-]*\.(md|txt|rs|py|sh|ts|tsx|js|html|yml|yaml|toml)$")
+
+def agy_door_mentions(n):
+    for t in n.split():
+        b = t.rsplit("/", 1)[-1]
+        if AGY_DOOR_WORD in t and (b.startswith("agy-seat-door.json") or not AGY_DOOR_OTHER_FILE.search(b)):
+            return True
+    return False
+
 def agy_door_bash_write(cmd):
     ns = [norm_loose(cmd).lower(), norm_loose_slash(cmd).lower()]
-    if not any(AGY_DOOR_WORD in n for n in ns):
+    if not any(agy_door_mentions(n) for n in ns):
         return False
     for n in ns:
         toks = n.split()
@@ -1081,7 +1106,9 @@ run_loose_backstop() {
   low="$(printf '%s' "$cmd" | tr 'A-Z' 'a-z' | tr -s ' \t' ' ')"
   # ★agy 좌석 문(codex 1R major · 파서 부재·크래시 때도): 문 파일을 건드리는 입력은 순수 읽기(첫 낱말 cat/ls/stat/head/tail/wc/grep
   #   · 리다이렉트 없음)만 통과 — 그 밖(Write/Edit 포함 · jq 부재로 판독 불가 포함)은 fail-closed 거부.
+  #   codex 2R major: 단일 명령만 — `;`·`|`·`&`·명령 치환·줄바꿈이 섞이면(첫 낱말이 cat 이어도) 거부.
   case "$INPUT" in *agy-seat-*)
+    case "$low" in *";"*|*"|"*|*"&"*|*'$('*|*'`'*|*$'\n'*) emit_deny "백스톱: [AGY-DOOR] agy 좌석 문 파일 쓰기 차단(사람이 앱 화면에서만 연다)" ;; esac
     case "${low%% *}" in cat|ls|stat|head|tail|wc|grep) case "$low" in *">"*) emit_deny "백스톱: [AGY-DOOR] agy 좌석 문 파일 쓰기 차단(사람이 앱 화면에서만 연다)" ;; esac ;;
       *) emit_deny "백스톱: [AGY-DOOR] agy 좌석 문 파일 쓰기 차단(사람이 앱 화면에서만 연다)" ;; esac ;;
   esac

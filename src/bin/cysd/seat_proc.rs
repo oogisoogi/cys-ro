@@ -435,7 +435,7 @@ mod seatkeep_mac {
             let mut stream = loop {
                 if let Ok(Some(st)) = keeper.try_wait() {
                     return Err(format!(
-                        "seatkeep 이 붙기 전에 끝남(rc {:?} · 2=인자/경로 3=신원·상태폴더·등록부 4=같은 id·미소비 종료 기록 5=PTY·자식 기동) — 사유는 cysd 로그의 cys-seatkeep 줄",
+                        "seatkeep 이 붙기 전에 끝남(rc {:?} · 2=인자/경로 3=신원·상태폴더·등록부 4=같은 id·미소비 종료 기록 5=PTY·자식 기동 7=작업 폴더가 사라짐) — 사유는 cysd 로그의 cys-seatkeep 줄",
                         st.code()
                     ));
                 }
@@ -447,29 +447,35 @@ mod seatkeep_mac {
                 }
                 std::thread::sleep(Duration::from_millis(10));
             };
-            // 반대 방향 확인(DESIGN §3-2 ②): 이 소켓의 상대 = 내가 띄운 seatkeep 이어야 한다(가짜 소켓이 가짜 화면을 먹이는 것 차단).
-            let peer = peer_pid(&stream).ok_or_else(|| "seatkeep 소켓 상대 pid 를 못 읽음".to_string())?;
-            if peer != keeper.id() as i32 {
-                return Err(format!("seatkeep 소켓 상대 pid {peer} ≠ 띄운 seatkeep {}", keeper.id()));
-            }
-            let left = deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(100));
-            let _ = stream.set_read_timeout(Some(left));
-            proto::write_all(&mut stream, &proto::json_frame(proto::HELLO, SEAT, &json!({"core": proto::CORE_VERSION, "resume": {}})))
-                .map_err(|e| format!("seatkeep HELLO 보내기 실패: {e}"))?;
-            match proto::read_frame(&mut stream) {
-                Ok(Some((proto::WELCOME, _, p))) => {
-                    let v: Value = serde_json::from_slice(&p).map_err(|e| format!("seatkeep WELCOME 해석 실패: {e}"))?;
-                    if v["pid"].as_i64() != Some(keeper.id() as i64) {
-                        return Err(format!("seatkeep WELCOME pid {} ≠ 띄운 seatkeep {}", v["pid"], keeper.id()));
-                    }
-                    let _ = stream.set_read_timeout(None);
-                    Ok((stream, v))
+            greet(stream, keeper.id(), deadline)
+        }
+    }
+
+    /// 붙은 소켓의 확인과 첫 인사(독립 검증 D3 — 시험이 이 함수를 직접 부른다): ⑴ 소켓 상대 pid = 내가 띄운 seatkeep
+    /// ⑵ HELLO → WELCOME 의 pid = 같은 seatkeep. 둘 중 하나라도 다르면 이유와 함께 생성 실패.
+    pub(super) fn greet(mut stream: UnixStream, keeper_pid: u32, deadline: Instant) -> Result<(UnixStream, Value), String> {
+        // 반대 방향 확인(DESIGN §3-2 ②): 이 소켓의 상대 = 내가 띄운 seatkeep 이어야 한다(가짜 소켓이 가짜 화면을 먹이는 것 차단).
+        let peer = peer_pid(&stream).ok_or_else(|| "seatkeep 소켓 상대 pid 를 못 읽음".to_string())?;
+        if peer != keeper_pid as i32 {
+            return Err(format!("seatkeep 소켓 상대 pid {peer} ≠ 띄운 seatkeep {}", keeper_pid));
+        }
+        let left = deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(100));
+        let _ = stream.set_read_timeout(Some(left));
+        proto::write_all(&mut stream, &proto::json_frame(proto::HELLO, SEAT, &json!({"core": proto::CORE_VERSION, "resume": {}})))
+            .map_err(|e| format!("seatkeep HELLO 보내기 실패: {e}"))?;
+        match proto::read_frame(&mut stream) {
+            Ok(Some((proto::WELCOME, _, p))) => {
+                let v: Value = serde_json::from_slice(&p).map_err(|e| format!("seatkeep WELCOME 해석 실패: {e}"))?;
+                if v["pid"].as_i64() != Some(keeper_pid as i64) {
+                    return Err(format!("seatkeep WELCOME pid {} ≠ 띄운 seatkeep {}", v["pid"], keeper_pid));
                 }
-                Ok(Some((proto::REJECT, _, p))) => Err(format!("seatkeep 이 접속을 거절: {}", String::from_utf8_lossy(&p))),
-                Ok(Some((k, _, _))) => Err(format!("seatkeep 첫 프레임이 WELCOME 이 아님(kind {k})")),
-                Ok(None) => Err("seatkeep 이 HELLO 뒤 연결을 닫음".into()),
-                Err(e) => Err(format!("seatkeep WELCOME 읽기 실패: {e}")),
+                let _ = stream.set_read_timeout(None);
+                Ok((stream, v))
             }
+            Ok(Some((proto::REJECT, _, p))) => Err(format!("seatkeep 이 접속을 거절: {}", String::from_utf8_lossy(&p))),
+            Ok(Some((k, _, _))) => Err(format!("seatkeep 첫 프레임이 WELCOME 이 아님(kind {k})")),
+            Ok(None) => Err("seatkeep 이 HELLO 뒤 연결을 닫음".into()),
+            Err(e) => Err(format!("seatkeep WELCOME 읽기 실패: {e}")),
         }
     }
 

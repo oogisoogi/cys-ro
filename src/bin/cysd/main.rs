@@ -4220,6 +4220,8 @@ mod seat_d7_tests;
 mod seat_flood_tests;
 #[cfg(test)]
 mod seat_latency_tests;
+#[cfg(test)]
+mod seat_tail_tests;
 
 #[cfg(test)]
 mod env_scrub_tests {

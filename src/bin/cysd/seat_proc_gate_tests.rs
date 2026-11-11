@@ -122,17 +122,88 @@ const NEEDLES: &[&str] = &[
     "master.as_raw_fd(",
 ];
 
-/// 운영 구역 위반 목록(파일:줄 · 바늘). 판정 대상 = `src/bin/cysd/*.rs` 중 시험 파일·`seat_proc.rs` 밖.
-fn violations() -> Vec<String> {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/cysd");
+/// 좌석 필드(`Surface::child`·`Surface::master`)를 가리키는 자리 — 손잡이로 **넘기는** 자리(`seat_proc::<함수>(… &x.child …)`)만 허용한다
+/// (독립 검증 D4 · 별칭 `let ch = &s.child; ch.lock()` 도 여기서 잡힌다). 타입으로 막는 길은 시험 구역 86곳이 바뀌어 차선을 골랐다.
+const FIELDS: &[&str] = &[".child", ".master"];
+
+/// 같은 이름의 다른 구조체 필드(좌석 아님) — (파일, 받는 쪽+필드) 짝으로만 허용한다. 늘리면 까닭을 적는다.
+const UNRELATED_FIELDS: &[(&str, &str)] = &[
+    ("declaration.rs", "v.master"),       // 선언 어휘(Vocab) 의 master 칸
+    ("declaration.rs", "vocab().master"), // 같은 것
+    ("governance.rs", "d.child"),         // 후손 기록(부모·자식 pid 짝)의 child 칸
+    ("state.rs", "spawned.child"),        // 손잡이가 돌려준 결과(seat_proc::Spawned)를 Surface 로 옮기는 자리 · 뿌리 관측(얼굴 = Child 트레이트)
+    ("state.rs", "spawned.master"),       // 같은 것(Surface.master 로 옮김)
+];
+
+/// 손잡이로 넘기는 호출의 머리 — `seat_proc::` 또는 그 모듈에서 가져다 쓰는 손잡이 함수 이름.
+const HANDOFF_HEADS: &[&str] = &["seat_proc::", "probe_child("];
+
+/// 압축된(공백 없는) 운영 구역에서 좌석 필드 참조 위반을 찾는다 — (바이트 위치, 「받는 쪽+필드」).
+fn field_violations(name: &str, sq: &str) -> Vec<(usize, String)> {
+    let b = sq.as_bytes();
+    let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
     let mut out = Vec::new();
-    let mut files: Vec<_> = std::fs::read_dir(&dir).expect("cysd 소스 폴더").filter_map(|e| e.ok()).map(|e| e.path()).collect();
-    files.sort();
-    for p in files {
-        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-        if !name.ends_with(".rs") || name.ends_with("_tests.rs") || name == "seat_proc.rs" || name == "pty_test_support.rs" || name == "c8_test_inputs.rs" {
-            continue;
+    for f in FIELDS {
+        let mut from = 0;
+        while let Some(k) = sq[from..].find(f) {
+            let at = from + k;
+            from = at + f.len();
+            if b.get(at + f.len()).map(|c| ident(*c)).unwrap_or(false) {
+                continue; // `.children` · `.master_fd` 같은 다른 이름
+            }
+            // 받는 쪽 = 바로 앞 식별자(또는 `()` 로 끝나는 호출)
+            let mut st = at;
+            while st > 0 && (ident(b[st - 1]) || b[st - 1] == b'(' || b[st - 1] == b')') {
+                st -= 1;
+            }
+            let recv = &sq[st..at + f.len()];
+            if UNRELATED_FIELDS.iter().any(|(n, r)| *n == name && recv.ends_with(r) && (recv.len() == r.len() || !ident(recv.as_bytes()[recv.len() - r.len() - 1]))) {
+                continue;
+            }
+            // 손잡이로 넘기는 자리: 앞쪽 가장 가까운 손잡이 호출 머리부터 여기까지 `;{}` 없이 괄호가 열려 있다.
+            let handoff = HANDOFF_HEADS.iter().filter_map(|h| sq[..at].rfind(h)).max().map(|sp| {
+                let between = &sq[sp..at];
+                !between.contains(';') && !between.contains('{') && !between.contains('}')
+                    && between.matches('(').count() > between.matches(')').count()
+            });
+            if handoff == Some(true) {
+                continue;
+            }
+            out.push((at, recv.to_string()));
         }
+    }
+    out
+}
+
+/// 판정 대상 = `src/bin/cysd/` 아래 모든 `.rs`(하위 폴더 포함) + 라이브러리 `src/*.rs` — 시험 파일·`seat_proc.rs`·시험 지원 파일 밖.
+fn target_files() -> Vec<std::path::PathBuf> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    let mut stack = vec![root.join("src/bin/cysd")];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).expect("소스 폴더").flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else {
+                files.push(p);
+            }
+        }
+    }
+    files.extend(std::fs::read_dir(root.join("src")).expect("src").flatten().map(|e| e.path()).filter(|p| p.is_file()));
+    files.retain(|p| {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        name.ends_with(".rs") && !name.ends_with("_tests.rs") && name != "seat_proc.rs" && name != "pty_test_support.rs" && name != "c8_test_inputs.rs"
+    });
+    files.sort();
+    files
+}
+
+/// 운영 구역 위반 목록(파일:줄 · 바늘).
+fn violations() -> Vec<String> {
+    let mut out = Vec::new();
+    for p in target_files() {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
         let src = std::fs::read_to_string(&p).expect("소스 읽기");
         let prod = drop_test_blocks(&strip_code(&src));
         // 여러 줄로 이어진 호출(`.master\n    .lock()`)도 잡도록 공백을 지운 뒤 찾고, 줄 번호는 원래 위치로 되돌린다.
@@ -157,6 +228,9 @@ fn violations() -> Vec<String> {
                 out.push(format!("{name}:{} {n}", line_of.get(at).copied().unwrap_or(0)));
                 from = at + n.len();
             }
+        }
+        for (at, recv) in field_violations(&name, &squeezed) {
+            out.push(format!("{name}:{} 필드 참조 {recv}", line_of.get(at).copied().unwrap_or(0)));
         }
     }
     out
@@ -185,4 +259,21 @@ fn seat_handle_gate_detector_catches_and_skips_correctly() {
     assert_eq!(probe("#[cfg(all(test, unix))]\nmod drills { fn f(s: &S) { s.child.lock(); } }"), 0, "cfg(all(test, ..)) 블록을 셌다");
     assert_eq!(probe("#[cfg(unix)]\nfn f(s: &S) { s.child.lock(); }"), 1, "운영 cfg(unix) 를 시험으로 봤다");
     assert_eq!(probe("#[cfg(not(test))]\nfn f(s: &S) { s.child.lock(); }"), 1, "cfg(not(test)) 를 시험으로 봤다");
+    // D4: 필드 참조 자체 — 별칭은 잡고, 손잡이로 넘기는 자리·다른 이름·허용 목록은 안 잡는다.
+    let fields = |name: &str, src: &str| {
+        let prod = drop_test_blocks(&strip_code(src));
+        let sq: String = prod.chars().filter(|c| !c.is_whitespace()).collect();
+        field_violations(name, &sq).len()
+    };
+    assert_eq!(fields("governance.rs", "fn f(surface: &S) { let ch = &surface.child; let _ = ch.lock().map(|mut c| c.try_wait()); }"), 1, "별칭 우회(검증 ME)를 못 잡음");
+    assert_eq!(fields("x.rs", "fn f(s: &S) { let m = &s.master; m.lock(); }"), 1, "master 별칭을 못 잡음");
+    assert_eq!(fields("governance.rs", "fn f(surface: &S) { crate::seat_proc::kill_and_reap(&surface.child); }"), 0, "손잡이로 넘기는 자리를 셌다");
+    assert_eq!(fields("close_auth.rs", "fn f(s: &S) -> P { crate::seat_proc::probe_child(&s.exited, &s.child) }"), 0, "둘째 인자로 넘기는 자리를 셌다");
+    assert_eq!(fields("close_auth.rs", "fn f(s: &S) -> P { probe_child(&s.exited, &s.child) }"), 0, "가져다 쓴 손잡이 함수로 넘기는 자리를 셌다");
+    assert_eq!(fields("state.rs", "fn f(spawned: Spawned) { let m = Mutex::new(spawned.master); }"), 0, "손잡이 결과를 옮기는 자리를 셌다");
+    assert_eq!(fields("handlers.rs", "fn f(spawned: Spawned) { let m = spawned.master; }"), 1, "Spawned 허용이 다른 파일로 샜다");
+    assert_eq!(fields("x.rs", "fn f(s: &S) { let _ = s.children(); let _ = s.master_fd; }"), 0, "다른 이름을 셌다");
+    assert_eq!(fields("governance.rs", "fn f(d: &D) { let _ = d.child; }"), 0, "허용 목록(후손 기록)을 셌다");
+    assert_eq!(fields("x.rs", "fn f(d: &D) { let _ = d.child; }"), 1, "허용 목록이 다른 파일로 샜다");
+    assert_eq!(fields("x.rs", "fn f(s: &S) { crate::seat_proc::resize(&s.master, 1, 1); let c = &s.child; }"), 1, "넘기는 자리 뒤의 별칭을 놓침");
 }

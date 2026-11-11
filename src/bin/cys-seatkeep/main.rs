@@ -266,6 +266,8 @@ mod imp {
         room: Condvar,
         /// 그 기다리는 읽기 스레드 수 — 쓰기 스레드가 잠금 없이 보고 0 이 아닐 때만 잠금을 잡아 깨운다.
         room_waiters: AtomicUsize,
+        /// 기동 때의 부모 pid — `--controller-bound` 에서 이것이 바뀌면(부모 = cysd 가 죽음) 첫 조종자 전이라도 끝낸다(D2).
+        parent_pid: i32,
         /// 같은 id 의 두 번째 seatkeep 을 막는 잠금 — 프로세스가 끝날 때까지 쥔다.
         _id_lock: File,
     }
@@ -502,6 +504,8 @@ mod imp {
     }
 
     pub fn run() -> i32 {
+        // 띄운 부모(조종자 종속 모드 = cysd) — 가장 먼저 잰다(독립 검증 D2 · supervise 가 바뀌는지 본다).
+        let parent_pid = unsafe { libc::getppid() };
         let args = match parse_args() {
             Ok(a) => a,
             Err(e) => {
@@ -592,13 +596,19 @@ mod imp {
             };
             let mut cb = CommandBuilder::new(&args.cmd[0]);
             cb.args(&args.cmd[1..]);
-            if let Ok(cwd) = std::env::current_dir() {
-                cb.cwd(cwd);
-            }
+            // 작업 폴더 = 상속 그대로(독립 검증 D7): 조종자(cysd)가 폴더를 확인하고 그 폴더에서 seatkeep 을 띄웠다 — 여기서 다시 찾지
+            // 않는다(`current_dir()` 경로 → portable-pty 의 「폴더가 아니면 HOME」 다시 찾기는 그 사이 폴더·HOME 이 지워지면 ENOENT).
+            // "." = 지금 들어가 있는 그 폴더(지워졌어도 들어가 있는 동안은 유효) — 직접 PTY 가 확인 즉시 exec 하는 것과 같은 결과.
+            cb.cwd(".");
             cb.env("CYS_SEATKEEP_SEAT", i.to_string());
             let child = match pair.slave.spawn_command(cb) {
                 Ok(c) => c,
                 Err(e) => {
+                    // 그래도 실패하고 작업 폴더가 사라졌으면 이유를 붙여 따로 끝낸다(rc 7 · cysd 가 문구로 알린다).
+                    if !std::path::Path::new(".").is_dir() {
+                        warn!("cys-seatkeep: spawn: 작업 폴더가 사라짐: {e}");
+                        return 7;
+                    }
                     warn!("cys-seatkeep: spawn: {e}");
                     return 5;
                 }
@@ -660,6 +670,7 @@ mod imp {
             started: Instant::now(),
             room: Condvar::new(),
             room_waiters: AtomicUsize::new(0),
+            parent_pid,
             _id_lock: id_lock,
         });
 
@@ -1128,6 +1139,12 @@ mod imp {
         std::process::exit(0)
     }
 
+    /// 조종자 종속 모드에서 기동 때의 부모가 사라졌는가(부모 pid 가 바뀜). 인자 없는 모드(T2)는 늘 거짓.
+    /// 기동 때 이미 부모가 1(launchd)이면 = 띄운 cysd 가 seatkeep 이 첫 줄을 돌기 전에 죽었다(조종자 종속 모드는 cysd 만 띄운다) → 잃음.
+    fn parent_lost(keep: &Keep) -> bool {
+        keep.args.controller_bound && (keep.parent_pid <= 1 || unsafe { libc::getppid() } != keep.parent_pid)
+    }
+
     fn seat_index(keep: &Keep, seat: u32) -> Option<usize> {
         keep.seats.iter().position(|s| s.id == seat)
     }
@@ -1234,6 +1251,11 @@ mod imp {
     fn supervise(keep: Arc<Keep>) -> i32 {
         loop {
             std::thread::sleep(Duration::from_millis(100));
+            // `--controller-bound`(D2): 부모(cysd)가 죽으면 부모 pid 가 바뀐다(launchd 등으로 입양) — 첫 조종자가 붙기 전이라도 100ms 안에
+            // 끝낸다. 직접 PTY 는 cysd 가 죽는 순간 마스터가 닫혀 좌석이 HUP 이므로 같은 결과(전에는 FIRST_CONTROLLER_MAX 15초까지 무감독).
+            if parent_lost(&keep) {
+                end_for_controller_loss(&keep, "parent_lost");
+            }
             let mut st = lock_st(&keep);
             if !st.exit_record_ok && st.out.iter().any(|o| o.exit.is_some() && !o.exit_acked) {
                 keep.persist_exit_record(&mut st);
@@ -1326,7 +1348,7 @@ mod imp {
             let policy = Policy { controller_exe: args.controller_exe.clone(), requirement: None, lock: args.lock.clone() };
             let keep = Keep { args, paths, policy, seats, st: Mutex::new(st), ledger: Mutex::new(ledger), boot_id: "b".into(),
                               start_us: Some(1), pending_hs: AtomicUsize::new(0), started: Instant::now(),
-                              room: Condvar::new(), room_waiters: AtomicUsize::new(0), _id_lock: id_lock };
+                              room: Condvar::new(), room_waiters: AtomicUsize::new(0), parent_pid: 0, _id_lock: id_lock };
             (keep, d)
         }
 
@@ -1488,6 +1510,22 @@ mod imp {
             }
             let sent: usize = rx.try_iter().map(|f| f.len() - 9 - 8).sum();
             assert_eq!(sent, n, "전부 큐에 들어갔다");
+            let _ = std::fs::remove_dir_all(&d);
+        }
+
+        #[test]
+        fn bound_parent_loss_is_seen_only_in_bound_mode() {
+            // D2: 기동 때의 부모 pid 와 지금 부모가 다르면(부모 사망 → 입양) 조종자 종속 모드에서만 「잃음」.
+            let me = unsafe { libc::getppid() };
+            let (mut keep, d) = test_keep_bound("bnd-parent", MAX_TAIL);
+            keep.parent_pid = me;
+            assert!(!parent_lost(&keep), "부모 그대로 = 잃지 않음");
+            keep.parent_pid = me + 1_000_000;
+            assert!(parent_lost(&keep), "부모가 바뀜 = 잃음");
+            keep.parent_pid = 1;
+            assert!(parent_lost(&keep), "기동 때 이미 launchd 아래 = 잃음(띄운 cysd 가 먼저 죽음)");
+            keep.args.controller_bound = false;
+            assert!(!parent_lost(&keep), "인자 없는 모드(T2)는 보지 않는다");
             let _ = std::fs::remove_dir_all(&d);
         }
 

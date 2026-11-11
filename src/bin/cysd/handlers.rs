@@ -22013,8 +22013,10 @@ mod tests {
 
     fn make_surface(daemon: &Arc<Daemon>, role: Option<&str>) -> u64 {
         // ★v116-flake-pty ⑵: PTY 고갈(ENXIO)만 상한 재시도 · 넘기면 「PTY 고갈 — 결함 판정 보류」 문구로 실패.
+        // 작업 폴더를 명시한다(독립 검증 D7): 다른 시험이 프로세스 전역 HOME 을 임시 폴더로 바꾸고 지우므로 HOME 에 기대지 않는다.
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
         let s = crate::pty_test_support::retry_on_pty_exhaustion("make_surface", || {
-            daemon.create_surface(None, Some("sleep 30".into()), None, role.map(|r| r.into()), 24, 80)
+            daemon.create_surface(Some(cwd.clone()), Some("sleep 30".into()), None, role.map(|r| r.into()), 24, 80)
         })
         .expect("create surface");
         daemon.surfaces.lock().unwrap().insert(s.id, s.clone());

@@ -203,3 +203,35 @@ mod sec {
         }
     }
 }
+
+/// 독립 검증 D3 ⑴ — 붙은 소켓의 상대 pid 가 내가 띄운 seatkeep 이 아니면(가짜 소켓이 먼저 듣는 경우) 이유와 함께 거절한다.
+#[cfg(target_os = "macos")]
+#[test]
+fn greet_refuses_socket_whose_peer_is_not_the_launched_seatkeep() {
+    let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+    // 상대 = 이 시험 프로세스 자신 · 「띄운 seatkeep」 pid 는 다른 값.
+    let launched = std::process::id() + 1_000_000;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    let e = super::seatkeep_mac::greet(ours, launched, deadline).expect_err("가짜 소켓을 받아들임");
+    assert!(e.contains("상대 pid"), "소켓 상대 pid 대조로 거절해야 한다: {e}");
+    drop(theirs);
+}
+
+/// 독립 검증 D3 ⑵ — 소켓 상대는 맞아도 WELCOME 의 pid 가 띄운 seatkeep 이 아니면 거절한다.
+#[cfg(target_os = "macos")]
+#[test]
+fn greet_refuses_welcome_from_other_pid() {
+    use std::io::Write as _;
+    let (ours, mut theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+    let me = std::process::id(); // 소켓 상대 = 이 프로세스 = 「띄운 seatkeep」로 맞춘다
+    let t = std::thread::spawn(move || {
+        let _ = super::sk_proto::read_frame(&mut theirs); // HELLO
+        let w = super::sk_proto::json_frame(super::sk_proto::WELCOME, u32::MAX, &serde_json::json!({"pid": me + 1, "seats": []}));
+        let _ = theirs.write_all(&w);
+        theirs
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let e = super::seatkeep_mac::greet(ours, me, deadline).expect_err("다른 pid 의 WELCOME 을 받아들임");
+    assert!(e.contains("WELCOME pid"), "WELCOME pid 대조로 거절해야 한다: {e}");
+    let _ = t.join();
+}

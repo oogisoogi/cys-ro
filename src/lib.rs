@@ -525,15 +525,6 @@ pub fn env_compat(primary: &str) -> Option<String> {
         .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
 }
 
-/// 선두 UTF-8 BOM(U+FEFF) **1개**를 벗긴다 — JSON 파일 판독기의 공용 전처리(C3-c · 2026-09-17 3라운드).
-///
-/// 왜 공용인가: `serde_json` 은 선두 U+FEFF 를 문법 오류로 거부하고, 한국어 Windows 편집기("UTF-8(BOM)")가
-/// 저장한 `depts.json`·`dept-catalog.json` 은 BOM 을 단다. 2라운드까지 GUI(src-tauri) 만 벗기고 CLI 판독기
-/// (cys.rs drain_verify_targets · run_fleet)는 원문을 그대로 넣어, 같은 파일이 GUI 에는 보이고 CLI 집계·검증에서는
-/// 부서가 빠졌다(codex minor). 판독기마다 사본을 두면 다시 갈리므로 구현은 여기 하나다.
-///
-/// 값 안의 U+FEFF 와 두 번째 이후의 BOM 은 데이터로 보존한다(선두 1개만). 입력이 `&str` 인 것은 의도다 —
-/// 무효 UTF-8(cp949 저장)은 `read_to_string` 단계에서 InvalidData 로 걸리며 그 처리는 호출측 정책이다.
 /// cysd 시작 잠금 파일(`cys.lock`)의 홀더 pid — **첫 칸**(공백 앞)만 읽는다. 빈 파일·0·파싱 실패 = None(구 락파일과 같은 보수 해석).
 /// 형식 = `"{pid}"`(기본) 또는 `"{pid} {출생 시각 µs}"`(seatkeep 노브 켬 · T3). 독자(cysd deadman · cys doctor · factory_reset 격리 관문 ·
 /// GUI 로그)가 모두 이것 하나를 쓴다.
@@ -544,6 +535,15 @@ pub fn startup_lock_holder_pid(text: &str) -> Option<u32> {
     }
 }
 
+/// 선두 UTF-8 BOM(U+FEFF) **1개**를 벗긴다 — JSON 파일 판독기의 공용 전처리(C3-c · 2026-09-17 3라운드).
+///
+/// 왜 공용인가: `serde_json` 은 선두 U+FEFF 를 문법 오류로 거부하고, 한국어 Windows 편집기("UTF-8(BOM)")가
+/// 저장한 `depts.json`·`dept-catalog.json` 은 BOM 을 단다. 2라운드까지 GUI(src-tauri) 만 벗기고 CLI 판독기
+/// (cys.rs drain_verify_targets · run_fleet)는 원문을 그대로 넣어, 같은 파일이 GUI 에는 보이고 CLI 집계·검증에서는
+/// 부서가 빠졌다(codex minor). 판독기마다 사본을 두면 다시 갈리므로 구현은 여기 하나다.
+///
+/// 값 안의 U+FEFF 와 두 번째 이후의 BOM 은 데이터로 보존한다(선두 1개만). 입력이 `&str` 인 것은 의도다 —
+/// 무효 UTF-8(cp949 저장)은 `read_to_string` 단계에서 InvalidData 로 걸리며 그 처리는 호출측 정책이다.
 pub fn strip_utf8_bom(s: &str) -> &str {
     s.strip_prefix('\u{FEFF}').unwrap_or(s)
 }

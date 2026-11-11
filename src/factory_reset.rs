@@ -3163,6 +3163,21 @@ mod tests {
         assert!(verify_roots_quiescent(&r, &dead, &no_daemon).is_ok());
     }
 
+    /// TICKET=cysr-seatkeep-t3 독립 검증 D5: 노브 켬 cysd 는 잠금에 `"<pid> <출생 시각 µs>"` 두 칸을 쓴다 — 관문이 첫 칸을 읽어
+    /// 산 cysd 를 막아야 한다(옛 판독기 `s.trim().parse::<u32>()` 로 되돌리면 통과시켜 붉어진다).
+    #[test]
+    fn quiescent_gate_blocks_live_cysd_holder_two_field_lock() {
+        let td = test_home("gate2");
+        let r = seed_practice_tree(&td);
+        touch(&r.state_root.join("cys/cys.lock"), "4242 1794420130692329");
+        let live = |pid: u32| pid == 4242;
+        let no_daemon = || false;
+        let e = verify_roots_quiescent(&r, &live, &no_daemon).expect_err("두 칸 잠금의 산 cysd 를 통과시킴");
+        assert!(e.contains("pid 4242"), "{e}");
+        let dead = |_pid: u32| false;
+        assert!(verify_roots_quiescent(&r, &dead, &no_daemon).is_ok());
+    }
+
     #[test]
     fn strip_removes_only_cys_hooks_and_restores_prev_statusline() {
         let td = test_home("strip");

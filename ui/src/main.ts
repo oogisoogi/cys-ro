@@ -3919,9 +3919,21 @@ async function refreshPaneTitles() {
         //   남는다. 그 창에서 죽어 가는 부서의 잔여 role surface 를 입양하면, 탭이 곧 splice 될 때 삭제 경로는
         //   **stop 이전에 수집한 sid** 만 회수하므로(collectSids(ws.tree)) 방금 붙은 pane 런타임이 회수 대상에서
         //   빠진다 — WebSocket·xterm 이 화면 없이 살아남는다(입양 1건당 런타임 1건 누수).
-        const ws = workspaces.find((w) => !w.pending && !w.deleting && (w.socket ?? undefined) === (sk ?? undefined));
+        const homeOf = () => workspaces.find((w) => !w.pending && !w.deleting && (w.socket ?? undefined) === (sk ?? undefined));
+        let ws = homeOf();
         if (!ws || collectSids(ws.tree).includes(s.surface_id)) continue;
         const rt = await makePane(s.surface_id, s.title, sk);
+        // (codex 3R blocking 2) makePane(환경 조회·attach_surface) 을 기다리는 사이 그 작업공간이 지워졌거나 지워지는 중이면 거기 붙이지 않는다 —
+        //   삭제 경로는 이미 뜬 sid 목록만 거두므로 붙이면 화면 밖 런타임이 남고, panes 에 있으니 다음 틱도 건너뛴다(영영 고아).
+        //   같은 데몬의 살아 있는 작업공간을 다시 고르고 · 없으면 방금 만든 **런타임만** 파기한다(외부 역할 좌석 = 닫지 않는다 · panes 에서도 빠지므로
+        //   그 데몬 작업공간이 다시 생기면 다음 틱이 다시 입양한다).
+        if (!workspaces.includes(ws) || ws.deleting) {
+          ws = homeOf();
+          if (!ws || collectSids(ws.tree).includes(s.surface_id)) {
+            if (!ws) destroyPaneRuntime(s.surface_id, sk);
+            continue;
+          }
+        }
         // ★런타임이 선 바로 그 자리에서 트리에 붙인다(다음 await 전) — 다음 좌석의 makePane 이 던져도 이 좌석은 화면에 있다.
         arrangeWs(ws, { add: [{ sid: s.surface_id }] });
         setRoleDot(rt, s.role); // 입양 즉시 역할 점 채색(★F-01 같은 렌더러)
@@ -5115,6 +5127,14 @@ async function transferCrossDept(sid: number, srcWs: Workspace, destWs: Workspac
     // ③ 대상 부서에 새 surface 생성 + 트리 편입(같은 경로에서 시작 — 루트류 cwd는 승계하지
     //    않고 데몬 기본값(home)으로: 루트 cwd pane 재생산 차단)
     const newSid = await newSurface(rootish ? null : cwd, destSock);
+    // (codex 3R blocking 3) 새 좌석을 기다리는 사이 목적지나 원본 작업공간이 지워졌거나 지워지는 중이면 여기서 멈춘다 — 원본은 닫지 않고(전출 실패 =
+    //   원본 보존) 새 좌석만 거둔다. 거두기가 거부되면 dropSeatOfGoneWs 가 삭제 결과를 기다려 다시 판정한다(major 4 와 같은 처리 · 화면 밖 고아 0).
+    //   셸 갈래는 이 검사 뒤 원본 닫기까지 await 이 없어 이 한 곳이 「원본 닫기 직전」 이기도 하다(에이전트 갈래의 원본 닫기 = awaitHandoffAck 의 같은 검사).
+    if (wsGoneOrGoing(destWs) || wsGoneOrGoing(srcWs)) {
+      toast("watchdog", "전출 중단", "옮기는 사이 작업공간이 지워져서 멈췄어요 — 원래 좌석은 닫지 않았어요.");
+      await dropSeatOfGoneWs(destWs, newSid);
+      return;
+    }
     // 목적지 **에이전트** 좌석(런처 셸과 다르다). 확정 전에는 null 이고, 확정 전에 원본을
     // 닫는 경로는 없다.
     let agentSid: number | null = null;
@@ -5219,11 +5239,13 @@ async function transferCrossDept(sid: number, srcWs: Workspace, destWs: Workspac
       //   런치를 보낸 뒤에는 셸을 남기고 사람에게 알린다 — 우리가 모르는 것을 죽이지 않는다.
       let rollbackError: string | null = null;
       if (!launchSent) {
-        try {
-          await closePane(newSid, destWs.socket);
-        } catch (rollback) {
-          rollbackError = String(rollback).slice(0, 300);
-        }
+        if (wsGoneOrGoing(destWs)) await dropSeatOfGoneWs(destWs, newSid); // (codex 3R blocking 3) 지워진 목적지 — 거두기·거두기 실패 처리를 한 곳(major 4)
+        else
+          try {
+            await closePane(newSid, destWs.socket);
+          } catch (rollback) {
+            rollbackError = String(rollback).slice(0, 300);
+          }
       }
       render();
       // ★(0.14.43 · J2 · I6 N2) 사유는 번역기를 거친다 — 데몬 원문의 'retry later or use --queued' 같은 처방은 GUI 사용자가 실행할 수 없다.
@@ -5339,6 +5361,15 @@ async function awaitHandoffAck(
     return;
   } finally {
     dismissToast("transfer");
+  }
+  if (verdict.close && (wsGoneOrGoing(destWs) || wsGoneOrGoing(srcWs))) {
+    // (codex 3R blocking 3) 원본 닫기 직전 — 인수를 기다리는 사이 목적지·원본 작업공간이 지워졌거나 지워지는 중이면 원본을 닫지 않는다(원본 보존 ·
+    //   인수 대기로 남겨 다시 전출하면 관측만 재개).
+    holdForRetry(
+      "옮기는 사이 작업공간이 지워졌어요",
+      `원본 pane 은 닫지 않고 보존했습니다(다시 적재하지 않습니다). 목적지 surface:${rec.destSid} 를 확인하세요.`,
+    );
+    return;
   }
   if (verdict.close) {
     // ⑥ 인수 확인 + 좌석 수신 가능 재확인 뒤에만 원본 정리. 기록은 여기서 끝난다.
@@ -6616,6 +6647,7 @@ function buildTab(ws: Workspace): HTMLElement {
         try {
           await rpcT(invoke("stop_dept_daemon_by_socket", { socket }), T_STOP);
           stopped = "ok";
+          deptDaemonStopped.add(socket); // (codex 3R major 4) 종료 확인 — 거두지 못한 새 좌석 판정 재료
         } catch (e) {
           stopped = "failed";
           stopErr = String(e);
@@ -6646,6 +6678,7 @@ function buildTab(ws: Workspace): HTMLElement {
       //   예외)에서 **반드시** 해제한다 — 남으면 그 탭은 영구 입양 금지 + 영구 '…' 표식이 된다.
       //   저장본에는 실리지 않으므로(saveLayout 이 턴다) 다음 기동 오염은 없지만, 이 세션은 못 고친다.
       ws.deleting = undefined;
+      settleWsDelete(ws); // (codex 3R major 4) 결과 확정 — 기다리던 새 좌석 판정을 깨운다
       close.textContent = "×";
       close.style.pointerEvents = "";
       tab.removeAttribute("aria-busy");
@@ -6908,6 +6941,7 @@ async function confirmDeleteGroup(g: GroupMeta) {
         try {
           await rpcT(invoke("stop_dept_daemon_by_socket", { socket }), T_STOP);
           stopped = "ok";
+          deptDaemonStopped.add(socket); // (codex 3R major 4) 종료 확인 — 거두지 못한 새 좌석 판정 재료
         } catch (e) {
           stopped = "failed";
           stopErr = String(e);
@@ -6942,6 +6976,7 @@ async function confirmDeleteGroup(g: GroupMeta) {
     // ★I2: 모든 종료 경로(성공·종료 실패로 탭 유지·rpc timeout·예외)에서 해제한다. 지워진 탭에 남는
     //   것은 무해하지만, **남은 탭**에 플래그가 남으면 영구 입양 금지 + 영구 '…' 표식이 된다.
     for (const ws of members) ws.deleting = undefined;
+    for (const ws of members) settleWsDelete(ws); // (codex 3R major 4) 결과 확정 — 기다리던 새 좌석 판정을 깨운다(해제 뒤)
     renderWsTabs(); // 남은 탭(종료 실패)의 표식을 실제로 걷는다(위 render() 는 이미 지나갔다)
   }
 }
@@ -7732,17 +7767,64 @@ function wsGoneOrGoing(ws: Workspace): boolean {
   return !workspaces.includes(ws) || !!ws.deleting;
 }
 async function dropSeatOfGoneWs(ws: Workspace, sid: number): Promise<void> {
+  let err: unknown;
   try {
     await closePane(sid, ws.socket);
     toast("watchdog", "새 좌석 닫음", "좌석을 만드는 사이 그 작업공간이 지워져서, 화면에 없는 좌석으로 남지 않게 닫았어요.");
+    return;
   } catch (e) {
-    const home = workspaces.find((w) => w !== ws && !w.deleting && !w.pending && (w.socket ?? undefined) === (ws.socket ?? undefined));
-    if (home) {
-      arrangeWs(home, { add: [{ sid }] });
-      render();
-      toast("watchdog", "새 좌석 닫기 실패", `좌석을 만드는 사이 그 작업공간이 지워졌는데 좌석을 닫지 못해 「${wsLabel(home)}」 에 붙였어요 — 직접 닫아 주세요.`, undefined, String(e));
-    } else toast("watchdog", "새 좌석 닫기 실패", "좌석을 만드는 사이 그 작업공간이 지워졌는데 좌석을 닫지 못했어요.", undefined, String(e));
+    err = e;
   }
+  // (codex 3R major 4) 닫기를 거부당한 그 순간 「붙일 곳 없음」 을 끝으로 치지 않는다 — 삭제가 아직 진행 중이면(종료 대기·닫기 실패로 보존) 결과가
+  //   확정된 뒤에 다시 판정한다: ⑴ 그 작업공간이 보존됐으면 거기 ⑵ 같은 데몬의 살아 있는 작업공간이 있으면 거기 붙여 보이게 ⑶ 그 부서 데몬 종료가
+  //   확인됐으면 좌석도 함께 끝났으므로 화면 기억(런타임)만 거둔다 ⑷ 데몬이 살아 있는데(본부 데몬은 함께 꺼지지 않는다) 붙일 곳이 없으면 한 번 더
+  //   닫아 보고, 그래도 안 되면 새 작업공간을 열어 보이게 한다 — 어느 갈래도 화면 밖 런타임을 남기지 않는다.
+  await whenWsDeleteSettled(ws);
+  const sock = ws.socket;
+  const sameSock = (w: Workspace) => (w.socket ?? undefined) === (sock ?? undefined);
+  if (!panes.has(paneKey(sid, sock))) return; // 그사이 끝 이벤트 등 다른 경로가 거뒀다
+  if (workspaces.some((w) => sameSock(w) && collectSids(w.tree).includes(sid))) return; // 이미 어딘가에 붙어 보인다
+  const home = workspaces.includes(ws) && !ws.pending ? ws : workspaces.find((w) => !w.deleting && !w.pending && sameSock(w));
+  if (home) {
+    arrangeWs(home, { add: [{ sid }] });
+    render();
+    toast("watchdog", "새 좌석 닫기 실패", `좌석을 만드는 사이 그 작업공간이 지워졌는데 좌석을 닫지 못해 「${wsLabel(home)}」 에 붙였어요 — 직접 닫아 주세요.`, undefined, String(err));
+    return;
+  }
+  if (sock && deptDaemonStopped.has(sock)) {
+    destroyPaneRuntime(sid, sock); // 그 부서 데몬이 꺼졌다 = 좌석도 끝났다 — 남은 화면 기억만 거둔다
+    return;
+  }
+  try {
+    await closePane(sid, sock);
+    toast("watchdog", "새 좌석 닫음", "좌석을 만드는 사이 그 작업공간이 지워져서, 화면에 없는 좌석으로 남지 않게 닫았어요.");
+    return;
+  } catch (e) {
+    err = e;
+  }
+  if (!panes.has(paneKey(sid, sock))) return;
+  const nw: Workspace = { id: wsCounter++, name: UNTITLED, tree: null, socket: sock };
+  workspaces.push(nw);
+  arrangeWs(nw, { add: [{ sid }] });
+  render();
+  toast("watchdog", "새 좌석 닫기 실패", "좌석을 만드는 사이 그 작업공간이 지워졌는데 좌석을 닫지 못해 새 작업공간에 두었어요 — 직접 닫아 주세요.", undefined, String(err));
+}
+// (codex 3R major 4) 작업공간 삭제 결과 확정 알림 — 탭 닫기·그룹 삭제의 finally(「삭제 중」 해제 = 결과 확정) 가 settleWsDelete 를 부른다.
+//   deptDaemonStopped = 삭제가 종료를 확인한 부서 데몬 소켓(그 데몬의 좌석은 함께 끝났다).
+const wsDeleteWaiters = new Map<Workspace, (() => void)[]>();
+const deptDaemonStopped = new Set<string>();
+function whenWsDeleteSettled(ws: Workspace): Promise<void> {
+  if (!ws.deleting) return Promise.resolve();
+  return new Promise((res) => {
+    const a = wsDeleteWaiters.get(ws) ?? [];
+    a.push(res);
+    wsDeleteWaiters.set(ws, a);
+  });
+}
+function settleWsDelete(ws: Workspace): void {
+  const a = wsDeleteWaiters.get(ws);
+  wsDeleteWaiters.delete(ws);
+  for (const res of a ?? []) res();
 }
 
 async function actionNew() {

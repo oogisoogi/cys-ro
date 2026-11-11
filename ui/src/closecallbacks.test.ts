@@ -91,7 +91,7 @@ function harness(workspaces = [ws(1, SOURCE, [42])]) {
   const timers: { callback: () => void; ms: number; cancelled: boolean }[] = [];
   const runtimes = new Map<string, Any>();
   const scope: Any = {
-    workspaces, activeWs: 0, focusedSid: 42, panes: runtimes,
+    workspaces, activeWs: 0, focusedSid: 42, panes: runtimes, wsCounter: 100,
     purgingDept: false, rotatingDaemon: false, UNTITLED: "untitled", TRASH_SVG: "trash",
     T_REG: 8000, T_STOP: 8000, nodeSig: new Map(), seatAccts: new Map(),
     destinationCanReceive, destinationGone, handoffAckPath, handoffInstruction,
@@ -175,9 +175,12 @@ function harness(workspaces = [ws(1, SOURCE, [42])]) {
   //   actionClose 의 「닫는 중」 표식은 우리 판 closingPaneKeys(+ 확인 창 재진입 closeConfirmOpen)다.
   const names = ["collectSids", "replaceNode", "arrangeWs",
     "destroyPaneRuntime", "detachPane", "closePane", "actionClose", "transferCrossDept", "awaitHandoffAck",
-    "confirmDeleteGroup", "purgeDept"];
+    "confirmDeleteGroup", "purgeDept",
+    // (codex 3R #3·#4) 전출 중 작업공간 삭제 재검사 · 거두지 못한 새 좌석의 삭제 확정 뒤 재판정
+    "wsGoneOrGoing", "dropSeatOfGoneWs", "whenWsDeleteSettled", "settleWsDelete"];
   const prelude = ["paneKey", "closingPaneKeys", "closeConfirmOpen", "arrangeRolesBySocket",
-    "transfersInFlight", "groupDeleteArm", "TRANSFER_ACK_WAIT_SECS"].map(declaration).join("\n");
+    "transfersInFlight", "groupDeleteArm", "TRANSFER_ACK_WAIT_SECS",
+    "wsDeleteWaiters", "deptDaemonStopped"].map(declaration).join("\n");
   const transpiler = new Bun.Transpiler({ loader: "ts" });
   const body = transpiler.transformSync(prelude + "\n" + names.map(fnText).join("\n"));
   const api = new Function("scope", `with (scope) {\n${body}\nreturn {

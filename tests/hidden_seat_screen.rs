@@ -16,6 +16,8 @@ const CYS: &str = env!("CARGO_BIN_EXE_cys");
 struct Box_ {
     base: PathBuf,
     sock: PathBuf,
+    /// 시험이 띄운 격리 데몬 pid(system.identify 로 잰 값) — 끝에 반드시 내린다(고아 데몬 0).
+    pid: Option<i32>,
 }
 
 impl Box_ {
@@ -26,7 +28,7 @@ impl Box_ {
         let base = base.canonicalize().unwrap();
         std::fs::create_dir_all(base.join("run")).unwrap();
         let sock = base.join("run/cysd.sock");
-        Self { base, sock }
+        Self { base, sock, pid: None }
     }
     fn cys(&self, args: &[&str]) -> std::process::Output {
         Command::new(CYS)
@@ -62,14 +64,16 @@ impl Box_ {
 
 impl Drop for Box_ {
     fn drop(&mut self) {
-        if let Ok(v) = UnixStream::connect(&self.sock).map(|_| self.rpc("system.identify", json!({}))) {
-            if let Some(pid) = v["daemon_pid"].as_u64() {
-                unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+        // 소켓이 아니라 **프로세스**가 사라질 때까지 기다린다 — 소켓만 보면 내려가는 중인 데몬이 상태 폴더를 다시 써 고아로 남았다(첫 실행 실측).
+        if let Some(pid) = self.pid {
+            unsafe { libc::kill(pid, libc::SIGTERM) };
+            let t = Instant::now();
+            while unsafe { libc::kill(pid, 0) } == 0 && t.elapsed() < Duration::from_secs(10) {
+                std::thread::sleep(Duration::from_millis(100));
             }
-        }
-        let t = Instant::now();
-        while UnixStream::connect(&self.sock).is_ok() && t.elapsed() < Duration::from_secs(10) {
-            std::thread::sleep(Duration::from_millis(100));
+            if unsafe { libc::kill(pid, 0) } == 0 {
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+            }
         }
         let _ = std::fs::remove_dir_all(&self.base);
     }
@@ -93,7 +97,9 @@ fn hidden_seat_reads_like_visible_seat() {
     while UnixStream::connect(&b.sock).is_err() && t.elapsed() < Duration::from_secs(20) {
         std::thread::sleep(Duration::from_millis(100));
     }
-    let _ = b.cys(&["identify"]);
+    let mut b = b;
+    b.pid = b.rpc("system.identify", json!({}))["daemon_pid"].as_u64().map(|p| p as i32);
+    assert!(b.pid.is_some(), "격리 데몬 pid");
     let cwd = b.base.join("home");
     let mk = || b.rpc("surface.create", json!({"cwd": cwd, "rows": 30, "cols": 100}))["surface_id"].as_u64().expect("surface_id");
     let shown = mk();

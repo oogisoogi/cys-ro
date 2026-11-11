@@ -243,7 +243,8 @@ class E_AgyRunGuardAndRoundLog(unittest.TestCase):
     def test_not_agy_run_allowed(self):
         for cmd in ["grep -rn agy src/", "ls ~/axdev/.wt/cys-agy-policy", "cys send --surface surface:3 'please review agy docs'",
                     "git log --grep agy-seat-door", "git diff HEAD~1 | grep agy-seat-door",
-                    "python3 -c \"json.load(open('/Users/x/.cys/agy-seat-door.json'))\"", "echo agy"]:
+                    "python3 -c \"json.load(open('/Users/x/.cys/agy-seat-door.json'))\"", "echo agy",
+                    "python3 -c \"import json;print(json.load(open('/Users/x/.cys/agy-seat-door.json')))\""]:
             rc, err = self.g(cmd)
             self.assertEqual(rc, 0, "%r 막힘: %s" % (cmd, err[-300:]))
 

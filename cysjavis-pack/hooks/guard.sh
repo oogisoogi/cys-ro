@@ -1074,6 +1074,16 @@ def agy_door_bash_write(cmd, depth=0, forced=False):
         # 본문이 문 이름을 내놓으면(`> "$(echo <문 파일>)"`) 바깥 문은 문 이름이 없어도 문을 다루는 것으로 본다
         named = forced or any(AGY_DOOR_NAME in norm_loose(bd).lower() for bd in bodies)
         return agy_door_bash_write(outer, depth + 1, forced=named)
+    # 독립 검증 m2(R8): `python3 -c "import json;print(json.load(open('<문 파일>')))"` — 정규화가 따옴표를 지워 코드 속 `;` 에서
+    #   끊기므로 원문을 shlex 로 읽어 이 읽기 꼴 하나만 따로 통과시킨다(인자 한 개 open · 다른 문 없음).
+    try:
+        import shlex
+        _t = shlex.split(cmd)
+    except Exception:
+        _t = None
+    if (_t and len(_t) == 3 and _t[0].rsplit("/", 1)[-1] in ("python3", "python") and _t[1] == "-c"
+            and re.fullmatch(r"\s*(import json\s*;\s*)?(print\()?json\.load\(open\(['\"][^'\",()]+['\"]\)\)\)?\s*", _t[2])):
+        return False
     for n in ns:
         toks = n.split()
         if ">" in toks or ">>" in toks or any(w.startswith(">") for w in toks):

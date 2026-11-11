@@ -3,7 +3,7 @@
 //   group_set 없음(데몬 재시작·구판) = 앱 기록 유지 · 열쇠가 둘 이상 좌석에 같으면 읽지도 쓰지도 않음(딸려 옮겨짐 0) ·
 //   재부팅(번호 재발급) 뒤에도 같은 좌석의 묶음 · 저장값 형식 오류 = 빈 기록.
 import { describe, expect, test } from "bun:test";
-import { effectiveGroup, parseSeatGroups, SEAT_GROUP_KEY, seatGroupKey, syncSeatGroupsFromList, uniqueKeys } from "./seatgroup";
+import { effectiveGroup, forgetSeatGroup, parseSeatGroups, SEAT_GROUP_KEY, seatGroupKey, syncSeatGroupsFromList, uniqueKeys } from "./seatgroup";
 import { buildSeatRows, type SeatInput } from "./seatrows";
 
 describe("(2d) 옮긴 묶음 기록", () => {
@@ -61,3 +61,28 @@ describe("(2d) 옮긴 묶음 기록", () => {
     expect(model.groups.map((g) => [g.key, g.rows.map((r) => r.sid)])).toEqual([["site", [103]], ["lms", [104]]]);
   });
 });
+
+describe("(948 D3) 끝난 좌석의 옮긴 묶음 기록 지우기 — 같은 역할명을 재배정받은 새 좌석이 물려받지 않게", () => {
+  const w4 = { role: "worker-4", cwd: "/u/axdev/lms" };
+  const others = [{ role: "worker-5", cwd: "/u/axdev/lms" }, w4];
+  test("끝난 좌석 열쇠(하나뿐) = 지움 · 다른 기록 그대로 · 새 worker-4 는 자동 규칙(앱 기록 없음)", () => {
+    const m = { "#role:worker-4": "video", "#role:worker-5": "site" };
+    const r = forgetSeatGroup(m, undefined, w4, others);
+    expect(r).toEqual({ map: { "#role:worker-5": "site" }, changed: true });
+    const fresh = { role: "worker-4", cwd: "/u/axdev/newproj" };
+    expect(effectiveGroup(r.map, undefined, fresh, uniqueKeys(undefined, [fresh]))).toBeNull();
+  });
+  test("기록 없음 · 좌석 줄 모름 · 열쇠가 둘 이상(기록이 쓰이지 않던 좌석) = 그대로", () => {
+    const m = { "#role:worker-4": "video" };
+    expect(forgetSeatGroup({}, undefined, w4, others).changed).toBe(false);
+    expect(forgetSeatGroup(m, undefined, undefined, others)).toEqual({ map: m, changed: false });
+    expect(forgetSeatGroup(m, undefined, w4, [w4, { role: "worker-4", cwd: "/x" }]).changed).toBe(false);
+    expect(forgetSeatGroup(m, "/d.sock", w4, others).changed).toBe(false); // 다른 소켓 열쇠는 건드리지 않는다
+  });
+  test("재시작 복원(끝 신호 없이 번호만 바뀜)은 이 함수를 부르지 않는다 — 기록이 남아 같은 역할 좌석이 그 묶음으로", () => {
+    const m = { "#role:worker-4": "video" };
+    const renumbered = { role: "worker-4", cwd: "/u/axdev/lms" };
+    expect(effectiveGroup(m, undefined, renumbered, uniqueKeys(undefined, [renumbered]))).toBe("video");
+  });
+});
+

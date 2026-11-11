@@ -343,7 +343,7 @@ import { approvalSeatKeys, buildSeatRows, namedSeatInputs, seatApprovalItems, se
 import { paintSeatRows, pruneSeatHosts, seatHost } from "./seatrowsdom"; // (tabs-sidebar 조각1) 좌석 줄 그리기
 import { fixedColumnSplit, GRID_MIN_COLS, GRID_MIN_ROWS, gridColumns, gridView, GROUP_TABS_KEY, groupTabsOn, normalizeTabState, reconcileTabs, tabPillarShare, viewTree, zoomKeyOf, type TabState, type TabView } from "./grouptabs";
 import { buildTabBar } from "./tabbar";
-import { effectiveGroup, parseSeatGroups, SEAT_GROUP_KEY, syncSeatGroupsFromList, uniqueKeys, type SeatGroups } from "./seatgroup"; // (tabs-sidebar 2d) 옮긴 묶음 기록 // (tabs-sidebar 2b) 탭 머리 줄 // (tabs-sidebar 조각2) 묶음 탭 판정
+import { effectiveGroup, forgetSeatGroup, parseSeatGroups, SEAT_GROUP_KEY, syncSeatGroupsFromList, uniqueKeys, type SeatGroups } from "./seatgroup"; // (tabs-sidebar 2d) 옮긴 묶음 기록 // (tabs-sidebar 2b) 탭 머리 줄 // (tabs-sidebar 조각2) 묶음 탭 판정
 import type { SeatRowsModel } from "./seatrows";
 import { accountNeedsAction, BOARD_KEY, BOARD_OPEN_KEY, BOARD_POS_KEY, boardCounts, boardOpen, boardPos, boardVariant, limitLine, limitPct, limitTitle, nextSeat, paintBoard, type BoardState } from "./statusboard"; // (tabs-sidebar 1d) 상황판 시안
 
@@ -506,7 +506,14 @@ const displayNoByKey = new Map<string, number | null>();
 //   exited 경합이 「복원 대기 구멍」 을 만들지 않는다. 닫기 확인 계약(확인·정확한 not_found 만 성공)만 들인다.
 async function closePane(sid: number, socket?: string): Promise<void> {
   await invoke("close_surface", { socket, surfaceId: sid });
+  forgetEndedSeatGroup(sid, socket); // (948 D3) 끝난 좌석 = 그 열쇠의 옮긴 묶음 기록을 지운다
   detachPane(sid, socket);
+}
+// (948 D3) 끝난 좌석(닫힘 확인 · 끝 이벤트)의 앱 묶음 기록 지우기 — 재료 = 마지막 좌석 목록의 그 좌석 줄(역할·폴더). 유령 수렴(재시작)은 부르지 않는다.
+function forgetEndedSeatGroup(sid: number, socket?: string): void {
+  const list = seatListBySock.get(socket ?? "");
+  const r = forgetSeatGroup(seatGroups, socket, list?.get(sid), list ? [...list.values()] : []);
+  if (r.changed) saveSeatGroups(r.map);
 }
 
 interface PaneRuntime {
@@ -3874,8 +3881,10 @@ async function refreshPaneTitles() {
         if (!rt) continue;
         // 닫기 보호 판정 재료 — 화면에 있는 창만(누적 0). (Fable MINOR-4) 데몬의 지금 말을 거울처럼 따른다 —
         //   「참으로만 바뀐다·번호 비재사용」 가정에 기대지 않는다(기록 저장소가 지워진 채 데몬만 재시작되면 번호가 되돌 수 있다).
-        if (s.exited) exitedPaneKeys.add(paneKey(s.surface_id, sk));
-        else exitedPaneKeys.delete(paneKey(s.surface_id, sk));
+        if (s.exited) {
+          exitedPaneKeys.add(paneKey(s.surface_id, sk));
+          forgetEndedSeatGroup(s.surface_id, sk); // (948 D3) 목록의 「끝남」 표시도 끝 신호 — 끝 이벤트를 놓쳐도 옮긴 묶음 기록을 지운다
+        } else exitedPaneKeys.delete(paneKey(s.surface_id, sk));
         renderUsage(rt.usageEl, s.exited ? null : s.usage); // 종료 pane은 배지 제거 (혼동 방지)
         setRoleDot(rt, s.exited ? null : s.role); // 역할 점 동일 주기 갱신(★F-01 단일 렌더러 — 관측 활동 · 관측 없으면 자기보고 폴백)
         rt.titleEl.style.color = (titleColorRole && !s.exited && roleDotColor(s.role)) ? (roleDotColor(s.role) as string) : ""; // 제목 글자색 = 역할 점색(오너 요청 2026-07-14·토글 시)
@@ -5361,6 +5370,11 @@ function movePane(sid: number, targetSid: number, side: DropSide) {
 
 function setFocus(sid: number) {
   focusedSid = sid;
+  { // (948 D1 · D6) 탭마다 마지막 포커스 좌석을 기억 — 그 탭으로 돌아오면 그 좌석으로
+    const w = current();
+    const v = w ? lastTabView.get(w.id) : undefined;
+    if (w && v && v.active != null && v.zoom === null) tabFocusMemo.set(`${w.id}#${v.active}`, sid);
+  }
   const key = paneKey(sid, current()?.socket);
   for (const [id, rt] of panes) rt.el.classList.toggle("focused", id === key);
   // ★U6(0.14.41 · 반박 D2 blocking): 모달·팔레트가 떠 있으면 xterm 에 키보드 포커스를 주지 않는다.
@@ -5440,6 +5454,7 @@ function render() {
     top.style.flex = "";
     root.appendChild(top);
     if (ws) mountTabBar(ws, tree, top);
+    if (ws) repairHiddenFocus(ws, collectSids(tree)); // (948 D1 ⓐ) 보기 트리 밖으로 숨은 포커스를 보이는 좌석으로
   }
   else if (ws?.pending) root.appendChild(renderDeptPending(ws)); // WP-10: 부서 준비 중 빈 pane 스피너·안내(★0.14.43 GU: 경과·단계 문구)
   else if (ws) root.appendChild(renderIdleWorkspace(ws)); // pane 0개 — 백지 대신 안내+손잡이
@@ -5960,6 +5975,8 @@ function refreshSeatRows(): void {
       const self = seatSelf.get(`${sock}#${sid}`);
       const inp = seatInputOf(sid, list?.get(sid), seatDot(p.view, surfaceWorking(sid, sock), approvalSeats.has(`${sock}#${sid}`)), self, approvalSeats.has(`${sock}#${sid}`));
       inp.group = effectiveGroup(seatGroups, sock, list?.get(sid), uniq); // (tabs-sidebar 2d) 데몬이 정한 값 > 앱 기록 > 폴더
+      const made = createdInTab.get(paneKey(sid, sock)); // (948 D2) 탭 화면에서 만든 새 좌석 = 그 탭 묶음(데몬이 정한 값만 이를 이긴다)
+      if (made !== undefined && (list?.get(sid) as { group_set?: unknown } | undefined)?.group_set !== true) inp.group = made;
       inputs.push(inp);
     }
     const model = buildSeatRows(inputs);
@@ -6078,6 +6095,36 @@ const lastTabViewSig = new Map<number, string>();
 const lastTabView = new Map<number, TabView>();
 let tabRenderQueued = false;
 const tabViewSig = (v: TabView): string => JSON.stringify([v.tabs.map((t) => [t.key, t.sids]), v.active, v.zoom, [...v.hidden].sort((a, b) => a - b)]);
+// (948 D1) 지금 화면(보기 트리)에 보이는 좌석 = ws.tree 에서 탭·넓게 보기로 숨긴 좌석을 뺀 것(좌석 모델 전 = ws.tree 그대로 · 순수 판정만 · 상태 무변경).
+//   포커스로 대상을 잡는 동작(닫기·나누기·글 삽입)은 ws.tree 가 아니라 이것으로 검사한다 — 숨은 좌석을 닫거나 그 입력줄에 쓰는 길 0.
+function visibleSids(ws: Workspace): number[] {
+  const model = seatModels.get(ws.id);
+  const hidden = model ? reconcileTabs(model, normalizeTabState(ws.tabs), groupTabs).view.hidden : [];
+  return collectSids(ws.tree).filter((s) => !hidden.includes(s));
+}
+const seatVisible = (ws: Workspace, sid: number): boolean => visibleSids(ws).includes(sid);
+// (948 D1 ⓐ · D6) 탭·넓게 보기 전환으로 포커스 좌석이 숨으면 그 탭에서 마지막으로 쓰던 좌석(없으면 그 탭의 첫 좌석)으로 옮긴다 —
+//   ⌘W·⌘D·글 삽입이 숨은 좌석을 잡지 않고, 친 글자가 보이는 좌석으로 간다. 갈 좌석이 없으면 포커스를 비운다(표시도 지운다).
+const tabFocusMemo = new Map<string, number>(); // `${ws.id}#${묶음 열쇠}` → 그 탭에서 마지막으로 포커스한 좌석
+function repairHiddenFocus(ws: Workspace, vis: readonly number[]): void {
+  if (focusedSid == null || !ws.tree || !collectSids(ws.tree).includes(focusedSid) || vis.includes(focusedSid)) return;
+  const v = lastTabView.get(ws.id);
+  const tabSids = v?.zoom != null ? [v.zoom] : (v?.tabs.find((t) => t.key === v.active)?.sids ?? []);
+  const memo = v?.active != null ? tabFocusMemo.get(`${ws.id}#${v.active}`) : undefined;
+  const next = [memo, ...tabSids].find((x): x is number => x != null && vis.includes(x)) ?? null;
+  if (next != null) return setFocus(next);
+  focusedSid = null;
+  for (const rt of panes.values()) rt.el.classList.remove("focused");
+}
+// (948 D2) 탭 화면에서 사람이 만든 새 좌석(⌘T·⌘D)은 지금 보고 있는 탭의 묶음에 넣는다 — 앱이 켜져 있는 동안의 기억(열쇠 = paneKey).
+//   데몬이 정한 묶음(group_set)이 오면 그것이 이긴다 · 좌석이 끝나면 지운다(detachPane).
+const createdInTab = new Map<string, string>();
+function noteNewSeatInTab(ws: Workspace, sid: number): void {
+  const v = lastTabView.get(ws.id);
+  if (!v || (v.tabs.length === 0 && v.zoom === null)) return; // 탭 화면이 아니면 지금 그대로(1.1.14)
+  if (v.active != null) createdInTab.set(paneKey(sid, ws.socket), v.active);
+  if (v.zoom !== null) ws.tabs = { ...normalizeTabState(ws.tabs), zoom: null, zoomKey: null }; // 넓게 보기를 풀어야 새 좌석이 보인다
+}
 // 부서의 화면 트리 — 판정은 grouptabs(순수) · 여기선 상태를 적고 결과를 기억만 한다.
 function wsViewTree(ws: Workspace): Node | null {
   const model = seatModels.get(ws.id);
@@ -7560,6 +7607,7 @@ async function actionNew() {
   if (current()?.pending) return; // 부서 데몬 준비 중(빈 socket placeholder) — surface 생성 금지(기본 데몬 고아 차단)
   const sid = await newSurface(null, current().socket);
   const ws = current();
+  noteNewSeatInTab(ws, sid); // (948 D2) 탭 화면 = 지금 탭 묶음에 넣어 바로 보이게
   arrangeWs(ws, { add: [{ sid }] }); // 새 창도 다른 창과 같은 폭(종전 = 화면 절반)
   render();
   setFocus(sid);
@@ -7572,11 +7620,13 @@ async function actionSplit(dir: "row" | "col") {
   const ws = current();
   // stale focusedSid 검증 — 트리에 없는 대상을 분할하면 replaceNode가 무음 no-op 되어
   // 보이지 않는 고아 surface(살아있는 PTY)가 생긴다
-  if (focusedSid == null || !ws.tree || !collectSids(ws.tree).includes(focusedSid)) {
+  // (948 D1 ⓑ) 대상은 지금 보이는 좌석이어야 한다(ws.tree 가 아니라 보기 트리) — 숨은 좌석 옆에 붙으면 새 좌석도 안 보인다.
+  if (focusedSid == null || !ws.tree || !seatVisible(ws, focusedSid)) {
     return actionNew();
   }
   const target = focusedSid;
   const sid = await newSurface(null, ws.socket);
+  noteNewSeatInTab(ws, sid); // (948 D2)
   // await 사이에 대상이 닫혔으면 after 가 트리에 없으므로 맨 끝에 선다 — 루트에 덧붙여 고아를 만들지 않는다(종전과 같은 보장).
   arrangeWs(ws, { add: [{ sid, after: target, dir }] });
   render();
@@ -7596,7 +7646,8 @@ async function actionClose() {
   if (focusedSid == null || !ws.tree) return;
   const sid = focusedSid;
   // 포커스가 이 탭의 창이 아니면(낡은 포커스) 아무것도 닫지 않는다 — 보이지 않는 창을 닫는 경로 0.
-  if (!collectSids(ws.tree).includes(sid)) return;
+  //   (948 D1 ⓑ) 「보인다」 = 보기 트리 기준(묶음 탭·넓게 보기로 숨은 좌석 포함 · ws.tree 에 있어도 안 보이면 닫지 않는다).
+  if (!seatVisible(ws, sid)) return;
   const key = paneKey(sid, ws.socket);
   if (closingPaneKeys.has(key)) return;
   if (needsCloseConfirm(CLOSE_CONFIRM_POLICY, exitedPaneKeys.has(key) ? true : null)) {
@@ -7618,7 +7669,8 @@ async function actionClose() {
       return;
     }
     // 묻는 사이 그 창이 이미 사라졌으면(데몬 종료 이벤트 등) 할 일이 없다 — 다른 창으로 옮겨 닫지 않는다.
-    if (!ws.tree || !collectSids(ws.tree).includes(sid)) return;
+    //   (948 D1 ⓑ) 묻는 사이 탭을 바꿔 그 창이 숨었어도 닫지 않는다.
+    if (!ws.tree || !seatVisible(ws, sid)) return;
   }
   closingPaneKeys.add(key);
   // ★1.1.11 편입(원작자 0.14.52 c3ce3272 · 공지 ⑤): 데몬이 닫힘을 **확인한 뒤에만** 화면에서 뗀다(closePane → detachPane —
@@ -7661,6 +7713,7 @@ function detachPane(sid: number, socket?: string): void {
   }
   nodeSig.delete(`${socket}#${sid}`); // 사이드바 신호 캐시도 같이 — 10초 폴링을 기다리지 않는다
   seatAccts.delete(`${socket}#${sid}`); // ★0.14.45 좌석 계정 캐시도 같이
+  createdInTab.delete(paneKey(sid, socket)); // (948 D2) 탭에서 만든 좌석 기억도 같이
   // 포커스 이동은 죽은 pane이 '활성 ws(동일 socket)' 소속일 때만 — 타부서 동일 sid 종료가 현 포커스를 오해제하지 않게.
   if (focusedSid === sid && (current()?.socket ?? undefined) === (socket ?? undefined))
     focusedSid = collectSids(current()?.tree ?? null)[0] ?? null;
@@ -7963,7 +8016,7 @@ function ftContextMenu(e: MouseEvent, full: string, isDir: boolean) {
         toast("watchdog", "Finder 표시 실패", "Finder 에서 위치를 보여 주지 못했습니다. 다시 시도해 주세요.", undefined, String(err)),
       ),
   });
-  for (const sid of collectSids(current()?.tree ?? null).slice(0, 6)) {
+  for (const sid of (current() ? visibleSids(current()) : []).slice(0, 6)) { // (948 D1 ⓑ) 보이는 좌석에만 삽입
     const rt = panes.get(paneKey(sid, sock));
     if (!rt) continue;
     const name = rt.titleEl.textContent || `surface ${sid}`;
@@ -7974,7 +8027,9 @@ function ftContextMenu(e: MouseEvent, full: string, isDir: boolean) {
     items.push({
       label: "cd 텍스트 삽입(전송 없음)",
       action: () => {
-        const rt = focusedSid != null ? panes.get(paneKey(focusedSid, sock)) : undefined;
+        const cw = current();
+        // (948 D1 ⓑ) 포커스 좌석이 지금 보이는 좌석일 때만 — 숨은 좌석 입력줄에 글을 넣지 않는다.
+        const rt = focusedSid != null && cw && seatVisible(cw, focusedSid) ? panes.get(paneKey(focusedSid, sock)) : undefined;
         if (!rt) return toast("watchdog", "삽입 대상 없음", "포커스된 pane이 없습니다");
         void injectRawToPane(rt, `cd ${shellQuote(full, /Windows/i.test(navigator.userAgent))}`);
       },
@@ -10720,6 +10775,7 @@ function onDaemonEvent(event: Record<string, unknown>) {
       if (defaultSocketSlug === null) void loadDefaultSocketSlug(); // 기동 때 못 받았으면 다음 소식을 위해 재시도
       return; // slug 명시됐는데 미해결 → 기본 데몬 폴백 금지(타부서 동일 sid 오제거 방지)
     }
+    forgetEndedSeatGroup(Number(sid), src.socket); // (948 D3) 끝난 좌석 = 옮긴 묶음 기록을 지운다(재시작 복원은 이 이벤트가 없다)
     removeDeadPane(Number(sid), src.socket);
   }
 }

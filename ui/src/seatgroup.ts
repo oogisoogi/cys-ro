@@ -78,3 +78,14 @@ export function effectiveGroup(m: SeatGroups, socket: string | null | undefined,
   const k = keyOf(socket, s);
   return k && uniq.has(k) ? (m[k] ?? null) : null;
 }
+
+/** (948 D3) 좌석이 **끝나면**(사람이 닫음 확인 · 데몬의 surface.exited/closed/reaped) 그 좌석 열쇠의 앱 기록을 지운다 — 같은 역할명을
+ *  재배정받은 새 좌석이 옛 묶음을 물려받지 않게. 그 열쇠가 그때 하나뿐인 좌석의 것일 때만(둘 이상이면 기록이 애초에 쓰이지 않았다 · 남의 기록 보존).
+ *  ★앱 재실행·데몬 재시작 복원(좌석 번호만 바뀜)은 이 길을 타지 않는다 — 끝 이벤트 없이 사라진 좌석은 유령 수렴(detachPane)만 거치므로 기록이 남는다. */
+export function forgetSeatGroup(m: SeatGroups, socket: string | null | undefined, ended: GroupRow | undefined, surfaces: readonly GroupRow[]): { map: SeatGroups; changed: boolean } {
+  if (!ended) return { map: m, changed: false };
+  const k = keyOf(socket, ended);
+  if (!k || !(k in m) || !uniqueKeys(socket, surfaces).has(k)) return { map: m, changed: false };
+  const { [k]: _drop, ...rest } = m;
+  return { map: rest, changed: true };
+}

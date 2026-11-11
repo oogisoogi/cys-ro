@@ -1,6 +1,6 @@
 # HANDOFF — TICKET=cysr-tabs-sidebar-impl (가지 feat/tabs-sidebar · 기준 270e3e21 v1.1.14)
 
-**다음 첫 행동 1줄**: 조각 **1h**(부서 0개 기기 = 부서 흔적 화면 0 · master#edd9d8a8 · 아래 미완 0번) → 2d → 2b-2(A안 40열) → 캡처 3·7·12. codex 1R 남은 4건 = **완료**(5a334ab8).
+**다음 첫 행동 1줄**: master 의 【중간】(10:5x · 캡처 6장) 답을 확인 → 답이 없으면 **2d**(아래 미완 2) 착수. 상황판 지적 3 + 1h = 완료(476e73e3).
 
 (원래 첫 행동): 인박스에서 master 의 「두 줄 격자 기준」 답(A 40열 / B 80열 / C 격자 없음 · 10:06:45 【중간】 의 【결정필요】)을 확인하고, 답이 없으면 2c-2(아래)부터 착수한다.
 
@@ -20,11 +20,13 @@
 | 1g | 8c0f6fb0 | 상황판 = 상태 수 + 사용량(종전 #ws-usage 요소를 펼침 칸으로 옮김) · 위치 위/아래 |
 | 2b-1 | ef176ecd | `ui/src/tabbar.ts` 탭 머리 줄 = 고정 기둥 오른쪽 위에만 · 고정 기둥 폭 탭 간 유지 |
 | 2c-1 | c99378c6 | fitPane 같은 크기 재전송 0(탭 20회 왕복 resize 131 → 4 실측) |
+| codex 1R | f79f175c · 5a334ab8 | REVISE 6건 처리 |
+| 상황판 3 · 1h | 476e73e3 | 수 옆 글자 라벨 · 한도 줄 「86% · 금 06:00 초기화」(전문 = 툴팁) · 「승인 요청 N」 = 좌석 밖 요청만 · 부서 0개 = body.no-depts(.dept-only 숨김 · 팔레트 부서 항목 = 부서 있거나 전문가 모드만 · 「본부」→「새 화면」) · `ui/e2e/nodept_gate.py` |
 
 시험: `cd ui && bun test` = 3387 통과 0 실패 · `bunx tsc -p tsconfig.check.json` 0. 게이트 3종 PASS(아래 재현).
 
 ## 미완(순서)
-0. **1h**(master#edd9d8a8 · 박사님 「권고대로」): 부서 0개(본부만) = 「부서」 말·단추·안내 화면 0 · 1개 이상 = 지금 그대로 · 판정 = 부서 수(list_depts·deptSeen) · 감사 흔적 4(index.html:59 안내 줄 · main.ts:9152 팔레트 「부서 워크스페이스 추가」 · 「본부」 이름 · index.html:188 작업 탭 설명문) 다시 세어 표 · 만드는 길(dept-by-chat · 전문가 모드 단추)·openNewlyRegisteredDepts 무변경 · 코드 삭제 0 · 데몬·팩 무수정 · 캡처 0개/1개 · e2e 1. 감사 = ~/axdev/master/reports/2026-11-11-control-center-audit/REPORT.md §7-4 ㉯ · 부록 E §4.
+0. ✅ **1h 완료(476e73e3)** — 원 지시: (master#edd9d8a8 · 박사님 「권고대로」): 부서 0개(본부만) = 「부서」 말·단추·안내 화면 0 · 1개 이상 = 지금 그대로 · 판정 = 부서 수(list_depts·deptSeen) · 감사 흔적 4(index.html:59 안내 줄 · main.ts:9152 팔레트 「부서 워크스페이스 추가」 · 「본부」 이름 · index.html:188 작업 탭 설명문) 다시 세어 표 · 만드는 길(dept-by-chat · 전문가 모드 단추)·openNewlyRegisteredDepts 무변경 · 코드 삭제 0 · 데몬·팩 무수정 · 캡처 0개/1개 · e2e 1. 감사 = ~/axdev/master/reports/2026-11-11-control-center-audit/REPORT.md §7-4 ㉯ · 부록 E §4.
 1. **2c-2**: ⓑ = **완료** — `tests/hidden_seat_screen.rs`(격리 데몬 · 구독 붙은 좌석 vs 없는 좌석 · read_text 같은 결과 줄 · 86b7bc83 + 정리 수리). 남은 것 = 막힘 표시 지연 실측 + codex 1R. (아래 원문은 이력)
    - 이력: ⓑ 숨은 탭 좌석 `cys send` → `cys read-screen` = 보이는 좌석과 같음 — 구조 근거만 있음(read-screen = 데몬 RPC `surface.read_text` handlers.rs:8763 · 숨김 = main.ts render() 의 `rt.el.remove()` DOM 떼기뿐 · 출력은 떼어진 xterm 에도 계속 씀). **격리 데몬 실측 시험이 아직 없다.** + 「승인 창이 숨은 탭에서 떴을 때 막힘 표시까지 걸린 시간」 실측 + codex 1R(숨은 탭 PTY·복원 조각 · `</dev/null` + timeout).
 2. **2d**: `cys seat-group --surface <번호> <묶음>`(데몬 메모리 필드 + 이벤트 `surface.group.changed` · 호출자 = master 또는 사람 CLI · 같은 값이면 이벤트 없음) + 앱이 `seatGroup` 에 영속(열쇠 = 소켓+역할, 없으면 소켓+cwd) + 앱 시작 때 surface.list 의 group 읽어 영속 + **말로 컨트롤 센터 열기 통로**(같은 통로 · master#b1b8d7df) · codex 1R. 치명 4군 점검 = 설계 §5.
@@ -38,6 +40,7 @@
 - playwright = `/Users/oogisoogi/axdev/GlobalNews-Crawling-AgenticWorkflow/.venv/bin/python3`(읽기만) · 브라우저 판 불일치 → `CHROME_PATH=$HOME/Library/Caches/ms-playwright/chromium_headless_shell-1248/chrome-headless-shell-mac-arm64/chrome-headless-shell`.
 - 커밋 전에 `bunx tsc` 를 먼저(2693c9ab 를 한 번 바로잡았다).
 - cargo 는 PATH 에 없다 → `export PATH=$HOME/.cargo/bin:$PATH` · `cargo test --test hidden_seat_screen`(≈15초 · 끝나고 `pgrep -fl cys-hss` = 0).
+- 상황판 수를 읽는 e2e 는 `.ws-board-num` 만 읽는다(버튼엔 글자 라벨도 있다 · 476e73e3 에서 한 번 NaN).
 - dragdrop_gate.py 는 CHROME_PATH 를 안 받아 이 기계에서 브라우저 판 불일치로 못 돈다(환경 · 회귀 아님).
 
 ## 재현
@@ -45,9 +48,9 @@
 cd ~/axdev/.wt/cys-tabs-sidebar/ui && bun install --silent && bun test && bunx tsc -p tsconfig.check.json
 cd .. && sh ui/build.sh
 export CHROME_PATH=$HOME/Library/Caches/ms-playwright/chromium_headless_shell-1248/chrome-headless-shell-mac-arm64/chrome-headless-shell
-for g in seatrows_gate statusboard_gate cc_button_gate; do cys run -- /Users/oogisoogi/axdev/GlobalNews-Crawling-AgenticWorkflow/.venv/bin/python3 ui/e2e/$g.py; done
+for g in seatrows_gate statusboard_gate cc_button_gate nodept_gate; do cys run -- /Users/oogisoogi/axdev/GlobalNews-Crawling-AgenticWorkflow/.venv/bin/python3 ui/e2e/$g.py; done
 ```
-캡처 = `docs/evidence-tabs-sidebar/{1b,1d,1e}/`(커밋하지 않음).
+캡처 = `docs/evidence-tabs-sidebar/{1b,1d,1e,1h}/`(커밋하지 않음).
 
 ## master 결정(master#fcbc46fb · 확정)
 - 두 줄 격자 = A안(칸 최소 폭 40열 · 좌석 3·4개 나란히 · 5개부터 두 줄 · 시안 #C 유지).

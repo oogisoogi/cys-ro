@@ -4,6 +4,16 @@
 - 상위 = DESIGN.md §3-2 · §6 T3 · §7(master 판단) · T0-surface-state.md · HANDOFF-seatkeep-t2.md(「알려진 결함」 15 · 「T3 로 넘길 것」 10).
 - 표기: 【코드】 소스 판독 · 【실측】 이 좌석이 돌린 것 · 【추정】 근거는 있으나 안 잼.
 
+## 0. 전제와 정직한 범위(독립 검증 1회 고침 반영 · master#8193a786 · #6e60316b · 2026-11-12 05:0x)
+- **노브 켬 = 이 판에서 시험 전용.** 옛 판 독자는 두 칸 잠금(`"<pid> <출생시각>"`)에서 산 cysd 를 못 본다(독립 검증 REPORT 2-2': 기준선 lib 판독기 = 잠금 줄 통과 · 옛 cys doctor = 죽은 데몬 잔재의 stale pid 를 못 봄). 노브 기본 켬은 T4 차단 조건(HANDOFF 「T4 로 넘길 것」 맨 위)을 닫은 뒤에만.
+- **인자 없는 경로(T2 동작) = 동작 같음 · 의도된 변경 3곳**: ① SIGNAL `child_pid ≤ 0` 이면 신호를 보내지 않음(전: `killpg(0)` 이 될 수 있었음) ② 등록부 폴더 동시 첫 만들기 경합 고침(`registry.rs` `AlreadyExists` → 다시 검사) ③ `CYS_SEATKEEP_TEST_COMMIT_DELAY_MS` 가 릴리스 빌드에서 무시됨(`cfg(debug_assertions)`). (전 문구 「한 줄도 안 바뀜」은 과장이었다.)
+- **노브 켬 vs 직접 PTY = 구별되는 곳 1(D1 · 알려진 한계)**: 멈춘 조종자(cysd) 아래에서 seatkeep 의 역압은 자식이 큐 문턱(256KiB)+앞 단계만큼 앞서 쓰고 끝나게 하고, 그때 커널 PTY 버퍼에 남은 꼬리(≤ 1,024바이트)를 커널이 버린다. 직접 PTY 에서는 같은 폭발의 자식이 커널 버퍼(약 1KiB)에서 막혀 끝나지 못하므로 잃지 않는다. 시험 = `seat_tail_tests::seat_tail_known_limit_stalled_controller_child_exit`(켬 = 모자람 1..=1024 · 끔 = 자식이 6초 동안 막힌 채 · 모자람 0).
+  - **맥 커널 동작 = 관측(탐침 각 2/2) · 커널 소스 미확인**: PTY 자식(세션 우두머리)이 쓰고 끝날 때 마스터에서 `read()` 안에 잠든 독자가 있으면 그 독자가 깨어날 때 받을 첫 덩이는 남고(500바이트 한 번 쓰기 = 501/500), `read()` 밖이면 버려진다(0/500) · 자식 회수·`waitid WNOWAIT` 와 무관(0/500 ×5) · 커널 버퍼를 가득 채우고 끝나는 자식은 `read()` 안의 멈춘 독자가 있어도 첫 줄(102바이트)만 남고 1,024바이트를 잃는다(시험 노브 끔 비차단 자식 2/2). 탐침 = 시험대 `harness/ptyprobe/` · 원 출력 = `results/ptyprobe/`.
+  - 받는 쪽(cysd 가 output_open EXITED 뒤 OUTPUT 을 버림)은 D1 의 기제가 아니다 — 받는 쪽을 열어 둔 실험 1회에서 EXITED final_offset(1,299,276) = cysd 가 받은 바이트(1,299,276) · EXITED 뒤 OUTPUT 0. 그래서 받는 쪽은 바꾸지 않았다(master#6e60316b C 안 함).
+- **D2(생성 도중 cysd 사망)**: `--controller-bound` seatkeep 은 기동 때 부모 pid 를 재고 supervise(100ms)마다 바뀌었는지 본다 — 바뀌었거나 기동 때 이미 1(launchd)이면 `parent_lost` 로 끝남(전: 첫 조종자 상한 15초까지 무감독).
+- **D7(작업 폴더·HOME 이 생성 직후 사라짐)**: seatkeep 은 자식 작업 폴더를 다시 찾지 않고 `"."`(cysd 가 확인하고 seatkeep 을 띄운 그 폴더)로 상속 · 그래도 실패하고 폴더가 없으면 rc 7(「작업 폴더가 사라짐」).
+- **D4(직접 접근 게이트)**: 타입으로 막는 길(Surface `child`·`master` 를 손잡이 모듈 비공개 새 타입으로)은 시험 구역 약 86곳이 바뀌어(30곳 상한 초과) 차선 — 게이트가 `.child`·`.master` 필드 참조 자체를 보고, 손잡이로 넘기는 자리(`seat_proc::…(&x.child)` · 가져다 쓴 `probe_child(`)와 이름 붙은 예외(`declaration.rs` 어휘 · `governance.rs` 후손 기록 · `state.rs` 의 `spawned.*` = 손잡이 결과를 Surface 로 옮기는 자리)만 허용 · 대상 = `src/bin/cysd/` 하위 전체 + `src/*.rs`.
+
 ## 1. 직접 접근 자리 전수 표 (cysd 운영 코드)
 
 계수 방법 = `src/**/*.rs` 중 `*_tests.rs`·`pty_test_support.rs`·`cys-seatkeep/` 를 빼고, `#[cfg(test)]` 가 붙은 `mod`/`fn`/`impl` 블록(중괄호 짝 맞춤 · 문자열·주석 제외)을 「시험 구역」으로 나눠 셌다(스크립트 = §8). 여러 줄로 이어진 `.master\n.lock()` 도 잡는다.

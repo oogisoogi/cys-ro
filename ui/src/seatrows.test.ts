@@ -5,6 +5,7 @@
 //   고정 좌석(master·cso)은 묶음 밖 · 묶음 순서 = 처음 나타난 순 · 줄 순서 = 머리 번호 순.
 import { expect, test } from "bun:test";
 import {
+  approvalSeatKeys,
   buildSeatRows,
   folderKey,
   seatName,
@@ -71,6 +72,9 @@ test("꼬리표 — 막힘 = 승인 창 · 「확인」 은 자기보고 waiting
   expect(seatTag(base({ statusState: null }), "idle")).toBeNull();
   expect(seatTag(base({ statusState: "working" }), "idle")).toBeNull();
   expect(seatTag(base({ statusState: "blocked" }), "working")).toBeNull();
+  // 화면이 일하는 중이면 waiting 신고는 낡은 것 — 꼬리표 없음
+  expect(seatTag(base({ statusState: "waiting" }), "working")).toBeNull();
+  expect(seatTag(base({ statusState: "done" }), "unknown")).toBe("확인");
   // 끝난 좌석엔 꼬리표를 달지 않는다
   expect(seatTag(base({ statusState: "done" }), "exited")).toBeNull();
 });
@@ -151,4 +155,57 @@ test("CTX 는 pickCtx 결과를 그대로 싣는다(결측 = null · 0 으로 �
   const rows = m.groups[0].rows;
   expect(rows[0].ctxPct).toBeNull();
   expect(rows[1].ctxPct).toBe(0);
+});
+
+test("이름 보고자 줄 — 번호 대신 이름 · named 표식", () => {
+  const m = buildSeatRows([base({ sid: -1, role: "master", label: "master", dot: null })]);
+  expect(m.fixed[0].no).toBe("master");
+  expect(m.fixed[0].named).toBe(true);
+  expect(m.fixed[0].state).toBe("unknown");
+});
+
+test("승인 피드 → 좌석 열쇠 — 본부(dept null) = undefined 소켓 · 부서 = 소켓 경로 · 대기 approval 만", () => {
+  const keys = approvalSeatKeys({
+    sockets: [
+      { socket: "/s/base.sock", dept: null, ok: true, items: [
+        { kind: "approval", status: "pending", surface_id: 7 },
+        { kind: "approval", status: "resolved", surface_id: 8 },
+        { kind: "note", status: "pending", surface_id: 9 },
+        { kind: "approval", status: "pending", surface_id: null },
+      ] },
+      { socket: "/s/dept-a.sock", dept: "a", ok: true, items: [{ kind: "approval", status: "pending", surface_id: 3 }] },
+      { socket: 5, dept: "bad", ok: true, items: [{ kind: "approval", status: "pending", surface_id: 4 }] },
+    ],
+  });
+  expect([...keys].sort()).toEqual(["/s/dept-a.sock#3", "undefined#7"]);
+  expect(approvalSeatKeys(null).size).toBe(0);
+  expect(approvalSeatKeys({ sockets: "x" }).size).toBe(0);
+});
+
+test("surface.list 원행 → 입력 — 생성 폴더(cwd) 사용 · live_cwd 무시 · 끝난 좌석 CTX 판정 불가 · 원행 없음 = 모름", async () => {
+  const { seatInputOf } = await import("./seatrows");
+  const i = seatInputOf(5, { display_no: 931, role: "worker", title: "931 · Opus · site", cwd: "/w/site", live_cwd: "/w/other", exited: false, usage: { ctx_pct: 38 } }, "working", { state: "waiting", task: "홈 화면 수정" }, false);
+  expect([i.displayNo, i.cwd, i.ctxPct, i.ctxSrc, i.statusState, i.task, i.dot]).toEqual([931, "/w/site", 38, "measured", "waiting", "홈 화면 수정", "working"]);
+  const ex = seatInputOf(6, { exited: true, usage: { ctx_pct: 50 } }, "working", undefined, false);
+  expect([ex.exited, ex.ctxPct, ex.ctxSrc]).toEqual([true, null, "stale"]);
+  const none = seatInputOf(7, undefined, "working", undefined, false);
+  expect([none.dot, seatState(none)]).toEqual([null, "unknown"]);
+});
+
+test("이름 보고자 입력 — 이름 줄 · 활동 모름 · CTX 결측은 결측", async () => {
+  const { namedSeatInputs } = await import("./seatrows");
+  const xs = namedSeatInputs([{ name: "master", ctxPct: 52 }, { name: "cso", ctxPct: null }]);
+  const m = buildSeatRows(xs);
+  expect(m.fixed.map((r) => [r.no, r.state, r.ctxPct, r.named])).toEqual([["master", "unknown", 52, true], ["cso", "unknown", null, true]]);
+});
+
+test("좌석 점 — 관측 우선 · 모름이면 120초 안의 자기보고 working 만 작업 중 · 낡은/없는 자기보고는 모름", async () => {
+  const { seatDot } = await import("./seatrows");
+  expect(seatDot("waiting", { state: "working", ageSecs: 1 })).toBe("waiting");
+  expect(seatDot("unknown", { state: "working", ageSecs: 120 })).toBe("working");
+  expect(seatDot("unknown", { state: "working", ageSecs: 121 })).toBe("unknown");
+  expect(seatDot("unknown", { state: "working", ageSecs: null })).toBe("unknown");
+  expect(seatDot("unknown", { state: "waiting", ageSecs: 1 })).toBe("unknown");
+  expect(seatDot("unknown", undefined)).toBe("unknown");
+  expect(seatDot("stale", { state: "working", ageSecs: 1 })).toBe("stale");
 });

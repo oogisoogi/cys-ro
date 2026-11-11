@@ -330,6 +330,7 @@ function harness() {
     placeholderSids: new Set<number>(), touchedPlaceholders: new Set<number>(), shouldClosePlaceholder: () => false, placeholderScreenLines: () => null,
     hqMasterSids: null, renderWsTabs: nothing,
     lastSurfacesBySocket: new Map<string, unknown>(), refreshUsageAccounts: () => Promise.resolve(), refreshNamedReporters: () => Promise.resolve(), renderSidebarUsage: nothing,
+      seatListBySock: new Map<string, unknown>(), refreshSeatRows: nothing, // (tabs-sidebar 조각1) 좌석 줄 재료·그리기 — 이 검체의 축과 무관(무동작)
   };
   const loaded = loadWith(FNS, deps);
   fns = loaded.fns;

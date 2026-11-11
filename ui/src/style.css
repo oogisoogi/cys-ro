@@ -389,6 +389,29 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
 .ws-tab.active .ws-name { color: #fff; }
 .ws-tab.active .ws-sub { color: rgba(255, 255, 255, .75); }
 .ws-tab .ws-sub-pending { color: #58a6ff; animation: cc-blink 1.4s infinite; }
+/* (tabs-sidebar 조각1 · 설계 ④⑨) 부서 카드 아래 좌석 줄 — 번호 · 일감 · 상태(모양+색) · 꼬리표 · CTX %.
+   ★새 색 없음: 상태색 = 기존 토큰(--ok 작업 중 · --warn 대기 · --error 막힘) · 모름·끝남 = 사이드바 회색 · 글자 = 사이드바 배율(--wsbar-font).
+   ★가로 넘침 0: 이름 칸만 줄어들고(말줄임) 나머지 칸은 자기 폭 — 좁은 사이드바(176px)·배율 2.2 에서도 행이 넘치지 않는다. */
+.ws-seats { display: flex; flex-direction: column; gap: 1px; padding: 2px 2px 6px 6px; font-size: calc(15px * var(--wsbar-font, 1)); color: var(--text); font-variant-numeric: tabular-nums; min-width: 0; }
+.ws-seats[hidden] { display: none; }
+.ws-seat { display: flex; align-items: center; gap: .4em; padding: 1px 4px; border-radius: 4px; cursor: pointer; min-width: 0; white-space: nowrap; }
+.ws-seat:hover { background: #1c2128; }
+.ws-seat.named { cursor: default; }
+.ws-seat-shape { flex: none; width: 1em; text-align: center; color: #8b949e; }
+.ws-seat.st-working .ws-seat-shape { color: var(--ok); }
+.ws-seat.st-idle .ws-seat-shape { color: var(--warn); }
+.ws-seat.st-blocked .ws-seat-shape { color: var(--error); }
+.ws-seat.st-exited { opacity: .55; }
+.ws-seat-no { flex: none; color: #8b949e; }
+.ws-seat-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ws-seat-tag { flex: none; font-size: .8em; padding: 0 .35em; border: 1px solid var(--warn); border-radius: 3px; color: var(--warn); }
+.ws-seat-tag.blocked { border-color: var(--error); color: var(--error); }
+.ws-seat-ctx { flex: none; min-width: 2.6em; text-align: right; color: #8b949e; }
+.ws-seat-ctx.warn { color: var(--warn); }
+.ws-seat-ctx.crit { color: var(--error); font-weight: 600; }
+.ws-seat-group { display: flex; align-items: baseline; gap: .4em; margin-top: 4px; padding: 0 4px; font-size: .9em; font-weight: 700; color: #8b949e; min-width: 0; }
+.ws-seat-group-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-seat-group-n { flex: none; font-weight: 400; color: #6e7681; }
 /* ★0.14.45 노드별 계정 줄 — 같은 계정을 쓰는 노드 묶음(이름 굵게 + 역할). 좁은 폭에서는 묶음 단위로 줄바꿈된다. 이메일은 툴팁(title)에만. */
 .ws-tab .ws-accts {
   display: flex; flex-wrap: wrap; column-gap: 8px; row-gap: 1px; min-width: 0;

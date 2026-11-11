@@ -11,7 +11,8 @@
 // ★waiting(입력을 기다림)은 「대기」다 — 막 띄운 빈 좌석도 waiting 이므로 「확인 대기」라 부르면 뜻이 틀린다(master#c9265847 A).
 //   「확인」 꼬리표는 좌석이 스스로 waiting/done 을 신고했을 때만 단다.
 import type { DotView } from "./roleactivity";
-import type { CtxSource } from "./ctxpick";
+import { pickCtx, type CtxSource } from "./ctxpick";
+import { STATUS_FRESH_SECS } from "./appearance";
 
 export type SeatState = "working" | "idle" | "blocked" | "unknown" | "exited";
 export type SeatTag = "승인 창" | "확인" | null;
@@ -55,10 +56,14 @@ export interface SeatInput {
   ctxSrc: CtxSource;
   /** 사람이 옮긴 묶음(있으면 폴더보다 먼저) — 조각 2 에서 채운다. */
   group?: string | null;
+  /** 번호 대신 적을 이름(surface 없는 이름 보고자 master·cso — wsusage namedCtxRows). */
+  label?: string | null;
 }
 
 export interface SeatRow {
   sid: number;
+  /** 이름 보고자 줄(화면에 창이 없다 — 누를 수 없다). */
+  named: boolean;
   no: string;
   name: string;
   state: SeatState;
@@ -94,9 +99,9 @@ export function seatState(i: SeatInput): SeatState {
 }
 
 export function seatTag(i: SeatInput, state: SeatState): SeatTag {
-  if (state === "exited") return null;
   if (state === "blocked") return "승인 창";
-  if (i.statusState === "waiting" || i.statusState === "done") return "확인";
+  // 「확인」 = 좌석이 스스로 waiting/done 을 신고했고 화면이 일하는 중이 아닐 때만(일하는 중이면 낡은 신고다).
+  if ((state === "idle" || state === "unknown") && (i.statusState === "waiting" || i.statusState === "done")) return "확인";
   return null;
 }
 
@@ -134,7 +139,8 @@ function toRow(i: SeatInput): SeatRow {
   const state = seatState(i);
   return {
     sid: i.sid,
-    no: String(i.displayNo ?? i.sid),
+    named: !!i.label,
+    no: i.label || String(i.displayNo ?? i.sid),
     name: seatName(i),
     state,
     tag: seatTag(i, state),
@@ -171,4 +177,80 @@ export function buildSeatRows(inputs: readonly SeatInput[]): SeatRowsModel {
 /** 묶음 머리를 그릴지 — 묶음이 2개 이상일 때만(묶음 1개 = 지금 1.1.14 화면과 같게 · 설계 §8). */
 export function showGroupHeaders(m: SeatRowsModel): boolean {
   return m.groups.length > 1;
+}
+
+/** feed_list_all(status=pending) 응답 → 승인 창이 떠 있는 좌석 열쇠 집합(`${socket}#${sid}` · 본부 socket = undefined).
+ *  열쇠 모양은 main.ts nodeSig 와 같다. 형식이 어긋난 항목은 건너뛴다(IPC 값은 전부 의심한다). */
+export function approvalSeatKeys(all: unknown): Set<string> {
+  const out = new Set<string>();
+  const socks = (all as { sockets?: unknown } | null)?.sockets;
+  if (!Array.isArray(socks)) return out;
+  for (const x of socks) {
+    if (!x || typeof x !== "object") continue;
+    const o = x as { socket?: unknown; dept?: unknown; items?: unknown };
+    if (!Array.isArray(o.items)) continue;
+    const sock = o.dept === null ? undefined : typeof o.socket === "string" ? o.socket : null;
+    if (sock === null) continue;
+    for (const it of o.items) {
+      const f = it as { kind?: unknown; status?: unknown; surface_id?: unknown } | null;
+      if (!f || f.kind !== "approval" || f.status !== "pending") continue;
+      if (typeof f.surface_id !== "number" || !Number.isSafeInteger(f.surface_id)) continue;
+      out.add(`${sock}#${f.surface_id}`);
+    }
+  }
+  return out;
+}
+
+/** surface.list 원행 하나(+ 이미 판정한 활동 점 · 자기보고 · 승인 여부) → SeatInput. 원행이 없으면(아직 목록 전) 모름으로 둔다.
+ *  CTX 는 ctxpick.pickCtx(측정값 우선 · 끝남/사망 = 판정 불가 · 결측 = null). */
+export function seatInputOf(
+  sid: number,
+  s: any,
+  dot: DotView | null,
+  self: { state: string | null; task: string | null } | undefined,
+  approvalPending: boolean,
+): SeatInput {
+  const ctx = pickCtx({ exited: s?.exited, agent_alive: s?.agent_alive, usage: s?.usage });
+  return {
+    sid,
+    displayNo: typeof s?.display_no === "number" ? s.display_no : null,
+    role: typeof s?.role === "string" ? s.role : null,
+    title: typeof s?.title === "string" ? s.title : "",
+    cwd: typeof s?.cwd === "string" ? s.cwd : null,
+    exited: s?.exited === true,
+    dot: s ? dot : null,
+    approvalPending,
+    statusState: self?.state ?? null,
+    task: self?.task ?? null,
+    ctxPct: ctx.pct,
+    ctxSrc: ctx.src,
+  };
+}
+
+/** 이름 보고자(surface 없는 master·cso — wsusage namedCtxRows 의 행) → 고정 줄 입력. 활동은 모른다(모름). */
+export function namedSeatInputs(rows: readonly { name: string; ctxPct: number | null }[]): SeatInput[] {
+  return rows.map((c, k) => ({
+    sid: -1 - k,
+    displayNo: null,
+    role: c.name,
+    title: c.name,
+    cwd: null,
+    exited: false,
+    dot: null,
+    approvalPending: false,
+    statusState: null,
+    task: null,
+    ctxPct: c.ctxPct,
+    ctxSrc: c.ctxPct == null ? "none" : "measured",
+    label: c.name,
+  }));
+}
+
+/** 좌석 줄의 활동 점 — 데몬 관측이 있으면 그대로. 관측이 「모름」일 때만 **신선한 자기보고 working**(120초 이내 · appearance.ts
+ *  STATUS_FRESH_SECS)으로 메운다. ★역할 점의 폴백(nodeWorking)과 다른 점: 자기보고가 없을 때 「최근 60초 출력」만으로 작업 중이라
+ *  하지 않는다 — 출력은 작업의 증거가 아니다(설계 §2 「모름을 작업 중으로 칠하지 않는다」). */
+export function seatDot(view: DotView, self: { state: string | null; ageSecs: number | null } | undefined): DotView {
+  if (view !== "unknown") return view;
+  if (self?.state === "working" && typeof self.ageSecs === "number" && self.ageSecs <= STATUS_FRESH_SECS) return "working";
+  return "unknown";
 }

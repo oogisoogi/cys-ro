@@ -26,7 +26,11 @@ describe("C2 — 목록을 그리는 한 곳만 새 명령 · 나머지 feed_lis
     expect(b.includes("if (legacyMode) renderOtherWorkspacePending(box);")).toBe(true); // 종전 띠는 폴백에서만
   });
   it("feed_list_all 호출은 refreshFeed 하나뿐 · feed_list 의 다른 호출처 셋(승인 전환·팔레트 게이트·수동 승인 게이트)은 그대로", () => {
-    expect(code.split('invoke("feed_list_all"').length - 1).toBe(1);
+    // (tabs-sidebar 조각1) 두 번째 호출처 = 좌석 줄 「막힘(승인 창)」 재료 refreshApprovalSeats — 대기 승인이 0 이면 부르지 않는다(평소 비용 0 · m-2 취지 유지).
+    expect(code.split('invoke("feed_list_all"').length - 1).toBe(2);
+    const seat = fnBody("refreshApprovalSeats");
+    expect(seat.includes('invoke("feed_list_all", { status: "pending" })')).toBe(true);
+    expect(seat.indexOf("if (pendingApprovals === 0) {") >= 0 && seat.indexOf("if (pendingApprovals === 0) {") < seat.indexOf('invoke("feed_list_all"')).toBe(true);
     expect(code.split('feedList: () => invoke("feed_list", { status: null }),').length - 1).toBe(1); // 승인 전환 스케줄러(probefail.test.ts:450 이 같은 줄을 고정)
     expect(code.includes('invoke("feed_list", { status: "pending" })')).toBe(true);
   });

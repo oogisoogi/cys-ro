@@ -339,6 +339,8 @@ import {
 import { armDeferredPaneFocus, modalLayerOpen } from "./modalguard";
 import { activityExpiryMs, applyDotPaint, HIDDEN_DOT, projectActivity, RoleActivityStore } from "./roleactivity"; // ★F-01 역할 점 활동 표시(순수 판정·바뀐 것만 칠하기)
 import { SurfaceListTransport, type ListArrival } from "./surfacelist"; // ★F-01 끝점별 소유 원 호출 · 응답별 독립 투영
+import { approvalSeatKeys, buildSeatRows, namedSeatInputs, seatDot, seatInputOf, type SeatInput } from "./seatrows"; // (tabs-sidebar 조각1) 좌석 줄 판정·묶음
+import { paintSeatRows, pruneSeatHosts, seatHost } from "./seatrowsdom"; // (tabs-sidebar 조각1) 좌석 줄 그리기
 
 declare global {
   interface Window {
@@ -810,77 +812,9 @@ function renderSidebarUsage(surfaces: SurfaceLike[]) {
   //   그 자리를 비워 두는 대신 아무것도 그리지 않는다. Fable 표시는 위 ①의 「7d·Fable」
   //   실게이지가 전담한다(한도 대비 소진율 — 서버가 준 수).
 
-  // ② 페인별 CTX — 「페인 번호 + %」. 신선도·출처 등급을 함께 적는다(ⓓ).
-  // ★푸터에서 CTX가 사라지므로 이 표가 그 자리를 대신한다. 그래서 「언제 관측한 값인지」와
-  //   「서버가 준 값인지 우리가 추정한 값인지」를 값 옆에 붙인다.
-  // ★관측이 없는 pane도 「—」로 남긴다 — 지워 버리면 「미관측」과 「그런 pane 없음」이 구별되지 않는다.
+  // ② (tabs-sidebar 조각1 · 설계 ④) 종전 「페인 CTX」 칸은 부서 카드 아래 좌석 줄(seatrowsdom.ts)로 합쳤다 —
+  //   줄마다 번호 · 일감 · 상태 · CTX % 가 그쪽에 있다(출처·나이는 줄 툴팁). 여기는 패널 전체 신선도 꼬리만 남긴다.
   if (ctxRows.length) {
-    const head = document.createElement("div");
-    head.className = "wsu-head";
-    head.textContent = "페인 CTX";
-    frag.appendChild(head);
-    for (const line of ctxLines(ctxRows, showSocket, ctxGroupLabel)) {
-      if (line.kind === "group") {
-        // (D4 #10) 부서 머리줄 — 부서 이름 전체(패널 폭). 행 라벨 열에는 번호만.
-        const gh = document.createElement("div");
-        gh.className = "wsu-ctx-group";
-        gh.textContent = line.label;
-        gh.title = line.socket || "본부";
-        frag.appendChild(gh);
-        continue;
-      }
-      const c = line.row;
-      const row = document.createElement("div");
-      row.className = `wsu-ctx${c.stale ? " stale" : ""}${c.ctxPct == null ? " unobserved" : ""}`;
-      const sid = document.createElement("span");
-      sid.className = `wsu-ctx-sid${c.name ? " named" : ""}`;
-      const tag = showSocket ? shortSocketTag(c.socket) : "";
-      // ★이름 있는 보고자는 번호 대신 이름(오너 지시: 「master」·「cso」).
-      //   이들에겐 surface_id가 없으므로 번호를 적으면 화면의 어떤 페인과도 대조되지 않는다.
-      sid.textContent = c.name ? c.name : String(c.surfaceId); // (D4 #10) 부서 이름은 머리줄로 — 「dept-3:12」 잘림 제거
-      const track = document.createElement("span");
-      track.className = "cc-tbar-track";
-      if (c.ctxPct != null) {
-        const fill = document.createElement("span");
-        const sev = sevClassFor(c.ctxPct, 60, 80);
-        fill.className = `cc-tbar-fill${sev ? " " + sev : ""}`;
-        fill.style.width = `${Math.min(100, Math.max(0, c.ctxPct))}%`;
-        track.appendChild(fill);
-      }
-      const pct = document.createElement("span");
-      const sev = c.ctxPct == null ? "" : sevClassFor(c.ctxPct, 60, 80);
-      pct.className = `wsu-ctx-pct${sev ? " " + sev : ""}`;
-      pct.textContent = c.ctxPct == null ? "—" : `${Math.round(c.ctxPct)}%`;
-      const mark = document.createElement("span");
-      mark.className = "wsu-src";
-      const g = c.ctxPct == null ? null : sourceGrade(c.source);
-      mark.textContent = g ? g.mark : "";
-      // ★행별 관측 나이(오너 발의 2026-08-08). 푸터의 「가장 낡음」 하나만으로는 **어느 행이**
-      //   낡았는지 알 수 없어, 방금 관측된 행까지 함께 낡아 보였다. 나이는 행마다 다른 값이므로
-      //   행에 적어야 한다 — 패널 하나의 수로는 그 차이를 표현할 방법이 없다.
-      // ★미관측 행(ctxPct == null)은 비워 둔다 — 관측이 없으면 나이도 없다. 여기에 무언가를
-      //   찍으면 「측정 전」이 「방금 측정됨」으로 읽힌다(거짓 신선 금지 — 표 전체의 규율).
-      const age = document.createElement("span");
-      age.className = "wsu-ctx-age";
-      const mkAge = (nowSecs2: number) => (c.ctxPct == null ? "" : ageShort(ageAt(c.updatedAt, nowSecs2)));
-      age.textContent = mkAge(nowSecs);
-      row.append(sid, track, pct, mark, age);
-      const mkCtxTitle = (nowSecs2: number) => {
-        // 이름 행은 「페인 N」이 아니다 — cys surface가 아니라 cmux 페인의 Claude다.
-        const where = c.name
-          ? `${c.name} (cmux 페인 · cysr surface 없음)`
-          : `페인 ${c.surfaceId}${tag ? ` (데몬 ${tag} · ${c.socket})` : ""}`;
-        if (c.ctxPct == null) return `${where} · 아직 관측치 없음\n(측정 전이라는 뜻이지 0% 라는 뜻이 아니다)`;
-        return `${where} · CTX ${Math.round(c.ctxPct)}%\n${(g as { title: string }).title}\n관측 ${ageText(
-          ageAt(c.updatedAt, nowSecs2),
-        )}${c.stale ? " ⚠ stale" : ""}`;
-      };
-      row.title = mkCtxTitle(nowSecs);
-      // ★나이 텍스트도 서명이 아니라 이 클로저로 갱신한다 — 서명에 넣으면 60초 미만 구간에서
-      //   매 틱 서명이 바뀌어 표 전체가 재생성되고 툴팁·호버가 죽는다(codex 2R 이력).
-      usageAgeUpdaters.push((n) => { row.title = mkCtxTitle(n); age.textContent = mkAge(n); });
-      frag.appendChild(row);
-    }
     // 패널 전체의 신선도 — 가장 오래된 **관측된** 값 기준(미관측 행은 나이가 없다).
     const observed = ctxRows.filter((c) => c.ctxPct != null);
     if (observed.length) {
@@ -3276,6 +3210,10 @@ async function loadDefaultSocketSlug(): Promise<void> {
 // + working = 역할 점 깜빡임 판정(appearance.ts nodeWorking 단일 출처 · 우리 판 — 잠정 X6).
 type NodeSig = SeatSig & { working: boolean };
 const nodeSig = new Map<string, NodeSig>(); // 키 = `${socket}#${surface_id}`
+// (tabs-sidebar 조각1) 좌석 줄 재료 — 3초 surface.list 원행(소켓 → sid → 행) · 10초 org.status 자기보고 · 승인 창 좌석. 키 모양 = nodeSig.
+const seatListBySock = new Map<string, Map<number, any>>();
+const seatSelf = new Map<string, { state: string | null; task: string | null; ageSecs: number | null }>();
+let approvalSeats = new Set<string>();
 // ★0.14.45 좌석별 계정 캐시 — org.status 좌석 행의 `account` 가산 키(같은 10초 틱 · 새 RPC·타이머 0). 키는 nodeSig 와 같다. 표시 전용.
 const seatAccts = new Map<string, SeatAcctSig>();
 // 신호 낡음 창(3×폴링 주기). 재부팅 직후 Windows 는 같은 조회가 더 걸리므로 그 축에서만 2배(winScaled 관례) —
@@ -3815,6 +3753,7 @@ async function refreshPaneTitles() {
           cwd_blocked?: unknown;
         }[];
       };
+      seatListBySock.set(sk ?? "", new Map(r.surfaces.map((s) => [s.surface_id, s]))); // (tabs-sidebar 조각1) 좌석 줄 재료
       rememberRoles(sk, r.surfaces); // 자동 정렬 역할 표 — 이 틱의 닫기·입양 배치가 전부 이 값을 쓴다
       seatRolesTick.set(sk ?? "", deptLiveRoles(r.surfaces)); // ★R1F-UB(S4 B1): 목록을 **받은 뒤에만** 적는다 — 받지 못하면(시간 초과·오류) 이 줄에 닿지 않아 그 소켓의 판정을 건너뛴다
       blockedTick.push(...collectCwdBlocked(r.surfaces, sk ?? ""));
@@ -4001,6 +3940,7 @@ async function refreshPaneTitles() {
     void refreshUsageAccounts();
     void refreshNamedReporters();
     renderSidebarUsage([...lastSurfacesBySocket.values()].flat());
+    refreshSeatRows(); // (tabs-sidebar 조각1)
   }
   // ★(0.14.41 · U18) 폴더별 고정 토스트 — 새 좌석이 있을 때만 띄운다(3초마다 같은 id 재표시 금지 ·
   //   TTL 무한 연장 금지). 순수 판정이라 throw 가 없지만, 표시 실패가 루프를 멈추지 않게 가둔다.
@@ -5870,6 +5810,8 @@ async function refreshSidebarStatus() {
           unregistered: isUnregisteredRoleSeat(n), // ★U12(리뷰1 #3) 등록 에이전트 없는 역할 좌석 — 빈 자리 판정 제외 · 중립 표식만
           at: Date.now(), // ★U4-A5① 성공 조회 시각 — 실패는 덮어쓰지 않으므로 3×주기 뒤 '미확인'이 된다
         });
+      for (const n of r.surfaces ?? []) // (tabs-sidebar 조각1) 좌석 줄의 「확인」 꼬리표·일감 이름 = 자기보고
+        if (n && typeof n === "object") seatSelf.set(`${sock}#${n.surface_id}`, { state: typeof n.status?.state === "string" ? n.status.state : null, task: typeof n.status?.task === "string" ? n.status.task : null, ageSecs: typeof n.status?.age_secs === "number" ? n.status.age_secs : null });
       // ★0.14.45 좌석별 계정 — 키가 없으면(구버전 데몬) present=false 로 적는다(값을 지어내지 않는다). 실패 조회는 덮어쓰지 않으므로 낡음 창 뒤 '계정 미확인'.
       for (const n of r.surfaces ?? []) {
         if (!n || typeof n !== "object") continue;
@@ -5893,7 +5835,60 @@ async function refreshSidebarStatus() {
   // ★소비자도 같은 값을 써야 한다 — 위 한 줄만 고치고 여기에 지역 누산기를 넘기면
   // '합계는 맞는데 배지는 사라지는' 절반 수리가 된다(승인 도착 순간 배지가 깜빡 사라진다).
   updatePendingBadges(pendingApprovals); // CC 버튼·승인 Feed 탭 배지 동기
+  await refreshApprovalSeats();
   renderWsTabs(); // 신호 반영 재렌더
+}
+
+// (tabs-sidebar 조각1) 승인 창이 떠 있는 좌석 — 대기 승인이 있을 때만 묻는다(평소 비용 0 · 10초 고리 + approval.request 이벤트).
+//   실패하면 직전 값을 유지한다(0 으로 접어 막힘 표시가 사라지지 않게 — 배지와 같은 규율).
+async function refreshApprovalSeats(): Promise<void> {
+  if (pendingApprovals === 0) {
+    approvalSeats = new Set();
+    return;
+  }
+  if (!claimFlight("seat-approvals")) return;
+  try {
+    const call = invoke("feed_list_all", { status: "pending" });
+    releaseFlightWhenSettled("seat-approvals", call);
+    approvalSeats = approvalSeatKeys(await rpcT(call, T_LIST));
+  } catch {
+    /* 직전 값 유지 */
+  }
+}
+
+// (tabs-sidebar 조각1) 부서 카드 아래 좌석 줄 — 재료를 모아 seatrows 에 넘기고 그리기만 한다(판정은 seatrows.ts).
+function refreshSeatRows(): void {
+  const nowMs = performance.now();
+  let hq: number | null = null;
+  try {
+    hq = hqWorkspaceId(workspaces.map((w) => ({ id: w.id, socket: w.socket, pending: w.pending, sids: collectSids(w.tree) })), hqMasterSids);
+  } catch {
+    hq = null;
+  }
+  for (const ws of workspaces) {
+    if (ws.pending) continue;
+    const sock = ws.socket;
+    const list = seatListBySock.get(sock ?? "");
+    // 이름 보고자(surface 없는 master·cso)는 본부 좌석 줄의 고정 줄로 합친다(종전 「페인 CTX」 칸의 이름 줄).
+    const inputs: SeatInput[] = ws.id === hq ? namedSeatInputs(namedCtxRows(namedCache, Date.now() / 1000)) : [];
+    for (const sid of collectSids(ws.tree)) {
+      const p = projectActivity(roleActivity.get(paneKey(sid, sock)), nowMs, T_ACTIVITY);
+      const self = seatSelf.get(`${sock}#${sid}`);
+      inputs.push(seatInputOf(sid, list?.get(sid), seatDot(p.view, self), self, approvalSeats.has(`${sock}#${sid}`)));
+    }
+    paintSeatRows(seatHost(String(ws.id)), buildSeatRows(inputs), { onPick: (sid) => pickSeat(ws, sid) });
+  }
+  pruneSeatHosts((k) => workspaces.some((w) => String(w.id) === k));
+}
+// 좌석 줄을 누르면 = 그 부서로 전환 + 그 좌석 포커스(조각2 에서 「그 좌석만 넓게」로 확장).
+function pickSeat(ws: Workspace, sid: number): void {
+  const i = workspaces.indexOf(ws);
+  if (i < 0) return;
+  if (i !== activeWs) {
+    activeWs = i;
+    render();
+  }
+  setFocus(sid);
 }
 
 // 승인 대기 건수 배지 — 상단 Control Center 버튼 + 편입된 '승인 Feed' 탭 둘 다 갱신.
@@ -5977,7 +5972,8 @@ function renderWsTabs() {
   const pinnedG = groups.filter((g) => g.pinned && hasMembers(g));
   const unpinnedG = groups.filter((g) => !g.pinned && hasMembers(g));
   for (const g of [...pinnedG, ...unpinnedG]) bar.appendChild(buildGroupSection(g));
-  for (const ws of workspaces.filter((w) => !w.pending && w.groupId == null)) bar.appendChild(buildTab(ws));
+  for (const ws of workspaces.filter((w) => !w.pending && w.groupId == null)) bar.append(buildTab(ws), seatHost(String(ws.id)));
+  refreshSeatRows(); // (tabs-sidebar 조각1) 같은 호스트를 다시 붙였으니 값만 맞춘다(서명 같으면 그대로)
   wsAcctIdxForRender = null; // (C2) 렌더 밖에서는 캐시를 쓰지 않는다(다음 렌더가 새로 만든다)
 }
 
@@ -6299,7 +6295,7 @@ function buildGroupSection(g: GroupMeta): HTMLElement {
     for (const ws of workspaces.filter((w) => !w.pending && w.groupId === g.id)) {
       const tab = buildTab(ws);
       tab.classList.add("in-group");
-      body.appendChild(tab);
+      body.append(tab, seatHost(String(ws.id)));
     }
     sec.appendChild(body);
   }

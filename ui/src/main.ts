@@ -343,7 +343,7 @@ import { approvalSeatKeys, buildSeatRows, namedSeatInputs, seatApprovalItems, se
 import { paintSeatRows, pruneSeatHosts, seatHost } from "./seatrowsdom"; // (tabs-sidebar 조각1) 좌석 줄 그리기
 import { fixedColumnSplit, GRID_MIN_COLS, GRID_MIN_ROWS, gridColumns, gridView, GROUP_TABS_KEY, groupTabsOn, normalizeTabState, reconcileTabs, tabPillarShare, viewTree, zoomKeyOf, type TabState, type TabView } from "./grouptabs";
 import { buildTabBar } from "./tabbar";
-import { effectiveGroup, forgetSeatGroup, parseSeatGroups, SEAT_GROUP_KEY, syncSeatGroupsFromList, uniqueKeys, type SeatGroups } from "./seatgroup"; // (tabs-sidebar 2d) 옮긴 묶음 기록 // (tabs-sidebar 2b) 탭 머리 줄 // (tabs-sidebar 조각2) 묶음 탭 판정
+import { cleanGroupName, effectiveGroup, forgetSeatGroup, parseSeatGroups, SEAT_GROUP_KEY, syncSeatGroupsFromList, uniqueKeys, type SeatGroups } from "./seatgroup"; // (tabs-sidebar 2d) 옮긴 묶음 기록 // (tabs-sidebar 2b) 탭 머리 줄 // (tabs-sidebar 조각2) 묶음 탭 판정
 import type { SeatRowsModel } from "./seatrows";
 import { accountNeedsAction, BOARD_KEY, BOARD_OPEN_KEY, BOARD_POS_KEY, boardCounts, boardOpen, boardPos, boardVariant, limitLine, limitPct, limitTitle, nextSeat, paintBoard, type BoardState } from "./statusboard"; // (tabs-sidebar 1d) 상황판 시안
 
@@ -3823,6 +3823,8 @@ async function refreshPaneTitles() {
           usage?: ObservedUsage | null;
           // surface.list 가 이미 싣는 단조 줄 커서 — ③ 자리표 무접촉 판정의 「출력」 축.
           line_count?: number | null;
+          // (948 D5) 지금 좌석 크기(구 데몬 = 없음) — fitPane 의 「마지막으로 보낸 크기」 기억과 대조한다.
+          size?: { rows?: unknown; cols?: unknown } | null;
           // ★(0.14.41 · U18) 좌석 작업 폴더 막힘 관측(folderaccess.ts collectCwdBlocked 가 읽는다 · 구 데몬은 부재).
           cwd_blocked?: unknown;
         }[];
@@ -3883,6 +3885,7 @@ async function refreshPaneTitles() {
         //   「참으로만 바뀐다·번호 비재사용」 가정에 기대지 않는다(기록 저장소가 지워진 채 데몬만 재시작되면 번호가 되돌 수 있다).
         if (s.exited) exitedPaneKeys.add(paneKey(s.surface_id, sk));
         else exitedPaneKeys.delete(paneKey(s.surface_id, sk));
+        noteSeatSize(rt, s.size); // (948 D5) 바깥에서 크기가 바뀌었으면 기억을 버리고 다시 맞춘다
         if (s.exited) forgetEndedSeatGroup(s.surface_id, sk); // (948 D3) 목록의 「끝남」 표시도 끝 신호 — 끝 이벤트를 놓쳐도 옮긴 묶음 기록을 지운다
         renderUsage(rt.usageEl, s.exited ? null : s.usage); // 종료 pane은 배지 제거 (혼동 방지)
         setRoleDot(rt, s.exited ? null : s.role); // 역할 점 동일 주기 갱신(★F-01 단일 렌더러 — 관측 활동 · 관측 없으면 자기보고 폴백)
@@ -4782,6 +4785,20 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
 }
 
 const lastSentSize = new WeakMap<PaneRuntime, string>(); // (tabs-sidebar 2c) 런타임 → 마지막으로 보낸 「열x행」
+// (948 D5) 바깥(`cys resize` 등)이 좌석 크기를 바꾸면 기억이 거짓이 되어 같은 크기라며 영영 다시 보내지 않았다(1.1.14 퇴행).
+//   3초 목록의 좌석 크기(size)가 기억과 **두 번 잇달아** 다르면 기억을 버리고 다시 맞춘다 — 한 번만 보고 버리면 보낸 크기가 목록보다
+//   늦게 닿는 경합마다 같은 크기를 한 번 더 보낸다(「같은 크기 재전송 0」 유지). 숨은 좌석은 버리기만 하고 다시 보일 때 맞춘다.
+const sizeMismatch = new WeakMap<PaneRuntime, string>();
+function noteSeatSize(rt: PaneRuntime, size: { rows?: unknown; cols?: unknown } | null | undefined): void {
+  const mem = lastSentSize.get(rt);
+  if (!size || typeof size.rows !== "number" || typeof size.cols !== "number" || mem === undefined) return void sizeMismatch.delete(rt);
+  const seen = `${size.cols}x${size.rows}`;
+  if (seen === mem) return void sizeMismatch.delete(rt);
+  if (sizeMismatch.get(rt) !== seen) return void sizeMismatch.set(rt, seen);
+  sizeMismatch.delete(rt);
+  lastSentSize.delete(rt);
+  fitPane(rt);
+}
 /// Fit only when actually laid out — a detached/hidden pane must not shrink the PTY.
 function fitPane(rt: PaneRuntime) {
   if (rt.termHost.offsetWidth < 60 || rt.termHost.offsetHeight < 40) return;
@@ -10560,7 +10577,7 @@ function onDaemonEvent(event: Record<string, unknown>) {
     const sockList = seatListBySock.get(evSock ?? "");
     const s = gsid === null ? undefined : sockList?.get(gsid);
     if (s && sockList) {
-      s.group = typeof payload.group === "string" ? payload.group : null;
+      s.group = cleanGroupName(payload.group); // (948 D7) NFKC · 보이지 않는 문자 이름 = 없음
       s.group_set = true;
       const g = syncSeatGroupsFromList(seatGroups, evSock, [...sockList.values()]);
       if (g.changed) saveSeatGroups(g.map);

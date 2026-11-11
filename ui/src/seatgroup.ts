@@ -10,6 +10,16 @@
 import { seatKey } from "./grouptabs";
 
 export const SEAT_GROUP_KEY = "cys-seat-group";
+/** (948 D7 · master#cb40d4a3) 묶음 이름 정리 — 데몬 parse_seat_group 과 같은 규칙: NFKC → 앞뒤 공백 제거 → 빈 값 = null ·
+ *  (앞뒤 자르기 = White_Space 만 · BOM 은 자르지 않고 거부) · 64자 초과 또는 제어(Cc)·서식(Cf: 폭 0 · BOM · 방향 표시)·줄/문단 구분(Zl·Zp) 문자가 있으면 null(그 이름은 쓰지 않는다 = 자동 규칙).
+ *  「﻿site」 와 「site」 가 똑같이 보이는 다른 탭 2개가 되는 속임을 막는다. 문자열이 아니면 null. */
+export function cleanGroupName(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  // 앞뒤 자르기 = 유니코드 White_Space 만(Rust str::trim 과 같은 정의) — JS trim() 은 BOM(U+FEFF)까지 잘라 데몬과 판정이 갈렸다.
+  const t = v.normalize("NFKC").replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
+  if (!t || [...t].length > 64 || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(t)) return null;
+  return t;
+}
 export type SeatGroups = Record<string, string>;
 /** surface.list 원행 중 이 판정이 읽는 칸. */
 export interface GroupRow {
@@ -25,7 +35,10 @@ export function parseSeatGroups(raw: string | null): SeatGroups {
     const o = JSON.parse(raw ?? "{}");
     if (!o || typeof o !== "object" || Array.isArray(o)) return {};
     const out: SeatGroups = {};
-    for (const [k, v] of Object.entries(o)) if (typeof v === "string" && v.trim()) out[k] = v.trim();
+    for (const [k, v] of Object.entries(o)) {
+      const g = cleanGroupName(v); // (948 D7) 저장값도 같은 규칙
+      if (g !== null) out[k] = g;
+    }
     return out;
   } catch {
     return {};
@@ -60,7 +73,7 @@ export function syncSeatGroupsFromList(m: SeatGroups, socket: string | null | un
     if (s.group_set !== true) continue; // 모름(데몬 재시작·구판 데몬) = 앱 기록 유지
     const k = keyOf(socket, s);
     if (!k || !uniq.has(k)) continue;
-    const g = str(s.group)?.trim() || null;
+    const g = cleanGroupName(s.group); // (948 D7) 못 쓰는 이름 = 해제와 같게(자동 규칙)
     if (g === null ? !(k in map) : map[k] === g) continue;
     if (g === null) {
       const { [k]: _drop, ...rest } = map;
@@ -74,7 +87,7 @@ export function syncSeatGroupsFromList(m: SeatGroups, socket: string | null | un
 /** 이 좌석의 묶음 — 데몬이 정한 값 > (열쇠가 하나뿐일 때) 앱 기록 > null(자동 규칙 = 생성 폴더). */
 export function effectiveGroup(m: SeatGroups, socket: string | null | undefined, s: GroupRow | undefined, uniq: ReadonlySet<string>): string | null {
   if (!s) return null;
-  if (s.group_set === true) return str(s.group)?.trim() || null;
+  if (s.group_set === true) return cleanGroupName(s.group);
   const k = keyOf(socket, s);
   return k && uniq.has(k) ? (m[k] ?? null) : null;
 }

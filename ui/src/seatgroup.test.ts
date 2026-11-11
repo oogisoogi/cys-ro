@@ -3,7 +3,7 @@
 //   group_set 없음(데몬 재시작·구판) = 앱 기록 유지 · 열쇠가 둘 이상 좌석에 같으면 읽지도 쓰지도 않음(딸려 옮겨짐 0) ·
 //   재부팅(번호 재발급) 뒤에도 같은 좌석의 묶음 · 저장값 형식 오류 = 빈 기록.
 import { describe, expect, test } from "bun:test";
-import { effectiveGroup, forgetSeatGroup, parseSeatGroups, SEAT_GROUP_KEY, seatGroupKey, syncSeatGroupsFromList, uniqueKeys } from "./seatgroup";
+import { cleanGroupName, effectiveGroup, forgetSeatGroup, parseSeatGroups, SEAT_GROUP_KEY, seatGroupKey, syncSeatGroupsFromList, uniqueKeys } from "./seatgroup";
 import { buildSeatRows, type SeatInput } from "./seatrows";
 
 describe("(2d) 옮긴 묶음 기록", () => {
@@ -83,6 +83,25 @@ describe("(948 D3) 끝난 좌석의 옮긴 묶음 기록 지우기 — 같은 �
     const m = { "#role:worker-4": "video" };
     const renumbered = { role: "worker-4", cwd: "/u/axdev/lms" };
     expect(effectiveGroup(m, undefined, renumbered, uniqueKeys(undefined, [renumbered]))).toBe("video");
+  });
+});
+
+describe("(948 D7) 묶음 이름 = NFKC 뒤 Cc·Cf·Zl·Zp 거부(데몬 parse_seat_group 과 같은 규칙)", () => {
+  test("폭 0 · BOM · 줄/문단 구분 · NEL · 방향 표시 · 소프트 하이픈 = 못 쓰는 이름(null)", () => {
+    for (const bad of ["\u200Bsite", "\uFEFFsite", "si\u2028te", "si\u2029te", "si\u0085te", "a\u202Eb", "a\u2066b", "si\u00ADte", "x".repeat(65)]) expect(cleanGroupName(bad)).toBeNull();
+  });
+  test("NFKC 정규화 · 앞뒤 공백 · 결합 문자는 합침 · 한글 그대로 · 문자열 아님 = null", () => {
+    expect(cleanGroupName("ｓｉｔｅ")).toBe("site");
+    expect(cleanGroupName("  ﬁle ")).toBe("file");
+    expect(cleanGroupName("e\u0301")).toBe("\u00E9");
+    expect(cleanGroupName("교육 부서")).toBe("교육 부서");
+    expect(cleanGroupName("\u2028site\n")).toBe("site"); // 앞뒤 White_Space(줄 구분·줄바꿈 포함)는 자른다 — 데몬 str::trim 과 같다
+    expect([cleanGroupName("  "), cleanGroupName(5), cleanGroupName(null)]).toEqual([null, null, null]);
+  });
+  test("저장값·데몬 값 모두 같은 규칙 — BOM 붙은 이름은 버리고, 전각은 같은 탭 열쇠로", () => {
+    expect(parseSeatGroups(JSON.stringify({ a: "\uFEFFsite", b: "ｌｍｓ" }))).toEqual({ b: "lms" });
+    expect(effectiveGroup({}, undefined, { role: "w", cwd: "/x", group: "\u200Bsite", group_set: true }, new Set())).toBeNull();
+    expect(effectiveGroup({}, undefined, { role: "w", cwd: "/x", group: "ｓｉｔｅ", group_set: true }, new Set())).toBe("site");
   });
 });
 

@@ -41,7 +41,8 @@ impl Box_ {
             .stderr(std::process::Stdio::null());
         b.child = Some(d.spawn().expect("cysd 기동"));
         let t = Instant::now();
-        while UnixStream::connect(&b.sock).is_err() && t.elapsed() < Duration::from_secs(20) {
+        // (948 D9) 부하 7~10 · 새로 링크된 cysd 는 소켓까지 18.6초 실측 — 기동 대기 60초(대기만 · 단언 무변경).
+        while UnixStream::connect(&b.sock).is_err() && t.elapsed() < Duration::from_secs(60) {
             std::thread::sleep(Duration::from_millis(100));
         }
         let pid = b.rpc("system.identify", json!({}))["result"]["daemon_pid"].as_u64().map(|p| p as u32);

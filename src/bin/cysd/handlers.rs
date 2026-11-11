@@ -504,25 +504,116 @@ fn revive_authority_role(r: &str) -> bool {
 }
 
 /// (tabs-sidebar 2d) 앱 화면 명령(`surface.set_group` · `ui.open_panel`)의 호출자 게이트 — 좌석 안에서 부르면 그 좌석이
-/// master 역할이어야 한다(워커·CSO·리뷰어 좌석이 남의 화면 배치를 바꾸지 못하게). 좌석 밖(사람이 연 터미널의 CLI ·
-/// 익명 발신)은 통과 — 좌석 pane 의 peer pid 는 늘 자기 좌석으로 풀리므로 좌석이 익명을 흉내 낼 수 없다(surface.close 와 같은 근거).
+/// master 역할이어야 한다(워커·CSO·리뷰어 좌석이 남의 화면 배치를 바꾸지 못하게). 좌석 밖(사람이 연 터미널의 CLI · 앱)은 통과.
+/// (948 D4) 「좌석 밖」 은 조상 체인을 홉 상한 안에서 끝(pid ≤ 1)까지 **모두 읽었을 때만** 믿는다 — 40단 중첩으로 상한을 넘기거나
+///   중간 조상을 못 읽으면 거부. ⚠알려진 한계(설계 §5): 좌석이 띄운 고아 자식(부모가 launchd 로 바뀐 프로세스)·다른 데몬 좌석에서
+///   이 소켓을 부르는 것은 「좌석 밖 터미널」 과 구별할 수 없다(영향 = 앱 배치·컨트롤 센터 열기뿐 · 같은 근거의 기존 RPC 점검은 별도 티켓).
 fn ui_command_caller_ok(daemon: &Arc<Daemon>, caller_pid: Option<u32>) -> Result<(), &'static str> {
+    ui_caller_verdict(
+        caller_pid,
+        |pid| crate::state::peer_start_time(pid).is_some(),
+        |pid| resolve_caller_surface(daemon, pid),
+        |sid| daemon.get_surface(sid).and_then(|s| s.role.lock().unwrap().clone()).as_deref().is_some_and(revive_authority_role),
+        parent_pid_of,
+    )
+}
+
+/// (948 D4·D8) 호출자 판정 순수 코어 — 판독기를 주입받는다(단위 시험이 판독 실패·상한 초과를 직접 만든다).
+fn ui_caller_verdict(
+    caller_pid: Option<u32>,
+    inspectable: impl Fn(u32) -> bool,
+    seat_of: impl Fn(u32) -> Option<u64>,
+    seat_is_master: impl Fn(u64) -> bool,
+    parent_of: impl FnMut(u32) -> Option<u32>,
+) -> Result<(), &'static str> {
     // (codex 1R ①) 판독 실패는 통과가 아니다 — 피어 pid 를 못 읽었거나(None) 그 프로세스를 들여다볼 수 없으면(시작 시각 판독 불가)
-    //   「좌석 밖이 확인된 호출자」가 아니므로 거부한다. 통과 = 판독된 프로세스이고 조상 중 좌석이 없을 때만.
+    //   「좌석 밖이 확인된 호출자」가 아니므로 거부한다.
     let Some(pid) = caller_pid else {
         return Err("caller process could not be identified");
     };
-    if crate::state::peer_start_time(pid).is_none() {
+    if !inspectable(pid) {
         return Err("caller process could not be inspected");
     }
-    let Some(cs) = resolve_caller_surface(daemon, pid) else {
-        return Ok(());
-    };
-    let role = daemon.get_surface(cs).and_then(|s| s.role.lock().unwrap().clone());
-    if role.as_deref().is_some_and(revive_authority_role) {
-        Ok(())
-    } else {
-        Err("caller seat must be master (or run from a terminal outside cys seats)")
+    if let Some(cs) = seat_of(pid) {
+        return if seat_is_master(cs) { Ok(()) } else { Err("caller seat must be master (or run from a terminal outside cys seats)") };
+    }
+    match ancestry_end_with(pid, parent_of) {
+        AncestryEnd::Clean => Ok(()),
+        AncestryEnd::Overflow => Err("caller ancestry is deeper than the inspection limit"),
+        AncestryEnd::Unreadable => Err("caller ancestry could not be read to its root"),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum AncestryEnd {
+    /// 끝(부모 pid ≤ 1)까지 모두 읽었다.
+    Clean,
+    /// 조상 해석과 같은 홉 상한(32)을 넘었다 — 그 위에 좌석이 있을 수 있다.
+    Overflow,
+    /// 중간 조상을 못 읽었다(사라짐·남의 프로세스·자기 자신이 부모).
+    Unreadable,
+}
+
+/// (948 D4) 조상 체인을 홉 상한 안에서 끝까지 읽었는가 — 순수(판독기 주입). 상한 = walk_ancestry_with 와 같은 32.
+fn ancestry_end_with(caller_pid: u32, mut parent_of: impl FnMut(u32) -> Option<u32>) -> AncestryEnd {
+    let mut cur = caller_pid;
+    for _ in 0..32 {
+        match parent_of(cur) {
+            None => return AncestryEnd::Unreadable,
+            Some(p) if p <= 1 => return AncestryEnd::Clean,
+            Some(p) if p == cur => return AncestryEnd::Unreadable,
+            Some(p) => cur = p,
+        }
+    }
+    AncestryEnd::Overflow
+}
+
+/// 부모 pid 판독 — macOS 경량 판독기(proc_brief) · 그 밖은 sysinfo 단일 pid. 못 읽으면 None.
+fn parent_pid_of(pid: u32) -> Option<u32> {
+    #[cfg(target_os = "macos")]
+    {
+        if crate::state::proc_probe_fast_enabled() {
+            return crate::state::proc_brief(pid).and_then(|b| b.parent);
+        }
+    }
+    let mut sys = sysinfo::System::new();
+    let p = sysinfo::Pid::from_u32(pid);
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[p]), true);
+    sys.process(p).and_then(|x| x.parent()).map(|pp| pp.as_u32())
+}
+
+#[cfg(test)]
+mod ui_caller_tests {
+    use super::*;
+    const OK_START: fn(u32) -> bool = |_| true;
+    // 조상 사슬: 500 → 400 → 300 → 1(launchd)
+    fn chain(p: u32) -> Option<u32> {
+        match p { 500 => Some(400), 400 => Some(300), 300 => Some(1), _ => None }
+    }
+    #[test]
+    fn caller_without_pid_or_uninspectable_is_denied() {
+        // (948 D8 R2·R3) 판독 실패 = 거부 회귀 시험
+        assert!(ui_caller_verdict(None, OK_START, |_| None, |_| true, chain).is_err(), "pid 없음 = 거부");
+        assert!(ui_caller_verdict(Some(500), |_| false, |_| None, |_| true, chain).is_err(), "프로세스 판독 실패 = 거부");
+    }
+    #[test]
+    fn seat_caller_must_be_master() {
+        assert_eq!(ui_caller_verdict(Some(500), OK_START, |_| Some(7), |_| true, chain), Ok(()));
+        assert!(ui_caller_verdict(Some(500), OK_START, |_| Some(7), |_| false, chain).is_err());
+    }
+    #[test]
+    fn outside_caller_needs_a_clean_ancestry_to_root() {
+        assert_eq!(ui_caller_verdict(Some(500), OK_START, |_| None, |_| false, chain), Ok(()), "끝까지 읽힌 좌석 밖 = 통과");
+        // (948 D4 ②) 40단 중첩 = 홉 상한 초과 = 거부
+        let deep = |p: u32| if p > 1000 && p <= 1040 { Some(p - 1) } else if p == 1000 { Some(1) } else { None };
+        assert_eq!(ancestry_end_with(1040, deep), AncestryEnd::Overflow);
+        assert!(ui_caller_verdict(Some(1040), OK_START, |_| None, |_| false, deep).is_err());
+        assert_eq!(ancestry_end_with(1031, deep), AncestryEnd::Clean, "31단 + 끝 = 상한 안");
+        // 중간 조상 판독 실패 · 자기 자신이 부모 = 거부
+        let broken = |p: u32| if p == 500 { Some(400) } else { None };
+        assert_eq!(ancestry_end_with(500, broken), AncestryEnd::Unreadable);
+        assert!(ui_caller_verdict(Some(500), OK_START, |_| None, |_| false, broken).is_err());
+        assert_eq!(ancestry_end_with(5, |p| Some(p)), AncestryEnd::Unreadable);
     }
 }
 
@@ -531,21 +622,61 @@ fn is_bidi_control(c: char) -> bool {
     matches!(c, '\u{200E}' | '\u{200F}' | '\u{061C}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 
-/// (tabs-sidebar 2d) 묶음 이름 판독 — 빈 값·null = 옮김 해제(None) · 앞뒤 공백 제거 · 64자 이하 · 제어문자 금지.
+/// (948 D5) surface.list 의 「size」 칸 — 정식 크기(재동기 흔들기 중이면 흔들기 전 크기 · surface.resize 기준과 같은 값).
+fn surface_size_wire(s: &crate::state::Surface) -> Value {
+    let (r, c) = crate::repaint::current_size_for_resize(s);
+    json!({"rows": r, "cols": c})
+}
+
+/// (948 D7) 보이지 않거나 줄을 가르는 문자 — 일반 범주 Cc(제어)·Cf(서식: 폭 0 U+200B · BOM U+FEFF · 방향 표시 등)·Zl(U+2028)·Zp(U+2029).
+///   「﻿site」 와 「site」 처럼 똑같이 보이는 다른 묶음 이름(속임)을 막는다. 앱(ui/src/seatgroup.ts cleanGroupName)과 같은 범주.
+fn has_hidden_or_break_char(t: &str) -> bool {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r"[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]").expect("고정 정규식")).is_match(t)
+}
+
+/// (tabs-sidebar 2d) 묶음 이름 판독 — 빈 값·null = 옮김 해제(None) · 앞뒤 공백 제거 · 64자 이하 · 제어·서식·줄/문단 구분 문자 금지.
+///   (948 D7 · master#cb40d4a3 A안) 먼저 NFKC 정규화하고 그 결과로 판정·저장한다 — 전각 「ｓｉｔｅ」 = 「site」(앱 cleanGroupName 과 같은 규칙).
 fn parse_seat_group(v: Option<&Value>) -> Result<Option<String>, &'static str> {
+    use unicode_normalization::UnicodeNormalization;
     match v {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::String(s)) => {
-            let t = s.trim();
+        Some(Value::String(raw)) => {
+            let n: String = raw.nfkc().collect();
+            let t = n.trim();
             if t.is_empty() {
                 Ok(None)
-            } else if t.chars().count() > 64 || t.chars().any(|c| c.is_control() || is_bidi_control(c)) {
-                Err("group must be 1-64 chars without control or bidi-control characters")
+            } else if t.chars().count() > 64 || t.chars().any(|c| c.is_control() || is_bidi_control(c)) || has_hidden_or_break_char(t) {
+                Err("group must be 1-64 chars without control, format (zero-width/BOM/bidi) or line/paragraph separator characters")
             } else {
                 Ok(Some(t.to_string()))
             }
         }
         _ => Err("group must be a string or null"),
+    }
+}
+
+#[cfg(test)]
+mod seat_group_name_tests {
+    use super::*;
+    // (948 D7) NFKC 뒤 범주 Cc·Cf·Zl·Zp 거부 — 똑같이 보이는 다른 묶음 이름(속임) 0.
+    #[test]
+    fn group_name_rejects_zero_width_bom_and_line_separators_after_nfkc() {
+        for bad in ["\u{200B}site", "\u{FEFF}site", "si\u{2028}te", "si\u{2029}te", "si\u{0085}te", "si\u{200D}te", "si\u{00AD}te", "a\u{202E}b", "a\u{2066}b"] {
+            assert!(parse_seat_group(Some(&json!(bad))).is_err(), "거부해야 함: {bad:?}");
+        }
+    }
+    #[test]
+    fn group_name_is_stored_nfkc_normalized_and_trimmed() {
+        assert_eq!(parse_seat_group(Some(&json!("ｓｉｔｅ"))), Ok(Some("site".to_string())));
+        assert_eq!(parse_seat_group(Some(&json!("  ﬁle  "))), Ok(Some("file".to_string())));
+        assert_eq!(parse_seat_group(Some(&json!("e\u{0301}"))), Ok(Some("\u{00E9}".to_string()))); // 결합 문자는 합쳐 저장(거부 아님)
+        assert_eq!(parse_seat_group(Some(&json!("교육 부서"))), Ok(Some("교육 부서".to_string())));
+        assert_eq!(parse_seat_group(Some(&json!("\u{2028}site\n"))), Ok(Some("site".to_string())), "앞뒤 White_Space 는 자른다 — 앱 cleanGroupName 과 같다");
+        assert_eq!(parse_seat_group(Some(&json!("  "))), Ok(None));
+        assert_eq!(parse_seat_group(Some(&Value::Null)), Ok(None));
+        assert!(parse_seat_group(Some(&json!(5))).is_err());
+        assert!(parse_seat_group(Some(&json!("x".repeat(65)))).is_err());
     }
 }
 
@@ -7353,6 +7484,9 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                         "group": s.group.lock().unwrap().clone().flatten(),
                         // (codex 1R ③) 이번 기동 중 사람이 정했는가(해제 포함) — false 면 group null 은 「모름」(데몬 재시작) · true 면 「해제」.
                         "group_set": s.group.lock().unwrap().is_some(),
+                        // (tabs-sidebar 948 D5) 지금 좌석 크기(정식 크기 — 재동기 흔들기 중이면 흔들기 전 크기 · surface.resize 의 기준과 같은 값).
+                        //   앱은 「같은 크기 재전송 0」 기억과 이 값이 다르면(바깥 `cys resize` 등) 기억을 버리고 다시 맞춘다. 순수 additive.
+                        "size": surface_size_wire(s),
                         "cmd": s.cmd,
                         "cwd": s.cwd,
                         "live_cwd": live_cwd,

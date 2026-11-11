@@ -132,7 +132,8 @@ fn hidden_seat_reads_like_visible_seat() {
         .stderr(std::process::Stdio::null());
     b.child = Some(d.spawn().expect("cysd 기동")); // 이 줄부터 어떤 실패에도 Drop 이 데몬을 내린다
     let t = Instant::now();
-    while UnixStream::connect(&b.sock).is_err() && t.elapsed() < Duration::from_secs(20) {
+    // (948 D9) 부하 7~10 · 새로 링크된 cysd 는 소켓까지 18.6초 실측 — 기동 대기 60초(대기만 · 단언 무변경).
+    while UnixStream::connect(&b.sock).is_err() && t.elapsed() < Duration::from_secs(60) {
         std::thread::sleep(Duration::from_millis(100));
     }
     b.pid = b.rpc("system.identify", json!({}))["daemon_pid"].as_u64().map(|p| p as i32);

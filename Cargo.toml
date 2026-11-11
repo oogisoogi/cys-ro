@@ -47,6 +47,8 @@ portable-pty = { path = "vendor/portable-pty" }
 vt100 = { path = "vendor/vt100" }
 clap = { version = "4", features = ["derive"] }
 regex = "1"
+# (tabs-sidebar 948 D7 · master#cb40d4a3 A안) 묶음 이름 NFKC 정규화 — 데몬·앱 같은 규칙. 판 정확 고정(원작자 병합 때 볼 것 · HANDOFF).
+unicode-normalization = "=0.1.26"
 # ★FATAL-1(0.14.42 WP-transport 리뷰): 기본 feature 의 `multithread`(rayon 전역 풀)를 끈다 — 나머지 기본
 #   feature(component·disk·network·system·user)는 그대로다(윈도우 `windows` 크레이트 feature 집합 무변).
 #   multithread 는 요청마다 rayon 작업을 전역 풀에 넣고, join 대기 중인 워커가 **다른 요청의** 작업을 훔쳐

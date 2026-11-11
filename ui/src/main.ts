@@ -343,6 +343,7 @@ import { approvalSeatKeys, buildSeatRows, namedSeatInputs, seatDot, seatInputOf,
 import { paintSeatRows, pruneSeatHosts, seatHost } from "./seatrowsdom"; // (tabs-sidebar 조각1) 좌석 줄 그리기
 import { GROUP_TABS_KEY, groupTabsOn, normalizeTabState, reconcileTabs, viewTree, type TabState, type TabView } from "./grouptabs"; // (tabs-sidebar 조각2) 묶음 탭 판정
 import type { SeatRowsModel } from "./seatrows";
+import { BOARD_KEY, boardCounts, boardVariant, limitLine, nextSeat, paintBoard, type BoardState } from "./statusboard"; // (tabs-sidebar 1d) 상황판 시안
 
 declare global {
   interface Window {
@@ -5888,7 +5889,8 @@ function refreshSeatRows(): void {
     seatModels.set(ws.id, model);
     paintSeatRows(seatHost(String(ws.id)), model, { onPick: (sid) => pickSeat(ws, sid) });
   }
-  pruneSeatHosts((k) => workspaces.some((w) => String(w.id) === k));
+  pruneSeatHosts((k) => k === "board" || workspaces.some((w) => String(w.id) === k || `n${w.id}` === k));
+  if (statusBoard !== "off") paintStatusBoard();
   // (tabs-sidebar 조각2) 묶음이 새로 갈리거나 좌석이 옮겨 숨길 좌석이 바뀌었으면 한 번 다시 그린다(같으면 아무것도 안 함 = 고리 없음).
   const ws = current();
   if (ws && !tabRenderQueued) {
@@ -5898,6 +5900,38 @@ function refreshSeatRows(): void {
       queueMicrotask(() => { tabRenderQueued = false; render(); });
     }
   }
+}
+// (tabs-sidebar 1d · 시안) 상황판 — 수는 좌석 줄 모델(같은 판정)에서 센다 · 숫자 = 그 상태 좌석으로 차례로 이동.
+const statusBoard = boardVariant(localStorage.getItem(BOARD_KEY));
+const boardCursor = new Map<BoardState, number>();
+function paintStatusBoard(): void {
+  const live = workspaces.filter((w) => !w.pending);
+  const models = live.map((w) => ({ wsId: w.id, model: seatModels.get(w.id) ?? { fixed: [], groups: [] } }));
+  const counts = boardCounts(models);
+  const nowSecs = Date.now() / 1000;
+  const limit = limitLine(accountRates(accountsCache, nowSecs).map((r) => ({ label: r.label, usedPct: r.usedPct, resetsAt: r.resetsAt })), nowSecs);
+  const extra = live.length === 1 ? buildWsAcctLine(live[0]) : null; // 카드가 하던 계정 줄을 상황판으로 옮긴다
+  const onGo = (st: BoardState) => {
+    const n = nextSeat(counts[st], boardCursor.get(st) ?? -1);
+    if (!n) return;
+    boardCursor.set(st, n.index);
+    const ws = workspaces.find((w) => w.id === n.seat.wsId);
+    if (ws) gotoSeat(ws, n.seat.sid);
+  };
+  if (statusBoard === "off") return;
+  paintBoard(seatHost("board"), counts, { variant: statusBoard, limit, extra, onGo });
+  if (live.length > 1)
+    for (const m of models) paintBoard(seatHost(`n${m.wsId}`), boardCounts([m]), { variant: statusBoard, limit: null, extra: null, onGo, compact: true });
+}
+// 그 좌석으로 이동 = 그 부서 · 그 좌석의 묶음 탭(넓게 보기 풀기) · 포커스.
+function gotoSeat(ws: Workspace, sid: number): void {
+  const i = workspaces.indexOf(ws);
+  if (i < 0) return;
+  const g = seatModels.get(ws.id)?.groups.find((x) => x.rows.some((r) => r.sid === sid));
+  if (g) ws.tabs = { ...normalizeTabState(ws.tabs), active: g.key, zoom: null };
+  activeWs = i;
+  render();
+  setFocus(sid);
 }
 // (tabs-sidebar 조각2) 부서별 마지막 좌석 모델 · 마지막으로 그린 탭 보기 서명.
 const seatModels = new Map<number, SeatRowsModel>();
@@ -6011,7 +6045,13 @@ function renderWsTabs() {
   const pinnedG = groups.filter((g) => g.pinned && hasMembers(g));
   const unpinnedG = groups.filter((g) => !g.pinned && hasMembers(g));
   for (const g of [...pinnedG, ...unpinnedG]) bar.appendChild(buildGroupSection(g));
-  for (const ws of workspaces.filter((w) => !w.pending && w.groupId == null)) bar.append(buildTab(ws), seatHost(String(ws.id)));
+  // (tabs-sidebar 1d · 시안) 상황판 = 막대 맨 위 · 부서가 1개면 카드를 그리지 않는다(상황판이 대신) · 여럿이면 카드 아래 그 부서 상태 수.
+  const solo = statusBoard !== "off" && workspaces.filter((w) => !w.pending).length === 1;
+  if (statusBoard !== "off") bar.appendChild(seatHost("board"));
+  for (const ws of workspaces.filter((w) => !w.pending && w.groupId == null))
+    if (solo) bar.append(seatHost(String(ws.id)));
+    else if (statusBoard !== "off") bar.append(buildTab(ws), seatHost(`n${ws.id}`), seatHost(String(ws.id)));
+    else bar.append(buildTab(ws), seatHost(String(ws.id)));
   refreshSeatRows(); // (tabs-sidebar 조각1) 같은 호스트를 다시 붙였으니 값만 맞춘다(서명 같으면 그대로)
   wsAcctIdxForRender = null; // (C2) 렌더 밖에서는 캐시를 쓰지 않는다(다음 렌더가 새로 만든다)
 }

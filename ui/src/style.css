@@ -409,6 +409,18 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
 .ws-seat-ctx { flex: none; min-width: 2.6em; text-align: right; color: #8b949e; }
 .ws-seat-ctx.warn { color: var(--warn); }
 .ws-seat-ctx.crit { color: var(--error); font-weight: 600; }
+/* (tabs-sidebar 1d · 시안) 상황판 — 막대 맨 위 한 칸 · 상태 수(모양+색 = 좌석 줄과 같은 토큰) · 0 은 흐리게. */
+[data-seat-host="board"] { padding: 6px 8px 8px; margin: 0 0 4px; border-radius: 7px; background: #1c2128; font-size: calc(15px * var(--wsbar-font, 1)); }
+.ws-board-head { font-size: .9em; font-weight: 700; color: #8b949e; margin-bottom: 2px; }
+.ws-board-counts { display: flex; flex-wrap: wrap; gap: .3em .6em; }
+.ws-board-n { background: none; border: none; padding: 1px 2px; font: inherit; color: var(--text); cursor: pointer; font-variant-numeric: tabular-nums; }
+.ws-board-n.st-working { color: var(--ok); }
+.ws-board-n.st-idle { color: var(--warn); }
+.ws-board-n.st-blocked { color: var(--error); }
+.ws-board-n.st-unknown { color: #8b949e; }
+.ws-board-n.zero { opacity: .35; cursor: default; }
+.ws-board-limit { margin-top: 3px; font-size: .9em; color: #8b949e; }
+[data-seat-host^="n"] { padding: 0 6px 0 10px; font-size: calc(13px * var(--wsbar-font, 1)); }
 .ws-seat.tagged { flex-wrap: wrap; row-gap: 0; }
 .ws-seat-sub { flex: 1 0 100%; display: flex; justify-content: flex-end; align-items: center; gap: .4em; min-width: 0; }
 .ws-seat-group { display: flex; align-items: baseline; gap: .4em; margin-top: 4px; padding: 0 4px; font-size: .9em; font-weight: 700; color: #8b949e; min-width: 0; }

@@ -37,17 +37,14 @@ pub const DOOR_ACK: &str = "agy-consumer-plan-warning-v1";
 pub const OPEN_WARNING: &str = "개인 요금제(무료·Google AI Pro·Ultra)로 로그인한 agy 를 cysr 이 띄우고 Claude 가 부리면, \
 구글 약관상 계정이 정지될 수 있습니다. 기업 요금제(Gemini Enterprise 등)처럼 이런 사용이 허용된 경우에만 여세요.";
 
-/// 이 어댑터가 agy 인가(순수). **실행 프로그램이 정본**이다 — cmd 에서 실제로 실행될 프로그램(대입·래퍼·인용·
-/// `sh -c` · `;`·`&&`·`|` 로 이은 다음 명령까지)이 하나라도 `agy`/`antigravity` 면 agy. cmd 가 없거나 읽을 수 없을 때만
-/// 어댑터 키 `gemini`(출하 어댑터 = agy)로 추정한다(codex 1R major: 키만 보면 같은 키로 Gemini API 등 다른 프로그램을 쓰는
-/// 사용자까지 막힌다). ★명령 치환(`$(…)`·백틱·`<(…)`)이 섞인 cmd 에 agy 낱말이 있으면 해석하지 않고 agy 로 본다(안전 쪽 ·
-/// 독립 재검 2R+).
+/// 이 어댑터가 agy 인가(순수). **실행 프로그램이 정본**이다 — cmd 의 모든 명령 단위(`;`·`&&`·`|`·줄바꿈 · `sh -c` ·
+/// `cmd /c` · `powershell -Command` · `find -exec` · 명령/프로세스 치환 본문 · here-string)에서 실행될 프로그램을 찾고,
+/// 그중 하나라도 `agy`/`antigravity` 면 agy. ★안전망(codex 3R): 조회 전용 프로그램(echo·which·command -v 등)이 아니면
+/// **인용 안 된 낱말**이 agy 이름이기만 해도 agy 로 본다(열거 못 한 실행 래퍼 대비 · 인용된 프롬프트 글 속 agy 는 세지 않음).
+/// cmd 가 없거나 프로그램을 하나도 못 읽을 때만 어댑터 키 `gemini`(출하 어댑터 = agy)로 추정한다.
 pub fn is_agy_adapter(agent_key: &str, cmd: Option<&str>) -> bool {
     let Some(c) = cmd else { return agent_key.eq_ignore_ascii_case("gemini") };
-    if has_substitution(c) && mentions_agy(c) {
-        return true;
-    }
-    let progs = programs_in(c, 0);
+    let progs = scan(c, 0);
     if progs.is_empty() {
         return agent_key.eq_ignore_ascii_case("gemini");
     }
@@ -58,30 +55,99 @@ fn is_agy_name(p: &str) -> bool {
     p == "agy" || p == "antigravity"
 }
 
-fn has_substitution(s: &str) -> bool {
-    s.contains("$(") || s.contains('`') || s.contains("<(") || s.contains(">(")
+/// 낱말이 agy 실행 파일 이름인가 — 경로·확장자를 걷고, 셸 이스케이프(`ag\y`)를 지운 꼴도 본다.
+fn is_agy_word(t: &str) -> bool {
+    is_agy_name(&basename_lc(t)) || is_agy_name(&basename_lc(&t.replace('\\', "")))
 }
 
 fn mentions_agy(s: &str) -> bool {
-    s.to_ascii_lowercase().split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-')).any(is_agy_name)
+    s.to_ascii_lowercase().replace('\\', "").split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-')).any(is_agy_name)
 }
 
-/// 셸 비슷한 나누기(순수) — 인용 밖의 `;` `&` `|` `(` `)` 줄바꿈에서 **명령 단위**를 끊고, 단위 안은 낱말로 나눈다.
-/// 홑·겹따옴표 안 공백 보존 · 역슬래시는 따옴표 밖에서 뒤 글자가 공백·따옴표일 때만 이스케이프(윈도우 경로 `C:\x\agy.cmd`).
-fn segments(s: &str) -> Vec<Vec<String>> {
-    let (mut segs, mut out, mut cur, mut any) = (Vec::new(), Vec::new(), String::new(), false);
+#[derive(Clone)]
+struct Tok {
+    text: String,
+    quoted: bool,
+}
+
+/// 명령/프로세스 치환 본문을 뽑고 바깥 문에서는 자리표시로 바꾼다(`$(…)`·`<(…)`·`>(…)`·백틱 · 홑따옴표 안은 치환 아님).
+/// 짝이 안 맞으면 None(호출부가 안전 쪽으로 판정).
+fn extract_subst(s: &str) -> Option<(String, Vec<String>)> {
+    let c: Vec<char> = s.chars().collect();
+    let (mut outer, mut bodies, mut i, mut sq) = (String::new(), Vec::new(), 0usize, false);
+    while i < c.len() {
+        let ch = c[i];
+        if sq {
+            outer.push(ch);
+            if ch == '\'' {
+                sq = false;
+            }
+            i += 1;
+            continue;
+        }
+        if ch == '\'' {
+            sq = true;
+            outer.push(ch);
+            i += 1;
+            continue;
+        }
+        if ch == '\\' && i + 1 < c.len() {
+            outer.push(ch);
+            outer.push(c[i + 1]);
+            i += 2;
+            continue;
+        }
+        if (ch == '$' || ch == '<' || ch == '>') && c.get(i + 1) == Some(&'(') {
+            let (mut d, mut j) = (1, i + 2);
+            while j < c.len() && d > 0 {
+                match c[j] {
+                    '(' => d += 1,
+                    ')' => d -= 1,
+                    _ => {}
+                }
+                j += 1;
+            }
+            if d != 0 {
+                return None;
+            }
+            bodies.push(c[i + 2..j - 1].iter().collect());
+            outer.push_str(" __subst__ ");
+            i = j;
+            continue;
+        }
+        if ch == '`' {
+            let j = (i + 1..c.len()).find(|&k| c[k] == '`' && c[k - 1] != '\\')?;
+            bodies.push(c[i + 1..j].iter().collect());
+            outer.push_str(" __subst__ ");
+            i = j + 1;
+            continue;
+        }
+        outer.push(ch);
+        i += 1;
+    }
+    Some((outer, bodies))
+}
+
+/// 셸 비슷한 나누기(순수) — 인용 밖의 `;` `&` `|` `(` `)` 줄바꿈에서 명령 단위를 끊고 단위 안은 낱말로 · 낱말마다 인용 여부.
+/// 역슬래시: 뒤가 줄바꿈이면 줄 이음(둘 다 버림) · 뒤가 공백·따옴표면 이스케이프 · 그 밖은 글자 그대로(윈도우 경로 `C:\x\agy.cmd`).
+fn lex(s: &str) -> Vec<Vec<Tok>> {
+    let (mut segs, mut out, mut cur, mut any, mut quoted) = (Vec::new(), Vec::<Tok>::new(), String::new(), false, false);
     let mut it = s.chars().peekable();
     let mut q: Option<char> = None;
-    let flush = |out: &mut Vec<String>, cur: &mut String, any: &mut bool| {
+    fn flush(out: &mut Vec<Tok>, cur: &mut String, any: &mut bool, quoted: &mut bool) {
         if *any || !cur.is_empty() {
-            out.push(std::mem::take(cur));
+            out.push(Tok { text: std::mem::take(cur), quoted: *quoted });
             *any = false;
+            *quoted = false;
         }
-    };
+    }
     while let Some(c) = it.next() {
         match q {
             Some(qc) if c == qc => q = None,
             Some(_) => cur.push(c),
+            None if c == '\\' && it.peek() == Some(&'\n') => {
+                it.next();
+            }
             None if c == '\\' && matches!(it.peek(), Some(n) if n.is_whitespace() || *n == '"' || *n == '\'') => {
                 cur.push(it.next().unwrap());
                 any = true;
@@ -89,18 +155,19 @@ fn segments(s: &str) -> Vec<Vec<String>> {
             None if c == '\'' || c == '"' => {
                 q = Some(c);
                 any = true;
+                quoted = true;
             }
             None if matches!(c, ';' | '&' | '|' | '(' | ')' | '\n') => {
-                flush(&mut out, &mut cur, &mut any);
+                flush(&mut out, &mut cur, &mut any, &mut quoted);
                 if !out.is_empty() {
                     segs.push(std::mem::take(&mut out));
                 }
             }
-            None if c.is_whitespace() => flush(&mut out, &mut cur, &mut any),
+            None if c.is_whitespace() => flush(&mut out, &mut cur, &mut any, &mut quoted),
             None => cur.push(c),
         }
     }
-    flush(&mut out, &mut cur, &mut any);
+    flush(&mut out, &mut cur, &mut any, &mut quoted);
     if !out.is_empty() {
         segs.push(out);
     }
@@ -112,9 +179,45 @@ fn is_assignment(w: &str) -> bool {
     !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !k.starts_with(|c: char| c.is_ascii_digit())
 }
 
-/// cmd 문자열 → 실제로 실행될 프로그램 이름들(소문자 · 경로·확장자 제거 · 명령 단위마다 하나) — 깊이 3.
-fn programs_in(cmd: &str, depth: u8) -> Vec<String> {
-    segments(cmd).iter().flat_map(|w| program_of(w, depth)).collect()
+/// cmd 문자열 → 실행될 프로그램 이름들(소문자 · 경로·확장자 제거) — 깊이 4 넘으면 agy 낱말 유무로 안전 쪽 판정.
+fn scan(cmd: &str, depth: u8) -> Vec<String> {
+    if depth > 4 {
+        return if mentions_agy(cmd) { vec!["agy".into()] } else { vec!["?".into()] };
+    }
+    let Some((outer, bodies)) = extract_subst(cmd) else {
+        return if mentions_agy(cmd) { vec!["agy".into()] } else { vec!["?".into()] };
+    };
+    let mut out: Vec<String> = bodies.iter().flat_map(|b| scan(b, depth + 1)).collect();
+    for seg in lex(&outer) {
+        out.extend(seg_programs(&seg, depth));
+    }
+    out
+}
+
+/// 조회·출력만 하는 프로그램 — 인자 속 agy 낱말을 실행으로 세지 않는다.
+const NON_EXEC: [&str; 17] = ["echo", "printf", "which", "type", "whereis", "test", "[", "ls", "cat", "grep", "rg", "man",
+                               "file", "stat", "head", "tail", "wc"];
+
+fn seg_programs(w: &[Tok], depth: u8) -> Vec<String> {
+    let (mut progs, nonexec) = program_of(w, depth);
+    if !nonexec
+        && !progs.iter().any(|p| is_agy_name(p))
+        && w.iter().any(|t| !t.quoted && !is_assignment(&t.text) && is_agy_word(&t.text))
+    {
+        progs.push("agy".into());
+    }
+    progs
+}
+
+/// cmd.exe·PowerShell 은 뒤 글 전체를 명령줄로 다시 읽는다 — 인용을 덧씌우지 않고 이어 붙인다.
+fn join_plain(w: &[Tok]) -> String {
+    w.iter().map(|t| t.text.as_str()).collect::<Vec<_>>().join(" ")
+}
+
+fn join(w: &[Tok]) -> String {
+    w.iter().map(|t| if t.text.contains(char::is_whitespace) { format!("'{}'", t.text.replace('\'', "")) } else { t.text.clone() })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// 래퍼별 「값을 먹는」 짧은 옵션 글자 · 긴 옵션 이름 · 명령 앞에 버릴 위치 인자 수.
@@ -138,20 +241,22 @@ fn wrapper_spec(base: &str) -> Option<(&'static str, &'static [&'static str], us
     })
 }
 
-fn program_of(w: &[String], depth: u8) -> Vec<String> {
+/// 명령 단위 하나 → (실행될 프로그램들, 조회 전용인가).
+fn program_of(w: &[Tok], depth: u8) -> (Vec<String>, bool) {
     const KW: [&str; 10] = ["!", "{", "}", "then", "do", "else", "elif", "if", "while", "until"];
     let mut i = 0;
     while i < w.len() {
-        let t = &w[i];
-        if is_assignment(t) || KW.contains(&t.as_str()) {
+        let t = &w[i].text;
+        if (!w[i].quoted && is_assignment(t)) || KW.contains(&t.as_str()) {
             i += 1;
             continue;
         }
         let base = basename_lc(t);
+        let rest = &w[i + 1..];
         if base == "env" {
             i += 1;
             while i < w.len() {
-                let a = w[i].as_str();
+                let a = w[i].text.as_str();
                 if is_assignment(a) {
                     i += 1;
                     continue;
@@ -163,11 +268,9 @@ fn program_of(w: &[String], depth: u8) -> Vec<String> {
                 if let Some(long) = a.strip_prefix("--") {
                     let (name, val) = match long.split_once('=') { Some((n, v)) => (n, Some(v)), None => (long, None) };
                     // GNU env 는 긴 옵션의 모호하지 않은 앞부분을 받는다(`--split`·`--spl`) — s 로 시작하는 긴 옵션은 split-string 뿐.
-                    if !name.is_empty() && "split-string".starts_with(name) && depth < 3 {
-                        let (v, next) = match val { Some(v) => (v.to_string(), i + 1), None => (w.get(i + 1).cloned().unwrap_or_default(), i + 2) };
-                        let mut rest = segments(&v).into_iter().next().unwrap_or_default();
-                        rest.extend(w.get(next..).unwrap_or(&[]).iter().cloned());
-                        return program_of(&rest, depth + 1);
+                    if !name.is_empty() && "split-string".starts_with(name) {
+                        let (v, next) = match val { Some(v) => (v.to_string(), i + 1), None => (w.get(i + 1).map(|t| t.text.clone()).unwrap_or_default(), i + 2) };
+                        return (scan(&format!("{v} {}", join(w.get(next..).unwrap_or(&[]))), depth + 1), false);
                     }
                     let takes = val.is_none() && ["unset", "chdir", "argv0"].iter().any(|o| o.starts_with(name) && name.len() >= 2);
                     i += if takes { 2 } else { 1 };
@@ -178,15 +281,13 @@ fn program_of(w: &[String], depth: u8) -> Vec<String> {
                     let cl = &a[1..];
                     let mut consumed_next = false;
                     for (k, ch) in cl.char_indices() {
-                        let rest = &cl[k + ch.len_utf8()..];
-                        if ch == 'S' && depth < 3 {
-                            let (v, next) = if rest.is_empty() { (w.get(i + 1).cloned().unwrap_or_default(), i + 2) } else { (rest.to_string(), i + 1) };
-                            let mut more = segments(&v).into_iter().next().unwrap_or_default();
-                            more.extend(w.get(next..).unwrap_or(&[]).iter().cloned());
-                            return program_of(&more, depth + 1);
+                        let r = &cl[k + ch.len_utf8()..];
+                        if ch == 'S' {
+                            let (v, next) = if r.is_empty() { (w.get(i + 1).map(|t| t.text.clone()).unwrap_or_default(), i + 2) } else { (r.to_string(), i + 1) };
+                            return (scan(&format!("{v} {}", join(w.get(next..).unwrap_or(&[]))), depth + 1), false);
                         }
                         if matches!(ch, 'u' | 'C' | 'P' | 'a') {
-                            consumed_next = rest.is_empty();
+                            consumed_next = r.is_empty();
                             break;
                         }
                     }
@@ -197,11 +298,17 @@ fn program_of(w: &[String], depth: u8) -> Vec<String> {
             }
             continue;
         }
-        if depth < 3 && matches!(base.as_str(), "sh" | "bash" | "zsh" | "dash" | "ksh") {
-            // `-c` = 정확히 한 줄표 묶음 안의 c(`-c`·`-lc`) — `--norc` 같은 긴 옵션은 -c 가 아니다(독립 재검).
-            let mut j = i + 1;
-            while j < w.len() {
-                let a = w[j].as_str();
+        if matches!(base.as_str(), "sh" | "bash" | "zsh" | "dash" | "ksh") {
+            // here-string(`bash <<< '문'`) = 표준 입력 스크립트
+            if let Some(k) = rest.iter().position(|t| t.text.starts_with("<<<")) {
+                let v = rest[k].text[3..].to_string();
+                let v = if v.is_empty() { rest.get(k + 1).map(|t| t.text.clone()).unwrap_or_default() } else { v };
+                return (scan(&v, depth + 1), false);
+            }
+            // `-c` = 정확히 한 줄표 묶음 안의 c(`-c`·`-lc`) — `--norc` 같은 긴 옵션은 -c 가 아니다 · -o/-O 는 값을 먹는다.
+            let mut j = 0;
+            while j < rest.len() {
+                let a = rest[j].text.as_str();
                 if a == "--" || !(a.starts_with('-') || a.starts_with('+')) {
                     break;
                 }
@@ -209,27 +316,68 @@ fn program_of(w: &[String], depth: u8) -> Vec<String> {
                     j += if matches!(a, "--rcfile" | "--init-file") { 2 } else { 1 };
                     continue;
                 }
+                if matches!(a, "-o" | "+o" | "-O" | "+O") {
+                    j += 2;
+                    continue;
+                }
                 if a[1..].contains('c') {
                     let mut k = j + 1;
-                    while k < w.len() && w[k].starts_with('-') && w[k] != "-" {
+                    while k < rest.len() && rest[k].text.starts_with('-') && rest[k].text != "-" {
                         k += 1;
                     }
-                    return w.get(k).map(|inner| programs_in(inner, depth + 1)).unwrap_or_default();
+                    return (rest.get(k).map(|t| scan(&t.text, depth + 1)).unwrap_or_default(), false);
                 }
                 j += 1;
             }
-            return vec![base];
+            return (vec![base], false);
+        }
+        if base == "cmd" {
+            // cmd.exe /c 문 · /k 문 — 뒤 전부가 실행될 명령
+            if let Some(k) = rest.iter().position(|t| t.text.eq_ignore_ascii_case("/c") || t.text.eq_ignore_ascii_case("/k")) {
+                return (scan(&join_plain(&rest[k + 1..]), depth + 1), false);
+            }
+            return (vec![base], false);
+        }
+        if matches!(base.as_str(), "powershell" | "pwsh") {
+            let mut k = 0;
+            while k < rest.len() {
+                let a = rest[k].text.to_ascii_lowercase();
+                if a.starts_with('-') && a.len() >= 2 && "-file".starts_with(&a) && a != "-" {
+                    return (rest.get(k + 1).map(|t| vec![basename_lc(&t.text)]).unwrap_or_default(), false);
+                }
+                if a.starts_with('-') && a.len() >= 2 && "-command".starts_with(&a) {
+                    return (scan(&join_plain(&rest[k + 1..]), depth + 1), false);
+                }
+                if !a.starts_with('-') {
+                    return (scan(&join_plain(&rest[k..]), depth + 1), false);   // 옵션 없이 온 글 = -Command 와 같다
+                }
+                k += 1;
+            }
+            return (vec![base], false);
+        }
+        if base == "find" {
+            if let Some(k) = rest.iter().position(|t| matches!(t.text.as_str(), "-exec" | "-execdir" | "-ok" | "-okdir")) {
+                let end = rest[k + 1..].iter().position(|t| t.text == ";" || t.text == "+").map(|e| k + 1 + e).unwrap_or(rest.len());
+                return (program_of(&rest[k + 1..end], depth).0, false);
+            }
+            return (vec![base], true);
+        }
+        if base == "command" && rest.iter().take_while(|t| t.text.starts_with('-')).any(|t| t.text.contains('v') || t.text.contains('V')) {
+            return (vec![], true);   // command -v/-V = 조회
+        }
+        if NON_EXEC.contains(&base.as_str()) {
+            return (vec![base], true);
         }
         if let Some((short, long, positional)) = wrapper_spec(&base) {
             i += 1;
-            if base == "script" && depth < 3 {
+            if base == "script" {
                 // 리눅스 script -c '<문>' — 값이 실행될 명령
-                if let Some(k) = w[i..].iter().position(|a| a == "-c" || a == "--command") {
-                    return w.get(i + k + 1).map(|inner| programs_in(inner, depth + 1)).unwrap_or_default();
+                if let Some(k) = w[i..].iter().position(|a| a.text == "-c" || a.text == "--command") {
+                    return (w.get(i + k + 1).map(|t| scan(&t.text, depth + 1)).unwrap_or_default(), false);
                 }
             }
             while i < w.len() {
-                let a = w[i].as_str();
+                let a = w[i].text.as_str();
                 if a == "--" {
                     i += 1;
                     break;
@@ -260,9 +408,9 @@ fn program_of(w: &[String], depth: u8) -> Vec<String> {
             i += positional.min(w.len().saturating_sub(i));
             continue;
         }
-        return if base.is_empty() { vec![] } else { vec![base] };
+        return (if base.is_empty() { vec![] } else { vec![base] }, false);
     }
-    vec![]
+    (vec![], false)
 }
 
 fn basename_lc(tok: &str) -> String {
@@ -344,9 +492,11 @@ pub fn launch_refusal_argv(argv: &[String]) -> Option<String> {
 }
 
 pub fn launch_refusal_argv_with(argv: &[String], door_open: bool) -> Option<String> {
-    let is_agy = argv
-        .split(|a| matches!(a.as_str(), ";" | "&&" | "||" | "|" | "&"))
-        .flat_map(|seg| program_of(seg, 0))
+    // argv 원소 = 이미 나뉜 인자 — 공백이 든 원소는 인용된 한 낱말과 같다(프롬프트 글 속 agy 는 안전망에 안 걸림).
+    let toks: Vec<Tok> = argv.iter().map(|a| Tok { text: a.clone(), quoted: a.contains(char::is_whitespace) }).collect();
+    let is_agy = toks
+        .split(|t| matches!(t.text.as_str(), ";" | "&&" | "||" | "|" | "&"))
+        .flat_map(|seg| seg_programs(seg, 0))
         .any(|p| is_agy_name(&p));
     if is_agy { launch_refusal_with("", Some("agy"), door_open) } else { None }
 }
@@ -425,6 +575,26 @@ mod tests {
     }
 
     #[test]
+    fn codex_3r_executors_and_false_positives() {
+        for agy in ["cmd.exe /c agy", "cmd /C \"agy -p x\"", "powershell.exe -Command agy", "pwsh -c agy",
+                    "powershell -File C:\\x\\agy.ps1", "powershell agy", "find . -maxdepth 0 -exec agy ';'",
+                    "bash -O extglob -c agy", "bash -o pipefail -c 'agy'", "bash <<< agy", "bash <<<'agy -p'",
+                    "cd /tmp && \\\nagy", "ag\\y", "/x/ag\\y -p", "unknownwrapper --flag agy", "claude -p \"$(agy)\""] {
+            assert!(is_agy_adapter("claude", Some(agy)), "{agy}");
+        }
+        for ok in ["claude -p \"$(cat docs/agy.md)\"", "command -v agy", "which agy", "claude -p \"agy 를 설명해\"",
+                   "ls ~/.local/bin/agy", "claude --settings '/x/agy-notes/worker.json'", "echo '$(agy)'"] {
+            assert!(!is_agy_adapter("claude", Some(ok)), "{ok}");
+        }
+        let argv = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        for a in [argv(&["cmd.exe", "/c", "agy"]), argv(&["powershell.exe", "-Command", "agy"]),
+                  argv(&["find", ".", "-exec", "agy", ";"]), argv(&["bash", "-O", "extglob", "-c", "agy"])] {
+            assert!(launch_refusal_argv_with(&a, false).is_some(), "{a:?}");
+        }
+        assert!(launch_refusal_argv_with(&argv(&["command", "-v", "agy"]), false).is_none());
+    }
+
+    #[test]
     fn codex_2r_env_split_string() {
         for agy in ["env -S agy", "env -S 'agy -p hi'", "env -S'FOO=1 agy'", "env --split-string='agy x'",
                     "env --split-string agy", "env -i -S agy", "/usr/bin/env -S \"nohup agy\"", "env -S 'env -S agy'"] {
@@ -437,7 +607,8 @@ mod tests {
             assert!(launch_refusal_argv_with(&a, false).is_some(), "{a:?}");
             assert!(launch_refusal_argv_with(&a, true).is_none(), "문 열림이면 거부 없음 {a:?}");
         }
-        assert!(launch_refusal_argv_with(&argv(&["claude", "agy"]), false).is_none(), "인자 속 agy 는 프로그램이 아니다");
+        assert!(launch_refusal_argv_with(&argv(&["claude", "-p", "agy 를 설명해"]), false).is_none(), "인용된(공백 든) 프롬프트 글 속 agy 는 프로그램이 아니다");
+        assert!(launch_refusal_argv_with(&argv(&["claude", "agy"]), false).is_some(), "맨 낱말 agy = 안전망(codex 3R · 열거 못 한 실행 래퍼 대비)");
         assert!(launch_refusal_argv_with(&argv(&["echo", "it's", "agy"]), false).is_none());
     }
 

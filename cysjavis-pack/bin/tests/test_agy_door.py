@@ -75,6 +75,14 @@ class A_GuardDeniesDoorWrites(unittest.TestCase):
         ("Bash", {"command": "cat `cp /tmp/p ~/.cys/agy-seat-door.json`"}),
         ("Bash", {"command": "cat <(cp /tmp/p ~/.cys/agy-seat-door.json)"}),
         ("Bash", {"command": "rg --pre /tmp/w.sh x ~/.cys/agy-seat-door.json"}),
+        # codex 3R: HOME 을 딴 곳으로 돌려도 그 아래 문 파일을 만드는 단계가 막혀야 한다(어느 폴더든 이름으로 거부)
+        ("Write", {"file_path": "/tmp/fakehome/.cys/agy-seat-door.json", "content": "{}"}),
+        ("Bash", {"command": "mkdir -p /tmp/fh/.cys && cp /tmp/x /tmp/fh/.cys/agy-seat-door.json"}),
+        ("Bash", {"command": "HOME=/tmp/fh python3 -c \"open('/tmp/fh/.cys/agy-seat-door.json','w')\""}),
+        # 치환 본문이 문 이름을 내놓고 바깥이 쓰는 경우
+        ("Bash", {"command": "printf x > \"$(echo ~/.cys/agy-seat-door.json)\""}),
+        ("Bash", {"command": "cp /tmp/x `echo ~/.cys/agy-seat-door.json`"}),
+        ("Bash", {"command": "cat $(cp /tmp/p ~/.cys/agy-seat-door.json"}),
     ]
     ALLOW = [
         ("Bash", {"command": "cat ~/.cys/agy-seat-door.json"}),
@@ -88,6 +96,9 @@ class A_GuardDeniesDoorWrites(unittest.TestCase):
         ("Bash", {"command": "sed -n -e 1p -e '$p' ~/.cys/agy-seat-door.json"}),
         # codex 2R minor: 이름에 낱말이 든 **다른 파일**(문서) 편집은 문 규칙 대상이 아니다
         ("Bash", {"command": "sed -i '' 's/old/new/' docs/agy-seat-door.md"}),
+        # codex 3R minor: 이름만 비슷한 다른 데이터 파일 · 읽기 전용 치환
+        ("Bash", {"command": "sed -i s/x/y/ docs/agy-seat-notes.json"}),
+        ("Bash", {"command": "printf '%s' \"$(cat ~/.cys/agy-seat-door.json)\""}),
         ("Write", {"file_path": "/Users/x/repo/docs/agy-seat-door.md", "content": "설명 문서"}),   # 문 파일 아님(codex 1R minor)
     ]
 

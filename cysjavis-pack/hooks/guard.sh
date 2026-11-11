@@ -1017,29 +1017,51 @@ def agy_door_read_only(p, args):
                 and all(a in AGY_DOOR_JSONTOOL_OPTS for a in args[2:] if a.startswith("-")))
     return False
 
-# codex 2R minor: `docs/agy-seat-door.md` 같은 **다른 파일**만 이름에 낱말이 든 경우는 문 규칙 대상이 아니다
-#   (Write/Edit 의 basename 판정과 같은 경계). 문 파일 = basename 이 agy-seat-door.json 으로 시작 · 그 밖 낱말 출현
-#   (변수 조립 조각 등)은 종전대로 문 규칙 대상(안전 쪽).
+# codex 3R minor: 문 낱말 판정 = 문 파일 이름(agy-seat-door.json) 자체가 들었는가 — 확장자 목록으로 「다른 파일」을 고르던
+#   방식(목록 밖 agy-seat-notes.json 과차단 · 붙여 쓴 낱말 회귀)을 버린다. 인용은 정규화가 지우므로 `"agy-seat-"'door.json'` 도 이어진다.
+AGY_DOOR_NAME = "agy-seat-door.json"
 
-AGY_DOOR_OTHER_TOKEN = re.compile(r"[a-z0-9_./~$-]*agy-seat-[a-z0-9._-]*\.(md|txt|rs|py|sh|ts|tsx|js|html|yml|yaml|toml)")
+def agy_door_subst(cmd):
+    """명령/프로세스 치환 본문 뽑기 — (바깥 문, 본문들) · 짝이 안 맞으면 None. 홑따옴표 안은 치환이 아니다."""
+    out, bodies, i, sq = [], [], 0, False
+    while i < len(cmd):
+        ch = cmd[i]
+        if sq:
+            out.append(ch); sq = ch != "'"; i += 1; continue
+        if ch == "'":
+            sq = True; out.append(ch); i += 1; continue
+        if ch == "\\" and i + 1 < len(cmd):
+            out.append(cmd[i:i + 2]); i += 2; continue
+        if ch in "$<>" and cmd[i + 1:i + 2] == "(":
+            d, j = 1, i + 2
+            while j < len(cmd) and d:
+                d += {"(": 1, ")": -1}.get(cmd[j], 0); j += 1
+            if d:
+                return None
+            bodies.append(cmd[i + 2:j - 1]); out.append(" __subst__ "); i = j; continue
+        if ch == "`":
+            j = cmd.find("`", i + 1)
+            if j < 0:
+                return None
+            bodies.append(cmd[i + 1:j]); out.append(" __subst__ "); i = j + 1; continue
+        out.append(ch); i += 1
+    return "".join(out), bodies
 
-def agy_door_mentions(n):
-    # 독립 재검(2R 반영분 major): 낱말 전체가 「다른 파일 경로」 모양일 때만 뺀다 — 셸 문자로 문 경로에 붙여 쓴 낱말
-    #   (`…/agy-seat-door.json;:/agy-seat-x.md`)이 basename 만 보고 빠지던 회귀를 막는다. 문 파일 이름이 들면 언제나 대상.
-    for t in n.split():
-        if AGY_DOOR_WORD not in t:
-            continue
-        if "agy-seat-door.json" in t or not AGY_DOOR_OTHER_TOKEN.fullmatch(t):
-            return True
-    return False
-
-def agy_door_bash_write(cmd):
+def agy_door_bash_write(cmd, depth=0, forced=False):
     ns = [norm_loose(cmd).lower(), norm_loose_slash(cmd).lower()]
-    if not any(agy_door_mentions(n) for n in ns):
+    if not forced and not any(AGY_DOOR_NAME in n for n in ns):
         return False
-    # 독립 재검(2R 반영분 major): 명령 치환·프로세스 치환은 세그먼트 분할에 안 잡힌다 — 문 낱말과 함께면 거부(백스톱과 같은 규칙)
+    # 치환 본문은 같은 규칙으로 재귀 판정(읽기 전용 `"$(cat <문 파일>)"` 은 통과 · 본문 쓰기는 거부) · 짝 안 맞음·깊음 = 거부(안전 쪽)
     if any(x in cmd for x in ("$(", "`", "<(", ">(")):
-        return True
+        sp = agy_door_subst(cmd)
+        if sp is None or depth > 3:
+            return True
+        outer, bodies = sp
+        if any(agy_door_bash_write(bd, depth + 1) for bd in bodies):
+            return True
+        # 본문이 문 이름을 내놓으면(`> "$(echo <문 파일>)"`) 바깥 문은 문 이름이 없어도 문을 다루는 것으로 본다
+        named = forced or any(AGY_DOOR_NAME in norm_loose(bd).lower() for bd in bodies)
+        return agy_door_bash_write(outer, depth + 1, forced=named)
     for n in ns:
         toks = n.split()
         if ">" in toks or ">>" in toks or any(w.startswith(">") for w in toks):

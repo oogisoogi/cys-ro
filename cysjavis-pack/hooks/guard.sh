@@ -965,6 +965,36 @@ if PAUSED and not PREFLIGHT:
                      "($PACK/AUTOPILOT_PAUSED · <프로젝트루트>/_round/AUTOPILOT_PAUSED)"
                      % (first or "?"))
 
+# ★agy 좌석 문(TICKET=cysr-agy-policy-exposure · 모드 무관 · 헌법 인가 토큰 무관 · 서명 우회 없음):
+#   에이전트는 문 파일(~/.cys/agy-seat-door.json)을 만들거나 쓸 수 없다. 문은 사람이 앱 화면(명령 팔레트 확인 창 ·
+#   경고 문구)에서만 연다 — 정본 = src/agy_door.rs. 읽기·닫기(rm)는 막지 않는다(안전 쪽).
+#   ★정직한 한계: 낱말을 변수로 조립하는 등 의도적 우회는 이 문자열 검사로 다 잡지 못한다(같은 OS 사용자 =
+#   거버넌스 구분 · src/agy_door.rs 머리). 막는 것은 지침을 따르는 정상 노드의 평시 쓰기다.
+AGY_DOOR_WORD = "agy-seat-"
+AGY_DOOR_READ_OK = {"cat", "ls", "stat", "test", "[", "head", "tail", "wc", "file", "rm", "unlink",
+                    "shasum", "sha256sum", "jq", "grep", "rg", "git", "echo", "printf"}  # cys 제외 = `cys send` 로 남의 셸에 쓰는 길
+AGY_DOOR_DENY = ("agy 좌석 문 파일(agy-seat-door.json)은 에이전트가 만들거나 쓸 수 없다 — 구글 개인 요금제 약관 때문에 "
+                 "cysr 은 agy 좌석을 기본으로 띄우지 않으며, 여는 것은 사람이 앱 명령 팔레트 확인 창에서만 한다.")
+
+def agy_door_bash_write(cmd):
+    ns = [norm_loose(cmd).lower(), norm_loose_slash(cmd).lower()]
+    if not any(AGY_DOOR_WORD in n for n in ns):
+        return False
+    for n in ns:
+        toks = n.split()
+        if ">" in toks or ">>" in toks or any(w.startswith(">") for w in toks):
+            return True
+        for s in l_segments(n):
+            p, _a = l_cmd_word(s)
+            if p is not None and p.lower() not in AGY_DOOR_READ_OK:
+                return True
+    return False
+
+if tool == "Bash" and command and agy_door_bash_write(command):
+    out_deny("[AGY-DOOR] " + AGY_DOOR_DENY)
+if tool in WRITE_TOOLS and AGY_DOOR_WORD in basename(file_path).lower():
+    out_deny("[AGY-DOOR] " + AGY_DOOR_DENY)
+
 if tool == "Bash" and command:
     if ACTIVE:
         r = strict_deny(command)

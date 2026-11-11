@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""agy 좌석 문(TICKET=cysr-agy-policy-exposure) — 팩 쪽 계약 시험.
+
+정본 = 저장소 `src/agy_door.rs`(판정·문 파일) · 이 파일은 팩이 그 문을 **열지 못하고**(⑤) 닫힌 문을 **실패로 읽지
+않으며**(복원) 검토자 슬롯이 Claude 대체로 **폴백**하는지(③)를 잰다.
+
+  A. guard.sh — 에이전트가 문 파일을 만들거나 쓰는 평시 경로(touch·리다이렉트·cp·python·`cys send`·Write/Edit)는 DENY ·
+     읽기는 통과 · 무관한 명령은 통과.
+  B. 팩 전체(지침·스킬·복원기·스크립트)에 문 파일을 여는 코드·지시가 0(guard.sh 의 금지 규칙과 이 시험만 이름을 안다).
+  C. phoenix `agy_door_split` — 오라클이 agy_consumer_policy 를 낸 역할만 부활 대상에서 가르고(실패 아님), 오라클이 없으면
+     가르지 않는다(종전 동작).
+  D. (cys 바이너리가 있을 때) `cys agent-detect --json` 이 문 닫힘이면 gemini=미가용·사유 agy_consumer_policy,
+     문 열림이면 종전대로 가용 · 그 오라클로 `javis_orchestra.py boot-reviewers --spawn --plan` 이 reviewer-claude-1 로 폴백.
+     바이너리 = env `CYS_TEST_BIN` 또는 저장소 `target/debug/cys` · 없으면 D 만 건너뛴다(사유 출력).
+
+실행: python3 cysjavis-pack/bin/tests/test_agy_door.py  (unittest 로도 돈다)
+"""
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+BIN = os.path.dirname(HERE)
+PACK = os.path.dirname(BIN)
+REPO = os.path.dirname(PACK)
+GUARD = os.path.join(PACK, "hooks", "guard.sh")
+DOOR = "agy-seat-door.json"
+ACK = "agy-consumer-plan-warning-v1"
+sys.path.insert(0, BIN)
+
+
+def guard(payload):
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("CYS_", "AUTOPILOT", "GUARD_"))}
+    env.update({"GUARD_TEST_MODE": "1", "CYS_HOOK_LANE_GUARD": "0"})
+    r = subprocess.run(["bash", GUARD], input=json.dumps(payload, ensure_ascii=False), env=env,
+                       capture_output=True, text=True, timeout=60)
+    return r.returncode, r.stderr
+
+
+class A_GuardDeniesDoorWrites(unittest.TestCase):
+    DENY = [
+        ("Bash", {"command": "touch ~/.cys/agy-seat-door.json"}),
+        ("Bash", {"command": "echo '{\"open\":true}' > ~/.cys/agy-seat-door.json"}),
+        ("Bash", {"command": "printf x >> \"$HOME/.cys/agy-seat-door.json\""}),
+        ("Bash", {"command": "cp /tmp/x \"$HOME/.cys/agy-seat-\"'door.json'"}),
+        ("Bash", {"command": "python3 -c \"open('/Users/x/.cys/agy-seat-door.json','w').write('{}')\""}),
+        ("Bash", {"command": "echo hi | tee ~/.cys/agy-seat-door.json"}),
+        ("Bash", {"command": "cys send --surface surface:3 \"touch ~/.cys/agy-seat-door.json\""}),
+        ("Bash", {"command": "CYS_X=1 install -m 600 /tmp/a ~/.cys/agy-seat-door.json"}),
+        ("Write", {"file_path": "/Users/x/.cys/agy-seat-door.json", "content": "{}"}),
+        ("Edit", {"file_path": "C:\\Users\\x\\.cys\\agy-seat-door.json", "old_string": "a", "new_string": "b"}),
+        ("Write", {"file_path": "/Users/x/.cys/agy-seat-door.json.tmp", "content": "{}"}),
+    ]
+    ALLOW = [
+        ("Bash", {"command": "cat ~/.cys/agy-seat-door.json"}),
+        ("Bash", {"command": "ls -la ~/.cys/ | grep agy-seat-door"}),
+        ("Bash", {"command": "git commit -m \"agy-seat-door 설명\""}),
+        ("Bash", {"command": "ls -la"}),
+    ]
+
+    def test_deny(self):
+        for tool, ti in self.DENY:
+            rc, err = guard({"tool_name": tool, "tool_input": ti})
+            self.assertEqual(rc, 2, "%s %s 통과됨: %s" % (tool, ti, err[-300:]))
+            self.assertIn("AGY-DOOR", err, "%s %s — 다른 규칙이 막았다(문 규칙 미발동): %s" % (tool, ti, err[-300:]))
+
+    def test_allow(self):
+        for tool, ti in self.ALLOW:
+            rc, err = guard({"tool_name": tool, "tool_input": ti})
+            self.assertEqual(rc, 0, "%s %s 막힘: %s" % (tool, ti, err[-300:]))
+
+
+class B_PackHasNoDoorOpener(unittest.TestCase):
+    def test_no_pack_file_names_the_door_except_guard(self):
+        allowed = {os.path.realpath(GUARD), os.path.realpath(os.path.abspath(__file__))}
+        hits = []
+        for root, dirs, files in os.walk(PACK):
+            dirs[:] = [d for d in dirs if d not in ("__pycache__", ".git")]
+            for f in files:
+                p = os.path.join(root, f)
+                if os.path.realpath(p) in allowed:
+                    continue
+                try:
+                    with open(p, encoding="utf-8", errors="ignore") as fh:
+                        s = fh.read()
+                except OSError:
+                    continue
+                if "agy-seat-door" in s or "agy_seat_door" in s or ACK in s:
+                    hits.append(os.path.relpath(p, PACK))
+        self.assertEqual(hits, [], "팩이 문 파일을 안다(여는 길 후보): %s" % hits)
+
+
+class C_PhoenixPolicySplit(unittest.TestCase):
+    def setUp(self):
+        import javis_phoenix
+        self.ph = javis_phoenix
+
+    def test_splits_only_policy_refused_agents(self):
+        entries = {"worker": {"agent": "claude"}, "reviewer-gemini": {"agent": "gemini"},
+                   "reviewer-codex": {"agent": "codex"}}
+        detect = {"claude": "PATH 발견 /x/claude",
+                  "gemini": "agy_consumer_policy: Antigravity(agy) 좌석 문 닫힘 — 실행 파일 판정: 실행가능 /x/agy",
+                  "codex": "PATH 미발견 codex"}
+        keep, skipped = self.ph.agy_door_split(["worker", "reviewer-gemini", "reviewer-codex"], entries, detect=detect)
+        self.assertEqual(keep, ["worker", "reviewer-codex"])
+        self.assertEqual(skipped, ["reviewer-gemini"])
+
+    def test_no_oracle_means_no_split(self):
+        entries = {"reviewer-gemini": {"agent": "gemini"}}
+        keep, skipped = self.ph.agy_door_split(["reviewer-gemini"], entries, detect={})
+        self.assertEqual((keep, skipped), (["reviewer-gemini"], []))
+
+    def test_code_matches_rust(self):
+        with open(os.path.join(REPO, "src", "agy_door.rs"), encoding="utf-8") as fh:
+            rs = fh.read()
+        self.assertIn('pub const REFUSE_CODE: &str = "%s";' % self.ph.AGY_POLICY_CODE, rs)
+
+
+def _cys_bin():
+    b = os.environ.get("CYS_TEST_BIN") or os.path.join(REPO, "target", "debug", "cys")
+    return b if os.path.isfile(b) and os.access(b, os.X_OK) else None
+
+
+@unittest.skipUnless(_cys_bin(), "cys 바이너리 없음(CYS_TEST_BIN 또는 target/debug/cys) — D 건너뜀")
+class D_OracleAndRosterFallback(unittest.TestCase):
+    def setUp(self):
+        self.td = tempfile.mkdtemp(prefix="agydoor-")
+        self.home = os.path.join(self.td, "home")
+        self.pack = os.path.join(self.td, "pack")
+        os.makedirs(os.path.join(self.home, ".local", "bin"))
+        os.makedirs(os.path.join(self.home, ".cys"))
+        os.makedirs(self.pack)
+        shutil.copy(os.path.join(PACK, "agents.json"), os.path.join(self.pack, "agents.json"))
+        os.makedirs(os.path.join(self.pack, "directives"))
+        shutil.copy(os.path.join(PACK, "directives", "REVIEWER_DIRECTIVE.md"),
+                    os.path.join(self.pack, "directives", "REVIEWER_DIRECTIVE.md"))
+        # 가짜 agy(실제 agy 아님) — 실행되면 표식 파일을 남긴다(이 시험은 실행하지 않는다 · 감지만).
+        fake = os.path.join(self.home, ".local", "bin", "agy")
+        with open(fake, "w") as f:
+            f.write("#!/bin/sh\necho ran >> \"$HOME/agy-ran\"\n")
+        os.chmod(fake, 0o755)
+        self.pbin = os.path.join(self.td, "pbin")
+        os.makedirs(self.pbin)
+        os.symlink(_cys_bin(), os.path.join(self.pbin, "cys"))
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith(("CYS_", "AITERM_"))}
+        self.env.update({"HOME": self.home, "CYS_PACK_DIR": self.pack, "CYS_NO_AUTOSTART": "1",
+                         "PATH": self.pbin + os.pathsep + "/usr/bin:/bin"})
+
+    def tearDown(self):
+        shutil.rmtree(self.td, ignore_errors=True)
+
+    def detect(self):
+        r = subprocess.run([os.path.join(self.pbin, "cys"), "agent-detect", "--json"], env=self.env,
+                           capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)["agents"]
+
+    def open_door(self):
+        with open(os.path.join(self.home, ".cys", DOOR), "w") as f:
+            json.dump({"open": True, "ack": ACK}, f)
+
+    def test_closed_door_reports_unavailable_with_policy_reason(self):
+        g = self.detect()["gemini"]
+        self.assertFalse(g["installed"], g)
+        self.assertTrue(g["reason"].startswith("agy_consumer_policy"), g)
+        self.assertIn("실행가능", g["reason"], "실행 파일 판정을 사유에 남겨야 한다")
+        self.assertTrue(self.detect()["claude"]["reason"] and not self.detect()["claude"]["reason"].startswith("agy_"))
+
+    def test_open_door_restores_previous_detection(self):
+        self.open_door()
+        g = self.detect()["gemini"]
+        self.assertTrue(g["installed"], g)
+        self.assertFalse(g["reason"].startswith("agy_consumer_policy"), g)
+
+    def test_env_var_does_not_open(self):
+        for k in ("CYS_AGY_SEAT_DOOR", "CYS_ALLOW_AGY", "CYS_ENABLE_AGY_SEAT", "CYS_ENABLE_AGY_LANE"):
+            self.env[k] = "1"
+        self.assertFalse(self.detect()["gemini"]["installed"])
+
+    def test_hand_made_door_without_ack_stays_closed(self):
+        with open(os.path.join(self.home, ".cys", DOOR), "w") as f:
+            json.dump({"open": True}, f)
+        self.assertFalse(self.detect()["gemini"]["installed"])
+
+    def test_orchestra_roster_falls_back_to_claude_reviewer(self):
+        r = subprocess.run([sys.executable, os.path.join(BIN, "javis_orchestra.py"), "boot-reviewers", "--spawn", "--plan"],
+                           env=self.env, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 0, out[-800:])
+        self.assertIn("reviewer-claude-1", out, out[-800:])
+        self.assertIn("agy_consumer_policy", out, "폴백 사유가 보고에 보여야 한다: " + out[-800:])
+        self.assertFalse(os.path.exists(os.path.join(self.home, "agy-ran")), "가짜 agy 가 실행됐다")
+
+    def test_orchestra_roster_native_when_open(self):
+        self.open_door()
+        r = subprocess.run([sys.executable, os.path.join(BIN, "javis_orchestra.py"), "boot-reviewers", "--spawn", "--plan"],
+                           env=self.env, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 0, out[-800:])
+        self.assertIn("reviewer-gemini", out)
+        self.assertNotIn("reviewer-claude-1", out, out[-800:])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=1)

@@ -2776,6 +2776,40 @@ def current_tombstones(socket):
     return tombs
 
 
+AGY_POLICY_CODE = "agy_consumer_policy"   # 정본 = Rust cys::agy_door::REFUSE_CODE(같은 낱말)
+
+
+def agy_door_split(roles, entries, detect=None):
+    """★agy 좌석 문(TICKET=cysr-agy-policy-exposure) — 부활 대상에서 「문이 닫혀 띄우지 않을」 agy 역할을 가른다.
+    판정은 이 파일이 하지 않는다: `cys agent-detect --json` 오라클(Rust apply_agy_door)이 reason 머리에
+    `agy_consumer_policy` 를 낸 어댑터만 가른다(문 상태·agy 판정의 정본 = Rust 한 곳). 오라클을 못 부르면
+    가르지 않는다(종전 동작) — 그때도 launch-agent 가 76 으로 거부해 agy 프로세스는 생기지 않는다.
+    반환 (남길 역할, 가른 역할). detect 주입 = 시험 이음매(dict: agent → reason)."""
+    if not roles:
+        return list(roles), []
+    # claude 좌석만이면 오라클을 부르지 않는다(claude 는 agy 가 아니다 · CLI 호출 0 = 종전 프로토콜 그대로).
+    if all(str((entries.get(r) or {}).get("agent") or "claude") == "claude" for r in roles):
+        return list(roles), []
+    if detect is None:
+        detect = {}
+        try:
+            r = cys("agent-detect", "--json", timeout=15)
+            data = json.loads((r.stdout or "").strip() or "{}") if r.returncode == 0 else {}
+            for k, v in (data.get("agents") or {}).items():
+                if isinstance(v, dict):
+                    detect[k] = str(v.get("reason") or "")
+        except Exception:
+            detect = {}
+    keep, skipped = [], []
+    for role in roles:
+        agent = str((entries.get(role) or {}).get("agent") or "")
+        if agent and detect.get(agent, "").startswith(AGY_POLICY_CODE):
+            skipped.append(role)
+        else:
+            keep.append(role)
+    return keep, skipped
+
+
 def spawn_fresh_production(socket, role, agent, cwd=None):
     """★Phase11 독약세션 fresh-fallback(prod): 무 resume 로 새 세션 기동(cys launch-agent).
     cys restore 는 topology 의 session_id 를 resume 하므로 독약 세션이면 계속 실패한다 → 세션핀을 버리고
@@ -3373,6 +3407,7 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
     _tomb_skipped = [r for r in _requested if r in _tombstones]
     # ★R4-4: 부활 대상 = 'dead' 만. 'unknown' 은 따로 모아 정직 보고한다(맹목 재스폰도 침묵 생존 취급도 아님).
     target_roles = [r for r in _requested if _role_liveness(r) == "dead" and r not in _tombstones]
+    target_roles, _agy_skipped = agy_door_split(target_roles, entries)  # ★agy 좌석 문(기본 닫힘) — 실패 아님
     liveness_unknown_roles = [r for r in _requested
                               if r not in _tombstones and _role_liveness(r) == "unknown"]
     for _r in liveness_unknown_roles:
@@ -3385,6 +3420,13 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
                       summary="role=%s 생존 확인 불가(ps 축 부재·데몬 미관측) — 자동 부활 보류, 사람 확인 필요" % _r)
     if liveness_unknown_roles:
         log("★R4-4 liveness unknown: %s — 부활 보류·정직 보고(생존 취급 아님)." % liveness_unknown_roles)
+        save_journal(socket, ticket, j)
+    if _agy_skipped:
+        log("★agy 좌석 문 닫힘: %s 은 부활 대상에서 제외(구글 개인 요금제 약관 · 실패 아님)." % _agy_skipped)
+        for _r in _agy_skipped:
+            jevent(j, _r, "target", "skip_agy_policy",
+                   "agy_consumer_policy — cysr 은 Antigravity(agy) 좌석을 다시 띄우지 않는다(문 기본 닫힘 · 고장 아님). "
+                   "여는 길 = 사람이 앱 명령 팔레트 「Antigravity(agy) 좌석 열기」.")
         save_journal(socket, ticket, j)
     if _tomb_skipped:
         log("★묘비 필터: 요청 역할 중 폐역(tombstone) %s 은 부활 대상에서 제외(의도삭제>강제부활). untomb 로만 재편입." % _tomb_skipped)

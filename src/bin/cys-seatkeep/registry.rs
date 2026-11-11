@@ -94,17 +94,49 @@ pub fn lock_id(path: &Path) -> std::io::Result<File> {
     Ok(f)
 }
 
-/// 교체 기록. 덧붙이기 전용 열기 — 이 프로세스는 자기 기록을 고쳐 쓸 수 없다(예외: 아래 짧은 쓰기 되돌림 = 자기가 방금
-/// 덧붙이다 만 조각만 잘라 낸다). 심볼릭 링크는 따라가지 않는다(독립 검증 D6).
-pub struct Ledger {
-    file: File,
-    /// 짧은 쓰기 조각을 잘라 내지 못한 채 남아 있다 → 다음 줄을 줄바꿈으로 시작해 조각과 이어 붙지 않게 한다.
-    torn: bool,
-    /// 마지막 실패에서 그 줄이 온전히 남았는가(= fsync 만 실패). 되돌렸거나 조각이면 거짓 — 보정 줄을 쓸지 정한다.
-    pub last_failure_kept_line: bool,
+/// 교체 기록 줄 쓰기 실패. `kept_line` = 그 줄이 파일에 온전히 남았는가(= 쓰기는 끝났고 fsync 만 실패) — **이번 호출의 값**이다
+/// (codex 3R #2: 공유 칸으로 두면 앞선 fsync 실패의 「참」이 뒤 호출의 다른 실패(길이 읽기 등)에 남아 `accept` 없는
+/// `accept_aborted` 를 만든다).
+#[derive(Debug)]
+pub struct LineError {
+    pub error: std::io::Error,
+    pub kept_line: bool,
 }
 
-impl Ledger {
+impl std::fmt::Display for LineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+/// 교체 기록이 파일에 하는 일 — 실제 파일과 단위 시험의 실패 주입용 가짜가 같은 길을 탄다.
+pub trait LedgerFile: Write {
+    fn size(&self) -> std::io::Result<u64>;
+    fn truncate(&mut self, len: u64) -> std::io::Result<()>;
+    fn sync(&mut self) -> std::io::Result<()>;
+}
+
+impl LedgerFile for File {
+    fn size(&self) -> std::io::Result<u64> {
+        Ok(self.metadata()?.len())
+    }
+    fn truncate(&mut self, len: u64) -> std::io::Result<()> {
+        self.set_len(len)
+    }
+    fn sync(&mut self) -> std::io::Result<()> {
+        self.sync_data()
+    }
+}
+
+/// 교체 기록. 덧붙이기 전용 열기 — 이 프로세스는 자기 기록을 고쳐 쓸 수 없다(예외: 아래 짧은 쓰기 되돌림 = 자기가 방금
+/// 덧붙이다 만 조각만 잘라 낸다). 심볼릭 링크는 따라가지 않는다(독립 검증 D6).
+pub struct Ledger<F: LedgerFile = File> {
+    file: F,
+    /// 짧은 쓰기 조각을 잘라 내지 못한 채 남아 있다 → 다음 줄을 줄바꿈으로 시작해 조각과 이어 붙지 않게 한다.
+    torn: bool,
+}
+
+impl Ledger<File> {
     pub fn open(path: &Path) -> std::io::Result<Ledger> {
         let file = OpenOptions::new().append(true).create(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)?;
         // 앞 기동이 남긴 조각(마지막 바이트가 줄바꿈이 아님)이 있으면 첫 줄을 줄바꿈으로 시작한다(codex 2R #4 — 표시가
@@ -120,32 +152,31 @@ impl Ledger {
             }
             last[0] != b'\n'
         };
-        Ok(Ledger { file, torn, last_failure_kept_line: false })
+        Ok(Ledger { file, torn })
     }
+}
 
+impl<F: LedgerFile> Ledger<F> {
     /// 한 줄(JSON) 덧붙이고 fsync. 실패는 호출자에게 그대로 — 기록 없이 접속을 받지 않기 위해서다.
     /// 짧은 쓰기(디스크 가득 등)로 줄 앞부분만 써졌으면 쓰기 전 길이로 잘라 낸다 — 다음 진짜 줄이 그 조각에 이어 붙어
     /// 읽을 수 없게 되는 것을 막는다(독립 검증 D2). 잘라 내기도 실패하면 다음 줄을 줄바꿈으로 시작한다.
-    pub fn line(&mut self, value: &serde_json::Value) -> std::io::Result<()> {
+    /// 실패의 `kept_line` 은 fsync 실패(줄 전체가 쓰인 뒤)에서만 참이다 — 길이 읽기 실패·짧은 쓰기는 거짓.
+    pub fn line(&mut self, value: &serde_json::Value) -> Result<(), LineError> {
         let mut s = String::new();
         if self.torn {
             s.push('\n');
         }
         s.push_str(&value.to_string());
         s.push('\n');
-        let len0 = self.file.metadata()?.len();
-        if let Err(e) = self.file.write_all(s.as_bytes()) {
-            self.last_failure_kept_line = false;
-            if self.file.set_len(len0).is_err() {
+        let len0 = self.file.size().map_err(|error| LineError { error, kept_line: false })?;
+        if let Err(error) = self.file.write_all(s.as_bytes()) {
+            if self.file.truncate(len0).is_err() {
                 self.torn = true;
             }
-            return Err(e);
+            return Err(LineError { error, kept_line: false });
         }
         self.torn = false;
-        self.file.sync_data().map_err(|e| {
-            self.last_failure_kept_line = true;
-            e
-        })
+        self.file.sync().map_err(|error| LineError { error, kept_line: true })
     }
 }
 
@@ -235,6 +266,116 @@ mod tests {
         let ok: Vec<_> = s.lines().filter(|l| serde_json::from_str::<serde_json::Value>(l).is_ok()).collect();
         assert_eq!(ok.len(), 1, "온전한 줄 1개가 읽혀야 한다: {s:?}");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 실패 주입용 가짜 기록 파일(codex 3R #2 — fsync·길이 읽기·짧은 쓰기 실패를 구분하는 단위 시험).
+    #[derive(Default)]
+    struct FakeFile {
+        buf: Vec<u8>,
+        fail_size: bool,
+        /// Some(n) = 앞으로 n 바이트만 써지고 그다음 쓰기는 ENOSPC.
+        write_room: Option<usize>,
+        fail_truncate: bool,
+        fail_sync: bool,
+    }
+
+    impl Write for FakeFile {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            let n = match self.write_room {
+                Some(0) => return Err(std::io::Error::from_raw_os_error(libc::ENOSPC)),
+                Some(r) => b.len().min(r),
+                None => b.len(),
+            };
+            if let Some(r) = self.write_room.as_mut() {
+                *r -= n;
+            }
+            self.buf.extend_from_slice(&b[..n]);
+            Ok(n)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl LedgerFile for FakeFile {
+        fn size(&self) -> std::io::Result<u64> {
+            if self.fail_size {
+                return Err(std::io::Error::from_raw_os_error(libc::EIO));
+            }
+            Ok(self.buf.len() as u64)
+        }
+        fn truncate(&mut self, len: u64) -> std::io::Result<()> {
+            if self.fail_truncate {
+                return Err(std::io::Error::from_raw_os_error(libc::EIO));
+            }
+            self.buf.truncate(len as usize);
+            Ok(())
+        }
+        fn sync(&mut self) -> std::io::Result<()> {
+            if self.fail_sync {
+                return Err(std::io::Error::from_raw_os_error(libc::EIO));
+            }
+            Ok(())
+        }
+    }
+
+    fn fake_ledger() -> Ledger<FakeFile> {
+        Ledger { file: FakeFile::default(), torn: false }
+    }
+
+    fn parsed_lines(b: &[u8]) -> usize {
+        String::from_utf8_lossy(b).lines().filter(|l| serde_json::from_str::<serde_json::Value>(l).is_ok()).count()
+    }
+
+    #[test]
+    fn line_fsync_failure_keeps_line() {
+        let mut l = fake_ledger();
+        l.file.fail_sync = true;
+        let e = l.line(&serde_json::json!({"event": "accept"})).unwrap_err();
+        assert!(e.kept_line, "fsync 만 실패 = 줄은 온전히 남았다");
+        assert_eq!(parsed_lines(&l.file.buf), 1);
+    }
+
+    #[test]
+    fn line_kept_flag_is_per_call() {
+        // codex 3R #2 그 순서: fsync 실패(참) → 다음 기록 성공 → 다음 accept 가 길이 읽기에서 실패 = 거짓이어야 한다.
+        let mut l = fake_ledger();
+        l.file.fail_sync = true;
+        assert!(l.line(&serde_json::json!({"n": 1})).unwrap_err().kept_line);
+        l.file.fail_sync = false;
+        l.line(&serde_json::json!({"n": 2})).unwrap();
+        l.file.fail_size = true;
+        let e = l.line(&serde_json::json!({"event": "accept"})).unwrap_err();
+        assert!(!e.kept_line, "길이 읽기 실패 = 줄을 쓰지도 않았다");
+        assert_eq!(parsed_lines(&l.file.buf), 2);
+        // 반대 순서도: 길이 읽기 실패(거짓) 바로 뒤의 fsync 실패는 참.
+        l.file.fail_size = false;
+        l.file.fail_sync = true;
+        assert!(l.line(&serde_json::json!({"n": 3})).unwrap_err().kept_line);
+    }
+
+    #[test]
+    fn line_short_write_rolled_back_is_not_kept() {
+        let mut l = fake_ledger();
+        l.line(&serde_json::json!({"n": 1})).unwrap();
+        let before = l.file.buf.clone();
+        l.file.write_room = Some(5);
+        let e = l.line(&serde_json::json!({"event": "accept", "gen": 2})).unwrap_err();
+        assert!(!e.kept_line);
+        assert_eq!(l.file.buf, before, "짧은 쓰기 조각은 잘라 낸다");
+    }
+
+    #[test]
+    fn line_short_write_not_rolled_back_next_line_is_clean() {
+        let mut l = fake_ledger();
+        l.line(&serde_json::json!({"n": 1})).unwrap();
+        l.file.write_room = Some(5);
+        l.file.fail_truncate = true;
+        let e = l.line(&serde_json::json!({"event": "accept", "gen": 2})).unwrap_err();
+        assert!(!e.kept_line);
+        l.file.write_room = None;
+        l.line(&serde_json::json!({"n": 3})).unwrap();
+        assert_eq!(parsed_lines(&l.file.buf), 2, "조각 뒤 다음 줄은 줄바꿈으로 시작해 읽힌다: {:?}", String::from_utf8_lossy(&l.file.buf));
     }
 
     #[test]

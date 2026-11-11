@@ -109,6 +109,15 @@ describe("(codex 1R) 넓게 보기 = 번호가 아니라 안정 열쇠(역할 ·
     const moved = model(M, seat(15, "", "/w/site"), seat(16, "", "/w/site"), seat(5, "worker-2", "/w/lms"));
     expect(reconcileTabs(moved, { order: [], active: null, zoom: 5, zoomKey: "cwd:/w/site" }, true).view.zoom).toBeNull();
   });
+  test("(재실행) 좌석 목록 전 모델(역할·폴더 모름) = 넓게 보기만 잠시 풀고 저장 열쇠·활성 탭 유지 → 목록이 오면 새 번호로 되살아남", () => {
+    const saved = { order: ["site", "lms"], active: "lms", zoom: 6, zoomKey: "role:worker-4" };
+    const early = reconcileTabs(model(seat(6, "", ""), seat(7, "", "")), saved, true); // 옛 트리 번호 · 목록 전(정체 모름)
+    expect(early.view.zoom).toBeNull();
+    expect([early.state.zoom, early.state.zoomKey, early.state.active]).toEqual([6, "role:worker-4", "lms"]);
+    const later = reconcileTabs(model(M, seat(103, "worker", "/w/site"), seat(106, "worker-4", "/w/lms"), seat(107, "worker-5", "/w/lms")), normalizeTabState(JSON.parse(JSON.stringify(early.state))), true);
+    expect(later.view.zoom).toBe(106);
+    expect(later.view.active).toBe("lms");
+  });
   test("seatKey — 역할 우선 · 폴더 다음 · 둘 다 없으면 null · 고정 좌석(master)은 zoomKeyOf 대상 아님", () => {
     expect(seatKey({ role: " worker ", cwd: "/w" })).toBe("role:worker");
     expect(seatKey({ role: null, cwd: "/w/a" })).toBe("cwd:/w/a");

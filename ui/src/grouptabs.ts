@@ -91,6 +91,10 @@ export function reconcileTabs(m: SeatRowsModel, prev: TabState | undefined, on: 
   // (codex 1R) 넓게 보기는 번호가 아니라 안정 열쇠로 확인한다 — 재부팅 뒤 다른 좌석이 같은 번호를 받아도 그 좌석을 넓게 보지 않는다.
   //   못 알아보면 넓게 보기만 풀고 저장된 활성 탭은 그대로 둔다.
   const zoom = resolveZoom(m, p.zoom ?? null, p.zoomKey ?? null);
+  // (재실행 실측으로 찾음) 좌석 목록이 오기 전 모델(역할·폴더를 모르는 줄)로는 「그 좌석이 사라졌다」를 판정할 수 없다 —
+  //   그동안은 넓게 보기만 잠시 풀어 보이고 저장된 열쇠는 지우지 않는다(목록이 오면 되살아난다).
+  const identityUnknown = m.groups.some((g) => g.rows.some((r) => seatKey(r) === null));
+  const keepStored = zoom === null && (p.zoomKey ?? null) !== null && identityUnknown;
   const zoomGroup = zoom === null ? undefined : groups.find((g) => g.sids.includes(zoom));
   let active: string | null = zoomGroup ? zoomGroup.key : p.active !== null && keys.includes(p.active) ? p.active : (order[0] ?? null);
   const all = groups.flatMap((g) => g.sids);
@@ -102,7 +106,12 @@ export function reconcileTabs(m: SeatRowsModel, prev: TabState | undefined, on: 
   if (!multi && zoom === null) active = p.active; // 탭이 없을 땐 저장 활성값을 건드리지 않는다(묶음이 다시 늘면 그대로)
   const byKey = new Map(groups.map((g) => [g.key, g]));
   return {
-    state: { order: multi ? order : [...p.order, ...keys.filter((k) => !p.order.includes(k))], active, zoom, zoomKey: zoom === null ? null : (p.zoomKey ?? null) },
+    state: {
+      order: multi ? order : [...p.order, ...keys.filter((k) => !p.order.includes(k))],
+      active: keepStored ? p.active : active,
+      zoom: keepStored ? p.zoom : zoom,
+      zoomKey: keepStored || zoom !== null ? (p.zoomKey ?? null) : null,
+    },
     view: { tabs: multi ? order.map((k) => byKey.get(k)!) : [], active: multi ? active : null, zoom, hidden },
   };
 }

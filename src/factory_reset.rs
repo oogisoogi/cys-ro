@@ -1505,8 +1505,9 @@ pub fn verify_roots_quiescent(
         let Ok(s) = std::fs::read_to_string(&lock) else {
             continue;
         };
-        if let Ok(pid) = s.trim().parse::<u32>() {
-            if pid != 0 && pid_alive_and_cysd(pid) {
+        // ★T3: 첫 칸만(노브 켬이면 `pid 출생시각` 두 칸) — 두 칸을 통째로 숫자로 읽으면 실패해 산 cysd 를 못 보고 넘어간다.
+        if let Some(pid) = crate::startup_lock_holder_pid(&s) {
+            if pid_alive_and_cysd(pid) {
                 return Err(format!(
                     "살아있는 cysd(pid {pid})가 {} 을 보유 중 — 정지 후 재시도",
                     lock.display()

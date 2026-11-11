@@ -16,7 +16,12 @@
 //! PTY 입력 쓰기는 좌석별 입력 스레드가 한다 — 자식이 입력을 안 읽어도 serve 는 끊김을 계속 보고 조종자 자리를 풀 수 있다.
 //!
 //! 쓰임: `cys-seatkeep --dir <상태폴더> --id <seatkeep id> --controller-exe <경로> --lock <잠금파일>
-//!        [--requirement <코드서명 요구사항>] [--seats N] [--tail-bytes N] -- <명령> [인자…]`
+//!        [--requirement <코드서명 요구사항>] [--seats N] [--tail-bytes N] [--rows R --cols C]
+//!        [--end-on-controller-loss] -- <명령> [인자…]`
+//! `--rows/--cols` = 자식 PTY 첫 크기(기본 35×120 · T3 — cysd 가 좌석 크기로 띄운다).
+//! `--end-on-controller-loss` = 조종자 연결이 끊기면(또는 기동 뒤 `FIRST_CONTROLLER_MAX` 안에 아무도 안 붙으면) 기록 1줄을 남기고
+//! 스스로 끝난다 → PTY 마스터가 닫혀 커널이 좌석에 SIGHUP(= cysd 가 직접 PTY 를 쥐던 지금과 같은 좌석 수명 · T3 master#c125bc97 ②).
+//! 이 인자가 없으면 T2 동작 그대로(조종자 없이 좌석을 계속 쥔다 — 입양은 T4).
 //! `--seats N`(N>1) = 「판별 1개」 비교 변형(좌석 N개를 한 프로세스가 쥠) — 비용 비교 전용 · 제품 경로 아님.
 
 #[cfg(unix)]
@@ -95,6 +100,8 @@ mod imp {
     /// 자식 회수 뒤 PTY 의 마지막 출력을 기다리는 상한. 넘기면 EXITED 에 `output_open: true` 를 적는다.
     const DRAIN: Duration = Duration::from_secs(2);
     const COMMIT_TRIES: u64 = 3;
+    /// `--end-on-controller-loss` 일 때 기동 뒤 첫 조종자를 기다리는 상한(cysd 의 기동~WELCOME 상한 10초보다 길게).
+    const FIRST_CONTROLLER_MAX: Duration = Duration::from_secs(15);
     const ALL_SEATS: u32 = u32::MAX;
 
     struct Args {
@@ -105,6 +112,9 @@ mod imp {
         requirement: Option<String>,
         seats: u32,
         tail_bytes: usize,
+        rows: u16,
+        cols: u16,
+        end_on_controller_loss: bool,
         cmd: Vec<String>,
     }
 
@@ -112,6 +122,7 @@ mod imp {
         let mut it = std::env::args().skip(1);
         let (mut dir, mut id, mut exe, mut lock, mut req) = (None, None, None, None, None);
         let (mut seats, mut tail_bytes) = (1u32, DEFAULT_TAIL);
+        let (mut rows, mut cols, mut end_on_controller_loss) = (35u16, 120u16, false);
         let mut cmd = Vec::new();
         while let Some(a) = it.next() {
             match a.as_str() {
@@ -122,6 +133,9 @@ mod imp {
                 "--requirement" => req = it.next(),
                 "--seats" => seats = it.next().and_then(|v| v.parse().ok()).ok_or("--seats 숫자")?,
                 "--tail-bytes" => tail_bytes = it.next().and_then(|v| v.parse().ok()).ok_or("--tail-bytes 숫자")?,
+                "--rows" => rows = it.next().and_then(|v| v.parse().ok()).filter(|v| (1..=1000).contains(v)).ok_or("--rows 1..=1000")?,
+                "--cols" => cols = it.next().and_then(|v| v.parse().ok()).filter(|v| (1..=1000).contains(v)).ok_or("--cols 1..=1000")?,
+                "--end-on-controller-loss" => end_on_controller_loss = true,
                 "--" => {
                     cmd = it.by_ref().collect();
                 }
@@ -149,6 +163,9 @@ mod imp {
             requirement: req,
             seats,
             tail_bytes,
+            rows,
+            cols,
+            end_on_controller_loss,
             cmd,
         })
     }
@@ -231,6 +248,8 @@ mod imp {
         boot_id: String,
         start_us: Option<u64>,
         pending_hs: AtomicUsize,
+        /// 프로세스 시작(단조) — `--end-on-controller-loss` 첫 조종자 상한.
+        started: Instant,
         /// 같은 id 의 두 번째 seatkeep 을 막는 잠금 — 프로세스가 끝날 때까지 쥔다.
         _id_lock: File,
     }
@@ -546,7 +565,7 @@ mod imp {
         let mut readers = Vec::new();
         let mut inputs: Vec<(Receiver<InputJob>, Box<dyn Write + Send>)> = Vec::new();
         for i in 0..args.seats {
-            let pair = match native_pty_system().openpty(PtySize { rows: 35, cols: 120, pixel_width: 0, pixel_height: 0 }) {
+            let pair = match native_pty_system().openpty(PtySize { rows: args.rows, cols: args.cols, pixel_width: 0, pixel_height: 0 }) {
                 Ok(p) => p,
                 Err(e) => {
                     warn!("cys-seatkeep: openpty: {e}");
@@ -620,6 +639,7 @@ mod imp {
             start_us,
             args,
             pending_hs: AtomicUsize::new(0),
+            started: Instant::now(),
             _id_lock: id_lock,
         });
 
@@ -636,7 +656,8 @@ mod imp {
             std::thread::spawn(move || input_loop(k, i, rx, w));
         }
 
-        // 시험 전용 지연(A14① — 기동~확정 사이 창을 넓힌다). 제품 경로에는 이 변수가 없다.
+        // 시험 전용 지연(A14① — 기동~확정 사이 창을 넓힌다). 디버그 빌드에서만 읽는다 — 릴리스(제품) 빌드에는 이 문장이 없다(T2 인계 10 · T3).
+        #[cfg(debug_assertions)]
         if let Some(ms) = std::env::var("CYS_SEATKEEP_TEST_COMMIT_DELAY_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
             std::thread::sleep(Duration::from_millis(ms));
         }
@@ -727,11 +748,7 @@ mod imp {
         let pid = keep.seats[i].child_pid;
         // ① 끝남만 본다(회수 안 함). ② 신호 금지 표시를 잠금 안에서 세운다. ③ 그 뒤에야 회수한다.
         // SIGNAL·RELEASE 는 같은 잠금 안에서 이 표시를 보고 killpg 하므로, 회수된(재사용될 수 있는) pid 를 치지 않는다(codex 1R #3).
-        if !wait_exit_nowait(pid) {
-            warn!("cys-seatkeep: waitid({pid}) 실패: {} — 회수 경로로 넘어간다", std::io::Error::last_os_error());
-        }
-        lock_st(&keep).out[i].reaped = true;
-        let status = child.wait();
+        let status = reap_marked(&keep, i, pid, child.as_mut());
         let exit = match status {
             Ok(s) => json!({"code": s.exit_code(), "signal": s.signal(), "at": registry::now_epoch()}),
             Err(e) => json!({"error": e.to_string(), "at": registry::now_epoch()}),
@@ -745,6 +762,41 @@ mod imp {
         std::thread::sleep(DRAIN);
         let mut st = lock_st(&keep);
         publish_exit(&keep, &mut st, i, true);
+    }
+
+    /// SIGNAL 집행 — **상태 잠금을 쥔 채로** 부른다(회수 표시와 신호 사이에 회수가 끼지 않게). `target`:
+    /// 없음·`"group"` = killpg(T2 동작) · `"leader"` = 리더 pid 에만 kill(T3 D7 결정 B — 직접 PTY `Child::kill` 과 같은 대상) ·
+    /// 그 밖 = 거절(신호 0). 순서 = 값 검사 → 회수 표시 → pid 검사 → 신호.
+    fn signal_seat(keep: &Keep, st: &State, i: usize, sig: i32, target: Option<&str>) -> &'static str {
+        let leader = match target {
+            None | Some("group") => false,
+            Some("leader") => true,
+            Some(_) => return "bad_target",
+        };
+        if st.out[i].reaped {
+            return "reaped";
+        }
+        let pid = keep.seats[i].child_pid;
+        if pid <= 0 {
+            return "no_pid";
+        }
+        if leader {
+            unsafe { libc::kill(pid, sig) };
+        } else {
+            unsafe { libc::killpg(pid, sig) };
+        }
+        "sent"
+    }
+
+    /// 회수 순서(codex 1R #3 · M09): 끝남만 보고(WNOWAIT) → 잠금 안에서 신호 금지 표시 → 그 뒤에 회수. 시험(`reap_marks_before_reaping`)이
+    /// 회수 순간에 표시가 이미 서 있는지를 가짜 자식으로 직접 본다 — 부하와 무관한 결정적 시험(T3 · T2 인계 2).
+    fn reap_marked(keep: &Keep, i: usize, pid: i32, child: &mut (dyn Child + Send + Sync)) -> std::io::Result<portable_pty::ExitStatus> {
+        if !wait_exit_nowait(pid) {
+            warn!("cys-seatkeep: waitid({pid}) 실패: {} — 회수 경로로 넘어간다", std::io::Error::last_os_error());
+        }
+        lock_st(&keep).out[i].reaped = true;
+        let status = child.wait();
+        status
     }
 
     /// 좌석별 PTY 입력 쓰기 — 자식이 안 읽으면 여기만 막히고 serve 는 막히지 않는다(codex 1R #2).
@@ -993,7 +1045,20 @@ mod imp {
             st.last_peer = Some((c.peer.clone(), now));
             st.no_controller_since = Some(Instant::now());
             let _ = keep.log(json!({"event": "disconnect", "gen": gen, "peer": peer_json(&c.peer), "evicted": c.evicted}));
+            if keep.args.end_on_controller_loss {
+                drop(st);
+                end_for_controller_loss(&keep, "controller_lost");
+            }
         }
+    }
+
+    /// `--end-on-controller-loss`: 기록 1줄 · 등록부 `ended` · 소켓 삭제 뒤 프로세스를 끝낸다 → 커널이 PTY 마스터의 모든 사본을 닫아
+    /// 좌석(세션 우두머리)에 SIGHUP — cysd 가 마스터를 쥐던 때 cysd 가 죽은 것과 같은 경로(DESIGN §1-2). 자식에게 신호를 보내지 않는다.
+    fn end_for_controller_loss(keep: &Keep, why: &str) -> ! {
+        let _ = keep.log(json!({"event": "seatkeep_exit", "reason": why}));
+        let _ = std::fs::remove_file(&keep.paths.sock);
+        let _ = registry::write_atomic(&keep.paths.entry, &keep.entry("ended_controller_lost"));
+        std::process::exit(0)
     }
 
     fn seat_index(keep: &Keep, seat: u32) -> Option<usize> {
@@ -1048,11 +1113,15 @@ mod imp {
                     if !matches!(sig as i32, libc::SIGINT | libc::SIGTERM | libc::SIGHUP | libc::SIGKILL | libc::SIGQUIT | libc::SIGWINCH | libc::SIGCONT | libc::SIGSTOP) {
                         continue;
                     }
-                    // 회수 표시를 보는 것과 killpg 를 같은 잠금 안에서 — 회수된 자식(pid 재사용 대상)에는 보내지 않는다.
-                    let st = lock_st(keep);
+                    // T3 확장 칸 `target`(proto.rs 머리) — 칸이 있으면 결과를 답한다 · 문자열이 아니면 모르는 값과 같이 거절.
+                    let target: Option<Option<&str>> = v.get("target").map(|t| t.as_str().or(Some("\u{0}")));
+                    // 회수 표시를 보는 것과 신호를 같은 잠금 안에서 — 회수된 자식(pid 재사용 대상)에는 보내지 않는다.
+                    let mut st = lock_st(keep);
                     for i in targets(keep, seat) {
-                        if !st.out[i].reaped {
-                            unsafe { libc::killpg(keep.seats[i].child_pid, sig as i32) };
+                        let result = signal_seat(keep, &st, i, sig as i32, target.flatten());
+                        if target.is_some() {
+                            let body = json!({"sig": sig, "target": v["target"], "result": result});
+                            send_gen(keep, &mut st, gen, proto::json_frame(proto::SIGNAL_RESULT, keep.seats[i].id, &body));
                         }
                     }
                 }
@@ -1107,6 +1176,11 @@ mod imp {
             let orphan_long = st.controller.is_none() && st.no_controller_since.map(|t| t.elapsed() >= EXIT_GRACE).unwrap_or(false);
             // 종료 기록을 EXIT_PERSIST_MAX 넘게 못 남기면(상태 폴더가 사라짐 등) stderr 에 기록을 남기고 rc 6 으로 끝낸다 —
             // 소켓도 사라졌을 수 있어 어떤 조종자도 확인해 줄 수 없는 영구 고아가 되지 않게(독립 검증 D9).
+            // `--end-on-controller-loss`: 기동 뒤 아무 조종자도 붙지 않은 채 상한이 지나면 끝낸다(cysd 가 기동~HELLO 사이에 죽은 경우).
+            if keep.args.end_on_controller_loss && st.gen == 0 && st.controller.is_none() && keep.started.elapsed() >= FIRST_CONTROLLER_MAX {
+                drop(st);
+                end_for_controller_loss(&keep, "no_first_controller");
+            }
             let persist_given_up = !st.exit_record_ok && st.exit_record_fail_since.map(|t| t.elapsed() >= EXIT_PERSIST_MAX).unwrap_or(false);
             if all_exited && !all_acked && orphan_long && persist_given_up {
                 let v: Vec<Value> = st.out.iter().enumerate().map(|(i, o)| json!({"seat": i, "exit": o.exit, "acked": o.exit_acked})).collect();
@@ -1152,6 +1226,9 @@ mod imp {
                 requirement: None,
                 seats: n,
                 tail_bytes: MAX_TAIL,
+                rows: 10,
+                cols: 10,
+                end_on_controller_loss: false,
                 cmd: vec!["/bin/true".into()],
             };
             let paths = Paths::new(&d, "t");
@@ -1181,7 +1258,7 @@ mod imp {
             };
             let policy = Policy { controller_exe: args.controller_exe.clone(), requirement: None, lock: args.lock.clone() };
             let keep = Keep { args, paths, policy, seats, st: Mutex::new(st), ledger: Mutex::new(ledger), boot_id: "b".into(),
-                              start_us: Some(1), pending_hs: AtomicUsize::new(0), _id_lock: id_lock };
+                              start_us: Some(1), pending_hs: AtomicUsize::new(0), started: Instant::now(), _id_lock: id_lock };
             (keep, d)
         }
 
@@ -1369,6 +1446,135 @@ mod imp {
             st.out[0].exit = None;
             keep.persist_exit_record(&mut st);
             assert!(st.exit_record_ok && st.exit_record_fail_since.is_none(), "보존할 기록 없음");
+            drop(st);
+            let _ = std::fs::remove_dir_all(&d);
+        }
+
+        impl std::fmt::Debug for Keep {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("Keep")
+            }
+        }
+
+        /// M09 결정적 시험(T3 · T2 인계 2): **회수하는 그 순간** 신호 금지 표시(`reaped`)가 이미 서 있어야 한다.
+        /// 가짜 자식의 `wait()`(= 실제 회수 자리)가 그때의 표시를 읽어 둔다 — 실행 순서를 시험이 쥐므로 부하·잠·재시도와 무관하다.
+        /// 표시가 회수 뒤로 밀리면(M09 뮤턴트 = 회수 후 300ms 늦춤) 이 시험이 매번 붉다. SIGNAL·RELEASE 는 같은 잠금 안에서
+        /// 이 표시를 보고 killpg 하므로(serve), 「표시가 회수보다 먼저」가 곧 「회수된 pid 에 신호 0」이다.
+        #[test]
+        fn reap_marks_before_reaping() {
+            #[derive(Debug)]
+            struct Spy(Arc<Keep>, Arc<std::sync::atomic::AtomicU8>);
+            impl portable_pty::ChildKiller for Spy {
+                fn kill(&mut self) -> std::io::Result<()> {
+                    Ok(())
+                }
+                fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+                    Box::new(Spy(Arc::clone(&self.0), Arc::clone(&self.1)))
+                }
+            }
+            impl Child for Spy {
+                fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+                    Ok(None)
+                }
+                fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
+                    // 회수 순간: 표시를 읽는다(1 = 서 있음 · 2 = 아직 안 섬). 잠금을 잡을 수 있어야 한다(쥔 채 회수하지 않음).
+                    let marked = self.0.st.try_lock().map(|st| st.out[0].reaped).unwrap_or(false);
+                    self.1.store(if marked { 1 } else { 2 }, Ordering::SeqCst);
+                    Ok(portable_pty::ExitStatus::with_exit_code(0))
+                }
+                fn process_id(&self) -> Option<u32> {
+                    None
+                }
+            }
+            for _ in 0..10 {
+                let (keep, d) = test_keep("m09", 1);
+                let keep = Arc::new(keep);
+                let seen = Arc::new(std::sync::atomic::AtomicU8::new(0));
+                let mut spy = Spy(Arc::clone(&keep), Arc::clone(&seen));
+                // pid 0 = waitid 는 실패(ECHILD)하고 경고 뒤 회수 경로로 간다 — 표시·회수 순서만 본다.
+                let st = reap_marked(&keep, 0, 0, &mut spy);
+                assert!(st.is_ok());
+                assert_eq!(seen.load(Ordering::SeqCst), 1, "회수하는 순간 신호 금지 표시가 아직 안 섰다(회수된 pid 에 killpg 가능)");
+                assert!(lock_st(&keep).out[0].reaped);
+                drop(spy);
+                let _ = std::fs::remove_dir_all(&d);
+            }
+        }
+
+        fn alive(pid: i32) -> bool {
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                return false;
+            }
+            let o = std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().unwrap();
+            let t = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            !(t.is_empty() || t.starts_with('Z'))
+        }
+
+        /// 새 프로세스 그룹의 리더 `sh` + 같은 그룹의 손자 `sleep`. (리더 pid, 손자 pid, 리더 Child).
+        fn group_with_grandchild(d: &std::path::Path) -> (i32, i32, std::process::Child) {
+            use std::os::unix::process::CommandExt;
+            let f = d.join("gc.pid");
+            let mut cmd = std::process::Command::new("/bin/sh");
+            cmd.arg("-c").arg(format!("sleep 300 & echo $! > '{}'; wait", f.display())).process_group(0);
+            let child = cmd.spawn().unwrap();
+            let t = Instant::now();
+            let gc = loop {
+                if let Some(p) = std::fs::read_to_string(&f).ok().and_then(|t| t.trim().parse::<i32>().ok()) {
+                    break p;
+                }
+                assert!(t.elapsed() < Duration::from_secs(5), "손자 pid 를 못 받음");
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            (child.id() as i32, gc, child)
+        }
+
+        /// D7 결정 B(master#fe07cc6a) ⑴ 모르는 target = 거절(신호 0 · 그룹으로 내려가지 않음) ⑵ 회수 표시 뒤 = 신호 0 · "reaped"
+        /// ⑶ "leader" = 리더에만(같은 그룹 손자 생존 — leader 갈래를 killpg 로 되돌리는 뮤턴트면 손자가 죽어 붉다) ⑷ 칸 없음·"group" = 그룹.
+        #[test]
+        fn signal_target_leader_group_and_refusal() {
+            let (mut keep, d) = test_keep("sigtgt", 1);
+            let (leader, gc, mut child) = group_with_grandchild(&d);
+            keep.seats[0].child_pid = leader;
+            let st = lock_st(&keep);
+            for bad in ["foo", "Leader", "", "\u{0}"] {
+                assert_eq!(signal_seat(&keep, &st, 0, libc::SIGKILL, Some(bad)), "bad_target", "{bad:?}");
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            assert!(alive(leader) && alive(gc), "거절된 요청이 신호를 보냈다");
+            drop(st);
+            // ⑵ 회수 표시가 서면 leader·group 어느 쪽도 보내지 않는다(M09 와 같은 틀 — 표시를 시험이 직접 세운다).
+            lock_st(&keep).out[0].reaped = true;
+            {
+                let st = lock_st(&keep);
+                assert_eq!(signal_seat(&keep, &st, 0, libc::SIGKILL, Some("leader")), "reaped");
+                assert_eq!(signal_seat(&keep, &st, 0, libc::SIGKILL, None), "reaped");
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            assert!(alive(leader) && alive(gc), "회수 표시 뒤에 신호가 나갔다");
+            lock_st(&keep).out[0].reaped = false;
+            // ⑶ leader = 리더만
+            {
+                let st = lock_st(&keep);
+                assert_eq!(signal_seat(&keep, &st, 0, libc::SIGKILL, Some("leader")), "sent");
+            }
+            let _ = child.wait();
+            std::thread::sleep(Duration::from_millis(200));
+            assert!(alive(gc), "leader 신호가 같은 그룹 손자까지 쳤다(그룹 = killpg 뮤턴트)");
+            // ⑷ group = 그룹(리더가 없어도 그룹이 살아 있으면 pgid 가 유효)
+            {
+                let st = lock_st(&keep);
+                assert_eq!(signal_seat(&keep, &st, 0, libc::SIGKILL, Some("group")), "sent");
+            }
+            let t = Instant::now();
+            while alive(gc) && t.elapsed() < Duration::from_secs(3) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(!alive(gc), "group 신호가 그룹에 안 닿음");
+            // pid 0(모름)에는 어떤 신호도 보내지 않는다(kill(0) = 내 그룹이 되는 것 차단).
+            keep.seats[0].child_pid = 0;
+            let st = lock_st(&keep);
+            assert_eq!(signal_seat(&keep, &st, 0, libc::SIGWINCH, Some("leader")), "no_pid");
+            assert_eq!(signal_seat(&keep, &st, 0, libc::SIGWINCH, None), "no_pid");
             drop(st);
             let _ = std::fs::remove_dir_all(&d);
         }

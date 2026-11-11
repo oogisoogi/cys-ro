@@ -534,6 +534,16 @@ pub fn env_compat(primary: &str) -> Option<String> {
 ///
 /// 값 안의 U+FEFF 와 두 번째 이후의 BOM 은 데이터로 보존한다(선두 1개만). 입력이 `&str` 인 것은 의도다 —
 /// 무효 UTF-8(cp949 저장)은 `read_to_string` 단계에서 InvalidData 로 걸리며 그 처리는 호출측 정책이다.
+/// cysd 시작 잠금 파일(`cys.lock`)의 홀더 pid — **첫 칸**(공백 앞)만 읽는다. 빈 파일·0·파싱 실패 = None(구 락파일과 같은 보수 해석).
+/// 형식 = `"{pid}"`(기본) 또는 `"{pid} {출생 시각 µs}"`(seatkeep 노브 켬 · T3). 독자(cysd deadman · cys doctor · factory_reset 격리 관문 ·
+/// GUI 로그)가 모두 이것 하나를 쓴다.
+pub fn startup_lock_holder_pid(text: &str) -> Option<u32> {
+    match text.split_whitespace().next()?.parse::<u32>().ok()? {
+        0 => None,
+        pid => Some(pid),
+    }
+}
+
 pub fn strip_utf8_bom(s: &str) -> &str {
     s.strip_prefix('\u{FEFF}').unwrap_or(s)
 }

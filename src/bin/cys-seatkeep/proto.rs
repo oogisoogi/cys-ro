@@ -4,7 +4,14 @@
 //! 참고했고 코드는 새로 썼다(복사 없음 → NOTICE.md 항목 불요).
 //!
 //! **고정 핵심**(영구 고정 · `CORE_VERSION`): HELLO · WELCOME · REJECT · EXITED · RELEASE · SIGNAL.
-//! 나머지는 확장이다. 핵심 판이 다르면 seatkeep 은 REJECT(`core_mismatch`)로 끊는다 — 허더처럼
+//! 나머지는 확장이다.
+//!
+//! SIGNAL 본문(JSON) = `{"sig": <번호>}`(T2 · 그룹 = killpg) · **T3 확장**(master#fe07cc6a · D7 결정 B) 선택 칸
+//! `"target"`: `"group"`(= 칸 없음과 같음 · killpg) · `"leader"`(좌석 리더 pid 에만 kill) · 그 밖의 값 = **거절**(신호 0 ·
+//! 조용히 그룹으로 내려가지 않음). 회수 표시가 선 좌석에는 어느 쪽이든 보내지 않는다. `target` 칸이 있는 요청에만 결과 프레임
+//! SIGNAL_RESULT `{"sig","target","result": "sent"|"reaped"|"bad_target"|"no_pid"}` 를 좌석마다 돌려준다(칸 없는 T2 요청은
+//! 답 없음 = T2 동작 그대로). ★발행 전 확장 · 핵심 판 번호(CORE_VERSION) 그대로 — seatkeep 은 아직 한 번도 발행되지 않아
+//! 이 칸을 모르는 옛 seatkeep 이 현장에 없다(어긋날 상대 없음 · master#fe07cc6a). 핵심 판이 다르면 seatkeep 은 REJECT(`core_mismatch`)로 끊는다 — 허더처럼
 //! 판 번호를 받기만 하고 비교하지 않는 일(holder.rs:207)은 하지 않는다.
 
 use std::io::{self, Read, Write};
@@ -29,6 +36,8 @@ pub const EXITED: u8 = 106;
 pub const FOREGROUND_IS: u8 = 108;
 pub const REJECT: u8 = 109;
 pub const INPUT_ACK: u8 = 110;
+/// SIGNAL 결과(T3 확장 · `target` 칸이 있는 SIGNAL 에만).
+pub const SIGNAL_RESULT: u8 = 111;
 
 pub fn frame(kind: u8, seat: u32, payload: &[u8]) -> Vec<u8> {
     debug_assert!(payload.len() <= MAX_PAYLOAD, "보내는 프레임도 상한 안이어야 한다(재생은 나눠 보낸다)");

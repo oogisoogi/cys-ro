@@ -8358,12 +8358,8 @@ async fn plan_daemon_stop(socket: &std::path::Path) -> DaemonStopPlan {
 /// cys.lock). Read only, for the log. None when absent, unreadable, unparsable or 0 (Windows writes no lock file).
 #[cfg_attr(not(unix), allow(dead_code))]
 fn lock_file_pid(socket: &std::path::Path) -> Option<u32> {
-    std::fs::read_to_string(socket.with_extension("lock"))
-        .ok()?
-        .trim()
-        .parse::<u32>()
-        .ok()
-        .filter(|p| *p != 0)
+    // ★T3: 첫 칸만(cysd 가 노브 켬이면 `pid 출생시각` 두 칸을 적는다).
+    cys::startup_lock_holder_pid(&std::fs::read_to_string(socket.with_extension("lock")).ok()?)
 }
 
 /// 구 데몬 정상 종료: system.identify로 pid를 받아 SIGTERM(unix)/taskkill(win).

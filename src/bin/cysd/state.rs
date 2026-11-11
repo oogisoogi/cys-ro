@@ -2404,6 +2404,10 @@ pub struct Surface {
     /// 좌석이 살아 있는 동안 `master` 도 이 구조체 안에서 살아 있으므로 fd 는 유효하다(자식이 죽어도 master 는 남는다 — 그때 `tcgetpgrp` 는 실패 → V2).
     #[cfg(unix)]
     pub pty_master_fd: AtomicI32,
+    /// ★(T3 · cysr-seatkeep-t3) seatkeep 경유 좌석의 전경 질의 연결(맥 · 노브 `CYS_SEATKEEP=1`). 그때 `pty_master_fd` 는
+    /// `seat_proc::FG_VIA_LINK`(−2)이고 전경 질의는 이 연결로 간다 — `master` Mutex 를 잡지 않는 계약 그대로. 직접 PTY = None.
+    #[cfg(target_os = "macos")]
+    pub seat_link: Option<Arc<crate::seat_proc::SeatLink>>,
     /// ★(0.14.43 · R1F-IN ⓑ) 이 좌석 PTY 의 전경 프로세스 그룹이 **"엄격 일치한 에이전트 프로세스(`cmdline_matches_agent_exec`)의 그룹"** 이면 그 그룹 id, 아니면 0(unix).
     /// 단일 writer = `governance::sync_lone_key_exempt`(watchdog 틱 · 좌석마다 매 틱 — 종료 좌석·맨 셸·엄격 증거 없음·시스템 콜 실패·전경이 뿌리 셸 그룹이면 0). 틱이 엄격 일치한 자손 pid 들의 `getpgid` 집합 P 와
     /// `tcgetpgrp(pty_master_fd)` 를 비교해 `fg ∈ P` 일 때만 `fg` 를 적는다. 읽는 곳: 계수 시점의 V3 판정([`Surface::pending_input_model`] — 지금의 `tcgetpgrp` 와 같을 때만 · "면제해도 되는가"의 판정).
@@ -3093,7 +3097,10 @@ impl Surface {
     /// raw fd 를 읽는 곳은 이 함수 하나다(계수 시점 판정과 틱의 에이전트 그룹 판정·되돌리기가 같은 읽기를 쓴다).
     #[cfg(unix)]
     pub fn foreground_pgid_now(&self) -> Option<i32> {
-        crate::seat_proc::foreground_pgid(&self.pty_master_fd)
+        #[cfg(target_os = "macos")]
+        return crate::seat_proc::foreground_pgid(&self.pty_master_fd, self.seat_link.as_deref());
+        #[cfg(not(target_os = "macos"))]
+        return crate::seat_proc::foreground_pgid(&self.pty_master_fd, None);
     }
 
     /// 지금 이 좌석 PTY 의 전경 프로세스 그룹이 **틱이 적어 둔 에이전트 그룹**이면 그 그룹 번호(unix) — [`Surface::agent_fg_pgid`] 가 0 이면 시스템 콜 없이 `None`(V2).
@@ -7742,7 +7749,7 @@ impl Daemon {
         let config_dir_trusted =
             claude_config_dir_override.is_none() && caller_env_keeps_config_dir(env, &daemon_resolved);
         // 좌석 프로세스 손잡이(T3) — PTY 열기는 `seat_proc` 한 곳에서.
-        let opened = crate::seat_proc::open(PtySize {
+        let opened = crate::seat_proc::open(self, PtySize {
             rows,
             cols,
             pixel_width: 0,
@@ -7946,6 +7953,8 @@ impl Daemon {
         // ★(0.14.43 · RQFIX2 m-2) PTY master raw fd 캐시(unix) — master 를 Mutex 로 옮기기 전에 읽는다. 모르면 −1(= 전경 판정 불능 → V2).
         #[cfg(unix)]
         let pty_master_fd = spawned.foreground_fd();
+        #[cfg(target_os = "macos")]
+        let seat_link = spawned.link();
         let surface = Arc::new(Surface {
             id,
             title: Mutex::new(title.unwrap_or_else(|| format!("surface {id}"))),
@@ -8044,6 +8053,8 @@ impl Daemon {
             lone_key_exempt: AtomicBool::new(false),
             #[cfg(unix)]
             pty_master_fd: AtomicI32::new(pty_master_fd),
+            #[cfg(target_os = "macos")]
+            seat_link,
             // ★(R1F-IN) ⓑ 에이전트 전경 그룹은 틱 전이라 0(= V2) · ⓐ 신생 좌석은 면제한 Esc 가 없다(0).
             #[cfg(unix)]
             agent_fg_pgid: AtomicI32::new(0),

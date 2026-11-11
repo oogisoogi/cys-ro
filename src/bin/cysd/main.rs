@@ -4216,6 +4216,10 @@ mod startup_lock_retry_tests {
 mod pty_test_support;
 #[cfg(test)]
 mod seat_d7_tests;
+#[cfg(test)]
+mod seat_flood_tests;
+#[cfg(test)]
+mod seat_latency_tests;
 
 #[cfg(test)]
 mod env_scrub_tests {

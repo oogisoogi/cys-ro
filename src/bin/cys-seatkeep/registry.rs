@@ -50,7 +50,12 @@ impl Paths {
                     return Err(std::io::Error::other(format!("{} 의 소유자가 내가 아니다", self.dir.display())));
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::fs::create_dir(&self.dir)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => match std::fs::create_dir(&self.dir) {
+                Ok(()) => {}
+                // 다른 seatkeep 이 같은 순간에 처음 만들었다(좌석 여럿 동시 기동 · T3 실측) — 그 폴더를 같은 검사로 다시 본다.
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return self.ensure_dir(),
+                Err(e) => return Err(e),
+            },
             Err(e) => return Err(e),
         }
         std::fs::set_permissions(&self.dir, std::fs::Permissions::from_mode(0o700))
@@ -235,6 +240,30 @@ pub fn now_epoch() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// T3 실측 회귀: 좌석 여럿이 동시에 처음 뜨면 `seatkeep` 폴더 만들기가 경합해 한쪽이 `File exists` 로 rc 3 이었다.
+    /// 같은 새 폴더에 8 스레드가 동시에 `ensure_dir` — 전부 성공해야 한다(30회).
+    #[test]
+    fn ensure_dir_is_race_safe_on_first_creation() {
+        for round in 0..30 {
+            let base = tmpdir(&format!("race{round}"));
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+            let hs: Vec<_> = (0..8)
+                .map(|k| {
+                    let (b, base) = (std::sync::Arc::clone(&barrier), base.clone());
+                    std::thread::spawn(move || {
+                        let p = Paths::new(&base, &format!("s{k}"));
+                        b.wait();
+                        p.ensure_dir()
+                    })
+                })
+                .collect();
+            for h in hs {
+                h.join().unwrap().expect("동시 첫 만들기에서 실패");
+            }
+            let _ = std::fs::remove_dir_all(&base);
+        }
+    }
 
     fn tmpdir(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("sk-reg-{tag}-{}", std::process::id()));

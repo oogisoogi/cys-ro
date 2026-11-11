@@ -79,6 +79,9 @@ tar = "0.4"
 icu_normalizer = { version = "2.2", default-features = false, features = ["compiled_data"] }
 # 3-way 병합 엔진(순수 Rust·셸아웃 0). 0.5.1 하한 = #85 무개행 마커 접합 수리 포함.
 diffy = "0.5.1"
+# ★T3(cysr-seatkeep-t3): seatkeep 경유 좌석 손잡이가 portable-pty `MasterPty` 를 구현한다 — 그 트레이트의 오류 타입이 `anyhow::Error` 라
+#   이름을 써야 한다. anyhow 는 이미 의존 그래프·Cargo.lock 에 있다(portable-pty 전이) — 직접 의존 승격(flate2/tar 관례).
+anyhow = "1"
 
 # 테스트 fixture 전용: minisign keypair 생성·서명(서명 roundtrip 테스트). 런타임 의존 아님.
 [dev-dependencies]

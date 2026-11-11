@@ -24337,8 +24337,8 @@ mod tests {
     /// ★(0.14.43 · RQFIX2 m-2) PTY 의 `(전경 프로세스 그룹, 뿌리 프로세스 그룹)` — 제품 `Surface::foreground_pgid_now`(캐시한 master fd)·`getpgid(뿌리 pid)` 와 같은 두 시스템 콜. unix 전용.
     #[cfg(unix)]
     fn pty_groups(s: &Arc<crate::state::Surface>) -> (Option<i32>, Option<i32>) {
-        let fd = s.pty_master_fd.load(AtomicOrdering::Relaxed);
-        let fg = (fd >= 0).then(|| unsafe { libc::tcgetpgrp(fd) }).filter(|p| *p > 0);
+        // ★T3: 전경 그룹은 좌석 프로세스 손잡이로 묻는다(직접 PTY = 같은 `tcgetpgrp(캐시 fd)` · seatkeep 경유 = FOREGROUND 왕복).
+        let fg = s.foreground_pgid_now();
         let root = (s.pid > 0).then(|| unsafe { libc::getpgid(s.pid as libc::pid_t) }).filter(|p| *p > 0);
         (fg, root)
     }

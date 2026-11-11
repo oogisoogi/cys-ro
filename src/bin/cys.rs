@@ -10452,10 +10452,8 @@ fn doctor_lock_hold() -> std::time::Duration {
 #[cfg(unix)]
 fn doctor_read_holder_pid(lock: &std::path::Path) -> Option<u32> {
     let s = std::fs::read_to_string(lock).ok()?;
-    match s.trim().parse::<u32>().ok()? {
-        0 => None,
-        pid => Some(pid),
-    }
+    // ★T3: 첫 칸만(노브 켬이면 둘째 칸 = 출생 시각) — cysd 와 같은 판독기.
+    cys::startup_lock_holder_pid(&s)
 }
 
 #[cfg(unix)]

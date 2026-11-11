@@ -60,7 +60,9 @@ pub(crate) fn resize(master: &Mutex<..>, rows, cols)                  // #13
   3. 붙기 = 등록부 `committed` 또는 소켓이 생길 때까지(상한 5초 · 그사이 seatkeep 이 끝나면 rc 와 함께 실패) → 소켓 피어 pid = 내가 띄운 seatkeep pid 확인(DESIGN §3-2 「반대 방향」) → HELLO(`core:1`) → WELCOME(좌석 0 의 `child_pid`) 또는 REJECT(이유 그대로 실패 문구에).
   4. 연결 스레드 1개가 프레임을 나눈다: OUTPUT → 읽기 얼굴(오프셋 연속 확인 · 구멍이면 로그) · INPUT_ACK → 쓰기 대기자 깨움 · FOREGROUND_IS → 전경 대기자 · EXITED → 종료 상태 기록 + 읽기 EOF + **즉시 EXIT_ACK** · 연결 끊김 = 종료로 접음(`seatkeep_disconnected` — seatkeep 이 죽으면 마스터가 닫혀 자식도 SIGHUP 으로 끝난다 【코드 DESIGN §1-2】).
   5. 쓰기 = 256KiB 조각마다 INPUT(id = `시작 시각<<32 | 순번`) → INPUT_ACK 까지 기다림(직접 PTY 의 「write 가 돌아오면 PTY 에 들어감」과 같은 뜻 · 조각 상한 덕에 seatkeep 입력 대기 1MiB 를 넘지 않음) · 끊김·종료 = 오류.
-  6. 크기 = RESIZE(확인 프레임 없음 · `get_size` = 마지막으로 보낸 값) · 전경 = FOREGROUND 왕복(상한 200ms · 넘으면 `None` = V2 종전 경로) · 신호/닫기(`Child::kill`) = **RELEASE**(seatkeep 기록 1줄 + killpg SIGHUP) → 50ms×4 EXITED 확인 → SIGNAL SIGKILL · `wait` = EXITED 까지(끊김 = 오류로 끝).
+  6. 크기 = RESIZE(확인 프레임 없음 · `get_size` = 마지막으로 보낸 값) · 전경 = FOREGROUND 왕복(상한 200ms · 넘으면 `None` = V2 종전 경로) · 신호/닫기(`Child::kill`) = **SIGNAL `{"sig":1,"target":"leader"}`** → 50ms×4 EXITED 확인 → SIGNAL `{"sig":9,"target":"leader"}`(직접 PTY 와 같은 대상 · §6 결정 B) · `wait` = EXITED 까지(끊김 = 오류로 끝). RELEASE(그룹 SIGHUP)는 결정 B 와 어긋나 T3 에서 쓰지 않는다(판 내림 = T6).
+  6-1. **좌석 수명 = 직접 PTY 와 같게**(master#c125bc97 ②): cysd 는 seatkeep 을 늘 `--end-on-controller-loss` 로 띄운다 → 조종자(cysd) 연결이 끊기면(또는 기동 뒤 15초 안에 아무도 안 붙으면) seatkeep 이 기록 1줄 · 등록부 `ended_controller_lost` 를 남기고 스스로 끝난다 = 커널이 PTY 마스터를 닫아 좌석에 SIGHUP(cysd 가 마스터를 쥐던 지금과 같은 경로). 인자 없으면 T2 동작 그대로. ⚠T4 가 입양을 켤 때 이 인자를 뺀다(`seat_proc.rs` 그 자리 주석). 그래서 위험 1(조종자 없이 사는 좌석)은 T3 에서 없다.
+  6-2. **출력 큐 상한**(master#c125bc97 ③): 연결 스레드 → 읽기 얼굴 큐 = 조각 64개(`sync_channel`) · 차면 연결 스레드가 기다린다 → seatkeep 쪽 밀림(꼬리)로 넘어간다. 상한 없는 큐를 두지 않는다. 폭주 실측 표 = HANDOFF.
   7. seatkeep 프로세스는 cysd 의 자식이다 → 연결 스레드가 끝날 때 `wait()`(좀비 방지). cysd 가 먼저 죽으면 launchd 로 넘어간다(설계 의도).
 
 ## 3. 노브
@@ -70,7 +72,7 @@ pub(crate) fn resize(master: &Mutex<..>, rows, cols)                  // #13
 
 ## 4. 잠금 파일(`cys.lock` = `socket_path.with_extension("lock")`) 형식 바꿈과 독자 표
 
-쓰는 곳 = `deadman::claim_lock`(`deadman.rs:93-101` · 지금 = `"{pid}"`). 바꿈 = `"{pid} {출생 시각 µs}"`(출생 시각 = `proc_pidinfo` PROC_PIDTBSDINFO `pbi_start_tvsec*1e6 + pbi_start_tvusec` — seatkeep `registry::process_start_us` 와 같은 식 · 못 읽으면 한 칸 그대로).
+쓰는 곳 = `deadman::claim_lock`(`deadman.rs:93-101` · 지금 = `"{pid}"`). 바꿈 = **노브 켬일 때만**(master#c125bc97 ① — 독자 먼저·작성자 나중 · 노브 끔 = 바이트까지 그대로 · 시험 `claim_lock_bytes_follow_knob`) `"{pid} {출생 시각 µs}"`(출생 시각 = `proc_pidinfo` PROC_PIDTBSDINFO `pbi_start_tvsec*1e6 + pbi_start_tvusec` — seatkeep `registry::process_start_us` 와 같은 식 · 못 읽으면 한 칸 그대로).
 
 | 독자 | 파일:줄 | 지금 읽는 식 | 두 칸이면 | 처리 |
 |---|---|---|---|---|
@@ -98,7 +100,9 @@ seatkeep 은 조종자 경로를 `SecCodeCopyGuestWithAttributes(audit)` → 코
 | ⓑ 리더만 끝남 · 직후 | × | **○** | × | **○** | × | 커널의 전경 그룹 SIGHUP 만 · HUP 무시 손자는 산다 |
 | ⓑ 그 뒤 닫기 | × | **○** | × | **○** | × | 리더가 이미 없어 후손 목록이 비고, `kill()` 은 이미 회수된 자식이라 신호 없음 |
 
-**미리 보이는 차이 1곳 【코드 · 추정】**: 직접 PTY 의 `kill()` 은 **리더 pid 하나**에 SIGHUP→SIGKILL 이고, seatkeep 의 SIGNAL·RELEASE 는 **그룹 전체(killpg)** 다(`cys-seatkeep/main.rs:1045-1066`). 닫기는 앞에서 후손을 pid 로 다 치므로 보통 같지만, **리더가 HUP 을 무시하고 + 리더의 후손이 아닌 같은 그룹 고아(o1)** 가 있으면 직접 = o1 생존 · seatkeep = SIGKILL killpg 로 o1 사망. 같게 하려면 「리더 pid 에만」 보내는 SIGNAL 이 필요 = **T2 프로토콜 변경**(브리프 §9 ③) → 실측으로 확인되면 【결정필요】.
+**노브 켬 실측(00:5x)** = ⓐ·ⓑ 같음 · **ⓐ' 만 다름**(o1 = 직접 ○ / seatkeep ×). → 【결정필요】 → **master 결정 B**(master#fe07cc6a): SIGNAL 에 선택 칸 `target`(`"leader"` = 리더 pid 에만 · `"group"`/없음 = 그룹 · 모르는 값 = 거절) + `target` 이 있는 요청에만 SIGNAL_RESULT 답 · 회수 표시 잠금 안에서만 · 발행 전 확장이라 핵심 판 번호 그대로(proto.rs 머리 프레임 설명). cysd `Child::kill` 은 leader 로 보낸다.
+
+**처음 적었던 예측(이력) 【코드 · 추정】**: 직접 PTY 의 `kill()` 은 **리더 pid 하나**에 SIGHUP→SIGKILL 이고, seatkeep 의 SIGNAL·RELEASE 는 **그룹 전체(killpg)** 다(`cys-seatkeep/main.rs:1045-1066`). 닫기는 앞에서 후손을 pid 로 다 치므로 보통 같지만, **리더가 HUP 을 무시하고 + 리더의 후손이 아닌 같은 그룹 고아(o1)** 가 있으면 직접 = o1 생존 · seatkeep = SIGKILL killpg 로 o1 사망. 같게 하려면 「리더 pid 에만」 보내는 SIGNAL 이 필요 = **T2 프로토콜 변경**(브리프 §9 ③) → 실측으로 확인되면 【결정필요】.
 
 ## 7. 위험 3줄 + 결정 거리
 

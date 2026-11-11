@@ -969,7 +969,8 @@ if PAUSED and not PREFLIGHT:
 #   에이전트는 문 파일(~/.cys/agy-seat-door.json)을 만들거나 쓸 수 없다. 문은 사람이 앱 화면(명령 팔레트 확인 창 ·
 #   경고 문구)에서만 연다 — 정본 = src/agy_door.rs. 읽기·닫기(rm)는 막지 않는다(안전 쪽).
 #   ★정직한 한계: 낱말을 변수로 조립하는 등 의도적 우회는 이 문자열 검사로 다 잡지 못한다(같은 OS 사용자 =
-#   거버넌스 구분 · src/agy_door.rs 머리). 막는 것은 지침을 따르는 정상 노드의 평시 쓰기다.
+#   거버넌스 구분 · src/agy_door.rs 머리). 막는 것은 지침을 따르는 정상 노드의 평시 쓰기다. 문 이름을 담은 스크립트
+#   파일을 먼저 쓰고 그 파일을 실행하는 두 단계 간접(Write 본문은 검사 안 함 — 설계 문서·이 훅 자신이 이름을 담는다)도 이 한계에 든다.
 AGY_DOOR_WORD = "agy-seat-"
 AGY_DOOR_READ_OK = {"cat", "ls", "stat", "test", "[", "head", "tail", "wc", "file", "rm", "unlink",
                     "shasum", "sha256sum", "jq", "grep", "rg", "echo", "printf"}
@@ -985,6 +986,8 @@ AGY_DOOR_SED_SCRIPT = re.compile(r"^(\$|[0-9]+)?(,(\$|[0-9]+))?p$")
 AGY_DOOR_JSONTOOL_OPTS = {"--sort-keys", "--compact", "--no-ensure-ascii", "--json-lines", "--tab", "--no-indent"}
 
 def agy_door_read_only(p, args):
+    if p == "rg" and any(a.startswith("--pre") for a in args):   # rg --pre <prog> = 파일마다 프로그램 실행(독립 재검 minor)
+        return False
     if p in AGY_DOOR_READ_OK:
         return True
     if p == "sed":
@@ -1017,12 +1020,16 @@ def agy_door_read_only(p, args):
 # codex 2R minor: `docs/agy-seat-door.md` 같은 **다른 파일**만 이름에 낱말이 든 경우는 문 규칙 대상이 아니다
 #   (Write/Edit 의 basename 판정과 같은 경계). 문 파일 = basename 이 agy-seat-door.json 으로 시작 · 그 밖 낱말 출현
 #   (변수 조립 조각 등)은 종전대로 문 규칙 대상(안전 쪽).
-AGY_DOOR_OTHER_FILE = re.compile(r"agy-seat-[a-z0-9._-]*\.(md|txt|rs|py|sh|ts|tsx|js|html|yml|yaml|toml)$")
+
+AGY_DOOR_OTHER_TOKEN = re.compile(r"[a-z0-9_./~$-]*agy-seat-[a-z0-9._-]*\.(md|txt|rs|py|sh|ts|tsx|js|html|yml|yaml|toml)")
 
 def agy_door_mentions(n):
+    # 독립 재검(2R 반영분 major): 낱말 전체가 「다른 파일 경로」 모양일 때만 뺀다 — 셸 문자로 문 경로에 붙여 쓴 낱말
+    #   (`…/agy-seat-door.json;:/agy-seat-x.md`)이 basename 만 보고 빠지던 회귀를 막는다. 문 파일 이름이 들면 언제나 대상.
     for t in n.split():
-        b = t.rsplit("/", 1)[-1]
-        if AGY_DOOR_WORD in t and (b.startswith("agy-seat-door.json") or not AGY_DOOR_OTHER_FILE.search(b)):
+        if AGY_DOOR_WORD not in t:
+            continue
+        if "agy-seat-door.json" in t or not AGY_DOOR_OTHER_TOKEN.fullmatch(t):
             return True
     return False
 
@@ -1030,6 +1037,9 @@ def agy_door_bash_write(cmd):
     ns = [norm_loose(cmd).lower(), norm_loose_slash(cmd).lower()]
     if not any(agy_door_mentions(n) for n in ns):
         return False
+    # 독립 재검(2R 반영분 major): 명령 치환·프로세스 치환은 세그먼트 분할에 안 잡힌다 — 문 낱말과 함께면 거부(백스톱과 같은 규칙)
+    if any(x in cmd for x in ("$(", "`", "<(", ">(")):
+        return True
     for n in ns:
         toks = n.split()
         if ">" in toks or ">>" in toks or any(w.startswith(">") for w in toks):
@@ -1108,7 +1118,7 @@ run_loose_backstop() {
   #   · 리다이렉트 없음)만 통과 — 그 밖(Write/Edit 포함 · jq 부재로 판독 불가 포함)은 fail-closed 거부.
   #   codex 2R major: 단일 명령만 — `;`·`|`·`&`·명령 치환·줄바꿈이 섞이면(첫 낱말이 cat 이어도) 거부.
   case "$INPUT" in *agy-seat-*)
-    case "$low" in *";"*|*"|"*|*"&"*|*'$('*|*'`'*|*$'\n'*) emit_deny "백스톱: [AGY-DOOR] agy 좌석 문 파일 쓰기 차단(사람이 앱 화면에서만 연다)" ;; esac
+    case "$low" in *";"*|*"|"*|*"&"*|*'$('*|*'`'*|*'<('*|*'>('*|*$'\n'*) emit_deny "백스톱: [AGY-DOOR] agy 좌석 문 파일 쓰기 차단(사람이 앱 화면에서만 연다)" ;; esac
     case "${low%% *}" in cat|ls|stat|head|tail|wc|grep) case "$low" in *">"*) emit_deny "백스톱: [AGY-DOOR] agy 좌석 문 파일 쓰기 차단(사람이 앱 화면에서만 연다)" ;; esac ;;
       *) emit_deny "백스톱: [AGY-DOOR] agy 좌석 문 파일 쓰기 차단(사람이 앱 화면에서만 연다)" ;; esac ;;
   esac

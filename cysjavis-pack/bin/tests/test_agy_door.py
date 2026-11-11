@@ -68,6 +68,13 @@ class A_GuardDeniesDoorWrites(unittest.TestCase):
         ("Bash", {"command": "printf x | sed -n -e 1p -e \"w$HOME/.cys/agy-seat-door.json\""}),
         ("Bash", {"command": "sed -n -e 1p ~/.cys/agy-seat-door.json -e w/tmp/x"}),
         ("Bash", {"command": "sed -n ~/.cys/agy-seat-door.json -e"}),
+        # 독립 재검(2R 반영분): 붙여 쓴 낱말 회귀 · 명령/프로세스 치환 · rg --pre
+        ("Bash", {"command": "cp /tmp/p ~/.cys/agy-seat-door.json;:/agy-seat-x.md"}),
+        ("Bash", {"command": "cp /tmp/p ~/.cys/agy-seat-door.json&&echo/agy-seat-x.md"}),
+        ("Bash", {"command": "cat $(cp /tmp/p ~/.cys/agy-seat-door.json)"}),
+        ("Bash", {"command": "cat `cp /tmp/p ~/.cys/agy-seat-door.json`"}),
+        ("Bash", {"command": "cat <(cp /tmp/p ~/.cys/agy-seat-door.json)"}),
+        ("Bash", {"command": "rg --pre /tmp/w.sh x ~/.cys/agy-seat-door.json"}),
     ]
     ALLOW = [
         ("Bash", {"command": "cat ~/.cys/agy-seat-door.json"}),
@@ -109,7 +116,8 @@ class A_GuardDeniesDoorWrites(unittest.TestCase):
                     "cat /dev/null && tee \"$HOME/.cys/agy-seat-door.json\" </tmp/payload",
                     "cat /dev/null | tee ~/.cys/agy-seat-door.json",
                     "cat $(cp /tmp/p ~/.cys/agy-seat-door.json)",
-                    "cat /dev/null\ncp /tmp/p ~/.cys/agy-seat-door.json"]:
+                    "cat /dev/null\ncp /tmp/p ~/.cys/agy-seat-door.json",
+                    "cat <(cp /tmp/p ~/.cys/agy-seat-door.json)"]:
             rc, err = g({"tool_name": "Bash", "tool_input": {"command": cmd}})
             self.assertEqual(rc, 2, "%r 백스톱 통과: %s" % (cmd, err[-300:]))
             self.assertIn("AGY-DOOR", err)

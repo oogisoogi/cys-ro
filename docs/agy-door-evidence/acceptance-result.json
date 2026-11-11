@@ -1,6 +1,6 @@
 {
  "ok": true,
- "at": "2026-11-11T13:40:05+0900",
+ "at": "2026-11-11T15:16:00+0900",
  "results": [
   {
    "id": "②E1",
@@ -116,10 +116,10 @@
     "  \"c6_reap_gone\": [],",
     "  \"c6_reap_failed\": [],",
     "  \"cys_identity\": \"verified\",",
-    "  \"journal\": \"/private/tmp/phoenix-harn-home-su901d6b/.cys/state-harness/phoenix/journal-default.json\",",
+    "  \"journal\": \"/private/tmp/phoenix-harn-home-oxra4r4b/.cys/state-harness/phoenix/journal-default.json\",",
     "  \"honesty_note\": \"★M9: phoenix_restore 값만 신뢰하라. UNVERIFIED/FAILED 는 정상 완료가 아니다 (자기채점 금지·무출력을 정상으로 해석 금지). 세션 대조가 일치할 때만 VERIFIED. ★완결성: COMPLETE 는 roster 전원이 실 ready_marker 로 응답 가능함을 뜻한다. ★agy 좌석 문 닫힘=['reviewer-gemini']: 구글 개인 요금제 약관 때문에 cysr 은 Antigravity(agy) 좌석을 다시 띄우지 않았다 — 고장·부활 실패가 아니다(완결성·빈 좌석 집계에서 뺐다). 여는 길 = 사람이 앱 명령 팔레트 「Antigravity(agy) 좌석 열기」.\"",
     "}",
-    "[phoenix] cys 채택(PHOENIX_CYS): ~/axdev/.wt/cys-agy-policy/target/debug/cys — 3중 identity match(build_id=14d6f11ab32d-dirty.20261111T0430Z proto=1)"
+    "[phoenix] cys 채택(PHOENIX_CYS): ~/axdev/.wt/cys-agy-policy/target/debug/cys — 3중 identity match(build_id=ebfd661180dc-dirty.20261111T0605Z proto=1)"
    ]
   },
   {
@@ -166,7 +166,7 @@
     "[boot-node:inject] 주입 큐 등록(자동 Return 배달·시도 1)",
     "[boot-node:verify] ack 미확인 → 배달 분기=pending (큐에 주입문 잔존(미배달·대기) — 재전송 금지)",
     "[boot-reviewers] --spawn — 리뷰어 슬롯 기동 (미감지/각성실패 시 Claude 대체로 자동 폴백):",
-    "  ⚠ gemini 미감지(cys agent-detect: agy_consumer_policy: Antigravity(agy) 좌석 문 닫힘(기본 · 구글 개인 요금제 약관) — 실행 파일 판정: 실행가능 /private/tmp/phoenix-harn-home-su901d6b/.local/bin/agy) — reviewer-claude-1(Claude) 대체 기동",
+    "  ⚠ gemini 미감지(cys agent-detect: agy_consumer_policy: Antigravity(agy) 좌석 문 닫힘(기본 · 구글 개인 요금제 약관) — 실행 파일 판정: 실행가능 /private/tmp/phoenix-harn-home-oxra4r4b/.local/bin/agy) — reviewer-claude-1(Claude) 대체 기동",
     "  ✗ reviewer-claude-1  ← claude — boot_node(reviewer-claude-1) 실패(exit 1) — 실측 미확정, 보수적으로 재시도 대상",
     "  ⚠ reviewer-codex 기동/각성 실패(boot_node(reviewer-codex) 실패(exit 1) — 실측 미확정, 보수적으로 재시도 대상) — reviewer-claude-2(Claude) 대체로 2차 폴백",
     "  ✗ reviewer-claude-2  ← claude — boot_node(reviewer-claude-2) 실패(exit 1) — 실측 미확정, 보수적으로 재시도 대상",
@@ -216,7 +216,7 @@
    "pass": true,
    "fails": [],
    "tail": [
-    "[boot] 진행 중 40s 경과 — 다음 대상 role=worker",
+    "[boot] 진행 중 72s 경과 — 다음 대상 role=worker",
     "[launch-agent] surface:6 created (role=worker)",
     "[launch-agent] claude starting… (polling readiness, max 60s)",
     "[launch-agent] ★관문 보류(gate=unknown) — surface:6 을(를) **닫지 않았다**. 데몬이 'claude' 프로세스 생존을 관측했다(role=worker).",
@@ -226,7 +226,7 @@
     "  3) 통과한 뒤 `cys boot` 을 다시 실행하면 이 좌석이 그대로 쓰인다 — 재부트가 **스폰 없이**(read_text 1회 + 판정 1회) 관문 통과를 확인하고 이 좌석에 절대지침을 주입한다(M2 재관측 경로). **새 pane 을 만들지 마라**(역할은 이미 이 좌석이 쥐고 있어 새 기동은 claim_denied 다).",
     "  · 종전처럼 즉시 닫으려면: CYS_GATE_PENDING_CLOSE=1 (한 지점 롤백)",
     "마지막 화면 꼬리:",
-    "<user>@<host> ~ % CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=\"false\" CLAUDE_CONFIG_DIR=\"${CYS_ACCOUNT_DIR:-$HOME/.cys/claude}\" CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=\"1\" CLAUDE_CODE_EFFORT_LEVEL=\"high\" CLAUDE_CODE_ENABLE_CFC=\"false\" claude --dangerously-skip-permissions --settings '/private/tmp/phoenix-harn-home-su901d6b/.cys/seat-settings/worker.json'",
+    "<user>@<host> ~ % CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=\"false\" CLAUDE_CONFIG_DIR=\"${CYS_ACCOUNT_DIR:-$HOME/.cys/claude}\" CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=\"1\" CLAUDE_CODE_EFFORT_LEVEL=\"high\" CLAUDE_CODE_ENABLE_CFC=\"false\" claude --dangerously-skip-permissions --settings '/private/tmp/phoenix-harn-home-oxra4r4b/.cys/seat-settings/worker.json'",
     "❯"
    ]
   },
@@ -284,7 +284,7 @@
    "pass": true,
    "fails": [],
    "tail": [
-    "<user>@<host> ~ % ~/axdev/.wt/cys-agy-policy/target/debug/cys --socket /private/tmp/phoenix-harn-home-su901d6b/.cys/state-harness/cys.sock launch-agent --role reviewer-gemini --agent gemini",
+    "<user>@<host> ~ % ~/axdev/.wt/cys-agy-policy/target/debug/cys --socket /private/tmp/phoenix-harn-home-oxra4r4b/.cys/state-harness/cys.sock launch-agent --role reviewer-gemini --agent gemini",
     "[launch-agent] agy_consumer_policy: cysr 은 Antigravity(agy) 좌석을 띄우지 않습니다 — 개인 요금제에서 다른 프로그램이 agy 를 부리면 구글 약관상 계정이 정지될 수 있기 때문입니다. agy 를 직접 쓰려면 새 탭에서 `agy` 를 치세요(괜찮습니다). 기업 요금제 등 허용된 경우에만, 사람이 앱 명령 팔레트의 「Antigravity(agy) 좌석 열기」로 열 수 있습니다.",
     "<user>@<host> ~ %"
    ]
@@ -305,7 +305,7 @@
    "pass": true,
    "fails": [],
    "tail": [
-    "<user>@<host> ~ % ~/axdev/.wt/cys-agy-policy/target/debug/cys --socket /private/tmp/phoenix-harn-home-su901d6b/.cys/state-harness/cys.sock launch-agent --role reviewer-gemini --agent gemini",
+    "<user>@<host> ~ % ~/axdev/.wt/cys-agy-policy/target/debug/cys --socket /private/tmp/phoenix-harn-home-oxra4r4b/.cys/state-harness/cys.sock launch-agent --role reviewer-gemini --agent gemini",
     "[launch-agent] agy_consumer_policy: cysr 은 Antigravity(agy) 좌석을 띄우지 않습니다 — 개인 요금제에서 다른 프로그램이 agy 를 부리면 구글 약관상 계정이 정지될 수 있기 때문입니다. agy 를 직접 쓰려면 새 탭에서 `agy` 를 치세요(괜찮습니다). 기업 요금제 등 허용된 경우에만, 사람이 앱 명령 팔레트의 「Antigravity(agy) 좌석 열기」로 열 수 있습니다.",
     "<user>@<host> ~ % agy",
     "? for shortcuts",
@@ -338,10 +338,10 @@
    "pass": true,
    "fails": [],
    "tail": [
-    "· cso: 이미 가동 중 — 건너뜀",
-    "· reviewer-claude-2: 이미 가동 중 — 건너뜀",
-    "· worker: 이미 가동 중 — 건너뜀",
     "· reviewer-codex: 이미 가동 중 — 건너뜀",
+    "· worker: 이미 가동 중 — 건너뜀",
+    "· reviewer-claude-2: 이미 가동 중 — 건너뜀",
+    "· reviewer-claude-1: 이미 가동 중 — 건너뜀",
     "· reviewer-gemini: gemini 재기동…",
     "surface:8",
     "restore 완료: 재기동 1 · 실패 0 · 관문 보류 0 · journal refused 0 · outcome unknown 0 · 현황 `cys status`",

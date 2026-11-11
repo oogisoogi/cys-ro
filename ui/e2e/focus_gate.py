@@ -17,6 +17,10 @@
   ⑪ (codex 2R #2) 좌석 3(site) 「경로 삽입」 → 실재 확인(list_dir)을 1.5초 늦추고 그 사이 탭 lms 로 전환(3 숨음) → 3 으로 send_input 0 ·
      알림 「그 좌석이 화면에 없어서 넣지 않았어요」 (대조 = 전환하지 않으면 3 에 들어간다 — 게이트가 빈 통과가 아님)
   ⑫ (codex 2R #2) OS 드롭(tauri://drag-drop)으로 좌석 3 에 경로 → 같은 늦춤 사이 탭 전환 → 3 으로 send_input 0 · 알림
+  ⑬ (codex 2R #1 · 불변식 정의 고정 — master 처분) 불변식 = 「숨은 좌석에 **새로 시작되는** 입력 0」(이미 시작된 입력을 숨었다고 버리거나 보류하지 않는다):
+     ⓑ 좌석 4 가 보일 때 친 「abcd」 = send_input 을 0.4초씩 늦춰 줄 세운 채 바로 탭 lms 로 전환 → 남은 글자도 4 에만 · 순서대로 · 유실 0 ·
+        다른 좌석 0(줄 선 글자 일부가 실제로 숨은 뒤에 나갔음을 함께 단언 — 장면이 빈 통과가 아님)
+     ⓒ 숨은 뒤 새로 누른 「xy」 = 4 로 0(보이는 lms 좌석으로)
 실행: CHROME_PATH=<chrome-headless-shell> [GATE_DIST=<다른 번들 폴더>] cys run -- <playwright python3> ui/e2e/focus_gate.py
   (GATE_DIST = 고치기 전 번들로 돌려 붉음을 재는 대조용)
 """
@@ -39,7 +43,8 @@ SPY = r"""
   document.addEventListener('DOMContentLoaded', () => new MutationObserver((ms) => { for (const m of ms) for (const n of m.addedNodes) if (n.classList?.contains('toast')) window.__toasts.push(n.textContent); }).observe(document.body, { childList: true, subtree: true }));
   const orig = window.__TAURI__.core.invoke;
   window.__TAURI__.core.invoke = (cmd, args) => {
-    if (['send_input', 'close_surface', 'create_surface'].includes(cmd)) window.__calls.push([cmd, args?.surfaceId ?? null, args?.data ?? null]);
+    if (['send_input', 'close_surface', 'create_surface'].includes(cmd)) window.__calls.push([cmd, args?.surfaceId ?? null, args?.data ?? null, !!window.__HIDDEN_SINCE]);
+    if (cmd === 'send_input' && window.__SEND_DELAY) return new Promise((res) => setTimeout(res, window.__SEND_DELAY)).then(() => orig(cmd, args)); // ⑬ = 느린 데몬 흉내(앞 글자 응답이 늦어 뒤 글자가 줄 선다)
     if (cmd === 'create_surface') { window.__SEATS.push({ sock: args?.socket ?? '/sandbox/cys.sock', sid: 50, no: 950, role: null, cwd: '/Users/sim', act: 'waiting', raw: 'idle', approval: false, self: null, task: null, ctx: null }); return Promise.resolve({ surface_id: 50, display_no: 950 }); }
     if (cmd === 'list_surfaces') return orig(cmd, args).then((r) => { for (const s of r.surfaces) if ((window.__EXITED ?? []).includes(s.surface_id)) s.exited = true; return r; });
     if (cmd === 'close_surface') return Promise.resolve({ ok: true });
@@ -306,6 +311,29 @@ def main() -> int:
             tst = pg.evaluate("() => window.__toasts")
             sbg.check(not ins, f"숨은 좌석 3 · 다른 좌석으로 send_input 0 {ins}")
             sbg.check(any(HIDDEN_MSG in (t or "") for t in tst), f"알림 「{HIDDEN_MSG}」 {tst}")
+            sbg.check(not errs, f"오류 0 {errs[:2]}")
+            ctx.close()
+            # ⑬ 숨기 전에 시작된 입력 · 숨은 뒤 새 입력
+            print("== ⑬ 보일 때 시작된 입력은 숨은 뒤에도 그 좌석에 끝까지 · 숨은 뒤 새 키는 그 좌석으로 0")
+            ctx, pg, errs = page()
+            pg.click('#root .pane[data-sid="4"] .xterm-screen')
+            pg.wait_for_timeout(300)
+            pg.evaluate("() => { window.__calls = []; window.__SEND_DELAY = 400; window.__HIDDEN_SINCE = 0; }")
+            pg.keyboard.type("abcd")
+            pg.click('#root .group-tab:has-text("lms")')
+            pg.evaluate("() => { window.__HIDDEN_SINCE = Date.now(); }")
+            pg.wait_for_timeout(300)
+            s13 = pg.evaluate(STATE)
+            sbg.check(s13["tab"] == "lms" and 4 not in s13["panes"], f"탭 lms · 좌석 4 숨음 {s13['panes']}")
+            pg.keyboard.type("xy")
+            pg.wait_for_timeout(2500)
+            sent = calls(pg, "send_input")
+            to4 = [c for c in sent if c[1] == 4]
+            sbg.check("".join(c[2] for c in to4) == "abcd", f"ⓑ 보일 때 친 글자 = 4 에 끝까지 · 순서대로 · 유실 0 {to4}")
+            sbg.check(any(c[3] for c in to4), f"ⓑ 줄 선 글자 일부가 숨은 뒤에 4 로 나갔다(장면 성립) {to4}")
+            sbg.check(not any(c[1] not in (4, *LMS) for c in sent) and not any(c[1] in LMS and c[2] in "abcd" for c in sent), f"ⓑ 보일 때 친 글자 = 다른 좌석 0 {sent}")
+            sbg.check(not any(c[1] == 4 and c[2] in ("x", "y") for c in sent), f"ⓒ 숨은 뒤 새 키 = 4 로 0 {sent}")
+            sbg.check("".join(c[2] for c in sent if c[1] in LMS) == "xy", f"ⓒ 숨은 뒤 새 키 = 보이는 lms 좌석으로 {sent}")
             sbg.check(not errs, f"오류 0 {errs[:2]}")
             ctx.close()
             # ⑧ 한글 조합 중 탭 전환

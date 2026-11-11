@@ -4432,6 +4432,11 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
     sendFailTimer = undefined;
   };
 
+  // (codex 2R #1 · master 처분 — 불변식 정의) 탭 화면의 입력 불변식 = 「숨은 좌석에 **새로 시작되는** 입력 0」이다. 키를 누르거나 붙여 넣은
+  //   그 순간 보이던 이 좌석에 묶인 글자는, 앞 글자 응답이 늦어 줄을 서 있다가 탭이 바뀌어 이 좌석이 숨어도 **이 좌석에 끝까지 · 순서대로** 간다
+  //   (유실 0 · 다른 좌석으로 0 — tmux·브라우저 탭과 같은 동작). 숨었다고 버리거나 보류 큐 + 재확인 창에 넣지 않는다(붙여 넣고 바로 탭을
+  //   바꾸는 정상 사용이 손을 더 타게 된다). 숨은 뒤 **새로** 누른 키가 이 좌석으로 오지 않는 것은 포커스 쪽(repairHiddenFocus·D6)이 지킨다.
+  //   시험 = focus_gate ⑬(ⓑ 줄 선 글자 = 끝까지 이 좌석 · ⓒ 숨은 뒤 새 키 = 이 좌석 0).
   const sendRaw = (data: string) => {
     follow = true; // 입력 = 프롬프트 사용 의사 — 바닥 고정 재개(xterm scrollOnUserInput과 정합)
     notePlaceholderTouched(sid); // ③ 자리표에 사람이 손댔다 — 회수 대상에서 영구 제외

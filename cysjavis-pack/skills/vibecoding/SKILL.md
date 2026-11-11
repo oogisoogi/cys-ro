@@ -77,7 +77,7 @@ orchestrate)는 vibecoding 파이프라인 **안에서 호출**된다. 트리거
 집중**한다.
 
 - **계획 리뷰 게이트는 필수 통과 관문이다.** 문서 세트(특히 spec·plan)가 완성되면 구현 위임 **전**에
-  이종모델(agy·codex) 리뷰 라운드를 돌린다(§6 오케스트레이션). 리뷰 프롬프트에 엄격 제약(지정 파일만·
+  이종모델(codex·Claude 대체 · agy 는 좌석 문이 열렸을 때만) 리뷰 라운드를 돌린다(§6 오케스트레이션). 리뷰 프롬프트에 엄격 제약(지정 파일만·
   무관 파일 배회 금지)을 강제한다.
 - 리뷰 verdict는 `$CYS_PACK_DIR/round/REVIEWER_VERDICT_CONTRACT.md` 타입(ACCEPT|REVISE|BLOCK|ESCALATE +
   evidence:file:line)으로 받는다. score(0-100) 금지.
@@ -88,7 +88,7 @@ orchestrate)는 vibecoding 파이프라인 **안에서 호출**된다. 트리거
 
 - 구현 노동은 워커(Agent 도구 model=opus, 또는 cys 워커)에게 위임한다. master는 직접 구현하지 않는다
   (사소한 마무리 제외).
-- **검증은 만든 에이전트가 아닌 다른 페인·다른 모델**이 한다(자기채점 금지). 이종모델 검증(agy·codex),
+- **검증은 만든 에이전트가 아닌 다른 페인·다른 모델**이 한다(자기채점 금지). 이종모델 검증(codex·Claude 대체 · agy 는 문 열림 때만),
   벤더 장애 시 failover는 §C10.3.
 - 위임 브리프에 Level·필수 문서·완료 기준(통과해야 할 vibecheck 게이트)·"완료 시 master surface로 결과
   한 줄 push"를 동봉한다.
@@ -123,7 +123,7 @@ orchestrate)는 vibecoding 파이프라인 **안에서 호출**된다. 트리거
   doc-sync)은 `[[vibecoding-runbook]]`이 라우팅한다.
 - **Phase 순서 불변**: 측정 계약(pilot·A/B eval)이 전면 배포에 선행한다 — 규율 먼저 구축 후 효과
   확인의 순서 역전 금지.
-- **엔진 재사용**: 리뷰=§6 agy·codex 라운드, 구현=master 위임+autopilot, 검증=eval-driven·
+- **엔진 재사용**: 리뷰=§6 codex·Claude 대체 라운드(agy 는 문 열림 때만), 구현=master 위임+autopilot, 검증=eval-driven·
   producer≠evaluator. 재구현이 아니라 배선이다.
 
 ## 출력 계약

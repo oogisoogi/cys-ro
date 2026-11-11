@@ -515,7 +515,11 @@ const lastSeatRow = new Map<string, Record<string, unknown>>();
 function forgetEndedSeatGroup(sid: number, socket?: string): void {
   const list = seatListBySock.get(socket ?? "");
   const row = list?.get(sid) ?? lastSeatRow.get(paneKey(sid, socket));
-  const r = forgetSeatGroup(seatGroups, socket, row, list ? [...list.values()] : []);
+  // (codex 1R #3) 끝난 좌석이 이미 목록에서 빠졌으면 그 줄을 열쇠 겹침 판정에 넣는다 — 안 넣으면 남은 같은 열쇠 좌석(기록 주인)만 보고
+  //   「하나뿐」 으로 오판해 주인의 기록을 지웠다.
+  const surfaces = list ? [...list.values()] : [];
+  if (row && !list?.has(sid)) surfaces.push(row);
+  const r = forgetSeatGroup(seatGroups, socket, row, surfaces);
   if (r.changed) saveSeatGroups(r.map);
 }
 

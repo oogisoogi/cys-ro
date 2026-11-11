@@ -84,6 +84,8 @@ describe("(948 D3) 끝난 좌석의 옮긴 묶음 기록 지우기 — 같은 �
     const a = { role: null, cwd: "/u/axdev/proj", group: "video", group_set: true };
     const b = { role: null, cwd: "/u/axdev/proj", group: null, group_set: false };
     expect(forgetSeatGroup({ [k]: "video" }, undefined, a, [a, b])).toEqual({ map: {}, changed: true });
+    // (codex 1R #3) 주인 아닌 B 가 목록에서 먼저 빠진 뒤 끝남 = 호출자(main.forgetEndedSeatGroup)가 B 의 마지막 줄을 넣어 겹침을 본다 → 그대로
+    expect(forgetSeatGroup({ [k]: "video" }, undefined, b, [{ ...a, group_set: false }, b]).changed).toBe(false);
     // 주인이 아닌 쪽(B · 데몬 값 없음)이 끝나면 = 열쇠가 겹쳐 있으니 그대로(남의 기록 보존)
     expect(forgetSeatGroup({ [k]: "video" }, undefined, b, [a, b]).changed).toBe(false);
     // 주인 판정은 「데몬이 정한 값 = 기록 값」 일 때만 — 다른 묶음이면 주인 아님

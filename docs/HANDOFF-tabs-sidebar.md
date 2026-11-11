@@ -1,6 +1,6 @@
 # HANDOFF — TICKET=cysr-tabs-sidebar-impl (가지 feat/tabs-sidebar · 기준 270e3e21 v1.1.14)
 
-**다음 첫 행동 1줄**: 【확인요청 2】(11-11 · 2b-3 + 948 D1~D9 처분) 에 대한 master 답 대기 — master 가 D1 고침분을 스냅샷에서 codex 1R 돌릴지 판단한다. 답이 오기 전 새 조각 착수 0.
+**다음 첫 행동 1줄**: 【확인요청 3】(ChatGPT 대체 1R 처분 + codex 1R(D4·D4-b·D7·1R 고침분) 처분) 에 대한 master 답 대기 — 답 전 새 조각 0.
 
 (이전 첫 행동 · 끝남) 조각 2b-3 고정 기둥 폭 규칙(master#62758908 · 지시서 ~/axdev/master/briefs/2026-11-11-cysr-pillar-width-rule.md) → 완료(dc1401e1 · 0d8e0d31) · 독립 검증 948 결함 표 → 이 라운드에서 고침(master#07acca07).
 
@@ -33,6 +33,7 @@
 | 2b-3 | dc1401e1 · 0d8e0d31 | 탭 화면 고정 기둥 = clamp(64, 영역 열×36%, 96)(grouptabs.pillarCols·tabPillarShare) · 격자 한 규칙(gridRowMax · 4개 이하 예외 폐지 · 줄마다 고르게) · 잰 몫 재사용(흔들림 0) · noteGridCell 여백 ≥200px 거부(2b-2 잠복 결함) · 경계 눌렀다 떼기 = 아무것도 안 씀 · `ui/e2e/pillar_gate.py` · 캡처 2b-3/ 9장 + CAPTIONS.md |
 | 948 D1·D2·D3·D6 | 6a8840c5 · d5abef35 | 포커스 = 보기 트리 기준(visibleSids·seatVisible · 숨으면 그 탭 마지막/첫 좌석으로) · 탭 화면 새 좌석 = 지금 탭(createdInTab) · 끝난 좌석 묶음 기록 지움(seatgroup.forgetSeatGroup) · `ui/e2e/focus_gate.py`(⑧ 조합 중 탭 전환 포함) · `ui/e2e/rolereuse_gate.py` |
 | 948 D4·D5·D7·D8·D9 | efc6bed2 | 호출자 조상 끝까지 읽기(ui_caller_verdict·ancestry_end_with) · surface.list size + 앱 noteSeatSize · 이름 NFKC+Cc/Cf/Zl/Zp 거부(데몬·앱 같은 규칙 · 새 의존 unicode-normalization) · ui_caller_tests·seat_group_name_tests · 기동 대기 60초 · `ui/e2e/stty_gate.py`(격리 cysd) |
+| ChatGPT 대체 1R | d8eef9a3 | 묶음 옮김(사람 손 아님) = 좌석 따라가기(renderByUser · wsViewTree) · ⌘T/⌘D 생성 중 전환 = 누른 때 작업공간·탭(TabIntent) · 삽입 = 같은 소켓·보이는 좌석 · 끝난 기록 주인 규칙 + lastSeatRow · 이름 규칙 + Default_Ignorable(+JS Cs) · `ui/e2e/race_gate.py` · focus_gate ⑨⑩ |
 시험: `cd ui && bun test` = 3387 통과 0 실패 · `bunx tsc -p tsconfig.check.json` 0. 게이트 3종 PASS(아래 재현).
 
 ## 미완(순서)
@@ -51,7 +52,8 @@
 
 ## 함정
 - ★명령을 `&&` 로 이을 때 bun test 결과를 보지 않고 커밋으로 넘어가지 마라 — 6a8840c5 가 1 실패로 커밋돼 d5abef35 로 바로잡았다(그 뒤 커밋은 「tsc 0 ∧ 0 fail 일 때만」 조건문).
-- 소스 추출 시험 대역(closecallbacks·b230scroll·roleactivity)에 새 자유 이름을 더해야 한다: seatVisible·createdInTab·forgetEndedSeatGroup·repairHiddenFocus·noteSeatSize·tabPillarMemo·gridCell·recomputeTabPillar.
+- 소스 추출 시험 대역(closecallbacks·b230scroll·roleactivity·deptprogresswiring)에 새 자유 이름을 더해야 한다: seatVisible·createdInTab·forgetEndedSeatGroup·repairHiddenFocus·noteSeatSize·tabPillarMemo·gridCell·recomputeTabPillar·lastSeatRow.
+- render 를 사람 손(탭 클릭·좌석 줄 넓게 보기·상황판 이동)에서 부를 땐 renderByUser() — 그냥 render() 면 숨은 포커스가 「사람 손 아님」 으로 처리돼 탭이 좌석을 따라가거나 「포커스 없음」 이 뜬다.
 - closeguard 시험이 exited 판정 두 줄(`if (s.exited) exitedPaneKeys.add(...)` / `else exitedPaneKeys.delete(...)`)의 모양을 고정한다 — 그 줄을 블록으로 바꾸지 마라.
 - json! 매크로 값 자리에 `{ … }` 블록을 쓰면 JSON 객체로 읽힌다 → 도우미 함수로(surface_size_wire).
 - JS trim() 은 BOM(U+FEFF)까지 자르고 Rust str::trim 은 안 자른다 — 이름 규칙은 \p{White_Space} 로만 자른다(cleanGroupName).

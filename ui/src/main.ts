@@ -12069,7 +12069,7 @@ async function start() {
   for (const sk of sockets) {
     const lb = liveBySock.get(sk);
     if (!lb || !lb.ok) continue;
-    const ws = workspaces.find((w) => (w.socket ?? undefined) === (sk ?? undefined));
+    let ws = workspaces.find((w) => (w.socket ?? undefined) === (sk ?? undefined));
     // ★붙일 ws 가 없으면 pane 런타임도 만들지 않는다 — 종전에는 ws 없이도 makePane 이 불려
     // 화면 밖 고아 런타임(xterm·리스너)이 남았고, 그 런타임이 `panes.has` 게이트로 **같은 세션의
     // 재입양을 영구 차단**했다(실측 34개). 위 '존재 진실원 보강'으로 ws 는 늘 있지만, 이중 방어다.
@@ -12080,6 +12080,13 @@ async function start() {
     for (const s of lb.list) {
       if (startHaltedByReset(info)) return; // ★W-3-b(R3-M1): pane 을 붙이기 전마다 초기화 진행·완료를 다시 본다
       await makePane(s.surface_id, s.title, sk);
+      // (codex 3R 전수 표 · blocking 2 와 같은 모양) 기동 복원 중에도 탭은 이미 그려져(위 renderWsTabs) 사람이 지울 수 있다 — 붙이기를 기다린 사이
+      //   그 작업공간이 지워졌거나 지워지는 중이면 같은 데몬의 살아 있는 작업공간에 · 없으면 런타임만 파기(데몬 좌석 = 닫지 않는다 · 다음 틱이 다시 입양 가능).
+      if (ws && wsGoneOrGoing(ws)) ws = workspaces.find((w) => !w.pending && !w.deleting && (w.socket ?? undefined) === (sk ?? undefined));
+      if (!ws) {
+        destroyPaneRuntime(s.surface_id, sk);
+        continue;
+      }
       if (ws && !collectSids(ws.tree).includes(s.surface_id)) {
         arrangeWs(ws, { add: [{ sid: s.surface_id }] });
         ws.autoCreated = undefined; // pane 이 붙었다 = 이제 '쓰는 탭'(다음 기동 상한 면제)
@@ -12104,6 +12111,7 @@ async function start() {
     // 실패하면 빈 탭으로 남고 3초 틱이 노드를 입양하거나 다음 기동이 재시도한다.
     try {
       const sid = await newSurface(null, ws.socket, T_NEW);
+      if (wsGoneOrGoing(ws)) { await dropSeatOfGoneWs(ws, sid); continue; } // (3R 전수 표) 응답 전 지워짐 = 거둠(R10b)
       ws.tree = { type: "pane", sid };
       placeholderSids.add(sid); // ③ 이 번호만 나중에 회수 대상이 된다(남의 페인 불가침)
     } catch {
@@ -12119,8 +12127,14 @@ async function start() {
     // 못 가 화면이 통째로 백지가 됐다 — 이 커밋이 고치려던 바로 그 시나리오가 여기로 새어 있었다.
     // 둘 다 실패하면 **빈 탭으로 두고 진행한다**: 빈 탭은 백지보다 낫고, 3초 틱이 뒤를 받는다.
     if (startHaltedByReset(info)) return; // ★W-3-b(R3-M1): newSurface 앞 재확인
+    // (codex 3R 전수 표 · 같은 모양) `current().tree = { sid: await … }` 는 왼쪽 작업공간을 await **전에** 잡는다 — 그사이 지워졌으면 거둔다.
+    const cw = current();
+    const putSeat = async (sid: number) => {
+      if (wsGoneOrGoing(cw)) await dropSeatOfGoneWs(cw, sid);
+      else cw.tree = { type: "pane", sid };
+    };
     try {
-      current().tree = { type: "pane", sid: await newSurface(null, current().socket, T_NEW) };
+      await putSeat(await newSurface(null, current().socket, T_NEW));
     } catch {
       if (startHaltedByReset(info)) return; // ★W-3-b: 첫 시도가 실패하는 사이 초기화가 끝났을 수 있다
       // ★F2(8라운드): 기본 데몬 폴백은 **본부 탭에만** 적용한다. 부서 탭에 기본 데몬 셸을 붙이면 pane 키
@@ -12129,7 +12143,7 @@ async function start() {
       //   ('지금 켜기')이 받는다(백지가 아니다).
       if (!current().socket) {
         try {
-          current().tree = { type: "pane", sid: await newSurface(null, undefined, T_NEW) };
+          await putSeat(await newSurface(null, undefined, T_NEW));
         } catch {
           /* 기본 데몬까지 실패 — 빈 탭으로 두고 render 로 진행한다(백지 금지) */
         }

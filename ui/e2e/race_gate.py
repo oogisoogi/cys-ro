@@ -21,6 +21,11 @@
   R9b(3R major 4) 닫기를 계속 거부 · 같은 데몬 작업공간 없음 → 새 작업공간에 붙여 보이게 · 화면 밖 0 · 알림
   R9c(3R major 4) LMS 부서에서 ⌘T → 응답 전 LMS 삭제(데몬 종료 확인) · 50 닫기 계속 거부 → 런타임 파기 · 화면 밖 0
   R9d(3R major 4) 본부 삭제가 좌석 1 닫기 거부로 보존되는데 그 「진행 중」 에 새 좌석 50 닫기도 거부 → 결과 확정 뒤 보존된 본부 작업공간에 붙임 · 화면 밖 0
+  R9e(3R major 4 · 「진행 중」 갈래) 새 좌석 닫기 계속 거부 · 그 순간 삭제가 아직 진행 중(좌석 닫기 0.6초씩)이고 결국 성공 → 결과 확정 뒤 판정 = 새 작업공간에 보이게 ·
+     화면 밖 0(확정 전에 「지금 목록에 있는 그 작업공간」 에 붙이면 곧 지워져 고아가 된다)
+  R10(3R 전수 표 · start() 같은 모양) 기동 복원 중 — 탭은 이미 그려져 지울 수 있다 — 좌석 1 의 붙이기(attach)를 늦추고 그 사이 본부 작업공간 삭제 →
+     복원 좌석 1~5 = 지워진 작업공간에 안 붙음 · 닫지 않음(외부 좌석) · 화면 밖 0
+  R10b(같은 모양 · 빈 부서 자리 좌석) LMS 좌석이 하나도 없는 기동 → 복원이 LMS 에 빈 자리 좌석을 만드는 응답 전에 LMS 삭제 → 새 좌석 거둠 · 화면 밖 0
 실행: CHROME_PATH=<chrome-headless-shell> [GATE_DIST=<다른 번들>] cys run -- <playwright python3> ui/e2e/race_gate.py
 """
 import importlib.util
@@ -104,6 +109,49 @@ def main() -> int:
                 pg.wait_for_timeout(11500)
                 return ctx, pg, errs
 
+            def delete_ws(pg, idx):
+                pg.query_selector_all("#ws-tabs .ws-tab")[idx].query_selector(".ws-close").click()
+                pg.wait_for_timeout(300)
+                btn = next((b for b in pg.query_selector_all(".modal-overlay button") if (b.text_content() or "").strip() == "삭제"), None)
+                sbg.check(btn is not None, "삭제 확인 창의 「삭제」 단추")
+                if btn:
+                    btn.click()
+
+            def toasts(pg):
+                return pg.evaluate("() => window.__toasts")
+
+            def no_offscreen(st, tag):
+                sbg.check(not st["offscreen"], f"{tag} 화면 밖 런타임 0 {st['offscreen']} · 트리 {st['trees']}")
+
+            def wait_attach(pg, sid, ms=6000):
+                pg.wait_for_function(f"() => window.__calls.some((c) => c[0] === 'attach_surface' && c[1] === {sid})", timeout=ms)
+
+            NEW_ROLE = "{ sock: '__BASE__', sid: 60, no: 960, role: 'worker-9', cwd: '/u/axdev', act: 'waiting', raw: 'idle', approval: false, self: null, task: null, ctx: null }".replace("__BASE__", sbg.BASE)
+
+            def new_then_delete(pg, refuse, close_delay=0, ws_i=None):
+                pg.click('#root .pane[data-sid="1"] .xterm-screen')
+                pg.wait_for_timeout(300)
+                pg.evaluate(f"() => {{ window.__calls = []; window.__toasts = []; window.__REFUSE = {json.dumps(refuse)}; window.__CLOSE_DELAY = {close_delay}; }}")
+                pg.keyboard.press("Meta+t")
+                pg.wait_for_timeout(200)
+                delete_ws(pg, base_i if ws_i is None else ws_i)
+
+            def boot(seats_, depts_, init_js):
+                ctx = br.new_context(viewport={"width": 1920, "height": 1200})
+                pg = ctx.new_page()
+                errs: list[str] = []
+                pg.on("pageerror", lambda e: errs.append(str(e)[:200]))
+                pg.add_init_script(sbg.SHIM.replace("__SEATS__", "window.__SEATS = " + json.dumps(seats_)).replace("__DEPTS__", json.dumps(depts_)).replace("__BASE__", sbg.BASE))
+                pg.add_init_script(SPY.replace("__BASE__", sbg.BASE))
+                pg.add_init_script(init_js)
+                pg.goto(url)
+                return ctx, pg, errs
+
+            def tab_index(pg, pred):
+                names = [(t.text_content() or "") for t in pg.query_selector_all("#ws-tabs .ws-tab")]
+                return next((i for i, n in enumerate(names) if pred(n)), None), names
+
+
             # R1
             print("== R1(#2) ⌘T 생성 중 작업공간 전환")
             seats, depts = sbg.SCEN["dept3"]
@@ -172,17 +220,6 @@ def main() -> int:
             sbg.check(s3["focused"] == [50] and s3["active"] == 50, f"포커스 = 새 좌석(표시 {s3['focused']} · 키보드 {s3['active']})")
             sbg.check(not errs, f"오류 0 {errs[:2]}")
             ctx.close()
-
-            def delete_ws(pg, idx):
-                pg.query_selector_all("#ws-tabs .ws-tab")[idx].query_selector(".ws-close").click()
-                pg.wait_for_timeout(300)
-                btn = next((b for b in pg.query_selector_all(".modal-overlay button") if (b.text_content() or "").strip() == "삭제"), None)
-                sbg.check(btn is not None, "삭제 확인 창의 「삭제」 단추")
-                if btn:
-                    btn.click()
-
-            def toasts(pg):
-                return pg.evaluate("() => window.__toasts")
 
             # R4
             print("== R4(codex 2R #3) ⌘T 생성 중 그 작업공간 삭제")
@@ -271,14 +308,6 @@ def main() -> int:
             sbg.check(not errs, f"오류 0 {errs[:2]}")
             ctx.close()
 
-            def no_offscreen(st, tag):
-                sbg.check(not st["offscreen"], f"{tag} 화면 밖 런타임 0 {st['offscreen']} · 트리 {st['trees']}")
-
-            def wait_attach(pg, sid, ms=6000):
-                pg.wait_for_function(f"() => window.__calls.some((c) => c[0] === 'attach_surface' && c[1] === {sid})", timeout=ms)
-
-            NEW_ROLE = "{ sock: '__BASE__', sid: 60, no: 960, role: 'worker-9', cwd: '/u/axdev', act: 'waiting', raw: 'idle', approval: false, self: null, task: null, ctx: null }".replace("__BASE__", sbg.BASE)
-
             # R7
             print("== R7(3R blocking 2) 입양 attach 사이 그 작업공간 삭제 → 같은 데몬의 다른 작업공간에")
             ctx, pg, errs = page(js(seats), [list(d) for d in depts])
@@ -357,14 +386,6 @@ def main() -> int:
             sbg.check(not errs, f"오류 0 {errs[:2]}")
             ctx.close()
 
-            def new_then_delete(pg, refuse, close_delay=0, ws_i=None):
-                pg.click('#root .pane[data-sid="1"] .xterm-screen')
-                pg.wait_for_timeout(300)
-                pg.evaluate(f"() => {{ window.__calls = []; window.__toasts = []; window.__REFUSE = {json.dumps(refuse)}; window.__CLOSE_DELAY = {close_delay}; }}")
-                pg.keyboard.press("Meta+t")
-                pg.wait_for_timeout(200)
-                delete_ws(pg, base_i if ws_i is None else ws_i)
-
             # R9a
             print("== R9a(3R major 4) 새 좌석 닫기 1번 거부 → 삭제 확정 뒤 다시 닫음")
             ctx, pg, errs = page(js(seats), [list(d) for d in depts])
@@ -425,6 +446,53 @@ def main() -> int:
             sbg.check(len(base_now) == 1 and 1 in base_now[0]["sids"], f"본부 작업공간 보존(좌석 1 닫기 거부) {s9d['trees']}")
             sbg.check(len(base_now) == 1 and 50 in base_now[0]["sids"], f"새 좌석 50 = 보존된 본부 작업공간에 붙음 {s9d['trees']}")
             no_offscreen(s9d, "R9d")
+            sbg.check(not errs, f"오류 0 {errs[:2]}")
+            ctx.close()
+            # R9e
+            print("== R9e(3R major 4) 새 좌석 닫기 계속 거부 · 삭제 「진행 중」 에 판정 → 결과 확정 뒤 새 작업공간에")
+            ctx, pg, errs = page(js(seats), [list(d) for d in depts])
+            new_then_delete(pg, {"50": 99}, close_delay=600)
+            pg.wait_for_timeout(1300)
+            mid = pg.evaluate("() => document.querySelector('#ws-tabs .ws-tab[aria-busy=\"true\"]') !== null")
+            pg.wait_for_timeout(6500)
+            s9e = pg.evaluate(STATE)
+            print(f"  (실측) 생성 응답 무렵 삭제 진행 중 표식 = {mid}")
+            sbg.check(not any(t["socket"] in (None, sbg.BASE) and 1 in t["sids"] for t in s9e["trees"]), f"본부 작업공간(좌석 1~5) 지워짐 {s9e['trees']}")
+            sbg.check(any(t["socket"] in (None, sbg.BASE) and t["sids"] == [50] for t in s9e["trees"]), f"새 좌석 50 = 새 본부 데몬 작업공간에 {s9e['trees']}")
+            no_offscreen(s9e, "R9e")
+            sbg.check(not errs, f"오류 0 {errs[:2]}")
+            ctx.close()
+
+            # R10
+            print("== R10(3R 전수 표 · start()) 기동 복원 중 붙이기 사이 본부 작업공간 삭제")
+            ctx, pg, errs = boot(js(seats), [list(d) for d in depts], "window.__ATTACH_DELAY = { 1: 4000 };")
+            pg.wait_for_function("() => window.__calls.some((c) => c[0] === 'attach_surface' && c[1] === 1)", timeout=15000)
+            bi, names = tab_index(pg, lambda n: "LMS" not in n and "영상" not in n)
+            sbg.check(bi is not None, f"(장면 성립) 붙이기 대기 중 탭이 이미 보인다 {names}")
+            if bi is not None:
+                delete_ws(pg, bi)
+            pg.wait_for_timeout(9000)
+            s10 = pg.evaluate(STATE)
+            closed = [c for c in pg.evaluate("() => window.__calls") if c[0] == "close_surface"]
+            sbg.check(not any(t["socket"] in (None, sbg.BASE) for t in s10["trees"]), f"본부 작업공간 지워짐 {s10['trees']}")
+            sbg.check(not closed, f"복원 좌석은 닫지 않음(외부 좌석) {closed}")
+            no_offscreen(s10, "R10")
+            sbg.check(not errs, f"오류 0 {errs[:2]}")
+            ctx.close()
+
+            # R10b
+            print("== R10b(같은 모양) 기동 복원의 빈 부서 자리 좌석 응답 전 그 부서 삭제")
+            seats_nolms = [x for x in js(seats) if x["sock"] != sbg.LMS]
+            ctx, pg, errs = boot(seats_nolms, [list(d) for d in depts], "")
+            pg.wait_for_function(f"() => window.__calls.some((c) => c[0] === 'create_surface' && c[2] === {json.dumps(sbg.LMS)})", timeout=15000)
+            li, names = tab_index(pg, lambda n: "LMS" in n)
+            sbg.check(li is not None, f"(장면 성립) 자리 좌석 응답 대기 중 LMS 탭이 보인다 {names}")
+            if li is not None:
+                delete_ws(pg, li)
+            pg.wait_for_timeout(9000)
+            s10b = pg.evaluate(STATE)
+            sbg.check(not any(t["socket"] == sbg.LMS for t in s10b["trees"]), f"LMS 작업공간 지워짐 {s10b['trees']}")
+            no_offscreen(s10b, "R10b")
             sbg.check(not errs, f"오류 0 {errs[:2]}")
             ctx.close()
             br.close()

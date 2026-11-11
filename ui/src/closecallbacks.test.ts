@@ -407,6 +407,28 @@ describe("S6 actual transfer and compensation", () => {
     expect(h.api.collectSids(dest.tree)).toEqual([90]);
   });
 
+  test("(codex 3R #3) acknowledged handoff — destination or source workspace removed/being deleted before the close keeps the source", async () => {
+    for (const gone of ["dest-removed", "dest-deleting", "source-deleting"] as const) {
+      const source = ws(1, SOURCE, [42]); const dest = ws(2, DEST, [80]); const other = ws(3, SOURCE, [43]);
+      const h = harness([source, dest, other]);
+      const rt = h.runtimes.get(key(42, SOURCE));
+      const rec = { state: "awaiting-ack", destSocket: DEST, destSid: 80, launcherSid: 90,
+        handoffPath: "/fixture/handoff.md", role: "worker", wantAgent: "claude",
+        entryId: "entry-1", durable: true, sinceMs: 0 };
+      h.script((cmd, args) => {
+        if (cmd === "list_surfaces" && args.socket === DEST)
+          return { surfaces: [{ surface_id: 80, role: "worker", agent: "claude", agent_alive: true, exited: false }] };
+      });
+      if (gone === "dest-removed") h.scope.workspaces.splice(h.scope.workspaces.indexOf(dest), 1);
+      if (gone === "dest-deleting") dest.deleting = true;
+      if (gone === "source-deleting") source.deleting = true;
+      await h.api.awaitHandoffAck(42, source, dest, rec, key(42, SOURCE));
+      expect({ gone, closes: h.closeCalls().length }).toEqual({ gone, closes: 0 });
+      expect(h.runtimes.get(key(42, SOURCE))).toBe(rt);
+      expect(h.api.transfersInFlight.get(key(42, SOURCE)).state).toBe("awaiting-ack"); // 다시 전출하면 관측만 재개
+    }
+  });
+
   test("acknowledged handoff close rejection remains retryable and retry performs close only", async () => {
     const source = ws(1, SOURCE, [42]); const dest = ws(2, DEST, [80]); const h = harness([source, dest]);
     const rt = h.runtimes.get(key(42, SOURCE));

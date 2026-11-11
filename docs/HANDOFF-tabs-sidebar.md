@@ -1,6 +1,8 @@
 # HANDOFF — TICKET=cysr-tabs-sidebar-impl (가지 feat/tabs-sidebar · 기준 270e3e21 v1.1.14)
 
-**다음 첫 행동 1줄**: (이 좌석 = 【매듭】 · master 스냅샷 재실행(b21d1326) 초록이면 좌석 닫힘) 이어받는 좌석은 아래 「남은 것」 의 사후 codex 판정이 오면 그 결함 표부터 — 그 전 새 조각 0.
+**다음 첫 행동 1줄**: (TICKET=cysr-tabs-codex-fix-r2 · 【확인요청】 뒤 대기) codex 3R(master 대기열) 판정이 오면 그 결함 표부터 — 그 전 새 조각 0.
+
+(이전 첫 행동 · 끝남) (이 좌석 = 【매듭】 · master 스냅샷 재실행(b21d1326) 초록이면 좌석 닫힘) 이어받는 좌석은 아래 「남은 것」 의 사후 codex 판정이 오면 그 결함 표부터 — 그 전 새 조각 0.
 
 (이전 첫 행동 · 끝남) 조각 2b-3 고정 기둥 폭 규칙(master#62758908 · 지시서 ~/axdev/master/briefs/2026-11-11-cysr-pillar-width-rule.md) → 완료(dc1401e1 · 0d8e0d31) · 독립 검증 948 결함 표 → 이 라운드에서 고침(master#07acca07).
 
@@ -69,6 +71,43 @@
 | codex #1 큐에 남은 입력 | 불성립(수용) | 보일 때 사람이 친 글자 = 그 좌석으로(버리면 유실) | — |
 | codex #2 경로 삽입 비동기 | 불성립(수용) | 사람이 이름으로 고른 좌석 + 같은 소켓 ∧ 보이는 좌석 조건 | — |
 | codex #3 목록에서 먼저 빠진 비주인 | 성립·고침 | 끝난 줄을 겹침 판정에 넣음 | 956bbc3d |
+
+## codex 2R 처분 (TICKET=cysr-tabs-codex-fix-r2 · 범위 efc6bed2..b21d1326 · BLOCK blocking 2·major 2 · 판정문 ~/axdev/master/reports/2026-11-11-post-codex/codex-tabs-2r.md)
+| 발견 | 처분(master) | 고침·시험 | 커밋 |
+|---|---|---|---|
+| #4 render 뒤 실제 키보드 포커스 BODY(글자 유실 · 게이트 거짓 초록) | 고침(먼저) | render 가 떼기 전 실제 포커스 좌석을 기억 → 다시 붙인 뒤 ⑴ 포커스가 BODY/없음 ⑵ 같은 런타임이 #root 에 붙어 있음 ⑶ 모달·팔레트·메뉴 없음 ⑷ 포커스 표시 좌석 = 그 좌석 일 때만 setFocus(xterm 포커스 단일 입구 유지) · race_gate R2 = document.activeElement 가 표시된 보이는 좌석 + 이어 친 글자 send_input 목적지 단언 · R3 = 키보드도 새 좌석 · 고치기 전 붉음 3 → 초록 | 472d14e2 |
+| #3 새 좌석 응답 전 작업공간 삭제 → 화면 밖 고아 | 고침 | 응답 직후 `workspaces.includes(ws) && !ws.deleting` 재검사 → 실패 = 새 좌석 닫기(closePane · 데몬 확인 뒤 화면 기억도 지움) + 알림 「새 좌석 닫음」 · 닫기 거부 = 같은 데몬의 살아 있는 작업공간에 붙여 보이게 + 알림 · actionNew·actionSplit 공통 · race_gate R4(⌘T)·R5(⌘D) 붉음 → 초록 | f51c738a |
+| #2 경로 넣기 확인 창 뒤 가시성 재검사 없음 | 고침 | 공통 전송 입구 injectRawToPane 첫 줄 = paneShownNow(같은 런타임 ∧ 지금 작업공간 소켓 ∧ 보기 트리에 보임) → 아니면 넣지 않고 알림 「그 좌석이 화면에 없어서 넣지 않았어요 — 좌석이 보일 때 다시 해 주세요.」(다른 좌석으로 바꾸지 않음) · 메뉴·cd·트리 끌기·OS 드롭 전부 · focus_gate ⑪(메뉴 + 대조: 전환 없으면 들어감)·⑫(OS 드롭) 붉음 5 → 초록 | fe235975 |
+| #1 이미 친 글자의 남은 전송이 탭 전환 뒤에도 그 좌석으로 | 불성립(master 판단 · 확신도 중상) · 정의 고정 | 불변식 = 「숨은 좌석에 **새로 시작되는** 입력 0」(sendRaw 주석 · 설계 문서) · focus_gate ⑬ ⓑ send_input 0.4초 지연으로 줄 세운 「abcd」 → 탭 전환 → 4 에 끝까지·순서대로(b·c·d 가 숨은 뒤 나감 단언) · 다른 좌석 0 ⓒ 숨은 뒤 새 키 「xy」 → 4 로 0 · 보이는 6 으로 | 952e3ae2 |
+| (전수 표) 빈 작업공간 「새 셸 열기」 = #3 과 같은 모양 | 고침(같은 도우미) | 응답 전 그 작업공간 삭제 → 새 좌석 닫기 · 그사이 다른 작업공간이면 포커스 안 빼앗음 · race_gate R6 붉음 2 → 초록 | 578a358f |
+
+### await 뒤 캡처한 좌석·작업공간을 재검사 없이 쓰는 자리 — main.ts 전수(방법 = 「async 함수에서 첫 await 뒤 send_input·arrangeWs·setFocus·injectRaw/Paths·closePane·.tree= 를 부르는 곳」 기계 추출 15곳 + `invoke("send_input"` 실제 호출 6곳(sendRaw · 전출 3 · injectRawToPane · restartNode) 전부 눈으로)
+| 자리 | 캡처 → await → 쓰기 | 판정 |
+|---|---|---|
+| actionNew · actionSplit | ws/target → newSurface → arrangeWs·setFocus | 고침(#3 · R4·R5) · 포커스는 이미 「ws===current ∧ 보임」 검사 |
+| 빈 작업공간 「새 셸 열기」(renderIdleWorkspace) | ws → newSurface → ws.tree=·setFocus | 고침(R6) |
+| injectPathsToPane → injectRawToPane | rt → list_dir·확인 창·list_surfaces → send_input | 고침(#2 · ⑪⑫) |
+| sendRaw(sendChain) | sid(키 누른 순간) → 앞 전송 → send_input | 설계대로(#1 정의 · ⑬) |
+| actionClose | sid → 확인 창 → closePane | 기존 재검사 있음(확인 뒤 seatVisible · 948 D1 ⓑ) |
+| refreshPaneTitles 입양 | ws(!deleting 로 고름) → makePane → arrangeWs(ws) | **같은 모양 남음 · 안 고침** — makePane(WebSocket 붙이기) 사이 그 작업공간 삭제가 시작되면 입양 좌석이 삭제 스냅샷에서 빠질 수 있다(G4 주석이 말한 누수와 같은 결). 재현 안 함 = PLAUSIBLE(공통 규칙: CONFIRMED 만 고침) · 이번 차이 밖 · codex 3R 에 물을 것 ② |
+| transferCrossDept | srcWs·destWs → 여러 데몬 왕복 → destWs.tree=·send_input(새 좌석) | 같은 모양 가능(전출 중 destWs 삭제) · 안 고침 — 자체 롤백이 있는 다단계 거래 · send_input 대상 = 방금 만든 좌석 신원(가시성 무관 기계 명령) · PLAUSIBLE |
+| actionEqualize | ws → list_surfaces → arrangeWs(ws)·render | 무해 — 새 좌석 없음 · 지워진 ws 에 배치만(화면 영향 0) |
+| restartNode | 역할 → (await 없이) jumpToSurface → send_input | 무해 — 사람이 역할 이름으로 고른 기계 명령 · 보내기 전에 그 좌석으로 화면을 옮긴다(launchCmd 는 전출 안의 문자열) |
+| 부서 ▶부서장 단추 · 팔레트 목록 | ws/sock → invoke | 무해 — 알림·목록뿐 |
+| addWorkspace · addDeptWorkspace | 새 ws 를 await 뒤에 만듦 | 무해 |
+| start() 복원·입양(11.9k~12.0k 줄) | ws/current() → newSurface·makePane → .tree=·arrangeWs | 기동 복원 경로(사람 손 전) · 이번 범위 밖 · 안 고침 |
+
+### 검증(23:5x 실측)
+- bun test 3429 통과 / 0 실패 · tsc 0 · 번들 빌드 OK · 화면 게이트 race 36/0 · focus 50/0 · seatrows 75/0 · statusboard 264/0 · cc_button 12/0 · nodept 16/0 · seatgroup 8/0 · pillar 77/0 · restart 6/0 · baseline PASS(기준판 = git archive 270e3e21 로 새로 빌드)
+- cysd: 이 티켓은 Rust 무변경(diff 6파일 = ui·문서) · 그래도 `cargo test --bin cysd group` 12/0 · `ui_caller` 4/0 · `seat_group` 2/0 · `--test hidden_seat_screen` 1/0(끝나고 cys-hss 0)
+- 뮤턴트 10(원본 무접촉 · 변이 사본 번들을 GATE_DIST 로): 죽음 9 · 살아남음 1
+  M1 되돌림 호출 삭제 = 죽음(3) · M3 actionNew 검사 삭제 = 죽음 · M4 actionSplit = 죽음 · M5 빈 작업공간 = 죽음 · M6 「삭제 중」 무시 = 처음엔 살아남음 → R4b(닫기를 늦춰 응답이 삭제 진행 중에 옴) 추가 뒤 죽음 · M7 전송 직전 재검사 삭제 = 죽음(5) · M8 가시성 무시 = 죽음(5) · M9 줄 선 글자를 지금 포커스 좌석으로 = 죽음(4) · M10 숨은 좌석의 줄 선 글자 버림 = 죽음(2)
+  M2(되돌림 조건 ⑷ 「포커스 표시 좌석 = 그 창」 을 빼고 그 창에 바로 되돌림) = 살아남음 — ⑷ 는 표시·키보드를 어긋나게 두지 않으려는 보수 조건이고, 숨은 좌석 방어는 ⑵(지금 #root 에 붙은 같은 런타임)가 진다. 표시와 키보드가 이미 어긋난 상태를 만드는 사람 손 경로를 찾지 못해 시험이 그 갈래를 못 탄다(빈 통과 아님 — 도달 불가 방어).
+
+### codex 3R(범위 513846b8..HEAD · ui·문서만) 꼭 물을 것 3줄
+1. render 포커스 되돌림 ⑴~⑷ 가 다른 칸(탭·작업공간 이름 편집 contentEditable · 파일 트리 · 상황판)의 포커스를 빼앗거나, 숨은/다른 작업공간 좌석에 키보드를 주는 경로가 있는가.
+2. refreshPaneTitles 입양(makePane await 뒤 ws 재검사 없음 · 위 전수 표 PLAUSIBLE)이 실제 도달·피해가 있는가 — 있으면 같은 도우미로 고칠 대상.
+3. 지워진 작업공간의 새 좌석 = 닫기 처분이 맞는가(닫기 거부 시 같은 데몬 작업공간에 붙이기가 종료 중 부서 데몬에서 문제 되는가) · paneShownNow 가 정당한 경로 넣기(넓게 보기·상황판 위치)를 막는 경우가 있는가.
 
 ## 원작자 병합 때 볼 것
 - 새 의존 1 = unicode-normalization =0.1.26(D7 · master#cb40d4a3 · Cargo.lock 변화 = 그 크레이트 1 항목 · 그 의존 tinyvec 은 이미 있음 · 저장소에 cargo deny·라이선스 검사 장치 없음 확인 · 라이선스 (MIT OR Apache-2.0) AND Unicode-3.0).

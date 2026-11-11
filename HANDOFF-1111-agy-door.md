@@ -57,6 +57,19 @@
 - 1회 고침 = bc27f1ca(전부 반영 · 스크립트 파일 간접은 한계 주석으로 명시) · ⚠고침분 재검은 안 돌림
 - 사후 codex 필요 = **예**(실행 정책·훅 거부 규칙 = 보안 경계 성격) · master 가 11-13 06:47 뒤 · 그 전 발행 묶음 제외
 
+## 3R 라운드(master#a078504c · #3dde347c · 16:5x~)
+| 커밋 | 내용 |
+|---|---|
+| 753a3dbc | ②E5 결정화 — 앞 입구 역할 묘비 → restore 대상 gemini 하나 · rc 0 |
+| dfa3e561 | codex 3R 일부 — 판정 = 치환 본문 재귀·cmd /c·powershell·find -exec·셸 -o/-O·here-string·줄 이음·맨 낱말 안전망 · guard 문 이름 정확 판정 + 치환 재귀 |
+| 7ed51a57 | 독립 검증 966 B1(일정 등록·발화 · 채널 · 계정 어댑터 · round-log) · B2(숨은 `cys agy-door-check` + guard [AGY-RUN] · cys send 실행문) · M1 줄일 수 있는 부류(리다이렉트 머리 · zsh 앞말 · csh/fish/su · `$'agy'` · `a^gy` · 파이프 셸) · M3(데몬 send_text: 문 닫힘 + agy 좌석 + 사람 자판 아님 → 거부) · codex 3R phoenix 차단기 순서 |
+| f740c3f5 | 설명서·DESIGN §7·모듈 머리 「알려진 한계」 · OPEN_WARNING API 열쇠 한 줄 · 지침·스킬 3파일(REVIEWER 는 래칫 고정이라 그대로) |
+| d6efdf5e | guard R8(python json.load 읽기) 거짓 양성 |
+
+- codex 3R(스냅샷 753a3dbc · 17:0x 완주 · 한도 재소진 전) = BLOCK → 처분: 실행자 누락·거짓 양성·phoenix 차단기·결과 파일 미갱신·확장자 과차단 = 고침 / `HOME` 경로 = 부분 수용(문구·시험 정정 + 다른 폴더 문 파일 쓰기 거부 시험 · 경로 고정은 기각: 격리 시험이 HOME 으로 격리 · 윈도우 홈도 환경 변수) / 「열거식 파서로는 ① 불가」 = master 범위 판단대로 줄일 수 있는 부류만 + 한계 문서화
+- 966 재현 3종(내 빌드로 경로만 바꿔 재실행): 우회 77꼴 = 막힘 57 · 우회 15(전부 원리상 못 막는 부류: 변수 2·중괄호/글롭 3·스크립트 파일 3·인터프리터 3·사본·심링크·실행 시점 조립 2) · 판정만 37꼴 = 37 막힘 / guard 문 꼴 = 거부 20 · 통과 18(위장 쓰기 7 = 범위 밖 · 읽기 9 정상 · X3·X4 간접)
+- 남긴 것(이유): REVIEWER_DIRECTIVE(바이트 래칫 고정 · 리뷰어 일반 서술) · 거부문 머리 코드 `agy_consumer_policy:`(phoenix·acceptance·guard 가 이 낱말로 소비 — 문구만 바꾸면 계약 파손) · `antigravity .`(m5 · PLAUSIBLE · 편집기 실행기 이름 미확인)
+
 ## 함정(추가)
 - acceptance ②E5: `cys restore` 에 역할 필터가 없어 E6 이 남긴 reviewer-codex 좌석까지 되살린다 — rc 0/1 비결정(실측 1·0·0) → 역할 블록으로 판정.
 - 데몬을 띄우는 시험(acceptance·c6_reap·host-gate)과 전체 cargo 를 동시에 돌리면 시간 초과 거짓 적색이 난다 — 순차로.

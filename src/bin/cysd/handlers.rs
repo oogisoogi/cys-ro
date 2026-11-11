@@ -7845,11 +7845,11 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             // ★agy 좌석 문(독립 검증 M3): 문이 닫혀 있으면 agy 좌석으로 가는 **자동** 지시(send·queued·GUI 자동 문안)를 막는다 —
             //   사람이 자판으로 친 입력(human_verified)은 그대로 · 좌석을 끄지는 않는다(설명서 「닫기」 절과 같은 말).
             if !human_verified {
-                let key = surface.agent_meta.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|(a, _)| a.clone());
-                let cmd = (!surface.cmd.trim().is_empty()).then_some(surface.cmd.as_str());
-                if (key.is_some() || cmd.is_some())
-                    && cys::agy_door::launch_refusal(key.as_deref().unwrap_or(""), cmd).is_some()
-                {
+                // agent_meta = (어댑터 키, 해석된 실행 파일) — 좌석 cmd 는 로그인 셸일 수 있어(launch-agent 는 셸에 명령을 친다) 실행 파일로 잰다.
+                let meta = surface.agent_meta.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let by_meta = meta.as_ref().is_some_and(|(k, bin)| cys::agy_door::launch_refusal(k, Some(bin)).is_some());
+                let by_cmd = !surface.cmd.trim().is_empty() && cys::agy_door::launch_refusal("", Some(&surface.cmd)).is_some();
+                if by_meta || by_cmd {
                     return Reply::Single(reject_send(
                         daemon,
                         sid,

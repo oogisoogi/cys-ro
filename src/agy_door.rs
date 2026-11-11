@@ -629,7 +629,7 @@ mod tests {
             ("src/bin/cysd/schedule.rs", "if let Some(m) = cys::agy_door::launch_refusal(\"\", Some(command)) {"),
             ("src/bin/cysd/channels.rs", "if let Some(m) = cys::agy_door::launch_refusal(\"\", Some(bridge_cmd)) {"),
             ("src/bin/cysd/accounts.rs", "if cys::agy_door::launch_refusal(\"\", Some(&cmd)).is_some() {"),
-            ("src/bin/cysd/handlers.rs", "&& cys::agy_door::launch_refusal(key.as_deref().unwrap_or(\"\"), cmd).is_some()"),
+            ("src/bin/cysd/handlers.rs", "let by_meta = meta.as_ref().is_some_and(|(k, bin)| cys::agy_door::launch_refusal(k, Some(bin)).is_some());"),
             ("src/bin/cys.rs", "if let Some(m) = command.as_deref().and_then(|c| cys::agy_door::launch_refusal(\"\", Some(c))) {"),
             ("src/bin/cys.rs", "if let Some(m) = cmd.as_deref().and_then(|c| cys::agy_door::launch_refusal(\"\", Some(c))) {"),
             ("cysjavis-pack/bin/javis_orchestra.py", "_refuse = agy_door_refusal(args.from_cmd)"),

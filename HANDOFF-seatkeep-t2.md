@@ -1,6 +1,6 @@
 # HANDOFF — TICKET=cysr-seatkeep-t2 (좌석 보유 장치 seatkeep 단독 시제품 · 맥 · cysd 미연결)
 
-- 상태 = **【확인요청】 대기**(2026-11-11 재개 09:25 → 시험 전부 + codex 1R + 고침 1회 끝) · 다음 = master 가 독립 검증 좌석을 붙인다.
+- 상태 = **독립 검증 대기**(2026-11-11 재개 09:25 → 시험 전부 + codex 1R + 고침 1회 끝 · 【확인요청】 10:14 접수 master#2eb05a66). 검증 좌석 = `~/axdev/.wt/seatkeep-t2-verify`(d41c00eb 스냅샷 · TICKET=cysr-seatkeep-t2-verify) — 결함 표가 오면 그때 1회 고침 · 그 전 코드 수정 0.
 - 가지 = `feat/seatkeep-t2`(v1.1.14 `270e3e21` 위) · 커밋 2개(`0704dc03` 시제품 · 이 커밋 = codex 1R 고침 + 시험 결과) · push 0.
 - 설계·브리프 = `~/axdev/master/reports/2026-11-11-cysr-holder-design/`(DESIGN.md · T0-surface-state.md · briefs-draft/T2.md · master#a3db2868 결정 5).
 - codex 1R = 같은 폴더 `codex-t2-1R.prompt.md`(의뢰문) · `codex-t2-1R.verdict.json`(판정 BLOCK · 대상 `0704dc03`) · `codex-t2-1R.txt`(전 기록).
@@ -99,6 +99,7 @@ python3 tcc.py                        # TCC 1회 관찰
 10. 시험 전용 환경 변수 `CYS_SEATKEEP_TEST_COMMIT_DELAY_MS` — 제품 편입 전 제거 또는 시험 빌드 한정.
 11. 맥 밖: 리눅스 = 거절만 · 윈도우 = 「유닉스 전용」 안내 후 종료(T7). **윈도우 대상 컴파일 점검은 이 맥에서 불가**(`cargo check --target x86_64-pc-windows-msvc` 가 의존성 libsqlite3-sys C 빌드에서 실패 · seatkeep 무관) — 실측 없음. 새 [[bin]] 이 CI 에서 걸리는지: CI 빌드는 `--bin cys`·`--bin cysd` 를 명시해 쓰는 곳이 대부분이나 전수 확인은 안 함.
 12. 핸드셰이크 기한 타이머 스레드가 성공한 연결에서도 3초 동안 남음(소켓 사본 fd 1개).
+13. **A13 결정 = 좌석당 방식**(master#2eb05a66 · 판정선 불변). 단점(40좌석 스레드 280 · fd 480 · RSS 여유 4%)은 **T3 편입 때 같은 표를 다시 재서 판정선을 넘으면 좌석당 스레드 줄이기를 먼저 본다.**
 
 ## 다음 첫 행동(1줄)
 master 가 독립 검증 좌석(브리프 §6 5항 + 뮤턴트) 편성 → 그 결과 + codex 재검(선택)으로 1회 고침. T3(cysd 연결) 착수 조건은 【확인요청】 본문.

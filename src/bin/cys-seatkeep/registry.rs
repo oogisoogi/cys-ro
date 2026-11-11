@@ -100,12 +100,27 @@ pub struct Ledger {
     file: File,
     /// 짧은 쓰기 조각을 잘라 내지 못한 채 남아 있다 → 다음 줄을 줄바꿈으로 시작해 조각과 이어 붙지 않게 한다.
     torn: bool,
+    /// 마지막 실패에서 그 줄이 온전히 남았는가(= fsync 만 실패). 되돌렸거나 조각이면 거짓 — 보정 줄을 쓸지 정한다.
+    pub last_failure_kept_line: bool,
 }
 
 impl Ledger {
     pub fn open(path: &Path) -> std::io::Result<Ledger> {
         let file = OpenOptions::new().append(true).create(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)?;
-        Ok(Ledger { file, torn: false })
+        // 앞 기동이 남긴 조각(마지막 바이트가 줄바꿈이 아님)이 있으면 첫 줄을 줄바꿈으로 시작한다(codex 2R #4 — 표시가
+        // 메모리에만 있으면 재기동 뒤 첫 줄이 조각에 이어 붙는다).
+        let torn = {
+            use std::io::{Read, Seek, SeekFrom};
+            let mut r = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path)?;
+            let len = r.metadata()?.len();
+            let mut last = [b'\n'];
+            if len > 0 {
+                r.seek(SeekFrom::Start(len - 1))?;
+                r.read_exact(&mut last)?;
+            }
+            last[0] != b'\n'
+        };
+        Ok(Ledger { file, torn, last_failure_kept_line: false })
     }
 
     /// 한 줄(JSON) 덧붙이고 fsync. 실패는 호출자에게 그대로 — 기록 없이 접속을 받지 않기 위해서다.
@@ -120,13 +135,17 @@ impl Ledger {
         s.push('\n');
         let len0 = self.file.metadata()?.len();
         if let Err(e) = self.file.write_all(s.as_bytes()) {
+            self.last_failure_kept_line = false;
             if self.file.set_len(len0).is_err() {
                 self.torn = true;
             }
             return Err(e);
         }
         self.torn = false;
-        self.file.sync_data()
+        self.file.sync_data().map_err(|e| {
+            self.last_failure_kept_line = true;
+            e
+        })
     }
 }
 
@@ -202,6 +221,19 @@ mod tests {
         let s = std::fs::read_to_string(&p).unwrap();
         assert_eq!(s.lines().count(), 2);
         assert!(s.starts_with("{\"a\":1}"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn ledger_reopen_after_fragment_starts_new_line() {
+        // codex 2R #4 회귀: 앞 기동이 남긴 조각(줄바꿈 없음) 뒤 재기동 첫 줄은 조각에 이어 붙지 않는다.
+        let d = tmpdir("frag");
+        let p = d.join("x.log");
+        std::fs::write(&p, "{\"event\":\"accept\",\"ge").unwrap();
+        Ledger::open(&p).unwrap().line(&serde_json::json!({"event": "accept", "gen": 2})).unwrap();
+        let s = std::fs::read_to_string(&p).unwrap();
+        let ok: Vec<_> = s.lines().filter(|l| serde_json::from_str::<serde_json::Value>(l).is_ok()).collect();
+        assert_eq!(ok.len(), 1, "온전한 줄 1개가 읽혀야 한다: {s:?}");
         let _ = std::fs::remove_dir_all(&d);
     }
 

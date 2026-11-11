@@ -2293,6 +2293,28 @@ class AutoSwitch(Base):
         doc = json.loads(rd(os.path.join(self.cfg, "counsel", jc.NOTICE_FILE), encoding="utf-8"))
         self.assertEqual(doc["notice"], jc.HELP_NOTICE)
         self.assertRegex(doc["shown"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$")
+        self.assertEqual(doc["notice_version"], jc.NOTICE_VERSION)
+
+    def test_old_notice_viewers_see_the_fixed_notice_once_without_pausing_sends(self):
+        """⑤(cysr-counsel-notice) — 옛 안내(판 칸 없는 1.1.10 표식)만 본 기기 = 고친 안내를 한 번 더(needs_notice) ·
+        그동안 help 게이트는 열려 있다(이미 보내던 것을 끊지 않는다) · 다시 본 뒤 = 더 묻지 않는다."""
+        old = {"shown": "2026-10-23T00:00:00.000Z", "notice": "cysr는 … 판번·운영체제·오류 횟수만 개발팀에 보냅니다 …"}
+        os.makedirs(os.path.join(self.cfg, "counsel"), exist_ok=True)
+        with open(os.path.join(self.cfg, "counsel", jc.NOTICE_FILE), "w", encoding="utf-8") as f:
+            json.dump(old, f, ensure_ascii=False)
+        self.assertEqual(jc.notice_seen_version(self.cfg), 1)
+        self.assertTrue(jc.notice_seen(self.cfg), "옛 표식도 「본 적 있음」 — 보내기를 멈추면 안 된다")
+        self.assertNotEqual(jc.help_report(self.cfg), "notice-pending", "다시 띄우기 전인데 보내기 게이트가 닫혔다")
+        self.assertEqual(jc.auto_status(self.cfg), {"auto": True, "notice_seen": True, "needs_notice": True})
+        self.assertTrue(jc.mark_notice_seen(self.cfg))
+        self.assertEqual(jc.notice_seen_version(self.cfg), jc.NOTICE_VERSION)
+        self.assertEqual(jc.auto_status(self.cfg), {"auto": True, "notice_seen": True, "needs_notice": False})
+        for bad in ({"shown": "x", "notice_version": "2"}, {"shown": "x", "notice_version": 0}):
+            with open(os.path.join(self.cfg, "counsel", jc.NOTICE_FILE), "w", encoding="utf-8") as f:
+                json.dump(bad, f)
+            self.assertEqual(jc.notice_seen_version(self.cfg), 1, "판 칸이 꼴 밖이면 옛 판(1)으로 본다 — 다시 띄우는 쪽")
+        self.config(json.dumps({"counsel": {"auto": False}}))
+        self.assertFalse(jc.auto_status(self.cfg)["needs_notice"], "끈 기기에는 다시 띄우지 않는다")
 
     def test_off_without_client_writes_agora_fields_and_stops_everything(self):
         self.config(json.dumps({"keep": 1, "counsel": {"other": "x"}}))

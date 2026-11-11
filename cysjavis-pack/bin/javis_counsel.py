@@ -1359,18 +1359,29 @@ def help_report(cfg, now=None):
 
 # ── 앱 단추 — 「상담소 끄기/켜기」·첫 안내(1.1.10 · TICKET=cysr-1110-counsel-off) ─────────────────────────
 # 앱은 아고라 설정을 직접 쓰지 않는다 — 이 동사들만 부른다(설정 파일 꼴의 주인 = 아고라 클라이언트 · 팩은 그 클라이언트를 부른다).
-NOTICE_FILE = "help-notice.json"       # {shown, notice} — 앱이 안내문을 화면에 띄운 뒤 남긴다 · 없음·깨짐 = 안 뜸(help 가 보내지 않는다)
+NOTICE_FILE = "help-notice.json"       # {shown, notice, notice_version} — 앱이 안내문을 화면에 띄운 뒤 남긴다 · 없음·깨짐 = 안 뜸(help 가 보내지 않는다)
+NOTICE_VERSION = 2                     # 안내문 판 — 1 = 2026-10-22 원문(「판번·운영체제·오류 횟수만」) · 2 = 11-12 보내는 칸에 맞춘 글
+                                       #   (TICKET=cysr-counsel-notice ⑤) · 본 판이 이보다 낮으면 앱이 고친 안내를 한 번 더 띄운다(needs_notice) ·
+                                       #   ★다시 띄우는 동안에도 보내기는 막지 않는다(help 게이트 = 아무 판이든 본 적 있음 · 이미 보내던 것을 끊지 않는다)
 AUTO_SET_TIMEOUT_S = 30                # `agora counsel on|off` 상한 — 끄기는 첫 원자 쓰기(auto=false + purge_due)로 이미 꺼졌다 ·
                                        # 그 뒤 도는 판을 기다리다 끊겨도 표식이 남아 다음 판이 지운다(아고라 set_auto 설계)
 
 
-def notice_seen(cfg):
+def notice_seen_version(cfg):
+    """이 기기 화면에 뜬 안내문의 판 — 안 뜸·깨짐 = 0 · 판 칸 없는 옛 표식(1.1.10~) = 1."""
     try:
         with open(_counsel(cfg, NOTICE_FILE), encoding="utf-8") as f:
             doc = json.load(f)
     except (OSError, ValueError):
-        return False
-    return type(doc) is dict and type(doc.get("shown")) is str
+        return 0
+    if type(doc) is not dict or type(doc.get("shown")) is not str:
+        return 0
+    v = doc.get("notice_version", 1)
+    return v if type(v) is int and v >= 1 else 1
+
+
+def notice_seen(cfg):
+    return notice_seen_version(cfg) > 0
 
 
 def mark_notice_seen(cfg, now=None):
@@ -1380,7 +1391,8 @@ def mark_notice_seen(cfg, now=None):
         path = _counsel(cfg, NOTICE_FILE)
         tmp = "%s.tmp-%d-%s" % (path, os.getpid(), secrets.token_hex(4))
         with open(tmp, "w", encoding="utf-8", newline="\n") as f:
-            f.write(json.dumps({"shown": ms_iso(now or time.time()), "notice": HELP_NOTICE}, ensure_ascii=False, sort_keys=True) + "\n")
+            f.write(json.dumps({"shown": ms_iso(now or time.time()), "notice": HELP_NOTICE, "notice_version": NOTICE_VERSION},
+                               ensure_ascii=False, sort_keys=True) + "\n")
         os.replace(tmp, path)
         return True
     except OSError:
@@ -1388,11 +1400,11 @@ def mark_notice_seen(cfg, now=None):
 
 
 def auto_status(cfg):
-    """needs_notice = help 가 보낼 기기(켬 · 가입 없음)인데 안내가 아직 안 떴다."""
+    """needs_notice = help 가 보낼 기기(켬 · 가입 없음)인데 지금 판 안내가 아직 안 떴다(옛 판만 본 기기 포함 · ⑤)."""
     on = auto_enabled(cfg)
-    seen = notice_seen(cfg)
+    seen_v = notice_seen_version(cfg)
     joined = os.path.exists(os.path.join(cfg, PARTICIPANT_FILE))
-    return {"auto": on, "notice_seen": seen, "needs_notice": on and not joined and not seen}
+    return {"auto": on, "notice_seen": seen_v > 0, "needs_notice": on and not joined and seen_v < NOTICE_VERSION}
 
 
 def _agora_counsel(cfg, agora, action):

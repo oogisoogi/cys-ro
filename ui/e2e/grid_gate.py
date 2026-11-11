@@ -2,7 +2,7 @@
 """두 줄 격자 게이트 — TICKET=cysr-tabs-sidebar-impl 조각 2b-2(master#fcbc46fb 결정 ① A안 · 수동 실행 — CI 미배선).
 
 실제 번들 + __TAURI__ 대역(statusboard_gate 의 SHIM 재사용). 장면 = 고정 master·cso + site 묶음 좌석 3·7·12 + lms 1(탭이 생기게).
-단언(site 탭): 보이는 site 칸 = 좌석 수 · 4개 이하 = 한 줄 · 5개부터 = 두 줄 이상(줄 = ⌈n÷열⌉) · 가장 좁은 칸 열 수는 실측 출력(최소 40열은 지킬 수 있을 때만 · grouptabs.gridColumns) ·
+단언(site 탭): 보이는 site 칸 = 좌석 수 · 줄 = ⌈n÷한 줄⌉ · 줄마다 고르게(2b-3 한 규칙 · 옛 「4개 이하 한 줄」 예외 폐지) · 가장 좁은 칸 열 수는 실측 출력(최소 40열은 지킬 수 있을 때만 · grouptabs.gridColumns) ·
       가로 넘침 0 · 고정 기둥 폭 그대로 · 콘솔 오류 0. 캡처 = 3·7·12 × 1920·1280.
 실행: CHROME_PATH=<chrome-headless-shell> cys run -- <playwright python3> ui/e2e/grid_gate.py [캡처폴더]
 """
@@ -75,10 +75,9 @@ def main() -> int:
                     sbg.check(st["tab"] == "site" and len(site) == n and not any(x["sid"] == 40 for x in st["ps"]), f"site 탭 = site 칸 {len(site)}/{n} · lms 숨김")
                     tops = sorted({x["top"] for x in site})
                     per = max(sum(1 for x in site if x["top"] == t) for t in tops) if site else 0
-                    if n <= 4:
-                        sbg.check(len(tops) == 1, f"{n}개 = 한 줄 나란히(시안 #C · 폭과 무관) · 줄 {len(tops)}")
-                    else:
-                        sbg.check(len(tops) >= 2 and len(tops) == math.ceil(n / per), f"5개부터 = 두 줄 이상 · 줄 {len(tops)} = ⌈{n}÷{per}⌉")
+                    # (2b-3) 「4개 이하 한 줄」 예외 폐지 — 한 규칙: 줄 = ⌈n÷한 줄⌉ · 줄마다 고르게(가장 긴 줄과 가장 짧은 줄 차이 ≤ 한 줄 칸 수). 칸 수 기대값 대조 = pillar_gate.
+                    rows_n = [sum(1 for x in site if x["top"] == t) for t in tops]
+                    sbg.check(len(tops) == math.ceil(n / per) and (len(tops) == 1 or per == math.ceil(n / len(tops))), f"줄 {len(tops)} = ⌈{n}÷{per}⌉ · 줄마다 {rows_n}(고르게)")
                     mins = min((x["cols"] for x in site if x["cols"] is not None), default=None)
                     print(f"  (실측) 한 줄 최대 {per}칸 · 줄 {len(tops)} · 가장 좁은 칸 {mins}열")
                     sbg.check(len(fixed) == 2 and all(f["left"] < min(x["left"] for x in site) for f in fixed), "고정 기둥 master·cso = 왼쪽 그대로")

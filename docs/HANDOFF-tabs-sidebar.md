@@ -1,6 +1,8 @@
 # HANDOFF — TICKET=cysr-tabs-sidebar-impl (가지 feat/tabs-sidebar · 기준 270e3e21 v1.1.14)
 
-**다음 첫 행동 1줄**: (순환 뒤 새 문맥) 조각 **2b-3 고정 기둥 폭 규칙** — 지시서 ~/axdev/master/briefs/2026-11-11-cysr-pillar-width-rule.md 전문 Read 부터(master#62758908 · 박사님 13:1x 「권고대로 최소 폭을 낮추자 … 싱글/듀얼/노트북 모니터 상황에 맞추어 최적 비율」 · 기둥 = clamp(64, 영역 열 수×0.36, 96) · 워커 한 줄 칸 수 = 40열을 지키는 최대 · 「4개 이하 한 줄」 예외 폐지 — 번복 사유는 지시서). 병행 대기: 독립 검증 좌석(001dba76 스냅샷) 결함 표 → 1회 고침.
+**다음 첫 행동 1줄**: 【확인요청 2】(11-11 · 2b-3 + 948 D1~D9 처분) 에 대한 master 답 대기 — master 가 D1 고침분을 스냅샷에서 codex 1R 돌릴지 판단한다. 답이 오기 전 새 조각 착수 0.
+
+(이전 첫 행동 · 끝남) 조각 2b-3 고정 기둥 폭 규칙(master#62758908 · 지시서 ~/axdev/master/briefs/2026-11-11-cysr-pillar-width-rule.md) → 완료(dc1401e1 · 0d8e0d31) · 독립 검증 948 결함 표 → 이 라운드에서 고침(master#07acca07).
 
 (원래 첫 행동): 인박스에서 master 의 「두 줄 격자 기준」 답(A 40열 / B 80열 / C 격자 없음 · 10:06:45 【중간】 의 【결정필요】)을 확인하고, 답이 없으면 2c-2(아래)부터 착수한다.
 
@@ -28,6 +30,9 @@
 | 남은 4번 | 95e6c6c9 · bf24c380 | 1.1.14 기준 대조 · 재실행(목록 전) 넓게 보기 기억 소실 수리 + restart_gate |
 | 상황판 3 · 1h | 476e73e3 | 수 옆 글자 라벨 · 한도 줄 「86% · 금 06:00 초기화」(전문 = 툴팁) · 「승인 요청 N」 = 좌석 밖 요청만 · 부서 0개 = body.no-depts(.dept-only 숨김 · 팔레트 부서 항목 = 부서 있거나 전문가 모드만 · 「본부」→「새 화면」) · `ui/e2e/nodept_gate.py` |
 
+| 2b-3 | dc1401e1 · 0d8e0d31 | 탭 화면 고정 기둥 = clamp(64, 영역 열×36%, 96)(grouptabs.pillarCols·tabPillarShare) · 격자 한 규칙(gridRowMax · 4개 이하 예외 폐지 · 줄마다 고르게) · 잰 몫 재사용(흔들림 0) · noteGridCell 여백 ≥200px 거부(2b-2 잠복 결함) · 경계 눌렀다 떼기 = 아무것도 안 씀 · `ui/e2e/pillar_gate.py` · 캡처 2b-3/ 9장 + CAPTIONS.md |
+| 948 D1·D2·D3·D6 | 6a8840c5 · d5abef35 | 포커스 = 보기 트리 기준(visibleSids·seatVisible · 숨으면 그 탭 마지막/첫 좌석으로) · 탭 화면 새 좌석 = 지금 탭(createdInTab) · 끝난 좌석 묶음 기록 지움(seatgroup.forgetSeatGroup) · `ui/e2e/focus_gate.py`(⑧ 조합 중 탭 전환 포함) · `ui/e2e/rolereuse_gate.py` |
+| 948 D4·D5·D7·D8·D9 | efc6bed2 | 호출자 조상 끝까지 읽기(ui_caller_verdict·ancestry_end_with) · surface.list size + 앱 noteSeatSize · 이름 NFKC+Cc/Cf/Zl/Zp 거부(데몬·앱 같은 규칙 · 새 의존 unicode-normalization) · ui_caller_tests·seat_group_name_tests · 기동 대기 60초 · `ui/e2e/stty_gate.py`(격리 cysd) |
 시험: `cd ui && bun test` = 3387 통과 0 실패 · `bunx tsc -p tsconfig.check.json` 0. 게이트 3종 PASS(아래 재현).
 
 ## 미완(순서)
@@ -38,7 +43,17 @@
 3. ✅ **2b-2 완료(353fe297)** · 【결정필요】 A안 세 조건 충돌(아래) — 원 지시: 한 묶음 다수 좌석 두 줄 격자 — 위 【결정필요】 답대로. 1280 폭 탭 이름 넘침 점검.
 4. ✅(실앱 1건 제외) — 3·7·12 = 2b-2/ · 1280 = grid·seatrows·statusboard 게이트 · 워커 0·1 새 단추 0 = baseline_gate(95e6c6c9) · 재실행 배치 동일 = restart_gate(bf24c380 · 헤드리스) · ⛔남음 = 실제 빌드 앱 격리 프로필 캡처(박사님 화면에 창이 뜸 → master 판단). 원 지시: **캡처 3·7·12**(ⓐ) + 1280 + 워커 0·1 「새 단추 0 · 새 질문 0」 + 앱 종료→재실행 탭 배치 동일(ⓒ — 순수 시험 `grouptabs.test.ts` 「재부팅 뒤 번호 재발급」 은 있음 · 실앱 기록 없음) + 실제 빌드 앱 격리 프로필 캡처(박사님 화면 금지).
 
+## 원작자 병합 때 볼 것
+- 새 의존 1 = unicode-normalization =0.1.26(D7 · master#cb40d4a3 · Cargo.lock 변화 = 그 크레이트 1 항목 · 그 의존 tinyvec 은 이미 있음 · 저장소에 cargo deny·라이선스 검사 장치 없음 확인 · 라이선스 (MIT OR Apache-2.0) AND Unicode-3.0).
+- cysd surface.list 행에 size{rows,cols} 추가(순수 additive · D5).
+
 ## 함정
+- ★명령을 `&&` 로 이을 때 bun test 결과를 보지 않고 커밋으로 넘어가지 마라 — 6a8840c5 가 1 실패로 커밋돼 d5abef35 로 바로잡았다(그 뒤 커밋은 「tsc 0 ∧ 0 fail 일 때만」 조건문).
+- 소스 추출 시험 대역(closecallbacks·b230scroll·roleactivity)에 새 자유 이름을 더해야 한다: seatVisible·createdInTab·forgetEndedSeatGroup·repairHiddenFocus·noteSeatSize·tabPillarMemo·gridCell·recomputeTabPillar.
+- closeguard 시험이 exited 판정 두 줄(`if (s.exited) exitedPaneKeys.add(...)` / `else exitedPaneKeys.delete(...)`)의 모양을 고정한다 — 그 줄을 블록으로 바꾸지 마라.
+- json! 매크로 값 자리에 `{ … }` 블록을 쓰면 JSON 객체로 읽힌다 → 도우미 함수로(surface_size_wire).
+- JS trim() 은 BOM(U+FEFF)까지 자르고 Rust str::trim 은 안 자른다 — 이름 규칙은 \p{White_Space} 로만 자른다(cleanGroupName).
+- grid_gate 는 2b-2 캡처 폴더에 덮어쓴다 → 다시 돌릴 땐 캡처 폴더 인자를 스크래치로(2b-2 CAPTIONS.md 숫자 보존).
 - 소스를 문자열로 떼어 돌리는 시험이 많다(`roleactivity.test.ts` · `deptprogresswiring.test.ts` · `b230scroll.test.ts` 의 대역 목록). main.ts 함수에 새 자유 이름을 쓰면 그 대역에 이름을 더해야 한다(ReferenceError 로 실패).
 - style.css 의 첫 `@media (prefers-reduced-motion` 앞까지를 읽는 시험이 있다(roleactivity.test.ts) — 새 @media 블록을 역할 점 규칙보다 앞에 두지 마라(기존 블록에 줄을 더한다).
 - 시험 장치(e2e) 계정 목록이 비면 사용량 막대가 안 그려진다(accountRates 는 updated_at 없는 계정 무시) — 결함 아님.
@@ -65,8 +80,14 @@ for g in seatrows_gate statusboard_gate cc_button_gate nodept_gate seatgroup_gat
 ## canary 확인 항목 2 (master#9278e6ab · 1.1.15 묶음 빌드 canary 단계 · 동결 11-18 뒤 · master 집행 · 격리 프로필 실앱)
 1. 재실행 탭 배치 동일 — 앱 종료 → 재실행(+ 데몬 재부팅으로 좌석 번호 재발급) 뒤 활성 탭·넓게 보기 좌석·옮긴 묶음·탭 순서가 같다(헤드리스 대역 = ui/e2e/restart_gate.py · 실앱 미확인).
 2. 워커 0·1 새 단추 0 — v1.1.14 와 나란히 놓고 상단 막대 새 단추 0 · 질문 창 0(헤드리스 대역 = ui/e2e/baseline_gate.py · 실앱 미확인).
+3. (948 · master#07acca07) 한글 조합 중 탭 전환 — 실앱(WKWebView)에서 조합 중이던 글자가 어디로 가는가(헤드리스 Chromium = 버려짐 · 숨은 좌석으로 0 · 다음 글자 = 보이는 좌석 = focus_gate ⑧). 숨은 좌석으로 가면 결함.
+4. (948 D1·D6) 실앱에서 탭을 바꾼 뒤 ⌘W·⌘D·글자 입력이 보이는 좌석을 잡는가(헤드리스 대역 = focus_gate · WKWebView 포커스·키 이벤트 차이 확인).
 
 ## 알려진 한계
+- (948 D3) 앱이 꺼져 있는 동안 좌석이 끝나고 같은 역할명이 재배정되면 끝 신호를 못 봐 옛 묶음을 물려받는다(설계 §5 · 📌 데몬 정체 비교안).
+- (948 D2) 탭 화면에서 만든 새 좌석의 「지금 탭」 소속은 앱이 켜져 있는 동안만 — 앱을 다시 켜면 생성 폴더 묶음으로.
+- (948 D4) 좌석이 띄운 고아 자식·다른 데몬 좌석의 호출 = 좌석 밖 터미널과 구별 불가(영향 = 앱 배치·컨트롤 센터 열기뿐 · 기존 RPC 같은 근거 = master 별도 티켓).
+- (2b-3) 1371 에서 좌석 4개 이상 = 40열×12줄을 함께 지킬 격자가 없어 36열 칸(가장 덜 모자란 격자 · 지시서 규칙대로).
 - 역할·폴더가 둘 다 없는 좌석(외부 좌석)을 넓게 보다가 앱을 다시 켜면, 그 좌석의 정체를 끝내 알 수 없어 넓게 보기 저장값이 화면엔 안 보인 채 상태에만 남을 수 있다(화면 정상 · bf24c380 의 보존 규칙 탓 · master#9278e6ab 「알려진 한계」로 둠).
 
 ## master 결정(master#fcbc46fb · #608306ca · #9278e6ab · 확정)

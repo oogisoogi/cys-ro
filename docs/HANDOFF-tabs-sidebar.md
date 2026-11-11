@@ -24,6 +24,7 @@
 | 2d | cfbe352d | `cys seat-group --surface <좌석> <묶음>`("" = 해제) · `cys open-control-center` · 데몬 Surface.group(메모리) + RPC surface.set_group·ui.open_panel(호출자 = master 좌석 또는 좌석 밖) + 이벤트 · 앱 seatgroup.ts(열쇠 = 소켓+역할/폴더 · localStorage cys-seat-group) · `tests/seat_group.rs` · `ui/e2e/seatgroup_gate.py` |
 | 2d codex 1R | 05ab8f1b | 호출자 판독 실패 = 거부 · group_set(해제 ≠ 모름) · 같은 열쇠 좌석은 앱 기록 안 씀 · 양방향 제어 문자 거부 · 원문 docs/CODEX-R1-2d-tabs-sidebar.txt |
 | 2b-2 | 353fe297 | grouptabs.gridColumns·gridView(4개 이하 한 줄 · 5개부터 두 줄+ · 칸 최소 40열×12줄 · 못 지키면 가장 덜 모자란 격자) · 탭 화면에서만 · fitPane 이 글자 칸 기억(noteGridCell) · `ui/e2e/grid_gate.py` · 캡처 2b-2/ |
+| 2c-2 남은 것 | (이 커밋) | 숨은 탭 막힘 표시 지연 실측 `ui/e2e/hidden_block_gate.py` — 화면 승인 창 0.7~2.8초(3초 목록 고리) · 승인 요청 이벤트 즉시 · 실측 중 찾은 결함 수리 = 탭 머리 표지가 그릴 때 한 번만 만들어져 숨은 탭 막힘이 안 뜨던 것(refreshSeatRows 가 제자리 교체) · 1.1.14 기준 대조 `ui/e2e/baseline_gate.py` |
 | 상황판 3 · 1h | 476e73e3 | 수 옆 글자 라벨 · 한도 줄 「86% · 금 06:00 초기화」(전문 = 툴팁) · 「승인 요청 N」 = 좌석 밖 요청만 · 부서 0개 = body.no-depts(.dept-only 숨김 · 팔레트 부서 항목 = 부서 있거나 전문가 모드만 · 「본부」→「새 화면」) · `ui/e2e/nodept_gate.py` |
 
 시험: `cd ui && bun test` = 3387 통과 0 실패 · `bunx tsc -p tsconfig.check.json` 0. 게이트 3종 PASS(아래 재현).
@@ -46,6 +47,7 @@
 - 상황판 수를 읽는 e2e 는 `.ws-board-num` 만 읽는다(버튼엔 글자 라벨도 있다 · 476e73e3 에서 한 번 NaN).
 - ★clap: `Command` 열거에 변형을 하나라도 더하면(별도 평탄화 열거로도) debug 시험 스레드(2 MiB) 스택이 넘친다 — 새 최상위 동사는 기존 `VendorAuxCommand` 안에 + 인자는 따로 둔 Args 구조체(cfbe352d 실측).
 - `cargo test` 여러 대상을 한 번에 돌리면 첫 실패에서 멈춘다 → `--no-fail-fast`. `cargo test --bin cys` ≈ 13분(부하 시).
+- 흔들린 시험(이 티켓에서 고치지 않음 · master#608306ca): cysd `native_publication::…np_windows_real_candidate_change_restarts_sample_confirmation` · `…np_native_same_pid_exec_is_changed_not_agent_death` · `send_settle_tests::settle_hold_denies_text_while_submit_cr_inflight_then_admits` — 전체 실행 중 load 7~9 에서 실패 · 단독 각 3/3 통과.
 - 부하(load 5~7) 중엔 격리 데몬 시험이 20초 기동 대기를 넘길 수 있다(hidden_seat_screen 1회 · 단독 PASS) · cysd `np_windows_real_candidate_change_restarts_sample_confirmation` 도 부하 중 1회 실패 · 단독 3/3 PASS(이 티켓 무관 구역).
 - dragdrop_gate.py 는 CHROME_PATH 를 안 받아 이 기계에서 브라우저 판 불일치로 못 돈다(환경 · 회귀 아님).
 
@@ -58,10 +60,8 @@ for g in seatrows_gate statusboard_gate cc_button_gate nodept_gate seatgroup_gat
 ```
 캡처 = `docs/evidence-tabs-sidebar/{1b,1d,1e,1h}/`(커밋하지 않음).
 
-## 결정 대기
-- 📌 격자 A안 세 조건 충돌(1920 실측: 고정 기둥이 최소 90열로 43% → 오른쪽 975px · 3개 나란히 = 칸 38열 · 4개 = 약 29열). 기본값 = 「4개 이하 한 줄(시안 #C) 우선 · 5개부터 40열×12줄」 — 【중간】으로 올림.
-
-## master 결정(master#fcbc46fb · 확정)
+## master 결정(master#fcbc46fb · #608306ca · 확정)
+- 격자 = (가) 채택(master#608306ca): 4개 이하 한 줄 · 5개부터 40열×12줄 지키는 가장 적은 줄 · 못 지키면 가장 덜 모자란 격자 · 설계 §4 정정 1줄 반영 · 기둥 폭 규칙은 바꾸지 않는다.
 - 두 줄 격자 = A안(칸 최소 폭 40열 · 좌석 3·4개 나란히 · 5개부터 두 줄 · 시안 #C 유지).
 - 관찰 1 = 모양은 역할 점 정본 그대로 · 상황판 수 옆 글자 라벨(작업 중·대기) 항상 표시.
 - 관찰 2 = 216px 에서 한도 한 줄 = 「퍼센트 먼저 · 초기화 요일·시각 다음」 · 글자 중간 잘림 0(전문 = 펼침·툴팁).

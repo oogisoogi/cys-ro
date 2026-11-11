@@ -5931,6 +5931,9 @@ function refreshSeatRows(): void {
     if (tabViewSig(v) !== lastTabViewSig.get(ws.id)) {
       tabRenderQueued = true;
       queueMicrotask(() => { tabRenderQueued = false; render(); });
+    } else if (v.tabs.length > 0) {
+      // (2c-2 실측으로 찾음) 탭 구성이 같아도 좌석 상태는 바뀐다 — 탭 머리 표지(숨은 탭의 막힘 ◆ 포함)를 제자리에서 바꿔 끼운다(창·트리 무접촉).
+      root.querySelector(".group-tabbar")?.replaceWith(buildTabBar(v.tabs, seatModels.get(ws.id)!, v.zoom === null ? v.active : null, tabPick(ws)));
     }
   }
 }
@@ -5987,6 +5990,13 @@ function gotoSeat(ws: Workspace, sid: number): void {
   render();
   setFocus(sid);
 }
+// 탭을 누르면 그 묶음 나란히(넓게 보기 풀림) — 탭 머리 줄을 처음 그릴 때와 제자리에서 바꿔 끼울 때(refreshSeatRows) 같은 동작.
+function tabPick(ws: Workspace): (key: string) => void {
+  return (key) => {
+    ws.tabs = { ...normalizeTabState(ws.tabs), active: key, zoom: null };
+    render();
+  };
+}
 // (tabs-sidebar 2b · master#357e735a) 탭 머리 줄 = 고정 기둥(master·cso) 오른쪽 영역 위에만(고정 기둥 위엔 없다).
 //   탭을 누르면 그 묶음 나란히(넓게 보기 풀림) · 탭 화면에서 고정 기둥 경계를 끌면 그 폭을 ws.tree 에 되써 탭을 바꿔도 유지한다.
 function mountTabBar(ws: Workspace, tree: Node, top: HTMLElement): void {
@@ -6002,10 +6012,7 @@ function mountTabBar(ws: Workspace, tree: Node, top: HTMLElement): void {
   area.style.flex = right.style.flex;
   right.replaceWith(area);
   right.style.flex = "1 1 0%";
-  const bar = buildTabBar(v.tabs, model, v.zoom === null ? v.active : null, (key) => {
-    ws.tabs = { ...normalizeTabState(ws.tabs), active: key, zoom: null };
-    render();
-  });
+  const bar = buildTabBar(v.tabs, model, v.zoom === null ? v.active : null, tabPick(ws));
   area.append(bar, right);
   if (split && tree !== ws.tree && tree.type === "split" && ws.tree?.type === "split") {
     const div = top.querySelector(":scope > .divider");

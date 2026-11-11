@@ -1,6 +1,6 @@
 # HANDOFF — TICKET=cysr-tabs-sidebar-impl (가지 feat/tabs-sidebar · 기준 270e3e21 v1.1.14)
 
-**다음 첫 행동 1줄**: 【확인요청 3】(ChatGPT 대체 1R 처분 + codex 1R(D4·D4-b·D7·1R 고침분) 처분) 에 대한 master 답 대기 — 답 전 새 조각 0.
+**다음 첫 행동 1줄**: (이 좌석 = 【매듭】 · master 스냅샷 재실행(b21d1326) 초록이면 좌석 닫힘) 이어받는 좌석은 아래 「남은 것」 의 사후 codex 판정이 오면 그 결함 표부터 — 그 전 새 조각 0.
 
 (이전 첫 행동 · 끝남) 조각 2b-3 고정 기둥 폭 규칙(master#62758908 · 지시서 ~/axdev/master/briefs/2026-11-11-cysr-pillar-width-rule.md) → 완료(dc1401e1 · 0d8e0d31) · 독립 검증 948 결함 표 → 이 라운드에서 고침(master#07acca07).
 
@@ -44,6 +44,32 @@
 3. ✅ **2b-2 완료(353fe297)** · 【결정필요】 A안 세 조건 충돌(아래) — 원 지시: 한 묶음 다수 좌석 두 줄 격자 — 위 【결정필요】 답대로. 1280 폭 탭 이름 넘침 점검.
 4. ✅(실앱 1건 제외) — 3·7·12 = 2b-2/ · 1280 = grid·seatrows·statusboard 게이트 · 워커 0·1 새 단추 0 = baseline_gate(95e6c6c9) · 재실행 배치 동일 = restart_gate(bf24c380 · 헤드리스) · ⛔남음 = 실제 빌드 앱 격리 프로필 캡처(박사님 화면에 창이 뜸 → master 판단). 원 지시: **캡처 3·7·12**(ⓐ) + 1280 + 워커 0·1 「새 단추 0 · 새 질문 0」 + 앱 종료→재실행 탭 배치 동일(ⓒ — 순수 시험 `grouptabs.test.ts` 「재부팅 뒤 번호 재발급」 은 있음 · 실앱 기록 없음) + 실제 빌드 앱 격리 프로필 캡처(박사님 화면 금지).
 
+## 남은 것 (master#c961101e · 11-11 18:1x)
+- **사후 codex** = 대상 efc6bed2..b21d1326(cysd handlers.rs·state.rs · ui main.ts·seatgroup.ts · Cargo.toml) · master 가 21:46 뒤 codex 전담 좌석 대기열에 넣음. 꼭 물을 것 3줄:
+  ⑴ ui_caller_verdict + state::parent_any_user(SHORTBSDINFO unsafe 구조 배치·크기 검사)가 사람 터미널은 통과 · 워커 좌석·40단·판독 실패는 거부하는가
+  ⑵ parse_seat_group(Rust)과 cleanGroupName(JS)이 모든 입력에서 같은 판정인가(NFKC → White_Space 자르기 → Cc/Cf/Zl/Zp/Default_Ignorable · JS 는 Cs 도)
+  ⑶ 사람 손 아닌 보기 변화(묶음 이벤트·목록)에서 따라가기·포커스 비움이 「다른 좌석 입력 0」 을 지키는가
+- **별 조각 후보**(이번에 고치지 않음): render() 가 창을 모두 떼었다 붙여 키보드 포커스가 BODY 로 빠진다(1.1.14 동작 · race_gate R2 실측 — ⌘D 생성 중 탭을 바꾼 뒤 3초 목록이 새 좌석을 데려와 다시 그리면 글자가 어디로도 안 감). 제안 = render 끝에 「보이는 포커스 좌석이 있고 모달이 없으면 키보드 포커스 복원」.
+
+## 처분 표 — ChatGPT 대체 1R(8c6b13fc · BLOCK) + 1R 경고 + codex 1R(d8eef9a3 · BLOCK) · master#c961101e 수용
+| 항목 | 처분 | 근거·시험 | 커밋 |
+|---|---|---|---|
+| 1R 경고(묶음 옮김 → 타이핑이 다른 좌석) | 성립·고침(master#1dc9bd83 따라가기) | 고치기 전 cd → send_input(3) · focus_gate ⑨ ⑩ | d8eef9a3 |
+| 1R #1 재부모화 자식 우회 | 구현 안 함(master 판단) · 설계 §5 한계 + 최대 피해 | 남는 최대 피해 = 지금 탭이 바뀜 | d8eef9a3 |
+| 1R #2 ⌘T 생성 중 작업공간 전환 | 성립·고침 | race_gate R1 붉음 → 초록 | d8eef9a3 |
+| 1R #3 ⌘D 생성 중 탭 전환·대상 닫힘 | 성립·고침 | R2 붉음 → 초록 · R3 원래 초록 | d8eef9a3 · b21d1326 |
+| 1R #4 삽입 소켓 | 경로상 성립(재현 없음)·방어 | 같은 소켓 ∧ 보이는 좌석 | d8eef9a3 |
+| 1R #5 확인 뒤 작업공간 | 불성립(수용) | 확인 창이 그 좌석 이름을 보임 · 기존 ws !== current() 가지 | — |
+| 1R #6 겹친 열쇠 기록 | 성립·고침 | 단위 시험 붉음 → 초록 · 주인 규칙 + lastSeatRow | d8eef9a3 · 956bbc3d |
+| 1R #7 끝난 좌석 포커스 | 불성립(수용) | 뒤따르는 render 의 repairHiddenFocus | — |
+| 1R #8 크기 재동기 반복 | 불성립(수용) | 좌석당 약 6초 1회 상한 · stty_gate 재전송 1 | — |
+| 1R #9 보이지 않는 문자 | 성립·고침 | JS 시험 붉음 → 초록 · DI(+JS Cs) | d8eef9a3 |
+| 1R #10 탭 기억 수명 | 불성립(수용) | detachPane 이 모든 제거 경로에서 지움 | — |
+| 1R 추측(기둥 몫 기억 열쇠) | 불성립(수용) | 열쇠 = 영역 폭·글자 크기·글꼴 | — |
+| codex #1 큐에 남은 입력 | 불성립(수용) | 보일 때 사람이 친 글자 = 그 좌석으로(버리면 유실) | — |
+| codex #2 경로 삽입 비동기 | 불성립(수용) | 사람이 이름으로 고른 좌석 + 같은 소켓 ∧ 보이는 좌석 조건 | — |
+| codex #3 목록에서 먼저 빠진 비주인 | 성립·고침 | 끝난 줄을 겹침 판정에 넣음 | 956bbc3d |
+
 ## 원작자 병합 때 볼 것
 - 새 의존 1 = unicode-normalization =0.1.26(D7 · master#cb40d4a3 · Cargo.lock 변화 = 그 크레이트 1 항목 · 그 의존 tinyvec 은 이미 있음 · 저장소에 cargo deny·라이선스 검사 장치 없음 확인 · 라이선스 (MIT OR Apache-2.0) AND Unicode-3.0).
 - cysd surface.list 행에 size{rows,cols} 추가(순수 additive · D5).
@@ -86,6 +112,8 @@ for g in seatrows_gate statusboard_gate cc_button_gate nodept_gate seatgroup_gat
 2. 워커 0·1 새 단추 0 — v1.1.14 와 나란히 놓고 상단 막대 새 단추 0 · 질문 창 0(헤드리스 대역 = ui/e2e/baseline_gate.py · 실앱 미확인).
 3. (948 · master#07acca07) 한글 조합 중 탭 전환 — 실앱(WKWebView)에서 조합 중이던 글자가 어디로 가는가(헤드리스 Chromium = 버려짐 · 숨은 좌석으로 0 · 다음 글자 = 보이는 좌석 = focus_gate ⑧). 숨은 좌석으로 가면 결함.
 4. (948 D1·D6) 실앱에서 탭을 바꾼 뒤 ⌘W·⌘D·글자 입력이 보이는 좌석을 잡는가(헤드리스 대역 = focus_gate · WKWebView 포커스·키 이벤트 차이 확인).
+5. (1R 경고 · master#1dc9bd83) 실앱에서 입력 중인 좌석을 `cys seat-group` 으로 다른 묶음에 옮기면 탭이 따라가고 이어 친 글자가 그 좌석으로만 가는가(헤드리스 대역 = focus_gate ⑨ ⑩).
+6. (2b-3) 박사님 노트북(1371)·싱글(1920)·4K 프로필(2786) 실창에서 기둥 열 수 = 64·76·96 근처인가(헤드리스 대역 = pillar_gate · 캡처 2b-3/).
 
 ## 알려진 한계
 - (948 D3) 앱이 꺼져 있는 동안 좌석이 끝나고 같은 역할명이 재배정되면 끝 신호를 못 봐 옛 묶음을 물려받는다(설계 §5 · 📌 데몬 정체 비교안).

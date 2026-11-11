@@ -30990,6 +30990,94 @@ extern "C" fn scoped_cleanup_handler(sig: libc::c_int) {
     unsafe { libc::_exit(128 + sig) }
 }
 
+/// ★TICKET=cysr-dev-opt1-stack-budget(1.1.15): `Cli` 풀이 **스택 예산 핀**(macOS 한정 · 스택 칠하기 탐침 최소본).
+///
+/// 디버그 빌드의 `Cli::try_parse_from` 1회 필요 스택을 바이트로 재서 1 MiB 이하를 단언한다. 지금 실측 ≈229 KB(Cargo.toml
+/// `[profile.dev.package.cys-terminal] opt-level = 1`) · 그 줄이 없으면 ≈2.10 MB(clap derive 의 `Command::augment_subcommands` 틀
+/// 1,766,848 바이트) — 2 MiB 시험 스레드 여유가 수백 바이트라 전체 시험에서 가끔 SIGABRT 로 프로세스째 죽던 것을, 늘어난 **그 판에서**
+/// 이 시험 하나가 결정론적으로 붉어지게 바꾼다. 근거·측정법 = docs/1115/CLI-STACK-PROBE/REPORT.md.
+/// 원리: 지금 틀 아래 PAINT 바이트를 표식으로 칠함 → 풀이 → 아래부터 훑어 처음 지워진 바이트 = 최저 수위. 큰 틀의 머리말 탐침
+/// (쪽마다 `str xzr, [sp]`)이 칠을 지우므로 스택 넘침 판정과 같은 지점을 잡는다. 재는 일은 16 MiB 스레드에서 한다 — 예산을 넘은 판에서도
+/// 넘침(SIGABRT)이 아니라 이 단언으로 실패하게(측정 계기일 뿐, 다른 시험의 스택을 키우지 않는다). 맥 전용 API 는 쓰지 않지만 측정값은
+/// 맥 arm64 기준이라 macOS 로 한정한다.
+#[cfg(all(test, target_os = "macos"))]
+mod cli_stack_budget_tests {
+    use super::Cli;
+    use clap::Parser;
+    use std::hint::black_box;
+
+    /// 디버그 `Cli::try_parse_from` 1회 필요 스택 상한(바이트).
+    const BUDGET: usize = 1 << 20;
+    /// 계기가 일감을 만났는지의 하한(풀이 한 번이 이보다 적게 쓸 수는 없다 — 릴리스 실측 ≈111 KB).
+    const FLOOR: usize = 32 << 10;
+    const PAINT: usize = 6 << 20;
+    const MARK: u8 = 0xA5;
+
+    #[inline(never)]
+    fn here() -> usize {
+        let x = 0u8;
+        black_box(&x) as *const u8 as usize
+    }
+    #[inline(never)]
+    fn paint() -> usize {
+        let mut buf = [0u8; PAINT];
+        for b in buf.iter_mut() {
+            unsafe { std::ptr::write_volatile(b, MARK) }
+        }
+        black_box(&mut buf).as_ptr() as usize
+    }
+    #[inline(never)]
+    fn low_water(lo: usize) -> usize {
+        let p = lo as *const u8;
+        let mut i = 0;
+        while i < PAINT && unsafe { std::ptr::read_volatile(p.add(i)) } == MARK {
+            i += 1;
+        }
+        lo + i
+    }
+    /// 일감이 쓴 스택(바이트) = 일감 직전 위치 − 최저 수위.
+    #[inline(never)]
+    fn need(f: &dyn Fn()) -> usize {
+        let entry = here();
+        let lo = paint();
+        f();
+        entry.saturating_sub(low_water(lo))
+    }
+
+    #[test]
+    fn cli_parse_stack_need_stays_within_budget() {
+        let (argv, used) = std::thread::Builder::new()
+            .stack_size(16 << 20)
+            .spawn(|| {
+                [
+                    "cys pause",
+                    "cys kill 123",
+                    "cys launch-agent --role worker --agent claude --cwd /a/hq",
+                    "cys kill 123 2",
+                    "cys channel --help",
+                ]
+                .iter()
+                .map(|c| {
+                    let toks: Vec<&str> = c.split_whitespace().collect();
+                    (c.to_string(), need(&|| {
+                        black_box(Cli::try_parse_from(toks.iter()).is_ok());
+                    }))
+                })
+                .max_by_key(|x| x.1)
+                .expect("일감 5개")
+            })
+            .expect("측정 스레드")
+            .join()
+            .expect("측정 스레드 join");
+        assert!(used >= FLOOR, "계기가 일감을 못 만났다: {used} 바이트 < {FLOOR} ({argv})");
+        assert!(
+            used <= BUDGET,
+            "Cli 풀이 필요 스택 {used} 바이트 > 예산 {BUDGET} (최악 argv: {argv}) — 큰 clap 열거형(Command·*Action)에 변형·인자를 더했는가, \
+             Cargo.toml [profile.dev.package.cys-terminal] opt-level = 1 이 빠졌는가 · 근거 docs/1115/CLI-STACK-PROBE/REPORT.md"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

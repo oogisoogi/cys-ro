@@ -1,0 +1,4 @@
+# cargo --config 'profile.dev.package.cys-terminal.opt-level=1' test --bin cys -- --test-threads=8 (2026-11-12 08:0x~08:21)
+running 768 tests
+test result: ok. 761 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 796.52s
+FULL_OPT1_RC=0

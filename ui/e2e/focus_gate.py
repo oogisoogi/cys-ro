@@ -14,6 +14,9 @@
      헤드리스 Chromium IME ≠ 실앱 WKWebView → HANDOFF canary 확인 항목)
   ⑨ (master#1dc9bd83) 좌석 4 에 입력 중 묶음 옮김 이벤트(4 → lms) → 탭이 lms 로 따라가고 포커스·입력 = 4 그대로 · 다른 좌석 send_input 0
   ⑩ 같은 장면을 한글 조합 중에 → send_input 대상 = 4 뿐
+  ⑪ (codex 2R #2) 좌석 3(site) 「경로 삽입」 → 실재 확인(list_dir)을 1.5초 늦추고 그 사이 탭 lms 로 전환(3 숨음) → 3 으로 send_input 0 ·
+     알림 「그 좌석이 화면에 없어서 넣지 않았어요」 (대조 = 전환하지 않으면 3 에 들어간다 — 게이트가 빈 통과가 아님)
+  ⑫ (codex 2R #2) OS 드롭(tauri://drag-drop)으로 좌석 3 에 경로 → 같은 늦춤 사이 탭 전환 → 3 으로 send_input 0 · 알림
 실행: CHROME_PATH=<chrome-headless-shell> [GATE_DIST=<다른 번들 폴더>] cys run -- <playwright python3> ui/e2e/focus_gate.py
   (GATE_DIST = 고치기 전 번들로 돌려 붉음을 재는 대조용)
 """
@@ -32,13 +35,15 @@ OUT = sbg.UI.parent / "docs" / "evidence-tabs-sidebar" / "948-focus"
 SPY = r"""
 (() => {
   window.__calls = [];
+  window.__toasts = []; // 알림은 몇 초 뒤 사라진다 — 붙는 순간 글을 적어 둔다
+  document.addEventListener('DOMContentLoaded', () => new MutationObserver((ms) => { for (const m of ms) for (const n of m.addedNodes) if (n.classList?.contains('toast')) window.__toasts.push(n.textContent); }).observe(document.body, { childList: true, subtree: true }));
   const orig = window.__TAURI__.core.invoke;
   window.__TAURI__.core.invoke = (cmd, args) => {
     if (['send_input', 'close_surface', 'create_surface'].includes(cmd)) window.__calls.push([cmd, args?.surfaceId ?? null, args?.data ?? null]);
     if (cmd === 'create_surface') { window.__SEATS.push({ sock: args?.socket ?? '/sandbox/cys.sock', sid: 50, no: 950, role: null, cwd: '/Users/sim', act: 'waiting', raw: 'idle', approval: false, self: null, task: null, ctx: null }); return Promise.resolve({ surface_id: 50, display_no: 950 }); }
     if (cmd === 'list_surfaces') return orig(cmd, args).then((r) => { for (const s of r.surfaces) if ((window.__EXITED ?? []).includes(s.surface_id)) s.exited = true; return r; });
     if (cmd === 'close_surface') return Promise.resolve({ ok: true });
-    if (cmd === 'list_dir') return Promise.resolve([{ name: 'proj', is_dir: true }, { name: 'a.txt', is_dir: false }]);
+    if (cmd === 'list_dir') return new Promise((res) => setTimeout(() => res([{ name: 'proj', is_dir: true }, { name: 'a.txt', is_dir: false }]), window.__LISTDIR_DELAY ?? 0)); // ⑪⑫ = 느린 데몬 흉내
     if (cmd === 'path_exists' || cmd === 'stat_path') return Promise.resolve(true);
     return orig(cmd, args);
   };
@@ -245,6 +250,62 @@ def main() -> int:
             sent = calls(pg, "send_input")
             sbg.check(sent and all(c[1] == 4 for c in sent), f"조합 중 옮김 → 입력 대상 = 4 뿐 {sent}")
             print(f"  (실측) 보낸 글자 = {''.join(c[2] for c in sent)!r}")
+            sbg.check(not errs, f"오류 0 {errs[:2]}")
+            ctx.close()
+            # ⑪ 경로 삽입 메뉴 — 실재 확인을 기다리는 사이 대상이 숨음
+            HIDDEN_MSG = "그 좌석이 화면에 없어서 넣지 않았어요"
+
+            def menu_insert_to3(pg):
+                pg.click('#root .pane[data-sid="3"] .xterm-screen')
+                pg.wait_for_timeout(300)
+                pg.evaluate("() => { if (!document.getElementById('ft-body')?.offsetParent) document.getElementById('btn-files').click(); }")
+                pg.wait_for_timeout(800)
+                name3 = pg.evaluate("() => document.querySelector('#root .pane[data-sid=\"3\"] .pane-title-text')?.textContent ?? ''")
+                pg.evaluate("() => { window.__calls = []; window.__toasts = []; window.__LISTDIR_DELAY = 1500; }")
+                row = pg.query_selector('#ft-body .ft-row:has-text("a.txt")')
+                sbg.check(row is not None, "파일 트리 파일 줄 a.txt")
+                if not row:
+                    return False
+                row.click(button="right")
+                pg.wait_for_timeout(300)
+                item = next((i for i in pg.query_selector_all("#ctx-menu *") if (i.text_content() or "").strip() == f"➤ {name3} 에 경로 삽입"), None)
+                sbg.check(item is not None, f"메뉴 「➤ {name3} 에 경로 삽입」")
+                if not item:
+                    return False
+                item.click()
+                return True
+
+            print("== ⑪ 경로 삽입 — 실재 확인 사이 탭 전환(대조: 전환 없음)")
+            ctx, pg, errs = page()
+            if menu_insert_to3(pg):
+                pg.wait_for_timeout(2200)
+                ctl = calls(pg, "send_input")
+                sbg.check(any(c[1] == 3 for c in ctl), f"(대조) 전환 없으면 좌석 3 에 들어간다 {ctl}")
+            if menu_insert_to3(pg):
+                pg.wait_for_timeout(300)
+                pg.click('#root .group-tab:has-text("lms")')
+                pg.wait_for_timeout(2200)
+                ins = calls(pg, "send_input")
+                tst = pg.evaluate("() => window.__toasts")
+                sbg.check(not any(c[1] == 3 for c in ins), f"숨은 좌석 3 으로 send_input 0 {ins}")
+                sbg.check(not ins, f"다른 좌석으로도 0(대상을 바꾸지 않는다) {ins}")
+                sbg.check(any(HIDDEN_MSG in (t or "") for t in tst), f"알림 「{HIDDEN_MSG}」 {tst}")
+            sbg.check(not errs, f"오류 0 {errs[:2]}")
+            ctx.close()
+
+            # ⑫ OS 드롭 — 같은 늦춤 사이 탭 전환
+            print("== ⑫ OS 드롭 — 실재 확인 사이 탭 전환")
+            ctx, pg, errs = page()
+            box = pg.query_selector('#root .pane[data-sid="3"] .xterm-screen').bounding_box()
+            pg.evaluate("() => { window.__calls = []; window.__toasts = []; window.__LISTDIR_DELAY = 1500; }")
+            pg.evaluate("([x, y]) => window.__emit('tauri://drag-drop', { paths: ['/Users/sim/proj'], position: { x, y } })", [box["x"] + box["width"] / 2, box["y"] + box["height"] / 2])
+            pg.wait_for_timeout(300)
+            pg.click('#root .group-tab:has-text("lms")')
+            pg.wait_for_timeout(2200)
+            ins = calls(pg, "send_input")
+            tst = pg.evaluate("() => window.__toasts")
+            sbg.check(not ins, f"숨은 좌석 3 · 다른 좌석으로 send_input 0 {ins}")
+            sbg.check(any(HIDDEN_MSG in (t or "") for t in tst), f"알림 「{HIDDEN_MSG}」 {tst}")
             sbg.check(not errs, f"오류 0 {errs[:2]}")
             ctx.close()
             # ⑧ 한글 조합 중 탭 전환

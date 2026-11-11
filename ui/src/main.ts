@@ -8223,7 +8223,15 @@ async function injectPathsToPane(rt: PaneRuntime, paths: string[]) {
 // ★R5 machineOrigin: 경로 문자열도 **UI 가 조립한 문안**이다(사용자가 자판으로 친 것이 아니다).
 // 자동 Return 이 없어 보통은 사용자가 뒤에 문장을 이어 붙여 제출하므로 프롬프트 전문과는 매치되지
 // 않지만, 판정 불가는 기록하는 쪽이 fail-closed 다(delivery.rs 불변식 ③).
+// (codex 2R #2) 전송 직전 재검사 — 경로 넣기는 실재 확인(list_dir)·확인 창·세션 조회를 기다린 뒤 보낸다. 그 사이 탭·작업공간·묶음이 바뀌어
+//   그 좌석이 숨었거나 창이 다른 런타임으로 바뀌었으면 넣지 않는다(대상을 다른 좌석으로 바꾸지도 않는다 · 사람이 다시 하면 된다).
+//   메뉴·cd 넣기·트리 끌기·OS 드롭이 모두 이 함수로 보내므로 검사도 여기 한 곳이다.
+function paneShownNow(rt: PaneRuntime): boolean {
+  const cw = current();
+  return !!cw && panes.get(paneKey(rt.sid, rt.socket)) === rt && (cw.socket ?? undefined) === (rt.socket ?? undefined) && seatVisible(cw, rt.sid);
+}
 async function injectRawToPane(rt: PaneRuntime, data: string) {
+  if (!paneShownNow(rt)) return toast("watchdog", "삽입 안 함", "그 좌석이 화면에 없어서 넣지 않았어요 — 좌석이 보일 때 다시 해 주세요.");
   try {
     await invoke("send_input", { socket: rt.socket, surfaceId: rt.sid, data, machineOrigin: true });
     rt.el.classList.add("inject-flash");

@@ -133,3 +133,50 @@ export function fixedColumnSplit(tree: LayoutNode | null, fixedSids: readonly nu
   const left = sids(tree.a);
   return left.length === fixedSids.length && fixedSids.every((s) => left.includes(s)) && !sids(tree.b).some((s) => fixedSids.includes(s));
 }
+
+/** (2b-2 · master#fcbc46fb 결정 ① A안) 격자 칸 최소 폭(글자 열) · 최소 높이(줄 · 설계 §4). */
+export const GRID_MIN_COLS = 40;
+export const GRID_MIN_ROWS = 12;
+/** 한 줄에 둘 좌석 수(순수). 좌석 4개 이하 = 한 줄(시안 #C · 지금 그대로) · 5개부터 = 두 줄 이상(열 ≤ ⌈n÷2⌉).
+ *  5개부터는 칸 최소(폭 minW · 높이 minH px)를 지키는 열 수 중 가장 큰 것(= 줄이 가장 적은 것) · 지킬 수 없으면 「가장 덜 모자란」 열 수
+ *  (칸 폭÷최소폭 과 칸 높이÷최소높이 중 작은 쪽이 가장 큰 격자 = 영역 가로세로에 맞춘 고른 격자 · 설계 §4 「최소 아래 허용」). 재료를 모르면 ⌈n÷2⌉. */
+export function gridColumns(n: number, areaW: number, areaH: number, minW: number, minH: number): number {
+  if (n <= 4) return Math.max(1, n);
+  const top = Math.ceil(n / 2);
+  if (!(areaW > 0 && areaH > 0 && minW > 0 && minH > 0)) return top;
+  let best = top, bestFit = -1;
+  for (let c = top; c >= 1; c--) {
+    const fit = Math.min(areaW / c / minW, areaH / Math.ceil(n / c) / minH);
+    if (fit >= 1) return c;
+    if (fit > bestFit) [best, bestFit] = [c, fit];
+  }
+  return best;
+}
+const evenSplit = (nodes: LayoutNode[], dir: "row" | "col"): LayoutNode => {
+  let acc = nodes[nodes.length - 1];
+  for (let i = nodes.length - 2; i >= 0; i--) acc = { type: "split", dir, ratio: 1 / (nodes.length - i), a: nodes[i], b: acc };
+  return acc;
+};
+const rowLeaves = (n: LayoutNode, out: LayoutNode[] = []): LayoutNode[] => {
+  if (n.type === "split" && n.dir === "row") {
+    rowLeaves(n.a, out);
+    rowLeaves(n.b, out);
+  } else out.push(n);
+  return out;
+};
+/** (2b-2) 보기 트리의 오른쪽 영역(고정 기둥이 있으면 그 오른쪽 · 없으면 전체)을 고른 격자로 접는다 — 열 수 = cols(좌석 수) ·
+ *  줄 수 = ⌈n÷열⌉ · 줄마다 가로 균등 · 줄 사이 세로 균등. 한 줄로 충분하면 · 사람이 위아래로 나눈 기둥이 섞여 있으면 그대로(같은 객체).
+ *  입력 트리는 바꾸지 않는다. */
+export function gridView(tree: LayoutNode | null, fixedSids: readonly number[], cols: (n: number) => number): LayoutNode | null {
+  if (!tree) return tree;
+  const split = fixedColumnSplit(tree, fixedSids);
+  const area = split && tree.type === "split" ? tree.b : tree;
+  const units = rowLeaves(area);
+  if (units.some((u) => u.type !== "pane")) return tree;
+  const c = Math.max(1, Math.floor(cols(units.length)));
+  if (c >= units.length) return tree;
+  const rows: LayoutNode[] = [];
+  for (let i = 0; i < units.length; i += c) rows.push(evenSplit(units.slice(i, i + c), "row"));
+  const grid = evenSplit(rows, "col");
+  return split && tree.type === "split" ? { ...tree, b: grid } : grid;
+}

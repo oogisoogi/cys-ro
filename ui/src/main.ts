@@ -341,7 +341,7 @@ import { activityExpiryMs, applyDotPaint, HIDDEN_DOT, projectActivity, RoleActiv
 import { SurfaceListTransport, type ListArrival } from "./surfacelist"; // ★F-01 끝점별 소유 원 호출 · 응답별 독립 투영
 import { approvalSeatKeys, buildSeatRows, namedSeatInputs, seatApprovalItems, seatDot, seatInputOf, type SeatInput } from "./seatrows"; // (tabs-sidebar 조각1) 좌석 줄 판정·묶음
 import { paintSeatRows, pruneSeatHosts, seatHost } from "./seatrowsdom"; // (tabs-sidebar 조각1) 좌석 줄 그리기
-import { fixedColumnSplit, GROUP_TABS_KEY, groupTabsOn, normalizeTabState, reconcileTabs, viewTree, zoomKeyOf, type TabState, type TabView } from "./grouptabs";
+import { fixedColumnSplit, GRID_MIN_COLS, GRID_MIN_ROWS, gridColumns, gridView, GROUP_TABS_KEY, groupTabsOn, normalizeTabState, reconcileTabs, viewTree, zoomKeyOf, type TabState, type TabView } from "./grouptabs";
 import { buildTabBar } from "./tabbar";
 import { effectiveGroup, parseSeatGroups, SEAT_GROUP_KEY, syncSeatGroupsFromList, uniqueKeys, type SeatGroups } from "./seatgroup"; // (tabs-sidebar 2d) 옮긴 묶음 기록 // (tabs-sidebar 2b) 탭 머리 줄 // (tabs-sidebar 조각2) 묶음 탭 판정
 import type { SeatRowsModel } from "./seatrows";
@@ -4736,6 +4736,7 @@ function fitPane(rt: PaneRuntime) {
   if (rt.termHost.offsetWidth < 60 || rt.termHost.offsetHeight < 40) return;
   rt.keepReadingLine(() => rt.fit.fit()); // ★B-230: 위를 읽던 사람은 폭 리플로우 뒤에도 읽던 줄에 남는다(keepReadingLine)
   rt.snapToBottom(); // 리사이즈 리플로우가 뷰포트를 바닥에서 밀어내는 경우 복귀
+  noteGridCell(rt); // (tabs-sidebar 2b-2) 격자 칸 최소 크기 재료 — render() 직전엔 창이 떼어져 잴 수 없어 여기서 기억한다
   // (tabs-sidebar 2c · 설계 §3) 마지막으로 보낸 열·행과 같으면 보내지 않는다 — 탭 20회 왕복 실측 131회 중 122회가 같은 크기 재전송이었다.
   //   런타임마다 따로 기억(WeakMap) · 보내기 실패면 기억을 지워 다음 맞춤 때 다시 보낸다.
   const size = `${rt.term.cols}x${rt.term.rows}`;
@@ -6032,7 +6033,39 @@ function wsViewTree(ws: Workspace): Node | null {
   ws.tabs = r.state;
   lastTabView.set(ws.id, r.view);
   lastTabViewSig.set(ws.id, tabViewSig(r.view));
-  return viewTree(ws.tree, arrangeRolesBySocket.get(ws.socket ?? ""), r.view.hidden, currentDefaultLeftShare()) as Node | null;
+  const vt = viewTree(ws.tree, arrangeRolesBySocket.get(ws.socket ?? ""), r.view.hidden, currentDefaultLeftShare()) as Node | null;
+  if (r.view.hidden.length === 0) return vt; // 탭 없음(묶음 1개 · 노브 끔) = 지금 화면 그대로(설계 §8)
+  // (2b-2 · A안) 탭 화면에서 한 묶음 좌석이 많으면 오른쪽 영역을 고른 격자로(칸 최소 40열 · 3·4개 나란히 · 5개부터 두 줄).
+  const fixed = model.fixed.filter((x) => !x.named).map((x) => x.sid);
+  const g = gridArea(vt, fixed);
+  return gridView(vt, fixed, (n) => gridColumns(n, g.w, g.h, g.minW, g.minH)) as Node | null;
+}
+// 격자 재료 — 오른쪽 영역 가로·세로(px) · 칸 최소 폭(40열)·높이(12줄) px. ★render() 는 그리기 전에 창을 모두 떼므로 여기서는 잴 수 없다 —
+//   fitPane 이 맞출 때 기억한 글자 칸(gridCell)을 쓰고, 아직 없으면 글꼴로 잰 폭 · 높이 = 글자 크기 × 1.25 · 창 테두리 근사(첫 그림 1회).
+let gridCell: { cw: number; ch: number; padW: number; padH: number } | null = null;
+function noteGridCell(rt: PaneRuntime): void {
+  const sr = (rt.termHost.querySelector(".xterm-screen") as HTMLElement | null)?.getBoundingClientRect();
+  const pr = rt.el.getBoundingClientRect();
+  if (!sr || !(sr.width > 0) || !(sr.height > 0) || !(rt.term.cols > 0) || !(rt.term.rows > 0) || pr.width < sr.width || pr.height < sr.height) return;
+  gridCell = { cw: sr.width / rt.term.cols, ch: sr.height / rt.term.rows, padW: pr.width - sr.width, padH: pr.height - sr.height };
+}
+function gridArea(vt: Node | null, fixed: number[]): { w: number; h: number; minW: number; minH: number } {
+  const r = root.getBoundingClientRect();
+  const w = vt && vt.type === "split" && fixedColumnSplit(vt, fixed) ? r.width * (1 - (vt.ratio ?? 0.5)) : r.width;
+  let c = gridCell;
+  if (!c) {
+    try {
+      cellMeasureCtx ??= document.createElement("canvas").getContext("2d");
+      if (cellMeasureCtx) {
+        cellMeasureCtx.font = `${fontSize}px ${composeFontFamily(fontFace)}`;
+        const cw = cellMeasureCtx.measureText("W".repeat(20)).width / 20;
+        if (cw > 0) c = { cw, ch: fontSize * 1.25, padW: 24, padH: 40 };
+      }
+    } catch {
+      c = null;
+    }
+  }
+  return c ? { w, h: r.height, minW: GRID_MIN_COLS * c.cw + c.padW, minH: GRID_MIN_ROWS * c.ch + c.padH } : { w, h: r.height, minW: 0, minH: 0 };
 }
 // 좌석 줄을 누르면 = 그 부서로 전환 + 그 좌석 포커스(조각2 에서 「그 좌석만 넓게」로 확장).
 function pickSeat(ws: Workspace, sid: number): void {

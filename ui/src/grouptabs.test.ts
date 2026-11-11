@@ -232,3 +232,53 @@ describe("(codex 1R) 다시 그리기 예약 가드", () => {
     expect(f).toContain("reconcileTabs(seatModels.get(ws.id)!, normalizeTabState(ws.tabs), groupTabs)");
   });
 });
+
+describe("(2b-2 · A안) 격자 — 4개 이하 한 줄(시안 #C) · 5개부터 두 줄 이상 · 칸 최소 40열×12줄(못 지키면 가장 덜 모자란 고른 격자)", async () => {
+  const { gridColumns, gridView, GRID_MIN_COLS, GRID_MIN_ROWS } = await import("./grouptabs");
+  const pane = (sid: number): LayoutNode => ({ type: "pane", sid });
+  const row = (...xs: LayoutNode[]): LayoutNode => xs.slice(1).reduce((acc, x) => ({ type: "split", dir: "row", a: acc, b: x }) as LayoutNode, xs[0]);
+  const shape = (n: LayoutNode): unknown => (n.type === "pane" ? n.sid : n.dir === "col" ? ["col", shape(n.a), shape(n.b)] : ["row", shape(n.a), shape(n.b)]);
+  const rowsOf = (n: LayoutNode): number[][] => {
+    const leaves = (x: LayoutNode): number[] => (x.type === "pane" ? [x.sid] : [...leaves(x.a), ...leaves(x.b)]);
+    return n.type === "split" && n.dir === "col" ? [...rowsOf(n.a), ...rowsOf(n.b)] : [leaves(n)];
+  };
+  // 1920 실측(e2e grid_gate 탐침): 오른쪽 975px · 높이 1150px · 칸 최소 = 40열 334px · 12줄 230px
+  const W = 975, H = 1150, MW = 334, MH = 230;
+  test("4개 이하 = 한 줄(폭과 무관 · 시안 #C) · 재료 모름 = ⌈n÷2⌉", () => {
+    expect([GRID_MIN_COLS, GRID_MIN_ROWS]).toEqual([40, 12]);
+    expect([1, 3, 4].map((n) => gridColumns(n, W, H, MW, MH))).toEqual([1, 3, 4]);
+    expect([5, 7, 12].map((n) => gridColumns(n, 0, 0, 0, 0))).toEqual([3, 4, 6]);
+  });
+  test("5개부터 = 최소 칸을 지키는 가장 적은 줄 · 1920 실측 = 5→2열(3줄) · 7→2열(4줄) · 넓은 영역 = 7→4열(2줄)", () => {
+    expect([5, 7].map((n) => gridColumns(n, W, H, MW, MH))).toEqual([2, 2]);
+    expect(gridColumns(7, 1500, 1150, MW, MH)).toBe(4);
+    expect(gridColumns(12, 1500, 1150, MW, MH)).toBe(4);
+  });
+  test("최소를 못 지키면 가장 덜 모자란 고른 격자(설계 §4 최소 아래 허용) — 1920 의 12개 = 2열 6줄이 아니라 덜 모자란 쪽", () => {
+    const c = gridColumns(12, W, H, MW, MH);
+    const fit = (k: number) => Math.min(W / k / MW, H / Math.ceil(12 / k) / MH);
+    for (let k = 1; k <= 6; k++) expect(fit(c)).toBeGreaterThanOrEqual(fit(k));
+    expect(fit(c)).toBeLessThan(1);
+  });
+  test("고정 기둥(1·2) 오른쪽만 접는다 · 좌석 7 을 4열 = 4+3 · 12 를 4열 = 4+4+4 · 고정 기둥 폭(ratio) 유지 · 입력 무변경", () => {
+    const left: LayoutNode = { type: "split", dir: "col", ratio: 0.8, a: pane(1), b: pane(2) };
+    const t = (k: number): LayoutNode => ({ type: "split", dir: "row", ratio: 0.3, a: left, b: row(...Array.from({ length: k }, (_, i) => pane(10 + i))) });
+    const t7 = t(7);
+    const before = JSON.stringify(t7);
+    const g7 = gridView(t7, [1, 2], () => 4)!;
+    expect(JSON.stringify(t7)).toBe(before);
+    expect(g7.type === "split" && g7.ratio).toBe(0.3);
+    expect(g7.type === "split" && shape(g7.a)).toEqual(["col", 1, 2]);
+    expect(g7.type === "split" && rowsOf(g7.b)).toEqual([[10, 11, 12, 13], [14, 15, 16]]);
+    const g12 = gridView(t(12), [1, 2], () => 4)!;
+    expect(g12.type === "split" && rowsOf(g12.b)).toEqual([[10, 11, 12, 13], [14, 15, 16, 17], [18, 19, 20, 21]]);
+  });
+  test("한 줄로 충분 · 사람이 위아래로 나눈 기둥이 섞임 · 트리 없음 = 그대로(같은 객체) · 고정 좌석 없으면 전체를 접는다", () => {
+    const t3: LayoutNode = { type: "split", dir: "row", ratio: 0.3, a: pane(1), b: row(pane(10), pane(11), pane(12)) };
+    expect(gridView(t3, [1], () => 3)).toBe(t3);
+    const mixed: LayoutNode = { type: "split", dir: "row", a: pane(1), b: row(pane(10), { type: "split", dir: "col", a: pane(11), b: pane(12) }, pane(13), pane(14), pane(15)) };
+    expect(gridView(mixed, [1], () => 2)).toBe(mixed);
+    expect(gridView(null, [], () => 2)).toBeNull();
+    expect(rowsOf(gridView(row(pane(10), pane(11), pane(12)), [], () => 2)!)).toEqual([[10, 11], [12]]);
+  });
+});

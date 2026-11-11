@@ -214,7 +214,7 @@ describe("B-230 ③ fitPane — fit 은 keepReadingLine 안에서만 돈다", ()
       socket: "sock",
       sid: 1,
     };
-    const fitPane = loadWith(fnText("fitPane"), "fitPane", { invoke: () => ({ catch: () => {} }), lastSentSize: new WeakMap() }); // (tabs-sidebar 2c) 같은 크기 재전송 기억
+    const fitPane = loadWith(fnText("fitPane"), "fitPane", { invoke: () => ({ catch: () => {} }), lastSentSize: new WeakMap(), noteGridCell: () => {} }); // (tabs-sidebar 2c) 같은 크기 재전송 기억 · (2b-2) 격자 칸 기억 = 무관(무동작)
     fitPane(rt);
     expect(log).toEqual(["keep:start", "fit", "keep:end", "snap"]);
   });

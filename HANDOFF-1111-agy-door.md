@@ -70,7 +70,13 @@
 - 966 재현 3종(내 빌드로 경로만 바꿔 재실행): 우회 77꼴 = 막힘 57 · 우회 15(전부 원리상 못 막는 부류: 변수 2·중괄호/글롭 3·스크립트 파일 3·인터프리터 3·사본·심링크·실행 시점 조립 2) · 판정만 37꼴 = 37 막힘 / guard 문 꼴 = 거부 20 · 통과 18(위장 쓰기 7 = 범위 밖 · 읽기 9 정상 · X3·X4 간접)
 - 남긴 것(이유): REVIEWER_DIRECTIVE(바이트 래칫 고정 · 리뷰어 일반 서술) · 거부문 머리 코드 `agy_consumer_policy:`(phoenix·acceptance·guard 가 이 낱말로 소비 — 문구만 바꾸면 계약 파손) · `antigravity .`(m5 · PLAUSIBLE · 편집기 실행기 이름 미확인)
 
+- 최종 실측(4ba55981 · 18:24~19:39): acceptance 21/21 × 동시 5회 5/5(부하 20→26 · 순차 5회는 1회 55분 실측이라 상한 안 불가 → 동시) ·
+  e2e 무판정 입구 rig = 막힘 7/9(D2 맨 셸 cys send · D3a 글롭 어댑터 = 원리상 부류) · door_forge = 위장 쓰기 3 열림(범위 밖) · 실패 주입 7 닫힘 ·
+  팩 32 + host-gate 2 PASS · cargo: app 337 · lib 1216 · cys 759 · cysd 3226/1(pending_requests c8registry = SQLite Locked · 단독 2/2 통과 · 미수정 모듈) · 통합 15
+- 4ba55981: 7ed51a57 의 clap 변형 AgyDoorCheck 가 aid_s5_reap_due 시험을 단독에서도 스택 넘침시킴(변형 뺀 대조 = 통과) → clap 앞 수동 분기
+
 ## 함정(추가)
+- ★최상위 clap `Command` 에 변형을 더하면 시험 스레드(2MB)에서 clap 파싱이 스택을 넘는다(이 판 실측 · 선례 = 갱신 동사·rotate) — 새 숨은 동사는 clap 앞에서 떼어 낸다.
 - acceptance ②E5: `cys restore` 에 역할 필터가 없어 E6 이 남긴 reviewer-codex 좌석까지 되살린다 — rc 0/1 비결정(실측 1·0·0) → 역할 블록으로 판정.
 - 데몬을 띄우는 시험(acceptance·c6_reap·host-gate)과 전체 cargo 를 동시에 돌리면 시간 초과 거짓 적색이 난다 — 순차로.
 - macOS 에 `timeout` 없음 · zsh 는 `$VAR` 를 낱말로 안 나눔(명령을 변수에 담아 실행 금지).

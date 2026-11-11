@@ -8,6 +8,11 @@
 //! 종료 기록 · 조종자 교체 기록. 화면 해석·배달·승인 판단은 **하지 않는다**. 미응답 단말 질의 응답기도 없다
 //! (DESIGN §7-8 결정 전 · master 판단).
 //!
+//! 막히지 않는 규칙(codex 1R #1 #2 반영): 상태 잠금을 쥔 채 막히는 호출을 하지 않는다. 조종자에게 가는 프레임은
+//! 잠금 안에서 `try_send` 만 하고, 칸이 차거나(안 읽음) 소켓 쓰기가 기한을 넘으면 그 조종자를 내보낸다 —
+//! 출력은 꼬리에 남아 있으니 다시 붙으면 오프셋으로 받는다. PTY 입력 쓰기는 좌석별 입력 스레드가 한다 —
+//! 자식이 입력을 안 읽어도 serve 는 끊김을 계속 보고 조종자 자리를 풀 수 있다.
+//!
 //! 쓰임: `cys-seatkeep --dir <상태폴더> --id <seatkeep id> --controller-exe <경로> --lock <잠금파일>
 //!        [--requirement <코드서명 요구사항>] [--seats N] [--tail-bytes N] -- <명령> [인자…]`
 //! `--seats N`(N>1) = 「판별 1개」 비교 변형(좌석 N개를 한 프로세스가 쥠) — 비용 비교 전용 · 제품 경로 아님.
@@ -38,19 +43,38 @@ mod imp {
     use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
     use serde_json::{json, Value};
     use std::collections::{HashSet, VecDeque};
+    use std::fs::File;
     use std::io::{Read, Write};
+    use std::net::Shutdown;
     use std::os::unix::io::AsRawFd;
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::PathBuf;
-    use std::sync::mpsc::{sync_channel, SyncSender};
-    use std::sync::{Arc, Mutex};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
+    use std::sync::{Arc, Mutex, MutexGuard};
     use std::time::{Duration, Instant};
 
     const DEFAULT_TAIL: usize = 1 << 20;
+    /// 꼬리 상한 — 재생은 REPLAY_CHUNK 단위로 나눠 보내므로 프레임 상한과 무관하지만 메모리 상한은 둔다.
+    const MAX_TAIL: usize = 64 << 20;
+    /// 꼬리 재생 프레임 1개의 바이트 상한(오프셋 8바이트 + 이것 ≤ proto::MAX_PAYLOAD).
+    const REPLAY_CHUNK: usize = 1 << 20;
+    /// 조종자 실시간 프레임 칸 수(OUTPUT 1개 ≤ 16KiB → 최대 약 16MiB). 재생 프레임 수는 따로 더한다.
+    const CTL_QUEUE: usize = 1024;
+    /// 조종자 소켓 쓰기 1회 기한 — 넘으면 「안 읽는 조종자」로 보고 내보낸다.
+    const CTL_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
     const INPUT_IDS_KEPT: usize = 4096;
+    /// 좌석별 아직 PTY 에 못 쓴 입력 바이트 상한. 넘는 INPUT 은 받지 않는다(수신 확인 없음 = 조종자는 「모름」).
+    const INPUT_QUEUE_BYTES: usize = 1 << 20;
+    /// 핸드셰이크(신원 확인 ~ HELLO ~ 수락) 전체의 절대 기한.
     const HELLO_TIMEOUT: Duration = Duration::from_secs(3);
+    const HELLO_MAX: usize = 4096;
+    const MAX_PENDING_HANDSHAKES: usize = 16;
     /// 모든 자식이 끝났는데 조종자가 없을 때, 종료 기록을 남기고 나가기까지 기다리는 시간.
     const EXIT_GRACE: Duration = Duration::from_secs(2);
+    /// 자식 회수 뒤 PTY 의 마지막 출력을 기다리는 상한. 넘기면 EXITED 에 `output_open: true` 를 적는다.
+    const DRAIN: Duration = Duration::from_secs(2);
+    const COMMIT_TRIES: u64 = 3;
     const ALL_SEATS: u32 = u32::MAX;
 
     struct Args {
@@ -94,6 +118,9 @@ mod imp {
         if seats == 0 || seats > 512 {
             return Err("--seats 1..=512".into());
         }
+        if tail_bytes == 0 || tail_bytes > MAX_TAIL {
+            return Err(format!("--tail-bytes 1..={MAX_TAIL}"));
+        }
         Ok(Args {
             dir: dir.ok_or("--dir 필요")?,
             id,
@@ -106,19 +133,31 @@ mod imp {
         })
     }
 
+    struct InputJob {
+        id: u64,
+        gen: u64,
+        bytes: Vec<u8>,
+    }
+
     struct Seat {
         id: u32,
         child_pid: i32,
         master: Mutex<Box<dyn MasterPty + Send>>,
-        writer: Mutex<Box<dyn Write + Send>>,
+        input: SyncSender<InputJob>,
     }
 
     struct SeatOut {
         tail: VecDeque<u8>,
         total: u64,
+        /// 자식이 끝났음을 보았다(회수 직전에 잠금 안에서 세운다) — 이 뒤로는 그 pid·그룹에 신호를 보내지 않는다.
+        reaped: bool,
+        /// 회수 결과(내부). 조종자에게 알리는 것은 `exit`(아래)다.
+        exit_status: Option<Value>,
+        /// 알린 종료(마지막 출력 뒤 · final_offset 포함). Some = EXITED 를 냈다.
         exit: Option<Value>,
         exit_acked: bool,
         reader_done: bool,
+        input_pending: usize,
     }
 
     impl SeatOut {
@@ -131,6 +170,9 @@ mod imp {
         gen: u64,
         peer: Peer,
         tx: SyncSender<Vec<u8>>,
+        /// 내보내기용 — shutdown 하면 serve 의 읽기와 쓰기 스레드가 함께 끝난다.
+        shut: UnixStream,
+        evicted: bool,
     }
 
     struct State {
@@ -140,6 +182,9 @@ mod imp {
         last_peer: Option<(Peer, f64)>,
         no_controller_since: Option<Instant>,
         input_ids: (VecDeque<u64>, HashSet<u64>),
+        /// 미확인 종료 기록이 디스크에 있는가(없을 게 없으면 참). 거짓이면 조종자 없이 끝내지 않는다.
+        exit_record_ok: bool,
+        exit_record_warned: bool,
     }
 
     struct Keep {
@@ -151,6 +196,13 @@ mod imp {
         ledger: Mutex<Ledger>,
         boot_id: String,
         start_us: Option<u64>,
+        pending_hs: AtomicUsize,
+        /// 같은 id 의 두 번째 seatkeep 을 막는 잠금 — 프로세스가 끝날 때까지 쥔다.
+        _id_lock: File,
+    }
+
+    fn lock_st(keep: &Keep) -> MutexGuard<'_, State> {
+        keep.st.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn peer_json(p: &Peer) -> Value {
@@ -160,6 +212,7 @@ mod imp {
     }
 
     impl Keep {
+        /// 교체 기록 1줄. 잠금 순서 = 상태(st) → 기록(ledger) — 반대로 잡는 곳은 없다.
         fn log(&self, mut v: Value) -> std::io::Result<()> {
             v["t"] = json!(registry::now_epoch());
             v["seatkeep"] = json!(self.args.id);
@@ -183,18 +236,91 @@ mod imp {
             })
         }
 
-        fn write_exit_record(&self, st: &State) {
+        /// 알린 종료들을 `<id>.exit` 에 영속한다(전부 확인되면 지운다). 결과를 상태에 남긴다 — 실패면
+        /// supervise 가 다시 쓰고, 성공 전에는 조종자 없이 끝내지 않는다(codex 1R #5).
+        fn persist_exit_record(&self, st: &mut State) {
             let v: Vec<Value> = st
                 .out
                 .iter()
                 .enumerate()
                 .filter_map(|(i, o)| o.exit.clone().map(|e| json!({"seat": i, "exit": e, "acked": o.exit_acked})))
                 .collect();
-            if v.iter().all(|e| e["acked"] == json!(true)) && !v.is_empty() {
-                let _ = std::fs::remove_file(&self.paths.exit);
+            if v.is_empty() {
+                st.exit_record_ok = true;
                 return;
             }
-            let _ = registry::write_atomic(&self.paths.exit, &json!({"id": self.args.id, "seats": v}));
+            if v.iter().all(|e| e["acked"] == json!(true)) {
+                // 지울 것뿐 — 보존할 미확인 기록이 없으니 실패해도 끝내는 것을 막지 않는다(기록만 남김).
+                match std::fs::remove_file(&self.paths.exit) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => {
+                        let _ = self.log(json!({"event": "exit_record_remove_failed", "error": e.to_string()}));
+                    }
+                }
+                st.exit_record_ok = true;
+                return;
+            }
+            match registry::write_atomic(&self.paths.exit, &json!({"id": self.args.id, "seats": v})) {
+                Ok(()) => st.exit_record_ok = true,
+                Err(e) => {
+                    st.exit_record_ok = false;
+                    if !st.exit_record_warned {
+                        st.exit_record_warned = true;
+                        eprintln!("cys-seatkeep: 종료 기록 쓰기 실패(다시 시도함): {e}");
+                        let _ = self.log(json!({"event": "exit_record_write_failed", "error": e.to_string()}));
+                    }
+                }
+            }
+        }
+    }
+
+    /// 조종자에게 프레임 1개 — **상태 잠금 안에서만** 부른다(순서 보존 · 막히지 않음).
+    /// 칸이 차면(조종자가 안 읽음) 그 조종자를 내보낸다. 출력은 꼬리에 있으니 다시 붙으면 오프셋으로 받는다.
+    fn send_ctl(keep: &Keep, st: &mut State, frame: Vec<u8>) {
+        let Some(c) = st.controller.as_mut() else { return };
+        match c.tx.try_send(frame) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                if !c.evicted {
+                    c.evicted = true;
+                    let _ = c.shut.shutdown(Shutdown::Both);
+                    let (gen, peer) = (c.gen, peer_json(&c.peer));
+                    let _ = keep.log(json!({"event": "evict", "gen": gen, "reason": "queue_full", "peer": peer}));
+                }
+            }
+            // 쓰기 스레드가 이미 끝났다(소켓 오류·쓰기 기한 초과) — serve 가 곧 끊김을 정리한다.
+            Err(TrySendError::Disconnected(_)) => {}
+        }
+    }
+
+    /// 세대가 같은 조종자에게만 보낸다(옛 조종자의 요청에 대한 답이 새 조종자에게 가지 않게).
+    fn send_gen(keep: &Keep, st: &mut State, gen: u64, frame: Vec<u8>) {
+        if st.controller.as_ref().map(|c| c.gen) == Some(gen) {
+            send_ctl(keep, st, frame);
+        }
+    }
+
+    /// 회수하지 않고 끝남만 본다(WNOWAIT) — 이 사이 pid 는 좀비로 남아 재사용되지 않는다.
+    fn wait_exit_nowait(pid: i32) -> bool {
+        loop {
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            let rc = unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT) };
+            if rc == 0 {
+                return true;
+            }
+            if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                return false;
+            }
+        }
+    }
+
+    fn kill_children(keep: &Keep, sig: i32) {
+        let st = lock_st(keep);
+        for (i, s) in keep.seats.iter().enumerate() {
+            if !st.out[i].reaped && s.child_pid > 0 {
+                unsafe { libc::killpg(s.child_pid, sig) };
+            }
         }
     }
 
@@ -206,12 +332,28 @@ mod imp {
                 return 2;
             }
         };
-        // 조종자(cysd)와 다른 세션 — 조종자가 죽어도 이 프로세스에 SIGHUP 이 오지 않는다.
-        unsafe { libc::setsid() };
+        // 조종자(cysd)와 다른 세션 — 조종자가 죽어도 이 프로세스에 SIGHUP 이 오지 않는다. 실패 = 그 보장이 없으니 시작하지 않는다.
+        if unsafe { libc::setsid() } == -1 {
+            eprintln!("cys-seatkeep: setsid 실패(이미 그룹 대표로 띄워졌는가): {}", std::io::Error::last_os_error());
+            return 3;
+        }
         let paths = Paths::new(&args.dir, &args.id);
         if let Err(e) = paths.ensure_dir() {
             eprintln!("cys-seatkeep: 상태 폴더: {e}");
             return 3;
+        }
+        // ⓪ id 잠금 — 같은 id 의 두 번째 seatkeep 은 어떤 파일도 건드리기 전에 물러난다(동시 기동 포함 · codex 1R #6).
+        let id_lock = match registry::lock_id(&paths.idlock) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("cys-seatkeep: 같은 id 의 seatkeep 이 있다(잠금 {}): {e}", paths.idlock.display());
+                return 4;
+            }
+        };
+        // 앞선 기동이 남긴 미확인 종료 기록이 있으면 이 id 를 다시 쓰지 않는다 — 덮으면 그 기록이 사라진다(codex 1R #12).
+        if paths.exit.exists() {
+            eprintln!("cys-seatkeep: 미소비 종료 기록 {} — 조종자가 소비하기 전에는 이 id 를 다시 쓰지 않는다", paths.exit.display());
+            return 4;
         }
         let ledger = match Ledger::open(&paths.log) {
             Ok(l) => l,
@@ -221,8 +363,13 @@ mod imp {
             }
         };
         let policy = Policy { controller_exe: args.controller_exe.clone(), requirement: args.requirement.clone(), lock: args.lock.clone() };
+        // 자기 신원 성분(부팅 id · 시작 시각)이 없으면 등록부가 pid 재사용과 구분되지 않는다 — 시작하지 않는다.
         let boot_id = registry::boot_id();
         let start_us = registry::process_start_us(std::process::id() as i32);
+        if boot_id.is_empty() || start_us.is_none() {
+            eprintln!("cys-seatkeep: 자기 신원(부팅 id·시작 시각)을 못 읽음 — 시작하지 않는다");
+            return 3;
+        }
 
         // ① 준비 — 자식보다 먼저 등록부에 「준비」를 쓴다(조종자가 이 사이에 죽어도 새 조종자가 찾을 수 있게).
         let prepare = json!({"phase": "prepare", "id": args.id, "pid": std::process::id(), "start_us": start_us,
@@ -233,14 +380,8 @@ mod imp {
             return 3;
         }
 
-        // ② 소켓 — 같은 id 의 산 seatkeep 이 있으면 물러난다. 죽은 소켓 파일만 지운다.
-        if paths.sock.exists() {
-            if UnixStream::connect(&paths.sock).is_ok() {
-                eprintln!("cys-seatkeep: 같은 id 의 seatkeep 이 살아 있다");
-                return 4;
-            }
-            let _ = std::fs::remove_file(&paths.sock);
-        }
+        // ② 소켓 — id 잠금을 쥐었으니 남아 있는 소켓 파일은 죽은 것이다.
+        let _ = std::fs::remove_file(&paths.sock);
         let listener = match UnixListener::bind(&paths.sock) {
             Ok(l) => l,
             Err(e) => {
@@ -255,6 +396,7 @@ mod imp {
         let mut seats = Vec::new();
         let mut children: Vec<Box<dyn Child + Send + Sync>> = Vec::new();
         let mut readers = Vec::new();
+        let mut inputs: Vec<(Receiver<InputJob>, Box<dyn Write + Send>)> = Vec::new();
         for i in 0..args.seats {
             let pair = match native_pty_system().openpty(PtySize { rows: 35, cols: 120, pixel_width: 0, pixel_height: 0 }) {
                 Ok(p) => p,
@@ -292,21 +434,34 @@ mod imp {
                     return 5;
                 }
             };
-            seats.push(Seat { id: i, child_pid, master: Mutex::new(pair.master), writer: Mutex::new(writer) });
+            let (itx, irx) = sync_channel::<InputJob>(256);
+            seats.push(Seat { id: i, child_pid, master: Mutex::new(pair.master), input: itx });
             children.push(child);
             readers.push(reader);
+            inputs.push((irx, writer));
         }
 
         let keep = Arc::new(Keep {
             st: Mutex::new(State {
                 out: (0..args.seats)
-                    .map(|_| SeatOut { tail: VecDeque::new(), total: 0, exit: None, exit_acked: false, reader_done: false })
+                    .map(|_| SeatOut {
+                        tail: VecDeque::new(),
+                        total: 0,
+                        reaped: false,
+                        exit_status: None,
+                        exit: None,
+                        exit_acked: false,
+                        reader_done: false,
+                        input_pending: 0,
+                    })
                     .collect(),
                 controller: None,
                 gen: 0,
                 last_peer: None,
                 no_controller_since: Some(Instant::now()),
                 input_ids: (VecDeque::new(), HashSet::new()),
+                exit_record_ok: true,
+                exit_record_warned: false,
             }),
             ledger: Mutex::new(ledger),
             paths,
@@ -315,6 +470,8 @@ mod imp {
             boot_id,
             start_us,
             args,
+            pending_hs: AtomicUsize::new(0),
+            _id_lock: id_lock,
         });
 
         for (i, r) in readers.into_iter().enumerate() {
@@ -325,14 +482,36 @@ mod imp {
             let k = Arc::clone(&keep);
             std::thread::spawn(move || wait_loop(k, i, c));
         }
+        for (i, (rx, w)) in inputs.into_iter().enumerate() {
+            let k = Arc::clone(&keep);
+            std::thread::spawn(move || input_loop(k, i, rx, w));
+        }
 
         // 시험 전용 지연(A14① — 기동~확정 사이 창을 넓힌다). 제품 경로에는 이 변수가 없다.
         if let Some(ms) = std::env::var("CYS_SEATKEEP_TEST_COMMIT_DELAY_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
             std::thread::sleep(Duration::from_millis(ms));
         }
-        // ④ 확정
-        if let Err(e) = registry::write_atomic(&keep.paths.entry, &keep.entry("committed")) {
-            eprintln!("cys-seatkeep: 등록부 확정 실패: {e}");
+        // ④ 확정 — 실패하면 다시 시도하고, 끝내 못 쓰면 자식을 정리하고 끝낸다(등록부 밖 작성자 금지 · codex 1R #7).
+        let mut committed = false;
+        for k in 0..COMMIT_TRIES {
+            match registry::write_atomic(&keep.paths.entry, &keep.entry("committed")) {
+                Ok(()) => {
+                    committed = true;
+                    break;
+                }
+                Err(e) => {
+                    eprintln!("cys-seatkeep: 등록부 확정 실패({}/{COMMIT_TRIES}): {e}", k + 1);
+                    std::thread::sleep(Duration::from_millis(100 * (k + 1)));
+                }
+            }
+        }
+        if !committed {
+            let _ = keep.log(json!({"event": "commit_failed"}));
+            kill_children(&keep, libc::SIGHUP);
+            std::thread::sleep(Duration::from_millis(500));
+            kill_children(&keep, libc::SIGKILL);
+            let _ = std::fs::remove_file(&keep.paths.sock);
+            return 3;
         }
         let _ = keep.log(json!({"event": "spawned", "seats": keep.seats.iter().map(|s| json!({"seat": s.id, "pid": s.child_pid})).collect::<Vec<_>>()}));
 
@@ -350,57 +529,118 @@ mod imp {
                 Ok(0) | Err(_) => break,
                 Ok(n) => n,
             };
-            let (offset, tx) = {
-                let mut st = keep.st.lock().unwrap_or_else(|e| e.into_inner());
-                let o = &mut st.out[i];
-                let offset = o.total;
-                o.total += n as u64;
-                o.tail.extend(&buf[..n]);
-                let cap = keep.args.tail_bytes;
-                if o.tail.len() > cap {
-                    let drop_n = o.tail.len() - cap;
-                    o.tail.drain(..drop_n);
-                }
-                // 꼬리 갱신과 조종자 채널 복제를 같은 임계 구역에서 한다 — 붙기(attach)의 꼬리 재생과 겹치거나 빠지지 않는다.
-                (offset, st.controller.as_ref().map(|c| c.tx.clone()))
-            };
-            if let Some(tx) = tx {
-                let _ = tx.send(proto::frame(proto::OUTPUT, keep.seats[i].id, &proto::output_payload(offset, &buf[..n])));
+            // 꼬리 갱신과 조종자 송신을 같은 임계 구역에서 한다 — 붙기(attach)의 꼬리 재생과 겹치거나 빠지지 않는다.
+            // 송신은 try_send 뿐이라 여기서 막히지 않는다(조종자가 안 읽어도 자식 출력은 계속 꼬리에 쌓인다).
+            let mut st = lock_st(&keep);
+            let o = &mut st.out[i];
+            let offset = o.total;
+            o.total += n as u64;
+            o.tail.extend(&buf[..n]);
+            let cap = keep.args.tail_bytes;
+            if o.tail.len() > cap {
+                let drop_n = o.tail.len() - cap;
+                o.tail.drain(..drop_n);
             }
+            send_ctl(&keep, &mut st, proto::frame(proto::OUTPUT, keep.seats[i].id, &proto::output_payload(offset, &buf[..n])));
         }
-        keep.st.lock().unwrap_or_else(|e| e.into_inner()).out[i].reader_done = true;
+        let mut st = lock_st(&keep);
+        st.out[i].reader_done = true;
+        publish_exit(&keep, &mut st, i, false);
+    }
+
+    /// 회수된 종료를 조종자에게 알린다 — 마지막 출력 뒤에(읽기가 끝났거나 DRAIN 이 지났을 때) 한 번만.
+    /// EXITED·종료 기록에 `final_offset`(그때까지의 누적 출력)과 `output_open`(PTY 를 쥔 다른 프로세스가 있어
+    /// 출력이 더 올 수 있음)을 적는다(codex 1R #11).
+    fn publish_exit(keep: &Keep, st: &mut State, i: usize, force: bool) {
+        let o = &st.out[i];
+        if o.exit.is_some() {
+            return;
+        }
+        let Some(mut e) = o.exit_status.clone() else { return };
+        if !(o.reader_done || force) {
+            return;
+        }
+        e["final_offset"] = json!(o.total);
+        e["output_open"] = json!(!o.reader_done);
+        st.out[i].exit = Some(e.clone());
+        keep.persist_exit_record(st);
+        send_ctl(keep, st, proto::json_frame(proto::EXITED, keep.seats[i].id, &e));
     }
 
     fn wait_loop(keep: Arc<Keep>, i: usize, mut child: Box<dyn Child + Send + Sync>) {
+        let pid = keep.seats[i].child_pid;
+        // ① 끝남만 본다(회수 안 함). ② 신호 금지 표시를 잠금 안에서 세운다. ③ 그 뒤에야 회수한다.
+        // SIGNAL·RELEASE 는 같은 잠금 안에서 이 표시를 보고 killpg 하므로, 회수된(재사용될 수 있는) pid 를 치지 않는다(codex 1R #3).
+        if !wait_exit_nowait(pid) {
+            eprintln!("cys-seatkeep: waitid({pid}) 실패: {} — 회수 경로로 넘어간다", std::io::Error::last_os_error());
+        }
+        lock_st(&keep).out[i].reaped = true;
         let status = child.wait();
         let exit = match status {
             Ok(s) => json!({"code": s.exit_code(), "signal": s.signal(), "at": registry::now_epoch()}),
             Err(e) => json!({"error": e.to_string(), "at": registry::now_epoch()}),
         };
-        // 마지막 출력이 읽히도록 잠깐 기다린다(최대 300ms).
-        let until = Instant::now() + Duration::from_millis(300);
-        while Instant::now() < until {
-            if keep.st.lock().unwrap_or_else(|e| e.into_inner()).out[i].reader_done {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
+        {
+            let mut st = lock_st(&keep);
+            st.out[i].exit_status = Some(exit.clone());
+            publish_exit(&keep, &mut st, i, false);
         }
-        let tx = {
-            let mut st = keep.st.lock().unwrap_or_else(|e| e.into_inner());
-            st.out[i].exit = Some(exit.clone());
-            keep.write_exit_record(&st);
-            st.controller.as_ref().map(|c| c.tx.clone())
-        };
         let _ = keep.log(json!({"event": "child_exit", "seat": i, "exit": exit}));
-        if let Some(tx) = tx {
-            let _ = tx.send(proto::json_frame(proto::EXITED, keep.seats[i].id, &exit));
+        std::thread::sleep(DRAIN);
+        let mut st = lock_st(&keep);
+        publish_exit(&keep, &mut st, i, true);
+    }
+
+    /// 좌석별 PTY 입력 쓰기 — 자식이 안 읽으면 여기만 막히고 serve 는 막히지 않는다(codex 1R #2).
+    /// 수신 확인(INPUT_ACK) = PTY 에 다 썼다. 못 쓰면 확인 없음(조종자는 「모름」 · 자동 재전송 금지).
+    fn input_loop(keep: Arc<Keep>, i: usize, rx: Receiver<InputJob>, mut w: Box<dyn Write + Send>) {
+        for job in rx {
+            let reaped = lock_st(&keep).out[i].reaped;
+            let ok = !reaped && w.write_all(&job.bytes).and_then(|_| w.flush()).is_ok();
+            let mut st = lock_st(&keep);
+            st.out[i].input_pending = st.out[i].input_pending.saturating_sub(job.bytes.len());
+            if !ok {
+                if job.id != 0 {
+                    forget_input(&mut st.input_ids, job.id);
+                }
+                continue;
+            }
+            send_gen(&keep, &mut st, job.gen, proto::frame(proto::INPUT_ACK, keep.seats[i].id, &proto::input_ack_payload(job.id, false)));
         }
     }
 
+    fn remember_input(ids: &mut (VecDeque<u64>, HashSet<u64>), id: u64) {
+        if ids.1.insert(id) {
+            ids.0.push_back(id);
+            if ids.0.len() > INPUT_IDS_KEPT {
+                if let Some(old) = ids.0.pop_front() {
+                    ids.1.remove(&old);
+                }
+            }
+        }
+    }
+
+    fn forget_input(ids: &mut (VecDeque<u64>, HashSet<u64>), id: u64) {
+        if ids.1.remove(&id) {
+            ids.0.retain(|x| *x != id);
+        }
+    }
+
+    /// 거절 + 기록. 기록에 현재 세대·현재 조종자·직전 조종자와 끊긴 시각을 함께 남긴다(브리프 §1-4 · codex 1R #14).
+    /// 상태 잠금을 쥔 채 부르지 않는다.
     fn reject(keep: &Keep, mut s: UnixStream, reason: &str, peer: Option<&Peer>) {
-        let _ = keep.log(json!({"event": "reject", "reason": reason, "peer": peer.map(peer_json)}));
+        let (gen, cur, prev) = {
+            let st = lock_st(keep);
+            (
+                st.gen,
+                st.controller.as_ref().map(|c| json!({"gen": c.gen, "peer": peer_json(&c.peer)})),
+                st.last_peer.as_ref().map(|(p, at)| json!({"peer": peer_json(p), "disconnected_at": at})),
+            )
+        };
+        let _ = keep.log(json!({"event": "reject", "reason": reason, "peer": peer.map(peer_json),
+                                "gen": gen, "controller": cur, "prev": prev}));
         let _ = proto::write_all(&mut s, &proto::json_frame(proto::REJECT, ALL_SEATS, &json!({"reason": reason})));
-        let _ = s.shutdown(std::net::Shutdown::Both);
+        let _ = s.shutdown(Shutdown::Both);
     }
 
     fn accept_loop(keep: Arc<Keep>, listener: UnixListener) {
@@ -412,29 +652,64 @@ mod imp {
         }
     }
 
+    /// 진행 중 핸드셰이크 수(상한 MAX_PENDING_HANDSHAKES) — 끝나면(어느 길로든) 하나 줄인다.
+    struct Pending<'a>(&'a AtomicUsize);
+    impl Drop for Pending<'_> {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
     fn handshake(keep: Arc<Keep>, mut s: UnixStream) {
+        // 동시 상한 — 느린 접속이 스레드·fd 를 쌓아 인증을 막지 못하게(codex 1R #13).
+        if keep.pending_hs.fetch_add(1, Ordering::SeqCst) >= MAX_PENDING_HANDSHAKES {
+            keep.pending_hs.fetch_sub(1, Ordering::SeqCst);
+            return reject(&keep, s, "busy", None);
+        }
+        let pending = Pending(&keep.pending_hs);
+        // 절대 기한 — 읽기마다의 기한이 아니라 핸드셰이크 전체. 기한이 지나면 소켓을 닫아 아래 읽기를 끝낸다.
+        let done = Arc::new(AtomicBool::new(false));
+        if let Ok(s2) = s.try_clone() {
+            let d = Arc::clone(&done);
+            std::thread::spawn(move || {
+                std::thread::sleep(HELLO_TIMEOUT);
+                if !d.load(Ordering::SeqCst) {
+                    let _ = s2.shutdown(Shutdown::Both);
+                }
+            });
+        }
         let peer = match peer::authorize(s.as_raw_fd(), &keep.policy) {
             Ok(p) => p,
             Err((reason, p)) => return reject(&keep, s, reason, p.as_ref()),
         };
         // 살아 있는 조종자가 있으면 거절(허더의 「마지막 접속자 탈취」 반대). HELLO 를 읽기 전에도 한 번 본다.
-        if keep.st.lock().unwrap_or_else(|e| e.into_inner()).controller.is_some() {
+        if lock_st(&keep).controller.is_some() {
             return reject(&keep, s, "controller_alive", Some(&peer));
         }
         let _ = s.set_read_timeout(Some(HELLO_TIMEOUT));
-        let hello: Value = match proto::read_frame(&mut s) {
+        let hello: Value = match proto::read_frame_max(&mut s, HELLO_MAX) {
             Ok(Some((proto::HELLO, _, p))) => serde_json::from_slice(&p).unwrap_or(Value::Null),
             _ => return reject(&keep, s, "no_hello", Some(&peer)),
         };
         if hello["core"].as_u64() != Some(proto::CORE_VERSION as u64) {
             return reject(&keep, s, "core_mismatch", Some(&peer));
         }
+        // 확인~HELLO 사이에 잠금을 놓았거나 신원이 바뀌었으면 받지 않는다 — 확인과 수락 사이 틈을 좁힌다(codex 1R #10).
+        let peer = match peer::authorize(s.as_raw_fd(), &keep.policy) {
+            Ok(p2) if p2.pid == peer.pid && p2.pidversion == peer.pidversion => p2,
+            Ok(p2) => return reject(&keep, s, "peer_changed", Some(&p2)),
+            Err((reason, p)) => return reject(&keep, s, reason, p.as_ref()),
+        };
         let _ = s.set_read_timeout(None);
-        let Ok(write_half) = s.try_clone() else { return };
-        let (tx, rx) = sync_channel::<Vec<u8>>(256);
+        let (Ok(write_half), Ok(shut)) = (s.try_clone(), s.try_clone()) else {
+            return reject(&keep, s, "socket_clone_failed", Some(&peer));
+        };
+        // 안 읽는 조종자: 소켓 쓰기가 이 기한을 넘으면 쓰기 스레드가 끝나며 연결을 닫는다(codex 1R #1).
+        let _ = write_half.set_write_timeout(Some(CTL_WRITE_TIMEOUT));
+        let rx;
         let gen;
         {
-            let mut st = keep.st.lock().unwrap_or_else(|e| e.into_inner());
+            let mut st = lock_st(&keep);
             if st.controller.is_some() {
                 drop(st);
                 return reject(&keep, s, "controller_alive", Some(&peer));
@@ -456,13 +731,16 @@ mod imp {
                 .collect();
             if let Err(e) = keep.log(json!({"event": "accept", "gen": gen, "reason": reason, "peer": peer_json(&peer),
                                              "prev": prev, "replay": lost})) {
+                // 줄은 써졌는데 fsync 만 실패했을 수 있다 — 받지 않았다는 줄을 덧붙인다(A16 셈 = accept − accept_aborted).
+                let _ = keep.log(json!({"event": "accept_aborted", "gen": gen, "error": e.to_string()}));
                 drop(st);
                 eprintln!("cys-seatkeep: 교체 기록 실패 — 접속 거절: {e}");
                 return reject(&keep, s, "ledger_write_failed", Some(&peer));
             }
             st.gen = gen;
             st.no_controller_since = None;
-            // WELCOME + 좌석별 꼬리 재생을 같은 임계 구역에서 채널에 넣는다(read_loop 주석 참조).
+            // WELCOME + 좌석별 꼬리 재생(REPLAY_CHUNK 로 나눔) + 알린 종료 — 전부 먼저 모아 그 수만큼 칸을 더 잡는다
+            // (소비 스레드 시작 전에 고정 칸에 넣다가 조용히 버리던 결함 · codex 1R #8 #9).
             let seats: Vec<Value> = keep
                 .seats
                 .iter()
@@ -472,21 +750,29 @@ mod imp {
                 .collect();
             let welcome = json!({"core": proto::CORE_VERSION, "gen": gen, "pid": std::process::id(),
                                  "start_us": keep.start_us, "boot_id": keep.boot_id, "seats": seats});
-            let _ = tx.try_send(proto::json_frame(proto::WELCOME, ALL_SEATS, &welcome));
+            let mut frames = vec![proto::json_frame(proto::WELCOME, ALL_SEATS, &welcome)];
             for (i, o) in st.out.iter().enumerate() {
                 let from = resume[i.to_string()].as_u64().unwrap_or(0).max(o.tail_start()).min(o.total);
                 let skip = (from - o.tail_start()) as usize;
                 let bytes: Vec<u8> = o.tail.iter().skip(skip).copied().collect();
-                if !bytes.is_empty() {
-                    let _ = tx.try_send(proto::frame(proto::OUTPUT, keep.seats[i].id, &proto::output_payload(from, &bytes)));
+                for (k, chunk) in bytes.chunks(REPLAY_CHUNK).enumerate() {
+                    let off = from + (k * REPLAY_CHUNK) as u64;
+                    frames.push(proto::frame(proto::OUTPUT, keep.seats[i].id, &proto::output_payload(off, chunk)));
                 }
                 if let Some(e) = &o.exit {
-                    let _ = tx.try_send(proto::json_frame(proto::EXITED, keep.seats[i].id, e));
+                    frames.push(proto::json_frame(proto::EXITED, keep.seats[i].id, e));
                 }
             }
-            st.controller = Some(Controller { gen, peer: peer.clone(), tx: tx.clone() });
+            let (tx, r) = sync_channel::<Vec<u8>>(frames.len() + CTL_QUEUE);
+            for f in frames {
+                let sent = tx.try_send(f);
+                debug_assert!(sent.is_ok(), "재생 프레임 수만큼 칸을 잡았다");
+            }
+            st.controller = Some(Controller { gen, peer: peer.clone(), tx, shut, evicted: false });
+            rx = r;
         }
-        drop(tx);
+        done.store(true, Ordering::SeqCst);
+        drop(pending);
         {
             let mut w = write_half;
             std::thread::spawn(move || {
@@ -495,37 +781,22 @@ mod imp {
                         break;
                     }
                 }
-                let _ = w.shutdown(std::net::Shutdown::Both);
+                let _ = w.shutdown(Shutdown::Both);
             });
         }
         serve(&keep, s, gen);
-        let mut st = keep.st.lock().unwrap_or_else(|e| e.into_inner());
+        let mut st = lock_st(&keep);
         if st.controller.as_ref().map(|c| c.gen) == Some(gen) {
             let c = st.controller.take().unwrap();
             let now = registry::now_epoch();
             st.last_peer = Some((c.peer.clone(), now));
             st.no_controller_since = Some(Instant::now());
-            drop(st);
-            let _ = keep.log(json!({"event": "disconnect", "gen": gen, "peer": peer_json(&c.peer)}));
-        }
-    }
-
-    fn reply(keep: &Keep, gen: u64, frame: Vec<u8>) {
-        let tx = {
-            let st = keep.st.lock().unwrap_or_else(|e| e.into_inner());
-            st.controller.as_ref().filter(|c| c.gen == gen).map(|c| c.tx.clone())
-        };
-        if let Some(tx) = tx {
-            let _ = tx.send(frame);
+            let _ = keep.log(json!({"event": "disconnect", "gen": gen, "peer": peer_json(&c.peer), "evicted": c.evicted}));
         }
     }
 
     fn seat_index(keep: &Keep, seat: u32) -> Option<usize> {
         keep.seats.iter().position(|s| s.id == seat)
-    }
-
-    fn alive(keep: &Keep, i: usize) -> bool {
-        keep.st.lock().unwrap_or_else(|e| e.into_inner()).out[i].exit.is_none()
     }
 
     fn serve(keep: &Keep, mut s: UnixStream, gen: u64) {
@@ -535,39 +806,29 @@ mod imp {
                 _ => return,
             };
             // 세대 울타리: 이 연결이 더 이상 조종자가 아니면 어떤 명령도 집행하지 않는다.
-            if keep.st.lock().unwrap_or_else(|e| e.into_inner()).controller.as_ref().map(|c| c.gen) != Some(gen) {
+            if lock_st(keep).controller.as_ref().map(|c| c.gen) != Some(gen) {
                 return;
             }
             match kind {
                 proto::INPUT => {
                     let Some(i) = seat_index(keep, seat) else { continue };
                     let Some((id, bytes)) = proto::split_input(&payload) else { continue };
-                    let dup = id != 0 && keep.st.lock().unwrap_or_else(|e| e.into_inner()).input_ids.1.contains(&id);
-                    if !dup {
-                        if !alive(keep, i) {
-                            continue;
-                        }
-                        let ok = {
-                            let mut w = keep.seats[i].writer.lock().unwrap_or_else(|e| e.into_inner());
-                            w.write_all(bytes).and_then(|_| w.flush()).is_ok()
-                        };
-                        if !ok {
-                            continue; // 수신 확인 없음 = 조종자는 「모름」으로 다룬다(자동 재전송 금지)
-                        }
+                    let mut st = lock_st(keep);
+                    if id != 0 && st.input_ids.1.contains(&id) {
+                        // 이미 받은 id(썼거나 쓰는 중) — 다시 쓰지 않고 dup=1 로 답한다.
+                        send_gen(keep, &mut st, gen, proto::frame(proto::INPUT_ACK, seat, &proto::input_ack_payload(id, true)));
+                        continue;
+                    }
+                    if st.out[i].reaped || st.out[i].input_pending + bytes.len() > INPUT_QUEUE_BYTES {
+                        continue; // 받지 않음 = 확인 없음(조종자는 「모름」 · 자동 재전송 금지)
+                    }
+                    let n = bytes.len();
+                    if keep.seats[i].input.try_send(InputJob { id, gen, bytes: bytes.to_vec() }).is_ok() {
+                        st.out[i].input_pending += n;
                         if id != 0 {
-                            let mut st = keep.st.lock().unwrap_or_else(|e| e.into_inner());
-                            let ids = &mut st.input_ids;
-                            if ids.1.insert(id) {
-                                ids.0.push_back(id);
-                                if ids.0.len() > INPUT_IDS_KEPT {
-                                    if let Some(old) = ids.0.pop_front() {
-                                        ids.1.remove(&old);
-                                    }
-                                }
-                            }
+                            remember_input(&mut st.input_ids, id);
                         }
                     }
-                    reply(keep, gen, proto::frame(proto::INPUT_ACK, seat, &proto::input_ack_payload(id, dup)));
                 }
                 proto::RESIZE => {
                     let Some(i) = seat_index(keep, seat) else { continue };
@@ -586,17 +847,19 @@ mod imp {
                     if !matches!(sig as i32, libc::SIGINT | libc::SIGTERM | libc::SIGHUP | libc::SIGKILL | libc::SIGQUIT | libc::SIGWINCH | libc::SIGCONT | libc::SIGSTOP) {
                         continue;
                     }
+                    // 회수 표시를 보는 것과 killpg 를 같은 잠금 안에서 — 회수된 자식(pid 재사용 대상)에는 보내지 않는다.
+                    let st = lock_st(keep);
                     for i in targets(keep, seat) {
-                        // 회수된 자식에는 보내지 않는다(pid 재사용 대상 오타격 방지).
-                        if alive(keep, i) {
+                        if !st.out[i].reaped {
                             unsafe { libc::killpg(keep.seats[i].child_pid, sig as i32) };
                         }
                     }
                 }
                 proto::RELEASE => {
                     let _ = keep.log(json!({"event": "release", "gen": gen, "seat": seat}));
+                    let st = lock_st(keep);
                     for i in targets(keep, seat) {
-                        if alive(keep, i) {
+                        if !st.out[i].reaped {
                             unsafe { libc::killpg(keep.seats[i].child_pid, libc::SIGHUP) };
                         }
                     }
@@ -604,16 +867,17 @@ mod imp {
                 proto::FOREGROUND => {
                     let Some(i) = seat_index(keep, seat) else { continue };
                     let pg = keep.seats[i].master.lock().unwrap_or_else(|e| e.into_inner()).process_group_leader();
-                    reply(keep, gen, proto::json_frame(proto::FOREGROUND_IS, seat, &json!({"pgid": pg})));
+                    let mut st = lock_st(keep);
+                    send_gen(keep, &mut st, gen, proto::json_frame(proto::FOREGROUND_IS, seat, &json!({"pgid": pg})));
                 }
                 proto::EXIT_ACK => {
-                    let mut st = keep.st.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut st = lock_st(keep);
                     for i in targets(keep, seat) {
                         if st.out[i].exit.is_some() {
                             st.out[i].exit_acked = true;
                         }
                     }
-                    keep.write_exit_record(&st);
+                    keep.persist_exit_record(&mut st);
                 }
                 _ => {}
             }
@@ -628,23 +892,25 @@ mod imp {
         }
     }
 
-    /// 모든 자식이 끝나고 ⓐ 조종자가 전부 받았다고 답했거나 ⓑ 조종자 없이 유예가 지나면 끝낸다.
-    /// ⓑ 의 경우 `<id>.exit` 를 남긴다(새 조종자가 소비).
+    /// 모든 자식이 끝나고(알린 종료 기준) ⓐ 조종자가 전부 받았다고 답했거나 ⓑ 조종자 없이 유예가 지나고 종료 기록이
+    /// 디스크에 있으면 끝낸다. ⓑ 의 경우 `<id>.exit` 를 남긴다(새 조종자가 소비). 기록을 못 쓰면 끝내지 않고 다시 쓴다.
     fn supervise(keep: Arc<Keep>) -> i32 {
         loop {
             std::thread::sleep(Duration::from_millis(100));
-            let done = {
-                let st = keep.st.lock().unwrap_or_else(|e| e.into_inner());
-                let all_exited = st.out.iter().all(|o| o.exit.is_some());
-                let all_acked = st.out.iter().all(|o| o.exit_acked);
-                let orphan_long = st.controller.is_none() && st.no_controller_since.map(|t| t.elapsed() >= EXIT_GRACE).unwrap_or(false);
-                all_exited && (all_acked || orphan_long)
-            };
-            if done {
-                let acked = keep.st.lock().unwrap_or_else(|e| e.into_inner()).out.iter().all(|o| o.exit_acked);
+            let mut st = lock_st(&keep);
+            if !st.exit_record_ok && st.out.iter().any(|o| o.exit.is_some() && !o.exit_acked) {
+                keep.persist_exit_record(&mut st);
+            }
+            let all_exited = st.out.iter().all(|o| o.exit.is_some());
+            let all_acked = st.out.iter().all(|o| o.exit_acked);
+            let orphan_long = st.controller.is_none() && st.no_controller_since.map(|t| t.elapsed() >= EXIT_GRACE).unwrap_or(false);
+            if all_exited && (all_acked || (orphan_long && st.exit_record_ok)) {
+                // PTY 를 아직 쥔 프로세스가 있던 좌석 — 여기서 끝내면 그 뒤 출력은 받지 못한다(기록으로 남김).
+                let open: Vec<usize> = st.out.iter().enumerate().filter(|(_, o)| !o.reader_done).map(|(i, _)| i).collect();
+                drop(st);
                 let _ = std::fs::remove_file(&keep.paths.sock);
                 let _ = registry::write_atomic(&keep.paths.entry, &keep.entry("exited"));
-                let _ = keep.log(json!({"event": "seatkeep_exit", "exit_record_kept": !acked}));
+                let _ = keep.log(json!({"event": "seatkeep_exit", "exit_record_kept": !all_acked, "output_open_seats": open}));
                 return 0;
             }
         }

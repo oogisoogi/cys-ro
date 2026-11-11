@@ -188,26 +188,26 @@ pub fn identify(fd: i32) -> Option<(Peer, [u32; 8])> {
     }
 }
 
-/// 잠금 파일이 지금 누군가에게 잡혀 있는가(flock 비차단 시도가 EWOULDBLOCK 이면 잡혀 있다).
-/// 우리가 잡아 버리면 즉시 풀고 「안 잡혀 있음」으로 답한다.
-pub fn lock_is_held(lock: &Path) -> Option<bool> {
+/// 잠금 파일을 **한 번 열어 그 fd 로** ⓐ 지금 누군가에게 잡혀 있는가 ⓑ 적힌 pid 를 함께 본다 — 같은 inode 의
+/// 관측이다(codex 1R #10: 예전엔 잠금 검사 fd 를 닫고 경로를 다시 열어 pid 를 읽었다).
+/// ⓐ = flock 비차단 시도가 EWOULDBLOCK 이면 잡혀 있다. 우리가 잡아 버리면 즉시 풀고 「안 잡혀 있음」으로 답한다.
+/// 못 열거나 판정 불가 = None(→ 거절).
+pub fn lock_state(lock: &Path) -> Option<(bool, Option<i32>)> {
+    use std::io::Read;
     use std::os::unix::io::AsRawFd;
-    let f = std::fs::OpenOptions::new().read(true).open(lock).ok()?;
+    let mut f = std::fs::OpenOptions::new().read(true).open(lock).ok()?;
     let rc = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if rc == 0 {
+    let held = if rc == 0 {
         unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_UN) };
-        return Some(false);
-    }
-    let e = std::io::Error::last_os_error().raw_os_error();
-    if e == Some(libc::EWOULDBLOCK) {
-        Some(true)
+        false
+    } else if std::io::Error::last_os_error().raw_os_error() == Some(libc::EWOULDBLOCK) {
+        true
     } else {
-        None
-    }
-}
-
-pub fn lock_pid(lock: &Path) -> Option<i32> {
-    std::fs::read_to_string(lock).ok()?.split_whitespace().next()?.parse().ok()
+        return None;
+    };
+    let mut text = String::new();
+    f.read_to_string(&mut text).ok()?;
+    Some((held, text.split_whitespace().next().and_then(|t| t.parse().ok())))
 }
 
 /// 전부 통과하면 Ok(Peer). 순서는 싼 검사부터 — 결과는 같다(하나라도 실패 = 거절).
@@ -229,13 +229,11 @@ pub fn authorize(fd: i32, policy: &Policy) -> Result<Peer, (Reason, Option<Peer>
         }
     }
     let _ = &tok;
-    match lock_is_held(&policy.lock) {
-        Some(true) => {}
-        Some(false) => return Err(("lock_not_held", Some(peer))),
+    match lock_state(&policy.lock) {
+        Some((true, pid)) if pid == Some(peer.pid) => {}
+        Some((true, _)) => return Err(("lock_pid_mismatch", Some(peer))),
+        Some((false, _)) => return Err(("lock_not_held", Some(peer))),
         None => return Err(("lock_unreadable", Some(peer))),
-    }
-    if lock_pid(&policy.lock) != Some(peer.pid) {
-        return Err(("lock_pid_mismatch", Some(peer)));
     }
     Ok(peer)
 }
@@ -248,9 +246,8 @@ mod tests {
     fn unheld_lock_reads_false_and_stays_free() {
         let p = std::env::temp_dir().join(format!("sk-lock-{}", std::process::id()));
         std::fs::write(&p, "123").unwrap();
-        assert_eq!(lock_is_held(&p), Some(false));
-        assert_eq!(lock_is_held(&p), Some(false), "검사가 잠금을 붙잡아 두면 안 된다");
-        assert_eq!(lock_pid(&p), Some(123));
+        assert_eq!(lock_state(&p), Some((false, Some(123))));
+        assert_eq!(lock_state(&p), Some((false, Some(123))), "검사가 잠금을 붙잡아 두면 안 된다");
         let _ = std::fs::remove_file(&p);
     }
 
@@ -261,14 +258,14 @@ mod tests {
         std::fs::write(&p, "1").unwrap();
         let f = std::fs::File::open(&p).unwrap();
         assert_eq!(unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
-        assert_eq!(lock_is_held(&p), Some(true));
+        assert_eq!(lock_state(&p), Some((true, Some(1))));
         drop(f);
         let _ = std::fs::remove_file(&p);
     }
 
     #[test]
     fn missing_lock_is_unreadable_not_free() {
-        assert_eq!(lock_is_held(Path::new("/nonexistent/sk-lock")), None);
+        assert_eq!(lock_state(Path::new("/nonexistent/sk-lock")), None);
     }
 
     #[cfg(target_os = "macos")]

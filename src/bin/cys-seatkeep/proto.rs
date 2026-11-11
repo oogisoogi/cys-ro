@@ -31,6 +31,7 @@ pub const REJECT: u8 = 109;
 pub const INPUT_ACK: u8 = 110;
 
 pub fn frame(kind: u8, seat: u32, payload: &[u8]) -> Vec<u8> {
+    debug_assert!(payload.len() <= MAX_PAYLOAD, "보내는 프레임도 상한 안이어야 한다(재생은 나눠 보낸다)");
     let mut v = Vec::with_capacity(9 + payload.len());
     v.push(kind);
     v.extend_from_slice(&seat.to_le_bytes());
@@ -45,6 +46,11 @@ pub fn json_frame(kind: u8, seat: u32, value: &serde_json::Value) -> Vec<u8> {
 
 /// 프레임 1개를 읽는다. 깨끗한 EOF(머리 0바이트) = `Ok(None)`.
 pub fn read_frame(r: &mut impl Read) -> io::Result<Option<(u8, u32, Vec<u8>)>> {
+    read_frame_max(r, MAX_PAYLOAD)
+}
+
+/// 본문 상한을 따로 주는 읽기(HELLO 같은 작은 프레임용 — 큰 길이를 선언해 버퍼를 잡게 하지 못하게).
+pub fn read_frame_max(r: &mut impl Read, max: usize) -> io::Result<Option<(u8, u32, Vec<u8>)>> {
     let mut head = [0u8; 9];
     let mut got = 0;
     while got < head.len() {
@@ -57,7 +63,7 @@ pub fn read_frame(r: &mut impl Read) -> io::Result<Option<(u8, u32, Vec<u8>)>> {
     let kind = head[0];
     let seat = u32::from_le_bytes([head[1], head[2], head[3], head[4]]);
     let len = u32::from_le_bytes([head[5], head[6], head[7], head[8]]) as usize;
-    if len > MAX_PAYLOAD {
+    if len > max {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "payload too large"));
     }
     let mut payload = vec![0u8; len];
@@ -112,6 +118,13 @@ mod tests {
         let mut f = frame(INPUT, 0, b"");
         f[5..9].copy_from_slice(&((MAX_PAYLOAD as u32) + 1).to_le_bytes());
         assert!(read_frame(&mut &f[..]).is_err());
+    }
+
+    #[test]
+    fn small_cap_rejects_big_hello() {
+        let f = frame(HELLO, 0, &vec![b'x'; 5000]);
+        assert!(read_frame_max(&mut &f[..], 4096).is_err());
+        assert!(read_frame_max(&mut &f[..], 8192).unwrap().is_some());
     }
 
     #[test]

@@ -5,6 +5,7 @@
 //! - `<id>.log`   조종자 받기·끊김·거절 기록. **덧붙이기 전용으로만 연다**(O_APPEND). 쓰기 실패 = 접속을 받지 않는다.
 //! - `<id>.exit`  자식 종료 기록. 조종자의 EXIT_ACK 까지 보존(받으면 지운다 · 못 받으면 남겨 새 조종자가 소비).
 //! - `<id>.sock`  조종자 접속 소켓(0600).
+//! - `<id>.lock`  id 잠금(flock) — 같은 id 의 seatkeep 은 동시에 하나만. 프로세스가 끝나면 풀린다.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -17,6 +18,7 @@ pub struct Paths {
     pub log: PathBuf,
     pub exit: PathBuf,
     pub sock: PathBuf,
+    pub idlock: PathBuf,
 }
 
 impl Paths {
@@ -27,6 +29,7 @@ impl Paths {
             log: dir.join(format!("{id}.log")),
             exit: dir.join(format!("{id}.exit")),
             sock: dir.join(format!("{id}.sock")),
+            idlock: dir.join(format!("{id}.lock")),
             dir,
         }
     }
@@ -37,15 +40,41 @@ impl Paths {
     }
 }
 
-/// 임시 파일에 쓰고 fsync 뒤 rename — 읽는 쪽은 옛 내용이나 새 내용 중 하나만 본다.
+static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// 임시 파일에 쓰고 fsync 뒤 rename, 그다음 폴더 fsync — 읽는 쪽은 옛 내용이나 새 내용 중 하나만 본다.
+/// 임시 파일 이름 = 대상 파일 이름 전체 + pid + 호출 번호, `create_new` — 같은 프로세스 안에서 `<id>.json` 과
+/// `<id>.exit` 를 동시에 써도 서로의 임시 파일을 덮거나 옮기지 않는다(codex 1R #4: 옛 `with_extension` 은 둘 다
+/// `<id>.tmp.<pid>` 였다).
 pub fn write_atomic(path: &Path, value: &serde_json::Value) -> std::io::Result<()> {
-    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
-    {
-        let mut f = OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let tmp = path.with_file_name(format!(".{name}.tmp.{}.{seq}", std::process::id()));
+    let res = (|| {
+        let mut f = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
         f.write_all(value.to_string().as_bytes())?;
         f.sync_all()?;
+        drop(f);
+        std::fs::rename(&tmp, path)?;
+        if let Some(dir) = path.parent() {
+            File::open(dir)?.sync_all()?;
+        }
+        Ok(())
+    })();
+    if res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
     }
-    std::fs::rename(&tmp, path)
+    res
+}
+
+/// id 잠금 — 비차단 배타 flock. 이미 잡혀 있으면 오류(WouldBlock). 돌려준 File 을 쥐고 있는 동안 유효.
+pub fn lock_id(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::io::AsRawFd;
+    let f = OpenOptions::new().read(true).write(true).create(true).mode(0o600).open(path)?;
+    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(f)
 }
 
 /// 교체 기록. 덧붙이기 전용 열기 — 이 프로세스는 자기 기록을 고쳐 쓸 수 없다.
@@ -150,6 +179,42 @@ mod tests {
         write_atomic(&p, &serde_json::json!({"phase": "prepare"})).unwrap();
         write_atomic(&p, &serde_json::json!({"phase": "committed"})).unwrap();
         assert!(std::fs::read_to_string(&p).unwrap().contains("committed"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn atomic_writes_to_sibling_files_do_not_collide() {
+        // codex 1R #4 회귀: 같은 프로세스의 두 스레드가 <id>.json · <id>.exit 를 동시에 계속 써도 서로를 덮지 않는다.
+        let d = tmpdir("collide");
+        let (a, b) = (d.join("s.json"), d.join("s.exit"));
+        let (a2, b2) = (a.clone(), b.clone());
+        let t1 = std::thread::spawn(move || {
+            for i in 0..300 {
+                write_atomic(&a2, &serde_json::json!({"who": "entry", "i": i})).unwrap();
+            }
+        });
+        let t2 = std::thread::spawn(move || {
+            for i in 0..300 {
+                write_atomic(&b2, &serde_json::json!({"who": "exit", "i": i})).unwrap();
+            }
+        });
+        t1.join().unwrap();
+        t2.join().unwrap();
+        assert!(std::fs::read_to_string(&a).unwrap().contains("\"entry\""));
+        assert!(std::fs::read_to_string(&b).unwrap().contains("\"exit\""));
+        let left: Vec<_> = std::fs::read_dir(&d).unwrap().filter_map(|e| e.ok()).filter(|e| e.file_name().to_string_lossy().contains(".tmp.")).collect();
+        assert!(left.is_empty(), "임시 파일이 남으면 안 된다");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn id_lock_is_exclusive() {
+        let d = tmpdir("idlock");
+        let p = d.join("x.lock");
+        let first = lock_id(&p).unwrap();
+        assert!(lock_id(&p).is_err(), "두 번째는 거절");
+        drop(first);
+        assert!(lock_id(&p).is_ok(), "첫째가 놓으면 다시 잡힌다");
         let _ = std::fs::remove_dir_all(&d);
     }
 

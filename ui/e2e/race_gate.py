@@ -10,6 +10,7 @@
   R4(codex 2R #3) 본부 작업공간에서 ⌘T → 응답 전에 그 작업공간 삭제 확인 → 새 좌석 50 = 닫힘(close_surface(50)) · 어느 트리에도 없음(고아 0) · 알림 1
   R5(codex 2R #3) 같은 장면을 나누기(⌘D · actionSplit)로 — 본부 좌석 1 에서 ⌘D → 응답 전에 그 작업공간 삭제 → 새 좌석 50 = 닫힘 · 어느 트리에도 없음
     (작업공간이 하나뿐이면 상황판 화면은 작업공간 탭을 숨겨 사람이 지울 길이 없다 — 그래서 부서 3개 장면)
+  R6(await 전수 표 · 같은 모양) 빈 작업공간의 「새 셸 열기」 → 응답 전에 그 작업공간 삭제 → 새 좌석 = 닫힘 · 어느 트리에도 없음 · 알림 1
 실행: CHROME_PATH=<chrome-headless-shell> [GATE_DIST=<다른 번들>] cys run -- <playwright python3> ui/e2e/race_gate.py
 """
 import importlib.util
@@ -197,6 +198,36 @@ def main() -> int:
             sbg.check(any(c[1] == 50 for c in closed), f"새 좌석 50 = 닫힘(고아 0) · close_surface {closed}")
             sbg.check(not any(50 in t["sids"] for t in s5["trees"]) and 50 not in s5["panes"], f"새 좌석 50 = 어느 트리·화면에도 없음 {s5['trees']} · 화면 {s5['panes']}")
             sbg.check(any("새 좌석 닫음" in (t or "") for t in toasts(pg)), f"알림 「새 좌석 닫음」 {toasts(pg)}")
+            sbg.check(not errs, f"오류 0 {errs[:2]}")
+            ctx.close()
+            # R6
+            print("== R6(전수 표) 빈 작업공간 「새 셸 열기」 생성 중 그 작업공간 삭제")
+            ctx, pg, errs = page(js(seats), [list(d) for d in depts])
+            pg.click("#btn-ws-new")
+            pg.wait_for_timeout(2500)
+            s6a = pg.evaluate(STATE)
+            sbg.check(s6a["panes"] == [50], f"새 작업공간 = 좌석 50 하나 {s6a['panes']}")
+            pg.click('#root .pane[data-sid="50"] .xterm-screen')
+            pg.wait_for_timeout(300)
+            pg.keyboard.press("Meta+w")
+            pg.wait_for_timeout(400)
+            yes = next((b for b in pg.query_selector_all(".modal-overlay button") if (b.text_content() or "").strip() == "닫기"), None)
+            if yes:
+                yes.click()
+            pg.wait_for_timeout(800)
+            btn = pg.query_selector("#root .dept-idle-btn")
+            sbg.check(btn is not None, "빈 작업공간 = 「새 셸 열기」 단추")
+            if btn:
+                pg.evaluate("() => { window.__calls = []; window.__toasts = []; }")
+                btn.click()
+                pg.wait_for_timeout(200)
+                delete_ws(pg, len(pg.query_selector_all("#ws-tabs .ws-tab")) - 1)
+                pg.wait_for_timeout(4500)
+                s6 = pg.evaluate(STATE)
+                closed = [c for c in pg.evaluate("() => window.__calls") if c[0] == "close_surface"]
+                sbg.check(any(c[1] == 51 for c in closed), f"새 좌석 51 = 닫힘(고아 0) · close_surface {closed}")
+                sbg.check(not any(51 in t["sids"] for t in s6["trees"]) and 51 not in s6["panes"], f"새 좌석 51 = 어느 트리·화면에도 없음 {s6['trees']} · 화면 {s6['panes']}")
+                sbg.check(any("새 좌석 닫음" in (t or "") for t in toasts(pg)), f"알림 「새 좌석 닫음」 {toasts(pg)}")
             sbg.check(not errs, f"오류 0 {errs[:2]}")
             ctx.close()
             br.close()

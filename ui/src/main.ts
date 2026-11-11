@@ -5656,9 +5656,10 @@ function renderIdleWorkspace(ws: Workspace): HTMLElement {
         render();
       } else {
         const sid = await newSurface(null, ws.socket, T_NEW);
+        if (wsGoneOrGoing(ws)) return void (await dropSeatOfGoneWs(ws, sid)); // (codex 2R #3 같은 모양 · race_gate R6) 기다리는 사이 이 작업공간이 지워졌다
         ws.tree = { type: "pane", sid };
         render();
-        setFocus(sid);
+        if (ws === current()) setFocus(sid); // 그사이 다른 작업공간으로 옮겼으면 그 화면 포커스를 빼앗지 않는다
       }
       refreshPaneTitles(); // 노드가 뜨는 대로 입양
     } catch (e) {

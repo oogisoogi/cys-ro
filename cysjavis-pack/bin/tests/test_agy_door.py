@@ -54,12 +54,14 @@ class A_GuardDeniesDoorWrites(unittest.TestCase):
         ("Write", {"file_path": "/Users/x/.cys/agy-seat-door.json", "content": "{}"}),
         ("Edit", {"file_path": "C:\\Users\\x\\.cys\\agy-seat-door.json", "old_string": "a", "new_string": "b"}),
         ("Write", {"file_path": "/Users/x/.cys/agy-seat-door.json.tmp", "content": "{}"}),
+        # codex 1R major: git 출력 옵션으로 쓰기
+        ("Bash", {"command": "git show -s --format='{\"open\":true}' --output=\"$HOME/.cys/agy-seat-door.json\" HEAD"}),
     ]
     ALLOW = [
         ("Bash", {"command": "cat ~/.cys/agy-seat-door.json"}),
         ("Bash", {"command": "ls -la ~/.cys/ | grep agy-seat-door"}),
-        ("Bash", {"command": "git commit -m \"agy-seat-door 설명\""}),
         ("Bash", {"command": "ls -la"}),
+        ("Write", {"file_path": "/Users/x/repo/docs/agy-seat-door.md", "content": "설명 문서"}),   # 문 파일 아님(codex 1R minor)
     ]
 
     def test_deny(self):
@@ -67,6 +69,23 @@ class A_GuardDeniesDoorWrites(unittest.TestCase):
             rc, err = guard({"tool_name": tool, "tool_input": ti})
             self.assertEqual(rc, 2, "%s %s 통과됨: %s" % (tool, ti, err[-300:]))
             self.assertIn("AGY-DOOR", err, "%s %s — 다른 규칙이 막았다(문 규칙 미발동): %s" % (tool, ti, err[-300:]))
+
+    def test_backstop_without_python_still_denies(self):
+        # codex 1R major: 파서(python) 부재 → bash 백스톱 — 문 쓰기는 여기서도 거부 · 순수 읽기는 통과
+        def g(payload):
+            env = {k: v for k, v in os.environ.items() if not k.startswith(("CYS_", "AUTOPILOT", "GUARD_"))}
+            env.update({"GUARD_TEST_MODE": "1", "CYS_HOOK_LANE_GUARD": "0", "GUARD_FORCE_NOPY": "1"})
+            r = subprocess.run(["bash", GUARD], input=json.dumps(payload, ensure_ascii=False), env=env,
+                               capture_output=True, text=True, timeout=60)
+            return r.returncode, r.stderr
+        for tool, ti in [("Write", {"file_path": "/Users/x/.cys/agy-seat-door.json", "content": "{}"}),
+                         ("Bash", {"command": "echo {} > ~/.cys/agy-seat-door.json"}),
+                         ("Bash", {"command": "touch ~/.cys/agy-seat-door.json"})]:
+            rc, err = g({"tool_name": tool, "tool_input": ti})
+            self.assertEqual(rc, 2, "%s %s 백스톱 통과: %s" % (tool, ti, err[-300:]))
+            self.assertIn("AGY-DOOR", err)
+        rc, err = g({"tool_name": "Bash", "tool_input": {"command": "cat ~/.cys/agy-seat-door.json"}})
+        self.assertEqual(rc, 0, err[-300:])
 
     def test_allow(self):
         for tool, ti in self.ALLOW:

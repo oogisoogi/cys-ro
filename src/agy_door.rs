@@ -37,30 +37,99 @@ pub const DOOR_ACK: &str = "agy-consumer-plan-warning-v1";
 pub const OPEN_WARNING: &str = "개인 요금제(무료·Google AI Pro·Ultra)로 로그인한 agy 를 cysr 이 띄우고 Claude 가 부리면, \
 구글 약관상 계정이 정지될 수 있습니다. 기업 요금제(Gemini Enterprise 등)처럼 이런 사용이 허용된 경우에만 여세요.";
 
-/// 이 어댑터가 agy 인가(순수) — 어댑터 키 `gemini`(출하 어댑터 = agy) **또는** cmd 의 실행 파일 이름이 `agy`/`antigravity`.
-/// 키만 보면 사용자가 어댑터 키를 바꿔 우회되고, 실행 파일만 보면 `cmd` 가 없는 정의에서 놓친다 → 둘 중 하나.
+/// 이 어댑터가 agy 인가(순수). **실행 프로그램이 정본**이다 — cmd 에서 실제로 실행될 프로그램(대입·`env` 등 래퍼·인용·
+/// `sh -c` 를 걷어 낸 것)이 `agy`/`antigravity` 면 agy. cmd 가 없거나 읽을 수 없을 때만 어댑터 키 `gemini`(출하 어댑터 = agy)로
+/// 추정한다(codex 1R major: 키만 보면 같은 키로 Gemini API 등 다른 프로그램을 쓰는 사용자까지 막힌다).
 pub fn is_agy_adapter(agent_key: &str, cmd: Option<&str>) -> bool {
-    if agent_key.eq_ignore_ascii_case("gemini") {
-        return true;
+    match cmd.and_then(cmd_program) {
+        Some(p) => p == "agy" || p == "antigravity",
+        None => agent_key.eq_ignore_ascii_case("gemini"),
     }
-    cmd.and_then(cmd_program).is_some_and(|p| p == "agy" || p == "antigravity")
 }
 
-/// cmd 문자열 → 실행 파일 이름(소문자 · 경로·확장자 제거). 앞의 `KEY=val` 대입은 건너뛴다(순수).
+/// 셸 비슷한 토큰 나누기(순수) — 홑·겹따옴표 안 공백 보존 · 역슬래시는 겹따옴표 밖에서만 다음 글자 이스케이프(윈도우 경로
+/// `C:\x\agy.cmd` 는 따옴표 없이 오면 역슬래시가 남도록 경로 문자로 취급한다 — 뒤 글자가 공백·따옴표일 때만 이스케이프).
+fn shell_words(s: &str) -> Vec<String> {
+    let (mut out, mut cur, mut any) = (Vec::new(), String::new(), false);
+    let mut it = s.chars().peekable();
+    let mut q: Option<char> = None;
+    while let Some(c) = it.next() {
+        match q {
+            Some(qc) if c == qc => q = None,
+            Some(_) => cur.push(c),
+            None if c == '\\' && matches!(it.peek(), Some(n) if n.is_whitespace() || *n == '"' || *n == '\'') => {
+                cur.push(it.next().unwrap());
+                any = true;
+            }
+            None if c == '\'' || c == '"' => {
+                q = Some(c);
+                any = true;
+            }
+            None if c.is_whitespace() => {
+                if any || !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                    any = false;
+                }
+            }
+            None => cur.push(c),
+        }
+    }
+    if any || !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+fn is_assignment(w: &str) -> bool {
+    let Some((k, _)) = w.split_once('=') else { return false };
+    !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !k.starts_with(|c: char| c.is_ascii_digit())
+}
+
+/// cmd 문자열 → 실제로 실행될 프로그램 이름(소문자 · 경로·확장자 제거) — 대입 · 래퍼(env·command·exec·nohup·nice·time·
+/// caffeinate·stdbuf·setsid · env 의 옵션·대입) · `sh|bash|zsh -c '<문>'` 를 걷어 낸다(순수 · 깊이 3).
 fn cmd_program(cmd: &str) -> Option<String> {
-    let tok = cmd.split_whitespace().find(|t| {
-        let t = t.trim_matches(|c| c == '"' || c == '\'');
-        !(t.contains('=') && !t.contains('/') && !t.contains('\\'))
-    })?;
-    let tok = tok.trim_matches(|c| c == '"' || c == '\'');
+    program_of(&shell_words(cmd), 0)
+}
+
+fn program_of(w: &[String], depth: u8) -> Option<String> {
+    const WRAP: [&str; 9] = ["env", "command", "exec", "nohup", "nice", "time", "caffeinate", "stdbuf", "setsid"];
+    let mut i = 0;
+    while i < w.len() {
+        let t = &w[i];
+        if is_assignment(t) {
+            i += 1;
+            continue;
+        }
+        let base = basename_lc(t);
+        if WRAP.contains(&base.as_str()) {
+            i += 1;
+            while i < w.len() && (w[i].starts_with('-') || is_assignment(&w[i])) {
+                // env -u NAME · nice -n 5 · stdbuf -o L 처럼 값을 먹는 짧은 옵션
+                let takes = matches!(w[i].as_str(), "-u" | "-n" | "-C" | "-S" | "-P");
+                i += if takes { 2 } else { 1 };
+            }
+            continue;
+        }
+        if depth < 3 && matches!(base.as_str(), "sh" | "bash" | "zsh" | "dash") {
+            if let Some(j) = w[i + 1..].iter().position(|a| a.starts_with('-') && a.contains('c')) {
+                if let Some(inner) = w.get(i + 1 + j + 1) {
+                    return program_of(&shell_words(inner), depth + 1);
+                }
+            }
+        }
+        return (!base.is_empty()).then_some(base);
+    }
+    None
+}
+
+fn basename_lc(tok: &str) -> String {
     let base = tok.rsplit(['/', '\\']).next().unwrap_or(tok).to_ascii_lowercase();
-    let base = base
-        .strip_suffix(".exe")
-        .or_else(|| base.strip_suffix(".cmd"))
-        .or_else(|| base.strip_suffix(".ps1"))
-        .unwrap_or(&base)
-        .to_string();
-    (!base.is_empty()).then_some(base)
+    for ext in [".exe", ".cmd", ".bat", ".ps1", ".com"] {
+        if let Some(s) = base.strip_suffix(ext) {
+            return s.to_string();
+        }
+    }
+    base
 }
 
 /// 문 파일 자리 — `~/.cys/agy-seat-door.json`(본부·부서 공통 · 사람 하나의 결정).
@@ -162,9 +231,20 @@ mod tests {
     }
 
     #[test]
+    fn codex_1r_parser_cases() {
+        for agy in ["FOO=/tmp agy", "FOO=\"a b\" agy -p x", "env FOO=1 agy", "env -u X agy", "nohup env A=1 /x/agy",
+                    "\"/Applications/My Tools/agy\" --x", "C:\\npm\\agy.bat", "sh -c 'agy -p hi'", "bash -lc \"FOO=1 agy\""] {
+            assert!(is_agy_adapter("rv", Some(agy)), "{agy}");
+        }
+        assert!(!is_agy_adapter("claude", Some("CLAUDE_CONFIG_DIR=/tmp/agy claude")), "대입 값 속 agy 는 프로그램이 아니다");
+        assert!(!is_agy_adapter("gemini", Some("gemini --api-key-mode")), "같은 키라도 실행 프로그램이 agy 가 아니면 막지 않는다");
+        assert!(is_agy_adapter("gemini", None), "cmd 가 없을 때만 키로 추정");
+    }
+
+    #[test]
     fn agy_adapter_by_key_or_program() {
         assert!(is_agy_adapter("gemini", None));
-        assert!(is_agy_adapter("Gemini", Some("whatever")));
+        assert!(is_agy_adapter("Gemini", Some("")), "읽을 수 없는 cmd = 키 추정");
         assert!(is_agy_adapter("rv", Some("~/.local/bin/agy --dangerously-skip-permissions")));
         assert!(is_agy_adapter("rv", Some("FOO=1 BAR=\"x\" /opt/x/agy -p hi")));
         assert!(is_agy_adapter("rv", Some(r"C:\Users\x\AppData\Roaming\npm\agy.cmd")));

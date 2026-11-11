@@ -972,7 +972,8 @@ if PAUSED and not PREFLIGHT:
 #   거버넌스 구분 · src/agy_door.rs 머리). 막는 것은 지침을 따르는 정상 노드의 평시 쓰기다.
 AGY_DOOR_WORD = "agy-seat-"
 AGY_DOOR_READ_OK = {"cat", "ls", "stat", "test", "[", "head", "tail", "wc", "file", "rm", "unlink",
-                    "shasum", "sha256sum", "jq", "grep", "rg", "git", "echo", "printf"}  # cys 제외 = `cys send` 로 남의 셸에 쓰는 길
+                    "shasum", "sha256sum", "jq", "grep", "rg", "echo", "printf"}
+# cys 제외 = `cys send` 로 남의 셸에 쓰는 길 · git 제외 = `git show --output=<문 파일>` 같은 출력 옵션 쓰기(codex 1R major)
 AGY_DOOR_DENY = ("agy 좌석 문 파일(agy-seat-door.json)은 에이전트가 만들거나 쓸 수 없다 — 구글 개인 요금제 약관 때문에 "
                  "cysr 은 agy 좌석을 기본으로 띄우지 않으며, 여는 것은 사람이 앱 명령 팔레트 확인 창에서만 한다.")
 
@@ -992,7 +993,7 @@ def agy_door_bash_write(cmd):
 
 if tool == "Bash" and command and agy_door_bash_write(command):
     out_deny("[AGY-DOOR] " + AGY_DOOR_DENY)
-if tool in WRITE_TOOLS and AGY_DOOR_WORD in basename(file_path).lower():
+if tool in WRITE_TOOLS and basename(file_path).lower().startswith("agy-seat-door.json"):   # 실제 문 파일·임시본만(codex 1R minor)
     out_deny("[AGY-DOOR] " + AGY_DOOR_DENY)
 
 if tool == "Bash" and command:
@@ -1054,6 +1055,12 @@ run_loose_backstop() {
   cmd="$(printf '%s' "$INPUT" | jq -r '.tool_input.command // ""' 2>/dev/null)"
   fp="$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // ""' 2>/dev/null)"
   low="$(printf '%s' "$cmd" | tr 'A-Z' 'a-z' | tr -s ' \t' ' ')"
+  # ★agy 좌석 문(codex 1R major · 파서 부재·크래시 때도): 문 파일을 건드리는 입력은 순수 읽기(첫 낱말 cat/ls/stat/head/tail/wc/grep
+  #   · 리다이렉트 없음)만 통과 — 그 밖(Write/Edit 포함 · jq 부재로 판독 불가 포함)은 fail-closed 거부.
+  case "$INPUT" in *agy-seat-*)
+    case "${low%% *}" in cat|ls|stat|head|tail|wc|grep) case "$low" in *">"*) emit_deny "백스톱: [AGY-DOOR] agy 좌석 문 파일 쓰기 차단(사람이 앱 화면에서만 연다)" ;; esac ;;
+      *) emit_deny "백스톱: [AGY-DOOR] agy 좌석 문 파일 쓰기 차단(사람이 앱 화면에서만 연다)" ;; esac ;;
+  esac
   case "$low" in
     *"git push"*|*"git remote set-url"*|*"git remote remove"*|*"gh release create"*|*"gh pr create"*|*"scp "*)
       emit_deny "백스톱: 비가역 명령. 주인님 승인 필요" ;;

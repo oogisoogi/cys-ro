@@ -1,0 +1,9 @@
+start=2026-11-11T22:57:52+0900 n=5 source_commit=c5d2bca2cf427b6aaefd772def302a9ece95dda4
+load_start=5.15 5.25 6.06
+run1 rc=0 end=2026-11-11T23:09:00+0900
+run2 rc=0 end=2026-11-11T23:09:01+0900
+run3 rc=0 end=2026-11-11T23:09:01+0900
+run4 rc=0 end=2026-11-11T23:09:01+0900
+run5 rc=0 end=2026-11-11T23:09:01+0900
+load_end=4.73 5.65 6.02
+all_rc=0

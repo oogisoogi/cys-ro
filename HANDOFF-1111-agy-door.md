@@ -98,3 +98,11 @@
 - 낱말 검사에서 `-` 를 낱말 글자로 두면 `env -vSagy`·`${X:-agy}` 가 빠진다 → 「줄표로 시작하는 낱말은 끝이 이름이어도 agy」 규칙.
 - guard 안전망을 인용 낱말까지 넓히면 `powershell -Command Write-Output 'agy'` 의 바깥 단위에서 다시 걸린다 → 위임 갈래는 바깥 안전망 생략(true).
 - 뮤턴트·acceptance 를 같은 작업 트리에서 겹쳐 돌리면 provenance dirty_paths 가 오염된다 — 순차로.
+
+### r5 실측(23:09)
+- 커밋 fd73d38e(판정 분리·고침) · c5d2bca2(하네스·문서) · 이 커밋(결과·원시 기록).
+- acceptance 동시 5회(c5d2bca2 바이너리 · 22:57:52~23:09:01 · 부하 5.2→4.7) = **5/5 PASS · 각 26항목**(E1~E19·③·②E1·②E5·②E5-tomb·실 agy 0) ·
+  원시 기록 `docs/agy-door-evidence/concurrent-5/`(run1~5.json · stdout · run-meta.txt) · `acceptance-result.json` = run1 사본.
+  (그 전 1회차 = E2 적색 rc 79: E19 의 사람 글이 agy 좌석 입력줄 초안으로 남아 node-recover 가 사람 초안 보호로 거부 → E19 끝에 Ctrl-U 추가.)
+- 단위 lib agy_door 20 · 팩 test_agy_door 20 · phoenix 루프 P1~P7·M1~M5 · cys bin agy 13 · cysd agy|send_text|delivery 98 · src-tauri check · 뮤턴트 14/14 적색.
+- 미완: 사후 codex 5R(master 대기열) · push 0.

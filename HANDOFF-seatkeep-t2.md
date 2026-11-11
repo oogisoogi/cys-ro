@@ -1,6 +1,6 @@
 # HANDOFF — TICKET=cysr-seatkeep-t2 (좌석 보유 장치 seatkeep 단독 시제품 · 맥 · cysd 미연결)
 
-- 상태 = **3차 고침 진행 중**(master#0b5810df · codex 3R REVISE minor 2) — 코드 커밋 `0aabfa02`(0c3aff2d 위) · `t2.py fixes` 재실측 대기(부하 10 미만에서) · push 0. 이전: 【확인요청 2】 = `0c3aff2d`.
+- 상태 = **【확인요청 3】**(master#0b5810df · codex 3R REVISE minor 2 고침 + 재실측 끝) — 최종 코드 커밋 `0aabfa02`(0c3aff2d 위) · codex 4R 없음(master 차이 정독) · push 0. 이전: 【확인요청 2】 = `0c3aff2d`.
 - 가지 = `feat/seatkeep-t2`(v1.1.14 `270e3e21` 위) · 커밋 2개(`0704dc03` 시제품 · 이 커밋 = codex 1R 고침 + 시험 결과) · push 0.
 - 설계·브리프 = `~/axdev/master/reports/2026-11-11-cysr-holder-design/`(DESIGN.md · T0-surface-state.md · briefs-draft/T2.md · master#a3db2868 결정 5).
 - codex 1R = 같은 폴더 `codex-t2-1R.prompt.md`(의뢰문) · `codex-t2-1R.verdict.json`(판정 BLOCK · 대상 `0704dc03`) · `codex-t2-1R.txt`(전 기록).
@@ -12,6 +12,8 @@
 - **깨우기 경합의 한계**: 두 스레드의 실제 교차를 결정적으로 재현하는 시험은 아니다 — 각 쪽 절반(「표시를 세운 뒤 큐를 본다」 · 「내린 뒤 표시를 본다」)을 따로 고정한 것.
 - **단위 뮤턴트 13곳(U01~U13) 전부 잡음** = results/r3-unit-mutants.out · 스크립트 harness/unit_mutants.py. accept 경로의 `if e.kept_line` 자체(인라인)는 단위 시험 밖 — `vt_diskfull_ledger_boundary_errout`(A16 = WELCOME) 이 보는 자리.
 - **t2.py 끝 코드**: 판정 행 `pass_` 거짓이 1건 이상이면 rc 1(요약 1줄 출력) · `fixes` 도 시험별 예외를 판정 행으로 남김. 확인: 옛 실행 파일 `sameid` = rc 1 · 새 = rc 0. 고치기 전 사본 = results/t2.py.bak-before-r3-rc.
+
+- **재실측 `t2.py fixes`**(디버그 빌드 = `0aabfa02` · 결과 = results/r3-fixes.out · 시작 14:43:41 부하 1분 9.54 → 끝 14:47:21 부하 12.02 — 시작은 10 미만 대기 뒤였으나 도중에 올랐다): **판정 행 48개 전부 통과 · RC=0** — evict 1/1(10.0초 write_stalled) · stdin_block 3/3 · slowhello 3/3 · sameid 3/3 · exitreuse 3/3 · exitorder 3/3 · exitfail 3/3 · commitfail 3/3 · replay 2/2 · behind 3/3 · behind_mem 3/3 · vt_dual · vt_torn_read · vt_signal_spam_reap(5/5) · vt_reauth · vt_busy · vt_diskfull_ledger_boundary_errout(주입 성립 2/2 · A16 = WELCOME) · vt_diskfull_ledger_boundary · startpair 3/3 · sockpath 3/3 · symlink · persistcap(31.1초 rc 6) · ctlflood 3/3(`evict control_queue_full` · seatkeep 생존 · 새 조종자 WELCOME). 단위 27/27.
 
 ## 2차 고침(독립 검증 REVISE · master#69b9fe37)
 - **D1 안 읽는 조종자**: 프레임 개수(1024 ≈ 실제 1MB · 2ms 멈춤에 쫓겨남) 기준 폐기 → ⓐ **밀린 바이트 상한 4MiB/좌석**(`OUT_QUEUE_BYTES`) — 넘는 실시간 출력은 큐에 안 넣고 꼬리에 둔 채 「밀림」 표시 → 쓰기 스레드가 큐를 반 아래로 비우면 꼬리에서 그 오프셋부터 따라잡기(256KiB 조각) · 꼬리에서 이미 밀려난 부분은 오프셋 건너뜀(= 유실로 보임) · 밀린 좌석의 EXITED 는 따라잡기 뒤 ⓑ **멈춘 시간** = 소켓 쓰기가 10초 동안 진척 0 이면 `evict write_stalled` 후 닫음(EPIPE 등은 내보냄 아님). 값 근거 = 보통 좌석 출력 초당 약 11KB(A13 noisy) → 4MiB = 수 분 분량 · 쏟는 좌석(초당 약 150MB) 약 27ms 분량 · 메모리 = 좌석당 최대 4MiB(평소 0) · tmux `control.c` 도 시간으로 판정(300초 · 답장 버퍼 64MiB). 실측: `vt.py stall_tolerance` 500ms 멈춤 **10/10 생존**(내보냄 0) · 0~250ms 각 2/2 생존 · 영영 안 읽음(`t2.py evict`) = 10.0초에 `evict write_stalled` · 밀린 동안 RSS 증가 4.1~4.8MB(`behind_mem` 5/5) · 꼬리 64MiB 에서 300ms 멈춤 뒤 구멍 0·SEQ 역행 0(`behind` 3/3).
@@ -176,4 +178,4 @@ python3 tcc.py                        # TCC 1회 관찰
 10. **윈도우**: 컴파일 점검을 이 맥에서 못 함(libsqlite3-sys C 빌드) — 윈 실기 또는 CI 에서.
 
 ## 다음 첫 행동(1줄)
-master 의 codex 3R(2b2b4d5c..0c3aff2d) + 단위·`t2.py fixes` 재실행 결과 대기 — REVISE/BLOCK 이면 순환 뒤 1회 고침(재개 줄 동봉) · ACCEPT 면 수용·좌석 닫음(master#ae068a07).
+master 의 3차 차이 정독(0c3aff2d..0aabfa02) 판정 대기 — 수용이면 좌석 닫음 · 고칠 것이 있으면 그 지시대로.

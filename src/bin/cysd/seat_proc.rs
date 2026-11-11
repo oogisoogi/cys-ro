@@ -312,7 +312,7 @@ mod seatkeep_mac {
     use std::os::unix::net::UnixStream;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::sync::{Arc, Condvar, Mutex, MutexGuard};
     use std::time::{Duration, Instant};
 
@@ -324,9 +324,14 @@ mod seatkeep_mac {
     const FG_TIMEOUT: Duration = Duration::from_millis(200);
     /// 기동 ~ WELCOME 상한.
     const START_TIMEOUT: Duration = Duration::from_secs(10);
-    /// 연결 스레드 → 읽기 얼굴 출력 큐의 조각 수 상한(조각 ≤ 1MiB · seatkeep 재생 조각). 차면 연결 스레드가 기다린다 = 소켓을 안 읽는다
-    /// → seatkeep 이 자기 큐(4MiB)를 넘는 출력을 꼬리로 돌린다(「밀림」 · T2 설계). 상한 없는 큐를 두지 않는다(master#c125bc97 ③).
-    const OUT_QUEUE_CHUNKS: usize = 64;
+    /// 연결 스레드 → 읽기 얼굴 출력 대기열의 평소 바이트 상한(codex 1R #2 · 옛 64조각 채널 ≈ 64×16KiB 자리). 차면 연결 스레드가 소켓을
+    /// 안 읽는다 = 역압(seatkeep 조종자 종속 모드가 PTY 읽기를 멈춰 자식도 멈춘다 · 유실 0). 상한 없는 큐를 두지 않는다(master#c125bc97 ③).
+    const OUT_SOFT_BYTES: usize = 1 << 20;
+    /// 제어 답(INPUT_ACK · FOREGROUND_IS)을 기다리는 동안 또는 닫는 중(kill·wait)의 상한 — 그동안은 평소 상한을 넘어서도 소켓을 읽어
+    /// 출력 뒤에 줄 선 제어 프레임에 닿는다(codex 1R #2). 근거: 조종자 종속 seatkeep 은 출력·제어를 한 줄(FIFO)로 보내고 그 큐를
+    /// 256KiB(+읽기 16KiB · 첫 재생 조각 ≤ 1MiB)에서 멈추므로 제어 프레임 앞의 출력은 그 이하 + 소켓 버퍼다 → 4MiB 여유면 닿는다.
+    /// 메모리 상한 = 좌석당 이 값 + 프레임 1개.
+    const OUT_HARD_BYTES: usize = OUT_SOFT_BYTES + (4 << 20);
     /// 맥 소켓 경로 한도(sun_path 104 · NUL 포함).
     const SUN_PATH_MAX: usize = 104;
 
@@ -553,6 +558,19 @@ mod seatkeep_mac {
         closed: bool,
     }
 
+    /// 연결 스레드 → 읽기 얼굴 출력 대기열(codex 1R #2). 순서 = 넣은 순서 그대로(FIFO) · 바이트 상한 = OUT_SOFT/HARD_BYTES.
+    #[derive(Default)]
+    struct OutSpool {
+        q: VecDeque<Vec<u8>>,
+        bytes: usize,
+        /// 더 올 출력이 없다(EXITED·끊김) — 남은 조각을 다 돌려준 뒤 EOF.
+        eof: bool,
+        /// 읽기 얼굴이 사라졌다(좌석이 닫히는 중) — 이후 출력은 버린다(옛 채널 송신 실패와 같은 처분).
+        reader_gone: bool,
+        /// 닫는 중 상한(OUT_HARD_BYTES)을 넘어 버린 출력 바이트(관측용).
+        dropped_closing: u64,
+    }
+
     /// seatkeep 1개와의 연결(조종자 쪽). 손잡이의 얼굴(`MasterPty`·`Child`·읽기·쓰기)이 이것을 함께 쥔다.
     pub(crate) struct SeatLink {
         wr: Mutex<UnixStream>,
@@ -567,6 +585,28 @@ mod seatkeep_mac {
         input_base: u64,
         /// 받은 출력에서 건너뛴 바이트 합(seatkeep 꼬리에서 이미 밀려나 못 받은 구간 = 유실).
         gap_bytes: AtomicU64,
+        /// 출력 대기열(연결 스레드 → 읽기 얼굴) · 그 깨우기(넣음·뺌·급함 바뀜).
+        out: Mutex<OutSpool>,
+        out_cv: Condvar,
+        /// 지금 기다리는 제어 답 수(입력 수신 확인 · 전경 답) — 0 보다 크면 연결 스레드가 평소 상한을 넘어 읽는다.
+        awaiting: AtomicUsize,
+        /// 닫는 중(kill·wait 를 불렀다) — 연결 스레드는 어떤 경우에도 막히지 않는다(넘치는 출력은 버림).
+        closing: AtomicBool,
+    }
+
+    /// 제어 답 기다림 표시(만들 때 +1 · 버릴 때 −1 · 둘 다 연결 스레드를 깨운다).
+    struct Awaiting<'a>(&'a SeatLink);
+    impl<'a> Awaiting<'a> {
+        fn new(l: &'a SeatLink) -> Self {
+            l.awaiting.fetch_add(1, Ordering::SeqCst);
+            l.poke_out();
+            Awaiting(l)
+        }
+    }
+    impl Drop for Awaiting<'_> {
+        fn drop(&mut self) {
+            self.0.awaiting.fetch_sub(1, Ordering::SeqCst);
+        }
     }
 
     impl std::fmt::Debug for SeatLink {
@@ -595,20 +635,23 @@ mod seatkeep_mac {
                 next_input: AtomicU64::new(1),
                 input_base: (crate::state::now_epoch() as u64) << 24,
                 gap_bytes: AtomicU64::new(0),
+                out: Mutex::new(OutSpool::default()),
+                out_cv: Condvar::new(),
+                awaiting: AtomicUsize::new(0),
+                closing: AtomicBool::new(false),
             });
-            let (tx, rx) = sync_channel::<Vec<u8>>(OUT_QUEUE_CHUNKS);
             {
                 let l = Arc::clone(&link);
                 std::thread::Builder::new()
                     .name(format!("seatkeep-link-{child_pid}"))
-                    .spawn(move || l.demux(rd, tx, keeper))
+                    .spawn(move || l.demux(rd, keeper))
                     .map_err(|e| format!("seatkeep 연결 스레드 기동 실패: {e}"))?;
             }
             let spawned = super::Spawned {
                 master: Box::new(KeepMaster(Arc::clone(&link))),
                 child: Box::new(KeepChild(Arc::clone(&link))),
                 pid: child_pid,
-                io: Some((Box::new(ChanReader { rx, buf: Vec::new(), pos: 0 }), Box::new(KeepWriter(Arc::clone(&link))))),
+                io: Some((Box::new(SpoolReader { link: Arc::clone(&link), buf: Vec::new(), pos: 0 }), Box::new(KeepWriter(Arc::clone(&link))))),
                 link: Some(Arc::clone(&link)),
             };
             Ok(spawned)
@@ -619,9 +662,60 @@ mod seatkeep_mac {
             proto::write_all(&mut *w, &proto::frame(kind, SEAT, payload))
         }
 
+        fn lock_out(&self) -> MutexGuard<'_, OutSpool> {
+            self.out.lock().unwrap_or_else(|e| e.into_inner())
+        }
+
+        /// 급함(기다리는 답 · 닫는 중)이 바뀌었다 — 대기열 잠금을 잡고 깨운다(연결 스레드가 바뀐 값을 보기 전에 잠들지 않게).
+        fn poke_out(&self) {
+            let _g = self.lock_out();
+            self.out_cv.notify_all();
+        }
+
+        /// 닫는 중 표시(kill·wait) — 이후 연결 스레드는 막히지 않는다.
+        fn mark_closing(&self) {
+            if !self.closing.swap(true, Ordering::SeqCst) {
+                self.poke_out();
+            }
+        }
+
+        /// 출력 1조각을 대기열에 넣는다(연결 스레드만 부름 · codex 1R #2).
+        /// 평소 = OUT_SOFT_BYTES 에 닿으면 읽기 얼굴이 뺄 때까지 기다린다(역압 · 유실 0 · 순서 보존).
+        /// 제어 답을 기다리는 중 = OUT_HARD_BYTES 까지 넣는다(출력 뒤에 줄 선 답에 닿게). 닫는 중 = HARD 를 넘는 것은 버린다(막히지 않음
+        /// — 직접 PTY 를 닫으면 안 읽은 출력이 마스터와 함께 사라지는 것과 같다).
+        fn push_output(&self, chunk: Vec<u8>) {
+            let mut sp = self.lock_out();
+            loop {
+                if sp.reader_gone || sp.eof {
+                    return;
+                }
+                let closing = self.closing.load(Ordering::SeqCst);
+                let cap = if closing || self.awaiting.load(Ordering::SeqCst) > 0 { OUT_HARD_BYTES } else { OUT_SOFT_BYTES };
+                if sp.bytes < cap {
+                    sp.bytes += chunk.len();
+                    sp.q.push_back(chunk);
+                    self.out_cv.notify_all();
+                    return;
+                }
+                if closing {
+                    sp.dropped_closing += chunk.len() as u64;
+                    return;
+                }
+                sp = self.out_cv.wait(sp).unwrap_or_else(|e| e.into_inner());
+            }
+        }
+
+        /// 더 올 출력이 없다(EXITED·끊김) — 읽기 얼굴은 남은 조각 뒤 EOF.
+        fn close_output(&self) {
+            let mut sp = self.lock_out();
+            sp.eof = true;
+            self.out_cv.notify_all();
+        }
+
         /// 연결 스레드 — 프레임을 나눈다. 끝나면(끊김) 종료로 접고 seatkeep 프로세스를 회수한다.
-        fn demux(self: Arc<Self>, mut rd: UnixStream, tx: SyncSender<Vec<u8>>, mut keeper: std::process::Child) {
-            let mut tx = Some(tx);
+        /// 출력은 대기열(`push_output`)로만 넘기고 제어 프레임은 그 자리에서 상태에 반영한다 — 소비자가 멈춰도 답을 기다리는 동안·닫는
+        /// 중에는 소켓을 계속 읽는다(codex 1R #2: 옛 64조각 채널의 막히는 송신 뒤에 EXITED 가 묶여 닫기가 영구 대기).
+        fn demux(self: Arc<Self>, mut rd: UnixStream, mut keeper: std::process::Child) {
             let mut expect: u64 = 0;
             loop {
                 let (kind, _seat, payload) = match proto::read_frame(&mut rd) {
@@ -642,12 +736,7 @@ mod seatkeep_mac {
                         }
                         let skip = expect.saturating_sub(off) as usize;
                         expect = end;
-                        if let Some(t) = &tx {
-                            // 큐가 차면 여기서 기다린다(읽기 얼굴이 비울 때까지) · 읽기 얼굴이 사라졌으면 출력은 버린다(좌석이 닫히는 중).
-                            if t.send(bytes[skip..].to_vec()).is_err() {
-                                tx = None;
-                            }
-                        }
+                        self.push_output(bytes[skip..].to_vec());
                     }
                     proto::INPUT_ACK if payload.len() >= 8 => {
                         let id = u64::from_le_bytes(payload[..8].try_into().unwrap_or([0; 8]));
@@ -674,7 +763,7 @@ mod seatkeep_mac {
                             None => ExitStatus::with_exit_code(v["code"].as_u64().unwrap_or(0) as u32),
                         };
                         // 마지막 출력 뒤에 온다(seatkeep 순서 보장) — 읽기 얼굴을 닫아 EOF 로, 종료를 기록, 바로 확인.
-                        tx = None;
+                        self.close_output();
                         {
                             let mut st = self.lock_st();
                             if st.exit.is_none() {
@@ -687,7 +776,7 @@ mod seatkeep_mac {
                     _ => {}
                 }
             }
-            drop(tx);
+            self.close_output();
             {
                 let mut st = self.lock_st();
                 st.closed = true;
@@ -705,6 +794,7 @@ mod seatkeep_mac {
             let id = self.input_base | self.next_input.fetch_add(1, Ordering::Relaxed);
             let mut p = id.to_le_bytes().to_vec();
             p.extend_from_slice(bytes);
+            let _aw = Awaiting::new(self);
             self.send(proto::INPUT, &p)?;
             let mut st = self.lock_st();
             loop {
@@ -729,6 +819,7 @@ mod seatkeep_mac {
                 st.fg_sent += 1;
                 st.fg_sent
             };
+            let _aw = Awaiting::new(self);
             if self.send(proto::FOREGROUND, b"").is_err() {
                 return None;
             }
@@ -781,6 +872,7 @@ mod seatkeep_mac {
         /// 직접 PTY `Child::kill` 과 같은 모양·같은 대상: 리더에 SIGHUP → 회수 확인(즉시 + 50ms × 4) → 리더에 SIGKILL.
         /// (RELEASE 는 그룹 SIGHUP 이라 D7 결정 B 와 어긋나 T3 에서 쓰지 않는다 — 판 내림(T6) 몫.)
         fn kill(&self) -> std::io::Result<()> {
+            self.mark_closing();
             if self.exit_status().is_some() {
                 return Ok(());
             }
@@ -848,6 +940,7 @@ mod seatkeep_mac {
             Ok(self.0.exit_status())
         }
         fn wait(&mut self) -> std::io::Result<ExitStatus> {
+            self.0.mark_closing();
             let mut st = self.0.lock_st();
             loop {
                 if let Some(s) = st.exit.clone() {
@@ -876,27 +969,44 @@ mod seatkeep_mac {
         }
     }
 
-    /// 출력 읽기 얼굴 — 연결 스레드가 넣은 조각을 차례로 돌려준다. 보내는 쪽이 닫히면(EXITED·끊김) EOF.
-    struct ChanReader {
-        rx: Receiver<Vec<u8>>,
+    /// 출력 읽기 얼굴 — 연결 스레드가 대기열에 넣은 조각을 차례로 돌려준다. 더 올 것이 없으면(EXITED·끊김) 남은 조각 뒤 EOF.
+    struct SpoolReader {
+        link: Arc<SeatLink>,
         buf: Vec<u8>,
         pos: usize,
     }
-    impl Read for ChanReader {
+    impl Read for SpoolReader {
         fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
             if self.pos >= self.buf.len() {
-                match self.rx.recv() {
-                    Ok(b) => {
+                let mut sp = self.link.lock_out();
+                loop {
+                    if let Some(b) = sp.q.pop_front() {
+                        sp.bytes -= b.len();
+                        self.link.out_cv.notify_all();
                         self.buf = b;
                         self.pos = 0;
+                        break;
                     }
-                    Err(_) => return Ok(0),
+                    if sp.eof {
+                        return Ok(0);
+                    }
+                    sp = self.link.out_cv.wait(sp).unwrap_or_else(|e| e.into_inner());
                 }
             }
             let n = out.len().min(self.buf.len() - self.pos);
             out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
             self.pos += n;
             Ok(n)
+        }
+    }
+    /// 읽기 얼굴이 사라지면(좌석이 닫힘) 대기열을 비우고 이후 출력을 버린다 — 연결 스레드가 막혀 있었다면 깨운다.
+    impl Drop for SpoolReader {
+        fn drop(&mut self) {
+            let mut sp = self.link.lock_out();
+            sp.reader_gone = true;
+            sp.q.clear();
+            sp.bytes = 0;
+            self.link.out_cv.notify_all();
         }
     }
 }

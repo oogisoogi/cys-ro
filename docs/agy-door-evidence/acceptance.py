@@ -302,6 +302,15 @@ def kill_fake_agy():
             pass
 
 
+def dumps(o):
+    return json.dumps(o, ensure_ascii=False)
+
+
+def refused(r):
+    """원시 RPC 응답이 문 거부인가(r6) — ok 아님 ∧ 사유 코드 agy_consumer_policy."""
+    return r.get("ok") is not True and POLICY in dumps(r)
+
+
 def main():
     assert not real_agy_procs(), "시작 전 실 agy 프로세스가 이미 있다 — 대조가 흐려지므로 중단"
     pid = h.start_daemon(wait=120)
@@ -344,6 +353,26 @@ def main():
                    ("원장에 「토큰 미확인 통과」", any('"agy_door"' in l and "토큰 미확인 통과" in l for l in new_led)),
                    ("대조: machine_origin = 거부(agy_consumer_policy)", r_m.get("ok") is not True
                     and POLICY in json.dumps(r_m, ensure_ascii=False))))
+    # E21(codex 5R blocking 3): 문 열림에서 --agent 없이 만든 좌석(cmd = 치환 괄호 속 따옴표 + agy 경로) — 문을 닫은 뒤 자동 지시 거부.
+    #   종전엔 저장된 cmd 를 실행 자리 검사로 다시 읽어 치환 괄호를 오인(통과)했다 → 생성 때 확정한 좌석 종류로 판정.
+    door(True)
+    b = ran()
+    r21c = raw_rpc("surface.create", {"cmd": "true $(printf ')'); \"%s\" -p seat" % os.path.join(FAKE, "agy")})
+    s21 = (r21c.get("result") or {}).get("surface_id")
+    for _ in range(20):
+        if ran() > b:
+            break
+        time.sleep(0.5)
+    started = ran() - b
+    door(False)
+    r21 = raw_rpc("surface.send_text", {"surface_id": s21, "text": "hello from automation"})
+    r21q = raw_rpc("surface.send_text", {"surface_id": s21, "text": "queued hello", "queued": True})
+    rc21, out21 = cys("send", "--surface", "surface:%s" % s21, "hello via cli", timeout=30)
+    results.append({"id": "E21", "entry": "문 열림에서 만든 agy 좌석(cmd 치환 괄호 꼴 · --agent 없음) · 닫은 뒤 send · send --queued · cys send",
+                    "pass": bool(s21) and started == 1 and refused(r21) and refused(r21q) and rc21 != 0 and POLICY in out21,
+                    "started": started, "rpc": r21, "rpc_queued": r21q, "cli_rc": rc21, "cli_tail": out21.strip().splitlines()[-2:]})
+    print("%s E21 started=%s rpc=%s queued=%s cli_rc=%s" % ("PASS" if results[-1]["pass"] else "FAIL", started,
+          refused(r21), refused(r21q), rc21))
     kill_fake_agy()   # pane(셸)은 남기고 가짜 agy 만 → reviewer-gemini 를 쥔 빈 좌석
     time.sleep(6)     # 데몬 워치독이 agent_alive=false 를 보도록
 
@@ -425,6 +454,55 @@ def main():
     b = ran(); rc, out = cys("channel", "start", "agywatch", "--cmd", "watch \"%s\"" % agy)
     record("E18b", "채널 --cmd 'watch \"…/agy\"'(4R blocking 3 · 인용된 래퍼 대상)", b, out, rc, expect_rc=76,
            expect_in=("[channel] " + POLICY,))
+    # ── r6(TICKET=cysr-agy-door-r6 · codex 5R 처분) — 문 닫힘 ──
+    # E20(5R blocking 2): 구판 CLI·원시 RPC 가 데몬 surface.create 를 직접 — 서버가 PTY 를 만들기 전에 거부
+    n0 = len(surfaces())
+    b = ran()
+    r20 = {"cmd": raw_rpc("surface.create", {"cmd": agy + " -p raw"}),
+           "agent_gemini": raw_rpc("surface.create", {"agent": "gemini"}),
+           "agent_agy": raw_rpc("surface.create", {"cmd": "sleep 5", "agent": "agy"}),
+           "control_plain": raw_rpc("surface.create", {"cmd": "sleep 3"})}
+    time.sleep(4)
+    record("E20", "원시 RPC surface.create {cmd:agy} · {agent:gemini} · {agent:agy}(구판 CLI 꼴 · 5R blocking 2)", b, dumps(r20), 0,
+           checks=(("cmd agy = 거부(agy_consumer_policy)", refused(r20["cmd"])),
+                   ("선언 agent gemini(cmd 없음) = 거부", refused(r20["agent_gemini"])),
+                   ("선언 agent agy = 거부", refused(r20["agent_agy"])),
+                   ("대조: 평범한 cmd = 생성됨", r20["control_plain"].get("ok") is True),
+                   ("거부된 셋은 좌석을 만들지 않음(좌석 수 +1 이하 = 대조 하나)", len(surfaces()) <= n0 + 1)))
+    # E25(5R blocking 2 전수 · launch-agent 의 데몬 쪽): 빈 셸 좌석에 좌석 기동 줄 표지(agent_launch)로 agy 기동 줄 — 데몬 거부
+    r_sh = raw_rpc("surface.create", {"cwd": HOME})
+    sh_sid = (r_sh.get("result") or {}).get("surface_id")
+    time.sleep(3)
+    b = ran()
+    r25 = raw_rpc("surface.send_text", {"surface_id": sh_sid, "text": agy + " -p launch\r", "agent_launch": True})
+    time.sleep(4)
+    record("E25", "원시 RPC 빈 셸 좌석에 agent_launch 표지 agy 기동 줄(구판 CLI launch-agent 꼴)", b, dumps(r25), 0,
+           checks=(("빈 셸 좌석 생성", sh_sid is not None), ("기동 줄 = 거부(agy_consumer_policy)", refused(r25))))
+    # E22(5R major 4): cys run -- sh -c 'exec "$@"' sh agy — 위치 인자로 넘긴 명령 · 대조 = 위치 인자가 자료일 뿐인 꼴
+    b = ran(); rc, out = cys("run", "--", "sh", "-c", 'exec "$@"', "sh", agy, "-p", "trampoline", timeout=60)
+    record("E22", "cys run -- sh -c 'exec \"$@\"' sh agy(위치 인자 trampoline · 5R major 4)", b, out, rc, expect_rc=1,
+           expect_in=("error: " + POLICY,))
+    # 대조: 위치 인자가 자료일 뿐인 꼴은 문을 지난다. ★`cys run` 은 pane 밖 호출자에게 데몬 ACL(write-shell)이 원장 등록을 거부하므로
+    #   (문과 무관 · 실측 rc 1 「external lacks 'write-shell'」) 단언 = ⑴ cys run 출력에 문 사유 없음 ⑵ 같은 argv 판정(`cys agy-door-check -- …`) rc 0.
+    b = ran(); rc, out = cys("run", "--", "sh", "-c", 'echo "$1"', "sh", "agy-notes", timeout=60)
+    rc_chk, out_chk = cys("agy-door-check", "--", "sh", "-c", 'echo "$1"', "sh", "agy-notes", timeout=30)
+    record("E22c", "대조: cys run -- sh -c 'echo \"$1\"' sh agy-notes(위치 인자 = 자료 · 문 통과)", b, out + "\n[agy-door-check]\n" + out_chk, rc,
+           expect_not_in=(POLICY,), checks=(("같은 argv 문 판정 rc 0", rc_chk == 0),))
+    # E23(5R blocking 1 ⓑ): 내용이 agy 실행인 스크립트를 셸에 넘기는 일정 — 등록 때 한 단계 읽어 거부
+    review = os.path.join(HOME, "review.sh")
+    with open(review, "w") as f:
+        f.write("# nightly review\ncd /tmp\nexec %s -p review\n" % agy)
+    b = ran(); rc, out = cys("schedule", "add", "--id", "agyscript", "--in", "2s", "--command", "sh " + review)
+    record("E23", "일정 --command 'sh review.sh'(내용 = exec agy · 5R blocking 1 ⓑ 등록 때)", b, out, rc, expect_rc=76,
+           expect_in=("[schedule] " + POLICY,))
+    # E24(5R blocking 1 ⓐ): 이름 바꾼 심링크 — 실제 파일 이름으로 판정
+    gem = os.path.join(HOME, "bin", "gem-review")
+    os.makedirs(os.path.dirname(gem), exist_ok=True)
+    if not os.path.lexists(gem):
+        os.symlink(agy, gem)
+    b = ran(); rc, out = cys("channel", "start", "agylink", "--cmd", gem + " -p bridge")
+    record("E24", "채널 --cmd '…/gem-review'(→ agy 심링크 · 5R blocking 1 ⓐ)", b, out, rc, expect_rc=76,
+           expect_in=("[channel] " + POLICY,))
     # E9 = 앱 팔레트 「재기동 → reviewer-gemini」·「부서 간 전출」 이 하는 일 — 빈 셸에 그 명령을 쳐 넣는다
     rc, out = cys("new-surface", "--cwd", HOME)
     ref = next((w for w in out.split() if w.startswith("surface:")), None)
@@ -460,6 +538,10 @@ def main():
                                stdout=evf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
     time.sleep(2)
     b = ran(); rc, out = cys("schedule", "add", "--id", "agyfire", "--in", "8s", "--command", agy + " -p fire")
+    review2 = os.path.join(HOME, "review2.sh")
+    with open(review2, "w") as f:
+        f.write("exec %s -p fire-script\n" % agy)
+    rc_s, out_s = cys("schedule", "add", "--id", "agyfirescript", "--in", "8s", "--command", "sh " + review2)
     door(False)
     time.sleep(30)
     evp.terminate()   # 이 하네스가 띄운 구독 프로세스 하나(pid 직접)
@@ -469,10 +551,14 @@ def main():
         evp.kill()
     with open(ev_path, encoding="utf-8", errors="replace") as f:
         ev = f.read()
-    ev_hit = [l for l in ev.splitlines() if "agyfire" in l]
+    ev_hit = [l for l in ev.splitlines() if "agyfire" in l and "agyfirescript" not in l]
+    ev_scr = [l for l in ev.splitlines() if "agyfirescript" in l]
     record("E13", "문 열림에서 등록한 일정 --command agy · 닫은 뒤 발화(발화 때 판정)", b, out + "\n[events]\n" + ev, rc, expect_rc=0,
            checks=(("데몬 schedule.error 에 agyfire", bool(ev_hit)),
-                   ("그 사유 = agy_consumer_policy(codex 4R 발견 6)", any(POLICY in l for l in ev_hit))))
+                   ("그 사유 = agy_consumer_policy(codex 4R 발견 6)", any(POLICY in l for l in ev_hit)),
+                   ("r6: 문 열림 때 등록된 'sh review2.sh'(내용 agy) = 등록 rc 0", rc_s == 0),
+                   ("r6: 그 일정의 발화 = schedule.error · agy_consumer_policy(5R blocking 1 ⓑ 발화 때)",
+                    any(POLICY in l for l in ev_scr))))
     # ② 문 다시 열면 복원이 종전대로 띄운다
     # ★결정성(master#a078504c · 스냅샷 재실행 적색): `cys restore` 에는 역할 필터가 없어 앞 입구가 남긴 좌석(E6 의 reviewer-codex·
     #   reviewer-claude-*, E8 의 cso·worker — 가짜 에이전트는 시간이 지나면 끝난다)까지 되살리려 들고, 그 성패가 부하에 따라

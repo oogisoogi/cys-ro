@@ -126,6 +126,8 @@ describe("B-230 ① render() — 다시 붙인 뒤 보이는 pane 마다 resyncV
       wsViewTree: (w: { tree: unknown }) => w.tree, // (tabs-sidebar 조각2) 보기 트리 = 숨김 0 이면 ws.tree 그대로
       mountTabBar: () => {}, // (tabs-sidebar 2b) 탭 머리 줄 — 이 검체의 축과 무관
       repairHiddenFocus: () => {}, // (948 D1) 숨은 포커스 옮기기 — 이 검체의 축과 무관
+      paneHoldingKeyboard: () => null, // (codex 2R #4) 떼기 전 키보드 포커스 좌석 — 이 검체의 축과 무관
+      restoreKeyboardAfterRender: () => {}, // (codex 2R #4) 다시 붙인 뒤 포커스 되돌림 — 이 검체의 축과 무관
       tabPillarMemo: null, gridCell: null, recomputeTabPillar: () => {}, // (2b-3) 기둥 몫 재측정 — 이 검체의 축과 무관
       nodeShown: () => true,
       holeShownFor: () => new Set(),

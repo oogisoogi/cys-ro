@@ -5463,7 +5463,29 @@ function setOsDropTarget(rt: PaneRuntime | undefined) {
 
 // ---------- render ----------
 
+// (codex 2R #4) render 는 모든 창을 떼었다 붙인다 — 떼는 순간 브라우저가 실제 키보드 포커스를 BODY 로 떨어뜨려, 포커스 표시는 남는데
+//   이어 친 글자가 어느 좌석에도 안 갔다(유실 · race_gate R2·R3). 떼기 전 실제 포커스를 가진 좌석 창을 기억해 두었다가, 다시 붙인 뒤
+//   ⑴ 포커스가 정말 빠졌고(BODY·없음 — 그사이 다른 칸이 받았으면 손대지 않는다) ⑵ 그 창이 같은 런타임으로 지금 화면(#root)에 붙어 있으며
+//   ⑶ 모달·팔레트·메뉴가 떠 있지 않고 ⑷ 그 창이 포커스 표시(focusedSid)된 좌석일 때만 setFocus 로 되돌린다(xterm 포커스 단일 입구 · 모달 가드 그대로).
+//   숨었거나 사라진 창에는 되돌리지 않는다(숨은 좌석에 새로 시작되는 입력 0).
+function paneHoldingKeyboard(): PaneRuntime | null {
+  const a = document.activeElement;
+  if (!a || a === document.body) return null;
+  for (const rt of panes.values()) if (rt.el.contains(a)) return rt;
+  return null;
+}
+function restoreKeyboardAfterRender(held: PaneRuntime | null): void {
+  if (!held) return;
+  const a = document.activeElement;
+  if (a && a !== document.body) return;
+  if (panes.get(paneKey(held.sid, held.socket)) !== held || !root.contains(held.el)) return;
+  if (modalLayerOpen(document) || document.getElementById("ctx-menu")) return;
+  if (focusedSid == null || held.sid !== focusedSid || paneKey(focusedSid, current()?.socket) !== paneKey(held.sid, held.socket)) return;
+  setFocus(focusedSid);
+}
+
 function render() {
+  const kbHeld = paneHoldingKeyboard(); // (codex 2R #4) 떼기 전 실제 키보드 포커스 좌석
   for (const rt of panes.values()) rt.el.remove();
   root.innerHTML = "";
   const ws = current();
@@ -5483,6 +5505,7 @@ function render() {
   else if (ws?.pending) root.appendChild(renderDeptPending(ws)); // WP-10: 부서 준비 중 빈 pane 스피너·안내(★0.14.43 GU: 경과·단계 문구)
   else if (ws) root.appendChild(renderIdleWorkspace(ws)); // pane 0개 — 백지 대신 안내+손잡이
   renderWsTabs();
+  restoreKeyboardAfterRender(kbHeld); // (codex 2R #4) 다시 붙인 뒤 — 빠진 키보드 포커스를 그 좌석에(보일 때만)
   // ★B-230(H1): 방금 다시 붙인 pane 의 뷰포트를 xterm 의 지금 위치에 다시 맞춘다(resyncViewport) — 크기가 같아 아래 fit 이 아무것도 안 할 때도.
   for (const sid of collectSids(tree ?? null)) {
     const rt = panes.get(paneKey(sid, current()?.socket));

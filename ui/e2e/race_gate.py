@@ -4,6 +4,8 @@
 실제 번들 + __TAURI__ 대역(statusboard_gate SHIM) · create_surface 응답을 1.5초 늦추고 그 사이에:
   R1(#2) 본부 작업공간에서 ⌘T → 부서 작업공간(lms)으로 전환 → 새 좌석(본부 데몬 것)은 본부 트리에만 · 부서 트리에 0 · 화면 포커스는 지금 작업공간 좌석
   R2(#3) site 탭 좌석 4 에서 ⌘D → 탭 lms 로 전환 → 새 좌석은 시작한 탭(site) 묶음 · 지금 보이는 lms 화면에 없음 · 포커스 = 보이는 좌석(숨은 좌석 아님)
+    (codex 2R #4) 뒤이은 3초 목록 render(새 좌석을 데려와 창을 떼었다 붙임)를 지난 뒤에도 **실제 키보드 포커스**(document.activeElement)가
+    포커스 표시된 보이는 좌석 안에 있고(BODY 아님) · 이어 친 글자의 send_input 목적지 = 그 좌석뿐(유실 0)
   R3(#3) site 탭 좌석 4 에서 ⌘D → 그 사이 좌석 4 닫힘(surface.closed) → 새 좌석이 화면에 보이고 포커스도 그 좌석 · 오류 0
 실행: CHROME_PATH=<chrome-headless-shell> [GATE_DIST=<다른 번들>] cys run -- <playwright python3> ui/e2e/race_gate.py
 """
@@ -105,12 +107,18 @@ def main() -> int:
             pg.keyboard.press("Meta+d")
             pg.wait_for_timeout(300)
             pg.click('#root .group-tab:has-text("lms")')
-            pg.wait_for_timeout(2500)
+            # 생성 응답(1.5초) + 그 뒤 3초 목록 1바퀴(새 좌석을 목록에서 데려와 render — 창을 떼었다 붙인다)를 넉넉히 지난다
+            pg.wait_for_timeout(5000)
             s2 = pg.evaluate(STATE)
             sbg.check(s2["tab"] == "lms" and 50 not in s2["panes"], f"지금 lms 화면 = 새 좌석 없음(시작한 site 탭 묶음) {s2['panes']} · 탭 {s2['tab']}")
-            sbg.check(len(s2["focused"]) == 1 and s2["focused"][0] in s2["panes"] and s2["active"] != 50, f"포커스 표시 = 보이는 좌석(숨은 새 좌석 아님) {s2['focused']} · 키보드 {s2['active']}")
-            # 실측만: 뒤이은 배경 그림(3초 목록이 새 좌석을 데려옴)이 창을 떼었다 붙여 키보드 포커스가 BODY 로 빠질 수 있다 — render() 의 1.1.14 동작(이 조각 밖)
-            print(f"  (실측) 키보드 포커스 = {s2['active']}")
+            sbg.check(len(s2["focused"]) == 1 and s2["focused"][0] in s2["panes"], f"포커스 표시 = 보이는 좌석(숨은 새 좌석 아님) {s2['focused']}")
+            # (codex 2R #4) 표시만이 아니라 실제 키보드 포커스 — BODY 면 친 글자가 어디로도 안 간다(유실)
+            sbg.check(s2["active"] in s2["panes"] and s2["focused"] == [s2["active"]], f"실제 키보드 포커스 = 포커스 표시된 보이는 좌석(BODY 아님) · 키보드 {s2['active']} · 표시 {s2['focused']}")
+            pg.evaluate("() => { window.__calls = []; }")
+            pg.keyboard.type("xy")
+            pg.wait_for_timeout(500)
+            sent = [c for c in pg.evaluate("() => window.__calls") if c[0] == "send_input"]
+            sbg.check(bool(sent) and all(c[1] == (s2["focused"] or [None])[0] for c in sent), f"이어 친 글자 = 그 보이는 좌석으로만(유실 0 · 숨은 좌석 0) {sent} · 표시 {s2['focused']}")
             pg.click('#root .group-tab:has-text("site")')
             pg.wait_for_timeout(600)
             s2b = pg.evaluate(STATE)
@@ -130,7 +138,7 @@ def main() -> int:
             pg.wait_for_timeout(2500)
             s3 = pg.evaluate(STATE)
             sbg.check(4 not in s3["panes"] and 50 in s3["panes"], f"대상 닫힘 뒤 새 좌석 50 보임 {s3['panes']}")
-            sbg.check(s3["focused"] == [50], f"포커스 = 새 좌석 {s3['focused']}")
+            sbg.check(s3["focused"] == [50] and s3["active"] == 50, f"포커스 = 새 좌석(표시 {s3['focused']} · 키보드 {s3['active']})")
             sbg.check(not errs, f"오류 0 {errs[:2]}")
             ctx.close()
             br.close()

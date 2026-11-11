@@ -6262,6 +6262,7 @@ fn run(command: Command) -> i32 {
         }
 
         Command::NewSurface { cwd, cmd, title, role, agent, rows, cols } => {
+            if let Some(m) = cys::agy_door::launch_refusal(agent.as_deref().unwrap_or(""), cmd.as_deref()) { eprintln!("[new-surface] {m}"); std::process::exit(cys::agy_door::EXIT_AGY_POLICY_REFUSED); } // ★agy 좌석 문
             request(
                 "surface.create",
                 // (S3-D2) `agent` 는 부재 시 null 로 나간다 = 데몬이 메타를 쓰지 않는다(기존 동작).
@@ -57726,5 +57727,60 @@ mod b360_tests {
         let keys = r3x_dict_keys(&r3x_block(&block), "_BOOT_OUTCOME_READINESS").expect("parsed");
         assert_eq!(keys.into_iter().collect::<Vec<_>>(), vec!["failed".to_string(), "launched".to_string()]);
         assert_eq!(r3x_kept_pane_labels().len(), 4, "{:?}", r3x_kept_pane_labels());
+    }
+}
+
+/// ★agy 좌석 문(TICKET=cysr-agy-policy-exposure) 배선 핀 — 기동·복원 입구마다 문 판정이 **첫 동작**으로 걸려 있는가.
+/// 판정 자체(어댑터·문 파일·문안)는 lib `cys::agy_door` 시험이 재고, 여기서는 「그 판정을 부르는 줄이 지워지면 붉다」만 잰다
+/// (실측 = docs/agy-door-evidence/acceptance.py · 가짜 agy 로 11 입구 생성 0).
+#[cfg(test)]
+mod agy_door_wiring_tests {
+    fn body<'a>(src: &'a str, head: &str) -> &'a str {
+        let i = src.find(head).unwrap_or_else(|| panic!("{head} 부재"));
+        let open = i + src[i..].find(") -> ").expect("반환형");
+        let start = open + src[open..].find('{').expect("본체") + 1;
+        &src[start..]
+    }
+
+    fn first_stmt(b: &str) -> &str {
+        b.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("//")).unwrap_or("")
+    }
+
+    #[test]
+    fn launch_agent_refuses_before_anything_else() {
+        let src = include_str!("cys.rs");
+        let b = body(src, "\nfn run_launch_agent_opts(");
+        assert!(
+            first_stmt(b).starts_with("if let Some(rc) = agy_door_refuse_launch(agent) { return rc; }"),
+            "launch-agent 첫 동작이 agy 좌석 문이 아니다: {}",
+            first_stmt(b)
+        );
+    }
+
+    #[test]
+    fn boot_agent_on_surface_refuses_before_anything_else() {
+        let src = include_str!("cys.rs");
+        let b = body(src, "\nfn boot_agent_on_surface(");
+        assert!(
+            first_stmt(b).starts_with("if let Some(e) = cys::agy_door::launch_refusal(agent, spec[\"cmd\"].as_str()) { return Err(e); }"),
+            "boot_agent_on_surface 첫 동작이 agy 좌석 문이 아니다: {}",
+            first_stmt(b)
+        );
+    }
+
+    #[test]
+    fn restore_new_surface_and_detect_are_gated() {
+        let src = include_str!("cys.rs");
+        let r = &src[src.find("\nfn run_restore_with(").expect("restore")..];
+        let r = &r[..r[1..].find("\nfn ").expect("끝") + 1];
+        let skip = r.find("if let Some(l) = agy_door_restore_skip(role, agent) { println!(\"{l}\"); continue; }").expect("복원 건너뜀 줄 부재");
+        assert!(skip < r.find("launcher.in_seat(").expect("in_seat") && skip < r.find("launcher.fresh(").expect("fresh"),
+            "복원 건너뜀은 좌석 내 재연결·fresh 기동보다 앞이어야 한다");
+        let ns = &src[src.find("Command::NewSurface { cwd, cmd, title, role, agent, rows, cols } => {").expect("new-surface 팔")..];
+        assert!(first_stmt(&ns[ns.find("=> {").unwrap() + 4..]).starts_with("if let Some(m) = cys::agy_door::launch_refusal("),
+            "new-surface 첫 동작이 agy 좌석 문이 아니다");
+        let d = body(src, "\nfn detect_agent_binary(");
+        let d = &d[..d.find("\n}\n").expect("끝")];
+        assert!(d.contains("apply_agy_door(agent, apply_windows_agent_fallback("), "agent-detect 오라클이 문 판정을 거치지 않는다");
     }
 }

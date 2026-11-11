@@ -339,19 +339,31 @@ def main():
            expect_in=("? for shortcuts",))
 
     # ② 문 다시 열면 복원이 종전대로 띄운다
+    # ★결정성(master#a078504c · 스냅샷 재실행 적색): `cys restore` 에는 역할 필터가 없어 앞 입구가 남긴 좌석(E6 의 reviewer-codex·
+    #   reviewer-claude-*, E8 의 cso·worker — 가짜 에이전트는 시간이 지나면 끝난다)까지 되살리려 들고, 그 성패가 부하에 따라
+    #   달라졌다(실측 rc 1·0·0·1). 그래서 ②E5 직전에 reviewer-gemini 밖의 역할을 전부 묘비로 닫아 restore 대상을 gemini 하나로 만든다.
+    _roles = {s.get("role") for s in surfaces()} | {"reviewer-codex", "reviewer-claude-1", "reviewer-claude-2", "cso", "worker"}
+    for _tp in {os.path.join(os.path.dirname(SOCK), "topology.json"), os.path.join(h.HARN_STATE, "topology.json")}:
+        try:
+            with open(_tp, encoding="utf-8") as _f:
+                _roles |= {e.get("role") for e in json.load(_f).get("entries", [])}
+        except (OSError, ValueError):
+            pass
+    _tombed = sorted(r for r in _roles if r and r not in ("reviewer-gemini", "-", "master"))
+    for _r in _tombed:
+        cys("tombstone", _r, timeout=20)
+    print("②E5 준비: 묘비로 닫은 역할 =", _tombed)
     door(True)
     b = ran(); rc, out = cys("restore")
-    # restore 에는 역할 필터가 없다 — E6 이 남긴 reviewer-codex 좌석(가짜 codex)도 같이 되살리려 들고, 그 몫이 관문
-    #   보류에 걸리면 rc 1 이 된다(실측 2회: 한 번 1 · 한 번 0 = 비결정 · 문과 무관). 판정은 역할 블록에 결속한다(codex 2R):
-    #   gemini 블록 = ready · 관문 보류·실패 없음 · restore 요약 「실패 0」 · rc 1 이면 관문 보류가 **gemini 아닌** 블록에 있어야 한다.
+    # 판정은 역할 블록에 결속한다(codex 2R): restore 가 세운 좌석 = reviewer-gemini 하나 · 그 블록 = ready · 관문 보류·오류 없음 · rc 0.
     blk = launch_blocks(out)
     gem = blk.get("reviewer-gemini", "")
-    others_gate = any("관문 보류" in v for k, v in blk.items() if k != "reviewer-gemini")
-    record("②E5", "문 열림 · cys restore(종전대로 다시 뜸)", b, out, rc, expect_delta=1, expect_rc=(0, 1),
+    record("②E5", "문 열림 · cys restore(종전대로 다시 뜸)", b, out, rc, expect_delta=1, expect_rc=0,
            expect_in=("실패 0",), expect_not_in=(SKIP_LINE, "· reviewer-gemini: 기동 실패"),
-           checks=(("reviewer-gemini 블록 = ready", "[launch-agent] ready" in gem),
-                   ("reviewer-gemini 블록에 관문 보류·오류 없음", gem and "관문 보류" not in gem and "error" not in gem.lower()),
-                   ("rc 1 이면 원인 = 다른 역할 블록의 관문 보류", rc == 0 or others_gate)))
+           checks=(("앞 입구 역할 묘비 처리됨(restore 대상 = gemini 하나)", bool(_tombed)),
+                   ("restore 가 세운 좌석 = reviewer-gemini 뿐", sorted(blk) == ["reviewer-gemini"]),
+                   ("reviewer-gemini 블록 = ready", "[launch-agent] ready" in gem),
+                   ("reviewer-gemini 블록에 관문 보류·오류 없음", bool(gem) and "관문 보류" not in gem and "error" not in gem.lower())))
 
     real = real_agy_procs()
     results.append({"id": "real-agy", "entry": "실 agy 실행 파일 프로세스", "pass": not real, "procs": real})

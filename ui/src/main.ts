@@ -12128,22 +12128,30 @@ async function start() {
     // 둘 다 실패하면 **빈 탭으로 두고 진행한다**: 빈 탭은 백지보다 낫고, 3초 틱이 뒤를 받는다.
     if (startHaltedByReset(info)) return; // ★W-3-b(R3-M1): newSurface 앞 재확인
     // (codex 3R 전수 표 · 같은 모양) `current().tree = { sid: await … }` 는 왼쪽 작업공간을 await **전에** 잡는다 — 그사이 지워졌으면 거둔다.
+    // (ChatGPT F1) 작업공간과 그 소켓을 **한 단위로** 잡는다 — 폴백 판정까지 current() 를 다시 읽으면, 첫 시도를 기다리는 사이 탭을 바꿨을 때
+    //   본부 데몬 좌석을 다른 데몬(부서)의 작업공간 트리에 붙였다(race_gate R11). 폴백은 잡아 둔 작업공간이 본부일 때만.
     const cw = current();
-    const putSeat = async (sid: number) => {
+    const cwSock = cw.socket;
+    const putSeat = async (sid: number, madeOn: string | undefined) => {
+      // 붙이기 직전 단언: 좌석을 만든 데몬 == 붙일 작업공간의 데몬(그사이 그 작업공간 소켓이 바뀌었으면 붙이지 않고 그 새 좌석을 거둔다)
+      if ((madeOn ?? undefined) !== (cw.socket ?? undefined)) {
+        await closePane(sid, madeOn).catch(() => destroyPaneRuntime(sid, madeOn));
+        return;
+      }
       if (wsGoneOrGoing(cw)) await dropSeatOfGoneWs(cw, sid);
       else cw.tree = { type: "pane", sid };
     };
     try {
-      await putSeat(await newSurface(null, current().socket, T_NEW));
+      await putSeat(await newSurface(null, cwSock, T_NEW), cwSock);
     } catch {
       if (startHaltedByReset(info)) return; // ★W-3-b: 첫 시도가 실패하는 사이 초기화가 끝났을 수 있다
       // ★F2(8라운드): 기본 데몬 폴백은 **본부 탭에만** 적용한다. 부서 탭에 기본 데몬 셸을 붙이면 pane 키
       //   (sid+socket)가 그 탭의 socket 과 어긋나 화면에 붙지 못하고(renderNode 가 `surface:N (없음)` 만
       //   그린다) 그 surface 는 보이지 않는 채 남는다 — 죽은 부서 탭은 빈 트리로 두면 idle 패널
       //   ('지금 켜기')이 받는다(백지가 아니다).
-      if (!current().socket) {
+      if (!cwSock) {
         try {
-          await putSeat(await newSurface(null, undefined, T_NEW));
+          await putSeat(await newSurface(null, undefined, T_NEW), undefined);
         } catch {
           /* 기본 데몬까지 실패 — 빈 탭으로 두고 render 로 진행한다(백지 금지) */
         }

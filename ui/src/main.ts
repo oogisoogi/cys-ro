@@ -3212,7 +3212,7 @@ type NodeSig = SeatSig & { working: boolean };
 const nodeSig = new Map<string, NodeSig>(); // 키 = `${socket}#${surface_id}`
 // (tabs-sidebar 조각1) 좌석 줄 재료 — 3초 surface.list 원행(소켓 → sid → 행) · 10초 org.status 자기보고 · 승인 창 좌석. 키 모양 = nodeSig.
 const seatListBySock = new Map<string, Map<number, any>>();
-const seatSelf = new Map<string, { state: string | null; task: string | null; ageSecs: number | null }>();
+const seatSelf = new Map<string, { state: string | null; task: string | null }>();
 let approvalSeats = new Set<string>();
 // ★0.14.45 좌석별 계정 캐시 — org.status 좌석 행의 `account` 가산 키(같은 10초 틱 · 새 RPC·타이머 0). 키는 nodeSig 와 같다. 표시 전용.
 const seatAccts = new Map<string, SeatAcctSig>();
@@ -3550,9 +3550,10 @@ function paintRoleDot(rt: PaneRuntime, nowMs: number) {
   //   gemini·agy 등 · 관측 전 첫 몇 초)은 원작자 판에선 늘 빈 원(모름)이다. 그 경우에만 우리 신선한 자기보고(nodeSig ·
   //   appearance.ts nodeWorking)가 작업 중이면 작업 중으로 칠하고, 문구에 근거(자기보고)를 밝힌다. 관측이 있으면(대기·입력
   //   대기·지연 포함) 언제나 관측이 이긴다.
-  const selfWorking = p.view === "unknown" && surfaceWorking(rt.sid, rt.socket);
-  const view = selfWorking ? "working" : p.view;
-  const text = selfWorking ? "작업 중 · 자기보고(데몬 관측 없음)" : p.text;
+  // (tabs-sidebar 1c · master#6ecef1a2 ④) 좌석 줄과 같은 판정 하나(seatrows.seatDot) — 승인 피드가 대기 중이면 입력 대기(◆)로 두 표시가 같다.
+  const approval = approvalSeats.has(`${rt.socket}#${rt.sid}`);
+  const view = seatDot(p.view, surfaceWorking(rt.sid, rt.socket), approval);
+  const text = view === p.view ? p.text : approval ? "입력 대기 · 승인 창(승인 피드 대기 중)" : "작업 중 · 자기보고(데몬 관측 없음)";
   applyDotPaint(rt.roleEl, { visible: true, color, view, label: `역할: ${role} · ${text}` });
 }
 
@@ -5811,7 +5812,7 @@ async function refreshSidebarStatus() {
           at: Date.now(), // ★U4-A5① 성공 조회 시각 — 실패는 덮어쓰지 않으므로 3×주기 뒤 '미확인'이 된다
         });
       for (const n of r.surfaces ?? []) // (tabs-sidebar 조각1) 좌석 줄의 「확인」 꼬리표·일감 이름 = 자기보고
-        if (n && typeof n === "object") seatSelf.set(`${sock}#${n.surface_id}`, { state: typeof n.status?.state === "string" ? n.status.state : null, task: typeof n.status?.task === "string" ? n.status.task : null, ageSecs: typeof n.status?.age_secs === "number" ? n.status.age_secs : null });
+        if (n && typeof n === "object") seatSelf.set(`${sock}#${n.surface_id}`, { state: typeof n.status?.state === "string" ? n.status.state : null, task: typeof n.status?.task === "string" ? n.status.task : null });
       // ★0.14.45 좌석별 계정 — 키가 없으면(구버전 데몬) present=false 로 적는다(값을 지어내지 않는다). 실패 조회는 덮어쓰지 않으므로 낡음 창 뒤 '계정 미확인'.
       for (const n of r.surfaces ?? []) {
         if (!n || typeof n !== "object") continue;
@@ -5874,7 +5875,7 @@ function refreshSeatRows(): void {
     for (const sid of collectSids(ws.tree)) {
       const p = projectActivity(roleActivity.get(paneKey(sid, sock)), nowMs, T_ACTIVITY);
       const self = seatSelf.get(`${sock}#${sid}`);
-      inputs.push(seatInputOf(sid, list?.get(sid), seatDot(p.view, self), self, approvalSeats.has(`${sock}#${sid}`)));
+      inputs.push(seatInputOf(sid, list?.get(sid), seatDot(p.view, surfaceWorking(sid, sock), approvalSeats.has(`${sock}#${sid}`)), self, approvalSeats.has(`${sock}#${sid}`)));
     }
     paintSeatRows(seatHost(String(ws.id)), buildSeatRows(inputs), { onPick: (sid) => pickSeat(ws, sid) });
   }

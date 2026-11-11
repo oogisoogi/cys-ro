@@ -70,13 +70,15 @@ SHIM = r"""
       case 'fresh_start_check': return { ask: false };
       case 'resolve_list_endpoints': return a.endpoints;
       case 'list_surfaces': return { surfaces: SEATS.map(row) };
-      case 'org_status': return { surfaces: SEATS.map((s) => ({ surface_id: s.sid, role: s.role, exited: false, idle_secs: 1, agent_alive: true,
+      case 'org_status': return { surfaces: SEATS.map((s) => ({ surface_id: s.sid, role: s.role, exited: false, idle_secs: s.act === 'unknown' ? 999 : 1, agent_alive: true,
         usage: row(s).usage, status: s.self || s.task ? { state: s.self ?? 'working', context_pct: null, task: s.task, age_secs: 5 } : null })),
         feed: { pending: SEATS.filter((s) => s.approval).length } };
       case 'feed_list_all': return { sockets: [{ socket: '/sandbox/cys.sock', dept: null, ok: true,
         items: SEATS.filter((s) => s.approval).map((s, i) => ({ request_id: 'r' + i, kind: 'approval', status: 'pending', surface_id: s.sid, title: 't', body: 'b' })) }] };
       case 'usage_named_reporters': return { named: [] };
-      case 'usage_accounts_all': return { accounts: [] };
+      // 사용량 칸(사용량 · 7d · 7d·Fable) — 계정 자료가 있으면 그대로 그려져야 한다(1c ②: 좌석 줄 작업으로 칸이 사라지지 않았음을 확인)
+      case 'usage_accounts_all': return { accounts: [{ account_id: 'acct-1', label: 'sim@example.com', provider: 'claude', updated_at: Date.now() / 1000,
+        rate: [{ label: '7d', used_pct: 86, resets_at: Date.now() / 1000 + 86400, stale: false }] }] };
       case 'attach_surface': return { output_event: 'sim-out-' + a.surfaceId, exited_event: 'sim-exit-' + a.surfaceId };
       default: return null;
     }
@@ -96,10 +98,22 @@ JS_STATE = r"""
     ctx: r.querySelector('.ws-seat-ctx')?.textContent, over: r.scrollWidth > r.clientWidth + 1 }));
   const heads = [...document.querySelectorAll('.ws-seat-group-name')].map((h) => h.textContent);
   const tabs = document.getElementById('ws-tabs');
+  // 이름 칸: 다 보이거나(자르지 않음) 최소 6글자 폭(한글 1글자 ≈ 1em) — 1c ①
+  const nameShort = [...document.querySelectorAll('.ws-seats .ws-seat-name')].filter((n) => {
+    const em = parseFloat(getComputedStyle(n).fontSize);
+    return n.scrollWidth > n.clientWidth + 1 && n.clientWidth < 6 * em - 1;
+  }).map((n) => n.textContent);
+  // 역할 점(창 머리) ↔ 좌석 줄이 같은 값인가 — 1c ④
+  const dotOf = (sid) => { const e = document.querySelector(`#root .pane[data-sid="${sid}"] .pane-role-dot`); if (!e) return null;
+    for (const [c, v] of [['act-working', 'working'], ['act-waiting', 'idle'], ['act-input', 'blocked'], ['act-unknown', 'unknown'], ['act-stale', 'unknown']]) if (e.classList.contains(c)) return v; return '?'; };
+  const mismatch = [...document.querySelectorAll('.ws-seats .ws-seat:not(.named)')].map((r) => {
+    const st = [...r.classList].find((c) => c.startsWith('st-')).slice(3); const d = dotOf(r.dataset.sid);
+    return d === null || d === st ? null : `${r.dataset.sid}:${d}≠${st}`; }).filter(Boolean);
+  const rates = [...document.querySelectorAll('#ws-usage .wsu-rate')].length;
   return { rows, heads, docOver: document.documentElement.scrollWidth > innerWidth,
     tabsOver: tabs ? tabs.scrollWidth > tabs.clientWidth + 1 : null,
     oldCtx: [...document.querySelectorAll('.wsu-head')].some((h) => h.textContent === '페인 CTX'),
-    panes: document.querySelectorAll('#root .pane').length };
+    panes: document.querySelectorAll('#root .pane').length, nameShort, mismatch, rates };
 }
 """
 
@@ -162,6 +176,9 @@ def main() -> int:
                     if name == "workers7":
                         got = {r["no"]: (r["shape"], r["tag"]) for r in st["rows"]}
                         check(got == EXPECT7, f"상태 모양·꼬리표 판정표 일치 {got}")
+                    check(not st["nameShort"], f"이름이 잘리면 최소 6글자 폭 {st['nameShort']}")
+                    check(not st["mismatch"], f"역할 점 = 좌석 줄(같은 좌석 같은 값) {st['mismatch']}")
+                    check(st["rates"] >= 1, f"사용량 칸 막대 그려짐 {st['rates']}")
                     check(not errs, f"콘솔 오류 0 {errs[:3]}")
                     ctx.close()
             browser.close()

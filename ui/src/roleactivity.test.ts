@@ -3,6 +3,7 @@
 //   ② CSS: 무조건 깜박임 제거 — 작업 중만 깜박인다 · 움직임 줄임에서도 작업 중은 구별된다
 //   ③ U-F06: main.ts 의 **실제** refreshPaneTitles·활동 패스 본문을 떼어 돌린다(가짜 DOM · 가짜 IPC · 가짜 단조 시계)
 import { describe, it, expect } from "bun:test";
+import { seatDot } from "./seatrows"; // (tabs-sidebar 1c) paintRoleDot 의 판정 함수
 import { readFileSync } from "node:fs";
 import {
   parseDisplayActivity,
@@ -330,7 +331,7 @@ function harness() {
     placeholderSids: new Set<number>(), touchedPlaceholders: new Set<number>(), shouldClosePlaceholder: () => false, placeholderScreenLines: () => null,
     hqMasterSids: null, renderWsTabs: nothing,
     lastSurfacesBySocket: new Map<string, unknown>(), refreshUsageAccounts: () => Promise.resolve(), refreshNamedReporters: () => Promise.resolve(), renderSidebarUsage: nothing,
-      seatListBySock: new Map<string, unknown>(), refreshSeatRows: nothing, // (tabs-sidebar 조각1) 좌석 줄 재료·그리기 — 이 검체의 축과 무관(무동작)
+      seatListBySock: new Map<string, unknown>(), refreshSeatRows: nothing, seatDot, approvalSeats: new Set<string>(), // 실제 판정 함수(seatrows.seatDot) — 대역 아님 // (tabs-sidebar 조각1) 좌석 줄 재료·그리기 — 이 검체의 축과 무관(무동작)
   };
   const loaded = loadWith(FNS, deps);
   fns = loaded.fns;

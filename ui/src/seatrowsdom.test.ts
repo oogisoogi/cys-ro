@@ -57,10 +57,10 @@ describe("main.ts 배선 — 배선만 · 옛 페인 CTX 칸 없음", () => {
     expect(body("refreshPaneTitles")).toContain("seatListBySock.set(sk ?? \"\", new Map(r.surfaces.map((s) => [s.surface_id, s])));");
     expect(body("refreshSidebarStatus")).toContain("await refreshApprovalSeats();");
   });
-  test("좌석 줄 활동 점 = 데몬 관측 우선 · 모름일 때만 신선한 자기보고(seatDot) — 출력 활동 추정(surfaceWorking)은 쓰지 않는다", () => {
-    expect(body("refreshSeatRows")).toContain("seatDot(p.view, self)");
-    expect(body("refreshSeatRows").includes("surfaceWorking(")).toBe(false);
-    expect(body("paintRoleDot")).toContain('p.view === "unknown" && surfaceWorking(rt.sid, rt.socket)');
+  test("역할 점과 좌석 줄 = 같은 판정 함수 하나(seatDot) · 같은 입력(관측 + surfaceWorking)", () => {
+    expect(body("refreshSeatRows")).toContain("seatDot(p.view, surfaceWorking(sid, sock), approvalSeats.has(`${sock}#${sid}`))");
+    expect(body("paintRoleDot")).toContain("seatDot(p.view, surfaceWorking(rt.sid, rt.socket), approval)");
+    expect(body("paintRoleDot")).toContain("const approval = approvalSeats.has(`${rt.socket}#${rt.sid}`);");
   });
   test("옛 「페인 CTX」 머리·행이 다시 그려지지 않는다(신선도 꼬리만 남음)", () => {
     expect(main.includes('head.textContent = "페인 CTX";')).toBe(false);

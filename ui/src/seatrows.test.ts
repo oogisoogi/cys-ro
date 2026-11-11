@@ -199,13 +199,14 @@ test("이름 보고자 입력 — 이름 줄 · 활동 모름 · CTX 결측은 �
   expect(m.fixed.map((r) => [r.no, r.state, r.ctxPct, r.named])).toEqual([["master", "unknown", 52, true], ["cso", "unknown", null, true]]);
 });
 
-test("좌석 점 — 관측 우선 · 모름이면 120초 안의 자기보고 working 만 작업 중 · 낡은/없는 자기보고는 모름", async () => {
+test("화면 활동 점 — 관측 우선 · 관측이 모름일 때만 자기보고 판정(nodeWorking) 작업 중이면 작업 중 · 신호 없음 = 모름", async () => {
   const { seatDot } = await import("./seatrows");
-  expect(seatDot("waiting", { state: "working", ageSecs: 1 })).toBe("waiting");
-  expect(seatDot("unknown", { state: "working", ageSecs: 120 })).toBe("working");
-  expect(seatDot("unknown", { state: "working", ageSecs: 121 })).toBe("unknown");
-  expect(seatDot("unknown", { state: "working", ageSecs: null })).toBe("unknown");
-  expect(seatDot("unknown", { state: "waiting", ageSecs: 1 })).toBe("unknown");
-  expect(seatDot("unknown", undefined)).toBe("unknown");
-  expect(seatDot("stale", { state: "working", ageSecs: 1 })).toBe("stale");
+  expect(seatDot("waiting", true)).toBe("waiting");
+  expect(seatDot("input", true)).toBe("input");
+  expect(seatDot("stale", true)).toBe("stale");
+  expect(seatDot("unknown", true)).toBe("working");
+  expect(seatDot("unknown", false)).toBe("unknown");
+  // 승인 피드 대기 = 입력 대기(관측이 무엇이든)
+  expect(seatDot("working", false, true)).toBe("input");
+  expect(seatDot("unknown", true, true)).toBe("input");
 });

@@ -112,17 +112,22 @@ function rowEl(r: SeatRow, fixed: boolean, opts: SeatRowsDomOpts): HTMLElement {
   name.className = "ws-seat-name";
   name.textContent = r.name;
   row.append(shape, no, name);
-  if (r.tag) {
-    const tag = document.createElement("span");
-    tag.className = `ws-seat-tag${r.state === "blocked" ? " blocked" : ""}`;
-    tag.textContent = r.tag;
-    row.appendChild(tag);
-  }
   const pct = document.createElement("span");
   const sev = r.ctxPct == null ? "" : sevClassFor(r.ctxPct, 60, 80);
   pct.className = `ws-seat-ctx${sev ? " " + sev : ""}`;
   pct.textContent = r.ctxPct == null ? "—" : `${Math.round(r.ctxPct)}%`;
-  row.appendChild(pct);
+  if (r.tag) {
+    // (1c · master#6ecef1a2 ①) 꼬리표가 붙은 줄은 꼬리표 + CTX 를 둘째 줄(오른쪽)로 내린다 — 첫 줄 이름이 막대 폭을 다 쓴다
+    //   (한 줄에 다 넣으면 기본 폭 216px 에서 이름이 1~2자만 남았다 · 막대 폭은 늘리지 않는다).
+    row.classList.add("tagged");
+    const tag = document.createElement("span");
+    tag.className = `ws-seat-tag${r.state === "blocked" ? " blocked" : ""}`;
+    tag.textContent = r.tag;
+    const sub = document.createElement("span");
+    sub.className = "ws-seat-sub";
+    sub.append(tag, pct);
+    row.appendChild(sub);
+  } else row.appendChild(pct);
   row.title = seatRowTitle(r);
   if (!r.named) {
     row.addEventListener("click", (e) => {

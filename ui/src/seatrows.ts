@@ -12,7 +12,6 @@
 //   「확인」 꼬리표는 좌석이 스스로 waiting/done 을 신고했을 때만 단다.
 import type { DotView } from "./roleactivity";
 import { pickCtx, type CtxSource } from "./ctxpick";
-import { STATUS_FRESH_SECS } from "./appearance";
 
 export type SeatState = "working" | "idle" | "blocked" | "unknown" | "exited";
 export type SeatTag = "승인 창" | "확인" | null;
@@ -246,11 +245,10 @@ export function namedSeatInputs(rows: readonly { name: string; ctxPct: number | 
   }));
 }
 
-/** 좌석 줄의 활동 점 — 데몬 관측이 있으면 그대로. 관측이 「모름」일 때만 **신선한 자기보고 working**(120초 이내 · appearance.ts
- *  STATUS_FRESH_SECS)으로 메운다. ★역할 점의 폴백(nodeWorking)과 다른 점: 자기보고가 없을 때 「최근 60초 출력」만으로 작업 중이라
- *  하지 않는다 — 출력은 작업의 증거가 아니다(설계 §2 「모름을 작업 중으로 칠하지 않는다」). */
-export function seatDot(view: DotView, self: { state: string | null; ageSecs: number | null } | undefined): DotView {
-  if (view !== "unknown") return view;
-  if (self?.state === "working" && typeof self.ageSecs === "number" && self.ageSecs <= STATUS_FRESH_SECS) return "working";
-  return "unknown";
+/** 화면 표시 활동 점 — **역할 점(paintRoleDot)과 좌석 줄이 함께 쓰는 단 하나의 판정**(master#6ecef1a2 ④).
+ *  데몬 관측이 있으면 그대로. 관측이 「모름」일 때만 자기보고 판정(appearance.ts nodeWorking = 신선한 자기보고, 없으면 최근 60초 출력)이
+ *  작업 중이면 작업 중 — 사용자가 이미 보던 역할 점 동작 그대로다. 「모름」은 신호가 아무것도 없을 때만 남는다. */
+export function seatDot(view: DotView, selfWorking: boolean, approvalPending = false): DotView {
+  if (approvalPending) return "input"; // 그 좌석에 승인 창이 떠 있다(데몬 승인 피드 — agy·grok 처럼 화면 문법이 없는 좌석도 잡힌다)
+  return view === "unknown" && selfWorking ? "working" : view;
 }

@@ -409,6 +409,8 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
 .ws-seat-ctx { flex: none; min-width: 2.6em; text-align: right; color: #8b949e; }
 .ws-seat-ctx.warn { color: var(--warn); }
 .ws-seat-ctx.crit { color: var(--error); font-weight: 600; }
+.ws-seat.tagged { flex-wrap: wrap; row-gap: 0; }
+.ws-seat-sub { flex: 1 0 100%; display: flex; justify-content: flex-end; align-items: center; gap: .4em; min-width: 0; }
 .ws-seat-group { display: flex; align-items: baseline; gap: .4em; margin-top: 4px; padding: 0 4px; font-size: .9em; font-weight: 700; color: #8b949e; min-width: 0; }
 .ws-seat-group-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-seat-group-n { flex: none; font-weight: 400; color: #6e7681; }

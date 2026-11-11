@@ -8,10 +8,12 @@
 //! 종료 기록 · 조종자 교체 기록. 화면 해석·배달·승인 판단은 **하지 않는다**. 미응답 단말 질의 응답기도 없다
 //! (DESIGN §7-8 결정 전 · master 판단).
 //!
-//! 막히지 않는 규칙(codex 1R #1 #2 반영): 상태 잠금을 쥔 채 막히는 호출을 하지 않는다. 조종자에게 가는 프레임은
-//! 잠금 안에서 `try_send` 만 하고, 칸이 차거나(안 읽음) 소켓 쓰기가 기한을 넘으면 그 조종자를 내보낸다 —
-//! 출력은 꼬리에 남아 있으니 다시 붙으면 오프셋으로 받는다. PTY 입력 쓰기는 좌석별 입력 스레드가 한다 —
-//! 자식이 입력을 안 읽어도 serve 는 끊김을 계속 보고 조종자 자리를 풀 수 있다.
+//! 막히지 않는 규칙(codex 1R #1 #2 · 독립 검증 D1 반영): 상태 잠금을 쥔 채 막히는 호출을 하지 않는다. 조종자에게
+//! 가는 프레임은 잠금 안에서 막히지 않는 큐에 넣기만 한다. 조종자가 늦으면 **밀린 바이트**가 상한(OUT_QUEUE_BYTES)을
+//! 넘는 출력은 큐에 넣지 않고 꼬리에 둔 채 「밀림」으로 표시했다가, 쓰기 스레드가 큐를 비우면 꼬리에서 그 오프셋부터
+//! 따라잡아 보낸다(꼬리에서 이미 밀려난 부분은 오프셋 건너뜀 = 유실로 보인다). 조종자를 내보내는 기준은 **멈춘 시간**뿐이다
+//! — 소켓 쓰기가 CTL_WRITE_TIMEOUT 동안 한 바이트도 못 나가면 연결을 닫는다(tmux control.c 의 「시간으로 판정」과 같은 모양).
+//! PTY 입력 쓰기는 좌석별 입력 스레드가 한다 — 자식이 입력을 안 읽어도 serve 는 끊김을 계속 보고 조종자 자리를 풀 수 있다.
 //!
 //! 쓰임: `cys-seatkeep --dir <상태폴더> --id <seatkeep id> --controller-exe <경로> --lock <잠금파일>
 //!        [--requirement <코드서명 요구사항>] [--seats N] [--tail-bytes N] -- <명령> [인자…]`
@@ -50,19 +52,34 @@ mod imp {
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
+    use std::sync::mpsc::{channel, sync_channel, Receiver, Sender, SyncSender};
     use std::sync::{Arc, Mutex, MutexGuard};
     use std::time::{Duration, Instant};
+
+    /// stderr 쓰기 — 실패해도 패닉하지 않는다(eprintln! 은 stderr 실패에서 패닉한다 · 독립 검증 D4).
+    macro_rules! warn {
+        ($($t:tt)*) => {{
+            use std::io::Write as _;
+            let _ = writeln!(std::io::stderr(), $($t)*);
+        }};
+    }
 
     const DEFAULT_TAIL: usize = 1 << 20;
     /// 꼬리 상한 — 재생은 REPLAY_CHUNK 단위로 나눠 보내므로 프레임 상한과 무관하지만 메모리 상한은 둔다.
     const MAX_TAIL: usize = 64 << 20;
     /// 꼬리 재생 프레임 1개의 바이트 상한(오프셋 8바이트 + 이것 ≤ proto::MAX_PAYLOAD).
     const REPLAY_CHUNK: usize = 1 << 20;
-    /// 조종자 실시간 프레임 칸 수(OUTPUT 1개 ≤ 16KiB → 최대 약 16MiB). 재생 프레임 수는 따로 더한다.
-    const CTL_QUEUE: usize = 1024;
-    /// 조종자 소켓 쓰기 1회 기한 — 넘으면 「안 읽는 조종자」로 보고 내보낸다.
+    /// 조종자 큐에 쌓아 둘 실시간 출력의 바이트 상한(좌석마다). 넘는 출력은 꼬리에 두고 「밀림」으로 표시했다가 따라잡는다.
+    /// 값 근거(11-11 실측): 보통 좌석 출력은 초당 수 KB(A13 noisy = 초당 약 11KB/좌석) → 4MiB 는 수 분 분량이라 조종자가
+    /// 수백 ms 멈춰도 밀리지 않는다. 쏟는 좌석(`yes` 초당 약 150MB)에서는 약 27ms 분량 — 그 이상 멈추면 밀림 경로로 가고
+    /// 내보내지지는 않는다. 메모리 상한 = 좌석당 4MiB(40좌석이 동시에 전부 밀려도 160MiB · 평소 0).
+    const OUT_QUEUE_BYTES: usize = 4 << 20;
+    /// 따라잡기 때 한 번에 큐에 넣는 조각 크기.
+    const CATCHUP_CHUNK: usize = 256 << 10;
+    /// 조종자 소켓 쓰기가 이 시간 동안 한 바이트도 못 나가면(멈춘 조종자) 연결을 닫는다. 쓰기 진척이 있으면 재설정된다.
     const CTL_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+    /// 종료 기록을 디스크에 못 남기는 상태가 이만큼 이어지면(상태 폴더가 사라짐 등) stderr 에 기록을 남기고 끝낸다(독립 검증 D9).
+    const EXIT_PERSIST_MAX: Duration = Duration::from_secs(30);
     const INPUT_IDS_KEPT: usize = 4096;
     /// 좌석별 아직 PTY 에 못 쓴 입력 바이트 상한. 넘는 INPUT 은 받지 않는다(수신 확인 없음 = 조종자는 「모름」).
     const INPUT_QUEUE_BYTES: usize = 1 << 20;
@@ -169,9 +186,17 @@ mod imp {
     struct Controller {
         gen: u64,
         peer: Peer,
-        tx: SyncSender<Vec<u8>>,
-        /// 내보내기용 — shutdown 하면 serve 의 읽기와 쓰기 스레드가 함께 끝난다.
-        shut: UnixStream,
+        /// 막히지 않는 큐(크기 제한은 아래 `queued` 바이트로 한다).
+        tx: Sender<Vec<u8>>,
+        /// 큐에 있고 아직 소켓에 못 쓴 바이트(넣을 때 +, 쓰기 스레드가 쓴 뒤 −).
+        queued: Arc<AtomicUsize>,
+        /// 좌석별 「밀림」 시작 오프셋 — Some 이면 그 오프셋부터는 꼬리에만 있고 아직 이 조종자에게 안 갔다.
+        behind: Vec<Option<u64>>,
+        /// 밀린 좌석이 하나라도 있는가(쓰기 스레드가 잠금 없이 보는 표시).
+        behind_flag: Arc<AtomicBool>,
+        /// 좌석별 EXITED 를 이 조종자에게 보냈는가(밀린 좌석의 EXITED 는 따라잡기가 끝난 뒤 보낸다 — 순서 보존).
+        exited_sent: Vec<bool>,
+        /// 쓰기 스레드가 멈춤·오류로 연결을 닫았다(끊김 기록에 실림).
         evicted: bool,
     }
 
@@ -185,6 +210,8 @@ mod imp {
         /// 미확인 종료 기록이 디스크에 있는가(없을 게 없으면 참). 거짓이면 조종자 없이 끝내지 않는다.
         exit_record_ok: bool,
         exit_record_warned: bool,
+        /// 종료 기록 쓰기가 처음 실패한 때(성공하면 지움) — EXIT_PERSIST_MAX 판정용.
+        exit_record_fail_since: Option<Instant>,
     }
 
     struct Keep {
@@ -262,12 +289,16 @@ mod imp {
                 return;
             }
             match registry::write_atomic(&self.paths.exit, &json!({"id": self.args.id, "seats": v})) {
-                Ok(()) => st.exit_record_ok = true,
+                Ok(()) => {
+                    st.exit_record_ok = true;
+                    st.exit_record_fail_since = None;
+                }
                 Err(e) => {
                     st.exit_record_ok = false;
+                    st.exit_record_fail_since.get_or_insert_with(Instant::now);
                     if !st.exit_record_warned {
                         st.exit_record_warned = true;
-                        eprintln!("cys-seatkeep: 종료 기록 쓰기 실패(다시 시도함): {e}");
+                        warn!("cys-seatkeep: 종료 기록 쓰기 실패(다시 시도함): {e}");
                         let _ = self.log(json!({"event": "exit_record_write_failed", "error": e.to_string()}));
                     }
                 }
@@ -275,29 +306,70 @@ mod imp {
         }
     }
 
-    /// 조종자에게 프레임 1개 — **상태 잠금 안에서만** 부른다(순서 보존 · 막히지 않음).
-    /// 칸이 차면(조종자가 안 읽음) 그 조종자를 내보낸다. 출력은 꼬리에 있으니 다시 붙으면 오프셋으로 받는다.
-    fn send_ctl(keep: &Keep, st: &mut State, frame: Vec<u8>) {
+    /// 조종자에게 프레임 1개 — **상태 잠금 안에서만** 부른다(순서 보존 · 막히지 않음 · 제어 프레임용).
+    fn send_ctl(st: &mut State, frame: Vec<u8>) {
         let Some(c) = st.controller.as_mut() else { return };
-        match c.tx.try_send(frame) {
-            Ok(()) => {}
-            Err(TrySendError::Full(_)) => {
-                if !c.evicted {
-                    c.evicted = true;
-                    let _ = c.shut.shutdown(Shutdown::Both);
-                    let (gen, peer) = (c.gen, peer_json(&c.peer));
-                    let _ = keep.log(json!({"event": "evict", "gen": gen, "reason": "queue_full", "peer": peer}));
-                }
+        c.queued.fetch_add(frame.len(), Ordering::SeqCst);
+        // 실패 = 쓰기 스레드가 이미 끝났다(소켓 오류·멈춤 기한) — serve 가 곧 끊김을 정리한다.
+        let _ = c.tx.send(frame);
+    }
+
+    /// 실시간 출력 — 밀린 바이트가 상한을 넘거나 이 좌석이 이미 밀려 있으면 큐에 넣지 않고 「밀림」으로 둔다
+    /// (데이터는 꼬리에 있다 · 쓰기 스레드가 큐를 비우면 catch_up 이 그 오프셋부터 보낸다).
+    fn send_output(keep: &Keep, st: &mut State, i: usize, offset: u64, bytes: &[u8]) {
+        let Some(c) = st.controller.as_mut() else { return };
+        if c.behind[i].is_some() {
+            return;
+        }
+        if c.queued.load(Ordering::SeqCst) + bytes.len() > OUT_QUEUE_BYTES {
+            c.behind[i] = Some(offset);
+            c.behind_flag.store(true, Ordering::SeqCst);
+            return;
+        }
+        send_ctl(st, proto::frame(proto::OUTPUT, keep.seats[i].id, &proto::output_payload(offset, bytes)));
+    }
+
+    /// 밀린 좌석을 꼬리에서 따라잡는다(상태 잠금 안 · 큐 상한까지만). 꼬리에서 이미 밀려난 앞부분은 건너뛴다(오프셋이
+    /// 뛰어 조종자에게는 유실로 보인다). 따라잡기가 끝난 좌석에 알린 종료가 있으면 그 뒤에 EXITED 를 보낸다.
+    fn catch_up(keep: &Keep, st: &mut State) {
+        let State { out, controller, .. } = st;
+        let Some(c) = controller.as_mut() else { return };
+        let mut frames = Vec::new();
+        let mut any_behind = false;
+        let mut budget = OUT_QUEUE_BYTES.saturating_sub(c.queued.load(Ordering::SeqCst));
+        for (i, o) in out.iter().enumerate() {
+            let Some(from) = c.behind[i] else { continue };
+            let mut from = from.max(o.tail_start());
+            while from < o.total && budget > 0 {
+                let n = ((o.total - from) as usize).min(CATCHUP_CHUNK).min(budget.max(1));
+                let skip = (from - o.tail_start()) as usize;
+                let bytes: Vec<u8> = o.tail.range(skip..skip + n).copied().collect();
+                frames.push(proto::frame(proto::OUTPUT, keep.seats[i].id, &proto::output_payload(from, &bytes)));
+                budget = budget.saturating_sub(n);
+                from += n as u64;
             }
-            // 쓰기 스레드가 이미 끝났다(소켓 오류·쓰기 기한 초과) — serve 가 곧 끊김을 정리한다.
-            Err(TrySendError::Disconnected(_)) => {}
+            if from >= o.total {
+                c.behind[i] = None;
+                if let (Some(e), false) = (&o.exit, c.exited_sent[i]) {
+                    frames.push(proto::json_frame(proto::EXITED, keep.seats[i].id, e));
+                    c.exited_sent[i] = true;
+                }
+            } else {
+                c.behind[i] = Some(from);
+                any_behind = true;
+            }
+        }
+        c.behind_flag.store(any_behind, Ordering::SeqCst);
+        for f in frames {
+            c.queued.fetch_add(f.len(), Ordering::SeqCst);
+            let _ = c.tx.send(f);
         }
     }
 
     /// 세대가 같은 조종자에게만 보낸다(옛 조종자의 요청에 대한 답이 새 조종자에게 가지 않게).
-    fn send_gen(keep: &Keep, st: &mut State, gen: u64, frame: Vec<u8>) {
+    fn send_gen(st: &mut State, gen: u64, frame: Vec<u8>) {
         if st.controller.as_ref().map(|c| c.gen) == Some(gen) {
-            send_ctl(keep, st, frame);
+            send_ctl(st, frame);
         }
     }
 
@@ -328,37 +400,45 @@ mod imp {
         let args = match parse_args() {
             Ok(a) => a,
             Err(e) => {
-                eprintln!("cys-seatkeep: {e}");
+                warn!("cys-seatkeep: {e}");
                 return 2;
             }
         };
         // 조종자(cysd)와 다른 세션 — 조종자가 죽어도 이 프로세스에 SIGHUP 이 오지 않는다. 실패 = 그 보장이 없으니 시작하지 않는다.
         if unsafe { libc::setsid() } == -1 {
-            eprintln!("cys-seatkeep: setsid 실패(이미 그룹 대표로 띄워졌는가): {}", std::io::Error::last_os_error());
+            warn!("cys-seatkeep: setsid 실패(이미 그룹 대표로 띄워졌는가): {}", std::io::Error::last_os_error());
             return 3;
         }
         let paths = Paths::new(&args.dir, &args.id);
+        // 맥 소켓 경로 한도 = sun_path[104](NUL 포함) — 어떤 파일도 만들기 전에 잰다(prepare 잔재 방지 · 독립 검증 D5).
+        {
+            use std::os::unix::ffi::OsStrExt;
+            if paths.sock.as_os_str().as_bytes().len() >= 104 {
+                warn!("cys-seatkeep: 소켓 경로가 너무 길다({}바이트 ≥ 104): {}", paths.sock.as_os_str().as_bytes().len(), paths.sock.display());
+                return 2;
+            }
+        }
         if let Err(e) = paths.ensure_dir() {
-            eprintln!("cys-seatkeep: 상태 폴더: {e}");
+            warn!("cys-seatkeep: 상태 폴더: {e}");
             return 3;
         }
         // ⓪ id 잠금 — 같은 id 의 두 번째 seatkeep 은 어떤 파일도 건드리기 전에 물러난다(동시 기동 포함 · codex 1R #6).
         let id_lock = match registry::lock_id(&paths.idlock) {
             Ok(f) => f,
             Err(e) => {
-                eprintln!("cys-seatkeep: 같은 id 의 seatkeep 이 있다(잠금 {}): {e}", paths.idlock.display());
+                warn!("cys-seatkeep: 같은 id 의 seatkeep 이 있다(잠금 {}): {e}", paths.idlock.display());
                 return 4;
             }
         };
         // 앞선 기동이 남긴 미확인 종료 기록이 있으면 이 id 를 다시 쓰지 않는다 — 덮으면 그 기록이 사라진다(codex 1R #12).
         if paths.exit.exists() {
-            eprintln!("cys-seatkeep: 미소비 종료 기록 {} — 조종자가 소비하기 전에는 이 id 를 다시 쓰지 않는다", paths.exit.display());
+            warn!("cys-seatkeep: 미소비 종료 기록 {} — 조종자가 소비하기 전에는 이 id 를 다시 쓰지 않는다", paths.exit.display());
             return 4;
         }
         let ledger = match Ledger::open(&paths.log) {
             Ok(l) => l,
             Err(e) => {
-                eprintln!("cys-seatkeep: 교체 기록 열기 실패: {e}");
+                warn!("cys-seatkeep: 교체 기록 열기 실패: {e}");
                 return 3;
             }
         };
@@ -367,7 +447,7 @@ mod imp {
         let boot_id = registry::boot_id();
         let start_us = registry::process_start_us(std::process::id() as i32);
         if boot_id.is_empty() || start_us.is_none() {
-            eprintln!("cys-seatkeep: 자기 신원(부팅 id·시작 시각)을 못 읽음 — 시작하지 않는다");
+            warn!("cys-seatkeep: 자기 신원(부팅 id·시작 시각)을 못 읽음 — 시작하지 않는다");
             return 3;
         }
 
@@ -376,7 +456,7 @@ mod imp {
                              "boot_id": boot_id, "sock": paths.sock.to_string_lossy(), "core": proto::CORE_VERSION,
                              "at": registry::now_epoch()});
         if let Err(e) = registry::write_atomic(&paths.entry, &prepare) {
-            eprintln!("cys-seatkeep: 등록부 준비 실패: {e}");
+            warn!("cys-seatkeep: 등록부 준비 실패: {e}");
             return 3;
         }
 
@@ -385,7 +465,7 @@ mod imp {
         let listener = match UnixListener::bind(&paths.sock) {
             Ok(l) => l,
             Err(e) => {
-                eprintln!("cys-seatkeep: 소켓 열기 실패: {e}");
+                warn!("cys-seatkeep: 소켓 열기 실패: {e}");
                 return 3;
             }
         };
@@ -401,7 +481,7 @@ mod imp {
             let pair = match native_pty_system().openpty(PtySize { rows: 35, cols: 120, pixel_width: 0, pixel_height: 0 }) {
                 Ok(p) => p,
                 Err(e) => {
-                    eprintln!("cys-seatkeep: openpty: {e}");
+                    warn!("cys-seatkeep: openpty: {e}");
                     return 5;
                 }
             };
@@ -414,7 +494,7 @@ mod imp {
             let child = match pair.slave.spawn_command(cb) {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("cys-seatkeep: spawn: {e}");
+                    warn!("cys-seatkeep: spawn: {e}");
                     return 5;
                 }
             };
@@ -423,14 +503,14 @@ mod imp {
             let reader = match pair.master.try_clone_reader() {
                 Ok(r) => r,
                 Err(e) => {
-                    eprintln!("cys-seatkeep: reader: {e}");
+                    warn!("cys-seatkeep: reader: {e}");
                     return 5;
                 }
             };
             let writer = match pair.master.take_writer() {
                 Ok(w) => w,
                 Err(e) => {
-                    eprintln!("cys-seatkeep: writer: {e}");
+                    warn!("cys-seatkeep: writer: {e}");
                     return 5;
                 }
             };
@@ -462,6 +542,7 @@ mod imp {
                 input_ids: (VecDeque::new(), HashSet::new()),
                 exit_record_ok: true,
                 exit_record_warned: false,
+                exit_record_fail_since: None,
             }),
             ledger: Mutex::new(ledger),
             paths,
@@ -500,7 +581,7 @@ mod imp {
                     break;
                 }
                 Err(e) => {
-                    eprintln!("cys-seatkeep: 등록부 확정 실패({}/{COMMIT_TRIES}): {e}", k + 1);
+                    warn!("cys-seatkeep: 등록부 확정 실패({}/{COMMIT_TRIES}): {e}", k + 1);
                     std::thread::sleep(Duration::from_millis(100 * (k + 1)));
                 }
             }
@@ -541,7 +622,7 @@ mod imp {
                 let drop_n = o.tail.len() - cap;
                 o.tail.drain(..drop_n);
             }
-            send_ctl(&keep, &mut st, proto::frame(proto::OUTPUT, keep.seats[i].id, &proto::output_payload(offset, &buf[..n])));
+            send_output(&keep, &mut st, i, offset, &buf[..n]);
         }
         let mut st = lock_st(&keep);
         st.out[i].reader_done = true;
@@ -564,7 +645,14 @@ mod imp {
         e["output_open"] = json!(!o.reader_done);
         st.out[i].exit = Some(e.clone());
         keep.persist_exit_record(st);
-        send_ctl(keep, st, proto::json_frame(proto::EXITED, keep.seats[i].id, &e));
+        // 이 좌석이 밀려 있으면 EXITED 는 따라잡기가 끝난 뒤(catch_up)에 — 마지막 출력보다 먼저 가지 않게.
+        let behind = st.controller.as_ref().map(|c| c.behind[i].is_some()).unwrap_or(false);
+        if !behind {
+            send_ctl(st, proto::json_frame(proto::EXITED, keep.seats[i].id, &e));
+            if let Some(c) = st.controller.as_mut() {
+                c.exited_sent[i] = true;
+            }
+        }
     }
 
     fn wait_loop(keep: Arc<Keep>, i: usize, mut child: Box<dyn Child + Send + Sync>) {
@@ -572,7 +660,7 @@ mod imp {
         // ① 끝남만 본다(회수 안 함). ② 신호 금지 표시를 잠금 안에서 세운다. ③ 그 뒤에야 회수한다.
         // SIGNAL·RELEASE 는 같은 잠금 안에서 이 표시를 보고 killpg 하므로, 회수된(재사용될 수 있는) pid 를 치지 않는다(codex 1R #3).
         if !wait_exit_nowait(pid) {
-            eprintln!("cys-seatkeep: waitid({pid}) 실패: {} — 회수 경로로 넘어간다", std::io::Error::last_os_error());
+            warn!("cys-seatkeep: waitid({pid}) 실패: {} — 회수 경로로 넘어간다", std::io::Error::last_os_error());
         }
         lock_st(&keep).out[i].reaped = true;
         let status = child.wait();
@@ -605,7 +693,7 @@ mod imp {
                 }
                 continue;
             }
-            send_gen(&keep, &mut st, job.gen, proto::frame(proto::INPUT_ACK, keep.seats[i].id, &proto::input_ack_payload(job.id, false)));
+            send_gen(&mut st, job.gen, proto::frame(proto::INPUT_ACK, keep.seats[i].id, &proto::input_ack_payload(job.id, false)));
         }
     }
 
@@ -696,18 +784,22 @@ mod imp {
         }
         // 확인~HELLO 사이에 잠금을 놓았거나 신원이 바뀌었으면 받지 않는다 — 확인과 수락 사이 틈을 좁힌다(codex 1R #10).
         let peer = match peer::authorize(s.as_raw_fd(), &keep.policy) {
-            Ok(p2) if p2.pid == peer.pid && p2.pidversion == peer.pidversion => p2,
+            // (pid · pidversion · 출생 시각) 셋 다 같아야 — 토큰은 「지금 그 pid 의 프로세스」라서(peer.rs ⚠) 처음 확인한
+            // 그 프로세스가 아직 그 소켓의 마지막 사용자인지를 이 짝으로 본다. 출생 시각을 못 읽으면(None) 같다고 보지 않는다.
+            Ok(p2) if p2.pid == peer.pid && p2.pidversion == peer.pidversion && p2.start_us.is_some() && p2.start_us == peer.start_us => p2,
             Ok(p2) => return reject(&keep, s, "peer_changed", Some(&p2)),
             Err((reason, p)) => return reject(&keep, s, reason, p.as_ref()),
         };
         let _ = s.set_read_timeout(None);
-        let (Ok(write_half), Ok(shut)) = (s.try_clone(), s.try_clone()) else {
+        let Ok(write_half) = s.try_clone() else {
             return reject(&keep, s, "socket_clone_failed", Some(&peer));
         };
         // 안 읽는 조종자: 소켓 쓰기가 이 기한을 넘으면 쓰기 스레드가 끝나며 연결을 닫는다(codex 1R #1).
         let _ = write_half.set_write_timeout(Some(CTL_WRITE_TIMEOUT));
         let rx;
         let gen;
+        let queued = Arc::new(AtomicUsize::new(0));
+        let behind_flag = Arc::new(AtomicBool::new(false));
         {
             let mut st = lock_st(&keep);
             if st.controller.is_some() {
@@ -734,7 +826,7 @@ mod imp {
                 // 줄은 써졌는데 fsync 만 실패했을 수 있다 — 받지 않았다는 줄을 덧붙인다(A16 셈 = accept − accept_aborted).
                 let _ = keep.log(json!({"event": "accept_aborted", "gen": gen, "error": e.to_string()}));
                 drop(st);
-                eprintln!("cys-seatkeep: 교체 기록 실패 — 접속 거절: {e}");
+                warn!("cys-seatkeep: 교체 기록 실패 — 접속 거절: {e}");
                 return reject(&keep, s, "ledger_write_failed", Some(&peer));
             }
             st.gen = gen;
@@ -751,6 +843,7 @@ mod imp {
             let welcome = json!({"core": proto::CORE_VERSION, "gen": gen, "pid": std::process::id(),
                                  "start_us": keep.start_us, "boot_id": keep.boot_id, "seats": seats});
             let mut frames = vec![proto::json_frame(proto::WELCOME, ALL_SEATS, &welcome)];
+            let mut exited_sent = vec![false; st.out.len()];
             for (i, o) in st.out.iter().enumerate() {
                 let from = resume[i.to_string()].as_u64().unwrap_or(0).max(o.tail_start()).min(o.total);
                 let skip = (from - o.tail_start()) as usize;
@@ -761,24 +854,57 @@ mod imp {
                 }
                 if let Some(e) = &o.exit {
                     frames.push(proto::json_frame(proto::EXITED, keep.seats[i].id, e));
+                    exited_sent[i] = true;
                 }
             }
-            let (tx, r) = sync_channel::<Vec<u8>>(frames.len() + CTL_QUEUE);
+            // 재생은 크기와 무관하게 전부 넣는다(꼬리 상한 64MiB 안) — 그동안 새 출력은 밀림 경로로 간다.
+            let (tx, r) = channel::<Vec<u8>>();
             for f in frames {
-                let sent = tx.try_send(f);
-                debug_assert!(sent.is_ok(), "재생 프레임 수만큼 칸을 잡았다");
+                queued.fetch_add(f.len(), Ordering::SeqCst);
+                let _ = tx.send(f);
             }
-            st.controller = Some(Controller { gen, peer: peer.clone(), tx, shut, evicted: false });
+            let n = st.out.len();
+            st.controller = Some(Controller {
+                gen,
+                peer: peer.clone(),
+                tx,
+                queued: Arc::clone(&queued),
+                behind: vec![None; n],
+                behind_flag: Arc::clone(&behind_flag),
+                exited_sent,
+                evicted: false,
+            });
             rx = r;
         }
         done.store(true, Ordering::SeqCst);
         drop(pending);
         {
             let mut w = write_half;
+            let k = Arc::clone(&keep);
             std::thread::spawn(move || {
                 for f in rx {
-                    if proto::write_all(&mut w, &f).is_err() {
+                    if let Err(e) = proto::write_all(&mut w, &f) {
+                        // 쓰기 기한(CTL_WRITE_TIMEOUT) 동안 진척 0 = 멈춘 조종자 → 내보냄으로 기록하고 닫는다.
+                        // 그 밖의 오류(EPIPE 등) = 조종자가 이미 끊었다 → 기록 없이 닫는다(끊김은 serve 쪽이 기록).
+                        if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) {
+                            let mut st = lock_st(&k);
+                            if let Some(c) = st.controller.as_mut().filter(|c| c.gen == gen) {
+                                if !c.evicted {
+                                    c.evicted = true;
+                                    let peer = peer_json(&c.peer);
+                                    let _ = k.log(json!({"event": "evict", "gen": gen, "reason": "write_stalled", "error": e.to_string(), "peer": peer}));
+                                }
+                            }
+                        }
                         break;
+                    }
+                    queued.fetch_sub(f.len(), Ordering::SeqCst);
+                    // 큐가 반 아래로 비면 밀린 좌석을 따라잡는다.
+                    if behind_flag.load(Ordering::SeqCst) && queued.load(Ordering::SeqCst) < OUT_QUEUE_BYTES / 2 {
+                        let mut st = lock_st(&k);
+                        if st.controller.as_ref().map(|c| c.gen) == Some(gen) {
+                            catch_up(&k, &mut st);
+                        }
                     }
                 }
                 let _ = w.shutdown(Shutdown::Both);
@@ -816,7 +942,7 @@ mod imp {
                     let mut st = lock_st(keep);
                     if id != 0 && st.input_ids.1.contains(&id) {
                         // 이미 받은 id(썼거나 쓰는 중) — 다시 쓰지 않고 dup=1 로 답한다.
-                        send_gen(keep, &mut st, gen, proto::frame(proto::INPUT_ACK, seat, &proto::input_ack_payload(id, true)));
+                        send_gen(&mut st, gen, proto::frame(proto::INPUT_ACK, seat, &proto::input_ack_payload(id, true)));
                         continue;
                     }
                     if st.out[i].reaped || st.out[i].input_pending + bytes.len() > INPUT_QUEUE_BYTES {
@@ -868,7 +994,7 @@ mod imp {
                     let Some(i) = seat_index(keep, seat) else { continue };
                     let pg = keep.seats[i].master.lock().unwrap_or_else(|e| e.into_inner()).process_group_leader();
                     let mut st = lock_st(keep);
-                    send_gen(keep, &mut st, gen, proto::json_frame(proto::FOREGROUND_IS, seat, &json!({"pgid": pg})));
+                    send_gen(&mut st, gen, proto::json_frame(proto::FOREGROUND_IS, seat, &json!({"pgid": pg})));
                 }
                 proto::EXIT_ACK => {
                     let mut st = lock_st(keep);
@@ -904,6 +1030,17 @@ mod imp {
             let all_exited = st.out.iter().all(|o| o.exit.is_some());
             let all_acked = st.out.iter().all(|o| o.exit_acked);
             let orphan_long = st.controller.is_none() && st.no_controller_since.map(|t| t.elapsed() >= EXIT_GRACE).unwrap_or(false);
+            // 종료 기록을 EXIT_PERSIST_MAX 넘게 못 남기면(상태 폴더가 사라짐 등) stderr 에 기록을 남기고 rc 6 으로 끝낸다 —
+            // 소켓도 사라졌을 수 있어 어떤 조종자도 확인해 줄 수 없는 영구 고아가 되지 않게(독립 검증 D9).
+            let persist_given_up = !st.exit_record_ok && st.exit_record_fail_since.map(|t| t.elapsed() >= EXIT_PERSIST_MAX).unwrap_or(false);
+            if all_exited && !all_acked && orphan_long && persist_given_up {
+                let v: Vec<Value> = st.out.iter().enumerate().map(|(i, o)| json!({"seat": i, "exit": o.exit, "acked": o.exit_acked})).collect();
+                drop(st);
+                warn!("cys-seatkeep: 종료 기록을 {}초 동안 못 남김 — 여기 남기고 끝낸다: {}", EXIT_PERSIST_MAX.as_secs(), json!({"id": keep.args.id, "seats": v}));
+                let _ = keep.log(json!({"event": "seatkeep_exit", "exit_record_kept": false, "exit_record_to_stderr": true}));
+                let _ = std::fs::remove_file(&keep.paths.sock);
+                return 6;
+            }
             if all_exited && (all_acked || (orphan_long && st.exit_record_ok)) {
                 // PTY 를 아직 쥔 프로세스가 있던 좌석 — 여기서 끝내면 그 뒤 출력은 받지 못한다(기록으로 남김).
                 let open: Vec<usize> = st.out.iter().enumerate().filter(|(_, o)| !o.reader_done).map(|(i, _)| i).collect();

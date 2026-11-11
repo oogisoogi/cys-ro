@@ -34,8 +34,25 @@ impl Paths {
         }
     }
 
+    /// 상태 폴더 준비. `seatkeep` 폴더가 이미 있으면 **심볼릭 링크가 아닌 진짜 폴더**이고 소유자가 나여야 한다 —
+    /// 링크를 따라가 남의 폴더를 0700 으로 바꾸거나 그 안에 쓰지 않는다(독립 검증 D6).
     pub fn ensure_dir(&self) -> std::io::Result<()> {
-        std::fs::create_dir_all(&self.dir)?;
+        use std::os::unix::fs::MetadataExt;
+        if let Some(parent) = self.dir.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        match std::fs::symlink_metadata(&self.dir) {
+            Ok(m) => {
+                if !m.file_type().is_dir() {
+                    return Err(std::io::Error::other(format!("{} 는 폴더가 아니다(심볼릭 링크·파일 거부)", self.dir.display())));
+                }
+                if m.uid() != unsafe { libc::geteuid() } {
+                    return Err(std::io::Error::other(format!("{} 의 소유자가 내가 아니다", self.dir.display())));
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::fs::create_dir(&self.dir)?,
+            Err(e) => return Err(e),
+        }
         std::fs::set_permissions(&self.dir, std::fs::Permissions::from_mode(0o700))
     }
 }
@@ -70,29 +87,45 @@ pub fn write_atomic(path: &Path, value: &serde_json::Value) -> std::io::Result<(
 /// id 잠금 — 비차단 배타 flock. 이미 잡혀 있으면 오류(WouldBlock). 돌려준 File 을 쥐고 있는 동안 유효.
 pub fn lock_id(path: &Path) -> std::io::Result<File> {
     use std::os::unix::io::AsRawFd;
-    let f = OpenOptions::new().read(true).write(true).create(true).mode(0o600).open(path)?;
+    let f = OpenOptions::new().read(true).write(true).create(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)?;
     if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         return Err(std::io::Error::last_os_error());
     }
     Ok(f)
 }
 
-/// 교체 기록. 덧붙이기 전용 열기 — 이 프로세스는 자기 기록을 고쳐 쓸 수 없다.
+/// 교체 기록. 덧붙이기 전용 열기 — 이 프로세스는 자기 기록을 고쳐 쓸 수 없다(예외: 아래 짧은 쓰기 되돌림 = 자기가 방금
+/// 덧붙이다 만 조각만 잘라 낸다). 심볼릭 링크는 따라가지 않는다(독립 검증 D6).
 pub struct Ledger {
     file: File,
+    /// 짧은 쓰기 조각을 잘라 내지 못한 채 남아 있다 → 다음 줄을 줄바꿈으로 시작해 조각과 이어 붙지 않게 한다.
+    torn: bool,
 }
 
 impl Ledger {
     pub fn open(path: &Path) -> std::io::Result<Ledger> {
-        let file = OpenOptions::new().append(true).create(true).mode(0o600).open(path)?;
-        Ok(Ledger { file })
+        let file = OpenOptions::new().append(true).create(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)?;
+        Ok(Ledger { file, torn: false })
     }
 
     /// 한 줄(JSON) 덧붙이고 fsync. 실패는 호출자에게 그대로 — 기록 없이 접속을 받지 않기 위해서다.
+    /// 짧은 쓰기(디스크 가득 등)로 줄 앞부분만 써졌으면 쓰기 전 길이로 잘라 낸다 — 다음 진짜 줄이 그 조각에 이어 붙어
+    /// 읽을 수 없게 되는 것을 막는다(독립 검증 D2). 잘라 내기도 실패하면 다음 줄을 줄바꿈으로 시작한다.
     pub fn line(&mut self, value: &serde_json::Value) -> std::io::Result<()> {
-        let mut s = value.to_string();
+        let mut s = String::new();
+        if self.torn {
+            s.push('\n');
+        }
+        s.push_str(&value.to_string());
         s.push('\n');
-        self.file.write_all(s.as_bytes())?;
+        let len0 = self.file.metadata()?.len();
+        if let Err(e) = self.file.write_all(s.as_bytes()) {
+            if self.file.set_len(len0).is_err() {
+                self.torn = true;
+            }
+            return Err(e);
+        }
+        self.torn = false;
         self.file.sync_data()
     }
 }

@@ -1,9 +1,16 @@
 # HANDOFF — TICKET=cysr-seatkeep-t2 (좌석 보유 장치 seatkeep 단독 시제품 · 맥 · cysd 미연결)
 
-- 상태 = **독립 검증 대기**(2026-11-11 재개 09:25 → 시험 전부 + codex 1R + 고침 1회 끝 · 【확인요청】 10:14 접수 master#2eb05a66). 검증 좌석 = `~/axdev/.wt/seatkeep-t2-verify`(d41c00eb 스냅샷 · TICKET=cysr-seatkeep-t2-verify) — 결함 표가 오면 그때 1회 고침 · 그 전 코드 수정 0.
+- 상태 = **2차 고침 중**(독립 검증 REVISE · blocking 0 · major 3 · minor 6 · master#69b9fe37 · 보고서 = `~/axdev/terminal-ide-survey/2026-11-bench/seatkeep-t2/verify/VERIFY-REPORT.md`) — 중간 커밋 · 재실측·뮤턴트·codex 2R 은 이어서.
 - 가지 = `feat/seatkeep-t2`(v1.1.14 `270e3e21` 위) · 커밋 2개(`0704dc03` 시제품 · 이 커밋 = codex 1R 고침 + 시험 결과) · push 0.
 - 설계·브리프 = `~/axdev/master/reports/2026-11-11-cysr-holder-design/`(DESIGN.md · T0-surface-state.md · briefs-draft/T2.md · master#a3db2868 결정 5).
 - codex 1R = 같은 폴더 `codex-t2-1R.prompt.md`(의뢰문) · `codex-t2-1R.verdict.json`(판정 BLOCK · 대상 `0704dc03`) · `codex-t2-1R.txt`(전 기록).
+
+## 2차 고침(독립 검증 REVISE · master#69b9fe37)
+- **D1 안 읽는 조종자**: 프레임 개수(1024 ≈ 실제 1MB · 2ms 멈춤에 쫓겨남) 기준 폐기 → ⓐ **밀린 바이트 상한 4MiB/좌석**(`OUT_QUEUE_BYTES`) — 넘는 실시간 출력은 큐에 안 넣고 꼬리에 둔 채 「밀림」 표시 → 쓰기 스레드가 큐를 반 아래로 비우면 꼬리에서 그 오프셋부터 따라잡기(256KiB 조각) · 꼬리에서 이미 밀려난 부분은 오프셋 건너뜀(= 유실로 보임) · 밀린 좌석의 EXITED 는 따라잡기 뒤 ⓑ **멈춘 시간** = 소켓 쓰기가 10초 동안 진척 0 이면 `evict write_stalled` 후 닫음(EPIPE 등은 내보냄 아님). 값 근거 = 보통 좌석 출력 초당 약 11KB(A13 noisy) → 4MiB = 수 분 분량 · 쏟는 좌석(초당 약 150MB) 약 27ms 분량 · 메모리 = 좌석당 최대 4MiB(평소 0) · tmux `control.c` 도 시간으로 판정(300초 · 답장 버퍼 64MiB). 실측: `vt.py stall_tolerance` 500ms 멈춤 **10/10 생존**(내보냄 0) · 0~250ms 각 2/2 생존 · 영영 안 읽음(`t2.py evict`) = 10.0초에 `evict write_stalled` · 밀린 동안 RSS 증가 4.1~4.8MB(`behind_mem` 5/5) · 꼬리 64MiB 에서 300ms 멈춤 뒤 구멍 0·SEQ 역행 0(`behind` 3/3).
+- **D2 교체 기록 찢김**: 쓰기 전 길이를 재고 쓰기 실패면 `ftruncate` 로 되돌림 · 되돌림도 실패하면 다음 줄을 줄바꿈으로 시작 · 시험기 읽는 쪽은 해석 안 되는 줄을 건너뜀. 실측: `vt.py diskfull_ledger_boundary_errout` 주입 성립 회차 6/6(rem 0·60 각 3) 찢긴 줄 0 · A16 = 실제 WELCOME.
+- **D3 설계 전제 정정**: `peer.rs` 머리 주석 · DESIGN §3-2 를 커널 동작대로 고침(토큰 = 「지금 그 pid 의 마지막 사용 프로세스」). **(pid, 출생 시각) 짝 대조 추가**: HELLO 뒤 재인증은 (pid·pidversion·출생 시각) 셋 다 같아야 · 잠금 파일 둘째 칸이 있으면 조종자 출생 시각과 같아야(`lock_owner_mismatch`) — 실측 `startpair` 3/3. 실제 pid 재사용 우회는 여전히 못 잼.
+- **D4** `eprintln!` → 실패 무시 `warn!`(stderr 가 가득 찬 디스크여도 REJECT 2/2 · 패닉 0). **D5** 소켓 경로 ≥ 104바이트면 어떤 파일도 만들기 전에 rc 2(103 정상 · 104·105 잔재 0). **D6** 상태 폴더 `seatkeep` 이 링크·파일·남의 소유면 거절 · `<id>.log`·`<id>.lock` 은 O_NOFOLLOW(링크 대상 폴더 권한·파일 무변경 확인). **D9** 종료 기록을 30초(`EXIT_PERSIST_MAX`) 넘게 못 남기면 stderr 에 기록을 남기고 rc 6(31.2초 실측).
+- **D8 시험 편입**: 검증 좌석 `vt.py`·`vlib.py` 를 시험대로 들여옴(결과·실행 파일 경로만 바꿈) · `t2.py vtport`(dual·torn_read·signal_spam_reap·reauth·busy·디스크 가득 2종) · 새 `behind`·`behind_mem`·`startpair`·`sockpath`·`symlink`·`persistcap` · `replay` = 고정 3초 대신 EXITED 140개 받은 뒤 떠남 · 검증 좌석 `busy` 판정식(거절 줄 4)은 정당 조종자 busy 1줄을 빠뜨려 동작과 무관하게 거짓(검증 좌석 d41c00eb 기록도 같음) → 동작 기준으로 판정.
 
 ## 만든 것
 - 새 실행 파일 `cys-seatkeep`(`src/bin/cys-seatkeep/` 4파일 · `Cargo.toml` [[bin]] 1항). **cysd·cys 기존 파일 수정 0.**
@@ -89,7 +96,7 @@ python3 tcc.py                        # TCC 1회 관찰
 ## 알려진 결함·의문(남은 것)
 1. **실행 증거 없는 고침**(코드·추론만): #3 회수 직후 신호(WNOWAIT 순서 — 결정적 재현 수단 없음) · #9 꼬리 64MiB 상한·1MiB 분할(1MiB 넘는 꼬리 재생 미실행) · #10 HELLO 뒤 재인증(확인~HELLO 사이 잠금 해제 시험 없음) · #13 동시 핸드셰이크 상한 16(`busy` 미실행) · #14 거절 기록 칸·`accept_aborted`(fsync 실패 주입 없음). codex 「missing」 중 감사 토큰 판독 실패 주입 · 실제 pid 재사용(pidversion) 시험도 없음.
 2. **수용된 경계**(master 판단 11-11): 같은 사용자가 공백 구간에 잠금을 잡고 자기 pid 를 쓰면 통과 — 교체 기록으로 사후 적발. HELLO 뒤 재인증과 수락 사이의 아주 짧은 틈은 남음. 시험용 잠금 파일(flock) = 실제 deadman 연동은 T4.
-3. **조종자 내보내기 값은 실측 근거 없는 선택**: 칸 1024 프레임(약 16MiB) · 소켓 쓰기 기한 10초 · 입력 대기 1MiB · DRAIN 2초. 내보내진 조종자는 다시 붙을 수 있으나, 멈춘 cysd 가 잠금을 쥐고 있으면 새 cysd 는 못 붙는다(설계상 잠금 = 데몬 하나).
+3. **내보내기 값**: 큐 4MiB·멈춤 10초는 위 D1 근거·실측으로 정함. 입력 대기 1MiB · DRAIN 2초는 여전히 근거 없음(맥은 세션 리더 종료 때 단말이 회수되어 DRAIN 이 거의 안 쓰임 — 검증 관측). 멈춘 cysd 가 잠금을 쥐고 있으면 새 cysd 는 못 붙는다(설계상 잠금 = 데몬 하나).
 4. **입력 의미**: dup=1 = 「이미 받음(썼거나 쓰는 중)」 · 대기 상한을 넘거나 쓰기 실패면 확인 없음(NACK 프레임 없음 · 조종자는 「모름」).
 5. **확정 실패(rc 3) 경로**는 `prepare` 등록부와 (폴더 쓰기 금지 시) 죽은 소켓 파일을 남긴다 — 다음 기동이 소켓은 지우고, 등록부는 죽은 pid 의 prepare 로 남음(T4 입양 규칙에서 「죽은 pid 의 prepare = 무시」 필요).
 6. **TCC 한계**: 부모가 터미널 앱(이 좌석)인 경로만 봄 · TCC 로그에 귀속 줄 0건이라 「책임 프로세스」는 관찰 못 함 · 제품 경로(launchd 로 뜬 cysd 아래 seatkeep)는 미관찰 → T4/T6 에서 실제 서명 앱으로 다시 볼 것.
@@ -100,6 +107,9 @@ python3 tcc.py                        # TCC 1회 관찰
 11. 맥 밖: 리눅스 = 거절만 · 윈도우 = 「유닉스 전용」 안내 후 종료(T7). **윈도우 대상 컴파일 점검은 이 맥에서 불가**(`cargo check --target x86_64-pc-windows-msvc` 가 의존성 libsqlite3-sys C 빌드에서 실패 · seatkeep 무관) — 실측 없음. 새 [[bin]] 이 CI 에서 걸리는지: CI 빌드는 `--bin cys`·`--bin cysd` 를 명시해 쓰는 곳이 대부분이나 전수 확인은 안 함.
 12. 핸드셰이크 기한 타이머 스레드가 성공한 연결에서도 3초 동안 남음(소켓 사본 fd 1개).
 13. **A13 결정 = 좌석당 방식**(master#2eb05a66 · 판정선 불변). 단점(40좌석 스레드 280 · fd 480 · RSS 여유 4%)은 **T3 편입 때 같은 표를 다시 재서 판정선을 넘으면 좌석당 스레드 줄이기를 먼저 본다.**
+
+14. **D7(이번에 고치지 않음 · 관측과 선택지만)**: 좌석 리더(자식)가 끝난 뒤 그룹에 남은 손자에는 SIGNAL·RELEASE 가 닿지 않는다(회수 표시 뒤 killpg 금지) — HUP 을 무시하는 손자는 리더 종료·seatkeep 종료 뒤에도 산다(검증 관측 `vt.py signal_right_after_reap`). 선택지: ⓐ 그룹이 살아 있는 동안은 pgid 가 재사용되지 않으므로 「회수 뒤에도 그룹에 살아 있는 프로세스가 있으면 killpg 허용」(kill(-pgid,0) 확인 뒤) ⓑ seatkeep 종료 때 남은 그룹에 SIGHUP→SIGKILL 정리 ⓒ 좌석 수명을 「그룹 기준」으로 바꿈(T0 「좌석 수명 = 자식 기준」과 함께 결정). 결정 = master(T3/T4).
+15. **D3 남은 위험**: 토큰은 「마지막 사용 프로세스」라 fd 를 넘겨받아 HELLO 전에 보내는 경로는 재인증이 `peer_changed` 로 막지만, 처음 확인 전에 넘겨받으면 넘겨받은 쪽이 처음부터 확인 대상이 된다(그 프로세스도 실행 파일·잠금·짝 조건을 모두 통과해야 함 = 같은 사용자 경계 안 · 수용 경계와 같음). 잠금 파일 (pid, 출생 시각) 형식은 T4 cysd 쪽 작업.
 
 ## 다음 첫 행동(1줄)
 master 가 독립 검증 좌석(브리프 §6 5항 + 뮤턴트) 편성 → 그 결과 + codex 재검(선택)으로 1회 고침. T3(cysd 연결) 착수 조건은 【확인요청】 본문.

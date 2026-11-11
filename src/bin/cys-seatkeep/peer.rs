@@ -1,11 +1,23 @@
 //! 조종자 신원 확인 — T2 시제품(DESIGN.md §3-2 ② · codex 1R 2 · master 판단 11-11).
 //!
-//! 신뢰 경계 = 「같은 사용자 = 경계 안」(master 판단 11-11 ⓪). 그 안에서 할 수 있는 만큼 좁힌다:
-//! 1. **연결에 묶인 신원**: 맥 `LOCAL_PEERTOKEN`(감사 토큰 · SDK sys/un.h:93). pid 를 따로 조회하지 않는다.
-//! 2. **실행 파일 경로**: 감사 토큰으로 Security 프레임워크의 코드 객체를 얻고(`kSecGuestAttributeAudit`)
-//!    그 코드의 경로를 읽는다 — 토큰에 pid 판(pidversion)이 들어 있어 pid 가 재사용된 다른 프로세스를 가리키지 않는다.
+//! 신뢰 경계 = 「같은 사용자 = 경계 안」(master 판단 11-11 ⓪). 그 안에서 할 수 있는 만큼 좁힌다.
+//!
+//! ⚠ **감사 토큰은 연결에 묶여 있지 않다**(독립 검증 D3 · 11-11 정정). 맥 커널의 `LOCAL_PEERTOKEN` 은 피어 소켓의
+//! `last_pid`(그 소켓을 마지막으로 connect·send·recv·poll·kqueue 한 프로세스)를 그 순간 `proc_find` 로 찾아 **지금
+//! 그 pid 를 가진 프로세스**의 토큰을 돌려준다(xnu `bsd/kern/uipc_usrreq.c` LOCAL_PEERTOKEN · `so_update_last_owner_locked`
+//! 호출 11곳). 그래서 토큰의 pidversion 은 「처음 연결한 그 프로세스」를 보증하지 않는다 — fd 를 넘겨받은 프로세스가 보내면
+//! 그 프로세스로 바뀌고, 아무도 아직 안 보냈으면 EINVAL(→ 여기서는 거절)이다.
+//! **실제 방어**(주 방어 순서): ⓐ HELLO 를 받은 **뒤** 이 확인을 한 번 더 하고 처음 확인과 (pid · pidversion · 출생 시각)이
+//!   모두 같아야 받는다(main.rs handshake) ⓑ 핸드셰이크 전체 절대 기한 3초 ⓒ 같은 pid 가 그 3초 안에 재사용되기 어렵다는 사정
+//!   ⓓ 잠금 파일에 조종자의 (pid, 출생 시각)이 적혀 있으면 그 짝까지 대조한다(아래 4).
+//!
+//! 확인 항목:
+//! 1. 피어 신원: 맥 `LOCAL_PEERTOKEN`(감사 토큰 · SDK sys/un.h:93) — 위 ⚠ 대로 「지금 마지막 사용 프로세스」의 신원이다.
+//! 2. **실행 파일 경로**: 감사 토큰으로 Security 프레임워크의 코드 객체를 얻고(`kSecGuestAttributeAudit`) 그 코드의 경로를 읽는다.
 //! 3. (선택) **코드서명 요구사항**: `--requirement` 가 주어지면 같은 코드 객체로 `SecCodeCheckValidity`.
-//! 4. **데몬 잠금 보유**: 잠금 파일이 실제로 잡혀 있고(flock 시도 실패) 그 파일에 적힌 pid = 토큰 pid.
+//! 4. **데몬 잠금 보유**: 잠금 파일이 실제로 잡혀 있고(flock 시도 실패) 그 파일 첫 칸의 pid = 토큰 pid. 둘째 칸이 있으면
+//!    그것을 조종자의 출생 시각(마이크로초 · proc_pidinfo 의 시작 시각)으로 보고 피어의 출생 시각과 같아야 한다 —
+//!    (pid, 출생 시각) 짝은 pid 재사용과 구분된다. 둘째 칸이 없으면(옛 형식) pid 만 대조한다.
 //! 5. 같은 사용자(토큰 euid = 내 euid).
 //! 확인할 수 없는 것은 전부 거절이다(fail-closed). 맥 밖에서는 아직 구현이 없으므로 항상 거절한다.
 
@@ -17,6 +29,8 @@ pub struct Peer {
     pub pidversion: u32,
     pub euid: u32,
     pub exe: Option<PathBuf>,
+    /// 확인 시점에 그 pid 를 가진 프로세스의 출생 시각(마이크로초). 못 읽으면 None(→ 짝 대조가 필요한 곳에서 거절).
+    pub start_us: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -178,7 +192,9 @@ pub fn identify(fd: i32) -> Option<(Peer, [u32; 8])> {
     #[cfg(target_os = "macos")]
     {
         let tok = mac::peer_token(fd)?;
-        let peer = Peer { pid: tok[5] as i32, pidversion: tok[7], euid: tok[1], exe: mac::exe_of_token(&tok) };
+        let pid = tok[5] as i32;
+        let peer = Peer { pid, pidversion: tok[7], euid: tok[1], exe: mac::exe_of_token(&tok),
+                          start_us: crate::registry::process_start_us(pid) };
         Some((peer, tok))
     }
     #[cfg(not(target_os = "macos"))]
@@ -191,8 +207,9 @@ pub fn identify(fd: i32) -> Option<(Peer, [u32; 8])> {
 /// 잠금 파일을 **한 번 열어 그 fd 로** ⓐ 지금 누군가에게 잡혀 있는가 ⓑ 적힌 pid 를 함께 본다 — 같은 inode 의
 /// 관측이다(codex 1R #10: 예전엔 잠금 검사 fd 를 닫고 경로를 다시 열어 pid 를 읽었다).
 /// ⓐ = flock 비차단 시도가 EWOULDBLOCK 이면 잡혀 있다. 우리가 잡아 버리면 즉시 풀고 「안 잡혀 있음」으로 답한다.
+/// 둘째 값 = 첫 칸 pid · 셋째 값 = 둘째 칸(조종자 출생 시각 · 있으면).
 /// 못 열거나 판정 불가 = None(→ 거절).
-pub fn lock_state(lock: &Path) -> Option<(bool, Option<i32>)> {
+pub fn lock_state(lock: &Path) -> Option<(bool, Option<i32>, Option<u64>)> {
     use std::io::Read;
     use std::os::unix::io::AsRawFd;
     let mut f = std::fs::OpenOptions::new().read(true).open(lock).ok()?;
@@ -207,7 +224,10 @@ pub fn lock_state(lock: &Path) -> Option<(bool, Option<i32>)> {
     };
     let mut text = String::new();
     f.read_to_string(&mut text).ok()?;
-    Some((held, text.split_whitespace().next().and_then(|t| t.parse().ok())))
+    let mut it = text.split_whitespace();
+    let pid = it.next().and_then(|t| t.parse().ok());
+    let start = it.next().map(|t| t.parse::<u64>().unwrap_or(0));
+    Some((held, pid, start))
 }
 
 /// 전부 통과하면 Ok(Peer). 순서는 싼 검사부터 — 결과는 같다(하나라도 실패 = 거절).
@@ -230,9 +250,16 @@ pub fn authorize(fd: i32, policy: &Policy) -> Result<Peer, (Reason, Option<Peer>
     }
     let _ = &tok;
     match lock_state(&policy.lock) {
-        Some((true, pid)) if pid == Some(peer.pid) => {}
-        Some((true, _)) => return Err(("lock_pid_mismatch", Some(peer))),
-        Some((false, _)) => return Err(("lock_not_held", Some(peer))),
+        Some((true, pid, start)) if pid == Some(peer.pid) => {
+            // 둘째 칸(출생 시각)이 있으면 (pid, 출생 시각) 짝까지 같아야 한다 — pid 재사용과 구분.
+            if let Some(start) = start {
+                if peer.start_us != Some(start) {
+                    return Err(("lock_owner_mismatch", Some(peer)));
+                }
+            }
+        }
+        Some((true, _, _)) => return Err(("lock_pid_mismatch", Some(peer))),
+        Some((false, _, _)) => return Err(("lock_not_held", Some(peer))),
         None => return Err(("lock_unreadable", Some(peer))),
     }
     Ok(peer)
@@ -246,8 +273,12 @@ mod tests {
     fn unheld_lock_reads_false_and_stays_free() {
         let p = std::env::temp_dir().join(format!("sk-lock-{}", std::process::id()));
         std::fs::write(&p, "123").unwrap();
-        assert_eq!(lock_state(&p), Some((false, Some(123))));
-        assert_eq!(lock_state(&p), Some((false, Some(123))), "검사가 잠금을 붙잡아 두면 안 된다");
+        assert_eq!(lock_state(&p), Some((false, Some(123), None)));
+        assert_eq!(lock_state(&p), Some((false, Some(123), None)), "검사가 잠금을 붙잡아 두면 안 된다");
+        std::fs::write(&p, "123 456789").unwrap();
+        assert_eq!(lock_state(&p), Some((false, Some(123), Some(456789))));
+        std::fs::write(&p, "123 garbage").unwrap();
+        assert_eq!(lock_state(&p), Some((false, Some(123), Some(0))), "읽을 수 없는 둘째 칸 = 0(어떤 출생 시각과도 불일치 → 거절)");
         let _ = std::fs::remove_file(&p);
     }
 
@@ -258,7 +289,7 @@ mod tests {
         std::fs::write(&p, "1").unwrap();
         let f = std::fs::File::open(&p).unwrap();
         assert_eq!(unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
-        assert_eq!(lock_state(&p), Some((true, Some(1))));
+        assert_eq!(lock_state(&p), Some((true, Some(1), None)));
         drop(f);
         let _ = std::fs::remove_file(&p);
     }

@@ -10,6 +10,8 @@
   ⑤ 탭 lms 에서 ⌘T → 새 좌석이 바로 보이고 7초 뒤에도 보인다 · 탭은 lms 그대로(D2)
   ⑥ 파일 트리 「cd 텍스트 삽입」 → send_input 대상 = 보이는 좌석(숨은 4 아님)
   ⑦ 넓게 보기(좌석 줄 6 클릭) → 포커스 = 6 · ⌘W 확인 창 = 6 의 이름
+  ⑧ 한글 조합 중(CDP imeSetComposition 「한」) 탭 전환 → 숨은 4 로 send_input 0 · 다음 글자 = 보이는 좌석(조합 중이던 글자가 버려지는지는 실측 출력만 ·
+     헤드리스 Chromium IME ≠ 실앱 WKWebView → HANDOFF canary 확인 항목)
 실행: CHROME_PATH=<chrome-headless-shell> [GATE_DIST=<다른 번들 폴더>] cys run -- <playwright python3> ui/e2e/focus_gate.py
   (GATE_DIST = 고치기 전 번들로 돌려 붉음을 재는 대조용)
 """
@@ -202,6 +204,26 @@ def main() -> int:
             sbg.check(not (m and "932" in m), f"⌘W 가 숨은 4 를 묻지 않는다 {m!r}")
             cancel_modal(pg)
             sbg.check(not any(c[1] == 4 for c in calls(pg, "close_surface")), "close_surface(4) 0")
+            sbg.check(not errs, f"오류 0 {errs[:2]}")
+            ctx.close()
+            # ⑧ 한글 조합 중 탭 전환
+            print("== ⑧ 한글 조합 중 탭 전환")
+            ctx, pg, errs = page()
+            pg.click('#root .pane[data-sid="4"] .xterm-screen')
+            pg.wait_for_timeout(300)
+            pg.evaluate("() => { window.__calls = []; }")
+            cdp = ctx.new_cdp_session(pg)
+            cdp.send("Input.imeSetComposition", {"text": "한", "selectionStart": 1, "selectionEnd": 1})
+            pg.wait_for_timeout(200)
+            pg.click('#root .group-tab:has-text("lms")')
+            pg.wait_for_timeout(600)
+            mid = calls(pg, "send_input")
+            cdp.send("Input.insertText", {"text": "글"})
+            pg.wait_for_timeout(500)
+            sent = calls(pg, "send_input")
+            sbg.check(not any(c[1] == 4 for c in sent), f"조합 중 탭 전환 → 숨은 4 로 0 {sent}")
+            sbg.check(any(c[1] in LMS and c[2] == "글" for c in sent), f"다음 글자 = 보이는 좌석 {sent}")
+            print(f"  (실측) 조합 중이던 「한」 = {'버려짐(어디로도 안 감)' if not mid else mid}")
             sbg.check(not errs, f"오류 0 {errs[:2]}")
             ctx.close()
             br.close()

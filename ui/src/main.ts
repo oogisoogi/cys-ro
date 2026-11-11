@@ -6096,13 +6096,17 @@ function mountTabBar(ws: Workspace, tree: Node, top: HTMLElement): void {
   if (split && tree !== ws.tree && tree.type === "split" && ws.tree?.type === "split") {
     const div = top.querySelector(":scope > .divider");
     const src = ws.tree;
-    div?.addEventListener("mousedown", () =>
+    // (948 못 본 것 · 2b-3 확인) 눌렀다 떼기만 하면(끌지 않음) 아무것도 쓰지 않는다 — 종전엔 클릭 한 번에 기본 폭 표지(leftAuto)가 지워지고
+    //   탭 화면 기둥 몫이 ws.tree 에 박혀 노브 끔 화면 폭까지 바뀌었다(pillar_gate 실측 0.427 → 0.369).
+    div?.addEventListener("mousedown", () => {
+      const before = tree.ratio;
       window.addEventListener("mouseup", () => {
+        if (tree.ratio === before) return;
         src.ratio = tree.ratio;
         delete src.leftAuto;
         saveLayout();
-      }, { once: true }),
-    );
+      }, { once: true });
+    });
   }
 }
 // (tabs-sidebar 조각2) 부서별 마지막 좌석 모델 · 마지막으로 그린 탭 보기 서명.

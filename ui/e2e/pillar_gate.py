@@ -183,6 +183,29 @@ def main() -> int:
                     print("  " + line)
                     table.append(line)
                     ctx.close()
+            # (948 못 본 것 · master#07acca07) 경계를 끌지 않고 눌렀다 떼기만 하면 기본 폭 표지(leftAuto)가 그대로여야 한다
+            print("== 경계 눌렀다 떼기(끌지 않음) @ 1920 좌석 3")
+            ctx, pg, errs = page(3, 1920, 1080)
+            lay = lambda: json.loads(pg.evaluate("() => localStorage.getItem('cys-layout-v2')") or "{}")  # noqa: E731
+            t0 = (lay().get("workspaces") or [{}])[0].get("tree") or {}
+            box = pg.query_selector("#root > .split.row > .divider").bounding_box()
+            pg.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+            pg.mouse.down()
+            pg.mouse.up()
+            pg.wait_for_timeout(400)
+            t1 = (lay().get("workspaces") or [{}])[0].get("tree") or {}
+            sbg.check(t0.get("leftAuto") is True, f"준비: 저장 트리 = 기본 폭 표지 {t0.get('leftAuto')} · 몫 {t0.get('ratio')}")
+            sbg.check(t1.get("leftAuto") is True and t1.get("ratio") == t0.get("ratio"), f"눌렀다 떼기 뒤에도 표지·몫 그대로 {t1.get('leftAuto')} · {t0.get('ratio')} → {t1.get('ratio')}")
+            # 실제로 끌면 사람 폭(표지 지움 · 그 몫 저장)
+            pg.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+            pg.mouse.down()
+            pg.mouse.move(box["x"] + 120, box["y"] + box["height"] / 2, steps=5)
+            pg.mouse.up()
+            pg.wait_for_timeout(400)
+            t2 = (lay().get("workspaces") or [{}])[0].get("tree") or {}
+            sbg.check("leftAuto" not in t2 and t2.get("ratio") != t0.get("ratio"), f"끌면 사람 폭 = 표지 지움·몫 바뀜 {t2.get('leftAuto')} · {t2.get('ratio')}")
+            sbg.check(not errs, f"콘솔 오류 0 {errs[:3]}")
+            ctx.close()
             # 노브 끔 = 옛 규칙(1.1.14) 그대로
             print("== 노브 끔 site 3 @ 1920")
             ctx, pg, errs = page(3, 1920, 1080, knob_off=True)

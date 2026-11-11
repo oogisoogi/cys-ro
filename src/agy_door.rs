@@ -1614,6 +1614,9 @@ mod tests {
         let t0 = std::time::Instant::now();
         let j = resolve_judgements(&format!("sh {}", fifo.display()));
         assert!(t0.elapsed() < std::time::Duration::from_secs(2) && j.iter().any(|(_, j)| *j == Judge::Unread), "{j:?}");
+        // 찾은 뒤 FIFO 로 바뀐 경우(찾기는 일반 파일이었다) — 읽기 함수 자체가 열지 않거나(경로 확인) 연 핸들을 다시 보고 거절한다(막힘 없음)
+        let t0 = std::time::Instant::now();
+        assert!(read_capped(&fifo).is_err() && t0.elapsed() < std::time::Duration::from_secs(2), "FIFO 를 읽었다");
         // 실행 자리 낱말 4,000개(같은 이름) = 한 번만 찾는다 · 시간 상한
         let many_same = vec!["notfound_xyz"; 4000].join(";");
         let t0 = std::time::Instant::now();

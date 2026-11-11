@@ -1,0 +1,8 @@
+# E26 고치기 전 붉음(ChatGPT F1 재현) — 바이너리 = cd094675 와 같은 제품 소스(6907f84d 빌드) · 2026-11-12 05:13:05~05:14:02
+# 명령: env -u CYS_PACK_DIR DISABLE_AUTOUPDATER=1 python3 docs/agy-door-evidence/acceptance.py --only-e26
+FAIL E26 enqueue_ok=True delivered_to_pty=True queue_left=False ledger_reason=0
+  "queue_tail": "[]",
+  "screen_tail": "? for shortcuts\n> ^[[200~queued-while-open-71208^[[201~",
+# = 문 열림에서 적재한 자동 지시가, 문을 닫은 뒤 watchdog 배달로 agy 좌석 PTY 에 그대로 쓰였다(원장 사유 0).
+# (그 전 두 번은 사람 입력 식힘 30초 안이라 배달 전 관측 — 하네스 대기 12초 → 40초로 고침)
+# F1 만 고친 빌드(커밋 전 · 같은 줄이 1cb4685b 에 들어감 · 05:14:50~05:15:52): PASS E26 enqueue_ok=True delivered_to_pty=False queue_left=False ledger_reason=1

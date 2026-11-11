@@ -1,6 +1,6 @@
 {
  "ok": true,
- "at": "2026-11-11T11:45:23+0900",
+ "at": "2026-11-11T12:35:17+0900",
  "results": [
   {
    "id": "②E1",
@@ -65,7 +65,7 @@
    "tail": [
     "  \"honesty_note\": \"★M9: phoenix_restore 값만 신뢰하라. UNVERIFIED/FAILED 는 정상 완료가 아니다 (자기채점 금지·무출력을 정상으로 해석 금지). 세션 대조가 일치할 때만 VERIFIED. ★완결성: COMPLETE 는 roster 전원이 실 ready_marker 로 응답 가능함을 뜻한다. ★빈 좌석 잔존=['reviewer-gemini']: 이 역할들은 surface(좌석)는 있으나 **에이전트가 앉아 있지 않다**(자손 프로세스 0 — 커널 사실). 부활이 아니라 '사람이 그 pane 에서 직접 agent 를 실행'해야 채워지는 상태이거나, agent 미상(claim-role 등록 pane)이라 무엇을 띄울지 결정론으로 알 수 없는 상태다. 좌석 앞 큐 메시지는 배달 보류(보존)된다 — 침묵 성공 아님.\"",
     "}",
-    "[phoenix] cys 채택(PHOENIX_CYS): /Users/oogisoogi/axdev/.wt/cys-agy-policy/target/debug/cys — 3중 identity match(build_id=62b1f8d23896-dirty.20261111T0223Z proto=1)"
+    "[phoenix] cys 채택(PHOENIX_CYS): /Users/oogisoogi/axdev/.wt/cys-agy-policy/target/debug/cys — 3중 identity match(build_id=8f4140726604.20261111T0325Z proto=1)"
    ]
   },
   {
@@ -118,7 +118,7 @@
    "pass": true,
    "tail": [
     "마지막 화면 꼬리:",
-    "oogisoogi@oogisoogiui-MacBookPro ~ % CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=\"false\" CLAUDE_CONFIG_DIR=\"${CYS_ACCOUNT_DIR:-$HOME/.cys/claude}\" CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=\"1\" CLAUDE_CODE_EFFORT_LEVEL=\"high\" CLAUDE_CODE_ENABLE_CFC=\"false\" claude --dangerously-skip-permissions --settings '/private/tmp/phoenix-harn-home-0vwe1mdx/.cys/seat-settings/worker.json'",
+    "oogisoogi@oogisoogiui-MacBookPro ~ % CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=\"false\" CLAUDE_CONFIG_DIR=\"${CYS_ACCOUNT_DIR:-$HOME/.cys/claude}\" CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=\"1\" CLAUDE_CODE_EFFORT_LEVEL=\"high\" CLAUDE_CODE_ENABLE_CFC=\"false\" claude --dangerously-skip-permissions --settings '/private/tmp/phoenix-harn-home-4d49wld2/.cys/seat-settings/worker.json'",
     "❯"
    ]
   },
@@ -155,7 +155,7 @@
    "expect_delta": 0,
    "pass": true,
    "tail": [
-    "oogisoogi@oogisoogiui-MacBookPro ~ % /Users/oogisoogi/axdev/.wt/cys-agy-policy/target/debug/cys --socket /private/tmp/phoenix-harn-home-0vwe1mdx/.cys/state-harness/cys.sock launch-agent --role reviewer-gemini --agent gemini",
+    "oogisoogi@oogisoogiui-MacBookPro ~ % /Users/oogisoogi/axdev/.wt/cys-agy-policy/target/debug/cys --socket /private/tmp/phoenix-harn-home-4d49wld2/.cys/state-harness/cys.sock launch-agent --role reviewer-gemini --agent gemini",
     "[launch-agent] agy_consumer_policy: cysr 은 Antigravity(agy) 좌석을 띄우지 않습니다 — 개인 요금제에서 다른 프로그램이 agy 를 부리면 구글 약관상 계정이 정지될 수 있기 때문입니다. agy 를 직접 쓰려면 새 탭에서 `agy` 를 치세요(괜찮습니다). 기업 요금제 등 허용된 경우에만, 사람이 앱 명령 팔레트의 「Antigravity(agy) 좌석 열기」로 열 수 있습니다.",
     "oogisoogi@oogisoogiui-MacBookPro ~ %"
    ]

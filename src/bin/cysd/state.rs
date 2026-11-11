@@ -1,7 +1,7 @@
 //! Daemon state: surfaces (PTY sessions), health rules, process ledger.
 
 use crate::events::EventBus;
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
 use regex::Regex;
 use serde_json::json;
 use serde_json::Value;
@@ -3093,8 +3093,7 @@ impl Surface {
     /// raw fd 를 읽는 곳은 이 함수 하나다(계수 시점 판정과 틱의 에이전트 그룹 판정·되돌리기가 같은 읽기를 쓴다).
     #[cfg(unix)]
     pub fn foreground_pgid_now(&self) -> Option<i32> {
-        let fd = self.pty_master_fd.load(Ordering::Relaxed);
-        (fd >= 0).then(|| unsafe { libc::tcgetpgrp(fd) }).filter(|p| *p > 0)
+        crate::seat_proc::foreground_pgid(&self.pty_master_fd)
     }
 
     /// 지금 이 좌석 PTY 의 전경 프로세스 그룹이 **틱이 적어 둔 에이전트 그룹**이면 그 그룹 번호(unix) — [`Surface::agent_fg_pgid`] 가 0 이면 시스템 콜 없이 `None`(V2).
@@ -7742,15 +7741,13 @@ impl Daemon {
             .unwrap_or_else(|| daemon_resolved.clone());
         let config_dir_trusted =
             claude_config_dir_override.is_none() && caller_env_keeps_config_dir(env, &daemon_resolved);
-        let pty = native_pty_system();
-        let pair = pty
-            .openpty(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| map_pty_open_error(e.as_ref()))?;
+        // 좌석 프로세스 손잡이(T3) — PTY 열기는 `seat_proc` 한 곳에서.
+        let opened = crate::seat_proc::open(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
 
         let shell = default_shell();
         let mut builder = CommandBuilder::new(&shell);
@@ -7915,33 +7912,15 @@ impl Daemon {
             }
         };
 
-        let mut child = pair
-            .slave
-            .spawn_command(builder)
-            .map_err(|e| format!("spawn failed: {e}"))?;
-        let pid = child.process_id().unwrap_or(0);
-        // ★D3(W5): 자식을 데몬 소유 Job 에 결박 — 데몬 사후 동반사망(Windows P2-9). unix 는 no-op.
-        //   ★(1R#4) 자기 편입(bind_self)이 성립한 정상 경로에서는 **상속으로 이미 결박**돼 있어
-        //   이 호출은 Ok 로 즉시 끝난다(경쟁 창 0). 강등 모드에서만 실제 편입을 시도하고,
-        //   실패는 **조용히 넘어가지 않는다**(종전엔 반환값이 없어 실패가 보이지 않았다).
-        #[cfg(windows)]
-        if let Err(e) = winjob::assign_child(pid) {
-            eprintln!("[cysd] ⚠ PTY 자식 pid={pid} Job 결박 실패: {e} — 데몬 사후 고아 가능");
-        }
-        drop(pair.slave);
+        // 좌석 프로세스 손잡이(T3) — 자식 기동·Job 결박·slave 닫기는 `seat_proc::Opened::spawn`.
+        let mut spawned = opened.spawn(builder)?;
+        let pid = spawned.pid;
 
         // Observation failure only leaves R absent. The original child stays owned
         // here and is transferred unchanged into Surface.child below.
-        let root_registration = crate::root_registration::observe(child.as_mut(), pid);
+        let root_registration = crate::root_registration::observe(spawned.child.as_mut(), pid);
 
-        let reader = pair
-            .master
-            .try_clone_reader()
-            .map_err(|e| format!("clone reader failed: {e}"))?;
-        let writer = pair
-            .master
-            .take_writer()
-            .map_err(|e| format!("take writer failed: {e}"))?;
+        let (reader, writer) = spawned.take_io()?;
 
         let (out_tx, _) = broadcast::channel(256);
 
@@ -7966,7 +7945,7 @@ impl Daemon {
 
         // ★(0.14.43 · RQFIX2 m-2) PTY master raw fd 캐시(unix) — master 를 Mutex 로 옮기기 전에 읽는다. 모르면 −1(= 전경 판정 불능 → V2).
         #[cfg(unix)]
-        let pty_master_fd = pair.master.as_raw_fd().unwrap_or(-1);
+        let pty_master_fd = spawned.foreground_fd();
         let surface = Arc::new(Surface {
             id,
             title: Mutex::new(title.unwrap_or_else(|| format!("surface {id}"))),
@@ -8022,8 +8001,8 @@ impl Daemon {
             exited_at: Mutex::new(None),
             close_operation: Mutex::new(()),
             write_tx,
-            master: Mutex::new(pair.master),
-            child: Mutex::new(child),
+            master: Mutex::new(spawned.master),
+            child: Mutex::new(spawned.child),
             parser: Mutex::new(vt100::Parser::new(rows, cols, SCROLLBACK_LINES)),
             scrollback: Mutex::new(VecDeque::with_capacity(1024)),
             ingest: Mutex::new(IngestState {
@@ -8394,13 +8373,7 @@ impl Daemon {
             reader_writer_stop.store(true, Ordering::Relaxed);
             // 좀비 회수: 자력 종료(셸 exit)는 close_surface를 거치지 않으므로 여기서 reap.
             // EOF 시점엔 거의 항상 이미 종료 — 즉시 회수, 아니면 1초 후 한 번 더.
-            {
-                let mut child = surf.child.lock().unwrap();
-                if child.try_wait().ok().flatten().is_none() {
-                    std::thread::sleep(std::time::Duration::from_millis(1000));
-                    let _ = child.try_wait();
-                }
-            }
+            crate::seat_proc::reap_after_eof(&surf.child);
             // ★1.1.8 병합(판정 갈림 S1 · 잠정 = 우리 D7⑵): 원작자 Q7 은 같은 자리에서 역할 좌석의 활성 큐를 데몬 보존소
             //   (`restored_queue` · `governance::park_active_to_restored`)로 옮긴다. 잠정으로 우리 역할 주차(`parked_queues` →
             //   claim_role 상속)를 유지하고, 원작자의 인계 중 항목 보존(`drain_active_except_inflight`)·원장 묘비·만료 큐 처분은 받는다.

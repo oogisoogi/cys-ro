@@ -6485,12 +6485,8 @@ fn close_surface_effect(daemon: &Arc<Daemon>, operation: CloseOperation<'_>, cau
     for (pid, _) in &descendants {
         kill_pid(*pid);
     }
-    {
-        let mut child = surface.child.lock().unwrap();
-        let _ = child.kill();
-        // kill 후 reap — 좀비 잔존 차단 (reader 스레드의 try_wait와는 같은 Mutex로 직렬화)
-        let _ = child.wait();
-    }
+    // kill 후 reap — 좀비 잔존 차단 (좌석 프로세스 손잡이 · `seat_proc::kill_and_reap`)
+    crate::seat_proc::kill_and_reap(&surface.child);
     daemon.bus.publish(
         "surface.closed",
         "surface",

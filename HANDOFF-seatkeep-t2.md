@@ -1,6 +1,6 @@
 # HANDOFF — TICKET=cysr-seatkeep-t2 (좌석 보유 장치 seatkeep 단독 시제품 · 맥 · cysd 미연결)
 
-- 상태 = **2차 고침 중**(독립 검증 REVISE · blocking 0 · major 3 · minor 6 · master#69b9fe37 · 보고서 = `~/axdev/terminal-ide-survey/2026-11-bench/seatkeep-t2/verify/VERIFY-REPORT.md`) — 중간 커밋 · 재실측·뮤턴트·codex 2R 은 이어서.
+- 상태 = **2차 고침 코드 끝 · 재실측 중**(master#69b9fe37) — 커밋 2b2b4d5c(D1~D9) → 0c3aff2d(codex 2R REVISE 고침 5건: 밀림 깨우기 유실 · 제어 큐 1MiB 상한(`evict control_queue_full`) · accept_aborted 는 줄이 남았을 때만 · 재기동 조각 감지 · 실패 시각 초기화). 0c3aff2d 실측 = A11 6/6 · 단위 16/16 · ctlflood 3/3 · behind 3/3 · behind_mem 3/3. 남은 것 = 기준 전체·뮤턴트 24곳 재실행(run_r2b.sh) · A13 재측정(첫 회차가 noisy 좌석당 5 에서 기동 확정 미확인으로 멈춤 — 원인 조사) → 【확인요청 2】.
 - 가지 = `feat/seatkeep-t2`(v1.1.14 `270e3e21` 위) · 커밋 2개(`0704dc03` 시제품 · 이 커밋 = codex 1R 고침 + 시험 결과) · push 0.
 - 설계·브리프 = `~/axdev/master/reports/2026-11-11-cysr-holder-design/`(DESIGN.md · T0-surface-state.md · briefs-draft/T2.md · master#a3db2868 결정 5).
 - codex 1R = 같은 폴더 `codex-t2-1R.prompt.md`(의뢰문) · `codex-t2-1R.verdict.json`(판정 BLOCK · 대상 `0704dc03`) · `codex-t2-1R.txt`(전 기록).

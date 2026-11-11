@@ -485,7 +485,8 @@ def main():
     # 대조: 위치 인자가 자료일 뿐인 꼴은 문을 지난다. ★`cys run` 은 pane 밖 호출자에게 데몬 ACL(write-shell)이 원장 등록을 거부하므로
     #   (문과 무관 · 실측 rc 1 「external lacks 'write-shell'」) 단언 = ⑴ cys run 출력에 문 사유 없음 ⑵ 같은 argv 판정(`cys agy-door-check -- …`) rc 0.
     b = ran(); rc, out = cys("run", "--", "sh", "-c", 'echo "$1"', "sh", "agy-notes", timeout=60)
-    rc_chk, out_chk = cys("agy-door-check", "--", "sh", "-c", 'echo "$1"', "sh", "agy-notes", timeout=30)
+    # 숨은 동사 agy-door-check 는 clap 앞에서 첫 인자로만 알아본다(`--socket` 앞말 없이 부른다 · 4ba55981)
+    rc_chk, out_chk = run([os.path.join(TD, "cys"), "agy-door-check", "--", "sh", "-c", 'echo "$1"', "sh", "agy-notes"], timeout=30)
     record("E22c", "대조: cys run -- sh -c 'echo \"$1\"' sh agy-notes(위치 인자 = 자료 · 문 통과)", b, out + "\n[agy-door-check]\n" + out_chk, rc,
            expect_not_in=(POLICY,), checks=(("같은 argv 문 판정 rc 0", rc_chk == 0),))
     # E23(5R blocking 1 ⓑ): 내용이 agy 실행인 스크립트를 셸에 넘기는 일정 — 등록 때 한 단계 읽어 거부

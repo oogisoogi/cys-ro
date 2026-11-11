@@ -2358,6 +2358,10 @@ pub struct Surface {
     pub quiesce_owner: Mutex<Option<(u32, f64, f64)>>,
     /// T2-5 에이전트 메타: launch-agent가 등록한 (agent 이름, 실행 바이너리)
     pub agent_meta: Mutex<Option<(String, String)>>,
+    /// ★agy 좌석 문(TICKET=cysr-agy-door-r6 · codex 5R blocking 3): **생성 때 확정한** 좌석 종류 — 선언 agent·cmd 가 agy 를 가리키는가
+    ///   (`cys::agy_door::seat_kind_is_agy` · 문 상태와 무관 · 낱말 검사). 자동 지시 대상 식별의 1순위 — 저장된 cmd 를 실행 자리 검사로
+    ///   다시 읽지 않는다(치환 괄호 오인). 휘발(영속 안 함 · restore 는 surface.create 로 다시 확정).
+    pub agy_kind: bool,
     /// T2-5 사망 감지 상태머신: 자식 트리에서 agent 바이너리를 처음 본 뒤 사라지면 발화
     pub agent_seen: AtomicBool,
     pub agent_exit_notified: AtomicBool,
@@ -7967,6 +7971,7 @@ impl Daemon {
         // ★(0.14.43 · RQFIX2 m-2) PTY master raw fd 캐시(unix) — master 를 Mutex 로 옮기기 전에 읽는다. 모르면 −1(= 전경 판정 불능 → V2).
         #[cfg(unix)]
         let pty_master_fd = pair.master.as_raw_fd().unwrap_or(-1);
+        let cmd_for_kind = cmd.clone(); // ★agy 좌석 문: 좌석 종류는 셸 기본값으로 채우기 **전** cmd 로 확정한다
         let surface = Arc::new(Surface {
             id,
             title: Mutex::new(title.unwrap_or_else(|| format!("surface {id}"))),
@@ -8054,6 +8059,7 @@ impl Daemon {
             //   ⚠관측이 아니라 **선언**이므로 Windows 2-표본 확정(claim_role 의 pending_agent_obs)
             //   대상이 아니다 — 스폰한 쪽이 무엇을 띄우는지 아는 것은 추정이 아니다.
             agent_meta: Mutex::new(agent.clone().map(|a| (a.clone(), a))),
+            agy_kind: cys::agy_door::seat_kind_is_agy(agent.as_deref(), cmd_for_kind.as_deref()),
             agent_seen: AtomicBool::new(false),
             agent_exit_notified: AtomicBool::new(false),
             crash_notified: AtomicBool::new(false),

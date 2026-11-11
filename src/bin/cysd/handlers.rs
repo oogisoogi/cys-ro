@@ -284,6 +284,25 @@ fn run_dept_tool_capped(tool: &std::path::Path, verb: &str, args: &[String], tim
     DeptRunResult { code, stdout: rd(&op), stderr: rd(&ep), timed_out }
 }
 
+/// ★agy 좌석 문 — 이 좌석이 「닫힌 문의 agy 좌석」인가. agent_meta = (어댑터 키, 해석된 실행 파일) — 좌석 cmd 는 로그인 셸일 수 있어
+/// (launch-agent 는 셸에 명령을 친다) 실행 파일로 잰다. ★codex 5R blocking 3: 좌석 cmd 는 기계가 만든 실행 기록이라 실행 자리 검사로 다시
+/// 읽지 않고 **생성 때 확정한 종류**(`Surface.agy_kind` · 낱말 검사)를 쓴다.
+fn agy_door_seat_closed(surface: &crate::state::Surface) -> bool {
+    let meta = surface.agent_meta.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let by_meta = meta.as_ref().is_some_and(|(k, bin)| cys::agy_door::program_refused(k, bin));
+    let by_kind = surface.agy_kind && !cys::agy_door::door_open();
+    by_meta || by_kind
+}
+
+/// ★agy 좌석 문 — 사람 자판이 아닌 `surface.send_text`(직접·`queued`)를 막을 것인가: 닫힌 문의 agy 좌석이거나, 좌석 기동 줄 표지
+/// (`agent_launch`)가 붙은 글이 기계 입구 낱말 검사(①)에 걸리면(그 글 자체가 실행될 명령 — 구판 CLI·원시 RPC 가 빈 셸에 agy 기동 줄을
+/// 치는 길 · codex 5R blocking 2 의 데몬 입구 전수).
+fn agy_door_blocks_auto_send(surface: &crate::state::Surface, params: &Value, text: &str) -> bool {
+    agy_door_seat_closed(surface)
+        || (params.get(cys::AGENT_LAUNCH_KEY).and_then(|v| v.as_bool()).unwrap_or(false)
+            && cys::agy_door::launch_refusal("", Some(text)).is_some())
+}
+
 fn reject_send(
     daemon: &Daemon,
     sid: u64,
@@ -6896,6 +6915,11 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                     }
                 },
             };
+            // ★agy 좌석 문(TICKET=cysr-agy-door-r6 · codex 5R blocking 2): 서버가 권위 — `cmd`·선언 `agent` 를 PTY 를 만들기 **전에**
+            //   기계 입구 낱말 검사로 판정한다(신 CLI 의 new-surface 판정은 그대로 · 구판 CLI·원시 RPC 도 여기서 막힌다).
+            if let Some(m) = cys::agy_door::create_refusal(declared_agent.as_deref(), param_str(&params, "cmd").as_deref()) {
+                return Reply::Single(err_response(&id, cys::agy_door::REFUSE_CODE, &m));
+            }
             // ★SEAT: 승계 대상(구 좌석)을 생성 성공 후 마무리(role 해제·큐 이관)하기 위해 상위 스코프에 둔다.
             let mut seat_takeover_from: Option<u64> = None;
             // (W2 · G14) announce 를 성공 아크로 미루므로 role 문자열도 상위 스코프에 보존한다.
@@ -7538,6 +7562,20 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
             {
+                // ★agy 좌석 문(TICKET=cysr-agy-door-r6 · 데몬 입구 전수): 큐에 넣고 나면 배달(watchdog)에는 판정이 없다 — 넣기 전에 같은 판정.
+                //   사람 자판(human ∧ 기계 출처 아님)은 큐를 쓰지 않지만 쓰더라도 아래 직접 경로와 같이 통과시킨다.
+                let human_typed_q = human && !params.get("machine_origin").and_then(|v| v.as_bool()).unwrap_or(false);
+                if !human_typed_q && agy_door_blocks_auto_send(&surface, &params, &text) {
+                    return Reply::Single(reject_send(
+                        daemon,
+                        sid,
+                        "surface.send_text",
+                        cys::agy_door::REFUSE_CODE,
+                        "agy 좌석 문이 닫혀 있어 이 agy 좌석으로 자동 지시를 보내지 않는다(사람이 그 좌석에 직접 치는 것은 된다)",
+                        caller_pid,
+                        &id,
+                    ));
+                }
                 // ★G1(W2-A): from = 검증된 발신 surface_ref 우선, 부재 시 클라이언트 from 문자열
                 // (관측·폐기 통지용 — 신원 판정은 여전히 커널 peer 기반 verified_from이 한다).
                 let entry_from = verified_from.map(cys::surface_ref).or_else(|| {
@@ -7847,16 +7885,9 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             //   사람 입력을 거부하지 않는다) 원장에 「토큰 미확인 통과」를 남긴다. 같은 사용자 권한의 흉내(human 자기신고 위조)는
             //   원리상 한계 — 토큰이 있어도 같다(같은 UID 는 토큰 파일도 읽는다 · 설명서 「알려진 한계」). 좌석을 끄지는 않는다.
             let human_typed = human && !machine_origin;
-            let agy_seat = || {
-                // agent_meta = (어댑터 키, 해석된 실행 파일) — 좌석 cmd 는 로그인 셸일 수 있어(launch-agent 는 셸에 명령을 친다) 실행 파일로 잰다.
-                let meta = surface.agent_meta.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                let by_meta = meta.as_ref().is_some_and(|(k, bin)| cys::agy_door::program_refused(k, bin));
-                let by_cmd = !surface.cmd.trim().is_empty() && cys::agy_door::exec_refusal(&surface.cmd).is_some();
-                by_meta || by_cmd
-            };
-            let agy_token_unverified_pass = human_typed && !human_verified && agy_seat();
+            let agy_token_unverified_pass = human_typed && !human_verified && agy_door_seat_closed(&surface);
             if !human_typed {
-                if agy_seat() {
+                if agy_door_blocks_auto_send(&surface, &params, &text) {
                     return Reply::Single(reject_send(
                         daemon,
                         sid,

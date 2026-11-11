@@ -8695,6 +8695,9 @@ fn run_schedule(action: ScheduleAction) -> i32 {
                     eprintln!("[schedule] {m}");
                     std::process::exit(cys::agy_door::EXIT_AGY_POLICY_REFUSED); // ★agy 좌석 문 — 등록 때(발화 때는 데몬이 한 번 더)
                 }
+                for f in command.as_deref().map(cys::agy_door::unread_scripts).unwrap_or_default() {
+                    eprintln!("[schedule] 알림: 스크립트 {f} 를 읽지 못해 안에 agy 가 있는지 살피지 않고 등록합니다(agy 좌석 문 · 발화 때 한 번 더 봅니다).");
+                }
                 // --time(반복)·--in(원샷)·--every(주기) 정확히 하나
                 let mode_count = time.is_some() as u8 + in_dur.is_some() as u8 + every.is_some() as u8;
                 if mode_count != 1 {

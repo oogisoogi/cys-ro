@@ -24,7 +24,16 @@ export const SEAT_STATE_LABEL: Record<SeatState, string> = {
   exited: "끝남",
 };
 
-/** 모양(색과 함께 쓴다 — 색만으로 구별하지 않는다 · 설계 ⑨). */
+/** (1f · master#94f497c9 ②) 모양 정본 = 기존 역할 점(style.css .pane-role-dot act-*) — 좌석 줄·상황판이 같은 클래스를 쓴다.
+ *  작업 중 = 깜박이는 원 · 대기 = 채운 원 · 막힘(승인 창) = 마름모(역할 점 「입력 대기」) · 모름 = 빈 원 · 끝남 = 「–」(역할 점은 숨김). */
+export const SEAT_STATE_ACT: Record<SeatState, string> = {
+  working: "act-working",
+  idle: "act-waiting",
+  blocked: "act-input",
+  unknown: "act-unknown",
+  exited: "act-exited",
+};
+/** 글자 모양(툴팁·접근 문구용 보조 — 화면 표지는 SEAT_STATE_ACT). */
 export const SEAT_STATE_SHAPE: Record<SeatState, string> = {
   working: "●",
   idle: "◆",

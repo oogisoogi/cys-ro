@@ -56,3 +56,19 @@ describe("한도 한 줄((나))", () => {
     expect(limitLine([{ label: "5h", usedPct: 40, resetsAt: null }], now)).toBeNull();
   });
 });
+
+describe("(1f) 계정 경고 · 모양 어휘", () => {
+  test("손써야 할 사유(로그아웃·불일치)만 경고 · 낡음·구버전·미등록·확인 중은 경고 아님", async () => {
+    const { accountNeedsAction } = await import("./statusboard");
+    expect(accountNeedsAction(["known", "stale", "no_key", "none", "pending", "bad"])).toBe(false);
+    expect(accountNeedsAction(["known", "no_login"])).toBe(true);
+    expect(accountNeedsAction(["mismatch"])).toBe(true);
+  });
+  test("상태 → 역할 점 클래스 = 한 벌(같은 값 = 같은 모양 · 막힘 = 역할 점 입력 대기 마름모)", async () => {
+    const { SEAT_STATE_ACT } = await import("./seatrows");
+    expect(SEAT_STATE_ACT).toEqual({ working: "act-working", idle: "act-waiting", blocked: "act-input", unknown: "act-unknown", exited: "act-exited" });
+    const css = (await import("node:fs")).readFileSync(new URL("./style.css", import.meta.url), "utf-8");
+    expect(css).toContain(".ws-seat-dot.act-input, .ws-board-dot.act-input { border-radius: 1px; transform: rotate(45deg) scale(0.8); }");
+    expect(css).toContain(".pane .pane-role-dot.act-input { border-radius: 1px; transform: rotate(45deg) scale(0.8);");
+  });
+});

@@ -5,9 +5,10 @@
 // ★같은 호스트 노드를 계속 쓴다: renderWsTabs 가 10초마다 목록을 비우고 다시 그려도 호스트 객체는 Map 에 살아 있어
 //   다시 붙기만 한다 — 줄이 깜박이거나 툴팁·호버가 끊기지 않는다. 값이 같으면(서명 같음) DOM 을 다시 만들지 않는다.
 // ★색은 기존 토큰만(--ok · --warn · --error · 사이드바 회색) · 모양 + 색 둘 다(설계 ⑨) · 글자 = 사이드바 배율(--wsbar-font).
+import { roleDotColor } from "./appearance";
 import {
+  SEAT_STATE_ACT,
   SEAT_STATE_LABEL,
-  SEAT_STATE_SHAPE,
   showGroupHeaders,
   type SeatRow,
   type SeatRowsModel,
@@ -101,9 +102,10 @@ function rowEl(r: SeatRow, fixed: boolean, opts: SeatRowsDomOpts): HTMLElement {
   const row = document.createElement("div");
   row.className = `ws-seat st-${r.state}${fixed ? " fixed" : ""}${r.named ? " named" : ""}`;
   row.dataset.sid = String(r.sid);
+  // (1f) 표지 = 역할 점과 같은 클래스·같은 색(역할색) — 같은 값 = 같은 모양.
   const shape = document.createElement("span");
-  shape.className = "ws-seat-shape";
-  shape.textContent = SEAT_STATE_SHAPE[r.state];
+  shape.className = `ws-seat-dot ${SEAT_STATE_ACT[r.state]}`;
+  shape.style.setProperty("--role-color", roleDotColor(r.role) ?? "#64748b");
   shape.setAttribute("aria-label", SEAT_STATE_LABEL[r.state]);
   const no = document.createElement("span");
   no.className = "ws-seat-no";

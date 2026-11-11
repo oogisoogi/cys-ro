@@ -4,7 +4,7 @@
 //   숫자를 누르면 그 상태의 좌석으로 차례로 옮겨 가게 좌석 목록을 준다. ★새 판정 없음 — seatrows.seatState 가 낸 줄 상태를 센다.
 // 노브 = localStorage `cys-status-board`(0 끔 · 1 (가) 상태 수만 · 2 (나) + 한도 한 줄) — 기본 (가). 떼어 낼 때는 노브 0 또는 이 커밋 되돌리기.
 // ★세지 않는 줄: 이름 보고자(화면 밖 master·cso — 앱 좌석이 아니다) · 끝난 좌석(끝남은 상태 4종 밖).
-import { SEAT_STATE_LABEL, SEAT_STATE_SHAPE, type SeatRowsModel, type SeatState } from "./seatrows";
+import { SEAT_STATE_ACT, SEAT_STATE_LABEL, type SeatRowsModel, type SeatState } from "./seatrows";
 
 export const BOARD_KEY = "cys-status-board";
 export type BoardVariant = "off" | "a" | "b";
@@ -52,8 +52,8 @@ export function limitLine(rows: readonly { label: string; usedPct: number; reset
 export interface BoardPaintOpts {
   variant: Exclude<BoardVariant, "off">;
   limit: string | null;
-  /** 단일 부서일 때 카드 대신 여기에 다는 계정 줄(카드가 하던 일을 옮김) — 없으면 null. */
-  extra: HTMLElement | null;
+  /** (1f) 사람이 손써야 하는 계정 문제(로그아웃 · 계정 불일치)가 있으면 한 낱말 표시 — accountNeedsAction. */
+  acctWarn: boolean;
   onGo: (state: BoardState) => void;
   /** 부서 카드 아래 작은 줄(부서별 수) — 제목 없이 숫자만. */
   compact?: boolean;
@@ -78,7 +78,12 @@ export function paintBoard(host: HTMLElement, c: BoardCounts, o: BoardPaintOpts)
     const b = document.createElement("button");
     b.type = "button";
     b.className = `ws-board-n st-${st}${n === 0 ? " zero" : ""}`;
-    b.textContent = `${SEAT_STATE_SHAPE[st]} ${n}`;
+    const dot = document.createElement("span");
+    dot.className = `ws-board-dot ${SEAT_STATE_ACT[st]}`; // 역할 점과 같은 모양(1f)
+    const num = document.createElement("span");
+    num.className = "ws-board-num";
+    num.textContent = String(n);
+    b.append(dot, num);
     b.title = n === 0 ? `${SEAT_STATE_LABEL[st]} 0` : `${SEAT_STATE_LABEL[st]} ${n} — 누르면 그 좌석으로(여럿이면 차례로)`;
     b.disabled = n === 0;
     b.addEventListener("click", (e) => {
@@ -106,7 +111,19 @@ export function paintBoard(host: HTMLElement, c: BoardCounts, o: BoardPaintOpts)
     lim.textContent = o.limit;
     frag.appendChild(lim);
   }
-  if (o.extra) frag.appendChild(o.extra);
+  if (o.acctWarn && !o.compact) {
+    const w = document.createElement("div");
+    w.className = "ws-board-acct";
+    w.textContent = "계정 확인 필요";
+    w.title = "로그아웃됐거나 기록과 다른 계정으로 도는 좌석이 있습니다 — 좌석 줄에 마우스를 올리거나 마스터에게 물어보세요";
+    frag.appendChild(w);
+  }
   host.replaceChildren(frag);
   host.hidden = false;
+}
+
+/** (1f) 상황판에 계정 경고를 띄울지 — 사람이 손써야 하는 사유(로그아웃 no_login · 계정 불일치 mismatch)만.
+ *  카드의 「계정 미확인」(seatacct.parseSeatAccount 의 모든 미확인 사유 — 낡음·구버전·미등록 포함)은 여기서 띄우지 않는다. */
+export function accountNeedsAction(states: readonly string[]): boolean {
+  return states.some((s) => s === "no_login" || s === "mismatch");
 }

@@ -240,7 +240,7 @@ import {
   accountCardLabels,
   type AcctRow,
 } from "./usagebar";
-import { buildAcctIndex, buildWsAccountGroups, type SeatAcctSig, type AcctIndex } from "./seatacct"; // ★0.14.45 부서 카드 노드별 계정 줄(순수 판정)
+import { buildAcctIndex, buildWsAccountGroups, parseSeatAccount, type SeatAcctSig, type AcctIndex } from "./seatacct"; // ★0.14.45 부서 카드 노드별 계정 줄(순수 판정)
 import { planOfficeTab, repairOutcomeOf, type OfficeCtx } from "./officetab"; // 0.14.44 B5·B6 오피스 탭 안내(순수 판정)
 import { starvedNotice, starvedShouldPop, starvedKeyHasHead, starvedPopAgeMs, starvedDismissId, surfaceIdOfRef, locateStarvedSeat } from "./starvednotice"; // 0.14.43 UI2 큐 기아 경보 → 토스트·배너(순수 문구·좌석 확정)
 import { latestOnly, parseResultNotice, seatsBlockedText, SEATS_NOTE_POLL_MS } from "./updateresult"; // 1.1.8 U4 자동 갱신 결과 알림(응답 해석만 · 갱신 결정·집행 0)
@@ -343,7 +343,7 @@ import { approvalSeatKeys, buildSeatRows, namedSeatInputs, seatDot, seatInputOf,
 import { paintSeatRows, pruneSeatHosts, seatHost } from "./seatrowsdom"; // (tabs-sidebar 조각1) 좌석 줄 그리기
 import { GROUP_TABS_KEY, groupTabsOn, normalizeTabState, reconcileTabs, viewTree, type TabState, type TabView } from "./grouptabs"; // (tabs-sidebar 조각2) 묶음 탭 판정
 import type { SeatRowsModel } from "./seatrows";
-import { BOARD_KEY, boardCounts, boardVariant, limitLine, nextSeat, paintBoard, type BoardState } from "./statusboard"; // (tabs-sidebar 1d) 상황판 시안
+import { accountNeedsAction, BOARD_KEY, boardCounts, boardVariant, limitLine, nextSeat, paintBoard, type BoardState } from "./statusboard"; // (tabs-sidebar 1d) 상황판 시안
 
 declare global {
   interface Window {
@@ -5916,7 +5916,8 @@ function paintStatusBoard(): void {
   const counts = boardCounts(models);
   const nowSecs = Date.now() / 1000;
   const limit = limitLine(accountRates(accountsCache, nowSecs).map((r) => ({ label: r.label, usedPct: r.usedPct, resetsAt: r.resetsAt })), nowSecs);
-  const extra = live.length === 1 ? buildWsAcctLine(live[0]) : null; // 카드가 하던 계정 줄을 상황판으로 옮긴다
+  // (1f) 계정 줄(역할 목록)은 빼고, 손써야 할 계정 문제만 한 낱말로(accountNeedsAction).
+  const acctWarn = accountNeedsAction(live.flatMap((w) => wsSeatAccts(w).flatMap((x) => (x.sig ? [parseSeatAccount(x.sig, Date.now(), SIG_STALE_MS_UI).state] : []))));
   const onGo = (st: BoardState) => {
     const n = nextSeat(counts[st], boardCursor.get(st) ?? -1);
     if (!n) return;
@@ -5927,9 +5928,9 @@ function paintStatusBoard(): void {
   if (statusBoard === "off") return;
   // (1e) 승인 대기 수(옛 Control Center 단추의 빨간 수 = cc-pending-badge) — 누르면 승인 창이 뜬 좌석으로, 좌석이 없는 승인이면 승인 Feed 로.
   const onApprovals = () => (counts.blocked.length ? onGo("blocked") : openFeed());
-  paintBoard(seatHost("board"), counts, { variant: statusBoard, limit, extra, onGo, approvals: pendingApprovals, onApprovals });
+  paintBoard(seatHost("board"), counts, { variant: statusBoard, limit, acctWarn, onGo, approvals: pendingApprovals, onApprovals });
   if (live.length > 1)
-    for (const m of models) paintBoard(seatHost(`n${m.wsId}`), boardCounts([m]), { variant: statusBoard, limit: null, extra: null, onGo, compact: true });
+    for (const m of models) paintBoard(seatHost(`n${m.wsId}`), boardCounts([m]), { variant: statusBoard, limit: null, acctWarn: false, onGo, compact: true });
 }
 // 그 좌석으로 이동 = 그 부서 · 그 좌석의 묶음 탭(넓게 보기 풀기) · 포커스.
 function gotoSeat(ws: Workspace, sid: number): void {

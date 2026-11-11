@@ -44,9 +44,9 @@ SCENARIOS = {
     ],
 }
 # 기대 모양(sid → 모양 · 꼬리표)
-EXPECT7 = {
-    "900": ("●", None), "901": ("◆", None), "931": ("●", None), "932": ("◆", "확인"), "933": ("●", None),
-    "934": ("▲", "승인 창"), "935": ("▲", "승인 창"), "936": ("○", None), "937": ("◆", "확인"),
+EXPECT7 = {  # (1f) 모양 = 역할 점 클래스(act-working 깜박 원 · act-waiting 채운 원 · act-input 마름모 · act-unknown 빈 원)
+    "900": ("act-working", None), "901": ("act-waiting", None), "931": ("act-working", None), "932": ("act-waiting", "확인"), "933": ("act-working", None),
+    "934": ("act-input", "승인 창"), "935": ("act-input", "승인 창"), "936": ("act-unknown", None), "937": ("act-waiting", "확인"),
 }
 
 SHIM = r"""
@@ -93,7 +93,7 @@ SHIM = r"""
 JS_STATE = r"""
 () => {
   const rows = [...document.querySelectorAll('.ws-seats .ws-seat')].map((r) => ({
-    no: r.querySelector('.ws-seat-no')?.textContent, shape: r.querySelector('.ws-seat-shape')?.textContent,
+    no: r.querySelector('.ws-seat-no')?.textContent, shape: [...(r.querySelector('.ws-seat-dot')?.classList ?? [])].find((c) => c.startsWith('act-')) ?? null,
     tag: r.querySelector('.ws-seat-tag')?.textContent ?? null, name: r.querySelector('.ws-seat-name')?.textContent,
     ctx: r.querySelector('.ws-seat-ctx')?.textContent, over: r.scrollWidth > r.clientWidth + 1 }));
   const heads = [...document.querySelectorAll('.ws-seat-group-name')].map((h) => h.textContent);

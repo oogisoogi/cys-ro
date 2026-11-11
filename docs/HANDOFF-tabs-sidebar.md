@@ -1,6 +1,8 @@
 # HANDOFF — TICKET=cysr-tabs-sidebar-impl (가지 feat/tabs-sidebar · 기준 270e3e21 v1.1.14)
 
-**다음 첫 행동 1줄**: 인박스에서 master 의 「두 줄 격자 기준」 답(A 40열 / B 80열 / C 격자 없음 · 10:06:45 【중간】 의 【결정필요】)을 확인하고, 답이 없으면 2c-2(아래)부터 착수한다.
+**다음 첫 행동 1줄**: codex 1R(docs/CODEX-R1-tabs-sidebar.txt · REVISE) 남은 4건부터 고친다 — 그 뒤 아래 원래 첫 행동.
+
+(원래 첫 행동): 인박스에서 master 의 「두 줄 격자 기준」 답(A 40열 / B 80열 / C 격자 없음 · 10:06:45 【중간】 의 【결정필요】)을 확인하고, 답이 없으면 2c-2(아래)부터 착수한다.
 
 설계 = `docs/DESIGN-tabs-sidebar.md`(승인 master#c9265847) · 상황판·컨트롤 센터 = `docs/STATUSBOARD-1d.md` · TODO = `WORKER_TODO.cysr-tabs-sidebar-impl.md`(worktree 안).
 
@@ -48,3 +50,11 @@ for g in seatrows_gate statusboard_gate cc_button_gate; do cys run -- /Users/oog
 - 두 줄 격자 기준(A/B/C) — 10:06:45 【중간】.
 - 📌 상황판에서 「작업 중」·「대기」 가 둘 다 채운 원(작업 중만 깜박) — 정지 화면 구별 약함.
 - 📌 기본 폭 216px 에서 한도 한 줄 잘림(「…초기화까지 2…」).
+
+## codex 1R(2c · 숨은 탭 PTY·복원) = REVISE — 전문 docs/CODEX-R1-tabs-sidebar.txt
+- [고침] 차단: 활성 부서 pending·모델 없음 → refreshSeatRows→render 무한 마이크로태스크 고리 → 예약 가드(main.ts refreshSeatRows) + 시험.
+- [고침] 주요: refreshSeatRows 가 저장 tabs 를 정규화 없이 reconcileTabs 에 넘김 → normalizeTabState 적용.
+- [남음·주요] zoom 이 sid 로 저장돼 재부팅 뒤 번호가 바뀌면 다른 좌석을 넓게 봄 → 안정 열쇠(소켓+역할, 없으면 소켓+cwd)로 저장하거나 복원 때 zoom 해제(active 유지).
+- [남음·주요] tests/hidden_seat_screen.rs: spawn 직후부터 Child 소유 정리 가드 · KILL 뒤 wait · attach 성공 응답 확인 후 probe · 주장을 「구독 유무와 무관」으로 한정(DOM 숨김·PTY 크기 보존은 별도 — 2c-1 실측이 그 몫).
+- [남음·경미] mountTabBar: 래퍼(area)가 split 직계 자식인데 경계 끌기 클로저는 안쪽 right 의 flex 를 바꾼다 → 끌기 중 폭 어긋남 · area 를 갱신하게.
+- [논쟁] lastSentSize: 같은 런타임에서 데몬·PTY 만 바뀌는 재부착 때 기억을 지우는 근거 없음 → 재부착 경로에서 lastSentSize.delete(rt) 확인.

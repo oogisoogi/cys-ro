@@ -175,3 +175,13 @@ describe("(2c) 같은 크기 재전송 0 — fitPane 배선", () => {
     expect(f).toContain("if (rt.termHost.offsetWidth < 60 || rt.termHost.offsetHeight < 40) return;"); // 숨은 좌석 = PTY 마지막 크기 유지(기존 가드)
   });
 });
+
+describe("(codex 1R) 다시 그리기 예약 가드", () => {
+  const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+  test("준비 중·모델 없음이면 예약하지 않는다(무한 마이크로태스크 고리 차단) · 저장값 정규화", () => {
+    const i = main.indexOf("function refreshSeatRows(");
+    const f = main.slice(i, main.indexOf("\n}\n", i));
+    expect(f).toContain("if (ws && !ws.pending && seatModels.has(ws.id) && !tabRenderQueued) {");
+    expect(f).toContain("reconcileTabs(seatModels.get(ws.id)!, normalizeTabState(ws.tabs), groupTabs)");
+  });
+});

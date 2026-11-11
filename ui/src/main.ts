@@ -5907,8 +5907,10 @@ function refreshSeatRows(): void {
   if (statusBoard !== "off") paintStatusBoard();
   // (tabs-sidebar 조각2) 묶음이 새로 갈리거나 좌석이 옮겨 숨길 좌석이 바뀌었으면 한 번 다시 그린다(같으면 아무것도 안 함 = 고리 없음).
   const ws = current();
-  if (ws && !tabRenderQueued) {
-    const v = reconcileTabs(seatModels.get(ws.id) ?? { fixed: [], groups: [] }, ws.tabs, groupTabs).view;
+  // ★(codex 1R 차단) 준비 중(pending)·모델 없음 = 다시 그릴 근거가 없다 — wsViewTree 가 서명을 남기지 않으므로 여기서 예약하면
+  //   refreshSeatRows → render → refreshSeatRows 마이크로태스크 고리가 끝없이 돈다(화면 굳음). 저장값은 정규화해 넘긴다(손상 저장 = 기본값).
+  if (ws && !ws.pending && seatModels.has(ws.id) && !tabRenderQueued) {
+    const v = reconcileTabs(seatModels.get(ws.id)!, normalizeTabState(ws.tabs), groupTabs).view;
     if (tabViewSig(v) !== lastTabViewSig.get(ws.id)) {
       tabRenderQueued = true;
       queueMicrotask(() => { tabRenderQueued = false; render(); });

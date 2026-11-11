@@ -8,6 +8,7 @@
     포커스 표시된 보이는 좌석 안에 있고(BODY 아님) · 이어 친 글자의 send_input 목적지 = 그 좌석뿐(유실 0)
   R3(#3) site 탭 좌석 4 에서 ⌘D → 그 사이 좌석 4 닫힘(surface.closed) → 새 좌석이 화면에 보이고 포커스도 그 좌석 · 오류 0
   R4(codex 2R #3) 본부 작업공간에서 ⌘T → 응답 전에 그 작업공간 삭제 확인 → 새 좌석 50 = 닫힘(close_surface(50)) · 어느 트리에도 없음(고아 0) · 알림 1
+  R4b(codex 2R #3 · 삭제 「진행 중」 갈래) 같은 장면에서 좌석 닫기를 0.6초씩 늦춰 생성 응답이 삭제가 끝나기 전(ws.deleting)에 온다 → 새 좌석 50 = 닫힘 · 어느 트리에도 없음
   R5(codex 2R #3) 같은 장면을 나누기(⌘D · actionSplit)로 — 본부 좌석 1 에서 ⌘D → 응답 전에 그 작업공간 삭제 → 새 좌석 50 = 닫힘 · 어느 트리에도 없음
     (작업공간이 하나뿐이면 상황판 화면은 작업공간 탭을 숨겨 사람이 지울 길이 없다 — 그래서 부서 3개 장면)
   R6(await 전수 표 · 같은 모양) 빈 작업공간의 「새 셸 열기」 → 응답 전에 그 작업공간 삭제 → 새 좌석 = 닫힘 · 어느 트리에도 없음 · 알림 1
@@ -40,7 +41,7 @@ SPY = r"""
     if (cmd === 'close_surface') { // 닫힌 좌석은 목록에서도 빠진다(데몬과 같게)
       const i = window.__SEATS.findIndex((s) => s.sid === args?.surfaceId && s.sock === (args?.socket ?? '__BASE__'));
       if (i >= 0) window.__SEATS.splice(i, 1);
-      return Promise.resolve({ ok: true });
+      return new Promise((res) => setTimeout(() => res({ ok: true }), window.__CLOSE_DELAY ?? 0)); // R4b = 느린 닫기(삭제가 「진행 중」인 채 생성 응답이 온다)
     }
     return orig(cmd, args);
   };
@@ -181,6 +182,26 @@ def main() -> int:
             sbg.check(any(c[1] == 50 for c in closed), f"새 좌석 50 = 닫힘(고아 0) · close_surface {closed}")
             sbg.check(not any(50 in t["sids"] for t in s4["trees"]) and 50 not in s4["panes"], f"새 좌석 50 = 어느 트리·화면에도 없음 {s4['trees']}")
             sbg.check(any("새 좌석 닫음" in (t or "") for t in toasts(pg)), f"알림 「새 좌석 닫음」 {toasts(pg)}")
+            sbg.check(not errs, f"오류 0 {errs[:2]}")
+            ctx.close()
+
+            # R4b
+            print("== R4b(codex 2R #3) ⌘T 생성 응답이 삭제 진행 중(ws.deleting)에 도착")
+            ctx, pg, errs = page(js(seats), [list(d) for d in depts])
+            pg.click('#root .pane[data-sid="1"] .xterm-screen')
+            pg.wait_for_timeout(300)
+            pg.evaluate("() => { window.__CLOSE_DELAY = 600; }")
+            pg.keyboard.press("Meta+t")
+            pg.wait_for_timeout(200)
+            delete_ws(pg, base_i)
+            pg.wait_for_timeout(1300)
+            mid = pg.evaluate("() => JSON.parse(localStorage.getItem('cys-layout-v2') || '{}').workspaces?.length ?? null")
+            pg.wait_for_timeout(5500)
+            s4b = pg.evaluate(STATE)
+            closed = [c for c in pg.evaluate("() => window.__calls") if c[0] == "close_surface"]
+            print(f"  (실측) 생성 응답 무렵 저장 작업공간 수 = {mid}(3 = 아직 삭제 진행 중)")
+            sbg.check(any(c[1] == 50 for c in closed), f"새 좌석 50 = 닫힘(고아 0) · close_surface {closed}")
+            sbg.check(not any(50 in t["sids"] for t in s4b["trees"]) and 50 not in s4b["panes"], f"새 좌석 50 = 어느 트리·화면에도 없음 {s4b['trees']}")
             sbg.check(not errs, f"오류 0 {errs[:2]}")
             ctx.close()
 

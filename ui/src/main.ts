@@ -341,7 +341,8 @@ import { activityExpiryMs, applyDotPaint, HIDDEN_DOT, projectActivity, RoleActiv
 import { SurfaceListTransport, type ListArrival } from "./surfacelist"; // ★F-01 끝점별 소유 원 호출 · 응답별 독립 투영
 import { approvalSeatKeys, buildSeatRows, namedSeatInputs, seatDot, seatInputOf, type SeatInput } from "./seatrows"; // (tabs-sidebar 조각1) 좌석 줄 판정·묶음
 import { paintSeatRows, pruneSeatHosts, seatHost } from "./seatrowsdom"; // (tabs-sidebar 조각1) 좌석 줄 그리기
-import { GROUP_TABS_KEY, groupTabsOn, normalizeTabState, reconcileTabs, viewTree, type TabState, type TabView } from "./grouptabs"; // (tabs-sidebar 조각2) 묶음 탭 판정
+import { fixedColumnSplit, GROUP_TABS_KEY, groupTabsOn, normalizeTabState, reconcileTabs, viewTree, type TabState, type TabView } from "./grouptabs";
+import { buildTabBar } from "./tabbar"; // (tabs-sidebar 2b) 탭 머리 줄 // (tabs-sidebar 조각2) 묶음 탭 판정
 import type { SeatRowsModel } from "./seatrows";
 import { accountNeedsAction, BOARD_KEY, BOARD_OPEN_KEY, BOARD_POS_KEY, boardCounts, boardOpen, boardPos, boardVariant, limitLine, limitPct, nextSeat, paintBoard, type BoardState } from "./statusboard"; // (tabs-sidebar 1d) 상황판 시안
 
@@ -5379,6 +5380,7 @@ function render() {
     //   박으므로 지울 곳은 여기 한 곳이다.
     top.style.flex = "";
     root.appendChild(top);
+    if (ws) mountTabBar(ws, tree, top);
   }
   else if (ws?.pending) root.appendChild(renderDeptPending(ws)); // WP-10: 부서 준비 중 빈 pane 스피너·안내(★0.14.43 GU: 경과·단계 문구)
   else if (ws) root.appendChild(renderIdleWorkspace(ws)); // pane 0개 — 백지 대신 안내+손잡이
@@ -5956,6 +5958,38 @@ function gotoSeat(ws: Workspace, sid: number): void {
   activeWs = i;
   render();
   setFocus(sid);
+}
+// (tabs-sidebar 2b · master#357e735a) 탭 머리 줄 = 고정 기둥(master·cso) 오른쪽 영역 위에만(고정 기둥 위엔 없다).
+//   탭을 누르면 그 묶음 나란히(넓게 보기 풀림) · 탭 화면에서 고정 기둥 경계를 끌면 그 폭을 ws.tree 에 되써 탭을 바꿔도 유지한다.
+function mountTabBar(ws: Workspace, tree: Node, top: HTMLElement): void {
+  const v = lastTabView.get(ws.id);
+  const model = seatModels.get(ws.id);
+  if (!v || !model || v.tabs.length === 0) return;
+  const fixed = model.fixed.filter((r) => !r.named).map((r) => r.sid);
+  const split = fixedColumnSplit(tree, fixed);
+  const right = split ? (top.lastElementChild as HTMLElement | null) : top;
+  if (!right) return;
+  const area = document.createElement("div");
+  area.className = "group-tab-area";
+  area.style.flex = right.style.flex;
+  right.replaceWith(area);
+  right.style.flex = "1 1 0%";
+  const bar = buildTabBar(v.tabs, model, v.zoom === null ? v.active : null, (key) => {
+    ws.tabs = { ...normalizeTabState(ws.tabs), active: key, zoom: null };
+    render();
+  });
+  area.append(bar, right);
+  if (split && tree !== ws.tree && tree.type === "split" && ws.tree?.type === "split") {
+    const div = top.querySelector(":scope > .divider");
+    const src = ws.tree;
+    div?.addEventListener("mousedown", () =>
+      window.addEventListener("mouseup", () => {
+        src.ratio = tree.ratio;
+        delete src.leftAuto;
+        saveLayout();
+      }, { once: true }),
+    );
+  }
 }
 // (tabs-sidebar 조각2) 부서별 마지막 좌석 모델 · 마지막으로 그린 탭 보기 서명.
 const seatModels = new Map<number, SeatRowsModel>();

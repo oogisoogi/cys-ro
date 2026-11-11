@@ -429,6 +429,16 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
 .ws-board-more #ws-usage { border-top: none; padding: 4px 0 0; max-height: none; }
 [data-seat-host="board"].bottom { flex: none; margin: 0; border-radius: 0; border-top: 1px solid var(--hairline); }
 [data-seat-host^="n"] { padding: 0 6px 0 10px; font-size: calc(15px * var(--wsbar-font, 1)); } /* (1f ③) 0 이 아닌 수 = 좌석 줄 글자(15px) 이상 */
+/* (tabs-sidebar 2b) 묶음 탭 머리 줄 — 고정 기둥 오른쪽 영역 위에만 · 색 = 기존 토큰 · 표지 = 역할 점 클래스. */
+.group-tab-area { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.group-tab-area > :last-child { min-height: 0; }
+.group-tabbar { flex: none; display: flex; gap: 2px; padding: 2px 4px 0; background: var(--bar); border-bottom: 1px solid var(--hairline); overflow: hidden; }
+.group-tab { display: flex; align-items: center; gap: .45em; min-width: 0; flex: 0 1 auto; padding: 3px 10px; background: none; border: 1px solid transparent; border-bottom: none; border-radius: 6px 6px 0 0; color: #8b949e; font: inherit; font-size: calc(14px * var(--ui-chrome-scale, 1.25) / 1.25); cursor: pointer; white-space: nowrap; }
+.group-tab.active { color: var(--text); background: var(--bg); border-color: var(--accent); }
+.group-tab-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.group-tab-dots { display: inline-flex; gap: 3px; flex: none; }
+.group-tab-dots .ws-seat-dot { width: 8px; height: 8px; margin: 0; }
+.group-tab-n { flex: none; color: #6e7681; }
 .ws-seat.tagged { flex-wrap: wrap; row-gap: 0; }
 .ws-seat-sub { flex: 1 0 100%; display: flex; justify-content: flex-end; align-items: center; gap: .4em; min-width: 0; }
 .ws-seat-group { display: flex; align-items: baseline; gap: .4em; margin-top: 4px; padding: 0 4px; font-size: .9em; font-weight: 700; color: #8b949e; min-width: 0; }

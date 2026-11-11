@@ -178,6 +178,18 @@ def main() -> int:
                         check(got == EXPECT7, f"상태 모양·꼬리표 판정표 일치 {got}")
                         # (조각2a) 노브 기본 켜짐 + 묶음 3개 = 첫 묶음(site 3)만 + 고정 2 = 5칸 · 나머지는 떼어 둠(살아 있음)
                         check(st["panes"] == 5, f"묶음 탭: 보이는 칸 = 고정 2 + site 3 = 5 ({st['panes']})")
+                        # (2b · master#357e735a) 탭 머리 줄 = 고정 기둥 오른쪽 영역 위에만 · 탭 3개 · 탭 누름 = 그 묶음 + 고정 좌석 그대로
+                        tb = pg.evaluate("""() => { const b = document.querySelector('#root .group-tabbar'); const m = document.querySelector('#root .pane[data-sid="1"]');
+                          if (!b || !m) return null; return { left: Math.round(b.getBoundingClientRect().left), mRight: Math.round(m.getBoundingClientRect().right),
+                          tabs: [...b.querySelectorAll('.group-tab-name')].map((x) => x.textContent), active: b.querySelector('.group-tab.active .group-tab-name')?.textContent }; }""")
+                        check(tb is not None and tb["left"] >= tb["mRight"] and tb["tabs"] == ["site", "lms", "video"] and tb["active"] == "site", f"탭 줄 = 고정 기둥 오른쪽 위 {tb}")
+                        if w == 1920:
+                            pg.screenshot(path=str(OUT / f"{name}-{w}-tabs.png"))
+                            pg.click('#root .group-tab:nth-child(3)')
+                            pg.wait_for_timeout(300)
+                            vis = pg.evaluate("() => [...document.querySelectorAll('#root .pane')].map((p) => +p.dataset.sid).sort((a,b)=>a-b)")
+                            check(vis == [1, 2, 8, 9], f"video 탭 = 고정 1·2 + video 8·9 {vis}")
+                            pg.screenshot(path=str(OUT / f"{name}-{w}-tab-video.png"))
                         if w == 1920:
                             pg.click('.ws-seat[data-sid="6"]')  # 934 = lms 묶음 → 그 좌석만 넓게
                             pg.wait_for_timeout(300)

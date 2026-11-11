@@ -124,6 +124,7 @@ describe("B-230 ① render() — 다시 붙인 뒤 보이는 pane 마다 resyncV
       },
       current: () => ({ tree, socket: "sock" }),
       wsViewTree: (w: { tree: unknown }) => w.tree, // (tabs-sidebar 조각2) 보기 트리 = 숨김 0 이면 ws.tree 그대로
+      mountTabBar: () => {}, // (tabs-sidebar 2b) 탭 머리 줄 — 이 검체의 축과 무관
       nodeShown: () => true,
       holeShownFor: () => new Set(),
       // ★1.1.11 편입: 우리 판 render() 는 루트 직계의 인라인 flex 를 지운다(top.style.flex = "" · v116-ui-close X-1) — 대역 노드에 style 칸을 둔다.

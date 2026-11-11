@@ -150,3 +150,16 @@ describe("main.ts 배선(2a) — 배선만", () => {
     expect(body("pickSeat")).toContain("if (groupTabs && !fixed) {");
   });
 });
+
+describe("(2b) 고정 기둥 판정 — 탭 줄은 오른쪽 영역 위에만", async () => {
+  const { fixedColumnSplit } = await import("./grouptabs");
+  const pane = (sid: number): LayoutNode => ({ type: "pane", sid });
+  const t: LayoutNode = { type: "split", dir: "row", ratio: 0.3, a: { type: "split", dir: "col", ratio: 0.8, a: pane(1), b: pane(2) }, b: { type: "split", dir: "row", a: pane(3), b: pane(4) } };
+  test("master·cso 왼쪽 기둥 = 맞음 · master 만(cso 없음) = 맞음 · 고정 없음 = 아님 · 고정이 오른쪽에 섞임 = 아님", () => {
+    expect(fixedColumnSplit(t, [1, 2])).toBe(true);
+    expect(fixedColumnSplit({ type: "split", dir: "row", a: pane(1), b: pane(3) }, [1])).toBe(true);
+    expect(fixedColumnSplit(t, [])).toBe(false);
+    expect(fixedColumnSplit({ type: "split", dir: "row", a: pane(3), b: pane(1) }, [1])).toBe(false);
+    expect(fixedColumnSplit(pane(1), [1])).toBe(false);
+  });
+});

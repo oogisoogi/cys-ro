@@ -92,3 +92,16 @@ export function viewTree(
   const change = { remove: [...hidden] };
   return roles ? autoArrange(tree, roles, change, "auto", defaultShare) : arrangeWithoutRoles(tree, change);
 }
+
+/** (2b · master#357e735a) 보기 트리의 루트가 「고정 기둥(master·cso) | 오른쪽 영역」 가로 분할인가 — 탭 머리 줄은 오른쪽 영역 위에만 그린다.
+ *  맞으면 true(루트 = row 분할 · 왼쪽 서브트리 좌석 = 고정 좌석 전부 · 오른쪽에 고정 좌석 없음). 고정 좌석이 없으면 false(탭 줄 = 전체 위). */
+export function fixedColumnSplit(tree: LayoutNode | null, fixedSids: readonly number[]): boolean {
+  if (!tree || tree.type !== "split" || tree.dir !== "row" || fixedSids.length === 0) return false;
+  const sids = (n: LayoutNode, out: number[] = []): number[] => {
+    if (n.type === "pane") out.push(n.sid);
+    else { sids(n.a, out); sids(n.b, out); }
+    return out;
+  };
+  const left = sids(tree.a);
+  return left.length === fixedSids.length && fixedSids.every((s) => left.includes(s)) && !sids(tree.b).some((s) => fixedSids.includes(s));
+}

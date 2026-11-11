@@ -341,6 +341,8 @@ import { activityExpiryMs, applyDotPaint, HIDDEN_DOT, projectActivity, RoleActiv
 import { SurfaceListTransport, type ListArrival } from "./surfacelist"; // ★F-01 끝점별 소유 원 호출 · 응답별 독립 투영
 import { approvalSeatKeys, buildSeatRows, namedSeatInputs, seatDot, seatInputOf, type SeatInput } from "./seatrows"; // (tabs-sidebar 조각1) 좌석 줄 판정·묶음
 import { paintSeatRows, pruneSeatHosts, seatHost } from "./seatrowsdom"; // (tabs-sidebar 조각1) 좌석 줄 그리기
+import { GROUP_TABS_KEY, groupTabsOn, normalizeTabState, reconcileTabs, viewTree, type TabState, type TabView } from "./grouptabs"; // (tabs-sidebar 조각2) 묶음 탭 판정
+import type { SeatRowsModel } from "./seatrows";
 
 declare global {
   interface Window {
@@ -465,6 +467,8 @@ interface Workspace {
   // 마지막으로 낸 팀원 부팅 안내 — 열쇠(key)가 바뀔 때만 다시 낸다. muted = 사용자가 안내를 **× 버튼으로** 닫았다(noteToastClosedByUser 만 세운다 — 수명 만료·탭 닫힘은 닫음이 아니다).
   //   주기 갱신만 멈춘다 · 자리 판정의 최종 안내(모두 붙음·15분 경과·팀 데몬 무응답)는 그래도 한 번 낸다.
   formationView?: { state: DeptFormationState; key: string; muted?: boolean };
+  // (tabs-sidebar 조각2) 묶음 탭 상태(순서·활성·넓게 보기) — 저장된다(cys-layout-v2). 열쇠 = 묶음(폴더) 이름이라 재부팅 뒤에도 같은 배치.
+  tabs?: TabState;
 }
 
 // 06: 워크스페이스 그룹 메타데이터. 진실원=localStorage(cys-layout-v2). 데몬은 모름(그룹=UI/solution 층).
@@ -3096,6 +3100,9 @@ function applyMenuScale(pct: string | null) {
 }
 let titleColorRole = localStorage.getItem("cys-title-color-role") !== "0"; // 기본 ON(제목 글자=역할 점색)
 function applyTitleColorRole(on: boolean) { titleColorRole = on; localStorage.setItem("cys-title-color-role", on ? "1" : "0"); }
+// (tabs-sidebar 조각2) 묶음 탭 노브 — 기본 켜짐 · 끄면 지금처럼 전부 나란히(grouptabs.groupTabsOn).
+let groupTabs = groupTabsOn(localStorage.getItem(GROUP_TABS_KEY));
+function applyGroupTabs(on: boolean) { groupTabs = on; localStorage.setItem(GROUP_TABS_KEY, on ? "1" : "0"); render(); }
 function applyTermWeight(w: string | null) {
   if (!w) localStorage.removeItem("cys-term-weight"); else localStorage.setItem("cys-term-weight", w);
   const val = w || "400";
@@ -5355,7 +5362,7 @@ function render() {
   for (const rt of panes.values()) rt.el.remove();
   root.innerHTML = "";
   const ws = current();
-  const tree = ws?.tree;
+  const tree = ws ? wsViewTree(ws) : null; // (tabs-sidebar 조각2) 묶음 탭 = ws.tree 에서 숨길 좌석을 뺀 보기 트리(숨김 0 이면 ws.tree 그대로)
   if (tree) {
     const top = renderNode(tree);
     // ★(v116-ui-close · X-1) 루트 직계는 스타일시트(#root > * {flex:1})가 폭을 정한다. 그런데 pane 요소는
@@ -5370,12 +5377,12 @@ function render() {
   else if (ws) root.appendChild(renderIdleWorkspace(ws)); // pane 0개 — 백지 대신 안내+손잡이
   renderWsTabs();
   // ★B-230(H1): 방금 다시 붙인 pane 의 뷰포트를 xterm 의 지금 위치에 다시 맞춘다(resyncViewport) — 크기가 같아 아래 fit 이 아무것도 안 할 때도.
-  for (const sid of collectSids(current()?.tree ?? null)) {
+  for (const sid of collectSids(tree ?? null)) {
     const rt = panes.get(paneKey(sid, current()?.socket));
     if (rt?.el.isConnected) resyncViewport(rt.term);
   }
   requestAnimationFrame(() => {
-    for (const sid of collectSids(current()?.tree ?? null)) {
+    for (const sid of collectSids(tree ?? null)) {
       const rt = panes.get(paneKey(sid, current()?.socket));
       if (rt) fitPane(rt);
     }
@@ -5877,18 +5884,49 @@ function refreshSeatRows(): void {
       const self = seatSelf.get(`${sock}#${sid}`);
       inputs.push(seatInputOf(sid, list?.get(sid), seatDot(p.view, surfaceWorking(sid, sock), approvalSeats.has(`${sock}#${sid}`)), self, approvalSeats.has(`${sock}#${sid}`)));
     }
-    paintSeatRows(seatHost(String(ws.id)), buildSeatRows(inputs), { onPick: (sid) => pickSeat(ws, sid) });
+    const model = buildSeatRows(inputs);
+    seatModels.set(ws.id, model);
+    paintSeatRows(seatHost(String(ws.id)), model, { onPick: (sid) => pickSeat(ws, sid) });
   }
   pruneSeatHosts((k) => workspaces.some((w) => String(w.id) === k));
+  // (tabs-sidebar 조각2) 묶음이 새로 갈리거나 좌석이 옮겨 숨길 좌석이 바뀌었으면 한 번 다시 그린다(같으면 아무것도 안 함 = 고리 없음).
+  const ws = current();
+  if (ws && !tabRenderQueued) {
+    const v = reconcileTabs(seatModels.get(ws.id) ?? { fixed: [], groups: [] }, ws.tabs, groupTabs).view;
+    if (tabViewSig(v) !== lastTabViewSig.get(ws.id)) {
+      tabRenderQueued = true;
+      queueMicrotask(() => { tabRenderQueued = false; render(); });
+    }
+  }
+}
+// (tabs-sidebar 조각2) 부서별 마지막 좌석 모델 · 마지막으로 그린 탭 보기 서명.
+const seatModels = new Map<number, SeatRowsModel>();
+const lastTabViewSig = new Map<number, string>();
+const lastTabView = new Map<number, TabView>();
+let tabRenderQueued = false;
+const tabViewSig = (v: TabView): string => JSON.stringify([v.tabs.map((t) => [t.key, t.sids]), v.active, v.zoom, [...v.hidden].sort((a, b) => a - b)]);
+// 부서의 화면 트리 — 판정은 grouptabs(순수) · 여기선 상태를 적고 결과를 기억만 한다.
+function wsViewTree(ws: Workspace): Node | null {
+  const model = seatModels.get(ws.id);
+  if (!model) return ws.tree; // 좌석 목록 전 = 지금 화면 그대로
+  const r = reconcileTabs(model, normalizeTabState(ws.tabs), groupTabs);
+  ws.tabs = r.state;
+  lastTabView.set(ws.id, r.view);
+  lastTabViewSig.set(ws.id, tabViewSig(r.view));
+  return viewTree(ws.tree, arrangeRolesBySocket.get(ws.socket ?? ""), r.view.hidden, currentDefaultLeftShare()) as Node | null;
 }
 // 좌석 줄을 누르면 = 그 부서로 전환 + 그 좌석 포커스(조각2 에서 「그 좌석만 넓게」로 확장).
 function pickSeat(ws: Workspace, sid: number): void {
   const i = workspaces.indexOf(ws);
   if (i < 0) return;
-  if (i !== activeWs) {
-    activeWs = i;
-    render();
+  // (tabs-sidebar 조각2 · 설계 ⑤) 노브 켜짐 = 그 좌석만 넓게(같은 줄을 다시 누르면 풀림) · 고정 좌석(master·cso)은 넓게 보기 대상이 아니다.
+  const fixed = seatModels.get(ws.id)?.fixed.some((r) => r.sid === sid) ?? false;
+  if (groupTabs && !fixed) {
+    const st = normalizeTabState(ws.tabs);
+    ws.tabs = { ...st, zoom: st.zoom === sid && i === activeWs ? null : sid };
   }
+  activeWs = i;
+  render();
   setFocus(sid);
 }
 
@@ -6798,6 +6836,9 @@ function openThemePopover(anchor: HTMLElement) {
   const titleColorRow = document.createElement("label"); titleColorRow.className = "theme-pop-row"; titleColorRow.textContent = "제목=역할색";
   const tcCb = document.createElement("input"); tcCb.type = "checkbox"; tcCb.checked = titleColorRole;
   tcCb.addEventListener("change", () => applyTitleColorRole(tcCb.checked)); titleColorRow.appendChild(tcCb);
+  const groupTabsRow = document.createElement("label"); groupTabsRow.className = "theme-pop-row"; groupTabsRow.textContent = "묶음 탭";
+  const gtCb = document.createElement("input"); gtCb.type = "checkbox"; gtCb.checked = groupTabs;
+  gtCb.addEventListener("change", () => applyGroupTabs(gtCb.checked)); groupTabsRow.appendChild(gtCb);
   const termWeightRow = mkWeightRow("본문 굵기", "cys-term-weight", "400", applyTermWeight);
   const menuWeightRow = mkWeightRow("메뉴 굵기", "cys-menu-weight", "600", applyMenuWeight);
   // 메뉴 크기(오너 요청 2026-08-07) — 상단 툴바·사이드바 헤더·크롬 버튼 일괄 배율. 단위는 %.
@@ -6817,6 +6858,7 @@ function openThemePopover(anchor: HTMLElement) {
     applyTitleSize(null); tsInp.value = "20";
     applyTitleWeight(null); (titleWeightRow.querySelector("select") as HTMLSelectElement).value = "400";
     applyTitleColorRole(true); tcCb.checked = true;
+    if (!groupTabs) applyGroupTabs(true); gtCb.checked = true;
     applyTermWeight(null); (termWeightRow.querySelector("select") as HTMLSelectElement).value = "400";
     applyMenuWeight(null); (menuWeightRow.querySelector("select") as HTMLSelectElement).value = "600";
     applyMenuScale(null); msInp.value = String(MENU_SCALE_DEFAULT_PCT);
@@ -6825,7 +6867,7 @@ function openThemePopover(anchor: HTMLElement) {
 
   // ① 글자·배경 — 종전 「테마」 항목 전부 그대로.
   const look = mkSection("look", "글자·배경");
-  look.body.append(row, fontRow, titleSizeRow, titleWeightRow, titleColorRow, termWeightRow, menuWeightRow, menuSizeRow,
+  look.body.append(row, fontRow, titleSizeRow, titleWeightRow, titleColorRow, groupTabsRow, termWeightRow, menuWeightRow, menuSizeRow,
     mkReset("이 구획만 기본값으로", resetLook));
 
   // ② 상단 단추 — 줄 = [≡ 끌기 손잡이] [이름] [▲] [▼] [켬/끔]. 목록의 위 → 아래 = 상단의 왼쪽 → 오른쪽.

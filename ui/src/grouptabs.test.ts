@@ -3,6 +3,7 @@
 //   넓게 보기(zoom) = 그 좌석만 + 그 묶음으로 전환 · 고정 좌석(master·cso)은 숨기지 않음 · 보기 트리는 ws.tree 를 바꾸지 않음 ·
 //   저장값 정규화(형식 오류 = 기본값) · 재부팅 뒤(번호 재발급) 같은 탭 배치.
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { buildSeatRows, type SeatInput } from "./seatrows";
 import { GROUP_TABS_KEY, groupTabsOn, normalizeTabState, reconcileTabs, viewTree } from "./grouptabs";
 import type { LayoutNode } from "./formation";
@@ -121,5 +122,31 @@ describe("보기 트리 — ws.tree 를 바꾸지 않는 파생", () => {
   });
   test("빈 트리 = null", () => {
     expect(viewTree(null, roles, [1], 0.25)).toBeNull();
+  });
+});
+
+describe("main.ts 배선(2a) — 배선만", () => {
+  const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+  const body = (name: string): string => {
+    const i = main.search(new RegExp(`(async )?function ${name}\\(`));
+    expect(i >= 0).toBe(true);
+    return main.slice(i, main.indexOf("\n}\n", i) + 3);
+  };
+  test("render() 는 보기 트리(wsViewTree)를 그리고 맞춤도 그 트리의 좌석만 — ws.tree 는 건드리지 않는다", () => {
+    expect(body("render")).toContain("const tree = ws ? wsViewTree(ws) : null;");
+    expect(body("render")).toContain("for (const sid of collectSids(tree ?? null)) {");
+    expect(body("wsViewTree").includes("ws.tree =")).toBe(false);
+  });
+  test("탭 상태는 저장된다(saveLayout 이 tabs 를 털지 않는다)", () => {
+    expect(body("saveLayout").includes("tabs:")).toBe(false);
+  });
+  test("노브 = 화면 설정 「묶음 탭」 · 기본값 복원 = 켜짐", () => {
+    expect(main).toContain("let groupTabs = groupTabsOn(localStorage.getItem(GROUP_TABS_KEY));");
+    expect(main).toContain('groupTabsRow.textContent = "묶음 탭"');
+    expect(main).toContain("if (!groupTabs) applyGroupTabs(true); gtCb.checked = true;");
+  });
+  test("좌석 줄 클릭 = 넓게 보기 토글 · 고정 좌석은 대상 아님", () => {
+    expect(body("pickSeat")).toContain("ws.tabs = { ...st, zoom: st.zoom === sid && i === activeWs ? null : sid };");
+    expect(body("pickSeat")).toContain("if (groupTabs && !fixed) {");
   });
 });

@@ -176,6 +176,24 @@ def main() -> int:
                     if name == "workers7":
                         got = {r["no"]: (r["shape"], r["tag"]) for r in st["rows"]}
                         check(got == EXPECT7, f"상태 모양·꼬리표 판정표 일치 {got}")
+                        # (조각2a) 노브 기본 켜짐 + 묶음 3개 = 첫 묶음(site 3)만 + 고정 2 = 5칸 · 나머지는 떼어 둠(살아 있음)
+                        check(st["panes"] == 5, f"묶음 탭: 보이는 칸 = 고정 2 + site 3 = 5 ({st['panes']})")
+                        if w == 1920:
+                            pg.click('.ws-seat[data-sid="6"]')  # 934 = lms 묶음 → 그 좌석만 넓게
+                            pg.wait_for_timeout(300)
+                            vis = pg.evaluate("() => [...document.querySelectorAll('#root .pane')].map((p) => +p.dataset.sid).sort((a,b)=>a-b)")
+                            check(vis == [1, 2, 6], f"좌석 줄 클릭 = 그 좌석만 넓게 + 고정 좌석 {vis}")
+                            pg.screenshot(path=str(OUT / f"{name}-{w}-zoom.png"))
+                            pg.click('.ws-seat[data-sid="6"]')  # 다시 누르면 풀림 → lms 묶음 전체
+                            pg.wait_for_timeout(300)
+                            vis = pg.evaluate("() => [...document.querySelectorAll('#root .pane')].map((p) => +p.dataset.sid).sort((a,b)=>a-b)")
+                            check(vis == [1, 2, 6, 7], f"같은 줄 다시 누름 = 넓게 보기 풀림 → 그 묶음(lms) 전체 {vis}")
+                            pg.evaluate("() => localStorage.setItem('cys-group-tabs', '0')")
+                            pg.reload()
+                            pg.wait_for_timeout(4500)
+                            n = pg.evaluate("() => document.querySelectorAll('#root .pane').length")
+                            check(n == 9, f"노브 끔 = 지금처럼 전부 나란히 9칸 ({n})")
+                            pg.evaluate("() => localStorage.removeItem('cys-group-tabs')")
                     check(not st["nameShort"], f"이름이 잘리면 최소 6글자 폭 {st['nameShort']}")
                     check(not st["mismatch"], f"역할 점 = 좌석 줄(같은 좌석 같은 값) {st['mismatch']}")
                     check(st["rates"] >= 1, f"사용량 칸 막대 그려짐 {st['rates']}")

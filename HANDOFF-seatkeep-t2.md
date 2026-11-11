@@ -1,6 +1,6 @@
 # HANDOFF — TICKET=cysr-seatkeep-t2 (좌석 보유 장치 seatkeep 단독 시제품 · 맥 · cysd 미연결)
 
-- 상태 = **2차 고침 코드 끝 · 재실측 중**(master#69b9fe37) — 커밋 2b2b4d5c(D1~D9) → 0c3aff2d(codex 2R REVISE 고침 5건: 밀림 깨우기 유실 · 제어 큐 1MiB 상한(`evict control_queue_full`) · accept_aborted 는 줄이 남았을 때만 · 재기동 조각 감지 · 실패 시각 초기화). 0c3aff2d 실측 = A11 6/6 · 단위 16/16 · ctlflood 3/3 · behind 3/3 · behind_mem 3/3. 남은 것 = 기준 전체·뮤턴트 24곳 재실행(run_r2b.sh) · A13 재측정(첫 회차가 noisy 좌석당 5 에서 기동 확정 미확인으로 멈춤 — 원인 조사) → 【확인요청 2】.
+- 상태 = **【확인요청 2】**(master#69b9fe37 · 2차 고침 + codex 2R 고침 + 재실측 끝) — 최종 코드 커밋 `0c3aff2d`(2b2b4d5c D1~D9 → 0c3aff2d codex 2R 5건) · push 0.
 - 가지 = `feat/seatkeep-t2`(v1.1.14 `270e3e21` 위) · 커밋 2개(`0704dc03` 시제품 · 이 커밋 = codex 1R 고침 + 시험 결과) · push 0.
 - 설계·브리프 = `~/axdev/master/reports/2026-11-11-cysr-holder-design/`(DESIGN.md · T0-surface-state.md · briefs-draft/T2.md · master#a3db2868 결정 5).
 - codex 1R = 같은 폴더 `codex-t2-1R.prompt.md`(의뢰문) · `codex-t2-1R.verdict.json`(판정 BLOCK · 대상 `0704dc03`) · `codex-t2-1R.txt`(전 기록).
@@ -11,6 +11,50 @@
 - **D3 설계 전제 정정**: `peer.rs` 머리 주석 · DESIGN §3-2 를 커널 동작대로 고침(토큰 = 「지금 그 pid 의 마지막 사용 프로세스」). **(pid, 출생 시각) 짝 대조 추가**: HELLO 뒤 재인증은 (pid·pidversion·출생 시각) 셋 다 같아야 · 잠금 파일 둘째 칸이 있으면 조종자 출생 시각과 같아야(`lock_owner_mismatch`) — 실측 `startpair` 3/3. 실제 pid 재사용 우회는 여전히 못 잼.
 - **D4** `eprintln!` → 실패 무시 `warn!`(stderr 가 가득 찬 디스크여도 REJECT 2/2 · 패닉 0). **D5** 소켓 경로 ≥ 104바이트면 어떤 파일도 만들기 전에 rc 2(103 정상 · 104·105 잔재 0). **D6** 상태 폴더 `seatkeep` 이 링크·파일·남의 소유면 거절 · `<id>.log`·`<id>.lock` 은 O_NOFOLLOW(링크 대상 폴더 권한·파일 무변경 확인). **D9** 종료 기록을 30초(`EXIT_PERSIST_MAX`) 넘게 못 남기면 stderr 에 기록을 남기고 rc 6(31.2초 실측).
 - **D8 시험 편입**: 검증 좌석 `vt.py`·`vlib.py` 를 시험대로 들여옴(결과·실행 파일 경로만 바꿈) · `t2.py vtport`(dual·torn_read·signal_spam_reap·reauth·busy·디스크 가득 2종) · 새 `behind`·`behind_mem`·`startpair`·`sockpath`·`symlink`·`persistcap` · `replay` = 고정 3초 대신 EXITED 140개 받은 뒤 떠남 · 검증 좌석 `busy` 판정식(거절 줄 4)은 정당 조종자 busy 1줄을 빠뜨려 동작과 무관하게 거짓(검증 좌석 d41c00eb 기록도 같음) → 동작 기준으로 판정.
+
+## 2차 재실측(최종 코드 `0c3aff2d` · 릴리스 고정본 `bin-r2/cys-seatkeep-0c3aff2d-release` · 결과 = results/r2-all-base.out · r2-a11.out · r2-a13b.out · r2-mutant-table.tsv)
+| 기준 | 결과 |
+|---|---|
+| A3 | 3/3(죽인 seatkeep 의 좌석만 사망 · 나머지 2개 생존) · 대조군 판별 1개 = 3개 모두 사망 |
+| A8 | ⓐ perl 5/5 `exe_mismatch` · 잠금 없이 5/5 `lock_not_held` · ⓑ 같은 프로세스 둘째 5/5 `controller_alive` · 다른 프로세스 5/5 `lock_pid_mismatch` · ⓕ 죽은 pid 위조 5/5 · 요구사항 1/1 · 재인증(vt reauth) 9/9 · 출생 시각 짝(startpair) 3/3 |
+| 조종자 SIGKILL 12회 | 자식 생존 12/12 · 같은 pid · 신호 0 · 누락 0 · 구멍 0 |
+| A16 | accept 13 = disconnect 13 = WELCOME 13 · 디스크 가득 짧은 쓰기 주입 성립 회차 찢김 0 · 수락 수 = 실제 |
+| 유실 보고 | 3/3 일치 |
+| A10 | 조종자 없음 10/10 · 확인 3/3 · 잔여 프로세스 0 |
+| A11 | 6/6(대조군 6/6 사망 = 유효) · 뮤턴트 M17(setsid 끔) = 0/2 생존(잡음) |
+| A13 | 좌석당 40좌석 RSS 300.6 / 305.8MB(≤320) · 유휴 CPU 0.0%(≤2%) · footprint 98.1 / 104.0MB · 스레드 280 · fd 480 · 소켓 160 · 판별 1개 11.2 / 15.5MB · 첫 일괄의 A13 은 noisy 좌석당 5 에서 기동 확정 미확인으로 1회 멈춤(뮤턴트 빌드와 겹친 때 · 재현 안 됨 · 원인 미상) |
+| A14① | 5/5(prepare 중 SIGKILL · 등록부 밖 작성자 0) |
+| 2차 고침 시험 | evict 1/1(10.0초 write_stalled) · stdin_block 3/3 · slowhello 3/3 · sameid 3/3 · exitreuse 3/3 · exitorder 3/3 · exitfail 3/3 · commitfail 3/3 · replay 2/2 · behind 3/3 · behind_mem 3/3 · vt_dual · vt_torn_read · vt_signal_spam_reap · vt_busy · 디스크 가득 2종 · sockpath 3/3 · symlink · persistcap · ctlflood 3/3 — 전부 통과 |
+
+### 뮤턴트 재실행(핵심 방어 줄 1곳씩 · 기존 시험 `t2.py all` 이 잡는가 · 병렬 2)
+| 뮤턴트 | 결과 | 잡은 시험 |
+|---|---|---|
+| M01 잠금 pid 비교 생략 | 잡음 | a8b·a8f·vt_reauth |
+| M02 잠금 안 잡혀도 통과 | 잡음 | a8a·vt_reauth |
+| M03 실행 파일 불일치 통과 | 잡음 | a8a |
+| M04 수락 직전 조종자 확인 끔 | 잡음 | vt_dual |
+| M05 원자 기록 → 직접 덮어쓰기 | 잡음 | vt_torn_read |
+| M06 종료 기록 게이트 끔 | 잡음 | exitfail·persistcap |
+| M07 밀림 표시 없이 버림 | 잡음 | behind(구멍) |
+| M08 id 잠금 실패 무시 | 잡음 | sameid |
+| M09 회수 표시 300ms 늦춤 | **놓침**(이번 일괄) | 첫 일괄에서는 vt_signal_spam_reap 이 잡음 · 단독 재실행 = 새 M09 1/3 · 검증 좌석의 d41c00eb M09 도 지금 0/3 — 부하(평균 6~7)에서 손자에 닿는 SIGWINCH 가 2~65번뿐이라 **시험 감도가 부하에 따라 흔들림**(코드 회귀 아님 · 결정적 시험 필요) |
+| M10 HELLO 뒤 재인증 생략 | 잡음 | vt_reauth |
+| M11 동시 핸드셰이크 상한 끔 | 잡음 | vt_busy |
+| M12 수락 기록 실패 무시 | 잡음 | 디스크 가득 2종 |
+| M13 유실 식 틀림 | 잡음 | loss |
+| M14 미소비 종료 기록 확인 끔 | 잡음 | exitreuse(+ a14 1회차 흔들림: 죽인 시점이 준비 기록 앞) |
+| M15 확정 실패해도 계속 | 잡음 | commitfail |
+| M16 종료 알림을 읽기 끝 전에 | **놓침** | 맥은 세션 리더 종료 때 단말이 회수되어 등가 뮤턴트에 가까움(검증 보고와 같음) |
+| M17 setsid 끔 | 잡음 | A11(0/2 생존 · `t2.py all` 에는 A11 없음) |
+| M18 짧은 쓰기 되돌림 끔 | 잡음 | 디스크 가득 errout |
+| M19 밀린 바이트 상한 끔 | 잡음 | behind_mem |
+| M20 출생 시각 짝 끔 | 잡음 | startpair |
+| M21 소켓 경로 검사 끔 | 잡음 | sockpath |
+| M22 링크 폴더 허용 | 잡음 | symlink |
+| M23 종료 기록 시도 상한 끔 | 잡음 | persistcap |
+| M24 제어 큐 상한 끔 | 잡음 | ctlflood |
+- 합계: 검증 좌석 16곳(M01~M17 중 M16 포함 · 번호 16개) 중 `t2.py all` 이 잡음 13 · A11 이 잡음 1(M17) · 놓침 2(M09 시험 감도 · M16 맥 등가). 2차 추가 7곳(M18~M24) 전부 잡음.
+- 시험기 결함 고친 것(뮤턴트 첫 일괄에서 드러남): behind 가 부하에서 멈춤 자체를 못 하던 것 · sockpath 고정 경로라 회차끼리 섞이던 것 · 한 시험의 대기 시간 초과 예외가 뒤 시험을 막던 것.
 
 ## 만든 것
 - 새 실행 파일 `cys-seatkeep`(`src/bin/cys-seatkeep/` 4파일 · `Cargo.toml` [[bin]] 1항). **cysd·cys 기존 파일 수정 0.**

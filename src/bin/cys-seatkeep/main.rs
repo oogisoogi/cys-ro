@@ -17,11 +17,17 @@
 //!
 //! 쓰임: `cys-seatkeep --dir <상태폴더> --id <seatkeep id> --controller-exe <경로> --lock <잠금파일>
 //!        [--requirement <코드서명 요구사항>] [--seats N] [--tail-bytes N] [--rows R --cols C]
-//!        [--end-on-controller-loss] -- <명령> [인자…]`
+//!        [--controller-bound] -- <명령> [인자…]`
 //! `--rows/--cols` = 자식 PTY 첫 크기(기본 35×120 · T3 — cysd 가 좌석 크기로 띄운다).
-//! `--end-on-controller-loss` = 조종자 연결이 끊기면(또는 기동 뒤 `FIRST_CONTROLLER_MAX` 안에 아무도 안 붙으면) 기록 1줄을 남기고
-//! 스스로 끝난다 → PTY 마스터가 닫혀 커널이 좌석에 SIGHUP(= cysd 가 직접 PTY 를 쥐던 지금과 같은 좌석 수명 · T3 master#c125bc97 ②).
-//! 이 인자가 없으면 T2 동작 그대로(조종자 없이 좌석을 계속 쥔다 — 입양은 T4).
+//! `--controller-bound`(조종자 종속 모드 · T3 master#77162b13 — 옛 `--end-on-controller-loss` 를 넓힘) = seatkeep 이 직접 PTY 처럼 투명하다:
+//!   ⑴ 조종자 연결이 끊기면(또는 기동 뒤 `FIRST_CONTROLLER_MAX` 안에 아무도 안 붙으면) 기록 1줄을 남기고 스스로 끝난다 → PTY 마스터가
+//!      닫혀 커널이 좌석에 SIGHUP(= cysd 가 직접 PTY 를 쥐던 지금과 같은 좌석 수명 · master#c125bc97 ②).
+//!   ⑵ 조종자가 밀리면(못 보낸 출력이 BOUND_QUEUE_BYTES(256KiB) 에 닿으면) **PTY 를 읽지 않는다** — 커널 PTY 버퍼가 차서 자식의 쓰기가 멈춘다
+//!      (직접 PTY 를 쥔 조종자가 늦게 읽을 때와 같은 역압 · 「밀림」·꼬리 따라잡기·유실 없음). 첫 조종자가 붙기 전에는 꼬리가 차면 멈춘다.
+//!   ⑶ 쓰기 기한(CTL_WRITE_TIMEOUT)으로 내보내지 않는다(`write_stalled` 없음) — 연결이 살아 있는 한 기다린다(멈춘 조종자 아래서 자식도
+//!      멈춰 산다 = 직접 PTY 와 같음). 제어 큐 상한(CTL_QUEUE_BYTES · `control_queue_full`)은 그대로다 — 제어 프레임은 조종자 요청의 답이라
+//!      멈춘 조종자 아래서 쌓일 길이 없고, 넘치면 규약 위반으로 보고 끊김과 같이 끝낸다.
+//! 이 인자가 없으면 T2 동작 그대로(조종자 없이 좌석을 계속 쥔다 · 4MiB 큐 → 밀림 → 꼬리 따라잡기 · write_stalled 10초 — 입양은 T4).
 //! `--seats N`(N>1) = 「판별 1개」 비교 변형(좌석 N개를 한 프로세스가 쥠) — 비용 비교 전용 · 제품 경로 아님.
 
 #[cfg(unix)]
@@ -58,7 +64,7 @@ mod imp {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc::{channel, sync_channel, Receiver, Sender, SyncSender};
-    use std::sync::{Arc, Mutex, MutexGuard};
+    use std::sync::{Arc, Condvar, Mutex, MutexGuard};
     use std::time::{Duration, Instant};
 
     /// stderr 쓰기 — 실패해도 패닉하지 않는다(eprintln! 은 stderr 실패에서 패닉한다 · 독립 검증 D4).
@@ -79,6 +85,11 @@ mod imp {
     /// 수백 ms 멈춰도 밀리지 않는다. 쏟는 좌석(`yes` 초당 약 150MB)에서는 약 27ms 분량 — 그 이상 멈추면 밀림 경로로 가고
     /// 내보내지지는 않는다. 메모리 상한 = 좌석당 4MiB(40좌석이 동시에 전부 밀려도 160MiB · 평소 0).
     const OUT_QUEUE_BYTES: usize = 4 << 20;
+    /// 조종자 종속 모드(`--controller-bound` ⑵)의 큐 상한 — 여기 닿으면 PTY 읽기를 멈추고 반 아래로 내려가면 다시 읽는다.
+    /// OUT_QUEUE_BYTES(4MiB)보다 작게 둔다: 이미 PTY 에서 읽어 둔 바이트는 ^C 의 커널 출력 비우기(직접 PTY 는 ^C 뒤 0바이트)가
+    /// 닿지 않아 ^C 뒤에도 화면에 흐르고, 조종자가 다시 읽기 시작한 뒤 자식이 움직이기까지 이만큼을 먼저 비워야 한다(재개 지연).
+    /// 값 근거 = T3 실측 표(HANDOFF 「조종자 종속 모드」 — 4MiB 와 이 값의 ^C 뒤 바이트 · 재개 지연 · 폭주 처리량).
+    const BOUND_QUEUE_BYTES: usize = 256 << 10;
     /// 제어 프레임(WELCOME·EXITED·INPUT_ACK·FOREGROUND_IS) 큐 바이트 상한 — 조종자가 요청을 쏟으면서 답을 느리게 읽으면
     /// 넘는다 → 그 조종자를 내보낸다(codex 2R #2 · 출력과 달리 꼬리에 둘 곳이 없으므로).
     const CTL_QUEUE_BYTES: usize = 1 << 20;
@@ -100,7 +111,7 @@ mod imp {
     /// 자식 회수 뒤 PTY 의 마지막 출력을 기다리는 상한. 넘기면 EXITED 에 `output_open: true` 를 적는다.
     const DRAIN: Duration = Duration::from_secs(2);
     const COMMIT_TRIES: u64 = 3;
-    /// `--end-on-controller-loss` 일 때 기동 뒤 첫 조종자를 기다리는 상한(cysd 의 기동~WELCOME 상한 10초보다 길게).
+    /// `--controller-bound` 일 때 기동 뒤 첫 조종자를 기다리는 상한(cysd 의 기동~WELCOME 상한 10초보다 길게).
     const FIRST_CONTROLLER_MAX: Duration = Duration::from_secs(15);
     const ALL_SEATS: u32 = u32::MAX;
 
@@ -114,7 +125,8 @@ mod imp {
         tail_bytes: usize,
         rows: u16,
         cols: u16,
-        end_on_controller_loss: bool,
+        /// `--controller-bound` — 조종자 종속 모드(맨 위 설명 ⑴⑵⑶).
+        controller_bound: bool,
         cmd: Vec<String>,
     }
 
@@ -122,7 +134,7 @@ mod imp {
         let mut it = std::env::args().skip(1);
         let (mut dir, mut id, mut exe, mut lock, mut req) = (None, None, None, None, None);
         let (mut seats, mut tail_bytes) = (1u32, DEFAULT_TAIL);
-        let (mut rows, mut cols, mut end_on_controller_loss) = (35u16, 120u16, false);
+        let (mut rows, mut cols, mut controller_bound) = (35u16, 120u16, false);
         let mut cmd = Vec::new();
         while let Some(a) = it.next() {
             match a.as_str() {
@@ -135,7 +147,7 @@ mod imp {
                 "--tail-bytes" => tail_bytes = it.next().and_then(|v| v.parse().ok()).ok_or("--tail-bytes 숫자")?,
                 "--rows" => rows = it.next().and_then(|v| v.parse().ok()).filter(|v| (1..=1000).contains(v)).ok_or("--rows 1..=1000")?,
                 "--cols" => cols = it.next().and_then(|v| v.parse().ok()).filter(|v| (1..=1000).contains(v)).ok_or("--cols 1..=1000")?,
-                "--end-on-controller-loss" => end_on_controller_loss = true,
+                "--controller-bound" => controller_bound = true,
                 "--" => {
                     cmd = it.by_ref().collect();
                 }
@@ -165,7 +177,7 @@ mod imp {
             tail_bytes,
             rows,
             cols,
-            end_on_controller_loss,
+            controller_bound,
             cmd,
         })
     }
@@ -248,8 +260,12 @@ mod imp {
         boot_id: String,
         start_us: Option<u64>,
         pending_hs: AtomicUsize,
-        /// 프로세스 시작(단조) — `--end-on-controller-loss` 첫 조종자 상한.
+        /// 프로세스 시작(단조) — `--controller-bound` 첫 조종자 상한.
         started: Instant,
+        /// `--controller-bound` 역압: PTY 읽기를 멈추고 기다리는 읽기 스레드를 깨운다(상태 잠금 `st` 와 짝).
+        room: Condvar,
+        /// 그 기다리는 읽기 스레드 수 — 쓰기 스레드가 잠금 없이 보고 0 이 아닐 때만 잠금을 잡아 깨운다.
+        room_waiters: AtomicUsize,
         /// 같은 id 의 두 번째 seatkeep 을 막는 잠금 — 프로세스가 끝날 때까지 쥔다.
         _id_lock: File,
     }
@@ -399,7 +415,9 @@ mod imp {
         if c.behind[i].is_some() {
             return;
         }
-        if c.queued.load(Ordering::SeqCst) + bytes.len() > OUT_QUEUE_BYTES {
+        // 조종자 종속 모드(⑵) = 밀림이 없다 — 늘 큐에 넣고, 큐가 상한에 닿으면 읽기 스레드가 PTY 읽기를 멈춘다(`wait_for_room`).
+        // 큐가 상한을 넘는 폭 = 읽기 스레드마다 읽기 버퍼 1개(READ_BUF)뿐이다.
+        if !keep.args.controller_bound && c.queued.load(Ordering::SeqCst) + bytes.len() > OUT_QUEUE_BYTES {
             c.behind[i] = Some(offset);
             c.behind_flag.store(true, Ordering::SeqCst);
             // 깨우기 유실 방지(codex 2R #1): 쓰기 스레드가 표시를 세우기 전에 큐를 다 비우고 잠들었으면 아무도 따라잡지 않는다.
@@ -640,6 +658,8 @@ mod imp {
             args,
             pending_hs: AtomicUsize::new(0),
             started: Instant::now(),
+            room: Condvar::new(),
+            room_waiters: AtomicUsize::new(0),
             _id_lock: id_lock,
         });
 
@@ -692,10 +712,50 @@ mod imp {
         supervise(keep)
     }
 
+    /// PTY 읽기 버퍼 크기.
+    const READ_BUF: usize = 16 * 1024;
+
+    /// `--controller-bound` ⑵ 역압 — PTY 를 읽기 **전에** 조종자에게 못 보낸 출력이 상한에 닿았으면 읽지 않고 기다린다.
+    /// 그동안 커널 PTY 버퍼가 차서 자식의 쓰기가 멈춘다(직접 PTY 를 쥔 조종자가 늦게 읽을 때와 같다 · 입력·신호 길은 막지 않는다).
+    /// 상한 = BOUND_QUEUE_BYTES 에 닿으면 멈추고, 반(BOUND_QUEUE_BYTES/2) 아래로 내려가면 다시 읽는다. 첫 조종자가 붙기 전(gen 0)에는
+    /// 꼬리가 아직 아무에게도 안 간 출력이므로 꼬리의 남은 칸만큼만 읽고, 꼬리가 차면 멈춘다(첫 WELCOME 재생이 꼬리를 큐로 옮긴다).
+    /// 돌려주는 값 = 이번에 읽어도 되는 바이트 수(1..=READ_BUF).
+    /// 깨우기 유실 방지: 기다리는 쪽은 「`room_waiters` 를 올린 뒤 큐를 본다」, 쓰기 스레드는 「큐를 내린 뒤 `room_waiters` 를 본다」
+    /// (둘 다 SeqCst) — 둘 중 하나는 반드시 상대의 쓰기를 본다(`written` 의 밀림 표시와 같은 모양). 깨우는 쪽은 상태 잠금을 잡고 깨운다.
+    fn wait_for_room(keep: &Keep, i: usize) -> usize {
+        let mut st = lock_st(keep);
+        keep.room_waiters.fetch_add(1, Ordering::SeqCst);
+        let mut limit = BOUND_QUEUE_BYTES;
+        let room = loop {
+            let room = match st.controller.as_ref() {
+                Some(c) if c.queued.load(Ordering::SeqCst) >= limit => 0,
+                Some(_) => READ_BUF,
+                None if st.gen == 0 => keep.args.tail_bytes.saturating_sub(st.out[i].tail.len()).min(READ_BUF),
+                None => READ_BUF, // 조종자를 잃었다 — 곧 끝난다(end_for_controller_loss)
+            };
+            if room > 0 {
+                break room;
+            }
+            limit = BOUND_QUEUE_BYTES / 2;
+            st = keep.room.wait(st).unwrap_or_else(|e| e.into_inner());
+        };
+        keep.room_waiters.fetch_sub(1, Ordering::SeqCst);
+        room
+    }
+
+    /// 쓰기 스레드가 프레임 1개를 쓴 뒤 — 조종자 종속 모드에서 기다리는 읽기 스레드가 있고 큐가 반 아래면 깨운다.
+    fn wake_readers(keep: &Keep, queued: &AtomicUsize) {
+        if keep.args.controller_bound && keep.room_waiters.load(Ordering::SeqCst) > 0 && queued.load(Ordering::SeqCst) < BOUND_QUEUE_BYTES / 2 {
+            let _st = lock_st(keep);
+            keep.room.notify_all();
+        }
+    }
+
     fn read_loop(keep: Arc<Keep>, i: usize, mut r: Box<dyn Read + Send>) {
-        let mut buf = [0u8; 16 * 1024];
+        let mut buf = [0u8; READ_BUF];
         loop {
-            let n = match r.read(&mut buf) {
+            let room = if keep.args.controller_bound { wait_for_room(&keep, i) } else { READ_BUF };
+            let n = match r.read(&mut buf[..room]) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => n,
             };
@@ -915,7 +975,10 @@ mod imp {
             return reject(&keep, s, "socket_clone_failed", Some(&peer));
         };
         // 안 읽는 조종자: 소켓 쓰기가 이 기한을 넘으면 쓰기 스레드가 끝나며 연결을 닫는다(codex 1R #1).
-        let _ = write_half.set_write_timeout(Some(CTL_WRITE_TIMEOUT));
+        // 조종자 종속 모드(⑶)는 기한이 없다 — 연결이 살아 있는 한 기다린다(멈춘 조종자 = 자식도 역압으로 멈춤 · write_stalled 없음).
+        if !keep.args.controller_bound {
+            let _ = write_half.set_write_timeout(Some(CTL_WRITE_TIMEOUT));
+        }
         let rx;
         let gen;
         let queued = Arc::new(AtomicUsize::new(0));
@@ -1002,6 +1065,8 @@ mod imp {
                 exited_sent,
                 evicted: false,
             });
+            // 첫 조종자를 기다리며 꼬리가 차서 멈춘 읽기 스레드(조종자 종속 모드)는 따로 깨우지 않는다 — 큐의 첫 프레임(WELCOME)을
+            // 쓰기 스레드가 쓴 뒤 `wake_readers` 가 깨운다(그때 큐 = 재생분뿐이고, 반 아래로 내려가면 깨운다).
             rx = r;
         }
         done.store(true, Ordering::SeqCst);
@@ -1026,8 +1091,10 @@ mod imp {
                         }
                         break;
                     }
-                    // 큐가 반 아래로 비면 밀린 좌석을 따라잡는다.
-                    if written(&queued, &ctl_queued, &behind_flag, &f) {
+                    // 큐가 반 아래로 비면 밀린 좌석을 따라잡는다(조종자 종속 모드 = 역압으로 멈춘 읽기 스레드를 깨운다).
+                    let catch = written(&queued, &ctl_queued, &behind_flag, &f);
+                    wake_readers(&k, &queued);
+                    if catch {
                         let mut st = lock_st(&k);
                         if st.controller.as_ref().map(|c| c.gen) == Some(gen) {
                             catch_up(&k, &mut st);
@@ -1045,14 +1112,14 @@ mod imp {
             st.last_peer = Some((c.peer.clone(), now));
             st.no_controller_since = Some(Instant::now());
             let _ = keep.log(json!({"event": "disconnect", "gen": gen, "peer": peer_json(&c.peer), "evicted": c.evicted}));
-            if keep.args.end_on_controller_loss {
+            if keep.args.controller_bound {
                 drop(st);
                 end_for_controller_loss(&keep, "controller_lost");
             }
         }
     }
 
-    /// `--end-on-controller-loss`: 기록 1줄 · 등록부 `ended` · 소켓 삭제 뒤 프로세스를 끝낸다 → 커널이 PTY 마스터의 모든 사본을 닫아
+    /// `--controller-bound` ⑴: 기록 1줄 · 등록부 `ended` · 소켓 삭제 뒤 프로세스를 끝낸다 → 커널이 PTY 마스터의 모든 사본을 닫아
     /// 좌석(세션 우두머리)에 SIGHUP — cysd 가 마스터를 쥐던 때 cysd 가 죽은 것과 같은 경로(DESIGN §1-2). 자식에게 신호를 보내지 않는다.
     fn end_for_controller_loss(keep: &Keep, why: &str) -> ! {
         let _ = keep.log(json!({"event": "seatkeep_exit", "reason": why}));
@@ -1176,8 +1243,8 @@ mod imp {
             let orphan_long = st.controller.is_none() && st.no_controller_since.map(|t| t.elapsed() >= EXIT_GRACE).unwrap_or(false);
             // 종료 기록을 EXIT_PERSIST_MAX 넘게 못 남기면(상태 폴더가 사라짐 등) stderr 에 기록을 남기고 rc 6 으로 끝낸다 —
             // 소켓도 사라졌을 수 있어 어떤 조종자도 확인해 줄 수 없는 영구 고아가 되지 않게(독립 검증 D9).
-            // `--end-on-controller-loss`: 기동 뒤 아무 조종자도 붙지 않은 채 상한이 지나면 끝낸다(cysd 가 기동~HELLO 사이에 죽은 경우).
-            if keep.args.end_on_controller_loss && st.gen == 0 && st.controller.is_none() && keep.started.elapsed() >= FIRST_CONTROLLER_MAX {
+            // `--controller-bound`: 기동 뒤 아무 조종자도 붙지 않은 채 상한이 지나면 끝낸다(cysd 가 기동~HELLO 사이에 죽은 경우).
+            if keep.args.controller_bound && st.gen == 0 && st.controller.is_none() && keep.started.elapsed() >= FIRST_CONTROLLER_MAX {
                 drop(st);
                 end_for_controller_loss(&keep, "no_first_controller");
             }
@@ -1228,7 +1295,7 @@ mod imp {
                 tail_bytes: MAX_TAIL,
                 rows: 10,
                 cols: 10,
-                end_on_controller_loss: false,
+                controller_bound: false,
                 cmd: vec!["/bin/true".into()],
             };
             let paths = Paths::new(&d, "t");
@@ -1258,7 +1325,8 @@ mod imp {
             };
             let policy = Policy { controller_exe: args.controller_exe.clone(), requirement: None, lock: args.lock.clone() };
             let keep = Keep { args, paths, policy, seats, st: Mutex::new(st), ledger: Mutex::new(ledger), boot_id: "b".into(),
-                              start_us: Some(1), pending_hs: AtomicUsize::new(0), started: Instant::now(), _id_lock: id_lock };
+                              start_us: Some(1), pending_hs: AtomicUsize::new(0), started: Instant::now(),
+                              room: Condvar::new(), room_waiters: AtomicUsize::new(0), _id_lock: id_lock };
             (keep, d)
         }
 
@@ -1391,6 +1459,72 @@ mod imp {
             }
             let sent: usize = rx.try_iter().map(|f| f.len() - 9 - 8).sum();
             assert_eq!(sent, OUT_QUEUE_BYTES, "밀림으로 간 즉시 꼬리에서 따라잡았다");
+            let _ = std::fs::remove_dir_all(&d);
+        }
+
+        /// 조종자 종속 모드(`--controller-bound`) 시험용 — 같은 Keep 에 인자만 켠다.
+        fn test_keep_bound(tag: &str, tail: usize) -> (Keep, PathBuf) {
+            let (mut keep, d) = test_keep(tag, 1);
+            keep.args.controller_bound = true;
+            keep.args.tail_bytes = tail;
+            (keep, d)
+        }
+
+        #[test]
+        fn bound_send_output_never_goes_behind() {
+            // ⑵ 조종자 종속 모드 = 밀림이 없다 — 4MiB 를 넘는 출력도 큐에 넣는다(멈춤은 읽기 쪽 wait_for_room 몫 · 유실 0).
+            let (keep, d) = test_keep_bound("bnd-nobehind", MAX_TAIL);
+            let (c, rx, _theirs) = test_controller(1);
+            let n = OUT_QUEUE_BYTES + 1;
+            {
+                let mut st = lock_st(&keep);
+                st.out[0].tail.extend(std::iter::repeat(b'y').take(n));
+                st.out[0].total = n as u64;
+                st.controller = Some(c);
+                send_output(&keep, &mut st, 0, 0, &vec![b'y'; n]);
+                let c = st.controller.as_ref().unwrap();
+                assert_eq!(c.behind[0], None, "조종자 종속 모드는 밀림으로 가지 않는다");
+                assert!(!c.behind_flag.load(Ordering::SeqCst));
+            }
+            let sent: usize = rx.try_iter().map(|f| f.len() - 9 - 8).sum();
+            assert_eq!(sent, n, "전부 큐에 들어갔다");
+            let _ = std::fs::remove_dir_all(&d);
+        }
+
+        #[test]
+        fn bound_reads_only_tail_room_before_first_controller() {
+            // 첫 조종자 전(gen 0) = 꼬리는 아직 아무에게도 안 간 출력 → 꼬리의 남은 칸만큼만 읽는다(앞부분이 꼬리에서 밀려나지 않게).
+            let (keep, d) = test_keep_bound("bnd-tail", 100_000);
+            assert_eq!(wait_for_room(&keep, 0), READ_BUF, "빈 꼬리 = 읽기 버퍼 전부");
+            lock_st(&keep).out[0].tail.extend(std::iter::repeat(b'y').take(100_000 - 100));
+            assert_eq!(wait_for_room(&keep, 0), 100, "남은 칸만큼만");
+            assert_eq!(keep.room_waiters.load(Ordering::SeqCst), 0);
+            let _ = std::fs::remove_dir_all(&d);
+        }
+
+        #[test]
+        fn bound_reader_waits_at_cap_and_wakes_below_half() {
+            // 큐가 상한이면 PTY 를 읽지 않고 기다린다 → 쓰기 스레드가 반 아래로 비운 뒤 wake_readers 로 깨운다.
+            let (keep, d) = test_keep_bound("bnd-wait", MAX_TAIL);
+            let keep = Arc::new(keep);
+            let (c, _rx, _theirs) = test_controller(1);
+            let queued = Arc::clone(&c.queued);
+            queued.store(BOUND_QUEUE_BYTES, Ordering::SeqCst);
+            lock_st(&keep).controller = Some(c);
+            let (tx, got) = channel();
+            let k = Arc::clone(&keep);
+            std::thread::spawn(move || {
+                let _ = tx.send(wait_for_room(&k, 0));
+            });
+            assert!(got.recv_timeout(Duration::from_millis(300)).is_err(), "상한에서는 읽지 않고 기다린다");
+            assert_eq!(keep.room_waiters.load(Ordering::SeqCst), 1);
+            queued.store(BOUND_QUEUE_BYTES / 2, Ordering::SeqCst);
+            wake_readers(&keep, &queued);
+            assert!(got.recv_timeout(Duration::from_millis(300)).is_err(), "반(되읽기 문턱)까지는 계속 기다린다");
+            queued.store(BOUND_QUEUE_BYTES / 2 - 1, Ordering::SeqCst);
+            wake_readers(&keep, &queued);
+            assert_eq!(got.recv_timeout(Duration::from_secs(5)).expect("반 아래에서 깨어난다"), READ_BUF);
+            assert_eq!(keep.room_waiters.load(Ordering::SeqCst), 0);
             let _ = std::fs::remove_dir_all(&d);
         }
 

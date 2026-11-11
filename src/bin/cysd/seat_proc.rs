@@ -391,9 +391,11 @@ mod seatkeep_mac {
                 .arg("--lock").arg(&self.lock)
                 .arg("--rows").arg(self.size.rows.to_string())
                 .arg("--cols").arg(self.size.cols.to_string())
-                // ★T3 = 좌석 수명은 직접 PTY 와 같다: cysd(조종자)가 끊기면 seatkeep 이 끝나 커널이 좌석에 SIGHUP(master#c125bc97 ②).
-                //   ⚠T4(입양)가 켜질 때 **이 인자를 뺀다** — 이 한 줄이 「데몬이 죽어도 좌석이 산다」를 막는 자리다.
-                .arg("--end-on-controller-loss");
+                // ★T3 = 조종자 종속 모드(master#77162b13 · 옛 --end-on-controller-loss 를 넓힘) — 좌석이 직접 PTY 와 같다:
+                //   cysd(조종자)가 끊기면 seatkeep 이 끝나 커널이 좌석에 SIGHUP(master#c125bc97 ②) · cysd 가 밀리면 seatkeep 이 PTY 읽기를
+                //   멈춰 자식이 cysd 속도에 맞춰 멈춤(출력 유실 0) · 멈춘 cysd 를 내보내지 않음(write_stalled 없음).
+                //   ⚠T4(입양)가 켜질 때 **이 인자를 뺀다** — 이 한 줄이 「데몬이 죽어도 좌석이 산다」를 막는 자리다(그때 밀림 정책을 다시 정한다).
+                .arg("--controller-bound");
             if let Some(req) = &self.requirement {
                 cmd.arg("--requirement").arg(req);
             }

@@ -7685,6 +7685,7 @@ async function actionNew() {
   arrangeWs(ws, { add: [{ sid }] }); // 새 창도 다른 창과 같은 폭(종전 = 화면 절반)
   render();
   if (ws === current() && seatVisible(ws, sid)) setFocus(sid);
+  else if (focusedSid != null && current() && seatVisible(current(), focusedSid)) setFocus(focusedSid); // 다시 그리며 잃은 키보드 포커스를 지금 좌석에 되돌린다(race_gate R2)
 }
 
 // (v116-equalize-v2 · 박사님 결정 09-25 14:1x) 방향을 배치에 넘긴다 — "row" = 대상 창이 든 기둥 바로 오른쪽 새 기둥 ·
@@ -7707,6 +7708,7 @@ async function actionSplit(dir: "row" | "col") {
   render();
   // (ChatGPT 1R #3) 그사이 탭·작업공간을 바꿨으면 새 좌석은 시작한 탭에 숨어 있다 — 숨은 좌석에 포커스를 주지 않는다(지금 화면 포커스 유지).
   if (ws === current() && seatVisible(ws, sid)) setFocus(sid);
+  else if (focusedSid != null && current() && seatVisible(current(), focusedSid)) setFocus(focusedSid); // 다시 그리며 잃은 키보드 포커스를 지금 좌석에 되돌린다(race_gate R2)
 }
 
 // ★(v116-ui-close · 닫기 보호) 확인 창이 떠 있는 동안의 재진입 차단. 전역 단축키는 모달이 떠 있으면 이미

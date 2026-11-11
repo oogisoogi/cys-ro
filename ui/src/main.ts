@@ -7694,6 +7694,28 @@ async function newSurface(cwd: string | null = null, socket?: string, timeoutMs?
 // 새 pane 시작 경로 = 홈 디렉터리 (cwd=null → 데몬 기본값 home_dir — 오너 결정 2026-07-06:
 // 피닉스 복원 후에도 새 워크스페이스·pane은 항상 홈에서 시작. 첫 pane 경로 상속 폐기)
 
+// (codex 2R #3) 새 좌석 응답을 기다리는 사이 그 작업공간이 지워졌으면(삭제 중 포함) 새 좌석을 지워진 작업공간 객체에 붙이지 않는다 —
+//   붙이면 화면 어디에도 없는 산 좌석(고아)이 남는다(본부 데몬은 함께 꺼지지 않는다). 처분 = 닫기(데몬이 닫힘을 확인한 뒤 화면 기억도 지움).
+//   까닭 ⑴ 사람이 그 작업공간 삭제를 확인한 것 = 그 안 좌석을 전부 닫겠다는 뜻이고 만들던 좌석도 그 몫이다 ⑵ 다른 작업공간에 붙이면
+//   사람이 만들지 않은 곳에 좌석이 갑자기 생긴다(부서면 그 데몬이 곧 꺼져 붙여도 죽은 좌석). 닫기를 데몬이 거부하면 같은 데몬의 살아 있는
+//   작업공간에 붙여 보이게 하고(직접 닫을 수 있게) 알린다 · 그런 작업공간도 없으면 알림만(데몬 종료가 함께 거둔다).
+function wsGoneOrGoing(ws: Workspace): boolean {
+  return !workspaces.includes(ws) || !!ws.deleting;
+}
+async function dropSeatOfGoneWs(ws: Workspace, sid: number): Promise<void> {
+  try {
+    await closePane(sid, ws.socket);
+    toast("watchdog", "새 좌석 닫음", "좌석을 만드는 사이 그 작업공간이 지워져서, 화면에 없는 좌석으로 남지 않게 닫았어요.");
+  } catch (e) {
+    const home = workspaces.find((w) => w !== ws && !w.deleting && !w.pending && (w.socket ?? undefined) === (ws.socket ?? undefined));
+    if (home) {
+      arrangeWs(home, { add: [{ sid }] });
+      render();
+      toast("watchdog", "새 좌석 닫기 실패", `좌석을 만드는 사이 그 작업공간이 지워졌는데 좌석을 닫지 못해 「${wsLabel(home)}」 에 붙였어요 — 직접 닫아 주세요.`, undefined, String(e));
+    } else toast("watchdog", "새 좌석 닫기 실패", "좌석을 만드는 사이 그 작업공간이 지워졌는데 좌석을 닫지 못했어요.", undefined, String(e));
+  }
+}
+
 async function actionNew() {
   // ★P1-3: 리셋 진행/완료(래치) 중에는 새 pane 을 만들지 않는다. 종전엔 완료 후 '나중에'를
   // 고른 사용자가 + New·Split 를 눌러도 **토스트 하나 없이 무반응**이라 앱이 죽은 것처럼 보였다.
@@ -7704,6 +7726,7 @@ async function actionNew() {
   const ws = current();
   const intent = tabIntentOf(ws);
   const sid = await newSurface(null, ws.socket);
+  if (wsGoneOrGoing(ws)) return dropSeatOfGoneWs(ws, sid); // (codex 2R #3) 기다리는 사이 그 작업공간이 지워졌다 — 고아로 남기지 않는다
   noteNewSeatInTab(ws, sid, intent); // (948 D2) 탭 화면 = 시작한 탭 묶음에 넣어 바로 보이게
   arrangeWs(ws, { add: [{ sid }] }); // 새 창도 다른 창과 같은 폭(종전 = 화면 절반)
   render();
@@ -7725,6 +7748,7 @@ async function actionSplit(dir: "row" | "col") {
   const target = focusedSid;
   const intent = tabIntentOf(ws); // (ChatGPT 1R #3) 대상이 보이던 그때의 탭
   const sid = await newSurface(null, ws.socket);
+  if (wsGoneOrGoing(ws)) return dropSeatOfGoneWs(ws, sid); // (codex 2R #3) 기다리는 사이 그 작업공간이 지워졌다 — 고아로 남기지 않는다
   noteNewSeatInTab(ws, sid, intent); // (948 D2) 시작한 탭 묶음(대상 좌석과 같은 묶음)
   // await 사이에 대상이 닫혔으면 after 가 트리에 없으므로 맨 끝에 선다 — 루트에 덧붙여 고아를 만들지 않는다(종전과 같은 보장).
   arrangeWs(ws, { add: [{ sid, after: target, dir }] });

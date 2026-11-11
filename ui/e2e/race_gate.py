@@ -7,6 +7,9 @@
     (codex 2R #4) 뒤이은 3초 목록 render(새 좌석을 데려와 창을 떼었다 붙임)를 지난 뒤에도 **실제 키보드 포커스**(document.activeElement)가
     포커스 표시된 보이는 좌석 안에 있고(BODY 아님) · 이어 친 글자의 send_input 목적지 = 그 좌석뿐(유실 0)
   R3(#3) site 탭 좌석 4 에서 ⌘D → 그 사이 좌석 4 닫힘(surface.closed) → 새 좌석이 화면에 보이고 포커스도 그 좌석 · 오류 0
+  R4(codex 2R #3) 본부 작업공간에서 ⌘T → 응답 전에 그 작업공간 삭제 확인 → 새 좌석 50 = 닫힘(close_surface(50)) · 어느 트리에도 없음(고아 0) · 알림 1
+  R5(codex 2R #3) 같은 장면을 나누기(⌘D · actionSplit)로 — 본부 좌석 1 에서 ⌘D → 응답 전에 그 작업공간 삭제 → 새 좌석 50 = 닫힘 · 어느 트리에도 없음
+    (작업공간이 하나뿐이면 상황판 화면은 작업공간 탭을 숨겨 사람이 지울 길이 없다 — 그래서 부서 3개 장면)
 실행: CHROME_PATH=<chrome-headless-shell> [GATE_DIST=<다른 번들>] cys run -- <playwright python3> ui/e2e/race_gate.py
 """
 import importlib.util
@@ -23,14 +26,21 @@ DIST = Path(os.environ["GATE_DIST"]) if os.environ.get("GATE_DIST") else sbg.DIS
 SPY = r"""
 (() => {
   window.__calls = [];
+  window.__toasts = []; // 알림은 몇 초 뒤 사라진다 — 붙는 순간 글을 적어 둔다
+  document.addEventListener('DOMContentLoaded', () => new MutationObserver((ms) => { for (const m of ms) for (const n of m.addedNodes) if (n.classList?.contains('toast')) window.__toasts.push(n.textContent); }).observe(document.body, { childList: true, subtree: true }));
   const orig = window.__TAURI__.core.invoke;
   window.__TAURI__.core.invoke = (cmd, args) => {
     if (['send_input', 'close_surface', 'create_surface'].includes(cmd)) window.__calls.push([cmd, args?.surfaceId ?? null, args?.socket ?? null]);
     if (cmd === 'create_surface') return new Promise((res) => setTimeout(() => {
-      window.__SEATS.push({ sock: args?.socket ?? '__BASE__', sid: 50, no: 950, role: null, cwd: '/Users/sim', act: 'waiting', raw: 'idle', approval: false, self: null, task: null, ctx: null });
-      res({ surface_id: 50, display_no: 950 });
+      const sid = window.__nextSid = (window.__nextSid ?? 49) + 1; // 50, 51, … (대체 작업공간이 또 만들 수 있다)
+      window.__SEATS.push({ sock: args?.socket ?? '__BASE__', sid, no: 900 + sid, role: null, cwd: '/Users/sim', act: 'waiting', raw: 'idle', approval: false, self: null, task: null, ctx: null });
+      res({ surface_id: sid, display_no: 900 + sid });
     }, 1500));
-    if (cmd === 'close_surface') return Promise.resolve({ ok: true });
+    if (cmd === 'close_surface') { // 닫힌 좌석은 목록에서도 빠진다(데몬과 같게)
+      const i = window.__SEATS.findIndex((s) => s.sid === args?.surfaceId && s.sock === (args?.socket ?? '__BASE__'));
+      if (i >= 0) window.__SEATS.splice(i, 1);
+      return Promise.resolve({ ok: true });
+    }
     return orig(cmd, args);
   };
 })();
@@ -139,6 +149,54 @@ def main() -> int:
             s3 = pg.evaluate(STATE)
             sbg.check(4 not in s3["panes"] and 50 in s3["panes"], f"대상 닫힘 뒤 새 좌석 50 보임 {s3['panes']}")
             sbg.check(s3["focused"] == [50] and s3["active"] == 50, f"포커스 = 새 좌석(표시 {s3['focused']} · 키보드 {s3['active']})")
+            sbg.check(not errs, f"오류 0 {errs[:2]}")
+            ctx.close()
+
+            def delete_ws(pg, idx):
+                pg.query_selector_all("#ws-tabs .ws-tab")[idx].query_selector(".ws-close").click()
+                pg.wait_for_timeout(300)
+                btn = next((b for b in pg.query_selector_all(".modal-overlay button") if (b.text_content() or "").strip() == "삭제"), None)
+                sbg.check(btn is not None, "삭제 확인 창의 「삭제」 단추")
+                if btn:
+                    btn.click()
+
+            def toasts(pg):
+                return pg.evaluate("() => window.__toasts")
+
+            # R4
+            print("== R4(codex 2R #3) ⌘T 생성 중 그 작업공간 삭제")
+            ctx, pg, errs = page(js(seats), [list(d) for d in depts])
+            s0 = pg.evaluate(STATE)
+            base_i = next(i for i, t in enumerate(s0["trees"]) if t["socket"] in (None, sbg.BASE))
+            pg.click('#root .pane[data-sid="1"] .xterm-screen')
+            pg.wait_for_timeout(300)
+            pg.keyboard.press("Meta+t")
+            pg.wait_for_timeout(200)
+            delete_ws(pg, base_i)
+            pg.wait_for_timeout(4500)
+            s4 = pg.evaluate(STATE)
+            closed = [c for c in pg.evaluate("() => window.__calls") if c[0] == "close_surface"]
+            sbg.check(not any(t["socket"] in (None, sbg.BASE) for t in s4["trees"]), f"본부 작업공간 지워짐 {s4['trees']}")
+            sbg.check(any(c[1] == 50 for c in closed), f"새 좌석 50 = 닫힘(고아 0) · close_surface {closed}")
+            sbg.check(not any(50 in t["sids"] for t in s4["trees"]) and 50 not in s4["panes"], f"새 좌석 50 = 어느 트리·화면에도 없음 {s4['trees']}")
+            sbg.check(any("새 좌석 닫음" in (t or "") for t in toasts(pg)), f"알림 「새 좌석 닫음」 {toasts(pg)}")
+            sbg.check(not errs, f"오류 0 {errs[:2]}")
+            ctx.close()
+
+            # R5
+            print("== R5(codex 2R #3) ⌘D 생성 중 그 작업공간 삭제")
+            ctx, pg, errs = page(js(seats), [list(d) for d in depts])
+            pg.click('#root .pane[data-sid="1"] .xterm-screen')
+            pg.wait_for_timeout(300)
+            pg.keyboard.press("Meta+d")
+            pg.wait_for_timeout(200)
+            delete_ws(pg, base_i)
+            pg.wait_for_timeout(5000)
+            s5 = pg.evaluate(STATE)
+            closed = [c for c in pg.evaluate("() => window.__calls") if c[0] == "close_surface"]
+            sbg.check(any(c[1] == 50 for c in closed), f"새 좌석 50 = 닫힘(고아 0) · close_surface {closed}")
+            sbg.check(not any(50 in t["sids"] for t in s5["trees"]) and 50 not in s5["panes"], f"새 좌석 50 = 어느 트리·화면에도 없음 {s5['trees']} · 화면 {s5['panes']}")
+            sbg.check(any("새 좌석 닫음" in (t or "") for t in toasts(pg)), f"알림 「새 좌석 닫음」 {toasts(pg)}")
             sbg.check(not errs, f"오류 0 {errs[:2]}")
             ctx.close()
             br.close()

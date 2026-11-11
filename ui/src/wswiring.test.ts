@@ -1472,7 +1472,7 @@ describe("U2+U3 좌석 배치 배선 — (1.1.8 X1) 우리 균등 배치(formati
     expect((code.match(/await closePane\(sid, socket\)/g) ?? []).length).toBe(3);
     expect((code.match(/await closePane\(sid, srcSock\)/g) ?? []).length).toBe(2);
     expect((code.match(/await closePane\(newSid, destWs\.socket\)/g) ?? []).length).toBe(1);
-    expect((code.match(/await closePane\(sid, ws\.socket\)/g) ?? []).length).toBe(2);
+    expect((code.match(/await closePane\(sid, ws\.socket\)/g) ?? []).length).toBe(3); // (codex 2R #3) +1 = 지워진 작업공간의 새 좌석 닫기(dropSeatOfGoneWs)
     const guarded = code.slice(code.indexOf("async function closePane("), code.indexOf("interface PaneRuntime"));
     expect(guarded.indexOf('await invoke("close_surface"')).toBeGreaterThan(0);
     expect(guarded.indexOf('await invoke("close_surface"')).toBeLessThan(guarded.indexOf("detachPane(sid, socket);"));

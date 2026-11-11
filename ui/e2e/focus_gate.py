@@ -21,6 +21,9 @@
      ⓑ 좌석 4 가 보일 때 친 「abcd」 = send_input 을 0.4초씩 늦춰 줄 세운 채 바로 탭 lms 로 전환 → 남은 글자도 4 에만 · 순서대로 · 유실 0 ·
         다른 좌석 0(줄 선 글자 일부가 실제로 숨은 뒤에 나갔음을 함께 단언 — 장면이 빈 통과가 아님)
      ⓒ 숨은 뒤 새로 누른 「xy」 = 4 로 0(보이는 lms 좌석으로)
+  ⑭ (codex 3R blocking 1) 좌석 4 머리 우클릭 「이름 변경」 → 「ab」 입력 중 3초 입양 틱이 새 역할 좌석 60 을 데려온다(attach_surface(60) 로 장면 성립 단언) →
+     이어 친 「cd」 + Enter = 터미널 send_input 0(어느 좌석으로도) · 키보드는 편집 칸에 그대로 · 이름 = 「abcd」 로 확정(rename_surface(4)) ·
+     확정 뒤 밀린 그리기 1회로 새 좌석 60 이 화면에 보인다
 실행: CHROME_PATH=<chrome-headless-shell> [GATE_DIST=<다른 번들 폴더>] cys run -- <playwright python3> ui/e2e/focus_gate.py
   (GATE_DIST = 고치기 전 번들로 돌려 붉음을 재는 대조용)
 """
@@ -43,7 +46,8 @@ SPY = r"""
   document.addEventListener('DOMContentLoaded', () => new MutationObserver((ms) => { for (const m of ms) for (const n of m.addedNodes) if (n.classList?.contains('toast')) window.__toasts.push(n.textContent); }).observe(document.body, { childList: true, subtree: true }));
   const orig = window.__TAURI__.core.invoke;
   window.__TAURI__.core.invoke = (cmd, args) => {
-    if (['send_input', 'close_surface', 'create_surface'].includes(cmd)) window.__calls.push([cmd, args?.surfaceId ?? null, args?.data ?? null, !!window.__HIDDEN_SINCE]);
+    if (['send_input', 'close_surface', 'create_surface', 'attach_surface'].includes(cmd)) window.__calls.push([cmd, args?.surfaceId ?? null, args?.data ?? null, !!window.__HIDDEN_SINCE]);
+    if (cmd === 'rename_surface') { window.__calls.push([cmd, args?.surfaceId ?? null, args?.title ?? null, false]); return Promise.resolve({ ok: true }); } // ⑭ = 이름 확정 기록
     if (cmd === 'send_input' && window.__SEND_DELAY) return new Promise((res) => setTimeout(res, window.__SEND_DELAY)).then(() => orig(cmd, args)); // ⑬ = 느린 데몬 흉내(앞 글자 응답이 늦어 뒤 글자가 줄 선다)
     if (cmd === 'create_surface') { window.__SEATS.push({ sock: args?.socket ?? '/sandbox/cys.sock', sid: 50, no: 950, role: null, cwd: '/Users/sim', act: 'waiting', raw: 'idle', approval: false, self: null, task: null, ctx: null }); return Promise.resolve({ surface_id: 50, display_no: 950 }); }
     if (cmd === 'list_surfaces') return orig(cmd, args).then((r) => { for (const s of r.surfaces) if ((window.__EXITED ?? []).includes(s.surface_id)) s.exited = true; return r; });
@@ -334,6 +338,37 @@ def main() -> int:
             sbg.check(not any(c[1] not in (4, *LMS) for c in sent) and not any(c[1] in LMS and c[2] in "abcd" for c in sent), f"ⓑ 보일 때 친 글자 = 다른 좌석 0 {sent}")
             sbg.check(not any(c[1] == 4 and c[2] in ("x", "y") for c in sent), f"ⓒ 숨은 뒤 새 키 = 4 로 0 {sent}")
             sbg.check("".join(c[2] for c in sent if c[1] in LMS) == "xy", f"ⓒ 숨은 뒤 새 키 = 보이는 lms 좌석으로 {sent}")
+            sbg.check(not errs, f"오류 0 {errs[:2]}")
+            ctx.close()
+            # ⑭ 좌석 이름 변경 중 입양 틱
+            print("== ⑭ 좌석 이름 변경 중 3초 입양 틱 → 이어 친 글자·Enter 는 편집 칸에(터미널 0)")
+            ctx, pg, errs = page()
+            pg.click('#root .pane[data-sid="4"] .xterm-screen')
+            pg.wait_for_timeout(300)
+            pg.click('#root .pane[data-sid="4"] .pane-title-text', button="right")
+            pg.wait_for_timeout(300)
+            item = next((i for i in pg.query_selector_all("#ctx-menu .ctx-item") if (i.text_content() or "").strip() == "이름 변경"), None)
+            sbg.check(item is not None, "좌석 머리 우클릭 = 「이름 변경」")
+            if item:
+                item.click()
+                pg.wait_for_timeout(200)
+                pg.evaluate("() => { window.__calls = []; }")
+                pg.keyboard.type("ab")
+                pg.evaluate("() => window.__SEATS.push({ sock: '__BASE__', sid: 60, no: 960, role: 'worker-8', cwd: '/u/axdev/site', act: 'waiting', raw: 'idle', approval: false, self: null, task: null, ctx: null })".replace("__BASE__", sbg.BASE))
+                pg.wait_for_timeout(4000)  # 3초 목록 1바퀴 + 입양
+                att = calls(pg, "attach_surface")
+                sbg.check(any(c[1] == 60 for c in att), f"(장면 성립) 편집 중 입양 틱이 새 좌석 60 을 데려왔다 {att}")
+                ed = pg.evaluate("() => { const a = document.activeElement; return { editing: !!a?.classList?.contains('pane-title-text') && a.isContentEditable, sid: +(a?.closest?.('.pane')?.dataset.sid ?? -1), tag: a?.tagName ?? null }; }")
+                sbg.check(ed["editing"] and ed["sid"] == 4, f"입양 틱 뒤에도 키보드 = 좌석 4 이름 편집 칸 {ed}")
+                pg.keyboard.type("cd")
+                pg.keyboard.press("Enter")
+                pg.wait_for_timeout(800)
+                sent = calls(pg, "send_input")
+                ren = calls(pg, "rename_surface")
+                sbg.check(not sent, f"이어 친 「cd」·Enter = 터미널 send_input 0 {sent}")
+                sbg.check([c[1:3] for c in ren] == [[4, "abcd"]], f"이름 = 「abcd」 로 한 번 확정 {ren}")
+                s14 = pg.evaluate(STATE)
+                sbg.check(60 in s14["panes"], f"확정 뒤 밀린 그리기 1회 = 새 좌석 60 보임 {s14['panes']}")
             sbg.check(not errs, f"오류 0 {errs[:2]}")
             ctx.close()
             # ⑧ 한글 조합 중 탭 전환

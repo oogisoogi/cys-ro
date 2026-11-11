@@ -4174,6 +4174,7 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
           const commit = () => {
             titleEl.removeEventListener("keydown", onKey); // rename마다 리스너 누적 방지
             titleEl.contentEditable = "false";
+            flushHeldRender(); // (codex 3R blocking 1) 편집 중 미룬 render 1회
             // 빈 이름 = 기본으로 복귀 — 역할 창은 「번호 · 특성」, 역할 없는 창은 ""(자동 제목) (D4 #12 · panetitle.ts)
             const name = renameCommitTitle(titleEl.textContent || "", shownBefore, titleEl.dataset.ruleTitle ?? null);
             if (name === null) {
@@ -5473,11 +5474,28 @@ function setOsDropTarget(rt: PaneRuntime | undefined) {
 //   ⑴ 포커스가 정말 빠졌고(BODY·없음 — 그사이 다른 칸이 받았으면 손대지 않는다) ⑵ 그 창이 같은 런타임으로 지금 화면(#root)에 붙어 있으며
 //   ⑶ 모달·팔레트·메뉴가 떠 있지 않고 ⑷ 그 창이 포커스 표시(focusedSid)된 좌석일 때만 setFocus 로 되돌린다(xterm 포커스 단일 입구 · 모달 가드 그대로).
 //   숨었거나 사라진 창에는 되돌리지 않는다(숨은 좌석에 새로 시작되는 입력 0).
+// (codex 3R blocking 1) 기억하는 것은 **그 좌석의 xterm 입력칸(term.textarea)** 일 때뿐이다 — 좌석 안의 다른 칸(이름 변경 중인 제목 ·
+//   xterm 접근성 줄 등)을 쥐고 있었으면 그것은 터미널 키보드가 아니므로 되돌릴 대상이 아니다(되돌리면 이름 글자·Enter 가 에이전트 입력으로 샌다).
 function paneHoldingKeyboard(): PaneRuntime | null {
   const a = document.activeElement;
   if (!a || a === document.body) return null;
-  for (const rt of panes.values()) if (rt.el.contains(a)) return rt;
+  for (const rt of panes.values()) if (rt.term.textarea != null && rt.term.textarea === a) return rt;
   return null;
+}
+// (codex 3R blocking 1) 좌석 이름을 고치는 중이면 render 를 미룬다 — render 는 창을 떼었다 붙여 편집 칸의 포커스를 빼앗는다(3초 입양 틱·이벤트가
+//   사람 손과 무관하게 부른다). 작업공간 이름 편집 중 renderWsTabs() 재렌더 거부와 같은 계약 · 편집이 끝나면(제목 확정 처리기) 밀린 render 1회.
+//   화면에 붙어 있는 좌석의 제목만 본다 — 편집 중 그 좌석이 파기됐으면(destroyPaneRuntime 이 떼어 냄) 막지 않는다.
+//   blur 가 「떼는 순간」 오든 안 오든(WKWebView·Chromium 순서 실기 미확인) 떼기 자체가 일어나지 않으므로 순서와 무관하다.
+let renderHeld: "no" | "auto" | "user" = "no";
+function paneTitleEditing(): boolean {
+  for (const rt of panes.values()) if (rt.titleEl.isContentEditable && rt.el.isConnected) return true;
+  return false;
+}
+function flushHeldRender(): void {
+  const held = renderHeld;
+  renderHeld = "no";
+  if (held === "user") renderByUser();
+  else if (held === "auto") render();
 }
 function restoreKeyboardAfterRender(held: PaneRuntime | null): void {
   if (!held) return;
@@ -5490,6 +5508,11 @@ function restoreKeyboardAfterRender(held: PaneRuntime | null): void {
 }
 
 function render() {
+  if (paneTitleEditing()) { // (codex 3R blocking 1) 좌석 이름 편집 중 = 미룬다(확정 처리기가 flushHeldRender)
+    if (viewByUser) renderHeld = "user";
+    else if (renderHeld === "no") renderHeld = "auto";
+    return;
+  }
   const kbHeld = paneHoldingKeyboard(); // (codex 2R #4) 떼기 전 실제 키보드 포커스 좌석
   for (const rt of panes.values()) rt.el.remove();
   root.innerHTML = "";

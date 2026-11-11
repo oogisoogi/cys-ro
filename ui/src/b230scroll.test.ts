@@ -128,6 +128,7 @@ describe("B-230 ① render() — 다시 붙인 뒤 보이는 pane 마다 resyncV
       repairHiddenFocus: () => {}, // (948 D1) 숨은 포커스 옮기기 — 이 검체의 축과 무관
       paneHoldingKeyboard: () => null, // (codex 2R #4) 떼기 전 키보드 포커스 좌석 — 이 검체의 축과 무관
       restoreKeyboardAfterRender: () => {}, // (codex 2R #4) 다시 붙인 뒤 포커스 되돌림 — 이 검체의 축과 무관
+      paneTitleEditing: () => false, renderHeld: "no", viewByUser: false, // (codex 3R blocking 1) 좌석 이름 편집 중 render 미룸 — 이 검체의 축과 무관
       tabPillarMemo: null, gridCell: null, recomputeTabPillar: () => {}, // (2b-3) 기둥 몫 재측정 — 이 검체의 축과 무관
       nodeShown: () => true,
       holeShownFor: () => new Set(),

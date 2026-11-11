@@ -7,6 +7,16 @@
 import { SEAT_STATE_ACT, SEAT_STATE_LABEL, type SeatRowsModel, type SeatState } from "./seatrows";
 
 export const BOARD_KEY = "cys-status-board";
+/** (1g · master#17b20312) 위치 = 「화면 설정」 「상황판 위치」(위 기본 · 아래) · 펼침 = 기억. */
+export const BOARD_POS_KEY = "cys-status-board-pos";
+export const BOARD_OPEN_KEY = "cys-status-board-open";
+export const boardPos = (raw: string | null): "top" | "bottom" => (raw === "bottom" ? "bottom" : "top");
+export const boardOpen = (raw: string | null): boolean => raw === "1";
+/** 한도 한 줄의 막대 값 — limitLine 과 같은 7d 최고값(없으면 null). */
+export function limitPct(rows: readonly { label: string; usedPct: number }[]): number | null {
+  const d7 = rows.filter((r) => r.label === "7d" && Number.isFinite(r.usedPct));
+  return d7.length ? Math.max(...d7.map((r) => r.usedPct)) : null;
+}
 export type BoardVariant = "off" | "a" | "b";
 export function boardVariant(raw: string | null): BoardVariant {
   return raw === "0" ? "off" : raw === "2" ? "b" : "a";
@@ -52,6 +62,10 @@ export function limitLine(rows: readonly { label: string; usedPct: number; reset
 export interface BoardPaintOpts {
   variant: Exclude<BoardVariant, "off">;
   limit: string | null;
+  /** (1g) 한도 막대 값(%) · 펼침 상태 · 누르면 펼침/접힘. */
+  limitPct?: number | null;
+  open?: boolean;
+  onToggle?: () => void;
   /** (1f) 사람이 손써야 하는 계정 문제(로그아웃 · 계정 불일치)가 있으면 한 낱말 표시 — accountNeedsAction. */
   acctWarn: boolean;
   onGo: (state: BoardState) => void;
@@ -105,10 +119,35 @@ export function paintBoard(host: HTMLElement, c: BoardCounts, o: BoardPaintOpts)
     });
     frag.appendChild(ap);
   }
-  if (o.variant === "b" && o.limit && !o.compact) {
-    const lim = document.createElement("div");
+  if (o.limit && !o.compact) {
+    // (1g) 둘째 줄 = 가장 높은 한도의 막대 + % + 초기화까지 · 누르면 아래 사용량 칸(모델별 7d · 5h · 가장 낡음)을 펼친다.
+    const lim = document.createElement("button");
+    lim.type = "button";
     lim.className = "ws-board-limit";
-    lim.textContent = o.limit;
+    lim.setAttribute("aria-expanded", String(!!o.open));
+    lim.title = o.open ? "사용량 접기" : "사용량 펼치기(모델별 7d · 5h · 가장 낡음)";
+    const caret = document.createElement("span");
+    caret.className = "ws-board-caret";
+    caret.textContent = o.open ? "▾" : "▸";
+    lim.appendChild(caret);
+    if (o.limitPct != null) {
+      const track = document.createElement("span");
+      track.className = "cc-tbar-track";
+      const fill = document.createElement("span");
+      const p = Math.min(100, Math.max(0, o.limitPct));
+      fill.className = `cc-tbar-fill${p >= 80 ? " crit" : p >= 60 ? " warn" : ""}`;
+      fill.style.width = `${p}%`;
+      track.appendChild(fill);
+      lim.appendChild(track);
+    }
+    const txt = document.createElement("span");
+    txt.className = "ws-board-limit-text";
+    txt.textContent = o.limit;
+    lim.appendChild(txt);
+    lim.addEventListener("click", (e) => {
+      e.stopPropagation();
+      o.onToggle?.();
+    });
     frag.appendChild(lim);
   }
   if (o.acctWarn && !o.compact) {

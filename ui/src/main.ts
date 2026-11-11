@@ -343,7 +343,7 @@ import { approvalSeatKeys, buildSeatRows, namedSeatInputs, seatDot, seatInputOf,
 import { paintSeatRows, pruneSeatHosts, seatHost } from "./seatrowsdom"; // (tabs-sidebar 조각1) 좌석 줄 그리기
 import { GROUP_TABS_KEY, groupTabsOn, normalizeTabState, reconcileTabs, viewTree, type TabState, type TabView } from "./grouptabs"; // (tabs-sidebar 조각2) 묶음 탭 판정
 import type { SeatRowsModel } from "./seatrows";
-import { accountNeedsAction, BOARD_KEY, boardCounts, boardVariant, limitLine, nextSeat, paintBoard, type BoardState } from "./statusboard"; // (tabs-sidebar 1d) 상황판 시안
+import { accountNeedsAction, BOARD_KEY, BOARD_OPEN_KEY, BOARD_POS_KEY, boardCounts, boardOpen, boardPos, boardVariant, limitLine, limitPct, nextSeat, paintBoard, type BoardState } from "./statusboard"; // (tabs-sidebar 1d) 상황판 시안
 
 declare global {
   interface Window {
@@ -5909,13 +5909,18 @@ function refreshSeatRows(): void {
 }
 // (tabs-sidebar 1d · 시안) 상황판 — 수는 좌석 줄 모델(같은 판정)에서 센다 · 숫자 = 그 상태 좌석으로 차례로 이동.
 const statusBoard = boardVariant(localStorage.getItem(BOARD_KEY));
+// (1g) 상황판이 켜져 있으면 종전 사용량 칸(#ws-usage)을 상황판 펼침 칸으로 옮긴다(꺼져 있으면 제자리 = 1.1.14 그대로).
+const usageEl = statusBoard !== "off" ? document.getElementById("ws-usage") : null;
+const boardMore = document.createElement("div");
+boardMore.className = "ws-board-more";
 const boardCursor = new Map<BoardState, number>();
 function paintStatusBoard(): void {
   const live = workspaces.filter((w) => !w.pending);
   const models = live.map((w) => ({ wsId: w.id, model: seatModels.get(w.id) ?? { fixed: [], groups: [] } }));
   const counts = boardCounts(models);
   const nowSecs = Date.now() / 1000;
-  const limit = limitLine(accountRates(accountsCache, nowSecs).map((r) => ({ label: r.label, usedPct: r.usedPct, resetsAt: r.resetsAt })), nowSecs);
+  const rateRows = accountRates(accountsCache, nowSecs).map((r) => ({ label: r.label, usedPct: r.usedPct, resetsAt: r.resetsAt }));
+  const limit = limitLine(rateRows, nowSecs);
   // (1f) 계정 줄(역할 목록)은 빼고, 손써야 할 계정 문제만 한 낱말로(accountNeedsAction).
   const acctWarn = accountNeedsAction(live.flatMap((w) => wsSeatAccts(w).flatMap((x) => (x.sig ? [parseSeatAccount(x.sig, Date.now(), SIG_STALE_MS_UI).state] : []))));
   const onGo = (st: BoardState) => {
@@ -5928,7 +5933,17 @@ function paintStatusBoard(): void {
   if (statusBoard === "off") return;
   // (1e) 승인 대기 수(옛 Control Center 단추의 빨간 수 = cc-pending-badge) — 누르면 승인 창이 뜬 좌석으로, 좌석이 없는 승인이면 승인 Feed 로.
   const onApprovals = () => (counts.blocked.length ? onGo("blocked") : openFeed());
-  paintBoard(seatHost("board"), counts, { variant: statusBoard, limit, acctWarn, onGo, approvals: pendingApprovals, onApprovals });
+  // (1g · master#17b20312) 사용량 통합 — 둘째 줄 = 한도 한 줄(막대) · 펼치면 종전 사용량 칸(#ws-usage) 그 요소를 상황판 안에 그대로 담는다
+  //   (그리기 = renderSidebarUsage 무변경 · 같은 정보 두 곳 0). 위치 = 위(목록 맨 위) / 아래(막대 맨 아래 고정 · 좌석 줄이 스크롤).
+  const board = seatHost("board");
+  const open = boardOpen(localStorage.getItem(BOARD_OPEN_KEY));
+  const onToggle = () => { localStorage.setItem(BOARD_OPEN_KEY, open ? "0" : "1"); paintStatusBoard(); };
+  paintBoard(board, counts, { variant: statusBoard, limit, limitPct: limitPct(rateRows), open, onToggle, acctWarn, onGo, approvals: pendingApprovals, onApprovals });
+  boardMore.hidden = !open;
+  if (usageEl) boardMore.appendChild(usageEl);
+  board.appendChild(boardMore);
+  board.classList.toggle("bottom", boardPos(localStorage.getItem(BOARD_POS_KEY)) === "bottom");
+  if (board.classList.contains("bottom")) document.getElementById("ws-tabs")?.after(board);
   if (live.length > 1)
     for (const m of models) paintBoard(seatHost(`n${m.wsId}`), boardCounts([m]), { variant: statusBoard, limit: null, acctWarn: false, onGo, compact: true });
 }
@@ -6056,7 +6071,7 @@ function renderWsTabs() {
   for (const g of [...pinnedG, ...unpinnedG]) bar.appendChild(buildGroupSection(g));
   // (tabs-sidebar 1d · 시안) 상황판 = 막대 맨 위 · 부서가 1개면 카드를 그리지 않는다(상황판이 대신) · 여럿이면 카드 아래 그 부서 상태 수.
   const solo = statusBoard !== "off" && workspaces.filter((w) => !w.pending).length === 1;
-  if (statusBoard !== "off") bar.appendChild(seatHost("board"));
+  if (statusBoard !== "off" && boardPos(localStorage.getItem(BOARD_POS_KEY)) === "top") bar.appendChild(seatHost("board"));
   for (const ws of workspaces.filter((w) => !w.pending && w.groupId == null))
     if (solo) bar.append(seatHost(String(ws.id)));
     else if (statusBoard !== "off") bar.append(buildTab(ws), seatHost(`n${ws.id}`), seatHost(String(ws.id)));
@@ -6889,6 +6904,11 @@ function openThemePopover(anchor: HTMLElement) {
   const ccOpenRow = document.createElement("div"); ccOpenRow.className = "theme-pop-row";
   const ccOpenBtn = document.createElement("button"); ccOpenBtn.type = "button"; ccOpenBtn.textContent = "컨트롤 센터 열기";
   ccOpenBtn.addEventListener("click", () => setCcOpen(true)); ccOpenRow.appendChild(ccOpenBtn);
+  const boardPosRow = document.createElement("label"); boardPosRow.className = "theme-pop-row"; boardPosRow.textContent = "상황판 위치";
+  const bpSel = document.createElement("select");
+  for (const [v, t] of [["top", "위"], ["bottom", "아래"]]) { const o = document.createElement("option"); o.value = v; o.textContent = t; bpSel.appendChild(o); }
+  bpSel.value = boardPos(localStorage.getItem(BOARD_POS_KEY));
+  bpSel.addEventListener("change", () => { localStorage.setItem(BOARD_POS_KEY, bpSel.value); renderWsTabs(); }); boardPosRow.appendChild(bpSel);
   const groupTabsRow = document.createElement("label"); groupTabsRow.className = "theme-pop-row"; groupTabsRow.textContent = "묶음 탭";
   const gtCb = document.createElement("input"); gtCb.type = "checkbox"; gtCb.checked = groupTabs;
   gtCb.addEventListener("change", () => applyGroupTabs(gtCb.checked)); groupTabsRow.appendChild(gtCb);
@@ -6920,7 +6940,7 @@ function openThemePopover(anchor: HTMLElement) {
 
   // ① 글자·배경 — 종전 「테마」 항목 전부 그대로.
   const look = mkSection("look", "글자·배경");
-  look.body.append(ccOpenRow, row, fontRow, titleSizeRow, titleWeightRow, titleColorRow, groupTabsRow, termWeightRow, menuWeightRow, menuSizeRow,
+  look.body.append(ccOpenRow, row, fontRow, titleSizeRow, titleWeightRow, titleColorRow, groupTabsRow, boardPosRow, termWeightRow, menuWeightRow, menuSizeRow,
     mkReset("이 구획만 기본값으로", resetLook));
 
   // ② 상단 단추 — 줄 = [≡ 끌기 손잡이] [이름] [▲] [▼] [켬/끔]. 목록의 위 → 아래 = 상단의 왼쪽 → 오른쪽.

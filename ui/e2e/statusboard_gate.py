@@ -34,7 +34,6 @@ W7 = [
     (BASE, 9, 937, "worker-7", "/u/axdev/video", "waiting", "idle", False, "done", "스킬 초안", 84),
 ]
 SCEN = {
-    "dept1-workers0": (W7[:1], []),
     "dept1-workers1": (W7[:1] + [W7[2]], []),
     "dept1-workers7": (W7, []),
     "dept3": (
@@ -95,7 +94,11 @@ JS = r"""
   const states = ['working', 'idle', 'blocked', 'unknown'];
   return { cards: document.querySelectorAll('#ws-tabs .ws-tab').length, hq: [...document.querySelectorAll('#ws-tabs .ws-name')].map((e) => e.textContent),
     board: states.map(n), rows: states.map(rowsBy), zeroDisabled: [...document.querySelectorAll('.ws-board-n.zero')].every((b) => b.disabled),
-    limit: document.querySelector('.ws-board-limit')?.textContent ?? null, perDept: document.querySelectorAll('[data-seat-host^="n"] .ws-board-counts').length,
+    limit: document.querySelector('.ws-board-limit-text')?.textContent ?? null, perDept: document.querySelectorAll('[data-seat-host^="n"] .ws-board-counts').length,
+    usageInBoard: !!document.querySelector('[data-seat-host="board"] .ws-board-more #ws-usage'), usageShown: (() => { const m = document.querySelector('.ws-board-more'); return !!m && !m.hidden && document.querySelectorAll('#ws-usage .wsu-rate').length > 0; })(),
+    usageCount: document.querySelectorAll('#ws-usage').length,
+    pos: (() => { const b = document.querySelector('[data-seat-host="board"]'); if (!b) return null; const r = b.getBoundingClientRect(); const nav = document.getElementById('wsbar').getBoundingClientRect();
+      return { inTabs: b.parentElement?.id === 'ws-tabs', bottomGap: Math.round(nav.bottom - r.bottom), visible: r.bottom <= innerHeight + 1 && r.top >= 0 }; })(),
     topbar: document.querySelectorAll('#topbar button:not([hidden])').length,
     docOver: document.documentElement.scrollWidth > innerWidth, tabsOver: (() => { const t = document.getElementById('ws-tabs'); return t.scrollWidth > t.clientWidth + 1; })() };
 }
@@ -125,17 +128,18 @@ def main() -> int:
             br = p.chromium.launch(executable_path=exe) if exe else p.chromium.launch()
             for name, (seats, depts) in SCEN.items():
                 js = [dict(sock=s[0], sid=s[1], no=s[2], role=s[3], cwd=s[4], act=s[5], raw=s[6], approval=s[7], self=s[8], task=s[9], ctx=s[10]) for s in seats]
-                variants = ["1", "2"] if name.startswith("dept1") else ["1"]
-                for var in (["0"] if name == "dept1-workers0" else []) + variants:
+                combos = [("top", "0"), ("top", "1"), ("bottom", "0"), ("bottom", "1")] if name.startswith("dept1") else [("top", "0")]
+                for pos, op in combos:
+                    var = "1"
                     for w, hgt in ((1920, 1200), (1280, 800)):
-                        tag = {"1": "a", "2": "b", "0": "off"}[var]
+                        tag = f"{pos}-{'open' if op == '1' else 'closed'}"
                         print(f"== {name} ({tag}) @ {w}")
                         ctx = br.new_context(viewport={"width": w, "height": hgt})
                         pg = ctx.new_page()
                         errs: list[str] = []
                         pg.on("pageerror", lambda e: errs.append(str(e)[:200]))
                         pg.on("console", lambda m: errs.append(m.text[:200]) if m.type == "error" else None)
-                        pg.add_init_script(f"localStorage.setItem('cys-status-board', '{var}');")
+                        pg.add_init_script(f"localStorage.setItem('cys-status-board', '{var}'); localStorage.setItem('cys-status-board-pos', '{pos}'); localStorage.setItem('cys-status-board-open', '{op}');")
                         pg.add_init_script(SHIM.replace("__SEATS__", json.dumps(js)).replace("__DEPTS__", json.dumps(depts)).replace("__BASE__", BASE))
                         pg.goto(f"http://127.0.0.1:{port}/index.html")
                         pg.wait_for_timeout(11500)
@@ -153,10 +157,13 @@ def main() -> int:
                                 check(st["cards"] == 0, f"부서 1개 = 본부 카드 없음 ({st['cards']} · {st['hq']})")
                             check(st["board"] == st["rows"], f"상황판 수 = 좌석 줄 상태 수 {st['board']} vs {st['rows']}")
                             check(st["zeroDisabled"], "0 인 상태 = 흐림·누를 수 없음")
-                            if var == "2":
-                                check(st["limit"] == "7d 86% · 초기화까지 2일 3시간", f"(나) 한도 한 줄 {st['limit']}")
-                            else:
-                                check(st["limit"] is None, "(가) 한도 줄 없음")
+                            check(st["limit"] == "7d 86% · 초기화까지 2일 3시간", f"둘째 줄 한도 한 줄 {st['limit']}")
+                            check(st["usageInBoard"] and st["usageCount"] == 1, "사용량 칸 = 상황판 안 한 곳뿐(아래 따로 없음)")
+                            check(st["usageShown"] == (op == "1"), f"펼침 {op} = 사용량 막대 보임 {st['usageShown']}")
+                            check(st["pos"]["inTabs"] == (pos == "top"), f"위치 {pos} {st['pos']}")
+                            check(st["pos"]["visible"], f"상황판 화면 안(가려지지 않음) {st['pos']}")
+                            if pos == "bottom":
+                                check(abs(st["pos"]["bottomGap"]) <= 2, f"아래 = 막대 맨 아래에 붙음 {st['pos']}")
                             if name == "dept1-workers7" and var == "1" and w == 1920:
                                 pg.click('[data-seat-host="board"] .ws-board-n.st-blocked')
                                 pg.wait_for_timeout(300)

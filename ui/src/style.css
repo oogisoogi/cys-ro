@@ -421,7 +421,13 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
 .ws-board-acct { margin-top: 3px; font-size: .9em; color: var(--warn); }
 .ws-board-n.zero { opacity: .35; cursor: default; font-weight: 400; }
 .ws-board-approvals { margin-top: 3px; background: none; border: 1px solid var(--error); border-radius: 4px; color: var(--error); font: inherit; font-size: .9em; padding: 0 .4em; cursor: pointer; }
-.ws-board-limit { margin-top: 3px; font-size: .9em; color: #8b949e; }
+.ws-board-limit { display: flex; align-items: center; gap: .4em; width: 100%; margin-top: 3px; padding: 0; background: none; border: none; font: inherit; font-size: .9em; color: #8b949e; cursor: pointer; min-width: 0; }
+.ws-board-limit .cc-tbar-track { flex: 1 1 auto; min-width: 2em; }
+.ws-board-limit-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-board-caret { flex: none; }
+.ws-board-more[hidden] { display: none; }
+.ws-board-more #ws-usage { border-top: none; padding: 4px 0 0; max-height: none; }
+[data-seat-host="board"].bottom { flex: none; margin: 0; border-radius: 0; border-top: 1px solid var(--hairline); }
 [data-seat-host^="n"] { padding: 0 6px 0 10px; font-size: calc(15px * var(--wsbar-font, 1)); } /* (1f ③) 0 이 아닌 수 = 좌석 줄 글자(15px) 이상 */
 .ws-seat.tagged { flex-wrap: wrap; row-gap: 0; }
 .ws-seat-sub { flex: 1 0 100%; display: flex; justify-content: flex-end; align-items: center; gap: .4em; min-width: 0; }

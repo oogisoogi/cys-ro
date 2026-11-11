@@ -109,6 +109,73 @@
 2. refreshPaneTitles 입양(makePane await 뒤 ws 재검사 없음 · 위 전수 표 PLAUSIBLE)이 실제 도달·피해가 있는가 — 있으면 같은 도우미로 고칠 대상.
 3. 지워진 작업공간의 새 좌석 = 닫기 처분이 맞는가(닫기 거부 시 같은 데몬 작업공간에 붙이기가 종료 중 부서 데몬에서 문제 되는가) · paneShownNow 가 정당한 경로 넣기(넓게 보기·상황판 위치)를 막는 경우가 있는가.
 
+## codex 3R 처분 (TICKET=cysr-tabs-codex-fix-r3 · 범위 aa110891..머리 · BLOCK blocking 3·major 1 · 판정문 ~/axdev/master/reports/2026-11-11-post-codex/codex-tabs-3r.md)
+| 발견 | 처분(master) | 고침·시험 | 커밋 |
+|---|---|---|---|
+| #1 blocking 좌석 이름 변경 중 render → 이름 글자·Enter 가 터미널로(이번 차이가 만든 것) | 고침(최우선) | ⑴ paneHoldingKeyboard = 그 좌석의 xterm 입력칸(`term.textarea`)일 때만 기억(main.ts:5510) ⑵ render = 화면에 붙은 좌석 제목이 편집 중이면 떼지 않고 미룸(paneTitleEditing · main.ts:5521·5541) · 제목 확정 처리기가 flushHeldRender 로 밀린 1회(사람 손이었으면 renderByUser · main.ts:4189) · focus_gate ⑭ 고치기 전 붉음 3 → 초록 · kbrestore.test.ts ①③ | ab1b1cf2 |
+| #2 blocking refreshPaneTitles 입양 makePane 뒤 재검사 없음 | 고침 | 재검사 → 같은 데몬의 살아 있는 작업공간 다시 고름 · 없으면 런타임만 파기(외부 역할 좌석 = 닫지 않음 · panes 에서도 빠짐 → 다음 틱 재입양 가능 · main.ts:3930) · race_gate R7(다른 본부 작업공간으로) · R7b(런타임 파기) | 384fb51f |
+| #3 blocking transferCrossDept newSurface 뒤·원본 닫기 직전 재검사 없음 | 고침 | newSurface 뒤 srcWs·destWs 재검사(셸 갈래는 이 자리 뒤 원본 닫기까지 await 없음 = 「닫기 직전」 과 같은 자리 · main.ts:5133) → 알림 「전출 중단」 + 원본 보존 + 새 좌석만 dropSeatOfGoneWs 로 거둠 · 보상 롤백도 지워진 목적지면 같은 처리(main.ts:5242) · 에이전트 갈래 원본 닫기 직전(awaitHandoffAck · main.ts:5365) 같은 재검사 → 보류(인수 대기 기록 유지 · 원본 보존) · race_gate R8 · closecallbacks 「(codex 3R #3) acknowledged handoff …」 | 384fb51f · 111d841a(시험) |
+| #4 major dropSeatOfGoneWs 닫기 거부 = 「지금 붙일 곳 없음」 을 끝으로 | 고침 | 거부 뒤 삭제 결과 확정을 기다림(whenWsDeleteSettled ← 탭 닫기·그룹 삭제 finally 의 settleWsDelete) → ⑴ 보존된 그 작업공간 ⑵ 같은 데몬의 살아 있는 작업공간 ⑶ 부서 데몬 종료 확인(deptDaemonStopped) = 런타임 파기 ⑷ 다시 닫기 1회 → 그래도 거부면 새 작업공간을 열어 보이게(알림 새 문구 「…새 작업공간에 두었어요 — 직접 닫아 주세요.」 · 지시 없이 내린 판단) · race_gate R9a(다시 닫음)·R9b(새 작업공간)·R9c(데몬 종료 = 파기)·R9d(보존된 작업공간)·R9e(삭제 「진행 중」 이 끝내 성공) | 384fb51f · 111d841a(R9e) |
+| 조건 ⑷(뮤턴트 M2 생존) | 유지 + 직접 시험 | kbrestore.test.ts ② held=A·focused=B·A 도 화면 = setFocus 0 · 대조 held=A·focused=A = setFocus(A) 1 | ab1b1cf2 |
+| (전수 표 추가 발견) start() 기동 복원의 같은 모양 3곳 | 고침(같은 처분 · 재현 = CONFIRMED) | 기동 중 탭은 renderWsTabs 로 먼저 그려져 지울 수 있다 → ⑴ 복원 입양 makePane 뒤 = #2 와 같은 처분(main.ts:12085) ⑵ 빈 자리 좌석 newSurface 뒤 = dropSeatOfGoneWs(main.ts:12114) ⑶ 현재 작업공간 첫 좌석(`current().tree = { sid: await … }` 는 왼쪽을 await 전에 잡음) = putSeat(main.ts:12132) · race_gate R10·R10b(384fb51f 번들에서 붉음 → 초록) · 소스 핀 문자열 그대로 | 111d841a |
+
+### 좌석(.pane) 안에서 글자를 받을 수 있는 요소 — 전수(방법 = makePane(main.ts:4104~) 의 createElement 7개 + xterm 5.5.0 lib/xterm.js 의 tabIndex 대입 2곳 + main.ts `screenReaderMode` grep 0건)
+| 요소 | 글자를 받나 | render 되돌림 기억 | 근거 |
+|---|---|---|---|
+| xterm 입력칸 `term.textarea`(tabIndex 0) | 예 = 터미널 입력 | **유일한 기억 대상** | xterm.js `this.textarea.tabIndex=0` |
+| 좌석 제목 `.pane-title-text` | 「이름 변경」 중만(contentEditable) | 제외 + 편집 중 render 미룸 | focus_gate ⑭ |
+| xterm 접근성 줄(`role=listitem` · tabIndex −1) | 스크린리더 모드 때만 생김 — 우리 설정 0 | 제외(xterm 입력칸이 아님) | main.ts `screenReaderMode` 0건 |
+| 역할 점·사용량·× (`span`) | 아니오(포커스 못 받는 span) | 해당 없음 | makePane createElement |
+| 좌석 밖(사이드바 작업공간 이름 · 묶음 이름 · 파일 트리 · 상황판 · 설정·확인 창의 input/select/textarea 7개) | 예 | 좌석 밖 = 원래도 기억 안 함(rt.el 안이 아님) · 창은 조건 ⑶ | codex 3R 질문 1 확인 |
+
+### await 뒤 작업공간·좌석 재검사 — main.ts 전수 갱신(방법 = 최상위 함수마다 첫 await 뒤에 `arrangeWs(`·`.tree =`·`setFocus(`·`"send_input"`·`closePane(`·`injectRaw`·`makePane(`·`workspaces.splice/push`·`destroyPaneRuntime`·`dropSeatOfGoneWs`·`.socket` 를 ws/destWs/srcWs/rt/home 과 같은 줄에 쓰는 곳 기계 추출 · await 줄 277(주석 제외) · 그런 함수 15개 + 함수 밖 클로저 10줄 + makePane 안 클로저 2개 전부 눈으로)
+| 자리 | 캡처 → await → 쓰기 | 재검사 | 시험 |
+|---|---|---|---|
+| actionNew(7830) · actionSplit(7850) | ws/target → newSurface → arrangeWs·setFocus | 있음(r2) | race R4·R4b·R5 |
+| renderIdleWorkspace 「새 셸 열기」(5713) | ws → newSurface → ws.tree=·setFocus | 있음(r2) | race R6 |
+| injectPathsToPane → injectRawToPane(8344) | rt → list_dir·확인 창·list_surfaces → send_input | 있음(r2) | focus ⑪⑫ |
+| sendRaw(4453) | sid(키 순간) → 앞 전송 → send_input | 설계(#1 정의) | focus ⑬ |
+| actionClose(7880) | sid → 확인 창 → closePane | 있음(기존 seatVisible) | 948 D1 ⓑ |
+| **refreshPaneTitles 입양(3930)** | ws → makePane → arrangeWs(ws) | **있음(이번)** | race R7·R7b |
+| **transferCrossDept(5133·5242)** | srcWs·destWs → newSurface → destWs.tree=·closePane(원본) | **있음(이번)** | race R8 |
+| **awaitHandoffAck(5365)** | srcWs·destWs → 인수 확인 폴링 → closePane(원본) | **있음(이번)** | closecallbacks (codex 3R #3) |
+| **dropSeatOfGoneWs(7769)** | ws → closePane 거부 → arrangeWs(home) | **삭제 확정 뒤 판정(이번)** | race R9a~e |
+| **start() 복원 입양(12085) · 빈 자리 좌석(12114) · 첫 좌석(12132)** | ws/current() → makePane·newSurface → arrangeWs·.tree= | **있음(이번)** | race R10·R10b(첫 좌석 = 같은 도우미 · 별도 장면 없음) |
+| buildTab 삭제 · confirmDeleteGroup · purgeDept(10101) | 지우는 그 작업공간 → 닫기·종료 → splice | 거래 자신 · `indexOf(ws) < 0` 재검사 있음 | 기존(I2·F3) |
+| addDeptWorkspace(7443) | 자리 탭 → allocate → ws.socket= | 있음(기존 `indexOf(ws) < 0`) · 대기 탭의 삭제는 확인 직후 await 없이 끝나 「진행 중」 창 0 | 기존 |
+| addWorkspace(7415) · openNewlyRegisteredDepts(4069) | 새 ws 를 await **뒤에** 만듦 | 무해 | — |
+| actionEqualize(5951) | ws → list_surfaces → arrangeWs(ws)·render | 무해 — 새 좌석 없음 · 지워진 ws 에 배치만 | — |
+| restartNode(9499) · ▶부서장 단추(12439) · 팔레트·설치 창 클로저(12252~13034) | 역할·소켓 → invoke | 무해 — 좌석·트리를 안 만든다(알림·목록·기계 명령) | — |
+| makePane 안 클로저(제목 확정 rename · × 닫기) | sid/socket → invoke → refresh·render | 무해 — 그 좌석 자신 · 트리 미변경 | — |
+| **남김 PLAUSIBLE ①** renderIdleWorkspace 「지금 켜기」(5700) · start() 부서 재기동(11933) | ws → launch_dept_daemon → ws.socket= | 없음 · 좌석 고아는 아님(뒤 newSurface 는 R6 도우미가 거둠 · 기동은 다음 줄들이 재검사) · **켜진 부서 데몬이 탭 없이 남을 수 있음**(데몬 생명주기 · Rust launch 쪽) | 재현 안 함(공통 규칙: CONFIRMED 만 고침) |
+| **남김 PLAUSIBLE ②** 사이드바 묶음(그룹) 이름 편집(6767~) | — | renderWsTabs 재렌더 거부가 `.ws-name` 만 봐서 10초 갱신이 묶음 이름 편집을 끊을 수 있음(글자 유실 · 터미널로 새지는 않음 = 이번 고침 뒤 기억 대상이 xterm 뿐) · 좌석 밖 · 이번 차이 밖 | 재현 안 함 |
+
+### 검증(실측)
+- bun test 3529 중 통과 3441 · 건너뜀 88 · 실패 0(머리 bf8aba33) · tsc 0 · 번들 OK
+- 붉음 → 초록: focus_gate ⑭ 붉음 3(aa110891 번들) · race_gate R7~R9d 붉음 15(aa110891 번들) · R9e 붉음 2(aa110891) · R10·R10b 붉음 2(384fb51f 번들) → 모두 초록
+- 화면 게이트(최종 머리): bf8aba33 · 04:03~04:19 · race 95/0 · focus 57/0 · seatrows 75/0 · pillar 77/0 · seatgroup 8/0 · rolereuse 11/0 · stty 7/0(cysd·cys debug 빌드 포함 · 끝나고 격리 데몬 0) · 전부 RESULT PASS
+- Rust 무변경(aa110891..머리 diff = ui 7파일 · main.ts +135/−16)
+- 뮤턴트(원본 무접촉 · 스크래치 사본 src + node_modules 연결 · 번들 GATE_DIST · 화면은 해당 항목만 잘라 실행): 14개 — 죽음 13 · 살아남음 1(동치)
+  M1 되돌림 기억을 좌석 안 아무 요소로(옛 rt.el.contains) = 죽음(kbrestore ①) · M2 조건 ⑷ 빼고 held 로 되돌림 = 죽음(kbrestore ②) ·
+  M3 제목 편집 중 render 미룸 제거 = 죽음(⑭ 2 · 단위 2) · M4 확정 처리기의 flushHeldRender 호출 제거 = 화면 ⑭ 는 살아남고 단위 배선 핀으로 죽음
+  (관측: 이 장면에선 확정 뒤 #root 다시 그리기 0회인데 새 좌석 60 이 0.15초 안에 보인다 — render 아닌 다른 DOM 경로 · 원인 미규명 · 「미룬 render 가 반드시 한 번 돈다」 는 단위 시험만 고정) ·
+  M5 입양 재검사 제거 = 죽음(R7·R7b 3) · M6 입양 런타임 파기 제거 = 죽음(R7b) · M7 전출 newSurface 뒤 재검사 제거 = 죽음(R8 4) ·
+  M8 awaitHandoffAck 원본 닫기 직전 재검사 제거 = 죽음(closecallbacks) · M9 삭제 확정 기다림 제거 = 죽음(R9e 2) · M10 데몬 종료 갈래 제거 = 죽음(R9c) ·
+  M11 다시 닫기 제거 = 죽음(R9a 2) · M12 「보존된 그 작업공간 우선」 제거 = 살아남음 — 동치(확정 뒤엔 그 작업공간이 「삭제 중」 이 아니어서 아래 같은 데몬 찾기가 그것을 고른다 · 차이 = 같은 데몬 작업공간 2개+ 일 때 어느 쪽인가뿐) ·
+  M13 기동 복원 입양 재검사 제거 = 죽음(R10) · M14 기동 빈 자리 좌석 재검사 제거 = 죽음(R10b)
+
+### 알려진 동작(릴리스 노트 초안 · 2R #1 잔여 · 코드 변경 없음)
+- 좌석이 보일 때 친 글자와 Enter 는, 바로 탭을 바꿔 그 좌석이 숨더라도 그 좌석에 끝까지 전달돼요. 그래서 질문을 치고 Enter 를 누른 직후 탭을 바꾸면, 에이전트는 화면에 안 보이는 채로 그 질문을 실행할 수 있어요.
+- 숨은 좌석에 **새로** 들어가는 글자는 없어요. 실행 결과는 그 탭으로 돌아오면 그대로 볼 수 있어요.
+
+### codex/ChatGPT 닫힘 확인(범위 aa110891..머리 · ui·문서만) 꼭 물을 것 3줄
+1. render 미룸(좌석 제목 편집 중)이 다른 사람 손 동작(탭 클릭·⌘키·좌석 닫힘 이벤트)과 겹칠 때 화면이 옛 상태로 남거나 미룬 render 가 사라지는 길이 있는가(편집이 blur 없이 끝나는 경우 포함).
+2. dropSeatOfGoneWs 의 「삭제 확정 뒤 판정」 · 새 작업공간 열기 끝 갈래가 사용자가 방금 지운 작업공간을 사실상 되살리는 것으로 읽히는가 — 더 나은 끝 처분이 있는가.
+3. start() 기동 복원 3곳·전출 2곳 재검사 뒤에도 await 뒤 지워진 작업공간에 좌석을 붙이는 자리가 main.ts 에 남았는가(위 전수 표의 「무해」·PLAUSIBLE 판정이 틀린 곳).
+
+### 다음 첫 행동
+- master 스냅샷 재검증 → ChatGPT 닫힘 확인 1R(위 3줄).
+
 ## 원작자 병합 때 볼 것
 - 새 의존 1 = unicode-normalization =0.1.26(D7 · master#cb40d4a3 · Cargo.lock 변화 = 그 크레이트 1 항목 · 그 의존 tinyvec 은 이미 있음 · 저장소에 cargo deny·라이선스 검사 장치 없음 확인 · 라이선스 (MIT OR Apache-2.0) AND Unicode-3.0).
 - cysd surface.list 행에 size{rows,cols} 추가(순수 additive · D5).

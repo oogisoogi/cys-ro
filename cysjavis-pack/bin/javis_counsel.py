@@ -18,7 +18,7 @@
                  · ★1.1.10 help: 아고라를 띄우기 전에 가입 없는 기기(participant.json 없음)는 설치 도움 서버
                  `POST /api/report` 로 하루 신호 1통 + 일일 1통(기기 id = 갱신기 install_id · 없으면 안 보냄 · 끔이면 안 보냄)
                  — 「cysr는 문제를 빨리 찾아 고치기 위해 하루 한 번 기기 상태(판 번호·운영체제·좌석 수와 종류·부서 수·
-                 켜 둔 시간)와 오류 기록(횟수·종류·생긴 시각·점검 결과와 항목 이름)을 개발팀에 보냅니다. 기기를 구분하는
+                 cysr를 켜 둔 시간)와 오류 기록(횟수·종류·생긴 시각·점검 결과와 항목 이름)을 개발팀에 보냅니다. 기기를 구분하는
                  무작위 번호가 함께 갑니다(사람 이름·파일·대화 내용은 보내지 않습니다). 끄려면 ‘상담소 끄기’를 누르세요.」
 
   ★1.1.10 앱 단추(TICKET=cysr-1110-counsel-off) — 앱(상단바 「상담소」 창 · 첫 안내 창)만 부르는 동사 셋:
@@ -1069,7 +1069,7 @@ HELP_BASE_DEFAULT = "https://jarvis-install.godmeyou.kr"
 UPDATE_STATE_ENV = "CYS_UPDATE_STATE_DIR"   # 갱신기 상태 폴더 덮어쓰기(src/update/buildinfo.rs 와 같은 이름 · 시험 격리용)
 INSTALL_ID_RE = re.compile(r"^[0-9a-f]{32}\Z", re.ASCII)   # buildinfo.rs ensure_install_id 꼴(소문자 16진 32자) = 서버 §12-2 가 받는 꼴만
 HELP_ERROR_RE = re.compile(r"^[a-z_]{1,40}\Z", re.ASCII)     # 서버 오류 이름(`daily_cap` 등) — 로그에 옮길 때 이 꼴만
-HELP_NOTICE = ("cysr는 문제를 빨리 찾아 고치기 위해 하루 한 번 기기 상태(판 번호·운영체제·좌석 수와 종류·부서 수·켜 둔 시간)와 "
+HELP_NOTICE = ("cysr는 문제를 빨리 찾아 고치기 위해 하루 한 번 기기 상태(판 번호·운영체제·좌석 수와 종류·부서 수·cysr를 켜 둔 시간)와 "
                "오류 기록(횟수·종류·생긴 시각·점검 결과와 항목 이름)을 개발팀에 보냅니다. "
                "기기를 구분하는 무작위 번호가 함께 갑니다(사람 이름·파일·대화 내용은 보내지 않습니다). "
                "끄려면 ‘상담소 끄기’를 누르세요.")
@@ -1105,8 +1105,8 @@ HELP_SENT_FIELDS = {
     "payload.doctor.fail_ids[]": "점검 결과와 항목 이름",
     "payload.depts.active": "부서 수",
     "payload.depts.tombstones": "부서 수",            # 닫은 부서 수
-    "payload.uptime.last_boot": "켜 둔 시간",         # cysr 데몬이 켜진 시각
-    "payload.uptime.uptime_s": "켜 둔 시간",
+    "payload.uptime.last_boot": "cysr를 켜 둔 시간",         # cysr 데몬이 켜진 시각
+    "payload.uptime.uptime_s": "cysr를 켜 둔 시간",
     "payload.errors.tick_errors": "횟수",
     "payload.errors.hook_rc_nonzero": "횟수",
     "payload.errors.signatures[]": "종류",

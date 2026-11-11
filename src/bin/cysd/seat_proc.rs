@@ -498,7 +498,18 @@ mod seatkeep_mac {
     /// 조종자 잠금 = 데몬 시작 잠금(`socket_path.with_extension("lock")` · main 이 쥐고 `pid 출생시각` 을 적는다).
     /// 시험 빌드: 시험 데몬은 시작 잠금을 잡지 않는다 → 이 프로세스가 그 경로를 잡아 데몬이 끝날 때까지 쥔다(같은 형식으로 적음).
     fn controller_lock(daemon: &crate::state::Daemon) -> Result<PathBuf, String> {
+        #[cfg(not(test))]
         let lock = daemon.socket_path.with_extension("lock");
+        // 시험 빌드: 시험 데몬 폴더는 일부러 쓰기를 막는 시험이 있다 — 시험용 잠금은 짧은 시험 폴더에 데몬마다 하나(같은 형식).
+        #[cfg(test)]
+        let lock = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            daemon.socket_path.hash(&mut h);
+            let d = seatkeep_base(daemon).join("locks");
+            let _ = std::fs::create_dir_all(&d);
+            d.join(format!("{:x}.lock", h.finish()))
+        };
         #[cfg(test)]
         {
             use std::collections::HashMap;

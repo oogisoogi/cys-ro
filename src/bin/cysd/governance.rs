@@ -22067,7 +22067,8 @@ mod tests {
         kill_pid(job as u32);
         wait_foreground(&s, false, "작업 종료 뒤 전경이 셸(뿌리 그룹)로 복귀");
         let fd = s.pty_master_fd.swap(-1, AtomicOrdering::Relaxed);
-        assert!(fd >= 0, "전제: 좌석의 master fd 가 캐시돼 있다");
+        // ★T3: seatkeep 경유(노브 켬)면 캐시 칸 = FG_VIA_LINK(−2 · 연결로 물음) — −1 을 넣으면 두 구현 모두 「모름」이다.
+        assert!(fd >= 0 || fd == crate::seat_proc::FG_VIA_LINK, "전제: 좌석의 전경 질의 칸이 캐시돼 있다");
         assert_eq!(s.foreground_pgid_now(), None, "전제: fd 불능 = 전경을 모른다");
         r1f_in_tick_after_exit(&daemon);
         assert_eq!(recount_triplet(&s), (0, 0, 0), "전경을 모르면 건너뛴다");

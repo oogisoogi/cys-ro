@@ -806,17 +806,6 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// ★agy 좌석 문 판정만(아무것도 실행하지 않는다) — 팩 훅(guard)·팩 스크립트가 Rust 판정기를 그대로 쓰는 입구.
-    /// 문 닫힘 + agy 실행이면 76 + 사유(stderr) · 그 밖 0. `--cmd '<셸 문>'` 또는 `-- <argv…>`.
-    #[command(name = "agy-door-check", hide = true)]
-    AgyDoorCheck {
-        #[arg(long)]
-        cmd: Option<String>,
-        #[arg(long)]
-        agent: Option<String>,
-        #[arg(last = true)]
-        argv: Vec<String>,
-    },
     /// 어댑터 CLI 설치 감지 — agents.json 의 각 어댑터가 **지금 기동 가능한가**(바이너리 실재+실행권).
     /// 부트·python(detect_reviewer)·GUI 가 공유하는 단일 오라클(CS-1③). 데몬 무의존.
     #[command(name = "agent-detect")]
@@ -3493,6 +3482,51 @@ fn pack_keyring() -> Result<cys::packsig::Keyring, String> {
     cys::packsig::embedded_keyring()
 }
 
+fn run_agy_door_check(a: &[String]) -> i32 {
+    let (mut cmd, mut agent, mut argv) = (None::<String>, None::<String>, Vec::<String>::new());
+    let mut i = 0;
+    while i < a.len() {
+        match a[i].as_str() {
+            "--" => {
+                argv = a[i + 1..].to_vec();
+                break;
+            }
+            "--cmd" => {
+                cmd = a.get(i + 1).cloned();
+                i += 2;
+            }
+            "--agent" => {
+                agent = a.get(i + 1).cloned();
+                i += 2;
+            }
+            x if x.starts_with("--cmd=") => {
+                cmd = Some(x["--cmd=".len()..].to_string());
+                i += 1;
+            }
+            x if x.starts_with("--agent=") => {
+                agent = Some(x["--agent=".len()..].to_string());
+                i += 1;
+            }
+            other => {
+                eprintln!("agy-door-check: unknown argument {other:?}");
+                return 2;
+            }
+        }
+    }
+    let m = if argv.is_empty() {
+        cys::agy_door::launch_refusal(agent.as_deref().unwrap_or(""), cmd.as_deref())
+    } else {
+        cys::agy_door::launch_refusal_argv(&argv)
+    };
+    match m {
+        Some(m) => {
+            eprintln!("{m}");
+            cys::agy_door::EXIT_AGY_POLICY_REFUSED
+        }
+        None => 0,
+    }
+}
+
 fn main() {
     // ★SEAL-1 층3: 스레드 생성 전 프로세스 env 봉인 — 이 CLI 가 띄우는 **모든** 자손
     // (`cys run -- <임의명령>`·`launch-agent` 로 뜨는 pane·팩 python 헬퍼)이 상속으로 덮인다.
@@ -3538,6 +3572,16 @@ fn main() {
             if let Some(rc) = cys::update::cli::dispatch(&args, &hooks) {
                 std::process::exit(rc);
             }
+        }
+    }
+    // ★agy 좌석 문 판정만(숨은 동사 `agy-door-check` · 아무것도 실행하지 않음) — 팩 훅(guard)·팩 스크립트가 Rust 판정기를 그대로
+    //   쓰는 입구. clap 앞에서 떼어 낸다: 최상위 `Command` 변형을 하나 더하면 시험 스레드(2MB)에서 clap 파싱이 스택을 넘는다
+    //   (실측 aid_s5_reap_due 시험 · 변형을 빼면 통과 — 위·아래 갱신 동사·rotate 와 같은 이유).
+    //   형식: `cys agy-door-check --cmd '<셸 문>' [--agent <키>]` 또는 `cys agy-door-check -- <argv…>` · 닫힘+agy = 76(사유 stderr) · 그 밖 0.
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if args.get(1).map(String::as_str) == Some("agy-door-check") {
+            std::process::exit(run_agy_door_check(&args[2..]));
         }
     }
     // ★1.1.8 U2(§3-3 · §3-10): `rotate --stop-only` · `rotate --txn <txn:epoch>` 는 clap 앞에서 떼어 낸다(최상위 `Command` 인자 추가 =
@@ -7238,20 +7282,6 @@ fn run(command: Command) -> i32 {
         }
         Command::Boot { cwd, json } => return run_boot(cwd, json),
         Command::AgentDetect { json } => return run_agent_detect(json),
-        Command::AgyDoorCheck { cmd, agent, argv } => {
-            let m = if argv.is_empty() {
-                cys::agy_door::launch_refusal(agent.as_deref().unwrap_or(""), cmd.as_deref())
-            } else {
-                cys::agy_door::launch_refusal_argv(&argv)
-            };
-            return match m {
-                Some(m) => {
-                    eprintln!("{m}");
-                    cys::agy_door::EXIT_AGY_POLICY_REFUSED
-                }
-                None => 0,
-            };
-        }
         Command::GateCorpus { json, agent, detected_version } => {
             return run_gate_corpus(&agent, json, detected_version.as_deref())
         }

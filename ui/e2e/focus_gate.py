@@ -23,7 +23,7 @@
      ⓒ 숨은 뒤 새로 누른 「xy」 = 4 로 0(보이는 lms 좌석으로)
   ⑭ (codex 3R blocking 1) 좌석 4 머리 우클릭 「이름 변경」 → 「ab」 입력 중 3초 입양 틱이 새 역할 좌석 60 을 데려온다(attach_surface(60) 로 장면 성립 단언) →
      이어 친 「cd」 + Enter = 터미널 send_input 0(어느 좌석으로도) · 키보드는 편집 칸에 그대로 · 이름 = 「abcd」 로 확정(rename_surface(4)) ·
-     확정 뒤 밀린 그리기 1회로 새 좌석 60 이 화면에 보인다
+     확정 즉시(0.15초 · 주기 그리기를 기다리지 않음) 밀린 그리기 1회로 새 좌석 60 이 화면에 보인다
 실행: CHROME_PATH=<chrome-headless-shell> [GATE_DIST=<다른 번들 폴더>] cys run -- <playwright python3> ui/e2e/focus_gate.py
   (GATE_DIST = 고치기 전 번들로 돌려 붉음을 재는 대조용)
 """
@@ -362,13 +362,14 @@ def main() -> int:
                 sbg.check(ed["editing"] and ed["sid"] == 4, f"입양 틱 뒤에도 키보드 = 좌석 4 이름 편집 칸 {ed}")
                 pg.keyboard.type("cd")
                 pg.keyboard.press("Enter")
-                pg.wait_for_timeout(800)
+                pg.wait_for_timeout(150)
+                s14 = pg.evaluate(STATE)  # 확정(blur) 처리기가 그 자리에서 밀린 그리기 1회 — 다른 주기 그리기를 기다리지 않는다
+                pg.wait_for_timeout(650)
                 sent = calls(pg, "send_input")
                 ren = calls(pg, "rename_surface")
                 sbg.check(not sent, f"이어 친 「cd」·Enter = 터미널 send_input 0 {sent}")
                 sbg.check([c[1:3] for c in ren] == [[4, "abcd"]], f"이름 = 「abcd」 로 한 번 확정 {ren}")
-                s14 = pg.evaluate(STATE)
-                sbg.check(60 in s14["panes"], f"확정 뒤 밀린 그리기 1회 = 새 좌석 60 보임 {s14['panes']}")
+                sbg.check(60 in s14["panes"], f"확정 즉시(0.15초) 밀린 그리기 1회 = 새 좌석 60 보임 {s14['panes']}")
             sbg.check(not errs, f"오류 0 {errs[:2]}")
             ctx.close()
             # ⑧ 한글 조합 중 탭 전환

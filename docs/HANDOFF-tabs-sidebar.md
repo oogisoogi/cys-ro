@@ -47,6 +47,7 @@
 - cargo 는 PATH 에 없다 → `export PATH=$HOME/.cargo/bin:$PATH` · `cargo test --test hidden_seat_screen`(≈15초 · 끝나고 `pgrep -fl cys-hss` = 0).
 - 상황판 수를 읽는 e2e 는 `.ws-board-num` 만 읽는다(버튼엔 글자 라벨도 있다 · 476e73e3 에서 한 번 NaN).
 - ★clap: `Command` 열거에 변형을 하나라도 더하면(별도 평탄화 열거로도) debug 시험 스레드(2 MiB) 스택이 넘친다 — 새 최상위 동사는 기존 `VendorAuxCommand` 안에 + 인자는 따로 둔 Args 구조체(cfbe352d 실측).
+- ★clap 스택 여유 실측(12:1x · 시험 바이너리 RUST_MIN_STACK 이분): `tests::a3_strip_hook_digits_only_for_the_seven_target_verbs_when_the_rest_is_leftover_args` 통과 문턱 = 2d 전(a54b3b76) 2032~2040KiB · 지금 2040~2044KiB(2d 가 ≤8KiB 더함) · 시험 스레드 한도 2048KiB → 전체 실행 때 간헐 넘침(1회 재현 · 단독은 통과). 처리 = master 판단 대기(【확인요청】 에 올림).
 - `cargo test` 여러 대상을 한 번에 돌리면 첫 실패에서 멈춘다 → `--no-fail-fast`. `cargo test --bin cys` ≈ 13분(부하 시).
 - 흔들린 시험(이 티켓에서 고치지 않음 · master#608306ca): cysd `native_publication::…np_windows_real_candidate_change_restarts_sample_confirmation` · `…np_native_same_pid_exec_is_changed_not_agent_death` · `send_settle_tests::settle_hold_denies_text_while_submit_cr_inflight_then_admits` — 전체 실행 중 load 7~9 에서 실패 · 단독 각 3/3 통과.
 - 부하(load 5~7) 중엔 격리 데몬 시험이 20초 기동 대기를 넘길 수 있다(hidden_seat_screen 1회 · 단독 PASS) · cysd `np_windows_real_candidate_change_restarts_sample_confirmation` 도 부하 중 1회 실패 · 단독 3/3 PASS(이 티켓 무관 구역).

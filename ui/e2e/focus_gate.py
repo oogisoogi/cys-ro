@@ -24,6 +24,8 @@
   ⑭ (codex 3R blocking 1) 좌석 4 머리 우클릭 「이름 변경」 → 「ab」 입력 중 3초 입양 틱이 새 역할 좌석 60 을 데려온다(attach_surface(60) 로 장면 성립 단언) →
      이어 친 「cd」 + Enter = 터미널 send_input 0(어느 좌석으로도) · 키보드는 편집 칸에 그대로 · 이름 = 「abcd」 로 확정(rename_surface(4)) ·
      확정 즉시(0.15초 · 주기 그리기를 기다리지 않음) 밀린 그리기 1회로 새 좌석 60 이 화면에 보인다
+  ⑮ (ChatGPT F4) 좌석 이름 편집 중 사람 손 동작 — 탭 클릭 · ⌘T · ⌘W 마다: 화면이 그 동작대로 바뀌고(옛 화면으로 남지 않음) 편집은 「ab」 로 확정되어 끝나며
+     터미널 send_input 0
 실행: CHROME_PATH=<chrome-headless-shell> [GATE_DIST=<다른 번들 폴더>] cys run -- <playwright python3> ui/e2e/focus_gate.py
   (GATE_DIST = 고치기 전 번들로 돌려 붉음을 재는 대조용)
 """
@@ -372,6 +374,54 @@ def main() -> int:
                 sbg.check(60 in s14["panes"], f"확정 즉시(0.15초) 밀린 그리기 1회 = 새 좌석 60 보임 {s14['panes']}")
             sbg.check(not errs, f"오류 0 {errs[:2]}")
             ctx.close()
+            # ⑮ 좌석 이름 편집 중 사람 손 동작
+            print("== ⑮(ChatGPT F4) 좌석 이름 편집 중 사람 손 동작 — 화면이 옛 상태로 남지 않는다")
+
+            def start_rename4(pg):
+                pg.click('#root .pane[data-sid="4"] .xterm-screen')
+                pg.wait_for_timeout(300)
+                pg.click('#root .pane[data-sid="4"] .pane-title-text', button="right")
+                pg.wait_for_timeout(300)
+                it = next((i for i in pg.query_selector_all("#ctx-menu .ctx-item") if (i.text_content() or "").strip() == "이름 변경"), None)
+                if it:
+                    it.click()
+                    pg.wait_for_timeout(200)
+                    pg.evaluate("() => { window.__calls = []; }")
+                    pg.keyboard.type("ab")
+                return it is not None
+
+            def editing(pg):
+                return pg.evaluate("() => !!document.querySelector('.pane-title-text[contenteditable=\"true\"]')")
+
+            for case in ("tab-click", "cmd-t", "cmd-w"):
+                ctx, pg, errs = page()
+                sbg.check(start_rename4(pg), f"[{case}] 이름 변경 시작")
+                if case == "tab-click":
+                    pg.click('#root .group-tab:has-text("lms")')
+                    pg.wait_for_timeout(600)
+                    st = pg.evaluate(STATE)
+                    if st["tab"] != "lms":  # (실측 · 이 티켓 전 aa110891 번들도 같음) 편집을 끝내는 첫 클릭은 탭을 못 바꾼다 — 화면·상태는 같이 site(어긋남 없음) · 다시 누르면 바뀐다
+                        print(f"  (실측) 편집 중 첫 탭 클릭 = 편집 확정만 · 탭 그대로 {st['tab']}")
+                        pg.click('#root .group-tab:has-text("lms")')
+                        pg.wait_for_timeout(600)
+                        st = pg.evaluate(STATE)
+                    sbg.check(st["tab"] == "lms" and 4 not in st["panes"], f"[{case}] 화면 = 누른 탭(lms) · 좌석 4 숨음 {st['panes']} · 탭 {st['tab']}")
+                elif case == "cmd-t":
+                    pg.keyboard.press("Meta+t")
+                    pg.wait_for_timeout(800)
+                    st = pg.evaluate(STATE)
+                    sbg.check(50 in st["panes"], f"[{case}] ⌘T 로 만든 새 좌석 50 이 바로 보인다(이름 편집에 묶여 옛 화면으로 남지 않음) {st['panes']}")
+                else:
+                    pg.keyboard.press("Meta+w")
+                    pg.wait_for_timeout(600)
+                    st = pg.evaluate(STATE)
+                    sbg.check(st["modal"] is not None, f"[{case}] ⌘W = 닫기 확인 창이 뜬다 {st['modal']!r}")
+                    cancel_modal(pg)
+                ren = calls(pg, "rename_surface")
+                sbg.check(not editing(pg) and [c[1:3] for c in ren] == [[4, "ab"]], f"[{case}] 편집은 확정(「ab」)되고 끝났다 · 편집 중 {editing(pg)} · {ren}")
+                sbg.check(not calls(pg, "send_input"), f"[{case}] 터미널 send_input 0 {calls(pg, 'send_input')}")
+                sbg.check(not errs, f"[{case}] 오류 0 {errs[:2]}")
+                ctx.close()
             # ⑧ 한글 조합 중 탭 전환
             print("== ⑧ 한글 조합 중 탭 전환")
             ctx, pg, errs = page()

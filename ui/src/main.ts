@@ -5523,6 +5523,14 @@ function paneTitleEditing(): boolean {
   for (const rt of panes.values()) if (rt.titleEl.isContentEditable && rt.el.isConnected) return true;
   return false;
 }
+// (ChatGPT F4) 사람 손 단축키 앞에서 좌석 이름 편집을 확정으로 끝낸다 — 확정 처리기는 blur 에 걸려 있다(포커스가 이미 다른 데 있으면 blur 를 직접 보낸다).
+function endPaneTitleEdit(): void {
+  for (const rt of panes.values()) {
+    if (!rt.titleEl.isContentEditable) continue;
+    if (document.activeElement === rt.titleEl) rt.titleEl.blur();
+    else rt.titleEl.dispatchEvent(new FocusEvent("blur"));
+  }
+}
 function flushHeldRender(): void {
   const held = renderHeld;
   renderHeld = "no";
@@ -13111,6 +13119,9 @@ window.addEventListener("keydown", (e) => {
   if (document.querySelector(".modal-overlay")) return;
   const mod = e.metaKey || e.ctrlKey;
   if (!mod) return;
+  // (ChatGPT F4) 좌석 이름 편집 중 — 아래가 처리하는 단축키면 편집을 먼저 확정한다(blur → 확정 처리기 → 밀린 render 1회) · 그래야 단축키가 바꾼 화면이
+  //   이름 편집에 묶여 옛 화면으로 남지 않는다(focus_gate ⑮ ⌘T). 편집 칸의 글자 단축키(⌘A·⌘C·⌘V·⌘Z 등)는 건드리지 않는다.
+  if (/^[ktdDw=+0-]$/.test(e.key) || (e.key === "g" && ccOpen)) endPaneTitleEdit();
   if (e.key === "k") {
     // 07: ⌘K — Command Palette 기동(미사용 키, 충돌 없음)
     e.preventDefault();

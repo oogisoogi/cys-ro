@@ -2455,8 +2455,8 @@ class CsoDirectiveRevision(unittest.TestCase):
         #     (+395 B 씩 = 「★ 컴퓨터 통제 — 선례로 먼저 정하고 보고」 절 1개 · 박사님 10-26 「매번 묻지 않게」 · 조건 ≤ 400 B · 근거 상세는 SKILL/DESIGN).
         size = lambda name: os.path.getsize(os.path.join(REAL_DIRECTIVES_DIR, name))   # 실제 파일(전체 검체 재실행이 DIRECTIVES_DIR 을 임시 사본으로 바꿔도 영향 없다)
         self.assertLessEqual(size("CSO_DIRECTIVE.md"), 57687, "CSO_DIRECTIVE.md 바이트 예산(57,687) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다)")
-        self.assertLessEqual(size("MASTER_DIRECTIVE.md"), 85382, "MASTER_DIRECTIVE.md 바이트 예산(85,382) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다)")
-        self.assertLessEqual(size("CEO_TEMPLATE.md"), 100868, "CEO_TEMPLATE.md 바이트 예산(100,868) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다 · 생성물이라 MASTER 와 머리글 바이트가 함께 든다)")
+        self.assertLessEqual(size("MASTER_DIRECTIVE.md"), 85365, "MASTER_DIRECTIVE.md 바이트 예산(85,365) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다)")
+        self.assertLessEqual(size("CEO_TEMPLATE.md"), 100851, "CEO_TEMPLATE.md 바이트 예산(100,851) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다 · 생성물이라 MASTER 와 머리글 바이트가 함께 든다)")
 
     def test_utf8_and_lf(self):
         """세 지시문 모두 엄격 UTF-8 로 읽히고 CRLF 가 없어야 한다(Windows 체크아웃 회귀)."""

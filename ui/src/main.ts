@@ -341,7 +341,7 @@ import { activityExpiryMs, applyDotPaint, HIDDEN_DOT, projectActivity, RoleActiv
 import { SurfaceListTransport, type ListArrival } from "./surfacelist"; // ★F-01 끝점별 소유 원 호출 · 응답별 독립 투영
 import { approvalSeatKeys, buildSeatRows, namedSeatInputs, seatApprovalItems, seatDot, seatInputOf, type SeatInput } from "./seatrows"; // (tabs-sidebar 조각1) 좌석 줄 판정·묶음
 import { paintSeatRows, pruneSeatHosts, seatHost } from "./seatrowsdom"; // (tabs-sidebar 조각1) 좌석 줄 그리기
-import { fixedColumnSplit, GRID_MIN_COLS, GRID_MIN_ROWS, gridColumns, gridView, GROUP_TABS_KEY, groupTabsOn, normalizeTabState, reconcileTabs, viewTree, zoomKeyOf, type TabState, type TabView } from "./grouptabs";
+import { fixedColumnSplit, GRID_MIN_COLS, GRID_MIN_ROWS, gridColumns, gridView, GROUP_TABS_KEY, groupTabsOn, normalizeTabState, reconcileTabs, tabPillarShare, viewTree, zoomKeyOf, type TabState, type TabView } from "./grouptabs";
 import { buildTabBar } from "./tabbar";
 import { effectiveGroup, parseSeatGroups, SEAT_GROUP_KEY, syncSeatGroupsFromList, uniqueKeys, type SeatGroups } from "./seatgroup"; // (tabs-sidebar 2d) 옮긴 묶음 기록 // (tabs-sidebar 2b) 탭 머리 줄 // (tabs-sidebar 조각2) 묶음 탭 판정
 import type { SeatRowsModel } from "./seatrows";
@@ -3059,6 +3059,7 @@ function applyZoom(delta: number | null) {
     rt.term.options.fontSize = fontSize;
     fitPane(rt);
   }
+  recomputeTabPillar(); // (2b-3) 탭 화면 기둥 열 수는 글자 크기를 따라간다
 }
 
 // 터미널 폰트 선택(cys-font-face · 오너 요청 2026-07-12) — 선택 폰트를 기본 스택 앞에 합성
@@ -3074,6 +3075,7 @@ function applyFontFace(face: string | null) {
     rt.term.options.fontFamily = termFontStack(fam, () => refreshGlyphWidths(rt.term)); // 한글 두 칸 맞춤(termrender.ts)
     fitPane(rt);
   }
+  recomputeTabPillar(); // (2b-3) 글꼴이 바뀌면 글자 칸 폭도 바뀐다
 }
 // 동봉 JetBrains Mono(termrender.ts) — 올라오기 전에 만든 창은 대체 글꼴로 칸·한글 배율을 쟀으므로 다시 잰다.
 loadBundledFont().then((ok) => {
@@ -3462,6 +3464,46 @@ function currentDefaultLeftShare(): number {
   }
   return defaultLeftShare(root.getBoundingClientRect().width, cell, LEFT_CHROME_FALLBACK_PX);
 }
+// (tabs-sidebar 2b-3) 탭 화면의 고정 기둥 기본 폭 = clamp(64, 배치 영역 열 수 × 36%, 96)열(grouptabs.tabPillarShare) — 글자 칸은 위와 같은 실측
+//   (붙은 칸 · render() 안에서는 창이 떼어져 있으니 fitPane 이 기억한 칸(gridCell) · 그것도 없으면 글꼴 폭). 못 재면 노브 끔과 같은 기본 폭.
+//   ★배치 영역 폭·글자 크기·글꼴이 같으면 한 번 잰 몫을 그대로 쓴다 — 매 그림마다 다시 재면 잰 칸(여백 = 칸 폭의 자투리 포함)이 탭마다 달라
+//   기둥이 75↔77열로 흔들리고 탭 왕복마다 고정·워커 좌석 크기를 다시 보냈다(2b-3 실측 · 1920 좌석 3 · 20회 왕복 28회). 글꼴 폭 추정으로 잰 값은
+//   실제 칸을 잴 수 있게 되면 한 번 바꾼다.
+let lastTabPillarShare: number | null = null;
+let tabPillarMemo: { key: string; share: number; measured: boolean } | null = null;
+function currentTabPillarShare(): number {
+  const div = (root.querySelector(".split.row > .divider") as HTMLElement | null)?.getBoundingClientRect().width ?? 1;
+  const w = root.getBoundingClientRect().width;
+  const key = `${Math.round(w)}|${fontSize}|${fontFace ?? ""}`;
+  const m = measuredPaneMetrics() ?? (gridCell ? { cell: gridCell.cw, chrome: gridCell.padW } : null);
+  if (tabPillarMemo && tabPillarMemo.key === key && (tabPillarMemo.measured || !m)) return tabPillarMemo.share;
+  let share = m ? tabPillarShare(w, m.cell, m.chrome + div) : null;
+  if (share !== null) {
+    tabPillarMemo = { key, share, measured: true };
+    return share;
+  }
+  if (share === null) {
+    try {
+      cellMeasureCtx ??= document.createElement("canvas").getContext("2d");
+      if (cellMeasureCtx) {
+        cellMeasureCtx.font = `${fontSize}px ${composeFontFamily(fontFace)}`;
+        share = tabPillarShare(w, cellMeasureCtx.measureText("W".repeat(20)).width / 20, LEFT_CHROME_FALLBACK_PX + div);
+      }
+    } catch {
+      share = null;
+    }
+  }
+  if (share === null) return currentDefaultLeftShare();
+  tabPillarMemo = { key, share, measured: false };
+  return share;
+}
+// 창 크기·글자 크기가 바뀌면 탭 화면이 떠 있는 동안만 다시 그린다(기둥 열 수·격자 칸 수를 다시 잼) — 탭 화면이 아니면 아무것도 안 한다(노브 끔 = 1.1.14 그대로).
+function recomputeTabPillar(): void {
+  if (dividerDragActive || lastTabPillarShare === null) return;
+  const ws = workspaces[activeWs];
+  if (!ws || !(lastTabView.get(ws.id)?.hidden.length)) return;
+  render();
+}
 // 창 크기가 바뀌면 기본 폭을 쓰는 탭(루트 leftAuto 표지)만 다시 잰다 — 사람이 끈 폭(표지 없음)은 그대로.
 let dividerDragActive = false;
 let leftDefaultResizeSkipped = false;
@@ -3489,6 +3531,7 @@ function recomputeDefaultLeft(): void {
       }
     }
     if (changed) render(); // 새 폭으로 DOM 재구성 + fitPane + saveLayout
+    else recomputeTabPillar(); // (2b-3) 탭 화면 기둥·격자는 ws.tree 가 안 바뀌어도 창 폭을 따라간다
   }
 }
 
@@ -5411,6 +5454,9 @@ function render() {
       const rt = panes.get(paneKey(sid, current()?.socket));
       if (rt) fitPane(rt);
     }
+    // (2b-3) 탭 화면 기둥 몫을 글꼴 폭 추정으로 정했으면 방금 맞춘 실제 칸(gridCell)으로 한 번만 다시 그린다 — 첫 탭 클릭에 크기 재전송이 몰리지 않게.
+    //   gridCell 이 있을 때만(다음 계산이 실측이 되어 표지가 서므로 되풀이 없음).
+    if (tabPillarMemo && !tabPillarMemo.measured && gridCell) recomputeTabPillar();
   });
   saveLayout();
 }
@@ -6040,8 +6086,10 @@ function wsViewTree(ws: Workspace): Node | null {
   ws.tabs = r.state;
   lastTabView.set(ws.id, r.view);
   lastTabViewSig.set(ws.id, tabViewSig(r.view));
-  const vt = viewTree(ws.tree, arrangeRolesBySocket.get(ws.socket ?? ""), r.view.hidden, currentDefaultLeftShare()) as Node | null;
-  if (r.view.hidden.length === 0) return vt; // 탭 없음(묶음 1개 · 노브 끔) = 지금 화면 그대로(설계 §8)
+  if (r.view.hidden.length === 0) return ws.tree; // 탭 없음(묶음 1개 · 노브 끔) = 지금 화면 그대로(설계 §8)
+  // (2b-3) 탭 화면의 고정 기둥 = 64~96열 규칙(사람이 끈 폭이 있으면 그 폭 — autoArrange 가 leftAuto 표지 없는 몫을 지킨다).
+  lastTabPillarShare = currentTabPillarShare();
+  const vt = viewTree(ws.tree, arrangeRolesBySocket.get(ws.socket ?? ""), r.view.hidden, lastTabPillarShare) as Node | null;
   // (2b-2 · A안) 탭 화면에서 한 묶음 좌석이 많으면 오른쪽 영역을 고른 격자로(칸 최소 40열 · 3·4개 나란히 · 5개부터 두 줄).
   const fixed = model.fixed.filter((x) => !x.named).map((x) => x.sid);
   const g = gridArea(vt, fixed);
@@ -6054,6 +6102,9 @@ function noteGridCell(rt: PaneRuntime): void {
   const sr = (rt.termHost.querySelector(".xterm-screen") as HTMLElement | null)?.getBoundingClientRect();
   const pr = rt.el.getBoundingClientRect();
   if (!sr || !(sr.width > 0) || !(sr.height > 0) || !(rt.term.cols > 0) || !(rt.term.rows > 0) || pr.width < sr.width || pr.height < sr.height) return;
+  // (2b-3 실측) 처음 보이는 좌석은 맞춘 직후 글자 화면이 아직 옛 크기(120×35 = 960×595px)라 칸 4.4px · 여백 817px 같은 엉뚱한 값이 잡혀
+  //   다음 그림의 격자가 한 번 2열로 틀어졌다(2786 좌석 3) — 여백이 200px 이상이면 기억하지 않는다(measuredPaneMetrics 와 같은 가드).
+  if (pr.width - sr.width >= 200 || pr.height - sr.height >= 200) return;
   gridCell = { cw: sr.width / rt.term.cols, ch: sr.height / rt.term.rows, padW: pr.width - sr.width, padH: pr.height - sr.height };
 }
 function gridArea(vt: Node | null, fixed: number[]): { w: number; h: number; minW: number; minH: number } {

@@ -242,7 +242,7 @@ describe("(codex 1R) 다시 그리기 예약 가드", () => {
   });
 });
 
-describe("(2b-2 · A안) 격자 — 4개 이하 한 줄(시안 #C) · 5개부터 두 줄 이상 · 칸 최소 40열×12줄(못 지키면 가장 덜 모자란 고른 격자)", async () => {
+describe("(2b-2 · A안 → 2b-3 한 규칙) 격자 — 칸 최소 40열×12줄을 지키는 가장 적은 줄 · 줄마다 고르게(못 지키면 가장 덜 모자란 고른 격자)", async () => {
   const { gridColumns, gridView, GRID_MIN_COLS, GRID_MIN_ROWS } = await import("./grouptabs");
   const pane = (sid: number): LayoutNode => ({ type: "pane", sid });
   const row = (...xs: LayoutNode[]): LayoutNode => xs.slice(1).reduce((acc, x) => ({ type: "split", dir: "row", a: acc, b: x }) as LayoutNode, xs[0]);
@@ -253,10 +253,12 @@ describe("(2b-2 · A안) 격자 — 4개 이하 한 줄(시안 #C) · 5개부터
   };
   // 1920 실측(e2e grid_gate 탐침): 오른쪽 975px · 높이 1150px · 칸 최소 = 40열 334px · 12줄 230px
   const W = 975, H = 1150, MW = 334, MH = 230;
-  test("4개 이하 = 한 줄(폭과 무관 · 시안 #C) · 재료 모름 = ⌈n÷2⌉", () => {
+  test("(2b-3) 「4개 이하 한 줄」 예외 폐지 — 975px(40열 칸 2개 폭)에서 3·4개도 2열(4개 = 2×2) · 재료 모름 = 2b-2 그대로(4개 이하 한 줄 · ⌈n÷2⌉)", () => {
     expect([GRID_MIN_COLS, GRID_MIN_ROWS]).toEqual([40, 12]);
-    expect([1, 3, 4].map((n) => gridColumns(n, W, H, MW, MH))).toEqual([1, 3, 4]);
-    expect([5, 7, 12].map((n) => gridColumns(n, 0, 0, 0, 0))).toEqual([3, 4, 6]);
+    expect([1, 2, 3, 4].map((n) => gridColumns(n, W, H, MW, MH))).toEqual([1, 2, 2, 2]);
+    expect([3, 4].map((n) => gridColumns(n, 3 * MW, H, MW, MH))).toEqual([3, 2]); // 3칸 폭: 3개 = 한 줄 · 4개 = 2×2(3+1 이 아니라 고르게)
+    expect(gridColumns(5, 3 * MW, H, MW, MH)).toBe(3); // 3+2
+    expect([1, 3, 4, 5, 7, 12].map((n) => gridColumns(n, 0, 0, 0, 0))).toEqual([1, 3, 4, 3, 4, 6]);
   });
   test("5개부터 = 최소 칸을 지키는 가장 적은 줄 · 1920 실측 = 5→2열(3줄) · 7→2열(4줄) · 넓은 영역 = 7→4열(2줄)", () => {
     expect([5, 7].map((n) => gridColumns(n, W, H, MW, MH))).toEqual([2, 2]);
@@ -291,3 +293,50 @@ describe("(2b-2 · A안) 격자 — 4개 이하 한 줄(시안 #C) · 5개부터
     expect(rowsOf(gridView(row(pane(10), pane(11), pane(12)), [], () => 2)!)).toEqual([[10, 11], [12]]);
   });
 });
+
+describe("(2b-3 · 박사님 11-11 13:1x · 지시서 2026-11-11-cysr-pillar-width-rule) 탭 화면 고정 기둥 = clamp(64, 영역 열 × 36%, 96) · 한 줄 칸 수 = 40열 지키는 최대", async () => {
+  const { pillarCols, tabPillarShare, gridRowMax, GRID_MIN_COLS, PILLAR_MIN_COLS, PILLAR_MAX_COLS, PILLAR_PCT } = await import("./grouptabs");
+  // 지시서 표 모형: 배치 영역 = 창 폭 − 왼쪽 막대 219px(2b-2 실측 1920 → 1701px) · 글자 칸 = 726px ÷ 90열 · 워커 칸 테두리 = 2열.
+  //   기둥 열 수 = 기둥 px ÷ 글자 칸 · 오른쪽 = 영역 − 기둥 · 한 줄 칸 수 = ⌊오른쪽 ÷ (40+2)열⌋.
+  const SIDE = 219, CELL = 726 / 90;
+  const model = (rootPx: number, cell: number): [number, number] => {
+    const share = tabPillarShare(rootPx, cell, 0)!;
+    const pillarPx = share * rootPx;
+    return [Math.round(pillarPx / cell), gridRowMax(rootPx - pillarPx, (GRID_MIN_COLS + 2) * cell)];
+  };
+  const TABLE: [number, number, number][] = [
+    [1280, 64, 1], [1371, 64, 1], [1512, 64, 2], [1728, 67, 2], [1920, 75, 3], [2560, 96, 4], [2786, 96, 5], [3840, 96, 8],
+  ];
+  test("상수 = 64 · 96 · 36%", () => {
+    expect([PILLAR_MIN_COLS, PILLAR_MAX_COLS, PILLAR_PCT]).toEqual([64, 96, 36]);
+  });
+  test("지시서 표 8폭(노트북 1280 · 1371 · 맥북 14/16 · 싱글 1920/2560 · 4K 프로필 2786 · 4K 3840) = 기둥 열 수 · 한 줄 칸 수", () => {
+    for (const [w, pillar, per] of TABLE) expect([w, ...model(w - SIDE, CELL)]).toEqual([w, pillar, per]);
+  });
+  test("글자 크기를 바꿔도(작게·크게 2단계) 열 기준으로 같다 — 같은 영역 열 수면 같은 기둥 열 수 · 같은 한 줄 칸 수", () => {
+    for (const [w, pillar, per] of TABLE) {
+      const areaCols = Math.floor((w - SIDE) / CELL);
+      for (const cell of [6.6, 7.2, CELL, 9.0, 9.9]) expect([w, cell, ...model((areaCols + 0.3) * cell, cell)]).toEqual([w, cell, pillar, per]);
+    }
+  });
+  test("경계: ⌊영역×36%⌋ 63→64 · 64 · 65 · 95 · 96 · 97→96 (정수 백분율이라 소수 곱 어긋남 없음)", () => {
+    expect([175, 177, 178, 181, 264, 267, 270, 1000].map(pillarCols)).toEqual([64, 64, 64, 65, 95, 96, 96, 96]);
+    expect(pillarCols(0)).toBe(64);
+    // 비율이 소수 곱이면 ⌊200 × 0.36⌋ 같은 정수 경계가 흔들린다 — 25열 단위 정확값 25·50·…·250 전부 정수 결과
+    for (let a = 200; a <= 250; a += 25) expect(pillarCols(a)).toBe(Math.min(96, Math.max(64, (a * 36) / 100)));
+  });
+  test("경계: 칸 39열 ↔ 40열 — 3칸이 딱 40열이면 3 · 1px 모자라면 2 · 폭 0·최소폭 0 = 1", () => {
+    const minW = GRID_MIN_COLS * 8 + 16; // 글자 칸 8px · 칸 여백 16px
+    expect(gridRowMax(3 * minW, minW)).toBe(3);
+    expect(gridRowMax(3 * minW - 1, minW)).toBe(2);
+    expect(gridRowMax(3 * (39 * 8 + 16), minW)).toBe(2);
+    expect([gridRowMax(0, minW), gridRowMax(500, 0), gridRowMax(10, minW)]).toEqual([1, 1, 1]);
+  });
+  test("기둥 px = 열 × 글자 칸 + 칸 여백(경계 포함) · 못 재면 null · 몫 상한 = 기존 끌기 상한(0.85 · 새 최소 창 폭 동작 없음)", () => {
+    const share = tabPillarShare(1701, 8, 25)!;
+    expect(share * 1701).toBeCloseTo(76 * 8 + 25, 6); // ⌊1701÷8⌋=212 → ⌊212×36%⌋=76
+    expect([tabPillarShare(0, 8), tabPillarShare(1701, 0), tabPillarShare(NaN, 8)]).toEqual([null, null, null]);
+    expect(tabPillarShare(400, 8, 20)).toBe(0.85); // 64열 = 532px > 400px 의 85% — 기둥을 더 줄이지 않고 끌기 상한에서 멈춤
+  });
+});
+

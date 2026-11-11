@@ -6,7 +6,7 @@
 // ★묶음 1개 이하 · 노브 꺼짐 = 탭 없음 · 숨김 0 → 지금(1.1.14) 화면 그대로(왕초보 화면 불변 §8).
 // ★탭 열쇠 = 묶음 열쇠(폴더 이름 문자열)라 재부팅으로 좌석 번호가 새로 발급돼도 같은 배치가 돌아온다(wsreconcile.ts 머리 주석).
 // ★숨김 = DOM 에서 떼어 두기(다른 부서 좌석과 같은 길) — PTY 는 마지막 크기 그대로(main.ts fitPane 가드).
-import { arrangeWithoutRoles, autoArrange, type LayoutNode } from "./formation";
+import { arrangeWithoutRoles, autoArrange, DRAG_MAX, type LayoutNode } from "./formation";
 import type { SeatRow, SeatRowsModel } from "./seatrows";
 
 export const GROUP_TABS_KEY = "cys-group-tabs";
@@ -146,18 +146,42 @@ export function fixedColumnSplit(tree: LayoutNode | null, fixedSids: readonly nu
 /** (2b-2 · master#fcbc46fb 결정 ① A안) 격자 칸 최소 폭(글자 열) · 최소 높이(줄 · 설계 §4). */
 export const GRID_MIN_COLS = 40;
 export const GRID_MIN_ROWS = 12;
-/** 한 줄에 둘 좌석 수(순수). 좌석 4개 이하 = 한 줄(시안 #C · 지금 그대로) · 5개부터 = 두 줄 이상(열 ≤ ⌈n÷2⌉).
- *  5개부터는 칸 최소(폭 minW · 높이 minH px)를 지키는 열 수 중 가장 큰 것(= 줄이 가장 적은 것) · 지킬 수 없으면 「가장 덜 모자란」 열 수
- *  (칸 폭÷최소폭 과 칸 높이÷최소높이 중 작은 쪽이 가장 큰 격자 = 영역 가로세로에 맞춘 고른 격자 · 설계 §4 「최소 아래 허용」). 재료를 모르면 ⌈n÷2⌉. */
+/** (2b-3 · 박사님 11-11 13:1x 「최소 폭을 낮추자 … 싱글/듀얼/노트북 모니터 상황에 맞추어 최적 비율」 · 지시서 2026-11-11-cysr-pillar-width-rule)
+ *  탭 화면의 고정 기둥(master·cso) 열 수 = clamp(64, ⌊배치 영역 열 수 × 36%⌋, 96) — 옛 「최소 90열」(묶음 탭 노브 끔 = formation.defaultLeftShare)은 탭 화면에서 쓰지 않는다.
+ *  비율은 정수 백분율로 계산한다(0.36 같은 소수 곱은 경계에서 ⌊⌋ 가 한 칸 어긋날 수 있다). */
+export const PILLAR_MIN_COLS = 64;
+export const PILLAR_MAX_COLS = 96;
+export const PILLAR_PCT = 36;
+export function pillarCols(areaCols: number): number {
+  return Math.min(PILLAR_MAX_COLS, Math.max(PILLAR_MIN_COLS, Math.floor((Math.max(0, Math.floor(areaCols)) * PILLAR_PCT) / 100)));
+}
+/** 그 열 수를 루트 가로 분할 몫으로 — 배치 영역 열 수 = ⌊배치 영역 px ÷ 글자 칸 px⌋(글자 크기를 따라감 · px 고정값 없음) ·
+ *  기둥 px = 열 수 × 글자 칸 + 칸 여백(안쪽 여백·스크롤바·경계 · 호출자가 잰 값). 못 재면 null(호출자가 기존 기본 폭).
+ *  오른쪽이 좁아져도 기둥을 더 줄이지 않는다(64열 고정) — 몫은 기존 끌기 상한(DRAG_MAX)만 넘지 않게 둔다(새 최소 창 폭 동작 없음). */
+export function tabPillarShare(rootPx: number, cellPx: number, chromePx = 0): number | null {
+  if (!(rootPx > 0) || !(cellPx > 0)) return null;
+  const cols = pillarCols(rootPx / cellPx);
+  return Math.min(DRAG_MAX, (cols * cellPx + Math.max(0, chromePx)) / rootPx);
+}
+/** (2b-3) 한 줄에 둘 수 있는 가장 많은 칸 = 칸 폭이 최소 폭(40열 px) 이상이 되는 가장 큰 수(최소 1). */
+export function gridRowMax(areaW: number, minW: number): number {
+  return areaW > 0 && minW > 0 ? Math.max(1, Math.floor(areaW / minW)) : 1;
+}
+/** 한 줄에 둘 좌석 수(순수 · 2b-3 = 한 규칙 · 옛 「4개 이하 한 줄」 예외 폐지 — 기둥이 36% 로 줄어 1920 에서 3칸 한 줄이 40열을 넘는다).
+ *  칸 최소(폭 minW · 높이 minH px)를 지키는 가장 적은 줄 = 한 줄 최대 칸 수(gridRowMax)로 줄 수를 정하고, 줄마다 고르게(4개 = 2×2 · 5개 = 3+2).
+ *  높이까지 지킬 수 없으면 「가장 덜 모자란」 고른 격자(칸 폭÷최소폭 과 칸 높이÷최소높이 중 작은 쪽이 가장 큰 것 · 설계 §4 「최소 아래 허용」).
+ *  재료를 모르면(첫 그림 전 · 잴 수 없음) 2b-2 대로 4개 이하 한 줄 · 5개부터 ⌈n÷2⌉. */
 export function gridColumns(n: number, areaW: number, areaH: number, minW: number, minH: number): number {
-  if (n <= 4) return Math.max(1, n);
-  const top = Math.ceil(n / 2);
-  if (!(areaW > 0 && areaH > 0 && minW > 0 && minH > 0)) return top;
-  let best = top, bestFit = -1;
-  for (let c = top; c >= 1; c--) {
-    const fit = Math.min(areaW / c / minW, areaH / Math.ceil(n / c) / minH);
-    if (fit >= 1) return c;
-    if (fit > bestFit) [best, bestFit] = [c, fit];
+  if (n <= 1) return 1;
+  if (!(areaW > 0 && areaH > 0 && minW > 0 && minH > 0)) return n <= 4 ? n : Math.ceil(n / 2);
+  const even = (c: number) => Math.ceil(n / Math.ceil(n / c)); // 같은 줄 수에서 가장 고른 열 수(≤ c)
+  const fit = (c: number) => Math.min(areaW / c / minW, areaH / Math.ceil(n / c) / minH);
+  const max = Math.min(n, gridRowMax(areaW, minW));
+  if (fit(max) >= 1) return even(max);
+  let best = max, bestFit = -1;
+  for (let c = n; c >= 1; c--) {
+    const f = fit(even(c));
+    if (f > bestFit) [best, bestFit] = [even(c), f];
   }
   return best;
 }

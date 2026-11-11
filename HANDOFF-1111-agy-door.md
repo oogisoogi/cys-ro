@@ -33,5 +33,34 @@
 - **미반영(2R 몫)**: ① acceptance.py 판정이 agy 실행 횟수 차이만 봄 → 입구별 기대 rc·사유 단언 추가 필요(E6 rc=1·E7 launch_failed·E8 rc=78 이 PASS 로 기록됨 — 차단은 맞으나 「도달」 증명이 약함) ② phoenix 최종 결과의 manual_seats 에 정책 제외 역할이 「빈 좌석·사람이 실행」으로 다시 들어감(codex minor · javis_phoenix.py:3410 부근) ③ guard 가 `sed -n 1p <문 파일>`·`python3 -m json.tool` 같은 읽기도 막음(codex minor · 거짓 양성 · 안전 쪽)
 - verdict 원문 = 세션 scratchpad `codex/verdict.json`(커밋 안 함)
 
+## 2R 몫 처리(master#38e5ce91 순환 재개 · 12:36~)
+| 커밋 | 내용 |
+|---|---|
+| 14d6f11a | 1R 미반영 3건 — acceptance 입구별 rc·사유 단언 · phoenix manual_seats 정책 제외(+agy_policy_skipped_roles) · guard sed/json.tool 읽기 허용 · 결과 파일 비식별(H-SECRET-1 적색 해소) |
+| ebfd6611 | codex 2R(BLOCK) 반영 — env -S 우회 · cys run argv 판정 · sed 스크립트 자리 검증 · 백스톱 복합 명령 거부 · phoenix 첫 restore 건너뜀 줄 즉시 소비(재스폰 계수 되돌림 · 차단기 리셋 · fresh 끔 경로) · ②E5 역할 블록 결속 · 문서 파일 과차단 해소 · 구조 보존 비식별 |
+
+- codex 2R(13:2x · gpt-6.1-sol · read-only): verdict **BLOCK** · 1R 9건 중 닫힘 4 · 미닫힘 5 · 새 지적 blocking 1·major 4·minor 2 → 전부 ebfd6611 반영
+  (원문 = 세션 scratchpad codex2/verdict.json · 커밋 안 함). ⚠반영분에 대한 codex 재검(3R)은 **안 돌림** — 다음 검증 좌석 몫.
+- 실측(최종 코드 ebfd6611 바이너리): acceptance **15/15 PASS**(판정 = 횟수+rc+사유+역할 결속 · 결과 파일 비식별) · test_agy_door 15 ·
+  test_agy_door_phoenix_loop OK(뮤턴트 2 적색) · guard/phoenix 단위 31 + host-gate 3 PASS · H-SECRET-1 PASS
+- health 전체(깨끗한 env · 14d6f11a 이전 트리): 166 PASS / 3 FAIL — H-SECRET-1 = 이 가지 결함(해소) · **H-CLT-1/2 = 기존 결함**:
+  기준판 270e3e21 도 깨끗한 셸에서 같은 적색 → env 누출 가설 기각. 원인 = 검체 샌드박스(_u15_sandbox)가 `CYS_TEST_SYSROOT` 를 안 주고,
+  이 기계에 `/Applications/cys.app` 가 실재해 `_lib.sh:205` 탐침이 진짜 앱 python 을 고름(검체 비밀폐 · 이 티켓 범위 밖 · 📌 master 판단).
+- cargo: 이전 세션 전체 실행(acceptance 와 동시) 3 FAIL(trash background_walk · native_publication 2) → 단독 재실행 3/3 ok(부하 민감) ·
+  test_phoenix_c6_reap 도 동시 실행에서만 시간 초과 · 무부하 재실행 PASS. 최종 전체 실행(bc27f1ca · CARGO_BUILD_JOBS=4 · --test-threads=4 · 15:20~16:20 · 부하 9.7→15.9) = rc 0 · app 337 · lib 1213 · cys 759 · cysd 3227 · 통합 11+4 · 실패 0 · 2R 실행 중 나온 cys bin 스택 넘침(a3_strip_hook_digits…)은 단독 3/3 ok · 이번 전체 실행 ok(병렬 부하 민감).
+
+## 독립 재검(codex 한도 소진 · master#fe668845 대체 규칙)
+- 대상 = ebfd6611(2R 반영분) · 맥락 없는 서브에이전트(읽기 전용 · 커밋 차이 + 잠금 기준만) · verdict **BLOCK**
+  · 고침 확인: 2R 반영 7건 중 닫힘 5(sed 스크립트 · phoenix 소비 · ②E5 결속 · 문서 과차단 · redact) · 미닫힘 2(env 묶음 옵션 · 백스톱 `<(`)
+  · 새 지적: blocking 1(판정이 첫 단순 명령·짧은 래퍼 목록만 봄 — `cd x && agy`·`bash --norc -c agy`·`timeout 5 agy`·`sudo agy` 등 통과)
+    · major 2(fix 6 회귀 = 붙여 쓴 낱말 · 파이썬 경로 명령/프로세스 치환) · minor 1(rg --pre · 스크립트 파일 간접)
+- 1회 고침 = bc27f1ca(전부 반영 · 스크립트 파일 간접은 한계 주석으로 명시) · ⚠고침분 재검은 안 돌림
+- 사후 codex 필요 = **예**(실행 정책·훅 거부 규칙 = 보안 경계 성격) · master 가 11-13 06:47 뒤 · 그 전 발행 묶음 제외
+
+## 함정(추가)
+- acceptance ②E5: `cys restore` 에 역할 필터가 없어 E6 이 남긴 reviewer-codex 좌석까지 되살린다 — rc 0/1 비결정(실측 1·0·0) → 역할 블록으로 판정.
+- 데몬을 띄우는 시험(acceptance·c6_reap·host-gate)과 전체 cargo 를 동시에 돌리면 시간 초과 거짓 적색이 난다 — 순차로.
+- macOS 에 `timeout` 없음 · zsh 는 `$VAR` 를 낱말로 안 나눔(명령을 변수에 담아 실행 금지).
+
 ## 미완
-- 위 2R 몫 3건 · 전체 cargo 재실행(f2f5536e 뒤) · health 재실행(깨끗한 env · H-CLT-1/2 원인 확정) · acceptance 재실행(f2f5536e 뒤) · codex 2R
+- 독립 검증 좌석(master 몫) · 사후 codex(11-13 06:47 뒤 · bc27f1ca 기준) · push 0

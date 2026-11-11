@@ -3495,7 +3495,11 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
     # ★M5/P1-3 회로차단기: '실제 부활 시도(죽은 역할 존재)'에만 기록한다. NOOP(대상 0)은 스폰 시도가
     #   아니므로 카운트하지 않고 오히려 창을 리셋한다 — NOOP 반복이 차단기를 OPEN 시켜 진짜 부활을 막는
     #   오검출(P1-3)을 차단. target 산출 이후로 이동해 "spawn 시도가 있을 때만 기록"(설계 축C4)을 만족.
-    if not target_roles:
+    if not target_roles and _agy_skipped:
+        # ★agy 좌석 문(codex 4R blocking 1): 대상이 비었으나 그 까닭이 **정책 건너뜀**이면 진짜 NOOP(전원 생존)이 아니다 —
+        #   부활을 시도하지도, 성공하지도 않았으므로 차단기 파일을 읽지도 쓰지도 않는다(기존 실패 이력 보존).
+        log("부활 대상 = 정책 건너뜀(%s)뿐 — 차단기 무접촉(기존 실패 이력 보존)." % _agy_skipped)
+    elif not target_roles:
         log("부활 대상 죽은 역할 0 — restore 무작업(멱등).")
         if not no_breaker:
             breaker_reset(socket)

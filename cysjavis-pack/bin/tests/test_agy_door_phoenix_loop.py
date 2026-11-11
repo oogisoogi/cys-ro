@@ -9,7 +9,10 @@
 하니스 = 가짜 spawn 주입(test_v116_phoenix_midrun_tomb 형 · 데몬 0).
   P1 fresh 강등 켬: restore 1회 · fresh 0 · agy_policy_skipped_roles=[reviewer-gemini] · 실패·미완 아님 · 재스폰 계수 0
   P2 fresh 강등 끔(PHOENIX_POISON_FRESH_FALLBACK=0): 같은 결과(종전엔 FAILED/INCOMPLETE)
-  P3 차단기: 대상이 정책 건너뜀뿐인 런을 연달아 돌려도 BREAKER_OPEN 이 아니다(창 리셋)
+  P3 차단기: 대상이 정책 건너뜀뿐인 런을 연달아 돌려도 BREAKER_OPEN 이 아니다
+  P5 차단기(오라클 실패): 기존 실패 이력 2 + 정책 좌석뿐 → 이력 그대로 2
+  P6 차단기(오라클 성공 · codex 4R blocking 1): 기존 실패 이력 2 + 오라클이 정책 좌석을 미리 가름 → 차단기 파일 읽기·쓰기 0 · 이력 2
+  P7 대조(진짜 NOOP): 죽은 역할 0 → 종전대로 차단기 창 리셋(이력 0)
   C0 대조군: worker(claude) 는 그대로 부활 · 건너뜀 줄 없는 역할은 종전대로 재시도
   M  뮤턴트: resume 루프의 소비 줄 제거 → P1 적색(restore 4회 재시도)
 
@@ -46,13 +49,17 @@ def load_src(src, name, d):
     return mod
 
 
-def scenario(src, tmp, tag, roles, fresh_fallback=True, runs=1, no_breaker=True, skip_line=True, breaker_seed=0):
+def scenario(src, tmp, tag, roles, fresh_fallback=True, runs=1, no_breaker=True, skip_line=True, breaker_seed=0,
+             oracle_ok=False, all_alive=False):
     d = tempfile.mkdtemp(prefix=tag + "-", dir=tmp)
     m = load_src(src, "ph_" + tag, d)
     sockdir = os.path.join(d, "sock")
     os.makedirs(os.path.join(sockdir, "phoenix"), exist_ok=True)
     sock = os.path.join(sockdir, "cys.sock")
     st = {"live": {}}
+    if all_alive:   # P7 대조: 전원 생존 = 진짜 NOOP
+        st["live"] = {r: [{"surface": "surface:%d" % (50 + k), "pid": None, "exited": False, "agent_alive": True,
+                           "seat": "occupied"}] for k, r in enumerate(roles)}
     calls = {"restore": 0, "fresh": []}
     agents = {r: ("gemini" if r == "reviewer-gemini" else "claude") for r in roles}
     m.CYS = os.path.join(d, "nonexistent-cys")
@@ -99,8 +106,21 @@ def scenario(src, tmp, tag, roles, fresh_fallback=True, runs=1, no_breaker=True,
                              "agent_alive": True, "seat": "occupied"}]
         return {"rc": 0, "out": "launched"}
     m.spawn_fresh_production = _fresh
-    # 오라클 실패: agent-detect 가 비0 → agy_door_split 이 가르지 못한다(이 시험의 전제)
-    m.cys = lambda *a, **k: type("R", (), {"returncode": 1, "stdout": "", "stderr": "detect failed"})()
+    # 오라클 실패(기본): agent-detect 가 비0 → agy_door_split 이 가르지 못한다 · oracle_ok = 정책 사유를 낸다(P6)
+    def _cys(*a, **k):
+        if oracle_ok and a[:2] == ("agent-detect", "--json"):
+            body = {"agents": {"gemini": {"reason": "agy_consumer_policy: 문 닫힘"}, "claude": {"reason": "PATH 발견"}}}
+            return type("R", (), {"returncode": 0, "stdout": json.dumps(body), "stderr": ""})()
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": "detect failed"})()
+    m.cys = _cys
+    # 차단기 파일 접근 감시(P6 「읽지도 쓰지도 않는다」) — 차단기 세 함수를 감싸 호출을 센다
+    calls["breaker_io"] = []
+    for _fn in ("breaker_check_and_record", "breaker_reset"):
+        _orig = getattr(m, _fn)
+        def _spy(*a, _o=_orig, _n=_fn, **k):
+            calls["breaker_io"].append(_n)
+            return _o(*a, **k)
+        setattr(m, _fn, _spy)
     m.stage_ready = lambda s, role, surf, stub: (True, "ready-stub")
     m.stage_observe_session = lambda s, surf, stub, role=None: ("S-%s" % role, "stub")   # 세션핀 재개 성공(이 축과 무관한 verify 를 통과시킨다)
     m.stage_reinject = lambda s, role, surf, stub: (True, "stub")
@@ -152,6 +172,15 @@ def axes(src, tmp, tag, sink=None):
     check("P5 차단기: 기존 실패 이력 2(임계 3) + 정책 좌석뿐 → BREAKER_OPEN 아님 · 이력 그대로 2(지우지도 늘리지도 않음)",
           res.get("phoenix_restore") != "BREAKER_OPEN" and counts["__breaker__"] == 2,
           (res.get("phoenix_restore"), counts), sink)
+    c, res, counts = scenario(src, tmp, tag + "P6", ["reviewer-gemini"], no_breaker=False, breaker_seed=2, oracle_ok=True)
+    check("P6 차단기(오라클 성공 · codex 4R blocking 1): 이력 2 + 정책 좌석뿐 → 차단기 읽기·쓰기 0 · 이력 그대로 2 · restore 0",
+          c["breaker_io"] == [] and counts["__breaker__"] == 2 and c["restore"] == 0
+          and res.get("phoenix_restore") != "BREAKER_OPEN",
+          (c, res.get("phoenix_restore"), counts), sink)
+    c, res, counts = scenario(src, tmp, tag + "P7", ["reviewer-gemini", "worker"], no_breaker=False, breaker_seed=2,
+                              oracle_ok=True, all_alive=True)
+    check("P7 대조(진짜 NOOP · 전원 생존): 종전대로 차단기 창 리셋(이력 0)",
+          c["breaker_io"] == ["breaker_reset"] and counts["__breaker__"] == 0, (c, counts), sink)
     c, res, counts = scenario(src, tmp, tag + "P3", ["reviewer-gemini"], runs=6, no_breaker=False)
     check("P3 정책 건너뜀뿐인 런 6회 연속 → BREAKER_OPEN 아님 · 재스폰 계수 0",
           res.get("phoenix_restore") != "BREAKER_OPEN" and counts.get("reviewer-gemini", 0) == 0,
@@ -180,6 +209,8 @@ def main():
         ("M4 차단기 기록 조건 제거(codex 3R)",
          '    elif not no_breaker and not (not _agy_oracle.get("oracle_ok", True)',
          '    elif not no_breaker and not (False', "P5"),
+        ("M5 정책 전용 실행 분기 제거(codex 4R blocking 1)",
+         "    if not target_roles and _agy_skipped:", "    if False:", "P6"),
     ]
     for name, old, new, axis in mutants:
         assert src.count(old) == 1, "변이 대상 부재/중복: " + name

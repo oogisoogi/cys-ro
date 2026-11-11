@@ -43,18 +43,71 @@ pub const OPEN_WARNING: &str = "개인 요금제(무료·Google AI Pro·Ultra)�
 구글 약관상 계정이 정지될 수 있습니다. 기업 요금제(Gemini Enterprise 등)처럼 이런 사용이 허용된 경우에만 여세요. \
 (Gemini API 열쇠로 agy 가 아닌 다른 프로그램을 쓰는 경우는 이 문과 상관없습니다.)";
 
-/// 이 어댑터가 agy 인가(순수). **실행 프로그램이 정본**이다 — cmd 의 모든 명령 단위(`;`·`&&`·`|`·줄바꿈 · `sh -c` ·
-/// `cmd /c` · `powershell -Command` · `find -exec` · 명령/프로세스 치환 본문 · here-string)에서 실행될 프로그램을 찾고,
-/// 그중 하나라도 `agy`/`antigravity` 면 agy. ★안전망(codex 3R): 조회 전용 프로그램(echo·which·command -v 등)이 아니면
-/// **인용 안 된 낱말**이 agy 이름이기만 해도 agy 로 본다(열거 못 한 실행 래퍼 대비 · 인용된 프롬프트 글 속 agy 는 세지 않음).
-/// cmd 가 없거나 프로그램을 하나도 못 읽을 때만 어댑터 키 `gemini`(출하 어댑터 = agy)로 추정한다.
-pub fn is_agy_adapter(agent_key: &str, cmd: Option<&str>) -> bool {
-    let Some(c) = cmd else { return agent_key.eq_ignore_ascii_case("gemini") };
-    let progs = scan(c, 0);
-    if progs.is_empty() {
-        return agent_key.eq_ignore_ascii_case("gemini");
+// ── 판정 방식은 둘이다(TICKET=cysr-agy-door-r5 · codex 4R 처분 · 경계 표 = `docs/agy-door-evidence/ENTRY-MODES.md`) ──
+//   ① 기계 입구(일정·채널·계정 어댑터·launch-agent/restore/boot 의 어댑터 cmd·new-surface --cmd·round-log·phoenix 오라클) =
+//      [`names_agy`] **낱말 검사** — 셸 구조를 해석하지 않는다. 따옴표·괄호·역슬래시·경로 구분자를 전부 구분자로 보고,
+//      agy 실행 파일 이름과 같은 낱말이 **어디에든** 있으면 agy. 인용·치환·래퍼(call·start·watch·flock …) 우회가 성립하지
+//      않는 대신 거짓 양성(프롬프트 속 「agy」 낱말)을 받아들인다 — 거부 글이 까닭과 푸는 법을 말한다.
+//   ② 에이전트 자기 Bash(guard)·`cys run -- <argv>` = [`runs_agy`] **실행 자리 검사** — 사람·에이전트가 그 자리에서 쓰는
+//      문장이라 프롬프트(`claude -p agy`)를 막지 않는다. 따옴표 속 치환 등 남는 우회는 「알려진 한계」(선의의 실수 범위 밖).
+
+/// 판정 입력 상한(바이트) — 넘으면 기계 입구는 문 닫힘에서 거부 · 실행 자리 판정은 agy 로 본다(codex 4R minor 8 · 안전 쪽).
+pub const MAX_JUDGE_BYTES: usize = 64 * 1024;
+/// 실행 자리 판정의 치환 본문 수 상한 — 넘으면 구조를 읽지 않고 agy 낱말 유무로 안전 쪽 판정(codex 4R minor 8).
+const MAX_SUBSTS: usize = 64;
+
+/// 기계 입구 판정에서 지우는 인용·이스케이프 글자 — 셸·cmd 가 이름 안에서 걷어 내는 글자(`a''gy` · `ag\y` · `a^gy` · ``a``gy``).
+const SPLICE_CHARS: [char; 5] = ['\'', '"', '\\', '^', '`'];
+
+/// ① 기계 입구 낱말 검사(순수) — cmd 안에 agy 실행 파일 이름과 같은 낱말이 있는가.
+///   낱말 = 영숫자·`.`·`_`·`-` 의 연속(그 밖 글자는 전부 구분자) · 대소문자 접기 · 끝 점 무시 · `.exe/.cmd/.bat/.ps1/.com` 제거 ·
+///   줄표로 시작하는 낱말은 끝이 이름이어도 참(옵션에 붙은 값 `env -Sagy`).
+///   원문과 「인용·이스케이프 글자를 지운 꼴」 둘 다 본다. 상한을 넘는 입력은 읽지 않고 참(안전 쪽).
+pub fn names_agy(cmd: &str) -> bool {
+    if cmd.len() > MAX_JUDGE_BYTES {
+        return true;
     }
-    progs.iter().any(|p| is_agy_name(p))
+    let lc = cmd.to_lowercase();
+    let spliced: String = lc.chars().filter(|c| !SPLICE_CHARS.contains(c)).collect();
+    [lc.as_str(), spliced.as_str()].iter().any(|s| {
+        s.split(|c: char| !(c.is_alphanumeric() || matches!(c, '.' | '_' | '-'))).any(|w| {
+            let w = strip_ext(w.trim_end_matches('.'));
+            // 줄표로 시작하는 낱말은 옵션 글자에 값이 붙은 꼴일 수 있다(`env -vSagy` · `${X:-agy}`) — 끝이 이름이면 agy.
+            is_agy_name(&w) || (w.starts_with('-') && (w.ends_with("agy") || w.ends_with("antigravity")))
+        })
+    })
+}
+
+/// ② 실행 자리 검사(순수) — cmd 의 모든 명령 단위(`;`·`&&`·`|`·줄바꿈 · `sh -c` · `cmd /c` · `powershell -Command` · `find -exec` ·
+/// 명령/프로세스 치환 본문 · here-string)에서 실행될 프로그램을 찾고, 그중 하나라도 `agy`/`antigravity` 면 참.
+/// 안전망: 조회 전용 프로그램(echo·which·command -v·PowerShell 출력 명령 등)과 프롬프트 CLI(claude·codex)가 아니면
+/// **낱말 하나 전체가** agy 이름이기만 해도(인용 여부 무관 · `call "C:\…\agy.cmd"`) 참 — 공백 든 프롬프트 글 속 agy 는 세지 않음.
+/// 상한을 넘는 입력은 참(안전 쪽).
+pub fn runs_agy(cmd: &str) -> bool {
+    cmd.len() > MAX_JUDGE_BYTES || scan(cmd, 0).iter().any(|p| is_agy_name(p))
+}
+
+/// 해석된 실행 파일(경로 또는 이름)이 agy 인가 — 좌석 식별·감지 오라클용(③ 파일 이름 검사). 경로의 폴더 이름(예: 사용자
+/// 이름이 `agy`)으로 오판하지 않게 **마지막 이름만** 본다. 공백이 들어 있으면 명령 문자열이므로 기계 입구 낱말 검사(①).
+pub fn program_is_agy(bin: &str) -> bool {
+    if bin.trim().contains(char::is_whitespace) { names_agy(bin) } else { is_agy_word(bin.trim()) }
+}
+
+/// [`program_is_agy`] + 문 상태 — 비어 있으면 어댑터 키 `gemini` 로 추정. 문이 닫혀 있고 agy 면 참.
+pub fn program_refused(agent_key: &str, bin: &str) -> bool {
+    program_refused_with(agent_key, bin, door_open())
+}
+
+pub fn program_refused_with(agent_key: &str, bin: &str, door_open: bool) -> bool {
+    !door_open && if bin.trim().is_empty() { agent_key.eq_ignore_ascii_case("gemini") } else { program_is_agy(bin) }
+}
+
+/// 이 어댑터가 agy 인가 — **기계 입구 판정**(①). cmd 가 없거나 비었을 때만 어댑터 키 `gemini`(출하 어댑터 = agy)로 추정한다.
+pub fn is_agy_adapter(agent_key: &str, cmd: Option<&str>) -> bool {
+    match cmd {
+        Some(c) if !c.trim().is_empty() => names_agy(c),
+        _ => agent_key.eq_ignore_ascii_case("gemini"),
+    }
 }
 
 fn is_agy_name(p: &str) -> bool {
@@ -128,7 +181,7 @@ fn extract_subst(s: &str) -> Option<(String, Vec<String>)> {
                 }
                 j += 1;
             }
-            if d != 0 {
+            if d != 0 || bodies.len() >= MAX_SUBSTS {
                 return None;
             }
             bodies.push(c[i + 2..j - 1].iter().collect());
@@ -138,6 +191,9 @@ fn extract_subst(s: &str) -> Option<(String, Vec<String>)> {
         }
         if ch == '`' {
             let j = (i + 1..c.len()).find(|&k| c[k] == '`' && c[k - 1] != '\\')?;
+            if bodies.len() >= MAX_SUBSTS {
+                return None;
+            }
             bodies.push(c[i + 1..j].iter().collect());
             outer.push_str(" __subst__ ");
             i = j + 1;
@@ -226,15 +282,25 @@ fn scan(cmd: &str, depth: u8) -> Vec<String> {
 
 const STDIN_SHELL: &str = "<stdin-shell>";
 
-/// 조회·출력만 하는 프로그램 — 인자 속 agy 낱말을 실행으로 세지 않는다.
-const NON_EXEC: [&str; 17] = ["echo", "printf", "which", "type", "whereis", "test", "[", "ls", "cat", "grep", "rg", "man",
-                               "file", "stat", "head", "tail", "wc"];
+/// 조회·출력만 하는 프로그램 — 인자 속 agy 낱말을 실행으로 세지 않는다(PowerShell 출력·조회 명령 포함 · codex 4R major 5).
+const NON_EXEC: [&str; 27] = ["echo", "printf", "which", "type", "whereis", "test", "[", "ls", "cat", "grep", "rg", "man",
+                               "file", "stat", "head", "tail", "wc", "write-output", "write-host", "get-command", "get-help",
+                               "test-path", "get-content", "get-childitem", "get-item", "select-string", "where.exe"];
+
+/// 프롬프트 CLI — 인자는 사람 말(프롬프트)이지 실행할 프로그램이 아니다(`claude -p agy` · `codex exec agy` · codex 4R major 5).
+/// 단 다른 프로그램을 실행·등록하는 하위 명령(`mcp` · codex `sandbox`/`debug`)이 보이면 이 면제를 쓰지 않는다(안전망으로).
+fn prompt_cli_exempt(base: &str, rest: &[Tok]) -> bool {
+    let runs_other = |t: &Tok| !t.quoted && matches!(t.text.as_str(), "mcp" | "sandbox" | "debug");
+    matches!(base, "claude" | "codex") && !rest.iter().any(runs_other)
+}
 
 fn seg_programs(w: &[Tok], depth: u8) -> Vec<String> {
     let (mut progs, nonexec) = program_of(w, depth);
     if !nonexec
         && !progs.iter().any(|p| is_agy_name(p))
-        && w.iter().any(|t| !t.quoted && !is_assignment(&t.text) && redirect_skip(t).is_none() && is_agy_word(&t.text))
+        // ★codex 4R blocking 3: 인용된 낱말도 본다(`call "C:\\…\\agy.cmd"` · `watch "/opt/agy"`) — 낱말 하나 **전체**가 agy 이름일 때만
+        //   (공백 든 프롬프트 글 「agy 를 설명해」는 이름이 아니다).
+        && w.iter().any(|t| !(!t.quoted && is_assignment(&t.text)) && redirect_skip(t).is_none() && is_agy_word(&t.text))
     {
         progs.push("agy".into());
     }
@@ -275,7 +341,8 @@ fn wrapper_spec(base: &str) -> Option<(&'static str, &'static [&'static str], us
     })
 }
 
-/// 명령 단위 하나 → (실행될 프로그램들, 조회 전용인가).
+/// 명령 단위 하나 → (실행될 프로그램들, 바깥 안전망 생략인가 = 조회 전용 · 프롬프트 CLI · 안쪽 명령을 이미 따로 판정한 위임
+/// (`sh -c`·`cmd /c`·`powershell -Command`·`env -S`·`find -exec`·`su -c`·`script -c`·here-string)).
 fn program_of(w: &[Tok], depth: u8) -> (Vec<String>, bool) {
     // 예약어 · zsh 앞말(noglob·nocorrect·builtin·coproc·`-`)
     const KW: [&str; 15] = ["!", "{", "}", "then", "do", "else", "elif", "if", "while", "until", "noglob", "nocorrect",
@@ -310,7 +377,7 @@ fn program_of(w: &[Tok], depth: u8) -> (Vec<String>, bool) {
                     // GNU env 는 긴 옵션의 모호하지 않은 앞부분을 받는다(`--split`·`--spl`) — s 로 시작하는 긴 옵션은 split-string 뿐.
                     if !name.is_empty() && "split-string".starts_with(name) {
                         let (v, next) = match val { Some(v) => (v.to_string(), i + 1), None => (w.get(i + 1).map(|t| t.text.clone()).unwrap_or_default(), i + 2) };
-                        return (scan(&format!("{v} {}", join(w.get(next..).unwrap_or(&[]))), depth + 1), false);
+                        return (scan(&format!("{v} {}", join(w.get(next..).unwrap_or(&[]))), depth + 1), true);
                     }
                     let takes = val.is_none() && ["unset", "chdir", "argv0"].iter().any(|o| o.starts_with(name) && name.len() >= 2);
                     i += if takes { 2 } else { 1 };
@@ -324,7 +391,7 @@ fn program_of(w: &[Tok], depth: u8) -> (Vec<String>, bool) {
                         let r = &cl[k + ch.len_utf8()..];
                         if ch == 'S' {
                             let (v, next) = if r.is_empty() { (w.get(i + 1).map(|t| t.text.clone()).unwrap_or_default(), i + 2) } else { (r.to_string(), i + 1) };
-                            return (scan(&format!("{v} {}", join(w.get(next..).unwrap_or(&[]))), depth + 1), false);
+                            return (scan(&format!("{v} {}", join(w.get(next..).unwrap_or(&[]))), depth + 1), true);
                         }
                         if matches!(ch, 'u' | 'C' | 'P' | 'a') {
                             consumed_next = r.is_empty();
@@ -340,7 +407,7 @@ fn program_of(w: &[Tok], depth: u8) -> (Vec<String>, bool) {
         }
         if base == "su" {
             if let Some(k) = rest.iter().position(|t| t.text == "-c" || t.text == "--command") {
-                return (rest.get(k + 1).map(|t| scan(&t.text, depth + 1)).unwrap_or_default(), false);
+                return (rest.get(k + 1).map(|t| scan(&t.text, depth + 1)).unwrap_or_default(), true);
             }
         }
         if matches!(base.as_str(), "sh" | "bash" | "zsh" | "dash" | "ksh" | "csh" | "tcsh" | "fish" | "mksh" | "yash") {
@@ -348,7 +415,7 @@ fn program_of(w: &[Tok], depth: u8) -> (Vec<String>, bool) {
             if let Some(k) = rest.iter().position(|t| t.text.starts_with("<<<")) {
                 let v = rest[k].text[3..].to_string();
                 let v = if v.is_empty() { rest.get(k + 1).map(|t| t.text.clone()).unwrap_or_default() } else { v };
-                return (scan(&v, depth + 1), false);
+                return (scan(&v, depth + 1), true);
             }
             // `-c` = 정확히 한 줄표 묶음 안의 c(`-c`·`-lc`) — `--norc` 같은 긴 옵션은 -c 가 아니다 · -o/-O 는 값을 먹는다.
             let mut j = 0;
@@ -370,7 +437,7 @@ fn program_of(w: &[Tok], depth: u8) -> (Vec<String>, bool) {
                     while k < rest.len() && rest[k].text.starts_with('-') && rest[k].text != "-" {
                         k += 1;
                     }
-                    return (rest.get(k).map(|t| scan(&t.text, depth + 1)).unwrap_or_default(), false);
+                    return (rest.get(k).map(|t| scan(&t.text, depth + 1)).unwrap_or_default(), true);
                 }
                 j += 1;
             }
@@ -381,7 +448,7 @@ fn program_of(w: &[Tok], depth: u8) -> (Vec<String>, bool) {
         if base == "cmd" {
             // cmd.exe /c 문 · /k 문 — 뒤 전부가 실행될 명령
             if let Some(k) = rest.iter().position(|t| t.text.eq_ignore_ascii_case("/c") || t.text.eq_ignore_ascii_case("/k")) {
-                return (scan(&join_plain(&rest[k + 1..]), depth + 1), false);
+                return (scan(&join_plain(&rest[k + 1..]), depth + 1), true);
             }
             return (vec![base], false);
         }
@@ -390,13 +457,13 @@ fn program_of(w: &[Tok], depth: u8) -> (Vec<String>, bool) {
             while k < rest.len() {
                 let a = rest[k].text.to_ascii_lowercase();
                 if a.starts_with('-') && a.len() >= 2 && "-file".starts_with(&a) && a != "-" {
-                    return (rest.get(k + 1).map(|t| vec![basename_lc(&t.text)]).unwrap_or_default(), false);
+                    return (rest.get(k + 1).map(|t| vec![basename_lc(&t.text)]).unwrap_or_default(), true);
                 }
                 if a.starts_with('-') && a.len() >= 2 && "-command".starts_with(&a) {
-                    return (scan(&join_plain(&rest[k + 1..]), depth + 1), false);
+                    return (scan(&join_plain(&rest[k + 1..]), depth + 1), true);
                 }
                 if !a.starts_with('-') {
-                    return (scan(&join_plain(&rest[k..]), depth + 1), false);   // 옵션 없이 온 글 = -Command 와 같다
+                    return (scan(&join_plain(&rest[k..]), depth + 1), true);   // 옵션 없이 온 글 = -Command 와 같다
                 }
                 k += 1;
             }
@@ -405,14 +472,14 @@ fn program_of(w: &[Tok], depth: u8) -> (Vec<String>, bool) {
         if base == "find" {
             if let Some(k) = rest.iter().position(|t| matches!(t.text.as_str(), "-exec" | "-execdir" | "-ok" | "-okdir")) {
                 let end = rest[k + 1..].iter().position(|t| t.text == ";" || t.text == "+").map(|e| k + 1 + e).unwrap_or(rest.len());
-                return (program_of(&rest[k + 1..end], depth).0, false);
+                return (seg_programs(&rest[k + 1..end], depth), true);
             }
             return (vec![base], true);
         }
         if base == "command" && rest.iter().take_while(|t| t.text.starts_with('-')).any(|t| t.text.contains('v') || t.text.contains('V')) {
             return (vec![], true);   // command -v/-V = 조회
         }
-        if NON_EXEC.contains(&base.as_str()) {
+        if NON_EXEC.contains(&base.as_str()) || prompt_cli_exempt(&base, rest) {
             return (vec![base], true);
         }
         if let Some((short, long, positional)) = wrapper_spec(&base) {
@@ -420,7 +487,7 @@ fn program_of(w: &[Tok], depth: u8) -> (Vec<String>, bool) {
             if base == "script" {
                 // 리눅스 script -c '<문>' — 값이 실행될 명령
                 if let Some(k) = w[i..].iter().position(|a| a.text == "-c" || a.text == "--command") {
-                    return (w.get(i + k + 1).map(|t| scan(&t.text, depth + 1)).unwrap_or_default(), false);
+                    return (w.get(i + k + 1).map(|t| scan(&t.text, depth + 1)).unwrap_or_default(), true);
                 }
             }
             while i < w.len() {
@@ -461,13 +528,17 @@ fn program_of(w: &[Tok], depth: u8) -> (Vec<String>, bool) {
 }
 
 fn basename_lc(tok: &str) -> String {
-    let base = tok.rsplit(['/', '\\']).next().unwrap_or(tok).to_ascii_lowercase();
+    strip_ext(&tok.rsplit(['/', '\\']).next().unwrap_or(tok).to_ascii_lowercase())
+}
+
+/// 윈도 실행 확장자 하나를 걷는다(소문자 입력).
+fn strip_ext(base: &str) -> String {
     for ext in [".exe", ".cmd", ".bat", ".ps1", ".com"] {
         if let Some(s) = base.strip_suffix(ext) {
             return s.to_string();
         }
     }
-    base
+    base.to_string()
 }
 
 /// 문 파일 자리 — `~/.cys/agy-seat-door.json`(본부·부서 공통 · 사람 하나의 결정).
@@ -501,16 +572,23 @@ pub fn door_open() -> bool {
 }
 
 /// 문 쓰기 — **앱 화면(src-tauri) 전용**. 열기 = 표지 달린 본문 · 닫기 = 파일 삭제(없으면 그대로 성공).
+/// 반환 = 쓰기 직후 **같은 임계 구역 안에서** 읽은 문 상태(codex 4R minor 7).
 /// ★`cys` CLI·데몬·팩은 부르지 않는다(시험 `only_the_gui_writes_the_door`).
-pub fn write_door(open: bool) -> Result<(), String> {
+pub fn write_door(open: bool) -> Result<bool, String> {
     write_door_at(&door_path(), open)
 }
 
-pub fn write_door_at(path: &Path, open: bool) -> Result<(), String> {
+/// 문 변경 직렬화(프로세스 전역) — 열기 A 가 임시본을 쓰고 멈춘 사이 닫기 B 가 끝나고, 그 뒤 A 의 이름 바꾸기가 문을 다시
+/// 여는 경합(「나중에 누른 닫기」가 지는 fail-open · codex 4R minor 7)을 막는다.
+static DOOR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static DOOR_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn write_door_at(path: &Path, open: bool) -> Result<bool, String> {
+    let _g = DOOR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if !open {
         return match std::fs::remove_file(path) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Ok(()) => Ok(door_open_at(path)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(door_open_at(path)),
             Err(e) => Err(format!("{}: {e}", path.display())),
         };
     }
@@ -522,14 +600,29 @@ pub fn write_door_at(path: &Path, open: bool) -> Result<(), String> {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let body = serde_json::json!({"open": true, "ack": DOOR_ACK, "opened_at_epoch": at, "by": "cysr-app"});
-    let tmp = path.with_extension("json.tmp");
+    // 고유 임시본(프로세스·순번) — 같은 이름을 두 쓰기가 나눠 쓰지 않는다.
+    let seq = DOOR_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_file_name(format!("{DOOR_FILE}.{}.{seq}.tmp", std::process::id()));
     std::fs::write(&tmp, format!("{body}\n")).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("{}: {e}", path.display()));
+    }
+    Ok(door_open_at(path))
 }
 
-/// 기동 거부 문안(왕초보가 읽는 말) — agy 어댑터이고 문이 닫혀 있으면 Some.
+/// 기동 거부 문안(왕초보가 읽는 말) — **기계 입구**(낱말 검사 ①): agy 어댑터이고 문이 닫혀 있으면 Some.
 pub fn launch_refusal(agent_key: &str, cmd: Option<&str>) -> Option<String> {
     launch_refusal_with(agent_key, cmd, door_open())
+}
+
+/// **실행 자리** 판정(②) 거부 문안 — 에이전트 자기 Bash(팩 훅 guard 가 `cys agy-door-check --cmd` 로 부른다).
+pub fn exec_refusal(cmd: &str) -> Option<String> {
+    exec_refusal_with(cmd, door_open())
+}
+
+pub fn exec_refusal_with(cmd: &str, door_open: bool) -> Option<String> {
+    (!door_open && runs_agy(cmd)).then(policy_text)
 }
 
 /// argv(이미 나뉜 실행 인자 — `cys run -- <argv>`) 판. 문자열로 다시 이어 붙이지 않는다(codex 2R: 인용 재조립은
@@ -539,24 +632,49 @@ pub fn launch_refusal_argv(argv: &[String]) -> Option<String> {
 }
 
 pub fn launch_refusal_argv_with(argv: &[String], door_open: bool) -> Option<String> {
+    if door_open {
+        return None;
+    }
+    if argv.iter().map(String::len).sum::<usize>() > MAX_JUDGE_BYTES {
+        return Some(policy_text());   // 상한 초과 = 안전 쪽(codex 4R minor 8)
+    }
     // argv 원소 = 이미 나뉜 인자 — 공백이 든 원소는 인용된 한 낱말과 같다(프롬프트 글 속 agy 는 안전망에 안 걸림).
     let toks: Vec<Tok> = argv.iter().map(|a| Tok { text: a.clone(), quoted: a.contains(char::is_whitespace) }).collect();
     let is_agy = toks
         .split(|t| matches!(t.text.as_str(), ";" | "&&" | "||" | "|" | "&"))
         .flat_map(|seg| seg_programs(seg, 0))
         .any(|p| is_agy_name(&p));
-    if is_agy { launch_refusal_with("", Some("agy"), door_open) } else { None }
+    is_agy.then(policy_text)
+}
+
+/// 정책 본문(두 판정 공통 머리) — 거부 사유 코드로 시작한다(phoenix·acceptance·guard 가 이 머리로 소비).
+fn policy_text() -> String {
+    format!(
+        "{REFUSE_CODE}: cysr 은 Antigravity(agy) 좌석을 띄우지 않습니다 — 개인 요금제에서 다른 프로그램이 agy 를 \
+         부리면 구글 약관상 계정이 정지될 수 있기 때문입니다. agy 를 직접 쓰려면 새 탭에서 `agy` 를 치세요(괜찮습니다). \
+         기업 요금제 등 허용된 경우에만, 사람이 앱 명령 팔레트의 「Antigravity(agy) 좌석 열기」로 열 수 있습니다."
+    )
+}
+
+/// 기계 입구 거부의 덧말 — 낱말 검사는 거짓 양성을 받아들이므로 까닭과 푸는 법을 왕초보 말로 말한다.
+fn machine_hint(cmd: Option<&str>) -> String {
+    match cmd {
+        Some(c) if c.len() > MAX_JUDGE_BYTES => format!(
+            " (이 명령은 {}바이트로 너무 길어서 — 상한 {MAX_JUDGE_BYTES}바이트 — 안을 살피지 않고 막았습니다. 명령을 짧게 \
+             줄이거나 스크립트 파일로 옮겨 그 파일을 실행하게 하세요.)",
+            c.len()
+        ),
+        Some(c) if !c.trim().is_empty() => " (자동으로 도는 명령 — 일정·채널·계정·복원 같은 것 — 은 셸 문법을 해석하지 않고, \
+             글자 안에 「agy」라는 낱말이 하나라도 있으면 막습니다. agy 를 실행하려던 게 아니라 설명 글 등에 그 낱말이 \
+             들어 있을 뿐이라면, 그 낱말을 다른 말(예: 「안티그래비티」)로 바꿔 다시 등록하세요.)"
+            .to_string(),
+        _ => String::new(),
+    }
 }
 
 /// [`launch_refusal`] 의 순수판(문 상태 주입).
 pub fn launch_refusal_with(agent_key: &str, cmd: Option<&str>, door_open: bool) -> Option<String> {
-    (is_agy_adapter(agent_key, cmd) && !door_open).then(|| {
-        format!(
-            "{REFUSE_CODE}: cysr 은 Antigravity(agy) 좌석을 띄우지 않습니다 — 개인 요금제에서 다른 프로그램이 agy 를 \
-             부리면 구글 약관상 계정이 정지될 수 있기 때문입니다. agy 를 직접 쓰려면 새 탭에서 `agy` 를 치세요(괜찮습니다). \
-             기업 요금제 등 허용된 경우에만, 사람이 앱 명령 팔레트의 「Antigravity(agy) 좌석 열기」로 열 수 있습니다."
-        )
-    })
+    (!door_open && is_agy_adapter(agent_key, cmd)).then(|| policy_text() + &machine_hint(cmd))
 }
 
 /// 복원 건너뜀 한 줄(실패로 세지 않는다) — agy 어댑터이고 문이 닫혀 있으면 Some.
@@ -565,7 +683,7 @@ pub fn restore_skip_line(role: &str, agent_key: &str, cmd: Option<&str>) -> Opti
 }
 
 pub fn restore_skip_line_with(role: &str, agent_key: &str, cmd: Option<&str>, door_open: bool) -> Option<String> {
-    (is_agy_adapter(agent_key, cmd) && !door_open).then(|| {
+    (!door_open && is_agy_adapter(agent_key, cmd)).then(|| {
         format!(
             "· {role}: 건너뜀({REFUSE_CODE}) — 구글 개인 요금제 약관 때문에 cysr 은 Antigravity(agy) 좌석을 다시 띄우지 \
              않습니다. 고장이 아닙니다 · 검토가 필요하면 Claude 대체 검토자가 대신합니다."
@@ -576,6 +694,11 @@ pub fn restore_skip_line_with(role: &str, agent_key: &str, cmd: Option<&str>, do
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 두 판정 모두 agy 로 본다(실행 자리에서 잡히는 꼴은 기계 입구 낱말 검사에서도 잡혀야 한다 · ② ⊆ ①).
+    fn both(c: &str) -> bool {
+        runs_agy(c) && names_agy(c)
+    }
 
     fn td(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("cys-agy-door-{name}-{}", std::process::id()));
@@ -588,9 +711,10 @@ mod tests {
     fn codex_1r_parser_cases() {
         for agy in ["FOO=/tmp agy", "FOO=\"a b\" agy -p x", "env FOO=1 agy", "env -u X agy", "nohup env A=1 /x/agy",
                     "\"/Applications/My Tools/agy\" --x", "C:\\npm\\agy.bat", "sh -c 'agy -p hi'", "bash -lc \"FOO=1 agy\""] {
-            assert!(is_agy_adapter("rv", Some(agy)), "{agy}");
+            assert!(both(agy), "{agy}");
         }
-        assert!(!is_agy_adapter("claude", Some("CLAUDE_CONFIG_DIR=/tmp/agy claude")), "대입 값 속 agy 는 프로그램이 아니다");
+        assert!(!runs_agy("CLAUDE_CONFIG_DIR=/tmp/agy claude"), "실행 자리: 대입 값 속 agy 는 프로그램이 아니다");
+        assert!(names_agy("CLAUDE_CONFIG_DIR=/tmp/agy claude"), "기계 입구: 낱말이 있으면 거부(받아들인 거짓 양성)");
         assert!(!is_agy_adapter("gemini", Some("gemini --api-key-mode")), "같은 키라도 실행 프로그램이 agy 가 아니면 막지 않는다");
         assert!(is_agy_adapter("gemini", None), "cmd 가 없을 때만 키로 추정");
     }
@@ -607,13 +731,13 @@ mod tests {
                     "sudo -u root -E agy", "doas -u me agy", "script -q /dev/null agy", "script -c 'agy -p'",
                     "arch -arm64 agy", "arch -arch arm64 agy", "nice -n 5 agy", "nice -10 agy", "command -p agy",
                     "echo $(agy)", "cat <(agy)", "echo `agy`", "if true; then agy; fi", "! agy", "{ agy; }"] {
-            assert!(is_agy_adapter("", Some(agy)), "{agy}");
+            assert!(both(agy), "{agy}");
             assert!(launch_refusal_with("claude", Some(agy), false).is_some(), "키가 claude 여도 cmd 가 agy 면 거부: {agy}");
         }
         for ok in ["claude --dangerously-skip-permissions", "env -u FOO claude", "env -iS 'claude --x'", "cd /x && claude",
                    "bash --norc -c claude", "timeout 5 claude", "sudo -u me codex", "claude 2>&1", "echo agy",
                    "CLAUDE_CONFIG_DIR=/tmp/agy claude", "codex exec -s read-only"] {
-            assert!(!is_agy_adapter("", Some(ok)), "{ok}");
+            assert!(!runs_agy(ok), "{ok}");
         }
         let argv = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert!(launch_refusal_argv_with(&argv(&["env", "-iSagy"]), false).is_some());
@@ -625,14 +749,16 @@ mod tests {
     fn every_other_entry_is_gated_source_pin() {
         // 독립 검증 B1·B2·M3: 문 판정 없이 셸 문을 실행하던 입구 — 판정 줄을 지우면 붉다(배선 핀).
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let pins: [(&str, &str); 7] = [
+        let pins: [(&str, &str); 9] = [
             ("src/bin/cysd/schedule.rs", "if let Some(m) = cys::agy_door::launch_refusal(\"\", Some(command)) {"),
             ("src/bin/cysd/channels.rs", "if let Some(m) = cys::agy_door::launch_refusal(\"\", Some(bridge_cmd)) {"),
             ("src/bin/cysd/accounts.rs", "if cys::agy_door::launch_refusal(\"\", Some(&cmd)).is_some() {"),
-            ("src/bin/cysd/handlers.rs", "let by_meta = meta.as_ref().is_some_and(|(k, bin)| cys::agy_door::launch_refusal(k, Some(bin)).is_some());"),
+            ("src/bin/cysd/handlers.rs", "let by_meta = meta.as_ref().is_some_and(|(k, bin)| cys::agy_door::program_refused(k, bin));"),
             ("src/bin/cys.rs", "if let Some(m) = command.as_deref().and_then(|c| cys::agy_door::launch_refusal(\"\", Some(c))) {"),
             ("src/bin/cys.rs", "if let Some(m) = cmd.as_deref().and_then(|c| cys::agy_door::launch_refusal(\"\", Some(c))) {"),
             ("cysjavis-pack/bin/javis_orchestra.py", "_refuse = agy_door_refusal(args.from_cmd)"),
+            ("cysjavis-pack/bin/javis_orchestra.py", "[cys, \"agy-door-check\", \"--machine\", \"--cmd\", cmd]"),
+            ("src/bin/cysd/handlers.rs", "if !human_typed {\n                if agy_seat() {"),
         ];
         for (f, needle) in pins {
             let src = std::fs::read_to_string(root.join(f)).unwrap();
@@ -653,11 +779,11 @@ mod tests {
                     "$'agy'", "a^gy", "echo agy | sh", "printf agy | bash -s", "echo hi\nagy", "start agy", "call agy",
                     "wsl agy", "watch agy", "flock /tmp/l agy", "tmux new -d agy", "screen -dm agy", "npx @google/antigravity",
                     "sh -o errexit -c agy"] {
-            assert!(is_agy_adapter("claude", Some(agy)), "{agy}");
+            assert!(both(agy), "{agy}");
         }
         assert!(launch_refusal_with("gemini", Some(">/dev/null ~/.local/bin/agy --dangerously-skip-permissions"), false).is_some());
         for ok in ["claude 2>&1", "claude >/tmp/agy.log", "cat x | sh", "echo agy | grep a", "claude --dangerously-skip-permissions 2>/dev/null"] {
-            assert!(!is_agy_adapter("claude", Some(ok)), "{ok}");
+            assert!(!runs_agy(ok), "{ok}");
         }
     }
 
@@ -667,11 +793,11 @@ mod tests {
                     "powershell -File C:\\x\\agy.ps1", "powershell agy", "find . -maxdepth 0 -exec agy ';'",
                     "bash -O extglob -c agy", "bash -o pipefail -c 'agy'", "bash <<< agy", "bash <<<'agy -p'",
                     "cd /tmp && \\\nagy", "ag\\y", "/x/ag\\y -p", "unknownwrapper --flag agy", "claude -p \"$(agy)\""] {
-            assert!(is_agy_adapter("claude", Some(agy)), "{agy}");
+            assert!(both(agy), "{agy}");
         }
         for ok in ["claude -p \"$(cat docs/agy.md)\"", "command -v agy", "which agy", "claude -p \"agy 를 설명해\"",
                    "ls ~/.local/bin/agy", "claude --settings '/x/agy-notes/worker.json'", "echo '$(agy)'"] {
-            assert!(!is_agy_adapter("claude", Some(ok)), "{ok}");
+            assert!(!runs_agy(ok), "{ok}");
         }
         let argv = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         for a in [argv(&["cmd.exe", "/c", "agy"]), argv(&["powershell.exe", "-Command", "agy"]),
@@ -685,9 +811,9 @@ mod tests {
     fn codex_2r_env_split_string() {
         for agy in ["env -S agy", "env -S 'agy -p hi'", "env -S'FOO=1 agy'", "env --split-string='agy x'",
                     "env --split-string agy", "env -i -S agy", "/usr/bin/env -S \"nohup agy\"", "env -S 'env -S agy'"] {
-            assert!(is_agy_adapter("", Some(agy)), "{agy}");
+            assert!(both(agy), "{agy}");
         }
-        assert!(!is_agy_adapter("", Some("env -S 'claude --x'")));
+        assert!(!runs_agy("env -S 'claude --x'"));
         let argv = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         for a in [argv(&["agy"]), argv(&["env", "-S", "agy -p 'it''s'"]), argv(&["/x/agy", "it's"]),
                   argv(&["nohup", "env", "A=1", "agy"]), argv(&["sh", "-c", "agy"])] {
@@ -695,7 +821,8 @@ mod tests {
             assert!(launch_refusal_argv_with(&a, true).is_none(), "문 열림이면 거부 없음 {a:?}");
         }
         assert!(launch_refusal_argv_with(&argv(&["claude", "-p", "agy 를 설명해"]), false).is_none(), "인용된(공백 든) 프롬프트 글 속 agy 는 프로그램이 아니다");
-        assert!(launch_refusal_argv_with(&argv(&["claude", "agy"]), false).is_some(), "맨 낱말 agy = 안전망(codex 3R · 열거 못 한 실행 래퍼 대비)");
+        assert!(launch_refusal_argv_with(&argv(&["claude", "agy"]), false).is_none(), "프롬프트 CLI 의 인자 = 사람 말(codex 4R major 5)");
+        assert!(launch_refusal_argv_with(&argv(&["mytool", "agy"]), false).is_some(), "맨 낱말 agy = 안전망(codex 3R · 열거 못 한 실행 래퍼 대비)");
         assert!(launch_refusal_argv_with(&argv(&["echo", "it's", "agy"]), false).is_none());
     }
 
@@ -703,13 +830,13 @@ mod tests {
     fn agy_adapter_by_key_or_program() {
         assert!(is_agy_adapter("gemini", None));
         assert!(is_agy_adapter("Gemini", Some("")), "읽을 수 없는 cmd = 키 추정");
-        assert!(is_agy_adapter("rv", Some("~/.local/bin/agy --dangerously-skip-permissions")));
-        assert!(is_agy_adapter("rv", Some("FOO=1 BAR=\"x\" /opt/x/agy -p hi")));
-        assert!(is_agy_adapter("rv", Some(r"C:\Users\x\AppData\Roaming\npm\agy.cmd")));
-        assert!(is_agy_adapter("rv", Some("antigravity.exe")));
+        for c in ["~/.local/bin/agy --dangerously-skip-permissions", "FOO=1 BAR=\"x\" /opt/x/agy -p hi",
+                  r"C:\Users\x\AppData\Roaming\npm\agy.cmd", "antigravity.exe"] {
+            assert!(is_agy_adapter("rv", Some(c)) && runs_agy(c), "{c}");
+        }
         assert!(!is_agy_adapter("claude", Some("claude --dangerously-skip-permissions")));
         assert!(!is_agy_adapter("codex", Some("codex")));
-        assert!(!is_agy_adapter("rv", Some("/opt/agyx/bin/claude")), "디렉터리 이름이 agy 여도 실행 파일이 아니면 아님");
+        assert!(!is_agy_adapter("rv", Some("/opt/agyx/bin/claude")), "디렉터리 이름이 agyx — agy 낱말 아님");
         assert!(!is_agy_adapter("rv", None));
     }
 
@@ -728,11 +855,11 @@ mod tests {
         let d = td("rw");
         let p = door_path_under(&d);
         assert!(!door_open_at(&p), "기본 = 닫힘(파일 없음)");
-        write_door_at(&p, true).unwrap();
+        assert!(write_door_at(&p, true).unwrap(), "열기 반환 = 열림");
         assert!(door_open_at(&p));
-        write_door_at(&p, false).unwrap();
+        assert!(!write_door_at(&p, false).unwrap(), "닫기 반환 = 닫힘");
         assert!(!door_open_at(&p) && !p.exists());
-        write_door_at(&p, false).unwrap(); // 이미 닫힘 = 성공
+        assert!(!write_door_at(&p, false).unwrap()); // 이미 닫힘 = 성공
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -794,5 +921,167 @@ mod tests {
         assert!(offenders.is_empty(), "앱 화면 밖에서 문을 여는 코드: {offenders:?}");
         let gui = std::fs::read_to_string(root.join("src-tauri/src/main.rs")).unwrap();
         assert!(gui.contains("agy_door::write_door("), "앱 화면이 문을 여는 유일한 입구여야 한다");
+    }
+
+    // ── TICKET=cysr-agy-door-r5(codex 4R 처분) ──
+
+    /// 변이 생성 — 이름(2) × 대소문자(3) × 확장자(7) × 경로 머리(6) × 인용·치환 꼴(10) × 명령 문맥(17).
+    fn mutations() -> Vec<String> {
+        let mut out = Vec::new();
+        for name in ["agy", "antigravity"] {
+            let cases = [name.to_string(), name.to_ascii_uppercase(),
+                         name.char_indices().map(|(i, c)| if i % 2 == 0 { c.to_ascii_uppercase() } else { c }).collect()];
+            for n in cases {
+                for ext in ["", ".exe", ".cmd", ".bat", ".ps1", ".com", ".EXE"] {
+                    for pre in ["", "/opt/", "./", "~/.local/bin/", r"C:\Users\u\AppData\Roaming\npm\", r".\"] {
+                        let exe = format!("{pre}{n}{ext}");
+                        for q in ["{}", "'{}'", "\"{}\"", "$'{}'", "`{}`", "$({})", "<({})", "\"$({})\"", "{}.", "${X:-{}}"] {
+                            let w = q.replace("{}", &exe);
+                            for ctx in ["{}", "{} -p hi", "call {}", "start \"\" {}", "watch {}", "flock /tmp/l {}",
+                                        "true $(printf ')'); {}", "cmd /c {}", "powershell -Command \"& {}\"", "x=1; {}",
+                                        "nohup {} &", "sudo -u me {}", "echo hi | {}", "find . -exec {} ';'", "{}>/dev/null",
+                                        "claude -p {}", "env -S {}"] {
+                                out.push(ctx.replace("{}", &w));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // 이름 안에 셸·cmd 가 걷어 내는 글자를 끼운 꼴(`a''gy` · `ag\y` · `a^gy` · ``a``gy``) — 원문엔 글자가 이어져 있지 않다.
+        for sp in ["''", "\"\"", "\\", "^", "``"] {
+            for (a, b) in [("a", "gy"), ("ag", "y"), ("anti", "gravity")] {
+                for ctx in ["{}", "call {}", "watch \"{}\"", "cmd /c {}"] {
+                    out.push(ctx.replace("{}", &format!("{a}{sp}{b}")));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn machine_word_check_catches_every_mutation() {
+        let all = mutations();
+        assert!(all.len() > 30_000, "변이 수 {}", all.len());
+        let passed: Vec<&String> = all.iter().filter(|c| !names_agy(c)).collect();
+        assert!(passed.is_empty(), "이름이 글자로 들어 있는데 통과 {}건(변이 {}): {:?}", passed.len(), all.len(), &passed[..passed.len().min(5)]);
+        for c in all.iter().step_by(97) {
+            assert!(launch_refusal_with("", Some(c), false).is_some(), "{c}");
+            assert!(launch_refusal_with("", Some(c), true).is_none(), "문 열림 = 종전대로 {c}");
+        }
+    }
+
+    #[test]
+    fn machine_word_check_codex_4r_reproductions() {
+        // codex 4R blocking 2(치환 괄호 깊이) · blocking 3(call·start·watch·flock 의 인용된 agy)
+        for c in ["true $(printf ')'); \"/opt/agy\"", r#"call "C:\Users\u\AppData\Roaming\npm\agy.cmd""#,
+                  r#"start "" "C:\Users\u\AppData\Roaming\npm\agy.cmd""#, "watch \"/opt/agy\"", "flock /tmp/l \"/opt/agy\""] {
+            assert!(names_agy(c), "{c}");
+            assert!(launch_refusal_with("", Some(c), false).is_some_and(|m| m.starts_with(REFUSE_CODE)), "{c}");
+        }
+        // 실행 자리(guard)에서도 낱말 하나 전체가 agy 경로면 인용돼 있어도 잡는다(blocking 3)
+        for c in [r#"call "C:\Users\u\AppData\Roaming\npm\agy.cmd""#, r#"start "" "C:\x\agy.cmd""#, "watch \"/opt/agy\"",
+                  "flock /tmp/l \"/opt/agy\""] {
+            assert!(runs_agy(c), "{c}");
+        }
+        // 받아들인 거짓 양성(기계 입구) — 낱말만 있어도 거부 · 실행 자리 판정은 막지 않는다
+        for c in ["claude -p agy", "codex exec agy", "echo agy", "claude -p \"agy 를 설명해\"", "command -v agy",
+                  "CLAUDE_CONFIG_DIR=/tmp/agy claude"] {
+            assert!(names_agy(c), "기계 입구 거짓 양성(받아들임): {c}");
+            assert!(!runs_agy(c), "실행 자리는 막지 않는다: {c}");
+        }
+        // 낱말이 아닌 것(기계 입구도 통과)
+        for c in ["claude -p \"$(cat docs/agy.md)\"", "/opt/agyx/bin/claude", "claude --settings '/x/agy-notes/w.json'",
+                  "claude >/tmp/agy.log", "agyx", "pagy", "agy_", "agy-cli", "안티그래비티 검토", "agy를"] {
+            assert!(!names_agy(c), "{c}");
+        }
+    }
+
+    #[test]
+    fn exec_position_false_positives_codex_4r_major_5() {
+        for ok in ["claude -p agy", "codex exec agy", "claude --dangerously-skip-permissions -p agy", "codex exec -s read-only agy",
+                   "powershell -Command Write-Output 'agy'", "pwsh -c \"Write-Host agy\"", "powershell Get-Command agy",
+                   "echo agy", "claude -p \"agy 를 설명해\""] {
+            assert!(!runs_agy(ok), "{ok}");
+            assert!(exec_refusal_with(ok, false).is_none(), "{ok}");
+        }
+        let argv = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        for a in [argv(&["claude", "-p", "agy"]), argv(&["codex", "exec", "agy"]), argv(&["powershell", "-Command", "Write-Output", "agy"])] {
+            assert!(launch_refusal_argv_with(&a, false).is_none(), "{a:?}");
+        }
+        // 프롬프트 CLI 면제는 다른 프로그램을 실행·등록하는 하위 명령에는 쓰지 않는다
+        for agy in ["claude mcp add gem -- agy", "claude mcp add gem -- \"/opt/agy\"", "codex sandbox macos agy",
+                    "codex debug seatbelt /opt/agy", "claude -p hi; agy", "claude -p \"$(agy)\""] {
+            assert!(runs_agy(agy), "{agy}");
+        }
+        assert!(launch_refusal_argv_with(&argv(&["claude", "mcp", "add", "g", "--", "agy"]), false).is_some());
+    }
+
+    #[test]
+    fn judge_input_caps_codex_4r_minor_8() {
+        let big = format!("claude -p '{}'", "x".repeat(MAX_JUDGE_BYTES));
+        assert!(names_agy(&big) && runs_agy(&big), "상한 초과 = 안전 쪽");
+        let m = launch_refusal_with("", Some(&big), false).unwrap();
+        assert!(m.starts_with(REFUSE_CODE) && m.contains("너무 길어서"), "{}", &m[m.len().saturating_sub(200)..]);
+        assert!(launch_refusal_with("", Some(&big), true).is_none(), "문 열림 = 판정 안 함");
+        assert!(launch_refusal_argv_with(&["claude".into(), "x".repeat(MAX_JUDGE_BYTES + 1)], false).is_some());
+        let ok = format!("{}{}", "echo $(true); ".repeat(MAX_SUBSTS + 1), "claude -p hi");
+        assert!(!runs_agy(&ok), "치환 수 초과 + agy 낱말 없음 = 통과");
+        let bad = format!("{}{}", "echo $(true); ".repeat(MAX_SUBSTS + 1), "claude -p 'agy docs'");
+        assert!(runs_agy(&bad), "치환 수 초과 + agy 낱말 = 안전 쪽(구조를 읽지 않는다)");
+    }
+
+    #[test]
+    fn refusal_texts_tell_why_and_how() {
+        let m = launch_refusal_with("", Some("claude -p 'review agy door'"), false).unwrap();
+        assert!(m.starts_with(REFUSE_CODE) && m.contains("낱말") && m.contains("다른 말") && m.contains("좌석 열기"), "{m}");
+        let e = exec_refusal_with("agy -p x", false).unwrap();
+        assert!(e.starts_with(REFUSE_CODE) && !e.contains("낱말"), "실행 자리 거부는 낱말 덧말이 없다: {e}");
+        let k = launch_refusal_with("gemini", None, false).unwrap();
+        assert!(!k.contains("낱말"), "어댑터 키 추정 거부는 덧말 없음");
+    }
+
+    #[test]
+    fn program_path_checks_name_only() {
+        assert!(program_is_agy("/x/agy") && program_is_agy(r"C:\npm\AGY.CMD") && program_is_agy("antigravity"));
+        assert!(!program_is_agy("/Users/agy/.local/bin/claude"), "폴더 이름(사용자 이름 agy)으로 오판하지 않는다");
+        assert!(program_refused_with("gemini", "", false) && !program_refused_with("gemini", "", true));
+        assert!(!program_refused_with("claude", "/usr/local/bin/claude", false));
+    }
+
+    #[test]
+    fn door_open_close_race_serialized_codex_4r_minor_7() {
+        // 여러 스레드가 열기/닫기를 섞어 누른다 — 쓰기마다 ⑴ 실패 0(고유 임시본) ⑵ 반환 상태 = 그 쓰기가 원한 상태
+        //   (같은 임계 구역 안에서 읽음 = 그 사이 다른 쓰기가 끼지 않았다) ⑶ 끝난 뒤 임시본 0.
+        let d = td("race");
+        let p = door_path_under(&d);
+        let errs = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let hs: Vec<_> = (0..8)
+            .map(|t| {
+                let (p, errs) = (p.clone(), errs.clone());
+                std::thread::spawn(move || {
+                    for k in 0..150 {
+                        let want = (t + k) % 2 == 0;
+                        match write_door_at(&p, want) {
+                            Ok(got) if got == want => {}
+                            Ok(got) => errs.lock().unwrap().push(format!("t{t} k{k}: want {want} got {got}")),
+                            Err(e) => errs.lock().unwrap().push(format!("t{t} k{k}: {e}")),
+                        }
+                    }
+                })
+            })
+            .collect();
+        for h in hs {
+            h.join().unwrap();
+        }
+        let errs = errs.lock().unwrap();
+        assert!(errs.is_empty(), "경합 결함 {}건: {:?}", errs.len(), &errs[..errs.len().min(5)]);
+        let left: Vec<_> = std::fs::read_dir(p.parent().unwrap()).unwrap().flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp")).map(|e| e.file_name()).collect();
+        assert!(left.is_empty(), "임시본 잔존 {left:?}");
+        // 마지막에 누른 닫기가 이긴다
+        write_door_at(&p, true).unwrap();
+        assert!(!write_door_at(&p, false).unwrap() && !door_open_at(&p));
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

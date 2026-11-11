@@ -257,10 +257,37 @@ class E_AgyRunGuardAndRoundLog(unittest.TestCase):
             self.assertTrue(o.agy_door_refusal("agy -p review"))
             self.assertTrue(o.agy_door_refusal("2>&1 agy -p review"))
             self.assertIsNone(o.agy_door_refusal("cargo test --lib"))
+            # ★r5: round-log = 기계 입구(낱말 검사 · `--machine`) — 셸 구조 우회와 받아들인 거짓 양성 둘 다 거부 · 까닭과 푸는 법
+            for c in ["true $(printf ')'); \"/opt/agy\"", "watch \"/opt/agy\"", "call \"C:\\x\\agy.cmd\"", "echo agy"]:
+                m = o.agy_door_refusal(c)
+                self.assertTrue(m and m.startswith("agy_consumer_policy"), c)
+            self.assertIn("다른 말", o.agy_door_refusal("echo agy"))
         finally:
             os.environ.pop("CYS_CYS_BIN", None)
             if old_home is not None:
                 os.environ["HOME"] = old_home
+
+    def test_round_log_fallback_is_same_word_check(self):
+        """cys 를 못 부르면(구 cys 의 rc 2 포함) 같은 낱말 검사(Rust names_agy 와 같은 규칙)로 안전 쪽 거부."""
+        import javis_orchestra as o
+        os.environ["CYS_CYS_BIN"] = os.path.join(self.td, "no-such-cys")
+        try:
+            for c in ["true $(printf ')'); \"/opt/agy\"", "a''gy", "AGY.CMD", "env -vSagy", "${X:-agy}", "x" * (64 * 1024 + 1)]:
+                self.assertTrue(o.agy_door_refusal(c), c[:40])
+            for c in ["cargo test --lib", "claude -p 'see docs/agy.md'", "/opt/agyx/bin/claude", "agy-notes"]:
+                self.assertIsNone(o.agy_door_refusal(c), c)
+        finally:
+            os.environ.pop("CYS_CYS_BIN", None)
+
+    def test_guard_exec_position_r5(self):
+        """★r5: guard = 실행 자리 검사 — 프롬프트 CLI·PowerShell 출력은 통과(codex 4R major 5) · 인용된 agy 경로 실행은 거부(blocking 3)."""
+        for cmd in ["claude -p agy", "codex exec agy", "powershell -Command Write-Output 'agy'"]:
+            rc, err = self.g(cmd)
+            self.assertEqual(rc, 0, "%r 막힘: %s" % (cmd, err[-300:]))
+        for cmd in ['call "C:\\Users\\u\\AppData\\Roaming\\npm\\agy.cmd"', 'watch "/opt/agy"', "claude mcp add g -- agy"]:
+            rc, err = self.g(cmd)
+            self.assertEqual(rc, 2, "%r 통과: %s" % (cmd, err[-300:]))
+            self.assertIn("AGY-RUN", err, cmd)
 
 
 def _cys_bin():

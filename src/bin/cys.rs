@@ -3484,9 +3484,14 @@ fn pack_keyring() -> Result<cys::packsig::Keyring, String> {
 
 fn run_agy_door_check(a: &[String]) -> i32 {
     let (mut cmd, mut agent, mut argv) = (None::<String>, None::<String>, Vec::<String>::new());
+    let mut machine = false;
     let mut i = 0;
     while i < a.len() {
         match a[i].as_str() {
+            "--machine" => {
+                machine = true;
+                i += 1;
+            }
             "--" => {
                 argv = a[i + 1..].to_vec();
                 break;
@@ -3513,10 +3518,13 @@ fn run_agy_door_check(a: &[String]) -> i32 {
             }
         }
     }
-    let m = if argv.is_empty() {
+    // ★두 판정(TICKET=cysr-agy-door-r5): `--machine` = 기계 입구 낱말 검사(round-log 등) · 그 밖 `--cmd` = 실행 자리 검사(guard).
+    let m = if !argv.is_empty() {
+        cys::agy_door::launch_refusal_argv(&argv)
+    } else if machine || cmd.is_none() {
         cys::agy_door::launch_refusal(agent.as_deref().unwrap_or(""), cmd.as_deref())
     } else {
-        cys::agy_door::launch_refusal_argv(&argv)
+        cys::agy_door::exec_refusal(cmd.as_deref().unwrap_or(""))
     };
     match m {
         Some(m) => {
@@ -3577,7 +3585,8 @@ fn main() {
     // ★agy 좌석 문 판정만(숨은 동사 `agy-door-check` · 아무것도 실행하지 않음) — 팩 훅(guard)·팩 스크립트가 Rust 판정기를 그대로
     //   쓰는 입구. clap 앞에서 떼어 낸다: 최상위 `Command` 변형을 하나 더하면 시험 스레드(2MB)에서 clap 파싱이 스택을 넘는다
     //   (실측 aid_s5_reap_due 시험 · 변형을 빼면 통과 — 위·아래 갱신 동사·rotate 와 같은 이유).
-    //   형식: `cys agy-door-check --cmd '<셸 문>' [--agent <키>]` 또는 `cys agy-door-check -- <argv…>` · 닫힘+agy = 76(사유 stderr) · 그 밖 0.
+    //   형식: `cys agy-door-check [--machine] --cmd '<셸 문>' [--agent <키>]` 또는 `cys agy-door-check -- <argv…>` · 닫힘+agy = 76(사유 stderr) · 그 밖 0.
+    //   `--machine` = 기계 입구 낱말 검사(round-log) · 없으면 `--cmd` 는 실행 자리 검사(guard) · argv = 실행 자리(cys run 과 같은 것).
     {
         let args: Vec<String> = std::env::args().collect();
         if args.get(1).map(String::as_str) == Some("agy-door-check") {
@@ -14567,7 +14576,8 @@ fn detect_agent_binary(agent: &str, agents: &Value) -> AgentDetection {
 /// `agy_consumer_policy`). 이 오라클을 1순위로 읽는 `javis_orchestra.detect_reviewer` 가 수정 없이 Claude 대체 검토자
 /// (reviewer-claude-1)로 폴백하고, `cys boot` 도 같은 판정으로 agy 행을 건너뛴다. 실행 파일 실재 여부는 사유에 남긴다.
 fn apply_agy_door(agent: &str, d: AgentDetection) -> AgentDetection {
-    if cys::agy_door::launch_refusal(agent, Some(&d.bin)).is_none() {
+    // 실행 파일 이름 검사(③) — 경로의 폴더 이름(사용자 이름 등)으로 오판하지 않는다(TICKET=cysr-agy-door-r5 · 경계 표).
+    if !cys::agy_door::program_refused(agent, &d.bin) {
         return d;
     }
     AgentDetection {

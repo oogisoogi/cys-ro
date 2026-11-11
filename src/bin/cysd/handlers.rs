@@ -7842,14 +7842,21 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             //   표식이 있으면 토큰이 유효해도 **기록**한다(origin=gui_auto 로 감사에서 구별).
             //   ★불변식 ② 는 그대로다 — 표식 없는 실키 입력(sendRaw)은 여전히 무기록이다.
             let human_verified = human && !machine_origin && operator_token_ok(daemon, &params);
-            // ★agy 좌석 문(독립 검증 M3): 문이 닫혀 있으면 agy 좌석으로 가는 **자동** 지시(send·queued·GUI 자동 문안)를 막는다 —
-            //   사람이 자판으로 친 입력(human_verified)은 그대로 · 좌석을 끄지는 않는다(설명서 「닫기」 절과 같은 말).
-            if !human_verified {
+            // ★agy 좌석 문(독립 검증 M3 · codex 4R major 4): 문이 닫혀 있으면 agy 좌석으로 가는 **자동** 지시(send·queued·GUI 자동
+            //   문안)를 막는다 — 사람 자판(human ∧ 기계 출처 아님)은 운영자 토큰 판독이 실패해도 통과시키고(구 GUI·토큰 판독 실패에서
+            //   사람 입력을 거부하지 않는다) 원장에 「토큰 미확인 통과」를 남긴다. 같은 사용자 권한의 흉내(human 자기신고 위조)는
+            //   원리상 한계 — 토큰이 있어도 같다(같은 UID 는 토큰 파일도 읽는다 · 설명서 「알려진 한계」). 좌석을 끄지는 않는다.
+            let human_typed = human && !machine_origin;
+            let agy_seat = || {
                 // agent_meta = (어댑터 키, 해석된 실행 파일) — 좌석 cmd 는 로그인 셸일 수 있어(launch-agent 는 셸에 명령을 친다) 실행 파일로 잰다.
                 let meta = surface.agent_meta.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                let by_meta = meta.as_ref().is_some_and(|(k, bin)| cys::agy_door::launch_refusal(k, Some(bin)).is_some());
-                let by_cmd = !surface.cmd.trim().is_empty() && cys::agy_door::launch_refusal("", Some(&surface.cmd)).is_some();
-                if by_meta || by_cmd {
+                let by_meta = meta.as_ref().is_some_and(|(k, bin)| cys::agy_door::program_refused(k, bin));
+                let by_cmd = !surface.cmd.trim().is_empty() && cys::agy_door::exec_refusal(&surface.cmd).is_some();
+                by_meta || by_cmd
+            };
+            let agy_token_unverified_pass = human_typed && !human_verified && agy_seat();
+            if !human_typed {
+                if agy_seat() {
                     return Reply::Single(reject_send(
                         daemon,
                         sid,
@@ -7890,20 +7897,18 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                 // ★(0.14.43 · J3) 검증 신원이 없고 요청의 `from` 이 좌석 표기가 아닌 문자열(pane 밖 CLI 의 표시용 라벨 `cli:…`)이면 원장에
                 //   가산 키 `from_label` 로 남긴다 — `from`(좌석)의 값·의미는 무변경이고 판정(ACL·게이트·짝 Return)은 이 값을 보지 않는다.
                 //   라벨이 없는 행은 종전 호출 그대로(키 추가 0 · 종전 바이트).
-                match direct_send_from_label(verified_from, &params) {
-                    Some(label) => {
-                        crate::delivery::record_audited_with(
-                            daemon,
-                            sid,
-                            &text,
-                            ledger_origin,
-                            from_sid,
-                            &json!({"from_label": label}),
-                        );
-                    }
-                    None => {
-                        crate::delivery::record_audited(daemon, sid, &text, ledger_origin, from_sid);
-                    }
+                // ★agy 좌석 문(codex 4R major 4): 토큰 판독이 실패한 사람 자판이 닫힌 문의 agy 좌석에 닿았으면 가산 키로 남긴다.
+                let mut extra = serde_json::Map::new();
+                if let Some(label) = direct_send_from_label(verified_from, &params) {
+                    extra.insert("from_label".into(), json!(label));
+                }
+                if agy_token_unverified_pass {
+                    extra.insert("agy_door".into(), json!("토큰 미확인 통과"));
+                }
+                if extra.is_empty() {
+                    crate::delivery::record_audited(daemon, sid, &text, ledger_origin, from_sid);
+                } else {
+                    crate::delivery::record_audited_with(daemon, sid, &text, ledger_origin, from_sid, &serde_json::Value::Object(extra));
                 }
             }
             // clear_first면 원자 Inject(Ctrl-U 선정리 → paste → CR 제출)로, 아니면 현행 Data(원시

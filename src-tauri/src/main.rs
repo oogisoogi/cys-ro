@@ -3890,11 +3890,11 @@ fn agy_seat_door_warning() -> String {
     cys::agy_door::OPEN_WARNING.to_string()
 }
 
-/// 문 여닫기 — 반환 = 쓴 뒤 다시 읽은 실제 상태(쓰기가 조용히 안 먹은 경우를 화면이 알게).
+/// 문 여닫기 — 반환 = 쓴 뒤 **같은 임계 구역 안에서** 다시 읽은 실제 상태(쓰기가 조용히 안 먹은 경우를 화면이 알게 ·
+/// 열기/닫기 직렬화 = codex 4R minor 7).
 #[tauri::command]
 fn agy_seat_door_set(open: bool) -> Result<bool, String> {
-    cys::agy_door::write_door(open)?;
-    Ok(cys::agy_door::door_open())
+    cys::agy_door::write_door(open)
 }
 
 /// 시스템 설정의 해당 화면을 연다(macOS 전용 — 그 밖은 Err). `/usr/bin/open` 절대경로(PATH 무의존)

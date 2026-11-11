@@ -10,7 +10,12 @@
       → 문 닫음 → 그 좌석의 가짜 agy 프로세스만 죽여 「빈 좌석」을 만든다 → 아래 11 입구를 차례로 두드리며 계수(①)
       → ③ 사람처럼 셸 탭에서 `agy` 를 치면 뜬다 → 문 다시 열고 E5 cys restore 가 종전대로 띄우는지(②).
 실행: python3 docs/agy-door-evidence/acceptance.py   (저장소 뿌리에서 · cargo build --bin cys --bin cysd 선행)
+
+r5(TICKET=cysr-agy-door-r5 · codex 4R 발견 6): 결과 파일의 입구는 **전부 이 파일이 실행한다**(E12~E19 포함 · 앞 좌석이 커밋하지
+않았던 E12~E16 코드를 이번에 커밋) · 묘비 명령마다 (rc, 출력) 저장·단언 · 결과에 소스 커밋·바이너리 sha256 결속 · E13 은 데몬
+`schedule.error` 이벤트의 사유(agy_consumer_policy)까지 단언 · 동시 실행 원시 기록 = `run_concurrent.sh`.
 """
+import hashlib
 import getpass
 import json
 import os
@@ -23,7 +28,7 @@ import sys
 import time
 
 
-REDACT_KEYS = {"tail", "fails", "procs"}   # 출력 증거만 지운다 — 판정 낱말(expect_in·entry·id·checks)·키·불리언은 그대로(codex 2R)
+REDACT_KEYS = {"tail", "fails", "procs", "dirty_paths"}   # 출력 증거만 지운다 — 판정 낱말(expect_in·entry·id·checks)·키·불리언은 그대로(codex 2R)
 
 
 def redact_text(text):
@@ -49,6 +54,14 @@ def redact(obj, key=None):
         return redact_text(obj)
     return obj
 
+
+if __name__ == "__main__" and sys.argv[1:2] == ["--redact-text"]:   # 원시 로그(글)를 제자리에서 지운다(하네스 기동 없음)
+    for _p in sys.argv[2:]:
+        with open(_p, encoding="utf-8", errors="replace") as _f:
+            _t = _f.read()
+        with open(_p, "w", encoding="utf-8") as _f:
+            _f.write(redact_text(_t))
+    sys.exit(0)
 
 if __name__ == "__main__" and sys.argv[1:2] == ["--redact"]:   # 이미 쓴 결과 파일을 제자리에서 지운다(하네스 기동 없음)
     for _p in sys.argv[2:]:
@@ -228,6 +241,57 @@ def json_line(out, key):
     return None
 
 
+def raw_rpc(method, params, timeout=20):
+    """데몬 소켓에 직접 한 줄 JSON 요청(앱 화면이 보내는 것과 같은 꼴 — E19 사람 자판 재현용)."""
+    rid = "accept-%d" % time.monotonic_ns()
+    sk = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sk.settimeout(timeout)
+    try:
+        sk.connect(SOCK)
+        sk.sendall((json.dumps({"id": rid, "method": method, "params": params}) + "\n").encode("utf-8"))
+        data = b""
+        while b"\n" not in data:
+            chunk = sk.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+    finally:
+        sk.close()
+    try:
+        return json.loads(data.split(b"\n", 1)[0])
+    except ValueError:
+        return {"raw": data[:400].decode("utf-8", "replace")}
+
+
+def ledger_lines():
+    """하네스 데몬의 배달 원장 줄 전부(delivery-*.jsonl · 격리 상태 폴더)."""
+    out = []
+    for n in sorted(os.listdir(h.HARN_STATE)) if os.path.isdir(h.HARN_STATE) else []:
+        if n.startswith("delivery-") and n.endswith(".jsonl"):
+            with open(os.path.join(h.HARN_STATE, n), encoding="utf-8", errors="replace") as f:
+                out += [l for l in f if l.strip()]
+    return out
+
+
+def sha256_of(path):
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return None
+
+
+def provenance():
+    """결과를 소스 커밋·바이너리에 결속한다(codex 4R 발견 6) — 결과 파일이 어느 코드로 만들어졌는지."""
+    def git(*a):
+        r = subprocess.run(["git", "-C", REPO, *a], capture_output=True, text=True)
+        return r.stdout
+    dirty = [l[3:] for l in git("status", "--porcelain").splitlines() if l.strip()]   # 앞 두 칸 = 상태 글자(strip 금지)
+    return {"source_commit": git("rev-parse", "HEAD").strip(), "dirty_paths": dirty,
+            "harness_sha256": sha256_of(os.path.abspath(__file__)),
+            "cys_sha256": sha256_of(os.path.join(TD, "cys")), "cysd_sha256": sha256_of(os.path.join(TD, "cysd"))}
+
+
 def kill_fake_agy():
     with open(os.path.join(HOME, "AGY_RAN")) as f:
         pids = [int(l.split()[0]) for l in f if l.strip()]
@@ -257,6 +321,29 @@ def main():
            expect_rc=0, expect_in=("[launch-agent] ready",), expect_not_in=(POLICY,))
     time.sleep(2)
     door(False)
+    # E16(독립 검증 M3): 문을 닫은 뒤 떠 있는 agy 좌석으로 가는 자동 지시는 데몬이 거부(사람 자판 입력은 별개 · 좌석은 끄지 않음)
+    gref = next((x.get("surface_ref") or "surface:%s" % x.get("surface_id") for x in surfaces() if x.get("role") == "reviewer-gemini"), None)
+    b = ran(); rc, out = cys("send", "--surface", gref or "surface:0", "hello from automation", timeout=30)
+    record("E16", "문 닫은 뒤 떠 있는 agy 좌석으로 cys send(자동 지시)", b, out, rc, expect_in=(POLICY,),
+           checks=(("agy 좌석 찾음", bool(gref)), ("거부(rc≠0)", rc != 0)))
+    # E19(codex 4R major 4): 같은 좌석에 사람 자판(앱 화면의 실키 = human ∧ 기계 출처 아님)이 운영자 토큰 없이 오면 통과 +
+    #   원장 「토큰 미확인 통과」 — 구 GUI·토큰 판독 실패에서 사람 입력을 거부하지 않는다. 대조 = 같은 요청에 machine_origin → 거부.
+    gsid = next((x.get("surface_id") for x in surfaces() if x.get("role") == "reviewer-gemini"), None)
+    led0 = len(ledger_lines())
+    b = ran(); r_h = raw_rpc("surface.send_text", {"surface_id": gsid, "text": "typed by a person", "human": True})
+    r_m = raw_rpc("surface.send_text", {"surface_id": gsid, "text": "gui auto text", "human": True, "machine_origin": True})
+    new_led = ledger_lines()[led0:]
+    # 사람이 친 글은 입력줄 초안으로 남는다 — 사람처럼 줄을 비운다(Ctrl-U · 남기면 다음 입구 node-recover 가 「사람 초안」 보호로 거부(rc 79))
+    r_clr = raw_rpc("surface.send_text", {"surface_id": gsid, "text": "\u0015", "human": True})
+    time.sleep(1)
+    record("E19", "문 닫힘 · agy 좌석에 사람 자판(토큰 없음) 통과 + 원장 표시 · 대조 machine_origin 거부", b,
+           json.dumps({"human": r_h, "machine_origin": r_m}, ensure_ascii=False), 0,
+           checks=(("agy 좌석 찾음", gsid is not None),
+                   ("사람 자판 = ok", r_h.get("ok") is True),
+                   ("사람 줄 비우기(Ctrl-U) = ok", r_clr.get("ok") is True),
+                   ("원장에 「토큰 미확인 통과」", any('"agy_door"' in l and "토큰 미확인 통과" in l for l in new_led)),
+                   ("대조: machine_origin = 거부(agy_consumer_policy)", r_m.get("ok") is not True
+                    and POLICY in json.dumps(r_m, ensure_ascii=False))))
     kill_fake_agy()   # pane(셸)은 남기고 가짜 agy 만 → reviewer-gemini 를 쥔 빈 좌석
     time.sleep(6)     # 데몬 워치독이 agent_alive=false 를 보도록
 
@@ -317,6 +404,27 @@ def main():
     time.sleep(4)
     record("E11", "cys new-surface --cmd agy(어댑터 선언 없이)", b, out, rc,
            expect_rc=76, expect_in=("[new-surface] " + POLICY,))
+    # E12~E15(독립 검증 B1·B2): 셸 문을 실행하던 무판정 입구
+    agy = os.path.join(FAKE, "agy")
+    b = ran(); rc, out = cys("schedule", "add", "--id", "agyjob", "--in", "2s", "--command", agy + " -p review")
+    record("E12", "cys schedule add --command agy(등록 때 판정)", b, out, rc, expect_rc=76, expect_in=("[schedule] " + POLICY,))
+    b = ran(); rc, out = cys("channel", "start", "agych", "--cmd", agy + " -p bridge")
+    record("E14", "cys channel start --cmd agy(채널 브리지)", b, out, rc, expect_rc=76, expect_in=("[channel] " + POLICY,))
+    b = ran(); rc, out = run([sys.executable, os.path.join(BIN, "javis_orchestra.py"), "round-log", "--task", "agyt", "--round", "1",
+                              "--evaluator", "machine", "--from-cmd", agy + " -p review"], timeout=60)
+    record("E15", "javis_orchestra.py round-log --from-cmd agy", b, out, rc, expect_rc=76, expect_in=("[round-log] 거부", POLICY))
+    # E17(r5 · 받아들인 거짓 양성): 기계 입구는 낱말만 있어도 거부 — 거부 글이 까닭과 푸는 법(낱말 바꾸기)을 말한다
+    bc = ran("claude")
+    b = ran(); rc, out = cys("schedule", "add", "--id", "agyword", "--in", "2s", "--command", "claude -p 'review agy door'")
+    record("E17", "일정 --command 프롬프트 속 「agy」 낱말(받아들인 거짓 양성 · 안내 글)", b, out, rc, expect_rc=76,
+           expect_in=("[schedule] " + POLICY, "낱말", "다른 말"), checks=(("가짜 claude 실행 0", ran("claude") == bc),))
+    # E18(codex 4R blocking 2·3): 치환 괄호 속 따옴표 · 래퍼의 인용된 agy 경로 — 기계 입구 낱말 검사가 구조와 무관하게 거부
+    b = ran(); rc, out = cys("schedule", "add", "--id", "agysub", "--in", "2s", "--command", "true $(printf ')'); \"%s\"" % agy)
+    record("E18a", "일정 --command 'true $(printf \')\'); \"…/agy\"'(4R blocking 2)", b, out, rc, expect_rc=76,
+           expect_in=("[schedule] " + POLICY,))
+    b = ran(); rc, out = cys("channel", "start", "agywatch", "--cmd", "watch \"%s\"" % agy)
+    record("E18b", "채널 --cmd 'watch \"…/agy\"'(4R blocking 3 · 인용된 래퍼 대상)", b, out, rc, expect_rc=76,
+           expect_in=("[channel] " + POLICY,))
     # E9 = 앱 팔레트 「재기동 → reviewer-gemini」·「부서 간 전출」 이 하는 일 — 빈 셸에 그 명령을 쳐 넣는다
     rc, out = cys("new-surface", "--cwd", HOME)
     ref = next((w for w in out.split() if w.startswith("surface:")), None)
@@ -338,6 +446,33 @@ def main():
     record("③", "사람이 셸 탭에서 직접 `agy` 입력(허용)", b, out, rc, expect_delta=1, expect_rc=0,
            expect_in=("? for shortcuts",))
 
+    # E13(독립 검증 B1 · 발화 때 판정): 대조 = 문 열림에서 등록·발화 → agy +1 · 본 = 문 열림에서 등록 뒤 닫고 발화 → +0
+    door(True)
+    b = ran(); rc, out = cys("schedule", "add", "--id", "agyctl", "--in", "3s", "--command", agy + " -p ctl")
+    for _ in range(40):
+        if ran() > b:
+            break
+        time.sleep(1)
+    record("E13c", "대조: 문 열림 · 일정 --command agy 발화(일정이 실제로 돈다)", b, out, rc, expect_delta=1, expect_rc=0)
+    ev_path = os.path.join(HOME, "schedule-events.log")
+    with open(ev_path, "w") as evf:
+        evp = subprocess.Popen([os.path.join(TD, "cys"), "--socket", SOCK, "events", "--name", "schedule.error"], env=ENV,
+                               stdout=evf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+    time.sleep(2)
+    b = ran(); rc, out = cys("schedule", "add", "--id", "agyfire", "--in", "8s", "--command", agy + " -p fire")
+    door(False)
+    time.sleep(30)
+    evp.terminate()   # 이 하네스가 띄운 구독 프로세스 하나(pid 직접)
+    try:
+        evp.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        evp.kill()
+    with open(ev_path, encoding="utf-8", errors="replace") as f:
+        ev = f.read()
+    ev_hit = [l for l in ev.splitlines() if "agyfire" in l]
+    record("E13", "문 열림에서 등록한 일정 --command agy · 닫은 뒤 발화(발화 때 판정)", b, out + "\n[events]\n" + ev, rc, expect_rc=0,
+           checks=(("데몬 schedule.error 에 agyfire", bool(ev_hit)),
+                   ("그 사유 = agy_consumer_policy(codex 4R 발견 6)", any(POLICY in l for l in ev_hit))))
     # ② 문 다시 열면 복원이 종전대로 띄운다
     # ★결정성(master#a078504c · 스냅샷 재실행 적색): `cys restore` 에는 역할 필터가 없어 앞 입구가 남긴 좌석(E6 의 reviewer-codex·
     #   reviewer-claude-*, E8 의 cso·worker — 가짜 에이전트는 시간이 지나면 끝난다)까지 되살리려 들고, 그 성패가 부하에 따라
@@ -350,9 +485,15 @@ def main():
         except (OSError, ValueError):
             pass
     _tombed = sorted(r for r in _roles if r and r not in ("reviewer-gemini", "-", "master"))
+    _tomb_rc, _tomb_out = {}, {}
     for _r in _tombed:
-        cys("tombstone", _r, timeout=20)
+        _tomb_rc[_r], _tomb_out[_r] = cys("tombstone", _r, timeout=20)
     print("②E5 준비: 묘비로 닫은 역할 =", _tombed)
+    # codex 4R 발견 6: 묘비 명령마다 (rc, 출력)을 저장하고 단언한다(전부 rc 0 · 출력에 오류 낱말 없음)
+    results.append({"id": "②E5-tomb", "entry": "②E5 준비 묘비 명령별 (rc, 출력)",
+                    "pass": bool(_tombed) and all(_tomb_rc[r] == 0 and "error" not in _tomb_out[r].lower() for r in _tombed),
+                    "tombs": [{"role": r, "rc": _tomb_rc[r], "tail": _tomb_out[r].strip().splitlines()[-3:]} for r in _tombed]})
+    print("%s ②E5-tomb 묘비 %d건 rc=%s" % ("PASS" if results[-1]["pass"] else "FAIL", len(_tombed), sorted(set(_tomb_rc.values()))))
     door(True)
     b = ran(); rc, out = cys("restore")
     # 판정은 역할 블록에 결속한다(codex 2R): restore 가 세운 좌석 = reviewer-gemini 하나 · 그 블록 = ready · 관문 보류·오류 없음 · rc 0.
@@ -360,7 +501,7 @@ def main():
     gem = blk.get("reviewer-gemini", "")
     record("②E5", "문 열림 · cys restore(종전대로 다시 뜸)", b, out, rc, expect_delta=1, expect_rc=0,
            expect_in=("실패 0",), expect_not_in=(SKIP_LINE, "· reviewer-gemini: 기동 실패"),
-           checks=(("앞 입구 역할 묘비 처리됨(restore 대상 = gemini 하나)", bool(_tombed)),
+           checks=(("앞 입구 역할 묘비 처리 = 전부 rc 0(codex 3R: 반환 코드 단언)", bool(_tomb_rc) and all(v == 0 for v in _tomb_rc.values())),
                    ("restore 가 세운 좌석 = reviewer-gemini 뿐", sorted(blk) == ["reviewer-gemini"]),
                    ("reviewer-gemini 블록 = ready", "[launch-agent] ready" in gem),
                    ("reviewer-gemini 블록에 관문 보류·오류 없음", bool(gem) and "관문 보류" not in gem and "error" not in gem.lower())))
@@ -382,7 +523,7 @@ if __name__ == "__main__":
             print("teardown:", e)
     ok = all(r["pass"] for r in res)
     with open(out_path, "w") as f:
-        json.dump(redact({"ok": ok, "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "results": res}),
+        json.dump(redact({"ok": ok, "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "provenance": provenance(), "results": res}),
                   f, ensure_ascii=False, indent=1)
     print("종합:", "PASS" if ok else "FAIL", "·", out_path)
     sys.exit(0 if ok else 1)

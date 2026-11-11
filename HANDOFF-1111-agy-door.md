@@ -83,3 +83,18 @@
 
 ## 미완
 - 독립 검증 좌석(master 몫) · 사후 codex(11-13 06:47 뒤 · bc27f1ca 기준) · push 0
+
+## r5 라운드(TICKET=cysr-agy-door-r5 · 후임 surface:1994 · 22:29~ · codex 4R BLOCK 처분)
+- 지시 = spawn 브리프(원장 22:28:59 · 대상 1994) + master#7f3602d7(미커밋 acceptance.py 처분)
+- **판정 방식 분리**(설계 변경 · 4R 2·3·5): 기계 입구 = `names_agy` 낱말 검사(셸 무해석 · 거짓 양성 받아들임 · 거부 글 덧말) /
+  guard·`cys run` = `runs_agy` 실행 자리 검사(프롬프트 CLI·PowerShell 출력 면제 · 인용된 낱말 전체 agy 경로 안전망 · 위임 뒤 바깥 안전망 생략) /
+  해석된 실행 파일 = `program_is_agy`(이름만 — 사용자 이름 agy 오판 방지). 표 = `docs/agy-door-evidence/ENTRY-MODES.md`.
+- 4R 1 phoenix: 대상이 정책 건너뜀뿐이면 차단기 읽기·쓰기 0(P6 · M5) · 4R 4 데몬: human ∧ ¬machine_origin 이면 토큰 판독 실패여도 통과 +
+  원장 `agy_door: 토큰 미확인 통과`(E19) · 4R 7 문 쓰기 프로세스 전역 Mutex + 고유 임시본 + 임계 구역 안 상태 반환 · 4R 8 64KiB·치환 64 상한.
+- 4R 6 하네스: 앞 좌석의 **미커밋** acceptance.py 변경(E12~E16 + 묘비 rc) = 발견 6 원인(커밋 누락) → 보강 후 커밋(E13 데몬 schedule.error 사유 ·
+  E17 거짓 양성 안내 · E18a/b 4R 2·3 재현 · E19 · 묘비 (rc,출력) 결과 항목 · provenance(커밋·dirty·sha256)) · `run_concurrent.sh` = 동시 N회 원시 기록.
+
+### 함정(r5)
+- 낱말 검사에서 `-` 를 낱말 글자로 두면 `env -vSagy`·`${X:-agy}` 가 빠진다 → 「줄표로 시작하는 낱말은 끝이 이름이어도 agy」 규칙.
+- guard 안전망을 인용 낱말까지 넓히면 `powershell -Command Write-Output 'agy'` 의 바깥 단위에서 다시 걸린다 → 위임 갈래는 바깥 안전망 생략(true).
+- 뮤턴트·acceptance 를 같은 작업 트리에서 겹쳐 돌리면 provenance dirty_paths 가 오염된다 — 순차로.

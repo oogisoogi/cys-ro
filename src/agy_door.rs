@@ -17,8 +17,9 @@
 //!   ② 문 자리는 `home_dir()`(유닉스 = `HOME` 우선)이다 — `HOME` 을 바꾸면 다른 폴더의 문을 보지만 그 문 파일을 쓰는 단계가 ①의 훅에 걸린다
 //!      (환경 변수 **하나만으로** 열리는 길은 없다 · 시험 `env_never_opens_the_door` 의 범위). 경로를 계정 홈에 고정하지 않은 까닭 =
 //!      격리 시험(하네스·단위)이 `HOME` 으로 격리하고, 윈도우 홈도 환경 변수다.
-//!   ③ 실행 프로그램 판정은 **명령 문자열**을 읽는다 — 이름 바꾼 사본·심링크·변수에 담은 이름·eval·글롭·스크립트 파일·대신 실행(인터프리터
-//!      exec 등)·맨 셸 좌석에 글자로 쳐 넣기는 원리상 다 못 잡는다(안전망 = 인용 안 된 agy 낱말 · 목록으로 줄일 수 있는 부류만 줄임).
+//!   ③ 판정은 **명령 문자열**을 읽는다 — 기계 입구는 낱말 검사(셸 무해석 · 이름이 글자로 있으면 어떤 꼴이든 거부)라 남는 것은 이름이
+//!      글자에 없는 꼴(글롭·스크립트 파일·이름 바꾼 사본·심링크·실행 시점 조립)뿐이고, guard(실행 자리 검사)에는 꼬아 쓰기(치환 속 따옴표·
+//!      변수·인터프리터 exec)도 남는다 · 맨 셸 좌석에 글자로 쳐 넣기는 못 잡는다(입구 표 = `docs/agy-door-evidence/ENTRY-MODES.md`).
 //!   실행 시점 차단(실행 파일 실체 감시)·앱 서명에 묶은 문은 다음 판 설계 과제(master 1.1.15 범위 판단 · USER-MANUAL 「알려진 한계」).
 //!
 //! leaf 모듈 — cys 도메인 모듈에 의존하지 않는다(`home_dir` 만 · 판정은 순수 함수).
@@ -1079,6 +1080,12 @@ mod tests {
         let left: Vec<_> = std::fs::read_dir(p.parent().unwrap()).unwrap().flatten()
             .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp")).map(|e| e.file_name()).collect();
         assert!(left.is_empty(), "임시본 잔존 {left:?}");
+        // 다른 프로세스(앱 두 벌)가 쓰는 중인 임시본(종전 고정 이름)을 건드리지 않는다 — 고유 임시본
+        let foreign = p.with_extension("json.tmp");
+        std::fs::write(&foreign, "foreign-in-flight").unwrap();
+        write_door_at(&p, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&foreign).ok().as_deref(), Some("foreign-in-flight"), "남의 임시본을 덮거나 옮겼다");
+        std::fs::remove_file(&foreign).unwrap();
         // 마지막에 누른 닫기가 이긴다
         write_door_at(&p, true).unwrap();
         assert!(!write_door_at(&p, false).unwrap() && !door_open_at(&p));

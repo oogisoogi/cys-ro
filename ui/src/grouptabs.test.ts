@@ -5,7 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { buildSeatRows, type SeatInput } from "./seatrows";
-import { GROUP_TABS_KEY, groupTabsOn, normalizeTabState, reconcileTabs, viewTree } from "./grouptabs";
+import { GROUP_TABS_KEY, groupTabsOn, normalizeTabState, reconcileTabs, seatKey, viewTree, zoomKeyOf } from "./grouptabs";
 import type { LayoutNode } from "./formation";
 
 const seat = (sid: number, role: string, cwd: string): SeatInput => ({
@@ -32,7 +32,7 @@ describe("탭 판정", () => {
     expect(r.view.hidden).toEqual([]);
   });
   test("노브 꺼짐 = 묶음이 여럿이어도 탭 없음 · 숨김 0 · 저장 순서는 지우지 않는다", () => {
-    const prev = { order: ["lms", "site"], active: "lms", zoom: null };
+    const prev = { order: ["lms", "site"], active: "lms", zoom: null, zoomKey: null };
     const r = reconcileTabs(model(M, seat(3, "worker", "/w/site"), seat(4, "worker-2", "/w/lms")), prev, false);
     expect(r.view.tabs).toEqual([]);
     expect(r.view.hidden).toEqual([]);
@@ -45,7 +45,7 @@ describe("탭 판정", () => {
     expect(r.view.hidden).toEqual([4]);
   });
   test("저장된 탭 순서를 지킨다 · 사라진 묶음은 빠지고 새 묶음은 뒤에 붙는다", () => {
-    const prev = { order: ["lms", "gone", "site"], active: "site", zoom: null };
+    const prev = { order: ["lms", "gone", "site"], active: "site", zoom: null, zoomKey: null };
     const r = reconcileTabs(model(M, seat(3, "worker", "/w/site"), seat(4, "worker-2", "/w/lms"), seat(6, "worker-4", "/w/video")), prev, true);
     expect(r.state.order).toEqual(["lms", "site", "video"]);
     expect(r.view.tabs.map((t) => t.key)).toEqual(["lms", "site", "video"]);
@@ -53,27 +53,27 @@ describe("탭 판정", () => {
     expect(r.view.hidden.sort()).toEqual([4, 6]);
   });
   test("활성 묶음이 사라지면 첫 탭으로", () => {
-    const r = reconcileTabs(model(M, seat(3, "worker", "/w/site"), seat(4, "worker-2", "/w/lms")), { order: [], active: "gone", zoom: null }, true);
+    const r = reconcileTabs(model(M, seat(3, "worker", "/w/site"), seat(4, "worker-2", "/w/lms")), { order: [], active: "gone", zoom: null, zoomKey: null }, true);
     expect(r.view.active).toBe("site");
   });
   test("넓게 보기 = 그 좌석만(+ 고정 좌석) · 활성 탭 = 그 좌석의 묶음", () => {
-    const r = reconcileTabs(model(M, seat(3, "worker", "/w/site"), seat(4, "worker-2", "/w/lms"), seat(5, "worker-3", "/w/lms")), { order: [], active: "site", zoom: 5 }, true);
+    const r = reconcileTabs(model(M, seat(3, "worker", "/w/site"), seat(4, "worker-2", "/w/lms"), seat(5, "worker-3", "/w/lms")), { order: [], active: "site", zoom: 5, zoomKey: "role:worker-3" }, true);
     expect(r.view.active).toBe("lms");
     expect(r.view.zoom).toBe(5);
     expect(r.view.hidden.sort()).toEqual([3, 4]);
   });
   test("넓게 보던 좌석이 사라지면 넓게 보기를 푼다", () => {
-    const r = reconcileTabs(model(M, seat(3, "worker", "/w/site"), seat(4, "worker-2", "/w/lms")), { order: [], active: "site", zoom: 99 }, true);
+    const r = reconcileTabs(model(M, seat(3, "worker", "/w/site"), seat(4, "worker-2", "/w/lms")), { order: [], active: "site", zoom: 99, zoomKey: "role:worker-9" }, true);
     expect(r.view.zoom).toBeNull();
     expect(r.state.zoom).toBeNull();
   });
   test("묶음 1개여도 넓게 보기는 된다(좌석 줄 클릭) — 다른 좌석만 숨김", () => {
-    const r = reconcileTabs(model(M, seat(3, "worker", "/w/site"), seat(4, "worker-2", "/w/site")), { order: [], active: null, zoom: 4 }, true);
+    const r = reconcileTabs(model(M, seat(3, "worker", "/w/site"), seat(4, "worker-2", "/w/site")), { order: [], active: null, zoom: 4, zoomKey: "role:worker-2" }, true);
     expect(r.view.tabs).toEqual([]);
     expect(r.view.hidden).toEqual([3]);
   });
   test("재부팅 뒤 좌석 번호가 새로 발급돼도 같은 묶음 열쇠(폴더)라 같은 탭 배치", () => {
-    const prev = reconcileTabs(model(M, seat(3, "worker", "/w/site"), seat(4, "worker-2", "/w/lms")), { order: ["lms", "site"], active: "lms", zoom: null }, true).state;
+    const prev = reconcileTabs(model(M, seat(3, "worker", "/w/site"), seat(4, "worker-2", "/w/lms")), { order: ["lms", "site"], active: "lms", zoom: null, zoomKey: null }, true).state;
     const saved = JSON.parse(JSON.stringify(prev));
     const after = reconcileTabs(model(seat(101, "master", "/w"), seat(103, "worker", "/w/site"), seat(104, "worker-2", "/w/lms")), normalizeTabState(saved), true);
     expect(after.view.tabs.map((t) => t.key)).toEqual(["lms", "site"]);
@@ -82,12 +82,47 @@ describe("탭 판정", () => {
   });
 });
 
+describe("(codex 1R) 넓게 보기 = 번호가 아니라 안정 열쇠(역할 · 없으면 폴더)", () => {
+  test("재부팅 뒤 번호가 뒤바뀌어도(A 좌석 7→9 · B 좌석 → 7) B 를 넓게 보지 않고 A 를 따라간다", () => {
+    const before = model(M, seat(7, "worker", "/w/site"), seat(8, "worker-2", "/w/lms"));
+    const saved = JSON.parse(JSON.stringify({ order: ["site", "lms"], active: "site", zoom: 7, zoomKey: zoomKeyOf(before, 7) }));
+    const after = reconcileTabs(model(M, seat(9, "worker", "/w/site"), seat(7, "worker-2", "/w/lms")), normalizeTabState(saved), true);
+    expect(after.view.zoom).toBe(9);
+    expect(after.view.active).toBe("site");
+    expect([after.state.zoom, after.state.zoomKey]).toEqual([9, "role:worker"]);
+  });
+  test("넓게 보던 좌석이 사라지고 그 번호를 다른 좌석이 받았으면 넓게 보기만 풀고 저장된 활성 탭은 그대로", () => {
+    const after = reconcileTabs(model(M, seat(7, "worker-2", "/w/lms"), seat(8, "worker-3", "/w/site")), { order: ["site", "lms"], active: "site", zoom: 7, zoomKey: "role:worker" }, true);
+    expect(after.view.zoom).toBeNull();
+    expect(after.view.active).toBe("site");
+    expect([after.state.active, after.state.zoom, after.state.zoomKey]).toEqual(["site", null, null]);
+  });
+  test("열쇠 없는 저장값(옛 형식 zoom 만) = 알아볼 수 없음 → 풀기 · 활성 탭 유지", () => {
+    const after = reconcileTabs(model(M, seat(7, "worker", "/w/site"), seat(8, "worker-2", "/w/lms")), normalizeTabState({ order: [], active: "lms", zoom: 7 }), true);
+    expect(after.view.zoom).toBeNull();
+    expect(after.view.active).toBe("lms");
+  });
+  test("역할 없는 좌석 = 폴더 열쇠 · 같은 폴더에 역할 없는 좌석이 둘이면 번호가 맞을 때만 붙들고 옮기지 않는다", () => {
+    const two = model(M, seat(5, "", "/w/site"), seat(6, "", "/w/site"), seat(8, "worker-2", "/w/lms"));
+    expect(zoomKeyOf(two, 5)).toBe("cwd:/w/site");
+    expect(reconcileTabs(two, { order: [], active: null, zoom: 5, zoomKey: "cwd:/w/site" }, true).view.zoom).toBe(5);
+    const moved = model(M, seat(15, "", "/w/site"), seat(16, "", "/w/site"), seat(5, "worker-2", "/w/lms"));
+    expect(reconcileTabs(moved, { order: [], active: null, zoom: 5, zoomKey: "cwd:/w/site" }, true).view.zoom).toBeNull();
+  });
+  test("seatKey — 역할 우선 · 폴더 다음 · 둘 다 없으면 null · 고정 좌석(master)은 zoomKeyOf 대상 아님", () => {
+    expect(seatKey({ role: " worker ", cwd: "/w" })).toBe("role:worker");
+    expect(seatKey({ role: null, cwd: "/w/a" })).toBe("cwd:/w/a");
+    expect(seatKey({ role: null, cwd: null })).toBeNull();
+    expect(zoomKeyOf(model(M, seat(3, "worker", "/w/site")), 1)).toBeNull();
+  });
+});
+
 describe("저장값 정규화", () => {
   test("형식 오류 = 기본값 · 문자열 아닌 순서 항목 버림 · zoom 은 정수만", () => {
-    expect(normalizeTabState(undefined)).toEqual({ order: [], active: null, zoom: null });
-    expect(normalizeTabState("x")).toEqual({ order: [], active: null, zoom: null });
-    expect(normalizeTabState({ order: ["a", 3, "b", "a"], active: 5, zoom: 1.5 })).toEqual({ order: ["a", "b"], active: null, zoom: null });
-    expect(normalizeTabState({ order: ["a"], active: "a", zoom: 7 })).toEqual({ order: ["a"], active: "a", zoom: 7 });
+    expect(normalizeTabState(undefined)).toEqual({ order: [], active: null, zoom: null, zoomKey: null });
+    expect(normalizeTabState("x")).toEqual({ order: [], active: null, zoom: null, zoomKey: null });
+    expect(normalizeTabState({ order: ["a", 3, "b", "a"], active: 5, zoom: 1.5, zoomKey: 3 })).toEqual({ order: ["a", "b"], active: null, zoom: null, zoomKey: null });
+    expect(normalizeTabState({ order: ["a"], active: "a", zoom: 7, zoomKey: "role:w" })).toEqual({ order: ["a"], active: "a", zoom: 7, zoomKey: "role:w" });
   });
 });
 
@@ -146,7 +181,8 @@ describe("main.ts 배선(2a) — 배선만", () => {
     expect(main).toContain("if (!groupTabs) applyGroupTabs(true); gtCb.checked = true;");
   });
   test("좌석 줄 클릭 = 넓게 보기 토글 · 고정 좌석은 대상 아님", () => {
-    expect(body("pickSeat")).toContain("ws.tabs = { ...st, zoom: st.zoom === sid && i === activeWs ? null : sid };");
+    expect(body("pickSeat")).toContain("const off = st.zoom === sid && i === activeWs;");
+    expect(body("pickSeat")).toContain("ws.tabs = { ...st, zoom: off ? null : sid, zoomKey: off || !m ? null : zoomKeyOf(m, sid) };");
     expect(body("pickSeat")).toContain("if (groupTabs && !fixed) {");
   });
 });
@@ -173,6 +209,17 @@ describe("(2c) 같은 크기 재전송 0 — fitPane 배선", () => {
     expect(f.indexOf("if (lastSentSize.get(rt) === size) return;") < f.indexOf('invoke("resize_surface"')).toBe(true);
     expect(f).toContain(".catch(() => lastSentSize.delete(rt));");
     expect(f).toContain("if (rt.termHost.offsetWidth < 60 || rt.termHost.offsetHeight < 40) return;"); // 숨은 좌석 = PTY 마지막 크기 유지(기존 가드)
+  });
+  // (codex 1R 논쟁 · 재부착) 크기 기억은 런타임 객체에 묶인 WeakMap 이다. 붙기(start_surface_stream)는 makePane 안 한 곳뿐이고
+  //   그 직후 새 런타임을 만들므로 새 PTY 에 붙을 때마다 기억은 비어 시작한다 = 첫 맞춤은 반드시 보낸다.
+  //   같은 런타임을 새 PTY 에 다시 붙이는 길이 생기면 이 시험이 깨진다 — 그때 그 길에서 lastSentSize.delete(rt) 를 넣어라.
+  test("붙기는 makePane 안 한 곳뿐 · 붙은 뒤 새 런타임 = 크기 기억 빈 채 시작", () => {
+    expect(main.split('invoke("start_surface_stream"').length - 1).toBe(1);
+    const i = main.indexOf("async function makePane(");
+    const f = main.slice(i, main.indexOf("\n}\n", i));
+    expect(f).toContain('await invoke("start_surface_stream", { socket, surfaceId: sid });');
+    expect(f.indexOf('invoke("start_surface_stream"') < f.indexOf("const rt: PaneRuntime = {")).toBe(true);
+    expect(main).toContain("const lastSentSize = new WeakMap<PaneRuntime, string>();");
   });
 });
 

@@ -79,6 +79,8 @@ export interface SeatRow {
   ctxPct: number | null;
   ctxSrc: CtxSource;
   role: string | null;
+  /** 좌석 생성 폴더 — 넓게 보기 좌석을 재부팅 너머로 알아보는 열쇠의 둘째 재료(grouptabs.seatKey). */
+  cwd?: string | null;
 }
 
 export interface SeatGroup {
@@ -155,6 +157,7 @@ function toRow(i: SeatInput): SeatRow {
     ctxPct: i.ctxPct,
     ctxSrc: i.ctxSrc,
     role: i.role,
+    cwd: i.cwd,
   };
 }
 

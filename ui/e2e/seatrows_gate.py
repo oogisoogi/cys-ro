@@ -192,6 +192,26 @@ def main() -> int:
                             vis = pg.evaluate("() => [...document.querySelectorAll('#root .pane')].map((p) => +p.dataset.sid).sort((a,b)=>a-b)")
                             check(vis == [1, 2, 8, 9], f"video 탭 = 고정 1·2 + video 8·9 {vis}")
                             pg.screenshot(path=str(OUT / f"{name}-{w}-tab-video.png"))
+                            # (codex 1R 경미) 탭 화면에서 고정 기둥 경계 끌기 — 끄는 중 경계가 손을 따라가고(래퍼 flex 갱신) · 탭을 바꿔도 같은 자리
+                            DIV = "() => { const d = document.querySelector('#root > .split.row > .divider'); if (!d) return null; const r = d.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; }"
+                            d0 = pg.evaluate(DIV)
+                            check(d0 is not None, "고정 기둥 경계 있음")
+                            if d0:
+                                tx = d0["x"] + 160
+                                pg.mouse.move(d0["x"], d0["y"])
+                                pg.mouse.down()
+                                pg.mouse.move(tx, d0["y"], steps=6)
+                                mid = pg.evaluate(DIV)
+                                pg.mouse.up()
+                                pg.wait_for_timeout(200)
+                                d1 = pg.evaluate(DIV)
+                                check(mid is not None and abs(mid["x"] - tx) <= 3, f"끄는 중 경계 = 손 위치 ±3px ({mid and round(mid['x'])} vs {round(tx)})")
+                                pg.click('#root .group-tab:nth-child(1)')
+                                pg.wait_for_timeout(300)
+                                d2 = pg.evaluate(DIV)
+                                check(d1 is not None and d2 is not None and abs(d1["x"] - d2["x"]) <= 2, f"끈 뒤 = 탭 바꾼 뒤 경계 같은 자리 ±2px ({d1 and round(d1['x'])} → {d2 and round(d2['x'])})")
+                                pg.click('#root .group-tab:nth-child(3)')
+                                pg.wait_for_timeout(300)
                         if w == 1920:
                             pg.click('.ws-seat[data-sid="6"]')  # 934 = lms 묶음 → 그 좌석만 넓게
                             pg.wait_for_timeout(300)

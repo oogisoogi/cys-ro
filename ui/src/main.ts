@@ -341,7 +341,7 @@ import { activityExpiryMs, applyDotPaint, HIDDEN_DOT, projectActivity, RoleActiv
 import { SurfaceListTransport, type ListArrival } from "./surfacelist"; // ★F-01 끝점별 소유 원 호출 · 응답별 독립 투영
 import { approvalSeatKeys, buildSeatRows, namedSeatInputs, seatDot, seatInputOf, type SeatInput } from "./seatrows"; // (tabs-sidebar 조각1) 좌석 줄 판정·묶음
 import { paintSeatRows, pruneSeatHosts, seatHost } from "./seatrowsdom"; // (tabs-sidebar 조각1) 좌석 줄 그리기
-import { fixedColumnSplit, GROUP_TABS_KEY, groupTabsOn, normalizeTabState, reconcileTabs, viewTree, type TabState, type TabView } from "./grouptabs";
+import { fixedColumnSplit, GROUP_TABS_KEY, groupTabsOn, normalizeTabState, reconcileTabs, viewTree, zoomKeyOf, type TabState, type TabView } from "./grouptabs";
 import { buildTabBar } from "./tabbar"; // (tabs-sidebar 2b) 탭 머리 줄 // (tabs-sidebar 조각2) 묶음 탭 판정
 import type { SeatRowsModel } from "./seatrows";
 import { accountNeedsAction, BOARD_KEY, BOARD_OPEN_KEY, BOARD_POS_KEY, boardCounts, boardOpen, boardPos, boardVariant, limitLine, limitPct, nextSeat, paintBoard, type BoardState } from "./statusboard"; // (tabs-sidebar 1d) 상황판 시안
@@ -5591,8 +5591,9 @@ function attachDividerDrag(
       const ratio = Math.min(0.85, Math.max(0.15, pos / size));
       node.ratio = ratio;
       delete node.leftAuto; // 사람이 끈 폭 — 이제 기본 폭이 아니다(창 크기 변경·자동 정렬이 다시 재지 않는다)
-      aEl.style.flex = `${ratio} 1 0%`;
-      bEl.style.flex = `${1 - ratio} 1 0%`;
+      // (tabs-sidebar codex 1R) 탭 머리 줄(mountTabBar)이 오른쪽 칸을 래퍼로 감싸면 분할의 직계 자식은 래퍼다 — 지금 경계 양옆 요소에 쓴다.
+      ((divider.previousElementSibling as HTMLElement | null) ?? aEl).style.flex = `${ratio} 1 0%`;
+      ((divider.nextElementSibling as HTMLElement | null) ?? bEl).style.flex = `${1 - ratio} 1 0%`;
     };
     const up = () => {
       divider.classList.remove("dragging");
@@ -6023,7 +6024,9 @@ function pickSeat(ws: Workspace, sid: number): void {
   const fixed = seatModels.get(ws.id)?.fixed.some((r) => r.sid === sid) ?? false;
   if (groupTabs && !fixed) {
     const st = normalizeTabState(ws.tabs);
-    ws.tabs = { ...st, zoom: st.zoom === sid && i === activeWs ? null : sid };
+    const off = st.zoom === sid && i === activeWs;
+    const m = seatModels.get(ws.id);
+    ws.tabs = { ...st, zoom: off ? null : sid, zoomKey: off || !m ? null : zoomKeyOf(m, sid) }; // (codex 1R) 열쇠 = 역할·폴더(번호 재발급에 안전)
   }
   activeWs = i;
   render();

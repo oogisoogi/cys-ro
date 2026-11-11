@@ -7,7 +7,7 @@
 // ★탭 열쇠 = 묶음 열쇠(폴더 이름 문자열)라 재부팅으로 좌석 번호가 새로 발급돼도 같은 배치가 돌아온다(wsreconcile.ts 머리 주석).
 // ★숨김 = DOM 에서 떼어 두기(다른 부서 좌석과 같은 길) — PTY 는 마지막 크기 그대로(main.ts fitPane 가드).
 import { arrangeWithoutRoles, autoArrange, type LayoutNode } from "./formation";
-import type { SeatRowsModel } from "./seatrows";
+import type { SeatRow, SeatRowsModel } from "./seatrows";
 
 export const GROUP_TABS_KEY = "cys-group-tabs";
 /** 기본 켜짐 — "0" 일 때만 끈다(꺼지면 지금처럼 전부 나란히). */
@@ -22,6 +22,8 @@ export interface TabState {
   active: string | null;
   /** 넓게 보기 중인 좌석 sid(좌석 줄 클릭) — null = 묶음 전체 나란히. */
   zoom: number | null;
+  /** (codex 1R) 넓게 보기 좌석의 안정 열쇠(seatKey) — 재부팅으로 번호가 다시 발급돼도 같은 좌석을 찾는다. 없으면 넓게 보기를 붙들지 않는다. */
+  zoomKey: string | null;
 }
 
 export interface TabInfo {
@@ -39,7 +41,7 @@ export interface TabView {
   hidden: number[];
 }
 
-const EMPTY: TabState = { order: [], active: null, zoom: null };
+const EMPTY: TabState = { order: [], active: null, zoom: null, zoomKey: null };
 
 /** 저장값(localStorage → JSON) 정규화 — 형식이 어긋나면 그 칸만 기본값. */
 export function normalizeTabState(raw: unknown): TabState {
@@ -51,19 +53,45 @@ export function normalizeTabState(raw: unknown): TabState {
     order,
     active: typeof o.active === "string" ? o.active : null,
     zoom: typeof o.zoom === "number" && Number.isSafeInteger(o.zoom) ? o.zoom : null,
+    zoomKey: typeof o.zoomKey === "string" ? o.zoomKey : null,
   };
+}
+
+/** 좌석의 안정 열쇠(부서 = 소켓 하나라 소켓은 빼고) — 역할 우선 · 없으면 생성 폴더 · 둘 다 없으면 null(알아볼 수 없음). */
+export function seatKey(r: Pick<SeatRow, "role" | "cwd">): string | null {
+  const role = (r.role ?? "").trim();
+  if (role) return `role:${role}`;
+  return r.cwd ? `cwd:${r.cwd}` : null;
+}
+
+/** 넓게 보기 좌석 sid → 저장할 열쇠(그 좌석이 묶음에 없으면 null). */
+export function zoomKeyOf(m: SeatRowsModel, sid: number): string | null {
+  const row = m.groups.flatMap((g) => g.rows).find((r) => r.sid === sid);
+  return row ? seatKey(row) : null;
+}
+
+/** 저장된 넓게 보기 → 지금 sid. 그 번호의 좌석 열쇠가 같으면 그대로 · 다르면(번호 재발급) 열쇠가 하나뿐인 좌석으로 옮김 · 못 찾거나 여럿이면 null(풀기). */
+function resolveZoom(m: SeatRowsModel, zoom: number | null, zoomKey: string | null): number | null {
+  if (zoom === null || zoomKey === null) return null;
+  const rows = m.groups.flatMap((g) => g.rows);
+  const same = rows.find((r) => r.sid === zoom);
+  if (same && seatKey(same) === zoomKey) return zoom;
+  const hits = rows.filter((r) => seatKey(r) === zoomKey);
+  return hits.length === 1 ? hits[0].sid : null;
 }
 
 /** 저장 상태 + 지금 좌석 → 정리된 상태 + 이번 화면. */
 export function reconcileTabs(m: SeatRowsModel, prev: TabState | undefined, on: boolean): { state: TabState; view: TabView } {
   const p = prev ?? EMPTY;
-  if (!on) return { state: { ...p, zoom: null }, view: { tabs: [], active: null, zoom: null, hidden: [] } };
+  if (!on) return { state: { ...p, zoom: null, zoomKey: null }, view: { tabs: [], active: null, zoom: null, hidden: [] } };
   const groups: TabInfo[] = m.groups.map((g) => ({ key: g.key, label: g.label, sids: g.rows.map((r) => r.sid) }));
   const keys = groups.map((g) => g.key);
   // 순서: 저장 순서 중 지금 있는 것 → 새 묶음은 모델 순(처음 나타난 순)으로 뒤에.
   const order = [...p.order.filter((k) => keys.includes(k)), ...keys.filter((k) => !p.order.includes(k))];
-  const zoomGroup = p.zoom === null ? undefined : groups.find((g) => g.sids.includes(p.zoom as number));
-  const zoom = zoomGroup ? p.zoom : null;
+  // (codex 1R) 넓게 보기는 번호가 아니라 안정 열쇠로 확인한다 — 재부팅 뒤 다른 좌석이 같은 번호를 받아도 그 좌석을 넓게 보지 않는다.
+  //   못 알아보면 넓게 보기만 풀고 저장된 활성 탭은 그대로 둔다.
+  const zoom = resolveZoom(m, p.zoom ?? null, p.zoomKey ?? null);
+  const zoomGroup = zoom === null ? undefined : groups.find((g) => g.sids.includes(zoom));
   let active: string | null = zoomGroup ? zoomGroup.key : p.active !== null && keys.includes(p.active) ? p.active : (order[0] ?? null);
   const all = groups.flatMap((g) => g.sids);
   const multi = groups.length > 1;
@@ -74,7 +102,7 @@ export function reconcileTabs(m: SeatRowsModel, prev: TabState | undefined, on: 
   if (!multi && zoom === null) active = p.active; // 탭이 없을 땐 저장 활성값을 건드리지 않는다(묶음이 다시 늘면 그대로)
   const byKey = new Map(groups.map((g) => [g.key, g]));
   return {
-    state: { order: multi ? order : [...p.order, ...keys.filter((k) => !p.order.includes(k))], active, zoom },
+    state: { order: multi ? order : [...p.order, ...keys.filter((k) => !p.order.includes(k))], active, zoom, zoomKey: zoom === null ? null : (p.zoomKey ?? null) },
     view: { tabs: multi ? order.map((k) => byKey.get(k)!) : [], active: multi ? active : null, zoom, hidden },
   };
 }

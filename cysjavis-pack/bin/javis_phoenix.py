@@ -2777,6 +2777,7 @@ def current_tombstones(socket):
 
 
 AGY_POLICY_CODE = "agy_consumer_policy"   # 정본 = Rust cys::agy_door::REFUSE_CODE(같은 낱말)
+AGY_POLICY_RC = 76                        # 정본 = Rust cys::agy_door::EXIT_AGY_POLICY_REFUSED
 
 
 def agy_door_split(roles, entries, detect=None):
@@ -3826,6 +3827,11 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
                 fresh_cwd = seat_fresh_cwd(role, fresh_cwd, master_cwd, log_fn=log)
                 fresh_at = time.time()
                 res = spawn_fresh_production(socket, role, agent, cwd=fresh_cwd)
+                if res.get("rc") == AGY_POLICY_RC:   # ★agy 좌석 문 — 오라클이 못 가른 정책 좌석(codex 1R major): 실패 아님
+                    _agy_skipped.append(role)
+                    jevent(j, role, "spawn", "skip_agy_policy",
+                           "launch-agent rc=76 agy_consumer_policy — 문 닫힘이라 띄우지 않음(고장 아님 · 재시도·fresh 강등·실패 계상 밖)")
+                    continue
                 time.sleep(SPAWN_SETTLE)
                 alive = [s for s in live_role_surfaces(socket).get(role, []) if not s["exited"]]
                 ref = alive[0]["surface"] if alive else None
@@ -3856,6 +3862,10 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
         mark_stage(j, role, "spawn", False, "재시도 %d회 + fresh 강등 소진 후에도 surface 미발견" % SPAWN_RETRIES)
         jevent(j, role, "spawn", "fail", "재시도 %d회 + fresh 강등 소진 — 부활 실패(INCOMPLETE)" % SPAWN_RETRIES)
     save_journal(socket, ticket, j)
+    # ★agy 좌석 문: 정책으로 건너뛴 역할도 하위 단계·완결성에서 뺀다(부활 실패가 아니다).
+    if _agy_skipped:
+        pending = [r for r in pending if r not in _agy_skipped]
+        target_roles = [r for r in target_roles if r not in _agy_skipped]
     # ★v116-pack: 런 도중 묘비 역할은 하위 단계·완결성·최종 판정에서 뺀다(부활 실패가 아니라 의도 삭제).
     if _mid_tomb:
         pending = [r for r in pending if r not in _mid_tomb]

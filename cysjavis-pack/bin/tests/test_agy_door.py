@@ -133,6 +133,15 @@ class C_PhoenixPolicySplit(unittest.TestCase):
         keep, skipped = self.ph.agy_door_split(["reviewer-gemini"], entries, detect={})
         self.assertEqual((keep, skipped), (["reviewer-gemini"], []))
 
+    def test_rc_matches_rust_and_fresh_76_is_consumed(self):
+        with open(os.path.join(REPO, "src", "agy_door.rs"), encoding="utf-8") as fh:
+            rs = fh.read()
+        self.assertIn("pub const EXIT_AGY_POLICY_REFUSED: i32 = %d;" % self.ph.AGY_POLICY_RC, rs)
+        with open(os.path.join(BIN, "javis_phoenix.py"), encoding="utf-8") as fh:
+            src = fh.read()
+        i = src.index("res = spawn_fresh_production(socket, role, agent, cwd=fresh_cwd)")
+        self.assertIn('if res.get("rc") == AGY_POLICY_RC:', src[i:i + 300], "fresh 76 을 정책 건너뜀으로 소비하지 않는다")
+
     def test_code_matches_rust(self):
         with open(os.path.join(REPO, "src", "agy_door.rs"), encoding="utf-8") as fh:
             rs = fh.read()

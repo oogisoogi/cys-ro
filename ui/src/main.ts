@@ -3881,10 +3881,9 @@ async function refreshPaneTitles() {
         if (!rt) continue;
         // 닫기 보호 판정 재료 — 화면에 있는 창만(누적 0). (Fable MINOR-4) 데몬의 지금 말을 거울처럼 따른다 —
         //   「참으로만 바뀐다·번호 비재사용」 가정에 기대지 않는다(기록 저장소가 지워진 채 데몬만 재시작되면 번호가 되돌 수 있다).
-        if (s.exited) {
-          exitedPaneKeys.add(paneKey(s.surface_id, sk));
-          forgetEndedSeatGroup(s.surface_id, sk); // (948 D3) 목록의 「끝남」 표시도 끝 신호 — 끝 이벤트를 놓쳐도 옮긴 묶음 기록을 지운다
-        } else exitedPaneKeys.delete(paneKey(s.surface_id, sk));
+        if (s.exited) exitedPaneKeys.add(paneKey(s.surface_id, sk));
+        else exitedPaneKeys.delete(paneKey(s.surface_id, sk));
+        if (s.exited) forgetEndedSeatGroup(s.surface_id, sk); // (948 D3) 목록의 「끝남」 표시도 끝 신호 — 끝 이벤트를 놓쳐도 옮긴 묶음 기록을 지운다
         renderUsage(rt.usageEl, s.exited ? null : s.usage); // 종료 pane은 배지 제거 (혼동 방지)
         setRoleDot(rt, s.exited ? null : s.role); // 역할 점 동일 주기 갱신(★F-01 단일 렌더러 — 관측 활동 · 관측 없으면 자기보고 폴백)
         rt.titleEl.style.color = (titleColorRole && !s.exited && roleDotColor(s.role)) ? (roleDotColor(s.role) as string) : ""; // 제목 글자색 = 역할 점색(오너 요청 2026-07-14·토글 시)

@@ -236,15 +236,11 @@ fn greet_refuses_welcome_from_other_pid() {
     let _ = t.join();
 }
 
-/// codex 1R #2: 출력 소비자(읽기 얼굴)가 멈춰 연결 스레드 → 읽기 얼굴 대기열이 가득 찬 뒤에도 ⑴ 입력 수신 확인(INPUT_ACK)이 막히지 않고
-/// ⑵ 닫기(`kill_and_reap` = close_surface 의 kill 뒤 회수)가 상한 안에 돌아온다(EXITED 가 상태에 닿는다). 노브와 무관하게 seatkeep 경로를
-/// 직접 띄운다(`SeatkeepPlan` · 실제 seatkeep 실행 파일 = `cargo build --bin cys-seatkeep` 뒤). 좌석 = 4MB 를 쏟은 뒤 입력을 되읽는 셸.
+/// codex 1R #2 시험대: 출력 소비자(읽기 얼굴)가 멈춘 seatkeep 좌석. 노브와 무관하게 seatkeep 경로를 직접 띄운다(`SeatkeepPlan` · 실제
+/// seatkeep 실행 파일 = `cargo build --bin cys-seatkeep` 뒤). 좌석 = 4MB 를 쏟은 뒤 입력을 되읽는 셸. 1.5초 쉬어 대기열이 차게 한다.
 #[cfg(target_os = "macos")]
-#[test]
-fn seatkeep_stalled_consumer_does_not_block_ack_or_close() {
-    use std::sync::mpsc::channel;
-    use std::time::{Duration, Instant};
-    let dir = std::env::temp_dir().join(format!("cskt-stall-{}-{}", std::process::id(), crate::state::now_epoch().to_bits() % 1_000_000));
+fn stalled_seat(tag: &str) -> (Spawned, Box<dyn std::io::Read + Send>, Box<dyn std::io::Write + Send>, i32, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("cskt-{tag}-{}-{}", std::process::id(), crate::state::now_epoch().to_bits() % 1_000_000));
     std::fs::create_dir_all(&dir).unwrap();
     let daemon = crate::state::Daemon::new(dir.join("cysd.sock"));
     let size = portable_pty::PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 };
@@ -253,44 +249,66 @@ fn seatkeep_stalled_consumer_does_not_block_ack_or_close() {
     b.args(["-c", "head -c 4000000 /dev/zero | tr '\\0' x; exec cat"]);
     b.cwd(&dir);
     let mut sp = Opened::Seatkeep(plan).spawn(b).expect("seatkeep 좌석");
-    let (reader, mut writer) = sp.take_io().expect("얼굴");
+    let (reader, writer) = sp.take_io().expect("얼굴");
     let keeper = sp.link().expect("연결").keeper_pid() as i32;
-    let cleanup = move || unsafe {
-        libc::kill(keeper, libc::SIGKILL);
-    };
-    // 소비자 정지 = 읽기 얼굴을 쥐고 읽지 않는다 → 대기열이 차고 연결 스레드는 역압으로 소켓을 멈춘다.
-    std::thread::sleep(Duration::from_millis(1500));
-    // ⑴ 입력 수신 확인 — 쓰기 얼굴의 write 는 확인까지 기다린다.
-    let (tx, rx) = channel();
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    (sp, reader, writer, keeper, dir)
+}
+
+/// 시험 끝 정리 — seatkeep 이 끝나기를 기다리고(최대 10초) 남으면 SIGKILL.
+#[cfg(target_os = "macos")]
+fn reap_keeper(keeper: i32, dir: &std::path::Path) {
+    let t = std::time::Instant::now();
+    while unsafe { libc::kill(keeper, 0) } == 0 && t.elapsed() < std::time::Duration::from_secs(10) {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    unsafe { libc::kill(keeper, libc::SIGKILL) };
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// codex 1R #2 ⑴: 출력 소비자가 멈춰 대기열이 가득 찬 뒤에도 입력 수신 확인(INPUT_ACK)이 막히지 않는다(쓰기 얼굴 write = 확인까지 기다림).
+#[cfg(target_os = "macos")]
+#[test]
+fn seatkeep_stalled_consumer_does_not_block_input_ack() {
+    use std::time::Duration;
+    let (sp, reader, mut writer, keeper, dir) = stalled_seat("stall-ack");
+    let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let r = std::io::Write::write_all(&mut writer, b"ping\n");
         let _ = tx.send(r.is_ok());
         writer
     });
     let acked = rx.recv_timeout(Duration::from_secs(5));
-    if !matches!(acked, Ok(true)) {
-        cleanup();
-        panic!("출력 소비자가 멈춘 동안 입력 수신 확인이 5초 안에 안 옴: {acked:?}");
-    }
-    // ⑵ 닫기 — close_surface 와 같은 kill 뒤 회수.
+    let fg = sp.link().unwrap().foreground();
+    drop(reader);
+    drop(sp);
+    unsafe { libc::kill(keeper, libc::SIGKILL) };
+    reap_keeper(keeper, &dir);
+    assert!(matches!(acked, Ok(true)), "출력 소비자가 멈춘 동안 입력 수신 확인이 5초 안에 안 옴: {acked:?}");
+    eprintln!("[stall-ack] 전경 답(200ms 상한) = {fg:?}");
+}
+
+/// codex 1R #2 ⑵: 출력 소비자가 멈춘 채로 닫기(close_surface 의 kill 뒤 회수 = `kill_and_reap`)가 상한 안에 돌아온다 — EXITED 가
+/// 상태에 닿는다(옛: 64조각 채널의 막히는 송신 뒤에 EXITED 가 묶여 영구 대기).
+#[cfg(target_os = "macos")]
+#[test]
+fn seatkeep_stalled_consumer_does_not_block_close() {
+    use std::time::{Duration, Instant};
+    let (sp, reader, writer, keeper, dir) = stalled_seat("stall-close");
     let child = std::sync::Mutex::new(sp.child);
-    let (tx, rx) = channel();
+    let (tx, rx) = std::sync::mpsc::channel();
     let t = Instant::now();
     std::thread::spawn(move || {
         crate::seat_proc::kill_and_reap(&child);
         let _ = tx.send(());
     });
-    if rx.recv_timeout(Duration::from_secs(5)).is_err() {
-        cleanup();
-        panic!("출력 소비자가 멈춘 동안 닫기(kill_and_reap)가 5초 안에 안 돌아옴(EXITED 미반영)");
-    }
+    let done = rx.recv_timeout(Duration::from_secs(5));
     let took = t.elapsed();
-    drop(reader);
-    // seatkeep 도 끝난다(조종자 연결 유지 · 좌석 종료 확인 뒤).
-    let t2 = Instant::now();
-    while unsafe { libc::kill(keeper, 0) } == 0 && t2.elapsed() < Duration::from_secs(10) {
-        std::thread::sleep(Duration::from_millis(50));
+    if done.is_err() {
+        unsafe { libc::kill(keeper, libc::SIGKILL) };
     }
-    eprintln!("[stall] 닫기 {took:?}");
-    let _ = std::fs::remove_dir_all(&dir);
+    drop((reader, writer));
+    reap_keeper(keeper, &dir);
+    assert!(done.is_ok(), "출력 소비자가 멈춘 동안 닫기(kill_and_reap)가 5초 안에 안 돌아옴(EXITED 미반영)");
+    eprintln!("[stall-close] 닫기 {took:?}");
 }

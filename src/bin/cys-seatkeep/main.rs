@@ -615,6 +615,11 @@ mod imp {
                 warn!("cys-seatkeep: 띄운 부모(조종자)가 기동 전에 사라짐(ppid {parent_pid}) — 좌석을 만들지 않고 끝낸다");
                 return RC_PARENT_LOST;
             }
+            // 시험 전용(codex 2R #1 시험이 「부모를 잰 뒤」를 기다리는 표지). 디버그 빌드에서만 읽는다.
+            #[cfg(debug_assertions)]
+            if let Ok(f) = std::env::var("CYS_SEATKEEP_TEST_PARENT_SEEN_FILE") {
+                let _ = std::fs::write(f, parent_pid.to_string());
+            }
             watch_parent(parent_pid);
         }
         // 조종자(cysd)와 다른 세션 — 조종자가 죽어도 이 프로세스에 SIGHUP 이 오지 않는다. 실패 = 그 보장이 없으니 시작하지 않는다.
@@ -1156,13 +1161,13 @@ mod imp {
         let behind_flag = Arc::new(AtomicBool::new(false));
         {
             let mut st = lock_st(&keep);
-            // 수락 쪽 끝맺음 — 감시가 이미 시간 초과로 끝냈으면 여기서 조용히 물러난다(그쪽이 기록했다 · 늦은 수락 차단).
-            if done.compare_exchange(HS_RUNNING, HS_FINISHED, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+            // 감시가 이미 시간 초과로 끝냈으면(준비 전) 조용히 물러난다 — 늦은 accept 줄을 쓰지 않는다(그쪽이 reject 를 기록했다).
+            if done.load(Ordering::SeqCst) != HS_RUNNING {
                 return;
             }
             if st.controller.is_some() {
                 drop(st);
-                return reject(&keep, s, "controller_alive", Some(&peer));
+                return reject_once(&keep, s, &done, "controller_alive", Some(&peer));
             }
             gen = st.gen + 1;
             // 교체 기록이 먼저다 — 기록 없이 조종자를 받지 않는다(사후 적발 장치가 무력해지지 않게).
@@ -1207,10 +1212,15 @@ mod imp {
                     exited_sent[i] = true;
                 }
             }
+            // 시험 전용 지연(codex 2R #3 재현 — 수락 준비가 느림 · 상태 잠금을 쥔 채). 디버그 빌드에서만 읽는다.
+            #[cfg(debug_assertions)]
+            if let Some(ms) = std::env::var("CYS_SEATKEEP_TEST_ACCEPT_DELAY_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
+                std::thread::sleep(Duration::from_millis(ms));
+            }
             let Some((tx, r)) = queue_initial(frames, &queued, &ctl_queued) else {
                 drop(st);
                 warn!("cys-seatkeep: 첫 재생의 제어 프레임이 상한({CTL_QUEUE_BYTES}바이트)을 넘음 — 접속 거절");
-                return reject(&keep, s, "control_queue_full", Some(&peer));
+                return reject_once(&keep, s, &done, "control_queue_full", Some(&peer));
             };
             if let Err(e) = keep.log(json!({"event": "accept", "gen": gen, "reason": reason, "peer": peer_json(&peer),
                                              "prev": prev, "replay": lost})) {
@@ -1222,7 +1232,13 @@ mod imp {
                 }
                 drop(st);
                 warn!("cys-seatkeep: 교체 기록 실패 — 접속 거절: {e}");
-                return reject(&keep, s, "ledger_write_failed", Some(&peer));
+                return reject_once(&keep, s, &done, "ledger_write_failed", Some(&peer));
+            }
+            // 수락 쪽 끝맺음(codex 2R #3) = 조종자를 실제로 거는 이 자리 — 준비(재생 프레임·accept 기록)는 그 앞에서 끝낸다. 감시가 그사이
+            // 시간 초과로 이겼으면 준비를 버리고 `accept_aborted handshake_timeout` 을 덧붙여 물러난다(A16 셈: accept − accept_aborted).
+            if done.compare_exchange(HS_RUNNING, HS_FINISHED, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+                let _ = keep.log(json!({"event": "accept_aborted", "gen": gen, "reason": "handshake_timeout"}));
+                return;
             }
             st.gen = gen;
             st.no_controller_since = None;
@@ -2082,7 +2098,7 @@ mod imp {
         /// codex 2R #1 시험대: 「가짜 cysd」(sh) 아래 seatkeep 을 띄우고 seatkeep 이 뜬 지 0.3초 뒤 부모를 죽인다 → 끝날 때까지 기다린 뒤
         /// (표식 = 좌석 자식이 한 번이라도 떴는가 · 기록의 seatkeep_exit 줄들)을 돌려준다. `envs` = 시험 지연 훅.
         #[cfg(target_os = "macos")]
-        fn parent_dies_early(tag: &str, envs: &[(&str, &str)]) -> (bool, Vec<Value>) {
+        fn parent_dies_early(tag: &str, envs: &[(&str, &str)]) -> (bool, Vec<Value>, Duration) {
             let d = tmpdir(tag);
             let marker = d.join("child-ran");
             let pidf = d.join("s.pid");
@@ -2091,31 +2107,40 @@ mod imp {
             for (k, v) in envs {
                 cmd.env(k, v);
             }
+            let marker_wait = envs.iter().any(|(k, _)| *k == "WAIT_MARKER_BEFORE_KILL");
+            let seen = d.join("parent-seen");
+            cmd.env("CYS_SEATKEEP_TEST_PARENT_SEEN_FILE", &seen);
             let mut p = cmd.spawn().unwrap();
             let sk = read_pidfile(&pidf);
-            std::thread::sleep(Duration::from_millis(300));
+            // 부모를 잰 뒤에 죽인다(부하로 seatkeep 첫 줄이 늦어도 같은 창을 친다).
+            assert!(wait_until(Duration::from_secs(10), || seen.exists()), "seatkeep 이 부모를 재지 않음");
+            if marker_wait {
+                assert!(wait_until(Duration::from_secs(10), || marker.exists()), "자식이 안 떴다(이 시험은 기동 뒤 창)");
+            }
+            let t_kill = Instant::now();
             let _ = p.kill();
             let _ = p.wait();
             assert!(wait_until(Duration::from_secs(15), || !alive(sk)), "seatkeep 이 끝나지 않음");
+            let took = t_kill.elapsed();
             std::thread::sleep(Duration::from_millis(300));
             let ran = marker.exists();
             let log = std::fs::read_to_string(Paths::new(&d, "p").log).unwrap_or_default();
             let exits = log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter(|v| v["event"] == "seatkeep_exit").collect();
             let _ = std::fs::remove_dir_all(&d);
-            (ran, exits)
+            (ran, exits, took)
         }
 
-        /// codex 2R #1 ① 등록 전 스케줄 틈: 감시 스레드가 늦게 돈다(CYS_SEATKEEP_TEST_WATCH_DELAY_MS 2초) — 부모는 0.3초에 죽는다.
-        /// 고친 뒤 = 주 스레드가 감시 준비(등록 → 이미 상실)를 기다린 뒤 진행 → 자식 기동 직전 확인에서 끝(자식 0).
-        /// 고치기 전 = 주 스레드가 감시를 안 기다리고 곧바로 자식을 띄운다(표식 생김).
+        /// codex 2R #1 ① 등록 전 스케줄 틈: 감시 스레드가 늦게 돈다(CYS_SEATKEEP_TEST_WATCH_DELAY_MS 3초) · 자식은 뜨고 등록부 확정 중
+        /// (CYS_SEATKEEP_TEST_COMMIT_DELAY_MS 5초 · supervise 아직 안 돎)에 부모가 죽는다. 고친 뒤 = 주 스레드가 감시 준비(등록)를 기다린 뒤
+        /// 진행했으므로 감시가 곧바로 끝낸다(1.5초 안). 고치기 전 = 감시가 아직 등록 전이라 늦게(≈ 지연 끝) 또는 확정 뒤에야 끝난다.
         #[cfg(target_os = "macos")]
         #[test]
-        fn bound_watcher_late_schedule_still_spawns_nothing() {
-            let (ran, exits) = parent_dies_early("pgone3", &[("CYS_SEATKEEP_TEST_WATCH_DELAY_MS", "2000")]);
-            assert!(!ran, "감시가 준비되기 전에 좌석 자식이 떴다(codex 2R #1 등록 전 틈) · 기록 {exits:?}");
+        fn bound_watcher_late_schedule_still_ends_at_once() {
+            let (_ran, exits, took) = parent_dies_early("pgone3", &[("CYS_SEATKEEP_TEST_WATCH_DELAY_MS", "3000"),
+                ("CYS_SEATKEEP_TEST_COMMIT_DELAY_MS", "5000"), ("WAIT_MARKER_BEFORE_KILL", "1")]);
+            assert!(took < Duration::from_millis(1500), "부모 사망 뒤 끝나기까지 {took:?} — 감시가 등록 전이었다(codex 2R #1) · 기록 {exits:?}");
             assert_eq!(exits.len(), 1, "seatkeep_exit 1줄: {exits:?}");
             assert_eq!(exits[0]["reason"], "parent_lost");
-            assert_eq!(exits[0]["spawned"], json!([]), "{exits:?}");
         }
 
         /// codex 2R #1 ② 감시가 상실을 본 뒤 표시가 늦은 창(폴링 대신 20ms 창과 같은 꼴): CYS_SEATKEEP_TEST_GONE_DELAY_MS 4초 ·
@@ -2123,11 +2148,11 @@ mod imp {
         #[cfg(target_os = "macos")]
         #[test]
         fn bound_parent_gone_seen_directly_before_flag() {
-            let (ran, exits) = parent_dies_early("pgone4", &[("CYS_SEATKEEP_TEST_GONE_DELAY_MS", "4000"), ("CYS_SEATKEEP_TEST_SPAWN_DELAY_MS", "1500")]);
+            let (ran, exits, _) = parent_dies_early("pgone4", &[("CYS_SEATKEEP_TEST_GONE_DELAY_MS", "4000"), ("CYS_SEATKEEP_TEST_SPAWN_DELAY_MS", "1500")]);
             assert!(!ran, "감시 표시 전이라 좌석 자식이 떴다(codex 2R #1 직접 확인 없음) · 기록 {exits:?}");
-            assert_eq!(exits.len(), 1, "seatkeep_exit 1줄: {exits:?}");
-            assert_eq!(exits[0]["reason"], "parent_lost");
-            assert_eq!(exits[0]["spawned"], json!([]), "{exits:?}");
+            // 부하로 seatkeep 첫 줄이 부모 사망보다 늦으면 기동 때 ppid 1 → 파일 없이 rc 8(기록 0줄)도 맞는 끝이다.
+            assert!(exits.is_empty() || (exits.len() == 1 && exits[0]["reason"] == "parent_lost" && exits[0]["spawned"] == json!([])),
+                    "seatkeep_exit = 0줄 또는 parent_lost·spawned [] 1줄: {exits:?}");
         }
 
         /// 자식 기동 뒤 · 등록부 확정 중(시험 지연 CYS_SEATKEEP_TEST_COMMIT_DELAY_MS 3초)에 부모가 죽음 — supervise 는 아직 안 돈다.
@@ -2170,7 +2195,15 @@ mod imp {
         /// 돌려줌 = (조종자가 받은 첫 프레임의 REJECT 이유 · 기록 「event:reason」 목록 · 끝에 seatkeep 생존).
         #[cfg(target_os = "macos")]
         fn slow_handshake(tag: &str, hold: bool) -> (Option<String>, Vec<String>, bool) {
+            slow_handshake_with(tag, hold, &[("CYS_SEATKEEP_TEST_AUTH_DELAY_MS", "3600")])
+        }
+
+        #[cfg(target_os = "macos")]
+        fn slow_handshake_with(tag: &str, hold: bool, envs: &[(&str, &str)]) -> (Option<String>, Vec<String>, bool) {
             use std::os::unix::io::AsRawFd as _;
+            // 핸드셰이크 시험끼리는 한 번에 하나 — 신원 조회(Security)가 동시 호출 수에 비례해 느려져(실측) 시간 경계가 흔들린다.
+            static SERIAL: Mutex<()> = Mutex::new(());
+            let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
             let d = tmpdir(tag);
             let lock = d.join("ctl.lock");
             let mut lf = std::fs::OpenOptions::new().create(true).read(true).write(true).open(&lock).unwrap();
@@ -2182,7 +2215,7 @@ mod imp {
             let mut sk = std::process::Command::new(sk_exe())
                 .args(["--dir", d.to_str().unwrap(), "--id", "h", "--controller-exe", me_exe.to_str().unwrap(),
                        "--lock", lock.to_str().unwrap(), "--controller-bound", "--", "/bin/sleep", "30"])
-                .env("CYS_SEATKEEP_TEST_AUTH_DELAY_MS", "3600")
+                .envs(envs.iter().copied())
                 .spawn()
                 .unwrap();
             let paths = Paths::new(&d, "h");
@@ -2193,10 +2226,12 @@ mod imp {
             c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
             let first = proto::read_frame(&mut c);
             if hold {
-                std::thread::sleep(Duration::from_millis(1500));
+                // 늦은 두 번째 확인이 조종자가 붙어 있는 동안 끝나게(조회가 수 초까지 늘어도) — 그래야 늦은 수락 길까지 간다.
+                std::thread::sleep(Duration::from_millis(6000));
             }
             drop(c);
-            std::thread::sleep(Duration::from_millis(if hold { 500 } else { 2000 }));
+            // 늦은 길(지연 뒤 두 번째 확인 · 수락 준비)이 끝날 때까지 — 신원 조회는 부하에서 수 초까지 늘어난다(실측 · HANDOFF).
+            std::thread::sleep(Duration::from_millis(4000));
             let alive = matches!(sk.try_wait(), Ok(None));
             let kinds: Vec<String> = std::fs::read_to_string(&paths.log).unwrap_or_default().lines()
                 .filter_map(|l| serde_json::from_str::<Value>(l).ok())
@@ -2219,10 +2254,38 @@ mod imp {
         #[test]
         fn handshake_timeout_is_recorded_once_and_blocks_late_accept() {
             let (rej, kinds, alive) = slow_handshake("hs-timeout-hold", true);
+            eprintln!("[hs-hold] rej={rej:?} kinds={kinds:?} alive={alive}");
             assert_eq!(rej.as_deref(), Some("handshake_timeout"), "조종자가 받은 첫 프레임 = REJECT handshake_timeout(기록 없는 닫힘 아님) · 기록 {kinds:?}");
             assert_eq!(kinds.iter().filter(|k| k.starts_with("reject:")).collect::<Vec<_>>(), vec!["reject:handshake_timeout"], "거절 기록 1줄: {kinds:?}");
             assert!(!kinds.iter().any(|k| k.starts_with("accept:")), "시간 초과 뒤 늦은 수락: {kinds:?}");
-            assert!(alive && !kinds.iter().any(|k| k.starts_with("seatkeep_exit:")), "늦은 수락 → controller_lost 로 끝남: alive={alive} {kinds:?}");
+            // 조종자가 한 번도 걸리지 않았다 = disconnect·controller_lost 없음(15초 첫 조종자 상한 no_first_controller 끝은 정상 · 시험이 길다).
+            assert!(!kinds.iter().any(|k| k.starts_with("disconnect:") || k == "seatkeep_exit:controller_lost"), "늦은 수락 → controller_lost: alive={alive} {kinds:?}");
+        }
+
+        /// codex 2R #3: 두 번째 확인은 기한 전에 끝났지만(지연 없음) 수락 준비(상태 잠금 안 · CYS_SEATKEEP_TEST_ACCEPT_DELAY_MS 4초)가 기한을
+        /// 넘긴다 → 끝맺음은 조종자를 실제로 거는 자리에서 잡으므로 감시가 이긴다: 조종자 = REJECT handshake_timeout · 기록 = accept 뒤
+        /// accept_aborted handshake_timeout · 조종자 걸림 0(disconnect·seatkeep_exit 없음). 고치기 전 = 들머리에서 끝맺음을 잡아 감시는 아무것도
+        /// 안 하고 늦게 WELCOME(「3초 전체」 약속 위반 · reject 없음).
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn handshake_timeout_during_accept_preparation_aborts_accept() {
+            // 부하로 두 번의 신원 조회가 이미 3초를 넘기면 시간 초과가 준비 「전」에 와서 이 시나리오가 안 생긴다(그때는 조용히 물러남이
+            // 맞는 동작 · 위 ① 시험 몫) — 준비 「중」 시간 초과가 실제로 생긴 회차(accept 줄 있음)를 최대 3번까지 찾는다.
+            let mut got = None;
+            for round in 0..3 {
+                let r = slow_handshake_with(&format!("hs-timeout-prep{round}"), true, &[("CYS_SEATKEEP_TEST_ACCEPT_DELAY_MS", "4000")]);
+                let reached = r.1.iter().any(|k| k.starts_with("accept:")) || r.0.is_none();
+                eprintln!("[hs-prep] 회차 {round} reached={reached} {r:?}");
+                if reached {
+                    got = Some(r);
+                    break;
+                }
+            }
+            let (rej, kinds, alive) = got.expect("3회 모두 준비 전에 시간 초과(신원 조회가 3초 넘음 · 부하) — 이 시나리오에 닿지 못함");
+            assert_eq!(rej.as_deref(), Some("handshake_timeout"), "첫 프레임 = REJECT handshake_timeout(늦은 WELCOME 아님) · 기록 {kinds:?}");
+            assert_eq!(kinds.iter().filter(|k| k.starts_with("reject:")).collect::<Vec<_>>(), vec!["reject:handshake_timeout"], "{kinds:?}");
+            assert_eq!(kinds.iter().filter(|k| *k == "accept_aborted:handshake_timeout").count(), 1, "accept 뒤 accept_aborted 1줄: {kinds:?}");
+            assert!(!kinds.iter().any(|k| k.starts_with("disconnect:") || k == "seatkeep_exit:controller_lost"), "조종자가 걸렸다: alive={alive} {kinds:?}");
         }
 
         /// ② 조종자가 REJECT 를 받자마자 끊는 경우: 늦게 끝난 두 번째 확인은 실패하지만(상대 없음) 두 번째 거절 줄을 남기지 않는다.
@@ -2232,7 +2295,7 @@ mod imp {
             let (rej, kinds, alive) = slow_handshake("hs-timeout-drop", false);
             assert_eq!(rej.as_deref(), Some("handshake_timeout"), "기록 {kinds:?}");
             assert_eq!(kinds.iter().filter(|k| k.starts_with("reject:")).collect::<Vec<_>>(), vec!["reject:handshake_timeout"], "거절 기록 1줄: {kinds:?}");
-            assert!(alive && !kinds.iter().any(|k| k.starts_with("accept:") || k.starts_with("seatkeep_exit:")), "alive={alive} {kinds:?}");
+            assert!(!kinds.iter().any(|k| k.starts_with("accept:") || k.starts_with("disconnect:") || k == "seatkeep_exit:controller_lost"), "alive={alive} {kinds:?}");
         }
     }
 }

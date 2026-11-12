@@ -312,3 +312,57 @@ fn seatkeep_stalled_consumer_does_not_block_close() {
     assert!(done.is_ok(), "출력 소비자가 멈춘 동안 닫기(kill_and_reap)가 5초 안에 안 돌아옴(EXITED 미반영)");
     eprintln!("[stall-close] 닫기 {took:?}");
 }
+
+/// codex 2R #2 재현(판정문 순서 그대로): 출력 소비자 정지 → 좌석의 별도 흐름(`yes &`)은 출력을 계속 쏟고 stdin 은 3초 동안 안 읽음 →
+/// cysd 가 입력 한 조각(256KiB · 줄 단위)을 보내고 수신 확인(ACK)을 기다림 → 3초 뒤 좌석이 stdin 을 읽기 시작(`cat`).
+/// 관측: ⑴ 소비자가 멈춰 있는 동안 ACK 가 오는가(15초) ⑵ 소비자를 다시 돌리면 ACK 가 오는가.
+/// 결과에 따라 판정을 고정한다 — 이 시험은 「지금 동작」을 기록하는 알려진 한계 시험이다(HANDOFF codex 2R 처분 표).
+/// ⚠시간에 따라 재현이 갈린다(PTY 입력 쓰기가 실제로 막혀야 출력이 5MiB 상한을 채운다 · 2026-11-13 실측 1/2 재현) → 기본 실행에서 뺀다:
+/// `cargo test --bin cysd seatkeep_known_limit_input_ack -- --ignored --nocapture`(출력의 [ackflood] 줄이 관측).
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore]
+fn seatkeep_known_limit_input_ack_behind_full_output_while_consumer_stalled() {
+    use std::time::{Duration, Instant};
+    let dir = std::env::temp_dir().join(format!("cskt-ackflood-{}-{}", std::process::id(), crate::state::now_epoch().to_bits() % 1_000_000));
+    std::fs::create_dir_all(&dir).unwrap();
+    let daemon = crate::state::Daemon::new(dir.join("cysd.sock"));
+    let size = portable_pty::PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 };
+    let plan = SeatkeepPlan::prepare(&daemon, size).expect("seatkeep 계획");
+    let mut b = portable_pty::CommandBuilder::new("/bin/sh");
+    b.args(["-c", "yes 0123456789abcdef & sleep 3; exec cat >/dev/null"]);
+    b.cwd(&dir);
+    let mut sp = Opened::Seatkeep(plan).spawn(b).expect("seatkeep 좌석");
+    let (mut reader, mut writer) = sp.take_io().expect("얼굴");
+    let keeper = sp.link().expect("연결").keeper_pid() as i32;
+    std::thread::sleep(Duration::from_millis(500));
+    let line = [b"a".repeat(99), b"\n".to_vec()].concat();
+    let input: Vec<u8> = line.iter().copied().cycle().take(256 << 10).collect();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let t0 = Instant::now();
+    std::thread::spawn(move || {
+        let r = std::io::Write::write_all(&mut writer, &input);
+        let _ = tx.send((r.is_ok(), t0.elapsed()));
+        writer
+    });
+    let stalled = rx.recv_timeout(Duration::from_secs(15));
+    // 소비자를 다시 돌린다(읽기 얼굴을 비움).
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let st2 = std::sync::Arc::clone(&stop);
+    std::thread::spawn(move || {
+        let mut buf = vec![0u8; 1 << 16];
+        while !st2.load(std::sync::atomic::Ordering::Relaxed) {
+            if std::io::Read::read(&mut reader, &mut buf).map(|n| n == 0).unwrap_or(true) {
+                break;
+            }
+        }
+    });
+    let resumed = if stalled.is_ok() { None } else { Some(rx.recv_timeout(Duration::from_secs(15))) };
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    crate::seat_proc::kill_and_reap(&std::sync::Mutex::new(sp.child));
+    unsafe { libc::kill(keeper, libc::SIGKILL) };
+    let _ = std::fs::remove_dir_all(&dir);
+    eprintln!("[ackflood] 소비자 정지 중 ACK = {stalled:?} · 소비자 재개 뒤 = {resumed:?}");
+    assert!(stalled.is_err(), "알려진 한계가 바뀌었다(소비자 정지 중에도 ACK 도착: {stalled:?}) — 고쳐졌다면 이 시험을 뒤집고 HANDOFF 를 고친다");
+    assert!(matches!(resumed, Some(Ok((true, _)))), "소비자 재개 뒤에도 ACK 가 안 옴(유실?): {resumed:?}");
+}

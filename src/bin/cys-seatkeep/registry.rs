@@ -449,7 +449,15 @@ mod tests {
         let first = lock_id(&p).unwrap();
         assert!(lock_id(&p).is_err(), "두 번째는 거절");
         drop(first);
-        assert!(lock_id(&p).is_ok(), "첫째가 놓으면 다시 잡힌다");
+        // 같은 시험 프로세스의 다른 시험이 그 순간 fork 하면 자식이 exec 전까지 잠금 fd 사본(같은 열린 파일 = 같은 flock)을 잠깐 쥔다 —
+        // 놓임은 곧 온다. 최대 2초 다시 시도(seatkeep-t3-fix2: 자식을 띄우는 시험이 늘어 부하에서 1/3 실패 관측 · 2026-11-13).
+        let t = std::time::Instant::now();
+        let mut again = lock_id(&p);
+        while again.is_err() && t.elapsed() < std::time::Duration::from_secs(2) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            again = lock_id(&p);
+        }
+        assert!(again.is_ok(), "첫째가 놓으면 다시 잡힌다");
         let _ = std::fs::remove_dir_all(&d);
     }
 

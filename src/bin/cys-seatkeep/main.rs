@@ -127,18 +127,37 @@ mod imp {
     /// 부모 감시를 **자식 기동 앞에서** 시작한다(codex 1R #1). 고른 길 = kqueue `EVFILT_PROC/NOTE_EXIT`(맥):
     /// 부모가 죽는 순간 깨어나 폴링 지연이 없고, 잰 뒤 등록 전에 이미 죽었으면 등록이 ESRCH 로 실패해 그 틈도 닫힌다
     /// (감시 스레드 폴링은 주기만큼 늦고 그 틈을 따로 메워야 한다 — kqueue 를 못 쓰는 곳에서만 20ms 폴링으로 대신한다).
+    /// 감시가 「등록 끝남 · 이미 상실 · 폴링으로 대신 준비됨」 중 하나를 알릴 때까지 돌아오지 않는다(codex 2R #1 — 등록 전 스케줄 틈:
+    /// 스레드가 아직 안 돌았는데 주 스레드가 자식을 띄우던 창). 알림이 안 오면(감시 스레드가 못 뜸) 기다리지 않고 돌아온다 —
+    /// 그 경우에도 기동 확인 자리는 `getppid` 를 직접 본다(`parent_gone_early`).
     fn watch_parent(parent: i32) {
-        std::thread::spawn(move || {
-            wait_parent_gone(parent);
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+        let spawned = std::thread::Builder::new().name("seatkeep-parent-watch".into()).spawn(move || {
+            // 시험 전용 지연(codex 2R #1 재현 — 감시 스레드가 늦게 스케줄됨). 디버그 빌드에서만 읽는다.
+            #[cfg(debug_assertions)]
+            if let Some(ms) = std::env::var("CYS_SEATKEEP_TEST_WATCH_DELAY_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
+                std::thread::sleep(Duration::from_millis(ms));
+            }
+            wait_parent_gone(parent, &ready_tx);
+            let _ = ready_tx.send(());
+            // 시험 전용 지연(codex 2R #1 재현 — 상실을 본 뒤 표시가 늦음 · 폴링 대신 창과 같은 꼴). 디버그 빌드에서만 읽는다.
+            #[cfg(debug_assertions)]
+            if let Some(ms) = std::env::var("CYS_SEATKEEP_TEST_GONE_DELAY_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
+                std::thread::sleep(Duration::from_millis(ms));
+            }
             PARENT_GONE.store(true, Ordering::SeqCst);
             if let Some(k) = KEEP.get() {
                 end_for_controller_loss(k, "parent_lost");
             }
         });
+        if spawned.is_ok() {
+            let _ = ready_rx.recv();
+        }
     }
 
-    /// 부모 `parent` 가 사라질 때까지 막힌다.
-    fn wait_parent_gone(parent: i32) {
+    /// 부모 `parent` 가 사라질 때까지 막힌다. 감시가 준비되면(등록 끝남 · 폴링 시작 직전) `ready` 로 알린다
+    /// (상실로 곧바로 돌아오는 길은 부르는 쪽이 알린다).
+    fn wait_parent_gone(parent: i32, ready: &std::sync::mpsc::Sender<()>) {
         #[cfg(target_os = "macos")]
         unsafe {
             let kq = libc::kqueue();
@@ -161,6 +180,7 @@ mod imp {
                         libc::close(kq);
                         return;
                     }
+                    let _ = ready.send(());
                     loop {
                         let mut out: libc::kevent = std::mem::zeroed();
                         let n = libc::kevent(kq, std::ptr::null(), 0, &mut out, 1, std::ptr::null());
@@ -176,14 +196,16 @@ mod imp {
                 }
             }
         }
+        let _ = ready.send(());
         while unsafe { libc::getppid() } == parent {
             std::thread::sleep(Duration::from_millis(20));
         }
     }
 
     /// 기동 단계 확인(자식 기동 직전·직후 · Keep 만들기 직전) — 조종자 종속 모드에서 부모가 사라졌는가.
-    fn parent_gone_early(args: &Args) -> bool {
-        args.controller_bound && PARENT_GONE.load(Ordering::SeqCst)
+    /// 감시 표시뿐 아니라 지금 부모를 직접 본다(codex 2R #1 — 감시가 상실을 봤지만 아직 표시 전 · 폴링 대신 20ms 창).
+    fn parent_gone_early(args: &Args, parent: i32) -> bool {
+        args.controller_bound && (PARENT_GONE.load(Ordering::SeqCst) || unsafe { libc::getppid() } != parent)
     }
 
     struct Args {
@@ -675,7 +697,7 @@ mod imp {
                 std::thread::sleep(Duration::from_millis(ms));
             }
             // 자식 기동 직전 — 부모가 사라졌으면 이 좌석을 만들지 않는다(codex 1R #1).
-            if parent_gone_early(&args) {
+            if parent_gone_early(&args, parent_pid) {
                 return end_early_parent_lost(&args, &paths, ledger, &seats);
             }
             let pair = match native_pty_system().openpty(PtySize { rows: args.rows, cols: args.cols, pixel_width: 0, pixel_height: 0 }) {
@@ -726,7 +748,7 @@ mod imp {
             readers.push(reader);
             inputs.push((irx, writer));
             // 자식 기동 직후 — 그 사이 부모가 사라졌으면 곧바로 끝낸다(마스터가 닫혀 방금 띄운 좌석에 SIGHUP · 확정·감독 없음).
-            if parent_gone_early(&args) {
+            if parent_gone_early(&args, parent_pid) {
                 return end_early_parent_lost(&args, &paths, ledger, &seats);
             }
         }
@@ -772,7 +794,7 @@ mod imp {
         // 부모 감시가 이제부터 바로 끝낼 수 있게 둔다 — 두기 전에 상실을 봤으면(감시는 Keep 이 없어 기록만 함) 여기서 끝낸다.
         // 감시 = 「상실 표시 → Keep 확인」 · 여기 = 「Keep 두기 → 상실 확인」(둘 다 SeqCst) — 둘 중 하나는 반드시 끝낸다(둘 다면 종료 소유자 1명).
         let _ = KEEP.set(Arc::clone(&keep));
-        if parent_gone_early(&keep.args) {
+        if parent_gone_early(&keep.args, keep.parent_pid) {
             end_for_controller_loss(&keep, "parent_lost");
         }
 
@@ -2055,6 +2077,57 @@ mod imp {
             assert_eq!(exits[0]["spawned"], json!([]), "자식을 하나도 띄우지 않았어야 한다: {log}");
             assert!(!log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).any(|v| v["event"] == "spawned"), "확정(spawned) 기록이 있다: {log}");
             let _ = std::fs::remove_dir_all(&d);
+        }
+
+        /// codex 2R #1 시험대: 「가짜 cysd」(sh) 아래 seatkeep 을 띄우고 seatkeep 이 뜬 지 0.3초 뒤 부모를 죽인다 → 끝날 때까지 기다린 뒤
+        /// (표식 = 좌석 자식이 한 번이라도 떴는가 · 기록의 seatkeep_exit 줄들)을 돌려준다. `envs` = 시험 지연 훅.
+        #[cfg(target_os = "macos")]
+        fn parent_dies_early(tag: &str, envs: &[(&str, &str)]) -> (bool, Vec<Value>) {
+            let d = tmpdir(tag);
+            let marker = d.join("child-ran");
+            let pidf = d.join("s.pid");
+            let mut cmd = std::process::Command::new("/bin/sh");
+            cmd.arg("-c").arg(r#""$@" & echo $! > "$PIDF"; wait"#).arg("p").args(bound_sk_args(&d, &marker)).env("PIDF", &pidf);
+            for (k, v) in envs {
+                cmd.env(k, v);
+            }
+            let mut p = cmd.spawn().unwrap();
+            let sk = read_pidfile(&pidf);
+            std::thread::sleep(Duration::from_millis(300));
+            let _ = p.kill();
+            let _ = p.wait();
+            assert!(wait_until(Duration::from_secs(15), || !alive(sk)), "seatkeep 이 끝나지 않음");
+            std::thread::sleep(Duration::from_millis(300));
+            let ran = marker.exists();
+            let log = std::fs::read_to_string(Paths::new(&d, "p").log).unwrap_or_default();
+            let exits = log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter(|v| v["event"] == "seatkeep_exit").collect();
+            let _ = std::fs::remove_dir_all(&d);
+            (ran, exits)
+        }
+
+        /// codex 2R #1 ① 등록 전 스케줄 틈: 감시 스레드가 늦게 돈다(CYS_SEATKEEP_TEST_WATCH_DELAY_MS 2초) — 부모는 0.3초에 죽는다.
+        /// 고친 뒤 = 주 스레드가 감시 준비(등록 → 이미 상실)를 기다린 뒤 진행 → 자식 기동 직전 확인에서 끝(자식 0).
+        /// 고치기 전 = 주 스레드가 감시를 안 기다리고 곧바로 자식을 띄운다(표식 생김).
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn bound_watcher_late_schedule_still_spawns_nothing() {
+            let (ran, exits) = parent_dies_early("pgone3", &[("CYS_SEATKEEP_TEST_WATCH_DELAY_MS", "2000")]);
+            assert!(!ran, "감시가 준비되기 전에 좌석 자식이 떴다(codex 2R #1 등록 전 틈) · 기록 {exits:?}");
+            assert_eq!(exits.len(), 1, "seatkeep_exit 1줄: {exits:?}");
+            assert_eq!(exits[0]["reason"], "parent_lost");
+            assert_eq!(exits[0]["spawned"], json!([]), "{exits:?}");
+        }
+
+        /// codex 2R #1 ② 감시가 상실을 본 뒤 표시가 늦은 창(폴링 대신 20ms 창과 같은 꼴): CYS_SEATKEEP_TEST_GONE_DELAY_MS 4초 ·
+        /// 자식 기동 직전 확인은 1.5초(CYS_SEATKEEP_TEST_SPAWN_DELAY_MS). 고친 뒤 = 기동 확인이 getppid 를 직접 봐서 끝(자식 0).
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn bound_parent_gone_seen_directly_before_flag() {
+            let (ran, exits) = parent_dies_early("pgone4", &[("CYS_SEATKEEP_TEST_GONE_DELAY_MS", "4000"), ("CYS_SEATKEEP_TEST_SPAWN_DELAY_MS", "1500")]);
+            assert!(!ran, "감시 표시 전이라 좌석 자식이 떴다(codex 2R #1 직접 확인 없음) · 기록 {exits:?}");
+            assert_eq!(exits.len(), 1, "seatkeep_exit 1줄: {exits:?}");
+            assert_eq!(exits[0]["reason"], "parent_lost");
+            assert_eq!(exits[0]["spawned"], json!([]), "{exits:?}");
         }
 
         /// 자식 기동 뒤 · 등록부 확정 중(시험 지연 CYS_SEATKEEP_TEST_COMMIT_DELAY_MS 3초)에 부모가 죽음 — supervise 는 아직 안 돈다.

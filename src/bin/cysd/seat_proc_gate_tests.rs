@@ -1,6 +1,13 @@
 //! TICKET=cysr-seatkeep-t3 · 손잡이 우회 grep 게이트 — cysd **운영 구역**에서 좌석 PTY·자식에 직접 닿는 코드는 `seat_proc.rs` 에만
 //! 있어야 한다(브리프 §5 방법 ③ · 「남으면 붉어지는 시험」). 시험 구역(`#[cfg(test)]` 이 붙은 mod/fn/impl · `*_tests.rs`)은 세지 않는다 —
 //! 그곳은 손잡이 얼굴(`Box<dyn Child>`·`Box<dyn MasterPty>`)을 통해 부르므로 노브 켬에서 seatkeep 구현으로 간다.
+//!
+//! ⚠알려진 한계(codex 1R #3 · master 처분 = 싼 것만 고침 · 필드 비공개화 86곳은 안 함): 이 게이트는 **문자열 판독**이다(Rust 구문 트리 아님).
+//! 잡는 것 = `.child`/`.master` 필드 참조(별칭 포함) · `Surface { child, .. }` 구조 분해 · 손잡이 머리의 식별자 경계(`evil_probe_child(` 거부) ·
+//! 손잡이 함수의 **직접 인자**가 아닌 넘김(중첩 호출 `seat_proc::f(g(&s.child))` 거부). 못 잡는 것(남는 우회) = 매크로가 만든 접근 ·
+//! 다른 이름으로 다시 내보낸 타입(`type S = Surface;` 뒤 `S { child, .. }`) · 필드를 통째로 옮기는 함수 인자(`fn f(Surface { child, .. }: Surface)`
+//! 의 타입 경로가 `Surface` 가 아닌 경우) · 손잡이 함수 안에서 받은 참조를 밖으로 돌려주는 것. 정본(타입으로 막기)은 `Surface` 필드를
+//! 손잡이 모듈 비공개 타입으로 바꾸는 것이며 T4 이후 몫이다.
 
 /// 문자열·문자·주석을 공백으로 지운다(줄 수 보존).
 fn strip_code(src: &str) -> String {
@@ -135,8 +142,115 @@ const UNRELATED_FIELDS: &[(&str, &str)] = &[
     ("state.rs", "spawned.master"),       // 같은 것(Surface.master 로 옮김)
 ];
 
-/// 손잡이로 넘기는 호출의 머리 — `seat_proc::` 또는 그 모듈에서 가져다 쓰는 손잡이 함수 이름.
+/// 손잡이로 넘기는 호출의 머리 — `seat_proc::` 또는 그 모듈에서 가져다 쓰는 손잡이 함수 이름. 앞 글자는 식별자 경계여야 한다
+/// (codex 1R #3: `evil_probe_child(` · `notseat_proc::` 는 머리가 아니다).
 const HANDOFF_HEADS: &[&str] = &["seat_proc::", "probe_child("];
+
+/// `Surface` 구조체 식(구조 분해 패턴이든 만들기든)에서 좌석 필드를 집는 자리 — 만들기는 이 (파일, 바로 앞 글자열) 짝만 허용한다.
+const SURFACE_LITERAL_OK: &[(&str, &str)] = &[
+    ("state.rs", "Arc::new("), // 좌석 생성 — 손잡이 결과(spawned.child·master)를 Surface 로 옮기는 유일한 자리
+];
+
+fn is_ident(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c == b'_'
+}
+
+/// 손잡이 머리 `h` 가 `sq[..at]` 안에서 식별자 경계로 나오는 마지막 위치.
+fn last_head(sq: &str, at: usize, h: &str) -> Option<usize> {
+    let b = sq.as_bytes();
+    let mut end = at;
+    while let Some(p) = sq[..end].rfind(h) {
+        if p == 0 || !is_ident(b[p - 1]) {
+            return Some(p);
+        }
+        end = p;
+    }
+    None
+}
+
+/// 손잡이 머리 `sp` 의 호출 괄호 **바로 안**(깊이 1)의 인자로 `&x.field` 가 넘겨지는가 — 받는 쪽 식(`x`)은 식별자와 `.` 만(codex 1R #3:
+/// 중첩 호출 `seat_proc::f(g(&s.child))`·식 섞기 `seat_proc::f(&(a+s).child)` 는 직접 인자가 아니다).
+fn direct_arg(sq: &str, sp: usize, at: usize) -> bool {
+    let between = &sq[sp..at];
+    if between.contains(';') || between.contains('{') || between.contains('}') {
+        return false;
+    }
+    let Some(open) = between.find('(') else { return false };
+    let args = &between[open + 1..];
+    let mut depth = 0i32;
+    let mut last = 0usize;
+    for (i, c) in args.char_indices() {
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => {
+                depth -= 1;
+                if depth < 0 {
+                    return false; // 머리 호출이 이미 닫혔다
+                }
+            }
+            ',' if depth == 0 => last = i + 1,
+            _ => {}
+        }
+    }
+    if depth != 0 {
+        return false;
+    }
+    let arg = &args[last..];
+    let body = arg.strip_prefix("&mut").or_else(|| arg.strip_prefix('&')).unwrap_or(arg);
+    !body.is_empty() && body.bytes().all(|c| is_ident(c) || c == b'.')
+}
+
+/// `Surface { … }` 구조체 식 안에서 좌석 필드(`child`·`master`)를 집는 자리 — (바이트 위치, 표시). 다른 타입의 `X::Surface {`·
+/// `VerifiedSurface {` 는 보지 않는다(앞이 식별자이거나 `state::` 가 아닌 `::`).
+fn surface_pattern_violations(name: &str, sq: &str) -> Vec<(usize, String)> {
+    let b = sq.as_bytes();
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(k) = sq[from..].find("Surface{") {
+        let at = from + k;
+        from = at + "Surface{".len();
+        // 앞 식별자 = 다른 이름의 일부(`VerifiedSurface`)면 건너뛴다 — 공백을 지운 글이라 `let Surface` 는 `letSurface` 로 붙는다(키워드는 본다).
+        let word_start = sq[..at].bytes().rev().take_while(|c| is_ident(*c)).count();
+        let word = &sq[at - word_start..at];
+        if !word.is_empty() && !matches!(word, "let" | "iflet" | "whilelet" | "elseiflet" | "mut" | "ref" | "in") {
+            continue;
+        }
+        if sq[..at].ends_with("::") && !sq[..at].ends_with("state::") {
+            continue;
+        }
+        if SURFACE_LITERAL_OK.iter().any(|(n, pre)| *n == name && sq[..at].ends_with(pre)) {
+            continue;
+        }
+        // 짝 맞는 닫는 중괄호까지의 깊이 1 필드 이름들
+        let mut depth = 0i32;
+        let mut field_start = at + "Surface{".len();
+        let mut k2 = at + "Surface".len();
+        while k2 < b.len() {
+            match b[k2] {
+                b'{' | b'(' | b'[' => depth += 1,
+                b'}' | b')' | b']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            if depth == 1 && (b[k2] == b'{' || b[k2] == b',') {
+                field_start = k2 + 1;
+                let name_end = sq[field_start..].bytes().take_while(|c| is_ident(*c)).count() + field_start;
+                let field = &sq[field_start..name_end];
+                let after = b.get(name_end).copied();
+                if (field == "child" || field == "master") && matches!(after, Some(b':') | Some(b',') | Some(b'}')) {
+                    out.push((field_start, format!("Surface{{{field}}}")));
+                }
+            }
+            k2 += 1;
+        }
+        let _ = field_start;
+    }
+    out
+}
 
 /// 압축된(공백 없는) 운영 구역에서 좌석 필드 참조 위반을 찾는다 — (바이트 위치, 「받는 쪽+필드」).
 fn field_violations(name: &str, sq: &str) -> Vec<(usize, String)> {
@@ -160,12 +274,8 @@ fn field_violations(name: &str, sq: &str) -> Vec<(usize, String)> {
             if UNRELATED_FIELDS.iter().any(|(n, r)| *n == name && recv.ends_with(r) && (recv.len() == r.len() || !ident(recv.as_bytes()[recv.len() - r.len() - 1]))) {
                 continue;
             }
-            // 손잡이로 넘기는 자리: 앞쪽 가장 가까운 손잡이 호출 머리부터 여기까지 `;{}` 없이 괄호가 열려 있다.
-            let handoff = HANDOFF_HEADS.iter().filter_map(|h| sq[..at].rfind(h)).max().map(|sp| {
-                let between = &sq[sp..at];
-                !between.contains(';') && !between.contains('{') && !between.contains('}')
-                    && between.matches('(').count() > between.matches(')').count()
-            });
+            // 손잡이로 넘기는 자리: 앞쪽 가장 가까운 (식별자 경계의) 손잡이 호출 머리의 **직접 인자**다(codex 1R #3).
+            let handoff = HANDOFF_HEADS.iter().filter_map(|h| last_head(sq, at, h)).max().map(|sp| direct_arg(sq, sp, at));
             if handoff == Some(true) {
                 continue;
             }
@@ -232,6 +342,9 @@ fn violations() -> Vec<String> {
         for (at, recv) in field_violations(&name, &squeezed) {
             out.push(format!("{name}:{} 필드 참조 {recv}", line_of.get(at).copied().unwrap_or(0)));
         }
+        for (at, what) in surface_pattern_violations(&name, &squeezed) {
+            out.push(format!("{name}:{} 구조 분해 {what}", line_of.get(at).copied().unwrap_or(0)));
+        }
     }
     out
 }
@@ -276,4 +389,24 @@ fn seat_handle_gate_detector_catches_and_skips_correctly() {
     assert_eq!(fields("governance.rs", "fn f(d: &D) { let _ = d.child; }"), 0, "허용 목록(후손 기록)을 셌다");
     assert_eq!(fields("x.rs", "fn f(d: &D) { let _ = d.child; }"), 1, "허용 목록이 다른 파일로 샜다");
     assert_eq!(fields("x.rs", "fn f(s: &S) { crate::seat_proc::resize(&s.master, 1, 1); let c = &s.child; }"), 1, "넘기는 자리 뒤의 별칭을 놓침");
+    // codex 1R #3: 식별자 경계 · 중첩 호출 · 구조 분해.
+    assert_eq!(fields("x.rs", "fn f(s: &S) { evil_probe_child(&s.child); }"), 1, "식별자 경계 없는 머리(evil_probe_child)를 허용함");
+    assert_eq!(fields("x.rs", "fn f(s: &S) { notseat_proc::kill_and_reap(&s.child); }"), 1, "식별자 경계 없는 seat_proc:: 를 허용함");
+    assert_eq!(fields("x.rs", "fn f(s: &S) { crate::seat_proc::resize(pass_through(&s.master), 1, 1); }"), 1, "중첩 호출을 허용함");
+    assert_eq!(fields("x.rs", "fn f(s: &S) { crate::seat_proc::kill_and_reap(&wrap(s).child); }"), 1, "식 섞인 받는 쪽을 허용함");
+    assert_eq!(fields("x.rs", "fn f(s: &S) { crate::seat_proc::kill_and_reap(&self.surfaces.child); }"), 0, "점 경로 받는 쪽을 셌다");
+    assert_eq!(fields("x.rs", "fn f(s: &S) { crate::seat_proc::resize(&s.master, s.rows(), s.cols()); }"), 0, "뒤 인자의 호출 때문에 셌다");
+    let pats = |name: &str, src: &str| {
+        let prod = drop_test_blocks(&strip_code(src));
+        let sq: String = prod.chars().filter(|c| !c.is_whitespace()).collect();
+        surface_pattern_violations(name, &sq).len()
+    };
+    assert_eq!(pats("x.rs", "fn f(surface: Surface) { let Surface { child: ch, .. } = surface; ch.lock(); }"), 1, "구조 분해(child: 이름)를 놓침");
+    assert_eq!(pats("x.rs", "fn f(surface: Surface) { let crate::state::Surface { id, master, .. } = surface; }"), 1, "경로 붙은 구조 분해(줄임)를 놓침");
+    assert_eq!(pats("x.rs", "fn f(s: Surface) { if let Surface { child, .. } = s {} }"), 1, "if let 구조 분해를 놓침");
+    assert_eq!(pats("x.rs", "fn f(s: Surface) { let Surface { id, name, .. } = s; }"), 0, "좌석 필드 없는 구조 분해를 셌다");
+    assert_eq!(pats("x.rs", "fn f() { let a = CallerRecord::Surface { id: 1 }; let b = VerifiedSurface { child: 1 }; }"), 0, "다른 타입을 셌다");
+    assert_eq!(pats("state.rs", "fn f() { let s = Arc::new(Surface { id, child: Mutex::new(spawned.child), master: m }); }"), 0, "허용된 좌석 생성을 셌다");
+    assert_eq!(pats("handlers.rs", "fn f() { let s = Arc::new(Surface { id, child: c }); }"), 1, "좌석 생성 허용이 다른 파일로 샜다");
+    assert_eq!(pats("x.rs", "fn f(s: Surface) { let Surface { inner: Inner { child }, .. } = s; }"), 0, "깊이 2 의 다른 필드를 셌다");
 }

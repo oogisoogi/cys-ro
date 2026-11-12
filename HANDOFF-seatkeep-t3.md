@@ -5,6 +5,22 @@
 - 시험대 = `~/axdev/terminal-ide-survey/2026-11-bench/seatkeep-t3/harness/`(t3life.py · t3a13.py · t3misc.py) · T2 시험대 사본 = `../t2copy/harness/`
 - 격리 시험 실행기 = scratchpad `run_tests.sh <label> <cargo test 인자>`(CYS_* 제거 · HOME/XDG 임시 · CYS_SEATKEEP 만 통과)
 
+## fix2 = codex 2R REVISE(blocking 0 · major 2 · minor 2) 처분 · 고침(master#b8703879 · 2026-11-13 07:29~08:3x · 판정문 = `~/axdev/master/reviews/codex-queue-2026-11-13/4-seatkeep-t3.verdict.md`)
+- 커밋: 08bc92d7(#1) → 8f86d2b0(#3 · #1 시험 결정화 · #2 재현 · T2 잠금 시험) → (이 HANDOFF 커밋). push 0 · codex 0 · 설치본·라이브 무접촉.
+
+| # | 판정문 | 처분 | 한 것 | 붉음(고치기 전 꼴) | 고친 뒤 | 뮤턴트 |
+|---|---|---|---|---|---|---|
+| 1 major | 감시 등록 전 스케줄 틈 · 폴링 20ms 창 | 수용·고침 | `watch_parent` = 감시가 「등록 끝남·이미 상실·폴링 준비」를 채널로 알릴 때까지 주 스레드 대기 · `parent_gone_early` 가 표시 + `getppid() != parent` 직접 · 디버그 훅 WATCH_DELAY·GONE_DELAY·PARENT_SEEN_FILE(「부모를 잰 뒤」 표지로 창 결정화) | M6-prefix(장벽·직접 확인 둘 다 끔) 2/2 붉음 ×2회 | `bound_watcher_late_schedule_still_ends_at_once`(감시 3초 늦음 + 확정 중 사망 → 1.5초 안 끝) · `bound_parent_gone_seen_directly_before_flag`(상실 표시 4초 늦음 → 기동 확인 직접 getppid → 자식 0) | M6a(장벽 끔)=①만 · M6b(직접 끔)=②만 붉음 · 각 2회 |
+| 2 major | 입력 ACK 가 PTY 쓰기 뒤에만 · 소비자 정지 + 출력 폭주 + stdin 안 읽음 = 영구 대기 | 수용(재현 = CONFIRMED) · **고침 = 【결정필요】(규약)** | 판정문 순서 재현 시험 `seatkeep_known_limit_input_ack_behind_full_output_while_consumer_stalled`(`#[ignore]` · 관측) — 1회차: 소비자 정지 15초 동안 ACK 안 옴 → 소비자 재개 즉시(15.04초) 옴(유실 아님 · 지연) · 2회차: PTY 입력이 안 막혀 ACK 28ms(재현 안 됨) → 시간 의존 1/2. 한 줄(FIFO) 위에서 메모리 상한 + 유실 0 + 소비자 무기한 정지를 함께 지키며 ACK 를 보장하는 길은 없다(출력 뒤에 선 ACK 에 닿으려면 상한 없이 읽어야 함) → 규약 변경 필요 | 위 1회차 | — | — |
+| 3 minor | 수락 쪽이 준비 전에 끝맺음을 잡음 | 수용·고침 | 끝맺음 CAS = 조종자를 실제로 거는 자리(재생 프레임·accept 기록 뒤) · 준비 중 감시가 이기면 `accept_aborted handshake_timeout` 덧붙이고 물러남(A16 셈 일관) · 준비 전에 이미 시간 초과면 accept 를 쓰지 않고 조용히 물러남 · 준비 안의 거절 3곳도 reject_once · 디버그 훅 ACCEPT_DELAY · 핸드셰이크 시험 직렬화(Security 동시 조회가 시간 경계를 흔듦) · 조종자 6초 쥠(늦은 길이 붙은 채 끝나게) | M7-prefix(옛 자리 = 들머리 CAS) = 늦은 WELCOME → accept→disconnect→controller_lost | `handshake_timeout_during_accept_preparation_aborts_accept`(시나리오에 닿을 때까지 최대 3회) + 기존 둘 | M7a(준비 전 조기 확인 끔)=①붉음 · M5a/M5b/M5c 다시 돌려 모두 붉음 |
+| 4 minor | 게이트 구조적 보장 없음(필드 pub) | 수용 · **부분 처분 유지(닫힘 아님)** | 고침 없음 — 정본 = `Surface` 필드 비공개 래퍼(시험 구역 약 86곳) · T4 이후. 게이트 머리 주석 「알려진 한계」 그대로 · 이 표에서 #3(1R) 은 「부분」으로 둔다 | — | — | — |
+
+- **#2 【결정필요】 선택지**(master → 박사님/T4): Ⓐ 흐름 제어 프레임(조종자가 OUTPUT 소비 신용을 돌려줌 · seatkeep 은 신용 안에서만 OUTPUT · 제어 프레임은 늘 먼저) — 규약 판 올림 · 가장 정석 Ⓑ 제어 전용 두 번째 연결(seatkeep 조종자 자리 1개 규칙 변경) Ⓒ cysd 출력 대기열을 상한 넘으면 디스크로(메모리 상한 유지 · 디스크 상한 따로) Ⓓ 알려진 한계로 둠(직접 PTY 는 입력이 출력 소비와 무관 = 차이 1곳 · 소비자 무기한 정지는 cysd 결함 상황). 권고 = T4 에서 Ⓐ(입양을 켤 때 밀림 정책을 다시 정하는 일과 같은 자리) · 그 전까지 Ⓓ.
+- **#1 판단(1R 처분 「부모 감시 = kqueue」 유지)**: 장벽 = 감시 준비까지 대기(감시 스레드를 못 띄우면 기다리지 않음 · 기동 확인의 직접 getppid 가 대신) · kqueue 등록 실패 → 폴링 시작 직전에 준비 알림.
+- **시험(HEAD 8f86d2b0 · 부하 load 14~53 · 다른 좌석 작업)**: seatkeep 단위 43/43 ×3 · 게이트 2/2 · cysd `seatkeep_` 묶음(정지 소비자 입력·닫기 2) 초록 · 노브 켬 `accounts::` 실행기 = 스레드 4 → 15 실패 · 2 → 2 실패 · 1 → 0 실패(실패는 전부 새 동작 그대로 `seatkeep 이 접속을 거절: handshake_timeout` — 기록 없는 EOF 아님). ⚠「스레드 ≤4 면 0 실패」(fix1 18:54 = 3249/0)는 기계 부하가 낮을 때 값 — 부하가 크면 `SEATKEEP_TEST_THREADS=1`.
+- **T2 시험 손댐 1곳**: `registry::tests::id_lock_is_exclusive` — 같은 시험 프로세스에서 다른 시험이 fork 하면 자식이 exec 전까지 잠금 fd 사본을 쥐어(같은 열린 파일 = 같은 flock) 「놓은 뒤 다시 잡기」가 잠깐 실패(부하에서 3회 중 1~2회 관측) → 다시 잡기 최대 2초. 운영 코드 무변경.
+- **내가 덧붙인 것(지시 밖 판단)**: ① 준비 「전」 시간 초과의 조용한 물러남(조기 확인) — codex 고침 방향(「준비를 CAS 앞에」)을 따르면 생기는 「시간 초과 뒤 accept+accept_aborted」 줄을 막으려고 ② 핸드셰이크 시험 직렬화·6초 쥠·최대 3회 — 부하 의존 판정을 없애려고 ③ #2 재현 시험 `#[ignore]` — 1/2 재현이라 기본 실행에 두면 흔들림.
+
 - **매듭(2026-11-12 21:09 · master#1e252546 주간 98% 정지)**: fix1 마지막 = 48a34208 · handshake-timeout = b5ee4392(【확인요청 3】 18:54 · 노브 켬 전체 스레드 4 = 3249/0) · 진행 중 고침 없음 · 재개 = 리셋(금 06:00) 뒤 master 지시 · 다음 = master 스냅샷 재검증 + codex 2R(fix1 차이 + handshake-timeout 차이).
 
 ## fix1 = codex 1R REVISE 4건 처분·고침(TICKET=cysr-seatkeep-t3-fix1 · worker-8 surface:2019 · 2026-11-12 08:31~08:43 · 예산 정지 · 16:51~ 재개 master#be9e91aa)

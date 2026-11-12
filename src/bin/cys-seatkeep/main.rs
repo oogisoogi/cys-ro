@@ -64,7 +64,7 @@ mod imp {
     use std::os::unix::io::AsRawFd;
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
     use std::sync::mpsc::{channel, sync_channel, Receiver, Sender, SyncSender};
     use std::sync::{Arc, Condvar, Mutex, MutexGuard};
     use std::time::{Duration, Instant};
@@ -1038,6 +1038,18 @@ mod imp {
         let _ = s.shutdown(Shutdown::Both);
     }
 
+    /// 핸드셰이크 끝맺음 상태(handshake-timeout): 진행 중 · 끝남(수락 또는 거절 기록) · 감시가 시간 초과로 끝냄.
+    const HS_RUNNING: u8 = 0;
+    const HS_FINISHED: u8 = 1;
+    const HS_TIMED_OUT: u8 = 2;
+
+    /// 핸드셰이크 도중의 거절 — 끝맺음을 잡았을 때만 기록·REJECT(감시가 시간 초과로 이미 끝냈으면 두 번째 줄을 남기지 않는다).
+    fn reject_once(keep: &Keep, s: UnixStream, done: &AtomicU8, reason: &str, peer: Option<&Peer>) {
+        if done.compare_exchange(HS_RUNNING, HS_FINISHED, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+            reject(keep, s, reason, peer);
+        }
+    }
+
     fn accept_loop(keep: Arc<Keep>, listener: UnixListener) {
         for conn in listener.incoming() {
             let Ok(s) = conn else { continue };
@@ -1063,43 +1075,52 @@ mod imp {
         }
         let pending = Pending(&keep.pending_hs);
         // 절대 기한 — 읽기마다의 기한이 아니라 핸드셰이크 전체. 기한이 지나면 소켓을 닫아 아래 읽기를 끝낸다.
-        let done = Arc::new(AtomicBool::new(false));
+        // 끝맺음은 하나만(handshake-timeout · master#5b9e1d26): 감시가 먼저 「시간 초과」를 잡으면 `reject handshake_timeout` 1줄
+        // (+REJECT 프레임)을 남기고 닫는다 — 그 뒤 핸드셰이크는 수락(accept)도 거절 기록도 하지 않는다. 수락 쪽이 먼저 「끝남」을
+        // 잡으면 감시는 아무것도 안 한다(전: 감시가 기록 없이 닫고, 핸드셰이크는 닫힌 소켓을 늦게 수락 → 조종자 종속이면 곧 controller_lost).
+        let done = Arc::new(AtomicU8::new(HS_RUNNING));
         if let Ok(s2) = s.try_clone() {
-            let d = Arc::clone(&done);
+            let (d, k) = (Arc::clone(&done), Arc::clone(&keep));
             std::thread::spawn(move || {
                 std::thread::sleep(HELLO_TIMEOUT);
-                if !d.load(Ordering::SeqCst) {
-                    let _ = s2.shutdown(Shutdown::Both);
+                if d.compare_exchange(HS_RUNNING, HS_TIMED_OUT, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+                    reject(&k, s2, "handshake_timeout", None);
                 }
             });
         }
         let peer = match peer::authorize(s.as_raw_fd(), &keep.policy) {
             Ok(p) => p,
-            Err((reason, p)) => return reject(&keep, s, reason, p.as_ref()),
+            Err((reason, p)) => return reject_once(&keep, s, &done, reason, p.as_ref()),
         };
         // 살아 있는 조종자가 있으면 거절(허더의 「마지막 접속자 탈취」 반대). HELLO 를 읽기 전에도 한 번 본다.
         if lock_st(&keep).controller.is_some() {
-            return reject(&keep, s, "controller_alive", Some(&peer));
+            return reject_once(&keep, s, &done, "controller_alive", Some(&peer));
         }
         let _ = s.set_read_timeout(Some(HELLO_TIMEOUT));
         let hello: Value = match proto::read_frame_max(&mut s, HELLO_MAX) {
             Ok(Some((proto::HELLO, _, p))) => serde_json::from_slice(&p).unwrap_or(Value::Null),
-            _ => return reject(&keep, s, "no_hello", Some(&peer)),
+            _ => return reject_once(&keep, s, &done, "no_hello", Some(&peer)),
         };
         if hello["core"].as_u64() != Some(proto::CORE_VERSION as u64) {
-            return reject(&keep, s, "core_mismatch", Some(&peer));
+            return reject_once(&keep, s, &done, "core_mismatch", Some(&peer));
+        }
+        // 시험 전용 지연(handshake-timeout 재현 — HELLO 를 읽은 뒤 두 번째 신원 확인이 느린 경우 · 실측된 느린 자리).
+        // 디버그 빌드에서만 읽는다.
+        #[cfg(debug_assertions)]
+        if let Some(ms) = std::env::var("CYS_SEATKEEP_TEST_AUTH_DELAY_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
+            std::thread::sleep(Duration::from_millis(ms));
         }
         // 확인~HELLO 사이에 잠금을 놓았거나 신원이 바뀌었으면 받지 않는다 — 확인과 수락 사이 틈을 좁힌다(codex 1R #10).
         let peer = match peer::authorize(s.as_raw_fd(), &keep.policy) {
             // (pid · pidversion · 출생 시각) 셋 다 같아야 — 토큰은 「지금 그 pid 의 프로세스」라서(peer.rs ⚠) 처음 확인한
             // 그 프로세스가 아직 그 소켓의 마지막 사용자인지를 이 짝으로 본다. 출생 시각을 못 읽으면(None) 같다고 보지 않는다.
             Ok(p2) if p2.pid == peer.pid && p2.pidversion == peer.pidversion && p2.start_us.is_some() && p2.start_us == peer.start_us => p2,
-            Ok(p2) => return reject(&keep, s, "peer_changed", Some(&p2)),
-            Err((reason, p)) => return reject(&keep, s, reason, p.as_ref()),
+            Ok(p2) => return reject_once(&keep, s, &done, "peer_changed", Some(&p2)),
+            Err((reason, p)) => return reject_once(&keep, s, &done, reason, p.as_ref()),
         };
         let _ = s.set_read_timeout(None);
         let (Ok(write_half), Ok(shut)) = (s.try_clone(), s.try_clone()) else {
-            return reject(&keep, s, "socket_clone_failed", Some(&peer));
+            return reject_once(&keep, s, &done, "socket_clone_failed", Some(&peer));
         };
         // 안 읽는 조종자: 소켓 쓰기가 이 기한을 넘으면 쓰기 스레드가 끝나며 연결을 닫는다(codex 1R #1).
         // 조종자 종속 모드(⑶)는 기한이 없다 — 연결이 살아 있는 한 기다린다(멈춘 조종자 = 자식도 역압으로 멈춤 · write_stalled 없음).
@@ -1113,6 +1134,10 @@ mod imp {
         let behind_flag = Arc::new(AtomicBool::new(false));
         {
             let mut st = lock_st(&keep);
+            // 수락 쪽 끝맺음 — 감시가 이미 시간 초과로 끝냈으면 여기서 조용히 물러난다(그쪽이 기록했다 · 늦은 수락 차단).
+            if done.compare_exchange(HS_RUNNING, HS_FINISHED, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+                return;
+            }
             if st.controller.is_some() {
                 drop(st);
                 return reject(&keep, s, "controller_alive", Some(&peer));
@@ -1196,7 +1221,6 @@ mod imp {
             // 쓰기 스레드가 쓴 뒤 `wake_readers` 가 깨운다(그때 큐 = 재생분뿐이고, 반 아래로 내려가면 깨운다).
             rx = r;
         }
-        done.store(true, Ordering::SeqCst);
         drop(pending);
         {
             let mut w = write_half;
@@ -2065,6 +2089,77 @@ mod imp {
             assert_eq!(exits[0]["reason"], "parent_lost");
             assert!(!log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).any(|v| v["event"] == "spawned"), "확정(spawned) 기록이 있다: {log}");
             let _ = std::fs::remove_dir_all(&d);
+        }
+
+        /// handshake-timeout 시험대: 조종자 = 이 시험 프로세스(실행 파일 · 잠금 = 「pid 출생시각」 + flock). seatkeep 은 HELLO 를 읽은 뒤
+        /// 두 번째 신원 확인을 시험 지연 CYS_SEATKEEP_TEST_AUTH_DELAY_MS(3.6초)로 늦춘다(실측된 느린 자리 · 기한 3초 넘김).
+        /// `hold` = 조종자가 첫 답을 받은 뒤에도 연결을 1.5초 쥐고 있는가(실제 cysd 처럼 → 늦은 확인이 성공해 늦은 수락 길까지 감).
+        /// 돌려줌 = (조종자가 받은 첫 프레임의 REJECT 이유 · 기록 「event:reason」 목록 · 끝에 seatkeep 생존).
+        #[cfg(target_os = "macos")]
+        fn slow_handshake(tag: &str, hold: bool) -> (Option<String>, Vec<String>, bool) {
+            use std::os::unix::io::AsRawFd as _;
+            let d = tmpdir(tag);
+            let lock = d.join("ctl.lock");
+            let mut lf = std::fs::OpenOptions::new().create(true).read(true).write(true).open(&lock).unwrap();
+            assert_eq!(unsafe { libc::flock(lf.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+            let me = std::process::id() as i32;
+            write!(lf, "{} {}", me, registry::process_start_us(me).unwrap()).unwrap();
+            lf.flush().unwrap();
+            let me_exe = std::env::current_exe().unwrap();
+            let mut sk = std::process::Command::new(sk_exe())
+                .args(["--dir", d.to_str().unwrap(), "--id", "h", "--controller-exe", me_exe.to_str().unwrap(),
+                       "--lock", lock.to_str().unwrap(), "--controller-bound", "--", "/bin/sleep", "30"])
+                .env("CYS_SEATKEEP_TEST_AUTH_DELAY_MS", "3600")
+                .spawn()
+                .unwrap();
+            let paths = Paths::new(&d, "h");
+            assert!(wait_until(Duration::from_secs(5), || std::fs::read_to_string(&paths.entry).map(|t| t.contains("committed")).unwrap_or(false)),
+                    "확정 기록 없음");
+            let mut c = UnixStream::connect(&paths.sock).unwrap();
+            proto::write_all(&mut c, &proto::json_frame(proto::HELLO, 0, &json!({"core": proto::CORE_VERSION, "resume": {}}))).unwrap();
+            c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let first = proto::read_frame(&mut c);
+            if hold {
+                std::thread::sleep(Duration::from_millis(1500));
+            }
+            drop(c);
+            std::thread::sleep(Duration::from_millis(if hold { 500 } else { 2000 }));
+            let alive = matches!(sk.try_wait(), Ok(None));
+            let kinds: Vec<String> = std::fs::read_to_string(&paths.log).unwrap_or_default().lines()
+                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                .map(|v| format!("{}:{}", v["event"].as_str().unwrap_or(""), v["reason"].as_str().unwrap_or("")))
+                .collect();
+            let _ = sk.kill();
+            let _ = sk.wait();
+            let _ = std::fs::remove_dir_all(&d);
+            let rej = match &first {
+                Ok(Some((k, _, p))) if *k == proto::REJECT => serde_json::from_slice::<Value>(p).ok().and_then(|v| v["reason"].as_str().map(str::to_string)),
+                _ => None,
+            };
+            (rej, kinds, alive)
+        }
+
+        /// handshake-timeout(master#5b9e1d26 ⑵) ① 조종자가 연결을 쥐고 기다리는 경우(실제 cysd 꼴): 감시가 `reject handshake_timeout`
+        /// 1줄 + REJECT 프레임을 남기고 닫으며, 늦게 끝난 확인은 수락하지 않는다(조종자 종속 seatkeep 이 controller_lost 로 끝나지 않음).
+        /// 고치기 전(= 시험 뮤턴트 M5-prefix) = EOF · 기록 accept → disconnect → seatkeep_exit controller_lost.
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn handshake_timeout_is_recorded_once_and_blocks_late_accept() {
+            let (rej, kinds, alive) = slow_handshake("hs-timeout-hold", true);
+            assert_eq!(rej.as_deref(), Some("handshake_timeout"), "조종자가 받은 첫 프레임 = REJECT handshake_timeout(기록 없는 닫힘 아님) · 기록 {kinds:?}");
+            assert_eq!(kinds.iter().filter(|k| k.starts_with("reject:")).collect::<Vec<_>>(), vec!["reject:handshake_timeout"], "거절 기록 1줄: {kinds:?}");
+            assert!(!kinds.iter().any(|k| k.starts_with("accept:")), "시간 초과 뒤 늦은 수락: {kinds:?}");
+            assert!(alive && !kinds.iter().any(|k| k.starts_with("seatkeep_exit:")), "늦은 수락 → controller_lost 로 끝남: alive={alive} {kinds:?}");
+        }
+
+        /// ② 조종자가 REJECT 를 받자마자 끊는 경우: 늦게 끝난 두 번째 확인은 실패하지만(상대 없음) 두 번째 거절 줄을 남기지 않는다.
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn handshake_timeout_then_hangup_leaves_one_reject() {
+            let (rej, kinds, alive) = slow_handshake("hs-timeout-drop", false);
+            assert_eq!(rej.as_deref(), Some("handshake_timeout"), "기록 {kinds:?}");
+            assert_eq!(kinds.iter().filter(|k| k.starts_with("reject:")).collect::<Vec<_>>(), vec!["reject:handshake_timeout"], "거절 기록 1줄: {kinds:?}");
+            assert!(alive && !kinds.iter().any(|k| k.starts_with("accept:") || k.starts_with("seatkeep_exit:")), "alive={alive} {kinds:?}");
         }
     }
 }

@@ -80,7 +80,7 @@ pub(crate) fn resize(master: &Mutex<..>, rows, cols)                  // #13
 ## 3. 노브
 
 - 관례 = `knobs.rs`(환경변수 · 순수 판정 함수 + 얇은 읽기 껍질 · **켜는 값은 정책 파일에서 받지 않는다**). → `CYS_SEATKEEP=1` 만 켬 · 그 밖(없음·0·빈 값·다른 값) = 끔 · 정책 파일 키 없음.
-- **데몬 단위**: 첫 좌석 생성 때 한 번 읽어 고정(`OnceLock`) — 같은 데몬 안에서 좌석마다 갈리지 않는다. 노브 켬 전체 시험 = `CYS_SEATKEEP=1 cargo test --bin cysd`(시험 프로세스 하나 = 한 값).
+- **데몬 단위**: 첫 좌석 생성 때 한 번 읽어 고정(`OnceLock`) — 같은 데몬 안에서 좌석마다 갈리지 않는다. 노브 켬 전체 시험 = `scripts/seatkeep-knob-on-tests.sh`(= seatkeep 먼저 빌드 + `CYS_SEATKEEP=1 cargo test --bin cysd -- --test-threads=4` · 시험 프로세스 하나 = 한 값). ⚠**스레드 4 이하**(handshake-timeout · master#5b9e1d26 ⑶): 기본 병렬(16)에서는 seatkeep 핸드셰이크 3초 기한 안의 Security 실행 파일 조회가 디버그 시험 바이너리 상대로 느려져 「seatkeep 이 HELLO 뒤 연결을 닫음」 실패가 수십 개 난다(운영 코드 결함 아님 · HANDOFF 「노브 켬 전체 139 실패 원인 규명」).
 
 ## 4. 잠금 파일(`cys.lock` = `socket_path.with_extension("lock")`) 형식 바꿈과 독자 표
 

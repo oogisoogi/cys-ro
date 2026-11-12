@@ -5,6 +5,8 @@
 - 시험대 = `~/axdev/terminal-ide-survey/2026-11-bench/seatkeep-t3/harness/`(t3life.py · t3a13.py · t3misc.py) · T2 시험대 사본 = `../t2copy/harness/`
 - 격리 시험 실행기 = scratchpad `run_tests.sh <label> <cargo test 인자>`(CYS_* 제거 · HOME/XDG 임시 · CYS_SEATKEEP 만 통과)
 
+- **매듭(2026-11-12 21:09 · master#1e252546 주간 98% 정지)**: fix1 마지막 = 48a34208 · handshake-timeout = b5ee4392(【확인요청 3】 18:54 · 노브 켬 전체 스레드 4 = 3249/0) · 진행 중 고침 없음 · 재개 = 리셋(금 06:00) 뒤 master 지시 · 다음 = master 스냅샷 재검증 + codex 2R(fix1 차이 + handshake-timeout 차이).
+
 ## fix1 = codex 1R REVISE 4건 처분·고침(TICKET=cysr-seatkeep-t3-fix1 · worker-8 surface:2019 · 2026-11-12 08:31~08:43 · 예산 정지 · 16:51~ 재개 master#be9e91aa)
 - 커밋: d9f8f44a(#1·#4) → 7cdb8c46(WIP #2) → 81745d7b(#2 시험) → 22a30875(#3) → 62d57b19(D1 문서) → (이 HANDOFF 커밋). push 0 · 라이브 무접촉 · codex 호출 0(master 가 2R 을 건다).
 - **노브 끔 경로에서 바뀐 운영 코드 줄 = 0**: cysd 운영 변경은 전부 `seat_proc.rs` 의 `mod seatkeep_mac`(맥 · 노브 켬 전용) 안(`git diff fcc6896f..HEAD -U0 -- src/bin/cysd/seat_proc.rs` 의 덩이 머리가 모두 `mod seatkeep_mac`) · seatkeep 실행 파일은 노브 켬에서만 뜬다 · 나머지 = 시험·문서.

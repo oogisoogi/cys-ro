@@ -3,10 +3,20 @@
 //! (고쳐지든 나빠지든) 붉어진다. ⚠ T4 에서 A(seatkeep 이 슬레이브를 쥐고 회수 뒤 비우고 닫기) 또는 다른 길로 고치면 노브 켬 갈래를
 //! 「모자람 0」으로 뒤집는다.
 //!
-//! 기제(관측 · 커널 소스 미확인): 맥 커널은 PTY 자식(세션 우두머리)이 쓰고 끝날 때 **마스터에서 `read()` 안에 잠든 독자가 있으면 꼬리를
-//! 남기고, `read()` 밖이면 버린다**(cys 없는 파이썬 탐침 각 2/2 · 회수·WNOWAIT 무관 — 시험대 `harness/ptyprobe/` 스크립트·원 출력).
-//! 직접 PTY cysd 는 읽기 스레드가 `read()` 안에서 멈춰(SIGSTOP 등) 꼬리가 남는다. seatkeep 조종자 종속 모드는 역압 때 읽기 스레드가
-//! Condvar(`read()` 밖)에서 기다리므로, 그 사이 자식이 커널 버퍼(실측 1,024바이트)만큼 쓰고 끝나면 그 꼬리를 커널이 버린다
+//! 기제(관측 각 2/2 + 공개 XNU 소스 대조 · codex 1R ③ 표현으로 정정): 독자가 마스터 `read()` 안에 잠들어 있으면 자식의 **첫 write 가 그
+//! 독자를 깨워 그 덩이를 read 로 옮기고**(커널 큐에 보존된 것이 아니다 · 탐침 501/500), **나머지 출력 큐(t_outq)는 마지막 슬레이브 참조가
+//! 닫힐 때 버려진다**. 조건은 「세션 우두머리 종료」 자체가 아니라 「마지막 슬레이브 close(회수·WNOWAIT 무관 — 회수보다 앞선 fd close/TTY
+//! 정리에서 정해짐)」다. 다만 세션 우두머리가 제어 터미널을 쥔 채 끝나면 커널이 그 터미널을 REVOKEALL 로 회수해(아래 kern_exit.c) 다른
+//! 프로세스가 쥔 슬레이브 열림까지 닫힐 수 있다 — T4 의 「슬레이브 보유」는 이 점을 먼저 검증해야 한다.
+//! 소스(apple-oss-distributions/xnu `f6217f89` = xnu-12377.1.9 · 2025-10-16 · 줄 = 그 판):
+//!   `bsd/kern/tty_dev.c` `ptcread` 642·680·691·700(슬레이브가 열려 있을 때만 t_outq 를 `q_to_b` 로 복사 · 아니면 685 EOF) ·
+//!   `ptsclose` 350(`t_timeout = 60`)·355(`l_close` = ttylclose)·356(`ttyclose`)·361(`ptsstop`) ·
+//!   `bsd/kern/tty.c` `ttylclose` 1993~1994(`ttywflush` 실패면 `ttyflush(FREAD|FWRITE)`) · `ttyclose` 418(무조건 `ttyflush(FREAD|FWRITE)`) ·
+//!   `ttyflush` 1840(`FLUSHQ(&tp->t_outq)`) · `bsd/kern/kern_exit.c` 2287·2312·2330·2336(세션 우두머리: SIGHUP → `ttywait` → `VNOP_REVOKE REVOKEALL`).
+//!   【추정 · 미실측】 끝나는 우두머리 안의 `ttywait`(PCATCH 잠·t_timeout 0 = 무기한)가 곧바로 깨지는 까닭(직전 자기 그룹 SIGHUP 로 보류 신호?)은
+//!   소스로 확정하지 못했다 — 관측(멈춘 독자 아래서 자식이 끝나고 꼬리를 잃음)과 맞는 설명일 뿐이다.
+//! 직접 PTY cysd 는 읽기 스레드가 `read()` 안에서 멈춰(SIGSTOP 등) 첫 덩이를 받는다. seatkeep 조종자 종속 모드는 역압 때 읽기 스레드가
+//! Condvar(`read()` 밖)에서 기다리므로, 그 사이 자식이 커널 버퍼(실측 1,024바이트)만큼 쓰고 끝나면 그 큐를 커널이 버린다
 //! (seatkeep 이 읽은 적이 없다 — 받는 쪽을 열어 둔 실험에서 EXITED final_offset = cysd 가 받은 바이트).
 //!
 //! 띠에 기대지 않는 방법: 좌석 자식(perl)은 1초 쉰 뒤 비차단 `syswrite` 로 번호 줄을 쓰다가 **1초 동안 한 바이트도 못 쓰면**(앞 단계가

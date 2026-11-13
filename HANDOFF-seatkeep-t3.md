@@ -5,6 +5,19 @@
 - 시험대 = `~/axdev/terminal-ide-survey/2026-11-bench/seatkeep-t3/harness/`(t3life.py · t3a13.py · t3misc.py) · T2 시험대 사본 = `../t2copy/harness/`
 - 격리 시험 실행기 = scratchpad `run_tests.sh <label> <cargo test 인자>`(CYS_* 제거 · HOME/XDG 임시 · CYS_SEATKEEP 만 통과)
 
+## fix3 = codex 3R REVISE(major 2 · minor 1) 처분(master#e7ca9e16 · 2026-11-13 12:11~ · 판정문 = `~/axdev/master/reviews/codex-queue-2026-11-13/r3/4-seatkeep-t3.r3.verdict.md`) — 【매듭 · CTX 58%】
+- **끝남**:
+  - #1 major = 08f6d1dd: `watch_parent` → `Watch::{Ready,Gone,Unavailable}`(main.rs 128~·147~·184~) · 감시 스레드 생성 실패·**맥 kqueue 실패 = fail-closed rc 9**(main.rs 123 · 660 · PTY·파일·자식 전) · 폴링 대체는 안전 보장으로 세지 않음(맥 밖 유닉스만 폴링 · 제품 경로 아님) · cysd 문구 rc 9. 시험 `bound_watch_unavailable_fails_closed`(디버그 훅 CYS_SEATKEEP_TEST_WATCH_FAIL=spawn|kqueue) · 뮤턴트 M8(못 세움 무시)·M8b(kqueue 실패→폴링) 붉음 · bound_ 10/10.
+  - #3 minor = ac7d690d: `reject_timeout`(main.rs 1122 · 호출 1167) — 상태·기록 잠금 무관하게 REJECT 유한 쓰기(200ms) → shutdown → 기록(상태 try_lock). 시험 = 준비 중 상태 잠금 6초에도 첫 프레임 < 3초+1.5초 · 고치기 전 꼴 M9 = 7.33초 붉음 · handshake_timeout 3/3.
+- **남은 것 = #2 major(INPUT_ACK 무기한 대기)** — 후임 몫. master 지시 = ACK 대기에 절대 상한 · 만료 처리 (가) 비차단·poll PTY 쓰기로 좌석 살리고 TimedOut / (나) controller 연결 끝내 쓰기 취소 + 오류 · 「cysd 만 기다림 끝내고 입력이 나중에 적용」 금지 · 「소비자를 끝내 재개하지 않음」 시험 필수.
+  - 【반론 · master 회신 대기 · 2026-11-13 12:1x】 **「절대」 상한은 정상 좌석을 죽일 수 있다**: 자식이 stdin 을 한동안 안 읽기만 해도(긴 빌드 중 미리 친 입력 > PTY 입력 버퍼 등) seatkeep PTY 쓰기가 막혀 ACK 가 늦는다 — 직접 PTY 는 그때 cysd 쓰기가 막혀 기다릴 뿐 좌석이 살아 있다(차이 = 출력 소비와 무관). 교착은 「ACK 기다림 + demux 가 상한(5MiB)에서 막힘(= 출력 소비 정지)」이 겹칠 때만 생긴다. 제안 = 상한 시계를 **ACK 기다림 중 demux 가 HARD 에서 막힌 순간부터** 잰다(예 10초) — 그 조건 밖(소비가 도는데 자식이 stdin 만 안 읽음)은 직접 PTY 처럼 기다린다. master 가 「절대」를 유지하면 값은 크게(예 120초) + 문서에 「입력을 그만큼 안 읽는 프로그램 = 좌석 끝남」 명시.
+  - 고른 안(후임 구현 권고) = **(나)**: 만료 → `self.wr` shutdown(Both) + `closed` 표시 → write_chunk `TimedOut` · 조종자 종속 seatkeep 은 연결 상실 → `end_for_controller_loss` → 프로세스 끝 → PTY 마스터 닫힘(입력 스레드의 막힌 쓰기도 프로세스와 함께 끝남 = 나중 적용 없음 · 일부 기록은 가능하나 좌석이 죽음). 까닭: 기존 연결 상실 경로 재사용 · 규약 변경 0 · 작음. 버린 안 (가): seatkeep 입력 스레드를 비차단+poll+취소 토큰으로 다시 쓰고 「일부만 씀」의 ACK 의미를 새로 정해야 함 — T4 흐름 제어(Ⓐ)와 함께.
+  - 시험 설계: 기존 `#[ignore]` 재현을 바탕으로 소비자를 **끝내 재개하지 않는** 판 — 기대 = write 가 상한+여유 안에 `TimedOut` · seatkeep 끝남(controller_lost) · 좌석 pid 사라짐 · 뒤늦은 입력 적용 0(좌석이 없으니 관측 = 좌석 프로세스 부재). 재현이 시간 의존(1/2)이므로 입력 쓰기를 확실히 막는 꼴 = 자식이 `stty -icanon` 아래 stdin 을 안 읽음(또는 입력 > 입력 버퍼 + 원시 모드) 로 고정 — 미실측.
+  - HANDOFF 「알려진 한계」의 「지연(유실 아님)」 문구는 codex 3R 지적대로 무기한 정지에선 미입증 — #2 고친 뒤 고쳐 쓴다.
+- **2R #4 = 이번에 안 고침 · 다음 판 후보**: `Surface` 필드 비공개 래퍼(우회 꼴 = 공개 필드 직접 접근 · 매크로 생성 접근 · 타입 별칭 구조 분해 · 손잡이가 참조를 돌려줌) — 문자열 게이트로는 구조적 보장 불가.
+- msv 재검증(후임이 #2 뒤 다시 돌릴 것): `cargo build --bin cys-seatkeep && cargo test --bin cys-seatkeep`(지금 45) · `cargo test --bin cysd seat_handle_gate seatkeep_stalled`(필터 하나씩) · `SEATKEEP_TEST_THREADS=1 scripts/seatkeep-knob-on-tests.sh accounts::` · 관측 `cargo test --bin cysd seatkeep_known_limit_input_ack -- --ignored --nocapture`.
+- 뮤턴트 실행기 주의: 시험대 scratchpad `mut.py` 는 되돌린 뒤 seatkeep 을 다시 빌드한다(fix1 교훈) · cargo test 거르개는 1개만.
+
 ## fix2 = codex 2R REVISE(blocking 0 · major 2 · minor 2) 처분 · 고침(master#b8703879 · 2026-11-13 07:29~08:3x · 판정문 = `~/axdev/master/reviews/codex-queue-2026-11-13/4-seatkeep-t3.verdict.md`)
 - 커밋: 08bc92d7(#1) → 8f86d2b0(#3 · #1 시험 결정화 · #2 재현 · T2 잠금 시험) → (이 HANDOFF 커밋). push 0 · codex 0 · 설치본·라이브 무접촉.
 

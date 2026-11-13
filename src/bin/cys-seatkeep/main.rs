@@ -135,6 +135,9 @@ mod imp {
 
     /// 부모 감시(codex 1R #1)가 부모 상실을 봤다 — 기동 단계(Keep 이 생기기 전)의 확인 자리가 읽는다.
     static PARENT_GONE: AtomicBool = AtomicBool::new(false);
+    /// 부모 감시가 준비(Ready) 뒤에 감시를 잃었다(맥 kqueue 대기 실패 · codex r4 #1) — 폴링으로 대신하지 않고 fail-closed:
+    /// 기동 단계면 주 스레드가 확인 자리에서 끝내고(rc 9) · Keep 이 생긴 뒤면 감시가 부모 상실과 같은 길(`end_for_controller_loss`)로 끝낸다.
+    static WATCH_LOST: AtomicBool = AtomicBool::new(false);
     /// 기동이 끝나 Keep 이 생기면 여기 둔다 — 부모 감시가 상실을 보면 이것으로 바로 끝낸다(supervise 100ms 를 기다리지 않음).
     static KEEP: std::sync::OnceLock<Arc<Keep>> = std::sync::OnceLock::new();
 
@@ -184,11 +187,13 @@ mod imp {
     fn wait_parent_gone(parent: i32, ready: &std::sync::mpsc::Sender<Watch>) -> bool {
         #[cfg(target_os = "macos")]
         unsafe {
+            // 시험 전용 고장 흉내(디버그 빌드만): kqueue = 첫 kqueue() 실패 · gone = 등록이 ESRCH(이미 상실) ·
+            // kevent = 등록·Ready 뒤 대기 kevent() 실패(CYS_SEATKEEP_TEST_KEVENT_FAIL_DELAY_MS 뒤 · codex r4 #1).
             #[cfg(debug_assertions)]
-            let forced_fail = std::env::var("CYS_SEATKEEP_TEST_WATCH_FAIL").ok().as_deref() == Some("kqueue");
+            let forced = std::env::var("CYS_SEATKEEP_TEST_WATCH_FAIL").ok().unwrap_or_default();
             #[cfg(not(debug_assertions))]
-            let forced_fail = false;
-            let kq = if forced_fail { -1 } else { libc::kqueue() };
+            let forced = String::new();
+            let kq = if forced == "kqueue" { -1 } else { libc::kqueue() };
             // 맥에서 kqueue 를 못 쓰면 폴링으로 대신하지 않는다(codex 3R #1 — 20ms 폴링 + 기동 확인은 안전 보장으로 세지 않음) → fail-closed.
             if kq < 0 {
                 let _ = ready.send(Watch::Unavailable);
@@ -200,9 +205,10 @@ mod imp {
                 ev.filter = libc::EVFILT_PROC;
                 ev.flags = libc::EV_ADD | libc::EV_ONESHOT;
                 ev.fflags = libc::NOTE_EXIT;
-                if libc::kevent(kq, &ev, 1, std::ptr::null_mut(), 0, std::ptr::null()) < 0 {
+                let reg = if forced == "gone" { -1 } else { libc::kevent(kq, &ev, 1, std::ptr::null_mut(), 0, std::ptr::null()) };
+                if reg < 0 {
                     // ESRCH = 등록 전에 이미 죽음. 그 밖의 실패 = 감시를 못 세움(fail-closed · codex 3R #1).
-                    let gone = std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+                    let gone = forced == "gone" || std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
                     libc::close(kq);
                     if gone {
                         return true;
@@ -216,33 +222,56 @@ mod imp {
                         return true;
                     }
                     let _ = ready.send(Watch::Ready);
+                    #[cfg(debug_assertions)]
+                    if forced == "kevent" {
+                        if let Some(ms) = std::env::var("CYS_SEATKEEP_TEST_KEVENT_FAIL_DELAY_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
+                            std::thread::sleep(Duration::from_millis(ms));
+                        }
+                    }
                     loop {
                         let mut out: libc::kevent = std::mem::zeroed();
-                        let n = libc::kevent(kq, std::ptr::null(), 0, &mut out, 1, std::ptr::null());
+                        let n = if forced == "kevent" { -1 } else { libc::kevent(kq, std::ptr::null(), 0, &mut out, 1, std::ptr::null()) };
                         if n > 0 && out.fflags & libc::NOTE_EXIT != 0 {
                             libc::close(kq);
                             return true;
                         }
-                        if n < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                        if n < 0 && (forced == "kevent" || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR)) {
                             libc::close(kq);
-                            break;
+                            // 등록 뒤 대기 실패 = 감시를 잃음(codex r4 #1) — 폴링으로 내려가지 않는다(fail-closed).
+                            // 갈래: Keep 이 아직 없으면(기동 단계) 표시만 → 주 스레드의 기동 확인 자리가 끝낸다(자식 전 = rc 9 · 자식 뒤 = 같은 rc 9
+                            // + end_early 정리 = 부모 상실과 같은 길) · Keep 이 있으면 여기서 부모 상실과 같은 길로 끝낸다.
+                            // 순서 = 「표시 → Keep 확인」(주 스레드는 「Keep 두기 → 표시 확인」 · 둘 다 SeqCst) — 둘 중 하나는 반드시 끝낸다.
+                            WATCH_LOST.store(true, Ordering::SeqCst);
+                            warn!("cys-seatkeep: 부모(조종자) 감시 대기 실패 — 감시 없이 좌석을 두지 않고 끝낸다");
+                            if let Some(k) = KEEP.get() {
+                                end_for_controller_loss(k, "watch_lost");
+                            }
+                            return false;
                         }
                     }
                 }
             }
         }
-        // 등록 뒤 kevent 대기가 실패한 경우(맥) 또는 맥 밖 유닉스 = 폴링(맥 밖은 제품 경로 아님 · 맥은 이미 Ready 를 알렸다).
-        let _ = ready.send(Watch::Ready);
-        while unsafe { libc::getppid() } == parent {
-            std::thread::sleep(Duration::from_millis(20));
+        // 맥 밖 유닉스 = 폴링(제품 경로 아님 · 맥은 위에서 모든 갈래가 돌아간다 — 등록 뒤 실패도 폴링으로 오지 않는다).
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = ready.send(Watch::Ready);
+            while unsafe { libc::getppid() } == parent {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            true
         }
-        true
     }
 
     /// 기동 단계 확인(자식 기동 직전·직후 · Keep 만들기 직전) — 조종자 종속 모드에서 부모가 사라졌는가.
     /// 감시 표시뿐 아니라 지금 부모를 직접 본다(codex 2R #1 — 감시가 상실을 봤지만 아직 표시 전 · 폴링 대신 20ms 창).
     fn parent_gone_early(args: &Args, parent: i32) -> bool {
         args.controller_bound && (PARENT_GONE.load(Ordering::SeqCst) || unsafe { libc::getppid() } != parent)
+    }
+
+    /// 기동 단계 확인 — 준비 뒤 감시를 잃었는가(codex r4 #1 · fail-closed).
+    fn watch_lost_early(args: &Args) -> bool {
+        args.controller_bound && WATCH_LOST.load(Ordering::SeqCst)
     }
 
     struct Args {
@@ -657,9 +686,17 @@ mod imp {
             if let Ok(f) = std::env::var("CYS_SEATKEEP_TEST_PARENT_SEEN_FILE") {
                 let _ = std::fs::write(f, parent_pid.to_string());
             }
-            if watch_parent(parent_pid) == Watch::Unavailable {
-                warn!("cys-seatkeep: 부모(조종자) 감시를 세우지 못함 — 감시 없이 좌석을 만들지 않고 끝낸다");
-                return RC_WATCH_UNAVAILABLE;
+            // Ready 만 진행한다(codex r4 #2 — Gone 도 상태 폴더·잠금·장부·등록부를 만들기 전에 끝).
+            match watch_parent(parent_pid) {
+                Watch::Ready => {}
+                Watch::Gone => {
+                    warn!("cys-seatkeep: 띄운 부모(조종자)가 감시 등록 때 이미 사라짐 — 좌석을 만들지 않고 끝낸다");
+                    return RC_PARENT_LOST;
+                }
+                Watch::Unavailable => {
+                    warn!("cys-seatkeep: 부모(조종자) 감시를 세우지 못함 — 감시 없이 좌석을 만들지 않고 끝낸다");
+                    return RC_WATCH_UNAVAILABLE;
+                }
             }
         }
         // 조종자(cysd)와 다른 세션 — 조종자가 죽어도 이 프로세스에 SIGHUP 이 오지 않는다. 실패 = 그 보장이 없으니 시작하지 않는다.
@@ -741,9 +778,12 @@ mod imp {
             if let Some(ms) = std::env::var("CYS_SEATKEEP_TEST_SPAWN_DELAY_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
                 std::thread::sleep(Duration::from_millis(ms));
             }
-            // 자식 기동 직전 — 부모가 사라졌으면 이 좌석을 만들지 않는다(codex 1R #1).
+            // 자식 기동 직전 — 부모가 사라졌으면 이 좌석을 만들지 않는다(codex 1R #1) · 감시를 잃었어도 같다(codex r4 #1 · rc 9).
             if parent_gone_early(&args, parent_pid) {
                 return end_early_parent_lost(&args, &paths, ledger, &seats);
+            }
+            if watch_lost_early(&args) {
+                return end_early(&args, &paths, ledger, &seats, "watch_lost", RC_WATCH_UNAVAILABLE);
             }
             let pair = match native_pty_system().openpty(PtySize { rows: args.rows, cols: args.cols, pixel_width: 0, pixel_height: 0 }) {
                 Ok(p) => p,
@@ -796,6 +836,9 @@ mod imp {
             if parent_gone_early(&args, parent_pid) {
                 return end_early_parent_lost(&args, &paths, ledger, &seats);
             }
+            if watch_lost_early(&args) {
+                return end_early(&args, &paths, ledger, &seats, "watch_lost", RC_WATCH_UNAVAILABLE);
+            }
         }
 
         let keep = Arc::new(Keep {
@@ -841,6 +884,9 @@ mod imp {
         let _ = KEEP.set(Arc::clone(&keep));
         if parent_gone_early(&keep.args, keep.parent_pid) {
             end_for_controller_loss(&keep, "parent_lost");
+        }
+        if watch_lost_early(&keep.args) {
+            end_for_controller_loss(&keep, "watch_lost");
         }
 
         for (i, r) in readers.into_iter().enumerate() {
@@ -895,15 +941,20 @@ mod imp {
     /// 기동 단계(Keep 이 생기기 전)에 부모 상실을 봤다 — 기록 1줄 · 등록부 `ended_controller_lost` · 소켓 삭제 뒤 RC_PARENT_LOST.
     /// 이미 띄운 좌석이 있으면 이 프로세스가 끝나며 마스터가 닫혀 SIGHUP(end_for_controller_loss 와 같은 경로 · 자식에게 신호 안 보냄).
     /// 이 단계에서 끝내는 쪽은 주 스레드 하나뿐이다(감시는 Keep 이 없으면 표시만 한다) — 종료 소유자 다툼 없음.
-    fn end_early_parent_lost(args: &Args, paths: &Paths, mut ledger: Ledger, seats: &[Seat]) -> i32 {
+    fn end_early_parent_lost(args: &Args, paths: &Paths, ledger: Ledger, seats: &[Seat]) -> i32 {
+        end_early(args, paths, ledger, seats, "parent_lost", RC_PARENT_LOST)
+    }
+
+    /// 기동 단계 끝(부모 상실 · 감시 잃음 codex r4 #1) — 같은 정리 길: 기록 1줄(`why`) · 소켓 삭제 · 등록부 `ended_controller_lost` · `rc`.
+    fn end_early(args: &Args, paths: &Paths, mut ledger: Ledger, seats: &[Seat], why: &str, rc: i32) -> i32 {
         let pids: Vec<i32> = seats.iter().map(|s| s.child_pid).collect();
-        let _ = ledger.line(&json!({"event": "seatkeep_exit", "reason": "parent_lost", "phase": "starting", "spawned": pids,
+        let _ = ledger.line(&json!({"event": "seatkeep_exit", "reason": why, "phase": "starting", "spawned": pids,
                                     "t": registry::now_epoch(), "seatkeep": args.id, "seatkeep_pid": std::process::id()}));
         let _ = std::fs::remove_file(&paths.sock);
         let _ = registry::write_atomic(&paths.entry, &json!({"phase": "ended_controller_lost", "id": args.id, "pid": std::process::id(),
                                                               "core": proto::CORE_VERSION, "spawned": pids, "at": registry::now_epoch()}));
-        warn!("cys-seatkeep: 띄운 부모(조종자)가 기동 중에 사라짐 — 좌석 {}개 띄운 상태에서 끝낸다", pids.len());
-        RC_PARENT_LOST
+        warn!("cys-seatkeep: 기동 중 끝냄({why}) — 좌석 {}개 띄운 상태에서 끝낸다", pids.len());
+        rc
     }
 
     /// PTY 읽기 버퍼 크기.
@@ -2226,6 +2277,111 @@ mod imp {
                 assert_eq!(rc, Some(RC_WATCH_UNAVAILABLE), "{mode}: 감시를 못 세웠는데 rc {rc:?}");
                 assert!(!ran && !entry, "{mode}: 감시 없이 진행(자식 {ran} · 등록부 {entry})");
             }
+        }
+
+        /// seatkeep 을 디버그 훅 환경과 함께 직접 띄워(부모 = 이 시험 프로세스 · 살아 있음) 끝날 때까지(최대 `limit`) 기다린다.
+        /// 돌려주는 값 = (rc · 끝나기까지 · 상태 폴더 파일 이름들(표식 제외) · seatkeep_exit 줄들). 끝나지 않으면 SIGKILL 하고 rc None.
+        #[cfg(target_os = "macos")]
+        fn run_sk_with(tag: &str, script: &str, envs: &[(&str, &str)], limit: Duration) -> (Option<i32>, Duration, Vec<String>, Vec<Value>, PathBuf) {
+            let d = tmpdir(tag);
+            let mut args = bound_sk_args(&d, &d.join("unused"));
+            *args.last_mut().unwrap() = script.replace("{D}", &d.to_string_lossy());
+            let mut cmd = std::process::Command::new(&args[0]);
+            cmd.args(&args[1..]);
+            for (k, v) in envs {
+                cmd.env(k, v);
+            }
+            let mut sk = cmd.spawn().unwrap();
+            let t = Instant::now();
+            let mut rc = None;
+            while t.elapsed() < limit {
+                if let Ok(Some(st)) = sk.try_wait() {
+                    rc = st.code();
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let took = t.elapsed();
+            if rc.is_none() {
+                let _ = sk.kill();
+                let _ = sk.wait();
+            }
+            std::thread::sleep(Duration::from_millis(300));
+            let log = std::fs::read_to_string(Paths::new(&d, "p").log).unwrap_or_default();
+            let exits = log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter(|v| v["event"] == "seatkeep_exit").collect();
+            let mut files: Vec<String> = Vec::new();
+            for e in walk(&d) {
+                let rel = e.strip_prefix(&d).unwrap().to_string_lossy().into_owned();
+                if !rel.starts_with("child-") {
+                    files.push(rel);
+                }
+            }
+            files.sort();
+            (rc, took, files, exits, d)
+        }
+
+        #[cfg(target_os = "macos")]
+        fn walk(d: &std::path::Path) -> Vec<PathBuf> {
+            let mut out = Vec::new();
+            if let Ok(rd) = std::fs::read_dir(d) {
+                for e in rd.flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        out.extend(walk(&p));
+                    }
+                    out.push(p);
+                }
+            }
+            out
+        }
+
+        /// codex r4 #2: 감시 등록 때 이미 상실(Watch::Gone · 디버그 훅 WATCH_FAIL=gone = 등록 ESRCH 흉내) → 상태 폴더·잠금·장부·등록부를
+        /// 만들기 전에 rc 8(흔적 0). 고치기 전(Unavailable 만 처리) = 계속 진행해 .lock·.log·등록부를 만든 뒤 기동 확인에서 rc 8.
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn bound_watch_gone_ends_before_any_file() {
+            let (rc, _, files, exits, d) = run_sk_with("wgone", "echo $$ > '{D}/child-ran'; exec sleep 30",
+                &[("CYS_SEATKEEP_TEST_WATCH_FAIL", "gone"), ("CYS_SEATKEEP_TEST_SPAWN_DELAY_MS", "300")], Duration::from_secs(10));
+            let ran = d.join("child-ran").exists();
+            let _ = std::fs::remove_dir_all(&d);
+            assert_eq!(rc, Some(RC_PARENT_LOST), "Gone 인데 rc {rc:?}");
+            assert!(!ran, "Gone 인데 좌석 자식이 떴다");
+            assert!(files.is_empty() && exits.is_empty(), "Gone 인데 상태 파일을 만들었다: {files:?} · 기록 {exits:?}");
+        }
+
+        /// codex r4 #1 ⑴: 등록·Ready 뒤 kqueue 대기 kevent() 가 실패(디버그 훅 WATCH_FAIL=kevent · 지연 0) + 자식 기동 지연 300ms →
+        /// 폴링으로 내려가지 않고 자식 전에 끝(rc 9 · 자식 표식 0 · 기록 watch_lost spawned []). 고치기 전 = 맥에서도 20ms 폴링으로 내려가
+        /// (부모가 살아 있으니) 자식이 뜬다.
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn bound_watch_wait_failure_before_spawn_fails_closed() {
+            let (rc, _, _files, exits, d) = run_sk_with("wkev1", "echo $$ > '{D}/child-ran'; exec sleep 30",
+                &[("CYS_SEATKEEP_TEST_WATCH_FAIL", "kevent"), ("CYS_SEATKEEP_TEST_KEVENT_FAIL_DELAY_MS", "0"),
+                  ("CYS_SEATKEEP_TEST_SPAWN_DELAY_MS", "300")], Duration::from_secs(10));
+            let ran = d.join("child-ran").exists();
+            let _ = std::fs::remove_dir_all(&d);
+            assert_eq!(rc, Some(RC_WATCH_UNAVAILABLE), "감시 대기 실패인데 rc {rc:?} · 기록 {exits:?}");
+            assert!(!ran, "감시를 잃었는데 좌석 자식이 떴다(폴링 대신) · 기록 {exits:?}");
+            assert!(exits.len() == 1 && exits[0]["reason"] == "watch_lost" && exits[0]["spawned"] == json!([]), "기록: {exits:?}");
+        }
+
+        /// codex r4 #1 ⑵: 좌석이 돌던 중(Keep 뒤) kevent 대기 실패(지연 1.5초) → 부모 상실과 같은 길(end_for_controller_loss)로 곧바로 끝:
+        /// 기록 watch_lost 1줄 · 좌석 자식(SIGHUP) 사라짐. 고치기 전 = 폴링으로 내려가 좌석이 계속 돈다(부모 생존).
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn bound_watch_wait_failure_after_start_ends_like_parent_loss() {
+            let (rc, took, _files, exits, d) = run_sk_with("wkev2", "echo $$ > '{D}/child-ran'; exec sleep 30",
+                &[("CYS_SEATKEEP_TEST_WATCH_FAIL", "kevent"), ("CYS_SEATKEEP_TEST_KEVENT_FAIL_DELAY_MS", "1500")], Duration::from_secs(10));
+            let child: i32 = std::fs::read_to_string(d.join("child-ran")).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
+            let child_gone = child > 0 && wait_until(Duration::from_secs(5), || !alive(child));
+            if child > 0 && !child_gone {
+                unsafe { libc::kill(child, libc::SIGKILL) };
+            }
+            let _ = std::fs::remove_dir_all(&d);
+            assert!(child > 0, "이 시험은 좌석이 뜬 뒤의 창이다(자식 표식 없음) · 기록 {exits:?}");
+            assert!(rc.is_some() && took < Duration::from_secs(8), "감시를 잃었는데 seatkeep 이 안 끝남(폴링 대신) rc {rc:?} · {took:?}");
+            assert!(exits.len() == 1 && exits[0]["reason"] == "watch_lost", "기록 watch_lost 1줄: {exits:?}");
+            assert!(child_gone, "좌석 자식이 끝나지 않음");
         }
 
         /// codex 2R #1 ② 감시가 상실을 본 뒤 표시가 늦은 창(폴링 대신 20ms 창과 같은 꼴): CYS_SEATKEEP_TEST_GONE_DELAY_MS 4초 ·

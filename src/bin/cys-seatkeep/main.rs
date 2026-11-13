@@ -118,6 +118,20 @@ mod imp {
     const ALL_SEATS: u32 = u32::MAX;
     /// `--controller-bound` 에서 부모(cysd)가 자식 기동 **전에** 사라졌을 때의 끝 코드(codex 1R #1) — PTY·자식을 만들지 않는다.
     const RC_PARENT_LOST: i32 = 8;
+    /// `--controller-bound` 에서 부모 감시를 세우지 못함(감시 스레드 생성 실패 · 맥에서 kqueue 등록 실패) — 감시 없이 좌석을 띄우지 않는다
+    /// (codex 3R #1 fail-closed). PTY·파일·자식 전에 끝낸다.
+    const RC_WATCH_UNAVAILABLE: i32 = 9;
+
+    /// 부모 감시 준비 결과(codex 3R #1).
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum Watch {
+        /// 등록 끝남(맥 = kqueue NOTE_EXIT · 그 밖 유닉스 = 폴링 시작)
+        Ready,
+        /// 등록 때 이미 상실(ESRCH · 등록 뒤 getppid 바뀜)
+        Gone,
+        /// 감시를 세우지 못함 → 부르는 쪽이 fail-closed
+        Unavailable,
+    }
 
     /// 부모 감시(codex 1R #1)가 부모 상실을 봤다 — 기동 단계(Keep 이 생기기 전)의 확인 자리가 읽는다.
     static PARENT_GONE: AtomicBool = AtomicBool::new(false);
@@ -130,16 +144,23 @@ mod imp {
     /// 감시가 「등록 끝남 · 이미 상실 · 폴링으로 대신 준비됨」 중 하나를 알릴 때까지 돌아오지 않는다(codex 2R #1 — 등록 전 스케줄 틈:
     /// 스레드가 아직 안 돌았는데 주 스레드가 자식을 띄우던 창). 알림이 안 오면(감시 스레드가 못 뜸) 기다리지 않고 돌아온다 —
     /// 그 경우에도 기동 확인 자리는 `getppid` 를 직접 본다(`parent_gone_early`).
-    fn watch_parent(parent: i32) {
-        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+    fn watch_parent(parent: i32) -> Watch {
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Watch>();
+        // 시험 전용(codex 3R #1 — 감시 스레드 생성 실패 흉내). 디버그 빌드에서만 읽는다.
+        #[cfg(debug_assertions)]
+        if std::env::var("CYS_SEATKEEP_TEST_WATCH_FAIL").ok().as_deref() == Some("spawn") {
+            return Watch::Unavailable;
+        }
         let spawned = std::thread::Builder::new().name("seatkeep-parent-watch".into()).spawn(move || {
             // 시험 전용 지연(codex 2R #1 재현 — 감시 스레드가 늦게 스케줄됨). 디버그 빌드에서만 읽는다.
             #[cfg(debug_assertions)]
             if let Some(ms) = std::env::var("CYS_SEATKEEP_TEST_WATCH_DELAY_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
                 std::thread::sleep(Duration::from_millis(ms));
             }
-            wait_parent_gone(parent, &ready_tx);
-            let _ = ready_tx.send(());
+            if !wait_parent_gone(parent, &ready_tx) {
+                return; // 감시를 못 세움(Unavailable 을 이미 알림) — 상실 표시를 하지 않는다(주 스레드가 끝낸다)
+            }
+            let _ = ready_tx.send(Watch::Gone);
             // 시험 전용 지연(codex 2R #1 재현 — 상실을 본 뒤 표시가 늦음 · 폴링 대신 창과 같은 꼴). 디버그 빌드에서만 읽는다.
             #[cfg(debug_assertions)]
             if let Some(ms) = std::env::var("CYS_SEATKEEP_TEST_GONE_DELAY_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
@@ -150,43 +171,57 @@ mod imp {
                 end_for_controller_loss(k, "parent_lost");
             }
         });
-        if spawned.is_ok() {
-            let _ = ready_rx.recv();
+        match spawned {
+            // 첫 알림 = 준비 결과(등록 끝남 · 이미 상실 · 못 세움). 알림 없이 채널이 닫히면(스레드가 죽음) 못 세움으로 본다.
+            Ok(_) => ready_rx.recv().unwrap_or(Watch::Unavailable),
+            Err(_) => Watch::Unavailable,
         }
     }
 
     /// 부모 `parent` 가 사라질 때까지 막힌다. 감시가 준비되면(등록 끝남 · 폴링 시작 직전) `ready` 로 알린다
     /// (상실로 곧바로 돌아오는 길은 부르는 쪽이 알린다).
-    fn wait_parent_gone(parent: i32, ready: &std::sync::mpsc::Sender<()>) {
+    /// 돌려주는 값 = 감시를 세웠는가(거짓 = `Unavailable` 을 알렸음 · 맥에서 kqueue 를 못 씀). 참이면 상실까지 막혔다가 돌아온다.
+    fn wait_parent_gone(parent: i32, ready: &std::sync::mpsc::Sender<Watch>) -> bool {
         #[cfg(target_os = "macos")]
         unsafe {
-            let kq = libc::kqueue();
-            if kq >= 0 {
+            #[cfg(debug_assertions)]
+            let forced_fail = std::env::var("CYS_SEATKEEP_TEST_WATCH_FAIL").ok().as_deref() == Some("kqueue");
+            #[cfg(not(debug_assertions))]
+            let forced_fail = false;
+            let kq = if forced_fail { -1 } else { libc::kqueue() };
+            // 맥에서 kqueue 를 못 쓰면 폴링으로 대신하지 않는다(codex 3R #1 — 20ms 폴링 + 기동 확인은 안전 보장으로 세지 않음) → fail-closed.
+            if kq < 0 {
+                let _ = ready.send(Watch::Unavailable);
+                return false;
+            }
+            {
                 let mut ev: libc::kevent = std::mem::zeroed();
                 ev.ident = parent as usize;
                 ev.filter = libc::EVFILT_PROC;
                 ev.flags = libc::EV_ADD | libc::EV_ONESHOT;
                 ev.fflags = libc::NOTE_EXIT;
                 if libc::kevent(kq, &ev, 1, std::ptr::null_mut(), 0, std::ptr::null()) < 0 {
-                    // ESRCH = 등록 전에 이미 죽음. 그 밖의 실패 = 아래 폴링으로 대신.
+                    // ESRCH = 등록 전에 이미 죽음. 그 밖의 실패 = 감시를 못 세움(fail-closed · codex 3R #1).
                     let gone = std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
                     libc::close(kq);
                     if gone {
-                        return;
+                        return true;
                     }
+                    let _ = ready.send(Watch::Unavailable);
+                    return false;
                 } else {
                     // 잰 뒤 등록 전에 죽고 pid 가 재사용됐으면 남의 프로세스를 보고 있다 — 지금 부모가 그대로인지 한 번 더 본다.
                     if libc::getppid() != parent {
                         libc::close(kq);
-                        return;
+                        return true;
                     }
-                    let _ = ready.send(());
+                    let _ = ready.send(Watch::Ready);
                     loop {
                         let mut out: libc::kevent = std::mem::zeroed();
                         let n = libc::kevent(kq, std::ptr::null(), 0, &mut out, 1, std::ptr::null());
                         if n > 0 && out.fflags & libc::NOTE_EXIT != 0 {
                             libc::close(kq);
-                            return;
+                            return true;
                         }
                         if n < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
                             libc::close(kq);
@@ -196,10 +231,12 @@ mod imp {
                 }
             }
         }
-        let _ = ready.send(());
+        // 등록 뒤 kevent 대기가 실패한 경우(맥) 또는 맥 밖 유닉스 = 폴링(맥 밖은 제품 경로 아님 · 맥은 이미 Ready 를 알렸다).
+        let _ = ready.send(Watch::Ready);
         while unsafe { libc::getppid() } == parent {
             std::thread::sleep(Duration::from_millis(20));
         }
+        true
     }
 
     /// 기동 단계 확인(자식 기동 직전·직후 · Keep 만들기 직전) — 조종자 종속 모드에서 부모가 사라졌는가.
@@ -620,7 +657,10 @@ mod imp {
             if let Ok(f) = std::env::var("CYS_SEATKEEP_TEST_PARENT_SEEN_FILE") {
                 let _ = std::fs::write(f, parent_pid.to_string());
             }
-            watch_parent(parent_pid);
+            if watch_parent(parent_pid) == Watch::Unavailable {
+                warn!("cys-seatkeep: 부모(조종자) 감시를 세우지 못함 — 감시 없이 좌석을 만들지 않고 끝낸다");
+                return RC_WATCH_UNAVAILABLE;
+            }
         }
         // 조종자(cysd)와 다른 세션 — 조종자가 죽어도 이 프로세스에 SIGHUP 이 오지 않는다. 실패 = 그 보장이 없으니 시작하지 않는다.
         if unsafe { libc::setsid() } == -1 {
@@ -2141,6 +2181,38 @@ mod imp {
             assert!(took < Duration::from_millis(1500), "부모 사망 뒤 끝나기까지 {took:?} — 감시가 등록 전이었다(codex 2R #1) · 기록 {exits:?}");
             assert_eq!(exits.len(), 1, "seatkeep_exit 1줄: {exits:?}");
             assert_eq!(exits[0]["reason"], "parent_lost");
+        }
+
+        /// codex 3R #1: 부모 감시를 세우지 못하면(감시 스레드 생성 실패 · 맥 kqueue 실패 — 디버그 훅 CYS_SEATKEEP_TEST_WATCH_FAIL)
+        /// 감시 없이 진행하지 않는다 = PTY·파일·자식 전에 rc 9(fail-closed). 고치기 전 = 그대로 진행해 좌석 자식이 뜸.
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn bound_watch_unavailable_fails_closed() {
+            for mode in ["spawn", "kqueue"] {
+                let d = tmpdir(&format!("wfail-{mode}"));
+                let marker = d.join("child-ran");
+                let args = bound_sk_args(&d, &marker);
+                let mut sk = std::process::Command::new(&args[0]).args(&args[1..]).env("CYS_SEATKEEP_TEST_WATCH_FAIL", mode).spawn().unwrap();
+                let t = Instant::now();
+                let mut rc = None;
+                while t.elapsed() < Duration::from_secs(10) {
+                    if let Ok(Some(st)) = sk.try_wait() {
+                        rc = st.code();
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                if rc.is_none() {
+                    let _ = sk.kill();
+                    let _ = sk.wait();
+                }
+                std::thread::sleep(Duration::from_millis(300));
+                let ran = marker.exists();
+                let entry = Paths::new(&d, "p").entry.exists();
+                let _ = std::fs::remove_dir_all(&d);
+                assert_eq!(rc, Some(RC_WATCH_UNAVAILABLE), "{mode}: 감시를 못 세웠는데 rc {rc:?}");
+                assert!(!ran && !entry, "{mode}: 감시 없이 진행(자식 {ran} · 등록부 {entry})");
+            }
         }
 
         /// codex 2R #1 ② 감시가 상실을 본 뒤 표시가 늦은 창(폴링 대신 20ms 창과 같은 꼴): CYS_SEATKEEP_TEST_GONE_DELAY_MS 4초 ·

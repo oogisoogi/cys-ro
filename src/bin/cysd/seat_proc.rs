@@ -440,7 +440,7 @@ mod seatkeep_mac {
             let mut stream = loop {
                 if let Ok(Some(st)) = keeper.try_wait() {
                     return Err(format!(
-                        "seatkeep 이 붙기 전에 끝남(rc {:?} · 2=인자/경로 3=신원·상태폴더·등록부 4=같은 id·미소비 종료 기록 5=PTY·자식 기동 7=작업 폴더가 사라짐 8=띄운 cysd 가 기동 중에 사라짐) — 사유는 cysd 로그의 cys-seatkeep 줄",
+                        "seatkeep 이 붙기 전에 끝남(rc {:?} · 2=인자/경로 3=신원·상태폴더·등록부 4=같은 id·미소비 종료 기록 5=PTY·자식 기동 7=작업 폴더가 사라짐 8=띄운 cysd 가 기동 중에 사라짐 9=부모 감시를 세우지 못함) — 사유는 cysd 로그의 cys-seatkeep 줄",
                         st.code()
                     ));
                 }

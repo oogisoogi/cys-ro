@@ -1117,6 +1117,19 @@ mod imp {
         }
     }
 
+    /// 기한 감시의 거절(codex 3R #3) — 상태·기록 잠금과 무관하게 **먼저** 짧은 REJECT 를 유한 쓰기(200ms)로 보내고 소켓을 닫는다
+    /// (수락 준비가 상태 잠금을 쥔 채 늦어도 조종자는 기한 안에 답을 받는다). 기록은 그 뒤 — 상태는 `try_lock` 으로만 본다(못 보면 칸 null).
+    fn reject_timeout(keep: &Keep, mut s: UnixStream) {
+        let _ = s.set_write_timeout(Some(Duration::from_millis(200)));
+        let _ = proto::write_all(&mut s, &proto::json_frame(proto::REJECT, ALL_SEATS, &json!({"reason": "handshake_timeout"})));
+        let _ = s.shutdown(Shutdown::Both);
+        let (gen, cur) = match keep.st.try_lock() {
+            Ok(st) => (json!(st.gen), st.controller.as_ref().map(|c| json!({"gen": c.gen, "peer": peer_json(&c.peer)}))),
+            Err(_) => (Value::Null, None),
+        };
+        let _ = keep.log(json!({"event": "reject", "reason": "handshake_timeout", "peer": Value::Null, "gen": gen, "controller": cur}));
+    }
+
     fn accept_loop(keep: Arc<Keep>, listener: UnixListener) {
         for conn in listener.incoming() {
             let Ok(s) = conn else { continue };
@@ -1151,7 +1164,7 @@ mod imp {
             std::thread::spawn(move || {
                 std::thread::sleep(HELLO_TIMEOUT);
                 if d.compare_exchange(HS_RUNNING, HS_TIMED_OUT, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
-                    reject(&k, s2, "handshake_timeout", None);
+                    reject_timeout(&k, s2);
                 }
             });
         }
@@ -2267,11 +2280,12 @@ mod imp {
         /// 돌려줌 = (조종자가 받은 첫 프레임의 REJECT 이유 · 기록 「event:reason」 목록 · 끝에 seatkeep 생존).
         #[cfg(target_os = "macos")]
         fn slow_handshake(tag: &str, hold: bool) -> (Option<String>, Vec<String>, bool) {
-            slow_handshake_with(tag, hold, &[("CYS_SEATKEEP_TEST_AUTH_DELAY_MS", "3600")])
+            let (r, k, a, _) = slow_handshake_with(tag, hold, &[("CYS_SEATKEEP_TEST_AUTH_DELAY_MS", "3600")]);
+            (r, k, a)
         }
 
         #[cfg(target_os = "macos")]
-        fn slow_handshake_with(tag: &str, hold: bool, envs: &[(&str, &str)]) -> (Option<String>, Vec<String>, bool) {
+        fn slow_handshake_with(tag: &str, hold: bool, envs: &[(&str, &str)]) -> (Option<String>, Vec<String>, bool, Duration) {
             use std::os::unix::io::AsRawFd as _;
             // 핸드셰이크 시험끼리는 한 번에 하나 — 신원 조회(Security)가 동시 호출 수에 비례해 느려져(실측) 시간 경계가 흔들린다.
             static SERIAL: Mutex<()> = Mutex::new(());
@@ -2295,8 +2309,10 @@ mod imp {
                     "확정 기록 없음");
             let mut c = UnixStream::connect(&paths.sock).unwrap();
             proto::write_all(&mut c, &proto::json_frame(proto::HELLO, 0, &json!({"core": proto::CORE_VERSION, "resume": {}}))).unwrap();
+            let t_hello = Instant::now();
             c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
             let first = proto::read_frame(&mut c);
+            let first_after = t_hello.elapsed();
             if hold {
                 // 늦은 두 번째 확인이 조종자가 붙어 있는 동안 끝나게(조회가 수 초까지 늘어도) — 그래야 늦은 수락 길까지 간다.
                 std::thread::sleep(Duration::from_millis(6000));
@@ -2316,7 +2332,7 @@ mod imp {
                 Ok(Some((k, _, p))) if *k == proto::REJECT => serde_json::from_slice::<Value>(p).ok().and_then(|v| v["reason"].as_str().map(str::to_string)),
                 _ => None,
             };
-            (rej, kinds, alive)
+            (rej, kinds, alive, first_after)
         }
 
         /// handshake-timeout(master#5b9e1d26 ⑵) ① 조종자가 연결을 쥐고 기다리는 경우(실제 cysd 꼴): 감시가 `reject handshake_timeout`
@@ -2345,7 +2361,7 @@ mod imp {
             // 맞는 동작 · 위 ① 시험 몫) — 준비 「중」 시간 초과가 실제로 생긴 회차(accept 줄 있음)를 최대 3번까지 찾는다.
             let mut got = None;
             for round in 0..3 {
-                let r = slow_handshake_with(&format!("hs-timeout-prep{round}"), true, &[("CYS_SEATKEEP_TEST_ACCEPT_DELAY_MS", "4000")]);
+                let r = slow_handshake_with(&format!("hs-timeout-prep{round}"), true, &[("CYS_SEATKEEP_TEST_ACCEPT_DELAY_MS", "6000")]);
                 let reached = r.1.iter().any(|k| k.starts_with("accept:")) || r.0.is_none();
                 eprintln!("[hs-prep] 회차 {round} reached={reached} {r:?}");
                 if reached {
@@ -2353,8 +2369,10 @@ mod imp {
                     break;
                 }
             }
-            let (rej, kinds, alive) = got.expect("3회 모두 준비 전에 시간 초과(신원 조회가 3초 넘음 · 부하) — 이 시나리오에 닿지 못함");
+            let (rej, kinds, alive, first_after) = got.expect("3회 모두 준비 전에 시간 초과(신원 조회가 3초 넘음 · 부하) — 이 시나리오에 닿지 못함");
             assert_eq!(rej.as_deref(), Some("handshake_timeout"), "첫 프레임 = REJECT handshake_timeout(늦은 WELCOME 아님) · 기록 {kinds:?}");
+            // codex 3R #3: 수락 준비가 상태 잠금을 6초 쥐어도 REJECT 는 기한(HELLO_TIMEOUT 3초) + 허용 오차 1.5초 안에 온다.
+            assert!(first_after < HELLO_TIMEOUT + Duration::from_millis(1500), "REJECT 가 상태 잠금 뒤에서 늦음: {first_after:?}");
             assert_eq!(kinds.iter().filter(|k| k.starts_with("reject:")).collect::<Vec<_>>(), vec!["reject:handshake_timeout"], "{kinds:?}");
             assert_eq!(kinds.iter().filter(|k| *k == "accept_aborted:handshake_timeout").count(), 1, "accept 뒤 accept_aborted 1줄: {kinds:?}");
             assert!(!kinds.iter().any(|k| k.starts_with("disconnect:") || k == "seatkeep_exit:controller_lost"), "조종자가 걸렸다: alive={alive} {kinds:?}");

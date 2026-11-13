@@ -313,56 +313,115 @@ fn seatkeep_stalled_consumer_does_not_block_close() {
     eprintln!("[stall-close] 닫기 {took:?}");
 }
 
-/// codex 2R #2 재현(판정문 순서 그대로): 출력 소비자 정지 → 좌석의 별도 흐름(`yes &`)은 출력을 계속 쏟고 stdin 은 3초 동안 안 읽음 →
-/// cysd 가 입력 한 조각(256KiB · 줄 단위)을 보내고 수신 확인(ACK)을 기다림 → 3초 뒤 좌석이 stdin 을 읽기 시작(`cat`).
-/// 관측: ⑴ 소비자가 멈춰 있는 동안 ACK 가 오는가(15초) ⑵ 소비자를 다시 돌리면 ACK 가 오는가.
-/// 결과에 따라 판정을 고정한다 — 이 시험은 「지금 동작」을 기록하는 알려진 한계 시험이다(HANDOFF codex 2R 처분 표).
-/// ⚠시간에 따라 재현이 갈린다(PTY 입력 쓰기가 실제로 막혀야 출력이 5MiB 상한을 채운다 · 2026-11-13 실측 1/2 재현) → 기본 실행에서 뺀다:
-/// `cargo test --bin cysd seatkeep_known_limit_input_ack -- --ignored --nocapture`(출력의 [ackflood] 줄이 관측).
+/// codex 3R #2 시험대: 셸 스크립트 좌석(seatkeep 경로 직접 · `cargo build --bin cys-seatkeep` 뒤). `stty raw -echo` 로 입력 쓰기가 버려지지
+/// 않고 막히게 한다(정규 모드는 줄 없이 찬 입력을 버릴 수 있다) — 자식이 stdin 을 안 읽는 동안 256KiB 입력은 PTY 입력 버퍼에서 반드시 막힌다.
 #[cfg(target_os = "macos")]
-#[test]
-#[ignore]
-fn seatkeep_known_limit_input_ack_behind_full_output_while_consumer_stalled() {
-    use std::time::{Duration, Instant};
-    let dir = std::env::temp_dir().join(format!("cskt-ackflood-{}-{}", std::process::id(), crate::state::now_epoch().to_bits() % 1_000_000));
+fn script_seat(tag: &str, script: &str) -> (Spawned, Box<dyn std::io::Read + Send>, Box<dyn std::io::Write + Send>, i32, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("cskt-{tag}-{}-{}", std::process::id(), crate::state::now_epoch().to_bits() % 1_000_000));
     std::fs::create_dir_all(&dir).unwrap();
     let daemon = crate::state::Daemon::new(dir.join("cysd.sock"));
     let size = portable_pty::PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 };
     let plan = SeatkeepPlan::prepare(&daemon, size).expect("seatkeep 계획");
     let mut b = portable_pty::CommandBuilder::new("/bin/sh");
-    b.args(["-c", "yes 0123456789abcdef & sleep 3; exec cat >/dev/null"]);
+    b.args(["-c", script]);
     b.cwd(&dir);
     let mut sp = Opened::Seatkeep(plan).spawn(b).expect("seatkeep 좌석");
-    let (mut reader, mut writer) = sp.take_io().expect("얼굴");
+    let (reader, writer) = sp.take_io().expect("얼굴");
     let keeper = sp.link().expect("연결").keeper_pid() as i32;
-    std::thread::sleep(Duration::from_millis(500));
+    (sp, reader, writer, keeper, dir)
+}
+
+/// 입력 256KiB(100바이트 줄) — 원시 모드 PTY 입력 버퍼(수 KiB)보다 커서 자식이 안 읽으면 seatkeep 의 PTY 쓰기가 막힌다.
+#[cfg(target_os = "macos")]
+fn big_input() -> Vec<u8> {
     let line = [b"a".repeat(99), b"\n".to_vec()].concat();
-    let input: Vec<u8> = line.iter().copied().cycle().take(256 << 10).collect();
+    line.iter().copied().cycle().take(256 << 10).collect()
+}
+
+/// codex 3R #2 ①(master 결정 A안 + 만료 (나)): 출력 소비자가 끝내 재개하지 않는다 + 좌석은 출력을 쏟고 stdin 을 안 읽는다 → 입력 확인
+/// 기다림 중 연결 스레드가 HARD 에서 막힌 순간부터 ACK_STALL_LIMIT(10초) 안에 호출자에게 TimedOut · seatkeep 끝(연결 끊김 → controller_lost)
+/// · 좌석 프로세스 사라짐(= 막힌 입력이 나중에 적용될 곳이 없음). 옛 꼴(상한 없음)은 영구 대기.
+#[cfg(target_os = "macos")]
+#[test]
+fn seatkeep_input_ack_stall_ends_seat_when_consumer_never_resumes() {
+    use std::time::{Duration, Instant};
+    let (mut sp, reader, mut writer, keeper, dir) = script_seat("ackstall", "stty raw -echo; exec yes 0123456789abcdef");
+    let child = sp.pid as i32;
+    let input = big_input();
     let (tx, rx) = std::sync::mpsc::channel();
     let t0 = Instant::now();
     std::thread::spawn(move || {
         let r = std::io::Write::write_all(&mut writer, &input);
-        let _ = tx.send((r.is_ok(), t0.elapsed()));
+        let _ = tx.send((r.map_err(|e| e.kind()), t0.elapsed()));
         writer
     });
-    let stalled = rx.recv_timeout(Duration::from_secs(15));
-    // 소비자를 다시 돌린다(읽기 얼굴을 비움).
+    // 상한 10초 + 대기열이 HARD 까지 차는 시간 + 허용 오차(주기 250ms · 부하).
+    let got = rx.recv_timeout(Duration::from_secs(16));
+    let gone_by = Instant::now() + Duration::from_secs(5);
+    let alive = |pid: i32| unsafe { libc::kill(pid, 0) } == 0;
+    while (alive(keeper) || alive(child)) && Instant::now() < gone_by {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let (keeper_alive, child_alive) = (alive(keeper), alive(child));
+    let exit = sp.child.try_wait().ok().flatten();
+    if child_alive {
+        unsafe { libc::kill(child, libc::SIGKILL) };
+    }
+    drop(reader);
+    drop(sp);
+    unsafe { libc::kill(keeper, libc::SIGKILL) };
+    reap_keeper(keeper, &dir);
+    eprintln!("[ackstall] 쓰기 = {got:?} · seatkeep 생존 {keeper_alive} · 좌석 생존 {child_alive} · 종료 = {exit:?}");
+    let (r, took) = got.expect("소비자 정지 + stdin 안 읽음에서 쓰기가 16초 안에 안 돌아옴(상한 없음 = 영구 대기)");
+    assert_eq!(r, Err(std::io::ErrorKind::TimedOut), "상한 만료는 호출자에게 TimedOut 이어야 한다");
+    assert!(took >= Duration::from_secs(10), "상한(HARD 막힘부터 10초)보다 일찍 끝남: {took:?}");
+    assert!(!keeper_alive, "상한 만료 뒤 seatkeep 이 5초 안에 안 끝남(controller_lost 경로 미작동)");
+    assert!(!child_alive, "상한 만료 뒤 좌석 프로세스가 5초 안에 안 사라짐(입력이 나중에 적용될 수 있음)");
+    assert!(exit.is_some(), "연결 끊김이 종료로 접히지 않음");
+}
+
+/// codex 3R #2 ②: 출력 소비는 정상인데 자식이 stdin 을 상한(10초)보다 오래(16초) 안 읽는다 → 상한 미발동 · 좌석이 죽지 않고 자식이 읽기
+/// 시작하면 확인이 온다(직접 PTY 처럼 기다림). 「절대」 상한(B안)이면 여기서 좌석이 죽는다.
+#[cfg(target_os = "macos")]
+#[test]
+fn seatkeep_input_ack_waits_while_consumer_runs_and_stdin_unread() {
+    use std::time::{Duration, Instant};
+    let (sp, mut reader, mut writer, keeper, dir) =
+        script_seat("ackslow", "stty raw -echo; yes 0123456789abcdef & sleep 16; exec cat >/dev/null");
+    let child = sp.pid as i32;
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let st2 = std::sync::Arc::clone(&stop);
-    std::thread::spawn(move || {
+    let drained = std::thread::spawn(move || {
         let mut buf = vec![0u8; 1 << 16];
+        let mut n_all: u64 = 0;
         while !st2.load(std::sync::atomic::Ordering::Relaxed) {
-            if std::io::Read::read(&mut reader, &mut buf).map(|n| n == 0).unwrap_or(true) {
-                break;
+            match std::io::Read::read(&mut reader, &mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n_all += n as u64,
             }
         }
+        n_all
     });
-    let resumed = if stalled.is_ok() { None } else { Some(rx.recv_timeout(Duration::from_secs(15))) };
+    let input = big_input();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let t0 = Instant::now();
+    std::thread::spawn(move || {
+        let r = std::io::Write::write_all(&mut writer, &input);
+        let _ = tx.send((r.map_err(|e| e.kind()), t0.elapsed()));
+        writer
+    });
+    let got = rx.recv_timeout(Duration::from_secs(30));
+    let alive = |pid: i32| unsafe { libc::kill(pid, 0) } == 0;
+    let (keeper_alive, child_alive) = (alive(keeper), alive(child));
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     crate::seat_proc::kill_and_reap(&std::sync::Mutex::new(sp.child));
     unsafe { libc::kill(keeper, libc::SIGKILL) };
-    let _ = std::fs::remove_dir_all(&dir);
-    eprintln!("[ackflood] 소비자 정지 중 ACK = {stalled:?} · 소비자 재개 뒤 = {resumed:?}");
-    assert!(stalled.is_err(), "알려진 한계가 바뀌었다(소비자 정지 중에도 ACK 도착: {stalled:?}) — 고쳐졌다면 이 시험을 뒤집고 HANDOFF 를 고친다");
-    assert!(matches!(resumed, Some(Ok((true, _)))), "소비자 재개 뒤에도 ACK 가 안 옴(유실?): {resumed:?}");
+    let n_out = drained.join().unwrap_or(0);
+    reap_keeper(keeper, &dir);
+    eprintln!("[ackslow] 쓰기 = {got:?} · 소비한 출력 {n_out}바이트 · seatkeep 생존 {keeper_alive} · 좌석 생존 {child_alive}");
+    let (r, took) = got.expect("자식이 읽기 시작한 뒤에도 30초 안에 확인이 안 옴");
+    assert_eq!(r, Ok(()), "소비가 도는데 상한이 발동해 좌석이 끝남(절대 상한 꼴)");
+    assert!(took >= Duration::from_secs(11), "입력 쓰기가 실제로 상한보다 오래 막히지 않음(시험이 판별력 없음): {took:?}");
+    assert!(keeper_alive && child_alive, "확인 뒤 seatkeep·좌석이 살아 있어야 한다");
+    assert!(n_out > 5 << 20, "출력 소비가 돌지 않음(판별력 없음): {n_out}");
 }

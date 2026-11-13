@@ -332,6 +332,12 @@ mod seatkeep_mac {
     /// 256KiB(+읽기 16KiB · 첫 재생 조각 ≤ 1MiB)에서 멈추므로 제어 프레임 앞의 출력은 그 이하 + 소켓 버퍼다 → 4MiB 여유면 닿는다.
     /// 메모리 상한 = 좌석당 이 값 + 프레임 1개.
     const OUT_HARD_BYTES: usize = OUT_SOFT_BYTES + (4 << 20);
+    /// 입력 확인(INPUT_ACK) 기다림의 조건부 상한(codex 3R #2 · master 결정 A안) — 시계는 「ACK 를 기다리는 중 연결 스레드가 HARD 에서
+    /// 막힌 순간」부터 잰다(= 출력 소비 정지 · 그 뒤에 줄 선 ACK 에 닿을 길이 없음). 그 밖(소비는 도는데 자식이 stdin 만 안 읽음)은 직접
+    /// PTY 처럼 기다린다. 넘으면 (나): 연결을 끊어 seatkeep 을 controller_lost 로 끝낸다(PTY 닫힘 = 입력이 나중에 적용되지 않음) · 호출자 TimedOut.
+    const ACK_STALL_LIMIT: Duration = Duration::from_secs(10);
+    /// 입력 확인 기다림 중 위 시계를 다시 보는 주기(연결 스레드는 확인 쪽 조건변수를 깨우지 않는다 — 허용 오차 = 이 값).
+    const ACK_STALL_POLL: Duration = Duration::from_millis(250);
     /// 맥 소켓 경로 한도(sun_path 104 · NUL 포함).
     const SUN_PATH_MAX: usize = 104;
 
@@ -569,11 +575,15 @@ mod seatkeep_mac {
         reader_gone: bool,
         /// 닫는 중 상한(OUT_HARD_BYTES)을 넘어 버린 출력 바이트(관측용).
         dropped_closing: u64,
+        /// 연결 스레드가 제어 답을 기다리는 중 HARD 에서 막혀 기다리기 시작한 시각(막힘이 풀리거나 답 기다림이 끝나면 None · ACK_STALL_LIMIT 시계).
+        hard_stall_since: Option<Instant>,
     }
 
     /// seatkeep 1개와의 연결(조종자 쪽). 손잡이의 얼굴(`MasterPty`·`Child`·읽기·쓰기)이 이것을 함께 쥔다.
     pub(crate) struct SeatLink {
         wr: Mutex<UnixStream>,
+        /// 연결을 끊는 손잡이(쓰기 잠금과 무관하게 shutdown — ACK 상한 만료 처리).
+        sd: UnixStream,
         st: Mutex<LinkState>,
         cv: Condvar,
         /// 전경 질의를 한 번에 하나씩(답 번호 대조는 `fg_sent`/`fg_recv`).
@@ -606,6 +616,8 @@ mod seatkeep_mac {
     impl Drop for Awaiting<'_> {
         fn drop(&mut self) {
             self.0.awaiting.fetch_sub(1, Ordering::SeqCst);
+            // 답 기다림이 끝나면 HARD 막힘 시각을 거두게 연결 스레드를 깨운다(다음 기다림이 옛 시각으로 재지 않게).
+            self.0.poke_out();
         }
     }
 
@@ -624,8 +636,10 @@ mod seatkeep_mac {
             let seat0 = &welcome["seats"][0];
             let child_pid = seat0["child_pid"].as_i64().filter(|p| *p > 0).ok_or_else(|| format!("seatkeep WELCOME 에 좌석 pid 없음: {welcome}"))? as u32;
             let rd = stream.try_clone().map_err(|e| format!("seatkeep 연결 복제 실패: {e}"))?;
+            let sd = stream.try_clone().map_err(|e| format!("seatkeep 연결 복제 실패: {e}"))?;
             let link = Arc::new(SeatLink {
                 wr: Mutex::new(stream),
+                sd,
                 st: Mutex::new(LinkState::default()),
                 cv: Condvar::new(),
                 fg_gate: Mutex::new(()),
@@ -694,12 +708,20 @@ mod seatkeep_mac {
                 if sp.bytes < cap {
                     sp.bytes += chunk.len();
                     sp.q.push_back(chunk);
+                    sp.hard_stall_since = None;
                     self.out_cv.notify_all();
                     return;
                 }
                 if closing {
                     sp.dropped_closing += chunk.len() as u64;
+                    sp.hard_stall_since = None;
                     return;
+                }
+                // 막힌다 — 답을 기다리는 중의 HARD 막힘이면 그 시작 시각(ACK_STALL_LIMIT 시계) · 평소 상한 막힘이면 시계 없음.
+                if cap == OUT_HARD_BYTES {
+                    sp.hard_stall_since.get_or_insert_with(Instant::now);
+                } else {
+                    sp.hard_stall_since = None;
                 }
                 sp = self.out_cv.wait(sp).unwrap_or_else(|e| e.into_inner());
             }
@@ -790,11 +812,14 @@ mod seatkeep_mac {
         }
 
         /// 입력 한 조각 — INPUT 을 보내고 수신 확인(= PTY 에 다 씀)까지 기다린다. 끊김·종료 = 오류.
+        /// 상한(codex 3R #2 · A안): 이 기다림 중 연결 스레드가 HARD 에서 ACK_STALL_LIMIT 동안 내리 막히면(출력 소비 정지 = ACK 에 닿을 길 없음)
+        /// 연결을 끊어 좌석을 끝내고(`abort_link`) TimedOut. 소비가 도는 한(자식이 stdin 을 오래 안 읽어도) 직접 PTY 처럼 기다린다.
         fn write_chunk(&self, bytes: &[u8]) -> std::io::Result<()> {
             let id = self.input_base | self.next_input.fetch_add(1, Ordering::Relaxed);
             let mut p = id.to_le_bytes().to_vec();
             p.extend_from_slice(bytes);
             let _aw = Awaiting::new(self);
+            let begun = Instant::now();
             self.send(proto::INPUT, &p)?;
             let mut st = self.lock_st();
             loop {
@@ -804,8 +829,37 @@ mod seatkeep_mac {
                 if st.closed || st.exit.is_some() {
                     return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "seatkeep: 좌석이 끝났거나 연결이 끊김"));
                 }
-                st = self.cv.wait(st).unwrap_or_else(|e| e.into_inner());
+                // 이 조각을 기다리기 전의 막힘(다른 답 기다림)은 세지 않는다 — 시계 = max(막힌 시각, 보낸 시각).
+                let stall = self.lock_out().hard_stall_since.map(|t| t.max(begun));
+                let nap = match stall {
+                    Some(t) => {
+                        let el = t.elapsed();
+                        if el >= ACK_STALL_LIMIT {
+                            drop(st);
+                            self.abort_link(el);
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "seatkeep: 출력 소비가 멈춰 입력 확인에 닿지 못함(상한 초과) — 연결을 끊어 좌석을 끝냄",
+                            ));
+                        }
+                        (ACK_STALL_LIMIT - el).min(ACK_STALL_POLL)
+                    }
+                    None => ACK_STALL_POLL,
+                };
+                st = self.cv.wait_timeout(st, nap).unwrap_or_else(|e| e.into_inner()).0;
             }
+        }
+
+        /// ACK 상한 만료 처리 (나) — 연결을 양쪽 다 끊는다: seatkeep(조종자 종속)은 끊김을 보고 `controller_lost` 로 끝나 PTY 마스터가
+        /// 닫히고(막힌 입력 쓰기도 프로세스와 함께 끝남 = 나중 적용 없음) 좌석은 SIGHUP. 연결 스레드는 닫는 중 표시로 막힘에서 풀려
+        /// 끊김을 읽고 종료로 접는다(seatkeep 회수까지).
+        fn abort_link(&self, stalled: Duration) {
+            eprintln!(
+                "[cysd] seatkeep 좌석 pid {} 입력 확인 상한 초과(출력 소비 정지 {stalled:?}) — 연결을 끊어 좌석을 끝낸다",
+                self.child_pid
+            );
+            let _ = self.sd.shutdown(std::net::Shutdown::Both);
+            self.mark_closing();
         }
 
         /// 전경 그룹 질의(락 없는 경로에서 부름 · 상한 FG_TIMEOUT · 모르면 None).

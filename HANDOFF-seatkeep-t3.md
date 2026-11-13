@@ -5,6 +5,20 @@
 - 시험대 = `~/axdev/terminal-ide-survey/2026-11-bench/seatkeep-t3/harness/`(t3life.py · t3a13.py · t3misc.py) · T2 시험대 사본 = `../t2copy/harness/`
 - 격리 시험 실행기 = scratchpad `run_tests.sh <label> <cargo test 인자>`(CYS_* 제거 · HOME/XDG 임시 · CYS_SEATKEEP 만 통과)
 
+## fix3 #2 끝 = INPUT_ACK 조건부 상한(재개 master#7e06caa5 · 2026-11-13 12:18~ · 커밋 146d3ac3 · push 0 · codex 0 · 설치본·라이브 무접촉)
+- **master 결정** = A안(상한 시계 = 「ACK 기다림 중 demux 가 HARD(5MiB)에서 막힌 순간」부터 10초 · 그 밖은 직접 PTY 처럼 기다림) + 만료 (나) · B(절대 상한) 버림.
+- **고친 줄(seat_proc.rs · 모두 `mod seatkeep_mac` 안 = 노브 켬 전용 · 노브 끔 운영 줄 0)**: `ACK_STALL_LIMIT`·`ACK_STALL_POLL` 338~340 · `OutSpool.hard_stall_since` 579 · `SeatLink.sd`(shutdown 전용 연결 사본 · 쓰기 잠금 무관) 586 · `Awaiting` drop = `poke_out` 620(답 기다림이 끝나면 옛 막힘 시각을 거둠) · `push_output` 717~725(답 기다림 중 HARD 막힘 = 시각 기록 · 넣음 성공·평소 상한 막힘·닫는 중 = None) · `write_chunk` 817~851(시계 = max(막힌 시각, 보낸 시각) · 250ms 주기 · 10초 = 만료) · `abort_link` 856~(eprintln 1줄 → `sd.shutdown(Both)` → `mark_closing`).
+- **만료 경로(실측)**: 호출자 `TimedOut` 10.04~10.10초 · seatkeep `controller_lost` 로 끝 · 좌석 프로세스 사라짐(= 막힌 입력이 나중에 적용될 곳 없음) · 연결 스레드는 닫는 중 표시로 HARD 막힘에서 풀려 끊김을 읽고 `exit = seatkeep_disconnected` · seatkeep 회수.
+- **시험(seat_proc_tests.rs)**: 셸 좌석 도우미 `script_seat` 319 · `stty raw -echo` 로 256KiB 입력이 PTY 입력 버퍼에서 반드시 막힘(정규 모드는 찬 입력을 버릴 수 있음) → 옛 재현의 시간 의존(1/2) 제거.
+  - ① `seatkeep_input_ack_stall_ends_seat_when_consumer_never_resumes` 346(`exec yes` · 소비자 끝내 재개 안 함): TimedOut · ≥10초 · 16초 안 · 5초 안 seatkeep·좌석 부재 · 종료 접힘.
+  - ② `seatkeep_input_ack_waits_while_consumer_runs_and_stdin_unread` 387(`yes &` 출력 폭주 + 소비 정상 + 자식 16초 stdin 안 읽음 → `cat`): Ok · 12.2초(>10초 = 상한을 넘겨 기다림) · 좌석·seatkeep 생존 · 소비 출력 0.5~1.8GB.
+  - 옛 `#[ignore]` 관측 시험 `seatkeep_known_limit_input_ack_behind_full_output_while_consumer_stalled` = 삭제(①이 결정화된 판으로 대체 · 그 시험의 「15초 동안 ACK 안 옴」 단언은 이제 거짓).
+  - 뮤턴트(되돌림 확인 `cmp` 일치): M10a 상한 없음(고치기 전 꼴 · LIMIT 3600초) = ① 붉음(16초 안 안 돌아옴 · seatkeep·좌석 생존) · M10b 절대 상한(시계 = 보낸 시각) = ② 붉음(10.01초 TimedOut) · M10c 만료 때 `mark_closing` 안 함 = ① 붉음(seatkeep 회수 안 됨 · 종료 None) · M10d 만료 때 연결 안 끊음 = ① 붉음(좌석 생존).
+- **msv(HEAD 146d3ac3 · 부하 load 10~17)**: seatkeep 단위 44/44(`--list` 실측 44 — 위 「지금 45」는 수 기재 오류로 보임) · 게이트 2/2 · `seatkeep_stalled` 2/2 · `seat_proc::` 20/20(`--test-threads=1`·`=2` 각 1회) · 노브 켬 `SEATKEEP_TEST_THREADS=1 scripts/seatkeep-knob-on-tests.sh accounts::` = 158/158(58초).
+  - ⚠ `seat_proc::` 기본 병렬(4개 seatkeep 동시 기동) + 부하 15 = 4개 모두 `handshake_timeout` 거절로 실패(좌석 생성 단계 · 이 고침 전 코드에 닿기 전) — fix1 에 규명된 「디버그 시험 바이너리 상대 Security 조회 ×2 > 3초」 그대로. 이 묶음도 스레드 ≤2 로 돌린다.
+- **알려진 한계 문구 고침**(아래 fix2 절의 「지연(유실 아님)」 → 정정): 노브 켬 + cysd 출력 소비 정지 + 입력 확인 기다림 = 소비가 10초 안에 재개되면 지연(유실 아님) · 10초 넘게 막히면 **좌석이 끝난다**(호출자 TimedOut · 입력 나중 적용 없음 · 일부 입력은 이미 PTY 에 들어갔을 수 있음). 직접 PTY 와의 차이 = 직접 PTY 는 출력 소비 정지와 무관하게 입력이 들어감.
+- **T4 Ⓐ 후보(1줄)**: (가) seatkeep 입력 스레드 비차단·poll PTY 쓰기 + 취소 토큰 + 「일부만 씀」 ACK 의미 정의 = 만료에도 좌석을 살리는 길 → T4 흐름 제어(Ⓐ)와 함께 결정.
+
 ## fix3 = codex 3R REVISE(major 2 · minor 1) 처분(master#e7ca9e16 · 2026-11-13 12:11~ · 판정문 = `~/axdev/master/reviews/codex-queue-2026-11-13/r3/4-seatkeep-t3.r3.verdict.md`) — 【매듭 · CTX 58%】
 - **끝남**:
   - #1 major = 08f6d1dd: `watch_parent` → `Watch::{Ready,Gone,Unavailable}`(main.rs 128~·147~·184~) · 감시 스레드 생성 실패·**맥 kqueue 실패 = fail-closed rc 9**(main.rs 123 · 660 · PTY·파일·자식 전) · 폴링 대체는 안전 보장으로 세지 않음(맥 밖 유닉스만 폴링 · 제품 경로 아님) · cysd 문구 rc 9. 시험 `bound_watch_unavailable_fails_closed`(디버그 훅 CYS_SEATKEEP_TEST_WATCH_FAIL=spawn|kqueue) · 뮤턴트 M8(못 세움 무시)·M8b(kqueue 실패→폴링) 붉음 · bound_ 10/10.
@@ -29,7 +43,7 @@
 | 4 minor | 게이트 구조적 보장 없음(필드 pub) | 수용 · **부분 처분 유지(닫힘 아님)** | 고침 없음 — 정본 = `Surface` 필드 비공개 래퍼(시험 구역 약 86곳) · T4 이후. 게이트 머리 주석 「알려진 한계」 그대로 · 이 표에서 #3(1R) 은 「부분」으로 둔다 | — | — | — |
 
 - **#2 【결정필요】 선택지**(master → 박사님/T4): Ⓐ 흐름 제어 프레임(조종자가 OUTPUT 소비 신용을 돌려줌 · seatkeep 은 신용 안에서만 OUTPUT · 제어 프레임은 늘 먼저) — 규약 판 올림 · 가장 정석 Ⓑ 제어 전용 두 번째 연결(seatkeep 조종자 자리 1개 규칙 변경) Ⓒ cysd 출력 대기열을 상한 넘으면 디스크로(메모리 상한 유지 · 디스크 상한 따로) Ⓓ 알려진 한계로 둠(직접 PTY 는 입력이 출력 소비와 무관 = 차이 1곳 · 소비자 무기한 정지는 cysd 결함 상황). 권고 = T4 에서 Ⓐ(입양을 켤 때 밀림 정책을 다시 정하는 일과 같은 자리) · 그 전까지 Ⓓ.
-- **알려진 한계(master#1401eca4 결정 = Ⓓ · 2026-11-13)**: 노브 켬 + cysd 출력 소비 정지 = 입력 확인(INPUT_ACK) 지연(유실 아님) · T4 에서 Ⓐ 흐름 제어 프레임으로 닫음(입양 밀림 정책 재결정과 같은 자리) · 관측 시험 `seatkeep_known_limit_input_ack_behind_full_output_while_consumer_stalled`(`#[ignore]`). 「준비 전 시간 초과 = accept 안 씀」 = master 수용 · 실행기 기본 스레드 = 안 바꿈(제안 기록만).
+- **알려진 한계(master#1401eca4 결정 = Ⓓ · 2026-11-13 · ⚠fix3 #2 로 대체됨 — 위 「fix3 #2 끝」 절 정정 문구가 정본)**: 노브 켬 + cysd 출력 소비 정지 = 입력 확인(INPUT_ACK) 지연(유실 아님) · T4 에서 Ⓐ 흐름 제어 프레임으로 닫음(입양 밀림 정책 재결정과 같은 자리) · 관측 시험 `seatkeep_known_limit_input_ack_behind_full_output_while_consumer_stalled`(`#[ignore]`). 「준비 전 시간 초과 = accept 안 씀」 = master 수용 · 실행기 기본 스레드 = 안 바꿈(제안 기록만).
 - **#1 판단(1R 처분 「부모 감시 = kqueue」 유지)**: 장벽 = 감시 준비까지 대기(감시 스레드를 못 띄우면 기다리지 않음 · 기동 확인의 직접 getppid 가 대신) · kqueue 등록 실패 → 폴링 시작 직전에 준비 알림.
 - **시험(HEAD 8f86d2b0 · 부하 load 14~53 · 다른 좌석 작업)**: seatkeep 단위 43/43 ×3 · 게이트 2/2 · cysd `seatkeep_` 묶음(정지 소비자 입력·닫기 2) 초록 · 노브 켬 `accounts::` 실행기 = 스레드 4 → 15 실패 · 2 → 2 실패 · 1 → 0 실패(실패는 전부 새 동작 그대로 `seatkeep 이 접속을 거절: handshake_timeout` — 기록 없는 EOF 아님). ⚠「스레드 ≤4 면 0 실패」(fix1 18:54 = 3249/0)는 기계 부하가 낮을 때 값 — 부하가 크면 `SEATKEEP_TEST_THREADS=1`.
 - **T2 시험 손댐 1곳**: `registry::tests::id_lock_is_exclusive` — 같은 시험 프로세스에서 다른 시험이 fork 하면 자식이 exec 전까지 잠금 fd 사본을 쥐어(같은 열린 파일 = 같은 flock) 「놓은 뒤 다시 잡기」가 잠깐 실패(부하에서 3회 중 1~2회 관측) → 다시 잡기 최대 2초. 운영 코드 무변경.

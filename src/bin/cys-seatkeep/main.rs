@@ -140,6 +140,27 @@ mod imp {
     static WATCH_LOST: AtomicBool = AtomicBool::new(false);
     /// 기동이 끝나 Keep 이 생기면 여기 둔다 — 부모 감시가 상실을 보면 이것으로 바로 끝낸다(supervise 100ms 를 기다리지 않음).
     static KEEP: std::sync::OnceLock<Arc<Keep>> = std::sync::OnceLock::new();
+    /// 기동 잠금(codex r4b #1) — 주 스레드는 첫 좌석의 「마지막 확인」부터 자식 spawn·`KEEP` 두기까지 쥐고, 감시는 「`WATCH_LOST` 표시 + `KEEP` 확인」을
+    /// 쥐고 한다. 두 구간이 서로 끼어들 수 없으므로: 표시가 먼저면 주 스레드의 마지막 확인이 그것을 보고 spawn 하지 않고(rc 9),
+    /// spawn 이 먼저면 감시는 잠금을 얻은 때 `KEEP` 을 반드시 보고 끝낸다(부모 상실과 같은 길). 잠금의 풀기→얻기가 양쪽 쓰기를 보이게 하므로
+    /// `OnceLock` 의 게시(AcqRel)·확인(Acquire) 순서에 기대지 않는다. 감시 쪽 구간 안에서는 다른 잠금을 잡지 않는다(순서 역전 없음).
+    static LAUNCH: Mutex<()> = Mutex::new(());
+    /// 종료 집행 앞 진단 출력이 기다리는 상한(codex r4b #2) — stderr 를 아무도 안 읽어도 이만큼 뒤에는 끝을 진행한다.
+    const WARN_EXIT_WAIT: Duration = Duration::from_millis(200);
+
+    /// 종료 집행 **앞**의 진단 출력(codex r4b #2) — stderr 쓰기를 따로 스레드에서 하고 `WARN_EXIT_WAIT` 까지만 기다린다.
+    /// stderr 가 막혀 있으면(가득 찬 파이프 · cysd 가 stderr 를 그대로 물려줌) 그 스레드만 막히고 종료는 그대로 간다.
+    /// 스레드를 못 띄우면 쓰지 않는다.
+    fn warn_before_exit(msg: String) {
+        let (tx, rx) = channel::<()>();
+        let spawned = std::thread::Builder::new().name("seatkeep-exit-warn".into()).spawn(move || {
+            warn!("{msg}");
+            let _ = tx.send(());
+        });
+        if spawned.is_ok() {
+            let _ = rx.recv_timeout(WARN_EXIT_WAIT);
+        }
+    }
 
     /// 부모 감시를 **자식 기동 앞에서** 시작한다(codex 1R #1). 고른 길 = kqueue `EVFILT_PROC/NOTE_EXIT`(맥):
     /// 부모가 죽는 순간 깨어나 폴링 지연이 없고, 잰 뒤 등록 전에 이미 죽었으면 등록이 ESRCH 로 실패해 그 틈도 닫힌다
@@ -240,11 +261,16 @@ mod imp {
                             // 등록 뒤 대기 실패 = 감시를 잃음(codex r4 #1) — 폴링으로 내려가지 않는다(fail-closed).
                             // 갈래: Keep 이 아직 없으면(기동 단계) 표시만 → 주 스레드의 기동 확인 자리가 끝낸다(자식 전 = rc 9 · 자식 뒤 = 같은 rc 9
                             // + end_early 정리 = 부모 상실과 같은 길) · Keep 이 있으면 여기서 부모 상실과 같은 길로 끝낸다.
-                            // 순서 = 「표시 → Keep 확인」(주 스레드는 「Keep 두기 → 표시 확인」 · 둘 다 SeqCst) — 둘 중 하나는 반드시 끝낸다.
-                            WATCH_LOST.store(true, Ordering::SeqCst);
-                            warn!("cys-seatkeep: 부모(조종자) 감시 대기 실패 — 감시 없이 좌석을 두지 않고 끝낸다");
-                            if let Some(k) = KEEP.get() {
-                                end_for_controller_loss(k, "watch_lost");
+                            // 「표시 + Keep 확인」은 기동 잠금(LAUNCH) 안에서 한다(codex r4b #1) — 주 스레드의 「마지막 확인 ~ spawn ~ Keep 두기」와
+                            // 서로 끼어들 수 없다. 진단 출력은 하지 않는다(codex r4b #2 — 종료가 stderr 소비에 기대지 않게 · 까닭은 기록 watch_lost 1줄).
+                            let keep = {
+                                let _g = LAUNCH.lock().unwrap_or_else(|e| e.into_inner());
+                                WATCH_LOST.store(true, Ordering::SeqCst);
+                                test_trace("mark");
+                                KEEP.get().cloned()
+                            };
+                            if let Some(k) = keep {
+                                end_for_controller_loss(&k, "watch_lost");
                             }
                             return false;
                         }
@@ -268,6 +294,20 @@ mod imp {
     fn parent_gone_early(args: &Args, parent: i32) -> bool {
         args.controller_bound && (PARENT_GONE.load(Ordering::SeqCst) || unsafe { libc::getppid() } != parent)
     }
+
+    /// 시험 전용 순서 기록(codex r4b #1 — 「감시 상실 표시」와 「자식 spawn」 중 무엇이 먼저였나) — `CYS_SEATKEEP_TEST_TRACE_FILE` 에 한 줄씩 덧붙인다.
+    /// 디버그 빌드에서만 읽는다(릴리스 = 빈 함수).
+    #[cfg(debug_assertions)]
+    fn test_trace(what: &str) {
+        if let Ok(f) = std::env::var("CYS_SEATKEEP_TEST_TRACE_FILE") {
+            use std::io::Write as _;
+            if let Ok(mut fh) = std::fs::OpenOptions::new().create(true).append(true).open(f) {
+                let _ = writeln!(fh, "{what}");
+            }
+        }
+    }
+    #[cfg(not(debug_assertions))]
+    fn test_trace(_what: &str) {}
 
     /// 기동 단계 확인 — 준비 뒤 감시를 잃었는가(codex r4 #1 · fail-closed).
     fn watch_lost_early(args: &Args) -> bool {
@@ -772,11 +812,16 @@ mod imp {
         let mut children: Vec<Box<dyn Child + Send + Sync>> = Vec::new();
         let mut readers = Vec::new();
         let mut inputs: Vec<(Receiver<InputJob>, Box<dyn Write + Send>)> = Vec::new();
+        // 기동 잠금(codex r4b #1) — 첫 좌석의 마지막 확인 앞에서 잡아 Keep 두기·그 뒤 확인까지 쥔다(LAUNCH 설명).
+        let mut launch: Option<MutexGuard<'static, ()>> = None;
         for i in 0..args.seats {
             // 시험 전용 지연(codex 1R #1 재현 — 부모를 잰 뒤 자식 기동 전 창을 넓힌다). 디버그 빌드에서만 읽는다.
             #[cfg(debug_assertions)]
             if let Some(ms) = std::env::var("CYS_SEATKEEP_TEST_SPAWN_DELAY_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
                 std::thread::sleep(Duration::from_millis(ms));
+            }
+            if launch.is_none() {
+                launch = Some(LAUNCH.lock().unwrap_or_else(|e| e.into_inner()));
             }
             // 자식 기동 직전 — 부모가 사라졌으면 이 좌석을 만들지 않는다(codex 1R #1) · 감시를 잃었어도 같다(codex r4 #1 · rc 9).
             if parent_gone_early(&args, parent_pid) {
@@ -784,6 +829,11 @@ mod imp {
             }
             if watch_lost_early(&args) {
                 return end_early(&args, &paths, ledger, &seats, "watch_lost", RC_WATCH_UNAVAILABLE);
+            }
+            // 시험 전용 틈(codex r4b #1 재현 — 「마지막 확인」을 통과한 뒤 spawn 전에 멈춘다). 디버그 빌드에서만 읽는다.
+            #[cfg(debug_assertions)]
+            if let Some(ms) = std::env::var("CYS_SEATKEEP_TEST_SPAWN_GAP_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
+                std::thread::sleep(Duration::from_millis(ms));
             }
             let pair = match native_pty_system().openpty(PtySize { rows: args.rows, cols: args.cols, pixel_width: 0, pixel_height: 0 }) {
                 Ok(p) => p,
@@ -799,6 +849,7 @@ mod imp {
             // "." = 지금 들어가 있는 그 폴더(지워졌어도 들어가 있는 동안은 유효) — 직접 PTY 가 확인 즉시 exec 하는 것과 같은 결과.
             cb.cwd(".");
             cb.env("CYS_SEATKEEP_SEAT", i.to_string());
+            test_trace("spawn");
             let child = match pair.slave.spawn_command(cb) {
                 Ok(c) => c,
                 Err(e) => {
@@ -880,7 +931,8 @@ mod imp {
             _id_lock: id_lock,
         });
         // 부모 감시가 이제부터 바로 끝낼 수 있게 둔다 — 두기 전에 상실을 봤으면(감시는 Keep 이 없어 기록만 함) 여기서 끝낸다.
-        // 감시 = 「상실 표시 → Keep 확인」 · 여기 = 「Keep 두기 → 상실 확인」(둘 다 SeqCst) — 둘 중 하나는 반드시 끝낸다(둘 다면 종료 소유자 1명).
+        // 부모 상실 감시 = 「상실 표시 → Keep 확인」 · 여기 = 「Keep 두기 → 상실 확인」(+ supervise 100ms 폴링이 뒷받침) — 둘 다면 종료 소유자 1명.
+        // 감시 상실(watch_lost)은 기동 잠금 안이라 이 확인 자리까지 표시가 설 수 없다(뒷받침 확인으로만 둔다 · codex r4b #1).
         let _ = KEEP.set(Arc::clone(&keep));
         if parent_gone_early(&keep.args, keep.parent_pid) {
             end_for_controller_loss(&keep, "parent_lost");
@@ -888,6 +940,8 @@ mod imp {
         if watch_lost_early(&keep.args) {
             end_for_controller_loss(&keep, "watch_lost");
         }
+        // 여기서 기동 잠금을 푼다 — 그 사이 감시가 상실을 봤으면 이제 잠금을 얻어 Keep 을 보고 끝낸다(spawn 직후 상실과 같은 길).
+        drop(launch);
 
         for (i, r) in readers.into_iter().enumerate() {
             let k = Arc::clone(&keep);
@@ -953,7 +1007,8 @@ mod imp {
         let _ = std::fs::remove_file(&paths.sock);
         let _ = registry::write_atomic(&paths.entry, &json!({"phase": "ended_controller_lost", "id": args.id, "pid": std::process::id(),
                                                               "core": proto::CORE_VERSION, "spawned": pids, "at": registry::now_epoch()}));
-        warn!("cys-seatkeep: 기동 중 끝냄({why}) — 좌석 {}개 띄운 상태에서 끝낸다", pids.len());
+        // 종료 집행(= 이 프로세스가 끝나 마스터가 닫힘) 앞이므로 stderr 소비에 기대지 않는다(codex r4b #2).
+        warn_before_exit(format!("cys-seatkeep: 기동 중 끝냄({why}) — 좌석 {}개 띄운 상태에서 끝낸다", pids.len()));
         rc
     }
 
@@ -2283,13 +2338,23 @@ mod imp {
         /// 돌려주는 값 = (rc · 끝나기까지 · 상태 폴더 파일 이름들(표식 제외) · seatkeep_exit 줄들). 끝나지 않으면 SIGKILL 하고 rc None.
         #[cfg(target_os = "macos")]
         fn run_sk_with(tag: &str, script: &str, envs: &[(&str, &str)], limit: Duration) -> (Option<i32>, Duration, Vec<String>, Vec<Value>, PathBuf) {
+            run_sk_io(tag, script, envs, limit, None)
+        }
+
+        /// `run_sk_with` + seatkeep 의 stderr 를 `stderr` 로 준다(codex r4b #2 — 가득 찬 파이프). 환경값의 `{D}` = 상태 폴더.
+        #[cfg(target_os = "macos")]
+        fn run_sk_io(tag: &str, script: &str, envs: &[(&str, &str)], limit: Duration, stderr: Option<std::process::Stdio>)
+            -> (Option<i32>, Duration, Vec<String>, Vec<Value>, PathBuf) {
             let d = tmpdir(tag);
             let mut args = bound_sk_args(&d, &d.join("unused"));
             *args.last_mut().unwrap() = script.replace("{D}", &d.to_string_lossy());
             let mut cmd = std::process::Command::new(&args[0]);
             cmd.args(&args[1..]);
             for (k, v) in envs {
-                cmd.env(k, v);
+                cmd.env(k, v.replace("{D}", &d.to_string_lossy()));
+            }
+            if let Some(s) = stderr {
+                cmd.stderr(s);
             }
             let mut sk = cmd.spawn().unwrap();
             let t = Instant::now();
@@ -2382,6 +2447,92 @@ mod imp {
             assert!(rc.is_some() && took < Duration::from_secs(8), "감시를 잃었는데 seatkeep 이 안 끝남(폴링 대신) rc {rc:?} · {took:?}");
             assert!(exits.len() == 1 && exits[0]["reason"] == "watch_lost", "기록 watch_lost 1줄: {exits:?}");
             assert!(child_gone, "좌석 자식이 끝나지 않음");
+        }
+
+        /// codex r4b #1 재현 순서: Ready → 주 스레드가 자식 직전 「마지막 확인」을 통과하고 멈춤(디버그 틈 SPAWN_GAP 1초) → 그 틈에 감시 kevent
+        /// 대기 실패(지연 200ms). 닫혀야 하는 성질 = 「상실 표시가 선 뒤에는 spawn 이 없다 · spawn 이 먼저면 감시가 Keep 을 보고 끝낸다」.
+        /// 잼 = 순서 기록(TRACE: mark·spawn)에서 mark 가 spawn 앞이면 붉음 · 끝 = 감시의 Keep 길(watch_lost · `phase: starting` 없음) · 8초 안 ·
+        /// 좌석 자식 사라짐. 고치기 전 = 감시가 Keep 없이 표시만 하고 떠난 뒤 주 스레드가 spawn(mark → spawn · 사후 검사 rc 9 spawned [pid]).
+        /// 커널 오류가 틈 안에 돌아오는 것 자체는 물리적으로 못 막는다 — 그 경우의 끝 = 「spawn 직후 상실」과 같은 결과(이 시험이 그것을 잰다).
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn bound_watch_lost_in_spawn_gap_never_marks_before_spawn() {
+            let (rc, took, _files, exits, d) = run_sk_with("wgap", "echo $$ > '{D}/child-ran'; exec sleep 30",
+                &[("CYS_SEATKEEP_TEST_WATCH_FAIL", "kevent"), ("CYS_SEATKEEP_TEST_KEVENT_FAIL_DELAY_MS", "200"),
+                  ("CYS_SEATKEEP_TEST_SPAWN_GAP_MS", "1000"), ("CYS_SEATKEEP_TEST_TRACE_FILE", "{D}/child-trace")], Duration::from_secs(10));
+            let trace = std::fs::read_to_string(d.join("child-trace")).unwrap_or_default();
+            let order: Vec<&str> = trace.lines().collect();
+            let child: i32 = std::fs::read_to_string(d.join("child-ran")).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
+            let child_gone = child <= 0 || wait_until(Duration::from_secs(5), || !alive(child));
+            if child > 0 && !child_gone {
+                unsafe { libc::kill(child, libc::SIGKILL) };
+            }
+            let _ = std::fs::remove_dir_all(&d);
+            assert_eq!(order.iter().filter(|w| **w == "mark").count(), 1, "상실 표시 1회 · 순서 {order:?}");
+            let (m, s) = (order.iter().position(|w| *w == "mark"), order.iter().position(|w| *w == "spawn"));
+            assert!(!matches!((m, s), (Some(m), Some(s)) if m < s), "상실 표시 뒤에 spawn 이 일어났다(codex r4b #1) · 순서 {order:?} · 기록 {exits:?}");
+            assert!(rc.is_some() && took < Duration::from_secs(8), "감시를 잃었는데 seatkeep 이 안 끝남 rc {rc:?} · {took:?}");
+            assert!(exits.len() == 1 && exits[0]["reason"] == "watch_lost", "기록 watch_lost 1줄: {exits:?}");
+            if s.is_some() {
+                // spawn 이 먼저였다 = 감시가 Keep 을 보고 끝냈어야 한다(기동 단계 끝 `phase: starting` 이 아님).
+                assert!(exits[0].get("phase").is_none(), "spawn 이 먼저인데 감시가 Keep 을 못 보고 떠났다: {exits:?}");
+            }
+            assert!(child_gone, "좌석 자식이 끝나지 않음");
+        }
+
+        /// stderr 를 아무도 안 읽는 가득 찬 파이프로 만든다(쓰기 끝 = 막힘 모드로 되돌림 · 읽기 끝은 부르는 쪽이 쥔다).
+        #[cfg(target_os = "macos")]
+        fn full_pipe() -> (std::os::fd::OwnedFd, std::process::Stdio) {
+            use std::os::fd::FromRawFd;
+            let mut fds = [0i32; 2];
+            assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+            let (r, w) = (fds[0], fds[1]);
+            unsafe {
+                // 같은 시험 프로세스의 다른 시험이 띄우는 자식에게 새지 않게(seatkeep 쪽 stderr 는 dup2 라 그대로 물림).
+                libc::fcntl(r, libc::F_SETFD, libc::FD_CLOEXEC);
+                libc::fcntl(w, libc::F_SETFD, libc::FD_CLOEXEC);
+                let fl = libc::fcntl(w, libc::F_GETFL);
+                libc::fcntl(w, libc::F_SETFL, fl | libc::O_NONBLOCK);
+                let buf = [b'x'; 4096];
+                while libc::write(w, buf.as_ptr() as *const libc::c_void, buf.len()) > 0 {}
+                while libc::write(w, buf.as_ptr() as *const libc::c_void, 1) > 0 {}
+                assert_eq!(libc::write(w, buf.as_ptr() as *const libc::c_void, 1), -1, "파이프가 안 찼다");
+                libc::fcntl(w, libc::F_SETFL, fl);
+                (std::os::fd::OwnedFd::from_raw_fd(r), std::process::Stdio::from(std::os::fd::OwnedFd::from_raw_fd(w)))
+            }
+        }
+
+        /// codex r4b #2: stderr = 아무도 안 읽는 가득 찬 파이프(cysd 가 stderr 를 그대로 물려주는 꼴 · seat_proc.rs) 인 채 감시 상실 →
+        /// 종료가 stderr 쓰기에서 멈추지 않는다. ⑴ 좌석이 돌던 중(Keep 뒤 · kevent 지연 1.5초) = 8초 안 rc · 기록 watch_lost · 소켓 없음 ·
+        /// 좌석 자식 사라짐 ⑵ 기동 단계(자식 전 · 지연 0 + 자식 기동 지연 300ms) = 8초 안 rc 9 · 기록 watch_lost spawned [] · 소켓 없음.
+        /// 고치기 전 = 감시가 상실 표시 뒤 `warn!`(동기 stderr 쓰기)에서 영구히 멈춘다(⑴ 좌석 계속 돎 · ⑵ end_early 의 끝 warn 에서도 멈춤).
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn bound_watch_lost_ends_even_if_stderr_blocks() {
+            for (tag, envs, want_rc) in [
+                ("wfull1", vec![("CYS_SEATKEEP_TEST_WATCH_FAIL", "kevent"), ("CYS_SEATKEEP_TEST_KEVENT_FAIL_DELAY_MS", "1500")], None),
+                ("wfull2", vec![("CYS_SEATKEEP_TEST_WATCH_FAIL", "kevent"), ("CYS_SEATKEEP_TEST_KEVENT_FAIL_DELAY_MS", "0"),
+                                ("CYS_SEATKEEP_TEST_SPAWN_DELAY_MS", "300")], Some(RC_WATCH_UNAVAILABLE)),
+            ] {
+                let (_keep_reader, stderr) = full_pipe();
+                let (rc, took, files, exits, d) = run_sk_io(tag, "echo $$ > '{D}/child-ran'; exec sleep 30", &envs, Duration::from_secs(8), Some(stderr));
+                let child: i32 = std::fs::read_to_string(d.join("child-ran")).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
+                let child_gone = child <= 0 || wait_until(Duration::from_secs(5), || !alive(child));
+                if child > 0 && !child_gone {
+                    unsafe { libc::kill(child, libc::SIGKILL) };
+                }
+                let _ = std::fs::remove_dir_all(&d);
+                assert!(rc.is_some(), "{tag}: stderr 가 막히니 감시 상실 뒤 seatkeep 이 안 끝남({took:?}) · 기록 {exits:?} · 파일 {files:?}");
+                if let Some(w) = want_rc {
+                    assert_eq!(rc, Some(w), "{tag}: rc");
+                    assert!(child <= 0, "{tag}: 자식 전 감시 상실인데 좌석 자식이 떴다");
+                } else {
+                    assert!(child > 0, "{tag}: 이 갈래는 좌석이 뜬 뒤의 창이다(자식 표식 없음)");
+                }
+                assert!(exits.len() == 1 && exits[0]["reason"] == "watch_lost", "{tag}: 기록 watch_lost 1줄: {exits:?}");
+                assert!(!files.iter().any(|f| f.ends_with("p.sock")), "{tag}: 소켓이 남았다: {files:?}");
+                assert!(child_gone, "{tag}: 좌석 자식이 끝나지 않음");
+            }
         }
 
         /// codex 2R #1 ② 감시가 상실을 본 뒤 표시가 늦은 창(폴링 대신 20ms 창과 같은 꼴): CYS_SEATKEEP_TEST_GONE_DELAY_MS 4초 ·

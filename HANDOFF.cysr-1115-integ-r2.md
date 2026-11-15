@@ -167,17 +167,17 @@ f41a0024 agy = src/bin/cysd/state.rs 뿐 — 차이 = 충돌 표식 3줄 삭제 
 ## 7. master 가 다시 돌릴 명령(깨끗한 스냅숏 · 격리 env)
 
 ```sh
-W=~/axdev/.wt/cys-1115-integ2; cd $W && git log -1 --format=%h        # 기대: 인계서 커밋(그 아래 3d2d4e88)
+W=~/axdev/.wt/cys-1115-integ2; cd $W && git log -1 --format=%h        # 기대: 마지막 인계서 커밋(그 아래 e3181056 census · 62f51ef0 secret · 3d2d4e88 통합 시험)
 # 격리 env 틀: env -i HOME=<짧은 임시 폴더> TMPDIR=<짧은 임시 폴더> PATH=$HOME/.cargo/bin:$HOME/.bun/bin:/usr/bin:/bin \
 #   CARGO_HOME=$HOME/.cargo RUSTUP_HOME=$HOME/.rustup DISABLE_AUTOUPDATER=1 <명령>   (⚠ TMPDIR 이 길면 SUN_LEN 적색)
-cargo build --bins && cargo test --lib -- --test-threads=4          # 기대 실패 = census 1(T3 몫)
+cargo build --bins && cargo test --lib -- --test-threads=4          # 기대 1238/0(census = e3181056 로 초록)
 cargo test --bin cys -- --test-threads=4                            # 기대 761/0
 cargo test --bin cysd -- --test-threads=4                           # 기대 0 실패(흔들림 pending_requests 1건 가능 → 단독 재실행)
 cargo test --bin cys-seatkeep && for t in hidden_seat_screen rotate_autorestore_hold seat_group update_drainhold_e2e; do cargo test --test $t; done
 cargo test --bin cysd integ_1115_agy_door_drop                       # B 시험
 (cd ui && bun install --frozen-lockfile && sh build.sh && bun test && bun x --package typescript@7.0.2 tsc -p tsconfig.check.json)
 python3 docs/agy-door-evidence/acceptance.py; git checkout -- docs/agy-door-evidence/   # 기대 종합 PASS 34/34
-python3 cysjavis-pack/bin/tests/run_bootstrap_health.py --json      # 기대 FAIL = H-SECRET-1(tabs·agy 몫) · H-CLT-1/2(기존)
+python3 cysjavis-pack/bin/tests/run_bootstrap_health.py --json      # 기대 FAIL = H-CLT-1/2 뿐(기준선 v1.1.14 도 같은 사유 · 이 기계 환경) · H-SECRET-1 = PASS(62f51ef0) · H-WIN-11 = skip
 # 화면 게이트: CHROME_PATH=<chrome-headless-shell> <playwright python3> ui/e2e/{race,focus,seatrows,pillar,seatgroup,rolereuse,stty}_gate.py
 #   (focus_gate 는 docs/evidence-tabs-sidebar/948-focus 에 캡처를 쓴다 → 끝나면 옮기거나 지운다)
 ```
@@ -251,7 +251,9 @@ python3 cysjavis-pack/bin/tests/run_bootstrap_health.py --json      # 기대 FAI
   - **A(권고) 통합 가지에서 동결표 1칸 2 → 10**(시험 자료 1줄 · 운영 코드 0 · 고친 뒤 lib 초록 확인) — 근거: 세는 10개가 전부 시험 코드라 위험 판단이 바뀌지 않는다 · T3 판정(codex r5 ACCEPT)의 대상인 운영 코드를 건드리지 않는다. 단점: 「시험 모듈이 운영으로 세어지는」 세는 쪽의 사각(들여쓴 `#[cfg(test)]`)은 그대로 남는다(1.1.16 후보).
   - B 세는 쪽(`production_slice`)이 들여쓴 `#[cfg(test)]` 도 걷어 내게 고침 — 다른 파일 계수도 바뀔 수 있어 동결표 전체 재측정 · 공용 그물을 바꾸는 일이라 이번 판엔 과함.
   - C T3 좌석에서 새 머리(동결표 갱신)를 받아 덧붙여 합침 — A 와 같은 결과 · 좌석 1회 + 다시 모으기.
-- 고치지 않았다(지시대로). A 면 바로 1커밋으로 한다.
+- **결정 = A(master#df1e99e5 · 08:0x)** — master 직접 확인: 10개 줄(2073·2082·2173·2201·2231·2264·2314·2351·2558·2608) 전부 1662행 `#[cfg(test)] mod tests {` 안(2697행에서 닫힘) = 운영 0개. 세는 쪽(B)은 1.1.16 TODO(master).
+- **결과**: 고침 커밋 **e3181056**(lib.rs 동결표 1칸 2 → 10 · 1줄) → 격리 env `cargo test --lib -- --test-threads=4` = **1238 통과 · 0 실패 · 2 무시**(관측).
+- 세는 쪽 사각(들여쓴 `#[cfg(test)]` 시험 모듈이 운영으로 세어짐)은 그대로 — 1.1.16 후보.
 
 ### 12-3. 흔들림 목록
 

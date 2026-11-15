@@ -213,7 +213,7 @@ describe("0.14.48 D — main.ts 배선: 분기 인자 실행 검증(판정 조�
     const starvedLastKey = new Map<string, string>();
     const deps = {
       starvedNotice, surfaceIdOfRef, starvedShouldPop, starvedLastKey, starvedLastPopAt: new Map<string, { wall: number; mono: number }>(), starvedPopAgeMs, Date: { now: () => 0 }, performance: { now: () => 0 }, starvedDismissId,
-      stickyToast: rec("stickyToast"), daemonStickyToast: rec("stickyToast"), daemonOsBanner: rec("osBanner"), alertsQuiet: () => false, /* v0.14.51 편입: TOAST 축 래퍼·가드(우리 출하 값 false) */ osBanner: rec("osBanner"), recordAlarm: rec("recordAlarm"), focusStarvedSeat: rec("focusStarvedSeat"), dismissToast: rec("dismissToast"),
+      stickyToast: rec("stickyToast"), daemonStickyToast: rec("stickyToast"), daemonOsBanner: rec("osBanner"), alertsQuiet: () => false, /* v0.14.51 편입: TOAST 축 래퍼·가드(우리 출하 값 false) */ osBanner: rec("osBanner"), recordAlarm: rec("recordAlarm"), focusStarvedSeat: rec("focusStarvedSeat"), dismissToast: rec("dismissToast"), noteQueueExpired: rec("noteQueueExpired") /* cysr-queued-paste-submit ⓒ 만료 유실 알림 묶음 — 이 검체는 머리 기억만 잰다 */,
     };
     const fireFn = new Function("deps", "name", "event", "payload", "sid", `with (deps) {\n${branch}\n}\nreturn "fell-through";`) as (...a: unknown[]) => unknown;
     const dismissRun = new Function("deps", "slug", "sid", `with (deps) {\n${dismissFn}\n dismissStarvedToast(slug, sid);\n}`) as (...a: unknown[]) => unknown;
@@ -406,7 +406,7 @@ describe("0.14.48 D F1-R — 만료·되살림(같은 머리 id)과 억제 상�
     const deps = {
       starvedNotice, surfaceIdOfRef, starvedShouldPop, starvedKeyHasHead, starvedPopAgeMs, starvedLastKey, starvedLastPopAt, starvedDismissId,
       Date: { now: () => wall }, performance: { now: () => mono },
-      stickyToast: rec("stickyToast"), daemonStickyToast: rec("stickyToast"), daemonOsBanner: rec("osBanner"), alertsQuiet: () => false, /* v0.14.51 편입: TOAST 축 래퍼·가드(우리 출하 값 false) */ osBanner: rec("osBanner"), recordAlarm: rec("recordAlarm"), focusStarvedSeat: rec("focusStarvedSeat"), dismissToast: rec("dismissToast"),
+      stickyToast: rec("stickyToast"), daemonStickyToast: rec("stickyToast"), daemonOsBanner: rec("osBanner"), alertsQuiet: () => false, /* v0.14.51 편입: TOAST 축 래퍼·가드(우리 출하 값 false) */ osBanner: rec("osBanner"), recordAlarm: rec("recordAlarm"), focusStarvedSeat: rec("focusStarvedSeat"), dismissToast: rec("dismissToast"), noteQueueExpired: rec("noteQueueExpired") /* cysr-queued-paste-submit ⓒ 만료 유실 알림 묶음 — 이 검체는 머리 기억만 잰다 */,
     };
     const run = (src: string, name: string, event: unknown, payload: unknown, sid: number) =>
       new Function("deps", "name", "event", "payload", "sid", `with (deps) {\n${forgetFn}\n${dismissFn}\n${src}\n}\nreturn "fell-through";`)(deps, name, event, payload, sid);

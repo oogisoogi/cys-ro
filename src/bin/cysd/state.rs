@@ -1712,6 +1712,46 @@ pub struct InjectTrack {
     /// ★(0.14.52 · S-a C7b) Writer requests that wrote at least one byte to this seat (any arm). A held partial write
     /// resumes only while this is unchanged since its hold (S4-1 "no foreign input since the loss").
     wrote: AtomicU64,
+    /// ★(cysr-queued-paste-submit) 큐 배달의 Return 을 **쓴 뒤** 제출 확인 기록 — [`SubmitCheck`]. 쓰기 = 큐 결판
+    /// (`governance::settle_queue_write` 의 WrittenSubmitted) · 소비 = watchdog 틱(`governance::recheck_queue_submits`). leaf 락.
+    submit_check: Mutex<Option<SubmitCheck>>,
+}
+
+/// ★(cysr-queued-paste-submit) 큐 배달 Return 의 **제출 확인** 기록 — Return 을 썼는데 TUI 가 먹지 않은(긴 붙여넣기 처리
+/// 지연 · 접힘 `[Pasted text #N +M lines]` 이 입력줄에 미제출로 남음) 경우의 상한 있는 재시도 재료.
+///
+/// 【왜】 큐 인계는 본문 → 400ms → Return 한 번이고 인계 순간 미제출 계수를 0 으로 둔다(`deliver_head_locked`). TUI 가 그 Return 을
+/// 먹으면 화면에는 우리 본문이 남는데 계수는 0 이라 처방 표 3행(`human_draft`)으로 읽혀 그 좌석 큐 전체가 사람 손을 기다렸고
+/// TTL 에 조용히 만료됐다(윈 dept-1 11-09 09:47 · base 10-13 00:28). 부트 경로(`javis_awaken`)만 확인·재시도가 있었다.
+#[derive(Debug, Clone)]
+pub(crate) struct SubmitCheck {
+    /// Return 을 쓴 큐 배달의 기계 본문 기록 시각([`MachineBody::at`]) — 그 뒤 새 기계 본문이 오면 이 기록은 낡았다.
+    pub(crate) body_at: Instant,
+    /// 기록을 세운 시각(= 큐 Return 을 쓴 직후) — 기록 수명 상한의 기준.
+    pub(crate) armed_at: Instant,
+    /// 마지막으로 Return 을 쓴(또는 인계한) 시각 — 재시도 간격의 기준.
+    pub(crate) last_return_at: Instant,
+    /// 다시 쓴 Return 수(0 = 아직 재시도 없음).
+    pub(crate) tries: u8,
+    /// 배달 항목의 발신 좌석(이벤트 표기).
+    pub(crate) from: Option<u64>,
+    /// 배달 항목 id(이벤트 표기 — 대조축).
+    pub(crate) entry_id: String,
+    /// 본문 대조 열쇠 — 공백을 모두 지운 **본문 전체**(세션 기록 user 레코드 대조 · 머리만 같은 다른 배달을 제출 증거로 오인하지 않는다 · codex 1R QPS-2).
+    pub(crate) needle: String,
+    /// 인계 순간(첫 바이트 전)의 좌석 세션 기록 경로와 그때 길이 — 이 뒤에 붙은 user 레코드만 이 배달의 제출 증거다. 모르면 None.
+    pub(crate) transcript: Option<(String, u64)>,
+    /// 배달 시점의 에이전트·대화 세대 — 다르면 다른 프로세스·다른 대화다(같은 pid·같은 좌석에만 다시 쓴다).
+    pub(crate) agent_epoch: u64,
+    pub(crate) conversation_epoch: u64,
+}
+
+impl SubmitCheck {
+    /// 순수 — 본문에서 대조 열쇠를 만든다(공백 전부 제거 · **전체**). 머리만 대조하면 같은 발신자의 연속 다이제스트(머리 공통)끼리
+    /// 서로의 제출 증거가 된다(codex 1R QPS-2). 붙여넣기 본문은 큐 다이제스트 상한 안이라 길이가 유계다.
+    pub(crate) fn needle_of(body: &str) -> String {
+        body.chars().filter(|c| !c.is_whitespace()).collect()
+    }
 }
 
 /// ★(0.14.42 · 수정 2회차 F1 · 재개) 쓰지 않은(보류한) 제출 CR 의 기록 — 보류는 **버림이 아니라 미룸**이다. 창이 닫히고
@@ -1954,6 +1994,39 @@ impl InjectTrack {
     /// ★(F1 · 재개) 보류 탐침 전용 — 보류 기록(덮어쓰기: 가장 최근 보류가 입력줄의 현재 사실이다).
     pub(crate) fn note_withheld(&self, w: WithheldSubmit) {
         *self.withheld.lock().unwrap_or_else(|e| e.into_inner()) = Some(w);
+    }
+
+    /// ★(cysr-queued-paste-submit) 큐 Return 제출 확인 기록을 세운다(덮어쓰기 — 가장 최근 큐 배달이 입력줄의 현재 사실이다).
+    pub(crate) fn arm_submit_check(&self, c: SubmitCheck) {
+        *self.submit_check.lock().unwrap_or_else(|e| e.into_inner()) = Some(c);
+    }
+
+    /// ★(cysr-queued-paste-submit) 제출 확인 기록(없으면 None).
+    pub(crate) fn submit_check(&self) -> Option<SubmitCheck> {
+        self.submit_check.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// ★(cysr-queued-paste-submit) 그 기록(`armed_at`)이 아직 남아 있을 때만 지운다(그 사이 새 큐 배달이 기록을 바꿨으면 둔다).
+    pub(crate) fn take_submit_check_if(&self, armed_at: Instant) -> Option<SubmitCheck> {
+        let mut g = self.submit_check.lock().unwrap_or_else(|e| e.into_inner());
+        if g.as_ref().is_some_and(|c| c.armed_at == armed_at) {
+            g.take()
+        } else {
+            None
+        }
+    }
+
+    /// ★(cysr-queued-paste-submit) 그 기록(`armed_at`)이 아직 남아 있을 때만 재시도 1회를 적는다 — 적었으면 true.
+    pub(crate) fn note_submit_retry_if(&self, armed_at: Instant, at: Instant) -> bool {
+        let mut g = self.submit_check.lock().unwrap_or_else(|e| e.into_inner());
+        match g.as_mut() {
+            Some(c) if c.armed_at == armed_at => {
+                c.tries = c.tries.saturating_add(1);
+                c.last_return_at = at;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// ★(F1 · 재개) 보류 기록(없으면 None).
@@ -13813,8 +13886,8 @@ mod tests {
                    "cursor_col": null, "after_cursor_dim": null, "alt_screen": false, "human_idle_secs": null,
                    "layout_why": null,
                    "repaint_knob_off": false, "rows_too_small": false, "repaint_unresolved": false, "nudge_ineligible": false,
-                   "repaint_last_obs": null}),
-            "결측은 null(값이 아니다) — ★(0.14.47 · 계측) 추가형 키 넷 + ★(1.1.10 · cysr-1110-winqueue 축2) layout_why + ★(1.1.11 · win-qstarved-ctrl-bytes) 다시 그리기 사유 다섯은 screen_diag 객체 안이다(최상위 키 수 16 은 그대로)"
+                   "repaint_last_obs": null, "composer_machine_body": null}),
+            "결측은 null(값이 아니다) — ★(0.14.47 · 계측) 추가형 키 넷 + ★(1.1.10 · cysr-1110-winqueue 축2) layout_why + ★(1.1.11 · win-qstarved-ctrl-bytes) 다시 그리기 사유 다섯 + ★(cysr-queued-paste-submit) composer_machine_body 는 screen_diag 객체 안이다(최상위 키 수 16 은 그대로)"
         );
         // 커서 뒤에 글자가 있으면(회색 제안인지 직접 쓴 글인지 모른다) 유령 단정이 아니라 `after_cursor_text`(표 7행) — 사람이 화면을 보고 가린다.
         let p_after = queue_starved_payload("surface:5", Some("cso".into()), &head, 4200, 3, blocked, &c5_diag_ga(Some(false), Some(true)));

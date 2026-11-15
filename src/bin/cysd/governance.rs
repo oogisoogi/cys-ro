@@ -206,6 +206,8 @@ pub fn spawn_watchdog(daemon: Arc<Daemon>) {
                 // ★(0.14.42 · 수정 2회차 F1 · 재개) 보류한 제출 CR 의 재제출 — 큐 배달 **앞**(입력줄 잔여가 그 좌석 큐를
                 //   세우지 않게). pause 중에는 아무것도 하지 않는다(기록 유지).
                 resubmit_withheld_submits(&daemon);
+                // ★(cysr-queued-paste-submit) 큐 배달 Return 이 먹혔으면 상한 있는 재시도 — 큐 배달 **앞**(같은 이유).
+                recheck_queue_submits(&daemon);
                 // ★1.1.8 U2(§3-3 S10 재생 ①): 정비 모드가 아니면 보류 로그 → 배송 큐(정확히 한 번 · 좌석 미기동 = 다음 틱).
                 crate::update_hold::tick(&daemon);
                 deliver_queued(
@@ -7672,6 +7674,412 @@ fn resubmit_withheld_one(
     "resubmitted"
 }
 
+// ═══════════ ★(cysr-queued-paste-submit) 큐 배달 Return 이 먹힌 뒤의 제출 확인 · 상한 있는 재시도 ═══════════
+//
+// 【결함】 큐 인계는 본문 → 400ms → Return 한 번이다(`deliver_head_locked` · `Plan::paste(..).with_submit(400, 0)`). 받는 TUI 가
+// 붙여넣기 처리를 400ms 안에 끝내지 못하면(긴 다이제스트 · 긴 세션 · 느린 윈도) Return 이 붙여넣기보다 먼저 처리돼 빈 줄을
+// 누르고, 붙여넣기는 뒤늦게 `[Pasted text #N +M lines]` 로 입력줄에 남는다(벤더 이슈 anthropics/claude-code#28137 · 같은
+// 모양). 인계 순간 미제출 계수는 0 이라 그 잔여는 처방 3행 `human_draft` 로 읽혔고, 그 좌석 큐 전체가 사람 Enter 를 기다리다
+// TTL 에 만료됐다(윈 dept-1 11-09 09:47 · base 10-13 00:28).
+// 【규칙】 Return 을 쓴 큐 배달마다 기록 1건([`crate::state::SubmitCheck`]). 틱마다 — 입력줄이 **그 본문 그대로**(접힘 자리표시
+// 포함 · [`composer_block_is_machine_body`])이고 · 그 뒤 사람 손이 없고 · 같은 에이전트·대화이고 · 창이 없고 · 큐와 같은 프롬프트
+// 경계(입력줄 점유 축만 뺀다)가 통과하고 · 좌석 세션 기록에 그 본문의 user 레코드가 아직 없을 때만 Return 을 한 번 더 쓴다.
+// 간격 [`SUBMIT_RETRY_SPACING_MS`] · 상한 [`SUBMIT_RETRY_MAX`]. 상한을 다 쓰고도 그대로면 `queue.submit_unconfirmed` 1건을 내고
+// 기록을 닫는다 = 종전 동작(입력줄 점유 보류 + 기아 경보)으로 돌아간다.
+// 【판정원】 Return 을 **쓸지**는 화면의 양성 증거(입력줄이 우리 본문)가 정하고, 이미 제출됐는지는 세션 기록(user 레코드)이
+// 거부권을 가진다 — 바쁜 좌석의 큐잉 메시지는 기록이 늦게 붙지만 그때 입력줄은 이미 비어 있어 다시 쓰지 않는다.
+
+/// 재시도 간격(ms) — i 번째 재시도는 직전 Return 뒤 이만큼 지나야 한다(틱 5초 해상도라 실효 간격은 그 이상이다).
+pub(crate) const SUBMIT_RETRY_SPACING_MS: [u64; 3] = [2_000, 4_000, 8_000];
+/// 재시도 상한(같은 배달 1건당 다시 쓰는 Return 수).
+pub(crate) const SUBMIT_RETRY_MAX: u8 = 3;
+/// 상한을 다 쓴 뒤 마지막 Return 의 결과를 기다리는 시간(ms) — 이 뒤에도 입력줄이 우리 본문이면 경보 1건.
+pub(crate) const SUBMIT_CHECK_FINAL_MS: u64 = 8_000;
+/// 입력줄이 비어 보여도 이보다 이르면 닫지 않는다(ms) — 붙여넣기가 Return 뒤에 늦게 그려지는 창(먹힌 Return 의 정체)을 넘긴다.
+pub(crate) const SUBMIT_CHECK_SETTLE_MS: u64 = 6_000;
+/// 기록 수명 상한(ms) — 바쁜 좌석이 프롬프트 경계로 돌아오지 않으면 이 뒤 포기한다(기아 경보 기본 임계 600s 와 같은 자).
+pub(crate) const SUBMIT_CHECK_MAX_AGE_MS: u64 = 600_000;
+/// 세션 기록에서 배달 뒤 붙은 부분을 읽는 상한(바이트).
+const SUBMIT_CHECK_TRANSCRIPT_SCAN_MAX: u64 = 8 * 1024 * 1024;
+
+/// 노브 — `CYS_QUEUED_SUBMIT_RETRY=0` 이면 기록을 세우지 않는다(즉시 종전 동작 복원).
+pub(crate) fn queued_submit_retry_enabled() -> bool {
+    std::env::var("CYS_QUEUED_SUBMIT_RETRY").map(|v| v.trim() != "0").unwrap_or(true)
+}
+
+/// 제출 확인 틱 1회의 관측(순수 판정 입력).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct SubmitCheckObs {
+    pub(crate) tries: u8,
+    pub(crate) since_return_ms: u64,
+    pub(crate) age_ms: u64,
+    /// 사람 바이트가 있거나 기록 본문 뒤 사람 입력이 있었다.
+    pub(crate) human: bool,
+    /// 그 뒤 새 기계 본문이 왔다.
+    pub(crate) newer_body: bool,
+    /// 에이전트·대화 세대가 배달 때와 다르다.
+    pub(crate) epoch_moved: bool,
+    /// 커서가 든 입력 블록이 그 본문인가 — None = 관측 불능.
+    pub(crate) own: Option<bool>,
+    /// 커서가 든 입력 블록이 선두 마커 뒤 빈 줄이다.
+    pub(crate) line_empty: bool,
+    /// 지금 Return 을 쓰면 창을 누른다(질문·선택 창 ∨ 승인 대기).
+    pub(crate) dialog: bool,
+    /// 그 블록을 빈 프롬프트로 본 화면에서 큐와 같은 프롬프트 경계가 통과한다.
+    pub(crate) prompt_ready: bool,
+    /// 세션 기록에 그 본문의 user 레코드가 배달 뒤에 붙었는가 — None = 모름(기록 경로 없음·못 읽음).
+    pub(crate) transcript_submitted: Option<bool>,
+}
+
+/// 제출 확인 틱의 처분.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SubmitCheckStep {
+    /// 기록을 닫는다 — 쓰기 0(사유).
+    Close(&'static str),
+    /// 이번 틱은 아무것도 하지 않는다(사유).
+    Wait(&'static str),
+    /// Return 을 한 번 더 쓴다.
+    Resend,
+    /// 상한 소진 — `queue.submit_unconfirmed` 1건 후 닫는다(종전 동작으로 돌아간다).
+    GiveUp,
+}
+
+/// ★(cysr-queued-paste-submit) 순수 판정표 — 위에서부터 첫 일치.
+///
+/// | # | 조건 | 처분 |
+/// |---|---|---|
+/// | 1 | 사람 손 | Close(human) |
+/// | 2 | 새 기계 본문 | Close(newer_body) |
+/// | 3 | 에이전트·대화 세대 바뀜 | Close(epoch_moved) |
+/// | 4 | 세션 기록 = 제출됨 | Close(confirmed_transcript) |
+/// | 5 | 입력줄이 그 본문이 아님 ∧ 빈 줄 ∧ 나이 ≥ SETTLE | Close(line_empty) |
+/// | 6 | 입력줄이 그 본문이 아님 ∧ 나이 ≥ MAX_AGE | Close(stale) |
+/// | 7 | 입력줄이 그 본문이 아님 | Wait(line) |
+/// | 8 | 재시도 상한 도달 ∧ 마지막 Return 뒤 ≥ FINAL | GiveUp |
+/// | 9 | 재시도 상한 도달 | Wait(final) |
+/// | 10 | 간격 미달 | Wait(spacing) |
+/// | 11 | 나이 ≥ MAX_AGE | GiveUp |
+/// | 12 | 창 | Wait(dialog) |
+/// | 13 | 프롬프트 경계 미통과 | Wait(prompt) |
+/// | 14 | 그 밖 | Resend |
+pub(crate) fn submit_check_step(o: &SubmitCheckObs) -> SubmitCheckStep {
+    use SubmitCheckStep::{Close, GiveUp, Resend, Wait};
+    if o.human {
+        return Close("human");
+    }
+    if o.newer_body {
+        return Close("newer_body");
+    }
+    if o.epoch_moved {
+        return Close("epoch_moved");
+    }
+    if o.transcript_submitted == Some(true) {
+        return Close("confirmed_transcript");
+    }
+    if o.own != Some(true) {
+        if o.line_empty && o.age_ms >= SUBMIT_CHECK_SETTLE_MS {
+            return Close("line_empty");
+        }
+        if o.age_ms >= SUBMIT_CHECK_MAX_AGE_MS {
+            return Close("stale");
+        }
+        return Wait("line");
+    }
+    if o.tries >= SUBMIT_RETRY_MAX {
+        return if o.since_return_ms >= SUBMIT_CHECK_FINAL_MS { GiveUp } else { Wait("final") };
+    }
+    if o.since_return_ms < SUBMIT_RETRY_SPACING_MS[usize::from(o.tries)] {
+        return Wait("spacing");
+    }
+    if o.age_ms >= SUBMIT_CHECK_MAX_AGE_MS {
+        return GiveUp;
+    }
+    if o.dialog {
+        return Wait("dialog");
+    }
+    if !o.prompt_ready {
+        return Wait("prompt");
+    }
+    Resend
+}
+
+/// 순수 — 세션 기록 한 줄이 그 본문의 user 레코드인가(공백을 모두 지운 공간에서 **동일** · 문자열 content ∨ text 조각 배열).
+pub(crate) fn transcript_line_is_user_with(line: &str, needle: &str) -> bool {
+    if needle.is_empty() || !line.contains("\"user\"") {
+        return false;
+    }
+    let Ok(v) = serde_json::from_str::<Value>(line) else {
+        return false;
+    };
+    if v.get("type").and_then(Value::as_str) != Some("user") {
+        return false;
+    }
+    let text = match v.pointer("/message/content") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(a)) => a.iter().filter_map(|x| x.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join(""),
+        _ => return false,
+    };
+    // ★(codex 2R) **동일성**이다(부분 문자열 아님) — 프롬프트 경계(빈 입력줄)에서 붙인 본문이 그대로 제출되므로 제출 레코드의
+    //   content 는 그 본문과 공백만 다르다. contains 면 B 가 A 의 접두부·인용일 때 A 의 늦은 레코드가 B 를 제출로 닫았다.
+    text.chars().filter(|c| !c.is_whitespace()).eq(needle.chars())
+}
+
+/// IO — 세션 기록의 `offset` 뒤에 그 본문의 user 레코드가 붙었는가. 파일이 없거나 짧아졌으면(교체·잘림) None(판정 불능).
+pub(crate) fn transcript_user_since(path: &str, offset: u64, needle: &str) -> Option<bool> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    if len < offset {
+        return None;
+    }
+    f.seek(SeekFrom::Start(offset)).ok()?;
+    let mut buf = Vec::new();
+    f.take(SUBMIT_CHECK_TRANSCRIPT_SCAN_MAX).read_to_end(&mut buf).ok()?;
+    Some(String::from_utf8_lossy(&buf).lines().any(|ln| transcript_line_is_user_with(ln, needle)))
+}
+
+/// IO — 좌석 세션 기록의 (경로, 지금 길이). 경로를 모르거나 파일이 없으면 None. 인계 시점([`HandoffStamp::of`])에 부른다.
+pub(crate) fn transcript_snapshot(s: &crate::state::Surface) -> Option<(String, u64)> {
+    let p = s.registered_transcript.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
+    let len = std::fs::metadata(&p).ok()?.len();
+    Some((p, len))
+}
+
+/// 큐 결판(WrittenSubmitted · writer 스레드)이 부른다: 이 좌석에 제출 확인 기록을 세운다. 노브 꺼짐·기계 본문 기록 없음이면 세우지 않는다.
+/// `transcript` = 인계 순간의 세션 기록 스냅숏([`HandoffStamp`]) — 결판에서 다시 재지 않는다(codex 1R QPS-1 · writer 스레드 IO 0).
+pub(crate) fn arm_queue_submit_check(
+    s: &crate::state::Surface,
+    body: &str,
+    from: Option<u64>,
+    entry_id: &str,
+    transcript: Option<(String, u64)>,
+) {
+    if !queued_submit_retry_enabled() {
+        return;
+    }
+    let Some(b) = s.inject_track.last_body() else {
+        return;
+    };
+    let now = std::time::Instant::now();
+    s.inject_track.arm_submit_check(crate::state::SubmitCheck {
+        body_at: b.at,
+        armed_at: now,
+        last_return_at: now,
+        tries: 0,
+        from,
+        entry_id: entry_id.to_string(),
+        needle: crate::state::SubmitCheck::needle_of(body),
+        transcript,
+        agent_epoch: s.agent_epoch.load(Ordering::Acquire),
+        conversation_epoch: s.conversation_epoch.load(Ordering::Acquire),
+    });
+}
+
+/// ★(cysr-queued-paste-submit · codex 1R QPS-3) 재전송 Return 의 **쓰기 직전 거부 탐침**(writer 스레드 · `SubmitAfterGap::refuse`) —
+/// 관측~인계~쓰기 사이에 전제가 깨졌으면 그 CR 을 쓰지 않는다(보류 기록도 세우지 않는다 · 거부 ≠ 보류): kill-switch pause ·
+/// 이 CR 을 허가한 기록이 닫힘·교체됨 · 승인/관문 대기 · 좌석 등급 Off(에이전트 사망 등) · 에이전트/대화 세대 바뀜 · 새 기계 본문 · 사람 바이트 ∨ 본문 뒤 사람 입력 · 커서가 든 입력 블록이
+/// 더는 그 본문이 아님(이미 제출됐거나 누가 지웠다). 좌석·데몬 소멸·관측 패닉 = 쓰지 않는다(재전송은 선택적 행동이라 실패 방향 = 0).
+pub(crate) fn queue_retry_cancel_probe(
+    daemon: &Arc<Daemon>,
+    s: &Arc<crate::state::Surface>,
+    c: &crate::state::SubmitCheck,
+    markers: Vec<String>,
+) -> crate::state::SafetyProbe {
+    let (wd, ws) = (Arc::downgrade(daemon), Arc::downgrade(s));
+    let (body_at, agent_epoch, conversation_epoch, armed_at) = (c.body_at, c.agent_epoch, c.conversation_epoch, c.armed_at);
+    Arc::new(move || {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (Some(d), Some(s)) = (wd.upgrade(), ws.upgrade()) else {
+                return true;
+            };
+            // ★(codex 2R) 이 CR 을 허가한 기록이 **아직 살아 있어야** 쓴다 — 인계 뒤 writer 가 밀린 사이 기록이 닫혔으면(포기·기록 확인·
+            //   사람 손·새 배달의 덮어쓰기) 이미 넘긴 CR 도 취소다. 승인·관문 대기가 인계 뒤에 섰으면 쓰지 않는다(보류 탐침은 화면 창만 본다 ·
+            //   `inject_safety_probe` ⓑ와 같은 판독 — writer 스레드 poison 관용 읽기).
+            if s.inject_track.submit_check().map(|x| x.armed_at) != Some(armed_at) || approval_or_gate_pending(&d, s.id) {
+                return true;
+            }
+            if d.paused.load(Ordering::Relaxed)
+                || s.agent_epoch.load(Ordering::Acquire) != agent_epoch
+                || s.conversation_epoch.load(Ordering::Acquire) != conversation_epoch
+            {
+                return true;
+            }
+            let scope = submit_guard_scope(&s);
+            if scope == SubmitGuardScope::Off {
+                return true;
+            }
+            let Some(body) = s.inject_track.last_body().filter(|b| b.at == body_at) else {
+                return true;
+            };
+            if s.pending_input.lock().unwrap_or_else(|e| e.into_inner()).human != 0
+                || s.last_human_input.lock().unwrap_or_else(|e| e.into_inner()).is_some_and(|t| t > body_at)
+            {
+                return true;
+            }
+            !submit_cr_verdict(scope, &observe_prompt_block(&s, &markers), Some(body.norm.as_str())).own
+        }))
+        .unwrap_or(true)
+    })
+}
+
+/// ★(cysr-queued-paste-submit) watchdog 틱(재제출 다음 · 큐 배달 앞) — 기록이 선 좌석마다 [`submit_check_step`] 1회.
+/// kill-switch pause 중에는 아무것도 하지 않는다(기록 유지 · 쓰기 0).
+pub(crate) fn recheck_queue_submits(daemon: &Arc<Daemon>) {
+    if daemon.paused.load(Ordering::Relaxed) {
+        return;
+    }
+    let seats: Vec<Arc<crate::state::Surface>> = daemon
+        .surfaces
+        .lock()
+        .unwrap()
+        .values()
+        .filter(|s| s.inject_track.submit_check().is_some())
+        .cloned()
+        .collect();
+    for s in seats {
+        let _ = recheck_queue_submit_one(daemon, &s, std::time::Instant::now());
+    }
+}
+
+/// [`recheck_queue_submits`] 의 좌석 1개 — 반환 = 처분 표지(검체·로그용).
+pub(crate) fn recheck_queue_submit_one(
+    daemon: &Arc<Daemon>,
+    s: &Arc<crate::state::Surface>,
+    now: std::time::Instant,
+) -> &'static str {
+    let Some(c) = s.inject_track.submit_check() else {
+        return "none";
+    };
+    let ms = |a: std::time::Instant| u64::try_from(now.saturating_duration_since(a).as_millis()).unwrap_or(u64::MAX);
+    let close = |why: &'static str, publish_as: Option<&'static str>| -> &'static str {
+        if let Some(gone) = s.inject_track.take_submit_check_if(c.armed_at) {
+            if let Some(name) = publish_as {
+                daemon.bus.publish(
+                    name,
+                    "queue",
+                    Some(s.id),
+                    json!({
+                        "surface_ref": cys::surface_ref(s.id),
+                        "from": gone.from.map(cys::surface_ref),
+                        "queue_entry_id": gone.entry_id,
+                        "tries": gone.tries,
+                        "basis": why,
+                        "since_delivery_ms": ms(gone.armed_at),
+                        "note": if name == "queue.submit_unconfirmed" {
+                            "큐 배달의 Return 을 다시 써도 입력줄에 그 본문이 미제출로 남았다 — 재시도를 멈춘다(종전처럼 입력줄 점유로 보류 · 기아 경보). \
+                             사람이 그 창에서 Enter 로 제출하거나 지운다"
+                        } else {
+                            "큐 배달의 먹힌 Return 을 다시 써서 제출됐다"
+                        },
+                    }),
+                );
+            }
+        }
+        why
+    };
+    if crate::handlers::send_settle_disabled(daemon) || submit_guard_scope(s) == SubmitGuardScope::Off {
+        return close("seat_off", None);
+    }
+    let body = s.inject_track.last_body();
+    let human = s.pending_input.lock().unwrap_or_else(|e| e.into_inner()).human != 0
+        || s.last_human_input.lock().unwrap_or_else(|e| e.into_inner()).is_some_and(|t| t > c.body_at);
+    let mut o = SubmitCheckObs {
+        tries: c.tries,
+        since_return_ms: ms(c.last_return_at),
+        age_ms: ms(c.armed_at),
+        human,
+        newer_body: body.as_ref().map(|b| b.at) != Some(c.body_at),
+        epoch_moved: s.agent_epoch.load(Ordering::Acquire) != c.agent_epoch
+            || s.conversation_epoch.load(Ordering::Acquire) != c.conversation_epoch,
+        ..SubmitCheckObs::default()
+    };
+    let adapters = load_adapter_defs();
+    let marker = surface_prompt_marker(s, &adapters).filter(|(m, _)| !m.is_empty());
+    let mut view: Option<PromptObs> = None;
+    if let (Some((markers, _)), Some(b)) = (marker.as_ref(), body.as_ref()) {
+        if !o.human && !o.newer_body && !o.epoch_moved && effective_quiescing_since(daemon, s).is_none() {
+            let obs = observe_prompt_block(s, markers);
+            let v = submit_cr_verdict(submit_guard_scope(s), &obs, Some(b.norm.as_str()));
+            o.own = Some(v.own);
+            o.line_empty = obs.block.as_ref().is_some_and(|bl| bl.before_cursor.trim().is_empty());
+            o.dialog = v.hits || approval_or_gate_pending(daemon, s.id);
+            view = obs.with_block_emptied();
+        }
+    }
+    if let (Some(v), Some((_, placeholder))) = (view.as_ref(), marker.as_ref()) {
+        let mut gate = prompt_gate_input(daemon, s, v.marker.as_str(), placeholder.as_deref(), v);
+        gate.input = InputLine::Empty;
+        gate.modal_foreground = false;
+        gate.selector_row = false;
+        o.prompt_ready = prompt_gate_verdict(&gate) == PromptGate::Ready;
+    }
+    let mut step = submit_check_step(&o);
+    // 세션 기록은 쓰기·포기 직전에만 읽는다(IO 를 그 순간으로 한정) — 이미 제출됐으면 거부권.
+    if matches!(step, SubmitCheckStep::Resend | SubmitCheckStep::GiveUp) {
+        // ★(codex 1R QPS-4) 포기 직전에도 — 마지막 재전송이 실제로 제출됐으면 unconfirmed 가 아니라 recovered 다.
+        o.transcript_submitted = c.transcript.as_ref().and_then(|(p, off)| transcript_user_since(p, *off, &c.needle));
+        step = submit_check_step(&o);
+    }
+    match step {
+        SubmitCheckStep::Wait(why) => why,
+        SubmitCheckStep::Close(why) => close(why, (c.tries > 0 && matches!(why, "line_empty" | "confirmed_transcript")).then_some("queue.submit_recovered")),
+        SubmitCheckStep::GiveUp => close("unconfirmed", Some("queue.submit_unconfirmed")),
+        SubmitCheckStep::Resend => {
+            let Some((markers, _)) = marker else {
+                return "wait_line";
+            };
+            {
+                let _gate = s.input_gate.lock().unwrap();
+                // 게이트 안 재확인(원자·leaf 판독뿐) — 관측과 인계 사이에 직접 send·사람 키·새 배달이 끼었으면 이번 틱은 쓰지 않는다.
+                // ★(codex 1R QPS-3) 사람 시각·세대·pause 도 게이트 안에서 다시 본다(관측 뒤 끼어든 사람 키·사이클·kill-switch).
+                if s.inject_track.last_body().map(|b| b.at) != Some(c.body_at)
+                    || s.pending_input_bytes.load(Ordering::Relaxed) != 0
+                    || s.inject_track.submit_check().map(|x| (x.armed_at, x.tries)) != Some((c.armed_at, c.tries))
+                    || daemon.paused.load(Ordering::Relaxed)
+                    || s.agent_epoch.load(Ordering::Acquire) != c.agent_epoch
+                    || s.conversation_epoch.load(Ordering::Acquire) != c.conversation_epoch
+                    || s.pending_input.lock().unwrap_or_else(|e| e.into_inner()).human != 0
+                    || s.last_human_input.lock().unwrap_or_else(|e| e.into_inner()).is_some_and(|t| t > c.body_at)
+                {
+                    return "raced";
+                }
+                // 쓰기 직전: 거부 탐침(전제가 깨졌으면 쓰지 않음 · 기록 없음) → 보류 탐침(창이면 쓰지 않고 보류 기록 — 창이 닫히면 재제출 경로).
+                let refuse = queue_retry_cancel_probe(daemon, s, &c, markers.clone());
+                let probe = submit_cr_withhold_probe(daemon, s, markers, "queue_submit_retry", c.from);
+                let req = crate::state::WriteReq::SubmitAfterGap {
+                    bytes: b"\r".to_vec(),
+                    min_gap_ms: crate::handlers::cr_min_gap_ms(),
+                    withhold: Some(probe),
+                    refuse: Some(refuse),
+                };
+                s.inject_track.submit_handed();
+                if s.write_tx.try_send(req).is_err() {
+                    s.inject_track.submit_hand_failed();
+                    return "write_failed";
+                }
+                s.apply_pending_input(b"\r", InputOrigin::Machine);
+                s.inject_track.note_submit_retry_if(c.armed_at, now);
+            }
+            daemon.bus.publish(
+                "queue.submit_retried",
+                "queue",
+                Some(s.id),
+                json!({
+                    "surface_ref": cys::surface_ref(s.id),
+                    "from": c.from.map(cys::surface_ref),
+                    "queue_entry_id": c.entry_id,
+                    "try": c.tries + 1,
+                    "max": SUBMIT_RETRY_MAX,
+                    "since_delivery_ms": ms(c.armed_at),
+                    "transcript_known": c.transcript.is_some(),
+                    "note": "큐 배달의 Return 뒤에도 입력줄이 그 본문 그대로라(붙여넣기 처리 지연으로 Return 이 먹혔다) Return 을 한 번 더 썼다.",
+                }),
+            );
+            "resent"
+        }
+    }
+}
+
 // ═══════════ ★(0.14.42 · 설계 H0) 게이트 없는 데몬 내부 주입자의 공용 하드축 판정 ═══════════
 //
 // 【무엇이 문제였나】 데몬 안에서 스스로 PTY 에 글을 쓰는 생산자 일곱 곳은 큐 게이트를 거치지 않는다
@@ -10072,6 +10480,11 @@ pub(crate) struct QueueBlockDiag {
     /// ★(1.1.11 · win-qstarved-ctrl-bytes) 큐 틱이 마지막으로 매긴 다시 그리기 분류(`RepaintState::last_obs` · `"unreadable"`·`"readable"`·`"other"`) — **진단 전용**.
     /// 다시 그리기 시계는 `"unreadable"` 에서만 간다. 처방이 요청을 약속하는데 이 값이 `"other"`·`"readable"` 이면 요청은 오지 않는다(윈 1.1.10 실기 48건의 빈칸 사유). 관측 전 = `None`.
     pub(crate) repaint_last_obs: Option<&'static str>,
+    /// ★(cysr-queued-paste-submit) 커서가 든 입력 블록이 **마지막 기계 본문**(데몬 배달)으로 완전히 설명되고 그 뒤 사람 손이 없다 —
+    /// Return 이 먹힌 큐 배달의 잔여다(계수는 인계 때 0 이 됐다). `None` = 관측 불능(마커 없음·본문 기록 없음). 처방 3행의 사람/기계 갈래에만 쓴다.
+    pub(crate) composer_machine_body: Option<bool>,
+    /// ★(codex 1R QPS-5) 이 잔여(마지막 기계 본문)에 대한 Return 재전송 기록이 **살아 있다** — 처방 3′행 문장의 갈래(재전송 중 · 끝났거나 꺼짐)에만 쓴다. 진단 JSON 에 싣지 않는다.
+    pub(crate) submit_retry_live: bool,
 }
 
 /// ★(0.14.45 · F3) 화면 동기 진단 묶음 — [`QueueBlockDiag`] 의 `cursor_row`·`marker_row`·`cursor_lead_cp`.
@@ -10356,6 +10769,22 @@ pub(crate) fn queue_block_diag_with(
     // (codex 2차 검토 #4) nudge 대상 = 마커 좌석(큐 틱의 마커 경로만 nudge 를 부른다) ∧ (비-대체 화면 ∨ 전경 에이전트). 맨 셸은 어댑터를 읽지 않는다(RQFIX F4 와 같은 규율).
     let has_marker = s.agent_meta.lock().map(|m| m.is_some()).unwrap_or(false) && surface_prompt_marker(s, &defs()).is_some();
     let nudge_ineligible = !has_marker || (alt && !alt_fg_agent);
+    // ★(cysr-queued-paste-submit) 입력줄 잔여가 데몬 자신의 마지막 배달 본문인가(접힘 자리표시 포함) — 사람 바이트·그 뒤 사람 입력이 있으면 아니다.
+    let composer_machine_body = if has_marker {
+        surface_prompt_marker(s, &defs()).filter(|(m, _)| !m.is_empty()).and_then(|(markers, _)| {
+            let b = s.inject_track.last_body()?;
+            let human_raw = s.pending_input.lock().unwrap_or_else(|e| e.into_inner()).human;
+            let human_after = s.last_human_input.lock().unwrap_or_else(|e| e.into_inner()).is_some_and(|t| t > b.at);
+            let obs = observe_prompt_block(s, &markers);
+            Some(
+                human_raw == 0
+                    && !human_after
+                    && composer_block_is_machine_body(obs.block.as_ref().map(|x| x.before_cursor.as_str()), Some(b.norm.as_str())),
+            )
+        })
+    } else {
+        None
+    };
     QueueBlockDiag {
         pending_input_bytes: pending,
         pending_input_human_bytes: human,
@@ -10382,6 +10811,11 @@ pub(crate) fn queue_block_diag_with(
         repaint_unresolved,
         nudge_ineligible,
         repaint_last_obs,
+        composer_machine_body,
+        submit_retry_live: s
+            .inject_track
+            .submit_check()
+            .is_some_and(|c| s.inject_track.last_body().is_some_and(|b| b.at == c.body_at)),
     }
 }
 
@@ -10407,6 +10841,8 @@ pub(crate) fn screen_diag_json(d: &QueueBlockDiag) -> Value {
         "repaint_unresolved": d.repaint_unresolved,
         "nudge_ineligible": d.nudge_ineligible,
         "repaint_last_obs": d.repaint_last_obs,
+        // ★(cysr-queued-paste-submit) 추가형 키 — 입력줄 잔여가 데몬의 마지막 배달 본문인가(관측 불능 null).
+        "composer_machine_body": d.composer_machine_body,
     })
 }
 
@@ -10579,6 +11015,7 @@ pub(crate) fn paused_queue_remedy(
 /// |---|---|---|
 /// | 1 | `kill_switch` | `paused`(오너 문장) |
 /// | 2 | `paused`(좌석 pause 만) | `paused`(좌석 문장) |
+/// | 3′ | 입력줄 ∧ c == 0 ∧ dv == Some(true) ∧ 입력 블록 = 마지막 기계 본문(`composer_machine_body`) | `machine_residue`(먹힌 큐 Return · cysr-queued-paste-submit) |
 /// | 3 | 입력줄 ∧ c == 0 ∧ dv == Some(true) | `human_draft` |
 /// | 4 | 입력줄 ∧ c == 0 | `wait` |
 /// | 5 | 입력줄 ∧ dv == Some(true) ∧ h == 0 | `machine_residue` |
@@ -10611,6 +11048,20 @@ pub(crate) fn queue_remedy(blocked_by: &str, d: &QueueBlockDiag) -> (&'static st
     };
     let (code, body): (&'static str, String) = if let Some(body) = pause_remedy_body(d.kill_switch, d.paused) {
         ("paused", body.into())
+    } else if input_line && d.pending_input_bytes == 0 && d.draft_visible == Some(true) && d.composer_machine_body == Some(true) {
+        // ★(cysr-queued-paste-submit) 3′행 — 계수 0 인 화면 글이 데몬의 마지막 배달 본문 그대로다(Return 이 먹힌 큐 배달 · 접힘 자리표시 포함).
+        //   사람 초안이 아니다. cys 가 Return 을 상한 3회까지 다시 보내고(queue.submit_retried), 그래도 남으면 이 처방이 사람에게 간다.
+        (
+            "machine_residue",
+            if d.submit_retry_live {
+                "기계가 배달한 본문이 입력줄에 제출되지 않은 채 남았다(Return 이 먹힘) — cys 가 Return 을 다시 보내는 중이다(최대 3회). \
+                 그래도 남으면 사람이 그 창을 확인하고 Enter 로 제출하거나 지운다"
+            } else {
+                "기계가 배달한 본문이 입력줄에 제출되지 않은 채 남았다(Return 이 먹힘 · cys 의 Return 재전송은 끝났거나 꺼져 있다) — \
+                 사람이 그 창을 확인하고 Enter 로 제출하거나 지운다"
+            }
+            .into(),
+        )
     } else if input_line && d.pending_input_bytes == 0 && d.draft_visible == Some(true) {
         ("human_draft", REMEDY_BODY_HUMAN_DRAFT.into())
     } else if input_line && d.pending_input_bytes == 0 {
@@ -11512,6 +11963,9 @@ struct HandoffStamp {
     agent_epoch: u64,
     conversation_epoch: u64,
     human_at: Option<std::time::Instant>,
+    /// ★(cysr-queued-paste-submit · codex 1R QPS-1) 인계 순간(첫 바이트 전)의 좌석 세션 기록 경로와 길이 — 이 뒤에 붙은 user 레코드만
+    /// 이 배달의 제출 증거다. 결판(Return 뒤)에서 재면 Return 과 결판 사이에 붙은 레코드가 기준점 앞으로 빠진다. 모르면 None.
+    transcript: Option<(String, u64)>,
 }
 
 impl HandoffStamp {
@@ -11523,6 +11977,7 @@ impl HandoffStamp {
             agent_epoch: s.agent_epoch.load(Ordering::Acquire),
             conversation_epoch: s.conversation_epoch.load(Ordering::Acquire),
             human_at: *s.last_human_input.lock().unwrap_or_else(|e| e.into_inner()),
+            transcript: transcript_snapshot(s),
         }
     }
     /// The seat is still on the hand-off's agent and conversation.
@@ -11666,6 +12121,10 @@ fn settle_queue_write(
                     &d.merged_ids,
                 ),
             );
+            // ★(cysr-queued-paste-submit) Return 을 쓴 것은 제출의 증거가 아니다 — 제출 확인 기록을 세운다(틱이 확인·상한 재시도).
+            if let Some(s) = &s {
+                arm_queue_submit_check(s, &d.body, receipt.2, &d.entry.id, stamp.transcript.clone());
+            }
             // P7 큐 WAL: 배달로 줄어든 큐를 디스크에 반영(스냅샷 최신화).
             daemon.persist_queue_state();
             // ★v112-wake: 감시 각성 줄의 제출 실측 기준점 — 1.1.11 편입(원작자 S-a)으로 인계가 아니라 **쓴 Return** 시점이 됐다.
@@ -22256,7 +22715,10 @@ mod tests {
             //   and LOWERS the exempt marker (`take_esc_exempt`, as `deliver_head_locked` does); its failed hand-off restores
             //   count and marker together (`restore_esc_exempt`, the rollback rule). A re-hold restores both in `hold_partial_write`.
             // ★1.1.11 편입: 우리 +2 clear(적대 R2 F2 · 에이전트 사망 시 미제출 계수 비움 등 · 1.1.10 값 3) 를 원작자 값 위에 더한다.
-            ("governance", 6, 4, 1),
+            // ★(cysr-queued-paste-submit) +1 apply: `recheck_queue_submit_one` — 먹힌 큐 Return 의 재전송은 보류 CR 재제출
+            //   (`resubmit_withheld_one` · 종전 1)과 같은 꼴(Return 한 바이트 · InputOrigin::Machine · input_gate 안 인계 직후)이다.
+            //   본문은 큐 인계 때 이미 계상됐고(set 0) 이 CR 은 계수를 0 으로 다시 확인할 뿐이라 면제 표식 규칙은 종전 재제출과 같다.
+            ("governance", 6, 4, 2),
             // ★(0.14.52 · S-a C5b) +1 clear, +1 apply: the direct agent write's settlement (`DirectSettle::run`) applies the
             //   SAME clear-first reset / accepted-bytes step the handler applied at hand-off - moved to after the terminal.
             ("handlers", 0, 2, 3),
@@ -31607,6 +32069,104 @@ mod tests {
         }
     }
 
+    // ═══════════ ★(cysr-queued-paste-submit) 먹힌 큐 Return — 처방 3′행 · 제출 확인 판정표 · 세션 기록 대조 ═══════════
+
+    /// 처방 3′행: 계수 0 · 화면 글 · 입력 블록 = 데몬의 마지막 배달 본문 → `machine_residue`(사람 초안 아님).
+    /// 음성 대조(실례 ③ · 오너가 직접 붙인 글): 입력 블록이 우리 본문이 아니거나(Some(false)) 관측 불능(None)이면 종전 `human_draft`.
+    #[test]
+    fn qps_remedy_row3_splits_machine_body_from_human_draft() {
+        let ip = BLOCKED_INPUT_PENDING;
+        let mut d = c5_diag(0, 0, Some(true));
+        d.composer_machine_body = Some(true);
+        d.submit_retry_live = true;
+        let (code, body) = queue_remedy(ip, &d);
+        assert_eq!(code, "machine_residue");
+        assert!(body.contains("다시 보내는 중") && body.contains("최대 3회"), "{body}");
+        // ★(codex 1R QPS-5) 재전송 기록이 없으면(노브 0 · 소진 · 큐 밖 본문) 재전송을 약속하지 않는다.
+        d.submit_retry_live = false;
+        let (code2, body2) = queue_remedy(ip, &d);
+        assert_eq!(code2, "machine_residue");
+        assert!(body2.contains("끝났거나 꺼져") && !body2.contains("다시 보내는 중"), "{body2}");
+        assert!(body2.ends_with(REMEDY_LLM_SUFFIX));
+        assert!(body.ends_with(REMEDY_LLM_SUFFIX), "폭주 차단 꼬리 유지: {body}");
+        assert!(QUEUE_REMEDY_CODES.contains(&code), "허용 목록 안의 code");
+        for owned in [Some(false), None] {
+            d.composer_machine_body = owned;
+            assert_eq!(queue_remedy(ip, &d).0, "human_draft", "사람 초안 보존 · {owned:?}");
+        }
+        // 계수 > 0 행들은 무변경(5·6행) — 3′ 은 계수 0 갈래뿐이다.
+        let mut h = c5_diag(4, 4, Some(true));
+        h.composer_machine_body = Some(true);
+        assert_eq!(queue_remedy(ip, &h).0, "human_draft", "사람 몫 계수가 있는 줄은 6행 그대로");
+    }
+
+    /// 제출 확인 순수 판정표 — 행 순서(첫 일치)를 행마다 고정한다.
+    #[test]
+    fn qps_submit_check_step_table() {
+        use super::{submit_check_step, SubmitCheckObs as O, SubmitCheckStep as S, SUBMIT_CHECK_MAX_AGE_MS as MAX,
+                    SUBMIT_CHECK_SETTLE_MS as SETTLE, SUBMIT_RETRY_MAX as N, SUBMIT_RETRY_SPACING_MS as SP};
+        let own = O { own: Some(true), prompt_ready: true, since_return_ms: SP[0], age_ms: SP[0], ..O::default() };
+        assert_eq!(submit_check_step(&own), S::Resend, "14행 기본");
+        assert_eq!(submit_check_step(&O { human: true, ..own }), S::Close("human"));
+        assert_eq!(submit_check_step(&O { newer_body: true, ..own }), S::Close("newer_body"));
+        assert_eq!(submit_check_step(&O { epoch_moved: true, ..own }), S::Close("epoch_moved"));
+        assert_eq!(submit_check_step(&O { transcript_submitted: Some(true), ..own }), S::Close("confirmed_transcript"));
+        assert_eq!(submit_check_step(&O { transcript_submitted: Some(false), ..own }), S::Resend, "기록 미제출 = 쓴다");
+        assert_eq!(submit_check_step(&O { transcript_submitted: None, ..own }), S::Resend, "기록 모름 = 화면 양성으로 쓴다");
+        let notown = O { own: Some(false), ..own };
+        assert_eq!(submit_check_step(&O { line_empty: true, age_ms: SETTLE, ..notown }), S::Close("line_empty"));
+        assert_eq!(submit_check_step(&O { line_empty: true, age_ms: SETTLE - 1, ..notown }), S::Wait("line"), "정착 창 안 빈 줄");
+        assert_eq!(submit_check_step(&O { age_ms: MAX, ..notown }), S::Close("stale"));
+        assert_eq!(submit_check_step(&notown), S::Wait("line"));
+        assert_eq!(submit_check_step(&O { own: None, ..own }), S::Wait("line"), "관측 불능은 쓰지 않는다");
+        assert_eq!(submit_check_step(&O { tries: N, since_return_ms: 8_000, ..own }), S::GiveUp);
+        assert_eq!(submit_check_step(&O { tries: N, since_return_ms: 7_999, ..own }), S::Wait("final"));
+        for i in 0..usize::from(N) {
+            let o = O { tries: i as u8, since_return_ms: SP[i] - 1, ..own };
+            assert_eq!(submit_check_step(&o), S::Wait("spacing"), "{i}번째 간격");
+            assert_eq!(submit_check_step(&O { since_return_ms: SP[i], ..o }), S::Resend, "{i}번째 간격 도달");
+        }
+        assert_eq!(submit_check_step(&O { age_ms: MAX, ..own }), S::GiveUp, "수명 상한");
+        assert_eq!(submit_check_step(&O { dialog: true, ..own }), S::Wait("dialog"), "창 위에는 쓰지 않는다");
+        assert_eq!(submit_check_step(&O { prompt_ready: false, ..own }), S::Wait("prompt"));
+        assert_eq!(N, 3, "상한 3");
+    }
+
+    /// 세션 기록 대조 — 문자열 content · text 조각 배열 · 공백 무시 · user 아닌 레코드 무시 · 깨진 줄 무시.
+    #[test]
+    fn qps_transcript_line_matching() {
+        use super::{transcript_line_is_user_with as m, transcript_user_since};
+        let needle = crate::state::SubmitCheck::needle_of("[QPS] 큐 배달 본문 머리\n01 첫째 줄");
+        assert!(m(r#"{"type":"user","message":{"content":"[QPS] 큐  배달 본문\n머리 01 첫째 줄"}}"#, &needle), "공백만 다르면 같은 본문");
+        // ★(codex 2R) 꼬리가 더 붙은 레코드(다른 본문 · 우리 본문이 그 접두부)는 증거가 아니다.
+        assert!(!m(r#"{"type":"user","message":{"content":"[QPS] 큐  배달 본문\n머리 01 첫째 줄 더"}}"#, &needle), "접두부 일치는 동일성이 아니다");
+        assert!(!m(r#"{"type":"user","message":{"content":"인용: [QPS] 큐 배달 본문 머리 01 첫째 줄"}}"#, &needle), "인용은 동일성이 아니다");
+        assert!(m(r#"{"type":"user","message":{"content":[{"type":"text","text":"[QPS] 큐 배달 본문 머리"},{"type":"text","text":"01 첫째 줄"}]}}"#, &needle));
+        assert!(!m(r#"{"type":"assistant","message":{"content":"[QPS] 큐 배달 본문 머리 01 첫째 줄"}}"#, &needle));
+        assert!(!m(r#"{"type":"user","message":{"content":"다른 글"}}"#, &needle));
+        assert!(!m("{not json \"user\"", &needle));
+        assert!(!m(r#"{"type":"user","message":{"content":"x"}}"#, ""), "빈 열쇠는 일치가 아니다");
+        // ★(codex 1R QPS-2) 머리 48자+ 가 같고 꼬리가 다른 두 배달 — 서로의 user 레코드는 증거가 아니다.
+        let head = "[queue digest from surface:62 · 3건] 쇼츠 업로드 초안 보고 머리 공통 부분 ".repeat(2);
+        let (a_body, b_body) = (format!("{head}\n꼬리 A"), format!("{head}\n꼬리 B"));
+        let a_line = serde_json::json!({"type": "user", "message": {"content": a_body}}).to_string();
+        let nb = crate::state::SubmitCheck::needle_of(&b_body);
+        assert!(nb.chars().count() > 48);
+        assert!(!m(&a_line, &nb), "A 의 레코드가 B 의 제출 증거가 됐다");
+        assert!(m(&a_line, &crate::state::SubmitCheck::needle_of(&a_body)), "자기 레코드는 증거");
+        let dir = std::env::temp_dir().join(format!("qps-tr-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("s.jsonl");
+        let old = "{\"type\":\"user\",\"message\":{\"content\":\"[QPS] 큐 배달 본문 머리 01 첫째 줄\"}}\n";
+        std::fs::write(&p, old).unwrap();
+        let off = old.len() as u64;
+        let ps = p.to_string_lossy().into_owned();
+        assert_eq!(transcript_user_since(&ps, off, &needle), Some(false), "offset 앞의 옛 레코드는 증거가 아니다");
+        assert_eq!(transcript_user_since(&ps, off + 10, &needle), None, "파일이 짧아졌으면 판정 불능");
+        assert_eq!(transcript_user_since(&dir.join("none.jsonl").to_string_lossy(), 0, &needle), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// ★(RQFIX I-11) `queue.starved` payload 의 `hint` 기대값 — **이 프로세스의 env**(`CYS_QUEUE_STARVED_HINT_LEGACY`)가 고르는 문면을 제품과 같은 순수 함수 사슬로 도출한다.
     /// 상수를 직접 박으면 롤백 노브를 켠 구성의 전량 실행이 적색이 된다(문면 자체의 바이트 고정은 `state.rs` 의 순수 검체가 env 없이 잰다).
     fn c5_expected_starved_hint() -> &'static str {
@@ -33026,6 +33586,8 @@ mod tests {
             "cursor_col", "after_cursor_dim", "alt_screen", "human_idle_secs", "layout_why",
             // ★(1.1.11 · win-qstarved-ctrl-bytes) 다시 그리기 미발화 사유 다섯.
             "repaint_knob_off", "rows_too_small", "repaint_unresolved", "nudge_ineligible", "repaint_last_obs",
+            // ★(cysr-queued-paste-submit) 입력줄 잔여가 데몬 마지막 배달 본문인가(처방 3′행의 재료 · 추가형).
+            "composer_machine_body",
         ]
         .into_iter()
         .collect();

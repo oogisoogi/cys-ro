@@ -29597,6 +29597,58 @@ mod tests {
         assert_eq!(d.entry.text, old, "다른 에이전트 좌석에서 폐기가 일어났다");
     }
 
+    /// ★(integ · TICKET=cysr-1115-reassemble · 뜻 충돌 점검 B) 큐 배달 수리(제출 확인 기록·Return 재전송·만료 유실 알림) × agy 좌석 문
+    /// (`deliver_head_locked` 머리의 `drop_agy_door_closed`)이 같은 배달 길을 지난다. 버린 항목은 ⑴ 제출 확인 기록을 세우지 않고
+    /// (= 재전송·재검사가 붙지 않는다) ⑵ 만료 큐로 가지 않으며(= 만료 유실 알림 재료가 아니다) ⑶ 그 좌석 큐를 멈추지 않는다
+    /// (버린 틱만 거르고 다음 틱에 남은 사람 자판 항목이 나간다). 순서 = 폐기 → 이번 틱 거름 → 다음 틱 배달.
+    #[test]
+    fn integ_1115_agy_door_drop_gets_no_submit_check_and_does_not_stall_queue() {
+        if cys::agy_door::door_open() {
+            eprintln!("건너뜀: 이 HOME 에서는 agy 좌석 문이 열려 있다(시험은 닫힌 문 전제 · 격리 HOME 에서 돌릴 것)");
+            return;
+        }
+        let daemon = drill_daemon("integ-agy-queue");
+        let s = daemon
+            .create_surface(None, Some("sleep 30".into()), None, None, 24, 80)
+            .expect("create surface");
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        *s.agent_meta.lock().unwrap() = Some(("gemini".into(), "agy".into()));
+        assert!(crate::handlers::agy_door_seat_closed(&s), "전제: 닫힌 문의 agy 좌석");
+        let human = "사람이 친 글";
+        let (m1, m2) = {
+            let mut q = s.pending_queue.lock().unwrap();
+            let a = daemon.next_queue_entry("기계 보고 본문 1".into(), Some("surface:7".into()), "send");
+            let b = daemon.next_queue_entry("기계 보고 본문 2".into(), Some("surface:8".into()), "send");
+            let ids = (a.id.clone(), b.id.clone());
+            q.push_back(a);
+            q.push_back(b);
+            q.push_back(daemon.next_queue_entry(human.into(), None, crate::governance::AGY_ORIGIN_HUMAN));
+            ids
+        };
+        // ① 버린 틱 = 배달 0(머리가 바뀌었다 — 옛 판정으로 새 머리를 보내지 않는다).
+        assert!(deliver_head_locked(&daemon, &s, false, false, None, None, None, None).is_none(),
+                "agy 문이 머리를 버린 틱에 배달이 나갔다");
+        let left: Vec<String> = s.pending_queue.lock().unwrap().iter().map(|e| e.text.clone()).collect();
+        assert_eq!(left, vec![human.to_string()], "기계 항목만 버리고 사람 자판 항목은 남아야 한다");
+        // ② 버린 항목에 제출 확인 기록(재전송·재검사 재료)이 서지 않는다 — 틱 재검사도 할 일이 없다.
+        assert!(s.inject_track.submit_check().is_none(), "버린 항목에 제출 확인 기록이 섰다(재전송이 붙는다)");
+        assert_eq!(crate::governance::recheck_queue_submit_one(&daemon, &s, std::time::Instant::now()), "none");
+        // ③ 버린 항목은 만료 큐로 가지 않는다(만료 유실 알림 = queue.expired 의 재료가 아니다) · 막힘 사유도 남기지 않는다.
+        assert!(s.expired_queue.lock().unwrap().iter().all(|e| e.id != m1 && e.id != m2), "버린 항목이 만료 큐에 들어갔다");
+        let ev = daemon.bus.tail(200);
+        let named = |n: &str| ev.iter().filter(|e| e["name"] == n).count();
+        assert_eq!(named("queue.expired"), 0, "버린 항목이 만료(유실) 이벤트를 냈다");
+        assert_eq!(named("queue.delivered"), 0, "버린 틱에 배달 이벤트가 났다");
+        assert!(named("queue.submit_retried") + named("queue.submit_unconfirmed") + named("queue.submit_recovered") == 0,
+                "버린 항목에 재전송 계열 이벤트가 났다");
+        let dropped: Vec<&Value> = ev.iter().filter(|e| e["name"] == "queue.dropped").collect();
+        assert_eq!(dropped.len(), 1, "폐기 이벤트는 1건(조용히 지우지 않는다)");
+        assert!(dropped[0].to_string().contains(cys::agy_door::REFUSE_CODE), "폐기 사유 = agy 좌석 문: {}", dropped[0]);
+        // ④ 큐는 멈추지 않는다 — 다음 틱에 남은 사람 자판 항목이 머리로 나간다.
+        let d = deliver_head_locked(&daemon, &s, false, false, None, None, None, None).expect("다음 틱 = 사람 자판 항목 배달");
+        assert_eq!(d.entry.text, human);
+    }
+
     /// ★v116-seat agy 3R 반례 2건(구체 입력): ①「claude is an AI」처럼 에이전트 이름으로 시작하는 한 줄 산문은
     /// 옛 기동 줄이 아니다 — 폐기되면 안 된다(기동 줄은 실행 파일 뒤가 언제나 플래그). ②틱 경로에서 폐기가 일어나면
     /// 그 틱은 배달하지 않는다 — 준비 판정은 폐기 전 머리(옛 줄 · 오래 기다림 = overdue 완화)로 내려졌으므로, 새 머리를

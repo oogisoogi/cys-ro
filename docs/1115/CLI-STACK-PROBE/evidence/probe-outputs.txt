@@ -1,0 +1,34 @@
+# 탐침 출력 원문(2026-11-12 · 맥 arm64 · d5824332 + 탐침)
+## 디버그 · stack_probe_thread_facts
+PROBE facts: thread_size=2109440 test_fn_depth=2609
+PROBE facts: thread_size=16789504 test_fn_depth=2609   (RUST_MIN_STACK=16777216)
+## 디버그 · stack_probe_cli_parse (RUST_MIN_STACK=16777216 · 2회 같은 값)
+PROBE noop: used_from_top=3832 entry_depth=3585 body=247
+PROBE Cli::command: used_from_top=2104336 entry_depth=3585 body=2100751
+PROBE try_parse_from[cys kill 123|cys pause|cys channel --help|cys launch-agent …|cys kill 123 2]: used_from_top=2104736 entry_depth=3585 body=2101151
+PROBE a3_test_body: used_from_top=2110472 entry_depth=3585 body=2106887
+## 디버그 · 분포(n=200)
+PROBE spread[quiet] n=200 min=2110872 max=2110872 hist={2110872: 200}
+PROBE spread[alloc_storm] n=200 min=2111208 max=2111424 hist={2111208: 198, 2111424: 2}
+(quiet·storm 의 336 차 = 두 시험 함수 틀 차 352−16 · 진짜 변동 = +216)
+## 디버그 · stack_probe_a3_margin (RUST_MIN_STACK=2113536 → thread_size=2125824 · pad 한 단 96 B)
+quiet: max_pass_pad=162 min_fail_pad=163
+storm(REPS=20): max_pass_pad=162 min_fail_pad=163
+## 릴리스 · stack_probe_thread_facts / cli_parse / spread
+PROBE facts: thread_size=2109440 test_fn_depth=2457
+PROBE Cli::command: used_from_top=113972 entry_depth=2857 body=111115
+PROBE try_parse_from[…5종]: used_from_top=114320 entry_depth=2857 body=111463
+PROBE a3_test_body: used_from_top=116048 entry_depth=2857 body=113191
+PROBE spread[quiet] n=200 hist={115856: 200}
+PROBE spread[alloc_storm] n=200 hist={116016: 200}
+## 디버그 opt-level=1(이 크레이트만) · stack_probe_cli_parse
+PROBE Cli::command: used_from_top=230768 entry_depth=3049 body=227719
+PROBE try_parse_from[cys kill 123]: used_from_top=232400 entry_depth=3049 body=229351
+PROBE a3_test_body: used_from_top=233192 entry_depth=3049 body=230143
+## 진짜 a3 시험 재현(기본 2 MiB 시험 스레드 · 150회씩)
+debug + storm_only 나란히: overflow 11/150
+debug 혼자(07:5x): fail 1/150(종류 미보관)
+debug 혼자(08:2x · load avg 40.84 22.48 14.30): fail 6/150 · overflow 6/150
+opt-level=1 + storm_only 나란히: fail 0/150
+## 이분법(bisect.sh · 판 3 × 3회 · 전부 같은 값)
+270e3e21 / 6e2d29b7 / d5824332: MIN_PASS=2081280 MAX_FAIL=2077216

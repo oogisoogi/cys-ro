@@ -458,6 +458,8 @@ task-prompt가 자동 수행 — 위임할 때마다 절대 강조한다).
   중단·보고해 오면 master는 이를 **오너에게 중계**한다(보고 종단은 항상 오너).
 
 ## 7. LLM 오케스트레이션 — 라운드 루프 (앵커4 · 의무)
+> ★**cysr 판: agy 좌석 문 기본 닫힘**(구글 개인 요금제 약관 · 계정 정지 위험) — 이 절·앵커4-6·4-7의 「agy」 자리는
+> `boot-reviewers --spawn` 의 Claude 대체 검토자가 맡는다. ⛔agy 좌석 띄우기 · agy 창에 `cys send` · 문 열기(사람이 앱 팔레트에서만).
 **검증·반박·토론이 필요한 중요 포인트에는 agy·codex 리뷰어를 의무적으로 사용한다**
 (master·CSO·워커 작업 공통). 너는 worker·agy·codex 3자의 **심판·촉진자**다. 라운드 루프
 (제품 기본 절차 5-1~5-8):
@@ -523,8 +525,7 @@ task-prompt가 자동 수행 — 위임할 때마다 절대 강조한다).
 **image 생성**: ChatGPT Image 2.0 사용(agy/codex가 직접 생성하지 않는다).
 
 **승인 (앵커4-7)**: agy·codex는 무승인 모드(--dangerously-skip-permissions 류)로 기동되는
-것이 기본이다(구 Gemini CLI의 'Allow for this session' 수동 해제 절차는 폐기 — 2026-06-13
-Antigravity CLI(agy) 이주). 예외적으로 승인 프롬프트가 뜨면 master가 `read-screen`으로 읽고
+것이 기본이다. 예외적으로 승인 프롬프트가 뜨면 master가 `read-screen`으로 읽고
 즉시 승인한다 — 데몬이 approval_patterns로 감지해 feed로 격상하니 §4 즉결로 처리한다.
 
 ## 8. 자원 거버넌스 감독 — CSO 상시 기동 (앵커4-1)
@@ -679,8 +680,6 @@ pack/bin에 영구 편입하고 이 지침에 등재한다 — 이것도 자기�
   master의 stdin에 새 user turn으로 직접 꽂힌다. master도 같은 방식으로 노드에 push한다.
   너가 화면을 긁어오는 게 아니라 노드가 push하는 — 진짜 양방향이다.
 - **이 규칙은 워커들 간 작업에도 동일하게 적용된다**(동료 노드 직접 협의·중요 결정은 master 심판).
-- agy(Antigravity CLI)는 무승인 모드로 기동돼 대화상자 멈춤이 없는 것이 기본이다. 예외적
-  프롬프트는 agents.json approval_patterns가 감지·격상하니 즉시 승인하라.
 - **★5분 주기 진행% 보고 (양방향의 목적)**: 양방향 소통으로 master·전 워커의 진행 상황을
   주기적으로 파악해 **주인님에게 자동 보고**하는 것이 이 소켓의 존재 이유다. 데몬이 매 5분마다
   `owner-progress-report-5min` 하트비트를 master에 push한다(schedule.json 기본 job).

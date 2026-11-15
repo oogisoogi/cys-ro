@@ -1,0 +1,36 @@
+하네스 홈 = /private/tmp/phoenix-harn-home-zxssko3z · 데몬 pid 7522 · gemini cmd = ~/.local/bin/agy --dangerously-skip-permissions
+PASS ②E1  문 열림 · cys launch-agent --agent gemini (종전대로 뜸)            rc=0    agy 0→1 (기대 +1)
+PASS E16  문 닫은 뒤 떠 있는 agy 좌석으로 cys send(자동 지시)                       rc=1    agy 1→1 (기대 +0)
+PASS E19  문 닫힘 · agy 좌석에 사람 자판(토큰 없음) 통과 + 원장 표시 · 대조 machine_origin 거부 rc=0    agy 1→1 (기대 +0)
+PASS E21 started=1 rpc=True queued=True cli_rc=1
+PASS E1   cys launch-agent --role reviewer-gemini --agent gemini     rc=76   agy 2→2 (기대 +0)
+PASS E2   cys node-recover --role reviewer-gemini(빈 좌석 · boot_agent_on_surface) rc=1    agy 2→2 (기대 +0)
+PASS E3   cys restore(빈 좌석 = 좌석 내 재연결 갈래)                            rc=0    agy 2→2 (기대 +0)
+PASS E4   javis_phoenix.py restore(앱 재시작·업데이트 복원기)                   rc=0    agy 2→2 (기대 +0)
+PASS E5   cys restore(좌석 없음 · topology 만 = fresh 갈래)                 rc=0    agy 2→2 (기대 +0)
+PASS E6   javis_orchestra.py boot-reviewers --spawn(지휘자·토론 스킬 길)     rc=1    agy 2→2 (기대 +0)
+PASS E7   javis_boot_node.py --role reviewer-gemini --agent gemini   rc=1    agy 2→2 (기대 +0)
+PASS E8   cys boot(기본 함대 · agy 행 없음)                                 rc=78   agy 2→2 (기대 +0)
+PASS E10  cys new-surface --cmd agy --agent gemini(launch-agent 우회 길) rc=76   agy 2→2 (기대 +0)
+PASS E11  cys new-surface --cmd agy(어댑터 선언 없이)                       rc=76   agy 2→2 (기대 +0)
+PASS E12  cys schedule add --command agy(등록 때 판정)                    rc=76   agy 2→2 (기대 +0)
+PASS E14  cys channel start --cmd agy(채널 브리지)                        rc=76   agy 2→2 (기대 +0)
+PASS E15  javis_orchestra.py round-log --from-cmd agy                rc=76   agy 2→2 (기대 +0)
+PASS E17  일정 --command 프롬프트 속 「agy」 낱말(받아들인 거짓 양성 · 안내 글)            rc=76   agy 2→2 (기대 +0)
+PASS E18a 일정 --command 'true $(printf ')'); "…/agy"'(4R blocking 2)  rc=76   agy 2→2 (기대 +0)
+PASS E18b 채널 --cmd 'watch "…/agy"'(4R blocking 3 · 인용된 래퍼 대상)        rc=76   agy 2→2 (기대 +0)
+PASS E20  원시 RPC surface.create {cmd:agy} · {agent:gemini} · {agent:agy}(구판 CLI 꼴 · 5R blocking 2) rc=0    agy 2→2 (기대 +0)
+PASS E25  원시 RPC 빈 셸 좌석에 agent_launch 표지 agy 기동 줄(구판 CLI launch-agent 꼴) rc=0    agy 2→2 (기대 +0)
+PASS E22  cys run -- sh -c 'exec "$@"' sh agy(위치 인자 trampoline · 5R major 4) rc=1    agy 2→2 (기대 +0)
+PASS E22c 대조: cys run -- sh -c 'echo "$1"' sh agy-notes(위치 인자 = 자료 · 문 통과) rc=1    agy 2→2 (기대 +0)
+PASS E23  일정 --command 'sh review.sh'(내용 = exec agy · 5R blocking 1 ⓑ 등록 때) rc=76   agy 2→2 (기대 +0)
+PASS E24  채널 --cmd '…/gem-review'(→ agy 심링크 · 5R blocking 1 ⓐ)       rc=76   agy 2→2 (기대 +0)
+PASS E9   앱 팔레트 재기동 명령을 셸 탭에 입력(UI 길)                                rc=0    agy 2→2 (기대 +0)
+PASS ③    사람이 셸 탭에서 직접 `agy` 입력(허용)                                  rc=0    agy 2→3 (기대 +1)
+PASS E13c 대조: 문 열림 · 일정 --command agy 발화(일정이 실제로 돈다)                 rc=0    agy 3→4 (기대 +1)
+PASS E13  문 열림에서 등록한 일정 --command agy · 닫은 뒤 발화(발화 때 판정)             rc=0    agy 4→4 (기대 +0)
+②E5 준비: 묘비로 닫은 역할 = ['cso', 'reviewer-claude-1', 'reviewer-claude-2', 'reviewer-codex', 'worker']
+PASS ②E5-tomb 묘비 5건 rc=[0]
+PASS ②E5  문 열림 · cys restore(종전대로 다시 뜸)                              rc=0    agy 4→5 (기대 +1)
+PASS 실 agy(~/.local/bin/agy) 프로세스 0개
+종합: PASS · docs/agy-door-evidence/concurrent-5-r6/run4.json

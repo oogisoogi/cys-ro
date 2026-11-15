@@ -7813,8 +7813,11 @@ def h_seat_4axis():
     # ③ launch 호출부: 보류에서 close 에 **도달할 수 없다**(치명위험 ④ 차단의 본체).
     li2 = src.find("fn run_launch_agent_opts(")
     need(li2 > 0, "run_launch_agent_opts 를 못 찾았다")
-    lbody2 = src[li2:src.find("\n/// 온보딩③", li2) if src.find("\n/// 온보딩③", li2) > 0
-                 else li2 + 12000]
+    # ★(TICKET=cysr-agy-policy-exposure) 창 끝 = 다음 최상위 `fn`(실제 함수 경계). 종전 끝 표지 「/// 온보딩③」 은
+    #   이미 사라져 고정 12,000자 창으로 떨어졌고, 실패 분기 롤백 close 가 그 창 끝(11,965자)에 걸려 있어 함수 머리에
+    #   한 줄만 늘어도 이 검사가 「close 가 사라졌다」 로 거짓 적색이 됐다(검사 대상은 그대로 · 경계만 정확히).
+    _le2 = src.find("\nfn ", li2 + 1)
+    lbody2 = src[li2:_le2 if _le2 > 0 else li2 + 12000]
     gi2 = lbody2.find("Ok(BootVerdict::GatePending")
     # 실패 합류 지점 = `LaunchFailed | Err` or-패턴(롤백 close 를 한 벌로 유지하는 구조).
     ei2 = lbody2.find("Ok(BootVerdict::LaunchFailed { evidence: e }) | Err(e) => {",

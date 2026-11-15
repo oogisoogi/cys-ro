@@ -1287,6 +1287,51 @@ def cmd_check(args):
     return check_exit_code(axes, ack)
 
 
+AGY_JUDGE_MAX_BYTES = 64 * 1024   # 정본 = Rust cys::agy_door::MAX_JUDGE_BYTES
+_AGY_SPLICE = "'\"\\^`"          # 정본 = Rust agy_door::SPLICE_CHARS
+
+
+def agy_names(cmd):
+    """기계 입구 낱말 검사(순수 · 정본 = Rust `cys::agy_door::names_agy` 와 같은 규칙) — 셸 구조를 해석하지 않는다.
+    따옴표·괄호·역슬래시·경로 구분자 등 영숫자·`.`·`_`·`-` 밖 글자를 전부 구분자로 보고, agy 실행 파일 이름(대소문자 접기 ·
+    끝 점 무시 · .exe/.cmd/.bat/.ps1/.com)과 같은 낱말이 어디에든 있으면 참. 원문과 인용·이스케이프 글자를 지운 꼴을 둘 다 본다.
+    상한을 넘는 입력은 읽지 않고 참(안전 쪽)."""
+    if len(cmd.encode("utf-8", "surrogatepass")) > AGY_JUDGE_MAX_BYTES:
+        return True
+    lc = cmd.lower()
+    for s in (lc, "".join(c for c in lc if c not in _AGY_SPLICE)):
+        for w in re.split(r"[^\w.\-]", s):
+            w = w.rstrip(".")
+            for ext in (".exe", ".cmd", ".bat", ".ps1", ".com"):
+                if w.endswith(ext):
+                    w = w[:-len(ext)]
+                    break
+            if w in ("agy", "antigravity") or (w.startswith("-") and w.endswith(("agy", "antigravity"))):
+                return True   # 줄표 낱말 = 옵션에 붙은 값(`env -Sagy` · `${X:-agy}`)
+    return False
+
+
+def agy_door_refusal(cmd):
+    """★agy 좌석 문(독립 검증 B2 · round-log --from-cmd · TICKET=cysr-agy-door-r5): round-log 는 **기계 입구**다 — Rust 판정기
+    (`cys agy-door-check --machine` · 문 상태 포함 · 낱말 검사)로 재고, 문이 닫혔고 agy 낱말이 든 명령이면 사유 문자열을 돌려준다
+    (아니면 None). cys 를 못 부르거나(구 cys 의 rc 2 포함) 판정이 0/76 이 아니면 같은 낱말 검사로 안전 쪽 거부."""
+    cys = os.environ.get("CYS_CYS_BIN") or shutil.which("cys")
+    if cys:
+        try:
+            r = subprocess.run([cys, "agy-door-check", "--machine", "--cmd", cmd], stdin=subprocess.DEVNULL,
+                               capture_output=True, text=True, timeout=15, **NOWIN)
+            if r.returncode == 76:
+                return (r.stderr or "").strip() or "agy_consumer_policy"
+            if r.returncode == 0:
+                return None
+        except Exception:
+            pass
+    if agy_names(cmd):
+        return ("agy_consumer_policy: 판정기를 부를 수 없어, 자동으로 도는 명령 글자 안에 「agy」 낱말이 있으면 실행하지 않습니다"
+                "(안전 쪽). agy 를 실행하려던 게 아니라면 그 낱말을 다른 말(예: 「안티그래비티」)로 바꾸세요.")
+    return None
+
+
 # ── boot-reviewers: 리뷰어 감지→기동, 미감지 시 Claude 대체 자동 폴백(멈춤 없음) ──
 # ─────────────────── A12: 호출 exit 분류 (transient vs permanent) ───────────────────
 # ★재감사 A12: 674행 '죽은 초기화'가 설계 의도 소실의 물증이었다 — 모든 비0 을 뭉개 재시도하면
@@ -2754,6 +2799,10 @@ def cmd_round_log(args):
                   "`--evaluator machine` 이다(G8·REVIEWER_VERDICT_CONTRACT §2)." % args.evaluator,
                   file=sys.stderr)
             return 2
+        _refuse = agy_door_refusal(args.from_cmd)
+        if _refuse:
+            print("[round-log] 거부: %s" % _refuse, file=sys.stderr)
+            return 76
         try:
             # RC-6(D6): shell=True는 OS 기본 셸(unix=/bin/sh·Windows=cmd.exe)로 실행 — from_cmd는
             # OS중립 기계검증 명령(빌드·테스트) 전제다. bash 전용 문법을 넣으면 Windows cmd.exe에서

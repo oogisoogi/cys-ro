@@ -284,6 +284,25 @@ fn run_dept_tool_capped(tool: &std::path::Path, verb: &str, args: &[String], tim
     DeptRunResult { code, stdout: rd(&op), stderr: rd(&ep), timed_out }
 }
 
+/// ★agy 좌석 문 — 이 좌석이 「닫힌 문의 agy 좌석」인가. agent_meta = (어댑터 키, 해석된 실행 파일) — 좌석 cmd 는 로그인 셸일 수 있어
+/// (launch-agent 는 셸에 명령을 친다) 실행 파일로 잰다. ★codex 5R blocking 3: 좌석 cmd 는 기계가 만든 실행 기록이라 실행 자리 검사로 다시
+/// 읽지 않고 **생성 때 확정한 종류**(`Surface.agy_kind` · 낱말 검사)를 쓴다.
+pub(crate) fn agy_door_seat_closed(surface: &crate::state::Surface) -> bool {
+    let meta = surface.agent_meta.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let by_meta = meta.as_ref().is_some_and(|(k, bin)| cys::agy_door::program_refused(k, bin));
+    let by_kind = surface.agy_kind && !cys::agy_door::door_open();
+    by_meta || by_kind
+}
+
+/// ★agy 좌석 문 — 사람 자판이 아닌 `surface.send_text`(직접·`queued`)를 막을 것인가: 닫힌 문의 agy 좌석이거나, 좌석 기동 줄 표지
+/// (`agent_launch`)가 붙은 글이 기계 입구 낱말 검사(①)에 걸리면(그 글 자체가 실행될 명령 — 구판 CLI·원시 RPC 가 빈 셸에 agy 기동 줄을
+/// 치는 길 · codex 5R blocking 2 의 데몬 입구 전수).
+pub(crate) fn agy_door_blocks_auto_send(surface: &crate::state::Surface, params: &Value, text: &str) -> bool {
+    agy_door_seat_closed(surface)
+        || (params.get(cys::AGENT_LAUNCH_KEY).and_then(|v| v.as_bool()).unwrap_or(false)
+            && cys::agy_door::launch_refusal("", Some(text)).is_some())
+}
+
 fn reject_send(
     daemon: &Daemon,
     sid: u64,
@@ -7006,6 +7025,11 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                     }
                 },
             };
+            // ★agy 좌석 문(TICKET=cysr-agy-door-r6 · codex 5R blocking 2): 서버가 권위 — `cmd`·선언 `agent` 를 PTY 를 만들기 **전에**
+            //   기계 입구 낱말 검사로 판정한다(신 CLI 의 new-surface 판정은 그대로 · 구판 CLI·원시 RPC 도 여기서 막힌다).
+            if let Some(m) = cys::agy_door::create_refusal(declared_agent.as_deref(), param_str(&params, "cmd").as_deref()) {
+                return Reply::Single(err_response(&id, cys::agy_door::REFUSE_CODE, &m));
+            }
             // ★SEAT: 승계 대상(구 좌석)을 생성 성공 후 마무리(role 해제·큐 이관)하기 위해 상위 스코프에 둔다.
             let mut seat_takeover_from: Option<u64> = None;
             // (W2 · G14) announce 를 성공 아크로 미루므로 role 문자열도 상위 스코프에 보존한다.
@@ -7655,6 +7679,20 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
             {
+                // ★agy 좌석 문(TICKET=cysr-agy-door-r6 · 데몬 입구 전수): 큐에 넣고 나면 배달(watchdog)에는 판정이 없다 — 넣기 전에 같은 판정.
+                //   사람 자판(human ∧ 기계 출처 아님)은 큐를 쓰지 않지만 쓰더라도 아래 직접 경로와 같이 통과시킨다.
+                let human_typed_q = human && !params.get("machine_origin").and_then(|v| v.as_bool()).unwrap_or(false);
+                if !human_typed_q && agy_door_blocks_auto_send(&surface, &params, &text) {
+                    return Reply::Single(reject_send(
+                        daemon,
+                        sid,
+                        "surface.send_text",
+                        cys::agy_door::REFUSE_CODE,
+                        "agy 좌석 문이 닫혀 있어 이 agy 좌석으로 자동 지시를 보내지 않는다(사람이 그 좌석에 직접 치는 것은 된다)",
+                        caller_pid,
+                        &id,
+                    ));
+                }
                 // ★G1(W2-A): from = 검증된 발신 surface_ref 우선, 부재 시 클라이언트 from 문자열
                 // (관측·폐기 통지용 — 신원 판정은 여전히 커널 peer 기반 verified_from이 한다).
                 let entry_from = verified_from.map(cys::surface_ref).or_else(|| {
@@ -7669,7 +7707,16 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                             "pending queue cap (100) reached",
                         ));
                     }
-                    let entry = daemon.next_queue_entry(text.clone(), entry_from, "send");
+                    // ★agy 좌석 문(r6 2회차 · ChatGPT F1): 배달 시점 재판정이 갈래를 알 수 있게 출처를 적는다 —
+                    //   사람 자판(통과 유지)·좌석 기동 줄(낱말 재판정) · 그 밖은 종전 "send".
+                    let q_origin = if human_typed_q {
+                        crate::governance::AGY_ORIGIN_HUMAN
+                    } else if params.get(cys::AGENT_LAUNCH_KEY).and_then(|v| v.as_bool()).unwrap_or(false) {
+                        crate::governance::AGY_ORIGIN_LAUNCH
+                    } else {
+                        "send"
+                    };
+                    let entry = daemon.next_queue_entry(text.clone(), entry_from, q_origin);
                     q.push_back(entry.clone());
                     (entry, q.len())
                 };
@@ -7959,6 +8006,25 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             //   표식이 있으면 토큰이 유효해도 **기록**한다(origin=gui_auto 로 감사에서 구별).
             //   ★불변식 ② 는 그대로다 — 표식 없는 실키 입력(sendRaw)은 여전히 무기록이다.
             let human_verified = human && !machine_origin && operator_token_ok(daemon, &params);
+            // ★agy 좌석 문(독립 검증 M3 · codex 4R major 4): 문이 닫혀 있으면 agy 좌석으로 가는 **자동** 지시(send·queued·GUI 자동
+            //   문안)를 막는다 — 사람 자판(human ∧ 기계 출처 아님)은 운영자 토큰 판독이 실패해도 통과시키고(구 GUI·토큰 판독 실패에서
+            //   사람 입력을 거부하지 않는다) 원장에 「토큰 미확인 통과」를 남긴다. 같은 사용자 권한의 흉내(human 자기신고 위조)는
+            //   원리상 한계 — 토큰이 있어도 같다(같은 UID 는 토큰 파일도 읽는다 · 설명서 「알려진 한계」). 좌석을 끄지는 않는다.
+            let human_typed = human && !machine_origin;
+            let agy_token_unverified_pass = human_typed && !human_verified && agy_door_seat_closed(&surface);
+            if !human_typed {
+                if agy_door_blocks_auto_send(&surface, &params, &text) {
+                    return Reply::Single(reject_send(
+                        daemon,
+                        sid,
+                        "surface.send_text",
+                        cys::agy_door::REFUSE_CODE,
+                        "agy 좌석 문이 닫혀 있어 이 agy 좌석으로 자동 지시를 보내지 않는다(사람이 그 좌석에 직접 치는 것은 된다)",
+                        caller_pid,
+                        &id,
+                    ));
+                }
+            }
             if human_verified && verified_from.is_some() {
                 // 오퍼레이터 토큰이 **pane 에서** 왔다. GUI(Tauri)는 어떤 surface 의 자손도 아니므로
                 // 정상 경로에서는 나올 수 없는 조합이다 — 토큰 파일을 읽은 동일 UID 프로세스일
@@ -7988,20 +8054,18 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                 // ★(0.14.43 · J3) 검증 신원이 없고 요청의 `from` 이 좌석 표기가 아닌 문자열(pane 밖 CLI 의 표시용 라벨 `cli:…`)이면 원장에
                 //   가산 키 `from_label` 로 남긴다 — `from`(좌석)의 값·의미는 무변경이고 판정(ACL·게이트·짝 Return)은 이 값을 보지 않는다.
                 //   라벨이 없는 행은 종전 호출 그대로(키 추가 0 · 종전 바이트).
-                match direct_send_from_label(verified_from, &params) {
-                    Some(label) => {
-                        crate::delivery::record_audited_with(
-                            daemon,
-                            sid,
-                            &text,
-                            ledger_origin,
-                            from_sid,
-                            &json!({"from_label": label}),
-                        );
-                    }
-                    None => {
-                        crate::delivery::record_audited(daemon, sid, &text, ledger_origin, from_sid);
-                    }
+                // ★agy 좌석 문(codex 4R major 4): 토큰 판독이 실패한 사람 자판이 닫힌 문의 agy 좌석에 닿았으면 가산 키로 남긴다.
+                let mut extra = serde_json::Map::new();
+                if let Some(label) = direct_send_from_label(verified_from, &params) {
+                    extra.insert("from_label".into(), json!(label));
+                }
+                if agy_token_unverified_pass {
+                    extra.insert("agy_door".into(), json!("토큰 미확인 통과"));
+                }
+                if extra.is_empty() {
+                    crate::delivery::record_audited(daemon, sid, &text, ledger_origin, from_sid);
+                } else {
+                    crate::delivery::record_audited_with(daemon, sid, &text, ledger_origin, from_sid, &serde_json::Value::Object(extra));
                 }
             }
             // clear_first면 원자 Inject(Ctrl-U 선정리 → paste → CR 제출)로, 아니면 현행 Data(원시

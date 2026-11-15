@@ -1,0 +1,805 @@
+{
+ "ok": false,
+ "at": "2026-11-12T03:45:41+0900",
+ "provenance": {
+  "source_commit": "f4576ffae45d7314fc5e0107d7a590b46c87bed6",
+  "dirty_paths": [
+   "USER-MANUAL.md",
+   "docs/agy-door-evidence/ENTRY-MODES.md",
+   "docs/agy-door-evidence/acceptance.py",
+   "WORKER_TODO.cysr-agy-door-r6.md",
+   "WORKER_TODO.cysr-agy-policy-exposure.md",
+   "docs/HANDOFF-agy-door-r6-2026-11-12.md"
+  ],
+  "harness_sha256": "5efd7ac6ffdb2844cbec14bc24b624c05a7076bfd85493887e4ce21fc310675b",
+  "cys_sha256": "aae59ac24dbf26eb0f271c65bca05c0f2b4b8e85f6004a2dcf254f751ccfd26e",
+  "cysd_sha256": "11f3a825a003dd6e7b1e9a58356d4e18d35f424e8ef9cb700741fe4566d2f5e6"
+ },
+ "results": [
+  {
+   "id": "②E1",
+   "entry": "문 열림 · cys launch-agent --agent gemini (종전대로 뜸)",
+   "rc": 0,
+   "expect_rc": 0,
+   "agy_runs_before": 0,
+   "agy_runs_after": 1,
+   "expect_delta": 1,
+   "expect_in": [
+    "[launch-agent] ready"
+   ],
+   "expect_not_in": [
+    "agy_consumer_policy"
+   ],
+   "checks": [],
+   "pass": true,
+   "fails": [],
+   "tail": [
+    "surface:1",
+    "[launch-agent] surface:1 created (role=reviewer-gemini)",
+    "[launch-agent] gemini starting… (polling readiness, max 60s)",
+    "[launch-agent] ready(신규 출현분에 마커) — 주입 안전",
+    "[launch-agent] directive 주입 검증 미확인 — ack 미확인(8s 창) · 화면 에코(신규 출현분)=관측. 부트는 계속한다(치명 아님). 상태를 directive_verified=false 로 기록: `cys status --json` 또는 `cys read-screen --surface surface:1` 로 확인, 필요하면 javis_boot_node.py --role <role> --agent <agent> 로 재각성하라"
+   ]
+  },
+  {
+   "id": "E16",
+   "entry": "문 닫은 뒤 떠 있는 agy 좌석으로 cys send(자동 지시)",
+   "rc": 1,
+   "expect_rc": null,
+   "agy_runs_before": 1,
+   "agy_runs_after": 1,
+   "expect_delta": 0,
+   "expect_in": [
+    "agy_consumer_policy"
+   ],
+   "expect_not_in": [],
+   "checks": [
+    "agy 좌석 찾음",
+    "거부(rc≠0)"
+   ],
+   "pass": true,
+   "fails": [],
+   "tail": [
+    "error: agy_consumer_policy: agy 좌석 문이 닫혀 있어 이 agy 좌석으로 자동 지시를 보내지 않는다(사람이 그 좌석에 직접 치는 것은 된다)"
+   ]
+  },
+  {
+   "id": "E19",
+   "entry": "문 닫힘 · agy 좌석에 사람 자판(토큰 없음) 통과 + 원장 표시 · 대조 machine_origin 거부",
+   "rc": 0,
+   "expect_rc": null,
+   "agy_runs_before": 1,
+   "agy_runs_after": 1,
+   "expect_delta": 0,
+   "expect_in": [],
+   "expect_not_in": [],
+   "checks": [
+    "agy 좌석 찾음",
+    "사람 자판 = ok",
+    "사람 줄 비우기(Ctrl-U) = ok",
+    "원장에 「토큰 미확인 통과」",
+    "대조: machine_origin = 거부(agy_consumer_policy)"
+   ],
+   "pass": true,
+   "fails": [],
+   "tail": [
+    "{\"human\": {\"_flen\": 28, \"_pv\": 1, \"id\": \"accept-1550216007353458\", \"ok\": true, \"result\": {\"sent\": true, \"surface_id\": 1}}, \"machine_origin\": {\"_flen\": 185, \"_pv\": 1, \"error\": {\"code\": \"agy_consumer_policy\", \"message\": \"agy 좌석 문이 닫혀 있어 이 agy 좌석으로 자동 지시를 보내지 않는다(사람이 그 좌석에 직접 치는 것은 된다)\"}, \"id\": \"accept-1550216008624541\", \"ok\": false}}"
+   ]
+  },
+  {
+   "id": "E21",
+   "entry": "문 열림에서 만든 agy 좌석(cmd 치환 괄호 꼴 · --agent 없음) · 닫은 뒤 send · send --queued · cys send",
+   "pass": false,
+   "started": 1,
+   "rpc": {
+    "_flen": 28,
+    "_pv": 1,
+    "id": "accept-1550217323963416",
+    "ok": true,
+    "result": {
+     "sent": true,
+     "surface_id": 2
+    }
+   },
+   "rpc_queued": {
+    "_flen": 86,
+    "_pv": 1,
+    "id": "accept-1550217327976083",
+    "ok": true,
+    "result": {
+     "depth": 1,
+     "durable": true,
+     "queue_entry_id": "q6af4b547.1",
+     "queued": true,
+     "surface_id": 2
+    }
+   },
+   "cli_rc": 0,
+   "cli_tail": [
+    "QUEUED (depth 2)",
+    "[send] 사람 입력 감지 — 본문을 큐로 전환(QUEUED depth 2) surface=surface:2"
+   ]
+  },
+  {
+   "id": "E1",
+   "entry": "cys launch-agent --role reviewer-gemini --agent gemini",
+   "rc": 76,
+   "expect_rc": 76,
+   "agy_runs_before": 2,
+   "agy_runs_after": 2,
+   "expect_delta": 0,
+   "expect_in": [
+    "[launch-agent] agy_consumer_policy"
+   ],
+   "expect_not_in": [],
+   "checks": [],
+   "pass": true,
+   "fails": [],
+   "tail": [
+    "[launch-agent] agy_consumer_policy: cysr 은 Antigravity(agy) 좌석을 띄우지 않습니다 — 개인 요금제에서 다른 프로그램이 agy 를 부리면 구글 약관상 계정이 정지될 수 있기 때문입니다. agy 를 직접 쓰려면 새 탭에서 `agy` 를 치세요(괜찮습니다). 기업 요금제 등 허용된 경우에만, 사람이 앱 명령 팔레트의 「Antigravity(agy) 좌석 열기」로 열 수 있습니다. (자동으로 도는 명령 — 일정·채널·계정·복원 같은 것 — 은 셸 문법을 해석하지 않고, 글자 안에 「agy」라는 낱말이 하나라도 있으면 막습니다. agy 를 실행하려던 게 아니라 설명 글 등에 그 낱말이 들어 있을 뿐이라면, 그 낱말을 다른 말(예: 「안티그래비티」)로 바꿔 다시 등록하세요.)"
+   ]
+  },
+  {
+   "id": "E2",
+   "entry": "cys node-recover --role reviewer-gemini(빈 좌석 · boot_agent_on_surface)",
+   "rc": 1,
+   "expect_rc": 1,
+   "agy_runs_before": 2,
+   "agy_runs_after": 2,
+   "expect_delta": 0,
+   "expect_in": [
+    "error: agy_consumer_policy"
+   ],
+   "expect_not_in": [],
+   "checks": [],
+   "pass": true,
+   "fails": [],
+   "tail": [
+    "[node-recover] surface:1 위에 gemini 재기동 (role=reviewer-gemini)",
+    "error: agy_consumer_policy: cysr 은 Antigravity(agy) 좌석을 띄우지 않습니다 — 개인 요금제에서 다른 프로그램이 agy 를 부리면 구글 약관상 계정이 정지될 수 있기 때문입니다. agy 를 직접 쓰려면 새 탭에서 `agy` 를 치세요(괜찮습니다). 기업 요금제 등 허용된 경우에만, 사람이 앱 명령 팔레트의 「Antigravity(agy) 좌석 열기」로 열 수 있습니다. (자동으로 도는 명령 — 일정·채널·계정·복원 같은 것 — 은 셸 문법을 해석하지 않고, 글자 안에 「agy」라는 낱말이 하나라도 있으면 막습니다. agy 를 실행하려던 게 아니라 설명 글 등에 그 낱말이 들어 있을 뿐이라면, 그 낱말을 다른 말(예: 「안티그래비티」)로 바꿔 다시 등록하세요.)"
+   ]
+  },
+  {
+   "id": "E3",
+   "entry": "cys restore(빈 좌석 = 좌석 내 재연결 갈래)",
+   "rc": 0,
+   "expect_rc": 0,
+   "agy_runs_before": 2,
+   "agy_runs_after": 2,
+   "expect_delta": 0,
+   "expect_in": [
+    "reviewer-gemini: 건너뜀(agy_consumer_policy)",
+    "실패 0"
+   ],
+   "expect_not_in": [],
+   "checks": [],
+   "pass": true,
+   "fails": [],
+   "tail": [
+    "· reviewer-gemini: 건너뜀(agy_consumer_policy) — 구글 개인 요금제 약관 때문에 cysr 은 Antigravity(agy) 좌석을 다시 띄우지 않습니다. 고장이 아닙니다 · 검토가 필요하면 Claude 대체 검토자가 대신합니다.",
+    "restore 완료: 재기동 0 · 실패 0 · 관문 보류 0 · journal refused 0 · outcome unknown 0 · 현황 `cys status`"
+   ]
+  },
+  {
+   "id": "E4",
+   "entry": "javis_phoenix.py restore(앱 재시작·업데이트 복원기)",
+   "rc": 0,
+   "expect_rc": 0,
+   "agy_runs_before": 2,
+   "agy_runs_after": 2,
+   "expect_delta": 0,
+   "expect_in": [
+    "agy 좌석 문 닫힘"
+   ],
+   "expect_not_in": [],
+   "checks": [
+    "결과 JSON 판독",
+    "agy_policy_skipped_roles ∋ reviewer-gemini",
+    "manual_seats ∌ reviewer-gemini(정책 건너뜀을 빈 좌석으로 재보고하지 않음)",
+    "incomplete_roles ∌ reviewer-gemini(부활 실패 아님)"
+   ],
+   "pass": true,
+   "fails": [],
+   "tail": [
+    "    {",
+    "      \"surface\": \"surface:2\",",
+    "      \"reason\": \"grace_not_elapsed\"",
+    "    }",
+    "  ],",
+    "  \"c6_reap_gone\": [],",
+    "  \"c6_reap_failed\": [],",
+    "  \"cys_identity\": \"verified\",",
+    "  \"journal\": \"/private/tmp/phoenix-harn-home-bwb3oisg/.cys/state-harness/phoenix/journal-default.json\",",
+    "  \"honesty_note\": \"★M9: phoenix_restore 값만 신뢰하라. UNVERIFIED/FAILED 는 정상 완료가 아니다 (자기채점 금지·무출력을 정상으로 해석 금지). 세션 대조가 일치할 때만 VERIFIED. ★완결성: COMPLETE 는 roster 전원이 실 ready_marker 로 응답 가능함을 뜻한다. ★agy 좌석 문 닫힘=['reviewer-gemini']: 구글 개인 요금제 약관 때문에 cysr 은 Antigravity(agy) 좌석을 다시 띄우지 않았다 — 고장·부활 실패가 아니다(완결성·빈 좌석 집계에서 뺐다). 여는 길 = 사람이 앱 명령 팔레트 「Antigravity(agy) 좌석 열기」.\"",
+    "}",
+    "[phoenix] cys 채택(PHOENIX_CYS): /private/tmp/claude-501/-Users-<user>-axdev--wt-cys-agy-policy/be287e20-cfbc-4e55-9d77-b2d343ba0b6a/scratchpad/target-base/debug/cys — 3중 identity match(build_id=73d1a72e03da.20261111T1832Z proto=1)"
+   ]
+  },
+  {
+   "id": "E5",
+   "entry": "cys restore(좌석 없음 · topology 만 = fresh 갈래)",
+   "rc": 0,
+   "expect_rc": 0,
+   "agy_runs_before": 2,
+   "agy_runs_after": 2,
+   "expect_delta": 0,
+   "expect_in": [
+    "reviewer-gemini: 건너뜀(agy_consumer_policy)",
+    "실패 0"
+   ],
+   "expect_not_in": [],
+   "checks": [],
+   "pass": true,
+   "fails": [],
+   "tail": [
+    "· reviewer-gemini: 건너뜀(agy_consumer_policy) — 구글 개인 요금제 약관 때문에 cysr 은 Antigravity(agy) 좌석을 다시 띄우지 않습니다. 고장이 아닙니다 · 검토가 필요하면 Claude 대체 검토자가 대신합니다.",
+    "restore 완료: 재기동 0 · 실패 0 · 관문 보류 0 · journal refused 0 · outcome unknown 0 · 현황 `cys status`"
+   ]
+  },
+  {
+   "id": "E6",
+   "entry": "javis_orchestra.py boot-reviewers --spawn(지휘자·토론 스킬 길)",
+   "rc": 1,
+   "expect_rc": 1,
+   "agy_runs_before": 2,
+   "agy_runs_after": 2,
+   "expect_delta": 0,
+   "expect_in": [
+    "gemini 미감지(cys agent-detect: agy_consumer_policy",
+    "reviewer-claude-1(Claude) 대체 기동"
+   ],
+   "expect_not_in": [],
+   "checks": [
+    "Claude 대체가 실제로 기동됨(가짜 claude 실행 +1 이상)"
+   ],
+   "pass": true,
+   "fails": [],
+   "tail": [
+    "[boot-node:poll] surface:5 idle=8s 안착 — 주입",
+    "[boot-node:inject] 주입 큐 등록(자동 Return 배달·시도 1)",
+    "[boot-node:verify] ack 미확인 → 배달 분기=pending (큐에 주입문 잔존(미배달·대기) — 재전송 금지)",
+    "[boot-reviewers] --spawn — 리뷰어 슬롯 기동 (미감지/각성실패 시 Claude 대체로 자동 폴백):",
+    "  ⚠ gemini 미감지(cys agent-detect: agy_consumer_policy: Antigravity(agy) 좌석 문 닫힘(기본 · 구글 개인 요금제 약관) — 실행 파일 판정: 실행가능 /private/tmp/phoenix-harn-home-bwb3oisg/.local/bin/agy) — reviewer-claude-1(Claude) 대체 기동",
+    "  ✗ reviewer-claude-1  ← claude — boot_node(reviewer-claude-1) 실패(exit 1) — 실측 미확정, 보수적으로 재시도 대상",
+    "  ⚠ reviewer-codex 기동/각성 실패(boot_node(reviewer-codex) 실패(exit 1) — 실측 미확정, 보수적으로 재시도 대상) — reviewer-claude-2(Claude) 대체로 2차 폴백",
+    "  ✗ reviewer-claude-2  ← claude — boot_node(reviewer-claude-2) 실패(exit 1) — 실측 미확정, 보수적으로 재시도 대상",
+    "종합: 리뷰어 0/2 각성 (Claude 대체 포함) — 부족: master 가 점검·수동 재기동",
+    "[boot-node:launch] launch-agent 기동(상한 80s) (남은 예산 114s)",
+    "[boot-node:launch] launch-agent 기동(상한 80s) (남은 예산 114s)",
+    "[boot-node:launch] launch-agent 기동(상한 80s) (남은 예산 114s)"
+   ]
+  },
+  {
+   "id": "E7",
+   "entry": "javis_boot_node.py --role reviewer-gemini --agent gemini",
+   "rc": 1,
+   "expect_rc": 1,
+   "agy_runs_before": 2,
+   "agy_runs_after": 2,
+   "expect_delta": 0,
+   "expect_in": [
+    "launch-agent rc=76",
+    "\"reason\": \"launch_failed\""
+   ],
+   "expect_not_in": [],
+   "checks": [],
+   "pass": true,
+   "fails": [],
+   "tail": [
+    "{\"role\": \"reviewer-gemini\", \"result\": \"no_surface\", \"reason\": \"launch_failed\", \"surface\": null, \"log\": [{\"stage\": \"launch\", \"msg\": \"launch-agent rc=76 (실패 텍스트 무시·cys list 재조회)\"}, {\"stage\": \"fail\", \"msg\": \"launch 후에도 reviewer-gemini surface 생성 안 됨\"}]}",
+    "[boot-node:launch] launch-agent 기동(상한 80s) (남은 예산 90s)"
+   ]
+  },
+  {
+   "id": "E8",
+   "entry": "cys boot(기본 함대 · agy 행 없음)",
+   "rc": 78,
+   "expect_rc": 78,
+   "agy_runs_before": 2,
+   "agy_runs_after": 2,
+   "expect_delta": 0,
+   "expect_in": [],
+   "expect_not_in": [
+    "agy_consumer_policy"
+   ],
+   "checks": [
+    "boot --json roles 줄 판독",
+    "부트 대상 = cso·worker 뿐(claude)"
+   ],
+   "pass": true,
+   "fails": [],
+   "tail": [
+    "[boot] 진행 중 69s 경과 — 다음 대상 role=worker",
+    "[launch-agent] surface:7 created (role=worker)",
+    "[launch-agent] claude starting… (polling readiness, max 60s)",
+    "[launch-agent] ★관문 보류(gate=unknown) — surface:7 을(를) **닫지 않았다**. 데몬이 'claude' 프로세스 생존을 관측했다(role=worker).",
+    "사람이 1회 조치하면 이 좌석을 그대로 쓴다:",
+    "  1) `cys read-screen --surface surface:7` 로 화면을 확인하라 — 첫기동 관문 순서는 테마 → 로그인방식 → OAuth → 폴더신뢰 → 면책 → 새기능안내다.",
+    "  2) ★폴더신뢰(2.1.261+)·면책(Bypass) 창 **둘 다** 기본 포커스가 `No, exit` 다 — 그대로 Return 하면 노드가 종료된다. 아래 방향키 1회 뒤 Return(또는 숫자 `2`)으로 통과하라. 버전을 모르면 라벨로 확인하라: `Yes, I trust this folder`/`Yes, I accept` 위에 커서를 두고 Return — `No, exit` 위에서는 Return 금지.",
+    "  3) 통과한 뒤 `cys boot` 을 다시 실행하면 이 좌석이 그대로 쓰인다 — 재부트가 **스폰 없이**(read_text 1회 + 판정 1회) 관문 통과를 확인하고 이 좌석에 절대지침을 주입한다(M2 재관측 경로). **새 pane 을 만들지 마라**(역할은 이미 이 좌석이 쥐고 있어 새 기동은 claim_denied 다).",
+    "  · 종전처럼 즉시 닫으려면: CYS_GATE_PENDING_CLOSE=1 (한 지점 롤백)",
+    "마지막 화면 꼬리:",
+    "<user>@<host> ~ % CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=\"false\" CLAUDE_CONFIG_DIR=\"${CYS_ACCOUNT_DIR:-$HOME/.cys/claude}\" CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=\"1\" CLAUDE_CODE_EFFORT_LEVEL=\"high\" CLAUDE_CODE_ENABLE_CFC=\"false\" claude --dangerously-skip-permissions --settings '/private/tmp/phoenix-harn-home-bwb3oisg/.cys/seat-settings/worker.json'",
+    "❯"
+   ]
+  },
+  {
+   "id": "E10",
+   "entry": "cys new-surface --cmd agy --agent gemini(launch-agent 우회 길)",
+   "rc": 76,
+   "expect_rc": 76,
+   "agy_runs_before": 2,
+   "agy_runs_after": 2,
+   "expect_delta": 0,
+   "expect_in": [
+    "[new-surface] agy_consumer_policy"
+   ],
+   "expect_not_in": [],
+   "checks": [],
+   "pass": true,
+   "fails": [],
+   "tail": [
+    "[new-surface] agy_consumer_policy: cysr 은 Antigravity(agy) 좌석을 띄우지 않습니다 — 개인 요금제에서 다른 프로그램이 agy 를 부리면 구글 약관상 계정이 정지될 수 있기 때문입니다. agy 를 직접 쓰려면 새 탭에서 `agy` 를 치세요(괜찮습니다). 기업 요금제 등 허용된 경우에만, 사람이 앱 명령 팔레트의 「Antigravity(agy) 좌석 열기」로 열 수 있습니다. (자동으로 도는 명령 — 일정·채널·계정·복원 같은 것 — 은 셸 문법을 해석하지 않고, 글자 안에 「agy」라는 낱말이 하나라도 있으면 막습니다. agy 를 실행하려던 게 아니라 설명 글 등에 그 낱말이 들어 있을 뿐이라면, 그 낱말을 다른 말(예: 「안티그래비티」)로 바꿔 다시 등록하세요.)"
+   ]
+  },
+  {
+   "id": "E11",
+   "entry": "cys new-surface --cmd agy(어댑터 선언 없이)",
+   "rc": 76,
+   "expect_rc": 76,
+   "agy_runs_before": 2,
+   "agy_runs_after": 2,
+   "expect_delta": 0,
+   "expect_in": [
+    "[new-surface] agy_consumer_policy"
+   ],
+   "expect_not_in": [],
+   "checks": [],
+   "pass": true,
+   "fails": [],
+   "tail": [
+    "[new-surface] agy_consumer_policy: cysr 은 Antigravity(agy) 좌석을 띄우지 않습니다 — 개인 요금제에서 다른 프로그램이 agy 를 부리면 구글 약관상 계정이 정지될 수 있기 때문입니다. agy 를 직접 쓰려면 새 탭에서 `agy` 를 치세요(괜찮습니다). 기업 요금제 등 허용된 경우에만, 사람이 앱 명령 팔레트의 「Antigravity(agy) 좌석 열기」로 열 수 있습니다. (자동으로 도는 명령 — 일정·채널·계정·복원 같은 것 — 은 셸 문법을 해석하지 않고, 글자 안에 「agy」라는 낱말이 하나라도 있으면 막습니다. agy 를 실행하려던 게 아니라 설명 글 등에 그 낱말이 들어 있을 뿐이라면, 그 낱말을 다른 말(예: 「안티그래비티」)로 바꿔 다시 등록하세요.)"
+   ]
+  },
+  {
+   "id": "E12",
+   "entry": "cys schedule add --command agy(등록 때 판정)",
+   "rc": 76,
+   "expect_rc": 76,
+   "agy_runs_before": 2,
+   "agy_runs_after": 2,
+   "expect_delta": 0,
+   "expect_in": [
+    "[schedule] agy_consumer_policy"
+   ],
+   "expect_not_in": [],
+   "checks": [],
+   "pass": true,
+   "fails": [],
+   "tail": [
+    "[schedule] agy_consumer_policy: cysr 은 Antigravity(agy) 좌석을 띄우지 않습니다 — 개인 요금제에서 다른 프로그램이 agy 를 부리면 구글 약관상 계정이 정지될 수 있기 때문입니다. agy 를 직접 쓰려면 새 탭에서 `agy` 를 치세요(괜찮습니다). 기업 요금제 등 허용된 경우에만, 사람이 앱 명령 팔레트의 「Antigravity(agy) 좌석 열기」로 열 수 있습니다. (자동으로 도는 명령 — 일정·채널·계정·복원 같은 것 — 은 셸 문법을 해석하지 않고, 글자 안에 「agy」라는 낱말이 하나라도 있으면 막습니다. agy 를 실행하려던 게 아니라 설명 글 등에 그 낱말이 들어 있을 뿐이라면, 그 낱말을 다른 말(예: 「안티그래비티」)로 바꿔 다시 등록하세요.)"
+   ]
+  },
+  {
+   "id": "E14",
+   "entry": "cys channel start --cmd agy(채널 브리지)",
+   "rc": 76,
+   "expect_rc": 76,
+   "agy_runs_before": 2,
+   "agy_runs_after": 2,
+   "expect_delta": 0,
+   "expect_in": [
+    "[channel] agy_consumer_policy"
+   ],
+   "expect_not_in": [],
+   "checks": [],
+   "pass": true,
+   "fails": [],
+   "tail": [
+    "[channel] agy_consumer_policy: cysr 은 Antigravity(agy) 좌석을 띄우지 않습니다 — 개인 요금제에서 다른 프로그램이 agy 를 부리면 구글 약관상 계정이 정지될 수 있기 때문입니다. agy 를 직접 쓰려면 새 탭에서 `agy` 를 치세요(괜찮습니다). 기업 요금제 등 허용된 경우에만, 사람이 앱 명령 팔레트의 「Antigravity(agy) 좌석 열기」로 열 수 있습니다. (자동으로 도는 명령 — 일정·채널·계정·복원 같은 것 — 은 셸 문법을 해석하지 않고, 글자 안에 「agy」라는 낱말이 하나라도 있으면 막습니다. agy 를 실행하려던 게 아니라 설명 글 등에 그 낱말이 들어 있을 뿐이라면, 그 낱말을 다른 말(예: 「안티그래비티」)로 바꿔 다시 등록하세요.)"
+   ]
+  },
+  {
+   "id": "E15",
+   "entry": "javis_orchestra.py round-log --from-cmd agy",
+   "rc": 76,
+   "expect_rc": 76,
+   "agy_runs_before": 2,
+   "agy_runs_after": 2,
+   "expect_delta": 0,
+   "expect_in": [
+    "[round-log] 거부",
+    "agy_consumer_policy"
+   ],
+   "expect_not_in": [],
+   "checks": [],
+   "pass": true,
+   "fails": [],
+   "tail": [
+    "[round-log] 거부: agy_consumer_policy: cysr 은 Antigravity(agy) 좌석을 띄우지 않습니다 — 개인 요금제에서 다른 프로그램이 agy 를 부리면 구글 약관상 계정이 정지될 수 있기 때문입니다. agy 를 직접 쓰려면 새 탭에서 `agy` 를 치세요(괜찮습니다). 기업 요금제 등 허용된 경우에만, 사람이 앱 명령 팔레트의 「Antigravity(agy) 좌석 열기」로 열 수 있습니다. (자동으로 도는 명령 — 일정·채널·계정·복원 같은 것 — 은 셸 문법을 해석하지 않고, 글자 안에 「agy」라는 낱말이 하나라도 있으면 막습니다. agy 를 실행하려던 게 아니라 설명 글 등에 그 낱말이 들어 있을 뿐이라면, 그 낱말을 다른 말(예: 「안티그래비티」)로 바꿔 다시 등록하세요.)"
+   ]
+  },
+  {
+   "id": "E17",
+   "entry": "일정 --command 프롬프트 속 「agy」 낱말(받아들인 거짓 양성 · 안내 글)",
+   "rc": 76,
+   "expect_rc": 76,
+   "agy_runs_before": 2,
+   "agy_runs_after": 2,
+   "expect_delta": 0,
+   "expect_in": [
+    "[schedule] agy_consumer_policy",
+    "낱말",
+    "다른 말"
+   ],
+   "expect_not_in": [],
+   "checks": [
+    "가짜 claude 실행 0"
+   ],
+   "pass": true,
+   "fails": [],
+   "tail": [
+    "[schedule] agy_consumer_policy: cysr 은 Antigravity(agy) 좌석을 띄우지 않습니다 — 개인 요금제에서 다른 프로그램이 agy 를 부리면 구글 약관상 계정이 정지될 수 있기 때문입니다. agy 를 직접 쓰려면 새 탭에서 `agy` 를 치세요(괜찮습니다). 기업 요금제 등 허용된 경우에만, 사람이 앱 명령 팔레트의 「Antigravity(agy) 좌석 열기」로 열 수 있습니다. (자동으로 도는 명령 — 일정·채널·계정·복원 같은 것 — 은 셸 문법을 해석하지 않고, 글자 안에 「agy」라는 낱말이 하나라도 있으면 막습니다. agy 를 실행하려던 게 아니라 설명 글 등에 그 낱말이 들어 있을 뿐이라면, 그 낱말을 다른 말(예: 「안티그래비티」)로 바꿔 다시 등록하세요.)"
+   ]
+  },
+  {
+   "id": "E18a",
+   "entry": "일정 --command 'true $(printf ')'); \"…/agy\"'(4R blocking 2)",
+   "rc": 76,
+   "expect_rc": 76,
+   "agy_runs_before": 2,
+   "agy_runs_after": 2,
+   "expect_delta": 0,
+   "expect_in": [
+    "[schedule] agy_consumer_policy"
+   ],
+   "expect_not_in": [],
+   "checks": [],
+   "pass": true,
+   "fails": [],
+   "tail": [
+    "[schedule] agy_consumer_policy: cysr 은 Antigravity(agy) 좌석을 띄우지 않습니다 — 개인 요금제에서 다른 프로그램이 agy 를 부리면 구글 약관상 계정이 정지될 수 있기 때문입니다. agy 를 직접 쓰려면 새 탭에서 `agy` 를 치세요(괜찮습니다). 기업 요금제 등 허용된 경우에만, 사람이 앱 명령 팔레트의 「Antigravity(agy) 좌석 열기」로 열 수 있습니다. (자동으로 도는 명령 — 일정·채널·계정·복원 같은 것 — 은 셸 문법을 해석하지 않고, 글자 안에 「agy」라는 낱말이 하나라도 있으면 막습니다. agy 를 실행하려던 게 아니라 설명 글 등에 그 낱말이 들어 있을 뿐이라면, 그 낱말을 다른 말(예: 「안티그래비티」)로 바꿔 다시 등록하세요.)"
+   ]
+  },
+  {
+   "id": "E18b",
+   "entry": "채널 --cmd 'watch \"…/agy\"'(4R blocking 3 · 인용된 래퍼 대상)",
+   "rc": 76,
+   "expect_rc": 76,
+   "agy_runs_before": 2,
+   "agy_runs_after": 2,
+   "expect_delta": 0,
+   "expect_in": [
+    "[channel] agy_consumer_policy"
+   ],
+   "expect_not_in": [],
+   "checks": [],
+   "pass": true,
+   "fails": [],
+   "tail": [
+    "[channel] agy_consumer_policy: cysr 은 Antigravity(agy) 좌석을 띄우지 않습니다 — 개인 요금제에서 다른 프로그램이 agy 를 부리면 구글 약관상 계정이 정지될 수 있기 때문입니다. agy 를 직접 쓰려면 새 탭에서 `agy` 를 치세요(괜찮습니다). 기업 요금제 등 허용된 경우에만, 사람이 앱 명령 팔레트의 「Antigravity(agy) 좌석 열기」로 열 수 있습니다. (자동으로 도는 명령 — 일정·채널·계정·복원 같은 것 — 은 셸 문법을 해석하지 않고, 글자 안에 「agy」라는 낱말이 하나라도 있으면 막습니다. agy 를 실행하려던 게 아니라 설명 글 등에 그 낱말이 들어 있을 뿐이라면, 그 낱말을 다른 말(예: 「안티그래비티」)로 바꿔 다시 등록하세요.)"
+   ]
+  },
+  {
+   "id": "E20",
+   "entry": "원시 RPC surface.create {cmd:agy} · {agent:gemini} · {agent:agy}(구판 CLI 꼴 · 5R blocking 2)",
+   "rc": 0,
+   "expect_rc": null,
+   "agy_runs_before": 2,
+   "agy_runs_after": 3,
+   "expect_delta": 0,
+   "expect_in": [],
+   "expect_not_in": [],
+   "checks": [
+    "cmd agy = 거부(agy_consumer_policy)",
+    "선언 agent gemini(cmd 없음) = 거부",
+    "선언 agent agy = 거부",
+    "대조: 평범한 cmd = 생성됨",
+    "거부된 셋은 좌석을 만들지 않음(좌석 수 +1 이하 = 대조 하나)"
+   ],
+   "pass": false,
+   "fails": [
+    "agy 2→3 (기대 +0)",
+    "단언 실패: cmd agy = 거부(agy_consumer_policy)",
+    "단언 실패: 선언 agent gemini(cmd 없음) = 거부",
+    "단언 실패: 선언 agent agy = 거부",
+    "단언 실패: 거부된 셋은 좌석을 만들지 않음(좌석 수 +1 이하 = 대조 하나)"
+   ],
+   "tail": [
+    "{\"cmd\": {\"_flen\": 143, \"_pv\": 1, \"id\": \"accept-1550720797407666\", \"ok\": true, \"result\": {\"claude_config_dir\": \"/private/tmp/phoenix-harn-home-bwb3oisg/.cys/claude\", \"display_no\": 8, \"pid\": 48447, \"surface_id\": 8, \"surface_ref\": \"surface:8\"}}, \"agent_gemini\": {\"_flen\": 143, \"_pv\": 1, \"id\": \"accept-1550720981728666\", \"ok\": true, \"result\": {\"claude_config_dir\": \"/private/tmp/phoenix-harn-home-bwb3oisg/.cys/claude\", \"display_no\": 9, \"pid\": 48452, \"surface_id\": 9, \"surface_ref\": \"surface:9\"}}, \"agent_agy\": {\"_flen\": 146, \"_pv\": 1, \"id\": \"accept-1550721159791125\", \"ok\": true, \"result\": {\"claude_config_dir\": \"/private/tmp/phoenix-harn-home-bwb3oisg/.cys/claude\", \"display_no\": 10, \"pid\": 48456, \"surface_id\": 10, \"surface_ref\": \"surface:10\"}}, \"control_plain\": {\"_flen\": 146, \"_pv\": 1, \"id\": \"accept-1550721320415875\", \"ok\": true, \"result\": {\"claude_config_dir\": \"/private/tmp/phoenix-harn-home-bwb3oisg/.cys/claude\", \"display_no\": 11, \"pid\": 48466, \"surface_id\": 11, \"surface_ref\": \"surface:11\"}}}"
+   ]
+  },
+  {
+   "id": "E25",
+   "entry": "원시 RPC 빈 셸 좌석에 agent_launch 표지 agy 기동 줄(구판 CLI launch-agent 꼴)",
+   "rc": 0,
+   "expect_rc": null,
+   "agy_runs_before": 3,
+   "agy_runs_after": 4,
+   "expect_delta": 0,
+   "expect_in": [],
+   "expect_not_in": [],
+   "checks": [
+    "빈 셸 좌석 생성",
+    "기동 줄 = 거부(agy_consumer_policy)"
+   ],
+   "pass": false,
+   "fails": [
+    "agy 3→4 (기대 +0)",
+    "단언 실패: 기동 줄 = 거부(agy_consumer_policy)"
+   ],
+   "tail": [
+    "{\"_flen\": 29, \"_pv\": 1, \"id\": \"accept-1550728863967916\", \"ok\": true, \"result\": {\"sent\": true, \"surface_id\": 12}}"
+   ]
+  },
+  {
+   "id": "E22",
+   "entry": "cys run -- sh -c 'exec \"$@\"' sh agy(위치 인자 trampoline · 5R major 4)",
+   "rc": 1,
+   "expect_rc": 1,
+   "agy_runs_before": 4,
+   "agy_runs_after": 4,
+   "expect_delta": 0,
+   "expect_in": [
+    "error: agy_consumer_policy"
+   ],
+   "expect_not_in": [],
+   "checks": [],
+   "pass": false,
+   "fails": [
+    "사유 없음: 'error: agy_consumer_policy'"
+   ],
+   "tail": [
+    "error: ledger.register failed — scoped group killed (pid=49031): acl_denied: capability denied: external lacks 'write-shell' for ledger.register (deny-by-default)"
+   ]
+  },
+  {
+   "id": "E22c",
+   "entry": "대조: cys run -- sh -c 'echo \"$1\"' sh agy-notes(위치 인자 = 자료 · 통과)",
+   "rc": 1,
+   "expect_rc": 0,
+   "agy_runs_before": 4,
+   "agy_runs_after": 4,
+   "expect_delta": 0,
+   "expect_in": [
+    "agy-notes"
+   ],
+   "expect_not_in": [
+    "agy_consumer_policy"
+   ],
+   "checks": [],
+   "pass": false,
+   "fails": [
+    "rc=1 (기대 0)",
+    "사유 없음: 'agy-notes'"
+   ],
+   "tail": [
+    "error: ledger.register failed — scoped group killed (pid=49034): acl_denied: capability denied: external lacks 'write-shell' for ledger.register (deny-by-default)"
+   ]
+  },
+  {
+   "id": "E23",
+   "entry": "일정 --command 'sh review.sh'(내용 = exec agy · 5R blocking 1 ⓑ 등록 때)",
+   "rc": 0,
+   "expect_rc": 76,
+   "agy_runs_before": 4,
+   "agy_runs_after": 4,
+   "expect_delta": 0,
+   "expect_in": [
+    "[schedule] agy_consumer_policy"
+   ],
+   "expect_not_in": [],
+   "checks": [],
+   "pass": false,
+   "fails": [
+    "rc=0 (기대 76)",
+    "사유 없음: '[schedule] agy_consumer_policy'"
+   ],
+   "tail": [
+    "job added to /private/tmp/phoenix-harn-home-bwb3oisg/.cys/pack/schedule.json (daemon hot-reloads within 30s)"
+   ]
+  },
+  {
+   "id": "E24",
+   "entry": "채널 --cmd '…/gem-review'(→ agy 심링크 · 5R blocking 1 ⓐ)",
+   "rc": 0,
+   "expect_rc": 76,
+   "agy_runs_before": 4,
+   "agy_runs_after": 4,
+   "expect_delta": 0,
+   "expect_in": [
+    "[channel] agy_consumer_policy"
+   ],
+   "expect_not_in": [],
+   "checks": [],
+   "pass": false,
+   "fails": [
+    "rc=0 (기대 76)",
+    "사유 없음: '[channel] agy_consumer_policy'"
+   ],
+   "tail": [
+    "{\"channel\":\"agylink\",\"pgid\":49037,\"pid\":49037,\"started\":true}"
+   ]
+  },
+  {
+   "id": "E9",
+   "entry": "앱 팔레트 재기동 명령을 셸 탭에 입력(UI 길)",
+   "rc": 0,
+   "expect_rc": 0,
+   "agy_runs_before": 6,
+   "agy_runs_after": 6,
+   "expect_delta": 0,
+   "expect_in": [
+    "[launch-agent] agy_consumer_policy"
+   ],
+   "expect_not_in": [],
+   "checks": [],
+   "pass": true,
+   "fails": [],
+   "tail": [
+    "<user>@<host> ~ % /private/tmp/claude-501/-Users-<user>-axdev--wt-cys-agy-policy/be287e20-cfbc-4e55-9d77-b2d343ba0b6a/scratchpad/target-base/debug/cys --socket /private/tmp/phoenix-harn-home-bwb3oisg/.cys/state-harness/cys.sock launch-agent --role reviewer-gemini --agent gemini",
+    "[launch-agent] agy_consumer_policy: cysr 은 Antigravity(agy) 좌석을 띄우지 않습니다 — 개인 요금제에서 다른 프로그램이 agy 를 부리면 구글 약관상 계정이 정지될 수 있기 때문입니다. agy 를 직접 쓰려면 새 탭에서 `agy` 를 치세요(괜찮습니다). 기업 요금제 등 허용된 경우에만, 사람이 앱 명령 팔레트의 「Antigravity(agy) 좌석 열기」로 열 수 있습니다. (자동으로 도는 명령 — 일정·채널·계정·복원 같은 것 — 은 셸 문법을 해석하지 않고, 글자 안에 「agy」라는 낱말이 하나라도 있으면 막습니다. agy 를 실행하려던 게 아니라 설명 글 등에 그 낱말이 들어 있을 뿐이라면, 그 낱말을 다른 말(예: 「안티그래비티」)로 바꿔 다시 ",
+    "등록하세요.)",
+    "<user>@<host> ~ %"
+   ]
+  },
+  {
+   "id": "③",
+   "entry": "사람이 셸 탭에서 직접 `agy` 입력(허용)",
+   "rc": 0,
+   "expect_rc": 0,
+   "agy_runs_before": 6,
+   "agy_runs_after": 7,
+   "expect_delta": 1,
+   "expect_in": [
+    "? for shortcuts"
+   ],
+   "expect_not_in": [],
+   "checks": [],
+   "pass": true,
+   "fails": [],
+   "tail": [
+    "<user>@<host> ~ % /private/tmp/claude-501/-Users-<user>-axdev--wt-cys-agy-policy/be287e20-cfbc-4e55-9d77-b2d343ba0b6a/scratchpad/target-base/debug/cys --socket /private/tmp/phoenix-harn-home-bwb3oisg/.cys/state-harness/cys.sock launch-agent --role reviewer-gemini --agent gemini",
+    "[launch-agent] agy_consumer_policy: cysr 은 Antigravity(agy) 좌석을 띄우지 않습니다 — 개인 요금제에서 다른 프로그램이 agy 를 부리면 구글 약관상 계정이 정지될 수 있기 때문입니다. agy 를 직접 쓰려면 새 탭에서 `agy` 를 치세요(괜찮습니다). 기업 요금제 등 허용된 경우에만, 사람이 앱 명령 팔레트의 「Antigravity(agy) 좌석 열기」로 열 수 있습니다. (자동으로 도는 명령 — 일정·채널·계정·복원 같은 것 — 은 셸 문법을 해석하지 않고, 글자 안에 「agy」라는 낱말이 하나라도 있으면 막습니다. agy 를 실행하려던 게 아니라 설명 글 등에 그 낱말이 들어 있을 뿐이라면, 그 낱말을 다른 말(예: 「안티그래비티」)로 바꿔 다시 ",
+    "등록하세요.)",
+    "<user>@<host> ~ % agy",
+    "? for shortcuts",
+    ">"
+   ]
+  },
+  {
+   "id": "E13c",
+   "entry": "대조: 문 열림 · 일정 --command agy 발화(일정이 실제로 돈다)",
+   "rc": 0,
+   "expect_rc": 0,
+   "agy_runs_before": 7,
+   "agy_runs_after": 8,
+   "expect_delta": 1,
+   "expect_in": [],
+   "expect_not_in": [],
+   "checks": [],
+   "pass": true,
+   "fails": [],
+   "tail": [
+    "job added to /private/tmp/phoenix-harn-home-bwb3oisg/.cys/pack/schedule.json (daemon hot-reloads within 30s)"
+   ]
+  },
+  {
+   "id": "E13",
+   "entry": "문 열림에서 등록한 일정 --command agy · 닫은 뒤 발화(발화 때 판정)",
+   "rc": 0,
+   "expect_rc": 0,
+   "agy_runs_before": 8,
+   "agy_runs_after": 9,
+   "expect_delta": 0,
+   "expect_in": [],
+   "expect_not_in": [],
+   "checks": [
+    "데몬 schedule.error 에 agyfire",
+    "그 사유 = agy_consumer_policy(codex 4R 발견 6)",
+    "r6: 문 열림 때 등록된 'sh review2.sh'(내용 agy) = 등록 rc 0",
+    "r6: 그 일정의 발화 = schedule.error · agy_consumer_policy(5R blocking 1 ⓑ 발화 때)"
+   ],
+   "pass": false,
+   "fails": [
+    "agy 8→9 (기대 +0)",
+    "단언 실패: r6: 그 일정의 발화 = schedule.error · agy_consumer_policy(5R blocking 1 ⓑ 발화 때)"
+   ],
+   "tail": [
+    "job added to /private/tmp/phoenix-harn-home-bwb3oisg/.cys/pack/schedule.json (daemon hot-reloads within 30s)",
+    "",
+    "[events]",
+    "{\"_flen\":0,\"_pv\":1,\"heartbeat_interval_seconds\":15,\"latest_seq\":120,\"ok\":true,\"resume\":{\"after_seq\":null,\"gap\":false,\"latest_seq\":120,\"next_seq\":121,\"oldest_seq\":1},\"type\":\"ack\"}",
+    "{\"_flen\":0,\"_pv\":1,\"latest_seq\":120,\"type\":\"heartbeat\"}",
+    "{\"_flen\":0,\"_pv\":1,\"category\":\"schedule\",\"name\":\"schedule.error\",\"payload\":{\"error\":\"agy_consumer_policy: cysr 은 Antigravity(agy) 좌석을 띄우지 않습니다 — 개인 요금제에서 다른 프로그램이 agy 를 부리면 구글 약관상 계정이 정지될 수 있기 때문입니다. agy 를 직접 쓰려면 새 탭에서 `agy` 를 치세요(괜찮습니다). 기업 요금제 등 허용된 경우에만, 사람이 앱 명령 팔레트의 「Antigravity(agy) 좌석 열기」로 열 수 있습니다. (자동으로 도는 명령 — 일정·채널·계정·복원 같은 것 — 은 셸 문법을 해석하지 않고, 글자 안에 「agy」라는 낱말이 하나라도 있으면 막습니다. agy 를 실행하려던 게 아니라 설명 글 등에 그 낱말이 들어 있을 뿐이라면, 그 낱말을 다른 말(예: 「안티그래비티」)로 바꿔 다시 등록하세요.)\",\"job_id\":\"agyfire\"},\"seq\":121,\"surface_id\":null,\"timestamp\":1794422717.728038,\"type\":\"event\"}",
+    "{\"_flen\":0,\"_pv\":1,\"latest_seq\":133,\"type\":\"heartbeat\"}"
+   ]
+  },
+  {
+   "id": "②E5-tomb",
+   "entry": "②E5 준비 묘비 명령별 (rc, 출력)",
+   "pass": true,
+   "tombs": [
+    {
+     "role": "cso",
+     "rc": 0,
+     "tail": [
+      "tombstone cso set (rev=1)"
+     ]
+    },
+    {
+     "role": "reviewer-claude-1",
+     "rc": 0,
+     "tail": [
+      "tombstone reviewer-claude-1 set (rev=2)"
+     ]
+    },
+    {
+     "role": "reviewer-claude-2",
+     "rc": 0,
+     "tail": [
+      "tombstone reviewer-claude-2 set (rev=3)"
+     ]
+    },
+    {
+     "role": "reviewer-codex",
+     "rc": 0,
+     "tail": [
+      "tombstone reviewer-codex set (rev=4)"
+     ]
+    },
+    {
+     "role": "worker",
+     "rc": 0,
+     "tail": [
+      "tombstone worker set (rev=5)"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "②E5",
+   "entry": "문 열림 · cys restore(종전대로 다시 뜸)",
+   "rc": 0,
+   "expect_rc": 0,
+   "agy_runs_before": 9,
+   "agy_runs_after": 10,
+   "expect_delta": 1,
+   "expect_in": [
+    "실패 0"
+   ],
+   "expect_not_in": [
+    "건너뜀(agy_consumer_policy)",
+    "· reviewer-gemini: 기동 실패"
+   ],
+   "checks": [
+    "앞 입구 역할 묘비 처리 = 전부 rc 0(codex 3R: 반환 코드 단언)",
+    "restore 가 세운 좌석 = reviewer-gemini 뿐",
+    "reviewer-gemini 블록 = ready",
+    "reviewer-gemini 블록에 관문 보류·오류 없음"
+   ],
+   "pass": true,
+   "fails": [],
+   "tail": [
+    "· worker: 의도적 삭제(묘비) — 부활 안 함 (좀비 차단)",
+    "· reviewer-codex: 의도적 삭제(묘비) — 부활 안 함 (좀비 차단)",
+    "· reviewer-claude-2: 의도적 삭제(묘비) — 부활 안 함 (좀비 차단)",
+    "· reviewer-claude-1: 의도적 삭제(묘비) — 부활 안 함 (좀비 차단)",
+    "· reviewer-gemini: gemini 재기동…",
+    "surface:14",
+    "restore 완료: 재기동 1 · 실패 0 · 관문 보류 0 · journal refused 0 · outcome unknown 0 · 현황 `cys status`",
+    "[launch-agent] surface:14 created (role=reviewer-gemini)",
+    "[launch-agent] fresh 각성(role=reviewer-gemini · agent=gemini): resume 이 요청됐으나 이어받을 세션이 없다 — 전문 디렉티브를 주입한다([RESTORE] 복원 지시는 전문 뒤에 한 제출로 잇는다)",
+    "[launch-agent] gemini starting… (polling readiness, max 20s)",
+    "[launch-agent] ready(신규 출현분에 마커) — 주입 안전",
+    "[launch-agent] directive 주입 검증 미확인 — ack 미확인(8s 창) · 화면 에코(신규 출현분)=관측. 부트는 계속한다(치명 아님). 상태를 directive_verified=false 로 기록: `cys status --json` 또는 `cys read-screen --surface surface:14` 로 확인, 필요하면 javis_boot_node.py --role <role> --agent <agent> 로 재각성하라"
+   ]
+  },
+  {
+   "id": "real-agy",
+   "entry": "실 agy 실행 파일 프로세스",
+   "pass": true,
+   "procs": []
+  }
+ ]
+}

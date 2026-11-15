@@ -9587,6 +9587,27 @@ async function approveFeedItem(requestId: string) {
   }
 }
 
+// ★agy 좌석 문 여닫기(팔레트) — 열 때만 확인 창(경고 문구 1회)을 거친다 · 닫기는 안전 쪽이라 바로.
+async function toggleAgySeatDoor(isOpen: boolean) {
+  try {
+    if (!isOpen) {
+      const warning = String(await invoke("agy_seat_door_warning"));
+      const ok = await confirmModal("Antigravity(agy) 좌석 열기", warning, "열기", "닫힌 채 두기");
+      if (!ok) return;
+    }
+    const now = (await invoke("agy_seat_door_set", { open: !isOpen })) as boolean;
+    toast(
+      "system",
+      now ? "agy 좌석 열림" : "agy 좌석 닫힘",
+      now
+        ? "cysr 이 agy 좌석을 띄울 수 있습니다 — 개인 요금제라면 다시 닫으세요"
+        : "cysr 은 agy 좌석을 띄우지 않습니다(기본)",
+    );
+  } catch (e) {
+    toast("health", "agy 좌석 문 바꾸기 실패", "문 상태를 바꾸지 못했습니다 — 다시 시도해 주세요", undefined, String(e));
+  }
+}
+
 // org.status로 노드 행 생성 + 빌트인 액션 행 추가. socket = 활성 ws socket(1차: 단일 소켓).
 async function buildPaletteItems(): Promise<PaletteItem[]> {
   const items: PaletteItem[] = [];
@@ -9647,6 +9668,22 @@ async function buildPaletteItems(): Promise<PaletteItem[]> {
       keywords: `restart relaunch reboot 재기동 ${role}`,
       confirm: { title: `${role} 재기동`, body: `${role} 노드에 다음 명령을 주입합니다:\n${cmd}` },
       action: () => restartNode(role, cmd, org.surfaces ?? [], sock),
+    });
+  }
+
+  // ── (3-b) Antigravity(agy) 좌석 문 — 사람이 여닫는 유일한 입구(TICKET=cysr-agy-policy-exposure) ──
+  //   기본 닫힘: cysr 은 agy 좌석을 띄우지 않는다(구글 개인 요금제 약관 — 다른 프로그램이 agy 를 부리면 계정 정지 위험).
+  //   여는 것은 확인 창에서 경고 문구(정본 = Rust cys::agy_door::OPEN_WARNING)를 읽고 [열기]를 누른 사람뿐이다.
+  const agyDoorOpen = (await invoke("agy_seat_door_get").catch(() => null)) as boolean | null;
+  if (agyDoorOpen !== null) {
+    items.push({
+      id: "act:agy-seat-door",
+      title: agyDoorOpen ? "Antigravity(agy) 좌석 닫기" : "Antigravity(agy) 좌석 열기",
+      subtitle: agyDoorOpen
+        ? "지금 열림 — cysr 이 agy 좌석을 띄울 수 있음"
+        : "지금 닫힘(기본) — cysr 은 agy 좌석을 띄우지 않음",
+      keywords: "agy antigravity gemini 제미나이 검토자 리뷰어 약관 좌석 문",
+      action: () => toggleAgySeatDoor(agyDoorOpen),
     });
   }
 

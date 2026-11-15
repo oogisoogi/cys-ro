@@ -3500,6 +3500,59 @@ fn pack_keyring() -> Result<cys::packsig::Keyring, String> {
     cys::packsig::embedded_keyring()
 }
 
+fn run_agy_door_check(a: &[String]) -> i32 {
+    let (mut cmd, mut agent, mut argv) = (None::<String>, None::<String>, Vec::<String>::new());
+    let mut machine = false;
+    let mut i = 0;
+    while i < a.len() {
+        match a[i].as_str() {
+            "--machine" => {
+                machine = true;
+                i += 1;
+            }
+            "--" => {
+                argv = a[i + 1..].to_vec();
+                break;
+            }
+            "--cmd" => {
+                cmd = a.get(i + 1).cloned();
+                i += 2;
+            }
+            "--agent" => {
+                agent = a.get(i + 1).cloned();
+                i += 2;
+            }
+            x if x.starts_with("--cmd=") => {
+                cmd = Some(x["--cmd=".len()..].to_string());
+                i += 1;
+            }
+            x if x.starts_with("--agent=") => {
+                agent = Some(x["--agent=".len()..].to_string());
+                i += 1;
+            }
+            other => {
+                eprintln!("agy-door-check: unknown argument {other:?}");
+                return 2;
+            }
+        }
+    }
+    // ★두 판정(TICKET=cysr-agy-door-r5): `--machine` = 기계 입구 낱말 검사(round-log 등) · 그 밖 `--cmd` = 실행 자리 검사(guard).
+    let m = if !argv.is_empty() {
+        cys::agy_door::launch_refusal_argv(&argv)
+    } else if machine || cmd.is_none() {
+        cys::agy_door::launch_refusal(agent.as_deref().unwrap_or(""), cmd.as_deref())
+    } else {
+        cys::agy_door::exec_refusal(cmd.as_deref().unwrap_or(""))
+    };
+    match m {
+        Some(m) => {
+            eprintln!("{m}");
+            cys::agy_door::EXIT_AGY_POLICY_REFUSED
+        }
+        None => 0,
+    }
+}
+
 fn main() {
     // ★SEAL-1 층3: 스레드 생성 전 프로세스 env 봉인 — 이 CLI 가 띄우는 **모든** 자손
     // (`cys run -- <임의명령>`·`launch-agent` 로 뜨는 pane·팩 python 헬퍼)이 상속으로 덮인다.
@@ -3545,6 +3598,17 @@ fn main() {
             if let Some(rc) = cys::update::cli::dispatch(&args, &hooks) {
                 std::process::exit(rc);
             }
+        }
+    }
+    // ★agy 좌석 문 판정만(숨은 동사 `agy-door-check` · 아무것도 실행하지 않음) — 팩 훅(guard)·팩 스크립트가 Rust 판정기를 그대로
+    //   쓰는 입구. clap 앞에서 떼어 낸다: 최상위 `Command` 변형을 하나 더하면 시험 스레드(2MB)에서 clap 파싱이 스택을 넘는다
+    //   (실측 aid_s5_reap_due 시험 · 변형을 빼면 통과 — 위·아래 갱신 동사·rotate 와 같은 이유).
+    //   형식: `cys agy-door-check [--machine] --cmd '<셸 문>' [--agent <키>]` 또는 `cys agy-door-check -- <argv…>` · 닫힘+agy = 76(사유 stderr) · 그 밖 0.
+    //   `--machine` = 기계 입구 낱말 검사(round-log) · 없으면 `--cmd` 는 실행 자리 검사(guard) · argv = 실행 자리(cys run 과 같은 것).
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if args.get(1).map(String::as_str) == Some("agy-door-check") {
+            std::process::exit(run_agy_door_check(&args[2..]));
         }
     }
     // ★1.1.8 U2(§3-3 · §3-10): `rotate --stop-only` · `rotate --txn <txn:epoch>` 는 clap 앞에서 떼어 낸다(최상위 `Command` 인자 추가 =
@@ -6280,6 +6344,7 @@ fn run(command: Command) -> i32 {
         }
 
         Command::NewSurface { cwd, cmd, title, role, agent, rows, cols } => {
+            if let Some(m) = cys::agy_door::launch_refusal(agent.as_deref().unwrap_or(""), cmd.as_deref()) { eprintln!("[new-surface] {m}"); std::process::exit(cys::agy_door::EXIT_AGY_POLICY_REFUSED); } // ★agy 좌석 문
             request(
                 "surface.create",
                 // (S3-D2) `agent` 는 부재 시 null 로 나간다 = 데몬이 메타를 쓰지 않는다(기존 동작).
@@ -8027,7 +8092,13 @@ fn run_channel(action: ChannelAction) -> i32 {
     }
     let (method, params): (&str, Value) = match action {
         ChannelAction::Start { channel, cmd } => (
-            "channel.start",
+            {
+                if let Some(m) = cmd.as_deref().and_then(|c| cys::agy_door::launch_refusal("", Some(c))) {
+                    eprintln!("[channel] {m}");
+                    std::process::exit(cys::agy_door::EXIT_AGY_POLICY_REFUSED); // ★agy 좌석 문(재사용 브리지는 데몬 spawn_bridge 가 판정)
+                }
+                "channel.start"
+            },
             json!({"channel": channel, "cmd": cmd}),
         ),
         ChannelAction::Stop { channel } => ("channel.stop", json!({"channel": channel})),
@@ -8653,6 +8724,13 @@ fn run_schedule(action: ScheduleAction) -> i32 {
                         || cwd.is_some())
                 {
                     return Err("--command cannot be combined with --to/--if-absent-launch/--fresh/--agent/--cwd (these apply only to --text push jobs)".into());
+                }
+                if let Some(m) = command.as_deref().and_then(|c| cys::agy_door::launch_refusal("", Some(c))) {
+                    eprintln!("[schedule] {m}");
+                    std::process::exit(cys::agy_door::EXIT_AGY_POLICY_REFUSED); // ★agy 좌석 문 — 등록 때(발화 때는 데몬이 한 번 더)
+                }
+                for f in command.as_deref().map(cys::agy_door::unread_scripts).unwrap_or_default() {
+                    eprintln!("[schedule] 알림: 스크립트 {f} 를 읽지 못해 안에 agy 가 있는지 살피지 않고 등록합니다(agy 좌석 문 · 발화 때 한 번 더 봅니다).");
                 }
                 // --time(반복)·--in(원샷)·--every(주기) 정확히 하나
                 let mode_count = time.is_some() as u8 + in_dur.is_some() as u8 + every.is_some() as u8;
@@ -14517,7 +14595,7 @@ fn detect_agent_binary(agent: &str, agents: &Value) -> AgentDetection {
             (false, None, format!("PATH 미발견 {bin}"))
         }
     };
-    apply_windows_agent_fallback(
+    apply_agy_door(agent, apply_windows_agent_fallback(
         agent,
         AgentDetection {
             installed,
@@ -14526,7 +14604,43 @@ fn detect_agent_binary(agent: &str, agents: &Value) -> AgentDetection {
             reason,
             hint: install_hint(agent).to_string(),
         },
-    )
+    ))
+}
+
+/// ★agy 좌석 문(TICKET=cysr-agy-policy-exposure) — 문이 닫혀 있으면 agy 어댑터를 **미가용**으로 낸다(사유 머리
+/// `agy_consumer_policy`). 이 오라클을 1순위로 읽는 `javis_orchestra.detect_reviewer` 가 수정 없이 Claude 대체 검토자
+/// (reviewer-claude-1)로 폴백하고, `cys boot` 도 같은 판정으로 agy 행을 건너뛴다. 실행 파일 실재 여부는 사유에 남긴다.
+fn apply_agy_door(agent: &str, d: AgentDetection) -> AgentDetection {
+    // 실행 파일 이름 검사(③) — 경로의 폴더 이름(사용자 이름 등)으로 오판하지 않는다(TICKET=cysr-agy-door-r5 · 경계 표).
+    if !cys::agy_door::program_refused(agent, &d.bin) {
+        return d;
+    }
+    AgentDetection {
+        installed: false,
+        reason: format!(
+            "{}: Antigravity(agy) 좌석 문 닫힘(기본 · 구글 개인 요금제 약관) — 실행 파일 판정: {}",
+            cys::agy_door::REFUSE_CODE,
+            d.reason
+        ),
+        hint: "agy 를 직접 쓰려면 새 탭에서 `agy` 를 치세요. 기업 요금제 등 허용된 경우에만 사람이 앱 명령 팔레트                「Antigravity(agy) 좌석 열기」로 엽니다."
+            .to_string(),
+        ..d
+    }
+}
+
+/// launch-agent 의 agy 좌석 문 — 닫혀 있으면 사람 말 처방을 stderr 로 내고 [`cys::agy_door::EXIT_AGY_POLICY_REFUSED`].
+/// 좌석(pane)을 만들기 **전**이라 남는 것이 없다(스폰 0).
+fn agy_door_refuse_launch(agent: &str) -> Option<i32> {
+    let cmd = load_agent_spec(agent).ok().and_then(|s| s["cmd"].as_str().map(str::to_string));
+    let msg = cys::agy_door::launch_refusal(agent, cmd.as_deref())?;
+    eprintln!("[launch-agent] {msg}");
+    Some(cys::agy_door::EXIT_AGY_POLICY_REFUSED)
+}
+
+/// `cys restore` 의 agy 좌석 문 — 닫혀 있으면 건너뜀 한 줄(실패·관문 보류 어느 쪽으로도 세지 않는다).
+fn agy_door_restore_skip(role: &str, agent: &str) -> Option<String> {
+    let cmd = load_agent_spec(agent).ok().and_then(|s| s["cmd"].as_str().map(str::to_string));
+    cys::agy_door::restore_skip_line(role, agent, cmd.as_deref())
 }
 
 /// `cys agent-detect [--json]` — 어댑터별 설치 감지를 **한 곳에서** 판정해 내보낸다.
@@ -17036,6 +17150,7 @@ fn boot_agent_on_surface(
     //   대신 규칙은 `resume_guard_yields_to_followup`.
     followup: Option<&str>,
 ) -> Result<BootVerdict, String> {
+    if let Some(e) = cys::agy_door::launch_refusal(agent, spec["cmd"].as_str()) { return Err(e); } // ★agy 좌석 문
     let mut cmd = spec["cmd"].as_str().ok_or("agent cmd missing")?.to_string();
     // ★(0.14.31 · WP-1 F-1) `requested_resume`(호출부의 의도) 와 `effective_resume`(접미가 **실제로**
     //   붙었는가) 를 가른다. 종전엔 하나의 `resume` 가 둘을 겸해, 세션 파일이 없어 접미가 생략된
@@ -20668,6 +20783,7 @@ fn run_launch_agent_opts(
     //   낡은 번호」 갈래가 번호 칸만 새 번호로 바꾸고 특성(cwd 특성 등)을 보존한다. None = 종전(workflow_title).
     title_override: Option<String>,
 ) -> i32 {
+    if let Some(rc) = agy_door_refuse_launch(agent) { return rc; } // ★agy 좌석 문(기본 닫힘 · cys::agy_door)
     // ★(W2 · G12) LAUNCH 경로의 boot 락 참여 — 별도 프로세스로 도는 `cys launch-agent`
     //   (javis_boot_node → boot-reviewers 경로)를 GUI/훅 `cys boot` 와 직렬화한다.
     //   run_boot 이 이미 쥐고 있으면 None(재진입 방어). Drop 에서 flock 자동 해제.
@@ -25921,6 +26037,7 @@ fn run_restore_with(cwd: Option<String>, include_master: bool, no_resume: bool, 
                 println!("· {role}: agent 미상 — 건너뜀 (claim-role로 등록된 pane){hint}");
                 continue;
             };
+            if let Some(l) = agy_door_restore_skip(role, agent) { println!("{l}"); continue; } // ★agy 좌석 문 — 실패 아님
             // ★2R codex #2 수리(2026-09-11) — **항목별 override**: 전역 `--cwd`가 저장
             // 엔트리를 전부 이기던 자리다. 이제 저장 cwd가 **진짜 작업 폴더**면 그것이 이기고,
             // 홈·미지정("말해 주지 않은 값")일 때만 override가 채운다.
@@ -30919,6 +31036,7 @@ fn run_scoped(surface: Option<String>, command: Vec<String>) -> Result<i32, Stri
     if command.is_empty() {
         return Err("no command given".into());
     }
+    if let Some(m) = cys::agy_door::launch_refusal_argv(&command) { return Err(m); } // ★agy 좌석 문(codex 1R · 2R argv 판정)
     let sid = parse_explicit_surface(&surface)?
         .or_else(|| cys::env_compat(ENV_SURFACE_ID).and_then(|s| parse_surface_ref(&s)));
 
@@ -57860,5 +57978,63 @@ mod b360_tests {
         let keys = r3x_dict_keys(&r3x_block(&block), "_BOOT_OUTCOME_READINESS").expect("parsed");
         assert_eq!(keys.into_iter().collect::<Vec<_>>(), vec!["failed".to_string(), "launched".to_string()]);
         assert_eq!(r3x_kept_pane_labels().len(), 4, "{:?}", r3x_kept_pane_labels());
+    }
+}
+
+/// ★agy 좌석 문(TICKET=cysr-agy-policy-exposure) 배선 핀 — 기동·복원 입구마다 문 판정이 **첫 동작**으로 걸려 있는가.
+/// 판정 자체(어댑터·문 파일·문안)는 lib `cys::agy_door` 시험이 재고, 여기서는 「그 판정을 부르는 줄이 지워지면 붉다」만 잰다
+/// (실측 = docs/agy-door-evidence/acceptance.py · 가짜 agy 로 11 입구 생성 0).
+#[cfg(test)]
+mod agy_door_wiring_tests {
+    fn body<'a>(src: &'a str, head: &str) -> &'a str {
+        let i = src.find(head).unwrap_or_else(|| panic!("{head} 부재"));
+        let open = i + src[i..].find(") -> ").expect("반환형");
+        let start = open + src[open..].find('{').expect("본체") + 1;
+        &src[start..]
+    }
+
+    fn first_stmt(b: &str) -> &str {
+        b.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("//")).unwrap_or("")
+    }
+
+    #[test]
+    fn launch_agent_refuses_before_anything_else() {
+        let src = include_str!("cys.rs");
+        let b = body(src, "\nfn run_launch_agent_opts(");
+        assert!(
+            first_stmt(b).starts_with("if let Some(rc) = agy_door_refuse_launch(agent) { return rc; }"),
+            "launch-agent 첫 동작이 agy 좌석 문이 아니다: {}",
+            first_stmt(b)
+        );
+    }
+
+    #[test]
+    fn boot_agent_on_surface_refuses_before_anything_else() {
+        let src = include_str!("cys.rs");
+        let b = body(src, "\nfn boot_agent_on_surface(");
+        assert!(
+            first_stmt(b).starts_with("if let Some(e) = cys::agy_door::launch_refusal(agent, spec[\"cmd\"].as_str()) { return Err(e); }"),
+            "boot_agent_on_surface 첫 동작이 agy 좌석 문이 아니다: {}",
+            first_stmt(b)
+        );
+    }
+
+    #[test]
+    fn restore_new_surface_and_detect_are_gated() {
+        let src = include_str!("cys.rs");
+        let r = &src[src.find("\nfn run_restore_with(").expect("restore")..];
+        let r = &r[..r[1..].find("\nfn ").expect("끝") + 1];
+        let skip = r.find("if let Some(l) = agy_door_restore_skip(role, agent) { println!(\"{l}\"); continue; }").expect("복원 건너뜀 줄 부재");
+        assert!(skip < r.find("launcher.in_seat(").expect("in_seat") && skip < r.find("launcher.fresh(").expect("fresh"),
+            "복원 건너뜀은 좌석 내 재연결·fresh 기동보다 앞이어야 한다");
+        let ns = &src[src.find("Command::NewSurface { cwd, cmd, title, role, agent, rows, cols } => {").expect("new-surface 팔")..];
+        assert!(first_stmt(&ns[ns.find("=> {").unwrap() + 4..]).starts_with("if let Some(m) = cys::agy_door::launch_refusal("),
+            "new-surface 첫 동작이 agy 좌석 문이 아니다");
+        let d = body(src, "\nfn detect_agent_binary(");
+        let d = &d[..d.find("\n}\n").expect("끝")];
+        assert!(d.contains("apply_agy_door(agent, apply_windows_agent_fallback("), "agent-detect 오라클이 문 판정을 거치지 않는다");
+        let rs = &src[src.find("\nfn run_scoped(").expect("run_scoped")..];
+        let spawn = rs.find("std::process::Command::new(&command[0])").expect("스폰");
+        assert!(rs[..spawn].contains("cys::agy_door::launch_refusal_argv(&command)"), "cys run 이 스폰 전에 문 판정을 거치지 않는다(codex 1R blocking)");
     }
 }

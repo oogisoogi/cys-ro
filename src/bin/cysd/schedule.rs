@@ -1986,6 +1986,10 @@ fn text_command_allowed(cmd: &str) -> Result<(), String> {
 async fn run_text_command(cmd: &str) -> Result<String, String> {
     // R-CLI-4: 무게이트 셸 실행 차단 — built-in 신뢰 또는 서명 승인만 통과.
     text_command_allowed(cmd)?;
+    // ★agy 좌석 문(TICKET=cysr-agy-door-r6 · 데몬 입구 전수): push 일정의 text_command 도 무인 셸 실행이다 — 발화 때 기계 입구 판정.
+    if let Some(m) = cys::agy_door::launch_refusal("", Some(cmd)) {
+        return Err(m);
+    }
     // RC-11: OS별 셸 — Windows는 sh 부재라 heartbeat/report text_command job이 전부 실패했다.
     // fire_command와 동일하게 command_shell()(win=동봉 bash·미탐지 시 cmd) 사용으로 통일.
     let (sh, flag) = command_shell();
@@ -3215,6 +3219,16 @@ async fn fire_command(daemon: &Arc<Daemon>, job: &Job) -> Result<String, String>
         .command
         .as_deref()
         .ok_or("command job missing 'command'")?;
+    // ★agy 좌석 문(독립 검증 B1): 발화 때마다 판정 — 등록 뒤 문이 닫혔거나 파일을 손으로 고친 일정도 막는다.
+    if let Some(m) = cys::agy_door::launch_refusal("", Some(command)) {
+        return Err(m);
+    }
+    // ★codex 5R blocking 1 ⓑ: 셸에 넘긴 스크립트를 한 단계 읽으려 했으나 못 읽었으면 통과시키되 원장(이벤트)에 남긴다.
+    let unread = cys::agy_door::unread_scripts(command);
+    if !unread.is_empty() {
+        daemon.bus.publish("schedule.agy_door_unread", "schedule", None,
+                           json!({"job_id": job.id, "unread_scripts": unread, "note": "agy 좌석 문: 스크립트를 못 읽어 안을 살피지 않고 통과"}));
+    }
     let (shell, flag) = command_shell();
     #[cfg(windows)]
     warn_shell_fallback(daemon, flag);

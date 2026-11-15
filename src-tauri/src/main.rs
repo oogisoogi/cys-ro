@@ -3876,6 +3876,27 @@ fn privacy_settings_url(target: &str) -> Option<&'static str> {
     }
 }
 
+/// ★agy 좌석 문(TICKET=cysr-agy-policy-exposure) — 앱 화면이 문을 여닫는 **유일한** 입구다(`cys` CLI·데몬·팩에는 쓰기
+/// 길 0 · 시험 `cys::agy_door::tests::only_the_gui_writes_the_door`). 기본 = 닫힘(cysr 은 agy 좌석을 띄우지 않는다 —
+/// 구글 개인 요금제 약관). 여는 것은 UI 확인 창에서 [`cys::agy_door::OPEN_WARNING`] 을 사람이 읽고 [열기] 를 누른 뒤에만.
+#[tauri::command]
+fn agy_seat_door_get() -> bool {
+    cys::agy_door::door_open()
+}
+
+/// 확인 창 본문 — 문구의 정본은 Rust 상수 하나(UI 에 사본을 두지 않는다).
+#[tauri::command]
+fn agy_seat_door_warning() -> String {
+    cys::agy_door::OPEN_WARNING.to_string()
+}
+
+/// 문 여닫기 — 반환 = 쓴 뒤 **같은 임계 구역 안에서** 다시 읽은 실제 상태(쓰기가 조용히 안 먹은 경우를 화면이 알게 ·
+/// 열기/닫기 직렬화 = codex 4R minor 7).
+#[tauri::command]
+fn agy_seat_door_set(open: bool) -> Result<bool, String> {
+    cys::agy_door::write_door(open)
+}
+
 /// 시스템 설정의 해당 화면을 연다(macOS 전용 — 그 밖은 Err). `/usr/bin/open` 절대경로(PATH 무의존)
 /// · 클릭 1회 = 실행 1회 · 자식은 별도 스레드가 거둔다(좀비 0).
 #[tauri::command]
@@ -8550,6 +8571,9 @@ fn main() {
             onboard_notices,
             perm_warnings,
             open_privacy_settings,
+            agy_seat_door_get,
+            agy_seat_door_warning,
+            agy_seat_door_set,
             // INST-1(P4-4): claude CLI 미설치 온보딩 카드 pull(agent-detect 단일 오라클 소비).
             claude_missing_hint,
             // v116-app-firstrun(A-3): 새 설치 첫 실행의 폴더 권한 창 — 안내 먼저, 권한 창은 그 뒤.

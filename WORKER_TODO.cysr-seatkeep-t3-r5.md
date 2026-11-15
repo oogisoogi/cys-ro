@@ -12,4 +12,4 @@
 - [x] 회귀(HANDOFF 명령 그대로) · 흔들림 단독 재실행
 - [x] 노브 기본값 파일:줄
 - [x] HANDOFF r5 절 · 커밋 · readlink ~/.local/bin/claude 대조(처음 = versions/2.1.325)
-- [ ] 【확인요청】
+- [x] 【확인요청】(22:05 인박스 발송)

@@ -284,7 +284,7 @@ class E_AgyRunGuardAndRoundLog(unittest.TestCase):
         for cmd in ["claude -p agy", "codex exec agy", "powershell -Command Write-Output 'agy'"]:
             rc, err = self.g(cmd)
             self.assertEqual(rc, 0, "%r 막힘: %s" % (cmd, err[-300:]))
-        for cmd in ['call "C:\\Users\\u\\AppData\\Roaming\\npm\\agy.cmd"', 'watch "/opt/agy"', "claude mcp add g -- agy"]:
+        for cmd in ['call "C:\\Users\\x\\AppData\\Roaming\\npm\\agy.cmd"', 'watch "/opt/agy"', "claude mcp add g -- agy"]:
             rc, err = self.g(cmd)
             self.assertEqual(rc, 2, "%r 통과: %s" % (cmd, err[-300:]))
             self.assertIn("AGY-RUN", err, cmd)

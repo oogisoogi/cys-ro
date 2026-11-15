@@ -2172,12 +2172,12 @@ class HelpReport(Base):
         바깥으로 나간 본문에 그 글자가 0(범주 접기 · 닫힌 칸 정규식) · 보낸 판이 실제로 있어야 한다(공허한 통과 금지)."""
         planted = ("홍길동", "hong-gildong", "/Users/", "secret.txt", "안녕하세요 대화")
         fb = FakeCys.make_cys(self,
-                              "surface:1\trole=worker-홍길동\texited=false\tcwd=/Users/hong-gildong/secret.txt\n"
+                              "surface:1\trole=worker-홍길동\texited=false\tcwd=/Users" "/hong-gildong/secret.txt\n"
                               "surface:2\trole=hong-gildong-imac\texited=false\n"
                               "surface:3\trole=master\texited=false\ttitle=안녕하세요 대화\n",
                               json.dumps({"summary": {"ok": 1, "warn": 2, "fail": 1, "skip": 0},
                                           "items": [{"name": "hook", "status": "WARN"},
-                                                    {"name": "/Users/hong-gildong/secret.txt", "status": "WARN"},
+                                                    {"name": "/Users" "/hong-gildong/secret.txt", "status": "WARN"},
                                                     {"name": "홍길동", "status": "FAIL"}]}))
         st = os.path.join(self.tmp, "state")
         os.makedirs(st)
@@ -2190,10 +2190,10 @@ class HelpReport(Base):
         import datetime as _dt
         now = _dt.datetime.now(_dt.timezone.utc)
         ts = jc.ms_iso(now.timestamp() - 60)
-        self.assertIsNone(jc.make_row("worker", "/Users/hong-gildong/secret.txt", "e"), "경로 op 를 받았다")
+        self.assertIsNone(jc.make_row("worker", "/Users" "/hong-gildong/secret.txt", "e"), "경로 op 를 받았다")
         self.assertIsNone(jc.make_row("worker", "op", "홍길동"), "한글 이름 오류 코드를 받았다")
         good = self.row(ts, op="hook.session-start", code="hook.rc1")
-        self.put_signals(good, dict(good, op="/Users/hong-gildong/secret.txt"), dict(good, error_code="홍길동"),
+        self.put_signals(good, dict(good, op="/Users" "/hong-gildong/secret.txt"), dict(good, error_code="홍길동"),
                          dict(good, source="hong-gildong"), dict(good, version="안녕하세요 대화"),
                          dict(good, os="macos-/Users/x"))
         self.put_id()

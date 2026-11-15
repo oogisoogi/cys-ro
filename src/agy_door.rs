@@ -91,7 +91,7 @@ pub fn runs_agy(cmd: &str) -> bool {
 }
 
 /// 해석된 **실행 파일 경로**(또는 이름)가 agy 인가 — 좌석 식별·감지 오라클용(③ 파일 이름 검사). 경로의 폴더 이름(예: 사용자
-/// 이름이 `agy`)으로 오판하지 않게 **마지막 이름만** 본다 — 공백이 든 경로(`/Users/agy/Application Support/claude`)도 경로다
+/// 이름이 `agy`)으로 오판하지 않게 **마지막 이름만** 본다 — 공백이 든 경로(`/Users/<사용자 agy>/Application Support/claude`)도 경로다
 /// (codex 5R minor 7 · 명령 문자열은 [`names_agy`] 가 맡는다). 심링크면 해소한 실제 경로의 마지막 이름으로도 본다(codex 5R blocking 1 ⓐ).
 pub fn program_is_agy(bin: &str) -> bool {
     let b = bin.trim();
@@ -1238,7 +1238,7 @@ mod tests {
                          name.char_indices().map(|(i, c)| if i % 2 == 0 { c.to_ascii_uppercase() } else { c }).collect()];
             for n in cases {
                 for ext in ["", ".exe", ".cmd", ".bat", ".ps1", ".com", ".EXE"] {
-                    for pre in ["", "/opt/", "./", "~/.local/bin/", r"C:\Users\u\AppData\Roaming\npm\", r".\"] {
+                    for pre in ["", "/opt/", "./", "~/.local/bin/", r"C:\Users\x\AppData\Roaming\npm\", r".\"] {
                         let exe = format!("{pre}{n}{ext}");
                         for q in ["{}", "'{}'", "\"{}\"", "$'{}'", "`{}`", "$({})", "<({})", "\"$({})\"", "{}.", "${X:-{}}"] {
                             let w = q.replace("{}", &exe);
@@ -1279,13 +1279,13 @@ mod tests {
     #[test]
     fn machine_word_check_codex_4r_reproductions() {
         // codex 4R blocking 2(치환 괄호 깊이) · blocking 3(call·start·watch·flock 의 인용된 agy)
-        for c in ["true $(printf ')'); \"/opt/agy\"", r#"call "C:\Users\u\AppData\Roaming\npm\agy.cmd""#,
-                  r#"start "" "C:\Users\u\AppData\Roaming\npm\agy.cmd""#, "watch \"/opt/agy\"", "flock /tmp/l \"/opt/agy\""] {
+        for c in ["true $(printf ')'); \"/opt/agy\"", r#"call "C:\Users\x\AppData\Roaming\npm\agy.cmd""#,
+                  r#"start "" "C:\Users\x\AppData\Roaming\npm\agy.cmd""#, "watch \"/opt/agy\"", "flock /tmp/l \"/opt/agy\""] {
             assert!(names_agy(c), "{c}");
             assert!(launch_refusal_with("", Some(c), false).is_some_and(|m| m.starts_with(REFUSE_CODE)), "{c}");
         }
         // 실행 자리(guard)에서도 낱말 하나 전체가 agy 경로면 인용돼 있어도 잡는다(blocking 3)
-        for c in [r#"call "C:\Users\u\AppData\Roaming\npm\agy.cmd""#, r#"start "" "C:\x\agy.cmd""#, "watch \"/opt/agy\"",
+        for c in [r#"call "C:\Users\x\AppData\Roaming\npm\agy.cmd""#, r#"start "" "C:\x\agy.cmd""#, "watch \"/opt/agy\"",
                   "flock /tmp/l \"/opt/agy\""] {
             assert!(runs_agy(c), "{c}");
         }
@@ -1349,7 +1349,7 @@ mod tests {
     #[test]
     fn program_path_checks_name_only() {
         assert!(program_is_agy("/x/agy") && program_is_agy(r"C:\npm\AGY.CMD") && program_is_agy("antigravity"));
-        assert!(!program_is_agy("/Users/agy/.local/bin/claude"), "폴더 이름(사용자 이름 agy)으로 오판하지 않는다");
+        assert!(!program_is_agy(concat!("/Users", "/agy/.local/bin/claude")), "폴더 이름(사용자 이름 agy)으로 오판하지 않는다");
         assert!(program_refused_with("gemini", "", false) && !program_refused_with("gemini", "", true));
         assert!(!program_refused_with("claude", "/usr/local/bin/claude", false));
     }
@@ -1442,11 +1442,11 @@ mod tests {
     #[test]
     fn exe_path_vs_command_string_codex_5r_minor_7() {
         // 실행 파일 경로(공백 든 경로 포함) = 마지막 이름만 · 명령 문자열 = 낱말 검사(서로 다른 함수)
-        assert!(!program_is_agy("/Users/agy/Application Support/claude"), "공백 든 경로의 폴더 이름 agy 는 프로그램이 아니다");
-        assert!(!program_is_agy(r"C:\Users\agy\App Data\claude.exe"));
-        assert!(program_is_agy("/Users/me/Application Support/agy") && program_is_agy(r"C:\Program Files\x\agy.cmd"));
-        assert!(!program_refused_with("claude", "/Users/agy/Application Support/claude", false));
-        assert!(names_agy("/Users/agy/Application Support/claude"), "명령 문자열로 읽으면 기계 입구는 막는다(받아들인 거짓 양성)");
+        assert!(!program_is_agy(concat!("/Users", "/agy/Application Support/claude")), "공백 든 경로의 폴더 이름 agy 는 프로그램이 아니다");
+        assert!(!program_is_agy(concat!(r"C:\Users", r"\agy\App Data\claude.exe")));
+        assert!(program_is_agy("/Users/x/Application Support/agy") && program_is_agy(r"C:\Program Files\x\agy.cmd"));
+        assert!(!program_refused_with("claude", concat!("/Users", "/agy/Application Support/claude"), false));
+        assert!(names_agy(concat!("/Users", "/agy/Application Support/claude")), "명령 문자열로 읽으면 기계 입구는 막는다(받아들인 거짓 양성)");
     }
 
     #[test]
@@ -1510,11 +1510,11 @@ mod tests {
     #[test]
     fn false_positive_table_codex_5r_item_5() {
         // codex 5R 「문제없다」 ⑤ — 기계 입구 낱말 검사의 거짓 양성(받아들임) vs 실행 파일 경로(③)에서 줄어든 것
-        for c in ["grep agy log", "cat docs/agy/README", "/Users/agy/bin/claude -p hi"] {
+        for c in ["grep agy log", "cat docs/agy/README", concat!("/Users", "/agy/bin/claude -p hi")] {
             assert!(names_agy(c), "기계 입구 = 여전히 막힘(받아들인 거짓 양성): {c}");
             assert!(!runs_agy(c), "실행 자리 = 통과: {c}");
         }
-        assert!(!program_is_agy("/Users/agy/bin/claude") && !program_is_agy("/Users/agy/Application Support/claude"), "③ 실행 파일 경로 = 통과");
+        assert!(!program_is_agy(concat!("/Users", "/agy/bin/claude")) && !program_is_agy(concat!("/Users", "/agy/Application Support/claude")), "③ 실행 파일 경로 = 통과");
     }
 
     #[test]

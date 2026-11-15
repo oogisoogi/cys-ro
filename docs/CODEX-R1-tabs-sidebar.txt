@@ -1,7 +1,7 @@
 Reading additional input from stdin...
 OpenAI Codex v0.167.0
 --------
-workdir: /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+workdir: ~/axdev/.wt/cys-tabs-sidebar
 model: gpt-6.1-sol
 provider: openai
 approval: never
@@ -26,9 +26,9 @@ user
 통과 조건: **잠근 합격 기준의 미달 항목 0** — 점수(0-100)·고정 향상률 목표는 금지. 판정은 verdict enum(ACCEPT|REVISE|BLOCK|ESCALATE) + evidence(file:line)로만 한다.
 
 verdict 정본 저장(필수 — 이 경로에 JSON 파일로 저장하라):
-  /Users/oogisoogi/.cys/pack/round/_reviews/cysr_묶음_탭___숨은_탭_좌석_PTY_크기_복원_조각_적대_검증_codex_1R_-r1-reviewer1.json
-  · 디렉터리가 없으면 먼저 만들어라: mkdir -p "/Users/oogisoogi/.cys/pack/round/_reviews"
-  · 스키마 = /Users/oogisoogi/.cys/pack/round/REVIEWER_VERDICT_CONTRACT.md (verdict enum + evidence file:line · score(0-100) 금지).
+  ~/.cys/pack/round/_reviews/cysr_묶음_탭___숨은_탭_좌석_PTY_크기_복원_조각_적대_검증_codex_1R_-r1-reviewer1.json
+  · 디렉터리가 없으면 먼저 만들어라: mkdir -p "~/.cys/pack/round/_reviews"
+  · 스키마 = ~/.cys/pack/round/REVIEWER_VERDICT_CONTRACT.md (verdict enum + evidence file:line · score(0-100) 금지).
   · 최상위 키: verdict justification evidence issues missing revision (필수: verdict justification evidence issues) · verdict enum: ACCEPT|REVISE|BLOCK|ESCALATE · severity: blocking|major|minor · evidence[]: {claim ref verified} · issues[]: {severity where what fix} · revision: 대상 커밋 해시(선택·리비전 바인딩)
   · 빈 골격(이 형태 그대로 채워라):
 {"verdict": "ACCEPT|REVISE|BLOCK|ESCALATE", "justification": "", "evidence": [{"claim": "", "ref": "file:line", "verified": false}], "issues": [{"severity": "blocking|major|minor", "where": "file:line", "what": "", "fix": ""}], "missing": [], "revision": ""}
@@ -47,7 +47,7 @@ verdict 정본 저장(필수 — 이 경로에 JSON 파일로 저장하라):
 codex
 지정된 파일·함수와 커밋 범위만 읽어 검토하겠습니다. 서버·빌드·시험은 실행하지 않겠습니다. 현재 환경은 파일 쓰기가 금지되어 있어 verdict JSON 저장은 제약이 있지만, 먼저 근거를 확인하고 판정을 작성하겠습니다.
 exec
-/bin/zsh -lc 'git rev-parse HEAD && git diff --stat 1a6f5be6..HEAD -- ui/src/grouptabs.ts ui/src/tabbar.ts ui/src/main.ts tests/hidden_seat_screen.rs' in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+/bin/zsh -lc 'git rev-parse HEAD && git diff --stat 1a6f5be6..HEAD -- ui/src/grouptabs.ts ui/src/tabbar.ts ui/src/main.ts tests/hidden_seat_screen.rs' in ~/axdev/.wt/cys-tabs-sidebar
  succeeded in 0ms:
 f6d917876f3bf3c873d3c540a497bc6a82d908e2
  tests/hidden_seat_screen.rs | 132 ++++++++++++++++++
@@ -57,7 +57,7 @@ f6d917876f3bf3c873d3c540a497bc6a82d908e2
  4 files changed, 513 insertions(+), 83 deletions(-)
 
 exec
-/bin/zsh -lc 'cat /Users/oogisoogi/.cys/pack/round/REVIEWER_VERDICT_CONTRACT.md' in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+/bin/zsh -lc 'cat ~/.cys/pack/round/REVIEWER_VERDICT_CONTRACT.md' in ~/axdev/.wt/cys-tabs-sidebar
  succeeded in 0ms:
 # REVIEWER_VERDICT_CONTRACT — 리뷰어 verdict 타입 계약(생성물 · 손편집 금지)
 
@@ -124,7 +124,7 @@ issues[] 계약 형태: `{severity,where,what,fix}`
 `javis_verdict.py validate <파일>`
 
 exec
-/bin/zsh -lc 'git diff 1a6f5be6..HEAD -- ui/src/grouptabs.ts ui/src/tabbar.ts tests/hidden_seat_screen.rs' in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+/bin/zsh -lc 'git diff 1a6f5be6..HEAD -- ui/src/grouptabs.ts ui/src/tabbar.ts tests/hidden_seat_screen.rs' in ~/axdev/.wt/cys-tabs-sidebar
  succeeded in 0ms:
 diff --git a/tests/hidden_seat_screen.rs b/tests/hidden_seat_screen.rs
 new file mode 100644
@@ -424,7 +424,7 @@ index 00000000..fb8a531f
 +}
 
 exec
-/bin/zsh -lc 'git diff 1a6f5be6..HEAD -- ui/src/main.ts' in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+/bin/zsh -lc 'git diff 1a6f5be6..HEAD -- ui/src/main.ts' in ~/axdev/.wt/cys-tabs-sidebar
  succeeded in 0ms:
 diff --git a/ui/src/main.ts b/ui/src/main.ts
 index 8c7ddf7d..b850afb5 100644
@@ -922,7 +922,7 @@ index 8c7ddf7d..b850afb5 100644
  
 
 exec
-/bin/zsh -lc "rg -n 'tabs:|tabs =|normalizeTabState|lastSentSize|function fitPane|function render\\(|function renderNode|resize_surface|function saveLayout|loadLayout|surface_attach|surface.attach|attach_surface|panes\\.set|panes\\.delete' ui/src/main.ts" in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+/bin/zsh -lc "rg -n 'tabs:|tabs =|normalizeTabState|lastSentSize|function fitPane|function render\\(|function renderNode|resize_surface|function saveLayout|loadLayout|surface_attach|surface.attach|attach_surface|panes\\.set|panes\\.delete' ui/src/main.ts" in ~/axdev/.wt/cys-tabs-sidebar
  succeeded in 0ms:
 344:import { fixedColumnSplit, GROUP_TABS_KEY, groupTabsOn, normalizeTabState, reconcileTabs, viewTree, type TabState, type TabView } from "./grouptabs";
 3345:function saveLayout() {
@@ -948,7 +948,7 @@ exec
 10335:      const ev = (await invoke("attach_surface", { socket: null, surfaceId: id })) as { output_event?: unknown };
 
 exec
-/bin/zsh -lc "nl -ba ui/src/main.ts | sed -n '5135,5420p'; nl -ba ui/src/main.ts | sed -n '5890,6045p'; nl -ba ui/src/grouptabs.ts; nl -ba tests/hidden_seat_screen.rs" in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+/bin/zsh -lc "nl -ba ui/src/main.ts | sed -n '5135,5420p'; nl -ba ui/src/main.ts | sed -n '5890,6045p'; nl -ba ui/src/grouptabs.ts; nl -ba tests/hidden_seat_screen.rs" in ~/axdev/.wt/cys-tabs-sidebar
  succeeded in 0ms:
   5135	      }
   5136	      render();
@@ -1633,7 +1633,7 @@ exec
    132	}
 
 exec
-/bin/zsh -lc "nl -ba ui/src/main.ts | sed -n '5880,5925p'; rg -n 'cys-layout-v2|JSON.parse|saved\\.workspaces|\\.tabs|ensurePane\\(|attach_surface|daemon_pid|daemon.*restart|restart.*daemon' ui/src/main.ts" in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+/bin/zsh -lc "nl -ba ui/src/main.ts | sed -n '5880,5925p'; rg -n 'cys-layout-v2|JSON.parse|saved\\.workspaces|\\.tabs|ensurePane\\(|attach_surface|daemon_pid|daemon.*restart|restart.*daemon' ui/src/main.ts" in ~/axdev/.wt/cys-tabs-sidebar
  succeeded in 0ms:
   5880	}
   5881	
@@ -1714,7 +1714,7 @@ exec
 11918:document.getElementById("btn-restart-daemon")!.addEventListener("click", () => void manualRestartAllDaemons());
 
 exec
-/bin/zsh -lc "nl -ba ui/src/main.ts | sed -n '3340,3400p'; nl -ba ui/src/main.ts | sed -n '4715,4750p'; nl -ba ui/src/main.ts | sed -n '5552,5635p'" in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+/bin/zsh -lc "nl -ba ui/src/main.ts | sed -n '3340,3400p'; nl -ba ui/src/main.ts | sed -n '4715,4750p'; nl -ba ui/src/main.ts | sed -n '5552,5635p'" in ~/axdev/.wt/cys-tabs-sidebar
  succeeded in 0ms:
   3340	    seen.add(g.id);
   3341	    return liveGids.has(g.id); // 멤버 0인 그룹 = 자동 해체
@@ -1901,7 +1901,7 @@ exec
 codex
 정적 추적에서 두 가지 재현 경로를 찾았습니다. 활성 부서가 `pending`이고 좌석 모델이 없으면 서명이 기록되지 않아 렌더 마이크로태스크가 계속 예약됩니다. 시험에서는 데몬 PID를 얻기 전에 실패할 경우 종료 처리가 빠집니다. 저장값 정규화와 좌석 번호 재발급 시 복원 경로도 확인하겠습니다.
 exec
-/bin/zsh -lc "git diff --unified=5 1a6f5be6..HEAD -- ui/src/main.ts | sed -n '/const lastSentSize/,/function render()/p'; nl -ba ui/src/main.ts | sed -n '11216,11238p'; nl -ba ui/src/main.ts | sed -n '4555,4600p'; nl -ba ui/src/main.ts | sed -n '6100,6125p'; nl -ba ui/src/tabbar.ts" in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+/bin/zsh -lc "git diff --unified=5 1a6f5be6..HEAD -- ui/src/main.ts | sed -n '/const lastSentSize/,/function render()/p'; nl -ba ui/src/main.ts | sed -n '11216,11238p'; nl -ba ui/src/main.ts | sed -n '4555,4600p'; nl -ba ui/src/main.ts | sed -n '6100,6125p'; nl -ba ui/src/tabbar.ts" in ~/axdev/.wt/cys-tabs-sidebar
  succeeded in 0ms:
 +const lastSentSize = new WeakMap<PaneRuntime, string>(); // (tabs-sidebar 2c) 런타임 → 마지막으로 보낸 「열x행」
  /// Fit only when actually laid out — a detached/hidden pane must not shrink the PTY.
@@ -2060,7 +2060,7 @@ exec
     39	}
 
 exec
-/bin/zsh -lc 'git rev-parse --abbrev-ref HEAD; git diff --numstat 1a6f5be6..HEAD -- ui/src/grouptabs.ts ui/src/tabbar.ts ui/src/main.ts tests/hidden_seat_screen.rs' in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+/bin/zsh -lc 'git rev-parse --abbrev-ref HEAD; git diff --numstat 1a6f5be6..HEAD -- ui/src/grouptabs.ts ui/src/tabbar.ts ui/src/main.ts tests/hidden_seat_screen.rs' in ~/axdev/.wt/cys-tabs-sidebar
  succeeded in 0ms:
 feat/tabs-sidebar
 132	0	tests/hidden_seat_screen.rs

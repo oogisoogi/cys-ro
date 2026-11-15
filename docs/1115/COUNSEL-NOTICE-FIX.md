@@ -94,7 +94,7 @@ facts 의 `cutoff`·`since`·`nonce` 는 **보내지 않는다**(`daily_body` �
 
 ### 3-a. 새 시험
 - `test_notice_covers_every_sent_field_and_nothing_else`(`test_javis_counsel.py:2146`) — 가짜 받는 곳에 신호·일일 두 통을 실제로 보내게 하고 ① 보낸 본문의 잎 칸 전부 = `HELP_SENT_FIELDS` 열쇠(하나라도 더 보내거나 덜 보내면 적) ② 표의 말이 안내문에 글자로 있다 ③ 안내문 괄호 속 9항목 각각에 실제 칸이 있다(안 보내는 것을 보낸다고 쓰지 않는다) ④ 「만 」 한정어 없음.
-- `test_names_files_and_talk_never_reach_the_wire`(`:2170`) — 좌석 이름(`worker-홍길동`·`hong-gildong-imac`)·좌석 줄 끝 경로·제목(`/Users/hong-gildong/secret.txt`·「안녕하세요 대화」)·점검 이름(경로·한글)·신호 칸 6가지(op 경로·한글 오류 코드·모르는 source·대화 판번·경로 os)를 심고 실제 `facts` 명령 → help 를 돌린다. 나간 본문에 심은 글자 0 · 좌석 = `{"count":3,"roles":["master","pack","worker"]}` · 점검 이름 = `["hook"]` 만 · 형식 안 신호 줄 1개만. (이 시험은 「막는다」의 증거이지 증명이 아니다 — 아래 5절.)
+- `test_names_files_and_talk_never_reach_the_wire`(`:2170`) — 좌석 이름(`worker-홍길동`·`hong-gildong-imac`)·좌석 줄 끝 경로·제목(`/Users/<지어낸 이름 hong-gildong>/secret.txt`·「안녕하세요 대화」)·점검 이름(경로·한글)·신호 칸 6가지(op 경로·한글 오류 코드·모르는 source·대화 판번·경로 os)를 심고 실제 `facts` 명령 → help 를 돌린다. 나간 본문에 심은 글자 0 · 좌석 = `{"count":3,"roles":["master","pack","worker"]}` · 점검 이름 = `["hook"]` 만 · 형식 안 신호 줄 1개만. (이 시험은 「막는다」의 증거이지 증명이 아니다 — 아래 5절.)
 - 화면 쪽 `counselwiring.test.ts:120` — 팩 HELP_NOTICE 의 문자열 조각을 개수와 관계없이 모아(2 → 4조각) 화면 REPORT_NOTICE 와 글자 그대로 대조.
 - ⑤ `test_old_notice_viewers_see_the_fixed_notice_once_without_pausing_sends`(`:2298`).
 

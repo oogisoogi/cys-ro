@@ -71,7 +71,7 @@ SPY = r"""
     if (cmd === 'create_surface' && (window.__CREATE_FAIL ?? []).includes(args?.socket ?? '__BASE__')) return new Promise((_, rej) => setTimeout(() => rej('create failed (sim)'), 1500)); // R11 = 부서 데몬 생성 실패
     if (cmd === 'create_surface') return new Promise((res) => setTimeout(() => {
       const sid = window.__nextSid = (window.__nextSid ?? 49) + 1; // 50, 51, … (대체 작업공간이 또 만들 수 있다)
-      window.__SEATS.push({ sock: args?.socket ?? '__BASE__', sid, no: 900 + sid, role: null, cwd: '/Users/sim', act: 'waiting', raw: 'idle', approval: false, self: null, task: null, ctx: null, shell: true });
+      window.__SEATS.push({ sock: args?.socket ?? '__BASE__', sid, no: 900 + sid, role: null, cwd: '/Users/x/', act: 'waiting', raw: 'idle', approval: false, self: null, task: null, ctx: null, shell: true });
       (window.__made ??= []).push([args?.socket ?? '__BASE__', sid]); // (F9·F10) 만든 좌석 기록 = 응답 도착 표지
       res({ surface_id: sid, display_no: 900 + sid });
     }, 1500));

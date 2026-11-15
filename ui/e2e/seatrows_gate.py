@@ -26,21 +26,21 @@ OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else UI.parent / "docs" / "evidence
 
 # 좌석 정의: (sid, display_no, role, cwd, activity_state, raw, approval, self_state, task, ctx)
 SCENARIOS = {
-    "workers0": [(1, 900, "master", "/Users/u/axdev", "waiting", "idle", False, None, None, 41)],
+    "workers0": [(1, 900, "master", "/Users/x/axdev", "waiting", "idle", False, None, None, 41)],
     "workers1": [
-        (1, 900, "master", "/Users/u/axdev", "working", "active", False, None, None, 41),
-        (2, 931, "worker", "/Users/u/axdev/site", "waiting", "idle", False, None, None, None),
+        (1, 900, "master", "/Users/x/axdev", "working", "active", False, None, None, 41),
+        (2, 931, "worker", "/Users/x/axdev/site", "waiting", "idle", False, None, None, None),
     ],
     "workers7": [
-        (1, 900, "master", "/Users/u/axdev", "working", "active", False, None, None, 41),
-        (2, 901, "cso", "/Users/u/axdev/cso", "waiting", "idle", False, None, None, 23),
-        (3, 931, "worker", "/Users/u/axdev/site", "working", "active", False, "working", "홈 화면 수정", 38),
-        (4, 932, "worker-2", "/Users/u/axdev/site", "waiting", "idle", False, "waiting", "교역자 소개", 47),
-        (5, 933, "worker-3", "/Users/u/axdev/site", "working", "active", False, None, "모바일 점검", 29),
-        (6, 934, "worker-4", "C:\\Users\\u\\work\\lms", "working", "active", True, None, "6강 발행", 52),
-        (7, 935, "worker-5", "C:\\Users\\u\\work\\lms", "waiting_for_input", "permission", False, None, "묶음 머리 수정", 63),
-        (8, 936, "worker-6", "/Users/u/axdev/video", "unknown", "unknown", False, None, None, None),  # 관측 없음 + 자기보고 없음 = 모름(○) — 자기보고 working 이 있으면 역할 점과 같이 작업 중이 된다
-        (9, 937, "worker-7", "/Users/u/axdev/video", "waiting", "idle", False, "done", "스킬 초안", 84),
+        (1, 900, "master", "/Users/x/axdev", "working", "active", False, None, None, 41),
+        (2, 901, "cso", "/Users/x/axdev/cso", "waiting", "idle", False, None, None, 23),
+        (3, 931, "worker", "/Users/x/axdev/site", "working", "active", False, "working", "홈 화면 수정", 38),
+        (4, 932, "worker-2", "/Users/x/axdev/site", "waiting", "idle", False, "waiting", "교역자 소개", 47),
+        (5, 933, "worker-3", "/Users/x/axdev/site", "working", "active", False, None, "모바일 점검", 29),
+        (6, 934, "worker-4", "C:\\Users\\x\\work\\lms", "working", "active", True, None, "6강 발행", 52),
+        (7, 935, "worker-5", "C:\\Users\\x\\work\\lms", "waiting_for_input", "permission", False, None, "묶음 머리 수정", 63),
+        (8, 936, "worker-6", "/Users/x/axdev/video", "unknown", "unknown", False, None, None, None),  # 관측 없음 + 자기보고 없음 = 모름(○) — 자기보고 working 이 있으면 역할 점과 같이 작업 중이 된다
+        (9, 937, "worker-7", "/Users/x/axdev/video", "waiting", "idle", False, "done", "스킬 초안", 84),
     ],
 }
 # 기대 모양(sid → 모양 · 꼬리표)

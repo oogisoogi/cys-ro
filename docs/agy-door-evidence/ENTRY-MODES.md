@@ -82,7 +82,7 @@ agy 이름이면 agy — 단 `$0` 자리 낱말은 글이 `$0` 을 쓸 때만 �
 ## 3. 받아들인 거짓 양성(기계 입구 ①) — 거부 글 원문
 
 막히는 예: 일정·채널·계정 어댑터·round-log·launch-agent 어댑터 cmd 에 `claude -p 'review agy door'` · `echo agy` ·
-`command -v agy` · `CLAUDE_CONFIG_DIR=/tmp/agy claude`(폴더 이름 agy) · `/Users/agy/...` 처럼 **사용자 이름이 agy 인 경로를 명령 글자에
+`command -v agy` · `CLAUDE_CONFIG_DIR=/tmp/agy claude`(폴더 이름 agy) · `~agy/...` 처럼 **사용자 이름이 agy 인 경로를 명령 글자에
 적은** 경우. (해석된 실행 파일 경로를 보는 ③ 은 마지막 이름만 보므로 사용자 이름 agy 로는 막히지 않는다.)
 막히지 않는 예: `docs/agy.md` · `agy-notes` · `agyx` · `pagy` · `agy를` · `안티그래비티`.
 
@@ -104,8 +104,8 @@ agy 이름이면 agy — 단 `$0` 자리 낱말은 글이 `$0` 을 쓸 때만 �
 |---|---|---|---|---|
 | `grep agy log` | 막힘(받아들임) | 통과 | — | 없음 |
 | `docs/agy/README` | 막힘(받아들임) | 통과(조회 프로그램 인자) | — | 없음 |
-| `/Users/agy/bin/claude -p hi` | 막힘(받아들임) | 통과 | `/Users/agy/bin/claude` = 통과 | 없음 |
-| `/Users/agy/Application Support/claude`(공백 든 해소 경로) | 막힘(받아들임 · 명령 글자로 쓰면) | — | **통과**(종전 = 공백 때문에 ① 로 읽어 막힘) | **줄어듦**(minor 7) |
+| `~agy/bin/claude -p hi` | 막힘(받아들임) | 통과 | `~agy/bin/claude` = 통과 | 없음 |
+| `~agy/Application Support/claude`(공백 든 해소 경로) | 막힘(받아들임 · 명령 글자로 쓰면) | — | **통과**(종전 = 공백 때문에 ① 로 읽어 막힘) | **줄어듦**(minor 7) |
 시험 = 단위 `false_positive_table_codex_5r_item_5` · `exe_path_vs_command_string_codex_5r_minor_7`.
 
 ## 4. 남는 우회 — 독립 검증 966 의 77꼴에 두 판정을 그대로 대 봄(판정만 · 실행 없음)

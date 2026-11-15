@@ -22,7 +22,7 @@ const base = (o: Partial<SeatInput>): SeatInput => ({
   displayNo: null,
   role: "worker",
   title: "",
-  cwd: "/Users/u/axdev/eduscan",
+  cwd: "/Users/x/axdev/eduscan",
   exited: false,
   dot: "working",
   approvalPending: false,
@@ -81,10 +81,10 @@ test("꼬리표 — 막힘 = 승인 창 · 「확인」 은 자기보고 waiting
 });
 
 test("폴더 이름 — 마지막 이름 · 맥/윈 구분자 · 끝 구분자 · 빈 값", () => {
-  expect(folderKey("/Users/u/axdev/eduscan")).toBe("eduscan");
-  expect(folderKey("/Users/u/axdev/eduscan/")).toBe("eduscan");
-  expect(folderKey("C:\\Users\\u\\work\\lms")).toBe("lms");
-  expect(folderKey("C:\\Users\\u\\work\\lms\\")).toBe("lms");
+  expect(folderKey("/Users/x/axdev/eduscan")).toBe("eduscan");
+  expect(folderKey("/Users/x/axdev/eduscan/")).toBe("eduscan");
+  expect(folderKey("C:\\Users\\x\\work\\lms")).toBe("lms");
+  expect(folderKey("C:\\Users\\x\\work\\lms\\")).toBe("lms");
   expect(folderKey("/")).toBe("");
   expect(folderKey("")).toBe("");
   expect(folderKey(null)).toBe("");

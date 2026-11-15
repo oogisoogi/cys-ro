@@ -51,7 +51,7 @@ SPY = r"""
     if (['send_input', 'close_surface', 'create_surface', 'attach_surface'].includes(cmd)) window.__calls.push([cmd, args?.surfaceId ?? null, args?.data ?? null, !!window.__HIDDEN_SINCE]);
     if (cmd === 'rename_surface') { window.__calls.push([cmd, args?.surfaceId ?? null, args?.title ?? null, false]); return Promise.resolve({ ok: true }); } // ⑭ = 이름 확정 기록
     if (cmd === 'send_input' && window.__SEND_DELAY) return new Promise((res) => setTimeout(res, window.__SEND_DELAY)).then(() => orig(cmd, args)); // ⑬ = 느린 데몬 흉내(앞 글자 응답이 늦어 뒤 글자가 줄 선다)
-    if (cmd === 'create_surface') { window.__SEATS.push({ sock: args?.socket ?? '/sandbox/cys.sock', sid: 50, no: 950, role: null, cwd: '/Users/sim', act: 'waiting', raw: 'idle', approval: false, self: null, task: null, ctx: null }); return Promise.resolve({ surface_id: 50, display_no: 950 }); }
+    if (cmd === 'create_surface') { window.__SEATS.push({ sock: args?.socket ?? '/sandbox/cys.sock', sid: 50, no: 950, role: null, cwd: '/Users/x/', act: 'waiting', raw: 'idle', approval: false, self: null, task: null, ctx: null }); return Promise.resolve({ surface_id: 50, display_no: 950 }); }
     if (cmd === 'list_surfaces') return orig(cmd, args).then((r) => { for (const s of r.surfaces) if ((window.__EXITED ?? []).includes(s.surface_id)) s.exited = true; return r; });
     if (cmd === 'close_surface') return Promise.resolve({ ok: true });
     if (cmd === 'list_dir') return new Promise((res) => setTimeout(() => res([{ name: 'proj', is_dir: true }, { name: 'a.txt', is_dir: false }]), window.__LISTDIR_DELAY ?? 0)); // ⑪⑫ = 느린 데몬 흉내
@@ -309,7 +309,7 @@ def main() -> int:
             ctx, pg, errs = page()
             box = pg.query_selector('#root .pane[data-sid="3"] .xterm-screen').bounding_box()
             pg.evaluate("() => { window.__calls = []; window.__toasts = []; window.__LISTDIR_DELAY = 1500; }")
-            pg.evaluate("([x, y]) => window.__emit('tauri://drag-drop', { paths: ['/Users/sim/proj'], position: { x, y } })", [box["x"] + box["width"] / 2, box["y"] + box["height"] / 2])
+            pg.evaluate("([x, y]) => window.__emit('tauri://drag-drop', { paths: ['/Users/x/proj'], position: { x, y } })", [box["x"] + box["width"] / 2, box["y"] + box["height"] / 2])
             pg.wait_for_timeout(300)
             pg.click('#root .group-tab:has-text("lms")')
             pg.wait_for_timeout(2200)

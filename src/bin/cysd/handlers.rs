@@ -3989,24 +3989,8 @@ fn observe_submit_parent_with(
 // Do not reuse the general pid_alive or WinChild::try_wait semantics: both can treat
 // an unavailable query as alive. A busy/error query supplies no actor evidence.
 fn owned_submit_root_live(surface: &crate::state::Surface) -> bool {
-    if surface.exited.load(Ordering::Acquire) { return false; }
-    let mut child = match surface.child.try_lock() {
-        Ok(child) => child,
-        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
-        Err(std::sync::TryLockError::WouldBlock) => return false,
-    };
-    if child.process_id() != Some(surface.pid) { return false; }
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
-        use windows_sys::Win32::System::Threading::WaitForSingleObject;
-        let Some(handle) = child.as_raw_handle() else { return false; };
-        // WinChild::try_wait conflates GetExitCodeProcess failure with STILL_ACTIVE.
-        // Only a successful unsignalled observation of the retained handle is positive.
-        unsafe { WaitForSingleObject(handle as _, 0) == WAIT_TIMEOUT }
-    }
-    #[cfg(not(windows))]
-    { matches!(child.try_wait(), Ok(None)) }
+    // 본문 = 좌석 프로세스 손잡이(`seat_proc::owned_root_live` · 논리 그대로 옮김).
+    crate::seat_proc::owned_root_live(surface)
 }
 
 fn observe_submit_surface(daemon: &Daemon, caller_pid: Option<u32>) -> Option<Arc<crate::state::Surface>> {
@@ -22214,8 +22198,10 @@ mod tests {
 
     fn make_surface(daemon: &Arc<Daemon>, role: Option<&str>) -> u64 {
         // ★v116-flake-pty ⑵: PTY 고갈(ENXIO)만 상한 재시도 · 넘기면 「PTY 고갈 — 결함 판정 보류」 문구로 실패.
+        // 작업 폴더를 명시한다(독립 검증 D7): 다른 시험이 프로세스 전역 HOME 을 임시 폴더로 바꾸고 지우므로 HOME 에 기대지 않는다.
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
         let s = crate::pty_test_support::retry_on_pty_exhaustion("make_surface", || {
-            daemon.create_surface(None, Some("sleep 30".into()), None, role.map(|r| r.into()), 24, 80)
+            daemon.create_surface(Some(cwd.clone()), Some("sleep 30".into()), None, role.map(|r| r.into()), 24, 80)
         })
         .expect("create surface");
         daemon.surfaces.lock().unwrap().insert(s.id, s.clone());

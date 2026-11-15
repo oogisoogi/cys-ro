@@ -66,6 +66,7 @@ mod repaint;
 mod root_registration;
 mod s5_escalation;
 mod schedule;
+mod seat_proc;
 mod severity;
 mod skillrun;
 mod state;
@@ -4213,6 +4214,14 @@ mod startup_lock_retry_tests {
 //   파일 머리 모듈 목록에 두면 제품 부분이 잘려 H-TICK-ALIVE 가 붉는다(09-24 실측) — 시험 모듈 구역에 둔다.
 #[cfg(test)]
 mod pty_test_support;
+#[cfg(test)]
+mod seat_d7_tests;
+#[cfg(test)]
+mod seat_flood_tests;
+#[cfg(test)]
+mod seat_latency_tests;
+#[cfg(test)]
+mod seat_tail_tests;
 
 #[cfg(test)]
 mod env_scrub_tests {

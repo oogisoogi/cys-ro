@@ -1505,8 +1505,9 @@ pub fn verify_roots_quiescent(
         let Ok(s) = std::fs::read_to_string(&lock) else {
             continue;
         };
-        if let Ok(pid) = s.trim().parse::<u32>() {
-            if pid != 0 && pid_alive_and_cysd(pid) {
+        // ★T3: 첫 칸만(노브 켬이면 `pid 출생시각` 두 칸) — 두 칸을 통째로 숫자로 읽으면 실패해 산 cysd 를 못 보고 넘어간다.
+        if let Some(pid) = crate::startup_lock_holder_pid(&s) {
+            if pid_alive_and_cysd(pid) {
                 return Err(format!(
                     "살아있는 cysd(pid {pid})가 {} 을 보유 중 — 정지 후 재시도",
                     lock.display()
@@ -3158,6 +3159,21 @@ mod tests {
         // 게이트 거부 시 부분 이동 0.
         assert!(r.cys_base.join("pack").exists());
         // 홀더 사망(또는 pid 재사용으로 cysd 아님) → 통과.
+        let dead = |_pid: u32| false;
+        assert!(verify_roots_quiescent(&r, &dead, &no_daemon).is_ok());
+    }
+
+    /// TICKET=cysr-seatkeep-t3 독립 검증 D5: 노브 켬 cysd 는 잠금에 `"<pid> <출생 시각 µs>"` 두 칸을 쓴다 — 관문이 첫 칸을 읽어
+    /// 산 cysd 를 막아야 한다(옛 판독기 `s.trim().parse::<u32>()` 로 되돌리면 통과시켜 붉어진다).
+    #[test]
+    fn quiescent_gate_blocks_live_cysd_holder_two_field_lock() {
+        let td = test_home("gate2");
+        let r = seed_practice_tree(&td);
+        touch(&r.state_root.join("cys/cys.lock"), "4242 1794420130692329");
+        let live = |pid: u32| pid == 4242;
+        let no_daemon = || false;
+        let e = verify_roots_quiescent(&r, &live, &no_daemon).expect_err("두 칸 잠금의 산 cysd 를 통과시킴");
+        assert!(e.contains("pid 4242"), "{e}");
         let dead = |_pid: u32| false;
         assert!(verify_roots_quiescent(&r, &dead, &no_daemon).is_ok());
     }

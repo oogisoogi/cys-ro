@@ -525,6 +525,16 @@ pub fn env_compat(primary: &str) -> Option<String> {
         .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
 }
 
+/// cysd 시작 잠금 파일(`cys.lock`)의 홀더 pid — **첫 칸**(공백 앞)만 읽는다. 빈 파일·0·파싱 실패 = None(구 락파일과 같은 보수 해석).
+/// 형식 = `"{pid}"`(기본) 또는 `"{pid} {출생 시각 µs}"`(seatkeep 노브 켬 · T3). 독자(cysd deadman · cys doctor · factory_reset 격리 관문 ·
+/// GUI 로그)가 모두 이것 하나를 쓴다.
+pub fn startup_lock_holder_pid(text: &str) -> Option<u32> {
+    match text.split_whitespace().next()?.parse::<u32>().ok()? {
+        0 => None,
+        pid => Some(pid),
+    }
+}
+
 /// 선두 UTF-8 BOM(U+FEFF) **1개**를 벗긴다 — JSON 파일 판독기의 공용 전처리(C3-c · 2026-09-17 3라운드).
 ///
 /// 왜 공용인가: `serde_json` 은 선두 U+FEFF 를 문법 오류로 거부하고, 한국어 Windows 편집기("UTF-8(BOM)")가
@@ -7294,6 +7304,10 @@ mod spawn_policy_tests {
         //   `spawn_policy(ChildLifetime::Attached)` 등급(원작자 b9151464 · 3a728d10).
         ("src/agy_statusline.rs", 2),
         ("src/app_bundle.rs", 4),
+        // seatkeep T2·T3(cysr-seatkeep-piece-fixes): 좌석 보유 장치 바이너리의 `#[cfg(unix)] mod imp` 안 시험 모듈(들여쓴
+        //   `#[cfg(test)] mod tests` 라 production_slice 가 못 걷는다) — `ps` 생존 확인 1 · 그룹 리더 `/bin/sh` 검체 1. ⓐ윈에서 컴파일 안 됨
+        //   (cfg unix · 윈 main = 종료 2) · 제품 스폰 0.
+        ("src/bin/cys-seatkeep/main.rs", 2),
         ("src/bin/cys.rs", 15),
         ("src/bin/cysd/accounts.rs", 2),
         // 1.1.11 편입(원작자 0.14.52 시험 파일 3개 · 전부 #[cfg(test)] 격리 고정물 — 제품 스폰 0): F-01 U4-3 계측 하네스 2 ·
@@ -7311,6 +7325,17 @@ mod spawn_policy_tests {
         ("src/bin/cysd/native_publication_transition_tests.rs", 2),
         ("src/bin/cysd/pty_admission_tests.rs", 1),
         ("src/bin/cysd/schedule.rs", 3),
+        // seatkeep T3(cysr-seatkeep-piece-fixes): 노브 켬 좌석의 보유 장치 기동 `Command::new(&self.exe)` 1 — ⓐ윈에서 안 돈다
+        //   (`#[cfg(target_os = "macos")] mod seatkeep_mac` · 윈 = T7) · ⓑ등급 미부착이 의도: 맥에서 `hidden_command`(Attached)는 아무것도
+        //   얹지 않아 행동은 같지만, 이 자식의 생사 등급(조종자 종속 ↔ T4 입양 = 데몬보다 오래 삶)은 T4·T7 이 정한다 — 지금 Attached 를 적으면
+        //   그 결정을 앞당겨 적는 셈이라 계수로만 묶는다(좌석 프로세스 생성 = 고위험 경로 · 동작 변경 0).
+        ("src/bin/cysd/seat_proc.rs", 1),
+        // seatkeep T3 시험 파일 4개(cysd main.rs·seat_proc.rs 에서 `#[cfg(test)] mod` 로만 붙음 · 제품 스폰 0): `ps` 상태·RSS 확인 3 ·
+        //   꼬리 시험 `/bin/cat` 검체 1 · 복사본 seatkeep 기동 1.
+        ("src/bin/cysd/seat_d7_tests.rs", 1),
+        ("src/bin/cysd/seat_flood_tests.rs", 1),
+        ("src/bin/cysd/seat_proc_tests.rs", 1),
+        ("src/bin/cysd/seat_tail_tests.rs", 2),
         ("src/bin/cysd/state.rs", 3),
         ("src/bin/cysd/usage.rs", 3),
         ("src/factory_reset.rs", 7),

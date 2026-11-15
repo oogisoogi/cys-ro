@@ -3,6 +3,7 @@
 //   ② CSS: 무조건 깜박임 제거 — 작업 중만 깜박인다 · 움직임 줄임에서도 작업 중은 구별된다
 //   ③ U-F06: main.ts 의 **실제** refreshPaneTitles·활동 패스 본문을 떼어 돌린다(가짜 DOM · 가짜 IPC · 가짜 단조 시계)
 import { describe, it, expect } from "bun:test";
+import { seatDot } from "./seatrows"; // (tabs-sidebar 1c) paintRoleDot 의 판정 함수
 import { readFileSync } from "node:fs";
 import {
   parseDisplayActivity,
@@ -326,10 +327,13 @@ function harness() {
     exitedSweepArm: null, sweepScopeFor: () => null, exitedSweepTargets: () => [], settleSweep: (a: unknown) => a,
     openNewlyRegisteredDepts: async () => false, rememberRoles: nothing, arrangeWs: nothing,
     displayNoByKey: new Map<string, unknown>(), exitedPaneKeys: new Set<string>(),
+    noteSeatSize: nothing, forgetEndedSeatGroup: nothing, lastSeatRow: new Map<string, unknown>(), // (948 D5·D3) 크기 기억 대조 · 끝난 좌석 묶음 기록 — 이 검체의 축 밖
     surfaceWorking: () => false, titleColorRole: false, paneTitleText: (_sid: number, t: string): string => String(t), ruleTitleOf: () => null,
     placeholderSids: new Set<number>(), touchedPlaceholders: new Set<number>(), shouldClosePlaceholder: () => false, placeholderScreenLines: () => null,
     hqMasterSids: null, renderWsTabs: nothing,
     lastSurfacesBySocket: new Map<string, unknown>(), refreshUsageAccounts: () => Promise.resolve(), refreshNamedReporters: () => Promise.resolve(), renderSidebarUsage: nothing,
+      seatListBySock: new Map<string, unknown>(), seatGroups: {}, syncSeatGroupsFromList: () => ({ changed: false }), saveSeatGroups: nothing, refreshSeatRows: nothing, seatDot, approvalSeats: new Set<string>(), // (tabs-sidebar 2d) 옮긴 묶음 동기 = 무관(무동작)
+      // 실제 판정 함수(seatrows.seatDot) — 대역 아님 // (tabs-sidebar 조각1) 좌석 줄 재료·그리기 — 이 검체의 축과 무관(무동작)
   };
   const loaded = loadWith(FNS, deps);
   fns = loaded.fns;

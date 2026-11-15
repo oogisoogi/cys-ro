@@ -101,7 +101,7 @@ export function needsExpiryBanner(id: string): boolean {
 export function expiryBannerText(name: string, detail: string): { title: string; body: string } {
   return {
     title: `⚠ ${name}`,
-    body: `${detail}\n(알람은 자동으로 닫혔습니다 — Control Center의 알람 탭에서 다시 볼 수 있습니다.)`,
+    body: `${detail}\n(알람은 자동으로 닫혔습니다 — Control Center의 알람 탭에서 다시 볼 수 있습니다 · 화면 설정 → 컨트롤 센터 열기.)`,
   };
 }
 

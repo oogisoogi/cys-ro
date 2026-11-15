@@ -3384,6 +3384,16 @@ enum FeedAction {
 }
 
 
+/// `cys seat-group --surface <좌석> <묶음>` 인자.
+#[derive(clap::Args)]
+struct SeatGroupArgs {
+    /// 옮길 좌석(#보이는번호 · surface:N · 내부 번호) — 반드시 적는다(자기 좌석 폴백 없음)
+    #[arg(long)]
+    surface: String,
+    /// 묶음 이름(1~64자) · "" = 옮김 해제
+    group: String,
+}
+
 /// ★1.1.11 편입 — 원작자 0.14.52 의 새 최상위 동사 2개(`Command` 에 평탄화 · 이름·도움말·숨김은 원작자 그대로).
 #[derive(Subcommand)]
 enum VendorAuxCommand {
@@ -3399,6 +3409,14 @@ enum VendorAuxCommand {
     ///   the inline form, 2044 KiB without the variant and with this form — measured, debug build).
     #[command(name = "kept-pane-notice", hide = true)]
     KeptPaneNotice(KeptPaneNoticeArgs),
+    /// (tabs-sidebar 2d) 좌석을 앱의 다른 묶음(탭)으로 옮긴다 — master 좌석 또는 좌석 밖 터미널에서만. 묶음 이름을 비우면("") 옮김 해제(자동 = 생성 폴더).
+    /// ★여기(평탄화 열거) 둔 이유: `Command` 에 변형을 하나라도 더하면(별도 평탄화 열거로도) debug 파싱 프레임이 2 MiB 시험 스레드를 넘었다
+    ///   (실측: `aid_s5_reap_due_is_explicit_and_json_is_validated` 스택 넘침 · HEAD 판 통과 · RUST_MIN_STACK 8 MiB 통과). 최상위 동사 이름은 그대로다.
+    #[command(name = "seat-group")]
+    SeatGroup(SeatGroupArgs),
+    /// (tabs-sidebar 2d) 앱의 컨트롤 센터를 연다(말로 열기 통로) — master 좌석 또는 좌석 밖 터미널에서만.
+    #[command(name = "open-control-center")]
+    OpenControlCenter,
 }
 
 /// ★1.1.8 휴면(master D-TEAM [master#36f48cf7] · judge 조건 ① [master#cd9e534c]) — 원작자 팀 만들기 동사 2개.
@@ -6522,6 +6540,22 @@ fn run(command: Command) -> i32 {
                 )
                 .map(|_| println!("OK"))
             })
+        }
+
+        Command::VendorAux(VendorAuxCommand::SeatGroup(SeatGroupArgs { surface, group })) => resolve_surface_arg(&surface).and_then(|sid| {
+            let g = group.trim();
+            request("surface.set_group", json!({"surface_id": sid, "group": if g.is_empty() { Value::Null } else { json!(g) }})).map(|r| {
+                let shown = r["group"].as_str().unwrap_or("(자동 · 생성 폴더)");
+                if r["changed"].as_bool() == Some(true) {
+                    println!("OK surface:{sid} → 묶음 {shown}");
+                } else {
+                    println!("OK surface:{sid} 이미 묶음 {shown} (변화 없음)");
+                }
+            })
+        }),
+
+        Command::VendorAux(VendorAuxCommand::OpenControlCenter) => {
+            request("ui.open_panel", json!({"panel": "control-center"})).map(|_| println!("OK 컨트롤 센터 열기 요청을 앱에 보냈습니다"))
         }
 
         Command::UsageRegister { transcript, surface, source } => {
@@ -11862,7 +11896,7 @@ fn run_factory_reset(
         // ★1.1.10(S8): 자동 소거는 없어졌다 — 문장은 앱 정본(ui/src/resetconfirm.ts TRASH_KEEP_NOTICE)과 같게(시험 factory_reset_trash_notice_tests).
         //   ★단 휴지통 삭제가 꺼진 빌드(윈도우)는 휴지통에서 지울 수도 없다 — 그 문장은 TRASH_KEEP_NOTICE_WIN(14일 자동 정리 약속은 거짓이라 뺐다 · cysr-1110-counsel-off ⓒ).
         if cys::trash_delete_supported() {
-            println!("        격리본은 그대로 보관됩니다 — 이 제품은 더 이상 스스로 지우지 않습니다(삭제는 Control Center 의 휴지통에서 명령합니다).");
+            println!("        격리본은 그대로 보관됩니다 — 이 제품은 더 이상 스스로 지우지 않습니다(삭제는 Control Center 의 휴지통에서 명령합니다 · 화면 설정 → 컨트롤 센터 열기).");
         } else {
             println!("        격리본은 그대로 보관되고 저절로 지워지지 않습니다(윈도우 — 이번 판은 휴지통에서 직접 지우는 기능이 아직 꺼져 있습니다. 그 기능이 켜지는 판부터는 맥처럼 휴지통에서 지울 수 있습니다).");
         }
@@ -42538,6 +42572,58 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
 
     /// ★(0.14.44 · A3) CLI `approval check` 의 끝 숫자 토큰 떼기 — 대상 동사 7종 × (`2` · `1` · `3` · `1 2`) 는 떼어지고, 숫자 셋 · 그대로 읽히는 명령 · 대상 밖 명령 ·
     /// 모르는 옵션 · 도움말 · 인자가 모자란 꼴은 **원문 그대로**. 그리고 7종의 완전한 명령 뒤에 인자 하나를 더 붙이면 "남는 인자" 오류다(성질 고정 — 동사 문법이 바뀌면 멈춘다).
+    #[test]
+    /// ★스택 감시(TICKET=cysr-tabs-sidebar-impl · master#9278e6ab) — `.cargo/config.toml` 이 시험 스레드 스택을 4MiB 로 올렸다(거대 clap
+    /// `Command` 의 debug 파싱 프레임이 libtest 기본 2MiB 한도에 닿아 시험 프로세스가 통째로 죽은 사고 4회). 그 대신 이 시험 하나가
+    /// 「2MiB + 여유 64KiB」 스레드에서 파싱이 끝나는지 본다 — 예산이 정확히 2MiB 가 아닌 까닭: 오늘 실측 문턱이 2040~2044KiB(2d 전
+    /// 2032~2040KiB)라 2MiB 자체는 들쭉날쭉 붉어진다. 넘침은 프로세스를 죽이므로 자기 시험 바이너리를 자식으로 다시 띄워 그 안에서 잰다
+    /// → 프레임이 64KiB 넘게 더 커지면 **이 시험만** 붉어진다(다른 시험은 4MiB 로 계속 돈다). 붉어지면: 새 동사를 `VendorAuxCommand`
+    /// 처럼 평탄화 열거 + 따로 둔 Args 구조체로 옮겨 프레임을 줄이거나(cfbe352d 실측), 까닭을 적고 예산을 올린다.
+    fn cli_parse_fits_2mib_plus_64kib_stack_guard_because_cargo_config_raises_test_stack() {
+        let out = std::process::Command::new(std::env::current_exe().expect("시험 바이너리"))
+            .args(["--exact", "tests::cli_parse_stack_probe_child", "--ignored", "--nocapture", "--test-threads=1"])
+            .env("CYS_CLI_STACK_PROBE", "1")
+            .output()
+            .expect("자식 시험 실행");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success() && String::from_utf8_lossy(&out.stdout).contains("1 passed"),
+            "clap 파싱이 2MiB+64KiB 스레드를 넘쳤다(프레임이 커졌다): status={:?} stderr={}",
+            out.status,
+            err.chars().take(400).collect::<String>()
+        );
+    }
+
+    #[test]
+    #[ignore = "자식 프로세스 전용 — cli_parse_fits_2mib_plus_64kib_stack_guard_… 가 부른다"]
+    fn cli_parse_stack_probe_child() {
+        if std::env::var("CYS_CLI_STACK_PROBE").is_err() {
+            return;
+        }
+        let h = std::thread::Builder::new()
+            .stack_size((2048 + 64) * 1024)
+            .spawn(|| {
+                use clap::Parser;
+                // 넘침을 낸 적 있는 길(a3 의 완전한 명령 + 남는 인자 오류 · aid_s5 reap-due · 2d seat-group)
+                for c in [
+                    "cys kill 123",
+                    "cys close-surface surface:5",
+                    "cys launch-agent --role worker --agent claude --cwd /a/hq",
+                    "cys cycle-agent --surface surface:5",
+                    "cys reap-due surface:9",
+                    "cys seat-group --surface surface:5 lms",
+                    "cys open-control-center",
+                ] {
+                    let toks: Vec<&str> = c.split_whitespace().collect();
+                    assert!(Cli::try_parse_from(toks.iter()).is_ok(), "{c}");
+                    let more: Vec<&str> = toks.iter().copied().chain(std::iter::once("2")).collect();
+                    assert!(Cli::try_parse_from(more.iter()).is_err(), "{c} 2");
+                }
+            })
+            .expect("2MiB+64KiB 스레드");
+        h.join().expect("파싱 스레드");
+    }
+
     #[test]
     fn a3_strip_hook_digits_only_for_the_seven_target_verbs_when_the_rest_is_leftover_args() {
         use clap::Parser;

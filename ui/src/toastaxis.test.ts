@@ -158,6 +158,8 @@ function build(opts: { quiet: boolean; ccOpen?: boolean; slugs?: Record<string, 
     MOUSE_ALL_OFF: "\x1b[?1000l",
     BULK_CONFIRM_MAX: 20,
     panes: opts.panes ?? new Map(),
+    seatListBySock: new Map(), // (tabs-sidebar 2d) surface.group.changed 분기 재료(좌석 목록 없음 = 열쇠 없음 = 무동작)
+    seatGroups: {},
     socketForSlug: new Map(Object.entries(opts.slugs ?? {})),
     stickyToasts: new Map(),
     document: {
@@ -256,6 +258,9 @@ const EVENTS: { id: string; ev: Record<string, unknown>; expect: string[] }[] = 
   { id: "agent.exited", ev: { name: "agent.exited", category: "agent", surface_id: 7, payload: { role: "worker" } }, expect: ["refreshSidebarStatus"] },
   { id: "master.deadman", ev: { name: "master.deadman", category: "alert", surface_id: 1, payload: { reason: "agent process dead", role: "master" } }, expect: [] },
   { id: "queue.starved", ev: { name: "queue.starved", category: "queue", surface_id: 2, payload: {} }, expect: [] },
+  // (tabs-sidebar 2d) 좌석 묶음 옮김 · 말로 컨트롤 센터 열기 — 토스트·배너 0(화면 배치만 바꾼다)
+  { id: "surface.group.changed", ev: { name: "surface.group.changed", category: "surface", surface_id: 3, payload: { surface_id: 3, group: "lms", previous: null } }, expect: [] },
+  { id: "ui.open_panel", ev: { name: "ui.open_panel", category: "ui", payload: { panel: "control-center" } }, expect: [] },
   // ★v0.14.51 편입(우리 main.ts): 우리는 원작자 S5(큐 막힘 경보 제거)를 받지 않았다 — 판정 가능한 payload(사람 손 · surface:<n>)로 경보 블록이 실제로 도는 모양을 더한다.
   { id: "queue.starved.human", ev: { name: "queue.starved", category: "queue", surface_id: 2, socket_slug: "dept-5", payload: { surface_ref: "surface:2", role: "worker", remedy_code: "machine_residue", blocked_by: "x", waited_secs: 700 } }, expect: [] },
   { id: "queue.delivered", ev: { name: "queue.delivered", category: "queue", surface_id: 2, payload: {} }, expect: [] },
@@ -775,7 +780,7 @@ interface KeptSite {
   pin: string;
 }
 const KEPT_SITES: KeptSite[] = [
-  { id: "feed-wait-banner", kind: "R2", anchor: "if (waitBannerReplacesToast() && payload.wait === true && payload.auto_route !== true) osBanner(feedCreatedToastTitle(payload.kind), String(payload.title ?? \"\"));", nth: 0, pin: "83f3a45e7bfb4b70" }, // ★cysr 1.1.10 Q2=B 재기준선(문장 머리에 waitBannerReplacesToast() 조건 · 17801e6610300e2c → 83f3a45e7bfb4b70) · 재기준선: 우리 onDaemonEvent 의 선행 분기 줄(restore.retrying·role.takeover·seat.folder_denied·queue.expired/revived·복원 카드 판정) · 원작자 U16 팀 제안 분기 없음 · ★1.1.10 통합 재계산: 선행 분기 queue.dropped(winqueue Q1-A ①) 추가(7e292a7ea0458b84 → 17801e6610300e2c)
+  { id: "feed-wait-banner", kind: "R2", anchor: "if (waitBannerReplacesToast() && payload.wait === true && payload.auto_route !== true) osBanner(feedCreatedToastTitle(payload.kind), String(payload.title ?? \"\"));", nth: 0, pin: "6a2731d1667d685d" }, // ★tabs-sidebar 2d 재기준선: 선행 분기 surface.group.changed · ui.open_panel 추가(83f3a45e7bfb4b70 → 6a2731d1667d685d) · ★cysr 1.1.10 Q2=B 재기준선(문장 머리에 waitBannerReplacesToast() 조건 · 17801e6610300e2c → 83f3a45e7bfb4b70) · 재기준선: 우리 onDaemonEvent 의 선행 분기 줄(restore.retrying·role.takeover·seat.folder_denied·queue.expired/revived·복원 카드 판정) · 원작자 U16 팀 제안 분기 없음 · ★1.1.10 통합 재계산: 선행 분기 queue.dropped(winqueue Q1-A ①) 추가(7e292a7ea0458b84 → 17801e6610300e2c)
   { id: "K5-daemon-error", kind: "daemon-info", anchor: "info.textContent = `daemon error: ${e.payload}`;", nth: 0, pin: "1fc56231bf45df6e" },
   { id: "K5-startup-failed", kind: "daemon-info", anchor: "document.getElementById(\"daemon-info\")!.textContent = `startup failed: ${e}`;", nth: 0, pin: "607b4ac9163cc886" },
   { id: "K5-recovery-failed", kind: "daemon-info", anchor: "document.getElementById(\"daemon-info\")!.textContent = `startup failed: ${e} / recovery failed: ${e2}`;", nth: 0, pin: "bd517611b51bc743" },
@@ -985,6 +990,7 @@ describe("TOAST 축 — 출처 핀 · 통짜 가드 금지 · 커버리지", () 
     for (const n of names) expect([n, EVENTS.some((e) => e.ev.name === n)]).toEqual([n, true]);
     // ★v0.14.51 편입(우리 main.ts): 원작자 17 + 우리 5(restore.retrying · role.takeover · seat.folder_denied · queue.expired · queue.revived) = 22
     // ★1.1.10 통합: + queue.dropped(winqueue Q1-A ①) = 23
-    expect(names.size).toBe(23); // approval.request/stalled · context.threshold · restore.retrying · role.takeover · seat.folder_denied · pane.idle · master.idle/deadman · agent.exited · queue.starved/expired/revived/delivered · status.changed · task.changed · osc.notify · feed.item.created · watchdog.duplicate_procs · surface.exited/closed/reaped
+    // ★tabs-sidebar 2d: + surface.group.changed · ui.open_panel = 25
+    expect(names.size).toBe(25); // approval.request/stalled · context.threshold · restore.retrying · role.takeover · seat.folder_denied · pane.idle · master.idle/deadman · agent.exited · queue.starved/expired/revived/delivered · status.changed · task.changed · osc.notify · feed.item.created · watchdog.duplicate_procs · surface.exited/closed/reaped
   });
 });

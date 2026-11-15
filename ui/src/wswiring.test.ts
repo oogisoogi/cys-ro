@@ -1127,8 +1127,11 @@ describe("복원 보류 — 탭은 유지하고 트리만 비운다(F2)", () => 
     const i = code.indexOf("if (!collectSids(current().tree).length) {");
     expect(i).toBeGreaterThan(0);
     const seg = code.slice(i, code.indexOf("\n  render();", i));
-    expect(seg).toContain("newSurface(null, current().socket, T_NEW)");
-    expect(seg).toContain("if (!current().socket) {");
+    // (ChatGPT F1) 소켓은 처음 잡은 작업공간의 것으로 고정(cwSock) — 폴백 판정도 그 값으로(탭을 바꿔도 다른 데몬 좌석을 붙이지 않는다)
+    expect(seg).toContain("const cwSock = cw.socket;");
+    expect(seg).toContain("newSurface(null, cwSock, T_NEW)");
+    expect(seg).toContain("if (!cwSock) {");
+    expect(seg).not.toContain("current().socket");
   });
 
   it("★수동 [지금 켜기] 의 등재 조회에도 상한이 있다(무기한 disabled 금지)", () => {
@@ -1472,7 +1475,7 @@ describe("U2+U3 좌석 배치 배선 — (1.1.8 X1) 우리 균등 배치(formati
     expect((code.match(/await closePane\(sid, socket\)/g) ?? []).length).toBe(3);
     expect((code.match(/await closePane\(sid, srcSock\)/g) ?? []).length).toBe(2);
     expect((code.match(/await closePane\(newSid, destWs\.socket\)/g) ?? []).length).toBe(1);
-    expect((code.match(/await closePane\(sid, ws\.socket\)/g) ?? []).length).toBe(2);
+    expect((code.match(/await closePane\(sid, ws\.socket\)/g) ?? []).length).toBe(3); // (codex 2R #3) +1 = 지워진 작업공간의 새 좌석 닫기(dropSeatOfGoneWs)
     const guarded = code.slice(code.indexOf("async function closePane("), code.indexOf("interface PaneRuntime"));
     expect(guarded.indexOf('await invoke("close_surface"')).toBeGreaterThan(0);
     expect(guarded.indexOf('await invoke("close_surface"')).toBeLessThan(guarded.indexOf("detachPane(sid, socket);"));

@@ -1,0 +1,2273 @@
+Reading additional input from stdin...
+OpenAI Codex v0.167.0
+--------
+workdir: /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+model: gpt-6.1-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: high
+reasoning summaries: none
+session id: 01a1c82a-7e84-7300-9575-9e34b8b89500
+--------
+user
+[리뷰 의뢰 — 엄격 제약 준수 · 지정 범위만]
+검토 범위(이 파일/범위만, 무관 파일·repo 배회 금지): ui/src/grouptabs.ts · ui/src/tabbar.ts · ui/src/main.ts 의 wsViewTree·mountTabBar·render·fitPane·refreshSeatRows·pickSeat · tests/hidden_seat_screen.rs (가지 feat/tabs-sidebar · 1a6f5be6..HEAD)
+과업: cysr 묶음 탭 — 숨은 탭 좌석 PTY 크기·복원 조각 적대 검증(codex 1R)
+
+엄격 제약 (REVIEWER_DIRECTIVE §2 — 위반 금지):
+  - **지정 파일과 task만 검토**한다(의뢰 범위 밖 확장 금지). **무관한 repo 및 파일 배회 금지**,
+  - **서버 기동/상태 변경 명령 금지**(자원 오염 차단) — 서버·장시간 프로세스를 띄우지 않고,
+  - 검토 대상을 직접 수정하지 않는다(의견 제시가 기본). 직접 생성·수정 의뢰를 받은 경우에만
+  - **정지 경계(다섯 정지의 상주 배치 · 리뷰어 헌장 제0조)**: 로드맵 밖 새 범위 · soul/CLAUDE.md/
+
+리뷰 형식: [문제점] [논쟁점] [다음 단계 조언] — 각 지적에 파일:라인 또는 구체 근거.
+근거 없는 인상비평·칭찬만 하는 리뷰 금지. 결함을 찾는 것이 직무다.
+통과 조건: **잠근 합격 기준의 미달 항목 0** — 점수(0-100)·고정 향상률 목표는 금지. 판정은 verdict enum(ACCEPT|REVISE|BLOCK|ESCALATE) + evidence(file:line)로만 한다.
+
+verdict 정본 저장(필수 — 이 경로에 JSON 파일로 저장하라):
+  /Users/oogisoogi/.cys/pack/round/_reviews/cysr_묶음_탭___숨은_탭_좌석_PTY_크기_복원_조각_적대_검증_codex_1R_-r1-reviewer1.json
+  · 디렉터리가 없으면 먼저 만들어라: mkdir -p "/Users/oogisoogi/.cys/pack/round/_reviews"
+  · 스키마 = /Users/oogisoogi/.cys/pack/round/REVIEWER_VERDICT_CONTRACT.md (verdict enum + evidence file:line · score(0-100) 금지).
+  · 최상위 키: verdict justification evidence issues missing revision (필수: verdict justification evidence issues) · verdict enum: ACCEPT|REVISE|BLOCK|ESCALATE · severity: blocking|major|minor · evidence[]: {claim ref verified} · issues[]: {severity where what fix} · revision: 대상 커밋 해시(선택·리비전 바인딩)
+  · 빈 골격(이 형태 그대로 채워라):
+{"verdict": "ACCEPT|REVISE|BLOCK|ESCALATE", "justification": "", "evidence": [{"claim": "", "ref": "file:line", "verified": false}], "issues": [{"severity": "blocking|major|minor", "where": "file:line", "what": "", "fix": ""}], "missing": [], "revision": ""}
+  · master 의 `javis_orchestra.py round-log --verdict-json <파일>` 은 **이 파일만** 받는다 — 산문 전사는 거부된다.
+  · 화면 출력·push 본문은 사본이다(pane 폭에서 잘리고 좌석이 정리되면 사라진다). **파일이 정본**이다.
+완료 기준(파일 실재): 위 경로에 verdict JSON 이 **실재**할 때 이 라운드가 제출된 것으로 본다 — 파일이 없으면 미제출이며 라운드는 종결되지 않는다.
+회신: `cys send --queued --to master "[리뷰] ..."` (자동 Return 배달 — 타이핑 가드 안전·send-key 불필요).
+
+검토 초점(판정 enum = ACCEPT | REVISE | BLOCK · 각 지적에 file:line · 맨 끝 줄에 `VERDICT: <enum>`):
+1) 숨은 탭 좌석의 PTY 크기: 보기 트리에서 빠진 좌석은 DOM 에서 떼어지고(fitPane 의 60×40px 가드로) resize 를 보내지 않는가. fitPane 의 「같은 크기 재전송 0」 기억(lastSentSize WeakMap)이 크기를 잘못 생략하는 경우(데몬 재시작·재부착·같은 런타임 재사용·보내기 실패)가 있는가.
+2) 복원: ws.tabs(order·active·zoom) 저장·정규화(normalizeTabState)·정리(reconcileTabs)가 재부팅 뒤 좌석 번호 재발급에도 같은 배치를 돌려주는가 · 손상 저장값에 안전한가.
+3) ws.tree 무변경 보장: wsViewTree 가 ws.tree 를 바꾸지 않는가(mountTabBar 의 경계선 되쓰기 = src.ratio/leftAuto 만) · 보기 트리 노드를 끌 때 ws.tree 와 엇갈리는 경우.
+4) render() 고리: refreshSeatRows → queueMicrotask(render) 가 무한 고리를 만들 수 있는가(서명 비교).
+5) tests/hidden_seat_screen.rs: 격리(HOME·TMPDIR·소켓)·정리(고아 데몬 0)·판정이 주장(숨은 좌석 = 보이는 좌석 read_text)을 실제로 증명하는가.
+명령 실행은 읽기·git diff/show·grep 만. 빌드·시험 실행·파일 수정 금지.
+codex
+지정된 파일·함수와 커밋 범위만 읽어 검토하겠습니다. 서버·빌드·시험은 실행하지 않겠습니다. 현재 환경은 파일 쓰기가 금지되어 있어 verdict JSON 저장은 제약이 있지만, 먼저 근거를 확인하고 판정을 작성하겠습니다.
+exec
+/bin/zsh -lc 'git rev-parse HEAD && git diff --stat 1a6f5be6..HEAD -- ui/src/grouptabs.ts ui/src/tabbar.ts ui/src/main.ts tests/hidden_seat_screen.rs' in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+ succeeded in 0ms:
+f6d917876f3bf3c873d3c540a497bc6a82d908e2
+ tests/hidden_seat_screen.rs | 132 ++++++++++++++++++
+ ui/src/grouptabs.ts         | 107 +++++++++++++++
+ ui/src/main.ts              | 318 ++++++++++++++++++++++++++++++++------------
+ ui/src/tabbar.ts            |  39 ++++++
+ 4 files changed, 513 insertions(+), 83 deletions(-)
+
+exec
+/bin/zsh -lc 'cat /Users/oogisoogi/.cys/pack/round/REVIEWER_VERDICT_CONTRACT.md' in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+ succeeded in 0ms:
+# REVIEWER_VERDICT_CONTRACT — 리뷰어 verdict 타입 계약(생성물 · 손편집 금지)
+
+생성 명령: `python3 javis_verdict.py contract`
+
+## §1 점수 금지
+
+어느 깊이든 점수류 키는 금지한다. SCORE_KEY_RE 패턴: `score|grade|rating` (대소문자 무시).
+score(0-100) 금지 · 0-1 점수도 금지한다.
+
+## §2 스키마
+
+| 최상위 키 | 필수 여부 | 설명 |
+| --- | --- | --- |
+| `verdict` | 필수 |  |
+| `justification` | 필수 |  |
+| `evidence` | 필수 |  |
+| `issues` | 필수 |  |
+| `missing` | 선택 |  |
+| `revision` | 선택 | 대상 커밋 해시(비-git 대상이면 파일 해시·타임스탬프) · REVIEWER_DIRECTIVE §3 리비전 바인딩 |
+
+리뷰어 verdict enum: `ACCEPT | REVISE | BLOCK | ESCALATE`
+
+INVESTIGATE 는 검증기(CHAI R2) 전용이다. 실행가능 fix 없는 BLOCK/REVISE의 강등값이다.
+
+severity enum: `blocking | major | minor`
+
+evidence[] 키: `{claim,ref,verified}` · ref는 file:line 근거를 기록한다.
+
+issues[] 계약 형태: `{severity,where,what,fix}`
+
+드리프트 형태 `{severity,ref,issue}`는 `--lenient-issues`에서만 수용한다. fix가 없으면 CHAI R2가 발화한다.
+
+## §3 빈 JSON 골격
+
+값 힌트를 실제 판정으로 채운다. 선택 키는 사용하지 않으면 생략한다.
+
+```json
+{
+  "verdict": "ACCEPT|REVISE|BLOCK|ESCALATE",
+  "justification": "",
+  "evidence": [
+    {
+      "claim": "",
+      "ref": "file:line",
+      "verified": false
+    }
+  ],
+  "issues": [
+    {
+      "severity": "blocking|major|minor",
+      "where": "file:line",
+      "what": "",
+      "fix": ""
+    }
+  ],
+  "missing": [],
+  "revision": ""
+}
+```
+
+## §4 검증
+
+`javis_verdict.py validate <파일>`
+
+exec
+/bin/zsh -lc 'git diff 1a6f5be6..HEAD -- ui/src/grouptabs.ts ui/src/tabbar.ts tests/hidden_seat_screen.rs' in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+ succeeded in 0ms:
+diff --git a/tests/hidden_seat_screen.rs b/tests/hidden_seat_screen.rs
+new file mode 100644
+index 00000000..062e0e87
+--- /dev/null
++++ b/tests/hidden_seat_screen.rs
+@@ -0,0 +1,132 @@
++//! ⓑ 숨은 탭 좌석 = 보이는 좌석과 같은 send/read-screen(TICKET=cysr-tabs-sidebar-impl 조각 2c-2) — 실 `cys` · 실 `cysd` · 격리 HOME · 격리 소켓.
++//! 앱의 묶음 탭은 숨긴 좌석의 화면 요소를 DOM 에서 떼어 둘 뿐이다(main.ts render() 의 rt.el.remove()). 데몬 쪽에서 「보이는 좌석」 = 출력
++//! 구독(surface.attach)이 붙은 좌석 · 「숨은 좌석」 = 구독이 없는 좌석으로 보고, 같은 입력을 보내 read_text(cys read-screen 의 RPC)가
++//! 같은 줄을 돌려주는지 잰다.
++#![cfg(unix)]
++
++use serde_json::{json, Value};
++use std::io::{BufRead, BufReader, Read, Write};
++use std::os::unix::net::UnixStream;
++use std::path::PathBuf;
++use std::process::Command;
++use std::time::{Duration, Instant};
++
++const CYS: &str = env!("CARGO_BIN_EXE_cys");
++
++struct Box_ {
++    base: PathBuf,
++    sock: PathBuf,
++    /// 시험이 띄운 격리 데몬 pid(system.identify 로 잰 값) — 끝에 반드시 내린다(고아 데몬 0).
++    pid: Option<i32>,
++}
++
++impl Box_ {
++    fn new() -> Self {
++        let base = PathBuf::from(format!("/tmp/cys-hss-{}", std::process::id()));
++        let _ = std::fs::remove_dir_all(&base);
++        std::fs::create_dir_all(base.join("home")).unwrap();
++        let base = base.canonicalize().unwrap();
++        std::fs::create_dir_all(base.join("run")).unwrap();
++        let sock = base.join("run/cysd.sock");
++        Self { base, sock, pid: None }
++    }
++    fn cys(&self, args: &[&str]) -> std::process::Output {
++        Command::new(CYS)
++            .args(args)
++            .env_clear()
++            .env("PATH", std::env::var("PATH").unwrap_or_default())
++            .env("HOME", self.base.join("home"))
++            .env("TMPDIR", &self.base)
++            .env("CYS_SOCKET", &self.sock)
++            .output()
++            .unwrap()
++    }
++    fn rpc(&self, method: &str, params: Value) -> Value {
++        let mut s = UnixStream::connect(&self.sock).expect("connect");
++        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
++        let mut line = serde_json::to_vec(&json!({"id": 1, "method": method, "params": params})).unwrap();
++        line.push(b'\n');
++        s.write_all(&line).unwrap();
++        let mut got = Vec::new();
++        let mut buf = [0u8; 65536];
++        while !got.ends_with(b"\n") {
++            match s.read(&mut buf) {
++                Ok(0) => break,
++                Ok(n) => got.extend_from_slice(&buf[..n]),
++                Err(e) => panic!("{method}: {e}"),
++            }
++        }
++        let v: Value = serde_json::from_slice(&got).unwrap();
++        assert!(v.get("error").map_or(true, Value::is_null), "{method}: {v}");
++        v["result"].clone()
++    }
++}
++
++impl Drop for Box_ {
++    fn drop(&mut self) {
++        // 소켓이 아니라 **프로세스**가 사라질 때까지 기다린다 — 소켓만 보면 내려가는 중인 데몬이 상태 폴더를 다시 써 고아로 남았다(첫 실행 실측).
++        if let Some(pid) = self.pid {
++            unsafe { libc::kill(pid, libc::SIGTERM) };
++            let t = Instant::now();
++            while unsafe { libc::kill(pid, 0) } == 0 && t.elapsed() < Duration::from_secs(10) {
++                std::thread::sleep(Duration::from_millis(100));
++            }
++            if unsafe { libc::kill(pid, 0) } == 0 {
++                unsafe { libc::kill(pid, libc::SIGKILL) };
++            }
++        }
++        let _ = std::fs::remove_dir_all(&self.base);
++    }
++}
++
++#[test]
++fn hidden_seat_reads_like_visible_seat() {
++    let b = Box_::new();
++    // 격리 데몬을 직접 띄운다(같은 빌드 폴더의 cysd · 격리 HOME·TMPDIR·소켓) — 소켓이 받을 때까지 기다린다.
++    let mut d = Command::new(PathBuf::from(CYS).with_file_name("cysd"));
++    d.env_clear()
++        .env("PATH", std::env::var("PATH").unwrap_or_default())
++        .env("HOME", b.base.join("home"))
++        .env("TMPDIR", &b.base)
++        .env("CYS_SOCKET", &b.sock)
++        .stdin(std::process::Stdio::null())
++        .stdout(std::process::Stdio::null())
++        .stderr(std::process::Stdio::null());
++    let _child = d.spawn().expect("cysd 기동");
++    let t = Instant::now();
++    while UnixStream::connect(&b.sock).is_err() && t.elapsed() < Duration::from_secs(20) {
++        std::thread::sleep(Duration::from_millis(100));
++    }
++    let mut b = b;
++    b.pid = b.rpc("system.identify", json!({}))["daemon_pid"].as_u64().map(|p| p as i32);
++    assert!(b.pid.is_some(), "격리 데몬 pid");
++    let cwd = b.base.join("home");
++    let mk = || b.rpc("surface.create", json!({"cwd": cwd, "rows": 30, "cols": 100}))["surface_id"].as_u64().expect("surface_id");
++    let shown = mk();
++    let hidden = mk();
++    // 「보이는 좌석」 = 출력 구독이 붙어 있다(앱의 화면 칸과 같은 자리) — 구독 연결을 끝까지 살려 두고 흘려 읽는다.
++    let mut att = UnixStream::connect(&b.sock).unwrap();
++    let mut line = serde_json::to_vec(&json!({"id": 9, "method": "surface.attach", "params": {"surface_id": shown}})).unwrap();
++    line.push(b'\n');
++    att.write_all(&line).unwrap();
++    let rd = att.try_clone().unwrap();
++    std::thread::spawn(move || for _ in BufReader::new(rd).lines() {});
++    std::thread::sleep(Duration::from_millis(800));
++    for sid in [shown, hidden] {
++        b.rpc("surface.send_text", json!({"surface_id": sid, "text": "echo HSS_PROBE_$((6*7))\r"}));
++    }
++    let probe = |sid: u64| -> bool {
++        let t = Instant::now();
++        while t.elapsed() < Duration::from_secs(10) {
++            let txt = b.rpc("surface.read_text", json!({"surface_id": sid, "lines": 40}))["text"].as_str().unwrap_or("").to_string();
++            if txt.lines().any(|l| l.trim() == "HSS_PROBE_42") {
++                return true;
++            }
++            std::thread::sleep(Duration::from_millis(200));
++        }
++        false
++    };
++    assert!(probe(shown), "보이는(구독 붙은) 좌석의 read_text 에 결과 줄");
++    assert!(probe(hidden), "숨은(구독 없는) 좌석의 read_text 에도 같은 결과 줄 — 숨김이 좌석을 멈추거나 화면을 굳히지 않는다");
++    drop(att);
++}
+diff --git a/ui/src/grouptabs.ts b/ui/src/grouptabs.ts
+new file mode 100644
+index 00000000..39eb5349
+--- /dev/null
++++ b/ui/src/grouptabs.ts
+@@ -0,0 +1,107 @@
++// 묶음 탭 — 순수 판정 (TICKET=cysr-tabs-sidebar-impl 조각 2a · 설계 docs/DESIGN-tabs-sidebar.md §1·§3·§8).
++//
++// 무엇을 하나: 좌석 줄 모델(seatrows.buildSeatRows)의 묶음을 탭으로 보고, 저장된 탭 상태(순서·활성·넓게 보기)를 지금 좌석에 맞춰
++//   정리한 뒤 「이번 화면에서 숨길 좌석」을 낸다. 화면 트리는 viewTree 가 ws.tree 에서 **파생**한다 — ws.tree 는 언제나 전 좌석 트리
++//   그대로다(입양·유령 퇴거·부서 간 이동·저장 경로 무변경 · 설계 §1 「트리는 하나만」).
++// ★묶음 1개 이하 · 노브 꺼짐 = 탭 없음 · 숨김 0 → 지금(1.1.14) 화면 그대로(왕초보 화면 불변 §8).
++// ★탭 열쇠 = 묶음 열쇠(폴더 이름 문자열)라 재부팅으로 좌석 번호가 새로 발급돼도 같은 배치가 돌아온다(wsreconcile.ts 머리 주석).
++// ★숨김 = DOM 에서 떼어 두기(다른 부서 좌석과 같은 길) — PTY 는 마지막 크기 그대로(main.ts fitPane 가드).
++import { arrangeWithoutRoles, autoArrange, type LayoutNode } from "./formation";
++import type { SeatRowsModel } from "./seatrows";
++
++export const GROUP_TABS_KEY = "cys-group-tabs";
++/** 기본 켜짐 — "0" 일 때만 끈다(꺼지면 지금처럼 전부 나란히). */
++export function groupTabsOn(raw: string | null): boolean {
++  return raw !== "0";
++}
++
++/** 부서(워크스페이스)마다 저장되는 탭 상태 — cys-layout-v2 의 ws.tabs. */
++export interface TabState {
++  /** 탭 순서(묶음 열쇠). 지금 없는 묶음은 정리 때 빠진다. */
++  order: string[];
++  active: string | null;
++  /** 넓게 보기 중인 좌석 sid(좌석 줄 클릭) — null = 묶음 전체 나란히. */
++  zoom: number | null;
++}
++
++export interface TabInfo {
++  key: string;
++  label: string;
++  sids: number[];
++}
++
++export interface TabView {
++  /** 그릴 탭(묶음 2개 이상 · 노브 켜짐일 때만 · 아니면 빈 배열). */
++  tabs: TabInfo[];
++  active: string | null;
++  zoom: number | null;
++  /** 이번 화면에서 떼어 둘 좌석(고정 좌석 master·cso 는 절대 들지 않는다). */
++  hidden: number[];
++}
++
++const EMPTY: TabState = { order: [], active: null, zoom: null };
++
++/** 저장값(localStorage → JSON) 정규화 — 형식이 어긋나면 그 칸만 기본값. */
++export function normalizeTabState(raw: unknown): TabState {
++  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ...EMPTY };
++  const o = raw as Record<string, unknown>;
++  const order: string[] = [];
++  if (Array.isArray(o.order)) for (const k of o.order) if (typeof k === "string" && !order.includes(k)) order.push(k);
++  return {
++    order,
++    active: typeof o.active === "string" ? o.active : null,
++    zoom: typeof o.zoom === "number" && Number.isSafeInteger(o.zoom) ? o.zoom : null,
++  };
++}
++
++/** 저장 상태 + 지금 좌석 → 정리된 상태 + 이번 화면. */
++export function reconcileTabs(m: SeatRowsModel, prev: TabState | undefined, on: boolean): { state: TabState; view: TabView } {
++  const p = prev ?? EMPTY;
++  if (!on) return { state: { ...p, zoom: null }, view: { tabs: [], active: null, zoom: null, hidden: [] } };
++  const groups: TabInfo[] = m.groups.map((g) => ({ key: g.key, label: g.label, sids: g.rows.map((r) => r.sid) }));
++  const keys = groups.map((g) => g.key);
++  // 순서: 저장 순서 중 지금 있는 것 → 새 묶음은 모델 순(처음 나타난 순)으로 뒤에.
++  const order = [...p.order.filter((k) => keys.includes(k)), ...keys.filter((k) => !p.order.includes(k))];
++  const zoomGroup = p.zoom === null ? undefined : groups.find((g) => g.sids.includes(p.zoom as number));
++  const zoom = zoomGroup ? p.zoom : null;
++  let active: string | null = zoomGroup ? zoomGroup.key : p.active !== null && keys.includes(p.active) ? p.active : (order[0] ?? null);
++  const all = groups.flatMap((g) => g.sids);
++  const multi = groups.length > 1;
++  let hidden: number[];
++  if (zoom !== null) hidden = all.filter((s) => s !== zoom);
++  else if (multi) hidden = all.filter((s) => !groups.find((g) => g.key === active)!.sids.includes(s));
++  else hidden = [];
++  if (!multi && zoom === null) active = p.active; // 탭이 없을 땐 저장 활성값을 건드리지 않는다(묶음이 다시 늘면 그대로)
++  const byKey = new Map(groups.map((g) => [g.key, g]));
++  return {
++    state: { order: multi ? order : [...p.order, ...keys.filter((k) => !p.order.includes(k))], active, zoom },
++    view: { tabs: multi ? order.map((k) => byKey.get(k)!) : [], active: multi ? active : null, zoom, hidden },
++  };
++}
++
++/** 화면 트리 = ws.tree 에서 숨길 좌석을 뺀 파생(원본 무변경). 숨김 0 이면 같은 객체.
++ *  역할 표가 있으면 autoArrange(사람이 끈 왼쪽 기둥 폭 보존 · 나머지 기둥 균등) · 없으면(목록 전) 그 자리 잘라내기. */
++export function viewTree(
++  tree: LayoutNode | null,
++  roles: Map<number, string | null | undefined> | undefined,
++  hidden: readonly number[],
++  defaultShare: number,
++): LayoutNode | null {
++  if (!tree) return null;
++  if (hidden.length === 0) return tree;
++  const change = { remove: [...hidden] };
++  return roles ? autoArrange(tree, roles, change, "auto", defaultShare) : arrangeWithoutRoles(tree, change);
++}
++
++/** (2b · master#357e735a) 보기 트리의 루트가 「고정 기둥(master·cso) | 오른쪽 영역」 가로 분할인가 — 탭 머리 줄은 오른쪽 영역 위에만 그린다.
++ *  맞으면 true(루트 = row 분할 · 왼쪽 서브트리 좌석 = 고정 좌석 전부 · 오른쪽에 고정 좌석 없음). 고정 좌석이 없으면 false(탭 줄 = 전체 위). */
++export function fixedColumnSplit(tree: LayoutNode | null, fixedSids: readonly number[]): boolean {
++  if (!tree || tree.type !== "split" || tree.dir !== "row" || fixedSids.length === 0) return false;
++  const sids = (n: LayoutNode, out: number[] = []): number[] => {
++    if (n.type === "pane") out.push(n.sid);
++    else { sids(n.a, out); sids(n.b, out); }
++    return out;
++  };
++  const left = sids(tree.a);
++  return left.length === fixedSids.length && fixedSids.every((s) => left.includes(s)) && !sids(tree.b).some((s) => fixedSids.includes(s));
++}
+diff --git a/ui/src/tabbar.ts b/ui/src/tabbar.ts
+new file mode 100644
+index 00000000..fb8a531f
+--- /dev/null
++++ b/ui/src/tabbar.ts
+@@ -0,0 +1,39 @@
++// 묶음 탭 머리 줄 그리기 — TICKET=cysr-tabs-sidebar-impl 조각 2b(설계 ③⑤ · master#357e735a).
++// 탭 하나 = 묶음 이름 + 좌석별 상태 표지(역할 점과 같은 클래스 · 1f) + 좌석 수. 누르면 그 묶음 좌석이 나란히(넓게 보기 풀림).
++// 판정은 하지 않는다 — seatrows 모델의 줄 상태를 그대로 그린다. 새 단추·새 색 없음(묶음 2개 이상일 때만 생긴다).
++import { roleDotColor } from "./appearance";
++import { SEAT_STATE_ACT, SEAT_STATE_LABEL, type SeatRowsModel } from "./seatrows";
++import type { TabInfo } from "./grouptabs";
++
++export function buildTabBar(tabs: readonly TabInfo[], model: SeatRowsModel, active: string | null, onPick: (key: string) => void): HTMLElement {
++  const bar = document.createElement("div");
++  bar.className = "group-tabbar";
++  bar.setAttribute("role", "tablist");
++  for (const t of tabs) {
++    const g = model.groups.find((x) => x.key === t.key);
++    const b = document.createElement("button");
++    b.type = "button";
++    b.className = `group-tab${t.key === active ? " active" : ""}`;
++    b.setAttribute("role", "tab");
++    b.setAttribute("aria-selected", String(t.key === active));
++    const name = document.createElement("span");
++    name.className = "group-tab-name";
++    name.textContent = t.label;
++    const dots = document.createElement("span");
++    dots.className = "group-tab-dots";
++    for (const r of g?.rows ?? []) {
++      const d = document.createElement("span");
++      d.className = `ws-seat-dot ${SEAT_STATE_ACT[r.state]}`;
++      d.style.setProperty("--role-color", roleDotColor(r.role) ?? "#64748b");
++      d.title = `${r.no} · ${r.name} · ${SEAT_STATE_LABEL[r.state]}`;
++      dots.appendChild(d);
++    }
++    const n = document.createElement("span");
++    n.className = "group-tab-n";
++    n.textContent = String(t.sids.length);
++    b.append(name, dots, n);
++    b.addEventListener("click", () => onPick(t.key));
++    bar.appendChild(b);
++  }
++  return bar;
++}
+
+exec
+/bin/zsh -lc 'git diff 1a6f5be6..HEAD -- ui/src/main.ts' in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+ succeeded in 0ms:
+diff --git a/ui/src/main.ts b/ui/src/main.ts
+index 8c7ddf7d..b850afb5 100644
+--- a/ui/src/main.ts
++++ b/ui/src/main.ts
+@@ -28,7 +28,7 @@ import { DEFAULT_BG, readableForeground, termTheme } from "./theme";
+ import { termFontStack, snapCellsToDevicePixels, refreshGlyphWidths, loadBundledFont, remeasureCells } from "./termrender";
+ import { reorderWorkspace, reorderGroup } from "./reorder";
+ import {
+-  TOPBAR_LAYOUT_KEY, type TopbarItem, isTopbarPinned, defaultTopbarLayout, parseTopbarLayout, serializeTopbarLayout,
++  TOPBAR_LAYOUT_KEY, type TopbarItem, isTopbarPinned, defaultTopbarLayout, parseTopbarLayout, serializeTopbarLayout, ccButtonOffOnce, CC_BTN_OFF_ONCE_KEY,
+   setTopbarItemOn, moveTopbarItem, canMoveTopbarItem, dropTopbarItem,
+ } from "./topbarlayout";
+ import {
+@@ -240,7 +240,7 @@ import {
+   accountCardLabels,
+   type AcctRow,
+ } from "./usagebar";
+-import { buildAcctIndex, buildWsAccountGroups, type SeatAcctSig, type AcctIndex } from "./seatacct"; // ★0.14.45 부서 카드 노드별 계정 줄(순수 판정)
++import { buildAcctIndex, buildWsAccountGroups, parseSeatAccount, type SeatAcctSig, type AcctIndex } from "./seatacct"; // ★0.14.45 부서 카드 노드별 계정 줄(순수 판정)
+ import { planOfficeTab, repairOutcomeOf, type OfficeCtx } from "./officetab"; // 0.14.44 B5·B6 오피스 탭 안내(순수 판정)
+ import { starvedNotice, starvedShouldPop, starvedKeyHasHead, starvedPopAgeMs, starvedDismissId, surfaceIdOfRef, locateStarvedSeat } from "./starvednotice"; // 0.14.43 UI2 큐 기아 경보 → 토스트·배너(순수 문구·좌석 확정)
+ import { latestOnly, parseResultNotice, seatsBlockedText, SEATS_NOTE_POLL_MS } from "./updateresult"; // 1.1.8 U4 자동 갱신 결과 알림(응답 해석만 · 갱신 결정·집행 0)
+@@ -339,6 +339,12 @@ import {
+ import { armDeferredPaneFocus, modalLayerOpen } from "./modalguard";
+ import { activityExpiryMs, applyDotPaint, HIDDEN_DOT, projectActivity, RoleActivityStore } from "./roleactivity"; // ★F-01 역할 점 활동 표시(순수 판정·바뀐 것만 칠하기)
+ import { SurfaceListTransport, type ListArrival } from "./surfacelist"; // ★F-01 끝점별 소유 원 호출 · 응답별 독립 투영
++import { approvalSeatKeys, buildSeatRows, namedSeatInputs, seatDot, seatInputOf, type SeatInput } from "./seatrows"; // (tabs-sidebar 조각1) 좌석 줄 판정·묶음
++import { paintSeatRows, pruneSeatHosts, seatHost } from "./seatrowsdom"; // (tabs-sidebar 조각1) 좌석 줄 그리기
++import { fixedColumnSplit, GROUP_TABS_KEY, groupTabsOn, normalizeTabState, reconcileTabs, viewTree, type TabState, type TabView } from "./grouptabs";
++import { buildTabBar } from "./tabbar"; // (tabs-sidebar 2b) 탭 머리 줄 // (tabs-sidebar 조각2) 묶음 탭 판정
++import type { SeatRowsModel } from "./seatrows";
++import { accountNeedsAction, BOARD_KEY, BOARD_OPEN_KEY, BOARD_POS_KEY, boardCounts, boardOpen, boardPos, boardVariant, limitLine, limitPct, nextSeat, paintBoard, type BoardState } from "./statusboard"; // (tabs-sidebar 1d) 상황판 시안
+ 
+ declare global {
+   interface Window {
+@@ -463,6 +469,8 @@ interface Workspace {
+   // 마지막으로 낸 팀원 부팅 안내 — 열쇠(key)가 바뀔 때만 다시 낸다. muted = 사용자가 안내를 **× 버튼으로** 닫았다(noteToastClosedByUser 만 세운다 — 수명 만료·탭 닫힘은 닫음이 아니다).
+   //   주기 갱신만 멈춘다 · 자리 판정의 최종 안내(모두 붙음·15분 경과·팀 데몬 무응답)는 그래도 한 번 낸다.
+   formationView?: { state: DeptFormationState; key: string; muted?: boolean };
++  // (tabs-sidebar 조각2) 묶음 탭 상태(순서·활성·넓게 보기) — 저장된다(cys-layout-v2). 열쇠 = 묶음(폴더) 이름이라 재부팅 뒤에도 같은 배치.
++  tabs?: TabState;
+ }
+ 
+ // 06: 워크스페이스 그룹 메타데이터. 진실원=localStorage(cys-layout-v2). 데몬은 모름(그룹=UI/solution 층).
+@@ -810,77 +818,9 @@ function renderSidebarUsage(surfaces: SurfaceLike[]) {
+   //   그 자리를 비워 두는 대신 아무것도 그리지 않는다. Fable 표시는 위 ①의 「7d·Fable」
+   //   실게이지가 전담한다(한도 대비 소진율 — 서버가 준 수).
+ 
+-  // ② 페인별 CTX — 「페인 번호 + %」. 신선도·출처 등급을 함께 적는다(ⓓ).
+-  // ★푸터에서 CTX가 사라지므로 이 표가 그 자리를 대신한다. 그래서 「언제 관측한 값인지」와
+-  //   「서버가 준 값인지 우리가 추정한 값인지」를 값 옆에 붙인다.
+-  // ★관측이 없는 pane도 「—」로 남긴다 — 지워 버리면 「미관측」과 「그런 pane 없음」이 구별되지 않는다.
++  // ② (tabs-sidebar 조각1 · 설계 ④) 종전 「페인 CTX」 칸은 부서 카드 아래 좌석 줄(seatrowsdom.ts)로 합쳤다 —
++  //   줄마다 번호 · 일감 · 상태 · CTX % 가 그쪽에 있다(출처·나이는 줄 툴팁). 여기는 패널 전체 신선도 꼬리만 남긴다.
+   if (ctxRows.length) {
+-    const head = document.createElement("div");
+-    head.className = "wsu-head";
+-    head.textContent = "페인 CTX";
+-    frag.appendChild(head);
+-    for (const line of ctxLines(ctxRows, showSocket, ctxGroupLabel)) {
+-      if (line.kind === "group") {
+-        // (D4 #10) 부서 머리줄 — 부서 이름 전체(패널 폭). 행 라벨 열에는 번호만.
+-        const gh = document.createElement("div");
+-        gh.className = "wsu-ctx-group";
+-        gh.textContent = line.label;
+-        gh.title = line.socket || "본부";
+-        frag.appendChild(gh);
+-        continue;
+-      }
+-      const c = line.row;
+-      const row = document.createElement("div");
+-      row.className = `wsu-ctx${c.stale ? " stale" : ""}${c.ctxPct == null ? " unobserved" : ""}`;
+-      const sid = document.createElement("span");
+-      sid.className = `wsu-ctx-sid${c.name ? " named" : ""}`;
+-      const tag = showSocket ? shortSocketTag(c.socket) : "";
+-      // ★이름 있는 보고자는 번호 대신 이름(오너 지시: 「master」·「cso」).
+-      //   이들에겐 surface_id가 없으므로 번호를 적으면 화면의 어떤 페인과도 대조되지 않는다.
+-      sid.textContent = c.name ? c.name : String(c.surfaceId); // (D4 #10) 부서 이름은 머리줄로 — 「dept-3:12」 잘림 제거
+-      const track = document.createElement("span");
+-      track.className = "cc-tbar-track";
+-      if (c.ctxPct != null) {
+-        const fill = document.createElement("span");
+-        const sev = sevClassFor(c.ctxPct, 60, 80);
+-        fill.className = `cc-tbar-fill${sev ? " " + sev : ""}`;
+-        fill.style.width = `${Math.min(100, Math.max(0, c.ctxPct))}%`;
+-        track.appendChild(fill);
+-      }
+-      const pct = document.createElement("span");
+-      const sev = c.ctxPct == null ? "" : sevClassFor(c.ctxPct, 60, 80);
+-      pct.className = `wsu-ctx-pct${sev ? " " + sev : ""}`;
+-      pct.textContent = c.ctxPct == null ? "—" : `${Math.round(c.ctxPct)}%`;
+-      const mark = document.createElement("span");
+-      mark.className = "wsu-src";
+-      const g = c.ctxPct == null ? null : sourceGrade(c.source);
+-      mark.textContent = g ? g.mark : "";
+-      // ★행별 관측 나이(오너 발의 2026-08-08). 푸터의 「가장 낡음」 하나만으로는 **어느 행이**
+-      //   낡았는지 알 수 없어, 방금 관측된 행까지 함께 낡아 보였다. 나이는 행마다 다른 값이므로
+-      //   행에 적어야 한다 — 패널 하나의 수로는 그 차이를 표현할 방법이 없다.
+-      // ★미관측 행(ctxPct == null)은 비워 둔다 — 관측이 없으면 나이도 없다. 여기에 무언가를
+-      //   찍으면 「측정 전」이 「방금 측정됨」으로 읽힌다(거짓 신선 금지 — 표 전체의 규율).
+-      const age = document.createElement("span");
+-      age.className = "wsu-ctx-age";
+-      const mkAge = (nowSecs2: number) => (c.ctxPct == null ? "" : ageShort(ageAt(c.updatedAt, nowSecs2)));
+-      age.textContent = mkAge(nowSecs);
+-      row.append(sid, track, pct, mark, age);
+-      const mkCtxTitle = (nowSecs2: number) => {
+-        // 이름 행은 「페인 N」이 아니다 — cys surface가 아니라 cmux 페인의 Claude다.
+-        const where = c.name
+-          ? `${c.name} (cmux 페인 · cysr surface 없음)`
+-          : `페인 ${c.surfaceId}${tag ? ` (데몬 ${tag} · ${c.socket})` : ""}`;
+-        if (c.ctxPct == null) return `${where} · 아직 관측치 없음\n(측정 전이라는 뜻이지 0% 라는 뜻이 아니다)`;
+-        return `${where} · CTX ${Math.round(c.ctxPct)}%\n${(g as { title: string }).title}\n관측 ${ageText(
+-          ageAt(c.updatedAt, nowSecs2),
+-        )}${c.stale ? " ⚠ stale" : ""}`;
+-      };
+-      row.title = mkCtxTitle(nowSecs);
+-      // ★나이 텍스트도 서명이 아니라 이 클로저로 갱신한다 — 서명에 넣으면 60초 미만 구간에서
+-      //   매 틱 서명이 바뀌어 표 전체가 재생성되고 툴팁·호버가 죽는다(codex 2R 이력).
+-      usageAgeUpdaters.push((n) => { row.title = mkCtxTitle(n); age.textContent = mkAge(n); });
+-      frag.appendChild(row);
+-    }
+     // 패널 전체의 신선도 — 가장 오래된 **관측된** 값 기준(미관측 행은 나이가 없다).
+     const observed = ctxRows.filter((c) => c.ctxPct != null);
+     if (observed.length) {
+@@ -3162,6 +3102,9 @@ function applyMenuScale(pct: string | null) {
+ }
+ let titleColorRole = localStorage.getItem("cys-title-color-role") !== "0"; // 기본 ON(제목 글자=역할 점색)
+ function applyTitleColorRole(on: boolean) { titleColorRole = on; localStorage.setItem("cys-title-color-role", on ? "1" : "0"); }
++// (tabs-sidebar 조각2) 묶음 탭 노브 — 기본 켜짐 · 끄면 지금처럼 전부 나란히(grouptabs.groupTabsOn).
++let groupTabs = groupTabsOn(localStorage.getItem(GROUP_TABS_KEY));
++function applyGroupTabs(on: boolean) { groupTabs = on; localStorage.setItem(GROUP_TABS_KEY, on ? "1" : "0"); render(); }
+ function applyTermWeight(w: string | null) {
+   if (!w) localStorage.removeItem("cys-term-weight"); else localStorage.setItem("cys-term-weight", w);
+   const val = w || "400";
+@@ -3199,6 +3142,12 @@ function topbarSavedRaw(): string | null {
+   }
+ }
+ let topbarLayout: TopbarItem[] = parseTopbarLayout(topbarSavedRaw(), TOPBAR_DOM_IDS);
++// (1e) 저장된 배치에도 Control Center 단추를 한 번 끈다(표지 1회 · 그 뒤 사람이 켜면 그대로).
++try {
++  const m = ccButtonOffOnce(topbarLayout, localStorage.getItem(CC_BTN_OFF_ONCE_KEY) === "1");
++  localStorage.setItem(CC_BTN_OFF_ONCE_KEY, "1");
++  if (m.changed && topbarSavedRaw()) { topbarLayout = m.items; localStorage.setItem(TOPBAR_LAYOUT_KEY, serializeTopbarLayout(m.items)); }
++} catch { /* 저장소 막힘 — 기본값 경로(이미 끔)에 맡긴다 */ }
+ // persist: true = 저장 · false = 화면에만(시작 복원) · null = 저장을 지운다(기본값 복원 — 다음 판의 기본값을 그대로 따른다).
+ // 돌려주는 값 = 저장까지 됐는가. ★저장이 실패해도(codex 1R LOW · QuotaExceeded 등) 화면에는 끝까지 바른다 — 되돌리면
+ //   저장소가 막힌 기기에서는 단추를 켤 길이 없어진다(윈에서 창 만들기의 보이는 길이 이 토글이다). 부르는 쪽이 false 를
+@@ -3276,6 +3225,10 @@ async function loadDefaultSocketSlug(): Promise<void> {
+ // + working = 역할 점 깜빡임 판정(appearance.ts nodeWorking 단일 출처 · 우리 판 — 잠정 X6).
+ type NodeSig = SeatSig & { working: boolean };
+ const nodeSig = new Map<string, NodeSig>(); // 키 = `${socket}#${surface_id}`
++// (tabs-sidebar 조각1) 좌석 줄 재료 — 3초 surface.list 원행(소켓 → sid → 행) · 10초 org.status 자기보고 · 승인 창 좌석. 키 모양 = nodeSig.
++const seatListBySock = new Map<string, Map<number, any>>();
++const seatSelf = new Map<string, { state: string | null; task: string | null }>();
++let approvalSeats = new Set<string>();
+ // ★0.14.45 좌석별 계정 캐시 — org.status 좌석 행의 `account` 가산 키(같은 10초 틱 · 새 RPC·타이머 0). 키는 nodeSig 와 같다. 표시 전용.
+ const seatAccts = new Map<string, SeatAcctSig>();
+ // 신호 낡음 창(3×폴링 주기). 재부팅 직후 Windows 는 같은 조회가 더 걸리므로 그 축에서만 2배(winScaled 관례) —
+@@ -3612,9 +3565,10 @@ function paintRoleDot(rt: PaneRuntime, nowMs: number) {
+   //   gemini·agy 등 · 관측 전 첫 몇 초)은 원작자 판에선 늘 빈 원(모름)이다. 그 경우에만 우리 신선한 자기보고(nodeSig ·
+   //   appearance.ts nodeWorking)가 작업 중이면 작업 중으로 칠하고, 문구에 근거(자기보고)를 밝힌다. 관측이 있으면(대기·입력
+   //   대기·지연 포함) 언제나 관측이 이긴다.
+-  const selfWorking = p.view === "unknown" && surfaceWorking(rt.sid, rt.socket);
+-  const view = selfWorking ? "working" : p.view;
+-  const text = selfWorking ? "작업 중 · 자기보고(데몬 관측 없음)" : p.text;
++  // (tabs-sidebar 1c · master#6ecef1a2 ④) 좌석 줄과 같은 판정 하나(seatrows.seatDot) — 승인 피드가 대기 중이면 입력 대기(◆)로 두 표시가 같다.
++  const approval = approvalSeats.has(`${rt.socket}#${rt.sid}`);
++  const view = seatDot(p.view, surfaceWorking(rt.sid, rt.socket), approval);
++  const text = view === p.view ? p.text : approval ? "입력 대기 · 승인 창(승인 피드 대기 중)" : "작업 중 · 자기보고(데몬 관측 없음)";
+   applyDotPaint(rt.roleEl, { visible: true, color, view, label: `역할: ${role} · ${text}` });
+ }
+ 
+@@ -3815,6 +3769,7 @@ async function refreshPaneTitles() {
+           cwd_blocked?: unknown;
+         }[];
+       };
++      seatListBySock.set(sk ?? "", new Map(r.surfaces.map((s) => [s.surface_id, s]))); // (tabs-sidebar 조각1) 좌석 줄 재료
+       rememberRoles(sk, r.surfaces); // 자동 정렬 역할 표 — 이 틱의 닫기·입양 배치가 전부 이 값을 쓴다
+       seatRolesTick.set(sk ?? "", deptLiveRoles(r.surfaces)); // ★R1F-UB(S4 B1): 목록을 **받은 뒤에만** 적는다 — 받지 못하면(시간 초과·오류) 이 줄에 닿지 않아 그 소켓의 판정을 건너뛴다
+       blockedTick.push(...collectCwdBlocked(r.surfaces, sk ?? ""));
+@@ -4001,6 +3956,7 @@ async function refreshPaneTitles() {
+     void refreshUsageAccounts();
+     void refreshNamedReporters();
+     renderSidebarUsage([...lastSurfacesBySocket.values()].flat());
++    refreshSeatRows(); // (tabs-sidebar 조각1)
+   }
+   // ★(0.14.41 · U18) 폴더별 고정 토스트 — 새 좌석이 있을 때만 띄운다(3초마다 같은 id 재표시 금지 ·
+   //   TTL 무한 연장 금지). 순수 판정이라 throw 가 없지만, 표시 실패가 루프를 멈추지 않게 가둔다.
+@@ -4765,12 +4721,18 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
+   return rt;
+ }
+ 
++const lastSentSize = new WeakMap<PaneRuntime, string>(); // (tabs-sidebar 2c) 런타임 → 마지막으로 보낸 「열x행」
+ /// Fit only when actually laid out — a detached/hidden pane must not shrink the PTY.
+ function fitPane(rt: PaneRuntime) {
+   if (rt.termHost.offsetWidth < 60 || rt.termHost.offsetHeight < 40) return;
+   rt.keepReadingLine(() => rt.fit.fit()); // ★B-230: 위를 읽던 사람은 폭 리플로우 뒤에도 읽던 줄에 남는다(keepReadingLine)
+   rt.snapToBottom(); // 리사이즈 리플로우가 뷰포트를 바닥에서 밀어내는 경우 복귀
+-  invoke("resize_surface", { socket: rt.socket, surfaceId: rt.sid, rows: rt.term.rows, cols: rt.term.cols }).catch(() => {});
++  // (tabs-sidebar 2c · 설계 §3) 마지막으로 보낸 열·행과 같으면 보내지 않는다 — 탭 20회 왕복 실측 131회 중 122회가 같은 크기 재전송이었다.
++  //   런타임마다 따로 기억(WeakMap) · 보내기 실패면 기억을 지워 다음 맞춤 때 다시 보낸다.
++  const size = `${rt.term.cols}x${rt.term.rows}`;
++  if (lastSentSize.get(rt) === size) return;
++  lastSentSize.set(rt, size);
++  invoke("resize_surface", { socket: rt.socket, surfaceId: rt.sid, rows: rt.term.rows, cols: rt.term.cols }).catch(() => lastSentSize.delete(rt));
+ }
+ 
+ /// ★B-230(0.14.52 · U · H1): render() 는 보이는 pane 호스트를 전부 떼었다 다시 붙인다. WebKit 은 다시 붙인 `.xterm-viewport` 의 스크롤 위치를
+@@ -5414,7 +5376,7 @@ function render() {
+   for (const rt of panes.values()) rt.el.remove();
+   root.innerHTML = "";
+   const ws = current();
+-  const tree = ws?.tree;
++  const tree = ws ? wsViewTree(ws) : null; // (tabs-sidebar 조각2) 묶음 탭 = ws.tree 에서 숨길 좌석을 뺀 보기 트리(숨김 0 이면 ws.tree 그대로)
+   if (tree) {
+     const top = renderNode(tree);
+     // ★(v116-ui-close · X-1) 루트 직계는 스타일시트(#root > * {flex:1})가 폭을 정한다. 그런데 pane 요소는
+@@ -5424,17 +5386,18 @@ function render() {
+     //   박으므로 지울 곳은 여기 한 곳이다.
+     top.style.flex = "";
+     root.appendChild(top);
++    if (ws) mountTabBar(ws, tree, top);
+   }
+   else if (ws?.pending) root.appendChild(renderDeptPending(ws)); // WP-10: 부서 준비 중 빈 pane 스피너·안내(★0.14.43 GU: 경과·단계 문구)
+   else if (ws) root.appendChild(renderIdleWorkspace(ws)); // pane 0개 — 백지 대신 안내+손잡이
+   renderWsTabs();
+   // ★B-230(H1): 방금 다시 붙인 pane 의 뷰포트를 xterm 의 지금 위치에 다시 맞춘다(resyncViewport) — 크기가 같아 아래 fit 이 아무것도 안 할 때도.
+-  for (const sid of collectSids(current()?.tree ?? null)) {
++  for (const sid of collectSids(tree ?? null)) {
+     const rt = panes.get(paneKey(sid, current()?.socket));
+     if (rt?.el.isConnected) resyncViewport(rt.term);
+   }
+   requestAnimationFrame(() => {
+-    for (const sid of collectSids(current()?.tree ?? null)) {
++    for (const sid of collectSids(tree ?? null)) {
+       const rt = panes.get(paneKey(sid, current()?.socket));
+       if (rt) fitPane(rt);
+     }
+@@ -5870,6 +5833,8 @@ async function refreshSidebarStatus() {
+           unregistered: isUnregisteredRoleSeat(n), // ★U12(리뷰1 #3) 등록 에이전트 없는 역할 좌석 — 빈 자리 판정 제외 · 중립 표식만
+           at: Date.now(), // ★U4-A5① 성공 조회 시각 — 실패는 덮어쓰지 않으므로 3×주기 뒤 '미확인'이 된다
+         });
++      for (const n of r.surfaces ?? []) // (tabs-sidebar 조각1) 좌석 줄의 「확인」 꼬리표·일감 이름 = 자기보고
++        if (n && typeof n === "object") seatSelf.set(`${sock}#${n.surface_id}`, { state: typeof n.status?.state === "string" ? n.status.state : null, task: typeof n.status?.task === "string" ? n.status.task : null });
+       // ★0.14.45 좌석별 계정 — 키가 없으면(구버전 데몬) present=false 로 적는다(값을 지어내지 않는다). 실패 조회는 덮어쓰지 않으므로 낡음 창 뒤 '계정 미확인'.
+       for (const n of r.surfaces ?? []) {
+         if (!n || typeof n !== "object") continue;
+@@ -5893,9 +5858,176 @@ async function refreshSidebarStatus() {
+   // ★소비자도 같은 값을 써야 한다 — 위 한 줄만 고치고 여기에 지역 누산기를 넘기면
+   // '합계는 맞는데 배지는 사라지는' 절반 수리가 된다(승인 도착 순간 배지가 깜빡 사라진다).
+   updatePendingBadges(pendingApprovals); // CC 버튼·승인 Feed 탭 배지 동기
++  await refreshApprovalSeats();
+   renderWsTabs(); // 신호 반영 재렌더
+ }
+ 
++// (tabs-sidebar 조각1) 승인 창이 떠 있는 좌석 — 대기 승인이 있을 때만 묻는다(평소 비용 0 · 10초 고리 + approval.request 이벤트).
++//   실패하면 직전 값을 유지한다(0 으로 접어 막힘 표시가 사라지지 않게 — 배지와 같은 규율).
++async function refreshApprovalSeats(): Promise<void> {
++  if (pendingApprovals === 0) {
++    approvalSeats = new Set();
++    return;
++  }
++  if (!claimFlight("seat-approvals")) return;
++  try {
++    const call = invoke("feed_list_all", { status: "pending" });
++    releaseFlightWhenSettled("seat-approvals", call);
++    approvalSeats = approvalSeatKeys(await rpcT(call, T_LIST));
++  } catch {
++    /* 직전 값 유지 */
++  }
++}
++
++// (tabs-sidebar 조각1) 부서 카드 아래 좌석 줄 — 재료를 모아 seatrows 에 넘기고 그리기만 한다(판정은 seatrows.ts).
++function refreshSeatRows(): void {
++  const nowMs = performance.now();
++  let hq: number | null = null;
++  try {
++    hq = hqWorkspaceId(workspaces.map((w) => ({ id: w.id, socket: w.socket, pending: w.pending, sids: collectSids(w.tree) })), hqMasterSids);
++  } catch {
++    hq = null;
++  }
++  for (const ws of workspaces) {
++    if (ws.pending) continue;
++    const sock = ws.socket;
++    const list = seatListBySock.get(sock ?? "");
++    // 이름 보고자(surface 없는 master·cso)는 본부 좌석 줄의 고정 줄로 합친다(종전 「페인 CTX」 칸의 이름 줄).
++    const inputs: SeatInput[] = ws.id === hq ? namedSeatInputs(namedCtxRows(namedCache, Date.now() / 1000)) : [];
++    for (const sid of collectSids(ws.tree)) {
++      const p = projectActivity(roleActivity.get(paneKey(sid, sock)), nowMs, T_ACTIVITY);
++      const self = seatSelf.get(`${sock}#${sid}`);
++      inputs.push(seatInputOf(sid, list?.get(sid), seatDot(p.view, surfaceWorking(sid, sock), approvalSeats.has(`${sock}#${sid}`)), self, approvalSeats.has(`${sock}#${sid}`)));
++    }
++    const model = buildSeatRows(inputs);
++    seatModels.set(ws.id, model);
++    paintSeatRows(seatHost(String(ws.id)), model, { onPick: (sid) => pickSeat(ws, sid) });
++  }
++  pruneSeatHosts((k) => k === "board" || workspaces.some((w) => String(w.id) === k || `n${w.id}` === k));
++  if (statusBoard !== "off") paintStatusBoard();
++  // (tabs-sidebar 조각2) 묶음이 새로 갈리거나 좌석이 옮겨 숨길 좌석이 바뀌었으면 한 번 다시 그린다(같으면 아무것도 안 함 = 고리 없음).
++  const ws = current();
++  if (ws && !tabRenderQueued) {
++    const v = reconcileTabs(seatModels.get(ws.id) ?? { fixed: [], groups: [] }, ws.tabs, groupTabs).view;
++    if (tabViewSig(v) !== lastTabViewSig.get(ws.id)) {
++      tabRenderQueued = true;
++      queueMicrotask(() => { tabRenderQueued = false; render(); });
++    }
++  }
++}
++// (tabs-sidebar 1d · 시안) 상황판 — 수는 좌석 줄 모델(같은 판정)에서 센다 · 숫자 = 그 상태 좌석으로 차례로 이동.
++const statusBoard = boardVariant(localStorage.getItem(BOARD_KEY));
++// (1g) 상황판이 켜져 있으면 종전 사용량 칸(#ws-usage)을 상황판 펼침 칸으로 옮긴다(꺼져 있으면 제자리 = 1.1.14 그대로).
++const usageEl = statusBoard !== "off" ? document.getElementById("ws-usage") : null;
++const boardMore = document.createElement("div");
++boardMore.className = "ws-board-more";
++const boardCursor = new Map<BoardState, number>();
++function paintStatusBoard(): void {
++  const live = workspaces.filter((w) => !w.pending);
++  const models = live.map((w) => ({ wsId: w.id, model: seatModels.get(w.id) ?? { fixed: [], groups: [] } }));
++  const counts = boardCounts(models);
++  const nowSecs = Date.now() / 1000;
++  const rateRows = accountRates(accountsCache, nowSecs).map((r) => ({ label: r.label, usedPct: r.usedPct, resetsAt: r.resetsAt }));
++  const limit = limitLine(rateRows, nowSecs);
++  // (1f) 계정 줄(역할 목록)은 빼고, 손써야 할 계정 문제만 한 낱말로(accountNeedsAction).
++  const acctWarn = accountNeedsAction(live.flatMap((w) => wsSeatAccts(w).flatMap((x) => (x.sig ? [parseSeatAccount(x.sig, Date.now(), SIG_STALE_MS_UI).state] : []))));
++  const onGo = (st: BoardState) => {
++    const n = nextSeat(counts[st], boardCursor.get(st) ?? -1);
++    if (!n) return;
++    boardCursor.set(st, n.index);
++    const ws = workspaces.find((w) => w.id === n.seat.wsId);
++    if (ws) gotoSeat(ws, n.seat.sid);
++  };
++  if (statusBoard === "off") return;
++  // (1e) 승인 대기 수(옛 Control Center 단추의 빨간 수 = cc-pending-badge) — 누르면 승인 창이 뜬 좌석으로, 좌석이 없는 승인이면 승인 Feed 로.
++  const onApprovals = () => (counts.blocked.length ? onGo("blocked") : openFeed());
++  // (1g · master#17b20312) 사용량 통합 — 둘째 줄 = 한도 한 줄(막대) · 펼치면 종전 사용량 칸(#ws-usage) 그 요소를 상황판 안에 그대로 담는다
++  //   (그리기 = renderSidebarUsage 무변경 · 같은 정보 두 곳 0). 위치 = 위(목록 맨 위) / 아래(막대 맨 아래 고정 · 좌석 줄이 스크롤).
++  const board = seatHost("board");
++  const open = boardOpen(localStorage.getItem(BOARD_OPEN_KEY));
++  const onToggle = () => { localStorage.setItem(BOARD_OPEN_KEY, open ? "0" : "1"); paintStatusBoard(); };
++  paintBoard(board, counts, { variant: statusBoard, limit, limitPct: limitPct(rateRows), open, onToggle, acctWarn, onGo, approvals: pendingApprovals, onApprovals });
++  boardMore.hidden = !open;
++  if (usageEl) boardMore.appendChild(usageEl);
++  board.appendChild(boardMore);
++  board.classList.toggle("bottom", boardPos(localStorage.getItem(BOARD_POS_KEY)) === "bottom");
++  if (board.classList.contains("bottom")) document.getElementById("ws-tabs")?.after(board);
++  if (live.length > 1)
++    for (const m of models) paintBoard(seatHost(`n${m.wsId}`), boardCounts([m]), { variant: statusBoard, limit: null, acctWarn: false, onGo, compact: true });
++}
++// 그 좌석으로 이동 = 그 부서 · 그 좌석의 묶음 탭(넓게 보기 풀기) · 포커스.
++function gotoSeat(ws: Workspace, sid: number): void {
++  const i = workspaces.indexOf(ws);
++  if (i < 0) return;
++  const g = seatModels.get(ws.id)?.groups.find((x) => x.rows.some((r) => r.sid === sid));
++  if (g) ws.tabs = { ...normalizeTabState(ws.tabs), active: g.key, zoom: null };
++  activeWs = i;
++  render();
++  setFocus(sid);
++}
++// (tabs-sidebar 2b · master#357e735a) 탭 머리 줄 = 고정 기둥(master·cso) 오른쪽 영역 위에만(고정 기둥 위엔 없다).
++//   탭을 누르면 그 묶음 나란히(넓게 보기 풀림) · 탭 화면에서 고정 기둥 경계를 끌면 그 폭을 ws.tree 에 되써 탭을 바꿔도 유지한다.
++function mountTabBar(ws: Workspace, tree: Node, top: HTMLElement): void {
++  const v = lastTabView.get(ws.id);
++  const model = seatModels.get(ws.id);
++  if (!v || !model || v.tabs.length === 0) return;
++  const fixed = model.fixed.filter((r) => !r.named).map((r) => r.sid);
++  const split = fixedColumnSplit(tree, fixed);
++  const right = split ? (top.lastElementChild as HTMLElement | null) : top;
++  if (!right) return;
++  const area = document.createElement("div");
++  area.className = "group-tab-area";
++  area.style.flex = right.style.flex;
++  right.replaceWith(area);
++  right.style.flex = "1 1 0%";
++  const bar = buildTabBar(v.tabs, model, v.zoom === null ? v.active : null, (key) => {
++    ws.tabs = { ...normalizeTabState(ws.tabs), active: key, zoom: null };
++    render();
++  });
++  area.append(bar, right);
++  if (split && tree !== ws.tree && tree.type === "split" && ws.tree?.type === "split") {
++    const div = top.querySelector(":scope > .divider");
++    const src = ws.tree;
++    div?.addEventListener("mousedown", () =>
++      window.addEventListener("mouseup", () => {
++        src.ratio = tree.ratio;
++        delete src.leftAuto;
++        saveLayout();
++      }, { once: true }),
++    );
++  }
++}
++// (tabs-sidebar 조각2) 부서별 마지막 좌석 모델 · 마지막으로 그린 탭 보기 서명.
++const seatModels = new Map<number, SeatRowsModel>();
++const lastTabViewSig = new Map<number, string>();
++const lastTabView = new Map<number, TabView>();
++let tabRenderQueued = false;
++const tabViewSig = (v: TabView): string => JSON.stringify([v.tabs.map((t) => [t.key, t.sids]), v.active, v.zoom, [...v.hidden].sort((a, b) => a - b)]);
++// 부서의 화면 트리 — 판정은 grouptabs(순수) · 여기선 상태를 적고 결과를 기억만 한다.
++function wsViewTree(ws: Workspace): Node | null {
++  const model = seatModels.get(ws.id);
++  if (!model) return ws.tree; // 좌석 목록 전 = 지금 화면 그대로
++  const r = reconcileTabs(model, normalizeTabState(ws.tabs), groupTabs);
++  ws.tabs = r.state;
++  lastTabView.set(ws.id, r.view);
++  lastTabViewSig.set(ws.id, tabViewSig(r.view));
++  return viewTree(ws.tree, arrangeRolesBySocket.get(ws.socket ?? ""), r.view.hidden, currentDefaultLeftShare()) as Node | null;
++}
++// 좌석 줄을 누르면 = 그 부서로 전환 + 그 좌석 포커스(조각2 에서 「그 좌석만 넓게」로 확장).
++function pickSeat(ws: Workspace, sid: number): void {
++  const i = workspaces.indexOf(ws);
++  if (i < 0) return;
++  // (tabs-sidebar 조각2 · 설계 ⑤) 노브 켜짐 = 그 좌석만 넓게(같은 줄을 다시 누르면 풀림) · 고정 좌석(master·cso)은 넓게 보기 대상이 아니다.
++  const fixed = seatModels.get(ws.id)?.fixed.some((r) => r.sid === sid) ?? false;
++  if (groupTabs && !fixed) {
++    const st = normalizeTabState(ws.tabs);
++    ws.tabs = { ...st, zoom: st.zoom === sid && i === activeWs ? null : sid };
++  }
++  activeWs = i;
++  render();
++  setFocus(sid);
++}
++
+ // 승인 대기 건수 배지 — 상단 Control Center 버튼 + 편입된 '승인 Feed' 탭 둘 다 갱신.
+ function updatePendingBadges(n: number) {
+   if (alertsQuiet("pendingBadges")) return; // ★TOAST: Control Center 버튼·Feed 탭의 승인 대기 건수 배지는 경보 표시라 끈다(카드·버튼 면은 남는다)
+@@ -5977,7 +6109,14 @@ function renderWsTabs() {
+   const pinnedG = groups.filter((g) => g.pinned && hasMembers(g));
+   const unpinnedG = groups.filter((g) => !g.pinned && hasMembers(g));
+   for (const g of [...pinnedG, ...unpinnedG]) bar.appendChild(buildGroupSection(g));
+-  for (const ws of workspaces.filter((w) => !w.pending && w.groupId == null)) bar.appendChild(buildTab(ws));
++  // (tabs-sidebar 1d · 시안) 상황판 = 막대 맨 위 · 부서가 1개면 카드를 그리지 않는다(상황판이 대신) · 여럿이면 카드 아래 그 부서 상태 수.
++  const solo = statusBoard !== "off" && workspaces.filter((w) => !w.pending).length === 1;
++  if (statusBoard !== "off" && boardPos(localStorage.getItem(BOARD_POS_KEY)) === "top") bar.appendChild(seatHost("board"));
++  for (const ws of workspaces.filter((w) => !w.pending && w.groupId == null))
++    if (solo) bar.append(seatHost(String(ws.id)));
++    else if (statusBoard !== "off") bar.append(buildTab(ws), seatHost(`n${ws.id}`), seatHost(String(ws.id)));
++    else bar.append(buildTab(ws), seatHost(String(ws.id)));
++  refreshSeatRows(); // (tabs-sidebar 조각1) 같은 호스트를 다시 붙였으니 값만 맞춘다(서명 같으면 그대로)
+   wsAcctIdxForRender = null; // (C2) 렌더 밖에서는 캐시를 쓰지 않는다(다음 렌더가 새로 만든다)
+ }
+ 
+@@ -6299,7 +6438,7 @@ function buildGroupSection(g: GroupMeta): HTMLElement {
+     for (const ws of workspaces.filter((w) => !w.pending && w.groupId === g.id)) {
+       const tab = buildTab(ws);
+       tab.classList.add("in-group");
+-      body.appendChild(tab);
++      body.append(tab, seatHost(String(ws.id)));
+     }
+     sec.appendChild(body);
+   }
+@@ -6801,6 +6940,18 @@ function openThemePopover(anchor: HTMLElement) {
+   const titleColorRow = document.createElement("label"); titleColorRow.className = "theme-pop-row"; titleColorRow.textContent = "제목=역할색";
+   const tcCb = document.createElement("input"); tcCb.type = "checkbox"; tcCb.checked = titleColorRole;
+   tcCb.addEventListener("change", () => applyTitleColorRole(tcCb.checked)); titleColorRow.appendChild(tcCb);
++  // (1e) 컨트롤 센터 여는 길 — 상단 단추를 기본으로 내렸으므로 여기 한 줄(+ 말).
++  const ccOpenRow = document.createElement("div"); ccOpenRow.className = "theme-pop-row";
++  const ccOpenBtn = document.createElement("button"); ccOpenBtn.type = "button"; ccOpenBtn.textContent = "컨트롤 센터 열기";
++  ccOpenBtn.addEventListener("click", () => setCcOpen(true)); ccOpenRow.appendChild(ccOpenBtn);
++  const boardPosRow = document.createElement("label"); boardPosRow.className = "theme-pop-row"; boardPosRow.textContent = "상황판 위치";
++  const bpSel = document.createElement("select");
++  for (const [v, t] of [["top", "위"], ["bottom", "아래"]]) { const o = document.createElement("option"); o.value = v; o.textContent = t; bpSel.appendChild(o); }
++  bpSel.value = boardPos(localStorage.getItem(BOARD_POS_KEY));
++  bpSel.addEventListener("change", () => { localStorage.setItem(BOARD_POS_KEY, bpSel.value); renderWsTabs(); }); boardPosRow.appendChild(bpSel);
++  const groupTabsRow = document.createElement("label"); groupTabsRow.className = "theme-pop-row"; groupTabsRow.textContent = "묶음 탭";
++  const gtCb = document.createElement("input"); gtCb.type = "checkbox"; gtCb.checked = groupTabs;
++  gtCb.addEventListener("change", () => applyGroupTabs(gtCb.checked)); groupTabsRow.appendChild(gtCb);
+   const termWeightRow = mkWeightRow("본문 굵기", "cys-term-weight", "400", applyTermWeight);
+   const menuWeightRow = mkWeightRow("메뉴 굵기", "cys-menu-weight", "600", applyMenuWeight);
+   // 메뉴 크기(오너 요청 2026-08-07) — 상단 툴바·사이드바 헤더·크롬 버튼 일괄 배율. 단위는 %.
+@@ -6820,6 +6971,7 @@ function openThemePopover(anchor: HTMLElement) {
+     applyTitleSize(null); tsInp.value = "20";
+     applyTitleWeight(null); (titleWeightRow.querySelector("select") as HTMLSelectElement).value = "400";
+     applyTitleColorRole(true); tcCb.checked = true;
++    if (!groupTabs) applyGroupTabs(true); gtCb.checked = true;
+     applyTermWeight(null); (termWeightRow.querySelector("select") as HTMLSelectElement).value = "400";
+     applyMenuWeight(null); (menuWeightRow.querySelector("select") as HTMLSelectElement).value = "600";
+     applyMenuScale(null); msInp.value = String(MENU_SCALE_DEFAULT_PCT);
+@@ -6828,7 +6980,7 @@ function openThemePopover(anchor: HTMLElement) {
+ 
+   // ① 글자·배경 — 종전 「테마」 항목 전부 그대로.
+   const look = mkSection("look", "글자·배경");
+-  look.body.append(row, fontRow, titleSizeRow, titleWeightRow, titleColorRow, termWeightRow, menuWeightRow, menuSizeRow,
++  look.body.append(ccOpenRow, row, fontRow, titleSizeRow, titleWeightRow, titleColorRow, groupTabsRow, boardPosRow, termWeightRow, menuWeightRow, menuSizeRow,
+     mkReset("이 구획만 기본값으로", resetLook));
+ 
+   // ② 상단 단추 — 줄 = [≡ 끌기 손잡이] [이름] [▲] [▼] [켬/끔]. 목록의 위 → 아래 = 상단의 왼쪽 → 오른쪽.
+@@ -6908,7 +7060,7 @@ function openThemePopover(anchor: HTMLElement) {
+     mkNote("끈 단추는 상단에서만 숨겨집니다 — 여기서 다시 켜면 바로 보이고, 단축키는 그대로 됩니다."),
+     tbList,
+     tbUnsaved,
+-    mkNote("「화면 설정」·「Control Center」는 끌 수 없습니다(순서만 바꿀 수 있어요). 목록의 위쪽이 상단의 왼쪽입니다."),
++    mkNote("「화면 설정」은 끌 수 없습니다(순서만 바꿀 수 있어요). Control Center 는 끄면 「컨트롤 센터 열기」(맨 위 줄)로 엽니다. 목록의 위쪽이 상단의 왼쪽입니다."),
+     mkReset("이 구획만 기본값으로", resetBar),
+   );
+ 
+
+exec
+/bin/zsh -lc "rg -n 'tabs:|tabs =|normalizeTabState|lastSentSize|function fitPane|function render\\(|function renderNode|resize_surface|function saveLayout|loadLayout|surface_attach|surface.attach|attach_surface|panes\\.set|panes\\.delete' ui/src/main.ts" in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+ succeeded in 0ms:
+344:import { fixedColumnSplit, GROUP_TABS_KEY, groupTabsOn, normalizeTabState, reconcileTabs, viewTree, type TabState, type TabView } from "./grouptabs";
+3345:function saveLayout() {
+4575:  const ev = (await invoke("attach_surface", { socket, surfaceId: sid })) as {
+4720:  panes.set(paneKey(sid, socket), rt);
+4724:const lastSentSize = new WeakMap<PaneRuntime, string>(); // (tabs-sidebar 2c) 런타임 → 마지막으로 보낸 「열x행」
+4726:function fitPane(rt: PaneRuntime) {
+4733:  if (lastSentSize.get(rt) === size) return;
+4734:  lastSentSize.set(rt, size);
+4735:  invoke("resize_surface", { socket: rt.socket, surfaceId: rt.sid, rows: rt.term.rows, cols: rt.term.cols }).catch(() => lastSentSize.delete(rt));
+4759:  panes.delete(paneKey(sid, socket));
+5375:function render() {
+5552:function renderNode(node: Node): HTMLElement {
+5684:        const tabs = bar.querySelectorAll<HTMLElement>(":scope > .ws-tab[data-ws-id]");
+5790:  render(); // 새 트리로 DOM 재구성 + fitPane→resize_surface + saveLayout
+5963:  if (g) ws.tabs = { ...normalizeTabState(ws.tabs), active: g.key, zoom: null };
+5984:    ws.tabs = { ...normalizeTabState(ws.tabs), active: key, zoom: null };
+6010:  const r = reconcileTabs(model, normalizeTabState(ws.tabs), groupTabs);
+6011:  ws.tabs = r.state;
+6023:    const st = normalizeTabState(ws.tabs);
+6024:    ws.tabs = { ...st, zoom: st.zoom === sid && i === activeWs ? null : sid };
+10327:/// 백엔드가 본부 소켓·그 번호로 만든 attach 이벤트 이름(`surface-output-<slug>-<번호>`)에 이 slug 가 들어 있는지로 확인한다(attach_surface 는 이름만
+10335:      const ev = (await invoke("attach_surface", { socket: null, surfaceId: id })) as { output_event?: unknown };
+
+exec
+/bin/zsh -lc "nl -ba ui/src/main.ts | sed -n '5135,5420p'; nl -ba ui/src/main.ts | sed -n '5890,6045p'; nl -ba ui/src/grouptabs.ts; nl -ba tests/hidden_seat_screen.rs" in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+ succeeded in 0ms:
+  5135	      }
+  5136	      render();
+  5137	      // ★(0.14.43 · J2 · I6 N2) 사유는 번역기를 거친다 — 데몬 원문의 'retry later or use --queued' 같은 처방은 GUI 사용자가 실행할 수 없다.
+  5138	      //   번역표에 없는 오류는 원문 그대로 돌려주므로 정보 손실은 없다(재기동 경로 restartNode 와 같은 restartInvokeFailureReason).
+  5139	      const why = restartInvokeFailureReason(e);
+  5140	      toast(
+  5141	        "watchdog",
+  5142	        "전출 실패",
+  5143	        !launchSent
+  5144	          ? rollbackError !== null
+  5145	            ? `${why} — 원본 pane은 보존됩니다. 새 pane surface:${newSid} 회수 실패(${rollbackError}) — 목적지 pane도 남겨 두었습니다.`
+  5146	            : `${why} — 원본 pane은 보존되고 새 pane은 회수했습니다`
+  5147	          : agentSid == null
+  5148	            ? `${why} — 원본 pane은 보존됩니다. 목적지 런처 셸 surface:${newSid} 는 기동이 진행 중일 수 있어 남겨 두었습니다(확인 후 정리하세요)`
+  5149	            : `${why} — 원본 pane은 보존됩니다. 목적지에 기동된 surface:${agentSid} 와 런처 셸 surface:${newSid} 는 살아 있으니 확인 후 정리하세요`,
+  5150	        undefined,
+  5151	        String(e), // (D4 #14) 데몬 원문은 접힌 「자세히」 안쪽으로만
+  5152	      );
+  5153	      return;
+  5154	    }
+  5155	    render();
+  5156	    toast("feed", "부서 전출 완료", `→ ${wsLabel(destWs)} (surface:${newSid})`);
+  5157	  } catch (e) {
+  5158	    toast("watchdog", "전출 실패", `${restartInvokeFailureReason(e)} — 원본 pane은 보존됩니다`, undefined, String(e)); // (D4 #14) 원문은 「자세히」 · ★J2·N2: 사유는 번역기를 거친다(위 inner catch 와 같다)
+  5159	  } finally {
+  5160	    // 인계 적재에 이르지 못한 전출은 기록을 남기지 않는다(다음 시도는 새 전출). 적재 뒤에는
+  5161	    // `awaitHandoffAck` 가 기록의 다음 상태(해제·인수 대기)를 소유한다.
+  5162	    if (!reachedAwait) transfersInFlight.delete(recKey);
+  5163	    dismissToast("transfer");
+  5164	  }
+  5165	}
+  5166	
+  5167	/** 같은 원본 pane 의 진행 중 전출 기록(키 = `paneKey(sid, socket)`). 재시도는 이것으로 관측만 재개한다. */
+  5168	const transfersInFlight = new Map<string, TransferRecord>();
+  5169	/** 수신자 인수 확인 대기 상한 — 새 좌석이 전문 디렉티브를 읽고 프롬프트로 돌아온 뒤 큐가 배달되고
+  5170	 *  에이전트가 인계 문서를 읽기까지의 시간(큐 대기 기본 상한 120s + 판독 여유). 넘기면 보류(원본 보존). */
+  5171	const TRANSFER_ACK_WAIT_SECS = 180;
+  5172	
+  5173	/** ★(0.14.31 · 성찰 C1·C2) 수신자 인수 확인 대기 → 원본 종료 결정. 실패 방향은 언제나 '원본 보존'이다.
+  5174	 *
+  5175	 * 종료 조건은 [`originCloseVerdict`] 하나다: 인수 확인 파일(`<handoff>.received`) 실존 ∧ 목적지 좌석이
+  5176	 * **지금** 수신 가능(역할 · 생존 관측 · 종류 · 미종료 — 닫기 직전 재평가). 각성 래치(`awakened_at`)는
+  5177	 * 보지 않는다(리뷰어는 구조적으로 못 낸다). 배달 이벤트도 보지 않는다(PTY writer 의 claim 이지
+  5178	 * 에이전트의 소비가 아니다 — codex 설계 검토).
+  5179	 *
+  5180	 * 보류는 **인계를 다시 적재하지 않는다**: 기록을 `awaiting-ack` 로 남겨 다음 시도가 관측만 재개한다.
+  5181	 * 목적지가 확정적으로 사라진 경우(종료 통지 · 좌석 소멸)에만 기록을 지운다 — 그때의 재시도는 새 전출이다.
+  5182	 * 생존 미관측(null)·RPC 실패는 '모름'이라 기록을 보존한다(살아 있는 좌석 옆에 새 좌석을 띄우지 않는다). */
+  5183	async function awaitHandoffAck(
+  5184	  sid: number,
+  5185	  srcWs: Workspace,
+  5186	  destWs: Workspace,
+  5187	  rec: TransferRecord,
+  5188	  recKey: string,
+  5189	) {
+  5190	  const srcSock = srcWs.socket;
+  5191	  const destSock = rec.destSocket;
+  5192	  const ackPath = handoffAckPath(rec.handoffPath);
+  5193	  transfersInFlight.set(recKey, { ...rec, state: "in-progress" });
+  5194	  stickyToast(
+  5195	    "transfer",
+  5196	    "feed",
+  5197	    "전출 진행 중",
+  5198	    `인계 적재됨(항목 ${rec.entryId ?? "?"}${rec.durable === false ? " · 내구 미확정" : ""}) · 목적지 surface:${rec.destSid} 의 인수 확인 대기(최대 ${TRANSFER_ACK_WAIT_SECS}초)…`,
+  5199	  );
+  5200	  // ★(0.14.31 · 성찰 확인 · major · 계획 C2) 보류·실패의 **단일 출구**.
+  5201	  //
+  5202	  // 【무엇이 틀렸었나】 기록은 인수 확인 직후 `in-progress` 로 올라가는데, 그 뒤의 **예외 경로가
+  5203	  // 기록을 되돌리지 않았다**. `close_surface` 가 일시 RPC 실패로 reject 하면(목적지는 인수했고
+  5204	  // 원본 pane 은 그대로 열려 있다) 예외가 이 함수를 그냥 빠져나가고 기록은 `in-progress` 로 남는다
+  5205	  // → 이후 모든 재시도가 [`transferRetryAction`] 에서 `busy`(무동작)로 끝난다. **아무 전출도 돌지
+  5206	  // 않는데** GUI 전출이 세션 내내 죽는다(C2 가 요구한 '재시도 가능한 인계' 의 정반대).
+  5207	  //
+  5208	  // 【규율】 이 함수의 모든 비정상 출구는 여기를 지난다 — 기록을 재시도 가능한 상태
+  5209	  // (`awaiting-ack`)로 되돌리거나(목적지 소멸이면 삭제) 하고, 사실을 말한다. 보류 토스트도
+  5210	  // 이 한 자리다(검체가 그 유일성을 핀한다).
+  5211	  const holdForRetry = (note: string, tail: string, drop = false) => {
+  5212	    if (drop) transfersInFlight.delete(recKey);
+  5213	    else transfersInFlight.set(recKey, { ...rec, state: "awaiting-ack" });
+  5214	    render();
+  5215	    toast("watchdog", "전출 보류", `${note} — ${tail}`);
+  5216	  };
+  5217	  let verdict: CloseVerdict = { close: false, hold: "not-acked", gone: false, note: "관측 전" };
+  5218	  try {
+  5219	    const deadline = Date.now() + TRANSFER_ACK_WAIT_SECS * 1000;
+  5220	    for (;;) {
+  5221	      const head = (await invoke("read_text_head", { path: ackPath }).catch(() => null)) as string | null;
+  5222	      const acked = !!head && head.trim().length > 0;
+  5223	      const rr = (await invoke("list_surfaces", { socket: destSock }).catch(() => null)) as {
+  5224	        surfaces: SurfaceRow[];
+  5225	      } | null;
+  5226	      verdict = originCloseVerdict({
+  5227	        row: rr?.surfaces?.find((x) => x.surface_id === rec.destSid),
+  5228	        rowsObserved: rr != null,
+  5229	        wantRole: rec.role,
+  5230	        wantAgent: rec.wantAgent,
+  5231	        entryId: rec.entryId,
+  5232	        durable: rec.durable,
+  5233	        acked,
+  5234	      });
+  5235	      if (verdict.close) break;
+  5236	      if (verdict.hold === "destination" && verdict.gone) break;
+  5237	      if (Date.now() >= deadline) break;
+  5238	      await new Promise((res) => setTimeout(res, 3000));
+  5239	    }
+  5240	  } catch (e) {
+  5241	    // 관측 중 예외 — 기록을 `in-progress` 로 두고 나가면 재시도가 영영 `busy` 다.
+  5242	    dismissToast("transfer");
+  5243	    holdForRetry(
+  5244	      `인수 확인 관측 중 오류(${e})`,
+  5245	      `인계는 적재됐고 원본 pane 은 보존했습니다(다시 적재하지 않습니다). 같은 부서로 다시 전출하면 인수 확인만 다시 기다립니다. 목적지 surface:${rec.destSid} 를 확인하세요.`,
+  5246	    );
+  5247	    return;
+  5248	  } finally {
+  5249	    dismissToast("transfer");
+  5250	  }
+  5251	  if (verdict.close) {
+  5252	    // ⑥ 인수 확인 + 좌석 수신 가능 재확인 뒤에만 원본 정리. 기록은 여기서 끝난다.
+  5253	    try {
+  5254	      await closePane(sid, srcSock);
+  5255	    } catch (e) {
+  5256	      // 목적지는 인수했고 원본은 **열린 채**다 — 되돌릴 것이 없으므로 인수 대기로 남겨 재시도가
+  5257	      // 종료만 다시 하게 한다(기동 0 · 적재 0). 여기서 나가면 그 pane 은 영영 `busy` 다.
+  5258	      holdForRetry(
+  5259	        `원본 pane 종료 실패(${e})`,
+  5260	        `인계는 적재됐고 목적지 surface:${rec.destSid} 는 인수했습니다. 원본 pane 은 열린 채이니, 같은 부서로 다시 전출하면 인수 확인 뒤 원본 종료만 재시도합니다(기동·적재 0).`,
+  5261	      );
+  5262	      return;
+  5263	    }
+  5264	    transfersInFlight.delete(recKey);
+  5265	    render();
+  5266	    toast(
+  5267	      "feed",
+  5268	      "부서 전출 완료",
+  5269	      `→ ${wsLabel(destWs)} (surface:${rec.destSid}) · 런처 셸 surface:${rec.launcherSid} 는 남아 있습니다(기동 완료 후 닫으세요)`,
+  5270	    );
+  5271	    return;
+  5272	  }
+  5273	  const gone = verdict.hold === "destination" && verdict.gone;
+  5274	  holdForRetry(
+  5275	    verdict.note,
+  5276	    `인계는 적재됐고 원본 pane 은 보존했습니다(다시 적재하지 않습니다). ` +
+  5277	      (gone
+  5278	        ? "목적지가 사라졌으므로 같은 pane 을 다시 전출하면 새로 기동합니다. "
+  5279	        : "같은 부서로 다시 전출하면 인수 확인만 다시 기다립니다(기동·적재 0). ") +
+  5280	      `목적지 surface:${rec.destSid} 를 확인한 뒤 원본을 닫으세요. 런처 셸 surface:${rec.launcherSid} 도 남아 있습니다.`,
+  5281	    gone,
+  5282	  );
+  5283	}
+  5284	
+  5285	/// sid pane을 트리에서 떼어 target pane의 side 쪽에 분할 삽입한다.
+  5286	function movePane(sid: number, targetSid: number, side: DropSide) {
+  5287	  const ws = current();
+  5288	  if (!ws.tree || sid === targetSid) return;
+  5289	  const sids = collectSids(ws.tree);
+  5290	  if (!sids.includes(sid) || !sids.includes(targetSid)) return;
+  5291	  ws.tree = replaceNode(ws.tree, sid, () => null);
+  5292	  const moved: Node = { type: "pane", sid };
+  5293	  if (!ws.tree) {
+  5294	    ws.tree = moved;
+  5295	  } else {
+  5296	    const dir = side === "left" || side === "right" ? "row" : "col";
+  5297	    const before = side === "left" || side === "top";
+  5298	    ws.tree = replaceNode(ws.tree, targetSid, (old) => ({
+  5299	      type: "split",
+  5300	      dir,
+  5301	      a: before ? moved : old,
+  5302	      b: before ? old : moved,
+  5303	    }));
+  5304	  }
+  5305	  render();
+  5306	  setFocus(sid);
+  5307	}
+  5308	
+  5309	function setFocus(sid: number) {
+  5310	  focusedSid = sid;
+  5311	  const key = paneKey(sid, current()?.socket);
+  5312	  for (const [id, rt] of panes) rt.el.classList.toggle("focused", id === key);
+  5313	  // ★U6(0.14.41 · 반박 D2 blocking): 모달·팔레트가 떠 있으면 xterm 에 키보드 포커스를 주지 않는다.
+  5314	  // 3초 틱의 자동 입양·surface.exited 가 여기를 부르면, 사용자가 모달 입력칸에 쓰던 글과 Enter 가
+  5315	  // 뒤에 가려진 pane(주로 마스터) PTY 로 들어갔다. 표시(focused)·focusedSid 는 그대로 갱신한다.
+  5316	  if (!modalLayerOpen(document)) panes.get(key)?.term.focus();
+  5317	  else deferPaneFocusUntilModalsClose();
+  5318	  updateFtRoot(); // 파일 트리가 열려 있으면 선택한 surface의 폴더로 전환
+  5319	}
+  5320	
+  5321	// ★U6(0.14.41 · 리뷰1 minor #3): setFocus 가 모달 층 때문에 xterm 포커스를 건너뛰면, 모달이 전부
+  5322	// 닫힌 뒤 한 박자 지나 pane 포커스를 한 번 되살린다(사용자가 pane 을 다시 클릭하지 않게). 다른 칸이
+  5323	// 이미 포커스를 가졌으면 빼앗지 않는다. 호이스팅되는 함수 선언이고 절대 던지지 않는다(setFocus·3초
+  5324	// 틱 보호 — 편의 기능이 부팅 경로를 깨면 안 된다).
+  5325	function deferPaneFocusUntilModalsClose() {
+  5326	  try {
+  5327	    armDeferredPaneFocus({
+  5328	      layerOpen: () => modalLayerOpen(document),
+  5329	      focusLost: () => {
+  5330	        const a = document.activeElement;
+  5331	        return a == null || a === document.body;
+  5332	      },
+  5333	      restore: () => {
+  5334	        if (focusedSid != null) setFocus(focusedSid);
+  5335	      },
+  5336	      watch: (cb) => {
+  5337	        const mo = new MutationObserver(cb);
+  5338	        mo.observe(document.body, { childList: true });
+  5339	        return () => mo.disconnect();
+  5340	      },
+  5341	      later: (fn) => void setTimeout(fn, 0),
+  5342	    });
+  5343	  } catch {
+  5344	    /* 관찰자를 못 만들어도 pane 포커스 흐름은 계속된다 */
+  5345	  }
+  5346	}
+  5347	
+  5348	// 플랫폼별 단위(macOS·Linux=논리 px 그대로 · Windows=물리 px → /dpr) 환산은 droppoint.ts 단일 정의처.
+  5349	// 환산한 CSS px 지점을 '직격'하는 pane만 찾는다.
+  5350	// 폴백 없음 — 빗나간 드롭이 포커스 pane에 조용히 주입되던 오배달 footgun 제거.
+  5351	// 호출측이 undefined를 무동작+토스트로 처리한다(무음 실패 금지).
+  5352	function paneAtPointStrict(pos?: { x: number; y: number }): PaneRuntime | undefined {
+  5353	  if (!pos) return undefined;
+  5354	  const css = dropPointToCss(pos, window.devicePixelRatio || 1, DROP_PLATFORM);
+  5355	  const hit = document.elementFromPoint(css.x, css.y) as HTMLElement | null;
+  5356	  const paneEl = hit?.closest(".pane") as HTMLElement | null;
+  5357	  if (!paneEl) return undefined;
+  5358	  for (const rt of panes.values()) if (rt.el === paneEl) return rt;
+  5359	  return undefined;
+  5360	}
+  5361	
+  5362	// 오배달은 '성공 토스트가 뜨는데 목적지가 틀린' 결함이다. 놓기 전에 목적지를 보여
+  5363	// 사용자가 스스로 보정하게 한다(잔여 y 오프셋 tauri#10744 대비).
+  5364	let osDropOver: PaneRuntime | null = null;
+  5365	function setOsDropTarget(rt: PaneRuntime | undefined) {
+  5366	  const next = rt ?? null;
+  5367	  if (osDropOver === next) return;
+  5368	  osDropOver?.el.classList.remove("drop-target");
+  5369	  osDropOver = next;
+  5370	  osDropOver?.el.classList.add("drop-target");
+  5371	}
+  5372	
+  5373	// ---------- render ----------
+  5374	
+  5375	function render() {
+  5376	  for (const rt of panes.values()) rt.el.remove();
+  5377	  root.innerHTML = "";
+  5378	  const ws = current();
+  5379	  const tree = ws ? wsViewTree(ws) : null; // (tabs-sidebar 조각2) 묶음 탭 = ws.tree 에서 숨길 좌석을 뺀 보기 트리(숨김 0 이면 ws.tree 그대로)
+  5380	  if (tree) {
+  5381	    const top = renderNode(tree);
+  5382	    // ★(v116-ui-close · X-1) 루트 직계는 스타일시트(#root > * {flex:1})가 폭을 정한다. 그런데 pane 요소는
+  5383	    //   런타임과 함께 **재사용**되고, split 안에 있던 때 renderNode 가 박은 인라인 flex("0.5 1 0%")가 남아
+  5384	    //   있으면 인라인이 스타일시트를 이긴다 → 창이 1개로 줄어도 flex-grow 0.5 = 폭 절반 · fitPane 이 그 절반을
+  5385	    //   재서 PTY 도 절반 열로 맞춘다(VM 65열 · 헤드리스 66열 실측). split 안의 요소는 renderNode 가 매번 다시
+  5386	    //   박으므로 지울 곳은 여기 한 곳이다.
+  5387	    top.style.flex = "";
+  5388	    root.appendChild(top);
+  5389	    if (ws) mountTabBar(ws, tree, top);
+  5390	  }
+  5391	  else if (ws?.pending) root.appendChild(renderDeptPending(ws)); // WP-10: 부서 준비 중 빈 pane 스피너·안내(★0.14.43 GU: 경과·단계 문구)
+  5392	  else if (ws) root.appendChild(renderIdleWorkspace(ws)); // pane 0개 — 백지 대신 안내+손잡이
+  5393	  renderWsTabs();
+  5394	  // ★B-230(H1): 방금 다시 붙인 pane 의 뷰포트를 xterm 의 지금 위치에 다시 맞춘다(resyncViewport) — 크기가 같아 아래 fit 이 아무것도 안 할 때도.
+  5395	  for (const sid of collectSids(tree ?? null)) {
+  5396	    const rt = panes.get(paneKey(sid, current()?.socket));
+  5397	    if (rt?.el.isConnected) resyncViewport(rt.term);
+  5398	  }
+  5399	  requestAnimationFrame(() => {
+  5400	    for (const sid of collectSids(tree ?? null)) {
+  5401	      const rt = panes.get(paneKey(sid, current()?.socket));
+  5402	      if (rt) fitPane(rt);
+  5403	    }
+  5404	  });
+  5405	  saveLayout();
+  5406	}
+  5407	
+  5408	// ★0.14.43(GU): 대기 화면(renderDeptPending)이 그려 둔 문구 갱신기 — 키 = 탭 번호. 단계 이벤트(onDeptCreateProgress)가 오면 전체 render() 대신
+  5409	// 이 갱신기만 불러 문구 노드만 고친다(render() 를 다시 부르면 스피너가 다시 만들어진다). 엘리먼트가 떨어지면 아래 타이머가 자기 항목을 지운다 — 누수 0.
+  5410	const deptPendingPainters = new Map<number, () => void>();
+  5411	
+  5412	// WP-10: 부서 데몬 준비(tree:null) 동안 빈 pane 호스트에 중앙 스피너+안내 문구를 표시한다.
+  5413	// 성공 시 tree가 채워져 자연 교체되고, 실패 시 placeholder 탭이 롤백된다(addDeptWorkspace 3분기 로직 불변).
+  5414	// aria-busy 로 스크린리더에 진행/해소를 통지. 스피너 회전·정지는 CSS(prefers-reduced-motion)가 담당.
+  5415	// ★0.14.43(GU): 문구는 deptprogress.ts 의 순수 함수가 만든다 — 주 문구(경과 시간 · 90초부터 '평소보다 오래')와 단계 줄('지금: …' · 팩이 단계를 알릴 때만)을
+  5416	//   따로 그린다. 옛 문구의 '곧 끝난다'는 짧은 약속은 거짓이었다(실측 25~30초 · 느린 PC 는 1분 이상). 1초마다 경과를 고치는 타이머는 **이 엘리먼트의 수명에 묶는다**
+  5417	//   (화면에서 떨어지면 — 탭 전환·render() 재생성·대기 종료 — 스스로 clearInterval · 누수 0). aria-live 는 주 문구가 아니라 **단계 줄에만** 건다
+  5418	//   (주 문구는 1초마다 바뀌므로 스크린리더가 매초 읽지 않게 off). 모든 문자열은 textContent 로만 그린다.
+  5419	function renderDeptPending(ws: Workspace): HTMLElement {
+  5420	  const host = document.createElement("div");
+  5890	  }
+  5891	  for (const ws of workspaces) {
+  5892	    if (ws.pending) continue;
+  5893	    const sock = ws.socket;
+  5894	    const list = seatListBySock.get(sock ?? "");
+  5895	    // 이름 보고자(surface 없는 master·cso)는 본부 좌석 줄의 고정 줄로 합친다(종전 「페인 CTX」 칸의 이름 줄).
+  5896	    const inputs: SeatInput[] = ws.id === hq ? namedSeatInputs(namedCtxRows(namedCache, Date.now() / 1000)) : [];
+  5897	    for (const sid of collectSids(ws.tree)) {
+  5898	      const p = projectActivity(roleActivity.get(paneKey(sid, sock)), nowMs, T_ACTIVITY);
+  5899	      const self = seatSelf.get(`${sock}#${sid}`);
+  5900	      inputs.push(seatInputOf(sid, list?.get(sid), seatDot(p.view, surfaceWorking(sid, sock), approvalSeats.has(`${sock}#${sid}`)), self, approvalSeats.has(`${sock}#${sid}`)));
+  5901	    }
+  5902	    const model = buildSeatRows(inputs);
+  5903	    seatModels.set(ws.id, model);
+  5904	    paintSeatRows(seatHost(String(ws.id)), model, { onPick: (sid) => pickSeat(ws, sid) });
+  5905	  }
+  5906	  pruneSeatHosts((k) => k === "board" || workspaces.some((w) => String(w.id) === k || `n${w.id}` === k));
+  5907	  if (statusBoard !== "off") paintStatusBoard();
+  5908	  // (tabs-sidebar 조각2) 묶음이 새로 갈리거나 좌석이 옮겨 숨길 좌석이 바뀌었으면 한 번 다시 그린다(같으면 아무것도 안 함 = 고리 없음).
+  5909	  const ws = current();
+  5910	  if (ws && !tabRenderQueued) {
+  5911	    const v = reconcileTabs(seatModels.get(ws.id) ?? { fixed: [], groups: [] }, ws.tabs, groupTabs).view;
+  5912	    if (tabViewSig(v) !== lastTabViewSig.get(ws.id)) {
+  5913	      tabRenderQueued = true;
+  5914	      queueMicrotask(() => { tabRenderQueued = false; render(); });
+  5915	    }
+  5916	  }
+  5917	}
+  5918	// (tabs-sidebar 1d · 시안) 상황판 — 수는 좌석 줄 모델(같은 판정)에서 센다 · 숫자 = 그 상태 좌석으로 차례로 이동.
+  5919	const statusBoard = boardVariant(localStorage.getItem(BOARD_KEY));
+  5920	// (1g) 상황판이 켜져 있으면 종전 사용량 칸(#ws-usage)을 상황판 펼침 칸으로 옮긴다(꺼져 있으면 제자리 = 1.1.14 그대로).
+  5921	const usageEl = statusBoard !== "off" ? document.getElementById("ws-usage") : null;
+  5922	const boardMore = document.createElement("div");
+  5923	boardMore.className = "ws-board-more";
+  5924	const boardCursor = new Map<BoardState, number>();
+  5925	function paintStatusBoard(): void {
+  5926	  const live = workspaces.filter((w) => !w.pending);
+  5927	  const models = live.map((w) => ({ wsId: w.id, model: seatModels.get(w.id) ?? { fixed: [], groups: [] } }));
+  5928	  const counts = boardCounts(models);
+  5929	  const nowSecs = Date.now() / 1000;
+  5930	  const rateRows = accountRates(accountsCache, nowSecs).map((r) => ({ label: r.label, usedPct: r.usedPct, resetsAt: r.resetsAt }));
+  5931	  const limit = limitLine(rateRows, nowSecs);
+  5932	  // (1f) 계정 줄(역할 목록)은 빼고, 손써야 할 계정 문제만 한 낱말로(accountNeedsAction).
+  5933	  const acctWarn = accountNeedsAction(live.flatMap((w) => wsSeatAccts(w).flatMap((x) => (x.sig ? [parseSeatAccount(x.sig, Date.now(), SIG_STALE_MS_UI).state] : []))));
+  5934	  const onGo = (st: BoardState) => {
+  5935	    const n = nextSeat(counts[st], boardCursor.get(st) ?? -1);
+  5936	    if (!n) return;
+  5937	    boardCursor.set(st, n.index);
+  5938	    const ws = workspaces.find((w) => w.id === n.seat.wsId);
+  5939	    if (ws) gotoSeat(ws, n.seat.sid);
+  5940	  };
+  5941	  if (statusBoard === "off") return;
+  5942	  // (1e) 승인 대기 수(옛 Control Center 단추의 빨간 수 = cc-pending-badge) — 누르면 승인 창이 뜬 좌석으로, 좌석이 없는 승인이면 승인 Feed 로.
+  5943	  const onApprovals = () => (counts.blocked.length ? onGo("blocked") : openFeed());
+  5944	  // (1g · master#17b20312) 사용량 통합 — 둘째 줄 = 한도 한 줄(막대) · 펼치면 종전 사용량 칸(#ws-usage) 그 요소를 상황판 안에 그대로 담는다
+  5945	  //   (그리기 = renderSidebarUsage 무변경 · 같은 정보 두 곳 0). 위치 = 위(목록 맨 위) / 아래(막대 맨 아래 고정 · 좌석 줄이 스크롤).
+  5946	  const board = seatHost("board");
+  5947	  const open = boardOpen(localStorage.getItem(BOARD_OPEN_KEY));
+  5948	  const onToggle = () => { localStorage.setItem(BOARD_OPEN_KEY, open ? "0" : "1"); paintStatusBoard(); };
+  5949	  paintBoard(board, counts, { variant: statusBoard, limit, limitPct: limitPct(rateRows), open, onToggle, acctWarn, onGo, approvals: pendingApprovals, onApprovals });
+  5950	  boardMore.hidden = !open;
+  5951	  if (usageEl) boardMore.appendChild(usageEl);
+  5952	  board.appendChild(boardMore);
+  5953	  board.classList.toggle("bottom", boardPos(localStorage.getItem(BOARD_POS_KEY)) === "bottom");
+  5954	  if (board.classList.contains("bottom")) document.getElementById("ws-tabs")?.after(board);
+  5955	  if (live.length > 1)
+  5956	    for (const m of models) paintBoard(seatHost(`n${m.wsId}`), boardCounts([m]), { variant: statusBoard, limit: null, acctWarn: false, onGo, compact: true });
+  5957	}
+  5958	// 그 좌석으로 이동 = 그 부서 · 그 좌석의 묶음 탭(넓게 보기 풀기) · 포커스.
+  5959	function gotoSeat(ws: Workspace, sid: number): void {
+  5960	  const i = workspaces.indexOf(ws);
+  5961	  if (i < 0) return;
+  5962	  const g = seatModels.get(ws.id)?.groups.find((x) => x.rows.some((r) => r.sid === sid));
+  5963	  if (g) ws.tabs = { ...normalizeTabState(ws.tabs), active: g.key, zoom: null };
+  5964	  activeWs = i;
+  5965	  render();
+  5966	  setFocus(sid);
+  5967	}
+  5968	// (tabs-sidebar 2b · master#357e735a) 탭 머리 줄 = 고정 기둥(master·cso) 오른쪽 영역 위에만(고정 기둥 위엔 없다).
+  5969	//   탭을 누르면 그 묶음 나란히(넓게 보기 풀림) · 탭 화면에서 고정 기둥 경계를 끌면 그 폭을 ws.tree 에 되써 탭을 바꿔도 유지한다.
+  5970	function mountTabBar(ws: Workspace, tree: Node, top: HTMLElement): void {
+  5971	  const v = lastTabView.get(ws.id);
+  5972	  const model = seatModels.get(ws.id);
+  5973	  if (!v || !model || v.tabs.length === 0) return;
+  5974	  const fixed = model.fixed.filter((r) => !r.named).map((r) => r.sid);
+  5975	  const split = fixedColumnSplit(tree, fixed);
+  5976	  const right = split ? (top.lastElementChild as HTMLElement | null) : top;
+  5977	  if (!right) return;
+  5978	  const area = document.createElement("div");
+  5979	  area.className = "group-tab-area";
+  5980	  area.style.flex = right.style.flex;
+  5981	  right.replaceWith(area);
+  5982	  right.style.flex = "1 1 0%";
+  5983	  const bar = buildTabBar(v.tabs, model, v.zoom === null ? v.active : null, (key) => {
+  5984	    ws.tabs = { ...normalizeTabState(ws.tabs), active: key, zoom: null };
+  5985	    render();
+  5986	  });
+  5987	  area.append(bar, right);
+  5988	  if (split && tree !== ws.tree && tree.type === "split" && ws.tree?.type === "split") {
+  5989	    const div = top.querySelector(":scope > .divider");
+  5990	    const src = ws.tree;
+  5991	    div?.addEventListener("mousedown", () =>
+  5992	      window.addEventListener("mouseup", () => {
+  5993	        src.ratio = tree.ratio;
+  5994	        delete src.leftAuto;
+  5995	        saveLayout();
+  5996	      }, { once: true }),
+  5997	    );
+  5998	  }
+  5999	}
+  6000	// (tabs-sidebar 조각2) 부서별 마지막 좌석 모델 · 마지막으로 그린 탭 보기 서명.
+  6001	const seatModels = new Map<number, SeatRowsModel>();
+  6002	const lastTabViewSig = new Map<number, string>();
+  6003	const lastTabView = new Map<number, TabView>();
+  6004	let tabRenderQueued = false;
+  6005	const tabViewSig = (v: TabView): string => JSON.stringify([v.tabs.map((t) => [t.key, t.sids]), v.active, v.zoom, [...v.hidden].sort((a, b) => a - b)]);
+  6006	// 부서의 화면 트리 — 판정은 grouptabs(순수) · 여기선 상태를 적고 결과를 기억만 한다.
+  6007	function wsViewTree(ws: Workspace): Node | null {
+  6008	  const model = seatModels.get(ws.id);
+  6009	  if (!model) return ws.tree; // 좌석 목록 전 = 지금 화면 그대로
+  6010	  const r = reconcileTabs(model, normalizeTabState(ws.tabs), groupTabs);
+  6011	  ws.tabs = r.state;
+  6012	  lastTabView.set(ws.id, r.view);
+  6013	  lastTabViewSig.set(ws.id, tabViewSig(r.view));
+  6014	  return viewTree(ws.tree, arrangeRolesBySocket.get(ws.socket ?? ""), r.view.hidden, currentDefaultLeftShare()) as Node | null;
+  6015	}
+  6016	// 좌석 줄을 누르면 = 그 부서로 전환 + 그 좌석 포커스(조각2 에서 「그 좌석만 넓게」로 확장).
+  6017	function pickSeat(ws: Workspace, sid: number): void {
+  6018	  const i = workspaces.indexOf(ws);
+  6019	  if (i < 0) return;
+  6020	  // (tabs-sidebar 조각2 · 설계 ⑤) 노브 켜짐 = 그 좌석만 넓게(같은 줄을 다시 누르면 풀림) · 고정 좌석(master·cso)은 넓게 보기 대상이 아니다.
+  6021	  const fixed = seatModels.get(ws.id)?.fixed.some((r) => r.sid === sid) ?? false;
+  6022	  if (groupTabs && !fixed) {
+  6023	    const st = normalizeTabState(ws.tabs);
+  6024	    ws.tabs = { ...st, zoom: st.zoom === sid && i === activeWs ? null : sid };
+  6025	  }
+  6026	  activeWs = i;
+  6027	  render();
+  6028	  setFocus(sid);
+  6029	}
+  6030	
+  6031	// 승인 대기 건수 배지 — 상단 Control Center 버튼 + 편입된 '승인 Feed' 탭 둘 다 갱신.
+  6032	function updatePendingBadges(n: number) {
+  6033	  if (alertsQuiet("pendingBadges")) return; // ★TOAST: Control Center 버튼·Feed 탭의 승인 대기 건수 배지는 경보 표시라 끈다(카드·버튼 면은 남는다)
+  6034	  for (const id of ["cc-pending-badge", "cc-feed-tabbadge"]) {
+  6035	    const b = document.getElementById(id);
+  6036	    if (!b) continue;
+  6037	    b.hidden = n === 0;
+  6038	    b.textContent = String(n);
+  6039	  }
+  6040	}
+  6041	
+  6042	// ws별 고유색 (id 기반 — 세션 복원에도 같은 ws는 같은 색)
+  6043	const WS_COLORS = ["#2f81f7", "#3fb950", "#d29922", "#f85149", "#a371f7", "#db61a2", "#39c5cf", "#e3b341"];
+  6044	
+  6045	// ---------- ★0.14.45 부서 카드 노드별 계정 줄 ----------
+     1	// 묶음 탭 — 순수 판정 (TICKET=cysr-tabs-sidebar-impl 조각 2a · 설계 docs/DESIGN-tabs-sidebar.md §1·§3·§8).
+     2	//
+     3	// 무엇을 하나: 좌석 줄 모델(seatrows.buildSeatRows)의 묶음을 탭으로 보고, 저장된 탭 상태(순서·활성·넓게 보기)를 지금 좌석에 맞춰
+     4	//   정리한 뒤 「이번 화면에서 숨길 좌석」을 낸다. 화면 트리는 viewTree 가 ws.tree 에서 **파생**한다 — ws.tree 는 언제나 전 좌석 트리
+     5	//   그대로다(입양·유령 퇴거·부서 간 이동·저장 경로 무변경 · 설계 §1 「트리는 하나만」).
+     6	// ★묶음 1개 이하 · 노브 꺼짐 = 탭 없음 · 숨김 0 → 지금(1.1.14) 화면 그대로(왕초보 화면 불변 §8).
+     7	// ★탭 열쇠 = 묶음 열쇠(폴더 이름 문자열)라 재부팅으로 좌석 번호가 새로 발급돼도 같은 배치가 돌아온다(wsreconcile.ts 머리 주석).
+     8	// ★숨김 = DOM 에서 떼어 두기(다른 부서 좌석과 같은 길) — PTY 는 마지막 크기 그대로(main.ts fitPane 가드).
+     9	import { arrangeWithoutRoles, autoArrange, type LayoutNode } from "./formation";
+    10	import type { SeatRowsModel } from "./seatrows";
+    11	
+    12	export const GROUP_TABS_KEY = "cys-group-tabs";
+    13	/** 기본 켜짐 — "0" 일 때만 끈다(꺼지면 지금처럼 전부 나란히). */
+    14	export function groupTabsOn(raw: string | null): boolean {
+    15	  return raw !== "0";
+    16	}
+    17	
+    18	/** 부서(워크스페이스)마다 저장되는 탭 상태 — cys-layout-v2 의 ws.tabs. */
+    19	export interface TabState {
+    20	  /** 탭 순서(묶음 열쇠). 지금 없는 묶음은 정리 때 빠진다. */
+    21	  order: string[];
+    22	  active: string | null;
+    23	  /** 넓게 보기 중인 좌석 sid(좌석 줄 클릭) — null = 묶음 전체 나란히. */
+    24	  zoom: number | null;
+    25	}
+    26	
+    27	export interface TabInfo {
+    28	  key: string;
+    29	  label: string;
+    30	  sids: number[];
+    31	}
+    32	
+    33	export interface TabView {
+    34	  /** 그릴 탭(묶음 2개 이상 · 노브 켜짐일 때만 · 아니면 빈 배열). */
+    35	  tabs: TabInfo[];
+    36	  active: string | null;
+    37	  zoom: number | null;
+    38	  /** 이번 화면에서 떼어 둘 좌석(고정 좌석 master·cso 는 절대 들지 않는다). */
+    39	  hidden: number[];
+    40	}
+    41	
+    42	const EMPTY: TabState = { order: [], active: null, zoom: null };
+    43	
+    44	/** 저장값(localStorage → JSON) 정규화 — 형식이 어긋나면 그 칸만 기본값. */
+    45	export function normalizeTabState(raw: unknown): TabState {
+    46	  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ...EMPTY };
+    47	  const o = raw as Record<string, unknown>;
+    48	  const order: string[] = [];
+    49	  if (Array.isArray(o.order)) for (const k of o.order) if (typeof k === "string" && !order.includes(k)) order.push(k);
+    50	  return {
+    51	    order,
+    52	    active: typeof o.active === "string" ? o.active : null,
+    53	    zoom: typeof o.zoom === "number" && Number.isSafeInteger(o.zoom) ? o.zoom : null,
+    54	  };
+    55	}
+    56	
+    57	/** 저장 상태 + 지금 좌석 → 정리된 상태 + 이번 화면. */
+    58	export function reconcileTabs(m: SeatRowsModel, prev: TabState | undefined, on: boolean): { state: TabState; view: TabView } {
+    59	  const p = prev ?? EMPTY;
+    60	  if (!on) return { state: { ...p, zoom: null }, view: { tabs: [], active: null, zoom: null, hidden: [] } };
+    61	  const groups: TabInfo[] = m.groups.map((g) => ({ key: g.key, label: g.label, sids: g.rows.map((r) => r.sid) }));
+    62	  const keys = groups.map((g) => g.key);
+    63	  // 순서: 저장 순서 중 지금 있는 것 → 새 묶음은 모델 순(처음 나타난 순)으로 뒤에.
+    64	  const order = [...p.order.filter((k) => keys.includes(k)), ...keys.filter((k) => !p.order.includes(k))];
+    65	  const zoomGroup = p.zoom === null ? undefined : groups.find((g) => g.sids.includes(p.zoom as number));
+    66	  const zoom = zoomGroup ? p.zoom : null;
+    67	  let active: string | null = zoomGroup ? zoomGroup.key : p.active !== null && keys.includes(p.active) ? p.active : (order[0] ?? null);
+    68	  const all = groups.flatMap((g) => g.sids);
+    69	  const multi = groups.length > 1;
+    70	  let hidden: number[];
+    71	  if (zoom !== null) hidden = all.filter((s) => s !== zoom);
+    72	  else if (multi) hidden = all.filter((s) => !groups.find((g) => g.key === active)!.sids.includes(s));
+    73	  else hidden = [];
+    74	  if (!multi && zoom === null) active = p.active; // 탭이 없을 땐 저장 활성값을 건드리지 않는다(묶음이 다시 늘면 그대로)
+    75	  const byKey = new Map(groups.map((g) => [g.key, g]));
+    76	  return {
+    77	    state: { order: multi ? order : [...p.order, ...keys.filter((k) => !p.order.includes(k))], active, zoom },
+    78	    view: { tabs: multi ? order.map((k) => byKey.get(k)!) : [], active: multi ? active : null, zoom, hidden },
+    79	  };
+    80	}
+    81	
+    82	/** 화면 트리 = ws.tree 에서 숨길 좌석을 뺀 파생(원본 무변경). 숨김 0 이면 같은 객체.
+    83	 *  역할 표가 있으면 autoArrange(사람이 끈 왼쪽 기둥 폭 보존 · 나머지 기둥 균등) · 없으면(목록 전) 그 자리 잘라내기. */
+    84	export function viewTree(
+    85	  tree: LayoutNode | null,
+    86	  roles: Map<number, string | null | undefined> | undefined,
+    87	  hidden: readonly number[],
+    88	  defaultShare: number,
+    89	): LayoutNode | null {
+    90	  if (!tree) return null;
+    91	  if (hidden.length === 0) return tree;
+    92	  const change = { remove: [...hidden] };
+    93	  return roles ? autoArrange(tree, roles, change, "auto", defaultShare) : arrangeWithoutRoles(tree, change);
+    94	}
+    95	
+    96	/** (2b · master#357e735a) 보기 트리의 루트가 「고정 기둥(master·cso) | 오른쪽 영역」 가로 분할인가 — 탭 머리 줄은 오른쪽 영역 위에만 그린다.
+    97	 *  맞으면 true(루트 = row 분할 · 왼쪽 서브트리 좌석 = 고정 좌석 전부 · 오른쪽에 고정 좌석 없음). 고정 좌석이 없으면 false(탭 줄 = 전체 위). */
+    98	export function fixedColumnSplit(tree: LayoutNode | null, fixedSids: readonly number[]): boolean {
+    99	  if (!tree || tree.type !== "split" || tree.dir !== "row" || fixedSids.length === 0) return false;
+   100	  const sids = (n: LayoutNode, out: number[] = []): number[] => {
+   101	    if (n.type === "pane") out.push(n.sid);
+   102	    else { sids(n.a, out); sids(n.b, out); }
+   103	    return out;
+   104	  };
+   105	  const left = sids(tree.a);
+   106	  return left.length === fixedSids.length && fixedSids.every((s) => left.includes(s)) && !sids(tree.b).some((s) => fixedSids.includes(s));
+   107	}
+     1	//! ⓑ 숨은 탭 좌석 = 보이는 좌석과 같은 send/read-screen(TICKET=cysr-tabs-sidebar-impl 조각 2c-2) — 실 `cys` · 실 `cysd` · 격리 HOME · 격리 소켓.
+     2	//! 앱의 묶음 탭은 숨긴 좌석의 화면 요소를 DOM 에서 떼어 둘 뿐이다(main.ts render() 의 rt.el.remove()). 데몬 쪽에서 「보이는 좌석」 = 출력
+     3	//! 구독(surface.attach)이 붙은 좌석 · 「숨은 좌석」 = 구독이 없는 좌석으로 보고, 같은 입력을 보내 read_text(cys read-screen 의 RPC)가
+     4	//! 같은 줄을 돌려주는지 잰다.
+     5	#![cfg(unix)]
+     6	
+     7	use serde_json::{json, Value};
+     8	use std::io::{BufRead, BufReader, Read, Write};
+     9	use std::os::unix::net::UnixStream;
+    10	use std::path::PathBuf;
+    11	use std::process::Command;
+    12	use std::time::{Duration, Instant};
+    13	
+    14	const CYS: &str = env!("CARGO_BIN_EXE_cys");
+    15	
+    16	struct Box_ {
+    17	    base: PathBuf,
+    18	    sock: PathBuf,
+    19	    /// 시험이 띄운 격리 데몬 pid(system.identify 로 잰 값) — 끝에 반드시 내린다(고아 데몬 0).
+    20	    pid: Option<i32>,
+    21	}
+    22	
+    23	impl Box_ {
+    24	    fn new() -> Self {
+    25	        let base = PathBuf::from(format!("/tmp/cys-hss-{}", std::process::id()));
+    26	        let _ = std::fs::remove_dir_all(&base);
+    27	        std::fs::create_dir_all(base.join("home")).unwrap();
+    28	        let base = base.canonicalize().unwrap();
+    29	        std::fs::create_dir_all(base.join("run")).unwrap();
+    30	        let sock = base.join("run/cysd.sock");
+    31	        Self { base, sock, pid: None }
+    32	    }
+    33	    fn cys(&self, args: &[&str]) -> std::process::Output {
+    34	        Command::new(CYS)
+    35	            .args(args)
+    36	            .env_clear()
+    37	            .env("PATH", std::env::var("PATH").unwrap_or_default())
+    38	            .env("HOME", self.base.join("home"))
+    39	            .env("TMPDIR", &self.base)
+    40	            .env("CYS_SOCKET", &self.sock)
+    41	            .output()
+    42	            .unwrap()
+    43	    }
+    44	    fn rpc(&self, method: &str, params: Value) -> Value {
+    45	        let mut s = UnixStream::connect(&self.sock).expect("connect");
+    46	        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    47	        let mut line = serde_json::to_vec(&json!({"id": 1, "method": method, "params": params})).unwrap();
+    48	        line.push(b'\n');
+    49	        s.write_all(&line).unwrap();
+    50	        let mut got = Vec::new();
+    51	        let mut buf = [0u8; 65536];
+    52	        while !got.ends_with(b"\n") {
+    53	            match s.read(&mut buf) {
+    54	                Ok(0) => break,
+    55	                Ok(n) => got.extend_from_slice(&buf[..n]),
+    56	                Err(e) => panic!("{method}: {e}"),
+    57	            }
+    58	        }
+    59	        let v: Value = serde_json::from_slice(&got).unwrap();
+    60	        assert!(v.get("error").map_or(true, Value::is_null), "{method}: {v}");
+    61	        v["result"].clone()
+    62	    }
+    63	}
+    64	
+    65	impl Drop for Box_ {
+    66	    fn drop(&mut self) {
+    67	        // 소켓이 아니라 **프로세스**가 사라질 때까지 기다린다 — 소켓만 보면 내려가는 중인 데몬이 상태 폴더를 다시 써 고아로 남았다(첫 실행 실측).
+    68	        if let Some(pid) = self.pid {
+    69	            unsafe { libc::kill(pid, libc::SIGTERM) };
+    70	            let t = Instant::now();
+    71	            while unsafe { libc::kill(pid, 0) } == 0 && t.elapsed() < Duration::from_secs(10) {
+    72	                std::thread::sleep(Duration::from_millis(100));
+    73	            }
+    74	            if unsafe { libc::kill(pid, 0) } == 0 {
+    75	                unsafe { libc::kill(pid, libc::SIGKILL) };
+    76	            }
+    77	        }
+    78	        let _ = std::fs::remove_dir_all(&self.base);
+    79	    }
+    80	}
+    81	
+    82	#[test]
+    83	fn hidden_seat_reads_like_visible_seat() {
+    84	    let b = Box_::new();
+    85	    // 격리 데몬을 직접 띄운다(같은 빌드 폴더의 cysd · 격리 HOME·TMPDIR·소켓) — 소켓이 받을 때까지 기다린다.
+    86	    let mut d = Command::new(PathBuf::from(CYS).with_file_name("cysd"));
+    87	    d.env_clear()
+    88	        .env("PATH", std::env::var("PATH").unwrap_or_default())
+    89	        .env("HOME", b.base.join("home"))
+    90	        .env("TMPDIR", &b.base)
+    91	        .env("CYS_SOCKET", &b.sock)
+    92	        .stdin(std::process::Stdio::null())
+    93	        .stdout(std::process::Stdio::null())
+    94	        .stderr(std::process::Stdio::null());
+    95	    let _child = d.spawn().expect("cysd 기동");
+    96	    let t = Instant::now();
+    97	    while UnixStream::connect(&b.sock).is_err() && t.elapsed() < Duration::from_secs(20) {
+    98	        std::thread::sleep(Duration::from_millis(100));
+    99	    }
+   100	    let mut b = b;
+   101	    b.pid = b.rpc("system.identify", json!({}))["daemon_pid"].as_u64().map(|p| p as i32);
+   102	    assert!(b.pid.is_some(), "격리 데몬 pid");
+   103	    let cwd = b.base.join("home");
+   104	    let mk = || b.rpc("surface.create", json!({"cwd": cwd, "rows": 30, "cols": 100}))["surface_id"].as_u64().expect("surface_id");
+   105	    let shown = mk();
+   106	    let hidden = mk();
+   107	    // 「보이는 좌석」 = 출력 구독이 붙어 있다(앱의 화면 칸과 같은 자리) — 구독 연결을 끝까지 살려 두고 흘려 읽는다.
+   108	    let mut att = UnixStream::connect(&b.sock).unwrap();
+   109	    let mut line = serde_json::to_vec(&json!({"id": 9, "method": "surface.attach", "params": {"surface_id": shown}})).unwrap();
+   110	    line.push(b'\n');
+   111	    att.write_all(&line).unwrap();
+   112	    let rd = att.try_clone().unwrap();
+   113	    std::thread::spawn(move || for _ in BufReader::new(rd).lines() {});
+   114	    std::thread::sleep(Duration::from_millis(800));
+   115	    for sid in [shown, hidden] {
+   116	        b.rpc("surface.send_text", json!({"surface_id": sid, "text": "echo HSS_PROBE_$((6*7))\r"}));
+   117	    }
+   118	    let probe = |sid: u64| -> bool {
+   119	        let t = Instant::now();
+   120	        while t.elapsed() < Duration::from_secs(10) {
+   121	            let txt = b.rpc("surface.read_text", json!({"surface_id": sid, "lines": 40}))["text"].as_str().unwrap_or("").to_string();
+   122	            if txt.lines().any(|l| l.trim() == "HSS_PROBE_42") {
+   123	                return true;
+   124	            }
+   125	            std::thread::sleep(Duration::from_millis(200));
+   126	        }
+   127	        false
+   128	    };
+   129	    assert!(probe(shown), "보이는(구독 붙은) 좌석의 read_text 에 결과 줄");
+   130	    assert!(probe(hidden), "숨은(구독 없는) 좌석의 read_text 에도 같은 결과 줄 — 숨김이 좌석을 멈추거나 화면을 굳히지 않는다");
+   131	    drop(att);
+   132	}
+
+exec
+/bin/zsh -lc "nl -ba ui/src/main.ts | sed -n '5880,5925p'; rg -n 'cys-layout-v2|JSON.parse|saved\\.workspaces|\\.tabs|ensurePane\\(|attach_surface|daemon_pid|daemon.*restart|restart.*daemon' ui/src/main.ts" in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+ succeeded in 0ms:
+  5880	}
+  5881	
+  5882	// (tabs-sidebar 조각1) 부서 카드 아래 좌석 줄 — 재료를 모아 seatrows 에 넘기고 그리기만 한다(판정은 seatrows.ts).
+  5883	function refreshSeatRows(): void {
+  5884	  const nowMs = performance.now();
+  5885	  let hq: number | null = null;
+  5886	  try {
+  5887	    hq = hqWorkspaceId(workspaces.map((w) => ({ id: w.id, socket: w.socket, pending: w.pending, sids: collectSids(w.tree) })), hqMasterSids);
+  5888	  } catch {
+  5889	    hq = null;
+  5890	  }
+  5891	  for (const ws of workspaces) {
+  5892	    if (ws.pending) continue;
+  5893	    const sock = ws.socket;
+  5894	    const list = seatListBySock.get(sock ?? "");
+  5895	    // 이름 보고자(surface 없는 master·cso)는 본부 좌석 줄의 고정 줄로 합친다(종전 「페인 CTX」 칸의 이름 줄).
+  5896	    const inputs: SeatInput[] = ws.id === hq ? namedSeatInputs(namedCtxRows(namedCache, Date.now() / 1000)) : [];
+  5897	    for (const sid of collectSids(ws.tree)) {
+  5898	      const p = projectActivity(roleActivity.get(paneKey(sid, sock)), nowMs, T_ACTIVITY);
+  5899	      const self = seatSelf.get(`${sock}#${sid}`);
+  5900	      inputs.push(seatInputOf(sid, list?.get(sid), seatDot(p.view, surfaceWorking(sid, sock), approvalSeats.has(`${sock}#${sid}`)), self, approvalSeats.has(`${sock}#${sid}`)));
+  5901	    }
+  5902	    const model = buildSeatRows(inputs);
+  5903	    seatModels.set(ws.id, model);
+  5904	    paintSeatRows(seatHost(String(ws.id)), model, { onPick: (sid) => pickSeat(ws, sid) });
+  5905	  }
+  5906	  pruneSeatHosts((k) => k === "board" || workspaces.some((w) => String(w.id) === k || `n${w.id}` === k));
+  5907	  if (statusBoard !== "off") paintStatusBoard();
+  5908	  // (tabs-sidebar 조각2) 묶음이 새로 갈리거나 좌석이 옮겨 숨길 좌석이 바뀌었으면 한 번 다시 그린다(같으면 아무것도 안 함 = 고리 없음).
+  5909	  const ws = current();
+  5910	  if (ws && !tabRenderQueued) {
+  5911	    const v = reconcileTabs(seatModels.get(ws.id) ?? { fixed: [], groups: [] }, ws.tabs, groupTabs).view;
+  5912	    if (tabViewSig(v) !== lastTabViewSig.get(ws.id)) {
+  5913	      tabRenderQueued = true;
+  5914	      queueMicrotask(() => { tabRenderQueued = false; render(); });
+  5915	    }
+  5916	  }
+  5917	}
+  5918	// (tabs-sidebar 1d · 시안) 상황판 — 수는 좌석 줄 모델(같은 판정)에서 센다 · 숫자 = 그 상태 좌석으로 차례로 이동.
+  5919	const statusBoard = boardVariant(localStorage.getItem(BOARD_KEY));
+  5920	// (1g) 상황판이 켜져 있으면 종전 사용량 칸(#ws-usage)을 상황판 펼침 칸으로 옮긴다(꺼져 있으면 제자리 = 1.1.14 그대로).
+  5921	const usageEl = statusBoard !== "off" ? document.getElementById("ws-usage") : null;
+  5922	const boardMore = document.createElement("div");
+  5923	boardMore.className = "ws-board-more";
+  5924	const boardCursor = new Map<BoardState, number>();
+  5925	function paintStatusBoard(): void {
+445:  // 06: 소속 그룹 id(undefined=ungrouped). 부서 ws도 그룹에 들어가면 set. 진실원=localStorage(cys-layout-v2).
+472:  // (tabs-sidebar 조각2) 묶음 탭 상태(순서·활성·넓게 보기) — 저장된다(cys-layout-v2). 열쇠 = 묶음(폴더) 이름이라 재부팅 뒤에도 같은 배치.
+476:// 06: 워크스페이스 그룹 메타데이터. 진실원=localStorage(cys-layout-v2). 데몬은 모름(그룹=UI/solution 층).
+487:const LAYOUT_KEY = "cys-layout-v2";
+876:  usageHidden = sanitizeHiddenKeys(JSON.parse(localStorage.getItem(USAGE_HIDDEN_KEY) || "[]"));
+2079:    const v = JSON.parse(localStorage.getItem("cys-board-pins") || "[]");
+4575:  const ev = (await invoke("attach_surface", { socket, surfaceId: sid })) as {
+5911:    const v = reconcileTabs(seatModels.get(ws.id) ?? { fixed: [], groups: [] }, ws.tabs, groupTabs).view;
+5963:  if (g) ws.tabs = { ...normalizeTabState(ws.tabs), active: g.key, zoom: null };
+5973:  if (!v || !model || v.tabs.length === 0) return;
+5983:  const bar = buildTabBar(v.tabs, model, v.zoom === null ? v.active : null, (key) => {
+5984:    ws.tabs = { ...normalizeTabState(ws.tabs), active: key, zoom: null };
+6005:const tabViewSig = (v: TabView): string => JSON.stringify([v.tabs.map((t) => [t.key, t.sids]), v.active, v.zoom, [...v.hidden].sort((a, b) => a - b)]);
+6010:  const r = reconcileTabs(model, normalizeTabState(ws.tabs), groupTabs);
+6011:  ws.tabs = r.state;
+6023:    const st = normalizeTabState(ws.tabs);
+6024:    ws.tabs = { ...st, zoom: st.zoom === sid && i === activeWs ? null : sid };
+8836:    stickyToast("restart-daemon", "feed", "↻ 저장 검증", "재시작 전 노드 체크포인트를 검증하는 중… 저장이 늦는 자리는 자동으로 기다렸다가 그대로 재시작합니다.");
+8848:      dismissToast("restart-daemon");
+8851:      stickyToast("restart-daemon", "feed", "↻ 데몬 재시작", "저장 후 데몬을 다시 시작하는 중… 부서·노드를 자동 복원합니다.");
+8853:      dismissToast("restart-daemon");
+8863:      stickyToast("restart-daemon", "feed", "↻ 저장 검증", `복원이 아직 끝나지 않은 자리 ${retryKeys.length}곳 — 끝나길 잠깐 기다렸다가 저장합니다…`);
+8877:    stickyToast("restart-daemon", "feed", "↻ 데몬 재시작", "저장 검증 완료 — 데몬을 다시 시작하고 노드를 복원하는 중…");
+8879:    dismissToast("restart-daemon");
+8890:    dismissToast("restart-daemon");
+10327:/// 백엔드가 본부 소켓·그 번호로 만든 attach 이벤트 이름(`surface-output-<slug>-<번호>`)에 이 slug 가 들어 있는지로 확인한다(attach_surface 는 이름만
+10335:      const ev = (await invoke("attach_surface", { socket: null, surfaceId: id })) as { output_event?: unknown };
+11221:    const saved = JSON.parse(savedRaw ?? "null");
+11222:    if (saved && Array.isArray(saved.workspaces)) {
+11223:      workspaces = saved.workspaces;
+11918:document.getElementById("btn-restart-daemon")!.addEventListener("click", () => void manualRestartAllDaemons());
+
+exec
+/bin/zsh -lc "nl -ba ui/src/main.ts | sed -n '3340,3400p'; nl -ba ui/src/main.ts | sed -n '4715,4750p'; nl -ba ui/src/main.ts | sed -n '5552,5635p'" in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+ succeeded in 0ms:
+  3340	    seen.add(g.id);
+  3341	    return liveGids.has(g.id); // 멤버 0인 그룹 = 자동 해체
+  3342	  });
+  3343	}
+  3344	
+  3345	function saveLayout() {
+  3346	  if (!layoutLoaded) return; // ★저장본을 아직 안 읽었다 — 덮어쓰면 사용자의 배치가 영구 소실된다
+  3347	  const norm = normalizeWorkspaces(workspaces);
+  3348	  const normG = normalizeGroups(norm, groups); // 06: norm 기준으로 그룹 청소
+  3349	  groups = normG; // 06: 멤버0 그룹을 모듈 상태에서도 즉시 해체(유령 누적 방지 · 적대검증 교정)
+  3350	  const activeId = workspaces[activeWs]?.id;
+  3351	  const a = Math.max(0, norm.findIndex((w) => w.id === activeId));
+  3352	  // ★G4/G5(2026-09-17 10라운드): 런타임 전용 표식은 **저장하지 않는다**. `pending` 은 normalizeWorkspaces 가
+  3353	  //   탭째 배제하지만 `deleting`·`stopFailed` 는 **살아 있는 탭**의 일시 상태라 탭을 버릴 수 없다 — 대신
+  3354	  //   직렬화에서만 턴다. 저장되면 다음 기동이 '삭제 중' 탭을 영영 입양 금지로 보거나(deleting) 이미 정리된
+  3355	  //   부서에 종료 실패 안내를 계속 그린다(stopFailed). norm 의 원본 객체는 건드리지 않는다(복사본만).
+  3356	  //   ★0.14.43(GU): 「팀 직접 만들기」 표시 전용 필드(pendingSince·pendingStage·pendingSpawned·createdAt·formationDone·formationView)도 같은 이유로 턴다 —
+  3357	  //   저장되면 다음 기동이 '이 세션에서 새로 만든 팀' 안내를 되살린다. 첫 map 은 위 핀(wswiring.test.ts)이 한 줄 그대로 못박는다.
+  3358	  const persisted = norm.map(({ deleting: _d, stopFailed: _s, ...w }) => w).map(
+  3359	    ({ pendingSince: _ps, pendingStage: _pg, pendingSpawned: _sp, createdAt: _ca, formationDone: _fd, formationView: _fv, ...w }) => w,
+  3360	  );
+  3361	  localStorage.setItem(
+  3362	    LAYOUT_KEY,
+  3363	    JSON.stringify({ workspaces: persisted, groups: normG, active: a, counter: wsCounter, groupCounter }),
+  3364	  );
+  3365	}
+  3366	
+  3367	function collectSids(node: Node | null, out: number[] = []): number[] {
+  3368	  if (!node) return out;
+  3369	  if (node.type === "pane") out.push(node.sid);
+  3370	  else {
+  3371	    collectSids(node.a, out);
+  3372	    collectSids(node.b, out);
+  3373	  }
+  3374	  return out;
+  3375	}
+  3376	
+  3377	function replaceNode(node: Node, target: number, make: (old: Node) => Node | null): Node | null {
+  3378	  if (node.type === "pane") {
+  3379	    return node.sid === target ? make(node) : node;
+  3380	  }
+  3381	  const a = replaceNode(node.a, target, make);
+  3382	  const b = replaceNode(node.b, target, make);
+  3383	  if (a && b) return { ...node, a, b };
+  3384	  return a ?? b; // one side removed → collapse to sibling
+  3385	}
+  3386	
+  3387	// ---------- 창 열기·닫기 자동 좌우 균등(TICKET=v116-auto-equalize · 오너 지시 2026-09-25 05:2x) ----------
+  3388	// 오너 원문: 「마스터 cso는 지금 비율 그대로 둔다 · 마스터가 창을 열고 닫을 때, 그리고 사용자가 열고 닫을 때
+  3389	//   존재하는 페인들 모두 자동으로 좌우 균등 정렬한다.」
+  3390	// ★창이 **열리고 닫히는 모든 경로**(자동 입양 · 새 창 · 분할 · 닫기 · 머리 × · 외부 닫힘 · 자리표 회수 · 복원 입양 ·
+  3391	//   복원 때 죽은 좌석 정리)와 정렬 단추가 **이 함수 한 곳**을 지난다. 경로마다 따로 짜면 한쪽만 고쳐지는
+  3392	//   비대칭이 생긴다(B17 relayoutWs 주석과 같은 이유). 트리를 먼저 감싸거나 잘라낸 뒤 부르지 마라 —
+  3393	//   좌열 몫을 그 순간 잃는다(autoArrange 머리말). 창 옮기기(movePane·transferCrossDept)는 열기·닫기가 아니라 대상 밖.
+  3394	// 역할 표 = 소켓별 마지막 목록(끝난 좌석의 역할도 남긴다 — 끝난 master 칸이 좌열에서 튀어나가지 않게).
+  3395	//   빠지는 좌석은 역할이 아니라 change.remove 가 정한다.
+  3396	const arrangeRolesBySocket = new Map<string, Map<number, string | null>>();
+  3397	function rememberRoles(socket: string | undefined, surfaces: { surface_id: number; role: string | null }[]): void {
+  3398	  const key = socket ?? "";
+  3399	  const next = new Map(surfaces.map((x) => [x.surface_id, x.role] as [number, string | null]));
+  3400	  // 목록에서 사라졌지만 아직 화면(트리)에 있는 좌석의 역할은 이어서 기억한다 — 유령 수렴으로 떼어질 옛 master 의
+  4715	  // 정리(cancelSendFail)도 여기 실어 필드를 늘리지 않는다(닫힌 pane 의 지연 토스트 차단).
+  4716	  // ★cancelSendFail 을 **맨 앞**에 둔다: destroyPaneRuntime 의 forEach 는 앞 항목이 던지면
+  4717	  //  뒤를 실행하지 못하므로, 뒤에 두면 un1/un2 가 던졌을 때 예약된 토스트가 죽은 pane 이름으로
+  4718	  //  최대 3초 뒤 떠버린다. 순서 외의 의미는 없다(세 훅은 서로 독립).
+  4719	  const rt: PaneRuntime = { sid, socket, el, termHost, roleEl, titleEl, usageEl, term, fit, unlisten: [cancelSendFail, un1, un2], observer, snapToBottom, keepReadingLine, lastOutputAt: () => outStamp.t, imeBusy: () => imeState.pending !== "", trackFilter };
+  4720	  panes.set(paneKey(sid, socket), rt);
+  4721	  return rt;
+  4722	}
+  4723	
+  4724	const lastSentSize = new WeakMap<PaneRuntime, string>(); // (tabs-sidebar 2c) 런타임 → 마지막으로 보낸 「열x행」
+  4725	/// Fit only when actually laid out — a detached/hidden pane must not shrink the PTY.
+  4726	function fitPane(rt: PaneRuntime) {
+  4727	  if (rt.termHost.offsetWidth < 60 || rt.termHost.offsetHeight < 40) return;
+  4728	  rt.keepReadingLine(() => rt.fit.fit()); // ★B-230: 위를 읽던 사람은 폭 리플로우 뒤에도 읽던 줄에 남는다(keepReadingLine)
+  4729	  rt.snapToBottom(); // 리사이즈 리플로우가 뷰포트를 바닥에서 밀어내는 경우 복귀
+  4730	  // (tabs-sidebar 2c · 설계 §3) 마지막으로 보낸 열·행과 같으면 보내지 않는다 — 탭 20회 왕복 실측 131회 중 122회가 같은 크기 재전송이었다.
+  4731	  //   런타임마다 따로 기억(WeakMap) · 보내기 실패면 기억을 지워 다음 맞춤 때 다시 보낸다.
+  4732	  const size = `${rt.term.cols}x${rt.term.rows}`;
+  4733	  if (lastSentSize.get(rt) === size) return;
+  4734	  lastSentSize.set(rt, size);
+  4735	  invoke("resize_surface", { socket: rt.socket, surfaceId: rt.sid, rows: rt.term.rows, cols: rt.term.cols }).catch(() => lastSentSize.delete(rt));
+  4736	}
+  4737	
+  4738	/// ★B-230(0.14.52 · U · H1): render() 는 보이는 pane 호스트를 전부 떼었다 다시 붙인다. WebKit 은 다시 붙인 `.xterm-viewport` 의 스크롤 위치를
+  4739	///   0 으로 되돌리는데 xterm 은 제 위치(viewportY)를 그대로 갖고, 자기 캐시 값이 바뀔 때만 DOM 을 다시 맞춘다(xterm 5.5.0 Viewport.syncScrollArea).
+  4740	///   그래서 크기가 같은 render 뒤에는 아무것도 고쳐지지 않았고, 다음 아래쪽 휠 한 칸(트랙패드 +1px 도)이 0 에서 계산돼 **첫 대화로 점프**했다
+  4741	///   (B230-REPRO-REPORT · P0·P1 5/5). 한 행 갔다 오는 스크롤은 xterm 이 **자기** 갱신을 돌리게 하는 공개 API 길이다 — 위치는 xterm 의 지금
+  4742	///   모델에서 다시 나오고(저장해 둔 옛 오프셋을 되살리지 않는다), 떠나 있던 동안 쌓인 출력도 그 모델에 이미 들어 있다. 한 태스크 안이라 중간
+  4743	///   화면은 그려지지 않는다. 스크롤백이 없으면(대체 화면 포함) 할 일이 없다.
+  4744	function resyncViewport(term: Terminal) {
+  4745	  const b = term.buffer.active;
+  4746	  if (b.baseY <= 0) return;
+  4747	  const step = b.viewportY > 0 ? -1 : 1;
+  4748	  term.scrollLines(step);
+  4749	  term.scrollLines(-step);
+  4750	}
+  5552	function renderNode(node: Node): HTMLElement {
+  5553	  if (node.type === "pane") {
+  5554	    const rt = panes.get(paneKey(node.sid, current()?.socket));
+  5555	    if (rt) return rt.el;
+  5556	    const placeholder = document.createElement("div");
+  5557	    placeholder.className = "pane";
+  5558	    placeholder.textContent = `surface:${node.sid} (없음)`;
+  5559	    return placeholder;
+  5560	  }
+  5561	  const div = document.createElement("div");
+  5562	  div.className = `split ${node.dir}`;
+  5563	  const aEl = renderNode(node.a);
+  5564	  const bEl = renderNode(node.b);
+  5565	  const divider = document.createElement("div");
+  5566	  divider.className = "divider";
+  5567	  const ratio = node.ratio ?? 0.5;
+  5568	  aEl.style.flex = `${ratio} 1 0%`;
+  5569	  bEl.style.flex = `${1 - ratio} 1 0%`;
+  5570	  attachDividerDrag(divider, div, node, aEl, bEl);
+  5571	  div.append(aEl, divider, bEl);
+  5572	  return div;
+  5573	}
+  5574	
+  5575	function attachDividerDrag(
+  5576	  divider: HTMLElement,
+  5577	  container: HTMLElement,
+  5578	  node: Node & { type: "split" },
+  5579	  aEl: HTMLElement,
+  5580	  bEl: HTMLElement,
+  5581	) {
+  5582	  divider.addEventListener("mousedown", (down) => {
+  5583	    down.preventDefault();
+  5584	    divider.classList.add("dragging");
+  5585	    dividerDragActive = true;
+  5586	    const horizontal = node.dir === "row";
+  5587	    const move = (e: MouseEvent) => {
+  5588	      const rect = container.getBoundingClientRect();
+  5589	      const pos = horizontal ? e.clientX - rect.left : e.clientY - rect.top;
+  5590	      const size = horizontal ? rect.width : rect.height;
+  5591	      const ratio = Math.min(0.85, Math.max(0.15, pos / size));
+  5592	      node.ratio = ratio;
+  5593	      delete node.leftAuto; // 사람이 끈 폭 — 이제 기본 폭이 아니다(창 크기 변경·자동 정렬이 다시 재지 않는다)
+  5594	      aEl.style.flex = `${ratio} 1 0%`;
+  5595	      bEl.style.flex = `${1 - ratio} 1 0%`;
+  5596	    };
+  5597	    const up = () => {
+  5598	      divider.classList.remove("dragging");
+  5599	      dividerDragActive = false;
+  5600	      if (leftDefaultResizeSkipped) { leftDefaultResizeSkipped = false; recomputeDefaultLeft(); } // 끄는 중 건너뛴 창 크기 변경을 이제 반영
+  5601	      window.removeEventListener("mousemove", move);
+  5602	      window.removeEventListener("mouseup", up);
+  5603	      saveLayout();
+  5604	      for (const sid of collectSids(node)) {
+  5605	        const rt = panes.get(paneKey(sid, current()?.socket));
+  5606	        if (rt) fitPane(rt);
+  5607	      }
+  5608	    };
+  5609	    window.addEventListener("mousemove", move);
+  5610	    window.addEventListener("mouseup", up);
+  5611	  });
+  5612	}
+  5613	
+  5614	// ---------- 사이드바 드래그 순서 변경 (ws 탭·그룹 섹션) ----------
+  5615	// HTML5 draggable API는 Tauri wry/WKWebView가 가로채 신뢰 불가 → attachDividerDrag처럼
+  5616	// mousedown + window mousemove/mouseup로 직접 구현. 배열 변형은 reorder.ts 순수 함수가 담당,
+  5617	// 여기선 히트테스트·삽입 표시선·render()만.
+  5618	
+  5619	// 삽입 위치 표시선(fixed) — 앵커 rect의 위/아래 모서리에 2px 라인. pointer-events:none로 히트테스트 방해 차단.
+  5620	function makeDropLine(): HTMLElement {
+  5621	  const el = document.createElement("div");
+  5622	  el.className = "ws-drop-indicator";
+  5623	  el.hidden = true;
+  5624	  document.body.appendChild(el);
+  5625	  return el;
+  5626	}
+  5627	function placeDropLine(el: HTMLElement, left: number, edgeY: number, width: number) {
+  5628	  el.hidden = false;
+  5629	  el.style.left = `${left}px`;
+  5630	  el.style.top = `${edgeY - 1}px`;
+  5631	  el.style.width = `${width}px`;
+  5632	}
+  5633	// 실제 드래그(임계 초과) 뒤에 뒤따르는 합성 click을 1회 삼킨다(그룹 name focus 등 오발 방지).
+  5634	// click이 안 오면 setTimeout으로 자기청소 → 미래의 무관한 click을 먹지 않는다.
+  5635	function suppressNextClick() {
+
+codex
+정적 추적에서 두 가지 재현 경로를 찾았습니다. 활성 부서가 `pending`이고 좌석 모델이 없으면 서명이 기록되지 않아 렌더 마이크로태스크가 계속 예약됩니다. 시험에서는 데몬 PID를 얻기 전에 실패할 경우 종료 처리가 빠집니다. 저장값 정규화와 좌석 번호 재발급 시 복원 경로도 확인하겠습니다.
+exec
+/bin/zsh -lc "git diff --unified=5 1a6f5be6..HEAD -- ui/src/main.ts | sed -n '/const lastSentSize/,/function render()/p'; nl -ba ui/src/main.ts | sed -n '11216,11238p'; nl -ba ui/src/main.ts | sed -n '4555,4600p'; nl -ba ui/src/main.ts | sed -n '6100,6125p'; nl -ba ui/src/tabbar.ts" in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+ succeeded in 0ms:
++const lastSentSize = new WeakMap<PaneRuntime, string>(); // (tabs-sidebar 2c) 런타임 → 마지막으로 보낸 「열x행」
+ /// Fit only when actually laid out — a detached/hidden pane must not shrink the PTY.
+ function fitPane(rt: PaneRuntime) {
+   if (rt.termHost.offsetWidth < 60 || rt.termHost.offsetHeight < 40) return;
+   rt.keepReadingLine(() => rt.fit.fit()); // ★B-230: 위를 읽던 사람은 폭 리플로우 뒤에도 읽던 줄에 남는다(keepReadingLine)
+   rt.snapToBottom(); // 리사이즈 리플로우가 뷰포트를 바닥에서 밀어내는 경우 복귀
+-  invoke("resize_surface", { socket: rt.socket, surfaceId: rt.sid, rows: rt.term.rows, cols: rt.term.cols }).catch(() => {});
++  // (tabs-sidebar 2c · 설계 §3) 마지막으로 보낸 열·행과 같으면 보내지 않는다 — 탭 20회 왕복 실측 131회 중 122회가 같은 크기 재전송이었다.
++  //   런타임마다 따로 기억(WeakMap) · 보내기 실패면 기억을 지워 다음 맞춤 때 다시 보낸다.
++  const size = `${rt.term.cols}x${rt.term.rows}`;
++  if (lastSentSize.get(rt) === size) return;
++  lastSentSize.set(rt, size);
++  invoke("resize_surface", { socket: rt.socket, surfaceId: rt.sid, rows: rt.term.rows, cols: rt.term.cols }).catch(() => lastSentSize.delete(rt));
+ }
+ 
+ /// ★B-230(0.14.52 · U · H1): render() 는 보이는 pane 호스트를 전부 떼었다 다시 붙인다. WebKit 은 다시 붙인 `.xterm-viewport` 의 스크롤 위치를
+ ///   0 으로 되돌리는데 xterm 은 제 위치(viewportY)를 그대로 갖고, 자기 캐시 값이 바뀔 때만 DOM 을 다시 맞춘다(xterm 5.5.0 Viewport.syncScrollArea).
+ ///   그래서 크기가 같은 render 뒤에는 아무것도 고쳐지지 않았고, 다음 아래쪽 휠 한 칸(트랙패드 +1px 도)이 0 에서 계산돼 **첫 대화로 점프**했다
+@@ -5412,31 +5374,32 @@ function setOsDropTarget(rt: PaneRuntime | undefined) {
+ 
+ function render() {
+ 11216	  // 선행 → 소켓별 대조. 데몬 일시 미가동 ws는 보존(영구 삭제 방지, 검증 mustFix).
+ 11217	  try {
+ 11218	    const savedRaw = localStorage.getItem(LAYOUT_KEY);
+ 11219	    // ★v115r5-T4: 첫 기동 판정은 **여기서** 떠 둔다 — 아래 render() 가 곧바로 저장본을 써서 뒤에선 못 가른다.
+ 11220	    briefGate.firstLaunch = isFirstLaunch(savedRaw);
+ 11221	    const saved = JSON.parse(savedRaw ?? "null");
+ 11222	    if (saved && Array.isArray(saved.workspaces)) {
+ 11223	      workspaces = saved.workspaces;
+ 11224	      groups = Array.isArray(saved.groups) ? saved.groups : []; // 06: 하위호환 — 옛 저장본엔 groups 없음
+ 11225	      activeWs = saved.active ?? 0;
+ 11226	      wsCounter = saved.counter ?? 1;
+ 11227	      groupCounter = saved.groupCounter ?? 1; // 06
+ 11228	    }
+ 11229	  } catch {
+ 11230	    workspaces = [];
+ 11231	    groups = []; // 06: 손상 저장본 폴백
+ 11232	  }
+ 11233	  // 여기까지 왔으면 저장본을 읽어 본 것이다(내용이 없거나 손상이어도 '읽었다'는 사실은 같다) —
+ 11234	  // 이제부터의 저장은 사용자의 배치를 덮는 것이 아니라 그 배치를 갱신하는 것이다.
+ 11235	  layoutLoaded = true;
+ 11236	  for (const ws of workspaces) ws.socket = ws.socket ?? undefined; // 하위호환 마이그레이션(기본 데몬)
+ 11237	  // socket 1:1 수렴 + id 중복 제거(중복 탭 증식 차단) — 복원 적재 직후 단일 게이트.
+ 11238	  workspaces = normalizeWorkspaces(workspaces);
+  4555	      // 혼성 프로필(C) 방어: 자모 insertText 커밋 후 조합이 표준 composition으로 이어지면
+  4556	      // 리듀서가 흡수된 자모를 폐기한다. composition 3종 모두 배선(제5 프로필 진단 계측 포함).
+  4557	      ta.addEventListener("compositionstart", () => applyIme({ kind: "compositionstart" }));
+  4558	      ta.addEventListener("compositionupdate", () => applyIme({ kind: "compositionupdate" }));
+  4559	      ta.addEventListener("compositionend", () => applyIme({ kind: "compositionend" }));
+  4560	      ta.addEventListener("keydown", (e) => {
+  4561	        // 일반 키(Enter·Space·화살표 등, IME 처리중 229 제외) 직전에 조합 확정(리듀서 flush).
+  4562	        applyIme({ kind: "keydown", keyCode: e.keyCode, key: e.key });
+  4563	        // 조합 중이 아닐 때 textarea 잔여 value 정리 (IME value 누적 방지)
+  4564	        if (e.keyCode !== 229 && !imeState.pending && ta.value.length > 64) {
+  4565	          (ta as HTMLTextAreaElement).value = "";
+  4566	        }
+  4567	      });
+  4568	      ta.addEventListener("blur", () => applyIme({ kind: "blur" }));
+  4569	    }
+  4570	  }
+  4571	  el.addEventListener("mousedown", () => setFocus(sid));
+  4572	  term.textarea?.addEventListener("focus", () => setFocus(sid));
+  4573	
+  4574	  // attach 먼저 — 백엔드가 (소켓 slug, surface_id) 이벤트명을 만들어 반환한다(단일 진실, UI 재계산 금지).
+  4575	  const ev = (await invoke("attach_surface", { socket, surfaceId: sid })) as {
+  4576	    output_event: string;
+  4577	    exited_event: string;
+  4578	  };
+  4579	  const outStamp = { t: 0 }; // 마지막 출력 시각 — rt.lastOutputAt(스트리밍 가드)의 원천
+  4580	  // ★마우스 트래킹 스트리핑+정합기(스펙 D4 · trackfilter.ts 계약 주석 참조): 앱의 DECSET
+  4581	  // 1003h/1006h 류가 xterm 에 닿지 않게 걷어내 휠 스크롤·일반 드래그 선택·복사를 기본 동작으로
+  4582	  // 복원하고, mac 은 alt 화면 구간만 장부 재생 주입으로 앱에 마우스를 돌려준다(fullscreen 휠
+  4583	  // →프롬프트 히스토리 오염 봉인). pane 수명 전체 단일 인스턴스 — 스냅샷 재생과 라이브
+  4584	  // 스트림이 같은 필터를 지난다. os·롤백 스위치는 pane 생성 시 캡처(라이브 재판독 금지 —
+  4585	  // 수명 중 토글 시 필터/휠 억제 상태 분열. allowAppMouse 킬스위치와 동형 계약).
+  4586	  // 킬스위치 allowAppMouse 는 onData 등록 앞(insertLeak 아래)에서 판독했다 — 여기서는 소비만.
+  4587	  // 롤백 스위치 cysMouseReconcilerOff="1" = 정합기 전체 비활성(win 비활성 코드 경로 재사용).
+  4588	  const reconcile = localStorage.getItem("cysMouseReconcilerOff") !== "1";
+  4589	  const trackFilter = new MouseTrackingFilter({ os: IS_WINDOWS ? "win" : "mac", reconcile });
+  4590	  // ★휠 억제 — OS로 **배타 분기**한다(mac=shouldSuppressWheel · Windows=shouldSuppressWheelWin).
+  4591	  // (mac·스펙 D4) [alt buffer ∧ 장부 트래킹 요청 ∧ xterm 트래킹 미진입]이면 휠을 소비한다
+  4592	  // (return false = xterm 기본 차단) — 미진입 창의 휠이 방향키로 합성돼 Claude Code 프롬프트
+  4593	  // 히스토리를 오염시키는 결함 봉인. 판단은 wheelgate 순수 함수(테스트 고정). less/man(트래킹
+  4594	  // 무요청)은 술어 불충족 → 방향키 합성 보존. mac 롤백 스위치 off(reconcile=false)면 미등록.
+  4595	  //
+  4596	  // (a) ★Windows도 이제 등록한다(스펙 C-2 — 종전에는 미등록이었다). 다만 술어는 **다른 함수**이고
+  4597	  //     판별자를 1003(any-motion)으로 좁혔다: claude fullscreen은 1000+1002+1003+1006("full")을
+  4598	  //     켜므로 충족(=억제)이고, vim `mouse=a`는 통상 1003을 켜지 않아 불충족(=방향키 합성 보존
+  4599	  //     → 현행 Windows vim 휠 UX 무회귀)이다. 근거와 최대 미확정은 wheelgate.ts의 (b)·(d) 주석.
+  4600	  // (b) ★종전 미등록의 근거였던 "Windows claude는 기본 inline이라 문제2가 미발현"은 **반증됐다**:
+  6100	  try {
+  6101	    wsAcctIdxForRender = wsAcctIndex();
+  6102	  } catch {
+  6103	    wsAcctIdxForRender = null;
+  6104	  }
+  6105	  // 06: 2계층 tier 정렬 — pinned 그룹 → unpinned 그룹 → ungrouped ws(배열 순서). 시각 순서≠배열 순서이므로
+  6106	  // 탭 핸들러는 캡처 idx 대신 workspaces.indexOf(ws)로 활성 비교/전환(stale idx 회피, close 핸들러 패턴 일치).
+  6107	  // 06: 멤버0 그룹은 렌더에서 제외(유령 헤더 차단 · 적대검증 교정 — saveLayout이 모듈 상태도 청소).
+  6108	  const hasMembers = (g: GroupMeta) => workspaces.some((w) => !w.pending && w.groupId === g.id);
+  6109	  const pinnedG = groups.filter((g) => g.pinned && hasMembers(g));
+  6110	  const unpinnedG = groups.filter((g) => !g.pinned && hasMembers(g));
+  6111	  for (const g of [...pinnedG, ...unpinnedG]) bar.appendChild(buildGroupSection(g));
+  6112	  // (tabs-sidebar 1d · 시안) 상황판 = 막대 맨 위 · 부서가 1개면 카드를 그리지 않는다(상황판이 대신) · 여럿이면 카드 아래 그 부서 상태 수.
+  6113	  const solo = statusBoard !== "off" && workspaces.filter((w) => !w.pending).length === 1;
+  6114	  if (statusBoard !== "off" && boardPos(localStorage.getItem(BOARD_POS_KEY)) === "top") bar.appendChild(seatHost("board"));
+  6115	  for (const ws of workspaces.filter((w) => !w.pending && w.groupId == null))
+  6116	    if (solo) bar.append(seatHost(String(ws.id)));
+  6117	    else if (statusBoard !== "off") bar.append(buildTab(ws), seatHost(`n${ws.id}`), seatHost(String(ws.id)));
+  6118	    else bar.append(buildTab(ws), seatHost(String(ws.id)));
+  6119	  refreshSeatRows(); // (tabs-sidebar 조각1) 같은 호스트를 다시 붙였으니 값만 맞춘다(서명 같으면 그대로)
+  6120	  wsAcctIdxForRender = null; // (C2) 렌더 밖에서는 캐시를 쓰지 않는다(다음 렌더가 새로 만든다)
+  6121	}
+  6122	
+  6123	// 06: ws 1행 탭 DOM 생성(기존 renderWsTabs forEach 본문을 외과적으로 추출 — idx→workspaces.indexOf(ws)만 치환).
+  6124	function buildTab(ws: Workspace): HTMLElement {
+  6125	  const color = WS_COLORS[ws.id % WS_COLORS.length];
+     1	// 묶음 탭 머리 줄 그리기 — TICKET=cysr-tabs-sidebar-impl 조각 2b(설계 ③⑤ · master#357e735a).
+     2	// 탭 하나 = 묶음 이름 + 좌석별 상태 표지(역할 점과 같은 클래스 · 1f) + 좌석 수. 누르면 그 묶음 좌석이 나란히(넓게 보기 풀림).
+     3	// 판정은 하지 않는다 — seatrows 모델의 줄 상태를 그대로 그린다. 새 단추·새 색 없음(묶음 2개 이상일 때만 생긴다).
+     4	import { roleDotColor } from "./appearance";
+     5	import { SEAT_STATE_ACT, SEAT_STATE_LABEL, type SeatRowsModel } from "./seatrows";
+     6	import type { TabInfo } from "./grouptabs";
+     7	
+     8	export function buildTabBar(tabs: readonly TabInfo[], model: SeatRowsModel, active: string | null, onPick: (key: string) => void): HTMLElement {
+     9	  const bar = document.createElement("div");
+    10	  bar.className = "group-tabbar";
+    11	  bar.setAttribute("role", "tablist");
+    12	  for (const t of tabs) {
+    13	    const g = model.groups.find((x) => x.key === t.key);
+    14	    const b = document.createElement("button");
+    15	    b.type = "button";
+    16	    b.className = `group-tab${t.key === active ? " active" : ""}`;
+    17	    b.setAttribute("role", "tab");
+    18	    b.setAttribute("aria-selected", String(t.key === active));
+    19	    const name = document.createElement("span");
+    20	    name.className = "group-tab-name";
+    21	    name.textContent = t.label;
+    22	    const dots = document.createElement("span");
+    23	    dots.className = "group-tab-dots";
+    24	    for (const r of g?.rows ?? []) {
+    25	      const d = document.createElement("span");
+    26	      d.className = `ws-seat-dot ${SEAT_STATE_ACT[r.state]}`;
+    27	      d.style.setProperty("--role-color", roleDotColor(r.role) ?? "#64748b");
+    28	      d.title = `${r.no} · ${r.name} · ${SEAT_STATE_LABEL[r.state]}`;
+    29	      dots.appendChild(d);
+    30	    }
+    31	    const n = document.createElement("span");
+    32	    n.className = "group-tab-n";
+    33	    n.textContent = String(t.sids.length);
+    34	    b.append(name, dots, n);
+    35	    b.addEventListener("click", () => onPick(t.key));
+    36	    bar.appendChild(b);
+    37	  }
+    38	  return bar;
+    39	}
+
+exec
+/bin/zsh -lc 'git rev-parse --abbrev-ref HEAD; git diff --numstat 1a6f5be6..HEAD -- ui/src/grouptabs.ts ui/src/tabbar.ts ui/src/main.ts tests/hidden_seat_screen.rs' in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+ succeeded in 0ms:
+feat/tabs-sidebar
+132	0	tests/hidden_seat_screen.rs
+107	0	ui/src/grouptabs.ts
+235	83	ui/src/main.ts
+39	0	ui/src/tabbar.ts
+
+codex
+검토 대상은 `feat/tabs-sidebar`의 `f6d917876f3bf3c873d3c540a497bc6a82d908e2`로 확인했습니다. 좌석 번호가 재사용되면 저장된 `zoom`이 다른 묶음을 활성화하는 경로도 확인되어 판정은 `REVISE`입니다. 정본 파일 생성과 `cys send`는 각각 환경의 읽기 전용 제한과 의뢰의 상태 변경 명령 금지에 걸려 수행하지 못했습니다.
+codex
+[문제점]
+
+정적 검토 판정은 **REVISE**입니다. 아래 JSON의 `issues`에 결함 6건과 수정 방향을 기록했습니다. 서버·빌드·시험은 실행하지 않았습니다.
+
+```json
+{
+  "verdict": "REVISE",
+  "justification": "pending 부서의 무한 렌더 예약, 손상된 탭 저장값의 정규화 누락, 재발급된 좌석 번호에 대한 잘못된 zoom 복원, 시험 실패 시 데몬 정리 누락이 확인됐다.",
+  "evidence": [
+    {
+      "claim": "pending 부서는 모델 생성에서 제외되지만 모델 없는 활성 부서도 렌더를 예약한다. wsViewTree의 조기 반환은 비교 서명을 기록하지 않는다.",
+      "ref": "ui/src/main.ts:5892; ui/src/main.ts:5911; ui/src/main.ts:6009",
+      "verified": true
+    },
+    {
+      "claim": "refreshSeatRows는 정규화하지 않은 ws.tabs를 reconcileTabs에 전달하며, reconcileTabs는 order.filter를 직접 호출한다.",
+      "ref": "ui/src/main.ts:5911; ui/src/grouptabs.ts:64",
+      "verified": true
+    },
+    {
+      "claim": "zoom은 숫자 sid로 저장되고, 현재 그 번호를 포함한 묶음이 저장된 active보다 우선한다.",
+      "ref": "ui/src/grouptabs.ts:24; ui/src/grouptabs.ts:65",
+      "verified": true
+    },
+    {
+      "claim": "탭 영역 래퍼는 기존 오른쪽 요소의 flex를 복사하지만 드래그는 기존 요소의 flex를 갱신한다.",
+      "ref": "ui/src/main.ts:5980; ui/src/main.ts:5595",
+      "verified": true
+    },
+    {
+      "claim": "데몬 생성 후 system.identify가 성공해야 정리용 pid가 설정된다.",
+      "ref": "tests/hidden_seat_screen.rs:95; tests/hidden_seat_screen.rs:101; tests/hidden_seat_screen.rs:68",
+      "verified": true
+    },
+    {
+      "claim": "보이는 좌석의 attach 응답을 검증하지 않고 읽어서 버리므로 구독 실패도 시험을 통과할 수 있다.",
+      "ref": "tests/hidden_seat_screen.rs:109; tests/hidden_seat_screen.rs:113; tests/hidden_seat_screen.rs:129",
+      "verified": true
+    }
+  ],
+  "issues": [
+    {
+      "severity": "blocking",
+      "where": "ui/src/main.ts:5910",
+      "what": "활성 ws가 pending이고 seatModels 항목이 없으면 무한 마이크로태스크 고리가 생긴다. refreshSeatRows는 pending 모델 생성을 건너뛰고 기본 빈 보기와 미기록 서명을 비교해 render를 예약한다. 다음 render도 wsViewTree에서 조기 반환하여 같은 조건이 유지되므로 화면과 타이머 진행을 막는다.",
+      "fix": "pending 또는 모델 미확보 상태에서는 탭 재렌더를 예약하지 않도록 가드한다. pending 활성 부서에서 마이크로태스크가 수렴하는 회귀 검증을 추가한다."
+    },
+    {
+      "severity": "major",
+      "where": "ui/src/main.ts:5911",
+      "what": "최초 렌더에서 모델이 없으면 wsViewTree가 normalizeTabState 전에 반환한다. 이후 refreshSeatRows가 저장된 tabs를 그대로 전달하므로 tabs={} 또는 order가 배열이 아닌 값이면 grouptabs.ts:64에서 예외가 발생한다.",
+      "fix": "refreshSeatRows의 reconcileTabs 호출에도 normalizeTabState를 적용하거나 reconcileTabs 입구에서 일괄 정규화한다."
+    },
+    {
+      "severity": "major",
+      "where": "ui/src/grouptabs.ts:65",
+      "what": "zoom 복원은 좌석 번호 재발급에 안전하지 않다. 예를 들어 저장값 active=A, zoom=7에서 재부팅 후 A의 좌석이 9, B의 좌석이 7이면 B가 활성화되고 확대된다. 7이 사라졌다면 확대 상태가 소실된다.",
+      "fix": "확대 대상을 재부팅 간 안정적인 좌석 식별자로 저장하고 현재 sid로 해석한다. 식별이 불가능하면 zoom을 해제하되 저장된 active를 유지한다."
+    },
+    {
+      "severity": "minor",
+      "where": "ui/src/main.ts:5980",
+      "what": "고정 기둥 경계 드래그의 오른쪽 flex 갱신 대상이 래퍼와 어긋난다. area가 기존 flex를 복사한 뒤 실제 split 자식이 되지만 드래그 클로저는 내부 right를 계속 갱신한다. 따라서 드래그 중 외부 폭이 node.ratio와 다르고 재렌더 시 폭이 달라질 수 있다.",
+      "fix": "드래그가 실제 split 직계 자식인 area의 flex를 갱신하도록 연결한다. 드래그 직후와 재렌더 후의 경계 위치가 같은지 검증한다."
+    },
+    {
+      "severity": "major",
+      "where": "tests/hidden_seat_screen.rs:95",
+      "what": "spawn 성공 후 연결 또는 system.identify가 실패하면 b.pid는 None인 채로 정리되어 데몬에 종료 신호를 보내지 않는다. 생성한 Child도 kill/wait하지 않는다. 성공 경로에서도 SIGKILL 이후 종료 확인과 wait가 없어 고아 데몬 0을 보장하지 못한다.",
+      "fix": "spawn 직후부터 Child를 소유하는 정리 가드를 설치하고 모든 실패 경로에서 종료 후 wait한다. 데몬이 별도 프로세스로 분리되는 경우에도 해당 PID의 종료 확인을 포함한다."
+    },
+    {
+      "severity": "major",
+      "where": "tests/hidden_seat_screen.rs:113",
+      "what": "attach 응답과 오류를 모두 버리므로 shown이 실제 구독됐다는 전제가 검증되지 않는다. attach가 실패하여 두 좌석 모두 구독이 없어도 두 probe가 성공하면 통과한다. 또한 UI의 숨김은 DOM 분리인데 시험은 구독 유무로 대체하여 DOM 숨김 및 PTY 크기 보존을 검증하지 않는다.",
+      "fix": "attach 성공 응답을 확인한 후 probe를 시작한다. 이 시험의 주장을 구독 유무에 따른 동일 결과 줄 확인으로 한정하고, 탭 숨김 전후의 resize 호출 및 PTY 크기 보존은 실제 숨김 동작을 대상으로 별도 검증한다."
+    }
+  ],
+  "missing": [
+    "실행 검증은 의뢰의 금지 조건에 따라 수행하지 않았다.",
+    "범위 밖 autoArrange와 arrangeWithoutRoles 구현은 열람하지 않아 전이 호출까지 포함한 원본 트리 불변성을 확정하지 않았다.",
+    "환경의 읽기 전용 제한으로 지정 정본 JSON 파일을 생성하지 못했다."
+  ],
+  "revision": "f6d917876f3bf3c873d3c540a497bc6a82d908e2"
+}
+```
+
+[논쟁점]
+
+- 숨은 요소는 DOM에서 분리되고 크기 가드가 resize를 막는 구조입니다(`main.ts:5376`, `4727`). 전송 실패 시 캐시는 삭제됩니다(`4735`). 다만 같은 런타임에서 데몬·PTY만 교체되는 경우 캐시를 무효화하는 근거는 확보하지 못했습니다. `4733`의 크기 비교만으로 재부착 안전성을 확정할 수 없습니다.
+- 원본 트리로의 명시적 되쓰기는 `ratio`와 `leftAuto`입니다(`main.ts:5993`). 파생 트리 내부 경계의 변경 유지와 전이 호출의 불변성은 추가 증명이 필요합니다.
+
+[다음 단계 조언]
+
+무한 렌더 고리와 정리 가드를 먼저 수정하고, 손상 저장값·좌석 번호 교환·attach 실패를 회귀 사례로 고정하십시오.
+
+**정본 파일은 생성되지 않아 라운드는 미제출 상태입니다.** 읽기 전용 환경 때문에 파일을 저장하지 못했고, 상태 변경 명령 금지에 따라 `cys send`도 실행하지 않았습니다.
+
+VERDICT: REVISE
+tokens used
+49,221
+[문제점]
+
+정적 검토 판정은 **REVISE**입니다. 아래 JSON의 `issues`에 결함 6건과 수정 방향을 기록했습니다. 서버·빌드·시험은 실행하지 않았습니다.
+
+```json
+{
+  "verdict": "REVISE",
+  "justification": "pending 부서의 무한 렌더 예약, 손상된 탭 저장값의 정규화 누락, 재발급된 좌석 번호에 대한 잘못된 zoom 복원, 시험 실패 시 데몬 정리 누락이 확인됐다.",
+  "evidence": [
+    {
+      "claim": "pending 부서는 모델 생성에서 제외되지만 모델 없는 활성 부서도 렌더를 예약한다. wsViewTree의 조기 반환은 비교 서명을 기록하지 않는다.",
+      "ref": "ui/src/main.ts:5892; ui/src/main.ts:5911; ui/src/main.ts:6009",
+      "verified": true
+    },
+    {
+      "claim": "refreshSeatRows는 정규화하지 않은 ws.tabs를 reconcileTabs에 전달하며, reconcileTabs는 order.filter를 직접 호출한다.",
+      "ref": "ui/src/main.ts:5911; ui/src/grouptabs.ts:64",
+      "verified": true
+    },
+    {
+      "claim": "zoom은 숫자 sid로 저장되고, 현재 그 번호를 포함한 묶음이 저장된 active보다 우선한다.",
+      "ref": "ui/src/grouptabs.ts:24; ui/src/grouptabs.ts:65",
+      "verified": true
+    },
+    {
+      "claim": "탭 영역 래퍼는 기존 오른쪽 요소의 flex를 복사하지만 드래그는 기존 요소의 flex를 갱신한다.",
+      "ref": "ui/src/main.ts:5980; ui/src/main.ts:5595",
+      "verified": true
+    },
+    {
+      "claim": "데몬 생성 후 system.identify가 성공해야 정리용 pid가 설정된다.",
+      "ref": "tests/hidden_seat_screen.rs:95; tests/hidden_seat_screen.rs:101; tests/hidden_seat_screen.rs:68",
+      "verified": true
+    },
+    {
+      "claim": "보이는 좌석의 attach 응답을 검증하지 않고 읽어서 버리므로 구독 실패도 시험을 통과할 수 있다.",
+      "ref": "tests/hidden_seat_screen.rs:109; tests/hidden_seat_screen.rs:113; tests/hidden_seat_screen.rs:129",
+      "verified": true
+    }
+  ],
+  "issues": [
+    {
+      "severity": "blocking",
+      "where": "ui/src/main.ts:5910",
+      "what": "활성 ws가 pending이고 seatModels 항목이 없으면 무한 마이크로태스크 고리가 생긴다. refreshSeatRows는 pending 모델 생성을 건너뛰고 기본 빈 보기와 미기록 서명을 비교해 render를 예약한다. 다음 render도 wsViewTree에서 조기 반환하여 같은 조건이 유지되므로 화면과 타이머 진행을 막는다.",
+      "fix": "pending 또는 모델 미확보 상태에서는 탭 재렌더를 예약하지 않도록 가드한다. pending 활성 부서에서 마이크로태스크가 수렴하는 회귀 검증을 추가한다."
+    },
+    {
+      "severity": "major",
+      "where": "ui/src/main.ts:5911",
+      "what": "최초 렌더에서 모델이 없으면 wsViewTree가 normalizeTabState 전에 반환한다. 이후 refreshSeatRows가 저장된 tabs를 그대로 전달하므로 tabs={} 또는 order가 배열이 아닌 값이면 grouptabs.ts:64에서 예외가 발생한다.",
+      "fix": "refreshSeatRows의 reconcileTabs 호출에도 normalizeTabState를 적용하거나 reconcileTabs 입구에서 일괄 정규화한다."
+    },
+    {
+      "severity": "major",
+      "where": "ui/src/grouptabs.ts:65",
+      "what": "zoom 복원은 좌석 번호 재발급에 안전하지 않다. 예를 들어 저장값 active=A, zoom=7에서 재부팅 후 A의 좌석이 9, B의 좌석이 7이면 B가 활성화되고 확대된다. 7이 사라졌다면 확대 상태가 소실된다.",
+      "fix": "확대 대상을 재부팅 간 안정적인 좌석 식별자로 저장하고 현재 sid로 해석한다. 식별이 불가능하면 zoom을 해제하되 저장된 active를 유지한다."
+    },
+    {
+      "severity": "minor",
+      "where": "ui/src/main.ts:5980",
+      "what": "고정 기둥 경계 드래그의 오른쪽 flex 갱신 대상이 래퍼와 어긋난다. area가 기존 flex를 복사한 뒤 실제 split 자식이 되지만 드래그 클로저는 내부 right를 계속 갱신한다. 따라서 드래그 중 외부 폭이 node.ratio와 다르고 재렌더 시 폭이 달라질 수 있다.",
+      "fix": "드래그가 실제 split 직계 자식인 area의 flex를 갱신하도록 연결한다. 드래그 직후와 재렌더 후의 경계 위치가 같은지 검증한다."
+    },
+    {
+      "severity": "major",
+      "where": "tests/hidden_seat_screen.rs:95",
+      "what": "spawn 성공 후 연결 또는 system.identify가 실패하면 b.pid는 None인 채로 정리되어 데몬에 종료 신호를 보내지 않는다. 생성한 Child도 kill/wait하지 않는다. 성공 경로에서도 SIGKILL 이후 종료 확인과 wait가 없어 고아 데몬 0을 보장하지 못한다.",
+      "fix": "spawn 직후부터 Child를 소유하는 정리 가드를 설치하고 모든 실패 경로에서 종료 후 wait한다. 데몬이 별도 프로세스로 분리되는 경우에도 해당 PID의 종료 확인을 포함한다."
+    },
+    {
+      "severity": "major",
+      "where": "tests/hidden_seat_screen.rs:113",
+      "what": "attach 응답과 오류를 모두 버리므로 shown이 실제 구독됐다는 전제가 검증되지 않는다. attach가 실패하여 두 좌석 모두 구독이 없어도 두 probe가 성공하면 통과한다. 또한 UI의 숨김은 DOM 분리인데 시험은 구독 유무로 대체하여 DOM 숨김 및 PTY 크기 보존을 검증하지 않는다.",
+      "fix": "attach 성공 응답을 확인한 후 probe를 시작한다. 이 시험의 주장을 구독 유무에 따른 동일 결과 줄 확인으로 한정하고, 탭 숨김 전후의 resize 호출 및 PTY 크기 보존은 실제 숨김 동작을 대상으로 별도 검증한다."
+    }
+  ],
+  "missing": [
+    "실행 검증은 의뢰의 금지 조건에 따라 수행하지 않았다.",
+    "범위 밖 autoArrange와 arrangeWithoutRoles 구현은 열람하지 않아 전이 호출까지 포함한 원본 트리 불변성을 확정하지 않았다.",
+    "환경의 읽기 전용 제한으로 지정 정본 JSON 파일을 생성하지 못했다."
+  ],
+  "revision": "f6d917876f3bf3c873d3c540a497bc6a82d908e2"
+}
+```
+
+[논쟁점]
+
+- 숨은 요소는 DOM에서 분리되고 크기 가드가 resize를 막는 구조입니다(`main.ts:5376`, `4727`). 전송 실패 시 캐시는 삭제됩니다(`4735`). 다만 같은 런타임에서 데몬·PTY만 교체되는 경우 캐시를 무효화하는 근거는 확보하지 못했습니다. `4733`의 크기 비교만으로 재부착 안전성을 확정할 수 없습니다.
+- 원본 트리로의 명시적 되쓰기는 `ratio`와 `leftAuto`입니다(`main.ts:5993`). 파생 트리 내부 경계의 변경 유지와 전이 호출의 불변성은 추가 증명이 필요합니다.
+
+[다음 단계 조언]
+
+무한 렌더 고리와 정리 가드를 먼저 수정하고, 손상 저장값·좌석 번호 교환·attach 실패를 회귀 사례로 고정하십시오.
+
+**정본 파일은 생성되지 않아 라운드는 미제출 상태입니다.** 읽기 전용 환경 때문에 파일을 저장하지 못했고, 상태 변경 명령 금지에 따라 `cys send`도 실행하지 않았습니다.
+
+VERDICT: REVISE

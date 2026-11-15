@@ -2277,6 +2277,10 @@ pub struct Surface {
     pub boot_ack: Mutex<Option<BootAck>>,
     pub title: Mutex<String>,
     pub role: Mutex<Option<String>>,
+    /// (tabs-sidebar 2d · 설계 §5) 사람·master 가 `cys seat-group` 으로 옮긴 묶음 — **메모리 전용**(영속·복원 무접촉).
+    /// 바깥 None = 이 데몬 기동 뒤 아무도 정하지 않음(데몬 재시작 포함 = 앱 기록을 쓴다) · Some(None) = 사람이 **해제함**(자동 규칙) ·
+    /// Some(Some(g)) = 묶음 g. 해제와 「모름」을 갈라야 앱이 놓친 해제를 목록으로 되살린다(codex 1R ③).
+    pub group: Mutex<Option<Option<String>>>,
     pub cmd: String,
     pub cwd: String,
     pub pid: u32,
@@ -5128,6 +5132,64 @@ pub(crate) fn proc_brief(pid: u32) -> Option<ProcBrief> {
     decide_brief(bsd, pidpath_ok, || procargs2_ok(cpid))
 }
 
+// ▼ (tabs-sidebar 948 D4-b · master#8258a495) fix/1115-caller-check(950) src/bin/cysd/caller_class.rs 의 parent_any_user·proc_stat_fields 와 **같은 구현**(글자 그대로 옮김 ·
+//   나중 병합 때 그 모듈 하나로 합치면 된다 · 원작자 병합 때 볼 것 = HANDOFF).
+/// 다른 사용자(root `login`·launchd) 프로세스도 읽히는 부모 판독. 판독 실패 = None.
+#[cfg(target_os = "macos")]
+pub(crate) fn parent_any_user(pid: u32) -> Option<u32> {
+    // <sys/proc_info.h> struct proc_bsdshortinfo (64 바이트) — libc 크레이트에 정의가 없어 여기서 둔다.
+    #[repr(C)]
+    struct ProcBsdShortInfo {
+        pbsi_pid: u32,
+        pbsi_ppid: u32,
+        pbsi_pgid: u32,
+        pbsi_status: u32,
+        pbsi_comm: [u8; 16],
+        pbsi_flags: u32,
+        pbsi_uid: u32,
+        pbsi_gid: u32,
+        pbsi_ruid: u32,
+        pbsi_rgid: u32,
+        pbsi_svuid: u32,
+        pbsi_svgid: u32,
+        pbsi_rfu: u32,
+    }
+    const PROC_PIDT_SHORTBSDINFO: libc::c_int = 13;
+    let cpid = pid as libc::c_int;
+    if cpid <= 0 {
+        return None;
+    }
+    // SAFETY: 정수·바이트 배열뿐인 repr(C) 구조라 0 비트 패턴이 유효하다. 커널은 넘긴 크기 이하만 쓴다.
+    unsafe {
+        let mut info: ProcBsdShortInfo = std::mem::zeroed();
+        let size = std::mem::size_of::<ProcBsdShortInfo>() as libc::c_int;
+        let n = libc::proc_pidinfo(
+            cpid,
+            PROC_PIDT_SHORTBSDINFO,
+            0,
+            &mut info as *mut ProcBsdShortInfo as *mut libc::c_void,
+            size,
+        );
+        (n == size && info.pbsi_pid == pid).then_some(info.pbsi_ppid)
+    }
+}
+
+/// Linux — `/proc/<pid>/stat` 의 4번째 칸(ppid). 판독 실패 = None.
+#[cfg(target_os = "linux")]
+pub(crate) fn parent_any_user(pid: u32) -> Option<u32> {
+    proc_stat_fields(pid).and_then(|f| f.first().and_then(|s| s.parse().ok()))
+}
+
+/// Linux `/proc/<pid>/stat` 에서 `)` 뒤 칸들(state 다음부터: [ppid, pgrp, session, tty_nr, …]).
+#[cfg(target_os = "linux")]
+fn proc_stat_fields(pid: u32) -> Option<Vec<String>> {
+    let s = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let rest = &s[s.rfind(')')? + 1..];
+    let mut it = rest.split_whitespace();
+    it.next()?; // state
+    Some(it.map(str::to_string).collect())
+}
+
 /// ③ KERN_PROCARGS2 폴백(bsd=Some ∧ pidpath 실패일 때만 호출된다) — 크기 조회 뒤 **커널이 알려준
 /// 크기**의 0 초기화 힙 버퍼(len=sz, set_len 없음)로 본문을 조회하고, 성공 ∧ sz>0 이면 true.
 /// 버퍼 내용은 읽지 않는다(sysinfo get_process_infos 의 성공 조건과 같다).
@@ -7971,6 +8033,7 @@ impl Daemon {
             id,
             title: Mutex::new(title.unwrap_or_else(|| format!("surface {id}"))),
             role: Mutex::new(role.clone()),
+            group: Mutex::new(None),
             cmd: cmd.unwrap_or_else(|| shell.clone()),
             cwd: cwd_str,
             pid,

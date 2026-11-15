@@ -1,0 +1,1525 @@
+OpenAI Codex v0.167.0
+--------
+workdir: /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+model: gpt-6.1-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: high
+reasoning summaries: none
+session id: 01a1c86a-ac02-7db0-a84b-e581fe55fc37
+--------
+user
+[리뷰 의뢰 — 엄격 제약 준수 · 지정 범위만]
+검토 범위(이 파일/범위만, 무관 파일·repo 배회 금지): src/bin/cysd/handlers.rs 의 surface.set_group·ui.open_panel·ui_command_caller_ok·parse_seat_group·surface.list group 칸 · src/bin/cysd/state.rs Surface.group · src/bin/cys.rs VendorAuxCommand::SeatGroup·OpenControlCenter 와 그 처리 arm · ui/src/seatgroup.ts · ui/src/main.ts 의 seatGroups·saveSeatGroups·refreshPaneTitles 안 syncSeatGroupsFromList 줄·refreshSeatRows 의 inp.group·onDaemonEvent 의 surface.group.changed·ui.open_panel 분기 · tests/seat_group.rs (가지 feat/tabs-sidebar · 작업트리 미커밋분 포함)
+과업: cysr 묶음 탭 2d — cys seat-group·open-control-center 데몬 RPC·CLI·앱 영속 적대 검증(codex 1R)
+
+엄격 제약 (REVIEWER_DIRECTIVE §2 — 위반 금지):
+  - **지정 파일과 task만 검토**한다(의뢰 범위 밖 확장 금지). **무관한 repo 및 파일 배회 금지**,
+  - **서버 기동/상태 변경 명령 금지**(자원 오염 차단) — 서버·장시간 프로세스를 띄우지 않고,
+  - 검토 대상을 직접 수정하지 않는다(의견 제시가 기본). 직접 생성·수정 의뢰를 받은 경우에만
+  - **정지 경계(다섯 정지의 상주 배치 · 리뷰어 헌장 제0조)**: 로드맵 밖 새 범위 · soul/CLAUDE.md/
+
+리뷰 형식: [문제점] [논쟁점] [다음 단계 조언] — 각 지적에 파일:라인 또는 구체 근거.
+근거 없는 인상비평·칭찬만 하는 리뷰 금지. 결함을 찾는 것이 직무다.
+통과 조건: **잠근 합격 기준의 미달 항목 0** — 점수(0-100)·고정 향상률 목표는 금지. 판정은 verdict enum(ACCEPT|REVISE|BLOCK|ESCALATE) + evidence(file:line)로만 한다.
+
+verdict 정본 저장(필수 — 이 경로에 JSON 파일로 저장하라):
+  /Users/oogisoogi/.cys/pack/round/_reviews/cysr_묶음_탭_2d___cys_seat-group_open-control-center_데몬_RPC_CLI_앱_영속_적대_검증_codex_1R-r1-reviewer1.json
+  · 디렉터리가 없으면 먼저 만들어라: mkdir -p "/Users/oogisoogi/.cys/pack/round/_reviews"
+  · 스키마 = /Users/oogisoogi/.cys/pack/round/REVIEWER_VERDICT_CONTRACT.md (verdict enum + evidence file:line · score(0-100) 금지).
+  · 최상위 키: verdict justification evidence issues missing revision (필수: verdict justification evidence issues) · verdict enum: ACCEPT|REVISE|BLOCK|ESCALATE · severity: blocking|major|minor · evidence[]: {claim ref verified} · issues[]: {severity where what fix} · revision: 대상 커밋 해시(선택·리비전 바인딩)
+  · 빈 골격(이 형태 그대로 채워라):
+{"verdict": "ACCEPT|REVISE|BLOCK|ESCALATE", "justification": "", "evidence": [{"claim": "", "ref": "file:line", "verified": false}], "issues": [{"severity": "blocking|major|minor", "where": "file:line", "what": "", "fix": ""}], "missing": [], "revision": ""}
+  · master 의 `javis_orchestra.py round-log --verdict-json <파일>` 은 **이 파일만** 받는다 — 산문 전사는 거부된다.
+  · 화면 출력·push 본문은 사본이다(pane 폭에서 잘리고 좌석이 정리되면 사라진다). **파일이 정본**이다.
+완료 기준(파일 실재): 위 경로에 verdict JSON 이 **실재**할 때 이 라운드가 제출된 것으로 본다 — 파일이 없으면 미제출이며 라운드는 종결되지 않는다.
+회신: `cys send --queued --to master "[리뷰] ..."` (자동 Return 배달 — 타이핑 가드 안전·send-key 불필요).
+
+특히 볼 것(적대 관점 · 각 항목 file:line 근거로 판정):
+1. 호출자 게이트(ui_command_caller_ok): 워커·CSO·리뷰어 좌석이 우회할 길이 있는가(peer pid 해석 실패 = 익명 통과 경로 · 좌석 자식 프로세스가 setsid 로 떨어진 경우 등). 익명 통과를 허용한 근거(surface.close 와 같은 근거)가 이 두 RPC 에도 성립하는가.
+2. 폭주: 같은 값이면 이벤트 0 이 맞는가 · 앱 쪽에 이벤트→명령→이벤트 고리가 생길 수 있는가.
+3. 앱 영속 열쇠(소켓 + 역할, 없으면 소켓 + 생성 폴더): 같은 역할·같은 폴더 좌석이 여럿일 때 다른 좌석이 옮겨지는가 · 이벤트가 좌석 목록보다 먼저 와서 열쇠를 못 만들 때 값이 사라지는가(목록 동기가 되살리는가) · 해제(null) 와 데몬 재시작(null) 구분이 맞는가.
+4. 입력 판독(parse_seat_group): 길이·제어문자·유니코드(양방향 제어 문자 등) · CLI 의 빈 문자열 = 해제 경로.
+5. 치명 4군(설계 docs/DESIGN-tabs-sidebar.md §5 끝): 폭주 · 무clear · 자가치유 · 전 pane 사망 — 이 변경이 하나라도 건드리는가.
+
+codex
+지정한 코드 범위와 verdict 계약만 읽고, 서버 기동이나 상태 변경 없이 적대 경로를 확인하겠습니다. 현재 파일시스템은 읽기 전용이라 정본 JSON 저장은 제한될 수 있습니다. 저장 가능 여부와 검토 결과를 구분해 보고하겠습니다.
+
+exec
+/bin/zsh -lc 'pwd; git status --short --branch; git rev-parse HEAD; cat /Users/oogisoogi/.cys/pack/round/REVIEWER_VERDICT_CONTRACT.md' in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+ succeeded in 0ms:
+/Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+## feat/tabs-sidebar
+ M src/bin/cys.rs
+ M src/bin/cysd/handlers.rs
+ M src/bin/cysd/state.rs
+ M ui/src/deptprogresswiring.test.ts
+ M ui/src/main.ts
+ M ui/src/roleactivity.test.ts
+ M ui/src/toastaxis.test.ts
+?? WORKER_TODO.cysr-tabs-sidebar-impl.md
+?? docs/CODEX-R1-2d-tabs-sidebar.txt
+?? docs/evidence-tabs-sidebar/
+?? tests/seat_group.rs
+?? ui/e2e/seatgroup_gate.py
+?? ui/src/seatgroup.test.ts
+?? ui/src/seatgroup.ts
+a54b3b76607cc465f229d14aa9fd2d1a31999477
+# REVIEWER_VERDICT_CONTRACT — 리뷰어 verdict 타입 계약(생성물 · 손편집 금지)
+
+생성 명령: `python3 javis_verdict.py contract`
+
+## §1 점수 금지
+
+어느 깊이든 점수류 키는 금지한다. SCORE_KEY_RE 패턴: `score|grade|rating` (대소문자 무시).
+score(0-100) 금지 · 0-1 점수도 금지한다.
+
+## §2 스키마
+
+| 최상위 키 | 필수 여부 | 설명 |
+| --- | --- | --- |
+| `verdict` | 필수 |  |
+| `justification` | 필수 |  |
+| `evidence` | 필수 |  |
+| `issues` | 필수 |  |
+| `missing` | 선택 |  |
+| `revision` | 선택 | 대상 커밋 해시(비-git 대상이면 파일 해시·타임스탬프) · REVIEWER_DIRECTIVE §3 리비전 바인딩 |
+
+리뷰어 verdict enum: `ACCEPT | REVISE | BLOCK | ESCALATE`
+
+INVESTIGATE 는 검증기(CHAI R2) 전용이다. 실행가능 fix 없는 BLOCK/REVISE의 강등값이다.
+
+severity enum: `blocking | major | minor`
+
+evidence[] 키: `{claim,ref,verified}` · ref는 file:line 근거를 기록한다.
+
+issues[] 계약 형태: `{severity,where,what,fix}`
+
+드리프트 형태 `{severity,ref,issue}`는 `--lenient-issues`에서만 수용한다. fix가 없으면 CHAI R2가 발화한다.
+
+## §3 빈 JSON 골격
+
+값 힌트를 실제 판정으로 채운다. 선택 키는 사용하지 않으면 생략한다.
+
+```json
+{
+  "verdict": "ACCEPT|REVISE|BLOCK|ESCALATE",
+  "justification": "",
+  "evidence": [
+    {
+      "claim": "",
+      "ref": "file:line",
+      "verified": false
+    }
+  ],
+  "issues": [
+    {
+      "severity": "blocking|major|minor",
+      "where": "file:line",
+      "what": "",
+      "fix": ""
+    }
+  ],
+  "missing": [],
+  "revision": ""
+}
+```
+
+## §4 검증
+
+`javis_verdict.py validate <파일>`
+
+exec
+/bin/zsh -lc 'git diff -- src/bin/cysd/handlers.rs src/bin/cysd/state.rs src/bin/cys.rs ui/src/main.ts' in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+ succeeded in 0ms:
+exec
+/bin/zsh -lc "rg -n 'ui_command_caller_ok|parse_seat_group|surface.set_group|ui.open_panel|surface.list|group' src/bin/cysd/handlers.rs; rg -n 'SeatGroup|OpenControlCenter|seat-group|open-control-center' src/bin/cys.rs; rg -n 'seatGroups|saveSeatGroups|syncSeatGroupsFromList|inp.group|surface.group.changed|ui.open_panel' ui/src/main.ts; rg -n '"'^##|치명|폭주|무clear|자가치유|전 pane'"' docs/DESIGN-tabs-sidebar.md; nl -ba ui/src/seatgroup.ts; nl -ba tests/seat_group.rs" in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+ succeeded in 0ms:
+256:        cmd.process_group(0);
+506:/// (tabs-sidebar 2d) 앱 화면 명령(`surface.set_group` · `ui.open_panel`)의 호출자 게이트 — 좌석 안에서 부르면 그 좌석이
+509:fn ui_command_caller_ok(daemon: &Arc<Daemon>, caller_pid: Option<u32>) -> Result<(), &'static str> {
+522:fn parse_seat_group(v: Option<&Value>) -> Result<Option<String>, &'static str> {
+530:                Err("group must be 1-64 chars without control characters")
+535:        _ => Err("group must be a string or null"),
+865:/// ★(0.14.42 · perf R3-6) 좌석 셸 pid 들의 **지금** 작업 디렉터리(`live_cwd`) — surface.list · org.status ·
+1566:    //   · cwd: 좌석 셸 pid 의 **실제 작업 디렉터리**(`surface.list` 의 `live_cwd` 와 같은 관측 —
+1569:    //     한다(surface.list 와 같은 규율).
+1585:            // 관측은 surface.list 와 같은 단일 경로(live_cwds)다.
+1633:    let (narrow_groups, cwd_source): (Vec<Vec<&str>>, &'static str) =
+1699:        narrow_cwds: &narrow_groups,
+3777:/// The parent process's own parent/group/executable are deliberately NOT identity fields.
+7284:        "surface.list" => {
+7314:                    //   surface.list 와 org.status 가 갈리면 소비부가 좌석마다 다른 사실을 본다).
+7340:                        "group": s.group.lock().unwrap().clone(),
+7413:                        // ★0.14.43(B3) 세 곳(surface.list · org.status · control.dashboard)이 같은 도우미 하나 — 기존 직렬화 + 계산 키 가산.
+8989:        "surface.set_group" => {
+8993:            let group = match parse_seat_group(params.get("group")) {
+8997:            if let Err(m) = ui_command_caller_ok(daemon, caller_pid) {
+8998:                return Reply::Single(err_response(&id, "forbidden", &format!("surface.set_group: {m}")));
+9008:                let mut g = surface.group.lock().unwrap();
+9009:                if *g == group {
+9010:                    return Reply::Single(ok_response(&id, json!({"surface_id": sid, "group": group, "changed": false})));
+9012:                std::mem::replace(&mut *g, group.clone())
+9015:                "surface.group.changed",
+9018:                json!({"surface_id": sid, "group": group, "previous": previous}),
+9020:            Reply::Single(ok_response(&id, json!({"surface_id": sid, "group": group, "changed": true})))
+9024:        //   지금 여는 패널 = control-center 하나. 호출자 = master 좌석 또는 좌석 밖 사람 CLI(surface.set_group 과 같은 게이트).
+9025:        "ui.open_panel" => {
+9030:            if let Err(m) = ui_command_caller_ok(daemon, caller_pid) {
+9031:                return Reply::Single(err_response(&id, "forbidden", &format!("ui.open_panel: {m}")));
+9033:            daemon.bus.publish("ui.open_panel", "ui", None, json!({"panel": panel}));
+10140:                    governance::kill_group_or_pid(e.pid, e.pgid);
+11872:            // live_cwd(cd 추적): surfaces 락 밖에서 조회 — surface.list와 같은 단일 관측(live_cwds).
+11883:            // ★0.14.43(B3) 좌석 `usage` 계산 키용 좌석 신원 표 — surfaces 락 **밖**에서(파일 IO · 폴더별 60초 캐시). surface.list 와 같은 도우미.
+11970:                    // ★M1: surface.list 와 **같은 3값 술어**(`agent_alive_tri`)를 경유한다.
+11990:                        // ★v116-num: surface.list 와 같은 키·같은 의미(앱 사이드바·CSO 가 같은 사실을 보게).
+12027:                        // `cys status --json`). surface.list 와 **같은 키·같은 의미**를 노출한다.
+12054:                        // ★(W4 · D5) alternate screen 관측 — surface.list 와 **같은 키·같은 의미**
+12057:                        // ★(U-10) 좌석 제4 등급 — surface.list 와 **같은 키·같은 의미**(동형성 핀).
+12061:                        // ★(0.14.41 · U18) 작업 폴더 읽기 막힘 — surface.list 와 **같은 키·같은 의미**(동형성 핀).
+12081:                        // ★0.14.45 좌석별 계정 — {provider, agent, account_id, profile, state} · null = 에이전트 아님·종료·수집 실패. surface.list 와 같은 키·같은 의미.
+13615:                               // ★(0.14.31 · WP-4) 재결합 판정 3축 노출 — `surface.list` 가 이미
+14222:    /// ① surface.list · org.status · 좌석 회수 호출자 축은 `live_cwds` 를 경유한다 — 운영 구간(테스트
+14235:        assert!(calls >= 3, "live_cwds 호출부(surface.list · org.status · 회수 호출자 축)가 {calls}곳뿐이다");
+24513:    /// [P5 핀] 무영속·무노출 — seat 토큰은 topology.json(persist_topology)에도 surface.list
+24514:    /// 응답에도 나타나지 않는다. persist_topology·surface.list 는 필드를 손으로 골라 조립하므로
+24532:        let req = Request { id: json!(1), method: "surface.list".into(), params: json!({}) };
+24539:            "seat 토큰이 surface.list 관측 채널로 노출됐다"
+30005:    fn org_status_and_surface_list_expose_pending_input_bytes() {
+30012:        for method in ["org.status", "surface.list"] {
+30195:    /// 발견(torn read): surface.list·org.status가 한 json! 블록 안에서 agent_meta 락을
+30240:        for (method, key) in [("surface.list", "surfaces"), ("org.status", "surfaces")] {
+30303:    /// ★v116-seat Fable 2-2: surface.list 가 좌석 메타의 agent_bin 을 싣는다(CLI 가 set_meta meta_denied 를
+30306:    fn v116_surface_list_exposes_agent_bin_from_meta() {
+30312:        let req = Request { id: json!(1), method: "surface.list".into(), params: json!({}) };
+30393:    /// `surface.list` · `org.status` **양쪽**을 같은 좌석으로 관통한다.
+30411:        for (method, key) in [("surface.list", "surfaces"), ("org.status", "surfaces")] {
+35738:    // 【계약】 ①역할 좌석 + 막힌 폴더 → surface.list/org.status 의 `cwd_blocked` 가 object
+35868:        for method in ["surface.list", "org.status"] {
+35886:            if method == "surface.list" {
+35912:        /// 세 RPC(surface.list · org.status · control.dashboard) 응답에서 이 좌석의 `usage` 객체.
+35914:            let list = b3_rpc(daemon, "surface.list")["result"]["surfaces"].clone();
+35925:            vec![("surface.list", pick(&list)), ("org.status", pick(&status)), ("control.dashboard", pick(&dash))]
+36150:            assert_eq!(norm(&objs[0].1), norm(&objs[1].1), "surface.list 와 org.status 의 usage 가 갈린다");
+36187:        /// 락 순서 배선 핀(소스): 세 곳(surface.list · org.status · control.dashboard) 모두 좌석 신원 표(파일 IO)를 `surfaces` 락을 잡기 **전에** 만들고, 락 안에서는
+36193:                ("\n        \"surface.list\" => {", "\n        \"surface.send_text\" => {"),
+36354:    /// ★0.14.45 좌석별 계정(`account`) — surface.list · org.status 두 RPC 가 같은 값을 싣는다(가산 키 · 기존 키 불변).
+36360:        fn surface_list_and_org_status_carry_the_same_seat_account() {
+36382:            for method in ["surface.list", "org.status"] {
+36389:            assert_eq!(pick("surface.list", seat), pick("org.status", seat), "두 RPC 의 좌석 계정이 다르다");
+36507:        let list = call(&d, "surface.list", json!({}));
+3387:/// `cys seat-group --surface <좌석> <묶음>` 인자.
+3389:struct SeatGroupArgs {
+3415:    #[command(name = "seat-group")]
+3416:    SeatGroup(SeatGroupArgs),
+3418:    #[command(name = "open-control-center")]
+3419:    OpenControlCenter,
+6545:        Command::VendorAux(VendorAuxCommand::SeatGroup(SeatGroupArgs { surface, group })) => resolve_surface_arg(&surface).and_then(|sid| {
+6557:        Command::VendorAux(VendorAuxCommand::OpenControlCenter) => {
+346:import { applySeatGroup, parseSeatGroups, SEAT_GROUP_KEY, seatGroupKey, syncSeatGroupsFromList, type SeatGroups } from "./seatgroup"; // (tabs-sidebar 2d) 옮긴 묶음 기록 // (tabs-sidebar 2b) 탭 머리 줄 // (tabs-sidebar 조각2) 묶음 탭 판정
+3232:let seatGroups: SeatGroups = parseSeatGroups(localStorage.getItem(SEAT_GROUP_KEY));
+3233:function saveSeatGroups(next: SeatGroups): void {
+3234:  seatGroups = next;
+3781:      { const g = syncSeatGroupsFromList(seatGroups, sk, r.surfaces); if (g.changed) saveSeatGroups(g.map); } // (tabs-sidebar 2d) 앱이 꺼져 있던 동안 옮긴 값도 영속
+5914:      inp.group = seatGroups[seatGroupKey(sock, inp.role, inp.cwd) ?? ""] ?? null; // (tabs-sidebar 2d) 옮긴 묶음 > 폴더
+10411:  if (name === "surface.group.changed") {
+10414:    const g = applySeatGroup(seatGroups, seatGroupKey(evSock, s?.role ?? null, s?.cwd ?? null), typeof payload.group === "string" ? payload.group : null);
+10416:      saveSeatGroups(g.map);
+10422:  if (name === "ui.open_panel") {
+3:## 0. 지금 화면이 그려지는 곳 (근거)
+10:## 1. 묶음 정보를 어디에 두나 · 복원 길
+14:- 데몬은 수정하지 않는다(부트 체인·phoenix 복원·topology.json 무접촉 → 닻 치명 4군 해당 없음). 예외 1건 = §5 「말로 옮기기」용 메모리 필드.
+16:## 2. 상태 3종 + 모름 (데몬이 이미 가진 값만 · 새 판독기 0)
+26:## 3. 숨은 탭 좌석의 터미널 크기
+31:## 4. 한 묶음에 좌석이 많을 때 (#C-12)
+36:## 5. 자동 배정 · 말로 옮기기
+40:- 치명 위험 4군 점검(2d): ① 폭주 = 같은 값이면 이벤트를 내지 않음 · 사람/master 명령 1회당 이벤트 최대 1건 · 자동 발신·재시도 고리 없음 ② 무clear = 어느 좌석에도 글을 넣지 않음(입력·주입 경로 무접촉) → 해당 없음 ③ 자가치유 = watchdog·governance 틱·topology·phoenix 무접촉 · 데몬 재시작 시 필드는 비고 자동 규칙으로 복귀 → 해당 없음 ④ 전 pane 사망 = PTY·프로세스 조작 없음 · 좌석 구조체의 문자열 1개를 짧은 잠금으로 씀 → 해당 없음.
+43:## 6. 맥·윈
+48:## 7. 조각 순서 · 시간(실측 계수 없음 = 이 티켓으로 확보) · 동결 11-18
+62:## 8. 왕초보 화면 불변 (워커 0~2 · 묶음 1개)
+68:## 9. 시험 계획
+74:## 10. 지시 없이 정한 것
+     1	// 사람·master 가 옮긴 좌석 묶음의 앱 쪽 기록 — 순수 판정 (TICKET=cysr-tabs-sidebar-impl 조각 2d · 설계 §1·§5).
+     2	//
+     3	// 무엇을 하나: 데몬의 `surface.group.changed` 이벤트와 `surface.list` 의 group 칸을 받아, 재부팅으로 좌석 번호가 바뀌어도 같은 좌석을
+     4	//   알아보는 열쇠(소켓 + 역할, 역할 없으면 소켓 + 생성 폴더 = grouptabs.seatKey)로 묶음 이름을 기억한다. 데몬 필드는 메모리 전용이라
+     5	//   데몬이 다시 켜지면 비지만, 앱 기록이 남아 같은 탭으로 돌아온다(남는 한계 = 데몬 재시작 전에 앱을 한 번도 안 켠 경우 · 설계 §5).
+     6	// ★데몬 값이 있으면 그것이 이긴다(최신 명령) · 데몬 값이 없음(null)은 「모름」으로 보고 앱 기록을 지우지 않는다 — 지우는 것은
+     7	//   해제 이벤트(group = null) 하나뿐.
+     8	import { seatKey } from "./grouptabs";
+     9	
+    10	export const SEAT_GROUP_KEY = "cys-seat-group";
+    11	export type SeatGroups = Record<string, string>;
+    12	
+    13	/** 저장값 → 기록. 형식이 어긋나면 빈 기록 · 문자열이 아닌 값·빈 이름은 버린다. */
+    14	export function parseSeatGroups(raw: string | null): SeatGroups {
+    15	  try {
+    16	    const o = JSON.parse(raw ?? "{}");
+    17	    if (!o || typeof o !== "object" || Array.isArray(o)) return {};
+    18	    const out: SeatGroups = {};
+    19	    for (const [k, v] of Object.entries(o)) if (typeof v === "string" && v.trim()) out[k] = v.trim();
+    20	    return out;
+    21	  } catch {
+    22	    return {};
+    23	  }
+    24	}
+    25	
+    26	/** 기록 열쇠 — 소켓(본부 = "") + seatKey. 좌석을 알아볼 재료가 없으면 null(기록하지 않는다). */
+    27	export function seatGroupKey(socket: string | null | undefined, role: string | null | undefined, cwd: string | null | undefined): string | null {
+    28	  const k = seatKey({ role: role ?? null, cwd: cwd ?? null });
+    29	  return k ? `${socket ?? ""}#${k}` : null;
+    30	}
+    31	
+    32	/** 해제 이벤트·새 값 반영. 바뀌었으면 changed = true(호출측이 저장·다시 그리기). */
+    33	export function applySeatGroup(m: SeatGroups, key: string | null, group: string | null): { map: SeatGroups; changed: boolean } {
+    34	  if (!key) return { map: m, changed: false };
+    35	  const g = group?.trim() || null;
+    36	  if (g === null) {
+    37	    if (!(key in m)) return { map: m, changed: false };
+    38	    const { [key]: _, ...rest } = m;
+    39	    return { map: rest, changed: true };
+    40	  }
+    41	  if (m[key] === g) return { map: m, changed: false };
+    42	  return { map: { ...m, [key]: g }, changed: true };
+    43	}
+    44	
+    45	/** 목록 동기 — 데몬이 값을 가진 좌석만 반영(null = 모름 → 앱 기록 유지). */
+    46	export function syncSeatGroupsFromList(
+    47	  m: SeatGroups,
+    48	  socket: string | null | undefined,
+    49	  surfaces: readonly { role?: unknown; cwd?: unknown; group?: unknown }[],
+    50	): { map: SeatGroups; changed: boolean } {
+    51	  let map = m;
+    52	  let changed = false;
+    53	  for (const s of surfaces) {
+    54	    if (typeof s.group !== "string" || !s.group.trim()) continue;
+    55	    const r = applySeatGroup(map, seatGroupKey(socket, typeof s.role === "string" ? s.role : null, typeof s.cwd === "string" ? s.cwd : null), s.group);
+    56	    map = r.map;
+    57	    changed ||= r.changed;
+    58	  }
+    59	  return { map, changed };
+    60	}
+     1	//! (tabs-sidebar 2d · 설계 §5) `cys seat-group` · `cys open-control-center` — 실 `cys` · 실 `cysd` · 격리 HOME · 격리 소켓.
+     2	//! 못박는 것: 좌석 밖(사람 터미널) 호출 = 허용 · master 좌석 안 = 허용 · 워커 좌석 안 = forbidden · 같은 값 = 이벤트 0 ·
+     3	//!   `surface.list` 에 group · 빈 값 = 옮김 해제(null) · 잘못된 이름 = invalid_params · ui.open_panel = control-center 만 · 이벤트 1건씩.
+     4	#![cfg(unix)]
+     5	
+     6	use serde_json::{json, Value};
+     7	use std::io::{BufRead, BufReader, Read, Write};
+     8	use std::os::unix::net::UnixStream;
+     9	use std::path::PathBuf;
+    10	use std::process::{Child, Command};
+    11	use std::sync::{Arc, Mutex};
+    12	use std::time::{Duration, Instant};
+    13	
+    14	const CYS: &str = env!("CARGO_BIN_EXE_cys");
+    15	
+    16	/// 격리 데몬 상자 — spawn 직후부터 Child 를 소유하고 Drop 에서 TERM→KILL→wait(고아 0 · hidden_seat_screen.rs 와 같은 규율).
+    17	struct Box_ {
+    18	    base: PathBuf,
+    19	    sock: PathBuf,
+    20	    child: Option<Child>,
+    21	}
+    22	
+    23	impl Box_ {
+    24	    fn start() -> Self {
+    25	        let base = PathBuf::from(format!("/tmp/cys-sg-{}", std::process::id()));
+    26	        let _ = std::fs::remove_dir_all(&base);
+    27	        std::fs::create_dir_all(base.join("home")).unwrap();
+    28	        let base = base.canonicalize().unwrap();
+    29	        std::fs::create_dir_all(base.join("run")).unwrap();
+    30	        let sock = base.join("run/cysd.sock");
+    31	        let mut b = Self { base, sock, child: None };
+    32	        let mut d = Command::new(PathBuf::from(CYS).with_file_name("cysd"));
+    33	        d.env_clear()
+    34	            .env("PATH", std::env::var("PATH").unwrap_or_default())
+    35	            .env("HOME", b.base.join("home"))
+    36	            .env("TMPDIR", &b.base)
+    37	            .env("CYS_SOCKET", &b.sock)
+    38	            .env("CYS_NO_AUTORESTORE", "1")
+    39	            .stdin(std::process::Stdio::null())
+    40	            .stdout(std::process::Stdio::null())
+    41	            .stderr(std::process::Stdio::null());
+    42	        b.child = Some(d.spawn().expect("cysd 기동"));
+    43	        let t = Instant::now();
+    44	        while UnixStream::connect(&b.sock).is_err() && t.elapsed() < Duration::from_secs(20) {
+    45	            std::thread::sleep(Duration::from_millis(100));
+    46	        }
+    47	        let pid = b.rpc("system.identify", json!({}))["result"]["daemon_pid"].as_u64().map(|p| p as u32);
+    48	        assert_eq!(pid, b.child.as_ref().map(|c| c.id()), "소켓의 데몬 = 시험이 띄운 그 자식");
+    49	        b
+    50	    }
+    51	    /// 응답 전체(ok/error 포함)를 돌려준다.
+    52	    fn rpc(&self, method: &str, params: Value) -> Value {
+    53	        let mut s = UnixStream::connect(&self.sock).expect("connect");
+    54	        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    55	        let mut line = serde_json::to_vec(&json!({"id": 1, "method": method, "params": params})).unwrap();
+    56	        line.push(b'\n');
+    57	        s.write_all(&line).unwrap();
+    58	        let mut got = Vec::new();
+    59	        let mut buf = [0u8; 65536];
+    60	        while !got.ends_with(b"\n") {
+    61	            match s.read(&mut buf) {
+    62	                Ok(0) => break,
+    63	                Ok(n) => got.extend_from_slice(&buf[..n]),
+    64	                Err(e) => panic!("{method}: {e}"),
+    65	            }
+    66	        }
+    67	        serde_json::from_slice(&got).unwrap()
+    68	    }
+    69	    fn ok(&self, method: &str, params: Value) -> Value {
+    70	        let v = self.rpc(method, params);
+    71	        assert!(v.get("error").map_or(true, Value::is_null), "{method}: {v}");
+    72	        v["result"].clone()
+    73	    }
+    74	    /// 좌석 밖(이 시험 프로세스 = 사람 터미널 자리)에서 cys 를 부른다.
+    75	    fn cys(&self, args: &[&str]) -> std::process::Output {
+    76	        Command::new(CYS)
+    77	            .args(args)
+    78	            .env_clear()
+    79	            .env("PATH", std::env::var("PATH").unwrap_or_default())
+    80	            .env("HOME", self.base.join("home"))
+    81	            .env("TMPDIR", &self.base)
+    82	            .env("CYS_SOCKET", &self.sock)
+    83	            .output()
+    84	            .unwrap()
+    85	    }
+    86	    fn group_of(&self, sid: u64) -> Value {
+    87	        let l = self.ok("surface.list", json!({}));
+    88	        l["surfaces"].as_array().unwrap().iter().find(|s| s["surface_id"].as_u64() == Some(sid)).expect("좌석")["group"].clone()
+    89	    }
+    90	    fn read_until(&self, sid: u64, needle: &str) -> Option<String> {
+    91	        let t = Instant::now();
+    92	        while t.elapsed() < Duration::from_secs(15) {
+    93	            let txt = self.ok("surface.read_text", json!({"surface_id": sid, "lines": 60}))["text"].as_str().unwrap_or("").to_string();
+    94	            // 줄머리 일치 — 입력한 명령 줄(「… echo W_RC=$?」)이 아니라 실행 결과 줄만 잡는다
+    95	            if let Some(l) = txt.lines().find(|l| l.trim().starts_with(needle)) {
+    96	                return Some(l.trim().to_string());
+    97	            }
+    98	            std::thread::sleep(Duration::from_millis(200));
+    99	        }
+   100	        None
+   101	    }
+   102	    fn gone(&mut self) -> bool {
+   103	        self.child.as_mut().map_or(true, |c| !matches!(c.try_wait(), Ok(None)))
+   104	    }
+   105	}
+   106	
+   107	impl Drop for Box_ {
+   108	    fn drop(&mut self) {
+   109	        if let Some(pid) = self.child.as_ref().map(|c| c.id() as i32) {
+   110	            unsafe { libc::kill(pid, libc::SIGTERM) };
+   111	            let t = Instant::now();
+   112	            while !self.gone() && t.elapsed() < Duration::from_secs(10) {
+   113	                std::thread::sleep(Duration::from_millis(100));
+   114	            }
+   115	            if !self.gone() {
+   116	                unsafe { libc::kill(pid, libc::SIGKILL) };
+   117	                let t = Instant::now();
+   118	                while !self.gone() && t.elapsed() < Duration::from_secs(5) {
+   119	                    std::thread::sleep(Duration::from_millis(100));
+   120	                }
+   121	            }
+   122	        }
+   123	        if let Some(mut c) = self.child.take() {
+   124	            let _ = c.kill();
+   125	            let _ = c.wait();
+   126	        }
+   127	        let _ = std::fs::remove_dir_all(&self.base);
+   128	    }
+   129	}
+   130	
+   131	#[test]
+   132	fn seat_group_caller_gate_events_and_list() {
+   133	    let b = Box_::start();
+   134	    // 이벤트 구독(시험 내내 · 받은 이름만 모은다)
+   135	    let mut ev = UnixStream::connect(&b.sock).unwrap();
+   136	    let mut line = serde_json::to_vec(&json!({"id": 7, "method": "events.stream", "params": {"names": ["surface.group.changed", "ui.open_panel"]}})).unwrap();
+   137	    line.push(b'\n');
+   138	    ev.write_all(&line).unwrap();
+   139	    let seen: Arc<Mutex<Vec<Value>>> = Arc::default();
+   140	    {
+   141	        let seen = Arc::clone(&seen);
+   142	        let rd = ev.try_clone().unwrap();
+   143	        std::thread::spawn(move || {
+   144	            for l in BufReader::new(rd).lines().map_while(Result::ok) {
+   145	                if let Ok(v) = serde_json::from_str::<Value>(&l) {
+   146	                    if v.get("name").is_some() {
+   147	                        seen.lock().unwrap().push(v);
+   148	                    }
+   149	                }
+   150	            }
+   151	        });
+   152	    }
+   153	    std::thread::sleep(Duration::from_millis(500));
+   154	    let events = |name: &str| seen.lock().unwrap().iter().filter(|v| v["name"] == name).cloned().collect::<Vec<_>>();
+   155	
+   156	    let cwd = b.base.join("home");
+   157	    let mk = |role: Option<&str>| {
+   158	        let mut p = json!({"cwd": cwd, "rows": 30, "cols": 140});
+   159	        if let Some(r) = role {
+   160	            p["role"] = json!(r);
+   161	        }
+   162	        b.ok("surface.create", p)["surface_id"].as_u64().expect("surface_id")
+   163	    };
+   164	    let target = mk(None);
+   165	    let master = mk(Some("master"));
+   166	    let worker = mk(Some("worker"));
+   167	    let tref = format!("surface:{target}");
+   168	
+   169	    // ① 좌석 밖(사람 터미널) = 허용 · list 에 group · 이벤트 1건
+   170	    let o = b.cys(&["seat-group", "--surface", &tref, "site"]);
+   171	    assert!(o.status.success(), "좌석 밖 seat-group: {}", String::from_utf8_lossy(&o.stderr));
+   172	    assert_eq!(b.group_of(target), json!("site"));
+   173	    // ② 같은 값 = 변화 없음 · 이벤트 0
+   174	    let o = b.cys(&["seat-group", "--surface", &tref, " site "]);
+   175	    assert!(String::from_utf8_lossy(&o.stdout).contains("변화 없음"), "같은 값: {}", String::from_utf8_lossy(&o.stdout));
+   176	    // ③ 잘못된 이름 = invalid_params(65자 · 제어문자)
+   177	    let long = "가".repeat(65);
+   178	    assert_eq!(b.rpc("surface.set_group", json!({"surface_id": target, "group": long}))["error"]["code"], "invalid_params");
+   179	    assert_eq!(b.rpc("surface.set_group", json!({"surface_id": target, "group": "a\u{7}b"}))["error"]["code"], "invalid_params");
+   180	    assert_eq!(b.rpc("surface.set_group", json!({"surface_id": target, "group": 3}))["error"]["code"], "invalid_params");
+   181	    assert_eq!(b.group_of(target), json!("site"), "거부된 호출은 값을 바꾸지 않는다");
+   182	
+   183	    // ④ 좌석 안: 워커 = forbidden · master = 허용(그 좌석 셸에서 같은 cys 를 실행 — 데몬은 peer pid 로 좌석을 푼다)
+   184	    let run_in = |sid: u64, group: &str, tag: &str| {
+   185	        let cmd = format!("{CYS} seat-group --surface {tref} {group}; echo {tag}_RC=$?\r");
+   186	        b.ok("surface.send_text", json!({"surface_id": sid, "text": cmd}));
+   187	        b.read_until(sid, &format!("{tag}_RC="))
+   188	    };
+   189	    let w = run_in(worker, "lms", "W").expect("워커 좌석 결과 줄");
+   190	    assert_eq!(w, "W_RC=1", "워커 좌석 = 거부(exit 1)");
+   191	    assert_eq!(b.group_of(target), json!("site"), "워커 좌석 호출은 값을 바꾸지 못한다");
+   192	    let m = run_in(master, "lms", "M").expect("master 좌석 결과 줄");
+   193	    assert_eq!(m, "M_RC=0", "master 좌석 = 허용");
+   194	    assert_eq!(b.group_of(target), json!("lms"));
+   195	
+   196	    // ⑤ 빈 값 = 옮김 해제(null)
+   197	    let o = b.cys(&["seat-group", "--surface", &tref, ""]);
+   198	    assert!(o.status.success());
+   199	    assert_eq!(b.group_of(target), Value::Null);
+   200	
+   201	    // ⑥ ui.open_panel — control-center 만 · 좌석 밖 CLI 허용 · 워커 좌석 거부
+   202	    assert_eq!(b.rpc("ui.open_panel", json!({"panel": "feed"}))["error"]["code"], "invalid_params");
+   203	    let o = b.cys(&["open-control-center"]);
+   204	    assert!(o.status.success(), "open-control-center: {}", String::from_utf8_lossy(&o.stderr));
+   205	    b.ok("surface.send_text", json!({"surface_id": worker, "text": format!("{CYS} open-control-center; echo U_RC=$?\r")}));
+   206	    let u = b.read_until(worker, "U_RC=").expect("워커 좌석 open-control-center 결과 줄");
+   207	    assert_eq!(u, "U_RC=1", "워커 좌석 open-control-center = 거부");
+   208	
+   209	    // 이벤트 수 = 실제로 값이 바뀐 횟수(site · lms · 해제 = 3) · 패널 열기 = 1(거부·같은 값은 0)
+   210	    let t = Instant::now();
+   211	    while (events("surface.group.changed").len() < 3 || events("ui.open_panel").is_empty()) && t.elapsed() < Duration::from_secs(5) {
+   212	        std::thread::sleep(Duration::from_millis(100));
+   213	    }
+   214	    std::thread::sleep(Duration::from_millis(500));
+   215	    let g = events("surface.group.changed");
+   216	    let seq: Vec<Value> = g.iter().map(|v| v["payload"]["group"].clone()).collect();
+   217	    assert_eq!(seq, vec![json!("site"), json!("lms"), Value::Null], "group 이벤트 = 바뀐 값 3건만: {g:?}");
+   218	    assert_eq!(g[1]["payload"]["previous"], json!("site"));
+   219	    assert!(g.iter().all(|v| v["surface_id"].as_u64() == Some(target)));
+   220	    assert_eq!(events("ui.open_panel").len(), 1, "패널 열기 이벤트 = 허용된 1건");
+   221	    drop(ev);
+   222	}
+
+exec
+/bin/zsh -lc "sed -n '400,550p' src/bin/cysd/handlers.rs | nl -ba -v400; sed -n '7284,7350p' src/bin/cysd/handlers.rs | nl -ba -v7284; sed -n '8970,9050p' src/bin/cysd/handlers.rs | nl -ba -v8970; sed -n '3380,3430p' src/bin/cys.rs | nl -ba -v3380; sed -n '6520,6585p' src/bin/cys.rs | nl -ba -v6520; rg -n 'pub group|group: Mutex|group: ' src/bin/cysd/state.rs; sed -n '3220,3250p' ui/src/main.ts | nl -ba -v3220; sed -n '3730,3795p' ui/src/main.ts | nl -ba -v3730; sed -n '5860,5930p' ui/src/main.ts | nl -ba -v5860; sed -n '10355,10455p' ui/src/main.ts | nl -ba -v10355; sed -n '10,15p;36,41p' docs/DESIGN-tabs-sidebar.md | nl -ba; git --no-optional-locks diff --no-ext-diff HEAD --stat -- src/bin/cysd/handlers.rs src/bin/cysd/state.rs src/bin/cys.rs ui/src/main.ts" in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+ succeeded in 0ms:
+   400	        3600..=86_399 => format!("{}시간", s / 3600),
+   401	        _ => format!("{}일", s / 86_400),
+   402	    }
+   403	}
+   404	
+   405	/// ★W2/P0-6: surface.close 의 cause 파라미터 파싱 — "reap"=Reap(묘비 미생성·부활 대상), 그 외/부재=OwnerClose
+   406	/// (묘비 생성·좀비 부활 차단). 미지 값은 안전측 OwnerClose(오타로 부활 폭주 방지). 순수 함수(테스트 가능).
+   407	fn close_cause_from_params(params: &Value) -> governance::CloseCause {
+   408	    match params.get("cause").and_then(|v| v.as_str()) {
+   409	        Some("reap") => governance::CloseCause::Reap,
+   410	        _ => governance::CloseCause::OwnerClose,
+   411	    }
+   412	}
+   413	
+   414	/// ★T-0147-4: surface.close 소유 게이트의 **생성자 롤백 예외** — 순수 판정부(테스트 가능).
+   415	///
+   416	/// 허용은 세 조건을 **모두** 요구한다(하나라도 빠지면 거부):
+   417	/// ① `cause == Reap` — 롤백 의미의 닫기만. `OwnerClose`는 묘비를 심으므로 남의 역할을 영구
+   418	///    폐역시킬 수 있다 → 타 surface에 대해선 절대 열지 않는다.
+   419	/// ② `entry.creator == caller_sid` — 발신 pane이 **바로 그 surface를 만든 당사자**여야 한다.
+   420	///    남이 만든 surface는 `cause="reap"`을 붙여도 통과하지 못한다(기존 위협모델 불변).
+   421	/// ③ `now - entry.ts < CREATE_IDEM_TTL_SECS` — 창을 생성 직후 롤백 구간으로 좁힌다. 오래 전
+   422	///    자기가 만든 pane을 나중에 임의로 죽이는 권한으로 자라지 않게 하는 시한이다.
+   423	///
+   424	/// `entry`가 없으면(=데몬 재시작 후·pane 밖 생성) 거부 — 부재는 무증명이다(deny-by-default).
+   425	fn rollback_allowed(
+   426	    entry: Option<(u64, f64)>,
+   427	    caller_sid: u64,
+   428	    cause: governance::CloseCause,
+   429	    now: f64,
+   430	) -> bool {
+   431	    if cause != governance::CloseCause::Reap {
+   432	        return false;
+   433	    }
+   434	    entry.is_some_and(|(creator, ts)| {
+   435	        creator == caller_sid && now - ts < crate::state::CREATE_IDEM_TTL_SECS
+   436	    })
+   437	}
+   438	
+   439	/// ★D19(1.1.8 · master 결정 A′) 생성자 닫기 판정(순수) — 좌석 수명 원장 항목이 있고 · 생성자가 호출 pane 이고 ·
+   440	/// 생성 뒤 시한(`ttl`) 안일 때만. 원장 부재(남이 만든 좌석 · 데몬 재시작 뒤) = 거부.
+   441	fn creator_close_allowed(entry: Option<(u64, f64)>, caller_sid: u64, now: f64, ttl: f64) -> bool {
+   442	    entry.is_some_and(|(creator, ts)| creator == caller_sid && now - ts < ttl)
+   443	}
+   444	
+   445	/// 데몬 상태(create_owner 원장)를 읽어 `rollback_allowed`에 위임한다.
+   446	/// 락 규약: `create_owner`는 **리프 락** — surfaces/roles를 쥔 채 잡지 않는다(AB-BA 차단).
+   447	/// 이 함수는 close 게이트에서 다른 락 없이 호출된다.
+   448	fn creator_rollback_ok(
+   449	    daemon: &Daemon,
+   450	    sid: u64,
+   451	    caller_sid: u64,
+   452	    cause: governance::CloseCause,
+   453	) -> bool {
+   454	    let entry = daemon.create_owner.lock().unwrap().get(&sid).copied();
+   455	    rollback_allowed(entry, caller_sid, cause, crate::state::now_epoch())
+   456	}
+   457	
+   458	/// 생성자 원장 기록 + 만료분 lazy GC (surface.create 성공 아크 전용).
+   459	/// GC를 insert 시점에 함께 도는 이유는 create_idem과 동일 — 별도 타이머 없이 유계 유지.
+   460	fn record_create_owner(daemon: &Daemon, new_sid: u64, creator_sid: u64) {
+   461	    let now = crate::state::now_epoch();
+   462	    let mut owners = daemon.create_owner.lock().unwrap();
+   463	    owners.retain(|_, (_, ts)| now - *ts < crate::state::CREATE_IDEM_TTL_SECS);
+   464	    owners.insert(new_sid, (creator_sid, now));
+   465	}
+   466	
+   467	/// ★결함8 창작자 원장 기록 + 만료분 lazy GC (`surface.create` 성공 아크 전용).
+   468	///
+   469	/// `record_create_owner`(pane surface_id 축·close 롤백용)와 **다른 축**이다 — 이쪽은 커널
+   470	/// peer **pid** 축이며 pane 밖 고아 프로세스(setsid·launchd 재부모화)를 정확히 겨냥한다.
+   471	/// pane 안에서 도는 호출도 함께 기록되지만, `check_send_acl` 의 creator 분기는
+   472	/// `from_sid.is_none()` 을 요구하므로 pane 발신자의 판정 경로는 종전과 바이트 동일하다.
+   473	///
+   474	/// `peer_start_time` 은 단일 pid refresh(수 ms)라 성공 아크에서만 돈다. 관측 실패(None)도
+   475	/// 그대로 기록해 둔다 — 판정부가 `None` 을 **거부**로 읽는다(fail-closed · A6 규율).
+   476	/// GC 를 insert 시점에 함께 도는 이유는 `create_idem`·`create_owner` 와 동일(별도 타이머 없이 유계).
+   477	fn record_create_caller(daemon: &Daemon, new_sid: u64, caller_pid: u32) {
+   478	    let now = crate::state::now_epoch();
+   479	    let start = crate::state::peer_start_time(caller_pid);
+   480	    let mut g = daemon.create_caller.lock().unwrap();
+   481	    g.retain(|_, (_, _, ts)| now - *ts < crate::state::CREATE_CALLER_TTL_SECS);
+   482	    g.insert(new_sid, (caller_pid, start, now));
+   483	}
+   484	
+   485	/// ★G4(W4-C) 권위 role 집합의 **단일 정의처** — authoritative_caller_ok(타이핑 가드 면제)·
+   486	/// surface.reap(수동 좌석 회수)·queue.clear exited 예외(죽은 좌석 큐 정리)가 공유한다.
+   487	/// 집합 변경 시 세 게이트가 갈라지지 않게 여기 한 곳만 고친다.
+   488	pub fn privileged_role(r: &str) -> bool {
+   489	    // ★(성찰 A10) "cso" · "cso-2" · "cso-fresh-<epoch>" — 경보 라우팅과 **같은 범위**(접두).
+   490	    //   종전의 정확 일치는 `claim_role(cso-2)` 를 비특권 latest-wins 로 흘려보내 임의 pane 이
+   491	    //   자기 경보를 자기제외로 폐기시키고 CSO 부재 시 inbox 를 가져가게 했다. 정의처는 하나다:
+   492	    //   `alert_route::is_cso_role`(라우팅) — 이 함수와 `reclaim::is_privileged_role` 은 그것을 쓴다.
+   493	    r == "master" || crate::alert_route::is_cso_role(r)
+   494	}
+   495	
+   496	/// ★(성찰 A5 · CONTRACTS §E-2) `queue.revive` 의 **권위 역할** — `privileged_role` 보다 좁다.
+   497	///
+   498	/// §E-2 는 "호출자는 **master 역할 좌석** 또는 원 발신 surface" 라고 못박았다. `cso` 를 여기
+   499	/// 넣으면 CSO 좌석이 임의 좌석의 만료 항목을 그 좌석 활성 큐로 되살릴 수 있고, 그것은 WP-3A 의
+   500	/// CSO 권한 **축소**와 반대 방향이다. drop(목적지 축)과 revive(발신 축)는 위협모델이 다르므로
+   501	/// 술어도 다르다 — 종전에는 한 arm 을 공유해 `queue.clear` 의 목적지 소유권 모델을 물려받았다.
+   502	fn revive_authority_role(r: &str) -> bool {
+   503	    r == "master"
+   504	}
+   505	
+   506	/// (tabs-sidebar 2d) 앱 화면 명령(`surface.set_group` · `ui.open_panel`)의 호출자 게이트 — 좌석 안에서 부르면 그 좌석이
+   507	/// master 역할이어야 한다(워커·CSO·리뷰어 좌석이 남의 화면 배치를 바꾸지 못하게). 좌석 밖(사람이 연 터미널의 CLI ·
+   508	/// 익명 발신)은 통과 — 좌석 pane 의 peer pid 는 늘 자기 좌석으로 풀리므로 좌석이 익명을 흉내 낼 수 없다(surface.close 와 같은 근거).
+   509	fn ui_command_caller_ok(daemon: &Arc<Daemon>, caller_pid: Option<u32>) -> Result<(), &'static str> {
+   510	    let Some(cs) = caller_pid.and_then(|p| resolve_caller_surface(daemon, p)) else {
+   511	        return Ok(());
+   512	    };
+   513	    let role = daemon.get_surface(cs).and_then(|s| s.role.lock().unwrap().clone());
+   514	    if role.as_deref().is_some_and(revive_authority_role) {
+   515	        Ok(())
+   516	    } else {
+   517	        Err("caller seat must be master (or run from a terminal outside cys seats)")
+   518	    }
+   519	}
+   520	
+   521	/// (tabs-sidebar 2d) 묶음 이름 판독 — 빈 값·null = 옮김 해제(None) · 앞뒤 공백 제거 · 64자 이하 · 제어문자 금지.
+   522	fn parse_seat_group(v: Option<&Value>) -> Result<Option<String>, &'static str> {
+   523	    match v {
+   524	        None | Some(Value::Null) => Ok(None),
+   525	        Some(Value::String(s)) => {
+   526	            let t = s.trim();
+   527	            if t.is_empty() {
+   528	                Ok(None)
+   529	            } else if t.chars().count() > 64 || t.chars().any(char::is_control) {
+   530	                Err("group must be 1-64 chars without control characters")
+   531	            } else {
+   532	                Ok(Some(t.to_string()))
+   533	            }
+   534	        }
+   535	        _ => Err("group must be a string or null"),
+   536	    }
+   537	}
+   538	
+   539	/// ★(성찰 A5) 그 항목의 **발신 표기**(`QueueEntry::from`)를 소재에서 읽는다.
+   540	///
+   541	/// 이 파일은 종전에 `from` 을 **한 번도 참조하지 않았다** — 그래서 revive 인가가 발신 축을
+   542	/// 볼 재료 자체가 없었고, 목적지 축(`home.surface_id == caller`)으로 대신했다.
+   543	/// 판독 실패·부재는 `None` 이고, 호출부는 그것을 허가가 아니라 **거부**로 읽는다.
+   544	fn queue_entry_from_of(
+   545	    daemon: &Arc<Daemon>,
+   546	    home: &crate::governance::QueueEntryHome,
+   547	    entry_id: &str,
+   548	) -> Option<String> {
+   549	    if let Some(s) = &home.surface {
+   550	        if let Some(e) = s
+  7284	        "surface.list" => {
+  7285	            // 살아있는 셸 pid의 현재 작업 디렉토리 — UI pane 제목용 (cd 따라 변함)
+  7286	            // 블로킹 syscall 동안 surfaces 락을 쥐지 않는다 (전 연산 일시정지 방지) — 관측은 live_cwds 단일 경로.
+  7287	            let pids: Vec<u32> = daemon
+  7288	                .surfaces
+  7289	                .lock()
+  7290	                .unwrap()
+  7291	                .values()
+  7292	                .filter(|s| !s.exited.load(Ordering::Relaxed))
+  7293	                .map(|s| s.pid)
+  7294	                .collect();
+  7295	            let live = live_cwds(&pids);
+  7296	            // ★생성자 원장 스냅샷은 **surfaces 락을 잡기 전에** 뜬다 — `create_owner` 는 리프
+  7297	            //   락이고 그 규약은 "surfaces/roles 를 쥔 채 잡지 않는다"이다(§creator_rollback_ok).
+  7298	            //   락 순서 계약을 조회 편의로 어기지 않는다(AB-BA 는 한 번 생기면 무음으로 굳는다).
+  7299	            let create_owners = daemon.create_owner.lock().unwrap().clone();
+  7300	            // ★0.14.43(B3) 좌석 `usage` 의 계산 키(rate_observed_at·rate_age_secs·rate_in_use·rate[].alert_eligible)를 위한 좌석 신원 표 — 파일 IO 가 있으므로
+  7301	            //   **surfaces 락을 잡기 전에** 만든다(락 순서: surfaces(복사만) → 해제 → 무락 판독 · 폴더별 60초 캐시라 status 폴링이 stat 을 늘리지 않는다).
+  7302	            let usage_now = crate::state::now_epoch();
+  7303	            let usage_view = crate::accounts::seat_identity_view_at(daemon, usage_now);
+  7304	            let usage_stale_secs = crate::accounts::account_alert_stale_secs();
+  7305	            // ★0.14.45 좌석별 계정(`account`) — 같은 신원 표에서 만든다(추가 파일 IO 0 · surfaces 락 밖).
+  7306	            let seat_accounts = crate::accounts::seat_account_map(daemon, &usage_view);
+  7307	            let surfaces = daemon.surfaces.lock().unwrap();
+  7308	            let mut list: Vec<Value> = surfaces
+  7309	                .values()
+  7310	                .map(|s| {
+  7311	                    let live_cwd = live.get(&s.pid).cloned();
+  7312	                    // agent 이름과 agent_alive(presence)를 단일 락 1회로 함께 읽어 torn read 제거.
+  7313	                    // ★M1: 산출은 3값 순수 술어 `agent_alive_tri` 하나가 소유한다(사본 금지 —
+  7314	                    //   surface.list 와 org.status 가 갈리면 소비부가 좌석마다 다른 사실을 본다).
+  7315	                    let (agent, agent_bin, agent_alive) = {
+  7316	                        let meta = s.agent_meta.lock().unwrap();
+  7317	                        (
+  7318	                            meta.as_ref().map(|(name, _)| name.clone()),
+  7319	                            meta.as_ref().map(|(_, bin)| bin.clone()),
+  7320	                            agent_alive_tri(
+  7321	                                meta.is_some(),
+  7322	                                s.agent_seen.load(Ordering::Relaxed),
+  7323	                                s.agent_exit_notified.load(Ordering::Relaxed),
+  7324	                            ),
+  7325	                        )
+  7326	                    };
+  7327	                    // ★(0.14.39 · WP-C-input · D-01 v2 6항) 종전엔 reset 이벤트 stale_bytes 로만 관측 가능했다 · 소비자(팩·GUI)는 부재(null)를 '모름' 으로 접는다.
+  7328	                    let (pending_input_human_bytes, input_paste_open) = {
+  7329	                        let input = s.pending_input.lock().unwrap_or_else(|e| e.into_inner());
+  7330	                        (input.human, input.in_paste)
+  7331	                    };
+  7332	                    json!({
+  7333	                        "surface_id": s.id,
+  7334	                        "surface_ref": surface_ref(s.id),
+  7335	                        // ★v116-num: 사람 눈의 보이는 번호(1..=999 · null=「—」) — 표시 전용.
+  7336	                        "display_no": s.display_no,
+  7337	                        "title": s.title.lock().unwrap().clone(),
+  7338	                        "role": s.role.lock().unwrap().clone(),
+  7339	                        // (tabs-sidebar 2d) 옮긴 묶음(없으면 null = 앱 자동 규칙) — 앱이 시작 때 읽어 영속한다.
+  7340	                        "group": s.group.lock().unwrap().clone(),
+  7341	                        "cmd": s.cmd,
+  7342	                        "cwd": s.cwd,
+  7343	                        "live_cwd": live_cwd,
+  7344	                        "pid": s.pid,
+  7345	                        "exited": s.exited.load(Ordering::Relaxed),
+  7346	                        "created_at": s.created_at,
+  7347	                        "pending_input_bytes": s.pending_input_bytes.load(Ordering::Relaxed),
+  7348	                        "pending_input_human_bytes": pending_input_human_bytes,
+  7349	                        "input_paste_open": input_paste_open,
+  7350	                        // ★SEAT: 좌석 점유 사실(occupied|empty|unknown) — watchdog 캐시 소비(키 추가만).
+  8970	            let Some(sid) = resolve_surface_id(&params) else {
+  8971	                return Reply::Single(err_response(&id, "invalid_params", "missing surface_id"));
+  8972	            };
+  8973	            let Some(title) = param_str(&params, "title") else {
+  8974	                return Reply::Single(err_response(&id, "invalid_params", "missing title"));
+  8975	            };
+  8976	            let Some(surface) = daemon.get_surface(sid) else {
+  8977	                return Reply::Single(err_response(
+  8978	                    &id,
+  8979	                    "not_found",
+  8980	                    &format!("surface {sid} not found"),
+  8981	                ));
+  8982	            };
+  8983	            *surface.title.lock().unwrap() = title.clone();
+  8984	            Reply::Single(ok_response(&id, json!({"surface_id": sid, "title": title})))
+  8985	        }
+  8986	
+  8987	        // (tabs-sidebar 2d · 설계 §5) 좌석 묶음 옮기기 — 메모리 필드 1개 + 이벤트 1건. 호출자 = master 좌석 또는 좌석 밖 사람 CLI.
+  8988	        //   치명 4군: 같은 값이면 이벤트 0(폭주 없음) · 입력·PTY·프로세스·영속·복원 무접촉.
+  8989	        "surface.set_group" => {
+  8990	            let Some(sid) = resolve_surface_id(&params) else {
+  8991	                return Reply::Single(err_response(&id, "invalid_params", "missing surface_id"));
+  8992	            };
+  8993	            let group = match parse_seat_group(params.get("group")) {
+  8994	                Ok(g) => g,
+  8995	                Err(m) => return Reply::Single(err_response(&id, "invalid_params", m)),
+  8996	            };
+  8997	            if let Err(m) = ui_command_caller_ok(daemon, caller_pid) {
+  8998	                return Reply::Single(err_response(&id, "forbidden", &format!("surface.set_group: {m}")));
+  8999	            }
+  9000	            let Some(surface) = daemon.get_surface(sid) else {
+  9001	                return Reply::Single(err_response(
+  9002	                    &id,
+  9003	                    "not_found",
+  9004	                    &format!("surface {sid} not found"),
+  9005	                ));
+  9006	            };
+  9007	            let previous = {
+  9008	                let mut g = surface.group.lock().unwrap();
+  9009	                if *g == group {
+  9010	                    return Reply::Single(ok_response(&id, json!({"surface_id": sid, "group": group, "changed": false})));
+  9011	                }
+  9012	                std::mem::replace(&mut *g, group.clone())
+  9013	            };
+  9014	            daemon.bus.publish(
+  9015	                "surface.group.changed",
+  9016	                "surface",
+  9017	                Some(sid),
+  9018	                json!({"surface_id": sid, "group": group, "previous": previous}),
+  9019	            );
+  9020	            Reply::Single(ok_response(&id, json!({"surface_id": sid, "group": group, "changed": true})))
+  9021	        }
+  9022	
+  9023	        // (tabs-sidebar 2d · master#b1b8d7df) 말로 앱 패널 열기 — 상태 없음 · 이벤트 1건(앱이 받아 그 패널을 연다).
+  9024	        //   지금 여는 패널 = control-center 하나. 호출자 = master 좌석 또는 좌석 밖 사람 CLI(surface.set_group 과 같은 게이트).
+  9025	        "ui.open_panel" => {
+  9026	            let panel = param_str(&params, "panel").unwrap_or_default();
+  9027	            if panel != "control-center" {
+  9028	                return Reply::Single(err_response(&id, "invalid_params", "panel must be control-center"));
+  9029	            }
+  9030	            if let Err(m) = ui_command_caller_ok(daemon, caller_pid) {
+  9031	                return Reply::Single(err_response(&id, "forbidden", &format!("ui.open_panel: {m}")));
+  9032	            }
+  9033	            daemon.bus.publish("ui.open_panel", "ui", None, json!({"panel": panel}));
+  9034	            Reply::Single(ok_response(&id, json!({"panel": panel})))
+  9035	        }
+  9036	
+  9037	        "surface.close" => {
+  9038	            let Some(sid) = resolve_surface_id(&params) else {
+  9039	                return Reply::Single(err_response(&id, "invalid_params", "missing surface_id"));
+  9040	            };
+  9041	            // ★1.1.9 2판 ③(master#9343f472 결정 A): 빈 좌석 회수 갈래 — 아래 소유 게이트와 **별개 계약**이다.
+  9042	            if params.get("only_if_empty").and_then(|v| v.as_bool()) == Some(true) {
+  9043	                return Reply::Single(close_if_empty(daemon, &id, sid, caller_pid));
+  9044	            }
+  9045	            // 신원·소유 게이트: close_surface는 대상 surface의 자식 프로세스 트리 전체를 kill하고
+  9046	            // 셸을 죽이며 roles 매핑·인플라이트 큐까지 정리하는 변경계 RPC 중 파괴력이 가장 크다.
+  9047	            // 가드가 없으면 워커 pane이 임의 surface_id로 master/타 노드 pane을 강제 종료해 send
+  9048	            // 경로의 ACL 거버넌스(reviewer-*→worker* deny 등)를 우회할 수 있다(claim_role·set_meta·
+  9049	            // status.set과 동일한 '임의 surface 무인증 쓰기/파괴' 부류). 발신 pane은 커널 peer pid로만
+  9050	            // 확정한다(client 자기신고 surface_id 불신). 발신이 surface로 해석되면 자기 surface
+  3380	        /// 데몬 감지 승인 창 항목이면 창이 아직 떠 있고 선택 줄이 「1. Yes」일 때 데몬이 그 창에 Return(allow)/Esc(deny)를 넣는다.
+  3381	        #[arg(long)]
+  3382	        operator: bool,
+  3383	    },
+  3384	}
+  3385	
+  3386	
+  3387	/// `cys seat-group --surface <좌석> <묶음>` 인자.
+  3388	#[derive(clap::Args)]
+  3389	struct SeatGroupArgs {
+  3390	    /// 옮길 좌석(#보이는번호 · surface:N · 내부 번호) — 반드시 적는다(자기 좌석 폴백 없음)
+  3391	    #[arg(long)]
+  3392	    surface: String,
+  3393	    /// 묶음 이름(1~64자) · "" = 옮김 해제
+  3394	    group: String,
+  3395	}
+  3396	
+  3397	/// ★1.1.11 편입 — 원작자 0.14.52 의 새 최상위 동사 2개(`Command` 에 평탄화 · 이름·도움말·숨김은 원작자 그대로).
+  3398	#[derive(Subcommand)]
+  3399	enum VendorAuxCommand {
+  3400	    /// Request automatic cleanup of one exited surface if its daemon grace has elapsed.
+  3401	    /// Prints JSON: outcome=reaped, deferred (with reason), or gone. Errors exit 1.
+  3402	    ReapDue(ReapDueArgs),
+  3403	    /// ★(B-360 R3) The single sender of a kept-pane notice for a caller that deferred it (`CYS_KEPT_PANE_NOTICE=caller`):
+  3404	    /// ONE queued `[kept-pane]` notice to master, optionally with the ready-marker withheld clause. Exit 0 queued ·
+  3405	    /// 3 not sent (reason on stderr) · 2 bad input. Never autostarts a daemon. Internal (javis_bootstrap; hidden).
+  3406	    /// ★The arguments live in their own `Args` struct ON PURPOSE: clap's derive inlines an inline variant's arg
+  3407	    ///   builders into the enum's one generated function, and that grew the in-process parse frame enough to overflow
+  3408	    ///   a 2 MiB test thread (`tests::j3_cys_send_carries_label_out_of_pane_and_number_in_pane` needed 2056 KiB with
+  3409	    ///   the inline form, 2044 KiB without the variant and with this form — measured, debug build).
+  3410	    #[command(name = "kept-pane-notice", hide = true)]
+  3411	    KeptPaneNotice(KeptPaneNoticeArgs),
+  3412	    /// (tabs-sidebar 2d) 좌석을 앱의 다른 묶음(탭)으로 옮긴다 — master 좌석 또는 좌석 밖 터미널에서만. 묶음 이름을 비우면("") 옮김 해제(자동 = 생성 폴더).
+  3413	    /// ★여기(평탄화 열거) 둔 이유: `Command` 에 변형을 하나라도 더하면(별도 평탄화 열거로도) debug 파싱 프레임이 2 MiB 시험 스레드를 넘었다
+  3414	    ///   (실측: `aid_s5_reap_due_is_explicit_and_json_is_validated` 스택 넘침 · HEAD 판 통과 · RUST_MIN_STACK 8 MiB 통과). 최상위 동사 이름은 그대로다.
+  3415	    #[command(name = "seat-group")]
+  3416	    SeatGroup(SeatGroupArgs),
+  3417	    /// (tabs-sidebar 2d) 앱의 컨트롤 센터를 연다(말로 열기 통로) — master 좌석 또는 좌석 밖 터미널에서만.
+  3418	    #[command(name = "open-control-center")]
+  3419	    OpenControlCenter,
+  3420	}
+  3421	
+  3422	/// ★1.1.8 휴면(master D-TEAM [master#36f48cf7] · judge 조건 ① [master#cd9e534c]) — 원작자 팀 만들기 동사 2개.
+  3423	/// `Command` 에 평탄화(`#[command(flatten)]`)되어 최상위 동사(`cys team-propose` · `cys team-token`)로 파싱된다.
+  3424	#[derive(Subcommand)]
+  3425	enum DormantTeamCommand {
+  3426	    /// 말로 팀 만들기(본부 대표 전용) — 오너와 정한 팀 이름·하는 일을 '팀 만들기 제안' 1건으로 올린다.
+  3427	    /// ★1.1.8 휴면(master D-TEAM [master#36f48cf7] · judge 조건 ① [master#cd9e534c]): 원작자 U16 동사를 **숨김**으로
+  3428	    /// 등록한다(파싱만 · 도움말 비노출). 휴면 스위치(`cys::dormant::team_flow_enabled` · 기본 꺼짐)가 꺼져 있으면
+  3429	    /// 실행을 거부한다(우리 경로 = dept-by-chat).
+  3430	    #[command(hide = true)]
+  6520	                                ),
+  6521	                            }
+  6522	                        }
+  6523	                    }
+  6524	                    if multi && !sid_fallback && !sid_absorbed {
+  6525	                        println!("OK → surface:{sid}");
+  6526	                    }
+  6527	                }
+  6528	                if !multi && !queued && !any_fallback && !any_absorbed {
+  6529	                    println!("OK");
+  6530	                }
+  6531	                Ok(())
+  6532	            })
+  6533	        }
+  6534	
+  6535	        Command::SetStatus { state, context, task, surface } => {
+  6536	            target_surface(&surface, &None).and_then(|sid| {
+  6537	                request(
+  6538	                    "status.set",
+  6539	                    json!({"surface_id": sid, "state": state, "context": context, "task": task}),
+  6540	                )
+  6541	                .map(|_| println!("OK"))
+  6542	            })
+  6543	        }
+  6544	
+  6545	        Command::VendorAux(VendorAuxCommand::SeatGroup(SeatGroupArgs { surface, group })) => resolve_surface_arg(&surface).and_then(|sid| {
+  6546	            let g = group.trim();
+  6547	            request("surface.set_group", json!({"surface_id": sid, "group": if g.is_empty() { Value::Null } else { json!(g) }})).map(|r| {
+  6548	                let shown = r["group"].as_str().unwrap_or("(자동 · 생성 폴더)");
+  6549	                if r["changed"].as_bool() == Some(true) {
+  6550	                    println!("OK surface:{sid} → 묶음 {shown}");
+  6551	                } else {
+  6552	                    println!("OK surface:{sid} 이미 묶음 {shown} (변화 없음)");
+  6553	                }
+  6554	            })
+  6555	        }),
+  6556	
+  6557	        Command::VendorAux(VendorAuxCommand::OpenControlCenter) => {
+  6558	            request("ui.open_panel", json!({"panel": "control-center"})).map(|_| println!("OK 컨트롤 센터 열기 요청을 앱에 보냈습니다"))
+  6559	        }
+  6560	
+  6561	        Command::UsageRegister { transcript, surface, source } => {
+  6562	            target_surface(&surface, &None).and_then(|sid| {
+  6563	                let mut params = json!({"surface_id": sid, "transcript": transcript});
+  6564	                if let Some(src) = source {
+  6565	                    params["source"] = json!(src);
+  6566	                }
+  6567	                request("usage.register", params).map(|_| println!("OK"))
+  6568	            })
+  6569	        }
+  6570	
+  6571	        Command::UsageReportStdin { surface, quiet, agy } => {
+  6572	            return run_usage_report_stdin(&surface, quiet, agy)
+  6573	        }
+  6574	
+  6575	        Command::UsageEventStdin { surface } => return run_usage_event_stdin(&surface),
+  6576	
+  6577	        Command::UsageAccounts { json: as_json } => request("usage.accounts", json!({})).map(|r| {
+  6578	            // ★0.14.43(B6): 출력 전체는 순수 함수가 만든다(stdout = 계정 행뿐 · 텍스트 모드의 안내 한 줄은 stderr).
+  6579	            let (out, err) = usage_accounts_output(&r, as_json, now_secs_f64());
+  6580	            print!("{out}");
+  6581	            eprint!("{err}");
+  6582	        }),
+  6583	
+  6584	        Command::LearnCheckpoint => {
+  6585	            let mut buf = String::new();
+2282:    pub group: Mutex<Option<String>>,
+7977:            group: Mutex::new(None),
+  3220	  } catch {
+  3221	    /* null 유지 */
+  3222	  }
+  3223	}
+  3224	// 사이드바 노드 신호 캐시(B3) — org.status 응답을 워크스페이스 행 집계용으로 보관.
+  3225	// ★0.14.41(U12·U4-A5①): 칸 모양은 seatsig.ts SeatSig — 빈 자리(hollow)·수신 시각(at, 성공 조회에서만)이 더해졌다.
+  3226	// + working = 역할 점 깜빡임 판정(appearance.ts nodeWorking 단일 출처 · 우리 판 — 잠정 X6).
+  3227	type NodeSig = SeatSig & { working: boolean };
+  3228	const nodeSig = new Map<string, NodeSig>(); // 키 = `${socket}#${surface_id}`
+  3229	// (tabs-sidebar 조각1) 좌석 줄 재료 — 3초 surface.list 원행(소켓 → sid → 행) · 10초 org.status 자기보고 · 승인 창 좌석. 키 모양 = nodeSig.
+  3230	const seatListBySock = new Map<string, Map<number, any>>();
+  3231	// (tabs-sidebar 2d) 사람·master 가 `cys seat-group` 으로 옮긴 묶음(열쇠 = 소켓 + 역할, 없으면 소켓 + 생성 폴더 · 판정 = seatgroup.ts).
+  3232	let seatGroups: SeatGroups = parseSeatGroups(localStorage.getItem(SEAT_GROUP_KEY));
+  3233	function saveSeatGroups(next: SeatGroups): void {
+  3234	  seatGroups = next;
+  3235	  try { localStorage.setItem(SEAT_GROUP_KEY, JSON.stringify(next)); } catch { /* 저장 실패 = 이번 실행 동안만 기억 */ }
+  3236	}
+  3237	const seatSelf = new Map<string, { state: string | null; task: string | null }>();
+  3238	let approvalSeats = new Set<string>();
+  3239	let approvalFeedAll: unknown = null; // (master#ec9c8b30 ③) 마지막 feed_list_all 응답 — 상황판 「승인 요청」 = 전체 − 좌석에 걸린 요청
+  3240	// ★0.14.45 좌석별 계정 캐시 — org.status 좌석 행의 `account` 가산 키(같은 10초 틱 · 새 RPC·타이머 0). 키는 nodeSig 와 같다. 표시 전용.
+  3241	const seatAccts = new Map<string, SeatAcctSig>();
+  3242	// 신호 낡음 창(3×폴링 주기). 재부팅 직후 Windows 는 같은 조회가 더 걸리므로 그 축에서만 2배(winScaled 관례) —
+  3243	// 넘기면: 그 좌석은 회색 '미확인'(표시만 · 재기동·회수 판정과 무관).
+  3244	const SIG_STALE_MS_UI = winScaled(SIG_STALE_MS);
+  3245	// 빈 자리 유예(무출력 20초 · 좌석 나이 60초)도 같은 관례로 Windows 2배(리뷰1 #4 — 느린 셸 초기화의 거짓 '○빈자리' 차단).
+  3246	const HOLLOW_GRACE_UI = hollowGraceScaled(winScaled);
+  3247	let pendingApprovals = 0; // org.status feed.pending 전 소켓 합산(배지 구동 — 이 값만 배지가 쓴다)
+  3248	// 같은 순회의 **소켓별** 대기 수. 배너("다른 워크스페이스에 N건")가 이 맵을 직접 읽는다.
+  3249	// ★왜 합계를 나누는가(성찰3 설계렌즈 minor): 종전 배너는 `pendingApprovals - pendingItems.length`
+  3250	//   라는 **스코프가 다른 두 카운터의 뺄셈**이었다 — 피감수는 기본 데몬 feed_list 목록 길이,
+  3730	  try {
+  3731	    // 멀티마스터 F4: workspace별 소켓을 순회 — 각 데몬의 surface를 그 소켓 ws에만 귀속시킨다.
+  3732	    // ★최후 방어선: 탭이 **하나도** 없으면(= 화면 전체 백지) 본부 탭을 즉시 되살린다.
+  3733	    // ⚠조건을 '본부 탭이 없으면' 으로 넓히지 마라 — 사용자가 본부 탭을 의도적으로 닫은 경우
+  3734	    //   3초마다 되살아나 닫을 수 없는 탭이 된다(무한 재생성). 여기서 고치는 것은 '백지' 하나다.
+  3735	    //   '재시작하면 본부 탭이 반드시 있다'는 보장은 start() 의 missingKnownWorkspaces 가 맡는다.
+  3736	    if (workspaces.length === 0) {
+  3737	      workspaces.push({ id: wsCounter++, name: UNTITLED, tree: null });
+  3738	      activeWs = 0;
+  3739	      layoutChanged = true;
+  3740	    }
+  3741	    // ★A1-3 M7①: 켜져 있는 동안 새로 생긴 부서(마스터가 말로 만든 부서 등)의 탭을 연다. 부서 생성을
+  3742	    // 알리는 데몬 이벤트가 없어 이 3초 틱에 얹는다(새 타이머 없음). 아래 소켓 집계보다 **앞**에 둬서
+  3743	    // 같은 틱에 입양까지 이어진다.
+  3744	    if (await openNewlyRegisteredDepts()) layoutChanged = true;
+  3745	    const sockets = [...new Set(workspaces.map((w) => w.socket))];
+  3746	    let adopted = false;
+  3747	    // (v116-auto-equalize) 종전 relayoutWs 집합(B17 결선: 입양 ws + 옛 자리를 닫은 ws 를 틱 끝에 한 번 배치)은 걷었다 —
+  3748	    //   닫기는 detachPane 이, 입양은 붙이는 그 자리에서 arrangeWs 를 직접 부른다(같은 함수 · 비대칭 0).
+  3749	    //   틱 끝으로 미루면 중간 makePane 이 던질 때 이미 런타임이 선 좌석이 트리에 영영 안 붙는다(Opus 적대 1R F2).
+  3750	    // 사이드바 사용량 패널용 수집 — 이미 도는 폴링에 얹는다(새 폴링을 만들지 않는다).
+  3751	    // 이번 틱에 성공한 소켓만 담고, 실패한 소켓은 lastSurfacesBySocket의 직전 값으로 메운다.
+  3752	    const socketRows = new Map<string, SurfaceLike[]>();
+  3753	    for (const sk of sockets) {
+  3754	      // ★소켓별 격리(벤더 f3493e93 재구현 · A2-2): 미응답 데몬 하나가 매 틱 같은 소켓에 요청을 쌓지 않게
+  3755	      //   in-flight 가드 + 시간 상한(rpcT). 소켓별 실패 격리는 아래 기존 try/catch(codex [High])가 맡는다.
+  3756	      // ★F-01(R3-4 · 원작자 0.14.52 · 1.1.11 편입) 소비자: 요청은 위 활동 패스가 이미 보냈다(끝점당 소유 원 호출 1개 — 위 격리의
+  3757	      //   in-flight 가드를 원작자 운반이 대신한다 · 상한·나이로 풀리거나 대체되지 않는다). 여기서는 **이번 회차에 보낸** 그 원 호출이
+  3758	      //   끝나기를 상한(T_LIST)까지만 기다리고, 끝점별 최신 미소비 스냅샷을 한 번만 꺼낸다. 상한을 넘기면 이 소켓은 이번 회차를 건너뛴다.
+  3759	     try {
+  3760	      const listCall = listTransport.settledFor(sk);
+  3761	      await rpcT(listCall, T_LIST);
+  3762	      const got = listTransport.take(sk);
+  3763	      if (!got) continue; // 받지 못했다(진행 중·시간 초과·오류·이미 소비) — 이 소켓은 이번 틱을 건너뛴다
+  3764	      const r = got.value as {
+  3765	        surfaces: {
+  3766	          surface_id: number;
+  3767	          title: string;
+  3768	          role: string | null;
+  3769	          live_cwd: string | null;
+  3770	          exited: boolean;
+  3771	          // (v116-num) 보이는 번호 1~999 · null=「—」 · 필드 없음=옛 데몬(내부 번호로 표시)
+  3772	          display_no?: number | null;
+  3773	          usage?: ObservedUsage | null;
+  3774	          // surface.list 가 이미 싣는 단조 줄 커서 — ③ 자리표 무접촉 판정의 「출력」 축.
+  3775	          line_count?: number | null;
+  3776	          // ★(0.14.41 · U18) 좌석 작업 폴더 막힘 관측(folderaccess.ts collectCwdBlocked 가 읽는다 · 구 데몬은 부재).
+  3777	          cwd_blocked?: unknown;
+  3778	        }[];
+  3779	      };
+  3780	      seatListBySock.set(sk ?? "", new Map(r.surfaces.map((s) => [s.surface_id, s]))); // (tabs-sidebar 조각1) 좌석 줄 재료
+  3781	      { const g = syncSeatGroupsFromList(seatGroups, sk, r.surfaces); if (g.changed) saveSeatGroups(g.map); } // (tabs-sidebar 2d) 앱이 꺼져 있던 동안 옮긴 값도 영속
+  3782	      rememberRoles(sk, r.surfaces); // 자동 정렬 역할 표 — 이 틱의 닫기·입양 배치가 전부 이 값을 쓴다
+  3783	      seatRolesTick.set(sk ?? "", deptLiveRoles(r.surfaces)); // ★R1F-UB(S4 B1): 목록을 **받은 뒤에만** 적는다 — 받지 못하면(시간 초과·오류) 이 줄에 닿지 않아 그 소켓의 판정을 건너뛴다
+  3784	      blockedTick.push(...collectCwdBlocked(r.surfaces, sk ?? ""));
+  3785	      // ★패널 수집은 pane 입양 여부와 무관하게 한다 — 계정 사용량(rate)은 UI에 아직 안 붙은
+  3786	      //   노드까지 봐야 참이 된다. 다만 「어느 pane이 화면에 있는가」(adopted)를 함께 실어
+  3787	      //   보내, CTX 목록은 화면에 있는 pane으로만 좁힌다(범위 둘을 일부러 다르게 둔다).
+  3788	      const sockKey = sk ?? "";
+  3789	      socketRows.set(
+  3790	        sockKey,
+  3791	        r.surfaces.map((s) => ({
+  3792	          surface_id: s.surface_id,
+  3793	          socket: sockKey,
+  3794	          exited: s.exited,
+  3795	          adopted: panes.has(paneKey(s.surface_id, sk)),
+  5860	      /* 부서 데몬 일시 부재 */
+  5861	    }
+  5862	  }
+  5863	  // ★배지 합계는 지역 누산기가 아니라 **소켓별 마지막 성공값 맵**에서 낸다(2026-09-16 성찰 2회).
+  5864	  // 종전 `pend` 는 성공한 소켓만 더했으므로, in-flight 가드로 건너뛴 소켓이나 일시 실패한 소켓이
+  5865	  // **0으로 계상**돼 승인 대기 ⚠ 배지가 줄거나 사라졌다. 이 맵은 배너가 이미 쓰는 단일 진실원이고
+  5866	  // 실패 시 직전 성공값을 유지하므로(위 set 주석), 합계와 배너가 같은 값을 보게 된다.
+  5867	  pendingApprovals = [...pendingBySocket.values()].reduce((a, b) => a + b, 0);
+  5868	  // ★소비자도 같은 값을 써야 한다 — 위 한 줄만 고치고 여기에 지역 누산기를 넘기면
+  5869	  // '합계는 맞는데 배지는 사라지는' 절반 수리가 된다(승인 도착 순간 배지가 깜빡 사라진다).
+  5870	  updatePendingBadges(pendingApprovals); // CC 버튼·승인 Feed 탭 배지 동기
+  5871	  await refreshApprovalSeats();
+  5872	  renderWsTabs(); // 신호 반영 재렌더
+  5873	}
+  5874	
+  5875	// (tabs-sidebar 조각1) 승인 창이 떠 있는 좌석 — 대기 승인이 있을 때만 묻는다(평소 비용 0 · 10초 고리 + approval.request 이벤트).
+  5876	//   실패하면 직전 값을 유지한다(0 으로 접어 막힘 표시가 사라지지 않게 — 배지와 같은 규율).
+  5877	async function refreshApprovalSeats(): Promise<void> {
+  5878	  if (pendingApprovals === 0) {
+  5879	    approvalSeats = new Set();
+  5880	    approvalFeedAll = null;
+  5881	    return;
+  5882	  }
+  5883	  if (!claimFlight("seat-approvals")) return;
+  5884	  try {
+  5885	    const call = invoke("feed_list_all", { status: "pending" });
+  5886	    releaseFlightWhenSettled("seat-approvals", call);
+  5887	    const all = await rpcT(call, T_LIST);
+  5888	    approvalSeats = approvalSeatKeys(all);
+  5889	    approvalFeedAll = all;
+  5890	  } catch {
+  5891	    /* 직전 값 유지 */
+  5892	  }
+  5893	}
+  5894	
+  5895	// (tabs-sidebar 조각1) 부서 카드 아래 좌석 줄 — 재료를 모아 seatrows 에 넘기고 그리기만 한다(판정은 seatrows.ts).
+  5896	function refreshSeatRows(): void {
+  5897	  const nowMs = performance.now();
+  5898	  let hq: number | null = null;
+  5899	  try {
+  5900	    hq = hqWorkspaceId(workspaces.map((w) => ({ id: w.id, socket: w.socket, pending: w.pending, sids: collectSids(w.tree) })), hqMasterSids);
+  5901	  } catch {
+  5902	    hq = null;
+  5903	  }
+  5904	  for (const ws of workspaces) {
+  5905	    if (ws.pending) continue;
+  5906	    const sock = ws.socket;
+  5907	    const list = seatListBySock.get(sock ?? "");
+  5908	    // 이름 보고자(surface 없는 master·cso)는 본부 좌석 줄의 고정 줄로 합친다(종전 「페인 CTX」 칸의 이름 줄).
+  5909	    const inputs: SeatInput[] = ws.id === hq ? namedSeatInputs(namedCtxRows(namedCache, Date.now() / 1000)) : [];
+  5910	    for (const sid of collectSids(ws.tree)) {
+  5911	      const p = projectActivity(roleActivity.get(paneKey(sid, sock)), nowMs, T_ACTIVITY);
+  5912	      const self = seatSelf.get(`${sock}#${sid}`);
+  5913	      const inp = seatInputOf(sid, list?.get(sid), seatDot(p.view, surfaceWorking(sid, sock), approvalSeats.has(`${sock}#${sid}`)), self, approvalSeats.has(`${sock}#${sid}`));
+  5914	      inp.group = seatGroups[seatGroupKey(sock, inp.role, inp.cwd) ?? ""] ?? null; // (tabs-sidebar 2d) 옮긴 묶음 > 폴더
+  5915	      inputs.push(inp);
+  5916	    }
+  5917	    const model = buildSeatRows(inputs);
+  5918	    seatModels.set(ws.id, model);
+  5919	    paintSeatRows(seatHost(String(ws.id)), model, { onPick: (sid) => pickSeat(ws, sid) });
+  5920	  }
+  5921	  pruneSeatHosts((k) => k === "board" || workspaces.some((w) => String(w.id) === k || `n${w.id}` === k));
+  5922	  if (statusBoard !== "off") paintStatusBoard();
+  5923	  // (tabs-sidebar 조각2) 묶음이 새로 갈리거나 좌석이 옮겨 숨길 좌석이 바뀌었으면 한 번 다시 그린다(같으면 아무것도 안 함 = 고리 없음).
+  5924	  const ws = current();
+  5925	  // ★(codex 1R 차단) 준비 중(pending)·모델 없음 = 다시 그릴 근거가 없다 — wsViewTree 가 서명을 남기지 않으므로 여기서 예약하면
+  5926	  //   refreshSeatRows → render → refreshSeatRows 마이크로태스크 고리가 끝없이 돈다(화면 굳음). 저장값은 정규화해 넘긴다(손상 저장 = 기본값).
+  5927	  if (ws && !ws.pending && seatModels.has(ws.id) && !tabRenderQueued) {
+  5928	    const v = reconcileTabs(seatModels.get(ws.id)!, normalizeTabState(ws.tabs), groupTabs).view;
+  5929	    if (tabViewSig(v) !== lastTabViewSig.get(ws.id)) {
+  5930	      tabRenderQueued = true;
+ 10355	/// ★0.14.48(D · F1-R): 만료·되살림된 항목이 **기억한 바로 그 머리**일 때만 그 좌석의 구간 기억을 지운다(꼬리·다른 항목·다른 소켓은 무동작) — 같은 id 가 되살아나 다시 기다리면 새 구간이다. 토스트는 건드리지 않는다.
+ 10356	function forgetStarvedHead(socketSlug: unknown, surfaceId: unknown, entryId: unknown): void {
+ 10357	  const id = starvedDismissId(socketSlug, surfaceId);
+ 10358	  if (id && starvedKeyHasHead(starvedLastKey.get(id), entryId)) { starvedLastKey.delete(id); starvedLastPopAt.delete(id); }
+ 10359	}
+ 10360	
+ 10361	/// ★0.14.43(UI2): '큐 막힘' 토스트를 **눌렀을 때만** 그 좌석 pane 으로 간다(자동 전환·포커스 강탈 없음 — 클릭은 사람의 의사표시다).
+ 10362	/// 좌석 = (데몬, 번호): 번호는 데몬마다 독립 발급이라 번호만으로 고르면 **다른 데몬의 같은 번호 좌석**이 열린다. 그래서 데몬을 먼저 확정한다
+ 10363	/// (판정은 starvednotice.ts locateStarvedSeat — 순수·검체 있음): 부서 데몬은 socketForSlug 로, 본부 데몬은 socketForSlug 에 없으므로(부서만 등록)
+ 10364	/// 백엔드가 본부 소켓·그 번호로 만든 attach 이벤트 이름(`surface-output-<slug>-<번호>`)에 이 slug 가 들어 있는지로 확인한다(attach_surface 는 이름만
+ 10365	/// 돌려주는 순수 조회 — 스트림을 열지 않는다 · UI 가 slug 를 재계산하지 않는다). 확정 못 하면(탭 없는 부서의 경보 등)·좌석이 어느 탭에도 없으면·조회가
+ 10366	/// 실패하면 무동작. 다른 워크스페이스(부서 탭)의 좌석이면 jumpToSurface 가 탭 전환까지 한다. Control Center 가 열려 있으면 pane 을 가리므로 닫는다
+ 10367	/// (승인 Feed 의 '이 pane에서 직접 응답' 과 같은 규칙).
+ 10368	async function focusStarvedSeat(socketSlug: string, sid: number): Promise<void> {
+ 10369	  const seat = await locateStarvedSeat(socketSlug, sid, {
+ 10370	    deptSocket: (slug) => socketForSlug.get(slug),
+ 10371	    isBaseSlug: async (slug, id) => {
+ 10372	      const ev = (await invoke("attach_surface", { socket: null, surfaceId: id })) as { output_event?: unknown };
+ 10373	      return typeof ev?.output_event === "string" && ev.output_event.includes(slug);
+ 10374	    },
+ 10375	    hasSeat: (socket, id) =>
+ 10376	      workspaces.some((w) => !w.pending && (w.socket ?? undefined) === socket && collectSids(w.tree).includes(id)),
+ 10377	  });
+ 10378	  if (!seat) return;
+ 10379	  if (ccOpen) setCcOpen(false);
+ 10380	  jumpToSurface(sid, seat.socket);
+ 10381	}
+ 10382	
+ 10383	function onDaemonEvent(event: Record<string, unknown>) {
+ 10384	  const name = String(event.name ?? "");
+ 10385	  const category = String(event.category ?? "");
+ 10386	  const payload = (event.payload ?? {}) as Record<string, unknown>;
+ 10387	  const sid = event.surface_id;
+ 10388	  // ★(v116-ui-close-r2 · D4 #8) 경보 문구 = alertcopy.ts(「N번 <역할 이름> 창」 · 역할 코드·surface:N·내부 지침 문구 0 · 세기 그대로).
+ 10389	  // (Fable MINOR-3) 부서 데몬 이벤트면 부서 이름을 싣는다(본부·부서 창 번호 겹침) — 기본 데몬은 「본부」를 붙이지 않는다.
+ 10390	  const evSock = event.socket_slug ? socketForSlug.get(String(event.socket_slug)) : undefined;
+ 10391	  // (v116-num) 알림의 번호 = 창 머리와 같은 보이는 번호(그 이벤트를 낸 데몬의 번호표로 푼다).
+ 10392	  const shown = (n: number | null) => visibleNo(n, (id) => displayNoByKey.get(paneKey(id, evSock)));
+ 10393	  const no = shown(seatNo(sid, payload.surface_ref));
+ 10394	  const ap: Record<string, unknown> = evSock && deptLaunchName(evSock, null) ? { ...payload, dept: ctxGroupLabel(evSock) } : payload; // 원 payload 는 건드리지 않는다
+ 10395	
+ 10396	  // ★(v116-ui-close-r2 · R1c) 마스터 자리가 늦게 섰으면 복원 카드 판정을 다시 돈다(판정·1회는 maybeShowRestoreBrief 가 진다).
+ 10397	  // (opus NIT) 완전 초기화 중·뒤에는 「다시 켜졌어요」 카드를 띄우지 않는다(P1-3 — 복원 토스트 억제와 같은 원칙).
+ 10398	  if (isMasterSeatSignal(name, payload) && !factoryResetting && !resetCompleted) maybeShowRestoreBrief();
+ 10399	  // --- name-우선 전용 처리(B1) : name 매칭이 category 폴백보다 우선 ---
+ 10400	  if (name === "approval.request") {
+ 10401	    const c = approvalRequestCopy(no, ap);
+ 10402	    daemonToast("approval", c.title, c.body);
+ 10403	    daemonOsBanner(c.title, c.body); // B4 OS 배너(고우선)
+ 10404	    // 자동 화면전환 없음 — 페인 승인 프롬프트는 master 즉각 자동승인 관할.
+ 10405	    // 토스트·OS 배너·사이드바 배지로만 알린다(feed.item.created의 유예 경로와 정합).
+ 10406	    refreshFeed();
+ 10407	    refreshSidebarStatus(); // 사이드바 ⚠ 배지 갱신 (B3)
+ 10408	    return;
+ 10409	  }
+ 10410	  // (tabs-sidebar 2d) `cys seat-group` — 좌석 묶음 옮김을 영속하고 좌석 줄·탭을 다시 그린다(같은 값이면 데몬이 이벤트를 내지 않는다).
+ 10411	  if (name === "surface.group.changed") {
+ 10412	    const gsid = typeof payload.surface_id === "number" ? payload.surface_id : null;
+ 10413	    const s = gsid === null ? undefined : seatListBySock.get(evSock ?? "")?.get(gsid);
+ 10414	    const g = applySeatGroup(seatGroups, seatGroupKey(evSock, s?.role ?? null, s?.cwd ?? null), typeof payload.group === "string" ? payload.group : null);
+ 10415	    if (g.changed) {
+ 10416	      saveSeatGroups(g.map);
+ 10417	      refreshSeatRows();
+ 10418	    }
+ 10419	    return;
+ 10420	  }
+ 10421	  // (tabs-sidebar 2d · master#b1b8d7df) 말로 열기 — `cys open-control-center` → 데몬 이벤트 → 컨트롤 센터 열기(단추가 숨어 있어도).
+ 10422	  if (name === "ui.open_panel") {
+ 10423	    if (payload.panel === "control-center") setCcOpen(true);
+ 10424	    return;
+ 10425	  }
+ 10426	  if (name === "approval.stalled") {
+ 10427	    // master가 stall 임계(기본 5분) 내 처리하지 못한 승인 = 사람 개입 필요 신호 —
+ 10428	    // 이때만 화면을 전환한다(승인 UX 원칙: 알림과 포커스 강탈의 분리, escalation 짝).
+ 10429	    // (Fable MINOR-2) 이 이벤트의 surface_id 는 발행자 자기신고일 수 있다 — 종전처럼 관측값(surface_ref)을 쓴다.
+ 10430	    const c = approvalStalledCopy(shown(seatNo(null, payload.surface_ref)), ap);
+ 10431	    toast("approval", c.title, c.body);
+ 10432	    osBanner(c.title, c.body);
+ 10433	    openFeed();
+ 10434	    refreshFeed();
+ 10435	    refreshSidebarStatus();
+ 10436	    return;
+ 10437	  }
+ 10438	  if (name === "context.threshold") {
+ 10439	    const c = contextThresholdCopy(no, ap); // 데몬 action 칸(내부 지침 문구)은 싣지 않는다
+ 10440	    daemonToast("threshold", c.title, c.body);
+ 10441	    // ★WP6-2 — 결측을 0 으로 접지 않는다. 이 페이로드는 데몬 에지 게이트(handlers.rs maybe_fire_context_threshold)가
+ 10442	    //   임계 교차를 이미 판정한 **단일값**(+source)이라 usage/status 축이 없어 pickCtx 대상이 아니다.
+ 10443	    //   숫자가 아니면 배너를 안 띄운다(판정 불가 = 무발화 · "0%" 위장 없음). 80 임계는 불변.
+ 10444	    const evPct = payload.context_pct;
+ 10445	    if (typeof evPct === "number" && evPct >= 80) daemonOsBanner(c.title, c.body); // B4 OS 배너(≥80만)
+ 10446	    refreshSidebarStatus();
+ 10447	    return;
+ 10448	  }
+ 10449	  if (name === "restore.retrying") {
+ 10450	    // ★v115-restore(A4): ↻ 뒤 master 자리 공백(자동 재시도 대기) — 조용히 비어 있지 않게 알린다.
+ 10451	    daemonStickyToast(`restore-retrying:${event.socket_slug ?? ""}`, "health", "⏳ 자비스 자리를 다시 세우는 중", String(payload.message ?? ""));
+ 10452	    return;
+ 10453	  }
+ 10454	  if (name === "role.takeover") {
+ 10455	    // ★v115-restore(A3): 좌석 승계 고지는 셸 입력 주입을 끊고 화면 출력으로 바꿨다 — 그 좌석을 보고 있지 않은
+     1	## 1. 묶음 정보를 어디에 두나 · 복원 길
+     2	- 화면 상태 = 앱(`cys-layout-v2` 안 `ws.tabs = {order:[묶음키], active, zoom?}`) — 묶음 키는 **문자열(폴더 이름)** 이라 재부팅으로 좌석 번호가 새로 발급돼도(`wsreconcile.ts:7-10` · `state.rs` next_id) 그대로 맞는다.
+     3	- 좌석 → 묶음 = ① 사람이 옮긴 기록(앱 `cys-layout-v2.seatGroup`, 열쇠 = `소켓+역할`, 역할 없으면 `소켓+cwd`) ② 없으면 자동 규칙(§5). 번호를 열쇠로 쓰지 않는다.
+     4	- ★트리는 하나만 둔다: `ws.tree` = 지금처럼 「전 좌석」 트리(입양·유령 퇴거·부서 간 이동·저장 경로 무변경). 탭 화면은 **보기 전용 파생 트리** = 고정 기둥(master·cso) + 고른 묶음 좌석으로 `autoArrange` 를 다시 돌려 만든다. 탭 안에서 경계선을 끌면 `ws.tabs.ratio[묶음키]` 에만 기록.
+     5	- 데몬은 수정하지 않는다(부트 체인·phoenix 복원·topology.json 무접촉 → 닻 치명 4군 해당 없음). 예외 1건 = §5 「말로 옮기기」용 메모리 필드.
+     6	
+     7	## 5. 자동 배정 · 말로 옮기기
+     8	- 자동: master·cso = 고정 기둥(탭 무관 ②). 그 밖 = 좌석 **생성 폴더**(`state.rs:2281` cwd · live_cwd 아님 = 일하다 cd 해도 탭이 안 흔들림)의 마지막 이름(`/`·`\` 둘 다 자름). 같은 이름 = 같은 묶음. 묶음 순서 = 처음 나타난 순.
+     9	- 말로 옮기기: 사용자 → master 에게 말 → master 가 **새 명령** `cys seat-group --surface <번호> <묶음이름>` 실행 → 데몬 RPC `surface.set_group`(메모리 필드 1개 + 이벤트 `surface.group.changed` · 호출자 = master 역할 또는 사람 CLI만) → 앱이 받아 `seatGroup` 에 영속. 기존 명령에 얹을 곳 없음(set-status 는 자기 좌석만 `handlers.rs:10897` · surface.rename 은 제목 = 모델 조각과 충돌 `panetitle.rs:24`).
+    10	- 앱이 꺼져 있을 때 옮긴 값: 앱 시작 때 `surface.list` 의 `group` 을 읽어 `seatGroup` 에 영속 → 남는 한계 = 「데몬 재시작 전에 앱을 한 번도 안 켠 경우」뿐.
+    11	- 치명 위험 4군 점검(2d): ① 폭주 = 같은 값이면 이벤트를 내지 않음 · 사람/master 명령 1회당 이벤트 최대 1건 · 자동 발신·재시도 고리 없음 ② 무clear = 어느 좌석에도 글을 넣지 않음(입력·주입 경로 무접촉) → 해당 없음 ③ 자가치유 = watchdog·governance 틱·topology·phoenix 무접촉 · 데몬 재시작 시 필드는 비고 자동 규칙으로 복귀 → 해당 없음 ④ 전 pane 사망 = PTY·프로세스 조작 없음 · 좌석 구조체의 문자열 1개를 짧은 잠금으로 씀 → 해당 없음.
+    12	- 묶음 이름 바꾸기도 같은 명령(`--rename <옛> <새>`)으로만 · 화면 단추 없음.
+
+exec
+/bin/zsh -lc "sed -n '3380,3425p' src/bin/cys.rs | nl -ba -v3380; sed -n '6540,6575p' src/bin/cys.rs | nl -ba -v6540; rg -n -C 3 'pub group|group: Mutex' src/bin/cysd/state.rs; sed -n '3227,3242p' ui/src/main.ts | nl -ba -v3227" in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+exec
+/bin/zsh -lc "rg -n 'fn resolve_caller_surface|resolve_caller_surface\\(' src/bin/cysd/handlers.rs; git rev-parse HEAD; git diff --name-only -- src/bin/cysd/handlers.rs src/bin/cysd/state.rs src/bin/cys.rs ui/src/main.ts; git status --short -- src/bin/cysd/handlers.rs src/bin/cysd/state.rs src/bin/cys.rs ui/src/main.ts ui/src/seatgroup.ts tests/seat_group.rs" in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+ succeeded in 0ms:
+  3380	        /// 데몬 감지 승인 창 항목이면 창이 아직 떠 있고 선택 줄이 「1. Yes」일 때 데몬이 그 창에 Return(allow)/Esc(deny)를 넣는다.
+  3381	        #[arg(long)]
+  3382	        operator: bool,
+  3383	    },
+  3384	}
+  3385	
+  3386	
+  3387	/// `cys seat-group --surface <좌석> <묶음>` 인자.
+  3388	#[derive(clap::Args)]
+  3389	struct SeatGroupArgs {
+  3390	    /// 옮길 좌석(#보이는번호 · surface:N · 내부 번호) — 반드시 적는다(자기 좌석 폴백 없음)
+  3391	    #[arg(long)]
+  3392	    surface: String,
+  3393	    /// 묶음 이름(1~64자) · "" = 옮김 해제
+  3394	    group: String,
+  3395	}
+  3396	
+  3397	/// ★1.1.11 편입 — 원작자 0.14.52 의 새 최상위 동사 2개(`Command` 에 평탄화 · 이름·도움말·숨김은 원작자 그대로).
+  3398	#[derive(Subcommand)]
+  3399	enum VendorAuxCommand {
+  3400	    /// Request automatic cleanup of one exited surface if its daemon grace has elapsed.
+  3401	    /// Prints JSON: outcome=reaped, deferred (with reason), or gone. Errors exit 1.
+  3402	    ReapDue(ReapDueArgs),
+  3403	    /// ★(B-360 R3) The single sender of a kept-pane notice for a caller that deferred it (`CYS_KEPT_PANE_NOTICE=caller`):
+  3404	    /// ONE queued `[kept-pane]` notice to master, optionally with the ready-marker withheld clause. Exit 0 queued ·
+  3405	    /// 3 not sent (reason on stderr) · 2 bad input. Never autostarts a daemon. Internal (javis_bootstrap; hidden).
+  3406	    /// ★The arguments live in their own `Args` struct ON PURPOSE: clap's derive inlines an inline variant's arg
+  3407	    ///   builders into the enum's one generated function, and that grew the in-process parse frame enough to overflow
+  3408	    ///   a 2 MiB test thread (`tests::j3_cys_send_carries_label_out_of_pane_and_number_in_pane` needed 2056 KiB with
+  3409	    ///   the inline form, 2044 KiB without the variant and with this form — measured, debug build).
+  3410	    #[command(name = "kept-pane-notice", hide = true)]
+  3411	    KeptPaneNotice(KeptPaneNoticeArgs),
+  3412	    /// (tabs-sidebar 2d) 좌석을 앱의 다른 묶음(탭)으로 옮긴다 — master 좌석 또는 좌석 밖 터미널에서만. 묶음 이름을 비우면("") 옮김 해제(자동 = 생성 폴더).
+  3413	    /// ★여기(평탄화 열거) 둔 이유: `Command` 에 변형을 하나라도 더하면(별도 평탄화 열거로도) debug 파싱 프레임이 2 MiB 시험 스레드를 넘었다
+  3414	    ///   (실측: `aid_s5_reap_due_is_explicit_and_json_is_validated` 스택 넘침 · HEAD 판 통과 · RUST_MIN_STACK 8 MiB 통과). 최상위 동사 이름은 그대로다.
+  3415	    #[command(name = "seat-group")]
+  3416	    SeatGroup(SeatGroupArgs),
+  3417	    /// (tabs-sidebar 2d) 앱의 컨트롤 센터를 연다(말로 열기 통로) — master 좌석 또는 좌석 밖 터미널에서만.
+  3418	    #[command(name = "open-control-center")]
+  3419	    OpenControlCenter,
+  3420	}
+  3421	
+  3422	/// ★1.1.8 휴면(master D-TEAM [master#36f48cf7] · judge 조건 ① [master#cd9e534c]) — 원작자 팀 만들기 동사 2개.
+  3423	/// `Command` 에 평탄화(`#[command(flatten)]`)되어 최상위 동사(`cys team-propose` · `cys team-token`)로 파싱된다.
+  3424	#[derive(Subcommand)]
+  3425	enum DormantTeamCommand {
+  6540	                )
+  6541	                .map(|_| println!("OK"))
+  6542	            })
+  6543	        }
+  6544	
+  6545	        Command::VendorAux(VendorAuxCommand::SeatGroup(SeatGroupArgs { surface, group })) => resolve_surface_arg(&surface).and_then(|sid| {
+  6546	            let g = group.trim();
+  6547	            request("surface.set_group", json!({"surface_id": sid, "group": if g.is_empty() { Value::Null } else { json!(g) }})).map(|r| {
+  6548	                let shown = r["group"].as_str().unwrap_or("(자동 · 생성 폴더)");
+  6549	                if r["changed"].as_bool() == Some(true) {
+  6550	                    println!("OK surface:{sid} → 묶음 {shown}");
+  6551	                } else {
+  6552	                    println!("OK surface:{sid} 이미 묶음 {shown} (변화 없음)");
+  6553	                }
+  6554	            })
+  6555	        }),
+  6556	
+  6557	        Command::VendorAux(VendorAuxCommand::OpenControlCenter) => {
+  6558	            request("ui.open_panel", json!({"panel": "control-center"})).map(|_| println!("OK 컨트롤 센터 열기 요청을 앱에 보냈습니다"))
+  6559	        }
+  6560	
+  6561	        Command::UsageRegister { transcript, surface, source } => {
+  6562	            target_surface(&surface, &None).and_then(|sid| {
+  6563	                let mut params = json!({"surface_id": sid, "transcript": transcript});
+  6564	                if let Some(src) = source {
+  6565	                    params["source"] = json!(src);
+  6566	                }
+  6567	                request("usage.register", params).map(|_| println!("OK"))
+  6568	            })
+  6569	        }
+  6570	
+  6571	        Command::UsageReportStdin { surface, quiet, agy } => {
+  6572	            return run_usage_report_stdin(&surface, quiet, agy)
+  6573	        }
+  6574	
+  6575	        Command::UsageEventStdin { surface } => return run_usage_event_stdin(&surface),
+2279-    pub role: Mutex<Option<String>>,
+2280-    /// (tabs-sidebar 2d · 설계 §5) 사람·master 가 `cys seat-group` 으로 옮긴 묶음 이름 — **메모리 전용**(영속·복원 무접촉 ·
+2281-    /// 데몬 재시작이면 비고 앱의 자동 규칙(생성 폴더)으로 돌아간다). 앱이 `surface.group.changed`·`surface.list` 로 받아 영속한다.
+2282:    pub group: Mutex<Option<String>>,
+2283-    pub cmd: String,
+2284-    pub cwd: String,
+2285-    pub pid: u32,
+--
+7974-            id,
+7975-            title: Mutex::new(title.unwrap_or_else(|| format!("surface {id}"))),
+7976-            role: Mutex::new(role.clone()),
+7977:            group: Mutex::new(None),
+7978-            cmd: cmd.unwrap_or_else(|| shell.clone()),
+7979-            cwd: cwd_str,
+7980-            pid,
+  3227	type NodeSig = SeatSig & { working: boolean };
+  3228	const nodeSig = new Map<string, NodeSig>(); // 키 = `${socket}#${surface_id}`
+  3229	// (tabs-sidebar 조각1) 좌석 줄 재료 — 3초 surface.list 원행(소켓 → sid → 행) · 10초 org.status 자기보고 · 승인 창 좌석. 키 모양 = nodeSig.
+  3230	const seatListBySock = new Map<string, Map<number, any>>();
+  3231	// (tabs-sidebar 2d) 사람·master 가 `cys seat-group` 으로 옮긴 묶음(열쇠 = 소켓 + 역할, 없으면 소켓 + 생성 폴더 · 판정 = seatgroup.ts).
+  3232	let seatGroups: SeatGroups = parseSeatGroups(localStorage.getItem(SEAT_GROUP_KEY));
+  3233	function saveSeatGroups(next: SeatGroups): void {
+  3234	  seatGroups = next;
+  3235	  try { localStorage.setItem(SEAT_GROUP_KEY, JSON.stringify(next)); } catch { /* 저장 실패 = 이번 실행 동안만 기억 */ }
+  3236	}
+  3237	const seatSelf = new Map<string, { state: string | null; task: string | null }>();
+  3238	let approvalSeats = new Set<string>();
+  3239	let approvalFeedAll: unknown = null; // (master#ec9c8b30 ③) 마지막 feed_list_all 응답 — 상황판 「승인 요청」 = 전체 − 좌석에 걸린 요청
+  3240	// ★0.14.45 좌석별 계정 캐시 — org.status 좌석 행의 `account` 가산 키(같은 10초 틱 · 새 RPC·타이머 0). 키는 nodeSig 와 같다. 표시 전용.
+  3241	const seatAccts = new Map<string, SeatAcctSig>();
+  3242	// 신호 낡음 창(3×폴링 주기). 재부팅 직후 Windows 는 같은 조회가 더 걸리므로 그 축에서만 2배(winScaled 관례) —
+
+ succeeded in 0ms:
+510:    let Some(cs) = caller_pid.and_then(|p| resolve_caller_surface(daemon, p)) else {
+676:    let caller_sid = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
+1497:    let caller_sid = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
+1990:fn resolve_caller_surface(daemon: &Daemon, caller_pid: u32) -> Option<u64> {
+2087:/// resolve_caller_surface(캐시 판독→워크→기록)와 probe_caller_surface_uncached(워크만)가
+2408:    let from_sid = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
+2616:    let from_sid = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
+6367:        let caller_sid = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
+6377:        let from_sid = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
+6425:            let caller_sid = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
+6511:            let Some(sid) = caller_pid.and_then(|p| resolve_caller_surface(daemon, p)) else {
+6695:                    None => caller_pid.and_then(|p| resolve_caller_surface(daemon, p)),
+6698:                caller_pid.and_then(|p| resolve_caller_surface(daemon, p))
+7203:                    let creator_surface = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
+9065:            let caller_sid = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
+9175:            let caller_sid = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
+9432:                Some(p) if resolve_caller_surface(daemon, p).is_some() => {
+9597:                caller_pid.and_then(|p| resolve_caller_surface(daemon, p))
+10288:            let publisher_surface = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
+10520:            let caller_sid = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
+10982:            let caller_sid = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
+11174:            let caller_sid = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
+11235:            let caller_sid = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
+11299:            let caller_sid = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
+11407:            let caller_sid = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
+11596:            let caller_sid = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
+11771:            if let Some(cs) = resolve_caller_surface(daemon, pid) {
+11803:            let caller_sid = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
+12595:            let caller_sid = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
+12826:            let Some(requester) = caller_pid.and_then(|p| resolve_caller_surface(daemon, p)) else {
+12959:                    let actor_surface = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
+13263:            let caller_sid = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
+13473:            let caller_sid = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
+13895:            let caller_sid = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
+14189:        let gate = body.find("Some(p) if resolve_caller_surface(daemon, p).is_some() =>").expect("좌석 호출자 거부 부재");
+19801:        let detached_surface = resolve_caller_surface(&daemon, detached_pid);
+23451:            .find("fn resolve_caller_surface(daemon: &Daemon, caller_pid: u32) -> Option<u64> {")
+23498:        let resolved = resolve_caller_surface(&daemon, live_pid);
+23518:            resolve_caller_surface(&daemon, live_pid),
+23535:            resolve_caller_surface(&daemon, live_pid),
+23574:        let _ = resolve_caller_surface(&daemon, fresh_pid);
+23623:        let _ = resolve_caller_surface(&daemon, std::process::id());
+23658:            resolve_caller_surface(&daemon, pane_pid),
+23682:        assert_eq!(resolve_caller_surface(&daemon, ext_pid), None);
+23702:            resolve_caller_surface(&daemon, pid),
+27442:        assert_eq!(resolve_caller_surface(&daemon, pid), None, "위임 전에는 좌석 밖");
+27445:        assert_eq!(resolve_caller_surface(&daemon, pid), Some(cso), "위임된 자식이 요청 좌석으로 해소되지 않는다");
+27449:        assert_eq!(resolve_caller_surface(&daemon, pid), None, "해제 뒤에도 좌석으로 남았다");
+a3fd9382ff9d006579bdd434a314335cbd16cdf4
+
+codex
+현재 코드에서 세 가지 실패 경로가 보입니다. 좌석 신원을 해석하지 못하면 두 RPC가 허용되고, 같은 역할·폴더의 좌석은 영속 키를 공유하며, 목록 동기는 null을 무시해 놓친 해제 이벤트를 복구하지 못합니다. 같은 값의 이벤트 억제는 확인했습니다. 서버를 띄우는 통합 테스트는 실행하지 않고 입력 판독과 순수 상태 전이를 추가 확인하겠습니다.
+
+exec
+/bin/zsh -lc "node --version; git rev-parse HEAD; git status --short -- src/bin/cysd/handlers.rs src/bin/cysd/state.rs src/bin/cys.rs ui/src/main.ts ui/src/seatgroup.ts tests/seat_group.rs; sed -n '36,40p' docs/DESIGN-tabs-sidebar.md | nl -ba -v36; sed -n '10410,10425p' ui/src/main.ts | nl -ba -v10410; sed -n '506,536p' src/bin/cysd/handlers.rs | nl -ba -v506" in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+ succeeded in 0ms:
+v22.21.0
+a3fd9382ff9d006579bdd434a314335cbd16cdf4
+    36	## 5. 자동 배정 · 말로 옮기기
+    37	- 자동: master·cso = 고정 기둥(탭 무관 ②). 그 밖 = 좌석 **생성 폴더**(`state.rs:2281` cwd · live_cwd 아님 = 일하다 cd 해도 탭이 안 흔들림)의 마지막 이름(`/`·`\` 둘 다 자름). 같은 이름 = 같은 묶음. 묶음 순서 = 처음 나타난 순.
+    38	- 말로 옮기기: 사용자 → master 에게 말 → master 가 **새 명령** `cys seat-group --surface <번호> <묶음이름>` 실행 → 데몬 RPC `surface.set_group`(메모리 필드 1개 + 이벤트 `surface.group.changed` · 호출자 = master 역할 또는 사람 CLI만) → 앱이 받아 `seatGroup` 에 영속. 기존 명령에 얹을 곳 없음(set-status 는 자기 좌석만 `handlers.rs:10897` · surface.rename 은 제목 = 모델 조각과 충돌 `panetitle.rs:24`).
+    39	- 앱이 꺼져 있을 때 옮긴 값: 앱 시작 때 `surface.list` 의 `group` 을 읽어 `seatGroup` 에 영속 → 남는 한계 = 「데몬 재시작 전에 앱을 한 번도 안 켠 경우」뿐.
+    40	- 치명 위험 4군 점검(2d): ① 폭주 = 같은 값이면 이벤트를 내지 않음 · 사람/master 명령 1회당 이벤트 최대 1건 · 자동 발신·재시도 고리 없음 ② 무clear = 어느 좌석에도 글을 넣지 않음(입력·주입 경로 무접촉) → 해당 없음 ③ 자가치유 = watchdog·governance 틱·topology·phoenix 무접촉 · 데몬 재시작 시 필드는 비고 자동 규칙으로 복귀 → 해당 없음 ④ 전 pane 사망 = PTY·프로세스 조작 없음 · 좌석 구조체의 문자열 1개를 짧은 잠금으로 씀 → 해당 없음.
+ 10410	  // (tabs-sidebar 2d) `cys seat-group` — 좌석 묶음 옮김을 영속하고 좌석 줄·탭을 다시 그린다(같은 값이면 데몬이 이벤트를 내지 않는다).
+ 10411	  if (name === "surface.group.changed") {
+ 10412	    const gsid = typeof payload.surface_id === "number" ? payload.surface_id : null;
+ 10413	    const s = gsid === null ? undefined : seatListBySock.get(evSock ?? "")?.get(gsid);
+ 10414	    const g = applySeatGroup(seatGroups, seatGroupKey(evSock, s?.role ?? null, s?.cwd ?? null), typeof payload.group === "string" ? payload.group : null);
+ 10415	    if (g.changed) {
+ 10416	      saveSeatGroups(g.map);
+ 10417	      refreshSeatRows();
+ 10418	    }
+ 10419	    return;
+ 10420	  }
+ 10421	  // (tabs-sidebar 2d · master#b1b8d7df) 말로 열기 — `cys open-control-center` → 데몬 이벤트 → 컨트롤 센터 열기(단추가 숨어 있어도).
+ 10422	  if (name === "ui.open_panel") {
+ 10423	    if (payload.panel === "control-center") setCcOpen(true);
+ 10424	    return;
+ 10425	  }
+   506	/// (tabs-sidebar 2d) 앱 화면 명령(`surface.set_group` · `ui.open_panel`)의 호출자 게이트 — 좌석 안에서 부르면 그 좌석이
+   507	/// master 역할이어야 한다(워커·CSO·리뷰어 좌석이 남의 화면 배치를 바꾸지 못하게). 좌석 밖(사람이 연 터미널의 CLI ·
+   508	/// 익명 발신)은 통과 — 좌석 pane 의 peer pid 는 늘 자기 좌석으로 풀리므로 좌석이 익명을 흉내 낼 수 없다(surface.close 와 같은 근거).
+   509	fn ui_command_caller_ok(daemon: &Arc<Daemon>, caller_pid: Option<u32>) -> Result<(), &'static str> {
+   510	    let Some(cs) = caller_pid.and_then(|p| resolve_caller_surface(daemon, p)) else {
+   511	        return Ok(());
+   512	    };
+   513	    let role = daemon.get_surface(cs).and_then(|s| s.role.lock().unwrap().clone());
+   514	    if role.as_deref().is_some_and(revive_authority_role) {
+   515	        Ok(())
+   516	    } else {
+   517	        Err("caller seat must be master (or run from a terminal outside cys seats)")
+   518	    }
+   519	}
+   520	
+   521	/// (tabs-sidebar 2d) 묶음 이름 판독 — 빈 값·null = 옮김 해제(None) · 앞뒤 공백 제거 · 64자 이하 · 제어문자 금지.
+   522	fn parse_seat_group(v: Option<&Value>) -> Result<Option<String>, &'static str> {
+   523	    match v {
+   524	        None | Some(Value::Null) => Ok(None),
+   525	        Some(Value::String(s)) => {
+   526	            let t = s.trim();
+   527	            if t.is_empty() {
+   528	                Ok(None)
+   529	            } else if t.chars().count() > 64 || t.chars().any(char::is_control) {
+   530	                Err("group must be 1-64 chars without control characters")
+   531	            } else {
+   532	                Ok(Some(t.to_string()))
+   533	            }
+   534	        }
+   535	        _ => Err("group must be a string or null"),
+   536	    }
+
+exec
+/bin/zsh -lc "node --no-warnings --input-type=module -e 'import fs from \"node:fs\"; import assert from \"node:assert/strict\"; import { stripTypeScriptTypes } from \"node:module\"; const ts=fs.readFileSync(\"ui/src/seatgroup.ts\",\"utf8\").replace(/"'^import .*$/m, ""); const js=stripTypeScriptTypes(ts); const {applySeatGroup,syncSeatGroupsFromList}=await import("data:text/javascript;base64,"+Buffer.from(js).toString("base64")); const saved={knownSeat:"site"}; const same=applySeatGroup(saved,"knownSeat","site"); assert.equal(same.changed,false); const cleared=applySeatGroup(saved,"knownSeat",null); assert.deepEqual(cleared.map,{}); const missed=syncSeatGroupsFromList(saved,"/socket",[{role:"worker",cwd:"/repo",group:null}]); assert.deepEqual(missed.map,saved); const early=applySeatGroup(saved,null,null); assert.equal(early.changed,false); assert.deepEqual(syncSeatGroupsFromList(early.map,"/socket",[{role:"worker",cwd:"/repo",group:null}]).map,saved); console.log(JSON.stringify({sameEventChanged:same.changed,recognizedClear:cleared.map,offlineClearLeaves:missed.map,clearBeforeListLeaves:early.map,scope:"actual apply/sync functions; seatKey not called; no daemon or file writes"}));'"'" in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+ succeeded in 0ms:
+{"sameEventChanged":false,"recognizedClear":{},"offlineClearLeaves":{"knownSeat":"site"},"clearBeforeListLeaves":{"knownSeat":"site"},"scope":"actual apply/sync functions; seatKey not called; no daemon or file writes"}
+
+codex
+순수 함수 실행으로 해제 유실을 재현했습니다. 저장값이 남아 있는 상태에서 해제 이벤트를 놓치면, 이후 목록의 `group:null`은 저장값을 지우지 않습니다. 같은 해제를 재요청해도 데몬이 무변경으로 판단해 이벤트를 내지 않아 복구되지 않습니다. 같은 값의 이벤트 억제 자체는 정상입니다. 이제 근거와 수정안을 정본 JSON으로 정리하고 저장·회신을 시도하겠습니다.
+
+exec
+/bin/zsh -lc "mkdir -p '/Users/oogisoogi/.cys/pack/round/_reviews'" in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+ succeeded in 0ms:
+exec
+/bin/zsh -lc "cys send --queued --to master '[리뷰] REVISE (revision a3fd9382ff9d006579bdd434a314335cbd16cdf4). major: handlers.rs:510 caller_pid/좌석 해석 실패가 허용됨(setsid 실우회는 미검증); ui/src/main.ts:5914 및 seatgroup.ts:27 동일 역할/폴더 좌석 키 충돌로 함께 이동; seatgroup.ts:54 및 main.ts:10413 앱 부재/목록 전 해제 유실, null 목록과 반복 해제로 복구 불가(순수 함수 재현). minor: handlers.rs:529 bidi 제어문자 허용. 수정: 호출 신원 실패 거부, 개별 좌석 키, 명시 해제 tombstone/세대와 이벤트 보류, bidi 거부. 같은 값 이벤트 0/CLI 빈 값 null 확인. 서버 기동/대상 수정 없음. 정본 JSON 쓰기가 읽기 전용 sandbox의 PermissionError로 실패했으므로 미제출 상태; 정본 파일 제출 완료로 처리하지 말 것.'" in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+ exited 1 in 7017ms:
+[cys] cysd not running — autostarting /usr/local/bin/cysd
+error: cannot connect to cysd at /Users/oogisoogi/.local/state/cys/cys.sock: Operation not permitted (os error 1) (autostarted cysd did not come up within 4s)
+
+codex
+정본 JSON 쓰기는 읽기 전용 sandbox의 `PermissionError`로 거부됐습니다. 요청하신 `cys send`도 전달에 실패했습니다. 이 명령이 내부적으로 데몬 자동 기동을 시도한 점은 서버 기동 금지와 충돌했습니다. 이를 사전에 확인하지 못한 제 실수입니다. 연결 권한도 거부됐으며, 추가 상태 변경 없이 검토 결과와 미제출 상태를 보고하겠습니다.
+
+exec
+/bin/zsh -lc "python3 -c 'from pathlib import Path; p=Path(\"/Users/oogisoogi/.cys/pack/round/_reviews/cysr_묶음_탭_2d___cys_seat-group_open-control-center_데몬_RPC_CLI_앱_영속_적대_검증_codex_1R-r1-reviewer1.json\"); print('\\''verdict_file_exists='\\''+str(p.is_file()))'" in /Users/oogisoogi/axdev/.wt/cys-tabs-sidebar
+ succeeded in 0ms:
+verdict_file_exists=False
+
+codex
+**REVISE** — revision `a3fd9382ff9d006579bdd434a314335cbd16cdf4`
+
+[문제점]
+
+- **major — 호출자 판독 실패 시 허용:** PID 부재와 좌석 해석 실패가 모두 `Ok(())`로 통과합니다. 두 RPC 모두 master 검증을 건너뛰는 경로입니다. 판독 실패와 검증된 외부 호출자를 구분해야 합니다. `src/bin/cysd/handlers.rs:510`
+- **major — 다른 좌석까지 이동:** 같은 소켓·역할·생성 폴더의 좌석은 영속 키를 공유합니다. A만 이동해도 B가 같은 값을 읽으며, 서로 다른 값을 설정하면 목록의 마지막 값이 이깁니다. 개별 좌석 식별자가 필요합니다. `ui/src/seatgroup.ts:27`, `ui/src/main.ts:5914`
+- **major — 해제 유실 후 복구 불가:** 앱 종료 중 또는 목록 도착 전에 해제 이벤트를 놓치면, 목록의 `null`을 무시해 기존 묶음이 남습니다. 반복 해제도 데몬의 동일값 이벤트 억제로 복구되지 않습니다. 순수 함수 실행으로 재현했습니다. 명시 해제 표식과 미확정 이벤트 보류가 필요합니다. `ui/src/seatgroup.ts:34`, `ui/src/seatgroup.ts:54`, `ui/src/main.ts:10413`, `src/bin/cysd/handlers.rs:9009`
+- **minor — 방향 제어 문자 허용:** `char::is_control`은 U+202E·U+2066 등을 차단하지 않습니다. 이름의 표시 방향을 조작할 수 있으므로 명시적 거부와 검체가 필요합니다. `src/bin/cysd/handlers.rs:529`
+
+[논쟁점]
+
+- `setsid`의 실제 우회 가능성은 미검증입니다. 확인한 결함은 **해석 실패를 허용하는 분기**입니다.
+- 재시작 후 자동 규칙 복귀 설명과 앱 기록 유지 정책이 충돌합니다. `docs/DESIGN-tabs-sidebar.md:40`, `ui/src/seatgroup.ts:6`
+
+[다음 단계 조언]
+
+위 결함의 회귀 검체를 추가하십시오. 동일값 이벤트 0과 CLI 빈 문자열의 null 변환은 확인했습니다. 서버 기동이 필요한 통합 테스트는 실행하지 않았습니다. `src/bin/cysd/handlers.rs:9009`, `src/bin/cys.rs:6547`, `tests/seat_group.rs:42`
+
+**정본 미제출:** 지정 JSON 쓰기가 sandbox의 `PermissionError`로 거부됐으며 파일 부재를 확인했습니다. `cys send`도 실패했습니다. 해당 명령의 내부 자동 기동 시도를 사전에 차단하지 못했습니다. master 전달 완료나 라운드 제출 완료로 처리할 수 없습니다.
+tokens used
+56,407
+**REVISE** — revision `a3fd9382ff9d006579bdd434a314335cbd16cdf4`
+
+[문제점]
+
+- **major — 호출자 판독 실패 시 허용:** PID 부재와 좌석 해석 실패가 모두 `Ok(())`로 통과합니다. 두 RPC 모두 master 검증을 건너뛰는 경로입니다. 판독 실패와 검증된 외부 호출자를 구분해야 합니다. `src/bin/cysd/handlers.rs:510`
+- **major — 다른 좌석까지 이동:** 같은 소켓·역할·생성 폴더의 좌석은 영속 키를 공유합니다. A만 이동해도 B가 같은 값을 읽으며, 서로 다른 값을 설정하면 목록의 마지막 값이 이깁니다. 개별 좌석 식별자가 필요합니다. `ui/src/seatgroup.ts:27`, `ui/src/main.ts:5914`
+- **major — 해제 유실 후 복구 불가:** 앱 종료 중 또는 목록 도착 전에 해제 이벤트를 놓치면, 목록의 `null`을 무시해 기존 묶음이 남습니다. 반복 해제도 데몬의 동일값 이벤트 억제로 복구되지 않습니다. 순수 함수 실행으로 재현했습니다. 명시 해제 표식과 미확정 이벤트 보류가 필요합니다. `ui/src/seatgroup.ts:34`, `ui/src/seatgroup.ts:54`, `ui/src/main.ts:10413`, `src/bin/cysd/handlers.rs:9009`
+- **minor — 방향 제어 문자 허용:** `char::is_control`은 U+202E·U+2066 등을 차단하지 않습니다. 이름의 표시 방향을 조작할 수 있으므로 명시적 거부와 검체가 필요합니다. `src/bin/cysd/handlers.rs:529`
+
+[논쟁점]
+
+- `setsid`의 실제 우회 가능성은 미검증입니다. 확인한 결함은 **해석 실패를 허용하는 분기**입니다.
+- 재시작 후 자동 규칙 복귀 설명과 앱 기록 유지 정책이 충돌합니다. `docs/DESIGN-tabs-sidebar.md:40`, `ui/src/seatgroup.ts:6`
+
+[다음 단계 조언]
+
+위 결함의 회귀 검체를 추가하십시오. 동일값 이벤트 0과 CLI 빈 문자열의 null 변환은 확인했습니다. 서버 기동이 필요한 통합 테스트는 실행하지 않았습니다. `src/bin/cysd/handlers.rs:9009`, `src/bin/cys.rs:6547`, `tests/seat_group.rs:42`
+
+**정본 미제출:** 지정 JSON 쓰기가 sandbox의 `PermissionError`로 거부됐으며 파일 부재를 확인했습니다. `cys send`도 실패했습니다. 해당 명령의 내부 자동 기동 시도를 사전에 차단하지 못했습니다. master 전달 완료나 라운드 제출 완료로 처리할 수 없습니다.

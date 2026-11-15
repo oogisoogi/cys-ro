@@ -211,7 +211,7 @@ python3 cysjavis-pack/bin/tests/run_bootstrap_health.py --json      # 기대 FAI
 
 ## 11. 정리 상태
 
-- 내가 만든 임시 작업트리: `~/axdev/.wt/cys-1115-integ2-mut`(detached 3d2d4e88 · 상담소·agy 팩 뮤턴트용) · `/private/tmp/claude-501/r2/wt-{base,tabs,agy,t3}`(기준선·조각 단독 대조용 · detached · wt-t3 에 target 있음). 모두 커밋 0 — master 가 `git worktree remove --force <경로>` 로 치워도 잃는 것 없음(지우지 않고 남겨 둠 · 재검증에 쓸 수 있게).
+- 내가 만든 임시 작업트리: `~/axdev/.wt/cys-1115-integ2-mut`(detached 3d2d4e88 · 상담소·agy 팩 뮤턴트용) · `/private/tmp/claude-501/r2/wt-{base,tabs,agy,t3}`(기준선·조각 단독 대조용 · detached · wt-t3 에 target 있음). 모두 커밋 0 · 변경 0 확인 뒤 **2차 끝(08:0x)에 5개 모두 `git worktree remove --force` 로 지움**(master#65cc8eea 지시).
 - `WORKER_TODO.cysr-1115-reassemble.md` = 커밋 안 함(브리프).
 - 증류 2건 = 저장소 장기기억(`~/.claude-acct2/projects/-Users-oogisoogi-cys-terminal-src/memory/`)에 기록: `test-env-tmpdir-length-sun-len` · `agy-seat-is-gemini-adapter-has-marker`(팩 `~/.cys/pack` 은 브리프상 손대지 않아 팩 기억 도구는 안 씀).
 

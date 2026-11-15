@@ -85,7 +85,10 @@ f41a0024 agy = src/bin/cysd/state.rs 뿐 — 차이 = 충돌 표식 3줄 삭제 
 - tabs × 큐 배달(`state.rs`·`main.ts`·`toastaxis.test.ts`): 글자 충돌 0 · tabs 의 state.rs 변경(좌석 묶음 `group` · 부모 판독)과 큐 배달의 `InjectTrack.submit_check` 는 서로 다른 칸. main.ts 의 만료 알림(`noteQueueExpired`)은 tabs 구조 위에서 tsc 초록(음성 대조 rc 1 확인) · `toastaxis.test.ts` 포함 bun 3451/0 · 화면 게이트 7종 PASS(관측). 실제 앱 창에서 토스트가 탭 구조 안 제자리에 뜨는지는 **안 봄**(헤드리스 게이트에 그 장면 없음).
 - T3 × 큐 배달(`governance.rs`·`state.rs`): T3 는 좌석 프로세스 손잡이(종료·전경 질의)만 옮기고 `write_tx`·`inject_track`·`pending_queue` 를 건드리지 않음 · 큐 배달은 PTY 손잡이·전경 fd 를 건드리지 않음(관측: 두 diff 에서 상대 쪽 낱말 0) · 노브 끔이라 전경 질의는 같은 `tcgetpgrp(캐시 fd)`. 큐 배달 시험 `qps_*` 14건 · cysd 전체 초록(관측).
 
-### 4-3. 【결정필요】 큐 배달의 Return 재전송은 agy 좌석 문을 보지 않는다(관측)
+### 4-3. 큐 배달의 Return 재전송은 agy 좌석 문을 보지 않는다(관측) — **결정 = A(master · 11-16 07:4x · master#65cc8eea)**
+
+- **결정 = A**: 그대로 싣고 알려진 한계 1줄 「agy 문을 연 동안 이미 입력줄에 들어간 본문의 Return 마무리는 문이 닫힌 뒤에도 한 번 나갈 수 있다 · 창 ≈35초」 → 1.1.16 에서 고침. 까닭(master) = 그 본문은 문이 열렸을 때 정당하게 배달된 것이고 새 본문이 들어가는 길이 아니다 · 통합에서 고치면 큐 배달 codex 4R 판정이 무효.
+
 - **무엇**: 큐 배달 수리가 더한 데몬 내부 쓰기(먹힌 Return 재전송 · `recheck_queue_submit_one` 의 `Resend` → `WriteReq::SubmitAfterGap`)는 판정에 agy 문을 넣지 않는다 — 쓰기 직전 거부 탐침 `queue_retry_cancel_probe`(7917행)의 조건에도 문 상태가 없다. agy 문은 「적재 뒤 문이 닫혔으면 배달하지 않는다」(배달 직전 재판정 `drop_agy_door_closed`)인데, 이 새 쓰기 길은 그 재판정을 지나지 않는다.
 - **관측(임시 탐침 · 커밋 안 함)**: 닫힌 문(격리 HOME) · 좌석 메타 (`gemini`,`agy`) = 출하 어댑터 = agy · 마커 `>` · 기계 본문 기록 + 제출 확인 기록 · 입력줄 `> [Pasted text #9 +3 lines]` → 2.1초 틱 = `resent` · PTY 쓰기 +1 · `queue.submit_retried` 1건. (정정: 앞서 내 판독 「agy 좌석은 마커가 없어 재전송 불가」는 틀렸다 — 출하 `gemini` 어댑터가 agy 이고 마커가 있다.)
 - **언제 생기나(판독)**: 기록은 쓰기 결판에서만 서므로 ⑴ 문이 **열린** 동안 기계 항목이 agy 좌석에 배달되고 그 Return 이 먹힌 뒤 ~35초(재시도 간격 2·4·8초 + 틱) 안에 문을 닫은 경우 ⑵ 인계 중(쓰는 중)에 문이 닫힌 경우. 사람 자판 출처(`send_human`) 항목은 문이 닫혀도 배달되는 설계라 그 Return 재전송은 문 정책과 어긋나지 않는다. 문은 기본 닫힘 · 여는 것은 앱 화면의 명시 조작뿐이라 창은 좁다.
@@ -127,7 +130,7 @@ f41a0024 agy = src/bin/cysd/state.rs 뿐 — 차이 = 충돌 표식 3줄 삭제 
 |---|---|---|---|
 | lib `spawn_policy_tests::raw_command_new_census_is_frozen` | 붉음 · 사유 = `src/bin/cys-seatkeep/main.rs` 실측 10 ≠ 동결 2 | 초록 | **조각 단독 결함 CONFIRMED(T3)** — T3 머리 e568aa6c 단독 작업트리에서 같은 시험이 같은 사유(10 ≠ 2)로 붉음(관측) · 합친 판의 그 파일은 T3 머리와 바이트 같음. 1차 때 고친 fcc6896f(동결 2) 뒤의 T3 커밋 5개(d9f8f44a · b5ee4392 · 08bc92d7 · 08f6d1dd · f95cd5d4 = fix1~r4)가 그 파일에 `Command::new` 를 8개 더함(`git log -S` 관측). 고칠 곳 = T3 좌석(동결표 갱신 또는 hidden_command) |
 | cysd `pending_requests::tests::exact_plan_roundtrip_and_recovered_join_never_make_a_permit` | 전체 실행에서 붉음 · 사유 `Err(Locked)`(1639행 재열기) | (1차 기록에 없음) | **흔들림** — 단독 재실행 3/3 초록 · 모듈 99/0(관측) · 이 파일은 어느 조각도 안 바꿈(v1.1.14 그대로). 부하 중 잠금 경합으로 봄(판독) |
-| health `H-SECRET-1`(공개 secret-scan) | 붉음 · `scripts/secret-scan.sh --all` 적발 75줄(PATH .txt 31 · .py 4 · .md 4 · WIN-PATH .py 1 · 외 35) | v1.1.14 작업트리에서 rc 0 · 적발 0(관측) | **조각 단독 결함 CONFIRMED(tabs · agy)** — tabs 머리 단독 rc 1 · 적발 50(`docs/CODEX-R1-tabs-sidebar.txt`·`docs/CODEX-R1-2d-tabs-sidebar.txt`·`docs/HANDOFF-tabs-sidebar.md` 등 개인 경로) · agy 머리 단독 rc 1 · 적발 11(`src/agy_door.rs` 시험 문자열 `…/Library/Application Support/claude` 꼴 7 + .md 3 + WIN-PATH .py 1). ⚠**발행 차단 게이트**다 — 판 올림 전에 두 조각 좌석이 고쳐야 한다 |
+| health `H-SECRET-1`(공개 secret-scan) | 붉음 · `scripts/secret-scan.sh --all` 적발 75건 → **2차에서 0건으로 고침(62f51ef0 · §12-1)** | v1.1.14 작업트리에서 rc 0 · 적발 0(관측) | **조각 단독 결함 CONFIRMED(tabs · agy · 상담소)** — ⚠정정: 1차 보고는 tabs·agy 만 적었으나 상담소 2파일(5건)도 있었다(가림 표시 줄만 셌던 내 계수 실수 · §12-1 표가 정본) — tabs 머리 단독 rc 1 · 적발 50(`docs/CODEX-R1-tabs-sidebar.txt`·`docs/CODEX-R1-2d-tabs-sidebar.txt`·`docs/HANDOFF-tabs-sidebar.md` 등 개인 경로) · agy 머리 단독 rc 1 · 적발 11(`src/agy_door.rs` 시험 문자열 `…/Library/Application Support/claude` 꼴 7 + .md 3 + WIN-PATH .py 1). ⚠**발행 차단 게이트**다 — 판 올림 전에 두 조각 좌석이 고쳐야 한다 |
 | health `H-CLT-1` · `H-CLT-2` | 붉음 · 사유 = 프리루드가 `/Applications/cys.app/…/python3` 를 고름 | **같은 사유 글자 그대로 붉음**(v1.1.14 작업트리 `--only H-CLT-1,H-CLT-2` 관측) | 기존 결함(이 기계 환경) · agy 인계서 46행 「기존 결함」과 같음 |
 | health `H-WIN-11` | skip | — | 맥에서는 skip(윈 CI 몫) |
 | cys `b360_r3_k12…` 외 3건(첫 실행) | 첫 실행만 붉음 · `SUN_LEN` | — | **내 시험 환경 탓** — 짧은 TMPDIR 로 다시 돌려 761/0(§5) |
@@ -189,9 +192,9 @@ python3 cysjavis-pack/bin/tests/run_bootstrap_health.py --json      # 기대 FAI
 
 ## 9. 판 올림 전에 남은 일
 
-1. **T3 census 동결표**(lib `raw_command_new_census_is_frozen`) — T3 좌석 몫 · 판 올림 전 초록이어야 함.
-2. **tabs·agy 의 공개 secret-scan 적발**(health H-SECRET-1 · 발행 차단) — tabs 문서 3개(codex 원문 .txt 2 · HANDOFF)의 개인 경로 · agy `src/agy_door.rs` 시험 문자열 등 — 두 조각 좌석 몫(장기기억 test-strings-trip-public-secret-scan 의 방법).
-3. §4-3 【결정필요】 답(A 면 알려진 한계 1줄).
+1. **T3 census 동결표**(lib `raw_command_new_census_is_frozen`) — §12-2 【결정필요】 답에 따라.
+2. ~~공개 secret-scan 적발~~ → 2차에서 고침(62f51ef0 · §12-1). 조각 가지 자신은 그대로 붉다 — 조각 가지를 따로 발행·병합할 일이 생기면 같은 고침이 필요.
+3. §4-3 = A 확정 → 설명서·출시 안내에 알려진 한계 1줄.
 4. 1~2 의 새 머리가 오면 이 가지에 `--no-ff` 로 덧붙이고 §7 재실행(1차 인계서 C7 처럼 같은 이름 새 파일이 둘이면 add/add — 차례 병합으로 미리 볼 것).
 5. 윈 실기(§8) · master 깨끗한 스냅숏 재검증 · 판 번호·서명·발행(정책 §0 · 이 좌석 범위 밖).
 
@@ -211,3 +214,47 @@ python3 cysjavis-pack/bin/tests/run_bootstrap_health.py --json      # 기대 FAI
 - 내가 만든 임시 작업트리: `~/axdev/.wt/cys-1115-integ2-mut`(detached 3d2d4e88 · 상담소·agy 팩 뮤턴트용) · `/private/tmp/claude-501/r2/wt-{base,tabs,agy,t3}`(기준선·조각 단독 대조용 · detached · wt-t3 에 target 있음). 모두 커밋 0 — master 가 `git worktree remove --force <경로>` 로 치워도 잃는 것 없음(지우지 않고 남겨 둠 · 재검증에 쓸 수 있게).
 - `WORKER_TODO.cysr-1115-reassemble.md` = 커밋 안 함(브리프).
 - 증류 2건 = 저장소 장기기억(`~/.claude-acct2/projects/-Users-oogisoogi-cys-terminal-src/memory/`)에 기록: `test-env-tmpdir-length-sun-len` · `agy-seat-is-gemini-adapter-has-marker`(팩 `~/.cys/pack` 은 브리프상 손대지 않아 팩 기억 도구는 안 씀).
+
+## 12. 2차(master#65cc8eea · 08:0x) — H-SECRET-1 · T3 census · 흔들림
+
+### 12-1. H-SECRET-1(공개 secret-scan · 발행 차단) — 75건 → 0건(고침 커밋 62f51ef0)
+
+**진짜 비밀 0**(관측): 적발 75건이 전부 경로 규칙(PATH 65 · WIN-PATH 10) — 비밀값 규칙(토큰·키 = SECRET) · EMAIL · PROFILE · HANDLE 0건. 경로의 사용자 이름은 오너 실제 계정 1종(문서 3개)과 지어낸 이름 6종(시험 자료).
+
+| 파일 | 규칙 | 꼴(사용자 이름 · 건수) | 성격 | 넣은 커밋(조각) | 처분 |
+|---|---|---|---|---|---|
+| `docs/CODEX-R1-2d-tabs-sidebar.txt` | PATH | 오너 실제 계정 · 20 | codex 원문 기록의 작업 경로 | 05ab8f1b(tabs) | `~` 로(뜻 = 같은 홈) |
+| `docs/CODEX-R1-tabs-sidebar.txt` | PATH | 오너 실제 계정 · 15 | 〃 | f79f175c(tabs) | `~` 로 |
+| `docs/HANDOFF-tabs-sidebar.md` | PATH | 오너 실제 계정 · 2 | playwright 경로 | baddfb9a(tabs) | `~` 로 |
+| `ui/e2e/seatrows_gate.py` | PATH 10 · WIN-PATH 2 | `u` · 12 | 지어낸 좌석 cwd | b98bce33(tabs) | 더미 `x` |
+| `ui/src/seatrows.test.ts` | PATH 3 · WIN-PATH 2 | `u` · 5 | `folderKey` 입력 | 08d97e3a(tabs) | 더미 `x`(기대값 = 끝 폴더 이름 · 불변) |
+| `ui/e2e/focus_gate.py` | PATH | `sim` · 2 | 가짜 cwd · 끌어 놓기 경로 | 6a8840c5 · fe235975(tabs) | `/Users/x/`·`/Users/x/proj` |
+| `ui/e2e/race_gate.py` | PATH | `sim` · 1 | 가짜 cwd | d8eef9a3(tabs) | `/Users/x/` |
+| `src/agy_door.rs` | PATH 9 · WIN-PATH 5 | `agy` 9 · `me` 1 · `u` 4 | 시험 입력(사용자 이름이 agy 인 경로 = 뜻) · 주석 1 | fd73d38e · f4576ffa(agy) | `agy` = `concat!("/Users", "/agy/…")` 실행 시 조립(같은 `&'static str`) · `me`·`u` → `x` · 주석 = `/Users/<사용자 agy>/…` |
+| `docs/agy-door-evidence/ENTRY-MODES.md` | PATH | `agy` · 4 | 표의 입력 예 | c5d2bca2 · 996ee189(agy) | `~agy/`(사용자 agy 의 홈 = 같은 뜻) |
+| `cysjavis-pack/bin/tests/test_agy_door.py` | WIN-PATH | `u` · 1 | 시험 입력 | fd73d38e(agy) | 더미 `x` |
+| `cysjavis-pack/bin/tests/test_javis_counsel.py` | PATH | `hong-gildong` · 4 | 「개인정보처럼 보이는 글자가 전송에 안 실린다」 미끼 | 8599d13b(상담소) | `"/Users" "/hong-gildong/…"` 실행 시 조립(파이썬 문자열 이어 붙이기 · 실행 중 값 동일 — 미끼 목록 `planted` 그대로) |
+| `docs/1115/COUNSEL-NOTICE-FIX.md` | PATH | `hong-gildong` · 1 | 보고서 설명 | c7ea898e(상담소) | `/Users/<지어낸 이름 hong-gildong>/…` |
+
+- 고른 방식 = ⓐ(글자를 바꿈). 까닭: 이 저장소의 허용 방식은 `scripts/secret-scan.sh` 의 **더미 이름 목록 하나**(`user|x|youruser|USERNAME|runner|home`)뿐이고, 줄 단위 허용 표식은 없으며, 파일 통째 제외는 「오탐 확대 경로」로 폐기된 이력이 스크립트 주석에 있다(96~104행). 그래서 목록을 넓히지 않고(ⓑ 안 씀) 시험 자료를 그 목록의 이름이나 실행 시 조립으로 바꿨다(장기기억 test-strings-trip-public-secret-scan 관례).
+- 함정 1건: 더미 판정은 이름 뒤가 `/`·`"`·줄끝일 때만 — `'/Users/x'`(홑따옴표 끝)는 여전히 적발 → `'/Users/x/'` 로(폴더 이름 판정 `folderKey` 는 끝 `/` 를 무시 · 게이트 초록으로 확인).
+- 조각 시험이 여전히 초록(관측 · 고친 뒤): `secret-scan.sh --all` = `✓ clean (2049 파일)` · health `--only H-SECRET-1` = PASS(합성 변조 7/7 FIRE · 음성 대조 0) · lib `agy_door` 34/0 · cys `agy` 13/0 · `test_agy_door.py` 20 OK · `test_javis_counsel.py` 118 OK(skip 3) · bun 3451/0 · 화면 게이트 seatrows 75/0 · race 108/0 · focus 72/0(전부 앞 실행과 같은 수).
+- 조각 가지 자체(tabs·agy·counsel)는 그대로다 — 이 고침은 통합 가지에만 있다.
+
+### 12-2. T3 census(lib `spawn_policy_tests::raw_command_new_census_is_frozen`) — 【결정필요】
+
+- **환경 의존 아님**(관측·판독): 이 시험은 소스 파일 글자를 세는 정적 검사다(`production_slice(src).matches("Command::new").count()` · lib.rs 7324행대). 살아 있는 좌석·프로세스를 보지 않는다. 격리 env(`env -i` · 짧은 HOME/TMPDIR)에서 합친 판·T3 단독(e568aa6c 별도 작업트리) 둘 다 붉음 · 같은 사유.
+- v1.1.14: 시험은 있다(lib.rs 7324행 · 그때 초록 — 1차 기준선 lib 1203/0) · `src/bin/cys-seatkeep/main.rs` 파일은 없다(T3 가 만든 파일).
+- **까닭(판독 + 관측)**: 세는 10개 = 전부 `mod imp` 안쪽 **들여쓴** `    #[cfg(test)]`(main.rs 1662행) 시험 모듈의 `Command::new`(2073~2608행 · 운영 코드 쪽 0개). `production_slice` 는 들여쓰지 않은 `#[cfg(test)]` 줄만 시험 구간으로 걷어 내므로(lib.rs 7005행 `lines[i] != "#[cfg(test)]"`) 이 모듈이 운영 코드로 셈에 들어간다. 1차 때 고친 fcc6896f 는 그때의 2개로 동결했고, 그 뒤 T3 커밋 5개(fix1~r4)가 같은 시험 모듈에 8개를 더했다. → **운영 스폰 증가 0 · 시험 자료(동결표)가 낡은 것**.
+- 재현 한 줄: `git -C ~/cys-terminal-src worktree add --detach /tmp/t3 feat/seatkeep-t3 && cd /tmp/t3 && cargo test --lib raw_command_new_census_is_frozen`(기대 = FAILED · `"src/bin/cys-seatkeep/main.rs": 10` 대 동결 2).
+- 선택지:
+  - **A(권고) 통합 가지에서 동결표 1칸 2 → 10**(시험 자료 1줄 · 운영 코드 0 · 고친 뒤 lib 초록 확인) — 근거: 세는 10개가 전부 시험 코드라 위험 판단이 바뀌지 않는다 · T3 판정(codex r5 ACCEPT)의 대상인 운영 코드를 건드리지 않는다. 단점: 「시험 모듈이 운영으로 세어지는」 세는 쪽의 사각(들여쓴 `#[cfg(test)]`)은 그대로 남는다(1.1.16 후보).
+  - B 세는 쪽(`production_slice`)이 들여쓴 `#[cfg(test)]` 도 걷어 내게 고침 — 다른 파일 계수도 바뀔 수 있어 동결표 전체 재측정 · 공용 그물을 바꾸는 일이라 이번 판엔 과함.
+  - C T3 좌석에서 새 머리(동결표 갱신)를 받아 덧붙여 합침 — A 와 같은 결과 · 좌석 1회 + 다시 모으기.
+- 고치지 않았다(지시대로). A 면 바로 1커밋으로 한다.
+
+### 12-3. 흔들림 목록
+
+| 이름 | 조건 | 단독 |
+|---|---|---|
+| cysd `pending_requests::tests::exact_plan_roundtrip_and_recovered_join_never_make_a_permit` | cysd 전체(`--test-threads=4`) · 동시에 agy 수용 하네스·health 가 돌던 부하 · `Err(Locked)`(1639행 저장소 재열기) | 3/3 초록 · 모듈 `pending_requests::` 99/0 · 이 파일은 어느 조각도 안 바꿈 |

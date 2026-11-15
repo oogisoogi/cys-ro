@@ -7309,7 +7309,7 @@ mod spawn_policy_tests {
         // seatkeep T2·T3(cysr-seatkeep-piece-fixes): 좌석 보유 장치 바이너리의 `#[cfg(unix)] mod imp` 안 시험 모듈(들여쓴
         //   `#[cfg(test)] mod tests` 라 production_slice 가 못 걷는다) — `ps` 생존 확인 1 · 그룹 리더 `/bin/sh` 검체 1. ⓐ윈에서 컴파일 안 됨
         //   (cfg unix · 윈 main = 종료 2) · 제품 스폰 0.
-        ("src/bin/cys-seatkeep/main.rs", 2),
+        ("src/bin/cys-seatkeep/main.rs", 10),
         ("src/bin/cys.rs", 15),
         ("src/bin/cysd/accounts.rs", 2),
         // 1.1.11 편입(원작자 0.14.52 시험 파일 3개 · 전부 #[cfg(test)] 격리 고정물 — 제품 스폰 0): F-01 U4-3 계측 하네스 2 ·

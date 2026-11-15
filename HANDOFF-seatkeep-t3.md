@@ -5,6 +5,30 @@
 - 시험대 = `~/axdev/terminal-ide-survey/2026-11-bench/seatkeep-t3/harness/`(t3life.py · t3a13.py · t3misc.py) · T2 시험대 사본 = `../t2copy/harness/`
 - 격리 시험 실행기 = scratchpad `run_tests.sh <label> <cargo test 인자>`(CYS_* 제거 · HOME/XDG 임시 · CYS_SEATKEEP 만 통과)
 
+## r5 = codex r4b REVISE(major 2) 고침 · T3 마지막 왕복(master#523aa281 · 2026-11-15 21:42~22:1x · 판정문 = `~/axdev/master/reviews/codex-queue-2026-11-13/r4/4-seatkeep-t3.r4b.verdict.md` · 고침 커밋 ff2c4433 · push 0 · codex 0)
+- **노브 기본값 = 끔** — `src/bin/cysd/seat_proc.rs:228-230` `seatkeep_enabled_from` = `"1"` 만 켬(없음 = 거짓). 끔이면 사용자는 지금까지와 똑같다(좌석 = cysd 직접 PTY · seatkeep 미사용 · 이번 고침 무관).
+- **#1 major 고침(main.rs)**: 기동 잠금 `static LAUNCH: Mutex<()>` 147. 주 스레드 = 첫 좌석의 「마지막 확인」 앞(시험 지연 SPAWN_DELAY 뒤)에서 잡음 824 → 확인·spawn·Keep 두기·그 뒤 확인까지 쥠 → 풂 944. 감시 = kevent 대기 실패 때 잠금 안에서 `WATCH_LOST` 표시 + `KEEP.get()` 264~271(잠금 안에서 다른 잠금 없음) → Keep 있으면 잠금 밖에서 `end_for_controller_loss(watch_lost)`. **닫힌 성질**: 표시가 먼저면 마지막 확인이 보고 spawn 0(rc 9 · spawned []) · spawn 이 먼저면 감시가 잠금을 얻을 때 Keep 을 반드시 봄. **메모리 순서(판정문 끝 지적)**: 이 짝(WATCH_LOST↔KEEP)은 잠금 풀기→얻기가 양쪽 쓰기를 보이게 하므로 `OnceLock` 게시(AcqRel)·확인(Acquire)에 기대지 않음 = 닫힘. 부모 상실 짝(PARENT_GONE↔KEEP)은 잠금 밖 그대로 — 뒷받침 = 기동 확인의 `getppid` 직접 확인 + supervise 100ms `parent_lost` 폴링(이번 범위 밖 · 바꾸지 않음).
+- **물리적으로 못 닫는 창(한계)**: 마지막 확인 뒤 커널이 kevent 오류를 돌려주면(표시 전) 자식은 뜬다 — 감시는 잠금을 기다렸다가 Keep 을 보고 끝냄 = 「spawn 직후 상실」과 같은 결과(기록 watch_lost 1줄 · `phase` 없음 · 좌석 자식 SIGHUP 사라짐). 아래 시험 ① 이 바로 그 창을 잰다.
+- **#2 major 고침**: 감시의 상실 표시 뒤 동기 `warn!` 제거(까닭 = 기록 `watch_lost` 1줄) · `end_early` 끝 진단(종료 집행 = 프로세스 끝 앞) → `warn_before_exit` 154(따로 스레드에서 쓰고 `WARN_EXIT_WAIT` 200ms 만 기다림 · stderr 가 막히면 그 스레드만 막히고 끝은 진행 · 평소엔 문구 그대로 나옴).
+- **같은 꼴 grep 전수**(`warn!(` 운영 코드 1~1662 · 26곳): 종료 집행 앞 동기 출력 + 산 자식 = **870·877**(reader/writer 실패 → rc 5 · 그 좌석 자식은 이미 뜸) · **973**(확정 재시도 → commit_failed 의 kill_children 앞) · 1640(persist_given_up · stderr 가 곧 기록 통로 = 설계) — **고치지 않음(브리프 = 1줄 보고 · 감시 상실 길 밖)**. 841·858·861 = 좌석 1개 제품 경로에선 자식 전 · 713~803 = 자식 전(막히면 자식 없는 프로세스만 멈춤) · 548·1155·1381·1393 = 종료 길 아님.
+- **디버그 훅(릴리스 = 빈 값 실측: `cargo build --release --bin cys-seatkeep` 뒤 `strings target/release/cys-seatkeep | grep -c CYS_SEATKEEP_TEST_` = 0)**: `CYS_SEATKEEP_TEST_SPAWN_GAP_MS`(마지막 확인 뒤 spawn 앞 틈 835) · `CYS_SEATKEEP_TEST_TRACE_FILE`(`test_trace` 301 · 감시 표시 `mark` 269 · spawn 직전 `spawn` 852).
+- **시험(main.rs)**: 도우미 `run_sk_io` 2346(stderr 지정 · 환경값 `{D}`) · `full_pipe` 2485(아무도 안 읽는 가득 찬 파이프 · 1바이트 EAGAIN 확인).
+  - ① `bound_watch_lost_in_spawn_gap_never_marks_before_spawn` 2459 — 판정문 재현 순서(틈 1초 · kevent 실패 200ms): 순서 기록에서 mark 가 spawn 앞이면 붉음 · 8초 안 끝 · watch_lost 1줄 · spawn 먼저면 `phase` 없음(Keep 길) · 자식 사라짐. **고치기 전 = 붉음**(순서 ["mark","spawn"] · 기록 phase starting spawned [pid]).
+  - ② `bound_watch_lost_ends_even_if_stderr_blocks` 2511 — stderr = 가득 찬 파이프 · ⑴ Keep 뒤(kevent 1.5초) ⑵ 자식 전(지연 0 + SPAWN_DELAY 300ms · rc 9): 8초 안 rc · watch_lost 1줄 · 소켓 없음 · 자식 사라짐. **고치기 전 = 붉음**(⑴ 8.07초 안 끝 · 기록 0 · p.sock 남음).
+- **뮤턴트(scratchpad `mut.py` · 되돌림 `cmp` 일치 · 뮤턴트마다 seatkeep 다시 빌드 · 끝에 원본 다시 빌드)**: M12a 감시 쪽 잠금 끔 = ① 붉음 · M12b 주 스레드 쪽 잠금 끔 = ① 붉음 · M12c 감시 동기 warn 되살림 = ② ⑴ 붉음(8.05초 · 기록 0) · M12d end_early 동기 warn 되살림 = ② ⑵ 붉음(기록·소켓 정리는 됐으나 프로세스가 안 끝남).
+- **반복**: ① 50회 실패 0 · ② 20회 실패 0(21:53~21:58 · load 5~19).
+- **잠금 순서 표**:
+
+  | 잠금을 쥔 쪽 | 구간 | 구간 안에서 잡는 것 |
+  |---|---|---|
+  | 주 스레드 | 첫 좌석 마지막 확인 ~ Keep 두기·뒷받침 확인(824~944) | openpty·spawn · `end_early`(소유한 Ledger · 파일 · warn_before_exit ≤200ms) · `end_for_controller_loss`(종료 CAS = 막히지 않음 · Ledger Mutex · 파일) |
+  | 감시 스레드(kevent 실패 갈래) | 표시 + `KEEP.get()`(267~270) | 없음 |
+  | 그 밖(읽기·회수·입력·접속·supervise) | LAUNCH 를 잡지 않음(잠금이 풀린 뒤에 생김) | — |
+
+  Ledger Mutex·상태 잠금을 쥔 쪽은 LAUNCH 를 잡지 않는다 → 순환 없음. 종료 CAS 에서 진 주 스레드가 LAUNCH 를 쥔 채 잠드는 경우 = 이긴 쪽은 감시의 부모 상실 갈래뿐(잠금 밖)이고 그쪽이 프로세스를 끝냄 → 교착 없음.
+- **회귀(HEAD ff2c4433 · 22:0x)**: `cargo build --bin cys-seatkeep` rc 0 · `cargo test --bin cys-seatkeep` 49/49(47 + 새 2 · r4 시험 3 포함) · 노브 켬 `SEATKEEP_TEST_THREADS=1 scripts/seatkeep-knob-on-tests.sh accounts::` 158/158 · `seat_handle_gate` 2/2 · `seatkeep_stalled` 2/2 · `seatkeep_input_ack` 2/2(스레드 1) · `seat_proc::` 20/20(스레드 2). 실패·흔들림 0.
+- 이월: 2R #4(게이트 구조 = 부분) = 다음 판 후보 그대로 · 필터·ident 검증 생략 = 기록만(이번 변경 전부터 같음).
+
 ## fix3 r4 = 좁은 codex r4 REVISE 마무리 2건(master#50be861b · 2026-11-13 12:57~13:1x · 판정문 = `~/axdev/master/reviews/codex-queue-2026-11-13/r4/4-seatkeep-t3.r4.verdict.md` · 커밋 f95cd5d4 · push 0 · codex 0)
 - r4 판정: 3R #2·#3 닫힘 · #1 부분 → 아래 2건으로 닫으려 함(master 가 이 2건만 codex 마지막 확인).
 - **#1 major(main.rs 옛 218~239) 고침**: 맥에서 Ready 뒤 `kevent()` 대기가 비-EINTR 로 실패하면 20ms 폴링으로 내려가던 갈래 제거 → `WATCH_LOST` 표시(140) · 감시 스레드 233~252: 표시 → `KEEP` 있으면 `end_for_controller_loss(watch_lost)`(부모 상실과 같은 길) · 없으면 false 로 돌아감 → 주 스레드 기동 확인 자리 `watch_lost_early`(273) = 자식 직전 785~787 · 직후 839~841 → `end_early(watch_lost, rc 9)`(949 · 옛 `end_early_parent_lost` 공통화 = 기록 1줄·소켓 삭제·등록부 ended_controller_lost — 자식 뒤면 프로세스 끝으로 마스터가 닫혀 SIGHUP) · Keep 두기 뒤 888~890 = `end_for_controller_loss(watch_lost)`. **갈래 1줄**: Keep 이 생기기 전(자식 전·자식 뒤 모두) = 주 스레드가 rc 9 로 끝냄(자식 전이면 spawned [] · 자식 뒤면 같은 정리 길) · Keep 뒤 = 감시가 부모 상실과 같은 길로 끝냄 — 감시 「표시 → Keep 확인」 · 주 「Keep 두기 → 표시 확인」(SeqCst) 이라 둘 중 하나는 반드시 끝냄. 폴링은 맥 밖 유닉스만(256 `#[cfg(not(target_os = "macos"))]` · 제품 경로 아님). cysd rc 9 문구 「기동 중 잃음」 추가(seat_proc.rs 449).

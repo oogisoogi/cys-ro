@@ -154,6 +154,10 @@ fn b16fix2_dialog_variants_and_false_positive_table() {
         ("tn8c-write-box-char-name-wrapped", vec![RULE, " Create file", " Do you want to create a-very-long-file-name-with-a─box-char-that-wraps-over-the-", " edge─x.rs?", " ❯ 1. Yes", "   2. No"], 4, true),
         // codex 2R major: 공백에서 접혀 다음 행이 `─` 로 **시작**하는 이름(가로줄 행이 아니다 — 행 전체가 `─` 일 때만 가로줄 · is_rule_row).
         ("tn8d-write-wrapped-row-starts-with-box-char", vec![RULE, " Create file", " Do you want to create long-prefix", " ─b.rs?", " ❯ 1. Yes", "   2. No"], 4, true),
+        // codex 3R major 1: 이름 연속 행이 `─`·공백이 섞인 머리로 시작(가로줄 행 아님).
+        ("tn8e-write-wrapped-row-box-chars-and-spaces", vec![RULE, " Create file", " Do you want to create long-prefix", " ─ ─b.rs?", " ❯ 1. Yes", "   2. No"], 4, true),
+        // codex 3R major 2(좌석 판독): 동사 바로 뒤 빈 행을 넘어 이름을 잇지 않는다(창이 아닌 모양 · 선택 행이 있어도).
+        ("fp9-write-blank-row-after-verb", vec![RULE, " Do you want to create", "", " y.rs?", " ❯ 1. Yes", "   2. No"], 4, false),
     ];
     let mut bad: Vec<String> = Vec::new();
     for (i, (name, rows, cur, want)) in screens.iter().enumerate() {
@@ -181,6 +185,15 @@ fn b16fix2_dialog_variants_and_false_positive_table() {
     let re = regex::Regex::new(pat).expect("정규식");
     assert!(re.is_match("Do you want to create long-prefix\n ─b.rs?\n ❯ 1. Yes"), "행머리 ─ 이름 접힘");
     assert!(re.is_match("Do you want to create long-prefix\n ───  b.rs?\n ❯ 1. Yes"), "행머리 ─ 묶음 + 공백 뒤 이름");
+    assert!(re.is_match("Do you want to create long-prefix\n ─ ─b.rs?\n ❯ 1. Yes"), "행머리 ─·공백 섞임(codex 3R major 1)");
+    assert!(re.is_match("Do you want to create\n ─b.rs?\n ❯ 1. Yes"), "동사 뒤 접힘 + 행머리 ─");
+    assert!(re.is_match("Do you want to\n write to src/a.rs?\n ❯ 1. Yes"), "낱말 사이 한 번 접힘");
+    // codex 3R major 2: 동사 뒤·낱말 사이 공백이 가로줄 행·빈 행을 넘지 않는다.
+    assert!(!re.is_match(&format!("Do you want to create\n{RULE}\n y.rs?\n ❯ 1. Yes")), "동사 바로 뒤 가로줄 행을 넘었다");
+    assert!(!re.is_match(&format!("Do you want to create \n  {RULE}  \n y.rs?\n ❯ 1. Yes")), "동사 뒤 공백 + 앞뒤 공백 가로줄 행을 넘었다");
+    assert!(!re.is_match("Do you want to create\n\n y.rs?\n ❯ 1. Yes"), "동사 바로 뒤 빈 행을 넘었다");
+    assert!(!re.is_match("Do you want to create x\n\n y.rs?\n ❯ 1. Yes"), "이름 안 빈 행을 넘었다");
+    assert!(!re.is_match("Do\n\nyou want to create y.rs?\n ❯ 1. Yes"), "낱말 사이 빈 행을 넘었다");
     assert!(!re.is_match(&format!("Do you want to create x\n{RULE}\n y.rs?\n ❯ 1. Yes")), "가로줄 행을 넘어 문장을 이었다");
     assert!(!re.is_match(&format!("Do you want to create x\n  {RULE}  \n y.rs?\n ❯ 1. Yes")), "앞뒤 공백 있는 가로줄 행을 넘었다");
 }

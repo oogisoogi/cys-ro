@@ -26,13 +26,13 @@
       {
         "name": "file-write-permission",
         "scope": "prompt_tail",
-        "pattern": "Do\\s+you\\s+want\\s+to\\s+(?:create|overwrite|write\\s+to)\\s+(?:[^\\n]|\\n[ \\t]*(?:[^─ \\t\\n]|─+[ \\t]*[^─ \\t\\n])){1,400}?\\?[ \\t]*\\n(?:[^\\n─]*\\n){0,4}?[ \\t]*❯[ \\t]*[1-9]\\."
+        "pattern": "Do(?:[ \\t]+|[ \\t]*\\n[ \\t]*)you(?:[ \\t]+|[ \\t]*\\n[ \\t]*)want(?:[ \\t]+|[ \\t]*\\n[ \\t]*)to(?:[ \\t]+|[ \\t]*\\n[ \\t]*)(?:create|overwrite|write(?:[ \\t]+|[ \\t]*\\n[ \\t]*)to)(?:[ \\t]|\\n[─ \\t]*[^─ \\t\\n])(?:[^\\n]|\\n[─ \\t]*[^─ \\t\\n]){0,400}?\\?[ \\t]*\\n(?:[^\\n─]*\\n){0,4}?[ \\t]*❯[ \\t]*[1-9]\\."
       },
       {
         "name": "plan-approval",
         "scope": "prompt_tail",
         "block_only": true,
-        "pattern": "Would\\s+you\\s+like\\s+to\\s+proceed\\?[ \\t]*\\n(?:[^\\n─]*\\n){0,6}?[ \\t]*❯[ \\t]*[1-9]\\."
+        "pattern": "Would(?:[ \\t]+|[ \\t]*\\n[ \\t]*)you(?:[ \\t]+|[ \\t]*\\n[ \\t]*)like(?:[ \\t]+|[ \\t]*\\n[ \\t]*)to(?:[ \\t]+|[ \\t]*\\n[ \\t]*)proceed\\?[ \\t]*\\n(?:[^\\n─]*\\n){0,6}?[ \\t]*❯[ \\t]*[1-9]\\."
       }
     ],
     "first_run_gates": {

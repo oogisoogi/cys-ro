@@ -142,3 +142,98 @@ UNDO-ALL · NO-PLACEMENTS · IGNORE-BUSY · ANY-COMMIT · NO-LATE · LATE-ANYKIN
 1. 저널 묶음이 들어가기 전까지 부서 있는 기기에서 팩 단독 자동 업데이트를 멈출지(판정표 §6 결정 1) — 이 가지가 1.1.16 으로 나가면 그 게이트의 근거가 사라진다.
 2. codex 5R minor 1(링크 되살리기 재중단 창) · 2(nofollow 판독) · 3(부트 설치의 팩 밖 시드를 잠금 밖으로) — 1.1.17 후보.
 3. 윈도우 실기에서 끊김 재현 1회(레인 저널 · LockFileEx · 링크 거부) — 원작자도 윈 E2E 0.
+
+---
+
+## 10. 델타 — 독립 검증 1118 1회 고침 (TICKET=cysr-1116-vendor-fix-1118 · worker-3 surface:2163 · 2026-11-18 01:1x~03:4x)
+
+- 입력 = 독립 검증 원문 `~/axdev/.wt/cys-1116-vendor-verify/VERIFY.cysr-1116-vendor-verify-1118.md`(F1~F7) · push·서명·발행·설치 0 · 실제 `~/.cys` 무접촉(시험 = 격리 HOME `env -i`).
+- 증거 경로(scratchpad = `/private/tmp/claude-501/-Users-oogisoogi-axdev--wt-cys-1116-vendor/410f637d-ac6a-4ccd-9e2b-642e51cf6cd6/scratchpad/` · 재부팅 시 사라질 수 있음): `red-f1.log`·`red-f2.log`(붉음 먼저) · `mut-*.log`·`r1-mut-*.log`(뮤턴트) · `xlock/`(실바이너리 잠금 6줄) · `e2e/`(저널 실바이너리 재현) · `out-head/`·`out-base/`·`out-r1/`(전체 시험) · `v1118-on-head.log`(검증 좌석 시험 10개를 이 가지에서) · `codex-f1-prompt.md`·`codex-f1-out.txt`(codex 1R 원문).
+
+### 10-1. 커밋(fcc0cc73 위 · push 0)
+
+| 커밋 | 내용 |
+|---|---|
+| 9b2ce1bf | test — F1 붉음 먼저(본부 레인이 잠금을 쥔 동안 부서 기동이 `Ok((Busy, None))`) |
+| 0f6c1929 | fix F1 — 적용 잠금을 레인마다 |
+| d19264da | test — F2(가) 붉음 먼저(적용 전 0775 가 0644 로 남음) |
+| 105b9b61 | fix F2(가) — 권한 귀속 = 끝의 의도 줄을 건너뛴 마지막 확정 줄 |
+| 714ae7c5 | fix F5 — doctor pack-state 가 이 레인 진행 중 저널을 이름 댐 + 데몬 로그가 doctor 를 가리킴 |
+| 828bbcff | fix codex 1R REVISE 반영(F1 역방향 major · F5 doctor 거짓 Fail minor) |
+| (이 절 커밋) | HANDOFF 델타 · TODO |
+
+### 10-2. F1 고침 — 방향 ⓐ 레인마다 잠금(근거 1줄: 데몬 기동 설치가 쓰는 것은 그 레인 팩과 레인/pid 별 형제뿐이고 레인 사이 공유 파일 `.pack-staging`·`.pack-download`·`.pack-accepted.json` 은 `cys pack-update` 만 쓰므로, 공용 잠금은 쓰는 이끼리만 지키면 되고 기다림(ⓑ)·재시도(ⓒ)처럼 소켓 바인드 앞 기동을 늦추거나 「설치 전 바인드」를 바꾸지 않는다)
+
+- 잠금 자리: 레인 잠금 `<팩 부모>/.pack-journal.d/<팩 폴더 이름>/.apply.lock`(`src/pack.rs` `lane_apply_lock_path`) · 공용 `<팩 부모>/.pack-apply.lock` 은 그대로.
+- 쓰는 이(`src/bin/cys.rs` `with_apply_lock`): 공용 → 레인 순서로 둘 다 **기다려** 쥠(`cys::pack::with_lane_apply_lock`).
+- 데몬 기동(`with_apply_lock_nonblocking`): 이 레인 잠금을 비차단 · 남이 쥐면 Busy(= **같은 레인** 진행 중 적용 보호 · 시험 `j1116_daemon_recovery_skips_a_live_apply` 는 이제 쓰는 이가 실제로 쥐는 잠금 둘 다를 쥐고 잼). 부서 레인은 공용 잠금을 보지 않음.
+  본부 레인만 공용 잠금도 비차단으로 잡아 봄(본부 레인만 1.1.15 옛 공유 저널을 옮기는데 1.1.15 쓰는 이는 공용 잠금만 쥠) — ★codex 1R 반영: 못 잡아도 옛 공유 저널이 **없으면** 이관 단계만 빼고 자기 레인 복구·자동 설치를 함 · **있으면** Busy.
+- 공유 자원 실측(같은 부모 아래): 데몬 설치 = 그 레인 팩 + `<팩>.prev`·`<팩>.swap`·`.pack-staging-init-<pid>`(레인/pid 별) · 레인 사이 공유 = 위 셋(쓰는 이만) · 옛 공유 저널(본부 레인만 옮김) · 공장 초기화 목록은 `.pack-journal.d` 통째(레인 잠금 파일 포함).
+- 시험(붉음 → 초록): `j1116_dept_boot_installs_while_base_apply_holds_its_lock`(F1 정방향) · `j1116_base_boot_installs_while_a_dept_apply_holds_the_shared_lock`(codex 1R 역방향) · `j1116_shared_lock_only_writer_still_stops_the_base_lane`(1.1.15 쓰는 이 + 옛 저널 = 본부 Busy · 부서는 설치).
+- 뮤턴트(시험 빌드 전용): J1116-LANE-SHARED(레인 잠금 대신 공용 = 고치기 전) → 4 붉음 · J1116-SHARED-BUSY-SKIPS(공용 Busy = 건너뜀 = 1R 전) → 역방향 1 붉음 · J1116-BASE-NO-SHARED → 1.1.15 쓰는 이 시험 1 붉음 · J1116-IGNORE-BUSY → 같은 레인 보호 붉음.
+
+### 10-3. e2e_xlock(검증 좌석 도구 그대로 · 실바이너리 · 격리 HOME · 25초 뒤 팩 상태) — 전후
+
+| 줄 | 고치기 전(검증 좌석 · fcc0cc73 cysd) | 고친 뒤(이 가지 cysd · 5개 동시 실행) | 고친 뒤(단독 실행) |
+|---|---|---|---|
+| 본부 먼저 · 0초 | 본부 **설치 안 됨**(apply-lock 로그) | 둘 다 설치 중 · apply-lock 로그 0 | 둘 다 설치됨(496개 · 판 1.1.14) |
+| 부서 먼저 · 0초 | 본부 **설치 안 됨** | 둘 다 설치 중 · 로그 0 | 둘 다 설치됨 |
+| 본부 먼저 · 1초 | 부서 **설치 안 됨** | 둘 다 설치 중 · 로그 0 | 둘 다 설치됨 |
+| 부서 먼저 · 1초 | 본부 **설치 안 됨** | 둘 다 설치 중 · 로그 0 | 둘 다 설치됨 |
+| 본부 먼저 · 3초(동시 실행 중) | 부서 **설치 안 됨** | 둘 다 설치 중 · 로그 0 | 둘 다 설치됨 |
+| 본부 먼저 · 3초(단독) | 부서 **설치 안 됨** | — | 둘 다 설치됨(496 · 1.1.14) |
+
+건너뜀: 6/6 → **0/11**. (「설치 중」 = 동시 실행 부하로 25초 안에 판 표지까지 못 간 것 — 건너뜀 여부만 읽을 것 · 검증 좌석 표와 같은 읽기.) 이 표는 0f6c1929 의 cysd 다 — 828bbcff(codex 1R)는 본부 기동이 공용 잠금을 못 잡은 경우만 바꾸므로(두 데몬 기동끼리는 공용 잠금을 쥐어도 곧 놓음) 이 6줄의 경로와 겹치지 않는다 — 그래도 828bbcff cysd 로 6줄을 다시 단독 실행했다: **6줄 모두 두 레인 설치됨(판 1.1.14) · apply-lock 로그 0**(`xlock/r1-r1·r2` · `xlock/r1b-r3~r6` · 03:0x 첫 회는 load 100 이라 r3~r5 가 25초 안에 설치 중이었고 건너뜀 로그 0 → 부하 낮을 때 03:24 단독 재실행).
+저널 실바이너리 재현(`e2e_j1116.py` after · upgrade · 0f6c1929 cysd) = 앞 좌석 §2-1 과 같은 초록(본부 되돌림 · 예약 작업 생존 · 훅 0775 / 올림 = kept/ 보관).
+
+### 10-4. 지적별 처분(F1~F7)
+
+| 지적 | 처분 | 근거·자리 |
+|---|---|---|
+| F1 높음 | **고침** | §10-2 · 0f6c1929 + 828bbcff |
+| F2 낮음 | **(가) 고침 · (나) 일부러 안 고침** | 105b9b61 — 의도 확정 뒤 chmod 전 끊김은 앞 내용 줄(해시 + 놓인 권한)이 증거. (나) chmod 뒤 · 성공 줄 전 끊김은 지금 권한(0755) = 의도 값인데, 끊긴 뒤 사용자의 `chmod +x` 와 구별이 안 되므로 의도를 증거로 삼지 않음(codex 3R 「의도 ≠ 성공」 원칙 유지 · 결과 = 셔뱅 파일에 실행 비트가 남는 쪽 = 새 팩이 원하던 권한) |
+| F3 낮음 | 📌 기록만 | 0600 파일 + 끊긴 뒤 내용만 고침 → 적용이 넓힌 0644 남음 · codex 4R 「해시와 함께 확정된 놓인 권한만 증거」의 귀결 · 사용자 바이트 손실 0 |
+| F4 낮음~중간 | 📌 기록만 | 1.1.15 에서 **부서** 팩에 수동 pack-update 하다 끊긴 옛 저널이 남은 기기만(자동 경로 0) → 본부가 옮겨 되돌리면 본부 팩이 부서의 옛 백업으로 바뀜 · 부서 팩은 아무도 안 되돌림. 값싼 가름(검증 좌석 제안) = 옛 저널 백업 해시가 본부 매니페스트·살아 있는 본부 파일과 한 건도 안 맞으면 옮기지 않고 안내만 → 1.1.17 후보 |
+| F5 낮음 | **고침(안내)** | 714ae7c5 + 828bbcff — `cys doctor` pack-state: 이 레인 진행 중 저널이 있으면 이름을 댐(복구가 실제로 읽을 인덱스·늦은 백업 칸·배치 기록을 못 읽으면 Fail + 「지우지 말 것 · 데몬 로그 사유 확인」 · 아니면 Warn) · 데몬 `pack journal recovery failed` 로그가 doctor 를 가리킴. 자동 해소(사람 손 0)는 하지 않음 — 손상된 기록을 자동으로 되돌리는 것은 더 위험 |
+| F6 기록 | **정정**(§10-5) | 기준선 사본을 임시 폴더 밖에 둠 |
+| F7 기록 | 📌 기록만 | ① `javis_formation.py:207`·`javis_cycle_autopilot.py:230` 의 `os.path.exists` 정지 표지 판정(U08 과 같은 꼴 · 원작자도 같음) ② 줄 확정 뒤 · 이름 바꾸기 전 끊김의 임시 조각 잔여(기준선과 같음) ③ 윈도우 1.1.15 러너 사본 ↔ 1.1.16 데몬(미재현) ④ 1.1.16 → 1.1.15 되돌림 시 레인 저널 미인식(되돌림 절차 한 줄 필요) ⑤ 「배치 중」 끊김 = 패닉 갈고리 흉내 |
+
+### 10-5. §7 정정(F6) — dbg_r12 3개는 「흔들림/환경」이 아니라 「임시 폴더 위치 의존 고정 붉음」
+
+- §7 의 「기준선 붉음 1·2 = 흔들림/환경」 → **기준선 사본이 `/private/tmp/…` 아래라서 언제나 붉음**(이 시험들은 `<저장소>/target/…` 에 팩을 깔고 `javis_preflight.py --wire-seat` 를 부르는데, 그 도구는 임시 폴더 아래 팩을 격리 팩으로 보고 배선하지 않음 — 검증 좌석 대조 탐침으로 확정).
+- 실측: 기준선 3a095c4e 를 임시 폴더 **밖** `~/axdev/.wt/cys-1116-base-1118`(detached)에 두고 3회 = `dbg_r12_init_pack_wires_profile_skill_links` 3/3 초록 · `dbg_r12_seat_profile_wired_before_agent_exec`·`dbg_r12_update_lane_restore_seat_gets_link_before_exec` 3/3 초록(`out-base/dbgr12-*.log`). → 「기준선 붉음 → 이 가지 초록」은 개선이 아니라 위치 차이였다. 기준선 사본은 앞으로 임시 폴더 밖에.
+
+### 10-6. 시험 — 기준선(3a095c4e · 임시 폴더 밖) 대비 · 같은 격리 env(`runall.sh` · env -i · 짧은 TMPDIR)
+
+| 시험 | 기준선 3a095c4e(밖) | 이 가지 714ae7c5(전체) | 이 가지 828bbcff(codex 1R 뒤 · Rust 3종) | 차이 사유 |
+|---|---|---|---|---|
+| cargo build --bins --tests | rc 0 | rc 0 | rc 0 | — |
+| lib | 1238 · 0 · 2 ign | 1255 · 0 · 3 ign | **1256 · 0** · 3 ign | +17 = 앞 좌석 저널 14 + 이 티켓 3(F1 · 1.1.15 쓰는 이 · F2) · 828bbcff +1 = F1 역방향 |
+| bin cys | **761 · 0** · 2 ign | 765 · 0 | **765 · 0** | +4 = 앞 좌석 3 + F5 doctor 1 · 기준선 밖 = 0 붉음(F6) |
+| bin cysd | 3274 · **1**(`pending_requests::…loaded_id_bookkeeping_is_reclaimed_with_the_row` · `Err(Locked)`) | 3274 · **1**(`pending_requests::…c8registry_registration_counter_exhaustion_never_wraps_or_overwrites` · `Err(Locked)`) | **3275 · 0** | 둘 다 병렬 부하 흔들림: 두 시험을 두 트리에서 단독 3회씩 = 6/6 초록(`pr-*.log`) · 이 티켓이 안 건드린 파일 |
+| cys-seatkeep · tests/*.rs · 팩 파이썬 · scripts/tests · bun · tsc · health · secret | (앞 좌석 out-base 와 같음 — 이 티켓 Rust 만 바꿈) | 49/0 · hidden 1 · rotate 11 · seat_group 1 · drainhold 4 · win 0 · 파이썬 전부 rc 0(liveness 20 · computer_control 112 · hook_fail 11/10 · counsel 118 skip3 · agy_door 20) · scripts OK 22 FAIL 1(test_release_trigger_split — 기준선부터) · bun 3451/0 · tsc OK · health 167/2(H-CLT-1·2 — 기존)/1 · secret clean 2053 | — | 앞 좌석 §7 과 같음 |
+| 검증 좌석 시험 10개(이 가지에 갈고리 붙인 임시 사본 · 커밋 안 함) | — | 7 초록 · 3 붉음 = F2(나)·F3·F4(일부러 안 고친 셋) · **배치 끊김 116지점 어긋남 0**(F2(가) 닫힘) · 되돌림 140지점 0 · F1 시험 초록 | — | `v1118-on-head.log` |
+
+### 10-7. codex 1R(02:51 · gpt-5.6-sol high · 읽기 전용 사본 · 쓰기 0 · 대상 714ae7c5)
+
+- 판정 **REVISE**(major 1 · minor 3). 원문 = `codex-f1-out.txt`.
+- major: 모든 pack-update 가 공용 잠금을 먼저 쥐므로 **부서 레인 pack-update → 본부 데몬 기동** 방향은 여전히 건너뜀 → **반영**(828bbcff · §10-2 · 역방향 시험 + 뮤턴트).
+- minor ①: 1.1.15 쓰는 이의 대상 레인을 공용 잠금만으로 가를 수 없어 1.1.15 **부서** 수동 쓰는 이 ↔ 1.1.16 부서 데몬 설치가 겹칠 수 있음 → 기록만(기준선은 데몬 기동이 잠금 없이 설치 = 나빠지지 않음 · codex 도 minor).
+- minor ②: F2 — 의도 줄 뒤 chmod 성공 · 성공 줄 전 끊김 뒤 사용자가 바이트 그대로 권한만 앞 확정 값(0644)으로 되돌리면 그 사용자 권한을 적용 것으로 보고 적용 전 권한으로 되돌림 → 기록만(그 창 = 파일 하나 · 성공 줄 확정 시간 + 사용자가 정확히 그 값으로 chmod · 사용자 바이트 손실 0).
+- minor ③: F5 doctor 가 복구가 읽지 않는 배치 기록까지 봐 거짓 Fail 가능 → **반영**(828bbcff · 시험에 커밋됨 = Warn 갈래 추가).
+- missing 2: `pack_state_base()` = `pack_dir().parent()`(src/bin/cys.rs `fn pack_state_base` — 확인함 · 쓰는 이 `lock_path.parent()` 와 데몬 `pack_dir().parent()` 는 같은 값) · 공장 초기화가 `.pack-journal.d` 를 옮길 때 열린 레인 잠금(유닉스 inode 갈림 · 윈도우 이동 실패) → 기록만(📌).
+- 2R 은 브리프 밖(1R 1회) — 반영분(828bbcff) 수렴 확인은 하지 않음.
+
+### 10-8. 자원 규칙(master 03:07 [master#a745e394] · 원장 대조 성립) 이후
+
+- 그 시점 이미 돌던 lib·cys·cysd 동시 실행(828bbcff)은 끝까지 둠(전부 초록 · load 30~100 구간). 그 뒤 cargo 실행 0(실바이너리 xlock 만) · 하네스 `iso.sh` 에 `CARGO_BUILD_JOBS=6` 반영.
+
+## 📌 덧붙임(이 티켓 밖 · 실행 안 함)
+
+1. codex 2R(828bbcff 수렴 확인) — 브리프가 1R 1회라 하지 않음. 고위험(데몬 기동·잠금)이라 master 판단으로 1회 권함.
+2. F4 값싼 가름(옛 저널 백업 해시가 본부와 한 건도 안 맞으면 옮기지 않고 안내) — 1.1.17 후보.
+3. F3 · F2(나) · codex 1R minor ①②(1.1.15 부서 수동 쓰는 이 ↔ 부서 데몬 · 의도 줄 뒤 사용자 권한만 되돌림) — 기록. 셋 다 기준선보다 나빠지지 않음.
+4. 공장 초기화가 `.pack-journal.d` 를 옮길 때 열린 레인 잠금(유닉스 inode 갈림 · 윈도우 이동 실패) — 초기화가 데몬을 먼저 멈추는지 미확인(codex 1R missing).
+5. F7 ①(`javis_formation.py`·`javis_cycle_autopilot.py` 정지 표지 `os.path.exists`) · ④(1.1.16 → 1.1.15 되돌림 절차에 「레인 저널 남았는지 확인」 한 줄).
+6. 남은 「공용 잠금 Busy = 본부 건너뜀」 경우 = 1.1.15 옛 공유 저널이 **남아 있고** 어느 레인이든 pack-update 가 진행 중일 때뿐(1회성 올림 기기) — 다음 기동에서 복구·설치.
+7. 기준선 worktree `~/axdev/.wt/cys-1116-base-1118`(detached 3a095c4e · 깨끗) — 다음 비교에 재사용하거나 `git worktree remove` 로 치움.

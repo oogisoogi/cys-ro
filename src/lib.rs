@@ -7044,6 +7044,16 @@ mod spawn_policy_tests {
                             lines[k].trim()
                         ));
                     }
+                    // ★(codex 4R 뒤 이중 장치) 머리와 짝 사이의 비지 않은 줄은 모두 모듈보다 **깊이** 들여써야 한다 — 어휘 오인으로 짝이 진짜 끝을
+                    //   지나치면 그 사이에 모듈과 같은 들여쓰기의 형제 줄(운영 코드)이 끼므로 조용히 삼키지 않고 실패한다(실물 모듈 = 예외 0 실측).
+                    if let Some(off) = lines[j + 1..k].iter().position(|l| {
+                        !l.trim().is_empty() && l.len() - l.trim_start().len() <= indent
+                    }) {
+                        return Err(format!(
+                            "들여쓴 `#[cfg(test)]` 모듈(`{head}`) 안에 모듈보다 얕은 줄(`{}`)이 있다 — 짝을 잘못 찾았을 수 있어 실패",
+                            lines[j + 1 + off].trim()
+                        ));
+                    }
                     i = k + 1;
                     continue;
                 }
@@ -7148,9 +7158,10 @@ mod spawn_policy_tests {
                 }
                 continue;
             }
-            // raw 문자열: (b)r#*" … "#* — 앞 글자가 식별자의 일부가 아닐 때만.
-            if (ch == 'r' || (ch == 'b' && c.get(i + 1) == Some(&'r'))) && (i == 0 || !ident(c[i - 1])) {
-                let mut k = i + if ch == 'b' { 2 } else { 1 };
+            // raw 문자열: (b|c)r#*" … "#* — 앞 글자가 식별자의 일부가 아닐 때만(★codex 4R major: C raw 문자열 `cr#"…"#` 포함 —
+            //   빠지면 일반 문자열로 읽혀 안의 따옴표에서 닫히고 중괄호를 코드로 센다).
+            if (ch == 'r' || ((ch == 'b' || ch == 'c') && c.get(i + 1) == Some(&'r'))) && (i == 0 || !ident(c[i - 1])) {
+                let mut k = i + if ch == 'r' { 1 } else { 2 };
                 let mut hashes = 0;
                 while c.get(k) == Some(&'#') {
                     hashes += 1;
@@ -7293,6 +7304,24 @@ mod spawn_policy_tests {
              fn keep() { std::process::Command::new(\"prod\"); }\n    }\n",
         );
         assert!(esc.contains("fn keep") && !esc.contains("fn t()"), "이스케이프 문자 리터럴 뒤 운영 코드를 삼켰다: {esc}");
+        // codex 4R 반례: C raw 문자열(`cr#""{"}"#` · 끝이 역슬래시인 `cr"\"`)을 일반 문자열로 읽으면 짝이 밀려 감싼 모듈 닫힘까지 삼킨다.
+        for body in ["let _ = cr#\"\"{\"}\"#;", "let _ = cr\"\\\"; let _ = \"{\";"] {
+            let src = format!(
+                "mod outer {{\n    #[cfg(test)]\n    mod tests {{\n        fn t() {{ {body} }}\n    }}\n    \
+                 fn keep() {{ std::process::Command::new(\"prod\"); }}\n    }}\n"
+            );
+            let out = production_slice(&src);
+            assert!(out.contains("fn keep") && !out.contains("fn t()"), "C raw 문자열 뒤 운영 코드를 삼켰다({body}): {out}");
+        }
+        // 이중 장치: 어휘가 짝을 잘못 찾아(여기선 지원 밖 꼴을 흉내 — 닫히지 않은 `"` 로 짝을 밀어냄) 형제 운영 줄을 지나치면 실패한다.
+        assert!(
+            production_slice_checked(
+                "mod outer {\n    #[cfg(test)]\n    mod tests {\n        fn t() { let _ = c\"\\\"; }\n    }\n    \
+                 fn keep() { let _ = \"{\"; }\n    }\n"
+            )
+            .is_err(),
+            "짝 오인이 형제 운영 줄을 지나쳤는데 실패하지 않았다"
+        );
         assert!(tp.contains("keep_after") && tp.matches("Command::new").count() == 1 && !tp.contains("fn t<"),
                 "문자열·문자·주석·raw 문자열 속 중괄호에 짝이 흔들렸다: {tp}");
         // 실물에도 걸어 둔다 — 이 파일들의 프로덕션 앵커가 사라지면 핀이 헛도는 것이다.

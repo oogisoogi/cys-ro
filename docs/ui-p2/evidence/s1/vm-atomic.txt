@@ -18,5 +18,5 @@ feed pending 0 []
 #       (mono_send 는 VM 파이썬 time.monotonic · 덩이 시각은 대역 C CLOCK_MONOTONIC — 서로 다른 시계라 앞뒤 비교 금지 · 0.5 M1 과 같은 현상)
 
 == chat_transcript 경로 규칙 대조(같은 좌석 · surface.list + org.status 에서 재료를 받아 viewcore.rs transcript_path 와 같은 규칙으로)
-{'claude_config_dir': '/Users/admin/.cys/claude', 'cwd': '/Users/admin/m1', 'slug': '-Users-admin-m1', 'session': 'a12e64b8-1066-4acc-b0a8-c5bbce202811', 'path_exists': True, 'bytes': 91}
+{'claude_config_dir': '~/.cys/claude', 'cwd': '~/m1', 'slug': '-<VM홈>-m1', 'session': 'a12e64b8-1066-4acc-b0a8-c5bbce202811', 'path_exists': True, 'bytes': 91}
 # 한계: 이 세션 파일은 대역이 Claude Code 와 같은 규칙으로 쓴 것(fake_claude_t.c:15~22) — 진짜 Claude Code 의 기록 꼴(uuid·parentUuid·긴 붙여넣기)은 M7ⓐ·M8 재개 때.

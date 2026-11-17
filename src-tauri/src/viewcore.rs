@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn slug_and_path_follow_measured_layout() {
-        assert_eq!(transcript_slug("/Users/a/axdev/.wt/x-1"), "-Users-a-axdev--wt-x-1");
+        assert_eq!(transcript_slug("/sandbox/a/axdev/.wt/x-1"), "-sandbox-a-axdev--wt-x-1");
         assert_eq!(transcript_slug("/h/한글"), "-h---");
         let p = transcript_path(Some("/h/.cys/claude"), Some("/h/m1"), Some("0a4b82d0-9e01-4b29-aaaa-bbbbbbbbbbbb")).unwrap();
         assert_eq!(p, std::path::PathBuf::from("/h/.cys/claude/projects/-h-m1/0a4b82d0-9e01-4b29-aaaa-bbbbbbbbbbbb.jsonl"));

@@ -340,6 +340,40 @@ def main() -> int:
         check(not errs, f"페이지 오류 0 {errs[:2]}")
         ctx.close()
 
+        print("== J 조각 3 고침(검증 지적 H · B · A) — 그려진 화면")
+        ctx, pg, errs = page([seat(BASE, 1, "master")])
+        pg.click("#view-switch button[data-view=chat]")
+        pg.clock.run_for(3_100)
+        bubble = lambda pg, i: pg.evaluate(f"() => {{ const li = [...document.querySelectorAll('.cv-me')][{i}]; return li ? {{ step: li.querySelector('.cv-step').textContent, note: [...li.querySelectorAll('.cv-note')].map((n) => n.textContent).join(' | '), btns: [...li.querySelectorAll('button')].map((b) => b.textContent) }} : null; }}")  # noqa: E731
+        pg.evaluate("() => { window.__CHAT.sendOutcome = { outcome: 'failed', code: 'not_found', message: 'gone' }; }")
+        say(pg, "같은 글")
+        pg.clock.run_for(100)
+        check(bubble(pg, 0)["btns"] == ["다시 보내기"], f"확정 실패 X = 다시 보내기 단추 ({bubble(pg, 0)})")
+        pg.evaluate("() => { window.__CHAT.sendOutcome = { outcome: 'written', result: { sent: true } }; }")
+        n0 = writes(pg)
+        say(pg, "같은 글")
+        pg.evaluate("""() => { const C = window.__CHAT; C.file.push({ uuid: 'j1', parent: 'p0', role: 'user', text: '같은 글', ts: new Date(Date.now()).toISOString() }); }""")
+        pg.clock.run_for(1_100)
+        bx, by = bubble(pg, 0), bubble(pg, 1)
+        check(by["step"] == "전달됨" and bx["btns"] == [] and "이미 전달됐어요" in bx["note"] and writes(pg) == n0 + 1, f"같은 글 Y 전달됨 → X 다시 보내기 거둠 + 안내 ({bx} · {by['step']})")
+        pg.clock.run_for(40_000)
+        # B: 고리를 지나 답이 그 말에 붙음 · 안 묶인 답은 시각순
+        t_mid = pg.evaluate("() => Date.now()")
+        pg.clock.run_for(40_000)
+        say(pg, "고리 말")
+        pg.evaluate(f"""() => {{ const C = window.__CHAT; const ts = new Date(Date.now()).toISOString();
+          C.file.push({{ uuid: 'j2', parent: 'j1', role: 'user', text: '\\n\\n<pasted_content id="3f02">\\n고리 말\\n</pasted_content id="3f02">\\n', ts }});
+          C.file.push({{ uuid: 'j3', parent: 'j2', role: 'link', text: null, parts: null, ts: null, sidechain: false }});
+          C.file.push({{ uuid: 'j4', parent: 'j3', role: 'assistant', text: '고리 답', ts }});
+          C.file.push({{ uuid: 'j5', parent: 'nowhere', role: 'assistant', text: '떠돌이 답', ts: new Date({t_mid}).toISOString() }}); }}""")
+        pg.clock.run_for(8_000)
+        order = pg.evaluate("() => [...document.querySelectorAll('.cv-log > li')].map((li) => li.querySelector('.cv-text')?.textContent ?? '')")
+        b2 = bubble(pg, 2)
+        check(b2["step"] in ("전달됨", "답하는 중", "답함") and order.index("고리 답") == order.index("고리 말") + 1, f"감싼 기록 + 고리 → 그 말에 답이 붙음 ({b2['step']} · {order})")
+        check(order.index("떠돌이 답") < order.index("고리 말"), f"안 묶인 답 = 시각순(뒤 말 앞) ({order})")
+        check(not errs, f"페이지 오류 0 {errs[:2]}")
+        ctx.close()
+
         print("== G 경합 기록 — 보내는 중 승인 창(대역 시각 주입)")
         for lag in (() if os.environ.get("CHAT_GATE_SKIP_RACE") else (0, 1000)):  # 진단용 건너뛰기(수용 실행에서는 쓰지 않음)
             counts = {"screen_gate": 0, "daemon_refused": 0, "leak_enter": 0, "no_overlap": 0}

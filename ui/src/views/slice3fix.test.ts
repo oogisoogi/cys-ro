@@ -218,7 +218,8 @@ describe("D — 시험 구멍(검증 O11·O14·O13): 중복 쓰기 계수로 판
       const m = sim.core.state.msgs[0];
       expect(needsClick(m)).toBe(false);
       for (let i = 0; i < 3; i++) await sim.core.confirmHeld(m.id);
-      await sim.advance(30_000);
+      expect(sim.core.state.msgs.map((x) => x.id)).toEqual([m.id]); // 그 말을 지우고 새 말로 바꾸지 않음
+      await sim.advance(45_000); // 사람 입력 30초 묶음을 넘겨서도
       expect([kind, sim.sends()]).toEqual([kind, 1]);
       expect(sim.core.state.msgs.length).toBe(1);
     }

@@ -14,7 +14,7 @@
 - [x] 실제 데몬 1회(격리 HOME) 승인 요청 → 허락 → 응답 바이트 · 재클릭 호출 0
 - [ ] codex 1R — 00:1x 한도 소진(판정문 없음 · 탐침 4건 반영 aa6a80d7) · 02:51 1회 재시도 예약(master#121b7ff6)
 - [x] 팩 지침 표식 4줄 = 별도 커밋(합성기 · doc-contract · event_inject)
-- [ ] HANDOFF.cysr-ui-slice4.md · 【확인요청】
+- [x] HANDOFF.cysr-ui-slice4.md · 【확인요청】(00:29)
 
 ## 이월
 - 0.5 M4~M8 측정 대기 · FR-C5 5분 = 설계 목표값(U1 미실측) · approval.request 까닭 없음(꾸미지 않음)

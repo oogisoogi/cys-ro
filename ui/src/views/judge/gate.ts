@@ -59,7 +59,7 @@ export type GateVerdict = { ok: true } | { ok: false; code: GateCode; msg: strin
 const MSG: Record<GateCode, string> = {
   status_unknown: "마스터 상태를 확인하는 중이에요 — 확인되면 보낼게요.",
   no_master: "마스터가 아직 없어요 — 마스터가 준비되면 보낼게요.",
-  agent_dead: "마스터가 꺼져 있어요 — 마스터가 깨어나면 보낼게요.",
+  agent_dead: "마스터가 꺼져 있거나 상태를 알 수 없어요 — 마스터가 준비되면 보낼게요.",
   gate_pending: "마스터가 시작 확인을 기다리고 있어요 — 작업 화면에서 답해 주시면 그다음에 보낼게요.",
   approval: "마스터 창에 확인할 것이 떠 있어요 — 그 확인이 끝나면 보낼게요.",
   approval_unknown: "확인할 것이 있는지 살펴보는 중이에요 — 확인되면 보낼게요.",

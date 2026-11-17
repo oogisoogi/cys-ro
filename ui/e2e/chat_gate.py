@@ -10,6 +10,7 @@ C 문턱: feed 승인 대기 → 쓰기 0 · 붙잡음 → 풀리면 1건 / 사�
 D 응답: 데몬 승인 창 거부 → 붙잡음 · 쉼 동안 재시도 0 · 창 닫힘 뒤 1건 / 불명 → 「확인 중」 · 다시 보내기 단추 0 · 30초에도 재전송 0 / 확정 실패 → 「못 보냄」 + 다시 보내기 1회
 E 전환: 초안 왕복 같음 · 최소 계약 4칸 + 공통 전환 단추 · 두 화면 동시 노출 0
 F 가용: 새 설치(좌석 0)·마스터 꺼짐 → 흐림 0 / cys 밖 마스터(이름 보고 최근) ∧ cys 마스터 없음 → 전환 0 + 까닭 띠
+H 다시 켬: 저장된 화면이 대화 화면 → 대화 화면 보임 · 작업 화면 숨김 · 단추 눌림 = 대화 · 바로 보내기 1(VERIFY 지적 2)
 G 경합(기록): 「보내는 중 승인 창」 — 승인 창이 누름 전후 −1.5~+1.5초(100ms 간격) 중 한 시각에 뜰 때, 화면 문턱·데몬 거부·새는 경우의 비율(대역 시각 주입 · 데몬 Enter 직전 재판정 없음 가정 = 0.5 M2-c)
 실행: CHROME_PATH=<chrome-headless-shell> cys run -- <playwright python3> ui/e2e/chat_gate.py
 """
@@ -225,6 +226,30 @@ def main() -> int:
         st = pg.evaluate("""() => ({ cvs: document.querySelectorAll('.cv').length, band: document.querySelector('#view-switch .vs-band')?.textContent,
             dim: document.querySelector('#view-switch button[data-view=chat]').classList.contains('vs-dim'), view: localStorage.getItem('cys-view') })""")
         check(st["cvs"] == 0 and st["dim"] and "cysr 밖" in (st["band"] or "") and st["view"] is None, f"cys 밖 마스터 최근 ∧ cys 마스터 없음 → 전환 0 · 흐림 · 까닭 띠 · 저장 0 {st}")
+        ctx.close()
+
+        print("== H 다시 켬 — 저장된 화면이 대화 화면(VERIFY 지적 2)")
+        ctx = br.new_context(viewport={"width": 1400, "height": 900})
+        ctx.clock.install(time=T0)
+        ctx.clock.pause_at(datetime(2026, 11, 17, 10, 0, 1, tzinfo=timezone.utc))
+        pg = ctx.new_page()
+        errs = []
+        pg.on("pageerror", lambda e: errs.append(str(e)[:200]))
+        pg.add_init_script(shim)
+        pg.add_init_script(CHAT_SHIM)
+        pg.add_init_script("""localStorage.setItem('cys-view', JSON.stringify({ v: 1, id: 'chat', decidedBy: 'user' }))""")
+        pg.goto(url)
+        pg.clock.run_for(9_000)
+        pg.evaluate(f"() => {{ window.__SEATS.push({seat(BASE, 1, 'master')}); }}")
+        pg.clock.run_for(6_000)
+        st = pg.evaluate("""() => ({ host: document.getElementById('view-host').hidden, body: getComputedStyle(document.getElementById('body-row')).display,
+            cvVisible: !!document.querySelector('.cv') && document.querySelector('.cv').offsetParent !== null,
+            pressed: [...document.querySelectorAll('#view-switch button')].map((b) => [b.textContent, b.getAttribute('aria-pressed')]) })""")
+        check(st["host"] is False and st["body"] == "none" and st["cvVisible"], f"저장 화면(대화) 그대로 보임 · 작업 화면 숨김 {st}")
+        check(st["pressed"] == [["대화 화면", "true"], ["작업 화면", "false"]], f"단추 눌림 = 대화 {st['pressed']}")
+        say(pg, "안녕")
+        check(writes(pg) == 1, f"다시 켠 대화 화면에서 바로 보내기 = 쓰기 1 ({writes(pg)})")
+        check(not errs, f"페이지 오류 0 {errs[:2]}")
         ctx.close()
 
         print("== G 경합 기록 — 보내는 중 승인 창(대역 시각 주입)")

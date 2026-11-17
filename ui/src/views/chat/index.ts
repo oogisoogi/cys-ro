@@ -4,7 +4,7 @@
 // 최소 계약 4칸 = [data-min=confirms|lastSendStep|masterHealth|errors] · 화면 바꾸기는 공통 자리(#view-switch).
 
 import type { ViewContext, ViewInstance, ViewModule } from "../contract";
-import { errorCount, HEALTH_LABEL, lastSendStep, POLL_MS, RESTORED, type ChatCore, type ChatState } from "../core";
+import { errorCount, HEALTH_LABEL, lastSendStep, needsClick, POLL_MS, type ChatCore, type ChatState } from "../core";
 import { canRetry, STEP_LABEL, type Msg } from "../judge/msgstep";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -83,12 +83,12 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
       meta.dataset.step = m.step;
       li.append(meta);
       if (m.note) li.append(el("div", "cv-note", m.note));
-      if (m.step === "held" && m.code === RESTORED) {
+      if (needsClick(m)) {
         const b = el("button", "cv-retry cv-confirm", "이 말 보내기");
         b.type = "button";
         b.addEventListener("click", (e) => {
-          if (!e.isTrusted) return; // 저장소에서 읽은 말은 사람의 신뢰 클릭으로만(자동 제출 0)
-          void act.confirmRestored(m.id);
+          if (!e.isTrusted) return; // 복원·10분 넘은 말은 사람의 신뢰 클릭으로만(자동 제출 0)
+          void act.confirmHeld(m.id);
         });
         li.append(b);
       }

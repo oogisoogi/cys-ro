@@ -10,20 +10,26 @@ def run():
     r = subprocess.run(["bun","test","src/views/judge/judge.test.ts","src/views/core.test.ts"],cwd=ui,capture_output=True,text=True)
     m = re.search(r"(\d+) fail", r.stdout+r.stderr)
     return int(m.group(1)) if m else -1
+def run_core():
+    r = subprocess.run(["bun","test","src/views/core.test.ts"],cwd=ui,capture_output=True,text=True)
+    m = re.search(r"(\d+) fail", r.stdout+r.stderr)
+    return int(m.group(1)) if m else -1
 for l in lines:
     gate.write_text(src.replace(l, "  // MUTANT " + l.strip(), 1))
     try:
-        res.append((l.strip()[:90], run()))
+        res.append((l.strip()[:90] + f"  [core 시험만 붉음={run_core()}]", run()))
     finally:
         gate.write_text(src)
 core = ui/"src/views/core.ts"
 csrc = core.read_text()
 muts = [
+  ("core: 새 말이 붙잡은 앞 말 뒤에 줄 서지 않음(VERIFY 지적 1)", "const behind = this.writing || this.s.msgs.some(autoHeld);", "const behind = this.writing;"),
+  ("core: 10분 넘은 말도 자동 제출(markStale 무력화)", "    if (!this.s.msgs.some((m) => autoHeld(m) && now - m.createdAt > HELD_MAX_AGE_MS)) return;", "    return;"),
   ("core: 쓰기 직전 관측 나이 재검사 제거", "      if (this.d.now() - fresh.obsAt > OBS_MAX_MS) {", "      if (false) {"),
   ("core: 관측 유효시간 검사 제거", "const stale = this.d.now() - t0 > OBS_MAX_MS;", "const stale = false;"),
   ("core: 세션 소비 집합 대신 빈 집합", "applyRecords(this.s.msgs, recs, this.consumed)", "applyRecords(this.s.msgs, recs, new Set())"),
   ("core: 복원 말 내부 id 대신 저장소 id", "msgs.push({ id: `r${msgs.length + 1}`, text: x.text", "msgs.push({ id: String((it as { id?: unknown }).id), text: x.text"),
-  ("core: 복원 말 자동 제출 허용(RESTORED 거름 제거)", "m.step === \"held\" && m.code !== RESTORED && (m.notBefore", "m.step === \"held\" && (m.notBefore"),
+  ("core: 복원 말 자동 제출 허용(RESTORED 거름 제거)", "return m.step === \"held\" && (m.code === RESTORED || m.code === STALE);", "return m.step === \"held\" && m.code === STALE;"),
   ("core: 보내는 중 영속 실패해도 씀", "notBefore: undefined })) {", "notBefore: undefined }) && false) {"),
   ("core: reset 무시", "        if (r.reset === true) {", "        if (false) {"),
   ("core: 문턱 거부 분기 제거", "      if (!g.ok) {\n", "      if (false) {\n"),

@@ -22,16 +22,24 @@ const CODE_APPROVAL_SCREEN: &str = cys::ERR_APPROVAL_SCREEN;
 const CODE_WRITE_OUTCOME_UNKNOWN: &str = cys::ERR_WRITE_OUTCOME_UNKNOWN;
 /// 데몬이 **쓰기 전에** 거부했음이 코드로 보장되는 오류 코드(handlers.rs `surface.send_text` 분기 · 거부 = 바이트 0).
 /// 이 목록 밖 코드·코드 없음·꼴이 이상한 응답은 「쓰기 0」의 근거가 아니므로 `uncertain`(다시 보내기 금지)으로 접는다(codex 1R major).
-/// 근거(이 가지 src/bin/cysd/handlers.rs `"surface.send_text"` 분기 7543~8377 · 쓰기 = try_write/hand_off_direct_job ≈8240 · codex 4R 요청으로 줄 명시):
+/// 근거(이 가지 src/bin/cysd/handlers.rs `"surface.send_text"` 분기 7543~8377 · codex 4R 요청으로 줄 명시 · 독립 검증 VERIFY 지적 4 로 정정):
+/// - 사람 표지 요청(`human:true` · `machine_origin:false`)은 `direct_agent_intent`(:3816~3839)가 첫 줄 :3824 에서 None → 에이전트 작업 길이 아니다.
+///   쓰기 인계 = **`try_write` 직접(:8248)** · 넘기는 것 = `WriteReq::Inject{cr_delay_ms:400, clear_first:true, guard:None}`(:3773~3785).
+/// - 그래서 응답 `sent:true` 는 「썼다」가 아니라 **「writer 줄에 넣었다」**(:8248 뒤 :8370) — 바이트는 그 뒤 ≈0.74초에 걸쳐 나간다(VM 증거:
+///   응답 2.95ms · 쓰기 737.8ms). writer 단계에서 생긴 일은 호출자에게 돌아오지 않는다 → 화면은 `written` 을 「전달 확인 중」으로만 칠한다.
+/// - 그 자리 오류 = `try_write`(:386~402) 의 `write_stalled`·`write_failed` 둘뿐(목록 밖 → `uncertain`).
+/// - 아래 목록 가운데 이 요청 꼴에서 **닿지 않는** 것(죽은 갈래 · 다른 요청 꼴 대비로 둠): `invalid_params` :8112(에이전트 작업 길) ·
+///   `journal_unavailable` :8303(에이전트 작업 길) · `typing_guard` :7878(사람 아닌 쓰기). 분류의 `write_outcome_unknown` · `queued_hold`(정비 보류
+///   :7608 `if !human` 전용)도 같다.
 const PRE_WRITE_REFUSALS: &[&str] = &[
-    "invalid_params",          // :7545·:7548 본문·좌석 결측 · :7659 clear_first+queued · :8112 UTF-8 아님(계획 단계 · 쓰기 전)
+    "invalid_params",          // :7545·:7548 본문·좌석 결측 · :7659 clear_first+queued · (:8112 UTF-8 = 에이전트 작업 길 · 이 요청 꼴은 안 닿음)
     "not_found",               // :7553 좌석 없음
     "target_changed",          // :7558 「nothing was typed」
     "process_exited",          // :7566 좌석 프로세스 끝남
     "acl_denied",              // :7599 ACL 거부(reject_send · last_human_input 도 안 찍음)
     "clear_first_unsupported", // :7667 launch-agent 등록 좌석 아님
-    cys::ERR_TYPING_GUARD,        // :7878 타이핑 가드 · :7939~7970·:8202~8229 초안 게이트(draft_gate_denied_response :2983 → 이 코드)
-    cys::ERR_JOURNAL_UNAVAILABLE, // :8303 journal_barrier_verdict Refused = 「zero bytes written … nothing was typed」(:4704~4706)
+    cys::ERR_TYPING_GUARD,        // :7957~7962·:8207~8218 초안 게이트(draft_gate_denied_response :2983 → 이 코드 · 토큰을 못 읽은 좌석 안 앱일 때만 :7911~7912) · (:7878 = 사람 아닌 쓰기)
+    cys::ERR_JOURNAL_UNAVAILABLE, // (:8303 에이전트 작업 길 · 이 요청 꼴은 안 닿음) 「zero bytes written … nothing was typed」(:4704~4706)
 ];
 /// 세션 기록 한 번에 읽는 상한(바이트) — 넘으면 다음 호출이 `next_offset` 부터 잇는다(잘림 없음 · 레코드 경계까지만 소비).
 pub(crate) const TRANSCRIPT_READ_MAX: u64 = 2 * 1024 * 1024;

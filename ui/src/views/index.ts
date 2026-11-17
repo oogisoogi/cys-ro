@@ -71,6 +71,14 @@ export function bootViews(deps: BootDeps): { core: ChatCore; registry: Registry<
     setInterval: (fn, ms) => setInterval(fn, ms),
     clearInterval: (h) => clearInterval(h as ReturnType<typeof setInterval>),
     paint: () => paintSwitch(switchHost, registry),
+    // 자리 표시는 「켜진 화면」 하나로 정한다(VERIFY 지적 2): 시작 때 저장된 화면이 대화 화면이면 작업 화면이 한 번도 뜨지 않아
+    //   작업 화면 어댑터의 내리기(자리 풀기)가 불리지 않았다 → 대화 화면이 숨은 자리 안에 떠서 조회만 돌았다. 작업 화면 밖 화면이
+    //   켜지면 여기서 자리를 보이고 작업 화면을 숨긴다(작업 화면 자신은 어댑터가 반대로 한다 · 같은 전환 안 · 두 화면 동시 노출 0).
+    onShown: (id) => {
+      if (id === "work") return;
+      host.hidden = false;
+      bodyRow.style.display = "none";
+    },
   });
   let raw: string | null = null;
   try {

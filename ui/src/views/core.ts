@@ -24,8 +24,20 @@ export const POLL_MS = 3_000;
 export const OBS_MAX_MS = 500;
 /** 앱을 다시 켜기 전에 붙잡아 둔(저장소에서 읽은) 말 — 자동으로 보내지 않는다. */
 export const RESTORED = "restored";
-/** 앞 말을 쓰는 중에 받은 말의 붙잡음 표지(앞 말이 끝나면 바로 문턱에 건다). */
+/** 붙잡은 지 이만큼 지난 말은 자동으로 보내지 않는다 — 사람 클릭 1회로만(master 결정 11-17 23:2x · 10분 · VERIFY 지적 5). */
+export const HELD_MAX_AGE_MS = 600_000;
+export const STALE = "stale";
+/** 앞 말(쓰는 중이거나 붙잡힌 말) 뒤에 줄 선 말의 표지 — 오래된 것부터 1건씩(설계 §2-5 · VERIFY 지적 1). */
 const AFTER_PREV = "after_prev";
+
+/** 사람이 눌러야만 나가는 붙잡은 말(다시 켠 뒤 복원 · 10분 넘음). */
+export function needsClick(m: Msg): boolean {
+  return m.step === "held" && (m.code === RESTORED || m.code === STALE);
+}
+/** 문턱이 열리면 자동으로 나갈 붙잡은 말. */
+function autoHeld(m: Msg): boolean {
+  return m.step === "held" && !needsClick(m);
+}
 /** 데몬이 승인 창으로 거부한 말을 다시 문턱에 거는 최소 간격(설계 목표값 · 창이 닫히면 문턱 재통과 때 1회). */
 export const HELD_REFUSED_BACKOFF_MS = 15_000;
 /** 세션 기록 한 번 읽기에서 이어 읽는 최대 횟수(2 MiB × 이 수). */
@@ -76,7 +88,8 @@ export interface ChatState {
 export function healthOf(m: MasterRow | null | undefined): Health {
   if (m === undefined) return "unknown";
   if (m === null) return "none";
-  if (m.agent_alive !== true) return "off";
+  if (m.agent_alive === false) return "off";
+  if (m.agent_alive !== true) return "unknown"; // null = 등록 없는 좌석 등 · 「꺼져 있어요」라 말하지 않음(VERIFY 지적 11)
   if (m.gate_pending !== null && m.gate_pending !== undefined) return "gate";
   return m.working ? "busy" : "ready";
 }
@@ -260,21 +273,43 @@ export class ChatCore {
   }
 
   private async accept(text: string): Promise<void> {
-    const busy = this.writing; // 앞 말을 쓰는 중 — 이 말은 붙잡았다가 앞 말이 끝나면 같은 문턱으로(겹쳐 쓰기 0 · 말 버림 0)
-    const msg: Msg = busy
+    // 앞 말을 쓰는 중이거나 **앞서 붙잡힌(자동으로 나갈) 말이 있으면** 이 말은 그 뒤에 줄 선다 — 사람 지시의 앞뒤가 뒤집히지 않게(VERIFY 지적 1).
+    const behind = this.writing || this.s.msgs.some(autoHeld);
+    const msg: Msg = behind
       ? { id: `m${this.d.now()}-${++this.seq}`, text, createdAt: this.d.now(), sentAt: null, step: "held", code: AFTER_PREV, note: "앞 말을 보낸 뒤 보낼게요.", thread: [], replies: [] }
       : { id: `m${this.d.now()}-${++this.seq}`, text, createdAt: this.d.now(), sentAt: null, step: "sending", thread: [], replies: [] };
     this.s = { ...this.s, draft: "", notice: null };
     this.putMsgs([...this.s.msgs, msg]);
-    if (!busy) await this.deliver(msg.id);
+    if (!behind) await this.deliver(msg.id);
+    else if (!this.writing) await this.pump();
   }
 
-  /** 앱을 다시 켜기 전에 붙잡아 둔 말 — 사람이 「이 말 보내기」를 눌렀을 때만(다듬기부터 다시 · 새 번호). 막히면 그 말은 그대로 둔다. */
-  async confirmRestored(id: string): Promise<void> {
+  /** 자동으로 나갈 붙잡은 말 가운데 **가장 오래된 것 하나만** 문턱에 건다(그 말이 쉼 중이면 아무것도 안 함 — 뒤 말이 앞지르지 않게). */
+  private async pump(): Promise<void> {
+    if (this.writing) return;
+    this.markStale();
+    const first = this.s.msgs.find(autoHeld);
+    if (!first || (first.notBefore !== undefined && this.d.now() < first.notBefore)) return;
+    await this.deliver(first.id);
+  }
+
+  /** 붙잡은 지 10분 넘은 자동 말 → 사람 클릭 대기로(자동 제출 0). */
+  private markStale(): void {
+    const now = this.d.now();
+    if (!this.s.msgs.some((m) => autoHeld(m) && now - m.createdAt > HELD_MAX_AGE_MS)) return;
+    this.putMsgs(
+      this.s.msgs.map((m) =>
+        autoHeld(m) && now - m.createdAt > HELD_MAX_AGE_MS ? { ...m, code: STALE, notBefore: undefined, note: "오래 기다린 말이에요 · 보낼까요? 「이 말 보내기」를 누르면 지금 보냅니다." } : m,
+      ),
+    );
+  }
+
+  /** 사람 클릭이 필요한 붙잡은 말(다시 켠 뒤 복원 · 10분 넘음) — 「이 말 보내기」를 눌렀을 때만(다듬기부터 다시 · 새 번호 · 지금 시각). 막히면 그 말은 그대로 둔다. */
+  async confirmHeld(id: string): Promise<void> {
     const hits = this.s.msgs.filter((x) => x.id === id);
     if (hits.length !== 1) return; // 같은 id 가 둘 이상이면 고르지 않는다
     const m = hits[0];
-    if (m.step !== "held" || m.code !== RESTORED) return;
+    if (!needsClick(m)) return;
     // 이 말을 **대체**하는 동작이라 붙잡음 상한에 자기 자신을 세지 않는다(codex 2R major — 상한 20 교착). 다듬기는 그대로.
     const out = composeOutbound(m.text);
     if (!out.ok) {
@@ -315,6 +350,11 @@ export class ChatCore {
       const m = fresh.master as MasterRow;
       const msg = this.s.msgs.find((x) => x.id === id);
       if (!msg) return;
+      if (this.d.now() - msg.createdAt > HELD_MAX_AGE_MS) {
+        // 10분 넘게 기다린 말은 여기서도 쓰지 않는다(사람 클릭으로 새 말이 되어야 함).
+        this.patchMsg(id, { step: "held", code: STALE, notBefore: undefined, note: "오래 기다린 말이에요 · 보낼까요? 「이 말 보내기」를 누르면 지금 보냅니다." });
+        return;
+      }
       const sentAt = this.d.now();
       // ★쓰기 전에 「보내는 중」을 먼저 영속한다 — 저장소에서 이 말이 붙잡음 목록에서 빠진 것이 확인돼야 쓴다(codex 1R blocking:
       //   지우기 실패 + 불명 결과면 다시 켤 때 같은 말이 또 나가던 길). 저장 실패 = 쓰기 0 · 붙잡음 그대로.
@@ -350,8 +390,8 @@ export class ChatCore {
     } finally {
       this.writing = false;
     }
-    const next = this.s.msgs.find((x) => x.step === "held" && x.code === AFTER_PREV);
-    if (next) await this.deliver(next.id); // 앞 말이 끝난 뒤 1건 — 다시 재조회·문턱(같은 말 두 번 0)
+    // 이 말이 나갔으면(붙잡히지 않았으면) 다음 차례 1건 — 붙잡혔으면 멈춘다(뒤 말이 앞지르지 않게 · 다음은 poll 이 오래된 것부터).
+    if (this.s.msgs.find((x) => x.id === id)?.step !== "held") await this.pump();
   }
 
   /** 대화 화면이 켜져 있을 때 POLL_MS 마다. 붙잡은 말이 있고 문턱이 열렸으면 오래된 것 1건을 보낸다(그 안에서 다시 재조회). */
@@ -368,8 +408,9 @@ export class ChatCore {
       if (awaiting && prevWorking !== null && prevWorking !== this.lastWorking) void this.readTranscript(); // 활동이 바뀐 틱 1회
       else if (this.offset === null && fresh.master) void this.readTranscript(); // 마스터를 안 첫 틱에 세션 시작점을 잡아 둔다(보내기 길에서 그 RPC 를 빼려고)
       const now = this.d.now();
-      const held = this.s.msgs.find((m) => m.step === "held" && m.code !== RESTORED && (m.notBefore === undefined || now >= m.notBefore));
-      if (held && this.gateOf(fresh).ok) heldId = held.id;
+      this.markStale();
+      const held = this.s.msgs.find(autoHeld); // 가장 오래된 자동 말 하나 — 쉼 중이면 이번 틱은 아무것도 안 보냄
+      if (held && (held.notBefore === undefined || now >= held.notBefore) && this.gateOf(fresh).ok) heldId = held.id;
     } finally {
       this.polling = false;
     }

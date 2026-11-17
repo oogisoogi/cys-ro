@@ -1,7 +1,7 @@
 // (cysr-ui-slice1) 공통층 보내기 길 시험 — 대역 데몬(invoke 기록기) · 가짜 시계·타이머.
 // 판정 단위 = 「PTY 쓰기 = chat_send 호출 수」(원자 제출 1요청 = 쓰기 1 · 데몬 거부는 바이트 0).
 import { describe, it, expect } from "bun:test";
-import { ChatCore, HELD_REFUSED_BACKOFF_MS, HOLD_KEY, HOLD_MAX, healthOf, LOG_MAX, OBS_MAX_MS, RESTORED, type Deps } from "./core";
+import { ChatCore, HELD_MAX_AGE_MS, HELD_REFUSED_BACKOFF_MS, HOLD_KEY, HOLD_MAX, healthOf, LOG_MAX, OBS_MAX_MS, RESTORED, STALE, type Deps } from "./core";
 import { READ_AFTER_MS } from "./judge/msgstep";
 
 interface Call {
@@ -134,30 +134,93 @@ describe("문턱 실패 → 쓰기 0 · 붙잡음(조건 하나씩)", () => {
     ["feed 조회 실패", { feedFail: true }],
     ["org.status 조회 실패", { orgFail: true }],
     ["마스터 없음", { master: null }],
-    ["에이전트 죽음", { master: { surface_id: 5, role: "master", agent_alive: false, pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false } }],
-    ["관문", { master: { surface_id: 5, role: "master", agent_alive: true, pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false, gate_pending: { k: 1 } } }],
+    ["에이전트 죽음", { master: { surface_id: 5, role: "master", agent_alive: false, pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false, human_idle_secs: null } }],
+    ["관문", { master: { surface_id: 5, role: "master", agent_alive: true, pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false, gate_pending: { k: 1 }, human_idle_secs: null } }],
+    ["입력줄 칸 모름(human_idle_secs 칸 없음)", { master: { surface_id: 5, role: "master", agent_alive: true, pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false, gate_pending: null } }],
     ["다른 길 사람 입력 3초 전", { master: { surface_id: 5, role: "master", agent_alive: true, pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false, human_idle_secs: 3 } }],
-    ["바쁨(U25 측정 대기)", { master: { surface_id: 5, role: "master", agent_alive: true, pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false, working: true } }],
+    ["바쁨(U25 측정 대기)", { master: { surface_id: 5, role: "master", agent_alive: true, pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false, human_idle_secs: null, working: true } }],
   ];
+  const expectCode: Record<string, string> = {
+    "★수용 1 사람 초안 12바이트": "draft",
+    "★수용 2 feed 승인 대기": "approval",
+    "feed 조회 실패": "approval_unknown",
+    "org.status 조회 실패": "status_unknown",
+    "마스터 없음": "no_master",
+    "에이전트 죽음": "agent_dead",
+    "관문": "gate_pending",
+    "입력줄 칸 모름(human_idle_secs 칸 없음)": "input_unknown",
+    "다른 길 사람 입력 3초 전": "human_recent",
+    "바쁨(U25 측정 대기)": "busy",
+  };
   for (const [name, o] of cases)
     it(name, async () => {
       const h = harness(o);
       await h.core.send("안녕");
       expect(h.writes()).toHaveLength(0);
       expect(h.core.state.msgs[0].step).toBe("held");
+      expect(h.core.state.msgs[0].code).toBe(expectCode[name]); // 견본이 이름과 같은 갈래에서 붙잡히는지(VERIFY 지적 3)
       expect(JSON.parse(h.mem.get(HOLD_KEY) as string).items[0].text).toBe("안녕"); // 붙잡은 말만 원문 보관
     });
-  it("붙잡은 말 = 문턱이 열린 틱에 오래된 것 1건씩 · 보내면 저장소에서 지움", async () => {
+  it("붙잡은 말 = 문턱이 열리면 오래된 것부터(앞 말이 나간 뒤 다음) · 둘째 말은 첫 말 뒤에 줄 서서 문턱을 따로 안 두드림 · 보내면 저장소에서 지움", async () => {
     const h = harness({ approvals: [5] });
     await h.core.send("하나");
     await h.core.send("둘");
     expect(h.writes()).toHaveLength(0);
+    expect(h.core.state.msgs.map((m) => m.code)).toEqual(["approval", "after_prev"]);
     h.st.approvals = [];
-    await h.core.poll();
-    expect(h.writes().map((c) => c.args?.text)).toEqual(["하나"]);
     await h.core.poll();
     expect(h.writes().map((c) => c.args?.text)).toEqual(["하나", "둘"]);
     expect(h.mem.has(HOLD_KEY)).toBe(false);
+  });
+  it("★VERIFY 지적 1 — A 붙잡힘 → B 입력(문턱 열림) → 마스터 수신 순서 A, B", async () => {
+    const h = harness({ approvals: [5] });
+    await h.core.send("A 먼저 친 말");
+    h.st.approvals = []; // 문턱이 열린 뒤 B 를 친다
+    await h.core.send("B 나중에 친 말");
+    await h.core.poll();
+    expect(h.writes().map((c) => c.args?.text)).toEqual(["A 먼저 친 말", "B 나중에 친 말"]);
+  });
+  it("앞 말이 쉼 중(데몬 거부 뒤 15초)이면 뒤 말도 앞지르지 않음", async () => {
+    let n = 0;
+    const h = harness({ sendOutcome: () => (++n === 1 ? { outcome: "held", code: "approval_screen" } : { outcome: "written", result: { sent: true } }) });
+    await h.core.send("A");
+    await h.core.send("B");
+    await h.core.poll();
+    expect(h.writes().map((c) => c.args?.text)).toEqual(["A"]);
+    h.setNow(h.getNow() + HELD_REFUSED_BACKOFF_MS);
+    await h.core.poll();
+    expect(h.writes().map((c) => c.args?.text)).toEqual(["A", "A", "B"]);
+  });
+  it("★master 결정 — 붙잡은 지 10분 넘은 말은 자동 제출 0 · 「오래 기다린 말이에요 · 보낼까요?」 · 클릭 1회로만", async () => {
+    const h = harness({ approvals: [5] });
+    await h.core.send("그 파일 지워 줘");
+    h.setNow(h.getNow() + HELD_MAX_AGE_MS + 1);
+    h.st.approvals = [];
+    for (let i = 0; i < 5; i++) await h.core.poll();
+    expect(h.writes()).toHaveLength(0);
+    expect(h.core.state.msgs[0].code).toBe(STALE);
+    expect(h.core.state.msgs[0].note).toMatch(/오래 기다린 말이에요 · 보낼까요\?/);
+    await h.core.confirmHeld(h.core.state.msgs[0].id);
+    expect(h.writes().map((c) => c.args?.text)).toEqual(["그 파일 지워 줘"]);
+  });
+  it("문턱이 닫혀 있는 동안에도 10분이 지나면 「보낼까요?」로 바뀜(문턱이 열리는 순간 자동으로 나가는 일 0)", async () => {
+    const h = harness({ approvals: [5] });
+    await h.core.send("그 파일 지워 줘");
+    h.setNow(h.getNow() + HELD_MAX_AGE_MS + 1);
+    await h.core.poll(); // 아직 승인 대기 — 쓰기 시도 없음
+    expect(h.core.state.msgs[0].code).toBe(STALE);
+    h.st.approvals = [];
+    await h.core.poll();
+    expect(h.writes()).toHaveLength(0);
+  });
+  it("10분 넘은 앞 말이 클릭 대기면 새 말은 그 뒤에 묶이지 않고 나감(사람이 안 누를 수도 있는 말이 막지 않게)", async () => {
+    const h = harness({ approvals: [5] });
+    await h.core.send("옛 말");
+    h.setNow(h.getNow() + HELD_MAX_AGE_MS + 1);
+    h.st.approvals = [];
+    await h.core.poll();
+    await h.core.send("새 말");
+    expect(h.writes().map((c) => c.args?.text)).toEqual(["새 말"]);
   });
   it("앱을 다시 켜도 붙잡은 말이 남는다(cys-chat-hold) · ★자동 제출 0 — 사람이 「이 말 보내기」를 눌러야 다듬기부터 다시(codex 1R)", async () => {
     const h = harness({ master: null });
@@ -167,7 +230,7 @@ describe("문턱 실패 → 쓰기 0 · 붙잡음(조건 하나씩)", () => {
     expect(again.state.msgs.map((m) => [m.text, m.step, m.code])).toEqual([["남아라", "held", RESTORED]]);
     for (let i = 0; i < 5; i++) await again.poll();
     expect(h.writes()).toHaveLength(0);
-    await again.confirmRestored(again.state.msgs[0].id);
+    await again.confirmHeld(again.state.msgs[0].id);
     expect(h.writes().map((c) => c.args?.text)).toEqual(["남아라"]);
   });
   it("저장소에서 읽은 `/clear`(변조·손상) = 자동 제출 0 · 눌러도 다듬기에서 막힘", async () => {
@@ -175,7 +238,7 @@ describe("문턱 실패 → 쓰기 0 · 붙잡음(조건 하나씩)", () => {
     h.mem.set(HOLD_KEY, JSON.stringify({ v: 1, items: [{ id: "x1", text: "/clear", at: 1 }] }));
     const c = new ChatCore(h.deps);
     for (let i = 0; i < 3; i++) await c.poll();
-    await c.confirmRestored(c.state.msgs[0].id);
+    await c.confirmHeld(c.state.msgs[0].id);
     expect(h.writes()).toHaveLength(0);
     expect(c.state.notice).toMatch(/명령/);
   });
@@ -243,7 +306,7 @@ describe("codex 2R — 마지막 관측 · 복원 id · 상한 교착 · 단회 
     h.mem.set(HOLD_KEY, JSON.stringify({ v: 1, items: Array.from({ length: HOLD_MAX }, (_, i) => ({ id: "x", text: `말${i}`, at: i })) }));
     const c = new ChatCore(h.deps);
     expect(c.state.msgs).toHaveLength(HOLD_MAX);
-    await c.confirmRestored(c.state.msgs[0].id);
+    await c.confirmHeld(c.state.msgs[0].id);
     expect(h.writes().map((x) => x.args?.text)).toEqual(["말0"]);
   });
   it("소비한 uuid 는 말 목록과 무관하게 세션 동안 한 번만 — 같은 레코드를 다시 받아도 다른 같은 글 말에 배정 0", async () => {
@@ -437,5 +500,8 @@ describe("상태 표시", () => {
   it("healthOf", () => {
     expect(healthOf(undefined)).toBe("unknown");
     expect(healthOf(null)).toBe("none");
+    const row = { surface_id: 1, exited: false, pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false, gate_pending: null, human_idle_secs: null, working: false };
+    expect(healthOf({ ...row, agent_alive: false })).toBe("off");
+    expect(healthOf({ ...row, agent_alive: null })).toBe("unknown"); // 등록 없는 좌석 = 「꺼져 있어요」 아님(VERIFY 지적 11)
   });
 });

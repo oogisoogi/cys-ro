@@ -124,17 +124,17 @@ describe("registry — 수명 계약", () => {
 });
 
 describe("정적 핀 — 순수 판정 · 배선", () => {
-  const dir = new URL("./judge/", import.meta.url).pathname;
+  const dir = new URL("./judge/", import.meta.url); // URL 그대로 fs 에(윈도 「/D:/…」 pathname ENOENT 전례 · VERIFY 지적 8 · clipath.test repoUrl 꼴)
   it("judge/*.ts 에 document·window·localStorage·__TAURI__·Date.now·setTimeout 0(시험 파일 제외)", () => {
     const files = readdirSync(dir, { withFileTypes: true }).map((d) => d.name).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"));
     expect(files.length).toBeGreaterThanOrEqual(4);
     for (const f of files) {
-      const src = readFileSync(dir + f, "utf8").replace(/\/\/.*$/gm, "");
+      const src = readFileSync(new URL(f, dir), "utf8").replace(/\/\/.*$/gm, "");
       for (const w of ["document", "window", "localStorage", "__TAURI__", "Date.now", "setTimeout"]) expect(`${f}:${src.includes(w)}`).toBe(`${f}:false`);
     }
   });
   it("main.ts = import 1 + bootViews 1회 · layoutLoaded = true 바로 다음 줄", () => {
-    const src = readFileSync(new URL("../main.ts", import.meta.url).pathname, "utf8");
+    const src = readFileSync(new URL("../main.ts", import.meta.url), "utf8");
     expect(src.split('from "./views/index"').length - 1).toBe(1);
     expect(src.split("bootViews(").length - 1).toBe(1);
     const lines = src.split("\n");
@@ -142,27 +142,27 @@ describe("정적 핀 — 순수 판정 · 배선", () => {
     expect(lines[i - 1].trim()).toBe("layoutLoaded = true;");
   });
   it("chat_send 호출처 = core.ts 의 deliver 1곳 · kind human 고정", () => {
-    const core = readFileSync(new URL("./core.ts", import.meta.url).pathname, "utf8");
+    const core = readFileSync(new URL("./core.ts", import.meta.url), "utf8");
     expect(core.split('"chat_send"').length - 1).toBe(1);
     expect(core).toContain('kind: "human"');
-    const main = readFileSync(new URL("../main.ts", import.meta.url).pathname, "utf8");
+    const main = readFileSync(new URL("../main.ts", import.meta.url), "utf8");
     expect(main.includes("chat_send")).toBe(false);
   });
   it("Tauri: viewcore 등록 · 원자 제출 매개변수(refuse_on_approval·clear_first·human) · send_input 무변경 사용 0", () => {
-    const rs = readFileSync(new URL("../../../src-tauri/src/viewcore.rs", import.meta.url).pathname, "utf8");
+    const rs = readFileSync(new URL("../../../src-tauri/src/viewcore.rs", import.meta.url), "utf8");
     for (const k of ['"refuse_on_approval": true', '"clear_first": true', '"human": true', '"machine_origin": false', '"queued": false']) expect(rs).toContain(k);
     expect(/send_input\s*\(/.test(rs)).toBe(false); // 기존 send_input 은 refuse_on_approval 을 싣지 않는다(0.5 M2 대조 = R1)
-    const main = readFileSync(new URL("../../../src-tauri/src/main.rs", import.meta.url).pathname, "utf8");
+    const main = readFileSync(new URL("../../../src-tauri/src/main.rs", import.meta.url), "utf8");
     expect(main).toContain("viewcore::chat_send,");
     expect(main).toContain("viewcore::chat_transcript,");
     expect(main).toContain("mod viewcore;");
   });
   it("index.html 자리 2개 · views.css 연결 · build.sh 복사 · 전환 단추는 상단 단추 켬끔 목록 밖(div 안)", () => {
-    const html = readFileSync(new URL("../../index.html", import.meta.url).pathname, "utf8");
+    const html = readFileSync(new URL("../../index.html", import.meta.url), "utf8");
     expect(html).toContain('<div id="view-switch"></div>');
     expect(html).toContain('<div id="view-host" hidden></div>');
     expect(html).toContain('href="./views.css"');
-    const sh = readFileSync(new URL("../../build.sh", import.meta.url).pathname, "utf8");
+    const sh = readFileSync(new URL("../../build.sh", import.meta.url), "utf8");
     expect(sh).toContain("cp src/views/views.css dist/views.css");
   });
 });

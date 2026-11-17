@@ -7196,7 +7196,9 @@ mod spawn_policy_tests {
         let mut code_start = vec![true; lines.len().max(1)];
         let mut braces: Vec<(usize, bool)> = Vec::new();
         let (mut i, mut line) = (0usize, 0usize);
-        let ident = |ch: char| ch.is_alphanumeric() || ch == '_';
+        // ★(codex 9R major) 식별자 글자 = ASCII 글자·숫자·`_` ∪ **공백 아닌 비ASCII 전부**(XID_Continue 의 상위 집합 — 결합 문자 `U+0301` 등).
+        //   접미사를 끝까지 소비하고, raw 문자열 시작 판정(앞 글자가 식별자 아님)도 같은 규칙. 넓게 잡는 쪽이 안전: 코드 위치의 비ASCII 는 식별자뿐.
+        let ident = |ch: char| ch.is_ascii_alphanumeric() || ch == '_' || (!ch.is_ascii() && !ch.is_whitespace());
         // 코드 밖(주석·문자열) 구간에서 줄이 바뀌면 그 줄의 시작은 코드가 아니다.
         let mut newline_in = |line: &mut usize| {
             *line += 1;
@@ -7443,6 +7445,12 @@ mod spawn_policy_tests {
         );
         //   접미사를 소비하면 짝이 진짜 끝(여덟 칸 `}`)에 떨어져 정형 밖 닫힘 = Err(조용히 삼키지 않음).
         assert!(sfx.is_err(), "리터럴 접미사 뒤 운영 모듈을 조용히 걷었다: {sfx:?}");
+        // codex 9R 반례: 결합 문자가 든 접미사(`a` + U+0301 + `r`).
+        let sfx2 = production_slice_checked(
+            "mod outer {\n    #[cfg(test)]\n    mod tests {\n        const _: &str = stringify!(\"\"a\u{301}r\"\\\"\");\n        }\n        \
+             mod production {\n            pub fn keep() {}\n            // \"\n    }\n}\n",
+        );
+        assert!(sfx2.is_err(), "결합 문자 접미사 뒤 운영 모듈을 조용히 걷었다: {sfx2:?}");
         assert!(tp.contains("keep_after") && tp.matches("Command::new").count() == 1 && !tp.contains("fn t<"),
                 "문자열·문자·주석·raw 문자열 속 중괄호에 짝이 흔들렸다: {tp}");
         // 실물에도 걸어 둔다 — 이 파일들의 프로덕션 앵커가 사라지면 핀이 헛도는 것이다.

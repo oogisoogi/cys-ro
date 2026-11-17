@@ -3633,8 +3633,6 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// 방식은 넓은 창이 잠깐 열리므로, **처음부터** 목표 mode 로 만든다.
 pub fn write_atomic_mode(path: &Path, bytes: &[u8], mode: Option<u32>) -> std::io::Result<()> {
     use std::io::Write;
-    // ★1.1.16(U03 · WJ1): 팩 적용 중이면 이 이름을 바꾸기 직전 배치 기록에 확정(그 밖 = 무동작 · 실패 = 쓰지 않음).
-    placement_announce(path, Placed::Bytes(bytes))?;
     let parent = path.parent().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent")
     })?;
@@ -3680,6 +3678,10 @@ pub fn write_atomic_mode(path: &Path, bytes: &[u8], mode: Option<u32>) -> std::i
     let res = (|| -> std::io::Result<()> {
         f.write_all(bytes)?;
         f.sync_all()?; // 파일 본문 fsync (rename 전)
+        // ★1.1.16(U03 · WJ1 · codex 4R): 팩 적용 중이면 최종 이름을 바꾸기(rename) **직전** 배치 기록에 이 바이트의 해시 + 놓일 실제 권한
+        //   (임시 파일의 권한 = rename 뒤 그 이름의 권한)을 한 줄로 확정한다(그 밖 = 무동작 · 실패 = 바꾸지 않음).
+        let placed_mode = f.metadata().ok().and_then(|m| file_mode_of(&m));
+        placement_announce(path, Placed::Bytes(bytes, placed_mode))?;
         std::fs::rename(&tmp, path)?; // 원자 교체
         Ok(())
     })();
@@ -3689,9 +3691,6 @@ pub fn write_atomic_mode(path: &Path, bytes: &[u8], mode: Option<u32>) -> std::i
             if let Ok(d) = std::fs::File::open(parent) {
                 let _ = d.sync_all();
             }
-            // ★1.1.16(codex 2R major): 팩 적용 중이면 쓴 뒤의 실제 권한도 배치 기록에 남긴다(권한 귀속 — 되돌림은 지금 권한이 이 적용이
-            //   남긴 권한일 때만 되돌린다). 기록 실패 = 귀속 불명 → 되돌림이 보수 쪽(권한 무접촉 + 보관 기록).
-            placement_record_mode(path);
             Ok(())
         }
         Err(e) => {
@@ -3812,7 +3811,8 @@ pub fn byte_backup_user(dir: &Path, rel: &str, src: &Path) -> Result<(), String>
         let _ = std::fs::remove_file(&tmp);
         format!("바이트 백업 판독 실패 {}: {e}", tmp.display())
     })?;
-    placement_announce(&dst, Placed::Bytes(&copied)).map_err(|e| {
+    let copied_mode = std::fs::metadata(&tmp).ok().and_then(|m| file_mode_of(&m));
+    placement_announce(&dst, Placed::Bytes(&copied, copied_mode)).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         format!("배치 기록 실패 {}: {e}", dst.display())
     })?;
@@ -5642,8 +5642,8 @@ fn set_exact_mode(path: &Path, mode: Option<u32>) -> std::io::Result<()> {
 /// 배치 기록에 적을 「놓을 것」.
 #[derive(Clone, Copy)]
 pub(crate) enum Placed<'a> {
-    /// 이 바이트를 놓는다.
-    Bytes(&'a [u8]),
+    /// 이 바이트를 놓는다(+ 놓인 뒤의 실제 권한 · codex 4R — 해시와 권한을 한 줄에 확정).
+    Bytes(&'a [u8], Option<u32>),
     /// 이름을 없앤다(삭제).
     Absent,
     /// ★codex 1R(major #4): 권한만 바꾼다(내용 무변경 · 셔뱅 chmod) — 되돌림이 그 권한을 이 적용의 것으로 안다.
@@ -5712,7 +5712,7 @@ pub(crate) fn placement_announce(path: &Path, what: Placed<'_>) -> std::io::Resu
         }
         let Some(rel) = pack_rel_of(&log.pack, path) else { return Ok(()) };
         let line = match what {
-            Placed::Bytes(bytes) => serde_json::json!({"rel": rel, "sha256": sha256_hex(bytes)}),
+            Placed::Bytes(bytes, mode) => serde_json::json!({"rel": rel, "sha256": sha256_hex(bytes), "placed_mode": mode}),
             Placed::Absent => serde_json::json!({"rel": rel, "sha256": null}),
             Placed::Mode(m) => serde_json::json!({"rel": rel, "mode_intent": m & 0o7777}),
         };
@@ -5831,7 +5831,8 @@ pub(crate) fn remove_file_placed(path: impl AsRef<Path>) -> std::io::Result<()> 
 
 #[derive(Debug, PartialEq)]
 enum Announced {
-    Sha(String),
+    /// 이 바이트(해시)를 놓았다 + 놓인 뒤의 권한(쓰기 직전 확정 · 없음 = 옛 줄·비유닉스).
+    Sha(String, Option<u32>),
     Absent,
     /// 쓰기·권한 바꿈 **성공 뒤** 그 이름의 실제 권한.
     Mode(u32),
@@ -5847,7 +5848,9 @@ fn read_placements(jdir: &Path) -> Result<std::collections::BTreeMap<String, Vec
         let rel = v.get("rel").and_then(|x| x.as_str()).ok_or_else(|| format!("{}: rel 없음", p.display()))?.to_string();
         let a = match (v.get("sha256"), v.get("mode")) {
             (Some(serde_json::Value::Null), _) => Announced::Absent,
-            (Some(serde_json::Value::String(h)), _) => Announced::Sha(h.clone()),
+            (Some(serde_json::Value::String(h)), _) => {
+                Announced::Sha(h.clone(), v.get("placed_mode").and_then(|m| m.as_u64()).map(|m| m as u32))
+            }
             (None, Some(m)) => Announced::Mode(m.as_u64().ok_or_else(|| format!("{}: mode 이상", p.display()))? as u32),
             (None, None) if v.get("mode_intent").is_some() => Announced::ModeIntent(
                 v["mode_intent"].as_u64().ok_or_else(|| format!("{}: mode_intent 이상", p.display()))? as u32,
@@ -6012,7 +6015,7 @@ fn rollback_row(
     let hit = placed.get(rel).is_some_and(|v| {
         v.iter().any(|a| match (a, live) {
             (Announced::Absent, Live::Absent) => true,
-            (Announced::Sha(h), Live::File(b)) => sha256_hex(b) == *h,
+            (Announced::Sha(h, _), Live::File(b)) => sha256_hex(b) == *h,
             _ => false,
         })
     });
@@ -6025,19 +6028,25 @@ fn rollback_row(
     }
 }
 
-/// ★codex 3R(major #2): 되돌림이 이 이름에 걸 권한 — 내용 되돌림 여부와 **독립**. 그 이름의 **마지막** 배치 기록이 지금 권한을 설명하면
-/// (마지막 = 권한 성공 줄이고 지금 권한과 같음 · 권한 의도 줄이고 지금 권한과 같음 · 내용 줄이고 그 뒤 권한 줄이 없음 = 쓰기와 권한 기록 사이에
-/// 끊김) 이 적용이 남긴 권한 → 기록된 적용 전 권한. 그 밖(지금 권한이 이 적용의 마지막 권한과 다름 = 끊긴 뒤 사용자 chmod) → 지금 권한 유지.
-/// 옛 저널(배치 기록 없음)·기록 권한 없음·지금 파일 없음 = 기록된 권한(종전).
-fn rollback_mode_for(rel: &str, rec: Option<u32>, cur: Option<u32>, placed: Option<&std::collections::BTreeMap<String, Vec<Announced>>>) -> (Option<u32>, bool) {
+/// ★codex 3R·4R(권한 귀속): 되돌림이 이 이름에 걸 권한 — 내용 되돌림 여부와 **독립**. 지금 권한이 이 적용이 남긴 권한임을 **확정된 기록**이
+/// 증명할 때만 적용 전 권한으로: 그 이름의 마지막 배치 기록이 ⑴ 권한 성공 줄(`mode`)이고 지금 권한과 같거나 ⑵ 내용 줄이고 그 줄의 놓인 권한
+/// (`placed_mode` · 쓰기 직전 해시와 함께 확정)과 지금 권한이 같고 지금 바이트의 해시도 그 줄과 같을 때. 의도 줄·해시 불일치·기록 없음 = 증거
+/// 아님 → 지금 권한 유지(끊긴 뒤 사용자 chmod 보존 · kept.log). 옛 저널(배치 기록 없음)·기록 권한 없음·지금 파일 없음 = 기록된 권한(종전).
+fn rollback_mode_for(
+    rel: &str,
+    rec: Option<u32>,
+    cur: Option<u32>,
+    live_bytes: Option<&[u8]>,
+    placed: Option<&std::collections::BTreeMap<String, Vec<Announced>>>,
+) -> (Option<u32>, bool) {
     let (Some(r), Some(c), Some(pl)) = (rec, cur, placed) else { return (rec, false) };
     if c == r {
         return (rec, false);
     }
     let attributed = match pl.get(rel).and_then(|v| v.last()) {
-        Some(Announced::Mode(m)) | Some(Announced::ModeIntent(m)) => *m == c,
-        Some(Announced::Sha(_)) | Some(Announced::Absent) => true,
-        None => false,
+        Some(Announced::Mode(m)) => *m == c,
+        Some(Announced::Sha(h, Some(m))) => *m == c && live_bytes.is_some_and(|b| sha256_hex(b) == *h),
+        _ => false,
     } || crate::update::mutant("J1116-MODE-ANY-TOUCH");
     if attributed {
         (rec, false)
@@ -6090,6 +6099,9 @@ fn write_journal(
         if std::fs::symlink_metadata(&src).map(|m| m.file_type().is_symlink()).unwrap_or(false)
             && !crate::update::mutant("J1116-LINK-AS-FILE")
         {
+            // ★codex 4R: 링크를 되살릴 수 없는 플랫폼이면 아무것도 바꾸기 전에 적용을 거부한다.
+            #[cfg(not(unix))]
+            return Err(format!("{}: 팩 안 링크를 이 플랫폼에서 되돌릴 수 없어 적용하지 않습니다", src.display()));
             let t = std::fs::read_link(&src).map_err(|e| format!("journal 링크 읽기 실패 {}: {e}", src.display()))?;
             let t = t.to_str().ok_or_else(|| format!("journal 링크 대상이 UTF-8 이 아니라 기록할 수 없어 적용하지 않습니다: {}", src.display()))?;
             entries.push(JournalEntry { rel: rel.clone(), existed: true, mode: None, link: Some(t.to_string()) });
@@ -6185,7 +6197,8 @@ fn rollback_journal_for(pack: &Path) -> Result<(), String> {
                 // ★codex 1R·2R·3R(권한 귀속): rollback_mode_for — 지금 권한이 이 적용의 마지막 배치 기록으로 설명될 때만 적용 전 권한으로.
                 if let (true, Live::File(_)) = (entry.existed, &live) {
                     let cur = std::fs::metadata(&target).ok().and_then(|m| file_mode_of(&m));
-                    let (want, user_kept) = rollback_mode_for(&entry.rel, entry.mode, cur, placed.as_ref());
+                    let lb = if let Live::File(b) = &live { Some(b.as_slice()) } else { None };
+                    let (want, user_kept) = rollback_mode_for(&entry.rel, entry.mode, cur, lb, placed.as_ref());
                     if user_kept {
                         std::fs::create_dir_all(&kept.dir)
                             .map_err(|e| format!("보관 폴더 생성 실패 {}: {e}", kept.dir.display()))?;
@@ -6208,7 +6221,8 @@ fn rollback_journal_for(pack: &Path) -> Result<(), String> {
                     Live::File(_) => std::fs::metadata(&target).ok().and_then(|m| file_mode_of(&m)),
                     _ => None,
                 };
-                let (want, user_kept) = rollback_mode_for(&entry.rel, entry.mode, cur, placed.as_ref());
+                let lb = if let Live::File(b) = &live { Some(b.as_slice()) } else { None };
+                let (want, user_kept) = rollback_mode_for(&entry.rel, entry.mode, cur, lb, placed.as_ref());
                 if user_kept {
                     std::fs::create_dir_all(&kept.dir).map_err(|e| format!("보관 폴더 생성 실패 {}: {e}", kept.dir.display()))?;
                     kept.log(&entry.rel, "mode-left", None)?;
@@ -6248,7 +6262,7 @@ fn rollback_link_entry(
         Some(pl) => pl.get(rel).is_some_and(|v| {
             v.iter().any(|a| match (a, &live) {
                 (Announced::Absent, Live::Absent) => true,
-                (Announced::Sha(h), Live::File(b)) => sha256_hex(b) == *h,
+                (Announced::Sha(h, _), Live::File(b)) => sha256_hex(b) == *h,
                 _ => false,
             })
         }),
@@ -6259,25 +6273,25 @@ fn rollback_link_entry(
         kept.left += 1;
         return Ok(());
     }
-    match &live {
-        Live::File(b) => {
-            if placed.is_none() {
-                kept.preserve_live(rel, b)?;
-            }
-            std::fs::remove_file(target).map_err(|e| format!("링크 되살리기 전 파일 삭제 실패 {}: {e}", target.display()))?;
-        }
-        Live::Other => kept.displace(rel, target)?,
-        Live::Absent => {}
-    }
-    if let Some(parent) = target.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(link_to, target).map_err(|e| format!("링크 되살리기 실패 {}: {e}", target.display()))?;
     #[cfg(not(unix))]
-    return Err(format!("{}: 이 플랫폼에서 링크를 되살릴 수 없습니다(저널을 남김)", target.display()));
+    {
+        // 비유닉스는 링크 칸을 쓰지 않는다(write_journal 이 거부) — 손대지 않고 저널을 남긴다.
+        let _ = (&live, link_to);
+        return Err(format!("{}: 이 플랫폼에서 링크를 되살릴 수 없습니다(저널을 남김 · 무접촉)", target.display()));
+    }
     #[cfg(unix)]
-    Ok(())
+    {
+        // ★codex 4R(경합): 지우지 않는다 — 지금 그 이름의 것(판정한 그것이든 그 사이 생긴 새것이든)을 보관소로 **원자 이름 바꾸기**로 옮기고,
+        //   링크는 덮어쓰지 않는 생성(symlink · 이미 있으면 실패 = 저널을 남김)으로 만든다. 판정 뒤 바뀐 것도 보관소에 그대로 남는다(손실 0).
+        if !matches!(live, Live::Absent) {
+            kept.displace(rel, target)?;
+        }
+        if let Some(parent) = target.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::os::unix::fs::symlink(link_to, target).map_err(|e| format!("링크 되살리기 실패 {}: {e}", target.display()))?;
+        Ok(())
+    }
 }
 
 /// ★codex 1R(major #5 · 원작자 HE4 SETTLE 의 우리 꼴): 진행 중 저널을 먼저 `done-<시각>` 으로 **이름을 바꾸고**(원자 = 「이 저널은 끝났다」)

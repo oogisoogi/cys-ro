@@ -280,6 +280,39 @@ fn refuse_before_paste_once(fx: &Fx, t: &Arc<Surface>, draft: Option<&str>) {
     assert!(t.inject_track.last_body().is_none(), "안 쓴 본문이 「마지막 기계 본문」으로 남았다");
 }
 
+/// 적색→녹색(codex 2R major): 인계 뒤 · Ctrl-U 정착 중에 들어온 사람 키(핸들러가 계수·사람 몫을 올리고 바이트는 writer 뒤에 줄 선다)의
+/// 사람 몫을 붙여넣기 앞 거부 복원이 지우지 않는다 — 뒤따르는 기계 단독 Return 은 HumanDraft 로 거부(쓰기 0).
+/// 종전(a697bd59): 복원이 보내기 전 스냅샷(0,0)으로 사람 몫을 덮어 0 → 그 Return 이 사람 초안을 제출.
+#[test]
+fn b16fix_human_keys_during_settle_survive_before_paste_refusal() {
+    let fx = fx("b16fix-settle-keys");
+    let t = agent_pane_settled(&fx, "worker-1", P + 3080);
+    let _x = pane(&fx, "worker-2", P + 3081);
+    paint_empty_prompt(&t);
+    let r = atomic_send(&fx, None, &t, HUMAN_BODY, true, true);
+    assert_eq!(r["result"]["sent"], json!(true), "{r}");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !t.inject_track.busy_within(Duration::ZERO) {
+        assert!(Instant::now() < deadline, "writer 가 쓰기를 시작하지 않았다");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let k = rpc(&fx, None, "surface.send_text", json!({"surface_id": t.id, "text": "ab", "human": true, "quiet": true}));
+    assert_eq!(k["result"]["sent"], json!(true), "전제: 사람 키: {k}");
+    paint(&t, &DIALOG, 1, 8);
+    assert!(!atomic_enter_written(&t), "창 위에 Enter");
+    let ev = named(&fx, "input.refused_at_write");
+    assert_eq!(ev.len(), 1, "{ev:?}");
+    assert_eq!(ev[0]["payload"]["stage"], json!("before_paste"), "{ev:?}");
+    let (mirror, human, _) = counts(&t);
+    assert!(human > 0 && mirror >= human, "정착 중 들어온 사람 키의 사람 몫을 지웠다: ({mirror}, {human})");
+    paint_line_with(&t, "ab");
+    backdate_human_input(&t);
+    let w0 = t.inject_track.wrote();
+    let r = rpc(&fx, Some(P + 3081), "surface.send_key", json!({"surface_id": t.id, "key": "Return", "queued": false}));
+    std::thread::sleep(Duration::from_millis(800));
+    assert_eq!(t.inject_track.wrote() - w0, 0, "기계 Return 이 사람 초안을 제출했다: {r}");
+}
+
 /// 바이트 증거(검증 지적 4 · 검증 좌석 기록기와 같은 방식): 좌석 = raw `cat` 기록기. Ctrl-U(0x15)가 PTY 에 닿는 순간 창을 그리면
 /// 그 뒤 PTY 에 아무것도 오지 않는다(붙여넣기 0 · Enter 0) — 사람 길·기계 길 둘 다. 종전: `15` → 붙여넣기 → (Enter 거부).
 #[test]

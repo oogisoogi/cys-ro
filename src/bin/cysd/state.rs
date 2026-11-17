@@ -3319,7 +3319,7 @@ impl Surface {
     }
 
     /// ★(1.1.16 · cysr-1116-backlog-fix-1118 · 검증 지적 1) 사람 표지 원자 제출(`InjectRefusing`)이 쓰는 도중 거부됐다 — 입력줄에 남은
-    /// 글을 **사람 몫**으로 센다: 계수 = max(지금, `count`) · 사람 몫 = min(`human`, 계수) · 마지막 기계 본문 기록 지움(writer arm 이 첫 바이트
+    /// 글을 **사람 몫**으로 센다: 계수 = max(지금, `count`) · 사람 몫 = min(max(지금 사람 몫, `human`), 계수) · 마지막 기계 본문 기록 지움(writer arm 이 첫 바이트
     /// 앞에서 그 본문을 기계 본문으로 적었다). 그래야 뒤따르는 기계 Return·`clear_first`·스케줄 push 가 기존 사람 초안 규칙(HumanDraft 거부 ·
     /// 초안 보류)에 걸린다 — 종전(계수만 ≥1)은 사람 몫 0 · 마지막 기계 본문 = 그 사람 본문이라 그것들이 사람 말을 제출·삭제·이어붙였다.
     /// 소유자 각인은 `set_pending_input` 이 세대를 올려 결측이 된다([`Surface::pending_input_owner`]). 결과 계수가 0 이면 계수를 건드리지
@@ -3331,7 +3331,8 @@ impl Surface {
             let count = self.pending_input_bytes.load(Ordering::Relaxed).max(count);
             if count > 0 {
                 st.count = count;
-                st.human = human.min(count);
+                // ★(codex 2R) 덮지 않고 합친다 — 인계 뒤(Ctrl-U 정착 중 등) 들어온 사람 키가 올린 사람 몫을 지우지 않는다.
+                st.human = st.human.max(human).min(count);
             }
             count
         };

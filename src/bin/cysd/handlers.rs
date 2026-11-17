@@ -2978,6 +2978,31 @@ fn approval_write_guard(
 ///   · `request_id` = 거부 흔적의 요청 번호(사람 길 응답 `request_id` · 기계 길 작업 번호와 같은 값) — 화면이 어느 말인지 맞춘다.
 ///   · `refused` = 거부한 단계를 핸들러 응답에 넘기는 칸(0 없음 · 1 붙여넣기 앞 · 2 Enter 앞 — codex 1R: 결판 사유 글자는 저널 실패가
 ///     `journal_terminal:…` 로 덮을 수 있어 응답의 근거로 쓰지 않는다).
+/// ★(codex 2R) 「창이면 쓰지 마라」 원자 제출이 줄을 비우기(`clear_pending_input`) **직전**의 입력줄 계수·사람 몫 — 핸들러가 인계와 같은
+/// `input_gate` 임계영역 안에서 적는다(가드 생성 시점 값은 그 사이 사람 입력을 빠뜨린다 · 생성 시점 값은 인계 전 실패 때의 기본값일 뿐).
+pub(crate) struct PreClearLine {
+    count: std::sync::atomic::AtomicU64,
+    human: std::sync::atomic::AtomicU64,
+}
+
+impl PreClearLine {
+    fn now(surface: &crate::state::Surface) -> Arc<Self> {
+        let p = Arc::new(Self { count: Default::default(), human: Default::default() });
+        p.note(surface);
+        p
+    }
+    /// 지금 계수·사람 몫을 적는다 — 호출자는 `input_gate` 안(인계 임계영역)에서 부른다.
+    fn note(&self, surface: &crate::state::Surface) {
+        let count = surface.pending_input_bytes.load(Ordering::Relaxed);
+        let human = surface.pending_input.lock().unwrap_or_else(|e| e.into_inner()).human.min(count);
+        self.count.store(count, Ordering::Release);
+        self.human.store(human, Ordering::Release);
+    }
+    fn get(&self) -> (u64, u64) {
+        (self.count.load(Ordering::Acquire), self.human.load(Ordering::Acquire))
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RefuseAt {
     BeforePaste,
@@ -3000,12 +3025,12 @@ fn approval_enter_guard(
     human_line: Option<u64>,
     request_id: &str,
     refused: &Arc<std::sync::atomic::AtomicU8>,
+    pre_clear: &Arc<PreClearLine>,
 ) -> crate::state::SafetyProbe {
     let (wd, ws) = (Arc::downgrade(daemon), Arc::downgrade(surface));
-    let before = surface.pending_input_bytes.load(Ordering::Relaxed);
-    let before_human = surface.pending_input.lock().unwrap_or_else(|e| e.into_inner()).human.min(before);
     let request_id = request_id.to_string();
     let refused = refused.clone();
+    let pre_clear = pre_clear.clone();
     Arc::new(move || {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let (Some(d), Some(s)) = (wd.upgrade(), ws.upgrade()) else {
@@ -3016,6 +3041,7 @@ fn approval_enter_guard(
             if hit {
                 // codex 3R: 핸들러는 input_gate 를 쥔 채 enqueue → 계수 0 기록을 한다 — 같은 잠금을 잡아야 그 0 뒤에 복원된다.
                 let _gate = s.input_gate.lock().unwrap_or_else(|e| e.into_inner());
+                let (before, before_human) = pre_clear.get();
                 match (at, human_line) {
                     (RefuseAt::BeforeEnter, Some(n)) => s.restore_refused_line(n.max(1), n.max(1)),
                     (RefuseAt::BeforePaste, Some(_)) => s.restore_refused_line(before, before_human),
@@ -8258,6 +8284,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             let refuse_request_id = refuse_on_approval
                 .then(|| crate::agent_write::new_request_id((daemon.started_at * 1000.0) as u64));
             let refused_stage = Arc::new(std::sync::atomic::AtomicU8::new(0));
+            let pre_clear = PreClearLine::now(&surface);
             // ★(1.1.16 · master#4f5897d7 · 조각 0.5 M2-c) 「창이면 쓰지 마라」 원자 제출 = CR 바로 앞 승인 재판정(InjectRefusing doc ·
             //   술어 = approval_enter_guard: 쓰기 직전 화면 판정 ∨ feed 승인 대기 항목 · 거부 흔적 input.refused_at_write).
             //   에이전트 작업(OwnedClear) 길은 아래 SubmitRefuse 가 같은 일을 한다.
@@ -8271,8 +8298,8 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                         text,
                         cr_delay_ms,
                         clear_first: true,
-                        refuse_paste: approval_enter_guard(daemon, &surface, RefuseAt::BeforePaste, Some(0), rid, &refused_stage),
-                        refuse: approval_enter_guard(daemon, &surface, RefuseAt::BeforeEnter, Some(body_bytes), rid, &refused_stage),
+                        refuse_paste: approval_enter_guard(daemon, &surface, RefuseAt::BeforePaste, Some(0), rid, &refused_stage, &pre_clear),
+                        refuse: approval_enter_guard(daemon, &surface, RefuseAt::BeforeEnter, Some(body_bytes), rid, &refused_stage, &pre_clear),
                     };
                     human_refuse_request = Some(rid.to_string());
                 }
@@ -8313,8 +8340,8 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                             if let Some(rid) = refuse_request_id.as_deref() {
                                 Arc::new(SubmitRefuse {
                                     inner: surface.agent_proof(),
-                                    probe_paste: approval_enter_guard(daemon, &surface, RefuseAt::BeforePaste, None, rid, &refused_stage),
-                                    probe: approval_enter_guard(daemon, &surface, RefuseAt::BeforeEnter, None, rid, &refused_stage),
+                                    probe_paste: approval_enter_guard(daemon, &surface, RefuseAt::BeforePaste, None, rid, &refused_stage, &pre_clear),
+                                    probe: approval_enter_guard(daemon, &surface, RefuseAt::BeforeEnter, None, rid, &refused_stage, &pre_clear),
                                 })
                             } else {
                                 surface.agent_proof()
@@ -8463,6 +8490,9 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             if agent_handle.is_none() {
                 // ★(0.14.31 · WP-5) 세대 동반 쓰기 — stale 리셋(governance)이 세대로 ABA 를 가른다.
                 if clear_first {
+                    if refuse_request_id.is_some() {
+                        pre_clear.note(&surface); // ★(codex 2R) 인계 임계영역 안 = 비우기 직전 값(그 뒤 탐침 거부의 복원 재료)
+                    }
                     surface.clear_pending_input();
                 } else {
                     // human 은 자기신고(타이핑 가드 :4224 와 같은 신뢰 등급) —

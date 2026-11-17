@@ -240,3 +240,88 @@ PY=<playwright python3> CHROME_PATH=<…> python3 docs/ui-p2/evidence/s4/tools/m
 ### 12-3. 원작자 파일 변경 줄(검증 고침 뒤)
 
 여전히 **0줄** — 이번에 바뀐 Rust 는 `src-tauri/src/viewcore.rs`(조각 1 새 파일 · 우리) 하나. 데몬 변경 0.
+
+## 13. 델타 — codex 1R(BLOCK) 고침 · TICKET=cysr-ui-slice4-fix2-1118 (워커 surface:2166 · 2026-11-18 03:0x~ · 앞 좌석 2158 이어받음)
+
+- 브리프 = `master/briefs/2026-11-18-cysr-ui-slice4-fix2.md`(원장 kind=brief · spawn 경로 · surface:2166 · body_sha256 98229725 = 파일 끝 줄바꿈 뺀 sha 일치 — 대조함)
+- 1R 원문 = `docs/ui-p2/evidence/s4/codex-r1.json`(e62e1fb0 대상 · BLOCK · blocking 1 · major 6 · minor 1)
+- 비가역 0: push·서명·발행·앱 교체 안 함 · **데몬(src/bin) 변경 0** · 원작자 `main.rs` = `generate_handler!` 이름 **1줄**(`viewcore::confirm_reply` — 조각 1 이 넣은 두 줄과 같은 꼴 · 원작자 `feed_reply` 본문 무변경)
+
+### 13-1. codex 지적별 처분
+
+| # | 지적 | 처분 | 무엇을(파일) | 재현 시험(붉음 → 초록) |
+|---|---|---|---|---|
+| blocking | 승인 창 A→B 가 판 재검증을 통과 | **master 결정대로 고침**(b00800df) | 직접 「허락」 = 데몬 지문 표지(feed 항목 `screen_fingerprint` · 비어 있지 않은 글)가 있는 판만(`canAllowDirect`) · 지금 데몬엔 그 칸이 없음 = 늘 닫힘 → 멈춤 때 직접 단추 = **「거절」 + 「작업 화면에서 그 창 보기」 + 안내 「마스터가 멈췄어요. 허락은 작업 화면의 그 도우미 창에서 직접 눌러 주세요.」**(band.ts · 「무엇을 보기」도 안 냄) · 세 겹: 그리기(단추 없음) · `allowReady`(허락 거부) · `decide`(지문 null 이면 feed·org 재조회도 안 하고 호출 0) · 지문은 판 열쇠·`Bound`·`recheck`(지문 다르면 changed)에 들어가고 `confirm_reply` 가 `screen_fingerprint` 로 실어 보냄(자리만 · 시험은 대역) · 데몬 거부 코드 `approval_fingerprint_mismatch` 안내 글 준비 | judge 「지문 표지 = screen_fingerprint 만」·「지문 표지 없는 판 = 펼쳐도 허락 0」·recheck 지문 2건 · 장부 「blocking — 지금 데몬 … 허락 = 호출 0(재조회도 0) · 거절 = 1회(지문 null)」·「펼친 뒤 지문이 바뀜 = 호출 0」 · e2e **D1** · 뮤턴트 4(§13-3) |
+| major 1 | 생존 null 마스터의 새 출력이 deadman 을 못 풂 | **고침** | `deadmanRevived` = 꺼짐 확정(false)이 아닌 마스터 ∧ (새 좌석 ∨ 사건 뒤 출력) — 생존 null 이어도 풀림 · 장부 걸쇠가 지움 · `masterSilenced` = 좌석이 있고 생존 null 이면 deadman 근거 안 씀 | judge deadman 판정(풀림 4 · 근거 아님 2) · 장부 「codex 1R major 1 재현 — 생존 null · idle 0 = 풀림 · 뒤에 생존 확정이 와도 되살아나지 않음 · 호출 0」·「F2 ⓑ · 생존 모름 관측만 = 단추 0 · 호출 0」 · 뮤턴트 2 |
+| major 2 | 좌석이 바뀌어도 펼침 승계 | **고침** | `versionKey` = `JSON.stringify([번호, 시각, 본문, 좌석, 지문])`(Bound 칸 전부) — band.ts 정리 줄이 새 열쇠의 펼침을 지움 | judge 「판 열쇠 = Bound 칸 전부 — 어느 하나만 바뀌어도 다른 열쇠」(Bound 칸 목록 고정 + 칸마다 바꿔 봄) · e2e **F2**(펼친 뒤 좌석만 바뀜 → 접힘 · 흐린 허락 진짜 클릭 = 호출 0) · 뮤턴트 2 |
+| major 3 | slug 없는 사건 수용 | **고침** | `onEvent` = 본부 slug 확정 ∧ `typeof socket_slug === "string"` ∧ 비지 않음 ∧ 같음 일 때만 | 장부 「major 3 — slug 없음·null·빈 글 사건 = 버림(approval.stalled · deadman) · 호출 0」 · 뮤턴트 1 |
+| major 4 | 꼴 깨진 org 응답이 재확인 통과 | **고침** | `decide` = `masterOf(org) === undefined` 이면 처리 중단(`org_unknown`) · `itemStall` 첫머리 = 마스터 좌석 모름이면 null(직접 단추 0 · stalled·5분 규칙도 안 씀) | judge 「마스터 좌석 모르는 동안 stalled·5분 있어도 직접 단추 0」 · 장부 「major 4 — {surfaces:null} = 호출 0 · 그 뒤 띠 항목 단추 0」 · 뮤턴트 2 |
+| major 5 | 기록만 해소된 거절을 성공으로 표시 | **고침**(Tauri + 화면) | 새 Tauri 명령 **`viewcore::confirm_reply`**(우리 파일) = 원작자 `feed_reply` 와 같은 operator token 첨부·1회 재시도이되 **데몬 `result` 를 그대로 돌려줌** · 화면 `actuatedOf` = `actuated` 가 비지 않은 글일 때만 「허락했어요/거절했어요」 · null·없음 = **「기록만 됐고 도우미 창은 눌리지 않았어요 — 작업 화면에서 확인해 주세요.」** · 기록 outcome `recorded_only` · 대화 화면의 원작자 `feed_reply` 호출 = 0(e2e 핀) | cargo `confirm_reply_params_and_outcome_keep_actuated` · judge actuatedOf 5 · 장부 「major 5 — allow·deny · actuated 칸 없음」 · e2e **G2** · 뮤턴트 1 |
+| major 6 | 공백 정규화가 정확 일치를 깸 | **고침**(코드 b00800df + **팩 별도 커밋 12e8bc95**) | `resolves` = 원문 코드 포인트 그대로(정규화 0 · 앞 고침 F4 되돌림) · `markersOf` 가 해결 글을 깎지 않음(20번째 공백 보존) · 팩 문장 `⟪확인 해결: <같은 물음 앞부분을 글자 그대로(띄어쓰기 포함) 20자>⟫` | judge 「codex 1R major 6」(① 「…t  X」를 「…t X」가 못 닫음 ② 두 칸 물음의 정확한 앞 20자는 닫음 ③ 한 칸으로 줄인 해결 안 닫힘) · 「F4 · 20번째 공백 보존」 · 뮤턴트 2 |
+| minor | uuid 없는 반복 레코드가 앞 기록 해결을 놓침 | **고침**(Tauri + 화면) | viewcore 레코드에 **`at` = 줄 시작 파일 바이트**(깨진 줄을 건너뛰어도 위치 계산은 이어짐) · 앞 훑기의 끝을 넘는 토막 = `at < 시작 오프셋` 만 앞 기록 · 하나라도 `at` 이 없으면 「다 훑음」 확정 안 함 · 글 신원 장부(`priorTaken`·`tailSeen`·`recId`) 삭제 — 뒤 읽기는 전부 셈 | cargo `records_carry_file_line_start_position` · 장부 「minor — X → Q(무신원) → 해결 X · 뒤에 같은 Q 먼저 = Q 하나만」·「위치 모르는 레코드 = 모름 유지」 · V17·V18 = 위치로 다시 씀 · 뮤턴트 2 |
+
+### 13-2. 내가 내린 판단(지시에 없던 것 · master 확인 후보)
+
+1. **지문 표지 = feed 항목 칸 `screen_fingerprint` 하나**(기능 목록 칸 대신) — 표지와 보낼 값이 같은 칸이라 「표지는 있는데 값이 없음」 꼴이 생기지 않는다. 비어 있지 않은 글만 표지로 본다(빈 글·숫자 = 없음).
+2. **지문 없는 판 = 「무엇을 보기」도 안 냄** — 브리프 「직접 단추 = 거절 + 작업 화면에서 그 창 보기만」을 글자대로. 펼친 명령이 지금 창(B)과 다를 수 있어 거절 판단에도 오도할 수 있음.
+3. **actuated 를 받으려고 원작자 `feed_reply` 를 바꾸지 않고 우리 명령 `confirm_reply` 를 새로 둠** — `main.rs` 는 이름 1줄(조각 1 선례). `feed_reply` 는 작업 화면이 쓰므로 반환형을 바꾸면 작업 화면 동작이 바뀐다. 대가: 같은 재시도 규칙이 두 군데(viewcore.rs 주석에 출처).
+4. **`decide` 의 지문 가드는 재조회 전에** — 지문 없는 허락은 feed·org 도 다시 받지 않는다(호출 0 · 조회 0). 그리기 뒤 판이 지문 없는 판으로 바뀐 경우는 recheck 의 지문 대조(changed)가 막는다 — 따로 두 번째 가드를 두면 등가 뮤턴트가 되어 뺐다.
+5. **`at` 은 Tauri 쪽에서 실음**(데몬 아님 · viewcore.rs 우리 파일) — 위치를 화면이 추측하지 않는다.
+6. **생존 false + deadman 은 여전히 근거**(꺼짐 확정 = 죽음이 맞음) — 「생존 모름 관측만으로는 근거 안 씀」을 null 에 한정.
+
+### 13-3. 시험 수(고침 전 26d4f29c → 뒤)
+
+| 대상 | 전(26d4f29c) | 뒤(31800d54) |
+|---|---|---|
+| bun ui 전체 | 3613 · 88 skip · 0 | **3628 · 88 skip · 0**(3716 · 119 파일) |
+| `bun test src/views` | 162 / 0 | **177 / 0** |
+| tsc(typescript@7.0.2 · tsconfig.check) | rc 0 | **rc 0** |
+| cargo `-p cys-app --bin cys-app` 전체 | (345 = 뒤 348 − 이번에 더한 3 · 따로 재지 않음) | **348 / 0 · 2 ignored** |
+| cargo `… viewcore` | 8 / 0 | **11 / 0**(+ 레코드 위치 · confirm_reply 매개변수·결과 · from_end 시작점) |
+| cargo `-p cys-terminal --lib released` | 3 / 0 | **3 / 0**(팩 커밋 12e8bc95 뒤) |
+| `confirm_gate.py` | 29 / 0 | **37 / 0 · PASS**(+ D1 지문 없음 · F2 좌석만 바뀜 2 · G 거절 안내 · G2 기록만 · 원작자 feed_reply 0) |
+| `chat_gate.py` | 40 / 0 | **40 / 0 · PASS** |
+| `tickrec_gate.py` OFF(기준 = 3a012bf4 번들) | 308dd2b91f9a | **308dd2b91f9a = 308dd2b91f9a** · invoke 1088 = 1088 · 어긋난 호출 0(한가할 때 · 뮤턴트와 겹친 1회는 「가짜 시각 어긋남 14건 · 최대 1ms」 정보 줄만 · 판정 PASS) |
+| 팩 4본 | exit 0 ×4 | **exit 0 ×4**(ceo --check · hashes --check · bootv2_doc_contract OK · event_inject PASS 106 / FAIL 0) |
+| secret-scan `--all` | clean | **clean**(2117 파일) |
+| 뮤턴트(별도 작업트리 `~/axdev/.wt/cys-ui-slice4-mut` · /tmp 사본 아님 = 기억 「임시 폴더 사본 고정 붉음」 회피) | 39 / 39 | ee510b85 = **51 / 52**(생존 1 = 「F2 마스터 모름이어도 deadman 근거」 — 아래) → 31800d54 = **56 / 56 붉음 · 원복 전부 True**(생존 0 · 증거 `docs/ui-p2/evidence/s4/mutants-fix2.txt`) |
+| codex | 1R BLOCK | **2R = REVISE**(major 2 · minor 1 · `codex-r2.json`) → 3건 고침(31800d54) · **3R 안 돌림**(브리프 「2R 1회」) |
+
+- 뮤턴트 생존 1(ee510b85): `masterSilenced` 의 「좌석 모름 = null」 줄 — 이번 고침으로 `itemStall` 이 좌석 모름을 먼저 거르고, 장부는 좌석 모름일 때 생존을 늘 null 로 두어(새 null 줄이 같은 일을 함) 장부 층에서는 등가. 순수 함수 계약으로 핀 1줄(좌석 모름 ∧ 생존 true ∧ deadman → null) 추가 → 31800d54 판에서 붉음 1 확인.
+- 「재현 시험 붉음 → 초록」 = 지적마다 「고침 되돌림」 뮤턴트(blocking 4 · major 1~6 각 1~2 · minor 2 · 2R 4)가 붉어지는 것으로 보였다(옛 동작으로 되돌리면 그 지적의 재현 시험이 붉음 · 고친 코드에서 초록).
+
+### 13-4. codex 2R(6bbaae53 의뢰문 · 코드 머리 ee510b85) 지적과 처분 — 31800d54
+
+| 2R 지적 | 처분 | 시험 |
+|---|---|---|
+| major: 살아 있는 마스터 행의 좌석 번호가 깨진(「"7"」) 응답을 「마스터 없음」으로 확정 → 마스터가 그 좌석으로 옮겨도 stalled 로 거절 호출 | **고침** — `masterOf` = 살아 있는 마스터 행 중 번호가 안전한 정수가 아닌 것이 있으면 undefined(모름) · 끝난 행·행 없음만 null · 주기 관측(`observe`)도 org 원문을 같은 함수로 대조해 깨졌으면 모름 | 장부 「2R major — "7" 행 = 모름 · 처리 직전 호출 0 · 주기 관측 단추 0」 · 뮤턴트 2 |
+| major: from_end 가 줄 중간을 시작점으로 → 앞 훑기·뒤 읽기가 같은 줄을 다른 위치로 받아 해결 두 번 | **고침**(viewcore.rs) — from_end 시작점 = `last_line_end`(마지막 `\n` 바로 뒤 · 미완 줄은 뒤 읽기가 그 줄 처음부터 · 뒤에서 64 KiB 씩) | cargo `from_end_start_is_last_complete_line_end`(끝 줄바꿈 · 미완 공백 1바이트 · 줄바꿈 없음 · 200 KB 미완 줄 · codex 재현 꼴 = 완성된 줄 위치 = 시작점) · ⚠ `chat_transcript` 의 배선 한 줄(`let start = last_line_end(…)`) 자체는 비동기·데몬 필요라 시험 밖(코드 읽기로만) |
+| minor: 물음 글만 깎아 원문 그대로의 해결을 놓침(20번째 = 끝 공백 · 앞 공백) | **고침** — 물음 글·`resolveKey` 도 원문 그대로(빈 물음만 거름) | judge 「codex 2R minor」 3단 · 뮤턴트 2 |
+
+### 13-5. 커밋(26d4f29c 위)
+
+| 커밋 | 내용 |
+|---|---|
+| b00800df | codex 1R 고침 — blocking · major 1~6 · minor(코드 · 시험 · e2e · viewcore confirm_reply·레코드 위치 · main.rs 이름 1줄) |
+| **12e8bc95** | **팩 지침 별도 커밋** — 해결 표식 문장 「앞부분을 글자 그대로(띄어쓰기 포함) 20자」 + CEO_TEMPLATE 재합성 + 발행 해시표 재생성(직전 판 해시 1쌍 → 이 판 · 태그 유래 같음) |
+| ee510b85 | 뮤턴트 도구 — 옛 앵커 갱신 + 1R 되돌림 13(52종) |
+| 6bbaae53 | codex 2R 의뢰문 |
+| 8f3badab | codex 2R 원문(REVISE) |
+| 31800d54 | codex 2R 고침 — major 2 · minor 1 + 핀 1줄 + 2R 되돌림 뮤턴트 4(56종) |
+| (이 HANDOFF) | §13 · TODO |
+
+### 13-6. 알려진 남은 위험 · 한계(정직)
+
+- **직접 허락은 지금 데몬에서 늘 닫힘**(지문 표지 없음) — 마스터가 멈추면 사람은 작업 화면의 도우미 창에서 직접 눌러야 한다. 거절은 여전히 대화 화면에서 됨(되돌릴 수 없는 쪽 아님 · 단 A→B 바뀜이면 B 를 거절할 수 있다 = 브리프 결정대로 둠).
+- **지문 경로는 대역 시험뿐** — 데몬이 `screen_fingerprint` 를 내고 대조하기 전에는 실물 왕복이 없다(아래 📌).
+- **`actuated` 실물 확인은 앞 좌석의 실제 데몬 1회(`actuated:"return"`)뿐** — 이번 `confirm_reply` 로 실제 데몬 재실행은 안 함(도구 `real_daemon_drive.ts` 는 새 명령 꼴로 고쳐 둠 · 지금 데몬엔 지문이 없어 허락 길은 호출 0 이 정상).
+- §C idle_secs 실측 못 함(이월 그대로) · 0.5 M4~M8 측정 대기 · FR-C5 5분 = 설계 목표값.
+- `main.rs` 이름 1줄 = 원작자 파일 변경 1줄(조각 1 선례 꼴) — 「원작자 파일 0줄」이던 조각 4 의 성질이 깨짐 · 통합 때 편입 충돌 지점 1곳.
+
+### 13-7. 📌 데몬 지문 계약(데몬 티켓 후보 · master 가 냄 — 이 좌석은 데몬 안 건드림)
+
+데몬이 화면에서 감지한 승인 항목(`daemon_issued`)에 대해:
+① `feed.list` 항목에 **`screen_fingerprint`**(비어 있지 않은 글 · 예: 그 창의 명령 블록 + 선택지 줄을 정규화한 sha256 앞 16자)를 싣는다 — **이 칸이 있다 = 「집행 직전 지문 대조 지원」 표지**(화면은 이 칸이 있는 판에만 직접 허락을 낸다). 창 내용이 바뀌면 지문도 바뀌어야 한다(같은 번호여도 · 지금 F16 「대기 항목 본문 안 다시 씀」과 별개로 지문은 다시 계산).
+② `feed.reply` 는 `screen_fingerprint` 매개변수를 받아, **키를 넣기 직전 지금 좌석 화면에서 같은 방식으로 다시 계산한 지문**과 비교한다 — 다르면 키 0 + 오류 코드 **`approval_fingerprint_mismatch`**(화면 안내 글 준비됨 · 항목은 대기 유지 또는 stale-cleared — 데몬이 정함).
+③ 데몬 감지 항목에 대한 operator-token allow 인데 `screen_fingerprint` 가 없으면 거부(지원 데몬에서는 지문 없는 허락 = 옛 화면 · 구멍).
+④ 결과 `actuated` 는 지금처럼 유지(「기록만」 구분은 화면이 이미 함).

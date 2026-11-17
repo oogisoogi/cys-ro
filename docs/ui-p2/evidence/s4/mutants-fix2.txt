@@ -1,0 +1,115 @@
+# 뮤턴트 — ee510b85(52종)
+멈춤: 마스터 좌석 없음 무시: bun 붉음 3 · e2e 붉음 None · 원복 True
+멈춤: 꺼짐 무시: bun 붉음 2 · e2e 붉음 None · 원복 True
+멈춤: deadman 무시: bun 붉음 8 · e2e 붉음 3 · 원복 True
+멈춤: deadman 풀림 판정 없음(한 번이면 영원히): bun 붉음 1 · e2e 붉음 None · 원복 True
+멈춤: approval.stalled 무시: bun 붉음 4 · e2e 붉음 None · 원복 True
+멈춤: 5분 규칙에서 마스터 소식 조건 뺌: bun 붉음 1 · e2e 붉음 None · 원복 True
+멈춤: 늘 멈춤(평소에도 직접 단추): bun 붉음 19 · e2e 붉음 3 · 원복 True
+V3 풀림에서 꺼짐 확정 거르기 뺌(꺼진 마스터 출력도 풀림): bun 붉음 1 · e2e 붉음 None · 원복 True
+F2 마스터 모름이어도 deadman 근거: bun 붉음 0 · e2e 붉음 None · 원복 True
+F2 deadman 나이 상한 뺌: bun 붉음 1 · e2e 붉음 None · 원복 True
+F2 deadman 걸쇠(풀림 보면 지움) 뺌: bun 붉음 1 · e2e 붉음 None · 원복 True
+F0 좌석이 올린 approval 도 screen: bun 붉음 1 · e2e 붉음 1 · 원복 True
+F0 itemStall 의 screen 거르기 뺌: bun 붉음 1 · e2e 붉음 None · 원복 True
+F1 slug 붙은 사건 전부 버림(옛 동작): bun 붉음 11 · e2e 붉음 3 · 원복 True
+F1 다른 slug 사건도 받음: bun 붉음 3 · e2e 붉음 0 · 원복 True
+W26 못 나아가면 다 훑음(옛 동작): bun 붉음 1 · e2e 붉음 None · 원복 True
+F3 건너뛴 긴 줄 = 모름 표시 뺌: bun 붉음 1 · e2e 붉음 None · 원복 True
+F4 해결 글 깎기 되살림(20번째 공백 잃음): bun 붉음 1 · e2e 붉음 None · 원복 True
+F5 유예 뺌: bun 붉음 3 · e2e 붉음 None · 원복 True
+F6 처리 직전 org 낡음 검사 뺌: bun 붉음 1 · e2e 붉음 None · 원복 True
+F8 들여쓴·물결 울타리 무시(옛 동작): bun 붉음 1 · e2e 붉음 None · 원복 True
+V14 꼴 깨진 시각 칸 = 건너뜀: bun 붉음 1 · e2e 붉음 None · 원복 True
+V14 꼴 깨진 번호 칸 = 건너뜀: bun 붉음 1 · e2e 붉음 None · 원복 True
+V17·V18 끝 너머 레코드도 앞 기록으로(위치 가르기 뺌): bun 붉음 1 · e2e 붉음 None · 원복 True
+펼침: 허락 펼침 조건 뺌(판정): bun 붉음 1 · e2e 붉음 2 · 원복 True
+펼침: 멈춤 아닌 항목도 준비됨: bun 붉음 1 · e2e 붉음 None · 원복 True
+펼침: 그리기가 펼침 여부 대신 늘 펼침으로 넘김: bun 붉음 0 · e2e 붉음 2 · 원복 True
+펼침: 판 열쇠에서 본문·시각 뺌(같은 번호면 펼침 이어짐): bun 붉음 1 · e2e 붉음 4 · 원복 True
+판 묶기: 본문 대조 뺌: bun 붉음 2 · e2e 붉음 3 · 원복 True
+판 묶기: 지문 대조 뺌: bun 붉음 2 · e2e 붉음 None · 원복 True
+판 묶기: 시각 대조 뺌: bun 붉음 2 · e2e 붉음 None · 원복 True
+판 묶기: 이미 처리됨(목록 없음) 통과: bun 붉음 2 · e2e 붉음 2 · 원복 True
+판 묶기: 재확인 때 멈춤 다시 보기 뺌: bun 붉음 7 · e2e 붉음 None · 원복 True
+판 묶기: 처리 직전 재조회 대신 그리기 때 값: bun 붉음 11 · e2e 붉음 4 · 원복 True
+판 묶기: 연타 막기 뺌: bun 붉음 1 · e2e 붉음 None · 원복 True
+신뢰 클릭: isTrusted 검사 뺌: bun 붉음 0 · e2e 붉음 2 · 원복 True
+표식: 줄머리 대신 줄 어디든: bun 붉음 1 · e2e 붉음 None · 원복 True
+표식: 사람(user) 글도 표식: bun 붉음 2 · e2e 붉음 None · 원복 True
+표식: 앞 훑기 위치 모르면 확정 안 함 뺌: bun 붉음 1 · e2e 붉음 None · 원복 True
+blocking: 지문 표지 없어도 직접 허락(canAllowDirect 늘 참): bun 붉음 2 · e2e 붉음 1 · 원복 True
+blocking: allowReady 지문 검사 뺌: bun 붉음 1 · e2e 붉음 None · 원복 True
+blocking: decide 지문 가드 뺌: bun 붉음 1 · e2e 붉음 None · 원복 True
+blocking: 그리기가 지문 없는 판에도 허락 단추: bun 붉음 0 · e2e 붉음 1 · 원복 True
+major 1: 생존 모름 관측도 deadman 근거(옛 동작): bun 붉음 2 · e2e 붉음 None · 원복 True
+major 1: 풀림은 생존 확정만(옛 V3 조건): bun 붉음 2 · e2e 붉음 None · 원복 True
+major 2: 판 열쇠에서 좌석 뺌: bun 붉음 1 · e2e 붉음 2 · 원복 True
+major 2: 판 열쇠에서 지문 뺌: bun 붉음 1 · e2e 붉음 None · 원복 True
+major 3: slug 없음·null·빈 사건 받음(옛 동작): bun 붉음 1 · e2e 붉음 None · 원복 True
+major 4: 처리 직전 org 꼴 깨짐 통과: bun 붉음 1 · e2e 붉음 None · 원복 True
+major 4: 마스터 좌석 모름에도 직접 단추: bun 붉음 2 · e2e 붉음 None · 원복 True
+major 5: 기록만 해소도 「했어요」: bun 붉음 1 · e2e 붉음 1 · 원복 True
+major 6: 공백 정규화 되살림(앞 고침 F4): bun 붉음 2 · e2e 붉음 None · 원복 True
+
+뮤턴트 52 중 붉음 51 · 원복 전부 True
+
+# 뮤턴트 — 31800d54(56종 · 최종)
+멈춤: 마스터 좌석 없음 무시: bun 붉음 3 · e2e 붉음 None · 원복 True
+멈춤: 꺼짐 무시: bun 붉음 2 · e2e 붉음 None · 원복 True
+멈춤: deadman 무시: bun 붉음 8 · e2e 붉음 3 · 원복 True
+멈춤: deadman 풀림 판정 없음(한 번이면 영원히): bun 붉음 1 · e2e 붉음 None · 원복 True
+멈춤: approval.stalled 무시: bun 붉음 5 · e2e 붉음 None · 원복 True
+멈춤: 5분 규칙에서 마스터 소식 조건 뺌: bun 붉음 1 · e2e 붉음 None · 원복 True
+멈춤: 늘 멈춤(평소에도 직접 단추): bun 붉음 20 · e2e 붉음 3 · 원복 True
+V3 풀림에서 꺼짐 확정 거르기 뺌(꺼진 마스터 출력도 풀림): bun 붉음 1 · e2e 붉음 None · 원복 True
+F2 마스터 모름이어도 deadman 근거: bun 붉음 1 · e2e 붉음 None · 원복 True
+F2 deadman 나이 상한 뺌: bun 붉음 1 · e2e 붉음 None · 원복 True
+F2 deadman 걸쇠(풀림 보면 지움) 뺌: bun 붉음 1 · e2e 붉음 None · 원복 True
+F0 좌석이 올린 approval 도 screen: bun 붉음 1 · e2e 붉음 1 · 원복 True
+F0 itemStall 의 screen 거르기 뺌: bun 붉음 1 · e2e 붉음 None · 원복 True
+F1 slug 붙은 사건 전부 버림(옛 동작): bun 붉음 12 · e2e 붉음 3 · 원복 True
+F1 다른 slug 사건도 받음: bun 붉음 3 · e2e 붉음 0 · 원복 True
+W26 못 나아가면 다 훑음(옛 동작): bun 붉음 1 · e2e 붉음 None · 원복 True
+F3 건너뛴 긴 줄 = 모름 표시 뺌: bun 붉음 1 · e2e 붉음 None · 원복 True
+F4 해결 글 깎기 되살림(20번째 공백 잃음): bun 붉음 2 · e2e 붉음 None · 원복 True
+F5 유예 뺌: bun 붉음 3 · e2e 붉음 None · 원복 True
+F6 처리 직전 org 낡음 검사 뺌: bun 붉음 1 · e2e 붉음 None · 원복 True
+F8 들여쓴·물결 울타리 무시(옛 동작): bun 붉음 1 · e2e 붉음 None · 원복 True
+V14 꼴 깨진 시각 칸 = 건너뜀: bun 붉음 1 · e2e 붉음 None · 원복 True
+V14 꼴 깨진 번호 칸 = 건너뜀: bun 붉음 1 · e2e 붉음 None · 원복 True
+V17·V18 끝 너머 레코드도 앞 기록으로(위치 가르기 뺌): bun 붉음 1 · e2e 붉음 None · 원복 True
+펼침: 허락 펼침 조건 뺌(판정): bun 붉음 1 · e2e 붉음 2 · 원복 True
+펼침: 멈춤 아닌 항목도 준비됨: bun 붉음 1 · e2e 붉음 None · 원복 True
+펼침: 그리기가 펼침 여부 대신 늘 펼침으로 넘김: bun 붉음 0 · e2e 붉음 2 · 원복 True
+펼침: 판 열쇠에서 본문·시각 뺌(같은 번호면 펼침 이어짐): bun 붉음 1 · e2e 붉음 4 · 원복 True
+판 묶기: 본문 대조 뺌: bun 붉음 2 · e2e 붉음 3 · 원복 True
+판 묶기: 지문 대조 뺌: bun 붉음 2 · e2e 붉음 None · 원복 True
+판 묶기: 시각 대조 뺌: bun 붉음 2 · e2e 붉음 None · 원복 True
+판 묶기: 이미 처리됨(목록 없음) 통과: bun 붉음 2 · e2e 붉음 2 · 원복 True
+판 묶기: 재확인 때 멈춤 다시 보기 뺌: bun 붉음 7 · e2e 붉음 None · 원복 True
+판 묶기: 처리 직전 재조회 대신 그리기 때 값: bun 붉음 11 · e2e 붉음 4 · 원복 True
+판 묶기: 연타 막기 뺌: bun 붉음 1 · e2e 붉음 None · 원복 True
+신뢰 클릭: isTrusted 검사 뺌: bun 붉음 0 · e2e 붉음 2 · 원복 True
+표식: 줄머리 대신 줄 어디든: bun 붉음 1 · e2e 붉음 None · 원복 True
+표식: 사람(user) 글도 표식: bun 붉음 2 · e2e 붉음 None · 원복 True
+표식: 앞 훑기 위치 모르면 확정 안 함 뺌: bun 붉음 1 · e2e 붉음 None · 원복 True
+blocking: 지문 표지 없어도 직접 허락(canAllowDirect 늘 참): bun 붉음 2 · e2e 붉음 1 · 원복 True
+blocking: allowReady 지문 검사 뺌: bun 붉음 1 · e2e 붉음 None · 원복 True
+blocking: decide 지문 가드 뺌: bun 붉음 1 · e2e 붉음 None · 원복 True
+blocking: 그리기가 지문 없는 판에도 허락 단추: bun 붉음 0 · e2e 붉음 1 · 원복 True
+major 1: 생존 모름 관측도 deadman 근거(옛 동작): bun 붉음 2 · e2e 붉음 None · 원복 True
+major 1: 풀림은 생존 확정만(옛 V3 조건): bun 붉음 2 · e2e 붉음 None · 원복 True
+major 2: 판 열쇠에서 좌석 뺌: bun 붉음 1 · e2e 붉음 2 · 원복 True
+major 2: 판 열쇠에서 지문 뺌: bun 붉음 1 · e2e 붉음 None · 원복 True
+major 3: slug 없음·null·빈 사건 받음(옛 동작): bun 붉음 1 · e2e 붉음 None · 원복 True
+major 4: 처리 직전 org 꼴 깨짐 통과: bun 붉음 2 · e2e 붉음 None · 원복 True
+major 4: 마스터 좌석 모름에도 직접 단추: bun 붉음 3 · e2e 붉음 None · 원복 True
+major 5: 기록만 해소도 「했어요」: bun 붉음 1 · e2e 붉음 1 · 원복 True
+2R major 1: masterOf 깨진 번호 행을 버리고 마스터 없음(옛 동작): bun 붉음 1 · e2e 붉음 None · 원복 True
+2R major 1: 주기 관측의 org 원문 마스터 행 대조 뺌: bun 붉음 1 · e2e 붉음 None · 원복 True
+2R minor: 물음 글 깎기 되살림: bun 붉음 1 · e2e 붉음 None · 원복 True
+2R minor: resolveKey 깎기 되살림: bun 붉음 1 · e2e 붉음 None · 원복 True
+major 6: 공백 정규화 되살림(앞 고침 F4): bun 붉음 2 · e2e 붉음 None · 원복 True
+
+뮤턴트 56 중 붉음 56 · 원복 전부 True

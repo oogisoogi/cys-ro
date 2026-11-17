@@ -22,15 +22,16 @@ const CODE_APPROVAL_SCREEN: &str = cys::ERR_APPROVAL_SCREEN;
 const CODE_WRITE_OUTCOME_UNKNOWN: &str = cys::ERR_WRITE_OUTCOME_UNKNOWN;
 /// 데몬이 **쓰기 전에** 거부했음이 코드로 보장되는 오류 코드(handlers.rs `surface.send_text` 분기 · 거부 = 바이트 0).
 /// 이 목록 밖 코드·코드 없음·꼴이 이상한 응답은 「쓰기 0」의 근거가 아니므로 `uncertain`(다시 보내기 금지)으로 접는다(codex 1R major).
+/// 근거(이 가지 src/bin/cysd/handlers.rs `"surface.send_text"` 분기 7543~8377 · 쓰기 = try_write/hand_off_direct_job ≈8240 · codex 4R 요청으로 줄 명시):
 const PRE_WRITE_REFUSALS: &[&str] = &[
-    "invalid_params",          // 본문·좌석 번호 결측 · clear_first+queued
-    "not_found",               // 좌석 없음
-    "target_changed",          // 「nothing was typed」
-    "clear_first_unsupported", // launch-agent 등록 좌석 아님
-    "acl_denied",              // ACL 거부(쓰기 전 · last_human_input 도 안 찍음)
-    "process_exited",
-    cys::ERR_TYPING_GUARD,        // 타이핑 가드·초안 게이트 거부
-    cys::ERR_JOURNAL_UNAVAILABLE, // 「zero bytes」
+    "invalid_params",          // :7545·:7548 본문·좌석 결측 · :7659 clear_first+queued · :8112 UTF-8 아님(계획 단계 · 쓰기 전)
+    "not_found",               // :7553 좌석 없음
+    "target_changed",          // :7558 「nothing was typed」
+    "process_exited",          // :7566 좌석 프로세스 끝남
+    "acl_denied",              // :7599 ACL 거부(reject_send · last_human_input 도 안 찍음)
+    "clear_first_unsupported", // :7667 launch-agent 등록 좌석 아님
+    cys::ERR_TYPING_GUARD,        // :7878 타이핑 가드 · :7939~7970·:8202~8229 초안 게이트(draft_gate_denied_response :2983 → 이 코드)
+    cys::ERR_JOURNAL_UNAVAILABLE, // :8303 journal_barrier_verdict Refused = 「zero bytes written … nothing was typed」(:4704~4706)
 ];
 /// 세션 기록 한 번에 읽는 상한(바이트) — 넘으면 다음 호출이 `next_offset` 부터 잇는다(잘림 없음 · 레코드 경계까지만 소비).
 pub(crate) const TRANSCRIPT_READ_MAX: u64 = 2 * 1024 * 1024;
@@ -253,19 +254,11 @@ pub(crate) fn open_bound(cfg: &std::path::Path, expected: &std::path::Path) -> R
     Ok(f)
 }
 
-/// 윈도 — 경로 요소별 링크 차단 열기가 없어 실제 경로 대조만(〔윈 실측 = 조각 10〕).
+/// 윈도 — 폴더 핸들 기준 상대 열기·reparse point 차단을 아직 만들지 않았다 → **읽지 않는다**(codex 4R major · 경로 재탐색 대조는 바꿔치기를 못 막음).
+/// 화면은 「모름」(전달 확인 중 → 오래 걸려요)으로 남는다. 윈 구현·실측 = 조각 10.
 #[cfg(not(unix))]
-pub(crate) fn open_bound(cfg: &std::path::Path, expected: &std::path::Path) -> Result<std::fs::File, &'static str> {
-    let rel = expected.strip_prefix(cfg).map_err(|_| "outside_config_dir")?;
-    let want = std::fs::canonicalize(cfg).map_err(|_| "no_config_dir")?.join(rel);
-    if std::fs::canonicalize(expected).map_err(|_| "no_file")? != want {
-        return Err("symlinked_path");
-    }
-    let f = std::fs::File::open(&want).map_err(|_| "no_file")?;
-    if !f.metadata().map(|m| m.is_file()).unwrap_or(false) {
-        return Err("not_a_file");
-    }
-    Ok(f)
+pub(crate) fn open_bound(_cfg: &std::path::Path, _expected: &std::path::Path) -> Result<std::fs::File, &'static str> {
+    Err("unsupported_platform")
 }
 
 /// `chat_transcript` — 좌석에 결속된 세션 기록을 `after_offset` 부터 읽는다(`from_end` = 읽지 않고 끝 오프셋만).

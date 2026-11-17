@@ -1976,6 +1976,14 @@ fn merged_approval_patterns(
     out
 }
 
+/// ★(1.1.16 · cysr-1116-backlog-fix2-1118 · 재검 R2) 막기 전용 승인 패턴인가 — `"block_only": true`(계획 승인 창 `plan-approval`).
+/// 그 창의 1번은 「도구 1회 허락」 이 아니라 「계획 승인 + 자동 수락 모드 전환(판에 따라 맥락 지움)」 이다. 그래서 쓰기 직전 술어(사람·기계
+/// 말을 그 창에 쓰지 않음)에만 쓰고, 데몬 승인 스캔(`check_approvals` · feed 항목 · master 각성)과 오퍼레이터 집행
+/// (D24ⓐ `actuate_screen_approval`)에서는 뺀다 — 「허용」 한 번이 좌석을 자동 수락 모드로 바꾸지 않게.
+fn approval_pattern_block_only(p: &serde_json::Value) -> bool {
+    p["block_only"].as_bool().unwrap_or(false)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // ★(U-16) 데몬 첫기동 관문 스캔 — approval 스캔과 **분리된** 두 번째 스캐너
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2507,6 +2515,10 @@ fn check_approvals(
             let (Some(name), Some(pattern)) = (p["name"].as_str(), p["pattern"].as_str()) else {
                 continue;
             };
+            // ★(1.1.16 · cysr-1116-backlog-fix2-1118 · 재검 R2) 막기 전용 패턴(계획 승인 창)은 승인 항목·각성을 세우지 않는다.
+            if approval_pattern_block_only(p) {
+                continue;
+            }
             // ★(1.1.16 · cysr-1116-backlog-fix-1118 · codex 1R) `scope:"prompt_tail"` 패턴은 화면 전량이 아니라 쓰기 직전 술어와 같은
             //   범위(마지막 가로줄 아래 · 가로줄이 없으면 커서가 번호 선택 행일 때만 전량 — `approval_prompt_region`)에서만 찾는다.
             //   모델 답 본문·사람 입력이 창 문장과 선택지(`❯ 1.`)까지 인용해도 그것은 입력창 가로줄 위·안이라 범위 밖이다.
@@ -9905,12 +9917,14 @@ fn approval_screen_now(s: &Arc<crate::state::Surface>) -> bool {
     let Some((agent, _)) = s.agent_meta.lock().unwrap().clone() else {
         return false;
     };
-    approval_screen_with(s, &agent, true)
+    approval_screen_with(s, &agent, true, true)
 }
 
 /// [`approval_screen_now`] 본체 — `with_gates=false` 면 첫기동 관문 축(⑵)을 빼고 어댑터 승인 창만 본다
 /// (D24ⓐ 집행은 관문 창을 누르지 않는다 · 관문 통과는 부트 경로 소관 = `scan_first_run_gate` doc).
-fn approval_screen_with(s: &Arc<crate::state::Surface>, agent: &str, with_gates: bool) -> bool {
+/// ★(1.1.16 · cysr-1116-backlog-fix2-1118 · 재검 R2) `with_block_only=false` 면 막기 전용 패턴([`approval_pattern_block_only`] ·
+///   계획 승인 창)을 뺀다 — D24ⓐ 집행은 그 창을 「승인 창」으로 읽지 않는다(쓰기 직전 술어는 `true` 로 그대로 막는다).
+fn approval_screen_with(s: &Arc<crate::state::Surface>, agent: &str, with_gates: bool, with_block_only: bool) -> bool {
     let agent = agent.to_string();
     let disk = std::fs::read_to_string(cys::pack::pack_dir().join("agents.json"))
         .ok()
@@ -9923,6 +9937,7 @@ fn approval_screen_with(s: &Arc<crate::state::Surface>, agent: &str, with_gates:
         .unwrap_or_else(|| serde_json::json!({}));
     let res: Vec<regex::Regex> = merged_approval_patterns(&disk, &embed, &agent)
         .iter()
+        .filter(|p| with_block_only || !approval_pattern_block_only(p))
         .filter_map(|p| p["pattern"].as_str())
         .filter_map(approval_regex_cached)
         .collect();
@@ -9951,7 +9966,7 @@ fn approval_screen_with(s: &Arc<crate::state::Surface>, agent: &str, with_gates:
 
 /// 오퍼레이터 결정 → 창에 넣을 바이트(순수). 승인 창 판독은 호출자가 끝낸 뒤다.
 /// 선택 줄 = 준비 마커로 시작하는 번호 선택지 행(`❯ 1. Yes`)이 **정확히 1개**여야 한다(둘 이상·0 = 모양 불명 → 거부).
-/// allow 는 그 줄이 `1. Yes` 일 때만 Return(기본 선택 그대로 누름 · 숫자 키를 쓰지 않는 이유 = 선택 줄을 이미 대조했으므로
+/// allow 는 그 줄이 정확히 `1. Yes`(뒤 낱말 없음 · 1.1.16 재검 R2) 일 때만 Return(기본 선택 그대로 누름 · 숫자 키를 쓰지 않는 이유 = 선택 줄을 이미 대조했으므로
 /// Return 이 가장 좁다) · deny 는 Esc(claude 선택 창 꼬리 「Esc to cancel」).
 pub(crate) fn approval_actuation_bytes(
     rows: &[String],
@@ -9972,8 +9987,11 @@ pub(crate) fn approval_actuation_bytes(
         return Err("selected_row_ambiguous");
     };
     let rest = row[i + marker.len()..].trim_start();
+    // ★(1.1.16 · cysr-1116-backlog-fix2-1118 · 재검 R2) 1번 글자가 **정확히** `Yes`(뒤에 다른 낱말 없음 · 상자 테두리 `│` 는 벗김)일 때만.
+    //   종전 접두 대조는 계획 승인 창의 1번(`Yes, and auto-accept edits` · `Yes, clear context and auto-accept edits` = 승인 + 자동 수락
+    //   모드 전환)까지 눌렀다 — 「도구 1회 허락」 이 아닌 선택지는 어댑터 패턴과 무관하게 여기서 막는다.
     match rest.strip_prefix("1.") {
-        Some(label) if label.trim_start().starts_with("Yes") => Ok(b"\r"),
+        Some(label) if label.trim().trim_end_matches('│').trim_end() == "Yes" => Ok(b"\r"),
         _ => Err("selected_not_yes"),
     }
 }
@@ -9992,7 +10010,7 @@ pub(crate) fn actuate_screen_approval(
     let Some((agent, _)) = s.agent_meta.lock().unwrap().clone() else {
         return Err("agent_unknown");
     };
-    if !approval_screen_with(&s, &agent, false) {
+    if !approval_screen_with(&s, &agent, false, false) {
         return Err("gone");
     }
     let disk = std::fs::read_to_string(cys::pack::pack_dir().join("agents.json"))
@@ -18326,13 +18344,14 @@ mod tests {
         for q in &quoted {
             assert!(!scan(q).iter().any(|n| n == "plan-approval" || n == "file-write-permission"), "본문 인용을 창으로 읽었다:\n{q}");
         }
-        let dialogs = [
-            (format!("● 작업 로그\n{rule}\n Create file\n Do you want to create new.rs?\n ❯ 1. Yes\n   2. No\n Esc to cancel"), "file-write-permission"),
-            (format!("● 계획\n{rule}\n Claude has written up a plan and is ready to execute. Would you like to\n proceed?\n\n ❯ 1. Yes, and auto-accept edits\n   2. No"), "plan-approval"),
-        ];
-        for (d, want) in &dialogs {
-            assert!(scan(d).iter().any(|n| n == want), "실제 창을 승인 스캔이 못 읽었다({want}):\n{d}");
-        }
+        let write = format!("● 작업 로그\n{rule}\n Create file\n Do you want to create new.rs?\n ❯ 1. Yes\n   2. No\n Esc to cancel");
+        assert!(scan(&write).iter().any(|n| n == "file-write-permission"), "실제 Write 창을 승인 스캔이 못 읽었다:\n{write}");
+        // ★(1.1.16 · cysr-1116-backlog-fix2-1118 · 재검 R2) 계획 승인 창은 막기 전용(`block_only`) — 승인 항목·master 각성을 세우지 않는다
+        //   (쓰기 직전 술어는 그대로 막는다 · send_settle_tests::b16_fix2). 종전(8bdd08ad): `plan-approval` approval.request + feed 항목.
+        let plan = format!("● 계획\n{rule}\n Claude has written up a plan and is ready to execute. Would you like to\n proceed?\n\n ❯ 1. Yes, and auto-accept edits\n   2. No");
+        let got = scan(&plan);
+        assert!(got.is_empty(), "계획 승인 창이 승인 스캔 항목이 됐다: {got:?}");
+        assert!(daemon.pending_daemon_approvals(s.id).is_empty(), "계획 승인 창에 feed 승인 항목이 섰다");
         kill_pid(s.pid);
     }
 
@@ -18573,8 +18592,15 @@ mod tests {
         assert_eq!(super::approval_actuation_bytes(&none, "❯", true), Err("selected_row_ambiguous"));
         let two = rows("❯ 1. Yes\n❯ 1. Yes");
         assert_eq!(super::approval_actuation_bytes(&two, "❯", true), Err("selected_row_ambiguous"));
+        // ★(1.1.16 · cysr-1116-backlog-fix2-1118 · 재검 R2) 1번 글자가 **정확히** `Yes` 일 때만 — 종전 접두 대조는 계획 승인 창의 1번
+        //   (승인 + 자동 수락 모드 전환)까지 눌렀다. 어댑터 패턴과 무관한 방어선이다.
         let yesish = rows("❯ 1. Yesterday's plan");
-        assert_eq!(super::approval_actuation_bytes(&yesish, "❯", true), Ok(&b"\r"[..]), "라벨 머리 Yes 대조(접두) — 실제 창 문면 고정");
+        assert_eq!(super::approval_actuation_bytes(&yesish, "❯", true), Err("selected_not_yes"), "접두 Yes 는 Yes 가 아니다");
+        for plan in ["❯ 1. Yes, and auto-accept edits", "❯ 1. Yes, clear context and auto-accept edits", "❯ 1. Yes, auto-accept edits"] {
+            assert_eq!(super::approval_actuation_bytes(&rows(plan), "❯", true), Err("selected_not_yes"), "{plan}");
+            assert_eq!(super::approval_actuation_bytes(&rows(plan), "❯", false), Ok(&b"\x1b"[..]), "deny(Esc)는 그대로: {plan}");
+        }
+        assert_eq!(super::approval_actuation_bytes(&rows("│ ❯ 1. Yes      │"), "❯", true), Ok(&b"\r"[..]), "상자 테두리·뒤 공백은 벗긴다");
     }
 
     /// ★D24ⓑ 명령 원문 블록·읽기 전용 추정(순수) — 창 머리(가로줄·상자 윗변)까지 거슬러 모으고 테두리를 벗긴다.

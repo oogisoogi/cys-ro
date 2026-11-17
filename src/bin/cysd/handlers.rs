@@ -8037,8 +8037,17 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             //   배달됐다(승인 사유가 아니라 저장 검증 시간초과로 끝남).
             //   ★1.1.8 병합: 원작자 F1(일반 Return 쓰기 직전 보류+재제출)과 별개 축이다 — 이 옵션을 실은 호출자(순환·DRAIN·
             //   재주입)에게는 「보류 후 재제출」이 아니라 「쓰지 않음」이 맞다(JT-PART-DELIVERY §5-2 오버레이 1).
+            // ★(1.1.16 · cysr-1116-backlog-fix2-1118 · 재검 R1) 원자 제출(`clear_first`)은 쓰는 도중 탐침(`approval_enter_guard`)과
+            //   **같은 합집합**(화면 판정 ∨ 관문 항목 ∨ feed 승인 대기 항목)을 쓰기 전에도 본다. 종전엔 여기서 화면·관문만 봐서,
+            //   화면에 창이 없고 feed 항목만 남은 좌석(터미널에서 창에 답한 뒤 다음 15초 스캔 전 · 답 본문 인용으로 선 항목)은
+            //   통과 → 쓰는 도중 탐침이 Ctrl-U 만 쓰고 거부했다(사람 초안이 실제 입력줄에서 지워지고 응답은 `sent:true`).
+            //   지금은 바이트 0 · 오류 응답(호출자가 「안 보내졌다」 를 바로 안다). `clear_first` 가 없는 거부 요청은 쓰는 도중
+            //   탐침이 화면 술어뿐이라(feed 축 없음) 종전 술어 그대로 둔다.
             let refuse_on_approval = params.get("refuse_on_approval").and_then(|v| v.as_bool()).unwrap_or(false);
-            if refuse_on_approval && crate::governance::seat_approval_pending(daemon, &surface) {
+            if refuse_on_approval
+                && (crate::governance::seat_approval_pending(daemon, &surface)
+                    || (clear_first && crate::governance::approval_or_gate_pending(daemon, surface.id)))
+            {
                 return Reply::Single(err_response(
                     &id,
                     cys::ERR_APPROVAL_SCREEN,

@@ -222,7 +222,7 @@ UNDO-ALL · NO-PLACEMENTS · IGNORE-BUSY · ANY-COMMIT · NO-LATE · LATE-ANYKIN
 - minor ②: F2 — 의도 줄 뒤 chmod 성공 · 성공 줄 전 끊김 뒤 사용자가 바이트 그대로 권한만 앞 확정 값(0644)으로 되돌리면 그 사용자 권한을 적용 것으로 보고 적용 전 권한으로 되돌림 → 기록만(그 창 = 파일 하나 · 성공 줄 확정 시간 + 사용자가 정확히 그 값으로 chmod · 사용자 바이트 손실 0).
 - minor ③: F5 doctor 가 복구가 읽지 않는 배치 기록까지 봐 거짓 Fail 가능 → **반영**(828bbcff · 시험에 커밋됨 = Warn 갈래 추가).
 - missing 2: `pack_state_base()` = `pack_dir().parent()`(src/bin/cys.rs `fn pack_state_base` — 확인함 · 쓰는 이 `lock_path.parent()` 와 데몬 `pack_dir().parent()` 는 같은 값) · 공장 초기화가 `.pack-journal.d` 를 옮길 때 열린 레인 잠금(유닉스 inode 갈림 · 윈도우 이동 실패) → 기록만(📌).
-- 2R 은 브리프 밖(1R 1회) — 반영분(828bbcff) 수렴 확인은 하지 않음.
+- **codex 2R(03:27 · master 지시 [master#acb32445] · 대상 0f6c1929 포함 ~ 3100450c) = ACCEPT** — 1R major·minor ③·missing ① 닫힘 · minor ①② 기록만 동의 · 새 minor 1(본부 기동의 「공용 잠금 실패 → 옛 저널 없음」 검사와 1.1.15 쓰는 이의 저널 생성 사이 경합 · 기준선도 잠금 없이 설치 = 나빠지지 않음 → 📌) · 원문 = scratchpad `codex-f2r-out.txt`.
 
 ### 10-8. 자원 규칙(master 03:07 [master#a745e394] · 원장 대조 성립) 이후
 
@@ -235,5 +235,6 @@ UNDO-ALL · NO-PLACEMENTS · IGNORE-BUSY · ANY-COMMIT · NO-LATE · LATE-ANYKIN
 3. F3 · F2(나) · codex 1R minor ①②(1.1.15 부서 수동 쓰는 이 ↔ 부서 데몬 · 의도 줄 뒤 사용자 권한만 되돌림) — 기록. 셋 다 기준선보다 나빠지지 않음.
 4. 공장 초기화가 `.pack-journal.d` 를 옮길 때 열린 레인 잠금(유닉스 inode 갈림 · 윈도우 이동 실패) — 초기화가 데몬을 먼저 멈추는지 미확인(codex 1R missing).
 5. F7 ①(`javis_formation.py`·`javis_cycle_autopilot.py` 정지 표지 `os.path.exists`) · ④(1.1.16 → 1.1.15 되돌림 절차에 「레인 저널 남았는지 확인」 한 줄).
+6-1. codex 2R minor: 공용 잠금 실패 뒤 옛 저널 부재 검사는 원자적이지 않음(살아 있는 1.1.15 쓰는 이가 저널을 만들기 전 창) — 후속 = 제한 재시도 또는 세대·레인 표식 + 「공용 잠금만 · 옛 저널 아직 없음」 시험 · F2 권한만 되돌린 사용자 시험.
 6. 남은 「공용 잠금 Busy = 본부 건너뜀」 경우 = 1.1.15 옛 공유 저널이 **남아 있고** 어느 레인이든 pack-update 가 진행 중일 때뿐(1회성 올림 기기) — 다음 기동에서 복구·설치.
 7. 기준선 worktree `~/axdev/.wt/cys-1116-base-1118`(detached 3a095c4e · 깨끗) — 다음 비교에 재사용하거나 `git worktree remove` 로 치움.

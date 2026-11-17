@@ -13,6 +13,7 @@ import { composeOutbound } from "./judge/outbound";
 import { approvalSeatsOf, masterRowOf, sendGate, type GateVerdict, type MasterRow } from "./judge/gate";
 import { applyRecords, applyRefusedAtWrite, canRetry, mergeOutcome, READ_AFTER_MS, rematchPending, SENDING_SILENT_MS, settleSteps, SLOW_MS, stepFromOutcome, type Msg, type PendingRec, type Rec, type Reply, type Step } from "./judge/msgstep";
 import { applyQueueEvent, autoHoldRemainingMs, queueEventOf, type AutoMsg } from "./judge/autostep";
+import { ConfirmBook } from "./confirm";
 
 export const HOLD_KEY = "cys-chat-hold";
 /** 붙잡은 말 상한(설계 §5-3 · 넘으면 새 말을 받지 않고 안내). */
@@ -98,6 +99,13 @@ export interface Deps {
   store: Store;
   /** org.status 행 → 지금 답하는 중인가(appearance.nodeWorking) */
   working(row: Record<string, unknown>): boolean;
+  /** (조각 4) daemon-event 구독 — 대화 화면이 켜져 있을 때만(attach~detach). 없으면 사건 없이(멈춤 = org.status·5분 규칙만).
+   *  (통합 1116) 조각 3 의 `listen(name, handler)` 와 이름이 겹쳐 `listenDaemon` 으로 — 두 구독 모두 그대로 산다. */
+  listenDaemon?(fn: (ev: unknown) => void): () => void;
+  /** (조각 4) 다른 화면으로(「작업 화면에서 보기」) — registry.choose. */
+  goView?(id: string): void;
+  /** (조각 4 · 검증 F1) 본부 데몬 socket_slug(Tauri default_socket_slug) — 사건의 slug 대조용 · 대화 화면이 켜질 때 1회. */
+  defaultSlug?(): Promise<string>;
 }
 
 export type Health = "unknown" | "none" | "off" | "gate" | "busy" | "ready";
@@ -175,9 +183,14 @@ export class ChatCore {
   private pendingUser: PendingRec[] = [];
   /** (codex 1R major) 세션 시작점 조회 세대 — 늦게 돌아온 옛 조회(시간 상한을 넘겼거나 뒤 조회가 이미 시작된 것)는 offset·세션을 바꾸지 못한다 */
   private initGen = 0;
+  /** (조각 4) 확인 대기 장부 — 띠·표식·직접 허락. */
+  readonly confirm: ConfirmBook;
+  /** (조각 4 · 통합 1116) 장부용 사건 구독 해제 — 조각 3 구독(unlisten)과 따로 든다(두 구독 모두 대화 화면 attach~detach 동안만). */
+  private unlistenConfirm: (() => void) | null = null;
 
   constructor(private readonly d: Deps) {
     this.loadHold();
+    this.confirm = new ConfirmBook({ invoke: d.invoke, now: d.now, store: d.store }, () => this.set({}));
   }
 
   get state(): ChatState {
@@ -208,6 +221,12 @@ export class ChatCore {
   /** 대화 화면이 켜짐 — 세션 기록 읽기 허용 · 시작 오프셋 잡기. */
   attach(): void {
     this.attached = true;
+    if (!this.unlistenConfirm && this.d.listenDaemon) this.unlistenConfirm = this.d.listenDaemon((ev) => this.confirm.onEvent(ev));
+    if (this.d.defaultSlug)
+      void this.d
+        .defaultSlug()
+        .then((s) => this.confirm.setHqSlug(typeof s === "string" && s ? s : null))
+        .catch(() => {});
     void this.readTranscript();
     void this.startListening();
   }
@@ -215,6 +234,8 @@ export class ChatCore {
   /** 대화 화면이 내려감 — 읽기 예약 해제(공통층 상태·붙잡은 말은 그대로 · §4-3). */
   detach(): void {
     this.attached = false;
+    this.unlistenConfirm?.();
+    this.unlistenConfirm = null;
     for (const h of this.readTimers) this.d.clearTimeout(h);
     this.readTimers.clear();
     this.listenGen++;
@@ -280,6 +301,11 @@ export class ChatCore {
   /** (조각 3 · R3) 지금 기계 문안을 큐에 넣으면 데몬이 묶어 둘 남은 시간(ms) — 마지막 사람 보내기 뒤 31.2초(0.5 M10). */
   autoHoldRemainingMs(): number {
     return autoHoldRemainingMs(this.lastHumanSentAt, this.d.now());
+  }
+
+  /** (조각 4) 띠의 「작업 화면에서 보기」. */
+  goView(id: string): void {
+    this.d.goView?.(id);
   }
 
   // ---------- 저장소(붙잡은 말만 원문 · §5-3 cys-chat-hold) ----------
@@ -354,17 +380,17 @@ export class ChatCore {
   /** 마스터 상태 + 승인 대기를 새로 받는다. 실패는 undefined/null(모름). */
   /** 승인 대기(feed)를 먼저, **입력줄 상태(org.status)를 마지막에** 받는다 — 마지막 관측 뒤 다른 응답을 기다리지 않게(codex 2R blocking).
    *  org.status 왕복이 OBS_MAX_MS 를 넘으면 그 관측은 낡은 것으로 보고 모름(undefined → 붙잡음). */
-  private async fetchFresh(): Promise<{ master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number }> {
+  private async fetchFresh(): Promise<{ master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number; feed?: unknown; org?: unknown }> {
     const feed = await this.d.invoke("feed_list", { status: "pending" }).catch(() => undefined);
     const t0 = this.d.now();
     const org = await this.d.invoke("org_status", { socket: null }).catch(() => undefined);
     const stale = this.d.now() - t0 > OBS_MAX_MS;
-    return { master: org === undefined || stale ? undefined : masterRowOf(org, this.d.working), approvals: feed === undefined ? null : approvalSeatsOf(feed), obsAt: t0 };
+    return { master: org === undefined || stale ? undefined : masterRowOf(org, this.d.working), approvals: feed === undefined ? null : approvalSeatsOf(feed), obsAt: t0, feed, org };
   }
 
   /** (조각 3 고침 · 검증 지적 F) 재조회 전체에 시간 상한(OBS_MAX_MS · 조각 4 ORG_MAX_MS 와 같은 500ms) — 데몬이 살아 있지만 멈춰도 보내기·조회 고리가 멈추지 않게.
    *  넘으면 모름(마스터 undefined · 승인 대기 null → 문턱이 붙잡음 · 쓰기 0) + timedOut 표지. 늦게 온 답은 버린다. */
-  private async freshBounded(): Promise<{ master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number; timedOut?: boolean }> {
+  private async freshBounded(): Promise<{ master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number; timedOut?: boolean; feed?: unknown; org?: unknown }> {
     const r = await this.bounded(this.fetchFresh());
     return r === TIMED_OUT ? { master: undefined, approvals: null, obsAt: this.d.now(), timedOut: true } : r;
   }
@@ -398,8 +424,9 @@ export class ChatCore {
     return sendGate({ master: f.master, approvalSeats: f.approvals });
   }
 
-  private applyFresh(f: { master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number }): void {
+  private applyFresh(f: { master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number; feed?: unknown; org?: unknown }): void {
     const m = f.master;
+    this.confirm.observe(f.feed, f.org, m);
     const confirms = f.approvals === null || !m ? (f.approvals === null ? null : 0) : f.approvals.filter((x) => x === m.surface_id).length;
     const working = m ? m.working : null;
     const msgs = settleSteps(this.s.msgs, this.d.now(), working);
@@ -608,6 +635,7 @@ export class ChatCore {
       const fresh = await this.freshBounded(); // (조각 3 고침 · 검증 지적 F) 멈춘 데몬에 조회 고리가 묶이지 않게
       const prevWorking = this.lastWorking;
       this.applyFresh(fresh);
+      void this.confirm.scanStep(); // (조각 4) 대화 화면을 연 때보다 앞 기록의 표식을 한 토막씩
       this.lastWorking = fresh.master ? fresh.master.working : null;
       const awaiting = this.s.msgs.some((m) => ["injected", "checking", "slow", "delivered", "replying"].includes(m.step));
       // (조각 3 · 하네스 seed 370) 짧은 답(두 조회 사이 3초 안에 일 시작·끝)은 「활동 바뀜」으로 안 잡힌다 → 마스터 출력이 지난 조회 뒤에 있었으면(idle_secs) 그 틱도 읽는다.
@@ -616,7 +644,9 @@ export class ChatCore {
       const idle = fresh.master ? fresh.master.idle_secs : null;
       const outputSincePoll = this.lastPollAt !== null && typeof idle === "number" && idle * 1000 < pollAt - this.lastPollAt;
       this.lastPollAt = pollAt;
-      if (awaiting && ((prevWorking !== null && prevWorking !== this.lastWorking) || outputSincePoll)) void this.readTranscript(); // 활동이 바뀐 틱 · 새 출력이 있던 틱
+      // (조각 4) 기다리는 말이 없어도 마스터가 **쉬게 된** 틱이면 읽는다(마스터가 스스로 낸 물음 표식 · 새 주기 조회 0)
+      const changed = prevWorking !== null && prevWorking !== this.lastWorking;
+      if ((changed && (awaiting || this.lastWorking === false)) || (awaiting && outputSincePoll)) void this.readTranscript(); // 활동이 바뀐 틱 · 새 출력이 있던 틱
       else if (this.offset === null && fresh.master) void this.readTranscript(); // 마스터를 안 첫 틱에 세션 시작점을 잡아 둔다(보내기 길에서 그 RPC 를 빼려고)
       const now = this.d.now();
       this.markStale();
@@ -658,6 +688,7 @@ export class ChatCore {
     if (r?.status === "ok" && typeof r.next_offset === "number") {
       this.offset = r.next_offset;
       this.sessionId = typeof r.session_id === "string" ? r.session_id : null;
+      this.confirm.startSession(this.sessionId, m.surface_id, r.next_offset);
       return "ok";
     }
     return "none";
@@ -685,8 +716,10 @@ export class ChatCore {
           records?: unknown;
           session_id?: unknown;
           reset?: unknown;
+          skipped_bytes?: unknown;
         } | null;
         if (!r || r.status !== "ok" || typeof r.next_offset !== "number") return;
+        if (typeof r.skipped_bytes === "number" && r.skipped_bytes > 0) this.confirm.markLossy(); // (조각 4 · 검증 F3) 2 MiB 넘는 줄을 건너뜀
         const sid = typeof r.session_id === "string" ? r.session_id : null;
         if (sid !== this.sessionId) {
           // 결속 세션이 바뀜(마스터 다시 켜짐·/clear) — 새 파일 끝에서 다시 시작(옛 오프셋으로 새 파일을 읽지 않는다)
@@ -694,6 +727,7 @@ export class ChatCore {
           this.consumed.clear();
           this.pendingUser = [];
           this.offset = null;
+          this.confirm.resetSession();
           await this.initOffset();
           return;
         }
@@ -701,11 +735,13 @@ export class ChatCore {
           // 파일이 줄었다(잘림·교체) — 다시 읽은 옛 레코드로 새 전달·답 근거를 만들지 않는다(codex 1R major). 끝에서 다시 시작.
           this.offset = null;
           this.pendingUser = [];
+          this.confirm.resetSession();
           await this.initOffset();
           return;
         }
         const recs = Array.isArray(r.records) ? (r.records as Rec[]) : [];
         this.offset = r.next_offset;
+        if (recs.length) this.confirm.onTail(recs);
         if (recs.length) {
           const applied = applyRecords(this.s.msgs, recs, this.consumed);
           for (const u of applied.consumed) this.consumed.add(u);

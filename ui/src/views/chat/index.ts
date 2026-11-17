@@ -7,6 +7,7 @@ import type { ViewContext, ViewInstance, ViewModule } from "../contract";
 import { DUP, dupPending, errorCount, HEALTH_LABEL, lastSendStep, logOrder, needsClick, POLL_MS, SAME_DELIVERED_NOTE, sameTextDelivered, type ChatCore, type ChatState } from "../core";
 import { canRetry, STEP_LABEL, type Msg } from "../judge/msgstep";
 import { AUTO_STEP_LABEL, type AutoMsg } from "../judge/autostep";
+import { createBand } from "./band";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -50,7 +51,9 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
     notice.setAttribute("role", "status");
     form.append(input, sendBtn);
 
-    root.append(head, log, live, form, notice);
+    // (조각 4) 확인 대기 띠 = 화면 맨 위 · 「답하는 물음」 줄 = 입력칸 바로 위
+    const band = createBand(act, { log, input });
+    root.append(band.el, head, log, live, band.hint, form, notice);
     host.append(root);
 
     const submit = () => {
@@ -117,8 +120,9 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
       li.dataset.step = a.step;
       return li;
     };
-    const masterBubble = (text: string): HTMLLIElement => {
+    const masterBubble = (text: string, uuid: string | null = null): HTMLLIElement => {
       const li = el("li", "cv-msg cv-master");
+      if (uuid) li.dataset.uuid = uuid; // (조각 4) 「대화에서 답하기」가 그 물음 자리를 찾는 표지
       li.append(el("div", "cv-who", "마스터"), el("div", "cv-text", text));
       return li;
     };
@@ -129,8 +133,10 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
       lastRev = s.rev;
       health.textContent = HEALTH_LABEL[s.health];
       health.dataset.health = s.health;
-      confirms.textContent = s.confirms === null ? "확인할 것 살펴보는 중" : `확인이 필요해요 ${s.confirms}`;
-      confirms.dataset.count = s.confirms === null ? "" : String(s.confirms);
+      // (조각 4) 확인 대기 수 = 띠와 같은 값(마스터 물음 + 승인 대기 · 모르면 「살펴보는 중」)
+      const sum = band.summary();
+      confirms.textContent = sum.text;
+      confirms.dataset.count = sum.count;
       const ec = errorCount(s);
       errors.textContent = ec > 0 ? `문제 ${ec}` : "문제 없음";
       errors.dataset.count = String(ec);
@@ -144,13 +150,14 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
       // (조각 3 고침 · 검증 지적 B) 어느 말에도 안 묶인 마스터 글은 시각순으로 사람 말 사이에 끼운다(사람 말들 뒤에 몰리지 않게).
       for (const it of logOrder(s.msgs, s.stray)) {
         if (it.kind === "stray") {
-          log.append(masterBubble(it.r.text));
+          log.append(masterBubble(it.r.text, it.r.uuid));
           continue;
         }
         log.append(bubble(it.m, s));
-        for (const r of it.m.replies) log.append(masterBubble(r.text));
+        for (const r of it.m.replies) log.append(masterBubble(r.text, r.uuid));
       }
       for (const a of s.autos) log.append(autoLine(a));
+      band.paint(); // (조각 4) 말 목록을 다시 그린 뒤 — 답하는 물음 자리 표시를 다시 단다
       if (atBottom) log.scrollTop = log.scrollHeight;
     };
     ctx.subscribe(paint);

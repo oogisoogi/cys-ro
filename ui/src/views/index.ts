@@ -44,6 +44,23 @@ export function bootViews(deps: BootDeps): { core: ChatCore; registry: Registry<
     working: deps.working,
     // (조각 3) 데몬 사건 구독 — main.ts 를 건드리지 않고 같은 Tauri 전역을 쓴다(core 가 대화 화면이 켜졌을 때만 부름 · 작업 화면 invoke 0 유지).
     listen: (name, handler) => (window as unknown as { __TAURI__: { event: { listen(n: string, h: (e: { payload: unknown }) => void): Promise<() => void> } } }).__TAURI__.event.listen(name, handler),
+    // (조각 4) 대화 화면이 켜져 있을 때만 core 가 부른다 — 작업 화면만 쓰면 구독 0(동작 변화 0). (통합 1116) 조각 3 listen 과 이름이 겹쳐 listenDaemon.
+    listenDaemon: (fn) => {
+      const ev = (window as unknown as { __TAURI__?: { event?: { listen?: (n: string, h: (e: { payload: unknown }) => void) => Promise<() => void> } } }).__TAURI__?.event;
+      if (!ev?.listen) return () => {};
+      let off: (() => void) | null = null;
+      let dead = false;
+      void ev
+        .listen("daemon-event", (e) => fn(e.payload))
+        .then((u) => (dead ? u() : (off = u)))
+        .catch(() => {});
+      return () => {
+        dead = true;
+        off?.();
+      };
+    },
+    goView: (id) => void booted?.registry.choose(id),
+    defaultSlug: async () => String(await deps.invoke("default_socket_slug")),
   });
   const views: ViewDescriptor<ChatState, ChatCore>[] = [
     {

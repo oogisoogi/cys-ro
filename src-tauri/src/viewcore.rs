@@ -14,7 +14,7 @@
 
 use serde_json::{json, Value};
 
-use crate::{read_operator_token_for, resolve_socket, rpc_full_classified, rpc_on, TransportClass};
+use crate::{read_operator_token_for, resolve_socket, rpc_full, rpc_full_classified, rpc_on, TransportClass};
 
 /// 데몬 오류 코드(정의처 = `cys::ERR_APPROVAL_SCREEN` · src/lib.rs) — 승인·질문 창 거부(바이트 0) = 화면은 「붙잡음」.
 const CODE_APPROVAL_SCREEN: &str = cys::ERR_APPROVAL_SCREEN;
@@ -120,6 +120,53 @@ pub async fn chat_send(socket: Option<String>, surface_id: u64, text: String, ki
     Ok(classify_send(rpc_full_classified(&sock, "surface.send_text", params).await))
 }
 
+/// (조각 4 · codex 1R major 5 · blocking) `feed.reply` 매개변수(순수). `screen_fingerprint` = 화면이 펼쳐 본 판의 데몬 지문(있을 때만 싣는다 —
+/// 데몬이 집행 직전 지금 창 지문과 대조하는 자리 · 지금 데몬은 이 칸을 모르고 화면도 지문 없는 판엔 허락을 내지 않는다).
+pub(crate) fn confirm_reply_params(request_id: &str, decision: &str, screen_fingerprint: Option<&str>, tok: Option<&str>) -> Value {
+    let mut p = json!({"request_id": request_id, "decision": decision});
+    if let Some(f) = screen_fingerprint.filter(|f| !f.is_empty()) {
+        p["screen_fingerprint"] = json!(f);
+    }
+    if let Some(t) = tok {
+        p["operator_token"] = json!(t);
+    }
+    p
+}
+
+/// 데몬 응답 → 화면 결과(순수). ok 면 `result` 그대로(`actuated` = 창을 실제로 눌렀는지 · null = 기록만 해소) · 아니면 `"<code>: <message>"`.
+pub(crate) fn confirm_reply_outcome(resp: &Value) -> Result<Value, String> {
+    if resp["ok"].as_bool() == Some(true) {
+        Ok(resp["result"].clone())
+    } else {
+        Err(format!(
+            "{}: {}",
+            resp["error"]["code"].as_str().unwrap_or("error"),
+            resp["error"]["message"].as_str().unwrap_or("unknown error")
+        ))
+    }
+}
+
+/// `confirm_reply` — 대화 화면 직접 허락·거절(본부 데몬 승인 항목 한정). 원작자 `feed_reply` 와 같은 operator token 첨부·1회 재시도이되
+/// **데몬 결과를 버리지 않고** 돌려준다(`feed_reply` 는 `Ok(())` 로 `actuated` 를 버려 「기록만 해소」를 「집행 성공」으로 보이게 했다 · codex 1R major 5).
+/// allow/deny 만 받는다. 원작자 `feed_reply` 는 손대지 않는다(작업 화면 동작 변화 0).
+#[tauri::command]
+pub async fn confirm_reply(request_id: String, decision: String, screen_fingerprint: Option<String>) -> Result<Value, String> {
+    if decision != "allow" && decision != "deny" {
+        return Err(format!("invalid_decision: {decision}"));
+    }
+    let sock = resolve_socket(&None);
+    let call = |sock: std::path::PathBuf| {
+        let params = confirm_reply_params(&request_id, &decision, screen_fingerprint.as_deref(), read_operator_token_for(&sock).as_deref());
+        async move { rpc_full(&sock, "feed.reply", params).await }
+    };
+    let mut resp = call(sock.clone()).await?;
+    // feed_reply 와 같은 좁은 창(토큰 회전 경합) — 신선 재독으로 1회만 재시도.
+    if resp["ok"].as_bool() != Some(true) && matches!(resp["error"]["code"].as_str(), Some("self_approval_denied") | Some("owner_gui_required")) {
+        resp = call(sock).await?;
+    }
+    confirm_reply_outcome(&resp)
+}
+
 /// Claude Code 프로젝트 폴더 이름(순수) — cwd 의 영숫자 밖 글자를 전부 `-` 로(`/a/.b` → `-a--b`).
 pub(crate) fn transcript_slug(cwd: &str) -> String {
     cwd.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
@@ -150,9 +197,10 @@ fn content_text(content: &Value) -> (Option<String>, Vec<String>) {
 }
 
 /// 세션 기록 덩이(순수) → (레코드들, 소비한 바이트). 줄 끝(`\n`)까지 온전한 줄만 읽고 마지막 미완 줄은 남긴다(다음 호출이 잇는다).
-/// 레코드 = `{uuid, parent, role:"user"|"assistant", text(없으면 null), parts, ts, sidechain}` — user/assistant 전부(글 없는 고리 포함). 줄 파싱 실패는 건너뛴다(세기만).
+/// 레코드 = `{uuid, parent, role:"user"|"assistant", text(없으면 null), parts, ts, sidechain, at}` — user/assistant 전부(글 없는 고리 포함). 줄 파싱 실패는 건너뛴다(세기만).
 /// (조각 3 고침 · 검증 지적 B) 그 밖 종류(attachment·system 등)도 uuid 가 있으면 **글 없는 고리** `{uuid, parent, role:"link", text:null, …}` 로 넘긴다 —
 /// 진짜 기록은 사람 말과 첫 답 사이에 이런 레코드(훅이 덧붙인 글 등)가 끼어, 빼면 답의 부모 사슬이 끊긴다. 본문·종류 이름·시각은 넘기지 않는다(NFR-S3 · 글 0자).
+/// `at` = 그 줄이 시작하는 **덩이 안** 바이트 위치(`read_transcript_from` 이 파일 위치로 바꿈 · 조각 4 codex 1R minor — 앞 훑기·뒤 읽기 겹침을 위치로 가름).
 pub(crate) fn parse_transcript_chunk(buf: &[u8]) -> (Vec<Value>, usize, usize) {
     let consumed = match buf.iter().rposition(|&b| b == b'\n') {
         Some(i) => i + 1,
@@ -160,7 +208,10 @@ pub(crate) fn parse_transcript_chunk(buf: &[u8]) -> (Vec<Value>, usize, usize) {
     };
     let mut out = Vec::new();
     let mut bad = 0usize;
+    let mut pos = 0usize;
     for line in buf[..consumed].split(|&b| b == b'\n') {
+        let at = pos;
+        pos += line.len() + 1;
         if line.iter().all(|b| b.is_ascii_whitespace()) {
             continue;
         }
@@ -181,6 +232,9 @@ pub(crate) fn parse_transcript_chunk(buf: &[u8]) -> (Vec<Value>, usize, usize) {
                     "parts": Value::Null,
                     "ts": Value::Null,
                     "sidechain": v["isSidechain"].as_bool().unwrap_or(false),
+                    // (통합 1116) 고리도 줄 위치를 싣는다 — 조각 4 앞 훑기는 끝을 넘는 토막에 위치 없는 레코드가 하나라도 있으면
+                    // 「다 훑음」을 확정하지 않으므로(confirm.ts scanStep), 위치 없는 고리가 끼면 띠가 「살펴보는 중」에 머문다. 위치 = 바이트 수(글 0자 · NFR-S3 그대로).
+                    "at": at,
                 }));
                 continue;
             }
@@ -194,6 +248,7 @@ pub(crate) fn parse_transcript_chunk(buf: &[u8]) -> (Vec<Value>, usize, usize) {
             "parts": if parts.len() > 1 { json!(parts) } else { Value::Null },
             "ts": v["timestamp"].as_str(),
             "sidechain": v["isSidechain"].as_bool().unwrap_or(false),
+            "at": at,
         }));
     }
     (out, consumed, bad)
@@ -307,8 +362,11 @@ pub async fn chat_transcript(socket: Option<String>, surface_id: u64, after_offs
     };
     if from_end.unwrap_or(false) {
         // 대화 화면을 처음 띄울 때 — 지난 기록을 다 읽지 않고 끝에서 시작한다(이후 새 바이트만).
+        // 시작점 = **마지막 완성 줄의 끝**(쓰는 중인 미완 줄은 뒤 읽기가 그 줄 처음부터 읽는다 · codex 2R major — 줄 중간을 시작점으로 잡으면
+        // 앞 훑기와 뒤 읽기가 같은 줄을 서로 다른 위치로 받아 해결 표식을 두 번 셌다).
         let size = file.metadata().map_err(|e| e.to_string())?.len();
-        return Ok(json!({"status": "ok", "session_id": sid, "next_offset": size, "size": size, "records": [], "bad_lines": 0, "reset": false}));
+        let start = last_line_end(&file, size)?;
+        return Ok(json!({"status": "ok", "session_id": sid, "next_offset": start, "size": size, "records": [], "bad_lines": 0, "reset": false}));
     }
     read_transcript_from(file, after_offset).map(|mut v| {
         v["session_id"] = json!(sid);
@@ -325,21 +383,108 @@ pub(crate) fn read_transcript_from(mut f: std::fs::File, after_offset: u64) -> R
     f.seek(SeekFrom::Start(start)).map_err(|e| e.to_string())?;
     let want = (size - start).min(TRANSCRIPT_READ_MAX);
     let mut buf = Vec::with_capacity(want as usize);
-    f.take(want).read_to_end(&mut buf).map_err(|e| e.to_string())?;
-    let (records, consumed, bad) = parse_transcript_chunk(&buf);
+    (&f).take(want).read_to_end(&mut buf).map_err(|e| e.to_string())?;
+    let (mut records, consumed, bad) = parse_transcript_chunk(&buf);
+    for r in records.iter_mut() {
+        if let Some(rel) = r["at"].as_u64() {
+            r["at"] = json!(start + rel); // 덩이 안 위치 → 파일 위치
+        }
+    }
+    let mut next = start + consumed as u64;
+    let mut skipped: u64 = 0;
+    let mut long_open = false;
+    // (조각 4 · 독립 검증 F3) 한 줄이 읽기 한도보다 길면 줄 끝이 없어 영영 못 나아갔다(앞 훑기 「다 훑음」 오판 · 뒤 읽기 정지).
+    //   그 줄은 내용을 읽지 않고 다음 줄 끝까지 건너뛰고 건너뛴 바이트를 알린다(화면 = 그 세션 물음은 「모름」 유지).
+    //   줄 끝이 아직 없으면(쓰는 중) 그대로 두고 `long_line_open` 만 알린다.
+    if consumed == 0 && buf.len() as u64 == TRANSCRIPT_READ_MAX {
+        match next_newline_after(&f, start + buf.len() as u64, size)? {
+            Some(end) => {
+                skipped = end - start;
+                next = end;
+            }
+            None => long_open = true,
+        }
+    }
     Ok(json!({
         "status": "ok",
-        "next_offset": start + consumed as u64,
+        "next_offset": next,
         "size": size,
         "records": records,
         "bad_lines": bad,
         "reset": reset,
+        "skipped_bytes": skipped,
+        "long_line_open": long_open,
     }))
+}
+
+/// `size` 앞 마지막 `\n` 바로 뒤 오프셋(= 마지막 완성 줄의 끝 · 미완 줄의 시작) · `\n` 이 없으면 0. 뒤에서 64 KiB 씩 거슬러 읽는다(끝이 `\n` 이면 1바이트).
+pub(crate) fn last_line_end(mut f: &std::fs::File, size: u64) -> Result<u64, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut end = size;
+    let mut chunk = vec![0u8; 64 * 1024];
+    while end > 0 {
+        let n = end.min(64 * 1024);
+        let from = end - n;
+        f.seek(SeekFrom::Start(from)).map_err(|e| e.to_string())?;
+        f.read_exact(&mut chunk[..n as usize]).map_err(|e| e.to_string())?;
+        if let Some(i) = chunk[..n as usize].iter().rposition(|&b| b == b'\n') {
+            return Ok(from + i as u64 + 1);
+        }
+        end = from;
+    }
+    Ok(0)
+}
+
+/// `from` 부터 `size` 까지 첫 `\n` 뒤 오프셋(내용은 버림 · 64 KiB 씩) · 없으면 None.
+pub(crate) fn next_newline_after(mut f: &std::fs::File, from: u64, size: u64) -> Result<Option<u64>, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    f.seek(SeekFrom::Start(from)).map_err(|e| e.to_string())?;
+    let mut pos = from;
+    let mut chunk = vec![0u8; 64 * 1024];
+    while pos < size {
+        let n = f.read(&mut chunk[..((size - pos).min(64 * 1024)) as usize]).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        if let Some(i) = chunk[..n].iter().position(|&b| b == b'\n') {
+            return Ok(Some(pos + i as u64 + 1));
+        }
+        pos += n as u64;
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn over_long_line_is_skipped_to_next_line_end_and_reported() {
+        // (조각 4 · 독립 검증 F3) 한도보다 긴 한 줄 → 다음 줄 끝까지 건너뜀 + skipped_bytes · 줄 끝이 아직 없으면 그대로 + long_line_open
+        let dir = std::env::temp_dir().join(format!("vc-long-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("s.jsonl");
+        let long = vec![b'x'; TRANSCRIPT_READ_MAX as usize + 10];
+        let rec = br#"{"type":"assistant","uuid":"a2","message":{"content":"after"}}"#;
+        let mut body = long.clone();
+        body.push(b'\n');
+        body.extend_from_slice(rec);
+        body.push(b'\n');
+        std::fs::write(&p, &body).unwrap();
+        let v = read_transcript_from(std::fs::File::open(&p).unwrap(), 0).unwrap();
+        assert_eq!(v["skipped_bytes"], long.len() as u64 + 1);
+        assert_eq!(v["next_offset"], long.len() as u64 + 1);
+        assert_eq!(v["long_line_open"], false);
+        let w = read_transcript_from(std::fs::File::open(&p).unwrap(), long.len() as u64 + 1).unwrap();
+        assert_eq!(w["records"][0]["uuid"], "a2", "건너뛴 뒤 다음 줄을 읽는다");
+        assert_eq!(w["skipped_bytes"], 0);
+        std::fs::write(&p, &long).unwrap(); // 줄 끝이 아직 없음(쓰는 중)
+        let o = read_transcript_from(std::fs::File::open(&p).unwrap(), 0).unwrap();
+        assert_eq!(o["next_offset"], 0);
+        assert_eq!(o["long_line_open"], true);
+        assert_eq!(o["skipped_bytes"], 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn human_params_are_one_atomic_request_with_both_tokens() {
@@ -416,6 +561,8 @@ mod tests {
         assert_eq!(recs[3]["parent"], "u2");
         assert!(recs[3]["text"].is_null() && recs[3]["parts"].is_null() && recs[3]["ts"].is_null());
         assert!(!recs[3].to_string().contains("비밀") && !recs[3].to_string().contains("hook_additional_context"), "고리에 본문·종류 이름 0");
+        // (통합 1116) 고리도 줄 시작 위치(조각 4 앞 훑기가 위치로 앞·뒤 기록을 가름)
+        assert_eq!(recs[3]["at"].as_u64(), Some((a.len() + 1 + b.len() + 1 + tool.len() + 1 + meta.len() + 1) as u64));
         assert_eq!(recs[0]["role"], "user");
         assert_eq!(recs[0]["text"], "안녕");
         assert_eq!(recs[1]["parent"], "u1");
@@ -475,6 +622,68 @@ mod tests {
         assert_eq!(r2["reset"], false);
         let r3 = read_transcript_from(std::fs::File::open(&p).unwrap(), 10_000_000).unwrap();
         assert_eq!(r3["reset"], true);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn records_carry_file_line_start_position() {
+        // (조각 4 · codex 1R minor) 레코드 `at` = 그 줄이 시작하는 파일 바이트 위치(오프셋부터 읽어도 파일 기준)
+        let dir = std::env::temp_dir().join(format!("viewcore-at-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("s.jsonl");
+        let l1 = json!({"type":"assistant","message":{"content":"같은 글"}}).to_string();
+        let junk = "{not json";
+        let l3 = json!({"type":"assistant","message":{"content":"같은 글"}}).to_string();
+        std::fs::write(&p, format!("{l1}\n{junk}\n{l3}\n")).unwrap();
+        let r = read_transcript_from(std::fs::File::open(&p).unwrap(), 0).unwrap();
+        let at: Vec<u64> = r["records"].as_array().unwrap().iter().map(|x| x["at"].as_u64().unwrap()).collect();
+        let second = (l1.len() + 1 + junk.len() + 1) as u64;
+        assert_eq!(at, vec![0, second], "uuid 없는 같은 글 두 줄도 위치로 갈린다(깨진 줄은 건너뛰되 위치 계산은 이어짐)");
+        let r2 = read_transcript_from(std::fs::File::open(&p).unwrap(), second).unwrap();
+        assert_eq!(r2["records"][0]["at"].as_u64(), Some(second), "중간 오프셋부터 읽어도 파일 기준 위치");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn confirm_reply_params_and_outcome_keep_actuated() {
+        // (조각 4 · codex 1R major 5 · blocking) 지문은 있을 때만 · 결과는 버리지 않음(actuated null = 기록만)
+        let p = confirm_reply_params("daemon-1", "allow", None, Some("tok"));
+        assert_eq!(p, json!({"request_id": "daemon-1", "decision": "allow", "operator_token": "tok"}));
+        assert!(confirm_reply_params("daemon-1", "deny", Some(""), None).get("screen_fingerprint").is_none(), "빈 지문 = 안 실음");
+        assert_eq!(confirm_reply_params("daemon-1", "allow", Some("fp1"), None)["screen_fingerprint"], "fp1");
+        let ok = confirm_reply_outcome(&json!({"ok": true, "result": {"request_id": "daemon-1", "decision": "deny", "actuated": null}})).unwrap();
+        assert!(ok.get("actuated").is_some() && ok["actuated"].is_null(), "기록만 해소(actuated null)를 그대로 올린다");
+        let act = confirm_reply_outcome(&json!({"ok": true, "result": {"actuated": "return"}})).unwrap();
+        assert_eq!(act["actuated"], "return");
+        let e = confirm_reply_outcome(&json!({"ok": false, "error": {"code": "approval_screen_gone", "message": "m"}})).unwrap_err();
+        assert_eq!(e, "approval_screen_gone: m");
+    }
+
+    #[test]
+    fn from_end_start_is_last_complete_line_end() {
+        // (조각 4 · codex 2R major) 미완 줄(줄 끝 없음)이 있으면 시작점 = 그 줄의 처음 — 뒤 읽기가 그 줄을 처음부터 읽고 앞 훑기는 그 줄을 「뒤」로 본다
+        let dir = std::env::temp_dir().join(format!("viewcore-le-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("s.jsonl");
+        let l1 = json!({"type":"assistant","message":{"content":"a"}}).to_string();
+        let open = |b: &str| {
+            std::fs::write(&p, b).unwrap();
+            std::fs::File::open(&p).unwrap()
+        };
+        let whole = format!("{l1}\n");
+        assert_eq!(last_line_end(&open(&whole), whole.len() as u64).unwrap(), whole.len() as u64, "끝이 줄바꿈 = 크기 그대로");
+        let partial = format!("{l1}\n ");
+        assert_eq!(last_line_end(&open(&partial), partial.len() as u64).unwrap(), (l1.len() + 1) as u64, "미완 줄(공백 1바이트) = 그 줄 처음");
+        assert_eq!(last_line_end(&open(" "), 1).unwrap(), 0, "줄바꿈 없음 = 0");
+        assert_eq!(last_line_end(&open(""), 0).unwrap(), 0);
+        let big = format!("{l1}\n{}", "x".repeat(200_000));
+        assert_eq!(last_line_end(&open(&big), big.len() as u64).unwrap(), (l1.len() + 1) as u64, "64 KiB 넘게 거슬러 읽음");
+        // codex 2R 재현: 미완 줄이 나중에 완성되면 그 줄의 위치 = 시작점(뒤) — 앞 훑기(at < 시작점)와 겹치지 않는다
+        let done = format!("{l1}\n {}\n", json!({"type":"assistant","message":{"content":"⟪확인 해결: x⟫"}}));
+        let start = (l1.len() + 1) as u64;
+        let r = read_transcript_from(open(&done), 0).unwrap();
+        let at: Vec<u64> = r["records"].as_array().unwrap().iter().map(|x| x["at"].as_u64().unwrap()).collect();
+        assert_eq!(at, vec![0, start], "완성된 줄의 위치 = 시작점(앞 기록 아님)");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

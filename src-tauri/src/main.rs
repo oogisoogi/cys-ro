@@ -8459,6 +8459,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             viewcore::chat_send, // (cysr-ui-slice1)
             viewcore::chat_transcript, // (cysr-ui-slice1)
+            viewcore::confirm_reply, // (cysr-ui-slice4) 대화 화면 직접 허락·거절 — 데몬 결과(actuated) 그대로
             feedback::feedback_new_draft,
             feedback::feedback_stage_file,
             feedback::feedback_unstage,

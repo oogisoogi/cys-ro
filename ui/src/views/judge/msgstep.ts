@@ -92,6 +92,8 @@ export interface Rec {
   parts?: string[] | null;
   ts: string | null;
   sidechain?: boolean;
+  /** (조각 4 · codex 1R minor) 그 줄이 시작하는 파일 바이트 위치(viewcore.rs read_transcript_from) — 앞 훑기·뒤 읽기 겹침을 위치로 가른다 */
+  at?: number;
 }
 
 /** 데몬 결과(viewcore.rs classify_send) → 단계. */

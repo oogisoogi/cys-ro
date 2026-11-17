@@ -39,8 +39,8 @@ describe("마스터 물음 표식 — 줄머리 정확 일치만(§5-4)", () => 
     expect(markersOf(A("⟪확인 요청: 곁가지⟫", "a1", { sidechain: true }))).toEqual([]);
     expect(markersOf(A("표식 꼴은 이렇게:\n```\n⟪확인 요청: 예시⟫\n```\n끝"))).toEqual([]);
   });
-  it("해결 표식 = 앞 20자 열쇠", () => {
-    expect(markersOf(A("⟪확인 해결: 가나다라마바사아자차카타파하가나다라마바사아자⟫"))).toEqual([{ kind: "resolve", key: "가나다라마바사아자차카타파하가나다라마바", uuid: "a1" }]);
+  it("해결 표식 = 실린 글 전부(대조는 resolves)", () => {
+    expect(markersOf(A("⟪확인 해결: 가나다라마바사아자차카타파하가나다라마바사아자⟫"))).toEqual([{ kind: "resolve", key: "가나다라마바사아자차카타파하가나다라마바사아자", uuid: "a1" }]);
     expect(resolveKey("🙂".repeat(25))).toBe("🙂".repeat(20)); // 코드 포인트 단위
   });
 });
@@ -60,6 +60,14 @@ describe("열린 물음 다시 놀기(FR-C3 — 해결 표식이 올 때만 닫�
     expect(o.map((x) => x.text)).toEqual([`${p} 둘째`]);
     expect(openQuestions([ask("같은 물음"), ask("같은 물음")]).length).toBe(1);
   });
+  it("(codex 1R 탐침) 앞 20자만 같고 뒷말이 다른 해결 · 20자보다 짧은 해결 = 안 닫힘 · 짧은 물음은 전체로", () => {
+    const p = "12345678901234567890";
+    expect(openQuestions([ask(`${p}실제 질문`), { kind: "resolve", key: `${p}틀린 뒷말`, uuid: null }]).length).toBe(1);
+    expect(openQuestions([ask(`${p}실제 질문`), { kind: "resolve", key: "1234567890", uuid: null }]).length).toBe(1);
+    expect(openQuestions([ask(`${p}실제 질문`), { kind: "resolve", key: `${p}실제`, uuid: null }]).length).toBe(0);
+    expect(openQuestions([ask("배포할까요?"), { kind: "resolve", key: "배포할까요?", uuid: null }]).length).toBe(0);
+    expect(openQuestions([ask("배포할까요?"), { kind: "resolve", key: "배포", uuid: null }]).length).toBe(1);
+  });
   it("해결 앞에 온 물음만 닫힌다(순서)", () => {
     expect(openQuestions([res("뒤에 올 물음"), ask("뒤에 올 물음")]).length).toBe(1);
   });
@@ -70,12 +78,14 @@ describe("승인 feed 본문 → 펼침 자료(FR-C5a — 까닭은 지어내지
     expect(parseApprovalBody(body("rm -rf build\nls"))).toEqual({ excerpt: "Do you want to proceed?", command: "rm -rf build\nls", readonly: "쓰기·삭제 가능" });
     expect(parseApprovalBody("excerpt 만")).toEqual({ excerpt: "excerpt 만", command: "", readonly: null });
   });
-  it("pending approval 만 · 번호·좌석·시각 온전한 것만 · 오래된 것부터 · 꼴 틀림 = null(모름)", () => {
-    const got = approvalsOf({ items: [feedItem({ request_id: "r2", created_at: 2000 }), feedItem(), feedItem({ request_id: "x", kind: "question" }), feedItem({ request_id: "y", status: "resolved" }), feedItem({ request_id: "" }), feedItem({ request_id: "z", surface_id: "7" })] });
+  it("pending approval 만 · 오래된 것부터 · 꼴 틀림 = null(모름)", () => {
+    const got = approvalsOf({ items: [feedItem({ request_id: "r2", created_at: 2000 }), feedItem(), feedItem({ request_id: "x", kind: "question" }), feedItem({ request_id: "y", status: "resolved" })] });
     expect(got?.map((a) => a.request_id)).toEqual(["r1", "r2"]);
     expect(approvalsOf(null)).toBeNull();
     expect(approvalsOf({ nope: 1 })).toBeNull();
     expect(approvalsOf({ items: [] })).toEqual([]);
+    // (codex 1R 탐침) 대기 중 승인이 꼴이 깨졌으면 0건이 아니라 모름
+    expect(approvalsOf({ items: [feedItem(), feedItem({ request_id: "z", surface_id: null })] })).toBeNull();
   });
   it("데몬 자름 한도(12행·600자)에 닿으면 잘림 표시", () => {
     const lines = Array.from({ length: CMD_MAX_LINES }, (_, i) => `l${i}`).join("\n");

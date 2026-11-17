@@ -151,6 +151,19 @@ describe("마스터 물음 — 표식 판독(§5-4 · FR-C1·C3)", () => {
     await h.core.readTranscript();
     expect(label(h)).toEqual({ known: true, n: 1, kinds: ["ask"] });
   });
+  it("(codex 1R 탐침) uuid 없는 레코드도 앞 훑기·뒤 읽기가 두 번 세지 않는다", async () => {
+    const N = (text: string, ts: string) => ({ uuid: null, parent: null, role: "assistant", text, ts });
+    const h = harness({ prior: [N("⟪확인 요청: 무uuid 물음⟫", "2026-11-18T00:00:00Z")] });
+    h.core.attach();
+    await h.flush();
+    await h.core.poll(); // 시작점 = 1
+    await h.flush();
+    h.st.file.push(N("⟪확인 해결: 무uuid 물음⟫", "2026-11-18T00:00:05Z"));
+    await h.core.readTranscript(); // 뒤 읽기 = 해결
+    await h.core.poll(); // 앞 훑기 = 물음 + (해결 = 뒤 기록에서 멈춤)
+    await h.flush();
+    expect(label(h)).toEqual({ known: true, n: 0, kinds: [] });
+  });
   it("결속 세션이 바뀌면 표식 처음부터(옛 물음을 새 대화에 남기지 않음)", async () => {
     const h = harness({ prior: [A("p0", "⟪확인 요청: 옛 세션 물음⟫")] });
     await h.open(3);
@@ -282,6 +295,18 @@ describe("판 묶기 · 처리 직전 재확인(FR-C5b)", () => {
     h.setNow(h.getNow() + 5_000);
     h.st.master.idle_secs = 0;
     await h.core.confirm.decide(bound, "allow");
+    expect(h.replies().length).toBe(0);
+    expect(h.core.confirm.decisions.at(-1)?.outcome).toBe("not_stalled");
+  });
+  it("(codex 1R 탐침) 처리 직전 그 요청이 지금 마스터 좌석의 것이면 approval.stalled 가 있어도 호출 0", async () => {
+    const h = harness();
+    h.st.feed = [h.helper()];
+    await h.open(2);
+    h.emit("approval.stalled", { request_id: "r1" }, 7);
+    const it0 = h.core.confirm.band().items[0] as { a: FeedApproval; stall: string };
+    expect(it0.stall).toBe("stalled_event");
+    h.st.master.surface_id = 7; // 마스터가 그 좌석으로
+    await h.core.confirm.decide(boundOf(it0.a), "allow");
     expect(h.replies().length).toBe(0);
     expect(h.core.confirm.decisions.at(-1)?.outcome).toBe("not_stalled");
   });

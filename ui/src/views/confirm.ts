@@ -102,11 +102,10 @@ export class ConfirmBook {
   onTail(recs: readonly Rec[]): void {
     const ev: MarkerEvent[] = [];
     for (const r of recs) {
-      if (r.uuid !== null) {
-        if (this.seen.has(r.uuid)) continue; // 앞 훑기가 끝 너머까지 먼저 읽은 레코드
-        this.seen.add(r.uuid);
-        this.tailSeen.add(r.uuid);
-      }
+      const id = recId(r);
+      if (this.seen.has(id)) continue; // 앞 훑기가 끝 너머까지 먼저 읽은 레코드
+      this.seen.add(id);
+      this.tailSeen.add(id);
       ev.push(...markersOf(r));
     }
     if (ev.length) {
@@ -137,15 +136,14 @@ export class ConfirmBook {
       }
       const recs = Array.isArray(r.records) ? (r.records as Rec[]) : [];
       for (const rec of recs) {
-        if (rec.uuid !== null) {
-          // 뒤 읽기가 이미 받은 레코드에 닿음 = 여기부터는 뒤 기록 — 앞 훑기 끝(순서가 뒤집히지 않게 · 해결이 물음보다 먼저 놀지 않게)
-          if (this.tailSeen.has(rec.uuid)) {
-            this.priorDone = true;
-            break;
-          }
-          if (this.seen.has(rec.uuid)) continue;
-          this.seen.add(rec.uuid);
+        const id = recId(rec);
+        // 뒤 읽기가 이미 받은 레코드에 닿음 = 여기부터는 뒤 기록 — 앞 훑기 끝(순서가 뒤집히지 않게 · 해결이 물음보다 먼저 놀지 않게)
+        if (this.tailSeen.has(id)) {
+          this.priorDone = true;
+          break;
         }
+        if (this.seen.has(id)) continue;
+        this.seen.add(id);
         this.prior.push(...markersOf(rec));
       }
       if (this.priorDone) {
@@ -223,7 +221,8 @@ export class ConfirmBook {
       this.observe(feed, org, masterOf(org));
       const fresh = feed === undefined ? null : approvalsOf(feed);
       const st = this.stallInput();
-      const rc = recheck(bound, fresh, (a) => itemStall(st, a));
+      // 지금 마스터 좌석의 승인이면(마스터가 그 좌석으로 옮겨 옴 등) 직접 허락 대상이 아니다(codex 1R 탐침 — 그 요청의 approval.stalled 만으로 통과하던 길).
+      const rc = recheck(bound, fresh, (a) => (st.masterSid !== undefined && st.masterSid !== null && a.surface_id === st.masterSid ? null : itemStall(st, a)));
       if (!rc.ok) {
         outcome = rc.code;
         this.notice = rc.msg;
@@ -256,6 +255,11 @@ export class ConfirmBook {
       /* 기록 실패는 결정을 되돌리지 않는다(메모리 기록은 남음) */
     }
   }
+}
+
+/** 레코드 신원 — uuid · 없으면 역할·시각·글(codex 1R 탐침: uuid 없는 레코드를 앞 훑기·뒤 읽기가 둘 다 세던 길 · M8 측정 대기). */
+function recId(r: Rec): string {
+  return r.uuid ?? `\u0001${r.role}\u0001${r.ts ?? ""}\u0001${r.text ?? ""}`;
 }
 
 /** org.status 행에서 그 좌석의 idle_secs(마지막 출력 뒤 초) · 모름 = null. */

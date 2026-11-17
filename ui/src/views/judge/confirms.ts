@@ -43,10 +43,17 @@ export function markersOf(r: Rec): MarkerEvent[] {
       if (text) out.push({ kind: "ask", text, uuid: r.uuid });
     } else if (line.startsWith(RESOLVE_PREFIX)) {
       const key = line.slice(RESOLVE_PREFIX.length, line.length - MARK_END.length).trim();
-      if (key) out.push({ kind: "resolve", key: resolveKey(key), uuid: r.uuid });
+      if (key) out.push({ kind: "resolve", key, uuid: r.uuid }); // 전문을 싣는다 — 대조는 resolves()
     }
   }
   return out;
+}
+
+/** 해결 표식이 이 물음을 닫는가 — 해결 글이 물음의 **앞부분과 글자 그대로 같고** 그 길이가 앞 20자(물음이 짧으면 물음 전체) 이상일 때만.
+ *  (codex 1R 탐침 「앞 20자만 같고 뒷말이 다른 해결」 — 앞 20자로 잘라 대조하면 뒷말이 틀린 해결도 닫았다 → 실린 글 전부를 대조.) */
+export function resolves(question: string, key: string): boolean {
+  const need = Math.min(RESOLVE_KEY_LEN, Array.from(question).length);
+  return Array.from(key).length >= need && question.startsWith(key);
 }
 
 /** 물음의 앞 20자(코드 포인트) — 해결 표식 대조 열쇠. */
@@ -73,7 +80,7 @@ export function openQuestions(events: readonly MarkerEvent[]): Question[] {
       if (open.some((q) => q.text === e.text)) continue;
       open.push({ id: `q${n}`, text: e.text, uuid: e.uuid });
     } else {
-      const i = open.findIndex((q) => resolveKey(q.text) === e.key);
+      const i = open.findIndex((q) => resolves(q.text, e.key));
       if (i >= 0) open.splice(i, 1);
     }
   }
@@ -115,9 +122,10 @@ export function approvalsOf(feed: unknown): FeedApproval[] | null {
   for (const it of items) {
     const f = it as Record<string, unknown> | null;
     if (!f || f.kind !== "approval" || f.status !== "pending") continue;
-    if (typeof f.request_id !== "string" || !f.request_id) continue;
-    if (typeof f.surface_id !== "number" || !Number.isSafeInteger(f.surface_id)) continue;
-    if (typeof f.created_at !== "number" || !Number.isFinite(f.created_at)) continue;
+    // 대기 중 승인인데 번호·좌석·시각이 온전하지 않으면 「모름」(codex 1R 탐침 — 건너뛰면 0건 확정으로 칠해 띠가 숨었다).
+    if (typeof f.request_id !== "string" || !f.request_id) return null;
+    if (typeof f.surface_id !== "number" || !Number.isSafeInteger(f.surface_id)) return null;
+    if (typeof f.created_at !== "number" || !Number.isFinite(f.created_at)) return null;
     const body = typeof f.body === "string" ? f.body : "";
     const p = parseApprovalBody(body);
     const truncated = p.command.split("\n").length >= CMD_MAX_LINES || Array.from(p.command).length >= CMD_MAX_CHARS;

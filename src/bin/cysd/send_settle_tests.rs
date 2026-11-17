@@ -1951,7 +1951,9 @@ fn b16_atomic_refuse_send_rechecks_approval_before_enter() {
     paint_empty_prompt(&t);
     let r = atomic_send(&fx, None, &t, "사람이 보낸 말", true, true);
     assert_eq!(r["result"]["sent"], json!(true), "전제: 쓰기 전에는 창이 없다(통과): {r}");
-    dialog_after(&t, 150).join().unwrap();
+    // ★(1.1.16 · cysr-1116-backlog-fix-1118) 150 → 300ms: 150ms 는 Ctrl-U 정착(0.15초)이 끝나는 순간이라 이제 붙여넣기 앞 탐침의 몫이다
+    //   (그 단계는 `b16_fix::b16fix_human_refuse_before_paste`). 이 검체는 붙여넣기 뒤·Enter 앞에 뜬 창 = Enter 앞 탐침을 고정한다.
+    dialog_after(&t, 300).join().unwrap();
     assert!(!atomic_enter_written(&t), "쓰는 도중 뜬 승인 창에 Enter 를 썼다 — 오승인(M2-c)");
     let refused = named(&fx, "input.refused_at_write");
     assert_eq!(refused.len(), 1, "{refused:?}");

@@ -235,26 +235,49 @@ fn b16fix_machine_refuse_before_paste() {
 }
 
 /// 적색→녹색(검증 지적 4 · 사람 길): Ctrl-U 정착 중(쓰기가 시작된 직후 — writer 의 Inject 표식이 선 순간) 창이 서면 붙여넣기·Enter 0 ·
-/// 거부 흔적 stage `before_paste` · 남은 줄은 사람 몫(지적 1 과 같은 복원). 바이트 증거는 아래 기록기 시험과 writer 단위 시험(state.rs).
-/// 종전: 정착 중 뜬 창에 붙여넣기 본문이 들어갔다(+100ms 점 · 검증 지적 4).
+/// 거부 흔적 stage `before_paste`. 본문은 안 썼으므로 줄은 **보내기 전 그대로**로 센다(codex 1R major 1): 빈 줄이었으면 계수 0(유령 사람
+/// 계수 없음 — 고스트 제안이 stale 리셋을 막아 무기한 남는다) · 사람 초안이 있었으면 그 사람 몫(창이 Ctrl-U 보다 먼저 섰으면 그 글이 남았다).
+/// 바이트 증거는 아래 기록기 시험과 writer 단위 시험(state.rs). 종전: 정착 중 뜬 창에 붙여넣기 본문이 들어갔다(+100ms 점 · 검증 지적 4).
 #[test]
 fn b16fix_human_refuse_before_paste() {
     let fx = fx("b16fix-human-paste");
-    let t = agent_pane_settled(&fx, "worker-1", P + 3060);
-    paint_empty_prompt(&t);
-    let r = atomic_send(&fx, None, &t, HUMAN_BODY, true, true);
+    for (i, draft) in [None, Some("사람 초안")].into_iter().enumerate() {
+        let t = agent_pane_settled(&fx, "worker-1", P + 3060 + i as u32);
+        refuse_before_paste_once(&fx, &t, draft);
+    }
+}
+
+fn refuse_before_paste_once(fx: &Fx, t: &Arc<Surface>, draft: Option<&str>) {
+    paint_empty_prompt(t);
+    if let Some(d) = draft {
+        // 사람 초안 계수만 세운다(PTY 바이트 없이 — `sleep` 좌석의 cooked PTY 는 초안을 에코하고, 뒤이은 Ctrl-U 의 줄 지우기 에코가
+        // 커서 행에 그린 창 글자를 지워 술어를 거짓으로 만든다 · 시험 좌석 인공물 · 5회 중 2회 관측).
+        {
+            let _gate = t.input_gate.lock().unwrap();
+            t.apply_pending_input(d.as_bytes(), crate::governance::InputOrigin::Human);
+        }
+        assert!(counts(t).1 > 0, "전제: 사람 초안 계수");
+        paint_line_with(t, d);
+    }
+    let ev0 = named(fx, "input.refused_at_write").len();
+    let r = atomic_send(fx, None, t, HUMAN_BODY, true, true);
     assert_eq!(r["result"]["sent"], json!(true), "{r}");
     let deadline = Instant::now() + Duration::from_secs(3);
     while !t.inject_track.busy_within(Duration::ZERO) {
         assert!(Instant::now() < deadline, "writer 가 쓰기를 시작하지 않았다");
         std::thread::sleep(Duration::from_millis(1));
     }
-    paint(&t, &DIALOG, 1, 8);
-    assert!(!atomic_enter_written(&t), "창 위에 Enter");
-    let ev = named(&fx, "input.refused_at_write");
-    assert_eq!(ev.len(), 1, "{ev:?}");
-    assert_eq!(ev[0]["payload"]["stage"], json!("before_paste"), "붙여넣기 앞에서 거부하지 않았다: {ev:?}");
-    assert!(counts(&t).1 > 0, "사람 몫 복원");
+    paint(t, &DIALOG, 1, 8);
+    assert!(!atomic_enter_written(t), "창 위에 Enter");
+    let ev = named(fx, "input.refused_at_write");
+    assert_eq!(ev.len(), ev0 + 1, "{ev:?}");
+    assert_eq!(ev[ev0]["payload"]["stage"], json!("before_paste"), "붙여넣기 앞에서 거부하지 않았다: {ev:?}");
+    let (mirror, human, _) = counts(t);
+    match draft {
+        None => assert_eq!((mirror, human), (0, 0), "빈 줄에 없는 사람 본문을 셌다(유령 계수)"),
+        Some(_) => assert!(human > 0 && mirror >= human, "보내기 전 사람 초안을 되살리지 않았다: ({mirror}, {human})"),
+    }
+    assert!(t.inject_track.last_body().is_none(), "안 쓴 본문이 「마지막 기계 본문」으로 남았다");
 }
 
 /// 바이트 증거(검증 지적 4 · 검증 좌석 기록기와 같은 방식): 좌석 = raw `cat` 기록기. Ctrl-U(0x15)가 PTY 에 닿는 순간 창을 그리면

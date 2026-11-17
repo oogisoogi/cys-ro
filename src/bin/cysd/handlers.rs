@@ -2970,9 +2970,14 @@ fn approval_write_guard(
 ///
 /// ★(1.1.16 · cysr-1116-backlog-fix-1118) 검증 지적 1·4·5:
 ///   · `at` = 어느 쓰기 바로 앞인가(붙여넣기 앞 / Enter 앞) — 거부 흔적 `stage` 칸.
-///   · `human_line` = `Some(n)` 이면 **사람 길**(`InjectRefusing`): 남은 글을 사람 몫으로 복원한다(`restore_refused_human_line(n)` — 사람 몫 ·
-///     소유자 지움 · 마지막 기계 본문 지움). `None` = 기계 길(`SubmitRefuse`): 종전대로 계수 ≥1 만(결판이 바이트대로 기계 잔여로 센다).
+///   · `human_line` = `Some(n)` 이면 **사람 길**(`InjectRefusing`): 남은 글을 사람 몫으로 복원한다(`restore_refused_line` — 사람 몫 ·
+///     마지막 기계 본문 지움). Enter 앞 = 붙여넣은 본문 `n` 바이트(최소 1)가 줄에 있다 · 붙여넣기 앞 = 본문은 안 썼다 → 보내기 전 줄의
+///     계수·사람 몫(`before`·`before_human` — 창이 Ctrl-U 보다 먼저 섰으면 그 글이 남았다)만 되살리고 없던 글은 만들지 않는다(codex 1R:
+///     빈 줄의 유령 사람 계수는 고스트 제안이 stale 리셋을 막아 무기한 남는다). `None` = 기계 길(`SubmitRefuse`): 종전대로 계수만
+///     (Enter 앞 ≥1 · 붙여넣기 앞은 보내기 전 계수 — 결판이 바이트대로 기계 잔여로 센다).
 ///   · `request_id` = 거부 흔적의 요청 번호(사람 길 응답 `request_id` · 기계 길 작업 번호와 같은 값) — 화면이 어느 말인지 맞춘다.
+///   · `refused` = 거부한 단계를 핸들러 응답에 넘기는 칸(0 없음 · 1 붙여넣기 앞 · 2 Enter 앞 — codex 1R: 결판 사유 글자는 저널 실패가
+///     `journal_terminal:…` 로 덮을 수 있어 응답의 근거로 쓰지 않는다).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RefuseAt {
     BeforePaste,
@@ -2994,10 +2999,13 @@ fn approval_enter_guard(
     at: RefuseAt,
     human_line: Option<u64>,
     request_id: &str,
+    refused: &Arc<std::sync::atomic::AtomicU8>,
 ) -> crate::state::SafetyProbe {
     let (wd, ws) = (Arc::downgrade(daemon), Arc::downgrade(surface));
     let before = surface.pending_input_bytes.load(Ordering::Relaxed);
+    let before_human = surface.pending_input.lock().unwrap_or_else(|e| e.into_inner()).human.min(before);
     let request_id = request_id.to_string();
+    let refused = refused.clone();
     Arc::new(move || {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let (Some(d), Some(s)) = (wd.upgrade(), ws.upgrade()) else {
@@ -3008,12 +3016,17 @@ fn approval_enter_guard(
             if hit {
                 // codex 3R: 핸들러는 input_gate 를 쥔 채 enqueue → 계수 0 기록을 한다 — 같은 잠금을 잡아야 그 0 뒤에 복원된다.
                 let _gate = s.input_gate.lock().unwrap_or_else(|e| e.into_inner());
-                match human_line {
-                    Some(n) => s.restore_refused_human_line(before.max(n)),
-                    None => {
+                match (at, human_line) {
+                    (RefuseAt::BeforeEnter, Some(n)) => s.restore_refused_line(n.max(1), n.max(1)),
+                    (RefuseAt::BeforePaste, Some(_)) => s.restore_refused_line(before, before_human),
+                    (RefuseAt::BeforeEnter, None) => {
                         s.pending_input_bytes.fetch_max(before.max(1), Ordering::Relaxed);
                     }
+                    (RefuseAt::BeforePaste, None) => {
+                        s.pending_input_bytes.fetch_max(before, Ordering::Relaxed);
+                    }
                 }
+                refused.store(if at == RefuseAt::BeforePaste { 1 } else { 2 }, Ordering::Release);
                 d.bus.publish(
                     "input.refused_at_write",
                     "surface",
@@ -4416,25 +4429,20 @@ impl crate::agent_write::Proof for SubmitRefuse {
 const REFUSE_SETTLE_BUDGET_MS: u64 = 3_000;
 
 /// 결판(거부 여부)을 상한 안에서 기다린다 — 운영 빌드에서도(종전 응답은 저널 장벽까지만 기다렸다 · `test_wait_settled` 는 시험 전용).
-/// `Some(Some(stage))` = 창 때문에 거부됨(stage = `before_paste`/`before_enter`) · `Some(None)` = 끝까지 썼거나 다른 사유로 끝남 ·
-/// `None` = 상한 안에 결판이 안 났다. 잠금 없이 부른다(결판이 `input_gate` 를 잡는다).
-fn await_refuse_verdict(h: &crate::agent_write::Request, budget: std::time::Duration) -> Option<Option<&'static str>> {
+/// 거부 여부는 결판 사유 글자가 아니라 탐침이 적은 칸(`refused` — [`approval_enter_guard`])으로 본다(저널 실패가 사유를 덮어도 사실이
+/// 남는다 · codex 1R). `Some(Some(stage))` = 창 때문에 거부됨 · `Some(None)` = 끝남(거부 아님) · `None` = 상한 안에 결판이 안 났다.
+/// 잠금 없이 부른다(결판이 `input_gate` 를 잡는다).
+fn await_refuse_verdict(
+    h: &crate::agent_write::Request,
+    refused: &std::sync::atomic::AtomicU8,
+    budget: std::time::Duration,
+) -> Option<Option<&'static str>> {
     let deadline = std::time::Instant::now() + budget;
     loop {
-        if let crate::agent_write::Status::Terminal(t) = h.status() {
-            return Some(match t {
-                crate::agent_write::Terminal::PartialExact { reason, .. }
-                | crate::agent_write::Terminal::PartialUnknown { reason, .. }
-                | crate::agent_write::Terminal::RefusedNoWrite { reason } => {
-                    // ProofLoss::Unknown 의 reason 은 `unknown:<사유>` 꼴이다(receiver::ProofLoss::reason).
-                    if reason.ends_with(SUBMIT_REFUSED_APPROVAL) {
-                        Some(RefuseAt::BeforeEnter.as_str())
-                    } else if reason.ends_with(PASTE_REFUSED_APPROVAL) {
-                        Some(RefuseAt::BeforePaste.as_str())
-                    } else {
-                        None
-                    }
-                }
+        if matches!(h.status(), crate::agent_write::Status::Terminal(_)) {
+            return Some(match refused.load(Ordering::Acquire) {
+                1 => Some(RefuseAt::BeforePaste.as_str()),
+                2 => Some(RefuseAt::BeforeEnter.as_str()),
                 _ => None,
             });
         }
@@ -8249,6 +8257,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             //   에이전트 작업 길은 같은 번호를 작업 번호로 쓴다(아래 Request::new).
             let refuse_request_id = refuse_on_approval
                 .then(|| crate::agent_write::new_request_id((daemon.started_at * 1000.0) as u64));
+            let refused_stage = Arc::new(std::sync::atomic::AtomicU8::new(0));
             // ★(1.1.16 · master#4f5897d7 · 조각 0.5 M2-c) 「창이면 쓰지 마라」 원자 제출 = CR 바로 앞 승인 재판정(InjectRefusing doc ·
             //   술어 = approval_enter_guard: 쓰기 직전 화면 판정 ∨ feed 승인 대기 항목 · 거부 흔적 input.refused_at_write).
             //   에이전트 작업(OwnedClear) 길은 아래 SubmitRefuse 가 같은 일을 한다.
@@ -8262,8 +8271,8 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                         text,
                         cr_delay_ms,
                         clear_first: true,
-                        refuse_paste: approval_enter_guard(daemon, &surface, RefuseAt::BeforePaste, Some(0), rid),
-                        refuse: approval_enter_guard(daemon, &surface, RefuseAt::BeforeEnter, Some(body_bytes), rid),
+                        refuse_paste: approval_enter_guard(daemon, &surface, RefuseAt::BeforePaste, Some(0), rid, &refused_stage),
+                        refuse: approval_enter_guard(daemon, &surface, RefuseAt::BeforeEnter, Some(body_bytes), rid, &refused_stage),
                     };
                     human_refuse_request = Some(rid.to_string());
                 }
@@ -8304,8 +8313,8 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                             if let Some(rid) = refuse_request_id.as_deref() {
                                 Arc::new(SubmitRefuse {
                                     inner: surface.agent_proof(),
-                                    probe_paste: approval_enter_guard(daemon, &surface, RefuseAt::BeforePaste, None, rid),
-                                    probe: approval_enter_guard(daemon, &surface, RefuseAt::BeforeEnter, None, rid),
+                                    probe_paste: approval_enter_guard(daemon, &surface, RefuseAt::BeforePaste, None, rid, &refused_stage),
+                                    probe: approval_enter_guard(daemon, &surface, RefuseAt::BeforeEnter, None, rid, &refused_stage),
                                 })
                             } else {
                                 surface.agent_proof()
@@ -8568,7 +8577,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                 // ★(1.1.16 · cysr-1116-backlog-fix-1118 · 검증 지적 5) 「창이면 쓰지 마라」 작업은 결판을 기다려 거부 사실을 싣는다 —
                 //   `sent:true` 는 호환을 위해 둔다(본문 수락) · 거부면 `submitted:false` · `refused:"approval_screen"` · `refused_stage`.
                 if refuse_request_id.is_some() && agent_intent == Some(DirectAgentIntent::OwnedClear) {
-                    match await_refuse_verdict(h, std::time::Duration::from_millis(REFUSE_SETTLE_BUDGET_MS)) {
+                    match await_refuse_verdict(h, &refused_stage, std::time::Duration::from_millis(REFUSE_SETTLE_BUDGET_MS)) {
                         Some(Some(stage)) => {
                             result["submitted"] = json!(false);
                             result["refused"] = json!(cys::ERR_APPROVAL_SCREEN);

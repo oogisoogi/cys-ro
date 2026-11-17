@@ -2494,20 +2494,35 @@ fn check_approvals(
         }
         let patterns = &patterns;
         // 화면 스냅샷은 pass 당 좌석 1회 — 두 스캐너가 같은 스냅샷을 본다(파서 락 중복 0).
-        let screen = s
-            .parser
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .screen()
-            .contents();
+        // ★(1.1.16 · cysr-1116-backlog-fix-1118 · codex 1R) 같은 잠금에서 행·커서도 뜬다 — `scope:"prompt_tail"` 패턴의 판독 범위.
+        let (screen, rows, cursor_row) = {
+            let p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+            let sc = p.screen();
+            let (_, cols) = sc.size();
+            (sc.contents(), sc.rows(0, cols).collect::<Vec<String>>(), usize::from(sc.cursor_position().0))
+        };
+        let mut tail_text: Option<Option<String>> = None; // 첫 tail 패턴에서 한 번만 만든다
         let mut any_match = false;
         for p in patterns {
             let (Some(name), Some(pattern)) = (p["name"].as_str(), p["pattern"].as_str()) else {
                 continue;
             };
+            // ★(1.1.16 · cysr-1116-backlog-fix-1118 · codex 1R) `scope:"prompt_tail"` 패턴은 화면 전량이 아니라 쓰기 직전 술어와 같은
+            //   범위(마지막 가로줄 아래 · 가로줄이 없으면 커서가 번호 선택 행일 때만 전량 — `approval_prompt_region`)에서만 찾는다.
+            //   모델 답 본문·사람 입력이 창 문장과 선택지(`❯ 1.`)까지 인용해도 그것은 입력창 가로줄 위·안이라 범위 밖이다.
+            //   scope 가 없는 패턴(종전 tool-permission·trust-prompt · 사용자 패턴)은 종전대로 화면 전량.
+            let hay: &str = if p["scope"].as_str() == Some("prompt_tail") {
+                let marker = merged_ready_marker(&agents, &embed_agents, &agent).unwrap_or_default();
+                match tail_text.get_or_insert_with(|| approval_prompt_region(&rows, cursor_row, &marker).map(|r| r.join("\n"))) {
+                    Some(t) => t.as_str(),
+                    None => continue,
+                }
+            } else {
+                screen.as_str()
+            };
             // ★선컴파일 캐시(무효화 규칙 = ScanCaches doc). 판정 자체는 종전과 동일하다 —
             //   같은 패턴 문자열의 Regex 는 결정론이므로 캐시 히트는 재컴파일과 등가다.
-            let Some(m) = caches.approval_regex(pattern).and_then(|re| re.find(&screen)) else {
+            let Some(m) = caches.approval_regex(pattern).and_then(|re| re.find(hay)) else {
                 continue;
             };
             any_match = true;
@@ -2523,7 +2538,7 @@ fn check_approvals(
                 continue;
             }
             debounce.insert(key, now);
-            let excerpt: String = screen[m.start()..]
+            let excerpt: String = hay[m.start()..]
                 .lines()
                 .next()
                 .unwrap_or("")
@@ -2533,8 +2548,8 @@ fn check_approvals(
             let role = s.role.lock().unwrap().clone();
             // ★D24ⓑ(1.1.8) 명령 원문·읽기 전용 추정 동봉 — 사람·오퍼레이터가 화면을 열지 않고 feed 에서 바로 판단하게.
             //   추정은 기계 낱말 대조일 뿐이다(문구에 그대로 적는다). 패턴 행 위 창 머리까지가 원문 블록이다.
-            let screen_lines: Vec<&str> = screen.lines().collect();
-            let match_row = screen[..m.start()].matches('\n').count();
+            let screen_lines: Vec<&str> = hay.lines().collect();
+            let match_row = hay[..m.start()].matches('\n').count();
             let command = approval_command_block(&screen_lines, match_row);
             let readonly = approval_readonly_verdict(&command);
             daemon.bus.publish(
@@ -9769,18 +9784,21 @@ pub(crate) fn approval_in_prompt_tail(
         return true;
     }
     // ⑴ 어댑터 패턴 — 가로줄이 없으면 커서 행이 번호 선택지일 때만 전량(흔한 낱말 기아 방지 · 위 doc).
-    let region = match rows.iter().rposition(|r| is_rule_row(r)) {
-        Some(last_rule) => &rows[last_rule + 1..],
-        None if rows
-            .get(cursor_row)
-            .is_some_and(|r| is_numbered_choice_row(r, marker)) =>
-        {
-            rows
-        }
-        None => return false,
+    let Some(region) = approval_prompt_region(rows, cursor_row, marker) else {
+        return false;
     };
     let text = region.join("\n");
     patterns.iter().any(|re| re.is_match(&text))
+}
+
+/// 어댑터 승인 패턴의 판독 범위(순수) — 마지막 가로줄 아래, 가로줄이 없으면 커서 행이 번호 선택지일 때만 화면 전량, 아니면 `None`.
+/// 쓰기 직전 술어([`approval_in_prompt_tail`] ⑴)와 데몬 승인 스캔의 `scope:"prompt_tail"` 패턴(`check_approvals`)이 같은 정의를 쓴다.
+pub(crate) fn approval_prompt_region<'a>(rows: &'a [String], cursor_row: usize, marker: &str) -> Option<&'a [String]> {
+    match rows.iter().rposition(|r| is_rule_row(r)) {
+        Some(last_rule) => Some(&rows[last_rule + 1..]),
+        None if rows.get(cursor_row).is_some_and(|r| is_numbered_choice_row(r, marker)) => Some(rows),
+        None => None,
+    }
 }
 
 /// 선택지 창의 꼬리 행인가(순수 · 1.1.7 precut ㉮) — claude 의 AskUserQuestion·선택 메뉴 꼬리
@@ -18271,6 +18289,49 @@ mod tests {
         assert!(!approval_wakeup_suppressed(&q, &recent, text, 1000.0, -1.0));
     }
 
+    /// ★(1.1.16 · cysr-1116-backlog-fix-1118 · codex 1R major 2) 데몬 승인 스캔(`check_approvals` · 화면 전량 · feed 항목 + master 각성)이
+    /// `scope:"prompt_tail"` 패턴(Write 창 · 계획 승인 창)을 쓰기 직전 술어와 같은 범위(마지막 가로줄 아래)에서만 찾는다 — 모델 답 본문이
+    /// 창 문장과 선택지(`❯ 1. Yes`)까지 인용해도 그것은 입력창 가로줄 위라 감지가 아니다. 실제 창(입력창 대신 그려짐)은 감지한다.
+    /// 종전(scope 없이 화면 전량)이면 본문 인용 두 꼴이 `approval.request` 를 냈다.
+    #[test]
+    fn b16fix_approval_scan_reads_prompt_tail_patterns_below_last_rule_only() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pack = empty_pack_dir("b16fix-scan");
+        let embed = cys::pack::PACK_ALL.iter().find(|(r, _)| *r == "agents.json").map(|(_, c)| *c).expect("임베드 agents.json");
+        std::fs::write(pack.join("agents.json"), embed).expect("팩 agents.json");
+        let _env = QueueEnvGuard::set(&[("CYS_PACK_DIR", pack.to_str().unwrap())]);
+        let (daemon, s) = wp5_seat("b16fix-scan", "claude");
+        let scan = |screen: &str| -> Vec<String> {
+            for rid in daemon.pending_daemon_approvals(s.id) {
+                daemon.resolve_feed_item(&rid, "test-reset");
+            }
+            let before = daemon.bus.tail(5000).len();
+            crate::governance::h_paint(&s, screen);
+            crate::governance::check_approvals(&daemon, &mut HashMap::new(), &mut crate::governance::ScanCaches::default());
+            daemon.bus.tail(5000).into_iter().skip(before)
+                .filter(|e| e["name"] == "approval.request")
+                .map(|e| e["payload"]["pattern"].as_str().unwrap_or("").to_string())
+                .collect()
+        };
+        let rule = "────────────────────────────────────────";
+        let quoted = [
+            format!("● 그 창은 이렇게 생겼다:\n  Would you like to proceed?\n  ❯ 1. Yes\n    2. No\n{rule}\n❯ \n{rule}\n  ? for shortcuts"),
+            format!("● 예:\n  Do you want to create a.rs?\n  ❯ 1. Yes\n{rule}\n❯ \n{rule}"),
+            format!("● 답:\n{rule}\n❯ Would you like to proceed?\n  ❯ 1. Yes\n{rule}"),
+        ];
+        for q in &quoted {
+            assert!(!scan(q).iter().any(|n| n == "plan-approval" || n == "file-write-permission"), "본문 인용을 창으로 읽었다:\n{q}");
+        }
+        let dialogs = [
+            (format!("● 작업 로그\n{rule}\n Create file\n Do you want to create new.rs?\n ❯ 1. Yes\n   2. No\n Esc to cancel"), "file-write-permission"),
+            (format!("● 계획\n{rule}\n Claude has written up a plan and is ready to execute. Would you like to\n proceed?\n\n ❯ 1. Yes, and auto-accept edits\n   2. No"), "plan-approval"),
+        ];
+        for (d, want) in &dialogs {
+            assert!(scan(d).iter().any(|n| n == want), "실제 창을 승인 스캔이 못 읽었다({want}):\n{d}");
+        }
+        kill_pid(s.pid);
+    }
+
     /// ★W-B 보완 핀: agents.json user 동결이 vendor 신규 approval_patterns 를 못 받아 승인
     /// 미감지→워커 hang 으로 가는 경로를 차단한다. 규칙 = 합집합(디스크 ∪ 임베드), 동명은 디스크 승.
     #[test]
@@ -22872,7 +22933,9 @@ mod tests {
             //   stopped before its Return counts its accepted prefix as machine input (`ScheduleSettle::count_prefix`) - the line was
             //   NOT submitted, so the exempt marker is not lowered (same rule as the queue's partial-write prefix).
             ("schedule", 1, 0, 1),
-            ("state", 4, 1, 1),
+            // ★(1.1.16 · cysr-1116-backlog-fix-1118 · codex 1R) +1 set: `restore_refused_line` — 「창이면 쓰지 마라」 사람 원자 제출이 쓰는
+            //   도중 거부돼 남은 글을 사람 몫으로 되살린다. 줄이 제출된 것이 아니므로 면제 표식은 내리지 않는다(부분 쓰기 접두 계수와 같은 규칙).
+            ("state", 5, 1, 1),
             ("channels", 0, 0, 0),
         ];
         for ((name, src), (wname, w_set, w_clear, w_apply)) in files.iter().zip(want) {
@@ -36666,7 +36729,7 @@ mod h_machine_hold_tests {
         ];
         assert_eq!(specimens.len(), 5, "H-WIN 문면 5종");
         for (label, screen, expect) in &specimens {
-            h_paint(&s, screen);
+            crate::governance::h_paint(&s, screen);
             for (os, mask) in [("unix", unix), ("windows", win)] {
                 assert_eq!(
                     machine_direct_hold_masked(&d, &s, want, mask),

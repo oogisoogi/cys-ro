@@ -1945,7 +1945,6 @@ fn atomic_enter_written(t: &Arc<Surface>) -> bool {
 /// `input.refused_at_write`(reason `approval_screen`) · 입력줄은 비어 있지 않은 것으로 센다(뒤 배달이 이어붙지 않게).
 /// 종전: Enter 1(창의 「1. Yes」 를 누른다 · 실측 3/3).
 #[test]
-#[cfg_attr(not(unix), ignore = "S21 제출 정착·창 위 CR 보류는 유닉스 한정(send_settle_applies)")]
 fn b16_atomic_refuse_send_rechecks_approval_before_enter() {
     let fx = fx("b16-atomic-dialog");
     let t = agent_pane_settled(&fx, "worker-1", P + 540);
@@ -1962,7 +1961,6 @@ fn b16_atomic_refuse_send_rechecks_approval_before_enter() {
 
 /// 두 술어 중 feed 축 단독(화면은 승인 창 꼴이 아님 · 대기 항목만 섬 — 실측 M2-주 「술어가 다르다」) → 역시 Enter 0.
 #[test]
-#[cfg_attr(not(unix), ignore = "S21 제출 정착·창 위 CR 보류는 유닉스 한정(send_settle_applies)")]
 fn b16_atomic_refuse_send_sees_feed_pending_before_enter() {
     let fx = fx("b16-atomic-feed");
     let t = agent_pane_settled(&fx, "worker-1", P + 550);
@@ -1977,7 +1975,6 @@ fn b16_atomic_refuse_send_sees_feed_pending_before_enter() {
 /// 같은 고침의 에이전트 작업 길(기계 표지 `clear_first + refuse_on_approval` = OwnedClear · SubmitRefuse) — Submit 재검 순간 창이
 /// 서면(좌석 증명이 그 순간 그림) Enter 0 · 부분 결판 사유 `submit_refused:approval_screen` · 본문은 바이트대로 센다.
 #[test]
-#[cfg_attr(not(unix), ignore = "S21 제출 정착·창 위 CR 보류는 유닉스 한정(send_settle_applies)")]
 fn b16_atomic_refuse_machine_job_rechecks_approval_before_enter() {
     let fx = fx("b16-atomic-job");
     let t = agent_pane_settled(&fx, "worker-1", P + 570);
@@ -1997,7 +1994,6 @@ fn b16_atomic_refuse_machine_job_rechecks_approval_before_enter() {
 /// 정상 경로(승인 창 없음): Enter 그대로 1 · 거부 흔적 0 · 입력줄 계수 0. 그리고 `refuse_on_approval` 을 싣지 않은 원자 제출은
 /// 창이 떠도 종전 그대로(이 고침은 「창이면 쓰지 마라」를 요구한 호출자에게만 건다).
 #[test]
-#[cfg_attr(not(unix), ignore = "S21 제출 정착·창 위 CR 보류는 유닉스 한정(send_settle_applies)")]
 fn b16_atomic_send_unchanged_without_dialog_or_refuse_flag() {
     let fx = fx("b16-atomic-normal");
     let t = agent_pane_settled(&fx, "worker-1", P + 560);

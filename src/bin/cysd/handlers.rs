@@ -8164,7 +8164,8 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             //   술어 = approval_enter_guard: 쓰기 직전 화면 판정 ∨ feed 승인 대기 항목 · 거부 흔적 input.refused_at_write).
             //   에이전트 작업(OwnedClear) 길은 아래 SubmitRefuse 가 같은 일을 한다.
             if refuse_on_approval {
-                if let crate::state::WriteReq::Inject { text, cr_delay_ms, clear_first: true, guard: None } = write_req {
+                // (send_text_write_req 의 clear_first Inject 는 인계 가드가 언제나 없다 — 종전 동작 그대로)
+                if let crate::state::WriteReq::Inject { text, cr_delay_ms, clear_first: true, .. } = write_req {
                     write_req = crate::state::WriteReq::InjectRefusing {
                         text,
                         cr_delay_ms,

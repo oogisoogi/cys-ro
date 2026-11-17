@@ -16,12 +16,13 @@ use std::path::{Path, PathBuf};
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// ~/.cys 직하에서 격리하는 정확 이름. (pack·조직 레지스트리·상태·마커·토글 전부)
-const CYS_BASE_EXACT: [&str; 30] = [
+const CYS_BASE_EXACT: [&str; 31] = [
     "pack",
     "pack.prev",
     "pack.swap",
     ".pack-download",
     ".pack-journal",
+    ".pack-journal.d", // ★1.1.16(U02 · 원작자 7c82a7a5 GX7): 레인마다 팩 업데이트 저널(crate::pack::PACK_JOURNAL_ROOT)
     ".pack-accepted.json",
     ".pack-apply.lock",
     ".pack-reinject-pending.json",
@@ -2805,6 +2806,21 @@ mod tests {
         r
     }
 
+    /// ★1.1.16(U02 · 원작자 7c82a7a5 GX7 이식): 초기화가 레인 저널 폴더 `.pack-journal.d` 를 다른 알려진 이름처럼 격리한다.
+    #[test]
+    fn j1116_plan_quarantines_the_lane_journal_folder() {
+        let td = test_home("plan-journal-d");
+        let r = fake_roots(&td);
+        mk(&r.temp);
+        mk(&r.cys_base.join(".pack-journal.d/pack-dept-d1/active/files"));
+        let plan = build_plan(&r, &ResetOptions { purge_license: false, purge_local: false, purge_round: false });
+        let q: Vec<String> = plan.quarantine.iter().map(|i| norm(&i.path)).collect();
+        let k: Vec<String> = plan.keep.iter().map(|i| norm(&i.path)).collect();
+        let _ = std::fs::remove_dir_all(&td);
+        assert!(q.iter().any(|p| p.ends_with(".cys/.pack-journal.d")), "{q:?}");
+        assert!(!k.iter().any(|p| p.ends_with(".cys/.pack-journal.d")), "{k:?}");
+    }
+
     #[test]
     fn plan_quarantines_known_state_and_keeps_owner_files() {
         let td = test_home("plan-known");
@@ -4357,6 +4373,7 @@ mod r2f_dm_factory_reset {
     fn r2f_dm_factory_reset_inventory_lists_carry_the_new_persistent_files() {
         assert_eq!(CYS_BASE_EXACT2.len(), 12, "~/.cys 직하 정확 이름 목록(2차)의 길이");
         assert!(CYS_BASE_EXACT.contains(&"pack.swap"), "끊긴 교체의 옛 팩 — 빠지면 초기화 뒤 다음 설치가 되살린다");
+        assert!(CYS_BASE_EXACT.contains(&".pack-journal") && CYS_BASE_EXACT.contains(&crate::pack::PACK_JOURNAL_ROOT), "레인 저널 폴더(1.1.16)와 옛 공유 저널이 기본 격리 목록에 없다");
         assert!(CYS_BASE_PREFIX.contains(&"pack.swap-"), "복구의 보존 폴더 — 빠지면 초기화 뒤에도 사용자 상태가 남는다");
         assert!(CYS_BASE_EXACT2.contains(&"claude-tui-written.json") && crate::claude_tui::LEDGER_FILE.ends_with("/claude-tui-written.json"), "claude tui 원장이 기본 격리 목록에 없다");
         assert!(CYS_BASE_EXACT2.contains(&".update-attempt.json"), "~/.cys/.update-attempt.json(인앱 업데이트 시도 기록)이 기본 격리 목록에 없다");

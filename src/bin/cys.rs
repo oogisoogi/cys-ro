@@ -9615,6 +9615,22 @@ fn diag_pack_version(ctx: &DoctorCtx) -> DiagItem {
 }
 
 fn diag_pack_state(ctx: &DoctorCtx) -> DiagItem {
+    let mut item = diag_pack_state_row(ctx);
+    // ★1.1.16(U02 · 원작자 17f492db 의 doctor 줄): 1.1.15 이전 판이 남긴 공유 저널이 아직 있으면(부서 레인에서 보거나 본부에 진행 중
+    //   저널이 있어 옮기지 못한 경우) 이 줄이 이름을 대고 처리 방식을 적는다 — 읽기만(stat) · Ok → Warn(종료 코드는 Fail 만 따름).
+    if let Some(notice) = cys::pack::legacy_pack_journal_notice(&ctx.pack_dir) {
+        if item.status == DiagStatus::Ok {
+            item.status = DiagStatus::Warn;
+        }
+        item.detail = format!("{} · ⚠ {notice}", item.detail);
+        if item.action.is_empty() {
+            item.action = "본부 데몬을 다시 켜거나 팩 업데이트를 다시 실행하십시오(그 기록은 본부 레인이 옮겨 복구합니다 · 지우지 않음)".into();
+        }
+    }
+    item
+}
+
+fn diag_pack_state_row(ctx: &DoctorCtx) -> DiagItem {
     match cys::pack::read_pack_state(&ctx.pack_dir) {
         cys::pack::PackStateRead::Absent => DiagItem {
             name: "pack-state",
@@ -40799,6 +40815,28 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
             "시드 확인 후에도 공용 오염이 남았다"
         );
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn j1116_doctor_pack_state_names_a_legacy_journal() {
+        // ★1.1.16(U02 · 원작자 17f492db 이식): pack-state 줄이 옛 공유 저널을 이름 대고 알린다 — 읽기만(그 뒤에도 그대로) · Ok → Warn.
+        let base = std::env::temp_dir().join(format!("cys-doc-legacy-journal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let ctx = doctor_ctx_at(&base);
+        std::fs::create_dir_all(&ctx.pack_dir).unwrap();
+        let plain = diag_pack_state(&ctx);
+        let legacy = ctx.state_base.join(".pack-journal");
+        std::fs::create_dir_all(legacy.join("files")).unwrap();
+        std::fs::write(legacy.join("index.json"), r#"{"target_version":"1.1.15","entries":[]}"#).unwrap();
+        let named = diag_pack_state(&ctx);
+        let still_there = legacy.join("index.json").is_file();
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(plain.status, DiagStatus::Ok);
+        assert!(!plain.detail.contains(".pack-journal"), "{}", plain.detail);
+        assert_eq!(named.status, DiagStatus::Warn);
+        assert!(named.detail.contains(&legacy.display().to_string()), "{}", named.detail);
+        assert!(!named.action.is_empty());
+        assert!(still_there, "doctor 줄은 옛 저널을 건드리지 않는다");
     }
 
     #[test]

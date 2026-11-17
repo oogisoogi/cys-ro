@@ -3633,6 +3633,8 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// 방식은 넓은 창이 잠깐 열리므로, **처음부터** 목표 mode 로 만든다.
 pub fn write_atomic_mode(path: &Path, bytes: &[u8], mode: Option<u32>) -> std::io::Result<()> {
     use std::io::Write;
+    // ★1.1.16(U03 · WJ1): 팩 적용 중이면 이 이름을 바꾸기 직전 배치 기록에 확정(그 밖 = 무동작 · 실패 = 쓰지 않음).
+    placement_announce(path, Placed::Bytes(bytes))?;
     let parent = path.parent().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent")
     })?;
@@ -3797,6 +3799,8 @@ fn create_capture_segment(
 pub fn byte_backup_user(dir: &Path, rel: &str, src: &Path) -> Result<(), String> {
     let dst = dir.join(format!("{rel}.user"));
     let tmp = dir.join(format!("{rel}.user.tmp-{}", std::process::id()));
+    // ★1.1.16(U03 · WJ1): 복사본 내용은 미리 모른다 → 「내용 미상」으로 알린다(되돌림이 그 이름은 이 적용 몫으로 본다).
+    placement_announce(&dst, Placed::Unknown).map_err(|e| format!("배치 기록 실패 {}: {e}", dst.display()))?;
     std::fs::copy(src, &tmp).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         format!("바이트 백업 복사 실패 {}: {e}", tmp.display())
@@ -4483,7 +4487,7 @@ pub fn install_into<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
                     // 그대로 둬야 한다(읽지 못했다는 이유로 vendor 신버전 사본을 지우면 정보 손실).
                     pending.remove(rel);
                     pending_dirty = true;
-                    let _ = std::fs::remove_file(dir.join(format!("{rel}.new")));
+                    let _ = remove_file_placed(dir.join(format!("{rel}.new")));
                 }
                 if unreadable {
                     unreadable_kept.push(rel.to_string());
@@ -4500,7 +4504,7 @@ pub fn install_into<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
                 {
                     pending.remove(rel);
                     pending_dirty = true;
-                    let _ = std::fs::remove_file(dir.join(format!("{rel}.new")));
+                    let _ = remove_file_placed(dir.join(format!("{rel}.new")));
                 }
                 // 원장 계상(kind:"kept-drift", side:rel) — 기존 kind∈LINEAGE(merged·conflicted)면
                 // kind 불변·state:"at-rest" 만(upsert_pending_v2 계보 규칙 · no-op 시 rewrite 0).
@@ -4608,7 +4612,7 @@ pub fn install_into<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
                                 {
                                     pending.remove(rel);
                                     pending_dirty = true;
-                                    let _ = std::fs::remove_file(dir.join(format!("{rel}.new")));
+                                    let _ = remove_file_placed(dir.join(format!("{rel}.new")));
                                 }
                                 let capture_rel =
                                     format!("{}/{rel}", capture_seg.as_ref().unwrap().1);
@@ -4844,7 +4848,7 @@ pub fn install_into<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
             );
             let newp = dir.join(format!("{rel}.new"));
             if std::fs::read_to_string(&newp).ok().as_deref() == Some(vendor_embed) {
-                let _ = std::fs::remove_file(&newp);
+                let _ = remove_file_placed(&newp);
             }
         }
         // 정상 갱신으로 합류(비수정 update·신규 생성) — 남은 new-pending 잔재는 무의미하므로 청소.
@@ -4862,7 +4866,7 @@ pub fn install_into<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
             let user_touched = ceo_ov.is_some()
                 && std::fs::read_to_string(&newp).ok().is_some_and(|n| n != vendor_embed);
             if !user_touched {
-                let _ = std::fs::remove_file(newp);
+                let _ = remove_file_placed(newp);
             }
         }
         written += 1;
@@ -4951,7 +4955,7 @@ pub fn install_into<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
                         if manifest.get(&rel).map(String::as_str)
                             == Some(content_hash(&existing).as_str()) =>
                     {
-                        if std::fs::remove_file(&path).is_ok() {
+                        if remove_file_placed(&path).is_ok() {
                             manifest.remove(&rel);
                             pruned += 1;
                         }
@@ -5403,11 +5407,35 @@ pub fn install_staged(
 // pack-update만 apply_pack_transactional로 감싼다. R2CODE HIGH #1 해소.
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// ★1.1.16(원작자 v0.15.1 U02 · M15-다 를 우리 판에 재구현 · TICKET=cysr-1116-vendor-import): 1.1.15 까지의 저널 자리 —
+/// 본부 `pack` 과 부서 `pack-dept-*` 가 같은 부모를 써서 **한 곳을 공유**했고, 그래서 부서 데몬 기동 복구가 본부의 끊긴 기록을
+/// 자기 것으로 알고 부서 팩에 되돌렸다. 새 판은 여기에 쓰지 않는다. 남아 있으면 [`adopt_legacy_pack_journal`] 이 **본부 레인만**
+/// 한 번 자기 저널 자리로 옮겨 복구한다 — 우리 판에서 `pack-update` 를 부르는 것은 본부뿐이다(러너 `realops.rs` 의 팩 단독
+/// 업데이트·사람의 `cys pack-update` · 부서 팩 경로로 부르는 곳 0). 원작자는 「아무도 복구하지 않고 안내만」 했지만 그러면
+/// 반쯤 적용된 팩이 사람 손을 기다린다(박사님 원칙 「박사님 할 일 0」) — 대신 옛 저널은 배치 기록이 없으니 살아 있는 내용이
+/// 백업과 다르면 먼저 `kept/` 에 보관하고 되돌린다(주인이 틀려도 손실 0).
 const PACK_JOURNAL_DIR: &str = ".pack-journal";
-/// ★U2 5판(codex 4R M8-pro): 팩 저널의 **명시 커밋 기록**(`.pack-journal/commit.json` = `{target_version, pro_revision}`).
+/// ★1.1.16(U02 · 원작자와 같은 이름): 레인마다 자기 저널 폴더의 부모 — `<팩 부모>/.pack-journal.d/<레인 = 팩 폴더 이름>/`.
+/// 새 이름이라 옛 판(옛 자리만 읽음)은 새 저널을 보지 않는다.
+pub const PACK_JOURNAL_ROOT: &str = ".pack-journal.d";
+/// 레인 폴더 안의 **진행 중 저널** 자리 — 있음 = 정리되지 않은 저널(커밋 정리·되돌림이 끝나면 사라진다).
+const JOURNAL_ACTIVE: &str = "active";
+/// ★1.1.16(U03 · 원작자 WJ1): 레인 폴더 안의 보관소 `kept/<적용 id>/` — 되돌림이 그대로 둔 항목의 업데이트 백업 · 되돌리기 전
+/// 살아 있던 내용 · 비켜 둔 디렉터리. 덮어쓰지도 지우지도 않는다(기록 = 같은 폴더의 `kept.log`).
+const KEPT_DIR: &str = "kept";
+/// ★1.1.16(U03 · WJ1): 적용의 **선기록 배치 기록** — 팩 이름 하나를 바꾸기 **직전마다** 한 줄
+/// `{"rel":"<팩 상대 이름 '/'>","sha256":"<놓을 바이트의 hex>"|null|"*"}`(null = 없어짐 · "*" = 내용 미상)을 쓰고 디스크에
+/// 확정한 뒤에야 바꾼다. 되돌림은 이 기록에 있는 것만 되돌린다. ★WJ2: 줄마다 열고·쓰고·확정하고·닫는다(열린 손잡이 0 —
+/// 윈도우에서 저널 폴더 정리가 막히지 않게).
+const PLACED_LOG: &str = "placed.log";
+/// ★U2 5판(codex 4R M8-pro): 팩 저널의 **명시 커밋 기록**(`<저널>/commit.json` = `{target_version, pro_revision, apply_id}`).
 /// 같은 base 판의 pro_revision 전진(1.0.0/pro.1 → 1.0.0/pro.2)은 `.pack-version` 이 적용 전후로 같아 「판 문자열 == 목표」 판정이
 /// 커밋을 가르지 못한다 — 이 기록이 있으면 커밋(전진 완료) · 없으면 미커밋(되돌림). 이 기록을 쓰는 저널은 인덱스에 `explicit_commit`.
+/// ★1.1.16(U02 「끝남 = 그 적용 고유 표지」): 기록의 `apply_id` 가 인덱스의 `apply_id` 와 같을 때만 「이 적용의」 커밋이다.
 const PACK_JOURNAL_COMMIT: &str = "commit.json";
+/// ★1.1.16(U03 · 원작자 KB3): 팩을 **설명하는** 기록 파일 — 업데이트가 한 번이라도 무엇을 바꿨다면, 배치 기록에 없는 내용이라도
+/// 먼저 보관한 뒤 되돌린다(기록은 되돌린 팩과 맞아야 한다).
+const RECORD_NAMES: [&str; 4] = [INSTALL_MANIFEST, PACK_STATE_FILE, PACK_VERSION_FILE, MERGE_PENDING_FILE];
 
 // 시험 전용 결함 주입(프로세스 사망 흉내 = 그 자리에서 Err · 되돌림 없이 반환): `journal`(저널 뒤) · `install`(파일 반영 뒤) ·
 // `state`(.pack-state.json 뒤) · `commit`(커밋 기록 뒤) · `version`(.pack-version 뒤 · 저널 삭제 전).
@@ -5428,12 +5456,93 @@ fn pack_txn_killed(at: &'static str) -> bool {
     }
 }
 
-/// 백업 저널 디렉터리(~/.cys/.pack-journal) — pack_dir 형제(staging·lock·accepted와 동일 루트).
-pub fn pack_journal_dir() -> PathBuf {
-    pack_dir()
+/// ★1.1.16(U02): 팩 `pack` 레인의 저널 폴더 `<부모>/.pack-journal.d/<팩 폴더 이름>`(진행 중 저널 `active/` 와 보관소 `kept/` 의 부모).
+pub fn pack_journal_lane_dir_for(pack: &Path) -> PathBuf {
+    let root = pack
         .parent()
+        .map(|p| p.join(PACK_JOURNAL_ROOT))
+        .unwrap_or_else(|| PathBuf::from(PACK_JOURNAL_ROOT));
+    if crate::update::mutant("J1116-SHARED") {
+        return root; // 뮤턴트: 레인 구분 없이 한 곳(1.1.15 의 공유와 같은 결함)
+    }
+    root.join(pack.file_name().unwrap_or_else(|| std::ffi::OsStr::new("pack")))
+}
+
+/// ★1.1.16(U02): 팩 `pack` 레인의 **진행 중 저널** 폴더(있음 = 정리되지 않은 저널).
+pub fn pack_journal_dir_for(pack: &Path) -> PathBuf {
+    pack_journal_lane_dir_for(pack).join(JOURNAL_ACTIVE)
+}
+
+/// 이 프로세스 레인(= `pack_dir()`)의 진행 중 저널 폴더. ★1.1.16: 레인마다 따로(1.1.15 = `~/.cys/.pack-journal` 한 곳 공유).
+pub fn pack_journal_dir() -> PathBuf {
+    pack_journal_dir_for(&pack_dir())
+}
+
+/// ★1.1.16(U02): 1.1.15 까지의 공유 저널 자리(`<팩 부모>/.pack-journal`).
+pub fn legacy_pack_journal_dir_for(pack: &Path) -> PathBuf {
+    pack.parent()
         .map(|p| p.join(PACK_JOURNAL_DIR))
         .unwrap_or_else(|| PathBuf::from(PACK_JOURNAL_DIR))
+}
+
+/// ★1.1.16(U02): 옛 공유 저널이 **아직 남아 있으면** 그 사실과 처리 방식을 한 줄로(stat 만 · 읽지도 옮기지도 않는다). 없음 = None.
+/// 본부 레인은 보통 다음 복구에서 옮기므로, 이 줄이 남는 경우 = 부서 레인에서 볼 때 · 본부 레인에 이미 진행 중 저널이 있을 때 ·
+/// 옛 자리가 디렉터리가 아닐 때.
+pub fn legacy_pack_journal_notice(pack: &Path) -> Option<String> {
+    let p = legacy_pack_journal_dir_for(pack);
+    std::fs::symlink_metadata(&p).ok()?;
+    Some(if dept_scope_of(pack).is_some() {
+        format!(
+            "1.1.15 이전 판이 남긴 공유 팩 업데이트 복구 기록 {} — 본부 레인 몫이라 이 부서는 되돌리거나 옮기거나 지우지 \
+             않습니다(본부 데몬 또는 본부 팩 업데이트가 옮겨 복구합니다).",
+            p.display()
+        )
+    } else {
+        format!(
+            "1.1.15 이전 판이 남긴 공유 팩 업데이트 복구 기록 {} 이 남아 있습니다(본부 레인에 진행 중 저널 {} 이 있거나 \
+             옛 자리가 폴더가 아니어서 옮기지 않았고 지우지도 않았습니다). 해결: 팩 업데이트를 다시 실행하십시오.",
+            p.display(),
+            pack_journal_dir_for(pack).display()
+        )
+    })
+}
+
+/// 옛 공유 저널 안내는 프로세스마다 한 번(cysd 기동 · pack-update 의 복구 두 번).
+static LEGACY_JOURNAL_NAMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// ★1.1.16(U02 · 옛 공유 저널 이관 단계): 본부 레인(부서 아님)이고 자기 진행 중 저널이 없고 옛 자리가 **진짜 폴더**(링크 아님)면
+/// 옛 저널을 이름 바꾸기 한 번으로 자기 진행 중 저널 자리로 옮긴다(같은 부모 아래라 원자 · 이미 누가 옮겼으면 없음 = 무해).
+/// 그 밖(부서 레인 · 본부에 이미 저널 · 폴더 아님)은 손대지 않고 한 번 알린다.
+fn adopt_legacy_pack_journal(pack: &Path) -> Result<(), String> {
+    let legacy = legacy_pack_journal_dir_for(pack);
+    let Ok(meta) = std::fs::symlink_metadata(&legacy) else { return Ok(()) };
+    let own = pack_journal_dir_for(pack);
+    let base_lane = dept_scope_of(pack).is_none() && !crate::update::mutant("J1116-LEGACY-ANYLANE");
+    if base_lane && meta.is_dir() && std::fs::symlink_metadata(&own).is_err() {
+        let lane = pack_journal_lane_dir_for(pack);
+        std::fs::create_dir_all(&lane).map_err(|e| format!("레인 저널 폴더 생성 실패 {}: {e}", lane.display()))?;
+        match std::fs::rename(&legacy, &own) {
+            Ok(()) => {
+                if let Ok(d) = std::fs::File::open(&lane) {
+                    let _ = d.sync_all();
+                }
+                eprintln!(
+                    "[pack] 1.1.15 이전 판이 남긴 공유 팩 업데이트 복구 기록을 본부 레인 저널로 옮겼습니다: {} → {}",
+                    legacy.display(),
+                    own.display()
+                );
+                return Ok(());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(format!("옛 공유 저널 이관 실패 {} → {}: {e}", legacy.display(), own.display())),
+        }
+    }
+    if !LEGACY_JOURNAL_NAMED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        if let Some(n) = legacy_pack_journal_notice(pack) {
+            eprintln!("[pack] ⚠ {n}");
+        }
+    }
+    Ok(())
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -5441,6 +5550,9 @@ struct JournalEntry {
     rel: String,
     /// apply 전 파일이 존재했는가. false면 rollback 시 (신규 생성분) 삭제.
     existed: bool,
+    /// ★1.1.16(7c · 원작자 M15-가): 백업 당시 파일 권한(유닉스 mode) — 되돌림이 바이트와 함께 되돌린다(없음 = 옛 저널·윈도우).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mode: Option<u32>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -5452,14 +5564,380 @@ struct JournalIndex {
     /// ★U2 5판: true = 커밋 판정은 [`PACK_JOURNAL_COMMIT`] 기록 유무(판 문자열 대조 아님) · false = 옛 판 저널(종전 판정).
     #[serde(default)]
     explicit_commit: bool,
+    /// ★1.1.16(U02): 이 적용 고유 id(16 hex) — 커밋 기록·보관소 이름이 같은 id 를 싣는다(없음 = 1.1.15 저널).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    apply_id: Option<String>,
+    /// ★1.1.16(U03): true = 이 적용은 [`PLACED_LOG`] 를 쓴다(로그 부재 = 아직 아무것도 놓지 않음) · false = 옛 저널(보수 규칙).
+    #[serde(default)]
+    placements: bool,
 }
 
-/// apply 전 backup journal 작성: backup_set의 각 파일 기존 bytes를 저널에 복사(+fsync)하고
-/// 인덱스(목표 버전·existed 플래그)를 기록(+fsync)한다. 잔존 저널은 먼저 비운다.
+/// 이 적용 고유 id — pid · 시각(ns) · 프로세스 안 순번의 sha256 앞 16 hex.
+fn new_apply_id() -> String {
+    use sha2::{Digest, Sha256};
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let h = Sha256::digest(format!("{}:{nanos}:{seq}", std::process::id()).as_bytes());
+    format!("{h:x}")[..16].to_string()
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+#[cfg(unix)]
+fn file_mode_of(meta: &std::fs::Metadata) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    Some(meta.permissions().mode() & 0o7777)
+}
+#[cfg(not(unix))]
+fn file_mode_of(_meta: &std::fs::Metadata) -> Option<u32> {
+    None
+}
+
+/// 기록된 권한을 **정확히** 다시 건다(umask 무관 · 유닉스만 · 없음 = 무접촉).
+fn set_exact_mode(path: &Path, mode: Option<u32>) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Some(m) = mode {
+            if !crate::update::mutant("J1116-MODE-EXACT") {
+                return std::fs::set_permissions(path, std::fs::Permissions::from_mode(m & 0o7777));
+            }
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, mode);
+        Ok(())
+    }
+}
+
+// ─── ★1.1.16(U03 · WJ1 · WJ2) 배치 기록 ───────────────────────────────────────────────────────────────────────────────
+/// 배치 기록에 적을 「놓을 것」.
+#[derive(Clone, Copy)]
+pub(crate) enum Placed<'a> {
+    /// 이 바이트를 놓는다.
+    Bytes(&'a [u8]),
+    /// 이름을 없앤다(삭제).
+    Absent,
+    /// 내용을 미리 알 수 없다(복사 등) — 되돌림은 그 이름의 어떤 내용이든 「이 적용이 놓은 것」으로 본다.
+    Unknown,
+}
+
+struct PlacementLog {
+    pack: PathBuf,
+    path: PathBuf,
+    /// 끈적한 실패: 한 번 실패하면 이후 모든 알림이 실패한다 — 결과를 삼키는 best-effort 갈래가 있어도 다른 팩 이름을 더
+    /// 바꾸지 못하게 한다(원작자 KB2).
+    failed: Option<String>,
+}
+
+thread_local! {
+    /// 진행 중 적용의 배치 기록(이 스레드 · `apply_pack_transactional` 안에서만 Some).
+    static PLACEMENT: std::cell::RefCell<Option<PlacementLog>> = const { std::cell::RefCell::new(None) };
+}
+
+/// 배치 기록을 켠다 — 반환 가드가 drop 되면(오류·패닉 포함) 꺼진다.
+struct PlacementGuard;
+impl PlacementGuard {
+    fn start(pack: &Path, jdir: &Path) -> Self {
+        PLACEMENT.with(|p| {
+            *p.borrow_mut() = Some(PlacementLog { pack: pack.to_path_buf(), path: jdir.join(PLACED_LOG), failed: None })
+        });
+        PlacementGuard
+    }
+}
+impl Drop for PlacementGuard {
+    fn drop(&mut self) {
+        placement_stop();
+    }
+}
+fn placement_stop() {
+    PLACEMENT.with(|p| *p.borrow_mut() = None);
+}
+
+/// `path` 가 이 팩 안 이름이면 `/` 로 이은 팩 상대 이름(플랫폼 무관) · 밖이면 None(저널·캡처·설정 폴더 = 알리지 않음).
+fn pack_rel_of(pack: &Path, path: &Path) -> Option<String> {
+    let rest = path.strip_prefix(pack).ok()?;
+    let parts: Vec<String> = rest.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+    (!parts.is_empty()).then(|| parts.join("/"))
+}
+
+/// ★WJ1: 팩 이름 `path` 를 바꾸기 **직전** 배치 기록 한 줄을 디스크에 확정한다. 배치 기록이 꺼져 있거나 팩 밖이면 무동작.
+/// Err = 기록 실패(끈적) → 그 변경을 하면 안 된다(되돌림이 모르는 변경이 생긴다).
+pub(crate) fn placement_announce(path: &Path, what: Placed<'_>) -> std::io::Result<()> {
+    use std::io::Write;
+    PLACEMENT.with(|p| {
+        let mut b = p.borrow_mut();
+        let Some(log) = b.as_mut() else { return Ok(()) };
+        if let Some(e) = &log.failed {
+            return Err(std::io::Error::other(e.clone()));
+        }
+        let Some(rel) = pack_rel_of(&log.pack, path) else { return Ok(()) };
+        let sha = match what {
+            Placed::Bytes(bytes) => serde_json::Value::String(sha256_hex(bytes)),
+            Placed::Absent => serde_json::Value::Null,
+            Placed::Unknown => serde_json::Value::String("*".into()),
+        };
+        let line = format!("{}\n", serde_json::json!({"rel": rel, "sha256": sha}));
+        let res = (|| -> std::io::Result<()> {
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&log.path)?;
+            f.write_all(line.as_bytes())?;
+            f.sync_data()?;
+            Ok(())
+        })();
+        if let Err(e) = &res {
+            log.failed = Some(format!("배치 기록 실패 {}: {e}", log.path.display()));
+        }
+        res
+    })
+}
+
+/// 배치 기록을 거친 파일 삭제(없음 = 성공 아님 — 호출부가 종전처럼 결과를 다룬다).
+pub(crate) fn remove_file_placed(path: impl AsRef<Path>) -> std::io::Result<()> {
+    let path = path.as_ref();
+    placement_announce(path, Placed::Absent)?;
+    std::fs::remove_file(path)
+}
+
+#[derive(Debug, PartialEq)]
+enum Announced {
+    Sha(String),
+    Absent,
+    Unknown,
+}
+
+/// 배치 기록을 읽는다(없음 = 아무것도 놓지 않음). 마지막 줄만 깨져 있으면 무시(그 줄의 변경은 시작되지 않았다 — 줄이 확정된
+/// 뒤에야 바꾼다) · 중간 줄이 깨졌으면 Err(되돌림을 하지 않고 저널을 그대로 둔다).
+fn read_placements(jdir: &Path) -> Result<std::collections::BTreeMap<String, Vec<Announced>>, String> {
+    let mut out: std::collections::BTreeMap<String, Vec<Announced>> = std::collections::BTreeMap::new();
+    let p = jdir.join(PLACED_LOG);
+    let text = match std::fs::read(&p) {
+        Ok(b) => String::from_utf8_lossy(&b).into_owned(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        Err(e) => return Err(format!("배치 기록 읽기 실패 {}: {e}", p.display())),
+    };
+    let lines: Vec<&str> = text.split('\n').filter(|l| !l.trim().is_empty()).collect();
+    let n = lines.len();
+    for (i, l) in lines.into_iter().enumerate() {
+        let parsed = serde_json::from_str::<serde_json::Value>(l).ok().and_then(|v| {
+            let rel = v.get("rel")?.as_str()?.to_string();
+            let a = match v.get("sha256")? {
+                serde_json::Value::Null => Announced::Absent,
+                serde_json::Value::String(s) if s == "*" => Announced::Unknown,
+                serde_json::Value::String(s) => Announced::Sha(s.clone()),
+                _ => return None,
+            };
+            Some((rel, a))
+        });
+        match parsed {
+            Some((rel, a)) => out.entry(rel).or_default().push(a),
+            None if i + 1 == n => {}
+            None => return Err(format!("배치 기록 {} 의 {}번째 줄이 깨졌습니다 — 되돌리지 않고 그대로 둡니다", p.display(), i + 1)),
+        }
+    }
+    Ok(out)
+}
+
+/// 되돌림 직전 살아 있는 이름의 상태.
+enum Live {
+    File(Vec<u8>),
+    Absent,
+    /// 디렉터리·링크·읽을 수 없는 것 — 바이트로 비교하지 않는다(비켜 둔 뒤 되돌린다).
+    Other,
+}
+
+fn live_of(p: &Path) -> Live {
+    match std::fs::symlink_metadata(p) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Live::Absent,
+        Err(_) => Live::Other,
+        Ok(m) if m.is_file() => std::fs::read(p).map(Live::File).unwrap_or(Live::Other),
+        Ok(_) => Live::Other,
+    }
+}
+
+/// ★1.1.16(U03 · WJ1 · KB1): 보관소 `kept/<id>/` — 항목은 덮어쓰지 않고(이름이 있으면 `.1`·`.2`…) 항목마다 `kept.log` 한 줄을
+/// 디스크에 확정한다(그 보관에 기대는 되돌림보다 먼저).
+struct KeptFolder {
+    dir: PathBuf,
+    left: usize,
+    preserved: usize,
+    displaced: usize,
+}
+
+impl KeptFolder {
+    fn new(lane: &Path, id: &str) -> Self {
+        KeptFolder { dir: lane.join(KEPT_DIR).join(id), left: 0, preserved: 0, displaced: 0 }
+    }
+
+    fn free_name(&self, sub: &str, rel: &str) -> PathBuf {
+        let base = self.dir.join(sub).join(rel);
+        if std::fs::symlink_metadata(&base).is_err() {
+            return base;
+        }
+        (1..)
+            .map(|n| PathBuf::from(format!("{}.{n}", base.display())))
+            .find(|p| std::fs::symlink_metadata(p).is_err())
+            .unwrap_or(base)
+    }
+
+    fn log(&self, rel: &str, what: &str, item: Option<&Path>) -> Result<(), String> {
+        use std::io::Write;
+        let log = self.dir.join("kept.log");
+        let ends_clean = std::fs::read(&log).map(|b| b.last().is_none_or(|c| *c == b'\n')).unwrap_or(true);
+        let item_rel = item.and_then(|p| p.strip_prefix(&self.dir).ok()).map(|p| p.to_string_lossy().into_owned());
+        let line = format!(
+            "{}{}\n",
+            if ends_clean { "" } else { "\n" },
+            serde_json::json!({"rel": rel, "what": what, "item": item_rel})
+        );
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log)
+            .map_err(|e| format!("kept.log 열기 실패 {}: {e}", log.display()))?;
+        f.write_all(line.as_bytes()).and_then(|_| f.sync_data()).map_err(|e| format!("kept.log 쓰기 실패 {}: {e}", log.display()))
+    }
+
+    fn keep_bytes(&mut self, sub: &str, rel: &str, bytes: &[u8], what: &str) -> Result<(), String> {
+        use std::io::Write;
+        let dst = self.free_name(sub, rel);
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("보관 폴더 생성 실패 {}: {e}", parent.display()))?;
+        }
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&dst)
+            .map_err(|e| format!("보관 실패 {}: {e}", dst.display()))?;
+        f.write_all(bytes).and_then(|_| f.sync_all()).map_err(|e| format!("보관 실패 {}: {e}", dst.display()))?;
+        self.log(rel, what, Some(&dst))
+    }
+
+    /// 업데이트의 백업(없었던 이름이면 「없었음」)을 보관하고 살아 있는 것은 그대로 둔다.
+    fn left(&mut self, rel: &str, backup: Option<&[u8]>) -> Result<(), String> {
+        std::fs::create_dir_all(&self.dir).map_err(|e| format!("보관 폴더 생성 실패 {}: {e}", self.dir.display()))?;
+        match backup {
+            Some(b) => self.keep_bytes("backup", rel, b, "left-backup")?,
+            None => self.log(rel, "left-was-absent", None)?,
+        }
+        self.left += 1;
+        Ok(())
+    }
+
+    /// 되돌리기 전 살아 있던 바이트를 보관한다.
+    fn preserve_live(&mut self, rel: &str, live: &[u8]) -> Result<(), String> {
+        self.keep_bytes("live", rel, live, "preserved-live")?;
+        self.preserved += 1;
+        Ok(())
+    }
+
+    /// 파일이 아닌 것(디렉터리·링크·읽을 수 없는 것)을 지우지 않고 보관소로 옮긴다(재귀 삭제 0).
+    fn displace(&mut self, rel: &str, target: &Path) -> Result<(), String> {
+        let dst = self.free_name("displaced", rel);
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("보관 폴더 생성 실패 {}: {e}", parent.display()))?;
+        }
+        std::fs::rename(target, &dst).map_err(|e| format!("비켜 두기 실패 {} → {}: {e}", target.display(), dst.display()))?;
+        self.log(rel, "displaced", Some(&dst))?;
+        self.displaced += 1;
+        Ok(())
+    }
+
+    fn closing_line(&self) -> Option<String> {
+        (self.left + self.preserved + self.displaced > 0).then(|| {
+            format!(
+                "[pack] 끊긴 팩 업데이트를 되돌렸습니다 — 그 업데이트가 쓰지 않아 그대로 둔 것 {} · 먼저 보관하고 되돌린 것 {} · 비켜 둔 것 {} \
+                 (지우지 않음 · 기록: {})",
+                self.left,
+                self.preserved,
+                self.displaced,
+                self.dir.join("kept.log").display()
+            )
+        })
+    }
+}
+
+/// 되돌림 한 칸의 결정(원작자 rollback_row 와 같은 표).
+#[derive(Debug, PartialEq)]
+enum RollbackRow {
+    /// 살아 있는 것 = 백업 → 내용 무접촉(기록된 권한만 다시).
+    Same,
+    /// 살아 있는 것 = 이 업데이트가 놓은 것 → 백업으로 되돌림(바이트 + 권한) 또는 새로 만든 것 삭제.
+    Undo,
+    /// 먼저 살아 있는 것을 보관하고 되돌림(옛 저널 · 기록 파일).
+    PreserveThenUndo,
+    /// 이 업데이트가 놓지 않은 것 → 그대로 두고 업데이트의 백업만 보관.
+    Leave,
+}
+
+fn rollback_row(
+    rel: &str,
+    live: &Live,
+    backup: Option<&[u8]>,
+    placed: Option<&std::collections::BTreeMap<String, Vec<Announced>>>,
+) -> RollbackRow {
+    let same = match (live, backup) {
+        (Live::File(b), Some(bk)) => b.as_slice() == bk,
+        (Live::Absent, None) => true,
+        _ => false,
+    };
+    if same {
+        return RollbackRow::Same;
+    }
+    let Some(placed) = placed else { return RollbackRow::PreserveThenUndo };
+    if crate::update::mutant("J1116-UNDO-ALL") {
+        return RollbackRow::Undo;
+    }
+    let hit = placed.get(rel).is_some_and(|v| {
+        v.iter().any(|a| match (a, live) {
+            (Announced::Unknown, _) => true,
+            (Announced::Absent, Live::Absent) => true,
+            (Announced::Sha(h), Live::File(b)) => sha256_hex(b) == *h,
+            _ => false,
+        })
+    });
+    if hit {
+        RollbackRow::Undo
+    } else if !placed.is_empty() && RECORD_NAMES.contains(&rel) {
+        RollbackRow::PreserveThenUndo
+    } else {
+        RollbackRow::Leave
+    }
+}
+
+fn undo_entry(target: &Path, backup: Option<&[u8]>, mode: Option<u32>) -> Result<(), String> {
+    let mode = if crate::update::mutant("J1116-MODE") { None } else { mode }; // 뮤턴트: 1.1.15 처럼 권한 없이 되돌림
+    match backup {
+        Some(bytes) => {
+            if let Some(parent) = target.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            write_atomic_mode(target, bytes, mode)
+                .map_err(|e| format!("journal 복원 쓰기 실패 {}: {e}", target.display()))?;
+            set_exact_mode(target, mode).map_err(|e| format!("journal 복원 권한 실패 {}: {e}", target.display()))
+        }
+        None => match std::fs::remove_file(target) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("journal 신규파일 삭제 실패 {}: {e}", target.display())),
+        },
+    }
+}
+
+/// apply 전 backup journal 작성: backup_set의 각 파일 기존 bytes·권한을 저널에 복사(+fsync)하고
+/// 인덱스(목표 버전·existed 플래그·적용 id)를 기록(+fsync)한다. 잔존 저널은 먼저 비운다. 반환 = 적용 id.
 fn write_journal(
     target_version: &str,
     backup_set: &std::collections::BTreeSet<String>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let jdir = pack_journal_dir();
     let _ = std::fs::remove_dir_all(&jdir);
     let files_dir = jdir.join("files");
@@ -5472,6 +5950,7 @@ fn write_journal(
         if src.is_file() {
             let bytes = std::fs::read(&src)
                 .map_err(|e| format!("journal 백업 읽기 실패 {}: {e}", src.display()))?;
+            let mode = std::fs::metadata(&src).ok().and_then(|m| file_mode_of(&m));
             let dst = files_dir.join(rel);
             if let Some(parent) = dst.parent() {
                 std::fs::create_dir_all(parent)
@@ -5479,77 +5958,118 @@ fn write_journal(
             }
             write_atomic(&dst, &bytes)
                 .map_err(|e| format!("journal 백업 쓰기 실패 {}: {e}", dst.display()))?;
-            entries.push(JournalEntry { rel: rel.clone(), existed: true });
+            entries.push(JournalEntry { rel: rel.clone(), existed: true, mode });
         } else {
-            entries.push(JournalEntry { rel: rel.clone(), existed: false });
+            entries.push(JournalEntry { rel: rel.clone(), existed: false, mode: None });
         }
     }
+    let apply_id = new_apply_id();
     let index = JournalIndex {
         target_version: target_version.to_string(),
         entries,
         explicit_commit: true,
+        apply_id: Some(apply_id.clone()),
+        placements: !crate::update::mutant("J1116-NO-PLACEMENTS"),
     };
     let json =
         serde_json::to_vec_pretty(&index).map_err(|e| format!("journal 인덱스 직렬화 실패: {e}"))?;
     // 인덱스는 마지막에(원자) — 인덱스 부재 = '백업 미완 = 미커밋'(원본 미변경)을 의미.
     write_atomic(&jdir.join("index.json"), &json)
         .map_err(|e| format!("journal 인덱스 쓰기 실패: {e}"))?;
-    Ok(())
+    Ok(apply_id)
 }
 
-/// 저널에서 pre-state로 복원: existed=true는 백업 bytes를 원위치 atomic 복원, existed=false는
-/// (신규 생성분) 삭제. `.pack-version`은 저널에 없으므로 손대지 않는다(미커밋 = old 유지). 복원
-/// 후 저널 삭제. ★커밋 마커(.pack-version==target)가 아닐 때만 호출(recover_pack_journal이 판정).
+/// 저널에서 pre-state로 복원 — ★1.1.16(U03 · WJ1 · KA · KB · 7c): **그 업데이트가 한 것만** 되돌린다. 칸마다([`rollback_row`]):
+/// 살아 있는 것 = 백업 → 무접촉(권한만 다시) · 이 업데이트가 배치 기록([`PLACED_LOG`])에 알린 것 → 백업 바이트 + 권한으로 되돌림
+/// (새로 만든 것은 삭제) · 그 밖(백업 뒤 다른 것이 저장함 — 예: `cys schedule add`) → **그대로 두고** 업데이트의 백업을
+/// `kept/<id>/` 에 보관. 기록 파일 4종은 업데이트가 무엇이든 바꿨으면 먼저 보관하고 되돌린다. 옛 저널(배치 기록 없음)은 살아 있는
+/// 것이 백업과 다르면 먼저 보관하고 되돌린다. 파일이 아닌 것은 지우지 않고 보관소로 비켜 둔다(재귀 삭제 0).
+/// `.pack-version`은 저널에 없으면 손대지 않는다(미커밋 = old 유지). 끝나면 진행 중 저널을 지운다(보관소는 남는다).
+/// 보관 실패 = Err(그 칸을 되돌리지 않고 저널을 남긴다 — 다음 복구가 다시 시도).
 pub fn rollback_journal() -> Result<(), String> {
-    let jdir = pack_journal_dir();
+    rollback_journal_for(&pack_dir())
+}
+
+fn rollback_journal_for(pack: &Path) -> Result<(), String> {
+    let jdir = pack_journal_dir_for(pack);
     let index_path = jdir.join("index.json");
     let s = std::fs::read_to_string(&index_path)
         .map_err(|e| format!("journal 인덱스 읽기 실패 {}: {e}", index_path.display()))?;
     let index: JournalIndex =
         serde_json::from_str(&s).map_err(|e| format!("journal 인덱스 파싱 실패: {e}"))?;
-    let dir = pack_dir();
     let files_dir = jdir.join("files");
+    let placed = if index.placements { Some(read_placements(&jdir)?) } else { None };
+    let id = index.apply_id.clone().unwrap_or_else(|| {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        format!("legacy-{secs}")
+    });
+    let mut kept = KeptFolder::new(&pack_journal_lane_dir_for(pack), &id);
     for entry in &index.entries {
-        let target = dir.join(&entry.rel);
-        if entry.existed {
-            let backup = files_dir.join(&entry.rel);
-            let bytes = std::fs::read(&backup)
-                .map_err(|e| format!("journal 백업 복원 읽기 실패 {}: {e}", backup.display()))?;
-            if let Some(parent) = target.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            write_atomic(&target, &bytes)
-                .map_err(|e| format!("journal 복원 쓰기 실패 {}: {e}", target.display()))?;
+        let target = pack.join(&entry.rel);
+        let backup: Option<Vec<u8>> = if entry.existed {
+            let p = files_dir.join(&entry.rel);
+            Some(std::fs::read(&p).map_err(|e| format!("journal 백업 복원 읽기 실패 {}: {e}", p.display()))?)
         } else {
-            match std::fs::remove_file(&target) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                // 백업 시 파일이 아니라 디렉터리였던 경로(예: 손상돼 디렉터리가 된
-                // .install-manifest.json)는 bytes 백업 불가라 existed=false로 기록된다. remove_file은
-                // 디렉터리에 실패하므로 remove_dir_all로 손상물을 정리해 rollback이 중단 없이
-                // pre-state(손상물 부재=안전측)로 수렴하게 한다(R2CODE2 HIGH #1 fail-closed 경로).
-                Err(_) if target.is_dir() => {
-                    std::fs::remove_dir_all(&target).map_err(|e| {
-                        format!("journal 신규 디렉터리 삭제 실패 {}: {e}", target.display())
-                    })?;
-                }
-                Err(e) => {
-                    return Err(format!("journal 신규파일 삭제 실패 {}: {e}", target.display()))
+            None
+        };
+        let live = live_of(&target);
+        match rollback_row(&entry.rel, &live, backup.as_deref(), placed.as_ref()) {
+            RollbackRow::Same => {
+                if entry.existed {
+                    let _ = set_exact_mode(&target, entry.mode);
                 }
             }
+            row @ (RollbackRow::Undo | RollbackRow::PreserveThenUndo) => {
+                match &live {
+                    Live::Other => kept.displace(&entry.rel, &target)?,
+                    Live::File(b) if row == RollbackRow::PreserveThenUndo => kept
+                        .preserve_live(&entry.rel, b)
+                        .map_err(|e| format!("{}: 살아 있는 내용을 먼저 보관하지 못해 되돌리지 않았습니다 — {e}", entry.rel))?,
+                    _ => {}
+                }
+                undo_entry(&target, backup.as_deref(), entry.mode)?;
+            }
+            RollbackRow::Leave => kept
+                .left(&entry.rel, backup.as_deref())
+                .map_err(|e| format!("{}: 업데이트의 백업을 보관하지 못했습니다 — {e}", entry.rel))?,
         }
+    }
+    if let Some(line) = kept.closing_line() {
+        eprintln!("{line}");
     }
     let _ = std::fs::remove_dir_all(&jdir);
     Ok(())
 }
 
-/// crash recovery(§7-⑤): orphan 저널을 발견하면 `.pack-version`(= hard commit marker)을 저널의
-/// 목표 버전과 대조한다. 같으면 커밋은 성공했고 저널 정리 중 crash였으므로 저널만 삭제(롤백 금지).
-/// 다르면 미커밋(부분적용)이므로 rollback으로 pre-state 자가치유. 인덱스 부재(백업 도중 crash)는
-/// 원본 미변경이므로 잔존 저널만 폐기. 저널 완전 부재면 no-op. 반환: 복구를 수행했으면 true.
-/// ★pack-update 착수 시·cysd 기동 시(install(false) 전)에 호출해 부분적용을 선치유한다.
+/// 커밋 기록이 **이 적용의** 것인가(인덱스에 id 가 없으면 = 1.1.15 저널 = 기록 존재만으로).
+fn commit_record_is_this_apply(jdir: &Path, apply_id: Option<&str>) -> bool {
+    let p = jdir.join(PACK_JOURNAL_COMMIT);
+    if !p.is_file() {
+        return false;
+    }
+    let Some(id) = apply_id else { return true };
+    if crate::update::mutant("J1116-ANY-COMMIT") {
+        return true;
+    }
+    std::fs::read_to_string(&p)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("apply_id").and_then(|x| x.as_str()).map(|x| x == id))
+        .unwrap_or(false)
+}
+
+/// crash recovery(§7-⑤): ★1.1.16 = **이 레인의** 저널만 본다(부서 데몬은 부서 저널만 · 본부 기록 무접촉 — U02). 먼저 옛 공유
+/// 저널 이관 단계([`adopt_legacy_pack_journal`] · 본부 레인만). 커밋 판정 = 이 적용의 커밋 기록(apply_id 일치)이 있으면 전진
+/// 완료 · 없으면 되돌림([`rollback_journal`]). 인덱스 부재(백업 도중 crash)는 원본 미변경이므로 잔존 저널만 폐기. 저널 완전
+/// 부재면 no-op. 반환: 복구를 수행했으면 true.
+/// ★pack-update 착수 시(apply-lock 보유)·cysd 기동 시([`recover_pack_journal_unless_busy`] · install(false) 전)에 호출한다.
 pub fn recover_pack_journal() -> Result<bool, String> {
-    let jdir = pack_journal_dir();
+    let pack = pack_dir();
+    adopt_legacy_pack_journal(&pack)?;
+    let jdir = pack_journal_dir_for(&pack);
     let index_path = jdir.join("index.json");
     if !index_path.is_file() {
         // 인덱스 없는 잔존 디렉터리 = 백업 미완(원본 미변경) → 통째 폐기.
@@ -5563,20 +6083,20 @@ pub fn recover_pack_journal() -> Result<bool, String> {
         .map_err(|e| format!("journal 인덱스 읽기 실패 {}: {e}", index_path.display()))?;
     let index: JournalIndex =
         serde_json::from_str(&s).map_err(|e| format!("journal 인덱스 파싱 실패(손상): {e}"))?;
-    let disk_version = std::fs::read_to_string(pack_dir().join(PACK_VERSION_FILE))
+    let disk_version = std::fs::read_to_string(pack.join(PACK_VERSION_FILE))
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
     if index.explicit_commit && !crate::update::mutant("U2-PACKPRO") {
         // ★U2 5판(M8-pro): 커밋 기록 있음 = 커밋됨 → 전진 완료(.pack-version 을 목표로 맞추고 저널 정리 · 롤백 금지) · 없음 = 미커밋 →
         //   롤백(같은 base 판의 pro_revision 전진에서도 판 문자열은 같으니 그것으로 가르지 않는다).
-        if jdir.join(PACK_JOURNAL_COMMIT).is_file() {
+        if commit_record_is_this_apply(&jdir, index.apply_id.as_deref()) {
             if disk_version != index.target_version {
-                write_atomic(&pack_dir().join(PACK_VERSION_FILE), index.target_version.as_bytes())
+                write_atomic(&pack.join(PACK_VERSION_FILE), index.target_version.as_bytes())
                     .map_err(|e| format!(".pack-version 전진 완료 실패: {e}"))?;
             }
             let _ = std::fs::remove_dir_all(&jdir);
         } else {
-            rollback_journal()?;
+            rollback_journal_for(&pack)?;
         }
         return Ok(true);
     }
@@ -5585,9 +6105,39 @@ pub fn recover_pack_journal() -> Result<bool, String> {
         let _ = std::fs::remove_dir_all(&jdir);
     } else {
         // 미커밋 → 롤백(pre-state 복원 + 저널 삭제).
-        rollback_journal()?;
+        rollback_journal_for(&pack)?;
     }
     Ok(true)
+}
+
+/// ★1.1.16(U02 · 원작자 GX3 「살아 있는 쓰는 이의 저널은 건드리지 않는다」의 우리 꼴): 데몬 기동 복구용 — 팩 적용 잠금
+/// (`<팩 부모>/.pack-apply.lock` · `cys pack-update` 가 적용 내내 쥔다)을 **기다리지 않고** 잡아 본다. 지금 누가 쥐고 있으면 = 진행
+/// 중인 적용이 있다 → 복구하지 않는다(Ok(false) · 그 적용이 스스로 끝내거나 되돌리고, 죽으면 잠금이 풀려 다음 복구가 맡는다).
+/// 잡히면 쥔 채로 [`recover_pack_journal`]. 잠금 파일이 없으면 = 적용한 적 없음 → 그대로 복구.
+pub fn recover_pack_journal_unless_busy() -> Result<bool, String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let lock = pack_dir().parent().map(|p| p.join(".pack-apply.lock"));
+        if let Some(lp) = lock.filter(|p| p.is_file()) {
+            let f = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&lp)
+                .map_err(|e| format!("apply-lock 열기 실패 {}: {e}", lp.display()))?;
+            if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0
+                && !crate::update::mutant("J1116-IGNORE-BUSY")
+            {
+                eprintln!("[pack] 팩 적용이 진행 중(apply-lock 보유) — 그 저널은 쓰는 이의 몫이라 지금 복구하지 않습니다");
+                return Ok(false);
+            }
+            let out = recover_pack_journal();
+            unsafe {
+                libc::flock(f.as_raw_fd(), libc::LOCK_UN);
+            }
+            return out;
+        }
+    }
+    recover_pack_journal()
 }
 
 /// 무중단 pack-update 적용 트랜잭션(§7-⑤ 옵션 b + free/pro v4 §3 상태 계약). 호출 전제:
@@ -5650,16 +6200,21 @@ where
     backup_set.extend(side_paths);
     backup_set.insert(MERGE_PENDING_FILE.to_string());
     // ★MERGE_AUDIT_FILE 은 의도적 비등재 — append-only 감사 원장은 rollback 을 생존한다(G3-축3).
-    write_journal(target_version, &backup_set)?;
+    let apply_id = write_journal(target_version, &backup_set)?;
     if pack_txn_killed("journal") {
         return Err("PACK_TXN_KILL journal".into());
     }
+    // ★1.1.16(U03 · WJ1): 여기서부터 `.pack-version` 까지 팩 이름을 바꾸는 모든 쓰기·삭제는 바꾸기 직전 배치 기록에 한 줄을
+    //   확정한다(write_atomic_mode · remove_file_placed · byte_backup_user 가 알린다). 되돌림 전에는 반드시 끈다(되돌림 자신의
+    //   쓰기는 배치가 아니다) — 가드 drop · placement_stop.
+    let placement = PlacementGuard::start(&dir, &pack_journal_dir());
     // ② 파일 반영(transactional=true) — .pack-version은 여기서 쓰지 않고(④에서 commit marker로),
     //    .install-manifest.json write 실패는 fail-closed로 Err가 되어 아래 rollback을 탄다.
     let (written, kept) =
         match install_from_iter(items.iter().copied(), false, target_version, true, auth) {
             Ok(v) => v,
             Err(e) => {
+                placement_stop();
                 let _ = rollback_journal();
                 return Err(format!("파일 반영 실패(rollback 완료): {e}"));
             }
@@ -5669,6 +6224,7 @@ where
     }
     // ③ `.pack-state.json` 기록 — journal 백업 대상이므로 실패 시 rollback으로 전체 복원.
     if let Err(e) = write_pack_state(&dir, state) {
+        placement_stop();
         let _ = rollback_journal();
         return Err(format!("state 기록 실패(rollback 완료): {e}"));
     }
@@ -5676,8 +6232,10 @@ where
         return Err("PACK_TXN_KILL state".into());
     }
     // ③b ★U2 5판(M8-pro): 커밋 지점 = 저널의 커밋 기록(원자 쓰기) — 이 뒤 사망 = 복구가 전진 완료 · 앞 = 롤백.
-    let commit_rec = serde_json::json!({"target_version": target_version, "pro_revision": state.pro_revision});
+    //   ★1.1.16(U02): 기록에 이 적용 id 를 싣는다 — 복구는 id 가 같을 때만 「이 적용의 커밋」으로 본다.
+    let commit_rec = serde_json::json!({"target_version": target_version, "pro_revision": state.pro_revision, "apply_id": apply_id});
     if let Err(e) = write_atomic(&pack_journal_dir().join(PACK_JOURNAL_COMMIT), commit_rec.to_string().as_bytes()) {
+        placement_stop();
         let _ = rollback_journal();
         return Err(format!("커밋 기록 실패(rollback 완료): {e}"));
     }
@@ -5689,12 +6247,14 @@ where
         if let Err(e2) = std::fs::remove_file(pack_journal_dir().join(PACK_JOURNAL_COMMIT)) {
             return Err(format!(".pack-version 쓰기 실패({e}) · 커밋 기록 철회 실패({e2}) — 다음 복구가 전진 완료"));
         }
+        placement_stop();
         let _ = rollback_journal();
         return Err(format!(".pack-version 커밋 실패(rollback 완료): {e}"));
     }
     if pack_txn_killed("version") {
         return Err("PACK_TXN_KILL version".into());
     }
+    drop(placement);
     // ★W-a: 트랜잭션(원격 팩) 적용분은 내장 팩이 아니다 — 내장 지문을 지운다(부재 = 같은 판에서 종전대로 스킵 · 원격 팩을
     //   내장 팩으로 덮는 스윕을 만들지 않는다).
     let _ = std::fs::remove_file(dir.join(PACK_EMBED_HASH_FILE));
@@ -10502,7 +11062,8 @@ mod tests {
             &[("README.md", "OLD-SOUL"), ("schedule.json", "[]"), ("hooks/h.sh", "#!/bin/sh\necho old\n")],
             "1.0.0",
         );
-        std::fs::set_permissions(pd.join("hooks/h.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        // 0775 = umask(022)가 지우는 그룹 쓰기 비트까지 — 「생성 시 mode」만으로는 안 돌아오고 정확한 chmod 가 있어야 돌아온다.
+        std::fs::set_permissions(pd.join("hooks/h.sh"), std::fs::Permissions::from_mode(0o775)).unwrap();
         PACK_TXN_KILL.with(|k| k.set(Some("install")));
         let r = apply_pack_transactional(
             &[("README.md", "NEW-SOUL"), ("schedule.json", "[]"), ("hooks/h.sh", "echo new-without-shebang\n")],
@@ -10530,7 +11091,7 @@ mod tests {
         assert_eq!(soul, "OLD-SOUL", "업데이트가 쓴 README.md 는 되돌려야 한다");
         assert_eq!(hook, "#!/bin/sh\necho old\n", "업데이트가 쓴 훅은 되돌려야 한다");
         assert_eq!(sched, "[{\"id\":\"owner-job\"}]", "백업 뒤 저장한 예약 작업이 되돌림에 지워졌다(WJ1)");
-        assert_eq!(mode, 0o755, "되돌린 훅이 실행 권한을 잃었다(7c)");
+        assert_eq!(mode, 0o775, "되돌린 훅이 실행 권한을 잃었다(7c)");
         assert!(kept_log.contains("schedule.json"), "그대로 둔 항목의 백업 보관 기록 없음: {kept_log:?}");
     }
 
@@ -10583,6 +11144,141 @@ mod tests {
         assert!(!legacy_left, "옛 공유 저널이 본부 레인으로 옮겨지지 않았다");
         assert!(kept_bytes.iter().any(|b| b == "PARTIAL-NEW"), "되돌리기 전 살아 있던 내용 보관 없음: {kept_bytes:?}");
         assert!(kept_bytes.iter().any(|b| b == "ORPHAN-NEW"), "지운 신규 파일의 살아 있던 내용 보관 없음: {kept_bytes:?}");
+    }
+
+    /// WJ1 배치 기록 빠짐 검사: 사용자 수정본(.new·.user·병합 갈래) · 지울 낡은 파일(prune) · 새 파일 · 실행 파일 권한이 섞인 적용을
+    /// 마지막 쓰기 뒤(`version`)에 끊고, 적용 전후로 바이트가 바뀐(생김·사라짐 포함) **모든** 팩 이름이 배치 기록에 있는지 본다 —
+    /// 하나라도 빠지면 그 이름은 되돌림에서 「이 업데이트가 쓰지 않음」으로 남는다(부분 되돌림).
+    #[test]
+    fn j1116_every_change_of_an_apply_is_announced() {
+        let _g = PACK_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (base, pd, _env) = txn_prestate(
+            "j16-cover",
+            &[
+                ("README.md", "OLD-SOUL"),
+                ("directives/WORKER_DIRECTIVE.md", "# W\nvendor-1\n"),
+                ("skills/a/SKILL.md", "vendor-a-1"),
+                ("stale.txt", "STALE"),
+                ("hooks/h.sh", "#!/bin/sh\nold\n"),
+            ],
+            "1.0.0",
+        );
+        // 사용자가 고친 사본(매니페스트 해시와 다름) 두 개 — 지침(병합/.new 갈래) · 스킬.
+        std::fs::write(pd.join("directives/WORKER_DIRECTIVE.md"), "# W\nvendor-1\nUSER-LINE\n").unwrap();
+        std::fs::write(pd.join("skills/a/SKILL.md"), "user-a").unwrap();
+        let pre = fingerprint_dir(&pd);
+        PACK_TXN_KILL.with(|k| k.set(Some("version")));
+        let r = apply_pack_transactional(
+            &[
+                ("README.md", "NEW-SOUL"),
+                ("directives/WORKER_DIRECTIVE.md", "# W\nvendor-2\n"),
+                ("skills/a/SKILL.md", "vendor-a-2"),
+                ("hooks/h.sh", "#!/bin/sh\nnew\n"),
+                ("brand-new.txt", "N"),
+            ],
+            "2.0.0",
+            &test_free_state("2.0.0"),
+            None,
+            || Ok(()),
+        );
+        PACK_TXN_KILL.with(|k| k.set(None));
+        assert!(r.unwrap_err().contains("PACK_TXN_KILL"));
+        let post = fingerprint_dir(&pd);
+        let placed = read_placements(&pack_journal_dir()).unwrap();
+        let _ = std::fs::remove_dir_all(&base);
+        let changed: Vec<&String> = pre
+            .keys()
+            .chain(post.keys())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .filter(|k| pre.get(*k) != post.get(*k))
+            .collect();
+        eprintln!("[j1116 cover] changed={changed:?}");
+        assert!(changed.len() >= 5, "적용이 바꾼 것이 너무 적다(시험이 갈래를 못 탐): {changed:?}");
+        let missing: Vec<&&String> = changed.iter().filter(|k| !placed.contains_key(k.as_str())).collect();
+        assert!(missing.is_empty(), "배치 기록에 없는 변경: {missing:?} (바뀐 것 {changed:?})");
+    }
+
+    /// 같은 섞인 적용을 install·state 에서 끊고 복구하면 팩이 적용 전과 **바이트 단위로 같다**(배치 기록만으로 되돌림이 완결 —
+    /// 그대로 둔 것 0 · 보관소에 남는 것은 팩 밖).
+    #[test]
+    fn j1116_rich_apply_rolls_back_to_the_exact_prestate() {
+        let _g = PACK_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for at in ["install", "state"] {
+            let (base, pd, _env) = txn_prestate(
+                &format!("j16-rich-{at}"),
+                &[("README.md", "OLD-SOUL"), ("directives/WORKER_DIRECTIVE.md", "# W\nvendor-1\n"), ("skills/a/SKILL.md", "vendor-a-1"), ("stale.txt", "STALE")],
+                "1.0.0",
+            );
+            std::fs::write(pd.join("directives/WORKER_DIRECTIVE.md"), "# W\nvendor-1\nUSER-LINE\n").unwrap();
+            std::fs::write(pd.join("skills/a/SKILL.md"), "user-a").unwrap();
+            let pre = fingerprint_dir(&pd);
+            PACK_TXN_KILL.with(|k| k.set(Some(at)));
+            let r = apply_pack_transactional(
+                &[("README.md", "NEW-SOUL"), ("directives/WORKER_DIRECTIVE.md", "# W\nvendor-2\n"), ("skills/a/SKILL.md", "vendor-a-2"), ("brand-new.txt", "N")],
+                "2.0.0",
+                &test_free_state("2.0.0"),
+                None,
+                || Ok(()),
+            );
+            PACK_TXN_KILL.with(|k| k.set(None));
+            assert!(r.unwrap_err().contains("PACK_TXN_KILL"), "{at}");
+            let rec = recover_pack_journal();
+            let post = fingerprint_dir(&pd);
+            let kept = base.join(".pack-journal.d/pack/kept");
+            let kept_any = std::fs::read_dir(&kept).map(|mut r| r.next().is_some()).unwrap_or(false);
+            let _ = std::fs::remove_dir_all(&base);
+            assert_eq!(rec, Ok(true), "{at}");
+            assert_eq!(pre, post, "{at}: 적용 전과 다르다");
+            assert!(!kept_any, "{at}: 업데이트만 바꾼 상태인데 보관소가 생겼다(그대로 둔 것이 있었다는 뜻)");
+        }
+    }
+
+    /// GX3 우리 꼴: 팩 적용 잠금을 누가 쥐고 있으면(= 진행 중 적용) 데몬 기동 복구는 그 저널을 건드리지 않는다 · 풀리면 복구한다.
+    #[cfg(unix)]
+    #[test]
+    fn j1116_daemon_recovery_skips_a_live_apply() {
+        use std::os::unix::io::AsRawFd;
+        let _g = PACK_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (base, pd, _env) = txn_prestate("j16-busy", &[("README.md", "OLD-SOUL")], "1.0.0");
+        PACK_TXN_KILL.with(|k| k.set(Some("install")));
+        let _ = apply_pack_transactional(&[("README.md", "NEW-SOUL")], "2.0.0", &test_free_state("2.0.0"), None, || Ok(()));
+        PACK_TXN_KILL.with(|k| k.set(None));
+        let lp = base.join(".pack-apply.lock");
+        let holder = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&lp).unwrap();
+        // 다른 열린 파일 설명(=다른 프로세스와 같은 경합)으로 잡는다 — 같은 프로세스라도 flock 은 설명 단위다.
+        assert_eq!(unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_EX) }, 0);
+        let busy = recover_pack_journal_unless_busy();
+        let soul_busy = std::fs::read_to_string(pd.join("README.md")).unwrap();
+        let journal_busy = pack_journal_dir().join("index.json").is_file();
+        unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_UN) };
+        let free = recover_pack_journal_unless_busy();
+        let soul = std::fs::read_to_string(pd.join("README.md")).unwrap();
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(busy, Ok(false), "진행 중 적용의 저널을 복구했다");
+        assert_eq!((soul_busy.as_str(), journal_busy), ("NEW-SOUL", true));
+        assert_eq!(free, Ok(true));
+        assert_eq!(soul, "OLD-SOUL");
+    }
+
+    /// 「끝남 = 그 적용 고유 표지」: 커밋 기록의 apply_id 가 저널 인덱스의 것과 다르면 이 적용의 커밋이 아니다 → 되돌림.
+    #[test]
+    fn j1116_commit_record_of_another_apply_is_not_a_commit() {
+        let _g = PACK_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (base, pd, _env) = txn_prestate("j16-applyid", &[("README.md", "OLD-SOUL")], "1.0.0");
+        PACK_TXN_KILL.with(|k| k.set(Some("state")));
+        let _ = apply_pack_transactional(&[("README.md", "NEW-SOUL")], "2.0.0", &test_free_state("2.0.0"), None, || Ok(()));
+        PACK_TXN_KILL.with(|k| k.set(None));
+        std::fs::write(
+            pack_journal_dir().join(PACK_JOURNAL_COMMIT),
+            serde_json::json!({"target_version": "2.0.0", "pro_revision": 0, "apply_id": "0000000000000000"}).to_string(),
+        )
+        .unwrap();
+        let rec = recover_pack_journal();
+        let soul = std::fs::read_to_string(pd.join("README.md")).unwrap();
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(rec, Ok(true));
+        assert_eq!(soul, "OLD-SOUL", "다른 적용의 커밋 기록을 이 적용의 완료로 봤다");
     }
 
     fn walk_files(d: &Path) -> Vec<PathBuf> {

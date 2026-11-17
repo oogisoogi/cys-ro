@@ -1383,7 +1383,8 @@ async fn async_main() {
     // 통째로 포함하게 됐다 — 단일 워커(1코어)에서 이 블로킹이 tokio 워커를 45초(HEARTBEAT_STALE_THRESHOLD)+
     // 굶기면 heartbeat interval 태스크가 못 돌아 stale → 경합자 데드맨이 정당한 승자를 Dead 오판·SIGKILL 할
     // 수 있다. spawn_blocking 으로 별도 블로킹 풀에 태워 main 태스크가 yield 해도 interval 이 계속 돌게 한다.
-    match tokio::task::spawn_blocking(cys::pack::recover_pack_journal).await {
+    // ★1.1.16(U02): 이 데몬 레인의 저널만 복구(부서 데몬 = 부서 저널) · 팩 적용이 진행 중(apply-lock 보유)이면 손대지 않는다.
+    match tokio::task::spawn_blocking(cys::pack::recover_pack_journal_unless_busy).await {
         Ok(Ok(true)) => eprintln!("[cysd] pack-update orphan journal recovered (self-heal)"),
         Ok(Ok(false)) => {}
         Ok(Err(e)) => eprintln!("[cysd] pack journal recovery skipped: {e}"),

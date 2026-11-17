@@ -49,7 +49,7 @@ RED  fail=1  A 앞 고정(^) 제거 = 감싼 밖 앞글 허용
 RED  fail=1  A 글 조각의 감싼 꼴 제외
 RED  fail=1  B 안 묶인 답에 기록 시각 안 붙임
 RED  fail=1  B 시각 없는 답에 읽은 시각 안 붙임
-RED  fail=1  B 안 묶인 답을 사람 말 뒤에 몰아 그림(logOrder 끼우기 제거)
+RED  fail=2  B 안 묶인 답을 사람 말 뒤에 몰아 그림(logOrder 끼우기 제거)
 RED  fail=1  C 짝 후보에서 보내는 중 제외
 RED  fail=1  C 짝 없는 사람 레코드도 소비
 RED  fail=2  C 짝 없는 사람 레코드를 다시 대어 볼 목록에 안 넣음
@@ -64,10 +64,13 @@ RED  fail=1  E NEL·세로 탭·폼 피드를 줄 나눔으로 안 봄
 RED  fail=1  E U+2028/U+2029 를 줄 나눔으로 안 봄
 RED  fail=2  E 둘째 줄은 옛 규칙(공백·탭만 떼고 /)
 RED  fail=2  F 재조회 시간 상한 제거
-RED  fail=2  F 시간 상한 넘김을 붙잡지 않음(문턱 코드로만)
-RED  fail=1  F 쓰기 직전 시작점 잡기 시간 상한 제거
+RED  fail=3  F 시간 상한 넘김을 붙잡지 않음(문턱 코드로만)
+RED  fail=2  F 쓰기 직전 시작점 잡기 시간 상한 제거
 RED  fail=1  F 조회 고리는 상한 없이
 RED  fail=2  H 같은 글 전달됨이어도 다시 보내기 허용
 RED  fail=1  H 자기 자신도 셈
-붉음: 71 / 71
+RED  fail=2  codex① 본 시각 뒤에 보낸 말에도 짝(보내기 전 레코드가 근거)
+RED  fail=1  codex② 늦은 시작점 조회도 offset 을 바꿈(세대 검사 제거)
+RED  fail=1  codex③ 안 묶인 답 시각 정렬 제거
+붉음: 74 / 74
 원복 확인: True True True True

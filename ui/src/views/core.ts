@@ -11,7 +11,7 @@
 
 import { composeOutbound } from "./judge/outbound";
 import { approvalSeatsOf, masterRowOf, sendGate, type GateVerdict, type MasterRow } from "./judge/gate";
-import { applyRecords, applyRefusedAtWrite, canRetry, mergeOutcome, READ_AFTER_MS, rematchPending, SENDING_SILENT_MS, settleSteps, SLOW_MS, stepFromOutcome, type Msg, type Rec, type Reply, type Step } from "./judge/msgstep";
+import { applyRecords, applyRefusedAtWrite, canRetry, mergeOutcome, READ_AFTER_MS, rematchPending, SENDING_SILENT_MS, settleSteps, SLOW_MS, stepFromOutcome, type Msg, type PendingRec, type Rec, type Reply, type Step } from "./judge/msgstep";
 import { applyQueueEvent, autoHoldRemainingMs, queueEventOf, type AutoMsg } from "./judge/autostep";
 
 export const HOLD_KEY = "cys-chat-hold";
@@ -64,7 +64,7 @@ export const SAME_DELIVERED_NOTE = "같은 글이 이미 전달됐어요 — 다
 export type LogItem = { kind: "msg"; m: Msg } | { kind: "stray"; r: Reply };
 export function logOrder(msgs: readonly Msg[], stray: readonly Reply[]): LogItem[] {
   const out: LogItem[] = [];
-  const timed = stray.filter((r) => typeof r.at === "number");
+  const timed = stray.filter((r) => typeof r.at === "number").sort((a, b) => (a.at as number) - (b.at as number)); // (codex 1R minor) 시각으로 안정 정렬(입력 순서 의존 X)
   let k = 0;
   for (const m of msgs) {
     const t = m.sentAt ?? m.createdAt;
@@ -172,7 +172,9 @@ export class ChatCore {
   /** (조각 3) 마지막으로 바이트가 나갔을 수 있는 사람 보내기 시각(R3 — 기계 문안 묶임 계산) */
   private lastHumanSentAt: number | null = null;
   /** (조각 3 고침 · 검증 지적 C) 짝 못 찾은 사람 레코드(받은 시각 at) — 말이 짝 후보가 되면 다시 대어 본다 · 메모리만 · 세션이 바뀌면 비움 */
-  private pendingUser: Array<{ r: Rec; at: number }> = [];
+  private pendingUser: PendingRec[] = [];
+  /** (codex 1R major) 세션 시작점 조회 세대 — 늦게 돌아온 옛 조회(시간 상한을 넘겼거나 뒤 조회가 이미 시작된 것)는 offset·세션을 바꾸지 못한다 */
+  private initGen = 0;
 
   constructor(private readonly d: Deps) {
     this.loadHold();
@@ -325,12 +327,11 @@ export class ChatCore {
     if (this.pendingUser.length) {
       // (조각 3 고침 · 검증 지적 C) 말 단계가 바뀔 때마다 앞서 짝 못 찾은 사람 레코드를 다시 대어 본다(오래된 것은 버림)
       const now = this.d.now();
-      this.pendingUser = this.pendingUser.filter((p) => now - p.at <= SLOW_MS);
-      const rm = rematchPending(kept, this.pendingUser.map((p) => p.r));
+      this.pendingUser = this.pendingUser.filter((p) => now - p.seenAt <= SLOW_MS);
+      const rm = rematchPending(kept, this.pendingUser);
       if (rm.changed) {
         kept = rm.msgs;
-        const left = new Set(rm.pool);
-        this.pendingUser = this.pendingUser.filter((p) => left.has(p.r));
+        this.pendingUser = rm.pool;
         for (const m of kept) if (m.userUuid) this.consumed.add(m.userUuid);
       }
     }
@@ -521,6 +522,7 @@ export class ChatCore {
       if (this.offset === null && fresh.master) {
         // 보낸 user 레코드를 건너뛰지 않게 세션 기록 시작점을 먼저 잡는다 — 이 RPC 가 문턱 판정과 쓰기 사이에 끼지 않게 다시 조회한다.
         const init = await this.bounded(this.initOffset());
+        if (init === TIMED_OUT) this.initGen++; // (codex 1R major) 늦게 돌아올 그 조회의 결과를 무효로
         fresh = init === TIMED_OUT ? { master: undefined, approvals: null, obsAt: this.d.now(), timedOut: true } : await this.freshBounded();
         this.applyFresh(fresh);
       }
@@ -641,8 +643,10 @@ export class ChatCore {
   private async initOffset(): Promise<void> {
     const m = this.s.master;
     if (!m) return;
+    const gen = ++this.initGen; // 새 조회가 시작되면 앞선 조회의 늦은 결과는 버린다
     try {
       const r = (await this.d.invoke("chat_transcript", { socket: null, surfaceId: m.surface_id, afterOffset: 0, fromEnd: true })) as { status?: unknown; next_offset?: unknown; session_id?: unknown };
+      if (gen !== this.initGen) return; // (codex 1R major) 시간 상한을 넘겼거나 더 새 조회가 있음 — 파일 끝으로 덮어 보낸 말 레코드를 건너뛰지 않게
       if (r?.status === "ok" && typeof r.next_offset === "number") {
         this.offset = r.next_offset;
         this.sessionId = typeof r.session_id === "string" ? r.session_id : null;
@@ -700,7 +704,7 @@ export class ChatCore {
           for (const u of applied.consumed) this.consumed.add(u);
           const readAt = this.d.now();
           const pooled = new Set(this.pendingUser.map((p) => p.r.uuid).filter((u): u is string => u !== null));
-          for (const r of applied.unmatched) if (r.uuid === null || !pooled.has(r.uuid)) this.pendingUser.push({ r, at: readAt });
+          for (const r of applied.unmatched) if (r.uuid === null || !pooled.has(r.uuid)) this.pendingUser.push({ r, seenAt: readAt });
           if (this.pendingUser.length > PENDING_USER_MAX) this.pendingUser = this.pendingUser.slice(-PENDING_USER_MAX);
           // 「답함」은 여기서 칠하지 않는다(null) — 들고 있는 활동 값은 이 답보다 옛 관측일 수 있다. 다음 조회(poll)의 새 관측으로만.
           const known = new Set(this.s.stray.map((x) => x.uuid).filter((u): u is string => u !== null));

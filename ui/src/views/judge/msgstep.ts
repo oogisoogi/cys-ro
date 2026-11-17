@@ -207,20 +207,27 @@ export function applyRecords(msgs: readonly Msg[], recs: readonly Rec[], consume
 }
 
 /** (조각 3 고침 · 검증 지적 C) 앞서 짝을 못 찾은 사람 레코드를 지금 말 목록에 다시 대어 본다(순수 · 짝만 · 사슬 닫기는 안 함).
- *  짝을 찾은 레코드는 pool 에서 빠진다(한 레코드 = 한 말). */
-export function rematchPending(msgs: readonly Msg[], pool: readonly Rec[]): { msgs: Msg[]; pool: Rec[]; changed: boolean } {
+ *  짝을 찾은 레코드는 pool 에서 빠진다(한 레코드 = 한 말).
+ *  ★(codex 1R blocking) 레코드를 **본 시각(seenAt) 이전에 이미 보낸** 말에만 짝짓는다 — 보내기 전에 읽은 레코드(다른 길·시각 없는 레코드 포함)가
+ *  뒤에 보낸 같은 글 말의 「전달됨」 근거가 되지 않게(쓰기 직전 patchMsg 때 붙어 쓰기가 불명이어도 남던 길 · I2). */
+export interface PendingRec {
+  r: Rec;
+  seenAt: number;
+}
+export function rematchPending(msgs: readonly Msg[], pool: readonly PendingRec[]): { msgs: Msg[]; pool: PendingRec[]; changed: boolean } {
   let changed = false;
   const out = [...msgs];
-  const left: Rec[] = [];
-  for (const r of pool) {
+  const left: PendingRec[] = [];
+  for (const p of pool) {
+    const r = p.r;
     let hit = -1;
     for (let i = 0; i < out.length; i++) {
       const m = out[i];
-      if (!AWAITING.has(m.step) || m.userUuid || m.sentAt === null || !recordAfter(r, m.sentAt) || !userRecordMatches(m, r)) continue;
+      if (!AWAITING.has(m.step) || m.userUuid || m.sentAt === null || m.sentAt > p.seenAt || !recordAfter(r, m.sentAt) || !userRecordMatches(m, r)) continue;
       if (hit < 0 || (out[hit].sentAt as number) > m.sentAt) hit = i;
     }
     if (hit < 0) {
-      left.push(r);
+      left.push(p);
       continue;
     }
     out[hit] = { ...out[hit], userUuid: r.uuid, step: "delivered", code: undefined, note: undefined, thread: r.uuid ? [r.uuid] : [] };

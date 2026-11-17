@@ -162,17 +162,22 @@ describe("C — 「보내는 중」도 짝 후보 · 짝 못 찾은 사람 레�
     const ap = applyRecords([msg({ step: "held", sentAt: null })], [r]);
     expect(ap.consumed).toEqual([]);
     expect(ap.unmatched).toEqual([r]);
-    const later = rematchPending([msg({ step: "injected" })], ap.unmatched);
+    const seen = (r0: Rec, seenAt = T + 1_000) => ({ r: r0, seenAt });
+    const later = rematchPending([msg({ step: "injected" })], ap.unmatched.map((x) => seen(x)));
     expect(later.changed).toBe(true);
     expect(later.msgs[0].step).toBe("delivered");
     expect(later.msgs[0].userUuid).toBe("u1");
     expect(later.pool).toEqual([]);
     // 같은 글 두 말이 기다려도 레코드 하나 = 가장 먼저 보낸 말 하나만
-    const two = rematchPending([msg({ id: "x", sentAt: T + 100 }), msg({ id: "y", sentAt: T })], [r]);
+    const two = rematchPending([msg({ id: "x", sentAt: T + 100 }), msg({ id: "y", sentAt: T })], [seen(r)]);
     expect(two.msgs.map((m) => m.step)).toEqual(["injected", "delivered"]);
     // 이미 짝이 있는 말·붙잡은 말·시각이 6초 앞선 레코드 = 짝 아님
-    expect(rematchPending([msg({ userUuid: "z", step: "delivered" })], [r]).changed).toBe(false);
-    expect(rematchPending([msg({ sentAt: T + 7_000 })], [r]).changed).toBe(false);
+    expect(rematchPending([msg({ userUuid: "z", step: "delivered" })], [seen(r)]).changed).toBe(false);
+    expect(rematchPending([msg({ sentAt: T + 7_000 })], [seen(r, T + 8_000)]).changed).toBe(false);
+    // (codex 1R blocking) 레코드를 본 시각보다 뒤에 보낸 말에는 짝짓지 않는다(시각 없는 레코드도)
+    expect(rematchPending([msg({ sentAt: T + 1_001 })], [seen(r)]).changed).toBe(false);
+    expect(rematchPending([msg({ sentAt: T + 60_000 })], [seen({ ...r, ts: null })]).changed).toBe(false);
+    expect(rematchPending([msg({ sentAt: T + 1_000 })], [seen(r)]).changed).toBe(true);
   });
   it("core: 레코드가 먼저 읽히고(말이 짝 후보 아님) 뒤에 말이 「확인 중」이 되면 다시 짝지어 전달됨", async () => {
     const sim = new Sim({ plan: () => "uncertain_written", recordDelay: () => null, replyDelay: () => null });
@@ -387,5 +392,60 @@ describe("H — 같은 글의 다른 말이 「전달됨」 이상이면 확정 
     expect(sameTextDelivered([x, msg({ id: "y", step: "delivered", text: "다른 말" })], "말", "x")).toBe(false);
     for (const st of ["delivered", "replying", "replied"] as const) expect(sameTextDelivered([x, msg({ id: "y", step: st, text: "말" })], "말", "x")).toBe(true);
     expect(sameTextDelivered([msg({ id: "x", step: "delivered", text: "말" })], "말", "x")).toBe(false); // 자기 자신 제외
+  });
+});
+
+describe("codex 1R(e8ddaf65 BLOCK) 지적 고침 — 빠졌던 시험 3", () => {
+  it("blocking — 다른 길에서 온 시각 없는 같은 글 레코드를 먼저 읽어 둔 뒤 60초 뒤 그 글을 보냄 · 쓰기 불명(안 씀) → 전달됨 0", async () => {
+    const sim = new Sim({ plan: () => "uncertain_lost", recordDelay: () => null, replyDelay: () => null });
+    await ready(sim);
+    sim.startPolling();
+    await sim.advance(4_000);
+    sim.file.push({ uuid: "other", parent: "root", role: "user", text: "X", ts: null }); // 다른 길(작업 화면 등) · 시각 칸 없음
+    await sim.core.readTranscript();
+    await sim.advance(60_000);
+    await sim.core.send("X");
+    await sim.advance(20_000);
+    const m = sim.core.state.msgs[0];
+    expect(sim.writes.filter((w) => w.bytesIn).length).toBe(0); // 진실: 바이트 0
+    expect(["delivered", "replying", "replied"].includes(m.step)).toBe(false);
+    expect(m.userUuid ?? null).toBeNull();
+  });
+  it("major — 쓰기 직전 시작점 조회가 상한을 넘겨 붙잡힘 → 다음 조회로 보냄 → 옛 조회가 늦게 파일 끝을 돌려줘도 offset 을 덮지 않음 → 전달됨", async () => {
+    const sim = new Sim({ replyDelay: () => null });
+    const orig = sim.deps.invoke;
+    let fromEnd = 0;
+    let late: (() => void) | null = null;
+    (sim.deps as { invoke: typeof orig }).invoke = (cmd, args) => {
+      if (cmd === "chat_transcript" && args?.fromEnd && fromEnd++ === 0)
+        return new Promise<unknown>((res) => {
+          late = () => res({ status: "ok", session_id: sim.session, next_offset: sim.file.length, size: sim.file.length, records: [] }); // 돌아오는 순간의 파일 끝
+        });
+      return orig(cmd, args);
+    };
+    await ready(sim);
+    void sim.core.submit("늦은 시작점");
+    await sim.advance(OBS_MAX_MS + 50);
+    expect(sim.core.state.msgs[0].code).toBe(STATUS_TIMEOUT);
+    sim.startPolling();
+    await sim.advance(3_000 + 768 + 200 + 12); // 다음 조회 → 시작점(빠름) → 보냄 → 기록 생김(+968ms) · 첫 예약 읽기(+1000ms) 전
+    expect(sim.sends()).toBe(1);
+    expect(sim.file.length).toBe(1);
+    (late as unknown as () => void)(); // 옛 조회가 이제 돌아옴(파일 끝 = 레코드 뒤)
+    await sim.advance(10_000);
+    expect(sim.core.state.msgs[0].step).toMatch(/^(delivered|replying|replied)$/);
+  });
+  it("minor — 안 묶인 답의 시각이 입력 순서와 거꾸로여도 시각순 · 기록 시각과 읽은 시각이 섞여도", () => {
+    const a = msg({ id: "a", sentAt: 0, createdAt: 0 });
+    const b = msg({ id: "b", sentAt: 10_000, createdAt: 10_000 });
+    const order = logOrder([a, b], [
+      { uuid: "s2", text: "늦은 답", at: 20_000 },
+      { uuid: "s1", text: "이른 답", at: 5_000 },
+      { uuid: "s0", text: "맨 앞 답", at: -1 },
+    ]);
+    expect(order.map((x) => (x.kind === "msg" ? x.m.id : x.r.text))).toEqual(["맨 앞 답", "a", "이른 답", "b", "늦은 답"]);
+    // 같은 시각이면 들어온 순서 유지(안정 정렬)
+    const same = logOrder([], [{ uuid: "p", text: "P", at: 7 }, { uuid: "q", text: "Q", at: 7 }]);
+    expect(same.map((x) => (x.kind === "stray" ? x.r.text : ""))).toEqual(["P", "Q"]);
   });
 });

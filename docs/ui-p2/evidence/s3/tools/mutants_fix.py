@@ -95,6 +95,10 @@ M = [
     # ---- H 거둠 ----
     ("core", "H 같은 글 전달됨이어도 다시 보내기 허용", "    if (sameTextDelivered(this.s.msgs, m.text, m.id)) {", "    if (false) {"),
     ("core", "H 자기 자신도 셈", "  return msgs.some((m) => m.id !== exceptId && m.text === text && (m.step === \"delivered\"", "  return msgs.some((m) => m.text === text && (m.step === \"delivered\""),
+    # ---- codex 1R(e8ddaf65 BLOCK) 고침 ----
+    ("msgstep", "codex① 본 시각 뒤에 보낸 말에도 짝(보내기 전 레코드가 근거)", " || m.sentAt > p.seenAt", ""),
+    ("core", "codex② 늦은 시작점 조회도 offset 을 바꿈(세대 검사 제거)", "      if (gen !== this.initGen) return; // (codex 1R major)", "      // (gen 검사 제거) // (codex 1R major)"),
+    ("core", "codex③ 안 묶인 답 시각 정렬 제거", ".sort((a, b) => (a.at as number) - (b.at as number)); // (codex 1R minor)", "; // (codex 1R minor)"),
 ]
 res = []
 for key, name, a, b in M:

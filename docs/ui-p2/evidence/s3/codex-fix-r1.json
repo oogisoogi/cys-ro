@@ -1,0 +1,57 @@
+{
+  "verdict": "BLOCK",
+  "justification": "전송 전에 읽은 기록으로 새 말을 「전달됨」으로 만드는 I2 위반 경로가 있습니다. 시간 상한을 넘긴 시작점 조회도 이후 기록을 건너뛰게 할 수 있습니다. 지정 시험은 27개 모두 통과했지만 이 경합들은 검증하지 않습니다.",
+  "evidence": [
+    {
+      "claim": "정적 확인: sentAt을 설정하는 patchMsg가 pending 재짝짓기를 실행하며, 실제 chat_send 호출은 그 뒤에 있습니다.",
+      "ref": "ui/src/views/core.ts:548",
+      "verified": true
+    },
+    {
+      "claim": "정적 확인: timestamp가 없는 레코드는 시간 검사를 무조건 통과하고, rematchPending은 관측 당시의 전송 여부를 검사하지 않습니다.",
+      "ref": "ui/src/views/judge/msgstep.ts:219",
+      "verified": true
+    },
+    {
+      "claim": "정적 확인: bounded의 시간 상한과 무관하게 initOffset 내부에서 offset과 sessionId를 변경합니다.",
+      "ref": "ui/src/views/core.ts:647",
+      "verified": true
+    },
+    {
+      "claim": "logOrder는 stray의 시각을 정렬하지 않고 입력 순서대로 처리합니다.",
+      "ref": "ui/src/views/core.ts:67",
+      "verified": true
+    },
+    {
+      "claim": "지정된 slice3fix.test.ts 실행 결과는 27 pass, 0 fail입니다.",
+      "ref": "ui/src/views/slice3fix.test.ts:3",
+      "verified": true
+    }
+  ],
+  "issues": [
+    {
+      "severity": "blocking",
+      "where": "ui/src/views/judge/msgstep.ts:219",
+      "what": "전송 전에 관측한 user 기록이 나중에 생긴 말의 전달 근거가 됩니다. 예를 들어 다른 경로의 text=X, ts=null 기록을 pending에 보관한 뒤 60초 후 X를 보내면, core.ts:548의 전송 전 patchMsg가 그 기록을 새 말에 붙여 「전달됨」으로 만듭니다. 실제 chat_send가 바이트를 쓰지 못하고 uncertain으로 끝나도 mergeOutcome은 이 잘못된 단계를 보존합니다. 기록은 전송 전 것이므로 I2 위반입니다.",
+      "fix": "pending 레코드에 관측 당시 이미 제출 중이던 말의 id/시도를 결속하고, 이후 생성되거나 이후 제출한 말에는 배정하지 마십시오. timestamp 부재를 전송 이후 관측의 대용으로 사용하지 말고, 실제 호출 전에는 전달 근거를 적용하지 마십시오."
+    },
+    {
+      "severity": "major",
+      "where": "ui/src/views/core.ts:523",
+      "what": "bounded(initOffset())는 대기만 끝내며 initOffset의 상태 변경을 무효화하지 않습니다. 첫 조회가 500ms를 넘겨 말이 붙잡힌 뒤, 다음 조회가 성공하여 전송을 재개할 수 있습니다. 이때 첫 조회가 뒤늦게 파일 끝을 반환하면 core.ts:647이 현재 offset을 덮어씁니다. 새 user 기록 생성 후 첫 예약 읽기 전에 이 응답이 오면 해당 기록을 영구히 건너뛰어 전달 확인과 답 연결을 잃습니다.",
+      "fix": "initOffset이 값을 반환하게 하고, 유효한 조회 세대의 호출자만 offset/sessionId를 반영하도록 하십시오. 시간 상한을 넘겼거나 세션·시작점이 바뀐 조회의 늦은 결과는 상태를 변경하지 못하게 하십시오."
+    },
+    {
+      "severity": "minor",
+      "where": "ui/src/views/core.ts:67",
+      "what": "시각순 배치를 입력 순서에 의존합니다. 사람 말 시각이 [0, 10000], stray 시각이 [20000, 5000]이면 두 번째 답도 뒤로 밀립니다. 기록 시각과 readAt 대체값을 섞는 현재 수집 경로에서도 시각 역전이 가능하므로 B의 시각순 요구를 충족하지 않습니다.",
+      "fix": "timed 복사본을 at 기준으로 안정 정렬한 뒤 병합하고, 역전된 시각 및 기록 시각과 읽은 시각이 섞인 경우를 검증하십시오."
+    }
+  ],
+  "missing": [
+    "전송 전에 관측한 timestamp 없는 기록을 후속 새 말에 재짝짓는 회귀 시험",
+    "시작점 조회가 시간 상한 이후 새 전송보다 늦게 성공하는 경합 시험",
+    "stray 시각이 입력 순서와 다른 logOrder 시험"
+  ],
+  "revision": "e8ddaf65"
+}

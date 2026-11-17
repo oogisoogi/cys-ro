@@ -244,3 +244,17 @@ cys run -- uv run --no-project --with playwright python3 ui/e2e/chat_gate.py    
 | d40d7ca0 | 다른 씨앗 3범위 기록 · 타입 맞춤 · 경로 가림 |
 | (이 HANDOFF 커밋) | §12 |
 | (codex 뒤) | §12-8 codex 1R |
+
+### 12-8. codex 1R(고친 머리 e8ddaf65 · 02:56) = **BLOCK** → 고침 1회
+
+판정문 = `docs/ui-p2/evidence/s3/codex-fix-r1.json`(사본 `~/.cys/pack/round/_reviews/cysr-ui-slice3-fix-1118-r1-codex.json`) · 호출 = `codex exec --sandbox read-only -o … -`(NODE_OPTIONS 비움 · 이 기기에 `timeout` 명령 없음 → perl alarm 1500초)
+
+| # | 등급 | 지적 | 처분 | 시험(고치기 전 e8ddaf65 = 붉음 확인) |
+|---|---|---|---|---|
+| ① | blocking | `rematchPending` — 보내기 **전에** 읽어 둔 사람 레코드(다른 길 · 시각 칸 없는 것 포함)가 뒤에 보낸 같은 글 말에 붙음(쓰기 직전 `patchMsg` 때) · 쓰기가 불명으로 끝나도 남음 = I2 위반 | **고침**: 보관 레코드에 본 시각(`seenAt`)을 달고 **그 시각 이전에 이미 보낸 말**(`sentAt ≤ seenAt`)에만 짝 · `PendingRec` 타입 | 「다른 길 시각 없는 X 를 먼저 읽고 60초 뒤 X 보냄 · 쓰기 안 됨 → 전달됨 0」 + 순수 3줄 |
+| ② | major | `bounded(initOffset())` — 상한 넘긴 시작점 조회가 늦게 돌아와 offset 을 파일 끝으로 덮음 → 보낸 말 레코드를 건너뜀 | **고침**: 시작점 조회 세대 번호(`initGen`) · 새 조회 시작 또는 상한 넘김이면 옛 조회 결과는 offset·세션을 안 바꿈 | 「상한 넘김 → 다음 조회로 보냄 → 기록(+968ms) 뒤·첫 읽기(+1000ms) 전에 옛 조회가 파일 끝을 돌려줌 → 그래도 전달됨」 |
+| ③ | minor | `logOrder` 가 안 묶인 답을 입력 순서로만 끼움(시각 역전 시 뒤로 밀림) | **고침**: 시각으로 안정 정렬 뒤 끼움 | 역순 3개 + 같은 시각 순서 유지 |
+
+- 고친 뒤(커밋 아래): slice3fix 27→30 · bun 3656→**3659**/88/0 · views 205→**208**/0 · tsc 0 · 뮤턴트 71→**74/74**(codex①②③ 각 1 · 원복 True×4) · 조각 1 **23/23** · 하네스 기본·실측 꼴 0·0·0·0(343,488 · 1,673 같음) · 다른 씨앗 3범위 900 · 0·0·0·0(같은 수) · chat_gate **PASS ok 59** · tickrec OFF **1088 · `308dd2b91f9a`** · secret-scan clean
+- codex 2R = **안 돌림**(master 지시 「고침 1회」) — 다시 돌릴지는 master 판단.
+- 남는 성질(정직): 짝 후보 직접 경로(`applyRecords`)는 여전히 「보낸 뒤 읽은 새 바이트」를 근거로 삼는다 — 시각 칸 없는 레코드가 보내기 직전에 기록되고 보낸 뒤 읽히면 그 말에 붙을 수 있다(조각 1 부터의 오프셋 순서 가정 · 이번 지적 범위 밖 · 진짜 기록은 시각 칸이 있음).

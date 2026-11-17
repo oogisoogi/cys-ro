@@ -118,6 +118,25 @@ describe("마스터 물음 — 표식 판독(§5-4 · FR-C1·C3)", () => {
     await h.core.readTranscript();
     expect(label(h)).toEqual({ known: true, n: 0, kinds: [] });
   });
+  it("보낸 말이 없어도 마스터가 쉬게 된 틱에 세션을 읽어 스스로 낸 물음이 뜬다(새 주기 조회 0)", async () => {
+    const h = harness();
+    await h.open(3);
+    const reads = () => h.calls.filter((c) => c.cmd === "chat_transcript" && (c.args as { fromEnd: boolean }).fromEnd === false).length;
+    const r0 = reads();
+    await h.core.poll(); // 같은 활동(쉼) — 읽기 0
+    await h.flush();
+    expect(reads()).toBe(r0);
+    h.st.master.working = true;
+    await h.core.poll(); // 일함 — 기다리는 말 없음 → 읽기 0
+    await h.flush();
+    expect(reads()).toBe(r0);
+    h.st.file.push(A("a9", "⟪확인 요청: 스스로 묻는 물음⟫"));
+    h.st.master.working = false;
+    await h.core.poll(); // 쉬게 됨 → 1회
+    await h.flush();
+    expect(reads()).toBe(r0 + 1);
+    expect(label(h)).toEqual({ known: true, n: 1, kinds: ["ask"] });
+  });
   it("앞 훑기가 뒤 기록까지 읽어도 순서가 뒤집히지 않는다(물음은 앞 · 해결은 뒤)", async () => {
     const h = harness({ prior: [A("p0", "⟪확인 요청: 순서 시험 물음⟫")], chunk: 1000 });
     h.core.attach();

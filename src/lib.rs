@@ -7016,7 +7016,10 @@ mod spawn_policy_tests {
                 let mut j = i + 1;
                 while j < lines.len() {
                     let t = lines[j].trim_start();
-                    if t.is_empty() || t.starts_with('#') || t.starts_with("//") {
+                    // ★(codex 6R major) 속성 줄은 **속성만으로 이뤄진 줄**만 건너뛴다 — `#[allow(..)] mod tests {}` 처럼 같은 줄에 항목이 있으면
+                    //   그 항목이 cfg(test) 의 대상이다(건너뛰면 다음 운영 모듈을 머리로 잡아 걷는다). 그런 꼴은 머리 판정에서 모듈 아님 = 걷지 않음
+                    //   (운영으로 세는 보수 쪽 · census 가 붉어질 뿐 조용히 삼키지 않음).
+                    if t.is_empty() || is_pure_attr_line(t) || t.starts_with("//") {
                         j += 1;
                     } else {
                         break;
@@ -7120,6 +7123,50 @@ mod spawn_policy_tests {
             i = j;
         }
         Ok(out)
+    }
+
+    /// 줄 전체가 속성(`#[…]`·`#![…]`) 하나 이상으로만 이뤄졌는가 — 대괄호 짝(따옴표 안 무시)으로 각 속성의 끝을 찾고, 뒤에 다른 글자가 남으면 거짓.
+    fn is_pure_attr_line(t: &str) -> bool {
+        let c: Vec<char> = t.trim().chars().collect();
+        let mut i = 0usize;
+        if c.is_empty() {
+            return false;
+        }
+        while i < c.len() {
+            let start = if c[i] == '#' && c.get(i + 1) == Some(&'[') {
+                i + 1
+            } else if c[i] == '#' && c.get(i + 1) == Some(&'!') && c.get(i + 2) == Some(&'[') {
+                i + 2
+            } else {
+                return false;
+            };
+            let (mut k, mut depth, mut in_str) = (start, 0i32, false);
+            loop {
+                let Some(&ch) = c.get(k) else { return false };
+                if in_str {
+                    if ch == '\\' {
+                        k += 1;
+                    } else if ch == '"' {
+                        in_str = false;
+                    }
+                } else if ch == '"' {
+                    in_str = true;
+                } else if ch == '[' {
+                    depth += 1;
+                } else if ch == ']' {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                k += 1;
+            }
+            i = k + 1;
+            while i < c.len() && c[i].is_whitespace() {
+                i += 1;
+            }
+        }
+        true
     }
 
     /// 어휘 분석 결과 — `code_start[l]` = l 번째 줄의 시작이 코드인가(블록 주석·문자열·raw 문자열 안이 아님) · `braces` = 코드 중괄호의
@@ -7364,6 +7411,16 @@ mod spawn_policy_tests {
             "mod outer {\n    const S: &str = \"\n    #[cfg(test)]\n    mod tests {\n    \";\n    fn keep() { Command::new(\"p\"); }\n}\n",
         );
         assert!(in_str.contains("fn keep"), "문자열 속 가짜 시험 모듈로 운영 코드를 걷었다: {in_str}");
+        // codex 6R 반례: cfg(test) 의 대상이 같은 줄 항목(`#[allow(dead_code)] mod tests {}`)이면 다음 운영 모듈을 머리로 잡지 않는다.
+        let same_line = production_slice(
+            "mod outer {\n    #[cfg(test)]\n    #[allow(dead_code)] mod tests {}\n    mod production {\n        pub fn keep() {}\n    }\n}\n",
+        );
+        assert!(same_line.contains("mod production") && same_line.contains("pub fn keep"), "같은 줄 항목 뒤 운영 모듈을 걷었다: {same_line}");
+        // 순수 속성 줄(여러 개·문자열 속 `]`)은 그대로 건너뛴다.
+        let attrs = production_slice(
+            "mod imp {\n    #[cfg(test)]\n    #[allow(dead_code)] #[doc = \"a]b\"]\n    mod tests {\n        fn drop_me() {}\n    }\n    fn keep() {}\n}\n",
+        );
+        assert!(!attrs.contains("drop_me") && attrs.contains("fn keep"), "순수 속성 줄을 건너뛰지 못했다: {attrs}");
         assert!(tp.contains("keep_after") && tp.matches("Command::new").count() == 1 && !tp.contains("fn t<"),
                 "문자열·문자·주석·raw 문자열 속 중괄호에 짝이 흔들렸다: {tp}");
         // 실물에도 걸어 둔다 — 이 파일들의 프로덕션 앵커가 사라지면 핀이 헛도는 것이다.

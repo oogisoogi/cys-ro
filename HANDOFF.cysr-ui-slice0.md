@@ -99,6 +99,7 @@
 | 새 `tickrec_gate.py` | PASS(§4) | — | — |
 | agy 수용 하네스 `acceptance.py` | 종합 PASS(실행 뒤 `git checkout -- docs/agy-door-evidence/`) | 34/34 | 같음 |
 | 팩 파이썬 | computer_control 112 OK · agents_notes_personal_hooks rc 0 · hook_fail_log 11 OK · hook_fail_timing 10 OK · javis_counsel 118 OK(skip 3) · agy_door 20 OK · agy_door_phoenix_loop rc 0 · dept_chat_inject_timeout **1회 붉음 → 혼자 3/3 OK** | 전부 OK | 흔들림(아래) |
+| 공개 secret-scan `scripts/secret-scan.sh --all`(커밋 뒤) | 1차 적발 1(시험 견본 경로) → 24d5d2d8 뒤 **clean 2055 파일** | clean | 같음 |
 | health `run_bootstrap_health.py --json` | 167 PASS · 2 FAIL · 1 SKIP / 170 · FAIL = **H-CLT-1·H-CLT-2 뿐**(프리루드가 `/Applications/cys.app/…/python3` 를 고름) · H-SECRET-1 PASS · H-WIN-11 skip | FAIL = H-CLT-1/2 뿐 | 같음 |
 
 - dept_chat_inject_timeout `test_b_hung_interpreter_still_cut_and_recorded` = 「15.02 not less than 12 : 안쪽 상한이 걸리지 않았다」 — 순서 실행 중 1회 · 같은 격리 env 로 혼자 3번 = 3/3 OK(14.0s) · 팩 파일이라 이 조각(웹뷰 TS)과 무관 → 부하 타이밍 흔들림으로 둔다.
@@ -140,5 +141,6 @@ CHROME_PATH=<chrome-headless-shell> BASE_DIST=/tmp/s0base/ui/dist TICKREC_OUT=<�
 - 본문을 떼어 `with (scope)` 로 돌리는 하네스(roleactivity·deptprogresswiring)가 있다 — 고리에 새 자유 변수를 넣으면 그 대역 목록에도 넣어야 한다(안 넣으면 16건 붉음 · 관측).
 - `bun-env.d.ts` 는 손으로 적은 매처만 선언한다 — `toMatchObject`·`expect.stringMatching`·`toBeLessThanOrEqual` 을 쓰면 bun test 는 초록인데 **tsc 만 붉다**(관측 · 고쳐서 0).
 - playwright 파이썬 `clock.install(time=<int>)` 는 초로 읽는다(ms 로 넣으면 서기 58000년) → `datetime` 으로 · `pause_at` 없이 두면 실시간이 새어 시각이 수 ms 갈린다.
+- **health H-SECRET-1 은 커밋 전 새 파일을 보지 않는다** — 커밋 전 health 는 PASS 였는데, 커밋 뒤 `scripts/secret-scan.sh --all` 이 내 시험 견본 경로(`/Users/<이름>/…` 꼴) 1건을 적발(관측) → 24d5d2d8 로 0건. 새 파일이 있으면 **커밋 뒤 secret-scan 을 한 번 더**.
 - HANDOFF.cysr-1115-integ-r2 §7 의 격리 env PATH(`/usr/bin:/bin`)로는 cysd 3건(hwmon·pty census·lsof)이 붉다 — `/usr/sbin:/sbin` 을 더할 것(§5).
 - 시험 파이썬: 이 기기엔 playwright 가 깔린 파이썬이 없었다 → 스크래치 venv(`pip install playwright==1.58.0` · 브라우저는 기존 캐시 chromium_headless_shell-1248).

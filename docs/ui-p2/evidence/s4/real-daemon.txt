@@ -1,0 +1,23 @@
+# 조각 4 바깥 증거 — 실제 데몬(이 기기 · 격리 HOME/소켓 · 본 데몬·마스터 무접촉) 대상 직접 허락 1회 + 같은 판 재클릭
+# 2026-11-18 00:1x · TICKET=cysr-ui-slice4-1118 · 데몬 = 조각 1 작업트리 target/debug/cysd(데몬 소스 = 3a012bf4 와 같음 · 이 가지 데몬 변경 0)
+# 좌석 = 대역 도우미(fake_approval_agent.py · Claude 허락 창 모양 그림 · 받은 덩이마다 단조 시각·길이·16진 기록) · agent 메타 = claude
+# 부른 것 = ConfirmBook.decide(화면 띠와 같은 코드 · ui/src/views/confirm.ts) · invoke 대역 = 데몬 소켓 원문 RPC(Tauri feed_reply 와 같은 operator_token 첨부 · 값 가림)
+# 격리 데몬에는 마스터 좌석이 없다 → 멈춤 갈래 = no_master(직접 단추 열림)
+
+== 1회차(대역 커서가 선택 줄 밖) — 데몬이 창을 「없음」으로 판정 → 키 0 · 화면 안내
+BAND   [{"kind": "helper", "stall": "no_master", "cmd": "Bash command\nrm -rf build\n빌드 폴더 지우기"}]
+FIRST  {"notice": "도우미 창의 확인이 이미 사라졌어요 — 누를 것이 없었어요.", "calls": ["feed_list", "org_status", "feed_reply", "feed_list"], "decision": {"request_id": "daemon-1794928109-0", "decision": "allow", "at": 1794928117808, "outcome": "approval_screen_gone"}}
+RPC    {"method": "feed.reply", "req": "{\"id\":5,\"method\":\"feed.reply\",\"params\":{\"request_id\":\"daemon-1794928109-0\",\"decision\":\"allow\",\"operator_token\":\"<operator.token>\"}}", "resp_bytes": 195, "resp": "{\"_flen\":147,\"_pv\":1,\"error\":{\"code\":\"approval_screen_gone\",\"message\":\"승인 창이 이미 화면에 없다 — 키를 넣지 않았고 항목은 stale-cleared 로 닫았다\"},\"id\":5,\"ok\":false}"}
+SECOND {"notice": "이미 처리됐거나 바뀐 요청이에요.", "calls": ["feed_list", "org_status"], "feed_reply_calls": 0, "decision": {"request_id": "daemon-1794928109-0", "decision": "allow", "at": 1794928117810, "outcome": "gone"}}
+# 읽기: 데몬 actuate_screen_approval 은 가로줄 없는 화면에서 커서 행이 「❯ 1. Yes」 일 때만 창으로 본다(governance.rs approval_in_prompt_tail) → approval_screen_gone + 항목 stale-cleared. 화면 = 「도우미 창의 확인이 이미 사라졌어요」 · 재클릭 feed_reply 0
+
+== 2회차(대역 커서 = 「❯ 1. Yes」 행 · claude 실제 커서 자리)
+feed.list 응답 원문(566B): {"_flen":518,"_pv":1,"id":1,"ok":true,"result":{"items":[{"body":"Do you want to proceed?\n— 명령 원문:\nBash command\nrm -rf build\n빌드 폴더 지우기\n— 읽기 전용 판정(기계 추정 · 근거 아님): 쓰기·삭제 가능","created_at":1794928217.862497,"daemon_issued":true,"decision":null,"kind":"approval","publisher_alive":null,"request_id":"daemon-1794928217-2","resolved_at":null,"resolver_pid":null,"resolver_surface":null,"status":"pending","surface_id":2,"tier":null,"title":"claude 승인 대기 감지 (surface:2)","waiter":false}]}}
+BAND   [{"kind": "helper", "stall": "no_master", "cmd": "Bash command\nrm -rf build\n빌드 폴더 지우기"}]
+FIRST  {"notice": "허락했어요 — 도우미가 이어서 해요.", "calls": ["feed_list", "org_status", "feed_reply", "feed_list"], "decision": {"request_id": "daemon-1794928217-2", "decision": "allow", "at": 1794928218632, "outcome": "replied"}}
+RPC    {"method": "feed.reply", "req": "{\"id\":5,\"method\":\"feed.reply\",\"params\":{\"request_id\":\"daemon-1794928217-2\",\"decision\":\"allow\",\"operator_token\":\"<operator.token>\"}}", "resp_bytes": 122, "resp": "{\"_flen\":75,\"_pv\":1,\"id\":5,\"ok\":true,\"result\":{\"actuated\":\"return\",\"decision\":\"allow\",\"request_id\":\"daemon-1794928217-2\"}}"}
+SECOND {"notice": "이미 처리됐거나 바뀐 요청이에요.", "calls": ["feed_list", "org_status"], "feed_reply_calls": 0, "decision": {"request_id": "daemon-1794928217-2", "decision": "allow", "at": 1794928218634, "outcome": "gone"}}
+== 좌석이 받은 덩이(단조 시각 · 길이 · 16진)
+# drawn 1992119.678276
+1992127.765824 1 0d
+# 읽기: 허락 1클릭 → feed.reply 1요청 → 데몬 {"ok":true} · 도우미 좌석에 0x0d(Return = 「1. Yes」) 1바이트 · 같은 판 재클릭 = 처리 직전 재조회에서 목록에 없음(gone) → feed.reply 0 + 「이미 처리됐거나 바뀐 요청이에요」

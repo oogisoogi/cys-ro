@@ -9304,21 +9304,33 @@ async function restartContinuityToast(since: number) {
 }
 
 // ── 상시 "↻ 재시작" 버튼(초보자용) — "저장 검증 후 자동 재시작" 흐름 ──
-// 1) ★[V111-F5] 확인 모달 없음(1클릭 = 즉시 집행) → 2) drain --verify(feature-detect)로 노드별 체크포인트 저장 검증
+// 1) ★[V111-F5→11-18] 진입 확인 1회(「다시 시작」/「취소」 · 기본 초점 취소) → 2) drain --verify(feature-detect)로 노드별 체크포인트 저장 검증
 // → 3) 결과와 무관하게 자동 진행(skipDrain=true). ★[V111-F4] 부분 실패 확인 창은 폐기됐다 — 코어가
 //    상한 안에서 자동 재조회·연장하고, 미확인 자리는 **재시작 뒤 알림 1줄**로만 알린다(묻지 않는다).
 // cys 코어가 --verify를 미지원하면(구버전) plain drain 폴백(skipDrain=false)+경고. '무손실' 표현 금지 —
 // 대화 원문은 트랜스크립트 복원, 이 기능은 증류 체크포인트(SESSION_STATE·TODO) 최신성만 보증한다.
 // 복원 중 자리 재저장 대기 — 복원 가드는 이번 회차 복원 기록(verify)이 찍히면 풀린다(갱신 직후 ≈40s 창).
 const DRAIN_RESTORING_RETRY_MS = 30_000;
+// ↻ 단추 진입 확인 문구(박사님 11-18 「한 번 더 묻자」) — 왕초보 말투 · 겁주는 말 없음. 거절 쪽이 기본 초점이다.
+const RESTART_CONFIRM_TEXT = {
+  title: "데몬을 다시 시작할까요?",
+  body: "일하던 자리들이 잠깐 멈췄다가 대화 기억과 함께 다시 켜집니다.",
+  yes: "다시 시작",
+  no: "취소",
+} as const;
 
 async function manualRestartAllDaemons() {
   // ★[F3]+A6: purge·완전 초기화 진행 중이거나 **초기화 완료 래치**가 걸렸으면 재시작을 막는다
   // (완료 후 재시작은 pack 없는 유령 데몬을 세워 "설치 직후" 계약을 무음 침식한다).
   if (daemonActionBlocked()) return;
-  // ★[V111-F5] 진입 확인 모달도 없앴다(master 판정 2026-09-21) — 박사님 원칙 「중간에 묻는 단계를 모두
-  //   삭제」가 우선하고, 오발의 대가는 재시작 1회(대화는 트랜스크립트로 복원)로 작다. ↻ 한 번 = 드레인 →
-  //   재시작까지 한 번에. 진행 상황은 묻는 창이 아니라 아래 sticky 토스트로 알린다.
+  // ★[V111-F5→11-18] 진입 확인 1회 복원 — 09-21 에는 박사님 원칙 「중간에 묻는 단계를 모두 삭제」로 이 모달을
+  //   없앴으나, 11-18 박사님이 실수로 ↻ 를 눌러 일하던 자리가 끊긴 뒤 「한 번 더 묻자」 로 **이 단추만** 예외로
+  //   되돌렸다. 묻는 곳은 여기 한 번뿐이다 — 드레인 뒤 부분 실패·저장 미확인 확인 창은 되살리지 않는다(V111-F4 유지).
+  //   confirmModal 은 기본 초점 = 취소 · Esc·바깥 클릭 = 취소 라 무심코 친 Enter 도 재시작하지 않는다.
+  //   취소면 아무 호출도 하지 않는다(rotatingDaemon 도 건드리지 않는다 — 모달이 떠 있는 동안 다른 길이 막히지 않게).
+  if (!(await confirmModal(RESTART_CONFIRM_TEXT.title, RESTART_CONFIRM_TEXT.body, RESTART_CONFIRM_TEXT.yes, RESTART_CONFIRM_TEXT.no))) return;
+  // 모달이 떠 있던 사이 다른 교대·purge·초기화가 시작됐을 수 있다 — 집행 직전에 한 번 더 본다(purge 모달과 같은 TOCTOU 방어).
+  if (daemonActionBlocked()) return;
   rotatingDaemon = true;
   // ★v115r5-t1 T1③: 이번 회차 대조만 읽기 위한 기준 시각(phoenix 원장 verify 단계 ts 와 같은 초 단위).
   const restartStartedAt = Date.now() / 1000;

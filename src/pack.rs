@@ -6032,6 +6032,7 @@ fn rollback_row(
 /// 증명할 때만 적용 전 권한으로: 그 이름의 마지막 배치 기록이 ⑴ 권한 성공 줄(`mode`)이고 지금 권한과 같거나 ⑵ 내용 줄이고 그 줄의 놓인 권한
 /// (`placed_mode` · 쓰기 직전 해시와 함께 확정)과 지금 권한이 같고 지금 바이트의 해시도 그 줄과 같을 때. 의도 줄·해시 불일치·기록 없음 = 증거
 /// 아님 → 지금 권한 유지(끊긴 뒤 사용자 chmod 보존 · kept.log). 옛 저널(배치 기록 없음)·기록 권한 없음·지금 파일 없음 = 기록된 권한(종전).
+/// ★F2(1118): 「마지막 배치 기록」= 끝의 의도 줄을 건너뛴 마지막 확정 줄.
 fn rollback_mode_for(
     rel: &str,
     rec: Option<u32>,
@@ -6043,7 +6044,16 @@ fn rollback_mode_for(
     if c == r {
         return (rec, false);
     }
-    let attributed = match pl.get(rel).and_then(|v| v.last()) {
+    // ★F2(독립 검증 1118): 끝의 의도 줄(mode_intent)은 증거도 반증도 아니다 — 건너뛰고 그 앞의 마지막 **확정** 줄을 본다(의도 확정 뒤 · chmod 전
+    //   끊김이면 지금 바이트·권한이 앞의 내용 줄 그대로다). chmod 가 이미 됐으면 지금 권한 = 의도 값 ≠ 앞 줄의 놓인 권한 → 증거 아님(종전대로 유지).
+    let last_confirmed = pl.get(rel).and_then(|v| {
+        if crate::update::mutant("J1116-MODE-LAST-ONLY") {
+            v.last()
+        } else {
+            v.iter().rev().find(|a| !matches!(a, Announced::ModeIntent(_)))
+        }
+    });
+    let attributed = match last_confirmed {
         Some(Announced::Mode(m)) => *m == c,
         Some(Announced::Sha(h, Some(m))) => *m == c && live_bytes.is_some_and(|b| sha256_hex(b) == *h),
         _ => false,

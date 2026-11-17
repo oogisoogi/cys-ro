@@ -173,7 +173,7 @@ describe("링 200칸 회전 · 크기 상한", () => {
 
   it("실제 크기 장면(좌석 12 · 소켓 3 · 200틱) 덤프 ≤ 상한", () => {
     const r = createTickRecorder({ salt: "k" });
-    const surfaces = Array.from({ length: 4 }, (_, i) => ({ surface_id: i, role: "worker-" + i, exited: false, title: "1 · Opus · proj", live_cwd: "/Users/someone/axdev/proj", display_no: i, line_count: 1000 + i, size: { rows: 40, cols: 140 } }));
+    const surfaces = Array.from({ length: 4 }, (_, i) => ({ surface_id: i, role: "worker-" + i, exited: false, title: "1 · Opus · proj", live_cwd: "/sandbox/home/proj", display_no: i, line_count: 1000 + i, size: { rows: 40, cols: 140 } }));
     for (let t = 0; t < 200; t++) {
       r.begin(t, [W(0, [0, 1, 2, 3]), W(1, [0, 1, 2, 3], "/d1"), W(2, [0, 1, 2, 3], "/d2")], new Map(), false, new Set(), new Set());
       for (const s of ["", "/d1", "/d2"]) { r.sock(s, { surfaces }, () => true); r.ghost(s, [0, 1, 2, 3], []); r.sweep(s, false, []); }

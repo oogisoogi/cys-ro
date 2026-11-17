@@ -287,6 +287,11 @@ describe("독립 검증(2160) 지적 고정", () => {
     expect(it0.stall).toBeNull();
     h.core.confirm.observe({ items: h.st.feed }, undefined, undefined); // 마스터 상태 모름
     expect((h.core.confirm.band().items[0] as { stall: unknown }).stall).toBeNull();
+    // 걸쇠: 같은 좌석이 이어서 보이되 생존이 모름(null)으로 바뀌어도(풀림 다시 계산 = 거짓) 이미 지운 deadman 은 되살아나지 않는다
+    h.st.master.agent_alive = null;
+    await h.core.poll();
+    await h.flush();
+    expect((h.core.confirm.band().items[0] as { stall: unknown }).stall).toBeNull();
   });
   it("F2 ⓑ — 생존 모름(agent_alive null) 마스터 + deadman = 300초 뒤 근거 아님(영영 열리지 않음)", async () => {
     const h = harness();

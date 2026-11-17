@@ -11,6 +11,8 @@ D 응답: 데몬 승인 창 거부 → 붙잡음 · 쉼 동안 재시도 0 · �
 E 전환: 초안 왕복 같음 · 최소 계약 4칸 + 공통 전환 단추 · 두 화면 동시 노출 0
 F 가용: 새 설치(좌석 0)·마스터 꺼짐 → 흐림 0 / cys 밖 마스터(이름 보고 최근) ∧ cys 마스터 없음 → 전환 0 + 까닭 띠
 H 다시 켬: 저장된 화면이 대화 화면 → 대화 화면 보임 · 작업 화면 숨김 · 단추 눌림 = 대화 · 바로 보내기 1(VERIFY 지적 2)
+I 보낸 말 단계 전부(조각 3 · TICKET=cysr-ui-slice3-1118): 여러 줄 → 전달됨 · 응답 없이 3초 → 확인 중(단추 0) · 쓰기 직전 거부 사건 → 확인 중 + 안내(부서 데몬 사건 무시)
+  · 같은 말 겹침 → 쓰기 0 · 단추 0 → 앞 말 전달 뒤 「한 번 더 보내기」 1회 · 120초 → 오래 걸려요 + 마스터 상태 · 전달 뒤 마스터 일함 → 답하는 중 · 매 장면 「모든 말에 단계 글」(M2)
 G 경합(기록): 「보내는 중 승인 창」 — 승인 창이 누름 전후 −1.5~+1.5초(100ms 간격) 중 한 시각에 뜰 때, 화면 문턱·데몬 거부·새는 경우의 비율(대역 시각 주입 · 데몬 Enter 직전 재판정 없음 가정 = 0.5 M2-c)
 실행: CHROME_PATH=<chrome-headless-shell> cys run -- <playwright python3> ui/e2e/chat_gate.py
 """
@@ -41,7 +43,7 @@ def check(c: bool, m: str) -> None:
 CHAT_SHIM = r"""
 (() => {
   const C = window.__CHAT = { approvals: [], screen: false, master: { pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false, gate_pending: null, human_idle_secs: null, idle_secs: 999, status: null },
-    sendOutcome: { outcome: 'written', result: { sent: true } }, file: [], session: 'sess-0001-aaaa-bbbb', named: [], calls: [], writes: [], fetchLatency: 0 };
+    sendOutcome: { outcome: 'written', result: { sent: true } }, file: [], session: 'sess-0001-aaaa-bbbb', named: [], calls: [], writes: [], fetchLatency: 0, hangMs: 0 };
   const orig = window.__TAURI__.core.invoke;
   const later = (v) => C.fetchLatency > 0 ? new Promise((r) => setTimeout(() => r(v()), C.fetchLatency)) : Promise.resolve(v());
   window.__TAURI__.core.invoke = (cmd, args) => {
@@ -54,7 +56,9 @@ CHAT_SHIM = r"""
       C.calls.push([Date.now(), cmd]);
       const w = { t: Date.now(), args: a, refused: C.screen };
       C.writes.push(w);
-      return Promise.resolve(C.screen ? { outcome: 'held', code: 'approval_screen', message: 'refused' } : C.sendOutcome);
+      const out = C.screen ? { outcome: 'held', code: 'approval_screen', message: 'refused' } : C.sendOutcome;
+      if (C.hangMs > 0) return new Promise((r) => setTimeout(() => r(out), C.hangMs)); // (조각 3) 응답이 걸림
+      return Promise.resolve(out);
     }
     if (cmd === 'chat_transcript') {
       C.calls.push([Date.now(), cmd]);
@@ -252,8 +256,91 @@ def main() -> int:
         check(not errs, f"페이지 오류 0 {errs[:2]}")
         ctx.close()
 
+        print("== I 보낸 말 단계 전부(조각 3)")
+        ctx, pg, errs = page([seat(BASE, 1, "master")])
+        pg.click("#view-switch button[data-view=chat]")
+        pg.clock.run_for(3_100)
+        every_step = lambda pg: pg.evaluate("() => [...document.querySelectorAll('.cv-me')].every((li) => (li.querySelector('.cv-step')?.textContent || '').length > 0)")  # noqa: E731
+        bubble = lambda pg, i: pg.evaluate(f"() => {{ const li = [...document.querySelectorAll('.cv-me')][{i}]; return li ? {{ step: li.querySelector('.cv-step').textContent, note: [...li.querySelectorAll('.cv-note')].map((n) => n.textContent).join(' | '), btns: [...li.querySelectorAll('button')].map((b) => b.textContent) }} : null; }}")  # noqa: E731
+        n0 = writes(pg)
+        pg.fill(".cv-input", "첫 줄\n둘째 줄")
+        pg.press(".cv-input", "Enter")
+        pg.clock.run_for(50)
+        w = pg.evaluate("() => window.__CHAT.writes.map((x) => x.args.text)")
+        check(w[-1] == "첫 줄\n둘째 줄" and writes(pg) == n0 + 1, f"여러 줄 = 줄바꿈 그대로 쓰기 1 ({w[-1]!r})")
+        pg.evaluate("""() => { const C = window.__CHAT; C.file.push({ uuid: 'm1', parent: 'p0', role: 'user', text: '첫 줄\\r\\n둘째 줄', ts: new Date(Date.now()).toISOString() }); }""")
+        pg.clock.run_for(1_100)
+        check(bubble(pg, 0)["step"] == "전달됨", f"여러 줄 기록(CRLF) 전문 일치 → 전달됨 ({bubble(pg, 0)})")
+        pg.evaluate("() => { window.__CHAT.master.idle_secs = 0; }")
+        pg.clock.run_for(3_100)
+        check(bubble(pg, 0)["step"] == "답하는 중", f"전달 뒤 마스터 일함 → 답하는 중(답 글 전) ({bubble(pg, 0)['step']})")
+        pg.evaluate("() => { window.__CHAT.master.idle_secs = 999; }")
+        pg.clock.run_for(40_000)  # 사람 입력 30초 묶음 지나기
+        # 응답 없이 3초
+        pg.evaluate("() => { window.__CHAT.hangMs = 6_000; }")
+        n0 = writes(pg)
+        say(pg, "걸린 말")
+        pg.clock.run_for(1_000)
+        check(bubble(pg, 1)["step"] == "보내는 중", f"응답 전 = 보내는 중 ({bubble(pg, 1)['step']})")
+        pg.clock.run_for(2_100)
+        b = bubble(pg, 1)
+        check(b["step"] == "확인 중" and b["btns"] == [] and every_step(pg), f"응답 없이 3초 → 확인 중 · 단추 0 · 모든 말 단계 글 ({b})")
+        pg.clock.run_for(3_000)
+        check(bubble(pg, 1)["step"] == "전달 확인 중" and writes(pg) == n0 + 1, f"응답(written) 도착 → 전달 확인 중 · 쓰기 1 ({bubble(pg, 1)['step']})")
+        pg.evaluate("() => { window.__CHAT.hangMs = 0; }")
+        pg.clock.run_for(40_000)
+        # 쓰기 직전 거부 사건
+        say(pg, "창 뜬 말")
+        pg.clock.run_for(300)
+        pg.evaluate("() => window.__emit('daemon-event', { name: 'input.refused_at_write', surface_id: 1, seq: 9001, socket_slug: 'dept-x', payload: { reason: 'approval_screen' } })")
+        check(bubble(pg, 2)["step"] == "전달 확인 중", f"부서 데몬(다른 소켓) 사건 = 무시 ({bubble(pg, 2)['step']})")
+        pg.evaluate("() => window.__emit('daemon-event', { name: 'input.refused_at_write', surface_id: 1, seq: 9002, socket_slug: 'base', payload: { reason: 'approval_screen' } })")
+        pg.clock.run_for(50)
+        b = bubble(pg, 2)
+        check(b["step"] == "확인 중" and "입력줄에 남았" in b["note"] and b["btns"] == [], f"쓰기 직전 거부 사건 → 확인 중 + 안내 · 다시 보내기 0 ({b})")
+        pg.clock.run_for(40_000)
+        # 같은 말 겹침
+        pg.evaluate("() => { window.__CHAT.sendOutcome = { outcome: 'uncertain', code: 'transport_uncertain' }; }")
+        say(pg, "같은 말")
+        pg.evaluate("() => { window.__CHAT.sendOutcome = { outcome: 'written', result: { sent: true } }; }")
+        n0 = writes(pg)
+        say(pg, "같은 말")
+        pg.clock.run_for(40_000)
+        b = bubble(pg, 4)
+        check(writes(pg) == n0 and b["step"] == "붙잡아 둠" and "같은 말" in b["note"] and b["btns"] == [], f"불명 뒤 같은 말 → 쓰기 0 · 붙잡음 · 단추 0 ({writes(pg) - n0} · {b})")
+        pg.evaluate("""() => { const C = window.__CHAT; C.file.push({ uuid: 'm4', parent: 'm1', role: 'user', text: '같은 말', ts: new Date(Date.now()).toISOString() }); }""")
+        pg.evaluate("() => { window.__CHAT.master.idle_secs = 0; }")
+        pg.clock.run_for(3_100)
+        pg.evaluate("() => { window.__CHAT.master.idle_secs = 999; }")
+        pg.clock.run_for(3_100)
+        b3, b4 = bubble(pg, 3), bubble(pg, 4)
+        check(b3["step"] in ("전달됨", "답하는 중") and b4["btns"] == ["한 번 더 보내기"], f"앞 말 전달 → 겹친 말에 「한 번 더 보내기」 ({b3['step']} · {b4['btns']})")
+        pg.locator(".cv-confirm").first.click()
+        pg.clock.run_for(50)
+        check(writes(pg) == n0 + 1, f"사람 클릭 1회 → 쓰기 1 ({writes(pg) - n0})")
+        pg.clock.run_for(40_000)
+        # 120초 → 오래 걸려요 + 마스터 상태
+        pg.evaluate("() => { window.__CHAT.sendOutcome = { outcome: 'uncertain', code: 'transport_uncertain' }; }")
+        n0 = writes(pg)
+        say(pg, "느린 말")
+        last = pg.evaluate("() => document.querySelectorAll('.cv-me').length") - 1
+        ok_all = True
+        for _ in range(24):  # 120초를 5초씩 걸으며 M2(모든 말 단계 글) 표본
+            pg.clock.run_for(5_000)
+            ok_all = ok_all and every_step(pg)
+        pg.clock.run_for(3_500)  # 120초 뒤 첫 3초 조회에서 바뀜(조회 박자 ≤ 3초)
+        b = bubble(pg, last)
+        check(b["step"] == "확인이 오래 걸려요" and "마스터 상태:" in b["note"] and b["btns"] == [] and writes(pg) == n0 + 1, f"120초 → 오래 걸려요 + 마스터 상태 · 다시 보내기 0 · 재전송 0 ({b})")
+        check(ok_all and every_step(pg), "120초 동안 5초 표본 모두 「모든 말에 단계 글」(M2)")
+        if not ok_all or b["step"] != "확인이 오래 걸려요":
+            print("  (진단) 말 목록:", pg.evaluate("() => [...document.querySelectorAll('.cv-me')].map((li) => li.querySelector('.cv-text').textContent + ' = ' + li.querySelector('.cv-step').textContent)"))
+            print("  (진단) 쓰기:", pg.evaluate("() => window.__CHAT.writes.slice(-3).map((w) => [w.t % 1000000, w.args.text, w.refused])"))
+            print("  (진단) 마지막 조회들:", pg.evaluate("() => window.__CHAT.calls.slice(-6).map(([t, c]) => [t % 1000000, c])"), pg.evaluate("() => Date.now() % 1000000"))
+        check(not errs, f"페이지 오류 0 {errs[:2]}")
+        ctx.close()
+
         print("== G 경합 기록 — 보내는 중 승인 창(대역 시각 주입)")
-        for lag in (0, 1000):
+        for lag in (() if os.environ.get("CHAT_GATE_SKIP_RACE") else (0, 1000)):  # 진단용 건너뛰기(수용 실행에서는 쓰지 않음)
             counts = {"screen_gate": 0, "daemon_refused": 0, "leak_enter": 0, "no_overlap": 0}
             offsets = list(range(-1500, 1501, 100))
             for d in offsets:

@@ -42,6 +42,22 @@ export function bootViews(deps: BootDeps): { core: ChatCore; registry: Registry<
     clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
     store,
     working: deps.working,
+    // (조각 4) 대화 화면이 켜져 있을 때만 core 가 부른다 — 작업 화면만 쓰면 구독 0(동작 변화 0).
+    listen: (fn) => {
+      const ev = (window as unknown as { __TAURI__?: { event?: { listen?: (n: string, h: (e: { payload: unknown }) => void) => Promise<() => void> } } }).__TAURI__?.event;
+      if (!ev?.listen) return () => {};
+      let off: (() => void) | null = null;
+      let dead = false;
+      void ev
+        .listen("daemon-event", (e) => fn(e.payload))
+        .then((u) => (dead ? u() : (off = u)))
+        .catch(() => {});
+      return () => {
+        dead = true;
+        off?.();
+      };
+    },
+    goView: (id) => void booted?.registry.choose(id),
   });
   const views: ViewDescriptor<ChatState, ChatCore>[] = [
     {

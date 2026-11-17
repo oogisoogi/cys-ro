@@ -12,6 +12,7 @@
 import { composeOutbound } from "./judge/outbound";
 import { approvalSeatsOf, masterRowOf, sendGate, type GateVerdict, type MasterRow } from "./judge/gate";
 import { applyRecords, canRetry, READ_AFTER_MS, settleSteps, stepFromOutcome, type Msg, type Rec, type Reply } from "./judge/msgstep";
+import { ConfirmBook } from "./confirm";
 
 export const HOLD_KEY = "cys-chat-hold";
 /** 붙잡은 말 상한(설계 §5-3 · 넘으면 새 말을 받지 않고 안내). */
@@ -57,6 +58,10 @@ export interface Deps {
   store: Store;
   /** org.status 행 → 지금 답하는 중인가(appearance.nodeWorking) */
   working(row: Record<string, unknown>): boolean;
+  /** (조각 4) daemon-event 구독 — 대화 화면이 켜져 있을 때만(attach~detach). 없으면 사건 없이(멈춤 = org.status·5분 규칙만). */
+  listen?(fn: (ev: unknown) => void): () => void;
+  /** (조각 4) 다른 화면으로(「작업 화면에서 보기」) — registry.choose. */
+  goView?(id: string): void;
 }
 
 export type Health = "unknown" | "none" | "off" | "gate" | "busy" | "ready";
@@ -119,9 +124,13 @@ export class ChatCore {
   private readTimers = new Set<unknown>();
   private attached = false;
   private lastWorking: boolean | null = null;
+  /** (조각 4) 확인 대기 장부 — 띠·표식·직접 허락. */
+  readonly confirm: ConfirmBook;
+  private unlisten: (() => void) | null = null;
 
   constructor(private readonly d: Deps) {
     this.loadHold();
+    this.confirm = new ConfirmBook({ invoke: d.invoke, now: d.now, store: d.store }, () => this.set({}));
   }
 
   get state(): ChatState {
@@ -152,14 +161,22 @@ export class ChatCore {
   /** 대화 화면이 켜짐 — 세션 기록 읽기 허용 · 시작 오프셋 잡기. */
   attach(): void {
     this.attached = true;
+    if (!this.unlisten && this.d.listen) this.unlisten = this.d.listen((ev) => this.confirm.onEvent(ev));
     void this.readTranscript();
   }
 
   /** 대화 화면이 내려감 — 읽기 예약 해제(공통층 상태·붙잡은 말은 그대로 · §4-3). */
   detach(): void {
     this.attached = false;
+    this.unlisten?.();
+    this.unlisten = null;
     for (const h of this.readTimers) this.d.clearTimeout(h);
     this.readTimers.clear();
+  }
+
+  /** (조각 4) 띠의 「작업 화면에서 보기」. */
+  goView(id: string): void {
+    this.d.goView?.(id);
   }
 
   // ---------- 저장소(붙잡은 말만 원문 · §5-3 cys-chat-hold) ----------
@@ -223,20 +240,21 @@ export class ChatCore {
   /** 마스터 상태 + 승인 대기를 새로 받는다. 실패는 undefined/null(모름). */
   /** 승인 대기(feed)를 먼저, **입력줄 상태(org.status)를 마지막에** 받는다 — 마지막 관측 뒤 다른 응답을 기다리지 않게(codex 2R blocking).
    *  org.status 왕복이 OBS_MAX_MS 를 넘으면 그 관측은 낡은 것으로 보고 모름(undefined → 붙잡음). */
-  private async fetchFresh(): Promise<{ master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number }> {
+  private async fetchFresh(): Promise<{ master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number; feed?: unknown; org?: unknown }> {
     const feed = await this.d.invoke("feed_list", { status: "pending" }).catch(() => undefined);
     const t0 = this.d.now();
     const org = await this.d.invoke("org_status", { socket: null }).catch(() => undefined);
     const stale = this.d.now() - t0 > OBS_MAX_MS;
-    return { master: org === undefined || stale ? undefined : masterRowOf(org, this.d.working), approvals: feed === undefined ? null : approvalSeatsOf(feed), obsAt: t0 };
+    return { master: org === undefined || stale ? undefined : masterRowOf(org, this.d.working), approvals: feed === undefined ? null : approvalSeatsOf(feed), obsAt: t0, feed, org };
   }
 
   private gateOf(f: { master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number }): GateVerdict {
     return sendGate({ master: f.master, approvalSeats: f.approvals });
   }
 
-  private applyFresh(f: { master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number }): void {
+  private applyFresh(f: { master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number; feed?: unknown; org?: unknown }): void {
     const m = f.master;
+    this.confirm.observe(f.feed, f.org, m);
     const confirms = f.approvals === null || !m ? (f.approvals === null ? null : 0) : f.approvals.filter((x) => x === m.surface_id).length;
     const working = m ? m.working : null;
     const msgs = settleSteps(this.s.msgs, this.d.now(), working);
@@ -403,9 +421,11 @@ export class ChatCore {
       const fresh = await this.fetchFresh();
       const prevWorking = this.lastWorking;
       this.applyFresh(fresh);
+      void this.confirm.scanStep(); // (조각 4) 대화 화면을 연 때보다 앞 기록의 표식을 한 토막씩
       this.lastWorking = fresh.master ? fresh.master.working : null;
       const awaiting = this.s.msgs.some((m) => ["injected", "checking", "slow", "delivered", "replying"].includes(m.step));
-      if (awaiting && prevWorking !== null && prevWorking !== this.lastWorking) void this.readTranscript(); // 활동이 바뀐 틱 1회
+      // 활동이 바뀐 틱 1회 — (조각 4) 기다리는 말이 없어도 마스터가 **쉬게 된** 틱이면 읽는다(마스터가 스스로 낸 물음 표식 · 새 주기 조회 0)
+      if ((awaiting || this.lastWorking === false) && prevWorking !== null && prevWorking !== this.lastWorking) void this.readTranscript();
       else if (this.offset === null && fresh.master) void this.readTranscript(); // 마스터를 안 첫 틱에 세션 시작점을 잡아 둔다(보내기 길에서 그 RPC 를 빼려고)
       const now = this.d.now();
       this.markStale();
@@ -438,6 +458,7 @@ export class ChatCore {
       if (r?.status === "ok" && typeof r.next_offset === "number") {
         this.offset = r.next_offset;
         this.sessionId = typeof r.session_id === "string" ? r.session_id : null;
+        this.confirm.startSession(this.sessionId, m.surface_id, r.next_offset);
       }
     } catch {
       /* 모름 — 다음 읽기에서 다시 */
@@ -470,17 +491,20 @@ export class ChatCore {
           this.sessionId = sid;
           this.consumed.clear();
           this.offset = null;
+          this.confirm.resetSession();
           await this.initOffset();
           return;
         }
         if (r.reset === true) {
           // 파일이 줄었다(잘림·교체) — 다시 읽은 옛 레코드로 새 전달·답 근거를 만들지 않는다(codex 1R major). 끝에서 다시 시작.
           this.offset = null;
+          this.confirm.resetSession();
           await this.initOffset();
           return;
         }
         const recs = Array.isArray(r.records) ? (r.records as Rec[]) : [];
         this.offset = r.next_offset;
+        if (recs.length) this.confirm.onTail(recs);
         if (recs.length) {
           const applied = applyRecords(this.s.msgs, recs, this.consumed);
           for (const u of applied.consumed) this.consumed.add(u);

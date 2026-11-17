@@ -7466,6 +7466,19 @@ pub(crate) fn submit_cr_withhold_probe(
     armed_by: &'static str,
     from: Option<u64>,
 ) -> crate::state::SafetyProbe {
+    submit_cr_withhold_probe_agy(daemon, s, markers, armed_by, from, None)
+}
+
+/// [`submit_cr_withhold_probe`] + 보류 기록에 agy 좌석 문 재판정 문맥([`crate::state::WithheldSubmit::agy_launch_line`])을 싣는다
+/// (★1.1.16 · codex 1R major 1 — 큐 Return 재전송과 그 재제출만 `Some`).
+pub(crate) fn submit_cr_withhold_probe_agy(
+    daemon: &Arc<Daemon>,
+    s: &Arc<crate::state::Surface>,
+    markers: Vec<String>,
+    armed_by: &'static str,
+    from: Option<u64>,
+    agy_launch_line: Option<bool>,
+) -> crate::state::SafetyProbe {
     let wd = Arc::downgrade(daemon);
     let ws = Arc::downgrade(s);
     let handed = std::time::Instant::now();
@@ -7480,7 +7493,9 @@ pub(crate) fn submit_cr_withhold_probe(
             // ★(재개 S91) 보류는 미룸이다 — 입력줄에 남는 기계 본문을 기록해 창이 닫힌 뒤 watchdog 틱이 이 CR 을 한 번 다시
             //   쓴다([`resubmit_withheld_submits`]). 기계 본문 기록이 없으면(빈 줄 위 Return) 다시 쓸 것이 없다.
             if let Some(b) = s.inject_track.last_body() {
-                s.inject_track.note_withheld(crate::state::WithheldSubmit::new(std::time::Instant::now(), b.at, from));
+                let mut w = crate::state::WithheldSubmit::new(std::time::Instant::now(), b.at, from);
+                w.agy_launch_line = agy_launch_line;
+                s.inject_track.note_withheld(w);
             }
             d.bus.publish(
                 "queue.submit_withheld",
@@ -7617,6 +7632,10 @@ fn resubmit_withheld_one(
     if scope == SubmitGuardScope::Off {
         return drop_it("seat_off");
     }
+    // ★(1.1.16 · codex 1R major 1) 기계 출처 큐 재전송이 보류한 CR — 그 사이 agy 좌석 문이 닫혔으면 다시 쓰지 않는다(배달 직전 재판정과 같은 규칙).
+    if w.agy_launch_line.is_some_and(|l| agy_door_refuses_machine_cr(s, l)) {
+        return drop_it("agy_door_closed");
+    }
     let Some(body) = s.inject_track.last_body() else {
         return drop_it("newer_body");
     };
@@ -7692,12 +7711,14 @@ fn resubmit_withheld_one(
         {
             return "raced";
         }
-        let probe = submit_cr_withhold_probe(daemon, s, markers, "resubmit", from);
+        let probe = submit_cr_withhold_probe_agy(daemon, s, markers, "resubmit", from, w.agy_launch_line);
         let req = crate::state::WriteReq::SubmitAfterGap {
             bytes: b"\r".to_vec(),
             min_gap_ms: crate::handlers::cr_min_gap_ms(),
             withhold: Some(probe),
-            refuse: None, // ★1.1.8 K17 — 재제출은 거부 요청이 아니다(거부 모드는 `refuse_on_approval` 키 전용)
+            // ★1.1.8 K17 — 재제출은 승인 거부 요청이 아니다(그 거부 모드는 `refuse_on_approval` 키 전용).
+            // ★(1.1.16 · codex 1R major 1) 단 기계 출처 큐 재전송의 보류였으면 인계 뒤 agy 문이 닫혔을 때 쓰지 않는다(쓰기 직전 재판정).
+            refuse: w.agy_launch_line.map(|l| agy_door_cr_refuse_probe(s, l)),
         };
         s.inject_track.submit_handed();
         if s.write_tx.try_send(req).is_err() {
@@ -7900,6 +7921,7 @@ pub(crate) fn arm_queue_submit_check(
     from: Option<u64>,
     entry_id: &str,
     origin: &str,
+    agy_launch_line: bool,
     transcript: Option<(String, u64)>,
 ) {
     if !queued_submit_retry_enabled() {
@@ -7909,8 +7931,6 @@ pub(crate) fn arm_queue_submit_check(
         return;
     };
     let now = std::time::Instant::now();
-    let agy_launch_line =
-        origin == AGY_ORIGIN_LAUNCH && cys::agy_door::launch_refusal_with("", Some(body), false).is_some();
     s.inject_track.arm_submit_check(crate::state::SubmitCheck {
         body_at: b.at,
         armed_at: now,
@@ -7927,15 +7947,38 @@ pub(crate) fn arm_queue_submit_check(
     });
 }
 
+/// ★(1.1.16 · codex 1R major 2) 한 배달에 실린 항목 중 agy 기동 줄이 있는가 — **항목 원문마다**(출처 `send_agent_launch` ∧ 기계 입구 낱말 검사 ·
+/// 문 상태와 무관 = `launch_refusal_with(.., false)`). 다이제스트 본문은 `[1/2]` 머리·발신 라벨이 실행 자리를 차지해 오판한다(스크립트 실체 조회가
+/// 빠지거나 라벨 「agy」 가 정상 기동 줄을 agy 로 만든다). 기동 줄 출처만 보므로 평시 비용 0 · drop_agy_door_closed 가 같은 판정을 같은 락 아래 한다.
+pub(crate) fn delivery_has_agy_launch_line(merged: &[crate::state::QueueEntry]) -> bool {
+    merged
+        .iter()
+        .any(|e| e.origin == AGY_ORIGIN_LAUNCH && cys::agy_door::launch_refusal_with("", Some(&e.text), false).is_some())
+}
+
 /// ★(1.1.16 · cysr-1116-backlog · HANDOFF 1115-r2 §4-3 선택지 B) 큐 Return 재전송도 agy 좌석 문을 본다 — 배달 직전 재판정
 /// ([`drop_agy_door_closed`])과 **같은 규칙**: 문이 닫혀 있고 사람 자판 출처가 아니며 ⑴ 닫힌 문의 agy 좌석이거나 ⑵ 본문이 agy 기동 줄이면
 /// 그 기록의 Return 을 다시 쓰지 않는다. 종전에는 문이 열린 동안 배달된 기계 본문의 Return 이 먹히고 ~35초 안에 문이 닫히면 데몬이 닫힌 문의
 /// agy 좌석에 Return 을 한 번 더 썼다(1.1.15 알려진 한계). 사람 자판(`send_human`)은 문이 닫혀도 배달되는 설계라 그 재전송은 그대로 둔다.
 /// 재검사 틱([`recheck_queue_submit_one`] — 기록을 닫는다)과 쓰기 직전 거부 탐침([`queue_retry_cancel_probe`] — 인계 뒤 닫힌 문)이 함께 부른다.
 pub(crate) fn agy_door_refuses_submit_retry(s: &crate::state::Surface, c: &crate::state::SubmitCheck) -> bool {
-    c.origin != AGY_ORIGIN_HUMAN
-        && !cys::agy_door::door_open()
-        && (c.agy_launch_line || crate::handlers::agy_door_seat_closed(s))
+    c.origin != AGY_ORIGIN_HUMAN && agy_door_refuses_machine_cr(s, c.agy_launch_line)
+}
+
+/// 기계 출처 CR 의 agy 문 판정(출처 판정은 호출부) — 문 닫힘 ∧ (agy 기동 줄 ∨ 닫힌 문의 agy 좌석).
+pub(crate) fn agy_door_refuses_machine_cr(s: &crate::state::Surface, agy_launch_line: bool) -> bool {
+    !cys::agy_door::door_open() && (agy_launch_line || crate::handlers::agy_door_seat_closed(s))
+}
+
+/// [`agy_door_refuses_machine_cr`] 의 writer 쓰기 직전 판(`SubmitAfterGap::refuse`) — 좌석 소멸·패닉 = 쓰지 않음(재제출은 선택적 행동).
+fn agy_door_cr_refuse_probe(s: &Arc<crate::state::Surface>, agy_launch_line: bool) -> crate::state::SafetyProbe {
+    let ws = Arc::downgrade(s);
+    Arc::new(move || {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ws.upgrade().is_none_or(|s| agy_door_refuses_machine_cr(&s, agy_launch_line))
+        }))
+        .unwrap_or(true)
+    })
 }
 
 /// ★(cysr-queued-paste-submit · codex 1R QPS-3) 재전송 Return 의 **쓰기 직전 거부 탐침**(writer 스레드 · `SubmitAfterGap::refuse`) —
@@ -8118,7 +8161,10 @@ pub(crate) fn recheck_queue_submit_one(
                 }
                 // 쓰기 직전: 거부 탐침(전제가 깨졌으면 쓰지 않음 · 기록 없음) → 보류 탐침(창이면 쓰지 않고 보류 기록 — 창이 닫히면 재제출 경로).
                 let refuse = queue_retry_cancel_probe(daemon, s, &c, markers.clone());
-                let probe = submit_cr_withhold_probe(daemon, s, markers, "queue_submit_retry", c.from);
+                let probe = submit_cr_withhold_probe_agy(
+                    daemon, s, markers, "queue_submit_retry", c.from,
+                    (c.origin != AGY_ORIGIN_HUMAN).then_some(c.agy_launch_line),
+                );
                 let req = crate::state::WriteReq::SubmitAfterGap {
                     bytes: b"\r".to_vec(),
                     min_gap_ms: crate::handlers::cr_min_gap_ms(),
@@ -11744,6 +11790,10 @@ pub(crate) struct Delivered {
     pub merged_ids: Vec<String>,
     /// Planned body (a digest when merged); its existence is not evidence it was written.
     pub body: String,
+    /// ★(1.1.16 · cysr-1116-backlog · codex 1R major 2) 실린 항목 중 agy 기동 줄이 있는가 — **항목 원문마다** 판정(출처 `send_agent_launch`
+    /// ∧ 기계 입구 낱말 검사 · 문 상태와 무관). 다이제스트 본문(`[1/2]` 머리·발신 라벨)으로 판정하면 실행 자리가 장식에 밀려 오판한다.
+    /// 큐 Return 재전송의 agy 문 재판정 재료(`SubmitCheck::agy_launch_line`).
+    pub agy_launch_line: bool,
 }
 
 /// Transport acceptance is distinct from the writer's terminal result. Existing callers may
@@ -12196,7 +12246,7 @@ fn settle_queue_write(
             );
             // ★(cysr-queued-paste-submit) Return 을 쓴 것은 제출의 증거가 아니다 — 제출 확인 기록을 세운다(틱이 확인·상한 재시도).
             if let Some(s) = &s {
-                arm_queue_submit_check(s, &d.body, receipt.2, &d.entry.id, &d.entry.origin, stamp.transcript.clone());
+                arm_queue_submit_check(s, &d.body, receipt.2, &d.entry.id, &d.entry.origin, d.agy_launch_line, stamp.transcript.clone());
             }
             // P7 큐 WAL: 배달로 줄어든 큐를 디스크에 반영(스냅샷 최신화).
             daemon.persist_queue_state();
@@ -13181,7 +13231,8 @@ pub(crate) fn deliver_head_locked(
             }),
         );
         // `remaining` is a prediction here; the settlement reports the value after its pop.
-        let d = Delivered { entry, remaining: q.len().saturating_sub(merged.len()), merged_ids, body };
+        let agy_launch_line = delivery_has_agy_launch_line(&merged);
+        let d = Delivered { entry, remaining: q.len().saturating_sub(merged.len()), merged_ids, body, agy_launch_line };
         let request = crate::agent_write::Request::new(
             crate::agent_write::new_request_id((daemon.started_at * 1000.0) as u64),
             s.id,
@@ -15688,7 +15739,7 @@ mod tests {
             let at=Some(since);*s.last_queue_delivery_at.lock().unwrap()=at;
             let flight=super::InflightInject{guard:Some(old.clone()),prev_delivery_at:None,set_delivery_at:at,
                 prev_pending:17,prev_esc_exempt_pgid:0,pending_gen:s.input_gen.load(AtomicOrdering::Acquire),entries:vec![old_entry.clone()]};
-            let delivery=super::Delivered{entry:old_entry.clone(),remaining:1,merged_ids:vec![old_entry.id],body:"old".into()};
+            let delivery=super::Delivered{entry:old_entry.clone(),remaining:1,merged_ids:vec![old_entry.id],body:"old".into(),agy_launch_line:false};
             let req=crate::agent_write::Request::new("old-request".into(),s.id,"queue","old-digest".into());
             let stamp=super::HandoffStamp::of(&s,req,Arc::new(crate::agent_write::PassThrough),Some(old));
             let terminal=if submitted {crate::agent_write::Terminal::WrittenSubmitted{accepted:crate::agent_write::Accepted::default()}}
@@ -22695,7 +22746,7 @@ mod tests {
         let (_pack, _env) = wp5_env("r1f-in-n");
         let (daemon, s) = wp5_seat("r1f-in-n", "claude");
         let e = daemon.next_queue_entry("[보고] 롤백".into(), None, "test");
-        let delivered = super::Delivered { entry: e.clone(), remaining: 0, merged_ids: vec![e.id.clone()], body: e.text.clone() };
+        let delivered = super::Delivered { entry: e.clone(), remaining: 0, merged_ids: vec![e.id.clone()], body: e.text.clone(), agy_launch_line: false };
         let make_flight = |prev_esc: i32, gen: u64| super::InflightInject {
             guard: None,
             prev_delivery_at: None,
@@ -27296,6 +27347,7 @@ mod tests {
             remaining: 0,
             merged_ids: vec![id.clone()],
             body: e.text.clone(),
+            agy_launch_line: false,
         };
         *s.inject_reservation.lock().unwrap() = None;
         super::rollback_aborted_inject(&daemon, &s, &f, &delivered);
@@ -27349,6 +27401,7 @@ mod tests {
             remaining: 0,
             merged_ids: vec![id.clone()],
             body: e.text.clone(),
+            agy_launch_line: false,
         };
         *s.inject_reservation.lock().unwrap() = None;
         super::rollback_aborted_inject(&daemon, &s, &f, &delivered);

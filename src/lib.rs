@@ -7029,6 +7029,16 @@ mod spawn_policy_tests {
                     let close = format!("{}}}", &lines[i][..indent]);
                     let mut k = j + 1;
                     while k < lines.len() && lines[k] != close {
+                        // ★(codex 1R major) 같은·얕은 들여쓰기의 `}` 로 시작하는 다른 꼴(`    };`·`}`)은 모듈이 이미 닫혔거나 감싼 블록이
+                        //   닫힌 것이다 — 뒤의 같은 들여쓰기 `}` 까지 따라가면 운영 블록을 조용히 삼킨다. 따라가지 말고 실패.
+                        let l = lines[k];
+                        let li = l.len() - l.trim_start().len();
+                        if li <= indent && l.trim_start().starts_with('}') {
+                            return Err(format!(
+                                "들여쓴 `#[cfg(test)]` 모듈(`{head}`)의 닫힘 꼴(`{}`)을 모른다 — 뒤 운영 코드를 삼키지 않도록 실패",
+                                l.trim()
+                            ));
+                        }
                         k += 1;
                     }
                     if k >= lines.len() {
@@ -7144,6 +7154,14 @@ mod spawn_policy_tests {
         assert!(
             production_slice_checked("mod imp {\n    #[cfg(test)]\n    mod tests {\n        fn t() {}\n}\n").is_err(),
             "같은 들여쓰기로 닫히지 않은 시험 모듈을 조용히 통과시켰다"
+        );
+        // codex 1R 반례: 모듈 뒤 빈 문장(`    };`)으로 닫힌 꼴 — 뒤 `if` 블록의 `    }` 까지 삼켜 운영 Command::new 가 사라지면 안 된다.
+        assert!(
+            production_slice_checked(
+                "fn f() {\n    #[cfg(test)]\n    mod t {\n    };\n    if true {\n        std::process::Command::new(\"prod\");\n    }\n}\n"
+            )
+            .is_err(),
+            "모르는 닫힘 꼴(`    }};`)에서 뒤 운영 블록까지 삼켰다"
         );
         // 실물에도 걸어 둔다 — 이 파일들의 프로덕션 앵커가 사라지면 핀이 헛도는 것이다.
         let cys = production_slice(include_str!("bin/cys.rs"));

@@ -1788,12 +1788,16 @@ pub(crate) struct WithheldSubmit {
     /// byte-exact: the body counted, the unwritten Return not) - the resubmission requires exactly these. `None` = a record
     /// whose Return was counted when it was handed off (the resubmission's own re-withhold): the count must then be 0.
     pub(crate) expect: Option<(u64, u64)>,
+    /// ★(1.1.16 · cysr-1116-backlog · codex 1R major 1) agy 좌석 문 재판정 문맥 — `Some(기동 줄)` = 기계 출처 큐 배달의 Return 재전송
+    /// (`queue_submit_retry`)이 보류한 기록(재제출 틱·재제출 CR 쓰기 직전에 `governance::agy_door_refuses_machine_cr` 로 다시 본다) ·
+    /// `None` = 종전 기록(문 재판정 없음 — 사람 자판 출처 재전송 포함). 재제출이 다시 보류하면 그대로 이어받는다.
+    pub(crate) agy_launch_line: Option<bool>,
 }
 
 impl WithheldSubmit {
     /// 보류 탐침이 창을 본 순간의 기록 — 두 시계 0 · 창 열림.
     pub(crate) fn new(at: Instant, body_at: Instant, from: Option<u64>) -> Self {
-        Self { at, body_at, from, seen_at: at, live_ms: 0, dialog_ms: 0, dialog_open: true, expect: None }
+        Self { at, body_at, from, seen_at: at, live_ms: 0, dialog_ms: 0, dialog_open: true, expect: None, agy_launch_line: None }
     }
 
     /// ★(R3C-1) 순수 — 틱 1회의 경과를 잰다: `seen_at` 을 `now` 로 옮기고, pause 가 아니면 `live_ms` 에 더한다.

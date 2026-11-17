@@ -6413,30 +6413,83 @@ pub fn recover_pack_journal_unless_busy() -> Result<JournalRecovery, String> {
     }
 }
 
-/// 팩 적용 잠금(`<팩 부모>/.pack-apply.lock`)을 **기다리지 않고** 잡아 그 안에서 `f` 를 실행한다. None = 남이 쥐고 있음(진행 중 적용).
-/// 잠금 파일은 있든 없든 원자적으로 열거나 만든다 · 표준 라이브러리 잠금(유닉스 flock · 윈도우 LockFileEx) = `cys pack-update` 의 with_apply_lock 과 같은 잠금.
-fn with_apply_lock_nonblocking<T>(f: impl FnOnce() -> T) -> Result<Option<T>, String> {
-    let pd = pack_dir();
-    let Some(base) = pd.parent() else { return Ok(Some(f())) };
-    std::fs::create_dir_all(base).map_err(|e| format!("apply-lock 부모 생성 실패 {}: {e}", base.display()))?;
-    let lp = base.join(".pack-apply.lock");
-    let file = std::fs::OpenOptions::new()
+/// ★1.1.16 F1(독립 검증 1118): 레인 적용 잠금 이름 — 레인 저널 폴더(`.pack-journal.d/<레인>/`) 안.
+const LANE_APPLY_LOCK: &str = ".apply.lock";
+
+/// ★1.1.16 F1: 팩 `pack` 레인의 적용 잠금 `<state_base>/.pack-journal.d/<팩 폴더 이름>/.apply.lock`(`state_base` = 팩 부모 = 공용 잠금
+/// `.pack-apply.lock` 이 있는 곳). `cys pack-update` 는 공용 잠금 **과** 이 잠금을 적용 내내 쥐고, 데몬 기동은 자기 레인 잠금을 본다 —
+/// 다른 레인의 적용·기동이 이 레인 기동의 복구·자동 설치를 막지 않는다(1.1.16 초판 = 공용 잠금 하나 → 다른 레인이 쥐면 건너뜀).
+pub fn lane_apply_lock_path(state_base: &Path, pack: &Path) -> PathBuf {
+    let lane = state_base.join(pack.file_name().unwrap_or_else(|| std::ffi::OsStr::new("pack")));
+    pack_journal_lane_dir_for(&lane).join(LANE_APPLY_LOCK)
+}
+
+/// 잠금 파일을 (부모까지) 원자적으로 열거나 만든다.
+fn open_lock_file(lp: &Path) -> Result<std::fs::File, String> {
+    if let Some(parent) = lp.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("apply-lock 부모 생성 실패 {}: {e}", parent.display()))?;
+    }
+    std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(&lp)
-        .map_err(|e| format!("apply-lock 열기 실패 {}: {e}", lp.display()))?;
-    match file.try_lock() {
-        Ok(()) => {}
-        Err(std::fs::TryLockError::WouldBlock) if !crate::update::mutant("J1116-IGNORE-BUSY") => {
-            eprintln!("[pack] 팩 적용이 진행 중(apply-lock 보유) — 그 저널은 쓰는 이의 몫이라 지금 복구하지 않습니다");
-            return Ok(None);
-        }
-        Err(std::fs::TryLockError::WouldBlock) => {}
-        Err(std::fs::TryLockError::Error(e)) => return Err(format!("apply-lock 잠금 실패 {}: {e}", lp.display())),
-    }
+        .open(lp)
+        .map_err(|e| format!("apply-lock 열기 실패 {}: {e}", lp.display()))
+}
+
+/// ★1.1.16 F1: 쓰는 쪽(`cys pack-update` 의 with_apply_lock — 공용 잠금을 이미 쥔 채)이 이 레인의 적용 잠금을 **기다려** 잡고 `f` 를 실행한다.
+/// 잠금 순서 = 공용 → 레인(데몬 기동은 기다리지 않으므로 교착 없음).
+pub fn with_lane_apply_lock<T>(state_base: &Path, f: impl FnOnce() -> T) -> Result<T, String> {
+    let lp = lane_apply_lock_path(state_base, &pack_dir());
+    let file = open_lock_file(&lp)?;
+    file.lock().map_err(|e| format!("레인 apply-lock 잠금 실패 {}: {e}", lp.display()))?;
     let out = f();
     let _ = file.unlock();
+    Ok(out)
+}
+
+/// 기다리지 않고 잡아 본다. Ok(None) = 남이 쥐고 있음.
+fn try_lock_file(lp: &Path) -> Result<Option<std::fs::File>, String> {
+    let file = open_lock_file(lp)?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) if !crate::update::mutant("J1116-IGNORE-BUSY") => Ok(None),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(Some(file)),
+        Err(std::fs::TryLockError::Error(e)) => Err(format!("apply-lock 잠금 실패 {}: {e}", lp.display())),
+    }
+}
+
+/// 팩 적용 잠금을 **기다리지 않고** 잡아 그 안에서 `f` 를 실행한다. None = 남이 쥐고 있음(진행 중 적용).
+/// 잠금 파일은 있든 없든 원자적으로 열거나 만든다 · 표준 라이브러리 잠금(유닉스 flock · 윈도우 LockFileEx) = `cys pack-update` 의 with_apply_lock 과 같은 잠금.
+/// ★1.1.16 F1: 잡는 것 = **이 레인의** 적용 잠금([`lane_apply_lock_path`] · 같은 레인 pack-update 가 쥠). 본부 레인은 공용 잠금(`.pack-apply.lock`)도
+/// 잡아 본다 — 본부 레인만 옛 공유 저널을 옮기는데([`adopt_legacy_pack_journal`]) 1.1.15 쓰는 이는 공용 잠금만 쥐기 때문. 부서 레인은 공용 잠금을
+/// 보지 않는다(옛 저널 무접촉) → 본부의 팩 업데이트·본부 데몬 기동이 부서 기동을 막지 않는다. 본부 기동이 공용 잠금 때문에 Busy 가 되는 것은
+/// 어떤 레인이든 `cys pack-update` 가 진행 중일 때뿐이다(데몬 기동은 공용 잠금을 쥐지 않으므로 두 데몬 기동끼리는 서로 막지 않는다).
+fn with_apply_lock_nonblocking<T>(f: impl FnOnce() -> T) -> Result<Option<T>, String> {
+    let pd = pack_dir();
+    let Some(base) = pd.parent() else { return Ok(Some(f())) };
+    let busy = || eprintln!("[pack] 이 레인 팩 적용이 진행 중(apply-lock 보유) — 그 저널은 쓰는 이의 몫이라 지금 복구하지 않습니다");
+    let shared = if dept_scope_of(&pd).is_none() && !crate::update::mutant("J1116-BASE-NO-SHARED") {
+        match try_lock_file(&base.join(".pack-apply.lock"))? {
+            Some(f) => Some(f),
+            None => {
+                busy();
+                return Ok(None);
+            }
+        }
+    } else {
+        None
+    };
+    let lane_lp = if crate::update::mutant("J1116-LANE-SHARED") { base.join(".pack-apply.lock") } else { lane_apply_lock_path(base, &pd) };
+    let Some(lane) = try_lock_file(&lane_lp)? else {
+        busy();
+        return Ok(None);
+    };
+    let out = f();
+    let _ = lane.unlock();
+    if let Some(s) = shared {
+        let _ = s.unlock();
+    }
     Ok(Some(out))
 }
 
@@ -11558,22 +11611,19 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn j1116_daemon_recovery_skips_a_live_apply() {
-        use std::os::unix::io::AsRawFd;
         let _g = PACK_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (base, pd, _env) = txn_prestate("j16-busy", &[("README.md", "OLD-SOUL")], "1.0.0");
         PACK_TXN_KILL.with(|k| k.set(Some("install")));
         let _ = apply_pack_transactional(&[("README.md", "NEW-SOUL")], "2.0.0", &test_free_state("2.0.0"), None, || Ok(()));
         PACK_TXN_KILL.with(|k| k.set(None));
-        let lp = base.join(".pack-apply.lock");
-        let holder = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&lp).unwrap();
-        // 다른 열린 파일 설명(=다른 프로세스와 같은 경합)으로 잡는다 — 같은 프로세스라도 flock 은 설명 단위다.
-        assert_eq!(unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_EX) }, 0);
+        // ★F1(1118): 쓰는 이(`cys pack-update`)가 실제로 쥐는 잠금 전부(공용 + 이 레인)를 다른 열린 파일 설명으로 쥔다.
+        let holder = j1116_hold_writer_apply_lock(&base, &pd);
         let busy = recover_pack_journal_unless_busy();
         // codex 3R #1: 부트 한 덩어리(복구 + 판 게이트 + 자동 설치)도 잠금이 잡혀 있으면 아무것도 안 함.
         let boot_busy = boot_recover_and_install("0.0.1", PackWriteAuth::production()).map(|(r, i)| (r, i.is_none()));
         let soul_busy = std::fs::read_to_string(pd.join("README.md")).unwrap();
         let journal_busy = pack_journal_dir().join("index.json").is_file();
-        unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_UN) };
+        drop(holder);
         let free = recover_pack_journal_unless_busy();
         let soul = std::fs::read_to_string(pd.join("README.md")).unwrap();
         let _ = std::fs::remove_dir_all(&base);
@@ -11584,14 +11634,21 @@ mod tests {
         assert_eq!(soul, "OLD-SOUL");
     }
 
-    /// `cys pack-update` 가 **본부 레인** 적용 내내 쥐는 잠금을 다른 열린 파일 설명으로 쥔다(다른 프로세스와 같은 경합).
+    /// 잠금 파일 하나를 다른 열린 파일 설명으로 쥔다(다른 프로세스와 같은 경합 — flock 은 설명 단위).
     #[cfg(unix)]
-    fn j1116_hold_writer_apply_lock(base: &Path, _pack: &Path) -> std::fs::File {
+    fn j1116_flock_held(lp: &Path) -> std::fs::File {
         use std::os::unix::io::AsRawFd;
-        let lp = base.join(".pack-apply.lock");
-        let holder = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&lp).unwrap();
+        std::fs::create_dir_all(lp.parent().unwrap()).unwrap();
+        let holder = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(lp).unwrap();
         assert_eq!(unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_EX) }, 0);
         holder
+    }
+
+    /// `cys pack-update` 가 `pack` 레인 적용 내내 쥐는 잠금 전부(공용 `.pack-apply.lock` + 그 레인 잠금 — `src/bin/cys.rs` with_apply_lock ·
+    /// [`with_lane_apply_lock`])를 쥔다. 놓기 = 돌려받은 것을 drop.
+    #[cfg(unix)]
+    fn j1116_hold_writer_apply_lock(base: &Path, pack: &Path) -> (std::fs::File, std::fs::File) {
+        (j1116_flock_held(&base.join(".pack-apply.lock")), j1116_flock_held(&lane_apply_lock_path(base, pack)))
     }
 
     /// F1(독립 검증 1118 · 기준선에 없던 회귀): 본부 레인 팩 업데이트가 적용 잠금을 쥔 동안 **부서** 데몬이 뜨면, 부서는 자기 레인의
@@ -11611,6 +11668,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         assert!(gate_open, "시험 전제: 부서 팩이 이 판보다 낡아 설치가 필요하다");
         assert_eq!(res, Ok((JournalRecovery::Nothing, Some(true))), "본부 레인 잠금 때문에 부서 데몬이 자기 팩 설치를 건너뛰었다");
+    }
+
+    /// F1 고침이 1.1.15 쓰는 이를 놓치지 않는다: 공용 잠금 **만** 쥔 쓰는 이(1.1.15 `cys pack-update` · 옛 공유 저널을 쓴다)가 있으면 본부 레인
+    /// 기동은 옛 저널을 옮기지도 설치하지도 않는다(Busy) · 부서 레인 기동은 옛 저널을 보지 않으므로 자기 설치를 한다.
+    #[cfg(unix)]
+    #[test]
+    fn j1116_shared_lock_only_writer_still_stops_the_base_lane() {
+        let _g = PACK_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (base, _pd, _env) = txn_prestate("j16-oldwriter", &[("README.md", "BASE-SOUL")], "1.0.0");
+        let dd = j1116_dept(&base);
+        let legacy = base.join(".pack-journal");
+        std::fs::create_dir_all(legacy.join("files")).unwrap();
+        std::fs::write(legacy.join("files/README.md"), "OLD-BASE-SOUL").unwrap();
+        std::fs::write(
+            legacy.join("index.json"),
+            serde_json::json!({"target_version": "2.0.0", "explicit_commit": true, "entries": [{"rel": "README.md", "existed": true}]}).to_string(),
+        )
+        .unwrap();
+        let held = j1116_flock_held(&base.join(".pack-apply.lock"));
+        let base_boot = boot_recover_and_install("9.9.9", PackWriteAuth::production()).map(|(r, i)| (r, i.is_none()));
+        let legacy_left = legacy.join("index.json").is_file();
+        let dept_boot = {
+            let _d = EnvGuard::set(ENV_PACK_DIR, &dd);
+            boot_recover_and_install("9.9.9", PackWriteAuth::production()).map(|(r, i)| (r, i.map(|x| x.is_ok())))
+        };
+        drop(held);
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(base_boot, Ok((JournalRecovery::Busy, true)), "1.1.15 쓰는 이가 공용 잠금을 쥐었는데 본부 기동이 복구·설치를 했다");
+        assert!(legacy_left, "살아 있는 1.1.15 쓰는 이의 옛 공유 저널을 본부 기동이 옮겼다");
+        assert_eq!(dept_boot, Ok((JournalRecovery::Nothing, Some(true))), "부서 기동이 공용 잠금 때문에 자기 설치를 건너뛰었다");
     }
 
     /// 「끝남 = 그 적용 고유 표지」: 커밋 기록의 apply_id 가 저널 인덱스의 것과 다르면 이 적용의 커밋이 아니다 → 되돌림.

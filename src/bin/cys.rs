@@ -27618,11 +27618,13 @@ fn with_apply_lock<T>(lock_path: &std::path::Path, f: impl FnOnce() -> T) -> Res
         if unsafe { libc::flock(fd, libc::LOCK_EX) } != 0 {
             return Err(format!("flock 실패: {}", std::io::Error::last_os_error()));
         }
-        let out = f();
+        // ★1.1.16 F1(독립 검증 1118): 공용 잠금을 쥔 채 이 레인의 적용 잠금도 쥔다(순서 = 공용 → 레인) — 데몬 기동은 자기 레인 잠금만
+        //   보므로(본부 레인은 공용도) 다른 레인의 적용이 그 레인 기동의 복구·자동 설치를 막지 않는다.
+        let out = cys::pack::with_lane_apply_lock(lock_path.parent().unwrap_or_else(|| std::path::Path::new(".")), f);
         unsafe {
             libc::flock(fd, libc::LOCK_UN);
         }
-        Ok(out)
+        out
     }
     #[cfg(not(unix))]
     {
@@ -27638,9 +27640,9 @@ fn with_apply_lock<T>(lock_path: &std::path::Path, f: impl FnOnce() -> T) -> Res
             .open(lock_path)
             .map_err(|e| format!("apply-lock 열기 실패 {}: {e}", lock_path.display()))?;
         file.lock().map_err(|e| format!("apply-lock 잠금 실패: {e}"))?;
-        let out = f();
+        let out = cys::pack::with_lane_apply_lock(lock_path.parent().unwrap_or_else(|| std::path::Path::new(".")), f);
         let _ = file.unlock();
-        Ok(out)
+        out
     }
 }
 

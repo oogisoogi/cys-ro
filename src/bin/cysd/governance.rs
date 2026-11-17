@@ -4618,6 +4618,18 @@ pub(crate) fn drop_agy_door_closed(daemon: &Daemon, s: &crate::state::Surface) -
     };
     let (dropped, now_empty) = {
         let mut q = s.pending_queue.lock().unwrap();
+        // ★(1.1.16 · cysr-1116-backlog · HANDOFF 1115-r2 §4-3 부기) 인계 중(writer 에 넘어가 결판 대기)인 항목은 빼지 않는다 — 종전에는
+        //   여기서 묘비를 남기고 곧 쓰기 결판이 같은 항목에 배달 영수증·`queue.delivered` 를 남겼다(같은 항목에 묘비와 배달 둘 다).
+        //   이미 넘어간 바이트는 되돌릴 수 없으니 결판이 처분한다: 썼으면 배달(그 Return 재전송은 `agy_door_refuses_submit_retry` 가 막음) ·
+        //   안 썼으면 큐에 남아 다음 틱에 이 재판정이 뺀다. 락 순서 pending_queue → inject_reservation(leaf).
+        let in_flight: Vec<String> = s
+            .inject_reservation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|r| r.ids.clone())
+            .unwrap_or_default();
+        let refuse = |e: &crate::state::QueueEntry| !in_flight.contains(&e.id) && refuse(e);
         if !q.iter().any(&refuse) {
             return 0;
         }
@@ -7887,6 +7899,7 @@ pub(crate) fn arm_queue_submit_check(
     body: &str,
     from: Option<u64>,
     entry_id: &str,
+    origin: &str,
     transcript: Option<(String, u64)>,
 ) {
     if !queued_submit_retry_enabled() {
@@ -7896,6 +7909,8 @@ pub(crate) fn arm_queue_submit_check(
         return;
     };
     let now = std::time::Instant::now();
+    let agy_launch_line =
+        origin == AGY_ORIGIN_LAUNCH && cys::agy_door::launch_refusal_with("", Some(body), false).is_some();
     s.inject_track.arm_submit_check(crate::state::SubmitCheck {
         body_at: b.at,
         armed_at: now,
@@ -7907,7 +7922,20 @@ pub(crate) fn arm_queue_submit_check(
         transcript,
         agent_epoch: s.agent_epoch.load(Ordering::Acquire),
         conversation_epoch: s.conversation_epoch.load(Ordering::Acquire),
+        origin: origin.to_string(),
+        agy_launch_line,
     });
+}
+
+/// ★(1.1.16 · cysr-1116-backlog · HANDOFF 1115-r2 §4-3 선택지 B) 큐 Return 재전송도 agy 좌석 문을 본다 — 배달 직전 재판정
+/// ([`drop_agy_door_closed`])과 **같은 규칙**: 문이 닫혀 있고 사람 자판 출처가 아니며 ⑴ 닫힌 문의 agy 좌석이거나 ⑵ 본문이 agy 기동 줄이면
+/// 그 기록의 Return 을 다시 쓰지 않는다. 종전에는 문이 열린 동안 배달된 기계 본문의 Return 이 먹히고 ~35초 안에 문이 닫히면 데몬이 닫힌 문의
+/// agy 좌석에 Return 을 한 번 더 썼다(1.1.15 알려진 한계). 사람 자판(`send_human`)은 문이 닫혀도 배달되는 설계라 그 재전송은 그대로 둔다.
+/// 재검사 틱([`recheck_queue_submit_one`] — 기록을 닫는다)과 쓰기 직전 거부 탐침([`queue_retry_cancel_probe`] — 인계 뒤 닫힌 문)이 함께 부른다.
+pub(crate) fn agy_door_refuses_submit_retry(s: &crate::state::Surface, c: &crate::state::SubmitCheck) -> bool {
+    c.origin != AGY_ORIGIN_HUMAN
+        && !cys::agy_door::door_open()
+        && (c.agy_launch_line || crate::handlers::agy_door_seat_closed(s))
 }
 
 /// ★(cysr-queued-paste-submit · codex 1R QPS-3) 재전송 Return 의 **쓰기 직전 거부 탐침**(writer 스레드 · `SubmitAfterGap::refuse`) —
@@ -7922,6 +7950,7 @@ pub(crate) fn queue_retry_cancel_probe(
 ) -> crate::state::SafetyProbe {
     let (wd, ws) = (Arc::downgrade(daemon), Arc::downgrade(s));
     let (body_at, agent_epoch, conversation_epoch, armed_at) = (c.body_at, c.agent_epoch, c.conversation_epoch, c.armed_at);
+    let record = c.clone();
     Arc::new(move || {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let (Some(d), Some(s)) = (wd.upgrade(), ws.upgrade()) else {
@@ -7931,6 +7960,10 @@ pub(crate) fn queue_retry_cancel_probe(
             //   사람 손·새 배달의 덮어쓰기) 이미 넘긴 CR 도 취소다. 승인·관문 대기가 인계 뒤에 섰으면 쓰지 않는다(보류 탐침은 화면 창만 본다 ·
             //   `inject_safety_probe` ⓑ와 같은 판독 — writer 스레드 poison 관용 읽기).
             if s.inject_track.submit_check().map(|x| x.armed_at) != Some(armed_at) || approval_or_gate_pending(&d, s.id) {
+                return true;
+            }
+            // ★(1.1.16 · §4-3 B) 인계 뒤 agy 좌석 문이 닫혔으면(쓰는 중 닫힘) 기계 출처의 이 CR 은 쓰지 않는다 — 기록은 다음 재검사 틱이 닫는다.
+            if agy_door_refuses_submit_retry(&s, &record) {
                 return true;
             }
             if d.paused.load(Ordering::Relaxed)
@@ -8014,6 +8047,11 @@ pub(crate) fn recheck_queue_submit_one(
     };
     if crate::handlers::send_settle_disabled(daemon) || submit_guard_scope(s) == SubmitGuardScope::Off {
         return close("seat_off", None);
+    }
+    // ★(1.1.16 · §4-3 B) 닫힌 agy 문 ∧ 기계 출처 — 배달 직전 재판정과 같은 규칙으로 기록을 닫고 쓰지 않는다(재전송 0 · 이벤트 0).
+    if agy_door_refuses_submit_retry(s, &c) {
+        eprintln!("[cysd] {} agy 좌석 문 닫힘 — 큐 배달 {} 의 Return 재전송 기록을 닫음(쓰기 0)", cys::surface_ref(s.id), c.entry_id);
+        return close("agy_door_closed", None);
     }
     let body = s.inject_track.last_body();
     let human = s.pending_input.lock().unwrap_or_else(|e| e.into_inner()).human != 0
@@ -12158,7 +12196,7 @@ fn settle_queue_write(
             );
             // ★(cysr-queued-paste-submit) Return 을 쓴 것은 제출의 증거가 아니다 — 제출 확인 기록을 세운다(틱이 확인·상한 재시도).
             if let Some(s) = &s {
-                arm_queue_submit_check(s, &d.body, receipt.2, &d.entry.id, stamp.transcript.clone());
+                arm_queue_submit_check(s, &d.body, receipt.2, &d.entry.id, &d.entry.origin, stamp.transcript.clone());
             }
             // P7 큐 WAL: 배달로 줄어든 큐를 디스크에 반영(스냅샷 최신화).
             daemon.persist_queue_state();
@@ -29647,6 +29685,48 @@ mod tests {
         // ④ 큐는 멈추지 않는다 — 다음 틱에 남은 사람 자판 항목이 머리로 나간다.
         let d = deliver_head_locked(&daemon, &s, false, false, None, None, None, None).expect("다음 틱 = 사람 자판 항목 배달");
         assert_eq!(d.entry.text, human);
+    }
+
+    /// ★(1.1.16 · cysr-1116-backlog · HANDOFF 1115-r2 §4-3 부기) 닫힌 문의 agy 좌석 — 인계 중(예약 표지에 실린) 항목은 배달 직전 재판정이
+    /// 빼지 않는다(그 항목은 쓰기 결판이 처분 — 같은 항목에 묘비와 배달이 둘 다 남지 않는다) · 인계 밖의 기계 항목은 종전대로 뺀다 ·
+    /// 표지가 풀리면(결판이 안 썼으면 항목이 큐에 남음) 다음 재판정이 그것을 뺀다.
+    #[test]
+    fn b16_agy_door_drop_skips_in_flight_entry() {
+        if cys::agy_door::door_open() {
+            eprintln!("건너뜀: 이 HOME 에서는 agy 좌석 문이 열려 있다(격리 HOME 에서 돌릴 것)");
+            return;
+        }
+        let daemon = drill_daemon("b16-agy-inflight");
+        let s = daemon
+            .create_surface(None, Some("sleep 30".into()), None, None, 24, 80)
+            .expect("create surface");
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        *s.agent_meta.lock().unwrap() = Some(("gemini".into(), "agy".into()));
+        assert!(crate::handlers::agy_door_seat_closed(&s), "전제: 닫힌 문의 agy 좌석");
+        let (a, b) = {
+            let mut q = s.pending_queue.lock().unwrap();
+            let a = daemon.next_queue_entry("인계 중 기계 본문".into(), Some("surface:7".into()), "send");
+            let b = daemon.next_queue_entry("대기 기계 본문".into(), Some("surface:8".into()), "send");
+            let ids = (a.id.clone(), b.id.clone());
+            q.push_back(a);
+            q.push_back(b);
+            ids
+        };
+        let guard = std::sync::Arc::new(crate::state::InjectGuard::new(None, s.output_gen.clone(), false, None));
+        *s.inject_reservation.lock().unwrap() = Some(crate::state::InjectReservation { ids: vec![a.clone()], guard });
+        assert_eq!(crate::governance::drop_agy_door_closed(&daemon, &s), 1, "인계 밖 항목 1건만 뺀다");
+        let left: Vec<String> = s.pending_queue.lock().unwrap().iter().map(|e| e.id.clone()).collect();
+        assert_eq!(left, vec![a.clone()], "인계 중 항목은 큐에 남아 결판을 기다린다");
+        let ev = daemon.bus.tail(80);
+        let dropped: Vec<&Value> = ev.iter().filter(|e| e["name"] == "queue.dropped").collect();
+        assert_eq!(dropped.len(), 1);
+        assert!(!dropped[0].to_string().contains(&a) && dropped[0]["payload"]["count"] == serde_json::json!(1),
+                "인계 중 항목에 묘비를 남겼다: {}", dropped[0]);
+        let _ = b;
+        // 결판이 쓰지 않고 표지를 풀었다 — 다음 재판정이 남은 항목을 뺀다.
+        *s.inject_reservation.lock().unwrap() = None;
+        assert_eq!(crate::governance::drop_agy_door_closed(&daemon, &s), 1);
+        assert!(s.pending_queue.lock().unwrap().is_empty());
     }
 
     /// ★v116-seat agy 3R 반례 2건(구체 입력): ①「claude is an AI」처럼 에이전트 이름으로 시작하는 한 줄 산문은

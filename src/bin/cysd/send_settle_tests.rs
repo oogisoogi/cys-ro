@@ -1470,7 +1470,7 @@ fn paint_empty_prompt(t: &Arc<Surface>) {
 fn swallowed_seat(fx: &Fx, pid: u32) -> Arc<Surface> {
     let t = agent_pane_settled(fx, "worker-1", pid);
     t.inject_track.note_body(QPS_BODY, None);
-    crate::governance::arm_queue_submit_check(&t, QPS_BODY, Some(99), "q-test.1", None);
+    crate::governance::arm_queue_submit_check(&t, QPS_BODY, Some(99), "q-test.1", "send", None);
     assert!(t.inject_track.submit_check().is_some(), "전제: 기록이 섰다");
     paint_folded_own(&t);
     t
@@ -1589,7 +1589,7 @@ fn qps_transcript_user_record_vetoes_resend() {
     // Return 이 처리돼 user 레코드가 결판(arm) **전에** 붙었다.
     let line = json!({"type": "user", "message": {"content": QPS_BODY}}).to_string();
     std::fs::OpenOptions::new().append(true).open(&tr).unwrap().write_all(format!("{line}\n").as_bytes()).unwrap();
-    crate::governance::arm_queue_submit_check(&t, QPS_BODY, None, "q-test.2", snap);
+    crate::governance::arm_queue_submit_check(&t, QPS_BODY, None, "q-test.2", "send", snap);
     paint_folded_own(&t); // 낡은 화면 사본 — 우리 본문으로 보인다
     let w0 = t.inject_track.wrote();
     assert_eq!(step_at(&fx, &t, Instant::now(), 2_100), "confirmed_transcript");
@@ -1608,7 +1608,7 @@ fn qps_giveup_checks_transcript_first() {
     *t.registered_transcript.lock().unwrap() = Some(tr.to_string_lossy().into_owned());
     let snap = crate::governance::transcript_snapshot(&t);
     t.inject_track.note_body(QPS_BODY, None);
-    crate::governance::arm_queue_submit_check(&t, QPS_BODY, None, "q-test.3", snap);
+    crate::governance::arm_queue_submit_check(&t, QPS_BODY, None, "q-test.3", "send", snap);
     let base = Instant::now();
     let mut at = 2_100;
     for gap in [4_100u64, 8_100, 0] {
@@ -1666,7 +1666,7 @@ fn qps_retry_cancel_probe_refuses_on_each_broken_premise() {
     assert!(probe(), "기록이 닫힌 뒤의 CR");
     // 새 배달이 기록을 덮어써도(다른 armed_at) 옛 CR 은 쓰지 않는다.
     std::thread::sleep(Duration::from_millis(2));
-    crate::governance::arm_queue_submit_check(&t, QPS_BODY, Some(99), "q-test.next", None);
+    crate::governance::arm_queue_submit_check(&t, QPS_BODY, Some(99), "q-test.next", "send", None);
     assert!(probe(), "다른 기록으로 바뀐 뒤의 옛 CR");
     t.inject_track.note_body("다른 기계 본문", None);
     assert!(probe(), "인계 뒤 새 기계 본문");
@@ -1772,4 +1772,118 @@ fn qps_queue_delivery_arms_submit_check() {
     let c = t.inject_track.submit_check().expect("Return 을 쓴 큐 배달이 제출 확인 기록을 세웠다");
     assert_eq!(c.entry_id, id);
     assert_eq!(c.tries, 0);
+}
+
+// ═══════════ ★(1.1.16 · TICKET=cysr-1116-backlog · HANDOFF 1115-r2 §4-3 선택지 B) agy 좌석 문 × 큐 Return 재전송 ═══════════
+//
+// 【무엇】 agy 문은 「적재 뒤 문이 닫혔으면 배달하지 않는다」(배달 직전 재판정 `drop_agy_door_closed`)인데, 큐 배달 수리가 더한
+// 데몬 내부 쓰기(먹힌 Return 재전송 · `recheck_queue_submit_one` 의 Resend → `SubmitAfterGap`)는 그 재판정을 지나지 않았다.
+// 문이 열린 동안 배달된 기계 본문의 Return 이 먹히고 ~35초 안에 문이 닫히면, 닫힌 문의 agy 좌석에 데몬이 Return 을 한 번 더 썼다
+// (1.1.15 의 알려진 한계 · 관측 = 출하 gemini 어댑터 · 마커 `>` · `resent` · PTY 쓰기 +1). 사람 자판 출처(`send_human`)는 문이
+// 닫혀도 배달되는 설계라 그 Return 재전송은 문 정책과 어긋나지 않는다(그대로 둔다).
+
+/// 큐 결판이 막 Return 을 쓴 **agy 좌석**(출하 gemini 어댑터 = agy) — 기계 본문 기록 + 제출 확인 기록 + 입력줄에 접힘 잔여.
+fn agy_swallowed_seat(fx: &Fx, pid: u32, origin: &str) -> Arc<Surface> {
+    let t = agent_pane_settled(fx, "worker-1", pid);
+    *t.agent_meta.lock().unwrap() = Some(("gemini".into(), "agy".into()));
+    t.inject_track.note_body(QPS_BODY, None);
+    crate::governance::arm_queue_submit_check(&t, QPS_BODY, Some(99), "q-agy.1", origin, None);
+    assert!(t.inject_track.submit_check().is_some(), "전제: 기록이 섰다");
+    paint_folded_agy(&t);
+    t
+}
+
+/// agy(gemini 어댑터) 입력줄 = 우리 본문의 접힘 자리표시 — 마커 `>`(§4-3 관측 꼴).
+fn paint_folded_agy(t: &Arc<Surface>) {
+    paint(t, &["────────", "> [Pasted text #9 +3 lines] ", "────────"], 1, 40);
+}
+
+/// 적색→녹색(§4-3 재현): 닫힌 문의 agy 좌석 · 기계 출처 배달의 먹힌 Return — 재검사 틱이 Return 을 다시 쓰지 않고 기록을 닫는다.
+/// 종전: 2.1초 틱 = `resent` · PTY 쓰기 +1 · `queue.submit_retried` 1건.
+#[test]
+fn b16_agy_door_closed_machine_retry_is_not_written() {
+    if cys::agy_door::door_open() {
+        eprintln!("건너뜀: 이 HOME 에서는 agy 좌석 문이 열려 있다(시험은 닫힌 문 전제 · 격리 HOME 에서 돌릴 것)");
+        return;
+    }
+    let fx = fx("b16-agy-machine");
+    let t = agy_swallowed_seat(&fx, P + 500, "send");
+    assert!(crate::handlers::agy_door_seat_closed(&t), "전제: 닫힌 문의 agy 좌석");
+    let w0 = t.inject_track.wrote();
+    let base = Instant::now();
+    let step = step_at(&fx, &t, base, 2_100);
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(t.inject_track.wrote() - w0, 0, "닫힌 문의 agy 좌석에 기계 배달의 Return 을 다시 썼다(step={step})");
+    assert_eq!(step, "agy_door_closed", "재검사 처분");
+    assert!(named(&fx, "queue.submit_retried").is_empty(), "재전송 이벤트가 났다");
+    assert!(t.inject_track.submit_check().is_none(), "기록을 닫아야 한다(다음 틱에도 쓰지 않음)");
+    for k in 0..3 {
+        assert_eq!(step_at(&fx, &t, base, 6_200 + k * 8_000), "none");
+    }
+    assert_eq!(t.inject_track.wrote() - w0, 0);
+}
+
+/// 음성 대조: 사람 자판 출처(`send_human`)는 문이 닫혀도 배달되는 설계 — 그 먹힌 Return 은 종전처럼 다시 쓴다(문 정책 그대로).
+#[test]
+fn b16_agy_door_closed_human_retry_still_written() {
+    if cys::agy_door::door_open() {
+        eprintln!("건너뜀: 이 HOME 에서는 agy 좌석 문이 열려 있다(격리 HOME 에서 돌릴 것)");
+        return;
+    }
+    let fx = fx("b16-agy-human");
+    let t = agy_swallowed_seat(&fx, P + 510, crate::governance::AGY_ORIGIN_HUMAN);
+    assert!(crate::handlers::agy_door_seat_closed(&t), "전제: 닫힌 문의 agy 좌석");
+    let w0 = t.inject_track.wrote();
+    assert_eq!(step_at(&fx, &t, Instant::now(), 2_100), "resent", "사람 자판 배달의 먹힌 Return 은 다시 쓴다");
+    let o = wait_submit_consumed(&t);
+    assert!(o.since_written_ms.is_some(), "{o:?}");
+    assert_eq!(t.inject_track.wrote() - w0, 1);
+    assert_eq!(named(&fx, "queue.submit_retried").len(), 1);
+}
+
+/// 기동 줄 출처(`send_agent_launch`): 본문이 agy 기동 줄이면 agy 가 아닌 좌석이라도 닫힌 문에서 재전송 0(배달 직전 재판정 ⑵와 같은 규칙) ·
+/// agy 가 아닌 기동 줄은 그대로(문과 무관).
+#[test]
+fn b16_agy_launch_line_retry_follows_door_rule() {
+    if cys::agy_door::door_open() {
+        eprintln!("건너뜀: 이 HOME 에서는 agy 좌석 문이 열려 있다(격리 HOME 에서 돌릴 것)");
+        return;
+    }
+    let fx = fx("b16-agy-launch");
+    for (pid, body, refused) in [(P + 520, "agy --yolo", true), (P + 521, "claude --continue", false)] {
+        let t = agent_pane_settled(&fx, "worker-1", pid);
+        assert!(!crate::handlers::agy_door_seat_closed(&t), "전제: agy 좌석이 아니다");
+        t.inject_track.note_body(body, None);
+        crate::governance::arm_queue_submit_check(&t, body, None, "q-launch", crate::governance::AGY_ORIGIN_LAUNCH, None);
+        let c = t.inject_track.submit_check().expect("기록");
+        assert_eq!(c.agy_launch_line, refused, "{body}");
+        assert_eq!(crate::governance::agy_door_refuses_submit_retry(&t, &c), refused, "{body}");
+        let step = step_at(&fx, &t, Instant::now(), 2_100);
+        assert_eq!(step == "agy_door_closed", refused, "{body}: step={step}");
+    }
+}
+
+/// ★(전문가 몫 · §4-3 ⑵ 쓰는 중 닫힘) 인계 → writer 가 거부 탐침에서 대기 → 그 사이 그 좌석이 「닫힌 문의 agy 좌석」이 됨 → 재개: CR 0 · 보류 기록 0.
+/// (문 파일은 HOME 아래 프로세스 전역이라 시험 안에서 여닫지 않는다 — 같은 판정 `agy_door_seat_closed` 를 좌석 메타가 바뀌는 쪽으로 뒤집는다.
+/// 쓰기 직전 탐침이 문 판정을 **그 순간** 다시 읽는지가 고정 대상이다.) 사람 자판 출처는 같은 뒤집기에서도 쓴다.
+#[test]
+fn b16_agy_door_closing_mid_flight_cancels_machine_retry_cr() {
+    if cys::agy_door::door_open() {
+        eprintln!("건너뜀: 이 HOME 에서는 agy 좌석 문이 열려 있다(격리 HOME 에서 돌릴 것)");
+        return;
+    }
+    let fx = fx("b16-agy-midflight");
+    for (pid, origin, want) in [(P + 530, "send", 0u64), (P + 531, crate::governance::AGY_ORIGIN_HUMAN, 1)] {
+        let t = agent_pane_settled(&fx, "worker-1", pid);
+        t.inject_track.note_body(QPS_BODY, None);
+        crate::governance::arm_queue_submit_check(&t, QPS_BODY, Some(99), "q-mid", origin, None);
+        paint_folded_own(&t);
+        assert!(!crate::handlers::agy_door_seat_closed(&t), "전제: 인계 시점에는 문 밖 좌석");
+        let (wrote, o) = hand_retry_and_mutate_mid_flight(&fx, &t, || {
+            *t.agent_meta.lock().unwrap() = Some(("gemini".into(), "agy".into()));
+            assert!(crate::handlers::agy_door_seat_closed(&t), "인계 뒤 닫힌 문의 agy 좌석");
+        });
+        assert_eq!(wrote, want, "origin={origin}: {o:?}");
+        assert!(t.inject_track.withheld().is_none(), "거부는 보류 기록을 세우지 않는다");
+    }
 }

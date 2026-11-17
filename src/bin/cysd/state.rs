@@ -1744,6 +1744,12 @@ pub(crate) struct SubmitCheck {
     /// 배달 시점의 에이전트·대화 세대 — 다르면 다른 프로세스·다른 대화다(같은 pid·같은 좌석에만 다시 쓴다).
     pub(crate) agent_epoch: u64,
     pub(crate) conversation_epoch: u64,
+    /// ★(1.1.16 · cysr-1116-backlog · HANDOFF 1115-r2 §4-3 B) 배달 항목의 적재 출처([`QueueEntry::origin`] — 병합은 같은 출처끼리라
+    /// 머리 출처가 곧 이 배달의 출처). agy 좌석 문 재판정(`governance::agy_door_refuses_submit_retry`)이 사람 자판(`send_human`)을 가른다.
+    pub(crate) origin: String,
+    /// 배달 본문이 agy 를 가리키는 좌석 기동 줄인가(출처 `send_agent_launch` ∧ 기계 입구 낱말 검사 · 문 상태와 무관하게 기록 때 확정) —
+    /// 배달 직전 재판정(`drop_agy_door_closed` ⑵)과 같은 규칙: 문이 닫혀 있으면 어느 좌석이든 그 Return 을 다시 쓰지 않는다.
+    pub(crate) agy_launch_line: bool,
 }
 
 impl SubmitCheck {

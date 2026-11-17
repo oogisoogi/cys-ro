@@ -22,6 +22,16 @@
       {
         "name": "trust-prompt",
         "pattern": "Do you trust the files in this folder"
+      },
+      {
+        "name": "file-write-permission",
+        "scope": "prompt_tail",
+        "pattern": "Do\\s+you\\s+want\\s+to\\s+(?:create|overwrite|write\\s+to)\\s+[^?]{1,400}?\\?[ \\t]*\\n(?:[^\\n─]*\\n){0,4}?[ \\t]*❯[ \\t]*[1-9]\\."
+      },
+      {
+        "name": "plan-approval",
+        "scope": "prompt_tail",
+        "pattern": "Would\\s+you\\s+like\\s+to\\s+proceed\\?[ \\t]*\\n(?:[^\\n─]*\\n){0,4}?[ \\t]*❯[ \\t]*[1-9]\\."
       }
     ],
     "first_run_gates": {

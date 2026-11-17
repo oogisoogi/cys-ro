@@ -5989,6 +5989,47 @@ mod h2_schedule_hold_tests {
     /// ★(R3SH-1 · S1 모양) 기계가 본문과 **CR 까지** 보냈는데 TUI 가 그 Return 을 먹어 입력줄에 잔여가 남았다 — CR 이
     /// 계수·세대를 되돌려 owner 각인이 결측이 된 상태다. 그래도 H2 는 큐로 우회하지 않고 종전(pre-H)처럼 직접 주입해 잔여를
     /// 병합 제출한다(마지막 기계 본문의 꼬리로 입력줄이 완전히 설명됨 ∧ 그 뒤 사람 입력 없음 ∧ 사람 바이트 0).
+    /// ★(1.1.16 · TICKET=cysr-1116-backlog-fix-1118 · 검증 지적 1 ⓔ · 검증 좌석 `bv_e3_…` 를 단언으로) 사람 표지 원자 제출(앱 send_input 꼴)의
+    /// Enter 가 쓰는 도중 뜬 창으로 거부돼 본문이 입력줄에 남은 뒤(창이 닫혀 입력줄에 그 본문이 보임 · 사람 입력 30초 창 밖) 스케줄 직접
+    /// push 가 오면 **초안 보류**다 — 그 줄은 사람 몫이다(`restore_refused_human_line`). 종전: `pushed` + `machine_inject.machine_residue`
+    /// (basis `submitted_body`) — 사람 본문 뒤에 `[heartbeat] …` 가 이어붙어 한 프롬프트로 제출됐다(검증 e3-schedule-merge.txt PTY 바이트).
+    /// (좌석 = `sleep 30` · 판정은 push 결과·큐·이벤트로 본다 — 바이트 기록은 검증 좌석 증거에 있다.)
+    #[test]
+    #[cfg_attr(not(unix), ignore = "윈도우 기본 H 마스크는 draft 축을 끈다(hold_axes_default(true)) — 이 검체는 유닉스 기본(draft 축) 동작을 본다")]
+    fn b16fix_refused_human_body_holds_schedule_push() {
+        let _pack = crate::governance::HOutsidePack::new();
+        let (d, s) = rig("b16fix-e");
+        s.seat_cache.store(crate::governance::SeatState::Occupied.as_u8(), Ordering::Relaxed);
+        h_paint(&s, H_IDLE_SCREEN);
+        let r = match crate::handlers::dispatch(
+            &d,
+            cys::Request { id: json!(1), method: "surface.send_text".into(),
+                           params: json!({"surface_id": s.id, "text": "사람이 보낸 말", "human": true, "quiet": true, "queued": false,
+                                          "clear_first": true, "machine_origin": false, "refuse_on_approval": true}) },
+            None,
+        ) {
+            crate::handlers::Reply::Single(v) => v,
+            _ => panic!("single reply"),
+        };
+        assert_eq!(r["result"]["sent"], json!(true), "전제: {r}");
+        std::thread::sleep(std::time::Duration::from_millis(300)); // 붙여넣기 뒤 · Enter 앞
+        h_paint(&s, "● 작업 로그 한 줄\n────────────────────\nDo you want to proceed?\n❯ 1. Yes\n  2. No\n  Esc to cancel");
+        std::thread::sleep(std::time::Duration::from_millis(1400));
+        assert_eq!(events(&d, "input.refused_at_write").len(), 1, "전제: Enter 가 거부됐다");
+        // 사람이 터미널에서 창에 답했다 → 창이 닫히고 입력줄에 사람 본문이 그대로 보인다(사람 입력 60초 전).
+        h_paint(&s, &crate::governance::h_residue_screen("사람이 보낸 말"));
+        {
+            let mut g = s.last_human_input.lock().unwrap();
+            if let Some(x) = *g {
+                *g = Some(x - std::time::Duration::from_secs(60));
+            }
+        }
+        let out = deliver_push(&d, &periodic("hb-5m", 5), s.id, "[heartbeat] 5분 보고", None);
+        assert_eq!(out, Ok("queued(gate:draft)"), "거부된 사람 본문 뒤에 스케줄 push 를 이어붙였다");
+        assert!(events(&d, "machine_inject.machine_residue").is_empty(), "사람 본문을 기계 잔여로 봤다");
+        done(&s);
+    }
+
     /// 음성 대조: 같은 잔여 뒤에 사람이 한 글자라도 치면(입력 시각이 기록보다 뒤) 종전대로 우회.
     /// RED(HEAD 1b614e47): queued(gate:draft) — heartbeat·wakeup 무기한 정체(③).
     #[test]

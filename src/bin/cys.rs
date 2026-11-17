@@ -40916,10 +40916,17 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         let plain = diag_pack_state(&ctx);
         let jdir = cys::pack::pack_journal_dir_for(&ctx.pack_dir);
         std::fs::create_dir_all(jdir.join("files")).unwrap();
-        std::fs::write(jdir.join("index.json"), r#"{"target_version":"9.9.9","entries":[]}"#).unwrap();
+        std::fs::write(
+            jdir.join("index.json"),
+            r#"{"target_version":"9.9.9","entries":[],"explicit_commit":true,"apply_id":"a1","placements":true}"#,
+        )
+        .unwrap();
         let live = diag_pack_state(&ctx);
         std::fs::write(jdir.join("placed.log"), "{\"rel\":\"README.md\",\"sha256\":null}\n{깨진 줄\n").unwrap();
         let stuck = diag_pack_state(&ctx);
+        // codex 1R(minor): 이 적용의 커밋 기록이 있으면 복구는 전진 완료(배치 기록을 읽지 않음) → 깨진 배치 기록이어도 Fail 아님.
+        std::fs::write(jdir.join("commit.json"), r#"{"target_version":"9.9.9","pro_revision":0,"apply_id":"a1"}"#).unwrap();
+        let committed = diag_pack_state(&ctx);
         let still_there = jdir.join("placed.log").is_file() && jdir.join("index.json").is_file();
         let _ = std::fs::remove_dir_all(&base);
         assert_eq!(plain.status, DiagStatus::Ok, "{}", plain.detail);
@@ -40927,6 +40934,7 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         assert!(live.detail.contains(&jdir.display().to_string()), "{}", live.detail);
         assert_eq!(stuck.status, DiagStatus::Fail, "{}", stuck.detail);
         assert!(stuck.detail.contains("읽지 못합니다") && !stuck.action.is_empty(), "{} / {}", stuck.detail, stuck.action);
+        assert_eq!(committed.status, DiagStatus::Warn, "복구가 읽지 않는 배치 기록으로 거짓 Fail: {}", committed.detail);
         assert!(still_there, "doctor 줄은 저널을 건드리지 않는다");
     }
 

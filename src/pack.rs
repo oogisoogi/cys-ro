@@ -5530,11 +5530,28 @@ pub fn pack_journal_notice(pack: &Path) -> Option<(String, bool)> {
     let jdir = pack_journal_dir_for(pack);
     std::fs::symlink_metadata(&jdir).ok()?;
     let idx = jdir.join("index.json");
+    // ★codex 1R(minor): 복구가 실제로 읽을 것만 본다 — 커밋됨(전진 완료)이면 인덱스까지 · 되돌림이면 늦은 백업 칸 + (배치 기록이 켜진 저널이면)
+    //   배치 기록까지([`recover_pack_journal`] · [`rollback_journal_for`] 와 같은 갈래).
     let broken = if idx.is_file() {
         std::fs::read_to_string(&idx)
             .map_err(|e| format!("인덱스 읽기 실패: {e}"))
-            .and_then(|t| serde_json::from_str::<JournalIndex>(&t).map(|_| ()).map_err(|e| format!("인덱스 손상: {e}")))
-            .and_then(|()| read_placements(&jdir).map(|_| ()))
+            .and_then(|t| serde_json::from_str::<JournalIndex>(&t).map_err(|e| format!("인덱스 손상: {e}")))
+            .and_then(|index| {
+                let rolls_back = if index.explicit_commit {
+                    !commit_record_is_this_apply(&jdir, index.apply_id.as_deref())
+                } else {
+                    let disk = std::fs::read_to_string(pack.join(PACK_VERSION_FILE)).map(|s| s.trim().to_string()).unwrap_or_default();
+                    disk.is_empty() || disk != index.target_version
+                };
+                if !rolls_back {
+                    return Ok(());
+                }
+                read_late_entries(&jdir)?;
+                if index.placements {
+                    read_placements(&jdir)?;
+                }
+                Ok(())
+            })
             .err()
     } else {
         None
@@ -6385,8 +6402,16 @@ fn commit_record_is_this_apply(jdir: &Path, apply_id: Option<&str>) -> bool {
 /// 부재면 no-op. 반환: 복구를 수행했으면 true.
 /// ★pack-update 착수 시(apply-lock 보유)·cysd 기동 시([`recover_pack_journal_unless_busy`] · install(false) 전)에 호출한다.
 pub fn recover_pack_journal() -> Result<bool, String> {
+    recover_pack_journal_with(true)
+}
+
+/// [`recover_pack_journal`] 본체. `adopt_legacy` = 옛 공유 저널 이관 단계를 할지(★F1 codex 1R: 본부 데몬 기동이 공용 잠금을 못 잡았고 옛 저널도
+/// 없을 때 false — 그 뒤 살아 있는 1.1.15 쓰는 이가 옛 저널을 만들어도 옮기지 않는다).
+fn recover_pack_journal_with(adopt_legacy: bool) -> Result<bool, String> {
     let pack = pack_dir();
-    adopt_legacy_pack_journal(&pack)?;
+    if adopt_legacy {
+        adopt_legacy_pack_journal(&pack)?;
+    }
     sweep_settled_journals(&pack);
     let jdir = pack_journal_dir_for(&pack);
     let index_path = jdir.join("index.json");
@@ -6446,7 +6471,7 @@ pub enum JournalRecovery {
 /// 그 밖 잠금 오류 = Err. 잡히면 쥔 채로 [`recover_pack_journal`]. ★codex 2R: 윈도우 포함 모든 플랫폼(쓰는 쪽 with_apply_lock 도 같은
 /// 잠금으로 바꿈 — `src/bin/cys.rs`).
 pub fn recover_pack_journal_unless_busy() -> Result<JournalRecovery, String> {
-    match with_apply_lock_nonblocking(recover_pack_journal)? {
+    match with_apply_lock_nonblocking(recover_pack_journal_with)? {
         None => Ok(JournalRecovery::Busy),
         Some(r) => r.map(|b| if b { JournalRecovery::Recovered } else { JournalRecovery::Nothing }),
     }
@@ -6500,31 +6525,41 @@ fn try_lock_file(lp: &Path) -> Result<Option<std::fs::File>, String> {
 
 /// 팩 적용 잠금을 **기다리지 않고** 잡아 그 안에서 `f` 를 실행한다. None = 남이 쥐고 있음(진행 중 적용).
 /// 잠금 파일은 있든 없든 원자적으로 열거나 만든다 · 표준 라이브러리 잠금(유닉스 flock · 윈도우 LockFileEx) = `cys pack-update` 의 with_apply_lock 과 같은 잠금.
-/// ★1.1.16 F1: 잡는 것 = **이 레인의** 적용 잠금([`lane_apply_lock_path`] · 같은 레인 pack-update 가 쥠). 본부 레인은 공용 잠금(`.pack-apply.lock`)도
-/// 잡아 본다 — 본부 레인만 옛 공유 저널을 옮기는데([`adopt_legacy_pack_journal`]) 1.1.15 쓰는 이는 공용 잠금만 쥐기 때문. 부서 레인은 공용 잠금을
-/// 보지 않는다(옛 저널 무접촉) → 본부의 팩 업데이트·본부 데몬 기동이 부서 기동을 막지 않는다. 본부 기동이 공용 잠금 때문에 Busy 가 되는 것은
-/// 어떤 레인이든 `cys pack-update` 가 진행 중일 때뿐이다(데몬 기동은 공용 잠금을 쥐지 않으므로 두 데몬 기동끼리는 서로 막지 않는다).
-fn with_apply_lock_nonblocking<T>(f: impl FnOnce() -> T) -> Result<Option<T>, String> {
+/// ★1.1.16 F1: 잡는 것 = **이 레인의** 적용 잠금([`lane_apply_lock_path`] · 같은 레인 pack-update 가 쥠) — 남이 쥐면 None(Busy). `f` 의 인자 =
+/// 옛 공유 저널 이관을 해도 되는가. 본부 레인은 공용 잠금(`.pack-apply.lock`)도 잡아 본다 — 본부 레인만 옛 공유 저널을 옮기는데
+/// ([`adopt_legacy_pack_journal`]) 1.1.15 쓰는 이는 공용 잠금만 쥐기 때문. ★codex 1R(major): 공용 잠금을 못 잡아도(= 어느 레인이든 `cys pack-update`
+/// 진행 중 — 부서 레인 수동 적용 포함) 옛 공유 저널이 **없으면** 이관만 빼고 자기 레인 복구·자동 설치를 한다(그 뒤 생기는 옛 저널은 옮기지 않음) ·
+/// 옛 저널이 **있으면** 그 쓰는 이가 살아 있을 수 있으므로 Busy. 부서 레인은 공용 잠금을 보지 않는다(옛 저널 무접촉 · 이관 단계는 안내만).
+/// 데몬 기동은 공용 잠금을 기다리지 않고 쥐어도 곧 놓으므로 두 데몬 기동끼리는 서로 막지 않는다.
+fn with_apply_lock_nonblocking<T>(f: impl FnOnce(bool) -> T) -> Result<Option<T>, String> {
     let pd = pack_dir();
-    let Some(base) = pd.parent() else { return Ok(Some(f())) };
-    let busy = || eprintln!("[pack] 이 레인 팩 적용이 진행 중(apply-lock 보유) — 그 저널은 쓰는 이의 몫이라 지금 복구하지 않습니다");
-    let shared = if dept_scope_of(&pd).is_none() && !crate::update::mutant("J1116-BASE-NO-SHARED") {
+    let Some(base) = pd.parent() else { return Ok(Some(f(true))) };
+    let busy = || eprintln!("[pack] 팩 적용이 진행 중(apply-lock 보유) — 그 저널은 쓰는 이의 몫이라 지금 복구하지 않습니다");
+    let (shared, adopt) = if dept_scope_of(&pd).is_none() && !crate::update::mutant("J1116-BASE-NO-SHARED") {
         match try_lock_file(&base.join(".pack-apply.lock"))? {
-            Some(f) => Some(f),
-            None => {
+            Some(f) => (Some(f), true),
+            None if crate::update::mutant("J1116-SHARED-BUSY-SKIPS")
+                || std::fs::symlink_metadata(legacy_pack_journal_dir_for(&pd)).is_ok() =>
+            {
                 busy();
                 return Ok(None);
             }
+            None => {
+                eprintln!(
+                    "[pack] 다른 팩 업데이트가 공용 적용 잠금을 쥐고 있어 1.1.15 옛 공유 저널 이관만 이번 기동에서 건너뜁니다(이 레인 복구·자동 설치는 합니다)"
+                );
+                (None, false)
+            }
         }
     } else {
-        None
+        (None, true)
     };
     let lane_lp = if crate::update::mutant("J1116-LANE-SHARED") { base.join(".pack-apply.lock") } else { lane_apply_lock_path(base, &pd) };
     let Some(lane) = try_lock_file(&lane_lp)? else {
         busy();
         return Ok(None);
     };
-    let out = f();
+    let out = f(adopt);
     let _ = lane.unlock();
     if let Some(s) = shared {
         let _ = s.unlock();
@@ -6539,8 +6574,8 @@ pub fn boot_recover_and_install(
     binary_version: &str,
     auth: PackWriteAuth,
 ) -> Result<(JournalRecovery, Option<Result<(usize, usize), String>>), String> {
-    let r = with_apply_lock_nonblocking(|| -> Result<(JournalRecovery, Option<Result<(usize, usize), String>>), String> {
-        let rec = if recover_pack_journal()? { JournalRecovery::Recovered } else { JournalRecovery::Nothing };
+    let r = with_apply_lock_nonblocking(|adopt| -> Result<(JournalRecovery, Option<Result<(usize, usize), String>>), String> {
+        let rec = if recover_pack_journal_with(adopt)? { JournalRecovery::Recovered } else { JournalRecovery::Nothing };
         if pack_current_for(binary_version) {
             return Ok((rec, None));
         }
@@ -11724,6 +11759,25 @@ mod tests {
         assert_eq!(ga, (Some(0o775), false), "(가) 의도 줄이 앞의 확정 증거를 가려 적용 전 0775 가 0644 로 남는다");
         assert_eq!(na, (Some(0o755), true), "(나) 의도 줄만으로 지금 권한을 이 적용 것으로 보았다");
         assert_eq!(user, (Some(0o644), true), "끊긴 뒤 사용자가 내용을 고친 파일의 권한을 되돌렸다");
+    }
+
+    /// F1 역방향(codex 1R major): **부서** 레인 `cys pack-update`(공용 + 부서 레인 잠금)가 도는 동안 본부 데몬이 뜨면, 옛 공유 저널이 없는 한
+    /// 본부는 자기 레인 복구·자동 설치를 한다(옛 저널 이관 단계만 건너뜀).
+    #[cfg(unix)]
+    #[test]
+    fn j1116_base_boot_installs_while_a_dept_apply_holds_the_shared_lock() {
+        let _g = PACK_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (base, pd, _env) = txn_prestate("j16-xlock-rev", &[("README.md", "BASE-SOUL")], "1.0.0");
+        let dd = j1116_dept(&base);
+        let held = j1116_hold_writer_apply_lock(&base, &dd);
+        let gate_open = !pack_current_for("9.9.9");
+        let res = boot_recover_and_install("9.9.9", PackWriteAuth::production()).map(|(r, i)| (r, i.map(|x| x.is_ok())));
+        let base_ver = std::fs::read_to_string(pd.join(PACK_VERSION_FILE)).unwrap_or_default();
+        drop(held);
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(gate_open, "시험 전제: 본부 팩이 이 판보다 낡아 설치가 필요하다");
+        assert_eq!(res, Ok((JournalRecovery::Nothing, Some(true))), "부서 레인 팩 업데이트 때문에 본부 데몬이 자기 팩 설치를 건너뛰었다");
+        assert_ne!(base_ver.trim(), "1.0.0", "본부 팩이 설치되지 않았다");
     }
 
     /// F1 고침이 1.1.15 쓰는 이를 놓치지 않는다: 공용 잠금 **만** 쥔 쓰는 이(1.1.15 `cys pack-update` · 옛 공유 저널을 쓴다)가 있으면 본부 레인

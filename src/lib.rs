@@ -7191,7 +7191,9 @@ mod spawn_policy_tests {
             }
             if ch == '\'' {
                 if c.get(i + 1) == Some(&'\\') {
-                    i += 2;
+                    // ★(codex 3R major) 이스케이프된 글자(`\'`·`\\`·`\u{…}` 의 `u`)는 닫는 따옴표가 아니다 — 여는 `'`·`\`·그 글자를
+                    //   건너뛴 뒤 진짜 닫는 `'` 까지(종전: `'\''` 의 이스케이프된 `'` 를 닫힘으로 읽어 진짜 닫는 `'` 가 새 문자 리터럴을 열었다).
+                    i += 3;
                     while i < c.len() && c[i] != '\'' {
                         i += 1;
                     }
@@ -7284,6 +7286,13 @@ mod spawn_policy_tests {
                       let _ = '}';\n            let _ = '\\'';\n            // }}\n            /* } /* } */ } */\n            let _ = r#\"}\"#;\n            \
                       let _ = br\"}\";\n            Command::new(\"t\");\n        }\n    }\n    fn keep_after() { Command::new(\"p\"); }\n}\n";
         let tp = production_slice(tricky);
+        // codex 3R 반례: 공백 없이 이어진 `'\''<'{'` — 이스케이프된 따옴표 뒤의 진짜 닫는 따옴표를 새 문자 리터럴로 읽으면 `'{'` 의 중괄호를
+        //   코드로 세어 감싼 모듈 닫힘까지 삼킨다(운영 keep 소실).
+        let esc = production_slice(
+            "mod outer {\n    #[cfg(test)]\n    mod tests {\n        fn t() { let _ = '\\''<'{'; }\n    }\n    \
+             fn keep() { std::process::Command::new(\"prod\"); }\n    }\n",
+        );
+        assert!(esc.contains("fn keep") && !esc.contains("fn t()"), "이스케이프 문자 리터럴 뒤 운영 코드를 삼켰다: {esc}");
         assert!(tp.contains("keep_after") && tp.matches("Command::new").count() == 1 && !tp.contains("fn t<"),
                 "문자열·문자·주석·raw 문자열 속 중괄호에 짝이 흔들렸다: {tp}");
         // 실물에도 걸어 둔다 — 이 파일들의 프로덕션 앵커가 사라지면 핀이 헛도는 것이다.

@@ -8091,10 +8091,29 @@ pub(crate) fn recheck_queue_submit_one(
     if crate::handlers::send_settle_disabled(daemon) || submit_guard_scope(s) == SubmitGuardScope::Off {
         return close("seat_off", None);
     }
-    // ★(1.1.16 · §4-3 B) 닫힌 agy 문 ∧ 기계 출처 — 배달 직전 재판정과 같은 규칙으로 기록을 닫고 쓰지 않는다(재전송 0 · 이벤트 0).
+    // ★(1.1.16 · §4-3 B) 닫힌 agy 문 ∧ 기계 출처 — 배달 직전 재판정과 같은 규칙으로 기록을 닫고 쓰지 않는다(재전송 0).
+    // ★(1.1.16 · cysr-1116-backlog-fix-1118 · 검증 지적 6) 닫을 때 버스 흔적 1건 — 보류 경로(`queue.submit_withheld_dropped` 사유
+    //   `agy_door_closed`)와 같은 꼴의 `queue.submit_retry_dropped`. 그 배달은 이미 `queue.delivered` 로 기록됐고 본문은 입력줄에 미제출로
+    //   남는다 — 흔적이 없으면 발신자·화면 어디에도 「배달됐지만 제출 안 됨」 이 남지 않는다.
     if agy_door_refuses_submit_retry(s, &c) {
         eprintln!("[cysd] {} agy 좌석 문 닫힘 — 큐 배달 {} 의 Return 재전송 기록을 닫음(쓰기 0)", cys::surface_ref(s.id), c.entry_id);
-        return close("agy_door_closed", None);
+        if let Some(gone) = s.inject_track.take_submit_check_if(c.armed_at) {
+            daemon.bus.publish(
+                "queue.submit_retry_dropped",
+                "queue",
+                Some(s.id),
+                json!({
+                    "surface_ref": cys::surface_ref(s.id),
+                    "reason": "agy_door_closed",
+                    "from": gone.from.map(cys::surface_ref),
+                    "queue_entry_id": gone.entry_id,
+                    "tries": gone.tries,
+                    "since_delivery_ms": ms(gone.armed_at),
+                    "note": "agy 좌석 문이 닫혀 큐 배달의 먹힌 Return 을 다시 쓰지 않는다 — 본문은 입력줄에 미제출로 남는다(사람이 그 창에서 처리).",
+                }),
+            );
+        }
+        return "agy_door_closed";
     }
     let body = s.inject_track.last_body();
     let human = s.pending_input.lock().unwrap_or_else(|e| e.into_inner()).human != 0
@@ -37083,8 +37102,10 @@ mod h_machine_hold_tests {
     /// runs on Windows in the sibling specimens. Test renamed `_of_44` -> `_of_50` (the CI comment in windows-health.yml too).
     /// ★(0.14.52 · S-a C7d) 50 → **52**: class A (S21 withheld Return is Unix-only, `send_settle_applies`) +2 byte-exact
     /// withheld-Return accounting specimens (`send_settle_tests::c7d_*`). Renamed `_of_52`.
+    /// ★(1.1.16 · cysr-1116-backlog-fix-1118) 52 → **54**: class C +1(붙여넣기 앞 거부 바이트 증거 · 기록기 좌석) · class B +1(거부된 사람 본문 위
+    /// 스케줄 push 의 초안 보류). 둘 다 새 검체라 윈도우 검증력을 줄이지 않는다(같은 동작의 비기록기 형제는 윈도우에서 돈다). Renamed `_of_54`.
     #[test]
-    fn r2f_dm_windows_ignore_attributes_are_exactly_the_decided_set_of_52() {
+    fn r2f_dm_windows_ignore_attributes_are_exactly_the_decided_set_of_54() {
         const REASON_A: &str = "S21 제출 정착·창 위 CR 보류는 유닉스 한정(send_settle_applies)";
         const REASON_B: &str = "윈도우 기본 H 마스크는 draft 축을 끈다(hold_axes_default(true)) — 이 검체는 유닉스 기본(draft 축) 동작을 본다";
         const REASON_C: &str = "좌석 명령이 POSIX 셸 문법";
@@ -37145,8 +37166,13 @@ mod h_machine_hold_tests {
             ("agent_queue_tests", "s4_1_mid_body_transient_loss_resumes_and_submits_once", 'C'),
             ("agent_queue_tests", "s4_1_modal_waits_inside_the_window_then_resumes", 'C'),
             ("agent_queue_tests", "s4_1_resume_window_edges_are_exact", 'C'),
+            // ★(1.1.16 · cysr-1116-backlog-fix-1118) +2: 독립 검증 지적 재현 — 붙여넣기 앞 거부의 바이트 증거(기록기 좌석 · 형제 검체
+            //   `b16fix_human_refuse_before_paste`·`b16fix_machine_refuse_before_paste`·state 의 writer 단위 시험은 윈도우에서도 돈다) ·
+            //   거부된 사람 본문 위 스케줄 push 의 초안 보류(draft 축 = 유닉스 기본).
+            ("b16_fix_tests", "b16fix_paste_refused_when_dialog_rises_during_ctrl_u_settle_bytes", 'C'),
+            ("schedule", "b16fix_refused_human_body_holds_schedule_push", 'B'),
         ];
-        assert_eq!(want.len(), 52, "결정한 집합은 52건(24 + 17 + 8 + 3)");
+        assert_eq!(want.len(), 54, "결정한 집합은 54건(24 + 18 + 9 + 3)");
         let needle = concat!("#[cfg_attr(not(unix), ", "ignore = \"");
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/cysd");
         let mut got: Vec<(String, String, char)> = Vec::new();
@@ -37173,8 +37199,8 @@ mod h_machine_hold_tests {
         got.sort();
         let mut want_sorted: Vec<(String, String, char)> = want.iter().map(|(a, b, c)| (a.to_string(), b.to_string(), *c)).collect();
         want_sorted.sort();
-        assert_eq!(got.len(), 52, "윈도우 `ignore` 가 {}건이다(결정 52건) — 새로 더했거나 뺐다: {got:?}", got.len());
-        assert_eq!(got, want_sorted, "윈도우 `ignore` 집합이 결정한 52건과 다르다 — 목록과 `ignore` 사유를 함께 고쳐라");
+        assert_eq!(got.len(), 54, "윈도우 `ignore` 가 {}건이다(결정 54건) — 새로 더했거나 뺐다: {got:?}", got.len());
+        assert_eq!(got, want_sorted, "윈도우 `ignore` 집합이 결정한 54건과 다르다 — 목록과 `ignore` 사유를 함께 고쳐라");
     }
 }
 

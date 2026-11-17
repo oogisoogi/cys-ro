@@ -1996,6 +1996,12 @@ impl InjectTrack {
         self.wrote.load(Ordering::Acquire)
     }
 
+    /// ★(1.1.16 · cysr-1116-backlog-fix-1118 · 검증 지적 1) 마지막 기계 본문 기록을 지운다 — 사람 표지 원자 제출이 쓰는 도중 거부돼
+    /// 입력줄에 남은 글은 사람 몫이다(writer arm 이 첫 바이트 앞에서 그 본문을 「기계 본문」으로 적어 두었다 · [`Surface::restore_refused_human_line`]).
+    pub(crate) fn forget_body(&self) {
+        *self.last_body.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
     /// ★(R3SH-1) 마지막 기계 본문 기록(없으면 None).
     pub(crate) fn last_body(&self) -> Option<MachineBody> {
         self.last_body.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -2195,10 +2201,15 @@ pub enum WriteReq {
     /// 앞**에서 `refuse` 를 한 번 더 본다 — 참이면 CR 을 쓰지 않는다(Ctrl-U·본문은 이미 썼다 · 지우지도 다시 치지도 않음). 생산자 =
     /// `refuse_on_approval` 을 실은 `clear_first` 직접 제출(사람 표지 원자 제출 = 앱 send_input 꼴) 하나. 종전 Inject 는 쓰기 전 한 번만
     /// 봐서 쓰는 도중(Ctrl-U→CR ≈0.73~0.84초) 뜬 승인 창에 CR 까지 들어갔다(3/3). 인계 가드는 없다(그 경로의 종전 동작 = `guard: None`).
+    /// ★(1.1.16 · cysr-1116-backlog-fix-1118) 붙여넣기 **바로 앞**(Ctrl-U 정착 뒤)에도 `refuse_paste` 를 본다(검증 지적 4 — 정착 중 뜬 창에
+    /// 붙여넣기 본문이 들어갔다 · 질문 창은 그것을 「Other」 답 칸에 넣는다). 두 탐침의 처분은 같다(사람 몫 복원 · 거부 흔적 —
+    /// `handlers::approval_enter_guard`).
     InjectRefusing {
         text: String,
         cr_delay_ms: u64,
         clear_first: bool,
+        /// ★(1.1.16 · cysr-1116-backlog-fix-1118 · 검증 지적 4) 붙여넣기 **바로 앞**(Ctrl-U 정착 뒤) 재판정 — 참이면 붙여넣기·CR 0.
+        refuse_paste: SafetyProbe,
         refuse: SafetyProbe,
     },
     /// ★B2(0.14.24) delay_ms 만큼 **먼저 기다렸다가** 그대로 쓰기 — 프로그램이 본문을 꽂은
@@ -3305,6 +3316,23 @@ impl Surface {
             self.esc_exempt_pgid.store(0, Ordering::Relaxed);
         }
         self.set_pending_input(0);
+    }
+
+    /// ★(1.1.16 · cysr-1116-backlog-fix-1118 · 검증 지적 1) 사람 표지 원자 제출(`InjectRefusing`)이 쓰는 도중 거부됐다 — 입력줄에 남은
+    /// (남았을 수 있는) 글을 **사람 몫**으로 센다: 계수 = max(지금, `at_least`, 1) · 사람 몫 = 계수 · 마지막 기계 본문 기록 지움
+    /// (소유자 각인은 `set_pending_input` 이 세대를 올려 결측이 된다 — [`Surface::pending_input_owner`]). 그래야 뒤따르는 기계 Return·`clear_first`·스케줄 push 가 기존 사람 초안 규칙(HumanDraft 거부 · 초안 보류)에 걸린다 —
+    /// 종전(계수만 ≥1)은 사람 몫 0 · 마지막 기계 본문 = 그 사람 본문이라 그것들이 사람 말을 제출·삭제·이어붙였다.
+    /// 호출자는 `input_gate` 안에서 부른다(규약) — `pending_input` leaf 와 본문 기록 leaf 만 잡는다.
+    pub fn restore_refused_human_line(&self, at_least: u64) {
+        let count = {
+            let mut st = self.pending_input.lock().unwrap_or_else(|e| e.into_inner());
+            let count = self.pending_input_bytes.load(Ordering::Relaxed).max(at_least).max(1);
+            st.count = count;
+            st.human = count;
+            count
+        };
+        self.set_pending_input(count);
+        self.inject_track.forget_body();
     }
 
     /// ★(0.14.43 · R1F-IN ⓐ) 줄이 **제출됐다고 계상**하는 큐 인계(`governance::deliver_head_locked`)가 잠정 Esc 면제 표식을 내리고 **직전 값**(면제 당시의 그룹 번호 · 없으면 0)을 돌려준다 —
@@ -9114,12 +9142,14 @@ pub(crate) fn mirror_screen_modes(surf: &Surface, screen: &vt100::Screen) {
 /// `WriteReq::Inject` 의 바이트 시퀀스 — (선정리 Ctrl-U → settle) → bracketed paste → cr_delay →
 /// CR. 종전 arm 본문 그대로이며, 인계 가드(`InjectGuard`)를 arm 머리에 넣기 위해 함수로만 뺐다
 /// (한 arm = 원자 · 다른 WriteReq 끼어듦 없음이라는 계약은 호출부가 그대로 지킨다).
-/// 반환 `Ok(true)` = 끝 CR 까지 썼다 · `Ok(false)` = `refuse` 가 CR 바로 앞에서 참이라 CR 을 쓰지 않았다(그 앞 바이트는 썼다).
+/// 반환 `Ok(true)` = 끝 CR 까지 썼다 · `Ok(false)` = `refuse_paste` 가 붙여넣기 바로 앞에서(붙여넣기·CR 0) 또는 `refuse` 가 CR 바로
+/// 앞에서(CR 0) 참이라 거기서 멈췄다(그 앞 바이트는 썼다).
 fn inject_write<W: Write>(
     writer: &mut W,
     text: &str,
     cr_delay_ms: u64,
     clear_first: bool,
+    refuse_paste: Option<&SafetyProbe>,
     refuse: Option<&SafetyProbe>,
 ) -> std::io::Result<bool> {
     if clear_first {
@@ -9129,6 +9159,11 @@ fn inject_write<W: Write>(
         writer.write_all(b"\x15")?;
         writer.flush()?;
         std::thread::sleep(std::time::Duration::from_millis(clear_settle_ms()));
+    }
+    // ★(1.1.16 · cysr-1116-backlog-fix-1118 · 검증 지적 4) 붙여넣기 직전 재판정 — Ctrl-U 정착(0.15초 · 부하 아래 0.18~0.34초 실측) 중 뜬
+    //   창에 본문을 붙여 넣지 않는다(질문 창은 붙여넣기를 「Other」 답 칸에 넣는다 · InjectRefusing doc).
+    if refuse_paste.is_some_and(|p| p()) {
+        return Ok(false);
     }
     // ★(0.14.42 · 설계 C D2) 백스톱 — Inject 생산자 전부(큐 다이제스트·clear_first·CEO·스케줄·채널·부트 통보·
     //   승계 고지 등)를 한 곳에서 덮는다. 본문 안 표지(`ESC[201~`·C1 형)와 끝 미완성 이스케이프가 봉투를 조기에
@@ -9265,7 +9300,7 @@ pub(crate) fn run_writer_loop_tracked<W: Write, R: Into<crate::writer_gate::Queu
                     t.note_body(&text, None);
                     t.begin();
                 }
-                let r = inject_write(&mut writer, &text, cr_delay_ms, clear_first, None);
+                let r = inject_write(&mut writer, &text, cr_delay_ms, clear_first, None, None);
                 if let Some(t) = &track {
                     // ★(0.14.42 · S21-SETTLE) 끝 CR 까지 썼으면 제출 CR 을 쓴 시각이다(분리 보류의 기준점).
                     if matches!(r, Ok(true)) {
@@ -9276,12 +9311,12 @@ pub(crate) fn run_writer_loop_tracked<W: Write, R: Into<crate::writer_gate::Queu
                 r.map(|_| ())
             }
             // ★(1.1.16 · master#4f5897d7) Inject 와 같은 표식 규율 — CR 을 거부했으면 제출 CR 을 쓴 시각을 찍지 않는다.
-            WriteReq::InjectRefusing { text, cr_delay_ms, clear_first, refuse } => {
+            WriteReq::InjectRefusing { text, cr_delay_ms, clear_first, refuse_paste, refuse } => {
                 if let Some(t) = &track {
                     t.note_body(&text, None);
                     t.begin();
                 }
-                let r = inject_write(&mut writer, &text, cr_delay_ms, clear_first, Some(&refuse));
+                let r = inject_write(&mut writer, &text, cr_delay_ms, clear_first, Some(&refuse_paste), Some(&refuse));
                 if let Some(t) = &track {
                     if matches!(r, Ok(true)) {
                         t.submit_written();
@@ -17337,5 +17372,34 @@ mod c8_proof_pending_v2_api_tests {
         assert_eq!(g.expect_gen, Some(4));
         assert!(!g.claim_for_write());
         assert_eq!(g.cleanup_owner(), Ok(InjectCleanupOwner::Controller));
+    }
+}
+
+// ★(1.1.16 · TICKET=cysr-1116-backlog-fix-1118 · 검증 지적 4) `InjectRefusing` 의 바이트 순서 — 붙여넣기 앞 탐침이 참이면 Ctrl-U 만 쓰고
+// 멈추고(붙여넣기·CR 0), Enter 앞 탐침이 참이면 Ctrl-U·붙여넣기까지만(CR 0). 둘 다 거짓이면 종전 Inject 바이트와 같다.
+#[cfg(test)]
+mod b16fix_inject_write_tests {
+    use super::*;
+
+    fn probe(v: bool) -> SafetyProbe {
+        Arc::new(move || v)
+    }
+
+    #[test]
+    fn b16fix_inject_write_stops_before_paste_or_before_enter() {
+        let body = "사람이 보낸 말";
+        let paste = cys::paste_fence::wrap(body).into_bytes();
+        let mut w = Vec::new();
+        assert!(!inject_write(&mut w, body, 0, true, Some(&probe(true)), Some(&probe(false))).unwrap());
+        assert_eq!(w, b"\x15", "붙여넣기 앞 거부: Ctrl-U 만");
+        let mut w = Vec::new();
+        assert!(!inject_write(&mut w, body, 0, true, Some(&probe(false)), Some(&probe(true))).unwrap());
+        assert_eq!(w, [b"\x15".as_slice(), &paste].concat(), "Enter 앞 거부: Ctrl-U + 붙여넣기");
+        let mut w = Vec::new();
+        assert!(inject_write(&mut w, body, 0, true, Some(&probe(false)), Some(&probe(false))).unwrap());
+        let mut legacy = Vec::new();
+        assert!(inject_write(&mut legacy, body, 0, true, None, None).unwrap());
+        assert_eq!(w, legacy, "거부 없음 = 종전 Inject 바이트");
+        assert_eq!(legacy, [b"\x15".as_slice(), &paste, b"\r"].concat());
     }
 }

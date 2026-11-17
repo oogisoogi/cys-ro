@@ -2112,3 +2112,7 @@ fn b16_plain_withhold_keeps_agy_context_of_same_body() {
     assert!(crate::governance::submit_cr_withhold_probe(&fx.daemon, &t, m, "machine_body", None)());
     assert_eq!(t.inject_track.withheld().and_then(|w| w.agy_launch_line), None, "새 본문이 옛 본문의 문맥을 이어받았다");
 }
+
+// ★(1.1.16 · TICKET=cysr-1116-backlog-fix-1118) 독립 검증 지적 재현 → 단언 시험(같은 픽스처를 쓰는 자식 모듈).
+#[path = "b16_fix_tests.rs"]
+mod b16_fix;

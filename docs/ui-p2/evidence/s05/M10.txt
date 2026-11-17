@@ -1,0 +1,8 @@
+== 대조(사람 보내기 없음): 큐 1건
+{"rtt_ms": 63.49, "mono_send": 907.31489, "resp": {"_flen": 86, "_pv": 1, "id": 1, "ok": true, "result": {"depth": 1, "durable": true, "queue_entry_id": "q6afc48c4.1", "queued": true, "surface_id": 3}}}
+T0=906.966748 fence=909.944357
+== R3: 원자 사람 보내기 직후 큐 1건
+ 28, "_pv": 1, "id": 1, "ok": true, "result": {"sent": true, "surface_id": 3}}}
+{"rtt_ms": 75.89, "mono_send": 950.517493, "resp": {"_flen": 86, "_pv": 1, "id": 1, "ok": true, "result": {"depth": 1, "durable": true, "queue_entry_id": "q6afc48c4.2", "queued": true, "surface_id": 3}}}
+T0=950.171107 fence=981.334871
+{'pending_input_human_bytes': 0}

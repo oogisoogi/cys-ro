@@ -1,0 +1,7 @@
+set timeout 1800
+log_file -noappend /tmp/login.log
+spawn /Users/admin/.local/bin/claude auth login --claudeai
+while {1} {
+  expect { -timeout 3 timeout {} eof { exit 0 } }
+  if {[file exists /tmp/code]} { set fh [open /tmp/code r]; set c [string trim [read $fh]]; close $fh; file delete /tmp/code; send -- "$c\r" }
+}

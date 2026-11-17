@@ -1,0 +1,18 @@
+== ⓐ 사람 초안(사람 표지 · Enter 없음)
+{"rtt_ms": 0.39, "mono_send": 774.589031, "resp": {"_flen": 28, "_pv": 1, "id": 1, "ok": true, "result": {"sent": true, "surface_id": 3}}}
+pib= 12 pihb= 12 lhi= None
+atomic ok= True None 
+pib= 0 pihb= 0 lhi= None
+12:ec82aceb9e8c 1:15 22:1b5b3230307e 1:0d 
+== ⓑ 기계 잔여(사람 표지 없음 · Enter 없음)
+{"rtt_ms": 40.79, "mono_send": 809.70292, "resp": {"_flen": 101, "_pv": 1, "id": 1, "ok": true, "result": {"held": "awaiting_submit", "request_id": "w1a1e97c404
+pib= 0 pihb= 0 lhi= None
+atomic ok= True None 
+pib= 0 pihb= 0 lhi= None
+1:15 22:1b5b3230307e 1:0d 
+== ⓒ 방금 사람 키(사람 표지 send_key · 1초 뒤)
+{"rtt_ms": 0.59, "mono_send": 844.857126, "resp": {"_flen": 40, "_pv": 1, "id": 1, "ok": true, "result": {"key": "End", "sent": true, "surface_id": 3}}}
+pib= 3 pihb= 0 lhi= None
+atomic ok= True None 
+pib= 0 pihb= 0 lhi= None
+3:1b5b46 1:15 22:1b5b3230307e 1:0d 

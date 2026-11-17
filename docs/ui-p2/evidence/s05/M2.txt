@@ -1,0 +1,8 @@
+before: pending 0 []
+after-show: pending 0 []
+{"rtt_ms": 0.51, "mono_send": 613.557696, "resp": {"_flen": 28, "_pv": 1, "id": 1, "ok": true, "result": {"sent": true, "surface_id": 3}}}
+new bytes lines: 3
+613.229225 1 15
+613.463025 35 1b5b3230307eec8ab9ec9db8ecb0bd20eca49120ebb3b4eb82b4eab8b01b5b3230317e
+613.981886 1 0d
+after-send: pending 1 [('daemon-1794918842-1', 'approval', 3)]

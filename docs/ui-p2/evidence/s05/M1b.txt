@@ -1,0 +1,20 @@
+{"rtt_ms": 0.58, "mono_send": 550.216383, "resp": {"_flen": 28, "_pv": 1, "id": 1, "ok": true, "result": {"sent": true, "surface_id": 3}}}
+--
+549.887939 1 15
+550.079580 19 1b5b3230307eebb098ebb3b5311b5b3230317e
+550.616038 1 0d
+{"rtt_ms": 0.45, "mono_send": 552.758371, "resp": {"_flen": 28, "_pv": 1, "id": 1, "ok": true, "result": {"sent": true, "surface_id": 3}}}
+--
+552.429807 1 15
+552.729711 19 1b5b3230307eebb098ebb3b5321b5b3230317e
+553.265047 1 0d
+{"rtt_ms": 0.52, "mono_send": 555.307689, "resp": {"_flen": 28, "_pv": 1, "id": 1, "ok": true, "result": {"sent": true, "surface_id": 3}}}
+--
+554.979160 1 15
+555.273219 19 1b5b3230307eebb098ebb3b5331b5b3230317e
+555.747058 1 0d
+{"rtt_ms": 0.45, "mono_send": 557.854948, "resp": {"_flen": 28, "_pv": 1, "id": 1, "ok": true, "result": {"sent": true, "surface_id": 3}}}
+--
+557.526364 1 15
+557.763331 30 1b5b3230307eecb2ab20eca4840aeb9198eca7b820eca4841b5b3230317e
+558.313075 1 0d

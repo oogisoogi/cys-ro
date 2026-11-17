@@ -157,6 +157,7 @@
 ### M9 U26 — 세션 id → 파일
 
 - 맥(VM): 데몬 `control.session_detail`/analytics 가 고른 경로와 `vm$ ls ~/.claude*/projects/*/<id>.jsonl` 결과가 같은가 · `CLAUDE_CONFIG_DIR` 로 띄운 좌석이면 그 폴더 쪽인가.
+- **(master G4 · 11-17) 윈 절반 = 보류 · 재개 조건 = 조각 10 윈 실기 착수.**
 - **윈: 이 계획의 VM 은 맥이라 윈 절반은 따로다** — 윈 샌드박스(또는 윈 VM)에서 같은 절차 · 윈 경로(`%USERPROFILE%\.claude\projects\…`) 확인. 윈 환경 선택 = master 결정(§5 G4).
 
 ### M10 R3 — 30초 큐 묶임

@@ -1,0 +1,6 @@
+{"rtt_ms": 0.49, "mono_send": 631.007532, "resp": {"_flen": 28, "_pv": 1, "id": 1, "ok": true, "result": {"sent": true, "surface_id": 3}}}
+new bytes lines: 3
+630.678950 1 15
+630.976608 31 1b5b3230307eeb9190ebb288eca7b820ebb3b4eb82b4eab8b01b5b3230317e
+631.391832 1 0d
+{'surface_id': 3, 'approval_pending': None, 'gate_pending': None, 'pending_input_bytes': 0, 'pending_input_human_bytes': 0, 'display_activity': {'consecutive_rejections': 0, 'display_epoch': '3ddb764c0ea959a5', 'family': 'claude', 'grammar_revision': 'claude-2.1.301-r1', 'last_positive_age_secs': None, 'observation_seq': 129, 'observed_age_secs': 0.013, 'raw': 'unknown', 'reason': 'incomplete fram

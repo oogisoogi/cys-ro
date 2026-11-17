@@ -10286,7 +10286,7 @@ pub(crate) fn prompt_gate_verdict(i: &PromptGateInput) -> PromptGate {
 /// ★이 술어는 참이면 **막는** 소비처(큐 배달 게이트·writer 탐침·마커 없는 게이트) 전용이다. 참이면 **쓰는**
 /// 짝 Return 흡수 좁힘은 이 술어를 쓰지 않는다. 관문 feed 를 승인으로 세면 관문 기본 선택지를 누르는 치명
 /// 방향이 되기 때문이다([`seat_approval_live`] · RF1-GATE-NARROW).
-fn approval_or_gate_pending(daemon: &Arc<Daemon>, sid: u64) -> bool {
+pub(crate) fn approval_or_gate_pending(daemon: &Arc<Daemon>, sid: u64) -> bool {
     !pending_gate_items(daemon, sid).is_empty() || !daemon.pending_daemon_approvals(sid).is_empty()
 }
 

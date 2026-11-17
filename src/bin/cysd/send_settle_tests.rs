@@ -1887,3 +1887,128 @@ fn b16_agy_door_closing_mid_flight_cancels_machine_retry_cr() {
         assert!(t.inject_track.withheld().is_none(), "거부는 보류 기록을 세우지 않는다");
     }
 }
+
+// ═══════════ ★(1.1.16 · TICKET=cysr-1116-backlog 범위 추가 master#4f5897d7) 원자 제출의 Enter 직전 승인 재판정 ═══════════
+//
+// 【무엇】 조각 0.5 실측(SLICE-0.5-MEASURE-RESULT.md M2-c · 설계에 돌려줄 숫자 2·3): `clear_first + refuse_on_approval` 원자 제출
+// (앱 send_input 과 같은 사람 표지 요청)은 **쓰기 전** 한 번만 승인 화면을 봤다 — 쓰는 도중(보낸 뒤 0.15·0.45·0.6초) 뜬 승인 창에
+// Ctrl-U·붙여넣기·**Enter** 까지 들어갔다(3/3 · 남는 창 ≈0.73~0.84초). 고침 = CR 바로 앞에서 같은 술어(`seat_approval_pending` =
+// 쓰기 직전 화면 판정 ∨ feed 승인 대기 항목)로 다시 보고, 창이면 CR 을 쓰지 않는다.
+// 시각 주입 = 실측과 같은 꼴: 응답(쓰기를 기다리지 않음) 뒤 150ms 에 승인 창을 그리거나 feed 대기 항목을 세운다 — writer 는 그때
+// Ctrl-U 정착(clear_settle) 중이고 CR 은 정착 + 400ms 뒤다(여유 ≥ 0.5초).
+
+/// 앱 send_input 꼴의 원자 제출(조각 0.5 계획서 §2 공통 요청). `pid` = None 이면 pane 무귀속 호출자(= 신뢰 사람 · 앱).
+fn atomic_send(fx: &Fx, pid: Option<u32>, t: &Arc<Surface>, text: &str, human: bool, refuse: bool) -> Value {
+    rpc(fx, pid, "surface.send_text", json!({
+        "surface_id": t.id, "text": text, "human": human, "quiet": true, "queued": false,
+        "clear_first": true, "machine_origin": !human, "refuse_on_approval": refuse,
+    }))
+}
+
+/// 보낸 뒤 `ms` 에 승인 창을 그린다(쓰는 도중 뜬 창 · 실측 M2-c 의 0.15초).
+fn dialog_after(t: &Arc<Surface>, ms: u64) -> std::thread::JoinHandle<()> {
+    let w = Arc::downgrade(t);
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(ms));
+        if let Some(t) = w.upgrade() {
+            paint(&t, &DIALOG, 1, 8);
+        }
+    })
+}
+
+/// 보낸 뒤 `ms` 에 feed 승인 대기 항목만 세운다(화면은 그대로) — 두 술어 중 feed 축 단독.
+fn feed_after(fx: &Fx, t: &Arc<Surface>, ms: u64) -> std::thread::JoinHandle<()> {
+    let (d, sid) = (Arc::downgrade(&fx.daemon), t.id);
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(ms));
+        if let Some(d) = d.upgrade() {
+            d.push_feed_notification("approval", "claude 승인 대기 감지", "Do you want to proceed?", Some(sid));
+        }
+    })
+}
+
+/// 원자 제출의 쓰기가 끝날 때까지(최대 4초 · 정착 + 400ms 를 넉넉히 넘김) 기다린 뒤 Return 을 썼는가(제출 CR 을 쓴 시각 표식).
+fn atomic_enter_written(t: &Arc<Surface>) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while Instant::now() < deadline {
+        if settle_obs(t).since_written_ms.is_some() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    false
+}
+
+/// 적색→녹색(M2-c 재현 · 앱 사람 표지 원자 제출 = 종전 Inject 길): 보낸 뒤 0.15초에 승인 창 → Enter 0 · 거부 흔적
+/// `input.refused_at_write`(reason `approval_screen`) · 입력줄은 비어 있지 않은 것으로 센다(뒤 배달이 이어붙지 않게).
+/// 종전: Enter 1(창의 「1. Yes」 를 누른다 · 실측 3/3).
+#[test]
+#[cfg_attr(not(unix), ignore = "S21 제출 정착·창 위 CR 보류는 유닉스 한정(send_settle_applies)")]
+fn b16_atomic_refuse_send_rechecks_approval_before_enter() {
+    let fx = fx("b16-atomic-dialog");
+    let t = agent_pane_settled(&fx, "worker-1", P + 540);
+    paint_empty_prompt(&t);
+    let r = atomic_send(&fx, None, &t, "사람이 보낸 말", true, true);
+    assert_eq!(r["result"]["sent"], json!(true), "전제: 쓰기 전에는 창이 없다(통과): {r}");
+    dialog_after(&t, 150).join().unwrap();
+    assert!(!atomic_enter_written(&t), "쓰는 도중 뜬 승인 창에 Enter 를 썼다 — 오승인(M2-c)");
+    let refused = named(&fx, "input.refused_at_write");
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert_eq!(refused[0]["payload"]["reason"], json!(cys::ERR_APPROVAL_SCREEN));
+    assert!(counts(&t).0 > 0, "입력줄에 본문이 남았는데 빈 줄로 셌다");
+}
+
+/// 두 술어 중 feed 축 단독(화면은 승인 창 꼴이 아님 · 대기 항목만 섬 — 실측 M2-주 「술어가 다르다」) → 역시 Enter 0.
+#[test]
+#[cfg_attr(not(unix), ignore = "S21 제출 정착·창 위 CR 보류는 유닉스 한정(send_settle_applies)")]
+fn b16_atomic_refuse_send_sees_feed_pending_before_enter() {
+    let fx = fx("b16-atomic-feed");
+    let t = agent_pane_settled(&fx, "worker-1", P + 550);
+    paint_empty_prompt(&t);
+    let r = atomic_send(&fx, None, &t, "사람이 보낸 말", true, true);
+    assert_eq!(r["result"]["sent"], json!(true), "{r}");
+    feed_after(&fx, &t, 150).join().unwrap();
+    assert!(!atomic_enter_written(&t), "feed 승인 대기 항목이 선 뒤 Enter 를 썼다");
+    assert_eq!(named(&fx, "input.refused_at_write").len(), 1);
+}
+
+/// 같은 고침의 에이전트 작업 길(기계 표지 `clear_first + refuse_on_approval` = OwnedClear · SubmitRefuse) — Submit 재검 순간 창이
+/// 서면(좌석 증명이 그 순간 그림) Enter 0 · 부분 결판 사유 `submit_refused:approval_screen` · 본문은 바이트대로 센다.
+#[test]
+#[cfg_attr(not(unix), ignore = "S21 제출 정착·창 위 CR 보류는 유닉스 한정(send_settle_applies)")]
+fn b16_atomic_refuse_machine_job_rechecks_approval_before_enter() {
+    let fx = fx("b16-atomic-job");
+    let t = agent_pane_settled(&fx, "worker-1", P + 570);
+    let _x = pane(&fx, "worker-2", P + 571);
+    paint_empty_prompt(&t);
+    paint_at_submit(&t, &DIALOG, 1, 8);
+    let r = atomic_send(&fx, Some(P + 571), &t, "/clear", false, true);
+    assert_eq!(r["result"]["sent"], json!(true), "{r}");
+    assert!(!atomic_enter_written(&t), "에이전트 작업 길에서 창 위에 Enter 를 썼다");
+    let partial = named(&fx, "surface.write_partial");
+    assert_eq!(partial.len(), 1, "{partial:?}");
+    assert!(partial[0]["payload"]["reason"].as_str().unwrap_or("").ends_with("submit_refused:approval_screen"), "{partial:?}");
+    assert_eq!(partial[0]["payload"]["submitted"], json!(false));
+    assert!(counts(&t).0 > 0, "본문이 입력줄에 남은 것으로 세지 않았다");
+}
+
+/// 정상 경로(승인 창 없음): Enter 그대로 1 · 거부 흔적 0 · 입력줄 계수 0. 그리고 `refuse_on_approval` 을 싣지 않은 원자 제출은
+/// 창이 떠도 종전 그대로(이 고침은 「창이면 쓰지 마라」를 요구한 호출자에게만 건다).
+#[test]
+#[cfg_attr(not(unix), ignore = "S21 제출 정착·창 위 CR 보류는 유닉스 한정(send_settle_applies)")]
+fn b16_atomic_send_unchanged_without_dialog_or_refuse_flag() {
+    let fx = fx("b16-atomic-normal");
+    let t = agent_pane_settled(&fx, "worker-1", P + 560);
+    paint_empty_prompt(&t);
+    let r = atomic_send(&fx, None, &t, "사람이 보낸 말", true, true);
+    assert_eq!(r["result"]["sent"], json!(true), "{r}");
+    assert!(atomic_enter_written(&t), "창이 없는데 Enter 를 쓰지 않았다");
+    assert_eq!(counts(&t).0, 0);
+    assert!(named(&fx, "input.refused_at_write").is_empty());
+    let u = agent_pane_settled(&fx, "worker-2", P + 561);
+    paint_empty_prompt(&u);
+    let r = atomic_send(&fx, None, &u, "옵션 없는 원자 제출", true, false);
+    assert_eq!(r["result"]["sent"], json!(true), "{r}");
+    dialog_after(&u, 150).join().unwrap();
+    assert!(atomic_enter_written(&u), "refuse_on_approval 없는 원자 제출의 동작이 바뀌었다");
+}

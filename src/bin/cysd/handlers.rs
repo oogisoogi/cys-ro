@@ -2962,6 +2962,41 @@ fn approval_write_guard(
     })
 }
 
+/// ★(1.1.16 · cysr-1116-backlog · master#4f5897d7) 원자 제출의 **Enter 직전** 재판정 탐침 — [`approval_write_guard`] 와 같은 처분(거부 흔적 ·
+/// 계수 복원)에 술어만 넓다: 쓰기 직전 화면 판정(`seat_approval_pending` = 승인 화면 ∨ 관문 항목) **∨ feed 승인 대기 항목**
+/// (`approval_or_gate_pending` — 데몬이 화면에서 세운 `daemon-…` 승인 항목). 조각 0.5 실측 M2-주: 두 술어가 다르다(가로줄 없는 화면은
+/// 쓰기 직전 판정이 거짓인데 승인 항목은 그 뒤 선다) → 둘 다 본다. `send_key` 의 거부 모드는 종전 술어 그대로(이 티켓 범위 밖).
+fn approval_enter_guard(
+    daemon: &Arc<Daemon>,
+    surface: &Arc<crate::state::Surface>,
+) -> crate::state::SafetyProbe {
+    let (wd, ws) = (Arc::downgrade(daemon), Arc::downgrade(surface));
+    let before = surface.pending_input_bytes.load(Ordering::Relaxed);
+    Arc::new(move || {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (Some(d), Some(s)) = (wd.upgrade(), ws.upgrade()) else {
+                return true;
+            };
+            let hit = crate::governance::seat_approval_pending(&d, &s)
+                || crate::governance::approval_or_gate_pending(&d, s.id);
+            if hit {
+                // codex 3R: 핸들러는 input_gate 를 쥔 채 enqueue → 계수 0 기록을 한다 — 같은 잠금을 잡아야 그 0 뒤에 복원된다.
+                let _gate = s.input_gate.lock().unwrap_or_else(|e| e.into_inner());
+                s.pending_input_bytes.fetch_max(before.max(1), Ordering::Relaxed);
+                d.bus.publish(
+                    "input.refused_at_write",
+                    "surface",
+                    Some(s.id),
+                    json!({"reason": cys::ERR_APPROVAL_SCREEN,
+                           "note": "승인·질문 창이 쓰기 직전에 떠 제출 키를 쓰지 않았다(refuse_on_approval)"}),
+                );
+            }
+            hit
+        }))
+        .unwrap_or(true)
+    })
+}
+
 fn typing_guard_secs() -> u64 {
     std::env::var("CYS_TYPING_GUARD_SECS")
         .ok()
@@ -4280,6 +4315,47 @@ impl crate::agent_write::Proof for SubmitWithhold {
         self.inner.recheck(phase)?;
         if phase == crate::agent_write::Phase::Submit && (self.probe)() {
             return Err(crate::receiver::ProofLoss::Unknown(SUBMIT_WITHHELD.into()));
+        }
+        Ok(())
+    }
+}
+
+/// ProofLoss reason of a Return **refused** right before it was written (`refuse_on_approval` atomic send · not resubmitted).
+const SUBMIT_REFUSED_APPROVAL: &str = "submit_refused:approval_screen";
+
+/// ★(1.1.16 · cysr-1116-backlog · master#4f5897d7 · 조각 0.5 실측 M2-c) `clear_first + refuse_on_approval` 원자 제출의 **Enter 직전
+/// 승인 재판정**. 종전에는 쓰기 전 한 번만 봐서, 쓰는 도중(Ctrl-U→Enter ≈0.73~0.84초) 뜬 승인 창에 Enter 까지 들어갔다(3/3).
+/// writer 의 Submit 재검(대기 뒤 · CR 바로 앞)에서 [`approval_enter_guard`](쓰기 직전 화면 판정 ∨ feed 승인 대기 항목 — 실측 M2-주의
+/// 두 술어 둘 다 · 거부 흔적 `input.refused_at_write`)가 참이면 그 Return 을 쓰지 않는다. 보류(`SubmitWithhold`
+/// · 창이 닫히면 재제출)가 아니라 거부다 — 이 호출자는 「창이면 쓰지 마라」를 요구했다. 본문은 입력줄에 남고 결판이 바이트대로 센다
+/// (`surface.write_partial` · reason [`SUBMIT_REFUSED_APPROVAL`]).
+pub(crate) struct SubmitRefuse {
+    pub(crate) inner: Arc<dyn crate::agent_write::Proof>,
+    pub(crate) probe: crate::state::SafetyProbe,
+}
+
+impl crate::agent_write::Proof for SubmitRefuse {
+    fn admit_context(&self, ctx: &crate::agent_write::ProofContext<'_>) -> Result<(), crate::receiver::ProofLoss> {
+        self.inner.admit_context(ctx)?;
+        if ctx.next_phase == Some(crate::agent_write::Phase::Submit) && (self.probe)() {
+            return Err(crate::receiver::ProofLoss::Unknown(SUBMIT_REFUSED_APPROVAL.into()));
+        }
+        Ok(())
+    }
+    fn recheck_context(&self, phase: crate::agent_write::Phase, ctx: &crate::agent_write::ProofContext<'_>) -> Result<(), crate::receiver::ProofLoss> {
+        self.inner.recheck_context(phase, ctx)?;
+        if phase == crate::agent_write::Phase::Submit && (self.probe)() {
+            return Err(crate::receiver::ProofLoss::Unknown(SUBMIT_REFUSED_APPROVAL.into()));
+        }
+        Ok(())
+    }
+    fn admit(&self) -> Result<(), crate::receiver::ProofLoss> {
+        self.inner.admit()
+    }
+    fn recheck(&self, phase: crate::agent_write::Phase) -> Result<(), crate::receiver::ProofLoss> {
+        self.inner.recheck(phase)?;
+        if phase == crate::agent_write::Phase::Submit && (self.probe)() {
+            return Err(crate::receiver::ProofLoss::Unknown(SUBMIT_REFUSED_APPROVAL.into()));
         }
         Ok(())
     }
@@ -8083,7 +8159,20 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                 || direct_fence_disabled(daemon),
                 || surface.bracketed_paste.load(Ordering::Relaxed),
             );
-            let write_req = send_text_write_req(&text, clear_first, human_verified, fence);
+            let mut write_req = send_text_write_req(&text, clear_first, human_verified, fence);
+            // ★(1.1.16 · master#4f5897d7 · 조각 0.5 M2-c) 「창이면 쓰지 마라」 원자 제출 = CR 바로 앞 승인 재판정(InjectRefusing doc ·
+            //   술어 = approval_enter_guard: 쓰기 직전 화면 판정 ∨ feed 승인 대기 항목 · 거부 흔적 input.refused_at_write).
+            //   에이전트 작업(OwnedClear) 길은 아래 SubmitRefuse 가 같은 일을 한다.
+            if refuse_on_approval {
+                if let crate::state::WriteReq::Inject { text, cr_delay_ms, clear_first: true, guard: None } = write_req {
+                    write_req = crate::state::WriteReq::InjectRefusing {
+                        text,
+                        cr_delay_ms,
+                        clear_first: true,
+                        refuse: approval_enter_guard(daemon, &surface),
+                    };
+                }
+            }
             // ★(리뷰 RR1-F1-XSOCK · RV1-CS-F1-CLAIMED) 기계 잔여 소유자 등급 — 게이트 밖에서 미리 푼다(순수 · 토큰 비교뿐).
             let owner_if_residue = residue_owner(
                 verified_from,
@@ -8116,7 +8205,12 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                             crate::agent_write::Plan::paste(&text)
                                 .with_clear(crate::state::clear_settle_ms())
                                 .with_submit(400, 0),
-                            surface.agent_proof(),
+                            // ★(1.1.16 · master#4f5897d7) 「창이면 쓰지 마라」 원자 제출 = Enter 직전 승인 재판정(SubmitRefuse doc).
+                            if refuse_on_approval {
+                                Arc::new(SubmitRefuse { inner: surface.agent_proof(), probe: approval_enter_guard(daemon, &surface) })
+                            } else {
+                                surface.agent_proof()
+                            },
                             false,
                         ),
                         DirectAgentIntent::SelfSubmitting => {
@@ -22755,6 +22849,7 @@ mod tests {
             crate::state::WriteReq::DataAfter { .. } => "DataAfter",
             crate::state::WriteReq::SubmitAfterGap { .. } => "SubmitAfterGap",
             crate::state::WriteReq::Inject { .. } => "Inject",
+            crate::state::WriteReq::InjectRefusing { .. } => "InjectRefusing",
             crate::state::WriteReq::Agent(_) => "Agent",
         }
     }

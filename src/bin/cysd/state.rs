@@ -2174,6 +2174,16 @@ pub enum WriteReq {
         /// 않는 계약(스트리밍 중 주입 허용 · 기아 #1 의 수리)이라 가드를 걸지 않는다.
         guard: Option<Arc<InjectGuard>>,
     },
+    /// ★(1.1.16 · cysr-1116-backlog · master#4f5897d7 · 조각 0.5 실측 M2-c) [`WriteReq::Inject`] 와 바이트·순서·지연이 같고, **CR 바로
+    /// 앞**에서 `refuse` 를 한 번 더 본다 — 참이면 CR 을 쓰지 않는다(Ctrl-U·본문은 이미 썼다 · 지우지도 다시 치지도 않음). 생산자 =
+    /// `refuse_on_approval` 을 실은 `clear_first` 직접 제출(사람 표지 원자 제출 = 앱 send_input 꼴) 하나. 종전 Inject 는 쓰기 전 한 번만
+    /// 봐서 쓰는 도중(Ctrl-U→CR ≈0.73~0.84초) 뜬 승인 창에 CR 까지 들어갔다(3/3). 인계 가드는 없다(그 경로의 종전 동작 = `guard: None`).
+    InjectRefusing {
+        text: String,
+        cr_delay_ms: u64,
+        clear_first: bool,
+        refuse: SafetyProbe,
+    },
     /// ★B2(0.14.24) delay_ms 만큼 **먼저 기다렸다가** 그대로 쓰기 — 프로그램이 본문을 꽂은
     /// 직후 곧바로 도착한 제출 CR 을 최소 간격 뒤로 밀어내는 전용 변형이다.
     ///
@@ -9087,12 +9097,14 @@ pub(crate) fn mirror_screen_modes(surf: &Surface, screen: &vt100::Screen) {
 /// `WriteReq::Inject` 의 바이트 시퀀스 — (선정리 Ctrl-U → settle) → bracketed paste → cr_delay →
 /// CR. 종전 arm 본문 그대로이며, 인계 가드(`InjectGuard`)를 arm 머리에 넣기 위해 함수로만 뺐다
 /// (한 arm = 원자 · 다른 WriteReq 끼어듦 없음이라는 계약은 호출부가 그대로 지킨다).
+/// 반환 `Ok(true)` = 끝 CR 까지 썼다 · `Ok(false)` = `refuse` 가 CR 바로 앞에서 참이라 CR 을 쓰지 않았다(그 앞 바이트는 썼다).
 fn inject_write<W: Write>(
     writer: &mut W,
     text: &str,
     cr_delay_ms: u64,
     clear_first: bool,
-) -> std::io::Result<()> {
+    refuse: Option<&SafetyProbe>,
+) -> std::io::Result<bool> {
     if clear_first {
         // Ctrl-U(0x15) 선정리 → settle: 잔존 미제출 텍스트를 지우고 TUI가 처리할 짬을 준다.
         // paste·CR과 같은 arm에 묶여 다른 주입이 끼어들 수 없다(원자). 키 의미 게이트는
@@ -9108,8 +9120,12 @@ fn inject_write<W: Write>(
     writer.write_all(cys::paste_fence::wrap(text).as_bytes())?;
     writer.flush()?;
     std::thread::sleep(std::time::Duration::from_millis(cr_delay_ms));
+    // ★(1.1.16 · master#4f5897d7) Enter 직전 재판정 — 대기(cr_delay) **뒤**, CR 바로 앞(InjectRefusing doc).
+    if refuse.is_some_and(|p| p()) {
+        return Ok(false);
+    }
     writer.write_all(b"\r")?;
-    writer.flush()
+    writer.flush().map(|_| true)
 }
 
 /// (테스트 가시성) `delivery` 모듈의 race 봉쇄 실증이 이 루프를 직접 구동한다 —
@@ -9232,15 +9248,30 @@ pub(crate) fn run_writer_loop_tracked<W: Write, R: Into<crate::writer_gate::Queu
                     t.note_body(&text, None);
                     t.begin();
                 }
-                let r = inject_write(&mut writer, &text, cr_delay_ms, clear_first);
+                let r = inject_write(&mut writer, &text, cr_delay_ms, clear_first, None);
                 if let Some(t) = &track {
                     // ★(0.14.42 · S21-SETTLE) 끝 CR 까지 썼으면 제출 CR 을 쓴 시각이다(분리 보류의 기준점).
-                    if r.is_ok() {
+                    if matches!(r, Ok(true)) {
                         t.submit_written();
                     }
                     t.end();
                 }
-                r
+                r.map(|_| ())
+            }
+            // ★(1.1.16 · master#4f5897d7) Inject 와 같은 표식 규율 — CR 을 거부했으면 제출 CR 을 쓴 시각을 찍지 않는다.
+            WriteReq::InjectRefusing { text, cr_delay_ms, clear_first, refuse } => {
+                if let Some(t) = &track {
+                    t.note_body(&text, None);
+                    t.begin();
+                }
+                let r = inject_write(&mut writer, &text, cr_delay_ms, clear_first, Some(&refuse));
+                if let Some(t) = &track {
+                    if matches!(r, Ok(true)) {
+                        t.submit_written();
+                    }
+                    t.end();
+                }
+                r.map(|_| ())
             }
             // ★B2″(agy 감사 R2-①): Inject 는 기준점을 **찍지 않는다**. 이 arm 은 자체
             // cr_delay_ms(기본 400)를 두고 본문→CR 까지 원자로 보내므로, 뒤따라 오는 제출

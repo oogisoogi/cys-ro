@@ -6999,6 +6999,9 @@ mod spawn_policy_tests {
         /// `#[cfg(test)]` 항목 머리를 몇 줄까지 따라갈 것인가(다중 줄 시그니처 대비).
         const HEAD_SCAN_LIMIT: usize = 40;
         let lines: Vec<&str> = src.lines().collect();
+        // ★(codex 5R major 2) 파일 전체를 한 번 어휘 분석 — 줄이 코드에서 시작하는가(블록 주석·문자열·raw 문자열 안이 아님)와 코드 중괄호의
+        //   줄 위치. 들여쓴 시험 모듈 판정은 이 상태로만 한다(주석 속 가짜 `#[cfg(test)]`·`mod` 머리를 모듈로 보지 않는다).
+        let lexed = lex_rust_lines(&lines);
         let mut out = String::with_capacity(src.len());
         let mut i = 0usize;
         while i < lines.len() {
@@ -7009,7 +7012,7 @@ mod spawn_policy_tests {
             //   `{`·`;` 로 끝나지 않아 아래 일반 규칙으로 따라가면 뒤 운영 코드를 **조용히** 삼킨다(실측 realops.rs 111줄).
             //   닫는 줄 = 같은 들여쓰기의 `}`(rustfmt 관례) — 없으면 열 0 규칙과 같이 실패다.
             let indent = lines[i].len() - lines[i].trim_start().len();
-            if indent > 0 && lines[i].trim() == "#[cfg(test)]" {
+            if indent > 0 && lines[i].trim() == "#[cfg(test)]" && lexed.code_start[i] {
                 let mut j = i + 1;
                 while j < lines.len() {
                     let t = lines[j].trim_start();
@@ -7025,13 +7028,13 @@ mod spawn_policy_tests {
                     Some(r) if r.starts_with('(') => r.find(')').map(|p| r[p + 1..].trim_start()).unwrap_or(head),
                     _ => head,
                 };
-                if after_vis.starts_with("mod ") && head.ends_with('{') {
+                if after_vis.starts_with("mod ") && head.ends_with('{') && lexed.code_start.get(j).copied().unwrap_or(false) {
                     // ★(codex 1R·2R major) 모듈 끝 = 머리의 `{` 와 짝인 `}` — 들여쓰기가 아니라 **중괄호 짝**으로 찾는다(문자열·문자·주석·
                     //   raw 문자열 안의 중괄호는 세지 않음 · rustfmt 를 CI 가 강제하지 않으므로 들여쓰기는 경계 근거가 못 된다). 그 짝이
                     //   같은 들여쓰기의 `}` 한 줄이 아니면(`    };`·`        };`·`} // x` 등) 모르는 꼴 = 실패(뒤 운영 코드를 삼키지 않는다).
                     let close = format!("{}}}", &lines[i][..indent]);
-                    let k = match brace_block_end_line(&lines[j..]) {
-                        Some(off) => j + off,
+                    let k = match lexed.block_end_line(j) {
+                        Some(k) => k,
                         None => {
                             return Err(format!(
                                 "들여쓴 `#[cfg(test)]` 모듈(`{head}`)의 짝 `}}` 가 없다 — 파일 끝까지 삼켰다"
@@ -7119,13 +7122,48 @@ mod spawn_policy_tests {
         Ok(out)
     }
 
-    /// `lines[0]` 의 첫 `{` 와 짝인 `}` 가 있는 줄의 상대 번호(없으면 None). 줄 주석(`//`)·블록 주석(`/* */` 중첩)·문자열(`"…"` 이스케이프)·
-    /// raw 문자열(`r"…"`·`r#"…"#`·`br…`)·문자 리터럴(`'{'`·`'\''`·`'\u{7b}'`) 안의 중괄호는 세지 않는다 · 수명(`'a`)은 문자 리터럴이 아니다.
-    fn brace_block_end_line(lines: &[&str]) -> Option<usize> {
+    /// 어휘 분석 결과 — `code_start[l]` = l 번째 줄의 시작이 코드인가(블록 주석·문자열·raw 문자열 안이 아님) · `braces` = 코드 중괄호의
+    /// (줄, 여는가). 줄 주석(`//`)·블록 주석(`/* */` 중첩)·문자열(`"…"` 이스케이프 · `b"…"`·`c"…"`)·raw 문자열(`r"…"`·`r#"…"#`·`br…`·`cr…`)·
+    /// 문자 리터럴(`'{'`·`'\''`·`'\u{7b}'`·`b'{'`) 안의 중괄호는 세지 않는다 · 수명(`'a`)은 문자 리터럴이 아니다.
+    struct Lexed {
+        code_start: Vec<bool>,
+        braces: Vec<(usize, bool)>,
+    }
+
+    impl Lexed {
+        /// `head` 줄 이후 첫 코드 `{` 와 짝인 `}` 의 줄(없으면 None).
+        fn block_end_line(&self, head: usize) -> Option<usize> {
+            let mut depth = 0i64;
+            let mut opened = false;
+            for &(line, open) in self.braces.iter().filter(|(l, _)| *l >= head) {
+                if open {
+                    depth += 1;
+                    opened = true;
+                } else if opened {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(line);
+                    }
+                }
+            }
+            None
+        }
+    }
+
+    fn lex_rust_lines(lines: &[&str]) -> Lexed {
         let text = lines.join("\n");
         let c: Vec<char> = text.chars().collect();
-        let (mut i, mut line, mut depth, mut opened) = (0usize, 0usize, 0i64, false);
+        let mut code_start = vec![true; lines.len().max(1)];
+        let mut braces: Vec<(usize, bool)> = Vec::new();
+        let (mut i, mut line) = (0usize, 0usize);
         let ident = |ch: char| ch.is_alphanumeric() || ch == '_';
+        // 코드 밖(주석·문자열) 구간에서 줄이 바뀌면 그 줄의 시작은 코드가 아니다.
+        let mut newline_in = |line: &mut usize| {
+            *line += 1;
+            if let Some(slot) = code_start.get_mut(*line) {
+                *slot = false;
+            }
+        };
         while i < c.len() {
             let ch = c[i];
             if ch == '\n' {
@@ -7144,7 +7182,7 @@ mod spawn_policy_tests {
                 i += 2;
                 while i < c.len() && nest > 0 {
                     if c[i] == '\n' {
-                        line += 1;
+                        newline_in(&mut line);
                         i += 1;
                     } else if c[i] == '/' && c.get(i + 1) == Some(&'*') {
                         nest += 1;
@@ -7158,8 +7196,7 @@ mod spawn_policy_tests {
                 }
                 continue;
             }
-            // raw 문자열: (b|c)r#*" … "#* — 앞 글자가 식별자의 일부가 아닐 때만(★codex 4R major: C raw 문자열 `cr#"…"#` 포함 —
-            //   빠지면 일반 문자열로 읽혀 안의 따옴표에서 닫히고 중괄호를 코드로 센다).
+            // raw 문자열: (b|c)r#*" … "#* — 앞 글자가 식별자의 일부가 아닐 때만(★codex 4R major: C raw 문자열 `cr#"…"#` 포함).
             if (ch == 'r' || ((ch == 'b' || ch == 'c') && c.get(i + 1) == Some(&'r'))) && (i == 0 || !ident(c[i - 1])) {
                 let mut k = i + if ch == 'r' { 1 } else { 2 };
                 let mut hashes = 0;
@@ -7171,10 +7208,10 @@ mod spawn_policy_tests {
                     k += 1;
                     loop {
                         if k >= c.len() {
-                            return None;
+                            break;
                         }
                         if c[k] == '\n' {
-                            line += 1;
+                            newline_in(&mut line);
                         }
                         if c[k] == '"' && (1..=hashes).all(|h| c.get(k + h) == Some(&'#')) {
                             k += 1 + hashes;
@@ -7193,7 +7230,7 @@ mod spawn_policy_tests {
                         i += 1;
                     }
                     if c.get(i) == Some(&'\n') {
-                        line += 1;
+                        newline_in(&mut line);
                     }
                     i += 1;
                 }
@@ -7203,7 +7240,7 @@ mod spawn_policy_tests {
             if ch == '\'' {
                 if c.get(i + 1) == Some(&'\\') {
                     // ★(codex 3R major) 이스케이프된 글자(`\'`·`\\`·`\u{…}` 의 `u`)는 닫는 따옴표가 아니다 — 여는 `'`·`\`·그 글자를
-                    //   건너뛴 뒤 진짜 닫는 `'` 까지(종전: `'\''` 의 이스케이프된 `'` 를 닫힘으로 읽어 진짜 닫는 `'` 가 새 문자 리터럴을 열었다).
+                    //   건너뛴 뒤 진짜 닫는 `'` 까지.
                     i += 3;
                     while i < c.len() && c[i] != '\'' {
                         i += 1;
@@ -7218,18 +7255,12 @@ mod spawn_policy_tests {
                 i += 1; // 수명
                 continue;
             }
-            if ch == '{' {
-                depth += 1;
-                opened = true;
-            } else if ch == '}' {
-                depth -= 1;
-                if opened && depth == 0 {
-                    return Some(line);
-                }
+            if ch == '{' || ch == '}' {
+                braces.push((line, ch == '{'));
             }
             i += 1;
         }
-        None
+        Lexed { code_start, braces }
     }
 
     /// production_slice 자기 검증(계측 타당성 ①) — 이 도구가 실제로 테스트만 걷어내고
@@ -7322,6 +7353,17 @@ mod spawn_policy_tests {
             .is_err(),
             "짝 사이에 모듈 들여쓰기의 줄이 끼었는데 실패하지 않았다(이중 장치 무력)"
         );
+        // codex 5R 반례: 블록 주석 속 `#[cfg(test)]`·`mod tests {` 는 모듈이 아니다 — 그 뒤 outer 의 운영 함수가 남아야 한다.
+        let commented = production_slice(
+            "mod outer {\n    /*\n    #[cfg(test)]\n    mod tests {\n        */\n        pub fn keep() {\n            \
+             std::process::Command::new(\"prod\");\n        }\n    }\n",
+        );
+        assert!(commented.contains("pub fn keep") && commented.contains("Command::new"), "주석 속 가짜 시험 모듈로 운영 코드를 걷었다: {commented}");
+        // 문자열 속 가짜도 마찬가지(줄 시작이 문자열 안).
+        let in_str = production_slice(
+            "mod outer {\n    const S: &str = \"\n    #[cfg(test)]\n    mod tests {\n    \";\n    fn keep() { Command::new(\"p\"); }\n}\n",
+        );
+        assert!(in_str.contains("fn keep"), "문자열 속 가짜 시험 모듈로 운영 코드를 걷었다: {in_str}");
         assert!(tp.contains("keep_after") && tp.matches("Command::new").count() == 1 && !tp.contains("fn t<"),
                 "문자열·문자·주석·raw 문자열 속 중괄호에 짝이 흔들렸다: {tp}");
         // 실물에도 걸어 둔다 — 이 파일들의 프로덕션 앵커가 사라지면 핀이 헛도는 것이다.

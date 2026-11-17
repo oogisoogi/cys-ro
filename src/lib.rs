@@ -7026,24 +7026,22 @@ mod spawn_policy_tests {
                     _ => head,
                 };
                 if after_vis.starts_with("mod ") && head.ends_with('{') {
+                    // ★(codex 1R·2R major) 모듈 끝 = 머리의 `{` 와 짝인 `}` — 들여쓰기가 아니라 **중괄호 짝**으로 찾는다(문자열·문자·주석·
+                    //   raw 문자열 안의 중괄호는 세지 않음 · rustfmt 를 CI 가 강제하지 않으므로 들여쓰기는 경계 근거가 못 된다). 그 짝이
+                    //   같은 들여쓰기의 `}` 한 줄이 아니면(`    };`·`        };`·`} // x` 등) 모르는 꼴 = 실패(뒤 운영 코드를 삼키지 않는다).
                     let close = format!("{}}}", &lines[i][..indent]);
-                    let mut k = j + 1;
-                    while k < lines.len() && lines[k] != close {
-                        // ★(codex 1R major) 같은·얕은 들여쓰기의 `}` 로 시작하는 다른 꼴(`    };`·`}`)은 모듈이 이미 닫혔거나 감싼 블록이
-                        //   닫힌 것이다 — 뒤의 같은 들여쓰기 `}` 까지 따라가면 운영 블록을 조용히 삼킨다. 따라가지 말고 실패.
-                        let l = lines[k];
-                        let li = l.len() - l.trim_start().len();
-                        if li <= indent && l.trim_start().starts_with('}') {
+                    let k = match brace_block_end_line(&lines[j..]) {
+                        Some(off) => j + off,
+                        None => {
                             return Err(format!(
-                                "들여쓴 `#[cfg(test)]` 모듈(`{head}`)의 닫힘 꼴(`{}`)을 모른다 — 뒤 운영 코드를 삼키지 않도록 실패",
-                                l.trim()
-                            ));
+                                "들여쓴 `#[cfg(test)]` 모듈(`{head}`)의 짝 `}}` 가 없다 — 파일 끝까지 삼켰다"
+                            ))
                         }
-                        k += 1;
-                    }
-                    if k >= lines.len() {
+                    };
+                    if lines[k] != close {
                         return Err(format!(
-                            "들여쓴 `#[cfg(test)]` 모듈(`{head}`)을 닫는 같은 들여쓰기의 `}}` 가 없다 — 파일 끝까지 삼켰다"
+                            "들여쓴 `#[cfg(test)]` 모듈(`{head}`)의 닫힘 꼴(`{}`)을 모른다 — 같은 들여쓰기 `}}` 한 줄만 받는다",
+                            lines[k].trim()
                         ));
                     }
                     i = k + 1;
@@ -7111,6 +7109,116 @@ mod spawn_policy_tests {
         Ok(out)
     }
 
+    /// `lines[0]` 의 첫 `{` 와 짝인 `}` 가 있는 줄의 상대 번호(없으면 None). 줄 주석(`//`)·블록 주석(`/* */` 중첩)·문자열(`"…"` 이스케이프)·
+    /// raw 문자열(`r"…"`·`r#"…"#`·`br…`)·문자 리터럴(`'{'`·`'\''`·`'\u{7b}'`) 안의 중괄호는 세지 않는다 · 수명(`'a`)은 문자 리터럴이 아니다.
+    fn brace_block_end_line(lines: &[&str]) -> Option<usize> {
+        let text = lines.join("\n");
+        let c: Vec<char> = text.chars().collect();
+        let (mut i, mut line, mut depth, mut opened) = (0usize, 0usize, 0i64, false);
+        let ident = |ch: char| ch.is_alphanumeric() || ch == '_';
+        while i < c.len() {
+            let ch = c[i];
+            if ch == '\n' {
+                line += 1;
+                i += 1;
+                continue;
+            }
+            if ch == '/' && c.get(i + 1) == Some(&'/') {
+                while i < c.len() && c[i] != '\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            if ch == '/' && c.get(i + 1) == Some(&'*') {
+                let mut nest = 1;
+                i += 2;
+                while i < c.len() && nest > 0 {
+                    if c[i] == '\n' {
+                        line += 1;
+                        i += 1;
+                    } else if c[i] == '/' && c.get(i + 1) == Some(&'*') {
+                        nest += 1;
+                        i += 2;
+                    } else if c[i] == '*' && c.get(i + 1) == Some(&'/') {
+                        nest -= 1;
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                continue;
+            }
+            // raw 문자열: (b)r#*" … "#* — 앞 글자가 식별자의 일부가 아닐 때만.
+            if (ch == 'r' || (ch == 'b' && c.get(i + 1) == Some(&'r'))) && (i == 0 || !ident(c[i - 1])) {
+                let mut k = i + if ch == 'b' { 2 } else { 1 };
+                let mut hashes = 0;
+                while c.get(k) == Some(&'#') {
+                    hashes += 1;
+                    k += 1;
+                }
+                if c.get(k) == Some(&'"') {
+                    k += 1;
+                    loop {
+                        if k >= c.len() {
+                            return None;
+                        }
+                        if c[k] == '\n' {
+                            line += 1;
+                        }
+                        if c[k] == '"' && (1..=hashes).all(|h| c.get(k + h) == Some(&'#')) {
+                            k += 1 + hashes;
+                            break;
+                        }
+                        k += 1;
+                    }
+                    i = k;
+                    continue;
+                }
+            }
+            if ch == '"' {
+                i += 1;
+                while i < c.len() && c[i] != '"' {
+                    if c[i] == '\\' {
+                        i += 1;
+                    }
+                    if c.get(i) == Some(&'\n') {
+                        line += 1;
+                    }
+                    i += 1;
+                }
+                i += 1;
+                continue;
+            }
+            if ch == '\'' {
+                if c.get(i + 1) == Some(&'\\') {
+                    i += 2;
+                    while i < c.len() && c[i] != '\'' {
+                        i += 1;
+                    }
+                    i += 1;
+                    continue;
+                }
+                if c.get(i + 2) == Some(&'\'') {
+                    i += 3;
+                    continue;
+                }
+                i += 1; // 수명
+                continue;
+            }
+            if ch == '{' {
+                depth += 1;
+                opened = true;
+            } else if ch == '}' {
+                depth -= 1;
+                if opened && depth == 0 {
+                    return Some(line);
+                }
+            }
+            i += 1;
+        }
+        None
+    }
+
     /// production_slice 자기 검증(계측 타당성 ①) — 이 도구가 실제로 테스트만 걷어내고
     /// 프로덕션은 남기는지 확인한다. 걷어내기가 과하면(=프로덕션까지 삭제) 아래 핀이
     /// **아무것도 안 보고 초록**이 되어 버린다. 그래서 도구부터 검체를 건다.
@@ -7163,6 +7271,21 @@ mod spawn_policy_tests {
             .is_err(),
             "모르는 닫힘 꼴(`    }};`)에서 뒤 운영 블록까지 삼켰다"
         );
+        // codex 2R 반례: 더 깊이 들여쓴 `        };` 로 닫힌 꼴 — 들여쓰기 경계로는 뒤 `if` 의 `    }` 를 끝으로 잡는다. 중괄호 짝으로 실패해야 한다.
+        assert!(
+            production_slice_checked(
+                "fn f() {\n    #[cfg(test)]\n    mod t {\n        };\n    if true {\n        std::process::Command::new(\"prod\");\n    }\n}\n"
+            )
+            .is_err(),
+            "더 깊은 닫힘 꼴(`        }};`)에서 뒤 운영 블록까지 삼켰다"
+        );
+        // 중괄호 짝은 문자열·문자·주석·raw 문자열 안의 중괄호를 세지 않는다 · 수명은 문자가 아니다(정상 꼴은 그대로 걷힌다).
+        let tricky = "mod imp {\n    #[cfg(test)]\n    mod tests {\n        fn t<'a>(x: &'a str) {\n            let _ = \"}}\";\n            \
+                      let _ = '}';\n            let _ = '\\'';\n            // }}\n            /* } /* } */ } */\n            let _ = r#\"}\"#;\n            \
+                      let _ = br\"}\";\n            Command::new(\"t\");\n        }\n    }\n    fn keep_after() { Command::new(\"p\"); }\n}\n";
+        let tp = production_slice(tricky);
+        assert!(tp.contains("keep_after") && tp.matches("Command::new").count() == 1 && !tp.contains("fn t<"),
+                "문자열·문자·주석·raw 문자열 속 중괄호에 짝이 흔들렸다: {tp}");
         // 실물에도 걸어 둔다 — 이 파일들의 프로덕션 앵커가 사라지면 핀이 헛도는 것이다.
         let cys = production_slice(include_str!("bin/cys.rs"));
         assert!(

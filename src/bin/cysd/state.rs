@@ -2006,6 +2006,19 @@ impl InjectTrack {
         *self.withheld.lock().unwrap_or_else(|e| e.into_inner()) = Some(w);
     }
 
+    /// ★(1.1.16 · codex 2R major 1 잔여) 보류 기록 세우기 — 같은 본문(`body_at`)의 기존 기록이 agy 문 문맥(`Some`)을 갖고 있고 새 기록이
+    /// 문맥 없음(`None` — 일반 보류 탐침)이면 그 문맥을 **같은 잠금 안에서** 이어받는다(일반 Return 의 보류가 기계 큐 재전송의 agy 판정을
+    /// 지우지 않게). 새 본문(다른 `body_at`)은 이어받지 않는다 · 사람 자판 출처 재전송은 처음부터 `None` 이라 같은 본문의 `Some` 과 겹치지 않는다.
+    pub(crate) fn note_withheld_keeping_agy(&self, mut w: WithheldSubmit) {
+        let mut slot = self.withheld.lock().unwrap_or_else(|e| e.into_inner());
+        if w.agy_launch_line.is_none() {
+            if let Some(prev) = slot.as_ref().filter(|p| p.body_at == w.body_at) {
+                w.agy_launch_line = prev.agy_launch_line;
+            }
+        }
+        *slot = Some(w);
+    }
+
     /// ★(cysr-queued-paste-submit) 큐 Return 제출 확인 기록을 세운다(덮어쓰기 — 가장 최근 큐 배달이 입력줄의 현재 사실이다).
     pub(crate) fn arm_submit_check(&self, c: SubmitCheck) {
         *self.submit_check.lock().unwrap_or_else(|e| e.into_inner()) = Some(c);

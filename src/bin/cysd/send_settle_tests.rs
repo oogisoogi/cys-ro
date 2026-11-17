@@ -2100,3 +2100,19 @@ fn b16_resubmitted_cr_refused_when_agy_door_closes_mid_flight() {
     *t.agent_meta.lock().unwrap() = Some(("gemini".into(), "agy".into())); // 인계 뒤 문 닫힘
     assert!(!atomic_enter_written(&t), "인계 뒤 닫힌 문의 agy 좌석에 재제출 CR 을 썼다");
 }
+
+/// ★(codex 2R major 1 잔여) 같은 본문의 일반 Return 보류(문맥 없음)가 기계 큐 재전송 보류의 agy 문맥을 지우지 않는다 · 새 본문은 이어받지 않는다.
+#[test]
+fn b16_plain_withhold_keeps_agy_context_of_same_body() {
+    let fx = fx("b16-keep-agy");
+    let t = agent_pane_settled(&fx, "worker-1", P + 600);
+    t.inject_track.note_body(QPS_BODY, None);
+    paint_own_with_dialog_below(&t);
+    let m = vec!["❯".to_string()];
+    assert!(crate::governance::submit_cr_withhold_probe_agy(&fx.daemon, &t, m.clone(), "queue_submit_retry", None, Some(false))());
+    assert!(crate::governance::submit_cr_withhold_probe(&fx.daemon, &t, m.clone(), "machine_body", None)(), "전제: 일반 보류도 걸린다");
+    assert_eq!(t.inject_track.withheld().and_then(|w| w.agy_launch_line), Some(false), "일반 보류가 agy 문맥을 지웠다");
+    t.inject_track.note_body("다른 기계 본문", None);
+    assert!(crate::governance::submit_cr_withhold_probe(&fx.daemon, &t, m, "machine_body", None)());
+    assert_eq!(t.inject_track.withheld().and_then(|w| w.agy_launch_line), None, "새 본문이 옛 본문의 문맥을 이어받았다");
+}

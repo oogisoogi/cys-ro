@@ -7495,7 +7495,7 @@ pub(crate) fn submit_cr_withhold_probe_agy(
             if let Some(b) = s.inject_track.last_body() {
                 let mut w = crate::state::WithheldSubmit::new(std::time::Instant::now(), b.at, from);
                 w.agy_launch_line = agy_launch_line;
-                s.inject_track.note_withheld(w);
+                s.inject_track.note_withheld_keeping_agy(w);
             }
             d.bus.publish(
                 "queue.submit_withheld",

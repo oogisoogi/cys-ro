@@ -10427,6 +10427,179 @@ mod tests {
         }
     }
 
+    // ─── ★1.1.16 저널 묶음(원작자 v0.15.1 U02 · U03 · 7c 의 재구현 · TICKET=cysr-1116-vendor-import) ───
+    // 끊김 재현: 본부(`base/pack`)와 부서(`base/pack-dept-d1`)가 같은 부모를 쓴다 → 1.1.15 의 저널 한 곳 공유가
+    // 부서 데몬 기동 복구에서 본부 기록을 부서 팩에 되돌린다(M15-다) · 되돌림이 백업 뒤 저장분을 덮는다(WJ1) ·
+    // 되돌린 훅이 실행 권한을 잃는다(7c). 아래 셋은 고치기 전 판(3a095c4e)에서 붉고 고친 뒤 초록이어야 한다.
+
+    /// 부서 팩 하나를 `base/pack-dept-d1` 에 깐다(사용자 사본 `notes.md` 포함). 반환 = 부서 팩 경로.
+    fn j1116_dept(base: &Path) -> PathBuf {
+        let dd = base.join("pack-dept-d1");
+        std::fs::create_dir_all(dd.join("directives")).unwrap();
+        std::fs::write(dd.join("README.md"), "DEPT-SOUL").unwrap();
+        std::fs::write(dd.join("directives/W.md"), "DEPT-W").unwrap();
+        std::fs::write(dd.join("notes.md"), "DEPT-USER-NOTES").unwrap();
+        std::fs::write(dd.join(PACK_VERSION_FILE), "1.0.0").unwrap();
+        let m = serde_json::json!({"README.md": content_hash("DEPT-SOUL"), "directives/W.md": content_hash("DEPT-W")});
+        std::fs::write(dd.join(INSTALL_MANIFEST), m.to_string()).unwrap();
+        dd
+    }
+
+    /// M15-다: 본부 팩 업데이트가 끊긴(사망 지점 = install · commit) 뒤 **부서 데몬 기동 복구**(cysd main.rs 가 부르는 것과
+    /// 같은 `recover_pack_journal` · 그 데몬의 팩 = 부서 팩)가 부서 팩을 한 바이트도 바꾸지 않고 본부 기록도 남겨 둔다 →
+    /// 그 뒤 본부 복구가 본부를 제대로 되돌리거나(install) 전진 완료한다(commit).
+    #[test]
+    fn j1116_dept_daemon_recovery_leaves_dept_pack_and_base_journal_alone() {
+        let _g = PACK_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for (at, committed) in [("install", false), ("commit", true)] {
+            let (base, pd, _env) =
+                txn_prestate(&format!("j16-lane-{at}"), &[("README.md", "OLD-BASE"), ("directives/W.md", "BASE-W")], "1.0.0");
+            let dd = j1116_dept(&base);
+            let dept_before = fingerprint_dir(&dd);
+            PACK_TXN_KILL.with(|k| k.set(Some(at)));
+            let r = apply_pack_transactional(
+                &[("README.md", "NEW-BASE"), ("directives/W.md", "BASE-W2"), ("new.txt", "N")],
+                "2.0.0",
+                &test_free_state("2.0.0"),
+                None,
+                || Ok(()),
+            );
+            PACK_TXN_KILL.with(|k| k.set(None));
+            assert!(r.unwrap_err().contains("PACK_TXN_KILL"), "{at}");
+            // 부서 데몬 기동 = 그 데몬의 팩이 부서 팩.
+            let dept_rec = {
+                let _d = EnvGuard::set(ENV_PACK_DIR, &dd);
+                recover_pack_journal()
+            };
+            let dept_after = fingerprint_dir(&dd);
+            // 본부 데몬(또는 다음 pack-update) 복구.
+            let base_rec = recover_pack_journal();
+            let soul = std::fs::read_to_string(pd.join("README.md")).unwrap_or_default();
+            let ver = std::fs::read_to_string(pd.join(PACK_VERSION_FILE)).unwrap_or_default();
+            let new_exists = pd.join("new.txt").exists();
+            let _ = std::fs::remove_dir_all(&base);
+            assert_eq!(dept_rec, Ok(false), "{at}: 부서 데몬이 본부 기록을 자기 것으로 복구했다");
+            assert_eq!(dept_before, dept_after, "{at}: 부서 팩이 바뀌었다(본부 바이트·본부 판 번호 유입)");
+            assert_eq!(base_rec, Ok(true), "{at}: 본부 기록이 본부 복구 전에 사라졌다");
+            if committed {
+                assert_eq!((soul.as_str(), ver.trim(), new_exists), ("NEW-BASE", "2.0.0", true), "{at}: 본부 전진 완료");
+            } else {
+                assert_eq!((soul.as_str(), ver.trim(), new_exists), ("OLD-BASE", "1.0.0", false), "{at}: 본부 되돌림");
+            }
+        }
+    }
+
+    /// WJ1 + 7c: 끊긴 업데이트를 되돌릴 때 ⑴ 그 업데이트가 쓴 것만 되돌리고(README.md · 훅) ⑵ 백업 뒤에 저장된 예약 작업
+    /// (`schedule.json` · 업데이트는 같은 바이트라 쓰지 않음)은 그대로 두며 ⑶ 되돌린 훅은 실행 권한(0755)을 지킨다.
+    /// 그대로 둔 항목의 업데이트 백업은 `kept/` 에 보관된다(덮지도 지우지도 않음).
+    #[cfg(unix)]
+    #[test]
+    fn j1116_rollback_undoes_only_the_update_and_keeps_modes() {
+        use std::os::unix::fs::PermissionsExt;
+        let _g = PACK_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (base, pd, _env) = txn_prestate(
+            "j16-wj1",
+            &[("README.md", "OLD-SOUL"), ("schedule.json", "[]"), ("hooks/h.sh", "#!/bin/sh\necho old\n")],
+            "1.0.0",
+        );
+        std::fs::set_permissions(pd.join("hooks/h.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        PACK_TXN_KILL.with(|k| k.set(Some("install")));
+        let r = apply_pack_transactional(
+            &[("README.md", "NEW-SOUL"), ("schedule.json", "[]"), ("hooks/h.sh", "echo new-without-shebang\n")],
+            "2.0.0",
+            &test_free_state("2.0.0"),
+            None,
+            || Ok(()),
+        );
+        PACK_TXN_KILL.with(|k| k.set(None));
+        assert!(r.unwrap_err().contains("PACK_TXN_KILL"));
+        // 끊긴 사이 데몬이 `cys schedule add` 를 저장했다(백업 뒤 · 업데이트와 무관).
+        std::fs::write(pd.join("schedule.json"), "[{\"id\":\"owner-job\"}]").unwrap();
+        let rec = recover_pack_journal();
+        let soul = std::fs::read_to_string(pd.join("README.md")).unwrap();
+        let sched = std::fs::read_to_string(pd.join("schedule.json")).unwrap();
+        let hook = std::fs::read_to_string(pd.join("hooks/h.sh")).unwrap();
+        let mode = std::fs::metadata(pd.join("hooks/h.sh")).unwrap().permissions().mode() & 0o777;
+        let kept_log = std::fs::read_dir(base.join(".pack-journal.d/pack/kept"))
+            .ok()
+            .and_then(|mut rd| rd.next())
+            .and_then(|e| std::fs::read_to_string(e.ok()?.path().join("kept.log")).ok())
+            .unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(rec, Ok(true));
+        assert_eq!(soul, "OLD-SOUL", "업데이트가 쓴 README.md 는 되돌려야 한다");
+        assert_eq!(hook, "#!/bin/sh\necho old\n", "업데이트가 쓴 훅은 되돌려야 한다");
+        assert_eq!(sched, "[{\"id\":\"owner-job\"}]", "백업 뒤 저장한 예약 작업이 되돌림에 지워졌다(WJ1)");
+        assert_eq!(mode, 0o755, "되돌린 훅이 실행 권한을 잃었다(7c)");
+        assert!(kept_log.contains("schedule.json"), "그대로 둔 항목의 백업 보관 기록 없음: {kept_log:?}");
+    }
+
+    /// 1.1.15 → 1.1.16 올림: 옛 판이 남긴 공유 저널(`<부모>/.pack-journal` · 레인 이름 없음)을 ⑴ 부서 데몬은 건드리지 않고
+    /// ⑵ 본부 레인이 한 번 자기 저널로 옮겨 복구한다(우리 판에서 팩 업데이트를 쓰는 것은 본부뿐 — 원작자는 「아무도 복구 안 함 +
+    /// 안내」지만 그러면 반쯤 적용된 팩이 사람 손을 기다린다). 옛 저널에는 배치 기록이 없으므로 살아 있는 내용이 백업과 다르면
+    /// 먼저 `kept/` 에 보관한 뒤 되돌린다(손실 0).
+    #[test]
+    fn j1116_legacy_shared_journal_moves_to_base_lane_and_dept_leaves_it() {
+        let _g = PACK_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (base, pd, _env) = txn_prestate("j16-legacy", &[("README.md", "PARTIAL-NEW")], "1.0.0");
+        std::fs::write(pd.join("new.txt"), "ORPHAN-NEW").unwrap();
+        let dd = j1116_dept(&base);
+        let dept_before = fingerprint_dir(&dd);
+        // 1.1.15 write_journal 이 남기는 모양 그대로(인덱스 칸 = target_version · entries{rel,existed} · explicit_commit).
+        let legacy = base.join(".pack-journal");
+        std::fs::create_dir_all(legacy.join("files")).unwrap();
+        std::fs::write(legacy.join("files/README.md"), "OLD-SOUL").unwrap();
+        std::fs::write(
+            legacy.join("index.json"),
+            serde_json::json!({"target_version": "2.0.0", "explicit_commit": true, "entries": [
+                {"rel": "README.md", "existed": true}, {"rel": "new.txt", "existed": false}]})
+            .to_string(),
+        )
+        .unwrap();
+        let dept_rec = {
+            let _d = EnvGuard::set(ENV_PACK_DIR, &dd);
+            recover_pack_journal()
+        };
+        let dept_after = fingerprint_dir(&dd);
+        let legacy_after_dept = legacy.join("index.json").is_file();
+        let base_rec = recover_pack_journal();
+        let soul = std::fs::read_to_string(pd.join("README.md")).unwrap();
+        let new_exists = pd.join("new.txt").exists();
+        let legacy_left = legacy.exists();
+        let mut kept_bytes: Vec<String> = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(base.join(".pack-journal.d/pack/kept")) {
+            for e in rd.flatten() {
+                for f in walk_files(&e.path()) {
+                    kept_bytes.push(std::fs::read_to_string(f).unwrap_or_default());
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(dept_rec, Ok(false), "부서 데몬이 옛 공유 저널을 복구했다");
+        assert_eq!(dept_before, dept_after, "부서 팩이 바뀌었다");
+        assert!(legacy_after_dept, "부서 데몬이 옛 공유 저널을 지웠다");
+        assert_eq!(base_rec, Ok(true));
+        assert_eq!((soul.as_str(), new_exists), ("OLD-SOUL", false), "본부가 옛 저널로 되돌리지 않았다");
+        assert!(!legacy_left, "옛 공유 저널이 본부 레인으로 옮겨지지 않았다");
+        assert!(kept_bytes.iter().any(|b| b == "PARTIAL-NEW"), "되돌리기 전 살아 있던 내용 보관 없음: {kept_bytes:?}");
+        assert!(kept_bytes.iter().any(|b| b == "ORPHAN-NEW"), "지운 신규 파일의 살아 있던 내용 보관 없음: {kept_bytes:?}");
+    }
+
+    fn walk_files(d: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(d) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    out.extend(walk_files(&p));
+                } else {
+                    out.push(p);
+                }
+            }
+        }
+        out
+    }
+
     /// orphan 저널 recovery: 디스크 .pack-version != 저널 target(미커밋)이면 rollback으로
     /// pre-state 자가치유. crash로 남은 부분적용(README.md=PARTIAL·new.txt 생성)을 되돌린다.
     #[test]

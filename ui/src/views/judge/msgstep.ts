@@ -203,8 +203,8 @@ export function applyRefusedAtWrite(msgs: readonly Msg[], seat: number, now: num
   let pick = -1;
   for (let i = 0; i < msgs.length; i++) {
     const m = msgs[i];
-    if (m.seat !== seat || m.sentAt === null || m.userUuid) continue;
-    if (m.step !== "sending" && m.step !== "injected" && m.step !== "checking") continue;
+    if (m.seat !== seat || m.sentAt === null) continue;
+    if (m.step !== "sending" && m.step !== "injected" && m.step !== "checking") continue; // 전달됨 이상(근거 있음)·붙잡음은 제외
     if (now - m.sentAt < 0 || now - m.sentAt > REFUSED_AT_WRITE_WINDOW_MS) continue;
     if (pick < 0 || (msgs[pick].sentAt as number) <= m.sentAt) pick = i;
   }

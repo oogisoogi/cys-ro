@@ -37,14 +37,14 @@ MUTANTS = [
     ("판 묶기: 시각 대조 뺌", J, "a.created_at !== b.created_at || a.body !== b.body", "a.body !== b.body", False),
     ("판 묶기: 이미 처리됨(목록 없음) 통과", J, 'if (!a) return no("gone");', "if (!a) return { ok: true };", True),
     ("판 묶기: 재확인 때 멈춤 다시 보기 뺌", J, 'if (stallNow(a) === null) return no("not_stalled");', "", False),
-    ("판 묶기: 처리 직전 재조회 대신 그리기 때 값", C, 'const rc = recheck(bound, fresh, (a) => itemStall(st, a));', "const rc = { ok: true as const } as ReturnType<typeof recheck>;", True),
+    ("판 묶기: 처리 직전 재조회 대신 그리기 때 값", C, 'const rc = recheck(bound, fresh, (a) => (st.masterSid !== undefined && st.masterSid !== null && a.surface_id === st.masterSid ? null : itemStall(st, a)));', "const rc = { ok: true as const } as ReturnType<typeof recheck>;", True),
     ("판 묶기: 연타 막기 뺌", C, "if (this.deciding) return;\n    this.deciding = true;", "this.deciding = true;", False),
     # 신뢰 클릭
     ("신뢰 클릭: isTrusted 검사 뺌", B, "if (!e.isTrusted) return; // 사람이 실제로 누른 클릭만", "// 뺌", True),
     # 표식
     ("표식: 줄머리 대신 줄 어디든", J, "if (line.startsWith(ASK_PREFIX)) {", "if (line.includes(ASK_PREFIX)) {", False),
     ("표식: 사람(user) 글도 표식", J, 'if (r.role !== "assistant" || r.sidechain', "if (r.sidechain", False),
-    ("표식: 앞 훑기 뒤 기록에서 멈춤 뺌", C, "if (this.tailSeen.has(rec.uuid)) {", "if (false) {", False),
+    ("표식: 앞 훑기 뒤 기록에서 멈춤 뺌", C, "if (this.tailSeen.has(id)) {", "if (false) {", False),
 ]
 
 
@@ -73,7 +73,10 @@ def main() -> int:
         print("작업트리가 깨끗하지 않음 — 먼저 커밋")
         return 2
     rows = []
+    only = os.environ.get("MUT_ONLY")
     for name, f, old, new, e2e in MUTANTS:
+        if only and only not in name:
+            continue
         p = ROOT / f
         src = p.read_text(encoding="utf-8")
         if src.count(old) != 1:

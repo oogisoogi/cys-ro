@@ -1,0 +1,79 @@
+{
+ "verdict": "ACCEPT",
+ "justification": "지정 범위를 두 부모와 정적으로 대조한 결과, 조각 3·4의 동작 합집합이 보존되었고 충돌 해결로 생긴 결함은 확인되지 않았다. 두 사건 구독의 수명과 경합 처리, poll 조건, 세션 초기화·리셋, link 위치 정보, 대화 렌더링 및 freshBounded 형식이 모두 일관된다.",
+ "evidence": [
+  {
+   "claim": "조각 3과 조각 4 구독은 각각 listen/unlisten과 listenDaemon/unlistenConfirm을 사용하며 attach에서 연결되고 detach에서 독립적으로 해제된다.",
+   "ref": "ui/src/views/core.ts:222",
+   "verified": true
+  },
+  {
+   "claim": "조각 3의 비동기 구독은 listenGen으로 늦게 완료된 구독을 즉시 해제하여 detach/reattach 경합에서 새지 않는다.",
+   "ref": "ui/src/views/core.ts:254",
+   "verified": true
+  },
+  {
+   "claim": "조각 4 어댑터는 detach가 Promise 완료보다 빨라도 dead 표지를 통해 뒤늦게 얻은 해제 함수를 실행한다.",
+   "ref": "ui/src/views/index.ts:48",
+   "verified": true
+  },
+  {
+   "claim": "poll 조건은 두 부모 조건의 정확한 합집합인 (changed && (awaiting || idle)) || (awaiting && outputSincePoll)이다.",
+   "ref": "ui/src/views/core.ts:648",
+   "verified": true
+  },
+  {
+   "claim": "freshBounded 형식과 성공 실행값에 feed와 org가 보존되어 ConfirmBook.observe로 전달된다.",
+   "ref": "ui/src/views/core.ts:383",
+   "verified": true
+  },
+  {
+   "claim": "initOffset 성공 결과만 세대 검사를 통과한 뒤 offset/sessionId와 ConfirmBook 세션을 함께 시작하며 stale/none은 기존 상태를 잘못 갱신하지 않는다.",
+   "ref": "ui/src/views/core.ts:676",
+   "verified": true
+  },
+  {
+   "claim": "파일 reset 갈래는 조각 3의 pendingUser 초기화와 조각 4의 confirm.resetSession을 모두 수행한다.",
+   "ref": "ui/src/views/core.ts:734",
+   "verified": true
+  },
+  {
+   "claim": "link 레코드에도 줄 시작 위치 at이 실리고 read_transcript_from에서 덩이 상대 위치가 파일 절대 위치로 변환된다.",
+   "ref": "src-tauri/src/viewcore.rs:227",
+   "verified": true
+  },
+  {
+   "claim": "추가된 시험은 UUID가 있는 비사용자·비assistant 고리의 at이 실제 줄 시작 바이트와 일치함을 검증한다.",
+   "ref": "src-tauri/src/viewcore.rs:564",
+   "verified": true
+  },
+  {
+   "claim": "scanStep은 끝을 넘는 토막의 모든 레코드에 유효한 at이 있을 때만 앞 훑기 완료를 확정하므로 link에 at을 싣는 판단이 맞다.",
+   "ref": "ui/src/views/confirm.ts:151",
+   "verified": true
+  },
+  {
+   "claim": "applyRecords는 link를 본문 없는 부모 사슬 고리로만 이어 붙이고 at은 메시지 판정에 사용하지 않아 link+at 조합의 의미가 바뀌지 않는다.",
+   "ref": "ui/src/views/judge/msgstep.ts:197",
+   "verified": true
+  },
+  {
+   "claim": "markersOf는 assistant 본문만 처리하므로 link+at은 확인 표식을 만들거나 닫지 않는다.",
+   "ref": "ui/src/views/judge/confirms.ts:30",
+   "verified": true
+  },
+  {
+   "claim": "모든 stray 및 묶인 답 말풍선에 UUID가 전달되고, autos까지 그린 뒤 band.paint가 실행되어 물음 자리 표식이 재부착된다.",
+   "ref": "ui/src/views/chat/index.ts:149",
+   "verified": true
+  },
+  {
+   "claim": "confirm 시험 대역도 분리된 listenDaemon 키를 사용한다.",
+   "ref": "ui/src/views/confirm.test.ts:61",
+   "verified": true
+  }
+ ],
+ "issues": [],
+ "missing": [],
+ "revision": "d858abb3"
+}

@@ -1,0 +1,240 @@
+# HANDOFF — 1.1.16 통합 가지 조립 (TICKET=cysr-1116-integ-1118)
+
+> ⚠【경고 · 발행 전 필수】 팩 해시표(`src/released_directive_hashes.rs` · `cysjavis-pack/directives/RELEASED_MASTER_DIRECTIVE.sha256`)에 **1.1.15 지침 바이트가 없다**(MASTER `793e143f…` · CEO `1a9ebfb5…` = 3a095c4e 의 바이트). 원인 = 이 기기에 `v1.1.15` 태그가 아직 없고, 생성기는 「발행 계열 태그 + 지금 작업 트리」만 읽으며 추가 입력 옵션이 없다. → **1.1.15 태그(11-21 예정)를 만든 뒤 이 가지에서 `python3 scripts/gen_released_directive_hashes.py` 재생성 · 커밋**해야 1.1.16 설치기가 손대지 않은 1.1.15 사본을 알아본다(§3).
+
+- 좌석 worker-2(surface:2168 → 06:53 재시작 뒤 surface:2171) · 브리프 = spawn 경로(원장 2026-11-18T05:40:24 · `master/briefs/2026-11-18-cysr-1116-integ.md` · body_sha256 `ff359b9d…` = 파일 끝 줄바꿈 뺀 값과 일치) · 추가 지시 master#a55416cb(R1 갈래 표지) · master#b9752e56(재개 + fix/cc-popover-z 합침) · master#e28c3581(재시작 고아 정리) · master#eaa2b355(fix/restart-confirm 합침) — 넷 다 원장 대조 성립(대상·submitted yes·session_jsonl_nonce)
+- 작업트리 `~/axdev/.wt/cys-1116-integ` · 가지 `integ/1116` ← 3a095c4e(1.1.15 후보 integ/1115-r2 머리)
+- push · 서명 · 발행 · 설치 · 이 기기 앱 교체 · 실사용 데몬/마스터 접촉 = 0(시험 = `env -i` 격리 HOME/TMPDIR · cargo 1건씩 · `CARGO_BUILD_JOBS=6` · `--test-threads=4`)
+
+## 1. merge 커밋 목록(순서대로 · 전부 `--no-ff`)
+
+| merge 커밋 | 원 가지 · 머리 | 충돌 |
+|---|---|---|
+| 963c36e2 | `integ/1116-vendor` 1c4c07f6 | 없음 |
+| 668c7aed | `integ/1116-backlog` 8bdd08ad | 없음 |
+| 75dc2640 | `feat/ui-slice3` 43b44ea4(조각 1 3a012bf4 포함) | 없음 |
+| d858abb3 | `feat/ui-slice4` fa400dda(팩 지침 4d20d25a·e1cd0f76·12e8bc95 포함) | **6파일**(§2) |
+| 1ccfd1d2 | `fix/cc-popover-z` d8210ab4(master#b9752e56) | 없음 |
+| 79a56603 | `fix/restart-confirm` 7df374bc(master#eaa2b355 · 「↻ 재시작」 진입 확인 1회 · 데몬/Rust 변경 0) | 없음 |
+
+- 남은 것: backlog 재검(2167) 새 지적 R1~R3 고침(2169→2172 · `integ/1116-backlog` 8bdd08ad 위 새 커밋) — master 지시 뒤 추가 병합(master#a55416cb).
+
+## 2. 충돌 해결 표(d858abb3 · 두 쪽 동작 모두 살림 · 한쪽 버리기 0)
+
+`git show --remerge-diff d858abb3` = 자동 병합 대비 해결 차이 6파일(사본 `docs/integ-1116/codex-r1-prompt.md` 끝). 단순 나열이 아닌 덩어리만 줄마다:
+
+| 파일:줄(d858abb3) | 무엇을 살렸나 |
+|---|---|
+| `ui/src/views/core.ts:14~16` import | 단순 나열 — 조각 3(msgstep 새 이름들·autostep) + 조각 4(ConfirmBook) |
+| `ui/src/views/core.ts:101~104` Deps | ★두 조각이 **같은 이름 `listen` 을 다른 꼴로** 넣음(조각 3 = `listen(name, handler) → Promise<해제>` · 조각 4 = `listen(fn) → 해제`) → 조각 4 것을 `listenDaemon(fn)` 으로 이름만 바꿈. 두 구독 모두 대화 화면 attach~detach 동안 산다 |
+| `ui/src/views/core.ts:177~189` 필드 · `:222~250` attach/detach | ★자동 병합(충돌 표시 없음)이 두 조각의 구독 해제 필드를 **한 필드 `unlisten` 으로 합쳐** 조각 4 구독이 먼저 그 칸을 채우면 조각 3 `startListening` 이 `if (this.unlisten) return` 으로 **시작조차 안 하는** 숨은 결함 → 조각 4 칸을 `unlistenConfirm` 으로 가름 · detach 가 둘 다 푼다 |
+| `ui/src/views/core.ts:645~650` poll 세션 읽기 조건 | 합집합: `(활동 바뀜 ∧ (기다리는 말 ∨ 쉬게 됨[조각 4 · 마스터가 스스로 낸 물음])) ∨ (기다리는 말 ∧ 조회 사이 새 출력[조각 3 seed 370])` |
+| `ui/src/views/core.ts:676~695` initOffset | 조각 3 의 상한·세대·`ok/none/stale` 구조 유지 + ok 갈래에 조각 4 `confirm.startSession(…)` |
+| `ui/src/views/core.ts:734~740` 파일 줄어듦(reset) 갈래 | 단순 나열 — `pendingUser = []`(조각 3) + `confirm.resetSession()`(조각 4) |
+| `ui/src/views/core.ts:393` freshBounded 반환형 | `feed?`·`org?` 칸 추가(실행 값은 원래도 그대로 실려 조각 4 `confirm.observe` 에 감 · 형만 정직하게) |
+| `ui/src/views/chat/index.ts:126·150~160` | 조각 3 logOrder 고리(안 묶인 답 시각순) 안 두 곳에 조각 4 `masterBubble(text, uuid)` uuid 인자 · 조각 3 autos 줄 뒤 조각 4 `band.paint()` |
+| `ui/src/views/index.ts:45~63` | 조각 3 `listen` + 조각 4 `listenDaemon`·`goView`·`defaultSlug` · `confirm.test.ts:61` 대역 키 `listenDaemon` |
+| `ui/src/views/views.css:71~` | 단순 나열 — 조각 3 `.cv-auto` + 조각 4 띠 스타일 |
+| `src-tauri/src/viewcore.rs:199~203` 문서 주석 · `:234~237` | ★**의미 충돌 고침**: 조각 3 이 새로 넘기는 「글 없는 고리」(`role:"link"` · attachment·system 등)에 조각 4 의 줄 위치 `at` 이 없었다 → 조각 4 앞 훑기(`confirm.ts:151` scanStep)는 끝을 넘는 토막에 `at` 없는 레코드가 하나라도 있으면 「다 훑음」을 확정하지 않으므로, 실제 기록(훅 글 등 고리가 흔함)에서 확인 띠가 「확인할 것 살펴보는 중」에 머문다 → 고리에도 `at`(바이트 수 · 글 0자 · NFR-S3 그대로) · 시험 `chunk_parser_reads_whole_lines_only_and_keeps_text` 에 단언 1줄 |
+
+- 시험: `bun test ./src/views` = **286 / 0**(= 조각 3 212 + 조각 4 177 − 공통 조각 1 103 · 정확히 합) · tsc rc 0 · cargo viewcore(§4).
+- **codex 1R(gpt-5.6-sol high · 읽기 전용 깨끗한 작업트리 · `</dev/null` · 대상 = remerge diff + 닿는 곳) = ACCEPT · issues 0**(원문 `docs/integ-1116/codex-r1.json` · 사본 `~/.cys/pack/round/_reviews/cysr-1116-integ-1118-r1-codex.json`). 확인 항목: 두 구독 수명·경합(listenGen · dead 표지) · poll 조건 = 정확한 합집합 · initOffset/reset · link+at 이 msgstep(applyRecords)·confirms(markersOf) 에서 의미를 바꾸지 않음 · uuid 전달 · band.paint 위치.
+  - 첫 호출은 개인정보 관문(`codex-pii-gate`)이 작업트리의 미추적 Tauri 런타임 사본(src-tauri/runtime 등 · 빌드용 복제)을 걸어 **codex 미호출(rc 5)** → 깨끗한 작업트리(detached d858abb3)에서 다시 = 통과.
+
+## 3. 팩 해시표 처분
+
+- `scripts/gen_released_directive_hashes.py --check` = **OK**(표류 0) · `gen_ceo_template.py --check` = GREEN — 합친 뒤 재생성할 것 없음(커밋 0).
+- 3a095c4e(1.1.15) 바이트 직접 잼: `MASTER_DIRECTIVE.md` = `793e143f659714bd…` · `CEO_TEMPLATE.md` = `1a9ebfb520fd7665…` → **지금 표에 둘 다 없음**(조각 4 재생성 12e8bc95 가 「생성 시점 작업 트리」 항목으로 들어 있던 이 1쌍을 새 판으로 바꿨다).
+- 넣는 방법을 찾음: 생성기 = 태그 패턴(`v*`·`pack-v*`·`vendor-v*`·`upstream/v*`) + 작업 트리만 · 옵션은 `--check` 하나(전문 읽음) → **추가 입력 길 없음**. 로컬 태그 `v1.1.15` 를 3a095c4e 에 다는 길은 하지 않음 — 11-21 실제 발행 태그와 이름이 부딪히고(발행 커밋이 다를 수 있음) 태그는 모든 작업트리가 공유한다.
+- 결론 = 맨 위 경고: **1.1.15 태그 뒤 재생성 필요**. 그때 `--check` 가 표류로 잡는다(태그가 생기면 생성기 출력이 바뀌므로) — 발행 절차에 `--check` 가 있으면 놓치지 않는다.
+- 참고(표에 새로 든 4개의 출처 · 정상): MASTER `33d2ab85…`·`bba13992…` · CEO `7cb5542f…`·`15c72552…` = 원작자 태그 v0.15.0/v0.15.1 · v0.14.55/v0.14.56(이 기기에 나중에 받은 태그 · 바이트 등가 표라 넓어져도 오판 0).
+
+## 4. 시험 — 기준선 3a095c4e(임시 폴더 밖) 대비 · 새 적색 0
+
+- 틀 = 스크래치 `runall.sh`(`env -i` · HOME/TMPDIR = `/tmp/i16XXXX` · `CARGO_BUILD_JOBS=6` · `--test-threads=4` · cargo 1건씩 · PATH 에 /usr/sbin:/sbin). 화면 게이트 = `gates.sh`(실제 번들 + 대역 · `cys run --` · playwright 1.60 venv · chromium_headless_shell-1248).
+- 기준선 = 3a095c4e 를 임시 폴더 **밖** `~/axdev/.wt/cys-1116-base-1118` 에 둔 사본의 값(vendor 좌석 §10-6 실행 = lib·cys·cysd · 그 밖 대상은 vendor 좌석 첫 실행 `out-base` · 같은 커밋). 이번에 기준선 전체를 다시 돌리지는 않았다(시간 상한) — 대신 HEAD 에 붉음이 나오면 그 시험을 기준선에서 단독으로 돌려 대조하는 방식(이번 최종 실행엔 붉음 없음).
+- 대상 머리: 전체 묶음 = 1ccfd1d2(cc-popover-z 까지 · 06:57~) · ui/app 단계는 79a56603(restart-confirm · Rust 변경 0)을 읽음 · 화면 게이트 = 79a56603 번들 · backlog 새 머리 병합(26a41fe1 · 바뀐 Rust = `src/bin/cysd` 만 + `agents.json`) 뒤 = cysd 묶음 다시.
+
+| 대상 | 기준선 3a095c4e | HEAD | 차이 사유 |
+|---|---|---|---|
+| cargo build --bins --tests | rc 0 | rc 0 | — |
+| lib | 1238 · 0 · 2 ign | **1256 · 0 · 3 ign** | +18 = vendor 저널 시험(vendor 1256 와 같음 · backlog lib 수 변화 0) |
+| bin cys | 761 · 0 · 2 | **765 · 0 · 2** | +4 = vendor(7d 2 · doctor 2) |
+| bin cysd(1ccfd1d2) | 3274 · 1(흔들림 · Locked) · 17 ign | **3303 · 0 · 17** | +28 = backlog 시험(b16·b16fix) · vendor +0(핀 이동) |
+| bin cysd(26a41fe1 · backlog 새 머리 뒤) | 3274 · 1(흔들림) · 17 | **3305 · 1 · 17** → 붉음 1 = `pending_requests::c8attempt_persisted_progress_and_chain_are_checked_against_actual_plan`(「persisted impossible progress accepted」) · **단독 3/3 초록**(`out-final/c8-solo.txt`) · 어느 가지도 `pending_requests.rs` 무접촉(3a095c4e..HEAD diff 0줄) = 부하 흔들림 계열(기준선·앞 좌석들의 pending_requests 흔들림과 같은 모듈) | +2 = backlog fix2 시험(`b16_fix2_tests.rs` · 재검 R1·R2 붉음→초록) |
+| cys-seatkeep | 49 · 0 | **49 · 0** | — |
+| tests/*.rs | hidden 1 · rotate 11 · seat_group 1 · drainhold 4 · win 2종 0 | **같음**(1 · 11 · 1 · 4 · 0 · 0 · 전부 0 실패) | — |
+| bun test(ui 전체) | 3451 pass · 0 fail | **3746 pass · 0 fail**(3834 · 123 파일) | + 조각 1·3·4 views 시험 · popover · restart-confirm 시험 |
+| `bun test ./src/views` | — | **286 / 0**(합친 직후) | 조각 3 212 + 조각 4 177 − 공통 103 |
+| tsc(typescript@7.0.2 · tsconfig.check) | rc 0 | **rc 0** | — |
+| cargo `-p cys-app --bin cys-app`(viewcore 포함) | (조각 1 기준 344) | **348 · 0 · 2 ign** | 조각 4 HANDOFF 348 과 같음(고리 at 단언은 기존 시험 안 1줄) |
+| 팩 파이썬(wakeup 4종 · radio 297 · computer_control 112 · hook_fail 11/10 · counsel 118 skip3 · agy_door 20 · notes_personal_hooks · dept_chat 3 · phoenix_loop · phoenix_fresh_honest) | 전부 rc 0 · liveness 13 | **전부 rc 0** · liveness 20 | vendor U08 +7 |
+| doc-contract(test_bootv2_doc_contract) · test_event_inject | (조각 4 OK · PASS 106) | **rc 0 · rc 0** | — |
+| 합성기 `gen_ceo_template.py --check` · `gen_released_directive_hashes.py --check` | — | **GREEN · OK** | §3 |
+| scripts/tests/test_*.py | OK 21 · FAIL 1(test_release_trigger_split) | **OK 22 · FAIL 1(같은 것)** | +1 = check_macho_arch · 같은 FAIL = 기준선부터 |
+| health run_bootstrap_health.py | 167 pass · 2 fail(H-CLT-1·2) · 1 skip | 전체 실행 165 · **4 fail** · 1 skip → 새 2건 처분 뒤 **H-CLT-1·2 만 남음**(기준선과 같은 ID · 이 기계 설치본 python 선택 환경) | 새 2 = H-SECRET-1(아래 secret 과 같은 줄 · 고침) · H-DETECT-7(검체 크래시 `OSError: Directory not empty: <TMPDIR>/tmp…` = 전체 실행 중 임시 폴더 정리 경합) → 고친 뒤 `--only H-DETECT-7,H-SECRET-1` 단독 = **2 PASS / 0 FAIL** |
+| secret-scan --all | clean 2049 | 전체 실행 **1건**(`WORKER_TODO.cysr-cc-popover-z-1118.md:2` 의 홈 절대 경로 — fix/cc-popover-z 가 들여온 줄) → 그 줄의 경로를 「작업트리 cys-cc-popover-z」 로 바꾼 커밋 뒤 **clean 2158** | 통합 좌석 고침 1줄(문서 · 동작 무관) |
+
+화면 게이트(79a56603 번들 · 기준 번들 = 3a095c4e `ui/dist`):
+
+| 게이트 | 결과 | 앞 좌석 값 |
+|---|---|---|
+| tickrec_gate OFF | **PASS · 새 = 기준 sha `308dd2b91f9a`**(invoke 열·저장소·화면 글자 · 켜짐도 같음) | 308dd2b91f9a(조각 0·1·3·4) — **같음**. 기준을 조각 0 이전 3a095c4e(1.1.15 작업 화면 그대로)로 잡아도 같은 값 · 정보 줄 「가짜 시각 어긋남 14건 · 최대 1ms」 = 조각 4 §13-3 부하 때 본 것과 같은 꼴(판정 밖) |
+| chat_gate | **PASS · ok 59 / 0** | 조각 3 59 |
+| confirm_gate | **PASS · ok 37 / 0** | 조각 4 37 |
+| cc_popover_z_gate(새) | **PASS 4 / 0** | — |
+| restart_confirm_gate(새) | **PASS 13 / 0** | — |
+| race · focus · seatrows · pillar · seatgroup · rolereuse · stty · nodept · restart · hidden_block | **108 · 72 · 75 · 77 · 8 · 11 · 7 · 16 · 6 · 18 — 전부 0 FAIL** | 앞 좌석들과 같은 수 |
+
+- 1ccfd1d2 번들에서도 같은 15종 PASS(같은 수 · `gates-1ccf/`). 게이트 실행이 커밋된 캡처 PNG 2개(`docs/evidence-cc-popover-z/…` · `docs/evidence-restart-confirm/…`)를 덮어써서 `git checkout --` 으로 되돌렸고, 작업트리에 남긴 `docs/evidence-tabs-sidebar/` 캡처는 스크래치로 옮김(📌 I4).
+
+### 4-1. 06:53 끊긴 첫 실행과 마무리 값
+
+- 첫 실행(d858abb3 · 05:49~)은 06:53 데몬 재시작으로 `tests/*.rs` 중간에 끊김(`out-run1/`): lib 1256/0 · cys 765/0 · seatkeep 49/0 · **cysd 3297 · 6 실패**(seat_proc seatkeep 4 = `handshake_timeout` · `pending_requests::c8attempt_restart…` = `Locked` · `u18_cwd_blocked_observed_under_sandbox_read_deny` = 안쪽 샌드박스 검체 실패). → 처음부터 다시 돈 실행(1ccfd1d2)에서 **cysd 3303 · 0** — 6건 다 재현 안 됨(부하 흔들림 계열 · seatkeep `handshake_timeout`·`Locked` 는 앞 인계서들의 흔들림 꼴).
+- 끊긴 실행이 남긴 고아 = 이 작업트리 `target/debug/cysd` 2기(11291 · 22128 · ppid 1) + 그 시험 데몬의 phoenix 파이썬 1기(13554 · ppid 1 · 이 작업트리 `target/debug/runtime/python` · 죽은 시험 소켓) → `ps -o args` 로 경로 확인 뒤 pid 지정 종료(master#e28c3581 · 셋째는 같은 시험의 잔여라 함께 · pkill 0).
+
+## 5. 경합 재측정 — 「쓰는 도중 뜬 승인 창」 8점(조각 1 이월 6 · 브리프 4)
+
+### 5-1. 왜 chat_gate G 만으로는 못 재는가
+- `chat_gate.py` G 장면은 **JS 대역 데몬**이다: 거부를 `chat_send` 를 부르는 순간(쓰기 전) 한 번만 판정하고(`refused: C.screen`), 「샘」 = 창이 [쓰기 시각, 쓰기 + 836ms] 안에 뜸으로 센다. 데몬의 Enter·붙여넣기 직전 재판정은 대역에 없다 → 합친 번들에서 다시 돌려도 **lag0 = 화면 문턱 16 · 데몬 거부 0 · 샘 8 · 겹침 없음 7 / lag1000 = 6 · 10 · 8 · 7 — 조각 1 기록과 같은 숫자**(`gates-head/chat-gate-race.json` · 대역 모형 값 · 화면 문턱 동작이 그대로라는 뜻뿐).
+- 그래서 **실제 데몬 코드**로 같은 8점을 잼: 측정 전용 시험(커밋 안 함 · 작업트리 `~/axdev/.wt/cys-1116-integ-race` 의 `send_settle_tests.rs` 끝 `integ1116_race_sweep`·`integ1116_r1_feed_only` · `#[ignore]`) — 점마다 새 좌석 → 빈 입력줄 → **앱 대화 화면과 같은 사람 표지 원자 제출**(`surface.send_text` · human · clear_first · refuse_on_approval · machine_origin false = `viewcore::human_send_params` 와 같은 칸) → 응답 뒤 +d ms 에 승인 창을 그림 → 그 순간 Enter 가 이미 쓰였는지 · 거부 사건 단계 · 최종 Enter.
+- 실행 = 1ccfd1d2 트리(backlog 8bdd08ad 고침 포함 · backlog 새 머리 f55e6470 은 아직 안 듦) · 격리 env · 2회 반복 · `--test-threads=1`(원문 스크래치 `race-pre.log`).
+
+### 5-2. 8점 × 2회 — 사람 표지 원자 제출
+
+| 창이 뜬 때(응답 뒤) | refuse_on_approval 켬(앱 대화 화면 · 합친 빌드) 1회 / 2회 | 끔(= Enter 직전 재판정 없음 · 고치기 전 등가) 1회 / 2회 |
+|---|---|---|
+| +0.1초 | Enter 앞 거부 / **붙여넣기 앞 거부** | 창 위 Enter / 창 위 Enter |
+| +0.2초 | Enter 앞 거부 / Enter 앞 거부 | 창 위 Enter / 창 위 Enter |
+| +0.3초 | Enter 앞 거부 / Enter 앞 거부 | 창 위 Enter / 창 위 Enter |
+| +0.4초 | Enter 앞 거부 / Enter 앞 거부 | 창 위 Enter / 창 위 Enter |
+| +0.5초 | Enter 앞 거부 / Enter 앞 거부 | 창 위 Enter / 창 위 Enter |
+| +0.6초 | Enter 가 먼저(겹침 없음) / Enter 앞 거부 | Enter 가 먼저 / 창 위 Enter |
+| +0.7초 | Enter 가 먼저 / Enter 가 먼저 | Enter 가 먼저 / Enter 가 먼저 |
+| +0.8초 | Enter 가 먼저 / Enter 가 먼저 | Enter 가 먼저 / Enter 가 먼저 |
+| **합계** | **창 위 Enter 0 / 16** · 거부 11(붙여넣기 앞 1 · Enter 앞 10) · 겹침 없음 5 | **창 위 Enter 11 / 16** · 겹침 없음 5 |
+
+- 읽는 법: 「Enter 가 먼저」 = 창이 뜨기 전에 이미 Enter 가 들어가 말이 제출됨(창의 「1. Yes」 를 누른 것이 아님 · 오승인 아님). 이 측정 좌석에서 Enter 는 응답 뒤 약 0.52~0.67초에 들어갔다(조각 0.5 VM 실측 +0.54초와 같은 범위). 조각 1 표의 「+0.6~+0.8초 샘」 은 대역이 원자 제출 길이를 836ms 로 가정한 값이라, 실제로 Enter 뒤에 뜬 창까지 샘으로 셌던 것이다.
+- **결론: 쓰는 도중 뜬 창(Enter 전에 뜬 창) = 합친 빌드에서 전부 데몬이 막음(11/11) · 고치기 전 등가 동작은 11/11 샘.**
+- ⚠한계(정직): 시험은 창을 데몬 화면 해석기에 **바로** 그린다(실제 Claude 의 그리기 → PTY → 해석 지연 0). 실제로는 「창이 PTY 에 나왔지만 데몬이 아직 해석 못 한」 짧은 틈과 「마지막 탐침 ~ CR 바이트」(1ms 미만) 틈이 남는다 — 진짜 Claude 걷기(0.5 재개 조건)에서 잴 몫. 「끔」 열은 같은 HEAD 에서 옵션만 끈 것(옛 판 바이너리 아님 · 응답 뒤에 뜨는 창이라 핸들러의 쓰기 전 판정은 두 열에서 같음).
+
+### 5-3. ⚠R1 갈래 — 「backlog 고침 전」(master#a55416cb · 1ccfd1d2 = backlog 8bdd08ad 까지)
+
+창은 없고 feed 승인 대기 항목만 **보내기 전부터** 있는 좌석 · raw `cat` 기록기 좌석으로 PTY 에 실제로 간 바이트를 봄 · 3회씩.
+
+| 입력줄 | 응답 | PTY 에 간 바이트 | 거부 단계 | 데몬 계수(입력줄·사람 몫) | 뜻 |
+|---|---|---|---|---|---|
+| 빈 줄 ×3 | `sent:true` | `15`(Ctrl-U 1바이트)뿐 | 붙여넣기 앞 | (0, 0) | 쓰기 전 판정이 feed 를 안 봐 통과 → Ctrl-U 를 쓴 뒤 거부 · 빈 줄이라 해는 없음 |
+| 사람 초안 「사람 초안」 ×3 | `sent:true` | `15`뿐 | 붙여넣기 앞 | (13, 13) | **Ctrl-U 가 실제 화면의 사람 초안을 지웠는데 데몬은 초안이 그대로 있다고 셈**(계수 복원) = R1 그대로 재현 |
+
+- backlog 새 머리 f55e6470(28b74eaf 「원자 제출 쓰기 전 판정 = feed 합집합」)이 이 갈래를 **쓰기 전 거부(바이트 0)** 로 바꾼다 — 그 좌석의 붉음→초록 시험(`b16_fix2_tests.rs`)은 합친 머리 26a41fe1 의 cysd 묶음에 들어 있다(§4). 같은 측정 시험을 26a41fe1 에서 다시 돌리는 것은 시간 상한(08:45) 안에 못 했다 — 고친 뒤 동작의 근거는 지금 그 좌석 시험(26a41fe1 cysd 묶음에서 초록)뿐 · 측정 작업트리를 26a41fe1 로 옮겨 `cargo test --bin cysd integ1116_r1_feed_only -- --ignored --nocapture` 1회면 표가 채워진다(📌).
+- 대화 화면 쪽: 화면 문턱도 feed 승인 항목(마스터 좌석)을 보고 붙잡지만(조각 1 수용 브2) 그 조회와 쓰기 사이 틈·마스터 아닌 좌석 대상 원자 제출에는 데몬 판정이 유일한 방어였다.
+
+## 6. 📌 모음 — 각 가지의 덧붙임(실행 안 함 · 판단 = master)
+
+「원 좌석 표기」 = 그 인계서가 직접 적은 판(없으면 「—」). 「통합 좌석 제안」 = 내가 붙인 가름(근거 1줄) — **판단은 master**. 「1.1.16 전」 = 1.1.16 발행 전에 손이 필요한 성격, 「1.1.17」 = 미뤄도 1.1.15 보다 나빠지지 않는다고 원 좌석·codex 가 적은 것, 「설계/측정」 = 코드 아님.
+
+### 6-1. 이 티켓(통합)에서 생긴 것
+
+| # | 내용 | 통합 좌석 제안 |
+|---|---|---|
+| I1 | ★1.1.15 태그 뒤 해시표 재생성(맨 위 경고 · §3) | 1.1.16 전(발행 차단 성격) |
+| I2 | 해시 생성기에 「추가 git ref 입력」(예 `--extra-ref <커밋>`) — 태그 전 통합 가지에서도 직전 판 바이트를 넣을 길 | 1.1.17(도구) |
+| I3 | 대화 화면 데몬 사건 구독이 둘(조각 3 `listen` · 조각 4 `listenDaemon`) — 같은 `daemon-event` 를 두 번 구독 · `default_socket_slug` 도 두 번 부름. 한 구독으로 합쳐 두 처리기에 나눠 주기(동작 같음 · 조각 2 「고리 한 벌」 과 같은 성격) | 1.1.17 |
+| I4 | 화면 게이트가 작업트리에 `docs/evidence-tabs-sidebar/` 캡처를 남긴다(이번엔 스크래치로 옮김) — 게이트 출력 경로를 TMPDIR 로 | 1.1.17(시험 위생) |
+| I5 | codex 개인정보 관문이 빌드용 미추적 Tauri 런타임 복제(`src-tauri/runtime` 등)를 막는다 — 리뷰는 깨끗한 작업트리에서(이번 대응) · 관문 안내문에 그 길을 적을지 | 운영(도구) |
+
+### 6-2. `integ/1116-vendor`(HANDOFF.cysr-1116-vendor-import.md 📌 · §8 · §10)
+
+| # | 내용 | 원 좌석 표기 | 통합 좌석 제안 |
+|---|---|---|---|
+| V1 | 저널 묶음 전까지 부서 있는 기기에서 팩 단독 자동 업데이트를 멈출지(판정표 §6 결정 1) — 이 가지가 1.1.16 으로 나가면 그 게이트의 근거가 사라짐 | — | 1.1.16 전(결정만) |
+| V2 | codex 5R minor 1(링크 되살리기 재중단 창) · 2(write_journal nofollow 판독) · 3(부트 설치의 팩 밖 시드를 잠금 밖으로) · 4(비 UTF-8 링크 = 적용 거부 · 안전) · `.user.tmp-<pid>` 잔여 | 1.1.17 후보 | 1.1.17 |
+| V3 | 윈도우 실기 끊김 재현 1회(레인 저널 · LockFileEx · 링크 거부) | — | 측정 |
+| V4 | F4 값싼 가름(옛 저널 백업 해시가 본부와 한 건도 안 맞으면 옮기지 않고 안내) | 1.1.17 후보 | 1.1.17 |
+| V5 | F3 · F2(나) · codex 1R minor ①②(1.1.15 부서 수동 쓰는 이 ↔ 부서 데몬 · 의도 줄 뒤 사용자 권한만 되돌림) | 기록(나빠지지 않음) | 1.1.17 |
+| V6 | 공장 초기화가 `.pack-journal.d` 를 옮길 때 열린 레인 잠금(유닉스 inode 갈림 · 윈도우 이동 실패) — 초기화가 데몬을 먼저 멈추는지 미확인 | — | 1.1.17(확인 1회) |
+| V7 | F7 ①(`javis_formation.py:207`·`javis_cycle_autopilot.py:230` 정지 표지 `os.path.exists` = U08 과 같은 꼴) · `javis_radio.py paused_now()` 같은 꼴 | — | 1.1.17 |
+| V8 | F7 ④ 1.1.16 → 1.1.15 되돌림 절차에 「레인 저널 남았는지 확인」 한 줄 | — | 1.1.16 전(문서 1줄) |
+| V9 | codex 2R minor: 공용 잠금 실패 뒤 옛 저널 부재 검사가 원자적이지 않음(제한 재시도 또는 세대·레인 표식) · F2 권한만 되돌린 사용자 시험 | — | 1.1.17 |
+| V10 | U05 업데이터 tarball(`make-darwin-updater-tarball.sh`) 칩 검사 미배선 · LSMinimumSystemVersion 10.13 vs 진입점 11.0 경고 | — | 1.1.17 |
+| V11 | 러너 `realops.rs` recover_pack_at 의 사용자 트리 복원과 팩 되돌림 상호작용 미측정 | — | 측정 |
+| V12 | 1.1.15 옛 공유 저널 올림 = 보수 규칙(kept/ 보관 후 되돌림 · 권한 못 되살림) — 끊긴 사이 예약 작업은 사람이 kept/ 에서 다시 넣어야 할 수 있음 | 한계 기록 | 1.1.16 발행 노트 1줄 |
+
+### 6-3. `integ/1116-backlog`(HANDOFF.cysr-1116-backlog.md §2·§3·§5·§10-7)
+
+| # | 내용 | 원 좌석 표기 | 통합 좌석 제안 |
+|---|---|---|---|
+| B1 | census 손 어휘 분석기 → `proc-macro2` 토크나이저(dev-dependency · 공급망 검토) 또는 시험 모듈 끝 명시 표지(10R 상한 격차) | 1.1.17 후보 | 1.1.17 |
+| B2 | 열 0 `#[cfg(test)]` 경로의 기존 규칙(비정형 꼴이면 운영 코드를 걷음 · codex 5R major 1) — 공용 그물 변경이라 별건 | 범위 밖 | 1.1.17 |
+| B3 | 쓰기 **전** 판정(핸들러)도 feed 승인 항목을 볼지(M2-주 첫 견본) — ★master#a55416cb R1 과 같은 자리(§5 R1 줄) | — | 재검 R1 고침(2169)에 포함 여부 확인 |
+| B4 | 원작자에게 돌려줄 수정: claude 어댑터 `approval_patterns` 에 Write 창·계획 승인 창 문구 + 번호 선택 행 + `scope` | — | 원작자 환류 |
+| B5 | CLI 순환(`cys.rs` cycle 5/7 원자 clear)·DRAIN 이 새 응답 칸 `submitted:false`·`refused_stage` 를 읽어 즉시 `not_cleared` | — | 1.1.17 |
+| B6 | 종전 `tool-permission` 패턴이 scope 없이 화면 전량(답 본문 인용에 승인 스캔 반응 · 디스크 동명 우선이라 고치려면 새 이름 + scope) | 기존 동작 | 1.1.17 |
+| B7 | h7 핀에 `InjectRefusing` 생산자 목록 핀 · `watch_wake.rs:313` 각성 Return 의 문·승인 재판정(대상 = master 좌석) | 범위 밖 | 1.1.17 |
+| B8 | `b16_atomic` 윈 ignore 제거 — 윈 CI 다음 실행에서 확인 | 그대로 | 측정(윈 CI) |
+| B9 | 큐 Return 재전송·Enter 직전 재판정을 공통 함수로 묶지 않음(기계가 다름) | 기록 | — |
+| B10 | 재검(2167) R1~R3 고침 = 2169 진행 중 | master 지시 | 1.1.16 전(추가 병합) |
+
+### 6-4. `feat/ui-slice1`(HANDOFF.cysr-ui-slice1.md §11 · §12)
+
+| # | 내용 | 원 좌석 표기 | 통합 좌석 제안 |
+|---|---|---|---|
+| S1-1 | 전환 단추 접근성(상단바 28px·13px · 설계 §9-2 미달) | 조각 10 걷기 | 조각 10 |
+| S1-2 | 대화 화면 3초 조회를 작업 화면 고리와 한 벌로 | 조각 2 | 조각 2(I3 과 같은 성격) |
+| S1-3 | 첫 글자 `#`(Claude Code 메모 단축 추정 · 판별 실측 없음) | — | 측정(U21 때) |
+| S1-4 | 다시 켠 뒤 붙잡은 말 = 사람 확인(설계 §2-5 를 같은 실행 안으로 좁힘) | 설계 개정 후보 | 설계 |
+| S1-5 | 사람 입력 30초 = 내 보내기 포함 → 데몬이 「이 사람 입력은 이 요청」을 응답에 실어 주면 짝짓기 정확 | 데몬 후보 | 1.1.17 |
+| S1-6 | 데몬 고침 뒤 chat_gate G 재측정 | 이월 | **이 티켓 §5 에서 함** |
+| S1-7 | 설계 문서 개정(§5-1 세션 경로 꼴 · §2-5 400ms → 실측 0.47~0.55초) | 설계 | 설계 |
+| S1-8 | 지적 4ⓒ `write_stalled`·`write_failed`(쓰기 0 확정)를 「못 보냄 + 다시 보내기」로 옮길지 | master 판단 | 1.1.17 |
+| S1-9 | 지적 6 「화면이 Enter 거부를 모른 채 확인 중」 + 미제출 계수 복원으로 뒷말이 「쓰다 만 글」로 붙잡힘 — 통합 실측 | 통합 때 | §5 참고 · 화면 쪽 짝짓기(S3-1) |
+| S1-10 | 지적 7 데몬 승인 창 거부도 사람 입력 시각을 찍음(화면 15초 쉼 실효 없음) | 데몬 후보 | 1.1.17 |
+| S1-11 | 지적 10 문턱~쓰기 사이 마스터 죽음 → 빈 셸 실행(데몬 빈 셸 가드가 `!human` 조건) — 사람 표지여도 `refuse_on_approval` 요청이면 빈 셸 거부 | 데몬 후보 | 1.1.16 전 검토(대화 화면이 1.1.16 기본 노출이면) |
+| S1-12 | 지적 11 등록 없는 좌석을 대화 화면 대상으로 다룰지 | — | 설계 |
+
+### 6-5. `feat/ui-slice3`(HANDOFF.cysr-ui-slice3.md §11 · §12-6)
+
+| # | 내용 | 원 좌석 표기 | 통합 좌석 제안 |
+|---|---|---|---|
+| S3-1 | `input.refused_at_write` 에 요청 번호 — ★backlog 고침(§10-2 지적 5)이 사람 길 사건에 `request_id` 를 실음 → **데몬 쪽은 이 통합에 들어옴** · 화면(core.onDaemonEvent)은 아직 좌석·5초 창으로 짝지음 | 데몬 몫 | 1.1.16 전 또는 1.1.17(화면 짝짓기를 request_id 로) |
+| S3-2 | viewcore.rs 세션 경로: 심볼릭 링크 cwd(실제 경로로 풀어 슬러그 · codex 재검토 필요) | — | 1.1.17 |
+| S3-3 | 조각 5 에 넘길 것: `chat_send{kind:auto}` · `trackAuto` · 적재 전 사건 유실 · 화면 내림 동안 사건 유실 · `queue.expired_parked` | 조각 5 | 조각 5 |
+| S3-4 | 같은 말 겹침 막기의 다시 켬 너머 유지(원문 해시만 저장 — NFR-S3 판단) | — | 설계 |
+| S3-5 | 설계 문서 개정 후보(세션 읽기 계기 · 답하는 중 · 확인 중 · 겹침 · write_released · expired) | 설계 | 설계 |
+| S3-6 | 통합 재측정(= S1-6) | 이월 | **§5** |
+| S3-7 | 하네스 uuid 없는 꼴 짝 검사 보강 | — | 1.1.17(시험) |
+| S3-8 | 감싼 붙여넣기 안쪽 태그 바뀜(`<\pasted_content`) 되돌려 맞출지 | — | 측정 |
+| S3-9 | 둘째 줄 `!` 막기 유지 여부 | U21 때 | 측정 |
+| S3-10 | 조각 4 장부가 `role:"link"`·`Reply.at` 을 쓸지 — ★통합에서 link 에 줄 위치 `at` 을 실음(§2) · `Reply.at`(기록 시각)과 `Rec.at`(바이트 위치)은 이름만 같고 다른 칸 | — | 기록 |
+| S3-11 | codex 2R 고침분(동률 · 감싼 꼴 분기 · 시작점 세대·stale) codex 미검토 | master 판단 | 1.1.16 전 이종 1회 권함(통합 codex 1R 은 충돌 덩어리만 봄) |
+
+### 6-6. `feat/ui-slice4`(HANDOFF.cysr-ui-slice4.md §11 · §12 · §13)
+
+| # | 내용 | 원 좌석 표기 | 통합 좌석 제안 |
+|---|---|---|---|
+| S4-1 | FR-C4 OS 알림·앱 배지 | 범위 밖 | 다음 조각 |
+| S4-2 | `cys feed push --wait`(permission·question) 항목을 띠에 올릴지 | — | 설계 |
+| S4-3 | 사건 구독을 main.ts 배선 1줄로(대화 화면을 끈 동안 온 deadman 도) — 원작자 파일 1줄 대가 | — | 1.1.17(I3 과 함께) |
+| S4-4 | ★데몬 지문 계약(§13-7 ①~④ `screen_fingerprint` · `approval_fingerprint_mismatch`) — 지금 데몬엔 지문이 없어 대화 화면 「직접 허락」은 늘 닫힘 | 데몬 티켓 후보 | 1.1.17(데몬) |
+| S4-5 | 도우미 지침(팩)에 「되돌릴 수 없는 명령 전에 까닭 한 줄」(사람 승인 대상) | — | 팩 지침(박사님 승인) |
+| S4-6 | 팩 지침 D7(⟪팀 제안⟫) | 조각 6 | 조각 6 |
+| S4-7 | F7 닫히지 않는 물음 치울 길 · F10 띠 한 번에 하나 → 다른 항목에 거절 | 지시로 📌 만 | 1.1.17 |
+| S4-8 | §C 허락 창이 떠 있는 동안 도우미 좌석 주기 출력(idle_secs)으로 A→B 좁히기 — 실측 0 | 측정 대기 | 측정(0.5 재개) |
+| S4-9 | `main.rs` 이름 1줄(`viewcore::confirm_reply`) = 원작자 파일 변경 1줄 → 다음 원작자 편입 때 충돌 지점 | 기록 | 편입 때 |
+| S4-10 | 해시표 직전 판 1쌍(793e143f·1a9ebfb5) | 통합 때 | **§3 처분**(I1) |
+
+### 6-7. `fix/cc-popover-z` · `fix/restart-confirm`
+
+- 덧붙임 없음(커밋 메시지·TODO 확인). 게이트 `cc_popover_z_gate.py` 는 「수동 실행 · CI 미배선」(파일 머리) — CI 배선 여부만 📌(1.1.17).
+
+### 6-8. 측정 대기(코드 아님 · 진짜 Claude 로그인 필요 — 조각 0.5 M4~M8 재개 조건)
+
+- 대화 화면 수용 8(「안녕」 → 마스터 답) · uuid/parentUuid 사슬(M8) · 긴 붙여넣기 기록 꼴(U20) · 둘째 줄 `/`(U21) · 바쁜 중 붙여넣기(U25) · 답하는 중 실물 · 표식 준수율(U15′) · FR-C5 5분·멈춤 경로(U1) · 윈도 결속 세션 파일(조각 10).
+
+## 7. 증거 경로
+
+- 스크래치(재부팅 시 사라질 수 있음) = `/private/tmp/claude-501/-Users-oogisoogi-axdev--wt-cys-1116-integ/f735c79c-f628-4381-8653-1eb57b0995c2/scratchpad/`: `runall.sh`(시험 틀) · `out-head/`(최종 시험) · `out-run1/`(06:53 재시작으로 끊긴 첫 실행) · `gates.sh`·`gates-head/`(화면 게이트) · `remerge.diff` · `codex-r1-*`
+- 저장소 안: `docs/integ-1116/codex-r1-prompt.md` · `codex-r1.json`
+- 측정 작업트리 `~/axdev/.wt/cys-1116-integ-race`(미커밋 측정 시험 2개 · 지울 때 `git worktree remove --force`) · codex 사본 작업트리 = 스크래치 `cx/`
+- 기준선 작업트리 `~/axdev/.wt/cys-1116-base-1118`(detached 3a095c4e · 이번에 `ui/node_modules`·`ui/dist` 생김 = git 무시 대상)

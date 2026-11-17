@@ -1,5 +1,5 @@
 # worker-3 TODO — TICKET=cysr-cc-popover-z-1118
-cwd = /Users/oogisoogi/axdev/.wt/cys-cc-popover-z · 가지 fix/cc-popover-z ← 3a095c4e · 이월 없음 · push·서명·발행·앱 교체 금지
+cwd = 작업트리 cys-cc-popover-z · 가지 fix/cc-popover-z ← 3a095c4e · 이월 없음 · push·서명·발행·앱 교체 금지
 
 - [x] 1. style.css 층서 토큰 --z-ctx-menu 를 cc-panel(1500) 위 · palette(1600) 아래로
 - [x] 2. stacking.test.ts 관계 단언(ctx-menu > cc-panel · modal > ctx-menu) + ORDER 갱신

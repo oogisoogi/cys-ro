@@ -7127,6 +7127,10 @@ mod spawn_policy_tests {
 
     /// 줄 전체가 속성(`#[…]`·`#![…]`) 하나 이상으로만 이뤄졌는가 — 대괄호 짝(따옴표 안 무시)으로 각 속성의 끝을 찾고, 뒤에 다른 글자가 남으면 거짓.
     fn is_pure_attr_line(t: &str) -> bool {
+        // ★(codex 7R major) 주석(`/*`·`//`)·문자 리터럴(`'`)이 섞인 줄은 대괄호 짝을 믿을 수 없다 — 순수 속성 줄로 보지 않는다(보수 쪽).
+        if t.contains("/*") || t.contains("//") || t.contains('\'') {
+            return false;
+        }
         let c: Vec<char> = t.trim().chars().collect();
         let mut i = 0usize;
         if c.is_empty() {
@@ -7421,6 +7425,11 @@ mod spawn_policy_tests {
             "mod imp {\n    #[cfg(test)]\n    #[allow(dead_code)] #[doc = \"a]b\"]\n    mod tests {\n        fn drop_me() {}\n    }\n    fn keep() {}\n}\n",
         );
         assert!(!attrs.contains("drop_me") && attrs.contains("fn keep"), "순수 속성 줄을 건너뛰지 못했다: {attrs}");
+        // codex 7R 반례: 주석 속 대괄호(`/* [ */` … `// ]`)로 같은 줄 항목까지 속성으로 읽으면 다음 운영 모듈을 걷는다.
+        let cm = production_slice(
+            "mod outer {\n    #[cfg(test)]\n    #[allow(dead_code /* [ */)] mod tests {} // ]\n    mod production {\n        pub fn keep() {}\n    }\n}\n",
+        );
+        assert!(cm.contains("mod production") && cm.contains("pub fn keep"), "주석 속 대괄호로 운영 모듈을 걷었다: {cm}");
         assert!(tp.contains("keep_after") && tp.matches("Command::new").count() == 1 && !tp.contains("fn t<"),
                 "문자열·문자·주석·raw 문자열 속 중괄호에 짝이 흔들렸다: {tp}");
         // 실물에도 걸어 둔다 — 이 파일들의 프로덕션 앵커가 사라지면 핀이 헛도는 것이다.

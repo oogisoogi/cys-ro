@@ -11670,6 +11670,23 @@ mod tests {
         assert_eq!(res, Ok((JournalRecovery::Nothing, Some(true))), "본부 레인 잠금 때문에 부서 데몬이 자기 팩 설치를 건너뛰었다");
     }
 
+    /// F2(독립 검증 1118): 권한 귀속은 끝의 **의도 줄**(mode_intent · 성공 여부 미상)을 건너뛰고 그 앞의 확정 줄을 본다.
+    /// (가) 내용 줄(해시 + 놓인 권한 0644) 확정 → 의도 줄(0755) 확정 → chmod 전 끊김: 지금 바이트·권한이 그 내용 줄과 같으면 이 적용이 남긴
+    /// 권한이다 → 적용 전 권한(0775)으로. (나) chmod 뒤 · 성공 줄 전 끊김(지금 0755) = 의도는 증거가 아님 → 지금 권한 유지(끊긴 뒤 사용자 chmod +x 와
+    /// 구별 불가 · 안전 쪽). 끊긴 뒤 사용자가 내용을 고쳤으면(해시 불일치) 역시 지금 권한 유지.
+    #[test]
+    fn j1116_mode_attribution_looks_past_a_trailing_intent_line() {
+        let bytes: &[u8] = b"#!/bin/sh\necho new\n";
+        let mut pl = std::collections::BTreeMap::new();
+        pl.insert("hooks/h.sh".to_string(), vec![Announced::Sha(sha256_hex(bytes), Some(0o644)), Announced::ModeIntent(0o755)]);
+        let ga = rollback_mode_for("hooks/h.sh", Some(0o775), Some(0o644), Some(bytes), Some(&pl));
+        let na = rollback_mode_for("hooks/h.sh", Some(0o775), Some(0o755), Some(bytes), Some(&pl));
+        let user = rollback_mode_for("hooks/h.sh", Some(0o775), Some(0o644), Some(b"#!/bin/sh\necho mine\n"), Some(&pl));
+        assert_eq!(ga, (Some(0o775), false), "(가) 의도 줄이 앞의 확정 증거를 가려 적용 전 0775 가 0644 로 남는다");
+        assert_eq!(na, (Some(0o755), true), "(나) 의도 줄만으로 지금 권한을 이 적용 것으로 보았다");
+        assert_eq!(user, (Some(0o644), true), "끊긴 뒤 사용자가 내용을 고친 파일의 권한을 되돌렸다");
+    }
+
     /// F1 고침이 1.1.15 쓰는 이를 놓치지 않는다: 공용 잠금 **만** 쥔 쓰는 이(1.1.15 `cys pack-update` · 옛 공유 저널을 쓴다)가 있으면 본부 레인
     /// 기동은 옛 저널을 옮기지도 설치하지도 않는다(Busy) · 부서 레인 기동은 옛 저널을 보지 않으므로 자기 설치를 한다.
     #[cfg(unix)]

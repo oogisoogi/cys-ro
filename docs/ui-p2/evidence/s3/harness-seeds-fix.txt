@@ -1,0 +1,6 @@
+[M2·M3 5001~5300] {"scenarios":300,"msgs":2501,"samples":515390,"missing":0,"wrong":0,"dupRisk":0,"multiWrite":0,
+ 0 fail
+[M2·M3 910001~910300] {"scenarios":300,"msgs":2514,"samples":515379,"missing":0,"wrong":0,"dupRisk":0,"multiWrite":0,
+ 0 fail
+[M2·M3 77700001~77700300] {"scenarios":300,"msgs":2524,"samples":515178,"missing":0,"wrong":0,"dupRisk":0,"multiWrite":0,
+ 0 fail

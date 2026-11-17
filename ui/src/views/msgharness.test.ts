@@ -270,7 +270,7 @@ describe("M2·M3 하네스 — 다른 씨앗 범위(환경 변수)", () => {
     const b = Math.min(to, a + 24);
     it(`씨앗 ${a}~${b}`, async () => {
       for (let s = a; s <= b; s++) await runScenario(s, t);
-    }, 120_000);
+    });
   }
   if (from > 0)
     it("모음", () => {

@@ -1,5 +1,5 @@
 [scoped pid=81420 registered in ledger]
-번들: /Users/oogisoogi/axdev/.wt/cys-ui-slice3/ui/dist · 기준 번들: /Users/oogisoogi/axdev/.wt/cys-ui-slice1/ui/dist
+번들: <wt>/cys-ui-slice3/ui/dist · 기준 번들: <wt>/cys-ui-slice1/ui/dist
 == ON: 스위치 켬 · 200틱 넘게
   ok   페이지 오류 0 []
   ok   window.__cysTickRec 있음(켜짐)

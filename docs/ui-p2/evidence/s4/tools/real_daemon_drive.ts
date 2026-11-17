@@ -1,5 +1,5 @@
 // 조각 4 바깥 증거 — 실제 데몬(격리 HOME) 대상 ConfirmBook.decide 1회 + 같은 판 재클릭(TICKET=cysr-ui-slice4-1118).
-// 화면 대신 ConfirmBook 을 그대로 쓴다(그리기 = 신뢰 클릭 판정은 e2e 몫). invoke 대역 = 데몬 소켓 원문 RPC(Tauri feed_reply 와 같은 operator_token 첨부).
+// 화면 대신 ConfirmBook 을 그대로 쓴다(그리기 = 신뢰 클릭 판정은 e2e 몫). invoke 대역 = 데몬 소켓 원문 RPC(Tauri confirm_reply 와 같은 operator_token 첨부 · fix2-1118 부터 feed_reply 대신).
 // 쓰는 법: CYS_SOCKET=<격리 소켓> bun run real_daemon_drive.ts
 import { connect } from "node:net";
 import { readFileSync } from "node:fs";
@@ -47,10 +47,13 @@ const invoke = async (cmd: string, a: Record<string, unknown> = {}): Promise<unk
     if (r.ok !== true) throw new Error("org");
     return r.result;
   }
-  if (cmd === "feed_reply") {
-    const r = await rpc("feed.reply", { request_id: a.requestId, decision: a.decision, operator_token: tok });
+  if (cmd === "confirm_reply") {
+    // viewcore.rs confirm_reply 와 같은 꼴(지문은 있을 때만 · 결과 그대로 · fix2-1118 codex 1R major 5)
+    const params: Record<string, unknown> = { request_id: a.requestId, decision: a.decision, operator_token: tok };
+    if (typeof a.screenFingerprint === "string" && a.screenFingerprint) params.screen_fingerprint = a.screenFingerprint;
+    const r = await rpc("feed.reply", params);
     if (r.ok !== true) throw `${(r.error as { code?: string })?.code}: ${(r.error as { message?: string })?.message}`;
-    return null;
+    return r.result;
   }
   throw new Error(cmd);
 };
@@ -72,5 +75,5 @@ await book.decide(bound, "allow");
 console.log("FIRST", JSON.stringify({ notice: book.notice, calls: calls.slice(c0), decision: book.decisions.at(-1) }));
 const c1 = calls.length;
 await book.decide(bound, "allow"); // 같은 판 재클릭 — 이미 처리됨
-console.log("SECOND", JSON.stringify({ notice: book.notice, calls: calls.slice(c1), feed_reply_calls: calls.slice(c1).filter((x) => x === "feed_reply").length, decision: book.decisions.at(-1) }));
+console.log("SECOND", JSON.stringify({ notice: book.notice, calls: calls.slice(c1), feed_reply_calls: calls.slice(c1).filter((x) => x === "confirm_reply").length, decision: book.decisions.at(-1) }));
 console.log("RPCLOG", JSON.stringify(rpcLog));

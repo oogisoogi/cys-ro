@@ -6,7 +6,7 @@
 // 글은 전부 textContent(명령 원문·마스터 글에 HTML 해석 0).
 
 import type { ChatCore } from "../core";
-import { allowReady, bandLabel, boundOf, type BandItem, type StallWhy } from "../judge/confirms";
+import { ALLOW_AT_WORK_MSG, allowReady, bandLabel, boundOf, canAllowDirect, type BandItem, type StallWhy } from "../judge/confirms";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -115,6 +115,29 @@ export function createBand(act: ChatCore, ui: BandUi): BandHandle {
       return box;
     }
     box.dataset.direct = "1";
+    // 단추는 이 그리기 순간의 판(번호·시각·본문·좌석·지문)에 묶인다 — 누른 뒤 core 가 처리 직전 다시 받아 대조(FR-C5b).
+    const bound = boundOf(a);
+    const decide = (dec: "allow" | "deny") => (e: MouseEvent) => {
+      if (!e.isTrusted) return; // 사람이 실제로 누른 클릭만(NFR-S5 ①② · 대본 클릭 무시 · 안내도 없음)
+      if (act.confirm.busy) return;
+      const r = allowReady(it, expanded.has(it.key), dec);
+      if (!r.ok) {
+        localNote = r.msg;
+        paint();
+        return;
+      }
+      localNote = null;
+      void act.confirm.decide(bound, dec);
+    };
+    if (!canAllowDirect(a)) {
+      // 데몬 지문 표지 없음(지금 데몬) — 화면만으로는 지금 도우미 창이 그 명령인지 증명할 수 없다 → 직접 단추 = 거절 + 작업 화면에서 보기만(codex 1R blocking · master 결정)
+      box.dataset.direct = "deny";
+      box.append(el("div", "cvb-text", `도우미가 허락을 기다려요 — ${ALLOW_AT_WORK_MSG}`));
+      const row = el("div", "cvb-actions");
+      row.append(button("거절", "cvb-deny", decide("deny")), button("작업 화면에서 그 창 보기", "cvb-work", () => act.goView("work")));
+      box.append(row);
+      return box;
+    }
     box.append(el("div", "cvb-text", `도우미가 허락을 기다려요 — ${STALL_TEXT[it.stall]}. 직접 정할 수 있어요.`));
     const open = expanded.has(it.key);
     const tog = button(open ? "접기" : "무엇을 보기", "cvb-what", () => {
@@ -137,20 +160,6 @@ export function createBand(act: ChatCore, ui: BandUi): BandHandle {
       }
       box.append(d);
     }
-    // 단추는 이 그리기 순간의 판(번호·시각·본문·좌석)에 묶인다 — 누른 뒤 core 가 처리 직전 다시 받아 대조(FR-C5b).
-    const bound = boundOf(a);
-    const decide = (dec: "allow" | "deny") => (e: MouseEvent) => {
-      if (!e.isTrusted) return; // 사람이 실제로 누른 클릭만(NFR-S5 ①② · 대본 클릭 무시 · 안내도 없음)
-      if (act.confirm.busy) return;
-      const r = allowReady(it, expanded.has(it.key), dec);
-      if (!r.ok) {
-        localNote = r.msg;
-        paint();
-        return;
-      }
-      localNote = null;
-      void act.confirm.decide(bound, dec);
-    };
     const allow = button("허락", "cvb-allow", decide("allow"));
     if (!open) {
       allow.setAttribute("aria-disabled", "true");

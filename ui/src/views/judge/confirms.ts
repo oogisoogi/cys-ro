@@ -47,25 +47,20 @@ export function markersOf(r: Rec): MarkerEvent[] {
       const text = line.slice(ASK_PREFIX.length, line.length - MARK_END.length).trim();
       if (text) out.push({ kind: "ask", text, uuid: r.uuid });
     } else if (line.startsWith(RESOLVE_PREFIX)) {
-      const key = line.slice(RESOLVE_PREFIX.length, line.length - MARK_END.length).trim();
-      if (key) out.push({ kind: "resolve", key, uuid: r.uuid }); // 전문을 싣는다 — 대조는 resolves()
+      // 깎지 않는다 — 표식 안 글자 그대로(20번째 글자가 띄어쓰기여도 보존 · codex 1R major 6). 대조는 resolves().
+      const key = line.slice(RESOLVE_PREFIX.length, line.length - MARK_END.length);
+      if (key) out.push({ kind: "resolve", key, uuid: r.uuid });
     }
   }
   return out;
 }
 
-/** 해결 표식이 이 물음을 닫는가 — 해결 글이 물음의 **앞부분과 글자 그대로 같고** 그 길이가 앞 20자(물음이 짧으면 물음 전체) 이상일 때만.
- *  (codex 1R 탐침 「앞 20자만 같고 뒷말이 다른 해결」 — 앞 20자로 잘라 대조하면 뒷말이 틀린 해결도 닫았다 → 실린 글 전부를 대조.) */
+/** 해결 표식이 이 물음을 닫는가 — 해결 글이 물음의 **앞부분과 코드 포인트 그대로 같고**(띄어쓰기 포함 · 정규화 0) 그 길이가 앞 20자(물음이 짧으면 물음 전체) 이상일 때만.
+ *  (codex 1R 탐침 「앞 20자만 같고 뒷말이 다른 해결」 → 실린 글 전부를 대조 · codex 1R major 6 「공백 정규화가 정확 일치를 깸」 → 앞 고침 F4 의 정규화를 되돌림.
+ *   20번째 글자가 띄어쓰기인 길은 표식 판독이 해결 글을 깎지 않는 것으로 막는다 — markersOf.) */
 export function resolves(question: string, key: string): boolean {
-  // 공백 정규화(연속 공백 = 한 칸 · 앞뒤 깎음) 뒤 대조 — 20번째 글자가 띄어쓰기면 표식 판독의 끝 공백 깎기로 19자가 되던 길(검증 F4).
-  const q = normSpace(question);
-  const k = normSpace(key);
-  const need = Array.from(normSpace(Array.from(q).slice(0, RESOLVE_KEY_LEN).join(""))).length;
-  return k.length > 0 && Array.from(k).length >= need && q.startsWith(k);
-}
-
-function normSpace(s: string): string {
-  return s.replace(/\s+/g, " ").trim();
+  const need = Math.min(RESOLVE_KEY_LEN, Array.from(question).length);
+  return key.length > 0 && Array.from(key).length >= need && question.startsWith(key);
 }
 
 /** 물음의 앞 20자(코드 포인트) — 해결 표식 대조 열쇠. */
@@ -115,7 +110,14 @@ export interface FeedApproval {
   truncated: boolean;
   /** 데몬이 좌석 화면에서 감지한 도구 허락 창(daemon_issued · 번호 접두 daemon-)인가 — 아니면 좌석이 직접 올린 항목(글은 올린 쪽이 씀 · 검증 F0) */
   screen: boolean;
+  /** 데몬 승인 창 지문(feed 항목 `screen_fingerprint` · 비어 있지 않은 글) · 없으면 null.
+   *  ★이 칸이 있다 = 데몬이 「집행 직전 지금 창 지문 대조」를 지원한다는 표지(codex 1R blocking · 데몬 계약 = HANDOFF §13 📌).
+   *  지금 데몬에는 없다 → 늘 null → 직접 「허락」 0(거절 + 작업 화면에서 보기만). */
+  fingerprint: string | null;
 }
+
+/** 데몬 지문 표지 칸 이름(feed.list 항목) — 데몬 지원이 들어오면 이 칸을 싣는다(지금 = 없음). */
+export const FINGERPRINT_FIELD = "screen_fingerprint";
 
 const CMD_HEAD = "\n— 명령 원문:\n";
 const RO_HEAD = "\n— 읽기 전용 판정(기계 추정 · 근거 아님): ";
@@ -144,7 +146,9 @@ export function approvalsOf(feed: unknown): FeedApproval[] | null {
     const p = parseApprovalBody(body);
     const truncated = p.command.split("\n").length >= CMD_MAX_LINES || Array.from(p.command).length >= CMD_MAX_CHARS;
     const screen = f.daemon_issued === true || (f.daemon_issued === undefined && f.request_id.startsWith("daemon-"));
-    out.push({ request_id: f.request_id, surface_id: f.surface_id, created_at: f.created_at, body, ...p, truncated, screen });
+    const fp = f[FINGERPRINT_FIELD];
+    const fingerprint = typeof fp === "string" && fp.length > 0 ? fp : null;
+    out.push({ request_id: f.request_id, surface_id: f.surface_id, created_at: f.created_at, body, ...p, truncated, screen, fingerprint });
   }
   return out.sort((a, b) => a.created_at - b.created_at);
 }
@@ -173,19 +177,22 @@ export const ABSENT_GRACE_MS = 30_000;
 /** deadman 나이 상한 — 데몬은 아직 죽어 있으면 300초마다 다시 알린다(governance.rs deadman debounce 300s) · 그보다 오래된 사건은 근거로 안 씀(검증 F2). */
 export const DEADMAN_MAX_AGE_MS = 300_000;
 
-/** 그 deadman 뒤 마스터가 살아났는가 — 생존 확정(true)인 마스터가 새 좌석이거나 사건 뒤 출력을 냈음. 모름(좌석 모름·생존 null)은 아님. */
+/** 그 deadman 뒤 마스터가 살아났는가 — 꺼짐 확정(false)이 아닌 마스터가 새 좌석이거나 사건 뒤 출력을 냈음(생존 모름 null 이어도 · codex 1R major 1).
+ *  좌석 모름(undefined)·좌석 없음(null)은 아님. 장부는 이것을 한 번 보면 deadman 을 지운다(걸쇠). */
 export function deadmanRevived(i: StallInput): boolean {
   const d = i.deadman;
   if (!d) return false;
-  return i.masterAlive === true && i.masterSid !== undefined && i.masterSid !== null && (i.masterSid !== d.sid || (i.masterIdleSecs !== null && i.masterIdleSecs * 1000 < i.now - d.at));
+  return i.masterAlive !== false && i.masterSid !== undefined && i.masterSid !== null && (i.masterSid !== d.sid || (i.masterIdleSecs !== null && i.masterIdleSecs * 1000 < i.now - d.at));
 }
 
-/** 마스터가 말할 수 없는가(항목과 무관한 축) — 좌석 없음·꺼짐 확정(30초 넘게 이어짐) · deadman(300초 안 · 풀림 아님 · 마스터 상태를 알 때만). 모름 = 아님. */
+/** 마스터가 말할 수 없는가(항목과 무관한 축) — 좌석 없음·꺼짐 확정(30초 넘게 이어짐) · deadman(300초 안 · 풀림 아님 · 마스터 상태를 알 때만). 모름 = 아님.
+ *  deadman 은 「좌석 없음」 또는 「생존 확정(true/false)」 관측과 함께일 때만 근거 — 생존 모름(null) 관측만으로는 근거로 안 씀(codex 1R major 1). */
 export function masterSilenced(i: StallInput): StallWhy | null {
   if (i.masterSid === undefined) return null; // 마스터 상태 모름 — deadman 도 근거로 안 씀(검증 F2 ⓐ)
   const absent = i.masterSid === null || i.masterAlive === false;
   if (absent && i.absentSince !== null && i.now - i.absentSince >= ABSENT_GRACE_MS) return i.masterSid === null ? "no_master" : "master_off";
   const d = i.deadman;
+  if (d && i.masterSid !== null && i.masterAlive === null) return null; // 생존 모름 — deadman 근거로 안 씀
   if (d && i.now - d.at <= DEADMAN_MAX_AGE_MS && !deadmanRevived(i)) return "deadman";
   return null;
 }
@@ -193,6 +200,7 @@ export function masterSilenced(i: StallInput): StallWhy | null {
 /** 이 도우미 허락에 사람이 직접 단추를 둘 수 있는가(FR-C5) — 마스터 멈춤 · 그 요청의 approval.stalled · 생긴 지 5분 ∧ 마스터 소식 5분 없음. */
 export function itemStall(i: StallInput, a: FeedApproval): StallWhy | null {
   if (!a.screen) return null; // 좌석이 직접 올린 approval — 직접 단추 0 · 늘 「마스터가 확인하는 중」(검증 F0)
+  if (i.masterSid === undefined) return null; // 마스터 좌석 모름 — 그 요청이 마스터 좌석 것인지도 모름 → 직접 단추 0(codex 1R major 4)
   const m = masterSilenced(i);
   if (m) return m;
   if (i.stalledIds.has(a.request_id)) return "stalled_event";
@@ -212,9 +220,9 @@ export interface Band {
   items: BandItem[];
 }
 
-/** 판 열쇠 — 같은 번호여도 시각·본문이 바뀌면 다른 판(펼침이 이어지지 않음). */
+/** 판 열쇠 — 판 구성 요소(Bound 의 칸 전부 = 번호·시각·본문·좌석·지문) 가운데 하나라도 바뀌면 다른 판(펼침이 이어지지 않음 · codex 1R major 2 = 좌석). */
 export function versionKey(a: FeedApproval): string {
-  return `${a.request_id}\u0000${a.created_at}\u0000${a.body}`;
+  return JSON.stringify([a.request_id, a.created_at, a.body, a.surface_id, a.fingerprint]);
 }
 
 /** 띠 항목(한 번에 하나를 보이는 쪽은 그리기) — 마스터 물음 먼저(대화가 1차 통로) · 그다음 승인 대기(오래된 것부터). */
@@ -238,9 +246,18 @@ export function bandLabel(b: Band): string | null {
 /** 직접 허락 단추를 누를 수 있는가(FR-C5·C5a) — 멈춤 아니면 단추 자체가 없음 · 펼치기 전 = 흐림 + 안내. 거절은 펼침 없이 됨. */
 export function allowReady(item: BandItem, expanded: boolean, decision: "allow" | "deny"): { ok: true } | { ok: false; msg: string } {
   if (item.kind !== "helper" || item.stall === null) return { ok: false, msg: "마스터가 확인하는 중이에요 — 마스터에게 맡겨 주세요." };
+  if (decision === "allow" && !canAllowDirect(item.a)) return { ok: false, msg: ALLOW_AT_WORK_MSG };
   if (decision === "allow" && !expanded) return { ok: false, msg: "먼저 「무엇을 보기」를 펼쳐 무엇을 허락하는지 확인해 주세요." };
   return { ok: true };
 }
+
+/** 직접 「허락」을 둘 수 있는 판인가 — 데몬 지문 표지가 있을 때만(codex 1R blocking · master 결정). 화면만으로는 「지금 도우미 창이 펼친 그 명령인가」를 증명할 길이 없다. */
+export function canAllowDirect(a: FeedApproval): boolean {
+  return a.screen && a.fingerprint !== null;
+}
+
+/** 지문 표지가 없을 때 멈춤 안내(master 결정 문구). */
+export const ALLOW_AT_WORK_MSG = "마스터가 멈췄어요. 허락은 작업 화면의 그 도우미 창에서 직접 눌러 주세요.";
 
 /** 클릭이 묶인 판(요청 번호 + 화면에 보인 본문 + 시각 + 좌석 · FR-C5b). */
 export interface Bound {
@@ -248,11 +265,25 @@ export interface Bound {
   created_at: number;
   body: string;
   surface_id: number;
+  /** 그리기 순간의 데몬 지문(없으면 null) — 허락 때 데몬에 실어 보내 집행 직전 지금 창과 대조하게 한다 */
+  fingerprint: string | null;
 }
 
 export function boundOf(a: FeedApproval): Bound {
-  return { request_id: a.request_id, created_at: a.created_at, body: a.body, surface_id: a.surface_id };
+  return { request_id: a.request_id, created_at: a.created_at, body: a.body, surface_id: a.surface_id, fingerprint: a.fingerprint };
 }
+
+/** 데몬 지문 대조 불일치 오류 코드(데몬 계약 · HANDOFF §13 📌 — 지금 데몬에는 없음). */
+export const FINGERPRINT_MISMATCH_CODE = "approval_fingerprint_mismatch";
+
+/** 데몬 응답 결과(feed.reply result) → 실제로 창을 눌렀는가. `actuated` 가 비지 않은 글일 때만(null·없음 = 기록만 해소 · codex 1R major 5). */
+export function actuatedOf(result: unknown): string | null {
+  const v = (result as { actuated?: unknown } | null)?.actuated;
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+
+/** 기록만 해소(창은 안 눌림) 안내. */
+export const RECORDED_ONLY_MSG = "기록만 됐고 도우미 창은 눌리지 않았어요 — 작업 화면에서 확인해 주세요.";
 
 export type RecheckCode = "unknown" | "gone" | "changed" | "not_stalled";
 
@@ -269,7 +300,7 @@ export function recheck(b: Bound, fresh: readonly FeedApproval[] | null, stallNo
   if (fresh === null) return no("unknown");
   const a = fresh.find((x) => x.request_id === b.request_id);
   if (!a) return no("gone");
-  if (a.created_at !== b.created_at || a.body !== b.body || a.surface_id !== b.surface_id) return no("changed");
+  if (a.created_at !== b.created_at || a.body !== b.body || a.surface_id !== b.surface_id || a.fingerprint !== b.fingerprint) return no("changed");
   if (stallNow(a) === null) return no("not_stalled");
   return { ok: true };
 }
@@ -280,5 +311,6 @@ export function replyErrorMsg(err: string): string {
   if (/already resolved/.test(err) || code === "not_found") return "이미 처리됐거나 바뀐 요청이에요.";
   if (code === "approval_screen_gone") return "도우미 창의 확인이 이미 사라졌어요 — 누를 것이 없었어요.";
   if (code === "approval_actuation_refused") return "도우미 창 모양이 예상과 달라 누르지 않았어요 — 작업 화면에서 확인해 주세요.";
+  if (code === FINGERPRINT_MISMATCH_CODE) return "도우미 창이 펼쳐 본 것과 달라져 누르지 않았어요 — 작업 화면에서 확인해 주세요.";
   return `처리하지 못했어요${code ? ` (${code})` : ""} — 작업 화면에서 확인해 주세요.`;
 }

@@ -5,11 +5,13 @@
 //    처음부터 훑는다(그동안 「확인할 것 살펴보는 중」 · FR-C1a) · 뒤 기록은 core 가 읽은 레코드를 그대로 받는다.
 //  · 도우미 허락 = core 가 쓰기 직전·3초마다 받는 feed_list(pending) 원문을 같이 받는다(새 조회 0).
 //  · 멈춤 = daemon-event 의 master.deadman · approval.stalled(대화 화면이 켜져 있을 때만 구독) + org.status 마스터 행.
-// 직접 허락(FR-C5): 사람의 신뢰 클릭(그리기 쪽 isTrusted) → decide(판 묶음) → **처리 직전 feed·org 다시 받기** → recheck 통과 때만 feed_reply 1회.
+// 직접 허락(FR-C5): 사람의 신뢰 클릭(그리기 쪽 isTrusted) → decide(판 묶음) → **처리 직전 feed·org 다시 받기** → recheck 통과 때만 confirm_reply 1회
+//   (= 데몬 feed.reply · 결과 `actuated` 를 그대로 받는 우리 명령 viewcore.rs · codex 1R major 5). 허락은 데몬 지문 표지가 있는 판만(codex 1R blocking).
 //   아니면 호출 0 + 「이미 처리됐거나 바뀐 요청이에요」. 누른 사실은 기록(NFR-S5 ③ · 명령 원문 0자).
 
 import type { Rec } from "./judge/msgstep";
 import {
+  actuatedOf,
   approvalsOf,
   bandOf,
   deadmanRevived,
@@ -17,7 +19,9 @@ import {
   markersOf,
   openQuestions,
   recheck,
+  RECORDED_ONLY_MSG,
   replyErrorMsg,
+  ALLOW_AT_WORK_MSG,
   type Band,
   type Bound,
   type FeedApproval,
@@ -56,10 +60,6 @@ interface Scan {
 export class ConfirmBook {
   private prior: MarkerEvent[] = [];
   private tail: MarkerEvent[] = [];
-  /** 앞 훑기가 「끝을 넘는 토막」에서 가져간 레코드 신원(개수) — 뒤 읽기가 같은 레코드를 한 번 더 세지 않게 한 번씩 지운다(검증 F9: 같은 글 다시 물음) */
-  private priorTaken = new Map<string, number>();
-  /** 뒤 읽기가 받은 레코드 신원 — 앞 훑기가 끝을 넘는 토막에서 여기 닿으면 멈춘다 */
-  private tailSeen = new Set<string>();
   /** 2 MiB 넘는 한 줄을 건너뛴 적 있음 — 그 안의 표식은 못 봄 → 물음 쪽은 「모름」 유지(검증 F3) */
   private lossy = false;
   /** 본부 데몬 socket_slug(앱 전달기는 본부 사건에도 slug 를 붙인다 · 검증 F1) · null = 아직 모름(사건 안 받음) */
@@ -105,8 +105,6 @@ export class ConfirmBook {
   private clearMarks(): void {
     this.prior = [];
     this.tail = [];
-    this.priorTaken.clear();
-    this.tailSeen.clear();
     this.lossy = false;
   }
 
@@ -117,19 +115,10 @@ export class ConfirmBook {
     this.changed();
   }
 
-  /** core 가 시작 오프셋 뒤를 읽은 레코드. */
+  /** core 가 시작 오프셋 뒤를 읽은 레코드(전부 뒤 기록 — 같은 신원도 다 셈 · 검증 F9). 앞 훑기는 시작 오프셋 앞에서 시작한 줄만 가져가므로 겹침 0. */
   onTail(recs: readonly Rec[]): void {
     const ev: MarkerEvent[] = [];
-    for (const r of recs) {
-      const id = recId(r);
-      const n = this.priorTaken.get(id) ?? 0;
-      if (n > 0) {
-        this.priorTaken.set(id, n - 1); // 앞 훑기가 끝 너머까지 먼저 가져간 레코드 — 한 번만 건너뜀
-        continue;
-      }
-      this.tailSeen.add(id);
-      ev.push(...markersOf(r));
-    }
+    for (const r of recs) ev.push(...markersOf(r));
     if (ev.length) {
       this.tail.push(...ev);
       this.changed();
@@ -160,15 +149,16 @@ export class ConfirmBook {
       if (typeof r.skipped_bytes === "number" && r.skipped_bytes > 0) this.lossy = true;
       const recs = Array.isArray(r.records) ? (r.records as Rec[]) : [];
       const crossing = r.next_offset > s.end; // 끝(시작 오프셋)을 넘는 토막 — 뒤 기록이 섞여 있다
+      // 끝을 넘는 토막은 레코드 **위치**(줄 시작 바이트 `at`)로 가른다: 시작 오프셋 앞에서 시작한 줄 = 앞 기록 · 그 뒤 = 뒤 읽기 몫(codex 1R minor —
+      // 글 신원으로 가르면 uuid 없는 같은 레코드가 앞·뒤에 다 있을 때 일찍 멈췄다). 위치를 모르는 레코드가 있으면 가르지 못함 → 「다 훑음」 확정 안 함(모름 유지).
+      if (crossing && recs.some((rec) => typeof rec.at !== "number" || !Number.isFinite(rec.at))) {
+        this.changed();
+        return;
+      }
       for (const rec of recs) {
-        const id = recId(rec);
-        if (crossing) {
-          // 뒤 읽기가 이미 받은 레코드에 닿음 = 여기부터는 뒤 기록 — 앞 훑기 끝(순서가 뒤집히지 않게 · 해결이 물음보다 먼저 놀지 않게)
-          if (this.tailSeen.has(id)) {
-            this.priorDone = true;
-            break;
-          }
-          this.priorTaken.set(id, (this.priorTaken.get(id) ?? 0) + 1);
+        if (crossing && (rec.at as number) >= s.end) {
+          this.priorDone = true; // 여기부터 뒤 기록 — 앞 훑기 끝(순서가 뒤집히지 않게 · 해결이 물음보다 먼저 놀지 않게)
+          break;
         }
         this.prior.push(...markersOf(rec));
       }
@@ -217,8 +207,9 @@ export class ConfirmBook {
   /** daemon-event 하나(대화 화면이 켜져 있을 때). */
   onEvent(ev: unknown): void {
     const e = (ev ?? {}) as { name?: unknown; payload?: unknown; surface_id?: unknown; socket_slug?: unknown };
-    // 앱 전달기는 본부 사건에도 slug 를 붙인다(main.rs 전달기) — 본부 slug 와 같을 때만 받음 · 본부 slug 를 모르면 받지 않음(단추가 덜 열리는 쪽)
-    if (e.socket_slug !== undefined && e.socket_slug !== null && e.socket_slug !== "" && (this.hqSlug === null || e.socket_slug !== this.hqSlug)) return;
+    // 앱 전달기는 본부 사건에도 slug 를 붙인다(main.rs 전달기) — 본부 slug 를 알고 ∧ 사건 slug 가 그것과 같을 때만 받음.
+    // slug 없음·null·빈 글·본부 slug 모름 = 버림(단추가 덜 열리는 쪽 · codex 1R major 3).
+    if (this.hqSlug === null || typeof e.socket_slug !== "string" || e.socket_slug === "" || e.socket_slug !== this.hqSlug) return;
     const p = (e.payload ?? {}) as Record<string, unknown>;
     if (e.name === "master.deadman" && p.role === "master") {
       this.deadman = { at: this.d.now(), sid: typeof e.surface_id === "number" ? e.surface_id : null };
@@ -259,13 +250,21 @@ export class ConfirmBook {
     this.changed();
     let outcome = "replied";
     try {
+      // 허락은 데몬 지문 표지가 있는 판만(codex 1R blocking · 그리기가 단추를 안 내도 여기서 한 번 더 · 호출 0)
+      if (decision === "allow" && bound.fingerprint === null) {
+        outcome = "no_fingerprint";
+        this.notice = ALLOW_AT_WORK_MSG;
+        return;
+      }
       const feed = await this.d.invoke("feed_list", { status: "pending" }).catch(() => undefined);
       const t0 = this.d.now();
       const org = await this.d.invoke("org_status", { socket: null }).catch(() => undefined);
       // org 왕복이 길면 낡은 관측 — 마스터 상태 모름으로(보내기 길 OBS_MAX_MS 와 같은 500ms · 검증 F6)
       const stale = this.d.now() - t0 > ORG_MAX_MS;
-      this.observe(feed, stale ? undefined : org, stale ? undefined : masterOf(org));
-      if (org === undefined || stale) {
+      const mo = stale ? undefined : masterOf(org);
+      this.observe(feed, stale ? undefined : org, mo);
+      // 전송은 됐어도 마스터 상태를 읽어 내지 못하면(꼴 깨짐 · surfaces 없음) 처리 중단(codex 1R major 4)
+      if (org === undefined || stale || mo === undefined) {
         outcome = "org_unknown";
         this.notice = "마스터 상태를 확인하지 못해 처리하지 않았어요 — 잠시 뒤 다시 눌러 주세요.";
         return;
@@ -280,8 +279,13 @@ export class ConfirmBook {
         return;
       }
       try {
-        await this.d.invoke("feed_reply", { requestId: bound.request_id, decision });
-        this.notice = decision === "allow" ? "허락했어요 — 도우미가 이어서 해요." : "거절했어요 — 도우미에게 하지 말라고 전했어요.";
+        const res = await this.d.invoke("confirm_reply", { requestId: bound.request_id, decision, screenFingerprint: bound.fingerprint });
+        // 데몬이 창을 실제로 눌렀을 때만 「했어요」 — `actuated` null·없음 = 기록만 해소(창은 그대로일 수 있음 · codex 1R major 5)
+        if (actuatedOf(res) !== null) this.notice = decision === "allow" ? "허락했어요 — 도우미가 이어서 해요." : "거절했어요 — 도우미에게 하지 말라고 전했어요.";
+        else {
+          outcome = "recorded_only";
+          this.notice = RECORDED_ONLY_MSG;
+        }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e); // Tauri 거부 = "<code>: <message>" 글
         outcome = msg.split(":")[0]?.trim() || "error";
@@ -306,11 +310,6 @@ export class ConfirmBook {
       /* 기록 실패는 결정을 되돌리지 않는다(메모리 기록은 남음) */
     }
   }
-}
-
-/** 레코드 신원 — uuid · 없으면 역할·시각·글(codex 1R 탐침: uuid 없는 레코드를 앞 훑기·뒤 읽기가 둘 다 세던 길 · M8 측정 대기). */
-function recId(r: Rec): string {
-  return r.uuid ?? `\u0001${r.role}\u0001${r.ts ?? ""}\u0001${r.text ?? ""}`;
 }
 
 /** org.status 행에서 그 좌석의 idle_secs(마지막 출력 뒤 초) · 모름 = null. */

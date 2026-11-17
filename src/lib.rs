@@ -7239,7 +7239,17 @@ mod spawn_policy_tests {
                 continue;
             }
             // raw 문자열: (b|c)r#*" … "#* — 앞 글자가 식별자의 일부가 아닐 때만(★codex 4R major: C raw 문자열 `cr#"…"#` 포함).
-            if (ch == 'r' || ((ch == 'b' || ch == 'c') && c.get(i + 1) == Some(&'r'))) && (i == 0 || !ident(c[i - 1])) {
+            // ★(codex 10R major) raw 식별자 `r#이름` 은 한 토큰 — 통째로 소비(안의 `r` 에서 raw 문자열을 다시 열지 않는다).
+            if ch == 'r' && c.get(i + 1) == Some(&'#') && c.get(i + 2).is_some_and(|&n| ident(n)) && (i == 0 || !ident(c[i - 1])) {
+                i += 2;
+                while i < c.len() && ident(c[i]) {
+                    i += 1;
+                }
+                continue;
+            }
+            if (ch == 'r' || ((ch == 'b' || ch == 'c') && c.get(i + 1) == Some(&'r')))
+                && (i == 0 || (!ident(c[i - 1]) && c[i - 1] != '#'))
+            {
                 let mut k = i + if ch == 'r' { 1 } else { 2 };
                 let mut hashes = 0;
                 while c.get(k) == Some(&'#') {
@@ -7451,6 +7461,12 @@ mod spawn_policy_tests {
              mod production {\n            pub fn keep() {}\n            // \"\n    }\n}\n",
         );
         assert!(sfx2.is_err(), "결합 문자 접미사 뒤 운영 모듈을 조용히 걷었다: {sfx2:?}");
+        // codex 10R 반례: raw 식별자 `r#r` 뒤 문자열.
+        let rid = production_slice_checked(
+            "mod outer {\n    #[cfg(test)]\n    mod tests {\n        const _: &str = stringify!(r#r\"\\\"\");\n        }\n        \
+             mod production {\n            pub fn keep() {}\n            // \"\n    }\n}\n",
+        );
+        assert!(rid.is_err(), "raw 식별자 뒤 운영 모듈을 조용히 걷었다: {rid:?}");
         assert!(tp.contains("keep_after") && tp.matches("Command::new").count() == 1 && !tp.contains("fn t<"),
                 "문자열·문자·주석·raw 문자열 속 중괄호에 짝이 흔들렸다: {tp}");
         // 실물에도 걸어 둔다 — 이 파일들의 프로덕션 앵커가 사라지면 핀이 헛도는 것이다.

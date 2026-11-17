@@ -3689,6 +3689,9 @@ pub fn write_atomic_mode(path: &Path, bytes: &[u8], mode: Option<u32>) -> std::i
             if let Ok(d) = std::fs::File::open(parent) {
                 let _ = d.sync_all();
             }
+            // ★1.1.16(codex 2R major): 팩 적용 중이면 쓴 뒤의 실제 권한도 배치 기록에 남긴다(권한 귀속 — 되돌림은 지금 권한이 이 적용이
+            //   남긴 권한일 때만 되돌린다). 기록 실패 = 귀속 불명 → 되돌림이 보수 쪽(권한 무접촉 + 보관 기록).
+            placement_record_mode(path);
             Ok(())
         }
         Err(e) => {
@@ -5734,6 +5737,10 @@ fn journal_late_entry(pack: &Path, jdir: &Path, rel: &str) -> std::io::Result<()
     use std::io::Write;
     let src = pack.join(rel);
     let (existed, mode) = match std::fs::symlink_metadata(&src) {
+        // ★codex 2R(major): 링크·디렉터리 등 바이트로 되살릴 수 없는 것은 늦은 백업을 하지 않고 그 변경을 막는다(끈적 실패 → 적용 실패 → 되돌림).
+        Ok(m) if !m.is_file() && !crate::update::mutant("J1116-LATE-ANYKIND") => {
+            return Err(std::io::Error::other(format!("{rel}: 일반 파일이 아니라(링크·폴더 등) 되돌릴 백업을 만들 수 없어 바꾸지 않습니다")));
+        }
         Ok(m) if m.is_file() => {
             let bytes = std::fs::read(&src)?;
             let dst = jdir.join("files").join(rel);
@@ -5766,8 +5773,8 @@ fn read_late_entries(jdir: &Path) -> Result<Vec<JournalEntry>, String> {
     Ok(out)
 }
 
-/// 줄마다 JSON 한 덩어리인 기록을 읽는다(없음 = 빈 목록). ★codex 1R(minor #6): 개행으로 끝나지 않은 **마지막 조각**만 쓰다 만
-/// 줄로 보고 버린다(그 줄의 변경은 시작되지 않았다 — 줄이 확정된 뒤에야 바꾼다) · 개행까지 쓰인 줄이 깨졌으면 어디든 Err
+/// 줄마다 JSON 한 덩어리인 기록을 읽는다(없음 = 빈 목록). ★codex 1R(minor #6)·2R: 개행으로 끝나지 않은 **마지막 조각**은 (JSON 으로
+/// 읽히더라도) 쓰다 만 줄로 보고 버린다(그 줄의 변경은 시작되지 않았다 — 줄이 확정된 뒤에야 바꾼다) · 개행까지 쓰인 줄이 깨졌으면 어디든 Err
 /// (되돌리지 않고 저널을 그대로 둔다).
 fn read_json_lines(p: &Path) -> Result<Vec<serde_json::Value>, String> {
     let raw = match std::fs::read(p) {
@@ -5787,12 +5794,27 @@ fn read_json_lines(p: &Path) -> Result<Vec<serde_json::Value>, String> {
             .map_err(|e| format!("{} 의 {}번째 줄이 깨졌습니다({e}) — 되돌리지 않고 그대로 둡니다", p.display(), i + 1))?;
         out.push(v);
     }
-    if !tail.trim().is_empty() {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(tail) {
-            out.push(v); // 개행만 빠진 완결 줄(그 뒤 변경 여부는 알 수 없으니 기록으로 셈 — 보수 쪽)
-        }
-    }
+    // ★codex 2R(minor): 개행으로 끝나지 않은 꼬리는 JSON 으로 읽혀도 버린다 — 줄은 개행까지 확정된 뒤에야 그 변경을 시작한다.
+    let _ = tail;
     Ok(out)
+}
+
+/// 팩 적용 중 쓴 뒤의 실제 권한 한 줄(최선 노력 · 실패해도 쓰기는 성공 — 귀속 불명은 되돌림이 보수 쪽으로 다룬다).
+fn placement_record_mode(path: &Path) {
+    let Some(m) = std::fs::symlink_metadata(path).ok().and_then(|m| file_mode_of(&m)) else { return };
+    PLACEMENT.with(|p| {
+        let b = p.borrow();
+        let Some(log) = b.as_ref() else { return };
+        if log.failed.is_some() {
+            return;
+        }
+        let Some(rel) = pack_rel_of(&log.pack, path) else { return };
+        use std::io::Write;
+        let line = format!("{}\n", serde_json::json!({"rel": rel, "mode": m}));
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(&log.path) {
+            let _ = f.write_all(line.as_bytes()).and_then(|_| f.sync_data());
+        }
+    });
 }
 
 /// 배치 기록을 거친 파일 삭제(없음 = 성공 아님 — 호출부가 종전처럼 결과를 다룬다).
@@ -6120,8 +6142,11 @@ fn rollback_journal_for(pack: &Path) -> Result<(), String> {
                 //   권한으로 되돌린다. 건드리지 않은 이름의 권한 변화(사용자 chmod)는 그대로 둔다(보관 기록에 한 줄). 옛 저널 = 종전(권한 칸 없음).
                 if let (true, Some(rec), Live::File(_)) = (entry.existed, entry.mode, &live) {
                     let cur = std::fs::metadata(&target).ok().and_then(|m| file_mode_of(&m));
-                    if cur.is_some_and(|c| c != rec) {
-                        let touched = placed.as_ref().is_none_or(|m| m.contains_key(&entry.rel));
+                    if let Some(c) = cur.filter(|c| *c != rec) {
+                        // ★codex 2R(major): 지금 권한이 **이 적용이 남긴 권한**(배치 기록의 권한 줄)일 때만 되돌린다 — 끊긴 뒤 사용자가 준 권한은 둔다.
+                        let touched = placed.as_ref().is_none_or(|m| {
+                            m.get(&entry.rel).is_some_and(|v| v.iter().any(|a| matches!(a, Announced::Mode(x) if *x == c)))
+                        }) || crate::update::mutant("J1116-MODE-ANY-TOUCH") && placed.as_ref().is_some_and(|m| m.contains_key(&entry.rel));
                         if touched {
                             set_exact_mode(&target, Some(rec))
                                 .map_err(|e| format!("journal 권한 복원 실패 {}: {e}", target.display()))?;
@@ -6261,43 +6286,34 @@ pub enum JournalRecovery {
 /// ★1.1.16(U02 · 원작자 GX3 「살아 있는 쓰는 이의 저널은 건드리지 않는다」의 우리 꼴): 데몬 기동 복구용 — 팩 적용 잠금
 /// (`<팩 부모>/.pack-apply.lock` · `cys pack-update` 가 적용 내내 쥔다)을 **기다리지 않고** 잡아 본다. ★codex 1R(blocking #3): 잠금 파일은
 /// 있든 없든 원자적으로 열거나 만든다(「없음 확인 → 복구」 사이에 첫 적용이 끼어드는 틈 제거) · 남이 쥐고 있음(EWOULDBLOCK)만 Busy ·
-/// 그 밖 잠금 오류 = Err. 잡히면 쥔 채로 [`recover_pack_journal`]. ⚠ 윈도우는 `cys pack-update` 자신도 잠그지 않으므로(with_apply_lock 이
-/// 비유닉스에서 무잠금) 여기서도 잠금 없이 복구한다 — 두 쪽을 함께 바꿔야 하는 별 과제.
+/// 그 밖 잠금 오류 = Err. 잡히면 쥔 채로 [`recover_pack_journal`]. ★codex 2R: 윈도우 포함 모든 플랫폼(쓰는 쪽 with_apply_lock 도 같은
+/// 잠금으로 바꿈 — `src/bin/cys.rs`).
 pub fn recover_pack_journal_unless_busy() -> Result<JournalRecovery, String> {
     let done = |b: bool| if b { JournalRecovery::Recovered } else { JournalRecovery::Nothing };
-    #[cfg(unix)]
-    {
-        use std::os::unix::io::AsRawFd;
-        let pd = pack_dir();
-        let Some(base) = pd.parent() else { return recover_pack_journal().map(done) };
-        std::fs::create_dir_all(base).map_err(|e| format!("apply-lock 부모 생성 실패 {}: {e}", base.display()))?;
-        let lp = base.join(".pack-apply.lock");
-        let f = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&lp)
-            .map_err(|e| format!("apply-lock 열기 실패 {}: {e}", lp.display()))?;
-        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            let err = std::io::Error::last_os_error();
-            if err.raw_os_error() == Some(libc::EWOULDBLOCK) && !crate::update::mutant("J1116-IGNORE-BUSY") {
-                eprintln!("[pack] 팩 적용이 진행 중(apply-lock 보유) — 그 저널은 쓰는 이의 몫이라 지금 복구하지 않습니다");
-                return Ok(JournalRecovery::Busy);
-            }
-            if err.raw_os_error() != Some(libc::EWOULDBLOCK) {
-                return Err(format!("apply-lock 잠금 실패 {}: {err}", lp.display()));
-            }
+    let pd = pack_dir();
+    let Some(base) = pd.parent() else { return recover_pack_journal().map(done) };
+    std::fs::create_dir_all(base).map_err(|e| format!("apply-lock 부모 생성 실패 {}: {e}", base.display()))?;
+    let lp = base.join(".pack-apply.lock");
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lp)
+        .map_err(|e| format!("apply-lock 열기 실패 {}: {e}", lp.display()))?;
+    // ★codex 2R(blocking): 표준 라이브러리 파일 잠금(유닉스 = flock · 윈도우 = LockFileEx) — `cys pack-update` 의 with_apply_lock 과 같은
+    //   잠금이라 모든 플랫폼에서 서로를 본다.
+    match f.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) if !crate::update::mutant("J1116-IGNORE-BUSY") => {
+            eprintln!("[pack] 팩 적용이 진행 중(apply-lock 보유) — 그 저널은 쓰는 이의 몫이라 지금 복구하지 않습니다");
+            return Ok(JournalRecovery::Busy);
         }
-        let out = recover_pack_journal();
-        unsafe {
-            libc::flock(f.as_raw_fd(), libc::LOCK_UN);
-        }
-        out.map(done)
+        Err(std::fs::TryLockError::WouldBlock) => {}
+        Err(std::fs::TryLockError::Error(e)) => return Err(format!("apply-lock 잠금 실패 {}: {e}", lp.display())),
     }
-    #[cfg(not(unix))]
-    {
-        recover_pack_journal().map(done)
-    }
+    let out = recover_pack_journal();
+    let _ = f.unlock();
+    out.map(done)
 }
 
 /// 무중단 pack-update 적용 트랜잭션(§7-⑤ 옵션 b + free/pro v4 §3 상태 계약). 호출 전제:
@@ -11540,11 +11556,16 @@ mod tests {
     fn j1116_mode_rollback_is_attributed() {
         use std::os::unix::fs::PermissionsExt;
         let _g = PACK_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (base, pd, _env) = txn_prestate("j16-mode", &[("hooks/a.sh", "#!/bin/sh\necho a\n"), ("notes.txt", "N")], "1.0.0");
+        let (base, pd, _env) = txn_prestate(
+            "j16-mode",
+            &[("hooks/a.sh", "#!/bin/sh\necho a\n"), ("hooks/b.sh", "#!/bin/sh\necho b\n"), ("notes.txt", "N")],
+            "1.0.0",
+        );
         std::fs::set_permissions(pd.join("hooks/a.sh"), std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::set_permissions(pd.join("hooks/b.sh"), std::fs::Permissions::from_mode(0o644)).unwrap();
         PACK_TXN_KILL.with(|k| k.set(Some("install")));
         let _ = apply_pack_transactional(
-            &[("hooks/a.sh", "#!/bin/sh\necho a\n"), ("notes.txt", "N")],
+            &[("hooks/a.sh", "#!/bin/sh\necho a\n"), ("hooks/b.sh", "#!/bin/sh\necho b\n"), ("notes.txt", "N")],
             "2.0.0",
             &test_free_state("2.0.0"),
             None,
@@ -11552,15 +11573,54 @@ mod tests {
         );
         PACK_TXN_KILL.with(|k| k.set(None));
         let after_apply = std::fs::metadata(pd.join("hooks/a.sh")).unwrap().permissions().mode() & 0o777;
-        std::fs::set_permissions(pd.join("notes.txt"), std::fs::Permissions::from_mode(0o600)).unwrap(); // 사용자 chmod
+        std::fs::set_permissions(pd.join("notes.txt"), std::fs::Permissions::from_mode(0o600)).unwrap(); // 사용자 chmod(적용이 안 건드린 이름)
+        std::fs::set_permissions(pd.join("hooks/b.sh"), std::fs::Permissions::from_mode(0o700)).unwrap(); // 사용자 chmod(적용이 건드린 이름 · codex 2R)
         let rec = recover_pack_journal();
         let a = std::fs::metadata(pd.join("hooks/a.sh")).unwrap().permissions().mode() & 0o777;
+        let b = std::fs::metadata(pd.join("hooks/b.sh")).unwrap().permissions().mode() & 0o777;
         let n = std::fs::metadata(pd.join("notes.txt")).unwrap().permissions().mode() & 0o777;
         let _ = std::fs::remove_dir_all(&base);
         assert_eq!(after_apply, 0o755, "시험 전제: 적용이 셔뱅 파일을 0755 로");
         assert_eq!(rec, Ok(true));
         assert_eq!(a, 0o644, "이 적용이 바꾼 권한을 되돌리지 않았다");
         assert_eq!(n, 0o600, "적용이 건드리지 않은 이름의 사용자 권한을 덮었다");
+        assert_eq!(b, 0o700, "적용이 건드렸어도 끊긴 뒤 사용자가 준 권한은 둔다(지금 권한 ≠ 적용이 남긴 권한)");
+    }
+
+    /// codex 2R(major): 백업 목록 밖 이름이 링크면 늦은 백업을 만들 수 없으니 바꾸지 않는다(링크가 그대로 남고 쓰기는 실패).
+    #[cfg(unix)]
+    #[test]
+    fn j1116_late_backup_refuses_a_symlink() {
+        let _g = PACK_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (base, pd, _env) = txn_prestate("j16-latelink", &[("README.md", "OLD-SOUL")], "1.0.0");
+        std::fs::write(base.join("target.txt"), "T").unwrap();
+        std::os::unix::fs::symlink(base.join("target.txt"), pd.join("link.txt")).unwrap();
+        let set: std::collections::BTreeSet<String> = ["README.md".to_string()].into_iter().collect();
+        write_journal("2.0.0", &set).unwrap();
+        let w = {
+            let _p = PlacementGuard::start(&pd, &pack_journal_dir(), set.clone());
+            write_atomic(&pd.join("link.txt"), b"REPLACED")
+        };
+        let still_link = std::fs::symlink_metadata(pd.join("link.txt")).map(|m| m.file_type().is_symlink()).unwrap_or(false);
+        let _ = recover_pack_journal();
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(w.is_err(), "링크를 늦은 백업 없이 바꿨다");
+        assert!(still_link, "링크가 사라졌다");
+    }
+
+    /// codex 2R(minor): 개행으로 끝나지 않은 꼬리는 JSON 으로 읽혀도 버린다 · 개행까지 쓰인 깨진 줄은 Err.
+    #[test]
+    fn j1116_placement_log_tail_rule() {
+        let d = std::env::temp_dir().join(format!("cys-j16-tail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join(PLACED_LOG), "{\"rel\":\"a\",\"sha256\":null}\n{\"rel\":\"b\",\"sha256\":null}").unwrap();
+        let m = read_placements(&d).unwrap();
+        std::fs::write(d.join(PLACED_LOG), "{\"rel\":\"a\",\"sha256\":null}\n{broken\n").unwrap();
+        let bad = read_placements(&d);
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(m.contains_key("a") && !m.contains_key("b"), "개행 없는 꼬리를 기록으로 셌다: {m:?}");
+        assert!(bad.is_err(), "개행까지 쓰인 깨진 줄을 넘겼다");
     }
 
     fn walk_files(d: &Path) -> Vec<PathBuf> {

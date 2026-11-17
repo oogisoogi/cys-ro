@@ -27582,7 +27582,7 @@ fn collect_tree(root: &std::path::Path) -> Result<Vec<(String, String)>, String>
 }
 
 /// flock(LOCK_EX) 임계영역에서 f를 실행(§7-⑧ 폴백 apply-lock — per-file write_atomic + writer 배타).
-/// non-unix는 잠금 없이 실행.
+/// ★1.1.16: non-unix 도 표준 라이브러리 파일 잠금(LockFileEx)으로 같은 배타를 건다(데몬 기동 복구가 이 잠금으로 「진행 중」을 본다).
 ///
 /// ⚠보장 범위(정직 명시 · 층위 분리):
 /// 1) 이 락은 **writer 측 상호배제(serialization)만** 제공한다 — 동시 writer가 같은 pack_dir를
@@ -27626,8 +27626,21 @@ fn with_apply_lock<T>(lock_path: &std::path::Path, f: impl FnOnce() -> T) -> Res
     }
     #[cfg(not(unix))]
     {
-        let _ = lock_path;
-        Ok(f())
+        // ★1.1.16(codex 2R blocking): 비유닉스도 같은 잠금 — 표준 라이브러리 파일 잠금(윈도우 = LockFileEx). 데몬 기동 복구
+        //   (cys::pack::recover_pack_journal_unless_busy)가 이 잠금을 비차단으로 잡아 보고 「진행 중」을 안다.
+        if let Some(parent) = lock_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("apply-lock 부모 디렉토리 생성 실패 {}: {e}", parent.display()))?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(lock_path)
+            .map_err(|e| format!("apply-lock 열기 실패 {}: {e}", lock_path.display()))?;
+        file.lock().map_err(|e| format!("apply-lock 잠금 실패: {e}"))?;
+        let out = f();
+        let _ = file.unlock();
+        Ok(out)
     }
 }
 

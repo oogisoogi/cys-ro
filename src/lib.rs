@@ -7313,14 +7313,14 @@ mod spawn_policy_tests {
             let out = production_slice(&src);
             assert!(out.contains("fn keep") && !out.contains("fn t()"), "C raw 문자열 뒤 운영 코드를 삼켰다({body}): {out}");
         }
-        // 이중 장치: 어휘가 짝을 잘못 찾아(여기선 지원 밖 꼴을 흉내 — 닫히지 않은 `"` 로 짝을 밀어냄) 형제 운영 줄을 지나치면 실패한다.
+        // 이중 장치: 짝이 같은 들여쓰기 `}` 한 줄에 정확히 떨어져도(어휘가 짝을 밀어낸 꼴을 흉내 — 중괄호 짝 자체는 맞게 세어지는 입력)
+        //   그 사이에 모듈 들여쓰기의 줄이 끼면 실패한다(오인이 형제 운영 줄을 지나친 모양과 구별할 수 없다 — 보수 쪽).
         assert!(
             production_slice_checked(
-                "mod outer {\n    #[cfg(test)]\n    mod tests {\n        fn t() { let _ = c\"\\\"; }\n    }\n    \
-                 fn keep() { let _ = \"{\"; }\n    }\n"
+                "mod outer {\n    #[cfg(test)]\n    mod tests {\n        fn t() {\n    }\n    fn keep() { Command::new(\"p\"); }\n    }\n}\n"
             )
             .is_err(),
-            "짝 오인이 형제 운영 줄을 지나쳤는데 실패하지 않았다"
+            "짝 사이에 모듈 들여쓰기의 줄이 끼었는데 실패하지 않았다(이중 장치 무력)"
         );
         assert!(tp.contains("keep_after") && tp.matches("Command::new").count() == 1 && !tp.contains("fn t<"),
                 "문자열·문자·주석·raw 문자열 속 중괄호에 짝이 흔들렸다: {tp}");

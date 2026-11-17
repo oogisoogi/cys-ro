@@ -152,6 +152,8 @@ fn b16fix2_dialog_variants_and_false_positive_table() {
         ("tn8-write-box-char-in-name", vec![RULE, " Create file", " Do you want to create a─b.rs?", " ❯ 1. Yes", "   2. No", " Esc to cancel"], 3, true),
         ("tn8b-write-box-char-and-question-in-name", vec![RULE, " Overwrite file", " Do you want to overwrite a─?b.rs?", " ❯ 1. Yes", "   2. No", " Esc to cancel"], 3, true),
         ("tn8c-write-box-char-name-wrapped", vec![RULE, " Create file", " Do you want to create a-very-long-file-name-with-a─box-char-that-wraps-over-the-", " edge─x.rs?", " ❯ 1. Yes", "   2. No"], 4, true),
+        // codex 2R major: 공백에서 접혀 다음 행이 `─` 로 **시작**하는 이름(가로줄 행이 아니다 — 행 전체가 `─` 일 때만 가로줄 · is_rule_row).
+        ("tn8d-write-wrapped-row-starts-with-box-char", vec![RULE, " Create file", " Do you want to create long-prefix", " ─b.rs?", " ❯ 1. Yes", "   2. No"], 4, true),
     ];
     let mut bad: Vec<String> = Vec::new();
     for (i, (name, rows, cur, want)) in screens.iter().enumerate() {
@@ -163,4 +165,22 @@ fn b16fix2_dialog_variants_and_false_positive_table() {
         }
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
+    // 정규식 단독(화면 전량 꼴 · 판독 범위 밖에서도): 문장 범위는 가로줄 **행**(전부 `─`)을 넘지 않는다 — codex 2R 고침의 음성 대조.
+    let embed: Value = cys::pack::PACK_ALL
+        .iter()
+        .find(|(r, _)| *r == "agents.json")
+        .map(|(_, c)| serde_json::from_str(c).expect("임베드 agents.json"))
+        .expect("임베드 agents.json");
+    let pat = embed["claude"]["approval_patterns"]
+        .as_array()
+        .expect("approval_patterns")
+        .iter()
+        .find(|p| p["name"] == json!("file-write-permission"))
+        .and_then(|p| p["pattern"].as_str())
+        .expect("file-write-permission");
+    let re = regex::Regex::new(pat).expect("정규식");
+    assert!(re.is_match("Do you want to create long-prefix\n ─b.rs?\n ❯ 1. Yes"), "행머리 ─ 이름 접힘");
+    assert!(re.is_match("Do you want to create long-prefix\n ───  b.rs?\n ❯ 1. Yes"), "행머리 ─ 묶음 + 공백 뒤 이름");
+    assert!(!re.is_match(&format!("Do you want to create x\n{RULE}\n y.rs?\n ❯ 1. Yes")), "가로줄 행을 넘어 문장을 이었다");
+    assert!(!re.is_match(&format!("Do you want to create x\n  {RULE}  \n y.rs?\n ❯ 1. Yes")), "앞뒤 공백 있는 가로줄 행을 넘었다");
 }

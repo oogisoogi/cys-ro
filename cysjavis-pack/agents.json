@@ -26,7 +26,7 @@
       {
         "name": "file-write-permission",
         "scope": "prompt_tail",
-        "pattern": "Do\\s+you\\s+want\\s+to\\s+(?:create|overwrite|write\\s+to)\\s+(?:[^\\n]|\\n[ \\t]*[^─ \\t\\n]){1,400}?\\?[ \\t]*\\n(?:[^\\n─]*\\n){0,4}?[ \\t]*❯[ \\t]*[1-9]\\."
+        "pattern": "Do\\s+you\\s+want\\s+to\\s+(?:create|overwrite|write\\s+to)\\s+(?:[^\\n]|\\n[ \\t]*(?:[^─ \\t\\n]|─+[ \\t]*[^─ \\t\\n])){1,400}?\\?[ \\t]*\\n(?:[^\\n─]*\\n){0,4}?[ \\t]*❯[ \\t]*[1-9]\\."
       },
       {
         "name": "plan-approval",

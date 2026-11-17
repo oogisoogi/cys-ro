@@ -34,6 +34,10 @@ export interface SimOpts {
   /** M8: 세션 레코드에 uuid 가 없는 꼴 */
   noUuid?: boolean;
   slug?: string;
+  /** (조각 3 고침 · 검증 지적 A · 실측 꼴) 이 쓰기의 user 레코드를 `<pasted_content id=…>` 로 감싸 남김 */
+  wrapPaste?: (n: number) => boolean;
+  /** (조각 3 고침 · 검증 지적 B · 실측 꼴) user 레코드와 답 사이에 끼는 다른 종류 레코드 수(attachment 등 = 글 없는 고리 role:"link") */
+  linksBetween?: number;
 }
 
 export class Sim {
@@ -183,11 +187,19 @@ export class Sim {
     if (rd === null) return;
     this.later(rd, () => {
       const uuid = this.o.noUuid ? null : `u${wi}`;
-      this.file.push({ uuid, parent: this.o.noUuid ? null : this.lastUuid, role: "user", text: w.text, ts: new Date(this.now).toISOString() });
+      const text = this.o.wrapPaste?.(n) ? `\n\n<pasted_content id="${(0x3f00 + wi).toString(16)}">\n${w.text}\n</pasted_content id="${(0x3f00 + wi).toString(16)}">\n` : w.text;
+      this.file.push({ uuid, parent: this.o.noUuid ? null : this.lastUuid, role: "user", text, ts: new Date(this.now).toISOString() });
       this.lastOutputAt = this.now;
+      let tail = uuid;
       if (uuid) {
         this.recordOf.set(uuid, wi);
         this.lastUuid = uuid;
+        for (let k = 0; k < (this.o.linksBetween ?? 0); k++) {
+          const lu = `l${wi}-${k}`;
+          this.file.push({ uuid: lu, parent: tail, role: "link", text: null, parts: null, ts: null, sidechain: false });
+          tail = lu;
+          this.lastUuid = lu;
+        }
       }
       this.recorded.set(wi, uuid ?? `nouuid-${wi}`);
       const rp = this.o.replyDelay ? this.o.replyDelay(n) : 1_500;
@@ -195,7 +207,7 @@ export class Sim {
       this.workStart();
       this.later(rp, () => {
         const au = this.o.noUuid ? null : `a${wi}`;
-        this.file.push({ uuid: au, parent: uuid, role: "assistant", text: `답 ${wi}`, ts: new Date(this.now).toISOString() });
+        this.file.push({ uuid: au, parent: tail, role: "assistant", text: `답 ${wi}`, ts: new Date(this.now).toISOString() });
         this.lastOutputAt = this.now;
         if (au) this.lastUuid = au;
         this.replied.set(wi, au ?? `nouuid-a${wi}`);

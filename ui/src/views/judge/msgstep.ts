@@ -17,6 +17,12 @@ export const READ_AFTER_MS: readonly number[] = [1_000, 3_000, 7_000];
  *  지금 = 전문 일치만(접힌 꼴이면 짝이 안 되어 「전달 확인 중 → 오래 걸려요」로 남는다 · 틀린 「전달됨」 0).
  *  값이 오면 `userRecordMatches` 의 이 갈래만 바꾼다. */
 export const U20_PASTE_RECORD_FORM: "unmeasured" | "verbatim" | "collapsed" = "unmeasured";
+/** (조각 3 고침 · 검증 지적 A · 실측) 진짜 Claude Code(2.1.32x) 기록은 붙여넣은 사람 글을 이 꼴로 감싸 남기는 일이 있다 —
+ *  `\n\n<pasted_content id="N">\n` + 글 + `\n</pasted_content id="N">\n`(id = 영숫자 · 여는·닫는 id 같음 · 이 기기 실측 `3943`·`3f02`).
+ *  감싼 **속 글이 보낸 글과 글자 하나까지 같을 때만** 전문 일치로 본다(감싼 밖에 다른 글 = 불일치 = 모름 유지).
+ *  ⚠실측(이 좌석 기록 1건): 속 글 안의 `<pasted_content`·`</pasted_content` 는 `<\pasted_content`·`<\/pasted_content` 로 바뀌어 남는다 —
+ *  그런 글은 속 글이 원문과 달라 모름으로 남는다(되돌려 맞추지 않음 · 보수 쪽). */
+export const PASTE_WRAP = /^\n\n<pasted_content id="([0-9A-Za-z]{1,32})">\n([\s\S]*)\n<\/pasted_content id="\1">\n$/;
 /** M8(세션 레코드에 uuid/parentUuid 가 있는가) — **측정 대기**. 없으면 답을 그 말에 묶지 않는다(「답함」 0 · 말풍선은 「마스터」 일반 줄로). */
 export const M8_UUID_CHAIN: "unmeasured" | "present" | "absent" = "unmeasured";
 /** (조각 3) 원자 제출 요청이 이만큼 응답 없이 걸려 있으면 「보내는 중」 → 「확인 중」(§5-2 「근거 3초 넘게 없음」 · PRD M2 3초). 응답이 오면 그 응답으로 바뀐다. */
@@ -50,6 +56,8 @@ export const STEP_LABEL: Record<Step, string> = {
 export interface Reply {
   uuid: string | null;
   text: string;
+  /** (조각 3 고침 · 검증 지적 B) 어느 말에도 안 묶인 답의 시각(ms · 기록 시각 · 없으면 읽은 시각) — 화면이 시각순으로 끼워 그림 */
+  at?: number;
 }
 
 export interface Msg {
@@ -78,7 +86,8 @@ export interface Msg {
 export interface Rec {
   uuid: string | null;
   parent: string | null;
-  role: "user" | "assistant";
+  /** (조각 3 고침 · 검증 지적 B) "link" = user·assistant 밖 종류(attachment·system 등) — 글 0자 · uuid·부모만(사슬을 잇는 고리 · NFR-S3) */
+  role: "user" | "assistant" | "link";
   text: string | null;
   parts?: string[] | null;
   ts: string | null;
@@ -101,17 +110,24 @@ export function stepFromOutcome(outcome: unknown): Step {
   }
 }
 
-const AWAITING: ReadonlySet<Step> = new Set<Step>(["injected", "checking", "slow"]);
+// (조각 3 고침 · 검증 지적 C) 「보내는 중」(보낸 시각 있음 · 응답이 아직 안 옴)도 짝 후보 — 응답이 걸린 사이 읽힌 자기 레코드를 놓치지 않게.
+const AWAITING: ReadonlySet<Step> = new Set<Step>(["sending", "injected", "checking", "slow"]);
 
 export function normRecordText(t: string): string {
   return t.replace(/\r\n?/g, "\n").replace(/^\s+/, "").replace(/\s+$/, "");
 }
 
-/** user 레코드가 이 말인가 — 지금은 전문 일치만(U20 측정 대기). 조각이 여럿이면 조각 하나가 같아도 된다(훅이 덧붙인 글 조각). */
+/** 감싼 꼴(PASTE_WRAP)이면 속 글이 보낸 글과 글자 하나까지 같은가(순수 · 정규화 없음). */
+function wrappedIs(raw: string, text: string): boolean {
+  const w = PASTE_WRAP.exec(raw);
+  return w !== null && w[2] === text;
+}
+
+/** user 레코드가 이 말인가 — 전문 일치 · 또는 감싼 꼴의 속 글 전문 일치(검증 지적 A). 조각이 여럿이면 조각 하나가 같아도 된다(훅이 덧붙인 글 조각). */
 export function userRecordMatches(m: Msg, r: Rec): boolean {
   if (r.role !== "user" || r.text === null || r.sidechain) return false;
-  if (normRecordText(r.text) === m.text) return true;
-  return Array.isArray(r.parts) && r.parts.some((p) => normRecordText(p) === m.text);
+  if (normRecordText(r.text) === m.text || wrappedIs(r.text, m.text)) return true;
+  return Array.isArray(r.parts) && r.parts.some((p) => normRecordText(p) === m.text || wrappedIs(p, m.text));
 }
 
 function recordAfter(r: Rec, sentAt: number): boolean {
@@ -126,12 +142,15 @@ export interface ApplyResult {
   consumed: string[];
   /** 어느 말에도 묶이지 않은 마스터 글(uuid 사슬이 없을 때 등) — 「마스터」 일반 말풍선 */
   stray: Reply[];
+  /** (조각 3 고침 · 검증 지적 C) 짝을 못 찾은 글 있는 user 레코드 — 「본 것」으로 소비하지 않는다(뒤에 그 말이 짝 후보가 되면 rematchPending 으로 다시) */
+  unmatched: Rec[];
 }
 
 /** 새로 읽은 레코드들을 말 목록에 반영(순수 · 입력 불변 · 레코드 순서대로). */
 export function applyRecords(msgs: readonly Msg[], recs: readonly Rec[], consumed: ReadonlySet<string> = new Set()): ApplyResult {
   const out = msgs.map((m) => ({ ...m, thread: [...m.thread], replies: [...m.replies] }));
   const stray: Reply[] = [];
+  const unmatched: Rec[] = [];
   // 한 레코드는 한 번만 근거가 된다(codex 1R major — 다시 읽은 기록으로 같은 uuid 를 두 말에 배정하던 길): 이미 짝지은 user·이미 이은 사슬 레코드는 건너뜀.
   const seen = new Set<string>(consumed);
   const used: string[] = [];
@@ -142,7 +161,9 @@ export function applyRecords(msgs: readonly Msg[], recs: readonly Rec[], consume
   for (const r of recs) {
     if (r.sidechain) continue;
     if (r.uuid !== null && seen.has(r.uuid)) continue;
-    if (r.uuid !== null) {
+    // 짝 없는 사람 글은 소비하지 않는다(아래에서 짝을 찾았을 때만 seen·used 에 넣음 · 검증 지적 C)
+    const pendingHuman = r.role === "user" && r.text !== null;
+    if (r.uuid !== null && !pendingHuman) {
       seen.add(r.uuid);
       used.push(r.uuid);
     }
@@ -152,6 +173,10 @@ export function applyRecords(msgs: readonly Msg[], recs: readonly Rec[], consume
         .sort((a, b) => (a.sentAt as number) - (b.sentAt as number))
         .find((m) => userRecordMatches(m, r));
       if (cand) {
+        if (r.uuid !== null) {
+          seen.add(r.uuid);
+          used.push(r.uuid);
+        }
         cand.userUuid = r.uuid;
         cand.step = "delivered";
         cand.code = undefined; // (조각 3 · 검토 지적 4) 근거가 왔으니 옛 「확인 중」 까닭·안내를 지운다
@@ -162,6 +187,7 @@ export function applyRecords(msgs: readonly Msg[], recs: readonly Rec[], consume
       // 글 있는 user 레코드 = 새 사람 차례 → 옛 말들의 사슬을 닫는다(부모가 옛 답이어도 이어 붙이지 않음).
       if (r.text !== null) {
         for (const m of out) if (r.parent && m.thread.includes(r.parent)) m.thread = [];
+        unmatched.push(r);
         continue;
       }
     }
@@ -173,10 +199,34 @@ export function applyRecords(msgs: readonly Msg[], recs: readonly Rec[], consume
         if (owner.step === "delivered") owner.step = "replying";
       }
     } else if (r.role === "assistant" && r.text !== null) {
-      stray.push({ uuid: r.uuid, text: r.text });
+      const at = r.ts === null ? NaN : Date.parse(r.ts);
+      stray.push(Number.isNaN(at) ? { uuid: r.uuid, text: r.text } : { uuid: r.uuid, text: r.text, at });
     }
   }
-  return { msgs: out, stray, consumed: used };
+  return { msgs: out, stray, consumed: used, unmatched };
+}
+
+/** (조각 3 고침 · 검증 지적 C) 앞서 짝을 못 찾은 사람 레코드를 지금 말 목록에 다시 대어 본다(순수 · 짝만 · 사슬 닫기는 안 함).
+ *  짝을 찾은 레코드는 pool 에서 빠진다(한 레코드 = 한 말). */
+export function rematchPending(msgs: readonly Msg[], pool: readonly Rec[]): { msgs: Msg[]; pool: Rec[]; changed: boolean } {
+  let changed = false;
+  const out = [...msgs];
+  const left: Rec[] = [];
+  for (const r of pool) {
+    let hit = -1;
+    for (let i = 0; i < out.length; i++) {
+      const m = out[i];
+      if (!AWAITING.has(m.step) || m.userUuid || m.sentAt === null || !recordAfter(r, m.sentAt) || !userRecordMatches(m, r)) continue;
+      if (hit < 0 || (out[hit].sentAt as number) > m.sentAt) hit = i;
+    }
+    if (hit < 0) {
+      left.push(r);
+      continue;
+    }
+    out[hit] = { ...out[hit], userUuid: r.uuid, step: "delivered", code: undefined, note: undefined, thread: r.uuid ? [r.uuid] : [] };
+    changed = true;
+  }
+  return { msgs: out, pool: left, changed };
 }
 
 /** 시간·활동에 따른 단계 갱신(순수): 답이 붙은 말은 마스터가 쉬면 「답함」 · 전달된 뒤 마스터가 일하면 「답하는 중」(조각 3) ·

@@ -4,7 +4,7 @@
 // 최소 계약 4칸 = [data-min=confirms|lastSendStep|masterHealth|errors] · 화면 바꾸기는 공통 자리(#view-switch).
 
 import type { ViewContext, ViewInstance, ViewModule } from "../contract";
-import { DUP, dupPending, errorCount, HEALTH_LABEL, lastSendStep, needsClick, POLL_MS, type ChatCore, type ChatState } from "../core";
+import { DUP, dupPending, errorCount, HEALTH_LABEL, lastSendStep, logOrder, needsClick, POLL_MS, SAME_DELIVERED_NOTE, sameTextDelivered, type ChatCore, type ChatState } from "../core";
 import { canRetry, STEP_LABEL, type Msg } from "../judge/msgstep";
 import { AUTO_STEP_LABEL, type AutoMsg } from "../judge/autostep";
 
@@ -97,7 +97,9 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
         });
         li.append(b);
       }
-      if (canRetry(m) && !dupPending(s.msgs, m.text, m.id)) {
+      // (조각 3 고침 · 검증 지적 H) 같은 글이 이미 전달됐으면 다시 보내기를 거두고 그 사실만 알린다.
+      if (canRetry(m) && sameTextDelivered(s.msgs, m.text, m.id)) li.append(el("div", "cv-note cv-same-delivered", SAME_DELIVERED_NOTE));
+      else if (canRetry(m) && !dupPending(s.msgs, m.text, m.id)) {
         const b = el("button", "cv-retry", "다시 보내기");
         b.type = "button";
         b.addEventListener("click", (e) => {
@@ -139,11 +141,15 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
       const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
       log.replaceChildren();
       if (s.msgs.length === 0 && s.stray.length === 0 && s.autos.length === 0) log.append(empty);
-      for (const m of s.msgs) {
-        log.append(bubble(m, s));
-        for (const r of m.replies) log.append(masterBubble(r.text));
+      // (조각 3 고침 · 검증 지적 B) 어느 말에도 안 묶인 마스터 글은 시각순으로 사람 말 사이에 끼운다(사람 말들 뒤에 몰리지 않게).
+      for (const it of logOrder(s.msgs, s.stray)) {
+        if (it.kind === "stray") {
+          log.append(masterBubble(it.r.text));
+          continue;
+        }
+        log.append(bubble(it.m, s));
+        for (const r of it.m.replies) log.append(masterBubble(r.text));
       }
-      for (const r of s.stray) log.append(masterBubble(r.text));
       for (const a of s.autos) log.append(autoLine(a));
       if (atBottom) log.scrollTop = log.scrollHeight;
     };

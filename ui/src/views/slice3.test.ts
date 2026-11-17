@@ -357,7 +357,7 @@ describe("같은 말 겹침 — 중복 쓰기 0", () => {
     await sim.advance(100);
     expect(sim.sends()).toBe(2);
   });
-  it("★(하네스 seed 131) 확정 실패 X 뒤 같은 글 Y 가 확인 중이면 X 의 다시 보내기도 막음(쓰기 0 · 안내) · Y 가 전달되면 풀림", async () => {
+  it("★(하네스 seed 131) 확정 실패 X 뒤 같은 글 Y 가 확인 중이면 X 의 다시 보내기도 막음(쓰기 0 · 안내) · (고침 H) Y 가 전달되면 X 의 다시 보내기는 거둠(쓰기 0 · 「이미 전달됐어요」)", async () => {
     const sim = new Sim({ plan: (n) => (n === 0 ? "failed" : n === 1 ? "uncertain_written" : "written"), recordDelay: (n) => (n === 1 ? 200_000 : 100), replyDelay: () => null });
     await ready(sim);
     sim.startPolling();
@@ -377,7 +377,8 @@ describe("같은 말 겹침 — 중복 쓰기 0", () => {
     expect(sim.core.state.msgs[1].step).toMatch(/^(delivered|replying|replied)$/);
     await sim.core.retry(x.id);
     await sim.advance(40_000);
-    expect(sim.sends()).toBe(3);
+    expect(sim.sends()).toBe(2); // (조각 3 고침 · 검증 지적 H · master 결정 = 거둠) 같은 글이 이미 전달됨 → 다시 보내기 0
+    expect(sim.core.state.notice).toMatch(/이미 전달됐어요/);
   });
   it("Enter 연타 20회(같은 글) → 쓰기 1", async () => {
     const sim = new Sim({ recordDelay: () => null });

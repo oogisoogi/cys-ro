@@ -11,7 +11,7 @@
 
 import { composeOutbound } from "./judge/outbound";
 import { approvalSeatsOf, masterRowOf, sendGate, type GateVerdict, type MasterRow } from "./judge/gate";
-import { applyRecords, applyRefusedAtWrite, canRetry, mergeOutcome, READ_AFTER_MS, SENDING_SILENT_MS, settleSteps, stepFromOutcome, type Msg, type Rec, type Reply, type Step } from "./judge/msgstep";
+import { applyRecords, applyRefusedAtWrite, canRetry, mergeOutcome, READ_AFTER_MS, rematchPending, SENDING_SILENT_MS, settleSteps, SLOW_MS, stepFromOutcome, type Msg, type Rec, type Reply, type Step } from "./judge/msgstep";
 import { applyQueueEvent, autoHoldRemainingMs, queueEventOf, type AutoMsg } from "./judge/autostep";
 
 export const HOLD_KEY = "cys-chat-hold";
@@ -23,6 +23,10 @@ export const LOG_MAX = 200;
 export const POLL_MS = 3_000;
 /** 쓰기 직전 입력줄 관측(org.status 왕복)의 유효 상한(설계 목표값) — 넘으면 그 관측으로 쓰지 않는다(0.5 M12: 데몬 몫 < 1ms). */
 export const OBS_MAX_MS = 500;
+/** (조각 3 고침 · 검증 지적 F) 시간 상한을 넘긴 재조회 표지. */
+const TIMED_OUT: unique symbol = Symbol("timed_out");
+/** 재조회가 시간 상한을 넘겨 쓰지 않은 말의 까닭 코드. */
+export const STATUS_TIMEOUT = "status_timeout";
 /** 앱을 다시 켜기 전에 붙잡아 둔(저장소에서 읽은) 말 — 자동으로 보내지 않는다. */
 export const RESTORED = "restored";
 /** 붙잡은 지 이만큼 지난 말은 자동으로 보내지 않는다 — 사람 클릭 1회로만(master 결정 11-17 23:2x · 10분 · VERIFY 지적 5). */
@@ -50,6 +54,29 @@ export function dupPending(msgs: readonly Msg[], text: string, exceptId?: string
 function autoHeld(m: Msg): boolean {
   return m.step === "held" && !needsClick(m);
 }
+/** (조각 3 고침 · 검증 지적 H · master 결정 = 거둠) 같은 글의 다른 말이 이미 「전달됨」 이상인가 — 그러면 확정 실패 말의 「다시 보내기」를 거둔다. 순수. */
+export function sameTextDelivered(msgs: readonly Msg[], text: string, exceptId?: string): boolean {
+  return msgs.some((m) => m.id !== exceptId && m.text === text && (m.step === "delivered" || m.step === "replying" || m.step === "replied"));
+}
+export const SAME_DELIVERED_NOTE = "같은 글이 이미 전달됐어요 — 다시 보내지 않아요.";
+/** (조각 3 고침 · 검증 지적 B) 그릴 차례(순수) — 사람 말 차례는 그대로 두고, 어느 말에도 안 묶인 마스터 글을 시각(at)이 그 뒤인 첫 사람 말 앞에 끼운다.
+ *  사람 말 시각 = 보낸 시각(없으면 받아들인 시각) · 시각 없는 글은 맨 뒤. */
+export type LogItem = { kind: "msg"; m: Msg } | { kind: "stray"; r: Reply };
+export function logOrder(msgs: readonly Msg[], stray: readonly Reply[]): LogItem[] {
+  const out: LogItem[] = [];
+  const timed = stray.filter((r) => typeof r.at === "number");
+  let k = 0;
+  for (const m of msgs) {
+    const t = m.sentAt ?? m.createdAt;
+    while (k < timed.length && (timed[k].at as number) < t) out.push({ kind: "stray", r: timed[k++] });
+    out.push({ kind: "msg", m });
+  }
+  while (k < timed.length) out.push({ kind: "stray", r: timed[k++] });
+  for (const r of stray) if (typeof r.at !== "number") out.push({ kind: "stray", r });
+  return out;
+}
+/** (조각 3 고침 · 검증 지적 C) 짝 못 찾은 사람 레코드를 들고 있는 상한(개수 · 시간 = SLOW_MS). */
+const PENDING_USER_MAX = 50;
 /** 데몬이 승인 창으로 거부한 말을 다시 문턱에 거는 최소 간격(설계 목표값 · 창이 닫히면 문턱 재통과 때 1회). */
 export const HELD_REFUSED_BACKOFF_MS = 15_000;
 /** 세션 기록 한 번 읽기에서 이어 읽는 최대 횟수(2 MiB × 이 수). */
@@ -144,6 +171,8 @@ export class ChatCore {
   private defaultSlug: string | null = null;
   /** (조각 3) 마지막으로 바이트가 나갔을 수 있는 사람 보내기 시각(R3 — 기계 문안 묶임 계산) */
   private lastHumanSentAt: number | null = null;
+  /** (조각 3 고침 · 검증 지적 C) 짝 못 찾은 사람 레코드(받은 시각 at) — 말이 짝 후보가 되면 다시 대어 본다 · 메모리만 · 세션이 바뀌면 비움 */
+  private pendingUser: Array<{ r: Rec; at: number }> = [];
 
   constructor(private readonly d: Deps) {
     this.loadHold();
@@ -293,6 +322,18 @@ export class ChatCore {
 
   private putMsgs(msgs: Msg[], extra: Partial<ChatState> = {}): boolean {
     let kept = msgs;
+    if (this.pendingUser.length) {
+      // (조각 3 고침 · 검증 지적 C) 말 단계가 바뀔 때마다 앞서 짝 못 찾은 사람 레코드를 다시 대어 본다(오래된 것은 버림)
+      const now = this.d.now();
+      this.pendingUser = this.pendingUser.filter((p) => now - p.at <= SLOW_MS);
+      const rm = rematchPending(kept, this.pendingUser.map((p) => p.r));
+      if (rm.changed) {
+        kept = rm.msgs;
+        const left = new Set(rm.pool);
+        this.pendingUser = this.pendingUser.filter((p) => left.has(p.r));
+        for (const m of kept) if (m.userUuid) this.consumed.add(m.userUuid);
+      }
+    }
     if (kept.length > LOG_MAX) {
       const done = new Set(["replied", "failed"]);
       let drop = kept.length - LOG_MAX;
@@ -318,6 +359,38 @@ export class ChatCore {
     const org = await this.d.invoke("org_status", { socket: null }).catch(() => undefined);
     const stale = this.d.now() - t0 > OBS_MAX_MS;
     return { master: org === undefined || stale ? undefined : masterRowOf(org, this.d.working), approvals: feed === undefined ? null : approvalSeatsOf(feed), obsAt: t0 };
+  }
+
+  /** (조각 3 고침 · 검증 지적 F) 재조회 전체에 시간 상한(OBS_MAX_MS · 조각 4 ORG_MAX_MS 와 같은 500ms) — 데몬이 살아 있지만 멈춰도 보내기·조회 고리가 멈추지 않게.
+   *  넘으면 모름(마스터 undefined · 승인 대기 null → 문턱이 붙잡음 · 쓰기 0) + timedOut 표지. 늦게 온 답은 버린다. */
+  private async freshBounded(): Promise<{ master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number; timedOut?: boolean }> {
+    const r = await this.bounded(this.fetchFresh());
+    return r === TIMED_OUT ? { master: undefined, approvals: null, obsAt: this.d.now(), timedOut: true } : r;
+  }
+
+  private bounded<T>(p: Promise<T>): Promise<T | typeof TIMED_OUT> {
+    return new Promise((res) => {
+      let done = false;
+      const h = this.d.setTimeout(() => {
+        if (done) return;
+        done = true;
+        res(TIMED_OUT);
+      }, OBS_MAX_MS);
+      p.then(
+        (v) => {
+          if (done) return;
+          done = true;
+          this.d.clearTimeout(h);
+          res(v);
+        },
+        () => {
+          if (done) return;
+          done = true;
+          this.d.clearTimeout(h);
+          res(TIMED_OUT);
+        },
+      );
+    });
   }
 
   private gateOf(f: { master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number }): GateVerdict {
@@ -424,6 +497,10 @@ export class ChatCore {
   async retry(id: string): Promise<void> {
     const m = this.s.msgs.find((x) => x.id === id);
     if (!m || !canRetry(m) || this.writing) return;
+    if (sameTextDelivered(this.s.msgs, m.text, m.id)) {
+      this.set({ notice: SAME_DELIVERED_NOTE }); // (조각 3 고침 · 검증 지적 H) 같은 글이 이미 전달됨 → 다시 보내기 거둠
+      return;
+    }
     if (dupPending(this.s.msgs, m.text, m.id)) {
       // (조각 3 · M2·M3 하네스 seed 131 이 찾음) 같은 글의 다른 말이 아직 확인 중이면 다시 보내기도 막는다 — 두 번 갈 수 있다.
       this.set({ notice: "같은 말이 아직 확인 중이에요 — 그 말이 끝나면 다시 보낼 수 있어요." });
@@ -439,13 +516,18 @@ export class ChatCore {
     if (this.writing) return;
     this.writing = true;
     try {
-      let fresh = await this.fetchFresh(); // ★쓰기 직전 재조회 1회(3초 목록을 믿지 않음)
+      let fresh = await this.freshBounded(); // ★쓰기 직전 재조회 1회(3초 목록을 믿지 않음 · 시간 상한 = 검증 지적 F)
       this.applyFresh(fresh);
       if (this.offset === null && fresh.master) {
         // 보낸 user 레코드를 건너뛰지 않게 세션 기록 시작점을 먼저 잡는다 — 이 RPC 가 문턱 판정과 쓰기 사이에 끼지 않게 다시 조회한다.
-        await this.initOffset();
-        fresh = await this.fetchFresh();
+        const init = await this.bounded(this.initOffset());
+        fresh = init === TIMED_OUT ? { master: undefined, approvals: null, obsAt: this.d.now(), timedOut: true } : await this.freshBounded();
         this.applyFresh(fresh);
+      }
+      if (fresh.timedOut) {
+        // 아직 안 썼다(바이트 0) → 「확인 중」이 아니라 붙잡음 · 다시 확인되면 poll 이 문턱에 다시 건다.
+        this.patchMsg(id, { step: "held", sentAt: null, code: STATUS_TIMEOUT, note: "마스터 상태 확인이 늦어져서 아직 쓰지 않았어요 — 다시 확인되면 보낼게요." });
+        return;
       }
       const g = this.gateOf(fresh);
       if (!g.ok) {
@@ -520,7 +602,7 @@ export class ChatCore {
     this.polling = true;
     let heldId: string | null = null;
     try {
-      const fresh = await this.fetchFresh();
+      const fresh = await this.freshBounded(); // (조각 3 고침 · 검증 지적 F) 멈춘 데몬에 조회 고리가 묶이지 않게
       const prevWorking = this.lastWorking;
       this.applyFresh(fresh);
       this.lastWorking = fresh.master ? fresh.master.working : null;
@@ -599,6 +681,7 @@ export class ChatCore {
           // 결속 세션이 바뀜(마스터 다시 켜짐·/clear) — 새 파일 끝에서 다시 시작(옛 오프셋으로 새 파일을 읽지 않는다)
           this.sessionId = sid;
           this.consumed.clear();
+          this.pendingUser = [];
           this.offset = null;
           await this.initOffset();
           return;
@@ -606,6 +689,7 @@ export class ChatCore {
         if (r.reset === true) {
           // 파일이 줄었다(잘림·교체) — 다시 읽은 옛 레코드로 새 전달·답 근거를 만들지 않는다(codex 1R major). 끝에서 다시 시작.
           this.offset = null;
+          this.pendingUser = [];
           await this.initOffset();
           return;
         }
@@ -614,9 +698,13 @@ export class ChatCore {
         if (recs.length) {
           const applied = applyRecords(this.s.msgs, recs, this.consumed);
           for (const u of applied.consumed) this.consumed.add(u);
+          const readAt = this.d.now();
+          const pooled = new Set(this.pendingUser.map((p) => p.r.uuid).filter((u): u is string => u !== null));
+          for (const r of applied.unmatched) if (r.uuid === null || !pooled.has(r.uuid)) this.pendingUser.push({ r, at: readAt });
+          if (this.pendingUser.length > PENDING_USER_MAX) this.pendingUser = this.pendingUser.slice(-PENDING_USER_MAX);
           // 「답함」은 여기서 칠하지 않는다(null) — 들고 있는 활동 값은 이 답보다 옛 관측일 수 있다. 다음 조회(poll)의 새 관측으로만.
           const known = new Set(this.s.stray.map((x) => x.uuid).filter((u): u is string => u !== null));
-          const fresh = applied.stray.filter((x) => x.uuid === null || !known.has(x.uuid));
+          const fresh = applied.stray.filter((x) => x.uuid === null || !known.has(x.uuid)).map((x) => (x.at === undefined ? { ...x, at: readAt } : x));
           this.putMsgs(settleSteps(applied.msgs, this.d.now(), null), { stray: [...this.s.stray, ...fresh].slice(-LOG_MAX) });
         }
         if (typeof r.size !== "number" || r.next_offset >= r.size) return;

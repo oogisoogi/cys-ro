@@ -151,6 +151,8 @@ fn content_text(content: &Value) -> (Option<String>, Vec<String>) {
 
 /// 세션 기록 덩이(순수) → (레코드들, 소비한 바이트). 줄 끝(`\n`)까지 온전한 줄만 읽고 마지막 미완 줄은 남긴다(다음 호출이 잇는다).
 /// 레코드 = `{uuid, parent, role:"user"|"assistant", text(없으면 null), parts, ts, sidechain}` — user/assistant 전부(글 없는 고리 포함). 줄 파싱 실패는 건너뛴다(세기만).
+/// (조각 3 고침 · 검증 지적 B) 그 밖 종류(attachment·system 등)도 uuid 가 있으면 **글 없는 고리** `{uuid, parent, role:"link", text:null, …}` 로 넘긴다 —
+/// 진짜 기록은 사람 말과 첫 답 사이에 이런 레코드(훅이 덧붙인 글 등)가 끼어, 빼면 답의 부모 사슬이 끊긴다. 본문·종류 이름·시각은 넘기지 않는다(NFR-S3 · 글 0자).
 pub(crate) fn parse_transcript_chunk(buf: &[u8]) -> (Vec<Value>, usize, usize) {
     let consumed = match buf.iter().rposition(|&b| b == b'\n') {
         Some(i) => i + 1,
@@ -169,7 +171,19 @@ pub(crate) fn parse_transcript_chunk(buf: &[u8]) -> (Vec<Value>, usize, usize) {
         let role = match v["type"].as_str() {
             Some("user") => "user",
             Some("assistant") => "assistant",
-            _ => continue,
+            _ => {
+                let Some(uuid) = v["uuid"].as_str() else { continue };
+                out.push(json!({
+                    "uuid": uuid,
+                    "parent": v["parentUuid"].as_str(),
+                    "role": "link",
+                    "text": Value::Null,
+                    "parts": Value::Null,
+                    "ts": Value::Null,
+                    "sidechain": v["isSidechain"].as_bool().unwrap_or(false),
+                }));
+                continue;
+            }
         };
         let (text, parts) = content_text(&v["message"]["content"]);
         out.push(json!({
@@ -391,10 +405,17 @@ mod tests {
         let b = r#"{"type":"assistant","uuid":"a1","parentUuid":"u1","timestamp":"t2","message":{"content":[{"type":"thinking","thinking":"x"},{"type":"text","text":"네, 안녕하세요"}]}}"#;
         let tool = r#"{"type":"user","uuid":"u2","parentUuid":"a1","message":{"content":[{"type":"tool_result","content":"zz"}]}}"#;
         let meta = r#"{"type":"summary","summary":"s"}"#;
+        // (조각 3 고침 · 검증 지적 B) uuid 있는 다른 종류 = 글 없는 고리(본문·종류 이름·시각 안 넘김)
+        let att = r#"{"type":"attachment","uuid":"x1","parentUuid":"u2","timestamp":"t3","attachment":{"type":"hook_additional_context","content":["비밀 글"]}}"#;
         let partial = r#"{"type":"user","uuid":"u3""#;
-        let buf = format!("{a}\n{b}\n{tool}\n{meta}\nnot json\n{partial}");
+        let buf = format!("{a}\n{b}\n{tool}\n{meta}\n{att}\nnot json\n{partial}");
         let (recs, consumed, bad) = parse_transcript_chunk(buf.as_bytes());
-        assert_eq!(recs.len(), 3, "user·assistant·도구 결과 고리(글 없음) — 요약 레코드는 뺌");
+        assert_eq!(recs.len(), 4, "user·assistant·도구 결과 고리(글 없음)·다른 종류 고리 — uuid 없는 요약 레코드는 뺌");
+        assert_eq!(recs[3]["role"], "link");
+        assert_eq!(recs[3]["uuid"], "x1");
+        assert_eq!(recs[3]["parent"], "u2");
+        assert!(recs[3]["text"].is_null() && recs[3]["parts"].is_null() && recs[3]["ts"].is_null());
+        assert!(!recs[3].to_string().contains("비밀") && !recs[3].to_string().contains("hook_additional_context"), "고리에 본문·종류 이름 0");
         assert_eq!(recs[0]["role"], "user");
         assert_eq!(recs[0]["text"], "안녕");
         assert_eq!(recs[1]["parent"], "u1");

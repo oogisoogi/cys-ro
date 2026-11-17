@@ -5,7 +5,7 @@
 import { describe, it, expect } from "bun:test";
 import { DUP, dupPending, needsClick } from "./core";
 import { canRetry, STEP_LABEL, type Msg } from "./judge/msgstep";
-import { Sim, type SendKind } from "./testkit";
+import { Sim, type SendKind, type SimOpts } from "./testkit";
 
 /** 진단·넓게 돌리기용 환경 변수(타입 검증 설정에 node 타입이 없어 전역에서 읽음) */
 const ENV: Record<string, string | undefined> = (globalThis as unknown as { process?: { env: Record<string, string | undefined> } }).process?.env ?? {};
@@ -52,10 +52,11 @@ export interface Tally {
   missingWhy: string[];
 }
 
-export async function runScenario(seed: number, t: Tally, dump = false): Promise<void> {
+export async function runScenario(seed: number, t: Tally, dump = false, extra: Partial<SimOpts> = {}): Promise<void> {
   const r = rng(seed);
   const noUuid = r() < 0.15;
   const sim = new Sim({
+    ...extra,
     plan: () => pick(r, KINDS),
     recordDelay: () => {
       const x = r();
@@ -232,5 +233,51 @@ describe("M2·M3 하네스 — 행방 불명 0 · 틀림 0 · 같은 말 두 번
       expect(t.multiWrite).toBe(0);
       // 하네스가 실제로 여러 갈래를 지났는지(빈 시험 방지)
       for (const s of ["held", "injected", "delivered", "replied", "failed", "checking", "slow"]) expect(t.steps[s] ?? 0).toBeGreaterThan(0);
+    });
+});
+
+// (조각 3 고침 · 검증 지적 A·B) 진짜 기록 꼴로 같은 하네스 — 쓰기 셋 중 하나는 `<pasted_content id=…>` 로 감싸 남고 · 사람 말과 답 사이에 고리(attachment 등) 2개가 낌.
+//   기본 씨앗과 같은 시나리오에 꼴만 바꾼다(무작위 순서 그대로) · 행방 불명 0 · 틀림 0 · 같은 말 두 번 0 · 그리고 감싼 말도 「전달됨」 이상이 실제로 나오는지.
+describe("M2·M3 하네스 — 진짜 기록 꼴(감싼 붙여넣기 · 사이 고리)", () => {
+  const t: Tally = { scenarios: 0, msgs: 0, samples: 0, missing: 0, wrong: 0, dupRisk: 0, multiWrite: 0, steps: {}, kinds: {}, wrongWhy: [], missingWhy: [] };
+  const n = Number(ENV.MSGHARNESS_DUMP_SEED ?? 0) > 0 ? 0 : Math.min(200, Number(ENV.MSGHARNESS_SEEDS ?? 200));
+  const extra: Partial<SimOpts> = { wrapPaste: (k) => k % 3 === 0, linksBetween: 2 };
+  for (let from = 1; from <= n; from += 50) {
+    const to = Math.min(n, from + 49);
+    it(`실측 꼴 씨앗 ${from}~${to}`, async () => {
+      for (let seed = from; seed <= to; seed++) await runScenario(seed, t, false, extra);
+      expect(t.wrongWhy).toEqual([]);
+      expect(t.missingWhy).toEqual([]);
+    });
+  }
+  if (n > 0)
+    it("실측 꼴 모음 판정", () => {
+      console.log(`[M2·M3 실측 꼴] ${JSON.stringify(t)}`);
+      expect(t.missing).toBe(0);
+      expect(t.wrong).toBe(0);
+      expect(t.dupRisk).toBe(0);
+      expect(t.multiWrite).toBe(0);
+      expect(t.steps.replied ?? 0).toBeGreaterThan(0);
+    });
+});
+
+// (조각 3 고침 · 검증 좌석 verify_s3_seeds 를 옮김) 다른 씨앗 범위 — 환경 변수로만 켬: MSGHARNESS_SEEDS=0 MSGHARNESS_FROM=5001 MSGHARNESS_TO=5300
+describe("M2·M3 하네스 — 다른 씨앗 범위(환경 변수)", () => {
+  const t: Tally = { scenarios: 0, msgs: 0, samples: 0, missing: 0, wrong: 0, dupRisk: 0, multiWrite: 0, steps: {}, kinds: {}, wrongWhy: [], missingWhy: [] };
+  const from = Number(ENV.MSGHARNESS_FROM ?? 0);
+  const to = Number(ENV.MSGHARNESS_TO ?? 0);
+  for (let a = from; a > 0 && a <= to; a += 25) {
+    const b = Math.min(to, a + 24);
+    it(`씨앗 ${a}~${b}`, async () => {
+      for (let s = a; s <= b; s++) await runScenario(s, t);
+    }, 120_000);
+  }
+  if (from > 0)
+    it("모음", () => {
+      console.log(`[M2·M3 ${from}~${to}] ${JSON.stringify(t)}`);
+      expect(t.missing).toBe(0);
+      expect(t.wrong).toBe(0);
+      expect(t.dupRisk).toBe(0);
+      expect(t.multiWrite).toBe(0);
     });
 });

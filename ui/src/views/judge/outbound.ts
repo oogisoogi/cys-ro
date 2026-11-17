@@ -12,6 +12,19 @@ import { sanitizePaste } from "../../pastesafe";
  *  값이 오면 이 상수만 바꾼다: true = 울타리 안이라 명령 아님(보냄) · false = 못 믿음(막음 · 지금 기본값). */
 export const U21_LATER_LINE_SLASH_SAFE: boolean = false;
 
+/** (조각 3 고침 · 검증 지적 E · 보수 쪽) 줄 맨 앞에서 떼고 보는 보이지 않는 글자 — 공백류(\s) · Unicode 일반 범주 Cf(서식)·Mn(결합)·Zs·Zl·Zp ·
+ *  범주로 안 잡히는 채움 글자(U+115F·U+1160 한글 초성·중성 채움 · U+3164 한글 채움 · U+FFA0 반각 한글 채움 · U+2800 점자 빈칸).
+ *  이 글자들을 뗀 뒤 첫 글자가 `/`·`!` 면 막는다. 받는 쪽(Claude Code)이 이 글자를 떼고 명령으로 읽는지는 U21 측정 때 함께 잰다. */
+const INVISIBLE_LEAD = /^[\s\p{Cf}\p{Mn}\p{Zs}\p{Zl}\p{Zp}\u115F\u1160\u3164\uFFA0\u2800]+/u;
+/** 판정에서 줄 나눔으로 보는 글자 — LF 와 함께 U+2028·U+2029 · NEL(U+0085)·세로 탭·폼 피드(살균이 공백으로 바꾸기 **전에** 줄로 가름). 보내는 글은 바꾸지 않는다. */
+const CHECK_BREAK_BEFORE_SANITIZE = /[\u0085\u000B\u000C]/g;
+const CHECK_LINES = /[\n\u2028\u2029]/;
+
+function leadsCommand(line: string): boolean {
+  const c = line.replace(INVISIBLE_LEAD, "")[0];
+  return c === "/" || c === "!";
+}
+
 export type Outbound =
   | { ok: true; text: string }
   | { ok: false; code: "empty" | "leading_command" | "later_line_slash"; msg: string };
@@ -20,9 +33,12 @@ export function composeOutbound(raw: string, laterSlashSafe: boolean = U21_LATER
   const unixed = raw.replace(/\r\n?/g, "\n");
   const clean = sanitizePaste(unixed).replace(/^\s+/, "").replace(/\s+$/, "");
   if (clean.length === 0) return { ok: false, code: "empty", msg: "보낼 말을 적어 주세요." };
-  if (clean[0] === "/" || clean[0] === "!")
+  // 판정용 줄 = 살균 전에 NEL·세로 탭·폼 피드를 줄 나눔으로 바꾼 뒤 살균 · U+2028/U+2029 도 줄 나눔(보내는 글 clean 은 그대로).
+  const lines = sanitizePaste(unixed.replace(CHECK_BREAK_BEFORE_SANITIZE, "\n")).replace(INVISIBLE_LEAD, "").split(CHECK_LINES);
+  if (leadsCommand(lines[0] ?? ""))
     return { ok: false, code: "leading_command", msg: "「/」나 「!」로 시작하는 말은 명령이라 대화 화면에서 보내지 않아요. 작업 화면의 마스터 창에서 쳐 주세요." };
-  if (!laterSlashSafe && clean.split("\n").slice(1).some((l) => l.replace(/^[ \t]+/, "").startsWith("/")))
-    return { ok: false, code: "later_line_slash", msg: "둘째 줄부터 「/」로 시작하는 줄이 있으면 아직 보내지 않아요(안전 확인 중). 그 줄 앞에 글자를 하나 넣어 주세요." };
+  // (검증 지적 E) 둘째 줄부터도 첫 줄과 같은 규칙(보이지 않는 글자를 떼고 `/`·`!`).
+  if (!laterSlashSafe && lines.slice(1).some(leadsCommand))
+    return { ok: false, code: "later_line_slash", msg: "둘째 줄부터 「/」나 「!」로 시작하는 줄이 있으면 아직 보내지 않아요(안전 확인 중). 그 줄 앞에 글자를 하나 넣어 주세요." };
   return { ok: true, text: clean };
 }

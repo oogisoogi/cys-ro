@@ -7260,6 +7260,10 @@ mod spawn_policy_tests {
                         k += 1;
                     }
                     i = k;
+                    // ★(codex 8R major) 리터럴 접미사(`""r`·`r"x"suf`)는 리터럴의 일부 — 접미사 안에서 raw 문자열을 다시 열지 않는다.
+                    while i < c.len() && ident(c[i]) {
+                        i += 1;
+                    }
                     continue;
                 }
             }
@@ -7275,6 +7279,9 @@ mod spawn_policy_tests {
                     i += 1;
                 }
                 i += 1;
+                while i < c.len() && ident(c[i]) {
+                    i += 1; // 접미사(codex 8R)
+                }
                 continue;
             }
             if ch == '\'' {
@@ -7286,10 +7293,16 @@ mod spawn_policy_tests {
                         i += 1;
                     }
                     i += 1;
+                    while i < c.len() && ident(c[i]) {
+                        i += 1; // 접미사(codex 8R)
+                    }
                     continue;
                 }
                 if c.get(i + 2) == Some(&'\'') {
                     i += 3;
+                    while i < c.len() && ident(c[i]) {
+                        i += 1; // 접미사(codex 8R)
+                    }
                     continue;
                 }
                 i += 1; // 수명
@@ -7423,6 +7436,13 @@ mod spawn_policy_tests {
             "mod outer {\n    #[cfg(test)]\n    #[allow(dead_code /* [ */)] mod tests {} // ]\n    mod production {\n        pub fn keep() {}\n    }\n}\n",
         );
         assert!(cm.contains("mod production") && cm.contains("pub fn keep"), "주석 속 대괄호로 운영 모듈을 걷었다: {cm}");
+        // codex 8R 반례: 리터럴 접미사(`""r`) 를 raw 문자열 시작으로 읽으면 가짜 문자열이 시험 모듈 닫힘·운영 모듈 열림을 숨긴다.
+        let sfx = production_slice_checked(
+            "mod outer {\n    #[cfg(test)]\n    mod tests {\n        const _: &str = stringify!(\"\"r\"\\\"\");\n        }\n        \
+             mod production {\n            pub fn keep() {}\n            // \"\n    }\n}\n",
+        );
+        //   접미사를 소비하면 짝이 진짜 끝(여덟 칸 `}`)에 떨어져 정형 밖 닫힘 = Err(조용히 삼키지 않음).
+        assert!(sfx.is_err(), "리터럴 접미사 뒤 운영 모듈을 조용히 걷었다: {sfx:?}");
         assert!(tp.contains("keep_after") && tp.matches("Command::new").count() == 1 && !tp.contains("fn t<"),
                 "문자열·문자·주석·raw 문자열 속 중괄호에 짝이 흔들렸다: {tp}");
         // 실물에도 걸어 둔다 — 이 파일들의 프로덕션 앵커가 사라지면 핀이 헛도는 것이다.

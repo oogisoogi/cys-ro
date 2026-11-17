@@ -58,6 +58,7 @@ export function bootViews(deps: BootDeps): { core: ChatCore; registry: Registry<
       };
     },
     goView: (id) => void booted?.registry.choose(id),
+    defaultSlug: async () => String(await deps.invoke("default_socket_slug")),
   });
   const views: ViewDescriptor<ChatState, ChatCore>[] = [
     {

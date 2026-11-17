@@ -12,6 +12,7 @@ D 마스터 멈춤(master.deadman 주입): 단추 보임 · 펼치기 전 허락
 E 이미 처리된 요청(그리기 뒤 목록에서 빠짐) → 진짜 클릭 → 호출 0 + 「이미 처리됐거나 바뀐 요청이에요」
 F 펼친 뒤 판 바뀜(같은 번호 · 다른 명령 · 시각 주입: 그리기와 클릭 사이) → 호출 0 + 안내 · 다음 그리기 = 접힌 채 새 명령
 G 거절 · 마스터 창 승인 = 「작업 화면에서 보기」(진짜 클릭 → 작업 화면)
+D0·F0(독립 검증 1회 고침) 사건은 앱 꼴(본부 slug = 대역 default_socket_slug 'base') · 부서 slug 사건 = 버림 · daemon_issued 아닌 approval = 멈춤이어도 직접 단추 0
 실행: CHROME_PATH=<chrome-headless-shell> cys run -- <playwright python3> ui/e2e/confirm_gate.py
 """
 import http.server
@@ -59,9 +60,10 @@ CONFIRM_SHIM = r"""
 BODY = "Do you want to proceed?\n— 명령 원문:\n{cmd}\n— 읽기 전용 판정(기계 추정 · 근거 아님): 쓰기·삭제 가능"
 
 
-def item_js(rid: str, sid: int, cmd: str, created: str = "Date.now() / 1000 - 10") -> str:
+def item_js(rid: str, sid: int, cmd: str, created: str = "Date.now() / 1000 - 10", daemon: bool = True) -> str:
     body = BODY.format(cmd=cmd).replace("\\", "\\\\").replace("`", "\\`")
-    return f"{{ request_id: '{rid}', kind: 'approval', status: 'pending', surface_id: {sid}, created_at: {created}, title: 't', body: `{body}` }}"
+    issued = "true" if daemon else "false"
+    return f"{{ request_id: '{rid}', kind: 'approval', status: 'pending', surface_id: {sid}, created_at: {created}, daemon_issued: {issued}, title: 't', body: `{body}` }}"
 
 
 def main() -> int:
@@ -142,8 +144,12 @@ def main() -> int:
         b = band(pg)
         check(b["head"] == "확인이 필요해요 1" and "마스터가 확인하는 중" in b["text"] and not b["allow"], f"「마스터가 확인하는 중」 · 허락 단추 0 {b}")
 
+        print("== D0 앱 꼴 사건(검증 F1) — 부서 slug 사건 = 버림")
+        pg.evaluate("() => { window.__CHAT.master.idle_secs = 120; window.__emit('daemon-event', { name: 'master.deadman', category: 'alert', surface_id: 1, socket_slug: 'dept-xyz', payload: { role: 'master' } }); }")
+        pg.clock.run_for(3_100)
+        check(not band(pg)["allow"], f"부서 slug 의 deadman → 직접 단추 0 {band(pg)['text']}")
         print("== D 마스터 멈춤 → 펼침 · 신뢰 클릭")
-        pg.evaluate("() => { window.__CHAT.master.idle_secs = 120; window.__emit('daemon-event', { name: 'master.deadman', category: 'alert', surface_id: 1, payload: { role: 'master', axis: 'agent_dead', reason: 'agent process dead' } }); }")
+        pg.evaluate("() => { window.__CHAT.master.idle_secs = 120; window.__emit('daemon-event', { name: 'master.deadman', category: 'alert', surface_id: 1, socket_slug: 'base', payload: { role: 'master', axis: 'agent_dead', reason: 'agent process dead' } }); }")
         pg.clock.run_for(3_100)
         b = band(pg)
         check(b["allow"] and b["dim"] and "마스터가 멈췄어요" in b["text"] and b["cmd"] is None, f"멈춤 → 허락(흐림)·거절 · 펼치기 전 명령 숨김 {b}")
@@ -199,6 +205,13 @@ def main() -> int:
         pg.clock.run_for(50)
         check(band(pg)["cmd"] == "rm -rf ~", "다시 펼치면 새 명령")
 
+        print("== F0 좌석이 직접 올린 approval(검증 F0) — 멈춤이어도 직접 단추 0")
+        pg.evaluate(f"() => {{ window.__CHAT.feedItems = [{item_js('req-77', 2, 'ls -la', daemon=False)}]; }}")
+        pg.clock.run_for(3_100)
+        b = band(pg)
+        check("마스터가 확인하는 중" in b["text"] and not b["allow"], f"daemon_issued 아님 → 「마스터가 확인하는 중」 · 단추 0 {b}")
+        pg.evaluate(f"() => {{ window.__CHAT.feedItems = [{item_js('r3', 2, 'rm -rf ~', '1763373000')}]; }}")
+        pg.clock.run_for(3_100)
         print("== G 거절 · 마스터 창 승인")
         pg.click(".cvb-deny")
         pg.clock.run_for(100)

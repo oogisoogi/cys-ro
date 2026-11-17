@@ -62,6 +62,8 @@ export interface Deps {
   listen?(fn: (ev: unknown) => void): () => void;
   /** (조각 4) 다른 화면으로(「작업 화면에서 보기」) — registry.choose. */
   goView?(id: string): void;
+  /** (조각 4 · 검증 F1) 본부 데몬 socket_slug(Tauri default_socket_slug) — 사건의 slug 대조용 · 대화 화면이 켜질 때 1회. */
+  defaultSlug?(): Promise<string>;
 }
 
 export type Health = "unknown" | "none" | "off" | "gate" | "busy" | "ready";
@@ -162,6 +164,11 @@ export class ChatCore {
   attach(): void {
     this.attached = true;
     if (!this.unlisten && this.d.listen) this.unlisten = this.d.listen((ev) => this.confirm.onEvent(ev));
+    if (this.d.defaultSlug)
+      void this.d
+        .defaultSlug()
+        .then((s) => this.confirm.setHqSlug(typeof s === "string" && s ? s : null))
+        .catch(() => {});
     void this.readTranscript();
   }
 
@@ -483,8 +490,10 @@ export class ChatCore {
           records?: unknown;
           session_id?: unknown;
           reset?: unknown;
+          skipped_bytes?: unknown;
         } | null;
         if (!r || r.status !== "ok" || typeof r.next_offset !== "number") return;
+        if (typeof r.skipped_bytes === "number" && r.skipped_bytes > 0) this.confirm.markLossy(); // (조각 4 · 검증 F3) 2 MiB 넘는 줄을 건너뜀
         const sid = typeof r.session_id === "string" ? r.session_id : null;
         if (sid !== this.sessionId) {
           // 결속 세션이 바뀜(마스터 다시 켜짐·/clear) — 새 파일 끝에서 다시 시작(옛 오프셋으로 새 파일을 읽지 않는다)

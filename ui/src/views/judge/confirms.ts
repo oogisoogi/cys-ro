@@ -25,14 +25,19 @@ export const CMD_MAX_CHARS = 600;
 
 export type MarkerEvent = { kind: "ask"; text: string; uuid: string | null } | { kind: "resolve"; key: string; uuid: string | null };
 
-/** 마스터 답 레코드 하나 → 표식 사건들(순서대로). user·곁가지·글 없는 레코드 = 0 · 코드 울타리(```) 안 줄 = 0(인용·예시로 쓴 표식). */
+/** 마스터 답 레코드 하나 → 표식 사건들(순서대로). user·곁가지·글 없는 레코드 = 0 · 코드 울타리 안 줄 = 0(인용·예시로 쓴 표식).
+ *  울타리 = 줄 앞 공백 뒤 ``` 또는 ~~~ 3개 이상 · 닫는 줄 = 같은 글자 · 같거나 더 긴 줄(CommonMark 울타리 규칙 · 검증 F8 — ~~~ · 들여쓴 ``` · ```` 안의 ```). */
 export function markersOf(r: Rec): MarkerEvent[] {
   if (r.role !== "assistant" || r.sidechain || typeof r.text !== "string") return [];
   const out: MarkerEvent[] = [];
-  let fence = false;
+  let fence: { ch: string; n: number } | null = null;
   for (const raw of r.text.replace(/\r\n?/g, "\n").split("\n")) {
-    if (raw.startsWith("```")) {
-      fence = !fence;
+    const f = /^\s*(`{3,}|~{3,})/.exec(raw);
+    if (f) {
+      const ch = f[1][0];
+      const n = f[1].length;
+      if (fence === null) fence = { ch, n };
+      else if (fence.ch === ch && n >= fence.n && raw.trim() === f[1].trim()) fence = null;
       continue;
     }
     if (fence) continue;
@@ -52,8 +57,15 @@ export function markersOf(r: Rec): MarkerEvent[] {
 /** 해결 표식이 이 물음을 닫는가 — 해결 글이 물음의 **앞부분과 글자 그대로 같고** 그 길이가 앞 20자(물음이 짧으면 물음 전체) 이상일 때만.
  *  (codex 1R 탐침 「앞 20자만 같고 뒷말이 다른 해결」 — 앞 20자로 잘라 대조하면 뒷말이 틀린 해결도 닫았다 → 실린 글 전부를 대조.) */
 export function resolves(question: string, key: string): boolean {
-  const need = Math.min(RESOLVE_KEY_LEN, Array.from(question).length);
-  return Array.from(key).length >= need && question.startsWith(key);
+  // 공백 정규화(연속 공백 = 한 칸 · 앞뒤 깎음) 뒤 대조 — 20번째 글자가 띄어쓰기면 표식 판독의 끝 공백 깎기로 19자가 되던 길(검증 F4).
+  const q = normSpace(question);
+  const k = normSpace(key);
+  const need = Array.from(normSpace(Array.from(q).slice(0, RESOLVE_KEY_LEN).join(""))).length;
+  return k.length > 0 && Array.from(k).length >= need && q.startsWith(k);
+}
+
+function normSpace(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
 }
 
 /** 물음의 앞 20자(코드 포인트) — 해결 표식 대조 열쇠. */
@@ -101,6 +113,8 @@ export interface FeedApproval {
   readonly: string | null;
   /** 데몬 자름 한도에 닿음 */
   truncated: boolean;
+  /** 데몬이 좌석 화면에서 감지한 도구 허락 창(daemon_issued · 번호 접두 daemon-)인가 — 아니면 좌석이 직접 올린 항목(글은 올린 쪽이 씀 · 검증 F0) */
+  screen: boolean;
 }
 
 const CMD_HEAD = "\n— 명령 원문:\n";
@@ -129,7 +143,8 @@ export function approvalsOf(feed: unknown): FeedApproval[] | null {
     const body = typeof f.body === "string" ? f.body : "";
     const p = parseApprovalBody(body);
     const truncated = p.command.split("\n").length >= CMD_MAX_LINES || Array.from(p.command).length >= CMD_MAX_CHARS;
-    out.push({ request_id: f.request_id, surface_id: f.surface_id, created_at: f.created_at, body, ...p, truncated });
+    const screen = f.daemon_issued === true || (f.daemon_issued === undefined && f.request_id.startsWith("daemon-"));
+    out.push({ request_id: f.request_id, surface_id: f.surface_id, created_at: f.created_at, body, ...p, truncated, screen });
   }
   return out.sort((a, b) => a.created_at - b.created_at);
 }
@@ -143,28 +158,41 @@ export interface StallInput {
   masterAlive: boolean | null;
   /** 마스터 좌석 마지막 출력 뒤 초(org.status idle_secs) · null = 모름 */
   masterIdleSecs: number | null;
-  /** 받은 master.deadman(가장 최근) */
+  /** 받은 master.deadman(가장 최근 · 풀림을 한 번 보면 장부가 지움) */
   deadman: { at: number; sid: number | null } | null;
+  /** 「마스터 좌석 없음 / 꺼짐 확정」을 처음 본 시각(끊김 없이 이어지는 동안) · null = 그 상태 아님 */
+  absentSince: number | null;
   /** approval.stalled 를 받은 요청 번호 */
   stalledIds: ReadonlySet<string>;
 }
 
 export type StallWhy = "deadman" | "master_off" | "no_master" | "stalled_event" | "quiet";
 
-/** 마스터가 말할 수 없는가(항목과 무관한 축) — deadman 사건(그 뒤 같은 마스터가 살아 출력했거나 새 마스터가 섰으면 풀림) · 꺼짐 확정 · 좌석 없음. 모름 = 아님. */
-export function masterSilenced(i: StallInput): StallWhy | null {
-  if (i.masterSid === null) return "no_master";
-  if (i.masterSid !== undefined && i.masterAlive === false) return "master_off";
+/** 「좌석 없음 · 꺼짐 확정」 유예 — 마스터를 다시 켜는·승계하는 사이에 단추가 열리지 않게(데몬 deadman 유예 60초·3틱과 같은 뜻 · 설계 목표값 · 검증 F5). */
+export const ABSENT_GRACE_MS = 30_000;
+/** deadman 나이 상한 — 데몬은 아직 죽어 있으면 300초마다 다시 알린다(governance.rs deadman debounce 300s) · 그보다 오래된 사건은 근거로 안 씀(검증 F2). */
+export const DEADMAN_MAX_AGE_MS = 300_000;
+
+/** 그 deadman 뒤 마스터가 살아났는가 — 생존 확정(true)인 마스터가 새 좌석이거나 사건 뒤 출력을 냈음. 모름(좌석 모름·생존 null)은 아님. */
+export function deadmanRevived(i: StallInput): boolean {
   const d = i.deadman;
-  if (d) {
-    const revived = i.masterAlive === true && i.masterSid !== undefined && (i.masterSid !== d.sid || (i.masterIdleSecs !== null && i.masterIdleSecs * 1000 < i.now - d.at));
-    if (!revived) return "deadman";
-  }
+  if (!d) return false;
+  return i.masterAlive === true && i.masterSid !== undefined && i.masterSid !== null && (i.masterSid !== d.sid || (i.masterIdleSecs !== null && i.masterIdleSecs * 1000 < i.now - d.at));
+}
+
+/** 마스터가 말할 수 없는가(항목과 무관한 축) — 좌석 없음·꺼짐 확정(30초 넘게 이어짐) · deadman(300초 안 · 풀림 아님 · 마스터 상태를 알 때만). 모름 = 아님. */
+export function masterSilenced(i: StallInput): StallWhy | null {
+  if (i.masterSid === undefined) return null; // 마스터 상태 모름 — deadman 도 근거로 안 씀(검증 F2 ⓐ)
+  const absent = i.masterSid === null || i.masterAlive === false;
+  if (absent && i.absentSince !== null && i.now - i.absentSince >= ABSENT_GRACE_MS) return i.masterSid === null ? "no_master" : "master_off";
+  const d = i.deadman;
+  if (d && i.now - d.at <= DEADMAN_MAX_AGE_MS && !deadmanRevived(i)) return "deadman";
   return null;
 }
 
 /** 이 도우미 허락에 사람이 직접 단추를 둘 수 있는가(FR-C5) — 마스터 멈춤 · 그 요청의 approval.stalled · 생긴 지 5분 ∧ 마스터 소식 5분 없음. */
 export function itemStall(i: StallInput, a: FeedApproval): StallWhy | null {
+  if (!a.screen) return null; // 좌석이 직접 올린 approval — 직접 단추 0 · 늘 「마스터가 확인하는 중」(검증 F0)
   const m = masterSilenced(i);
   if (m) return m;
   if (i.stalledIds.has(a.request_id)) return "stalled_event";
@@ -190,14 +218,14 @@ export function versionKey(a: FeedApproval): string {
 }
 
 /** 띠 항목(한 번에 하나를 보이는 쪽은 그리기) — 마스터 물음 먼저(대화가 1차 통로) · 그다음 승인 대기(오래된 것부터). */
-export function bandOf(questions: readonly Question[] | null, approvals: readonly FeedApproval[] | null, stall: StallInput): Band {
+export function bandOf(questions: readonly Question[] | null, approvals: readonly FeedApproval[] | null, stall: StallInput, questionsKnown: boolean = questions !== null): Band {
   const items: BandItem[] = [];
   for (const q of questions ?? []) items.push({ kind: "ask", key: q.id, q });
   for (const a of approvals ?? []) {
     if (stall.masterSid !== undefined && stall.masterSid !== null && a.surface_id === stall.masterSid) items.push({ kind: "master_screen", key: versionKey(a), a });
     else items.push({ kind: "helper", key: versionKey(a), a, stall: itemStall(stall, a) });
   }
-  return { known: questions !== null && approvals !== null && stall.masterSid !== undefined, items };
+  return { known: questionsKnown && questions !== null && approvals !== null && stall.masterSid !== undefined, items };
 }
 
 /** 띠 머리 글 · null = 띠 숨김(0건 확정일 때만 · FR-C1a). */

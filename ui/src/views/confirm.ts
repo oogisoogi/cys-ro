@@ -12,6 +12,7 @@ import type { Rec } from "./judge/msgstep";
 import {
   approvalsOf,
   bandOf,
+  deadmanRevived,
   itemStall,
   markersOf,
   openQuestions,
@@ -25,6 +26,8 @@ import {
 } from "./judge/confirms";
 
 export const DECISION_LOG_KEY = "cys-chat-decisions";
+/** 처리 직전 org.status 왕복 상한(core OBS_MAX_MS 와 같은 값 · 순환 import 를 피해 따로 둠). */
+export const ORG_MAX_MS = 500;
 export const DECISION_LOG_MAX = 50;
 
 export interface ConfirmDeps {
@@ -53,9 +56,16 @@ interface Scan {
 export class ConfirmBook {
   private prior: MarkerEvent[] = [];
   private tail: MarkerEvent[] = [];
-  /** 표식 근거로 쓴 레코드 uuid(앞 훑기와 뒤 읽기가 겹친 토막을 두 번 세지 않게) */
-  private seen = new Set<string>();
+  /** 앞 훑기가 「끝을 넘는 토막」에서 가져간 레코드 신원(개수) — 뒤 읽기가 같은 레코드를 한 번 더 세지 않게 한 번씩 지운다(검증 F9: 같은 글 다시 물음) */
+  private priorTaken = new Map<string, number>();
+  /** 뒤 읽기가 받은 레코드 신원 — 앞 훑기가 끝을 넘는 토막에서 여기 닿으면 멈춘다 */
   private tailSeen = new Set<string>();
+  /** 2 MiB 넘는 한 줄을 건너뛴 적 있음 — 그 안의 표식은 못 봄 → 물음 쪽은 「모름」 유지(검증 F3) */
+  private lossy = false;
+  /** 본부 데몬 socket_slug(앱 전달기는 본부 사건에도 slug 를 붙인다 · 검증 F1) · null = 아직 모름(사건 안 받음) */
+  private hqSlug: string | null = null;
+  /** 「마스터 좌석 없음 / 꺼짐 확정」을 처음 본 시각(검증 F5 유예) */
+  private absentSince: number | null = null;
   private scan: Scan | null = null;
   private priorDone = false;
   private scanning = false;
@@ -78,10 +88,7 @@ export class ConfirmBook {
   /** core 가 결속 세션의 시작 오프셋을 잡음. 같은 세션이면 그대로(대화 화면 왕복) · 다르면 처음부터. */
   startSession(sid: string | null, surface: number, startOffset: number): void {
     if (this.scan && this.scan.sid === sid && this.scan.surface === surface) return;
-    this.prior = [];
-    this.tail = [];
-    this.seen.clear();
-    this.tailSeen.clear();
+    this.clearMarks();
     this.scan = { sid, surface, next: 0, end: startOffset };
     this.priorDone = startOffset <= 0;
     this.changed();
@@ -89,12 +96,24 @@ export class ConfirmBook {
 
   /** 결속 세션이 바뀌었거나 잘림 — 표식 처음부터(모름으로). */
   resetSession(): void {
-    this.prior = [];
-    this.tail = [];
-    this.seen.clear();
-    this.tailSeen.clear();
+    this.clearMarks();
     this.scan = null;
     this.priorDone = false;
+    this.changed();
+  }
+
+  private clearMarks(): void {
+    this.prior = [];
+    this.tail = [];
+    this.priorTaken.clear();
+    this.tailSeen.clear();
+    this.lossy = false;
+  }
+
+  /** 긴 줄을 건너뜀(뒤 읽기 쪽에서도 · core 가 알림). */
+  markLossy(): void {
+    if (this.lossy) return;
+    this.lossy = true;
     this.changed();
   }
 
@@ -103,8 +122,11 @@ export class ConfirmBook {
     const ev: MarkerEvent[] = [];
     for (const r of recs) {
       const id = recId(r);
-      if (this.seen.has(id)) continue; // 앞 훑기가 끝 너머까지 먼저 읽은 레코드
-      this.seen.add(id);
+      const n = this.priorTaken.get(id) ?? 0;
+      if (n > 0) {
+        this.priorTaken.set(id, n - 1); // 앞 훑기가 끝 너머까지 먼저 가져간 레코드 — 한 번만 건너뜀
+        continue;
+      }
       this.tailSeen.add(id);
       ev.push(...markersOf(r));
     }
@@ -126,6 +148,7 @@ export class ConfirmBook {
         records?: unknown;
         session_id?: unknown;
         reset?: unknown;
+        skipped_bytes?: unknown;
       } | null;
       if (this.scan !== s) return; // 그사이 세션이 바뀜
       if (!r || r.status !== "ok" || typeof r.next_offset !== "number") return; // 모름 — 다음 틱에 다시
@@ -134,16 +157,19 @@ export class ConfirmBook {
         this.resetSession();
         return;
       }
+      if (typeof r.skipped_bytes === "number" && r.skipped_bytes > 0) this.lossy = true;
       const recs = Array.isArray(r.records) ? (r.records as Rec[]) : [];
+      const crossing = r.next_offset > s.end; // 끝(시작 오프셋)을 넘는 토막 — 뒤 기록이 섞여 있다
       for (const rec of recs) {
         const id = recId(rec);
-        // 뒤 읽기가 이미 받은 레코드에 닿음 = 여기부터는 뒤 기록 — 앞 훑기 끝(순서가 뒤집히지 않게 · 해결이 물음보다 먼저 놀지 않게)
-        if (this.tailSeen.has(id)) {
-          this.priorDone = true;
-          break;
+        if (crossing) {
+          // 뒤 읽기가 이미 받은 레코드에 닿음 = 여기부터는 뒤 기록 — 앞 훑기 끝(순서가 뒤집히지 않게 · 해결이 물음보다 먼저 놀지 않게)
+          if (this.tailSeen.has(id)) {
+            this.priorDone = true;
+            break;
+          }
+          this.priorTaken.set(id, (this.priorTaken.get(id) ?? 0) + 1);
         }
-        if (this.seen.has(id)) continue;
-        this.seen.add(id);
         this.prior.push(...markersOf(rec));
       }
       if (this.priorDone) {
@@ -151,7 +177,9 @@ export class ConfirmBook {
         return;
       }
       if (r.next_offset <= s.next) {
-        this.priorDone = true; // 더 읽을 것이 없음(줄 끝 없음 등) — 멈춤 방지
+        // 못 나아감(아직 끝나지 않은 긴 줄 등) — 「다 훑음」으로 확정하지 않는다(모름 유지 · 다음 틱에 다시 · 검증 F3)
+        this.changed();
+        return;
       } else {
         s.next = r.next_offset;
         if (s.next >= s.end) this.priorDone = true;
@@ -171,12 +199,26 @@ export class ConfirmBook {
     if (master === undefined) this.master = { sid: undefined, alive: null, idle: null };
     else if (master === null) this.master = { sid: null, alive: null, idle: null };
     else this.master = { sid: master.surface_id, alive: master.agent_alive, idle: idleOf(org, master.surface_id) };
+    // 좌석 없음·꺼짐 확정이 이어진 시작 시각(모름이면 그대로 둠) — 유예 30초(검증 F5)
+    if (this.master.sid !== undefined) {
+      const absent = this.master.sid === null || this.master.alive === false;
+      if (!absent) this.absentSince = null;
+      else if (this.absentSince === null) this.absentSince = this.d.now();
+    }
+    // deadman 걸쇠 — 풀림(살아난 마스터의 새 출력·새 좌석)을 한 번 보면 지운다(검증 F2 · 그 뒤 모름이 와도 되살아나지 않음)
+    if (this.deadman && deadmanRevived(this.stallInput())) this.deadman = null;
+  }
+
+  /** 본부 데몬 slug(대화 화면이 켜질 때 core 가 받아 넣음). */
+  setHqSlug(slug: string | null): void {
+    this.hqSlug = slug;
   }
 
   /** daemon-event 하나(대화 화면이 켜져 있을 때). */
   onEvent(ev: unknown): void {
     const e = (ev ?? {}) as { name?: unknown; payload?: unknown; surface_id?: unknown; socket_slug?: unknown };
-    if (e.socket_slug) return; // 부서 데몬 사건 — 본부 마스터 대화와 무관
+    // 앱 전달기는 본부 사건에도 slug 를 붙인다(main.rs 전달기) — 본부 slug 와 같을 때만 받음 · 본부 slug 를 모르면 받지 않음(단추가 덜 열리는 쪽)
+    if (e.socket_slug !== undefined && e.socket_slug !== null && e.socket_slug !== "" && (this.hqSlug === null || e.socket_slug !== this.hqSlug)) return;
     const p = (e.payload ?? {}) as Record<string, unknown>;
     if (e.name === "master.deadman" && p.role === "master") {
       this.deadman = { at: this.d.now(), sid: typeof e.surface_id === "number" ? e.surface_id : null };
@@ -188,13 +230,14 @@ export class ConfirmBook {
   }
 
   private stallInput(): StallInput {
-    return { now: this.d.now(), masterSid: this.master.sid, masterAlive: this.master.alive, masterIdleSecs: this.master.idle, deadman: this.deadman, stalledIds: this.stalledIds };
+    return { now: this.d.now(), masterSid: this.master.sid, masterAlive: this.master.alive, masterIdleSecs: this.master.idle, deadman: this.deadman, absentSince: this.absentSince, stalledIds: this.stalledIds };
   }
 
   /** 지금의 띠(그리기용). 표식은 앞 훑기가 끝나야 「안다」. */
   band(): Band {
+    // 앞 훑기가 끝나야 물음을 보인다 · 긴 줄을 건너뛰었으면 보이되 「모름」(더 살펴보는 중)
     const qs = this.scan !== null && this.priorDone ? openQuestions([...this.prior, ...this.tail]) : null;
-    return bandOf(qs, this.approvals, this.stallInput());
+    return bandOf(qs, this.approvals, this.stallInput(), qs !== null && !this.lossy);
   }
 
   /** 열린 물음(앞 훑기 중이어도 지금까지 본 것 · 시험용). */
@@ -217,8 +260,16 @@ export class ConfirmBook {
     let outcome = "replied";
     try {
       const feed = await this.d.invoke("feed_list", { status: "pending" }).catch(() => undefined);
+      const t0 = this.d.now();
       const org = await this.d.invoke("org_status", { socket: null }).catch(() => undefined);
-      this.observe(feed, org, masterOf(org));
+      // org 왕복이 길면 낡은 관측 — 마스터 상태 모름으로(보내기 길 OBS_MAX_MS 와 같은 500ms · 검증 F6)
+      const stale = this.d.now() - t0 > ORG_MAX_MS;
+      this.observe(feed, stale ? undefined : org, stale ? undefined : masterOf(org));
+      if (org === undefined || stale) {
+        outcome = "org_unknown";
+        this.notice = "마스터 상태를 확인하지 못해 처리하지 않았어요 — 잠시 뒤 다시 눌러 주세요.";
+        return;
+      }
       const fresh = feed === undefined ? null : approvalsOf(feed);
       const st = this.stallInput();
       // 지금 마스터 좌석의 승인이면(마스터가 그 좌석으로 옮겨 옴 등) 직접 허락 대상이 아니다(codex 1R 탐침 — 그 요청의 approval.stalled 만으로 통과하던 길).

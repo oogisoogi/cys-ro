@@ -10,6 +10,9 @@ import {
   CMD_MAX_LINES,
   CONFIRM_STALL_MEASURED,
   CONFIRM_STALL_MS,
+  ABSENT_GRACE_MS,
+  DEADMAN_MAX_AGE_MS,
+  deadmanRevived,
   itemStall,
   markersOf,
   masterSilenced,
@@ -24,8 +27,8 @@ import type { Rec } from "./msgstep";
 
 const A = (text: string, uuid = "a1", extra: Partial<Rec> = {}): Rec => ({ uuid, parent: null, role: "assistant", text, ts: null, ...extra });
 const body = (cmd: string, ro = "쓰기·삭제 가능") => `Do you want to proceed?\n— 명령 원문:\n${cmd}\n— 읽기 전용 판정(기계 추정 · 근거 아님): ${ro}`;
-const feedItem = (o: Partial<Record<string, unknown>> = {}) => ({ request_id: "r1", kind: "approval", status: "pending", surface_id: 7, created_at: 1000, body: body("rm -rf build"), ...o });
-const stall = (o: Partial<StallInput> = {}): StallInput => ({ now: 1_000_000, masterSid: 5, masterAlive: true, masterIdleSecs: 1, deadman: null, stalledIds: new Set(), ...o });
+const feedItem = (o: Partial<Record<string, unknown>> = {}) => ({ request_id: "r1", kind: "approval", status: "pending", surface_id: 7, created_at: 1000, daemon_issued: true, body: body("rm -rf build"), ...o });
+const stall = (o: Partial<StallInput> = {}): StallInput => ({ now: 1_000_000, masterSid: 5, masterAlive: true, masterIdleSecs: 1, deadman: null, absentSince: 0, stalledIds: new Set(), ...o });
 
 describe("마스터 물음 표식 — 줄머리 정확 일치만(§5-4)", () => {
   it("⟪확인 요청: …⟫ 한 줄 = 물음 1 · 뒤 공백은 봐줌", () => {
@@ -33,6 +36,12 @@ describe("마스터 물음 표식 — 줄머리 정확 일치만(§5-4)", () => 
   });
   it("줄 중간·들여쓰기·끝 표시 없음·빈 물음 = 0(꾸미지 않음)", () => {
     for (const t of ["예: ⟪확인 요청: 배포할까요?⟫", " ⟪확인 요청: 배포할까요?⟫", "⟪확인 요청: 배포할까요?", "⟪확인 요청:  ⟫", "⟪확인요청: 붙임⟫", "📌 결정 필요: 배포할까요?"]) expect(markersOf(A(t))).toEqual([]);
+  });
+  it("(검증 F8) ~~~ 울타리 · 들여쓴 ``` · ```` 안의 ``` 예시 = 0 · 울타리 닫힌 뒤 표식 = 1", () => {
+    expect(markersOf(A("~~~\n⟪확인 요청: 물결 울타리⟫\n~~~"))).toEqual([]);
+    expect(markersOf(A("1. 예:\n   ```\n⟪확인 요청: 들여쓴 울타리⟫\n   ```"))).toEqual([]);
+    expect(markersOf(A("````md\n```\n⟪확인 요청: 네 개 울타리 안⟫\n```\n````"))).toEqual([]);
+    expect(markersOf(A("```\n예시\n```\n⟪확인 요청: 진짜 물음⟫")).map((e) => e.kind)).toEqual(["ask"]);
   });
   it("사람(user) 글 · 곁가지 · 코드 울타리 안 = 0", () => {
     expect(markersOf({ ...A("⟪확인 요청: 사람이 친 표식⟫"), role: "user" })).toEqual([]);
@@ -68,6 +77,15 @@ describe("열린 물음 다시 놀기(FR-C3 — 해결 표식이 올 때만 닫�
     expect(openQuestions([ask("배포할까요?"), { kind: "resolve", key: "배포할까요?", uuid: null }]).length).toBe(0);
     expect(openQuestions([ask("배포할까요?"), { kind: "resolve", key: "배포", uuid: null }]).length).toBe(1);
   });
+  it("(검증 F4) 20번째 글자가 띄어쓰기여도 지침대로 「앞 20자」를 실으면 닫힘 · 공백 수 차이는 같게 봄", () => {
+    const q = "이번 금요일 배포를 다음 주 월요일 오후로 미뤄도 될까요?";
+    const k20 = Array.from(q).slice(0, 20).join("");
+    expect(k20.endsWith(" ")).toBe(true); // 이 견본의 20번째 글자 = 띄어쓰기
+    const ev = markersOf(A(`⟪확인 해결: ${k20}⟫`));
+    expect(openQuestions([ask(q), ...ev]).length).toBe(0);
+    expect(openQuestions([ask(q), { kind: "resolve", key: "이번  금요일 배포를 다음 주 월요일", uuid: null }]).length).toBe(0);
+    expect(openQuestions([ask(q), { kind: "resolve", key: "이번 금요일 배포를 다음 주", uuid: null }]).length).toBe(1);
+  });
   it("해결 앞에 온 물음만 닫힌다(순서)", () => {
     expect(openQuestions([res("뒤에 올 물음"), ask("뒤에 올 물음")]).length).toBe(1);
   });
@@ -84,8 +102,18 @@ describe("승인 feed 본문 → 펼침 자료(FR-C5a — 까닭은 지어내지
     expect(approvalsOf(null)).toBeNull();
     expect(approvalsOf({ nope: 1 })).toBeNull();
     expect(approvalsOf({ items: [] })).toEqual([]);
-    // (codex 1R 탐침) 대기 중 승인이 꼴이 깨졌으면 0건이 아니라 모름
+    // (codex 1R 탐침 · 검증 V14) 대기 중 승인이 꼴이 깨졌으면(번호·좌석·시각 칸 어느 것이든) 0건이 아니라 모름
     expect(approvalsOf({ items: [feedItem(), feedItem({ request_id: "z", surface_id: null })] })).toBeNull();
+    expect(approvalsOf({ items: [feedItem(), feedItem({ request_id: 7 })] })).toBeNull();
+    expect(approvalsOf({ items: [feedItem(), feedItem({ request_id: "t", created_at: "x" })] })).toBeNull();
+  });
+  it("(검증 F0) 데몬이 화면에서 감지한 창(daemon_issued · 없으면 번호 접두 daemon-)만 screen · 좌석이 올린 approval 은 직접 단추 0", () => {
+    const [a, b, c, d] = approvalsOf({ items: [feedItem({ request_id: "r1" }), feedItem({ request_id: "req-1", daemon_issued: false }), feedItem({ request_id: "daemon-9", daemon_issued: undefined }), feedItem({ request_id: "req-2", daemon_issued: undefined })] })!;
+    expect([a.screen, b.screen, c.screen, d.screen]).toEqual([true, false, true, false]);
+    const st = stall({ masterSid: null });
+    expect(itemStall(st, a)).toBe("no_master");
+    expect(itemStall(st, b)).toBeNull();
+    expect(itemStall(stall({ stalledIds: new Set(["req-1"]) }), b)).toBeNull();
   });
   it("데몬 자름 한도(12행·600자)에 닿으면 잘림 표시", () => {
     const lines = Array.from({ length: CMD_MAX_LINES }, (_, i) => `l${i}`).join("\n");
@@ -105,6 +133,12 @@ describe("마스터 멈춤 판정(FR-C5 · 직접 단추는 이때만)", () => {
     expect(itemStall(stall({ masterSid: undefined, masterAlive: null, masterIdleSecs: null }), a)).toBeNull();
     expect(itemStall(stall(), a)).toBeNull();
   });
+  it("(검증 F5) 좌석 없음·꺼짐 확정은 30초 이어져야 멈춤(다시 켜는 사이 단추 0)", () => {
+    expect(ABSENT_GRACE_MS).toBe(30_000);
+    expect(masterSilenced(stall({ masterSid: null, absentSince: 1_000_000 - 29_999 }))).toBeNull();
+    expect(masterSilenced(stall({ masterSid: null, absentSince: 1_000_000 - 30_000 }))).toBe("no_master");
+    expect(masterSilenced(stall({ masterAlive: false, absentSince: null }))).toBeNull();
+  });
   it("마스터 좌석 없음 · 꺼짐 확정 = 멈춤", () => {
     expect(masterSilenced(stall({ masterSid: null }))).toBe("no_master");
     expect(masterSilenced(stall({ masterAlive: false }))).toBe("master_off");
@@ -115,7 +149,15 @@ describe("마스터 멈춤 판정(FR-C5 · 직접 단추는 이때만)", () => {
     expect(masterSilenced(stall({ deadman: d, masterIdleSecs: 120 }))).toBe("deadman");
     expect(masterSilenced(stall({ deadman: d, masterIdleSecs: 10 }))).toBeNull();
     expect(masterSilenced(stall({ deadman: d, masterSid: 9, masterIdleSecs: 999 }))).toBeNull();
-    expect(masterSilenced(stall({ deadman: d, masterSid: undefined, masterAlive: null, masterIdleSecs: null }))).toBe("deadman");
+    // (검증 F2 ⓐ) 마스터 상태 모름이면 deadman 을 멈춤 근거로 안 씀
+    expect(masterSilenced(stall({ deadman: d, masterSid: undefined, masterAlive: null, masterIdleSecs: null }))).toBeNull();
+    // (검증 F2 · 뮤턴트 V3) 생존 모름(null)인 마스터의 출력만으로는 풀리지 않는다 — 풀림 = 생존 확정 ∧ (새 좌석 ∨ 사건 뒤 출력)
+    expect(masterSilenced(stall({ deadman: d, masterAlive: null, masterIdleSecs: 10 }))).toBe("deadman");
+    expect(deadmanRevived(stall({ deadman: d, masterAlive: null, masterIdleSecs: 10 }))).toBe(false);
+    expect(deadmanRevived(stall({ deadman: d, masterAlive: true, masterIdleSecs: 10 }))).toBe(true);
+    // (검증 F2) 나이 상한 300초 — 데몬은 아직 죽어 있으면 300초마다 다시 알린다
+    expect(masterSilenced(stall({ deadman: { at: 1_000_000 - DEADMAN_MAX_AGE_MS - 1, sid: 5 }, masterAlive: null, masterIdleSecs: 999 }))).toBeNull();
+    expect(masterSilenced(stall({ deadman: { at: 1_000_000 - DEADMAN_MAX_AGE_MS, sid: 5 }, masterAlive: null, masterIdleSecs: 999 }))).toBe("deadman");
   });
   it("그 요청의 approval.stalled = 멈춤", () => {
     expect(itemStall(stall({ stalledIds: new Set(["r1"]) }), a)).toBe("stalled_event");

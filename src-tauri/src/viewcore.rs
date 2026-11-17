@@ -311,21 +311,85 @@ pub(crate) fn read_transcript_from(mut f: std::fs::File, after_offset: u64) -> R
     f.seek(SeekFrom::Start(start)).map_err(|e| e.to_string())?;
     let want = (size - start).min(TRANSCRIPT_READ_MAX);
     let mut buf = Vec::with_capacity(want as usize);
-    f.take(want).read_to_end(&mut buf).map_err(|e| e.to_string())?;
+    (&f).take(want).read_to_end(&mut buf).map_err(|e| e.to_string())?;
     let (records, consumed, bad) = parse_transcript_chunk(&buf);
+    let mut next = start + consumed as u64;
+    let mut skipped: u64 = 0;
+    let mut long_open = false;
+    // (조각 4 · 독립 검증 F3) 한 줄이 읽기 한도보다 길면 줄 끝이 없어 영영 못 나아갔다(앞 훑기 「다 훑음」 오판 · 뒤 읽기 정지).
+    //   그 줄은 내용을 읽지 않고 다음 줄 끝까지 건너뛰고 건너뛴 바이트를 알린다(화면 = 그 세션 물음은 「모름」 유지).
+    //   줄 끝이 아직 없으면(쓰는 중) 그대로 두고 `long_line_open` 만 알린다.
+    if consumed == 0 && buf.len() as u64 == TRANSCRIPT_READ_MAX {
+        match next_newline_after(&f, start + buf.len() as u64, size)? {
+            Some(end) => {
+                skipped = end - start;
+                next = end;
+            }
+            None => long_open = true,
+        }
+    }
     Ok(json!({
         "status": "ok",
-        "next_offset": start + consumed as u64,
+        "next_offset": next,
         "size": size,
         "records": records,
         "bad_lines": bad,
         "reset": reset,
+        "skipped_bytes": skipped,
+        "long_line_open": long_open,
     }))
+}
+
+/// `from` 부터 `size` 까지 첫 `\n` 뒤 오프셋(내용은 버림 · 64 KiB 씩) · 없으면 None.
+pub(crate) fn next_newline_after(mut f: &std::fs::File, from: u64, size: u64) -> Result<Option<u64>, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    f.seek(SeekFrom::Start(from)).map_err(|e| e.to_string())?;
+    let mut pos = from;
+    let mut chunk = vec![0u8; 64 * 1024];
+    while pos < size {
+        let n = f.read(&mut chunk[..((size - pos).min(64 * 1024)) as usize]).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        if let Some(i) = chunk[..n].iter().position(|&b| b == b'\n') {
+            return Ok(Some(pos + i as u64 + 1));
+        }
+        pos += n as u64;
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn over_long_line_is_skipped_to_next_line_end_and_reported() {
+        // (조각 4 · 독립 검증 F3) 한도보다 긴 한 줄 → 다음 줄 끝까지 건너뜀 + skipped_bytes · 줄 끝이 아직 없으면 그대로 + long_line_open
+        let dir = std::env::temp_dir().join(format!("vc-long-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("s.jsonl");
+        let long = vec![b'x'; TRANSCRIPT_READ_MAX as usize + 10];
+        let rec = br#"{"type":"assistant","uuid":"a2","message":{"content":"after"}}"#;
+        let mut body = long.clone();
+        body.push(b'\n');
+        body.extend_from_slice(rec);
+        body.push(b'\n');
+        std::fs::write(&p, &body).unwrap();
+        let v = read_transcript_from(std::fs::File::open(&p).unwrap(), 0).unwrap();
+        assert_eq!(v["skipped_bytes"], long.len() as u64 + 1);
+        assert_eq!(v["next_offset"], long.len() as u64 + 1);
+        assert_eq!(v["long_line_open"], false);
+        let w = read_transcript_from(std::fs::File::open(&p).unwrap(), long.len() as u64 + 1).unwrap();
+        assert_eq!(w["records"][0]["uuid"], "a2", "건너뛴 뒤 다음 줄을 읽는다");
+        assert_eq!(w["skipped_bytes"], 0);
+        std::fs::write(&p, &long).unwrap(); // 줄 끝이 아직 없음(쓰는 중)
+        let o = read_transcript_from(std::fs::File::open(&p).unwrap(), 0).unwrap();
+        assert_eq!(o["next_offset"], 0);
+        assert_eq!(o["long_line_open"], true);
+        assert_eq!(o["skipped_bytes"], 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn human_params_are_one_atomic_request_with_both_tokens() {

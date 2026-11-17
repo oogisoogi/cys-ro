@@ -51,6 +51,7 @@ function harness(o: { prior?: Array<Record<string, unknown>>; chunk?: number } =
     clearTimeout: () => {},
     store: { get: (k) => mem.get(k) ?? null, set: (k, v) => void mem.set(k, v), remove: (k) => void mem.delete(k) },
     working: (r) => r.working === true,
+    defaultSlug: async () => "hq-slug-0001",
     listen: (fn) => {
       listenCalls++;
       listeners.push(fn);
@@ -64,8 +65,9 @@ function harness(o: { prior?: Array<Record<string, unknown>>; chunk?: number } =
     for (let i = 0; i < 30; i++) await Promise.resolve();
   };
   const core = new ChatCore(deps);
-  const emit = (name: string, payload: Record<string, unknown>, surface_id: number | null = 5) => {
-    for (const f of [...listeners]) f({ name, payload, surface_id });
+  /** 앱 꼴 사건 — 앱 전달기는 본부 사건에도 본부 slug 를 붙인다(검증 F1) */
+  const emit = (name: string, payload: Record<string, unknown>, surface_id: number | null = 5, socket_slug: string | undefined = "hq-slug-0001") => {
+    for (const f of [...listeners]) f({ name, payload, surface_id, socket_slug });
   };
   const replies = () => calls.filter((c) => c.cmd === "feed_reply");
   /** 대화 화면을 엶 + 3초 고리 n번 */
@@ -77,7 +79,7 @@ function harness(o: { prior?: Array<Record<string, unknown>>; chunk?: number } =
       await flush();
     }
   };
-  const helper = (o: Partial<Record<string, unknown>> = {}) => ({ request_id: "r1", kind: "approval", status: "pending", surface_id: 7, created_at: now / 1000 - 10, body: body("rm -rf build"), ...o });
+  const helper = (o: Partial<Record<string, unknown>> = {}) => ({ request_id: "r1", kind: "approval", status: "pending", surface_id: 7, created_at: now / 1000 - 10, daemon_issued: true, body: body("rm -rf build"), ...o });
   return { calls, mem, st, core, emit, replies, open, flush, helper, listenersCount: () => listeners.length, listenCalls: () => listenCalls, setNow: (n: number) => (now = n), getNow: () => now };
 }
 
@@ -245,10 +247,123 @@ describe("도우미 허락 — 평소 「마스터가 확인하는 중」(FR-C6)
     h.st.feed = [h.helper(), h.helper({ request_id: "rm", surface_id: 5 })];
     h.st.master.agent_alive = false;
     await h.open(2);
+    // (검증 F5) 꺼짐을 처음 본 뒤 30초 유예 — 그동안은 「마스터가 확인하는 중」
+    expect(h.core.confirm.band().items.map((x) => (x.kind === "helper" ? x.stall : "-"))).toEqual([null, "-"]);
+    h.setNow(h.getNow() + 30_000);
     expect(h.core.confirm.band().items.map((x) => [x.kind, x.kind === "helper" ? x.stall : null])).toEqual([
       ["helper", "master_off"],
       ["master_screen", null],
     ]);
+  });
+});
+
+describe("독립 검증(2160) 지적 고정", () => {
+  const N = (text: string, ts: string | null = null) => ({ uuid: null, parent: null, role: "assistant", text, ts });
+  it("F1 — 본부 slug 가 붙은 사건 = 받음 · 다른 slug = 버림 · 본부 slug 를 아직 모르면 버림", async () => {
+    const h = harness();
+    h.st.feed = [h.helper()];
+    h.st.master.idle_secs = 120;
+    await h.open(2);
+    h.emit("master.deadman", { role: "master" }, 5, "dept-slug-9");
+    expect((h.core.confirm.band().items[0] as { stall: unknown }).stall).toBeNull();
+    h.core.confirm.setHqSlug(null);
+    h.emit("master.deadman", { role: "master" });
+    expect((h.core.confirm.band().items[0] as { stall: unknown }).stall).toBeNull();
+    h.core.confirm.setHqSlug("hq-slug-0001");
+    h.emit("master.deadman", { role: "master" });
+    expect((h.core.confirm.band().items[0] as { stall: unknown }).stall).toBe("deadman");
+  });
+  it("F2 ⓐ — 풀림을 한 번 보면 deadman 을 지운다(그 뒤 마스터 상태 모름이 와도 멈춤 아님 · 클릭 호출 0)", async () => {
+    const h = harness();
+    h.st.feed = [h.helper()];
+    h.st.master.idle_secs = 120;
+    await h.open(2);
+    h.emit("master.deadman", { role: "master" });
+    h.setNow(h.getNow() + 10_000);
+    h.st.master.idle_secs = 1; // 사건 뒤 출력 = 풀림
+    await h.core.poll();
+    await h.flush();
+    const it0 = h.core.confirm.band().items[0] as { a: FeedApproval; stall: unknown };
+    expect(it0.stall).toBeNull();
+    h.core.confirm.observe({ items: h.st.feed }, undefined, undefined); // 마스터 상태 모름
+    expect((h.core.confirm.band().items[0] as { stall: unknown }).stall).toBeNull();
+  });
+  it("F2 ⓑ — 생존 모름(agent_alive null) 마스터 + deadman = 300초 뒤 근거 아님(영영 열리지 않음)", async () => {
+    const h = harness();
+    h.st.feed = [h.helper()];
+    h.st.master.agent_alive = null;
+    await h.open(2);
+    h.emit("master.deadman", { role: "master" });
+    expect((h.core.confirm.band().items[0] as { stall: unknown }).stall).toBe("deadman");
+    h.setNow(h.getNow() + 300_001);
+    expect((h.core.confirm.band().items[0] as { stall: unknown }).stall).toBeNull();
+  });
+  it("F3 — 못 나아가는 토막(아직 끝나지 않은 긴 줄) = 「다 훑음」 확정 안 함 · 건너뛴 긴 줄 = 물음은 보이되 모름", async () => {
+    const h = harness({ prior: [A("p0", "⟪확인 요청: 긴 줄 앞 물음⟫"), A("p1", "x")], chunk: 1 });
+    let stuck = true;
+    const inv = h.core["d"].invoke;
+    (h.core["d"] as { invoke: typeof inv }).invoke = async (cmd, args) => {
+      if (cmd === "chat_transcript" && !(args as { fromEnd: boolean }).fromEnd && (args as { afterOffset: number }).afterOffset === 1) {
+        if (stuck) return { status: "ok", session_id: h.st.session, next_offset: 1, size: 2, records: [] };
+        return { status: "ok", session_id: h.st.session, next_offset: 2, size: 2, records: [], skipped_bytes: 3_000_000 };
+      }
+      return inv(cmd, args);
+    };
+    (h.core.confirm as unknown as { d: { invoke: typeof inv } }).d.invoke = h.core["d"].invoke;
+    await h.open(4);
+    expect(label(h).known).toBe(false); // 못 나아감 — 모름 유지
+    stuck = false;
+    await h.open(2);
+    expect(label(h)).toEqual({ known: false, n: 1, kinds: ["ask"] }); // 다 훑었으나 긴 줄을 건너뜀 → 물음 1 · 모름
+  });
+  it("F6 — 처리 직전 org.status 왕복이 500ms 넘으면 호출 0", async () => {
+    const h = harness();
+    h.st.feed = [h.helper()];
+    h.st.master.idle_secs = 120;
+    await h.open(2);
+    h.emit("master.deadman", { role: "master" });
+    const it0 = h.core.confirm.band().items[0] as { a: FeedApproval };
+    const inv = h.core["d"].invoke;
+    (h.core.confirm as unknown as { d: { invoke: typeof inv } }).d.invoke = async (cmd, args) => {
+      if (cmd === "org_status") h.setNow(h.getNow() + 501);
+      return inv(cmd, args);
+    };
+    await h.core.confirm.decide(boundOf(it0.a), "allow");
+    expect(h.replies().length).toBe(0);
+    expect(h.core.confirm.decisions.at(-1)?.outcome).toBe("org_unknown");
+  });
+  it("F9 — uuid·시각 없는 레코드: 묻고 → 해결 → 같은 글로 다시 물음 = 열림 1", async () => {
+    const h = harness();
+    await h.open(3);
+    h.st.file.push(N("⟪확인 요청: 무신원 물음⟫"), N("⟪확인 해결: 무신원 물음⟫"), N("⟪확인 요청: 무신원 물음⟫"));
+    await h.core.readTranscript();
+    expect(label(h)).toEqual({ known: true, n: 1, kinds: ["ask"] });
+  });
+  it("V17 — 신원이 역할만이면 끝을 넘는 토막의 앞 기록 물음을 잃는다(역할·시각·글 신원이어야 1)", async () => {
+    const h = harness({ prior: [N("⟪확인 요청: 앞 기록 무신원 물음⟫")] });
+    h.core.attach();
+    await h.flush();
+    await h.core.poll(); // 시작점 = 1
+    await h.flush();
+    h.st.file.push(N("다른 말"));
+    await h.core.readTranscript(); // 뒤 읽기 = 다른 말
+    await h.core.poll(); // 앞 훑기(끝을 넘는 토막): 물음 → 다른 말(뒤 기록)에서 멈춤
+    await h.flush();
+    expect(label(h)).toEqual({ known: true, n: 1, kinds: ["ask"] });
+  });
+  it("V18 — 앞 훑기가 끝 너머에서 먼저 가져간 레코드를 뒤 읽기가 또 세지 않는다(해결 한 번 = 물음 하나)", async () => {
+    const p = "가나다라마바사아자차카타파하가나다라마바";
+    const h = harness({ prior: [A("p0", `⟪확인 요청: ${p} 첫째⟫`), A("p1", `⟪확인 요청: ${p} 둘째⟫`)] });
+    h.core.attach();
+    await h.flush();
+    await h.core.readTranscript(); // 마스터 모름 — 아무것도 안 함
+    await h.core.poll(); // 시작점 = 2 · (이 틱의 앞 훑기는 시작점 전이라 건너뜀)
+    await h.flush();
+    h.st.file.push(A("t1", `⟪확인 해결: ${p}⟫`));
+    await h.core.poll(); // 앞 훑기: p0·p1·t1(끝 너머 · 뒤 읽기 전) 가져감
+    await h.flush();
+    await h.core.readTranscript(); // 뒤 읽기: t1 = 이미 가져간 것 → 건너뜀
+    expect(h.core.confirm.questionsSoFar().map((q) => q.text)).toEqual([`${p} 둘째`]);
   });
 });
 

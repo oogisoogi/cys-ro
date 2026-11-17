@@ -121,6 +121,7 @@ fn b16fix2_plan_dialog_is_block_only_for_operator_actuation() {
 /// a = 계획 승인 창 선택 줄이 문장 아래 5번째 행(여백 1 + 선택지 4 뒤 · 의견 입력 행) · b = Write 창 파일 이름에 `?`.
 /// 종전(8bdd08ad): tn2·tn7 술어 거짓 → Ctrl-U·본문·Enter 가 그 창에 들어갔다. fp 줄은 고침 전후 같은 값이어야 한다(재검 관측 그대로 —
 /// 묶이는 fp4·fp4w·fp7 은 종전 문구 fp4old 도 같은 자리에서 묶이는 화면 = 입력창 없는 화면 · 가로줄 없이 커서가 인용 선택 행 위).
+/// tn8* = codex 1R major 2(파일 이름 속 `─` — 문장 범위는 가로줄 **행**(줄머리 `─`)만 넘지 않는다).
 /// (R3 c = 낱말 가운데에서 잘린 문장 · 대역 인공물로 판단해 손대지 않았다 — 여기 넣지 않는다.)
 #[test]
 fn b16fix2_dialog_variants_and_false_positive_table() {
@@ -147,6 +148,10 @@ fn b16fix2_dialog_variants_and_false_positive_table() {
         ("tn6-write-norule-tall-cursor-on-choice", vec![" 1 fn main() {}", " 2 // 긴 미리보기로 윗 가로줄이 밀려남", " Do you want to overwrite a.rs?", " ❯ 1. Yes", "   2. No"], 3, true),
         ("tn7-write-question-mark-in-name(R3b)", vec![RULE, " Create file", " Do you want to create what?.md?", " ❯ 1. Yes", "   2. No"], 3, true),
         ("tn7b-write-question-marks-in-name-cursor-on-3rd", vec![RULE, " Overwrite file", " Do you want to overwrite a?b?.rs?", "   1. Yes", "   2. Yes, allow all edits during this session (shift+tab)", " ❯ 3. No"], 5, true),
+        // codex 1R major 2: 파일 이름 속 `─`(가로줄 글자) — 종전 `[^?]` 는 읽었고 첫 고침 `[^─]` 는 못 읽었다. 가로줄 **행**만 경계다.
+        ("tn8-write-box-char-in-name", vec![RULE, " Create file", " Do you want to create a─b.rs?", " ❯ 1. Yes", "   2. No", " Esc to cancel"], 3, true),
+        ("tn8b-write-box-char-and-question-in-name", vec![RULE, " Overwrite file", " Do you want to overwrite a─?b.rs?", " ❯ 1. Yes", "   2. No", " Esc to cancel"], 3, true),
+        ("tn8c-write-box-char-name-wrapped", vec![RULE, " Create file", " Do you want to create a-very-long-file-name-with-a─box-char-that-wraps-over-the-", " edge─x.rs?", " ❯ 1. Yes", "   2. No"], 4, true),
     ];
     let mut bad: Vec<String> = Vec::new();
     for (i, (name, rows, cur, want)) in screens.iter().enumerate() {

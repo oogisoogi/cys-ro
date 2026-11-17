@@ -116,8 +116,16 @@ export interface ApplyResult {
 export function applyRecords(msgs: readonly Msg[], recs: readonly Rec[]): ApplyResult {
   const out = msgs.map((m) => ({ ...m, thread: [...m.thread], replies: [...m.replies] }));
   const stray: Reply[] = [];
+  // 한 레코드는 한 번만 근거가 된다(codex 1R major — 다시 읽은 기록으로 같은 uuid 를 두 말에 배정하던 길): 이미 짝지은 user·이미 이은 사슬 레코드는 건너뜀.
+  const seen = new Set<string>();
+  for (const m of out) {
+    if (m.userUuid) seen.add(m.userUuid);
+    for (const u of m.thread) seen.add(u);
+  }
   for (const r of recs) {
     if (r.sidechain) continue;
+    if (r.uuid !== null && seen.has(r.uuid)) continue;
+    if (r.uuid !== null) seen.add(r.uuid);
     if (r.role === "user") {
       const cand = out
         .filter((m) => AWAITING.has(m.step) && !m.userUuid && m.sentAt !== null && recordAfter(r, m.sentAt))

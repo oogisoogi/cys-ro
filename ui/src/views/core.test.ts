@@ -1,7 +1,7 @@
 // (cysr-ui-slice1) 공통층 보내기 길 시험 — 대역 데몬(invoke 기록기) · 가짜 시계·타이머.
 // 판정 단위 = 「PTY 쓰기 = chat_send 호출 수」(원자 제출 1요청 = 쓰기 1 · 데몬 거부는 바이트 0).
 import { describe, it, expect } from "bun:test";
-import { ChatCore, HELD_REFUSED_BACKOFF_MS, HOLD_KEY, healthOf, type Deps } from "./core";
+import { ChatCore, HELD_REFUSED_BACKOFF_MS, HOLD_KEY, healthOf, RESTORED, type Deps } from "./core";
 import { READ_AFTER_MS } from "./judge/msgstep";
 
 interface Call {
@@ -103,6 +103,30 @@ describe("보내기 1 → 쓰기 1(원자) — 쓰기 직전 재조회 1회", ()
   });
 });
 
+describe("입력칸 — 막힌 말은 남기고 받아들인 말만 비움 · 첫 보내기의 세션 시작점 RPC 는 문턱과 쓰기 사이에 끼지 않음", () => {
+  it("submit: `/clear` = false(입력칸 그대로 · 안내) · 「안녕」 = true", async () => {
+    const h = harness();
+    expect(h.core.submit("/clear")).toBe(false);
+    expect(h.core.state.notice).toMatch(/명령/);
+    expect(h.core.submit("안녕")).toBe(true);
+    await h.flush();
+    expect(h.writes()).toHaveLength(1);
+  });
+  it("첫 보내기: chat_transcript(fromEnd) 뒤에 org_status·feed_list 를 다시 받고 곧바로 chat_send", async () => {
+    const h = harness();
+    h.core.attach(); // 마스터를 아직 모름 → 시작점 못 잡음
+    await h.flush();
+    h.calls.length = 0;
+    await h.core.send("안녕");
+    const cmds = h.calls.map((c) => c.cmd);
+    const ci = cmds.indexOf("chat_send");
+    const ti = cmds.indexOf("chat_transcript");
+    expect(ti).toBeGreaterThan(-1);
+    expect(ti).toBeLessThan(ci);
+    expect(cmds.slice(ti + 1, ci).sort()).toEqual(["feed_list", "org_status"]);
+  });
+});
+
 describe("문턱 실패 → 쓰기 0 · 붙잡음(조건 하나씩)", () => {
   const cases: Array<[string, Parameters<typeof harness>[0]]> = [
     ["★수용 1 사람 초안 12바이트", { master: { surface_id: 5, role: "master", agent_alive: true, pending_input_bytes: 12, pending_input_human_bytes: 12, input_paste_open: false, gate_pending: null, human_idle_secs: 999 } }],
@@ -135,11 +159,39 @@ describe("문턱 실패 → 쓰기 0 · 붙잡음(조건 하나씩)", () => {
     expect(h.writes().map((c) => c.args?.text)).toEqual(["하나", "둘"]);
     expect(h.mem.has(HOLD_KEY)).toBe(false);
   });
-  it("앱을 다시 켜도 붙잡은 말이 남는다(cys-chat-hold)", async () => {
+  it("앱을 다시 켜도 붙잡은 말이 남는다(cys-chat-hold) · ★자동 제출 0 — 사람이 「이 말 보내기」를 눌러야 다듬기부터 다시(codex 1R)", async () => {
     const h = harness({ master: null });
     await h.core.send("남아라");
+    h.st.master = { surface_id: 5, role: "master", agent_alive: true, pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false, gate_pending: null, human_idle_secs: null };
     const again = new ChatCore(h.deps);
-    expect(again.state.msgs.map((m) => [m.text, m.step])).toEqual([["남아라", "held"]]);
+    expect(again.state.msgs.map((m) => [m.text, m.step, m.code])).toEqual([["남아라", "held", RESTORED]]);
+    for (let i = 0; i < 5; i++) await again.poll();
+    expect(h.writes()).toHaveLength(0);
+    await again.confirmRestored(again.state.msgs[0].id);
+    expect(h.writes().map((c) => c.args?.text)).toEqual(["남아라"]);
+  });
+  it("저장소에서 읽은 `/clear`(변조·손상) = 자동 제출 0 · 눌러도 다듬기에서 막힘", async () => {
+    const h = harness();
+    h.mem.set(HOLD_KEY, JSON.stringify({ v: 1, items: [{ id: "x1", text: "/clear", at: 1 }] }));
+    const c = new ChatCore(h.deps);
+    for (let i = 0; i < 3; i++) await c.poll();
+    await c.confirmRestored("x1");
+    expect(h.writes()).toHaveLength(0);
+    expect(c.state.notice).toMatch(/명령/);
+  });
+  it("★쓰기 전 「보내는 중」 영속 실패(저장소 쓰기 예외) = 쓰기 0 · 붙잡음 그대로(codex 1R)", async () => {
+    const h = harness({ approvals: [5] });
+    await h.core.send("안녕");
+    h.st.approvals = [];
+    h.deps.store.set = () => {
+      throw new Error("quota");
+    };
+    h.deps.store.remove = () => {
+      throw new Error("quota");
+    };
+    await h.core.poll();
+    expect(h.writes()).toHaveLength(0);
+    expect(h.core.state.msgs[0].code).toBe("store_failed");
   });
 });
 
@@ -260,6 +312,23 @@ describe("전달 확인 중 → 전달됨 → 마스터 답(결속 세션 전문
     const before = h.calls.filter((c) => c.cmd === "chat_transcript").length;
     await h.advance(10_000);
     expect(h.calls.filter((c) => c.cmd === "chat_transcript").length).toBe(before);
+  });
+  it("파일이 줄어 reset 이면 다시 읽은 옛 레코드로 근거를 만들지 않고 끝에서 다시(codex 1R)", async () => {
+    const h = harness();
+    h.core.attach();
+    await h.flush();
+    await h.core.send("안녕");
+    const orig = h.deps.invoke;
+    let once = true;
+    h.deps.invoke = async (cmd, args) => {
+      if (cmd === "chat_transcript" && once && !(args as { fromEnd: boolean }).fromEnd) {
+        once = false;
+        return { status: "ok", session_id: h.st.session, next_offset: 1, size: 1, reset: true, records: [{ uuid: "u1", parent: null, role: "user", text: "안녕", ts: null }] };
+      }
+      return orig(cmd, args);
+    };
+    await h.core.readTranscript();
+    expect(h.core.state.msgs[0].step).toBe("injected");
   });
   it("결속 세션이 바뀌면 새 파일 끝에서 다시 시작", async () => {
     const h = harness();

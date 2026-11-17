@@ -4,7 +4,8 @@
 //  · 사람 초안이 있으면 Ctrl-U 가 그 초안을 **거부 없이 지운다**(0.5 숫자 4 · 12바이트 → 0) → 입력줄 빈칸이 유일한 방어.
 //  · 데몬의 승인 창 판정(쓰기 직전 · 가로줄 아래 꼬리)과 승인 대기 항목(feed)은 **술어가 다르다**(0.5 숫자 3) → 둘 다 본다.
 //    데몬 쪽은 같은 요청 안의 refuse_on_approval 이 보고, 화면은 feed 대기 항목을 본다.
-//  · 사람 키 직후는 데몬이 막지 않는다(0.5 M3ⓒ) → `human_idle_secs` 30초 안이면 붙잡는다(내 직전 보내기는 빼고).
+//  · 사람 키 직후는 데몬이 막지 않는다(0.5 M3ⓒ) → `human_idle_secs` 30초 안이면 붙잡는다. 내 직전 보내기도 데몬에는 사람 입력으로
+//    찍히지만, 시각만으로는 다른 길 입력과 가를 수 없다(codex 1R major) → 구별하지 않고 같이 붙잡는다(30초 뒤 자동 1건).
 // 「모름」(null·조회 실패)은 전부 **붙잡음** 쪽으로 접는다 — 이 문턱은 쓰지 않는 쪽이 안전하다.
 // 규칙: document·window·localStorage·__TAURI__·Date.now·setTimeout 금지(views.test.ts 정적 검사).
 
@@ -13,8 +14,6 @@
 export const HUMAN_QUIET_SECS = 30;
 /** 0.5 M10 실측 묶임(초) — 기계 문안을 사람 보내기 뒤 언제 보낼지(조각 5)·「30초 뒤 다시」 문구가 이 값을 쓴다. */
 export const MEASURED_QUEUE_HOLD_AFTER_HUMAN_SECS = 31.2;
-/** 내 보내기를 데몬 `human_idle_secs` 와 짝지을 때 허용 오차(초) — 목록 왕복·초 내림(0.5 M12: 데몬 목록 왕복 < 1ms · 웹뷰 구간 미측정). */
-export const OWN_SEND_SKEW_SECS = 2;
 /** U25(마스터가 답하는 중에 친 말을 Claude Code 가 받아 두는가) — **측정 대기**(0.5 M5 보류).
  *  값이 오면 이 상수만 바꾼다: true = 바쁠 때도 보냄 · false = 못 믿음(마스터가 쉬면 보냄 · 지금 기본값). */
 export const U25_BUSY_PASTE_OK: boolean = false;
@@ -29,7 +28,8 @@ export interface MasterRow {
   input_paste_open: boolean | null;
   /** 관문(첫기동 등) — null/없음 = 관문 없음 */
   gate_pending: unknown;
-  human_idle_secs: number | null;
+  /** null = 사람 입력 없음(데몬이 null 로 줌) · undefined = 칸 자체가 없음(모름) */
+  human_idle_secs: number | null | undefined;
   /** 지금 답하는 중(appearance.nodeWorking) */
   working: boolean;
 }
@@ -39,8 +39,6 @@ export interface GateInput {
   master: MasterRow | null | undefined;
   /** 이 데몬의 승인 대기(feed kind=approval status=pending) 항목이 걸린 좌석 번호들 · null = feed 조회 실패(모름) */
   approvalSeats: readonly number[] | null;
-  /** 이 화면이 마지막으로 사람 말을 쓴 뒤 지난 초 · null = 쓴 적 없음 */
-  ownLastSendAgeSecs: number | null;
   busyPasteOk?: boolean;
 }
 
@@ -67,7 +65,7 @@ const MSG: Record<GateCode, string> = {
   approval_unknown: "확인할 것이 있는지 살펴보는 중이에요 — 확인되면 보낼게요.",
   draft: "마스터 창에 쓰다 만 글이 있어요 — 그 글을 지우지 않으려고 기다려요. 작업 화면에서 그 글을 보내거나 지우면 보낼게요.",
   input_unknown: "마스터 입력줄 상태를 확인하는 중이에요 — 확인되면 보낼게요.",
-  human_recent: "방금 다른 곳에서 마스터 창에 입력이 있었어요 — 30초 동안 조용하면 보낼게요.",
+  human_recent: "마스터 창에 사람 입력이 있은 지 30초가 안 됐어요(방금 보낸 말 포함) — 30초 동안 조용하면 보낼게요.",
   busy: "마스터가 답하는 중이에요 — 끝나면 보낼게요.",
 };
 
@@ -82,16 +80,11 @@ export function sendGate(g: GateInput): GateVerdict {
   if (m.gate_pending !== null && m.gate_pending !== undefined) return verdict("gate_pending");
   if (g.approvalSeats === null) return verdict("approval_unknown");
   if (g.approvalSeats.includes(m.surface_id)) return verdict("approval");
-  if (m.pending_input_bytes === null || m.pending_input_human_bytes === null || m.input_paste_open === null) return verdict("input_unknown");
+  if (m.pending_input_bytes === null || m.pending_input_human_bytes === null || m.input_paste_open === null || m.human_idle_secs === undefined) return verdict("input_unknown");
   if (m.pending_input_human_bytes > 0 || m.pending_input_bytes > 0 || m.input_paste_open) return verdict("draft");
-  if (m.human_idle_secs !== null && m.human_idle_secs < HUMAN_QUIET_SECS && !isOwnSend(m.human_idle_secs, g.ownLastSendAgeSecs)) return verdict("human_recent");
+  if (m.human_idle_secs !== null && m.human_idle_secs < HUMAN_QUIET_SECS) return verdict("human_recent");
   if (m.working && !(g.busyPasteOk ?? U25_BUSY_PASTE_OK)) return verdict("busy");
   return { ok: true };
-}
-
-/** 데몬이 본 마지막 사람 입력이 이 화면의 마지막 보내기인가 — 그 뒤에 다른 사람 입력이 없었다면 idle ≥ 내 나이 − 오차. */
-export function isOwnSend(humanIdleSecs: number, ownAgeSecs: number | null): boolean {
-  return ownAgeSecs !== null && humanIdleSecs >= ownAgeSecs - OWN_SEND_SKEW_SECS;
 }
 
 /** org.status 행(IPC 값 · 전부 의심) → MasterRow. 마스터 = role === "master" ∧ !exited(main.ts 와 같은 판정) · 둘 이상이면 번호가 작은 것. */
@@ -114,7 +107,7 @@ export function masterRowOf(org: unknown, working: (row: Record<string, unknown>
     pending_input_human_bytes: num(r.pending_input_human_bytes),
     input_paste_open: bool(r.input_paste_open),
     gate_pending: r.gate_pending ?? null,
-    human_idle_secs: num(r.human_idle_secs),
+    human_idle_secs: "human_idle_secs" in r ? num(r.human_idle_secs) ?? (r.human_idle_secs === null ? null : undefined) : undefined,
     working: working(r),
   };
 }

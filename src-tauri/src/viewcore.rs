@@ -20,6 +20,18 @@ use crate::{read_operator_token_for, resolve_socket, rpc_full_classified, rpc_on
 const CODE_APPROVAL_SCREEN: &str = cys::ERR_APPROVAL_SCREEN;
 /// 데몬 오류 코드(정의처 = `cys::ERR_WRITE_OUTCOME_UNKNOWN`) — 쓰기 결과 모름(아직 쓰일 수 있음 · 재시도하면 두 번 쳐질 수 있음) = 「확인 중」.
 const CODE_WRITE_OUTCOME_UNKNOWN: &str = cys::ERR_WRITE_OUTCOME_UNKNOWN;
+/// 데몬이 **쓰기 전에** 거부했음이 코드로 보장되는 오류 코드(handlers.rs `surface.send_text` 분기 · 거부 = 바이트 0).
+/// 이 목록 밖 코드·코드 없음·꼴이 이상한 응답은 「쓰기 0」의 근거가 아니므로 `uncertain`(다시 보내기 금지)으로 접는다(codex 1R major).
+const PRE_WRITE_REFUSALS: &[&str] = &[
+    "invalid_params",          // 본문·좌석 번호 결측 · clear_first+queued
+    "not_found",               // 좌석 없음
+    "target_changed",          // 「nothing was typed」
+    "clear_first_unsupported", // launch-agent 등록 좌석 아님
+    "acl_denied",              // ACL 거부(쓰기 전 · last_human_input 도 안 찍음)
+    "process_exited",
+    cys::ERR_TYPING_GUARD,        // 타이핑 가드·초안 게이트 거부
+    cys::ERR_JOURNAL_UNAVAILABLE, // 「zero bytes」
+];
 /// 세션 기록 한 번에 읽는 상한(바이트) — 넘으면 다음 호출이 `next_offset` 부터 잇는다(잘림 없음 · 레코드 경계까지만 소비).
 pub(crate) const TRANSCRIPT_READ_MAX: u64 = 2 * 1024 * 1024;
 
@@ -47,13 +59,16 @@ pub(crate) fn human_send_params(surface_id: u64, text: &str, tok: Option<&str>) 
 /// - `written`   : ok · `sent:true` · 붙잡음 표시(`held`) 없음
 /// - `held`      : 승인·질문 창 거부(`approval_screen` · 바이트 0) — 화면이 붙잡고 문턱 재통과 때 1회 제출
 /// - `queued_hold`: 정비 보류(`hold_seq`) — 데몬이 붙잡아 스스로 배달 · 화면은 다시 보내지 않음
-/// - `failed`    : 확정 거부(그 밖 오류 코드) · 전송 전 끊김(Definite = 데몬이 못 봄)
-/// - `uncertain` : 전송 뒤 끊김·응답 파싱 실패(Uncertain) · `write_outcome_unknown` · ok 인데 `sent` 를 확인 못 함
+/// - `failed`    : 쓰기 전 거부가 보장된 코드(`PRE_WRITE_REFUSALS`) · 전송 전 끊김(Definite = 데몬이 못 봄)
+/// - `uncertain` : 전송 뒤 끊김·응답 파싱 실패(Uncertain) · `write_outcome_unknown` · 목록 밖 코드·코드 없음 · `ok` 칸 없음 · ok 인데 `sent` 를 확인 못 함
 pub(crate) fn classify_send(r: Result<Value, (TransportClass, String)>) -> Value {
     match r {
         Err((TransportClass::Definite, e)) => json!({"outcome": "failed", "code": "transport_definite", "message": e}),
         Err((TransportClass::Uncertain, e)) => json!({"outcome": "uncertain", "code": "transport_uncertain", "message": e}),
         Ok(resp) => {
+            if resp["ok"].as_bool().is_none() {
+                return json!({"outcome": "uncertain", "code": "malformed_response"});
+            }
             if resp["ok"].as_bool() == Some(true) {
                 let res = resp["result"].clone();
                 if res.get("hold_seq").map_or(false, |h| !h.is_null()) {
@@ -75,7 +90,8 @@ pub(crate) fn classify_send(r: Result<Value, (TransportClass, String)>) -> Value
                 let outcome = match code.as_str() {
                     CODE_APPROVAL_SCREEN => "held",
                     CODE_WRITE_OUTCOME_UNKNOWN => "uncertain",
-                    _ => "failed",
+                    c if PRE_WRITE_REFUSALS.contains(&c) => "failed",
+                    _ => "uncertain",
                 };
                 json!({"outcome": outcome, "code": code, "message": message})
             }
@@ -180,20 +196,17 @@ pub(crate) fn transcript_path(cfg: Option<&str>, cwd: Option<&str>, sid: Option<
     Ok(cfg_path.join("projects").join(transcript_slug(cwd)).join(format!("{sid}.jsonl")))
 }
 
-/// 슬러그 폴더에 없을 때의 대비 — `<cfg>/projects/*/<id>.jsonl` **정확히 같은 이름 하나**만(긴 cwd 의 줄인 슬러그 등). 둘 이상이면 고르지 않는다.
-fn find_by_id(cfg: &std::path::Path, sid: &str) -> Option<std::path::PathBuf> {
-    let want = format!("{sid}.jsonl");
-    let mut hit = None;
-    for d in std::fs::read_dir(cfg.join("projects")).ok()?.flatten() {
-        let p = d.path().join(&want);
-        if p.is_file() {
-            if hit.is_some() {
-                return None;
-            }
-            hit = Some(p);
-        }
+/// 경로 경계(파일 IO): 링크를 푼 실제 경로가 링크를 푼 `<cfg>/projects` 아래의 보통 파일이어야 한다(codex 1R major — 심볼릭 링크로 밖을 읽는 길).
+pub(crate) fn confine(cfg: &std::path::Path, path: &std::path::Path) -> Result<std::path::PathBuf, &'static str> {
+    let root = std::fs::canonicalize(cfg.join("projects")).map_err(|_| "no_projects_dir")?;
+    let real = std::fs::canonicalize(path).map_err(|_| "no_file")?;
+    if !real.starts_with(&root) {
+        return Err("outside_config_dir");
     }
-    hit
+    if !std::fs::metadata(&real).map(|m| m.is_file()).unwrap_or(false) {
+        return Err("not_a_file");
+    }
+    Ok(real)
 }
 
 /// `chat_transcript` — 좌석에 결속된 세션 기록을 `after_offset` 부터 읽는다(`from_end` = 읽지 않고 끝 오프셋만).
@@ -212,13 +225,11 @@ pub async fn chat_transcript(socket: Option<String>, surface_id: u64, after_offs
         Err(why) => return Ok(json!({"status": "unknown", "why": why})),
     };
     let sid = sid.unwrap_or_default();
-    let path = if path.is_file() {
-        path
-    } else {
-        match lrow["claude_config_dir"].as_str().and_then(|c| find_by_id(std::path::Path::new(c), &sid)) {
-            Some(p) => p,
-            None => return Ok(json!({"status": "unknown", "why": "no_file", "session_id": sid})),
-        }
+    // 다른 프로젝트 폴더는 뒤지지 않는다(codex 1R major — 같은 이름 파일이 다른 cwd 의 기록일 수 있음). 링크를 풀어 설정 폴더 안인지 확인.
+    let cfg = lrow["claude_config_dir"].as_str().unwrap_or_default();
+    let path = match confine(std::path::Path::new(cfg), &path) {
+        Ok(p) => p,
+        Err(why) => return Ok(json!({"status": "unknown", "why": why, "session_id": sid})),
     };
     if from_end.unwrap_or(false) {
         // 대화 화면을 처음 띄울 때 — 지난 기록을 다 읽지 않고 끝에서 시작한다(이후 새 바이트만).
@@ -285,7 +296,11 @@ mod tests {
         assert_eq!(err("approval_screen")["outcome"], "held");
         assert_eq!(err("write_outcome_unknown")["outcome"], "uncertain");
         assert_eq!(err("not_found")["outcome"], "failed");
-        assert_eq!(err("")["outcome"], "failed");
+        assert_eq!(err("acl_denied")["outcome"], "failed");
+        assert_eq!(err("typing_guard")["outcome"], "failed");
+        assert_eq!(err("")["outcome"], "uncertain", "코드 없음 = 쓰기 0 근거 아님");
+        assert_eq!(err("something_new")["outcome"], "uncertain");
+        assert_eq!(classify_send(Ok(json!({})))["outcome"], "uncertain", "ok 칸 없음");
         assert_eq!(classify_send(Err((TransportClass::Definite, "x".into())))["outcome"], "failed");
         assert_eq!(classify_send(Err((TransportClass::Uncertain, "x".into())))["outcome"], "uncertain");
     }
@@ -329,6 +344,26 @@ mod tests {
         assert_eq!(recs[2]["parent"], "a1");
         assert_eq!(bad, 1);
         assert_eq!(consumed, buf.len() - partial.len());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn confine_rejects_symlink_escape_and_accepts_real_file() {
+        let base = std::env::temp_dir().join(format!("viewcore-c-{}", std::process::id()));
+        let proj = base.join("cfg/projects/-p");
+        std::fs::create_dir_all(&proj).unwrap();
+        let ok = proj.join("abcdefgh.jsonl");
+        std::fs::write(&ok, "{}\n").unwrap();
+        let secret = base.join("secret.txt");
+        std::fs::write(&secret, "x").unwrap();
+        let link = proj.join("linked00.jsonl");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+        let cfg = base.join("cfg");
+        assert!(confine(&cfg, &ok).is_ok());
+        assert_eq!(confine(&cfg, &link).unwrap_err(), "outside_config_dir");
+        assert_eq!(confine(&cfg, &proj.join("missing0.jsonl")).unwrap_err(), "no_file");
+        assert_eq!(confine(&cfg, &proj).unwrap_err(), "not_a_file");
+        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]

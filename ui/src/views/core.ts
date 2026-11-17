@@ -20,6 +20,8 @@ export const HOLD_MAX = 20;
 export const LOG_MAX = 200;
 /** 대화 화면이 켜져 있을 때 마스터 상태 조회 주기(작업 화면 3초 고리와 같은 박자 · 조각 2 에서 한 벌로 합침 📌). */
 export const POLL_MS = 3_000;
+/** 앱을 다시 켜기 전에 붙잡아 둔(저장소에서 읽은) 말 — 자동으로 보내지 않는다. */
+export const RESTORED = "restored";
 /** 앞 말을 쓰는 중에 받은 말의 붙잡음 표지(앞 말이 끝나면 바로 문턱에 건다). */
 const AFTER_PREV = "after_prev";
 /** 데몬이 승인 창으로 거부한 말을 다시 문턱에 거는 최소 간격(설계 목표값 · 창이 닫히면 문턱 재통과 때 1회). */
@@ -94,7 +96,6 @@ export class ChatCore {
   /** 진행 중인 쓰기(원자 제출 1건) — 겹쳐 쓰지 않는다(클릭 1 → 호출 ≤ 1). */
   private writing = false;
   private polling = false;
-  private ownLastSendAt: number | null = null;
   private offset: number | null = null;
   private sessionId: string | null = null;
   private reading = false;
@@ -161,7 +162,9 @@ export class ChatCore {
       for (const it of o.items.slice(0, HOLD_MAX)) {
         const x = it as { id?: unknown; text?: unknown; at?: unknown };
         if (typeof x.id !== "string" || typeof x.text !== "string" || typeof x.at !== "number") continue;
-        msgs.push({ id: x.id, text: x.text, createdAt: x.at, sentAt: null, step: "held", code: "restored", note: "앱을 다시 켜기 전에 붙잡아 둔 말이에요 — 마스터가 준비되면 보낼게요.", thread: [], replies: [] });
+        // ★저장소 글은 자동으로 보내지 않는다(codex 1R blocking — 저장소 변조·손상 글이 사람 표지를 달고 원장 무기록 오너 입력이 되는 길).
+        //   사람이 「이 말 보내기」를 눌러야(신뢰 클릭) 다듬기(composeOutbound)부터 다시 거쳐 새 말로 간다.
+        msgs.push({ id: x.id, text: x.text, createdAt: x.at, sentAt: null, step: "held", code: RESTORED, note: "앱을 다시 켜기 전에 붙잡아 둔 말이에요 — 보내려면 「이 말 보내기」를 눌러 주세요.", thread: [], replies: [] });
       }
       this.s = { ...this.s, msgs };
     } catch {
@@ -169,29 +172,32 @@ export class ChatCore {
     }
   }
 
-  private saveHold(msgs: readonly Msg[]): void {
+  /** 붙잡은 말만 저장 · 성공 여부를 돌려준다(쓰기 직전 「보내는 중」 영속 확인에 씀). */
+  private saveHold(msgs: readonly Msg[]): boolean {
     const items = msgs.filter((m) => m.step === "held").map((m) => ({ id: m.id, text: m.text, at: m.createdAt }));
     try {
       if (items.length === 0) this.d.store.remove(HOLD_KEY);
       else this.d.store.set(HOLD_KEY, JSON.stringify({ v: 1, items }));
+      return true;
     } catch {
-      /* 저장 실패는 보내기를 막지 않는다(메모리에는 남음) */
+      return false;
     }
   }
 
-  private putMsgs(msgs: Msg[], extra: Partial<ChatState> = {}): void {
+  private putMsgs(msgs: Msg[], extra: Partial<ChatState> = {}): boolean {
     let kept = msgs;
     if (kept.length > LOG_MAX) {
       const done = new Set(["replied", "failed"]);
       let drop = kept.length - LOG_MAX;
       kept = kept.filter((m) => !(drop > 0 && done.has(m.step) && drop-- > 0));
     }
-    this.saveHold(kept);
+    const saved = this.saveHold(kept);
     this.set({ msgs: kept, ...extra });
+    return saved;
   }
 
-  private patchMsg(id: string, patch: Partial<Msg>): void {
-    this.putMsgs(this.s.msgs.map((m) => (m.id === id ? { ...m, ...patch } : m)));
+  private patchMsg(id: string, patch: Partial<Msg>): boolean {
+    return this.putMsgs(this.s.msgs.map((m) => (m.id === id ? { ...m, ...patch } : m)));
   }
 
   // ---------- 데몬 무리 ----------
@@ -206,8 +212,7 @@ export class ChatCore {
   }
 
   private gateOf(f: { master: MasterRow | null | undefined; approvals: number[] | null }): GateVerdict {
-    const age = this.ownLastSendAt === null ? null : (this.d.now() - this.ownLastSendAt) / 1000;
-    return sendGate({ master: f.master, approvalSeats: f.approvals, ownLastSendAgeSecs: age });
+    return sendGate({ master: f.master, approvalSeats: f.approvals });
   }
 
   private applyFresh(f: { master: MasterRow | null | undefined; approvals: number[] | null }): void {
@@ -218,24 +223,53 @@ export class ChatCore {
     this.putMsgs(msgs, { master: m, health: healthOf(m), confirms, pollFailed: m === undefined });
   }
 
-  /** 사람이 보내기를 누름(또는 Enter). 겹친 누름은 무시(호출 ≤ 1). */
+  /** 사람이 보내기를 누름(또는 Enter) — 받아들였으면 true(화면이 입력칸을 비움) · 막혔으면 false(입력칸 그대로 · 안내 1줄).
+   *  받아들인 말은 바로 문턱·쓰기로 간다(끝을 기다리려면 `send`). */
+  submit(raw: string): boolean {
+    const text = this.admit(raw);
+    if (text === null) return false;
+    void this.accept(text);
+    return true;
+  }
+
+  /** submit 과 같되 끝까지 기다린다(시험·내부용). */
   async send(raw: string): Promise<void> {
+    const text = this.admit(raw);
+    if (text !== null) await this.accept(text);
+  }
+
+  /** 다듬기·붙잡음 상한 — 통과면 보낼 글 · 아니면 null(안내 1줄). */
+  private admit(raw: string): string | null {
     const out = composeOutbound(raw);
     if (!out.ok) {
       this.set({ notice: out.msg });
-      return;
+      return null;
     }
     if (this.s.msgs.filter((m) => m.step === "held").length >= HOLD_MAX) {
       this.set({ notice: `붙잡아 둔 말이 ${HOLD_MAX}개라 더 받지 않아요 — 마스터가 깨어나면 차례로 보내요.` });
-      return;
+      return null;
     }
+    return out.text;
+  }
+
+  private async accept(text: string): Promise<void> {
     const busy = this.writing; // 앞 말을 쓰는 중 — 이 말은 붙잡았다가 앞 말이 끝나면 같은 문턱으로(겹쳐 쓰기 0 · 말 버림 0)
     const msg: Msg = busy
-      ? { id: `m${this.d.now()}-${++this.seq}`, text: out.text, createdAt: this.d.now(), sentAt: null, step: "held", code: AFTER_PREV, note: "앞 말을 보낸 뒤 보낼게요.", thread: [], replies: [] }
-      : { id: `m${this.d.now()}-${++this.seq}`, text: out.text, createdAt: this.d.now(), sentAt: null, step: "sending", thread: [], replies: [] };
+      ? { id: `m${this.d.now()}-${++this.seq}`, text, createdAt: this.d.now(), sentAt: null, step: "held", code: AFTER_PREV, note: "앞 말을 보낸 뒤 보낼게요.", thread: [], replies: [] }
+      : { id: `m${this.d.now()}-${++this.seq}`, text, createdAt: this.d.now(), sentAt: null, step: "sending", thread: [], replies: [] };
     this.s = { ...this.s, draft: "", notice: null };
     this.putMsgs([...this.s.msgs, msg]);
     if (!busy) await this.deliver(msg.id);
+  }
+
+  /** 앱을 다시 켜기 전에 붙잡아 둔 말 — 사람이 「이 말 보내기」를 눌렀을 때만(다듬기부터 다시 · 새 번호). 막히면 그 말은 그대로 둔다. */
+  async confirmRestored(id: string): Promise<void> {
+    const m = this.s.msgs.find((x) => x.id === id);
+    if (!m || m.step !== "held" || m.code !== RESTORED) return;
+    const text = this.admit(m.text);
+    if (text === null) return;
+    this.putMsgs(this.s.msgs.filter((x) => x.id !== id));
+    await this.accept(text);
   }
 
   /** 확정 실패한 말을 사람이 다시 보냄(1회 · 새 번호). */
@@ -252,19 +286,29 @@ export class ChatCore {
     if (this.writing) return;
     this.writing = true;
     try {
-      const fresh = await this.fetchFresh(); // ★쓰기 직전 재조회 1회(3초 목록을 믿지 않음)
+      let fresh = await this.fetchFresh(); // ★쓰기 직전 재조회 1회(3초 목록을 믿지 않음)
       this.applyFresh(fresh);
+      if (this.offset === null && fresh.master) {
+        // 보낸 user 레코드를 건너뛰지 않게 세션 기록 시작점을 먼저 잡는다 — 이 RPC 가 문턱 판정과 쓰기 사이에 끼지 않게 다시 조회한다.
+        await this.initOffset();
+        fresh = await this.fetchFresh();
+        this.applyFresh(fresh);
+      }
       const g = this.gateOf(fresh);
       if (!g.ok) {
         this.patchMsg(id, { step: "held", code: g.code, note: g.msg });
         return;
       }
       const m = fresh.master as MasterRow;
-      if (this.offset === null) await this.initOffset(); // 보낸 user 레코드를 건너뛰지 않게 시작점을 먼저 잡는다
       const msg = this.s.msgs.find((x) => x.id === id);
       if (!msg) return;
       const sentAt = this.d.now();
-      this.patchMsg(id, { step: "sending", sentAt, code: undefined, note: undefined, notBefore: undefined });
+      // ★쓰기 전에 「보내는 중」을 먼저 영속한다 — 저장소에서 이 말이 붙잡음 목록에서 빠진 것이 확인돼야 쓴다(codex 1R blocking:
+      //   지우기 실패 + 불명 결과면 다시 켤 때 같은 말이 또 나가던 길). 저장 실패 = 쓰기 0 · 붙잡음 그대로.
+      if (!this.patchMsg(id, { step: "sending", sentAt, code: undefined, note: undefined, notBefore: undefined })) {
+        this.patchMsg(id, { step: "held", sentAt: null, code: "store_failed", note: "앱 저장소에 쓸 수 없어 보내지 않았어요(같은 말이 두 번 가는 것을 막으려고) — 잠시 뒤 다시 해 볼게요.", notBefore: this.d.now() + HELD_REFUSED_BACKOFF_MS });
+        return;
+      }
       let res: unknown;
       try {
         res = await this.d.invoke("chat_send", { socket: null, surfaceId: m.surface_id, text: msg.text, kind: "human" });
@@ -283,7 +327,6 @@ export class ChatCore {
         this.patchMsg(id, { step, code, note: `보내지 못했어요${code ? ` (${code})` : ""}.` });
         return;
       }
-      this.ownLastSendAt = sentAt; // 쓰였거나 쓰였을 수 있음 — 데몬 human_idle_secs 가 이 보내기를 가리킨다
       this.patchMsg(id, { step, code, note: step === "queued_hold" ? "업데이트 중이라 차례를 기다려요 — 끝나면 데몬이 전달해요." : undefined });
       if (step === "injected" || step === "checking") this.scheduleReads();
     } finally {
@@ -305,8 +348,9 @@ export class ChatCore {
       this.lastWorking = fresh.master ? fresh.master.working : null;
       const awaiting = this.s.msgs.some((m) => ["injected", "checking", "slow", "delivered", "replying"].includes(m.step));
       if (awaiting && prevWorking !== null && prevWorking !== this.lastWorking) void this.readTranscript(); // 활동이 바뀐 틱 1회
+      else if (this.offset === null && fresh.master) void this.readTranscript(); // 마스터를 안 첫 틱에 세션 시작점을 잡아 둔다(보내기 길에서 그 RPC 를 빼려고)
       const now = this.d.now();
-      const held = this.s.msgs.find((m) => m.step === "held" && (m.notBefore === undefined || now >= m.notBefore));
+      const held = this.s.msgs.find((m) => m.step === "held" && m.code !== RESTORED && (m.notBefore === undefined || now >= m.notBefore));
       if (held && this.gateOf(fresh).ok) heldId = held.id;
     } finally {
       this.polling = false;
@@ -369,12 +413,20 @@ export class ChatCore {
           await this.initOffset();
           return;
         }
+        if (r.reset === true) {
+          // 파일이 줄었다(잘림·교체) — 다시 읽은 옛 레코드로 새 전달·답 근거를 만들지 않는다(codex 1R major). 끝에서 다시 시작.
+          this.offset = null;
+          await this.initOffset();
+          return;
+        }
         const recs = Array.isArray(r.records) ? (r.records as Rec[]) : [];
         this.offset = r.next_offset;
         if (recs.length) {
           const applied = applyRecords(this.s.msgs, recs);
           // 「답함」은 여기서 칠하지 않는다(null) — 들고 있는 활동 값은 이 답보다 옛 관측일 수 있다. 다음 조회(poll)의 새 관측으로만.
-          this.putMsgs(settleSteps(applied.msgs, this.d.now(), null), { stray: [...this.s.stray, ...applied.stray].slice(-LOG_MAX) });
+          const known = new Set(this.s.stray.map((x) => x.uuid).filter((u): u is string => u !== null));
+          const fresh = applied.stray.filter((x) => x.uuid === null || !known.has(x.uuid));
+          this.putMsgs(settleSteps(applied.msgs, this.d.now(), null), { stray: [...this.s.stray, ...fresh].slice(-LOG_MAX) });
         }
         if (typeof r.size !== "number" || r.next_offset >= r.size) return;
       }

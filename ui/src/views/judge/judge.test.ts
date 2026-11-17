@@ -1,7 +1,7 @@
 // (cysr-ui-slice1) 순수 판정 시험 — outbound · gate · msgstep · viewpick. 같은 입력 2회 = 같은 출력(바이트) 포함.
 import { describe, it, expect } from "bun:test";
 import { composeOutbound, U21_LATER_LINE_SLASH_SAFE } from "./outbound";
-import { approvalSeatsOf, HUMAN_QUIET_SECS, isOwnSend, masterRowOf, MEASURED_QUEUE_HOLD_AFTER_HUMAN_SECS, sendGate, U25_BUSY_PASTE_OK, type GateInput, type MasterRow } from "./gate";
+import { approvalSeatsOf, HUMAN_QUIET_SECS, masterRowOf, MEASURED_QUEUE_HOLD_AFTER_HUMAN_SECS, sendGate, U25_BUSY_PASTE_OK, type GateInput, type MasterRow } from "./gate";
 import { applyRecords, ATOMIC_SUBMIT_MS, canRetry, M8_UUID_CHAIN, READ_AFTER_MS, settleSteps, SLOW_MS, stepFromOutcome, U20_PASTE_RECORD_FORM, type Msg, type Rec } from "./msgstep";
 import { chatAvailability, pickView, storedViewText } from "./viewpick";
 
@@ -52,7 +52,7 @@ const M = (p: Partial<MasterRow> = {}): MasterRow => ({
   working: false,
   ...p,
 });
-const G = (p: Partial<GateInput> = {}): GateInput => ({ master: M(), approvalSeats: [], ownLastSendAgeSecs: null, ...p });
+const G = (p: Partial<GateInput> = {}): GateInput => ({ master: M(), approvalSeats: [], ...p });
 const code = (g: GateInput) => {
   const v = sendGate(g);
   return v.ok ? "ok" : v.code;
@@ -86,14 +86,16 @@ describe("sendGate — 문턱(조건 하나씩 실패 = 쓰기 0)", () => {
     expect(code(G({ master: M({ pending_input_human_bytes: null }) }))).toBe("input_unknown");
     expect(code(G({ master: M({ input_paste_open: null }) }))).toBe("input_unknown");
   });
-  it("다른 길 사람 입력 30초 안 = human_recent · 내 보내기면 통과 · 30초 지나면 통과", () => {
+  it("사람 입력 30초 안 = human_recent(내 보내기와 가르지 않음 · codex 1R) · 30초 지나면 통과 · 칸 없음 = input_unknown", () => {
     expect(HUMAN_QUIET_SECS).toBe(30);
-    expect(code(G({ master: M({ human_idle_secs: 3 }) }))).toBe("human_recent");
-    expect(code(G({ master: M({ human_idle_secs: 3 }), ownLastSendAgeSecs: 4 }))).toBe("ok");
-    expect(code(G({ master: M({ human_idle_secs: 3 }), ownLastSendAgeSecs: 20 }))).toBe("human_recent");
+    expect(code(G({ master: M({ human_idle_secs: 0 }) }))).toBe("human_recent");
+    expect(code(G({ master: M({ human_idle_secs: 29 }) }))).toBe("human_recent");
     expect(code(G({ master: M({ human_idle_secs: 30 }) }))).toBe("ok");
-    expect(isOwnSend(10, 11.9)).toBe(true);
-    expect(isOwnSend(10, 12.1)).toBe(false);
+    expect(code(G({ master: M({ human_idle_secs: null }) }))).toBe("ok");
+    expect(code(G({ master: M({ human_idle_secs: undefined }) }))).toBe("input_unknown");
+    expect(masterRowOf({ surfaces: [{ surface_id: 1, role: "master" }] }, () => false)?.human_idle_secs).toBeUndefined();
+    expect(masterRowOf({ surfaces: [{ surface_id: 1, role: "master", human_idle_secs: null }] }, () => false)?.human_idle_secs).toBeNull();
+    expect(masterRowOf({ surfaces: [{ surface_id: 1, role: "master", human_idle_secs: "x" }] }, () => false)?.human_idle_secs).toBeUndefined();
   });
   it("U25 측정 대기 — 바쁨 = busy(기본값) · 상수/인자가 참이면 통과", () => {
     expect(U25_BUSY_PASTE_OK).toBe(false);
@@ -117,7 +119,7 @@ describe("masterRowOf · approvalSeatsOf — IPC 값 의심", () => {
     const r = masterRowOf({ surfaces: [{ surface_id: 9, role: "master" }, { surface_id: 4, role: "master", agent_alive: true, pending_input_bytes: "x", pending_input_human_bytes: 0, input_paste_open: false, human_idle_secs: -1 }] }, () => true);
     expect(r?.surface_id).toBe(4);
     expect(r?.pending_input_bytes).toBeNull();
-    expect(r?.human_idle_secs).toBeNull();
+    expect(r?.human_idle_secs).toBeUndefined(); // 음수 = 이상한 값 = 모름(문턱 input_unknown)
     expect(r?.working).toBe(true);
     expect(r?.gate_pending).toBeNull();
   });
@@ -185,6 +187,17 @@ describe("msgstep — 전달됨·답함은 근거가 있을 때만", () => {
     ]);
     expect(r.msgs[0].replies).toEqual([]);
     expect(r.stray.map((x) => x.text)).toEqual(["그 답", "사슬 없음"]);
+  });
+  it("한 레코드는 한 번만 근거(codex 1R) — 이미 짝지은 uuid 를 다시 읽어도 다른 같은 글 말에 배정 0 · 이미 붙은 답 중복 0", () => {
+    const a = msg({ id: "a", sentAt: 1000, step: "delivered", userUuid: "u1", thread: ["u1", "a1"], replies: [{ uuid: "a1", text: "답" }] });
+    const b = msg({ id: "b", sentAt: 1000 });
+    const r = applyRecords([a, b], [
+      { uuid: "u1", parent: null, role: "user", text: "안녕", ts: ts(1100) },
+      { uuid: "a1", parent: "u1", role: "assistant", text: "답", ts: ts(1200) },
+    ]);
+    expect(r.msgs.find((m) => m.id === "b")?.step).toBe("injected");
+    expect(r.msgs.find((m) => m.id === "a")?.replies).toHaveLength(1);
+    expect(r.stray).toEqual([]);
   });
   it("훅이 덧붙인 조각 — 조각 하나가 같으면 짝 · 곁가지(sidechain) 무시", () => {
     expect(applyRecords([msg()], [{ uuid: "u", parent: null, role: "user", text: "안녕\n<hook>", parts: ["안녕", "<hook>"], ts: ts(1200) }]).msgs[0].step).toBe("delivered");

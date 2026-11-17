@@ -5523,6 +5523,35 @@ pub fn legacy_pack_journal_notice(pack: &Path) -> Option<String> {
     })
 }
 
+/// ★1.1.16 F5(독립 검증 1118): 이 레인에 진행 중 저널(`.pack-journal.d/<레인>/active`)이 남아 있으면 그 사실을 한 줄로 — 읽기만(옮기지도 고치지도
+/// 않는다) · None = 없음. 반환 둘째 = 손상(복구가 인덱스·배치 기록을 읽지 못함 = 복구가 Err 로 끝나 그 레인의 데몬 기동 자동 설치·팩 업데이트·
+/// 자동 갱신이 사람 손을 기다리는 상태). 손상이 아니어도 데몬을 다시 켠 뒤 남아 있으면 복구가 다른 이유(백업 판독·보관 실패)로 Err 인 것이다.
+pub fn pack_journal_notice(pack: &Path) -> Option<(String, bool)> {
+    let jdir = pack_journal_dir_for(pack);
+    std::fs::symlink_metadata(&jdir).ok()?;
+    let idx = jdir.join("index.json");
+    let broken = if idx.is_file() {
+        std::fs::read_to_string(&idx)
+            .map_err(|e| format!("인덱스 읽기 실패: {e}"))
+            .and_then(|t| serde_json::from_str::<JournalIndex>(&t).map(|_| ()).map_err(|e| format!("인덱스 손상: {e}")))
+            .and_then(|()| read_placements(&jdir).map(|_| ()))
+            .err()
+    } else {
+        None
+    };
+    Some(match broken {
+        Some(e) => (
+            format!(
+                "끊긴 팩 업데이트 기록 {} 을 복구가 읽지 못합니다({e}) — 이 레인은 데몬 기동 자동 설치·팩 업데이트·자동 갱신이 멈춰 있고 팩이 반쯤 \
+                 적용된 채일 수 있습니다",
+                jdir.display()
+            ),
+            true,
+        ),
+        None => (format!("끊긴(또는 지금 진행 중인) 팩 업데이트 기록 {} 이 남아 있습니다 — 데몬 기동·팩 업데이트가 복구합니다", jdir.display()), false),
+    })
+}
+
 /// 옛 공유 저널 안내는 프로세스마다 한 번(cysd 기동 · pack-update 의 복구 두 번).
 static LEGACY_JOURNAL_NAMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 

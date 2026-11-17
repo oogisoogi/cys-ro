@@ -1418,7 +1418,10 @@ async fn async_main() {
                 Some(Err(e)) => eprintln!("[cysd] pack auto-install skipped: {e}"),
             }
         }
-        Ok(Err(e)) => eprintln!("[cysd] pack journal recovery failed — pack auto-install skipped this boot: {e}"),
+        // ★1.1.16 F5(독립 검증 1118): 이 상태는 다음 기동·팩 업데이트·자동 갱신도 같은 Err 로 막는다 — 사람이 볼 자리(doctor pack-state 줄)를 가리킨다.
+        Ok(Err(e)) => eprintln!(
+            "[cysd] pack journal recovery failed — pack auto-install skipped this boot (the journal stays; see `cys doctor` pack-state): {e}"
+        ),
         Err(e) => eprintln!("[cysd] pack journal recovery task failed — pack auto-install skipped this boot: {e}"),
     }
     let daemon = Daemon::new(socket_path.clone());

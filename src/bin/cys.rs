@@ -9627,6 +9627,27 @@ fn diag_pack_state(ctx: &DoctorCtx) -> DiagItem {
             item.action = "본부 데몬을 다시 켜거나 팩 업데이트를 다시 실행하십시오(그 기록은 본부 레인이 옮겨 복구합니다 · 지우지 않음)".into();
         }
     }
+    // ★1.1.16 F5(독립 검증 1118): 이 레인의 진행 중 저널이 남아 있으면 이름을 댄다 — 복구가 읽지 못하는 기록(손상)이면 Fail(그 레인의 자동 설치·
+    //   팩 업데이트·자동 갱신이 멈춰 사람 손을 기다린다) · 읽을 수 있으면 Warn. 읽기만.
+    if let Some((line, broken)) = cys::pack::pack_journal_notice(&ctx.pack_dir) {
+        if broken {
+            item.status = DiagStatus::Fail;
+        } else if item.status == DiagStatus::Ok {
+            item.status = DiagStatus::Warn;
+        }
+        item.detail = format!("{} · ⚠ {line}", item.detail);
+        if item.action.is_empty() {
+            item.action = if broken {
+                "그 기록 폴더는 지우지 말고(되돌림의 유일한 근거) 데몬 로그의 'pack journal recovery failed' 사유를 확인하십시오 — 손상된 기록은 \
+                 자동으로 되돌리지 않습니다"
+                    .into()
+            } else {
+                "데몬을 다시 켜면 복구합니다 · 다시 켠 뒤에도 이 줄이 남으면 데몬 로그의 'pack journal recovery failed' 사유를 확인하십시오(기록 폴더는 \
+                 지우지 말 것)"
+                    .into()
+            };
+        }
+    }
     item
 }
 
@@ -40883,6 +40904,30 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         assert!(named.detail.contains(&legacy.display().to_string()), "{}", named.detail);
         assert!(!named.action.is_empty());
         assert!(still_there, "doctor 줄은 옛 저널을 건드리지 않는다");
+    }
+
+    #[test]
+    fn j1116_doctor_pack_state_names_a_stuck_lane_journal() {
+        // ★1.1.16 F5(독립 검증 1118): 이 레인의 진행 중 저널 — 읽히면 Warn · 복구가 읽지 못하는 깨진 배치 기록 줄이면 Fail · 읽기만.
+        let base = std::env::temp_dir().join(format!("cys-doc-lane-journal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let ctx = doctor_ctx_at(&base);
+        std::fs::create_dir_all(&ctx.pack_dir).unwrap();
+        let plain = diag_pack_state(&ctx);
+        let jdir = cys::pack::pack_journal_dir_for(&ctx.pack_dir);
+        std::fs::create_dir_all(jdir.join("files")).unwrap();
+        std::fs::write(jdir.join("index.json"), r#"{"target_version":"9.9.9","entries":[]}"#).unwrap();
+        let live = diag_pack_state(&ctx);
+        std::fs::write(jdir.join("placed.log"), "{\"rel\":\"README.md\",\"sha256\":null}\n{깨진 줄\n").unwrap();
+        let stuck = diag_pack_state(&ctx);
+        let still_there = jdir.join("placed.log").is_file() && jdir.join("index.json").is_file();
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(plain.status, DiagStatus::Ok, "{}", plain.detail);
+        assert_eq!(live.status, DiagStatus::Warn, "{}", live.detail);
+        assert!(live.detail.contains(&jdir.display().to_string()), "{}", live.detail);
+        assert_eq!(stuck.status, DiagStatus::Fail, "{}", stuck.detail);
+        assert!(stuck.detail.contains("읽지 못합니다") && !stuck.action.is_empty(), "{} / {}", stuck.detail, stuck.action);
+        assert!(still_there, "doctor 줄은 저널을 건드리지 않는다");
     }
 
     #[test]

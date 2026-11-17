@@ -102,7 +102,7 @@
 | `tickrec_gate.py` OFF(b50fce4b 번들 · 94d0884f 에서도 같음) | 새 = 기준 · invoke 1088 · 저장 키 3 · 화면 글자(전환 단추 뺌) · sha `308dd2b91f9a` | `308dd2b91f9a`(조각 0) | **작업 화면 동작 변화 0** |
 | `chat_gate.py`(19c14ad7 번들) | **PASS · ok 36 / FAIL 0** | — | 새 게이트 |
 | 뮤턴트 | **21 / 21 붉음**(§4) | — | — |
-| 공개 secret-scan `scripts/secret-scan.sh --all`(커밋 뒤) | 1차 적발 2(VM 홈 경로 · 시험 견본 `/Users/a/`) → 고친 뒤 **clean 2098 파일** | clean | 같음 |
+| 공개 secret-scan `scripts/secret-scan.sh --all`(커밋 뒤) | 1차 적발 2(VM 홈 경로 · 시험 견본 맥 홈 꼴 경로) → 고친 뒤 clean · HANDOFF 커밋 뒤 이 줄 자체 1건 → 고친 뒤 **clean** | clean | 같음 |
 | 실제 데몬 1회(VM 격리) | 원자 제출 바이트 `0x15` → +198ms 울타리 51B → +540ms `0x0d` · `{"sent":true}` · 세션 경로 실재 | — | §5 바깥 증거 = `docs/ui-p2/evidence/s1/vm-atomic.txt` |
 
 - 흔들림: 조각 0 `tickrec.test.ts` 최악 장면 시험이 화면 게이트·codex 와 겹친 부하에서 5초 상한 초과로 2회 붉음 → 혼자 다시 21/21 · 기준 작업트리도 같은 시험 2.3~2.7초(§9).

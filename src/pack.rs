@@ -11584,6 +11584,35 @@ mod tests {
         assert_eq!(soul, "OLD-SOUL");
     }
 
+    /// `cys pack-update` 가 **본부 레인** 적용 내내 쥐는 잠금을 다른 열린 파일 설명으로 쥔다(다른 프로세스와 같은 경합).
+    #[cfg(unix)]
+    fn j1116_hold_writer_apply_lock(base: &Path, _pack: &Path) -> std::fs::File {
+        use std::os::unix::io::AsRawFd;
+        let lp = base.join(".pack-apply.lock");
+        let holder = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&lp).unwrap();
+        assert_eq!(unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_EX) }, 0);
+        holder
+    }
+
+    /// F1(독립 검증 1118 · 기준선에 없던 회귀): 본부 레인 팩 업데이트가 적용 잠금을 쥔 동안 **부서** 데몬이 뜨면, 부서는 자기 레인의
+    /// 복구·자동 설치를 건너뛰지 않는다(그 잠금은 본부 레인의 진행 중 적용만 보호한다).
+    #[cfg(unix)]
+    #[test]
+    fn j1116_dept_boot_installs_while_base_apply_holds_its_lock() {
+        let _g = PACK_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (base, pd, _env) = txn_prestate("j16-xlock", &[("README.md", "BASE-SOUL")], "1.0.0");
+        let dd = j1116_dept(&base);
+        let held = j1116_hold_writer_apply_lock(&base, &pd);
+        let (gate_open, res) = {
+            let _d = EnvGuard::set(ENV_PACK_DIR, &dd);
+            (!pack_current_for("9.9.9"), boot_recover_and_install("9.9.9", PackWriteAuth::production()).map(|(r, i)| (r, i.map(|x| x.is_ok()))))
+        };
+        drop(held);
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(gate_open, "시험 전제: 부서 팩이 이 판보다 낡아 설치가 필요하다");
+        assert_eq!(res, Ok((JournalRecovery::Nothing, Some(true))), "본부 레인 잠금 때문에 부서 데몬이 자기 팩 설치를 건너뛰었다");
+    }
+
     /// 「끝남 = 그 적용 고유 표지」: 커밋 기록의 apply_id 가 저널 인덱스의 것과 다르면 이 적용의 커밋이 아니다 → 되돌림.
     #[test]
     fn j1116_commit_record_of_another_apply_is_not_a_commit() {

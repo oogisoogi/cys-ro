@@ -1,0 +1,3 @@
+{"rtt_ms": 16.35, "mono_send": 1042.399432, "resp": {"_flen": 18, "_pv": 1, "id": 1, "ok": true, "result": {"named": "master"}}}
+{"rtt_ms": 0.17, "mono_send": 1042.431899, "resp": {"_flen": 14, "_pv": 1, "id": 1, "ok": true, "result": {"named": null}}}
+{"rtt_ms": 0.15, "mono_send": 1042.447223, "resp": {"_flen": 137, "_pv": 1, "id": 1, "ok": true, "result": {"named": [{"ctx_pct": 12.5, "ctx_tokens": 125000, "ctx_window": 1000000, "name": "master", "source": "statusline", "updated_at": 1794919271.19422}]}}}

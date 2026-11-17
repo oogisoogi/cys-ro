@@ -1,0 +1,47 @@
+[scoped pid=34815 registered in ledger]
+번들: <wt>/cys-ui-slice3/ui/dist · 기준 번들: <wt>/cys-ui-slice1/ui/dist
+== ON: 스위치 켬 · 200틱 넘게
+  ok   페이지 오류 0 []
+  ok   window.__cysTickRec 있음(켜짐)
+  ok   덤프 있음
+  카운터: {"ticks": 200, "skippedNotStarted": 1, "skippedBusy": 0, "sockSkip": 11, "adopt": 6, "adoptAbort": 0, "evict": 1, "sweep": 1, "placeholderJudged": 5, "placeholderClose": 1, "placeholderClosed": 1, "deptOpened": 1, "render": 6, "err": 0, "dropped": 0, "recorderFault": 0}
+  ok   꼴 schema·ring cys-tickrec/1 200
+  ok   200틱째 덤프 = 칸 200 · 버림 0 (칸 200 · 틱 200 · 버림 0)
+  ok   회전: 그 뒤 30초 → 버림 = 틱 − 200 ({'ticks': 210, 'skippedNotStarted': 1, 'skippedBusy': 0, 'sockSkip': 11, 'adopt': 6, 'adoptAbort': 0, 'evict': 1, 'sweep': 1, 'placeholderJudged': 5, 'placeholderClose': 1, 'placeholderClosed': 1, 'deptOpened': 1, 'render': 6, 'err': 0, 'dropped': 10, 'recorderFault': 0})
+  칸 안 결정 수: {'adopt': 6, 'evict': 1, 'sweep': 1, 'phClose': 1, 'phKeep': 4, 'deptOpen': 1, 'sockSkip': 11}
+  ok   덤프 칸 안 adopt ≥ 1 (6)
+  ok   덤프 칸 안 evict ≥ 1 (1)
+  ok   덤프 칸 안 sweep ≥ 1 (1)
+  ok   덤프 칸 안 phClose ≥ 1 (1)
+  ok   덤프 칸 안 phKeep ≥ 1 (4)
+  ok   덤프 칸 안 deptOpen ≥ 1 (1)
+  ok   덤프 칸 안 sockSkip ≥ 1 (11)
+  ok   결정 기록 adopt ≥ 1 (6)
+  ok   결정 기록 evict ≥ 1 (1)
+  ok   결정 기록 sweep ≥ 1 (1)
+  ok   결정 기록 placeholderJudged ≥ 1 (5)
+  ok   결정 기록 placeholderClose ≥ 1 (1)
+  ok   결정 기록 placeholderClosed ≥ 1 (1)
+  ok   결정 기록 deptOpened ≥ 1 (1)
+  ok   결정 기록 render ≥ 1 (6)
+  ok   결정 기록 sockSkip ≥ 1 (11)
+  ok   기록기 예외 0 (0)
+  ok   모든 칸이 end 까지 닿음(던진 틱 0)
+  ok   칸 seq 연속(겹침·빠짐 0)
+  틱 간격(ms) 종류: [0, 2700, 3000]
+  ok   겹친 틱(바쁨 가드) 0 (0)
+  ok   덤프에 장면 원문 0 []
+  ok   덤프 크기 277556 B ≤ 상한 2097152 B
+  덤프 파일: /var/folders/yh/whgdgpzd2snf37v_kkp2bqgr0000gn/T/tickrec-200.json (277556 B)
+== OFF: 스위치 없음 — 기준 번들과 바이트 대조
+  ok   페이지 오류 0 [] []
+  ok   꺼짐 = window.__cysTickRec 없음
+  invoke 수: 새 1088 · 기준 1088 · 저장 키 3 · pane 2 · 탭 ['본부', 'zeta-team-name']
+  ok   대조군: 기준 번들 두 번 = 같음(하네스 결정론) 308dd2b91f9a 308dd2b91f9a
+  ok   꺼짐: 새 번들 = 기준 번들(invoke 열·저장소·화면 글자) 308dd2b91f9a 308dd2b91f9a
+  ok   음성 대조: 장면 1칸 바꿈 → 다름 32679284744a
+  (정보) invoke 가짜 시각까지 같음: True · 어긋난 호출 0건 · 최대 0ms
+  ok   켜짐도 invoke 열·저장소(스위치 키 제외)·화면 = 기준과 같음(기록기 부작용 0) 308dd2b91f9a
+
+RESULT: PASS
+[scoped pid=34815 exited (exit status: 0); process group force-killed and deregistered]

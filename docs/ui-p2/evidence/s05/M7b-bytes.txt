@@ -1,0 +1,11 @@
+{"rtt_ms": 77.05, "mono_send": 1117.729388, "resp": {"_flen": 86, "_pv": 1, "id": 1, "ok": true, "result": {"depth": 1, "durable": true, "queue_entry_id": "q6afc48c4.3", "queued": true, "surface_id": 
+{"rtt_ms": 65.36, "mono_send": 1117.821964, "resp": {"_flen": 86, "_pv": 1, "id": 1, "ok": true, "result": {"depth": 2, "durable": true, "queue_entry_id": "q6afc48c4.4", "queued": true, "surface_id": 
+1119.521138 97
+~[200~[큐 다이제스트 2건 · 발신 chat-auto]
+[1/2] 묶음 항목 1
+[2/2] 묶음 항목 2
+
+1119.521347 6
+~[201~
+1120.065419 1
+

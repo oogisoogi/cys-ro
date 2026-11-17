@@ -1,0 +1,10 @@
+{"rtt_ms": 0.56, "mono_send": 689.91392, "resp": {"_flen": 131, "_pv": 1, "error": {"code": "approval_screen", "message": "approval or question dialog is on screen — refused (refuse_on_approval) · nothing written"}, "id": 1, "ok": false}}
+new bytes lines: 0
+{"rtt_ms": 0.53, "mono_send": 691.943814, "resp": {"_flen": 131, "_pv": 1, "error": {"code": "approval_screen", "message": "approval or question dialog is on screen — refused (refuse_on_approval) · nothing written"}, "id": 1, "ok": false}}
+new bytes lines: 0
+--- 대조: refuse_on_approval 없이
+{"rtt_ms": 0.42, "mono_send": 693.977076, "resp": {"_flen": 28, "_pv": 1, "id": 1, "ok": true, "result": {"sent": true, "surface_id": 3}}}
+new bytes lines: 3
+693.648462 1 15
+693.890986 29 1b5b3230307eeab1b0ebb68020ed82a420ec9786ec9d8c1b5b3230317e
+694.312798 1 0d

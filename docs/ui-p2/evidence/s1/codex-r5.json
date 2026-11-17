@@ -1,0 +1,68 @@
+{
+  "verdict": "ESCALATE",
+  "justification": "4R major와 비유닉스 잔존 partial 3건은 읽기 차단으로 닫혔다. R1-5는 명시된 거부 경로와 추가 허용된 헬퍼의 계약까지 확인했으나, 범위 밖 헬퍼의 응답을 그대로 반환하는 경로가 있어 전체 허용 목록의 폐쇄는 확정할 수 없다. 지정 diff에서 새 결함은 발견하지 못했다. 정적 검토만 수행했으며 서버 기동·상태 변경·수정은 하지 않았다.",
+  "r1_closure": [
+    {
+      "issue": "4R major: 비유닉스 open_bound 경로 재탐색",
+      "status": "closed",
+      "ref": "src-tauri/src/viewcore.rs:260"
+    },
+    {
+      "issue": "R1-5 허용 목록 전체의 쓰기 0 근거",
+      "status": "partial",
+      "ref": "src/bin/cysd/handlers.rs:8244"
+    },
+    {
+      "issue": "R1-7 비유닉스 결속 파일 밖 읽기",
+      "status": "closed",
+      "ref": "src-tauri/src/viewcore.rs:261"
+    },
+    {
+      "issue": "R2-3 비유닉스 내부 링크 및 검사·열기 경합",
+      "status": "closed",
+      "ref": "src-tauri/src/viewcore.rs:261"
+    },
+    {
+      "issue": "R3-2 비유닉스 중간 디렉터리 교체 경합",
+      "status": "closed",
+      "ref": "src-tauri/src/viewcore.rs:261"
+    }
+  ],
+  "evidence": [
+    {
+      "claim": "비유닉스 open_bound는 파일 시스템 접근 없이 unsupported_platform을 반환한다.",
+      "ref": "src-tauri/src/viewcore.rs:260",
+      "verified": true
+    },
+    {
+      "claim": "open_bound 오류는 status:unknown으로 반환되어 from_end 처리와 본문 읽기에 도달하지 않는다.",
+      "ref": "src-tauri/src/viewcore.rs:282",
+      "verified": true
+    },
+    {
+      "claim": "허용 목록에 명시된 매개변수·좌석·ACL·타이핑 가드 거부와 UTF-8 변환 실패는 해당 분기의 쓰기 인계보다 앞에 있다.",
+      "ref": "src/bin/cysd/handlers.rs:8112",
+      "verified": true
+    },
+    {
+      "claim": "초안 게이트 거부 헬퍼는 ERR_TYPING_GUARD를 반환하며, 해당 분기의 호출 지점들은 쓰기 인계보다 앞에 있다.",
+      "ref": "src/bin/cysd/handlers.rs:3066",
+      "verified": true
+    },
+    {
+      "claim": "journal_barrier_verdict는 쓰기 0·보류 없음으로 명시된 Refused를 ERR_JOURNAL_UNAVAILABLE로, Pending을 ERR_WRITE_OUTCOME_UNKNOWN으로 구분한다.",
+      "ref": "src/bin/cysd/handlers.rs:4698",
+      "verified": true
+    },
+    {
+      "claim": "hand_off_direct_job과 try_write가 돌려준 오류 응답은 추가 코드 검사 없이 반환된다. 이번 범위에서는 두 헬퍼의 구현을 확인하지 않았다.",
+      "ref": "src/bin/cysd/handlers.rs:8244",
+      "verified": true
+    }
+  ],
+  "issues": [],
+  "missing": [
+    "R1-5 완전 폐쇄에 필요한 try_write·hand_off_direct_job의 반환 코드 및 쓰기 0 계약 확인. 두 구현은 지정된 읽기 허용 범위 밖이며, viewcore.rs의 근거 주석만으로 해당 응답 경로까지 확정할 수 없다."
+  ],
+  "revision": "1ec9aafc"
+}

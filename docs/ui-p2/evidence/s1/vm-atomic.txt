@@ -1,0 +1,22 @@
+# 조각 1 바깥 증거 — 실제 데몬(격리 VM s05-measure · cysr 048610cc · 데몬 코드 = 이 가지와 같음[데몬 변경 0]) 원자 제출 1회
+# 2026-11-17 22:2x · TICKET=cysr-ui-slice1-1117 · VM IP 가림 · 원문 그대로(호스트 → VM ssh · 호스트 데몬·마스터 무접촉)
+# 보낸 것 = viewcore.rs human_send_params 와 같은 8키(cargo 시험 human_params_are_one_atomic_request_with_both_tokens 가 키·값 핀) + operator·owner 표지(VM operator.token)
+# 좌석 = surface:3 worker-fake(대역 · 받은 덩이마다 CLOCK_MONOTONIC 시각·길이·16진 기록 · 0.5 와 같은 대역)
+
+== 쓰기 직전 상태(org.status 좌석 3 · feed pending)
+{'role': 'worker-fake', 'exited': False, 'agent_alive': True, 'pending_input_bytes': 0, 'pending_input_human_bytes': 0, 'input_paste_open': False, 'gate_pending': None, 'human_idle_secs': 2065, 'registered_session_id': 'a12e64b8-1066-4acc-b0a8-c5bbce202811'}
+feed pending 0 []
+== chat_send{human} 매개변수(viewcore.rs human_send_params 와 같은 8키 + 표지 2) 1요청
+{"rtt_ms": 2.95, "mono_send": 3015.873357, "resp": {"_flen": 28, "_pv": 1, "id": 1, "ok": true, "result": {"sent": true, "surface_id": 3}}}
+== 좌석이 받은 덩이(단조 시각 · 길이 · 16진)
+3015.618117 1 15
+3015.816383 51 1b5b3230307eeb8c80ed999420ed9994eba9b420eca1b0eab0813120ec9588eb85950aeb9198eca7b820eca4841b5b3230317e
+3016.355868 1 0d
+
+# 읽기: 0x15(Ctrl-U) → +198.3ms 울타리 51B(ESC[200~ + 「대화 화면 조각1 안녕」 + 0x0a + 「둘째 줄」 + ESC[201~ · 줄바꿈은 울타리 안 LF 그대로) → +539.5ms 0x0d 1개
+#       Ctrl-U→Enter 합계 737.8ms(0.5 M1 범위 728.1~835.2ms 안) · 응답 {"sent":true} = viewcore.rs classify_send → "written"
+#       (mono_send 는 VM 파이썬 time.monotonic · 덩이 시각은 대역 C CLOCK_MONOTONIC — 서로 다른 시계라 앞뒤 비교 금지 · 0.5 M1 과 같은 현상)
+
+== chat_transcript 경로 규칙 대조(같은 좌석 · surface.list + org.status 에서 재료를 받아 viewcore.rs transcript_path 와 같은 규칙으로)
+{'claude_config_dir': '~/.cys/claude', 'cwd': '~/m1', 'slug': '-<VM홈>-m1', 'session': 'a12e64b8-1066-4acc-b0a8-c5bbce202811', 'path_exists': True, 'bytes': 91}
+# 한계: 이 세션 파일은 대역이 Claude Code 와 같은 규칙으로 쓴 것(fake_claude_t.c:15~22) — 진짜 Claude Code 의 기록 꼴(uuid·parentUuid·긴 붙여넣기)은 M7ⓐ·M8 재개 때.

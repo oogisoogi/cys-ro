@@ -1,0 +1,26 @@
+# 조각 3 바깥 증거 — 실제 데몬 1회(격리 HOME · 이 맥) · 2026-11-18 00:4x
+- 데몬 = 이 작업트리 소스 빌드 target/debug/cysd(3a012bf4 + 화면 변경만 · 데몬 소스 변경 0) · HOME·소켓·팩 = /tmp/claude-501/s3d 아래(일정 잡 전부 지움 뒤 측정) · 좌석 = tests/fixtures/fake_claude.c 대역(launch-agent --role worker --agent claude)
+- 보낸 요청 = 대화 화면 chat_send{human} 과 같은 꼴: surface.send_text {human, quiet, queued:false, clear_first, machine_origin:false, refuse_on_approval} + operator·owner 표지
+
+## 1. 원자 제출(여러 줄 · 탭)
+응답: {"sent":true,"surface_id":1}
+좌석이 받은 바이트(got.log 마지막 Ctrl-U 부터 · 16진):
+15 1b 5b 32 30 30 7e ec b2 ab 20 ec a4 84 0a 09 eb 91 98 ec a7 b8 20 ec a4 84 20 28 ed 83 ad 29 0a ec 85 8b ec a7 b8 20 ec a4 84 20 c2 b7 20 ed 95 9c ea b8 80 1b 5b 32 30 31 7e 0d
+글자: '\x15\x1b[200~첫 줄\n\t둘째 줄 (탭)\n셋째 줄 · 한글\x1b[201~\r'
+→ 0x15(Ctrl-U) · ESC[200~ · 본문(줄바꿈 0x0a · 탭 0x09 그대로) · ESC[201~ · 0x0d(Enter) 1개 — 화면 composeOutbound 결과와 바이트 일치
+
+## 2. 세션 기록(대역)
+파일: /tmp/claude-501/s3d/h/.cys/claude/projects/-private-tmp-claude-501-s3d-m1/b524e6b9-b90e-4fce-a25d-fea957f6e8c4.jsonl
+내용:
+{"type":"user","sessionId":"b524e6b9-b90e-4fce-a25d-fea957f6e8c4","cwd":"/private/tmp/claude-501/s3d/m1"}
+→ 대역은 받은 말을 user 레코드로 쓰지 않는다(머리 줄 1개 · uuid/parentUuid 칸 없음) = uuid/parentUuid 대조는 진짜 Claude 필요(0.5 M8 · 측정 대기 그대로)
+
+## 3. 세션 폴더 이름 — 심볼릭 링크 cwd 발견
+데몬 목록 cwd = /tmp/claude-501/s3d/m1 · 세션 폴더 = -private-tmp-claude-501-s3d-m1(좌석 프로세스 getcwd = 실제 경로 /private/tmp/…)
+→ viewcore.rs transcript_path 는 목록 cwd 로 슬러그를 만든다(-tmp-claude-501-s3d-m1) → 이런 좌석은 세션 파일을 못 찾아 「전달 확인 중 → 오래 걸려요」(틀림 아님 · 모름). 진짜 Claude Code 도 실제 경로로 쓰는지는 측정 대기(대역은 getcwd).
+
+## 4. 큐 사건 칸(기계 문안)
+적재 응답: {"queue_entry_id":"q6afc7647.1","queued":true,"durable":true,"depth":1}
+queue.enqueued payload: {bytes, depth, enqueued_at, from:"chat-auto", queue_entry_id, seq} · 사건 timestamp = 1794930306.662664(초 · 실수)
+배달: 대역 화면에서 프롬프트를 못 찾아 막힘 — blocked_by=prompt_unknown(45초+) → queue.delivered 는 이 장면에서 관측 못 함(칸 이름은 코드 state.rs:605~621 대조)
+queue.drop 뒤 queue.dropped payload: {bytes:15, count:1, entry_ids:[], queue_entry_ids:["q6afc7647.1"], reason:"dropped"} → autostep 의 queue_entry_ids 읽기와 일치

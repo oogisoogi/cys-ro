@@ -1,0 +1,74 @@
+/* (cysr-ui-slice1) 대화 화면·전환 단추 스타일 — 우리 새 파일(원작자 style.css 무변경 · build.sh 가 dist 로 복사).
+   글자: 읽는 글 20px · 표식 18px · 18px 미만 0 · 누를 면 44×44 이상(P2-DESIGN §9-2). 색 대비는 흰 바탕 계산값(§9-2 표)을 따른다. */
+
+:root {
+  --cv-bg: #ffffff;
+  --cv-ink: #1c2330;
+  --cv-sub: #4a5361;
+  --cv-accent: #2d5bcb;
+  --cv-wait: #8a4b08;
+  --cv-attn: #a33a0c;
+  --cv-err: #a61e2a;
+  --cv-line: #d5dae3;
+  --cv-me: #eef3ff;
+  --cv-master: #f4f5f7;
+}
+
+/* 전환 단추 — 상단바 안(오른쪽 위) · 두 단추 한 묶음 */
+#view-switch { display: flex; align-items: center; gap: 8px; margin-right: 8px; }
+#view-switch .vs-group { display: inline-flex; border: 1px solid var(--cv-line); border-radius: 8px; overflow: hidden; }
+#view-switch .vs-group button { min-height: 28px; padding: 0 12px; font-size: 13px; border: 0; background: transparent; color: inherit; cursor: pointer; }
+#view-switch .vs-group button[aria-pressed="true"] { background: var(--cv-accent); color: #fff; }
+#view-switch .vs-group button.vs-dim { opacity: 0.45; }
+#view-switch .vs-band { font-size: 13px; color: var(--cv-attn); max-width: 360px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#view-switch .vs-band[hidden] { display: none; }
+
+/* 화면 자리 — 작업 화면(#body-row)과 같은 높이 */
+#view-host { height: calc(100% - var(--topbar-h)); background: var(--cv-bg); color: var(--cv-ink); overflow: hidden; }
+#view-host[hidden] { display: none; }
+
+.cv { display: flex; flex-direction: column; height: 100%; max-width: 920px; margin: 0 auto; padding: 16px; box-sizing: border-box; font-size: 20px; line-height: 1.5; }
+.cv-head { display: flex; flex-wrap: wrap; gap: 12px 20px; padding-bottom: 12px; border-bottom: 1px solid var(--cv-line); }
+.cv-health, .cv-confirms, .cv-errors { font-size: 18px; color: var(--cv-sub); }
+.cv-health[data-health="off"], .cv-health[data-health="none"] { color: var(--cv-wait); }
+.cv-health[data-health="ready"] { color: var(--cv-accent); }
+.cv-confirms:not([data-count="0"]):not([data-count=""]) { color: var(--cv-attn); }
+.cv-errors:not([data-count="0"]) { color: var(--cv-err); }
+
+.cv-log { flex: 1; overflow-y: auto; list-style: none; margin: 0; padding: 12px 0; display: flex; flex-direction: column; gap: 12px; }
+.cv-empty { color: var(--cv-sub); }
+.cv-msg { max-width: 80%; padding: 10px 14px; border-radius: 12px; white-space: pre-wrap; word-break: break-word; }
+.cv-me { align-self: flex-end; background: var(--cv-me); }
+.cv-master { align-self: flex-start; background: var(--cv-master); }
+.cv-who { font-size: 18px; color: var(--cv-sub); }
+.cv-step { font-size: 18px; color: var(--cv-sub); margin-top: 4px; }
+.cv-me.step-held .cv-step, .cv-me.step-checking .cv-step, .cv-me.step-slow .cv-step, .cv-me.step-queued_hold .cv-step { color: var(--cv-wait); }
+.cv-me.step-failed .cv-step { color: var(--cv-err); }
+.cv-me.step-delivered .cv-step, .cv-me.step-replied .cv-step { color: var(--cv-accent); }
+.cv-note { font-size: 18px; color: var(--cv-wait); margin-top: 4px; }
+.cv-retry { min-height: 44px; min-width: 44px; margin-top: 6px; font-size: 18px; }
+
+.cv-live { font-size: 18px; color: var(--cv-sub); padding: 6px 0; }
+.cv-form { display: flex; gap: 8px; align-items: stretch; }
+.cv-input { flex: 1; min-height: 88px; font-size: 20px; padding: 10px; border: 1px solid var(--cv-line); border-radius: 10px; resize: vertical; font-family: inherit; background: var(--cv-bg); color: var(--cv-ink); }
+.cv-send { min-width: 88px; min-height: 44px; font-size: 20px; border-radius: 10px; border: 0; background: var(--cv-accent); color: #fff; cursor: pointer; }
+.cv-notice { min-height: 1.5em; font-size: 18px; color: var(--cv-attn); padding-top: 6px; }
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --cv-bg: #15181e;
+    --cv-ink: #e6e9ef;
+    --cv-sub: #b4bac5;
+    --cv-accent: #7ea2ff;
+    --cv-wait: #f0b25a;
+    --cv-attn: #ff9b6b;
+    --cv-err: #ff8a93;
+    --cv-line: #343a46;
+    --cv-me: #1f2a44;
+    --cv-master: #222630;
+  }
+}
+/* (cysr-ui-slice3) 기계 문안 한 줄 표지 · 오래 걸려요 때 마스터 상태 줄 */
+.cv-auto { align-self: center; font-size: 18px; color: var(--cv-sub); padding: 4px 10px; }
+.cv-auto.auto-failed { color: var(--cv-err); }
+.cv-auto.auto-partial, .cv-auto.auto-slow, .cv-auto.auto-retrying { color: var(--cv-wait); }

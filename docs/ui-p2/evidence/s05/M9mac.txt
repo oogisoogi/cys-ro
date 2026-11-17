@@ -1,0 +1,11 @@
+{'claude_config_dir': '~/.cys/claude', 'usage': None}
+sid=a12e64b8-1066-4acc-b0a8-c5bbce202811 surface=3 role=worker-fake argv: --dangerously-skip-permissions --settings ~/.cys/seat-settings/worker-fake.json
+a12e64b8-1066-4acc-b0a8-c5bbce202811.jsonl
+== control.sessions
+{"rtt_ms": 0.28, "mono_send": 1168.35923, "resp": {"_flen": 96, "_pv": 1, "id": 1, "ok": true, "result": {"now": 1794919397.158235, "redacted": false, "sessions": [], "since": 1794314597.158235, "window": "7d"}}}
+== control.session_detail
+{"rtt_ms": 0.28, "mono_send": 1168.374702, "resp": {"_flen": 432, "_pv": 1, "id": 1, "ok": true, "result": {"redacted": false, "session_id": "a12e64b8-1066-4acc-b0a8-c5bbce202811", "summary": {"by_agent": [], "by_model": [], "by_tier": [], "cache_efficiency": 0.0, "cache_savings_usd": 0.0, "productivity": {"avg_session_duration_secs": 0.0, "cost_per_session": 0.0, "tokens_per_turn": 0.0, "turns_per_session": 0.0}, "totals": {"cache_creation": 0, "cache_read": 0, "cost_usd": 0.0, "input": 0, "msgs": 0, "output": 0, "sessions": 0, "tokens": 0}}, "timeline": [], "transcript": []}}}
+sid=a12e64b8-1066-4acc-b0a8-c5bbce202811 surface=3 role=worker-fake argv: --dangerously-skip-permissions --settings ~/.cys/seat-settings/worker-fake.json
+T5 사용량 관측: 이 세션의 트랜스크립트 경로를 pane에 등록 (SessionStart hook 전용 plumbing)
+
+Usage: cysr usage-register [OPTIONS] --transcript <TRANSCRIPT>

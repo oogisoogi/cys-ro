@@ -1,0 +1,146 @@
+{
+  "verdict": "BLOCK",
+  "justification": "2R 5건 중 3건은 닫혔고 2건은 부분 수정이다. 최종 관측의 유효시간을 넘긴 초안 삭제 경로와 중간 디렉터리 교체를 통한 결속 파일 밖 읽기가 남는다. 지정 커밋의 정적 검토와 메모리 호출 대역만 사용했다. 실측된 원자 제출 도중 승인 창 경합은 알려진 위험으로 기록하며 신규 결함에서 제외했다.",
+  "r1_closure": [
+    {
+      "issue": "R1-1 저장소 삭제 실패 뒤 불명 항목 자동 재제출",
+      "status": "closed",
+      "ref": "ui/src/views/core.ts:321"
+    },
+    {
+      "issue": "R1-2 초안 문턱 통과 뒤 공백과 관측 노후화",
+      "status": "partial",
+      "ref": "ui/src/views/core.ts:217"
+    },
+    {
+      "issue": "R1-3 확인하지 않은 복원 문안에 사람 표지 부여",
+      "status": "closed",
+      "ref": "ui/src/views/core.ts:172"
+    },
+    {
+      "issue": "R1-4 시간 근접성으로 다른 사람 입력 면제",
+      "status": "closed",
+      "ref": "ui/src/views/judge/gate.ts:85"
+    },
+    {
+      "issue": "R1-5 불명 오류 응답을 확정 실패로 분류",
+      "status": "partial",
+      "ref": "src-tauri/src/viewcore.rs:90"
+    },
+    {
+      "issue": "R1-6 다른 프로젝트의 같은 세션 파일명 검색",
+      "status": "closed",
+      "ref": "src-tauri/src/viewcore.rs:236"
+    },
+    {
+      "issue": "R1-7 심볼릭 링크와 경로 교체를 통한 결속 파일 밖 읽기",
+      "status": "partial",
+      "ref": "src-tauri/src/viewcore.rs:217"
+    },
+    {
+      "issue": "R1-8 소비 UUID 재배정과 reset 기록 재적용",
+      "status": "closed",
+      "ref": "ui/src/views/core.ts:439"
+    },
+    {
+      "issue": "R2-1 느린 병렬 조회와 관측 유효시간 미검사",
+      "status": "partial",
+      "ref": "ui/src/views/core.ts:217"
+    },
+    {
+      "issue": "R2-2 복원 ID 충돌로 미확인 문안에 사람 표지 부여",
+      "status": "closed",
+      "ref": "ui/src/views/core.ts:172"
+    },
+    {
+      "issue": "R2-3 projects 내부 링크 및 검사·열기 경합",
+      "status": "partial",
+      "ref": "src-tauri/src/viewcore.rs:217"
+    },
+    {
+      "issue": "R2-4 로그 정리 후 소비 UUID 이력 소실",
+      "status": "closed",
+      "ref": "ui/src/views/core.ts:104"
+    },
+    {
+      "issue": "R2-5 복원 항목 20개에서 확인 교착",
+      "status": "closed",
+      "ref": "ui/src/views/core.ts:279"
+    }
+  ],
+  "evidence": [
+    {
+      "claim": "저장소 실패 대역에서는 chat_send가 0회이고 store_failed로 남았다. uncertain 결과 뒤 retry와 poll을 실행해도 최초 제출을 포함한 호출 수는 1회였다.",
+      "ref": "ui/src/views/core.ts:321",
+      "verified": true
+    },
+    {
+      "claim": "feed를 60초 지연시키며 초안을 12바이트로 바꾼 대역에서는 이후 org_status가 초안을 발견해 제출 0회로 끝났다. org_status 왕복 600ms도 status_unknown으로 붙잡혔다.",
+      "ref": "ui/src/views/core.ts:214",
+      "verified": true
+    },
+    {
+      "claim": "최종 문턱 통과 후 저장소 remove 대역에서 가상 시각을 1초 진행하고 초안을 12바이트로 바꾸자 추가 조회 없이 chat_send가 1회 호출됐다. 500ms 검사는 이 저장 단계 이전에 끝난다.",
+      "ref": "ui/src/views/core.ts:321",
+      "verified": true
+    },
+    {
+      "claim": "저장소에 id=m100000-1인 /clear를 넣고 같은 시각에 safe를 제출한 대역에서 복원 ID는 r1이 됐고 실제 제출 본문은 safe였다.",
+      "ref": "ui/src/views/core.ts:172",
+      "verified": true
+    },
+    {
+      "claim": "복원 확인 버튼은 신뢰 클릭을 요구하며, 확인 경로는 선택한 본문에 composeOutbound를 적용한다.",
+      "ref": "ui/src/views/chat/index.ts:90",
+      "verified": true
+    },
+    {
+      "claim": "복원 항목 20개에서 r1을 확인한 대역은 제출 1회, 남은 복원 항목 19개로 끝났다.",
+      "ref": "ui/src/views/core.ts:279",
+      "verified": true
+    },
+    {
+      "claim": "ChatCore 대역에서 소비 UUID를 가진 완료 항목을 로그 정리로 제거한 뒤 같은 UUID를 재입력했다. 소비 집합은 유지됐고 새 항목은 checking으로 남았다.",
+      "ref": "ui/src/views/core.ts:439",
+      "verified": true
+    },
+    {
+      "claim": "reset 응답은 레코드 적용 전에 끝 오프셋 재초기화로 빠진다.",
+      "ref": "ui/src/views/core.ts:430",
+      "verified": true
+    },
+    {
+      "claim": "정적 확인상 고정된 내부·외부 심볼릭 링크는 경로 불일치로 거부하고, 검증 후에는 열린 핸들로 읽는다. 다만 canonicalize와 symlink_metadata는 별도 경로 탐색이며 중간 디렉터리 핸들을 고정하지 않는다.",
+      "ref": "src-tauri/src/viewcore.rs:210",
+      "verified": true
+    },
+    {
+      "claim": "정적 경합 추적: 외부 디렉터리를 가리키는 중간 링크로 파일을 연 뒤, canonicalize 동안 정상 디렉터리로 교체하고 symlink_metadata 전에 외부 링크로 되돌리면 real==want와 장치·inode 비교가 모두 통과한다. symlink_metadata는 최종 항목만 링크 여부를 검사한다. 실제 파일 변경 재현은 수행하지 않았다.",
+      "ref": "src-tauri/src/viewcore.rs:217",
+      "verified": true
+    },
+    {
+      "claim": "ok 결측·오류 코드 결측·허용 목록 밖 코드는 uncertain이다. 허용 목록 코드는 failed가 되어 재시도 가능하므로 목록 전체의 쓰기 0 보장은 별도 확인이 필요하다.",
+      "ref": "src-tauri/src/viewcore.rs:93",
+      "verified": true
+    }
+  ],
+  "issues": [
+    {
+      "severity": "blocking",
+      "where": "ui/src/views/core.ts:217",
+      "what": "R1-2/R2-1 잔존. 새 500ms 검사는 org_status 왕복 시간만 검사한다. 이후 applyFresh와 제출 전 patchMsg가 동기 저장 및 구독자 렌더링을 수행하지만 제출 직전 관측 나이는 다시 검사하지 않는다. 최종 저장 단계에 1초 지연과 초안 12바이트를 주입한 대역에서 오래된 빈칸 판정으로 human 제출이 나갔다. 원자 제출 시작 전 화면 경로의 문제다.",
+      "fix": "최종 조회 시작시각을 보존하고 영속 확인·렌더링 이후 chat_send 호출 직전에 관측 나이를 검사하라. 상한 초과 시 재조회·재판정하거나 held로 끝내라. 제출 전 저장 성공 조건은 유지하라."
+    },
+    {
+      "severity": "major",
+      "where": "src-tauri/src/viewcore.rs:217",
+      "what": "R1-7/R2-3 잔존. 열린 핸들의 inode를 비교해도 비교 대상 경로의 중간 디렉터리는 고정되지 않는다. 외부 파일 열기 → 정상 디렉터리로 교체해 canonicalize 통과 → 외부 디렉터리 링크로 재교체해 symlink_metadata의 inode 일치라는 순서가 가능하다. 최종 항목은 보통 파일이므로 링크 검사도 통과하고 외부 핸들이 read_transcript_from으로 전달된다.",
+      "fix": "신뢰한 설정 루트의 디렉터리 핸들을 기준으로 각 경로 요소를 링크 추적 없이 열어 검증하라. 중간 디렉터리와 최종 파일을 경로 문자열로 다시 탐색하는 검증에 의존하지 말라."
+    }
+  ],
+  "missing": [
+    "R1-5: PRE_WRITE_REFUSALS 전체의 모든 반환 경로가 쓰기 0인지는 확정하지 못했다. 허용된 surface.send_text 분기는 hand_off_direct_job과 journal_barrier_verdict의 응답을 반환한다(src/bin/cysd/handlers.rs:8244, src/bin/cysd/handlers.rs:8303). 해당 헬퍼 구현과 TransportClass 생성 근거는 지정 범위 밖이므로 읽지 않았다."
+  ],
+  "revision": "b50fce4b"
+}

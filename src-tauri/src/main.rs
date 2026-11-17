@@ -14,6 +14,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 mod counsel;
 mod feedback;
 mod updnotice;
+mod viewcore; // (cysr-ui-slice1) 대화 화면 Tauri 명령 — 우리 새 파일(chat_send · chat_transcript)
 
 type Stream = Box<dyn AsyncReadWrite>;
 trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -8456,6 +8457,8 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .manage(Attachments(Mutex::new(HashMap::new())))
         .invoke_handler(tauri::generate_handler![
+            viewcore::chat_send, // (cysr-ui-slice1)
+            viewcore::chat_transcript, // (cysr-ui-slice1)
             feedback::feedback_new_draft,
             feedback::feedback_stage_file,
             feedback::feedback_unstage,

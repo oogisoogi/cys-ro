@@ -28938,6 +28938,31 @@ fn merge_audit_entry(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// ★1.1.16(7d · 원작자 v0.15.1 8deb3f99 「T2j · RULINGS HM1」 재구현): `--to-local` 은 사용자본을 `~/.cys/local/<rel>` 에 둔다. 그 자리의
+/// 사본을 실제로 읽는 것은 같은 이름의 스킬(`skills/`)뿐이고, `bin/`·`hooks/` 파일의 사본은 아무것도 읽지 않는다(로컬 훅 = 
+/// `~/.cys/local/hooks/<이벤트>.d/*.sh` 만 · `cysjavis-pack/hooks/cys-hook.sh:39`). 그 두 폴더면 거부 문장(이유 + 아무것도 바꾸지 않았음 +
+/// 대신 쓸 명령)을 돌려준다 · None = 이 규칙의 대상 아님(스킬·그 밖 = 종전 그대로).
+fn to_local_no_reader_refusal(rel: &str) -> Option<String> {
+    if !(rel.starts_with("bin/") || rel.starts_with("hooks/")) || mutant_env("J1116-TOLOCAL") {
+        return None;
+    }
+    let own_hooks = if rel.starts_with("hooks/") {
+        " 따로 두고 싶은 내 훅은 ~/.cys/local/hooks/<이벤트>.d/ 에 둡니다(그 자리만 읽힙니다)."
+    } else {
+        ""
+    };
+    Some(format!(
+        "⛔ 거부: '{rel}' 은 bin/·hooks/ 파일입니다 — --to-local 이 ~/.cys/local 에 두는 사본은 읽는 곳이 없어 내 수정이 꺼집니다\
+         (그 사본을 실제로 읽는 것은 skills/ 의 스킬뿐). 아무것도 쓰거나 옮기거나 해소하지 않았습니다. 대신: 보관된 내 사본({rel}.user)을 \
+         팩 제자리에 되살리려면 cys pack-adopt {rel} · vendor 본을 그대로 쓰려면 cys pack-merge --file {rel} --keep-mine(보존본 정리).{own_hooks}"
+    ))
+}
+
+/// 시험 빌드 전용 뮤턴트 스위치(`CYS_U1_MUTANT` · 출시 빌드 = 늘 false) — 이 바이너리 안의 1.1.16 고침 가드를 끄고 같은 시험이 붉어지는지 본다.
+fn mutant_env(id: &str) -> bool {
+    cfg!(test) && std::env::var("CYS_U1_MUTANT").map(|v| v == id).unwrap_or(false)
+}
+
 fn run_pack_merge(
     file: Option<String>,
     take_new: bool,
@@ -29246,6 +29271,12 @@ fn run_pack_merge(
         "healed" | "conflicted" => {
             let user_path = dir.join(format!("{rel}.user"));
             if to_local {
+                // ★1.1.16(7d · 원작자 v0.15.1 8deb3f99 T2j 재구현): `bin/`·`hooks/` 파일이면 아무것도 쓰거나 해소하기 **전에** 거부한다 —
+                //   그 자리 사본은 읽는 곳이 없어 내 수정이 말없이 꺼진다(1.1.15 = 쓰고·해소하고·감사 기록까지 한 뒤에야 경고).
+                if let Some(refusal) = to_local_no_reader_refusal(&rel) {
+                    eprintln!("{refusal}");
+                    return 1;
+                }
                 // 스킬 등 system 파일의 사용자본을 오버레이로 승격 — vendor 무결성(치유)과 공존.
                 let local_root = cys::pack::local_dir();
                 let dest = local_root.join(&rel);
@@ -46192,6 +46223,74 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         );
         assert_eq!(t4_ledger_kind(&td, &rel).as_deref(), Some("kept-drift"), "kept-drift 정규화");
         let _ = std::fs::remove_dir_all(td.parent().unwrap());
+    }
+
+    /// ★1.1.16(7d · 원작자 8deb3f99 시험 이식): healed·conflicted 의 `bin/`·`hooks/` 파일에 `--to-local` = 쓰기 **전** 거부(rc 1) —
+    /// 살아 있는 파일 · `.user` · 원장 항목 · 감사 기록 무변경 · 오버레이 사본 0. 대조군: 스킬은 종전대로 승격된다.
+    #[test]
+    fn j1116_to_local_refused_for_bin_and_hooks_before_any_write() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for prefix in ["bin/", "hooks/"] {
+            for kind in ["healed", "conflicted"] {
+                let (td, _rel0, _embed0, _env) = t4_system_fixture(&format!("j16tl-{}-{kind}", prefix.trim_end_matches('/')));
+                let (rel, embed) = cys::pack::PACK_ALL
+                    .iter()
+                    .find(|(r, _)| r.starts_with(prefix) && cys::pack::ownership_name_scoped(r, &td) == "system")
+                    .map(|(r, c)| (r.to_string(), c.to_string()))
+                    .expect("팩에 그 폴더의 system 파일이 있다");
+                let local = td.parent().unwrap().join("local");
+                let _l = cys::pack::EnvGuard::set("CYS_LOCAL_DIR", &local);
+                std::fs::create_dir_all(td.join(&rel).parent().unwrap()).unwrap();
+                std::fs::write(td.join(&rel), &embed).unwrap();
+                std::fs::write(td.join(format!("{rel}.user")), "MY-EDIT").unwrap();
+                t4_write_ledger(&td, &rel, serde_json::json!({"kind": kind, "side": format!("{rel}.user"), "version": "0", "ts": 0}));
+                let audit = td.join(".merge-audit.jsonl");
+                let audit_before = std::fs::read(&audit).ok();
+                let rc = run_pack_merge(Some(rel.clone()), false, false, false, true, false, true, false, false, false, None);
+                let overlay = local.join(&rel).exists();
+                let user = std::fs::read_to_string(td.join(format!("{rel}.user"))).ok();
+                let live = std::fs::read_to_string(td.join(&rel)).ok();
+                let kind_after = t4_ledger_kind(&td, &rel);
+                let audit_after = std::fs::read(&audit).ok();
+                let _ = std::fs::remove_dir_all(td.parent().unwrap());
+                assert_eq!(rc, 1, "{rel} {kind}: 거부 rc 1");
+                assert!(!overlay, "{rel} {kind}: 읽는 곳 없는 오버레이 사본을 썼다");
+                assert_eq!(user.as_deref(), Some("MY-EDIT"), "{rel} {kind}: .user 를 해소했다");
+                assert_eq!(live.as_deref(), Some(embed.as_str()), "{rel} {kind}: 살아 있는 파일이 바뀌었다");
+                assert_eq!(kind_after.as_deref(), Some(kind), "{rel} {kind}: 원장 항목이 바뀌었다");
+                assert_eq!(audit_before, audit_after, "{rel} {kind}: 감사 기록이 늘었다");
+            }
+        }
+        // 대조군: 스킬은 종전대로 오버레이로 승격(rc 0 · 사본 있음).
+        let (td, _r, _e, _env) = t4_system_fixture("j16tl-skill");
+        let (rel, embed) = cys::pack::PACK_ALL
+            .iter()
+            .find(|(r, _)| r.starts_with("skills/") && cys::pack::ownership_name_scoped(r, &td) == "system")
+            .map(|(r, c)| (r.to_string(), c.to_string()))
+            .expect("system 스킬 파일");
+        let local = td.parent().unwrap().join("local");
+        let _l = cys::pack::EnvGuard::set("CYS_LOCAL_DIR", &local);
+        std::fs::create_dir_all(td.join(&rel).parent().unwrap()).unwrap();
+        std::fs::write(td.join(&rel), &embed).unwrap();
+        std::fs::write(td.join(format!("{rel}.user")), "MY-SKILL").unwrap();
+        t4_write_ledger(&td, &rel, serde_json::json!({"kind": "healed", "side": format!("{rel}.user"), "version": "0", "ts": 0}));
+        let rc = run_pack_merge(Some(rel.clone()), false, false, false, true, false, true, false, false, false, None);
+        let copied = std::fs::read_to_string(local.join(&rel)).ok();
+        let _ = std::fs::remove_dir_all(td.parent().unwrap());
+        assert_eq!(rc, 0, "스킬 to-local 은 종전대로");
+        assert_eq!(copied.as_deref(), Some("MY-SKILL"));
+    }
+
+    #[test]
+    fn j1116_to_local_refusal_sentence() {
+        let b = to_local_no_reader_refusal("bin/x.py").unwrap();
+        assert!(b.starts_with("⛔ 거부: 'bin/x.py'") && b.contains("읽는 곳이 없어") && b.contains("아무것도 쓰거나 옮기거나 해소하지 않았습니다."), "{b}");
+        assert!(b.contains("cys pack-adopt bin/x.py"), "{b}");
+        let h = to_local_no_reader_refusal("hooks/x.sh").unwrap();
+        assert!(h.contains("~/.cys/local/hooks/<이벤트>.d/"), "{h}");
+        for rel in ["skills/a/SKILL.md", "directives/MASTER_DIRECTIVE.md", "soul.md", "binx/y.py", "hooksy.sh"] {
+            assert_eq!(to_local_no_reader_refusal(rel), None, "{rel}: 이 규칙의 대상이 아니다");
+        }
     }
 
     /// ★성찰 차단 수리 2R-3 핀: adopted 원장 kind 에서 --take-new/--keep-mine 플래그가 침묵

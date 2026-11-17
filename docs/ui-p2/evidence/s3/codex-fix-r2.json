@@ -1,0 +1,53 @@
+{
+  "verdict": "BLOCK",
+  "justification": "①은 같은 밀리초 경계에서 여전히 I2를 위반한다. 추가로 감싼 기록의 대조 우회와 시작점 조회 경합을 재현했다. 지정 회귀 시험은 30 pass·0 fail이다.",
+  "evidence": [
+    {
+      "claim": "① 안 닫힘 — 먼저 읽은 다른 길의 레코드와 이후 보내기의 시각이 같은 밀리초이면 짝짓기가 허용된다. 대역에서 bytesIn=false·userUuid=other·step=delivered를 재현했다.",
+      "ref": "ui/src/views/judge/msgstep.ts:226",
+      "verified": true
+    },
+    {
+      "claim": "② 닫힘 — 기존의 'bounded 상한을 넘긴 해당 시작점 조회가 뒤늦게 offset을 덮는 경로'는 상한 초과 시 세대 증가와 결과 적용 전 세대 검사로 차단된다. 다만 별도의 겹친 조회 경합은 남는다.",
+      "ref": "ui/src/views/core.ts:525",
+      "verified": true
+    },
+    {
+      "claim": "③ 닫힘 — 시각 있는 stray를 먼저 안정 정렬하므로 기존의 입력 순서 의존 문제가 해소됐다.",
+      "ref": "ui/src/views/core.ts:67",
+      "verified": true
+    },
+    {
+      "claim": "감싼 기록의 속 글이 보낸 글과 달라도 일반 정규화 분기가 true를 반환해 delivered가 되는 입력을 재현했다.",
+      "ref": "ui/src/views/judge/msgstep.ts:129",
+      "verified": true
+    },
+    {
+      "claim": "deliver의 시작점 조회 뒤 poll의 시작점 조회를 겹치면, 앞 조회가 무효화되어도 쓰기가 진행된다. 뒤 조회가 기록 생성 후 파일 끝을 적용하여 기록 1건이 있는데도 userUuid=null·step=injected로 남는 것을 재현했다.",
+      "ref": "ui/src/views/core.ts:649",
+      "verified": true
+    }
+  ],
+  "issues": [
+    {
+      "severity": "blocking",
+      "where": "ui/src/views/judge/msgstep.ts:226",
+      "what": "seenAt과 sentAt의 동률을 허용하므로 ①이 완전히 닫히지 않았다. 시각 없는 다른 길의 X를 먼저 읽고 같은 밀리초에 X를 보내면, 쓰기 직전 patchMsg에서 옛 레코드가 붙는다. 이후 uncertain_lost 응답도 mergeOutcome이 전달됨을 보존한다. 쓰기 0인데 전달됨이 되어 I2를 위반한다.",
+      "fix": "이미 관측한 레코드와 이후 제출의 선후관계를 단조 순번으로 구분하라. 시각만 사용한다면 동률은 짝짓지 말고 모름으로 남겨라."
+    },
+    {
+      "severity": "blocking",
+      "where": "ui/src/views/judge/msgstep.ts:129",
+      "what": "감싼 기록도 normRecordText 분기를 먼저 통과할 수 있다. 보낸 글이 '<pasted_content id=\"1\">\\n안녕\\n</pasted_content id=\"1\">'이고 레코드가 '\\n\\n<pasted_content id=\"1\">\\n안녕\\n</pasted_content id=\"1\">\\n'이면, 속 글은 '안녕'으로 서로 다른데 matches=true·delivered가 된다. A의 속 글 전문 일치 조건과 I2를 우회한다.",
+      "fix": "감싼 꼴로 인식한 문자열은 속 글 대조만 수행하고 일반 정규화 대조로 통과시키지 마라. text와 parts에 같은 규칙을 적용하라."
+    },
+    {
+      "severity": "major",
+      "where": "ui/src/views/core.ts:649",
+      "what": "세대가 뒤처진 initOffset은 성공 여부 없이 반환한다. deliver가 시작한 조회 뒤 poll이 새 조회를 시작하면 앞 조회는 결과를 버리지만 deliver는 초기화가 끝났다고 보고 offset=null 상태로 chat_send를 호출한다. poll의 조회는 상한 없이 계속되며, 보낸 레코드 생성 후 파일 끝을 적용해 그 레코드를 영구히 건너뛸 수 있다.",
+      "fix": "초기화를 공유하거나 성공 여부를 명시 반환하고, 유효한 시작점이 확정되지 않았으면 쓰기를 붙잡아라. poll에서 시작한 초기화에도 상한과 무효화를 적용하라."
+    }
+  ],
+  "missing": [],
+  "revision": "60185fe2"
+}

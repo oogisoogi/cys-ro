@@ -1,4 +1,4 @@
-[scoped pid=85181 registered in ledger]
+[scoped pid=34815 registered in ledger]
 번들: <wt>/cys-ui-slice3/ui/dist · 기준 번들: <wt>/cys-ui-slice1/ui/dist
 == ON: 스위치 켬 · 200틱 넘게
   ok   페이지 오류 0 []
@@ -44,4 +44,4 @@
   ok   켜짐도 invoke 열·저장소(스위치 키 제외)·화면 = 기준과 같음(기록기 부작용 0) 308dd2b91f9a
 
 RESULT: PASS
-[scoped pid=85181 exited (exit status: 0); process group force-killed and deregistered]
+[scoped pid=34815 exited (exit status: 0); process group force-killed and deregistered]

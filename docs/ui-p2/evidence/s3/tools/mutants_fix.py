@@ -63,11 +63,8 @@ M = [
     ("core", "O14 「이 말 보내기」가 클릭 대상 아닌 말에도(needsClick 검사 제거)", "    if (!needsClick(m)) return;\n", ""),
     ("core", "O13 다시 보내기의 쓰는 중 검사 제거", "    if (!m || !canRetry(m) || this.writing) return;", "    if (!m || !canRetry(m)) return;"),
     # ---- A 감싼 붙여넣기 ----
-    ("msgstep", "A 감싼 꼴을 전문 일치로 안 봄", "if (normRecordText(r.text) === m.text || wrappedIs(r.text, m.text)) return true;", "if (normRecordText(r.text) === m.text) return true;"),
-    ("msgstep", "A 속 글을 다듬어 비교(글자 하나까지 아님)", "return w !== null && w[2] === text;", "return w !== null && normRecordText(w[2]) === text;"),
     ("msgstep", "A 여닫는 id 같음 검사 제거", '<\\/pasted_content id="\\1">', '<\\/pasted_content id="[0-9A-Za-z]{1,32}">'),
     ("msgstep", "A 앞 고정(^) 제거 = 감싼 밖 앞글 허용", 'PASTE_WRAP = /^\\n\\n<pasted', 'PASTE_WRAP = /\\n\\n<pasted'),
-    ("msgstep", "A 글 조각의 감싼 꼴 제외", "normRecordText(p) === m.text || wrappedIs(p, m.text));", "normRecordText(p) === m.text);"),
     # ---- B 고리 · 시각순 ----
     ("msgstep", "B 안 묶인 답에 기록 시각 안 붙임", "stray.push(Number.isNaN(at) ? { uuid: r.uuid, text: r.text } : { uuid: r.uuid, text: r.text, at });", "stray.push({ uuid: r.uuid, text: r.text });"),
     ("core", "B 시각 없는 답에 읽은 시각 안 붙임", ".map((x) => (x.at === undefined ? { ...x, at: readAt } : x));", ";"),
@@ -90,15 +87,24 @@ M = [
     # ---- F 시간 상한 ----
     ("core", "F 재조회 시간 상한 제거", "    const r = await this.bounded(this.fetchFresh());", "    const r = await this.fetchFresh();"),
     ("core", "F 시간 상한 넘김을 붙잡지 않음(문턱 코드로만)", "      if (fresh.timedOut) {", "      if (false) {"),
-    ("core", "F 쓰기 직전 시작점 잡기 시간 상한 제거", "        const init = await this.bounded(this.initOffset());", "        const init = await this.initOffset();"),
     ("core", "F 조회 고리는 상한 없이", "      const fresh = await this.freshBounded(); // (조각 3 고침", "      const fresh = await this.fetchFresh(); // (조각 3 고침"),
     # ---- H 거둠 ----
     ("core", "H 같은 글 전달됨이어도 다시 보내기 허용", "    if (sameTextDelivered(this.s.msgs, m.text, m.id)) {", "    if (false) {"),
     ("core", "H 자기 자신도 셈", "  return msgs.some((m) => m.id !== exceptId && m.text === text && (m.step === \"delivered\"", "  return msgs.some((m) => m.text === text && (m.step === \"delivered\""),
     # ---- codex 1R(e8ddaf65 BLOCK) 고침 ----
-    ("msgstep", "codex① 본 시각 뒤에 보낸 말에도 짝(보내기 전 레코드가 근거)", " || m.sentAt > p.seenAt", ""),
-    ("core", "codex② 늦은 시작점 조회도 offset 을 바꿈(세대 검사 제거)", "      if (gen !== this.initGen) return; // (codex 1R major)", "      // (gen 검사 제거) // (codex 1R major)"),
     ("core", "codex③ 안 묶인 답 시각 정렬 제거", ".sort((a, b) => (a.at as number) - (b.at as number)); // (codex 1R minor)", "; // (codex 1R minor)"),
+    # ---- 2R 머리에 맞춰 다시 쓴 것(같은 뜻) ----
+    ("msgstep", "A 감싼 꼴을 알아보지 않음(정규화 비교만)", "  return w !== null ? w[2] === text : normRecordText(raw) === text;", "  return normRecordText(raw) === text;"),
+    ("msgstep", "A 속 글을 다듬어 비교(글자 하나까지 아님)", "return w !== null ? w[2] === text :", "return w !== null ? normRecordText(w[2]) === text :"),
+    ("msgstep", "A 글 조각은 감싼 꼴 규칙 없이", "r.parts.some((p) => recordTextIs(p, m.text));", "r.parts.some((p) => normRecordText(p) === m.text);"),
+    ("core", "F 시작점 조회 상한 제거", 'const r = (await this.bounded(this.d.invoke("chat_transcript", { socket: null, surfaceId: m.surface_id, afterOffset: 0, fromEnd: true }))) as', 'const r = (await this.d.invoke("chat_transcript", { socket: null, surfaceId: m.surface_id, afterOffset: 0, fromEnd: true }).catch(() => null)) as'),
+    ("msgstep", "codex① 본 시각 뒤에 보낸 말에도 짝(보내기 전 레코드가 근거)", " || m.sentAt >= p.seenAt", ""),
+    ("core", "codex② 늦은 시작점 조회도 offset 을 바꿈(세대 검사 제거)", '    if (gen !== this.initGen) return "stale";\n', ""),
+    # ---- codex 2R(60185fe2 BLOCK) 고침 ----
+    ("msgstep", "codex2R① 같은 밀리초도 짝", " || m.sentAt >= p.seenAt", " || m.sentAt > p.seenAt"),
+    ("msgstep", "codex2R② 감싼 꼴도 정규화 비교로 통과", "  return w !== null ? w[2] === text : normRecordText(raw) === text;", "  return (w !== null && w[2] === text) || normRecordText(raw) === text;"),
+    ("core", "codex2R③ 시작점이 밀렸어도 씀(stale 붙잡음 제거)", '        fresh = init === "stale" ? { master: undefined, approvals: null, obsAt: this.d.now(), timedOut: true } : await this.freshBounded();', "        fresh = await this.freshBounded();"),
+    ("core", "codex2R③ 상한 넘김 때 세대 안 올림", "      if (gen === this.initGen) this.initGen++; // 늦게 돌아와도 버리게", "      // (세대 안 올림)"),
 ]
 res = []
 for key, name, a, b in M:

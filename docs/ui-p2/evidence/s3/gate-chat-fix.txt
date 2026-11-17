@@ -1,4 +1,4 @@
-[scoped pid=83015 registered in ledger]
+[scoped pid=31854 registered in ledger]
 == A 기본 = 작업 화면
   ok   작업 화면 보임 · 대화 자리 숨김 True flex
   ok   전환 단추 「대화 화면 | 작업 화면」 · 눌림 = 작업 [['대화 화면', 'false'], ['작업 화면', 'true']]
@@ -73,4 +73,4 @@
   경합 기록: /var/folders/yh/whgdgpzd2snf37v_kkp2bqgr0000gn/T/chat-gate-race.json
 
 RESULT: PASS
-[scoped pid=83015 exited (exit status: 0); process group force-killed and deregistered]
+[scoped pid=31854 exited (exit status: 0); process group force-killed and deregistered]

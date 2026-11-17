@@ -521,9 +521,10 @@ export class ChatCore {
       this.applyFresh(fresh);
       if (this.offset === null && fresh.master) {
         // 보낸 user 레코드를 건너뛰지 않게 세션 기록 시작점을 먼저 잡는다 — 이 RPC 가 문턱 판정과 쓰기 사이에 끼지 않게 다시 조회한다.
-        const init = await this.bounded(this.initOffset());
-        if (init === TIMED_OUT) this.initGen++; // (codex 1R major) 늦게 돌아올 그 조회의 결과를 무효로
-        fresh = init === TIMED_OUT ? { master: undefined, approvals: null, obsAt: this.d.now(), timedOut: true } : await this.freshBounded();
+        // (codex 2R major) 시작점 조회가 상한을 넘겼거나 겹친 조회에 밀려 결과를 버렸으면(「stale」) 시작점이 정해지지 않은 채 쓰지 않는다 — 붙잡음.
+        //   조회는 끝났지만 기록이 없다(「none」 · 윈도·파일 없음)면 예전처럼 보낸다(전달됨 0 · 오래 걸려요).
+        const init = await this.initOffset();
+        fresh = init === "stale" ? { master: undefined, approvals: null, obsAt: this.d.now(), timedOut: true } : await this.freshBounded();
         this.applyFresh(fresh);
       }
       if (fresh.timedOut) {
@@ -640,20 +641,26 @@ export class ChatCore {
     }
   }
 
-  private async initOffset(): Promise<void> {
+  /** 세션 기록 시작점(파일 끝)을 잡는다 — 결과: ok(잡음) · none(조회는 끝났지만 기록 없음·오류) · stale(상한을 넘겼거나 더 새 조회에 밀려 결과를 버림).
+   *  (codex 1R·2R major) 모든 시작점 조회에 상한(OBS_MAX_MS)과 세대를 건다 — 늦게 돌아온 옛 조회가 파일 끝으로 덮어 보낸 말 레코드를 건너뛰지 않게. */
+  private async initOffset(): Promise<"ok" | "none" | "stale"> {
     const m = this.s.master;
-    if (!m) return;
+    if (!m) return "none";
     const gen = ++this.initGen; // 새 조회가 시작되면 앞선 조회의 늦은 결과는 버린다
-    try {
-      const r = (await this.d.invoke("chat_transcript", { socket: null, surfaceId: m.surface_id, afterOffset: 0, fromEnd: true })) as { status?: unknown; next_offset?: unknown; session_id?: unknown };
-      if (gen !== this.initGen) return; // (codex 1R major) 시간 상한을 넘겼거나 더 새 조회가 있음 — 파일 끝으로 덮어 보낸 말 레코드를 건너뛰지 않게
-      if (r?.status === "ok" && typeof r.next_offset === "number") {
-        this.offset = r.next_offset;
-        this.sessionId = typeof r.session_id === "string" ? r.session_id : null;
-      }
-    } catch {
-      /* 모름 — 다음 읽기에서 다시 */
+    const r = (await this.bounded(this.d.invoke("chat_transcript", { socket: null, surfaceId: m.surface_id, afterOffset: 0, fromEnd: true }))) as
+      | { status?: unknown; next_offset?: unknown; session_id?: unknown }
+      | typeof TIMED_OUT;
+    if (r === TIMED_OUT) {
+      if (gen === this.initGen) this.initGen++; // 늦게 돌아와도 버리게
+      return "stale";
     }
+    if (gen !== this.initGen) return "stale";
+    if (r?.status === "ok" && typeof r.next_offset === "number") {
+      this.offset = r.next_offset;
+      this.sessionId = typeof r.session_id === "string" ? r.session_id : null;
+      return "ok";
+    }
+    return "none";
   }
 
   async readTranscript(): Promise<void> {

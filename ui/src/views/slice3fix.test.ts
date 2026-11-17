@@ -177,7 +177,8 @@ describe("C — 「보내는 중」도 짝 후보 · 짝 못 찾은 사람 레�
     // (codex 1R blocking) 레코드를 본 시각보다 뒤에 보낸 말에는 짝짓지 않는다(시각 없는 레코드도)
     expect(rematchPending([msg({ sentAt: T + 1_001 })], [seen(r)]).changed).toBe(false);
     expect(rematchPending([msg({ sentAt: T + 60_000 })], [seen({ ...r, ts: null })]).changed).toBe(false);
-    expect(rematchPending([msg({ sentAt: T + 1_000 })], [seen(r)]).changed).toBe(true);
+    expect(rematchPending([msg({ sentAt: T + 1_000 })], [seen(r)]).changed).toBe(false); // (codex 2R) 같은 밀리초 = 선후 모름 → 짝 안 함
+    expect(rematchPending([msg({ sentAt: T + 999 })], [seen(r)]).changed).toBe(true);
   });
   it("core: 레코드가 먼저 읽히고(말이 짝 후보 아님) 뒤에 말이 「확인 중」이 되면 다시 짝지어 전달됨", async () => {
     const sim = new Sim({ plan: () => "uncertain_written", recordDelay: () => null, replyDelay: () => null });
@@ -188,6 +189,7 @@ describe("C — 「보내는 중」도 짝 후보 · 짝 못 찾은 사람 레�
     // 짝 후보가 아닌 단계(붙잡음)로 잠시 바꿔 둔 사이 레코드가 읽힘 — 기존이면 「본 것」으로 소비돼 영영 못 씀
     const realStep = sim.core.state.msgs[0].step;
     (sim.core as unknown as { s: { msgs: Msg[] } }).s.msgs = sim.core.state.msgs.map((m) => (m.id === id ? { ...m, step: "queued_hold" } : m));
+    await sim.advance(10); // 자기 레코드는 보낸 뒤에 읽힌다(같은 밀리초 = 선후 모름 · codex 2R)
     sim.file.push({ uuid: "uz", parent: "root", role: "user", text: "늦게 짝", ts: iso(sim.now + 300) });
     await sim.core.readTranscript();
     expect(sim.core.state.msgs[0].step).toBe("queued_hold");
@@ -447,5 +449,69 @@ describe("codex 1R(e8ddaf65 BLOCK) 지적 고침 — 빠졌던 시험 3", () => 
     // 같은 시각이면 들어온 순서 유지(안정 정렬)
     const same = logOrder([], [{ uuid: "p", text: "P", at: 7 }, { uuid: "q", text: "Q", at: 7 }]);
     expect(same.map((x) => (x.kind === "stray" ? x.r.text : ""))).toEqual(["P", "Q"]);
+  });
+});
+
+describe("codex 2R(60185fe2 BLOCK) 지적 고침", () => {
+  it("blocking ① — 다른 길 시각 없는 X 를 읽은 **같은 밀리초**에 X 를 보냄 · 쓰기 안 됨 → 전달됨 0", async () => {
+    const sim = new Sim({ plan: () => "uncertain_lost", recordDelay: () => null, replyDelay: () => null });
+    await ready(sim);
+    await sim.advance(4_000);
+    await sim.core.poll(); // 마스터를 앎 · 시작점 잡기
+    await sim.flush();
+    sim.file.push({ uuid: "other", parent: "root", role: "user", text: "X", ts: null });
+    await sim.core.readTranscript(); // 보관(본 시각 = 지금)
+    expect(sim.calls.filter((c) => c.cmd === "chat_transcript" && !c.args?.fromEnd).length).toBe(1); // 정말 읽었음
+    await sim.core.send("X"); // 시계를 움직이지 않음 = 같은 밀리초
+    await sim.advance(20_000);
+    const m = sim.core.state.msgs[0];
+    expect(sim.writes.filter((w) => w.bytesIn).length).toBe(0);
+    expect(["delivered", "replying", "replied"].includes(m.step)).toBe(false);
+  });
+  it("blocking ② — 보낸 글이 감싼 꼴 자체이고 레코드가 그것을 한 번 더 감싼 꼴이면 속 글 비교만(다르면 불일치) · text·parts 같은 규칙", () => {
+    const sent = '<pasted_content id="1">\n안녕\n</pasted_content id="1">';
+    const rec = '\n\n<pasted_content id="1">\n안녕\n</pasted_content id="1">\n'; // 속 글 = 「안녕」 ≠ 보낸 글
+    const r: Rec = { uuid: "u1", parent: null, role: "user", text: rec, ts: iso(T + 900) };
+    expect(userRecordMatches(msg({ text: sent }), r)).toBe(false);
+    expect(userRecordMatches(msg({ text: sent }), { ...r, text: "머리\n" + rec, parts: ["머리", rec] })).toBe(false);
+    expect(applyRecords([msg({ text: sent })], [r]).msgs[0].step).toBe("injected");
+    // 감싼 꼴이 아닌 레코드는 예전처럼 정규화 전문 비교
+    expect(userRecordMatches(msg({ text: sent }), { ...r, text: sent + "\n" })).toBe(true);
+  });
+  it("major ③ — 쓰기 직전 시작점 조회(A) 중에 조회 고리의 시작점 조회(B)가 겹침 → A 는 결과를 버리고 쓰지 않음 · B 가 늦게 파일 끝을 돌려줘도 덮지 않음 → 다음 차례에 보냄 → 전달됨", async () => {
+    const sim = new Sim({ replyDelay: () => null });
+    const orig = sim.deps.invoke;
+    let fromEnd = 0;
+    const end = () => ({ status: "ok", session_id: sim.session, next_offset: sim.file.length, size: sim.file.length, records: [] });
+    (sim.deps as { invoke: typeof orig }).invoke = (cmd, args) => {
+      if (cmd === "chat_transcript" && args?.fromEnd) {
+        const k = fromEnd++;
+        if (k === 0) return new Promise<unknown>((res) => sim.later(200, () => res(end()))); // A: 0.2초 뒤(상한 안)
+        if (k === 1) return new Promise<unknown>((res) => sim.later(1_080, () => res(end()))); // B: 기록이 생긴 뒤에야 돌아옴
+      }
+      return orig(cmd, args);
+    };
+    await ready(sim);
+    void sim.core.submit("겹친 시작점");
+    await sim.advance(100);
+    void sim.core.poll(); // 조회 고리 → 시작점 없음 → B 시작
+    await sim.advance(400);
+    expect(sim.sends()).toBe(0); // A 가 밀렸으니 시작점 없이 쓰지 않음
+    expect(sim.core.state.msgs[0].step).toBe("held");
+    expect(sim.core.state.msgs[0].code).toBe(STATUS_TIMEOUT);
+    sim.startPolling();
+    await sim.advance(20_000);
+    expect(sim.sends()).toBe(1);
+    expect(sim.file.length).toBe(1);
+    expect(sim.core.state.msgs[0].step).toMatch(/^(delivered|replying|replied)$/);
+  });
+  it("시작점 조회가 끝났지만 기록이 없음(status unknown · 윈도·파일 없음)이면 예전처럼 보냄(쓰기 1 · 전달됨 0)", async () => {
+    const sim = new Sim({});
+    const orig = sim.deps.invoke;
+    (sim.deps as { invoke: typeof orig }).invoke = (cmd, args) => (cmd === "chat_transcript" ? Promise.resolve({ status: "unknown" }) : orig(cmd, args));
+    await ready(sim);
+    await sim.core.send("기록 없는 좌석");
+    expect(sim.sends()).toBe(1);
+    expect(sim.core.state.msgs[0].step).toBe("injected");
   });
 });

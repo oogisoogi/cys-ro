@@ -117,17 +117,18 @@ export function normRecordText(t: string): string {
   return t.replace(/\r\n?/g, "\n").replace(/^\s+/, "").replace(/\s+$/, "");
 }
 
-/** 감싼 꼴(PASTE_WRAP)이면 속 글이 보낸 글과 글자 하나까지 같은가(순수 · 정규화 없음). */
-function wrappedIs(raw: string, text: string): boolean {
+/** 레코드 글 하나가 보낸 글인가(순수): 감싼 꼴(PASTE_WRAP)로 읽히면 **속 글 비교만**(글자 하나까지 · 정규화 없음) · 아니면 정규화 전문 비교.
+ *  (codex 2R blocking) 감싼 꼴을 일반 정규화 비교로도 통과시키면, 보낸 글이 감싼 꼴 자체일 때 속 글이 달라도 일치가 되던 길을 막는다. */
+function recordTextIs(raw: string, text: string): boolean {
   const w = PASTE_WRAP.exec(raw);
-  return w !== null && w[2] === text;
+  return w !== null ? w[2] === text : normRecordText(raw) === text;
 }
 
 /** user 레코드가 이 말인가 — 전문 일치 · 또는 감싼 꼴의 속 글 전문 일치(검증 지적 A). 조각이 여럿이면 조각 하나가 같아도 된다(훅이 덧붙인 글 조각). */
 export function userRecordMatches(m: Msg, r: Rec): boolean {
   if (r.role !== "user" || r.text === null || r.sidechain) return false;
-  if (normRecordText(r.text) === m.text || wrappedIs(r.text, m.text)) return true;
-  return Array.isArray(r.parts) && r.parts.some((p) => normRecordText(p) === m.text || wrappedIs(p, m.text));
+  if (recordTextIs(r.text, m.text)) return true;
+  return Array.isArray(r.parts) && r.parts.some((p) => recordTextIs(p, m.text));
 }
 
 function recordAfter(r: Rec, sentAt: number): boolean {
@@ -208,7 +209,7 @@ export function applyRecords(msgs: readonly Msg[], recs: readonly Rec[], consume
 
 /** (조각 3 고침 · 검증 지적 C) 앞서 짝을 못 찾은 사람 레코드를 지금 말 목록에 다시 대어 본다(순수 · 짝만 · 사슬 닫기는 안 함).
  *  짝을 찾은 레코드는 pool 에서 빠진다(한 레코드 = 한 말).
- *  ★(codex 1R blocking) 레코드를 **본 시각(seenAt) 이전에 이미 보낸** 말에만 짝짓는다 — 보내기 전에 읽은 레코드(다른 길·시각 없는 레코드 포함)가
+ *  ★(codex 1R·2R blocking) 레코드를 **본 시각(seenAt)보다 앞서 이미 보낸** 말에만 짝짓는다(같은 밀리초 = 선후 모름 → 짝 안 함 · 모름) — 보내기 전에 읽은 레코드(다른 길·시각 없는 레코드 포함)가
  *  뒤에 보낸 같은 글 말의 「전달됨」 근거가 되지 않게(쓰기 직전 patchMsg 때 붙어 쓰기가 불명이어도 남던 길 · I2). */
 export interface PendingRec {
   r: Rec;
@@ -223,7 +224,7 @@ export function rematchPending(msgs: readonly Msg[], pool: readonly PendingRec[]
     let hit = -1;
     for (let i = 0; i < out.length; i++) {
       const m = out[i];
-      if (!AWAITING.has(m.step) || m.userUuid || m.sentAt === null || m.sentAt > p.seenAt || !recordAfter(r, m.sentAt) || !userRecordMatches(m, r)) continue;
+      if (!AWAITING.has(m.step) || m.userUuid || m.sentAt === null || m.sentAt >= p.seenAt || !recordAfter(r, m.sentAt) || !userRecordMatches(m, r)) continue;
       if (hit < 0 || (out[hit].sentAt as number) > m.sentAt) hit = i;
     }
     if (hit < 0) {

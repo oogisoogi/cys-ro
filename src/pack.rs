@@ -5058,8 +5058,10 @@ pub fn install_into<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
             let p = dir.join(rel);
             if p.exists() {
                 // ★1.1.16(U03 · codex 1R major #4): 권한 바꿈도 배치 기록에 먼저 확정(실패 = 바꾸지 않음 · 종전처럼 결과 무시).
-                if placement_announce(&p, Placed::Mode(0o755)).is_ok() {
-                    let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755));
+                if placement_announce(&p, Placed::Mode(0o755)).is_ok()
+                    && std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).is_ok()
+                {
+                    placement_record_mode(&p); // ★codex 3R: 의도(mode_intent) 와 성공(mode) 을 가른다
                 }
             }
         }
@@ -5567,6 +5569,9 @@ struct JournalEntry {
     /// ★1.1.16(7c · 원작자 M15-가): 백업 당시 파일 권한(유닉스 mode) — 되돌림이 바이트와 함께 되돌린다(없음 = 옛 저널·윈도우).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mode: Option<u32>,
+    /// ★codex 3R(major #3): 백업 당시 이 이름이 **링크**였으면 그 대상(바이트 백업 없음) — 되돌림은 일반 파일이 아니라 같은 링크로 되살린다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    link: Option<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -5709,7 +5714,7 @@ pub(crate) fn placement_announce(path: &Path, what: Placed<'_>) -> std::io::Resu
         let line = match what {
             Placed::Bytes(bytes) => serde_json::json!({"rel": rel, "sha256": sha256_hex(bytes)}),
             Placed::Absent => serde_json::json!({"rel": rel, "sha256": null}),
-            Placed::Mode(m) => serde_json::json!({"rel": rel, "mode": m & 0o7777}),
+            Placed::Mode(m) => serde_json::json!({"rel": rel, "mode_intent": m & 0o7777}),
         };
         let line = format!("{line}\n");
         let res = (|| -> std::io::Result<()> {
@@ -5768,7 +5773,7 @@ fn read_late_entries(jdir: &Path) -> Result<Vec<JournalEntry>, String> {
         let rel = v.get("rel").and_then(|x| x.as_str()).ok_or_else(|| format!("{}: rel 없음", p.display()))?;
         let existed = v.get("existed").and_then(|x| x.as_bool()).ok_or_else(|| format!("{}: existed 없음", p.display()))?;
         let mode = v.get("mode").and_then(|x| x.as_u64()).map(|m| m as u32);
-        out.push(JournalEntry { rel: rel.to_string(), existed, mode });
+        out.push(JournalEntry { rel: rel.to_string(), existed, mode, link: None });
     }
     Ok(out)
 }
@@ -5828,8 +5833,10 @@ pub(crate) fn remove_file_placed(path: impl AsRef<Path>) -> std::io::Result<()> 
 enum Announced {
     Sha(String),
     Absent,
-    /// 권한만 바꿈.
+    /// 쓰기·권한 바꿈 **성공 뒤** 그 이름의 실제 권한.
     Mode(u32),
+    /// 권한을 바꾸려는 의도(바꾸기 직전 · 성공 여부 미상).
+    ModeIntent(u32),
 }
 
 /// 배치 기록을 읽는다(없음 = 아무것도 놓지 않음 · 깨진 줄 규칙 = [`read_json_lines`]).
@@ -5842,6 +5849,9 @@ fn read_placements(jdir: &Path) -> Result<std::collections::BTreeMap<String, Vec
             (Some(serde_json::Value::Null), _) => Announced::Absent,
             (Some(serde_json::Value::String(h)), _) => Announced::Sha(h.clone()),
             (None, Some(m)) => Announced::Mode(m.as_u64().ok_or_else(|| format!("{}: mode 이상", p.display()))? as u32),
+            (None, None) if v.get("mode_intent").is_some() => Announced::ModeIntent(
+                v["mode_intent"].as_u64().ok_or_else(|| format!("{}: mode_intent 이상", p.display()))? as u32,
+            ),
             _ => return Err(format!("{}: 알 수 없는 배치 기록 줄 {v}", p.display())),
         };
         out.entry(rel).or_default().push(a);
@@ -6015,6 +6025,27 @@ fn rollback_row(
     }
 }
 
+/// ★codex 3R(major #2): 되돌림이 이 이름에 걸 권한 — 내용 되돌림 여부와 **독립**. 그 이름의 **마지막** 배치 기록이 지금 권한을 설명하면
+/// (마지막 = 권한 성공 줄이고 지금 권한과 같음 · 권한 의도 줄이고 지금 권한과 같음 · 내용 줄이고 그 뒤 권한 줄이 없음 = 쓰기와 권한 기록 사이에
+/// 끊김) 이 적용이 남긴 권한 → 기록된 적용 전 권한. 그 밖(지금 권한이 이 적용의 마지막 권한과 다름 = 끊긴 뒤 사용자 chmod) → 지금 권한 유지.
+/// 옛 저널(배치 기록 없음)·기록 권한 없음·지금 파일 없음 = 기록된 권한(종전).
+fn rollback_mode_for(rel: &str, rec: Option<u32>, cur: Option<u32>, placed: Option<&std::collections::BTreeMap<String, Vec<Announced>>>) -> (Option<u32>, bool) {
+    let (Some(r), Some(c), Some(pl)) = (rec, cur, placed) else { return (rec, false) };
+    if c == r {
+        return (rec, false);
+    }
+    let attributed = match pl.get(rel).and_then(|v| v.last()) {
+        Some(Announced::Mode(m)) | Some(Announced::ModeIntent(m)) => *m == c,
+        Some(Announced::Sha(_)) | Some(Announced::Absent) => true,
+        None => false,
+    } || crate::update::mutant("J1116-MODE-ANY-TOUCH");
+    if attributed {
+        (rec, false)
+    } else {
+        (Some(c), true)
+    }
+}
+
 fn undo_entry(target: &Path, backup: Option<&[u8]>, mode: Option<u32>) -> Result<(), String> {
     let mode = if crate::update::mutant("J1116-MODE") { None } else { mode }; // 뮤턴트: 1.1.15 처럼 권한 없이 되돌림
     match backup {
@@ -6055,6 +6086,15 @@ fn write_journal(
     let mut entries = Vec::new();
     for rel in backup_set {
         let src = dir.join(rel);
+        // ★codex 3R(major #3): 링크는 대상의 바이트가 아니라 링크 자체를 기록한다(종전 = 따라가 대상 바이트를 저장 → 되돌림이 일반 파일로 바꿈).
+        if std::fs::symlink_metadata(&src).map(|m| m.file_type().is_symlink()).unwrap_or(false)
+            && !crate::update::mutant("J1116-LINK-AS-FILE")
+        {
+            let t = std::fs::read_link(&src).map_err(|e| format!("journal 링크 읽기 실패 {}: {e}", src.display()))?;
+            let t = t.to_str().ok_or_else(|| format!("journal 링크 대상이 UTF-8 이 아니라 기록할 수 없어 적용하지 않습니다: {}", src.display()))?;
+            entries.push(JournalEntry { rel: rel.clone(), existed: true, mode: None, link: Some(t.to_string()) });
+            continue;
+        }
         if src.is_file() {
             let bytes = std::fs::read(&src)
                 .map_err(|e| format!("journal 백업 읽기 실패 {}: {e}", src.display()))?;
@@ -6066,9 +6106,9 @@ fn write_journal(
             }
             write_atomic(&dst, &bytes)
                 .map_err(|e| format!("journal 백업 쓰기 실패 {}: {e}", dst.display()))?;
-            entries.push(JournalEntry { rel: rel.clone(), existed: true, mode });
+            entries.push(JournalEntry { rel: rel.clone(), existed: true, mode, link: None });
         } else {
-            entries.push(JournalEntry { rel: rel.clone(), existed: false, mode: None });
+            entries.push(JournalEntry { rel: rel.clone(), existed: false, mode: None, link: None });
         }
     }
     let apply_id = new_apply_id();
@@ -6124,6 +6164,10 @@ fn rollback_journal_for(pack: &Path) -> Result<(), String> {
     let mut kept = KeptFolder::new(&pack_journal_lane_dir_for(pack), &id);
     for entry in &index.entries {
         let target = pack.join(&entry.rel);
+        if let Some(lt) = &entry.link {
+            rollback_link_entry(&entry.rel, &target, lt, placed.as_ref(), &mut kept)?;
+            continue;
+        }
         let backup: Option<Vec<u8>> = if entry.existed {
             let p = files_dir.join(&entry.rel);
             Some(std::fs::read(&p).map_err(|e| format!("journal 백업 복원 읽기 실패 {}: {e}", p.display()))?)
@@ -6138,23 +6182,16 @@ fn rollback_journal_for(pack: &Path) -> Result<(), String> {
                     kept.left(&entry.rel, backup.as_deref())
                         .map_err(|e| format!("{}: 업데이트의 백업을 보관하지 못했습니다 — {e}", entry.rel))?;
                 }
-                // ★codex 1R(major #4): 권한 귀속 — 내용은 그대로 둘 때도, 이 적용이 그 이름을 건드렸으면(내용·권한 배치 기록) 기록된
-                //   권한으로 되돌린다. 건드리지 않은 이름의 권한 변화(사용자 chmod)는 그대로 둔다(보관 기록에 한 줄). 옛 저널 = 종전(권한 칸 없음).
-                if let (true, Some(rec), Live::File(_)) = (entry.existed, entry.mode, &live) {
+                // ★codex 1R·2R·3R(권한 귀속): rollback_mode_for — 지금 권한이 이 적용의 마지막 배치 기록으로 설명될 때만 적용 전 권한으로.
+                if let (true, Live::File(_)) = (entry.existed, &live) {
                     let cur = std::fs::metadata(&target).ok().and_then(|m| file_mode_of(&m));
-                    if let Some(c) = cur.filter(|c| *c != rec) {
-                        // ★codex 2R(major): 지금 권한이 **이 적용이 남긴 권한**(배치 기록의 권한 줄)일 때만 되돌린다 — 끊긴 뒤 사용자가 준 권한은 둔다.
-                        let touched = placed.as_ref().is_none_or(|m| {
-                            m.get(&entry.rel).is_some_and(|v| v.iter().any(|a| matches!(a, Announced::Mode(x) if *x == c)))
-                        }) || crate::update::mutant("J1116-MODE-ANY-TOUCH") && placed.as_ref().is_some_and(|m| m.contains_key(&entry.rel));
-                        if touched {
-                            set_exact_mode(&target, Some(rec))
-                                .map_err(|e| format!("journal 권한 복원 실패 {}: {e}", target.display()))?;
-                        } else {
-                            std::fs::create_dir_all(&kept.dir)
-                                .map_err(|e| format!("보관 폴더 생성 실패 {}: {e}", kept.dir.display()))?;
-                            kept.log(&entry.rel, "mode-left", None)?;
-                        }
+                    let (want, user_kept) = rollback_mode_for(&entry.rel, entry.mode, cur, placed.as_ref());
+                    if user_kept {
+                        std::fs::create_dir_all(&kept.dir)
+                            .map_err(|e| format!("보관 폴더 생성 실패 {}: {e}", kept.dir.display()))?;
+                        kept.log(&entry.rel, "mode-left", None)?;
+                    } else if want != cur {
+                        set_exact_mode(&target, want).map_err(|e| format!("journal 권한 복원 실패 {}: {e}", target.display()))?;
                     }
                 }
             }
@@ -6166,7 +6203,17 @@ fn rollback_journal_for(pack: &Path) -> Result<(), String> {
                         .map_err(|e| format!("{}: 살아 있는 내용을 먼저 보관하지 못해 되돌리지 않았습니다 — {e}", entry.rel))?,
                     _ => {}
                 }
-                undo_entry(&target, backup.as_deref(), entry.mode)?;
+                // ★codex 3R(major #2): 내용을 되돌려도 권한은 따로 판정 — 끊긴 뒤 사용자가 준 권한이면 그 권한으로 쓴다.
+                let cur = match &live {
+                    Live::File(_) => std::fs::metadata(&target).ok().and_then(|m| file_mode_of(&m)),
+                    _ => None,
+                };
+                let (want, user_kept) = rollback_mode_for(&entry.rel, entry.mode, cur, placed.as_ref());
+                if user_kept {
+                    std::fs::create_dir_all(&kept.dir).map_err(|e| format!("보관 폴더 생성 실패 {}: {e}", kept.dir.display()))?;
+                    kept.log(&entry.rel, "mode-left", None)?;
+                }
+                undo_entry(&target, backup.as_deref(), want)?;
             }
         }
     }
@@ -6174,6 +6221,63 @@ fn rollback_journal_for(pack: &Path) -> Result<(), String> {
         eprintln!("{line}");
     }
     settle_journal(pack)
+}
+
+/// ★codex 3R(major #3): 백업 당시 링크였던 이름의 되돌림 — 지금도 같은 대상의 링크면 무접촉 · 이 적용이 바꾼 것(배치 기록의 내용·없음 줄과
+/// 지금 상태가 맞음 · 옛 저널이면 보수로 보관 후)이면 같은 링크로 되살림 · 그 밖(끊긴 뒤 다른 것이 저장) = 그대로 두고 보관 기록 한 줄.
+fn rollback_link_entry(
+    rel: &str,
+    target: &Path,
+    link_to: &str,
+    placed: Option<&std::collections::BTreeMap<String, Vec<Announced>>>,
+    kept: &mut KeptFolder,
+) -> Result<(), String> {
+    let meta = std::fs::symlink_metadata(target);
+    if let Ok(m) = &meta {
+        if m.file_type().is_symlink() && std::fs::read_link(target).ok().and_then(|p| p.to_str().map(str::to_string)).as_deref() == Some(link_to) {
+            return Ok(());
+        }
+    }
+    let live = match &meta {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Live::Absent,
+        Ok(m) if m.is_file() => std::fs::read(target).map(Live::File).unwrap_or(Live::Other),
+        _ => Live::Other,
+    };
+    let hit = match placed {
+        None => true,
+        Some(pl) => pl.get(rel).is_some_and(|v| {
+            v.iter().any(|a| match (a, &live) {
+                (Announced::Absent, Live::Absent) => true,
+                (Announced::Sha(h), Live::File(b)) => sha256_hex(b) == *h,
+                _ => false,
+            })
+        }),
+    };
+    if !hit {
+        std::fs::create_dir_all(&kept.dir).map_err(|e| format!("보관 폴더 생성 실패 {}: {e}", kept.dir.display()))?;
+        kept.log(rel, &format!("left-was-link:{link_to}"), None)?;
+        kept.left += 1;
+        return Ok(());
+    }
+    match &live {
+        Live::File(b) => {
+            if placed.is_none() {
+                kept.preserve_live(rel, b)?;
+            }
+            std::fs::remove_file(target).map_err(|e| format!("링크 되살리기 전 파일 삭제 실패 {}: {e}", target.display()))?;
+        }
+        Live::Other => kept.displace(rel, target)?,
+        Live::Absent => {}
+    }
+    if let Some(parent) = target.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(link_to, target).map_err(|e| format!("링크 되살리기 실패 {}: {e}", target.display()))?;
+    #[cfg(not(unix))]
+    return Err(format!("{}: 이 플랫폼에서 링크를 되살릴 수 없습니다(저널을 남김)", target.display()));
+    #[cfg(unix)]
+    Ok(())
 }
 
 /// ★codex 1R(major #5 · 원작자 HE4 SETTLE 의 우리 꼴): 진행 중 저널을 먼저 `done-<시각>` 으로 **이름을 바꾸고**(원자 = 「이 저널은 끝났다」)
@@ -6289,31 +6393,55 @@ pub enum JournalRecovery {
 /// 그 밖 잠금 오류 = Err. 잡히면 쥔 채로 [`recover_pack_journal`]. ★codex 2R: 윈도우 포함 모든 플랫폼(쓰는 쪽 with_apply_lock 도 같은
 /// 잠금으로 바꿈 — `src/bin/cys.rs`).
 pub fn recover_pack_journal_unless_busy() -> Result<JournalRecovery, String> {
-    let done = |b: bool| if b { JournalRecovery::Recovered } else { JournalRecovery::Nothing };
+    match with_apply_lock_nonblocking(recover_pack_journal)? {
+        None => Ok(JournalRecovery::Busy),
+        Some(r) => r.map(|b| if b { JournalRecovery::Recovered } else { JournalRecovery::Nothing }),
+    }
+}
+
+/// 팩 적용 잠금(`<팩 부모>/.pack-apply.lock`)을 **기다리지 않고** 잡아 그 안에서 `f` 를 실행한다. None = 남이 쥐고 있음(진행 중 적용).
+/// 잠금 파일은 있든 없든 원자적으로 열거나 만든다 · 표준 라이브러리 잠금(유닉스 flock · 윈도우 LockFileEx) = `cys pack-update` 의 with_apply_lock 과 같은 잠금.
+fn with_apply_lock_nonblocking<T>(f: impl FnOnce() -> T) -> Result<Option<T>, String> {
     let pd = pack_dir();
-    let Some(base) = pd.parent() else { return recover_pack_journal().map(done) };
+    let Some(base) = pd.parent() else { return Ok(Some(f())) };
     std::fs::create_dir_all(base).map_err(|e| format!("apply-lock 부모 생성 실패 {}: {e}", base.display()))?;
     let lp = base.join(".pack-apply.lock");
-    let f = std::fs::OpenOptions::new()
+    let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
         .open(&lp)
         .map_err(|e| format!("apply-lock 열기 실패 {}: {e}", lp.display()))?;
-    // ★codex 2R(blocking): 표준 라이브러리 파일 잠금(유닉스 = flock · 윈도우 = LockFileEx) — `cys pack-update` 의 with_apply_lock 과 같은
-    //   잠금이라 모든 플랫폼에서 서로를 본다.
-    match f.try_lock() {
+    match file.try_lock() {
         Ok(()) => {}
         Err(std::fs::TryLockError::WouldBlock) if !crate::update::mutant("J1116-IGNORE-BUSY") => {
             eprintln!("[pack] 팩 적용이 진행 중(apply-lock 보유) — 그 저널은 쓰는 이의 몫이라 지금 복구하지 않습니다");
-            return Ok(JournalRecovery::Busy);
+            return Ok(None);
         }
         Err(std::fs::TryLockError::WouldBlock) => {}
         Err(std::fs::TryLockError::Error(e)) => return Err(format!("apply-lock 잠금 실패 {}: {e}", lp.display())),
     }
-    let out = recover_pack_journal();
-    let _ = f.unlock();
-    out.map(done)
+    let out = f();
+    let _ = file.unlock();
+    Ok(Some(out))
+}
+
+/// ★1.1.16(codex 3R major #1): 데몬 기동의 팩 준비 한 덩어리 — 적용 잠금을 **한 번** 잡은 채 ①저널 복구 ②판 게이트(`pack_current_for`) 재검사
+/// ③필요하면 자동 설치(install(false)). 복구가 잠금을 푼 뒤 설치하기 전 사이에 `cys pack-update` 가 끼어드는 틈을 없앤다.
+/// 반환 = (복구 결과 · 설치 결과(게이트가 닫혀 있으면 None)). Busy = 둘 다 안 함 · 복구 Err = 설치 안 함(Err 를 그대로 돌려준다).
+pub fn boot_recover_and_install(
+    binary_version: &str,
+    auth: PackWriteAuth,
+) -> Result<(JournalRecovery, Option<Result<(usize, usize), String>>), String> {
+    let r = with_apply_lock_nonblocking(|| -> Result<(JournalRecovery, Option<Result<(usize, usize), String>>), String> {
+        let rec = if recover_pack_journal()? { JournalRecovery::Recovered } else { JournalRecovery::Nothing };
+        if pack_current_for(binary_version) {
+            return Ok((rec, None));
+        }
+        defer_agy_statusline_probe();
+        Ok((rec, Some(install(false, Some(auth)))))
+    })?;
+    r.unwrap_or(Ok((JournalRecovery::Busy, None)))
 }
 
 /// 무중단 pack-update 적용 트랜잭션(§7-⑤ 옵션 b + free/pro v4 §3 상태 계약). 호출 전제:
@@ -11427,6 +11555,8 @@ mod tests {
         // 다른 열린 파일 설명(=다른 프로세스와 같은 경합)으로 잡는다 — 같은 프로세스라도 flock 은 설명 단위다.
         assert_eq!(unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_EX) }, 0);
         let busy = recover_pack_journal_unless_busy();
+        // codex 3R #1: 부트 한 덩어리(복구 + 판 게이트 + 자동 설치)도 잠금이 잡혀 있으면 아무것도 안 함.
+        let boot_busy = boot_recover_and_install("0.0.1", PackWriteAuth::production()).map(|(r, i)| (r, i.is_none()));
         let soul_busy = std::fs::read_to_string(pd.join("README.md")).unwrap();
         let journal_busy = pack_journal_dir().join("index.json").is_file();
         unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_UN) };
@@ -11434,6 +11564,7 @@ mod tests {
         let soul = std::fs::read_to_string(pd.join("README.md")).unwrap();
         let _ = std::fs::remove_dir_all(&base);
         assert_eq!(busy, Ok(JournalRecovery::Busy), "진행 중 적용의 저널을 복구했다");
+        assert_eq!(boot_busy, Ok((JournalRecovery::Busy, true)), "잠금이 잡혀 있는데 부트 복구·설치를 했다");
         assert_eq!((soul_busy.as_str(), journal_busy), ("NEW-SOUL", true));
         assert_eq!(free, Ok(JournalRecovery::Recovered));
         assert_eq!(soul, "OLD-SOUL");
@@ -11558,14 +11689,14 @@ mod tests {
         let _g = PACK_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (base, pd, _env) = txn_prestate(
             "j16-mode",
-            &[("hooks/a.sh", "#!/bin/sh\necho a\n"), ("hooks/b.sh", "#!/bin/sh\necho b\n"), ("notes.txt", "N")],
+            &[("hooks/a.sh", "#!/bin/sh\necho a\n"), ("hooks/b.sh", "#!/bin/sh\necho b\n"), ("notes.txt", "N"), ("c.txt", "C-OLD")],
             "1.0.0",
         );
         std::fs::set_permissions(pd.join("hooks/a.sh"), std::fs::Permissions::from_mode(0o644)).unwrap();
         std::fs::set_permissions(pd.join("hooks/b.sh"), std::fs::Permissions::from_mode(0o644)).unwrap();
         PACK_TXN_KILL.with(|k| k.set(Some("install")));
         let _ = apply_pack_transactional(
-            &[("hooks/a.sh", "#!/bin/sh\necho a\n"), ("hooks/b.sh", "#!/bin/sh\necho b\n"), ("notes.txt", "N")],
+            &[("hooks/a.sh", "#!/bin/sh\necho a\n"), ("hooks/b.sh", "#!/bin/sh\necho b\n"), ("notes.txt", "N"), ("c.txt", "C-NEW")],
             "2.0.0",
             &test_free_state("2.0.0"),
             None,
@@ -11575,9 +11706,12 @@ mod tests {
         let after_apply = std::fs::metadata(pd.join("hooks/a.sh")).unwrap().permissions().mode() & 0o777;
         std::fs::set_permissions(pd.join("notes.txt"), std::fs::Permissions::from_mode(0o600)).unwrap(); // 사용자 chmod(적용이 안 건드린 이름)
         std::fs::set_permissions(pd.join("hooks/b.sh"), std::fs::Permissions::from_mode(0o700)).unwrap(); // 사용자 chmod(적용이 건드린 이름 · codex 2R)
+        std::fs::set_permissions(pd.join("c.txt"), std::fs::Permissions::from_mode(0o600)).unwrap(); // 사용자 chmod(적용이 내용을 쓴 이름 · 내용은 되돌림 · codex 3R)
         let rec = recover_pack_journal();
         let a = std::fs::metadata(pd.join("hooks/a.sh")).unwrap().permissions().mode() & 0o777;
         let b = std::fs::metadata(pd.join("hooks/b.sh")).unwrap().permissions().mode() & 0o777;
+        let c = std::fs::metadata(pd.join("c.txt")).unwrap().permissions().mode() & 0o777;
+        let c_body = std::fs::read_to_string(pd.join("c.txt")).unwrap();
         let n = std::fs::metadata(pd.join("notes.txt")).unwrap().permissions().mode() & 0o777;
         let _ = std::fs::remove_dir_all(&base);
         assert_eq!(after_apply, 0o755, "시험 전제: 적용이 셔뱅 파일을 0755 로");
@@ -11585,6 +11719,7 @@ mod tests {
         assert_eq!(a, 0o644, "이 적용이 바꾼 권한을 되돌리지 않았다");
         assert_eq!(n, 0o600, "적용이 건드리지 않은 이름의 사용자 권한을 덮었다");
         assert_eq!(b, 0o700, "적용이 건드렸어도 끊긴 뒤 사용자가 준 권한은 둔다(지금 권한 ≠ 적용이 남긴 권한)");
+        assert_eq!((c_body.as_str(), c), ("C-OLD", 0o600), "내용은 되돌리되 끊긴 뒤 사용자가 준 권한은 둔다(codex 3R)");
     }
 
     /// codex 2R(major): 백업 목록 밖 이름이 링크면 늦은 백업을 만들 수 없으니 바꾸지 않는다(링크가 그대로 남고 쓰기는 실패).
@@ -11606,6 +11741,30 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         assert!(w.is_err(), "링크를 늦은 백업 없이 바꿨다");
         assert!(still_link, "링크가 사라졌다");
+    }
+
+    /// codex 3R(major #3): 백업 목록 안 이름이 링크였고 적용이 그 자리에 파일을 썼다 → 되돌림은 같은 대상의 **링크**로 되살린다(일반 파일 아님).
+    #[cfg(unix)]
+    #[test]
+    fn j1116_symlink_in_the_backup_set_comes_back_as_a_link() {
+        let _g = PACK_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (base, pd, _env) = txn_prestate("j16-link", &[("README.md", "OLD-SOUL")], "1.0.0");
+        std::fs::write(base.join("real.md"), "REAL").unwrap();
+        std::os::unix::fs::symlink(base.join("real.md"), pd.join("linked.md")).unwrap();
+        PACK_TXN_KILL.with(|k| k.set(Some("install")));
+        let _ = apply_pack_transactional(&[("README.md", "NEW-SOUL"), ("linked.md", "VENDOR")], "2.0.0", &test_free_state("2.0.0"), None, || Ok(()));
+        PACK_TXN_KILL.with(|k| k.set(None));
+        let replaced = !std::fs::symlink_metadata(pd.join("linked.md")).unwrap().file_type().is_symlink();
+        let rec = recover_pack_journal();
+        let is_link = std::fs::symlink_metadata(pd.join("linked.md")).map(|m| m.file_type().is_symlink()).unwrap_or(false);
+        let to = std::fs::read_link(pd.join("linked.md")).ok();
+        let real = std::fs::read_to_string(base.join("real.md")).unwrap();
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(replaced, "시험 전제: 적용이 링크 자리에 파일을 썼다");
+        assert_eq!(rec, Ok(true));
+        assert!(is_link, "링크가 일반 파일로 되돌아왔다");
+        assert_eq!(to, Some(base.join("real.md")));
+        assert_eq!(real, "REAL", "링크 대상은 무접촉");
     }
 
     /// codex 2R(minor): 개행으로 끝나지 않은 꼬리는 JSON 으로 읽혀도 버린다 · 개행까지 쓰인 깨진 줄은 Err.

@@ -7002,6 +7002,44 @@ mod spawn_policy_tests {
         let mut out = String::with_capacity(src.len());
         let mut i = 0usize;
         while i < lines.len() {
+            // ★(1.1.16 · TICKET=cysr-1116-backlog · HANDOFF 1115-r2 §12-2 B) **들여쓴** `#[cfg(test)]` 시험 **모듈**도 걷어 낸다 —
+            //   `#[cfg(unix)] mod imp { … #[cfg(test)] mod tests { … } }` 꼴(cys-seatkeep)의 시험 모듈이 운영 코드로 세어져
+            //   census 동결표가 시험 자료를 운영 스폰으로 들고 있었다(1.1.15 = 동결표 2 → 10 으로 버팀). 모듈(`mod x {`) 머리만
+            //   받는다: 들여쓴 `#[cfg(test)]` 은 구조체 칸·식 문장·match 갈래에도 붙고(realops.rs·update_hold.rs), 그 머리는
+            //   `{`·`;` 로 끝나지 않아 아래 일반 규칙으로 따라가면 뒤 운영 코드를 **조용히** 삼킨다(실측 realops.rs 111줄).
+            //   닫는 줄 = 같은 들여쓰기의 `}`(rustfmt 관례) — 없으면 열 0 규칙과 같이 실패다.
+            let indent = lines[i].len() - lines[i].trim_start().len();
+            if indent > 0 && lines[i].trim() == "#[cfg(test)]" {
+                let mut j = i + 1;
+                while j < lines.len() {
+                    let t = lines[j].trim_start();
+                    if t.is_empty() || t.starts_with('#') || t.starts_with("//") {
+                        j += 1;
+                    } else {
+                        break;
+                    }
+                }
+                let head = lines.get(j).map(|l| l.trim()).unwrap_or("");
+                let after_vis = match head.strip_prefix("pub") {
+                    Some(r) if r.starts_with(' ') => r.trim_start(),
+                    Some(r) if r.starts_with('(') => r.find(')').map(|p| r[p + 1..].trim_start()).unwrap_or(head),
+                    _ => head,
+                };
+                if after_vis.starts_with("mod ") && head.ends_with('{') {
+                    let close = format!("{}}}", &lines[i][..indent]);
+                    let mut k = j + 1;
+                    while k < lines.len() && lines[k] != close {
+                        k += 1;
+                    }
+                    if k >= lines.len() {
+                        return Err(format!(
+                            "들여쓴 `#[cfg(test)]` 모듈(`{head}`)을 닫는 같은 들여쓰기의 `}}` 가 없다 — 파일 끝까지 삼켰다"
+                        ));
+                    }
+                    i = k + 1;
+                    continue;
+                }
+            }
             if lines[i] != "#[cfg(test)]" {
                 out.push_str(lines[i]);
                 out.push('\n');
@@ -7089,6 +7127,24 @@ mod spawn_policy_tests {
         );
         assert!(np.contains("fn inner"), "절단이 다음 블록까지 삼켰다: {np}");
         assert!(np.contains("keep_last"), "절단이 파일 끝까지 번졌다: {np}");
+        // ★(1.1.16 · §12-2 B) 들여쓴 `#[cfg(test)]` 시험 모듈은 걷어 내고(닫는 줄 = 같은 들여쓰기 `}`), 들여쓴 `#[cfg(test)]` 이
+        //   붙은 구조체 칸·식 문장은 **모듈이 아니므로** 손대지 않는다 — 그 뒤 운영 코드를 삼키면 안 된다(realops.rs 꼴).
+        let nested = "mod imp {\n    fn keep_imp() { Command::new(\"a\"); }\n    #[cfg(test)]\n    // 주석\n    mod tests {\n        \
+                      fn drop_t() { Command::new(\"b\"); }\n        mod deeper {\n        }\n    }\n    fn keep_imp2() {}\n}\n\
+                      struct S {\n    #[cfg(test)]\n    pub knob: Option<bool>,\n    pub keep_field: u8,\n}\n\
+                      fn keep_tail() {\n    #[cfg(test)]\n    hook();\n    keep_stmt();\n}\n\
+                      mod v {\n    #[cfg(test)]\n    pub(crate) mod t2 {\n        fn drop_v() {}\n    }\n}\n";
+        let ns = production_slice(nested);
+        assert!(ns.contains("keep_imp") && ns.contains("keep_imp2"), "들여쓴 시험 모듈 앞뒤 운영 코드가 빠졌다: {ns}");
+        assert!(!ns.contains("drop_t") && !ns.contains("deeper") && ns.matches("Command::new").count() == 1,
+                "들여쓴 시험 모듈이 운영으로 남았다: {ns}");
+        assert!(!ns.contains("drop_v"), "가시성 붙은 들여쓴 시험 모듈(`pub(crate) mod`)이 남았다: {ns}");
+        assert!(ns.contains("keep_field") && ns.contains("pub knob") && ns.contains("keep_stmt") && ns.contains("keep_tail"),
+                "모듈이 아닌 들여쓴 `#[cfg(test)]` 항목이 뒤 운영 코드를 삼켰다: {ns}");
+        assert!(
+            production_slice_checked("mod imp {\n    #[cfg(test)]\n    mod tests {\n        fn t() {}\n}\n").is_err(),
+            "같은 들여쓰기로 닫히지 않은 시험 모듈을 조용히 통과시켰다"
+        );
         // 실물에도 걸어 둔다 — 이 파일들의 프로덕션 앵커가 사라지면 핀이 헛도는 것이다.
         let cys = production_slice(include_str!("bin/cys.rs"));
         assert!(
@@ -7306,10 +7362,9 @@ mod spawn_policy_tests {
         //   `spawn_policy(ChildLifetime::Attached)` 등급(원작자 b9151464 · 3a728d10).
         ("src/agy_statusline.rs", 2),
         ("src/app_bundle.rs", 4),
-        // seatkeep T2·T3(cysr-seatkeep-piece-fixes): 좌석 보유 장치 바이너리의 `#[cfg(unix)] mod imp` 안 시험 모듈(들여쓴
-        //   `#[cfg(test)] mod tests` 라 production_slice 가 못 걷는다) — `ps` 생존 확인 1 · 그룹 리더 `/bin/sh` 검체 1. ⓐ윈에서 컴파일 안 됨
-        //   (cfg unix · 윈 main = 종료 2) · 제품 스폰 0.
-        ("src/bin/cys-seatkeep/main.rs", 10),
+        // src/bin/cys-seatkeep/main.rs = 0(칸 없음) — 1.1.15 의 10 은 전부 `#[cfg(unix)] mod imp` 안 **들여쓴** `#[cfg(test)] mod tests`
+        //   (1662~2697행)의 시험 자식이었다(제품 스폰 0). 1.1.16(cysr-1116-backlog · §12-2 B) production_slice 가 들여쓴 시험 모듈을
+        //   걷어 내 운영 코드만 센다 — 이 파일에 새 칸이 생기면 그것은 운영 스폰이다.
         ("src/bin/cys.rs", 15),
         ("src/bin/cysd/accounts.rs", 2),
         // 1.1.11 편입(원작자 0.14.52 시험 파일 3개 · 전부 #[cfg(test)] 격리 고정물 — 제품 스폰 0): F-01 U4-3 계측 하네스 2 ·

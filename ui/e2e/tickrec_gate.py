@@ -89,7 +89,9 @@ SNAP = r"""
 () => ({
   invokes: window.__INVOKES,
   storage: Object.keys(localStorage).sort().map((k) => [k, localStorage.getItem(k)]),
-  text: document.body.innerText,
+  // (cysr-ui-slice1) 「대화 화면 | 작업 화면」 전환 단추(#view-switch)는 화면 글자에서 뺀다 — 기준 번들(조각 0)에는 그 자리가 없다.
+  //   단추 글자 말고는(작업 화면 글자·invoke 열·저장소) 그대로 바이트 대조한다. 단추 글자 자체는 chat_gate.py 가 따로 본다.
+  text: (() => { const vs = document.getElementById('view-switch'); const d = vs ? vs.style.display : null; if (vs) vs.style.display = 'none'; const t = document.body.innerText; if (vs) vs.style.display = d; return t; })(),
   panes: document.querySelectorAll('.pane').length,
   tabs: [...document.querySelectorAll('#ws-tabs .ws-name')].map((e) => e.textContent),
   hasRec: !!window.__cysTickRec,

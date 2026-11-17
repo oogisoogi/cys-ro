@@ -1,0 +1,22 @@
+{
+ "lag0": {
+  "offsets": 31,
+  "screen_gate": 16,
+  "daemon_refused": 0,
+  "leak_enter": 7,
+  "no_overlap": 8,
+  "racing": 23,
+  "blocked_pct": 69.6,
+  "screen_gate_pct": 69.6
+ },
+ "lag1000": {
+  "offsets": 31,
+  "screen_gate": 6,
+  "daemon_refused": 10,
+  "leak_enter": 7,
+  "no_overlap": 8,
+  "racing": 23,
+  "blocked_pct": 69.6,
+  "screen_gate_pct": 26.1
+ }
+}

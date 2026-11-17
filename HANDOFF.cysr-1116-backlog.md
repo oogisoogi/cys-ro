@@ -209,3 +209,75 @@ MF1 사람 몫 복원 끔 · MF2 사람 몫 0 · MF3 본문 기록 안 지움 ·
 
 - 작업 사본(`/private/tmp/claude-501/bf/`): `red`(b8045dd9 + 새 시험 · 붉음 관측용 · target `red-target`) · `mutwt`(뮤턴트 · target 복제) · `cx`(codex 읽기 사본) · 결과 `s-head/` · `mut/run3.txt` · `codex/` · `pack-head/` — 전부 git worktree(지울 때 `git worktree remove --force <경로>`)
 - 증류: 「뮤턴트는 편집 중인 작업 사본에서 돌리지 않는다(원복 `git checkout` 이 미커밋 편집을 지운다 — 별도 worktree + target 복제)」 · 「cooked PTY `sleep` 좌석에 사람 키를 PTY 로 보내면 Ctrl-U 줄 지우기 에코가 그려 둔 화면을 지운다 — 계수만 세우는 시험은 apply_pending_input 으로」
+
+## 11. 델타 — TICKET=cysr-1116-backlog-fix2-1118 (worker · surface:2169 → 재시작 뒤 2172 · 2026-11-18 06:22~ · 재검 R1~R4 고침)
+
+- 브리프 = `master/briefs/2026-11-18-cysr-1116-backlog-fix2.md`(원장 spawn 항목 surface:2169 · 06:22:56) · 재개 지시 `master#f32a9e00`(06:53 데몬 재시작으로 끊김 → [RESUME] · 원장 대조: surface:2172 = 이 좌석 재시작 뒤 번호(`cys identify`) · submitted yes · session_jsonl_nonce)
+- 재검 원문 = `~/axdev/.wt/cys-1116-backlog-verify2/VERIFY.cysr-1116-backlog-reverify.md` §2 R1~R4 · 그 계측 시험(`bv_n1`·`bv_n2`·`bv_n4` · 파이썬 기록기 · 단언 없음)은 **단언 시험으로 옮겼다**(새 파일 `src/bin/cysd/b16_fix2_tests.rs` · `send_settle_tests` 자식 모듈 · 기록기 = raw `cat`)
+- push · 서명 · 발행 · 설치 · 실사용 데몬/마스터 접촉 = 0 · 격리 env `/private/tmp/claude-501/bf2/iso.sh`(HOME·TMPDIR 짧게 · agy 문 닫힘 · `CARGO_BUILD_JOBS=6` · `--test-threads=4` · cargo 1건씩)
+
+### 11-1. 커밋(8bdd08ad 위 · 순서대로)
+
+| 커밋 | 무엇 |
+|---|---|
+| 28b74eaf | R1·R2·R3 — handlers 쓰기 전 판정 · governance block_only·정확히 Yes · agents.json(plan-approval `block_only` · 계획 창 6행 · Write 문장 범위) · 시험(b16_fix2 3 · d24 표 · 승인 스캔 시험 갱신) |
+| 776e5fd2 | R3a 범위 — Write 창 선택 줄 탐색은 4행 그대로(6행은 계획 창만 · 브리프 근거 = 여백 + 선택지 4 + 의견 행) |
+| 41350c29 | 윈 ignore 집합 핀 54 → 56(_of_56 · class C +2 = 새 기록기 시험 2) · windows-health.yml 주석 |
+| 8bd56d9e | codex 1R major 2 — Write 문장 범위가 파일 이름 속 `─` 를 읽음 |
+| 461f5243 | codex 2R major — 줄머리 `─` 로 접힌 이름 |
+| 357a965a | codex 3R major 2 — 줄 이음 `\n[─ \t]*[^─ \t\n]` · 동사 뒤·낱말 사이 공백도 가로줄 행·빈 행을 넘지 않음(두 패턴) |
+
+### 11-2. 처분 표(R1~R4)
+
+| 재검 지적 | 처분 | 무엇이 바뀌었나 |
+|---|---|---|
+| R1 쓰기 전 판정 ≠ 쓰는 도중 탐침(feed 항목만 남은 좌석에서 Ctrl-U 만 쓰고 거부) | **고침** | `handlers.rs` send_text: `refuse_on_approval ∧ (seat_approval_pending ∨ (clear_first ∧ approval_or_gate_pending))` → `approval_screen` 오류 응답 · 바이트 0 · 계수 그대로. `clear_first` 없는 거부 요청은 쓰는 도중 탐침에 feed 축이 없어 종전 술어 그대로(범위 제한 · 판단 1건) · `send_key` 쓰기 전 판정 손대지 않음. 운영 호출자 = 순환 원자 `/clear`(cys.rs) — 이미 오류를 not_cleared 로 처리(codex 1R 확인) · 앱 `send_input` 은 아직 `refuse_on_approval` 안 실음(조각 3 몫) |
+| R2 계획 승인 창이 승인 항목·집행 대상 | **고침** | agents.json `plan-approval` 에 `"block_only": true`(+ `_doc` 설명) · `check_approvals` 가 block_only 패턴 건너뜀(feed 항목·master 각성 0) · `approval_screen_with(.., with_block_only)` = 쓰기 직전 true · D24ⓐ 집행 false(`gone`) · 어댑터 무관 방어선 `approval_actuation_bytes` allow = 1번 글자 **정확히** `Yes`(trim · 끝 `│` 벗김 · 종전 접두 대조 시험 `Yesterday's plan` → `Ok` 단언을 `Err(selected_not_yes)` 로 바꿈) |
+| R3 a 선택 줄 5번째 행 | **고침** | plan-approval 탐색 `{0,4}` → `{0,6}` |
+| R3 b 파일 이름 속 `?` | **고침**(codex 1R~3R 로 세 번 다듬음) | 최종 file-write-permission = `Do W you W want W to W (create\|overwrite\|write W to)(?:[ \t]\|U)(?:[^\n]\|U){0,400}?\?[ \t]*\n(?:[^\n─]*\n){0,4}?[ \t]*❯[ \t]*[1-9]\.` · W = `(?:[ \t]+\|[ \t]*\n[ \t]*)`(한 번 접힘) · U = `\n[─ \t]*[^─ \t\n]`(다음 행이 가로줄 행·빈 행이면 끊김). 문장 끝 `?` = `[ \t]*\n` 앞의 것 |
+| R3 c 낱말 가운데 잘림 | 손대지 않음(브리프) | 대역 인공물 판단 그대로 |
+| R4 ① 거짓 양성 | 그대로 · **시험으로 고정** | fp1~fp9 표(`b16fix2_dialog_variants_and_false_positive_table`) — 묶이는 fp4·fp4w·fp7 은 종전 문구 fp4old 도 같은 자리에서 묶임(입력창 없는 화면 · 가로줄 없이 커서가 인용 선택 행 위) · 옛 머리에서도 fp 줄 전부 같은 값(붉음은 tn 줄뿐) |
+| R4 ② 사람 몫 복원 뒤 잔류 | R1 경로는 해소 · 나머지 기록만 | R1(feed 항목만 남은 좌석)의 유령 계수 경로는 이제 쓰기 0 이라 생기지 않음. 남는 틈(창이 Ctrl-U 뒤에 서는 붙여넣기 앞 거부 + 빈 입력줄 고스트 제안이 stale 리셋을 막음) = 재검이 재지 않은 그럴듯 · 📌 |
+| R4 ③ 3초 결판 대기 × 호출자 상한 | 처분 없음 | 재검 판독 = 부딪침 없음 · R1 로 feed 항목 좌석의 순환은 결판 대기 전에 오류로 끝나 오히려 빨라짐 |
+| R4 ④ e5204360 판독 | 처분 없음 | 지적 없음(재검) |
+
+### 11-3. 시험
+
+- **붉음→초록**: 새·갱신 시험 5개를 옛 머리(8bdd08ad · 사본 `~/axdev/.wt/cys-1116-fix2-red`)에 옮겨 돌림 = **5/5 붉음** · 재검 관측과 같음: R1 세 갈래 PTY `15` · 응답 `sent:true`(기계 `submitted:false · before_paste`) · 사람 초안 갈래 계수 (13,13) 그대로인데 Ctrl-U 가 씀 / R2 계획 창 2종 `Ok("return")` · PTY `0d` / R3 tn2·tn7·tn7b 술어 거짓 / 스캔 = 계획 창 `plan-approval` 항목 / d24 = 접두 Yes `Ok`. 원 출력 `/private/tmp/claude-501/bf2/red.txt`. HEAD = 5/5 초록(R1 세 갈래 = `approval_screen` 오류 · PTY `[]` · 계수 그대로 · 쓰는 도중 흔적 0 / R2 Bash·Write `Ok("return")` `0d` · 계획 2종 `Err("gone")` `[]`).
+- codex 지적으로 더한 검체(tn8·tn8b·tn8c·tn8d·tn8e·fp9 · 정규식 단독 양성 5 · 음성 7)는 이 좌석 고침 사이의 회귀를 막는 것 — 뮤턴트로 붉음 확인(11-4).
+- 묶음 `b16 qps_ integ_1115 u16_ h2_ approval r1f_in_reset r2f_dm_windows`(357a965a · `--test-threads=4`) = **214 통과 · 0 실패**(핀 고치기 전 213/1 = 윈 ignore 54 핀 · 41350c29 로 초록)
+- 팩: `test_bootv2_doc_contract.py` ALL PASS · `test_event_inject.py` ALL PASS · agents.json 구문(패턴 7 전부 컴파일)
+- lib(`cargo test --lib` · 357a965a) = **1238 통과 · 0 실패 · 2 무시**(앞 좌석 §10-6 과 같은 수)
+- ⚠돌리지 않음: 전체 cysd · cys 바이너리 · UI · 윈(시간 상한) — 이 묶음의 변경 = cysd 3파일 + agents.json + 시험.
+
+### 11-4. 뮤턴트(별도 작업트리 `~/axdev/.wt/cys-1116-fix2-red` · 적용 → 빌드 → 해당 시험 → `git checkout` 원복)
+
+**14/14 사망**(전부 붉음 · 원 출력 `/private/tmp/claude-501/bf2/mut/run2.txt`·`run4.txt`):
+- 8bd56d9e 위 9: MR1 쓰기 전 feed 축 뺌 · MR2a 스캔 block_only 건너뜀 뺌 · MR2b 집행 판독 block_only 필터 뺌(→ `selected_not_yes` 로 사유가 바뀜 = 붉음) · MR2c 정확히 Yes → 접두 · MR2d 끝 `│` 안 벗김 · MR2e agents.json block_only 뺌 · MR3a 계획 창 6 → 4행 · MR3b 이름 속 `?`(`[^?]`) · MR3b2 첫 고침 `[^─]`
+- 357a965a 위 5(정규식 최종식): MR3b `[^?]` 복귀(tn7·tn7b) · MR3b2 줄머리 `─` 허용 뺌(tn8d·tn8e) · MR3b4 이름 범위 행 경계 없앰(정규식 단독 음성) · MR3c 동사 뒤 `\s+` 복귀(가로줄 행·fp9) · MR3d 낱말 사이 `\s+` 복귀(낱말 사이 빈 행)
+- R1·R2 코드는 8bd56d9e 이후 바뀌지 않았다(뒤 커밋 = agents.json file-write·plan 낱말 사이 규칙 + 시험).
+- ⚠정직: 06:53 데몬 재시작으로 첫 묶음(run1)이 MR2b 변이를 작업트리에 남긴 채 끊김 → [RESUME] 뒤 `git checkout -- .` 로 원복 확인 후 새 머리에서 전부 다시 돌림. 461f5243 위 R3b 묶음(run3)은 codex 3R 고침으로 대상이 바뀌어 중간에 내 pid 로 멈춤(3 사망까지 관측 · 결과는 run4 로 대체).
+
+### 11-5. codex(읽기 전용 사본 `/private/tmp/claude-501/bf2/cx` · `</dev/null` · perl alarm 1800 · 원문 `/private/tmp/claude-501/bf2/codex/last{1,2,3,4}.json`)
+
+| 라운드 | 대상 | 판정 | 처분 |
+|---|---|---|---|
+| 1R | 776e5fd2 | REVISE · major 2 | ① 동명 디스크 agents.json(8bdd08ad 판)이 block_only·R3 보정을 가림 → **기록만**: 실측 = 그 이름을 가진 설치 팩 0건(`~/.cys/pack`·`pack.prev`·`pack-dept-*` 5·각 `.pristine` · 소스 사본 1개만) · ead44653 을 담은 태그 0 = 미발행 · 그런 디스크가 있어도 집행은 정확히-Yes 가 막음(남는 것 = feed 항목·각성 소음) ② 이름 속 `─` → 8bd56d9e |
+| 2R | 8bd56d9e | REVISE · major 1(① 은 전제 성립 시 종결 · 환경 변수 팩 경로 미확인) | 줄머리 `─` 접힘 → 461f5243 |
+| 3R | 461f5243 | REVISE · major 2 | ─·공백 섞인 줄머리 · 동사 뒤 `\s+` 의 가로줄·빈 행 우회 → 357a965a |
+| 4R | 357a965a | **ACCEPT** · 지적 0 | 알려진 한계 2(접힌 행이 `?` 하나뿐 · 1~7개 `─` 만의 행) = 실제 렌더에서 결함 아님 판정 |
+
+- ⚠잇단 정규식 다듬기 3회 = 앞 좌석 증류(「손 어휘 분석기 … 적대 검토가 라운드마다 새 꼴 반례」)와 같은 성질. 끝은 4R ACCEPT 이지만 정규식은 손 판독기다 — 이름 속 기호의 끝없는 꼴은 화면 행 구조(가로줄 행·빈 행)로 경계를 정하는 지금 꼴이 한계선.
+
+### 11-6. 📌(덧붙임 · 실행 안 함)
+
+1. 윈도우: R1·R2 좌석 동작 검체가 기록기라 윈에서 안 돈다(R3 표·d24 표·스캔 시험은 돈다) — 비기록기 형제(쓰기 계수 `inject_track.wrote()`)를 더하면 윈 검증력 회복.
+2. `send_key` 의 `refuse_on_approval` 쓰기 전 판정도 화면 술어뿐(feed 축 없음) — 지금 운영 호출자(순환 3분할 폴백 C-u·Return)는 쓰는 도중 탐침도 화면 술어라 둘이 일치 · 바꿀 이유 없음(기록).
+3. 원작자 회신 후보(§10-7 📌1 갱신): plan-approval 은 막기 전용(block_only)으로 · 문장 범위 꼴 = 위 최종식.
+4. R4 ② 의 남는 틈(빈 입력줄 고스트 제안 × stale 리셋) 재측정.
+
+### 11-7. 남긴 것
+
+- 작업트리 `~/axdev/.wt/cys-1116-fix2-red`(뮤턴트·붉음 관측 · detached · target 복제 · 지울 때 `git -C ~/axdev/.wt/cys-1116-backlog worktree remove --force ~/axdev/.wt/cys-1116-fix2-red`) · `/private/tmp/claude-501/bf2/cx`(codex 읽기 사본 · 같은 방식으로 지움) · 결과 `/private/tmp/claude-501/bf2/{red.txt,suite-targeted*.txt,mut/run*.txt,codex/}`
+- `WORKER_TODO.cysr-1116-backlog-fix2-1118.md`·`_round/`(체크포인트) = 미커밋 좌석 파일
+- 증류: 「재시작으로 끊긴 뮤턴트 묶음은 변이를 작업트리에 남긴다(finally 원복이 안 돈다) — 재개 첫 행동 = 그 작업트리 `git checkout -- .`」 · 「정규식 경계를 문자 클래스(`[^─]`)로 정하면 이름 속 같은 글자에서 깨진다 — 경계는 행 단위(가로줄 행 = 행 전체 `─` · 빈 행)로」

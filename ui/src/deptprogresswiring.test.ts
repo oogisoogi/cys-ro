@@ -2161,6 +2161,7 @@ describe("★S4 B1 — 실제 3초 틱(refreshPaneTitles 실제 본문)으로: �
       formationTrack: new WeakMap<object, unknown>(), // ★R2F-UI: 그 팀 좌석 목록을 마지막으로 받은 때의 기록(모듈 수준 WeakMap 의 대역)
       // ── (1.1.8 병합 · X1 = 우리 배치) 우리 판 refreshPaneTitles 의 자유 변수 대역 — 이 검체가 보는 축(팀원 안내 판정)과 무관한 우리 배선(B17 옛 자리 스윕 ·
       //    새 부서 감지 M7① · 자동 정렬 역할 표 · 빈 자리표 회수 · 표시 번호 · 본부 판정 · 사이드바 사용량 패널)은 무동작으로 둔다(파일 머리 주석: 「새 외부 이름 → 대역 갱신」).
+      tickRec: null, // (cysr-ui-slice0) 3초 고리 특성 기록기 = 꺼짐(기본) — 배선은 전부 `tickRec?.` 라 무평가
       exitedSweepArm: null, sweepScopeFor: () => null, exitedSweepTargets: () => [], settleSweep: (a: unknown) => a,
       openNewlyRegisteredDepts: async () => false, rememberRoles: nothing, arrangeWs: nothing,
       displayNoByKey: new Map<string, unknown>(), exitedPaneKeys: new Set<string>(),

@@ -323,6 +323,7 @@ import { parseBriefSections, recordedAt, localStamp, briefStatePaths, pickBriefT
 import { nextFollow, shouldShowFoldHint, FOLD_HINT_TITLE, FOLD_HINT_BODY } from "./scrollfollow";
 import { shouldClosePlaceholder } from "./placeholderclose";
 import { placeholderScreenLines } from "./placeholderclose";
+import { TICKREC_KEY, tickRecFromSwitch, defaultTickRecSalt, type TickRecorder } from "./views/tickrec"; // (cysr-ui-slice0) 3초 고리 특성 기록기 — 기본 꺼짐
 import { queueDropNotice } from "./queuedropnotice";
 import { queueExpiredItem, queueExpiredNotice, type QueueExpiredItem } from "./queueexpirednotice";
 import {
@@ -3713,6 +3714,13 @@ document.addEventListener("visibilitychange", onVisibilityReturn);
 // 주기적으로 데몬에 물어 자동 제목 pane의 현재 디렉토리(cd 추적)를 갱신.
 // + 외부(CLI launch-agent·cys boot)에서 생성된 역할 노드 surface를 pane으로 자동 입양 —
 //   이게 없으면 노드가 데몬 안에서 헤드리스로만 돌고 화면에 보이지 않는다.
+// ★(TICKET=cysr-ui-slice0-1117 · P2-DESIGN §2-1 조각 0) 3초 고리 특성 기록기 — localStorage `cys-tickrec` === "1" 일 때만 생긴다(기본 null).
+//   아래 refreshPaneTitles 의 배선은 전부 `tickRec?.…(…)` 꼴이다 — null 이면 인자 식도 평가되지 않아 꺼짐 = 종전과 같은 식·같은 순서(views/tickrec.ts 머리말).
+const tickRec: TickRecorder | null = tickRecFromSwitch({
+  read: () => localStorage.getItem(TICKREC_KEY),
+  salt: defaultTickRecSalt,
+  expose: (r) => { (window as unknown as { __cysTickRec?: TickRecorder }).__cysTickRec = r; },
+});
 let refreshing = false;
 let started = false; // start()의 세션 복원이 끝나기 전 인터벌 자동 입양 차단 (이중 생성 방지)
 
@@ -3770,6 +3778,7 @@ async function refreshPaneTitles() {
   // 이 패스 동안의 무장 상태를 **한 번** 읽는다(패스 중간에 켜지면 다음 패스가 친다 — 반쪽 스윕 금지).
   const sweepArm = exitedSweepArm;
   const sweptSockets: string[] = []; // 이번 패스에서 청소 줄까지 도달한 소켓(= 무장에서 뺄 것)
+  tickRec?.gate(started, refreshing); // (조각 0) 이 틱이 아래 두 가드에서 돌아가는지 셈만(pumpRoleActivity 는 동기 — 그 사이 두 값은 안 바뀐다)
   if (!started) return; // start()의 세션 복원이 끝나기 전에는 보내지 않는다(기동 list 원 호출은 adoptStartup 이 끝점 소유로 이어받는다)
   // ★F-01(R3-4): 활동 패스 — 디스패치와 국소 만료는 **바쁨 가드 앞**, 자기 바깥 catch 안. 앞 틱의 입양이 아직 돌아도 점은 갱신된다.
   //   요청은 끝점마다 소유 원 호출 하나(이 줄의 list_surfaces 가 유일한 발송 지점) · 응답마다 독립 투영 · 아래 소비자는 그 응답을 한 번씩만 꺼낸다.
@@ -3780,6 +3789,7 @@ async function refreshPaneTitles() {
   }
   if (refreshing) return; // 겹친 호출의 이중 입양 방지(입양·제목 소비는 직렬 하나)
   refreshing = true;
+  tickRec?.begin(Date.now(), workspaces.map((w) => ({ id: w.id, socket: w.socket, pending: !!w.pending, deleting: !!w.deleting, sids: collectSids(w.tree) })), ghostStrike, sweepArm !== null, placeholderSids, touchedPlaceholders);
   let layoutChanged = false; // 이번 틱에서 워크스페이스/트리를 고쳤는가(render 필요 판정)
   const blockedTick: CwdBlockedEntry[] = []; // 이번 틱에 모든 소켓에서 모은 cwd_blocked
   // ★0.14.43(R1F-UB · S4 B1): 이번 틱에 **받은** 소켓별 좌석 목록의 (종료 안 한) 역할 — 팀원 부팅 안내의 완료 판정이 쓴다. 새 RPC·새 타이머 0: 이 틱이 어차피 부르는 list_surfaces 의 결과다.
@@ -3800,6 +3810,7 @@ async function refreshPaneTitles() {
     // 알리는 데몬 이벤트가 없어 이 3초 틱에 얹는다(새 타이머 없음). 아래 소켓 집계보다 **앞**에 둬서
     // 같은 틱에 입양까지 이어진다.
     if (await openNewlyRegisteredDepts()) layoutChanged = true;
+    tickRec?.deptsDone(workspaces.length);
     const sockets = [...new Set(workspaces.map((w) => w.socket))];
     let adopted = false;
     // (v116-auto-equalize) 종전 relayoutWs 집합(B17 결선: 입양 ws + 옛 자리를 닫은 ws 를 틱 끝에 한 번 배치)은 걷었다 —
@@ -3818,6 +3829,7 @@ async function refreshPaneTitles() {
       const listCall = listTransport.settledFor(sk);
       await rpcT(listCall, T_LIST);
       const got = listTransport.take(sk);
+      tickRec?.sock(sk ?? "", got?.value, (sid) => panes.has(paneKey(sid, sk)));
       if (!got) continue; // 받지 못했다(진행 중·시간 초과·오류·이미 소비) — 이 소켓은 이번 틱을 건너뛴다
       const r = got.value as {
         surfaces: {
@@ -3869,6 +3881,7 @@ async function refreshPaneTitles() {
       }
       const step = advanceGhostStrikes(ghostStrike, sockSids, knownIds, (sid) => paneKey(sid, sk), `${sk ?? ""}#`);
       ghostStrike = step.next;
+      tickRec?.ghost(sk ?? "", sockSids, step.evict);
       for (const sid of step.evict) {
         detachPane(sid, sk);
         layoutChanged = true;
@@ -3880,8 +3893,10 @@ async function refreshPaneTitles() {
       const sweepScope = sweepScopeFor(sweepArm, sk ?? "", Date.now());
       const sweepHere = sweepScope !== null;
       const sweepSids = sweepScope ? sockSids.filter((sid) => sweepScope.has(sid)) : [];
+      tickRec?.sweep(sk ?? "", sweepHere, sweepSids);
       for (const sid of exitedSweepTargets(sweepHere, sweepSids, r.surfaces)) {
         detachPane(sid, sk); // 닫기 + 남은 창 배치(arrangeWs remove) — 닫기가 먼저, 배치가 같은 자리에서
+        tickRec?.sweepSid(sk ?? "", sid);
         layoutChanged = true;
       }
       if (sweepHere) sweptSockets.push(sk ?? ""); // 이 소켓은 이번에 쓸렸다 — 실패·건너뜀 소켓은 여기 안 온다
@@ -3932,6 +3947,7 @@ async function refreshPaneTitles() {
           ws = homeOf();
           if (!ws || collectSids(ws.tree).includes(s.surface_id)) {
             if (!ws) destroyPaneRuntime(s.surface_id, sk);
+            tickRec?.adoptAbort(sk ?? "", s.surface_id, !ws);
             continue;
           }
         }
@@ -3939,6 +3955,7 @@ async function refreshPaneTitles() {
         arrangeWs(ws, { add: [{ sid: s.surface_id }] });
         setRoleDot(rt, s.role); // 입양 즉시 역할 점 채색(★F-01 같은 렌더러)
         adopted = true;
+        tickRec?.adopt(sk ?? "", s.surface_id, s.role);
       }
       // ★cysr 1.0.2 B3: 입양이 루트를 매번 0.5 로 감싸 [[[셸|master]|cso]|worker] = 1/8·1/8·1/4·1/2 가 됐다
       //   (깨끗한 VM run4 · 마스터 칸 ≈100px). 입양이 일어난 ws 만 기존 좌→우 순서 그대로 열을 다시 짠다 —
@@ -3958,6 +3975,8 @@ async function refreshPaneTitles() {
           for (const sid of sids) {
             if (!placeholderSids.has(sid)) continue; // ⓐ 남의 페인은 여기서 이미 걸러진다
             const su = r.surfaces.find((x) => x.surface_id === sid);
+            // (조각 0) 판정 입력 기록 — 아래 shouldClosePlaceholder 인자와 같은 식(읽기 전용) · 꺼짐이면 평가 0. 조각 2 가 이 두 벌을 하나로 접는다.
+            tickRec?.placeholderIn(sk ?? "", sid, { isOwnPlaceholder: placeholderSids.has(sid), touched: touchedPlaceholders.has(sid), role: su?.role ?? null, lineCount: placeholderScreenLines(panes.get(paneKey(sid, ws.socket))?.term), isWindows: IS_WINDOWS, formationArrived, exited: su?.exited ?? true });
             if (
               !shouldClosePlaceholder({
                 isOwnPlaceholder: placeholderSids.has(sid),
@@ -3971,6 +3990,7 @@ async function refreshPaneTitles() {
               })
             )
               continue;
+            tickRec?.placeholderClose(sk ?? "", sid);
             placeholderSids.delete(sid); // 한 번 판정한 자리는 장부에서 뺀다(반복 시도 0)
             // ★1.1.11 편입(원작자 0.14.52 공지 ⑤): 데몬이 닫힘을 확인한 뒤에만 뗀다(closePane → detachPane = 런타임·배치·캐시) —
             //   거부·불확실이면 자리표를 그대로 둔다(평범한 셸 창으로 남는다 · 장부에서는 이미 뺐으므로 재시도 0 · 종전 = 실패를 삼키고 화면만 뗐다).
@@ -3979,6 +3999,7 @@ async function refreshPaneTitles() {
             } catch {
               continue;
             }
+            tickRec?.placeholderClosed(sk ?? "", sid);
             if (focusedSid === sid) focusedSid = collectSids(ws.tree)[0] ?? null;
             layoutChanged = true;
           }
@@ -4002,6 +4023,7 @@ async function refreshPaneTitles() {
       //   좌열을 세로로 나누는 순간부터 입양이 다시 짜이지 않았다(재현 R1: 새 워커 0.50 · master 0.20).
       //   배치는 이제 열기·닫기가 일어난 그 자리에서 arrangeWs 가 한다(위 입양 루프 · detachPane · 자리표 회수).
      } catch {
+       tickRec?.error("sock");
        // ★소켓 하나의 실패가 다른 소켓의 갱신·렌더를 막지 않는다(codex [High] 수리).
        //   이 소켓 몫은 아래에서 직전 값으로 메워지고, 나이가 자라 stale로 표시된다.
      }
@@ -4013,6 +4035,7 @@ async function refreshPaneTitles() {
       if (!sockets.some((sk) => (sk ?? "") === k)) lastSurfacesBySocket.delete(k);
     }
     if (adopted || layoutChanged) {
+      tickRec?.render(adopted, layoutChanged);
       render();
       // ★0.14.41(리뷰1 #6): 입양한 pane 의 신호를 다음 폴링까지 기다리지 않는다(회색 '?미확인' 깜빡임 차단 · in-flight 가드).
       if (adopted) void refreshSidebarStatus().catch(() => {});
@@ -4022,6 +4045,7 @@ async function refreshPaneTitles() {
       if (aSids.length && (focusedSid == null || !aSids.includes(focusedSid))) setFocus(aSids[0]);
     }
   } catch {
+    tickRec?.error("tick");
     /* 데몬 일시 미응답은 다음 틱에 */
   } finally {
     refreshing = false;
@@ -4030,6 +4054,7 @@ async function refreshPaneTitles() {
     //   ⚠패스 도중 새로 무장됐으면(exitedSweepArm !== sweepArm) 새 무장은 건드리지 않는다 — 그 복원분은
     //   이 패스가 쓴 목록보다 뒤의 일이다.
     if (sweepArm && exitedSweepArm === sweepArm) exitedSweepArm = settleSweep(sweepArm, sweptSockets, Date.now());
+    tickRec?.end(ghostStrike, exitedSweepArm !== null);
     // ★렌더는 finally에 둔다 — 위쪽 어디서 예외가 나도 패널은 매 틱 다시 그려진다.
     //   초판은 예외 시 렌더 자체를 건너뛰어 now가 재계산되지 않았고, 그래서 낡은 행이
     //   영원히 「fresh 모양」으로 굳었다(codex [High]). 나이는 그릴 때 다시 계산된다.
@@ -4047,6 +4072,7 @@ async function refreshPaneTitles() {
   try {
     const step = cwdBlockedNotices(cwdBlockedSeen, blockedTick);
     cwdBlockedSeen = step.seen;
+    tickRec?.notices(step.notices.length);
     for (const n of step.notices) stickyToast(n.id, "health", n.title, n.detail, () => openPrivacySettings(n.target));
   } catch {
     /* 안내 실패는 무음 — 다음 새 좌석에서 다시 시도한다 */

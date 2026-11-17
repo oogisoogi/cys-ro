@@ -9615,6 +9615,43 @@ fn diag_pack_version(ctx: &DoctorCtx) -> DiagItem {
 }
 
 fn diag_pack_state(ctx: &DoctorCtx) -> DiagItem {
+    let mut item = diag_pack_state_row(ctx);
+    // ★1.1.16(U02 · 원작자 17f492db 의 doctor 줄): 1.1.15 이전 판이 남긴 공유 저널이 아직 있으면(부서 레인에서 보거나 본부에 진행 중
+    //   저널이 있어 옮기지 못한 경우) 이 줄이 이름을 대고 처리 방식을 적는다 — 읽기만(stat) · Ok → Warn(종료 코드는 Fail 만 따름).
+    if let Some(notice) = cys::pack::legacy_pack_journal_notice(&ctx.pack_dir) {
+        if item.status == DiagStatus::Ok {
+            item.status = DiagStatus::Warn;
+        }
+        item.detail = format!("{} · ⚠ {notice}", item.detail);
+        if item.action.is_empty() {
+            item.action = "본부 데몬을 다시 켜거나 팩 업데이트를 다시 실행하십시오(그 기록은 본부 레인이 옮겨 복구합니다 · 지우지 않음)".into();
+        }
+    }
+    // ★1.1.16 F5(독립 검증 1118): 이 레인의 진행 중 저널이 남아 있으면 이름을 댄다 — 복구가 읽지 못하는 기록(손상)이면 Fail(그 레인의 자동 설치·
+    //   팩 업데이트·자동 갱신이 멈춰 사람 손을 기다린다) · 읽을 수 있으면 Warn. 읽기만.
+    if let Some((line, broken)) = cys::pack::pack_journal_notice(&ctx.pack_dir) {
+        if broken {
+            item.status = DiagStatus::Fail;
+        } else if item.status == DiagStatus::Ok {
+            item.status = DiagStatus::Warn;
+        }
+        item.detail = format!("{} · ⚠ {line}", item.detail);
+        if item.action.is_empty() {
+            item.action = if broken {
+                "그 기록 폴더는 지우지 말고(되돌림의 유일한 근거) 데몬 로그의 'pack journal recovery failed' 사유를 확인하십시오 — 손상된 기록은 \
+                 자동으로 되돌리지 않습니다"
+                    .into()
+            } else {
+                "데몬을 다시 켜면 복구합니다 · 다시 켠 뒤에도 이 줄이 남으면 데몬 로그의 'pack journal recovery failed' 사유를 확인하십시오(기록 폴더는 \
+                 지우지 말 것)"
+                    .into()
+            };
+        }
+    }
+    item
+}
+
+fn diag_pack_state_row(ctx: &DoctorCtx) -> DiagItem {
     match cys::pack::read_pack_state(&ctx.pack_dir) {
         cys::pack::PackStateRead::Absent => DiagItem {
             name: "pack-state",
@@ -27566,7 +27603,7 @@ fn collect_tree(root: &std::path::Path) -> Result<Vec<(String, String)>, String>
 }
 
 /// flock(LOCK_EX) 임계영역에서 f를 실행(§7-⑧ 폴백 apply-lock — per-file write_atomic + writer 배타).
-/// non-unix는 잠금 없이 실행.
+/// ★1.1.16: non-unix 도 표준 라이브러리 파일 잠금(LockFileEx)으로 같은 배타를 건다(데몬 기동 복구가 이 잠금으로 「진행 중」을 본다).
 ///
 /// ⚠보장 범위(정직 명시 · 층위 분리):
 /// 1) 이 락은 **writer 측 상호배제(serialization)만** 제공한다 — 동시 writer가 같은 pack_dir를
@@ -27602,16 +27639,31 @@ fn with_apply_lock<T>(lock_path: &std::path::Path, f: impl FnOnce() -> T) -> Res
         if unsafe { libc::flock(fd, libc::LOCK_EX) } != 0 {
             return Err(format!("flock 실패: {}", std::io::Error::last_os_error()));
         }
-        let out = f();
+        // ★1.1.16 F1(독립 검증 1118): 공용 잠금을 쥔 채 이 레인의 적용 잠금도 쥔다(순서 = 공용 → 레인) — 데몬 기동은 자기 레인 잠금만
+        //   보므로(본부 레인은 공용도) 다른 레인의 적용이 그 레인 기동의 복구·자동 설치를 막지 않는다.
+        let out = cys::pack::with_lane_apply_lock(lock_path.parent().unwrap_or_else(|| std::path::Path::new(".")), f);
         unsafe {
             libc::flock(fd, libc::LOCK_UN);
         }
-        Ok(out)
+        out
     }
     #[cfg(not(unix))]
     {
-        let _ = lock_path;
-        Ok(f())
+        // ★1.1.16(codex 2R blocking): 비유닉스도 같은 잠금 — 표준 라이브러리 파일 잠금(윈도우 = LockFileEx). 데몬 기동 복구
+        //   (cys::pack::recover_pack_journal_unless_busy)가 이 잠금을 비차단으로 잡아 보고 「진행 중」을 안다.
+        if let Some(parent) = lock_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("apply-lock 부모 디렉토리 생성 실패 {}: {e}", parent.display()))?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(lock_path)
+            .map_err(|e| format!("apply-lock 열기 실패 {}: {e}", lock_path.display()))?;
+        file.lock().map_err(|e| format!("apply-lock 잠금 실패: {e}"))?;
+        let out = cys::pack::with_lane_apply_lock(lock_path.parent().unwrap_or_else(|| std::path::Path::new(".")), f);
+        let _ = file.unlock();
+        out
     }
 }
 
@@ -28922,6 +28974,31 @@ fn merge_audit_entry(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// ★1.1.16(7d · 원작자 v0.15.1 8deb3f99 「T2j · RULINGS HM1」 재구현): `--to-local` 은 사용자본을 `~/.cys/local/<rel>` 에 둔다. 그 자리의
+/// 사본을 실제로 읽는 것은 같은 이름의 스킬(`skills/`)뿐이고, `bin/`·`hooks/` 파일의 사본은 아무것도 읽지 않는다(로컬 훅 = 
+/// `~/.cys/local/hooks/<이벤트>.d/*.sh` 만 · `cysjavis-pack/hooks/cys-hook.sh:39`). 그 두 폴더면 거부 문장(이유 + 아무것도 바꾸지 않았음 +
+/// 대신 쓸 명령)을 돌려준다 · None = 이 규칙의 대상 아님(스킬·그 밖 = 종전 그대로).
+fn to_local_no_reader_refusal(rel: &str) -> Option<String> {
+    if !(rel.starts_with("bin/") || rel.starts_with("hooks/")) || mutant_env("J1116-TOLOCAL") {
+        return None;
+    }
+    let own_hooks = if rel.starts_with("hooks/") {
+        " 따로 두고 싶은 내 훅은 ~/.cys/local/hooks/<이벤트>.d/ 에 둡니다(그 자리만 읽힙니다)."
+    } else {
+        ""
+    };
+    Some(format!(
+        "⛔ 거부: '{rel}' 은 bin/·hooks/ 파일입니다 — --to-local 이 ~/.cys/local 에 두는 사본은 읽는 곳이 없어 내 수정이 꺼집니다\
+         (그 사본을 실제로 읽는 것은 skills/ 의 스킬뿐). 아무것도 쓰거나 옮기거나 해소하지 않았습니다. 대신: 보관된 내 사본({rel}.user)을 \
+         팩 제자리에 되살리려면 cys pack-adopt {rel} · vendor 본을 그대로 쓰려면 cys pack-merge --file {rel} --keep-mine(보존본 정리).{own_hooks}"
+    ))
+}
+
+/// 시험 빌드 전용 뮤턴트 스위치(`CYS_U1_MUTANT` · 출시 빌드 = 늘 false) — 이 바이너리 안의 1.1.16 고침 가드를 끄고 같은 시험이 붉어지는지 본다.
+fn mutant_env(id: &str) -> bool {
+    cfg!(test) && std::env::var("CYS_U1_MUTANT").map(|v| v == id).unwrap_or(false)
+}
+
 fn run_pack_merge(
     file: Option<String>,
     take_new: bool,
@@ -29230,6 +29307,12 @@ fn run_pack_merge(
         "healed" | "conflicted" => {
             let user_path = dir.join(format!("{rel}.user"));
             if to_local {
+                // ★1.1.16(7d · 원작자 v0.15.1 8deb3f99 T2j 재구현): `bin/`·`hooks/` 파일이면 아무것도 쓰거나 해소하기 **전에** 거부한다 —
+                //   그 자리 사본은 읽는 곳이 없어 내 수정이 말없이 꺼진다(1.1.15 = 쓰고·해소하고·감사 기록까지 한 뒤에야 경고).
+                if let Some(refusal) = to_local_no_reader_refusal(&rel) {
+                    eprintln!("{refusal}");
+                    return 1;
+                }
                 // 스킬 등 system 파일의 사용자본을 오버레이로 승격 — vendor 무결성(치유)과 공존.
                 let local_root = cys::pack::local_dir();
                 let dest = local_root.join(&rel);
@@ -40802,6 +40885,60 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
     }
 
     #[test]
+    fn j1116_doctor_pack_state_names_a_legacy_journal() {
+        // ★1.1.16(U02 · 원작자 17f492db 이식): pack-state 줄이 옛 공유 저널을 이름 대고 알린다 — 읽기만(그 뒤에도 그대로) · Ok → Warn.
+        let base = std::env::temp_dir().join(format!("cys-doc-legacy-journal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let ctx = doctor_ctx_at(&base);
+        std::fs::create_dir_all(&ctx.pack_dir).unwrap();
+        let plain = diag_pack_state(&ctx);
+        let legacy = ctx.state_base.join(".pack-journal");
+        std::fs::create_dir_all(legacy.join("files")).unwrap();
+        std::fs::write(legacy.join("index.json"), r#"{"target_version":"1.1.15","entries":[]}"#).unwrap();
+        let named = diag_pack_state(&ctx);
+        let still_there = legacy.join("index.json").is_file();
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(plain.status, DiagStatus::Ok);
+        assert!(!plain.detail.contains(".pack-journal"), "{}", plain.detail);
+        assert_eq!(named.status, DiagStatus::Warn);
+        assert!(named.detail.contains(&legacy.display().to_string()), "{}", named.detail);
+        assert!(!named.action.is_empty());
+        assert!(still_there, "doctor 줄은 옛 저널을 건드리지 않는다");
+    }
+
+    #[test]
+    fn j1116_doctor_pack_state_names_a_stuck_lane_journal() {
+        // ★1.1.16 F5(독립 검증 1118): 이 레인의 진행 중 저널 — 읽히면 Warn · 복구가 읽지 못하는 깨진 배치 기록 줄이면 Fail · 읽기만.
+        let base = std::env::temp_dir().join(format!("cys-doc-lane-journal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let ctx = doctor_ctx_at(&base);
+        std::fs::create_dir_all(&ctx.pack_dir).unwrap();
+        let plain = diag_pack_state(&ctx);
+        let jdir = cys::pack::pack_journal_dir_for(&ctx.pack_dir);
+        std::fs::create_dir_all(jdir.join("files")).unwrap();
+        std::fs::write(
+            jdir.join("index.json"),
+            r#"{"target_version":"9.9.9","entries":[],"explicit_commit":true,"apply_id":"a1","placements":true}"#,
+        )
+        .unwrap();
+        let live = diag_pack_state(&ctx);
+        std::fs::write(jdir.join("placed.log"), "{\"rel\":\"README.md\",\"sha256\":null}\n{깨진 줄\n").unwrap();
+        let stuck = diag_pack_state(&ctx);
+        // codex 1R(minor): 이 적용의 커밋 기록이 있으면 복구는 전진 완료(배치 기록을 읽지 않음) → 깨진 배치 기록이어도 Fail 아님.
+        std::fs::write(jdir.join("commit.json"), r#"{"target_version":"9.9.9","pro_revision":0,"apply_id":"a1"}"#).unwrap();
+        let committed = diag_pack_state(&ctx);
+        let still_there = jdir.join("placed.log").is_file() && jdir.join("index.json").is_file();
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(plain.status, DiagStatus::Ok, "{}", plain.detail);
+        assert_eq!(live.status, DiagStatus::Warn, "{}", live.detail);
+        assert!(live.detail.contains(&jdir.display().to_string()), "{}", live.detail);
+        assert_eq!(stuck.status, DiagStatus::Fail, "{}", stuck.detail);
+        assert!(stuck.detail.contains("읽지 못합니다") && !stuck.action.is_empty(), "{} / {}", stuck.detail, stuck.action);
+        assert_eq!(committed.status, DiagStatus::Warn, "복구가 읽지 않는 배치 기록으로 거짓 Fail: {}", committed.detail);
+        assert!(still_there, "doctor 줄은 저널을 건드리지 않는다");
+    }
+
+    #[test]
     fn doctor_pack_version_ok_and_skew() {
         let base = std::env::temp_dir().join(format!("cys-doc-ver-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -46154,6 +46291,74 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         );
         assert_eq!(t4_ledger_kind(&td, &rel).as_deref(), Some("kept-drift"), "kept-drift 정규화");
         let _ = std::fs::remove_dir_all(td.parent().unwrap());
+    }
+
+    /// ★1.1.16(7d · 원작자 8deb3f99 시험 이식): healed·conflicted 의 `bin/`·`hooks/` 파일에 `--to-local` = 쓰기 **전** 거부(rc 1) —
+    /// 살아 있는 파일 · `.user` · 원장 항목 · 감사 기록 무변경 · 오버레이 사본 0. 대조군: 스킬은 종전대로 승격된다.
+    #[test]
+    fn j1116_to_local_refused_for_bin_and_hooks_before_any_write() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for prefix in ["bin/", "hooks/"] {
+            for kind in ["healed", "conflicted"] {
+                let (td, _rel0, _embed0, _env) = t4_system_fixture(&format!("j16tl-{}-{kind}", prefix.trim_end_matches('/')));
+                let (rel, embed) = cys::pack::PACK_ALL
+                    .iter()
+                    .find(|(r, _)| r.starts_with(prefix) && cys::pack::ownership_name_scoped(r, &td) == "system")
+                    .map(|(r, c)| (r.to_string(), c.to_string()))
+                    .expect("팩에 그 폴더의 system 파일이 있다");
+                let local = td.parent().unwrap().join("local");
+                let _l = cys::pack::EnvGuard::set("CYS_LOCAL_DIR", &local);
+                std::fs::create_dir_all(td.join(&rel).parent().unwrap()).unwrap();
+                std::fs::write(td.join(&rel), &embed).unwrap();
+                std::fs::write(td.join(format!("{rel}.user")), "MY-EDIT").unwrap();
+                t4_write_ledger(&td, &rel, serde_json::json!({"kind": kind, "side": format!("{rel}.user"), "version": "0", "ts": 0}));
+                let audit = td.join(".merge-audit.jsonl");
+                let audit_before = std::fs::read(&audit).ok();
+                let rc = run_pack_merge(Some(rel.clone()), false, false, false, true, false, true, false, false, false, None);
+                let overlay = local.join(&rel).exists();
+                let user = std::fs::read_to_string(td.join(format!("{rel}.user"))).ok();
+                let live = std::fs::read_to_string(td.join(&rel)).ok();
+                let kind_after = t4_ledger_kind(&td, &rel);
+                let audit_after = std::fs::read(&audit).ok();
+                let _ = std::fs::remove_dir_all(td.parent().unwrap());
+                assert_eq!(rc, 1, "{rel} {kind}: 거부 rc 1");
+                assert!(!overlay, "{rel} {kind}: 읽는 곳 없는 오버레이 사본을 썼다");
+                assert_eq!(user.as_deref(), Some("MY-EDIT"), "{rel} {kind}: .user 를 해소했다");
+                assert_eq!(live.as_deref(), Some(embed.as_str()), "{rel} {kind}: 살아 있는 파일이 바뀌었다");
+                assert_eq!(kind_after.as_deref(), Some(kind), "{rel} {kind}: 원장 항목이 바뀌었다");
+                assert_eq!(audit_before, audit_after, "{rel} {kind}: 감사 기록이 늘었다");
+            }
+        }
+        // 대조군: 스킬은 종전대로 오버레이로 승격(rc 0 · 사본 있음).
+        let (td, _r, _e, _env) = t4_system_fixture("j16tl-skill");
+        let (rel, embed) = cys::pack::PACK_ALL
+            .iter()
+            .find(|(r, _)| r.starts_with("skills/") && cys::pack::ownership_name_scoped(r, &td) == "system")
+            .map(|(r, c)| (r.to_string(), c.to_string()))
+            .expect("system 스킬 파일");
+        let local = td.parent().unwrap().join("local");
+        let _l = cys::pack::EnvGuard::set("CYS_LOCAL_DIR", &local);
+        std::fs::create_dir_all(td.join(&rel).parent().unwrap()).unwrap();
+        std::fs::write(td.join(&rel), &embed).unwrap();
+        std::fs::write(td.join(format!("{rel}.user")), "MY-SKILL").unwrap();
+        t4_write_ledger(&td, &rel, serde_json::json!({"kind": "healed", "side": format!("{rel}.user"), "version": "0", "ts": 0}));
+        let rc = run_pack_merge(Some(rel.clone()), false, false, false, true, false, true, false, false, false, None);
+        let copied = std::fs::read_to_string(local.join(&rel)).ok();
+        let _ = std::fs::remove_dir_all(td.parent().unwrap());
+        assert_eq!(rc, 0, "스킬 to-local 은 종전대로");
+        assert_eq!(copied.as_deref(), Some("MY-SKILL"));
+    }
+
+    #[test]
+    fn j1116_to_local_refusal_sentence() {
+        let b = to_local_no_reader_refusal("bin/x.py").unwrap();
+        assert!(b.starts_with("⛔ 거부: 'bin/x.py'") && b.contains("읽는 곳이 없어") && b.contains("아무것도 쓰거나 옮기거나 해소하지 않았습니다."), "{b}");
+        assert!(b.contains("cys pack-adopt bin/x.py"), "{b}");
+        let h = to_local_no_reader_refusal("hooks/x.sh").unwrap();
+        assert!(h.contains("~/.cys/local/hooks/<이벤트>.d/"), "{h}");
+        for rel in ["skills/a/SKILL.md", "directives/MASTER_DIRECTIVE.md", "soul.md", "binx/y.py", "hooksy.sh"] {
+            assert_eq!(to_local_no_reader_refusal(rel), None, "{rel}: 이 규칙의 대상이 아니다");
+        }
     }
 
     /// ★성찰 차단 수리 2R-3 핀: adopted 원장 kind 에서 --take-new/--keep-mine 플래그가 침묵

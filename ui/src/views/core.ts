@@ -11,7 +11,8 @@
 
 import { composeOutbound } from "./judge/outbound";
 import { approvalSeatsOf, masterRowOf, sendGate, type GateVerdict, type MasterRow } from "./judge/gate";
-import { applyRecords, canRetry, READ_AFTER_MS, settleSteps, stepFromOutcome, type Msg, type Rec, type Reply } from "./judge/msgstep";
+import { applyRecords, applyRefusedAtWrite, canRetry, mergeOutcome, READ_AFTER_MS, SENDING_SILENT_MS, settleSteps, stepFromOutcome, type Msg, type Rec, type Reply, type Step } from "./judge/msgstep";
+import { applyQueueEvent, autoHoldRemainingMs, queueEventOf, type AutoMsg } from "./judge/autostep";
 
 export const HOLD_KEY = "cys-chat-hold";
 /** 붙잡은 말 상한(설계 §5-3 · 넘으면 새 말을 받지 않고 안내). */
@@ -29,10 +30,21 @@ export const HELD_MAX_AGE_MS = 600_000;
 export const STALE = "stale";
 /** 앞 말(쓰는 중이거나 붙잡힌 말) 뒤에 줄 선 말의 표지 — 오래된 것부터 1건씩(설계 §2-5 · VERIFY 지적 1). */
 const AFTER_PREV = "after_prev";
+/** (조각 3) 같은 글의 앞 말이 아직 끝나지 않았는데(보내는 중·전달 확인 중·확인 중·오래 걸려요·차례 기다림·자동으로 나갈 붙잡음) 또 보낸 말.
+ *  자동으로 보내지 않는다 — 앞 말이 끝난 뒤 사람이 「한 번 더 보내기」를 눌러야 나간다(같은 말 두 번 방지 · NFR-R1 · 「불명 = 다시 보내기 0」). */
+export const DUP = "dup_pending";
 
-/** 사람이 눌러야만 나가는 붙잡은 말(다시 켠 뒤 복원 · 10분 넘음). */
+/** 사람이 눌러야만 나가는 붙잡은 말(다시 켠 뒤 복원 · 10분 넘음 · 같은 말 겹침). */
 export function needsClick(m: Msg): boolean {
-  return m.step === "held" && (m.code === RESTORED || m.code === STALE);
+  return m.step === "held" && (m.code === RESTORED || m.code === STALE || m.code === DUP);
+}
+
+/** (조각 3) 끝나지 않은 말 — 같은 글을 또 보내면 두 번 갈 수 있는 상태. */
+const UNRESOLVED: ReadonlySet<Step> = new Set<Step>(["sending", "injected", "checking", "slow", "queued_hold"]);
+
+/** (조각 3) 이 글과 같은 글의 앞 말이 아직 끝나지 않았는가(exceptId = 자기 자신 제외). 순수. */
+export function dupPending(msgs: readonly Msg[], text: string, exceptId?: string): boolean {
+  return msgs.some((m) => m.id !== exceptId && m.text === text && (UNRESOLVED.has(m.step) || autoHeld(m)));
 }
 /** 문턱이 열리면 자동으로 나갈 붙잡은 말. */
 function autoHeld(m: Msg): boolean {
@@ -51,6 +63,8 @@ export interface Store {
 
 export interface Deps {
   invoke(cmd: string, args?: Record<string, unknown>): Promise<unknown>;
+  /** (조각 3) 데몬 사건 구독(Tauri `daemon-event`) — 대화 화면이 켜져 있을 때만 건다 · 없으면 사건 근거 없이 돈다(시험·옛 판). */
+  listen?(name: string, handler: (e: { payload: unknown }) => void): Promise<() => void>;
   now(): number;
   setTimeout(fn: () => void, ms: number): unknown;
   clearTimeout(h: unknown): void;
@@ -82,6 +96,8 @@ export interface ChatState {
   notice: string | null;
   /** 마지막 조회 실패 여부(오류 수에 셈) */
   pollFailed: boolean;
+  /** (조각 3) 추적 중인 기계 문안(데몬 큐 항목) — 단계는 큐 사건으로만(judge/autostep) */
+  autos: AutoMsg[];
   rev: number;
 }
 
@@ -105,7 +121,7 @@ export function lastSendStep(s: ChatState): Msg["step"] | null {
 type Listener = (s: ChatState) => void;
 
 export class ChatCore {
-  private s: ChatState = { master: undefined, health: "unknown", confirms: null, msgs: [], stray: [], draft: "", notice: null, pollFailed: false, rev: 0 };
+  private s: ChatState = { master: undefined, health: "unknown", confirms: null, msgs: [], stray: [], draft: "", notice: null, pollFailed: false, autos: [], rev: 0 };
   private listeners = new Set<Listener>();
   private seq = 0;
   /** 진행 중인 쓰기(원자 제출 1건) — 겹쳐 쓰지 않는다(클릭 1 → 호출 ≤ 1). */
@@ -119,6 +135,12 @@ export class ChatCore {
   private readTimers = new Set<unknown>();
   private attached = false;
   private lastWorking: boolean | null = null;
+  /** (조각 3) 사건 구독 해제 함수 · 구독 세대(붙였다 뗐다 경합 방지) · 기본 데몬 소켓 이름(부서 데몬 사건과 좌석 번호가 겹침) */
+  private unlisten: (() => void) | null = null;
+  private listenGen = 0;
+  private defaultSlug: string | null = null;
+  /** (조각 3) 마지막으로 바이트가 나갔을 수 있는 사람 보내기 시각(R3 — 기계 문안 묶임 계산) */
+  private lastHumanSentAt: number | null = null;
 
   constructor(private readonly d: Deps) {
     this.loadHold();
@@ -153,6 +175,7 @@ export class ChatCore {
   attach(): void {
     this.attached = true;
     void this.readTranscript();
+    void this.startListening();
   }
 
   /** 대화 화면이 내려감 — 읽기 예약 해제(공통층 상태·붙잡은 말은 그대로 · §4-3). */
@@ -160,6 +183,66 @@ export class ChatCore {
     this.attached = false;
     for (const h of this.readTimers) this.d.clearTimeout(h);
     this.readTimers.clear();
+    this.listenGen++;
+    if (this.unlisten) {
+      try {
+        this.unlisten();
+      } catch {
+        /* 이미 풀림 */
+      }
+      this.unlisten = null;
+    }
+  }
+
+  // ---------- 데몬 사건(조각 3 · 이미 방송되는 사건만 · 새 조회 0) ----------
+
+  private async startListening(): Promise<void> {
+    if (!this.d.listen || this.unlisten) return;
+    const gen = ++this.listenGen;
+    if (this.defaultSlug === null) {
+      try {
+        const v = await this.d.invoke("default_socket_slug");
+        this.defaultSlug = typeof v === "string" && v.length > 0 ? v : null;
+      } catch {
+        this.defaultSlug = null;
+      }
+    }
+    if (gen !== this.listenGen || !this.attached) return;
+    try {
+      const un = await this.d.listen("daemon-event", (e) => this.onDaemonEvent(e.payload));
+      if (gen !== this.listenGen || !this.attached) un();
+      else this.unlisten = un;
+    } catch {
+      /* 구독 실패 = 사건 근거 없이(세션 기록·응답만으로) 돈다 */
+    }
+  }
+
+  /** 데몬 사건 하나 — 기본 데몬(마스터가 사는 곳) 사건만 받는다(부서 데몬은 좌석 번호가 겹친다 · 소켓 이름을 모르면 아무것도 받지 않음). */
+  onDaemonEvent(raw: unknown): void {
+    const e = raw as { name?: unknown; socket_slug?: unknown; surface_id?: unknown } | null;
+    if (!e || typeof e.name !== "string") return;
+    if (this.defaultSlug === null || e.socket_slug !== this.defaultSlug) return;
+    if (e.name === "input.refused_at_write") {
+      if (typeof e.surface_id !== "number") return;
+      const next = applyRefusedAtWrite(this.s.msgs, e.surface_id, this.d.now());
+      if (next.some((m, i) => m !== this.s.msgs[i])) this.putMsgs(next);
+      return;
+    }
+    const q = queueEventOf(raw);
+    if (!q || this.s.autos.length === 0) return;
+    const autos = applyQueueEvent(this.s.autos, q);
+    if (autos.some((a, i) => a !== this.s.autos[i])) this.set({ autos });
+  }
+
+  /** (조각 3) 기계 문안 1건을 추적한다(보내는 쪽 = 조각 5 깨움 · chat_send{kind:auto} 응답의 queue_entry_id). 같은 번호는 한 번만. */
+  trackAuto(entryId: string, seat: number): void {
+    if (this.s.autos.some((a) => a.entryId === entryId)) return;
+    this.set({ autos: [...this.s.autos, { entryId, seat, step: "queued" as const, lastSeq: -1 }].slice(-LOG_MAX) });
+  }
+
+  /** (조각 3 · R3) 지금 기계 문안을 큐에 넣으면 데몬이 묶어 둘 남은 시간(ms) — 마지막 사람 보내기 뒤 31.2초(0.5 M10). */
+  autoHoldRemainingMs(): number {
+    return autoHoldRemainingMs(this.lastHumanSentAt, this.d.now());
   }
 
   // ---------- 저장소(붙잡은 말만 원문 · §5-3 cys-chat-hold) ----------
@@ -273,6 +356,13 @@ export class ChatCore {
   }
 
   private async accept(text: string): Promise<void> {
+    // (조각 3) 같은 글의 앞 말이 아직 끝나지 않았으면 이 말은 자동으로 보내지 않는다(사람이 같은 말을 다시 친 경우 · 불명 응답 뒤 다시 누름 포함).
+    if (dupPending(this.s.msgs, text)) {
+      const dup: Msg = { id: `m${this.d.now()}-${++this.seq}`, text, createdAt: this.d.now(), sentAt: null, step: "held", code: DUP, note: "같은 말이 아직 확인 중이라 두 번 가지 않게 붙잡아 뒀어요 — 앞 말이 끝나면 「한 번 더 보내기」로 보낼 수 있어요(글을 조금 바꾸면 바로 보내요).", thread: [], replies: [] };
+      this.s = { ...this.s, draft: "", notice: null };
+      this.putMsgs([...this.s.msgs, dup]);
+      return;
+    }
     // 앞 말을 쓰는 중이거나 **앞서 붙잡힌(자동으로 나갈) 말이 있으면** 이 말은 그 뒤에 줄 선다 — 사람 지시의 앞뒤가 뒤집히지 않게(VERIFY 지적 1).
     const behind = this.writing || this.s.msgs.some(autoHeld);
     const msg: Msg = behind
@@ -310,6 +400,10 @@ export class ChatCore {
     if (hits.length !== 1) return; // 같은 id 가 둘 이상이면 고르지 않는다
     const m = hits[0];
     if (!needsClick(m)) return;
+    if (m.code === DUP && dupPending(this.s.msgs, m.text, m.id)) {
+      this.set({ notice: "같은 말이 아직 확인 중이에요 — 앞 말이 끝나면 보낼 수 있어요." }); // 불명·확인 중인 앞 말이 있는 동안은 사람 클릭으로도 다시 보내지 않는다
+      return;
+    }
     // 이 말을 **대체**하는 동작이라 붙잡음 상한에 자기 자신을 세지 않는다(codex 2R major — 상한 20 교착). 다듬기는 그대로.
     const out = composeOutbound(m.text);
     if (!out.ok) {
@@ -324,6 +418,11 @@ export class ChatCore {
   async retry(id: string): Promise<void> {
     const m = this.s.msgs.find((x) => x.id === id);
     if (!m || !canRetry(m) || this.writing) return;
+    if (dupPending(this.s.msgs, m.text, m.id)) {
+      // (조각 3 · M2·M3 하네스 seed 131 이 찾음) 같은 글의 다른 말이 아직 확인 중이면 다시 보내기도 막는다 — 두 번 갈 수 있다.
+      this.set({ notice: "같은 말이 아직 확인 중이에요 — 그 말이 끝나면 다시 보낼 수 있어요." });
+      return;
+    }
     const msg: Msg = { id: `m${this.d.now()}-${++this.seq}`, text: m.text, createdAt: this.d.now(), sentAt: null, step: "sending", thread: [], replies: [], retried: true };
     this.putMsgs([...this.s.msgs.map((x) => (x.id === id ? { ...x, retried: true } : x)), msg]);
     await this.deliver(msg.id);
@@ -358,7 +457,7 @@ export class ChatCore {
       const sentAt = this.d.now();
       // ★쓰기 전에 「보내는 중」을 먼저 영속한다 — 저장소에서 이 말이 붙잡음 목록에서 빠진 것이 확인돼야 쓴다(codex 1R blocking:
       //   지우기 실패 + 불명 결과면 다시 켤 때 같은 말이 또 나가던 길). 저장 실패 = 쓰기 0 · 붙잡음 그대로.
-      if (!this.patchMsg(id, { step: "sending", sentAt, code: undefined, note: undefined, notBefore: undefined })) {
+      if (!this.patchMsg(id, { step: "sending", sentAt, seat: m.surface_id, code: undefined, note: undefined, notBefore: undefined })) {
         this.patchMsg(id, { step: "held", sentAt: null, code: "store_failed", note: "앱 저장소에 쓸 수 없어 보내지 않았어요(같은 말이 두 번 가는 것을 막으려고) — 잠시 뒤 다시 해 볼게요.", notBefore: this.d.now() + HELD_REFUSED_BACKOFF_MS });
         return;
       }
@@ -368,25 +467,38 @@ export class ChatCore {
         return;
       }
       let res: unknown;
+      // (조각 3) 응답 없이 3초 = 「확인 중」(보내는 중이 끝없이 머물지 않게 · 다시 보내기 0). 응답이 오면 그 응답으로 바뀐다.
+      const silent = this.d.setTimeout(() => {
+        this.putMsgs(settleSteps(this.s.msgs, this.d.now(), null));
+        this.scheduleReads();
+      }, SENDING_SILENT_MS);
       try {
         res = await this.d.invoke("chat_send", { socket: null, surfaceId: m.surface_id, text: msg.text, kind: "human" });
       } catch (e) {
         res = { outcome: "uncertain", code: "invoke_error", message: String(e) }; // Tauri 다리 자체 실패 = 쓰였는지 모름
+      } finally {
+        this.d.clearTimeout(silent);
       }
       const r = (res ?? {}) as { outcome?: unknown; code?: unknown; message?: unknown };
       const step = stepFromOutcome(r.outcome);
       const code = typeof r.code === "string" ? r.code : undefined;
-      if (step === "held") {
+      if (step !== "held" && step !== "failed" && step !== "queued_hold") this.lastHumanSentAt = sentAt; // 바이트가 나갔을 수 있음(R3)
+      const cur = this.s.msgs.find((x) => x.id === id);
+      const merged = cur ? mergeOutcome(cur, step) : {};
+      if (cur && merged.step === undefined) {
+        // 세션 기록으로 이미 「전달됨」 이상(또는 쓰기 직전 거부 사건) — 늦게 온 응답(written·불명)이 되돌리지 않는다.
+        if (cur.step === "checking") this.scheduleReads();
+      } else if (step === "held") {
         // 데몬 거부(바이트 0) — feed 대기 항목 없이 창만 떠 있을 수 있다(0.5 숫자 3 술어 차이) → 같은 말 재시도는 한동안 쉰다(3초마다 두드리지 않음 · 4군 ①).
-        this.patchMsg(id, { step, sentAt: null, code, notBefore: this.d.now() + HELD_REFUSED_BACKOFF_MS, note: "마스터 창에 확인할 것이 떠 있어서 쓰지 않았어요 — 그 확인이 끝나면 보낼게요." });
+        this.patchMsg(id, { ...merged, step, sentAt: null, code, notBefore: this.d.now() + HELD_REFUSED_BACKOFF_MS, note: "마스터 창에 확인할 것이 떠 있어서 쓰지 않았어요 — 그 확인이 끝나면 보낼게요." });
         return;
-      }
-      if (step === "failed") {
-        this.patchMsg(id, { step, code, note: `보내지 못했어요${code ? ` (${code})` : ""}.` });
+      } else if (step === "failed") {
+        this.patchMsg(id, { ...merged, step, code, note: `보내지 못했어요${code ? ` (${code})` : ""}.` });
         return;
+      } else {
+        this.patchMsg(id, { ...merged, step, code, note: step === "queued_hold" ? "업데이트 중이라 차례를 기다려요 — 끝나면 데몬이 전달해요." : undefined });
+        if (step === "injected" || step === "checking") this.scheduleReads();
       }
-      this.patchMsg(id, { step, code, note: step === "queued_hold" ? "업데이트 중이라 차례를 기다려요 — 끝나면 데몬이 전달해요." : undefined });
-      if (step === "injected" || step === "checking") this.scheduleReads();
     } finally {
       this.writing = false;
     }

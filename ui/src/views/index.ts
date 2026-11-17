@@ -42,6 +42,8 @@ export function bootViews(deps: BootDeps): { core: ChatCore; registry: Registry<
     clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
     store,
     working: deps.working,
+    // (조각 3) 데몬 사건 구독 — main.ts 를 건드리지 않고 같은 Tauri 전역을 쓴다(core 가 대화 화면이 켜졌을 때만 부름 · 작업 화면 invoke 0 유지).
+    listen: (name, handler) => (window as unknown as { __TAURI__: { event: { listen(n: string, h: (e: { payload: unknown }) => void): Promise<() => void> } } }).__TAURI__.event.listen(name, handler),
   });
   const views: ViewDescriptor<ChatState, ChatCore>[] = [
     {

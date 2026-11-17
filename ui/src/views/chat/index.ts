@@ -4,8 +4,9 @@
 // 최소 계약 4칸 = [data-min=confirms|lastSendStep|masterHealth|errors] · 화면 바꾸기는 공통 자리(#view-switch).
 
 import type { ViewContext, ViewInstance, ViewModule } from "../contract";
-import { errorCount, HEALTH_LABEL, lastSendStep, needsClick, POLL_MS, type ChatCore, type ChatState } from "../core";
+import { DUP, dupPending, errorCount, HEALTH_LABEL, lastSendStep, needsClick, POLL_MS, type ChatCore, type ChatState } from "../core";
 import { canRetry, STEP_LABEL, type Msg } from "../judge/msgstep";
+import { AUTO_STEP_LABEL, type AutoMsg } from "../judge/autostep";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -75,7 +76,7 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
     input.addEventListener("keydown", onKey);
     form.addEventListener("submit", onSubmit);
 
-    const bubble = (m: Msg): HTMLLIElement => {
+    const bubble = (m: Msg, s: ChatState): HTMLLIElement => {
       const li = el("li", `cv-msg cv-me step-${m.step}`);
       li.dataset.msgId = m.id;
       li.append(el("div", "cv-text", m.text));
@@ -83,8 +84,12 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
       meta.dataset.step = m.step;
       li.append(meta);
       if (m.note) li.append(el("div", "cv-note", m.note));
-      if (needsClick(m)) {
-        const b = el("button", "cv-retry cv-confirm", "이 말 보내기");
+      // (조각 3 · PRD FR-A2a) 오래 걸려요 = 마스터 상태를 함께 보인다(근거 없이 「못 보냄」으로 바꾸지 않음 · 다시 보내기 0).
+      if (m.step === "slow") li.append(el("div", "cv-note cv-slow-health", `마스터 상태: ${HEALTH_LABEL[s.health]} — 다시 보내지 않고 계속 확인해요.`));
+      // (조각 3) 같은 말 겹침: 앞 말이 끝나기 전에는 누를 단추가 없다(불명·확인 중 = 다시 보내기 0).
+      const dupBlocked = m.code === DUP && dupPending(s.msgs, m.text, m.id);
+      if (needsClick(m) && !dupBlocked) {
+        const b = el("button", "cv-retry cv-confirm", m.code === DUP ? "한 번 더 보내기" : "이 말 보내기");
         b.type = "button";
         b.addEventListener("click", (e) => {
           if (!e.isTrusted) return; // 복원·10분 넘은 말은 사람의 신뢰 클릭으로만(자동 제출 0)
@@ -92,7 +97,7 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
         });
         li.append(b);
       }
-      if (canRetry(m)) {
+      if (canRetry(m) && !dupPending(s.msgs, m.text, m.id)) {
         const b = el("button", "cv-retry", "다시 보내기");
         b.type = "button";
         b.addEventListener("click", (e) => {
@@ -101,6 +106,13 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
         });
         li.append(b);
       }
+      return li;
+    };
+    // (조각 3) 기계 문안(깨움 말·1회 안내) = 사람 말이 아니므로 말풍선이 아니라 한 줄 표지(§5-2 auto · 단계는 큐 사건으로만).
+    const autoLine = (a: AutoMsg): HTMLLIElement => {
+      const li = el("li", `cv-auto auto-${a.step}`, `자동 안내: ${AUTO_STEP_LABEL[a.step]}`);
+      li.dataset.entry = a.entryId;
+      li.dataset.step = a.step;
       return li;
     };
     const masterBubble = (text: string): HTMLLIElement => {
@@ -126,12 +138,13 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
       notice.textContent = s.notice ?? "";
       const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
       log.replaceChildren();
-      if (s.msgs.length === 0 && s.stray.length === 0) log.append(empty);
+      if (s.msgs.length === 0 && s.stray.length === 0 && s.autos.length === 0) log.append(empty);
       for (const m of s.msgs) {
-        log.append(bubble(m));
+        log.append(bubble(m, s));
         for (const r of m.replies) log.append(masterBubble(r.text));
       }
       for (const r of s.stray) log.append(masterBubble(r.text));
+      for (const a of s.autos) log.append(autoLine(a));
       if (atBottom) log.scrollTop = log.scrollHeight;
     };
     ctx.subscribe(paint);

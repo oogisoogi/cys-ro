@@ -19,6 +19,12 @@ export const READ_AFTER_MS: readonly number[] = [1_000, 3_000, 7_000];
 export const U20_PASTE_RECORD_FORM: "unmeasured" | "verbatim" | "collapsed" = "unmeasured";
 /** M8(세션 레코드에 uuid/parentUuid 가 있는가) — **측정 대기**. 없으면 답을 그 말에 묶지 않는다(「답함」 0 · 말풍선은 「마스터」 일반 줄로). */
 export const M8_UUID_CHAIN: "unmeasured" | "present" | "absent" = "unmeasured";
+/** (조각 3) 원자 제출 요청이 이만큼 응답 없이 걸려 있으면 「보내는 중」 → 「확인 중」(§5-2 「근거 3초 넘게 없음」 · PRD M2 3초). 응답이 오면 그 응답으로 바뀐다. */
+export const SENDING_SILENT_MS = 3_000;
+/** (조각 3) 데몬 `input.refused_at_write`(쓰기 직전 재판정 · 제출 키를 쓰지 않음 · handlers.rs approval_write_guard)를 보낸 말에 잇는 창.
+ *  그 사건에는 요청 번호가 없다 → 같은 좌석 · 보낸 지 이 시간 안 · 아직 증거 없는 **가장 최근** 말 하나만(쓰기는 한 번에 1건이라 겹치지 않음).
+ *  창 = 원자 제출 최대 0.84초(0.5 M1) + 사건 전달 여유. 설계 목표값. */
+export const REFUSED_AT_WRITE_WINDOW_MS = 5_000;
 
 export type Step = "held" | "sending" | "injected" | "delivered" | "replying" | "replied" | "failed" | "checking" | "slow" | "queued_hold";
 
@@ -59,6 +65,8 @@ export interface Msg {
   notBefore?: number;
   /** 다시 보내기를 이미 썼는가(확정 실패 때 1회만 · NFR-R1) */
   retried?: boolean;
+  /** (조각 3) 원자 제출을 보낸 마스터 좌석 번호 — 좌석에 걸린 데몬 사건(쓰기 직전 거부)을 이 말에 잇는 데 씀 */
+  seat?: number;
 }
 
 export interface Rec {
@@ -163,13 +171,47 @@ export function applyRecords(msgs: readonly Msg[], recs: readonly Rec[], consume
   return { msgs: out, stray, consumed: used };
 }
 
-/** 시간·활동에 따른 단계 갱신(순수): 답이 붙은 말은 마스터가 쉬면 「답함」 · 근거 없는 대기 120초 → 「오래 걸려요」. */
+/** 시간·활동에 따른 단계 갱신(순수): 답이 붙은 말은 마스터가 쉬면 「답함」 · 전달된 뒤 마스터가 일하면 「답하는 중」(조각 3) ·
+ *  응답 없는 보내기 3초 → 「확인 중」(조각 3) · 근거 없는 대기 120초 → 「오래 걸려요」.
+ *  masterWorking = null(모름 · 이 값이 그 기록보다 옛 관측일 수 있음)이면 활동으로는 아무것도 칠하지 않는다. */
 export function settleSteps(msgs: readonly Msg[], now: number, masterWorking: boolean | null): Msg[] {
   return msgs.map((m) => {
     if ((m.step === "replying" || m.step === "delivered") && m.replies.length > 0 && masterWorking === false) return { ...m, step: "replied" as Step };
+    if (m.step === "delivered" && masterWorking === true) return { ...m, step: "replying" as Step };
+    if (m.step === "sending" && m.sentAt !== null && now - m.sentAt >= SENDING_SILENT_MS) return { ...m, step: "checking" as Step, code: "no_answer_yet", note: "보낸 요청의 답을 기다리는 중이에요 — 다시 보내지 않아요." };
     if ((m.step === "injected" || m.step === "checking") && m.sentAt !== null && now - m.sentAt >= SLOW_MS) return { ...m, step: "slow" as Step };
     return m;
   });
+}
+
+/** (조각 3) 근거(결속 세션 기록)로 칠한 단계 — 뒤늦게 온 원자 제출 응답(written·불명)이 이것을 「전달 확인 중」으로 되돌리지 않는다. */
+const EVIDENCED: ReadonlySet<Step> = new Set<Step>(["delivered", "replying", "replied"]);
+
+/** (조각 3) 원자 제출 응답을 지금 단계에 합친다(순수). 확정(바이트 0 = 붙잡음·정비 보류·못 보냄)은 늘 이긴다 —
+ *  그때 세션 기록에서 짝지은 user 레코드는 이 말의 것이 아니었다(같은 글이 다른 길로 들어옴)이므로 짝을 푼다. written·불명은 근거 단계를 되돌리지 않는다. */
+export function mergeOutcome(cur: Msg, outcomeStep: Step): Partial<Msg> {
+  const definite = outcomeStep === "held" || outcomeStep === "failed" || outcomeStep === "queued_hold";
+  if (EVIDENCED.has(cur.step) && !definite) return {};
+  if (cur.step === "checking" && cur.code === "refused_at_write" && !definite) return {}; // 쓰기 직전 거부 사건이 응답보다 먼저 왔음 — 그 근거가 「썼음」보다 정확하다
+  if (EVIDENCED.has(cur.step) && definite) return { step: outcomeStep, userUuid: null, thread: [], replies: [] };
+  return { step: outcomeStep };
+}
+
+/** (조각 3) 데몬 `input.refused_at_write`(좌석 = seat · 받은 시각 now) → 그 좌석에 방금 쓴 말 하나를 「확인 중」으로(순수).
+ *  본문은 입력줄에 남았고 제출 키만 안 들어갔다 → 다시 보내기 0(사람이 작업 화면에서 Enter·지우기) · 뒤 말은 문턱 `draft` 가 붙잡는다(데몬이 미제출 계수를 되돌림). */
+export function applyRefusedAtWrite(msgs: readonly Msg[], seat: number, now: number): Msg[] {
+  let pick = -1;
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i];
+    if (m.seat !== seat || m.sentAt === null || m.userUuid) continue;
+    if (m.step !== "sending" && m.step !== "injected" && m.step !== "checking") continue;
+    if (now - m.sentAt < 0 || now - m.sentAt > REFUSED_AT_WRITE_WINDOW_MS) continue;
+    if (pick < 0 || (msgs[pick].sentAt as number) <= m.sentAt) pick = i;
+  }
+  if (pick < 0) return [...msgs];
+  return msgs.map((m, i) =>
+    i === pick ? { ...m, step: "checking" as Step, code: "refused_at_write", note: "마스터 창에 확인할 것이 떠서 보낸 말이 입력줄에 남았을 수 있어요 — 작업 화면에서 확인한 뒤 Enter 를 누르거나 지워 주세요(다시 보내지 않아요)." } : m,
+  );
 }
 
 /** 다시 보내기 단추를 둘 수 있는가 — 확정 실패 + 아직 다시 보낸 적 없음만(불명·재시도 중·붙잡음 = 0 · 같은 말 두 번 방지). */

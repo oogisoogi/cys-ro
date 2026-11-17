@@ -20,6 +20,8 @@ export const HOLD_MAX = 20;
 export const LOG_MAX = 200;
 /** 대화 화면이 켜져 있을 때 마스터 상태 조회 주기(작업 화면 3초 고리와 같은 박자 · 조각 2 에서 한 벌로 합침 📌). */
 export const POLL_MS = 3_000;
+/** 쓰기 직전 입력줄 관측(org.status 왕복)의 유효 상한(설계 목표값) — 넘으면 그 관측으로 쓰지 않는다(0.5 M12: 데몬 몫 < 1ms). */
+export const OBS_MAX_MS = 500;
 /** 앱을 다시 켜기 전에 붙잡아 둔(저장소에서 읽은) 말 — 자동으로 보내지 않는다. */
 export const RESTORED = "restored";
 /** 앞 말을 쓰는 중에 받은 말의 붙잡음 표지(앞 말이 끝나면 바로 문턱에 건다). */
@@ -98,6 +100,8 @@ export class ChatCore {
   private polling = false;
   private offset: number | null = null;
   private sessionId: string | null = null;
+  /** 이 결속 세션에서 이미 근거로 쓴 레코드 uuid — 말 목록 정리와 무관하게 유지 · 세션이 바뀌면 비움(codex 2R major). */
+  private consumed = new Set<string>();
   private reading = false;
   private readTimers = new Set<unknown>();
   private attached = false;
@@ -160,11 +164,12 @@ export class ChatCore {
       if (o.v !== 1 || !Array.isArray(o.items)) return;
       const msgs: Msg[] = [];
       for (const it of o.items.slice(0, HOLD_MAX)) {
-        const x = it as { id?: unknown; text?: unknown; at?: unknown };
-        if (typeof x.id !== "string" || typeof x.text !== "string" || typeof x.at !== "number") continue;
+        const x = it as { text?: unknown; at?: unknown };
+        if (typeof x.text !== "string" || typeof x.at !== "number") continue;
         // ★저장소 글은 자동으로 보내지 않는다(codex 1R blocking — 저장소 변조·손상 글이 사람 표지를 달고 원장 무기록 오너 입력이 되는 길).
         //   사람이 「이 말 보내기」를 눌러야(신뢰 클릭) 다듬기(composeOutbound)부터 다시 거쳐 새 말로 간다.
-        msgs.push({ id: x.id, text: x.text, createdAt: x.at, sentAt: null, step: "held", code: RESTORED, note: "앱을 다시 켜기 전에 붙잡아 둔 말이에요 — 보내려면 「이 말 보내기」를 눌러 주세요.", thread: [], replies: [] });
+        // 저장소 id 는 믿지 않는다 — 새 말 id(`m…`)와 겹칠 수 없는 내부 id(`r…`)를 준다(codex 2R blocking: 같은 id 로 복원 /clear 가 새 말 대신 선택되던 길).
+        msgs.push({ id: `r${msgs.length + 1}`, text: x.text, createdAt: x.at, sentAt: null, step: "held", code: RESTORED, note: "앱을 다시 켜기 전에 붙잡아 둔 말이에요 — 보내려면 「이 말 보내기」를 눌러 주세요.", thread: [], replies: [] });
       }
       this.s = { ...this.s, msgs };
     } catch {
@@ -203,12 +208,14 @@ export class ChatCore {
   // ---------- 데몬 무리 ----------
 
   /** 마스터 상태 + 승인 대기를 새로 받는다. 실패는 undefined/null(모름). */
+  /** 승인 대기(feed)를 먼저, **입력줄 상태(org.status)를 마지막에** 받는다 — 마지막 관측 뒤 다른 응답을 기다리지 않게(codex 2R blocking).
+   *  org.status 왕복이 OBS_MAX_MS 를 넘으면 그 관측은 낡은 것으로 보고 모름(undefined → 붙잡음). */
   private async fetchFresh(): Promise<{ master: MasterRow | null | undefined; approvals: number[] | null }> {
-    const [org, feed] = await Promise.all([
-      this.d.invoke("org_status", { socket: null }).catch(() => undefined),
-      this.d.invoke("feed_list", { status: "pending" }).catch(() => undefined),
-    ]);
-    return { master: org === undefined ? undefined : masterRowOf(org, this.d.working), approvals: feed === undefined ? null : approvalSeatsOf(feed) };
+    const feed = await this.d.invoke("feed_list", { status: "pending" }).catch(() => undefined);
+    const t0 = this.d.now();
+    const org = await this.d.invoke("org_status", { socket: null }).catch(() => undefined);
+    const stale = this.d.now() - t0 > OBS_MAX_MS;
+    return { master: org === undefined || stale ? undefined : masterRowOf(org, this.d.working), approvals: feed === undefined ? null : approvalSeatsOf(feed) };
   }
 
   private gateOf(f: { master: MasterRow | null | undefined; approvals: number[] | null }): GateVerdict {
@@ -264,12 +271,18 @@ export class ChatCore {
 
   /** 앱을 다시 켜기 전에 붙잡아 둔 말 — 사람이 「이 말 보내기」를 눌렀을 때만(다듬기부터 다시 · 새 번호). 막히면 그 말은 그대로 둔다. */
   async confirmRestored(id: string): Promise<void> {
-    const m = this.s.msgs.find((x) => x.id === id);
-    if (!m || m.step !== "held" || m.code !== RESTORED) return;
-    const text = this.admit(m.text);
-    if (text === null) return;
+    const hits = this.s.msgs.filter((x) => x.id === id);
+    if (hits.length !== 1) return; // 같은 id 가 둘 이상이면 고르지 않는다
+    const m = hits[0];
+    if (m.step !== "held" || m.code !== RESTORED) return;
+    // 이 말을 **대체**하는 동작이라 붙잡음 상한에 자기 자신을 세지 않는다(codex 2R major — 상한 20 교착). 다듬기는 그대로.
+    const out = composeOutbound(m.text);
+    if (!out.ok) {
+      this.set({ notice: out.msg });
+      return;
+    }
     this.putMsgs(this.s.msgs.filter((x) => x.id !== id));
-    await this.accept(text);
+    await this.accept(out.text);
   }
 
   /** 확정 실패한 말을 사람이 다시 보냄(1회 · 새 번호). */
@@ -409,6 +422,7 @@ export class ChatCore {
         if (sid !== this.sessionId) {
           // 결속 세션이 바뀜(마스터 다시 켜짐·/clear) — 새 파일 끝에서 다시 시작(옛 오프셋으로 새 파일을 읽지 않는다)
           this.sessionId = sid;
+          this.consumed.clear();
           this.offset = null;
           await this.initOffset();
           return;
@@ -422,7 +436,8 @@ export class ChatCore {
         const recs = Array.isArray(r.records) ? (r.records as Rec[]) : [];
         this.offset = r.next_offset;
         if (recs.length) {
-          const applied = applyRecords(this.s.msgs, recs);
+          const applied = applyRecords(this.s.msgs, recs, this.consumed);
+          for (const u of applied.consumed) this.consumed.add(u);
           // 「답함」은 여기서 칠하지 않는다(null) — 들고 있는 활동 값은 이 답보다 옛 관측일 수 있다. 다음 조회(poll)의 새 관측으로만.
           const known = new Set(this.s.stray.map((x) => x.uuid).filter((u): u is string => u !== null));
           const fresh = applied.stray.filter((x) => x.uuid === null || !known.has(x.uuid));

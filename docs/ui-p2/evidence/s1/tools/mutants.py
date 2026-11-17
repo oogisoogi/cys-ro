@@ -19,6 +19,9 @@ for l in lines:
 core = ui/"src/views/core.ts"
 csrc = core.read_text()
 muts = [
+  ("core: 관측 유효시간 검사 제거", "const stale = this.d.now() - t0 > OBS_MAX_MS;", "const stale = false;"),
+  ("core: 세션 소비 집합 대신 빈 집합", "applyRecords(this.s.msgs, recs, this.consumed)", "applyRecords(this.s.msgs, recs, new Set())"),
+  ("core: 복원 말 내부 id 대신 저장소 id", "msgs.push({ id: `r${msgs.length + 1}`, text: x.text", "msgs.push({ id: String((it as { id?: unknown }).id), text: x.text"),
   ("core: 복원 말 자동 제출 허용(RESTORED 거름 제거)", "m.step === \"held\" && m.code !== RESTORED && (m.notBefore", "m.step === \"held\" && (m.notBefore"),
   ("core: 보내는 중 영속 실패해도 씀", "notBefore: undefined })) {", "notBefore: undefined }) && false) {"),
   ("core: reset 무시", "        if (r.reset === true) {", "        if (false) {"),

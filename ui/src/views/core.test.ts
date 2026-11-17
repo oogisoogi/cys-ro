@@ -1,7 +1,7 @@
 // (cysr-ui-slice1) 공통층 보내기 길 시험 — 대역 데몬(invoke 기록기) · 가짜 시계·타이머.
 // 판정 단위 = 「PTY 쓰기 = chat_send 호출 수」(원자 제출 1요청 = 쓰기 1 · 데몬 거부는 바이트 0).
 import { describe, it, expect } from "bun:test";
-import { ChatCore, HELD_REFUSED_BACKOFF_MS, HOLD_KEY, healthOf, RESTORED, type Deps } from "./core";
+import { ChatCore, HELD_REFUSED_BACKOFF_MS, HOLD_KEY, HOLD_MAX, healthOf, LOG_MAX, OBS_MAX_MS, RESTORED, type Deps } from "./core";
 import { READ_AFTER_MS } from "./judge/msgstep";
 
 interface Call {
@@ -175,7 +175,7 @@ describe("문턱 실패 → 쓰기 0 · 붙잡음(조건 하나씩)", () => {
     h.mem.set(HOLD_KEY, JSON.stringify({ v: 1, items: [{ id: "x1", text: "/clear", at: 1 }] }));
     const c = new ChatCore(h.deps);
     for (let i = 0; i < 3; i++) await c.poll();
-    await c.confirmRestored("x1");
+    await c.confirmRestored(c.state.msgs[0].id);
     expect(h.writes()).toHaveLength(0);
     expect(c.state.notice).toMatch(/명령/);
   });
@@ -192,6 +192,85 @@ describe("문턱 실패 → 쓰기 0 · 붙잡음(조건 하나씩)", () => {
     await h.core.poll();
     expect(h.writes()).toHaveLength(0);
     expect(h.core.state.msgs[0].code).toBe("store_failed");
+  });
+});
+
+describe("codex 2R — 마지막 관측 · 복원 id · 상한 교착 · 단회 소비", () => {
+  it("feed 먼저 · org.status(입력줄) 마지막 · 그 뒤 다른 응답 기다림 0 → chat_send", async () => {
+    const h = harness();
+    h.core.attach();
+    await h.core.poll(); // 마스터를 알고 세션 시작점을 잡아 둔다
+    await h.flush();
+    h.calls.length = 0;
+    await h.core.send("안녕");
+    expect(h.calls.map((c) => c.cmd)).toEqual(["feed_list", "org_status", "chat_send"]);
+  });
+  it("org.status 왕복이 상한을 넘으면 그 관측으로 쓰지 않음(붙잡음)", async () => {
+    const h = harness();
+    const orig = h.deps.invoke;
+    h.deps.invoke = async (cmd, args) => {
+      if (cmd === "org_status") h.setNow(h.getNow() + OBS_MAX_MS + 1);
+      return orig(cmd, args);
+    };
+    await h.core.send("안녕");
+    expect(h.writes()).toHaveLength(0);
+    expect(h.core.state.msgs[0].code).toBe("status_unknown");
+  });
+  it("저장소 id 는 쓰지 않음 — 새 말 id 와 같은 값이어도 새 말 보내기가 복원 `/clear` 를 고르지 않음", async () => {
+    const h = harness();
+    h.mem.set(HOLD_KEY, JSON.stringify({ v: 1, items: [{ id: `m${h.getNow()}-1`, text: "/clear", at: 1 }] }));
+    const c = new ChatCore(h.deps);
+    expect(c.state.msgs[0].id.startsWith("r")).toBe(true);
+    await c.send("안녕");
+    expect(h.writes().map((x) => x.args?.text)).toEqual(["안녕"]);
+    expect(c.state.msgs.find((m) => m.code === RESTORED)?.text).toBe("/clear");
+  });
+  it("복원 말 20개(상한)여도 「이 말 보내기」는 자기 자신을 대체(교착 0)", async () => {
+    const h = harness();
+    h.mem.set(HOLD_KEY, JSON.stringify({ v: 1, items: Array.from({ length: HOLD_MAX }, (_, i) => ({ id: "x", text: `말${i}`, at: i })) }));
+    const c = new ChatCore(h.deps);
+    expect(c.state.msgs).toHaveLength(HOLD_MAX);
+    await c.confirmRestored(c.state.msgs[0].id);
+    expect(h.writes().map((x) => x.args?.text)).toEqual(["말0"]);
+  });
+  it("소비한 uuid 는 말 목록과 무관하게 세션 동안 한 번만 — 같은 레코드를 다시 받아도 다른 같은 글 말에 배정 0", async () => {
+    const h = harness();
+    h.core.attach();
+    await h.core.poll();
+    await h.flush();
+    await h.core.send("안녕");
+    h.st.file.push({ uuid: "u1", parent: null, role: "user", text: "안녕", ts: null });
+    await h.core.readTranscript();
+    expect(h.core.state.msgs[0].step).toBe("delivered");
+    // 같은 레코드가 다시 들어오는 상황(대역 파일에 같은 줄을 한 번 더)
+    h.setNow(h.getNow() + 31_000);
+    await h.core.send("안녕");
+    h.st.file.push({ uuid: "u1", parent: null, role: "user", text: "안녕", ts: null });
+    await h.core.readTranscript();
+    expect(h.core.state.msgs[1].step).toBe("injected");
+  });
+});
+
+describe("codex 2R — 말 목록에서 밀려난 뒤에도 소비 이력 유지", () => {
+  it("답함 말이 LOG_MAX 정리로 사라진 뒤 같은 uuid 레코드가 다시 와도 새 같은 글 말에 배정 0", async () => {
+    let outcome: Record<string, unknown> = { outcome: "written", result: { sent: true } };
+    const h = harness({ sendOutcome: () => outcome });
+    h.core.attach();
+    await h.core.poll();
+    await h.flush();
+    await h.core.send("안녕");
+    h.st.file.push({ uuid: "u1", parent: null, role: "user", text: "안녕", ts: null }, { uuid: "a1", parent: "u1", role: "assistant", text: "답", ts: null });
+    await h.core.readTranscript();
+    await h.core.poll();
+    expect(h.core.state.msgs[0].step).toBe("replied");
+    outcome = { outcome: "failed", code: "not_found" };
+    for (let i = 0; i < LOG_MAX; i++) await h.core.send(`채움${i}`);
+    expect(h.core.state.msgs.some((m) => m.userUuid === "u1")).toBe(false); // 밀려남
+    outcome = { outcome: "written", result: { sent: true } };
+    await h.core.send("안녕");
+    h.st.file.push({ uuid: "u1", parent: null, role: "user", text: "안녕", ts: null });
+    await h.core.readTranscript();
+    expect(h.core.state.msgs[h.core.state.msgs.length - 1].step).toBe("injected");
   });
 });
 

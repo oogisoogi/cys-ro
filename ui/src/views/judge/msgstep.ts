@@ -108,16 +108,19 @@ function recordAfter(r: Rec, sentAt: number): boolean {
 
 export interface ApplyResult {
   msgs: Msg[];
+  /** 이번에 근거로 쓴(또는 본) 레코드 uuid — 호출자가 세션별 소비 집합에 더한다 */
+  consumed: string[];
   /** 어느 말에도 묶이지 않은 마스터 글(uuid 사슬이 없을 때 등) — 「마스터」 일반 말풍선 */
   stray: Reply[];
 }
 
 /** 새로 읽은 레코드들을 말 목록에 반영(순수 · 입력 불변 · 레코드 순서대로). */
-export function applyRecords(msgs: readonly Msg[], recs: readonly Rec[]): ApplyResult {
+export function applyRecords(msgs: readonly Msg[], recs: readonly Rec[], consumed: ReadonlySet<string> = new Set()): ApplyResult {
   const out = msgs.map((m) => ({ ...m, thread: [...m.thread], replies: [...m.replies] }));
   const stray: Reply[] = [];
   // 한 레코드는 한 번만 근거가 된다(codex 1R major — 다시 읽은 기록으로 같은 uuid 를 두 말에 배정하던 길): 이미 짝지은 user·이미 이은 사슬 레코드는 건너뜀.
-  const seen = new Set<string>();
+  const seen = new Set<string>(consumed);
+  const used: string[] = [];
   for (const m of out) {
     if (m.userUuid) seen.add(m.userUuid);
     for (const u of m.thread) seen.add(u);
@@ -125,7 +128,10 @@ export function applyRecords(msgs: readonly Msg[], recs: readonly Rec[]): ApplyR
   for (const r of recs) {
     if (r.sidechain) continue;
     if (r.uuid !== null && seen.has(r.uuid)) continue;
-    if (r.uuid !== null) seen.add(r.uuid);
+    if (r.uuid !== null) {
+      seen.add(r.uuid);
+      used.push(r.uuid);
+    }
     if (r.role === "user") {
       const cand = out
         .filter((m) => AWAITING.has(m.step) && !m.userUuid && m.sentAt !== null && recordAfter(r, m.sentAt))
@@ -154,7 +160,7 @@ export function applyRecords(msgs: readonly Msg[], recs: readonly Rec[]): ApplyR
       stray.push({ uuid: r.uuid, text: r.text });
     }
   }
-  return { msgs: out, stray };
+  return { msgs: out, stray, consumed: used };
 }
 
 /** 시간·활동에 따른 단계 갱신(순수): 답이 붙은 말은 마스터가 쉬면 「답함」 · 근거 없는 대기 120초 → 「오래 걸려요」. */

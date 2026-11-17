@@ -196,17 +196,30 @@ pub(crate) fn transcript_path(cfg: Option<&str>, cwd: Option<&str>, sid: Option<
     Ok(cfg_path.join("projects").join(transcript_slug(cwd)).join(format!("{sid}.jsonl")))
 }
 
-/// 경로 경계(파일 IO): 링크를 푼 실제 경로가 링크를 푼 `<cfg>/projects` 아래의 보통 파일이어야 한다(codex 1R major — 심볼릭 링크로 밖을 읽는 길).
-pub(crate) fn confine(cfg: &std::path::Path, path: &std::path::Path) -> Result<std::path::PathBuf, &'static str> {
-    let root = std::fs::canonicalize(cfg.join("projects")).map_err(|_| "no_projects_dir")?;
-    let real = std::fs::canonicalize(path).map_err(|_| "no_file")?;
-    if !real.starts_with(&root) {
-        return Err("outside_config_dir");
-    }
-    if !std::fs::metadata(&real).map(|m| m.is_file()).unwrap_or(false) {
+/// 결속 파일 열기(파일 IO) — **먼저 열고**, 연 핸들이 「설정 폴더(신뢰 뿌리) 아래 정확히 그 상대 경로」의 파일인지 확인한다(codex 2R major).
+/// - 뿌리 아래 경로에 심볼릭 링크가 끼면(파일·중간 폴더) 실제 경로 ≠ 기대 경로 → 거부(`projects` 아래 다른 파일 허용 0).
+/// - 확인과 열기 사이 바꿔치기: 핸들의 (장치, inode) = 지금 기대 경로 파일의 (장치, inode) 일 때만(유닉스). 읽기는 그 핸들로만.
+pub(crate) fn open_bound(cfg: &std::path::Path, expected: &std::path::Path) -> Result<std::fs::File, &'static str> {
+    let rel = expected.strip_prefix(cfg).map_err(|_| "outside_config_dir")?;
+    let f = std::fs::File::open(expected).map_err(|_| "no_file")?;
+    let hm = f.metadata().map_err(|_| "no_file")?;
+    if !hm.is_file() {
         return Err("not_a_file");
     }
-    Ok(real)
+    let want = std::fs::canonicalize(cfg).map_err(|_| "no_config_dir")?.join(rel);
+    let real = std::fs::canonicalize(expected).map_err(|_| "no_file")?;
+    if real != want {
+        return Err("symlinked_path");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let wm = std::fs::symlink_metadata(&want).map_err(|_| "no_file")?;
+        if wm.file_type().is_symlink() || wm.dev() != hm.dev() || wm.ino() != hm.ino() {
+            return Err("changed_while_opening");
+        }
+    }
+    Ok(f)
 }
 
 /// `chat_transcript` — 좌석에 결속된 세션 기록을 `after_offset` 부터 읽는다(`from_end` = 읽지 않고 끝 오프셋만).
@@ -227,25 +240,24 @@ pub async fn chat_transcript(socket: Option<String>, surface_id: u64, after_offs
     let sid = sid.unwrap_or_default();
     // 다른 프로젝트 폴더는 뒤지지 않는다(codex 1R major — 같은 이름 파일이 다른 cwd 의 기록일 수 있음). 링크를 풀어 설정 폴더 안인지 확인.
     let cfg = lrow["claude_config_dir"].as_str().unwrap_or_default();
-    let path = match confine(std::path::Path::new(cfg), &path) {
-        Ok(p) => p,
+    let file = match open_bound(std::path::Path::new(cfg), &path) {
+        Ok(f) => f,
         Err(why) => return Ok(json!({"status": "unknown", "why": why, "session_id": sid})),
     };
     if from_end.unwrap_or(false) {
         // 대화 화면을 처음 띄울 때 — 지난 기록을 다 읽지 않고 끝에서 시작한다(이후 새 바이트만).
-        let size = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
+        let size = file.metadata().map_err(|e| e.to_string())?.len();
         return Ok(json!({"status": "ok", "session_id": sid, "next_offset": size, "size": size, "records": [], "bad_lines": 0, "reset": false}));
     }
-    read_transcript_from(&path, after_offset).map(|mut v| {
+    read_transcript_from(file, after_offset).map(|mut v| {
         v["session_id"] = json!(sid);
         v
     })
 }
 
-/// 파일 하나를 오프셋부터 읽는다(파일 IO · 경로는 위에서 정한 결속 파일 하나).
-pub(crate) fn read_transcript_from(path: &std::path::Path, after_offset: u64) -> Result<Value, String> {
+/// 연 결속 파일 핸들을 오프셋부터 읽는다(파일 IO · 경로로 다시 열지 않음).
+pub(crate) fn read_transcript_from(mut f: std::fs::File, after_offset: u64) -> Result<Value, String> {
     use std::io::{Read, Seek, SeekFrom};
-    let mut f = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let size = f.metadata().map_err(|e| e.to_string())?.len();
     // 파일이 줄었으면(새 세션이 같은 이름? · 잘림) 처음부터 — 화면은 `reset` 으로 짝짓기를 다시 한다.
     let (start, reset) = if after_offset > size { (0, true) } else { (after_offset, false) };
@@ -348,21 +360,31 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn confine_rejects_symlink_escape_and_accepts_real_file() {
+    fn open_bound_rejects_links_below_root_and_accepts_exact_file() {
         let base = std::env::temp_dir().join(format!("viewcore-c-{}", std::process::id()));
-        let proj = base.join("cfg/projects/-p");
-        std::fs::create_dir_all(&proj).unwrap();
-        let ok = proj.join("abcdefgh.jsonl");
+        let cfg = base.join("cfg");
+        let pa = cfg.join("projects/-a");
+        let pb = cfg.join("projects/-b");
+        std::fs::create_dir_all(&pa).unwrap();
+        std::fs::create_dir_all(&pb).unwrap();
+        let ok = pa.join("abcdefgh.jsonl");
         std::fs::write(&ok, "{}\n").unwrap();
+        let other = pb.join("otherid0.jsonl");
+        std::fs::write(&other, "{}\n").unwrap();
         let secret = base.join("secret.txt");
         std::fs::write(&secret, "x").unwrap();
-        let link = proj.join("linked00.jsonl");
-        std::os::unix::fs::symlink(&secret, &link).unwrap();
-        let cfg = base.join("cfg");
-        assert!(confine(&cfg, &ok).is_ok());
-        assert_eq!(confine(&cfg, &link).unwrap_err(), "outside_config_dir");
-        assert_eq!(confine(&cfg, &proj.join("missing0.jsonl")).unwrap_err(), "no_file");
-        assert_eq!(confine(&cfg, &proj).unwrap_err(), "not_a_file");
+        let out_link = pa.join("linked00.jsonl");
+        std::os::unix::fs::symlink(&secret, &out_link).unwrap();
+        let in_link = pa.join("inside00.jsonl");
+        std::os::unix::fs::symlink(&other, &in_link).unwrap();
+        std::os::unix::fs::symlink(&pb, cfg.join("projects/-c")).unwrap();
+        assert!(open_bound(&cfg, &ok).is_ok());
+        assert_eq!(open_bound(&cfg, &out_link).unwrap_err(), "symlinked_path", "뿌리 밖 링크");
+        assert_eq!(open_bound(&cfg, &in_link).unwrap_err(), "symlinked_path", "projects 안 다른 파일 링크(codex 2R)");
+        assert_eq!(open_bound(&cfg, &cfg.join("projects/-c/otherid0.jsonl")).unwrap_err(), "symlinked_path", "중간 폴더 링크");
+        assert_eq!(open_bound(&cfg, &pa.join("missing0.jsonl")).unwrap_err(), "no_file");
+        assert_eq!(open_bound(&cfg, &pa).unwrap_err(), "not_a_file");
+        assert_eq!(open_bound(&cfg, &secret).unwrap_err(), "outside_config_dir");
         std::fs::remove_dir_all(&base).ok();
     }
 
@@ -374,16 +396,16 @@ mod tests {
         let long = "가".repeat(5000);
         let l1 = json!({"type":"user","uuid":"u1","message":{"content": long}}).to_string();
         std::fs::write(&p, format!("{l1}\n")).unwrap();
-        let r = read_transcript_from(&p, 0).unwrap();
+        let r = read_transcript_from(std::fs::File::open(&p).unwrap(), 0).unwrap();
         assert_eq!(r["records"][0]["text"].as_str().unwrap().chars().count(), 5000);
         let off = r["next_offset"].as_u64().unwrap();
         let l2 = json!({"type":"assistant","uuid":"a1","parentUuid":"u1","message":{"content":[{"type":"text","text":"답"}]}}).to_string();
         std::fs::write(&p, format!("{l1}\n{l2}\n")).unwrap();
-        let r2 = read_transcript_from(&p, off).unwrap();
+        let r2 = read_transcript_from(std::fs::File::open(&p).unwrap(), off).unwrap();
         assert_eq!(r2["records"].as_array().unwrap().len(), 1);
         assert_eq!(r2["records"][0]["text"], "답");
         assert_eq!(r2["reset"], false);
-        let r3 = read_transcript_from(&p, 10_000_000).unwrap();
+        let r3 = read_transcript_from(std::fs::File::open(&p).unwrap(), 10_000_000).unwrap();
         assert_eq!(r3["reset"], true);
         std::fs::remove_dir_all(&dir).ok();
     }

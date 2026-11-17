@@ -1384,12 +1384,27 @@ async fn async_main() {
     // 굶기면 heartbeat interval 태스크가 못 돌아 stale → 경합자 데드맨이 정당한 승자를 Dead 오판·SIGKILL 할
     // 수 있다. spawn_blocking 으로 별도 블로킹 풀에 태워 main 태스크가 yield 해도 interval 이 계속 돌게 한다.
     // ★1.1.16(U02): 이 데몬 레인의 저널만 복구(부서 데몬 = 부서 저널) · 팩 적용이 진행 중(apply-lock 보유)이면 손대지 않는다.
-    match tokio::task::spawn_blocking(cys::pack::recover_pack_journal_unless_busy).await {
-        Ok(Ok(true)) => eprintln!("[cysd] pack-update orphan journal recovered (self-heal)"),
-        Ok(Ok(false)) => {}
-        Ok(Err(e)) => eprintln!("[cysd] pack journal recovery skipped: {e}"),
-        Err(e) => eprintln!("[cysd] pack journal recovery task failed: {e}"),
-    }
+    //   ★codex 1R(blocking #3): 진행 중 적용(Busy)·복구 실패(Err)면 아래 자동 설치도 하지 않는다 — 반쯤 적용된 팩 위에 설치하지 않는다
+    //   (다음 기동·pack-update 가 저널을 먼저 정리한 뒤 설치한다).
+    let pack_journal_settled = match tokio::task::spawn_blocking(cys::pack::recover_pack_journal_unless_busy).await {
+        Ok(Ok(cys::pack::JournalRecovery::Recovered)) => {
+            eprintln!("[cysd] pack-update orphan journal recovered (self-heal)");
+            true
+        }
+        Ok(Ok(cys::pack::JournalRecovery::Nothing)) => true,
+        Ok(Ok(cys::pack::JournalRecovery::Busy)) => {
+            eprintln!("[cysd] pack update in progress (apply-lock held) — journal and pack auto-install left to it");
+            false
+        }
+        Ok(Err(e)) => {
+            eprintln!("[cysd] pack journal recovery failed — pack auto-install skipped this boot: {e}");
+            false
+        }
+        Err(e) => {
+            eprintln!("[cysd] pack journal recovery task failed — pack auto-install skipped this boot: {e}");
+            false
+        }
+    };
     // 온보딩②: 팩이 이 바이너리 버전으로 미커밋일 때만 자동 설치 — 신규 머신·바이너리 업그레이드·
     // 팩 소실(.pack-version/매니페스트 부재 = 게이트 개방)이 실행 조건. launch-agent·디렉티브·acl이
     // "init-pack을 아는 사람"에게만 동작하는 것을 없앤다는 원목적은 유지된다(보존 모드·사용자 파일 불가침).
@@ -1397,7 +1412,7 @@ async fn async_main() {
     // 재기동·로그온 자동기동마다 전량 스윕(320파일 read+해시)이 돌던 비용 제거(2026-07-12 Win11 이슈 실측).
     // 손상+마커 무결 상태의 치유는 cys init-pack/pack-update/doctor --fix 명시 경로가 담당한다
     // (매 부트 전량 치유는 seed-once 원복 사고(7-12)의 원인 기전 — 의도적 축소).
-    if !cys::pack::pack_current_for(env!("CARGO_PKG_VERSION")) {
+    if pack_journal_settled && !cys::pack::pack_current_for(env!("CARGO_PKG_VERSION")) {
         // ★리뷰어1 F1: install(false)도 동기 블로킹(최대 320파일 read+해시+write)이라 위 heartbeat 굶김
         // 위험이 동일 — spawn_blocking 으로 분리한다. (pack_current_for 게이트는 stat 2회라 동기 유지.)
         // W0-d: cysd 부팅 자동설치는 라이브 팩 쓰기 프로덕션 진입점 — 인가 부여.

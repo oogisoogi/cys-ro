@@ -7026,12 +7026,7 @@ mod spawn_policy_tests {
                     }
                 }
                 let head = lines.get(j).map(|l| l.trim()).unwrap_or("");
-                let after_vis = match head.strip_prefix("pub") {
-                    Some(r) if r.starts_with(' ') => r.trim_start(),
-                    Some(r) if r.starts_with('(') => r.find(')').map(|p| r[p + 1..].trim_start()).unwrap_or(head),
-                    _ => head,
-                };
-                if after_vis.starts_with("mod ") && head.ends_with('{') && lexed.code_start.get(j).copied().unwrap_or(false) {
+                if is_test_mod_head(head) && lexed.code_start.get(j).copied().unwrap_or(false) {
                     // ★(codex 1R·2R major) 모듈 끝 = 머리의 `{` 와 짝인 `}` — 들여쓰기가 아니라 **중괄호 짝**으로 찾는다(문자열·문자·주석·
                     //   raw 문자열 안의 중괄호는 세지 않음 · rustfmt 를 CI 가 강제하지 않으므로 들여쓰기는 경계 근거가 못 된다). 그 짝이
                     //   같은 들여쓰기의 `}` 한 줄이 아니면(`    };`·`        };`·`} // x` 등) 모르는 꼴 = 실패(뒤 운영 코드를 삼키지 않는다).
@@ -7125,52 +7120,46 @@ mod spawn_policy_tests {
         Ok(out)
     }
 
-    /// 줄 전체가 속성(`#[…]`·`#![…]`) 하나 이상으로만 이뤄졌는가 — 대괄호 짝(따옴표 안 무시)으로 각 속성의 끝을 찾고, 뒤에 다른 글자가 남으면 거짓.
+    /// 줄 전체가 **단순 속성**(`#[이름(인자)]` — 글자·숫자·`_`·`:`·`(`·`)`·`,`·`=`·공백만) 하나 이상인가. 따옴표·대괄호 중첩·주석·문자 리터럴이
+    /// 섞이면 거짓(★codex 6R·7R — 대괄호 짝을 어휘 없이 믿을 수 없다 · 거짓 = 시험 모듈로 보지 않음 = 운영으로 세는 보수 쪽).
     fn is_pure_attr_line(t: &str) -> bool {
-        // ★(codex 7R major) 주석(`/*`·`//`)·문자 리터럴(`'`)이 섞인 줄은 대괄호 짝을 믿을 수 없다 — 순수 속성 줄로 보지 않는다(보수 쪽).
-        if t.contains("/*") || t.contains("//") || t.contains('\'') {
+        let mut rest = t.trim();
+        if rest.is_empty() {
             return false;
         }
-        let c: Vec<char> = t.trim().chars().collect();
-        let mut i = 0usize;
-        if c.is_empty() {
-            return false;
-        }
-        while i < c.len() {
-            let start = if c[i] == '#' && c.get(i + 1) == Some(&'[') {
-                i + 1
-            } else if c[i] == '#' && c.get(i + 1) == Some(&'!') && c.get(i + 2) == Some(&'[') {
-                i + 2
-            } else {
+        while !rest.is_empty() {
+            let Some(body) = rest.strip_prefix("#[") else { return false };
+            let Some(end) = body.find(']') else { return false };
+            let inner = &body[..end];
+            if inner.is_empty()
+                || !inner.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | ':' | '(' | ')' | ',' | '=' | ' '))
+            {
                 return false;
-            };
-            let (mut k, mut depth, mut in_str) = (start, 0i32, false);
-            loop {
-                let Some(&ch) = c.get(k) else { return false };
-                if in_str {
-                    if ch == '\\' {
-                        k += 1;
-                    } else if ch == '"' {
-                        in_str = false;
-                    }
-                } else if ch == '"' {
-                    in_str = true;
-                } else if ch == '[' {
-                    depth += 1;
-                } else if ch == ']' {
-                    depth -= 1;
-                    if depth == 0 {
-                        break;
-                    }
-                }
-                k += 1;
             }
-            i = k + 1;
-            while i < c.len() && c[i].is_whitespace() {
-                i += 1;
-            }
+            rest = body[end + 1..].trim_start();
         }
         true
+    }
+
+    /// 들여쓴 시험 모듈 머리의 **정형**인가 — `mod 이름 {` · `pub mod 이름 {` · `pub(가시성) mod 이름 {`(가시성 = 글자·`:`·공백) 한 줄 그대로.
+    /// 그 밖(주석·속성이 섞인 줄 · 한 줄 모듈 `mod t {}`)은 거짓 = 걷지 않음(보수 쪽).
+    fn is_test_mod_head(head: &str) -> bool {
+        let rest = if let Some(r) = head.strip_prefix("pub(") {
+            let Some(p) = r.find(')') else { return false };
+            if !r[..p].chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | ':' | ' ')) {
+                return false;
+            }
+            r[p + 1..].strip_prefix(' ').unwrap_or("")
+        } else if let Some(r) = head.strip_prefix("pub ") {
+            r
+        } else {
+            head
+        };
+        let Some(r) = rest.strip_prefix("mod ") else { return false };
+        let Some(name) = r.strip_suffix(" {") else { return false };
+        !name.is_empty()
+            && name.chars().next().is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
+            && name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
     }
 
     /// 어휘 분석 결과 — `code_start[l]` = l 번째 줄의 시작이 코드인가(블록 주석·문자열·raw 문자열 안이 아님) · `braces` = 코드 중괄호의
@@ -7420,11 +7409,15 @@ mod spawn_policy_tests {
             "mod outer {\n    #[cfg(test)]\n    #[allow(dead_code)] mod tests {}\n    mod production {\n        pub fn keep() {}\n    }\n}\n",
         );
         assert!(same_line.contains("mod production") && same_line.contains("pub fn keep"), "같은 줄 항목 뒤 운영 모듈을 걷었다: {same_line}");
-        // 순수 속성 줄(여러 개·문자열 속 `]`)은 그대로 건너뛴다.
+        // 단순 속성 줄(여러 개)은 건너뛴다 · 따옴표가 든 속성 줄은 정형 밖 = 걷지 않는다(보수 쪽 — 운영으로 셈).
         let attrs = production_slice(
-            "mod imp {\n    #[cfg(test)]\n    #[allow(dead_code)] #[doc = \"a]b\"]\n    mod tests {\n        fn drop_me() {}\n    }\n    fn keep() {}\n}\n",
+            "mod imp {\n    #[cfg(test)]\n    #[allow(dead_code)] #[cfg_attr(test, allow(unused))]\n    pub(crate) mod tests {\n        fn drop_me() {}\n    }\n    fn keep() {}\n}\n",
         );
-        assert!(!attrs.contains("drop_me") && attrs.contains("fn keep"), "순수 속성 줄을 건너뛰지 못했다: {attrs}");
+        assert!(!attrs.contains("drop_me") && attrs.contains("fn keep"), "단순 속성 줄을 건너뛰지 못했다: {attrs}");
+        let quoted = production_slice(
+            "mod imp {\n    #[cfg(test)]\n    #[doc = \"a]b\"]\n    mod tests {\n        fn kept_t() {}\n    }\n    fn keep() {}\n}\n",
+        );
+        assert!(quoted.contains("kept_t") && quoted.contains("fn keep"), "정형 밖 속성 줄인데 걷었다: {quoted}");
         // codex 7R 반례: 주석 속 대괄호(`/* [ */` … `// ]`)로 같은 줄 항목까지 속성으로 읽으면 다음 운영 모듈을 걷는다.
         let cm = production_slice(
             "mod outer {\n    #[cfg(test)]\n    #[allow(dead_code /* [ */)] mod tests {} // ]\n    mod production {\n        pub fn keep() {}\n    }\n}\n",

@@ -7,6 +7,9 @@ import { DUP, dupPending, needsClick } from "./core";
 import { canRetry, STEP_LABEL, type Msg } from "./judge/msgstep";
 import { Sim, type SendKind } from "./testkit";
 
+/** 진단·넓게 돌리기용 환경 변수(타입 검증 설정에 node 타입이 없어 전역에서 읽음) */
+const ENV: Record<string, string | undefined> = (globalThis as unknown as { process?: { env: Record<string, string | undefined> } }).process?.env ?? {};
+
 function rng(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
@@ -177,13 +180,13 @@ export async function runScenario(seed: number, t: Tally, dump = false): Promise
 describe("M2·M3 하네스 — 행방 불명 0 · 틀림 0 · 같은 말 두 번 0", () => {
   it("씨앗 1~200 · 시나리오마다 6분(가짜 시계) · 0.25초 이하 간격 표본", async () => {
     const t: Tally = { scenarios: 0, msgs: 0, samples: 0, missing: 0, wrong: 0, dupRisk: 0, multiWrite: 0, steps: {}, kinds: {}, wrongWhy: [] };
-    const only = Number(process.env.MSGHARNESS_DUMP_SEED ?? 0); // 진단용: 그 씨앗 하나만 돌려 쓰기·기록·말 목록을 찍는다
+    const only = Number(ENV.MSGHARNESS_DUMP_SEED ?? 0); // 진단용: 그 씨앗 하나만 돌려 쓰기·기록·말 목록을 찍는다
     if (only > 0) {
       await runScenario(only, t, true);
       console.log(t.wrongWhy.join("\n"));
       return;
     }
-    const n = Number(process.env.MSGHARNESS_SEEDS ?? 200); // 기본 200 · 넓게 돌릴 때 환경 변수로
+    const n = Number(ENV.MSGHARNESS_SEEDS ?? 200); // 기본 200 · 넓게 돌릴 때 환경 변수로
     for (let seed = 1; seed <= n; seed++) await runScenario(seed, t);
     console.log(`[M2·M3] ${JSON.stringify({ ...t, wrongWhy: t.wrongWhy })}`);
     expect(t.scenarios).toBe(n);
@@ -195,5 +198,5 @@ describe("M2·M3 하네스 — 행방 불명 0 · 틀림 0 · 같은 말 두 번
     expect(t.multiWrite).toBe(0);
     // 하네스가 실제로 여러 갈래를 지났는지(빈 시험 방지)
     for (const s of ["held", "injected", "delivered", "replied", "failed", "checking", "slow"]) expect(t.steps[s] ?? 0).toBeGreaterThan(0);
-  }, 600_000);
+  });
 });

@@ -180,7 +180,8 @@ export class Sim {
 
   /** 마이크로태스크를 끝까지 비운다(매크로태스크 경계 2번 — 사슬 깊이와 무관). 시계는 움직이지 않는다. */
   async flush(): Promise<void> {
-    for (let i = 0; i < 2; i++) await new Promise<void>((r) => setImmediate(r));
+    const imm = (globalThis as unknown as { setImmediate(f: () => void): void }).setImmediate;
+    for (let i = 0; i < 2; i++) await new Promise<void>((r) => imm(r));
   }
 
   async advance(ms: number, each?: () => void): Promise<void> {

@@ -324,7 +324,7 @@ describe("같은 말 겹침 — 중복 쓰기 0", () => {
         for (const m of sim.core.state.msgs) if (needsClick(m)) await sim.core.confirmHeld(m.id); // 단추를 눌러 봄(있다면)
         await sim.advance(120_000 - at + 30_000);
         expect(sim.sends()).toBe(1);
-        expect(sim.writes.filter((w) => w.bytesIn).length).toBeLessThanOrEqual(1);
+        expect(sim.writes.filter((w) => w.bytesIn).length <= 1).toBe(true);
         total++;
       }
     }
@@ -362,7 +362,7 @@ describe("R3 — 사람 입력 30초 묶음(0.5 숫자 5 = 31.2초)", () => {
     });
     expect(tB).not.toBeNull();
     expect((tB as unknown as number) - tA).toBeGreaterThanOrEqual(30_000);
-    expect((tB as unknown as number) - tA).toBeLessThanOrEqual(33_100);
+    expect((tB as unknown as number) - tA <= 33_100).toBe(true);
   });
 });
 
@@ -382,8 +382,10 @@ describe("여러 줄 · `/`·`!` 막기(살균 뒤)", () => {
       const o = composeOutbound(bad);
       expect(o.ok).toBe(false);
     }
-    expect(composeOutbound("안녕\n/clear")).toMatchObject({ ok: false, code: "later_line_slash" });
-    expect(composeOutbound("안녕\n  /clear")).toMatchObject({ ok: false, code: "later_line_slash" });
-    expect(composeOutbound("경로는 a/b 이고\n둘째 줄")).toMatchObject({ ok: true });
+    for (const t of ["안녕\n/clear", "안녕\n  /clear"]) {
+      const o = composeOutbound(t);
+      expect(o.ok ? null : o.code).toBe("later_line_slash");
+    }
+    expect(composeOutbound("경로는 a/b 이고\n둘째 줄").ok).toBe(true);
   });
 });

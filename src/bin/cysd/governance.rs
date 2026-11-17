@@ -37197,8 +37197,11 @@ mod h_machine_hold_tests {
     /// withheld-Return accounting specimens (`send_settle_tests::c7d_*`). Renamed `_of_52`.
     /// ★(1.1.16 · cysr-1116-backlog-fix-1118) 52 → **54**: class C +1(붙여넣기 앞 거부 바이트 증거 · 기록기 좌석) · class B +1(거부된 사람 본문 위
     /// 스케줄 push 의 초안 보류). 둘 다 새 검체라 윈도우 검증력을 줄이지 않는다(같은 동작의 비기록기 형제는 윈도우에서 돈다). Renamed `_of_54`.
+    /// ★(1.1.16 · cysr-1116-backlog-fix2-1118) 54 → **56**: class C +2(재검 R1·R2 의 바이트 증거 · 기록기 좌석). 새 검체라 윈도우 검증력을 줄이지
+    /// 않는다 — R3 표(`b16fix2_dialog_variants_and_false_positive_table`)·집행 결정표(`d24_approval_actuation_bytes_table`)·스캔(`b16fix_approval_scan_…`)은
+    /// 윈도우에서도 돈다(R1·R2 의 좌석 동작 자체는 윈도우 검체 없음 — HANDOFF §11 📌). Renamed `_of_56`.
     #[test]
-    fn r2f_dm_windows_ignore_attributes_are_exactly_the_decided_set_of_54() {
+    fn r2f_dm_windows_ignore_attributes_are_exactly_the_decided_set_of_56() {
         const REASON_A: &str = "S21 제출 정착·창 위 CR 보류는 유닉스 한정(send_settle_applies)";
         const REASON_B: &str = "윈도우 기본 H 마스크는 draft 축을 끈다(hold_axes_default(true)) — 이 검체는 유닉스 기본(draft 축) 동작을 본다";
         const REASON_C: &str = "좌석 명령이 POSIX 셸 문법";
@@ -37264,8 +37267,11 @@ mod h_machine_hold_tests {
             //   거부된 사람 본문 위 스케줄 push 의 초안 보류(draft 축 = 유닉스 기본).
             ("b16_fix_tests", "b16fix_paste_refused_when_dialog_rises_during_ctrl_u_settle_bytes", 'C'),
             ("schedule", "b16fix_refused_human_body_holds_schedule_push", 'B'),
+            // ★(1.1.16 · cysr-1116-backlog-fix2-1118) +2: 재검 R1(feed 항목만 남은 좌석 = 쓰기 0 바이트) · R2(계획 승인 창 집행 0 바이트) 의 기록기 좌석.
+            ("b16_fix2_tests", "b16fix2_plan_dialog_is_block_only_for_operator_actuation", 'C'),
+            ("b16_fix2_tests", "b16fix2_stale_feed_item_refuses_before_any_write", 'C'),
         ];
-        assert_eq!(want.len(), 54, "결정한 집합은 54건(24 + 18 + 9 + 3)");
+        assert_eq!(want.len(), 56, "결정한 집합은 56건(24 + 18 + 11 + 3)");
         let needle = concat!("#[cfg_attr(not(unix), ", "ignore = \"");
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/cysd");
         let mut got: Vec<(String, String, char)> = Vec::new();
@@ -37292,8 +37298,8 @@ mod h_machine_hold_tests {
         got.sort();
         let mut want_sorted: Vec<(String, String, char)> = want.iter().map(|(a, b, c)| (a.to_string(), b.to_string(), *c)).collect();
         want_sorted.sort();
-        assert_eq!(got.len(), 54, "윈도우 `ignore` 가 {}건이다(결정 54건) — 새로 더했거나 뺐다: {got:?}", got.len());
-        assert_eq!(got, want_sorted, "윈도우 `ignore` 집합이 결정한 54건과 다르다 — 목록과 `ignore` 사유를 함께 고쳐라");
+        assert_eq!(got.len(), 56, "윈도우 `ignore` 가 {}건이다(결정 56건) — 새로 더했거나 뺐다: {got:?}", got.len());
+        assert_eq!(got, want_sorted, "윈도우 `ignore` 집합이 결정한 56건과 다르다 — 목록과 `ignore` 사유를 함께 고쳐라");
     }
 }
 

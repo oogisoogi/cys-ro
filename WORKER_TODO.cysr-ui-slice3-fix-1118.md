@@ -10,8 +10,8 @@
 - [x] D O11·O14·O13 붉게 만드는 시험
 - [x] E 보이지 않는 글자 떼고 첫 글자 / ! 막기 · 둘째 줄 같은 규칙 · 줄 나눔 확대
 - [x] F 쓰기 직전 org 재조회 500ms 상한 · 실패=쓰기 0 붙잡음+안내 · 보내는 중 굳음 0
-- [ ] G HANDOFF 하네스 숫자 정정
+- [x] G HANDOFF 하네스 숫자 정정
 - [x] H 같은 글 다른 말 전달됨 이상 → X 다시 보내기 거둠 + 안내
-- [ ] 시험: bun · tsc · chat_gate · tickrec_gate OFF · M2·M3 하네스(+다른 씨앗 3) · 뮤턴트(41+새) · cargo viewcore
-- [ ] codex 1R(고친 머리 · 02:51 뒤)
-- [ ] HANDOFF 델타 · 커밋 · 【확인요청】
+- [x] 시험: bun · tsc · chat_gate · tickrec_gate OFF · M2·M3 하네스(+다른 씨앗 3) · 뮤턴트(41+새) · cargo viewcore
+- [x] codex 1R(e8ddaf65 BLOCK → 고침 1회 60185fe2)
+- [x] HANDOFF 델타 · 커밋 · 【확인요청】

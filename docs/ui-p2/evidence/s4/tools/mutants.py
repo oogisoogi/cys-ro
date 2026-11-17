@@ -77,6 +77,11 @@ MUTANTS = [
     ("major 4: 처리 직전 org 꼴 깨짐 통과", C, "if (org === undefined || stale || mo === undefined) {", "if (org === undefined || stale) {", False),
     ("major 4: 마스터 좌석 모름에도 직접 단추", J, "if (i.masterSid === undefined) return null; // 마스터 좌석 모름", "if (false) return null; // 마스터 좌석 모름", False),
     ("major 5: 기록만 해소도 「했어요」", C, "if (actuatedOf(res) !== null) this.notice", "if (true) this.notice", True),
+    # codex 2R(6bbaae53 · 코드 ee510b85) 고침 되돌림
+    ("2R major 1: masterOf 깨진 번호 행을 버리고 마스터 없음(옛 동작)", C, "if (live.some((r) => typeof r.surface_id !== \"number\" || !Number.isSafeInteger(r.surface_id))) return undefined;", "if (false) return undefined;", False),
+    ("2R major 1: 주기 관측의 org 원문 마스터 행 대조 뺌", C, "if (org !== undefined && master !== undefined && masterOf(org) === undefined) master = undefined;", "", False),
+    ("2R minor: 물음 글 깎기 되살림", J, "const text = line.slice(ASK_PREFIX.length, line.length - MARK_END.length);", "const text = line.slice(ASK_PREFIX.length, line.length - MARK_END.length).trim();", False),
+    ("2R minor: resolveKey 깎기 되살림", J, "return Array.from(s).slice(0, RESOLVE_KEY_LEN).join(\"\");", "return Array.from(s.trim()).slice(0, RESOLVE_KEY_LEN).join(\"\");", False),
     ("major 6: 공백 정규화 되살림(앞 고침 F4)", J, "return key.length > 0 && Array.from(key).length >= need && question.startsWith(key);", "const n = (x: string) => x.replace(/\\s+/g, \" \").trim();\n  return n(key).length > 0 && Array.from(n(key)).length >= Math.min(RESOLVE_KEY_LEN, Array.from(n(question)).length) && n(question).startsWith(n(key));", False),
 ]
 

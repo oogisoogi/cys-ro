@@ -345,8 +345,11 @@ pub async fn chat_transcript(socket: Option<String>, surface_id: u64, after_offs
     };
     if from_end.unwrap_or(false) {
         // 대화 화면을 처음 띄울 때 — 지난 기록을 다 읽지 않고 끝에서 시작한다(이후 새 바이트만).
+        // 시작점 = **마지막 완성 줄의 끝**(쓰는 중인 미완 줄은 뒤 읽기가 그 줄 처음부터 읽는다 · codex 2R major — 줄 중간을 시작점으로 잡으면
+        // 앞 훑기와 뒤 읽기가 같은 줄을 서로 다른 위치로 받아 해결 표식을 두 번 셌다).
         let size = file.metadata().map_err(|e| e.to_string())?.len();
-        return Ok(json!({"status": "ok", "session_id": sid, "next_offset": size, "size": size, "records": [], "bad_lines": 0, "reset": false}));
+        let start = last_line_end(&file, size)?;
+        return Ok(json!({"status": "ok", "session_id": sid, "next_offset": start, "size": size, "records": [], "bad_lines": 0, "reset": false}));
     }
     read_transcript_from(file, after_offset).map(|mut v| {
         v["session_id"] = json!(sid);
@@ -395,6 +398,24 @@ pub(crate) fn read_transcript_from(mut f: std::fs::File, after_offset: u64) -> R
         "skipped_bytes": skipped,
         "long_line_open": long_open,
     }))
+}
+
+/// `size` 앞 마지막 `\n` 바로 뒤 오프셋(= 마지막 완성 줄의 끝 · 미완 줄의 시작) · `\n` 이 없으면 0. 뒤에서 64 KiB 씩 거슬러 읽는다(끝이 `\n` 이면 1바이트).
+pub(crate) fn last_line_end(mut f: &std::fs::File, size: u64) -> Result<u64, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut end = size;
+    let mut chunk = vec![0u8; 64 * 1024];
+    while end > 0 {
+        let n = end.min(64 * 1024);
+        let from = end - n;
+        f.seek(SeekFrom::Start(from)).map_err(|e| e.to_string())?;
+        f.read_exact(&mut chunk[..n as usize]).map_err(|e| e.to_string())?;
+        if let Some(i) = chunk[..n as usize].iter().rposition(|&b| b == b'\n') {
+            return Ok(from + i as u64 + 1);
+        }
+        end = from;
+    }
+    Ok(0)
 }
 
 /// `from` 부터 `size` 까지 첫 `\n` 뒤 오프셋(내용은 버림 · 64 KiB 씩) · 없으면 None.
@@ -610,5 +631,33 @@ mod tests {
         assert_eq!(act["actuated"], "return");
         let e = confirm_reply_outcome(&json!({"ok": false, "error": {"code": "approval_screen_gone", "message": "m"}})).unwrap_err();
         assert_eq!(e, "approval_screen_gone: m");
+    }
+
+    #[test]
+    fn from_end_start_is_last_complete_line_end() {
+        // (조각 4 · codex 2R major) 미완 줄(줄 끝 없음)이 있으면 시작점 = 그 줄의 처음 — 뒤 읽기가 그 줄을 처음부터 읽고 앞 훑기는 그 줄을 「뒤」로 본다
+        let dir = std::env::temp_dir().join(format!("viewcore-le-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("s.jsonl");
+        let l1 = json!({"type":"assistant","message":{"content":"a"}}).to_string();
+        let open = |b: &str| {
+            std::fs::write(&p, b).unwrap();
+            std::fs::File::open(&p).unwrap()
+        };
+        let whole = format!("{l1}\n");
+        assert_eq!(last_line_end(&open(&whole), whole.len() as u64).unwrap(), whole.len() as u64, "끝이 줄바꿈 = 크기 그대로");
+        let partial = format!("{l1}\n ");
+        assert_eq!(last_line_end(&open(&partial), partial.len() as u64).unwrap(), (l1.len() + 1) as u64, "미완 줄(공백 1바이트) = 그 줄 처음");
+        assert_eq!(last_line_end(&open(" "), 1).unwrap(), 0, "줄바꿈 없음 = 0");
+        assert_eq!(last_line_end(&open(""), 0).unwrap(), 0);
+        let big = format!("{l1}\n{}", "x".repeat(200_000));
+        assert_eq!(last_line_end(&open(&big), big.len() as u64).unwrap(), (l1.len() + 1) as u64, "64 KiB 넘게 거슬러 읽음");
+        // codex 2R 재현: 미완 줄이 나중에 완성되면 그 줄의 위치 = 시작점(뒤) — 앞 훑기(at < 시작점)와 겹치지 않는다
+        let done = format!("{l1}\n {}\n", json!({"type":"assistant","message":{"content":"⟪확인 해결: x⟫"}}));
+        let start = (l1.len() + 1) as u64;
+        let r = read_transcript_from(open(&done), 0).unwrap();
+        let at: Vec<u64> = r["records"].as_array().unwrap().iter().map(|x| x["at"].as_u64().unwrap()).collect();
+        assert_eq!(at, vec![0, start], "완성된 줄의 위치 = 시작점(앞 기록 아님)");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

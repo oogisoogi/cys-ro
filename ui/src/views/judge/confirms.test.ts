@@ -95,6 +95,15 @@ describe("열린 물음 다시 놀기(FR-C3 — 해결 표식이 올 때만 닫�
     expect(openQuestions([ask(q), ...ev]).length).toBe(0);
     expect(openQuestions([ask(q), { kind: "resolve", key: "이번 금요일 배포를 다음 주", uuid: null }]).length).toBe(1);
   });
+  it("(codex 2R minor) 물음 글도 깎지 않음 — 20번째 글자가 끝 공백인 물음 · 앞 공백 물음의 원문 앞 20자 해결이 닫음", () => {
+    const q = "abcdefghijklmnopqrs ";
+    const ev = markersOf(A(`⟪확인 요청: ${q}⟫`));
+    expect(ev).toEqual([{ kind: "ask", text: q, uuid: "a1" }]);
+    expect(openQuestions([...ev, ...markersOf(A(`⟪확인 해결: ${resolveKey(q)}⟫`, "a2"))]).length).toBe(0);
+    const lead = markersOf(A("⟪확인 요청:  앞 공백 물음⟫"));
+    expect(openQuestions([...lead, ...markersOf(A("⟪확인 해결:  앞 공백 물음⟫", "a3"))]).length).toBe(0);
+    expect(markersOf(A("⟪확인 요청:   ⟫"))).toEqual([]); // 빈 물음은 여전히 0
+  });
   it("(codex 1R major 6) 대조 = 원문 코드 포인트 그대로 — 공백 수가 다른 해결은 닫지 않고 · 띄어쓰기 두 칸 물음의 정확한 앞 20자는 닫음", () => {
     // ① 거짓 해결: 물음 「…t  X」(두 칸) 를 「…t X」(한 칸) 해결이 닫으면 안 된다
     expect(resolves("abcdefghijklmnopqrst  X", "abcdefghijklmnopqrst X")).toBe(false);
@@ -180,6 +189,8 @@ describe("마스터 멈춤 판정(FR-C5 · 직접 단추는 이때만)", () => {
     expect(masterSilenced(stall({ deadman: d, masterSid: 9, masterIdleSecs: 999 }))).toBeNull();
     // (검증 F2 ⓐ) 마스터 상태 모름이면 deadman 을 멈춤 근거로 안 씀
     expect(masterSilenced(stall({ deadman: d, masterSid: undefined, masterAlive: null, masterIdleSecs: null }))).toBeNull();
+    // (뮤턴트 「F2 마스터 모름이어도 deadman 근거」 생존 막음) 좌석 모름이면 생존 칸이 무엇이든 deadman 근거 아님 — masterSilenced 자체 계약
+    expect(masterSilenced(stall({ deadman: d, masterSid: undefined, masterAlive: true, masterIdleSecs: 120 }))).toBeNull();
     // (codex 1R major 1) 생존 모름(null)이어도 사건 뒤 새 출력 = 풀림 · 생존 모름 관측만으로는 deadman 근거 아님 · 꺼짐 확정(false)은 풀림 아님
     expect(deadmanRevived(stall({ deadman: d, masterAlive: null, masterIdleSecs: 0 }))).toBe(true);
     expect(deadmanRevived(stall({ deadman: d, masterAlive: null, masterIdleSecs: 120 }))).toBe(false);

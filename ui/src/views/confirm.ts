@@ -186,6 +186,8 @@ export class ConfirmBook {
   observe(feed: unknown, org: unknown, master: { surface_id: number; agent_alive: boolean | null } | null | undefined): void {
     if (feed !== undefined) this.approvals = approvalsOf(feed);
     else this.approvals = null;
+    // core 가 고른 마스터 행과 별개로 org 원문의 마스터 행이 깨졌으면 모름(codex 2R major · 주기 관측도 처리 직전과 같은 판정)
+    if (org !== undefined && master !== undefined && masterOf(org) === undefined) master = undefined;
     if (master === undefined) this.master = { sid: undefined, alive: null, idle: null };
     else if (master === null) this.master = { sid: null, alive: null, idle: null };
     else this.master = { sid: master.surface_id, alive: master.agent_alive, idle: idleOf(org, master.surface_id) };
@@ -321,14 +323,15 @@ function idleOf(org: unknown, sid: number): number | null {
   return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
 }
 
-/** org.status → 마스터 좌석(번호·생존)만 — gate.masterRowOf 와 같은 고르기(role master ∧ !exited · 번호 작은 것). */
-function masterOf(org: unknown): { surface_id: number; agent_alive: boolean | null } | null | undefined {
+/** org.status → 마스터 좌석(번호·생존)만 — gate.masterRowOf 와 같은 고르기(role master ∧ !exited · 번호 작은 것).
+ *  살아 있는 마스터 행의 좌석 번호가 깨졌으면 「마스터 없음(null)」이 아니라 「모름(undefined)」(codex 2R major — 「"7"」 같은 행을 버리고 null 로 확정하면
+ *  그 좌석이 지금 마스터인지 못 가린 채 직접 처리가 통과했다). 검증된 목록에 마스터 행이 없을 때만 null. */
+export function masterOf(org: unknown): { surface_id: number; agent_alive: boolean | null } | null | undefined {
   const rows = (org as { surfaces?: unknown } | null)?.surfaces;
   if (!Array.isArray(rows)) return undefined;
-  const ms = rows
-    .filter((r): r is Record<string, unknown> => !!r && typeof r === "object" && (r as { role?: unknown }).role === "master" && (r as { exited?: unknown }).exited !== true)
-    .filter((r) => typeof r.surface_id === "number" && Number.isSafeInteger(r.surface_id))
-    .sort((a, b) => (a.surface_id as number) - (b.surface_id as number));
+  const live = rows.filter((r): r is Record<string, unknown> => !!r && typeof r === "object" && (r as { role?: unknown }).role === "master" && (r as { exited?: unknown }).exited !== true);
+  if (live.some((r) => typeof r.surface_id !== "number" || !Number.isSafeInteger(r.surface_id))) return undefined;
+  const ms = live.sort((a, b) => (a.surface_id as number) - (b.surface_id as number));
   const r = ms[0];
   if (!r) return null;
   return { surface_id: r.surface_id as number, agent_alive: typeof r.agent_alive === "boolean" ? r.agent_alive : null };

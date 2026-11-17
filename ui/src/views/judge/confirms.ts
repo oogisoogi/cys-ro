@@ -44,8 +44,9 @@ export function markersOf(r: Rec): MarkerEvent[] {
     const line = raw.replace(/\s+$/, "");
     if (!line.endsWith(MARK_END)) continue;
     if (line.startsWith(ASK_PREFIX)) {
-      const text = line.slice(ASK_PREFIX.length, line.length - MARK_END.length).trim();
-      if (text) out.push({ kind: "ask", text, uuid: r.uuid });
+      // 깎지 않는다 — 해결 표식이 「물음 앞부분을 글자 그대로(띄어쓰기 포함)」 싣으므로 물음도 원문 그대로(codex 2R minor). 빈 물음만 거름.
+      const text = line.slice(ASK_PREFIX.length, line.length - MARK_END.length);
+      if (text.trim()) out.push({ kind: "ask", text, uuid: r.uuid });
     } else if (line.startsWith(RESOLVE_PREFIX)) {
       // 깎지 않는다 — 표식 안 글자 그대로(20번째 글자가 띄어쓰기여도 보존 · codex 1R major 6). 대조는 resolves().
       const key = line.slice(RESOLVE_PREFIX.length, line.length - MARK_END.length);
@@ -63,9 +64,9 @@ export function resolves(question: string, key: string): boolean {
   return key.length > 0 && Array.from(key).length >= need && question.startsWith(key);
 }
 
-/** 물음의 앞 20자(코드 포인트) — 해결 표식 대조 열쇠. */
+/** 물음의 앞 20자(코드 포인트 · 원문 그대로 · 깎지 않음) — 해결 표식 대조 열쇠. */
 export function resolveKey(s: string): string {
-  return Array.from(s.trim()).slice(0, RESOLVE_KEY_LEN).join("");
+  return Array.from(s).slice(0, RESOLVE_KEY_LEN).join("");
 }
 
 export interface Question {

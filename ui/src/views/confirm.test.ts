@@ -2,7 +2,7 @@
 // 판정 단위 = 「허락 집행 = confirm_reply 호출 수」(데몬 feed.reply · 처리 직전 재확인에 걸리면 0).
 import { describe, it, expect } from "bun:test";
 import { ChatCore, type Deps } from "./core";
-import { DECISION_LOG_KEY } from "./confirm";
+import { DECISION_LOG_KEY, masterOf } from "./confirm";
 import { ALLOW_AT_WORK_MSG, boundOf, CONFIRM_STALL_MS, RECORDED_ONLY_MSG, type FeedApproval } from "./judge/confirms";
 
 const body = (cmd: string) => `Do you want to proceed?\n— 명령 원문:\n${cmd}\n— 읽기 전용 판정(기계 추정 · 근거 아님): 쓰기·삭제 가능`;
@@ -462,6 +462,24 @@ describe("codex 1R(02:51 · e62e1fb0) 지적 고정", () => {
     expect(h.replies().length).toBe(0);
     expect(h.core.confirm.decisions.at(-1)?.outcome).toBe("org_unknown");
     // 꼴 깨진 org 를 본 뒤(마스터 상태 모름) 띠의 그 항목 = 직접 단추 0(「마스터가 확인하는 중」)
+    expect((h.core.confirm.band().items[0] as { stall: unknown }).stall).toBeNull();
+  });
+  it("2R major — 살아 있는 마스터 행의 좌석 번호가 깨짐(\"7\") = 마스터 없음이 아니라 모름 · 처리 직전 = 호출 0 · 주기 관측 = 직접 단추 0", async () => {
+    expect(masterOf({ surfaces: [{ role: "master", surface_id: "7", exited: false, agent_alive: true }] })).toBeUndefined();
+    expect(masterOf({ surfaces: [{ role: "master", surface_id: 5, exited: false, agent_alive: true }, { role: "master", surface_id: null, exited: false }] })).toBeUndefined();
+    expect(masterOf({ surfaces: [{ role: "master", surface_id: "7", exited: true }] })).toBeNull(); // 끝난 행은 고르지 않음 = 마스터 없음
+    expect(masterOf({ surfaces: [] })).toBeNull();
+    const h = harness();
+    h.st.feed = [h.helper({ screen_fingerprint: undefined })];
+    await h.open(2);
+    h.emit("approval.stalled", { request_id: "r1" }, 7);
+    const it0 = h.core.confirm.band().items[0] as { a: FeedApproval; stall: unknown };
+    expect(it0.stall).toBe("stalled_event");
+    h.st.orgOverride = { surfaces: [{ ...h.st.master, surface_id: "7" }] }; // 마스터가 7 로 옮겼는데 번호 칸이 깨짐
+    await h.core.confirm.decide(boundOf(it0.a), "deny");
+    expect(h.replies().length).toBe(0);
+    expect(h.core.confirm.decisions.at(-1)?.outcome).toBe("org_unknown");
+    h.core.confirm.observe({ items: h.st.feed }, h.st.orgOverride, { surface_id: 5, agent_alive: true }); // core 가 다른 행을 골라 넘겨도
     expect((h.core.confirm.band().items[0] as { stall: unknown }).stall).toBeNull();
   });
   it("major 5 — 데몬이 기록만 해소(actuated null) = 「했어요」 아님 · 작업 화면 확인 안내 · 기록 outcome recorded_only", async () => {

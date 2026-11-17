@@ -7,9 +7,9 @@
   --z-pane-overlay:      5;  /* 작업 영역 안의 겹침 — 분할선 히트존(.divider)·사이드바 폭 핸들(#wsbar-drag) */
   --z-hold-note:       800;  /* (1.1.8 U4 · 📌18) 좌석 0 상태 창 고정 안내(#update-hold-note · 아래 가장자리) — 복원 카드·메뉴·토스트 아래 · 작업 영역 위 */
   --z-restore-brief:   900;  /* (우리 v116 D4 #21) 복원 카드(#restore-brief · 오른쪽 위) — 토스트 아래 · 컨텍스트 메뉴 아래(값 900 그대로 · 1.1.8 토큰화) */
-  --z-ctx-menu:       1000;  /* 컨텍스트 메뉴·팝오버(#ctx-menu·#theme-pop) */
   --z-drop-indicator: 1200;  /* 사이드바 순서 바꾸기 삽입선(pointer-events:none) */
   --z-cc-panel:       1500;  /* Control Center 풀 패널(불투명 · 상단바 아래 전체 덮개) */
+  --z-ctx-menu:       1550;  /* 컨텍스트 메뉴·팝오버(#ctx-menu·#theme-pop) — Control Center 패널 **위**(1000 이던 때는 CC 를 연 채 「화면 설정」을 누르면 팝오버가 패널 뒤에 열려 안 보였다 · 2026-11-18 cysr-cc-popover-z-1118) · 팔레트·확인 창 아래 */
   --z-palette:        1600;  /* ⌘K 팔레트 */
   --z-toast-under-modal: 1650; /* 확인 창 밖의 창(입력·업데이트·피드백 — 위쪽에 조작부)이 떠 있는 동안의 토스트 — 그 창 밑·Control Center 위 */
   --z-modal:          1700;  /* 확인·입력·업데이트·피드백 창(.modal-overlay) — 모든 패널 위 */

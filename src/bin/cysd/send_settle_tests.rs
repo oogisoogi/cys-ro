@@ -2118,3 +2118,7 @@ fn b16_plain_withhold_keeps_agy_context_of_same_body() {
 // ★(1.1.16 · TICKET=cysr-1116-backlog-fix-1118) 독립 검증 지적 재현 → 단언 시험(같은 픽스처를 쓰는 자식 모듈).
 #[path = "b16_fix_tests.rs"]
 mod b16_fix;
+
+// ★(1.1.16 · TICKET=cysr-1116-backlog-fix2-1118) 재검 R1~R3 재현 → 단언 시험(같은 픽스처를 쓰는 자식 모듈).
+#[path = "b16_fix2_tests.rs"]
+mod b16_fix2;

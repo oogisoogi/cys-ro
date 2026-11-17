@@ -196,28 +196,74 @@ pub(crate) fn transcript_path(cfg: Option<&str>, cwd: Option<&str>, sid: Option<
     Ok(cfg_path.join("projects").join(transcript_slug(cwd)).join(format!("{sid}.jsonl")))
 }
 
-/// 결속 파일 열기(파일 IO) — **먼저 열고**, 연 핸들이 「설정 폴더(신뢰 뿌리) 아래 정확히 그 상대 경로」의 파일인지 확인한다(codex 2R major).
-/// - 뿌리 아래 경로에 심볼릭 링크가 끼면(파일·중간 폴더) 실제 경로 ≠ 기대 경로 → 거부(`projects` 아래 다른 파일 허용 0).
-/// - 확인과 열기 사이 바꿔치기: 핸들의 (장치, inode) = 지금 기대 경로 파일의 (장치, inode) 일 때만(유닉스). 읽기는 그 핸들로만.
+/// 결속 파일 열기(파일 IO) — 신뢰 뿌리(설정 폴더)를 연 **폴더 핸들**에서 상대 경로 요소를 하나씩 링크를 따르지 않고 연다(유닉스 `openat`
+/// + `O_NOFOLLOW`) — 중간 폴더·파일 어느 자리에 링크가 있거나 도중에 바뀌어도 뿌리 밖·다른 파일로 갈 수 없다(codex 2R·3R major).
+/// 경로 문자열로 다시 찾아 확인하는 단계가 없다(확인·열기 사이 바꿔치기 0). 뿌리 자체(설정 폴더)는 데몬이 준 값이라 링크여도 따른다.
+#[cfg(unix)]
 pub(crate) fn open_bound(cfg: &std::path::Path, expected: &std::path::Path) -> Result<std::fs::File, &'static str> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::io::FromRawFd;
     let rel = expected.strip_prefix(cfg).map_err(|_| "outside_config_dir")?;
-    let f = std::fs::File::open(expected).map_err(|_| "no_file")?;
-    let hm = f.metadata().map_err(|_| "no_file")?;
-    if !hm.is_file() {
+    let parts: Vec<&std::ffi::OsStr> = rel
+        .components()
+        .map(|c| match c {
+            std::path::Component::Normal(n) => Ok(n),
+            _ => Err("bad_component"),
+        })
+        .collect::<Result<_, _>>()?;
+    if parts.is_empty() {
+        return Err("bad_component");
+    }
+    let root = CString::new(cfg.as_os_str().as_bytes()).map_err(|_| "bad_component")?;
+    // SAFETY: 경로는 NUL 없는 CString · 돌려받은 fd 는 아래에서 닫거나 File 로 넘긴다.
+    let mut fd = unsafe { libc::open(root.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err("no_config_dir");
+    }
+    for (i, part) in parts.iter().enumerate() {
+        let last = i + 1 == parts.len();
+        let name = match CString::new(part.as_bytes()) {
+            Ok(n) => n,
+            Err(_) => {
+                unsafe { libc::close(fd) };
+                return Err("bad_component");
+            }
+        };
+        let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | if last { 0 } else { libc::O_DIRECTORY };
+        // SAFETY: fd 는 위에서 연 폴더 · name 은 NUL 없는 CString.
+        let next = unsafe { libc::openat(fd, name.as_ptr(), flags) };
+        unsafe { libc::close(fd) };
+        if next < 0 {
+            let e = std::io::Error::last_os_error().raw_os_error();
+            return Err(match e {
+                Some(libc::ELOOP) => "symlinked_path",
+                Some(libc::ENOTDIR) => "symlinked_path",
+                Some(libc::ENOENT) => "no_file",
+                _ => "no_file",
+            });
+        }
+        fd = next;
+    }
+    // SAFETY: fd 는 방금 연 유일한 소유 fd.
+    let f = unsafe { std::fs::File::from_raw_fd(fd) };
+    if !f.metadata().map(|m| m.is_file()).unwrap_or(false) {
         return Err("not_a_file");
     }
+    Ok(f)
+}
+
+/// 윈도 — 경로 요소별 링크 차단 열기가 없어 실제 경로 대조만(〔윈 실측 = 조각 10〕).
+#[cfg(not(unix))]
+pub(crate) fn open_bound(cfg: &std::path::Path, expected: &std::path::Path) -> Result<std::fs::File, &'static str> {
+    let rel = expected.strip_prefix(cfg).map_err(|_| "outside_config_dir")?;
     let want = std::fs::canonicalize(cfg).map_err(|_| "no_config_dir")?.join(rel);
-    let real = std::fs::canonicalize(expected).map_err(|_| "no_file")?;
-    if real != want {
+    if std::fs::canonicalize(expected).map_err(|_| "no_file")? != want {
         return Err("symlinked_path");
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let wm = std::fs::symlink_metadata(&want).map_err(|_| "no_file")?;
-        if wm.file_type().is_symlink() || wm.dev() != hm.dev() || wm.ino() != hm.ino() {
-            return Err("changed_while_opening");
-        }
+    let f = std::fs::File::open(&want).map_err(|_| "no_file")?;
+    if !f.metadata().map(|m| m.is_file()).unwrap_or(false) {
+        return Err("not_a_file");
     }
     Ok(f)
 }

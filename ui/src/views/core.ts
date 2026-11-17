@@ -210,19 +210,19 @@ export class ChatCore {
   /** 마스터 상태 + 승인 대기를 새로 받는다. 실패는 undefined/null(모름). */
   /** 승인 대기(feed)를 먼저, **입력줄 상태(org.status)를 마지막에** 받는다 — 마지막 관측 뒤 다른 응답을 기다리지 않게(codex 2R blocking).
    *  org.status 왕복이 OBS_MAX_MS 를 넘으면 그 관측은 낡은 것으로 보고 모름(undefined → 붙잡음). */
-  private async fetchFresh(): Promise<{ master: MasterRow | null | undefined; approvals: number[] | null }> {
+  private async fetchFresh(): Promise<{ master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number }> {
     const feed = await this.d.invoke("feed_list", { status: "pending" }).catch(() => undefined);
     const t0 = this.d.now();
     const org = await this.d.invoke("org_status", { socket: null }).catch(() => undefined);
     const stale = this.d.now() - t0 > OBS_MAX_MS;
-    return { master: org === undefined || stale ? undefined : masterRowOf(org, this.d.working), approvals: feed === undefined ? null : approvalSeatsOf(feed) };
+    return { master: org === undefined || stale ? undefined : masterRowOf(org, this.d.working), approvals: feed === undefined ? null : approvalSeatsOf(feed), obsAt: t0 };
   }
 
-  private gateOf(f: { master: MasterRow | null | undefined; approvals: number[] | null }): GateVerdict {
+  private gateOf(f: { master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number }): GateVerdict {
     return sendGate({ master: f.master, approvalSeats: f.approvals });
   }
 
-  private applyFresh(f: { master: MasterRow | null | undefined; approvals: number[] | null }): void {
+  private applyFresh(f: { master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number }): void {
     const m = f.master;
     const confirms = f.approvals === null || !m ? (f.approvals === null ? null : 0) : f.approvals.filter((x) => x === m.surface_id).length;
     const working = m ? m.working : null;
@@ -320,6 +320,11 @@ export class ChatCore {
       //   지우기 실패 + 불명 결과면 다시 켤 때 같은 말이 또 나가던 길). 저장 실패 = 쓰기 0 · 붙잡음 그대로.
       if (!this.patchMsg(id, { step: "sending", sentAt, code: undefined, note: undefined, notBefore: undefined })) {
         this.patchMsg(id, { step: "held", sentAt: null, code: "store_failed", note: "앱 저장소에 쓸 수 없어 보내지 않았어요(같은 말이 두 번 가는 것을 막으려고) — 잠시 뒤 다시 해 볼게요.", notBefore: this.d.now() + HELD_REFUSED_BACKOFF_MS });
+        return;
+      }
+      // ★쓰기 바로 앞에서 관측 나이를 다시 잰다(codex 3R blocking) — 영속·그리기가 늦어 마지막 입력줄 관측이 낡았으면 쓰지 않는다.
+      if (this.d.now() - fresh.obsAt > OBS_MAX_MS) {
+        this.patchMsg(id, { step: "held", sentAt: null, code: "status_stale", note: "마스터 입력줄 확인이 오래돼서 쓰지 않았어요 — 다시 확인되면 보낼게요." });
         return;
       }
       let res: unknown;

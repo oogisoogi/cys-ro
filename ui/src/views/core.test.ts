@@ -216,6 +216,19 @@ describe("codex 2R — 마지막 관측 · 복원 id · 상한 교착 · 단회 
     expect(h.writes()).toHaveLength(0);
     expect(h.core.state.msgs[0].code).toBe("status_unknown");
   });
+  it("★관측 뒤 영속·그리기가 늦어 쓰기 직전 관측 나이가 상한을 넘으면 쓰기 0(codex 3R)", async () => {
+    const h = harness();
+    await h.core.poll();
+    let slow = false;
+    h.core.subscribe(() => {
+      if (slow) h.setNow(h.getNow() + OBS_MAX_MS + 1); // 그리기(구독자)가 느림
+    });
+    slow = true;
+    await h.core.send("안녕");
+    slow = false;
+    expect(h.writes()).toHaveLength(0);
+    expect(h.core.state.msgs[0].step).toBe("held");
+  });
   it("저장소 id 는 쓰지 않음 — 새 말 id 와 같은 값이어도 새 말 보내기가 복원 `/clear` 를 고르지 않음", async () => {
     const h = harness();
     h.mem.set(HOLD_KEY, JSON.stringify({ v: 1, items: [{ id: `m${h.getNow()}-1`, text: "/clear", at: 1 }] }));

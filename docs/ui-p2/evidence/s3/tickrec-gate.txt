@@ -1,5 +1,5 @@
 [scoped pid=90141 registered in ledger]
-번들: /Users/oogisoogi/axdev/.wt/cys-ui-slice3/ui/dist · 기준 번들: /private/tmp/claude-501/-Users-oogisoogi-axdev--wt-cys-ui-slice3/fa300b57-f33d-4496-871c-502266ce0a25/scratchpad/s3base/ui/dist
+번들: ~/axdev/.wt/cys-ui-slice3/ui/dist · 기준 번들: <스크래치>/scratchpad/s3base/ui/dist
 == ON: 스위치 켬 · 200틱 넘게
   ok   페이지 오류 0 []
   ok   window.__cysTickRec 있음(켜짐)

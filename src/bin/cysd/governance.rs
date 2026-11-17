@@ -2512,8 +2512,12 @@ fn check_approvals(
             //   모델 답 본문·사람 입력이 창 문장과 선택지(`❯ 1.`)까지 인용해도 그것은 입력창 가로줄 위·안이라 범위 밖이다.
             //   scope 가 없는 패턴(종전 tool-permission·trust-prompt · 사용자 패턴)은 종전대로 화면 전량.
             let hay: &str = if p["scope"].as_str() == Some("prompt_tail") {
-                let marker = merged_ready_marker(&agents, &embed_agents, &agent).unwrap_or_default();
-                match tail_text.get_or_insert_with(|| approval_prompt_region(&rows, cursor_row, &marker).map(|r| r.join("\n"))) {
+                // codex 3R minor: 준비 마커를 모르는 어댑터는 번호 선택 행 폴백을 끈다(쓰기 직전 경로 `approval_screen_with` 와 같은 인자).
+                let (marker, cur) = match merged_ready_marker(&agents, &embed_agents, &agent) {
+                    Some(m) => (m, cursor_row),
+                    None => (String::new(), usize::MAX),
+                };
+                match tail_text.get_or_insert_with(|| approval_prompt_region(&rows, cur, &marker).map(|r| r.join("\n"))) {
                     Some(t) => t.as_str(),
                     None => continue,
                 }

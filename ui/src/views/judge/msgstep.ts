@@ -21,10 +21,16 @@ export const U20_PASTE_RECORD_FORM: "unmeasured" | "verbatim" | "collapsed" = "u
 export const M8_UUID_CHAIN: "unmeasured" | "present" | "absent" = "unmeasured";
 /** (조각 3) 원자 제출 요청이 이만큼 응답 없이 걸려 있으면 「보내는 중」 → 「확인 중」(§5-2 「근거 3초 넘게 없음」 · PRD M2 3초). 응답이 오면 그 응답으로 바뀐다. */
 export const SENDING_SILENT_MS = 3_000;
-/** (조각 3) 데몬 `input.refused_at_write`(쓰기 직전 재판정 · 제출 키를 쓰지 않음 · handlers.rs approval_write_guard)를 보낸 말에 잇는 창.
+/** (조각 3) 데몬 `input.refused_at_write`(쓰기 직전 재판정 · 제출 키를 쓰지 않음)를 보낸 말에 잇는 창.
+ *  ⚠출처(검토 지적 1 · 코드 확인): 기준판 3a012bf4 에서는 이 사건을 `surface.send_key` 거부 모드(handlers.rs approval_write_guard)만 낸다 —
+ *  대화 화면 원자 제출(Inject guard:None · handlers.rs:3779~3785)은 내지 않는다. 데몬 고침 integ/1116-backlog e4499d72 의
+ *  `approval_enter_guard` 가 **원자 제출 Enter 직전 거부에 같은 이름·같은 칸**으로 낸다(통합 빌드에서 이 짝짓기가 뜻을 가짐).
+ *  요청 번호가 없어 다른 호출자(send_key 거부)의 사건이 붙을 수 있다 → 단계는 「확인 중」(모름)만 · 세션 기록이 오면 전달됨으로 고쳐짐 · 다시 보내기 0.
  *  그 사건에는 요청 번호가 없다 → 같은 좌석 · 보낸 지 이 시간 안 · 아직 증거 없는 **가장 최근** 말 하나만(쓰기는 한 번에 1건이라 겹치지 않음).
  *  창 = 원자 제출 최대 0.84초(0.5 M1) + 사건 전달 여유. 설계 목표값. */
 export const REFUSED_AT_WRITE_WINDOW_MS = 5_000;
+/** 사건 시각(데몬 timestamp)이 보낸 시각보다 이만큼 앞서도 같은 쓰기로 본다(같은 기계 · 시각 찍는 자리 차이). */
+export const REFUSED_AT_WRITE_SKEW_MS = 1_000;
 
 export type Step = "held" | "sending" | "injected" | "delivered" | "replying" | "replied" | "failed" | "checking" | "slow" | "queued_hold";
 
@@ -148,6 +154,8 @@ export function applyRecords(msgs: readonly Msg[], recs: readonly Rec[], consume
       if (cand) {
         cand.userUuid = r.uuid;
         cand.step = "delivered";
+        cand.code = undefined; // (조각 3 · 검토 지적 4) 근거가 왔으니 옛 「확인 중」 까닭·안내를 지운다
+        cand.note = undefined;
         cand.thread = r.uuid ? [r.uuid] : [];
         continue;
       }
@@ -175,9 +183,13 @@ export function applyRecords(msgs: readonly Msg[], recs: readonly Rec[], consume
  *  응답 없는 보내기 3초 → 「확인 중」(조각 3) · 근거 없는 대기 120초 → 「오래 걸려요」.
  *  masterWorking = null(모름 · 이 값이 그 기록보다 옛 관측일 수 있음)이면 활동으로는 아무것도 칠하지 않는다. */
 export function settleSteps(msgs: readonly Msg[], now: number, masterWorking: boolean | null): Msg[] {
+  // 활동으로 「답하는 중」을 칠할 수 있는 말 = 전달된 말 가운데 **가장 최근 하나**뿐(앞 말들은 뒤 말이 덮음 · 검토 지적 2).
+  let newest: Msg | null = null;
+  for (const m of msgs) if ((m.step === "delivered" || m.step === "replying" || m.step === "replied") && m.sentAt !== null && (newest === null || (newest.sentAt as number) <= m.sentAt)) newest = m;
   return msgs.map((m) => {
     if ((m.step === "replying" || m.step === "delivered") && m.replies.length > 0 && masterWorking === false) return { ...m, step: "replied" as Step };
-    if (m.step === "delivered" && masterWorking === true) return { ...m, step: "replying" as Step };
+    if (m.step === "replying" && m.replies.length === 0 && (masterWorking === false || m !== newest)) return { ...m, step: "delivered" as Step }; // 답 글 없이 쉼 · 더 새 말이 있음 = 「전달됨」으로(답하는 중이 굳지 않게)
+    if (m.step === "delivered" && masterWorking === true && m === newest) return { ...m, step: "replying" as Step };
     if (m.step === "sending" && m.sentAt !== null && now - m.sentAt >= SENDING_SILENT_MS) return { ...m, step: "checking" as Step, code: "no_answer_yet", note: "보낸 요청의 답을 기다리는 중이에요 — 다시 보내지 않아요." };
     if ((m.step === "injected" || m.step === "checking") && m.sentAt !== null && now - m.sentAt >= SLOW_MS) return { ...m, step: "slow" as Step };
     return m;
@@ -205,12 +217,12 @@ export function applyRefusedAtWrite(msgs: readonly Msg[], seat: number, now: num
     const m = msgs[i];
     if (m.seat !== seat || m.sentAt === null) continue;
     if (m.step !== "sending" && m.step !== "injected" && m.step !== "checking") continue; // 전달됨 이상(근거 있음)·붙잡음은 제외
-    if (now - m.sentAt < 0 || now - m.sentAt > REFUSED_AT_WRITE_WINDOW_MS) continue;
+    if (now - m.sentAt < -REFUSED_AT_WRITE_SKEW_MS || now - m.sentAt > REFUSED_AT_WRITE_WINDOW_MS) continue;
     if (pick < 0 || (msgs[pick].sentAt as number) <= m.sentAt) pick = i;
   }
   if (pick < 0) return [...msgs];
   return msgs.map((m, i) =>
-    i === pick ? { ...m, step: "checking" as Step, code: "refused_at_write", note: "마스터 창에 확인할 것이 떠서 보낸 말이 입력줄에 남았을 수 있어요 — 작업 화면에서 확인한 뒤 Enter 를 누르거나 지워 주세요(다시 보내지 않아요)." } : m,
+    i === pick ? { ...m, step: "checking" as Step, code: "refused_at_write", note: "마스터 창에 확인할 것이 떠서 이 말의 제출이 멈췄을 수 있어요 — 작업 화면에서 마스터 창을 살펴봐 주세요. 확인 창이 떠 있으면 그 창부터 답해 주세요(이 말은 다시 보내지 않아요)." } : m,
   );
 }
 

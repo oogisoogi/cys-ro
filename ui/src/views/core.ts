@@ -132,9 +132,12 @@ export class ChatCore {
   /** 이 결속 세션에서 이미 근거로 쓴 레코드 uuid — 말 목록 정리와 무관하게 유지 · 세션이 바뀌면 비움(codex 2R major). */
   private consumed = new Set<string>();
   private reading = false;
+  private readAgain = false;
   private readTimers = new Set<unknown>();
   private attached = false;
   private lastWorking: boolean | null = null;
+  /** (조각 3) 지난 조회 시각 — 「두 조회 사이 새 출력」 판정용 */
+  private lastPollAt: number | null = null;
   /** (조각 3) 사건 구독 해제 함수 · 구독 세대(붙였다 뗐다 경합 방지) · 기본 데몬 소켓 이름(부서 데몬 사건과 좌석 번호가 겹침) */
   private unlisten: (() => void) | null = null;
   private listenGen = 0;
@@ -224,7 +227,10 @@ export class ChatCore {
     if (this.defaultSlug === null || e.socket_slug !== this.defaultSlug) return;
     if (e.name === "input.refused_at_write") {
       if (typeof e.surface_id !== "number") return;
-      const next = applyRefusedAtWrite(this.s.msgs, e.surface_id, this.d.now());
+      // 사건 시각 = 데몬 timestamp(초) — 받은 시각을 쓰면 데몬 재연결 뒤 다시 흘러온 옛 사건이 방금 보낸 말에 붙는다(검토 지적 5).
+      const ts = (raw as { timestamp?: unknown }).timestamp;
+      if (typeof ts !== "number" || !Number.isFinite(ts)) return;
+      const next = applyRefusedAtWrite(this.s.msgs, e.surface_id, Math.round(ts * 1000));
       if (next.some((m, i) => m !== this.s.msgs[i])) this.putMsgs(next);
       return;
     }
@@ -508,7 +514,9 @@ export class ChatCore {
 
   /** 대화 화면이 켜져 있을 때 POLL_MS 마다. 붙잡은 말이 있고 문턱이 열렸으면 오래된 것 1건을 보낸다(그 안에서 다시 재조회). */
   async poll(): Promise<void> {
-    if (this.polling || this.writing) return;
+    // (조각 3 · 하네스 seed 49) 쓰는 중에도 조회·단계 갱신은 한다 — 응답이 걸린 보내기(수 초) 동안 다른 말의 「답함」·「오래 걸려요」가 멈추지 않게.
+    //   보내기는 deliver 가 쓰는 중이면 바로 돌아간다(겹쳐 쓰기 0 · 클릭 1 → 호출 ≤ 1).
+    if (this.polling) return;
     this.polling = true;
     let heldId: string | null = null;
     try {
@@ -517,7 +525,13 @@ export class ChatCore {
       this.applyFresh(fresh);
       this.lastWorking = fresh.master ? fresh.master.working : null;
       const awaiting = this.s.msgs.some((m) => ["injected", "checking", "slow", "delivered", "replying"].includes(m.step));
-      if (awaiting && prevWorking !== null && prevWorking !== this.lastWorking) void this.readTranscript(); // 활동이 바뀐 틱 1회
+      // (조각 3 · 하네스 seed 370) 짧은 답(두 조회 사이 3초 안에 일 시작·끝)은 「활동 바뀜」으로 안 잡힌다 → 마스터 출력이 지난 조회 뒤에 있었으면(idle_secs) 그 틱도 읽는다.
+      //   새 조회 0(이 조회 값만 씀) · 로컬 세션 파일 오프셋 읽기 · 기다리는 말이 있을 때만.
+      const pollAt = this.d.now();
+      const idle = fresh.master ? fresh.master.idle_secs : null;
+      const outputSincePoll = this.lastPollAt !== null && typeof idle === "number" && idle * 1000 < pollAt - this.lastPollAt;
+      this.lastPollAt = pollAt;
+      if (awaiting && ((prevWorking !== null && prevWorking !== this.lastWorking) || outputSincePoll)) void this.readTranscript(); // 활동이 바뀐 틱 · 새 출력이 있던 틱
       else if (this.offset === null && fresh.master) void this.readTranscript(); // 마스터를 안 첫 틱에 세션 시작점을 잡아 둔다(보내기 길에서 그 RPC 를 빼려고)
       const now = this.d.now();
       this.markStale();
@@ -557,7 +571,11 @@ export class ChatCore {
   }
 
   async readTranscript(): Promise<void> {
-    if (this.reading || !this.attached) return;
+    if (this.reading) {
+      this.readAgain = true; // (조각 3 · 하네스 seed 49) 읽는 중에 온 계기(활동 바뀜 등)를 버리지 않는다 — 끝난 뒤 1회 더
+      return;
+    }
+    if (!this.attached) return;
     const m = this.s.master;
     if (!m) return;
     this.reading = true;
@@ -605,6 +623,10 @@ export class ChatCore {
       }
     } finally {
       this.reading = false;
+      if (this.readAgain) {
+        this.readAgain = false;
+        void this.readTranscript();
+      }
     }
   }
 }

@@ -38,7 +38,7 @@ describe("§5-2 단계 표 fixture(사람 말 전 행)", () => {
     ["checking", "불명(Uncertain) 응답", () => stepFromOutcome("uncertain")],
     ["checking", "모르는 응답 꼴", () => stepFromOutcome("???")],
     ["checking", "응답 없이 3초", () => settleSteps([msg({ step: "sending" })], T + SENDING_SILENT_MS, null)[0].step],
-    ["checking", "쓰기 직전 거부 사건(input.refused_at_write · 같은 좌석 · 5초 안)", () => applyRefusedAtWrite([msg({ seat: 5 })], 5, T + 600)[0].step],
+    ["checking", "쓰기 직전 거부 사건(input.refused_at_write · 같은 좌석 · 5초 안 · 통합 빌드 e4499d72 사건)", () => applyRefusedAtWrite([msg({ seat: 5 })], 5, T + 600)[0].step],
     ["slow", "전달 확인 중 120초", () => settleSteps([msg({})], T + SLOW_MS, null)[0].step],
     ["slow", "확인 중 120초", () => settleSteps([msg({ step: "checking" })], T + SLOW_MS, null)[0].step],
   ];
@@ -57,6 +57,19 @@ describe("§5-2 단계 표 fixture(사람 말 전 행)", () => {
     expect(applyRecords([msg({})], [{ ...old, ts: null, sidechain: true }]).msgs[0].step).toBe("injected");
     expect(applyRecords([msg({})], [{ ...old, ts: null, role: "assistant" }]).msgs[0].step).toBe("injected");
   });
+  it("(검토 지적 2) 답하는 중 = 가장 최근 전달된 말 하나만 · 답 글 없이 쉬면 전달됨으로 · 더 새 말이 전달되면 앞 말은 전달됨으로", () => {
+    const a = msg({ id: "a", step: "delivered", userUuid: "u1", thread: ["u1"], sentAt: T });
+    const b = msg({ id: "b", step: "delivered", userUuid: "u2", thread: ["u2"], sentAt: T + 10 });
+    expect(settleSteps([a, b], T + 20, true).map((m) => m.step)).toEqual(["delivered", "replying"]);
+    expect(settleSteps([msg({ step: "replying", thread: ["u1"] })], T + 1, false)[0].step).toBe("delivered");
+    expect(settleSteps([{ ...a, step: "replying" }, b], T + 20, null).map((m) => m.step)).toEqual(["delivered", "delivered"]);
+  });
+  it("(검토 지적 4) 기록으로 전달됨이 되면 옛 「확인 중」 까닭·안내가 지워진다", () => {
+    const r = applyRecords([msg({ step: "checking", code: "refused_at_write", note: "옛 안내" })], [{ uuid: "u1", parent: null, role: "user", text: "안녕", ts: null }]);
+    expect(r.msgs[0].step).toBe("delivered");
+    expect(r.msgs[0].code).toBeUndefined();
+    expect(r.msgs[0].note).toBeUndefined();
+  });
   it("답하는 중 아님: 활동 모름(null) · 쉼(false · 답 없음) · 아직 전달 전", () => {
     const d = msg({ step: "delivered", userUuid: "u1", thread: ["u1"] });
     expect(settleSteps([d], T + 1, null)[0].step).toBe("delivered");
@@ -64,7 +77,7 @@ describe("§5-2 단계 표 fixture(사람 말 전 행)", () => {
     expect(settleSteps([msg({})], T + 1, true)[0].step).toBe("injected");
   });
   it("답함 아님: 답 없음 · 활동 모름", () => {
-    expect(settleSteps([msg({ step: "replying", thread: ["u1"] })], T + 1, false)[0].step).toBe("replying");
+    expect(settleSteps([msg({ step: "replying", thread: ["u1"] })], T + 1, false)[0].step).toBe("delivered");
     expect(settleSteps([msg({ step: "replying", replies: [{ uuid: "a", text: "x" }] })], T + 1, null)[0].step).toBe("replying");
   });
   it("확인 중 아님: 보낸 지 3초 안 · 아직 보내기 전(sentAt 없음)", () => {
@@ -78,7 +91,8 @@ describe("§5-2 단계 표 fixture(사람 말 전 행)", () => {
   it("쓰기 직전 거부 사건: 다른 좌석 · 창 밖 시각 · 이미 전달된 말 · 보내기 전 말 = 무시 · 둘이면 가장 최근 하나만", () => {
     expect(applyRefusedAtWrite([msg({ seat: 5 })], 6, T + 100)[0].step).toBe("injected");
     expect(applyRefusedAtWrite([msg({ seat: 5 })], 5, T + REFUSED_AT_WRITE_WINDOW_MS + 1)[0].step).toBe("injected");
-    expect(applyRefusedAtWrite([msg({ seat: 5 })], 5, T - 1)[0].step).toBe("injected");
+    expect(applyRefusedAtWrite([msg({ seat: 5 })], 5, T - 1_001)[0].step).toBe("injected");
+    expect(applyRefusedAtWrite([msg({ seat: 5 })], 5, T - 900)[0].step).toBe("checking"); // 시각 찍는 자리 차이 1초 안
     expect(applyRefusedAtWrite([msg({ seat: 5, step: "delivered", userUuid: "u1" })], 5, T + 100)[0].step).toBe("delivered");
     expect(applyRefusedAtWrite([msg({ seat: 5, step: "held", sentAt: null })], 5, T + 100)[0].step).toBe("held");
     const two = applyRefusedAtWrite([msg({ id: "a", seat: 5, sentAt: T }), msg({ id: "b", seat: 5, sentAt: T + 1_000 })], 5, T + 1_500);
@@ -107,9 +121,9 @@ describe("§5-1 기계 문안 큐 사건 → 단계(fixture 전 행 · 이 판 �
     ["inject_aborted merged−disposed = 다시 시도 중", ev("queue.inject_aborted", { queue_entry_id: "q7", merged_ids: ["q7"], disposed_ids: [] }), "retrying"],
     ["inject_aborted disposed = 못 보냄", ev("queue.inject_aborted", { queue_entry_id: "q7", merged_ids: ["q7"], disposed_ids: ["q7"] }), "failed"],
     ["write_held = 반쯤 남음", ev("queue.write_held", { entry_ids: ["q7"], reason: "stalled" }), "partial"],
-    ["write_released = 미배달로 풀림(다시 치지 않음)", ev("queue.write_released", { entry_ids: ["q7"], released: "composer_empty" }), "failed"],
+    ["write_released = 입력줄 빔으로 풀림 → 전달 여부 모름(단정 안 함)", ev("queue.write_released", { entry_ids: ["q7"], released: "composer_empty" }), "unknown"],
     ["dropped", ev("queue.dropped", { queue_entry_ids: ["q7"], reason: "process_exited" }), "failed"],
-    ["expired", ev("queue.expired", { queue_entry_id: "q7" }), "failed"],
+    ["expired = 만료(되살아날 수 있음)", ev("queue.expired", { queue_entry_id: "q7" }), "expired"],
     ["parked = 다시 켜지면 전달", ev("queue.parked", { queue_entry_ids: ["q7"] }), "parked"],
     ["rehomed = 같은 번호 차례 기다림", ev("queue.rehomed", { queue_entry_ids: ["q7"] }), "queued"],
     ["revived = 다시 큐로", ev("queue.revived", { queue_entry_id: "q7" }), "queued"],
@@ -119,6 +133,14 @@ describe("§5-1 기계 문안 큐 사건 → 단계(fixture 전 행 · 이 판 �
     ["모르는 사건 = 무관", ev("queue.enqueued", { queue_entry_id: "q7" }), null],
   ];
   for (const [why, e, want] of rows) it(`${why} → ${want === null ? "변화 없음" : AUTO_STEP_LABEL[want]}`, () => expect(autoStepFor(a, e)?.step ?? null).toBe(want));
+  it("(검토 지적 3) 만료 → 되살림 → 차례 기다림 → 전달됨", () => {
+    let s = applyQueueEvent([a], ev("queue.expired", { queue_entry_id: "q7" }, 5, 11));
+    expect(s[0].step).toBe("expired");
+    s = applyQueueEvent(s, ev("queue.revived", { queue_entry_id: "q7" }, 5, 12));
+    expect(s[0].step).toBe("queued");
+    s = applyQueueEvent(s, ev("queue.delivered", { queue_entry_id: "q7", merged_ids: ["q7"] }, 5, 13));
+    expect(s[0].step).toBe("delivered");
+  });
   it("끝난 항목은 안 바뀜 · seq 가 거꾸로 온 옛 사건은 무시", () => {
     const done = applyQueueEvent([{ ...a, step: "delivered" }], ev("queue.dropped", { queue_entry_ids: ["q7"] }));
     expect(done[0].step).toBe("delivered");
@@ -188,6 +210,29 @@ describe("core 조각 3 — 단계 길", () => {
     expect(sim.core.state.msgs[0].step).toBe("replied");
     expect(sim.core.state.msgs[0].replies.map((r) => r.text)).toEqual(["답 0"]);
   });
+  it("(검토 지적 2) 전달된 말 뒤 마스터가 무관한 일을 하고 쉬면 「전달됨」으로 돌아옴(답하는 중이 굳지 않음)", async () => {
+    const sim = new Sim({ recordDelay: () => 100, replyDelay: () => null });
+    await ready(sim);
+    sim.startPolling();
+    sim.core.submit("안녕");
+    await sim.advance(2_000);
+    expect(sim.core.state.msgs[0].step).toBe("delivered");
+    sim.workOther(4_000);
+    await sim.advance(3_100);
+    expect(sim.core.state.msgs[0].step).toBe("replying"); // 설계 정의(전달 뒤 활동 = 답하는 중)의 한계 — 무관한 일과 가를 수 없음
+    await sim.advance(60_000);
+    expect(sim.core.state.msgs[0].step).toBe("delivered");
+  });
+  it("(검토 지적 5) 쓰기 직전 거부 사건의 시각 = 데몬 timestamp — 재연결 뒤 다시 흘러온 옛 사건·시각 없는 사건은 무시", async () => {
+    const sim = new Sim({ plan: () => "written", recordDelay: () => null });
+    await ready(sim);
+    sim.core.submit("안녕");
+    await sim.advance(100);
+    sim.emit("input.refused_at_write", 5, { reason: "approval_screen" }, 1, undefined, (sim.now - 60_000) / 1000);
+    expect(sim.core.state.msgs[0].step).toBe("injected");
+    sim.core.onDaemonEvent({ name: "input.refused_at_write", surface_id: 5, socket_slug: "default-slug", payload: {} });
+    expect(sim.core.state.msgs[0].step).toBe("injected");
+  });
   it("M8 uuid 없는 기록 꼴: 전달됨까지만 · 답을 그 말에 묶지 않음(답함 0 · 일반 말풍선)", async () => {
     const sim = new Sim({ noUuid: true, recordDelay: () => 100, replyDelay: () => 500 });
     await ready(sim);
@@ -195,7 +240,7 @@ describe("core 조각 3 — 단계 길", () => {
     sim.core.submit("안녕");
     await sim.advance(20_000);
     const m = sim.core.state.msgs[0];
-    expect(["delivered", "replying"]).toContain(m.step);
+    expect(m.step).toBe("delivered"); // 답 글이 그 말에 안 묶임 + 쉼 = 전달됨(답하는 중이 굳지 않음 · 검토 지적 2)
     expect(m.replies).toHaveLength(0);
     expect(sim.core.state.stray.map((r) => r.text)).toEqual(["답 0"]);
   });
@@ -208,7 +253,8 @@ describe("core 조각 3 — 단계 길", () => {
     const m = sim.core.state.msgs[0];
     expect(m.step).toBe("checking");
     expect(m.code).toBe("refused_at_write");
-    expect(m.note).toMatch(/입력줄에 남았/);
+    expect(m.note).toMatch(/제출이 멈췄을 수/);
+    expect(m.note).not.toMatch(/Enter 를 누르/); // 확인 창이 떠 있을 수 있는 때 Enter 를 권하지 않음(검토 지적 1)
     expect(canRetry(m)).toBe(false);
     sim.core.submit("둘째");
     await sim.advance(10_000);
@@ -224,6 +270,47 @@ describe("core 조각 3 — 단계 길", () => {
     expect(sim.core.state.msgs[0].step).toBe("injected");
     sim.emit("input.refused_at_write", 5, { reason: "approval_screen" }, 2);
     expect(sim.core.state.msgs[0].step).toBe("checking");
+  });
+  it("(하네스 seed 370) 두 조회 사이에 시작·끝난 짧은 답도 읽는다(idle_secs = 지난 조회 뒤 출력) · 출력 없으면 읽지 않음", async () => {
+    const sim = new Sim({ recordDelay: (n) => (n === 0 ? 9_000 : null), replyDelay: () => 1_000 });
+    await ready(sim);
+    sim.core.submit("안녕");
+    await sim.advance(9_000); // +1·+3·+7 읽기 끝 · 아직 기록 없음
+    await sim.core.poll(); // 조회 A: 쉼
+    const reads = () => sim.calls.filter((c) => c.cmd === "chat_transcript").length;
+    const r0 = reads();
+    await sim.advance(2_500); // 그 사이 user 기록(9.77초) → 일 → 답(10.77초) → 쉼
+    expect(sim.seat.working).toBe(false);
+    await sim.core.poll(); // 조회 B: 또 쉼(활동 바뀜 없음) — 출력은 있었음
+    await sim.flush();
+    expect(reads()).toBe(r0 + 1);
+    expect(sim.core.state.msgs[0].replies.map((x) => x.text)).toEqual(["답 0"]);
+    await sim.core.poll();
+    expect(sim.core.state.msgs[0].step).toBe("replied");
+    await sim.advance(40_000);
+    sim.core.submit("둘째"); // 기록이 안 생기는 말 = 기다리는 말이 있는 상태
+    await sim.advance(10_000); // +1·+3·+7 읽기 끝
+    await sim.core.poll();
+    const r1 = reads();
+    await sim.advance(3_000);
+    await sim.core.poll(); // 기다리는 말은 있지만 출력 없는 틱 = 읽지 않음(4군 ① 새 주기 읽기 0)
+    await sim.flush();
+    expect(sim.core.state.msgs[1].step).toBe("injected");
+    expect(reads()).toBe(r1);
+  });
+  it("(하네스 seed 49) 읽는 중에 온 읽기 계기는 버리지 않고 끝난 뒤 1회 더 읽는다", async () => {
+    const sim = new Sim({ recordDelay: () => null });
+    await ready(sim);
+    sim.core.submit("안녕");
+    await sim.advance(10_000); // +1·+3·+7 읽기 끝 · 기록 없음
+    const before = sim.calls.filter((c) => c.cmd === "chat_transcript").length;
+    const r1 = sim.core.readTranscript(); // 이 읽기는 지금 파일을 본다
+    sim.file.push({ uuid: "u9", parent: "root", role: "user", text: "안녕", ts: new Date(sim.now).toISOString() });
+    void sim.core.readTranscript(); // 읽는 중 = 버리지 않고 「다시」 표시
+    await r1;
+    await sim.flush();
+    expect(sim.calls.filter((c) => c.cmd === "chat_transcript").length).toBe(before + 2);
+    expect(sim.core.state.msgs[0].step).toBe("delivered");
   });
   it("사건 구독 = 대화 화면이 켜져 있을 때만(붙이기 전 default_socket_slug·listen 0 · 내리면 해제)", async () => {
     const sim = new Sim();

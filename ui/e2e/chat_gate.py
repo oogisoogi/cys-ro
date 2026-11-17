@@ -292,12 +292,13 @@ def main() -> int:
         # 쓰기 직전 거부 사건
         say(pg, "창 뜬 말")
         pg.clock.run_for(300)
-        pg.evaluate("() => window.__emit('daemon-event', { name: 'input.refused_at_write', surface_id: 1, seq: 9001, socket_slug: 'dept-x', payload: { reason: 'approval_screen' } })")
+        pg.evaluate("() => window.__emit('daemon-event', { name: 'input.refused_at_write', surface_id: 1, seq: 9001, socket_slug: 'dept-x', timestamp: Date.now() / 1000, payload: { reason: 'approval_screen' } })")
         check(bubble(pg, 2)["step"] == "전달 확인 중", f"부서 데몬(다른 소켓) 사건 = 무시 ({bubble(pg, 2)['step']})")
-        pg.evaluate("() => window.__emit('daemon-event', { name: 'input.refused_at_write', surface_id: 1, seq: 9002, socket_slug: 'base', payload: { reason: 'approval_screen' } })")
+        pg.evaluate("() => window.__emit('daemon-event', { name: 'input.refused_at_write', surface_id: 1, seq: 9002, socket_slug: 'base', timestamp: Date.now() / 1000, payload: { reason: 'approval_screen' } })")
         pg.clock.run_for(50)
         b = bubble(pg, 2)
-        check(b["step"] == "확인 중" and "입력줄에 남았" in b["note"] and b["btns"] == [], f"쓰기 직전 거부 사건 → 확인 중 + 안내 · 다시 보내기 0 ({b})")
+        check(b["step"] == "확인 중" and "제출이 멈췄을 수" in b["note"] and "Enter 를 누르" not in b["note"] and b["btns"] == [], f"쓰기 직전 거부 사건(통합 빌드 e4499d72 꼴) → 확인 중 + 안내(Enter 권하지 않음) · 다시 보내기 0 ({b})")
+        pg.evaluate("() => window.__emit('daemon-event', { name: 'input.refused_at_write', surface_id: 1, seq: 9003, socket_slug: 'base', timestamp: Date.now() / 1000 - 60, payload: { reason: 'approval_screen' } })")
         pg.clock.run_for(40_000)
         # 같은 말 겹침
         pg.evaluate("() => { window.__CHAT.sendOutcome = { outcome: 'uncertain', code: 'transport_uncertain' }; }")

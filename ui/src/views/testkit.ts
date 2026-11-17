@@ -44,6 +44,8 @@ export class Sim {
   readonly calls: Array<{ cmd: string; args?: Record<string, unknown>; at: number }> = [];
   readonly seat = { surface_id: 5, role: "master", exited: false, agent_alive: true as boolean, gate_pending: null as unknown, pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false, working: false };
   lastHumanAt: number | null = null;
+  /** 좌석 마지막 출력 시각(org.status idle_secs 의 근거) — 기록·답이 생길 때 출력이 있다고 둔다 */
+  lastOutputAt: number | null = null;
   approvals: number[] = [];
   /** 데몬 쓰기 직전 판정이 보는 승인 창(가로줄 아래 꼬리) */
   screen = false;
@@ -96,9 +98,29 @@ export class Sim {
   }
 
   /** 데몬 사건 방송(기본 데몬 = slug 일치). */
-  emit(name: string, surface_id: number | null, payload: Record<string, unknown>, seq?: number, slug?: string): void {
-    this.handler?.({ payload: { name, surface_id, payload, seq: seq ?? null, socket_slug: slug ?? this.o.slug ?? "default-slug" } });
+  emit(name: string, surface_id: number | null, payload: Record<string, unknown>, seq?: number, slug?: string, timestampSecs?: number): void {
+    this.handler?.({ payload: { name, surface_id, payload, seq: seq ?? null, socket_slug: slug ?? this.o.slug ?? "default-slug", timestamp: timestampSecs ?? this.now / 1000 } });
   }
+  /** 마스터가 이 말과 무관한 일을 함(깨움·도우미 보고 등) — 「답하는 중」 오칠 시험용 */
+  workOther(ms: number): void {
+    this.workStart();
+    this.later(ms, () => this.workEnd());
+  }
+  /** 좌석 활동 = 진행 중인 일감 수 > 0(답 작업·무관한 일이 겹쳐도 하나가 끝났다고 쉼이 되지 않게) */
+  private jobs = 0;
+  private workStart(): void {
+    this.jobs++;
+    this.seat.working = true;
+  }
+  private workEnd(): void {
+    this.jobs = Math.max(0, this.jobs - 1);
+    if (this.jobs === 0) {
+      this.seat.working = false;
+      this.idleSince = this.now;
+    }
+  }
+  /** 마지막으로 일을 멈춘 시각(하네스: 「답하는 중」인데 오래 쉼 = 틀림) */
+  idleSince = 0;
 
   private human_idle(): number | null {
     return this.lastHumanAt === null ? null : Math.floor((this.now - this.lastHumanAt) / 1000);
@@ -107,7 +129,7 @@ export class Sim {
   private async invoke(cmd: string, a: Record<string, unknown>): Promise<unknown> {
     this.calls.push({ cmd, args: a, at: this.now });
     if (cmd === "default_socket_slug") return this.o.slug ?? "default-slug";
-    if (cmd === "org_status") return { surfaces: [{ ...this.seat, human_idle_secs: this.human_idle() }] };
+    if (cmd === "org_status") return { surfaces: [{ ...this.seat, human_idle_secs: this.human_idle(), idle_secs: this.lastOutputAt === null ? null : Math.floor((this.now - this.lastOutputAt) / 1000) }] };
     if (cmd === "feed_list") return { items: this.approvals.map((sid) => ({ kind: "approval", status: "pending", surface_id: sid })) };
     if (cmd === "chat_transcript") {
       if (a.fromEnd) return { status: "ok", session_id: this.session, next_offset: this.file.length, size: this.file.length, records: [] };
@@ -136,6 +158,8 @@ export class Sim {
       w.bytesIn = true;
       if (kind === "refuse_at_write") {
         // Enter 직전 재판정에서 창 → 제출 키 0 · 본문은 입력줄에 남음 · 미제출 계수 ≥ 1 · 사건 1건(≈0.5초 뒤)
+        // ⚠이 꼴은 **통합 빌드**(데몬 고침 integ/1116-backlog e4499d72 approval_enter_guard)의 원자 제출 거부를 본뜬 것이다 — 기준판 3a012bf4 의
+        //   원자 제출은 Enter 직전 재판정이 없어 이 사건을 내지 않는다(검토 지적 1 · handlers.rs:3779~3785).
         this.later(500, () => {
           this.seat.pending_input_bytes = Math.max(this.seat.pending_input_bytes, 1);
           this.emit("input.refused_at_write", this.seat.surface_id, { reason: "approval_screen" });
@@ -160,6 +184,7 @@ export class Sim {
     this.later(rd, () => {
       const uuid = this.o.noUuid ? null : `u${wi}`;
       this.file.push({ uuid, parent: this.o.noUuid ? null : this.lastUuid, role: "user", text: w.text, ts: new Date(this.now).toISOString() });
+      this.lastOutputAt = this.now;
       if (uuid) {
         this.recordOf.set(uuid, wi);
         this.lastUuid = uuid;
@@ -167,13 +192,14 @@ export class Sim {
       this.recorded.set(wi, uuid ?? `nouuid-${wi}`);
       const rp = this.o.replyDelay ? this.o.replyDelay(n) : 1_500;
       if (rp === null) return; // 답이 없으면 일하지도 않는 것으로 둔다
-      this.seat.working = true;
+      this.workStart();
       this.later(rp, () => {
         const au = this.o.noUuid ? null : `a${wi}`;
         this.file.push({ uuid: au, parent: uuid, role: "assistant", text: `답 ${wi}`, ts: new Date(this.now).toISOString() });
+        this.lastOutputAt = this.now;
         if (au) this.lastUuid = au;
         this.replied.set(wi, au ?? `nouuid-a${wi}`);
-        this.seat.working = false;
+        this.workEnd();
       });
     });
   }

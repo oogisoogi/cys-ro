@@ -16,7 +16,7 @@
 
 import { MEASURED_QUEUE_HOLD_AFTER_HUMAN_SECS } from "./gate";
 
-export type AutoStep = "queued" | "retrying" | "partial" | "parked" | "delivered" | "failed" | "slow";
+export type AutoStep = "queued" | "retrying" | "partial" | "parked" | "delivered" | "failed" | "expired" | "unknown" | "slow";
 
 export const AUTO_STEP_LABEL: Record<AutoStep, string> = {
   queued: "차례 기다림",
@@ -25,6 +25,8 @@ export const AUTO_STEP_LABEL: Record<AutoStep, string> = {
   parked: "마스터가 다시 켜지면 전달",
   delivered: "전달됨",
   failed: "못 보냄",
+  expired: "못 보냄(기다리다 만료 · 되살아나면 다시 차례)",
+  unknown: "전달 여부를 알 수 없어요(입력줄이 비어 풀림)",
   slow: "확인이 오래 걸려요",
 };
 
@@ -76,11 +78,12 @@ export function autoStepFor(a: AutoMsg, ev: QueueEvent): { step: AutoStep; why?:
     case "queue.write_held":
       return ids(p.entry_ids).includes(id) ? { step: "partial", why: typeof p.reason === "string" ? p.reason : undefined } : null;
     case "queue.write_released":
-      return ids(p.entry_ids).includes(id) ? { step: "failed", why: "released_undelivered" } : null;
+      // 데몬: 「입력줄이 비어 미배달로 풀림 · 다시 치지 않음」 — 사람이 그 반쯤 쓴 글을 Enter 로 보냈을 수도 있다(검토 지적 6) → 못 보냄이라 단정하지 않음.
+      return ids(p.entry_ids).includes(id) ? { step: "unknown", why: "released_composer_empty" } : null;
     case "queue.dropped":
       return ids(p.queue_entry_ids).includes(id) ? { step: "failed", why: typeof p.reason === "string" ? p.reason : "dropped" } : null;
     case "queue.expired":
-      return p.queue_entry_id === id ? { step: "failed", why: "expired" } : null;
+      return p.queue_entry_id === id ? { step: "expired", why: "expired" } : null; // 만료분은 queue.revived 로 되살아날 수 있다(검토 지적 3)
     case "queue.parked":
       return ids(p.queue_entry_ids).includes(id) ? { step: "parked" } : null;
     case "queue.rehomed":

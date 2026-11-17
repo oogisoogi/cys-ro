@@ -1,34 +1,43 @@
-RED  fail=2  답하는 중 = 전달 뒤 일함 줄 제거
+RED  fail=4  답하는 중 = 전달 뒤 일함 줄 제거
+RED  fail=1  답하는 중을 가장 최근 전달 말에 한정하지 않음(검토 지적 2)
+RED  fail=8  답 글 없이 쉬어도 답하는 중 유지(검토 지적 2)
+RED  fail=1  전달됨이 돼도 옛 확인 중 안내 유지(검토 지적 4)
+RED  fail=1  쓰기 직전 거부: 시각 차 허용(1초) 제거
 RED  fail=3  무응답 3초 → 확인 중 줄 제거
 RED  fail=1  무응답 판정에 보낸 시각 없는 말도(sentAt 검사 제거)
 RED  fail=2  늦은 응답이 근거 단계를 되돌림(EVIDENCED 비확정 유지 제거)
 RED  fail=1  확정 응답이 짝을 풀지 않음
 RED  fail=1  쓰기 직전 거부 표지가 늦은 written 에 지워짐
 RED  fail=1  쓰기 직전 거부: 좌석 검사 제거
+RED  fail=1  쓰기 직전 거부 사건 시각 = 받은 시각(timestamp 무시 · 검토 지적 5)
+RED  fail=1  조회 사이 새 출력 틱 읽기 제거(seed 370)
+RED  fail=1  새 출력 판정을 늘 참으로(출력 없는 틱도 읽음 · 4군 ①)
+RED  fail=1  읽는 중 온 읽기 계기를 버림(readAgain 제거)
 RED  fail=1  쓰기 직전 거부: 창(5초) 검사 제거
 RED  fail=1  쓰기 직전 거부: 가장 최근 대신 가장 오래된 말
-RED  fail=2  쓰기 직전 거부: 이미 전달된 말도(단계 검사 제거)
-RED  fail=2  delivered: 묶음(merged_ids) 무시
-RED  fail=2  inject_aborted: disposed 를 다시 시도로
-RED  fail=2  inject_aborted: 재시도 중을 실패로
-RED  fail=2  write_held 무시
-RED  fail=2  write_released 를 전달됨으로
+RED  fail=1  쓰기 직전 거부: 이미 전달된 말도(단계 검사 제거)
+RED  fail=1  delivered: 묶음(merged_ids) 무시
+RED  fail=1  inject_aborted: disposed 를 다시 시도로
+RED  fail=1  inject_aborted: 재시도 중을 실패로
+RED  fail=1  write_held 무시
+RED  fail=1  write_released 를 못 보냄으로 단정(검토 지적 6)
 RED  fail=1  dropped 무시
-RED  fail=1  expired 무시
+RED  fail=2  expired 무시
+RED  fail=2  expired 를 끝난 실패로(되살림 불가 · 검토 지적 3)
 RED  fail=2  parked 를 실패로
 RED  fail=1  rehomed 무시
-RED  fail=1  revived 무시
+RED  fail=2  revived 무시
 RED  fail=1  starved: 좌석 검사 제거
 RED  fail=1  끝난 항목도 바뀜(FINAL 검사 제거)
 RED  fail=1  거꾸로 온 옛 사건도 반영(seq 검사 제거)
-RED  fail=3  같은 말 겹침 막기 제거(accept)
+RED  fail=7  같은 말 겹침 막기 제거(accept)
 RED  fail=1  겹친 말 「한 번 더」 클릭이 앞 말 확인 중에도 나감
-RED  fail=2  다시 보내기가 겹침을 안 봄(하네스 seed 131)
-RED  fail=4  겹침 판정에서 확인 중 제외
-RED  fail=1  겹침 판정에서 자동으로 나갈 붙잡음 제외
-RED  fail=3  겹친 말을 사람 클릭 없이 자동 제출(needsClick 에서 DUP 제거)
+RED  fail=4  다시 보내기가 겹침을 안 봄(하네스 seed 131)
+RED  fail=8  겹침 판정에서 확인 중 제외
+RED  fail=5  겹침 판정에서 자동으로 나갈 붙잡음 제외
+RED  fail=7  겹친 말을 사람 클릭 없이 자동 제출(needsClick 에서 DUP 제거)
 RED  fail=1  부서 데몬 사건도 받음(소켓 검사 제거)
 RED  fail=2  무응답 3초 타이머 제거
 RED  fail=1  늦은 응답 합치기 대신 응답 그대로
-붉음: 32 / 32
+붉음: 41 / 41
 원복 확인: True True True

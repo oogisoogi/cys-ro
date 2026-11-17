@@ -32,6 +32,8 @@ export interface MasterRow {
   human_idle_secs: number | null | undefined;
   /** 지금 답하는 중(appearance.nodeWorking) */
   working: boolean;
+  /** (조각 3) 좌석 마지막 출력 뒤 초(org.status `idle_secs` · handlers.rs:12145) — 두 조회 사이 새 출력(짧은 답)을 알아채는 데만 씀 · 없으면 null */
+  idle_secs?: number | null;
 }
 
 export interface GateInput {
@@ -109,6 +111,7 @@ export function masterRowOf(org: unknown, working: (row: Record<string, unknown>
     gate_pending: r.gate_pending ?? null,
     human_idle_secs: "human_idle_secs" in r ? num(r.human_idle_secs) ?? (r.human_idle_secs === null ? null : undefined) : undefined,
     working: working(r),
+    idle_secs: num(r.idle_secs),
   };
 }
 

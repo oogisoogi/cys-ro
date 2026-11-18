@@ -98,6 +98,7 @@ gh release view -R oogisoogi/cys-ro --json tagName,isDraft   # 되읽어 확인
 1. **내리기 전에 큐를 비운다**(1.1.11 → 1.1.10): 1.1.11 의 UNKNOWN 보류 본문은 `queue-state.json` 에 남고 재전송 금지 표지는 별도
    `queue-write-holds.json` 에만 있는데, 1.1.10 은 그 파일을 모른다 — 일반 미배달로 복원해 **같은 지시를 다시 보낼 수 있다**.
    `cys queue list` 로 남은 항목을 보고 좌석마다 `cys queue clear surface:<N>`. 좌석 안에서 치면 남의 좌석은 거부되니 좌석 밖 터미널에서 한다.
+1-b. **(1.1.16 → 1.1.15) 레인 저널이 남았는지 확인한다**: `ls -d ~/.cys/.pack-journal.d/*/active 2>/dev/null`(윈 = `%USERPROFILE%\.cys\.pack-journal.d\*\active`) · `CYS_PACK_DIR` 를 쓴 기기 = 그 팩 폴더의 부모 아래 `.pack-journal.d`이 **아무것도 안 내야** 내린다 — 1.1.15 는 레인 저널(`src/pack.rs` `PACK_JOURNAL_ROOT`)을 모르므로 끊긴 팩 업데이트를 복구하지 않고 반쯤 적용된 팩이 남는다. 나오면 1.1.16 데몬을 한 번 다시 켜 기동 복구를 끝내고 `cys doctor` 의 pack-state 줄(진행 중 저널 이름을 댄다)이 조용해진 뒤 다시 본다. 옆의 `kept/` 는 되돌림이 보관한 사용자 바이트라 지우지 않는다.
 2. 재설치: 맥 = 릴리스의 `cysr-macos-<arm64|x64>-v<이전>.zip` 을 풀어 `cysr.app` 교체 · 윈 = `cysr_<이전>_x64-setup.exe` 실행.
 3. **팩을 함께 내린다**: 바이너리만 내리면 새 판 팩이 남는다 — 다운그레이드 차단(`src/pack.rs:4199-4215`)이 `init-pack` 을 막고 팩의
    바이너리 하한 때문에 원격 팩 갱신도 안 온다. `cys init-pack --force`(사용자 수정본도 덮어쓴다 · `cys pack-rollback` 은 파일 단위 복원이다).

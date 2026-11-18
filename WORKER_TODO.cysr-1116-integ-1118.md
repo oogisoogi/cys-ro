@@ -15,3 +15,5 @@
 - [x] 0b. 재시작 고아 cysd 11291·22128 + phoenix 13554 종료(master#e28c3581)
 - [x] 1f. merge --no-ff fix/restart-confirm 7df374bc (master#eaa2b355)
 - [x] 8. 후속(master#eff65cb2): ② V8 e3cffabc · ③ S3-11 codex 1R REVISE → bb0a73e0 → 2R ACCEPT · ④ S1-11 eca3b956 · ⑤ V1 메모(HANDOFF §8-5)
+- [x] 9. ④ 📌 no_agent 앱 목록(master#f7e14a93) 7d25c38e · 【확인요청 3】
+- [x] 10. 바이트 예산 래칫(master#41422dd8) — 압축 + 상한 ⑤ · 【확인요청 4】

@@ -301,3 +301,11 @@
 - `src-tauri/src/viewcore.rs` `PRE_WRITE_REFUSALS` 에 `"no_agent"` — 사람 표지 + refuse_on_approval 요청(앱 대화 화면 유일 꼴 · `human_send_params`)의 `no_agent` 는 이제 쓰기 0 · 큐 0(cysd eca3b956)이라 「확인 중」 대신 「못 보냄 + 다시 보내기」(`classify_send` → failed → 화면 `canRetry`).
 - 시험: `viewcore::tests::classify_covers_the_four_outcomes` 에 `err("no_agent") → failed` 단언 1줄 — **넣기 전 붉음**(`left: "uncertain"`) → 넣은 뒤 cys-app 전체 **348 / 0 · 2 ign**.
 - V1 = master 결정 A(pack-v* 태그 0 · master 원장) — 이 가지 할 일 없음.
+
+### 8-8. 지침 바이트 예산 래칫(master#41422dd8)
+
+- 붉음: `cysjavis-pack/bin/tests/test_cso_directive_rev.py` `test_directive_byte_budget_ratchet` — MASTER 86,642 > 85,365(CEO 도 102,128 > 100,851). 원인 = 조각 4 팩 커밋 4d20d25a·e1cd0f76·12e8bc95 의 「대화 화면 표식」 절 +1,277 B(3a095c4e = 상한과 같은 85,365).
+- ⑴ 줄이기: 그 절을 뜻 불변으로 1,276 → 940 B(−336) · 표식 꼴 4줄은 화면 판정(`ui/src/views/judge/confirms.ts`)과 글자 그대로 맞아야 해서 손대지 않음 · 그 밖 조항은 이 티켓 밖(옛 조항 문구 핀 다수 · 지침 개정).
+- ⑵ 남는 +941 B = 상한 상향: MASTER 86,306 · CEO 101,792 — 시험 역사 주석 ⑤ 에 근거 1줄(10-26 선례 ④ 와 같은 꼴).
+- 생성물 재생성: CEO_TEMPLATE(gen --check GREEN 101,792) · 해시표(지금 판 1개 교체 · --check OK) — ⚠ §3 경고(1.1.15 태그 뒤 재생성)는 그대로 유효.
+- 시험: test_cso_directive_rev 75/0 · event_inject ALL PASS · bootv2_doc_contract OK · `cargo test --lib released` 3/0 · scripts/tests 23개 = OK 22 + `test_release_trigger_split`(시스템 python3 에 PyYAML 없음 — `ModuleNotFoundError: yaml` · 기준선부터 같은 환경 사유) → PyYAML 넣은 `uv run --with pyyaml` 로 **17/0**.

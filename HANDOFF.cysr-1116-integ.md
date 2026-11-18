@@ -301,3 +301,83 @@
 - `src-tauri/src/viewcore.rs` `PRE_WRITE_REFUSALS` 에 `"no_agent"` — 사람 표지 + refuse_on_approval 요청(앱 대화 화면 유일 꼴 · `human_send_params`)의 `no_agent` 는 이제 쓰기 0 · 큐 0(cysd eca3b956)이라 「확인 중」 대신 「못 보냄 + 다시 보내기」(`classify_send` → failed → 화면 `canRetry`).
 - 시험: `viewcore::tests::classify_covers_the_four_outcomes` 에 `err("no_agent") → failed` 단언 1줄 — **넣기 전 붉음**(`left: "uncertain"`) → 넣은 뒤 cys-app 전체 **348 / 0 · 2 ign**.
 - V1 = master 결정 A(pack-v* 태그 0 · master 원장) — 이 가지 할 일 없음.
+
+### 8-8. 지침 바이트 예산 래칫(master#41422dd8)
+
+- 붉음: `cysjavis-pack/bin/tests/test_cso_directive_rev.py` `test_directive_byte_budget_ratchet` — MASTER 86,642 > 85,365(CEO 도 102,128 > 100,851). 원인 = 조각 4 팩 커밋 4d20d25a·e1cd0f76·12e8bc95 의 「대화 화면 표식」 절 +1,277 B(3a095c4e = 상한과 같은 85,365).
+- ⑴ 줄이기: 그 절을 뜻 불변으로 1,276 → 940 B(−336) · 표식 꼴 4줄은 화면 판정(`ui/src/views/judge/confirms.ts`)과 글자 그대로 맞아야 해서 손대지 않음 · 그 밖 조항은 이 티켓 밖(옛 조항 문구 핀 다수 · 지침 개정).
+- ⑵ 남는 +941 B = 상한 상향: MASTER 86,306 · CEO 101,792 — 시험 역사 주석 ⑤ 에 근거 1줄(10-26 선례 ④ 와 같은 꼴).
+- 생성물 재생성: CEO_TEMPLATE(gen --check GREEN 101,792) · 해시표(지금 판 1개 교체 · --check OK) — ⚠ §3 경고(1.1.15 태그 뒤 재생성)는 그대로 유효.
+- 시험: test_cso_directive_rev 75/0 · event_inject ALL PASS · bootv2_doc_contract OK · `cargo test --lib released` 3/0 · scripts/tests 23개 = OK 22 + `test_release_trigger_split`(시스템 python3 에 PyYAML 없음 — `ModuleNotFoundError: yaml` · 기준선부터 같은 환경 사유) → PyYAML 넣은 `uv run --with pyyaml` 로 **17/0**.
+
+### 8-9. cysd `pending_requests` 재open `Locked` 흔들림(master#c3198344) — 제품 고침
+
+- 관측(master 게이트 81112a46): `c8registry_explicit_recovery_retirement_prevents_restart_capacity_leak` · `loaded_id_bookkeeping_is_reclaimed_with_the_row` · `persisted_sequence_survives_eviction_and_same_instance_reopen` — 셋 다 같은 scratch 에 store 를 닫고 곧바로 다시 여는 줄의 unwrap · **Err 원문 = `called \`Result::unwrap()\` on an \`Err\` value: Locked`** · 이 파일은 어느 병합 가지도 안 건드림(3a095c4e..HEAD diff 0) = 기준선부터의 흔들림(vendor·backlog 인계서의 pending_requests `Locked` 흔들림과 같은 것).
+- 가설 판정(측정 전용 시험 `integ1116_reopen_vs_fork_probe` · 미커밋 · 측정 작업트리 `~/axdev/.wt/cys-1116-integ-race`): 새 scratch 마다 open → drop → 날 `try_lock` 1회(원시 결과) → reopen, 300 주기.
+  | 조건 | 원시 `try_lock` = `WouldBlock` | `PendingStore::open` = `Err(Locked)` |
+  |---|---|---|
+  | fork 스레드 0 | 0 / 300 | 0 / 300 |
+  | fork 스레드 4(`Command` + `pre_exec` = fork+exec 길) · 고치기 전 · 50회 | **225 / 15,000**(1차) · **431 / 15,000**(재부팅 뒤 2차) | **147 / 15,000**(fork 2,998) · **339 / 15,000**(fork 15,830) |
+  | 같은 조건 · 고친 뒤 · 50회 | **0 / 15,000**(1차) · **0 / 15,000**(2차) | **0 / 15,000**(fork 8,372) · **0 / 15,000**(fork 7,621) |
+  - 13:46 재부팅으로 스크래치(/tmp) 기록이 사라져 2차를 다시 잼 — 2차 원문은 `~/axdev/.wt/cys-1116-integ-race/evidence-d5/probe-{pre,post}50.txt`(측정 작업트리 · 임시 폴더 밖 · 미커밋). fork 0 조건은 두 차례 모두 0.
+  - master 가설 「앞 store 의 drop 이 늦게 놓음(배경 스레드·Arc)」 = **기각**: fork 없으면 0 · store 는 잠금 `File` 을 필드로 직접 들고(`_process_lock`) 다른 곳과 공유하지 않아 drop 이 곧 close.
+  - 실제 원인 = flock 은 open file description 에 붙는다 → 같은 프로세스의 다른 스레드가 fork 하면 자식이 exec(또는 portable-pty 의 fd 정리) 전까지 그 description 을 복제해 쥔다 → close 만으로는 안 풀림. cysd 시험 바이너리는 다른 시험이 좌석을 fork 로 스폰하므로 부하가 클수록 그 창이 길어진다.
+- 판정 = **제품 쪽**: 시험만의 문제가 아니라 `PendingStore` 의 「닫으면 잠금이 풀린다」 가 fork 하는 프로세스(데몬 = 좌석을 스폰함)에서 성립하지 않는 결함. 지금 데몬은 `PendingStore` 를 시험 밖에서 열지 않지만(grep 0) 같은 프로세스 재open 이 생기는 순간 같은 결함이 난다. 같은 저장소의 다른 파일 잠금(`src/pack.rs` 레인·공용 apply-lock)은 이미 명시 `unlock()` 을 한다 — `PendingStore` 만 close 에 기댔다.
+- 고침(fd9f0cc7 · sleep·재시도 0): `impl Drop for PendingStore { let _ = self._process_lock.unlock(); }` — flock 해제는 description 의 모든 복제본에 대해 푼다.
+- 시험(결정론 · 붉음 먼저): `pending_requests::tests::reopen_succeeds_while_a_duplicate_of_the_closed_lock_fd_is_alive` — fork 자식의 복제본 대신 `try_clone`(같은 description)을 쥔 채 drop → reopen. **고치기 전 `Some(Locked)` 로 붉음 → 고친 뒤 초록** · 배타(살아 있는 store 가 있으면 두 번째 open = Locked)는 그대로 단언. `pending_requests::` 모듈 **100 / 0**.
+- 부하 반복 50회(같은 프로세스 안 fork 부하): 고친 cysd 시험 바이너리로 `pending_requests:: seat_proc::`(좌석 스폰 시험과 같이) `--test-threads=8` × 50 → §8-9 끝 줄.
+
+---
+
+## 9. 인계 델타(master#feca26ce · 2026-11-18 18:5x · 계정2 새 좌석에게)
+
+### 9-1. 중단 직전 하던 일
+- 티켓 = master#c3198344(cysd `pending_requests` 재open `Locked` 흔들림). **고침은 끝나 커밋됨**: fd9f0cc7(`impl Drop for PendingStore { unlock }` + 결정론 시험 `reopen_succeeds_while_a_duplicate_of_the_closed_lock_fd_is_alive` · 고치기 전 붉음 → 뒤 초록 · `pending_requests::` 100/0). 원인 판정·probe 표 = §8-9(8b3d0b8b 의 WIP 커밋이 §8-9 를 커밋함 · 미검증 표기는 「확인요청 5 미발송」 뜻).
+- 남은 일 = ⑴ 부하 반복 50회 증거 ⑵ 【확인요청 5】 발송. ⑴ 이 13:46 재부팅 · 15:3x 세션 재시작으로 두 번 끊김.
+
+### 9-2. 끊긴 시험과 결과
+- 부하 반복(고친 cysd 시험 바이너리 직접 실행 · `pending_requests:: seat_proc:: --test-threads=8` × 50): 2차 실행이 **29회에서 끊김**. 29회 중 **pending_requests 실패 0** · **11회에서 `seat_proc` seatkeep 4건 실패 = `handshake_timeout`(seatkeep 소켓 10초 안에 못 붙음)** — APFS 복제 target 의 deps 자리 직접 실행에서 잦다는 기억(`cysd-test-binary-direct-run-and-cloned-target-seatkeep-timeouts`)과 같은 꼴로 보이나 **확인 안 함**(pending_requests 고침과 무관해 보임 · 가설). 로그 사본 `~/axdev/.wt/cys-1116-integ-race/evidence-d5/load-partial/`.
+- probe 2차(fork 부하 측정 · 고치기 전/뒤 각 50회) 원문 = `~/axdev/.wt/cys-1116-integ-race/evidence-d5/probe-{pre,post}50.txt`(측정 작업트리 · 미커밋 시험 `integ1116_reopen_vs_fork_probe` 포함 · 지금 그 트리 소스 = 고친 판).
+- ⚠ 시험 재실행 규칙(master#feca26ce): cysd·cys 시험은 고정 자리 방식 · **부하 반복(같은 시험 수십 번)은 사람 맥에서 금지** → 부하 50회는 **master 통제 실행(tools/gk-guard 방식)으로 요청**한다. 다시 돌릴 명령(통제 실행 안에서): `cargo test --bin cysd pending_requests:: -- --test-threads=8` 반복(seat_proc 은 빼거나 따로 — 위 handshake_timeout 판별을 섞지 않게) · probe = 측정 작업트리에서 `cargo test --bin cysd integ1116_reopen_vs_fork_probe -- --ignored --nocapture`.
+
+### 9-3. 미결 · master 결정 대기
+- 부하 50회 증거를 어떤 방식(통제 실행)으로 받을지 — master.
+- `seat_proc` seatkeep `handshake_timeout`(직접 실행 · 복제 target)이 별개 흔들림인지 판별할지 — master(이 티켓 범위 밖으로 봄).
+- 【확인요청 5】 미발송(내용 = §8-9 + 이 절).
+
+### 9-4. 다음 첫 행동 3줄
+1. `git -C ~/axdev/.wt/cys-1116-integ log --oneline -3` 로 머리 확인(이 절 커밋) · HANDOFF §8-9·§9 읽기.
+2. master 에 부하 50회 통제 실행 요청(위 명령 · pending_requests 만) → 결과 0 붉음이면 §8-9 끝 줄 채움.
+3. 【확인요청 5】(새 머리 · Err 원문 `Locked` · 제품 판정 근거 = §8-9) 발송.
+
+---
+
+## 10. 델타 — gatekeeper 수정 병합 · 부하 시험 판별력 점검(master#5d954b24 · 2026-11-18 18:5x~ · surface:2227 · 계정2)
+
+### 10-1. 병합
+- `1a59b5a9` = `fix/test-gatekeeper-crash`(4a343a63 · 7커밋) `--no-ff` 병합 · 충돌 0 · 4a343a63 과의 차이 = 이 HANDOFF 파일뿐.
+- 합친 머리 확인(가벼운 것만): `cargo test --bin cysd --no-run` rc 0 · `cargo build --bin cys-seatkeep` 성공 · `reopen_succeeds_while_a_duplicate_of_the_closed_lock_fd_is_alive` 1/0 · 보호 계수 syspolicyd 26 · fake 162 불변.
+
+### 10-2. ⚠ §9-2·§9-4 의 부하 명령은 이 결함을 못 가른다
+- `pending_requests::` 시험과 `pending_attempts.rs` 에는 프로세스를 띄우는 코드가 없다(스레드만). 결함은 다른 스레드의 fork 가 있어야 나므로(§8-9 표 · fork 0 = 0건), `pending_requests::` 단독 50회는 고치기 전이어도 초록이 나온다.
+- `seat_proc::` 를 섞은 29회도 약한 증거다. fork 원천이 seatkeep 시험 4건 + `/bin/sleep` 1회뿐이고, 실패한 11회는 그 4건이 좌석을 못 띄웠다. 고치기 전 바이너리로 이 부하를 돌려 붉어진 기록도 없다.
+- `master/tools/gk-guard/run-filtered.sh` 도 이 측정에 안 맞는다: `--test-threads=1` 고정 · `--ignored`·`--nocapture` 를 넘기지 않고 `PROBE` 줄을 걸러 낸다.
+
+### 10-3. 판별되는 측정 = fork probe 를 합친 머리에 얹기(소스 커밋 안 함)
+- 패치(측정 작업트리 · 미커밋 · 임시 폴더 밖): `~/axdev/.wt/cys-1116-integ-race/evidence-d5/probe-only.patch` · `…/negative-control-remove-drop.patch`(`impl Drop for PendingStore` 3줄 제거).
+- 1회씩 실측(`PROBE_N=300` · 원문 `…/evidence-d5/merged-1a59b5a9-probe300.txt` · 끝난 뒤 소스 복원 · 변경 0):
+
+  | 판 | fork 스레드 | fork 수 | 원시 `WouldBlock` | `open` = `Err(Locked)` |
+  |---|---|---|---|---|
+  | 합친 머리(고친 판) | 0 | 0 | 0 / 300 | 0 / 300 |
+  | 합친 머리(고친 판) | 4 | 154 | 0 / 300 | 0 / 300 |
+  | 음성 대조(Drop 제거) | 0 | 0 | 0 / 300 | 0 / 300 |
+  | 음성 대조(Drop 제거) | 4 | 142 | **10 / 300** | **9 / 300** |
+- 시험 본체 0.41~0.42초 · 시험 실행 파일을 반복하지 않고 `PROBE_N` 만 키우면 된다(15,000 주기 = 1회 실행).
+
+### 10-4. `seat_proc` `handshake_timeout` 가설(미확인 · 신뢰도 낮음)
+- 실패 11회의 번호 = 8·10~13(5회 · `접속을 거절 handshake_timeout`) · 22·24·26~29(6회 · `소켓에 10초 안에 못 붙음`). 회차마다 4건이 **같은 사유로 함께** 실패한다. 같은 자리의 같은 바이너리가 나머지 18회는 초록이므로 「복제 target 자리」 만으로는 설명이 안 된다.
+- 가설 1줄: 시험별 코드 결함보다, 그 시간대에 기계 전체가 느려져(seatkeep 실행·서명 조회가 보안 검사를 기다림) 10초를 넘겼을 가능성. 판정 = master 통제 실행.
+
+### 10-5. 다음
+- 【확인요청 5】 발송 뒤 master 통제 실행 결과 대기. 결과가 오면 §8-9 끝 줄을 채운다.

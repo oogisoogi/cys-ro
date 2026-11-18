@@ -47,6 +47,9 @@ REMOVED_MARK = "이렇게 지웠습니다"
 BRIEF_MARK = "밀린 일"
 VALID_CHANNELS = ("app", "phone", "both", "off")
 HOOK_EVENTS = {"SessionStart": "session", "UserPromptSubmit": "prompt", "Stop": "stop", "PostToolUse": "posttool"}
+# 윈 무콘솔 세대: 캡처 하위 프로세스는 콘솔 창을 띄우지 않고(CREATE_NO_WINDOW) stdin 을 명시한다(WinError 6 방지 ·
+#   팩 계약 tests/test_nowin_captured_spawns.py · test_dept_tick_stdin.py).
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
 MAX_BLOCKS = 2                 # 한 오너 턴에서 Stop 훅이 막는 최대 횟수(고리 방지)
 
 
@@ -230,7 +233,8 @@ def list_rules():
 def _memory_tool(*args):
     tool = os.path.join(_SELF_DIR, "javis_memory.py")
     p = subprocess.run([sys.executable, tool, "--dir", memory_dir()] + list(args),
-                       capture_output=True, text=True, encoding="utf-8", timeout=30)
+                       capture_output=True, text=True, encoding="utf-8", timeout=30,
+                       stdin=subprocess.DEVNULL, **NOWIN)
     return p.returncode, p.stdout.strip(), p.stderr.strip()
 
 
@@ -468,7 +472,8 @@ def send_done_notice(it, c):
     if ch in ("app", "both"):
         try:
             p = subprocess.run([_cys_bin(), "feed", "push", "--kind", "ceo-notice", "--title", title,
-                                "--body", body], capture_output=True, text=True, timeout=10)
+                                "--body", body], capture_output=True, text=True, timeout=10,
+                               stdin=subprocess.DEVNULL, **NOWIN)
             res["app_rc"] = p.returncode
         except (OSError, subprocess.SubprocessError) as e:
             res["app_rc"] = -1

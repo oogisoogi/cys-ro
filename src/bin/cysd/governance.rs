@@ -705,9 +705,7 @@ pub(crate) fn release_role_after_agent_death(daemon: &Arc<Daemon>, s: &Arc<crate
         if roles.get(&role) == Some(&s.id) {
             roles.remove(&role);
             // ★조각 1: 이 좌석이 쥐고 있던 역할만 「거둔 역할」로 남긴다 — node-recover 가 이 이름으로 저장 대화를 찾는다.
-            let mut released = daemon.released_roles.lock().unwrap();
-            released.retain(|_, sid| *sid != s.id);
-            released.insert(role.clone(), s.id);
+            daemon.released_roles.lock().unwrap().insert(role.clone(), s.id);
         }
         *srole = None;
         *s.caps.lock().unwrap() = crate::caps::Caps::for_role(None);

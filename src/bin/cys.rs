@@ -57412,6 +57412,7 @@ mod b360_tests {
         assert_eq!(r2c_role(&report, "worker")["outcome"], "recovered", "{text}");
         let restore = calls.iter().find(|(m, _)| m == "role.restore_released").expect("역할 되돌리기");
         assert_eq!(restore.1["role"], "worker-3", "{text}");
+        assert!(text.contains("(role=worker-3)"), "되찾은 역할 이름으로 기동하지 않았다:\n{text}");
         assert!(p1_launch_line(&calls).contains(&format!("--resume {P1_SESSION}")), "잇지 않았다:\n{text}");
         assert_eq!(rc, 0, "{text}");
     }

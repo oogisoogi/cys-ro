@@ -2,7 +2,7 @@
 
 - 좌석 = worker-piece1 · surface:2240 · 가지 `feat/piece1-recover-1118` ← integ/1116(`b29cbdd89`)
 - 브리프 = master#68a90f34 · 범위 결정 = master#9f7c835b(A: 핀 유지는 범위 밖)
-- 구현 커밋 = `c03bccb80` · 1회 고침(master#267c6b97) = `59d755d9d` · `--resume-saved`(master#fbfe2389) = `94aeb1a4f` · codex 1R 고침(master#91f7d69b) = `fee25fbae`
+- 구현 커밋 = `c03bccb80` · 1회 고침(master#267c6b97) = `59d755d9d` · `--resume-saved`(master#fbfe2389) = `94aeb1a4f` · codex 1R 고침(master#91f7d69b) = `fee25fbae` · codex 2R 고침(master#556f6d21 · 후임 좌석 surface:2245) = `153629ec9`
 - 설계 판정 BLOCK 은 그대로다. 이 커밋은 그것을 풀지 않는다. 병합 조건 = X 실측 · 독립 검증 좌석 · 구현 diff codex 1R.
 
 ## 바뀐 것
@@ -81,9 +81,38 @@ codex = BLOCK(`~/axdev/master/reports/verify/piece1-recover-1118/codex-r1.verdic
 
 시험: 먼저 붉음 2건(`a_save_never_moves_the_tombstone_rev_backwards` · `isolating_a_corrupt_topology_at_start_warns_once_with_the_file_name`) → 영향 범위 cysd 105 통과 · 0 실패. cysd 시험 수 3337 → 3340. 뮤턴트 4개 전부 붉음(누적 44개).
 
+## codex 2R 고침(`153629ec9` · master#556f6d21)
+
+codex = BLOCK(`~/axdev/master/reports/verify/piece1-recover-1118/codex-r2.verdict.md`). 범위 5건만 고쳤다.
+
+| 항목 | 바뀐 것 | 먼저 붉은 시험 |
+|---|---|---|
+| 1 쓰기 실패 | `write_json_atomic` 실패면 `topology_dirty=true` · 성공해야 내린다 | `topology_dirty_is_set_by_a_failed_write_and_the_retry_lands`(표시를 미리 세우지 않음 · 옛 `topology_dirty_survives_a_failed_write` 를 대체) |
+| 2 boot-node 선회수 | reap-launch 의 `close-surface --reap` 직전 `cys daemon resume-check --role <역할>`. 0 이 아니면 회수·기동 없이 `resume_held`·93. `unrecognized subcommand 'resume-check'`(옛 cys)만 종전대로 | 팩 `ReapLaunchChecksSavedListFirst` 2건 |
+| 3 깨진 성공 응답 | `--resume-saved` 가 node-recover 와 같은 `recover_saved_pins` 로 판정. `saved` 부재·비배열 = 93 | `p1_resume_saved_holds_when_the_saved_list_is_unknown` |
+| 4 핀 충돌 | `saved_pins_conflict` = 세션·cwd·프로필·agent 묶음 비교. 한쪽만 값이 없어도 충돌 | `p1_saved_pins_that_differ_on_any_axis_hold_with_rc_93` |
+| 5 윈도우 cwd | `pin_path_key(경로, windows)` · 윈도우만 `claude_tui::normalize_profile_path` 로 접음 · 유닉스 값은 그대로 | `p1_pin_paths_fold_windows_spelling_only_on_windows` · `p1_windows_cwd_spelling_reaches_both_pin_checks` |
+
+- 새 동사 `cys daemon resume-check` = 숨김 · 읽기 전용 · `system.topology` 만 부른다. 최상위 `Command` 인자는 j3 스택 넘침 전례가 있어 하위 동사로 달았다.
+- **지시 없이 내린 판단**: 4번을 node-recover 뿐 아니라 `--resume-saved`·`resume-check` 에도 적용했다. 안 그러면 회수 전 확인은 통과하고 첫 항목을 임의로 잇는다.
+- `같은 꼴` 훑기: `run_restore` 는 깨진 `saved` 를 빈 목록으로 읽지만 아무것도 띄우지 않고 끝난다(새 대화 없음). `run_pack_reinject` 계열은 표지 조회뿐이다. 둘 다 고치지 않았다.
+
+남은 구멍(이번 범위 밖 · 고치지 않음):
+- reap-launch 확인은 저장 목록·핀 충돌만 본다. 프로필을 믿을 수 없는 핀은 지금처럼 회수 뒤 `launch-agent` 가 rc 2 로 멈춘다(새 대화는 없지만 빈 좌석은 회수됨).
+- `saved_resume_pin` 은 그 역할의 첫 항목만 본다. 첫 항목의 세션 칸이 비고 둘째에 세션이 있으면 지금처럼 「저장 대화 없음」이다.
+- phoenix 의 빈 좌석 회수(`javis_phoenix.py:3848`)는 복원 시도 뒤의 다른 경로라 건드리지 않았고 판정도 하지 않았다.
+
+시험(복구된 최종 코드):
+- cys 51 통과 · 0 실패(`p1_` · `v115r5_restore_and_resume_saved_wiring` · `j3_cys_send_carries` · `aid_s5_reap_due` · `daemon` · `dept_status` 필터). cysd 34 통과 · 0 실패(`topology_dirty` · `topology_read_error` · `persist_if_dirty` · `non_utf8` · `dirty_topology_retry` · `tombstone` · `system_topology` 필터).
+- 팩 `test_v115_dept` 93 OK · 관련 팩 시험 11파일 rc 0. `cargo check --bin cys --bin cysd` 통과.
+- 전체 수: cys 781(+6) · cysd 3340(교체 1건이라 그대로).
+- 뮤턴트 17개 전부 붉음(Rust 10 · 빌드 5벌 · 팩 7). 붉어진 시험 이름과 사유를 대조했다. 누적 61개.
+- 보호 계수: 시작 syspolicyd 26 · fake 162 → 끝 24 · 147(늘지 않음).
+
 ## X 상태
 
 - `0720c4097` 구현본에서 r0 fixed(끝 0) · r1 fixed(끝 0) · tomb fixed(끝 4 · 주기 잡 pid 칸 · master 수용) · unreadable 사전 점검 끝 2(미측정). 요약 = `piece1/x/RESULTS-impl.md`.
+- ⚠ 위 X 와 master 의 `0904da71e` 통과는 codex 2R 고침 **이전** 코드다.
 - 코드가 바뀌었으므로 **최종 커밋에서 네 시나리오를 각 1회 다시 돌린다.** master 의 「X 시작」 전에는 돌리지 않는다.
 - 판독 규칙: 끝 코드 4 라도 어긋남이 `com.jarvis.cso-resource-sentinel` pid 칸 하나뿐이고 그 종료 코드가 0 이면 verdict 사용 가능. 그 밖의 어긋남은 즉시 정지.
 - 사본 B 적용: 라이브 팩 대조에서 `state/evt_spool.jsonl` 만 제외. 직전 사본 대비 diff = `piece1/x/xprobe_impl.delta-r2.diff`.

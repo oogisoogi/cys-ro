@@ -29,6 +29,14 @@ TOOL = os.path.join(PACK, "bin", "javis_owner.py")
 SH = os.path.join(PACK, "hooks", "owner-desk.sh")
 sys.path.insert(0, os.path.join(PACK, "bin"))
 
+# PushNotification 의 PostToolUse tool_response. 실물 표본 = Claude Code 2.1.327 격리 좌석 기록(11-18 · message 만 짧게 바꿈).
+PRESENT = {"message": "m", "pushSent": False, "localSent": False, "disabledReason": "user_present", "sentAt": "2026-11-18T11:41:03.420Z"}
+NO_TRANSPORT = {"message": "m", "pushSent": False, "localSent": False, "disabledReason": "no_transport", "sentAt": "2026-11-18T11:41:09.375Z"}
+# 실물을 얻을 수 없는 갈래 = 설치본 2.1.327 PushNotification 코드의 반환 모양(폰 실제 발송·RC 연결이 필요해 실물 미검증).
+CONFIG_OFF = {"message": "m", "pushSent": False, "localSent": False, "disabledReason": "config_off", "sentAt": "2026-11-18T11:41:09.375Z"}
+PUSHED = {"message": "m", "pushSent": True, "localSent": False, "sentAt": "2026-11-18T11:41:09.375Z"}
+LOCAL_ONLY = {"message": "m", "pushSent": False, "localSent": True, "disabledReason": "no_transport", "sentAt": "2026-11-18T11:41:09.375Z"}
+
 
 class Base(unittest.TestCase):
     def setUp(self):
@@ -259,7 +267,7 @@ class R4Notify(Base):
         out = self.hook({"hook_event_name": "Stop", "last_assistant_message": "끝냈어요"})
         self.assertEqual(out["decision"], "block")
         self.assertIn("PushNotification", out["reason"])
-        self.hook({"hook_event_name": "PostToolUse", "tool_name": "PushNotification",
+        self.hook({"hook_event_name": "PostToolUse", "tool_name": "PushNotification", "tool_response": PUSHED,
                    "tool_input": {"message": "끝났어요: 사진 정리 (#1)"}})
         out = self.hook({"hook_event_name": "Stop", "last_assistant_message": "밀린 일 1건 …\n끝냈어요"})
         self.assertIsNone(out)
@@ -272,11 +280,11 @@ class R4Notify(Base):
         self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "둘 다 끝"})
         self.tool("todo", "done", "1", "--evidence", "a")
         self.tool("todo", "done", "2", "--evidence", "b")
-        self.hook({"hook_event_name": "PostToolUse", "tool_name": "PushNotification", "tool_input": {"message": "작업 완료"}})
+        self.hook({"hook_event_name": "PostToolUse", "tool_name": "PushNotification", "tool_response": PUSHED, "tool_input": {"message": "작업 완료"}})
         out = self.hook({"hook_event_name": "Stop", "last_assistant_message": "밀린 일 0건"})
         self.assertIn("(#1)", out["reason"])
         self.assertIn("(#2)", out["reason"])
-        self.hook({"hook_event_name": "PostToolUse", "tool_name": "PushNotification",
+        self.hook({"hook_event_name": "PostToolUse", "tool_name": "PushNotification", "tool_response": PUSHED,
                    "tool_input": {"message": "끝났어요: A (#1)"}})
         out = self.hook({"hook_event_name": "Stop", "last_assistant_message": "x"})
         self.assertIn("(#2)", out["reason"])
@@ -387,7 +395,7 @@ class R8Codex2R(Base):
         self.tool("todo", "add", "--what", "A", "--notify")
         self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "끝냈어"})
         self.tool("todo", "done", "1", "--evidence", "a")
-        self.hook({"hook_event_name": "PostToolUse", "tool_name": "PushNotification", "agent_id": "sub1",
+        self.hook({"hook_event_name": "PostToolUse", "tool_name": "PushNotification", "tool_response": PUSHED, "agent_id": "sub1",
                    "tool_input": {"message": "끝났어요: A (#1)"}})
         self.assertIsNone(self.hook({"hook_event_name": "Stop", "last_assistant_message": "밀린 일 0건"}))  # codex 2R #4
 
@@ -407,7 +415,7 @@ class R8Codex2R(Base):
         self.tool("todo", "done", "1", "--evidence", "a")
         out = self.hook({"hook_event_name": "Stop", "last_assistant_message": "밀린 일 …\n이렇게 저장했습니다: 「표로」"})
         self.assertIn("PushNotification", out["reason"])
-        self.hook({"hook_event_name": "PostToolUse", "tool_name": "PushNotification", "tool_input": {"message": "끝났어요: A (#1)"}})
+        self.hook({"hook_event_name": "PostToolUse", "tool_name": "PushNotification", "tool_response": PUSHED, "tool_input": {"message": "끝났어요: A (#1)"}})
         self.assertIsNone(self.hook({"hook_event_name": "Stop", "stop_hook_active": True,
                                      "last_assistant_message": "알림을 보냈어요"}))
         c = self.ctx(self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "다음"}))
@@ -437,7 +445,7 @@ class R9Codex3R(Base):
         self.tool("todo", "add", "--what", "보고서 (#2) 인용 확인", "--what", "B")
         self.tool("todo", "done", "1", "--evidence", "a")
         self.tool("todo", "done", "2", "--evidence", "b")
-        self.hook({"hook_event_name": "PostToolUse", "tool_name": "PushNotification",
+        self.hook({"hook_event_name": "PostToolUse", "tool_name": "PushNotification", "tool_response": PUSHED,
                    "tool_input": {"message": "끝났어요: 보고서 (#2) 인용 확인 (#1)"}})
         st = self.py("print([it['notice']['phone'] for it in o.load_todos()['items']])")
         self.assertEqual(st, "['sent', 'pending']")                              # 3R #2
@@ -450,7 +458,7 @@ class R9Codex3R(Base):
         self.assertIsNone(self.hook(pre))                                        # 첫 발송 허용(보내는 중 표지)
         d = self.hook(dict(pre, agent_id="sub"))                                  # 하위 에이전트·다른 좌석의 겹친 발송
         self.assertEqual(d["hookSpecificOutput"]["permissionDecision"], "deny")  # 3R #3
-        self.hook({"hook_event_name": "PostToolUse", "tool_name": "PushNotification", "tool_input": pre["tool_input"]})
+        self.hook({"hook_event_name": "PostToolUse", "tool_name": "PushNotification", "tool_response": PUSHED, "tool_input": pre["tool_input"]})
         d = self.hook(pre)
         self.assertEqual(d["hookSpecificOutput"]["permissionDecision"], "deny")  # 보낸 뒤 재발송도 거절
         self.assertIsNone(self.hook({"hook_event_name": "PreToolUse", "tool_name": "PushNotification",
@@ -495,7 +503,7 @@ class R9Codex3R(Base):
         self.tool("todo", "done", "1", "--evidence", "a")
         for i in range(3):
             self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "턴 %d" % i})
-        self.hook({"hook_event_name": "PostToolUse", "tool_name": "PushNotification",
+        self.hook({"hook_event_name": "PostToolUse", "tool_name": "PushNotification", "tool_response": PUSHED,
                    "tool_input": {"message": "끝났어요: A (#1)"}})
         self.assertEqual(self.py("print(o.load_todos()['items'][0]['notice']['phone'])"), "sent")   # 3R #6
 
@@ -539,6 +547,103 @@ class R10Codex4R(Base):
         self.env["CYS_SURFACE_ID"] = "8"
         c = self.ctx(self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "B 또"}, day="2026-11-19"))
         self.assertNotIn("밀린 일 1건", c)                          # 4R ② — 19일 확인이 18일로 되돌아가지 않음
+
+
+class R11PhoneResult(Base):
+    MSG = "끝났어요: A (#1)"
+
+    def setUp(self):
+        super().setUp()
+        self.tool("notify", "set", "--channel", "phone")
+        self.tool("todo", "add", "--what", "A", "--notify")
+        self.tool("todo", "done", "1", "--evidence", "a")
+
+    def notice(self):
+        return json.loads(self.py("print(__import__('json').dumps(o.load_todos()['items'][0]['notice']))"))
+
+    def send(self, resp="absent"):
+        self.hook({"hook_event_name": "PreToolUse", "tool_name": "PushNotification", "tool_input": {"message": self.MSG}})
+        p = {"hook_event_name": "PostToolUse", "tool_name": "PushNotification", "tool_input": {"message": self.MSG}}
+        if resp != "absent":
+            p["tool_response"] = resp
+        self.hook(p)
+
+    def prompt(self, text="다음"):
+        return self.ctx(self.hook({"hook_event_name": "UserPromptSubmit", "prompt": text}))
+
+    def test_really_sent_is_sent(self):
+        for resp in (PUSHED, LOCAL_ONLY):
+            self.py("\n".join(["def f(d):", "    d['items'][0]['notice'].update(phone='pending')", "    d['items'][0]['notice'].pop('phone_sent_at', None)", "o._mutate(f)"]))
+            self.send(resp)
+            n = self.notice()
+            self.assertEqual(n["phone"], "sent")
+            self.assertIn("phone_sent_at", n)
+            self.assertNotIn("phone_sending", n)
+
+    def test_present_is_not_sent_and_not_chased(self):
+        self.send(PRESENT)
+        n = self.notice()
+        self.assertEqual((n["phone"], n["phone_reason"]), ("present", "user_present"))
+        self.assertNotIn("phone_sent_at", n)
+        self.assertNotIn("phone_sending", n)
+        reminders = n.get("phone_reminders", 0)
+        for i in range(3):
+            c = self.prompt("턴 %d" % i)
+            self.assertNotIn("(#1)", c)                              # 재안내 없음
+            self.assertNotIn("폰 알림 결과", c)                       # 못 보냄 안내도 아님
+        n = self.notice()
+        self.assertEqual((n["phone"], n.get("phone_reminders", 0)), ("present", reminders))   # 포기로 몰지 않음
+        self.assertIsNone(self.hook({"hook_event_name": "Stop", "last_assistant_message": "x"}))
+
+    def _undelivered(self, resp, reason, phrase):
+        self.send(resp)
+        n = self.notice()
+        self.assertEqual((n["phone"], n["phone_reason"]), ("undelivered", reason))
+        self.assertNotIn("phone_sent_at", n)
+        self.assertNotIn("phone_sending", n)
+        c = self.prompt()
+        self.assertIn("폰 알림 결과", c)
+        self.assertIn(phrase, c)
+        self.assertNotIn("PushNotification 으로 보내라】", c)          # 다시 보내라고 하지 않음
+        self.assertNotIn("폰 알림 결과", self.prompt("또"))             # 한 번만 말한다
+        self.assertEqual(self.notice()["phone"], "undelivered")
+
+    def test_no_transport_tells_owner_once(self):
+        self._undelivered(NO_TRANSPORT, "no_transport", "Remote Control")
+
+    def test_config_off_tells_owner_once(self):
+        self._undelivered(CONFIG_OFF, "config_off", "설정이 꺼져")
+
+    def test_unknown_result_is_never_sent(self):
+        for resp in ("absent", None, "Mobile push requested.", {"pushSent": False}, {"disabledReason": "새로운_사유"},
+                     {"pushSent": "true", "localSent": 1}):
+            self.py("\n".join(["def f(d):", "    d['items'][0]['notice'].update(phone='pending', phone_told=False)", "o._mutate(f)"]))
+            self.send(resp)
+            n = self.notice()
+            self.assertEqual(n["phone"], "unknown", resp)
+            self.assertNotIn("phone_sent_at", n)
+            self.assertIn("확인하지 못했어요", self.prompt())
+
+    def test_retry_can_upgrade_but_sent_never_downgrades(self):
+        self.send(NO_TRANSPORT)
+        self.send(PUSHED)
+        self.assertEqual(self.notice()["phone"], "sent")
+        self.hook({"hook_event_name": "PostToolUse", "tool_name": "PushNotification", "tool_input": {"message": self.MSG},
+                   "tool_response": NO_TRANSPORT})
+        self.assertEqual(self.notice()["phone"], "sent")
+
+    def test_only_emitted_results_are_marked_told(self):
+        self.tool("todo", "add", *sum([["--what", "일 %d " % i + "가" * 110] for i in range(70)], []))
+        self.py("\n".join(["def f(d):", "    for it in d['items']:",
+                            "        it.update(status='done', notice={'phone': 'undelivered', 'phone_reason': 'no_transport', 'message': 'm'})",
+                            "o._mutate(f)"]))
+        c = self.prompt()
+        told = self.py("print(sum(1 for it in o.load_todos()['items'] if it['notice'].get('phone_told')))")
+        self.assertEqual(int(told), c.count("【폰 알림 결과 — "))
+        self.assertLess(int(told), 71)
+        self.assertGreater(int(told), 0)
+        self.prompt("또")
+        self.assertGreater(int(self.py("print(sum(1 for it in o.load_todos()['items'] if it['notice'].get('phone_told')))")), int(told))
 
 
 class R5StopNet(Base):

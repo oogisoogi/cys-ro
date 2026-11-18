@@ -61,6 +61,10 @@ BRIEF_CLAIM_STALE = 600        # 아침 보고를 맡은 좌석 표지 만료
 CARRY_MAX = 20                 # 이월 항목 상한(오래된 「다시 보기」부터 버림)
 PHONE_SENDING_STALE = 120      # PushNotification 「보내는 중」 표지(PreToolUse 가 잡음) 만료 — 실패로 PostToolUse 가 안 오면 다시 허용
 PHONE_REMINDERS = 2            # 폰 알림 미발송을 다음 오너 턴에 다시 일러 주는 최대 횟수(그 뒤 포기 기록)
+PHONE_OPEN = ("pending", "unsent", "present", "undelivered", "unknown")   # 도구 결과로 바뀔 수 있는 상태(sent 는 되돌리지 않는다)
+PHONE_NOT_SENT_SAY = {"no_transport": "Remote Control 이 연결돼 있지 않아 폰으로 못 보냈어요",
+                      "config_off": "폰 알림 설정이 꺼져 있어 못 보냈어요"}
+PHONE_UNKNOWN_SAY = "폰으로 갔는지 확인하지 못했어요"
 _CTRL = re.compile(r"[\x00-\x1f\x7f]")
 
 
@@ -631,29 +635,73 @@ def gate_phone_send(message):
     return res
 
 
-def mark_phone_sent(message):
-    """PostToolUse(PushNotification) — 끝 (#번호)의 폰 의무를 닫는다(늦게 성공한 것도 · 포기 기록 뒤라도 sent 로 · 3R #6)."""
+def phone_outcome(response):
+    """PushNotification 도구 결과(훅의 tool_response) → (원장 상태, 사유). 도구가 불렸다고 보낸 것이 아니다.
+    sent = 실제로 보냄 · present = 오너가 화면 앞이라 도구가 건너뜀(재안내·포기 대상 아님) · undelivered = 보낼 길이
+    없거나 꺼짐(오너에게 알린다) · unknown = 결과가 없거나 모르는 모양(보냈다고 적지 않는다)."""
+    r = response if isinstance(response, dict) else {}
+    if r.get("pushSent") is True or r.get("localSent") is True:
+        return "sent", None
+    why = r.get("disabledReason")
+    if why == "user_present":
+        return "present", why
+    if why in ("no_transport", "config_off"):
+        return "undelivered", why
+    return "unknown", None
+
+
+def settle_phone(message, response):
+    """PostToolUse(PushNotification) — 끝 (#번호)의 폰 의무를 도구 결과대로 정산한다. 도구가 끝났으니 「보내는 중」 표지는
+    늘 내린다. 포기 기록 뒤의 늦은 성공도 sent 로(3R #6) · 이미 sent 면 그대로. 반환 = 정산한 번호 목록."""
     tid = trailing_id(message)
     if tid is None:
         return []
+    outcome, why = phone_outcome(response)
     done = []
 
     def f(data):
         it = _find(data, tid)
         n = (it or {}).get("notice") or {}
-        if n.get("phone") in ("pending", "unsent"):
-            n["phone"] = "sent"
-            n["phone_sent_at"] = now_iso()
+        if n.get("phone") in PHONE_OPEN:
+            n["phone"] = outcome
+            n["phone_reason"] = why
             n.pop("phone_sending", None)
+            if outcome == "sent":
+                n["phone_sent_at"] = now_iso()
             done.append(tid)
 
     _mutate(f)
     return done
 
 
+def phone_to_tell():
+    """못 보냈거나 확인이 안 된 폰 알림 중 오너에게 아직 말하지 않은 것 → [(번호, 안내 줄)]."""
+    out = []
+    for it in load_todos()["items"]:
+        n = it.get("notice") or {}
+        if n.get("phone") in ("undelivered", "unknown") and not n.get("phone_told"):
+            say = PHONE_NOT_SENT_SAY.get(n.get("phone_reason"), PHONE_UNKNOWN_SAY)
+            out.append((it["id"], "【폰 알림 결과 — 답에서 오너에게 먼저 말하고, 다시 보내지는 마라】#%d %s: %s"
+                        % (it["id"], clean(it["what"], ITEM_CAP), say)))
+    return out
+
+
+def mark_phone_told(ids):
+    """실제로 출력에 실린 안내만 「말함」으로 적는다(못 실은 것은 다음 입력에 다시)."""
+    if not ids:
+        return
+
+    def f(data):
+        for it in data["items"]:
+            if it["id"] in ids and it.get("notice"):
+                it["notice"]["phone_told"] = True
+
+    _mutate(f)
+
+
 def expire_phone():
     """PHONE_REMINDERS 번 일러 줬는데도 남은 폰 의무는 포기 기록(unsent) — 다음 안내를 내기 **전에** 판정한다(마지막 안내의
-    실행 기회를 빼앗지 않게 · 3R #6). 늦게라도 보내면 mark_phone_sent 가 sent 로 바꾼다."""
+    실행 기회를 빼앗지 않게 · 3R #6). 늦게라도 보내면 settle_phone 이 sent 로 바꾼다."""
     def f(data):
         for it in data["items"]:
             n = it.get("notice") or {}
@@ -897,6 +945,7 @@ def hook_prompt(hin):
         ("carry", [(i, _carry_line(x, tl)) for i, x in enumerate(carry_items)], "【이월 %d건 더 — 다음 입력에 이어서】"),
         ("phone", [(p["id"], "【보내지 않은 폰 알림 — PushNotification 으로 보내라】%s" % clean(p["message"], ITEM_CAP))
                    for p in phones], "【보내지 않은 폰 알림 %d건 더】"),
+        ("phone_told", phone_to_tell(), "【폰 알림 결과 %d건 더 — 다음 입력에 이어서】"),
         ("ask", [(i, "【사흘 넘은 일 — 오너에게 먼저 물어라】%s → 답에 따라 `todo keep|defer|cancel <id>`" % a)
                  for i, a in enumerate(asks[:MAX_ASKS])], "【사흘 넘은 일 %d건 더 — todo brief】")])
     if len(asks) > MAX_ASKS:
@@ -905,6 +954,7 @@ def hook_prompt(hin):
     shown = set(emitted["carry"])                           # 실린 이월만 소비한다
     _save_carry([x for i, x in enumerate(carry_items) if i not in shown])
     bump_phone_reminders(set(emitted["phone"]))             # 실제로 일러 준 폰 알림만 센다
+    mark_phone_told(set(emitted["phone_told"]))
     turn = {"start_ts": time.time(), "owner": True, "brief_due": brief_due, "brief_day": t,
             "carried_saved": [carry_items[i].get("text", "") for i in shown if carry_items[i].get("k") == "saved"],
             "prompt_excerpt": clean(prompt, 300),
@@ -972,11 +1022,13 @@ def hook_pretool(hin):
 
 
 def hook_posttool(hin):
-    """PushNotification 보냄 정산 — 하위 에이전트가 보낸 것도 정산한다(그래야 부모가 다시 보내지 않는다 · codex 2R #4)."""
+    """PushNotification 결과 정산 — 하위 에이전트가 부른 것도 정산한다(그래야 부모가 다시 보내지 않는다 · codex 2R #4)."""
     if (hin.get("tool_name") or "") == "PushNotification":
         msg = str((hin.get("tool_input") or {}).get("message", ""))
-        ids = mark_phone_sent(msg)
-        log_event("notify.phone", message=clean(msg, 200), ids=ids, agent=bool(hin.get("agent_id")))
+        resp = hin.get("tool_response")
+        ids = settle_phone(msg, resp)
+        log_event("notify.phone", message=clean(msg, 200), ids=ids, result=phone_outcome(resp)[0],
+                  agent=bool(hin.get("agent_id")))
     return None
 
 

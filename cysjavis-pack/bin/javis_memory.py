@@ -483,32 +483,33 @@ def cmd_update(mdir, args):
     if not os.path.isfile(index_path):
         return fail(2, "%s 없음 — verify 로 정합부터 복구하라" % INDEX_FILE)
 
-    matches = []
-    for fn in memory_files(mdir):
-        text = open(os.path.join(mdir, fn), encoding="utf-8", errors="replace").read()
-        fm = parse_frontmatter(text)
-        if fm["name"] == args.name:
-            matches.append((fn, text))
-    if not matches:
-        return fail(2, "미등재 슬러그: %r — 파일 frontmatter 의 name 과 일치해야 한다" % args.name)
-    if len(matches) > 1:
-        return fail(2, "중복 슬러그: %r (%s) — verify 로 정합부터 복구하라"
-                    % (args.name, ", ".join(fn for fn, _ in matches)))
-    fn, old_text = matches[0]
-    fpath = os.path.join(mdir, fn)
-
-    new_text = old_text
-    if desc is not None:
-        new_text = _replace_fm_description(new_text, desc)
-        if new_text is None:
-            return fail(2, "%s: frontmatter 형식 불량 — description 줄을 찾지 못했다" % fn)
-    if body is not None:
-        new_text = _replace_body(new_text, body)
-        if new_text is None:
-            return fail(2, "%s: frontmatter 형식 불량 — 본문 경계를 찾지 못했다" % fn)
-
     try:
         with FileLock(index_path):
+            # ★owner-memory-todo-1118(codex 2R #6): 대상 찾기·본문 읽기도 잠금 안 — 잠금 밖에서 읽으면 그 사이 retire 가
+            #   은퇴시킨 파일을 이 갱신이 다시 만들어 「지운 규칙」이 되살아난다(색인 없는 활성 파일).
+            matches = []
+            for fn in memory_files(mdir):
+                text = open(os.path.join(mdir, fn), encoding="utf-8", errors="replace").read()
+                fm = parse_frontmatter(text)
+                if fm["name"] == args.name:
+                    matches.append((fn, text))
+            if not matches:
+                return fail(2, "미등재 슬러그: %r — 파일 frontmatter 의 name 과 일치해야 한다" % args.name)
+            if len(matches) > 1:
+                return fail(2, "중복 슬러그: %r (%s) — verify 로 정합부터 복구하라"
+                            % (args.name, ", ".join(fn for fn, _ in matches)))
+            fn, old_text = matches[0]
+            fpath = os.path.join(mdir, fn)
+
+            new_text = old_text
+            if desc is not None:
+                new_text = _replace_fm_description(new_text, desc)
+                if new_text is None:
+                    return fail(2, "%s: frontmatter 형식 불량 — description 줄을 찾지 못했다" % fn)
+            if body is not None:
+                new_text = _replace_body(new_text, body)
+                if new_text is None:
+                    return fail(2, "%s: frontmatter 형식 불량 — 본문 경계를 찾지 못했다" % fn)
             index_text = open(index_path, encoding="utf-8", errors="replace").read()
             new_index, changed = (index_text, 0)
             if desc is not None:

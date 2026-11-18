@@ -7977,6 +7977,20 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             //   본문은 큐로 돌린다(큐 배달은 프롬프트 경계 관측 전까지 prompt_unknown 으로 대기 · empty_seat
             //   게이트가 강제 배달도 막는다) · 호출자에겐 명시 에러로 즉시 알린다(저장 검증이 상한까지 기다리지 않게).
             //   사람 입력(human)은 대상이 아니다 — 빈 셸에 사람이 치는 것은 정상이다.
+            // ★(1.1.16 · cysr-1116-integ-1118 · 조각 1 검증 지적 10 / 통합 📌 S1-11) 단, 사람 표지여도 `refuse_on_approval` 을
+            //   실은 요청(앱 대화 화면의 원자 제출 = 「마스터에게 하는 말」)은 빈 셸이면 쓰지 않는다 — 화면 문턱과 쓰기 사이에
+            //   마스터가 죽으면 그 말이 셸 명령으로 실행된다. 큐에도 넣지 않는다(사람 말은 화면이 붙잡고 사람이 다시 보낸다 ·
+            //   큐에 두면 뒤에 뜬 에이전트에게 저절로 배달돼 두 번 갈 수 있다). 사람이 터미널에서 직접 치는 길(옵션 없음)은 그대로.
+            if human
+                && params.get("refuse_on_approval").and_then(|v| v.as_bool()).unwrap_or(false)
+                && crate::governance::agent_seat_vacant_now(&surface)
+            {
+                return Reply::Single(err_response(
+                    &id,
+                    ERR_NO_AGENT,
+                    "agent seat has no live agent (bare shell) — human send with refuse_on_approval: not typed; not queued",
+                ));
+            }
             if !human && crate::governance::agent_seat_vacant_now(&surface) {
                 // ★v116-seat X-4: 좌석 재기동 줄(`agent_launch` · cys 의 boot_agent_on_surface 가 붙인다)은
                 //   빈 셸에 쳐야 하는 명령 자체다 — 그 좌석에 등록된 에이전트의 한 줄 기동 명령이면 가드를
@@ -23591,6 +23605,53 @@ mod tests {
                    "기동 줄을 쳤는데 사망 타이머가 남았다 — 재기동 직후 역할 회수 유예가 만료될 수 있다");
         let left: Vec<String> = s.pending_queue.lock().unwrap().iter().map(|e| e.text.clone()).collect();
         assert_eq!(left, vec!["true --x".to_string()], "기동 줄 통과 지점이 큐를 건드렸다(폐기 지점 이원화)");
+
+        std::env::remove_var(cys::pack::ENV_PACK_DIR);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★적색→녹색(1.1.16 · cysr-1116-integ-1118 · 📌 S1-11): 빈 셸 좌석(에이전트 메타는 남음 · 뿌리 = sh)에 **사람 표지 +
+    /// `refuse_on_approval`** 원자 제출(앱 대화 화면 꼴) → 쓰기 0 · `no_agent` · 큐 0. 종전 = 사람 표지라 빈 셸 가드를 지나
+    /// Ctrl-U·붙여넣기·Enter 로 셸에 그 말이 명령으로 들어갔다(`sent:true`). 대조: 옵션 없는 사람 입력은 종전대로 쓴다.
+    #[cfg(unix)]
+    #[test]
+    fn integ1116_human_refuse_send_not_typed_into_bare_shell() {
+        let _g = ACL_ENV_LOCK.lock().unwrap();
+        let (daemon, dir) = daemon_with_acl("integ1116-bare", r#"{"default":"allow","rules":[]}"#);
+        let s = daemon
+            .create_surface(None, Some("exec /bin/sh -i".into()), None, None, 24, 80)
+            .expect("create surface");
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        let caller = 990_320_u32;
+        bind_caller(&daemon, caller, s.id);
+        crate::governance::test_wait_seat_runs(&s, "sh", &["-i"]);
+        let t0 = std::time::Instant::now();
+        while !crate::governance::agent_seat_vacant_now(&s) {
+            assert!(t0.elapsed().as_secs() < 10, "전제: 10초 안에 빈 셸 좌석이 되지 않았다");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let send = |n: u64, p: Value| {
+            let req = Request { id: json!(n), method: "surface.send_text".into(), params: p };
+            let Reply::Single(resp) = dispatch(&daemon, req, Some(caller)) else {
+                panic!("expected single reply");
+            };
+            resp
+        };
+        let qlen = || s.pending_queue.lock().unwrap().len();
+        let w0 = s.inject_track.wrote();
+        let r = send(1, json!({
+            "surface_id": s.id, "text": "true --x", "human": true, "quiet": true, "queued": false,
+            "clear_first": true, "machine_origin": false, "refuse_on_approval": true,
+        }));
+        assert_eq!(r["error"]["code"], json!(ERR_NO_AGENT), "사람 표지 + refuse_on_approval 본문이 빈 셸로 갔다: {r}");
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        assert_eq!(s.inject_track.wrote(), w0, "거부했는데 PTY 쓰기가 있었다");
+        assert_eq!(qlen(), 0, "사람 말이 큐에 들어갔다(뒤에 뜬 에이전트에게 저절로 배달될 수 있음)");
+        // 대조: 옵션 없는 사람 입력(터미널에서 직접 치는 길)은 빈 셸이어도 종전대로 쓴다.
+        let r = send(2, json!({"surface_id": s.id, "text": "true --y", "human": true, "quiet": true}));
+        assert_eq!(r["result"]["sent"], json!(true), "옵션 없는 사람 입력까지 막았다(빈 셸에 사람이 치는 것은 정상): {r}");
+        assert_eq!(qlen(), 0);
 
         std::env::remove_var(cys::pack::ENV_PACK_DIR);
         let _ = std::fs::remove_dir_all(&dir);

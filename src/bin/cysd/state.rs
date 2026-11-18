@@ -4825,6 +4825,9 @@ pub struct Daemon {
     pub ledger: Mutex<HashMap<u32, LedgerEntry>>,
     /// 역할 레지스트리: role → surface_id (launch-agent가 등록, --to <role> 주소 해석에 사용)
     pub roles: Mutex<HashMap<String, u64>>,
+    /// ★조각 1: 에이전트 사망 유예로 거둔 역할 → 거둔 좌석(역할당 한 좌석 · 메모리 전용 · 리프 락).
+    /// 그 역할이나 그 좌석이 다시 역할을 쥐는 순간 [`Daemon::note_role_held`] 가 지운다.
+    pub released_roles: Mutex<HashMap<String, u64>>,
     /// ★불사의 예외(W2a): 의도적으로 닫힌(surface.close 경유) 역할의 묘비 집합.
     /// close_surface가 role 보유 surface를 닫을 때 추가하고, 역할이 명시적으로 재기동
     /// (launch-agent/claim_role로 role 등록)되면 제거한다("살아있는 역할=묘비 아님" 불변식).
@@ -6759,6 +6762,11 @@ fn wal_write_verdict(
 
 impl Daemon {
     /// 역할 묘비 해제의 단일 입구. 디스크 묘비를 아직 못 읽은 동안에는 해제 의도를 남겨, 나중에 합칠 때 되살아나지 않게 한다.
+    /// ★조각 1: `role` 을 `sid` 가 쥐었다 — 그 역할의 거둔 표시와 그 좌석의 옛 거둔 표시는 무효다. `roles` 에 넣는 모든 곳이 부른다.
+    pub fn note_role_held(&self, role: &str, sid: u64) {
+        self.released_roles.lock().unwrap().retain(|r, s| r != role && *s != sid);
+    }
+
     pub fn remove_tombstone(&self, role: &str) {
         let mut tombstones = self.tombstones.lock().unwrap();
         tombstones.remove(role);
@@ -7058,6 +7066,7 @@ impl Daemon {
             create_caller: Mutex::new(HashMap::new()),
             ledger: Mutex::new(HashMap::new()),
             roles: Mutex::new(HashMap::new()),
+            released_roles: Mutex::new(HashMap::new()),
             // ★W2a 콜드부트 생존: topology.json에 영속된 묘비를 기동 시 로드(구 topology=빈 집합).
             tombstones: Mutex::new(start_tombstones.tombstones),
             tombstones_unread: Mutex::new(start_tombstones.unreadable.then(std::collections::HashSet::new)),
@@ -8387,6 +8396,7 @@ impl Daemon {
                 );
                 *surface.role.lock().unwrap() = Some(final_role.clone());
                 roles.insert(final_role.clone(), id);
+                self.note_role_held(&final_role, id);
                 registered_role = Some(final_role);
             }
         }

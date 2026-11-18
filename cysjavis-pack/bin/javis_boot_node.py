@@ -1192,11 +1192,14 @@ def _seat_kept_first(old_ref, kind, socket=None, clear=False):
     return True
 
 
-def _saved_list_block(role):
-    """★조각 1: reap-launch 회수 전 저장 목록 확인 — None = 회수 가능 · 문자열 = 보류 사유.
+def _saved_list_block(role, agent, cwd=None):
+    """★조각 1: reap-launch 회수 전 확인 — None = 회수 가능 · 문자열 = 보류 사유. 뒤이은 `launch-agent --resume-saved` 와 같은 판정이다.
     회수 뒤의 launch-agent 가 rc 93 으로 멈추면 좌석만 잃는다. `resume-check` 를 모르는 옛 cys 만 종전대로 지나가고
     그 밖의 실패(시간 초과 포함)는 목록을 모르는 것으로 친다."""
-    rc, _, err = run(["cys", "daemon", "resume-check", "--role", role], timeout=12)
+    cmd = ["cys", "daemon", "resume-check", "--role", role, "--agent", agent]
+    if cwd:
+        cmd += ["--cwd", cwd]
+    rc, _, err = run(cmd, timeout=12)
     if rc == 0 or (rc == 2 and "unrecognized subcommand 'resume-check'" in (err or "")):
         return None
     lines = [ln.strip() for ln in (err or "").splitlines() if ln.strip()]
@@ -1717,7 +1720,7 @@ def main():
                     if _seat_kept_first(old_ref, "recheck_%s" % act2):
                         _seat_event(a.role, old_ref, "seat.kept:recheck_%s" % act2, a.cwd)
                     return done("seat_kept_recheck", "recheck_%s" % act2, old_ref, code=1)
-                why_saved = _saved_list_block(a.role)
+                why_saved = _saved_list_block(a.role, a.agent, a.cwd)
                 if why_saved:
                     emit("seat", "%s 회수 보류 — 저장 대화를 지키려고 멈춤(회수·새 대화 0): %s" % (old_ref, why_saved))
                     return done("resume_held", why_saved, old_ref, code=EXIT_RESUME_HELD)

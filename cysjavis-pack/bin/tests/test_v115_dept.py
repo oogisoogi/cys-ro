@@ -849,7 +849,7 @@ class ReapLaunchChecksSavedListFirst(A2B8BootNodeRun):
         rc, out, fake = self._run_check(0, "")
         names = [c[1] for c in fake.calls]
         check = next(i for i, c in enumerate(fake.calls) if c[1:3] == ["daemon", "resume-check"])
-        self.assertEqual(fake.calls[check][3:], ["--role", "worker"])
+        self.assertEqual(fake.calls[check][3:7], ["--role", "worker", "--agent", "claude"], "launch-agent 와 같은 판정을 묻지 않는다")
         self.assertEqual(names[check + 1], "close-surface", fake.calls)
         self.assertEqual(self._kinds(fake), ["close-surface", "launch-agent"], fake.calls)
 

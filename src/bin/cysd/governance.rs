@@ -694,7 +694,7 @@ pub fn role_release_due(dead_since: Option<f64>, now: f64, grace_secs: f64) -> b
 ///
 /// 락 순서는 claim_role 승계 마무리와 동일하다(roles → surface 리프 락). `surfaces` 맵은
 /// 잡지 않는다 — 호출부가 이미 Arc 를 들고 있다.
-fn release_role_after_agent_death(daemon: &Arc<Daemon>, s: &Arc<crate::state::Surface>) -> bool {
+pub(crate) fn release_role_after_agent_death(daemon: &Arc<Daemon>, s: &Arc<crate::state::Surface>) -> bool {
     let released = {
         let mut roles = daemon.roles.lock().unwrap();
         let mut srole = s.role.lock().unwrap();
@@ -704,6 +704,10 @@ fn release_role_after_agent_death(daemon: &Arc<Daemon>, s: &Arc<crate::state::Su
         // 다른 좌석이 그 역할을 승계한 뒤라면 roles 맵은 그쪽 것이다(내 것만 지운다).
         if roles.get(&role) == Some(&s.id) {
             roles.remove(&role);
+            // ★조각 1: 이 좌석이 쥐고 있던 역할만 「거둔 역할」로 남긴다 — node-recover 가 이 이름으로 저장 대화를 찾는다.
+            let mut released = daemon.released_roles.lock().unwrap();
+            released.retain(|_, sid| *sid != s.id);
+            released.insert(role.clone(), s.id);
         }
         *srole = None;
         *s.caps.lock().unwrap() = crate::caps::Caps::for_role(None);

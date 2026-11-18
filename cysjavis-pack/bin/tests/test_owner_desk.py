@@ -113,6 +113,14 @@ class R1Rules(Base):
         self.assertEqual(len(retired), 1)
         self.assertNotIn("표로 깔끔하게", open(os.path.join(self.pack, "memory", "MEMORY.md"), encoding="utf-8").read())
 
+    def test_other_memories_are_not_owner_rules(self):
+        subprocess.run([sys.executable, os.path.join(PACK, "bin", "javis_memory.py"), "--dir",
+                        os.path.join(self.pack, "memory"), "add", "--type", "feedback", "--name", "seat-tip",
+                        "--desc", "좌석 기술 메모", "--body", "기술 메모 본문"], capture_output=True, env=self.env)
+        self.tool("rule", "add", "--text", "항상 존댓말")
+        self.assertEqual([r["text"] for r in self.tool("rule", "list")["rules"]], ["항상 존댓말"])
+        self.assertNotIn("좌석 기술 메모", self.ctx(self.hook({"hook_event_name": "SessionStart", "source": "clear"})))
+
     def test_rules_block_fits_hook_cap(self):
         for i in range(60):
             self.tool("rule", "add", "--text", "규칙 %02d " % i + "가" * 80)
@@ -195,6 +203,20 @@ class R4Notify(Base):
         self.assertEqual(self.feeds(), [])   # phone 길 = 앱 알림 0
 
 
+class R4NotifyRace(Base):
+    def test_send_done_notice_dedupe_marker(self):
+        """끝 표시 경합(두 좌석이 같은 일을 동시에 끝냄)에서도 알림은 1번 — notified_at 표지가 잠금 안에서 가른다."""
+        self.tool("notify", "set", "--channel", "app")
+        self.tool("todo", "add", "--what", "주보", "--notify")
+        code = ("import os,sys; sys.path.insert(0, %r); import javis_owner as o\n"
+                "it = o.load_todos()['items'][0]; it['evidence'] = 'x'\n"
+                "a = o.send_done_notice(it, o.config()); b = o.send_done_notice(it, o.config())\n"
+                "print(a['sent'], b['sent'])" % os.path.join(PACK, "bin"))
+        p = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=self.env)
+        self.assertEqual(p.stdout.strip(), "True False", p.stderr)
+        self.assertEqual(len(self.feeds()), 1)
+
+
 class R5StopNet(Base):
     """턴 끝 안전망 — 막는 것은 거짓 확인·폰 알림 미발송 둘뿐 · 나머지는 다음 오너 턴으로 이월(막으면 답이 되풀이된다 ·
     11-18 실좌석 실측: 자기 점검 막기 → 빈 답 → 하네스가 보이는 답 강요 → 같은 표 3번)."""
@@ -225,6 +247,9 @@ class R5StopNet(Base):
         self.assertIn("보고서는 늘 한 장으로 줄여서 줘", sc)
         c = self.ctx(self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "고마워"}))
         self.assertIn("«보고서는 늘 한 장으로 줄여서 줘»", c)
+        # 턴이 끊겨 Stop 이 안 와도(중단) 이월은 한 번만 실린다
+        c = self.ctx(self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "다시"}))
+        self.assertNotIn("«보고서는 늘 한 장으로 줄여서 줘»", c)
         # 기록이 있었던 턴은 다시 보기 없음
         self.tool("todo", "add", "--what", "주간 보고")
         self.assertIsNone(self.hook({"hook_event_name": "Stop", "last_assistant_message": "할 일로 적었어요"}))

@@ -199,7 +199,7 @@ def _parse_rule_file(path):
         for k in ("name", "description"):
             if s.startswith(k + ":"):
                 meta[k] = s[len(k) + 1:].strip()
-    if not (meta.get("name") or "").startswith(RULE_PREFIX):
+    if not meta.get("name"):
         return None
     saved = ""
     for ln in body.splitlines():
@@ -412,9 +412,8 @@ def brief(t=None):
     t = t or today()
     data = load_todos()
     open_items = [it for it in data["items"] if is_open(it)]
-    waiting = [it for it in open_items
-               if not (it.get("deferred_until") and _dt.date.fromisoformat(it["deferred_until"]) > t)]
-    stale = [it for it in waiting if (t - _anchor(it)).days > STALE_DAYS]
+    # 미룸 기간 안의 일은 기준일(_anchor)이 미룸 끝날이라 경과일이 음수 → 자연히 묻지 않는다.
+    stale = [it for it in open_items if (t - _anchor(it)).days > STALE_DAYS]
     out = {"open": len(open_items), "stale": [{"id": it["id"], "what": it["what"],
                                                "days": age_days(it, t)} for it in stale]}
     if open_items:

@@ -18,14 +18,15 @@ SH = "hooks/owner-desk.sh"
 
 MUTANTS = [
     ("규칙 주입 0(세션 시작에 규칙 안 실음)", OW, 'lines += ["  %d. %s" % (r["no"], r["text"]) for r in rules]', "pass"),
-    ("규칙 파일 접두 거름 제거", OW, 'if not (meta.get("name") or "").startswith(RULE_PREFIX):', "if False:"),
+    ("규칙 파일명 접두 거름 제거", OW, 'if n.startswith("%s_%s" % (RULE_TYPE, RULE_PREFIX)) and n.endswith(".md"):',
+     'if n.endswith(".md") and n != "MEMORY.md":'),
     ("중복 규칙 검사 제거", OW, 'if r["text"] == text:', "if False:"),
     ("은퇴가 색인 줄을 안 지움", MEM, 'kept = [ln for ln in index_text.splitlines(True) if ("(%s)" % fn) not in ln]',
      "kept = index_text.splitlines(True)"),
     ("은퇴가 본문 파일을 안 옮김", MEM, "            os.unlink(fpath)\n            try:\n                _write_text_atomic(index_path",
      "            try:\n                _write_text_atomic(index_path"),
     ("사흘 경계 > → >=", OW, "(t - _anchor(it)).days > STALE_DAYS", "(t - _anchor(it)).days >= STALE_DAYS"),
-    ("미룸 기간 무시", OW, 'if not (it.get("deferred_until") and _dt.date.fromisoformat(it["deferred_until"]) > t)]', "]"),
+    ("미룸 기준일 무시", OW, '    if it.get("deferred_until"):\n        cands.append(it["deferred_until"])\n', ""),
     ("계속 답 기준일 무시", OW, '    if it.get("kept_on"):\n        cands.append(it["kept_on"])\n', ""),
     ("가장 오래된 일 = 마지막 일", OW, 'oldest = min(open_items, key=lambda it: (it["received"], it["id"]))',
      'oldest = max(open_items, key=lambda it: (it["received"], it["id"]))'),

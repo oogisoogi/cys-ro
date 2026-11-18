@@ -786,8 +786,9 @@ enum Command {
         agent: String,
         #[arg(long)]
         cwd: Option<String>,
-        /// 저장 topology 에 이 역할의 대화 핀(session_id)이 있고 그 세션 파일이 실재하면 그 대화를
-        /// 이어서(restore 와 같은 resume 경로) 기동한다. 핀이 없거나 이을 수 없으면 종전과 같은 새 기동.
+        /// 저장 topology 에 이 역할의 대화 핀(session_id)이 있으면 저장 폴더·프로필로 그 대화를
+        /// 이어서(restore 와 같은 resume 경로) 기동한다. 핀이 없거나 세션 파일이 지워졌으면 종전과 같은 새 기동,
+        /// 그 밖에 이을 수 없으면 exit 93(새 대화로 내려가지 않는다).
         #[arg(long = "resume-saved")]
         resume_saved: bool,
     },
@@ -25608,9 +25609,9 @@ fn seat_pin_role(entry: &Value) -> Option<&str> {
     entry["role"].as_str().or_else(|| entry["released_role"].as_str())
 }
 
-/// 역할 `name` 을 거둔, 셸이 살아 있는 좌석 행.
+/// 역할 `name` 을 거둔 좌석 행(셸이 끝난 좌석은 뒤의 공통 검사가 멈춘다).
 fn released_seat_row<'a>(surfaces: &'a [Value], name: &str) -> Option<&'a Value> {
-    surfaces.iter().find(|s| s["released_role"].as_str() == Some(name) && s["exited"].as_bool() == Some(false))
+    surfaces.iter().find(|s| s["released_role"].as_str() == Some(name))
 }
 
 /// node-recover 의 일반 실패 종료 코드 — 핀이 걸린 좌석은 rc 1(boot 의 파괴적 회수) 대신 93.
@@ -57220,9 +57221,9 @@ mod b360_tests {
     }
 
     /// 새 좌석이 실제로 뜨는 가짜 데몬으로 `what` 을 돌린다(새 좌석 = surface:8 · 프로필은 요청값을 돌려준다).
-    /// `released` = surface:7 이 역할 `worker` 를 거둔 좌석으로 함께 보인다.
+    /// `released` = surface:7 이 그 역할을 거둔 좌석으로 함께 보인다(이름 · 셸이 끝났는가).
     #[cfg(unix)]
-    fn p1_launching(w: &P1World, what: &str, topology: Value, released: bool, extra: &[(&'static str, std::ffi::OsString)]) -> (i32, String, String, Vec<(String, Value)>) {
+    fn p1_launching(w: &P1World, what: &str, topology: Value, released: Option<(&'static str, bool)>) -> (i32, String, String, Vec<(String, Value)>) {
         let cwd = w.cwd.clone();
         let old = (chrono::Local::now().timestamp() - 3600) as f64;
         let (mut pastes, mut acked, mut regained) = (0, false, false);
@@ -57242,11 +57243,11 @@ mod b360_tests {
                         row["awakened_at"] = json!(1.0);
                     }
                 };
-                if released {
+                if let Some((name, exited)) = released {
                     let launched = regained && pastes > 0;
-                    let mut row = json!({"surface_id": 7, "surface_ref": "surface:7", "exited": false, "agent": "claude", "cwd": cwd,
-                                         "role": if regained { json!("worker") } else { Value::Null },
-                                         "released_role": if regained { Value::Null } else { json!("worker") },
+                    let mut row = json!({"surface_id": 7, "surface_ref": "surface:7", "exited": exited, "agent": "claude", "cwd": cwd,
+                                         "role": if regained { json!(name) } else { Value::Null },
+                                         "released_role": if regained { Value::Null } else { json!(name) },
                                          "agent_alive": launched, "seat": if launched { "occupied" } else { "empty" },
                                          "created_at": old, "line_count": if launched { 60 } else { 40 }});
                     if regained {
@@ -57278,15 +57279,13 @@ mod b360_tests {
             }
             _ => r2c_ok(json!({})),
         });
-        let mut envs = p1_child_env(w);
-        envs.extend(extra.iter().cloned());
-        let (rc, out, err) = r2c_child(what, &daemon, &envs);
+        let (rc, out, err) = r2c_child(what, &daemon, &p1_child_env(w));
         (rc, out, err, daemon.calls())
     }
 
     #[cfg(unix)]
     fn p1_resume_saved_launching(w: &P1World, topology: Value) -> (i32, String, Vec<(String, Value)>) {
-        let (rc, out, err, calls) = p1_launching(w, "resume-saved", topology, false, &[]);
+        let (rc, out, err, calls) = p1_launching(w, "resume-saved", topology, None);
         (rc, format!("{out}\n{err}"), calls)
     }
 
@@ -57381,8 +57380,8 @@ mod b360_tests {
     }
 
     #[cfg(unix)]
-    fn p1_boot(w: &P1World, topology: Value, released: bool) -> (i32, Value, String, Vec<(String, Value)>) {
-        let (rc, out, err, calls) = p1_launching(w, "boot", topology, released, &[]);
+    fn p1_boot(w: &P1World, topology: Value, released: Option<(&'static str, bool)>) -> (i32, Value, String, Vec<(String, Value)>) {
+        let (rc, out, err, calls) = p1_launching(w, "boot", topology, released);
         let report = r2b_report(&out, &err);
         (rc, report, format!("{out}\n{err}"), calls)
     }
@@ -57392,7 +57391,7 @@ mod b360_tests {
     #[test]
     fn p1_boot_recovers_the_seat_the_role_was_released_from() {
         let w = P1World::new();
-        let (rc, report, text, calls) = p1_boot(&w, w.topology(json!([w.pin()])), true);
+        let (rc, report, text, calls) = p1_boot(&w, w.topology(json!([w.pin()])), Some(("worker", false)));
         let worker = r2c_role(&report, "worker");
         assert_eq!(worker["outcome"], "recovered", "{worker}\n{text}");
         assert_eq!(worker["surface_ref"], "surface:7", "{worker}");
@@ -57402,17 +57401,35 @@ mod b360_tests {
         assert_eq!(rc, 0, "{text}");
     }
 
+    /// boot 의 `worker` 는 `worker-N` 을 포함한다 — 거둔 이름 그대로 복구해야 그 이름의 핀을 잇는다.
+    #[cfg(unix)]
+    #[test]
+    fn p1_boot_recovers_a_numbered_worker_under_its_own_name() {
+        let w = P1World::new();
+        let mut pin = w.pin();
+        pin["role"] = json!("worker-3");
+        let (rc, report, text, calls) = p1_boot(&w, w.topology(json!([pin])), Some(("worker-3", false)));
+        assert_eq!(r2c_role(&report, "worker")["outcome"], "recovered", "{text}");
+        let restore = calls.iter().find(|(m, _)| m == "role.restore_released").expect("역할 되돌리기");
+        assert_eq!(restore.1["role"], "worker-3", "{text}");
+        assert!(p1_launch_line(&calls).contains(&format!("--resume {P1_SESSION}")), "잇지 않았다:\n{text}");
+        assert_eq!(rc, 0, "{text}");
+    }
+
     /// B1 · boot: 거둔 좌석도 없는데 유효한 핀이 있으면 `--resume-saved` 와 같은 판정으로 잇는다.
     #[cfg(unix)]
     #[test]
     fn p1_boot_without_a_seat_resumes_the_saved_pin() {
         let w = P1World::new();
-        let (rc, report, text, calls) = p1_boot(&w, w.topology(json!([w.pin()])), false);
-        assert_eq!(r2c_role(&report, "worker")["outcome"], "launched", "{text}");
-        let create = calls.iter().find(|(m, _)| m == "surface.create").expect("새 좌석 요청");
-        assert_eq!(create.1["cwd"], json!(w.cwd), "저장 폴더로 뜨지 않았다");
-        assert!(p1_launch_line(&calls).contains(&format!("--resume {P1_SESSION}")), "잇지 않았다:\n{text}");
-        assert_eq!(rc, 0, "{text}");
+        // 셸이 끝난 좌석은 복구 대상이 아니다 — 거둔 표시가 남아 있어도 없는 것과 같다.
+        for released in [None, Some(("worker", true))] {
+            let (rc, report, text, calls) = p1_boot(&w, w.topology(json!([w.pin()])), released);
+            assert_eq!(r2c_role(&report, "worker")["outcome"], "launched", "{released:?}: {text}");
+            let create = calls.iter().find(|(m, _)| m == "surface.create").expect("새 좌석 요청");
+            assert_eq!(create.1["cwd"], json!(w.cwd), "{released:?}: 저장 폴더로 뜨지 않았다");
+            assert!(p1_launch_line(&calls).contains(&format!("--resume {P1_SESSION}")), "{released:?}: 잇지 않았다:\n{text}");
+            assert_eq!(rc, 0, "{released:?}: {text}");
+        }
     }
 
     /// B1 · boot: 핀을 잇지도 판정하지도 못하면 새 대화 좌석을 만들지 않는다(핀이 밀려 사라지는 길을 막는다). 치명 실패로 치지 않는다.
@@ -57426,7 +57443,7 @@ mod b360_tests {
             ("다른 agent 의 핀", w.topology(json!([other_agent]))),
             ("저장 목록을 못 읽음", r2c_ok(json!({"saved": [], "live": [], "tombstones": [], "saved_unreadable": true}))),
         ] {
-            let (rc, report, text, calls) = p1_boot(&w, topology, false);
+            let (rc, report, text, calls) = p1_boot(&w, topology, None);
             let worker = r2c_role(&report, "worker");
             assert_eq!(worker["outcome"], "resume_held", "{name}: {worker}\n{text}");
             assert_eq!(r2c_count(&calls, "surface.create"), 0, "{name}: 새 좌석을 만들었다");
@@ -57443,9 +57460,9 @@ mod b360_tests {
         let w = P1World::new();
         let tombstoned = r2c_ok(json!({"saved": [w.pin()], "live": [], "tombstones": ["worker"]}));
         for (name, topology, released) in [
-            ("거둔 좌석 · 핀 없음", w.topology(json!([])), true),
-            ("거둔 좌석 · 묘비", tombstoned, true),
-            ("첫 설치", w.topology(json!([])), false),
+            ("거둔 좌석 · 핀 없음", w.topology(json!([])), Some(("worker", false))),
+            ("거둔 좌석 · 묘비", tombstoned, Some(("worker", false))),
+            ("첫 설치", w.topology(json!([])), None),
         ] {
             let (rc, report, text, calls) = p1_boot(&w, topology, released);
             assert_eq!(r2c_role(&report, "worker")["outcome"], "launched", "{name}: {text}");

@@ -1618,14 +1618,14 @@ fn restore_released_role(daemon: &Arc<Daemon>, params: &Value, id: &Value, calle
     }
     let master_changed = {
         let mut roles = daemon.roles.lock().unwrap();
-        let mut srole = s.role.lock().unwrap();
         let mut released = daemon.released_roles.lock().unwrap();
-        if srole.is_some() || roles.contains_key(&role) || released.get(&role) != Some(&sid) {
+        // 누가 역할을 쥐면 표시가 지워지므로(`note_role_held` · 같은 roles 락 아래) 표시가 곧 「아무도 쥐지 않았다」는 뜻이다.
+        if released.get(&role) != Some(&sid) {
             return refuse("이 좌석이 거둔 역할이 아니거나 이미 다른 좌석이 쥐었다");
         }
         released.remove(&role);
         roles.insert(role.clone(), sid);
-        *srole = Some(role.clone());
+        *s.role.lock().unwrap() = Some(role.clone());
         *s.caps.lock().unwrap() = crate::caps::Caps::for_role(Some(&role));
         *s.agent_dead_since.lock().unwrap() = None;
         // 소유권과 쿨다운은 한 전이다(claim_role 과 같은 임계영역 규약).
@@ -7702,8 +7702,8 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                         "display_no": s.display_no,
                         "title": s.title.lock().unwrap().clone(),
                         "role": s.role.lock().unwrap().clone(),
-                        // ★조각 1: 에이전트 사망으로 거둔 역할(역할 없는 좌석 · 아무도 다시 쥐지 않았을 때만) — node-recover·boot 가 저장 대화를 찾는 이름.
-                        "released_role": released_by_seat.get(&s.id).filter(|_| s.role.lock().unwrap().is_none()),
+                        // ★조각 1: 에이전트 사망으로 거둔 역할(아무도 다시 쥐지 않았을 때만) — node-recover·boot 가 저장 대화를 찾는 이름.
+                        "released_role": released_by_seat.get(&s.id),
                         // (tabs-sidebar 2d) 옮긴 묶음(없으면 null = 앱 자동 규칙) — 앱이 시작 때 읽어 영속한다.
                         "group": s.group.lock().unwrap().clone().flatten(),
                         // (codex 1R ③) 이번 기동 중 사람이 정했는가(해제 포함) — false 면 group null 은 「모름」(데몬 재시작) · true 면 「해제」.
@@ -33310,6 +33310,7 @@ mod tests {
         assert!(crate::governance::release_role_after_agent_death(&daemon, &seat));
         assert_eq!(rr_saved_session(&daemon, "worker"), json!(RR_SESSION), "전제: 회수 뒤에도 핀이 있다");
         *seat.agent_dead_since.lock().unwrap() = Some(1.0);
+        *seat.title.lock().unwrap() = "after-release".into();
 
         let resp = rr_restore(&daemon, seat.id, "worker", None);
         assert_eq!(resp["ok"], json!(true), "{resp}");
@@ -33319,6 +33320,8 @@ mod tests {
         assert_eq!(*seat.agent_dead_since.lock().unwrap(), None, "옛 사망 시각이 남으면 다음 틱에 다시 회수된다");
         assert_eq!(rr_released(&daemon, seat.id), Value::Null);
         assert_eq!(rr_saved_session(&daemon, "worker"), json!(RR_SESSION), "핀이 바뀌었다");
+        let (saved, _) = crate::governance::load_saved_topology(&daemon);
+        assert_eq!(saved[0]["title"], json!("after-release"), "되돌린 좌석이 저장되지 않았다");
 
         assert!(crate::governance::release_role_after_agent_death(&daemon, &seat), "또 죽으면 다시 회수");
         assert_eq!(rr_released(&daemon, seat.id), json!("worker"));

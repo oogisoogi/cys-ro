@@ -7020,8 +7020,9 @@ impl Daemon {
         //   전용 동기 연결로(설계 §3-2 부팅 행). 경보는 이벤트 버스가 생긴 뒤(아래) 발행한다.
         let numbers_boot_at = now_epoch();
         let numbers_boot = crate::recall::surface_numbers_boot(&socket_path, numbers_boot_at);
-        // ★조각 1: 묘비 시드와 「못 읽었는가」는 **같은 한 번의 읽기**에서 나온다(둘이 갈리면 빈 시드가 파일을 덮는다).
-        let (seed_tombstones, tombstones_blocked) = crate::governance::load_tombstones_with_status(&socket_path);
+        // ★조각 1: 묘비·rev·직전 영속본·「못 읽었는가」는 **같은 한 번의 읽기**에서 나온다(갈리면 rev 가 뒤로 간다).
+        let start_tombstones = crate::governance::load_start_tombstones(&socket_path);
+        let isolated_topology = start_tombstones.isolated.clone();
         let daemon = Arc::new(Daemon {
             receipt_registry: Arc::new(crate::rpc_receipt::ReceiptRegistry::default()),
             surfaces: Mutex::new(HashMap::new()),
@@ -7058,21 +7059,14 @@ impl Daemon {
             ledger: Mutex::new(HashMap::new()),
             roles: Mutex::new(HashMap::new()),
             // ★W2a 콜드부트 생존: topology.json에 영속된 묘비를 기동 시 로드(구 topology=빈 집합).
-            tombstones: Mutex::new(seed_tombstones),
-            tombstones_unread: Mutex::new(tombstones_blocked.then(std::collections::HashSet::new)),
+            tombstones: Mutex::new(start_tombstones.tombstones),
+            tombstones_unread: Mutex::new(start_tombstones.unreadable.then(std::collections::HashSet::new)),
             dept_tombstones: Mutex::new(crate::governance::load_dept_tombstones_from_disk(
                 &socket_path,
             )),
             // ★W2/A-S1: rev 를 disk topology 에서 시드(재시작 넘어 단조성 유지)·직전 영속본=시드 묘비.
-            tombstones_rev: std::sync::atomic::AtomicU64::new(
-                crate::governance::load_tombstones_rev_from_disk(&socket_path),
-            ),
-            last_persisted_tombstones: Mutex::new({
-                let mut v: Vec<String> =
-                    crate::governance::load_tombstones_from_disk(&socket_path).into_iter().collect();
-                v.sort();
-                v
-            }),
+            tombstones_rev: std::sync::atomic::AtomicU64::new(start_tombstones.rev),
+            last_persisted_tombstones: Mutex::new(start_tombstones.last_persisted),
             topology_write: Mutex::new(()),
             topology_dirty: AtomicBool::new(false),
             // 벡터-9 방어심화: 기동 시 master 미승계 → None (첫 claim_role("master")에서 기록).
@@ -7132,6 +7126,15 @@ impl Daemon {
             // ★(0.14.31 · WP-3 B) enabled 는 alert_route::spawn 이 실제로 태스크를 열 때만 true.
             alert_route: Mutex::new(Default::default()),
         });
+        // ★조각 1: 시작 때 손상본을 옮겼으면 사람에게 알린다(저장 핀도 함께 빠졌을 수 있다).
+        if let Some(name) = isolated_topology {
+            daemon.push_feed_notification(
+                "error",
+                "좌석 기록 손상",
+                &format!("저장된 좌석 기록이 손상되어 따로 보관했다. 이전 대화를 자동으로 잇지 못할 수 있다 ({name})"),
+                None,
+            );
+        }
         // 재시작에도 오늘 소비/비용/모델믹스/스파크라인 보존 — 최근 12h usage_records 리플레이.
         crate::analytics::seed_consumption(&daemon);
         // ★v116-num: 부팅 경보(seed_failed · 고아 UPDATE 실패 write_io) — 버스가 선 뒤 · 종류별 1회.

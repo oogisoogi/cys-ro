@@ -556,7 +556,9 @@ def hook_session(hin):
     lines.append("■ 규약: 오너가 앞으로 계속 지킬 지시를 주면 그 턴 안에 `rule add --text` 로 저장하고 도구가 준 say 1줄"
                  "(「%s: …」)을 보인다 · 「그 규칙 지워」 = `rule remove <번호>` · 「기억하는 규칙 보여 줘」 = `rule list` · "
                  "오너가 일을 시키면 `todo add --what`(여럿이면 --what 여러 번 · 급한 것 --urgent N · 짧은 것 --short N) · "
-                 "끝나면 `todo done <id> --evidence` · 「끝나면 알려 줘」 = `todo add … --notify`(늘 그렇게 = `notify set --all-done on`)."
+                 "끝나면 `todo done <id> --evidence` · 「끝나면 알려 줘」 = `todo add … --notify`(늘 그렇게 = `notify set --all-done on`) · "
+                 "끝 알림 기본 = 앱 알림 + 폰(PushNotification) · 오너가 카톡을 원하면 「컴퓨터 조작으로 카톡 보내기는 불안정할 수 "
+                 "있어요」 1줄 안내 뒤 오너가 고르면 스킬 computer-control 길로 보낸다(새 로그인·외부 API 만들지 않음)."
                  % SAVED_MARK)
     # 순환(/clear·압축) 직전 턴에서 넘어온 것도 잃지 않는다(지우지는 않음 — 다음 오너 입력 훅이 싣고 지운다).
     lines += _carry_lines(_load_json(_carry_path(), {}), tl)

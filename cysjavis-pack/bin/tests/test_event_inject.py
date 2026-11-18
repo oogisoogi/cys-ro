@@ -265,7 +265,7 @@ def s_F(pack, tmp):
     c = ctx(out)
     ok = check("F 울타리: §1-A(844)는 들어가고 §2 는 「주입 상한 도달」+ 줄 범위",
                "■ 원문 §1-A" in c and "■ 원문 §2 " not in c and "주입 상한 도달 — §2 원문 생략" in c
-               and "줄 339–381" in c, c[-300:])
+               and "줄 351–393" in c, c[-300:])   # 1.1.16 owner-desk 절 +12줄(339–381 → 351–393)
     rows = [r for r in ledger_rows(tmp) if r.get("key") == "§2"]
     ok &= check("F 울타리 기록 1줄(fence)", [r["mode"] for r in rows] == ["fence"])
     rc, out, _e, _t = fire(pack, tmp, "cys launch-agent --role w")
@@ -376,7 +376,8 @@ def s_C(pack, tmp):
     rc, out, _e, _t = fire(pack, tmp, "cys launch-agent --role w", sid="s2")
     # v0.14.51 편입: 원작자 「주인님 조항」 59줄이 CEO 머리글에 들어와 §2 가 +59줄 내려갔다(421–463 → 480–522 · 길이 43줄 그대로).
     # 1.1.10 통합(cysr-1110-integrate · master#c287b9bc): 그 조항 머리에 오너 정의 1줄 + 빈 줄 → +2줄(480–522 → 482–524 · 길이 그대로).
-    ok &= check("C CEO: §2 줄 번호 = CEO 템플릿 기준(482–524)", "■ 원문 §2 (줄 482–524)" in ctx(out), ctx(out)[:160])
+    # 1.1.16(TICKET=cysr-owner-memory-todo-1118): §2 앞 「오너 책상」 절 +12줄(482–524 → 494–536 · 길이 그대로).
+    ok &= check("C CEO: §2 줄 번호 = CEO 템플릿 기준(494–536)", "■ 원문 §2 (줄 494–536)" in ctx(out), ctx(out)[:160])
     return ok
 
 

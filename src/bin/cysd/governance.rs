@@ -3357,6 +3357,7 @@ pub fn persist_topology(daemon: &Arc<Daemon>) {
         }
         return;
     }
+    adopt_unread_tombstones(daemon, &prev_topology);
     let entries: Vec<serde_json::Value> = daemon
         .surfaces
         .lock()
@@ -3466,7 +3467,7 @@ pub fn persist_topology(daemon: &Arc<Daemon>) {
                 None,
             );
         }
-        PrevTopology::Valid(prev_entries) => {
+        PrevTopology::Valid { entries: prev_entries, .. } => {
             for prev in prev_entries {
                 let Some(role) = prev["role"].as_str() else {
                     continue; // 역할 없는 잔재는 조립 대상이 아니었다 — 되살리지 않는다
@@ -3509,11 +3510,39 @@ pub fn persist_topology(daemon: &Arc<Daemon>) {
     }
 }
 
-/// ★조각 1: 읽기 오류로 건너뛴 저장이 있을 때만 다시 저장한다(watchdog 틱 · 정상 종료 직전).
+/// ★조각 1: 읽기 오류로 건너뛴 저장이나 아직 못 읽은 묘비가 있을 때만 다시 저장한다(watchdog 틱 · 정상 종료 직전).
 pub fn persist_topology_if_dirty(daemon: &Arc<Daemon>) {
-    if daemon.topology_dirty.load(Ordering::SeqCst) {
+    let tombstones_pending = daemon.tombstones_unread.lock().unwrap().is_some();
+    if tombstones_pending || daemon.topology_dirty.load(Ordering::SeqCst) {
         persist_topology(daemon);
     }
+}
+
+/// ★조각 1: 시작 때 못 읽은 묘비를 파일이 읽히게 된 첫 저장에서 이어받는다. 불변식 = 읽지 못한 묘비를 지우지 않는다 ·
+/// 그동안 실제로 해제한 묘비는 되살리지 않는다 · rev 는 줄지 않는다. 디스크와 같으면 rev 도 그대로다.
+fn adopt_unread_tombstones(daemon: &Arc<Daemon>, prev: &PrevTopology) {
+    if daemon.tombstones_unread.lock().unwrap().is_none() {
+        return;
+    }
+    let (disk, disk_rev) = match prev {
+        PrevTopology::Unreadable { .. } => return,
+        PrevTopology::Missing => (std::collections::HashSet::new(), 0),
+        // 시작 때의 손상 처리와 같이 세대 스냅샷으로 복구를 시도한다.
+        PrevTopology::Corrupt { .. } => (tombstones_from_latest_generation(), 0),
+        PrevTopology::Valid { tombstones, tombstones_rev, .. } => (tombstones.clone(), *tombstones_rev),
+    };
+    {
+        let mut tombstones = daemon.tombstones.lock().unwrap();
+        let Some(removed) = daemon.tombstones_unread.lock().unwrap().take() else {
+            return;
+        };
+        tombstones.extend(disk.iter().filter(|role| !removed.contains(*role)).cloned());
+    }
+    daemon.tombstones_rev.fetch_max(disk_rev, Ordering::SeqCst);
+    let mut on_disk: Vec<String> = disk.into_iter().collect();
+    on_disk.sort();
+    eprintln!("[cysd] 시작 때 못 읽은 묘비를 이어받았다(디스크 {}개).", on_disk.len());
+    *daemon.last_persisted_tombstones.lock().unwrap() = on_disk;
 }
 
 /// 손상-안전 원자 JSON 쓰기: 같은 디렉터리 temp에 write + fsync(file) → rename(원자 교체)
@@ -3564,6 +3593,16 @@ pub fn load_topology(daemon: &Arc<Daemon>) -> serde_json::Value {
         .unwrap_or_else(|| json!([]))
 }
 
+/// ★조각 1: `system.topology` 의 저장 목록 + 「읽지 못했다」 표시. 파일 부재는 정상 빈 목록이고, 읽기 오류·손상은
+/// 빈 목록과 표시 `true` 다. 조회이므로 파일을 옮기지 않는다.
+pub fn load_saved_topology(daemon: &Arc<Daemon>) -> (serde_json::Value, bool) {
+    match read_persisted_entries(&crate::state::state_dir(&daemon.socket_path)) {
+        PrevTopology::Valid { entries, .. } => (serde_json::Value::Array(entries), false),
+        PrevTopology::Missing => (json!([]), false),
+        PrevTopology::Unreadable { .. } | PrevTopology::Corrupt { .. } => (json!([]), true),
+    }
+}
+
 /// 직전 영속본 4분류 — **부재와 손상을 구분한다.** 구분하지 않으면 손상이 「보존할 것이 없다」로
 /// 위장해 살아있지 않던 역할이 조용히 전멸한다(S3 가 고치려는 결함의 I/O 판).
 enum PrevTopology {
@@ -3576,7 +3615,11 @@ enum PrevTopology {
         path: std::path::PathBuf,
         why: String,
     },
-    Valid(Vec<serde_json::Value>),
+    Valid {
+        entries: Vec<serde_json::Value>,
+        tombstones: std::collections::HashSet<String>,
+        tombstones_rev: u64,
+    },
 }
 
 fn read_persisted_entries(dir: &std::path::Path) -> PrevTopology {
@@ -3603,7 +3646,11 @@ fn read_persisted_entries(dir: &std::path::Path) -> PrevTopology {
         }
     };
     match v.get("entries") {
-        Some(serde_json::Value::Array(a)) => PrevTopology::Valid(a.clone()),
+        Some(serde_json::Value::Array(a)) => PrevTopology::Valid {
+            entries: a.clone(),
+            tombstones: _tombs_from_value(&v),
+            tombstones_rev: v["tombstones_rev"].as_u64().unwrap_or(0),
+        },
         // entries 키가 없거나 배열이 아니다 = 스키마가 우리 것이 아니다. 빈 배열로 읽으면
         // "보존할 것 없음"과 구별되지 않으므로 손상으로 분류한다(fail-safe 방향).
         _ => PrevTopology::Corrupt {
@@ -3706,14 +3753,25 @@ pub fn load_dept_tombstones_from_disk(
 }
 
 pub fn load_tombstones_from_disk(socket_path: &std::path::Path) -> std::collections::HashSet<String> {
+    load_tombstones_with_status(socket_path).0
+}
+
+/// 묘비 시드 + 「파일을 읽지 못했다」. ★조각 1: 부재만 fresh 다. 읽기 오류의 빈 집합은 「묘비 없음」이 아니라 「모름」이므로
+/// 호출자(`Daemon::new`)가 표시해 두고, 읽히게 된 첫 저장이 디스크 묘비를 이어받는다(`adopt_unread_tombstones`).
+pub fn load_tombstones_with_status(socket_path: &std::path::Path) -> (std::collections::HashSet<String>, bool) {
     let dir = crate::state::state_dir(socket_path);
     let p = dir.join("topology.json");
-    let s = match std::fs::read_to_string(&p) {
-        Ok(s) => s,
-        Err(_) => return std::collections::HashSet::new(), // 부재 = fresh install 정상
+    let parsed = match std::fs::read_to_string(&p) {
+        Ok(s) => serde_json::from_str::<serde_json::Value>(&s).map_err(|e| e.to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (std::collections::HashSet::new(), false), // 부재 = fresh install 정상
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => Err(e.to_string()), // UTF-8 아님 = 내용 손상
+        Err(e) => {
+            eprintln!("[cysd] topology.json 읽기 오류({e}) — 묘비를 아직 모른다. 읽히면 이어받는다.");
+            return (std::collections::HashSet::new(), true);
+        }
     };
-    match serde_json::from_str::<serde_json::Value>(&s) {
-        Ok(v) => _tombs_from_value(&v), // valid(구 topology tombstones 키 부재=빈집합·하위호환)
+    match parsed {
+        Ok(v) => (_tombs_from_value(&v), false), // valid(구 topology tombstones 키 부재=빈집합·하위호환)
         Err(e) => {
             // 손상 — isolate + 세대 스냅샷 폴백(조용한 소실 금지).
             let ts = now_epoch() as u64;
@@ -3725,7 +3783,7 @@ pub fn load_tombstones_from_disk(socket_path: &std::path::Path) -> std::collecti
                 corrupt.display(),
                 recovered.len()
             );
-            recovered
+            (recovered, false)
         }
     }
 }
@@ -30850,6 +30908,83 @@ mod tests {
         assert!(entries.iter().any(|e| e["role"] == "live-r"), "산 좌석이 빠졌다: {v}");
         assert_eq!(v["tombstones"], json!(["gone"]), "회복 뒤 묘비가 반영되지 않았다");
         assert_eq!(v["tombstones_rev"], json!(rev + 1), "회복 뒤 rev 가 한 번 올라야 한다");
+    }
+
+    /// topology 를 읽지 못하는 채로 시작한 데몬 — 파일에는 묘비와 rev 가 들어 있다(모드 000 으로 돌려준다).
+    #[cfg(unix)]
+    fn daemon_started_on_unreadable_topology(
+        tag: &str,
+        tombstones: &[&str],
+        rev: u64,
+    ) -> (Arc<Daemon>, std::path::PathBuf) {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, AtomicOrdering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("cys-tomb-{tag}-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("topology.json");
+        let seed = json!({"schema_version": 1, "tombstones_rev": rev, "updated_at": 1.0,
+                          "tombstones": tombstones, "entries": []});
+        std::fs::write(&path, seed.to_string()).unwrap();
+        set_mode(&path, 0o000);
+        let daemon = Daemon::new(dir.join("cysd.sock"));
+        (daemon, path)
+    }
+
+    #[cfg(unix)]
+    fn topology_on_disk(path: &std::path::Path) -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    /// 읽지 못한 묘비는 지우지 않고 rev 도 뒤로 가지 않는다 — 읽히게 된 첫 저장이 디스크 묘비를 이어받는다.
+    #[cfg(unix)]
+    #[test]
+    fn tombstones_unread_at_start_survive_the_first_readable_save() {
+        let (daemon, path) = daemon_started_on_unreadable_topology("keep", &["gone"], 7);
+        spawn_role_surface(&daemon, "live-r");
+        set_mode(&path, 0o600);
+        persist_topology(&daemon);
+        let v = topology_on_disk(&path);
+        assert_eq!(v["tombstones"], json!(["gone"]), "읽지 못했던 묘비가 지워졌다: {v}");
+        assert_eq!(v["tombstones_rev"], json!(7), "묘비가 그대로인데 rev 가 달라졌다: {v}");
+        assert!(daemon.tombstones.lock().unwrap().contains("gone"), "메모리 묘비가 비어 있다");
+    }
+
+    /// 못 읽는 동안 해제한 묘비는 되살아나지 않고, 새 묘비는 남으며, 집합이 바뀌었으니 rev 는 디스크 값 위로 오른다.
+    /// 밀린 저장 표시가 없어도 다시 시도 경로가 합친다. 아직 못 읽으면 합치지 않고 기다린다.
+    #[cfg(unix)]
+    #[test]
+    fn tombstones_removed_while_unread_stay_removed_and_rev_moves_forward() {
+        let (daemon, path) = daemon_started_on_unreadable_topology("remove", &["freed", "gone", "revived"], 7);
+        daemon.remove_tombstone("freed");
+        spawn_role_surface(&daemon, "revived"); // 역할 좌석 생성 = 묘비 해제 입구
+        daemon.tombstones.lock().unwrap().insert("new-t".into());
+        daemon.topology_dirty.store(false, AtomicOrdering::SeqCst);
+        persist_topology_if_dirty(&daemon);
+        let still_pending = daemon.tombstones_unread.lock().unwrap().is_some();
+        set_mode(&path, 0o600);
+        assert!(still_pending, "아직 못 읽는데 합친 것으로 처리했다");
+        daemon.topology_dirty.store(false, AtomicOrdering::SeqCst);
+        persist_topology_if_dirty(&daemon);
+        let v = topology_on_disk(&path);
+        assert_eq!(v["tombstones"], json!(["gone", "new-t"]), "{v}");
+        assert_eq!(v["tombstones_rev"], json!(8), "{v}");
+        assert!(daemon.tombstones_unread.lock().unwrap().is_none(), "합친 뒤에도 대기 표시가 남았다");
+    }
+
+    /// 파일 부재만 fresh 다(대기 표시 없음). UTF-8 아님은 시작 때도 손상으로 격리한다.
+    #[cfg(unix)]
+    #[test]
+    fn only_a_missing_file_is_fresh_at_start() {
+        let fresh = drill_daemon("tomb-fresh");
+        assert!(fresh.tombstones_unread.lock().unwrap().is_none(), "파일 부재를 못 읽음으로 봤다");
+        let dir = std::env::temp_dir().join(format!("cys-tomb-nonutf8-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("topology.json"), [0xff, 0xfe]).unwrap();
+        let daemon = Daemon::new(dir.join("cysd.sock"));
+        assert!(daemon.tombstones_unread.lock().unwrap().is_none(), "손상을 읽기 오류로 봤다");
+        assert_eq!(isolated_topologies(&dir).len(), 1, "깨진 내용이 격리되지 않았다");
     }
 
     /// 밀린 저장 표시: 실패 동안 켜져 있고 경고는 한 번이며, 다시 시도가 성공하면 내려간다.

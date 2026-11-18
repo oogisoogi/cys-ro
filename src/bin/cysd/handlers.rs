@@ -9777,15 +9777,13 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                 return Reply::Single(err_response(&id, "invalid_params", "missing role"));
             };
             let remove = params.get("remove").and_then(|v| v.as_bool()).unwrap_or(false);
-            {
+            if remove {
+                daemon.remove_tombstone(&role);
+            } else {
                 let mut tombs = daemon.tombstones.lock().unwrap();
-                if remove {
-                    tombs.remove(&role);
-                } else {
-                    tombs.insert(role.clone());
-                    // 폐역이면 role-map 에서도 제외(살아있는 surface 는 close_surface 가 별도 처리 — 여기선 선언만).
-                    daemon.roles.lock().unwrap().remove(&role);
-                }
+                tombs.insert(role.clone());
+                // 폐역이면 role-map 에서도 제외(살아있는 surface 는 close_surface 가 별도 처리 — 여기선 선언만).
+                daemon.roles.lock().unwrap().remove(&role);
             }
             governance::persist_topology(daemon); // 엔트리+묘비+rev 단일 영속(단조 카운터 증가)
             let rev = daemon
@@ -10335,7 +10333,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             }
             // ★W2a 해제 불변식: claim_role = 명시적 역할 (재)등록 = 부활 의도. 묘비에서 제거해
             // 이후 이 역할의 비정상 종료는 다시 정상 부활 대상이 되게 한다. tombstones는 리프 락.
-            daemon.tombstones.lock().unwrap().remove(&claimed_role);
+            daemon.remove_tombstone(&claimed_role);
             // ★agent 메타 확정 — `role.reclaim_auto` 와 **같은 함수**(사본 금지).
             //   근거·규칙·Windows 2표본 절차는 그 함수의 doc 이 정본이다.
             finalize_agent_meta_after_role_change(daemon, sid, &claimed_role, "claim_role");
@@ -14015,7 +14013,8 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
 
         // ─── T2-6 토폴로지: 영속 스냅샷 + 현재 라이브 역할 (cys restore의 데이터 소스) ───
         "system.topology" => {
-            let saved = crate::governance::load_topology(daemon);
+            // ★조각 1: 못 읽은 저장 목록을 빈 목록과 구별해 준다(`saved_unreadable`) — 빈 목록은 「핀 없음」으로 읽힌다.
+            let (saved, saved_unreadable) = crate::governance::load_saved_topology(daemon);
             let live: Vec<Value> = daemon
                 .surfaces
                 .lock()
@@ -14057,7 +14056,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             };
             Reply::Single(ok_response(
                 &id,
-                json!({"saved": saved, "live": live, "tombstones": tombstones}),
+                json!({"saved": saved, "saved_unreadable": saved_unreadable, "live": live, "tombstones": tombstones}),
             ))
         }
 
@@ -33084,6 +33083,62 @@ mod tests {
             tombs.iter().any(|t| t.as_str() == Some("master")),
             "system.topology가 묘비를 노출하지 않는다: {resp}"
         );
+    }
+
+    /// ★조각 1: 디스크 묘비를 못 읽은 동안의 `tombstone.set remove` 는 해제 의도로 남는다.
+    #[cfg(unix)]
+    #[test]
+    fn tombstone_remove_rpc_records_the_intent_while_disk_is_unread() {
+        use std::os::unix::fs::PermissionsExt;
+        let daemon = isolated_daemon();
+        let path = crate::state::state_dir(&daemon.socket_path).join("topology.json");
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        *daemon.tombstones_unread.lock().unwrap() = Some(Default::default());
+        let req = Request { id: json!(1), method: "tombstone.set".into(), params: json!({"role": "freed", "remove": true}) };
+        let reply = dispatch(&daemon, req, None);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let Reply::Single(_) = reply else {
+            panic!("expected single reply");
+        };
+        let unread = daemon.tombstones_unread.lock().unwrap();
+        assert!(unread.as_ref().is_some_and(|r| r.contains("freed")), "해제 의도가 남지 않았다");
+    }
+
+    /// ★조각 1: claim_role 의 묘비 해제도 단일 입구를 지난다(직접 지우면 해제 의도가 사라진다).
+    #[test]
+    fn claim_role_releases_the_tombstone_through_the_single_entry() {
+        let src = include_str!("handlers.rs");
+        assert!(src.contains(concat!("daemon.remove_tombstone(", "&claimed_role);")), "claim_role 이 단일 입구를 쓰지 않는다");
+    }
+
+    /// ★조각 1: 저장 목록을 못 읽었으면 빈 목록과 구별되는 표시를 준다(「핀 없음」 오인 차단). 파일 부재는 표시 없음.
+    #[cfg(unix)]
+    #[test]
+    fn system_topology_marks_a_saved_list_it_could_not_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let daemon = isolated_daemon();
+        let path = crate::state::state_dir(&daemon.socket_path).join("topology.json");
+        let ask = || {
+            let req = Request { id: json!(1), method: "system.topology".into(), params: json!({}) };
+            let Reply::Single(resp) = dispatch(&daemon, req, None) else {
+                panic!("expected single reply");
+            };
+            resp["result"].clone()
+        };
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(ask()["saved_unreadable"], json!(false), "파일 부재는 못 읽은 것이 아니다");
+        std::fs::write(&path, json!({"entries": [{"role": "r"}], "tombstones": []}).to_string()).unwrap();
+        let ok = ask();
+        assert_eq!((ok["saved_unreadable"].clone(), ok["saved"][0]["role"].clone()), (json!(false), json!("r")));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let denied = ask();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!((denied["saved_unreadable"].clone(), denied["saved"].clone()), (json!(true), json!([])), "읽기 오류");
+        std::fs::write(&path, "{ not json").unwrap();
+        let broken = ask();
+        assert_eq!((broken["saved_unreadable"].clone(), broken["saved"].clone()), (json!(true), json!([])), "손상");
+        assert!(path.exists(), "조회가 파일을 옮겼다");
     }
 
     // ─────────────────────────────────────────────────────────────────────────────

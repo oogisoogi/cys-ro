@@ -25434,6 +25434,10 @@ fn recover_pin_session(entry: &Value) -> Option<&str> {
 
 /// 이 역할의 저장 항목 중 세션이 있는 것(묘비 역할 = 없음). 저장 목록 칸이 없으면 응답을 믿을 수 없다.
 fn recover_saved_pins<'a>(topo: &'a Value, role: &str) -> Result<Vec<&'a Value>, String> {
+    // 데몬이 파일을 못 읽어 준 빈 목록은 「핀 없음」이 아니다(표시 없는 옛 데몬 응답은 지금처럼 목록을 그대로 믿는다).
+    if topo["saved_unreadable"].as_bool() == Some(true) {
+        return Err("데몬이 저장 목록을 읽지 못했다".into());
+    }
     let saved = topo["saved"].as_array().ok_or("저장 목록 응답이 깨졌다")?;
     let tombstoned = topo["tombstones"].as_array().is_some_and(|a| a.iter().any(|t| t.as_str() == Some(role)));
     if tombstoned {
@@ -56694,6 +56698,7 @@ mod b360_tests {
             ("다른 좌석이 잇는 중", occupied),
             ("조회 실패", r2c_reply("rpc_failed: topology unavailable")),
             ("깨진 응답", r2c_ok(json!({}))),
+            ("저장 목록을 못 읽음", r2c_ok(json!({"saved": [], "live": [], "tombstones": [], "saved_unreadable": true}))),
         ];
         let mut failures = Vec::new();
         for (name, topology) in cases {

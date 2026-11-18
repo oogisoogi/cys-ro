@@ -96,3 +96,9 @@
 1. WIP 머리 d0497ea1 에서 `python3 cysjavis-pack/bin/tests/test_owner_desk.py` 1회 → 초록이면 WIP 를 정식 커밋 메시지로 덮지 말고 `fix(… codex 4R …)` 새 커밋(시험 수치 기재).
 2. 뮤턴트 53 · 팩 14본 · dept_chat 단독 = master 통제 실행 요청 → 결과로 §3·§4 표를 최종 수치로 갱신(§0~§5 의 3a40e5c6 이전 수치 교체).
 3. codex 5R(필요 시) → 【확인요청】 TICKET=cysr-owner-memory-todo-1118 + 새 머리 + 시험 수치 + codex 1R~4R(5R) 처분 + HANDOFF.
+
+### 6-5. 후임 좌석 실측(11-18 18:5x · surface:2229 · 계정2 · master#26302103)
+- `test_owner_desk.py`(코드 = d0497ea1 · CYS_* 없는 깨끗한 env) = **43/43 초록 · 46초**.
+- 4R 시험 `R10Codex4R` 2건을 수리 전 코드(3a40e5c6 + 새 시험 파일 · 임시 작업트리)에서 실행 = **2/2 붉음**(`'unsent' != 'pending'` · 확인 날짜 후퇴로 「밀린 일 1건」 재출력).
+- **뮤턴트 53 · 팩 14본 · `javis_memory --self-test` = 아직 안 돌렸다**(master 통제 실행 대기). §3·§4 표는 그 결과가 오면 갱신한다.
+- codex 5R 판단 = **불요**: 4R 수리는 폰 안내 횟수·포기 판정의 유예와 `confirmed_on` 단조 증가뿐이고, 비밀값·데이터 비가역에 닿지 않는다(브리프 기준). 따라서 4R 수리는 codex 재확인 없이 시험·뮤턴트로만 닫힌다.

@@ -43,8 +43,8 @@ class Base(unittest.TestCase):
         self.failflag = os.path.join(self.tmp, "fail-feed-once")
         fake = os.path.join(self.tmp, "fake-cys")
         with open(fake, "w") as f:
-            f.write('#!/bin/sh\nif [ -f "%s" ]; then rm -f "%s"; exit 1; fi\nprintf "%%s\\n" "$*" >> "%s"\n'
-                    % (self.failflag, self.failflag, self.feedlog))
+            f.write('#!/bin/sh\nif [ -f "%s" ]; then rm -f "%s"; exit 1; fi\n[ -n "$FAKE_CYS_SLOW" ] && sleep 1\n'
+                    'printf "%%s\\n" "$*" >> "%s"\n' % (self.failflag, self.failflag, self.feedlog))
         os.chmod(fake, 0o755)
         self.env = {k: v for k, v in os.environ.items() if not k.startswith(("CYS_", "AITERM_", "JAVIS_"))}
         self.env.update(HOME=self.home, CYS_PACK_DIR=self.pack, CYS_OWNER_DIR=os.path.join(self.home, ".cys", "owner"),
@@ -135,6 +135,12 @@ class R1Rules(Base):
         self.assertIn("  1. 규칙 00 ", c)               # 번호 = 저장한 순서
         self.assertIn("…외", c)                        # 넘친 규칙은 개수로 고지
         self.assertNotIn("\\u0001", json.dumps(out))
+
+    def test_control_chars_are_cleaned(self):
+        self.tool("rule", "add", "--text", "짧은\x01\x02규칙")
+        out = self.hook({"hook_event_name": "SessionStart", "source": "clear"})
+        self.assertIn("짧은 규칙", self.ctx(out))
+        self.assertNotIn("\\u0001", json.dumps(out, ensure_ascii=False))
 
 
 class R2R3Backlog(Base):
@@ -287,6 +293,21 @@ class R4NotifyRace(Base):
                 "a = o.flush_app_notices(); b = o.flush_app_notices(); print(a, b)" % os.path.join(PACK, "bin"))
         p = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=self.env)
         self.assertEqual(p.stdout.strip(), "{1: 'sent'} {}", p.stderr)
+        self.assertEqual(len(self.feeds()), 1)
+
+    def test_parallel_flush_sends_once(self):
+        """두 좌석이 동시에 flush(발송이 1초 걸림) — 「보내는 중」 표지가 없으면 둘 다 보낸다."""
+        self.tool("notify", "set", "--channel", "app")
+        self.tool("todo", "add", "--what", "주보", "--notify")
+        setup = ("import sys; sys.path.insert(0, %r); import javis_owner as o\n"
+                 "def f(d): d['items'][0].update(status='done', notice={'app': 'pending', 'phone': None, 'message': 'm'})\n"
+                 "o._mutate(f)" % os.path.join(PACK, "bin"))
+        subprocess.run([sys.executable, "-c", setup], env=self.env, check=True)
+        code = "import sys; sys.path.insert(0, %r); import javis_owner as o; o.flush_app_notices()" % os.path.join(PACK, "bin")
+        env = dict(self.env, FAKE_CYS_SLOW="1")
+        ps = [subprocess.Popen([sys.executable, "-c", code], env=env) for _ in range(2)]
+        for p in ps:
+            p.wait(timeout=60)
         self.assertEqual(len(self.feeds()), 1)
 
 

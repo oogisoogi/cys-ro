@@ -2,7 +2,7 @@
 
 - 좌석 = worker-piece1 · surface:2240 · 가지 `feat/piece1-recover-1118` ← integ/1116(`b29cbdd89`)
 - 브리프 = master#68a90f34 · 범위 결정 = master#9f7c835b(A: 핀 유지는 범위 밖)
-- 구현 커밋 = `c03bccb80` · 1회 고침(master#267c6b97) = `59d755d9d`
+- 구현 커밋 = `c03bccb80` · 1회 고침(master#267c6b97) = `59d755d9d` · `--resume-saved`(master#fbfe2389) = `94aeb1a4f`
 - 설계 판정 BLOCK 은 그대로다. 이 커밋은 그것을 풀지 않는다. 병합 조건 = X 실측 · 독립 검증 좌석 · 구현 diff codex 1R.
 
 ## 바뀐 것
@@ -49,10 +49,28 @@ rc 93 이 되는 경우: 다른 agent 의 핀 · 저장 cwd ≠ 좌석 cwd · �
 - 1회 고침: 먼저 붉음 3건(`tombstones_unread_at_start_survive_the_first_readable_save` · `system_topology_marks_a_saved_list_it_could_not_read` · `p1_a_pin_that_cannot_be_resumed…` 의 「저장 목록을 못 읽음」) → 영향 범위 cys 41 통과 · 0 실패 · 1 무시 / cysd 102 통과 · 0 실패. 전체 수 cys 773 그대로(기존 시험에 사례 추가) · cysd 3331 → 3337.
 - 1회 고침 뮤턴트 15개 전부 붉음(이름·사유 대조 · 빌드 6벌). 누적 33개.
 
+## `--resume-saved` 고침(`94aeb1a4f`)
+
+`launch-agent --resume-saved` 는 `saved_unreadable=true` 또는 조회 실패면 새 좌석을 만들지 않고 rc 93 으로 멈춘다. 표시 없는 응답의 빈 목록은 지금처럼 새 기동이다.
+
+호출자 전수(`--resume-saved` 를 직접 쓰는 곳은 `javis_boot_node` 하나 · 저장소와 `~/.claude/channels/*.sh` 검색):
+
+| 호출자 | 파일:줄 | rc 93 을 받으면 | 재시도 | 문구 | 새 대화 fallback |
+|---|---|---|---|---|---|
+| `javis_boot_node` | `cysjavis-pack/bin/javis_boot_node.py:1734~1738` | 바로 `resume_held` · 같은 코드 93 으로 끝남 | 없음 | stderr 마지막 줄 | **없음**(고침 전: 일반 실패로 흘러 `no_surface`·`takeover_failed` · rc 1) |
+| 같은 파일의 옛 cys 재시도 | `:1730` | 해당 없음(rc 2 전용) | clap 문구일 때만 1회 | `cys 가 --resume-saved 를 모름` | **닫음**(고침 전: 프로필 불신 rc 2 도 플래그를 빼고 다시 띄웠다) |
+| 편성 `_boot_node` | `javis_formation.py:847` · 기록 `:2063` · 시도 상한 `:2046` | 실패로 기록 | 다음 편성 심박 · 시도 원장 상한까지 | `기동실패=<역할>:resume_held/<사유>` | 없음 |
+| 편성 master 자리 | `javis_formation.py:896~904` | 위와 같음 | 위와 같음 | 위와 같음 | **아래 경고** |
+| 리뷰어 `_boot_one_node` · `cmd_boot_reviewers` | `javis_orchestra.py:1367` · `:1446~1458` | exit 93 = 영구 분류 | 없음 | `저장 대화를 잇지 못해 멈춤(exit 93)` | **닫음**(고침 전: transient 로 분류해 Claude 대체 리뷰어를 띄웠다) |
+
+⚠ master 좌석이 없을 때 편성은 먼저 `new-surface --role master` 로 빈 좌석을 만든다(`:896`). 이 좌석이 저장되는 순간 핀이 지워지므로(핀 유지 범위), 목록이 다시 읽히면 다음 심박의 `--resume-saved` 는 「저장 대화 없음」으로 새 대화를 띄울 수 있다. rc 93 은 읽지 못하는 동안만 막는다. 코드 읽기까지다.
+
+시험: 먼저 붉음 = cys `p1_resume_saved_holds_when_the_saved_list_is_unknown` · 팩 3건. 고친 뒤 cys `p1_` 9 통과 · 관련 소스 핀 3 통과 · `test_v115_dept` 68 OK · 관련 팩 시험 9파일 rc 0. 뮤턴트 7개 전부 붉음(누적 40개).
+
 ## X 실측 준비(실행 안 함 · master 의 「X 시작」 대기)
 
 - 원형 `xprobe.py` 는 바꾸지 않았다. 사본 = `~/axdev/workers/cysr-blocked5-redesign-1116/piece1/x/xprobe_impl.py` · diff = 같은 폴더 `xprobe_impl.diff`.
-- 시나리오 = `r0`(세션이 등록된 좌석) · `r1` · `tomb`(①) · `unreadable`(②). 결과 폴더 = `out-impl`.
+- 시나리오 = `r0`(세션이 등록된 좌석) · `r1` · `tomb`(①) · `unreadable`(② · `node-recover` + `--resume-saved`). 결과 폴더 = `out-impl`.
 - 문법 확인만 했다. 사본은 한 번도 돌리지 않았으므로 시나리오 자체의 결함이 있을 수 있다.
 - 실행 전 필요한 것: 구현본 빌드(`cargo build --bin cys --bin cysd --bin cys-seatkeep` · 새 Mach-O 3개 · master 통제) · 환경값 `CYS_X_START=master` · `CYS_X_IMPL_BIN=<폴더>` · `CYS_X_IMPL_COMMIT=<빌드 때 HEAD>`.
 - 가짜 에이전트는 `/bin/sh` 가 아니라 기존 파이썬(`CYS_X_FAKE_INTERP` · 기본 `/opt/homebrew/bin/python3`)으로 돈다. `/bin/sh` 는 맥이 환경값을 숨겨 프로필이 `unobserved` 가 되고, 그러면 `r0` 이 다른 이유로 rc 93 이 된다(R0 원자료의 `config_dir_authority=unobserved` 로 확인).
@@ -65,8 +83,7 @@ rc 93 이 되는 경우: 다른 agent 의 핀 · 저장 cwd ≠ 좌석 cwd · �
 4. 세션 파일이 정말 지워진 좌석은 rc 93 에 머문다(I8 은 다음 범위 · 되돌릴 수 있음).
 5. boot 출력에서 93 은 아직 `recover_unrecognised` 로 보인다. `resume_held` 분류는 판정표 범위다.
 6. 강제 종료는 밀린 저장을 잃는다(설계 L19).
-7. **`launch-agent --resume-saved` 에 ②와 같은 구멍이 남아 있다.** `saved_unreadable` 을 보지 않아, 못 읽는 동안 「저장 대화 없음」으로 새 대화를 띄운다(`run_launch_agent_resume_saved` · 코드 읽기). 이번 지시 범위 밖이라 고치지 않고 master 에 물었다.
-8. 묘비를 아직 못 읽은 동안에는 메모리 묘비가 비어 있다. 그 사이 폐역 역할을 다시 띄우면 명시 재기동으로 치고 묘비가 풀린다(지금의 「역할 좌석 생성 = 묘비 해제」 규칙과 같다).
+7. 묘비를 아직 못 읽은 동안에는 메모리 묘비가 비어 있다. 그 사이 폐역 역할을 다시 띄우면 명시 재기동으로 치고 묘비가 풀린다(지금의 「역할 좌석 생성 = 묘비 해제」 규칙과 같다).
 
 ## 돌리지 않은 것
 

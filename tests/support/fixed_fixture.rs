@@ -39,20 +39,52 @@ pub fn cc_fixed(purpose: &str, name: &str, src_text: &str) -> PathBuf {
     exe
 }
 
-/// 빌드된 실행 파일 `from` 의 사본을 `<용도>/<같은 이름>` 에 둔다 — 원본 크기·수정 시각이 기록과 같으면 재사용.
+/// 빌드된 실행 파일 `from` 을 `<용도>/<같은 이름>` 에 둔다 — **내용(바이트 전수 비교)이 같으면 손대지 않는다**(시각·크기 기준 아님).
+/// 3ba23763 통제 실행 2회전에서 rah-bin 이 다시 써졌다: 작업 폴더(worktree)에서는 `.git` 이 파일이라 build.rs 의
+/// `rerun-if-changed=.git/HEAD` 경로가 없어 cargo 가 매번 빌드 스크립트를 다시 돌리고, 빌드 번호(UTC 분 포함)가 바뀌어 cys·cysd 를
+/// 다시 링크한다 → 옛 「크기 + 수정 시각」 기록이 어긋나 복사가 다시 일어났다.
+/// 그래서 ① 같은 inode 거나 바이트가 전부 같으면 그대로 돌려준다(쓰기 0) ② 다르면 **복사가 아니라 하드 링크**(cargo 가 이미 만든
+/// 같은 파일 · 새 Mach-O 내용 0)를 임시 이름에 걸고 rename 으로 갈아 끼운다. 지우지 않는다.
 pub fn copied_fixed(purpose: &str, from: &Path) -> PathBuf {
+    use std::os::unix::fs::MetadataExt;
     let _g = BUILD.lock().unwrap_or_else(|e| e.into_inner());
     let dir = fixture_dir(purpose);
     let name = from.file_name().unwrap().to_string_lossy().into_owned();
-    let (dst, stamp) = (dir.join(&name), dir.join(format!("{name}.stamp")));
-    let m = std::fs::metadata(from).unwrap();
-    let want = format!("{} {:?}", m.len(), m.modified().unwrap());
-    if dst.is_file() && std::fs::read_to_string(&stamp).ok().as_deref() == Some(want.as_str()) {
-        return dst;
+    let dst = dir.join(&name);
+    if let (Ok(a), Ok(b)) = (std::fs::metadata(from), std::fs::metadata(&dst)) {
+        if (a.dev(), a.ino()) == (b.dev(), b.ino()) || (a.len() == b.len() && same_bytes(from, &dst)) {
+            return dst;
+        }
     }
     let tmp = dir.join(format!("{name}.part-{}", std::process::id()));
-    std::fs::copy(from, &tmp).unwrap();
+    let _ = std::fs::remove_file(&tmp); // 이 프로세스가 앞서 남긴 링크 이름뿐(실행된 적 없는 이름)
+    std::fs::hard_link(from, &tmp).unwrap();
     std::fs::rename(&tmp, &dst).unwrap();
-    std::fs::write(&stamp, want).unwrap();
     dst
+}
+
+/// 두 파일의 바이트가 전부 같은가(1 MiB 조각 비교 · 해시보다 강하고 디버그 빌드에서도 빠르다).
+fn same_bytes(a: &Path, b: &Path) -> bool {
+    use std::io::Read;
+    let (Ok(mut fa), Ok(mut fb)) = (std::fs::File::open(a), std::fs::File::open(b)) else { return false };
+    let (mut ba, mut bb) = (vec![0u8; 1 << 20], vec![0u8; 1 << 20]);
+    loop {
+        let (Ok(na), Ok(nb)) = (read_full(&mut fa, &mut ba), read_full(&mut fb, &mut bb)) else { return false };
+        if na != nb || ba[..na] != bb[..nb] {
+            return false;
+        }
+        if na == 0 {
+            return true;
+        }
+    }
+    fn read_full(f: &mut std::fs::File, buf: &mut [u8]) -> std::io::Result<usize> {
+        let mut n = 0;
+        while n < buf.len() {
+            match f.read(&mut buf[n..])? {
+                0 => break,
+                k => n += k,
+            }
+        }
+        Ok(n)
+    }
 }

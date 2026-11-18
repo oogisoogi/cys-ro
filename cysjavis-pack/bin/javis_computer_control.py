@@ -75,7 +75,7 @@ SETTINGS_URLS = {
 MAC_APPS = [
     ("kakaotalk", "카카오톡", ("KakaoTalk",),
      "보이는 만큼 읽고 직접 보내는 것까지만 합니다(카카오는 대화 읽기 API 가 없고 대량 자동 발송을 막습니다)."),
-    ("hwp", "한글", ("Hancom Office HWP", "한컴오피스 한글"), "맥 한글은 화면 조작으로만 다룹니다(스크립트 길 없음)."),
+    ("hwp", "한글", ("Hancom Office HWP", "한컴오피스 한글"), "한글 문서는 먼저 파일로 다룹니다(한글 앱을 열지 않음) — 서식 그대로 PDF 저장·인쇄처럼 앱이 꼭 필요한 일만 화면 조작으로 합니다."),
     ("word", "Word", ("Microsoft Word",), ""),
     ("excel", "Excel", ("Microsoft Excel",), ""),
     ("powerpoint", "PowerPoint", ("Microsoft PowerPoint",), ""),

@@ -40,6 +40,7 @@ const PRE_WRITE_REFUSALS: &[&str] = &[
     "clear_first_unsupported", // :7667 launch-agent 등록 좌석 아님
     cys::ERR_TYPING_GUARD,        // :7957~7962·:8207~8218 초안 게이트(draft_gate_denied_response :2983 → 이 코드 · 토큰을 못 읽은 좌석 안 앱일 때만 :7911~7912) · (:7878 = 사람 아닌 쓰기)
     cys::ERR_JOURNAL_UNAVAILABLE, // (:8303 에이전트 작업 길 · 이 요청 꼴은 안 닿음) 「zero bytes written … nothing was typed」(:4704~4706)
+    "no_agent",                // (1.1.16 · cysr-1116-integ-1118) 빈 셸 좌석 — 사람 표지 + refuse_on_approval 요청은 cysd `surface.send_text` 빈 셸 가드 앞 갈래가 타이핑 0 · 큐 0 으로 거절(이 요청 꼴은 큐 보류 갈래 `!human` 에 안 닿음)
 ];
 /// 세션 기록 한 번에 읽는 상한(바이트) — 넘으면 다음 호출이 `next_offset` 부터 잇는다(잘림 없음 · 레코드 경계까지만 소비).
 pub(crate) const TRANSCRIPT_READ_MAX: u64 = 2 * 1024 * 1024;
@@ -516,6 +517,8 @@ mod tests {
         assert_eq!(err("not_found")["outcome"], "failed");
         assert_eq!(err("acl_denied")["outcome"], "failed");
         assert_eq!(err("typing_guard")["outcome"], "failed");
+        // (1.1.16 · cysr-1116-integ-1118 · master#f7e14a93) 빈 셸 좌석 = 사람 표지 + refuse_on_approval 요청은 쓰기 0 · 큐 0(cysd eca3b956) → 못 보냄 + 다시 보내기
+        assert_eq!(err("no_agent")["outcome"], "failed");
         assert_eq!(err("")["outcome"], "uncertain", "코드 없음 = 쓰기 0 근거 아님");
         assert_eq!(err("something_new")["outcome"], "uncertain");
         assert_eq!(classify_send(Ok(json!({})))["outcome"], "uncertain", "ok 칸 없음");

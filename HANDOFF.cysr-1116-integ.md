@@ -295,3 +295,9 @@
 
 - 돌리지 않은 것: cys·seatkeep·tests/*.rs·팩 파이썬·health·나머지 화면 게이트 — 이번 변경 = `handlers.rs`(cysd) · `views/core.ts`+시험 · 문서뿐이라 그 대상의 입력이 안 바뀜(직전 전체 실행 값 그대로).
 - CTX 실측 43.7%(jsonl 라이브 · 09:21).
+
+### 8-7. ④ 📌 반영(master#f7e14a93) — 앱 `no_agent` = 못 보냄
+
+- `src-tauri/src/viewcore.rs` `PRE_WRITE_REFUSALS` 에 `"no_agent"` — 사람 표지 + refuse_on_approval 요청(앱 대화 화면 유일 꼴 · `human_send_params`)의 `no_agent` 는 이제 쓰기 0 · 큐 0(cysd eca3b956)이라 「확인 중」 대신 「못 보냄 + 다시 보내기」(`classify_send` → failed → 화면 `canRetry`).
+- 시험: `viewcore::tests::classify_covers_the_four_outcomes` 에 `err("no_agent") → failed` 단언 1줄 — **넣기 전 붉음**(`left: "uncertain"`) → 넣은 뒤 cys-app 전체 **348 / 0 · 2 ign**.
+- V1 = master 결정 A(pack-v* 태그 0 · master 원장) — 이 가지 할 일 없음.

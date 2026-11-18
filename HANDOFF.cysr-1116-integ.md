@@ -309,3 +309,20 @@
 - ⑵ 남는 +941 B = 상한 상향: MASTER 86,306 · CEO 101,792 — 시험 역사 주석 ⑤ 에 근거 1줄(10-26 선례 ④ 와 같은 꼴).
 - 생성물 재생성: CEO_TEMPLATE(gen --check GREEN 101,792) · 해시표(지금 판 1개 교체 · --check OK) — ⚠ §3 경고(1.1.15 태그 뒤 재생성)는 그대로 유효.
 - 시험: test_cso_directive_rev 75/0 · event_inject ALL PASS · bootv2_doc_contract OK · `cargo test --lib released` 3/0 · scripts/tests 23개 = OK 22 + `test_release_trigger_split`(시스템 python3 에 PyYAML 없음 — `ModuleNotFoundError: yaml` · 기준선부터 같은 환경 사유) → PyYAML 넣은 `uv run --with pyyaml` 로 **17/0**.
+
+### 8-9. cysd `pending_requests` 재open `Locked` 흔들림(master#c3198344) — 제품 고침
+
+- 관측(master 게이트 81112a46): `c8registry_explicit_recovery_retirement_prevents_restart_capacity_leak` · `loaded_id_bookkeeping_is_reclaimed_with_the_row` · `persisted_sequence_survives_eviction_and_same_instance_reopen` — 셋 다 같은 scratch 에 store 를 닫고 곧바로 다시 여는 줄의 unwrap · **Err 원문 = `called \`Result::unwrap()\` on an \`Err\` value: Locked`** · 이 파일은 어느 병합 가지도 안 건드림(3a095c4e..HEAD diff 0) = 기준선부터의 흔들림(vendor·backlog 인계서의 pending_requests `Locked` 흔들림과 같은 것).
+- 가설 판정(측정 전용 시험 `integ1116_reopen_vs_fork_probe` · 미커밋 · 측정 작업트리 `~/axdev/.wt/cys-1116-integ-race`): 새 scratch 마다 open → drop → 날 `try_lock` 1회(원시 결과) → reopen, 300 주기.
+  | 조건 | 원시 `try_lock` = `WouldBlock` | `PendingStore::open` = `Err(Locked)` |
+  |---|---|---|
+  | fork 스레드 0 | 0 / 300 | 0 / 300 |
+  | fork 스레드 4(`Command` + `pre_exec` = fork+exec 길) · 고치기 전 · 50회 | **225 / 15,000**(1차) · **431 / 15,000**(재부팅 뒤 2차) | **147 / 15,000**(fork 2,998) · **339 / 15,000**(fork 15,830) |
+  | 같은 조건 · 고친 뒤 · 50회 | **0 / 15,000**(1차) · **0 / 15,000**(2차) | **0 / 15,000**(fork 8,372) · **0 / 15,000**(fork 7,621) |
+  - 13:46 재부팅으로 스크래치(/tmp) 기록이 사라져 2차를 다시 잼 — 2차 원문은 `~/axdev/.wt/cys-1116-integ-race/evidence-d5/probe-{pre,post}50.txt`(측정 작업트리 · 임시 폴더 밖 · 미커밋). fork 0 조건은 두 차례 모두 0.
+  - master 가설 「앞 store 의 drop 이 늦게 놓음(배경 스레드·Arc)」 = **기각**: fork 없으면 0 · store 는 잠금 `File` 을 필드로 직접 들고(`_process_lock`) 다른 곳과 공유하지 않아 drop 이 곧 close.
+  - 실제 원인 = flock 은 open file description 에 붙는다 → 같은 프로세스의 다른 스레드가 fork 하면 자식이 exec(또는 portable-pty 의 fd 정리) 전까지 그 description 을 복제해 쥔다 → close 만으로는 안 풀림. cysd 시험 바이너리는 다른 시험이 좌석을 fork 로 스폰하므로 부하가 클수록 그 창이 길어진다.
+- 판정 = **제품 쪽**: 시험만의 문제가 아니라 `PendingStore` 의 「닫으면 잠금이 풀린다」 가 fork 하는 프로세스(데몬 = 좌석을 스폰함)에서 성립하지 않는 결함. 지금 데몬은 `PendingStore` 를 시험 밖에서 열지 않지만(grep 0) 같은 프로세스 재open 이 생기는 순간 같은 결함이 난다. 같은 저장소의 다른 파일 잠금(`src/pack.rs` 레인·공용 apply-lock)은 이미 명시 `unlock()` 을 한다 — `PendingStore` 만 close 에 기댔다.
+- 고침(fd9f0cc7 · sleep·재시도 0): `impl Drop for PendingStore { let _ = self._process_lock.unlock(); }` — flock 해제는 description 의 모든 복제본에 대해 푼다.
+- 시험(결정론 · 붉음 먼저): `pending_requests::tests::reopen_succeeds_while_a_duplicate_of_the_closed_lock_fd_is_alive` — fork 자식의 복제본 대신 `try_clone`(같은 description)을 쥔 채 drop → reopen. **고치기 전 `Some(Locked)` 로 붉음 → 고친 뒤 초록** · 배타(살아 있는 store 가 있으면 두 번째 open = Locked)는 그대로 단언. `pending_requests::` 모듈 **100 / 0**.
+- 부하 반복 50회(같은 프로세스 안 fork 부하): 고친 cysd 시험 바이너리로 `pending_requests:: seat_proc::`(좌석 스폰 시험과 같이) `--test-threads=8` × 50 → §8-9 끝 줄.

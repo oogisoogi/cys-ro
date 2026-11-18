@@ -1780,17 +1780,32 @@ mod tests {
 
     /// 이름이 `cysd` 인 오래 사는 가짜 프로세스용 바이너리 — `/bin/sleep` 사본은 플랫폼 서명이라 이 맥에서 실행 즉시 SIGKILL(rc 137 · 3판 V2
     /// 시험은 좀비의 이름을 보고 통과하던 경주였다) → 사본을 ad-hoc 재서명한다.
+    /// ★TICKET=cysr-test-gatekeeper-crash-1118: 시험마다 새로 만들어 실행 → 지우던 것을 고정 자리 1회로 — `target/<profile>/cys-test-fixtures/
+    /// fake-cysd/cysd`(용도별 고정 이름) 에 없을 때만 임시 이름에 복사·서명 → rename 으로 놓고 재사용 · 지우지 않는다(새 Mach-O 실행 → 삭제 =
+    /// syspolicyd 검사 도중 파일 소실 충돌 후보). 호출자는 돌려받은 경로를 실행한다.
     #[cfg(unix)]
-    pub(crate) fn fake_cysd_bin(dir: &Path) -> PathBuf {
-        let p = dir.join("cysd");
-        let _ = std::fs::remove_file(&p);
-        std::fs::copy("/bin/sleep", &p).unwrap();
-        #[cfg(target_os = "macos")]
-        {
-            let o = std::process::Command::new("/usr/bin/codesign").args(["-s", "-", "-f"]).arg(&p).output().unwrap();
-            assert!(o.status.success(), "ad-hoc 재서명 실패");
-        }
-        p
+    pub(crate) fn fake_cysd_bin() -> PathBuf {
+        static BIN: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        BIN.get_or_init(|| {
+            let exe = std::env::current_exe().expect("시험 실행 파일 경로");
+            let deps = exe.parent().expect("deps");
+            let profile = if deps.file_name().map(|n| n == "deps").unwrap_or(false) { deps.parent().expect("profile") } else { deps };
+            let dir = profile.join("cys-test-fixtures/fake-cysd");
+            std::fs::create_dir_all(&dir).unwrap();
+            let p = dir.join("cysd");
+            if !p.is_file() {
+                let tmp = dir.join(format!("cysd.part-{}", std::process::id()));
+                std::fs::copy("/bin/sleep", &tmp).unwrap();
+                #[cfg(target_os = "macos")]
+                {
+                    let o = std::process::Command::new("/usr/bin/codesign").args(["-s", "-", "-f"]).arg(&tmp).output().unwrap();
+                    assert!(o.status.success(), "ad-hoc 재서명 실패");
+                }
+                std::fs::rename(&tmp, &p).unwrap();
+            }
+            p
+        })
+        .clone()
     }
 
     /// ★1.1.11 S10 rc 표: 끝까지 돈 rotate 의 25 = 성공 쪽(rc 는 V3 재료로 남는다) · 0 = 성공 · 그 밖 = 실패 · `--stop-only` 는 25 도 실패(그 길에 그런 rc 없음).
@@ -2636,11 +2651,8 @@ mod tests {
         use super::super::runner::{attempt_set_baseline, tests::Sim, Fault, Outcome, Runner};
         use std::os::unix::fs::PermissionsExt;
         let bi = super::super::buildinfo::build_info();
-        let fake = std::env::temp_dir().join(format!("cys-u2-n2e-bin-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&fake);
-        std::fs::create_dir_all(&fake).unwrap();
-        fake_cysd_bin(&fake);
-        let mut daemons: Vec<std::process::Child> = (0..3).map(|_| std::process::Command::new(fake.join("cysd")).arg("60").spawn().unwrap()).collect();
+        let fake = fake_cysd_bin();
+        let mut daemons: Vec<std::process::Child> = (0..3).map(|_| std::process::Command::new(&fake).arg("60").spawn().unwrap()).collect();
         let mut other = std::process::Command::new("/bin/sleep").arg("60").spawn().unwrap();
         for _ in 0..60 {
             if daemons.iter().all(|k| hq_daemon_count(&json!({"daemon_pid": k.id()})) == 1) {
@@ -2702,7 +2714,6 @@ mod tests {
             let _ = k.kill();
             let _ = k.wait();
         }
-        let _ = std::fs::remove_dir_all(&fake);
     }
 
     /// ★4판(codex 3R N3′ 반례): 지난 시도(told)의 기록·스냅샷이 남은 채 새 시도가 S3 에서 죽고 저널이 손상 → 복구기는 지난 시도의 옛
@@ -2858,10 +2869,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn v2_counts_only_the_hq_daemon_identified_by_socket() {
-        let d = std::env::temp_dir().join(format!("cys-u2-v2-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        let fake = fake_cysd_bin(&d);
+        let fake = fake_cysd_bin();
         let mut kids: Vec<std::process::Child> = (0..2).map(|_| std::process::Command::new(&fake).arg("30").spawn().unwrap()).collect();
         // 부하 중엔 exec 직후 이름이 늦게 보인다(전수 병렬 1회 적색) — 3초까지 기다린다
         let mut n = 0;
@@ -2881,7 +2889,6 @@ mod tests {
             let _ = k.wait();
         }
         assert_eq!(hq_daemon_count(&json!({"daemon_pid": kids[1].id()})), 0, "죽은 pid");
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// ★cysr-118-a2-sigformat: 실 발행물 A2 `.sig` 꼴(minisign 서명 텍스트의 base64 겉포장 · tauri 번들러 · 1.1.8 윈 실기 17:07

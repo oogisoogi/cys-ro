@@ -11,14 +11,14 @@
   rule list [--json]                 지금 기억하는 오너 규칙 목록(번호)
   rule remove <번호|슬러그>          은퇴(javis_memory retire — 물리 삭제 아님) → say 1줄
   todo add --what "<일>" [--what …] [--urgent N…] [--short N…] [--notify]   받은 일 원장 1줄(여럿이면 순서 1줄)
-  todo done <id> --evidence "<근거>" 끝 표시 → 알림 켜져 있으면 그 자리에서 알림 1회(중복 0)
+  todo done <id> --evidence "<근거>" 끝 표시 → 알림 켜져 있으면 그 자리에서 앱 알림(실패하면 다음 훅에서 재시도 · 중복 0)
   todo keep|defer|cancel <id> …      사흘 넘은 일에 대한 오너 답(계속 / 미룸 / 취소)
   todo list [--all] [--json] · todo brief [--json]   밀린 일 n건 · 가장 오래된 것 · 물어볼 일
-  notify set --channel app|phone|both|off [--all-done on|off] · notify status
-  hook session|prompt|stop|posttool  Claude Code 훅 본체(stdin = 훅 JSON · stdout = 훅 JSON 또는 무출력 · 늘 exit 0)
+  notify set --channel app|phone|both|off [--all-done on|off] [--selfcheck on|off] · notify status
+  hook auto|session|prompt|stop|posttool  Claude Code 훅 본체(stdin = 훅 JSON · stdout = 훅 JSON 또는 무출력 · 늘 exit 0)
 
 저장 위치: 규칙 = 팩 장기기억 폴더(javis_memory 와 같은 곳 · 새 저장소 없음) · 원장·설정·턴 표지 = ${CYS_OWNER_DIR:-~/.cys/owner}
-(오너 기기 안에만 · 바깥 전송 0 · 알림 「phone」 길만 Claude Code 자체 PushNotification 을 모델이 부른다).
+(파일은 오너 기기 안에만 둔다 · 단 규칙·할 일 제목·직전 오너 입력 발췌는 모델 문맥으로, 끝 알림 제목은 폰 푸시로 전달된다).
 의존성: 파이썬 표준 라이브러리 + 같은 bin 의 javis_memory(하위 프로세스) · javis_mission(기계 입력 판별 · 없으면 라벨 폴백).
 """
 
@@ -27,6 +27,7 @@ import datetime as _dt
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 sys.dont_write_bytecode = True
@@ -39,9 +40,7 @@ if _SELF_DIR not in sys.path:
 
 RULE_PREFIX = "owner-rule-"
 RULE_TYPE = "feedback"
-STALE_DAYS = 3                 # 「사흘 넘은」 = 받은(또는 계속 답한·미룸 끝난) 날부터 3일 초과
-SESSION_RULES_CAP = 2600       # 세션 주입 안 규칙 블록 상한(훅 출력 10,000자 상한 · 다른 훅과 별개)
-PROMPT_CAP = 2400
+STALE_DAYS = 3                 # 「사흘 넘은」 = 받은 날(또는 「계속」 답한 날)부터 3일 초과
 SAVED_MARK = "이렇게 저장했습니다"
 REMOVED_MARK = "이렇게 지웠습니다"
 BRIEF_MARK = "밀린 일"
@@ -51,9 +50,15 @@ HOOK_EVENTS = {"SessionStart": "session", "UserPromptSubmit": "prompt", "Stop": 
 #   팩 계약 tests/test_nowin_captured_spawns.py · test_dept_tick_stdin.py).
 NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
 MAX_BLOCKS = 2                 # 한 오너 턴에서 Stop 훅이 막는 최대 횟수(고리 방지)
+HOOK_JSON_CAP = 9500           # 훅 출력 상한(하네스 10,000자 · 직렬화 뒤 길이로 잰다)
+ITEM_CAP = 120                 # 목록 항목(규칙·일 제목) 표시 상한
+MAX_ASKS = 5                   # 한 번에 묻는 사흘 넘은 일 수
+APP_CLAIM_STALE = 60           # 앱 알림 「보내는 중」 표지가 이보다 오래면 재시도(보내다 죽은 경우)
+PHONE_REMINDERS = 2            # 폰 알림 미발송을 다음 오너 턴에 다시 일러 주는 최대 횟수(그 뒤 포기 기록)
+_CTRL = re.compile(r"[\x00-\x1f\x7f]")
 
 
-# ── 경로·시각 ─────────────────────────────────────────────────────────────────
+# ── 경로·시각·공통 ────────────────────────────────────────────────────────────
 def owner_dir():
     d = os.environ.get("CYS_OWNER_DIR") or os.path.join(os.path.expanduser("~"), ".cys", "owner")
     os.makedirs(d, exist_ok=True)
@@ -82,6 +87,14 @@ def now_iso():
 
 def surface():
     return os.environ.get("CYS_SURFACE_ID") or os.environ.get("AITERM_SURFACE_ID") or "-"
+
+
+def clean(s, cap=None):
+    """한 줄 정리 — 제어 문자 제거(직렬화 때 \\uXXXX 로 6배 부푸는 것 방지) · 공백 접기 · 상한."""
+    s = " ".join(_CTRL.sub(" ", s or "").split())
+    if cap and len(s) > cap:
+        s = s[:cap - 1] + "…"
+    return s
 
 
 def _atomic_write(path, text):
@@ -143,12 +156,23 @@ def _load_json(path, default):
         return default
 
 
+def _update_json(path, default, fn):
+    """잠금 안에서 최신 값을 읽어 고친 뒤 원자 교체(읽기-수정-쓰기 경합으로 남의 변경을 지우지 않게)."""
+    with Lock(path):
+        data = _load_json(path, default)
+        res = fn(data)
+        _atomic_write(path, json.dumps(data, ensure_ascii=False, indent=1) + "\n")
+    return res
+
+
 def log_event(op, **kw):
-    """턴 대조용 사건 원장(append 전용) — 훅의 Stop 검사가 「이번 턴에 저장했는가」를 이것으로 잰다."""
+    """턴 대조용 사건 원장(append 전용 · 잠금 아래 1줄) — Stop 검사가 「이번 턴에 저장했는가」를 이것으로 잰다."""
     rec = {"ts": time.time(), "at": now_iso(), "surface": surface(), "op": op}
     rec.update(kw)
-    with open(os.path.join(owner_dir(), "events.jsonl"), "a", encoding="utf-8") as f:
-        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    path = os.path.join(owner_dir(), "events.jsonl")
+    with Lock(path):
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
 def events_since(ts, surf=None):
@@ -172,18 +196,29 @@ def emit(obj):
 
 
 # ── 설정 ─────────────────────────────────────────────────────────────────────
+CONFIG_DEFAULTS = {"notify_channel": "both",   # 기본 = 앱 안 알림 + 폰/바탕화면(PushNotification)
+                   "notify_all_done": False,   # 「일이 끝나면 늘 알려 줘」 지속 지시 = True
+                   "selfcheck": True}          # 다시 보기 — 기록 0건 오너 턴을 다음 턴에 한 번 더 점검시킨다
+
+
+def _config_path():
+    return os.path.join(owner_dir(), "config.json")
+
+
 def config():
-    c = _load_json(os.path.join(owner_dir(), "config.json"), {})
-    c.setdefault("notify_channel", "both")   # 기본 = 앱 안 알림 + 폰/바탕화면(PushNotification)
-    c.setdefault("notify_all_done", False)   # 「일이 끝나면 늘 알려 줘」 지속 지시 = True
-    c.setdefault("selfcheck", True)          # 다시 보기(안전망) — 기록 0건인 오너 턴을 다음 턴에 한 번 더 점검시킨다
+    c = _load_json(_config_path(), {})
+    for k, v in CONFIG_DEFAULTS.items():
+        c.setdefault(k, v)
     return c
 
 
-def save_config(c):
-    path = os.path.join(owner_dir(), "config.json")
-    with Lock(path):
-        _atomic_write(path, json.dumps(c, ensure_ascii=False, indent=1) + "\n")
+def update_config(changes):
+    def f(c):
+        c.update(changes)
+        for k, v in CONFIG_DEFAULTS.items():
+            c.setdefault(k, v)
+        return dict(c)
+    return _update_json(_config_path(), {}, f)
 
 
 # ── ① 오래 지킬 지시(규칙) ─────────────────────────────────────────────────────
@@ -195,7 +230,9 @@ def _parse_rule_file(path):
     if not text.startswith("---"):
         return None
     end = text.find("\n---", 3)
-    head, body = text[3:end], text[end + 4:].strip() if end > 0 else ""
+    if end < 0:
+        return None
+    head, body = text[3:end], text[end + 4:]
     meta = {}
     for ln in head.splitlines():
         s = ln.strip()
@@ -223,27 +260,35 @@ def list_rules():
         if n.startswith("%s_%s" % (RULE_TYPE, RULE_PREFIX)) and n.endswith(".md"):
             r = _parse_rule_file(os.path.join(d, n))
             if r:
+                try:
+                    r["_m"] = os.stat(os.path.join(d, n)).st_mtime_ns
+                except OSError:
+                    r["_m"] = 0
                 rules.append(r)
-    rules.sort(key=lambda r: (r["saved"], r["slug"]))
+    rules.sort(key=lambda r: (r["saved"], r.pop("_m"), r["slug"]))   # 같은 날은 저장한 순서
     for i, r in enumerate(rules, 1):
         r["no"] = i
     return rules
 
 
 def _memory_tool(*args):
+    """javis_memory 하위 프로세스 — 자식·부모 모두 UTF-8 로 고정(한국어 윈의 파이프 기본 cp949 와 엇갈리지 않게)."""
     tool = os.path.join(_SELF_DIR, "javis_memory.py")
+    env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
     p = subprocess.run([sys.executable, tool, "--dir", memory_dir()] + list(args),
-                       capture_output=True, text=True, encoding="utf-8", timeout=30,
-                       stdin=subprocess.DEVNULL, **NOWIN)
-    return p.returncode, p.stdout.strip(), p.stderr.strip()
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
+                       env=env, stdin=subprocess.DEVNULL, **NOWIN)
+    return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
 
 
 def rule_add(text):
-    text = " ".join((text or "").split())
+    text = clean(text)
     if not text:
         return {"ok": False, "say": "저장할 지시 내용이 비어 있어요. 어떤 것을 앞으로 지키면 될지 한 줄로 알려 주세요."}
     for r in list_rules():
         if r["text"] == text:
+            # 같은 지시를 다시 받음 = 저장 확인이다(Stop 대조가 이것을 근거로 인정한다).
+            log_event("rule.add", slug=r["slug"], text=text, duplicate=True)
             return {"ok": True, "duplicate": True, "slug": r["slug"],
                     "say": "%s: 「%s」 (이미 %d번으로 기억하고 있어요)" % (SAVED_MARK, text, r["no"])}
     stamp = time.strftime("%Y%m%d%H%M%S")
@@ -259,9 +304,8 @@ def rule_add(text):
 
 
 def rule_remove(key):
-    rules = list_rules()
     hit = None
-    for r in rules:
+    for r in list_rules():
         if str(r["no"]) == str(key) or r["slug"] == key:
             hit = r
     if hit is None:
@@ -291,22 +335,7 @@ def load_todos():
 
 
 def _mutate(fn):
-    path = _todo_path()
-    with Lock(path):
-        data = load_todos()
-        res = fn(data)
-        _atomic_write(path, json.dumps(data, ensure_ascii=False, indent=1) + "\n")
-    return res
-
-
-def _anchor(it):
-    """경과일 기준일 — 받은 날 · 「계속」 답한 날 · 미룸이 끝난 날 중 가장 늦은 것."""
-    cands = [it.get("received")]
-    if it.get("kept_on"):
-        cands.append(it["kept_on"])
-    if it.get("deferred_until"):
-        cands.append(it["deferred_until"])
-    return max(_dt.date.fromisoformat(c) for c in cands if c)
+    return _update_json(_todo_path(), {"next_id": 1, "items": []}, fn)
 
 
 def is_open(it):
@@ -317,8 +346,17 @@ def age_days(it, t=None):
     return ((t or today()) - _dt.date.fromisoformat(it["received"])).days
 
 
+def should_ask(it, t):
+    """사흘 넘은 일인가 — 미룸이 걸려 있으면 미룬 날이 되면 묻고, 아니면 받은 날(또는 「계속」 답한 날)부터 3일 초과."""
+    du = it.get("deferred_until")
+    if du:
+        return t >= _dt.date.fromisoformat(du)
+    anchor = max(_dt.date.fromisoformat(c) for c in (it.get("received"), it.get("kept_on")) if c)
+    return (t - anchor).days > STALE_DAYS
+
+
 def todo_add(whats, urgent=(), short=(), notify=False):
-    whats = [" ".join(w.split()) for w in whats if w and w.strip()]
+    whats = [clean(w) for w in whats if clean(w)]
     if not whats:
         return {"ok": False, "say": "적을 일이 비어 있어요."}
     t = today().isoformat()
@@ -354,9 +392,15 @@ def _find(data, tid):
     return None
 
 
+def _push_message(it):
+    return "끝났어요: %s (#%d)" % (clean(it["what"], 60), it["id"])
+
+
 def todo_done(tid, evidence):
-    if not (evidence or "").strip():
+    evidence = clean(evidence)
+    if not evidence:
         return {"ok": False, "say": "끝 표시에는 근거 한 줄이 필요해요(무엇을 했는지)."}
+    c = config()
     holder = {}
 
     def f(data):
@@ -365,9 +409,16 @@ def todo_done(tid, evidence):
             return None
         if it["status"] == "done":
             holder["already"] = True
-            return it
-        it.update(status="done", done_at=now_iso(), done_on=today().isoformat(), evidence=evidence.strip())
-        return it
+            return dict(it)
+        it.update(status="done", done_at=now_iso(), done_on=today().isoformat(), evidence=evidence)
+        # 알림 의무는 끝 표시와 **같은 잠금 안에서** 원장에 박는다 — 발송이 실패해도 의무는 남아 다음 훅이 재시도한다.
+        if (it.get("notify") or c["notify_all_done"]) and c["notify_channel"] != "off":
+            ch = c["notify_channel"]
+            it["notice"] = {"event": "done-%d-%s" % (it["id"], it["done_at"]), "channel": ch,
+                            "app": "pending" if ch in ("app", "both") else None,
+                            "phone": "pending" if ch in ("phone", "both") else None,
+                            "message": _push_message(it), "phone_reminders": 0}
+        return dict(it)
 
     it = _mutate(f)
     if it is None:
@@ -376,14 +427,15 @@ def todo_done(tid, evidence):
         return {"ok": True, "already": True, "say": "#%d 은 이미 끝 표시가 돼 있어요." % it["id"]}
     log_event("todo.done", id=it["id"], what=it["what"])
     res = {"ok": True, "id": it["id"], "say": "끝냈어요: #%d %s — %s" % (it["id"], it["what"], it["evidence"])}
-    c = config()
-    if (it.get("notify") or c["notify_all_done"]) and c["notify_channel"] != "off":
-        res["notify"] = send_done_notice(it, c)
-        if res["notify"].get("phone_pending"):
-            # 모델이 이 JSON 을 읽는 그 자리에서 보내게 한다(안 보내면 Stop 훅이 1번 막는다).
-            res["do_now"] = ("이어서 PushNotification 도구로 「%s」를 보내라 — 오너가 이 화면을 보고 있으면 Claude Code 가 "
-                             "알아서 생략한다(그래도 이 호출은 한다). 보내기 전에 「폰 알림을 보냈다」고 말하지 마라."
-                             % res["notify"]["push_message"])
+    n = it.get("notice")
+    if n:
+        res["notify"] = {"channel": n["channel"], "app": flush_app_notices().get(it["id"])}
+        if n.get("phone"):
+            res["notify"]["phone_pending"] = True
+            # 모델이 이 JSON 을 읽는 그 자리에서 보내게 한다(안 보내면 Stop 훅이 막는다).
+            res["do_now"] = ("이어서 PushNotification 도구로 「%s」를 보내라(끝의 (#번호)를 그대로 — 기계가 그 번호로 "
+                             "보냄을 확인한다). 오너가 이 화면을 보고 있으면 Claude Code 가 알아서 생략한다(그래도 이 호출은 "
+                             "한다). 보내기 전에 「폰 알림을 보냈다」고 말하지 마라." % n["message"])
     return res
 
 
@@ -393,12 +445,13 @@ def todo_answer(tid, kind, days=None, reason=""):
         if it is None or it["status"] != "open":
             return None
         t = today()
-        if kind == "keep":
+        if kind == "keep":                     # 「계속」 = 지금부터 다시 센다(미룸이 걸려 있었으면 푼다)
             it["kept_on"] = t.isoformat()
-        elif kind == "defer":
+            it.pop("deferred_until", None)
+        elif kind == "defer":                  # 「미룸」 = 그날이 되면 다시 묻는다
             it["deferred_until"] = (t + _dt.timedelta(days=days or 7)).isoformat()
         elif kind == "cancel":
-            it.update(status="cancelled", cancelled_on=t.isoformat(), cancel_reason=reason)
+            it.update(status="cancelled", cancelled_on=t.isoformat(), cancel_reason=clean(reason))
         return dict(it)
 
     it = _mutate(f)
@@ -412,12 +465,11 @@ def todo_answer(tid, kind, days=None, reason=""):
 
 
 def brief(t=None):
-    """밀린 일 보고(결정론) — 개수·가장 오래된 날·물어볼 일(사흘 넘음 · 미룸 기간 안이면 제외)."""
+    """밀린 일 보고(결정론) — 개수·가장 오래된 날·물어볼 일."""
     t = t or today()
     data = load_todos()
     open_items = [it for it in data["items"] if is_open(it)]
-    # 미룸 기간 안의 일은 기준일(_anchor)이 미룸 끝날이라 경과일이 음수 → 자연히 묻지 않는다.
-    stale = [it for it in open_items if (t - _anchor(it)).days > STALE_DAYS]
+    stale = [it for it in open_items if should_ask(it, t)]
     out = {"open": len(open_items), "stale": [{"id": it["id"], "what": it["what"],
                                                "days": age_days(it, t)} for it in stale]}
     if open_items:
@@ -425,13 +477,13 @@ def brief(t=None):
         out["oldest_days"] = age_days(oldest, t)
         out["oldest"] = {"id": oldest["id"], "what": oldest["what"], "received": oldest["received"]}
         out["say"] = "%s %d건 · 가장 오래된 것 받은 지 %d일(#%d %s)" % (
-            BRIEF_MARK, len(open_items), out["oldest_days"], oldest["id"], oldest["what"])
+            BRIEF_MARK, len(open_items), out["oldest_days"], oldest["id"], clean(oldest["what"], ITEM_CAP))
     else:
         out["oldest_days"] = 0
         out["say"] = "%s 0건이에요." % BRIEF_MARK
     if stale:
         out["ask"] = ["#%d %s — 받은 지 %d일 됐어요. 계속할까요, 미룰까요, 취소할까요?" % (
-            s["id"], s["what"], s["days"]) for s in out["stale"]]
+            s["id"], clean(s["what"], ITEM_CAP), s["days"]) for s in out["stale"]]
     return out
 
 
@@ -445,47 +497,101 @@ def todos_say(items):
 
 # ── ③ 끝나면 알림 ─────────────────────────────────────────────────────────────
 def _cys_bin():
-    for c in (os.environ.get("CYS_BIN"), "cys"):
-        if c:
-            return c
-    return "cys"
+    return os.environ.get("CYS_BIN") or "cys"
 
 
-def send_done_notice(it, c):
-    """일 끝 사건에서 알림 1회 — 같은 일은 두 번 보내지 않는다(notified_on 표지 · 잠금 안에서 판정)."""
-    title = "끝났어요: %s" % it["what"][:60]
-    body = "#%d %s\n근거: %s" % (it["id"], it["what"], it.get("evidence", ""))
-    first = {}
+def flush_app_notices():
+    """원장의 앱 알림 의무를 보낸다 — 잠금 안에서 「보내는 중」 표지를 잡은 것만 보내고(중복 0), 성공이면 sent ·
+    실패면 pending 으로 되돌려 다음 훅(오너 입력·세션 시작)에서 재시도한다. 반환 = {id: "sent"|"failed"}."""
+    now = time.time()
+    claimed = []
+
+    def claim(data):
+        for it in data["items"]:
+            n = it.get("notice") or {}
+            st = n.get("app")
+            if st == "pending" or (isinstance(st, str) and st.startswith("claimed:")
+                                   and now - float(st.split(":", 1)[1]) > APP_CLAIM_STALE):
+                n["app"] = "claimed:%f" % now
+                claimed.append({"id": it["id"], "what": it["what"], "evidence": it.get("evidence", "")})
+
+    if not os.path.exists(_todo_path()):
+        return {}
+    _mutate(claim)
+    results = {}
+    for c in claimed:
+        title = "끝났어요: %s" % clean(c["what"], 60)
+        body = "#%d %s\n근거: %s" % (c["id"], c["what"], c["evidence"])
+        try:
+            p = subprocess.run([_cys_bin(), "feed", "push", "--kind", "ceo-notice", "--title", title, "--body", body],
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+                               stdin=subprocess.DEVNULL, **NOWIN)
+            ok = p.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            ok = False
+        results[c["id"]] = "sent" if ok else "failed"
+
+    def settle(data):
+        for it in data["items"]:
+            if it["id"] in results:
+                n = it.get("notice") or {}
+                if results[it["id"]] == "sent":
+                    n["app"] = "sent"
+                    n["app_sent_at"] = now_iso()
+                else:
+                    n["app"] = "pending"
+                    n["app_attempts"] = n.get("app_attempts", 0) + 1
+
+    if claimed:
+        _mutate(settle)
+        for i, st in results.items():
+            log_event("notify.app", id=i, result=st)
+    return results
+
+
+def phone_pending():
+    return [it for it in load_todos()["items"] if (it.get("notice") or {}).get("phone") == "pending"]
+
+
+def mark_phone_sent(message):
+    """PushNotification 메시지 끝의 (#번호)로 그 일의 폰 의무만 닫는다(엉뚱한 알림 1번이 여러 의무를 닫지 않게)."""
+    ids = set(int(x) for x in re.findall(r"\(#(\d+)\)", message or ""))
+    if not ids:
+        return []
+    done = []
 
     def f(data):
-        cur = _find(data, it["id"])
-        if cur is None or cur.get("notified_at"):
-            return
-        cur["notified_at"] = now_iso()
-        first["yes"] = True
+        for it in data["items"]:
+            n = it.get("notice") or {}
+            if it["id"] in ids and n.get("phone") == "pending":
+                n["phone"] = "sent"
+                n["phone_sent_at"] = now_iso()
+                done.append(it["id"])
 
     _mutate(f)
-    if not first.get("yes"):
-        return {"sent": False, "reason": "already-notified"}
-    ch = c["notify_channel"]
-    res = {"sent": True, "channel": ch}
-    if ch in ("app", "both"):
-        try:
-            p = subprocess.run([_cys_bin(), "feed", "push", "--kind", "ceo-notice", "--title", title,
-                                "--body", body], capture_output=True, text=True, timeout=10,
-                               stdin=subprocess.DEVNULL, **NOWIN)
-            res["app_rc"] = p.returncode
-        except (OSError, subprocess.SubprocessError) as e:
-            res["app_rc"] = -1
-            res["app_error"] = str(e)[:200]
-    if ch in ("phone", "both"):
-        # 폰·바탕화면 푸시 = Claude Code 자체 PushNotification 도구(Remote Control 연결 시 폰까지) — 모델만 부를
-        #   수 있다. 그래서 「보내야 함」을 원장에 남기고, Stop 훅이 이번 턴 안에 보냈는지(PostToolUse 기록) 대조한다.
-        res["phone_pending"] = True
-        res["push_message"] = "%s (#%d)" % (title, it["id"])
-    log_event("notify.due", id=it["id"], channel=ch, phone=bool(res.get("phone_pending")),
-              message=res.get("push_message", ""))
-    return res
+    return done
+
+
+def _phone_reminder_lines():
+    """다음 오너 턴에 미발송 폰 알림을 일러 준다(일마다 최대 PHONE_REMINDERS 번 · 그 뒤 포기 기록)."""
+    pend = phone_pending()
+    if not pend:
+        return []
+    ids = [it["id"] for it in pend]
+    out = []
+
+    def f(data):
+        for it in data["items"]:
+            n = it.get("notice") or {}
+            if it["id"] in ids and n.get("phone") == "pending":
+                n["phone_reminders"] = n.get("phone_reminders", 0) + 1
+                if n["phone_reminders"] > PHONE_REMINDERS:
+                    n["phone"] = "unsent"          # 포기 — 무한히 조르지 않는다(원장에 남는다)
+                else:
+                    out.append(n.get("message", ""))
+
+    _mutate(f)
+    return ["【보내지 않은 폰 알림 — PushNotification 으로 보내라】%s" % m for m in out]
 
 
 # ── 훅 ───────────────────────────────────────────────────────────────────────
@@ -502,10 +608,22 @@ def _tool_line():
     return '"%s" "%s"' % (py, os.path.abspath(__file__))
 
 
-def _turn_path():
-    d = os.path.join(owner_dir(), "turns")
+def _slot(name):
+    d = os.path.join(owner_dir(), name)
     os.makedirs(d, exist_ok=True)
-    return os.path.join(d, "%s.json" % surface().replace("/", "_").replace(":", "_"))
+    return os.path.join(d, "%s.json" % re.sub(r"[^0-9A-Za-z_.-]", "_", surface()))
+
+
+def _turn_path():
+    return _slot("turns")
+
+
+def _carry_path():
+    return _slot("carry")
+
+
+def _brief_path():
+    return os.path.join(owner_dir(), "brief.json")
 
 
 def is_machine(prompt):
@@ -522,51 +640,65 @@ def _ctx(event, text):
     return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
 
 
-def _cap(s, n):
-    return s if len(s) <= n else s[:n - 20] + "\n…(이하 생략 — rule list)"
-
-
-def _carry_path():
-    d = os.path.join(owner_dir(), "carry")
-    os.makedirs(d, exist_ok=True)
-    return os.path.join(d, "%s.json" % surface().replace("/", "_").replace(":", "_"))
+def _fit(event, required, optional, more_note):
+    """필수 줄(호출처가 이미 정리·상한 적용)을 먼저 확보하고, 선택 줄은 직렬화 뒤 길이가 HOOK_JSON_CAP 안에 드는
+    만큼만 싣는다. 잘린 선택 줄 수는 more_note 로 고지한다. 반환 = 훅 JSON(직렬화 길이 ≤ HOOK_JSON_CAP 보장)."""
+    body = list(required)
+    used = len(json.dumps(_ctx(event, "\n".join(body)), ensure_ascii=False))
+    dropped = 0
+    for i, line in enumerate(optional):
+        add = len(json.dumps(line, ensure_ascii=False)) + 2
+        if used + add + 80 > HOOK_JSON_CAP:
+            dropped = len(optional) - i
+            break
+        body.append(line)
+        used += add
+    if dropped and more_note:
+        body.append(more_note % dropped)
+    out = _ctx(event, "\n".join(body))
+    while len(json.dumps(out, ensure_ascii=False)) > HOOK_JSON_CAP and len(body) > 1:   # 최후 방어
+        body.pop(-1)
+        out = _ctx(event, "\n".join(body))
+    return out
 
 
 def _carry_lines(carry, tl):
     """직전 오너 턴에서 넘어온 할 일 — 턴 끝에 막지 않고(막으면 답이 되풀이된다 · 11-18 실좌석 실측) 다음 턴에 싣는다."""
     out = []
     for txt in carry.get("saved_unshown", []):
-        out.append("【직전 턴 확인 줄 누락 — 이번 답에 1줄】%s: 「%s」" % (SAVED_MARK, txt))
+        out.append("【직전 턴 확인 줄 누락 — 이번 답에 1줄】%s: 「%s」" % (SAVED_MARK, clean(txt, ITEM_CAP)))
     for txt in carry.get("removed_unshown", []):
-        out.append("【직전 턴 확인 줄 누락 — 이번 답에 1줄】%s: 「%s」" % (REMOVED_MARK, txt))
+        out.append("【직전 턴 확인 줄 누락 — 이번 답에 1줄】%s: 「%s」" % (REMOVED_MARK, clean(txt, ITEM_CAP)))
     if carry.get("second_look"):
         out.append("【직전 오너 입력 다시 보기 · owner-desk】직전 오너 입력 «%s» 에 앞으로 계속 지킬 지시나 맡긴 일·끝 알림 "
                    "부탁이 있었는데 기록하지 않았다면 이번 턴에 %s 로 기록하고 say 1줄을 보여라(없었으면 이 줄은 무시)."
-                   % (carry["second_look"], tl))
+                   % (clean(carry["second_look"], 300), tl))
     return out
 
 
+PROTOCOL = ("■ 규약: 오너가 앞으로 계속 지킬 지시를 주면 그 턴 안에 `rule add --text` 로 저장하고 도구가 준 say 1줄"
+            "(「%s: …」)을 보인다 · 「그 규칙 지워」 = `rule remove <번호>` · 「기억하는 규칙 보여 줘」 = `rule list` · "
+            "오너가 일을 시키면 `todo add --what`(여럿이면 --what 여러 번 · 급한 것 --urgent N · 짧은 것 --short N) · "
+            "끝나면 `todo done <id> --evidence` · 「끝나면 알려 줘」 = `todo add … --notify`(늘 그렇게 = `notify set --all-done on`) · "
+            "끝 알림 기본 = 앱 알림 + 폰(PushNotification) · 오너가 카톡을 원하면 「컴퓨터 조작으로 카톡 보내기는 불안정할 수 "
+            "있어요」 1줄 안내 뒤 오너가 고르면 스킬 computer-control 길로 보낸다(새 로그인·외부 API 만들지 않음)." % SAVED_MARK)
+
+
 def hook_session(hin):
+    flush_app_notices()                                     # 보내다 실패한 앱 알림 재시도
     rules = list_rules()
     b = brief()
     tl = _tool_line()
-    lines = ["■ 오너 책상(owner-desk) — 오너가 한 번 시킨 것을 잊지 않기 위한 기록이다. 도구 = %s" % tl]
-    if rules:
-        lines.append("■ 오너가 앞으로 계속 지키라고 한 지시 %d개(장기기억 · 이 대화에서도 그대로 지킨다):" % len(rules))
-        lines += ["  %d. %s" % (r["no"], r["text"]) for r in rules]
-    else:
-        lines.append("■ 오너가 저장해 둔 지속 지시: 없음")
-    lines.append("■ 오너 할 일 원장: %s" % b["say"])
-    lines.append("■ 규약: 오너가 앞으로 계속 지킬 지시를 주면 그 턴 안에 `rule add --text` 로 저장하고 도구가 준 say 1줄"
-                 "(「%s: …」)을 보인다 · 「그 규칙 지워」 = `rule remove <번호>` · 「기억하는 규칙 보여 줘」 = `rule list` · "
-                 "오너가 일을 시키면 `todo add --what`(여럿이면 --what 여러 번 · 급한 것 --urgent N · 짧은 것 --short N) · "
-                 "끝나면 `todo done <id> --evidence` · 「끝나면 알려 줘」 = `todo add … --notify`(늘 그렇게 = `notify set --all-done on`) · "
-                 "끝 알림 기본 = 앱 알림 + 폰(PushNotification) · 오너가 카톡을 원하면 「컴퓨터 조작으로 카톡 보내기는 불안정할 수 "
-                 "있어요」 1줄 안내 뒤 오너가 고르면 스킬 computer-control 길로 보낸다(새 로그인·외부 API 만들지 않음)."
-                 % SAVED_MARK)
+    required = ["■ 오너 책상(owner-desk) — 오너가 한 번 시킨 것을 잊지 않기 위한 기록이다. 도구 = %s" % tl,
+                PROTOCOL, "■ 오너 할 일 원장: %s" % b["say"]]
     # 순환(/clear·압축) 직전 턴에서 넘어온 것도 잃지 않는다(지우지는 않음 — 다음 오너 입력 훅이 싣고 지운다).
-    lines += _carry_lines(_load_json(_carry_path(), {}), tl)
-    return _ctx("SessionStart", _cap("\n".join(lines), SESSION_RULES_CAP + 1400))
+    required += _carry_lines(_load_json(_carry_path(), {}), tl)
+    if rules:
+        required.append("■ 오너가 앞으로 계속 지키라고 한 지시 %d개(장기기억 · 이 대화에서도 그대로 지킨다):" % len(rules))
+    else:
+        required.append("■ 오너가 저장해 둔 지속 지시: 없음")
+    optional = ["  %d. %s" % (r["no"], clean(r["text"], ITEM_CAP * 2)) for r in rules]
+    return _fit("SessionStart", required, optional, "  …외 %d개 — 전부 보려면 rule list")
 
 
 def hook_prompt(hin):
@@ -579,33 +711,42 @@ def hook_prompt(hin):
             state["owner"] = False
             _atomic_write(tp, json.dumps(state, ensure_ascii=False))
         return None
+    flush_app_notices()                                     # 보내다 실패한 앱 알림 재시도
     t = today().isoformat()
     b = brief()
+    # 아침 보고 = 오너 전체에서 하루 1번 · 「말했다」가 Stop 에서 확인될 때까지(중단·누락이면 다음 입력에 다시).
+    brief_due = _load_json(_brief_path(), {}).get("confirmed_on") != t and b["open"] > 0
     cp = _carry_path()
     carry = _load_json(cp, {})
-    brief_due = (state.get("briefed_on") != t or carry.get("brief_missing")) and b["open"] > 0
+    tl = _tool_line()
+    required = []
+    if brief_due:
+        required.append("【오늘 첫 오너 대화 — 답 첫 줄에 이 문장을 그대로 먼저 말한다】%s" % b["say"])
+    required += _carry_lines(carry, tl)
+    required += _phone_reminder_lines()
+    required.append("【오너 지시 점검 · owner-desk】이 오너 입력에 ⑴앞으로 계속 지킬 지시(선호·습관·규칙)가 있으면 이 턴 안에 "
+                    "%s rule add --text \"<지시>\" 로 저장하고 say 1줄(「%s: …」)을 보여라 ⑵새로 시킨 일이면 todo add "
+                    "(여럿이면 순서를 정해 say 1줄로 알림) ⑶「끝나면 알려 줘」면 --notify(앞으로 늘 그렇게면 notify set "
+                    "--all-done on 도) ⑷일을 끝내면 todo done <id> --evidence. 판단은 낱말이 아니라 뜻으로 한다 · 일회성 "
+                    "부탁이나 잡담이면 아무것도 저장하지 않는다." % (tl, SAVED_MARK))
+    asks = b.get("ask", []) if brief_due else []
+    optional = ["【사흘 넘은 일 — 오너에게 먼저 물어라】%s → 답에 따라 `todo keep|defer|cancel <id>`" % a
+                for a in asks[:MAX_ASKS]]
+    more = len(asks) - len(optional)
+    out = _fit("UserPromptSubmit", required, optional, "【사흘 넘은 일 …외 %d건 — todo brief 로 확인】")
+    if more > 0:
+        out["hookSpecificOutput"]["additionalContext"] += "\n【사흘 넘은 일 %d건 더 — 오늘은 위 것부터 · todo brief】" % more
     turn = {"start_ts": time.time(), "owner": True, "brief_due": brief_due,
-            "briefed_on": t if brief_due else state.get("briefed_on"), "brief_say": b["say"] if brief_due else "",
-            "prompt_excerpt": " ".join(prompt.split())[:300],
+            "carried_saved": carry.get("saved_unshown", []),
+            "prompt_excerpt": clean(prompt, 300),
             "prompt_sha": hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16]}
     _atomic_write(tp, json.dumps(turn, ensure_ascii=False))
-    tl = _tool_line()
-    lines = []
-    if brief_due:
-        lines.append("【오늘 첫 오너 대화 — 답 첫 줄에 이 문장을 그대로 먼저 말한다】%s" % b["say"])
-        for a in b.get("ask", []):
-            lines.append("【사흘 넘은 일 — 오너에게 먼저 물어라】%s → 답에 따라 `todo keep|defer|cancel <id>`" % a)
-    lines += _carry_lines(carry, tl)
-    if carry:
+    if carry:                                               # 실은 이월만 지운다(필수 줄이라 늘 실린다)
         try:
             os.unlink(cp)
         except OSError:
             pass
-    lines.append("【오너 지시 점검 · owner-desk】이 오너 입력에 ⑴앞으로 계속 지킬 지시(선호·습관·규칙)가 있으면 이 턴 안에 "
-                 "%s rule add --text \"<지시>\" 로 저장하고 say 1줄(「%s: …」)을 보여라 ⑵새로 시킨 일이면 todo add "
-                 "(여럿이면 순서를 정해 say 1줄로 알림) ⑶「끝나면 알려 줘」면 --notify(앞으로 늘 그렇게면 notify set --all-done on 도) ⑷일을 끝내면 todo done <id> --evidence. "
-                 "판단은 낱말이 아니라 뜻으로 한다 · 일회성 부탁이나 잡담이면 아무것도 저장하지 않는다." % (tl, SAVED_MARK))
-    return _ctx("UserPromptSubmit", _cap("\n".join(lines), PROMPT_CAP))
+    return out
 
 
 def _block(reason):
@@ -615,10 +756,11 @@ def _block(reason):
 def hook_stop(hin):
     """턴 끝 안전망(11-18 실좌석 실측 반영).
 
-    막는 것(decision=block)은 둘뿐이다 — ①「저장했습니다」라고 말했는데 저장 기록이 없음(거짓 확인 · 지금 고쳐야 한다)
-    ②끝난 일의 폰 알림을 아직 안 보냄(도구 호출 1번이면 된다). 그 밖(저장했는데 확인 줄 누락 · 아침 보고 누락 · 이번 턴에
-    기록이 하나도 없어 지속 지시를 놓쳤을 수 있음)은 **막지 않고 다음 오너 턴으로 넘긴다** — 막으면 모델이 「덧붙일 말 없음」
-    으로 빈 답을 내고, 하네스가 보이는 답을 강요해 같은 답이 되풀이됐다(실측: 한 턴에 같은 표 3번).
+    막는 것(decision=block)은 둘뿐이다 — ①「저장했습니다」라고 말했는데 저장 근거가 없음(이번 턴 rule add · 이월된
+    확인 줄 · 같은 지시 재저장 어느 것도 없음 = 거짓 확인) ②끝난 일의 폰 알림 의무가 남음(도구 호출 1번이면 된다).
+    그 밖(저장했는데 확인 줄 누락 · 기록 0건 턴)은 **막지 않고 다음 오너 턴으로 넘긴다** — 막으면 모델이 빈 답을 내고
+    하네스가 보이는 답을 강요해 같은 답이 되풀이됐다(실측: 한 턴에 같은 표 3번). 아침 보고는 「말했다」 확인만 기록하고,
+    확인이 없으면 다음 오너 입력이 다시 싣는다(사용자가 중간에 끊어 Stop 이 오지 않아도 같다).
     """
     tp = _turn_path()
     turn = _load_json(tp, {})
@@ -628,15 +770,16 @@ def hook_stop(hin):
     ev = events_since(turn.get("start_ts", 0), surface())
     ops = [e.get("op") for e in ev]
     tl = _tool_line()
+    if turn.get("brief_due") and BRIEF_MARK in msg:
+        t = today().isoformat()
+        _update_json(_brief_path(), {}, lambda d: d.update(confirmed_on=t))
     carry = {}
-    adds = [e.get("text", "") for e in ev if e.get("op") == "rule.add"]
+    adds = [e.get("text", "") for e in ev if e.get("op") == "rule.add" and not e.get("duplicate")]
     if adds and SAVED_MARK not in msg:
         carry["saved_unshown"] = adds
     rms = [e.get("text", "") for e in ev if e.get("op") == "rule.remove"]
     if rms and REMOVED_MARK not in msg:
         carry["removed_unshown"] = rms
-    if turn.get("brief_due") and BRIEF_MARK not in msg:
-        carry["brief_missing"] = True
     if config()["selfcheck"] and not any(o and (o.startswith("rule.") or o.startswith("todo.")) for o in ops):
         carry["second_look"] = turn.get("prompt_excerpt", "")
     cp = _carry_path()
@@ -647,18 +790,18 @@ def hook_stop(hin):
             os.unlink(cp)
         except OSError:
             pass
-    # 고리 방지: 한 오너 턴에서 막는 것은 최대 MAX_BLOCKS 번.
-    if turn.get("blocks", 0) >= MAX_BLOCKS:
+    if turn.get("blocks", 0) >= MAX_BLOCKS:                 # 고리 방지
         return None
     reasons = []
-    if SAVED_MARK in msg and not adds:
-        reasons.append("답에 「%s」라고 했지만 이번 턴 저장 기록이 없다 — 지금 %s rule add --text \"…\" 로 실제로 "
-                       "저장하거나, 저장하지 않았다면 그 문장을 바로잡아라(답 전체를 되풀이하지 말고 고친 1줄만)." % (SAVED_MARK, tl))
-    due = [e for e in ev if e.get("op") == "notify.due" and e.get("phone")]
-    sent = [e for e in ev if e.get("op") == "notify.phone"]
-    if due and not sent:
-        reasons.append("끝난 일 알림을 아직 폰으로 보내지 않았다 — PushNotification 도구로 「%s」를 보내라"
-                       "(답을 되풀이하지 말고 「알림을 보냈어요」 1줄만)." % due[-1].get("message", ""))
+    evidence = ops.count("rule.add") or turn.get("carried_saved")
+    if SAVED_MARK in msg and not evidence:
+        reasons.append("답에 「%s」라고 했지만 저장 기록이 없다 — 지금 %s rule add --text \"…\" 로 실제로 저장하거나, "
+                       "저장하지 않았다면 그 문장을 바로잡아라(답 전체를 되풀이하지 말고 고친 1줄만)." % (SAVED_MARK, tl))
+    pend = phone_pending()
+    if pend:
+        reasons.append("끝난 일 폰 알림이 아직 남았다 — PushNotification 도구로 %s 를 보내라(끝의 (#번호) 그대로 · "
+                       "답을 되풀이하지 말고 「알림을 보냈어요」 1줄만)."
+                       % " · ".join("「%s」" % (it["notice"].get("message", "")) for it in pend[:3]))
     if reasons:
         turn["blocks"] = turn.get("blocks", 0) + 1
         _atomic_write(tp, json.dumps(turn, ensure_ascii=False))
@@ -668,12 +811,24 @@ def hook_stop(hin):
 
 def hook_posttool(hin):
     if (hin.get("tool_name") or "") == "PushNotification":
-        log_event("notify.phone", message=str((hin.get("tool_input") or {}).get("message", ""))[:200])
+        msg = str((hin.get("tool_input") or {}).get("message", ""))
+        ids = mark_phone_sent(msg)
+        log_event("notify.phone", message=clean(msg, 200), ids=ids)
     return None
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
+def _utf8_stdio():
+    """윈 파이프 기본 인코딩(cp949 등)과 무관하게 훅 JSON 을 UTF-8 로 주고받는다."""
+    for s in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            s.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main(argv=None):
+    _utf8_stdio()
     ap = argparse.ArgumentParser(description="오너 책상 — 지속 지시·할 일 원장·끝 알림")
     sub = ap.add_subparsers(dest="area")
     r = sub.add_parser("rule")
@@ -765,16 +920,18 @@ def main(argv=None):
                 ap.print_help()
                 return 2
         elif a.area == "notify":
-            c = config()
             if a.act == "set":
+                changes = {}
                 if a.channel:
-                    c["notify_channel"] = a.channel
+                    changes["notify_channel"] = a.channel
                 if a.all_done:
-                    c["notify_all_done"] = a.all_done == "on"
+                    changes["notify_all_done"] = a.all_done == "on"
                 if a.selfcheck:
-                    c["selfcheck"] = a.selfcheck == "on"
-                save_config(c)
-                log_event("notify.set", channel=c["notify_channel"], all_done=c["notify_all_done"])
+                    changes["selfcheck"] = a.selfcheck == "on"
+                c = update_config(changes)
+                log_event("notify.set", **changes)
+            else:
+                c = config()
             names = {"app": "앱 안 알림", "phone": "폰·바탕화면 알림", "both": "앱 안 알림 + 폰·바탕화면 알림", "off": "끔"}
             res = {"ok": True, "config": c, "say": "끝 알림: %s · 모든 일 끝날 때마다 알림: %s" % (
                 names[c["notify_channel"]], "켬" if c["notify_all_done"] else "끔(--notify 한 일만)")}

@@ -544,37 +544,43 @@ def cmd_retire(mdir, args):
     """★owner-memory-todo-1118: 기억 1건을 **은퇴**시킨다 — 오너의 「그 규칙 지워」.
 
     물리 삭제가 아니라 soft tombstone 이다(RSI §7-4 「물리 삭제 금지」): 본문 파일을 `<mdir>/.retired/`
-    로 옮기고(꼬리표 `retired_at`·`retire_reason` 을 frontmatter 끝에 덧붙임) 색인 1줄을 지운다. 둘 다
-    색인 잠금 아래에서 하고, 색인 쓰기가 실패하면 파일을 제자리로 되돌린다(부분 은퇴 0). 은퇴한 파일은
-    `memory_files`(최상위 *.md)에 잡히지 않으므로 verify·주입 어디에도 다시 나타나지 않는다."""
+    로 옮기고(꼬리표 `retired_at`·`retire_reason` 을 frontmatter 끝에 덧붙임) 색인 1줄을 지운다. **대상 찾기·본문
+    읽기부터 색인 쓰기까지 전부 색인 잠금 안**에서 한다(잠금 밖에서 읽은 옛 본문으로 남의 최신 갱신을 덮지 않게 ·
+    codex 1R) · 색인 줄은 **링크 대상이 정확히 그 파일인 줄만** 지운다(다른 줄 설명 속 같은 파일명 무접촉) · 색인 쓰기가
+    실패하면 파일을 제자리로 되돌린다(부분 은퇴 0). 은퇴한 파일은 `memory_files`(최상위 *.md)에 잡히지 않는다."""
     index_path = os.path.join(mdir, INDEX_FILE)
     if not os.path.isfile(index_path):
         return fail(2, "%s 없음 — verify 로 정합부터 복구하라" % INDEX_FILE)
-    matches = []
-    for fn in memory_files(mdir):
-        text = open(os.path.join(mdir, fn), encoding="utf-8", errors="replace").read()
-        if parse_frontmatter(text)["name"] == args.name:
-            matches.append((fn, text))
-    if not matches:
-        return fail(2, "미등재 슬러그: %r" % args.name)
-    if len(matches) > 1:
-        return fail(2, "중복 슬러그: %r — verify 로 정합부터 복구하라" % args.name)
-    fn, old_text = matches[0]
-    fpath = os.path.join(mdir, fn)
-    rdir = os.path.join(mdir, RETIRED_DIR)
-    stamp = time.strftime("%Y%m%dT%H%M%S")
-    rpath = os.path.join(rdir, "%s.%s" % (fn, stamp))
     reason = (getattr(args, "reason", None) or "").replace("\n", " ").strip()
-    tag = "retired_at: %s\n" % time.strftime("%Y-%m-%dT%H:%M:%S%z")
-    if reason:
-        tag += "retire_reason: %s\n" % reason
-    end = old_text.find("\n---", 3) if old_text.startswith("---") else -1
-    new_text = (old_text[:end + 1] + tag + old_text[end + 1:]) if end >= 0 else (tag + old_text)
     try:
         with FileLock(index_path):
+            matches = []
+            for fn in memory_files(mdir):
+                text = open(os.path.join(mdir, fn), encoding="utf-8", errors="replace").read()
+                if parse_frontmatter(text)["name"] == args.name:
+                    matches.append((fn, text))
+            if not matches:
+                return fail(2, "미등재 슬러그: %r" % args.name)
+            if len(matches) > 1:
+                return fail(2, "중복 슬러그: %r — verify 로 정합부터 복구하라" % args.name)
+            fn, old_text = matches[0]
+            fpath = os.path.join(mdir, fn)
+            rdir = os.path.join(mdir, RETIRED_DIR)
+            rpath = os.path.join(rdir, "%s.%s" % (fn, time.strftime("%Y%m%dT%H%M%S")))
+            tag = "retired_at: %s\n" % time.strftime("%Y-%m-%dT%H:%M:%S%z")
+            if reason:
+                tag += "retire_reason: %s\n" % reason
+            end = old_text.find("\n---", 3) if old_text.startswith("---") else -1
+            new_text = (old_text[:end + 1] + tag + old_text[end + 1:]) if end >= 0 else (tag + old_text)
             index_text = open(index_path, encoding="utf-8", errors="replace").read()
-            kept = [ln for ln in index_text.splitlines(True) if ("(%s)" % fn) not in ln]
-            removed = len(index_text.splitlines(True)) - len(kept)
+            lines = index_text.splitlines(True)
+
+            def _is_row_of(ln):
+                m = INDEX_ROW_RE.match(ln.rstrip("\r\n"))
+                return bool(m) and m.group(1) == fn
+
+            kept = [ln for ln in lines if not _is_row_of(ln)]
+            removed = len(lines) - len(kept)
             os.makedirs(rdir, exist_ok=True)
             _write_text_atomic(rpath, new_text)
             os.unlink(fpath)
@@ -582,7 +588,7 @@ def cmd_retire(mdir, args):
                 _write_text_atomic(index_path, "".join(kept))
             except Exception as e:
                 try:
-                    _write_text_atomic(fpath, old_text)   # ★롤백 — 부분 은퇴 금지
+                    _write_text_atomic(fpath, old_text)   # ★롤백 — 부분 은퇴 금지(같은 잠금 안이라 old_text = 최신)
                     os.unlink(rpath)
                 except Exception:
                     return fail(3, "색인 갱신 실패 + 본문 롤백 실패(%s) — 수동 복구 필요" % e)

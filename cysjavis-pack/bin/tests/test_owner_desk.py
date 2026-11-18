@@ -40,9 +40,11 @@ class Base(unittest.TestCase):
         with open(os.path.join(self.pack, "memory", "MEMORY.md"), "w", encoding="utf-8") as f:
             f.write("# MEMORY\n")
         self.feedlog = os.path.join(self.tmp, "feed.log")
+        self.failflag = os.path.join(self.tmp, "fail-feed-once")
         fake = os.path.join(self.tmp, "fake-cys")
         with open(fake, "w") as f:
-            f.write('#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\n' % self.feedlog)
+            f.write('#!/bin/sh\nif [ -f "%s" ]; then rm -f "%s"; exit 1; fi\nprintf "%%s\\n" "$*" >> "%s"\n'
+                    % (self.failflag, self.failflag, self.feedlog))
         os.chmod(fake, 0o755)
         self.env = {k: v for k, v in os.environ.items() if not k.startswith(("CYS_", "AITERM_", "JAVIS_"))}
         self.env.update(HOME=self.home, CYS_PACK_DIR=self.pack, CYS_OWNER_DIR=os.path.join(self.home, ".cys", "owner"),
@@ -122,10 +124,17 @@ class R1Rules(Base):
         self.assertNotIn("좌석 기술 메모", self.ctx(self.hook({"hook_event_name": "SessionStart", "source": "clear"})))
 
     def test_rules_block_fits_hook_cap(self):
-        for i in range(60):
-            self.tool("rule", "add", "--text", "규칙 %02d " % i + "가" * 80)
-        c = self.ctx(self.hook({"hook_event_name": "SessionStart", "source": "clear"}))
-        self.assertLess(len(c), 9000)
+        for i in range(80):
+            self.tool("rule", "add", "--text", "규칙 %02d " % i + "가" * 150)
+        self.tool("rule", "add", "--text", "제어문자" + "\x01" * 3000)
+        out = self.hook({"hook_event_name": "SessionStart", "source": "clear"})
+        self.assertLessEqual(len(json.dumps(out, ensure_ascii=False)), 9500)   # 직렬화 뒤 길이(codex 1R #5)
+        c = self.ctx(out)
+        self.assertIn("■ 규약:", c)                    # 규약은 목록에 밀려 잘리지 않는다
+        self.assertIn("computer-control 길로 보낸다", c)   # 규약 줄 자체도 끝까지
+        self.assertIn("  1. 규칙 00 ", c)               # 번호 = 저장한 순서
+        self.assertIn("…외", c)                        # 넘친 규칙은 개수로 고지
+        self.assertNotIn("\\u0001", json.dumps(out))
 
 
 class R2R3Backlog(Base):
@@ -142,7 +151,9 @@ class R2R3Backlog(Base):
         # R3: 8일 = 묻는다 · 3일째(11-15 → 11-18 = 3일)는 아직 안 묻는다(「사흘 넘은」).
         self.assertIn("#1 주보 만들기 — 받은 지 8일", c)
         self.assertNotIn("#2 회계 정리 — 받은", c)
-        # 같은 날 두 번째 오너 대화엔 아침 보고 없음.
+        # 보고를 말한 뒤(Stop 확인) 같은 날 두 번째 오너 대화엔 아침 보고 없음 — 다른 마스터 좌석에서도(오너 전체 1번).
+        self.hook({"hook_event_name": "Stop", "last_assistant_message": "밀린 일 2건 · …"}, day="2026-11-18")
+        self.env["CYS_SURFACE_ID"] = "8"
         c2 = self.ctx(self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "그리고 하나 더"}, day="2026-11-18"))
         self.assertNotIn("밀린 일 2건", c2)
         self.assertIn("오너 지시 점검", c2)
@@ -153,15 +164,37 @@ class R2R3Backlog(Base):
     def test_keep_defer_cancel(self):
         self.tool("todo", "add", "--what", "A", "--what", "B", "--what", "C", day="2026-11-01")
         self.tool("todo", "keep", "1", day="2026-11-18")
-        self.tool("todo", "defer", "2", "--days", "5", day="2026-11-18")
+        d = self.tool("todo", "defer", "2", "--days", "5", day="2026-11-18")
+        self.assertIn("2026-11-23 에 다시 여쭐게요", d["say"])
         self.tool("todo", "cancel", "3", "--reason", "필요 없어짐", day="2026-11-18")
         b = self.tool("todo", "brief", day="2026-11-19")
         self.assertEqual(b["open"], 2)
         self.assertEqual(b["stale"], [])
-        b = self.tool("todo", "brief", day="2026-11-23")   # 계속(11-18)+5일 = 다시 묻고, 미룸(11-23까지)은 아직
+        b = self.tool("todo", "brief", day="2026-11-22")   # 계속(11-18)+4일 = 사흘 넘음 → 묻고, 미룸(11-23)은 아직
         self.assertEqual([s["id"] for s in b["stale"]], [1])
-        b = self.tool("todo", "brief", day="2026-11-27")   # 미룸 끝(11-23)+4일 → 묻는다
+        b = self.tool("todo", "brief", day="2026-11-23")   # 미룬 날이 되면 바로 묻는다(말한 날짜 그대로 · codex 1R)
         self.assertEqual([s["id"] for s in b["stale"]], [1, 2])
+        # 「계속」은 미룸을 푼다 — 지금부터 다시 센다
+        self.tool("todo", "add", "--what", "D", day="2026-11-01")
+        self.tool("todo", "defer", "4", "--days", "30", day="2026-11-18")
+        self.tool("todo", "keep", "4", day="2026-11-18")
+        b = self.tool("todo", "brief", day="2026-11-22")
+        self.assertIn(4, [s["id"] for s in b["stale"]])
+
+    def test_many_stale_items_fit_and_keep_protocol(self):
+        for i in range(30):
+            self.tool("todo", "add", "--what", "오래된 일 %02d " % i + "나" * 150, day="2026-10-01")
+        self.tool("rule", "add", "--text", "보고는 표로")
+        self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "보고서는 한 장으로"}, day="2026-10-02")
+        self.hook({"hook_event_name": "Stop", "last_assistant_message": "밀린 일 …"}, day="2026-10-02")
+        out = self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "안녕"})
+        self.assertLessEqual(len(json.dumps(out, ensure_ascii=False)), 9500)
+        c = self.ctx(out)
+        self.assertIn("밀린 일 30건", c)
+        self.assertIn("오너 지시 점검", c)            # 필수 규약 줄은 질문 목록에 밀려 잘리지 않는다(codex 1R #5)
+        self.assertIn("직전 오너 입력 다시 보기", c)    # 이월도 실리고(실린 것만 소비)
+        self.assertLessEqual(c.count("계속할까요"), 5)
+        self.assertIn("더 —", c)
 
     def test_multi_add_order_line(self):
         r = self.tool("todo", "add", "--what", "긴 보고서", "--what", "짧은 답장", "--what", "급한 송금 확인",
@@ -181,6 +214,18 @@ class R4Notify(Base):
         self.assertEqual(len(f), 1, f)
         self.assertIn("feed push --kind ceo-notice", f[0])
         self.assertIn("주보 만들기", f[0])
+
+    def test_app_send_failure_is_retried_not_lost(self):
+        self.tool("notify", "set", "--channel", "app")
+        self.tool("todo", "add", "--what", "주보 만들기", "--notify")
+        open(self.failflag, "w").close()                 # 첫 발송 실패(codex 1R #1)
+        d = self.tool("todo", "done", "1", "--evidence", "PDF 저장")
+        self.assertEqual(d["notify"]["app"], "failed")
+        self.assertEqual(self.feeds(), [])
+        self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "다음"})   # 다음 훅이 재시도
+        self.assertEqual(len(self.feeds()), 1)
+        self.hook({"hook_event_name": "SessionStart", "source": "clear"})     # 보낸 뒤엔 다시 안 보냄
+        self.assertEqual(len(self.feeds()), 1)
 
     def test_all_done_rule(self):
         self.tool("notify", "set", "--channel", "app", "--all-done", "on")
@@ -202,18 +247,46 @@ class R4Notify(Base):
         self.assertIsNone(out)
         self.assertEqual(self.feeds(), [])   # phone 길 = 앱 알림 0
 
+    def test_phone_matched_per_item(self):
+        """폰 의무는 일마다 (#번호)로 닫힌다 — 무관한 알림 1번이 A·B 를 함께 닫지 않는다(codex 1R #2)."""
+        self.tool("notify", "set", "--channel", "phone", "--all-done", "on")
+        self.tool("todo", "add", "--what", "A", "--what", "B")
+        self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "둘 다 끝"})
+        self.tool("todo", "done", "1", "--evidence", "a")
+        self.tool("todo", "done", "2", "--evidence", "b")
+        self.hook({"hook_event_name": "PostToolUse", "tool_name": "PushNotification", "tool_input": {"message": "작업 완료"}})
+        out = self.hook({"hook_event_name": "Stop", "last_assistant_message": "밀린 일 0건"})
+        self.assertIn("(#1)", out["reason"])
+        self.assertIn("(#2)", out["reason"])
+        self.hook({"hook_event_name": "PostToolUse", "tool_name": "PushNotification",
+                   "tool_input": {"message": "끝났어요: A (#1)"}})
+        out = self.hook({"hook_event_name": "Stop", "last_assistant_message": "x"})
+        self.assertIn("(#2)", out["reason"])
+        self.assertNotIn("(#1)", out["reason"])
+
+    def test_phone_reminders_then_give_up(self):
+        self.tool("notify", "set", "--channel", "phone")
+        self.tool("todo", "add", "--what", "A", "--notify")
+        self.tool("todo", "done", "1", "--evidence", "a")
+        seen = 0
+        for i in range(4):
+            c = self.ctx(self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "턴 %d" % i}))
+            seen += 1 if "보내지 않은 폰 알림" in c else 0
+        self.assertEqual(seen, 2)                        # 두 번 일러 주고 포기(무한히 조르지 않음)
+        self.assertIsNone(self.hook({"hook_event_name": "Stop", "last_assistant_message": "밀린 일 0건"}))
+
 
 class R4NotifyRace(Base):
-    def test_send_done_notice_dedupe_marker(self):
-        """끝 표시 경합(두 좌석이 같은 일을 동시에 끝냄)에서도 알림은 1번 — notified_at 표지가 잠금 안에서 가른다."""
+    def test_app_claim_marker_dedupes(self):
+        """두 좌석이 같은 앱 알림 의무를 동시에 flush 해도 1번 — 「보내는 중」 표지를 잠금 안에서 잡은 쪽만 보낸다."""
         self.tool("notify", "set", "--channel", "app")
         self.tool("todo", "add", "--what", "주보", "--notify")
-        code = ("import os,sys; sys.path.insert(0, %r); import javis_owner as o\n"
-                "it = o.load_todos()['items'][0]; it['evidence'] = 'x'\n"
-                "a = o.send_done_notice(it, o.config()); b = o.send_done_notice(it, o.config())\n"
-                "print(a['sent'], b['sent'])" % os.path.join(PACK, "bin"))
+        code = ("import sys; sys.path.insert(0, %r); import javis_owner as o\n"
+                "def f(d): d['items'][0].update(status='done', notice={'app': 'pending', 'phone': None, 'message': 'm'})\n"
+                "o._mutate(f)\n"
+                "a = o.flush_app_notices(); b = o.flush_app_notices(); print(a, b)" % os.path.join(PACK, "bin"))
         p = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=self.env)
-        self.assertEqual(p.stdout.strip(), "True False", p.stderr)
+        self.assertEqual(p.stdout.strip(), "{1: 'sent'} {}", p.stderr)
         self.assertEqual(len(self.feeds()), 1)
 
 
@@ -233,10 +306,18 @@ class R5StopNet(Base):
         c = self.ctx(self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "다음 일"}))
         self.assertIn("확인 줄 누락", c)
         self.assertIn("이렇게 저장했습니다: 「보고는 항상 표로」", c)
-        # 이월은 한 번만 실린다
-        self.hook({"hook_event_name": "Stop", "last_assistant_message": "이렇게 저장했습니다: 「보고는 항상 표로」"})
+        # 이월된 확인 줄을 그대로 말한 것은 거짓 확인이 아니다(codex 1R #3-A)
+        self.assertIsNone(self.hook({"hook_event_name": "Stop",
+                                     "last_assistant_message": "이렇게 저장했습니다: 「보고는 항상 표로」"}))
         c = self.ctx(self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "또 다음"}))
         self.assertNotIn("확인 줄 누락", c)
+
+    def test_duplicate_save_is_evidence(self):
+        self.tool("rule", "add", "--text", "보고는 항상 표로")
+        self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "보고는 항상 표로 해 줘"})
+        r = self.tool("rule", "add", "--text", "보고는 항상 표로")
+        self.assertTrue(r.get("duplicate"))
+        self.assertIsNone(self.hook({"hook_event_name": "Stop", "last_assistant_message": r["say"]}))   # codex 1R #3-B
 
     def test_second_look_next_turn_and_after_cycle(self):
         self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "보고서는 늘 한 장으로 줄여서 줘"})
@@ -281,6 +362,29 @@ class R5StopNet(Base):
         c = self.ctx(self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "응"}))
         self.assertNotIn("밀린 일 1건", c)       # 말했으면 그날은 끝
 
+    def test_morning_brief_survives_interrupt(self):
+        """보고 전에 사용자가 끊으면 Stop 이 오지 않는다(공식 hooks 문서) — 다음 입력에 다시 싣는다(codex 1R #7)."""
+        self.tool("todo", "add", "--what", "주보", day="2026-11-17")
+        self.assertIn("밀린 일 1건", self.ctx(self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "안녕"})))
+        self.assertIn("밀린 일 1건", self.ctx(self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "다시"})))
+
+
+class R1Retire(Base):
+    def test_retire_removes_only_exact_index_row(self):
+        mem = os.path.join(self.pack, "memory")
+        J = [sys.executable, os.path.join(PACK, "bin", "javis_memory.py"), "--dir", mem]
+        subprocess.run(J + ["add", "--type", "feedback", "--name", "x", "--desc", "X 메모", "--body", "x"],
+                       capture_output=True, env=self.env)
+        subprocess.run(J + ["add", "--type", "feedback", "--name", "y", "--desc", "예시 (feedback_x.md) 참고",
+                            "--body", "y"], capture_output=True, env=self.env)
+        p = subprocess.run(J + ["retire", "--name", "x"], capture_output=True, text=True, env=self.env)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        idx = open(os.path.join(mem, "MEMORY.md"), encoding="utf-8").read()
+        self.assertIn("(feedback_y.md)", idx)            # codex 1R #8
+        self.assertNotIn("](feedback_x.md)", idx)
+        v = subprocess.run(J + ["verify"], capture_output=True, text=True)
+        self.assertEqual(v.returncode, 0, v.stdout + v.stderr)
+
 
 class R6Guards(Base):
     def test_role_and_machine_and_subagent(self):
@@ -304,6 +408,28 @@ class R7Wiring(Base):
         inner = int(re.search(r"cys_timeout_run (\d+) ", open(SH, encoding="utf-8").read()).group(1))
         for ev, _ in rows:
             self.assertLess(inner, pf.HOOK_TIMEOUT_S[("owner-desk.sh", ev)])
+
+    def test_child_memory_tool_is_utf8(self):
+        """한국어 윈 파이프 기본 cp949 와 엇갈리지 않게 자식 javis_memory 를 UTF-8 로 띄운다(codex 1R #6)."""
+        import javis_owner
+        seen = {}
+        real = javis_owner.subprocess.run
+
+        def fake(cmd, **kw):
+            seen.update(kw)
+
+            class P:
+                returncode, stdout, stderr = 0, "", ""
+            return P()
+        javis_owner.subprocess.run = fake
+        try:
+            javis_owner._memory_tool("verify")
+        finally:
+            javis_owner.subprocess.run = real
+        self.assertEqual(seen["env"].get("PYTHONUTF8"), "1")
+        self.assertEqual(seen["env"].get("PYTHONIOENCODING"), "utf-8")
+        self.assertEqual(seen.get("encoding"), "utf-8")
+        self.assertEqual(seen.get("stdin"), subprocess.DEVNULL)
 
     def test_windows_home_paths(self):
         import importlib

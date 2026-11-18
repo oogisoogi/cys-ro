@@ -2,7 +2,7 @@
 
 - 좌석 = worker-piece1 · surface:2240 · 가지 `feat/piece1-recover-1118` ← integ/1116(`b29cbdd89`)
 - 브리프 = master#68a90f34 · 범위 결정 = master#9f7c835b(A: 핀 유지는 범위 밖)
-- 구현 커밋 = `c03bccb80`
+- 구현 커밋 = `c03bccb80` · 1회 고침(master#267c6b97) = `59d755d9d`
 - 설계 판정 BLOCK 은 그대로다. 이 커밋은 그것을 풀지 않는다. 병합 조건 = X 실측 · 독립 검증 좌석 · 구현 diff codex 1R.
 
 ## 바뀐 것
@@ -17,7 +17,17 @@
 | 다시 시도 = watchdog 틱 · 정상 종료 직전 | `persist_topology_if_dirty` :3513 · 틱 :191 · `main.rs` :1551 |
 | 파싱 실패 · UTF-8 아님 = 지금처럼 격리 | `read_persisted_entries` |
 
-rc 93 이 되는 경우: 다른 agent 의 핀 · 저장 cwd ≠ 좌석 cwd · 다른 좌석이 같은 대화 사용 중 · 한 역할에 서로 다른 핀 · 프로필을 믿을 수 없음 · 세션 파일 없음 · 재개 인자 없음 · 조회 실패 · 깨진 응답.
+rc 93 이 되는 경우: 다른 agent 의 핀 · 저장 cwd ≠ 좌석 cwd · 다른 좌석이 같은 대화 사용 중 · 한 역할에 서로 다른 핀 · 프로필을 믿을 수 없음 · 세션 파일 없음 · 재개 인자 없음 · 조회 실패 · 깨진 응답 · `saved_unreadable=true`.
+
+### 1회 고침(`59d755d9d`)
+
+| 불변식 | 구현 |
+|---|---|
+| 읽지 못한 묘비를 지우지 않는다 | 시작 때 파일 부재만 fresh. 그 밖의 읽기 오류면 `tombstones_unread=Some(해제 기록)`. 읽히게 된 첫 저장이 (디스크 − 해제 기록)을 메모리에 합친다(`adopt_unread_tombstones`). UTF-8 아님은 손상으로 격리 |
+| 그동안 해제한 묘비는 되살리지 않는다 | 해제 입구를 `Daemon::remove_tombstone` 하나로 모음(`tombstone.set` · `claim_role` · 역할 좌석 생성). `tombstones` 락 아래에서 해제 기록과 합치기가 줄을 선다 |
+| rev 는 줄지 않는다 | `tombstones_rev = max(메모리, 디스크)`. 직전 영속본을 디스크 묘비로 맞춰, 집합이 그대로면 rev 도 그대로이고 바뀌면 +1 |
+| 합치기를 놓치지 않는다 | `persist_topology_if_dirty` 는 밀린 저장이 없어도 못 읽은 묘비가 있으면 돈다(watchdog 틱 · 종료 직전) |
+| 못 읽은 목록을 「핀 없음」으로 읽지 않는다 | `system.topology` 에 `saved_unreadable`(읽기 오류·손상 = true · 부재 = false). 역할 좌석 `node-recover` 는 true 면 rc 93. 표시 없는 옛 데몬 응답은 지금과 같고, 역할 없는 좌석은 조회하지 않는다 |
 
 ## 호출자별 rc
 
@@ -36,17 +46,27 @@ rc 93 이 되는 경우: 다른 agent 의 핀 · 저장 cwd ≠ 좌석 cwd · �
 - 전체 수: cys 767 → 773 · cysd 3325 → 3331(둘 다 무시 포함 · 추가한 시험 수).
 - 뮤턴트 18개 전부 붉음. 붉어진 시험 이름과 사유를 대조했다. 묶음 6벌은 서로 다른 시험에 걸리는 것만 묶었다.
 - 보호 계수 syspolicyd 26 · fake 162 불변(시작 · 각 실행 · 끝).
+- 1회 고침: 먼저 붉음 3건(`tombstones_unread_at_start_survive_the_first_readable_save` · `system_topology_marks_a_saved_list_it_could_not_read` · `p1_a_pin_that_cannot_be_resumed…` 의 「저장 목록을 못 읽음」) → 영향 범위 cys 41 통과 · 0 실패 · 1 무시 / cysd 102 통과 · 0 실패. 전체 수 cys 773 그대로(기존 시험에 사례 추가) · cysd 3331 → 3337.
+- 1회 고침 뮤턴트 15개 전부 붉음(이름·사유 대조 · 빌드 6벌). 누적 33개.
+
+## X 실측 준비(실행 안 함 · master 의 「X 시작」 대기)
+
+- 원형 `xprobe.py` 는 바꾸지 않았다. 사본 = `~/axdev/workers/cysr-blocked5-redesign-1116/piece1/x/xprobe_impl.py` · diff = 같은 폴더 `xprobe_impl.diff`.
+- 시나리오 = `r0`(세션이 등록된 좌석) · `r1` · `tomb`(①) · `unreadable`(②). 결과 폴더 = `out-impl`.
+- 문법 확인만 했다. 사본은 한 번도 돌리지 않았으므로 시나리오 자체의 결함이 있을 수 있다.
+- 실행 전 필요한 것: 구현본 빌드(`cargo build --bin cys --bin cysd --bin cys-seatkeep` · 새 Mach-O 3개 · master 통제) · 환경값 `CYS_X_START=master` · `CYS_X_IMPL_BIN=<폴더>` · `CYS_X_IMPL_COMMIT=<빌드 때 HEAD>`.
+- 가짜 에이전트는 `/bin/sh` 가 아니라 기존 파이썬(`CYS_X_FAKE_INTERP` · 기본 `/opt/homebrew/bin/python3`)으로 돈다. `/bin/sh` 는 맥이 환경값을 숨겨 프로필이 `unobserved` 가 되고, 그러면 `r0` 이 다른 이유로 rc 93 이 된다(R0 원자료의 `config_dir_authority=unobserved` 로 확인).
 
 ## 남은 구멍
 
 1. **복원 직후 세션 등록 전에 에이전트가 죽으면 여전히 새 대화다.** 새 역할 좌석이 생기는 순간 저장 핀이 지워진다(핀 유지 범위 · 격리 데몬 시험으로 실측).
 2. **구현본 X 의 R0 는 가짜 에이전트가 세션을 등록하게 시험을 고쳐야 한다.** 이것은 xprobe 원형 재현과 다른 증거다. xprobe 원형을 그대로 돌리면 핀이 없어 새 대화로 나온다.
 3. **그래서 이번 범위는 PLAN 의 「대화 사라짐」 전체를 닫지 않는다.**
-4. topology 를 못 읽는 동안 `system.topology` 는 저장 목록을 빈 배열로 준다(`load_topology`). 그때 `node-recover` 는 「핀 없음」으로 보고 새 대화를 띄운다. 조회 오류 처리는 다음 범위다. 코드 읽기만.
-5. 데몬이 topology 를 못 읽는 채로 시작하면 묘비를 빈 집합으로 읽고(`load_tombstones_from_disk`), 회복 뒤 저장이 파일의 묘비 목록을 비운다. 코드 읽기만.
-6. 세션 파일이 정말 지워진 좌석은 rc 93 에 머문다(I8 은 다음 범위 · 되돌릴 수 있음).
-7. boot 출력에서 93 은 아직 `recover_unrecognised` 로 보인다. `resume_held` 분류는 판정표 범위다.
-8. 강제 종료는 밀린 저장을 잃는다(설계 L19).
+4. 세션 파일이 정말 지워진 좌석은 rc 93 에 머문다(I8 은 다음 범위 · 되돌릴 수 있음).
+5. boot 출력에서 93 은 아직 `recover_unrecognised` 로 보인다. `resume_held` 분류는 판정표 범위다.
+6. 강제 종료는 밀린 저장을 잃는다(설계 L19).
+7. **`launch-agent --resume-saved` 에 ②와 같은 구멍이 남아 있다.** `saved_unreadable` 을 보지 않아, 못 읽는 동안 「저장 대화 없음」으로 새 대화를 띄운다(`run_launch_agent_resume_saved` · 코드 읽기). 이번 지시 범위 밖이라 고치지 않고 master 에 물었다.
+8. 묘비를 아직 못 읽은 동안에는 메모리 묘비가 비어 있다. 그 사이 폐역 역할을 다시 띄우면 명시 재기동으로 치고 묘비가 풀린다(지금의 「역할 좌석 생성 = 묘비 해제」 규칙과 같다).
 
 ## 돌리지 않은 것
 

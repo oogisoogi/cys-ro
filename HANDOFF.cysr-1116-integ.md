@@ -326,3 +326,26 @@
 - 고침(fd9f0cc7 · sleep·재시도 0): `impl Drop for PendingStore { let _ = self._process_lock.unlock(); }` — flock 해제는 description 의 모든 복제본에 대해 푼다.
 - 시험(결정론 · 붉음 먼저): `pending_requests::tests::reopen_succeeds_while_a_duplicate_of_the_closed_lock_fd_is_alive` — fork 자식의 복제본 대신 `try_clone`(같은 description)을 쥔 채 drop → reopen. **고치기 전 `Some(Locked)` 로 붉음 → 고친 뒤 초록** · 배타(살아 있는 store 가 있으면 두 번째 open = Locked)는 그대로 단언. `pending_requests::` 모듈 **100 / 0**.
 - 부하 반복 50회(같은 프로세스 안 fork 부하): 고친 cysd 시험 바이너리로 `pending_requests:: seat_proc::`(좌석 스폰 시험과 같이) `--test-threads=8` × 50 → §8-9 끝 줄.
+
+---
+
+## 9. 인계 델타(master#feca26ce · 2026-11-18 18:5x · 계정2 새 좌석에게)
+
+### 9-1. 중단 직전 하던 일
+- 티켓 = master#c3198344(cysd `pending_requests` 재open `Locked` 흔들림). **고침은 끝나 커밋됨**: fd9f0cc7(`impl Drop for PendingStore { unlock }` + 결정론 시험 `reopen_succeeds_while_a_duplicate_of_the_closed_lock_fd_is_alive` · 고치기 전 붉음 → 뒤 초록 · `pending_requests::` 100/0). 원인 판정·probe 표 = §8-9(8b3d0b8b 의 WIP 커밋이 §8-9 를 커밋함 · 미검증 표기는 「확인요청 5 미발송」 뜻).
+- 남은 일 = ⑴ 부하 반복 50회 증거 ⑵ 【확인요청 5】 발송. ⑴ 이 13:46 재부팅 · 15:3x 세션 재시작으로 두 번 끊김.
+
+### 9-2. 끊긴 시험과 결과
+- 부하 반복(고친 cysd 시험 바이너리 직접 실행 · `pending_requests:: seat_proc:: --test-threads=8` × 50): 2차 실행이 **29회에서 끊김**. 29회 중 **pending_requests 실패 0** · **11회에서 `seat_proc` seatkeep 4건 실패 = `handshake_timeout`(seatkeep 소켓 10초 안에 못 붙음)** — APFS 복제 target 의 deps 자리 직접 실행에서 잦다는 기억(`cysd-test-binary-direct-run-and-cloned-target-seatkeep-timeouts`)과 같은 꼴로 보이나 **확인 안 함**(pending_requests 고침과 무관해 보임 · 가설). 로그 사본 `~/axdev/.wt/cys-1116-integ-race/evidence-d5/load-partial/`.
+- probe 2차(fork 부하 측정 · 고치기 전/뒤 각 50회) 원문 = `~/axdev/.wt/cys-1116-integ-race/evidence-d5/probe-{pre,post}50.txt`(측정 작업트리 · 미커밋 시험 `integ1116_reopen_vs_fork_probe` 포함 · 지금 그 트리 소스 = 고친 판).
+- ⚠ 시험 재실행 규칙(master#feca26ce): cysd·cys 시험은 고정 자리 방식 · **부하 반복(같은 시험 수십 번)은 사람 맥에서 금지** → 부하 50회는 **master 통제 실행(tools/gk-guard 방식)으로 요청**한다. 다시 돌릴 명령(통제 실행 안에서): `cargo test --bin cysd pending_requests:: -- --test-threads=8` 반복(seat_proc 은 빼거나 따로 — 위 handshake_timeout 판별을 섞지 않게) · probe = 측정 작업트리에서 `cargo test --bin cysd integ1116_reopen_vs_fork_probe -- --ignored --nocapture`.
+
+### 9-3. 미결 · master 결정 대기
+- 부하 50회 증거를 어떤 방식(통제 실행)으로 받을지 — master.
+- `seat_proc` seatkeep `handshake_timeout`(직접 실행 · 복제 target)이 별개 흔들림인지 판별할지 — master(이 티켓 범위 밖으로 봄).
+- 【확인요청 5】 미발송(내용 = §8-9 + 이 절).
+
+### 9-4. 다음 첫 행동 3줄
+1. `git -C ~/axdev/.wt/cys-1116-integ log --oneline -3` 로 머리 확인(이 절 커밋) · HANDOFF §8-9·§9 읽기.
+2. master 에 부하 50회 통제 실행 요청(위 명령 · pending_requests 만) → 결과 0 붉음이면 §8-9 끝 줄 채움.
+3. 【확인요청 5】(새 머리 · Err 원문 `Locked` · 제품 판정 근거 = §8-9) 발송.

@@ -10,7 +10,8 @@
   R2 오너 일 3건 등록 · 하나 완료 → 다음 날 첫 오너 대화에 「밀린 일 2건 · 가장 오래된 것 받은 지 n일」
   R3 사흘 넘은 일 → 묻는 줄(계속/미룸/취소) · 사흘째는 아직 안 묻는다 · 미룸 기간 안이면 안 묻는다
   R4 끝 알림 = 일 끝 사건에서 앱 알림 1회(같은 일 두 번 끝 표시해도 중복 0) · 폰 길은 미발송이면 Stop 이 막는다
-  R5 턴 끝 안전망 = 「저장했다」는 말과 저장 기록 대조(양방향) · 아침 보고 누락 차단 · 자기 점검 턴당 1회 · 고리 상한
+  R5 턴 끝 안전망 = 거짓 확인(말했는데 기록 없음)은 막고 · 확인 줄 누락·아침 보고 누락·기록 0건 턴은 다음 오너 턴(및
+     순환 뒤 새 대화)으로 이월(다시 보기) · 고리 상한
   R6 역할 가드(master 외 무출력) · 기계 입력(라벨 [wakeup])엔 점검 줄 0 · 하위 에이전트 사건 0
   R7 C28 등록표에 네 사건 · 안쪽 상한 < 하네스 선언 · 윈 경로(USERPROFILE·역슬래시)에서도 원장 위치가 홈 아래
 """
@@ -195,33 +196,47 @@ class R4Notify(Base):
 
 
 class R5StopNet(Base):
-    def test_claim_without_record_and_record_without_claim(self):
+    """턴 끝 안전망 — 막는 것은 거짓 확인·폰 알림 미발송 둘뿐 · 나머지는 다음 오너 턴으로 이월(막으면 답이 되풀이된다 ·
+    11-18 실좌석 실측: 자기 점검 막기 → 빈 답 → 하네스가 보이는 답 강요 → 같은 표 3번)."""
+
+    def test_false_claim_blocks_but_unshown_save_carries(self):
         self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "앞으로 보고는 항상 표로 해 줘"})
         out = self.hook({"hook_event_name": "Stop", "last_assistant_message": "이렇게 저장했습니다: 표로"})
         self.assertEqual(out["decision"], "block")
         self.assertIn("저장 기록이 없다", out["reason"])
-        # 새 턴: 저장은 했는데 확인 줄을 안 보임
+        # 새 턴: 저장은 했는데 확인 줄을 안 보임 → 막지 않고 다음 오너 턴 첫머리에 확인 줄을 싣는다
         self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "앞으로 보고는 항상 표로 해 줘"})
         self.tool("rule", "add", "--text", "보고는 항상 표로")
-        out = self.hook({"hook_event_name": "Stop", "last_assistant_message": "네 알겠습니다"})
-        self.assertEqual(out["decision"], "block")
-        self.assertIn("확인 줄이 없다", out["reason"])
-        out = self.hook({"hook_event_name": "Stop", "stop_hook_active": True,
-                         "last_assistant_message": "이렇게 저장했습니다: 「보고는 항상 표로」"})
-        self.assertIsNone(out)
+        self.assertIsNone(self.hook({"hook_event_name": "Stop", "last_assistant_message": "네 알겠습니다"}))
+        c = self.ctx(self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "다음 일"}))
+        self.assertIn("확인 줄 누락", c)
+        self.assertIn("이렇게 저장했습니다: 「보고는 항상 표로」", c)
+        # 이월은 한 번만 실린다
+        self.hook({"hook_event_name": "Stop", "last_assistant_message": "이렇게 저장했습니다: 「보고는 항상 표로」"})
+        c = self.ctx(self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "또 다음"}))
+        self.assertNotIn("확인 줄 누락", c)
 
-    def test_selfcheck_once_per_turn_and_loop_cap(self):
-        self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "오늘 날씨 어때"})
-        out = self.hook({"hook_event_name": "Stop", "last_assistant_message": "맑아요"})
-        self.assertEqual(out["decision"], "block")
-        self.assertIn("턴 끝 점검", out["reason"])
-        out = self.hook({"hook_event_name": "Stop", "stop_hook_active": True, "last_assistant_message": ""})
-        self.assertIsNone(out)
-        # 끄면 자기 점검 없음
+    def test_second_look_next_turn_and_after_cycle(self):
+        self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "보고서는 늘 한 장으로 줄여서 줘"})
+        self.assertIsNone(self.hook({"hook_event_name": "Stop", "last_assistant_message": "네"}))
+        # 순환(/clear) 뒤 새 대화 시작에도 다시 보기가 실린다
+        sc = self.ctx(self.hook({"hook_event_name": "SessionStart", "source": "clear"}))
+        self.assertIn("직전 오너 입력 다시 보기", sc)
+        self.assertIn("보고서는 늘 한 장으로 줄여서 줘", sc)
+        c = self.ctx(self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "고마워"}))
+        self.assertIn("«보고서는 늘 한 장으로 줄여서 줘»", c)
+        # 기록이 있었던 턴은 다시 보기 없음
+        self.tool("todo", "add", "--what", "주간 보고")
+        self.assertIsNone(self.hook({"hook_event_name": "Stop", "last_assistant_message": "할 일로 적었어요"}))
+        c = self.ctx(self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "또"}))
+        self.assertNotIn("다시 보기", c)
+        # 끄면 다시 보기 없음
         self.tool("notify", "set", "--selfcheck", "off")
-        self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "고마워"})
-        self.assertIsNone(self.hook({"hook_event_name": "Stop", "last_assistant_message": "천만에요"}))
-        # 고리 상한: 대조 실패가 되풀이돼도 MAX_BLOCKS 뒤엔 놓아준다
+        self.hook({"hook_event_name": "Stop", "last_assistant_message": "x"})
+        c = self.ctx(self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "그리고"}))
+        self.assertNotIn("다시 보기", c)
+
+    def test_loop_cap(self):
         self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "x"})
         n = 0
         for _ in range(5):
@@ -229,14 +244,17 @@ class R5StopNet(Base):
             n += 1 if o else 0
         self.assertEqual(n, 2)
 
-    def test_morning_brief_enforced(self):
+    def test_morning_brief_carries_when_missed(self):
         self.tool("todo", "add", "--what", "주보", day="2026-11-17")
-        self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "안녕"})
-        out = self.hook({"hook_event_name": "Stop", "last_assistant_message": "안녕하세요"})
-        self.assertIn("밀린 일 1건", out["reason"])
-        out = self.hook({"hook_event_name": "Stop", "stop_hook_active": True,
-                         "last_assistant_message": "밀린 일 1건 · 가장 오래된 것 받은 지 1일(#1 주보)\n안녕하세요"})
-        self.assertIsNone(out)
+        c = self.ctx(self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "안녕"}))
+        self.assertIn("밀린 일 1건", c)
+        self.assertIsNone(self.hook({"hook_event_name": "Stop", "last_assistant_message": "안녕하세요"}))
+        c = self.ctx(self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "뭐 해?"}))
+        self.assertIn("밀린 일 1건", c)          # 놓친 아침 보고는 다음 오너 턴에 다시
+        self.hook({"hook_event_name": "Stop",
+                   "last_assistant_message": "밀린 일 1건 · 가장 오래된 것 받은 지 1일(#1 주보)\n…"})
+        c = self.ctx(self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "응"}))
+        self.assertNotIn("밀린 일 1건", c)       # 말했으면 그날은 끝
 
 
 class R6Guards(Base):
@@ -246,8 +264,10 @@ class R6Guards(Base):
         self.assertIsNone(self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "앞으로 표로"}, role="cso"))
         self.assertIsNone(self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "[wakeup] 다음 액션 착수"}))
         self.assertIsNone(self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "앞으로 표로", "agent_id": "a1"}))
-        # 기계 입력 턴은 오너 턴이 아니다 → Stop 안전망 0
-        self.assertIsNone(self.hook({"hook_event_name": "Stop", "last_assistant_message": "x"}))
+        # 기계 입력 턴은 오너 턴이 아니다 → Stop 안전망 0(앞 오너 턴 표지가 있어도)
+        self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "오너 말"})
+        self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "[보고] 워커 완료"})
+        self.assertIsNone(self.hook({"hook_event_name": "Stop", "last_assistant_message": "이렇게 저장했습니다"}))
 
 
 class R7Wiring(Base):

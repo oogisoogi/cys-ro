@@ -173,7 +173,7 @@ def config():
     c = _load_json(os.path.join(owner_dir(), "config.json"), {})
     c.setdefault("notify_channel", "both")   # 기본 = 앱 안 알림 + 폰/바탕화면(PushNotification)
     c.setdefault("notify_all_done", False)   # 「일이 끝나면 늘 알려 줘」 지속 지시 = True
-    c.setdefault("selfcheck", True)          # 턴 끝 자기 점검(안전망 ③) — 끄면 대조 검사만 남는다
+    c.setdefault("selfcheck", True)          # 다시 보기(안전망) — 기록 0건인 오너 턴을 다음 턴에 한 번 더 점검시킨다
     return c
 
 
@@ -375,6 +375,11 @@ def todo_done(tid, evidence):
     c = config()
     if (it.get("notify") or c["notify_all_done"]) and c["notify_channel"] != "off":
         res["notify"] = send_done_notice(it, c)
+        if res["notify"].get("phone_pending"):
+            # 모델이 이 JSON 을 읽는 그 자리에서 보내게 한다(안 보내면 Stop 훅이 1번 막는다).
+            res["do_now"] = ("이어서 PushNotification 도구로 「%s」를 보내라 — 오너가 이 화면을 보고 있으면 Claude Code 가 "
+                             "알아서 생략한다(그래도 이 호출은 한다). 보내기 전에 「폰 알림을 보냈다」고 말하지 마라."
+                             % res["notify"]["push_message"])
     return res
 
 
@@ -517,6 +522,26 @@ def _cap(s, n):
     return s if len(s) <= n else s[:n - 20] + "\n…(이하 생략 — rule list)"
 
 
+def _carry_path():
+    d = os.path.join(owner_dir(), "carry")
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, "%s.json" % surface().replace("/", "_").replace(":", "_"))
+
+
+def _carry_lines(carry, tl):
+    """직전 오너 턴에서 넘어온 할 일 — 턴 끝에 막지 않고(막으면 답이 되풀이된다 · 11-18 실좌석 실측) 다음 턴에 싣는다."""
+    out = []
+    for txt in carry.get("saved_unshown", []):
+        out.append("【직전 턴 확인 줄 누락 — 이번 답에 1줄】%s: 「%s」" % (SAVED_MARK, txt))
+    for txt in carry.get("removed_unshown", []):
+        out.append("【직전 턴 확인 줄 누락 — 이번 답에 1줄】%s: 「%s」" % (REMOVED_MARK, txt))
+    if carry.get("second_look"):
+        out.append("【직전 오너 입력 다시 보기 · owner-desk】직전 오너 입력 «%s» 에 앞으로 계속 지킬 지시나 맡긴 일·끝 알림 "
+                   "부탁이 있었는데 기록하지 않았다면 이번 턴에 %s 로 기록하고 say 1줄을 보여라(없었으면 이 줄은 무시)."
+                   % (carry["second_look"], tl))
+    return out
+
+
 def hook_session(hin):
     rules = list_rules()
     b = brief()
@@ -533,21 +558,29 @@ def hook_session(hin):
                  "오너가 일을 시키면 `todo add --what`(여럿이면 --what 여러 번 · 급한 것 --urgent N · 짧은 것 --short N) · "
                  "끝나면 `todo done <id> --evidence` · 「끝나면 알려 줘」 = `todo add … --notify`(늘 그렇게 = `notify set --all-done on`)."
                  % SAVED_MARK)
+    # 순환(/clear·압축) 직전 턴에서 넘어온 것도 잃지 않는다(지우지는 않음 — 다음 오너 입력 훅이 싣고 지운다).
+    lines += _carry_lines(_load_json(_carry_path(), {}), tl)
     return _ctx("SessionStart", _cap("\n".join(lines), SESSION_RULES_CAP + 1400))
 
 
 def hook_prompt(hin):
     prompt = hin.get("prompt") or ""
-    if not prompt.strip() or is_machine(prompt):
-        return None
-    t = today().isoformat()
     tp = _turn_path()
     state = _load_json(tp, {})
-    c = config()
+    if not prompt.strip() or is_machine(prompt):
+        # 기계 입력 턴은 오너 턴이 아니다 — 앞 오너 턴의 표지가 남아 이 턴 끝에서 대조되지 않게 내린다.
+        if state.get("owner"):
+            state["owner"] = False
+            _atomic_write(tp, json.dumps(state, ensure_ascii=False))
+        return None
+    t = today().isoformat()
     b = brief()
-    brief_due = state.get("briefed_on") != t and b["open"] > 0
-    turn = {"start_ts": time.time(), "owner": True, "brief_due": brief_due, "selfcheck_done": False,
+    cp = _carry_path()
+    carry = _load_json(cp, {})
+    brief_due = (state.get("briefed_on") != t or carry.get("brief_missing")) and b["open"] > 0
+    turn = {"start_ts": time.time(), "owner": True, "brief_due": brief_due,
             "briefed_on": t if brief_due else state.get("briefed_on"), "brief_say": b["say"] if brief_due else "",
+            "prompt_excerpt": " ".join(prompt.split())[:300],
             "prompt_sha": hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16]}
     _atomic_write(tp, json.dumps(turn, ensure_ascii=False))
     tl = _tool_line()
@@ -556,6 +589,12 @@ def hook_prompt(hin):
         lines.append("【오늘 첫 오너 대화 — 답 첫 줄에 이 문장을 그대로 먼저 말한다】%s" % b["say"])
         for a in b.get("ask", []):
             lines.append("【사흘 넘은 일 — 오너에게 먼저 물어라】%s → 답에 따라 `todo keep|defer|cancel <id>`" % a)
+    lines += _carry_lines(carry, tl)
+    if carry:
+        try:
+            os.unlink(cp)
+        except OSError:
+            pass
     lines.append("【오너 지시 점검 · owner-desk】이 오너 입력에 ⑴앞으로 계속 지킬 지시(선호·습관·규칙)가 있으면 이 턴 안에 "
                  "%s rule add --text \"<지시>\" 로 저장하고 say 1줄(「%s: …」)을 보여라 ⑵새로 시킨 일이면 todo add "
                  "(여럿이면 순서를 정해 say 1줄로 알림) ⑶「끝나면 알려 줘」면 --notify(앞으로 늘 그렇게면 notify set --all-done on 도) ⑷일을 끝내면 todo done <id> --evidence. "
@@ -568,50 +607,56 @@ def _block(reason):
 
 
 def hook_stop(hin):
-    """턴 끝 안전망 — ①말과 기록 대조(결정론) ②아침 보고 확인 ③폰 알림 미발송 ④자기 점검(뜻 판단은 모델 · 턴당 1회)."""
+    """턴 끝 안전망(11-18 실좌석 실측 반영).
+
+    막는 것(decision=block)은 둘뿐이다 — ①「저장했습니다」라고 말했는데 저장 기록이 없음(거짓 확인 · 지금 고쳐야 한다)
+    ②끝난 일의 폰 알림을 아직 안 보냄(도구 호출 1번이면 된다). 그 밖(저장했는데 확인 줄 누락 · 아침 보고 누락 · 이번 턴에
+    기록이 하나도 없어 지속 지시를 놓쳤을 수 있음)은 **막지 않고 다음 오너 턴으로 넘긴다** — 막으면 모델이 「덧붙일 말 없음」
+    으로 빈 답을 내고, 하네스가 보이는 답을 강요해 같은 답이 되풀이됐다(실측: 한 턴에 같은 표 3번).
+    """
     tp = _turn_path()
     turn = _load_json(tp, {})
     if not turn.get("owner"):
-        return None
-    # 고리 방지: 한 오너 턴에서 막는 것은 최대 MAX_BLOCKS 번(대조 실패가 되풀이돼도 좌석을 붙잡지 않는다).
-    #   stop_hook_active 만 보면 자기 점검 뒤 이어진 답의 대조(저장했다는데 기록 없음)를 놓친다.
-    if turn.get("blocks", 0) >= MAX_BLOCKS:
         return None
     msg = hin.get("last_assistant_message") or ""
     ev = events_since(turn.get("start_ts", 0), surface())
     ops = [e.get("op") for e in ev]
     tl = _tool_line()
-    reasons = []
-    saved = ops.count("rule.add")
-    if saved and SAVED_MARK not in msg:
-        last = [e for e in ev if e.get("op") == "rule.add"][-1]
-        reasons.append("이번 턴에 오너 지시를 저장했는데 답에 확인 줄이 없다 — 오너에게 「%s: 「%s」」 1줄을 보여라."
-                       % (SAVED_MARK, last.get("text", "")))
-    if SAVED_MARK in msg and not saved:
-        reasons.append("답에 「%s」라고 했지만 이번 턴 저장 기록이 없다 — 지금 %s rule add --text \"…\" 로 실제로 "
-                       "저장하거나, 저장하지 않았다면 그 문장을 바로잡아라." % (SAVED_MARK, tl))
-    if ops.count("rule.remove") and REMOVED_MARK not in msg:
-        reasons.append("규칙을 지웠는데 답에 「%s」 확인 줄이 없다 — 1줄을 보여라." % REMOVED_MARK)
+    carry = {}
+    adds = [e.get("text", "") for e in ev if e.get("op") == "rule.add"]
+    if adds and SAVED_MARK not in msg:
+        carry["saved_unshown"] = adds
+    rms = [e.get("text", "") for e in ev if e.get("op") == "rule.remove"]
+    if rms and REMOVED_MARK not in msg:
+        carry["removed_unshown"] = rms
     if turn.get("brief_due") and BRIEF_MARK not in msg:
-        reasons.append("오늘 첫 오너 대화인데 밀린 일 보고가 답에 없다 — 「%s」를 먼저 말하라."
-                       % (turn.get("brief_say") or brief()["say"]))
+        carry["brief_missing"] = True
+    if config()["selfcheck"] and not any(o and (o.startswith("rule.") or o.startswith("todo.")) for o in ops):
+        carry["second_look"] = turn.get("prompt_excerpt", "")
+    cp = _carry_path()
+    if carry:
+        _atomic_write(cp, json.dumps(carry, ensure_ascii=False))
+    else:
+        try:
+            os.unlink(cp)
+        except OSError:
+            pass
+    # 고리 방지: 한 오너 턴에서 막는 것은 최대 MAX_BLOCKS 번.
+    if turn.get("blocks", 0) >= MAX_BLOCKS:
+        return None
+    reasons = []
+    if SAVED_MARK in msg and not adds:
+        reasons.append("답에 「%s」라고 했지만 이번 턴 저장 기록이 없다 — 지금 %s rule add --text \"…\" 로 실제로 "
+                       "저장하거나, 저장하지 않았다면 그 문장을 바로잡아라(답 전체를 되풀이하지 말고 고친 1줄만)." % (SAVED_MARK, tl))
     due = [e for e in ev if e.get("op") == "notify.due" and e.get("phone")]
     sent = [e for e in ev if e.get("op") == "notify.phone"]
     if due and not sent:
-        reasons.append("끝난 일 알림을 아직 폰으로 보내지 않았다 — PushNotification 도구로 「%s」를 보내라."
-                       % due[-1].get("message", ""))
+        reasons.append("끝난 일 알림을 아직 폰으로 보내지 않았다 — PushNotification 도구로 「%s」를 보내라"
+                       "(답을 되풀이하지 말고 「알림을 보냈어요」 1줄만)." % due[-1].get("message", ""))
     if reasons:
         turn["blocks"] = turn.get("blocks", 0) + 1
         _atomic_write(tp, json.dumps(turn, ensure_ascii=False))
         return _block("【owner-desk 대조】" + " / ".join(reasons))
-    if config()["selfcheck"] and not turn.get("selfcheck_done") and not hin.get("stop_hook_active") \
-            and not any(o and (o.startswith("rule.") or o.startswith("todo.")) for o in ops):
-        turn["selfcheck_done"] = True
-        turn["blocks"] = turn.get("blocks", 0) + 1
-        _atomic_write(tp, json.dumps(turn, ensure_ascii=False))
-        return _block("【턴 끝 점검 · owner-desk】방금 오너 입력에 ⑴앞으로 계속 지킬 지시 ⑵새로 시킨 일 ⑶「끝나면 알려 줘」가 "
-                      "있었는데 기록하지 않았다면 지금 %s 로 기록하고 say 1줄만 덧붙여라. 없었다면 아무 말도 덧붙이지 말고 "
-                      "그대로 끝내라." % tl)
     return None
 
 

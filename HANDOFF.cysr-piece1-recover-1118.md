@@ -2,7 +2,7 @@
 
 - 좌석 = worker-piece1 · surface:2240 · 가지 `feat/piece1-recover-1118` ← integ/1116(`b29cbdd89`)
 - 브리프 = master#68a90f34 · 범위 결정 = master#9f7c835b(A: 핀 유지는 범위 밖)
-- 구현 커밋 = `c03bccb80` · 1회 고침(master#267c6b97) = `59d755d9d` · `--resume-saved`(master#fbfe2389) = `94aeb1a4f` · codex 1R 고침(master#91f7d69b) = `fee25fbae` · codex 2R 고침(master#556f6d21 · 후임 좌석 surface:2245) = `153629ec9` · 독립 검증 지적 고침(master#e414b44b · 후임 좌석 surface:2248) = `7c3994a7f` `e518c01e1` `a9cbd0189`
+- 구현 커밋 = `c03bccb80` · 1회 고침(master#267c6b97) = `59d755d9d` · `--resume-saved`(master#fbfe2389) = `94aeb1a4f` · codex 1R 고침(master#91f7d69b) = `fee25fbae` · codex 2R 고침(master#556f6d21 · 후임 좌석 surface:2245) = `153629ec9` · 독립 검증 지적 고침(master#e414b44b · 후임 좌석 surface:2248) = `7c3994a7f` `e518c01e1` `a9cbd0189` · X·codex 3R 고침(master#4c8c9f99) = `d952fce23`
 - 설계 판정 BLOCK 은 그대로다. 이 커밋은 그것을 풀지 않는다. 병합 조건 = X 실측 · 독립 검증 좌석 · 구현 diff codex 1R.
 
 ## 바뀐 것
@@ -158,6 +158,30 @@ VERIFY = `~/axdev/master/reports/verify/piece1-recover-1118/VERIFY.md`. B1·R1·
 - 역할로 좌석을 찾는 다른 입구: `cycle-agent`·`reinject --role` 은 복구가 아니라 지금처럼 실패한다. `javis_boot_node` 는 `--resume-saved` 로 간다. watchdog 자동 재기동은 `node-recover --surface` 라 이번 수리를 받는다. phoenix `spawn_fresh_production` 은 핀 없는 `launch-agent`(독약 대체 경로)로 범위 밖이다.
 
 X: `xprobe_impl.py` 에 `r0-late`·`boot-late` 추가. 문법 컴파일만 했고 **실행하지 않았다**. 직전 sha256 앞 16자 `6da957a895d21109` → `117eb32d62e15fe8` · diff = `piece1/x/xprobe_impl.delta-late.diff`.
+
+## X·codex 3R 고침(`d952fce23` · master#4c8c9f99)
+
+처분 = `~/axdev/master/reports/verify/piece1-recover-1118/DISPOSITION-r3.md`. codex #3(세션 파일 부재)은 조건표로 넘어가 고치지 않았다.
+
+**boot-late 원인 = 제품 결함(가짜 에이전트가 드러냄).**
+1. `cys restore` 때 가짜 에이전트는 TUI 를 그리지 않아 `안전 밸브 보류` → 관문 표식(gate=unknown)이 찍혔다(`out-impl/boot-late-20261119-040713/commands.json` restore stderr).
+2. 에이전트가 죽고 역할을 거둔 뒤에도 표식은 남았다. 표식을 지우는 길은 `surface.gate_pending clear`(boot 채택·지침 주입 성공)뿐이고 사망 경로에는 없다.
+3. `seat_liveness` 가 표식을 사망 판정보다 먼저 봐서 죽은 좌석이 `GatePending` 이 됐고, `run_boot` 의 관문 분기로 갔다(같은 commands.json 의 boot 행: `프로세스 생존·입력 불가` · 재관측 `맨 셸 의심` · 둘째 `--resume` 없음).
+4. 대조: 같은 가짜 데몬에서 표식만 뺀 `p1_boot_recovers_the_seat_the_role_was_released_from` 은 고치기 전에도 복구 경로로 갔고, 표식을 넣은 시험은 붉었다.
+5. 실제 claude 도 겪을 수 있다: 첫기동 관문·느린 기동으로 표식이 찍힌 뒤 에이전트가 끝나면(관문의 `No, exit` 포함) 같은 상태가 된다. 코드 읽기까지이고 실제 claude 로 돌리지는 않았다.
+
+| 항목 | 바뀐 것 | 먼저 붉은 시험 |
+|---|---|---|
+| boot-late | 죽음이 3중 확정된 좌석은 관문 표식을 불신임(Rust `seat_liveness` · python `node_liveness` 같은 판정). 살아 있거나 좌석 점유·갓 만든 좌석은 지금처럼 관문 보류 | `p1_boot_recovers_a_dead_seat_that_still_carries_a_gate_mark` · `p1_gate_mark_yields_only_to_a_confirmed_death` · 팩 `test_case_gate_mark_yields_only_to_a_confirmed_death` |
+| codex #1 | `close_surface` 가 거둔 역할을 역할 좌석과 같은 규칙으로 처리. 사람이 닫으면 묘비 · reap 은 묘비 없음 · 표시는 둘 다 지운다 | `closing_a_released_seat_follows_the_role_seat_rule` |
+| codex #2 | 입력 직전 재검증 대신 재결합 유예를 택했다. 되돌린 시각부터 나이를 다시 재서 갓 만든 좌석처럼 120초 후보에서 빠진다. 재검증은 기동 중의 창을 못 닫는다 | `a_just_restored_seat_counts_as_new_for_reclaim_auto` |
+| codex #4 | `role.restore_released` = surfaces → roles → surface.role. 좌석 유무를 surfaces 락 안에서 본다 | `restore_released_and_close_are_ordered_by_the_surfaces_lock` |
+
+시험: 영향 범위 cysd 71 통과 · cys 180 통과 · 0 실패 · 팩 10파일 rc 0. 전체 수 cys 796 → 798 · cysd 3348 → 3351. 뮤턴트 8개 전부 붉음(cysd 6 · cys 1 · 팩 1).
+
+남은 한계: 유예 120초가 지나도 에이전트가 안 뜬 복구 좌석은 지금처럼 재결합 후보가 된다. #2 는 시험에서 나이 값까지 확인했고 실제 두 좌석 경합은 돌리지 않았다.
+
+X: `xprobe_impl.py` sha256 앞 16자 `117eb32d62e15fe8` → `e13fcd458c2625c6` · diff = `piece1/x/xprobe_impl.delta-r3.diff`. r0-late 합격 rc = 0 또는 78. boot-late 는 복구 뒤에도 가짜 에이전트가 관문 보류로 끝나므로 outcome `recovered` 또는 `gate_pending` + 둘째 `--resume` + 역할 복귀 + 핀 유지를 합격으로 본다. 죽음 확정 전의 `gate_pending` 은 재시도한다. 실행하지 않았다.
 
 ## X 상태
 

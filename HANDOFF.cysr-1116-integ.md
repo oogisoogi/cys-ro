@@ -325,7 +325,13 @@
 - 판정 = **제품 쪽**: 시험만의 문제가 아니라 `PendingStore` 의 「닫으면 잠금이 풀린다」 가 fork 하는 프로세스(데몬 = 좌석을 스폰함)에서 성립하지 않는 결함. 지금 데몬은 `PendingStore` 를 시험 밖에서 열지 않지만(grep 0) 같은 프로세스 재open 이 생기는 순간 같은 결함이 난다. 같은 저장소의 다른 파일 잠금(`src/pack.rs` 레인·공용 apply-lock)은 이미 명시 `unlock()` 을 한다 — `PendingStore` 만 close 에 기댔다.
 - 고침(fd9f0cc7 · sleep·재시도 0): `impl Drop for PendingStore { let _ = self._process_lock.unlock(); }` — flock 해제는 description 의 모든 복제본에 대해 푼다.
 - 시험(결정론 · 붉음 먼저): `pending_requests::tests::reopen_succeeds_while_a_duplicate_of_the_closed_lock_fd_is_alive` — fork 자식의 복제본 대신 `try_clone`(같은 description)을 쥔 채 drop → reopen. **고치기 전 `Some(Locked)` 로 붉음 → 고친 뒤 초록** · 배타(살아 있는 store 가 있으면 두 번째 open = Locked)는 그대로 단언. `pending_requests::` 모듈 **100 / 0**.
-- 부하 반복 50회(같은 프로세스 안 fork 부하): 고친 cysd 시험 바이너리로 `pending_requests:: seat_proc::`(좌석 스폰 시험과 같이) `--test-threads=8` × 50 → §8-9 끝 줄.
+- 부하 증거(master 통제 실행 · 머리 ff9448fc · 19:03:57~19:26:43 · gate_rc 0 · 로그 `master/logs-integ-forkprobe-ff9448fc.log`): 처음 계획한 `pending_requests::` 반복 50회는 fork 가 없어 결함을 못 가르므로(§10-2) fork probe 로 바꿨다. `PROBE_N=15000` · fork 스레드 4:
+  | 판 | fork 수 | 원시 `WouldBlock` | `open` = `Err(Locked)` |
+  |---|---|---|---|
+  | 고친 판 | 6,841 | **0 / 15,000** | **0 / 15,000** |
+  | 음성 대조(`impl Drop` 제거) | 6,733 | **311 / 15,000** | **268 / 15,000**(sample `Locked`) |
+  - fork 스레드 0 = 두 판 모두 0 · 0. `pending_requests:: seat_proc::` `--test-threads=8` × 29회 = **실패 0 / 29**(매회 120 passed · 앞 기록 11 / 29 실패) · syspolicyd 26 · fake 162 처음~끝 불변.
+  - 한계: `seat_proc` `handshake_timeout` 은 「재발 안 함」 까지만 말할 수 있다. Gatekeeper 수정이 그 원인이었다는 증명은 아니다.
 
 ---
 
@@ -380,4 +386,34 @@
 - 가설 1줄: 시험별 코드 결함보다, 그 시간대에 기계 전체가 느려져(seatkeep 실행·서명 조회가 보안 검사를 기다림) 10초를 넘겼을 가능성. 판정 = master 통제 실행.
 
 ### 10-5. 다음
-- 【확인요청 5】 발송 뒤 master 통제 실행 결과 대기. 결과가 오면 §8-9 끝 줄을 채운다.
+- 【확인요청 5】 발송 뒤 master 통제 실행 결과 대기. 결과가 오면 §8-9 끝 줄을 채운다. → 채움(master#cb38b613).
+
+---
+
+## 11. 1.1.16 후보 확정 전 전체 게이트(master#cb38b613 · 2026-11-18 19:3x · surface:2227)
+
+### 11-1. 들어올 순서
+- **① 2228 nohands2 `feat/no-hands-gui-1118` → ② 2229 ownermem2 `feat/owner-memory-todo-1118` → 그 머리에서 전체 게이트 1회.** 각 가지의 티켓 검수가 끝난 뒤 들인다. 끝점 acda833a·adfcb006 기준 모의 병합은 두 순서 모두 충돌 0 · 결과 트리가 같고 고친 파일이 겹치지 않는다. ①을 먼저 두는 이유 = 이미 ff9448fc 를 품었고 지침 해시를 바꾸는 쪽이라 해시 확인이 먼저 끝난다.
+
+### 11-2. 실행
+- 스크립트 = `docs/integ-1116/gate-1116.sh`(스냅샷 뿌리에서 `bash docs/integ-1116/gate-1116.sh <결과 폴더>` · 요약 = `<결과 폴더>/summary.txt`). 단계 81개(dry-run 계수 · 들어올 두 시험 포함) · **모든 대상 1회 · 자동 재시도 없음** · 격리 env(`env -i` · 짧은 TMPDIR) · 단계 실행 중 5초마다 syspolicyd·fake 계수를 대조해 늘면 그 단계 프로세스 그룹을 끊고 rc 3 로 중단.
+- 이 좌석에서 돌린 것 = 문법 · dry-run · 경량 5단계(gen 2 · secret 2 · `test_cso_directive_rev` 75 OK) · 보호 계수 증가 흉내(가짜 계수기 → `secret-scan` rc 125 · 전체 rc 3). **Rust·화면·팩 묶음은 스크립트로 돌려 보지 않았다.** `pw-venv` 단계는 처음 돌 때 playwright 1.60.0 을 내려받는다.
+- 맥에서 빼는 것 = `scripts/tests/test_release_postprocess_gate.py`(갓 만든 번들을 spctl·gktool 에 넘김) → CI 몫. `integ/1116` 은 ci-branch 의 push 대상(`feat/**`·`fix/**`) 밖이라 CI 는 별도 발화가 필요하다(push = master 게이트).
+
+### 11-3. 판정 기준(앞 값 = §4·§8-6 · 더 늘면 사유 대조 · 붉음은 자동 재실행 말고 사유 전문 대조)
+| 대상 | 기대 |
+|---|---|
+| lib · bin cys · cys-seatkeep | 1256 · 0 · 3 ign · 765 · 0 · 2 ign · 49 · 0 |
+| bin cysd | **3308 · 0 · 17 ign**(§8-6 3307 + fd9f0cc7 시험 1) |
+| tests/*.rs | hidden 1 · rotate 11 · seat_group 1 · drainhold 4 · win 2종 0 · 전부 0 실패 |
+| cys-app | 348 · 0 · 2 ign |
+| bun test · tsc | 0 fail · rc 0 |
+| 팩 파이썬 · doc-contract · event_inject · gen 2 · secret 2 | 전부 rc 0 |
+| scripts/tests | `test_release_trigger_split` **1건만** 실패(기준선부터) |
+| health | fail = **H-CLT-1·2 만**(기준선부터 · 이 기계 환경) |
+| 화면 게이트 15종 | 전부 PASS · chat 59 · confirm 37 · tickrec OFF sha `308dd2b91f9a` · 나머지 수는 §4 |
+
+### 11-4. 게이트가 먼저 잡은 것
+- `secret-scan --all` 적색 1건 = 병합으로 들어온 `WORKER_TODO.cysr-test-gatekeeper-crash-1118.md:2` 의 홈 절대 경로 → 「작업트리 cys-1116-gkfix」 로 고침(문서 · 동작 무관).
+- ⚠ 같은 꼴이 `feat/no-hands-gui-1118` 의 HANDOFF·WORKER_TODO 에 남아 있어 그대로 들이면 `secret-scan` 이 붉어진다(§11-1 ① 전에 그 좌석에서 고칠 일).
+- 📌 새 시험 `test_idle_gate`·`test_owner_desk` 는 어느 CI 워크플로에도 없다(현 머리에도 워크플로 미등재 팩 시험 44개). 이 게이트에서는 직접 돌린다.

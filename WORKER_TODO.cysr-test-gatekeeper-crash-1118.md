@@ -1,5 +1,5 @@
 # worker-3 TODO — TICKET=cysr-test-gatekeeper-crash-1118 (브리프 원장 master#cf6b2e31 15:41:44 · surface:2215)
-cwd = /Users/oogisoogi/axdev/.wt/cys-1116-gkfix · 가지 fix/test-gatekeeper-crash ← fd9f0cc7
+작업트리 cys-1116-gkfix · 가지 fix/test-gatekeeper-crash ← fd9f0cc7
 ⛔ 시험 실행 금지(빌드 --no-run 1회만) · push 금지
 
 - [x] 1. 방아쇠 시험 audit_code_path_matches_security_framework 고침(ⓐ fake ips 0 ⓑ syspolicyd 0 ⓒ 매번 만들고 지우기 없음)

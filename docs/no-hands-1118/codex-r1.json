@@ -1,0 +1,102 @@
+{
+  "verdict": "REVISE",
+  "justification": "지침은 의도와 맞지만, 구현에는 사용자 입력 누락, 관문 없는 앱 복귀, 윈도우 입력 틱 역행 미처리, 상태 경합이 있다. 따라서 합격 조건을 충족하지 못한다. 판정은 지정 리비전의 정적 검토와 수치 반례에 근거하며, 파일 수정·시험 실행·서버 기동은 하지 않았다.",
+  "evidence": [
+    {
+      "claim": "추가 지침은 백그라운드 우선과 손·앱을 비켜 달라는 요청 금지를 명시한다.",
+      "ref": "cysjavis-pack/skills/computer-control/SKILL.md:73",
+      "verified": true
+    },
+    {
+      "claim": "None인 유휴 값은 wait에서 통과시키지 않는다.",
+      "ref": "cysjavis-pack/bin/javis_idle_gate.py:262",
+      "verified": true
+    },
+    {
+      "claim": "mark/check 비교식은 mark+0.5초 이내 입력을 감지하지 못한다.",
+      "ref": "cysjavis-pack/bin/javis_idle_gate.py:276",
+      "verified": true
+    },
+    {
+      "claim": "end --restore는 유휴 확인 없이 앱을 앞으로 부를 수 있다.",
+      "ref": "cysjavis-pack/bin/javis_idle_gate.py:364",
+      "verified": true
+    },
+    {
+      "claim": "윈도우 유휴 계산은 32비트 모듈러 차이만 사용한다.",
+      "ref": "cysjavis-pack/bin/javis_idle_gate.py:147",
+      "verified": true
+    },
+    {
+      "claim": "경과 시간과 mark 비교에 조정 가능한 벽시계를 사용한다.",
+      "ref": "cysjavis-pack/bin/javis_idle_gate.py:77",
+      "verified": true
+    },
+    {
+      "claim": "대기열이 200개를 넘으면 이전 항목을 잘라 저장한다.",
+      "ref": "cysjavis-pack/bin/javis_idle_gate.py:238",
+      "verified": true
+    },
+    {
+      "claim": "뮤턴트 하네스는 원본 시험 통과 확인 없이 모든 비정상 종료를 KILLED로 센다.",
+      "ref": "cysjavis-pack/bin/tests/mut_idle_gate.py:51",
+      "verified": true
+    }
+  ],
+  "issues": [
+    {
+      "severity": "blocking",
+      "where": "cysjavis-pack/bin/javis_idle_gate.py:276",
+      "what": "현재 비교식은 마지막 입력 시각을 e, mark를 m이라 하면 e > m+0.5일 때만 참이다. m=1000, 사용자 입력=1000.2, check=1003이면 idle=2.8이므로 touched=False다. 이 입력은 나중에 check해도 감지되지 않는다. 동작 도중이나 동작 종료 후 mark 호출 전에 발생한 사용자 입력도 332행의 mark 갱신으로 가려진다. 반대로 mark 이후 늦게 반영된 자신의 합성 입력은 사용자 입력으로 오인할 수 있다.",
+      "fix": "동작 종료 시각으로 입력 이력을 덮어쓰는 모델을 교체하라. 사용자 입력을 동작 전·도중·후에 보존하고 합성 입력과 구분해야 한다. 구분할 수 없는 경우에는 보수적으로 중단·재대기하라. mark 전 입력, mark 직후 0.5초 경계, 긴 동작 중 입력, 지연된 합성 입력의 회귀 시험을 추가하라."
+    },
+    {
+      "severity": "major",
+      "where": "cysjavis-pack/bin/javis_idle_gate.py:364",
+      "what": "end --restore는 사용자 입력이나 유휴 측정 실패 여부와 관계없이 open -b로 포커스를 바꾼다. 사용자가 작업을 재개한 뒤에도 앱 복귀가 실행될 수 있다. 스킬 80행은 이 경로를 정상 종료 절차로 지시한다.",
+      "fix": "복귀도 입력을 건드리는 조작으로 관문에 포함하라. 사용자가 활동 중이거나 측정 불가이면 복귀를 보류하고, 스킬과 종료 반환값에 그 상태를 반영하라."
+    },
+    {
+      "severity": "major",
+      "where": "cysjavis-pack/bin/javis_idle_gate.py:315",
+      "what": "유휴 통과 뒤 front_app의 외부 명령 두 번과 notify를 실행하고도 입력을 다시 확인하지 않은 채 go=True를 반환한다. 각 명령의 상한은 5초이므로 준비 중 사용자가 입력을 재개할 상당한 구간이 있다. 스킬 77행은 반환 직후 첫 동작을 하도록 안내한다.",
+      "fix": "앱 정보 수집 등 준비 작업을 관문 전에 수행하고, 알림 이후 첫 조작 직전에도 입력 상태를 재검증하도록 구현과 절차를 맞춰라."
+    },
+    {
+      "severity": "major",
+      "where": "cysjavis-pack/bin/javis_idle_gate.py:147",
+      "what": "정상 틱 감김 보정은 있지만 입력 틱 역행 대응은 없다. 직전 사용자 입력 뒤 SendInput이 오래된 dwTime=70000을 공급하면 tick=100000에서 30초 유휴로 판단할 수 있다. 이는 최근 사용자 입력을 가려 wait/check를 통과시킨다. 세션 한정 및 비단조 입력 틱은 [MS GetLastInputInfo 문서](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getlastinputinfo)에 명시되어 있다.",
+      "fix": "단일 틱 차이만으로 안전한 유휴를 확정하지 말라. 입력 값의 변화·역행을 독립적인 단조 시각으로 추적하고, 불명확하면 재대기하라. 측정 세션과 조작 대상 세션의 일치도 보장하고, SendInput 역행 시험을 추가하라."
+    },
+    {
+      "severity": "major",
+      "where": "cysjavis-pack/bin/javis_idle_gate.py:77",
+      "what": "time.time이 뒤로 조정되면 now-mark가 작아지거나 음수가 되어 실제 입력을 놓친다. 같은 원인으로 wait의 경과 시간이 감소하므로 MAX_TIMEOUT=540도 실제 대기 상한이 되지 않는다.",
+      "fix": "경과 시간·입력 비교·deadline에는 단조 시계를 사용하고 표시용 날짜만 벽시계를 사용하라. 저장된 세션에는 재부팅 등 시계 기준 변경을 검출할 정보도 두고, 시계 전후 이동 시험을 추가하라."
+    },
+    {
+      "severity": "major",
+      "where": "cysjavis-pack/bin/javis_idle_gate.py:218",
+      "what": "기본 상태 경로에 세션 하나만 두며 소유권이나 잠금이 없다. 두 호출자의 wait가 세션을 덮어쓰고, 한쪽 mark/end/defer가 다른 쪽 세션을 변경·삭제할 수 있다. 대기열도 read-modify-write 전체가 잠기지 않아 두 defer가 같은 목록을 읽으면 마지막 저장만 남는다. os.replace는 이러한 경합을 막지 않는다.",
+      "fix": "화면 작업에 전역 배타 소유권과 세션 ID를 도입하고 모든 변경 명령에서 소유권을 검증하라. 대기열 추가·삭제는 잠금 또는 트랜잭션으로 보호하고 동시 호출 시험을 추가하라."
+    },
+    {
+      "severity": "major",
+      "where": "cysjavis-pack/bin/javis_idle_gate.py:238",
+      "what": "서로 다른 작업을 201개 미루면 첫 번째 미완료 작업이 통지 없이 삭제된다. 모든 호출은 대기열에 올렸다고 응답하지만 이전 작업은 pending에서 사라져 재시도할 수 없다.",
+      "fix": "미완료 작업을 자동 퇴출하지 말라. 표시 개수 제한과 영속 보관을 분리하거나 넘친 작업을 별도 영속 대기열에 보존하고, 상한 경계에서 무손실을 시험하라."
+    },
+    {
+      "severity": "major",
+      "where": "cysjavis-pack/bin/tests/mut_idle_gate.py:49",
+      "what": "원본 시험이 통과하는지 먼저 확인하지 않는다. 따라서 공통 환경 오류나 변이와 무관한 Docs 시험 실패만 있어도 9종 모두 KILLED로 집계되고 하네스가 성공할 수 있다. 현재 동작 시험도 합성 입력 후 mark, 충분히 늦은 사용자 입력이라는 정상 경로에 치우쳐 핵심 누락 구간을 잡지 못한다.",
+      "fix": "동일 환경에서 원본 시험 통과를 필수 전제로 삼고, 변이별 실패 원인을 보고하여 공통 실패와 구분하라. 위 입력 경계·틱 역행·복귀·시계 변경·경합·대기열 상한 계약을 실제 결과 단언으로 추가하라."
+    }
+  ],
+  "missing": [
+    "원본 시험 및 뮤턴트 실행 결과: 시험이 임시 파일을 생성하고 지정 범위 밖 파일을 읽으므로 이번 제약 아래 실행하지 않았다.",
+    "실제 macOS·Windows에서 합성 입력과 사용자 입력의 교차, 동작 중 중단, 측정 불가 시 복귀 억제에 대한 통합 검증.",
+    "Windows 측정 프로세스와 GUI 조작 대상이 동일 로그인 세션이라는 실행 근거."
+  ],
+  "revision": "10deb4d1"
+}

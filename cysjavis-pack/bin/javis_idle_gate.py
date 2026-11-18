@@ -6,32 +6,42 @@
 그렇다고 사용자에게 손을 비켜 달라고 하면 자비스를 쓰는 뜻이 사라진다. 그래서 **기계가 기다린다** — 사용자 키보드·마우스가
 정한 초만큼 쉬었을 때만 화면 작업을 하고, 도중에 다시 손을 대면 멈췄다가 이어 한다. 못 기다리면 실패가 아니라 대기열이다.
 
-이 관문이 필요한 것 = 입력을 건드리는 조작만(앱을 앞으로 부르기 · 키 보내기 · 픽셀 클릭 · 창 끌기).
+이 관문이 필요한 것 = 입력을 건드리는 조작만(앱을 앞으로 부르기 · 키 보내기 · 픽셀 클릭 · 창 끌기 · 끝의 원래 앱 복귀).
 셸·파일·설정·한글 파일 도구(hwp·rhwp-edit)·포커스를 안 건드리는 접근성 동작은 관문 없이 한다.
 
 동사(모두 stdout 에 JSON 한 줄 · 사용자에게 묻지 않는다):
   idle                               지금 유휴 초(맥 ioreg HIDIdleTime · 윈 GetLastInputInfo)
   wait --seconds 20 --timeout 90 [--task "<한 줄>"] [--est N]
-                                     유휴 ≥ seconds 를 기다림 → go(exit 0 · 시작 알림 say) / 시간 초과 → 미룸(exit 3 · 대기열)
-  mark                               「방금 내가 한 화면 동작이 끝났다」 기록(다음 check 의 기준점)
-  check [--seconds 20 --timeout 90]  다음 화면 동작 직전 — 마지막 mark 뒤 사용자 입력이 있었으면 멈추고 다시 유휴를 기다린다
-  end [--restore]                    화면 작업 끝(끝 알림 say) · --restore = 시작 때 맨 앞이던 앱으로 되돌림(맥)
-  pending                            미룬 화면 작업 목록
+                                     유휴 ≥ seconds 를 기다림 → go(exit 0 · sid · 시작 알림 say) / 시간 초과 → 미룸(exit 3 · 대기열)
+  mark --sid S                       「방금 내 화면 동작이 끝났다」 기록(다음 check 의 기준점) — 동작 직후 곧바로
+  check --sid S [--timeout 90]       다음 화면 동작 직전 — mark 뒤 입력이 하나라도 있었으면 멈추고 다시 유휴를 기다린다
+  end --sid S [--restore]            화면 작업 끝(끝 알림 say) · --restore = 시작 때 맨 앞이던 앱으로 되돌림(맥 · mark 뒤 입력 0 일 때만)
+  pending                            미룬 화면 작업 목록(자동으로 버리지 않는다)
   done --id <ID>                     미룬 작업 하나를 목록에서 지움
 
-exit: 0 진행 · 2 사용 오류(wait 없이 check 등) · 3 미룸(대기열 · 실패 아님) · 4 이 컴퓨터에서 유휴를 잴 수 없음
+exit: 0 진행 · 2 사용 오류(sid 없음·다름 등) · 3 미룸(대기열 · 실패 아님) · 4 유휴를 잴 수 없음 · 5 다른 화면 작업 진행 중
 
-★결정론: 유휴 판정은 OS 값만 쓴다 — 값을 못 읽으면 「쉬고 있다」로 치지 않는다(fail-closed · 미룸).
-★내 동작과 사용자 입력 구분: 자비스의 키·클릭도 OS 유휴 시계를 0 으로 되돌린다. 그래서 동작 직후 mark 를 찍고, 다음 동작 전
-  check 가 「유휴 초 < mark 뒤 흐른 초」(= mark 뒤에 누군가 입력)를 사용자 입력으로 본다.
+★결정론·보수 판정(codex 1R 반영):
+  · 유휴는 OS 값만 · 못 읽으면 쉬지 않은 것(fail-closed).
+  · 시각 비교는 단조 시계(time.monotonic)로 한다 — 벽시계 조정에 흔들리지 않는다. 세션에 「벽시계−단조」 차를 적어 두고
+    다른 프로세스에서 그 차가 2초 넘게 다르면(재부팅·시계 기준 변경) 그 사이 입력을 모르는 것으로 보고 다시 기다린다.
+  · 「마지막 입력 시각」은 관측한 값 중 가장 늦은 것(최고값)을 세션에 이어 쓴다 — 윈도우 SendInput 이 옛 틱을 넣어 값이
+    뒤로 가도(MS 문서) 이미 본 사용자 입력이 지워지지 않는다. 관측 간격 ≤ 1초.
+  · 자비스 자신의 키·클릭도 OS 유휴 시계를 0 으로 돌릴 수 있다 → 동작 직후 mark, 다음 동작 전 check 가 「mark 뒤 입력 1개라도」를
+    사용자 입력으로 본다(여유 0 · 늦게 반영된 내 입력을 사용자 입력으로 오인하는 쪽 = 멈췄다 다시 기다림 = 안전 쪽).
+    ⚠ 잔여: 내 동작이 끝난 순간 ~ mark 사이의 사용자 입력은 내 입력과 구분하지 못한다 — mark 는 동작 직후 곧바로 부른다.
+  · go 직전 준비(맨 앞 앱 기록 · 알림)가 끝난 뒤 다시 확인한다 — 준비 중 입력이 있으면 go 하지 않고 계속 기다린다.
+  · 화면 작업은 한 번에 하나(세션 sid · 잠금) · 대기열 쓰기는 잠금 안에서.
 ★시험: CYS_IDLE_GATE_FAKE = 가짜 시계 JSON 파일({"now": 초, "inputs": [입력 시각…]}) — 실제 대기 0 · 실제 OS 값 0.
 """
 import argparse
+import contextlib
 import datetime
 import hashlib
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 sys.dont_write_bytecode = True
@@ -47,10 +57,11 @@ for _s in (sys.stdout, sys.stderr):
 DEFAULT_SECONDS = 20          # 선례 hancom-front-needs-idle-gate(10-25) — 키보드·마우스 유휴 20초
 DEFAULT_TIMEOUT = 90          # 마스터 Bash 도구 기본 시간 상한(120초) 안
 MAX_TIMEOUT = 540
-GRACE = 0.5                   # 시계 해상도 여유(초) — mark 직후 같은 순간의 입력은 내 동작으로 본다
-POLL_MIN = 0.5
+POLL_MIN = 0.2
+POLL_MAX = 1.0                # 관측 간격 상한 — 최고값 추적이 입력을 놓치지 않게
+CLOCK_SKEW = 2.0              # 프로세스 사이 「벽시계−단조」 차 허용(초)
+SESSION_TTL = 900             # 이보다 오래된 세션은 버려진 것으로 본다(초 · 단조)
 SUBPROC_TIMEOUT = 5
-MAX_PENDING = 200
 
 
 # ───────────────────────── 시계 · 유휴 원천 ─────────────────────────
@@ -71,9 +82,18 @@ def _fake_save(d):
     os.replace(tmp, p)
 
 
-def now():
+def mono():
+    """비교용 시각(단조)."""
     if _fake_path():
         return float(_fake_load()["now"])
+    return time.monotonic()
+
+
+def wall():
+    """표시·시계 기준 검사용 벽시계."""
+    if _fake_path():
+        d = _fake_load()
+        return float(d["now"]) + float(d.get("wall_skew", 0))
     return time.time()
 
 
@@ -127,6 +147,7 @@ def mac_idle_secs():
 
 def win_idle_secs(user32=None, kernel32=None):
     """윈 — GetLastInputInfo(이 세션 마지막 입력 틱) 와 GetTickCount 의 차(밀리초 · 32비트 감김 보정). 실패 = None.
+    값이 뒤로 가는 경우(SendInput 이 옛 틱을 넣음 · MS 문서)는 호출부의 최고값 추적이 막는다.
     user32·kernel32 는 시험이 가짜를 넣는 자리다."""
     try:
         import ctypes
@@ -153,10 +174,14 @@ def idle_secs():
     """지금 유휴 초 · 못 읽으면 None(= 쉬고 있다고 치지 않는다)."""
     if _fake_path():
         d = _fake_load()
-        t = float(d["now"])
-        past = [float(x) for x in d.get("inputs", []) if float(x) <= t]
         if d.get("broken"):
             return None
+        if d.get("idle_override"):          # 시험: OS 값이 뒤로 가는 경우(윈 SendInput 옛 틱) — 한 번씩 꺼내 쓴다
+            v = float(d["idle_override"].pop(0))
+            _fake_save(d)
+            return v
+        t = float(d["now"])
+        past = [float(x) for x in d.get("inputs", []) if float(x) <= t]
         return t - max(past) if past else t
     plat = platform()
     if plat == "darwin":
@@ -166,10 +191,26 @@ def idle_secs():
     return None
 
 
+def observe(hi=None):
+    """마지막 입력 시각(단조) — 이번 관측과 이전 최고값 중 늦은 것. 못 읽으면 None.
+    순서 = 유휴를 읽은 **뒤** 시각을 잰다(마지막 입력을 늦게 잡는 쪽 = 「입력 있었다」 쪽으로 기운다)."""
+    idle = idle_secs()
+    t = mono()
+    if idle is None:
+        return None
+    last = t - idle
+    return max(last, float(hi)) if hi is not None else last
+
+
 def front_app():
-    """시작 때 맨 앞 앱(되돌리기용 · 맥 = 번들 ID). 묻는 창 0(lsappinfo 는 자동화 허락이 필요 없다). 실패 = None."""
+    """맨 앞 앱(되돌리기용 · 맥 = 번들 ID). 묻는 창 0(lsappinfo 는 자동화 허락이 필요 없다). 실패 = None."""
     if _fake_path():
-        return _fake_load().get("front")
+        d = _fake_load()
+        if d.get("input_on_front"):            # 시험: 준비 도중 사용자 입력
+            d["input_on_front"] = False
+            d.setdefault("inputs", []).append(d["now"])
+            _fake_save(d)
+        return d.get("front")
     if platform() != "darwin":
         return None
     asn = _run(["/usr/bin/lsappinfo", "front"])
@@ -178,6 +219,18 @@ def front_app():
     info = _run(["/usr/bin/lsappinfo", "info", "-only", "bundleid", asn.strip()])
     m = re.search(r'"CFBundleIdentifier"\s*=\s*"([^"]+)"', info or "")
     return m.group(1) if m else None
+
+
+def activate(bundle):
+    """원래 앱으로 되돌리기(맥). 시험에서는 실행하지 않고 기록만."""
+    if _fake_path():
+        d = _fake_load()
+        d["activated"] = bundle
+        _fake_save(d)
+        return True
+    if platform() != "darwin":
+        return False
+    return _run(["/usr/bin/open", "-b", bundle]) is not None
 
 
 def notify(text):
@@ -190,7 +243,7 @@ def notify(text):
     return _run(["/usr/bin/osascript", "-e", 'display notification "%s" with title "cysr"' % s]) is not None
 
 
-# ───────────────────────── 상태(세션 · 대기열) ─────────────────────────
+# ───────────────────────── 상태(세션 · 대기열 · 잠금) ─────────────────────────
 def state_dir():
     return os.environ.get("CYS_IDLE_STATE") or os.path.join(os.path.expanduser("~"), ".cys", "computer-control")
 
@@ -219,6 +272,38 @@ SESSION = "idle-session.json"
 PENDING = "idle-pending.json"
 
 
+@contextlib.contextmanager
+def locked():
+    """세션·대기열 읽고-고쳐-쓰기를 한 번에 한 프로세스만(맥 flock · 윈 msvcrt)."""
+    os.makedirs(state_dir(), exist_ok=True)
+    f = open(_p("idle-gate.lock"), "a+b")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            f.seek(0)
+            while True:
+                try:
+                    msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.1)
+        else:
+            import fcntl
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            if os.name == "nt":
+                import msvcrt
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        finally:
+            f.close()
+
+
 def _iso(t):
     return datetime.datetime.fromtimestamp(t).astimezone().isoformat(timespec="seconds")
 
@@ -227,53 +312,69 @@ def _task_id(task):
     return hashlib.sha256((task or "").strip().encode("utf-8")).hexdigest()[:10]
 
 
-def defer(task, reason):
-    """못 기다린 화면 작업 → 대기열(같은 일은 한 줄) · 세션 정리."""
+def _session_raw():
+    s = _read(_p(SESSION), None)
+    return s if isinstance(s, dict) and "sid" in s and "mark" in s else None
+
+
+def _clock_ok(s):
+    """세션을 쓴 프로세스와 지금의 「벽시계−단조」 차가 같은가(재부팅·시계 기준 변경 검출)."""
+    return abs((wall() - mono()) - float(s.get("offset", 0))) <= CLOCK_SKEW
+
+
+def _active(s):
+    """버려지지 않은 세션인가 — 시계 기준이 같고 단조 기준 TTL 안."""
+    return s is not None and _clock_ok(s) and 0 <= mono() - float(s["mark"]) <= SESSION_TTL
+
+
+def _defer_locked(task, reason):
+    """대기열에 올림(같은 일은 한 줄 · 자동으로 버리지 않는다). 잠금 안에서 부른다."""
     items = _read(_p(PENDING), [])
     if not isinstance(items, list):
         items = []
     tid = _task_id(task)
     if task and not any(isinstance(i, dict) and i.get("id") == tid for i in items):
-        items.append({"id": tid, "task": task[:300], "at": _iso(now()), "reason": reason})
-        _write(_p(PENDING), items[-MAX_PENDING:])
-    try:
-        os.remove(_p(SESSION))
-    except OSError:
-        pass
+        items.append({"id": tid, "task": task[:300], "at": _iso(wall()), "reason": reason})
+        _write(_p(PENDING), items)
     return tid
 
 
-def _clear_pending(task):
-    if not task:
-        return
-    items = _read(_p(PENDING), [])
-    if isinstance(items, list):
-        keep = [i for i in items if not (isinstance(i, dict) and i.get("id") == _task_id(task))]
-        if len(keep) != len(items):
-            _write(_p(PENDING), keep)
+def _drop_session_locked(sid=None):
+    s = _session_raw()
+    if s is not None and (sid is None or s.get("sid") == sid):
+        try:
+            os.remove(_p(SESSION))
+        except OSError:
+            pass
 
 
 # ───────────────────────── 관문 ─────────────────────────
-def wait_idle(seconds, timeout):
-    """유휴 ≥ seconds 까지 기다린다. (go, 마지막 유휴 초, 기다린 초). 못 읽는 값(None)은 쉬지 않은 것으로 본다."""
-    start = now()
+def wait_quiet(seconds, timeout, hi=None):
+    """마지막 입력 뒤 seconds 가 지날 때까지 기다린다. (go, 유휴 초|None, 기다린 초, 마지막 입력 최고값|None).
+    못 읽는 값은 쉬지 않은 것으로 본다 · 관측 간격 ≤ POLL_MAX(최고값 추적)."""
+    start = mono()
+    deadline = start + timeout
     while True:
-        idle = idle_secs()
-        if idle is not None and idle >= seconds:
-            return True, idle, now() - start
-        left = timeout - (now() - start)
-        if left <= 0:
-            return False, idle, now() - start
-        need = (seconds - idle) if idle is not None else 1.0
-        sleep(max(POLL_MIN, min(need, left)))
+        last = observe(hi)
+        if last is not None:
+            hi = last
+        t = mono()
+        if last is not None and t - last >= seconds:
+            return True, t - last, t - start, hi
+        if t >= deadline:
+            return False, (None if last is None else t - last), t - start, hi
+        need = (seconds - (t - last)) if last is not None else POLL_MAX
+        sleep(max(POLL_MIN, min(need, POLL_MAX, deadline - t)))
 
 
-def touched_since_mark(sess):
-    """마지막 mark 뒤 입력이 있었는가 — 유휴 초가 mark 뒤 흐른 초보다 짧으면 그 사이 누군가 입력했다. 못 읽으면 True."""
-    idle = idle_secs()
-    if idle is None:
-        return True, None
-    return idle + GRACE < now() - float(sess["mark"]), idle
+def touched(sess):
+    """mark 뒤 입력이 1개라도 있었는가(여유 0) · 못 읽거나 시계 기준이 바뀌었으면 True(안전 쪽). (touched, 최고값)."""
+    if not _clock_ok(sess):
+        return True, sess.get("hi")
+    last = observe(sess.get("hi"))
+    if last is None:
+        return True, sess.get("hi")
+    return last > float(sess["mark"]), last
 
 
 def out(obj, rc=0):
@@ -286,10 +387,11 @@ DEFER_SAY = ("지금은 컴퓨터를 쓰고 계셔서 화면이 필요한 일은
              "파일로 할 수 있는 일은 먼저 진행합니다.")
 END_SAY = "화면 쓰기를 마쳤습니다(%d초)."
 NO_IDLE_SAY = "이 컴퓨터에서는 키보드·마우스 쉼을 잴 수 없어 화면이 필요한 일은 하지 않고 미뤄 두겠습니다."
+BUSY_SAY = "다른 화면 작업이 진행 중입니다 — 그것이 끝난 뒤 이어 하겠습니다."
 
 
 def _timeout(v):
-    return max(0, min(int(v), MAX_TIMEOUT))
+    return max(0.0, min(float(v), MAX_TIMEOUT))
 
 
 def cmd_idle(a):
@@ -299,91 +401,144 @@ def cmd_idle(a):
     return out({"ok": True, "idle_secs": round(v, 1), "platform": platform()})
 
 
+def _deferred(task, reason, waited, idle=None, sid=None):
+    with locked():
+        tid = _defer_locked(task, reason)
+        if sid is not None:
+            _drop_session_locked(sid)
+    return out({"ok": True, "go": False, "deferred": True, "id": tid, "reason": reason,
+                "idle_secs": None if idle is None else round(idle, 1), "waited_secs": round(waited, 1),
+                "say": NO_IDLE_SAY if reason == "unsupported_platform" else DEFER_SAY}, 3)
+
+
 def cmd_wait(a):
     if platform() not in ("darwin", "win") and not _fake_path():
-        tid = defer(a.task, "unsupported_platform")
-        return out({"ok": True, "go": False, "deferred": True, "id": tid, "reason": "unsupported_platform",
-                    "say": NO_IDLE_SAY}, 3)
-    go, idle, waited = wait_idle(a.seconds, _timeout(a.timeout))
-    if not go:
-        reason = "idle_unknown" if idle is None else "user_active"
-        tid = defer(a.task, reason)
-        return out({"ok": True, "go": False, "deferred": True, "id": tid, "reason": reason,
-                    "idle_secs": None if idle is None else round(idle, 1), "waited_secs": round(waited, 1),
-                    "say": DEFER_SAY}, 3)
-    t = now()
-    sess = {"go_at": t, "mark": t, "seconds": a.seconds, "front": front_app(), "task": a.task or "", "pauses": 0}
-    _write(_p(SESSION), sess)
-    _clear_pending(a.task)
+        return _deferred(a.task, "unsupported_platform", 0.0)
+    with locked():
+        if _active(_session_raw()):
+            return out({"ok": False, "reason": "busy", "say": BUSY_SAY}, 5)
+    timeout = _timeout(a.timeout)
+    start = mono()
     say = START_SAY % max(1, int(a.est))
-    return out({"ok": True, "go": True, "idle_secs": round(idle, 1), "waited_secs": round(waited, 1),
-                "front_app": sess["front"], "notified": notify(say), "say": say})
+    notified = None
+    front = None
+    hi = None
+    while True:
+        go, idle, _w, hi = wait_quiet(a.seconds, max(0.0, timeout - (mono() - start)), hi)
+        if not go:
+            return _deferred(a.task, "idle_unknown" if idle is None else "user_active", mono() - start, idle)
+        front = front_app()                     # 준비(맨 앞 앱 기록 · 알림)는 go 판정 뒤 — 끝나고 다시 확인한다
+        if notified is None:
+            notified = notify(say)
+        last = observe(hi)
+        if last is not None and mono() - last >= a.seconds:     # 준비가 끝난 뒤 다시 확인(쉼 조건 그대로)
+            hi = last
+            break
+        hi = last if last is not None else hi   # 준비 중 입력(또는 못 읽음) → go 하지 않고 계속 기다린다
+    t = mono()
+    sid = secrets.token_hex(4)
+    with locked():
+        if _active(_session_raw()):
+            return out({"ok": False, "reason": "busy", "say": BUSY_SAY}, 5)
+        _write(_p(SESSION), {"sid": sid, "go_at": t, "mark": t, "hi": hi, "offset": wall() - mono(),
+                             "seconds": a.seconds, "front": front, "task": a.task or "", "pauses": 0})
+        if a.task:
+            items = _read(_p(PENDING), [])
+            if isinstance(items, list):
+                keep = [i for i in items if not (isinstance(i, dict) and i.get("id") == _task_id(a.task))]
+                if len(keep) != len(items):
+                    _write(_p(PENDING), keep)
+    return out({"ok": True, "go": True, "sid": sid, "idle_secs": round(t - hi, 1) if hi is not None else None,
+                "waited_secs": round(t - start, 1), "front_app": front, "notified": bool(notified), "say": say})
 
 
-def _session():
-    s = _read(_p(SESSION), None)
-    return s if isinstance(s, dict) and "mark" in s else None
+def _owned(a):
+    s = _session_raw()
+    if s is None:
+        return None, out({"ok": False, "reason": "no_session", "say": "먼저 wait 로 관문을 통과해야 합니다."}, 2)
+    if s.get("sid") != a.sid:
+        return None, out({"ok": False, "reason": "not_owner", "say": "이 화면 작업의 세션이 아닙니다."}, 2)
+    return s, None
 
 
 def cmd_mark(a):
-    s = _session()
-    if s is None:
-        return out({"ok": False, "reason": "no_session", "say": "먼저 wait 로 관문을 통과해야 합니다."}, 2)
-    s["mark"] = now()
-    _write(_p(SESSION), s)
+    with locked():
+        s, err = _owned(a)
+        if err is not None:
+            return err
+        s["mark"] = mono()
+        _write(_p(SESSION), s)
     return out({"ok": True})
 
 
 def cmd_check(a):
-    s = _session()
-    if s is None:
-        return out({"ok": False, "reason": "no_session", "say": "먼저 wait 로 관문을 통과해야 합니다."}, 2)
-    touched, idle = touched_since_mark(s)
-    if not touched:
-        return out({"ok": True, "go": True, "touched": False, "idle_secs": round(idle, 1)})
-    seconds = a.seconds if a.seconds is not None else int(s.get("seconds", DEFAULT_SECONDS))
-    go, idle2, waited = wait_idle(seconds, _timeout(a.timeout))
+    with locked():
+        s, err = _owned(a)
+        if err is not None:
+            return err
+    hit, hi = touched(s)
+    if not hit:
+        with locked():
+            s2, err = _owned(a)
+            if err is not None:
+                return err
+            s2["hi"] = hi
+            _write(_p(SESSION), s2)
+        return out({"ok": True, "go": True, "touched": False})
+    seconds = a.seconds if a.seconds is not None else float(s.get("seconds", DEFAULT_SECONDS))
+    go, idle, waited, hi = wait_quiet(seconds, _timeout(a.timeout), hi)
     if not go:
-        reason = "idle_unknown" if idle2 is None else "user_active"
-        tid = defer(s.get("task") or "", reason)
-        return out({"ok": True, "go": False, "touched": True, "deferred": True, "id": tid, "reason": reason,
-                    "waited_secs": round(waited, 1), "say": DEFER_SAY}, 3)
-    s["mark"] = now()
-    s["pauses"] = int(s.get("pauses", 0)) + 1
-    _write(_p(SESSION), s)
+        return _deferred(s.get("task") or "", "idle_unknown" if idle is None else "user_active", waited, idle, sid=a.sid)
+    with locked():
+        s2, err = _owned(a)
+        if err is not None:
+            return err
+        t = mono()
+        s2.update(mark=t, hi=hi, offset=wall() - t, pauses=int(s2.get("pauses", 0)) + 1)   # 재개 = 새 기준점
+        _write(_p(SESSION), s2)
     return out({"ok": True, "go": True, "touched": True, "resumed": True, "paused_secs": round(waited, 1)})
 
 
 def cmd_end(a):
-    s = _session()
-    if s is None:
-        return out({"ok": True, "ended": False, "reason": "no_session"})
-    used = int(round(now() - float(s["go_at"])))
-    restored = None
-    if a.restore and s.get("front") and platform() == "darwin" and not _fake_path():
-        restored = front_app() == s["front"] or _run(["/usr/bin/open", "-b", s["front"]]) is not None
-    try:
-        os.remove(_p(SESSION))
-    except OSError:
-        pass
-    say = END_SAY % used
+    with locked():
+        s, err = _owned(a)
+        if err is not None:
+            return err
+    restored, why = None, None
+    if a.restore:
+        hit, _hi = touched(s)
+        if not s.get("front"):
+            restored, why = False, "no_front"
+        elif hit:
+            restored, why = False, "user_active"      # 복귀도 입력 조작 — 사용자가 손을 댔으면 끌어오지 않는다
+        elif front_app() == s["front"]:
+            restored, why = True, "same_app"
+        else:
+            restored = activate(s["front"])
+            why = "activated" if restored else "activate_failed"
+    used = int(round(mono() - float(s["go_at"]))) if _clock_ok(s) else None
+    with locked():
+        _drop_session_locked(a.sid)
+    say = END_SAY % (used or 0)
     return out({"ok": True, "ended": True, "used_secs": used, "pauses": int(s.get("pauses", 0)),
-                "restored": restored, "notified": notify(say), "say": say})
+                "restored": restored, "restore_reason": why, "notified": notify(say), "say": say})
 
 
 def cmd_pending(a):
-    items = _read(_p(PENDING), [])
+    with locked():
+        items = _read(_p(PENDING), [])
     items = items if isinstance(items, list) else []
     return out({"ok": True, "count": len(items), "items": items})
 
 
 def cmd_done(a):
-    items = _read(_p(PENDING), [])
-    items = items if isinstance(items, list) else []
-    keep = [i for i in items if not (isinstance(i, dict) and i.get("id") == a.id)]
-    if len(keep) == len(items):
-        return out({"ok": False, "reason": "not_found"}, 4)
-    _write(_p(PENDING), keep)
+    with locked():
+        items = _read(_p(PENDING), [])
+        items = items if isinstance(items, list) else []
+        keep = [i for i in items if not (isinstance(i, dict) and i.get("id") == a.id)]
+        if len(keep) == len(items):
+            return out({"ok": False, "reason": "not_found"}, 4)
+        _write(_p(PENDING), keep)
     return out({"ok": True, "removed": a.id})
 
 
@@ -396,11 +551,14 @@ def main(argv=None):
     w.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
     w.add_argument("--task", default="")
     w.add_argument("--est", type=float, default=10)
-    sp.add_parser("mark")
+    m = sp.add_parser("mark")
+    m.add_argument("--sid", required=True)
     c = sp.add_parser("check")
+    c.add_argument("--sid", required=True)
     c.add_argument("--seconds", type=float, default=None)
     c.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
     e = sp.add_parser("end")
+    e.add_argument("--sid", required=True)
     e.add_argument("--restore", action="store_true")
     sp.add_parser("pending")
     d = sp.add_parser("done")

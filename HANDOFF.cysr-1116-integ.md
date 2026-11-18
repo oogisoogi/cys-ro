@@ -238,3 +238,60 @@
 - 저장소 안: `docs/integ-1116/codex-r1-prompt.md` · `codex-r1.json`
 - 측정 작업트리 `~/axdev/.wt/cys-1116-integ-race`(미커밋 측정 시험 2개 · 지울 때 `git worktree remove --force`) · codex 사본 작업트리 = 스크래치 `cx/`
 - 기준선 작업트리 `~/axdev/.wt/cys-1116-base-1118`(detached 3a095c4e · 이번에 `ui/node_modules`·`ui/dist` 생김 = git 무시 대상)
+
+---
+
+## 8. 델타 — master 판정 후속 4건(master#eff65cb2 · 2026-11-18 09:20~ · surface:2171)
+
+- master msv 973459e2 = 통과(bins 미빌드로 났던 seatkeep/seat_proc 붉음은 빌드 뒤 0). §6 처분 = I1 master TODO · V8·S3-11·S1-11 지금 · V1 결정 메모.
+
+### 8-1. 커밋(973459e2 위)
+
+| 커밋 | 무엇 |
+|---|---|
+| bb0a73e0 | ③ S3-11 — 조각 3 codex 2R 고침(43b44ea4) 이종 1R 의 REVISE major 고침: 시작점 조회 **거절** = none(예전처럼 보냄) · 시간 초과·세대 밀림만 stale |
+| eca3b956 | ④ S1-11 — 사람 표지여도 `refuse_on_approval` 요청은 빈 셸 좌석에 쓰지 않음(no_agent · 큐 0) |
+| e3cffabc | ② V8 — `docs/RELEASE-ROLLBACK.md` §2-b 에 1-b(1.1.16 → 1.1.15 되돌림 전 레인 저널 확인 · 명령) |
+| (이 절) | HANDOFF 델타 · TODO |
+
+### 8-2. ③ S3-11 — 조각 3 codex 2R 고침분 이종 검토
+
+| 회 | 대상 | 판정 | 처분 |
+|---|---|---|---|
+| 1R | 43b44ea4(동률 짝 안 함 · 감싼 꼴 속 글 비교 · 시작점 상한+세대·stale) | **REVISE** · major 1 — 2R 지적 ①②③ 은 닫힘 · 새 결함: `bounded()` 가 `chat_transcript` 거절도 TIMED_OUT 으로 합쳐 initOffset 이 stale → 기록 조회만 계속 실패하고 보내기는 되는 좌석에서 말이 status_timeout 붙잡음에 굳음 | bb0a73e0: `invoke(…).catch(() => null)` 을 bounded 안에 — 거절 = null → 세대 같으면 none(보냄) · 다르면 stale. 시험 1(slice3fix 「시작점 조회가 거절되면 … 쓰기 1」) · 고침 되돌리면 그 시험 붉음(34/1) 확인 · views 287/0 · tsc 0 |
+| 2R | bb0a73e0 | **ACCEPT** · issues 0 — 「1R major 닫힘 · 거절은 bounded 앞에서 null 로 정상화돼 같은 세대면 none · 세대 검사가 offset 갱신보다 먼저라 늦은 거절은 stale(새 offset 을 덮지 않음) · 실제 시간 초과는 계속 stale·쓰기 0 · 2R ①②③ 유지」 | 원문 `docs/integ-1116/codex-s3-r2.json` |
+
+원문 = `docs/integ-1116/codex-s3-r1.json` · 사본 `~/.cys/pack/round/_reviews/cysr-1116-integ-1118-s3-r1-codex.json`.
+
+### 8-3. ④ S1-11 — 빈 셸 가드(사람 표지 + refuse_on_approval)
+
+- 자리: `src/bin/cysd/handlers.rs` `surface.send_text` — 기존 빈 셸 가드(`!human && agent_seat_vacant_now`) 바로 앞에 갈래 1개: `human ∧ params.refuse_on_approval ∧ agent_seat_vacant_now(좌석)` → `no_agent` 오류 · **타이핑 0 · 큐 0**. 큐 코드(`hold_for_vacant_seat`·governance)·승인 판정·원자 제출 writer 무접촉 → 【결정필요】 아님으로 판단(변경 = 조건 1개 + 오류 응답).
+- 큐에 넣지 않는 이유: 사람 말은 화면이 붙잡고 사람이 다시 보낸다 — 큐에 두면 뒤에 뜬 에이전트에게 저절로 배달돼 두 번 갈 수 있다.
+- 옵션 없는 사람 입력(터미널에서 직접 치는 길)은 종전 그대로(빈 셸에 사람이 치는 것은 정상) — 시험의 대조 갈래.
+- 시험 `handlers::tests::integ1116_human_refuse_send_not_typed_into_bare_shell`(유닉스 · X-4 시험과 같은 `exec /bin/sh -i` 좌석 · 메타 claude): 사람 표지 + clear_first + refuse_on_approval = `no_agent` · PTY 쓰기 0 · 큐 0 / 옵션 없는 사람 입력 = `sent:true`. **고친 뒤 1/0 · 가드 끈 뮤턴트(`if false && human …`) = 붉음**(응답 `{"ok":true,"result":{"sent":true}}` = 고치기 전 동작 그대로 재현) · 원복 확인(diff = 추가분만).
+- 한계·📌: ⑴ 앱(viewcore `PRE_WRITE_REFUSALS`)은 `no_agent` 를 목록 밖 = 「확인 중」(다시 보내기 0)으로 본다 — 안전한 쪽. 사람 표지 + refuse 길에선 이제 바이트 0·큐 0 이 보장되므로 그 목록에 `no_agent` 를 넣으면 「못 보냄 + 다시 보내기」로 정확해진다(화면 1줄 · 이번 범위 밖). ⑵ 판정은 기존 가드와 같은 `agent_seat_vacant_now`(프로세스 표 1회 갱신) — 사람 표지 + refuse 요청마다 1회 비용 추가. ⑶ 「문턱 판정 ~ 이 가드」 사이에 죽는 틈은 남음(가드 ~ 쓰기 사이 ms 단위).
+
+### 8-4. ② V8
+
+`docs/RELEASE-ROLLBACK.md` §2-b 「1-b」: `ls -d ~/.cys/.pack-journal.d/*/active 2>/dev/null`(윈 `%USERPROFILE%\.cys\.pack-journal.d\*\active` · `CYS_PACK_DIR` 기기 = 팩 폴더 부모) 가 비어야 내림 · 나오면 1.1.16 데몬을 한 번 다시 켜 기동 복구 → `cys doctor` pack-state 줄 확인 · `kept/` 는 지우지 않음. 근거 = 1.1.15 는 레인 저널(`src/pack.rs` `PACK_JOURNAL_ROOT = ".pack-journal.d"` · 경로 `home_default_pack_dir` = `~/.cys/pack` 의 부모)을 모름(vendor HANDOFF §10-4 F7 ④).
+
+### 8-5. ⑤ V1 — 결정 메모(master 가 정함)
+
+- 무엇: 1.1.15(11-21) ~ 1.1.16 사이, 부서 있는 기기의 「팩 단독 자동 업데이트」를 멈출지(근거 `~/axdev/workers/cysr-vendor-0151-judge-1117/JUDGE-v0.14.54-v0.15.1.md` §6 결정 1 · 저널 결함 = 1.1.15 에 그대로 · 고침 = 이 가지 vendor 묶음).
+- 사실: 팩 단독 업데이트는 `pack-v*` 태그 → `pack-release.yml` 레인으로만 나간다(`docs/RELEASE-ROLLBACK.md:50` · 승인 게이트 없음) · 기기 쪽은 `src/update/realops.rs` 팩 경로 · 이 저장소 마지막 `pack-v*` = pack-v0.12.92(47855532 · 2026-07-18 — 4달 쓰지 않은 레인).
+- 권고 = A(멈춤)를 **코드 0 · 발행 쪽 운영 게이트**로: 11-21 ~ 1.1.16 발행 전까지 `pack-v*` 태그를 만들지 않는다(1.1.15 동결판·기기 무접촉 · 1.1.16 이 12-05 전이라 창 ≈2주).
+- 단점 1줄: 그 사이 팩 수정은 프로그램 업데이트(1.1.16)로만 나간다 — 급한 팩 수정이 생기면 1.1.16 을 앞당기거나 그 1건만 위험을 받아들여야 한다.
+
+### 8-6. 시험(e3cffabc · 같은 격리 틀 · cargo 1건씩)
+
+| 대상 | 직전(26a41fe1/973459e2) | 이번 |
+|---|---|---|
+| lib | 1256 · 0 · 3 | **1256 · 0 · 3** |
+| bin cysd | 3305 · 1(흔들림 · 단독 초록) · 17 | **3307 · 0 · 17**(+1 = S1-11 시험 · 앞 흔들림 1건 초록) |
+| `bun test ./src/views` · tsc | 286/0 · 0 | **287 / 0 · 0**(+1 = S3-11 시험) |
+| chat_gate · confirm_gate · tickrec OFF(새 번들) | 59 · 37 · 308dd2b91f9a | **PASS 59 · PASS 37 · PASS 308dd2b91f9a** |
+| secret-scan --all | clean 2162 | **clean**(커밋 뒤 다시 잼) |
+| codex | — | S3-11 1R REVISE → 고침 → 2R ACCEPT |
+
+- 돌리지 않은 것: cys·seatkeep·tests/*.rs·팩 파이썬·health·나머지 화면 게이트 — 이번 변경 = `handlers.rs`(cysd) · `views/core.ts`+시험 · 문서뿐이라 그 대상의 입력이 안 바뀜(직전 전체 실행 값 그대로).
+- CTX 실측 43.7%(jsonl 라이브 · 09:21).

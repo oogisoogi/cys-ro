@@ -2,7 +2,7 @@
 
 - 좌석 = worker-piece1 · surface:2240 · 가지 `feat/piece1-recover-1118` ← integ/1116(`b29cbdd89`)
 - 브리프 = master#68a90f34 · 범위 결정 = master#9f7c835b(A: 핀 유지는 범위 밖)
-- 구현 커밋 = `c03bccb80` · 1회 고침(master#267c6b97) = `59d755d9d` · `--resume-saved`(master#fbfe2389) = `94aeb1a4f` · codex 1R 고침(master#91f7d69b) = `fee25fbae` · codex 2R 고침(master#556f6d21 · 후임 좌석 surface:2245) = `153629ec9`
+- 구현 커밋 = `c03bccb80` · 1회 고침(master#267c6b97) = `59d755d9d` · `--resume-saved`(master#fbfe2389) = `94aeb1a4f` · codex 1R 고침(master#91f7d69b) = `fee25fbae` · codex 2R 고침(master#556f6d21 · 후임 좌석 surface:2245) = `153629ec9` · 독립 검증 지적 고침(master#e414b44b · 후임 좌석 surface:2248) = `7c3994a7f` `e518c01e1` `a9cbd0189`
 - 설계 판정 BLOCK 은 그대로다. 이 커밋은 그것을 풀지 않는다. 병합 조건 = X 실측 · 독립 검증 좌석 · 구현 diff codex 1R.
 
 ## 바뀐 것
@@ -108,6 +108,56 @@ codex = BLOCK(`~/axdev/master/reports/verify/piece1-recover-1118/codex-r2.verdic
 - 전체 수: cys 781(+6) · cysd 3340(교체 1건이라 그대로).
 - 뮤턴트 17개 전부 붉음(Rust 10 · 빌드 5벌 · 팩 7). 붉어진 시험 이름과 사유를 대조했다. 누적 61개.
 - 보호 계수: 시작 syspolicyd 26 · fake 162 → 끝 24 · 147(늘지 않음).
+
+## 독립 검증 지적 고침(`7c3994a7f` · `e518c01e1` · `a9cbd0189` · master#e414b44b)
+
+VERIFY = `~/axdev/master/reports/verify/piece1-recover-1118/VERIFY.md`. B1·R1·R2·R3 을 고쳤다. R4·O2·O3·O4 는 범위 밖이라 그대로다.
+
+| 항목 | 바뀐 것 |
+|---|---|
+| B1 데몬 | `Daemon::released_roles`(역할 → 거둔 좌석 · 메모리 전용). 회수 때 기록하고, `roles` 에 넣는 세 곳(claim · 재결합 · 좌석 생성)이 `note_role_held` 로 지운다. `surface.list` 의 `released_role` 로 내준다 |
+| B1 되돌리기 | 새 RPC `role.restore_released {surface_id, role, session_id}`. 좌석이 같은 대화를 들고 있고, 묘비가 아니고, 표시가 그 좌석일 때만 역할을 돌려준다. 사망 시각을 지우고 저장한다. 역할을 쥔 읽기 전용 좌석은 거절 |
+| B1 node-recover | `--surface`·`--role` 모두 거둔 역할로 핀을 판정한다. 이을 때만 C-u 전에 역할을 되돌린다. 핀 없음·묘비는 지금처럼 새 대화이고 역할을 되돌리지 않는다 |
+| B1 boot | 거둔 좌석에 핀이 걸려 있으면 복구 경로. 좌석이 없으면 `--resume-saved` 판정. 93 이면 outcome `resume_held`(새 좌석 0 · 치명 아님 · boot rc 0 · bootstrap 표 = withhold) |
+| R1 | `--resume-saved`·`resume-check --agent` = `launch_pin_verdict`(node-recover 와 같은 `recover_pin_verdict`). 저장 폴더가 있으면 거기서 잇는다. 세션 파일이 지워진 핀만 새 대화 |
+| R2 | 역할 이름을 받았으면 핀 유무를 알기 전 실패는 rc 93. 좌석도 핀도 없을 때만 rc 1 |
+| R3 | `resume-check` 는 자동 기동 금지 목록에 있다(`command_never_autostarts`) |
+
+입구별 rc:
+
+| 입구 | 상태 | 결과 |
+|---|---|---|
+| `node-recover --surface` · 거둔 좌석 | 이을 수 있는 핀 | 0 · `--resume` · 역할 되찾음 |
+| 같음 | 못 잇는 핀 · 저장 목록 모름 · 역할 되돌리기 거절 | 93 · 입력 0 |
+| 같음 | 핀 없음 · 묘비 | 0 · 새 대화 · 역할 없음(지금과 같음) |
+| `node-recover --role` | 역할 좌석 없음 · 거둔 좌석 있음 | 위와 같음 |
+| 같음 | 좌석 없음 · 핀 있음 또는 모름 | 93 |
+| 같음 | 좌석 없음 · 핀 없음 | 1(지금과 같음) |
+| 같음 | `resolve_role`·`surface.list` RPC 실패 | 93 |
+| `node-recover --surface` · 역할 이름 없음 | `surface.list` 실패 | 1(지금과 같음) |
+| `cys boot` | 거둔 좌석 + 핀 | `recovered` · 새 좌석 0 |
+| 같음 | 거둔 좌석 없음 + 이을 수 있는 핀 | `launched` · `--resume` · 저장 폴더 |
+| 같음 | 못 잇는 핀 · 저장 목록 모름 | `resume_held` · 새 좌석 0 · boot rc 0 |
+| 같음 | 핀 없음 · 묘비 · 첫 설치 | `launched` · 새 대화(지금과 같음) |
+| `--resume-saved` | 이을 수 있음 | 0 · 저장 폴더에서 잇는다 |
+| 같음 | 다른 agent · 저장 폴더 소실 · 프로필 불신 · 다른 좌석 사용 중 | 93(프로필 불신은 전에 rc 2) |
+| 같음 | 세션 파일 삭제 · 핀 없음 | 0 · 새 대화 |
+| `resume-check --agent` | `--resume-saved` 와 같은 판정 | 0 또는 93 |
+| `resume-check`(`--agent` 없음) | 저장 목록만 본다 | 0 또는 93 |
+| `resume-check` · 데몬 없음 | 자동 기동 없음 | 93 |
+
+시험·뮤턴트:
+- 먼저 붉음 = cys 14건 · cysd 6건(의도한 사유 대조).
+- 고친 뒤: cysd 66 통과 · cys 117 통과(영향 범위 필터) · 팩 10파일 rc 0. 전체 수 cys 781 → 796(+16 · `v115r5_saved_resume_pin_table` 삭제 −1) · cysd 3340 → 3348.
+- 뮤턴트 43개: 42개 붉음(cysd 20 · cys 21 · 팩 1). 살아남은 cysd 1개(회수 때의 중복 정리)는 코드를 지웠다. cys C19 는 처음에 살아남아 시험을 보강한 뒤 붉음을 확인했다.
+- `run_bootstrap_health.py` 는 400초 안에 끝나지 않아 **결과가 없다**.
+
+확인 결과:
+- seatkeep: 지금은 `--controller-bound` 라 데몬이 끝나면 좌석도 끝나고 입양이 없다. 거둔 역할은 메모리에만 있어 재시작을 넘을 일이 없다. **T4(입양)를 켜면** 좌석은 살고 표시는 사라져 B1 이 되살아난다(조건표 후보). 코드 읽기까지다.
+- `role.reclaim_auto`: 복구된 좌석 자신이 부르면 역할·핀이 그대로다(시험). 다른 역할 없는 좌석은 복구 좌석의 `seat` 가 아직 `empty` 인 동안(다음 watchdog 틱까지 · 계정·폴더가 같고 비특권 역할일 때) 역할을 가져갈 수 있고, 그 좌석의 세션이 저장되면 핀이 덮인다. 사망 후 60초 안의 좌석과 같은 창이다. 고치지 않았다(조건표 후보 · 코드 읽기).
+- 역할로 좌석을 찾는 다른 입구: `cycle-agent`·`reinject --role` 은 복구가 아니라 지금처럼 실패한다. `javis_boot_node` 는 `--resume-saved` 로 간다. watchdog 자동 재기동은 `node-recover --surface` 라 이번 수리를 받는다. phoenix `spawn_fresh_production` 은 핀 없는 `launch-agent`(독약 대체 경로)로 범위 밖이다.
+
+X: `xprobe_impl.py` 에 `r0-late`·`boot-late` 추가. 문법 컴파일만 했고 **실행하지 않았다**. 직전 sha256 앞 16자 `6da957a895d21109` → `117eb32d62e15fe8` · diff = `piece1/x/xprobe_impl.delta-late.diff`.
 
 ## X 상태
 

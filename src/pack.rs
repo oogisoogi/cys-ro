@@ -13717,12 +13717,12 @@ mod tests {
     #[test]
     fn chrome_onboarding_backfills_anything_but_real_true() {
         for (tag, val) in [
-            ("ob-false", "false"),
-            ("ob-null", "null"),
-            ("ob-zero", "0"),
-            ("ob-empty", "\"\""),
-            ("ob-one", "1"),
-            ("ob-text", "\"yes\""),
+            ("not-true-false", "false"),
+            ("not-true-null", "null"),
+            ("not-true-zero", "0"),
+            ("not-true-empty", "\"\""),
+            ("not-true-one", "1"),
+            ("not-true-text", "\"yes\""),
         ] {
             let body = format!(r#"{{"{CHROME_DEFAULT_KEY}":true,"{CHROME_ONBOARDING_KEY}":{val}}}"#);
             let (td, cfg) = chrome_seeded_device(tag, Some(&body));

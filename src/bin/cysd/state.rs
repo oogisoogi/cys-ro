@@ -2586,6 +2586,9 @@ pub struct Surface {
     /// 자가 업데이트류 「잠깐 죽음」을 role 회수로 오판하지 않으려면 이 시각과 유예가 필요하다
     /// (죽음 관측 1회 = 회수 근거가 아니다).
     pub agent_dead_since: Mutex<Option<f64>>,
+    /// ★조각 1: `role.restore_released` 로 역할을 되돌린 때. 재결합 판정이 이 시각부터 나이를 다시 잰다 —
+    /// 재개가 뜨는 동안 빈 좌석으로 보여 다른 좌석이 역할을 가져가지 못하게 한다.
+    pub role_restored_at: Mutex<Option<std::time::Instant>>,
     /// T4-17 헬스 조치: 이 시각까지 queued 배달 일시정지 (직접 send는 통과)
     pub queue_paused_until: Mutex<Option<Instant>>,
     /// ★(0.14.31 · WP-5 M) **만료 큐** — TTL 을 넘긴 항목의 보존소. 활성 큐(`pending_queue`)와
@@ -4825,6 +4828,9 @@ pub struct Daemon {
     pub ledger: Mutex<HashMap<u32, LedgerEntry>>,
     /// 역할 레지스트리: role → surface_id (launch-agent가 등록, --to <role> 주소 해석에 사용)
     pub roles: Mutex<HashMap<String, u64>>,
+    /// ★조각 1: 에이전트 사망 유예로 거둔 역할 → 거둔 좌석(역할당 한 좌석 · 메모리 전용 · 리프 락).
+    /// 그 역할이나 그 좌석이 다시 역할을 쥐는 순간 [`Daemon::note_role_held`] 가 지운다.
+    pub released_roles: Mutex<HashMap<String, u64>>,
     /// ★불사의 예외(W2a): 의도적으로 닫힌(surface.close 경유) 역할의 묘비 집합.
     /// close_surface가 role 보유 surface를 닫을 때 추가하고, 역할이 명시적으로 재기동
     /// (launch-agent/claim_role로 role 등록)되면 제거한다("살아있는 역할=묘비 아님" 불변식).
@@ -4850,6 +4856,13 @@ pub struct Daemon {
     /// 잡는다(락 순서: topology_write → surfaces → 좌석 필드). 다른 곳에서 잡지 않는다.
     /// static 이 아니라 데몬 필드인 이유: 운영 데몬은 하나라 전역과 같고, 검체의 격리 데몬끼리는 줄 세우지 않는다.
     pub topology_write: Mutex<()>,
+    /// ★조각 1: topology.json 을 읽지 못해 저장을 건너뛴 변경이 남아 있다. 저장이 성공하면 내려간다.
+    /// watchdog 틱과 정상 종료 직전이 이 값을 보고 다시 저장한다(`persist_topology_if_dirty`).
+    pub topology_dirty: AtomicBool,
+    /// ★조각 1: `Some` = 시작 때 topology.json 을 읽지 못해 디스크 묘비를 아직 모른다. 안의 집합은 그동안 메모리에서
+    /// 해제한 역할이다 — 읽히게 된 첫 저장이 (디스크 − 이 집합) 을 메모리에 합치고 `None` 으로 내린다.
+    /// 락 순서: `tombstones` → 이 락(해제 기록과 합치기가 어긋나지 않게 둘을 함께 쥔다).
+    pub tombstones_unread: Mutex<Option<std::collections::HashSet<String>>>,
     /// 적대검증 벡터-9 방어심화: master role이 현재 보유 surface로 (재)claim된 epoch초.
     /// master surface가 죽는 윈도우에 다른 노드가 claim_role("master")로 합법 승계 → 즉시
     /// approval.sign으로 위험명령을 정당 서명할 수 있다. 이 값으로 갓 승계한 master의 서명을
@@ -6751,6 +6764,20 @@ fn wal_write_verdict(
 }
 
 impl Daemon {
+    /// 역할 묘비 해제의 단일 입구. 디스크 묘비를 아직 못 읽은 동안에는 해제 의도를 남겨, 나중에 합칠 때 되살아나지 않게 한다.
+    /// ★조각 1: `role` 을 `sid` 가 쥐었다 — 그 역할의 거둔 표시와 그 좌석의 옛 거둔 표시는 무효다. `roles` 에 넣는 모든 곳이 부른다.
+    pub fn note_role_held(&self, role: &str, sid: u64) {
+        self.released_roles.lock().unwrap().retain(|r, s| r != role && *s != sid);
+    }
+
+    pub fn remove_tombstone(&self, role: &str) {
+        let mut tombstones = self.tombstones.lock().unwrap();
+        tombstones.remove(role);
+        if let Some(removed) = self.tombstones_unread.lock().unwrap().as_mut() {
+            removed.insert(role.to_string());
+        }
+    }
+
     pub fn new(socket_path: PathBuf) -> Arc<Self> {
         let dir = state_dir(&socket_path);
         let _ = std::fs::create_dir_all(&dir);
@@ -7004,6 +7031,9 @@ impl Daemon {
         //   전용 동기 연결로(설계 §3-2 부팅 행). 경보는 이벤트 버스가 생긴 뒤(아래) 발행한다.
         let numbers_boot_at = now_epoch();
         let numbers_boot = crate::recall::surface_numbers_boot(&socket_path, numbers_boot_at);
+        // ★조각 1: 묘비·rev·직전 영속본·「못 읽었는가」는 **같은 한 번의 읽기**에서 나온다(갈리면 rev 가 뒤로 간다).
+        let start_tombstones = crate::governance::load_start_tombstones(&socket_path);
+        let isolated_topology = start_tombstones.isolated.clone();
         let daemon = Arc::new(Daemon {
             receipt_registry: Arc::new(crate::rpc_receipt::ReceiptRegistry::default()),
             surfaces: Mutex::new(HashMap::new()),
@@ -7039,22 +7069,18 @@ impl Daemon {
             create_caller: Mutex::new(HashMap::new()),
             ledger: Mutex::new(HashMap::new()),
             roles: Mutex::new(HashMap::new()),
+            released_roles: Mutex::new(HashMap::new()),
             // ★W2a 콜드부트 생존: topology.json에 영속된 묘비를 기동 시 로드(구 topology=빈 집합).
-            tombstones: Mutex::new(crate::governance::load_tombstones_from_disk(&socket_path)),
+            tombstones: Mutex::new(start_tombstones.tombstones),
+            tombstones_unread: Mutex::new(start_tombstones.unreadable.then(std::collections::HashSet::new)),
             dept_tombstones: Mutex::new(crate::governance::load_dept_tombstones_from_disk(
                 &socket_path,
             )),
             // ★W2/A-S1: rev 를 disk topology 에서 시드(재시작 넘어 단조성 유지)·직전 영속본=시드 묘비.
-            tombstones_rev: std::sync::atomic::AtomicU64::new(
-                crate::governance::load_tombstones_rev_from_disk(&socket_path),
-            ),
-            last_persisted_tombstones: Mutex::new({
-                let mut v: Vec<String> =
-                    crate::governance::load_tombstones_from_disk(&socket_path).into_iter().collect();
-                v.sort();
-                v
-            }),
+            tombstones_rev: std::sync::atomic::AtomicU64::new(start_tombstones.rev),
+            last_persisted_tombstones: Mutex::new(start_tombstones.last_persisted),
             topology_write: Mutex::new(()),
+            topology_dirty: AtomicBool::new(false),
             // 벡터-9 방어심화: 기동 시 master 미승계 → None (첫 claim_role("master")에서 기록).
             master_claimed_at: Mutex::new(None),
             feed_items: Mutex::new(restored),
@@ -7112,6 +7138,15 @@ impl Daemon {
             // ★(0.14.31 · WP-3 B) enabled 는 alert_route::spawn 이 실제로 태스크를 열 때만 true.
             alert_route: Mutex::new(Default::default()),
         });
+        // ★조각 1: 시작 때 손상본을 옮겼으면 사람에게 알린다(저장 핀도 함께 빠졌을 수 있다).
+        if let Some(name) = isolated_topology {
+            daemon.push_feed_notification(
+                "error",
+                "좌석 기록 손상",
+                &format!("저장된 좌석 기록이 손상되어 따로 보관했다. 이전 대화를 자동으로 잇지 못할 수 있다 ({name})"),
+                None,
+            );
+        }
         // 재시작에도 오늘 소비/비용/모델믹스/스파크라인 보존 — 최근 12h usage_records 리플레이.
         crate::analytics::seed_consumption(&daemon);
         // ★v116-num: 부팅 경보(seed_failed · 고아 UPDATE 실패 write_io) — 버스가 선 뒤 · 종류별 1회.
@@ -8278,6 +8313,7 @@ impl Daemon {
             line_count: AtomicU64::new(0),
             last_line_at: Mutex::new(None),
             agent_dead_since: Mutex::new(None),
+            role_restored_at: Mutex::new(None),
             queue_paused_until: Mutex::new(None),
             // ★(0.14.31 · WP-5) 만료 큐·배달 간격 시계·stale 입력 관측 — 전부 빈 채로 출발.
             expired_queue: Mutex::new(std::collections::VecDeque::new()),
@@ -8364,6 +8400,7 @@ impl Daemon {
                 );
                 *surface.role.lock().unwrap() = Some(final_role.clone());
                 roles.insert(final_role.clone(), id);
+                self.note_role_held(&final_role, id);
                 registered_role = Some(final_role);
             }
         }
@@ -8376,7 +8413,7 @@ impl Daemon {
         // 이후 이 역할의 비정상 종료는 다시 정상 부활 대상이 되게 한다("살아있는 역할=묘비 아님").
         // tombstones는 리프 락 — surfaces/roles 락 해제 후 획득(락 순서 무변경).
         if let Some(rr) = registered_role {
-            self.tombstones.lock().unwrap().remove(&rr);
+            self.remove_tombstone(&rr);
             // ★W2/P1-2: master 역할로 (재)기동되면 master_claimed_at 스탬프 — 부활 master 가 approval.sign
             //   동결(master_unstable 거부) 상태로 깨어나 자율주행 게이트가 마비되던 결함 해소. claim_role
             //   경로(handlers.rs)의 승계 스탬프와 동일 의미(새 보유자=쿨다운 시작). tombstones 와 동일 리프 락.

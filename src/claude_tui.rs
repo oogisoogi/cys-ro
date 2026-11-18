@@ -138,9 +138,9 @@ pub enum DirOrigin {
     Implicit,
 }
 
-/// 개인 프로필 비교 전용 정규화(순수). OS 경로 파서에 의존하지 않아 맥에서도 Windows 문자열을 시험한다.
+/// 프로필·저장 핀 경로 비교용 정규화(순수). OS 경로 파서에 의존하지 않아 맥에서도 Windows 문자열을 시험한다.
 /// verbatim 접두 · 구분자 · 끝 구분자 · 점 경로를 접고, Windows 에서만 대소문자를 접는다.
-fn normalize_profile_path(path: &Path, windows: bool) -> String {
+pub fn normalize_profile_path(path: &Path, windows: bool) -> String {
     let mut text = path.to_string_lossy().into_owned();
     if windows {
         text = text.replace('\\', "/");

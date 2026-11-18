@@ -1338,6 +1338,7 @@ def agy_door_refusal(cmd):
 #   영구 실패(스크립트 부재·인터프리터 깨짐)를 24회 재시도로 태우고 정확한 처방을 잃는다.
 #     2   = 치명(데몬 다운·인자 오류)   → **영구**: 즉시 fail + 정확 처방(재시도 금지)
 #     127 = 명령/스크립트 부재          → **영구**: 즉시 fail + 설치·경로 처방(재시도 금지)
+#     93  = 저장 대화를 지키려고 멈춤   → **영구**: 대체 리뷰어로 넘어가지 않는다(대체 기동 = 새 대화)
 #     124 = timeout(부트가 느림)        → **transient**: 재시도 가치 있음
 #     그 밖 비0(1 등) = 실측 미확정      → transient(보수 — 종전 동작 보존)
 EXIT_CLASS_PERMANENT = "permanent"
@@ -1363,6 +1364,10 @@ def classify_call_exit(rc, target="호출"):
         return EXIT_CLASS_PERMANENT, (
             "%s 부재(exit 127 — 스크립트/인터프리터 없음): 재시도는 무의미하다. "
             "팩 경로(CYS_PACK_DIR)와 python 해소를 점검하라." % target)
+    if rc == 93:
+        return EXIT_CLASS_PERMANENT, (
+            "%s 저장 대화를 잇지 못해 멈춤(exit 93): 새 대화·대체 기동을 하지 않는다. "
+            "저장 목록을 읽을 수 있게 된 뒤 다시 실행하라." % target)
     if rc == 124:
         return EXIT_CLASS_TRANSIENT, "%s timeout(exit 124) — 예산 내 재시도 가치 있음" % target
     return EXIT_CLASS_TRANSIENT, "%s 실패(exit %s) — 실측 미확정, 보수적으로 재시도 대상" % (target, rc)

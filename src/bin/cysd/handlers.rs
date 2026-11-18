@@ -1209,7 +1209,10 @@ fn reclaim_live_snapshot(
                 env_injected: s.env_injected,
                 created_at: s.created_at,
                 // 단조 나이(§Surface.created_instant) — 벽시계 보정·절전 복귀에 면역인 축.
-                age_secs: Some(s.created_instant.elapsed().as_secs_f64()),
+                // ★조각 1: 역할을 되돌린 좌석은 재개가 뜨는 중이다 — 갓 만든 좌석과 같은 유예를 받는다.
+                age_secs: Some(
+                    s.role_restored_at.lock().unwrap().unwrap_or(s.created_instant).elapsed().as_secs_f64(),
+                ),
                 cwd: Some(s.cwd.clone()),
                 claude_config_dir: s.claude_config_dir.lock().unwrap().clone(),
                 exited: s.exited.load(Ordering::Relaxed),
@@ -1512,6 +1515,7 @@ fn reclaim_commit(
         // 역할명은 **후보의 그것 그대로** 쓴다(worker dedup 없음): 우리는 새 역할을 만드는 게
         // 아니라 기존 역할 **주소를 이사**시키는 것이고, 구 보유자는 같은 임계영역에서 내려간다.
         roles.insert(role.to_string(), caller_sid);
+        daemon.note_role_held(role, caller_sid);
         *caller.role.lock().unwrap() = Some(role.to_string());
         *caller.caps.lock().unwrap() = crate::caps::Caps::for_role(Some(role));
         *prev.role.lock().unwrap() = None;
@@ -1585,6 +1589,78 @@ fn reclaim_env_role_state(daemon: &Arc<Daemon>, caller_sid: Option<u64>, env_rol
             _ => "other_exited",
         },
     }
+}
+
+/// ★조각 1 `role.restore_released` — 유예로 거둔 역할을 **그 좌석에** 되돌린다. `node-recover` 가 저장 대화를 잇기 직전에 부른다.
+///
+/// 좌석이 그 대화를 그대로 들고 있어야 한다(`session_id`) — 역할이 돌아오는 순간의 저장이 핀을 그 좌석 값으로 덮기 때문이다.
+/// 사망 시각도 함께 지운다: 남겨 두면 다음 틱이 유예가 지났다고 보고 바로 다시 거둔다.
+fn restore_released_role(daemon: &Arc<Daemon>, params: &Value, id: &Value, caller_pid: Option<u32>) -> Reply {
+    let refuse = |why: &str| Reply::Single(err_response(id, "role_not_restorable", why));
+    let (Some(sid), Some(role), Some(session)) =
+        (resolve_surface_id(params), param_str(params, "role"), param_str(params, "session_id"))
+    else {
+        return Reply::Single(err_response(id, "invalid_params", "surface_id·role·session_id 가 필요하다"));
+    };
+    // 역할을 쥔 읽기 전용 좌석(리뷰어)은 부를 수 없다. 좌석 밖 호출(boot·watchdog 자식)과 역할 없는 사람 pane 은 통과한다(set_meta 와 같은 경계).
+    let caller = caller_pid.and_then(|p| resolve_caller_surface(daemon, p)).and_then(|c| daemon.get_surface(c));
+    if caller.is_some_and(|c| c.role.lock().unwrap().is_some() && !c.caps.lock().unwrap().allows(crate::caps::Cap::WriteShell)) {
+        return refuse("읽기 전용 좌석은 역할을 되돌릴 수 없다");
+    }
+    if daemon.tombstones.lock().unwrap().contains(&role) {
+        return refuse("의도적으로 닫힌 역할이다");
+    }
+    // 좌석 닫기와 같은 락 순서(surfaces → roles → surface.role) — 닫기가 먼저면 좌석이 없고, 이쪽이 먼저면 닫기가 역할을 보고 묘비를 남긴다.
+    let (s, master_changed) = {
+        let surfaces = daemon.surfaces.lock().unwrap();
+        let Some(s) = surfaces.get(&sid).cloned() else {
+            return Reply::Single(err_response(id, "not_found", &format!("surface {sid} not found")));
+        };
+        if s.exited.load(Ordering::Relaxed) {
+            return refuse("좌석 셸이 끝났다");
+        }
+        if s.agent_session_id.lock().unwrap().as_deref() != Some(session.as_str()) {
+            return refuse("좌석이 든 대화가 저장 핀과 다르다");
+        }
+        let mut roles = daemon.roles.lock().unwrap();
+        let mut srole = s.role.lock().unwrap();
+        let mut released = daemon.released_roles.lock().unwrap();
+        // 누가 역할을 쥐면 표시가 지워지므로(`note_role_held` · 같은 roles 락 아래) 표시가 곧 「아무도 쥐지 않았다」는 뜻이다.
+        if released.get(&role) != Some(&sid) {
+            return refuse("이 좌석이 거둔 역할이 아니거나 이미 다른 좌석이 쥐었다");
+        }
+        released.remove(&role);
+        roles.insert(role.clone(), sid);
+        *srole = Some(role.clone());
+        *s.caps.lock().unwrap() = crate::caps::Caps::for_role(Some(&role));
+        *s.agent_dead_since.lock().unwrap() = None;
+        *s.role_restored_at.lock().unwrap() = Some(std::time::Instant::now());
+        // 소유권과 쿨다운은 한 전이다(claim_role 과 같은 임계영역 규약).
+        let is_master = role == "master";
+        if is_master {
+            *daemon.master_claimed_at.lock().unwrap() = Some(crate::state::now_epoch());
+        }
+        drop(srole);
+        (s.clone(), is_master)
+    };
+    daemon.caller_gen.fetch_add(1, Ordering::Relaxed);
+    inherit_parked_queue(daemon, &s, &role);
+    if master_changed {
+        daemon.bus.publish(
+            "autopilot.master_changed",
+            "autopilot",
+            Some(sid),
+            json!({"from_sid": null, "to_sid": sid, "now": *daemon.master_claimed_at.lock().unwrap(), "via": "node_recover"}),
+        );
+    }
+    daemon.bus.publish(
+        "role.claimed",
+        "system",
+        Some(sid),
+        json!({"role": role, "surface_ref": surface_ref(sid), "via": "node_recover"}),
+    );
+    crate::governance::persist_topology(daemon);
+    Reply::Single(ok_response(id, json!({"role": role, "surface_id": sid})))
 }
 
 /// `role.reclaim_auto` 본체 — 판정(순수)과 커밋(임계영역)을 잇는다.
@@ -7592,6 +7668,9 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             //   락이고 그 규약은 "surfaces/roles 를 쥔 채 잡지 않는다"이다(§creator_rollback_ok).
             //   락 순서 계약을 조회 편의로 어기지 않는다(AB-BA 는 한 번 생기면 무음으로 굳는다).
             let create_owners = daemon.create_owner.lock().unwrap().clone();
+            // ★조각 1: 거둔 역할(좌석 → 역할) — 같은 이유로 surfaces 락 앞에서 뜬다.
+            let released_by_seat: std::collections::HashMap<u64, String> =
+                daemon.released_roles.lock().unwrap().iter().map(|(r, sid)| (*sid, r.clone())).collect();
             // ★0.14.43(B3) 좌석 `usage` 의 계산 키(rate_observed_at·rate_age_secs·rate_in_use·rate[].alert_eligible)를 위한 좌석 신원 표 — 파일 IO 가 있으므로
             //   **surfaces 락을 잡기 전에** 만든다(락 순서: surfaces(복사만) → 해제 → 무락 판독 · 폴더별 60초 캐시라 status 폴링이 stat 을 늘리지 않는다).
             let usage_now = crate::state::now_epoch();
@@ -7631,6 +7710,8 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                         "display_no": s.display_no,
                         "title": s.title.lock().unwrap().clone(),
                         "role": s.role.lock().unwrap().clone(),
+                        // ★조각 1: 에이전트 사망으로 거둔 역할(아무도 다시 쥐지 않았을 때만) — node-recover·boot 가 저장 대화를 찾는 이름.
+                        "released_role": released_by_seat.get(&s.id),
                         // (tabs-sidebar 2d) 옮긴 묶음(없으면 null = 앱 자동 규칙) — 앱이 시작 때 읽어 영속한다.
                         "group": s.group.lock().unwrap().clone().flatten(),
                         // (codex 1R ③) 이번 기동 중 사람이 정했는가(해제 포함) — false 면 group null 은 「모름」(데몬 재시작) · true 면 「해제」.
@@ -9777,15 +9858,13 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                 return Reply::Single(err_response(&id, "invalid_params", "missing role"));
             };
             let remove = params.get("remove").and_then(|v| v.as_bool()).unwrap_or(false);
-            {
+            if remove {
+                daemon.remove_tombstone(&role);
+            } else {
                 let mut tombs = daemon.tombstones.lock().unwrap();
-                if remove {
-                    tombs.remove(&role);
-                } else {
-                    tombs.insert(role.clone());
-                    // 폐역이면 role-map 에서도 제외(살아있는 surface 는 close_surface 가 별도 처리 — 여기선 선언만).
-                    daemon.roles.lock().unwrap().remove(&role);
-                }
+                tombs.insert(role.clone());
+                // 폐역이면 role-map 에서도 제외(살아있는 surface 는 close_surface 가 별도 처리 — 여기선 선언만).
+                daemon.roles.lock().unwrap().remove(&role);
             }
             governance::persist_topology(daemon); // 엔트리+묘비+rev 단일 영속(단조 카운터 증가)
             let rev = daemon
@@ -9890,6 +9969,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
         // ★(0.14.31 · WP-4 · 계약 C) `cys reclaim-role --auto` 의 서버측 — 빈 좌석이 쥔 역할을
         // 이 pane 으로 재결합한다. 판정은 `reclaim.rs`(순수)·커밋은 `reclaim_commit`(임계영역).
         "role.reclaim_auto" => return reclaim_auto(daemon, &params, &id, caller_pid),
+        "role.restore_released" => return restore_released_role(daemon, &params, &id, caller_pid),
 
         "system.claim_role" => {
             let Some(role) = param_str(&params, "role") else {
@@ -10273,6 +10353,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                     }
                 }
                 roles.insert(final_role.clone(), sid);
+                daemon.note_role_held(&final_role, sid);
                 *srole = Some(final_role.clone());
                 // T4-4/T6-P3: 역할 전이와 동기로 능력 집합 재도출(reviewer-*=read/search,
                 // full=worker/master/cso, 그 외 deny-by-default). cysd-매개 변형 게이트의 키 갱신.
@@ -10335,7 +10416,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             }
             // ★W2a 해제 불변식: claim_role = 명시적 역할 (재)등록 = 부활 의도. 묘비에서 제거해
             // 이후 이 역할의 비정상 종료는 다시 정상 부활 대상이 되게 한다. tombstones는 리프 락.
-            daemon.tombstones.lock().unwrap().remove(&claimed_role);
+            daemon.remove_tombstone(&claimed_role);
             // ★agent 메타 확정 — `role.reclaim_auto` 와 **같은 함수**(사본 금지).
             //   근거·규칙·Windows 2표본 절차는 그 함수의 doc 이 정본이다.
             finalize_agent_meta_after_role_change(daemon, sid, &claimed_role, "claim_role");
@@ -14015,7 +14096,8 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
 
         // ─── T2-6 토폴로지: 영속 스냅샷 + 현재 라이브 역할 (cys restore의 데이터 소스) ───
         "system.topology" => {
-            let saved = crate::governance::load_topology(daemon);
+            // ★조각 1: 못 읽은 저장 목록을 빈 목록과 구별해 준다(`saved_unreadable`) — 빈 목록은 「핀 없음」으로 읽힌다.
+            let (saved, saved_unreadable) = crate::governance::load_saved_topology(daemon);
             let live: Vec<Value> = daemon
                 .surfaces
                 .lock()
@@ -14057,7 +14139,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             };
             Reply::Single(ok_response(
                 &id,
-                json!({"saved": saved, "live": live, "tombstones": tombstones}),
+                json!({"saved": saved, "saved_unreadable": saved_unreadable, "live": live, "tombstones": tombstones}),
             ))
         }
 
@@ -33084,6 +33166,342 @@ mod tests {
             tombs.iter().any(|t| t.as_str() == Some("master")),
             "system.topology가 묘비를 노출하지 않는다: {resp}"
         );
+    }
+
+    /// ★조각 1: 디스크 묘비를 못 읽은 동안의 `tombstone.set remove` 는 해제 의도로 남는다.
+    #[cfg(unix)]
+    #[test]
+    fn tombstone_remove_rpc_records_the_intent_while_disk_is_unread() {
+        use std::os::unix::fs::PermissionsExt;
+        let daemon = isolated_daemon();
+        let path = crate::state::state_dir(&daemon.socket_path).join("topology.json");
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        *daemon.tombstones_unread.lock().unwrap() = Some(Default::default());
+        let req = Request { id: json!(1), method: "tombstone.set".into(), params: json!({"role": "freed", "remove": true}) };
+        let reply = dispatch(&daemon, req, None);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let Reply::Single(_) = reply else {
+            panic!("expected single reply");
+        };
+        let unread = daemon.tombstones_unread.lock().unwrap();
+        assert!(unread.as_ref().is_some_and(|r| r.contains("freed")), "해제 의도가 남지 않았다");
+    }
+
+    /// ★조각 1: claim_role 의 묘비 해제도 단일 입구를 지난다(직접 지우면 해제 의도가 사라진다).
+    #[test]
+    fn claim_role_releases_the_tombstone_through_the_single_entry() {
+        let src = include_str!("handlers.rs");
+        assert!(src.contains(concat!("daemon.remove_tombstone(", "&claimed_role);")), "claim_role 이 단일 입구를 쓰지 않는다");
+    }
+
+    // ── 조각 1 · 거둔 역할(VERIFY B1) ──
+
+    const RR_SESSION: &str = "11111111-2222-4333-8444-555555555555";
+
+    fn rr_seat(daemon: &Arc<Daemon>, role: Option<&str>) -> Arc<crate::state::Surface> {
+        let s = daemon
+            .create_surface(None, Some("sleep 30".into()), None, role.map(String::from), 24, 80)
+            .expect("create surface");
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        if let Some(role) = role {
+            daemon.roles.lock().unwrap().insert(role.into(), s.id);
+        }
+        *s.agent_session_id.lock().unwrap() = Some(RR_SESSION.into());
+        *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        s
+    }
+
+    fn rr_rpc(daemon: &Arc<Daemon>, method: &str, params: Value, pid: Option<u32>) -> Value {
+        let req = Request { id: json!(1), method: method.into(), params };
+        let Reply::Single(resp) = dispatch(daemon, req, pid) else {
+            panic!("expected single reply");
+        };
+        resp
+    }
+
+    fn rr_released(daemon: &Arc<Daemon>, sid: u64) -> Value {
+        let list = rr_rpc(daemon, "surface.list", json!({}), None);
+        let rows = list["result"]["surfaces"].as_array().expect("surfaces").clone();
+        rows.into_iter().find(|r| r["surface_id"] == json!(sid)).expect("row")["released_role"].clone()
+    }
+
+    fn rr_restore(daemon: &Arc<Daemon>, sid: u64, role: &str, pid: Option<u32>) -> Value {
+        rr_rpc(daemon, "role.restore_released", json!({"surface_id": sid, "role": role, "session_id": RR_SESSION}), pid)
+    }
+
+    fn rr_saved_session(daemon: &Arc<Daemon>, role: &str) -> Value {
+        let (saved, _) = crate::governance::load_saved_topology(daemon);
+        saved.as_array().unwrap().iter().find(|e| e["role"] == json!(role)).map_or(Value::Null, |e| e["session_id"].clone())
+    }
+
+    /// 거둔 역할은 회수된 좌석에만 보이고, 처음부터 역할이 없던 좌석에는 없다.
+    #[test]
+    fn released_role_is_listed_on_the_seat_it_was_taken_from() {
+        let daemon = isolated_daemon();
+        let (seat, plain) = (rr_seat(&daemon, Some("worker")), rr_seat(&daemon, None));
+        assert_eq!(rr_released(&daemon, seat.id), Value::Null, "역할을 쥔 좌석");
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &seat));
+        assert_eq!(rr_released(&daemon, seat.id), json!("worker"));
+        assert_eq!(rr_released(&daemon, plain.id), Value::Null, "역할이 없던 좌석");
+    }
+
+    /// 다른 좌석이 쥔 역할의 낡은 칸만 남은 좌석은 그 역할을 「거둔」 것이 아니다.
+    #[test]
+    fn a_seat_that_no_longer_held_the_role_does_not_record_it() {
+        let daemon = isolated_daemon();
+        let (stale, holder) = (rr_seat(&daemon, Some("reviewer-x")), rr_seat(&daemon, None));
+        daemon.roles.lock().unwrap().insert("reviewer-x".into(), holder.id);
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &stale));
+        assert_eq!(rr_released(&daemon, stale.id), Value::Null);
+    }
+
+    /// 그 역할을 누가 다시 쥐면(claim · 새 역할 좌석 · 다른 역할을 쥔 자기 좌석) 거둔 표시는 무효다.
+    #[test]
+    fn released_role_is_void_once_any_seat_holds_it_again() {
+        // ① 다른 좌석의 claim
+        let daemon = claim_daemon();
+        let seat = rr_seat(&daemon, Some("worker-7"));
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &seat));
+        let other = make_surface(&daemon, None);
+        bind_caller(&daemon, 990_711, other);
+        assert_eq!(claim(&daemon, "worker-7", other, Some(990_711))["ok"], json!(true));
+        assert_eq!(rr_released(&daemon, seat.id), Value::Null, "다른 좌석이 쥐었는데 남았다");
+        // 그 좌석이 역할을 잃어도 옛 표시는 되살아나지 않는다.
+        daemon.roles.lock().unwrap().remove("worker-7");
+        *daemon.get_surface(other).unwrap().role.lock().unwrap() = None;
+        assert_eq!(rr_released(&daemon, seat.id), Value::Null, "무효가 된 표시가 되살아났다");
+
+        // ② 같은 역할로 새 좌석 생성
+        let daemon = claim_daemon();
+        let seat = rr_seat(&daemon, Some("reviewer-y"));
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &seat));
+        let _new = daemon.create_surface(None, Some("sleep 30".into()), None, Some("reviewer-y".into()), 24, 80).expect("create");
+        assert_eq!(rr_released(&daemon, seat.id), Value::Null, "새 역할 좌석이 생겼는데 남았다");
+
+        // ③ 그 좌석이 다른 역할을 쥠
+        let daemon = claim_daemon();
+        let seat = rr_seat(&daemon, Some("worker-8"));
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &seat));
+        bind_caller(&daemon, 990_712, seat.id);
+        assert_eq!(claim(&daemon, "worker-9", seat.id, Some(990_712))["ok"], json!(true));
+        daemon.roles.lock().unwrap().remove("worker-9");
+        *seat.role.lock().unwrap() = None;
+        assert_eq!(rr_released(&daemon, seat.id), Value::Null, "다른 역할을 쥔 뒤에도 남았다");
+    }
+
+    /// 재결합(`role.reclaim_auto`)으로 역할을 받은 좌석의 옛 거둔 역할도 무효다.
+    #[test]
+    fn reclaim_auto_voids_the_callers_released_role() {
+        let _env = rc_env_lock();
+        let daemon = isolated_daemon();
+        let _old = reclaim_seat(&daemon, "worker-2", RC_CWD, None, false);
+        let pid = 990_713_u32;
+        let me = reclaim_caller(&daemon, RC_CWD, pid);
+        let me_seat = daemon.get_surface(me).unwrap();
+        *me_seat.role.lock().unwrap() = Some("worker-5".into());
+        daemon.roles.lock().unwrap().insert("worker-5".into(), me);
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &me_seat));
+        assert_eq!(rr_released(&daemon, me), json!("worker-5"), "전제");
+        assert_eq!(reclaim_ok(&daemon, pid)["result"]["role"], json!("worker-2"));
+        daemon.roles.lock().unwrap().remove("worker-2");
+        *me_seat.role.lock().unwrap() = None;
+        assert_eq!(rr_released(&daemon, me), Value::Null);
+    }
+
+    /// 복구: 좌석이 역할을 되찾고, 저장 핀은 같은 대화로 남고, 또 죽으면 다시 거둔 상태가 된다.
+    #[test]
+    fn restore_released_gives_the_role_back_and_keeps_the_pin() {
+        let daemon = isolated_daemon();
+        let seat = rr_seat(&daemon, Some("worker"));
+        crate::governance::persist_topology(&daemon);
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &seat));
+        assert_eq!(rr_saved_session(&daemon, "worker"), json!(RR_SESSION), "전제: 회수 뒤에도 핀이 있다");
+        *seat.agent_dead_since.lock().unwrap() = Some(1.0);
+        *seat.title.lock().unwrap() = "after-release".into();
+
+        let resp = rr_restore(&daemon, seat.id, "worker", None);
+        assert_eq!(resp["ok"], json!(true), "{resp}");
+        assert_eq!(seat.role.lock().unwrap().as_deref(), Some("worker"));
+        assert_eq!(daemon.roles.lock().unwrap().get("worker").copied(), Some(seat.id));
+        assert!(seat.caps.lock().unwrap().allows(crate::caps::Cap::Edit), "능력이 돌아오지 않았다");
+        assert_eq!(*seat.agent_dead_since.lock().unwrap(), None, "옛 사망 시각이 남으면 다음 틱에 다시 회수된다");
+        assert_eq!(rr_released(&daemon, seat.id), Value::Null);
+        assert_eq!(rr_saved_session(&daemon, "worker"), json!(RR_SESSION), "핀이 바뀌었다");
+        let (saved, _) = crate::governance::load_saved_topology(&daemon);
+        assert_eq!(saved[0]["title"], json!("after-release"), "되돌린 좌석이 저장되지 않았다");
+
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &seat), "또 죽으면 다시 회수");
+        assert_eq!(rr_released(&daemon, seat.id), json!("worker"));
+        assert_eq!(rr_restore(&daemon, seat.id, "worker", None)["ok"], json!(true), "두 번째 복구");
+    }
+
+    /// master 를 되돌리면 승계 쿨다운도 함께 다시 선다(claim 과 같은 규약).
+    #[test]
+    fn restore_released_rearms_the_master_cooldown() {
+        let daemon = isolated_daemon();
+        let seat = rr_seat(&daemon, Some("master"));
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &seat));
+        assert_eq!(*daemon.master_claimed_at.lock().unwrap(), None, "전제");
+        assert_eq!(rr_restore(&daemon, seat.id, "master", None)["ok"], json!(true));
+        assert!(daemon.master_claimed_at.lock().unwrap().is_some(), "쿨다운 기준이 비었다");
+    }
+
+    /// 되돌릴 수 없는 경우는 아무것도 바꾸지 않고 거절한다.
+    #[test]
+    fn restore_released_refuses_everything_else_and_changes_nothing() {
+        let check = |name: &str, daemon: &Arc<Daemon>, seat: &Arc<crate::state::Surface>, resp: Value| {
+            assert_eq!(resp["ok"], json!(false), "{name}: {resp}");
+            assert_eq!(*seat.role.lock().unwrap(), None, "{name}: 역할이 들어갔다");
+            assert_ne!(daemon.roles.lock().unwrap().get("worker").copied(), Some(seat.id), "{name}: 주소가 들어갔다");
+        };
+        let released = || {
+            let daemon = isolated_daemon();
+            let seat = rr_seat(&daemon, Some("worker"));
+            assert!(crate::governance::release_role_after_agent_death(&daemon, &seat));
+            (daemon, seat)
+        };
+
+        let (daemon, seat) = released();
+        check("다른 역할 이름", &daemon, &seat, rr_restore(&daemon, seat.id, "worker-2", None));
+
+        let (daemon, seat) = released();
+        let other = rr_seat(&daemon, None);
+        let resp = rr_restore(&daemon, other.id, "worker", None);
+        assert_eq!(resp["ok"], json!(false), "거둔 적 없는 좌석: {resp}");
+        assert_eq!(*other.role.lock().unwrap(), None);
+        assert_eq!(rr_released(&daemon, seat.id), json!("worker"), "거절이 표시를 지웠다");
+
+        let (daemon, seat) = released();
+        daemon.tombstones.lock().unwrap().insert("worker".into());
+        check("묘비", &daemon, &seat, rr_restore(&daemon, seat.id, "worker", None));
+
+        let (daemon, seat) = released();
+        *seat.agent_session_id.lock().unwrap() = Some("22222222-2222-4333-8444-555555555555".into());
+        check("다른 대화를 든 좌석", &daemon, &seat, rr_restore(&daemon, seat.id, "worker", None));
+
+        let (daemon, seat) = released();
+        seat.exited.store(true, Ordering::Relaxed);
+        check("끝난 좌석", &daemon, &seat, rr_restore(&daemon, seat.id, "worker", None));
+
+        // 읽기 전용 좌석(리뷰어)은 부를 수 없다 · 발신 좌석이 없는 호출(boot·watchdog 자식)은 위 성공 시험이 다룬다.
+        let (daemon, seat) = released();
+        let reviewer = rr_seat(&daemon, Some("reviewer-z"));
+        bind_caller(&daemon, 990_714, reviewer.id);
+        check("리뷰어 발신", &daemon, &seat, rr_restore(&daemon, seat.id, "worker", Some(990_714)));
+    }
+
+    /// 거둔 좌석을 사람이 닫으면 역할을 쥔 좌석을 닫을 때와 같다 — 묘비가 남고 저장 핀은 되살아나지 않는다. 자동 회수(reap)는 묘비를 남기지 않는다.
+    #[test]
+    fn closing_a_released_seat_follows_the_role_seat_rule() {
+        use crate::governance::{close_surface, persist_topology, CloseCause};
+        let released = || {
+            let daemon = isolated_daemon();
+            let seat = rr_seat(&daemon, Some("worker"));
+            persist_topology(&daemon);
+            assert!(crate::governance::release_role_after_agent_death(&daemon, &seat));
+            (daemon, seat)
+        };
+        let (daemon, seat) = released();
+        close_surface(&daemon, seat.id, CloseCause::OwnerClose).expect("close");
+        persist_topology(&daemon);
+        assert!(daemon.tombstones.lock().unwrap().contains("worker"), "사람이 닫았는데 묘비가 없다");
+        assert_eq!(rr_saved_session(&daemon, "worker"), Value::Null, "닫은 좌석의 핀이 남았다");
+        assert_eq!(rr_restore(&daemon, seat.id, "worker", None)["ok"], json!(false), "닫힌 좌석에 역할을 되돌렸다");
+
+        let (daemon, seat) = released();
+        close_surface(&daemon, seat.id, CloseCause::Reap).expect("reap");
+        persist_topology(&daemon);
+        assert!(!daemon.tombstones.lock().unwrap().contains("worker"), "자동 회수가 묘비를 남겼다");
+        assert_eq!(rr_saved_session(&daemon, "worker"), json!(RR_SESSION), "자동 회수가 핀을 지웠다");
+        assert!(daemon.released_roles.lock().unwrap().is_empty(), "사라진 좌석의 표시가 남았다");
+    }
+
+    /// 되돌리기와 좌석 닫기는 surfaces 락으로 순서가 갈린다 — 닫기가 먼저면 되돌리기 실패, 되돌리기가 먼저면 닫기가 역할을 보고 묘비를 남긴다.
+    #[test]
+    fn restore_released_and_close_are_ordered_by_the_surfaces_lock() {
+        use crate::governance::{close_surface, CloseCause};
+        let daemon = isolated_daemon();
+        let seat = rr_seat(&daemon, Some("worker"));
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &seat));
+        let sid = seat.id;
+        let roles_held = daemon.roles.lock().unwrap();
+        let racer = {
+            let daemon = daemon.clone();
+            std::thread::spawn(move || rr_restore(&daemon, sid, "worker", None))
+        };
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        // 되돌리기가 roles 락을 기다리는 동안의 닫기 — surfaces 락을 쥐고 있으면 닫기는 그 뒤로 밀린다.
+        let closed_first = daemon.surfaces.try_lock().map(|mut m| m.remove(&sid).is_some()).unwrap_or(false);
+        drop(roles_held);
+        let resp = racer.join().expect("restore thread");
+        if closed_first {
+            assert_eq!(resp["ok"], json!(false), "닫힌 좌석에 되돌리기가 성공했다: {resp}");
+            assert_eq!(daemon.roles.lock().unwrap().get("worker").copied(), None, "닫힌 좌석을 역할이 가리킨다");
+        } else {
+            assert_eq!(resp["ok"], json!(true), "{resp}");
+            close_surface(&daemon, sid, CloseCause::OwnerClose).expect("close");
+            assert!(daemon.tombstones.lock().unwrap().contains("worker"), "닫기가 되돌린 역할을 못 봤다");
+        }
+    }
+
+    /// 역할을 되돌린 좌석은 재결합 판정에서 갓 만든 좌석처럼 유예를 받는다 — 재개가 뜨기 전에 다른 좌석이 역할을 가져가지 못한다.
+    #[test]
+    fn a_just_restored_seat_counts_as_new_for_reclaim_auto() {
+        let daemon = isolated_daemon();
+        let seat = rr_seat(&daemon, Some("worker"));
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &seat));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let restored = std::time::Instant::now();
+        assert_eq!(rr_restore(&daemon, seat.id, "worker", None)["ok"], json!(true));
+        let live = reclaim_live_snapshot(&daemon.surfaces.lock().unwrap());
+        let entry = live.iter().find(|e| e.surface_id == seat.id).expect("snapshot");
+        let age = entry.age_secs.expect("age");
+        assert!(age <= restored.elapsed().as_secs_f64(), "되돌린 뒤의 나이가 아니다: {age}");
+    }
+
+    /// 복구된 좌석의 새 에이전트가 시작 훅에서 재결합을 불러도 역할·핀은 그대로다.
+    #[test]
+    fn reclaim_auto_from_the_recovered_seat_keeps_role_and_pin() {
+        let _env = rc_env_lock();
+        let daemon = isolated_daemon();
+        let seat = rr_seat(&daemon, Some("worker"));
+        crate::governance::persist_topology(&daemon);
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &seat));
+        assert_eq!(rr_restore(&daemon, seat.id, "worker", None)["ok"], json!(true));
+        bind_caller(&daemon, 990_715, seat.id);
+        let resp = reclaim_rpc(&daemon, Some(990_715), json!({"config": RC_CFG, "cwd": RC_CWD}));
+        assert_eq!(resp["result"]["role"], json!("worker"), "{resp}");
+        assert_eq!(rr_saved_session(&daemon, "worker"), json!(RR_SESSION), "핀이 덮였다");
+    }
+
+    /// ★조각 1: 저장 목록을 못 읽었으면 빈 목록과 구별되는 표시를 준다(「핀 없음」 오인 차단). 파일 부재는 표시 없음.
+    #[cfg(unix)]
+    #[test]
+    fn system_topology_marks_a_saved_list_it_could_not_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let daemon = isolated_daemon();
+        let path = crate::state::state_dir(&daemon.socket_path).join("topology.json");
+        let ask = || {
+            let req = Request { id: json!(1), method: "system.topology".into(), params: json!({}) };
+            let Reply::Single(resp) = dispatch(&daemon, req, None) else {
+                panic!("expected single reply");
+            };
+            resp["result"].clone()
+        };
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(ask()["saved_unreadable"], json!(false), "파일 부재는 못 읽은 것이 아니다");
+        std::fs::write(&path, json!({"entries": [{"role": "r"}], "tombstones": []}).to_string()).unwrap();
+        let ok = ask();
+        assert_eq!((ok["saved_unreadable"].clone(), ok["saved"][0]["role"].clone()), (json!(false), json!("r")));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let denied = ask();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!((denied["saved_unreadable"].clone(), denied["saved"].clone()), (json!(true), json!([])), "읽기 오류");
+        std::fs::write(&path, "{ not json").unwrap();
+        let broken = ask();
+        assert_eq!((broken["saved_unreadable"].clone(), broken["saved"].clone()), (json!(true), json!([])), "손상");
+        assert!(path.exists(), "조회가 파일을 옮겼다");
     }
 
     // ─────────────────────────────────────────────────────────────────────────────

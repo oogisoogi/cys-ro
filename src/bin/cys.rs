@@ -786,8 +786,9 @@ enum Command {
         agent: String,
         #[arg(long)]
         cwd: Option<String>,
-        /// 저장 topology 에 이 역할의 대화 핀(session_id)이 있고 그 세션 파일이 실재하면 그 대화를
-        /// 이어서(restore 와 같은 resume 경로) 기동한다. 핀이 없거나 이을 수 없으면 종전과 같은 새 기동.
+        /// 저장 topology 에 이 역할의 대화 핀(session_id)이 있으면 저장 폴더·프로필로 그 대화를
+        /// 이어서(restore 와 같은 resume 경로) 기동한다. 핀이 없거나 세션 파일이 지워졌으면 종전과 같은 새 기동,
+        /// 그 밖에 이을 수 없으면 exit 93(새 대화로 내려가지 않는다).
         #[arg(long = "resume-saved")]
         resume_saved: bool,
     },
@@ -799,7 +800,7 @@ enum Command {
         /// 기계 판독 결과를 stdout 마지막 줄에 JSON 으로 낸다(B1·G11·G29·B8):
         /// `{"roles":[{"role","agent","outcome","mandatory","install_hint"}],"summary":{…}}`.
         /// outcome ∈ launched | already_alive | busy | missing | failed | recovered |
-        /// skipped_unconfirmed.
+        /// skipped_unconfirmed | resume_held(저장 대화를 잇지 못해 멈춤 · 새 좌석 0).
         /// ★(W4) bare exit 계약: **0 = Fatal 없음(Degrade-only 포함) · 1 = Fatal 실패(mandatory 역할의
         /// failed·missing) · 75 = busy(다른 boot 가 락 보유 — 무스폰 skip)**. 세 의미가 분리돼 있으므로
         /// 소비부는 `!success()` 하나로 판정하지 말고 75 를 별도 분기해야 한다(위경보 방지).
@@ -987,6 +988,18 @@ enum DaemonAction {
         /// JSON 한 줄로 출력
         #[arg(long)]
         json: bool,
+    },
+    /// ★조각 1 이 역할의 저장 목록을 믿을 수 있는가(읽기 전용) — 0 = 믿을 수 있음 · 93 = 멈춤. `javis_boot_node` 가 좌석 회수 전에 묻는다.
+    #[command(hide = true)]
+    ResumeCheck {
+        #[arg(long)]
+        role: String,
+        /// 띄울 agent — 주면 `--resume-saved` 와 같은 판정을 한다(없으면 저장 목록만 본다).
+        #[arg(long)]
+        agent: Option<String>,
+        /// `--resume-saved` 에 넘길 작업 폴더.
+        #[arg(long)]
+        cwd: Option<String>,
     },
 }
 
@@ -1722,8 +1735,12 @@ const EXIT_DIRECTIVE_REFUSED: i32 = 90;
 /// Family: the direct-write OUTCOME codes of B-360 - 90 (`EXIT_DIRECTIVE_REFUSED`, launch-agent: zero bytes, pane kept)
 /// and 91 (any command: outcome unknown); passed = 0 and refused = 1 elsewhere. It sits right after 90 because it is the
 /// third outcome of the same write path. Neighbours for a reader scanning 80..91: 80-81 clear verification, 82-83
-/// verifier, 84-89 cycle-agent, then this family. 92-99 unassigned. Outside sysexits 64-78.
+/// verifier, 84-89 cycle-agent, then this family. 92 and 94-99 unassigned (93 = `EXIT_RESUME_HELD`). Outside sysexits 64-78.
 const EXIT_WRITE_OUTCOME_UNKNOWN: i32 = 91;
+
+/// ★조각 1(cysr-piece1-recover-1118): `cys node-recover` 가 저장 대화를 잇지 못해 **멈췄다**. 새 대화로 내려가지 않았다.
+/// rc 1 이면 안 된다 — `run_boot` 이 rc 1 만 파괴적 회수(`escalate_reclaim`)로 올리고, 그러면 대화를 잃는다.
+const EXIT_RESUME_HELD: i32 = 93;
 
 /// [결재 7ⓑ] `cycle-agent` 의 clear 는 **송신(행위)과 실효(결과)가 다르다.**
 ///
@@ -3617,12 +3634,20 @@ fn main() {
     if let Some(s) = &cli.socket {
         std::env::set_var(cys::ENV_SOCKET, s);
     }
-    // 순수 프로브 명령은 자동 기동 금지 — "데몬이 떠 있는가"라는 질문의 답을 바꾸면 안 된다
-    if matches!(
-        cli.command,
+    if command_never_autostarts(&cli.command) {
+        AUTOSTART.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+    let code = run(cli.command);
+    std::process::exit(code);
+}
+
+/// 순수 프로브 명령은 자동 기동 금지 — "데몬이 떠 있는가"라는 질문의 답을 바꾸면 안 된다
+fn command_never_autostarts(command: &Command) -> bool {
+    matches!(
+        command,
         Command::Ping
             | Command::Daemon {
-                action: DaemonAction::Status
+                action: DaemonAction::Status | DaemonAction::ResumeCheck { .. }
             }
             // 완전 초기화는 데몬을 죽이는 명령 — 어떤 경로로도 자동 기동을 발화하면 안 된다.
             | Command::FactoryReset { .. }
@@ -3637,11 +3662,7 @@ fn main() {
             //   소켓 부재 = 재시도 대기이고, 부서가 레지스트리에서 사라졌으면 구독을 끝낸다
             //   (`stream_events` 의 `dept_registration` 게이트).
             | Command::Events { .. }
-    ) {
-        AUTOSTART.store(false, std::sync::atomic::Ordering::Relaxed);
-    }
-    let code = run(cli.command);
-    std::process::exit(code);
+    )
 }
 
 fn target_surface(explicit: &Option<String>, to_role: &Option<String>) -> Result<u64, String> {
@@ -12767,7 +12788,9 @@ fn seat_liveness(s: &Value) -> (SeatLiveness, &'static str) {
     //      등급을 못 받고 종전 경로로 새어 다시 already_alive 가 된다.
     //    ★파괴는 여기서 일어나지 않는다: 아래 run_boot 은 이 등급에서 스폰도 회수도 하지
     //      않는다(관측·보고만). 오살이 오탐보다 훨씬 비싸다는 이 저장소의 규약 그대로다.
-    if cys::gate_pending_from_wire(&s[cys::GATE_PENDING_KEY]) {
+    //    ★조각 1: 표식은 에이전트가 죽어도 지워지지 않는다(해제 = boot 채택·주입 성공뿐). 죽음이 3중 확정된 좌석의
+    //      표식은 「살아 있다」는 근거가 못 된다 — 래치 부정과 같은 계약으로 불신임한다(python 미러 `node_liveness` 와 같다).
+    if cys::gate_pending_from_wire(&s[cys::GATE_PENDING_KEY]) && seat_death_confirmed(s).is_err() {
         return (
             SeatLiveness::GatePending,
             "첫기동 관문 보류(gate_pending — 프로세스 생존·입력 불가)",
@@ -14220,6 +14243,26 @@ mod seat_latch_negation_tests {
     }
 }
 
+/// ★조각 1: `cys boot` 가 다룰 좌석 — 역할을 쥔 좌석, 없으면 그 역할을 거둔 좌석 중 저장 핀이 걸린 것(핀을 판정할 수 없어도 걸린 것으로 친다).
+/// 핀이 없거나 묘비인 거둔 좌석은 고르지 않는다 — 지금처럼 새 좌석을 띄운다.
+fn boot_seat_row(surfaces: &[Value], role: &str) -> Option<Value> {
+    if let Some(row) = find_seat_row(surfaces, role) {
+        return Some(row.clone());
+    }
+    let released: Vec<&Value> = surfaces
+        .iter()
+        .filter(|s| {
+            let r = s["released_role"].as_str().unwrap_or("");
+            s["exited"].as_bool() == Some(false) && (r == role || (role == "worker" && r.starts_with("worker")))
+        })
+        .collect();
+    if released.is_empty() {
+        return None;
+    }
+    let topo = request("system.topology", json!({}));
+    released.into_iter().find(|s| recover_pin_at_stake(&topo, s["released_role"].as_str().unwrap_or(""))).cloned()
+}
+
 /// role → 그 role 을 쥔 비종료 surface 행(없으면 None). worker 는 접두 수용(데몬 dedup: worker-N).
 fn find_seat_row<'a>(surfaces: &'a [Value], role: &str) -> Option<&'a Value> {
     surfaces.iter().find(|s| {
@@ -14859,7 +14902,7 @@ fn run_boot(cwd: Option<String>, as_json: bool) -> i32 {
         // ── ★(W2 · B3) 스킵 술어: `!exited` 단독 → `!exited ∧ (awake ∨ presumed ∨ unknown-해소)` ──
         let surfaces = fetch_surfaces();
         // 소유 클론 — 아래 Unknown 시한부 해소가 목록을 재조회하므로 참조를 들고 가지 않는다.
-        let mut seat: Option<Value> = find_seat_row(&surfaces, role).cloned();
+        let mut seat: Option<Value> = boot_seat_row(&surfaces, role);
         let (mut grade, mut why) = match seat.as_ref() {
             Some(row) => seat_liveness(row),
             None => (SeatLiveness::Absent, "좌석 없음"),
@@ -14874,7 +14917,7 @@ fn run_boot(cwd: Option<String>, as_json: bool) -> i32 {
             eprintln!("[boot] role={role}: 좌석 판정 불가 — 워치독 1주기(5s) 대기 후 재조회 1회");
             std::thread::sleep(std::time::Duration::from_secs(5));
             let refreshed = fetch_surfaces();
-            seat = find_seat_row(&refreshed, role).cloned();
+            seat = boot_seat_row(&refreshed, role);
             let (g2, w2) = match seat.as_ref() {
                 Some(row) => seat_liveness(row),
                 None => (SeatLiveness::Absent, "좌석 없음(재조회)"),
@@ -15126,7 +15169,9 @@ fn run_boot(cwd: Option<String>, as_json: bool) -> i32 {
                 }
                 Ok(()) => {
                     println!("· {agent}: 역할 '{role}' 좌석 죽음 **확정**({why}) — node-recover 시도(비파괴)");
-                    let rc = boot_node_recover(&sref, role);
+                    // ★조각 1: 거둔 좌석은 거둔 이름으로 복구한다(boot 의 `worker` 는 `worker-N` 을 포함한다).
+                    let recover_role = row["released_role"].as_str().filter(|_| row["role"].is_null()).unwrap_or(role);
+                    let rc = boot_node_recover(&sref, recover_role);
                     if rc == 0 {
                         outcomes.push(json!({"role": role, "agent": agent, "outcome": "recovered",
                                              "mandatory": mandatory, "surface_ref": sref,
@@ -15239,7 +15284,15 @@ fn run_boot(cwd: Option<String>, as_json: bool) -> i32 {
         //   준비가 실패하면 종전 cwd 그대로다(좌석 폴더는 개선이지 전제가 아니다).
         let launch_cwd = boot_seat_cwd(role, &cwd);
         println!("· {agent}: 기동 시작 (role={role})…");
-        let launch_rc = run_launch_agent(role, agent, launch_cwd);
+        // ★조각 1: 좌석 없는 기동도 저장 핀을 본다 — 새 대화 좌석이 저장되는 순간 옛 핀이 밀려 사라진다. 핀이 없으면 지금과 같은 새 기동이다.
+        let launch_rc = run_launch_agent_resume_saved(role, agent, launch_cwd);
+        if launch_rc == EXIT_RESUME_HELD {
+            println!("· {agent}: 역할 '{role}' 저장 대화를 잇지 못해 기동 보류 — 새 좌석·새 대화 0(사유는 위 '--resume-saved' 줄)");
+            outcomes.push(json!({"role": role, "agent": agent, "outcome": "resume_held", "mandatory": mandatory,
+                                 "reason": "저장 대화를 이을 수 없거나 판정할 수 없다(exit 93)",
+                                 "hint": "원인을 고친 뒤 다시 부트 — 저장 대화는 그대로다"}));
+            continue;
+        }
         if launch_rc == cys::EXIT_GATE_PENDING {
             // ★(U-11) pane 은 떴고 프로세스도 살아 있다 — 실패로 계상하지 않는다.
             //   U-10 이 **좌석 경로**의 같은 상태에 이미 준 판정과 같은 값을 쓴다(같은 사실 =
@@ -15410,6 +15463,8 @@ fn boot_summary_buckets(roles: &[Value]) -> serde_json::Map<String, Value> {
             // ★(B-360 R2 revise · B-406) node-recover 91 / an unrecognised code — no reclaim, no spawn, not fatal
             "recover_unknown" => "recover_unknown",
             "recover_unrecognised" => "recover_unrecognised",
+            // ★조각 1: 저장 대화를 잇지 못해 멈춤 — 새 좌석 0 · 치명 아님
+            "resume_held" => "resume_held",
             "missing" => "missing",
             "failed" => "failed",
             _ => "unbucketed",
@@ -15453,6 +15508,7 @@ const BOOT_SUMMARY_BUCKETS: &[&str] = &[
     "directive_unknown",
     "recover_unknown",
     "recover_unrecognised",
+    "resume_held",
     "missing",
     "failed",
     "unbucketed",
@@ -20677,71 +20733,49 @@ fn run_launch_agent(role: &str, agent: &str, cwd: Option<String>) -> i32 {
     run_launch_agent_opts(role, agent, cwd, false, None, false, None, None)
 }
 
-/// ★v115r5-t1 T3: 저장 topology 에서 이 역할의 대화 핀을 고른다(순수) — `(session_id, config_dir)`.
-/// 원천은 `run_restore` 와 같은 `saved` 이므로 순환(/clear) 뒤 핀 추종(등록 경로 교체 · D2 R2)도 같다.
-/// 핀을 주지 않는 경우: 묘비 역할(의도 삭제 — 옛 대화 부활 금지) · 저장 agent 가 다름(다른 CLI 의
-/// 세션을 이 CLI 로 열지 않는다) · session_id 부재·빈 값.
-fn saved_resume_pin(topo: &Value, role: &str, agent: &str) -> Option<(String, Result<Option<String>, String>)> {
-    let tombstoned = topo["tombstones"]
-        .as_array()
-        .is_some_and(|a| a.iter().any(|t| t.as_str() == Some(role)));
-    if tombstoned {
-        return None;
+/// ★조각 1: `--resume-saved` 가 믿을 수 있는 저장 목록(node-recover 와 같은 판정). 모르거나 핀이 충돌하면 Err = rc 93.
+fn resume_saved_lookup(role: &str) -> Result<Value, String> {
+    let topo = request("system.topology", json!({})).map_err(|e| format!("저장 목록 조회 실패: {e}"))?;
+    let pins = recover_saved_pins(&topo, role)?;
+    if saved_pins_conflict(&pins, cfg!(windows)) {
+        return Err(SAVED_PIN_CONFLICT.into());
     }
-    let entry = topo["saved"]
-        .as_array()?
-        .iter()
-        .find(|e| e["role"].as_str() == Some(role))?;
-    if entry["agent"].as_str() != Some(agent) {
-        return None;
-    }
-    let sid = entry["session_id"].as_str().map(str::trim).filter(|s| !s.is_empty())?;
-    let cfg = cys::restore_config_dir(entry); // ★D-mac-1: 관측 프로필 우선 · ★2판 ⑦⑧: 검증 실패·권위 없음 = Err
-    Some((sid.to_string(), cfg))
+    Ok(topo)
+}
+
+/// `--resume-saved` · `resume-check` 의 호출자 폴더(지정 없으면 지금 폴더).
+fn launch_caller_cwd(cwd: Option<String>) -> Option<String> {
+    cwd.filter(|s| !s.is_empty())
+        .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()))
+        .map(sanitize_launch_cwd)
 }
 
 /// ★v115r5-t1 T3: `launch-agent --resume-saved` — 승계·편성 기동(javis_boot_node)이 저장된 대화를 잇는다.
 /// 종전엔 이 경로가 핀 없이 새 대화로 떠서, ↻ 뒤 콜드부트 복원(--resume)보다 먼저 앉으면 그 역할의
-/// 대화가 끊겼다(VM r3 · 부서장 2자리 · phoenix unverified(fork)). 이을 수 있을 때만 restore 와 같은
-/// 인자(resume·핀·계정 dir·restore 글)로 기동하고, 못 잇으면 **종전과 바이트 같은** 새 기동이다 —
-/// resume 을 켠 채 세션 파일이 없으면 짧은 복귀 글만 받은 새 대화가 되므로(절대지침 누락) 미리 잰다.
+/// 대화가 끊겼다(VM r3 · 부서장 2자리 · phoenix unverified(fork)). 이을 수 있으면 restore 와 같은
+/// 인자(resume·핀·계정 dir·restore 글)로 저장 폴더에서 기동한다.
+/// ★조각 1: 판정은 node-recover 와 같은 함수다 — 핀이 없거나 세션 파일이 지워졌을 때만 **종전과 바이트 같은** 새 기동이고,
+/// 그 밖에 못 이으면(다른 agent · 폴더 · 프로필 · 저장 목록을 모름) 새 대화로 내려가지 않고 rc 93 이다.
 fn run_launch_agent_resume_saved(role: &str, agent: &str, cwd: Option<String>) -> i32 {
-    let cwd = cwd
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            std::env::current_dir()
-                .ok()
-                .map(|p| p.to_string_lossy().into_owned())
-        })
-        .map(sanitize_launch_cwd);
-    let pin = request("system.topology", json!({}))
-        .ok()
-        .and_then(|t| saved_resume_pin(&t, role, agent));
-    let Some((sid, cfg)) = pin else {
-        eprintln!("[launch-agent] --resume-saved: {role} 저장 대화 없음 — 새 대화로 기동");
-        return run_launch_agent(role, agent, cwd);
-    };
-    // ★2판 ⑦⑧: 계정 프로필을 믿을 수 없으면 멈춘다 — 다른 계정으로 조용히 뜨는 새 기동도 하지 않는다(10-08 한도 정지 계보).
-    let cfg = match cfg {
-        Ok(c) => c,
-        Err(why) => {
-            eprintln!("[launch-agent] --resume-saved: {role} 기동 중단 — {why}");
-            return 2;
+    let cwd = launch_caller_cwd(cwd);
+    match launch_pin_verdict(role, agent, cwd.as_deref()) {
+        RecoverPin::Held(why) => {
+            eprintln!("[launch-agent] --resume-saved: {role} 기동 중단 — {why}(새 대화로 내려가지 않음)");
+            EXIT_RESUME_HELD
         }
-    };
-    let resumable = load_agent_spec(agent)
-        .ok()
-        .and_then(|spec| spec["resume_arg"].as_str().map(String::from))
-        .and_then(|arg| {
-            resolve_resume_suffix(agent, &arg, Some(&sid), cfg.as_deref(), cwd.as_deref(), "--continue")
-        })
-        .is_some_and(|s| s.contains(sid.as_str()));
-    if !resumable {
-        eprintln!("[launch-agent] --resume-saved: {role} 저장 대화({sid})를 이을 수 없음 — 새 대화로 기동");
-        return run_launch_agent(role, agent, cwd);
+        RecoverPin::Absent => {
+            eprintln!("[launch-agent] --resume-saved: {role} 저장 대화 없음 — 새 대화로 기동");
+            return run_launch_agent(role, agent, cwd);
+        }
+        RecoverPin::SessionFileMissing(why) => {
+            eprintln!("[launch-agent] --resume-saved: {role} {why} — 새 대화로 기동");
+            return run_launch_agent(role, agent, cwd);
+        }
+        RecoverPin::Resume { session, cwd, config_dir } => {
+            eprintln!("[launch-agent] --resume-saved: {role} 저장 대화({session})를 이어서 기동");
+            run_launch_agent_opts(role, agent, Some(cwd), true, Some(session), true, config_dir, None)
+        }
     }
-    eprintln!("[launch-agent] --resume-saved: {role} 저장 대화({sid})를 이어서 기동");
-    run_launch_agent_opts(role, agent, cwd, true, Some(sid), true, cfg, None)
 }
 
 /// ★v115r5-t1 T1①: 이 역할이 지금 **실제로 앉은 좌석**(occupied)에 있는가(순수).
@@ -21077,6 +21111,22 @@ fn run_daemon_cmd(action: DaemonAction) -> i32 {
     if let DaemonAction::DeptStatus { name, json } = &action {
         return run_dept_status(name, *json);
     }
+    if let DaemonAction::ResumeCheck { role, agent, cwd } = &action {
+        let held = match agent {
+            None => resume_saved_lookup(role).err(),
+            Some(agent) => match launch_pin_verdict(role, agent, launch_caller_cwd(cwd.clone()).as_deref()) {
+                RecoverPin::Held(why) => Some(why),
+                _ => None,
+            },
+        };
+        return match held {
+            None => 0,
+            Some(why) => {
+                eprintln!("[daemon resume-check] {role}: {why}");
+                EXIT_RESUME_HELD
+            }
+        };
+    }
     let result: Result<(), String> = (|| {
         #[cfg(target_os = "macos")]
         {
@@ -21177,7 +21227,7 @@ fn run_daemon_cmd(action: DaemonAction) -> i32 {
                     println!("launchd 등록 해제 완료 (데몬 정지됨 — 세션도 함께 종료)");
                     Ok(())
                 }
-                DaemonAction::DeptStatus { .. } => Ok(()), // 함수 머리에서 이미 처리(도달 불가)
+                DaemonAction::DeptStatus { .. } | DaemonAction::ResumeCheck { .. } => Ok(()), // 함수 머리에서 이미 처리(도달 불가)
                 DaemonAction::Status => {
                     let path = cys::launchd::plist_path();
                     let registered = path.exists();
@@ -21256,7 +21306,7 @@ fn run_daemon_cmd(action: DaemonAction) -> i32 {
                     println!("작업 스케줄러 등록 해제 완료");
                     Ok(())
                 }
-                DaemonAction::DeptStatus { .. } => Ok(()), // 함수 머리에서 이미 처리(도달 불가)
+                DaemonAction::DeptStatus { .. } | DaemonAction::ResumeCheck { .. } => Ok(()), // 함수 머리에서 이미 처리(도달 불가)
                 DaemonAction::Status => {
                     let registered = cys::hidden_command("schtasks")
                         .args(["/Query", "/TN", TASK])
@@ -25413,6 +25463,168 @@ fn run_cycle_agent(
     cycle_agent_exit(&result)
 }
 
+/// ★조각 1: node-recover 가 좌석 역할의 저장 핀을 어떻게 다룰지.
+#[derive(Debug, PartialEq, Eq)]
+enum RecoverPin {
+    /// 저장 핀 없음(항목 없음 · 세션 칸 빔 · 묘비) — 지금처럼 새 대화.
+    Absent,
+    /// 핀 묶음으로 잇는다.
+    Resume { session: String, cwd: String, config_dir: Option<String> },
+    /// 핀이 있는데 못 잇거나 핀 유무를 모른다 — 새 대화로 내려가지 않고 rc 93.
+    Held(String),
+    /// 저장 자리에 세션 파일이 없다 — 좌석 복구는 rc 93, `--resume-saved` 는 지금처럼 새 대화.
+    SessionFileMissing(String),
+}
+
+fn recover_pin_session(entry: &Value) -> Option<&str> {
+    entry["session_id"].as_str().map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// 이 역할의 저장 항목 중 세션이 있는 것(묘비 역할 = 없음). 저장 목록 칸이 없으면 응답을 믿을 수 없다.
+fn recover_saved_pins<'a>(topo: &'a Value, role: &str) -> Result<Vec<&'a Value>, String> {
+    // 데몬이 파일을 못 읽어 준 빈 목록은 「핀 없음」이 아니다(표시 없는 옛 데몬 응답은 지금처럼 목록을 그대로 믿는다).
+    if topo["saved_unreadable"].as_bool() == Some(true) {
+        return Err("데몬이 저장 목록을 읽지 못했다".into());
+    }
+    let saved = topo["saved"].as_array().ok_or("저장 목록 응답이 깨졌다")?;
+    let tombstoned = topo["tombstones"].as_array().is_some_and(|a| a.iter().any(|t| t.as_str() == Some(role)));
+    if tombstoned {
+        return Ok(Vec::new());
+    }
+    Ok(saved
+        .iter()
+        .filter(|e| e["role"].as_str() == Some(role) && recover_pin_session(e).is_some())
+        .collect())
+}
+
+const SAVED_PIN_CONFLICT: &str = "이 역할의 저장 항목이 서로 다르다(세션·작업 폴더·프로필·agent)";
+
+/// 저장 핀의 경로 비교 열쇠(순수). 윈도우는 드라이브 문자·대소문자·구분자·끝 구분자를 접고, 그 밖은 끝 구분자만 뗀다.
+fn pin_path_key(path: &str, windows: bool) -> String {
+    let path = path.trim();
+    if windows {
+        return cys::claude_tui::normalize_profile_path(std::path::Path::new(path), true);
+    }
+    path.trim_end_matches(['/', '\\']).to_string()
+}
+
+/// 같은 역할의 저장 항목끼리 핀 묶음(세션·cwd·프로필·agent)이 다른가 — 다르면 어느 쪽이 진짜 핀인지 모른다.
+fn saved_pins_conflict(pins: &[&Value], windows: bool) -> bool {
+    let identity = |e: &&Value| {
+        let cwd = e["cwd"].as_str().map(|p| pin_path_key(p, windows)).filter(|p| !p.is_empty());
+        let profile = cys::restore_config_dir(e).map(|dir| dir.map(|p| pin_path_key(&p, windows)));
+        (recover_pin_session(e).map(String::from), cwd, profile, e["agent"].as_str().map(String::from))
+    };
+    let mut identities = pins.iter().map(identity);
+    identities.next().is_some_and(|first| identities.any(|other| other != first))
+}
+
+/// 핀이 걸려 있는가(또는 모르는가) — 그렇다면 이 뒤의 어떤 실패도 rc 1 로 나가면 안 된다.
+fn recover_pin_at_stake(topo: &Result<Value, String>, role: &str) -> bool {
+    match topo {
+        Ok(t) => !recover_saved_pins(t, role).is_ok_and(|pins| pins.is_empty()),
+        Err(_) => true,
+    }
+}
+
+/// 저장 핀 판정(세션 파일 존재 확인 외에는 순수). 같은 칸에서 다시 띄우므로 저장 cwd 가 좌석 cwd 와 같아야 이을 수 있다.
+/// 세션 파일이 없는 경우도 이번 범위에서는 「확정 부재」로 치지 않고 멈춘다(지운 것인지 못 찾는 것인지 가르지 않는다).
+fn recover_pin_verdict(
+    topo: &Result<Value, String>,
+    role: &str,
+    sid: u64,
+    agent: &str,
+    seat_cwd: Option<&str>,
+    spec: &Value,
+    windows: bool,
+) -> RecoverPin {
+    let topo = match topo {
+        Ok(t) => t,
+        Err(e) => return RecoverPin::Held(format!("저장 목록 조회 실패: {e}")),
+    };
+    let pins = match recover_saved_pins(topo, role) {
+        Ok(p) => p,
+        Err(why) => return RecoverPin::Held(why),
+    };
+    let Some(pin) = pins.first() else {
+        return RecoverPin::Absent;
+    };
+    let Some(session) = recover_pin_session(pin) else {
+        return RecoverPin::Absent;
+    };
+    if saved_pins_conflict(&pins, windows) {
+        return RecoverPin::Held(SAVED_PIN_CONFLICT.into());
+    }
+    if pin["agent"].as_str() != Some(agent) {
+        return RecoverPin::Held(format!("저장 대화의 agent({})가 이 좌석({agent})과 다르다", pin["agent"].as_str().unwrap_or("미상")));
+    }
+    let busy_elsewhere = topo["live"].as_array().is_some_and(|live| {
+        live.iter().any(|e| {
+            e["surface_id"].as_u64() != Some(sid)
+                && e["seat"].as_str() != Some("empty")
+                && recover_pin_session(e) == Some(session)
+        })
+    });
+    if busy_elsewhere {
+        return RecoverPin::Held(format!("다른 좌석이 저장 대화({session})를 잇고 있다"));
+    }
+    let clean = |p: &str| p.trim().trim_end_matches(['/', '\\']).to_string();
+    let Some(cwd) = seat_cwd.map(clean).filter(|c| !c.is_empty()) else {
+        return RecoverPin::Held("좌석 작업 폴더를 알 수 없다".into());
+    };
+    if let Some(saved) = pin["cwd"].as_str().filter(|c| !clean(c).is_empty()) {
+        if pin_path_key(saved, windows) != pin_path_key(seat_cwd.unwrap_or_default(), windows) {
+            return RecoverPin::Held(format!("저장 대화의 작업 폴더({})가 이 좌석({cwd})과 다르다", clean(saved)));
+        }
+    }
+    let config_dir = match cys::restore_config_dir(pin) {
+        Ok(c) => c,
+        Err(why) => return RecoverPin::Held(why),
+    };
+    let Some(arg) = spec["resume_arg"].as_str() else {
+        return RecoverPin::Held(format!("agent '{agent}' 에 재개 인자가 없다"));
+    };
+    let fallback = spec["resume_arg_fallback"].as_str().unwrap_or("--continue");
+    match resolve_resume_suffix(agent, arg, Some(session), config_dir.as_deref(), Some(&cwd), fallback) {
+        None => RecoverPin::SessionFileMissing(format!("저장 대화({session})의 세션 파일이 없다")),
+        Some(suffix) if !suffix.contains(session) => RecoverPin::Held(format!("저장 대화({session})를 이을 재개 인자가 없다")),
+        Some(_) => RecoverPin::Resume { session: session.to_string(), cwd, config_dir },
+    }
+}
+
+/// 새 좌석에 저장 핀을 이을 수 있는가 — 좌석 복구와 같은 판정이다. 새 좌석은 저장 폴더에서 뜨므로 저장 폴더가 실재하면 그곳을 쓰고,
+/// 없으면 호출자 폴더로 판정한다(폴더가 달라 rc 93 이 된다). `--resume-saved` · `resume-check` · `cys boot` 가 함께 쓴다.
+fn launch_pin_verdict(role: &str, agent: &str, caller_cwd: Option<&str>) -> RecoverPin {
+    let topo = request("system.topology", json!({}));
+    let saved_cwd = topo
+        .as_ref()
+        .ok()
+        .and_then(|t| recover_saved_pins(t, role).ok())
+        .and_then(|pins| pins.first().and_then(|p| p["cwd"].as_str().map(String::from)))
+        .filter(|c| std::path::Path::new(c).is_dir());
+    let spec = load_agent_spec(agent).unwrap_or(Value::Null);
+    recover_pin_verdict(&topo, role, u64::MAX, agent, saved_cwd.as_deref().or(caller_cwd), &spec, cfg!(windows))
+}
+
+/// 좌석 행에서 저장 핀을 찾을 역할 이름 — 쥔 역할, 없으면 에이전트 사망으로 거둔 역할.
+fn seat_pin_role(entry: &Value) -> Option<&str> {
+    entry["role"].as_str().or_else(|| entry["released_role"].as_str())
+}
+
+/// 역할 `name` 을 거둔 좌석 행(셸이 끝난 좌석은 뒤의 공통 검사가 멈춘다).
+fn released_seat_row<'a>(surfaces: &'a [Value], name: &str) -> Option<&'a Value> {
+    surfaces.iter().find(|s| s["released_role"].as_str() == Some(name))
+}
+
+/// node-recover 의 일반 실패 종료 코드 — 핀이 걸린 좌석은 rc 1(boot 의 파괴적 회수) 대신 93.
+fn recover_failure_exit(resume_held: bool) -> i32 {
+    if !resume_held {
+        return 1;
+    }
+    eprintln!("node-recover 보류: 저장 대화를 지키려고 새 대화로 내려가지 않았다(회수 0) — 원인을 고친 뒤 다시 실행");
+    EXIT_RESUME_HELD
+}
+
 /// T2-5 노드 복구: 죽은 에이전트를 같은 surface에서 재기동 + 지침 재주입 + 복원 포인터
 fn run_node_recover(surface: Option<String>, role: Option<String>) -> i32 {
     // ★(0.14.31 · 성찰 C11) node-recover 도 boot 락에 참여한다 — 이 경로는
@@ -25424,9 +25636,30 @@ fn run_node_recover(surface: Option<String>, role: Option<String>) -> i32 {
     // ★(B-360 R2 revise) kept-pane records of this recovery go under the outermost command's name
     let _kept_scope = KeptPaneScope::open("node-recover");
     let mut seat: Option<(u64, String, String)> = None; // (sid, role, agent) once known — for the kept-pane record
+    // ★조각 1: 저장 핀이 걸린 좌석 — 이후 일반 실패는 rc 93. 역할 이름을 받았으면 핀 유무를 알기 전까지 걸린 것으로 친다(rc 1 = boot 의 파괴적 회수).
+    let mut resume_held = role.is_some();
     let result = (|| -> Result<BootVerdict, String> {
-        let sid = resolve_role_or_surface(&role, &surface)?;
+        let sid = match resolve_role_or_surface(&role, &surface) {
+            Ok(sid) => sid,
+            // ★조각 1: 그 역할을 쥔 산 좌석이 없다 — 유예로 거둔 좌석을 찾는다. 그런 좌석도 없으면 핀이 없을 때만 지금처럼 일반 실패다.
+            Err(e) if role.is_some() && e.starts_with("not_found") => {
+                let name = role.as_deref().unwrap_or_default();
+                let rows = request("surface.list", json!({}))?;
+                let found = rows["surfaces"].as_array().and_then(|a| released_seat_row(a, name)).and_then(|r| r["surface_id"].as_u64());
+                match found {
+                    Some(sid) => sid,
+                    None => {
+                        resume_held = recover_pin_at_stake(&request("system.topology", json!({})), name);
+                        return Err(e);
+                    }
+                }
+            }
+            Err(e) => return Err(e),
+        };
         let entry = surface_entry(sid)?;
+        // ★조각 1: 저장 핀은 **좌석이 가진 역할 또는 그 좌석에서 거둔 역할**로만 찾는다. 처음부터 역할이 없던 좌석은 아래 기본 이름 `worker` 로 남의 핀을 읽으면 안 된다.
+        let pin_lookup = seat_pin_role(&entry).map(|r| (r.to_string(), request("system.topology", json!({}))));
+        resume_held = pin_lookup.as_ref().is_some_and(|(r, topo)| recover_pin_at_stake(topo, r));
         if entry["exited"].as_bool() == Some(true) {
             return Err(format!(
                 "surface:{sid} 셸 자체가 종료됨 — `cys restore`로 재기동하라"
@@ -25457,9 +25690,24 @@ fn run_node_recover(surface: Option<String>, role: Option<String>) -> i32 {
                  `cys close-surface {sid}` 후 `cys launch-agent`로 재기동하라"
             ));
         }
-        let role_name = entry["role"].as_str().unwrap_or("worker").to_string();
+        let mut role_name = entry["role"].as_str().unwrap_or("worker").to_string();
         seat = Some((sid, role_name.clone(), agent.clone()));
         let spec = load_agent_spec(&agent)?;
+        // ★조각 1: 판정은 입력줄을 건드리기 전에 끝낸다 — 못 잇는 좌석에는 아무것도 쓰지 않는다.
+        let pin = match &pin_lookup {
+            Some((r, topo)) => recover_pin_verdict(topo, r, sid, &agent, entry["cwd"].as_str(), &spec, cfg!(windows)),
+            None => RecoverPin::Absent,
+        };
+        if let (RecoverPin::Held(why) | RecoverPin::SessionFileMissing(why), Some((r, _))) = (&pin, &pin_lookup) {
+            return Err(format!("{r}: {why}"));
+        }
+        // ★조각 1: 거둔 역할을 되돌린 뒤에 기동한다 — 새 에이전트의 시작 훅이 역할 없는 좌석으로 보면 남의 역할에 재결합할 수 있다.
+        if let (RecoverPin::Resume { session, .. }, Some((r, _)), true) = (&pin, &pin_lookup, entry["role"].is_null()) {
+            request("role.restore_released", json!({"surface_id": sid, "role": r, "session_id": session}))
+                .map_err(|e| format!("{r}: 거둔 역할을 되돌리지 못했다: {e}"))?;
+            role_name = r.clone();
+            seat = Some((sid, role_name.clone(), agent.clone()));
+        }
         eprintln!("[node-recover] surface:{sid} 위에 {agent} 재기동 (role={role_name})");
         // 셸 입력 잔재 정리 후 기동 (resume 플래그로 대화 기억 복원 시도)
         // ★(0.14.39 · WP-C-input 라운드 3→4 · 리뷰 major 1) authoritative 는 master/cso pane·phoenix 에서 부를 때 면제이고, 분리 호출자(setsid 부트·GUI 버튼 체인·watchdog 자식)에서는 면제가 없다 — 그 거부(타이핑 가드·초안 게이트 · 코드 typing_guard)는 사람 관측이지 파괴 근거가 아니므로 RECOVER_REFUSED_TOKEN 으로 접어 rc 79(run_boot skipped_unconfirmed) 로 낸다.
@@ -25473,12 +25721,19 @@ fn run_node_recover(surface: Option<String>, role: Option<String>) -> i32 {
                 .map_err(recover_refusal_from_input_guard)?;
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
-        // (4b) topology에 영속된 session_id가 있으면 정확한 세션 재개(없으면 fallback)
-        let sess = entry["session_id"].as_str().map(String::from);
-        // (W1) 같은 pane 재기동(restore=false → 인라인 없음)이나 resume 게이트엔 기록된 config_dir·cwd를 쓴다.
-        let rec_cwd = entry["cwd"].as_str().map(String::from);
-        // ★D-mac-1: 관측 프로필 우선 · ★2판 ⑦⑧: 검증 실패·권위 없음 = 재기동 중단(명시 오류)
-        let rec_cfg = cys::restore_config_dir(&entry).map_err(|why| format!("node-recover {role_name}: {why}"))?;
+        // ★조각 1: 저장 핀을 잇는 경로는 in-seat restore 와 같이 restore=true 다 — 핀의 프로필이 명령줄에 실려야 그 대화를 찾는다.
+        let (sess, restore_pin, rec_cwd, rec_cfg) = match pin {
+            RecoverPin::Resume { session, cwd, config_dir } => (Some(session), true, Some(cwd), config_dir),
+            _ => (
+                // (4b) topology에 영속된 session_id가 있으면 정확한 세션 재개(없으면 fallback)
+                entry["session_id"].as_str().map(String::from),
+                false,
+                // (W1) 같은 pane 재기동(restore=false → 인라인 없음)이나 resume 게이트엔 기록된 config_dir·cwd를 쓴다.
+                entry["cwd"].as_str().map(String::from),
+                // ★D-mac-1: 관측 프로필 우선 · ★2판 ⑦⑧: 검증 실패·권위 없음 = 재기동 중단(명시 오류)
+                cys::restore_config_dir(&entry).map_err(|why| format!("node-recover {role_name}: {why}"))?,
+            ),
+        };
         // 기동 send_text/Return 도 같은 접기 — C-u 는 지났는데 그 200ms 창에 사람이 치면 같은 코드로 거부된다.
         let verdict = boot_agent_on_surface(
             sid,
@@ -25487,7 +25742,7 @@ fn run_node_recover(surface: Option<String>, role: Option<String>) -> i32 {
             &spec,
             true,
             sess.as_deref(),
-            false,
+            restore_pin,
             rec_cwd.as_deref(),
             rec_cfg.as_deref(),
             Some(recover_directive()),
@@ -25526,10 +25781,10 @@ fn run_node_recover(surface: Option<String>, role: Option<String>) -> i32 {
     match result {
         Ok(BootVerdict::Ready) => 0,
         Ok(BootVerdict::GatePending { .. }) => cys::EXIT_GATE_PENDING,
-        // 종전과 동일: 실패는 rc 1 이고, run_boot 이 그 위에서 reclaim 으로 에스컬레이션한다.
+        // 종전과 동일: 실패는 rc 1 이고, run_boot 이 그 위에서 reclaim 으로 에스컬레이션한다(★조각 1: 저장 핀이 걸린 좌석은 93).
         Ok(BootVerdict::LaunchFailed { evidence }) => {
             eprintln!("error: {evidence}");
-            1
+            recover_failure_exit(resume_held)
         }
         // ★(0.14.31 · 성찰 C4ⓑ) 전처리 안전 거부는 **비파괴 전용 코드**로 나간다.
         Err(e) if is_recover_refusal(&e) => {
@@ -25560,7 +25815,7 @@ fn run_node_recover(surface: Option<String>, role: Option<String>) -> i32 {
         }
         Err(e) => {
             eprintln!("error: {e}");
-            1
+            recover_failure_exit(resume_held)
         }
     }
 }
@@ -33405,33 +33660,6 @@ mod tests {
         assert!(!is_home_like_cwd("/base/homex", home));
     }
 
-    // ★v115r5-t1 T3: 승계·편성 기동이 저장 대화를 잇는 핀 선택(VM r3 부서장 fork 재발 방지).
-    #[test]
-    fn v115r5_saved_resume_pin_table() {
-        let topo = json!({
-            "saved": [
-                {"role": "master", "agent": "claude", "session_id": "s-m", "claude_config_dir": "/cfg"},
-                {"role": "cso", "agent": "claude", "session_id": "  "},
-                {"role": "worker", "agent": "codex", "session_id": "s-w"},
-                {"role": "reviewer", "agent": "claude"}
-            ],
-            "tombstones": ["gone"],
-            "live": []
-        });
-        assert_eq!(
-            saved_resume_pin(&topo, "master", "claude"),
-            Some(("s-m".to_string(), Ok(Some("/cfg".to_string())))),
-            "저장 핀이 있으면 그 대화를 잇는다"
-        );
-        assert_eq!(saved_resume_pin(&topo, "cso", "claude"), None, "빈 핀은 잇지 않는다");
-        assert_eq!(saved_resume_pin(&topo, "worker", "claude"), None, "다른 CLI 의 세션을 열지 않는다");
-        assert_eq!(saved_resume_pin(&topo, "reviewer", "claude"), None, "핀 없음 = 새 대화");
-        assert_eq!(saved_resume_pin(&topo, "nobody", "claude"), None);
-        let tomb = json!({"saved": [{"role": "gone", "agent": "claude", "session_id": "s-g"}],
-                          "tombstones": ["gone"]});
-        assert_eq!(saved_resume_pin(&tomb, "gone", "claude"), None, "묘비 역할의 옛 대화를 되살렸다");
-    }
-
     // ★v115r5-t1 T1①: 겹친 복원 경로가 먼저 세운 역할은 실패가 아니다(앉은 좌석만 인정).
     #[test]
     fn v115r5_role_held_by_live_seat_table() {
@@ -33459,8 +33687,8 @@ mod tests {
         assert!(held_at < fail_at, "재실측이 실패 계수보다 뒤에 있다");
         let rs = &src[src.find("fn run_launch_agent_resume_saved(").unwrap()..];
         let rs = &rs[..rs.find("\n}\n").unwrap()];
-        assert!(rs.contains("run_launch_agent_opts(role, agent, cwd, true, Some(sid), true, cfg, None)"));
-        assert!(rs.contains(".is_some_and(|s| s.contains(sid.as_str()))"), "이을 수 있는지 미리 재지 않는다");
+        assert!(rs.contains("run_launch_agent_opts(role, agent, Some(cwd), true, Some(session), true, config_dir, None)"));
+        assert!(rs.contains("launch_pin_verdict(role, agent, cwd.as_deref())"), "이을 수 있는지 미리 재지 않는다");
         assert_eq!(rs.matches("return run_launch_agent(role, agent, cwd);").count(), 2, "못 이을 때 종전 기동이 아니다");
     }
 
@@ -53991,6 +54219,10 @@ mod b360_tests {
             "cycle" => run_cycle_agent(None, Some("7".into()), None, vec![], None, None, 3, true, None),
             "restore" => run_restore(None, false, true),
             "boot" => run_boot(None, true),
+            // ★조각 1(cysr-piece1-recover-1118): 역할로 부른 복구 · 좌석 번호로 부른 복구(역할 없는 좌석)
+            "node-recover" => run_node_recover(None, Some("worker".into())),
+            "node-recover-surface" => run_node_recover(Some("surface:7".into()), None),
+            "resume-saved" => run_launch_agent_resume_saved("worker", "claude", None),
             // ★(B-360 R2 revise · area P) no `--from`: the command stops after its pending pass (exit 1)
             "pack-update" => run_pack_update(None, None, false),
             // ★(B-360 R2 revise · area D) the real `cys drain --verify` (exit computed by run_drain_verify)
@@ -54008,7 +54240,12 @@ mod b360_tests {
                 let argv: Vec<String> =
                     serde_json::from_str(&std::env::var("CYS_B360_CLI_ARGS").expect("CYS_B360_CLI_ARGS")).expect("argv JSON");
                 match <Cli as clap::Parser>::try_parse_from(&argv) {
-                    Ok(cli) => run(cli.command),
+                    Ok(cli) => {
+                        if command_never_autostarts(&cli.command) {
+                            AUTOSTART.store(false, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        run(cli.command)
+                    }
                     Err(e) => {
                         eprint!("{e}");
                         2
@@ -56292,9 +56529,20 @@ mod b360_tests {
     /// stdout+stderr, requests, records).
     #[cfg(unix)]
     fn r2b_boot_recover(launch: Value, extra: &[(&'static str, &str)]) -> (i32, Value, String, Vec<(String, Value)>, Vec<Value>) {
+        r2b_boot_recover_saved(launch, extra, json!([]))
+    }
+
+    /// `r2b_boot_recover` with the daemon's saved topology entries (real daemons always answer `saved`).
+    #[cfg(unix)]
+    fn r2b_boot_recover_saved(
+        launch: Value,
+        extra: &[(&'static str, &str)],
+        saved: Value,
+    ) -> (i32, Value, String, Vec<(String, Value)>, Vec<Value>) {
         let pack = R2cPack::new();
         let old = (chrono::Local::now().timestamp() - 3600) as f64;
         let daemon = R2cDaemon::start(move |method, p| match method {
+            "system.topology" => r2c_ok(json!({"saved": saved.clone(), "live": [], "tombstones": []})),
             "surface.list" => r2c_ok(json!({"surfaces": [
                 {"surface_id": 3, "surface_ref": "surface:3", "role": "cso", "agent": "claude", "exited": false,
                  "awakened_at": 1.0, "agent_alive": true, "seat": "occupied"},
@@ -56367,6 +56615,947 @@ mod b360_tests {
         let (_rc, _report, text, _calls, _records) = r2b_boot_recover(generic, &[(R2B_RECOVER_RC, "1")]);
         assert!(text.contains("reclaim 에스컬레이션"), "rc 1 did not escalate:\n{text}");
     }
+
+    // ── 조각 1 · node-recover 가 저장 핀으로 잇는다(TICKET=cysr-piece1-recover-1118) ──
+    //
+    // 전제 = **세션이 등록돼 저장 핀이 남은 좌석**이다. 복원 직후 등록 전에 죽은 좌석은 저장 핀이 이미 없다(핀 유지 범위 · 여기서 안 다룬다).
+
+    #[cfg(unix)]
+    const P1_SESSION: &str = "11111111-2222-4333-8444-555555555555";
+
+    /// 임시 팩 + 작업 폴더 + 프로필 + 그 프로필 아래 실제 세션 파일(claude 어댑터의 재개 판정이 보는 자리).
+    #[cfg(unix)]
+    struct P1World {
+        pack: R2cPack,
+        cwd: String,
+        profile: String,
+    }
+
+    #[cfg(unix)]
+    impl P1World {
+        fn new() -> Self {
+            let pack = R2cPack::new();
+            let agents_path = pack.dir.join("pack/agents.json");
+            let mut agents: Value = serde_json::from_str(&std::fs::read_to_string(&agents_path).unwrap()).unwrap();
+            agents["claude"]["inject_delay_secs"] = json!(1);
+            std::fs::write(&agents_path, agents.to_string()).unwrap();
+            let cwd = pack.dir.join("work");
+            std::fs::create_dir_all(&cwd).unwrap();
+            let cwd = cwd.to_string_lossy().into_owned();
+            let profile = pack.dir.join("profile").to_string_lossy().into_owned();
+            let project = format!("{profile}/projects/{}", cys::claude_project_component(&cwd));
+            std::fs::create_dir_all(&project).unwrap();
+            std::fs::write(format!("{project}/{P1_SESSION}.jsonl"), "{}\n").unwrap();
+            Self { pack, cwd, profile }
+        }
+
+        fn pin(&self) -> Value {
+            json!({"role": "worker", "agent": "claude", "agent_bin": "claude", "cwd": self.cwd,
+                   "session_id": P1_SESSION, "claude_config_dir": self.profile})
+        }
+
+        /// 같은 세션 파일을 가진 둘째 프로필 — 충돌 시험의 사유가 「세션 파일 없음」이 되지 않게 한다.
+        fn second_profile(&self) -> String {
+            let profile = self.pack.dir.join("profile2").to_string_lossy().into_owned();
+            let project = format!("{profile}/projects/{}", cys::claude_project_component(&self.cwd));
+            std::fs::create_dir_all(&project).unwrap();
+            std::fs::write(format!("{project}/{P1_SESSION}.jsonl"), "{}\n").unwrap();
+            profile
+        }
+
+        /// 첫 항목은 정상 핀이고 둘째 항목만 한 축이 다른 저장 목록들.
+        fn conflicting_lists(&self) -> Vec<(&'static str, Value)> {
+            let other_dir = self.pack.dir.join("other");
+            std::fs::create_dir_all(&other_dir).unwrap();
+            let with = |key: &str, value: Value| {
+                let mut pin = self.pin();
+                pin[key] = value;
+                json!([self.pin(), pin])
+            };
+            vec![
+                ("세션만 다름", with("session_id", json!("22222222-2222-4333-8444-555555555555"))),
+                ("프로필만 다름", with("claude_config_dir", json!(self.second_profile()))),
+                ("한쪽만 프로필 없음", with("claude_config_dir", Value::Null)),
+                ("작업 폴더만 다름", with("cwd", json!(other_dir.to_string_lossy()))),
+                ("한쪽만 작업 폴더 없음", with("cwd", Value::Null)),
+                ("agent 만 다름", with("agent", json!("codex"))),
+            ]
+        }
+
+        fn topology(&self, saved: Value) -> Value {
+            r2c_ok(json!({"saved": saved, "tombstones": [],
+                          "live": [{"role": "worker", "surface_id": 7, "seat": "empty", "session_id": null}]}))
+        }
+    }
+
+    /// 가짜 데몬이 보여 줄 좌석(surface:7)과 역할 조회·역할 되돌리기의 답.
+    #[cfg(unix)]
+    struct P1Seat {
+        role: Value,
+        released: Value,
+        resolve: Value,
+        list_fails: bool,
+        restore: Value,
+    }
+
+    #[cfg(unix)]
+    impl P1Seat {
+        fn with_role(role: Value) -> Self {
+            Self { role, released: Value::Null, resolve: r2c_ok(json!({"surface_id": 7})), list_fails: false, restore: r2c_ok(json!({})) }
+        }
+
+        /// 에이전트가 죽고 유예가 지나 역할 `worker` 를 거둔 좌석 — 역할로는 찾히지 않는다.
+        fn released() -> Self {
+            Self { released: json!("worker"), resolve: p1_no_role_seat(), ..Self::with_role(Value::Null) }
+        }
+
+        /// 그 역할을 쥔 좌석도 거둔 좌석도 없다.
+        fn nowhere() -> Self {
+            Self { resolve: p1_no_role_seat(), ..Self::with_role(Value::Null) }
+        }
+    }
+
+    #[cfg(unix)]
+    fn p1_no_role_seat() -> Value {
+        r2c_reply("not_found: no surface registered for role 'worker'")
+    }
+
+    /// 죽은 에이전트가 있던 좌석(surface:7)에 node-recover 를 자식으로 돌린다. `surface.list` 행에는 진짜 데몬처럼
+    /// session_id 칸이 없다. `launch` = 기동 글의 답 · `after` = 기동 뒤 화면(없으면 정상 TUI · 있으면 에이전트 없음).
+    #[cfg(unix)]
+    fn p1_recover(
+        w: &P1World,
+        what: &str,
+        role: Value,
+        topology: Value,
+        launch: Value,
+        after: Option<&'static str>,
+    ) -> (i32, String, Vec<(String, Value)>) {
+        p1_recover_seat(w, what, P1Seat::with_role(role), topology, launch, after)
+    }
+
+    #[cfg(unix)]
+    fn p1_child_env(w: &P1World) -> Vec<(&'static str, std::ffi::OsString)> {
+        let mut envs = w.pack.envs();
+        let mut path = std::ffi::OsString::from(w.pack.dir.join("bin"));
+        path.push(":");
+        path.push(std::env::var_os("PATH").unwrap_or_default());
+        envs.push(("PATH", path));
+        envs
+    }
+
+    #[cfg(unix)]
+    fn p1_recover_seat(
+        w: &P1World,
+        what: &str,
+        seat: P1Seat,
+        topology: Value,
+        launch: Value,
+        after: Option<&'static str>,
+    ) -> (i32, String, Vec<(String, Value)>) {
+        let cwd = w.cwd.clone();
+        let (mut pastes, mut acked, mut regained) = (0, false, false);
+        let daemon = R2cDaemon::start(move |method, _| match method {
+            "system.topology" => topology.clone(),
+            "system.resolve_role" => seat.resolve.clone(),
+            "role.restore_released" => {
+                regained = seat.restore["ok"] == json!(true);
+                seat.restore.clone()
+            }
+            "surface.list" if seat.list_fails => r2c_reply("rpc_failed: list unavailable"),
+            "surface.list" => {
+                let launched = pastes > 0;
+                let (role, released) = if regained { (seat.released.clone(), Value::Null) } else { (seat.role.clone(), seat.released.clone()) };
+                let mut row = json!({"surface_id": 7, "surface_ref": "surface:7", "role": role, "released_role": released,
+                                     "agent": "claude", "exited": false, "cwd": cwd,
+                                     "agent_alive": launched && after.is_none(),
+                                     "line_count": if launched { 60 } else { 40 }});
+                if acked {
+                    row["awakened_at"] = json!(1.0);
+                }
+                r2c_ok(json!({"surfaces": [row]}))
+            }
+            "surface.read_text" => {
+                let (text, lines) = match (pastes > 0, after) {
+                    (true, Some(screen)) => (screen, 60),
+                    (true, None) => (cys::first_run_gates::fixtures::LIVE_TUI_AT_PROMPT, 60),
+                    (false, _) => ("% ", 40),
+                };
+                r2c_ok(json!({"text": text, "quiet_secs": 5.0, "line_count": lines, "next_cursor": lines}))
+            }
+            "surface.send_text" => {
+                pastes += 1;
+                if pastes == 1 {
+                    launch.clone()
+                } else {
+                    acked = true;
+                    r2c_ok(json!({}))
+                }
+            }
+            "surface.create" => r2c_reply("b360_no_spawn: this fake daemon makes no new surface"),
+            _ => r2c_ok(json!({})),
+        });
+        let (rc, out, err) = r2c_child(what, &daemon, &p1_child_env(w));
+        (rc, format!("{out}\n{err}"), daemon.calls())
+    }
+
+    #[cfg(unix)]
+    fn p1_launch_line(calls: &[(String, Value)]) -> String {
+        calls
+            .iter()
+            .find(|(m, _)| m == "surface.send_text")
+            .and_then(|(_, p)| p["text"].as_str().map(String::from))
+            .unwrap_or_default()
+    }
+
+    /// R0 고정: `surface.list` 에 세션 칸이 없어도 좌석 역할의 저장 핀으로 잇고, 프로필도 핀의 값을 쓴다.
+    /// 판정은 입력줄을 건드리기(C-u) 전에 끝난다.
+    #[cfg(unix)]
+    #[test]
+    fn p1_node_recover_resumes_the_saved_pin_with_its_profile() {
+        let w = P1World::new();
+        let (rc, text, calls) = p1_recover(&w, "node-recover", json!("worker"), w.topology(json!([w.pin()])), r2c_ok(json!({})), None);
+        let line = p1_launch_line(&calls);
+        assert_eq!(rc, 0, "{text}");
+        assert!(line.contains(&format!("--resume {P1_SESSION}")), "저장 대화를 잇지 않았다: {line}");
+        assert!(line.contains(&format!("CLAUDE_CONFIG_DIR=\"{}\"", w.profile)), "핀의 프로필로 뜨지 않았다: {line}");
+        let at = |name: &str| calls.iter().position(|(m, _)| m == name).unwrap_or(usize::MAX);
+        assert!(at("system.topology") < at("surface.send_key"), "판정이 C-u 뒤에 있다");
+    }
+
+    /// 역할 없는 좌석은 저장 핀을 보지 않는다 — 기본 이름 `worker` 로 남의 대화를 집으면 안 된다.
+    #[cfg(unix)]
+    #[test]
+    fn p1_seat_without_a_role_never_reads_the_saved_pins() {
+        let w = P1World::new();
+        let (rc, text, calls) =
+            p1_recover(&w, "node-recover-surface", Value::Null, w.topology(json!([w.pin()])), r2c_ok(json!({})), None);
+        assert_eq!(rc, 0, "{text}");
+        assert_eq!(r2c_count(&calls, "system.topology"), 0, "역할 없는 좌석이 저장 목록을 읽었다");
+        assert!(!p1_launch_line(&calls).contains("--resume"), "남의 핀으로 이었다");
+    }
+
+    /// 핀이 없거나 묘비면 지금처럼 새 대화다(대조군 · 기동이 막히면 안 된다).
+    #[cfg(unix)]
+    #[test]
+    fn p1_no_pin_or_tombstone_still_starts_a_new_conversation() {
+        let w = P1World::new();
+        let mut empty_id = w.pin();
+        empty_id["session_id"] = json!(" ");
+        let tombstoned = r2c_ok(json!({"saved": [w.pin()], "live": [], "tombstones": ["worker"]}));
+        for (name, topology) in [
+            ("항목 없음", w.topology(json!([]))),
+            ("세션 칸 빔", w.topology(json!([empty_id]))),
+            ("묘비", tombstoned),
+        ] {
+            let (rc, text, calls) = p1_recover(&w, "node-recover", json!("worker"), topology, r2c_ok(json!({})), None);
+            assert_eq!(rc, 0, "{name}: {text}");
+            assert!(!p1_launch_line(&calls).contains("--resume"), "{name}: 잇는 인자가 붙었다");
+        }
+    }
+
+    /// 핀이 있는데 못 이으면(또는 핀 유무를 모르면) rc 93 이고, 입력줄에 아무것도 쓰지 않는다.
+    #[cfg(unix)]
+    #[test]
+    fn p1_a_pin_that_cannot_be_resumed_holds_with_rc_93_before_touching_the_seat() {
+        let w = P1World::new();
+        let other_dir = w.pack.dir.join("other");
+        std::fs::create_dir_all(&other_dir).unwrap();
+        let with = |key: &str, value: Value| {
+            let mut pin = w.pin();
+            pin[key] = value;
+            pin
+        };
+        let occupied = r2c_ok(json!({"saved": [w.pin()], "tombstones": [], "live": [
+            {"role": "worker", "surface_id": 7, "seat": "empty", "session_id": null},
+            {"role": "worker", "surface_id": 9, "seat": "occupied", "session_id": P1_SESSION}]}));
+        let cases = [
+            ("세션 파일 없음", w.topology(json!([with("session_id", json!("99999999-2222-4333-8444-555555555555"))]))),
+            ("다른 agent 의 핀", w.topology(json!([with("agent", json!("codex"))]))),
+            ("다른 폴더의 핀", w.topology(json!([with("cwd", json!(other_dir.to_string_lossy()))]))),
+            ("프로필 미관측", w.topology(json!([with(cys::CONFIG_DIR_AUTHORITY_KEY, json!(cys::CONFIG_DIR_UNOBSERVED))]))),
+            ("한 역할에 다른 핀 둘", w.topology(json!([w.pin(), with("session_id", json!("22222222-2222-4333-8444-555555555555"))]))),
+            ("다른 좌석이 잇는 중", occupied),
+            ("조회 실패", r2c_reply("rpc_failed: topology unavailable")),
+            ("깨진 응답", r2c_ok(json!({}))),
+            ("저장 목록을 못 읽음", r2c_ok(json!({"saved": [], "live": [], "tombstones": [], "saved_unreadable": true}))),
+        ];
+        let mut failures = Vec::new();
+        for (name, topology) in cases {
+            let (rc, text, calls) = p1_recover(&w, "node-recover", json!("worker"), topology, r2c_ok(json!({})), None);
+            let touched = r2c_count(&calls, "surface.send_key") + r2c_count(&calls, "surface.send_text");
+            if rc != 93 || touched != 0 {
+                failures.push(format!("{name}: rc {rc} · 입력 {touched}건\n{text}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n---\n"));
+    }
+
+    /// 핀을 잇기로 한 뒤의 실패도 rc 1 이 아니다(rc 1 = boot 의 파괴적 회수). 79·91 은 더 구체적인 뜻이라 그대로다.
+    #[cfg(unix)]
+    #[test]
+    fn p1_failures_after_the_pin_decision_never_exit_1() {
+        let w = P1World::new();
+        let pinned = || w.topology(json!([w.pin()]));
+        let generic = || r2c_reply("rpc_failed: the fake daemon fails this write generically");
+        let (rc, text, _) = p1_recover(&w, "node-recover", json!("worker"), pinned(), generic(), None);
+        assert_eq!(rc, 93, "기동 글 실패: {text}");
+        let (rc, text, _) = p1_recover(&w, "node-recover", json!("worker"), pinned(), r2c_ok(json!({})),
+                                       Some("zsh: command not found: claude\n% "));
+        assert_eq!(rc, 93, "기동 실패 확증: {text}");
+        let (rc, text, _) = p1_recover(&w, "node-recover", json!("worker"), pinned(), r2c_reply(&journal_err()), None);
+        assert_eq!(rc, EXIT_RECOVER_REFUSED, "journal 거부: {text}");
+        let (rc, text, _) = p1_recover(&w, "node-recover", json!("worker"), pinned(), r2c_reply(&pending_err()), None);
+        assert_eq!(rc, EXIT_WRITE_OUTCOME_UNKNOWN, "결과 미상: {text}");
+        // 대조군: 핀이 없으면 같은 실패는 지금처럼 rc 1 이다.
+        let (rc, text, _) = p1_recover(&w, "node-recover", json!("worker"), w.topology(json!([])), generic(), None);
+        assert_eq!(rc, 1, "핀 없는 좌석의 실패 코드가 바뀌었다: {text}");
+    }
+
+    /// boot 소비: 진짜 node-recover 가 핀을 못 이어 93 을 내면 회수·새 좌석·입력이 모두 없다.
+    #[cfg(unix)]
+    #[test]
+    fn p1_boot_treats_a_held_pin_as_non_destructive() {
+        let saved = json!([{"role": "worker", "agent": "codex", "session_id": P1_SESSION}]);
+        let generic = r2c_reply("rpc_failed: the fake daemon fails this write generically");
+        let (rc, report, text, calls, _records) = r2b_boot_recover_saved(generic, &[], saved);
+        let worker = r2c_role(&report, "worker");
+        assert!(!text.contains("reclaim 에스컬레이션") && !text.contains("[boot] reclaim("), "회수로 올라갔다:\n{text}");
+        assert_eq!(r2c_count(&calls, "surface.create"), 0, "새 좌석을 요청했다");
+        assert_eq!(r2c_count(&calls, "surface.send_key"), 0, "좌석 입력줄을 건드렸다");
+        assert_eq!(worker["outcome"], "recover_unrecognised", "{worker}");
+        assert!(worker["reason"].as_str().unwrap_or("").contains("93"), "{worker}");
+        assert_eq!(rc, 0, "boot 종료 분류가 바뀌었다");
+    }
+
+    /// `launch-agent --resume-saved` 를 자식으로 돌린다(좌석 생성은 가짜 데몬이 거절한다 — 요청 여부만 잰다).
+    #[cfg(unix)]
+    fn p1_resume_saved(w: &P1World, topology: Value) -> (i32, String, Vec<(String, Value)>) {
+        let daemon = R2cDaemon::start(move |method, _| match method {
+            "system.topology" => topology.clone(),
+            "surface.create" => r2c_reply("b360_no_spawn: this fake daemon makes no new surface"),
+            _ => r2c_ok(json!({})),
+        });
+        let mut envs = w.pack.envs();
+        let mut path = std::ffi::OsString::from(w.pack.dir.join("bin"));
+        path.push(":");
+        path.push(std::env::var_os("PATH").unwrap_or_default());
+        envs.push(("PATH", path));
+        let (rc, out, err) = r2c_child("resume-saved", &daemon, &envs);
+        (rc, format!("{out}\n{err}"), daemon.calls())
+    }
+
+    /// 저장 목록을 못 읽었으면(또는 조회가 실패하면) 「저장 대화 없음」이 아니다 — 새 좌석을 만들지 않고 rc 93.
+    #[cfg(unix)]
+    #[test]
+    fn p1_resume_saved_holds_when_the_saved_list_is_unknown() {
+        let w = P1World::new();
+        for (name, topology) in [
+            ("저장 목록을 못 읽음", r2c_ok(json!({"saved": [], "live": [], "tombstones": [], "saved_unreadable": true}))),
+            ("조회 실패", r2c_reply("rpc_failed: topology unavailable")),
+            ("saved 칸 없음", r2c_ok(json!({"live": [], "tombstones": []}))),
+            ("saved 가 null", r2c_ok(json!({"saved": null, "saved_unreadable": false}))),
+            ("saved 가 배열 아님", r2c_ok(json!({"saved": {"role": "worker"}, "live": [], "tombstones": []}))),
+            ("묘비 역할이어도 saved 칸 없음", r2c_ok(json!({"live": [], "tombstones": ["worker"]}))),
+        ] {
+            let (rc, text, calls) = p1_resume_saved(&w, topology);
+            assert_eq!(rc, 93, "{name}: {text}");
+            assert_eq!(r2c_count(&calls, "surface.create"), 0, "{name}: 새 좌석을 요청했다");
+        }
+    }
+
+    /// 표시가 없거나 false 인 응답의 빈 목록은 지금처럼 「저장 대화 없음」 = 새 기동이다(옛 데몬 호환).
+    #[cfg(unix)]
+    #[test]
+    fn p1_resume_saved_keeps_starting_fresh_on_an_empty_list() {
+        let w = P1World::new();
+        for (name, topology) in [
+            ("표시 없는 옛 응답", r2c_ok(json!({"saved": [], "live": [], "tombstones": []}))),
+            ("표시 false", r2c_ok(json!({"saved": [], "live": [], "tombstones": [], "saved_unreadable": false}))),
+            ("표시 없는 옛 응답 · 다른 역할만", r2c_ok(json!({"saved": [{"role": "cso", "agent": "claude", "session_id": P1_SESSION}],
+                                                                "live": [], "tombstones": []}))),
+        ] {
+            let (rc, text, calls) = p1_resume_saved(&w, topology);
+            assert_ne!(rc, 93, "{name}: {text}");
+            assert!(r2c_count(&calls, "surface.create") >= 1, "{name}: 새 기동으로 가지 않았다\n{text}");
+        }
+    }
+
+    /// 같은 역할의 저장 항목이 어느 한 축이라도 다르면 어느 쪽이 진짜 핀인지 모른다 — 고르지 않고 rc 93.
+    #[cfg(unix)]
+    #[test]
+    fn p1_saved_pins_that_differ_on_any_axis_hold_with_rc_93() {
+        let w = P1World::new();
+        let mut failures = Vec::new();
+        for (name, saved) in w.conflicting_lists() {
+            let (rc, text, calls) = p1_recover(&w, "node-recover", json!("worker"), w.topology(saved.clone()), r2c_ok(json!({})), None);
+            let touched = r2c_count(&calls, "surface.send_key") + r2c_count(&calls, "surface.send_text");
+            if rc != 93 || touched != 0 {
+                failures.push(format!("node-recover · {name}: rc {rc} · 입력 {touched}건\n{text}"));
+            }
+            let (rc, text, calls) = p1_resume_saved(&w, w.topology(saved.clone()));
+            if rc != 93 || r2c_count(&calls, "surface.create") != 0 {
+                failures.push(format!("--resume-saved · {name}: rc {rc}\n{text}"));
+            }
+            let (rc, text, _) = p1_resume_check(&w, "worker", w.topology(saved));
+            if rc != 93 {
+                failures.push(format!("resume-check · {name}: rc {rc}\n{text}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n---\n"));
+    }
+
+    /// 대조군: 표기만 다른 같은 핀(끝 구분자)은 충돌이 아니다 — 그대로 잇는다.
+    #[cfg(unix)]
+    #[test]
+    fn p1_identical_saved_pins_are_not_a_conflict() {
+        let w = P1World::new();
+        let mut twin = w.pin();
+        twin["cwd"] = json!(format!("{}/", w.cwd));
+        let saved = json!([w.pin(), twin]);
+        let (rc, text, calls) = p1_recover(&w, "node-recover", json!("worker"), w.topology(saved.clone()), r2c_ok(json!({})), None);
+        assert_eq!(rc, 0, "{text}");
+        assert!(p1_launch_line(&calls).contains(&format!("--resume {P1_SESSION}")), "저장 대화를 잇지 않았다");
+        let (rc, text, calls) = p1_resume_saved_launching(&w, w.topology(saved));
+        assert_eq!(rc, 0, "{text}");
+        assert!(p1_launch_line(&calls).contains(&format!("--resume {P1_SESSION}")), "--resume-saved 가 잇지 않았다:\n{text}");
+    }
+
+    /// 윈도우 표기(드라이브 문자·대소문자·구분자·끝 구분자)는 윈도우에서만 접는다. 유닉스 비교는 그대로다.
+    #[test]
+    fn p1_pin_paths_fold_windows_spelling_only_on_windows() {
+        let same = |a: &str, b: &str, windows: bool| pin_path_key(a, windows) == pin_path_key(b, windows);
+        for (a, b) in [
+            (r"C:\Work\Repo", r"c:\work\repo\"),
+            (r"C:\Work\Repo", "c:/WORK/repo/"),
+            (r"C:\", "c:/"),
+        ] {
+            assert!(same(a, b, true), "윈도우에서 같은 경로: {a} · {b}");
+        }
+        for (a, b) in [(r"C:\Work\Repo", r"C:\Work\Other"), (r"C:\Work", r"D:\Work"), (r"C:\", "C:")] {
+            assert!(!same(a, b, true), "윈도우에서 다른 경로: {a} · {b}");
+        }
+        assert!(!same("/Work/Repo", "/work/repo", false), "유닉스 대소문자를 접었다");
+        assert!(!same(r"C:\Work", "C:/Work", false), "유닉스에서 구분자를 접었다");
+        assert_eq!(pin_path_key(" /a/b/ ", false), "/a/b", "유닉스 비교값이 바뀌었다");
+    }
+
+    /// 윈도우 표기 차이는 작업 폴더 판정과 핀 충돌 판정을 모두 통과한다(유닉스에서는 지금처럼 다르다).
+    #[test]
+    fn p1_windows_cwd_spelling_reaches_both_pin_checks() {
+        let pin = json!({"role": "worker", "agent": "claude", "session_id": "S", "cwd": r"C:\Work\Repo"});
+        let topo: Result<Value, String> = Ok(json!({"saved": [pin], "live": [], "tombstones": []}));
+        let verdict = |windows| recover_pin_verdict(&topo, "worker", 7, "claude", Some(r"c:\work\repo\"), &json!({}), windows);
+        // 재개 인자가 없는 spec — 작업 폴더 판정을 지나면 그다음 사유로 멈춘다.
+        assert!(matches!(verdict(true), RecoverPin::Held(why) if why.contains("재개 인자")), "윈도우 표기를 다른 폴더로 봤다");
+        assert!(matches!(verdict(false), RecoverPin::Held(why) if why.contains("작업 폴더")), "유닉스 비교가 바뀌었다");
+        let mut twin = pin_with_cwd(r"c:/work/repo/");
+        let first = pin_with_cwd(r"C:\Work\Repo");
+        assert!(!saved_pins_conflict(&[&first, &twin], true), "윈도우 표기 차이를 충돌로 봤다");
+        assert!(saved_pins_conflict(&[&first, &twin], false), "유닉스에서는 다른 경로다");
+        twin["cwd"] = json!(r"c:\work\other");
+        assert!(saved_pins_conflict(&[&first, &twin], true), "다른 폴더를 같게 봤다");
+    }
+
+    fn pin_with_cwd(cwd: &str) -> Value {
+        json!({"role": "worker", "agent": "claude", "session_id": "S", "cwd": cwd})
+    }
+
+    /// `cys daemon resume-check --role <역할>` 을 clap 그대로 자식으로 돌린다.
+    #[cfg(unix)]
+    fn p1_cli(w: &P1World, argv: Value, topology: Value) -> (i32, String, Vec<(String, Value)>) {
+        let daemon = R2cDaemon::start(move |method, _| match method {
+            "system.topology" => topology.clone(),
+            _ => r2c_ok(json!({})),
+        });
+        let mut envs = w.pack.envs();
+        envs.push(("CYS_B360_CLI_ARGS", std::ffi::OsString::from(argv.to_string())));
+        let (rc, out, err) = r2c_child("cli", &daemon, &envs);
+        (rc, format!("{out}\n{err}"), daemon.calls())
+    }
+
+    #[cfg(unix)]
+    fn p1_resume_check(w: &P1World, role: &str, topology: Value) -> (i32, String, Vec<(String, Value)>) {
+        p1_cli(w, json!(["cys", "daemon", "resume-check", "--role", role]), topology)
+    }
+
+    /// 회수 전 확인 동사: 저장 목록을 믿을 수 없으면 93, 믿을 수 있으면 0. 저장 목록을 읽는 것 말고는 아무것도 하지 않는다.
+    #[cfg(unix)]
+    #[test]
+    fn p1_resume_check_answers_from_the_saved_list_and_touches_nothing() {
+        let w = P1World::new();
+        let cases = [
+            ("저장 목록을 못 읽음", r2c_ok(json!({"saved": [], "live": [], "tombstones": [], "saved_unreadable": true})), 93),
+            ("조회 실패", r2c_reply("rpc_failed: topology unavailable"), 93),
+            ("saved 칸 없음", r2c_ok(json!({"live": [], "tombstones": []})), 93),
+            ("saved 가 null", r2c_ok(json!({"saved": null})), 93),
+            ("저장 항목 없음", w.topology(json!([])), 0),
+            ("핀 있음", w.topology(json!([w.pin()])), 0),
+            ("표시 없는 옛 응답", r2c_ok(json!({"saved": [w.pin()], "live": [], "tombstones": []})), 0),
+        ];
+        let mut failures = Vec::new();
+        for (name, topology, want) in cases {
+            let (rc, text, calls) = p1_resume_check(&w, "worker", topology);
+            let others: Vec<&String> = calls.iter().map(|(m, _)| m).filter(|m| *m != "system.topology").collect();
+            if rc != want || !others.is_empty() {
+                failures.push(format!("{name}: rc {rc}(기대 {want}) · 다른 호출 {others:?}\n{text}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n---\n"));
+    }
+
+    /// `javis_boot_node` 는 이 문구로 「resume-check 를 모르는 옛 cys」를 가른다 — clap 이 문구를 바꾸면 여기서 붉어진다.
+    #[cfg(unix)]
+    #[test]
+    fn p1_unknown_daemon_verb_message_is_what_boot_node_matches() {
+        let w = P1World::new();
+        let (rc, text, calls) = p1_cli(&w, json!(["cys", "daemon", "no-such-verb"]), r2c_ok(json!({})));
+        assert_eq!(rc, 2, "{text}");
+        assert!(text.contains("unrecognized subcommand 'no-such-verb'"), "{text}");
+        assert!(calls.is_empty(), "인자 해석 전에 데몬을 불렀다");
+    }
+
+    // ── 조각 1 · 역할을 거둔 좌석(에이전트 사망 + 유예 뒤) · VERIFY B1·R1·R2·R3 ──
+
+    #[cfg(unix)]
+    fn p1_input_count(calls: &[(String, Value)]) -> usize {
+        r2c_count(calls, "surface.send_key") + r2c_count(calls, "surface.send_text")
+    }
+
+    /// B1: 역할을 거둔 좌석은 좌석 번호로 불러도, 역할 이름으로 불러도 저장 대화를 잇고 역할을 되찾는다.
+    /// 역할은 입력줄을 건드리기 전에 되돌린다(못 되돌리면 아무것도 쓰지 않고 멈춘다).
+    #[cfg(unix)]
+    #[test]
+    fn p1_released_seat_resumes_its_pin_and_takes_the_role_back() {
+        let w = P1World::new();
+        for what in ["node-recover-surface", "node-recover"] {
+            let (rc, text, calls) = p1_recover_seat(&w, what, P1Seat::released(), w.topology(json!([w.pin()])), r2c_ok(json!({})), None);
+            assert_eq!(rc, 0, "{what}: {text}");
+            let line = p1_launch_line(&calls);
+            assert!(line.contains(&format!("--resume {P1_SESSION}")), "{what}: 저장 대화를 잇지 않았다: {line}");
+            assert!(line.contains(&format!("CLAUDE_CONFIG_DIR=\"{}\"", w.profile)), "{what}: 핀의 프로필이 아니다: {line}");
+            let restore = calls.iter().find(|(m, _)| m == "role.restore_released").unwrap_or_else(|| panic!("{what}: 역할을 되돌리지 않았다\n{text}"));
+            assert_eq!(restore.1, json!({"surface_id": 7, "role": "worker", "session_id": P1_SESSION}), "{what}");
+            let at = |name: &str| calls.iter().position(|(m, _)| m == name).unwrap_or(usize::MAX);
+            assert!(at("role.restore_released") < at("surface.send_key"), "{what}: 입력줄을 건드린 뒤에 역할을 되돌렸다");
+        }
+    }
+
+    /// 대조군: 거둔 역할이 있어도 핀이 없거나 묘비면 지금처럼 새 대화이고 역할을 되돌리지 않는다.
+    #[cfg(unix)]
+    #[test]
+    fn p1_released_seat_without_a_pin_behaves_as_before() {
+        let w = P1World::new();
+        let tombstoned = r2c_ok(json!({"saved": [w.pin()], "live": [], "tombstones": ["worker"]}));
+        for (name, topology) in [("핀 없음", w.topology(json!([]))), ("묘비", tombstoned)] {
+            let (rc, text, calls) = p1_recover_seat(&w, "node-recover-surface", P1Seat::released(), topology, r2c_ok(json!({})), None);
+            assert_eq!(rc, 0, "{name}: {text}");
+            assert!(!p1_launch_line(&calls).contains("--resume"), "{name}: 잇는 인자가 붙었다");
+            assert_eq!(r2c_count(&calls, "role.restore_released"), 0, "{name}: 역할을 되돌렸다");
+        }
+    }
+
+    /// 거둔 좌석의 핀을 판정할 수 없거나 못 이으면 rc 93 이고 입력줄에 아무것도 쓰지 않는다.
+    #[cfg(unix)]
+    #[test]
+    fn p1_released_seat_that_cannot_resume_holds_with_rc_93() {
+        let w = P1World::new();
+        let mut other_agent = w.pin();
+        other_agent["agent"] = json!("codex");
+        let mut missing_file = w.pin();
+        missing_file["session_id"] = json!("99999999-2222-4333-8444-555555555555");
+        let cases = [
+            ("다른 agent 의 핀", w.topology(json!([other_agent])), r2c_ok(json!({}))),
+            ("세션 파일 없음", w.topology(json!([missing_file])), r2c_ok(json!({}))),
+            ("조회 실패", r2c_reply("rpc_failed: topology unavailable"), r2c_ok(json!({}))),
+            ("저장 목록을 못 읽음", r2c_ok(json!({"saved": [], "live": [], "tombstones": [], "saved_unreadable": true})), r2c_ok(json!({}))),
+            ("역할을 못 되돌림", w.topology(json!([w.pin()])), r2c_reply("role_not_restorable: someone took it")),
+        ];
+        let mut failures = Vec::new();
+        for what in ["node-recover-surface", "node-recover"] {
+            for (name, topology, restore) in &cases {
+                let seat = P1Seat { restore: restore.clone(), ..P1Seat::released() };
+                let (rc, text, calls) = p1_recover_seat(&w, what, seat, topology.clone(), r2c_ok(json!({})), None);
+                if rc != 93 || p1_input_count(&calls) != 0 {
+                    failures.push(format!("{what} · {name}: rc {rc} · 입력 {}건\n{text}", p1_input_count(&calls)));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n---\n"));
+    }
+
+    /// B1·R2: 역할 이름으로 불렀는데 좌석을 찾지 못한 경우 — 핀이 있거나 모르면 93, 핀이 없을 때만 지금처럼 rc 1.
+    #[cfg(unix)]
+    #[test]
+    fn p1_recover_by_role_without_a_seat_never_exits_1_over_a_pin() {
+        let w = P1World::new();
+        let cases = [
+            ("핀 있음", w.topology(json!([w.pin()])), 93),
+            ("저장 목록 조회 실패", r2c_reply("rpc_failed: topology unavailable"), 93),
+            ("저장 목록을 못 읽음", r2c_ok(json!({"saved": [], "live": [], "tombstones": [], "saved_unreadable": true})), 93),
+            ("핀 없음", w.topology(json!([])), 1),
+        ];
+        for (name, topology, want) in cases {
+            let (rc, text, calls) = p1_recover_seat(&w, "node-recover", P1Seat::nowhere(), topology, r2c_ok(json!({})), None);
+            assert_eq!(rc, want, "{name}: {text}");
+            assert_eq!(p1_input_count(&calls), 0, "{name}: 입력줄을 건드렸다");
+        }
+    }
+
+    /// R2: 역할 이름을 받았으면 좌석을 찾는 RPC 자체가 실패해도 rc 1(boot 의 파괴적 회수)이 아니다.
+    #[cfg(unix)]
+    #[test]
+    fn p1_rpc_failures_before_the_pin_lookup_exit_93_when_a_role_was_named() {
+        let w = P1World::new();
+        let pinned = || w.topology(json!([w.pin()]));
+        let resolve_fails = P1Seat { resolve: r2c_reply("rpc_failed: resolve unavailable"), ..P1Seat::with_role(json!("worker")) };
+        let list_fails = P1Seat { list_fails: true, ..P1Seat::with_role(json!("worker")) };
+        let gone_and_list_fails = P1Seat { list_fails: true, ..P1Seat::nowhere() };
+        for (name, seat) in [("resolve_role 실패", resolve_fails), ("surface.list 실패", list_fails), ("역할 없음 + surface.list 실패", gone_and_list_fails)] {
+            let (rc, text, calls) = p1_recover_seat(&w, "node-recover", seat, pinned(), r2c_ok(json!({})), None);
+            assert_eq!(rc, 93, "{name}: {text}");
+            assert_eq!(p1_input_count(&calls), 0, "{name}: 입력줄을 건드렸다");
+        }
+        // 대조군: 역할 이름 없이 좌석 번호로만 불렀으면 목록 실패는 지금처럼 rc 1 이다.
+        let seat = P1Seat { list_fails: true, ..P1Seat::with_role(json!("worker")) };
+        let (rc, text, _) = p1_recover_seat(&w, "node-recover-surface", seat, pinned(), r2c_ok(json!({})), None);
+        assert_eq!(rc, 1, "{text}");
+    }
+
+    /// 새 좌석이 실제로 뜨는 가짜 데몬으로 `what` 을 돌린다(새 좌석 = surface:8 · 프로필은 요청값을 돌려준다).
+    /// `released` = surface:7 이 그 역할을 거둔 좌석으로 함께 보인다(이름 · 셸이 끝났는가).
+    #[cfg(unix)]
+    fn p1_launching(w: &P1World, what: &str, topology: Value, released: Option<(&'static str, bool)>) -> (i32, String, String, Vec<(String, Value)>) {
+        p1_launching_marked(w, what, topology, released, false)
+    }
+
+    /// `gate_marked` = 거둔 좌석에 예전 기동의 관문 표식이 남아 있다.
+    #[cfg(unix)]
+    fn p1_launching_marked(w: &P1World, what: &str, topology: Value, released: Option<(&'static str, bool)>, gate_marked: bool) -> (i32, String, String, Vec<(String, Value)>) {
+        let cwd = w.cwd.clone();
+        let old = (chrono::Local::now().timestamp() - 3600) as f64;
+        let (mut pastes, mut acked, mut regained) = (0, false, false);
+        let mut created: Option<Value> = None;
+        let daemon = R2cDaemon::start(move |method, p| match method {
+            "system.topology" => topology.clone(),
+            "system.resolve_role" => p1_no_role_seat(),
+            "role.restore_released" => {
+                regained = true;
+                r2c_ok(json!({}))
+            }
+            "surface.list" => {
+                let mut rows = vec![json!({"surface_id": 3, "surface_ref": "surface:3", "role": "cso", "agent": "claude", "exited": false,
+                                           "awakened_at": 1.0, "agent_alive": true, "seat": "occupied"})];
+                let ack = |row: &mut Value| {
+                    if acked {
+                        row["awakened_at"] = json!(1.0);
+                    }
+                };
+                if let Some((name, exited)) = released {
+                    let launched = regained && pastes > 0;
+                    let mut row = json!({"surface_id": 7, "surface_ref": "surface:7", "exited": exited, "agent": "claude", "cwd": cwd,
+                                         "role": if regained { json!(name) } else { Value::Null },
+                                         "released_role": if regained { Value::Null } else { json!(name) },
+                                         "agent_alive": launched, "seat": if launched { "occupied" } else { "empty" },
+                                         "created_at": old, "line_count": if launched { 60 } else { 40 }});
+                    if regained {
+                        ack(&mut row);
+                    } else if gate_marked {
+                        row["gate_pending"] = json!({"gate": "unknown", "since": 1.0});
+                    }
+                    rows.push(row);
+                }
+                if let Some(at) = &created {
+                    let mut row = json!({"surface_id": 8, "surface_ref": "surface:8", "role": "worker", "agent": "claude", "exited": false,
+                                         "cwd": at, "agent_alive": pastes > 0, "seat": "occupied", "created_at": old,
+                                         "line_count": if pastes > 0 { 60 } else { 40 }});
+                    ack(&mut row);
+                    rows.push(row);
+                }
+                r2c_ok(json!({"surfaces": rows}))
+            }
+            "surface.read_text" => {
+                let (text, lines) = if pastes > 0 { (cys::first_run_gates::fixtures::LIVE_TUI_AT_PROMPT, 60) } else { ("% ", 40) };
+                r2c_ok(json!({"text": text, "quiet_secs": 5.0, "line_count": lines, "next_cursor": lines}))
+            }
+            "surface.send_text" => {
+                pastes += 1;
+                acked = pastes > 1;
+                r2c_ok(json!({}))
+            }
+            "surface.create" => {
+                created = Some(p["cwd"].clone());
+                r2c_ok(json!({"surface_id": 8, "surface_ref": "surface:8", "claude_config_dir": p["claude_config_dir"]}))
+            }
+            _ => r2c_ok(json!({})),
+        });
+        let (rc, out, err) = r2c_child(what, &daemon, &p1_child_env(w));
+        (rc, out, err, daemon.calls())
+    }
+
+    #[cfg(unix)]
+    fn p1_resume_saved_launching(w: &P1World, topology: Value) -> (i32, String, Vec<(String, Value)>) {
+        let (rc, out, err, calls) = p1_launching(w, "resume-saved", topology, None);
+        (rc, format!("{out}\n{err}"), calls)
+    }
+
+    /// R1: 호출한 폴더와 상관없이 저장된 폴더·프로필로 잇는다(자식의 cwd 는 저장 폴더가 아니다).
+    #[cfg(unix)]
+    #[test]
+    fn p1_resume_saved_continues_in_the_saved_folder() {
+        let w = P1World::new();
+        let (rc, text, calls) = p1_resume_saved_launching(&w, w.topology(json!([w.pin()])));
+        assert_eq!(rc, 0, "{text}");
+        let create = calls.iter().find(|(m, _)| m == "surface.create").expect("새 좌석 요청");
+        assert_eq!(create.1["cwd"], json!(w.cwd), "저장 폴더로 뜨지 않았다");
+        assert_eq!(create.1["claude_config_dir"], json!(w.profile), "핀의 프로필이 아니다");
+        assert!(p1_launch_line(&calls).contains(&format!("--resume {P1_SESSION}")), "잇지 않았다:\n{text}");
+    }
+
+    /// R1(관찰 O1): 세션 칸이 빈 항목이 앞에 있어도 세션 있는 항목을 고른다.
+    #[cfg(unix)]
+    #[test]
+    fn p1_resume_saved_picks_the_entry_that_has_a_session() {
+        let w = P1World::new();
+        let mut blank = w.pin();
+        blank["session_id"] = Value::Null;
+        let (rc, text, calls) = p1_resume_saved_launching(&w, w.topology(json!([blank, w.pin()])));
+        assert_eq!(rc, 0, "{text}");
+        assert!(p1_launch_line(&calls).contains(&format!("--resume {P1_SESSION}")), "세션 있는 항목을 고르지 않았다:\n{text}");
+    }
+
+    /// R1: 이을 수 없는 핀(다른 agent · 저장 폴더 소실 · 프로필 불신 · 다른 좌석이 사용 중)은 새 대화가 아니라 rc 93.
+    /// `resume-check --agent` 도 같은 판정이다(그래야 reap-launch 가 빈 좌석을 먼저 회수하지 않는다).
+    #[cfg(unix)]
+    #[test]
+    fn p1_resume_saved_and_resume_check_hold_an_unresumable_pin() {
+        let w = P1World::new();
+        let with = |key: &str, value: Value| {
+            let mut pin = w.pin();
+            pin[key] = value;
+            pin
+        };
+        let busy = r2c_ok(json!({"saved": [w.pin()], "tombstones": [], "live": [
+            {"role": "worker", "surface_id": 9, "seat": "occupied", "session_id": P1_SESSION}]}));
+        let gone = w.pack.dir.join("no-such-folder").to_string_lossy().into_owned();
+        let cases = [
+            ("다른 agent 의 핀", w.topology(json!([with("agent", json!("codex"))]))),
+            ("저장 폴더 소실", w.topology(json!([with("cwd", json!(gone))]))),
+            ("프로필 미관측", w.topology(json!([with(cys::CONFIG_DIR_AUTHORITY_KEY, json!(cys::CONFIG_DIR_UNOBSERVED))]))),
+            ("다른 좌석이 잇는 중", busy),
+        ];
+        let mut failures = Vec::new();
+        for (name, topology) in cases {
+            let (rc, text, calls) = p1_resume_saved_launching(&w, topology.clone());
+            if rc != 93 || r2c_count(&calls, "surface.create") != 0 {
+                failures.push(format!("--resume-saved · {name}: rc {rc}\n{text}"));
+            }
+            let (rc, text, _) = p1_cli(&w, json!(["cys", "daemon", "resume-check", "--role", "worker", "--agent", "claude"]), topology);
+            if rc != 93 {
+                failures.push(format!("resume-check · {name}: rc {rc}\n{text}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n---\n"));
+    }
+
+    /// 대조군: 세션 파일이 저장 자리에서 실제로 지워진 핀의 처분은 그대로다 — `--resume-saved` 는 새 대화, 회수 전 확인은 통과.
+    #[cfg(unix)]
+    #[test]
+    fn p1_resume_saved_keeps_starting_fresh_when_the_session_file_is_gone() {
+        let w = P1World::new();
+        let mut pin = w.pin();
+        pin["session_id"] = json!("99999999-2222-4333-8444-555555555555");
+        let (rc, text, calls) = p1_resume_saved_launching(&w, w.topology(json!([pin.clone()])));
+        assert_eq!(rc, 0, "{text}");
+        assert_eq!(r2c_count(&calls, "surface.create"), 1, "{text}");
+        assert!(!p1_launch_line(&calls).contains("--resume"), "없는 세션을 이으려 했다:\n{text}");
+        let (rc, text, _) = p1_cli(&w, json!(["cys", "daemon", "resume-check", "--role", "worker", "--agent", "claude"]), w.topology(json!([pin])));
+        assert_eq!(rc, 0, "{text}");
+    }
+
+    /// 회수 전 확인: 이을 수 있는 핀 · 핀 없음은 통과한다. `--agent` 없는 옛 호출은 저장 목록만 본다.
+    #[cfg(unix)]
+    #[test]
+    fn p1_resume_check_passes_a_resumable_pin_and_keeps_the_old_call() {
+        let w = P1World::new();
+        let check = json!(["cys", "daemon", "resume-check", "--role", "worker", "--agent", "claude", "--cwd", "/elsewhere"]);
+        for (name, saved) in [("이을 수 있는 핀", json!([w.pin()])), ("핀 없음", json!([]))] {
+            let (rc, text, _) = p1_cli(&w, check.clone(), w.topology(saved));
+            assert_eq!(rc, 0, "{name}: {text}");
+        }
+        let mut other_agent = w.pin();
+        other_agent["agent"] = json!("codex");
+        let (rc, text, _) = p1_resume_check(&w, "worker", w.topology(json!([other_agent])));
+        assert_eq!(rc, 0, "옛 호출(--agent 없음)의 판정이 바뀌었다: {text}");
+    }
+
+    #[cfg(unix)]
+    fn p1_boot(w: &P1World, topology: Value, released: Option<(&'static str, bool)>) -> (i32, Value, String, Vec<(String, Value)>) {
+        let (rc, out, err, calls) = p1_launching(w, "boot", topology, released);
+        let report = r2b_report(&out, &err);
+        (rc, report, format!("{out}\n{err}"), calls)
+    }
+
+    /// B1 · boot: 역할 좌석이 없고 그 역할을 거둔 좌석에 핀이 걸려 있으면 그 좌석을 복구한다(새 좌석 0).
+    #[cfg(unix)]
+    #[test]
+    fn p1_boot_recovers_the_seat_the_role_was_released_from() {
+        let w = P1World::new();
+        let (rc, report, text, calls) = p1_boot(&w, w.topology(json!([w.pin()])), Some(("worker", false)));
+        let worker = r2c_role(&report, "worker");
+        assert_eq!(worker["outcome"], "recovered", "{worker}\n{text}");
+        assert_eq!(worker["surface_ref"], "surface:7", "{worker}");
+        assert_eq!(r2c_count(&calls, "surface.create"), 0, "새 좌석을 만들었다:\n{text}");
+        assert_eq!(r2c_count(&calls, "role.restore_released"), 1, "역할을 되돌리지 않았다:\n{text}");
+        assert!(p1_launch_line(&calls).contains(&format!("--resume {P1_SESSION}")), "잇지 않았다:\n{text}");
+        assert_eq!(rc, 0, "{text}");
+    }
+
+    /// boot-late 실측: 예전 기동의 관문 표식이 남은 좌석도 죽음이 확정되면 복구한다(「살아 있다」로 보고 멈추면 안 된다).
+    #[cfg(unix)]
+    #[test]
+    fn p1_boot_recovers_a_dead_seat_that_still_carries_a_gate_mark() {
+        let w = P1World::new();
+        let (rc, out, err, calls) = p1_launching_marked(&w, "boot", w.topology(json!([w.pin()])), Some(("worker", false)), true);
+        let text = format!("{out}\n{err}");
+        assert_eq!(r2c_role(&r2b_report(&out, &err), "worker")["outcome"], "recovered", "{text}");
+        assert!(p1_launch_line(&calls).contains(&format!("--resume {P1_SESSION}")), "잇지 않았다:\n{text}");
+        assert_eq!(rc, 0, "{text}");
+    }
+
+    /// 관문 표식은 프로세스가 살아 있다는 뜻이다 — 죽음이 3중 확정된 좌석에서는 힘이 없고, 그 밖에는 지금처럼 관문 보류다.
+    #[test]
+    fn p1_gate_mark_yields_only_to_a_confirmed_death() {
+        let old = (chrono::Local::now().timestamp() - 3600) as f64;
+        let young = chrono::Local::now().timestamp() as f64;
+        let row = |alive: bool, seat: &str, created: f64| {
+            json!({"role": "worker", "exited": false, "agent_alive": alive, "seat": seat, "created_at": created,
+                   "gate_pending": {"gate": "unknown", "since": 1.0}})
+        };
+        assert_eq!(seat_liveness(&row(false, "empty", old)).0, SeatLiveness::Absent, "죽음이 확정된 좌석");
+        for (name, s) in [
+            ("에이전트 생존", row(true, "empty", old)),
+            ("좌석 점유", row(false, "occupied", old)),
+            ("갓 만든 좌석", row(false, "empty", young)),
+        ] {
+            assert_eq!(seat_liveness(&s).0, SeatLiveness::GatePending, "{name}");
+        }
+    }
+
+    /// boot 의 `worker` 는 `worker-N` 을 포함한다 — 거둔 이름 그대로 복구해야 그 이름의 핀을 잇는다.
+    #[cfg(unix)]
+    #[test]
+    fn p1_boot_recovers_a_numbered_worker_under_its_own_name() {
+        let w = P1World::new();
+        let mut pin = w.pin();
+        pin["role"] = json!("worker-3");
+        let (rc, report, text, calls) = p1_boot(&w, w.topology(json!([pin])), Some(("worker-3", false)));
+        assert_eq!(r2c_role(&report, "worker")["outcome"], "recovered", "{text}");
+        let restore = calls.iter().find(|(m, _)| m == "role.restore_released").expect("역할 되돌리기");
+        assert_eq!(restore.1["role"], "worker-3", "{text}");
+        assert!(text.contains("(role=worker-3)"), "되찾은 역할 이름으로 기동하지 않았다:\n{text}");
+        assert!(p1_launch_line(&calls).contains(&format!("--resume {P1_SESSION}")), "잇지 않았다:\n{text}");
+        assert_eq!(rc, 0, "{text}");
+    }
+
+    /// B1 · boot: 거둔 좌석도 없는데 유효한 핀이 있으면 `--resume-saved` 와 같은 판정으로 잇는다.
+    #[cfg(unix)]
+    #[test]
+    fn p1_boot_without_a_seat_resumes_the_saved_pin() {
+        let w = P1World::new();
+        // 셸이 끝난 좌석은 복구 대상이 아니다 — 거둔 표시가 남아 있어도 없는 것과 같다.
+        for released in [None, Some(("worker", true))] {
+            let (rc, report, text, calls) = p1_boot(&w, w.topology(json!([w.pin()])), released);
+            assert_eq!(r2c_role(&report, "worker")["outcome"], "launched", "{released:?}: {text}");
+            let create = calls.iter().find(|(m, _)| m == "surface.create").expect("새 좌석 요청");
+            assert_eq!(create.1["cwd"], json!(w.cwd), "{released:?}: 저장 폴더로 뜨지 않았다");
+            assert!(p1_launch_line(&calls).contains(&format!("--resume {P1_SESSION}")), "{released:?}: 잇지 않았다:\n{text}");
+            assert_eq!(rc, 0, "{released:?}: {text}");
+        }
+    }
+
+    /// B1 · boot: 핀을 잇지도 판정하지도 못하면 새 대화 좌석을 만들지 않는다(핀이 밀려 사라지는 길을 막는다). 치명 실패로 치지 않는다.
+    #[cfg(unix)]
+    #[test]
+    fn p1_boot_holds_when_the_pin_cannot_be_resumed() {
+        let w = P1World::new();
+        let mut other_agent = w.pin();
+        other_agent["agent"] = json!("codex");
+        for (name, topology) in [
+            ("다른 agent 의 핀", w.topology(json!([other_agent]))),
+            ("저장 목록을 못 읽음", r2c_ok(json!({"saved": [], "live": [], "tombstones": [], "saved_unreadable": true}))),
+        ] {
+            let (rc, report, text, calls) = p1_boot(&w, topology, None);
+            let worker = r2c_role(&report, "worker");
+            assert_eq!(worker["outcome"], "resume_held", "{name}: {worker}\n{text}");
+            assert_eq!(r2c_count(&calls, "surface.create"), 0, "{name}: 새 좌석을 만들었다");
+            assert_eq!(report["summary"]["fatal_failed"], 0, "{name}: 치명 실패로 셌다");
+            assert_eq!(report["summary"]["resume_held"], 1, "{name}: 집계에 없다");
+            assert_eq!(rc, 0, "{name}: {text}");
+        }
+    }
+
+    /// 대조군: 핀이 없거나 묘비면 거둔 좌석이 있어도 boot 는 지금처럼 새 좌석을 띄운다. 첫 설치도 같다.
+    #[cfg(unix)]
+    #[test]
+    fn p1_boot_without_a_pin_launches_as_before() {
+        let w = P1World::new();
+        let tombstoned = r2c_ok(json!({"saved": [w.pin()], "live": [], "tombstones": ["worker"]}));
+        for (name, topology, released) in [
+            ("거둔 좌석 · 핀 없음", w.topology(json!([])), Some(("worker", false))),
+            ("거둔 좌석 · 묘비", tombstoned, Some(("worker", false))),
+            ("첫 설치", w.topology(json!([])), None),
+        ] {
+            let (rc, report, text, calls) = p1_boot(&w, topology, released);
+            assert_eq!(r2c_role(&report, "worker")["outcome"], "launched", "{name}: {text}");
+            assert_eq!(r2c_count(&calls, "surface.create"), 1, "{name}: {text}");
+            assert_eq!(r2c_count(&calls, "role.restore_released"), 0, "{name}: 역할을 되돌렸다");
+            assert!(!p1_launch_line(&calls).contains("--resume"), "{name}: 잇는 인자가 붙었다");
+            assert_eq!(rc, 0, "{name}: {text}");
+        }
+    }
+
+    /// R3: `resume-check` 는 읽기 전용이다 — `CYS_NO_AUTOSTART` 없이도 데몬을 띄우지 않고 rc 93. 대조군(자동 기동을 하는 명령)으로 감지기를 확인한다.
+    #[cfg(unix)]
+    #[test]
+    fn p1_resume_check_never_starts_a_daemon() {
+        use std::os::unix::fs::PermissionsExt;
+        let w = P1World::new();
+        let dir = w.pack.dir.join("x");
+        std::fs::create_dir_all(&dir).unwrap();
+        // current_exe 는 심링크를 풀지 않으므로 「옆의 cysd」 는 이 폴더의 가짜 스크립트다(진짜 데몬은 뜰 수 없다).
+        let exe = dir.join("cys-under-test");
+        std::os::unix::fs::symlink(std::env::current_exe().unwrap(), &exe).unwrap();
+        let marker = dir.join("started");
+        let fake = dir.join("cysd");
+        std::fs::write(&fake, format!("#!/bin/sh\n: > '{}'\n", marker.display())).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let sock = format!("/tmp/p1as-{}.s", std::process::id());
+        let run = |argv: Value| {
+            let _guard = super::tests::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let out = std::process::Command::new(&exe)
+                .args(["b360_tests::b360_r2c_child", "--exact", "--ignored", "--nocapture", "--test-threads=1"])
+                .env(R2C_CHILD, "cli")
+                .env(cys::ENV_SOCKET, &sock)
+                .env_remove("CYS_NO_AUTOSTART")
+                .env_remove("JAVIS_NO_AUTOSTART")
+                .env_remove("AITERM_NO_AUTOSTART")
+                .envs(w.pack.envs())
+                .env("CYS_B360_CLI_ARGS", argv.to_string())
+                .stdin(std::process::Stdio::null())
+                .output()
+                .expect("spawn");
+            (out.status.code().unwrap_or(-1), format!("{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
+        };
+        let (rc, text) = run(json!(["cys", "daemon", "resume-check", "--role", "worker"]));
+        assert_eq!(rc, 93, "{text}");
+        assert!(!text.contains("autostarting") && !marker.exists(), "읽기 전용 동사가 데몬을 띄웠다:\n{text}");
+        // 대조군: 일반 명령은 같은 조건에서 자동 기동을 시도한다.
+        let (_, text) = run(json!(["cys", "list"]));
+        assert!(text.contains("autostarting") || marker.exists(), "감지기가 자동 기동을 못 본다:\n{text}");
+        let _ = std::fs::remove_file(&sock);
+    }
+
     /// `cys boot --json` twice (children) against a gate-pending worker seat (surface:7) that re-observation adopts;
     /// `reply` answers the adoption paste. Unlike `r2c_boot_twice`, it KEEPS each boot's exit code (the old helper dropped
     /// it, census §10). Returns (exits, reports, requests, kept-pane records).
@@ -56473,6 +57662,7 @@ mod b360_tests {
         let mut pastes = 0usize;
         let mut created = false;
         let daemon = R2cDaemon::start(move |method, p| match method {
+            "system.topology" => r2c_ok(json!({"saved": [], "live": [], "tombstones": []})),
             "surface.list" => {
                 let mut rows = vec![json!({"surface_id": 3, "surface_ref": "surface:3", "role": "cso", "agent": "claude",
                                            "exited": false, "awakened_at": 1.0, "agent_alive": true, "seat": "occupied"})];

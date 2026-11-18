@@ -2087,7 +2087,7 @@ fn seed_chrome_preset_at_install(cfg: &Path) {
 }
 
 /// `<cfg>/.claude.json` 에 크롬 키가 **없을 때만** `true` 와 완료 표지를 함께 쓴다. 시드 표지만 있는 기기(1.1.11~1.1.14 를 거친 기기)는
-/// 키가 정확히 `true` 이고 완료 표지가 비어 있을 때 완료 표지만 한 번 보충한다.
+/// 키가 정확히 `true` 이고 완료 표지가 실제 `true` 가 아닐 때 완료 표지만 한 번 보충한다.
 ///
 /// Claude 와 같은 잠금(`<.claude.json>.lock` 폴더 · proper-lockfile 호환 · saveConfigWithLock)을 쥔 채 잠금 안에서 다시 읽고 쓴다 —
 /// 그래서 실행 중 세션과 겹쳐도 서로의 칸을 덮지 않는다. 남이 쥔 잠금은 지우지 않는다(`javis_computer_control._config_lock` 과 같은 규약).
@@ -2143,15 +2143,11 @@ fn seed_chrome_key_locked(path: &Path, before_swap: &dyn Fn()) -> ChromePreset {
     })
 }
 
-/// 켜기 키가 정확히 `true` 이고 완료 표지가 비어 있을 때(없음·null·false)만 완료 표지를 넣는다.
+/// 켜기 키가 정확히 `true` 이고 완료 표지가 실제 `true` 가 아닐 때만 완료 표지를 `true` 로 쓴다(켜기 도구와 같은 기준).
 fn backfill_chrome_onboarding_locked(path: &Path, before_swap: &dyn Fn()) -> ChromePreset {
     edit_chrome_config_locked(path, before_swap, ChromePreset::Backfilled, |doc| {
         let enabled = doc.get(CHROME_DEFAULT_KEY) == Some(&serde_json::Value::Bool(true));
-        let missing = matches!(
-            doc.get(CHROME_ONBOARDING_KEY),
-            None | Some(serde_json::Value::Null) | Some(serde_json::Value::Bool(false))
-        );
-        if !enabled || !missing {
+        if !enabled || doc.get(CHROME_ONBOARDING_KEY) == Some(&serde_json::Value::Bool(true)) {
             return false;
         }
         doc.insert(CHROME_ONBOARDING_KEY.to_string(), serde_json::Value::Bool(true));
@@ -3759,6 +3755,7 @@ pub fn write_atomic_mode(path: &Path, bytes: &[u8], mode: Option<u32>) -> std::i
 
 /// tmp 파일 생성 — `mode=Some(m)` 이면 **생성 시점부터** 그 퍼미션이다(사후 chmod 창 0).
 /// `mode=None` 이면 종전과 같은 기본 퍼미션(umask 적용)이다.
+/// 생성 때 umask 가 깎은 하위 9비트는 내용을 쓰기 전에 되살린다 — 깎인 쪽이 더 좁으므로 넓은 창이 열리지 않는다.
 ///
 /// ★H-CONC-3: 두 갈래 모두 `create_new`(O_EXCL)다 — 커널이 이름 유일성을 보증하므로 호출부가
 /// 충돌을 **관측**해 다음 후보로 넘어갈 수 있다. `create`+truncate 는 충돌을 조용히 삼켜 두
@@ -3772,7 +3769,19 @@ fn create_tmp_with_mode(tmp: &Path, mode: Option<u32>) -> std::io::Result<std::f
     if let Some(m) = mode {
         opts.mode(m);
     }
-    opts.open(tmp)
+    let f = opts.open(tmp)?;
+    if let Some(m) = mode {
+        use std::os::unix::fs::PermissionsExt;
+        let restored = f.metadata().and_then(|meta| {
+            let special = meta.permissions().mode() & 0o7000;
+            f.set_permissions(std::fs::Permissions::from_mode(special | (m & 0o777)))
+        });
+        if let Err(e) = restored {
+            let _ = std::fs::remove_file(tmp);
+            return Err(e);
+        }
+    }
+    Ok(f)
 }
 
 #[cfg(not(unix))]
@@ -13704,10 +13713,17 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&cfg).unwrap(), body, "1회만 보충한다");
     }
 
-    /// 벤더 조건은 값의 참·거짓을 본다(`!C || 표지`) — false·null 도 창이 뜨므로 없음과 같다.
+    /// 켜기 뒤 완료 표지는 실제 `true` 하나뿐이다 — 없음·false·null·0·빈 문자열과 그 밖의 값은 모두 `true` 로 쓴다(켜기 도구와 같은 기준).
     #[test]
-    fn chrome_onboarding_treats_false_and_null_as_missing() {
-        for (tag, val) in [("ob-false", "false"), ("ob-null", "null")] {
+    fn chrome_onboarding_backfills_anything_but_real_true() {
+        for (tag, val) in [
+            ("ob-false", "false"),
+            ("ob-null", "null"),
+            ("ob-zero", "0"),
+            ("ob-empty", "\"\""),
+            ("ob-one", "1"),
+            ("ob-text", "\"yes\""),
+        ] {
             let body = format!(r#"{{"{CHROME_DEFAULT_KEY}":true,"{CHROME_ONBOARDING_KEY}":{val}}}"#);
             let (td, cfg) = chrome_seeded_device(tag, Some(&body));
             assert_eq!(seed_chrome_default_at(&td, NO_WAIT), ChromePreset::Backfilled, "{val}");
@@ -13788,6 +13804,38 @@ mod tests {
         std::fs::set_permissions(&cfg, std::fs::Permissions::from_mode(0o640)).unwrap();
         assert_eq!(seed_chrome_default_at(&td, NO_WAIT), ChromePreset::Backfilled);
         assert_eq!(existing_file_mode(&cfg), Some(0o640));
+    }
+
+    /// 교체 파일은 umask 와 무관하게 원본 권한 그대로다. umask 는 프로세스 전역이라 병렬 시험을 오염시키지 않게 자식(이 시험 하나만 도는 시험 바이너리)에서 바꾼다.
+    #[cfg(unix)]
+    #[test]
+    fn chrome_onboarding_keeps_exact_mode_under_any_umask() {
+        use std::os::unix::fs::PermissionsExt;
+        const CHILD: &str = "CYS_TEST_CHROME_UMASK_CHILD";
+        const RAN: &str = "chrome-umask-child-ran";
+        if let Ok(spec) = std::env::var(CHILD) {
+            let (mode, mask) = spec.split_once(':').unwrap();
+            let (mode, mask) = (u32::from_str_radix(mode, 8).unwrap(), u32::from_str_radix(mask, 8).unwrap());
+            // SAFETY: umask 는 인자만 받는 시스템 호출이고, 이 자식 프로세스에서는 이 시험만 돈다.
+            unsafe { libc::umask(mask as libc::mode_t) };
+            let (td, cfg) = chrome_seeded_device(&format!("ob-umask-{spec}"), Some(&chrome_on_without_onboarding()));
+            std::fs::set_permissions(&cfg, std::fs::Permissions::from_mode(mode)).unwrap();
+            assert_eq!(seed_chrome_default_at(&td, NO_WAIT), ChromePreset::Backfilled, "{spec}");
+            assert_eq!(std::fs::metadata(&cfg).unwrap().permissions().mode() & 0o777, mode, "{spec}");
+            println!("{RAN}");
+            return;
+        }
+        let exe = std::env::current_exe().unwrap();
+        for spec in ["660:027", "666:077", "640:000", "600:022"] {
+            let out = std::process::Command::new(&exe)
+                .args(["--exact", "pack::tests::chrome_onboarding_keeps_exact_mode_under_any_umask", "--nocapture"])
+                .env(CHILD, spec)
+                .output()
+                .unwrap();
+            let text = String::from_utf8_lossy(&out.stdout);
+            assert!(out.status.success(), "{spec}: {text}\n{}", String::from_utf8_lossy(&out.stderr));
+            assert!(text.contains(RAN), "{spec}: 자식에서 시험이 돌지 않았다: {text}");
+        }
     }
 
     /// 1.1.14 → 새 판: 갱신이 지나는 세 입구(init-pack --no-install-hook · init-pack · 데몬 자동 설치)가 모두 보충에 닿는다.

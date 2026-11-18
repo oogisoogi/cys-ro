@@ -514,4 +514,14 @@ describe("codex 2R(60185fe2 BLOCK) 지적 고침", () => {
     expect(sim.sends()).toBe(1);
     expect(sim.core.state.msgs[0].step).toBe("injected");
   });
+  it("(통합 1116 · codex 1R major) 시작점 조회가 **거절**(Promise.reject)되면 시간 초과가 아니라 끝난 오류 = 예전처럼 보냄(쓰기 1) — 붙잡음에 굳지 않음", async () => {
+    const sim = new Sim({});
+    const orig = sim.deps.invoke;
+    (sim.deps as { invoke: typeof orig }).invoke = (cmd, args) => (cmd === "chat_transcript" ? Promise.reject(new Error("transcript down")) : orig(cmd, args));
+    await ready(sim);
+    await sim.core.send("기록 조회만 실패하는 좌석");
+    expect(sim.sends()).toBe(1);
+    expect(sim.core.state.msgs[0].code).not.toBe(STATUS_TIMEOUT);
+    expect(sim.core.state.msgs[0].step).toBe("injected");
+  });
 });

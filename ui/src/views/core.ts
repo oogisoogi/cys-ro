@@ -677,7 +677,9 @@ export class ChatCore {
     const m = this.s.master;
     if (!m) return "none";
     const gen = ++this.initGen; // 새 조회가 시작되면 앞선 조회의 늦은 결과는 버린다
-    const r = (await this.bounded(this.d.invoke("chat_transcript", { socket: null, surfaceId: m.surface_id, afterOffset: 0, fromEnd: true }))) as
+    // (통합 1116 · S3-11 codex 1R major) 조회 **거절**은 시간 초과가 아니다 — 끝난 오류 = none(예전처럼 보냄). bounded 는 거절도 TIMED_OUT 으로
+    //   합치므로 여기서 먼저 null 로 받는다(기록 조회만 계속 실패하는 좌석에서 말이 영원히 붙잡히지 않게). 세대가 밀렸으면 아래 stale 그대로.
+    const r = (await this.bounded(this.d.invoke("chat_transcript", { socket: null, surfaceId: m.surface_id, afterOffset: 0, fromEnd: true }).catch(() => null))) as
       | { status?: unknown; next_offset?: unknown; session_id?: unknown }
       | typeof TIMED_OUT;
     if (r === TIMED_OUT) {

@@ -42,7 +42,8 @@ MUTANTS = [
     ("아침 보고 확인됨 무시", OW, '        if d.get("confirmed_on") == t:', "        if False:"),
     ("아침 보고 좌석 예약 무시", OW,
      'if not r or r.get("day") != t or r.get("by") == me or now - r.get("at", 0) > BRIEF_CLAIM_STALE:', "if True:"),
-    ("아침 보고 확인 기록 제거", OW, "        _update_json(_brief_path(), {}, lambda d: d.update(confirmed_on=day))", "        pass"),
+    ("아침 보고 확인 기록 제거", OW,
+     '        _update_json(_brief_path(), {}, lambda d: d.update(confirmed_on=max(d.get("confirmed_on") or "", day)))', "        pass"),
     ("아침 보고 확인 날짜 후퇴 허용", OW, 'confirmed_on=max(d.get("confirmed_on") or "", day)', "confirmed_on=day"),
     ("보내는 중에도 안내 횟수 소진", OW, '            if it["id"] in ids and n.get("phone") == "pending" \\\n                    and time.time() - (n.get("phone_sending") or 0) >= PHONE_SENDING_STALE:',
      '            if it["id"] in ids and n.get("phone") == "pending":'),
@@ -65,7 +66,9 @@ MUTANTS = [
     ("포기 뒤 늦은 성공 불인정", OW, 'if n.get("phone") in ("pending", "unsent"):', 'if n.get("phone") == "pending":'),
     ("압축(compact)에도 턴 정산", OW, '    if hin.get("source") != "compact":\n        settle_turn', "    if True:\n        settle_turn"),
     ("폰 좌석 표지 무시", OW, 'if not cl or cl.get("by") == me or now - cl.get("at", 0) > PHONE_CLAIM_STALE:', "if True:"),
-    ("폰 미발송 포기 없음", OW, 'if n.get("phone") == "pending" and n.get("phone_reminders", 0) >= PHONE_REMINDERS:', "if False:"),
+    ("폰 미발송 포기 없음", OW,
+     'if n.get("phone") == "pending" and n.get("phone_reminders", 0) >= PHONE_REMINDERS \\\n'
+     '                    and time.time() - (n.get("phone_sending") or 0) >= PHONE_SENDING_STALE:', "if False:"),
     ("폰 안내 횟수 = 실리지 않은 것도 셈", OW, 'bump_phone_reminders(set(emitted["phone"]))',
      'bump_phone_reminders(set(p["id"] for p in phones))'),
     ("PushNotification 보냄 기록 제거", OW, "        ids = mark_phone_sent(msg)", "        ids = []"),
@@ -113,7 +116,8 @@ def main():
             with open(path, "wb") as f:
                 f.write(text.replace(old, new).encode("utf-8"))
             try:
-                p = subprocess.run([sys.executable, TEST], capture_output=True, text=True, timeout=900)
+                # -f = 첫 실패에서 멈춤(판정은 rc 그대로 · 잡힌 뮤턴트의 남은 시험 시간을 아낀다).
+                p = subprocess.run([sys.executable, TEST, "-f"], capture_output=True, text=True, timeout=900)
                 killed = p.returncode != 0
             except subprocess.TimeoutExpired:
                 killed = "timeout"                          # 시험이 끝나지 않음 = 정상본과 다르게 움직임(따로 표시)

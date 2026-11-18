@@ -459,15 +459,28 @@ class R9Codex3R(Base):
     def test_flush_deadline_bounds_subprocess(self):
         self.tool("notify", "set", "--channel", "app")
         self.tool("todo", "add", "--what", "A", "--what", "B", "--notify")
-        import time as _t
-        t0 = _t.time()
         self.py("\n".join(["def f(d):",
                             "    for it in d['items']:",
                             "        it.update(status='done', notice={'event': 'e%d' % it['id'], 'app': 'pending', 'phone': None, 'message': 'm'})",
                             "o._mutate(f)",
-                            "print(o.flush_app_notices(budget=4))"]), FAKE_CYS_SLOW="2.5")
-        # 수리 전: 둘째 발송이 2.5초에 시작해 고정 timeout 5초 안에서 끝까지(총 ≈5초) · 수리 후: 남은 1.5초에서 끊김(총 ≈4초)
-        self.assertLess(_t.time() - t0, 4.6)                                     # 3R #4 — 발송 timeout 도 남은 시간 안
+                            "print(o.flush_app_notices(budget=4))"]), FAKE_CYS_SLOW="2")
+        # 첫 발송(≈2초) 뒤 남은 시간 < 둘째에 필요한 시간 — 둘째는 끊겨 기록을 못 남긴다(고정 timeout 이면 끝까지 가서 2건).
+        # 벽시계 비교는 해석기 기동 시간에 따라 판정이 갈려 쓰지 않는다.
+        self.assertEqual(len(self.feeds()), 1)                                   # 3R #4 — 발송 timeout 도 남은 시간 안
+        st = self.py("print([it['notice']['app'] for it in o.load_todos()['items']])")
+        self.assertEqual(st, "['sent', 'pending']")
+
+    def test_flush_starts_nothing_when_budget_short(self):
+        self.tool("notify", "set", "--channel", "app")
+        self.tool("todo", "add", "--what", "A", "--notify")
+        out = self.py("\n".join(["def f(d):",
+                                  "    d['items'][0].update(status='done', notice={'event': 'e1', 'app': 'pending', 'phone': None, 'message': 'm'})",
+                                  "o._mutate(f)",
+                                  "print(o.flush_app_notices(budget=0.5))"]))
+        self.assertEqual(out, "{}")                                              # 남은 시간 1초 미만 = 시작하지 않음(실패로도 안 셈)
+        self.assertEqual(self.feeds(), [])
+        n = json.loads(self.py("print(__import__('json').dumps(o.load_todos()['items'][0]['notice']))"))
+        self.assertEqual((n["app"], n.get("app_attempts", 0)), ("pending", 0))
 
     def test_brief_confirm_uses_brief_day(self):
         self.tool("todo", "add", "--what", "주보", day="2026-11-16")
@@ -499,6 +512,21 @@ class R10Codex4R(Base):
         n = json.loads(self.py("print(__import__('json').dumps(o.load_todos()['items'][0]['notice']))"))
         self.assertEqual(n["phone"], "pending")                    # 4R ① — 보내는 중 유예 동안 포기하지 않음
         self.assertEqual(n.get("phone_reminders", 0), 0)
+
+    def test_sending_mark_guards_claim_bump_expire(self):
+        self.tool("notify", "set", "--channel", "phone")
+        self.tool("todo", "add", "--what", "A", "--notify")
+        self.tool("todo", "done", "1", "--evidence", "a")
+        code = "\n".join(["def f(d):",
+                          "    d['items'][0]['notice'].update(phone_sending=o.time.time() - (%s), phone_reminders=o.PHONE_REMINDERS)",
+                          "o._mutate(f)",
+                          "got = o.claim_phone()",
+                          "o.bump_phone_reminders({1})",                   # 안내를 고른 뒤 표지가 찍힌 틈도 세지 않는다
+                          "o.expire_phone()",
+                          "n = o.load_todos()['items'][0]['notice']",
+                          "print(len(got), n['phone_reminders'] - o.PHONE_REMINDERS, n['phone'])"])
+        self.assertEqual(self.py(code % "0"), "0 0 pending")               # 보내는 중 — 지시·횟수·포기 모두 멈춤
+        self.assertEqual(self.py(code % "o.PHONE_SENDING_STALE + 1"), "1 1 unsent")   # 표지 만료 — 다시 움직임
 
     def test_brief_confirm_never_moves_back(self):
         self.tool("todo", "add", "--what", "주보", day="2026-11-16")

@@ -8,7 +8,7 @@
 |---|---|
 | `cysjavis-pack/bin/javis_idle_gate.py`(새) | 유휴 관문 도구 — `idle` · `wait --seconds 20 --timeout N --task T --est N` · `mark` · `check` · `end --restore` · `pending` · `done --id` |
 | `cysjavis-pack/bin/tests/test_idle_gate.py`(새) | 관문 계약(가짜 시계) + 윈 원천 단위 + 문서 계약(손 떼기 요청 문장 0 · 스킬 절 · 지침 절 · 한글 문구) |
-| `cysjavis-pack/bin/tests/mut_idle_gate.py`(새) | 뮤턴트 9종(관문 끔 · fail-open · 도중 입력 못 봄 · 시간 초과 go · 대기열 누락 · 윈 감김 · 재개 기준점 · 손 떼기 문구 · 상한 없음) |
+| `cysjavis-pack/bin/tests/mut_idle_gate.py`(새) | 뮤턴트 27종(M1~M28 · M13 없음 — 관문 끔 · fail-open · 도중 입력 못 봄 · 시간 초과 go · 대기열 누락 · 윈 감김·역행 · 재개 기준점 · 손 떼기 문구 · 상한 없음 · 앱별 상향표 · 소유권/TTL · 잠금 · 복귀 재확인 등) · KILLED = unittest 실패 + 붉어진 시험 이름 있을 때만 |
 | `cysjavis-pack/skills/computer-control/SKILL.md` | 새 절 「사용자가 일하는 동안 — 손을 빌리지 않기 (1.1.16)」 + 한글 일 표 · 67줄 「맥 한글은 화면 조작만」 → 파일 도구 먼저 · description 에 트리거 1구 |
 | `cysjavis-pack/bin/javis_computer_control.py` | 맥 한글 안내 문구(MAC_APPS hwp note) = 파일 먼저 · 앱은 PDF·인쇄처럼 꼭 필요할 때만 |
 | `cysjavis-pack/directives/MASTER_DIRECTIVE.md` | 「컴퓨터 통제」 절 **바로 뒤**(파일 끝 아님 — ownermem 좌석의 끝 추가와 충돌 회피) 「## ★ 사용자와 함께 쓰는 컴퓨터 — 손을 빌리지 않기 (1.1.16)」 2줄 |
@@ -36,9 +36,9 @@
 ## 4. 시험
 | 항목 | 결과 |
 |---|---|
-| test_idle_gate | 20 OK(실대기 0 · 실 OS 값 0) |
+| test_idle_gate | 38 OK(66dfd324 · 11-18 18:5x 재실행 · 실대기 0 · 실 OS 값 0) |
 | 고치기 전(문서 계약) | 4건 붉음: hwp 문구 · 스킬 절 · MASTER 절 · CEO 절(「손 떼기」 문장 검사는 고치기 전에도 0건 — 팩에 그런 문장이 원래 없음 = 참가자 증상은 규칙 부재에서 온 모델 기본 행동) |
-| mut_idle_gate | 9/9 KILLED |
+| mut_idle_gate | 27/27 KILLED(66dfd324 · 원본 녹색 전제 통과 · SURVIVED·CRASH·BROKEN 0) |
 | test_computer_control | 112 OK(좌석 환경변수 `CYS_ROLE`·`CYS_SURFACE_ID`·`CLAUDE_CODE_ENABLE_CFC` 를 뺀 실행 · 그대로 두면 기준선 7d25c38e 도 같은 14건 붉음 = 시험 격리 결함 · 이 티켓 무관) |
 | mut_computer_control | (§7 갱신) |
 | test_bootv2_doc_contract · test_event_inject · test_computer_use_audit | rc 0 · rc 0 · 17 OK |

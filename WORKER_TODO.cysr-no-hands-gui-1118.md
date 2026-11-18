@@ -13,7 +13,10 @@
 - [x] 6 MASTER_DIRECTIVE 짧은 한 절 → CEO_TEMPLATE 재합성 · 해시표 재생성
 - [x] 7 팩 파이썬·doc-contract·합성기 재실행(재부팅 뒤 13:5x · computer_control 112 · doc_contract·event_inject·cu_audit·import_guard·pyseal rc 0 · 합성기 GREEN·OK · cso_directive_rev = 기준선부터 붉은 예산 핀 1건)
 - [x] 8 codex 1R(REVISE → c4b4ffe1) · 2R(REVISE · 결정 master#18af38d1→#16466ff6 = 일반 앱 Q=0 · 카톡·메일·한글 Q=20)
-- [ ] 9 2R 고침(미커밋 · 작업트리 5파일) → 뮤턴트 재실행(27종 · 직전 26/27 · M26 중복 갱신 제거 뒤 재실행이 [RESTORE] 로 끊김) → 커밋 → codex 결정 재검토 1회 → HANDOFF §4·§7 → 【확인요청】
+- [x] 9 2R 고침 검증 — 66dfd324 기준 test_idle_gate 38 OK · mut_idle_gate 27/27 KILLED
+- [ ] 10 지침 절 축소(469 → 321 B 이하 · 「한 번에」 삭제 · master#30990c7b A)
+- [ ] 11 integ/1116 로컬 병합(충돌 해소 · push 0) → 상한 +축소분 → cso_directive_rev·doc-contract·합성기 초록
+- [ ] 12 codex 결정 재검토 1회 → HANDOFF §4·§7·병합 뒤 실측 상한 → 【확인요청】
 - 복원 메모(11-18 두 번째 [RESTORE] · 좌석 2212): 재부팅 뒤 [RESUME] 로 다시 돌린 관문 시험+뮤턴트가 또 끊김(결과 없음) · 이전 메모: 재개 금지 · master 지시 대기 · 다음 첫 행동 = `python3 cysjavis-pack/bin/tests/mut_idle_gate.py`(백그라운드) 결과 확인
 
 ## 이월

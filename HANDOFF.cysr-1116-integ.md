@@ -468,6 +468,11 @@ lib 1256·0·3 · cys 765·0·2 · cysd 3308·0·17 · seatkeep 49·0 · hidden 
 - 맥에서 뺀 `test_release_postprocess_gate.py` 와 우분투 실행은 아직 안 돌았다(CI 몫 · §12-6).
 
 ### 12-6. `test_owner_desk` CI 등재 · dispatch 준비(push·dispatch = master)
+
+> **⛔ 보류(master#e5f6e238 · 11-18 23:14): push·dispatch 는 지금 하지 않는다.** `origin` 은 공개 저장소이고 이 가지에는 `origin/main` 에 없는 파일이 262개 있으며(HANDOFF·WORKER_TODO 포함) 후보도 확정 전이다.
+> - **재개 조건** = 1.1.16 후보 확정(조각 1 포함 여부 결정 뒤). 그때 master 가 공개 전 내부 문서 점검과 함께 실행한다. 아래 명령은 그때까지 실행하지 않는다.
+> - **공개 전 점검** = 새 내부 문서 262개 목록 · 개인정보·내부 경로 대조. 목록 산출: `git diff --name-only --diff-filter=A origin/main HEAD`(b29cbdd89 실측 262개 · `docs/` 134 · `ui/` 61 · `src/` 14 · `cysjavis-pack/` 11 · HANDOFF·WORKER_TODO 35). `secret-scan --all` clean 은 정해진 유형만 잡으므로 이 점검을 대신하지 못한다.
+> - 우분투 실행(`test_idle_gate`·`test_agents_notes_personal_hooks`·`test_hook_fail_timing`·`test_owner_desk`)과 맥의 `test_release_postprocess_gate.py` 는 그때까지 미확인이다.
 - `92fcae3e3`: `ci-branch.yml` 2 · `release.yml` 2 · `pack-release.yml` 1 루프에 등재. `lane-parity-rehearsal.sh` 고치기 전 `--strict` rc 1(`미등재 test_owner_desk`) → 고친 뒤 기본 · `--strict` · `--self-test` 모두 rc 0.
 - 맥 1회(CI 꼴 · `CYS_PACK_DIR` 임시 · python 3.12.13): 52 OK · 53.6초 · 계수 불변. 우분투 실행은 미확인.
 - §11-4 의 「미등재 44개」 는 낱말 대조 값이다. lane 도구 기준으로는 미등재가 모두 사유 있는 항목이고 사유 없는 미등재는 0이다.

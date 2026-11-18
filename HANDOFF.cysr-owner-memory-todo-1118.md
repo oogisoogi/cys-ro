@@ -69,3 +69,30 @@
 - 아침 보고 「말했다」 확인은 Stop 의 마지막 답에서 「밀린 일」을 찾는다 — 보고를 앞 답에 하고 도구 호출 뒤 마지막 답에 없으면 다음 입력에 한 번 더 나올 수 있다(중복 1회 · 누락 0 쪽으로 기움).
 - 팩 전수 루프·뮤턴트는 편집 중 작업트리에서 돌리지 마라(팩이 덮이거나 원복이 편집을 지운다).
 - 재현: `python3 cysjavis-pack/bin/tests/test_owner_desk.py` · `git worktree add --detach <임시> HEAD && (cd <임시> && python3 cysjavis-pack/bin/tests/mut_owner_desk.py)`.
+
+---
+
+## 6. 인계 델타(11-18 18:4x · master#e14438b2 · 계정2 새 좌석용) — ⚠위 §0~§5 는 3a40e5c6 이전 초안 수치다
+
+### 6-1. 중단 직전 하던 일
+- 커밋 사슬: … 83b5d5cc(codex 1R 수리) → 4ce6a80c(2R 수리) → 3a40e5c6(3R 수리 · 시험 41/41 초록 · 3R 시험 6건 = 직전 머리 6/6 붉음 확인) → **d0497ea1 WIP(4R 수리 · 미검증)**.
+- codex 4R(3a40e5c6 대상) = REVISE · MAJOR 2: ① 폰 알림 「보내는 중」(PreToolUse 표지 120초) 동안 재시도가 거절되는데 다음 입력 안내 횟수는 쌓여 결국 unsent 로 포기 ② 전날 좌석의 늦은 Stop 이 오늘 아침 보고 확인(confirmed_on)을 하루 뒤로 되돌림. 나머지 3R 6건 중 4건 닫힘 확인(#1 compact · #2 끝 번호 · #4 데드라인 · #6 늦은 성공) · #3·#5 는 위 ①②로 부분 닫힘.
+- WIP 수리 내용: `claim_phone`·`bump_phone_reminders`·`expire_phone` 이 보내는 중(PHONE_SENDING_STALE 안) 항목을 건너뜀 · `confirmed_on=max(기존, day)` · 시험 `R10Codex4R` 2건 · 뮤턴트 2종 추가(총 53) · 하네스가 시험 시간 초과를 KILLED(timeout) 로 기록(종전 = 하네스 중단).
+- codex 1R~4R 원문 파일은 재부팅으로 스크래치와 함께 소실 — 판정·지적 요지는 §4 표와 이 절이 정본.
+
+### 6-2. 끊긴 시험(결과 없음)과 다시 돌릴 명령
+- `python3 cysjavis-pack/bin/tests/test_owner_desk.py` — WIP 머리에서 전체 미실행(41+2=43 기대 · 단독 실행 정상 시 약 60~90초). 이 시험은 cysd·cys 실행 파일을 띄우지 않는다(파이썬 + sh + 가짜 cys) → 사람 맥 1회 실행 가능.
+- 뮤턴트 53종 = **별도 작업트리**에서만: `git worktree add --detach <임시> HEAD && (cd <임시> && python3 cysjavis-pack/bin/tests/mut_owner_desk.py)` — 53 × 시험 1회 ≈ 50~80분 · 같은 시험 반복 실행이므로 **사람 맥 부하 반복 금지 규칙상 master 통제 실행(tools/gk-guard 방식)으로 요청**할 것.
+- `python3 cysjavis-pack/bin/tests/test_dept_chat_inject_timeout.py` — 3a40e5c6 에서 부하 중 test_b 붉음 1(멈춘 해석기 60초 상한 초과) · 이 가지는 dept-chat-inject 무접촉 · 단독 재확인 1회.
+- 팩 전수 스캔·훅·계약 14본(§3 목록) — 3a40e5c6 에서 13 rc0 + 위 1건 · WIP 뒤 재확인 필요(별도 작업트리 · 팩 덮어쓰기 함정).
+- cargo lib/cys/cysd · bun · tsc = Rust·UI 변경 0이라 이전 값(§3) 유지 · 재실행 불요(필요 시 master 통제 실행).
+
+### 6-3. 미결 질문 · master 결정 대기
+- 없음(결정 1 effort 현행 유지 · 결정 2 카톡 = 안내 후 사용자 선택 · 안전망 설계 변경 = master#0f87e12f 로 확정).
+- 📌 tsc rc1(`ui/src/main.ts:4669·4678` TS7006 · UI 무변경) = 통합 좌석 환경 확인 몫.
+- 📌 codex 5R(4R 수리 대상) 여부 = master 판단(브리프 = 1R→2R · 실제 4R까지 진행).
+
+### 6-4. 다음 첫 행동 3줄
+1. WIP 머리 d0497ea1 에서 `python3 cysjavis-pack/bin/tests/test_owner_desk.py` 1회 → 초록이면 WIP 를 정식 커밋 메시지로 덮지 말고 `fix(… codex 4R …)` 새 커밋(시험 수치 기재).
+2. 뮤턴트 53 · 팩 14본 · dept_chat 단독 = master 통제 실행 요청 → 결과로 §3·§4 표를 최종 수치로 갱신(§0~§5 의 3a40e5c6 이전 수치 교체).
+3. codex 5R(필요 시) → 【확인요청】 TICKET=cysr-owner-memory-todo-1118 + 새 머리 + 시험 수치 + codex 1R~4R(5R) 처분 + HANDOFF.

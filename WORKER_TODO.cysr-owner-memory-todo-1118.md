@@ -29,3 +29,5 @@
 - [x] codex 4R 수리 fix 커밋 · codex 5R 판단 = 불요(비밀값·데이터 비가역 무접촉)
 - [x] 팩 14본 · javis_memory --self-test = master 통제 실행 전부 rc 0(adfcb006)
 - [x] 뮤턴트 생존·NO-MATCH 처분 → 5a1de515 에서 시험 45/45 · MUTANTS ALL-KILLED 53/53 · HANDOFF §1·§3·§4 갱신
+- [x] 실좌석 표지 경로(6a056e56) 12/12
+- [x] 폰 원장 = 도구 결과대로(master#31559f90 · f41676db) · 시험 52 · 뮤턴트 72/72 · 실좌석 16/16

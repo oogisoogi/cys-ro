@@ -487,6 +487,32 @@ class R9Codex3R(Base):
         self.assertEqual(self.py("print(o.load_todos()['items'][0]['notice']['phone'])"), "sent")   # 3R #6
 
 
+class R10Codex4R(Base):
+    def test_failed_send_does_not_burn_reminders(self):
+        self.tool("notify", "set", "--channel", "phone")
+        self.tool("todo", "add", "--what", "A", "--notify")
+        self.tool("todo", "done", "1", "--evidence", "a")
+        self.hook({"hook_event_name": "PreToolUse", "tool_name": "PushNotification",
+                   "tool_input": {"message": "끝났어요: A (#1)"}})          # 보내다 실패 — PostToolUse 안 옴
+        for i in range(3):
+            self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "턴 %d" % i})
+        n = json.loads(self.py("print(__import__('json').dumps(o.load_todos()['items'][0]['notice']))"))
+        self.assertEqual(n["phone"], "pending")                    # 4R ① — 보내는 중 유예 동안 포기하지 않음
+        self.assertEqual(n.get("phone_reminders", 0), 0)
+
+    def test_brief_confirm_never_moves_back(self):
+        self.tool("todo", "add", "--what", "주보", day="2026-11-16")
+        self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "A 18일 밤"}, day="2026-11-18")   # A 좌석 18일 보고
+        self.env["CYS_SURFACE_ID"] = "8"
+        self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "B 19일"}, day="2026-11-19")
+        self.hook({"hook_event_name": "Stop", "last_assistant_message": "밀린 일 1건"}, day="2026-11-19")
+        self.env["CYS_SURFACE_ID"] = "7"
+        self.hook({"hook_event_name": "Stop", "last_assistant_message": "밀린 일 1건"}, day="2026-11-19")  # A 의 늦은 Stop
+        self.env["CYS_SURFACE_ID"] = "8"
+        c = self.ctx(self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "B 또"}, day="2026-11-19"))
+        self.assertNotIn("밀린 일 1건", c)                          # 4R ② — 19일 확인이 18일로 되돌아가지 않음
+
+
 class R5StopNet(Base):
     """턴 끝 안전망 — 막는 것은 거짓 확인·폰 알림 미발송 둘뿐 · 나머지는 다음 오너 턴으로 이월(막으면 답이 되풀이된다 ·
     11-18 실좌석 실측: 자기 점검 막기 → 빈 답 → 하네스가 보이는 답 강요 → 같은 표 3번)."""

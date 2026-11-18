@@ -43,6 +43,9 @@ MUTANTS = [
     ("아침 보고 좌석 예약 무시", OW,
      'if not r or r.get("day") != t or r.get("by") == me or now - r.get("at", 0) > BRIEF_CLAIM_STALE:', "if True:"),
     ("아침 보고 확인 기록 제거", OW, "        _update_json(_brief_path(), {}, lambda d: d.update(confirmed_on=day))", "        pass"),
+    ("아침 보고 확인 날짜 후퇴 허용", OW, 'confirmed_on=max(d.get("confirmed_on") or "", day)', "confirmed_on=day"),
+    ("보내는 중에도 안내 횟수 소진", OW, '            if it["id"] in ids and n.get("phone") == "pending" \\\n                    and time.time() - (n.get("phone_sending") or 0) >= PHONE_SENDING_STALE:',
+     '            if it["id"] in ids and n.get("phone") == "pending":'),
     ("아침 보고 확인 날짜 = Stop 시점 오늘", OW, 'day = turn.get("brief_day") or today().isoformat()', "day = today().isoformat()"),
     # ③ 알림
     ("--notify 무시", OW, 'if (it.get("notify") or c["notify_all_done"]) and c["notify_channel"] != "off":',
@@ -109,12 +112,16 @@ def main():
         try:
             with open(path, "wb") as f:
                 f.write(text.replace(old, new).encode("utf-8"))
-            p = subprocess.run([sys.executable, TEST], capture_output=True, text=True, timeout=600)
-            killed = p.returncode != 0
+            try:
+                p = subprocess.run([sys.executable, TEST], capture_output=True, text=True, timeout=900)
+                killed = p.returncode != 0
+            except subprocess.TimeoutExpired:
+                killed = "timeout"                          # 시험이 끝나지 않음 = 정상본과 다르게 움직임(따로 표시)
         finally:
             with open(path, "wb") as f:
                 f.write(orig)
-        print("%s %s" % ("KILLED  " if killed else "SURVIVED", name), flush=True)
+        print("%s %s" % ("KILLED(timeout)" if killed == "timeout" else ("KILLED  " if killed else "SURVIVED"), name),
+              flush=True)
         if not killed:
             survived.append(name)
     for m in missing:

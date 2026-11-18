@@ -583,6 +583,8 @@ def claim_phone(only_ids=None):
             n = it.get("notice") or {}
             if n.get("phone") != "pending" or (only_ids is not None and it["id"] not in only_ids):
                 continue
+            if now - (n.get("phone_sending") or 0) < PHONE_SENDING_STALE:
+                continue                                    # 보내는 중(PreToolUse 표지) — 지시·안내 안 함(4R ①)
             cl = n.get("phone_claim") or {}
             if not cl or cl.get("by") == me or now - cl.get("at", 0) > PHONE_CLAIM_STALE:
                 n["phone_claim"] = {"by": me, "at": now}
@@ -655,7 +657,8 @@ def expire_phone():
     def f(data):
         for it in data["items"]:
             n = it.get("notice") or {}
-            if n.get("phone") == "pending" and n.get("phone_reminders", 0) >= PHONE_REMINDERS:
+            if n.get("phone") == "pending" and n.get("phone_reminders", 0) >= PHONE_REMINDERS \
+                    and time.time() - (n.get("phone_sending") or 0) >= PHONE_SENDING_STALE:
                 n["phone"] = "unsent"
 
     if os.path.exists(_todo_path()):
@@ -670,7 +673,8 @@ def bump_phone_reminders(ids):
     def f(data):
         for it in data["items"]:
             n = it.get("notice") or {}
-            if it["id"] in ids and n.get("phone") == "pending":
+            if it["id"] in ids and n.get("phone") == "pending" \
+                    and time.time() - (n.get("phone_sending") or 0) >= PHONE_SENDING_STALE:
                 n["phone_reminders"] = n.get("phone_reminders", 0) + 1
 
     _mutate(f)
@@ -934,7 +938,8 @@ def hook_stop(hin):
         turn["removed_shown"] = True
     if turn.get("brief_due") and BRIEF_MARK in msg:
         day = turn.get("brief_day") or today().isoformat()  # 보고를 실은 날로 확인(자정 넘긴 Stop 이 다음 날을 소비하지 않게 · 3R #5)
-        _update_json(_brief_path(), {}, lambda d: d.update(confirmed_on=day))
+        # 확인 날짜는 뒤로 가지 않는다 — 전날 턴의 늦은 Stop 이 오늘 확인을 되돌리지 않게(4R ②).
+        _update_json(_brief_path(), {}, lambda d: d.update(confirmed_on=max(d.get("confirmed_on") or "", day)))
     turn["stopped"] = True
     ev = events_since(turn.get("start_ts", 0), surface())
     tl = _tool_line()

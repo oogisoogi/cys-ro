@@ -13,3 +13,8 @@
 - [ ] 8 codex 1R(→2R)
 - [x] 9 실좌석 실사격(격리) 또는 한계 표기
 - [ ] 10 HANDOFF + 【확인요청】
+
+## 복원 메모(13:54 [RESTORE] 수신 · 재개 금지 · master 지시 대기)
+- 커밋 머리 4ce6a80c(codex 2R 수리) · 작업트리 미커밋 = codex 3R 수리 중(javis_owner.py · javis_preflight.py PreToolUse 행 · owner-desk.sh pretool) — 시험 미초록(C28 등록 시험이 4사건 기대 · flush 시간 상한 시험 조정 필요 · 기계 부하로 전체 실행 지연)
+- 3R 판정 REVISE(5 MAJOR·1 MINOR): compact 정산 해제 · 끝 (#번호)만 · 실제 발송 중복 거절(PreToolUse) · flush 데드라인 · 아침 보고 날짜 · 포기 뒤 늦은 성공 — 코드 수리는 작업트리에 있음
+- 남은 것: 3R 수리 시험 정리·커밋 → 뮤턴트(45+) → HANDOFF 갱신(초안 = HANDOFF.cysr-owner-memory-todo-1118.md 미커밋) → 【확인요청】

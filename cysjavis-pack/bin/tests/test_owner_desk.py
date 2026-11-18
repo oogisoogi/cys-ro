@@ -45,8 +45,11 @@ class Base(unittest.TestCase):
         with open(fake, "w") as f:
             f.write('#!/bin/sh\nif [ -f "%s" ]; then rm -f "%s"; exit 1; fi\n'
                     'if [ -f "%s.dup" ]; then echo "duplicate request_id" >&2; exit 1; fi\n'
-                    '[ -n "$FAKE_CYS_SLOW" ] && sleep 1\n'
-                    'printf "%%s\\n" "$*" >> "%s"\n' % (self.failflag, self.failflag, self.failflag, self.feedlog))
+                    # 느린 데몬 흉내 = exec 로 셸을 갈아 끼운다(발송 timeout 이 잡을 프로세스가 곧 이것 · 고아 sleep 0)
+                    'if [ -n "$FAKE_CYS_SLOW" ]; then exec "%s" -c "import sys,time; time.sleep(float(sys.argv[1])); '
+                    'open(sys.argv[2], \'a\').write(sys.argv[3] + chr(10))" "$FAKE_CYS_SLOW" "%s" "$*"; fi\n'
+                    'printf "%%s\\n" "$*" >> "%s"\n'
+                    % (self.failflag, self.failflag, self.failflag, sys.executable, self.feedlog, self.feedlog))
         os.chmod(fake, 0o755)
         self.env = {k: v for k, v in os.environ.items() if not k.startswith(("CYS_", "AITERM_", "JAVIS_"))}
         self.env.update(HOME=self.home, CYS_PACK_DIR=self.pack, CYS_OWNER_DIR=os.path.join(self.home, ".cys", "owner"),
@@ -72,6 +75,13 @@ class Base(unittest.TestCase):
                            env=env, timeout=60)
         self.assertEqual(p.returncode, 0, p.stderr)
         return json.loads(p.stdout) if p.stdout.strip() else None
+
+    def py(self, code, **env):
+        e = dict(self.env, **env)
+        p = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, %r); import javis_owner as o\n"
+                            % os.path.join(PACK, "bin") + code], capture_output=True, text=True, env=e)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        return p.stdout.strip()
 
     def ctx(self, out):
         return (out or {}).get("hookSpecificOutput", {}).get("additionalContext", "")
@@ -316,13 +326,6 @@ class R4NotifyRace(Base):
 class R8Codex2R(Base):
     """codex 2R 지적 재현(수리 전 붉음)."""
 
-    def py(self, code, **env):
-        e = dict(self.env, **env)
-        p = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, %r); import javis_owner as o\n"
-                            % os.path.join(PACK, "bin") + code], capture_output=True, text=True, env=e)
-        self.assertEqual(p.returncode, 0, p.stderr)
-        return p.stdout.strip()
-
     def test_fit_consumes_only_emitted_carry(self):
         # 다시 보기 줄(발췌 300자)은 한 줄이 길어 20건(CARRY_MAX)이면 출력 상한을 넘는다.
         items = [{"k": "second", "text": "확인 %03d " % i + "다" * 300} for i in range(20)]
@@ -357,7 +360,7 @@ class R8Codex2R(Base):
                             "    for it in d['items']:",
                             "        it.update(status='done', notice={'event': 'done-%d-x' % it['id'], 'app': 'pending', 'phone': None, 'message': 'm'})",
                             "o._mutate(f)",
-                            "print(o.flush_app_notices(budget=0.5))"]), FAKE_CYS_SLOW="1")
+                            "print(o.flush_app_notices(budget=1.6))"]), FAKE_CYS_SLOW="1")
         f = self.feeds()
         self.assertEqual(len(f), 1)                              # 시간 상한 — 둘째는 시작하지 않음
         self.assertIn("--request-id owner-done-1-x", open(self.feedlog, encoding="utf-8").read())   # 데몬 쪽 중복 거절 열쇠(2R #2)
@@ -418,6 +421,70 @@ class R8Codex2R(Base):
         self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "보고는 한 장으로"})   # 기록 0건 · 끊김
         c = self.ctx(self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "또"}))
         self.assertIn("«보고는 한 장으로»", c)
+
+
+class R9Codex3R(Base):
+    """codex 3R 지적 재현(수리 전 붉음)."""
+
+    def test_compact_keeps_active_turn_net(self):
+        self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "앞으로 표로"})
+        self.hook({"hook_event_name": "SessionStart", "source": "compact"})      # 턴 도중 자동 압축
+        out = self.hook({"hook_event_name": "Stop", "last_assistant_message": "이렇게 저장했습니다: 표로"})
+        self.assertEqual(out["decision"], "block")                               # 3R #1 — 안전망 유지
+
+    def test_only_trailing_id_settles(self):
+        self.tool("notify", "set", "--channel", "phone", "--all-done", "on")
+        self.tool("todo", "add", "--what", "보고서 (#2) 인용 확인", "--what", "B")
+        self.tool("todo", "done", "1", "--evidence", "a")
+        self.tool("todo", "done", "2", "--evidence", "b")
+        self.hook({"hook_event_name": "PostToolUse", "tool_name": "PushNotification",
+                   "tool_input": {"message": "끝났어요: 보고서 (#2) 인용 확인 (#1)"}})
+        st = self.py("print([it['notice']['phone'] for it in o.load_todos()['items']])")
+        self.assertEqual(st, "['sent', 'pending']")                              # 3R #2
+
+    def test_pretool_denies_duplicate_send(self):
+        self.tool("notify", "set", "--channel", "phone")
+        self.tool("todo", "add", "--what", "A", "--notify")
+        self.tool("todo", "done", "1", "--evidence", "a")
+        pre = {"hook_event_name": "PreToolUse", "tool_name": "PushNotification", "tool_input": {"message": "끝났어요: A (#1)"}}
+        self.assertIsNone(self.hook(pre))                                        # 첫 발송 허용(보내는 중 표지)
+        d = self.hook(dict(pre, agent_id="sub"))                                  # 하위 에이전트·다른 좌석의 겹친 발송
+        self.assertEqual(d["hookSpecificOutput"]["permissionDecision"], "deny")  # 3R #3
+        self.hook({"hook_event_name": "PostToolUse", "tool_name": "PushNotification", "tool_input": pre["tool_input"]})
+        d = self.hook(pre)
+        self.assertEqual(d["hookSpecificOutput"]["permissionDecision"], "deny")  # 보낸 뒤 재발송도 거절
+        self.assertIsNone(self.hook({"hook_event_name": "PreToolUse", "tool_name": "PushNotification",
+                                     "tool_input": {"message": "다른 알림"}}))   # 우리 의무 아닌 것은 무관여
+
+    def test_flush_deadline_bounds_subprocess(self):
+        self.tool("notify", "set", "--channel", "app")
+        self.tool("todo", "add", "--what", "A", "--what", "B", "--notify")
+        import time as _t
+        t0 = _t.time()
+        self.py("\n".join(["def f(d):",
+                            "    for it in d['items']:",
+                            "        it.update(status='done', notice={'event': 'e%d' % it['id'], 'app': 'pending', 'phone': None, 'message': 'm'})",
+                            "o._mutate(f)",
+                            "print(o.flush_app_notices(budget=4))"]), FAKE_CYS_SLOW="2.5")
+        # 수리 전: 둘째 발송이 2.5초에 시작해 고정 timeout 5초 안에서 끝까지(총 ≈5초) · 수리 후: 남은 1.5초에서 끊김(총 ≈4초)
+        self.assertLess(_t.time() - t0, 4.6)                                     # 3R #4 — 발송 timeout 도 남은 시간 안
+
+    def test_brief_confirm_uses_brief_day(self):
+        self.tool("todo", "add", "--what", "주보", day="2026-11-16")
+        self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "밤 늦게"}, day="2026-11-18")
+        self.hook({"hook_event_name": "Stop", "last_assistant_message": "밀린 일 1건 …"}, day="2026-11-19")   # 자정 넘김
+        c = self.ctx(self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "아침"}, day="2026-11-19"))
+        self.assertIn("밀린 일 1건", c)                                          # 3R #5
+
+    def test_late_success_after_give_up_is_settled(self):
+        self.tool("notify", "set", "--channel", "phone")
+        self.tool("todo", "add", "--what", "A", "--notify")
+        self.tool("todo", "done", "1", "--evidence", "a")
+        for i in range(3):
+            self.hook({"hook_event_name": "UserPromptSubmit", "prompt": "턴 %d" % i})
+        self.hook({"hook_event_name": "PostToolUse", "tool_name": "PushNotification",
+                   "tool_input": {"message": "끝났어요: A (#1)"}})
+        self.assertEqual(self.py("print(o.load_todos()['items'][0]['notice']['phone'])"), "sent")   # 3R #6
 
 
 class R5StopNet(Base):
@@ -533,8 +600,10 @@ class R7Wiring(Base):
     def test_c28_registration_and_caps(self):
         import javis_preflight as pf
         rows = dict(pf.SELFCORR_HOOKS)["owner-desk.sh"]
-        self.assertEqual(sorted(e for e, _ in rows), ["PostToolUse", "SessionStart", "Stop", "UserPromptSubmit"])
+        self.assertEqual(sorted(e for e, _ in rows),
+                         ["PostToolUse", "PreToolUse", "SessionStart", "Stop", "UserPromptSubmit"])
         self.assertIn(("PostToolUse", "PushNotification"), rows)
+        self.assertIn(("PreToolUse", "PushNotification"), rows)
         inner = int(re.search(r"cys_timeout_run (\d+) ", open(SH, encoding="utf-8").read()).group(1))
         for ev, _ in rows:
             self.assertLess(inner, pf.HOOK_TIMEOUT_S[("owner-desk.sh", ev)])

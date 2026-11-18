@@ -3,6 +3,7 @@
 #   SessionStart       → 저장된 오너 지시 전부 + 밀린 일 한 줄 + 규약(늘 · 순환·/clear·재시작 뒤에도)
 #   UserPromptSubmit   → 오너 입력(기계 입력 제외)마다 「지속 지시·새 일·끝 알림」 점검 1줄 · 그날 첫 오너 대화면 밀린 일 보고
 #   Stop               → 턴 끝 안전망(말과 기록 대조 · 아침 보고 확인 · 폰 알림 미발송 · 자기 점검 턴당 1회)
+#   PreToolUse(PushNotification)  → 같은 알림(#번호) 이중 발송 거절(실제 발송 경로의 중복 0)
 #   PostToolUse(PushNotification) → 폰 알림 보냄 기록
 # 판정·조립은 bin/javis_owner.py hook <사건> — 이 셸의 몫은 역할 가드와 상한뿐이다.
 # 계약: master 좌석에서만(다른 좌석은 외부 프로세스 0 으로 exit 0) · 무슨 일이 있어도 exit 0 · stdout = 훅 JSON 또는 무출력.
@@ -10,7 +11,7 @@
 [ -n "${CYS_SURFACE_ID:-}${AITERM_SURFACE_ID:-}" ] || exit 0
 # 사건 = 인자(시험용) 또는 훅 JSON 의 hook_event_name(등록은 인자 없이 한 줄 — 파이썬이 auto 로 가른다).
 EV="${1:-auto}"
-case "$EV" in auto|session|prompt|stop|posttool) ;; *) exit 0 ;; esac
+case "$EV" in auto|session|prompt|stop|pretool|posttool) ;; *) exit 0 ;; esac
 
 HOOK_IN=""
 if [ ! -t 0 ]; then

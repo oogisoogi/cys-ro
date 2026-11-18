@@ -431,10 +431,10 @@ SELFCORR_HOOKS = [
     ("dept-chat-inject.sh", [("UserPromptSubmit", None)]),
     # ★1.1.16 TICKET=cysr-owner-memory-todo-1118(박사님 11-18 「1.1.16에 넣는다」): 오너 책상 — 저장된 오너 지시 늘 주입
     #   (SessionStart) · 오너 입력마다 지속 지시·새 일 점검 1줄 + 그날 첫 대화 밀린 일 보고(UserPromptSubmit) · 턴 끝
-    #   말↔기록 대조 + 자기 점검(Stop) · 폰 알림 보냄 기록(PostToolUse PushNotification). 첫 줄 역할 가드(master 외
+    #   말↔기록 대조(Stop) · 폰 알림 이중 발송 거절(PreToolUse PushNotification) · 보냄 기록(PostToolUse PushNotification). 첫 줄 역할 가드(master 외
     #   즉시 exit 0) · fail-open · 각성 티어가 아니다 → Rust AWAKENING_HOOKS 에 넣지 않는다(C28 단독 등록 선례).
     ("owner-desk.sh", [("SessionStart", None), ("UserPromptSubmit", None), ("Stop", None),
-                       ("PostToolUse", "PushNotification")]),
+                       ("PreToolUse", "PushNotification"), ("PostToolUse", "PushNotification")]),
 ]
 
 # ★WP-3 A(0.14.31) 능력 게이트 — **조건부** 등록 훅. `SELFCORR_HOOKS` 에 합치지 않는 이유는
@@ -760,6 +760,7 @@ HOOK_TIMEOUT_S = {
     ("owner-desk.sh", "SessionStart"): 10,
     ("owner-desk.sh", "UserPromptSubmit"): 10,
     ("owner-desk.sh", "Stop"): 10,
+    ("owner-desk.sh", "PreToolUse"): 10,
     ("owner-desk.sh", "PostToolUse"): 10,
     # ★WP-3 A(0.14.31): 능력 게이트는 전 도구 호출에 붙는다 — 내부 데드라인(역할 조회 2s +
     #   TTL 승인 확인 5s)의 **바깥 겹**을 15s 로 선언한다. 하네스 timeout 은 차단 보증이 아니라

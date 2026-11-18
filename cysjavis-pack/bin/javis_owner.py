@@ -45,7 +45,8 @@ SAVED_MARK = "이렇게 저장했습니다"
 REMOVED_MARK = "이렇게 지웠습니다"
 BRIEF_MARK = "밀린 일"
 VALID_CHANNELS = ("app", "phone", "both", "off")
-HOOK_EVENTS = {"SessionStart": "session", "UserPromptSubmit": "prompt", "Stop": "stop", "PostToolUse": "posttool"}
+HOOK_EVENTS = {"SessionStart": "session", "UserPromptSubmit": "prompt", "Stop": "stop", "PreToolUse": "pretool",
+               "PostToolUse": "posttool"}
 # 윈 무콘솔 세대: 캡처 하위 프로세스는 콘솔 창을 띄우지 않고(CREATE_NO_WINDOW) stdin 을 명시한다(WinError 6 방지 ·
 #   팩 계약 tests/test_nowin_captured_spawns.py · test_dept_tick_stdin.py).
 NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
@@ -58,6 +59,7 @@ APP_SEND_BUDGET = 4.0          # 한 번의 flush 가 새 발송을 시작하는
 PHONE_CLAIM_STALE = 600        # 폰 알림을 맡은 좌석 표지가 이보다 오래면 다른 좌석이 넘겨받는다
 BRIEF_CLAIM_STALE = 600        # 아침 보고를 맡은 좌석 표지 만료
 CARRY_MAX = 20                 # 이월 항목 상한(오래된 「다시 보기」부터 버림)
+PHONE_SENDING_STALE = 120      # PushNotification 「보내는 중」 표지(PreToolUse 가 잡음) 만료 — 실패로 PostToolUse 가 안 오면 다시 허용
 PHONE_REMINDERS = 2            # 폰 알림 미발송을 다음 오너 턴에 다시 일러 주는 최대 횟수(그 뒤 포기 기록)
 _CTRL = re.compile(r"[\x00-\x1f\x7f]")
 
@@ -532,15 +534,16 @@ def flush_app_notices(budget=APP_SEND_BUDGET):
     _mutate(claim)
     results = {}
     for c in claimed:
-        if time.time() - t0 > budget:
-            ok = None                                       # 시간 상한 — 보내지 않고 되돌린다
+        remaining = budget - (time.time() - t0)
+        if remaining < 1.0:
+            ok = None                                       # 시간 상한 — 보내지 않고 되돌린다(훅 안쪽 상한 8초 안 · 3R #4)
         else:
             title = "끝났어요: %s" % clean(c["what"], 60)
             body = "#%d %s\n근거: %s" % (c["id"], c["what"], c["evidence"])
             try:
                 p = subprocess.run([_cys_bin(), "feed", "push", "--kind", "ceo-notice", "--title", title, "--body", body,
                                     "--request-id", _request_id(c["event"])],
-                                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+                                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=remaining,
                                    stdin=subprocess.DEVNULL, **NOWIN)
                 ok = p.returncode == 0 or "duplicate request_id" in ((p.stdout or "") + (p.stderr or ""))
             except (OSError, subprocess.SubprocessError):
@@ -590,27 +593,77 @@ def claim_phone(only_ids=None):
     return got
 
 
+_TRAIL_ID = re.compile(r"\(#(\d+)\)\s*$")
+
+
+def trailing_id(message):
+    """PushNotification 메시지 **끝**의 (#번호) 하나만 읽는다 — 제목 속 「(#2)」 같은 글자로 다른 일을 닫지 않게(3R #2)."""
+    m = _TRAIL_ID.search(message or "")
+    return int(m.group(1)) if m else None
+
+
+def gate_phone_send(message):
+    """PreToolUse(PushNotification) — 실제 발송 경로의 중복 거절(3R #3). 끝 (#번호)가 우리 의무면 잠금 안에서:
+    이미 sent 이거나 다른 호출이 「보내는 중」(만료 전)이면 거절, 아니면 「보내는 중」 표지를 잡고 허용.
+    번호가 없거나 우리 의무가 아니면 관여하지 않는다(None)."""
+    tid = trailing_id(message)
+    if tid is None or not os.path.exists(_todo_path()):
+        return None
+    now = time.time()
+    res = {}
+
+    def f(data):
+        it = _find(data, tid)
+        n = (it or {}).get("notice") or {}
+        st = n.get("phone")
+        if not st:
+            return
+        sending = n.get("phone_sending") or 0
+        if st == "sent" or (now - sending) < PHONE_SENDING_STALE:
+            res["deny"] = "이미 보냈거나 다른 곳에서 보내는 중인 알림(#%d)이다 — 다시 보내지 마라." % tid
+            return
+        n["phone_sending"] = now
+        res["allow"] = True
+
+    _mutate(f)
+    return res
+
+
 def mark_phone_sent(message):
-    """PushNotification 메시지 끝의 (#번호)로 그 일의 폰 의무만 닫는다(엉뚱한 알림 1번이 여러 의무를 닫지 않게)."""
-    ids = set(int(x) for x in re.findall(r"\(#(\d+)\)", message or ""))
-    if not ids:
+    """PostToolUse(PushNotification) — 끝 (#번호)의 폰 의무를 닫는다(늦게 성공한 것도 · 포기 기록 뒤라도 sent 로 · 3R #6)."""
+    tid = trailing_id(message)
+    if tid is None:
         return []
     done = []
 
     def f(data):
-        for it in data["items"]:
-            n = it.get("notice") or {}
-            if it["id"] in ids and n.get("phone") == "pending":
-                n["phone"] = "sent"
-                n["phone_sent_at"] = now_iso()
-                done.append(it["id"])
+        it = _find(data, tid)
+        n = (it or {}).get("notice") or {}
+        if n.get("phone") in ("pending", "unsent"):
+            n["phone"] = "sent"
+            n["phone_sent_at"] = now_iso()
+            n.pop("phone_sending", None)
+            done.append(tid)
 
     _mutate(f)
     return done
 
 
+def expire_phone():
+    """PHONE_REMINDERS 번 일러 줬는데도 남은 폰 의무는 포기 기록(unsent) — 다음 안내를 내기 **전에** 판정한다(마지막 안내의
+    실행 기회를 빼앗지 않게 · 3R #6). 늦게라도 보내면 mark_phone_sent 가 sent 로 바꾼다."""
+    def f(data):
+        for it in data["items"]:
+            n = it.get("notice") or {}
+            if n.get("phone") == "pending" and n.get("phone_reminders", 0) >= PHONE_REMINDERS:
+                n["phone"] = "unsent"
+
+    if os.path.exists(_todo_path()):
+        _mutate(f)
+
+
 def bump_phone_reminders(ids):
-    """실제로 일러 준(출력에 실린) 폰 알림만 횟수를 올리고, PHONE_REMINDERS 를 넘으면 포기 기록(unsent)."""
+    """실제로 일러 준(출력에 실린) 폰 알림만 횟수를 올린다(포기 판정은 다음 입력 때 expire_phone)."""
     if not ids:
         return
 
@@ -619,8 +672,6 @@ def bump_phone_reminders(ids):
             n = it.get("notice") or {}
             if it["id"] in ids and n.get("phone") == "pending":
                 n["phone_reminders"] = n.get("phone_reminders", 0) + 1
-                if n["phone_reminders"] >= PHONE_REMINDERS:
-                    n["phone"] = "unsent"          # 포기 — 무한히 조르지 않는다(원장에 남는다)
 
     _mutate(f)
 
@@ -788,7 +839,10 @@ def hook_session(hin):
     if hin.get("agent_id"):
         return None
     flush_app_notices()                                     # 보내다 실패한 앱 알림 재시도
-    settle_turn(_load_json(_turn_path(), {}))               # /clear·압축 직전 턴도 정산해 새 대화에 싣는다
+    # /clear·재개 = 직전 턴은 끝났다 → 정산해 새 대화에 싣는다. 압축(compact)은 턴 도중에도 일어난다(공식 hooks 문서) —
+    #   진행 중 턴의 Stop 안전망을 풀지 않도록 정산하지 않고 문맥만 다시 싣는다(3R #1).
+    if hin.get("source") != "compact":
+        settle_turn(_load_json(_turn_path(), {}))
     rules = list_rules()
     b = brief()
     tl = _tool_line()
@@ -832,6 +886,7 @@ def hook_prompt(hin):
                 "--all-done on 도) ⑷일을 끝내면 todo done <id> --evidence. 판단은 낱말이 아니라 뜻으로 한다 · 일회성 "
                 "부탁이나 잡담이면 아무것도 저장하지 않는다." % (tl, SAVED_MARK))
     carry_items = _load_carry()
+    expire_phone()
     phones = claim_phone()
     asks = b.get("ask", []) if brief_due else []
     out, emitted = _fit("UserPromptSubmit", must, [
@@ -846,7 +901,7 @@ def hook_prompt(hin):
     shown = set(emitted["carry"])                           # 실린 이월만 소비한다
     _save_carry([x for i, x in enumerate(carry_items) if i not in shown])
     bump_phone_reminders(set(emitted["phone"]))             # 실제로 일러 준 폰 알림만 센다
-    turn = {"start_ts": time.time(), "owner": True, "brief_due": brief_due,
+    turn = {"start_ts": time.time(), "owner": True, "brief_due": brief_due, "brief_day": t,
             "carried_saved": [carry_items[i].get("text", "") for i in shown if carry_items[i].get("k") == "saved"],
             "prompt_excerpt": clean(prompt, 300),
             "prompt_sha": hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16]}
@@ -878,8 +933,8 @@ def hook_stop(hin):
     if REMOVED_MARK in msg:
         turn["removed_shown"] = True
     if turn.get("brief_due") and BRIEF_MARK in msg:
-        t = today().isoformat()
-        _update_json(_brief_path(), {}, lambda d: d.update(confirmed_on=t))
+        day = turn.get("brief_day") or today().isoformat()  # 보고를 실은 날로 확인(자정 넘긴 Stop 이 다음 날을 소비하지 않게 · 3R #5)
+        _update_json(_brief_path(), {}, lambda d: d.update(confirmed_on=day))
     turn["stopped"] = True
     ev = events_since(turn.get("start_ts", 0), surface())
     tl = _tool_line()
@@ -898,6 +953,17 @@ def hook_stop(hin):
         turn["blocks"] = turn.get("blocks", 0) + 1
     _atomic_write(tp, json.dumps(turn, ensure_ascii=False))
     return _block("【owner-desk 대조】" + " / ".join(reasons)) if reasons else None
+
+
+def hook_pretool(hin):
+    if (hin.get("tool_name") or "") != "PushNotification":
+        return None
+    r = gate_phone_send(str((hin.get("tool_input") or {}).get("message", "")))
+    if r and r.get("deny"):
+        log_event("notify.phone_denied", reason=r["deny"])
+        return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                       "permissionDecisionReason": r["deny"]}}
+    return None
 
 
 def hook_posttool(hin):
@@ -965,7 +1031,7 @@ def main(argv=None):
     ns.add_parser("status")
 
     h = sub.add_parser("hook")
-    h.add_argument("event", choices=("auto", "session", "prompt", "stop", "posttool"))
+    h.add_argument("event", choices=("auto", "session", "prompt", "stop", "pretool", "posttool"))
 
     a = ap.parse_args(argv)
     if a.area == "hook":
@@ -978,7 +1044,7 @@ def main(argv=None):
                 if not ev:
                     return 0
             out = {"session": hook_session, "prompt": hook_prompt, "stop": hook_stop,
-                   "posttool": hook_posttool}[ev](hin)
+                   "pretool": hook_pretool, "posttool": hook_posttool}[ev](hin)
             if out:
                 emit(out)
         except Exception as e:  # fail-open

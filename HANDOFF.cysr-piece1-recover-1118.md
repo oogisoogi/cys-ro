@@ -2,7 +2,7 @@
 
 - 좌석 = worker-piece1 · surface:2240 · 가지 `feat/piece1-recover-1118` ← integ/1116(`b29cbdd89`)
 - 브리프 = master#68a90f34 · 범위 결정 = master#9f7c835b(A: 핀 유지는 범위 밖)
-- 구현 커밋 = `c03bccb80` · 1회 고침(master#267c6b97) = `59d755d9d` · `--resume-saved`(master#fbfe2389) = `94aeb1a4f`
+- 구현 커밋 = `c03bccb80` · 1회 고침(master#267c6b97) = `59d755d9d` · `--resume-saved`(master#fbfe2389) = `94aeb1a4f` · codex 1R 고침(master#91f7d69b) = `fee25fbae`
 - 설계 판정 BLOCK 은 그대로다. 이 커밋은 그것을 풀지 않는다. 병합 조건 = X 실측 · 독립 검증 좌석 · 구현 diff codex 1R.
 
 ## 바뀐 것
@@ -66,6 +66,27 @@ rc 93 이 되는 경우: 다른 agent 의 핀 · 저장 cwd ≠ 좌석 cwd · �
 ⚠ master 좌석이 없을 때 편성은 먼저 `new-surface --role master` 로 빈 좌석을 만든다(`:896`). 이 좌석이 저장되는 순간 핀이 지워지므로(핀 유지 범위), 목록이 다시 읽히면 다음 심박의 `--resume-saved` 는 「저장 대화 없음」으로 새 대화를 띄울 수 있다. rc 93 은 읽지 못하는 동안만 막는다. 코드 읽기까지다.
 
 시험: 먼저 붉음 = cys `p1_resume_saved_holds_when_the_saved_list_is_unknown` · 팩 3건. 고친 뒤 cys `p1_` 9 통과 · 관련 소스 핀 3 통과 · `test_v115_dept` 68 OK · 관련 팩 시험 9파일 rc 0. 뮤턴트 7개 전부 붉음(누적 40개).
+
+## codex 1R 고침(`fee25fbae` · master#91f7d69b)
+
+codex = BLOCK(`~/axdev/master/reports/verify/piece1-recover-1118/codex-r1.verdict.md`). master 판정:
+
+| 지적 | 처분 |
+|---|---|
+| #3 rev 역행 | **고침** · `load_start_tombstones` 한 번의 읽기로 묘비·rev·직전 영속본·못 읽음 표시를 시드(격리 때는 복구한 묘비 기준) · 정상 저장마다 직전 파일 rev 와 `fetch_max` |
+| #1 시작 때 손상 격리 | blocker 아님 · 격리 때 피드 경고 1건만(문구 + 격리 파일 이름). 세대 스냅샷에서 핀 복구는 다음 범위 |
+| #4 rc 79·91 | 그대로(새 대화 없이 멈추는 기존 계약) |
+| #2 | 핀 유지 범위 · 1.1.16 조건표 |
+| #5 | TODO |
+
+시험: 먼저 붉음 2건(`a_save_never_moves_the_tombstone_rev_backwards` · `isolating_a_corrupt_topology_at_start_warns_once_with_the_file_name`) → 영향 범위 cysd 105 통과 · 0 실패. cysd 시험 수 3337 → 3340. 뮤턴트 4개 전부 붉음(누적 44개).
+
+## X 상태
+
+- `0720c4097` 구현본에서 r0 fixed(끝 0) · r1 fixed(끝 0) · tomb fixed(끝 4 · 주기 잡 pid 칸 · master 수용) · unreadable 사전 점검 끝 2(미측정). 요약 = `piece1/x/RESULTS-impl.md`.
+- 코드가 바뀌었으므로 **최종 커밋에서 네 시나리오를 각 1회 다시 돌린다.** master 의 「X 시작」 전에는 돌리지 않는다.
+- 판독 규칙: 끝 코드 4 라도 어긋남이 `com.jarvis.cso-resource-sentinel` pid 칸 하나뿐이고 그 종료 코드가 0 이면 verdict 사용 가능. 그 밖의 어긋남은 즉시 정지.
+- 사본 B 적용: 라이브 팩 대조에서 `state/evt_spool.jsonl` 만 제외. 직전 사본 대비 diff = `piece1/x/xprobe_impl.delta-r2.diff`.
 
 ## X 실측 준비(실행 안 함 · master 의 「X 시작」 대기)
 

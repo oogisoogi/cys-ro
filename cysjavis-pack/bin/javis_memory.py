@@ -12,6 +12,7 @@
         --desc "<한 줄 요약>" --body "<사실 본문>"        # 증류 1건 (원자적)
     python3 javis_memory.py verify [--json] [--desc-strict]  # 색인↔파일 정합 + 훅↔description 대조
     python3 javis_memory.py update --name <slug> [--desc "..."] [--body "..."]  # 갱신(원자적·롤백)
+    python3 javis_memory.py retire --name <slug> [--reason "..."]  # 은퇴(.retired/ 이동 + 색인 삭제 · 원자적)
     python3 javis_memory.py recent --minutes 1440 [--json] # 최근 증류 목록 (게이트 증거)
     python3 javis_memory.py --self-test                    # 결정론 자기검증 (preflight C18)
 
@@ -536,6 +537,63 @@ def cmd_update(mdir, args):
     return 0
 
 
+RETIRED_DIR = ".retired"
+
+
+def cmd_retire(mdir, args):
+    """★owner-memory-todo-1118: 기억 1건을 **은퇴**시킨다 — 오너의 「그 규칙 지워」.
+
+    물리 삭제가 아니라 soft tombstone 이다(RSI §7-4 「물리 삭제 금지」): 본문 파일을 `<mdir>/.retired/`
+    로 옮기고(꼬리표 `retired_at`·`retire_reason` 을 frontmatter 끝에 덧붙임) 색인 1줄을 지운다. 둘 다
+    색인 잠금 아래에서 하고, 색인 쓰기가 실패하면 파일을 제자리로 되돌린다(부분 은퇴 0). 은퇴한 파일은
+    `memory_files`(최상위 *.md)에 잡히지 않으므로 verify·주입 어디에도 다시 나타나지 않는다."""
+    index_path = os.path.join(mdir, INDEX_FILE)
+    if not os.path.isfile(index_path):
+        return fail(2, "%s 없음 — verify 로 정합부터 복구하라" % INDEX_FILE)
+    matches = []
+    for fn in memory_files(mdir):
+        text = open(os.path.join(mdir, fn), encoding="utf-8", errors="replace").read()
+        if parse_frontmatter(text)["name"] == args.name:
+            matches.append((fn, text))
+    if not matches:
+        return fail(2, "미등재 슬러그: %r" % args.name)
+    if len(matches) > 1:
+        return fail(2, "중복 슬러그: %r — verify 로 정합부터 복구하라" % args.name)
+    fn, old_text = matches[0]
+    fpath = os.path.join(mdir, fn)
+    rdir = os.path.join(mdir, RETIRED_DIR)
+    stamp = time.strftime("%Y%m%dT%H%M%S")
+    rpath = os.path.join(rdir, "%s.%s" % (fn, stamp))
+    reason = (getattr(args, "reason", None) or "").replace("\n", " ").strip()
+    tag = "retired_at: %s\n" % time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    if reason:
+        tag += "retire_reason: %s\n" % reason
+    end = old_text.find("\n---", 3) if old_text.startswith("---") else -1
+    new_text = (old_text[:end + 1] + tag + old_text[end + 1:]) if end >= 0 else (tag + old_text)
+    try:
+        with FileLock(index_path):
+            index_text = open(index_path, encoding="utf-8", errors="replace").read()
+            kept = [ln for ln in index_text.splitlines(True) if ("(%s)" % fn) not in ln]
+            removed = len(index_text.splitlines(True)) - len(kept)
+            os.makedirs(rdir, exist_ok=True)
+            _write_text_atomic(rpath, new_text)
+            os.unlink(fpath)
+            try:
+                _write_text_atomic(index_path, "".join(kept))
+            except Exception as e:
+                try:
+                    _write_text_atomic(fpath, old_text)   # ★롤백 — 부분 은퇴 금지
+                    os.unlink(rpath)
+                except Exception:
+                    return fail(3, "색인 갱신 실패 + 본문 롤백 실패(%s) — 수동 복구 필요" % e)
+                return fail(3, "색인 갱신 실패(본문 원복됨): %s" % e)
+    except TimeoutError as e:
+        return fail(3, str(e))
+    print(json.dumps({"retired": fn, "moved_to": os.path.relpath(rpath, mdir),
+                      "index_lines_removed": removed}, ensure_ascii=False))
+    return 0
+
+
 def cmd_verify(mdir, as_json, desc_strict=False):
     """색인↔파일 정합 + (A7) 색인 훅↔description 대조.
 
@@ -953,6 +1011,10 @@ def main():
     u.add_argument("--desc", default=None, help="새 한 줄 요약(파일 description + 색인 훅 동시 갱신)")
     u.add_argument("--body", default=None, help="새 본문(frontmatter 는 보존)")
 
+    rt = sub.add_parser("retire", help="기억 1건 은퇴 — .retired/ 로 이동 + 색인 1줄 삭제 (원자적·롤백)")
+    rt.add_argument("--name", required=True, help="kebab 슬러그(파일 frontmatter 의 name)")
+    rt.add_argument("--reason", default=None, help="은퇴 사유 1줄(파일 꼬리표로 남김)")
+
     r = sub.add_parser("recent", help="최근 N분 내 증류 목록 (게이트 증거)")
     r.add_argument("--minutes", type=int, default=1440)
     r.add_argument("--json", action="store_true")
@@ -981,6 +1043,8 @@ def main():
         return cmd_verify(mdir, args.json, getattr(args, "desc_strict", False))
     if args.cmd == "update":
         return cmd_update(mdir, args)
+    if args.cmd == "retire":
+        return cmd_retire(mdir, args)
     if args.cmd == "recent":
         return cmd_recent(mdir, args.minutes, args.json)
     if args.cmd == "health":

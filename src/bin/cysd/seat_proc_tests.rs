@@ -106,38 +106,65 @@ fn audit_code_path_rule() {
 }
 
 /// 규칙이 **실제 Security 프레임워크**(seatkeep 이 감사 토큰으로 쓰는 같은 API 계열)와 맞는가 — T2 가 본 Homebrew 파이썬 모양
-/// (`…/Python.app/Contents/MacOS/Python` → `…/Python.app`)을 가짜 번들로 재현한다. 실행 파일 = `/bin/sleep` 복사본.
-/// pid 로 코드 객체를 얻어(`kSecGuestAttributePid`) 경로를 읽고, 규칙 함수의 답과 비교한다(번들 주 실행 파일 · 번들 안 비주 실행 파일 · 번들 밖).
+/// (`…/Python.app/Contents/MacOS/Python` → `…/Python.app`)을 가짜 번들로 재현한다(번들 주 실행 파일 · 번들 안 비주 실행 파일 · 번들 밖).
+///
+/// ⛔**가짜 실행 파일을 실행하지 않는다**(TICKET=cysr-test-gatekeeper-crash-1118). 옛 판은 `/bin/sleep` 을 임시 폴더에 복사 → 실행 →
+/// kill → 폴더 삭제를 매 실행 반복했다 — 복사본은 실행마다 「Code Signature Invalid」로 죽었고, 맥 보안 검사(syspolicyd)가 새 실행
+/// 파일을 검사하는 도중 파일이 지워져 syspolicyd 가 SIGSEGV 로 죽고 → tccd·WindowServer 가 그것을 기다리다 맥이 멈췄다(11-18).
+/// 그래서 지금은 ① 가짜 번들 = 정적 코드 객체(`SecStaticCodeCreateWithPath` · 실행 없음 · syspolicyd 를 부르지 않음)로 경로를
+/// 읽고 ② 가짜 번들 파일은 target 아래 고정 자리에 한 번만 만들고 지우지 않는다 ③ 실행 경로(pid → 코드 객체) 쪽은 제자리
+/// `/bin/sleep`(새로 만든 파일 아님) 한 번으로 「동적 답 = 정적 답 = 규칙」을 잇는다.
+/// 잃는 것: 번들 주 실행 파일을 **실행 중인 프로세스로** pid 경로에서 대조하는 것(정적 경로와 같은 판정 규칙을 쓴다는 가정에 기댄다).
 #[cfg(target_os = "macos")]
 #[test]
 fn audit_code_path_matches_security_framework() {
-    let root = std::env::temp_dir().join(format!("cys-t3-secpath-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    let main = fake_bundle(&root, "Fake.app", "fakemain", Some("fakemain"));
+    let canon = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let root = secpath_fixture_root();
+    let main = root.join("Fake.app/Contents/MacOS/fakemain");
     let helper = root.join("Fake.app/Contents/MacOS/fakehelper");
-    std::fs::create_dir_all(root.join("plain")).unwrap();
     let plain = root.join("plain/fakeplain");
-    for p in [&main, &helper, &plain] {
-        std::fs::copy("/bin/sleep", p).unwrap();
-    }
     for exe in [&main, &helper, &plain] {
-        let mut child = std::process::Command::new(exe).arg("30").spawn().expect("복사본 기동");
-        // 기동 직후 코드 객체가 아직 안 잡힐 수 있어 잠깐 기다린다.
-        let mut got = None;
-        for _ in 0..50 {
-            got = sec::code_path_of_pid(child.id() as i32);
-            if got.is_some() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        let _ = child.kill();
-        let _ = child.wait();
-        let got = got.expect("Security 프레임워크가 경로를 못 줌");
-        let canon = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        let got = sec::static_code_path(exe).expect("Security 프레임워크가 정적 코드 경로를 못 줌");
         assert_eq!(canon(&got), canon(&audit_code_path(exe)), "규칙 ≠ 실제({}): 실제 = {}", exe.display(), got.display());
     }
-    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(canon(&audit_code_path(&main)), canon(&root.join("Fake.app")), "주 실행 파일 = 번들 경로(가짜 번들 모양이 살아 있다)");
+    // 실행 경로 이음: 제자리 시스템 실행 파일(복사·삭제 없음)의 pid 답 = 정적 답 = 규칙.
+    let sleep = std::path::Path::new("/bin/sleep");
+    let mut child = std::process::Command::new(sleep).arg("30").spawn().expect("/bin/sleep 기동");
+    let dynamic = sec::code_path_of_pid(child.id() as i32);
+    let _ = child.kill();
+    let _ = child.wait();
+    let dynamic = dynamic.expect("Security 프레임워크가 pid 경로를 못 줌");
+    let stat = sec::static_code_path(sleep).expect("정적 경로");
+    assert_eq!(canon(&dynamic), canon(&stat), "pid 답 ≠ 정적 답");
+    assert_eq!(canon(&stat), canon(&audit_code_path(sleep)), "정적 답 ≠ 규칙");
+}
+
+/// 가짜 번들 고정 자리 = `target/<profile>/cys-test-fixtures/t3-secpath/`(시험 실행 파일 = `target/<profile>/deps/…`).
+/// 없을 때만 만들고(임시 이름에 복사 → 이름 바꾸기 = 동시 시험 프로세스끼리 반쪽 파일을 보지 않음) **지우지 않는다**. 실행하지 않는다.
+#[cfg(target_os = "macos")]
+fn secpath_fixture_root() -> std::path::PathBuf {
+    let exe = std::env::current_exe().expect("시험 실행 파일 경로");
+    let deps = exe.parent().expect("deps");
+    let profile = if deps.file_name().map(|n| n == "deps").unwrap_or(false) { deps.parent().expect("profile") } else { deps };
+    let root = profile.join("cys-test-fixtures/t3-secpath");
+    let plist = root.join("Fake.app/Contents/Info.plist");
+    if !plist.exists() {
+        fake_bundle(&root, "Fake.app", "fakemain", Some("fakemain"));
+    }
+    std::fs::create_dir_all(root.join("plain")).unwrap();
+    for rel in ["Fake.app/Contents/MacOS/fakemain", "Fake.app/Contents/MacOS/fakehelper", "plain/fakeplain"] {
+        let dst = root.join(rel);
+        if dst.exists() {
+            continue;
+        }
+        let tmp = dst.with_extension(format!("part-{}", std::process::id()));
+        std::fs::copy("/bin/sleep", &tmp).unwrap();
+        if std::fs::rename(&tmp, &dst).is_err() {
+            let _ = std::fs::remove_file(&tmp); // 다른 시험 프로세스가 먼저 놓았다 — 실행된 적 없는 반쪽 복사본만 치운다.
+        }
+    }
+    root
 }
 
 #[cfg(target_os = "macos")]
@@ -161,6 +188,7 @@ mod sec {
         fn CFNumberCreate(alloc: CFTypeRef, ty: CFIndex, v: *const c_void) -> CFTypeRef;
         fn CFDictionaryCreate(a: CFTypeRef, k: *const *const c_void, v: *const *const c_void, n: CFIndex, kcb: *const KeyCb, vcb: *const ValCb) -> CFTypeRef;
         fn CFURLGetFileSystemRepresentation(url: CFTypeRef, resolve: u8, buf: *mut u8, max: CFIndex) -> u8;
+        fn CFURLCreateFromFileSystemRepresentation(alloc: CFTypeRef, buf: *const u8, len: CFIndex, is_dir: u8) -> CFTypeRef;
         fn CFRelease(cf: CFTypeRef);
     }
     #[link(name = "Security", kind = "framework")]
@@ -169,8 +197,36 @@ mod sec {
         fn SecCodeCopyGuestWithAttributes(host: CFTypeRef, attrs: CFTypeRef, flags: u32, guest: *mut CFTypeRef) -> i32;
         fn SecCodeCopyStaticCode(code: CFTypeRef, flags: u32, out: *mut CFTypeRef) -> i32;
         fn SecCodeCopyPath(code: CFTypeRef, flags: u32, path: *mut CFTypeRef) -> i32;
+        fn SecStaticCodeCreateWithPath(path: CFTypeRef, flags: u32, out: *mut CFTypeRef) -> i32;
     }
     const K_CF_NUMBER_SINT32: CFIndex = 3;
+    /// 정적 코드 객체(파일 그대로 · 실행 없음)의 경로 — 번들 주 실행 파일이면 Security 가 번들로 잡아 번들 경로를 준다.
+    pub fn static_code_path(exe: &std::path::Path) -> Option<std::path::PathBuf> {
+        use std::os::unix::ffi::OsStrExt;
+        let bytes = exe.as_os_str().as_bytes();
+        unsafe {
+            let url = CFURLCreateFromFileSystemRepresentation(std::ptr::null(), bytes.as_ptr(), bytes.len() as CFIndex, 0);
+            if url.is_null() {
+                return None;
+            }
+            let mut st: CFTypeRef = std::ptr::null();
+            let rc = SecStaticCodeCreateWithPath(url, 0, &mut st);
+            CFRelease(url);
+            if rc != 0 || st.is_null() {
+                return None;
+            }
+            let mut out: CFTypeRef = std::ptr::null();
+            let rc = SecCodeCopyPath(st, 0, &mut out);
+            CFRelease(st);
+            if rc != 0 || out.is_null() {
+                return None;
+            }
+            let mut buf = [0u8; 4096];
+            let ok = CFURLGetFileSystemRepresentation(out, 1, buf.as_mut_ptr(), buf.len() as CFIndex);
+            CFRelease(out);
+            (ok != 0).then(|| std::path::PathBuf::from(CStr::from_ptr(buf.as_ptr() as *const c_char).to_string_lossy().into_owned()))
+        }
+    }
     pub fn code_path_of_pid(pid: i32) -> Option<std::path::PathBuf> {
         unsafe {
             let num = CFNumberCreate(std::ptr::null(), K_CF_NUMBER_SINT32, (&pid as *const i32).cast());

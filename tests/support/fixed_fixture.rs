@@ -27,7 +27,8 @@ pub fn cc_fixed(purpose: &str, name: &str, src_text: &str) -> PathBuf {
         return exe;
     }
     let tag = std::process::id();
-    let (te, ts) = (dir.join(format!("{name}.part-{tag}")), dir.join(format!("{name}.c.part-{tag}")));
+    // 임시 원문 이름은 `.c` 로 끝나야 한다 — 아니면 cc 가 확장자를 몰라 링커 입력(오브젝트)으로 넘겨 링크가 실패한다(979d148b 통제 실행 적색).
+    let (te, ts) = (dir.join(format!("{name}.part-{tag}")), dir.join(format!("{name}.part-{tag}.c")));
     std::fs::write(&ts, src_text).unwrap();
     assert!(
         std::process::Command::new("/usr/bin/cc").args(["-w", "-o"]).arg(&te).arg(&ts).status().unwrap().success(),

@@ -173,7 +173,8 @@ fn fixed_native_agents()->(PathBuf,PathBuf) {
         let fresh=a.is_file() && b.is_file() && std::fs::read_to_string(&src).map(|t|t==NATIVE_AGENT_C).unwrap_or(false);
         if !fresh {
             let tag=std::process::id();
-            let (ta,tb,ts)=(dir.join(format!("np-agent-a.part-{tag}")),dir.join(format!("np-agent-b.part-{tag}")),dir.join(format!("agent.c.part-{tag}")));
+            let (ta,tb,ts)=(dir.join(format!("np-agent-a.part-{tag}")),dir.join(format!("np-agent-b.part-{tag}")),dir.join(format!("agent.part-{tag}.c")));
+            // The temporary source name must end in `.c`; otherwise cc treats it as a linker input (979d148b red run).
             let compiler=std::env::var_os("C8_NATIVE_FIXTURE_CC").unwrap_or_else(||"/usr/bin/cc".into());
             compile_native_agent(&compiler,&ts,&ta);
             std::fs::copy(&ta,&tb).unwrap();

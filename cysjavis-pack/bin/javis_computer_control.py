@@ -1178,10 +1178,13 @@ def cmd_request_prompt(a):
 # ───────────────────────── 크롬 켜기·끄기 = 한 키만 (TICKET=cysr-1111-chrome-preset · 설계 cu-1111 §13-7) ─────────────────────────
 # 박사님 원문(11-01 08:2x) 「크롬은 권고대로 한다.」 — 크롬 연결은 설치·업데이트 때 미리 켜 둔다(src/pack.rs seed_chrome_default_at).
 #   그 뒤 시작하는 좌석의 Claude Code 가 연결 파일을 스스로 만든다 → 이 도구는 보조 claude·좌석 재시작·크롬 닫고 켜기를 하지 않는다.
-# 여기서 하는 일 = 좌석 설정 폴더 .claude.json 의 claudeInChromeDefaultEnabled **한 키만**(공식 /chrome·/config 토글이 쓰는 바로 그 키 —
-#   Claude Code 시작 판정 --chrome → CLAUDE_CODE_ENABLE_CFC → 이 키). 다른 키는 읽은 그대로 되쓴다.
+# 여기서 하는 일 = 좌석 설정 폴더 .claude.json 의 claudeInChromeDefaultEnabled(공식 /chrome·/config 토글이 쓰는 바로 그 키 —
+#   Claude Code 시작 판정 --chrome → CLAUDE_CODE_ENABLE_CFC → 이 키)와, 켤 때 함께 넣는 첫 안내 창 완료 표지. 다른 키는 읽은 그대로 되쓴다.
+#   완료 표지 없이 켜면 다음 master 좌석이 그 창에서 멈춘다(TICKET=cysr-chrome-onboarding-seed-1119 · 벤더의 켜기 코드도 두 키를 함께 쓴다).
+#   끄기는 키만 바꾼다(표지를 지우면 다시 켤 때 창이 또 뜬다) · 되돌리기는 켜기 전 표지 상태까지 복원한다.
 CHROME_STATE = "chrome-enable.json"
 CHROME_KEY = "claudeInChromeDefaultEnabled"
+CHROME_ONBOARDING_KEY = "hasCompletedClaudeInChromeOnboarding"
 CHROME_NEXT_SAY = "다음에 cysr 를 다시 시작하거나 업데이트할 때 연결됩니다."
 CHROME_OFF_SAY = " 다음에 cysr 를 다시 시작하거나 업데이트할 때부터 적용됩니다."
 # 옛 판이 남긴 빚·기록 — 읽어도 행동 0 · 만나면 지운다(prior_key·key_restored 만 되돌리기에 쓴다)
@@ -1200,6 +1203,19 @@ def read_chrome_key():
     if not isinstance(d, dict):
         return None, None
     return (CHROME_KEY in d), d.get(CHROME_KEY)
+
+
+def read_chrome_onboarding():
+    """첫 안내 창 완료 표지 (있음 여부, 값). 파일을 못 읽으면 (None, None)."""
+    d = _read_json(_claude_json())
+    if not isinstance(d, dict):
+        return None, None
+    return (CHROME_ONBOARDING_KEY in d), d.get(CHROME_ONBOARDING_KEY)
+
+
+def _onboarding_missing(v):
+    """벤더 조건은 값의 참·거짓을 본다 — 없음·null·false 는 모두 창이 뜬다."""
+    return v is None or v is False
 
 
 def _read_raw(path):
@@ -1234,8 +1250,9 @@ def _config_lock(path):
             return None
 
 
-def write_chrome_key(value):
-    """좌석 .claude.json 의 크롬 키 **하나만** 바꾼다(value=None 이면 키를 지운다 = 원래 없던 상태). 나머지 칸은 읽은 그대로.
+def write_chrome_key(value, restore_onboarding=None):
+    """좌석 .claude.json 의 크롬 키를 바꾼다(value=None 이면 키를 지운다 = 원래 없던 상태). value=True 면 비어 있는 완료 표지도 같은 교체로 넣고,
+    restore_onboarding({"present","value"})이 있으면 완료 표지를 그 상태로 되돌린다. 나머지 칸은 읽은 그대로.
     ★codex R1·R2(동시 쓰기): Claude Code 와 같은 잠금(`.claude.json.lock`)을 쥔 채 **잠금 안에서** 다시 읽고 → 키 하나 바꾸고 →
     원자 교체 → 잠금 해제. 덧붙여 교체 직전 원본 바이트 재확인(잠금을 안 지키는 작성자 대비 · 최대 3회 · 끝내 다르면 무변경 실패).
     파일 권한 유지 · 쓴 뒤 다시 읽어 확인. 성공 = True."""
@@ -1262,6 +1279,14 @@ def write_chrome_key(value):
                 d.pop(CHROME_KEY, None)
             else:
                 d[CHROME_KEY] = value
+            if value is True:
+                if _onboarding_missing(d.get(CHROME_ONBOARDING_KEY)):
+                    d[CHROME_ONBOARDING_KEY] = True
+            elif restore_onboarding is not None:
+                if restore_onboarding.get("present"):
+                    d[CHROME_ONBOARDING_KEY] = restore_onboarding.get("value")
+                else:
+                    d.pop(CHROME_ONBOARDING_KEY, None)
             try:
                 mode = os.stat(path).st_mode & 0o777
             except OSError:
@@ -1276,7 +1301,14 @@ def write_chrome_key(value):
                 continue
             os.replace(tmp, path)
             has, v = read_chrome_key()
-            return (not has) if value is None else (has and v is value)
+            if not ((not has) if value is None else (has and v is value)):
+                return False
+            ob_has, ob = read_chrome_onboarding()
+            if value is True:
+                return not _onboarding_missing(ob)
+            if restore_onboarding is not None:
+                return (ob_has, ob) == (bool(restore_onboarding.get("present")), restore_onboarding.get("value"))
+            return True
         _ledger({"event": "chrome_key_conflict", "tries": CAS_TRIES})
         return False
     finally:
@@ -1319,6 +1351,8 @@ def cmd_chrome_enable(a):
     has, v = read_chrome_key()
     if has is None:
         return fail("클로드 설정 파일을 읽지 못해 크롬 연결을 켜지 못했습니다.", "claude_json", 1)
+    ob_has, ob = read_chrome_onboarding()
+    ob_prior = {"present": ob_has, "value": ob}
     done = []
     if v is not True:
         # 처음 손대기 전의 원래 값만 기억한다(되돌리기 = 이 값) · ★codex R1: 되돌리기 정보가 바꾸기보다 먼저 디스크에
@@ -1326,12 +1360,23 @@ def cmd_chrome_enable(a):
         if "prior_key" not in st or st.get("key_restored"):
             st["prior_key"] = {"present": has, "value": v}
             st.pop("key_restored", None)
+            st["prior_onboarding"] = ob_prior
+        st.setdefault("prior_onboarding", ob_prior)     # 옛 판이 남긴 기록엔 이 칸이 없다
         _write_json(_p(CHROME_STATE), st)
         _ledger({"event": "chrome_enable_key", "prior": {"present": has, "value": v}})   # 기록 먼저
         if not write_chrome_key(True):
             return fail("크롬 기본 켜기를 저장하지 못했습니다(설정 파일을 지금 쓸 수 없어 손대지 않았습니다 — 잠시 뒤 다시 하겠습니다).",
                         "write_failed", 1)
         done.append("default_on")
+    elif _onboarding_missing(ob):                       # 키는 켜졌는데 표지가 비었다 = 다음 시작에 창에서 멈춘다 · 말은 「이미 켜져 있습니다」 그대로
+        if "prior_key" in st:
+            st.setdefault("prior_onboarding", ob_prior)
+        if stale or "prior_key" in st:
+            _write_json(_p(CHROME_STATE), st)
+        _ledger({"event": "chrome_onboarding_fill", "prior": ob_prior})
+        if not write_chrome_key(True):
+            return fail("크롬 기본 켜기를 저장하지 못했습니다(설정 파일을 지금 쓸 수 없어 손대지 않았습니다 — 잠시 뒤 다시 하겠습니다).",
+                        "write_failed", 1)
     elif stale:
         _write_json(_p(CHROME_STATE), st)
     nmh = _nmh_ok(plat, _chrome_userdata(plat))
@@ -1346,12 +1391,17 @@ def cmd_chrome_enable(a):
 
 def _chrome_key_off():
     """크롬 키를 켤 때 기억한 원래 값으로(기억이 없으면 끔) · 기록을 지운다. 반환 = 기억이 있었나 · 못 쓰면 None."""
-    prior = _load_chrome_state().get("prior_key")
+    st = _load_chrome_state()
+    prior = st.get("prior_key")
     target = (prior["value"] if prior.get("present") else None) if isinstance(prior, dict) else False
     if target is not None and not isinstance(target, bool):
         target = False
+    # 되돌리기만 표지를 복원한다(기록 없는 끄기 = 키만). 되돌린 값이 「켜짐」이면 write_chrome_key 가 표지를 채운다 — 켜짐 + 표지 없음 = 멈춤 상태다
+    ob = st.get("prior_onboarding") if isinstance(prior, dict) else None
+    if not (isinstance(ob, dict) and (ob.get("value") is None or isinstance(ob.get("value"), bool))):
+        ob = None
     _ledger({"event": "chrome_disable_key", "to": "absent" if target is None else target})
-    if not write_chrome_key(target):
+    if not write_chrome_key(target, ob):
         return None
     try:
         os.remove(_p(CHROME_STATE))

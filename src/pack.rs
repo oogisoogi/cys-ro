@@ -1574,7 +1574,8 @@ fn setup_isolated_config_dir(install_hooks: bool) {
     reconcile_agy_statusline_at_install();
     // ★1.1.11 크롬 연결 미리 켜기(박사님 11-01 「크롬은 권고대로 한다」) — 위 두 시드처럼 `install_hooks` 조기 return **위**다(GUI 인앱
     //   업데이트 도달성 · U-19 와 같은 이유). `CYS_FIRST_RUN_SEED` 와 무관하다: 그 스위치는 로그인·신뢰 관문을 지우는 시드를 지키고,
-    //   이 키는 관문을 지우지 않는 사용자 토글(/chrome 이 끌 수 있다)이라 기본 꺼짐 시드에 묶으면 켜지는 사용자가 없다.
+    //   이 키는 사용자 토글(/chrome 이 끌 수 있다)이라 기본 꺼짐 시드에 묶으면 켜지는 사용자가 없다. 함께 넣는 완료 표지는 이 토글이 새로 만드는
+    //   크롬 첫 안내 창만 넘긴다(로그인·신뢰 관문과 무관 · 벤더의 켜기 코드도 두 키를 함께 쓴다).
     seed_chrome_preset_at_install(&cfg);
     if !install_hooks {
         // ★G3(--no-install-hook 일관성): 종전엔 이 플래그가 ~/.claude 대상만 막고 격리 config dir
@@ -2043,6 +2044,14 @@ pub const CHROME_DEFAULT_KEY: &str = "claudeInChromeDefaultEnabled";
 /// 크롬 키를 한 번 살폈다는 표지(`<cfg>/` 직하) — 끄기 도구가 키를 지워 「없음」으로 돌아가도 업데이트가 다시 켜지 않게 한다.
 pub const CHROME_PRESET_MARKER: &str = ".cys-chrome-preset";
 
+/// Claude Code 의 크롬 첫 안내 창 완료 표지 — 켜기 키만 있고 이 값이 비어 있으면 master 좌석이 첫 시작에서 그 창에 멈춘다
+/// (깨끗한 맥 VM · 2.1.311 실측: 설치 EXIT-RC 10 · 2.1.327 판독: 시작 흐름이 전역 설정의 이 값이 거짓일 때 창을 띄운다).
+pub const CHROME_ONBOARDING_KEY: &str = "hasCompletedClaudeInChromeOnboarding";
+
+/// 완료 표지 보충을 한 번 살폈다는 표지(`<cfg>/` 직하). 시드 표지만으로는 「우리가 켠 기기」와 「이미 켜져 있어 건드리지 않은 기기」를
+/// 가를 수 없어 따로 둔다 — 이 표지가 있으면 보충하지 않는다.
+pub const CHROME_ONBOARDING_MARKER: &str = ".cys-chrome-onboarding";
+
 /// Claude 설정 잠금을 기다리는 상한 — 못 잡으면 이번 설치는 쓰지 않는다(표지도 없어 다음 설치가 다시 본다).
 const CHROME_PRESET_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -2053,7 +2062,9 @@ pub enum ChromePreset {
     Seeded,
     /// 키가 이미 있다(값 무관 · 사용자 `/chrome` 의 false 포함) — 파일 무변경.
     Kept,
-    /// 표지가 있다 — 파일을 읽지도 않았다.
+    /// 우리 시드를 거친 기기에 완료 표지만 보충했다.
+    Backfilled,
+    /// 두 표지가 다 있다 — 파일을 읽지도 않았다.
     AlreadyDone,
     /// 잠금을 못 잡았거나 그 사이 파일이 바뀌었다 — 무변경 · 다음 설치가 다시 본다.
     Busy,
@@ -2075,7 +2086,8 @@ fn seed_chrome_preset_at_install(cfg: &Path) {
     }
 }
 
-/// `<cfg>/.claude.json` 에 크롬 키가 **없을 때만** `true` 를 쓴다.
+/// `<cfg>/.claude.json` 에 크롬 키가 **없을 때만** `true` 와 완료 표지를 함께 쓴다. 시드 표지만 있는 기기(1.1.11~1.1.14 를 거친 기기)는
+/// 키가 정확히 `true` 이고 완료 표지가 비어 있을 때 완료 표지만 한 번 보충한다.
 ///
 /// Claude 와 같은 잠금(`<.claude.json>.lock` 폴더 · proper-lockfile 호환 · saveConfigWithLock)을 쥔 채 잠금 안에서 다시 읽고 쓴다 —
 /// 그래서 실행 중 세션과 겹쳐도 서로의 칸을 덮지 않는다. 남이 쥔 잠금은 지우지 않는다(`javis_computer_control._config_lock` 과 같은 규약).
@@ -2083,7 +2095,8 @@ fn seed_chrome_preset_at_install(cfg: &Path) {
 /// 표지는 살핀 결과가 확정됐을 때만 남긴다 — Busy·Refused 뒤에는 다음 설치가 다시 본다.
 pub fn seed_chrome_default_at(cfg: &Path, lock_wait: std::time::Duration) -> ChromePreset {
     let marker = cfg.join(CHROME_PRESET_MARKER);
-    if marker.exists() {
+    let onboarding_marker = cfg.join(CHROME_ONBOARDING_MARKER);
+    if marker.exists() && onboarding_marker.exists() {
         return ChromePreset::AlreadyDone;
     }
     let path = cfg.join(CLAUDE_CONFIG_FILE);
@@ -2102,16 +2115,65 @@ pub fn seed_chrome_default_at(cfg: &Path, lock_wait: std::time::Duration) -> Chr
         }
     }
     // 잠금을 기다리는 사이 다른 설치가 끝냈을 수 있다 — 그 뒤 사용자가 지운 키를 다시 켜지 않는다
-    let outcome = if marker.exists() { ChromePreset::AlreadyDone } else { seed_chrome_key_locked(&path, &|| {}) };
+    let outcome = match (marker.exists(), onboarding_marker.exists()) {
+        (true, true) => ChromePreset::AlreadyDone,
+        (true, false) => backfill_chrome_onboarding_locked(&path, &|| {}),
+        (false, _) => seed_chrome_key_locked(&path, &|| {}),
+    };
     let _ = std::fs::remove_dir(&lock);
-    if matches!(outcome, ChromePreset::Seeded | ChromePreset::Kept) {
-        let _ = write_atomic(&marker, env!("CARGO_PKG_VERSION").as_bytes());
+    if matches!(outcome, ChromePreset::Seeded | ChromePreset::Kept | ChromePreset::Backfilled) {
+        // 보충 표지가 먼저다 — 둘 사이에 끊겨도 시드 표지만 남아 사용자 값을 보충 대상으로 오인하는 일이 없다
+        let _ = write_atomic(&onboarding_marker, env!("CARGO_PKG_VERSION").as_bytes());
+        if !marker.exists() {
+            let _ = write_atomic(&marker, env!("CARGO_PKG_VERSION").as_bytes());
+        }
     }
     outcome
 }
 
-/// 잠금 안의 본체 — 읽고 → 키 판단 → 원자 교체 → 되읽기 확인. `before_swap` = 시험 주입점(교체 직전에 다른 쓰기를 끼워 넣는다).
+/// 키가 없을 때만 켜기 키와 완료 표지를 한 번의 교체로 넣는다.
 fn seed_chrome_key_locked(path: &Path, before_swap: &dyn Fn()) -> ChromePreset {
+    edit_chrome_config_locked(path, before_swap, ChromePreset::Seeded, |doc| {
+        if doc.contains_key(CHROME_DEFAULT_KEY) {
+            return false;
+        }
+        doc.insert(CHROME_DEFAULT_KEY.to_string(), serde_json::Value::Bool(true));
+        doc.insert(CHROME_ONBOARDING_KEY.to_string(), serde_json::Value::Bool(true));
+        true
+    })
+}
+
+/// 켜기 키가 정확히 `true` 이고 완료 표지가 비어 있을 때(없음·null·false)만 완료 표지를 넣는다.
+fn backfill_chrome_onboarding_locked(path: &Path, before_swap: &dyn Fn()) -> ChromePreset {
+    edit_chrome_config_locked(path, before_swap, ChromePreset::Backfilled, |doc| {
+        let enabled = doc.get(CHROME_DEFAULT_KEY) == Some(&serde_json::Value::Bool(true));
+        let missing = matches!(
+            doc.get(CHROME_ONBOARDING_KEY),
+            None | Some(serde_json::Value::Null) | Some(serde_json::Value::Bool(false))
+        );
+        if !enabled || !missing {
+            return false;
+        }
+        doc.insert(CHROME_ONBOARDING_KEY.to_string(), serde_json::Value::Bool(true));
+        true
+    })
+}
+
+/// 되읽은 설정에서 두 키가 모두 `true` 인가.
+fn chrome_config_verified(bytes: &[u8]) -> bool {
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return false;
+    };
+    [CHROME_DEFAULT_KEY, CHROME_ONBOARDING_KEY].iter().all(|k| v.get(*k).and_then(|x| x.as_bool()) == Some(true))
+}
+
+/// 잠금 안의 본체 — 읽고 → `edit` 판단(false = 쓸 것 없음 · `Kept`) → 원자 교체 → 되읽기 확인. `before_swap` = 시험 주입점(교체 직전에 다른 쓰기를 끼워 넣는다).
+fn edit_chrome_config_locked(
+    path: &Path,
+    before_swap: &dyn Fn(),
+    done: ChromePreset,
+    edit: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>) -> bool,
+) -> ChromePreset {
     // Claude Code 는 이 파일을 링크 너머로 쓴다 — 원자 교체는 링크를 일반 파일로 바꿔 설정을 갈라 놓는다(`seat::seed_trust` 와 같은 거절)
     if std::fs::symlink_metadata(path).map(|m| m.file_type().is_symlink()).unwrap_or(false) {
         return ChromePreset::Refused(format!("symlink 거부: {}", path.display()));
@@ -2129,10 +2191,9 @@ fn seed_chrome_key_locked(path: &Path, before_swap: &dyn Fn()) -> ChromePreset {
             Err(e) => return ChromePreset::Refused(format!("{} 파싱 불가 — 보존: {e}", path.display())),
         },
     };
-    if doc.contains_key(CHROME_DEFAULT_KEY) {
+    if !edit(&mut doc) {
         return ChromePreset::Kept;
     }
-    doc.insert(CHROME_DEFAULT_KEY.to_string(), serde_json::Value::Bool(true));
     let body = match serde_json::to_vec_pretty(&serde_json::Value::Object(doc)) {
         Ok(b) => b,
         Err(e) => return ChromePreset::Failed(e.to_string()),
@@ -2146,12 +2207,8 @@ fn seed_chrome_key_locked(path: &Path, before_swap: &dyn Fn()) -> ChromePreset {
     if let Err(e) = write_atomic_mode(path, &body, mode) {
         return ChromePreset::Failed(format!("{}: {e}", path.display()));
     }
-    let verified = std::fs::read(path)
-        .ok()
-        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-        .and_then(|v| v.get(CHROME_DEFAULT_KEY).and_then(|x| x.as_bool()));
-    if verified == Some(true) {
-        ChromePreset::Seeded
+    if std::fs::read(path).is_ok_and(|b| chrome_config_verified(&b)) {
+        done
     } else {
         ChromePreset::Failed(format!("{} 되읽기 불일치", path.display()))
     }
@@ -13429,11 +13486,13 @@ mod tests {
         assert_eq!(seed_chrome_default_at(&td, NO_WAIT), ChromePreset::Seeded);
         let v = u19_json(&std::fs::read_to_string(&cfg).unwrap());
         assert_eq!(v[CHROME_DEFAULT_KEY], serde_json::json!(true));
+        assert_eq!(v[CHROME_ONBOARDING_KEY], serde_json::json!(true), "완료 표지가 없으면 첫 안내 창에서 좌석이 멈춘다");
         assert_eq!(v["oauthAccount"]["accountUuid"], "u");
         assert_eq!(v["numStartups"], 7);
         assert_eq!(v["projects"]["/a"]["x"], serde_json::json!([1, 2]));
-        assert_eq!(v.as_object().unwrap().len(), 4, "키 한 칸만 더한다");
+        assert_eq!(v.as_object().unwrap().len(), 5, "두 칸만 더한다");
         assert!(td.join(CHROME_PRESET_MARKER).exists());
+        assert!(td.join(CHROME_ONBOARDING_MARKER).exists(), "새로 시드한 기기는 보충 대상이 아니다");
         assert!(!td.join(".claude.json.lock").exists(), "잠금을 풀어야 Claude 가 쓴다");
     }
 
@@ -13505,7 +13564,7 @@ mod tests {
         assert_eq!(seed_chrome_default_at(&td, NO_WAIT), ChromePreset::Seeded);
         assert_eq!(
             u19_json(&std::fs::read_to_string(&cfg).unwrap()),
-            serde_json::json!({ CHROME_DEFAULT_KEY: true })
+            serde_json::json!({ CHROME_DEFAULT_KEY: true, CHROME_ONBOARDING_KEY: true })
         );
         #[cfg(unix)]
         assert_eq!(existing_file_mode(&cfg), Some(0o600));
@@ -13548,9 +13607,10 @@ mod tests {
         let (td, cfg) = chrome_seed("remark", Some("{}"));
         let lock = td.join(".claude.json.lock");
         std::fs::create_dir(&lock).unwrap();
-        let (l2, m2) = (lock.clone(), td.join(CHROME_PRESET_MARKER));
+        let (l2, m2, m3) = (lock.clone(), td.join(CHROME_PRESET_MARKER), td.join(CHROME_ONBOARDING_MARKER));
         let t = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(200));
+            std::fs::write(&m3, "x").unwrap();
             std::fs::write(&m2, "x").unwrap();
             std::fs::remove_dir(&l2).unwrap();
         });
@@ -13569,6 +13629,189 @@ mod tests {
         std::fs::set_permissions(&cfg, std::fs::Permissions::from_mode(0o640)).unwrap();
         assert_eq!(seed_chrome_default_at(&td, NO_WAIT), ChromePreset::Seeded);
         assert_eq!(existing_file_mode(&cfg), Some(0o640));
+    }
+
+    /// 1.1.11~1.1.14 가 시드를 거친 기기 — 시드 표지만 있고 보충 표지는 없다.
+    fn chrome_seeded_device(tag: &str, body: Option<&str>) -> (PathBuf, PathBuf) {
+        let (td, cfg) = chrome_seed(tag, body);
+        std::fs::write(td.join(CHROME_PRESET_MARKER), "old-seed").unwrap();
+        (td, cfg)
+    }
+
+    fn chrome_on_without_onboarding() -> String {
+        format!(r#"{{"{CHROME_DEFAULT_KEY}":true,"numStartups":7,"projects":{{"/a":{{"x":[1]}}}}}}"#)
+    }
+
+    /// 두 키는 한 번의 교체로 함께 나타난다 — 켜기만 먼저 보이는 틈이 있으면 그 틈에 뜬 좌석이 창에 걸린다.
+    #[test]
+    fn chrome_preset_writes_both_keys_in_one_swap() {
+        let (_td, cfg) = chrome_seed("swap", Some(r#"{"numStartups":1}"#));
+        let (c2, seen) = (cfg.clone(), std::cell::Cell::new(false));
+        let before = || {
+            let v = u19_json(&std::fs::read_to_string(&c2).unwrap());
+            assert!(v.get(CHROME_DEFAULT_KEY).is_none() && v.get(CHROME_ONBOARDING_KEY).is_none(), "교체 전에 먼저 썼다");
+            seen.set(true);
+        };
+        assert_eq!(seed_chrome_key_locked(&cfg, &before), ChromePreset::Seeded);
+        assert!(seen.get());
+        let v = u19_json(&std::fs::read_to_string(&cfg).unwrap());
+        assert_eq!((&v[CHROME_DEFAULT_KEY], &v[CHROME_ONBOARDING_KEY]), (&serde_json::json!(true), &serde_json::json!(true)));
+    }
+
+    /// 되읽기는 두 키가 모두 참일 때만 성공이다.
+    #[test]
+    fn chrome_config_verified_needs_both_keys_true() {
+        let check = |v: serde_json::Value| chrome_config_verified(v.to_string().as_bytes());
+        assert!(check(serde_json::json!({ CHROME_DEFAULT_KEY: true, CHROME_ONBOARDING_KEY: true })));
+        assert!(!check(serde_json::json!({ CHROME_DEFAULT_KEY: true })));
+        assert!(!check(serde_json::json!({ CHROME_ONBOARDING_KEY: true })));
+        assert!(!check(serde_json::json!({ CHROME_DEFAULT_KEY: true, CHROME_ONBOARDING_KEY: false })));
+        assert!(!check(serde_json::json!({ CHROME_DEFAULT_KEY: false, CHROME_ONBOARDING_KEY: true })));
+        assert!(!chrome_config_verified(b"{"));
+    }
+
+    /// 우리 표지가 없을 때 이미 있던 키(사용자 값)는 지금도, 다음 설치에도 건드리지 않는다 — 시드 표지가 생겼다고 보충 대상이 되면 안 된다.
+    #[test]
+    fn chrome_preset_existing_key_is_never_backfilled_on_later_installs() {
+        for (tag, val) in [("user-true", "true"), ("user-false", "false")] {
+            let body = format!("{{ \"{CHROME_DEFAULT_KEY}\":  {val} }}\n");
+            let (td, cfg) = chrome_seed(tag, Some(&body));
+            assert_eq!(seed_chrome_default_at(&td, NO_WAIT), ChromePreset::Kept, "{val}");
+            assert_eq!(std::fs::read_to_string(&cfg).unwrap(), body);
+            assert!(td.join(CHROME_ONBOARDING_MARKER).exists(), "{val}: 다음 설치가 보충 대상으로 오인한다");
+            assert_eq!(seed_chrome_default_at(&td, NO_WAIT), ChromePreset::AlreadyDone, "{val}");
+            assert_eq!(std::fs::read_to_string(&cfg).unwrap(), body, "{val}");
+        }
+    }
+
+    /// 시드를 거친 기기 = 완료 표지만 한 번 보충한다 · 다른 칸과 시드 표지는 그대로 · 그 뒤 표지를 지워도 다시 넣지 않는다.
+    #[test]
+    fn chrome_onboarding_backfills_seeded_device_once() {
+        let (td, cfg) = chrome_seeded_device("fill", Some(&chrome_on_without_onboarding()));
+        assert_eq!(seed_chrome_default_at(&td, NO_WAIT), ChromePreset::Backfilled);
+        let v = u19_json(&std::fs::read_to_string(&cfg).unwrap());
+        assert_eq!(v[CHROME_ONBOARDING_KEY], serde_json::json!(true));
+        assert_eq!(v[CHROME_DEFAULT_KEY], serde_json::json!(true));
+        assert_eq!(v["numStartups"], 7);
+        assert_eq!(v["projects"]["/a"]["x"], serde_json::json!([1]));
+        assert_eq!(v.as_object().unwrap().len(), 4, "한 칸만 더한다");
+        assert!(td.join(CHROME_ONBOARDING_MARKER).exists());
+        assert_eq!(std::fs::read_to_string(td.join(CHROME_PRESET_MARKER)).unwrap(), "old-seed", "시드 표지는 그대로");
+        assert!(!td.join(".claude.json.lock").exists());
+        let body = chrome_on_without_onboarding();
+        std::fs::write(&cfg, &body).unwrap();
+        assert_eq!(seed_chrome_default_at(&td, NO_WAIT), ChromePreset::AlreadyDone);
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), body, "1회만 보충한다");
+    }
+
+    /// 벤더 조건은 값의 참·거짓을 본다(`!C || 표지`) — false·null 도 창이 뜨므로 없음과 같다.
+    #[test]
+    fn chrome_onboarding_treats_false_and_null_as_missing() {
+        for (tag, val) in [("ob-false", "false"), ("ob-null", "null")] {
+            let body = format!(r#"{{"{CHROME_DEFAULT_KEY}":true,"{CHROME_ONBOARDING_KEY}":{val}}}"#);
+            let (td, cfg) = chrome_seeded_device(tag, Some(&body));
+            assert_eq!(seed_chrome_default_at(&td, NO_WAIT), ChromePreset::Backfilled, "{val}");
+            assert_eq!(u19_json(&std::fs::read_to_string(&cfg).unwrap())[CHROME_ONBOARDING_KEY], serde_json::json!(true), "{val}");
+        }
+    }
+
+    /// 꺼 둔 기기·키가 없는 기기·이미 완료한 기기는 한 글자도 바꾸지 않고, 살폈다는 표지만 남긴다.
+    #[test]
+    fn chrome_onboarding_leaves_other_states_byte_for_byte() {
+        let cases = [
+            ("off", format!("{{ \"{CHROME_DEFAULT_KEY}\": false }}\n")),
+            ("null", format!("{{ \"{CHROME_DEFAULT_KEY}\": null }}\n")),
+            ("absent", "{ \"numStartups\": 1 }\n".to_string()),
+            ("done", format!("{{ \"{CHROME_DEFAULT_KEY}\": true, \"{CHROME_ONBOARDING_KEY}\": true }}\n")),
+        ];
+        for (tag, body) in cases {
+            let (td, cfg) = chrome_seeded_device(&format!("skip-{tag}"), Some(&body));
+            assert_eq!(seed_chrome_default_at(&td, NO_WAIT), ChromePreset::Kept, "{tag}");
+            assert_eq!(std::fs::read_to_string(&cfg).unwrap(), body, "{tag}");
+            assert!(td.join(CHROME_ONBOARDING_MARKER).exists(), "{tag}");
+        }
+        let (td, cfg) = chrome_seeded_device("skip-nofile", None);
+        assert_eq!(seed_chrome_default_at(&td, NO_WAIT), ChromePreset::Kept);
+        assert!(!cfg.exists(), "없는 설정 파일을 만들었다");
+    }
+
+    /// 깨진 파일은 보존하고 다음 설치가 다시 본다 — 고쳐지면 그때 보충한다.
+    #[test]
+    fn chrome_onboarding_preserves_broken_files_and_retries() {
+        for (tag, body) in [("broken", "{\"a\": "), ("array", "[1,2]"), ("empty", "")] {
+            let (td, cfg) = chrome_seeded_device(&format!("ob-{tag}"), Some(body));
+            assert!(matches!(seed_chrome_default_at(&td, NO_WAIT), ChromePreset::Refused(_)), "{tag}");
+            assert_eq!(std::fs::read_to_string(&cfg).unwrap(), body, "{tag}");
+            assert!(!td.join(CHROME_ONBOARDING_MARKER).exists(), "{tag}: 다음 설치가 다시 봐야 한다");
+            assert!(!td.join(".claude.json.lock").exists(), "{tag}");
+            std::fs::write(&cfg, chrome_on_without_onboarding()).unwrap();
+            assert_eq!(seed_chrome_default_at(&td, NO_WAIT), ChromePreset::Backfilled, "{tag}");
+        }
+    }
+
+    /// 보충도 Claude 의 잠금을 지킨다 — 남의 잠금을 지우지 않고, 표지 없이 다음 설치로 넘긴다.
+    #[test]
+    fn chrome_onboarding_respects_claude_lock() {
+        let body = chrome_on_without_onboarding();
+        let (td, cfg) = chrome_seeded_device("ob-lock", Some(&body));
+        let lock = td.join(".claude.json.lock");
+        std::fs::create_dir(&lock).unwrap();
+        assert_eq!(seed_chrome_default_at(&td, NO_WAIT), ChromePreset::Busy);
+        assert!(lock.is_dir(), "남의 잠금을 지웠다");
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), body);
+        assert!(!td.join(CHROME_ONBOARDING_MARKER).exists());
+        std::fs::remove_dir(&lock).unwrap();
+        assert_eq!(seed_chrome_default_at(&td, NO_WAIT), ChromePreset::Backfilled);
+    }
+
+    #[test]
+    fn chrome_onboarding_does_not_overwrite_a_writer_that_ignored_the_lock() {
+        let (_td, cfg) = chrome_seeded_device("ob-cas", Some(&chrome_on_without_onboarding()));
+        let c2 = cfg.clone();
+        let late = move || std::fs::write(&c2, r#"{"numStartups":9}"#).unwrap();
+        assert_eq!(backfill_chrome_onboarding_locked(&cfg, &late), ChromePreset::Busy);
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), r#"{"numStartups":9}"#);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn chrome_onboarding_refuses_symlink_and_keeps_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let (td, cfg) = chrome_seeded_device("ob-link", None);
+        let real = td.join("real.json");
+        std::fs::write(&real, chrome_on_without_onboarding()).unwrap();
+        std::os::unix::fs::symlink(&real, &cfg).unwrap();
+        assert!(matches!(seed_chrome_default_at(&td, NO_WAIT), ChromePreset::Refused(_)));
+        assert!(std::fs::symlink_metadata(&cfg).unwrap().file_type().is_symlink());
+        assert!(!td.join(CHROME_ONBOARDING_MARKER).exists());
+        let (td, cfg) = chrome_seeded_device("ob-mode", Some(&chrome_on_without_onboarding()));
+        std::fs::set_permissions(&cfg, std::fs::Permissions::from_mode(0o640)).unwrap();
+        assert_eq!(seed_chrome_default_at(&td, NO_WAIT), ChromePreset::Backfilled);
+        assert_eq!(existing_file_mode(&cfg), Some(0o640));
+    }
+
+    /// 1.1.14 → 새 판: 갱신이 지나는 세 입구(init-pack --no-install-hook · init-pack · 데몬 자동 설치)가 모두 보충에 닿는다.
+    #[test]
+    fn chrome_onboarding_backfill_reaches_every_update_route() {
+        let _g = PACK_ENV_LOCK.lock().unwrap();
+        type Route = fn() -> Result<(usize, usize), String>;
+        let routes: [(&str, Route); 3] = [
+            ("gui-rotate", || super::install_staged(false, None, false)),
+            ("init-pack", || super::install_staged(false, None, true)),
+            ("cysd-boot", || super::install(false, None)),
+        ];
+        for (tag, run) in routes {
+            let base = u19_tmp(&format!("chrome-up-{tag}"));
+            let (pd, cfg) = (base.join("pack"), base.join("cysclaude"));
+            let _env = set_pack_env(&pd, &cfg);
+            std::fs::create_dir_all(&cfg).unwrap();
+            std::fs::write(cfg.join(CLAUDE_CONFIG_FILE), chrome_on_without_onboarding()).unwrap();
+            std::fs::write(cfg.join(CHROME_PRESET_MARKER), "1.1.14").unwrap();
+            run().unwrap();
+            let v = u19_json(&std::fs::read_to_string(cfg.join(CLAUDE_CONFIG_FILE)).unwrap());
+            assert_eq!(v[CHROME_ONBOARDING_KEY], serde_json::json!(true), "{tag}");
+            let _ = std::fs::remove_dir_all(&base);
+        }
     }
 
     /// GUI 업데이트(`--no-install-hook`)에서도 돌고, 기본 꺼짐인 첫기동 시드 스위치에 묶이지 않으며, 부서 팩에서는 돌지 않는다.
@@ -13592,6 +13835,11 @@ mod tests {
         std::env::set_var("CYS_ACCOUNT_DIR", &acct);
         setup_isolated_config_dir(false);
         let dept = acct.join(CLAUDE_CONFIG_FILE).exists();
+        let dept_body = chrome_on_without_onboarding();
+        std::fs::write(acct.join(CLAUDE_CONFIG_FILE), &dept_body).unwrap();
+        std::fs::write(acct.join(CHROME_PRESET_MARKER), "1.1.14").unwrap();
+        setup_isolated_config_dir(false);
+        let dept_after = std::fs::read_to_string(acct.join(CLAUDE_CONFIG_FILE)).unwrap();
         for (k, v) in saved {
             match v {
                 Some(x) => std::env::set_var(k, x),
@@ -13600,6 +13848,7 @@ mod tests {
         }
         assert_eq!(u19_json(&seeded.expect("no-install-hook 경로가 키를 쓰지 않았다"))[CHROME_DEFAULT_KEY], serde_json::json!(true));
         assert!(!dept, "부서 계정 폴더에 키를 썼다");
+        assert_eq!(dept_after, dept_body, "부서 계정 폴더에 완료 표지를 보충했다");
     }
 
     // ═════════════════════════════════════════════════════════════════════════

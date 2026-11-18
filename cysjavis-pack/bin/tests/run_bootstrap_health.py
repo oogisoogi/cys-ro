@@ -6362,6 +6362,7 @@ _U5_PACK_CREATIONFLAGS = {
     "javis_hud_bridge.py":              1,   # NOWIN 원조 처방(0.12.44~)
     "javis_idempotency.py":             1,
     "javis_idle_audit.py":              1,
+    "javis_idle_gate.py":               1,   # 1.1.16(cysr-no-hands-gui-1118) — 캡처 스폰 1곳은 `**NOWIN` 전개라 토큰이 없고 NOWIN 정의 1곳만 센다
     "javis_intake.py":                  1,   # 0.14.52 편입 r2(3e7ae36c) — 원작자 새/변경 캡처 스폰 4곳에 우리 NOWIN 정본 정의(정의 1)
     "javis_learn.py":                   1,
     "javis_lock.py":                    1,
@@ -6370,6 +6371,7 @@ _U5_PACK_CREATIONFLAGS = {
     "javis_orchestra.py":               1,
     "javis_org.py":                     1,
     "javis_orient_log.py":              1,
+    "javis_owner.py":                   1,   # 1.1.16(cysr-owner-memory-todo-1118) — 캡처 스폰 2곳은 `**NOWIN` 전개라 토큰이 없고 NOWIN 정의 1곳만 센다
     "javis_phoenix.py":                 1,
     "javis_phoenix_encoding_smoke.py":  1,
     "javis_phoenix_harness.py":         1,

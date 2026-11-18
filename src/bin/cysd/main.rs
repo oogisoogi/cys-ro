@@ -1547,6 +1547,8 @@ async fn async_main() {
 /// 소켓 파일을 제거한다. unix·windows 양쪽 종료 핸들러가 공유한다 (크로스플랫폼 대칭).
 /// (windows named pipe엔 제거할 파일이 없어 remove_file은 무해한 no-op이 된다.)
 fn shutdown_cleanup(daemon: &Arc<Daemon>, reason: &str) {
+    // ★조각 1: 읽기 오류로 건너뛴 topology 저장의 마지막 기회 — 좌석 회수보다 먼저 한다.
+    governance::persist_topology_if_dirty(daemon);
     let scoped = governance::collect_scoped_for_shutdown(&daemon.ledger.lock().unwrap());
     for (pid, pgid) in scoped {
         governance::kill_group_or_pid(pid, pgid);

@@ -4850,6 +4850,9 @@ pub struct Daemon {
     /// 잡는다(락 순서: topology_write → surfaces → 좌석 필드). 다른 곳에서 잡지 않는다.
     /// static 이 아니라 데몬 필드인 이유: 운영 데몬은 하나라 전역과 같고, 검체의 격리 데몬끼리는 줄 세우지 않는다.
     pub topology_write: Mutex<()>,
+    /// ★조각 1: topology.json 을 읽지 못해 저장을 건너뛴 변경이 남아 있다. 저장이 성공하면 내려간다.
+    /// watchdog 틱과 정상 종료 직전이 이 값을 보고 다시 저장한다(`persist_topology_if_dirty`).
+    pub topology_dirty: AtomicBool,
     /// 적대검증 벡터-9 방어심화: master role이 현재 보유 surface로 (재)claim된 epoch초.
     /// master surface가 죽는 윈도우에 다른 노드가 claim_role("master")로 합법 승계 → 즉시
     /// approval.sign으로 위험명령을 정당 서명할 수 있다. 이 값으로 갓 승계한 master의 서명을
@@ -7055,6 +7058,7 @@ impl Daemon {
                 v
             }),
             topology_write: Mutex::new(()),
+            topology_dirty: AtomicBool::new(false),
             // 벡터-9 방어심화: 기동 시 master 미승계 → None (첫 claim_role("master")에서 기록).
             master_claimed_at: Mutex::new(None),
             feed_items: Mutex::new(restored),

@@ -33,7 +33,13 @@ fn main() {
     // ★W1 identity(3중 대조 field 1): 빌드 식별자 = git HEAD 짧은 SHA. 같은 빌드의 cys·cysd 는 동일 SHA →
     // 폴백 cys 가 데몬과 같은 빌드인지 교차대조하는 anti-shadowing 근거(embedded pack hash·protocol version 과 함께).
     // build.rs 는 이미 git 에 하드 의존(위 ls-files)하므로 추가 의존 없음. 실패 시 "unknown"(대조에서 불일치로 안전측).
-    println!("cargo:rerun-if-changed=.git/HEAD");
+    // ★TICKET=cysr-test-gatekeeper-crash-1118(master#c40b4251 A): worktree 에서는 `.git` 이 파일이라 `.git/HEAD` 가 없다 →
+    //   cargo 는 없는 경로를 늘 바뀐 것으로 보고 빌드 스크립트를 매번 다시 돌려 build_id(UTC 분)가 바뀌고 cys·cysd 가 매 빌드 새 Mach-O 가
+    //   됐다. 실제 HEAD 파일 + HEAD 가 가리키는 ref 파일(느슨한 ref 없으면 packed-refs)을 건다 — 커밋마다 커밋 12자는 그대로 갱신된다.
+    //   둘 다 못 구하면 옛 `.git/HEAD` 폴백.
+    for p in head_watch_paths(&manifest_dir) {
+        println!("cargo:rerun-if-changed={p}");
+    }
     // ★cysr 1.0.0(TICKET=cysr-brand-version · master 결정 2026-09-15): 같은 판번이라도 내용이 바뀌면
     //   업데이트돼야 한다 → 업데이터가 판번 다음으로 build_id 를 대조한다. 형식 =
     //   `<커밋 12자>[-dirty].<UTC yyyymmddTHHMMZ>`. 릴리스 CI 는 매트릭스 레그가 같은 값을 갖도록
@@ -326,6 +332,35 @@ fn release_seq_from_env() -> u64 {
 /// CYSR_BUILD_ID 미지정(로컬 빌드)일 때의 build_id — `<커밋 12자>[-dirty].<UTC yyyymmddTHHMMZ>`.
 /// git 실패 시 커밋 자리는 "unknown"(업데이터 대조에서 불일치 = 안전측). 시각은 build.rs 가 다시 돌 때만
 /// 갱신된다(rerun 조건 밖의 편집은 옛 시각·옛 dirty 표기를 유지한다 — 로컬 판별용이라 수용).
+/// build_id 의 커밋 칸을 바꾸는 파일들(존재하는 것만 — 없는 경로는 cargo 가 매번 재실행 사유로 본다).
+/// = `git rev-parse --git-path HEAD`(worktree 면 `.git/worktrees/<이름>/HEAD`) + HEAD 가 가리키는 ref 의 느슨한 파일, 없으면 `packed-refs`.
+/// git 을 못 부르거나 HEAD 경로가 없으면 옛 `.git/HEAD` 한 줄(종전 동작).
+fn head_watch_paths(manifest_dir: &str) -> Vec<String> {
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(manifest_dir)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let abs_git_path = |p: &str| {
+        git(&["rev-parse", "--path-format=absolute", "--git-path", p]).filter(|s| std::path::Path::new(s).is_file())
+    };
+    let Some(head) = abs_git_path("HEAD") else {
+        return vec![".git/HEAD".to_string()];
+    };
+    let mut out = vec![head];
+    if let Some(r) = git(&["rev-parse", "--symbolic-full-name", "HEAD"]).filter(|r| r.starts_with("refs/")) {
+        if let Some(p) = abs_git_path(&r).or_else(|| abs_git_path("packed-refs")) {
+            out.push(p);
+        }
+    }
+    out
+}
+
 fn local_build_id(manifest_dir: &str) -> String {
     let git = |args: &[&str]| {
         Command::new("git")

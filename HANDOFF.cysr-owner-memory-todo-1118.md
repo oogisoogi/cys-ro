@@ -20,8 +20,8 @@
 - 신규 `cysjavis-pack/bin/javis_owner.py` — rule/todo/notify/hook(auto = 훅 JSON 의 hook_event_name).
 - 신규 `cysjavis-pack/hooks/owner-desk.sh` — master 전용(첫 줄 역할 가드) · 안쪽 상한 8초 · fail-open · 하위 에이전트 거름은 파이썬이 사건별로(PushNotification 정산은 함).
 - `cysjavis-pack/bin/javis_memory.py` — `retire --name <slug> [--reason]`(색인 잠금 안에서 찾기·읽기·이동·색인 링크 정확 일치 삭제 · 실패 롤백) · `update` 의 찾기·읽기도 잠금 안으로(retire 와 경합 시 은퇴 규칙 부활 0 · codex 2R #6).
-- `cysjavis-pack/bin/javis_preflight.py` — C28 `SELFCORR_HOOKS` 에 owner-desk 4사건(SessionStart·UserPromptSubmit·Stop·PostToolUse `PushNotification`) · `HOOK_TIMEOUT_S` 4행 = 10초. Rust AWAKENING_HOOKS 무접촉(비각성 훅 = C28 단독 등록 선례).
-- 신규 시험 `bin/tests/test_owner_desk.py`(35) · 뮤턴트 `bin/tests/mut_owner_desk.py`(45 · 기준선 초록 선행 확인 · 별도 작업트리 전용).
+- `cysjavis-pack/bin/javis_preflight.py` — C28 `SELFCORR_HOOKS` 에 owner-desk 5사건(SessionStart·UserPromptSubmit·Stop·PreToolUse `PushNotification`·PostToolUse `PushNotification`) · `HOOK_TIMEOUT_S` 5행 = 10초. Rust AWAKENING_HOOKS 무접촉(비각성 훅 = C28 단독 등록 선례).
+- 신규 시험 `bin/tests/test_owner_desk.py`(45) · 뮤턴트 `bin/tests/mut_owner_desk.py`(53 · 기준선 초록 선행 확인 · 뮤턴트 실행은 `-f` · 별도 작업트리 전용).
 - `USER-MANUAL.md` §5.8(왕초보 말투 · 카톡 안내 · 생각 깊이 · 파일 로컬 vs 모델·푸시 전달 구분).
 - Rust·UI 소스 변경 0.
 
@@ -38,11 +38,11 @@
 
 | 항목 | 결과 |
 |---|---|
-| test_owner_desk(35 · R1~R8 · 윈 경로·UTF-8 단위 포함) | 기준선 7d25c38e = 첫 17건 **17/17 붉음** · codex 2R 시험 8건 = 직전 머리 83b5d5cc **8/8 붉음** → 머리 **35/35 초록** |
-| 뮤턴트 mut_owner_desk | 1차 26 → 22 처치(생존 4 = 중복 거름 2곳 단순화 · 시험 보강) · 2차 37 → 35(생존 2 = 시험 보강 후 처치) · 최종 45종 = §4 |
-| 실좌석 `claude -p`(로그인 프로필 그대로 · `--setting-sources project` 로 owner-desk 훅만 · 격리 팩/원장) | u1~u5(초판) · v1·v2(1R 수리판): 지속 지시 2건 저장·「이렇게 저장했습니다」·**새 세션에서 두 규칙 모두 지켜짐(표 + 3줄 이내)** · 아침 보고 첫 줄 · 잡담 저장 0 / w1(2R 수리판): 끝 표시 → 앱 알림 1회(request-id 포함) · `do_now` 로 PushNotification 즉시 호출(CC 「터미널 활성이라 생략」 = 문서화된 동작) · 앱·폰 의무 모두 정산(sent/sent) · Stop 막기 0 |
+| test_owner_desk(45 · 머리 5a1de515) | **45/45 초록**(42초 · 2회 연속) · 회차별 붉음 확인: 기준선 7d25c38e 첫 17건 17/17 · 2R 8건 = 83b5d5cc 8/8 · 3R 6건 = 4ce6a80c 6/6 · 4R 2건 = 3a40e5c6 2/2 |
+| 뮤턴트 mut_owner_desk(머리 5a1de515 · 깨끗한 작업트리 · 직렬 1000초) | **`MUTANTS ALL-KILLED 53/53`** · KILLED(timeout) 0. 직전 통제 실행(adfcb006) = 생존 2 · NO-MATCH 2 → 이 좌석 재실행 = 생존 3(「발송 timeout 고정」 은 벽시계 시험이라 실행마다 판정이 갈림). 처분: 시험을 기록 건수 판정으로 교체 · 시간 상한 시험 신설 · 보내는 중 표지 직접 시험 · 패턴 2종을 4R 수리 코드에 맞춤 |
+| 실좌석 `claude -p`(로그인 프로필 그대로 · `--setting-sources project` 로 owner-desk 훅만 · 격리 팩/원장) | u1~u5(초판) · v1·v2(1R 수리판): 지속 지시 2건 저장·「이렇게 저장했습니다」·**새 세션에서 두 규칙 모두 지켜짐(표 + 3줄 이내)** · 아침 보고 첫 줄 · 잡담 저장 0 / w1(2R 수리판): 끝 표시 → 앱 알림 1회(request-id 포함) · `do_now` 로 PushNotification 즉시 호출(CC 「터미널 활성이라 생략」 = 문서화된 동작) · 앱·폰 의무 모두 정산(sent/sent) · Stop 막기 0 · ⚠**3R·4R 수리 뒤에는 실좌석 재실행 없음**(이 표의 마지막 = 2R 수리판) |
 | 팩 파이썬 전수(별도 작업트리 · 4596a2f4) | 208 중 194 rc 0 · 붉음 12 = 기준선 7d25c38e 에서도 붉은 10 + **내 결함 2(dept_tick_stdin · nowin_captured_spawns = 윈 하위 프로세스 stdin·NOWIN) → 4f5833ee 고침** |
-| 팩 전수 스캔·훅·문서 계약 14본(최종 머리 4ce6a80c) | agy_door · dept_tick_stdin · pyseal_census · nowin_captured_spawns · session_start_hook · preflight_hook_body · preflight_win_hook_launcher · capgate_registration · dept_chat_inject_timeout · hook_fail_log · bootv2_doc_contract · event_inject · core_inject · t6_injection_policy = **전부 rc 0** · javis_memory --self-test ok |
+| 팩 전수 스캔·훅·문서 계약 14본(master 통제 실행 · adfcb006 · 그 뒤 변경 = owner-desk 시험·뮤턴트 2파일뿐) | agy_door · dept_tick_stdin · pyseal_census · nowin_captured_spawns · session_start_hook · preflight_hook_body · preflight_win_hook_launcher · capgate_registration · dept_chat_inject_timeout · hook_fail_log · bootv2_doc_contract · event_inject · core_inject · t6_injection_policy = **전부 rc 0**(agy_door 는 skipped 11 = 바이너리 없음 · 그 묶음은 통과로 세지 않음) · javis_memory --self-test ok · syspolicyd 계수 26·162 불변 |
 | health run_bootstrap_health | 167 PASS / 2 FAIL(H-CLT-1·2 = 기준선과 같은 ID · 이 기기 python 선택 환경) |
 | gen_ceo_template --check | GREEN(디렉티브 무변경) |
 | cargo lib / bin cys | 1256·0·3 ign / 765·0·2 ign(통합 기준선과 같은 수) |
@@ -56,9 +56,11 @@
 |---|---|---|---|
 | 1R(e28a3a7b 기준) | REVISE · 9 MAJOR · 1 MINOR | 발송 실패 영구 누락 · 폰 일별 대조 없음 · 정상 확인을 거짓으로 막음 · retire 롤백 덮어쓰기 · 출력 잘림 · 윈 자식 인코딩 · 중단 시 아침 보고 소실 · retire 가 다른 색인 줄 삭제 · 설정 동시 변경 · 매뉴얼 개인정보 문구 | 83b5d5cc 전부 수리 · 논쟁점(하루 1회 범위·keep/defer 뜻·사건 잠금·뮤턴트 기준선)도 반영 |
 | 2R(83b5d5cc) | REVISE · 1R #5 미닫힘 + 6 MAJOR · 2 MINOR(나머지 1R 9건 닫힘 확인) | 출력 맞춤 소비 범위 · 배치 중 종료 재발송 · 두 좌석 폰 이중 · 하위 에이전트 정산 · 아침 보고 좌석 중복 · retire/update 경합 · Stop 후속 응답 · 시험 경합 | 4ce6a80c 전부 수리 · 시험 8건(직전 머리 8/8 붉음) |
-| 3R(4ce6a80c) | (§ 확인요청 시점 값) | | |
+| 3R(4ce6a80c) | REVISE · 5 MAJOR · 1 MINOR | compact 정산 · 폰 끝 번호 · 실제 발송 중복 거절 · flush 데드라인 · 아침 보고 날짜 · 포기 뒤 늦은 성공 | 3a40e5c6 수리 · 시험 6건(직전 머리 6/6 붉음) |
+| 4R(3a40e5c6) | REVISE · 2 MAJOR(3R 6건 중 4건 닫힘 확인 · #3·#5 부분 닫힘) | 보내는 중 유예에 안내 횟수·포기 소진 · 전날 좌석 늦은 Stop 이 확인 날짜 후퇴 | d0497ea1 수리 · 시험 2건(3a40e5c6 2/2 붉음) · 5a1de515 표지 직접 시험 추가 |
+| 5R | 안 함 | 4R 수리는 비밀값·데이터 비가역 무접촉(master#b9235140 수용) · 11-18 20:24 codex 한도 소진(master#928aba95) | 4R 수리는 codex 재확인 없이 시험·뮤턴트로 닫음 |
 
-원문 = 스크래치 `codex/r1.out`·`r2.out`·`r3.out`(이 좌석 세션 스크래치 — 필요하면 HANDOFF 커밋 때 docs 로 옮김).
+원문 = 재부팅으로 스크래치와 함께 소실 — 판정·지적 요지는 이 표와 §6-1 이 정본.
 
 ## 5. 남은 것 · 함정
 
@@ -72,7 +74,7 @@
 
 ---
 
-## 6. 인계 델타(11-18 18:4x · master#e14438b2 · 계정2 새 좌석용) — ⚠위 §0~§5 는 3a40e5c6 이전 초안 수치다
+## 6. 인계 델타(11-18 18:4x · master#e14438b2 · 계정2 새 좌석용) — §1·§3·§4 는 11-18 20:3x 최종 수치로 갱신됨(§6-5)
 
 ### 6-1. 중단 직전 하던 일
 - 커밋 사슬: … 83b5d5cc(codex 1R 수리) → 4ce6a80c(2R 수리) → 3a40e5c6(3R 수리 · 시험 41/41 초록 · 3R 시험 6건 = 직전 머리 6/6 붉음 확인) → **d0497ea1 WIP(4R 수리 · 미검증)**.
@@ -100,5 +102,5 @@
 ### 6-5. 후임 좌석 실측(11-18 18:5x · surface:2229 · 계정2 · master#26302103)
 - `test_owner_desk.py`(코드 = d0497ea1 · CYS_* 없는 깨끗한 env) = **43/43 초록 · 46초**.
 - 4R 시험 `R10Codex4R` 2건을 수리 전 코드(3a40e5c6 + 새 시험 파일 · 임시 작업트리)에서 실행 = **2/2 붉음**(`'unsent' != 'pending'` · 확인 날짜 후퇴로 「밀린 일 1건」 재출력).
-- **뮤턴트 53 · 팩 14본 · `javis_memory --self-test` = 아직 안 돌렸다**(master 통제 실행 대기). §3·§4 표는 그 결과가 오면 갱신한다.
+- 뮤턴트 53 · 팩 14본 · `javis_memory --self-test` = 완료(§3). 머리 5a1de515 에서 시험 45/45 · `MUTANTS ALL-KILLED 53/53`.
 - codex 5R 판단 = **불요**: 4R 수리는 폰 안내 횟수·포기 판정의 유예와 `confirmed_on` 단조 증가뿐이고, 비밀값·데이터 비가역에 닿지 않는다(브리프 기준). 따라서 4R 수리는 codex 재확인 없이 시험·뮤턴트로만 닫힌다.

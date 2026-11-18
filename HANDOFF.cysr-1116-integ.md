@@ -394,10 +394,12 @@
 
 ### 11-1. 들어올 순서
 - **① 2228 nohands2 `feat/no-hands-gui-1118` → ② 2229 ownermem2 `feat/owner-memory-todo-1118` → 그 머리에서 전체 게이트 1회.** 각 가지의 티켓 검수가 끝난 뒤 들인다. 끝점 acda833a·adfcb006 기준 모의 병합은 두 순서 모두 충돌 0 · 결과 트리가 같고 고친 파일이 겹치지 않는다. ①을 먼저 두는 이유 = 이미 ff9448fc 를 품었고 지침 해시를 바꾸는 쪽이라 해시 확인이 먼저 끝난다.
+- ① 완료(master#428436e7) = `b3cb2721`(38ef248a `--no-ff` · 충돌 0 · 트리 = 38ef248a 와 같음). 병합 뒤 `secret-scan --all` clean 2176 파일 · `gen_ceo_template --check` · `gen_released_directive_hashes --check` rc 0 · `test_cso_directive_rev` 75 OK. ② = master 지시 2/2 대기.
+- 2228 이 이월한 다음 판 3건 = `HANDOFF.cysr-no-hands-gui-1118.md` §7 끝 줄(이번에 안 고침).
 
 ### 11-2. 실행
 - 스크립트 = `docs/integ-1116/gate-1116.sh`(스냅샷 뿌리에서 `bash docs/integ-1116/gate-1116.sh <결과 폴더>` · 요약 = `<결과 폴더>/summary.txt`). 단계 81개(dry-run 계수 · 들어올 두 시험 포함) · **모든 대상 1회 · 자동 재시도 없음** · 격리 env(`env -i` · 짧은 TMPDIR) · 단계 실행 중 5초마다 syspolicyd·fake 계수를 대조해 늘면 그 단계 프로세스 그룹을 끊고 rc 3 로 중단.
-- 이 좌석에서 돌린 것 = 문법 · dry-run · 경량 5단계(gen 2 · secret 2 · `test_cso_directive_rev` 75 OK) · 보호 계수 증가 흉내(가짜 계수기 → `secret-scan` rc 125 · 전체 rc 3). **Rust·화면·팩 묶음은 스크립트로 돌려 보지 않았다.** `pw-venv` 단계는 처음 돌 때 playwright 1.60.0 을 내려받는다.
+- 이 좌석에서 스크립트로 돌린 것 = 문법 · dry-run · gen 2 · secret 2 · `test_cso_directive_rev` 75 OK · `test_idle_gate` 49 OK · `test_check_macho_arch` 62 OK · `test_ci_branch_cysd_step` 38 OK · `test_unix_pty_results` 9 OK · `test_release_trigger_split` 17 OK · `ui-build` · `pw-venv`(playwright 1.60.0 · PyYAML 6.0.2 · `~/axdev/.wt/.gate-pw-venv`) · `e2e-chat` PASS 59 · 보호 계수 증가 흉내(가짜 계수기 → `secret-scan` rc 125 · 전체 rc 3). **Rust 묶음 · 나머지 팩 묶음 · health · 나머지 화면 게이트는 스크립트로 돌려 보지 않았다.**
 - 맥에서 빼는 것 = `scripts/tests/test_release_postprocess_gate.py`(갓 만든 번들을 spctl·gktool 에 넘김) → CI 몫. `integ/1116` 은 ci-branch 의 push 대상(`feat/**`·`fix/**`) 밖이라 CI 는 별도 발화가 필요하다(push = master 게이트).
 
 ### 11-3. 판정 기준(앞 값 = §4·§8-6 · 더 늘면 사유 대조 · 붉음은 자동 재실행 말고 사유 전문 대조)
@@ -409,11 +411,19 @@
 | cys-app | 348 · 0 · 2 ign |
 | bun test · tsc | 0 fail · rc 0 |
 | 팩 파이썬 · doc-contract · event_inject · gen 2 · secret 2 | 전부 rc 0 |
-| scripts/tests | `test_release_trigger_split` **1건만** 실패(기준선부터) |
+| scripts/tests(맥 제외 1건 뺀 22) | **전부 rc 0** — 기준선부터 붉던 `test_release_trigger_split` 의 원인 = `/usr/bin/python3` 에 PyYAML 없음 → 게이트 전용 venv 로 실행(17 OK) |
 | health | fail = **H-CLT-1·2 만**(기준선부터 · 이 기계 환경) |
 | 화면 게이트 15종 | 전부 PASS · chat 59 · confirm 37 · tickrec OFF sha `308dd2b91f9a` · 나머지 수는 §4 |
 
+2228 이 못 끝낸 3줄의 처리(master#428436e7):
+
+| 항목 | 처리 |
+|---|---|
+| `run_bootstrap_health` (420초 상한에 걸려 결과 없음) | **게이트에서 돌림** — `health` 단계 · 상한 3600초 · 합격선 = 위 표 |
+| `test_ci_branch_cysd_step` (「PyYAML 없음」 으로 미실행) | **게이트에서 돌림** — 이 시험은 PyYAML 이 필요 없다. `b3cb2721` 에서 `/usr/bin/python3` 로 38 OK(92초). PyYAML 이 필요한 것은 `test_release_trigger_split` |
+| 우분투 레인의 새 등재 시험(`test_idle_gate`·`test_agents_notes_personal_hooks`·`test_hook_fail_timing`) | 맥 실행 = **게이트에서 돌림** · **우분투 실행 = CI 몫**(integ push 는 후보 확정 뒤 master 게이트 · `integ/1116` 은 push 자동 발화 대상이 아니라 `workflow_dispatch` 또는 `feat/**`·`fix/**` 가지 필요) |
+
 ### 11-4. 게이트가 먼저 잡은 것
 - `secret-scan --all` 적색 1건 = 병합으로 들어온 `WORKER_TODO.cysr-test-gatekeeper-crash-1118.md:2` 의 홈 절대 경로 → 「작업트리 cys-1116-gkfix」 로 고침(문서 · 동작 무관).
-- ⚠ 같은 꼴이 `feat/no-hands-gui-1118` 의 HANDOFF·WORKER_TODO 에 남아 있어 그대로 들이면 `secret-scan` 이 붉어진다(§11-1 ① 전에 그 좌석에서 고칠 일).
-- 📌 새 시험 `test_idle_gate`·`test_owner_desk` 는 어느 CI 워크플로에도 없다(현 머리에도 워크플로 미등재 팩 시험 44개). 이 게이트에서는 직접 돌린다.
+- 같은 꼴이 `feat/no-hands-gui-1118` 의 HANDOFF·WORKER_TODO 에도 있었으나 그 좌석이 고쳐 38ef248a 병합 뒤 `secret-scan` clean.
+- 📌 워크플로 미등재 팩 시험 44개(03c11f36 기준) = 범위 밖 기록 · 1.1.17 후보(master#48c83aeb). `test_owner_desk` 의 등재 여부는 ② 병합 때 다시 본다.

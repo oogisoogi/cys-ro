@@ -73,7 +73,8 @@ for t in test_wakeup_durable_receipt test_wakeup_liveness test_wakeup_park_failu
          test_bootv2_doc_contract test_event_inject test_cso_directive_rev parity_todo_decl parity_todo_scan \
          test_idle_gate test_owner_desk; do py_step "pack-$t" "cysjavis-pack/bin/tests/$t.py"; done
 # ── scripts/tests(맥 제외 1건은 머리말 참조)
-for f in scripts/tests/test_*.py; do b=$(basename "$f" .py); [ "$b" = test_release_postprocess_gate ] && continue; py_step "script-$b" "$f"; done
+#    test_release_trigger_split 은 PyYAML 이 필요해 게이트 전용 venv 로 아래에서 돌린다.
+for f in scripts/tests/test_*.py; do b=$(basename "$f" .py); case "$b" in test_release_postprocess_gate|test_release_trigger_split) continue;; esac; py_step "script-$b" "$f"; done
 # ── 건강 검체 전량
 step health 3600 "${ISO[@]}" /bin/sh -c 'exec /usr/bin/python3 cysjavis-pack/bin/tests/run_bootstrap_health.py --json > "$0"' "$OUT/health.json"
 if [ "$DRY" = 0 ] && [[ health =~ $ONLY ]]; then /usr/bin/python3 - "$OUT/health.json" <<'PY' | tee -a "$SUM"
@@ -89,8 +90,9 @@ step ui-test 1800 "${ISO[@]}" /bin/sh -c 'cd ui && exec bun test'
 step ui-install 600 "${ISO[@]}" /bin/sh -c 'cd ui && exec bun install --frozen-lockfile'
 step ui-tsc 600 "${ISO[@]}" /bin/sh -c 'cd ui && bunx -p typescript@7.0.2 tsc -v && exec bunx -p typescript@7.0.2 tsc -p tsconfig.check.json'
 step ui-build 600 "${ISO[@]}" /bin/sh -c 'cd ui && exec sh build.sh'
-# ── 화면 게이트(실제 번들 + 대역 · playwright 는 이 게이트 전용 venv · 브라우저는 이미 받아 둔 것)
-step pw-venv 600 "${ISO[@]}" /bin/sh -c '[ -x "$0/bin/python" ] || /usr/bin/python3 -m venv "$0"; "$0/bin/python" -c "import playwright" 2>/dev/null || "$0/bin/pip" install -q "playwright==1.60.0"; exec "$0/bin/python" -c "import playwright; print(playwright.__version__)"' "$PW_VENV"
+# ── 화면 게이트(실제 번들 + 대역 · playwright·PyYAML 은 이 게이트 전용 venv · 브라우저는 이미 받아 둔 것)
+step pw-venv 600 "${ISO[@]}" /bin/sh -c '[ -x "$0/bin/python" ] || /usr/bin/python3 -m venv "$0"; "$0/bin/python" -c "import playwright, yaml" 2>/dev/null || "$0/bin/pip" install -q "playwright==1.60.0" "PyYAML==6.0.2"; exec "$0/bin/python" -c "import playwright, yaml; from importlib.metadata import version; print(version(\"playwright\"), yaml.__version__)"' "$PW_VENV"
+step script-test_release_trigger_split 300 "${ISO[@]}" "$PW" scripts/tests/test_release_trigger_split.py
 step e2e-tickrec 900 "${REAL[@]}" "BASE_DIST=$BASE_DIST" "$CYS" run -- "$PW" ui/e2e/tickrec_gate.py
 for g in chat confirm cc_popover_z restart_confirm race focus seatrows pillar seatgroup rolereuse stty nodept restart hidden_block; do step "e2e-$g" 900 "${REAL[@]}" "$CYS" run -- "$PW" "ui/e2e/${g}_gate.py"; done
 

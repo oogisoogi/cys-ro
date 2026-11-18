@@ -802,6 +802,68 @@ class V115r5T3BootNodeResumesSaved(A2B8BootNodeRun):
         self.assertNotEqual(rc, 0, out)
 
 
+class _ResumeCheckReplies(_FakeCys):
+    """`cys daemon resume-check` 가 지정한 rc·stderr 로 끝나는 cys 흉내."""
+
+    def __init__(self, rows, rc, err):
+        super().__init__(rows)
+        self.reply = (rc, "", err)
+
+    def __call__(self, args, timeout=15):
+        if args[1:3] == ["daemon", "resume-check"]:
+            self.calls.append(list(args))
+            return self.reply
+        return super().__call__(args, timeout)
+
+
+class ReapLaunchChecksSavedListFirst(A2B8BootNodeRun):
+    """조각 1: reap-launch 는 저장 목록을 믿을 수 있을 때만 좌석을 회수한다(회수 뒤 93 이면 좌석만 잃는다)."""
+
+    def _worker_rows(self):
+        return [{"ref": "surface:3", "role": "worker", "pid": 333, "seat": "empty", "agent": "claude",
+                 "created": time.time() - 900}]
+
+    def _run_check(self, rc, err):
+        fake = _ResumeCheckReplies(self._worker_rows(), rc, err)
+        saved = _FakeCys
+        globals()["_FakeCys"] = lambda r: fake
+        try:
+            return self._run(fake.rows, "worker", self.env)
+        finally:
+            globals()["_FakeCys"] = saved
+
+    def _kinds(self, fake):
+        return [c[1] for c in fake.calls if c[1] in ("close-surface", "launch-agent")]
+
+    def test_unknown_saved_list_holds_before_the_reap(self):
+        for rc_c, err in ((93, "[daemon resume-check] worker: 데몬이 저장 목록을 읽지 못했다\n"),
+                          (1, "error: socket\n"),
+                          (255, "timed out"),
+                          (2, "error: unexpected argument '--role' found\n")):
+            rc, out, fake = self._run_check(rc_c, err)
+            self.assertEqual(self._kinds(fake), [], "회수·기동이 일어났다(rc=%d): %s" % (rc_c, fake.calls))
+            self.assertEqual((rc, out["result"], out["surface"]), (93, "resume_held", "surface:3"), out)
+            self.assertIn(err.strip().splitlines()[-1], out["reason"])
+
+    def test_check_runs_for_this_role_right_before_the_reap(self):
+        rc, out, fake = self._run_check(0, "")
+        names = [c[1] for c in fake.calls]
+        check = next(i for i, c in enumerate(fake.calls) if c[1:3] == ["daemon", "resume-check"])
+        self.assertEqual(fake.calls[check][3:], ["--role", "worker"])
+        self.assertEqual(names[check + 1], "close-surface", fake.calls)
+        self.assertEqual(self._kinds(fake), ["close-surface", "launch-agent"], fake.calls)
+
+    def test_old_cys_without_the_verb_reaps_as_before(self):
+        rc, out, fake = self._run_check(2, "error: unrecognized subcommand 'resume-check'\n\nUsage: cys daemon <COMMAND>\n")
+        self.assertEqual(self._kinds(fake), ["close-surface", "launch-agent"], fake.calls)
+
+    def test_takeover_path_is_unchanged(self):
+        rows = [{"ref": "surface:1", "role": "master", "pid": 111, "seat": "empty", "agent": None,
+                 "created": time.time() - 5}]
+        rc, out, fake = self._run(rows, "master", self.env)
+        self.assertEqual([c for c in fake.calls if c[1:2] == ["daemon"]], [], "승계 경로가 달라졌다")
+
+
 class ReviewerFallbackRespectsHeldResume(unittest.TestCase):
     """조각 1: boot_node 93 은 대체 리뷰어로 넘어가지 않는다(대체 기동 = 새 대화)."""
 

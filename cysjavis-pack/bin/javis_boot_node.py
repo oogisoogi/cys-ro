@@ -1192,6 +1192,17 @@ def _seat_kept_first(old_ref, kind, socket=None, clear=False):
     return True
 
 
+def _saved_list_block(role):
+    """★조각 1: reap-launch 회수 전 저장 목록 확인 — None = 회수 가능 · 문자열 = 보류 사유.
+    회수 뒤의 launch-agent 가 rc 93 으로 멈추면 좌석만 잃는다. `resume-check` 를 모르는 옛 cys 만 종전대로 지나가고
+    그 밖의 실패(시간 초과 포함)는 목록을 모르는 것으로 친다."""
+    rc, _, err = run(["cys", "daemon", "resume-check", "--role", role], timeout=12)
+    if rc == 0 or (rc == 2 and "unrecognized subcommand 'resume-check'" in (err or "")):
+        return None
+    lines = [ln.strip() for ln in (err or "").splitlines() if ln.strip()]
+    return lines[-1][:200] if lines else "저장 목록 확인 실패(rc=%d)" % rc
+
+
 def _reap_after_succession(role, old_ref, old_pid=None):
     """승계 뒤 role 없는 옛 빈 셸 좌석 정리(v115-dept · master#0e579100) — 반환 = 기록 1줄.
     큐가 **비었다고 잴 수 있을 때만** close-surface --reap(best-effort). 큐가 남았거나 못 쟀으면 보존 —
@@ -1706,6 +1717,10 @@ def main():
                     if _seat_kept_first(old_ref, "recheck_%s" % act2):
                         _seat_event(a.role, old_ref, "seat.kept:recheck_%s" % act2, a.cwd)
                     return done("seat_kept_recheck", "recheck_%s" % act2, old_ref, code=1)
+                why_saved = _saved_list_block(a.role)
+                if why_saved:
+                    emit("seat", "%s 회수 보류 — 저장 대화를 지키려고 멈춤(회수·새 대화 0): %s" % (old_ref, why_saved))
+                    return done("resume_held", why_saved, old_ref, code=EXIT_RESUME_HELD)
                 rc_r, _, _ = run(["cys", "close-surface", old_ref, "--reap"], timeout=12)
                 _seat_kept_first(old_ref, None, clear=True)   # 보존 래치 해제(같은 번호 재사용 대비)
                 emit("seat", "%s 빈 좌석 회수(reap rc=%d · 큐 0) → 새 좌석 기동" % (old_ref, rc_r))

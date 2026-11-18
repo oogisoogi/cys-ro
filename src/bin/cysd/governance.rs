@@ -3506,15 +3506,22 @@ pub fn persist_topology(daemon: &Arc<Daemon>) {
     // ★원자 쓰기 — SIGTERM/크래시가 쓰기 도중 끼어도 topology.json은 옛 완본 또는 새 완본만
     // 남는다. 비원자 write면 torn write가 깨진 JSON을 남기고 load_topology가 빈 배열로 폴백해
     // 전 노드 resume 핀(=전 세션 컨텍스트)이 증발한다. 패턴: reference_atomic-sidecar-json-write.
-    // ★조각 1: 밀린 저장 표시는 실제로 써졌을 때만 내린다(쓰기 실패면 다음 틱이 다시 시도한다).
-    if write_json_atomic(&dir, "topology.json", &content).is_ok()
-        && daemon.topology_dirty.swap(false, Ordering::SeqCst)
-    {
-        eprintln!("[cysd] topology.json 다시 읽힘 — 미뤘던 저장을 반영했다.");
+    // ★조각 1: 쓰기 실패도 밀린 저장이다(watchdog 틱·종료 전 저장이 다시 시도한다). 표시는 실제로 써졌을 때만 내린다.
+    match write_json_atomic(&dir, "topology.json", &content) {
+        Ok(()) => {
+            if daemon.topology_dirty.swap(false, Ordering::SeqCst) {
+                eprintln!("[cysd] 미뤘던 topology.json 저장을 반영했다.");
+            }
+        }
+        Err(e) => {
+            if !daemon.topology_dirty.swap(true, Ordering::SeqCst) {
+                eprintln!("[cysd] topology.json 쓰기 실패({e}) — 다시 시도한다.");
+            }
+        }
     }
 }
 
-/// ★조각 1: 읽기 오류로 건너뛴 저장이나 아직 못 읽은 묘비가 있을 때만 다시 저장한다(watchdog 틱 · 정상 종료 직전).
+/// ★조각 1: 읽기 오류·쓰기 실패로 밀린 저장이나 아직 못 읽은 묘비가 있을 때만 다시 저장한다(watchdog 틱 · 정상 종료 직전).
 pub fn persist_topology_if_dirty(daemon: &Arc<Daemon>) {
     let tombstones_pending = daemon.tombstones_unread.lock().unwrap().is_some();
     if tombstones_pending || daemon.topology_dirty.load(Ordering::SeqCst) {
@@ -31102,19 +31109,31 @@ mod tests {
         assert!(!path.exists(), "밀린 저장이 없는데 파일을 썼다");
     }
 
-    /// 쓰기까지 실패하면 표시를 내리지 않는다 — 내리면 그 변경의 다시 시도가 사라진다.
+    /// 쓰기 실패는 그 자체로 밀린 저장이다 — 표시가 없던 데몬도 표시를 세우고, 실패가 이어지는 동안 유지하며,
+    /// 다시 시도가 성공하면 그 변경이 파일에 닿고 표시가 내려간다.
     #[cfg(unix)]
     #[test]
-    fn topology_dirty_survives_a_failed_write() {
+    fn topology_dirty_is_set_by_a_failed_write_and_the_retry_lands() {
         let daemon = drill_daemon("topo-dirty-write");
         let dir = crate::state::state_dir(&daemon.socket_path);
-        seed_topology_with_pin(&dir.join("topology.json"));
-        daemon.topology_dirty.store(true, AtomicOrdering::SeqCst);
+        let path = dir.join("topology.json");
+        seed_topology_with_pin(&path);
+        assert!(!daemon.topology_dirty.load(AtomicOrdering::SeqCst), "시험 전제: 밀린 저장 표시 없음");
+        daemon.tombstones.lock().unwrap().insert("closed-r".into());
         set_mode(&dir, 0o500);
+        persist_topology(&daemon);
+        let after_failure = daemon.topology_dirty.load(AtomicOrdering::SeqCst);
         persist_topology_if_dirty(&daemon);
-        let dirty = daemon.topology_dirty.load(AtomicOrdering::SeqCst);
+        let after_retry_failure = daemon.topology_dirty.load(AtomicOrdering::SeqCst);
         set_mode(&dir, 0o700);
-        assert!(dirty, "쓰지 못했는데 밀린 저장 표시가 내려갔다");
+        assert!(after_failure, "쓰지 못했는데 밀린 저장 표시가 서지 않았다");
+        assert!(after_retry_failure, "다시 시도도 실패했는데 표시가 내려갔다");
+        assert_eq!(topology_on_disk(&path)["tombstones"], json!([]), "시험 전제: 실패 동안 파일은 그대로");
+        persist_topology_if_dirty(&daemon);
+        let v = topology_on_disk(&path);
+        assert_eq!(v["tombstones"], json!(["closed-r"]), "다시 시도가 변경을 반영하지 않았다: {v}");
+        assert!(v["entries"].as_array().unwrap().iter().any(|e| e["role"] == "probe-a"), "다시 시도가 저장 핀을 잃었다: {v}");
+        assert!(!daemon.topology_dirty.load(AtomicOrdering::SeqCst), "성공한 저장 뒤에도 표시가 남았다");
     }
 
     /// UTF-8 이 아닌 내용은 읽기 오류가 아니라 손상이다 — 재시도로 낫지 않으므로 지금처럼 격리한다.

@@ -647,8 +647,9 @@ def node_liveness(status, role):
     # ★(U-10) ③ 관문 보류 — 프로세스는 살아 있으나 첫기동 관문에 갇혀 **입력 불가**.
     #   반드시 agent_alive 분기 **앞**(위 docstring ③ 사유). 파괴·스폰 어느 것도 유도하지
     #   않는다 — `latch_death_confirmed` 3중 AND(파괴 경로)는 이 등급을 보지 않는다(동결).
+    #   ★조각 1: 표식은 에이전트가 죽어도 지워지지 않는다 — 죽음이 3중 확정된 좌석의 표식은 생존 근거가 못 된다(Rust 와 같다).
     gp = gate_pending_info(s)
-    if gp is not None:
+    if gp is not None and not latch_death_confirmed(s)[0]:
         return LIVENESS_GATED, ("첫기동 관문 보류(gate=%s · 프로세스 생존·입력 불가)"
                                 % (gp.get("gate") or "unknown"))
     if s.get("agent_alive"):

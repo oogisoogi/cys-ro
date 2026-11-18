@@ -6623,6 +6623,14 @@ fn close_surface_effect(daemon: &Arc<Daemon>, operation: CloseOperation<'_>, cau
                 }
             }
         }
+        // ★조각 1: 유예로 거둔 역할의 좌석을 닫는 것도 그 역할을 닫는 것이다 — 아래 cause 규칙(사람 = 묘비 · reap = 없음)을 그대로 탄다.
+        {
+            let mut released = daemon.released_roles.lock().unwrap();
+            if let Some(role) = released.iter().find(|(_, sid)| **sid == id).map(|(r, _)| r.clone()) {
+                released.remove(&role);
+                tombstone_role = Some(role);
+            }
+        }
         drop(srole);
         drop(roles);
         // master_claimed_at 갱신은 surfaces·roles 락 해제 후(단일 락만 보유 → 락 순서 무변경).

@@ -2586,6 +2586,9 @@ pub struct Surface {
     /// 자가 업데이트류 「잠깐 죽음」을 role 회수로 오판하지 않으려면 이 시각과 유예가 필요하다
     /// (죽음 관측 1회 = 회수 근거가 아니다).
     pub agent_dead_since: Mutex<Option<f64>>,
+    /// ★조각 1: `role.restore_released` 로 역할을 되돌린 때. 재결합 판정이 이 시각부터 나이를 다시 잰다 —
+    /// 재개가 뜨는 동안 빈 좌석으로 보여 다른 좌석이 역할을 가져가지 못하게 한다.
+    pub role_restored_at: Mutex<Option<std::time::Instant>>,
     /// T4-17 헬스 조치: 이 시각까지 queued 배달 일시정지 (직접 send는 통과)
     pub queue_paused_until: Mutex<Option<Instant>>,
     /// ★(0.14.31 · WP-5 M) **만료 큐** — TTL 을 넘긴 항목의 보존소. 활성 큐(`pending_queue`)와
@@ -8310,6 +8313,7 @@ impl Daemon {
             line_count: AtomicU64::new(0),
             last_line_at: Mutex::new(None),
             agent_dead_since: Mutex::new(None),
+            role_restored_at: Mutex::new(None),
             queue_paused_until: Mutex::new(None),
             // ★(0.14.31 · WP-5) 만료 큐·배달 간격 시계·stale 입력 관측 — 전부 빈 채로 출발.
             expired_queue: Mutex::new(std::collections::VecDeque::new()),

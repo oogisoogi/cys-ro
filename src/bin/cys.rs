@@ -12788,7 +12788,9 @@ fn seat_liveness(s: &Value) -> (SeatLiveness, &'static str) {
     //      등급을 못 받고 종전 경로로 새어 다시 already_alive 가 된다.
     //    ★파괴는 여기서 일어나지 않는다: 아래 run_boot 은 이 등급에서 스폰도 회수도 하지
     //      않는다(관측·보고만). 오살이 오탐보다 훨씬 비싸다는 이 저장소의 규약 그대로다.
-    if cys::gate_pending_from_wire(&s[cys::GATE_PENDING_KEY]) {
+    //    ★조각 1: 표식은 에이전트가 죽어도 지워지지 않는다(해제 = boot 채택·주입 성공뿐). 죽음이 3중 확정된 좌석의
+    //      표식은 「살아 있다」는 근거가 못 된다 — 래치 부정과 같은 계약으로 불신임한다(python 미러 `node_liveness` 와 같다).
+    if cys::gate_pending_from_wire(&s[cys::GATE_PENDING_KEY]) && seat_death_confirmed(s).is_err() {
         return (
             SeatLiveness::GatePending,
             "첫기동 관문 보류(gate_pending — 프로세스 생존·입력 불가)",
@@ -57224,6 +57226,12 @@ mod b360_tests {
     /// `released` = surface:7 이 그 역할을 거둔 좌석으로 함께 보인다(이름 · 셸이 끝났는가).
     #[cfg(unix)]
     fn p1_launching(w: &P1World, what: &str, topology: Value, released: Option<(&'static str, bool)>) -> (i32, String, String, Vec<(String, Value)>) {
+        p1_launching_marked(w, what, topology, released, false)
+    }
+
+    /// `gate_marked` = 거둔 좌석에 예전 기동의 관문 표식이 남아 있다.
+    #[cfg(unix)]
+    fn p1_launching_marked(w: &P1World, what: &str, topology: Value, released: Option<(&'static str, bool)>, gate_marked: bool) -> (i32, String, String, Vec<(String, Value)>) {
         let cwd = w.cwd.clone();
         let old = (chrono::Local::now().timestamp() - 3600) as f64;
         let (mut pastes, mut acked, mut regained) = (0, false, false);
@@ -57252,6 +57260,8 @@ mod b360_tests {
                                          "created_at": old, "line_count": if launched { 60 } else { 40 }});
                     if regained {
                         ack(&mut row);
+                    } else if gate_marked {
+                        row["gate_pending"] = json!({"gate": "unknown", "since": 1.0});
                     }
                     rows.push(row);
                 }
@@ -57399,6 +57409,37 @@ mod b360_tests {
         assert_eq!(r2c_count(&calls, "role.restore_released"), 1, "역할을 되돌리지 않았다:\n{text}");
         assert!(p1_launch_line(&calls).contains(&format!("--resume {P1_SESSION}")), "잇지 않았다:\n{text}");
         assert_eq!(rc, 0, "{text}");
+    }
+
+    /// boot-late 실측: 예전 기동의 관문 표식이 남은 좌석도 죽음이 확정되면 복구한다(「살아 있다」로 보고 멈추면 안 된다).
+    #[cfg(unix)]
+    #[test]
+    fn p1_boot_recovers_a_dead_seat_that_still_carries_a_gate_mark() {
+        let w = P1World::new();
+        let (rc, out, err, calls) = p1_launching_marked(&w, "boot", w.topology(json!([w.pin()])), Some(("worker", false)), true);
+        let text = format!("{out}\n{err}");
+        assert_eq!(r2c_role(&r2b_report(&out, &err), "worker")["outcome"], "recovered", "{text}");
+        assert!(p1_launch_line(&calls).contains(&format!("--resume {P1_SESSION}")), "잇지 않았다:\n{text}");
+        assert_eq!(rc, 0, "{text}");
+    }
+
+    /// 관문 표식은 프로세스가 살아 있다는 뜻이다 — 죽음이 3중 확정된 좌석에서는 힘이 없고, 그 밖에는 지금처럼 관문 보류다.
+    #[test]
+    fn p1_gate_mark_yields_only_to_a_confirmed_death() {
+        let old = (chrono::Local::now().timestamp() - 3600) as f64;
+        let young = chrono::Local::now().timestamp() as f64;
+        let row = |alive: bool, seat: &str, created: f64| {
+            json!({"role": "worker", "exited": false, "agent_alive": alive, "seat": seat, "created_at": created,
+                   "gate_pending": {"gate": "unknown", "since": 1.0}})
+        };
+        assert_eq!(seat_liveness(&row(false, "empty", old)).0, SeatLiveness::Absent, "죽음이 확정된 좌석");
+        for (name, s) in [
+            ("에이전트 생존", row(true, "empty", old)),
+            ("좌석 점유", row(false, "occupied", old)),
+            ("갓 만든 좌석", row(false, "empty", young)),
+        ] {
+            assert_eq!(seat_liveness(&s).0, SeatLiveness::GatePending, "{name}");
+        }
     }
 
     /// boot 의 `worker` 는 `worker-N` 을 포함한다 — 거둔 이름 그대로 복구해야 그 이름의 핀을 잇는다.

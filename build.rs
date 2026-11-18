@@ -329,9 +329,6 @@ fn release_seq_from_env() -> u64 {
     }
 }
 
-/// CYSR_BUILD_ID 미지정(로컬 빌드)일 때의 build_id — `<커밋 12자>[-dirty].<UTC yyyymmddTHHMMZ>`.
-/// git 실패 시 커밋 자리는 "unknown"(업데이터 대조에서 불일치 = 안전측). 시각은 build.rs 가 다시 돌 때만
-/// 갱신된다(rerun 조건 밖의 편집은 옛 시각·옛 dirty 표기를 유지한다 — 로컬 판별용이라 수용).
 /// build_id 의 커밋 칸을 바꾸는 파일들(존재하는 것만 — 없는 경로는 cargo 가 매번 재실행 사유로 본다).
 /// = `git rev-parse --git-path HEAD`(worktree 면 `.git/worktrees/<이름>/HEAD`) + HEAD 가 가리키는 ref 의 느슨한 파일, 없으면 `packed-refs`.
 /// git 을 못 부르거나 HEAD 경로가 없으면 옛 `.git/HEAD` 한 줄(종전 동작).
@@ -361,6 +358,9 @@ fn head_watch_paths(manifest_dir: &str) -> Vec<String> {
     out
 }
 
+/// CYSR_BUILD_ID 미지정(로컬 빌드)일 때의 build_id — `<커밋 12자>[-dirty].<UTC yyyymmddTHHMMZ>`.
+/// git 실패 시 커밋 자리는 "unknown"(업데이터 대조에서 불일치 = 안전측). 시각은 build.rs 가 다시 돌 때만
+/// 갱신된다(rerun 조건 밖의 편집은 옛 시각·옛 dirty 표기를 유지한다 — 로컬 판별용이라 수용).
 fn local_build_id(manifest_dir: &str) -> String {
     let git = |args: &[&str]| {
         Command::new("git")

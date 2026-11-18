@@ -403,6 +403,7 @@
 - 맥에서 빼는 것 = `scripts/tests/test_release_postprocess_gate.py`(갓 만든 번들을 spctl·gktool 에 넘김) → CI 몫. `integ/1116` 은 ci-branch 의 push 대상(`feat/**`·`fix/**`) 밖이라 CI 는 별도 발화가 필요하다(push = master 게이트).
 
 ### 11-3. 판정 기준(앞 값 = §4·§8-6 · 더 늘면 사유 대조 · 붉음은 자동 재실행 말고 사유 전문 대조)
+> **판독 결과 = 합격선 통과(§12-5 · master#971f9848 · 머리 7869bbf6b).**
 | 대상 | 기대 |
 |---|---|
 | lib · bin cys · cys-seatkeep | 1256 · 0 · 3 ign · 765 · 0 · 2 ign · 49 · 0 |
@@ -455,3 +456,28 @@ lib 1256·0·3 · cys 765·0·2 · cysd 3308·0·17 · seatkeep 49·0 · hidden 
 
 ### 12-4. H-WIN-16 처분안(미적용 · master 결정)
 `cysjavis-pack/bin/tests/run_bootstrap_health.py` `_U5_PACK_CREATIONFLAGS` 에 사유와 함께 2줄: `"javis_idle_gate.py": 1`(대기 게이트 캡처 스폰 NOWIN 정의) · `"javis_owner.py": 1`(오너 책상 캡처 스폰 NOWIN 정의).
+
+### 12-5. 최종 판독(master#971f9848 · 합격선 §11-3 통과)
+| 묶음 | 대상 | 결과 |
+|---|---|---|
+| 1차 64단계 | `master/logs-gate-1116-ea9812306/` | 전부 rc 0 · 값 = §12-2 |
+| 환경 수정 19단계 | `master/logs-gate-1116-ea9812306-r2/`(스크립트 291928673 · 22:57:19 끝) | gate_rc 0 · `cys-app` 348 · 0 · 2 ign · 화면 15종 RESULT PASS · tickrec OFF `308dd2b91f9a` = 기준 · invoke 1088 = 1088 |
+| health | `master/logs-gate-1116-7869bbf6b-health/`(새 스냅샷 7869bbf6b · 23:09:41 끝) | 167 pass · **fail = H-CLT-1·2 만** · skip 1(H-WIN-11) · H-WIN-16 pass · 스크립트 gate_rc 1 은 이 허용된 fail 2건 때문 |
+| 보호 계수 | 세 실행 모두 | syspolicyd 26 · fake 162 불변 |
+
+- 맥에서 뺀 `test_release_postprocess_gate.py` 와 우분투 실행은 아직 안 돌았다(CI 몫 · §12-6).
+
+### 12-6. `test_owner_desk` CI 등재 · dispatch 준비(push·dispatch = master)
+- `92fcae3e3`: `ci-branch.yml` 2 · `release.yml` 2 · `pack-release.yml` 1 루프에 등재. `lane-parity-rehearsal.sh` 고치기 전 `--strict` rc 1(`미등재 test_owner_desk`) → 고친 뒤 기본 · `--strict` · `--self-test` 모두 rc 0.
+- 맥 1회(CI 꼴 · `CYS_PACK_DIR` 임시 · python 3.12.13): 52 OK · 53.6초 · 계수 불변. 우분투 실행은 미확인.
+- §11-4 의 「미등재 44개」 는 낱말 대조 값이다. lane 도구 기준으로는 미등재가 모두 사유 있는 항목이고 사유 없는 미등재는 0이다.
+- 명령(저장소 `oogisoogi/cys-ro` = **공개** · push 하면 `integ/1116` 이 공개된다 · `workflow_dispatch` 는 잡을 고를 수 없어 맥·우분투·UI 잡이 다 돈다):
+```bash
+cd ~/axdev/.wt/cys-1116-integ; H=$(git rev-parse integ/1116); R=oogisoogi/cys-ro
+/usr/bin/git push origin integ/1116
+gh workflow run ci-branch.yml --repo "$R" --ref integ/1116
+gh run list --repo "$R" --workflow ci-branch.yml --branch integ/1116 --event workflow_dispatch --limit 1 --json databaseId,headSha,status,url   # headSha = $H 확인 뒤 다음 줄
+RID=<위 databaseId>; gh run watch "$RID" --repo "$R" --exit-status
+JID=$(gh run view "$RID" --repo "$R" --json jobs --jq '.jobs[] | select(.name=="ubuntu-pack-suite") | .databaseId')
+gh run view --repo "$R" --job "$JID" --log | grep -E '== \[pack\] declared-state test: (test_idle_gate|test_agents_notes_personal_hooks|test_hook_fail_timing|test_owner_desk) =='   # 기대 4줄
+```

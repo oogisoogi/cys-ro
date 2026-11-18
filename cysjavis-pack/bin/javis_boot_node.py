@@ -198,6 +198,10 @@ ROLE_DIRECTIVE = {
 
 
 # ───────────────────────── cys 호출 ─────────────────────────
+# ★조각 1: `cys launch-agent --resume-saved` 의 「저장 대화를 지키려고 멈춤」(cys EXIT_RESUME_HELD) — 이 도구도 같은 값으로 끝난다.
+EXIT_RESUME_HELD = 93
+
+
 def run(args, timeout=15):
     try:
         r = subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout, **NOWIN)
@@ -1712,7 +1716,8 @@ def main():
             takeover = True
     if row is None:
         launched_at = time.time()
-        # ★v115r5-t1 T3: 저장된 대화가 있으면 이어서 기동(--resume-saved · 없거나 못 이으면 cys 가 새 대화).
+        # ★v115r5-t1 T3: 저장된 대화가 있으면 이어서 기동(--resume-saved · 없거나 못 이으면 cys 가 새 대화 ·
+        #   저장 목록을 못 읽으면 rc 93 으로 멈춤 — 조각 1).
         #   종전엔 핀 없이 새 대화로 떠서 ↻ 뒤 승계 좌석(부서장)의 대화가 끊겼다(VM r3 · phoenix fork).
         cmd = ["cys", "launch-agent", "--role", a.role, "--agent", a.agent, "--resume-saved"]
         if a.cwd:
@@ -1720,10 +1725,17 @@ def main():
         launch_cap = deadline_capped(budget("BOOT_NODE_LAUNCH_SUBPROC_S", 80))
         heartbeat("launch", "launch-agent 기동(상한 %.0fs)" % launch_cap)
         rc, _, err = run(cmd, timeout=launch_cap)
-        if rc == 2 and "--resume-saved" in (err or ""):
+        # ★조각 1: 재시도는 clap 의 정확한 문구일 때만 — 새 cys 의 rc 2(프로필 불신 기동 중단)도 stderr 에 플래그 이름이
+        #   들어 있어, 종전 조건이면 플래그를 빼고 다시 띄워 다른 계정·새 대화로 떴다.
+        if rc == 2 and "unexpected argument '--resume-saved'" in (err or ""):
             # 플래그를 모르는 옛 cys(인자 해석 거부 · 좌석 생성 전) — 종전 기동 그대로 1회.
             emit("launch", "cys 가 --resume-saved 를 모름 — 종전 기동으로 재시도")
-            rc, _, _ = run([c for c in cmd if c != "--resume-saved"], timeout=launch_cap)
+            rc, _, err = run([c for c in cmd if c != "--resume-saved"], timeout=launch_cap)
+        if rc == EXIT_RESUME_HELD:
+            lines = [ln.strip() for ln in (err or "").splitlines() if ln.strip()]
+            why = lines[-1][:200] if lines else "저장 대화 판정 보류"
+            emit("launch", "launch-agent rc=93 — 저장 대화를 지키려고 멈춤(새 대화 0): %s" % why)
+            return done("resume_held", why, code=EXIT_RESUME_HELD)
         emit("launch", "launch-agent rc=%d (실패 텍스트 무시·cys list 재조회)" % rc)
         for _ in range(3):
             time.sleep(2)

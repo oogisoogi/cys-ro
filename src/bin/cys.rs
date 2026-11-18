@@ -20718,9 +20718,20 @@ fn run_launch_agent_resume_saved(role: &str, agent: &str, cwd: Option<String>) -
                 .map(|p| p.to_string_lossy().into_owned())
         })
         .map(sanitize_launch_cwd);
-    let pin = request("system.topology", json!({}))
-        .ok()
-        .and_then(|t| saved_resume_pin(&t, role, agent));
+    // ★조각 1: 저장 목록을 모르면 「저장 대화 없음」이 아니다 — 새 대화로 내려가지 않고 멈춘다.
+    //   표시가 없는 옛 데몬의 응답은 지금처럼 목록을 그대로 믿는다.
+    let topo = match request("system.topology", json!({})) {
+        Ok(t) if t["saved_unreadable"].as_bool() != Some(true) => t,
+        Ok(_) => {
+            eprintln!("[launch-agent] --resume-saved: {role} 기동 중단 — 데몬이 저장 목록을 읽지 못했다(새 대화로 내려가지 않음)");
+            return EXIT_RESUME_HELD;
+        }
+        Err(e) => {
+            eprintln!("[launch-agent] --resume-saved: {role} 기동 중단 — 저장 목록 조회 실패: {e}(새 대화로 내려가지 않음)");
+            return EXIT_RESUME_HELD;
+        }
+    };
+    let pin = saved_resume_pin(&topo, role, agent);
     let Some((sid, cfg)) = pin else {
         eprintln!("[launch-agent] --resume-saved: {role} 저장 대화 없음 — 새 대화로 기동");
         return run_launch_agent(role, agent, cwd);
@@ -54132,6 +54143,7 @@ mod b360_tests {
             // ★조각 1(cysr-piece1-recover-1118): 역할로 부른 복구 · 좌석 번호로 부른 복구(역할 없는 좌석)
             "node-recover" => run_node_recover(None, Some("worker".into())),
             "node-recover-surface" => run_node_recover(Some("surface:7".into()), None),
+            "resume-saved" => run_launch_agent_resume_saved("worker", "claude", None),
             // ★(B-360 R2 revise · area P) no `--from`: the command stops after its pending pass (exit 1)
             "pack-update" => run_pack_update(None, None, false),
             // ★(B-360 R2 revise · area D) the real `cys drain --verify` (exit computed by run_drain_verify)
@@ -56746,6 +56758,53 @@ mod b360_tests {
         assert_eq!(worker["outcome"], "recover_unrecognised", "{worker}");
         assert!(worker["reason"].as_str().unwrap_or("").contains("93"), "{worker}");
         assert_eq!(rc, 0, "boot 종료 분류가 바뀌었다");
+    }
+
+    /// `launch-agent --resume-saved` 를 자식으로 돌린다(좌석 생성은 가짜 데몬이 거절한다 — 요청 여부만 잰다).
+    #[cfg(unix)]
+    fn p1_resume_saved(w: &P1World, topology: Value) -> (i32, String, Vec<(String, Value)>) {
+        let daemon = R2cDaemon::start(move |method, _| match method {
+            "system.topology" => topology.clone(),
+            "surface.create" => r2c_reply("b360_no_spawn: this fake daemon makes no new surface"),
+            _ => r2c_ok(json!({})),
+        });
+        let mut envs = w.pack.envs();
+        let mut path = std::ffi::OsString::from(w.pack.dir.join("bin"));
+        path.push(":");
+        path.push(std::env::var_os("PATH").unwrap_or_default());
+        envs.push(("PATH", path));
+        let (rc, out, err) = r2c_child("resume-saved", &daemon, &envs);
+        (rc, format!("{out}\n{err}"), daemon.calls())
+    }
+
+    /// 저장 목록을 못 읽었으면(또는 조회가 실패하면) 「저장 대화 없음」이 아니다 — 새 좌석을 만들지 않고 rc 93.
+    #[cfg(unix)]
+    #[test]
+    fn p1_resume_saved_holds_when_the_saved_list_is_unknown() {
+        let w = P1World::new();
+        for (name, topology) in [
+            ("저장 목록을 못 읽음", r2c_ok(json!({"saved": [], "live": [], "tombstones": [], "saved_unreadable": true}))),
+            ("조회 실패", r2c_reply("rpc_failed: topology unavailable")),
+        ] {
+            let (rc, text, calls) = p1_resume_saved(&w, topology);
+            assert_eq!(rc, 93, "{name}: {text}");
+            assert_eq!(r2c_count(&calls, "surface.create"), 0, "{name}: 새 좌석을 요청했다");
+        }
+    }
+
+    /// 표시가 없거나 false 인 응답의 빈 목록은 지금처럼 「저장 대화 없음」 = 새 기동이다(옛 데몬 호환).
+    #[cfg(unix)]
+    #[test]
+    fn p1_resume_saved_keeps_starting_fresh_on_an_empty_list() {
+        let w = P1World::new();
+        for (name, topology) in [
+            ("표시 없는 옛 응답", r2c_ok(json!({"saved": [], "live": [], "tombstones": []}))),
+            ("표시 false", r2c_ok(json!({"saved": [], "live": [], "tombstones": [], "saved_unreadable": false}))),
+        ] {
+            let (rc, text, calls) = p1_resume_saved(&w, topology);
+            assert_ne!(rc, 93, "{name}: {text}");
+            assert!(r2c_count(&calls, "surface.create") >= 1, "{name}: 새 기동으로 가지 않았다\n{text}");
+        }
     }
 
     /// `cys boot --json` twice (children) against a gate-pending worker seat (surface:7) that re-observation adopts;

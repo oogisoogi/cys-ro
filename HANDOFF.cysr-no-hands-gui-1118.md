@@ -1,6 +1,6 @@
 # HANDOFF — TICKET=cysr-no-hands-gui-1118 (사용자가 일하는 동안 자비스가 손을 빌리지 않게 · 1.1.16)
 
-- 가지 `feat/no-hands-gui-1118` ← integ/1116 `7d25c38e` · cwd `/Users/oogisoogi/axdev/.wt/cys-1116-nohands`
+- 가지 `feat/no-hands-gui-1118` ← integ/1116 `7d25c38e` · cwd `~/axdev/.wt/cys-1116-nohands`
 - push·태그·서명·발행 0 · 박사님 화면 입력 조작 0(⚠ 알림 1줄 사고 — §6)
 
 ## 1. 무엇이 바뀌었나
@@ -25,7 +25,7 @@
 - ⚠ 남는 틈(master 조건 1 · 스킬·도구 머리말에 같은 문장): 일반 앱에서는 내 동작 끝 ~ mark 사이에 사용자가 한 번 치고 멈춘 입력을 내 입력과 구분 못 해 그대로 진행할 수 있다(계속 치는 입력은 mark 뒤까지 이어져 잡힘 · 카카오톡·메일·한글은 20초 상향이라 틈 없음) — 시험 `test_residual_blind_window_is_pinned` 가 이 동작을 그대로 고정.
 - 끝의 원래 앱 복귀(`end --sid --restore`)도 입력 조작 → 마지막 mark 뒤 사용자 입력이 있었거나 못 읽으면 되돌리지 않음(`restore_reason: user_active`).
 - 화면 작업은 한 번에 하나: `wait` 이 `sid` 발급 · 진행 중이면 exit 5(busy) · mark/check/end 는 sid 일치만 · 소유자가 마지막으로 부른 뒤 **단조 시계로** 900초 지나야 만료(벽시계는 소유권에 안 씀 · 단조 시계가 뒤로 가면 재부팅 = 옛 세션 없음 · codex 3R) · 세션·대기열 쓰기는 잠금(맥 flock · 윈 msvcrt · 대기 상한 10초 → busy) 안에서.
-- `wait`·`check` = 명령 전체 하나의 단조 마감 + 「쉼 → 잠금 안 재관측」 되풀이 상한 50회 · **go 판정은 언제나 잠금을 잡은 뒤의 관측으로**(codex 3R) · 쉼은 맞아도 준비·잠금이 마감을 넘기면 go 하지 않고 미룸(`reason: deadline`).
+- `wait`·`check` = 단조 마감(`wait` 은 첫 잠금 뒤부터 · `check` 는 쉼을 기다린 경우만 go 전에 검사 — §7 다음 판) + 「쉼 → 잠금 안 재관측」 되풀이 상한 50회 · **go 판정은 언제나 잠금을 잡은 뒤의 관측으로**(codex 3R) · 쉼은 맞아도 준비·잠금이 마감을 넘기면 go 하지 않고 미룸(`reason: deadline`).
 - 기다리는 길이 = `max(--seconds, 앱별 쉼)` — 첫 관문과 재개 모두(codex 3R). 앱 이름 판정 = NFKC·대소문자 무시 낱말 대조(분해형 한글 · 카톡 · 한컴 · 아웃룩 · Thunderbird 포함 · 표에 없는 앱은 0).
 - OS 값 역행 허용폭 = 맥 1초(ioreg 실행 지연이 값을 흔듦) · 윈 0.05초(틱을 바로 읽음 · 작은 역행도 입력을 가릴 수 있음 · codex 3R).
 - `end --restore` = 앱 조회를 먼저 끝내고 잠금 안에서 입력·소유권을 다시 본 뒤에만 복귀.
@@ -43,9 +43,10 @@
 | 고치기 전(문서 계약) | 4건 붉음: hwp 문구 · 스킬 절 · MASTER 절 · CEO 절(「손 떼기」 문장 검사는 고치기 전에도 0건 — 팩에 그런 문장이 원래 없음 = 참가자 증상은 규칙 부재에서 온 모델 기본 행동) |
 | mut_idle_gate | 37종 전부 KILLED — 전체 실행 36/37 + 생존 1건(M4 = 잠금 뒤 재확인이 생겨 단독으로는 동작이 같아짐)을 재확인까지 끄는 변이로 고쳐 단독 재실행 KILLED · CRASH·BROKEN 0 |
 | 병합 뒤 지침 상한(integ/1116 ff9448fc 병합 · 실측) | MASTER_DIRECTIVE 86,625 B · CEO_TEMPLATE 102,111 B = 상한과 같음 · test_cso_directive_rev 75 OK(기준선의 붉음 해소) |
-| lane-parity-rehearsal | 이 시험의 미등재는 해소 · rc 1 잔존 = 이 티켓 밖 3건(test_agents_notes_personal_hooks · test_check_macho_arch · test_hook_fail_timing) |
+| lane-parity-rehearsal | rc 0 · `--strict` rc 0 · `--self-test` rc 0 · 사유 없는 미등재 0(4건 등재 · master#85e74556) |
+| CI 를 읽는 시험 | test_check_macho_arch 62 · c8_ci_consumer 19 · phoenix_host_gate_lane 8 · release_windows_help_gate 11 · release_postprocess_gate 82 · check_no_ioreport_link 12 OK · 새 등재 팩 시험 3종 = `CYS_PACK_DIR` 임시 폴더로 rc 0 |
 | test_import_guard · test_pyseal_census · test_nowin_captured/periodic_spawns | 146/146 · OK · 3 OK · 2 OK |
-| 돌리지 않음 | cargo test(`released_tables_cover_current_embed` 포함) · 부하 시험 = master 통제 실행 몫 · 윈도우 실기 |
+| 돌리지 않음·못 끝냄 | cargo test(`released_tables_cover_current_embed` 포함) = 통합 좌석 전체 게이트 몫 · run_bootstrap_health = 420초 상한에 걸려 결과 없음(남은 프로세스 0 확인) · test_ci_branch_cysd_step = 이 맥 파이썬에 PyYAML 없어 미실행 · 우분투 레인·윈도우 실기 |
 | test_computer_control | 112 OK(좌석 환경변수 `CYS_ROLE`·`CYS_SURFACE_ID`·`CLAUDE_CODE_ENABLE_CFC` 를 뺀 실행 · 그대로 두면 기준선 7d25c38e 도 같은 14건 붉음 = 시험 격리 결함 · 이 티켓 무관) |
 | mut_computer_control | (§7 갱신) |
 | test_bootv2_doc_contract · test_event_inject · test_computer_use_audit | rc 0 · rc 0 · 17 OK |
@@ -71,7 +72,8 @@
 - 1R = REVISE → c4b4ffe1 · 2R = REVISE(차단 1 + 주요 6 → master 결정 + 66dfd324).
 - 3R(결정 재검토 1회 · `docs/no-hands-1118/codex-r3.json` · 대상 66dfd324) = **BLOCK**(차단 2 · 주요 5) · 결정 자체 이견 없음. 7건 모두 코드 대조로 사실 확인 후 고침:
   ① 앱 이름 누락(카톡·분해형 한글) ② `check` 가 잠금 뒤 재관측 없이 go ③ 앱별 쉼이 `--seconds` 보다 길 때 무시 ④ 벽시계 변경이 소유권을 흔듦 ⑤ 윈 1초 이하 역행 무시 ⑥ 준비가 마감을 넘겨도 go ⑦ 뮤턴트 하네스가 도구 죽음을 KILLED 로 셈.
-- ⚠ 왕복 1회 한도라 **이 고침은 codex 재검토를 받지 않았다** — 검증 = 시험 49 + 뮤턴트 37.
+- 4R(마지막 왕복 · master#85e74556 · `docs/no-hands-1118/codex-r4.json` · 대상 66dfd324..3a93345d 세 파일 · 차단 기준 = 실제 입력 ∧ (사용자 앱으로 잘못 감 ∨ 되돌릴 수 없는 전송)) = **ACCEPT** · 차단 0.
+- 다음 판 목록(4R · 차단 기준 밖 · 이번에 안 고침): ① `wait` 첫 잠금 대기가 마감에서 빠짐 ② `check` 의 쉬지 않은 경로는 잠금이 늦어도 마감을 안 봄 ③ 도구가 신호로 죽고 stderr 가 비면 뮤턴트 하네스가 KILLED 로 셀 수 있음(`classify` 시험은 이 전달 경로를 못 잼).
 
 ## 8. 인계 델타 (11-18 18:4x · master#00cd1c9c · 계정1 좌석 → 계정2 새 좌석)
 - **중단 직전 하던 일**: codex 2R REVISE(docs/no-hands-1118/codex-r1.json 다음 판 = 아래) 고침 + master 결정 반영을 마치고, 관문 시험·뮤턴트를 다시 돌려 확인한 뒤 커밋하려던 참. 그 고침 전부가 WIP 커밋(이 델타와 같은 커밋)에 **미검증**으로 들어 있다.
@@ -89,4 +91,5 @@
 
 ## 9. 계정2 좌석 결과 (11-18 · master#9b8b2101 · #30990c7b)
 - 66dfd324 검증(시험 38 · 뮤턴트 27/27) → 지침 절 469 → 319 B(「한 번에」 삭제) → integ/1116 `ff9448fc` 로컬 병합(push 0) → 상한 MASTER 86,625 · CEO 102,111 → codex 3R BLOCK 7건 고침(§7) → CI 등재.
+- codex 4R ACCEPT → lane-parity 미등재 3건 등재(팩 시험 2종 = 3레인 5루프 · test_check_macho_arch = ci-branch·release 스텝 + ALLOWED 사유) → rc 0.
 - integ/1116 쪽으로 들이는 병합 · push · 태그 · 배포 = master 게이트(미실행).

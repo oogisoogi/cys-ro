@@ -1,0 +1,63 @@
+{
+  "verdict": "ACCEPT",
+  "justification": "지정한 diff와 같은 세 파일의 3a93345d 판을 정적으로 검토했다. 실제 입력이 잘못된 앱으로 들어가거나 되돌릴 수 없는 전송으로 이어지는 구체적인 차단 반례는 확인하지 못했다. 마감 처리와 하네스 판정의 남은 결함은 next_version으로 분류한다.",
+  "blocking": [],
+  "next_version": [
+    {
+      "file": "cysjavis-pack/bin/javis_idle_gate.py",
+      "line": 513,
+      "problem": "wait의 마감은 첫 잠금을 해제한 뒤 시작한다. 첫 잠금에서 3초 기다린 뒤 --timeout 1을 처리하면, 이미 유휴 조건을 만족하는 경우 명령 시작부터 1초를 넘겼어도 go할 수 있다. 첫 잠금 대기가 전체 마감에서 빠져 있다."
+    },
+    {
+      "file": "cysjavis-pack/bin/javis_idle_gate.py",
+      "line": 614,
+      "problem": "check의 마감 검사는 paused 분기에만 있다. mark 뒤 입력이 없는 세션에서 check --timeout 1의 첫 잠금 획득이 3초 걸리면, touched가 False여서 마감을 넘겼어도 go를 반환한다."
+    },
+    {
+      "file": "cysjavis-pack/bin/tests/test_idle_gate.py",
+      "line": 78,
+      "problem": "도구 자식 프로세스의 죽음은 stderr에 Traceback이 있을 때만 기록한다. 도구가 신호로 종료되어 returncode=-11이고 stderr가 비면, 이를 확인하는 시험은 FAIL이 되지만 traces는 비어 있다. 하네스가 받는 rc는 unittest의 1이므로 classify가 이를 KILLED로 잘못 센다. classify에 -11을 직접 넣는 추가 시험은 이 전달 경로를 검증하지 않는다."
+    }
+  ],
+  "fixes_checked": [
+    {
+      "item": 1,
+      "ok": true,
+      "ref": "cysjavis-pack/bin/javis_idle_gate.py:377"
+    },
+    {
+      "item": 2,
+      "ok": true,
+      "ref": "cysjavis-pack/bin/javis_idle_gate.py:594"
+    },
+    {
+      "item": 3,
+      "ok": true,
+      "ref": "cysjavis-pack/bin/javis_idle_gate.py:516, cysjavis-pack/bin/javis_idle_gate.py:601"
+    },
+    {
+      "item": 4,
+      "ok": true,
+      "ref": "cysjavis-pack/bin/javis_idle_gate.py:406"
+    },
+    {
+      "item": 5,
+      "ok": true,
+      "ref": "cysjavis-pack/bin/javis_idle_gate.py:211, cysjavis-pack/bin/javis_idle_gate.py:225"
+    },
+    {
+      "item": 6,
+      "ok": false,
+      "ref": "cysjavis-pack/bin/javis_idle_gate.py:513, cysjavis-pack/bin/javis_idle_gate.py:614"
+    },
+    {
+      "item": 7,
+      "ok": false,
+      "ref": "cysjavis-pack/bin/tests/test_idle_gate.py:78, cysjavis-pack/bin/tests/mut_idle_gate.py:86"
+    }
+  ],
+  "missing": [
+    "사용자 지시에 따라 시험·뮤턴트 하네스 실행과 실제 OS·GUI 동작 검증은 수행하지 않았다."
+  ],
+  "revision": "3a93345d"
+}

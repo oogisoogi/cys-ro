@@ -295,6 +295,124 @@ class Gate(unittest.TestCase):
         self.assertEqual(p["count"], 205)
         self.assertEqual(p["items"][0]["task"], "작업 0")
 
+    # ── codex 2R · master#16466ff6 결정 ──
+    def setfake(self, **upd):
+        d = self.clock_get()
+        d.update(upd)
+        with open(self.clock, "w", encoding="utf-8") as f:
+            json.dump(d, f)
+
+    def test_outbound_apps_wait_20s_before_every_step(self):
+        # 카카오톡·메일·한글 = Return 한 번이 바깥으로 → 매 동작 전 내 입력까지 포함해 20초
+        for target in ("com.kakao.KakaoTalkMac", "KakaoTalk.exe", "com.apple.mail", "Microsoft Outlook",
+                       "com.hancom.office.hwp12.mac.general", "Hwp.exe", "한글"):
+            with self.subTest(target=target):
+                self.set_clock(1000.0, [900.0])
+                rc, o = self.run_gate("wait", "--target", target, "--timeout", "10")
+                self.assertEqual(o["step_quiet"], 20.0)
+                sid = o["sid"]
+                self.advance(0.1)
+                self.user_input()                       # 내 동작
+                own = self.clock_get()["now"]
+                self.advance(0.1)
+                self.run_gate("mark", "--sid", sid)
+                self.advance(3)
+                rc, c = self.run_gate("check", "--sid", sid, "--timeout", "60")
+                self.assertTrue(c["touched"], "바깥으로 나가는 앱인데 20초 안 쉬고 다음 동작")
+                self.assertGreaterEqual(self.clock_get()["now"] - own, 20.0)
+                self.run_gate("end", "--sid", sid)
+
+    def test_other_apps_step_quiet_zero(self):
+        for target in ("", "com.apple.finder", "com.google.Chrome"):
+            with self.subTest(target=target):
+                self.set_clock(1000.0, [900.0])
+                rc, o = self.run_gate("wait", "--target", target, "--timeout", "10")
+                self.assertEqual(o["step_quiet"], 0.0)
+                self.run_gate("end", "--sid", o["sid"])
+        self.set_clock(1000.0, [900.0])
+        rc, o = self.run_gate("wait", "--target", "com.kakao.KakaoTalkMac", "--step-quiet", "3", "--timeout", "10")
+        self.assertEqual(o["step_quiet"], 3.0, "명시한 --step-quiet 가 표보다 우선해야 함")
+
+    def test_residual_blind_window_is_pinned(self):
+        # 잔여 위험(숨기지 않음 · master#18af38d1 조건 1): 일반 앱에서 내 동작 끝 ~ mark 사이에 한 번 치고 멈춘 입력은 못 잡는다.
+        # 같은 상황에서 바깥으로 나가는 앱(상향표 20초)은 잡는다.
+        for target, caught in (("com.apple.finder", False), ("com.kakao.KakaoTalkMac", True)):
+            with self.subTest(target=target):
+                self.set_clock(1000.0, [900.0])
+                rc, o = self.run_gate("wait", "--target", target, "--timeout", "10")
+                sid = o["sid"]
+                self.advance(0.1)
+                self.user_input()                       # 내 동작
+                self.advance(0.5)
+                self.user_input()                       # 틈 안의 사용자 입력 1번
+                self.advance(1.0)
+                self.run_gate("mark", "--sid", sid)
+                self.advance(3)
+                rc, c = self.run_gate("check", "--sid", sid, "--timeout", "60")
+                self.assertEqual(c["touched"], caught)
+                self.run_gate("end", "--sid", sid)
+
+    def test_os_regression_after_mark_is_touched(self):
+        # codex 2R 반례: mark 뒤 사용자 입력이 있었는데 다음 관측 전에 OS 틱이 옛 값(970)으로 되돌아감 → 진행하면 안 된다
+        self.set_clock(1000.0, [900.0])
+        sid = self.go()
+        self.advance(0.1)
+        self.user_input()
+        self.advance(0.1)
+        self.run_gate("mark", "--sid", sid)
+        self.advance(3)
+        now = self.clock_get()["now"]
+        self.setfake(idle_override=[now - 970.0])
+        rc, c = self.run_gate("check", "--sid", sid, "--timeout", "60")
+        self.assertTrue(c["touched"], "OS 값이 뒤로 갔는데 그대로 진행")
+
+    def test_regressed_value_that_stays_does_not_freeze(self):
+        # 뒤로 간 값이 그대로 머물면 그때부터 20초 뒤 진행(영구 정지 아님)
+        self.set_clock(1000.0, [995.0])
+        self.setfake(idle_override=[5.0, 40.0, 41.0, 42.0])
+        rc, o = self.run_gate("wait", "--seconds", "20", "--timeout", "120")
+        self.assertEqual(rc, 0, o)
+
+    def test_restore_rechecks_after_front_lookup(self):
+        # 복귀 직전 앱 조회 도중 사용자 입력 → 끌어오지 않는다(codex 2R)
+        self.set_clock(1000.0, [900.0], front="com.example.UserApp")
+        sid = self.go()
+        self.run_gate("mark", "--sid", sid)
+        self.advance(2)
+        self.setfake(front="com.hancom.office.hwp12.mac.general", input_on_front=True)
+        rc, e = self.run_gate("end", "--sid", sid, "--restore")
+        self.assertFalse(e["restored"], e)
+        self.assertEqual(e["restore_reason"], "user_active")
+        self.assertNotIn("activated", self.clock_get())
+
+    def test_prep_retry_is_bounded(self):
+        # 대기 관측은 정상 · 준비 뒤 관측만 실패가 되풀이(시계도 안 감) → 상한 안에 미룸으로 끝난다(codex 2R)
+        self.set_clock(1000.0, [], idle_override=[100.0, None] * 200)
+        rc, o = self.run_gate("wait", "--seconds", "20", "--timeout", "30", "--task", "되풀이")
+        self.assertEqual(rc, 3, o)
+        self.assertEqual(o["reason"], "idle_unknown")
+
+    def test_live_owner_keeps_ownership(self):
+        # 시계 기준이 바뀌어도 · mark 뒤 오래 걸려도 살아 있는 소유자(check 로 갱신)의 세션은 빼앗기지 않는다
+        self.set_clock(1000.0, [900.0])
+        sid = self.go()
+        self.setfake(wall_skew=30.0)
+        self.assertEqual(self.run_gate("wait", "--timeout", "5")[0], 5, "시계 변경으로 소유권이 풀림")
+        self.setfake(wall_skew=0.0)
+        self.advance(800)
+        self.run_gate("check", "--sid", sid)
+        self.advance(300)                               # mark 뒤 1100초 · 마지막 호출 뒤 300초
+        self.assertEqual(self.run_gate("wait", "--timeout", "5")[0], 5, "살아 있는 소유자의 세션을 빼앗음")
+
+    def test_lock_wait_is_bounded(self):
+        import fcntl
+        os.makedirs(self.state, exist_ok=True)
+        with open(os.path.join(self.state, "idle-gate.lock"), "a+b") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            rc, o = self.run_gate("pending")
+        self.assertEqual(rc, 5)
+        self.assertEqual(o["reason"], "busy")
+
     def test_start_and_end_notice_say(self):
         self.set_clock(1000.0, [900.0], front="com.example.UserApp")
         rc, o = self.run_gate("wait", "--est", "15")
@@ -392,7 +510,7 @@ class Docs(unittest.TestCase):
         s = self.read("skills/computer-control/SKILL.md")
         self.assertIn("## 사용자가 일하는 동안 — 손을 빌리지 않기", s)
         for need in ("javis_idle_gate.py", "wait --seconds 20", "mark", "check", "end", "백그라운드",
-                     "hwp", "rhwp-edit", "사본", "대기열", "mark --sid", "check --sid", "end --sid", "user_active"):
+                     "hwp", "rhwp-edit", "사본", "대기열", "mark --sid", "check --sid", "end --sid", "user_active", "--target", "step_quiet: 20", "카카오톡·메일·한글", "남는 틈"):
             with self.subTest(need=need):
                 self.assertIn(need, s)
         self.assertNotIn("맥 한글은 화면 조작만", s)

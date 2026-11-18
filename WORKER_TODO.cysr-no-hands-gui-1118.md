@@ -11,9 +11,10 @@
 - [x] 4 뮤턴트 bin/tests/mut_idle_gate.py(관문 끄면 붉음)
 - [x] 5 스킬 computer-control 절 + 도구 hwp 문구 · 한글 작업 길 표
 - [x] 6 MASTER_DIRECTIVE 짧은 한 절 → CEO_TEMPLATE 재합성 · 해시표 재생성
-- [ ] 7 팩 파이썬·doc-contract·합성기 재실행
-- [ ] 8 codex 1R
-- [ ] 9 HANDOFF · 커밋 · 【확인요청】
+- [x] 7 팩 파이썬·doc-contract·합성기 재실행(재부팅 뒤 13:5x · computer_control 112 · doc_contract·event_inject·cu_audit·import_guard·pyseal rc 0 · 합성기 GREEN·OK · cso_directive_rev = 기준선부터 붉은 예산 핀 1건)
+- [x] 8 codex 1R(REVISE → c4b4ffe1) · 2R(REVISE · 결정 master#18af38d1→#16466ff6 = 일반 앱 Q=0 · 카톡·메일·한글 Q=20)
+- [ ] 9 2R 고침(미커밋 · 작업트리 5파일) → 뮤턴트 재실행(27종 · 직전 26/27 · M26 중복 갱신 제거 뒤 재실행이 [RESTORE] 로 끊김) → 커밋 → codex 결정 재검토 1회 → HANDOFF §4·§7 → 【확인요청】
+- 복원 메모(11-18 두 번째 [RESTORE] · 좌석 2212): 재부팅 뒤 [RESUME] 로 다시 돌린 관문 시험+뮤턴트가 또 끊김(결과 없음) · 이전 메모: 재개 금지 · master 지시 대기 · 다음 첫 행동 = `python3 cysjavis-pack/bin/tests/mut_idle_gate.py`(백그라운드) 결과 확인
 
 ## 이월
 이월 없음.

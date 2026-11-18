@@ -14,14 +14,18 @@
 | `cysjavis-pack/directives/MASTER_DIRECTIVE.md` | 「컴퓨터 통제」 절 **바로 뒤**(파일 끝 아님 — ownermem 좌석의 끝 추가와 충돌 회피) 「## ★ 사용자와 함께 쓰는 컴퓨터 — 손을 빌리지 않기 (1.1.16)」 2줄 |
 | `CEO_TEMPLATE.md` · `RELEASED_MASTER_DIRECTIVE.sha256` · `src/released_directive_hashes.rs` | 생성기 재실행 산출(`gen_ceo_template.py` · `gen_released_directive_hashes.py`) |
 
-## 2. 설계 요점(codex 1R REVISE 반영 후)
+## 2. 설계 요점(codex 1R·2R REVISE 반영 · master 결정 [master#18af38d1]→정정 [master#16466ff6])
 - 판정 원천 = OS 값만(맥 `ioreg -c IOHIDSystem` HIDIdleTime 나노초 · 윈 `GetLastInputInfo` − `GetTickCount` 32비트 감김 보정). 못 읽으면 쉼 아님(fail-closed → 미룸).
 - 시각 비교 = 단조 시계(`time.monotonic`) · 세션에 「벽시계−단조」 차 기록 → 다른 프로세스에서 2초 넘게 다르면(재부팅·시계 기준 변경) 그 사이 입력을 모르는 것으로 보고 다시 기다림.
-- 「마지막 입력 시각」 = 관측값 중 가장 늦은 것(최고값)을 세션에 이어 씀 · 관측 간격 ≤ 1초 — 윈 SendInput 이 옛 틱을 넣어 값이 뒤로 가도(MS 문서) 이미 본 입력이 지워지지 않음.
+- 「마지막 입력 시각」 = 관측값 중 가장 늦은 것(최고값)을 세션에 이어 씀 · 관측 간격 ≤ 1초 · **OS 원시값이 직전 원시값보다 1초 넘게 뒤로 가면 「지금 막 입력」으로 봄**(윈 SendInput 옛 틱이 그 사이 사용자 입력을 가렸을 수 있음 · codex 2R) — 뒤로 간 값이 그대로 머물면 다음 관측부터는 역행이 아니라 영구 정지 없음 · `mark` 도 관측해 내 동작 시각을 역행 기준으로 남김.
+- **앱별 쉼 상향표(master 결정)**: `wait --target <앱>` — Return 한 번이 바깥으로 나가는 **카카오톡·메일·한글** = `step_quiet 20`(매 동작 전 내 입력까지 포함해 20초 = codex 안 B) · 그 밖 = 0(관문 1회 → 한 번에 = A) · `--step-quiet Q` 로 명시하면 표보다 우선.
 - 자비스의 키·클릭도 유휴 시계를 0 으로 돌릴 수 있다 → 동작 직후 `mark --sid`, 다음 동작 직전 `check --sid`: **mark 뒤 입력 1개라도 = 사용자**(여유 0 · 늦게 반영된 내 입력도 사용자로 봄 = 멈췄다 다시 기다림 = 안전 쪽) → 도구가 멈추고 다시 20초 쉼을 기다렸다 돌려준다(재개 = 새 기준점).
 - go 판정 뒤 준비(맨 앞 앱 기록 · 알림)가 끝나면 쉼 조건을 다시 확인 — 준비 중 입력이 있으면 go 하지 않고 계속 기다림.
+- ⚠ 남는 틈(master 조건 1 · 스킬·도구 머리말에 같은 문장): 일반 앱에서는 내 동작 끝 ~ mark 사이에 사용자가 한 번 치고 멈춘 입력을 내 입력과 구분 못 해 그대로 진행할 수 있다(계속 치는 입력은 mark 뒤까지 이어져 잡힘 · 카카오톡·메일·한글은 20초 상향이라 틈 없음) — 시험 `test_residual_blind_window_is_pinned` 가 이 동작을 그대로 고정.
 - 끝의 원래 앱 복귀(`end --sid --restore`)도 입력 조작 → 마지막 mark 뒤 사용자 입력이 있었거나 못 읽으면 되돌리지 않음(`restore_reason: user_active`).
-- 화면 작업은 한 번에 하나: `wait` 이 `sid` 발급 · 진행 중이면 exit 5(busy) · mark/check/end 는 sid 일치만 · 버려진 세션은 900초(단조) 뒤 만료 · 세션·대기열 쓰기는 잠금(맥 flock · 윈 msvcrt) 안에서.
+- 화면 작업은 한 번에 하나: `wait` 이 `sid` 발급 · 진행 중이면 exit 5(busy) · mark/check/end 는 sid 일치만 · 소유자가 마지막으로 부른 뒤 900초 지나야 만료(시계 기준이 바뀌어도 소유권은 안 풀고 벽시계로 나이를 잼 · codex 2R) · 세션·대기열 쓰기는 잠금(맥 flock · 윈 msvcrt · 대기 상한 10초 → busy) 안에서.
+- `wait` = 명령 전체 하나의 단조 마감 + 「쉼 → 준비 → 잠금 안 재관측」 되풀이 상한 50회(시계가 안 가는 경우까지 끝남) · go 반환 시각은 잠금을 잡은 뒤.
+- `end --restore` = 앱 조회를 먼저 끝내고 잠금 안에서 입력·소유권을 다시 본 뒤에만 복귀.
 - 시간 초과 = exit 3 · `idle-pending.json` 대기열(같은 일 한 줄 · 자동으로 버리지 않음 · 같은 `--task` 로 나중에 통과하면 빠짐).
 - 시작 알림 say 「잠깐 화면을 씁니다(약 n초). 하시던 일은 그대로 하셔도 됩니다 — …멈췄다가 쉬실 때 이어 합니다.」 · 끝 say 「화면 쓰기를 마쳤습니다(n초).」 · 맥은 알림 센터에도 1줄(포커스 0 · 최선 노력) · 윈은 대화 화면 1줄뿐.
 - 상태 = `~/.cys/computer-control/idle-session.json` · `idle-pending.json` · `idle-gate.lock`(`CYS_IDLE_STATE` 로 바꿈).
@@ -48,10 +52,25 @@
 
 ## 6. 함정·잔여 위험
 - ⚠ 사고 1건: 실기 스모크에서 `end` 에 `CYS_IDLE_NO_NOTIFY` 를 빠뜨려 박사님 맥 알림 센터에 「화면 쓰기를 마쳤습니다(0초)」 1줄(입력·포커스 조작 0). 시험은 전부 가짜 시계 + 알림 끔.
-- 잔여 위험(미측정 · codex 1R blocking 중 남는 부분): 자비스 동작이 끝난 순간 ~ `mark` 사이(모델 지연 수 초)의 사용자 입력은 「내 동작」과 구분 못 한다(mark 뒤 입력은 이제 여유 0 으로 잡음). 합성 입력이 HIDIdleTime 을 실제로 0 으로 돌리는지도 미측정(박사님 화면에 합성 입력을 보내야 재는 것이라 하지 않음) — 돌리지 않는다면 이 틈도 없다. 화면 없는 시험 기기(VM)에서 재는 것이 다음 단계. 스킬은 「동작 직후 곧바로 mark」로 틈을 줄인다.
+- 잔여 위험(§2 남는 틈): 일반 앱의 「동작 끝 ~ mark」 틈 · 1R 때 HANDOFF 의 「합성 입력이 유휴를 안 돌리면 틈도 없다」는 문장은 틀렸다(codex 2R 지적 — 사용자 입력만 있어도 mark 가 그 입력을 기준점 앞으로 보냄) → 삭제.
+- 📌 후속(범위 밖 · master 지시): 맥 `CGEventSourceSecondsSinceLastEventType(kCGEventSourceStateHIDSystemState, …)` 가 computer-use 합성 입력을 빼고 세는지 **시험 기기/VM 에서** 실측(박사님 화면에서 합성 입력 시험 금지) — 뺀다면 「내 입력과 사용자 입력 구분」이 OS 값으로 되어 남는 틈이 사라진다.
 - 윈 SendInput 역행: 우리가 한 번이라도 본 입력은 최고값으로 지켜지지만, 관측 전에 사용자 입력 직후 역행이 일어나면 못 본다(관측 간격 ≤ 1초로 줄임).
 - 윈 GetLastInputInfo 는 세션 한정 — cysr 좌석이 사용자 세션에서 돈다는 전제(서비스 세션 0 이면 값이 틀림 · 윈 실기 확인 항목).
 - `rhwp-advanced` 스킬은 hwp·rhwp-edit 가 가리키지만 팩에 없음(참고 · 범위 밖).
 
 ## 7. codex 1R
 (갱신 예정)
+
+## 8. 인계 델타 (11-18 18:4x · master#00cd1c9c · 계정1 좌석 → 계정2 새 좌석)
+- **중단 직전 하던 일**: codex 2R REVISE(docs/no-hands-1118/codex-r1.json 다음 판 = 아래) 고침 + master 결정 반영을 마치고, 관문 시험·뮤턴트를 다시 돌려 확인한 뒤 커밋하려던 참. 그 고침 전부가 WIP 커밋(이 델타와 같은 커밋)에 **미검증**으로 들어 있다.
+  - master 결정: [master#18af38d1] → 정정 [master#16466ff6] = 일반 앱 `--step-quiet` 기본 0(관문 1회 → 한 번에) · Return 한 번이 바깥으로 나가는 앱(카카오톡·메일·한글) = 앱별 상향표로 매 동작 전 내 입력 포함 20초 · 조건 = 남는 틈 1줄 명시(스킬·도구 머리말·§2 반영됨) · codex 에 결정·근거를 주고 재검토 1회(왕복 1회 한도 · 남는 이견은 【확인요청】 병기) · 📌 HIDSystemState 실측은 HANDOFF 1줄(§6 반영됨).
+  - codex 2R 판정문은 재부팅으로 scratchpad 와 함께 사라졌을 수 있다 — 요지: blocking 1(동작 끝~mark 틈 = 위 결정으로 처리) · major 6(복귀 직전 재확인 · 잠금 뒤 재관측 · 윈 틱 역행 · 소유권/TTL 분리 · 준비 되풀이 상한 · 뮤턴트 하네스 판정) — 6건 모두 코드·시험 반영(§2).
+- **끊긴 시험(재부팅으로 결과 없음)과 다시 돌릴 명령**(가벼움 — 파이썬 단위·가짜 시계 · 실대기 0 · cysd/cys 시험 아님):
+  - `cd cysjavis-pack && python3 bin/tests/test_idle_gate.py` — 마지막 확인 38 OK(M26 중복 갱신 제거 전).
+  - `python3 bin/tests/mut_idle_gate.py` — 27종 · 원본 녹색 전제 · 직전 26/27(M26 생존 → 원인 = check 의 생존 갱신 중복 → 뒤쪽 갱신 제거로 고침 · 재실행 결과 없음). 수 분 걸림 · 부하 반복 아님(변이당 시험 1회).
+  - 팩 파이썬 7종 + 합성기는 재부팅 뒤 이미 재실행 완료(TODO 7 · 기대대로 · cso_directive_rev 바이트 예산 핀 1건 = 기준선부터 붉음).
+- **미결 · 결정 대기**: ① 지침 바이트 예산 핀(MASTER_DIRECTIVE 기준선 86,642 > 85,365 · 이 티켓 절로 +약 470B) 상한 상향 여부 = master(중간보고 10:19 【결정필요】 · 답 없음) ② codex 결정 재검토 1회 미실행.
+- **다음 첫 행동 3줄**:
+  1. `python3 cysjavis-pack/bin/tests/test_idle_gate.py` → OK 확인 후 `python3 cysjavis-pack/bin/tests/mut_idle_gate.py`(백그라운드) → 27/27 KILLED 확인.
+  2. WIP 커밋 위에 검증 커밋(fix(… codex 2R REVISE · master 결정 반영)) → codex 3R = master 결정·근거 + `git diff c4b4ffe1..HEAD` 로 1회 재검토(`codex exec --sandbox read-only -o … -` · NODE_OPTIONS 비움).
+  3. HANDOFF §4(시험 수치)·§7(codex 1R·2R·3R) 채우고 【확인요청】(새 머리 · 시험 수치 · codex 결과·남는 이견 · 예산 핀 결정 대기).

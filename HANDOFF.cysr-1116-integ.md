@@ -398,7 +398,7 @@
 - 2228 이 이월한 다음 판 3건 = `HANDOFF.cysr-no-hands-gui-1118.md` §7 끝 줄(이번에 안 고침).
 
 ### 11-2. 실행
-- 스크립트 = `docs/integ-1116/gate-1116.sh`(스냅샷 뿌리에서 `bash docs/integ-1116/gate-1116.sh <결과 폴더>` · 요약 = `<결과 폴더>/summary.txt`). 단계 81개(dry-run 계수 · 들어올 두 시험 포함) · **모든 대상 1회 · 자동 재시도 없음** · 격리 env(`env -i` · 짧은 TMPDIR) · 단계 실행 중 5초마다 syspolicyd·fake 계수를 대조해 늘면 그 단계 프로세스 그룹을 끊고 rc 3 로 중단.
+- 스크립트 = `docs/integ-1116/gate-1116.sh`(스냅샷 뿌리에서 `bash docs/integ-1116/gate-1116.sh <결과 폴더>` · 요약 = `<결과 폴더>/summary.txt`). 단계 82개(dry-run 계수 · §12 에서 `cys-app-inputs` 추가) · **모든 대상 1회 · 자동 재시도 없음** · 격리 env(`env -i` · 짧은 TMPDIR) · 단계 실행 중 5초마다 syspolicyd·fake 계수를 대조해 늘면 그 단계 프로세스 그룹을 끊고 rc 3 로 중단.
 - 이 좌석에서 스크립트로 돌린 것 = 문법 · dry-run · gen 2 · secret 2 · `test_cso_directive_rev` 75 OK · `test_idle_gate` 49 OK · `test_check_macho_arch` 62 OK · `test_ci_branch_cysd_step` 38 OK · `test_unix_pty_results` 9 OK · `test_release_trigger_split` 17 OK · `ui-build` · `pw-venv`(playwright 1.60.0 · PyYAML 6.0.2 · `~/axdev/.wt/.gate-pw-venv`) · `e2e-chat` PASS 59 · 보호 계수 증가 흉내(가짜 계수기 → `secret-scan` rc 125 · 전체 rc 3). **Rust 묶음 · 나머지 팩 묶음 · health · 나머지 화면 게이트는 스크립트로 돌려 보지 않았다.**
 - 맥에서 빼는 것 = `scripts/tests/test_release_postprocess_gate.py`(갓 만든 번들을 spctl·gktool 에 넘김) → CI 몫. `integ/1116` 은 ci-branch 의 push 대상(`feat/**`·`fix/**`) 밖이라 CI 는 별도 발화가 필요하다(push = master 게이트).
 
@@ -427,3 +427,31 @@
 - `secret-scan --all` 적색 1건 = 병합으로 들어온 `WORKER_TODO.cysr-test-gatekeeper-crash-1118.md:2` 의 홈 절대 경로 → 「작업트리 cys-1116-gkfix」 로 고침(문서 · 동작 무관).
 - 같은 꼴이 `feat/no-hands-gui-1118` 의 HANDOFF·WORKER_TODO 에도 있었으나 그 좌석이 고쳐 38ef248a 병합 뒤 `secret-scan` clean.
 - 📌 워크플로 미등재 팩 시험 44개(03c11f36 기준) = 범위 밖 기록 · 1.1.17 후보(master#48c83aeb). `test_owner_desk` 의 등재 여부는 ② 병합 때 다시 본다.
+
+---
+
+## 12. 전체 게이트 1차 판독(master#190297c9 · 머리 ea9812306 · 결과 `master/logs-gate-1116-ea9812306/` · gate_rc 1)
+
+rc 0 = 64단계 · 붉음 = 17단계(`cys-app` 1 · `health` 1 · `e2e-*` 15) · syspolicyd 26 · fake 162 불변. 대조군 원문 = `~/axdev/.wt/cys-1116-integ-race/evidence-d5/gatefix-control{,2,3}.txt` · 기준선 대조는 이 절 표의 값.
+
+### 12-1. 붉은 단계
+| 단계 | 사유 원문 | 구분 | 근거 |
+|---|---|---|---|
+| `cys-app` rc 101 | `resource path binaries/cysd-aarch64-apple-darwin doesn't exist` | **게이트 실행 환경(대조군 확인)** | 같은 커밋 · 깨끗한 target: 입력 없음 = 같은 문구 rc 101 → `cys-app-inputs` 입력 있음 = `--no-run` rc 0(1분 26초). 시험 자체는 아직 안 돌았다 |
+| `health` · **H-WIN-16** | `팩 creationflags 사용이 동결표를 벗어났다` · 동결 57파일 vs 실측 59파일 · 추가 = `javis_idle_gate.py`:1 · `javis_owner.py`:1 | **이번 병합의 실제 결함(대조군 확인)** — 고치지 않음 | 기준선 3a095c4e 같은 검체 = pass. 03c11f36 57 → 47170c00(2228) 58 → ea981230(2229) 59. 새 사용은 전부 캡처 스폰(`javis_idle_gate.py:140` · `javis_owner.py:288·548` = `capture_output` + `stdin=DEVNULL` + `**NOWIN`) |
+| `health` · H-CLT-1 | `CLT 없는 맥에서 프리루드가 동봉 python 이 아닌 '/Applications/cys.app/…/python3' 를 골랐다(사전설정 미설정)` | **이번 변경 무관(대조군 확인)** · 제품/환경 구분은 추정(이 기계의 설치본) | 기준선 3a095c4e = fail · 사유 전문 일치 |
+| `health` · H-CLT-2 | `호스트(OSTYPE=darwin25)에서 해소값이 종전 규칙과 다르다: NEW='/Applications/cys.app/…/python3' OLD='/usr/bin/python3'` | 위와 같음 | 기준선 = fail · 사유 전문 일치 |
+| `e2e-*` 15종 rc 1 | `ledger.register failed — scoped group killed … acl_denied: capability denied: external lacks 'write-shell' for ledger.register (deny-by-default)` | **게이트 실행 환경(대조군 확인)** · 화면 판정은 아직 없음 | `cys run -- /bin/echo`: 좌석 안 = 성공 · 좌석 밖(이중 fork + setsid · ppid 1) = 같은 문구 rc 1 |
+
+- `H-WIN-11` skip = 윈도우 실기(정상) · health 합계 166 pass · 3 fail · 1 skip / 170.
+
+### 12-2. 합격선과 맞는 단계
+lib 1256·0·3 · cys 765·0·2 · cysd 3308·0·17 · seatkeep 49·0 · hidden 1 · rotate 11 · seat_group 1 · drainhold 4 · win 0·0 · portable-pty 9·0 · 팩 파이썬 21 · scripts/tests 22(`test_release_trigger_split` 17 OK 포함) · gen 2 · secret 2 · bun 3747 pass · 88 skip · 0 fail · tsc rc 0(7.0.2 · `ui/src` 218파일 대상 확인).
+
+### 12-3. `gate-1116.sh` 고침(환경 2건)
+- `cys-app` 을 화면 번들 뒤로 옮기고 `cys-app-inputs` 추가: binaries = `target/debug` 의 APFS 복제(0바이트 금지 · 실행·삭제 없음) · resources·runtime = 자리표시자.
+- 화면 게이트에서 `cys run` 제거: 좌석 밖 실행이 거부되므로 `guarded` 가 프로세스 그룹을 맡고, 정상 종료 뒤에도 남은 자식을 정리한다(대조: 배경 `sleep` 정리 확인).
+- 대조용 작업트리 `~/axdev/.wt/cys-1116-gatefix` 는 지우지 않고 남겼다(새 실행 파일을 지우지 않기 위함).
+
+### 12-4. H-WIN-16 처분안(미적용 · master 결정)
+`cysjavis-pack/bin/tests/run_bootstrap_health.py` `_U5_PACK_CREATIONFLAGS` 에 사유와 함께 2줄: `"javis_idle_gate.py": 1`(대기 게이트 캡처 스폰 NOWIN 정의) · `"javis_owner.py": 1`(오너 책상 캡처 스폰 NOWIN 정의).

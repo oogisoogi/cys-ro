@@ -349,3 +349,35 @@
 1. `git -C ~/axdev/.wt/cys-1116-integ log --oneline -3` 로 머리 확인(이 절 커밋) · HANDOFF §8-9·§9 읽기.
 2. master 에 부하 50회 통제 실행 요청(위 명령 · pending_requests 만) → 결과 0 붉음이면 §8-9 끝 줄 채움.
 3. 【확인요청 5】(새 머리 · Err 원문 `Locked` · 제품 판정 근거 = §8-9) 발송.
+
+---
+
+## 10. 델타 — gatekeeper 수정 병합 · 부하 시험 판별력 점검(master#5d954b24 · 2026-11-18 18:5x~ · surface:2227 · 계정2)
+
+### 10-1. 병합
+- `1a59b5a9` = `fix/test-gatekeeper-crash`(4a343a63 · 7커밋) `--no-ff` 병합 · 충돌 0 · 4a343a63 과의 차이 = 이 HANDOFF 파일뿐.
+- 합친 머리 확인(가벼운 것만): `cargo test --bin cysd --no-run` rc 0 · `cargo build --bin cys-seatkeep` 성공 · `reopen_succeeds_while_a_duplicate_of_the_closed_lock_fd_is_alive` 1/0 · 보호 계수 syspolicyd 26 · fake 162 불변.
+
+### 10-2. ⚠ §9-2·§9-4 의 부하 명령은 이 결함을 못 가른다
+- `pending_requests::` 시험과 `pending_attempts.rs` 에는 프로세스를 띄우는 코드가 없다(스레드만). 결함은 다른 스레드의 fork 가 있어야 나므로(§8-9 표 · fork 0 = 0건), `pending_requests::` 단독 50회는 고치기 전이어도 초록이 나온다.
+- `seat_proc::` 를 섞은 29회도 약한 증거다. fork 원천이 seatkeep 시험 4건 + `/bin/sleep` 1회뿐이고, 실패한 11회는 그 4건이 좌석을 못 띄웠다. 고치기 전 바이너리로 이 부하를 돌려 붉어진 기록도 없다.
+- `master/tools/gk-guard/run-filtered.sh` 도 이 측정에 안 맞는다: `--test-threads=1` 고정 · `--ignored`·`--nocapture` 를 넘기지 않고 `PROBE` 줄을 걸러 낸다.
+
+### 10-3. 판별되는 측정 = fork probe 를 합친 머리에 얹기(소스 커밋 안 함)
+- 패치(측정 작업트리 · 미커밋 · 임시 폴더 밖): `~/axdev/.wt/cys-1116-integ-race/evidence-d5/probe-only.patch` · `…/negative-control-remove-drop.patch`(`impl Drop for PendingStore` 3줄 제거).
+- 1회씩 실측(`PROBE_N=300` · 원문 `…/evidence-d5/merged-1a59b5a9-probe300.txt` · 끝난 뒤 소스 복원 · 변경 0):
+
+  | 판 | fork 스레드 | fork 수 | 원시 `WouldBlock` | `open` = `Err(Locked)` |
+  |---|---|---|---|---|
+  | 합친 머리(고친 판) | 0 | 0 | 0 / 300 | 0 / 300 |
+  | 합친 머리(고친 판) | 4 | 154 | 0 / 300 | 0 / 300 |
+  | 음성 대조(Drop 제거) | 0 | 0 | 0 / 300 | 0 / 300 |
+  | 음성 대조(Drop 제거) | 4 | 142 | **10 / 300** | **9 / 300** |
+- 시험 본체 0.41~0.42초 · 시험 실행 파일을 반복하지 않고 `PROBE_N` 만 키우면 된다(15,000 주기 = 1회 실행).
+
+### 10-4. `seat_proc` `handshake_timeout` 가설(미확인 · 신뢰도 낮음)
+- 실패 11회의 번호 = 8·10~13(5회 · `접속을 거절 handshake_timeout`) · 22·24·26~29(6회 · `소켓에 10초 안에 못 붙음`). 회차마다 4건이 **같은 사유로 함께** 실패한다. 같은 자리의 같은 바이너리가 나머지 18회는 초록이므로 「복제 target 자리」 만으로는 설명이 안 된다.
+- 가설 1줄: 시험별 코드 결함보다, 그 시간대에 기계 전체가 느려져(seatkeep 실행·서명 조회가 보안 검사를 기다림) 10초를 넘겼을 가능성. 판정 = master 통제 실행.
+
+### 10-5. 다음
+- 【확인요청 5】 발송 뒤 master 통제 실행 결과 대기. 결과가 오면 §8-9 끝 줄을 채운다.

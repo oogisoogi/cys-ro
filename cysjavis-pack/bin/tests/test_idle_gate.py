@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import unittest
 
 BIN = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -74,6 +75,9 @@ class Gate(unittest.TestCase):
 
     def run_gate(self, *args):
         r = subprocess.run([sys.executable, MOD_PATH] + list(args), env=self.env, capture_output=True, timeout=60)
+        if b"Traceback" in r.stderr and os.environ.get("IG_TRACE_LOG"):   # 뮤턴트 하네스: 도구가 죽은 것은 「잡힘」이 아니다
+            with open(os.environ["IG_TRACE_LOG"], "ab") as f:
+                f.write(r.stderr + b"\n")
         out = r.stdout.decode("utf-8").strip().splitlines()
         return r.returncode, (json.loads(out[-1]) if out else None)
 
@@ -424,6 +428,113 @@ class Gate(unittest.TestCase):
         self.assertEqual(e["used_secs"], 12)
         self.assertIn("마쳤습니다", e["say"])
 
+    # ── codex 3R ──
+    def test_target_aliases_and_decomposed_hangul(self):
+        ig = load(MOD_PATH, "javis_idle_gate_targets")
+        for target in ("카톡", "카카오톡", "KAKAOTALK", "아웃룩", "Thunderbird", "Gmail", "한컴오피스 한글", "HWP",
+                       unicodedata.normalize("NFD", "한글"), unicodedata.normalize("NFD", "카카오톡"),
+                       unicodedata.normalize("NFD", "메일")):
+            with self.subTest(target=target):
+                self.assertEqual(ig.step_quiet_for(target), 20.0)
+        for target in ("", "com.apple.finder", "com.google.Chrome"):
+            with self.subTest(target=target):
+                self.assertEqual(ig.step_quiet_for(target), 0.0)
+
+    def test_first_gate_honors_longer_step_quiet(self):
+        self.set_clock(1000.0, [995.0])
+        rc, o = self.run_gate("wait", "--seconds", "1", "--target", "카톡", "--timeout", "60")
+        self.assertEqual(rc, 0, o)
+        self.assertGreaterEqual(self.clock_get()["now"] - 995.0, 20.0, "카카오톡인데 1초 쉼으로 통과")
+
+    def test_check_honors_step_quiet_longer_than_seconds(self):
+        self.set_clock(1000.0, [900.0])
+        rc, o = self.run_gate("wait", "--step-quiet", "60", "--timeout", "10")
+        sid = o["sid"]
+        self.advance(0.1)
+        self.user_input()
+        own = self.clock_get()["now"]
+        self.advance(0.1)
+        self.run_gate("mark", "--sid", sid)
+        self.advance(3)
+        rc, c = self.run_gate("check", "--sid", sid, "--timeout", "120")
+        self.assertEqual(rc, 0, c)
+        self.assertGreaterEqual(self.clock_get()["now"] - own, 60.0, "Q=60 인데 20초만 쉬고 재개")
+
+    def test_wall_clock_jump_does_not_change_ownership(self):
+        self.set_clock(1000.0, [900.0])
+        self.go()
+        self.setfake(wall_skew=3600.0)
+        self.assertEqual(self.run_gate("wait", "--timeout", "5")[0], 5, "벽시계가 앞으로 뛰자 소유권이 풀림")
+        self.setfake(wall_skew=-86400.0)
+        self.advance(901)
+        self.assertEqual(self.run_gate("wait", "--timeout", "5")[0], 0, "벽시계가 뒤로 가자 버려진 세션이 남음")
+
+    def test_reboot_ends_old_session(self):
+        self.set_clock(1000.0, [900.0])
+        self.go()
+        self.set_clock(100.0, [])                       # 단조 시계가 뒤로 = 재부팅
+        self.assertEqual(self.run_gate("wait", "--timeout", "5")[0], 0, "재부팅 전 세션이 남아 막음")
+
+    def test_check_sees_input_while_waiting_for_lock(self):
+        self.set_clock(1000.0, [900.0])
+        sid = self.go()
+        self.run_gate("mark", "--sid", sid)
+        self.advance(3)
+        self.setfake(input_on_lock=1)                   # 잠금을 잡는 순간까지 들어온 입력
+        rc, c = self.run_gate("check", "--sid", sid, "--timeout", "60")
+        self.assertEqual(rc, 0, c)
+        self.assertTrue(c["touched"], "잠금을 기다리는 사이의 입력을 놓침")
+
+    def test_check_rechecks_after_pause_under_lock(self):
+        # codex 3R 반례: 쉼이 찬 뒤 잠금을 기다리는 사이 사용자 입력 → 재관측 없이 go 하면 안 된다
+        self.set_clock(1000.0, [900.0])
+        sid = self.go()
+        self.run_gate("mark", "--sid", sid)
+        self.advance(3)
+        self.user_input()
+        self.advance(1)
+        self.setfake(input_on_lock=2)
+        rc, c = self.run_gate("check", "--sid", sid, "--timeout", "120")
+        self.assertEqual(rc, 0, c)
+        d = self.clock_get()
+        self.assertTrue(c["resumed"])
+        self.assertGreaterEqual(d["now"] - max(d["inputs"]), 20.0, "잠금 대기 중 입력 뒤 20초가 안 됐는데 go")
+
+    def test_small_tick_regression_on_windows_is_touched(self):
+        for plat, expect in (("win", True), ("darwin", False)):
+            with self.subTest(plat=plat):
+                self.env["CYS_IDLE_PLATFORM"] = plat
+                self.set_clock(1000.0, [900.0])
+                sid = self.go()
+                self.run_gate("mark", "--sid", sid)
+                self.advance(3)
+                now = self.clock_get()["now"]
+                self.setfake(idle_override=[now - 899.5])   # 직전 원시값 900 보다 0.5초 뒤
+                rc, c = self.run_gate("check", "--sid", sid, "--timeout", "60")
+                self.assertEqual(rc, 0, c)
+                self.assertEqual(c["touched"], expect)
+                self.run_gate("end", "--sid", sid)
+
+    def test_wait_past_deadline_defers(self):
+        self.set_clock(1000.0, [900.0])
+        self.setfake(delay_on_lock=[2, 4.0])            # 준비·잠금이 마감(1초)을 넘김
+        rc, o = self.run_gate("wait", "--timeout", "1", "--task", "늦은 일")
+        self.assertEqual(rc, 3, o)
+        self.assertEqual(o["reason"], "deadline")
+        self.assertNotIn("쓰고 계셔서", o["say"])
+        self.assertFalse(os.path.exists(os.path.join(self.state, "idle-session.json")))
+
+    def test_check_past_deadline_defers(self):
+        self.set_clock(1000.0, [900.0])
+        sid = self.go()
+        self.run_gate("mark", "--sid", sid)
+        self.advance(3)
+        self.user_input()
+        self.setfake(delay_on_lock=[2, 5.0])
+        rc, c = self.run_gate("check", "--sid", sid, "--timeout", "20")
+        self.assertEqual(rc, 3, c)
+        self.assertEqual(c["reason"], "deadline")
+
     def test_unsupported_platform_defers(self):
         env = dict(self.env, CYS_IDLE_PLATFORM="other")
         env.pop("CYS_IDLE_GATE_FAKE")
@@ -527,6 +638,25 @@ class Docs(unittest.TestCase):
                 t = self.read(rel)
                 self.assertIn("## ★ 사용자와 함께 쓰는 컴퓨터 — 손을 빌리지 않기 (1.1.16)", t)
                 self.assertIn("javis_idle_gate.py", t)
+
+
+class MutantHarness(unittest.TestCase):
+    """뮤턴트 판정 — 시험이 계약 위반을 잡은 것만 KILLED · 도구가 죽거나 안 읽힌 것은 CRASH(codex 3R)."""
+    def test_classify(self):
+        m = load(os.path.join(BIN, "tests", "mut_idle_gate.py"), "mut_idle_gate_ut")
+        cases = (
+            ((True, 1, ["t"], [], False), "KILLED"),
+            ((True, 1, [], [], True), "KILLED"),                 # 멈춤(시간 초과)을 시험이 잡음
+            ((True, 0, [], [], False), "SURVIVED"),
+            ((False, 1, ["t"], [], False), "CRASH"),             # 사본이 컴파일되지 않음
+            ((True, 1, ["t"], ["t2"], False), "CRASH"),          # 도구 Traceback
+            ((True, 1, [], [], False), "CRASH"),                 # FAIL 없이 ERROR 만
+            ((True, None, [], [], False), "CRASH"),              # 시간 초과·신호
+            ((True, -11, ["t"], [], False), "CRASH"),
+        )
+        for args, want in cases:
+            with self.subTest(args=args):
+                self.assertEqual(m.classify(*args), want)
 
 
 if __name__ == "__main__":

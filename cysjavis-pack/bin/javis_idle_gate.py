@@ -49,6 +49,7 @@ import subprocess
 import sys
 sys.dont_write_bytecode = True
 import time
+import unicodedata
 
 NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
 for _s in (sys.stdout, sys.stderr):
@@ -65,15 +66,17 @@ POLL_MAX = 1.0                # 관측 간격 상한 — 최고값 추적이 입
 CLOCK_SKEW = 2.0              # 프로세스 사이 「벽시계−단조」 차 허용(초)
 SESSION_TTL = 900             # 이보다 오래된 세션은 버려진 것으로 본다(초 · 단조)
 SUBPROC_TIMEOUT = 5
-REGRESS = 1.0                 # OS 마지막 입력 시각이 이만큼 뒤로 가면 역행으로 본다(초)
+REGRESS = 1.0                 # OS 마지막 입력 시각이 이만큼 뒤로 가면 역행으로 본다(초 · 맥 = ioreg 실행 지연이 값을 흔들어 여유가 필요)
+REGRESS_WIN = 0.05            # 윈 = 같은 프로세스에서 틱을 바로 읽어 흔들림이 틱 단위(약 16ms)뿐 — 작은 역행도 입력을 가릴 수 있다(codex 3R)
 LOCK_WAIT = 10.0              # 잠금 대기 상한(초) — 넘으면 「다른 화면 작업 진행 중」
 MAX_ATTEMPTS = 50             # wait 의 「쉼 → 준비 → 재확인」 되풀이 상한(시계가 안 가는 경우까지 끝나게)
 # 앱별 쉼 상향표(master#16466ff6) — Return 한 번이 바깥(남에게)으로 나가는 앱은 매 동작 전 내 입력까지 포함해 20초(엄격) ·
-#   그 밖의 앱은 0(관문 1회 → 한 번에 · mark 뒤 입력만 사용자로 판정). 대상 이름·번들 ID 를 소문자로 낱말 대조.
+#   그 밖의 앱은 0(관문 1회 → 한 번에 · mark 뒤 입력만 사용자로 판정). 대상 이름·번들 ID 를 NFKC·대소문자 무시로 낱말 대조
+#   (맥 파일·앱 이름의 분해형 한글도 같은 낱말로 잡힌다 · codex 3R). 넓게 잡혀도 더 기다릴 뿐이라 안전 쪽이다.
 STEP_QUIET_TABLE = (
-    (("kakao", "카카오"), 20.0),                                    # 카카오톡(맥 com.kakao.KakaoTalkMac · 윈 KakaoTalk.exe)
-    (("com.apple.mail", "outlook", "메일", "mail"), 20.0),          # 메일
-    (("hancom", "hwp", "한글", "hnc"), 20.0),                       # 한글(한컴오피스)
+    (("kakao", "카카오", "카톡"), 20.0),                            # 카카오톡(맥 com.kakao.KakaoTalkMac · 윈 KakaoTalk.exe)
+    (("mail", "메일", "outlook", "아웃룩", "thunderbird", "썬더버드"), 20.0),   # 메일(com.apple.mail · Gmail 등)
+    (("hancom", "한컴", "hwp", "한글", "hnc"), 20.0),               # 한글(한컴오피스)
 )
 
 
@@ -204,6 +207,10 @@ def idle_secs():
     return None
 
 
+def _regress():
+    return REGRESS_WIN if platform() == "win" else REGRESS
+
+
 def observe(hi=None, raw=None):
     """(마지막 입력 시각(단조) | None, 이번 원시값 | 직전 원시값).
     마지막 입력 = 이번 관측과 이전 최고값(hi) 중 늦은 것 · 못 읽으면 None.
@@ -215,7 +222,7 @@ def observe(hi=None, raw=None):
     if idle is None:
         return None, raw
     cur = t - idle
-    if raw is not None and cur < float(raw) - REGRESS:
+    if raw is not None and cur < float(raw) - _regress():
         return t, cur
     return (max(cur, float(hi)) if hi is not None else cur), cur
 
@@ -294,6 +301,32 @@ class LockBusy(Exception):
     pass
 
 
+def _fake_on_lock():
+    """시험: N번째로 잠금을 잡은 순간 사용자 입력 · 시간 경과(잠금을 기다리는 사이의 일 재현)."""
+    if not _fake_path():
+        return
+    d = _fake_load()
+    changed = False
+    n = d.get("input_on_lock")
+    if n is not None:
+        changed = True
+        if n <= 1:
+            d.pop("input_on_lock")
+            d.setdefault("inputs", []).append(d["now"])
+        else:
+            d["input_on_lock"] = n - 1
+    delay = d.get("delay_on_lock")                # [N번째, 초]
+    if delay:
+        changed = True
+        if delay[0] <= 1:
+            d.pop("delay_on_lock")
+            d["now"] = float(d["now"]) + float(delay[1])
+        else:
+            d["delay_on_lock"] = [delay[0] - 1, delay[1]]
+    if changed:
+        _fake_save(d)
+
+
 @contextlib.contextmanager
 def locked():
     """세션·대기열 읽고-고쳐-쓰기를 한 번에 한 프로세스만(맥 flock · 윈 msvcrt) · 대기 상한 LOCK_WAIT → LockBusy."""
@@ -317,6 +350,7 @@ def locked():
                 if time.monotonic() >= deadline:
                     raise LockBusy()
                 time.sleep(0.05)
+        _fake_on_lock()
         yield
     finally:
         try:
@@ -340,11 +374,15 @@ def _task_id(task):
     return hashlib.sha256((task or "").strip().encode("utf-8")).hexdigest()[:10]
 
 
+def _norm_name(s):
+    return unicodedata.normalize("NFKC", s or "").casefold()
+
+
 def step_quiet_for(target):
     """대상 앱 → 매 동작 전 쉼(초). 표에 없으면 0."""
-    t = (target or "").lower()
+    t = _norm_name(target)
     for words, q in STEP_QUIET_TABLE:
-        if any(w in t for w in words):
+        if any(_norm_name(w) in t for w in words):
             return q
     return 0.0
 
@@ -360,20 +398,17 @@ def _clock_ok(s):
 
 
 def _active(s):
-    """살아 있는 세션인가 — 소유자가 마지막으로 부른 뒤 SESSION_TTL 안(codex 2R: 입력 판정의 불확실성과 소유권을 분리 —
-    시계 기준이 바뀌어도 소유권은 풀지 않고, 그때는 벽시계로 나이를 잰다)."""
+    """살아 있는 세션인가 — 소유자가 마지막으로 부른 뒤 단조 시계로 SESSION_TTL 안(codex 2R·3R: 입력 판정의 불확실성과 소유권을
+    분리 · 벽시계는 쓰지 않는다 — 벽시계를 바꿔도 소유권이 풀리거나 버려진 세션이 오래 남지 않는다).
+    단조 시계가 뒤로 갔으면 재부팅이다 = 그 세션의 소유자는 없다."""
     if s is None:
         return False
-    if _clock_ok(s):
-        age = mono() - float(s.get("seen_mono", s["mark"]))
-    else:
-        age = wall() - float(s.get("seen_wall", 0))
-    return age <= SESSION_TTL
+    age = mono() - float(s.get("seen_mono", s["mark"]))
+    return 0 <= age <= SESSION_TTL
 
 
 def _touch_seen(s):
     s["seen_mono"] = mono()
-    s["seen_wall"] = wall()
 
 
 def _defer_locked(task, reason):
@@ -440,6 +475,7 @@ DEFER_SAY = ("지금은 컴퓨터를 쓰고 계셔서 화면이 필요한 일은
              "파일로 할 수 있는 일은 먼저 진행합니다.")
 END_SAY = "화면 쓰기를 마쳤습니다(%d초)."
 NO_IDLE_SAY = "이 컴퓨터에서는 키보드·마우스 쉼을 잴 수 없어 화면이 필요한 일은 하지 않고 미뤄 두겠습니다."
+LATE_SAY = "화면 쓸 준비가 늦어져 이번 일은 대기열에 올려 두었습니다. 파일로 할 수 있는 일은 먼저 진행합니다."
 BUSY_SAY = "다른 화면 작업이 진행 중입니다 — 그것이 끝난 뒤 이어 하겠습니다."
 
 
@@ -465,7 +501,7 @@ def _deferred(task, reason, waited, idle=None, sid=None):
             _drop_session_locked(sid)
     return out({"ok": True, "go": False, "deferred": True, "id": tid, "reason": reason,
                 "idle_secs": None if idle is None else round(idle, 1), "waited_secs": round(waited, 1),
-                "say": NO_IDLE_SAY if reason == "unsupported_platform" else DEFER_SAY}, 3)
+                "say": {"unsupported_platform": NO_IDLE_SAY, "deadline": LATE_SAY}.get(reason, DEFER_SAY)}, 3)
 
 
 def cmd_wait(a):
@@ -477,12 +513,14 @@ def cmd_wait(a):
     start = mono()
     deadline = start + _timeout(a.timeout)        # 명령 전체 하나의 단조 마감(codex 2R)
     q = a.step_quiet if a.step_quiet is not None else step_quiet_for(a.target)
+    need = max(a.seconds, q)                      # 앱별 쉼이 더 길면 첫 관문도 그만큼(codex 3R)
     say = START_SAY % max(1, int(a.est))
     notified = None
     hi = raw = None
     last_idle = None
+    late = False
     for _attempt in range(MAX_ATTEMPTS):
-        go, idle, _w, hi, raw = wait_quiet(a.seconds, max(0.0, deadline - mono()), hi, raw)
+        go, idle, _w, hi, raw = wait_quiet(need, max(0.0, deadline - mono()), hi, raw)
         last_idle = idle
         if not go:
             break
@@ -494,7 +532,9 @@ def cmd_wait(a):
                 return _busy()
             last, raw = observe(hi, raw)        # 잠금을 잡은 **뒤** 다시 관측 · 반환 시각도 그 뒤(codex 2R)
             t = mono()
-            if last is not None and t - last >= a.seconds:
+            quiet = last is not None and t - last >= need
+            late = quiet and t > deadline       # 쉼은 맞지만 준비·잠금이 마감을 넘김 = go 하지 않는다(codex 3R)
+            if quiet and not late:
                 sid = secrets.token_hex(4)
                 sess = {"sid": sid, "go_at": t, "mark": t, "hi": last, "raw": raw, "offset": wall() - t, "seconds": a.seconds,
                         "step_quiet": q, "target": a.target or "", "front": front, "task": a.task or "", "pauses": 0}
@@ -513,7 +553,8 @@ def cmd_wait(a):
             last_idle = None if last is None else t - last
         if mono() >= deadline:
             break
-    return _deferred(a.task, "idle_unknown" if last_idle is None else "user_active", mono() - start, last_idle)
+    reason = "deadline" if late else ("idle_unknown" if last_idle is None else "user_active")
+    return _deferred(a.task, reason, mono() - start, last_idle)
 
 
 def _owned(a):
@@ -542,35 +583,53 @@ def cmd_mark(a):
 
 
 def cmd_check(a):
-    with locked():
-        s, err = _owned(a)
-        if err is not None:
-            return err
-        _touch_seen(s)
-        _write(_p(SESSION), s)
-    hit, hi, raw = touched(s)
-    if not hit:
+    """go 판정은 언제나 잠금을 잡은 **뒤**의 관측으로 한다(codex 3R) — 잠금을 기다리는 사이의 입력도 본다 · 관측 전에 mark 를 옮기지 않는다."""
+    start = mono()
+    deadline = start + _timeout(a.timeout)        # 명령 전체 하나의 단조 마감
+    hi = raw = None
+    task = ""
+    paused = late = False
+    idle = None
+    for attempt in range(MAX_ATTEMPTS):
         with locked():
-            s2, err = _owned(a)
+            s, err = _owned(a)
             if err is not None:
                 return err
-            s2["hi"] = hi
-            s2["raw"] = raw
-            _write(_p(SESSION), s2)
-        return out({"ok": True, "go": True, "touched": False})
-    seconds = a.seconds if a.seconds is not None else float(s.get("seconds", DEFAULT_SECONDS))
-    go, idle, waited, hi, raw = wait_quiet(seconds, _timeout(a.timeout), hi, raw)
-    if not go:
-        return _deferred(s.get("task") or "", "idle_unknown" if idle is None else "user_active", waited, idle, sid=a.sid)
-    with locked():
-        s2, err = _owned(a)
-        if err is not None:
-            return err
-        t = mono()
-        s2.update(mark=t, hi=hi, raw=raw, offset=wall() - t, pauses=int(s2.get("pauses", 0)) + 1)   # 재개 = 새 기준점
-        _touch_seen(s2)
-        _write(_p(SESSION), s2)
-    return out({"ok": True, "go": True, "touched": True, "resumed": True, "paused_secs": round(waited, 1)})
+            _touch_seen(s)
+            task = s.get("task") or ""
+            seconds = a.seconds if a.seconds is not None else float(s.get("seconds", DEFAULT_SECONDS))
+            need = max(seconds, float(s.get("step_quiet", 0) or 0))   # 앱별 쉼이 더 길면 그만큼 기다린다(codex 3R)
+            if attempt == 0:
+                hi, raw = s.get("hi"), s.get("raw")
+            if paused:
+                last, raw = observe(hi, raw)
+                hi = last if last is not None else hi
+                t = mono()
+                idle = None if last is None else t - last
+                quiet = idle is not None and idle >= need
+                late = quiet and t > deadline
+                ok = quiet and not late
+            else:
+                hit, hi, raw = touched(s)
+                ok = not hit
+            s["hi"], s["raw"] = hi, raw
+            if ok and paused:
+                t = mono()
+                s.update(mark=t, offset=wall() - t, pauses=int(s.get("pauses", 0)) + 1)   # 재개 = 새 기준점
+            _write(_p(SESSION), s)
+            if ok:
+                if paused:
+                    return out({"ok": True, "go": True, "touched": True, "resumed": True,
+                                "paused_secs": round(mono() - start, 1)})
+                return out({"ok": True, "go": True, "touched": False})
+        if late:
+            break
+        paused = True
+        go, idle, _w, hi, raw = wait_quiet(need, max(0.0, deadline - mono()), hi, raw)
+        if not go:
+            break
+    reason = "deadline" if late else ("idle_unknown" if idle is None else "user_active")
+    return _deferred(task, reason, mono() - start, idle, sid=a.sid)
 
 
 def cmd_end(a):

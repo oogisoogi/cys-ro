@@ -1,0 +1,110 @@
+{
+  "verdict": "BLOCK",
+  "justification": "정적 검토 결과, 운영 결정과 잔여 위험 고지는 반영됐지만 엄격한 앱이 0초로 분류되거나 20초 전에 진행하는 경로가 남아 있다. 2R의 소유권 보호와 KILLED/CRASH 구분도 불완전하다. 일반 앱의 승인된 mark 이전 틈은 차단 사유로 삼지 않았다.",
+  "evidence": [
+    {
+      "claim": "일반 앱 기본값 0과 명시한 --step-quiet의 표 우선 적용은 구현됐다.",
+      "ref": "cysjavis-pack/bin/javis_idle_gate.py:479",
+      "verified": true
+    },
+    {
+      "claim": "일반 앱의 남는 틈을 도구 머리말에 명시했다.",
+      "ref": "cysjavis-pack/bin/javis_idle_gate.py:33",
+      "verified": true
+    },
+    {
+      "claim": "같은 잔여 위험을 스킬에도 명시했다.",
+      "ref": "cysjavis-pack/skills/computer-control/SKILL.md:82",
+      "verified": true
+    },
+    {
+      "claim": "인계 문서 diff에도 잔여 위험과 앱별 정책을 명시했다.",
+      "ref": "HANDOFF.cysr-no-hands-gui-1118.md:24",
+      "verified": true
+    },
+    {
+      "claim": "복귀 시 앱 조회 뒤 잠금 안에서 소유권과 입력을 재확인한다.",
+      "ref": "cysjavis-pack/bin/javis_idle_gate.py:583",
+      "verified": true
+    },
+    {
+      "claim": "wait의 최종 관측은 잠금 획득 뒤로 이동했다.",
+      "ref": "cysjavis-pack/bin/javis_idle_gate.py:495",
+      "verified": true
+    },
+    {
+      "claim": "역행 비교 기준은 최고값이 아닌 직전 원시값이며, 준비 반복은 50회로 제한됐다.",
+      "ref": "cysjavis-pack/bin/javis_idle_gate.py:218",
+      "verified": true
+    },
+    {
+      "claim": "추가 시험은 정상 표기 일부와 기본 20초를 검사하지만, 별칭·정규화·큰 시계 변경·Q의 실제 대기시간은 검사하지 않는다.",
+      "ref": "cysjavis-pack/bin/tests/test_idle_gate.py:305",
+      "verified": true
+    }
+  ],
+  "issues": [
+    {
+      "severity": "blocking",
+      "file": "cysjavis-pack/bin/javis_idle_gate.py",
+      "line": 345,
+      "problem": "lower()와 부분 문자열만 사용하므로 실제 사용하는 별칭과 유니코드 표기가 상향표에서 빠진다. 스킬 자체가 사용하는 '카톡'은 0초이고, NFD로 표현된 '한글'·'카카오톡'도 0초다.",
+      "counterexample": "wait --target 카톡으로 통과 → 에이전트 입력 t=1000.1 → 사용자 입력 t=1000.6 후 멈춤 → mark t=1001.6 → check t=1004.6. step_quiet=0이므로 기다리지 않고 go한다. --target에 NFD(한글)을 전달해도 같은 분류 누락이 발생한다.",
+      "fix": "NFC 정규화와 대소문자 정규화 후 명시적인 앱 별칭·번들 ID·실행 파일 이름을 판정하고, 카톡 및 맥의 분해형 한글 표기를 시험에 추가한다. 메일 앱 분류도 대표 앱 이름 몇 개에만 의존하지 않도록 보완한다."
+    },
+    {
+      "severity": "major",
+      "file": "cysjavis-pack/bin/javis_idle_gate.py",
+      "line": 562,
+      "problem": "step_quiet는 대기 진입 여부에만 쓰이고 실제 대기에는 seconds만 전달된다. 명시한 Q가 기본 20초보다 크거나 seconds가 20보다 작으면 요구한 쉼을 채우지 않고 진행한다.",
+      "counterexample": "wait --target com.kakao.KakaoTalkMac --step-quiet 60 → 자기 입력 t=1000 → mark t=1000.1 → check t=1003. touched는 참이지만 wait_quiet(20, ...)으로 t=1020에 재개하여 Q=60을 위반한다. --seconds 1이면 표의 Q=20도 1초로 줄어든다.",
+      "fix": "재개 대기시간에 세션의 step_quiet 하한을 적용하고, Q=60 및 seconds<Q인 경우 실제 go 시각을 검증한다."
+    },
+    {
+      "severity": "major",
+      "file": "cysjavis-pack/bin/javis_idle_gate.py",
+      "line": 370,
+      "problem": "시계 기준이 달라지면 TTL을 벽시계 차로 계산하므로 벽시계를 앞으로 조정하는 것만으로 살아 있는 소유권이 풀린다. 뒤로 조정하면 버려진 세션이 TTL보다 훨씬 오래 남는다.",
+      "counterexample": "세션 생성 mono=1000, seen_wall=W → 1초 뒤 벽시계가 3600초 전진 → 다른 wait 호출. age=3601로 계산되어 기존 소유자가 살아 있어도 새 sid를 발급한다. 추가 시험의 wall_skew=30은 이 경우를 잡지 못한다.",
+      "fix": "동일 부팅 내 TTL은 단조 시계로 유지하고, 재부팅 판정은 별도 식별자로 분리한다. 벽시계의 큰 전진·후퇴로 소유권이 해제되거나 장기간 유지되지 않는 시험을 추가한다."
+    },
+    {
+      "severity": "blocking",
+      "file": "cysjavis-pack/bin/javis_idle_gate.py",
+      "line": 565,
+      "problem": "잠금 뒤 재관측은 wait에만 적용됐다. check는 잠금 밖에서 얻은 관측으로 go를 결정하고, 재잠금 중 발생한 사용자 입력을 확인하지 않은 채 mark를 앞으로 옮긴다. 엄격한 앱의 기본 20초 정책도 우회된다.",
+      "counterexample": "카카오톡 세션에서 check의 wait_quiet가 마지막 입력 t=1000 기준으로 t=1020에 성공 → 다른 프로세스가 상태 잠금을 t=1023까지 보유 → 사용자가 t=1021에 입력 → check가 t=1023에 잠금을 얻고 재관측 없이 mark=1023으로 저장한 뒤 go. 실제 사용자 유휴는 2초다. touched=False 경로의 두 번째 잠금에도 같은 문제가 있다.",
+      "fix": "check의 모든 go 경로에서 최종 잠금 획득 뒤 다시 관측한다. 조건이 깨졌으면 같은 단조 마감 안에서 다시 기다리고, 재관측 전에 mark를 갱신하지 않는다."
+    },
+    {
+      "severity": "major",
+      "file": "cysjavis-pack/bin/javis_idle_gate.py",
+      "line": 218,
+      "problem": "1초 이하의 원시 입력 시각 역행은 무시한다. 따라서 mark 뒤 입력이 작은 역행으로 가려지는 경우에는 2R의 역행 방어가 작동하지 않는다.",
+      "counterexample": "mark에서 raw=1000.0, mark=1000.1 저장 → 사용자 입력 t=1000.2 → OS 마지막 입력 틱이 999.5로 역행 → 일반 앱 check t=1003. cur=999.5는 raw-1보다 작지 않아 역행으로 처리되지 않고, hi=1000.0<=mark이므로 즉시 go한다. 이는 승인된 mark 이전 틈 밖의 입력이다.",
+      "fix": "윈도우 원시 틱의 역행을 1초 미만이라는 이유로 무시하지 않도록 처리한다. 관측 오차 허용이 필요하면 실제 원시 틱과 관측 지연을 분리하고, 작은 역행 반례도 시험한다."
+    },
+    {
+      "severity": "major",
+      "file": "cysjavis-pack/bin/javis_idle_gate.py",
+      "line": 497,
+      "problem": "명령 전체 단조 마감을 만들었지만 준비와 최종 잠금 뒤 go 조건에서는 마감을 확인하지 않는다. 준비 중 마감을 넘겨도 성공을 반환하므로 문서의 '명령 전체 하나의 단조 마감'이 보장되지 않는다.",
+      "counterexample": "t=1000에 이미 100초 유휴인 상태로 wait --timeout 1 실행 → front_app 조회가 4초 소요 → 최종 관측 t=1004에서도 유휴 조건 충족 → deadline=1001을 넘겼지만 go 반환. deadline 검사는 이 성공 분기 아래에 있다.",
+      "fix": "준비·잠금 대기 이후에도 마감을 검사하고, 남은 예산을 준비 작업에 반영한다. 준비가 마감을 넘기는 시나리오를 가짜 시계로 검증한다."
+    },
+    {
+      "severity": "major",
+      "file": "cysjavis-pack/bin/tests/mut_idle_gate.py",
+      "line": 94,
+      "problem": "검사하는 종료코드는 대상 도구가 아닌 상위 unittest 프로세스의 코드다. 대상 모듈의 로딩 오류나 하위 프로세스 예외도 unittest의 FAIL/ERROR로 포장되어 KILLED로 집계된다. 따라서 주석이 약속한 로딩 오류=CRASH 구분이 성립하지 않는다.",
+      "counterexample": "변이 사본에 SyntaxError가 생기면 run_gate는 종료코드 1과 출력 없음으로 돌아오고, assertEqual(rc, 0) 등이 FAIL을 만든다. load(MOD_PATH)를 호출하는 시험도 ERROR가 된다. 상위 결과는 rc=1이고 시험 이름도 있으므로 하네스는 CRASH 대신 KILLED를 출력한다. 기존 M2도 idle=None에서 t-last 예외를 일으키지만 같은 방식으로 KILLED가 된다.",
+      "fix": "변이 사본의 구문·로딩 실패를 별도로 식별하고, 하위 실행의 예외·시간 초과 정보를 상위 판정에 전달한다. 정상적인 계약 위반 검출과 실행 불능을 구분하는 하네스 자체 시험을 추가한다."
+    }
+  ],
+  "decision_dissent": "",
+  "missing": [
+    "요청에 따라 시험·뮤턴트를 실행하지 않았으므로 실제 통과 수와 실행 결과는 확인하지 않았다.",
+    "맥·윈 실기에서의 앱 표시명 전체 목록과 OS 입력 시계 동작은 실측하지 않았다."
+  ],
+  "revision": "66dfd324779c6c48a7d12c0c6212c5c1c9128b3a"
+}

@@ -100,3 +100,62 @@ macOS 는 **새로 만든 실행 파일의 첫 실행**에 정책 검사를 붙�
 - 다른 판끼리 비교할 땐 같은 시간대에 나란히 돌릴 것(주변 부하가 회차마다 7~27 로 흔들림).
 - 첫 실행 비용은 「경로(vnode)」 단위 — 같은 경로 덮어쓰기는 다시 안 느리지만, 파일을 지우고 새로 만들면(새 vnode) 다시 느리다. 그래서 헬퍼는 `open(path, "w")`(제자리 덮어쓰기)를 전제로 한다 — 호출측이 `os.replace`·삭제 후 생성으로 바꾸면 예열이 무효가 된다.
 - 반복기를 kill 할 때 시험 python 이 고아(ppid 1)로 남아 cys-dept 자식을 붙잡는다 — 끝에 `ps … | grep fk.` 로 내 고아 확인 후 pid 로만 종료(이번에 2건 정리).
+
+---
+
+# 2차 (master#ee9f8ce2 · 부하 주입 없음 · 커밋 c9ccfc026)
+
+## ② 같은 꼴 저장소 훑기
+
+- 방법(결정론): 시한 래퍼에 계측을 심은 스크래치 사본(`inst2/` · 저장소 무관)으로 **CI mac 팩 루프 151개 전부**를 1회 실행. 셸 `cys_timeout_run` ③ 폴백 + python `subprocess.run(timeout≤5)` 를 기록(경과·rc·실행 파일 나이). 판정 = 「나이 600초 미만 실행 파일의 **첫 호출**이 시한 ≤5초 안에서 0.25초 이상」. 한계: python `Popen.wait/communicate` 시한·Rust 쪽 시한은 계측 밖 · 사본에 `src/` 가 없어 Rust 소스를 읽는 시험 11개는 붉음(판정 대상 아님 · 호출 기록만 봄).
+- 1차에서 고친 5파일 = 첫 호출 느림 **0**(capgate 0/14 · refl 0/7 · role_authority 0/93 · role_authority_shell 1 = 의도된 M3 시한 초과 시험).
+
+| 시험 | 시한 | 첫 호출 느림 / 새 실행 파일 | 고치기 전 붉음(5회) | 고친 뒤 붉음(5회) |
+|---|---|---|---|---|
+| test_inject_context_role_seat | 2s(sh) | 20/20 | **2/5** | **0/5** |
+| test_role_authority_triage | 2s(sh) | 1/1 | 0/5 | 0/5 |
+| test_resource_gate_product_cpu | ps 1.5s · cys 5s(py) | 10/12 | 0/5 (훑기 1회에서 `test_9b_hung_lookup` 실붉음 = 「ps timeout 1.5 s」가 「deadline 3.0 s」보다 먼저) | 0/5 |
+| test_dept_name_guard | 3s(py) | 8/9 | 0/5 | 1/5 ※ |
+| test_dept_team_token | 3s(py) | 3/14(최대 2.55s) | 0/5 | 0/5 |
+| test_team_create_u16 | 3s(py) | 10/10(1건 3.00s 시한 종료) | 0/5 | 0/5 |
+| test_dept_create_progress | 3s(py) | 44/44 | 0/5 | 0/5 |
+| test_teamtoken_hook | 3s(sh · CYS_PY 래퍼 pylog) | 4/30(1건 3.12s rc 124) | 0/5 | 0/5 |
+| test_core_inject | 5s(sh) | 10/10 | 0/5 | 0/5 |
+| test_event_inject | 5s(sh) | 1/1 | 0/5 | 0/5 |
+| test_resource_gate_boot_anchor | 5s(py) | 1/1 | 0/5 | 0/5 |
+| test_session_start_hook | 5s(sh) | 37/38 | **1/5** | **0/5** |
+| test_session_start_r31 | 5s(sh) | 11/55 | 0/5 | 0/5 |
+| test_dept_request | 5s(py) | 1/35 | 0/5 | 0/5 |
+
+- ※ dept_name_guard 고친 뒤 1/5 = `test_create_spawn_loser_preserves_live_winner`(경쟁 스폰 승자 응답 대기 · load 18.2). 제 `_write_exec` 예열은 경쟁 시작 **전** 준비 단계에서만 불린다. 그 시험 묶음(PostSpawnRegistryFailure)만 단독 20회: 고치기 전 0/20 · 고친 뒤 0/20 → **미재현 · 원인 이름 안 붙임**(📌).
+- 3~5초 시한 시험은 5회에서 고치기 전 붉음이 거의 없다 — 첫 실행 0.3~2.5초가 시한 안에 대부분 들기 때문. 고침의 근거는 붉음 횟수가 아니라 계측(첫 호출이 시한의 최대 85%까지 씀 · 시한 종료 2건 관측)이다.
+- 제외: test_preflight_fresh_full_json 의 해당 스텁은 **제품 preflight(C82)가 스스로 만든다** → 시험 고침 대상 아님(0.61s / 5s · 기록만). owner_desk 의 3건 = 의도된 「느린 데몬」(sleep 1) 갈래.
+- 고침 모양 = 1차와 같은 `prime_exec`(각 파일 자기완결 사본) · 붙인 자리 = 각 파일의 스텁 작성 함수(`_write_exec`·`_exe`·`w(mode&0o111)`) 또는 스텁 쓰기 직전 · event_inject 는 시스템 명령 대역 22개 전부(시험당 ≈+20s).
+- 뮤턴트(고친 사본에 제품 결함): `_lib.sh` 해소기 조회 생략 → inject_context_role_seat 9건 붉음 · role_authority_triage `T3g` 붉음 / session-start `CYS_NO_AUTOSTART` 제거 → session_start_hook `18b` 붉음 / cys-dept 생존 판정 무력화 → dept_create_progress 붉음(dept_name_guard 는 이 결함의 대상 시험이 아님 = 초록).
+- 정적: 14파일 py_compile OK · secret-scan clean · pyseal_census OK.
+
+## ① test_phoenix_c6_reap — 사실만
+
+- dea2e1853 빌드물(`cys-1116-integ/target/debug`)을 새 파일로 복사(차가움) vs 복사 후 `--version` 1회(데움)로 각 1~2회: **둘 다 같은 자리**(`queue.parked` 관측 `until` 8초 창)에서 붉음 · daemon_ready True · 잔재 0 → **첫 실행 탓 아님**. 원인 추적 = 조각 5 좌석 몫(여기선 안 함).
+- 함정: 저장소 루트가 `/tmp/…` 면 `aliased_harness_root` 로 죽는다 → `/private/tmp/…` 로.
+
+## ③ 제품 영향(코드 고침 0 · master#64fd3812 결정 = A안 → debt-d 이관 · B안 안 함)
+
+- 새로 복사한 바이너리 첫 실행: integ 빌드 cys 중앙값 1.51s 최대 2.96s · cysd 2.26~2.44s / 설치본(서명) 사본 cys 1.30s 최대 2.29s · cysd 1.57s / 재실행 0.005~0.016s.
+- 격리 데몬 + 역할 `cso-p3probe` 좌석 + 낡은 `CYS_ROLE=master`: 해소기(2s) 차가움 20회 중 **1회 env 폴백(master)** · 데움 20/20 데몬 권위 / capgate 훅 차가움 20/20 거부 유지(지연 +1.3~1.5s). 실사용 `cys list` 시험 좌석 0 · 잔재 프로세스 0.
+
+## ④ 동반 3종 N=20
+
+- 고친 판: refl_inject 20/20 · role_authority 20/20 · owner_desk 20/20 초록(유효 회차 기준 — 아래 사고 1회 제외 후 1회 추가).
+
+## 2차 사고·함정
+
+- 05:00 훑기 재시작 때 내 `rm -rf /tmp/fk.*` 가 ④ owner_desk 3회차의 임시 폴더를 지움(FileNotFoundError) → 무효 처리 · 1회 추가. 공용 접두 glob 삭제 금지 — 반복기마다 고유 접두(`fk.`·`ng1.`·`c6r.`·`p3.`)를 쓰고 자기 것만 지울 것.
+- 첫 계측 사본은 셸 `'…'` 안에 파이썬 `repr` 의 홑따옴표가 들어가 래퍼가 SyntaxError(전 호출 rc 1) → 훑기 1회분 버리고 다시. 셸 홑따옴표 안 코드에 넣는 문자열은 큰따옴표로.
+- zsh 에서 `$F`(여러 줄) = 한 인자 → `${=F}`.
+
+## 📌 (2차)
+
+1. dept_name_guard `test_create_spawn_loser_preserves_live_winner` 전체 파일 실행 중 1회 붉음(load 18.2) · 단독 묶음 40회 미재현 — 부하 때 경쟁 시험의 시간 여유 문제일 수 있음(추정 · 미측정).
+2. python `Popen.wait/communicate` 시한·Rust 시험 쪽 스텁은 이번 계측 밖 — 같은 꼴이 남았을 수 있음.
+3. 제품 preflight C82 가 만드는 cys 스텁도 첫 실행 비용을 시한 안에서 치른다(0.61s/5s · 여유 큼).

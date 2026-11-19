@@ -13,6 +13,9 @@
 | 484cc63ad | E · 범주 3 | codex 1R 범주 3 지적 13줄(주석·doc 주석·시험 describe 이름) |
 | dd08b345a | 추가 ① | d1·name_guard 경쟁 승자 픽스처 — 리눅스 = 이름이 cysd 인 셸 스크립트(ubuntu-26.04 uutils) |
 | 06e3990f6 | 추가 ③ 고침(master#1519072c) | windows-health: S2 바로 앞 미리 빌드 스텝(`cargo test --bin cysd --no-run` · S2 와 같은 env · 시한 12분) + 핀 시험 1 |
+| 575ced14f | 게이트 env | 임시 뿌리 실경로(pwd -P) · CI 단계 PATH 첫 python3 = brew · cargo jobs 기본 4 · WARN 기준 = 시작 상태 |
+| b1b7024c7 | codex 1R 처분 | BLOCK 1 · MAJOR 6 → 고침 6 · 좁힘 1(아래 표) |
+| a181e5217 | codex 1R #4 배선 | ci_step 이 CI 시한(스텝·잡 timeout-minutes)을 넘기면 FAIL-CI-TIMEOUT |
 
 원작자 파일(데몬 handlers.rs·state.rs 등) 변경 = 0. 바뀐 운영 코드 줄 = 0(E 의 .rs·.ts·Cargo.toml·config.toml 은 주석만 · main.ts 는 함수 안 주석 3줄).
 
@@ -86,10 +89,36 @@
 - 시험: test_ci_branch_cysd_step 39/39(새 핀 `test_prebuild_step_immediately_precedes_s2_with_the_same_env` · 뮤턴트 3/3 붉음 = 순서 · env 하나 뺌 · `--bin cys`) · test_c8_ci_consumer 19/19 · test_release_windows_help_gate 11/11 · test_release_trigger_split 17/17(게이트 venv) · test_phoenix_host_gate_lane 8/8 · lane-parity-rehearsal --strict rc 0 · 팩 시험 test_win_dept_spawn·test_hook_launcher_split·test_pyseal_census·test_runtime_manifest_parity 초록.
 - ⚠윈도 실측 없음 — 실제로 S2 안 컴파일 0 인지는 다음 windows-health 런의 S2 로그 「Finished … in 0.xs」 로 판정(해소 판정: S2 스텝 안 `Compiling cys-terminal` 0줄).
 
+## codex 1R(01:3x · effort high · 판정문 = 스크래치 codex-r1.md · VERDICT: BLOCK) 처분
+
+| # | 심각도 | 지적 | 처분 | 근거 |
+|---|---|---|---|---|
+| 1 | BLOCK | pubcand.sh 빈 제외 목록 = H 전체 공개 · PUB_NO_RECHECK rc 0 | 고침 | 빈 목록 rc 2 · 생략 rc 4 · 자기 검체 2줄 |
+| 2 | MAJOR | 외부 recheck 가 push·gh 를 부를 수 있음 | 좁힘 | recheck 자식 env = git pushInsteadOf 5갈래(→ 없는 전송기) + PATH 앞 가짜 gh rc 97 · 실측: 로컬 경로·https 원격 push 「aborted」 · 읽기 정상 · 검체 = 원격 ref 0 · 뮤턴트(env 제거) = leak ref 생김 → BAD · 한계: 자식이 GIT_CONFIG_* 를 덮으면 못 막음 |
+| 3 | MAJOR | ci_pack_steps `run: >` 조용히 누락 | 고침 | `|`·`|-`·한 줄 밖 블록 스칼라 = exit 3 · 음성 대조 |
+| 4 | MAJOR | CI timeout-minutes·defaults 미보존 | 고침 | defaults: = exit 3 · 생성물 `# ci-timeout-secs:` → 게이트 FAIL-CI-TIMEOUT(잡 시한은 느슨한 쪽 · 현재 스텝 시한 0 · 잡 시한 4개 1800/2400) |
+| 5 | MAJOR | S2 미리 빌드가 같은 러너임을 고정 안 함 · Compiling 0 미측정 | 고침 + 📌 | 핀에 같은 잡 단언 · 뮤턴트(S2 를 새 잡으로) 붉음 · Compiling 0 = 다음 windows-health 로그 |
+| 6 | MAJOR | 움직이는 --extra-ref 로 섞인 표 | 고침 | pin_refs = 시작에서 전체 OID 고정 · 시험 + 뮤턴트 붉음 |
+| 7 | MAJOR | 두 표 비원자 쓰기 | 고침 | 임시 파일 둘 다 쓴 뒤 os.replace · 둘째 쓰기 실패 주입 시험 + 뮤턴트 붉음 |
+| — | (논쟁점) | 리눅스 승자 픽스처 | 지적 없음 | codex: d1·name_guard 가 양성(산 cysd)·음성(산 sleep) 둘 다 잰다 |
+
+- 「올리지 않은 것」 없음(7건 전부 위 표). codex 2R(수렴 확인) = **master 대기열**(11-20 공지 master#dbc57581 · 06:29 리셋 전 호출 금지).
+
+## 게이트 결과(이 맥 · 로컬 · CI 아님)
+
+| 회차 | 범위 | 결과 | 붉은 것 판독 |
+|---|---|---|---|
+| g1 23:51~01:28(load 20~37) | gen·build·ci 13·unreg 22·scripts 26·ui-test | 붉음 7 | 게이트 결손 2(Apple python → pyseal UNMEASURED 로 맥·우분투 루프 정지 · /tmp 별칭 → seat_revival aliased_harness_root) → 575ced14f · 시간 문턱 4(L1295 ps 1.5s · L1337 · phoenix c6_reap S5 · health H-LIFE-1·2·H-OBS-3) · 기준선 2(H-CLT-1·2) |
+| g2 01:30~02:25(load 5~10) | ci 13·unreg 22 | 붉음 3 | L1295·L1337·phoenix·H-LIFE·H-OBS = **부하 낮을 때 초록**(운영 공지 ② 대조) · health 붉음 = H-CLT-1·2 뿐(기준선) · L996·L2091 = test_capgate_hook_shell 간헐로 루프 정지(아래) · unreg 21/21 초록 + agora 건너뜀 |
+| g3 02:30~03:16(load 6~7) | L996·L2091 재실행 | L996 **초록**(맥 루프 151 시험 끝까지 · capgate 통과) · L2091 붉음 1 | 우분투 루프가 test_role_authority_shell 「A env master / rc2」 에서 정지 — 단독 6회 중 1회 붉음(다른 갈래 「30-second backoff expires」) · 이 가지 변경 0 = 기준선 간헐 · 그 뒤 미실행 시험은 전부 맥 루프에도 있고 g3 L996 에서 초록 |
+
+- scripts/tests 26 전부 초록(g1) · ui bun 3835/0(g1) · build rc 0 · gen-ceo·gen-hashes OK · pubcand·ci_pack_steps 자기 검체 OK.
+- ⚠**test_capgate_hook_shell 간헐(기준선 · 이 가지 변경 0)**: 단독 파일 실행 6회 중 2회 붉음(Apple 3.9 1/3 · brew 3.14 1/3) · 매번 다른 시험(stale_cache_is_requeried · role_query_never_spawns_a_daemon · colliding_socket_slugs… · cache_lives_in_the_shared_0700_directory) · 같은 훅·시험 파일 dea2e1853 대비 diff 0 · CI(rc2 우분투)에서는 초록. 맥·우분투 두 루프 모두 이 시험에서 멈추면 뒤 시험이 안 돈다 → 📌 별도 티켓.
+
 ## 시험 숫자(전후)
 
 - 기준선(dea2e1853 계열): 11-19 cifix 증거 레인 = mac 팩 스텝 rc 0(1452s) · ubuntu 팩 스텝 rc 0(1432s) · 그 전 판에서 r34 시한 행 간헐 붉음(위 C).
-- 이 가지: 로컬 게이트(`GATE_ONLY='^(gen-|build$|ci-|unreg-|pubcand-|script-|ui-test$)'`) 결과 = 아래 「게이트 결과」 칸(완주 뒤 채움).
+- 이 가지: 위 「게이트 결과」 표(g1·g2·g3) · 새 붉음 0(붉음은 전부 게이트 env 결손 → 고침 · 부하 시간 문턱 → 부하 낮을 때 초록 · 기준선 H-CLT-1·2 · 기준선 간헐 2개) · 화면 bun 3835/0 · scripts 26/26 · 생성기·도구 자기 검체 OK.
 
 ## 📌 덧붙임(실행 안 함 · 판단 = master)
 
@@ -98,7 +127,9 @@
 3. 범주 3 에서 안 고친 것(기능 줄·팩 지침): cysjavis-pack/agents.json:3·8 · MASTER_DIRECTIVE.md:462 · WORKER_DIRECTIVE.md:258 · skills/appbuild-plan-debate·computer-control SKILL.md — 팩 지침은 별도 커밋 + 합성기 + doc-contract 규약 · 내용 공개 여부는 제품 판단.
 4. 같은 꼴 남은 자리(주석·문자열 · 처분표 밖이라 안 고침): src/bin/cys.rs:31486(주석)·31564(assert 문구) 의 docs/1115/CLI-STACK-PROBE 경로 · ui/src/drainverify.test.ts:156·192 의 운영자 서사 · ui/src/grouptabs.ts·grouptabs.test.ts 의 pillar-width-rule 지시서 이름 · windows-health.yml 의 rqfix_f10 · seatkeep-knob-on-tests.sh:2 의 master# 표식.
 5. 다음 공개 후보 목록에 docs/integ-1116/ci_pack_steps.py · pubcand.sh 추가(pubcand.sh 가 rc 2 로 요구함).
-6. gate-1116.sh 의 ci_step WARN 은 게이트 시작 전부터 있던 미추적 파일도 「변화」로 센다(이번엔 WORKER_TODO 1개) — 시작 시 상태와 비교하도록 다듬을 여지.
+6. (처리됨 575ced14f) ci_step WARN 기준 = 게이트 시작 상태.
+7. test_capgate_hook_shell · test_role_authority_shell 로컬 간헐(위 · 각 단독 6회 중 2·1회 붉음 · 이 가지 변경 0) — 시간 의존 원인 규명 티켓. 루프가 첫 붉음에서 멈춰 뒤 시험이 가려지는 것은 CI 루프 설계 그대로다.
+8. pubcand 를 제외 목록(blocklist) 대신 B 기반 공개 허용 목록으로(codex 1R 조언 · 설계 변경 = 제품 판단).
 
 ## 함정·재현
 

@@ -191,3 +191,30 @@
 ### 남은 것·📌
 - codex 2R = master 대기열(범위에 3cbd96ba4·daf04f88e·7b894549c 추가).
 - 게이트 전체 실행(로컬 CI 단계)은 이번에 안 돌림(바뀐 것 = 게이트 도구 2개·r34 시험 1개 · 각각 단독 실측).
+
+## 델타 3 — codex 2R(0172b7138 · BLOCK) master 처분 집행(master#2384546d · 11-20 07:1x~07:2x)
+
+판정문 = `~/axdev/master/reports/verify/codex-1120/debtu-r2.md`(blocking 2 · major 6). master 처분 = 보안 적정선 세 물음(실제 입력인가 · 바깥으로 가는가 · 못 되돌리는가) · 검토 왕복은 이번으로 끝(codex 3R 없음).
+
+| codex # | 처분 | 커밋 | 내용 | 시험 |
+|---|---|---|---|---|
+| blocking 2(B2) 공개판 = 로컬 추적 ref | 고침 | d57e312b6 | B 확인 = `git ls-remote --heads --tags origin`(읽기만) 끝 중 하나에서 닿는가 · 로컬 refs/remotes 불신 · 원격 읽기 실패 rc 2 | 검체: 로컬 refs/remotes/origin/* 를 HEAD 로 오염 + PUB_BASE=HEAD → rc 2 · 원격 주소 깨짐 → rc 2 · 뮤턴트 2/2(로컬 ref 판정 복원 = rc 0 붉음 · ls-remote 실패 삼킴 붉음) · 실데이터(원격 = 공개 저장소 실제 읽기): B=270e3e21e → C 트리 27045f27 그대로 · B=c75e0714a(내부) → rc 2 |
+| major 4(M2) 지킴 폴더 경로 자체 | 고침 | d57e312b6 | `docs/integ-1116` 이 블롭·심볼릭·gitlink 로 바뀐 경우도 잡음 · 글자 그대로 비교(정규식 아님) | 검체: 블롭(본 경로) · 심볼릭(--derive-allow) → rc 2 · 뮤턴트(접두만) 2 BAD |
+| major 5(M3) PyYAML 대조 선택 | 고침 | 09ff211ea | PyYAML 없음 = exit 3 + 준비 안내 1줄 · 게이트는 venv 없으면 /usr/bin/python3 로 내려가지 않고 ABORT + 준비 명령 | 검체 음성 10(PyYAML 없는 기계 모사 +1) · /usr/bin/python3 = rc 3 · 게이트 DRY(venv 없음 모사) = ABORT · 뮤턴트 붉음 |
+| major 8(M5) 두 표 비원자 | 고침 | a59a55faf | 원본 .gen-bak 사본 → 차례로 rename → 실패 시 바꾼 표 되돌림(둘 다 원상 · exit 2) | 둘째 os.replace 실패 주입 시험 +1 · 9/9 · 옛 생성기 ERROR(붉음) |
+| blocking 1(B1) 최장 접두 우회 | 한계 문서 | — | 아래 「알려진 한계」 ① | — |
+| major 3(M1) PUB_WITHHELD_OUT 쓰기 | 한계 문서 | — | ② | — |
+| major 6(M4) 잡 수준 env 표류 | 한계 문서 | — | ③ | — |
+| major 7 r34 오라클 완전성 | 한계 문서 | — | ④ | — |
+
+### 알려진 한계(고치지 않음 · master 처분)
+1. **push 차단의 최장 접두 우회(codex B1)**: 기계 설정에 `url.<실제 주소>.pushInsteadOf=pubcand-no-push://` 꼴이나, 명령줄 주소에 걸리는 더 긴 사용자 pushInsteadOf 가 있으면 recheck 자식의 push 가 실제 원격에 닿을 수 있다. 실제 입력 아님 — 이 기계 `git config --show-origin --get-regexp '^url\.|pushurl'`(local·global·system) = 0건(11-20 07:22 실측). 그런 설정을 둔 기계에서 쓰기 전에 같은 명령으로 확인할 것.
+2. **PUB_WITHHELD_OUT(codex M1)**: 운영자가 주는 환경값 경로에 그대로 쓴다(관문 1 전). 운영자 자신이 고르는 값이라 바깥 입력이 아니다 — 저장소 안(`.git/` 등)을 가리키지 말 것.
+3. **ci_pack_steps 잡 수준 env 표류(codex M4)**: 줄 파서가 못 읽는 꼴의 잡 env(흐름 꼴 `env: {K: v}` 등)는 PyYAML 대조(스텝 수·표지 수)에 비치지 않는다 → 생성물이 CI 와 다른 env 로 돌 수 있다. 다음 판에서 env·시한 의미까지 PyYAML 로 대조.
+4. **r34 시한 오라클 완전성(codex major 7)**: 판정 = sleep 인자 순서 + 30s 자식이 끝나기 전에 돌아옴. sleep 밖의 30s 미만 대기(`/bin/sleep 5` 절대 경로 · 파일 시스템 막힘 · CPU)는 잡지 못하고, 부하로 런처가 30s 넘게 걸리면 거짓 붉음. 수용 기준(×2 회귀 붉음) 충족으로 갈음(master 처분).
+
+### 정정
+- 델타 2 의 pubcand 자기 검체 「24 ok(전 17)」 → 실제 **23 ok**(0172b7138 에서 다시 셈) · 이번 판 26 ok.
+
+### 시험(이 델타)
+- pubcand --self-test 26 ok · ci_pack_steps --self-test(venv) 음성 10 · test_gen_released_hashes_extra_ref 9/9 · 생성기 --check OK · 게이트 DRY rc 0 · 뮤턴트 6/6 붉음(B2 2 · M2 1 · M3 1 · M5 = 옛 생성기 1 · 위 표).

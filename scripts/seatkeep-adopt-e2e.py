@@ -15,6 +15,8 @@ TICKET=cysr-1116-seatkeep-1119 · 설계 = docs/seatkeep/T4-DESIGN.md · 합격 
 import json, os, re, shutil, signal, subprocess, sys, time
 
 BIN, MODE, ROUNDS = sys.argv[1], sys.argv[2], int(sys.argv[3])
+# 폭주 모드(A5 · 조종자 없는 동안 역압): SKA_PAD = 줄마다 덧붙일 바이트 · SKA_GAP_MS = 줄 사이 · SKA_LINES = read-screen 줄 수
+PAD, GAP_MS, LINES = int(os.environ.get("SKA_PAD", "0")), os.environ.get("SKA_GAP_MS", "50"), os.environ.get("SKA_LINES", "200")
 OUT = sys.argv[4] if len(sys.argv) > 4 else None
 assert MODE in ("adopt", "bound", "direct"), MODE
 R = f"/private/tmp/ska-{MODE[:3]}-{os.getpid() % 10000}"
@@ -31,6 +33,7 @@ open(SEAT, "w").write(r'''#!/usr/bin/python3 -I
 import os, select, signal, sys, time
 log = open(sys.argv[1], "a", buffering=1)
 gap = float(sys.argv[2]) / 1000
+pad = "x" * int(sys.argv[3]) if len(sys.argv) > 3 else ""
 log.write(f"START pid={os.getpid()} ppid={os.getppid()} t={time.time():.3f}\n")
 def die(s, _):
     log.write(f"SIGNAL {s} t={time.time():.3f}\n"); os._exit(128 + s)
@@ -40,7 +43,7 @@ n = 0
 buf = b""
 while True:
     n += 1
-    os.write(1, f"SEQ {n:08d}\r\n".encode())
+    os.write(1, f"SEQ {n:08d} {pad}\r\n".encode())
     log.write(f"S {n} {time.time():.4f}\n")
     r, _, _ = select.select([0], [], [], gap)
     if r:
@@ -118,7 +121,7 @@ d, ms = start_daemon("0")
 for rnd in range(ROUNDS):
     log = f"{R}/logs/s{rnd}.log"
     role = f"seat{rnd}"
-    x = cys("new-surface", "--cwd", "/private/tmp", "--role", role, "--cmd", f"{SEAT} {log} 50")
+    x = cys("new-surface", "--cwd", "/private/tmp", "--role", role, "--cmd", f"{SEAT} {log} {GAP_MS} {PAD}")
     sid = x.stdout.strip()
     if x.returncode != 0 or not sid:
         raise SystemExit(f"new-surface 실패 rc {x.returncode}: {x.stderr[:300]}")
@@ -131,10 +134,12 @@ for rnd in range(ROUNDS):
     produced_before = {s[0]: sum(1 for l in seat_lines(s[3]) if l.startswith("S ")) for s in seats}
     # ── 강제 종료 ──
     killed = d.pid
+    t_kill = time.time()
     os.kill(killed, signal.SIGKILL)
     d.wait()
     time.sleep(1.0)  # 데몬 없는 1초 — 좌석은 계속 출력(입양 모드 = seatkeep 꼬리에 쌓임)
     alive_gap = {s[0]: alive(s[2]) for s in seats}
+    t_restart = time.time()
     d, back_ms = start_daemon(str(rnd + 1))
     time.sleep(1.5)
     rec = {"mode": MODE, "round": rnd, "killed_daemon": killed, "new_daemon": d.pid, "daemon_back_ms": back_ms, "seats": []}
@@ -143,7 +148,9 @@ for rnd in range(ROUNDS):
         lines = seat_lines(s_log)
         ends = [l for l in lines if l.startswith(("SIGNAL", "EOF"))]
         nums = [int(l.split()[1]) for l in lines if l.startswith("S ")]
-        r = cys("read-screen", "--surface", s_ref, "--lines", "200")
+        r = cys("read-screen", "--surface", s_ref, "--lines", LINES)
+        # 데몬 없는 동안 좌석이 낸 줄 수(입양 모드 + 폭주 = 꼬리 크기 근처에서 역압으로 멈춰야 한다)
+        gap_lines = sum(1 for l in lines if l.startswith("S ") and t_kill <= float(l.split()[2]) < t_restart)
         seqs = [int(v) for v in re.findall(r"SEQ (\d{8})", r.stdout)]
         tag = f"hi{rnd}x{s_ref.split(':')[-1]}"
         snd = cys("send", "--surface", s_ref, tag)
@@ -166,6 +173,7 @@ for rnd in range(ROUNDS):
             "seq_missing": len(set(range(min(seqs), max(seqs) + 1)) - set(seqs)) if seqs else None,
             "seq_dups": len(seqs) - len(set(seqs)),
             "produced_before_kill": produced_before[s_ref], "produced_now": max(nums) if nums else 0,
+            "gap_lines": gap_lines, "line_bytes": len(f"SEQ 00000000 {'x' * PAD}") + 2,
             "send_rc": (snd.returncode, sk.returncode), "input_logged": got_in, "echo_on_screen": got_echo,
         })
     ks = keepers()

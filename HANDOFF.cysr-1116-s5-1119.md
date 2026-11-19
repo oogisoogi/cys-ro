@@ -280,7 +280,14 @@
 - 팩: javis_phoenix 를 읽는 시험 15개(test_agy_door·test_awaken_enter·test_agy_door_phoenix_loop·test_default_fleet_formation·test_dept_teardown_atomicity·test_dept_b11_lock·test_dept_tick_stdin·test_import_guard·test_pyseal_census·test_sandbox_state_isolation·test_seat_folders·test_seat_revival·test_v116_phoenix_midrun_tomb·test_v115_dept·test_phoenix_r4_restore) **전부 rc 0**(격리 env) · run_bootstrap_health = 13-4.
 - 화면·tsc·e2e: 이 델타에서 ts 변경 0(앞 340·0 · rc 0 그대로).
 
-### 13-4. 전체 시험(대기 — 아래 채움)
+### 13-4. 전체 시험
+- cysd 전체(58b3fbbd8 빌드 · 06:49~07:05 · 부하 8~13) = **3338 · 1 붉음 · 17** — 붉음 = `send_settle_tests::b16_fix::b16fix_human_refuse_event_carries_request_id_of_response`(b16_fix_tests.rs:211 `!atomic_enter_written` · 대화창 300ms 뒤 그림 vs Enter ≈400ms 시한형 · 파일 변경 0 · 앞 두 전체 실행에선 초록) → 단독 3회(부하 6.8) **3/3 초록** ⇒ 실패 0 상당(3339 = 앞 3338 + 새 시험 1).
+- run_bootstrap_health(팩 boot-health 검체 · 격리 env): 이 가지 1회차 165 PASS · 4 FAIL —
+  ① **H-SECRET-1 = 내 증거 스크립트 개인 경로**(mut_p1_ts.py 절대 경로 2곳) → 고침(c219b27e4 · 파일 위치 기준 · 증거 글 화면 줄 사용자@호스트 가림 · f1 결과 JSON 은 커밋 안 함) → `--only H-SECRET-1` **PASS** · `scripts/secret-scan.sh --all` clean(2213 파일)
+  ② B-2 test_bootstrap_chain 300초 시한(bh 와 v5 실물·cysd 전체가 겹친 시간) → 단독 **ALL PASS**(143초)
+  ③ H-CLT-1·H-CLT-2(맥 CLT/동봉 python 해소) → **기준 dea2e1853 같은 틀 = 같은 둘 FAIL**(167 PASS · 2 FAIL) = 호스트 환경 · 기준선 같음
+  ⇒ 이 가지 = 기준과 같음(167 + 2 환경).
+- ⚠ **이력 객체 개인 문자열**: 0442fe4e5·6a02f2d0a·00bc7131d·58b3fbbd8 의 `docs/ui-p2/evidence/s5/real-daemon-s5b.txt`(화면 줄 사용자@호스트 1곳) · 6a02f2d0a·00bc7131d·58b3fbbd8 의 `mut_p1_ts.py`(사용자 이름 든 절대 경로 2곳) — 머리에서는 지웠으나 **이력에 남음**(지우는 커밋은 공개를 못 줄임) → 공개 미러로 가기 전 이력 정리(스쿼시·재작성) = master 결정.
 
 ### 13-5. 원작자 파일 바뀐 줄(이 델타)
 - state.rs +6(시계 비움 · 뮤턴트 분기 cfg!(test) 값 1) · governance.rs +16/−1(`_if` 변형 · watchdog 호출 1곳) · handlers.rs +49/−1(시험 +47 · 내 시험 2건 고유 폴더) · javis_phoenix.py +42(행 칸 3 · `HUMAN_QUIET_SECS` · `seat_human_input_hold` · 회수 전 보류 · 보류 표기) · test_phoenix_r4_restore.py +31.

@@ -14,6 +14,9 @@
 | 7966e3d3f | 기록 없는 산 seatkeep 미결 · T4-DESIGN.md · e2e A5/A16 |
 | 4b3a9dccb | e2e 폭주 모드 |
 | 01b2f57ae | codex T4 1R BLOCK 처분(차단 3·주요 5·경미 1) — 아래 표 |
+| 43eab104a | HANDOFF 첫판 |
+| df024d83b | e2e 전사 겹침(transcripts.db)·조종자 없는 동안 출력 상한 판정 — 뮤턴트 M3·M5·M7 을 잡게 |
+| 0ed8c5611 | codex T4 2R BLOCK 처분(차단 1·주요 5) — 아래 표 |
 
 ## codex T4 1R(판정 BLOCK · 4b3a9dccb · 판정문 `~/axdev/master/reviews/codex-1116-seatkeep/t4.r1.verdict.md` · 의뢰문 `t4.r1.prompt.md`) 처분
 | # | 지적 | 처분(01b2f57ae) | 시험 |
@@ -28,6 +31,29 @@
 | 주요8 | 크기 흔들기 = 300ms 타이머 | 재생 전부 소비 직후 1회 | e2e(화면 반영) |
 | 경미 | 입양 끔 경로 로그 문구 바뀜 | 원복 | — |
 
+## codex T4 2R(판정 BLOCK · df024d83b · 판정문 `t4.r2.verdict.md` · 1R 상태 = 닫힘 4(차단1·차단2·주요5·경미) · 부분 5) 처분(0ed8c5611)
+| 지적 | 처분 |
+|---|---|
+| 차단: 산 pid + 출생 시각 다름 + 등록부 없음/오류 = 죽음 → 산 좌석 파일 삭제 | 지금 그 pid 실행 파일이 cys-seatkeep 이 **아니라는** 양성 증거(proc_pidpath)일 때만 죽음 · 그 밖 미결(start_mismatch_live) · 단위 표 3×3 |
+| 주요: PROCESSED 가 읽기 스레드에서 막히는 소켓 쓰기 · 노브 끔 좌석에도 | 입양 연결만(report_processed) · 읽기 얼굴 = 최신값 덮어쓰기 · 좌석마다 송신 스레드(최신값만) · 노브 끔 = 프레임·잠금 0 |
+| 주요: DSR 꼬리 덮어씀 | 이전 꼬리 + 화면 전용 조각 → 마지막 3바이트 |
+| 주요: 흔들기가 마지막 재생 조각 처리보다 먼저 | 그 조각의 화면·파서·전사 뒤 |
+| 주요: .exit 미검증 삭제·중복 | id 확인 · 못 읽음/해석 실패/id 다름 = 무삭제 미결 · 발행 뒤 `.exit.consumed` 표식 → 정리(적어도 한 번 · skid 멱등 키) |
+| 주요: reopen PkConflict 뒤 입양 계속 | 입양 실패(예약) · 등록 실패 = 붙은 연결 끊기(`SeatLink::detach`) · 단위 `numbers_reopen_variants` |
+- codex 3R(2R 처분 확인 · 범위 df024d83b..HEAD) = 【측정 중】 · 판정문 `t4.r3.verdict.md`.
+
+## 뮤턴트(분리 작업트리 `/private/tmp/skmut1119` · 한 줄씩 → 빌드 → e2e → git checkout · 러너 = scratchpad `mut.py` · 결과 `e2e/mutants*.out`)
+| 뮤턴트 | 바꾼 줄 | e2e | 결과 |
+|---|---|---|---|
+| M1 | seatkeep 인자 늘 --controller-bound | adopt | 붉음(좌석 죽음) |
+| M2 | adopt_on_boot 늘 반환 | adopt | 붉음(목록 없음 · 정리 뒤 좌석 남음) |
+| M3 | 화면 전용 재생 끔 | adopt | 처음 초록 → 전사 겹침 판정 추가 뒤 붉음(같은 SEQ 7건) |
+| M4 | surface_create_blocked 늘 None | reserve | 붉음(같은 역할 rc 0) |
+| M5 | 조종자 없는 동안 역압 끔 | adopt 폭주(60KB 줄) | 처음 초록(4KB 줄은 꼬리를 못 넘김) → 60KB·상한 판정 뒤 붉음(끊긴 동안 112줄 = 6.7MB) |
+| M7 | PROCESSED 안 보냄 | adopt | 처음 초록 → 전사 겹침 판정 뒤 붉음(7건) |
+| M6 | adopt_connect 실행 파일 검사 끔 | — | **시험 없음**(가짜 서버 흉내 시험대 미작성 · reserve 는 seatkeep 쪽 검사가 먼저 막아 가르지 못함) |
+- 뮤턴트는 0ed8c5611(2R 처분) **전** 코드에 대해 돌림 — 2R 처분 뒤 재실행 = 남은 것.
+
 ## 시험
 - seatkeep 단위: 49/49(기준선 49 · 고침 전·후 모두).
 - seat_adopt 단위: 8/8(+ record_start_mismatch 단언).
@@ -37,13 +63,17 @@
   - 폭주(4KB 줄·1ms): 끊긴 동안 118~137줄에서 역압 정지 · 재부착 뒤 3000줄 순번 빠짐 0·겹침 0 · A16 교체 줄 3/3 · 입양 전 RPC 0
   - 처분 뒤(01b2f57ae 직전 빌드): adopt 3회 교체 6/6 · 폭주 2회 3/3 · reserve · exitaway 통과
 - cysd 전체(노브 끔 · d32b1c7eb · 스레드 4 · load 20~38): 3330 통과 · 7 실패 · 17 무시 — 소스 핀 1(내 변경 · 01b2f57ae 에서 고침) · seatkeep 핸드셰이크 3초 시한 3 · 10초 시한 1 · PoisonError 2. 시한 계열 = 부하 낮을 때 단독 재실행 대조 필요(공지 a651807e).
-- 01b2f57ae 전체 재실행·기준선 dea2e1853 전체(분리 작업트리 `/private/tmp/skbase1119`) = 【측정 중】.
+- cysd 전체(01b2f57ae · load 높음 · 2066초): 3327 통과 · 15 실패 · 17 무시 — boot_supervisor c6c·h5 5 · channels c6b·h3 6 · seatkeep 핸드셰이크 4 (전부 시한·전달 계수). **두 실행의 실패 22개 이름 + 같은 접두 = 37개를 부하 6 에서 단독 재실행 = 37/37 통과**(`tests/head2-rerun.out`).
+- 기준선 dea2e1853 전체(분리 작업트리 `/private/tmp/skbase1119`) → 이어서 HEAD 전체(낮은 부하) = 【측정 중】(`tests/base-cysd.out` · `tests/head3-cysd.out`).
+- 2R 처분 뒤(0ed8c5611): seat_adopt 9/9 · e2e adopt 2회(교체 3/3 · 전사 겹침 0 · 출력 상한 OK) · reserve · exitaway 통과.
+- 관측(기존 동작 추정 · 원인 미확인): cysd SIGKILL 마다 전사(transcripts.db)에서 좌석당 SEQ 약 3줄 빠짐(폭주 시험은 0) — PROCESSED 는 「파서·전사 대기열에 넣음」까지라 전사 쓰기 스레드가 디스크에 쓰기 전 줄은 잃는다고 봄(직접 PTY 의 SIGKILL 도 같은 대기열을 잃음).
 
 ## 남은 것(T4) · 다음 첫 행동
-1. 전체 시험 결과 → 실패 이름을 기준선과 대조(사유 전문) · 시한 계열 단독 재실행.
+0. codex 3R 판정 받기 → 닫힘이면 【확인요청】 T4 · 아니면 처분.
+1. 기준선·HEAD 전체 시험 결과 → 실패 이름을 기준선과 대조(사유 전문) · 시한 계열 단독 재실행.
 2. 노브 켬 스크립트 `SEATKEEP_TEST_THREADS=1 scripts/seatkeep-knob-on-tests.sh accounts::` · `seat_proc::` · 입양 켬 상태 cysd 시험(CYS_SEATKEEP_ADOPT=1 붙인 같은 스크립트).
 3. CI 팩 단계(`.github/workflows/ci-branch.yml` · 떼어 둔 스크립트 `~/axdev/.wt/cys-1116-integ-cifix-evidence/step-mac.sh`) 1회.
-4. 뮤턴트(e2e 가 잡는가): ①인자 --adoptable→--controller-bound ②adopt_on_boot no-op ③screen_only 끔(겹침) ④surface_create_blocked None ⑤adoptable 무역압(READ_BUF) ⑥adopt_connect 실행 파일 검사 끔 ⑦PROCESSED 안 보냄.
+4. 뮤턴트 2R 처분 뒤 재실행(`python3 -I <scratchpad>/mut.py` · 작업트리 /private/tmp/skmut1119 를 HEAD 로 `git -C … checkout --detach <HEAD>` 뒤) · M6 시험대(가짜 소켓 서버) 작성.
 5. codex 2R(BLOCK 처분 확인 · 범위 4b3a9dccb..HEAD) → 【확인요청】 T4.
 6. 그다음 T5(아래).
 

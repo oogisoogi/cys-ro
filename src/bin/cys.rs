@@ -5154,8 +5154,28 @@ fn task_user_id(
 /// cysd 작업 스케줄러 태스크 XML. LogonTrigger(현재 사용자) + RestartOnFailure(PT1M×10) +
 /// ★ExecutionTimeLimit PT0S(무제한 — 기본 72h 제한이 장수 데몬을 죽인다) + IgnoreNew(중복 인스턴스 억제) +
 /// 배터리 제약 해제 + StartWhenAvailable + LeastPrivilege(=schtasks /RL LIMITED 대응).
+/// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · [master#1a7e7b90] ①): RunLevel 두 값·보존 판정·schtasks 해독 = lib 한 곳(`cys::update::win_task`).
+/// `daemon install` 이 다시 등록할 때 **사용자가 정해 둔 RunLevel 을 보존**한다 — 종전엔 rotate·설치기가 부를 때마다 XML 을
+/// LeastPrivilege 로 `/F` 덮어 박사님 규칙(10-27 「cysr 은 항상 관리자 모드」 = 작업 Highest)을 되돌렸다(11-09 1.1.14 설치 뒤 재부팅 =
+/// 데몬 Medium 실측).
+use cys::update::win_task::{
+    decode_schtasks_xml, run_level_to_keep as task_run_level_to_keep, RUN_LEVEL_HIGHEST as TASK_RUN_LEVEL_HIGHEST,
+};
+
+/// 기존 작업이 이미 같은 데몬을 가리키고 RunLevel 을 보존해야 하면 다시 등록하지 않는다 — Highest 작업의 재등록은 관리자 권한이
+/// 필요해 일반 창의 rotate 를 「작업 등록 실패」로 죽인다. 순수.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn task_reregister_needed(existing_xml: Option<&str>, escaped_daemon: &str) -> bool {
+    match existing_xml {
+        Some(x) if task_run_level_to_keep(Some(x)) == TASK_RUN_LEVEL_HIGHEST => {
+            !x.contains(&format!("<Command>{escaped_daemon}</Command>"))
+        }
+        _ => true,
+    }
+}
+
 #[cfg(windows)]
-fn cysd_task_xml(daemon: &std::path::Path, user_id: &str) -> String {
+fn cysd_task_xml_at(daemon: &std::path::Path, user_id: &str, run_level: &str) -> String {
     let cmd = xml_escape(&daemon.display().to_string());
     let uid = xml_escape(user_id);
     format!(
@@ -5174,7 +5194,7 @@ fn cysd_task_xml(daemon: &std::path::Path, user_id: &str) -> String {
     <Principal id="Author">
       <UserId>{uid}</UserId>
       <LogonType>InteractiveToken</LogonType>
-      <RunLevel>LeastPrivilege</RunLevel>
+      <RunLevel>{run_level}</RunLevel>
     </Principal>
   </Principals>
   <Settings>
@@ -5501,6 +5521,39 @@ fn poll_socket_ready() -> Option<ConnStream> {
     None
 }
 
+/// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · [master#df5b0a33] → 정정 [master#1a7e7b90]): 윈 기본 소켓 데몬은 **작업 스케줄러
+/// cysd 작업으로 먼저** 띄운다 — 그래야 데몬(그리고 그 아래 좌석 셸·에이전트) 무결성이 사용자가 정해 둔 작업 RunLevel 과 같다
+/// (박사님 규칙 10-27 「cysr 은 항상 관리자 모드」 = 작업 Highest · 기본 설치 = LeastPrivilege). 종전 = 이 CLI 토큰으로 형제 cysd 를
+/// 직접 띄웠다 → 관리자로 돈 설치기의 rotate 는 High · 일반 창의 rotate 는 Medium 으로 갈렸다(11-19 23:28 윈 실기). 작업이 없거나
+/// 답하지 않으면 종전대로 직접 띄운다(그때 갈림은 `cys doctor` 가 경고 1줄 · `daemon_integrity_check`). 부서·격리 소켓 = 작업 없음 · 종전대로.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+enum WinAutostartRoute {
+    /// 종전 — 형제 cysd 를 이 프로세스 토큰으로 직접 띄운다.
+    Sibling,
+    /// 작업 스케줄러 cysd 작업을 먼저 · 안 되면 직접.
+    TaskThenSibling,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn win_autostart_route(base_lane: bool) -> WinAutostartRoute {
+    if base_lane {
+        WinAutostartRoute::TaskThenSibling
+    } else {
+        WinAutostartRoute::Sibling
+    }
+}
+
+/// 작업 스케줄러 cysd 작업을 실행(`schtasks /Run /TN cysd`) — 등록된 Principal(LeastPrivilege · 이 사용자)로 뜬다.
+#[cfg(windows)]
+fn win_run_cysd_task() -> bool {
+    cys::hidden_command("schtasks")
+        .args(["/Run", "/TN", "cysd"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// 온보딩④: 연결 실패 시 형제 cysd를 자동 기동 후 재시도 — 신규 머신 zero-setup.
 /// 옵트아웃: CYS_NO_AUTOSTART=1. (데몬 중복 기동은 cysd 자체의 flock이 차단)
 /// autostart 자격(절대경로·unix SUN_LEN·부서 팩 env 역검사)을 위임/스폰 전에 검사한다.
@@ -5582,6 +5635,17 @@ fn connect() -> Result<ConnStream, String> {
             let Some(daemon) = sibling_daemon_path() else {
                 return Err(format!("{first} (no sibling cysd to autostart)"));
             };
+            #[cfg(windows)]
+            {
+                if win_autostart_route(lane == AutostartLane::Base) == WinAutostartRoute::TaskThenSibling && win_run_cysd_task() {
+                    eprintln!("[cys] cysd not running — 작업 스케줄러 cysd 작업으로 기동했다(무결성 = 작업 RunLevel)");
+                    // 작업 기동은 형제 기동보다 느릴 수 있다 — 4초 두 번까지 본다.
+                    if let Some(s) = poll_socket_ready().or_else(poll_socket_ready) {
+                        return Ok(s);
+                    }
+                    eprintln!("[cys] 작업 스케줄러 cysd 작업이 8초 안에 답하지 않음 — 형제 cysd 를 직접 띄운다(무결성이 작업과 갈릴 수 있다 · cys doctor)");
+                }
+            }
             eprintln!("[cys] cysd not running — autostarting {}", daemon.display());
             if spawn_detached_daemon(&daemon).is_err() {
                 return Err(first);
@@ -11764,6 +11828,55 @@ fn diag_pack_drift(ctx: &DoctorCtx) -> DiagItem {
 }
 
 fn run_doctor_diagnostics(ctx: &DoctorCtx, fix: bool) -> Vec<DiagItem> {
+    #[allow(unused_mut)]
+    let mut items = run_doctor_diagnostics_common(ctx, fix);
+    // ★1.1.16(TICKET=cysr-1116-debt-d-1119 ②): 윈 전용 행 — 맥·리눅스 요약 수(판정 못 함 포함)는 바뀌지 않는다.
+    #[cfg(windows)]
+    items.push(diag_daemon_integrity(ctx));
+    items
+}
+
+/// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · [master#1a7e7b90] ②): 돌고 있는 데몬의 토큰 상승 여부가 작업 스케줄러 cysd 작업 RunLevel 과
+/// 갈리면 경고 1줄(박사님 규칙 「cysr 은 항상 관리자 모드」 = 작업 Highest 인데 데몬 Medium · 또는 그 반대). 읽기 전용 · 순수 판정.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn daemon_integrity_item(task_xml: Option<&str>, daemon_elevated: Option<bool>) -> DiagItem {
+    let name = "daemon-integrity";
+    let item = |status, detail: String, action: &str| DiagItem { name, status, detail, action: action.into() };
+    let Some(x) = task_xml else {
+        return item(DiagStatus::Skip, "작업 스케줄러 cysd 작업 없음 또는 판독 불가 — 대조하지 않았다".into(), "");
+    };
+    let Some(el) = daemon_elevated else {
+        return item(DiagStatus::Skip, "데몬이 토큰 상승 여부를 답하지 않았다(꺼져 있거나 옛 데몬) — 대조하지 않았다".into(), "");
+    };
+    let task_high = task_run_level_to_keep(Some(x)) == TASK_RUN_LEVEL_HIGHEST;
+    let (want, got) = (if task_high { "관리자(Highest)" } else { "사용자(Limited)" }, if el { "관리자" } else { "사용자" });
+    if task_high == el {
+        item(DiagStatus::Ok, format!("데몬 권한 = 작업 RunLevel 과 같음({want})"), "")
+    } else {
+        item(
+            DiagStatus::Warn,
+            format!("데몬 권한이 작업 RunLevel 과 다름 — 작업 {want} · 데몬 {got}(데몬을 작업 밖에서 띄운 자국)"),
+            "cysr 앱의 [재시작] 또는 `cys rotate` — 새 데몬은 작업 스케줄러 cysd 작업으로 뜬다",
+        )
+    }
+}
+
+#[cfg(windows)]
+fn diag_daemon_integrity(ctx: &DoctorCtx) -> DiagItem {
+    let task = cys::hidden_command("schtasks")
+        .args(["/Query", "/TN", "cysd", "/XML"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| decode_schtasks_xml(&o.stdout));
+    // request_on = 그 소켓에만 연결(자동 기동 없음) · 못 붙으면 None(판정 못 함).
+    let elevated = request_on(&ctx.socket_path, "system.identify", json!({}))
+        .ok()
+        .and_then(|v| v["token_elevated"].as_bool());
+    daemon_integrity_item(task.as_deref(), elevated)
+}
+
+fn run_doctor_diagnostics_common(ctx: &DoctorCtx, fix: bool) -> Vec<DiagItem> {
     vec![
         diag_pack_version(ctx),
         diag_pack_state(ctx),
@@ -21272,7 +21385,19 @@ fn run_daemon_cmd(action: DaemonAction) -> i32 {
                     //   되살렸든 새 세대면 성공)로 확증돼 정합.
                     let user = current_user_id()
                         .ok_or("현재 사용자(whoami/USERNAME) 확인 실패 — 태스크 XML principal 생성 불가")?;
-                    let xml = cysd_task_xml(&daemon, &user);
+                    // ★1.1.16(TICKET=cysr-1116-debt-d-1119 ①): 기존 작업의 RunLevel 보존(task_run_level_to_keep 머리 주석).
+                    let existing = cys::hidden_command("schtasks")
+                        .args(["/Query", "/TN", TASK, "/XML"])
+                        .output()
+                        .ok()
+                        .filter(|o| o.status.success())
+                        .map(|o| decode_schtasks_xml(&o.stdout));
+                    let run_level = task_run_level_to_keep(existing.as_deref());
+                    if !task_reregister_needed(existing.as_deref(), &xml_escape(&daemon.display().to_string())) {
+                        println!("작업 스케줄러 cysd 작업이 이미 이 데몬을 가리킨다 — RunLevel {run_level} 그대로 둔다(다시 등록하지 않음).");
+                        return Ok(());
+                    }
+                    let xml = cysd_task_xml_at(&daemon, &user, run_level);
                     let xml_path = std::env::temp_dir().join("cysd-task.xml");
                     write_utf16le_bom(&xml_path, &xml).map_err(|e| format!("태스크 XML 기록 실패: {e}"))?;
                     let out = cys::hidden_command("schtasks")
@@ -31759,6 +31884,63 @@ mod tests {
     }
 
     /// ④ rotate 종료코드 표 — 중단 코드가 아닌 둘(21 · 25)의 우선순위.
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · [master#1a7e7b90] ②): 윈 기본 소켓 데몬 = 작업 경유(무결성 = 작업 RunLevel).
+    #[test]
+    fn debt_d_base_autostart_goes_through_the_scheduled_task() {
+        assert_eq!(win_autostart_route(true), WinAutostartRoute::TaskThenSibling);
+        assert_eq!(win_autostart_route(false), WinAutostartRoute::Sibling, "부서·격리 = 작업 없음 · 종전대로");
+        // 배선 핀: 자동 기동 본체가 작업 경유를 형제 기동 **앞**에서 시도한다.
+        let src = include_str!("cys.rs");
+        let body = &src[src.find("fn connect() -> Result<ConnStream, String> {").unwrap()..];
+        let body = &body[..body.find("\n#[cfg(unix)]\ntype ConnStream").unwrap()];
+        let route = body.find("win_autostart_route(lane == AutostartLane::Base) == WinAutostartRoute::TaskThenSibling && win_run_cysd_task()").expect("윈 갈래 배선");
+        let spawn = body.find("spawn_detached_daemon(&daemon)").unwrap();
+        assert!(route < spawn);
+    }
+
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · [master#1a7e7b90] ①): daemon install 은 사용자가 정한 Highest 를 되돌리지 않는다.
+    #[test]
+    fn debt_d_daemon_install_keeps_the_owner_run_level() {
+        let hi = "<Principal><RunLevel>HighestAvailable</RunLevel></Principal><Exec><Command>C:\\a\\cysd.exe</Command></Exec>";
+        let lo = "<Principal><RunLevel>LeastPrivilege</RunLevel></Principal><Exec><Command>C:\\a\\cysd.exe</Command></Exec>";
+        assert_eq!(task_run_level_to_keep(Some(hi)), "HighestAvailable");
+        assert_eq!(task_run_level_to_keep(Some(lo)), "LeastPrivilege");
+        assert_eq!(task_run_level_to_keep(None), "LeastPrivilege", "새 설치 기본값 = 그대로");
+        assert!(!task_reregister_needed(Some(hi), "C:\\a\\cysd.exe"), "같은 데몬 + Highest = 다시 등록하지 않음");
+        assert!(task_reregister_needed(Some(hi), "C:\\b\\cysd.exe"), "다른 자리 = 다시 등록(Highest 로)");
+        assert!(task_reregister_needed(Some(lo), "C:\\a\\cysd.exe"), "종전 동작 유지");
+        assert!(task_reregister_needed(None, "C:\\a\\cysd.exe"));
+        // schtasks 출력 해독 = UTF-16LE(BOM 있음·없음) · UTF-8 모두.
+        let u16: Vec<u8> = "\u{feff}<RunLevel>HighestAvailable</RunLevel>".encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+        assert!(decode_schtasks_xml(&u16).contains("<RunLevel>HighestAvailable</RunLevel>"));
+        let u16b: Vec<u8> = "<RunLevel>HighestAvailable</RunLevel>".encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+        assert_eq!(task_run_level_to_keep(Some(&decode_schtasks_xml(&u16b))), "HighestAvailable");
+        assert_eq!(task_run_level_to_keep(Some(&decode_schtasks_xml(hi.as_bytes()))), "HighestAvailable");
+        // 배선 핀: 윈 install 갈래가 질의 → 보존 판정 → 그 값으로 XML 을 만든다(옛 고정 LeastPrivilege 리터럴 없음).
+        let src = include_str!("cys.rs");
+        let at = src.find("fn cysd_task_xml_at(").unwrap();
+        let tpl = &src[at..at + src[at..].find("\n}\n").unwrap()];
+        assert!(tpl.contains("<RunLevel>{run_level}</RunLevel>") && !tpl.contains("<RunLevel>LeastPrivilege</RunLevel>"));
+        let inst = &src[src.find("DaemonAction::Install { takeover: _ } => {\n                    let daemon = sibling_daemon_path()").unwrap()..];
+        let q = inst.find("let run_level = task_run_level_to_keep(existing.as_deref());").unwrap();
+        let mk = inst.find("let xml = cysd_task_xml_at(&daemon, &user, run_level);").unwrap();
+        assert!(q < mk);
+    }
+
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · [master#1a7e7b90] ②): 데몬 권한 ↔ 작업 RunLevel 갈림 = doctor 경고.
+    #[test]
+    fn debt_d_doctor_warns_when_daemon_integrity_differs_from_the_task() {
+        let hi = "<RunLevel>HighestAvailable</RunLevel>";
+        let lo = "<RunLevel>LeastPrivilege</RunLevel>";
+        assert!(matches!(daemon_integrity_item(Some(hi), Some(true)).status, DiagStatus::Ok));
+        assert!(matches!(daemon_integrity_item(Some(lo), Some(false)).status, DiagStatus::Ok));
+        assert!(matches!(daemon_integrity_item(Some(hi), Some(false)).status, DiagStatus::Warn), "규칙 위반 꼴(11-09)");
+        assert!(matches!(daemon_integrity_item(Some(lo), Some(true)).status, DiagStatus::Warn), "11-19 23:28 꼴");
+        assert!(matches!(daemon_integrity_item(None, Some(true)).status, DiagStatus::Skip));
+        assert!(matches!(daemon_integrity_item(Some(hi), None).status, DiagStatus::Skip));
+        assert_eq!(daemon_integrity_item(Some(hi), Some(false)).name, "daemon-integrity");
+    }
+
     #[test]
     fn rotate_rc_table() {
         assert_eq!(rotate_rc(None, true), 0);

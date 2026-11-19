@@ -114,13 +114,53 @@ fn xml_unescape(s: &str) -> String {
     s.replace("&quot;", "\"").replace("&apos;", "'").replace("&gt;", ">").replace("&lt;", "<").replace("&amp;", "&")
 }
 
+/// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · [master#1a7e7b90]): 작업 RunLevel 두 값 — 새 설치 기본 = LeastPrivilege(그대로 · 바꾸는 것은 박사님 결정).
+pub const RUN_LEVEL_LEAST: &str = "LeastPrivilege";
+pub const RUN_LEVEL_HIGHEST: &str = "HighestAvailable";
+
+/// 기존 작업 XML 이 HighestAvailable 이면 그 값 · 아니면 기본값(순수) — `cys daemon install` 이 사용자가 정해 둔 RunLevel 을 보존할 때 쓴다.
+pub fn run_level_to_keep(existing_xml: Option<&str>) -> &'static str {
+    match existing_xml {
+        Some(x) if x.contains("<RunLevel>HighestAvailable</RunLevel>") => RUN_LEVEL_HIGHEST,
+        _ => RUN_LEVEL_LEAST,
+    }
+}
+
+/// `schtasks /Query /XML` 출력 해독(순수) — UTF-16LE(NUL 섞임 · BOM 있음·없음)이면 UTF-16, 아니면 UTF-8 손실 허용.
+pub fn decode_schtasks_xml(raw: &[u8]) -> String {
+    let body = raw.strip_prefix(&[0xFF, 0xFE][..]).unwrap_or(raw);
+    if body.len() >= 2 && body.iter().skip(1).step_by(2).take(64).all(|&b| b == 0) {
+        let u: Vec<u16> = body.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        String::from_utf16_lossy(&u)
+    } else {
+        String::from_utf8_lossy(raw).into_owned()
+    }
+}
+
+/// ★1.1.16(같은 티켓 ③ J-UPD-03): 갱신 러너 작업의 RunLevel(순수). 「관리자 모드 기기(cysd 작업 = Highest) = 갱신도 관리자로」 —
+/// 관리자로 만든 갱신 폴더(txn.owner.json · 소유자 BA)를 일반 권한 러너가 못 읽어 unsafe 로 멈추던 막다른 길(11-19 윈 W2)을 없앤다.
+/// Highest 작업 등록은 관리자 토큰이 필요하므로 **등록하는 쪽이 상승 토큰일 때만** Highest · 아니면 종전 LeastPrivilege.
+pub fn runner_run_level(cysd_task_xml: Option<&str>, registrar_elevated: Option<bool>) -> &'static str {
+    if registrar_elevated == Some(true) && run_level_to_keep(cysd_task_xml) == RUN_LEVEL_HIGHEST {
+        RUN_LEVEL_HIGHEST
+    } else {
+        RUN_LEVEL_LEAST
+    }
+}
+
 /// 작업 정의 XML(순수). `logon_trigger` = 복구기(로그온 때 실행) · 아니면 트리거 없음(러너 = 등록 직후 Run).
 pub fn task_xml(command: &Path, args: &[&str], user_sid: &str, logon_trigger: bool) -> String {
+    task_xml_at(command, args, user_sid, logon_trigger, RUN_LEVEL_LEAST)
+}
+
+/// [`task_xml`] + RunLevel 지정(순수 · ★1.1.16 ③).
+pub fn task_xml_at(command: &Path, args: &[&str], user_sid: &str, logon_trigger: bool, run_level: &str) -> String {
+    let run_level = if run_level == RUN_LEVEL_HIGHEST { RUN_LEVEL_HIGHEST } else { RUN_LEVEL_LEAST };
     let trig = if logon_trigger { format!("<Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{}</UserId></LogonTrigger></Triggers>", xml_escape(user_sid)) } else { String::new() };
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\n<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\
 <RegistrationInfo><Description>cysr auto-update</Description></RegistrationInfo>{trig}\
-<Principals><Principal id=\"Author\"><UserId>{sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>\
+<Principals><Principal id=\"Author\"><UserId>{sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>{run_level}</RunLevel></Principal></Principals>\
 <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\
 <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT2H</ExecutionTimeLimit><Hidden>true</Hidden><Enabled>true</Enabled></Settings>\
 <Actions Context=\"Author\"><Exec><Command>{cmd}</Command><Arguments>{a}</Arguments></Exec></Actions></Task>",
@@ -391,6 +431,11 @@ pub enum Prior {
 /// ⑤ 뒤 거부 작업 지우기가 실패해도 복원은 시도한다(codex R3-01 — 지우기 실패가 복원 등록 불가를 뜻하지 않는다 · 복원 결과는 재독이 판정).
 /// 뮤턴트 `WT4` = 그때 복원 빼기.
 pub fn install<S: Sched>(s: &mut S, name: &str, runner: &Path, args: &[&str], me: &str, logon: bool) -> Result<(), String> {
+    install_at(s, name, runner, args, me, logon, RUN_LEVEL_LEAST)
+}
+
+/// [`install`] + RunLevel 지정(★1.1.16 ③ · [`runner_run_level`]).
+pub fn install_at<S: Sched>(s: &mut S, name: &str, runner: &Path, args: &[&str], me: &str, logon: bool, run_level: &str) -> Result<(), String> {
     let sddl = sddl_for(me);
     let prior = match s.read_task(name) {
         Err(e) if e.absent() => Prior::Absent,
@@ -410,7 +455,7 @@ pub fn install<S: Sched>(s: &mut S, name: &str, runner: &Path, args: &[&str], me
             Err(e) => return Err(format!("[{name}] 옛 작업 지우기 실패 — 옛 작업 그대로 · 등록 안 함: {e}")),
         }
     }
-    if let Err(e) = s.register(name, &task_xml(runner, args, me, logon), &sddl) {
+    if let Err(e) = s.register(name, &task_xml_at(runner, args, me, logon, run_level), &sddl) {
         return Err(format!("{e}{}", restore(s, name, &prior, &sddl)));
     }
     if let Err(r) = s.verify(name) {
@@ -772,7 +817,15 @@ mod com {
         let svc = service()?;
         let folder = our_folder(dir, &svc, true, &sddl)?;
         // ★codex R2: 옛 작업 지우기·등록·재독·복원 = [`install`](오류 종류 구분 · 유효한 옛 작업 복원 — 가짜 Sched 로 모든 기판에서 시험).
-        install(&mut ComSched { dir, folder: &folder, runner, args, logon }, name, runner, args, &me, logon)?;
+        // ★1.1.16(TICKET=cysr-1116-debt-d-1119 ③): 관리자 모드 기기(cysd 작업 Highest) + 상승 토큰 등록 = 러너도 Highest.
+        let cysd_xml = crate::hidden_command("schtasks")
+            .args(["/Query", "/TN", "cysd", "/XML"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| decode_schtasks_xml(&o.stdout));
+        let level = runner_run_level(cysd_xml.as_deref(), crate::process_token_elevated());
+        install_at(&mut ComSched { dir, folder: &folder, runner, args, logon }, name, runner, args, &me, logon, level)?;
         if run_now {
             let task = get_task(&folder, name)?;
             let mut rt: Raw = std::ptr::null_mut();
@@ -791,6 +844,23 @@ mod tests {
     use super::*;
 
     /// §7-1 「작업 정의 재독 구조 대조(인자 공백·따옴표·역슬래시 사례)」.
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · [master#1a7e7b90] ③): 관리자 모드 기기 = 갱신 러너도 Highest(등록자 상승일 때만).
+    #[test]
+    fn debt_d_runner_run_level_follows_the_admin_mode_cysd_task() {
+        let hi = "<Principal><RunLevel>HighestAvailable</RunLevel></Principal>";
+        let lo = "<Principal><RunLevel>LeastPrivilege</RunLevel></Principal>";
+        assert_eq!(runner_run_level(Some(hi), Some(true)), RUN_LEVEL_HIGHEST);
+        assert_eq!(runner_run_level(Some(hi), Some(false)), RUN_LEVEL_LEAST, "일반 토큰은 Highest 작업을 못 만든다 = 종전");
+        assert_eq!(runner_run_level(Some(hi), None), RUN_LEVEL_LEAST);
+        assert_eq!(runner_run_level(Some(lo), Some(true)), RUN_LEVEL_LEAST, "기본 설치 기기 = 종전");
+        assert_eq!(runner_run_level(None, Some(true)), RUN_LEVEL_LEAST);
+        let x = task_xml_at(Path::new("C:/r/cys.exe"), &["self-update"], "S-1-5-21-1", false, RUN_LEVEL_HIGHEST);
+        assert!(x.contains("<RunLevel>HighestAvailable</RunLevel>"));
+        assert!(task_xml(Path::new("C:/r/cys.exe"), &["self-update"], "S-1-5-21-1", false).contains("<RunLevel>LeastPrivilege</RunLevel>"));
+        assert!(task_xml_at(Path::new("C:/r/cys.exe"), &[], "S", false, "<x>").contains("<RunLevel>LeastPrivilege</RunLevel>"), "모르는 값 = 기본");
+        assert_eq!(parse_task_xml(&x).map(|d| d.logon_type), Some("InteractiveToken".to_string()));
+    }
+
     #[test]
     fn args_roundtrip_through_windows_rules() {
         let cases: Vec<Vec<&str>> = vec![
@@ -982,7 +1052,8 @@ mod tests {
         assert!(com.find("TASK_CREATE_OR_UPDATE, empty()").is_none(), "RegisterTask 에 상수 6 직접 전달 금지");
         com.find("hr_e(f(folder.0, bn.0, bx.0, register_flags(), empty(), empty(), TASK_LOGON_INTERACTIVE_TOKEN").expect("RegisterTask 인자 = register_flags()");
         let rv = &com[com.find("pub fn register_and_verify(").unwrap()..];
-        let inst = rv.find("install(&mut ComSched {").expect("윈 등록 = install 경유");
+        // ★1.1.16(TICKET=cysr-1116-debt-d-1119 ③): RunLevel 을 넘기는 install_at 경유(install = install_at(.., LeastPrivilege)).
+        let inst = rv.find("install_at(&mut ComSched {").expect("윈 등록 = install(_at) 경유");
         assert!(inst < rv.find("if run_now").unwrap(), "install 뒤에만 Run");
         assert!(!rv[..inst].contains("register_in(") && !rv[..inst].contains("delete"), "install 앞에서 직접 지우기·등록 금지");
         assert!(!com.contains("let _ = delete(dir, name)"), "지우기 결과 버리기 금지(R2-01)");

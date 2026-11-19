@@ -505,6 +505,45 @@ impl_spawn_policy!(tokio::process::Command);
 /// ⚠대상이 아닌 것: 사용자 콘솔을 물려받아야 하는 전경 자식(`cys run` = `ConsoleScoped`)·
 /// 분리 자식(`Survivor`·`GroupScoped`)은 이 헬퍼가 아니라 `spawn_policy` 로 등급을 직접 적는다.
 /// 이 헬퍼 밖의 `Command::new` 는 `spawn_policy_tests::raw_command_new_census_is_frozen` 이 센다.
+/// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · [master#1a7e7b90] ②): 이 프로세스 토큰이 상승(UAC 관리자)인가 — 윈 `TokenElevation`.
+/// 데몬이 `system.identify` 에 싣고 `cys doctor` 가 작업 스케줄러 cysd 작업 RunLevel 과 대조한다. 윈 밖·판독 실패 = None.
+pub fn process_token_elevated() -> Option<bool> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+        use windows_sys::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+        let mut tok: HANDLE = std::ptr::null_mut();
+        // SAFETY: 의사 핸들 · tok 은 성공 시 닫아야 하는 토큰 핸들.
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut tok) } == 0 {
+            return None;
+        }
+        let mut e = TOKEN_ELEVATION { TokenIsElevated: 0 };
+        let mut need = 0u32;
+        // SAFETY: e 는 TOKEN_ELEVATION 크기의 쓰기 가능한 버퍼.
+        let ok = unsafe {
+            GetTokenInformation(
+                tok,
+                TokenElevation,
+                &mut e as *mut TOKEN_ELEVATION as _,
+                std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+                &mut need,
+            )
+        };
+        // SAFETY: OpenProcessToken 이 준 핸들.
+        unsafe { CloseHandle(tok) };
+        if ok == 0 {
+            None
+        } else {
+            Some(e.TokenIsElevated != 0)
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> std::process::Command {
     let mut cmd = std::process::Command::new(program);
     cmd.spawn_policy(ChildLifetime::Attached);

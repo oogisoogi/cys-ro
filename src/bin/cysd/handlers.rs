@@ -7185,6 +7185,8 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                     "version": env!("CARGO_PKG_VERSION"),
                     // ★1.1.8 U2 2판(codex 1R C9): 사후 검증 V1 이 **돌고 있는 데몬**의 빌드를 독립 관측한다(가산 키).
                     "build_id": cys::pack::build_id(),
+                    // ★1.1.16(TICKET=cysr-1116-debt-d-1119 ②): 데몬 토큰 상승 여부(윈 · 그 밖 null) — doctor 가 작업 RunLevel 과 대조(가산 키).
+                    "token_elevated": cys::process_token_elevated(),
                     "started_at": daemon.started_at,
                     "latest_seq": daemon.bus.latest_seq(),
                     "surface_count": daemon.surfaces.lock().unwrap().len(),

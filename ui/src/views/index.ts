@@ -15,6 +15,8 @@ import { Registry } from "./registry";
 export interface BootDeps {
   invoke(cmd: string, args?: Record<string, unknown>): Promise<unknown>;
   working(row: Record<string, unknown>): boolean;
+  /** (cysr-1116-s2 · P2-DESIGN §2-3 ㉢) 작업 화면이 보이게 된 직후(전환·물러남·시작) — main.ts 가 미룬 좌석 런타임을 만든다. */
+  onWorkShown?(): void;
 }
 
 const MIN_CHAT = { confirms: "[data-min=confirms]", lastSendStep: "[data-min=lastSendStep]", masterHealth: "[data-min=masterHealth]", errors: "[data-min=errors]", switcher: "shared" } as const;
@@ -25,6 +27,21 @@ const store: Store = {
   set: (k, v) => localStorage.setItem(k, v),
   remove: (k) => localStorage.removeItem(k),
 };
+
+/**
+ * (cysr-1116-s2 · P2-DESIGN §2-3 ㉢) 좌석 터미널 런타임(xterm·출력 흐름)을 **지금** 만들어도 되는가 = 작업 화면이 보이거나 보일 차례인가.
+ * 시작 값 = 고른 화면(pickView)이 작업 화면인가(대화 화면을 고른 기기는 시작 복원부터 런타임을 미룬다 · §9-4 「대화 화면만 쓴 새 설치 = 출력 흐름 0」) ·
+ * 그 뒤 = 작업 화면 어댑터의 mount/unmount 가 바꾼다. 공통층이 없는 옛 index.html(bootViews 가 null) = 늘 참(종전 그대로).
+ */
+let runtimeWanted = true;
+export function workRuntimeWanted(): boolean {
+  return runtimeWanted;
+}
+
+/** (cysr-1116-s2 · integ I3·S4-3) main.ts onDaemonEvent 머리 배선 1줄 — 공통층이 안 떴으면(옛 index.html) 아무것도 안 함. */
+export function viewsIngest(ev: unknown, hqSlug: string | null): void {
+  booted?.core.ingest(ev, hqSlug);
+}
 
 /** 이미 돈 적 있으면 같은 것을 돌려준다(시작 경로가 두 번 불려도 단추·고리 한 벌). */
 let booted: { core: ChatCore; registry: Registry<ChatState, ChatCore> } | null = null;
@@ -42,26 +59,22 @@ export function bootViews(deps: BootDeps): { core: ChatCore; registry: Registry<
     clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
     store,
     working: deps.working,
-    // (조각 3) 데몬 사건 구독 — main.ts 를 건드리지 않고 같은 Tauri 전역을 쓴다(core 가 대화 화면이 켜졌을 때만 부름 · 작업 화면 invoke 0 유지).
-    listen: (name, handler) => (window as unknown as { __TAURI__: { event: { listen(n: string, h: (e: { payload: unknown }) => void): Promise<() => void> } } }).__TAURI__.event.listen(name, handler),
-    // (조각 4) 대화 화면이 켜져 있을 때만 core 가 부른다 — 작업 화면만 쓰면 구독 0(동작 변화 0). (통합 1116) 조각 3 listen 과 이름이 겹쳐 listenDaemon.
-    listenDaemon: (fn) => {
-      const ev = (window as unknown as { __TAURI__?: { event?: { listen?: (n: string, h: (e: { payload: unknown }) => void) => Promise<() => void> } } }).__TAURI__?.event;
-      if (!ev?.listen) return () => {};
-      let off: (() => void) | null = null;
-      let dead = false;
-      void ev
-        .listen("daemon-event", (e) => fn(e.payload))
-        .then((u) => (dead ? u() : (off = u)))
-        .catch(() => {});
-      return () => {
-        dead = true;
-        off?.();
-      };
-    },
+    // (cysr-1116-s2 · integ I3·S4-3) 데몬 사건은 main.ts 의 하나뿐인 daemon-event 구독이 viewsIngest(아래) 로 넘긴다 —
+    //   종전 조각 3 `listen` · 조각 4 `listenDaemon` 두 구독과 `defaultSlug`(default_socket_slug 재조회)는 걷었다(구독 1 · 조회 0 · 대화 화면이 꺼진 동안 온 사건도 장부가 받음).
     goView: (id) => void booted?.registry.choose(id),
-    defaultSlug: async () => String(await deps.invoke("default_socket_slug")),
   });
+  // 작업 화면이 **숨김 → 보임**으로 바뀔 때만 main.ts 를 부른다(작업 화면으로 시작하는 기동은 처음부터 참이라 부르지 않는다 = 종전 흐름 그대로 ·
+  //   대화 화면에 있던 동안 건너뛴 그리기와 미룬 런타임을 여기서 한 번에).
+  const workShown = () => {
+    const was = runtimeWanted;
+    runtimeWanted = true;
+    if (was) return;
+    try {
+      deps.onWorkShown?.();
+    } catch {
+      /* 런타임 만들기 실패는 그리기에서 끝난다 — 전환은 그대로 */
+    }
+  };
   const views: ViewDescriptor<ChatState, ChatCore>[] = [
     {
       id: "chat",
@@ -80,7 +93,7 @@ export function bootViews(deps: BootDeps): { core: ChatCore; registry: Registry<
       },
       load: async () => chatView,
     },
-    { id: "work", label: "작업 화면", order: 2, minimum: MIN_WORK, available: async () => ({ ok: true }), load: async () => workView<ChatState, ChatCore>(bodyRow, host), outsideHost: true },
+    { id: "work", label: "작업 화면", order: 2, minimum: MIN_WORK, available: async () => ({ ok: true }), load: async () => workView<ChatState, ChatCore>(bodyRow, host, { shown: workShown, hidden: () => void (runtimeWanted = false) }), outsideHost: true },
   ];
   const registry: Registry<ChatState, ChatCore> = new Registry<ChatState, ChatCore>(views, {
     host,
@@ -106,6 +119,7 @@ export function bootViews(deps: BootDeps): { core: ChatCore; registry: Registry<
     raw = null;
   }
   const first = pickView(raw, registry.ids());
+  runtimeWanted = first === "work"; // 대화 화면이 시작 화면이면 시작 복원부터 런타임을 미룬다(작업 화면이 뜨면 mount 가 참으로)
   booted = { core, registry };
   paintSwitch(switchHost, registry);
   void registry.start(first);

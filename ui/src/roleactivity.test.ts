@@ -18,6 +18,7 @@ import { SurfaceListTransport } from "./surfacelist";
 import { roleDotColor } from "./appearance";
 import { seatPriority, annotateRoles, tidyHoles } from "./seatlayout";
 import { advanceGhostStrikes } from "./wsreconcile";
+import { decideSockPre, decidePlaceholders, homeWsOf } from "./views/judge/tick"; // (cysr-1116-s2) 3초 고리 판정(실제 순수 함수)
 import { deptLiveRoles } from "./deptprogress";
 
 declare const Bun: { Transpiler: new (o: { loader: "ts" }) => { transformSync(code: string): string } };
@@ -264,7 +265,7 @@ interface FakeRt {
   termHost: { scrollTop: number };
   el: Record<string, never>;
 }
-const FNS = ["collectSids", "setRoleDot", "paintRoleDot", "paintUnknownSafely", "sweepRoleDots", "projectListArrival", "pumpRoleActivity", "onVisibilityReturn", "refreshPaneTitles"];
+const FNS = ["collectSids", "setRoleDot", "paintRoleDot", "paintUnknownSafely", "sweepRoleDots", "projectListArrival", "pumpRoleActivity", "onVisibilityReturn", "tickWsModel", "seatAttached", "refreshPaneTitles"];
 
 function harness() {
   const mono = { t: 50_000 };
@@ -324,6 +325,8 @@ function harness() {
     //    (활동 패스·바쁨 가드·단일 렌더러)과 무관한 우리 배선(B17 옛 자리 스윕 · 새 부서 감지 M7① · 자동 정렬 · 빈 자리표 회수 · 표시 번호 · 본부 판정 ·
     //    사이드바 사용량 패널)은 무동작. 제목 문안은 원작자 대역(paneTitle)과 같은 항등(행 title 그대로)으로 둔다.
     //    ★surfaceWorking = false: 우리 판 paintRoleDot 의 자기보고 폴백(관측 '모름' → 자기보고 작업 중)은 끈다 — 이 검체는 데몬 관측 투영만 본다.
+    // (cysr-1116-s2) 고리 분리 — 판정 = 실제 views/judge/tick.ts 순수 함수 · 미룬 런타임 = 없음(늘 작업 화면 = 종전 흐름 그대로) · tickWsModel·seatAttached = 실제 main.ts 함수(같은 범위에서 연다)
+    decideSockPre, decidePlaceholders, homeWsOf, workRuntimeWanted: () => true, deferSeatRuntime: nothing, deferredRuntimes: new Map<string, unknown>(), ensureSeatRuntimes: async () => {}, DEFERRED_PER_TICK: 4,
     tickRec: null, // (cysr-ui-slice0) 3초 고리 특성 기록기 = 꺼짐(기본) — 배선은 전부 `tickRec?.` 라 무평가
     exitedSweepArm: null, sweepScopeFor: () => null, exitedSweepTargets: () => [], settleSweep: (a: unknown) => a,
     openNewlyRegisteredDepts: async () => false, rememberRoles: nothing, arrangeWs: nothing,

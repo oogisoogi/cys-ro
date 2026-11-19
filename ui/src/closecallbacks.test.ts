@@ -100,6 +100,7 @@ function harness(workspaces = [ws(1, SOURCE, [42])]) {
     // ★1.1.11 편입: 우리 판 자유 변수 — 배치(arrangeWs)·닫기 확인(actionClose)·종료 표식(destroyPaneRuntime).
     autoArrange, arrangeWithoutRoles, currentDefaultLeftShare: () => 0.25,
     CLOSE_CONFIRM_POLICY, CLOSE_CONFIRM_TEXT, needsCloseConfirm, closeConfirmBody,
+    deferredRuntimes: new Map<string, unknown>(), // (cysr-1116-s2) destroyPaneRuntime 이 미룬 런타임 장부도 비운다(빈 장부 = 종전 그대로)
     exitedPaneKeys: new Set<string>(), ccOpen: false, setCcOpen: (_open: boolean) => {},
     // (948 D1·D2·D3) 탭 없는 장면 = 보이는 좌석 = 트리 좌석(1.1.14) · 탭에서 만든 좌석 기억 · 끝난 좌석 묶음 기록(이 검체의 축 밖)
     seatVisible: (w: Any, sid: number) => { const out: number[] = []; const v = (n: Any): void => { if (!n) return; if (n.type === "pane") out.push(n.sid); else { v(n.a); v(n.b); } }; v(w.tree); return out.includes(sid); },

@@ -324,7 +324,8 @@ import { nextFollow, shouldShowFoldHint, FOLD_HINT_TITLE, FOLD_HINT_BODY } from 
 import { shouldClosePlaceholder } from "./placeholderclose";
 import { placeholderScreenLines } from "./placeholderclose";
 import { TICKREC_KEY, tickRecFromSwitch, defaultTickRecSalt, type TickRecorder } from "./views/tickrec"; // (cysr-ui-slice0) 3초 고리 특성 기록기 — 기본 꺼짐
-import { bootViews } from "./views/index"; // (cysr-ui-slice1) 「대화 화면 | 작업 화면」 공통층 입구 — 배선만
+import { bootViews, viewsIngest, workRuntimeWanted } from "./views/index"; // (cysr-ui-slice1) 「대화 화면 | 작업 화면」 공통층 입구 — 배선만 · (cysr-1116-s2) 사건 단일 입구 · 런타임 미룸 판정
+import { decideSockPre, decidePlaceholders, homeWsOf, type TickWs } from "./views/judge/tick"; // (cysr-1116-s2) 3초 고리 판정 = 순수 함수(P2-DESIGN §2-1)
 import { queueDropNotice } from "./queuedropnotice";
 import { queueExpiredItem, queueExpiredNotice, type QueueExpiredItem } from "./queueexpirednotice";
 import {
@@ -3775,6 +3776,85 @@ function releaseFlightWhenSettled(key: string, p: Promise<unknown>): void {
 }
 // ★(0.14.41 · U18) 좌석 작업 폴더 막힘 — 이미 알린 좌석(scope|role|path). 판정·문구는 folderaccess.ts.
 let cwdBlockedSeen: ReadonlySet<string> = new Set<string>();
+// ── (cysr-1116-s2 · P2-DESIGN §2-1 ㉠ · §2-3 ㉢) 고리 분리 보조 — 판정 입력(모형 사본) · 미룬 좌석 런타임 장부 ─────────────────────
+/** 판정 입력용 작업공간 모형 사본(트리 = 번호 목록 · 소켓 열쇠 = paneKey 와 같은 꼴 `socket ?? ""`). */
+function tickWsModel(): TickWs[] {
+  return workspaces.map((w) => ({ id: w.id, sock: w.socket ?? "", pending: !!w.pending, deleting: !!w.deleting, sids: collectSids(w.tree) }));
+}
+/**
+ * 런타임을 미룬 좌석(모형 = 트리에는 붙었고 xterm·attach_surface·출력 흐름은 아직) — 키 = paneKey.
+ * 대화 화면에서 입양·시작 복원·빈 탭 충전한 좌석이 여기 든다. 작업 화면이 보이면 ensureSeatRuntimes 가 만든다(보이는 탭 = 즉시 · 나머지 = 한 틱 4개).
+ * 지우는 곳 = 런타임을 만든 그 자리 · destroyPaneRuntime(떼기·탭 삭제·입양 포기 전부 이 함수를 지난다).
+ */
+const deferredRuntimes = new Map<string, { sid: number; socket?: string; title: string; role: string | null; tries: number }>();
+const DEFERRED_PER_TICK = 4; // (설계 목표값 §2-3) 보이지 않는 탭의 미룬 런타임 — 한 틱에 최대 이만큼
+/** 그 좌석이 화면 모형에 붙어 있는가 = 런타임 있음 ∪ 런타임 미룸(입양 판정의 「이미 붙음」 · 종전 panes.has 와 같은 뜻 + 미룬 좌석). */
+function seatAttached(sid: number, socket?: string): boolean {
+  const k = paneKey(sid, socket);
+  return panes.has(k) || deferredRuntimes.has(k);
+}
+/** 지워지지 않는 작업공간 트리에 그 좌석이 있는가(런타임을 만들어도 되는 자리인가). */
+function seatInModel(sid: number, socket?: string): boolean {
+  return workspaces.some((w) => !w.deleting && (w.socket ?? undefined) === (socket ?? undefined) && collectSids(w.tree).includes(sid));
+}
+function deferSeatRuntime(sid: number, socket: string | undefined, title: string, role: string | null): void {
+  const k = paneKey(sid, socket);
+  if (panes.has(k)) return;
+  deferredRuntimes.set(k, { sid, socket, title, role, tries: 0 });
+}
+/** 미룬 좌석 하나의 런타임을 만든다 — 만들었으면 true. 실패(F20) = 등록된 것은 파기 · 같은 좌석 재시도 3회까지(그 뒤 「(없음)」 칸 그대로). */
+async function ensureSeatRuntime(key: string): Promise<boolean> {
+  const d = deferredRuntimes.get(key);
+  if (!d) return false;
+  if (panes.has(key)) {
+    deferredRuntimes.delete(key);
+    return false;
+  }
+  if (!seatInModel(d.sid, d.socket)) return false; // 아직 모형에 안 붙음(만드는 쪽이 붙이기 전) — 장부 유지(떼면 destroyPaneRuntime 이 지운다)
+  deferredRuntimes.delete(key);
+  try {
+    const rt = await makePane(d.sid, d.title, d.socket);
+    // 기다린 사이 그 좌석이 떼였거나 탭이 지워지는 중이면 방금 만든 **런타임만** 파기(데몬 좌석은 닫지 않는다 · 종전 입양 재확인과 같은 뜻)
+    if (!seatInModel(d.sid, d.socket)) {
+      destroyPaneRuntime(d.sid, d.socket);
+      return false;
+    }
+    if (d.role) setRoleDot(rt, d.role);
+    return true;
+  } catch {
+    destroyPaneRuntime(d.sid, d.socket);
+    if (d.tries + 1 < 3 && seatInModel(d.sid, d.socket)) deferredRuntimes.set(key, { ...d, tries: d.tries + 1 });
+    return false;
+  }
+}
+let ensuringRuntimes = false;
+/**
+ * 작업 화면이 보이는 동안 미룬 런타임을 만든다 — 지금 보이는 탭(보기 트리) 좌석은 상한 없이 먼저 · 나머지는 othersBudget 개까지.
+ * 보이는 좌석을 하나라도 만들었으면 render() 1회(크기 맞춤 = 보이는 좌석 × 1 · §2-4). 직렬(한 번에 한 벌 · 같은 좌석 이중 생성 0).
+ */
+async function ensureSeatRuntimes(othersBudget: number): Promise<void> {
+  if (ensuringRuntimes || !workRuntimeWanted() || deferredRuntimes.size === 0) return;
+  ensuringRuntimes = true;
+  let visibleMade = 0;
+  try {
+    const cw = current();
+    const vis = new Set((cw ? collectSids(wsViewTree(cw)) : []).map((sid) => paneKey(sid, cw?.socket)));
+    for (const k of [...deferredRuntimes.keys()].filter((k) => vis.has(k))) {
+      if (!workRuntimeWanted()) break;
+      if (await ensureSeatRuntime(k)) visibleMade++;
+    }
+    let budget = othersBudget;
+    for (const k of [...deferredRuntimes.keys()]) {
+      if (budget <= 0 || !workRuntimeWanted()) break;
+      if (vis.has(k)) continue;
+      if (await ensureSeatRuntime(k)) budget--;
+    }
+  } finally {
+    ensuringRuntimes = false;
+  }
+  if (visibleMade > 0 && workRuntimeWanted()) render();
+}
+
 async function refreshPaneTitles() {
   // 이 패스 동안의 무장 상태를 **한 번** 읽는다(패스 중간에 켜지면 다음 패스가 친다 — 반쪽 스윕 금지).
   const sweepArm = exitedSweepArm;
@@ -3870,32 +3950,32 @@ async function refreshPaneTitles() {
           usage: s.usage ?? null,
         })),
       );
-      // ★유령 pane 수렴 — 판정은 wsreconcile.advanceGhostStrikes(순수·유닛 테스트가 고정),
-      // 여기는 배선이다. 데몬이 **기록 자체를 모르는** sid 만, **2연속 관측**일 때만 친다.
-      // 빈 목록이면 그 함수가 집행을 보류한다(재기동 직후 auto-restore 가 끝나기 전의 빈 목록 오판 방지).
-      // ★호출 계약: 이 소켓의 **전 워크스페이스 트리 합집합**을 한 번에 넘긴다(소켓당 1회).
-      const knownIds = new Set(r.surfaces.map((s) => s.surface_id));
-      const sockSids: number[] = [];
-      for (const w of workspaces) {
-        if ((w.socket ?? undefined) !== (sk ?? undefined) || !w.tree) continue;
-        sockSids.push(...collectSids(w.tree));
-      }
-      const step = advanceGhostStrikes(ghostStrike, sockSids, knownIds, (sid) => paneKey(sid, sk), `${sk ?? ""}#`);
-      ghostStrike = step.next;
-      tickRec?.ghost(sk ?? "", sockSids, step.evict);
-      for (const sid of step.evict) {
+      // ★(cysr-1116-s2 · P2-DESIGN §2-1 ㉠) 판정 = views/judge/tick.ts decideSockPre(순수 · 같은 입력 → 같은 판정 = tick.test.ts 기록 재생).
+      //   유령 퇴거(wsreconcile.advanceGhostStrikes — 데몬이 **기록 자체를 모르는** sid 만 · **2연속 관측**일 때만 · 빈 목록이면 보류) ·
+      //   옛 자리 쓸기(exitedsweep.exitedSweepTargets — B17 복원 직후 1회 · 무장 시점 스냅숏 안의 창만) · 입양 후보(아래)를 모형 사본 위에서 한 번에 낸다.
+      //   여기는 모으기(입력 칸)와 집행이다 — 집행 순서는 종전 그대로(퇴거 → 쓸기 → 제목 → 입양 → 자리표 · **닫기가 먼저, 배치가 나중** · B16 계약).
+      //   ★호출 계약: 유령 판정은 이 소켓의 **전 워크스페이스 트리 합집합**을 한 번에 본다(소켓당 1회 · decideSockPre 가 모형에서 모은다).
+      const sweepScope = sweepScopeFor(sweepArm, sk ?? "", Date.now()); // 무장 시점 스냅숏 안의 창만 옛 자리다(복원 뒤 새로 끝난 창은 대상 밖 — exitedsweep.ts SweepArm 설명)
+      const pre = decideSockPre({
+        sock: sk ?? "",
+        ws: tickWsModel(),
+        surfaces: r.surfaces,
+        ghostStrike,
+        sweepScope,
+        known: new Set(r.surfaces.map((s) => s.surface_id).filter((sid) => seatAttached(sid, sk))),
+        keyOf: (sid) => paneKey(sid, sk),
+      });
+      const sockSids = pre.tree;
+      ghostStrike = pre.ghostNext;
+      tickRec?.ghost(sk ?? "", sockSids, pre.evict);
+      for (const sid of pre.evict) {
         detachPane(sid, sk);
         layoutChanged = true;
       }
-      // ★B17 — 복원 직후 1회: 데몬이 **종료됨으로 알고 있는** 옛 자리를 닫는다(유령 수렴과 다른 축).
-      //   닫은 ws 는 아래 배치 블록의 대상에 넣는다 — **닫기가 먼저, 배치가 나중**이어야 한다
-      //   (B16 계약 · panetitle HANDOFF §3: 닫힌 sid 가 roleBySid 에 섞이면 그 좌석이 열을 하나 차지한다).
-      // 무장 시점 스냅숏 안의 창만 옛 자리다(복원 뒤 새로 끝난 창은 대상 밖 — exitedsweep.ts SweepArm 설명).
-      const sweepScope = sweepScopeFor(sweepArm, sk ?? "", Date.now());
-      const sweepHere = sweepScope !== null;
-      const sweepSids = sweepScope ? sockSids.filter((sid) => sweepScope.has(sid)) : [];
+      const sweepHere = pre.sweepHere;
+      const sweepSids = pre.sweepScope;
       tickRec?.sweep(sk ?? "", sweepHere, sweepSids);
-      for (const sid of exitedSweepTargets(sweepHere, sweepSids, r.surfaces)) {
+      for (const sid of pre.sweepTargets) {
         detachPane(sid, sk); // 닫기 + 남은 창 배치(arrangeWs remove) — 닫기가 먼저, 배치가 같은 자리에서
         tickRec?.sweepSid(sk ?? "", sid);
         layoutChanged = true;
@@ -3925,20 +4005,29 @@ async function refreshPaneTitles() {
       }
       // 자동 입양: 그 소켓의 role surface 중 UI에 없는 것 → '같은 소켓을 가진 ws'에만 표출.
       // ★소켓 일치 가드 — 부서A 노드가 부서B 탭에 잘못 입양되는 격리 누수 차단(검증 mustFix).
-      // role 우선순위(master>cso>worker>reviewer) 정렬 — 부서 첫 입양 시 master가 첫 pane(좌측·focus)이 되도록.
-      const rolePri = (role: string | null): number =>
-        role === "master" ? 0 : role === "cso" ? 1 : role?.startsWith("worker") ? 2 : role?.startsWith("reviewer") ? 3 : 4;
-      for (const s of [...r.surfaces].sort((a, b) => rolePri(a.role) - rolePri(b.role))) {
-        if (s.exited || !s.role || panes.has(paneKey(s.surface_id, sk))) continue;
-        // !w.pending — 런칭 중 placeholder(socket 미정)에는 입양 금지(타 데몬 surface 오입양 차단).
-        // ★G4(2026-09-17 10라운드 · opus 9R minor): `!w.deleting` — **삭제 중**(stop 을 기다리는) 탭에도 입양
-        //   금지. F3 이 splice 를 stop 뒤로 미뤘으므로 그 탭은 최대 T_STOP(그룹 삭제는 N×T_STOP) 동안 목록에
-        //   남는다. 그 창에서 죽어 가는 부서의 잔여 role surface 를 입양하면, 탭이 곧 splice 될 때 삭제 경로는
-        //   **stop 이전에 수집한 sid** 만 회수하므로(collectSids(ws.tree)) 방금 붙은 pane 런타임이 회수 대상에서
-        //   빠진다 — WebSocket·xterm 이 화면 없이 살아남는다(입양 1건당 런타임 1건 누수).
-        const homeOf = () => workspaces.find((w) => !w.pending && !w.deleting && (w.socket ?? undefined) === (sk ?? undefined));
+      // role 우선순위(master>cso>worker>reviewer) 정렬 — 부서 첫 입양 시 master가 첫 pane(좌측·focus)이 되도록. (판정 = tick.ts rolePri · 후보 순서 = pre.adopt)
+      // !w.pending — 런칭 중 placeholder(socket 미정)에는 입양 금지(타 데몬 surface 오입양 차단).
+      // ★G4(2026-09-17 10라운드 · opus 9R minor): `!w.deleting` — **삭제 중**(stop 을 기다리는) 탭에도 입양
+      //   금지. F3 이 splice 를 stop 뒤로 미뤘으므로 그 탭은 최대 T_STOP(그룹 삭제는 N×T_STOP) 동안 목록에
+      //   남는다. 그 창에서 죽어 가는 부서의 잔여 role surface 를 입양하면, 탭이 곧 splice 될 때 삭제 경로는
+      //   **stop 이전에 수집한 sid** 만 회수하므로(collectSids(ws.tree)) 방금 붙은 pane 런타임이 회수 대상에서
+      //   빠진다 — WebSocket·xterm 이 화면 없이 살아남는다(입양 1건당 런타임 1건 누수). (판정 = tick.ts homeWsOf)
+      const homeOf = () => homeWsOf(workspaces, (w) => (w.socket ?? undefined) === (sk ?? undefined));
+      for (const a of pre.adopt) {
+        const s = r.surfaces.find((x) => x.surface_id === a.sid);
+        // 낡은 판정 막이 — 앞 좌석의 런타임을 기다린 사이 모형이 바뀌었을 수 있다: 판정과 같은 조건을 그 자리에서 다시 본다(종전 반복문도 매 좌석 그 순간 값을 봤다).
+        if (!s || seatAttached(s.surface_id, sk)) continue;
         let ws = homeOf();
         if (!ws || collectSids(ws.tree).includes(s.surface_id)) continue;
+        // ★(cysr-1116-s2 · §2-3 ㉢) 작업 화면이 안 보이면(대화 화면) 입양 = **모형에만** 붙인다 — 런타임(xterm·attach_surface·출력 흐름)은
+        //   작업 화면이 보일 때 ensureSeatRuntimes 가 만든다(한 번 만든 런타임은 대화 화면으로 가도 부수지 않는다).
+        if (!workRuntimeWanted()) {
+          arrangeWs(ws, { add: [{ sid: s.surface_id }] });
+          deferSeatRuntime(s.surface_id, sk, s.title, s.role);
+          adopted = true;
+          tickRec?.adopt(sk ?? "", s.surface_id, s.role);
+          continue;
+        }
         const rt = await makePane(s.surface_id, s.title, sk);
         // (codex 3R blocking 2) makePane(환경 조회·attach_surface) 을 기다리는 사이 그 작업공간이 지워졌거나 지워지는 중이면 거기 붙이지 않는다 —
         //   삭제 경로는 이미 뜬 sid 목록만 거두므로 붙이면 화면 밖 런타임이 남고, panes 에 있으니 다음 틱도 건너뛴다(영영 고아).
@@ -3967,43 +4056,37 @@ async function refreshPaneTitles() {
       // 판정은 전부 placeholderclose.ts 가 쥔다(여기서 조건을 다시 쓰지 않는다 — 두 벌이 되면
       // 한쪽만 고쳐지고, 이 축의 실패 방향은 「사람의 작업창이 사라진다」다).
       if (placeholderSids.size) {
-        for (const ws of workspaces) {
-          if (ws.pending || (ws.socket ?? undefined) !== (sk ?? undefined)) continue;
-          const sids = collectSids(ws.tree);
-          const formationArrived = r.surfaces.some(
-            (x) => !x.exited && x.role && sids.includes(x.surface_id),
-          );
-          for (const sid of sids) {
-            if (!placeholderSids.has(sid)) continue; // ⓐ 남의 페인은 여기서 이미 걸러진다
-            const su = r.surfaces.find((x) => x.surface_id === sid);
-            // (조각 0) 판정 입력 기록 — 아래 shouldClosePlaceholder 인자와 같은 식(읽기 전용) · 꺼짐이면 평가 0. 조각 2 가 이 두 벌을 하나로 접는다.
-            tickRec?.placeholderIn(sk ?? "", sid, { isOwnPlaceholder: placeholderSids.has(sid), touched: touchedPlaceholders.has(sid), role: su?.role ?? null, lineCount: placeholderScreenLines(panes.get(paneKey(sid, ws.socket))?.term), isWindows: IS_WINDOWS, formationArrived, exited: su?.exited ?? true });
-            if (
-              !shouldClosePlaceholder({
-                isOwnPlaceholder: placeholderSids.has(sid),
-                touched: touchedPlaceholders.has(sid),
-                role: su?.role ?? null,
-                // ★(1.1.10) 데몬 line_count(출력 개행 누적 커서)가 아니라 그 pane 화면의 비어 있지 않은 줄(윈 466 ↔ 화면 4줄).
-                lineCount: placeholderScreenLines(panes.get(paneKey(sid, ws.socket))?.term),
-                isWindows: IS_WINDOWS,
-                formationArrived,
-                exited: su?.exited ?? true,
-              })
-            )
-              continue;
-            tickRec?.placeholderClose(sk ?? "", sid);
-            placeholderSids.delete(sid); // 한 번 판정한 자리는 장부에서 뺀다(반복 시도 0)
-            // ★1.1.11 편입(원작자 0.14.52 공지 ⑤): 데몬이 닫힘을 확인한 뒤에만 뗀다(closePane → detachPane = 런타임·배치·캐시) —
-            //   거부·불확실이면 자리표를 그대로 둔다(평범한 셸 창으로 남는다 · 장부에서는 이미 뺐으므로 재시도 0 · 종전 = 실패를 삼키고 화면만 뗐다).
-            try {
-              await closePane(sid, ws.socket);
-            } catch {
-              continue;
-            }
-            tickRec?.placeholderClosed(sk ?? "", sid);
-            if (focusedSid === sid) focusedSid = collectSids(ws.tree)[0] ?? null;
-            layoutChanged = true;
+        // (cysr-1116-s2 · F18) 판정 = tick.ts decidePlaceholders(입양을 모형에 붙인 **뒤**의 트리 · 화면 줄 수 = 모으기 단계 관측값 · 런타임 없음 = null = 보류).
+        //   조각 0 의 「기록 줄 · 판정 인자」 두 벌을 여기서 하나로 접었다 — 기록기는 판정이 쓴 입력 그대로를 받는다.
+        const verdicts = decidePlaceholders({
+          sock: sk ?? "",
+          ws: tickWsModel(),
+          surfaces: r.surfaces,
+          placeholders: placeholderSids,
+          touched: touchedPlaceholders,
+          // ★(1.1.10) 데몬 line_count(출력 개행 누적 커서)가 아니라 그 pane 화면의 비어 있지 않은 줄(윈 466 ↔ 화면 4줄).
+          lineCount: (wsId, sid) => placeholderScreenLines(panes.get(paneKey(sid, workspaces.find((w) => w.id === wsId)?.socket))?.term),
+          isWindows: IS_WINDOWS,
+        });
+        for (const v of verdicts) {
+          const sid = v.sid;
+          tickRec?.placeholderIn(sk ?? "", sid, v.in);
+          if (!v.close) continue;
+          const ws = workspaces.find((w) => w.id === v.wsId);
+          // 낡은 판정 막이 — 앞 자리표의 closePane 을 기다린 사이 사람이 손댔거나(touched) 장부에서 빠졌거나 탭이 바뀌었으면 닫지 않는다(남의 페인 불가침 · 실패 방향 = 닫지 않음).
+          if (!ws || !placeholderSids.has(sid) || touchedPlaceholders.has(sid) || !collectSids(ws.tree).includes(sid)) continue;
+          tickRec?.placeholderClose(sk ?? "", sid);
+          placeholderSids.delete(sid); // 한 번 판정한 자리는 장부에서 뺀다(반복 시도 0)
+          // ★1.1.11 편입(원작자 0.14.52 공지 ⑤): 데몬이 닫힘을 확인한 뒤에만 뗀다(closePane → detachPane = 런타임·배치·캐시) —
+          //   거부·불확실이면 자리표를 그대로 둔다(평범한 셸 창으로 남는다 · 장부에서는 이미 뺐으므로 재시도 0 · 종전 = 실패를 삼키고 화면만 뗐다).
+          try {
+            await closePane(sid, ws.socket);
+          } catch {
+            continue;
           }
+          tickRec?.placeholderClosed(sk ?? "", sid);
+          if (focusedSid === sid) focusedSid = collectSids(ws.tree)[0] ?? null;
+          layoutChanged = true;
         }
       }
       const masterSids = new Set(r.surfaces.filter((x) => !x.exited && x.role === "master").map((x) => x.surface_id));
@@ -4037,14 +4120,23 @@ async function refreshPaneTitles() {
     }
     if (adopted || layoutChanged) {
       tickRec?.render(adopted, layoutChanged);
-      render();
-      // ★0.14.41(리뷰1 #6): 입양한 pane 의 신호를 다음 폴링까지 기다리지 않는다(회색 '?미확인' 깜빡임 차단 · in-flight 가드).
-      if (adopted) void refreshSidebarStatus().catch(() => {});
-      // 자동입양으로 pane이 생긴 활성 ws에 유효 포커스가 없으면 그 첫 pane에 포커스(포커스 회수, 탈취 아님).
-      // 안 A: 부서 master 첫 등장 시 — 빈 셸이 없으므로 master pane으로 직행한다.
-      const aSids = collectSids(current()?.tree ?? null);
-      if (aSids.length && (focusedSid == null || !aSids.includes(focusedSid))) setFocus(aSids[0]);
+      // ★(cysr-1116-s2 · §2-1 저장 시점) 그리기는 켜진 화면만 — 작업 화면이 안 보이면 render()(pane 떼고 다시 붙이기·크기 맞춤·포커스) 대신
+      //   배치 저장만 한다(종전 render() 끝 saveLayout 이 유일한 저장이라, 대화 화면에서 그리기를 건너뛰면 저장도 멈췄다 · 4군 ③).
+      if (!workRuntimeWanted()) {
+        saveLayout();
+        if (adopted) void refreshSidebarStatus().catch(() => {});
+      } else {
+        render();
+        // ★0.14.41(리뷰1 #6): 입양한 pane 의 신호를 다음 폴링까지 기다리지 않는다(회색 '?미확인' 깜빡임 차단 · in-flight 가드).
+        if (adopted) void refreshSidebarStatus().catch(() => {});
+        // 자동입양으로 pane이 생긴 활성 ws에 유효 포커스가 없으면 그 첫 pane에 포커스(포커스 회수, 탈취 아님).
+        // 안 A: 부서 master 첫 등장 시 — 빈 셸이 없으므로 master pane으로 직행한다.
+        const aSids = collectSids(current()?.tree ?? null);
+        if (aSids.length && (focusedSid == null || !aSids.includes(focusedSid))) setFocus(aSids[0]);
+      }
     }
+    // (cysr-1116-s2 · §2-3 ㉢) 작업 화면이 보이는 동안 미룬 좌석 런타임 — 보이는 탭은 render 가 즉시 · 나머지는 한 틱 4개(설계 목표값).
+    if (workRuntimeWanted() && deferredRuntimes.size) void ensureSeatRuntimes(DEFERRED_PER_TICK);
   } catch {
     tickRec?.error("tick");
     /* 데몬 일시 미응답은 다음 틱에 */
@@ -4883,6 +4975,7 @@ function resyncViewport(term: Terminal) {
 }
 
 function destroyPaneRuntime(sid: number, socket?: string) {
+  deferredRuntimes.delete(paneKey(sid, socket)); // (cysr-1116-s2) 런타임을 미룬 좌석도 여기서 장부를 비운다(떼기·탭 삭제·입양 포기)
   const rt = panes.get(paneKey(sid, socket));
   if (!rt) return;
   rt.observer.disconnect();
@@ -5608,6 +5701,7 @@ function render() {
   else if (ws?.pending) root.appendChild(renderDeptPending(ws)); // WP-10: 부서 준비 중 빈 pane 스피너·안내(★0.14.43 GU: 경과·단계 문구)
   else if (ws) root.appendChild(renderIdleWorkspace(ws)); // pane 0개 — 백지 대신 안내+손잡이
   renderWsTabs();
+  if (deferredRuntimes.size && workRuntimeWanted()) void ensureSeatRuntimes(0); // (cysr-1116-s2 · §2-3) 보이는 탭의 미룬 좌석 런타임 — 만들고 나면 다시 그린다
   restoreKeyboardAfterRender(kbHeld); // (codex 2R #4) 다시 붙인 뒤 — 빠진 키보드 포커스를 그 좌석에(보일 때만)
   // ★B-230(H1): 방금 다시 붙인 pane 의 뷰포트를 xterm 의 지금 위치에 다시 맞춘다(resyncViewport) — 크기가 같아 아래 fit 이 아무것도 안 할 때도.
   for (const sid of collectSids(tree ?? null)) {
@@ -7793,7 +7887,9 @@ async function newSurface(cwd: string | null = null, socket?: string, timeoutMs?
   const r = (await (timeoutMs ? rpcT(call, timeoutMs) : call)) as {
     surface_id: number;
   };
-  await makePane(r.surface_id, "", socket); // 자동 제목 — 곧 refreshPaneTitles가 현재 경로로 채움
+  // (cysr-1116-s2 · F19) 작업 화면이 안 보이면(대화 화면으로 시작한 기동의 빈 탭 충전 등) 런타임은 미룬다 — 좌석·배치는 그대로 · 작업 화면이 보이면 만든다
+  if (workRuntimeWanted()) await makePane(r.surface_id, "", socket); // 자동 제목 — 곧 refreshPaneTitles가 현재 경로로 채움
+  else deferSeatRuntime(r.surface_id, socket, "", null);
   refreshPaneTitles();
   // ★0.14.41(U4-A5① · 리뷰1 #6): 새 pane 은 다음 10초 폴링까지 신호가 없어 탭 점이 회색 '?미확인 1'로 깜빡인다 —
   //   생성 직후 1회 당겨 온다(소켓별 in-flight 가드가 겹친 조회를 막는다 · 결과를 기다리지 않는다 · 새 주기 0).
@@ -10911,6 +11007,7 @@ async function focusStarvedSeat(socketSlug: string, sid: number): Promise<void> 
 
 function onDaemonEvent(event: Record<string, unknown>) {
   const name = String(event.name ?? "");
+  viewsIngest(event, defaultSocketSlug); // (cysr-1116-s2 · integ I3·S4-3) 화면 공통층 사건 단일 입구 — 앱의 daemon-event 구독은 이 하나(대화 화면이 꺼져 있어도 장부가 받음)
   const category = String(event.category ?? "");
   const payload = (event.payload ?? {}) as Record<string, unknown>;
   const sid = event.surface_id;
@@ -11822,7 +11919,7 @@ async function start() {
   // 여기까지 왔으면 저장본을 읽어 본 것이다(내용이 없거나 손상이어도 '읽었다'는 사실은 같다) —
   // 이제부터의 저장은 사용자의 배치를 덮는 것이 아니라 그 배치를 갱신하는 것이다.
   layoutLoaded = true;
-  bootViews({ invoke, working: (n) => nodeWorking(n.status as Parameters<typeof nodeWorking>[0], n.idle_secs as number | null | undefined, n.exited === true) }); // (cysr-ui-slice1) 전환 단추 + 고른 화면(기본 = 작업 화면 · 대화 화면을 안 고르면 invoke·저장소·타이머 0)
+  bootViews({ invoke, working: (n) => nodeWorking(n.status as Parameters<typeof nodeWorking>[0], n.idle_secs as number | null | undefined, n.exited === true), onWorkShown: () => render() }); // (cysr-ui-slice1) 전환 단추 + 고른 화면(기본 = 작업 화면 · 대화 화면을 안 고르면 invoke·저장소·타이머 0)
   for (const ws of workspaces) ws.socket = ws.socket ?? undefined; // 하위호환 마이그레이션(기본 데몬)
   // socket 1:1 수렴 + id 중복 제거(중복 탭 증식 차단) — 복원 적재 직후 단일 게이트.
   workspaces = normalizeWorkspaces(workspaces);
@@ -12215,7 +12312,9 @@ async function start() {
     for (const s of lb.list) {
       if (startHaltedByReset(info)) return; // ★W-3-b(R3-M1): pane 을 붙이기 전마다 초기화 진행·완료를 다시 본다
       const hadRuntime = panes.has(paneKey(s.surface_id, sk)); // (ChatGPT F6) 이미 있던 런타임은 그 주인(새 좌석 거두기 등)의 것 — 여기서 지우지 않는다
-      await makePane(s.surface_id, s.title, sk);
+      // (cysr-1116-s2 · 1회 고침 F19) 대화 화면으로 시작하면 복원 입양도 모형만 — 런타임은 작업 화면이 보일 때(§9-4 「대화 화면만 쓴 새 설치 = 출력 흐름 0」)
+      if (workRuntimeWanted()) await makePane(s.surface_id, s.title, sk);
+      else deferSeatRuntime(s.surface_id, sk, s.title, s.role);
       // (codex 3R 전수 표 · blocking 2 와 같은 모양) 기동 복원 중에도 탭은 이미 그려져(위 renderWsTabs) 사람이 지울 수 있다 — 붙이기를 기다린 사이
       //   그 작업공간이 지워졌거나 지워지는 중이면 같은 데몬의 살아 있는 작업공간에 · 없으면 런타임만 파기(데몬 좌석 = 닫지 않는다 · 다음 틱이 다시 입양 가능).
       if (ws && wsGoneOrGoing(ws)) ws = workspaces.find((w) => !w.pending && !w.deleting && (w.socket ?? undefined) === (sk ?? undefined));

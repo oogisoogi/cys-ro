@@ -45,6 +45,7 @@ import {
 import { toastTtl, needsExpiryBanner, expiryBannerText, VOLATILE_TTL_MS, STICKY_TTL_MS } from "./toastttl";
 import { seatPriority, annotateRoles, tidyHoles } from "./seatlayout";
 import { advanceGhostStrikes } from "./wsreconcile";
+import { decideSockPre, decidePlaceholders, homeWsOf } from "./views/judge/tick"; // (cysr-1116-s2) 3초 고리 판정(실제 순수 함수)
 import { feedCreatedToastTitle } from "./feedclass";
 import { TEAM_CREATE_KIND } from "./teamproposal";
 // ★R1F-UB: 자리 판정 도우미(deptLiveRoles · deptFormationVerdict)는 네임스페이스로 받는다 — 이름이 모듈에 없으면 그 검체만 개별로 적색이 된다(import 연결 오류로 파일 전체가 죽지 않는다).
@@ -2161,6 +2162,8 @@ describe("★S4 B1 — 실제 3초 틱(refreshPaneTitles 실제 본문)으로: �
       formationTrack: new WeakMap<object, unknown>(), // ★R2F-UI: 그 팀 좌석 목록을 마지막으로 받은 때의 기록(모듈 수준 WeakMap 의 대역)
       // ── (1.1.8 병합 · X1 = 우리 배치) 우리 판 refreshPaneTitles 의 자유 변수 대역 — 이 검체가 보는 축(팀원 안내 판정)과 무관한 우리 배선(B17 옛 자리 스윕 ·
       //    새 부서 감지 M7① · 자동 정렬 역할 표 · 빈 자리표 회수 · 표시 번호 · 본부 판정 · 사이드바 사용량 패널)은 무동작으로 둔다(파일 머리 주석: 「새 외부 이름 → 대역 갱신」).
+      // (cysr-1116-s2) 고리 분리 — 판정 = 실제 views/judge/tick.ts 순수 함수 · 미룬 런타임 = 없음(늘 작업 화면 = 종전 흐름 그대로) · tickWsModel·seatAttached = 실제 main.ts 함수(같은 범위에서 연다)
+      decideSockPre, decidePlaceholders, homeWsOf, workRuntimeWanted: () => true, deferSeatRuntime: nothing, deferredRuntimes: new Map<string, unknown>(), ensureSeatRuntimes: async () => {}, DEFERRED_PER_TICK: 4,
       tickRec: null, // (cysr-ui-slice0) 3초 고리 특성 기록기 = 꺼짐(기본) — 배선은 전부 `tickRec?.` 라 무평가
       exitedSweepArm: null, sweepScopeFor: () => null, exitedSweepTargets: () => [], settleSweep: (a: unknown) => a,
       openNewlyRegisteredDepts: async () => false, rememberRoles: nothing, arrangeWs: nothing,
@@ -2178,7 +2181,7 @@ describe("★S4 B1 — 실제 3초 틱(refreshPaneTitles 실제 본문)으로: �
       roleActivity: new RoleActivityStore(31_000),
       sweepRoleDots: nothing,
     };
-    const { fns, scope } = loadWith(["collectSids", "showDeptFormation", "checkDeptFormationNotices", "noteToastClosedByUser", "pumpRoleActivity", "refreshPaneTitles"], deps);
+    const { fns, scope } = loadWith(["collectSids", "showDeptFormation", "checkDeptFormationNotices", "noteToastClosedByUser", "pumpRoleActivity", "tickWsModel", "seatAttached", "refreshPaneTitles"], deps);
     // 첫 안내(addDeptWorkspace 성공 직후 한 번)
     fns.showDeptFormation(wsDept, "booting");
     return { clock, toasts, stickyToasts, lists, invokes, wsDept, wsBase, fns, scope };

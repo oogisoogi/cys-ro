@@ -114,7 +114,7 @@ describe("③ render — 좌석 이름 편집 중이면 떼지 않고 미룬다 
       root: { set innerHTML(_v: string) { log.push("root.clear"); } },
       current: () => { log.push("current"); return null; },
       wsViewTree: () => null,
-      renderWsTabs: () => log.push("renderWsTabs"),
+      renderWsTabs: () => log.push("renderWsTabs"), deferredRuntimes: new Map<string, unknown>(), workRuntimeWanted: () => true, ensureSeatRuntimes: async () => {}, // (cysr-1116-s2) render 의 미룬 런타임 줄 — 빈 장부 = 무동작
       restoreKeyboardAfterRender: () => log.push("restore"),
       collectSids: () => [],
       requestAnimationFrame: () => {},

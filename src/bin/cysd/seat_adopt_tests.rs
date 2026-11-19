@@ -226,3 +226,31 @@ fn seat_token_is_assigned_only_at_creation() {
     }
     assert!(hits.is_empty(), "좌석 토큰 대입이 생성 밖에 생겼다(재발급 = seatkeep 갱신 프레임 필요): {hits:?}");
 }
+
+/// T5 실패 갈래 새지 않음(master#9e1379e9): 접두 불일치·꼴 불량 토큰 = None + 사건 `seat.adopt_token_skipped` 은 skid·사유 낱말만(토큰 값·난수 0).
+#[test]
+fn adopted_token_skip_event_never_carries_the_token() {
+    let dir = std::env::temp_dir().join(format!("cys-t5skip-{}-{}", std::process::id(), crate::state::now_epoch() as u64));
+    let _ = std::fs::create_dir_all(&dir);
+    let daemon = Daemon::new(dir.join("cysd.sock"));
+    let mut rx = daemon.bus.subscribe();
+    let skid = "1f2e-6aff3a1f-0";
+    let rand = "0123456789abcdef0123456789abcdef";
+    let bad = [format!("6aff3a1f-1f2f.{rand}"), format!("6aff3a1f-1f2e.{}", &rand[..30])];
+    for t in &bad {
+        assert_eq!(adopted_token_or_skip(&daemon, skid, t.clone()), None);
+    }
+    let good = format!("6aff3a1f-1f2e.{rand}");
+    assert_eq!(adopted_token_or_skip(&daemon, skid, good.clone()).as_deref(), Some(good.as_str()));
+    let mut n = 0;
+    while let Ok(e) = rx.try_recv() {
+        if e["name"] == "seat.adopt_token_skipped" {
+            n += 1;
+            let s = e.to_string();
+            assert!(!s.contains(&rand[..16]) && !s.contains("6aff3a1f-1f2f"), "사건에 토큰 조각이 실렸다: {s}");
+            assert_eq!(e["payload"]["skid"], skid);
+        }
+    }
+    assert_eq!(n, 2, "실패 둘 = 사건 둘 · 성공은 사건 없음");
+    let _ = std::fs::remove_dir_all(&dir);
+}

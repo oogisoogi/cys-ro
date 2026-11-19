@@ -82,6 +82,19 @@ pub(crate) struct AdoptSeat {
 
 /// T5 세대 정합 — 입양 토큰의 세대 접두가 그 seatkeep 을 띄운 cysd 세대(seatkeep id `{pid hex}-{시작 시각 hex}-{순번}` 의 앞 두 성분)와
 /// 정확히 같고 꼴이 `<접두>.<32 소문자 hex>` 일 때만 받는다. 거절 사유는 고정 낱말뿐(토큰 값을 어디에도 싣지 않는다 · 비편입 계약).
+/// T5: 정합을 통과한 토큰만 돌려준다 — 실패 = None + 로그·사건(skid · 사유 낱말만 · 토큰 값 0).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn adopted_token_or_skip(daemon: &Daemon, skid: &str, token: String) -> Option<String> {
+    match check_adopted_token(skid, &token) {
+        Ok(()) => Some(token),
+        Err(why) => {
+            eprintln!("[cysd] 좌석 입양 {skid}: 좌석 토큰 안 이음({why}) — 무토큰 입양(claim = 체인 폴백)");
+            daemon.bus.publish("seat.adopt_token_skipped", "system", None, serde_json::json!({"skid": skid, "reason": why}));
+            None
+        }
+    }
+}
+
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn check_adopted_token(skid: &str, token: &str) -> Result<(), &'static str> {
     let mut it = skid.split('-');
@@ -812,17 +825,7 @@ fn adopt_one(daemon: &Arc<Daemon>, dir: &Path, skid: &str) -> (Outcome, Option<P
     };
     let link = spawned.link();
     // T5: 연결이 쥔 입양 토큰(WELCOME 칸)을 한 번 꺼내 세대 정합을 본다 — 실패 = 무토큰 입양 + 사건(사유 낱말만 · 값 0).
-    let token = match link.as_ref().and_then(|l| l.take_adopted_token()) {
-        None => None,
-        Some(t) => match check_adopted_token(skid, &t) {
-            Ok(()) => Some(t),
-            Err(why) => {
-                eprintln!("[cysd] 좌석 입양 {skid}: 좌석 토큰 안 이음({why}) — 무토큰 입양(claim = 체인 폴백)");
-                daemon.bus.publish("seat.adopt_token_skipped", "system", None, serde_json::json!({"skid": skid, "reason": why}));
-                None
-            }
-        },
-    };
+    let token = link.as_ref().and_then(|l| l.take_adopted_token()).and_then(|t| adopted_token_or_skip(daemon, skid, t));
     let mut rec = rec;
     rec.keeper_pid = pid;
     rec.keeper_start_us = Some(start);

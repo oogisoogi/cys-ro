@@ -353,6 +353,10 @@ if MODE == "token":
     open(f"{R}/logs/diag-list.txt", "w").write(cys("list").stdout)
     open(f"{R}/logs/diag-status.txt", "w").write(cys("status", "--json").stdout)
     if tok:
+        # 찾을 값 = 진짜 토큰 + 그 난수 부분 + 거절 갈래(tamper)가 실어 보낸 바꾼 토큰(실패 응답·로그에도 0)
+        g, r = tok.split(".", 1) if "." in tok else (tok, tok)
+        tampered = g + "." + ("f" * len(r) if r != "f" * len(r) else "e" * len(r))
+        needles = [tok.encode(), r.encode(), tampered.encode()]
         skip = {f"{R}/logs/tok.txt"} | {sl for (_, _, _, sl) in seats}
         for base, _dirs, files in os.walk(R):
             if base.startswith(f"{R}/bin") or base.startswith(f"{R}/home"):
@@ -362,7 +366,8 @@ if MODE == "token":
                 if fp in skip or not os.path.isfile(fp):
                     continue
                 try:
-                    if tok.encode() in open(fp, "rb").read():
+                    data = open(fp, "rb").read()
+                    if any(n in data for n in needles):
                         tk["leaks"].append(fp[len(R) + 1:])
                 except OSError:
                     pass
@@ -371,7 +376,7 @@ if MODE == "token":
             for fn in files:
                 fp = os.path.join(base, fn)
                 try:
-                    if os.path.getsize(fp) < (4 << 20) and tok.encode() in open(fp, "rb").read():
+                    if os.path.getsize(fp) < (4 << 20) and any(n in open(fp, "rb").read() for n in needles):
                         tk["leaks"].append(fp[len(R) + 1:])
                 except OSError:
                     pass

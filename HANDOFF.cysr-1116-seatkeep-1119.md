@@ -249,3 +249,44 @@ T6 rotate·업데이터(계획 교체 = 화면 저장+이어받기 · 사전 실
 - 커밋: 2b741e0c6(T6a 폴백·e2e rotate) · 282b1e568(B1·B2) · 80d66308b(빈칸 2). 시험: 폴백 단위 1 · dedup 단위 1 · 관련 묶음 125/125 · 빈칸 단위 2 · 탐침 claim/dedup 붉음→초록 · 뮤턴트 R1~R4 붉음 · e2e rotate 2회+drain 1회 rc 0(좌석 생존·작성자 하나).
 - 전체 cysd 묶음은 282b1e568·80d66308b 뒤 **안 돌림**(마지막 전체 = d2ca1de03 3351/0) — 후임 첫 전체 실행 때 확인.
 - 실사용 cys list 시험 좌석 0(실좌석 2276·2286 만) · 시험 프로세스 잔존 0.
+
+## 후임 3(worker-1116seatkeep3 · surface:2289 · master#2f4011cc · 브리프 `master/briefs/1116-full/seatkeep3.md`) 델타 — 11-20 06:0x~
+### 커밋
+| 커밋 | 내용 |
+|---|---|
+| 277c2df57 | **M1** 노브 끔 기동 = 산 seatkeep 관리용 종료(`end_orphans_in` → `end_keeper` → `consume_dead`) · **D2**(T6) 기록 없는 산 seatkeep = 같은 종료 · **m1** 조종자 잠금 결박(`bind_from`·`claimed_lock` · 다르면 `foreign` 무접촉) · seatkeep 등록부·종료 기록 `lock` 칸(입양 모드만) · `seat_proc::controller_lock_path` |
+| ead22aa8d | **M2** 미결 재시도(2초 × 5) → 끝내 미결 = 관리용 종료 + 예약 걷음 + 자동 복원 재실행 · 역할 모름 전면 차단 60초 상한(`blocks_all_until` · 재시도도 처음 상한 이음 `carry_pending`) · 조회 `org.status daemon.seat_adopt`(= `cys status --json` · 입양 켬일 때만 칸) |
+- 브리프 ④ 빈칸 2(reclaim·restore 관문) = 앞 좌석 80d66308b 에서 끝남 — 이 매듭 전체 실행에서 `reclaim_commit_refuses_…`·`restore_released_refuses_…`·`dedup_avoids_reserved_names` ok 확인(새 작업 0).
+
+### 관리용 종료 신원 규칙(`end_keeper` · 하나라도 안 서면 무접촉 Err)
+pid 생존 · 출생 시각 = 기록/등록부 값 · 실행 파일 = 이 cysd 옆 cys-seatkeep(`seatkeep_exe_matches == Some(true)`) · 인자 `--lock`(KERN_PROCARGS2 · `--` 앞만) = 이 cysd 시작 잠금 · `<skid>.lock` 을 그 seatkeep 이 쥐고 있음(못 잡음) → SIGTERM → 5초(끝 = pid 없음/출생 시각 다름) → SIGKILL 2초 → 등록부 `seats` 자식(pid·start_us) 3초 → SIGKILL. 정리 = `consume_dead`(.log 남김).
+
+### 시험(격리 env -i · 짧은 TMPDIR)
+| 묶음 | 앞(d2ca1de03 · 검증 4ba42e596) | HEAD ead22aa8d |
+|---|---|---|
+| cysd 전체(스레드 4 · 07:10~07:27 · load 6→26) | 3351 · 0 · 17 · 계 3368 | **3358 통과 · 3 실패 · 17 무시 · 계 3378**(+10 = B1·B2·빈칸 3 · 이 매듭 7) — 실패 = `seatkeep_input_ack_*` 2(`handshake_timeout` · 3초 시한) · `fv1_paused_daemon_…` 1 → **load 17~19 단독 재실행 3/3 통과** |
+| seat_adopt 단위 | 13 | 20(+7) |
+| cys-seatkeep | 51 | 52(+1 `registry_lock_field_only_in_adoptable_mode`) |
+| 노브 켬 accounts::+seat_proc:: | 180/180 | 180/180 · 입양 켬 180/180 |
+| 탐침 knoboff(M1 반례) | keepers 1 · 옛 좌석 산다 · 파일 5 | **keepers 0 · 옛 좌석 끝남 · 파일 = .log 만** · 로그 `ended (knob_off_orphan_ended)` |
+| e2e norecord(D2) | — | keepers 0 · 좌석 SIGNAL 1 · 파일 .log 만 · 같은 역할 rc 0 |
+| e2e foreign(m1) | — | b 기동 = `foreign (other_controller_lock)` · b 같은 역할 rc 0(남의 역할 예약 0) · a 좌석 생존 · 종료 기록 b 소비 0 → a 재기동이 소비 · `SKA_FOREIGN_B_OFF=1`(노브 끔 b) = `knob_off_end_lock_not_mine` · a 좌석 생존 |
+| e2e pending(M2) | — | recover = 재시도로 입양(4.9초) · fail = 10.7초에 `ended (pending_ended(registry_io))` · 좌석 SIGNAL 1 · rc 0 · unknown(역할 없는 좌석 + bin2) = 처음 rc 1 → 62초 뒤 `blocks_all` 거짓 · rc 0 · 고아는 조회 pending 에 남음 |
+| e2e 회귀(M2 빌드) | — | adopt 2(교체 3/3 · 겹침 0) · reserve · reserve+위조 pid · exitaway · token 5칸 · norecord · foreign · knoboff 통과 |
+- 뮤턴트(/private/tmp/skmut1119 · 파일 스위치 `/private/tmp/sk3mut/<X>` 1빌드 · 결과 scratchpad `e2e/mut-m1.out`·`mut-m2.jsonl`): A 노브 끔 정리 호출 끔 → knoboff 붉음(keepers 1) · B 잠금 결박 끔 → foreign 붉음(b 가 예약 rc 1 · 남의 종료 기록 소비) · C D2 끔 → norecord 붉음(고아·rc 1) · D end_keeper 잠금 검사 끔 → foreign B_OFF 붉음(남의 좌석 SIGHUP) · E 재시도 끔 → recover 붉음 · F 끝내기 끔 → fail 붉음 · G 상한 무시 → unknown 붉음. 재시도 상한 리셋 결함은 첫 unknown 실행이 실제로 잡음(고친 뒤 초록 · 단위 `retry_keeps_first_since_and_block_deadline`).
+
+### 원작자 파일 변경 줄(이 매듭)
+- handlers.rs: `org.status` 응답을 `let mut body` 로 받고 `seat_adopt::status_json()` 이 Some 일 때만 `daemon.seat_adopt` 칸 1개(+6줄 · 그 밖 바이트 무변).
+- main.rs: `spawn_auto_restore` → `pub(crate)`(1줄).
+- (이 갈래 파일) seat_adopt.rs · seat_adopt_tests.rs · seat_proc.rs(`controller_lock_path` 분리) · cys-seatkeep/main.rs(입양 모드 `lock` 칸 3자리 + 시험 1) · scripts/seatkeep-adopt-e2e.py(norecord·foreign·pending 모드).
+
+### 지시 없이 내린 판단(후임 3)
+1. m1 결박 근거 순서 = 산 pid 인자 → 등록부 `lock` → 종료 기록 `lock` · 근거 없음(옛 형식) = 종전 판정(산 seatkeep 을 **끝내는** 길은 인자로 확인된 Mine 만).
+2. 관리용 종료가 좌석 자식이 3초 안에 안 끝나면 SIGKILL(같은 대화 작성자 둘 차단 우선 · 자식 신원 = 등록부 pid+출생 시각).
+3. 노브 끔 기동은 **죽은** seatkeep 파일은 정리하지 않음(종전 · 입양 켬 기동 몫) — 산 고아만.
+4. M2 재시도 2초 × 5 · 역할 모름 상한 60초 = 브리프 예시값 그대로 · 상한 재실행 대기 10분.
+5. 조회 = JSON 칸만(`cys status` 사람용 줄은 안 바꿈).
+6. 자동 복원 재실행의 실물(phoenix 가 풀린 역할을 띄움)은 e2e 에서 재지 않음(시험 env `CYS_NO_AUTORESTORE=1` · 로그 「자동 복원 재실행」 줄까지만 확인) — 측정 대기.
+
+### 다음 첫 행동
+1. master 【확인요청】 T4 처분 매듭 회신 대기 중 → T6a 나머지(아래) 착수: drain 분리(입양 좌석 = `org.status daemon.seat_adopt` 에 입양 좌석 목록 칸 → rotate ① 이 그 좌석의 저장 실패를 rc 에서 뺌) · `cysd --adopt-check --json`(잠금·소켓·쓰기 0 · 판정 = judge + 실행 파일 + 핵심 판 + 결박) + rotate ② 앞 점검 · holder 총수 상한(기존 좌석 상한 상수 없음 → 기본값 📌) · A1 rotate 6회 · D4 launchd · D5 claude 5회 · 뮤턴트.

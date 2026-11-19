@@ -175,6 +175,30 @@ pub async fn chat_send(socket: Option<String>, surface_id: u64, text: String, ki
     }
 }
 
+/// (조각 5 · master#565d7c18 P1) 조건부 닫기 칸(순수) — 원작자 `close_surface_with` 가 만든 `{surface_id, owner_token}` 에 `if_quiet` · `expected_created_at` 만 더한다.
+pub(crate) fn if_quiet_close_params(mut p: Value, expected_created_at: f64) -> Value {
+    p["if_quiet"] = json!(true);
+    p["expected_created_at"] = json!(expected_created_at);
+    p
+}
+
+/// `close_surface_if_quiet` — 다시 켜기의 옛 마스터 창 닫기(never_started · 옛 빈 셸 정리) 전용. 데몬이 **닫기와 같은 잠금 안**에서
+/// 입력줄 사람 바이트 0 ∧ 붙여넣기 닫힘 ∧ 30초 안 사람 입력 없음 ∧ 생성 시각 일치를 판정한다(불충족 = 닫지 않음 · `close_refused: …`).
+/// 확인·첨부 정리는 원작자 `close_surface_with` 그대로(owner 표지 · Attachments) — 다른 것은 요청 칸 둘뿐.
+#[tauri::command]
+pub async fn close_surface_if_quiet(
+    state: tauri::State<'_, crate::Attachments>,
+    socket: Option<String>,
+    surface_id: u64,
+    expected_created_at: f64,
+) -> Result<(), String> {
+    let sock = resolve_socket(&socket);
+    crate::close_surface_with(&state, &sock, surface_id, read_operator_token_for, move |socket, params| async move {
+        rpc_full(&socket, "surface.close", if_quiet_close_params(params, expected_created_at)).await
+    })
+    .await
+}
+
 /// (조각 4 · codex 1R major 5 · blocking) `feed.reply` 매개변수(순수). `screen_fingerprint` = 화면이 펼쳐 본 판의 데몬 지문(있을 때만 싣는다 —
 /// 데몬이 집행 직전 지금 창 지문과 대조하는 자리 · 지금 데몬은 이 칸을 모르고 화면도 지문 없는 판엔 허락을 내지 않는다).
 pub(crate) fn confirm_reply_params(request_id: &str, decision: &str, screen_fingerprint: Option<&str>, tok: Option<&str>) -> Value {
@@ -512,6 +536,27 @@ pub(crate) fn next_newline_after(mut f: &std::fs::File, from: u64, size: u64) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn if_quiet_close_sends_conditions_and_refusal_is_not_closed() {
+        // (조각 5 P1) 요청 = 원작자 칸(surface_id · owner_token) + if_quiet · expected_created_at · 데몬 거절(close_refused) = Err(첨부 그대로)
+        let state = crate::Attachments(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Value::Null));
+        let s2 = sent.clone();
+        let r = tauri::async_runtime::block_on(crate::close_surface_with(&state, std::path::Path::new("/nonexistent/cys.sock"), 7, |_| Some("tok".into()), move |_sock, params| async move {
+            let p = if_quiet_close_params(params, 1700000000.125);
+            *s2.lock().unwrap() = p;
+            Ok(json!({"ok": false, "error": {"code": "close_refused", "message": "surface.close if_quiet refused: recent_human_input · not closed", "reason": "recent_human_input"}}))
+        }));
+        assert_eq!(*sent.lock().unwrap(), json!({"surface_id": 7, "owner_token": "tok", "if_quiet": true, "expected_created_at": 1700000000.125}));
+        let e = r.expect_err("거절인데 닫힘으로 봤다");
+        assert!(e.starts_with("close_refused:") && e.contains("recent_human_input"), "{e}");
+        let ok = tauri::async_runtime::block_on(crate::close_surface_with(&state, std::path::Path::new("/nonexistent/cys.sock"), 7, |_| None, |_sock, params| async move {
+            let p = if_quiet_close_params(params, 1.0);
+            Ok(json!({"ok": true, "result": {"surface_id": p["surface_id"], "closed": true, "cause": "OwnerClose", "if_quiet": true}}))
+        }));
+        assert_eq!(ok, Ok(()));
+    }
 
     #[test]
     fn over_long_line_is_skipped_to_next_line_end_and_reported() {

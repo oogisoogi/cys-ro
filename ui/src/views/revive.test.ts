@@ -71,6 +71,8 @@ class Env {
   startPlan: StartPlan = async (_n, env) => env.spawnMaster();
   starts = 0;
   closeFails = false;
+  /** 데몬 조건부 닫기가 닫는 순간 다시 본 사실(앱 조회 뒤 바뀜) — 거절 사유 */
+  closeRefuse: string | null = null;
   book: ReviveBook;
 
   constructor(seed?: (e: Env) => void) {
@@ -111,10 +113,17 @@ class Env {
     this.calls.push({ cmd, args });
     await Promise.resolve();
     if (cmd === "org_status") return this.org();
-    if (cmd === "close_surface") {
+    if (cmd === "close_surface_if_quiet") {
       if (this.closeFails) throw new Error("close_denied");
+      // 데몬 조건부 닫기 대역 — 생성 시각 · 입력줄 사람 바이트 · 붙여넣기 · 30초 안 사람 입력을 닫기 순간에 다시 본다(handlers.rs surface.close if_quiet)
       const sid = args?.surfaceId;
-      this.rows = this.rows.filter((r) => r.surface_id !== sid);
+      const r = this.rows.find((x) => x.surface_id === sid);
+      if (!r) throw new Error("not_found: surface not found");
+      const why =
+        r.created_at !== args?.expectedCreatedAt ? "created_at_mismatch"
+        : this.closeRefuse ?? (r.pending_input_human_bytes !== 0 ? "input_line_has_human_draft" : r.input_paste_open !== false ? "paste_open" : (r.human_idle_secs === undefined || (typeof r.human_idle_secs === "number" && r.human_idle_secs < 30)) ? "recent_human_input" : null);
+      if (why) throw new Error(`close_refused: surface.close if_quiet refused: ${why} · not closed`);
+      this.rows = this.rows.filter((x) => x.surface_id !== sid);
       return null;
     }
     if (cmd === "start_master") return this.startPlan(++this.starts, this);
@@ -291,7 +300,7 @@ describe("다시 켜기 — 축별 길(대역 데몬)", () => {
     const before = { cso: e.roles("cso"), worker: e.roles("worker") };
     await e.book.restart();
     expect(e.count("start_master")).toBe(1);
-    expect(e.count("close_surface")).toBe(0);
+    expect(e.count("close_surface_if_quiet")).toBe(0);
     expect(e.book.view().phase.kind).toBe("restarting");
     e.observe();
     expect(e.book.view().phase.kind).toBe("rest");
@@ -311,20 +320,20 @@ describe("다시 켜기 — 축별 길(대역 데몬)", () => {
       expect(e.book.view().sit.kind).toBe("down");
       await e.book.restart();
       e.observe();
-      expect(`${axis}:${e.count("start_master")}:${e.count("close_surface")}:${e.seatWrites()}:${e.book.view().phase.kind}`).toBe(`${axis}:1:${axis === "surface_exited" ? 0 : 0}:0:rest`);
+      expect(`${axis}:${e.count("start_master")}:${e.count("close_surface_if_quiet")}:${e.seatWrites()}:${e.book.view().phase.kind}`).toBe(`${axis}:1:${axis === "surface_exited" ? 0 : 0}:0:rest`);
       expect(e.roles("cso")).toBe(1);
       expect(e.roles("worker")).toBe(2);
     }
   });
-  it("agent_never_started → 옛 좌석 사람 입력 0 확인 → close_surface(그 좌석) 다음 start_master(순서) · 쓰기 0", async () => {
+  it("agent_never_started → 옛 좌석 사람 입력 0 확인 → close_surface_if_quiet(그 좌석 · 생성 시각) 다음 start_master(순서) · 쓰기 0", async () => {
     const e = new Env(base);
     Object.assign(e.rows[0], { agent_alive: null, agent_seen: false, seat: "empty" });
     e.emit("master.deadman", 5, { role: "master", axis: "agent_never_started" });
     e.observe();
     expect(e.band()?.title).toBe("마스터가 아직 시작하지 못했어요.");
     await e.book.restart();
-    const seq = e.calls.filter((c) => c.cmd === "close_surface" || c.cmd === "start_master").map((c) => `${c.cmd}:${c.args?.surfaceId ?? ""}`);
-    expect(seq).toEqual(["close_surface:5", "start_master:"]);
+    const seq = e.calls.filter((c) => c.cmd === "close_surface_if_quiet" || c.cmd === "start_master").map((c) => `${c.cmd}:${c.args?.surfaceId ?? ""}:${c.args?.expectedCreatedAt ?? ""}`);
+    expect(seq).toEqual(["close_surface_if_quiet:5:1005", "start_master::"]);
     e.observe();
     expect(e.book.view().phase.kind).toBe("rest");
     expect(e.seatWrites()).toBe(0);
@@ -336,11 +345,42 @@ describe("다시 켜기 — 축별 길(대역 데몬)", () => {
     e.emit("master.deadman", 5, { role: "master", axis: "agent_never_started" });
     e.observe();
     await e.book.restart();
-    expect(e.count("close_surface") + e.count("start_master")).toBe(0);
+    expect(e.count("close_surface_if_quiet") + e.count("start_master")).toBe(0);
     expect(e.band()?.title).toBe("그 창에 쓰다 만 글이 있어요.");
     expect(e.band()?.buttons).toContain("work");
     e.book.toWork();
     expect(e.views).toEqual(["work"]);
+  });
+  it("never_started — 앱 판정 통과 뒤 데몬이 조건부 닫기를 거절(그 사이 사람 입력) → 닫지 않음 · start_master 0 · 쓰다 만 글 안내", async () => {
+    for (const why of ["recent_human_input", "input_line_has_human_draft", "paste_open"]) {
+      const e = new Env(base);
+      Object.assign(e.rows[0], { agent_alive: null, agent_seen: false, seat: "empty" });
+      e.closeRefuse = why;
+      e.emit("master.deadman", 5, { role: "master", axis: "agent_never_started" });
+      e.observe();
+      await e.book.restart();
+      expect(`${why}:${e.count("close_surface_if_quiet")}:${e.count("start_master")}:${e.rows.some((r) => r.surface_id === 5)}`).toBe(`${why}:1:0:true`);
+      expect(e.band()?.title).toBe("그 창에 쓰다 만 글이 있어요.");
+    }
+  });
+  it("never_started — 다시 받은 행에 생성 시각이 없음(신원 모름) → 닫기 호출 0 · start_master 0 · 실패 안내", async () => {
+    const e = new Env(base);
+    Object.assign(e.rows[0], { agent_alive: null, agent_seen: false, seat: "empty", created_at: undefined });
+    e.emit("master.deadman", 5, { role: "master", axis: "agent_never_started" });
+    e.observe();
+    await e.book.restart();
+    expect(`${e.count("close_surface_if_quiet")}:${e.count("start_master")}:${e.book.view().phase.kind}`).toBe("0:0:restartfail");
+  });
+  it("never_started — 생성 시각 다름(그 사이 데몬 다시 켜져 번호 재사용) = 데몬 거절 → 닫지 않음 · 실패 안내 · start_master 0", async () => {
+    const e = new Env(base);
+    Object.assign(e.rows[0], { agent_alive: null, agent_seen: false, seat: "empty" });
+    e.closeRefuse = "created_at_mismatch";
+    e.emit("master.deadman", 5, { role: "master", axis: "agent_never_started" });
+    e.observe();
+    await e.book.restart();
+    expect(e.count("start_master")).toBe(0);
+    expect(e.rows.some((r) => r.surface_id === 5)).toBe(true);
+    expect(e.book.view().phase.kind).toBe("restartfail");
   });
   it("vacant(회수 뒤 · 앱 새로 켬 · 저장소에 본 적 있음) → 꺼짐 띠 즉시 → start_master → 성공 뒤 옛 빈 셸 정리(사람 입력 0)", async () => {
     const e = new Env((x) => {
@@ -353,7 +393,7 @@ describe("다시 켜기 — 축별 길(대역 데몬)", () => {
     expect(e.count("start_master")).toBe(1);
     e.observe();
     await e.flush();
-    expect(e.calls.filter((c) => c.cmd === "close_surface").map((c) => c.args?.surfaceId)).toEqual([5]);
+    expect(e.calls.filter((c) => c.cmd === "close_surface_if_quiet").map((c) => `${c.args?.surfaceId}:${c.args?.expectedCreatedAt}`)).toEqual(["5:1005"]);
     expect(JSON.parse(e.store.get(SEEN_KEY) ?? "null")).toEqual({ sid: 100, created_at: 1100 });
     expect(e.roles("cso")).toBe(1);
     expect(e.seatWrites()).toBe(0);
@@ -369,7 +409,7 @@ describe("다시 켜기 — 축별 길(대역 데몬)", () => {
       await e.book.restart();
       e.observe();
       await e.flush();
-      expect(`${seen}:${e.count("close_surface")}`).toBe(`${seen}:0`);
+      expect(`${seen}:${e.count("close_surface_if_quiet")}`).toBe(`${seen}:0`);
     }
   });
   it("vacant 정리 — 옛 빈 셸에 사람 입력이 있으면 닫지 않는다", async () => {
@@ -381,7 +421,7 @@ describe("다시 켜기 — 축별 길(대역 데몬)", () => {
     await e.book.restart();
     e.observe();
     await e.flush();
-    expect(e.count("close_surface")).toBe(0);
+    expect(e.count("close_surface_if_quiet")).toBe(0);
   });
   it("앱 새로 켬 + 놓아짐 기록만(role.released 받았던 기록) → 꺼짐 띠 · 새 설치(기록 0) → 띠 0", async () => {
     const a = new Env((x) => {
@@ -800,9 +840,12 @@ describe("S1-5 — 내 보내기 짝짓기(human_input_stamp)", () => {
 
 describe("정적 핀 — 다시 켜기 = 기존 입력줄 쓰기 0 · 깨움 말 길 1곳", () => {
   const src = readFileSync(new URL("./revive.ts", import.meta.url), "utf8").replace(/\/\/.*$/gm, "");
-  it("revive.ts 의 invoke = org_status · start_master · close_surface · chat_send(auto) 만", () => {
+  it("revive.ts 의 invoke = org_status · start_master · close_surface_if_quiet · chat_send(auto) 만 · 무조건 닫기(close_surface) 0", () => {
     const cmds = [...src.matchAll(/invoke\("([a-z_]+)"/g)].map((x) => x[1]).sort();
-    expect([...new Set(cmds)]).toEqual(["chat_send", "close_surface", "org_status", "start_master"]);
+    expect([...new Set(cmds)]).toEqual(["chat_send", "close_surface_if_quiet", "org_status", "start_master"]);
+    expect(src.match(/"close_surface"/g)).toBeNull();
+    expect(src.split('"close_surface_if_quiet"').length - 1).toBe(2);
+    expect(src.match(/expectedCreatedAt: seat\.created_at/g)?.length).toBe(2);
     expect(src.split('"chat_send"').length - 1).toBe(1);
     expect(src).toContain('kind: "auto"');
     for (const w of ["send_input", "send_text", "send_key"]) expect(src.includes(w)).toBe(false);

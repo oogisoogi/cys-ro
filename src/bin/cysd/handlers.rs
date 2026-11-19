@@ -445,6 +445,10 @@ fn try_write(
     req: crate::state::WriteReq,
     id: &Value,
 ) -> Option<Value> {
+    // (조각 5 P1) 조건부 닫기가 「닫는다」로 판정한 좌석 = 바이트 0 거부 — 두 호출자(send_text·send_key)는 input_gate 안이라 판정과 직렬.
+    if surface.close_decided.load(Ordering::SeqCst) {
+        return Some(err_response(id, "surface_closing", "surface is closing (if_quiet close decided) · nothing written"));
+    }
     match surface.write_tx.try_send(req) {
         Ok(()) => None,
         Err(std::sync::mpsc::TrySendError::Full(_)) => Some(err_response(
@@ -9628,6 +9632,13 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             let Some(sid) = resolve_surface_id(&params) else {
                 return Reply::Single(err_response(&id, "invalid_params", "missing surface_id"));
             };
+            // (1.1.16 · TICKET=cysr-1116-s5-1119 · master#565d7c18 P1) 조건부 닫기 칸 — `if_quiet:true` + `expected_created_at`(그 좌석 org.status 행의 생성 시각).
+            //   소유 게이트는 아래 그대로 지나고, 닫기만 governance::close_surface_if_quiet(판정과 닫기가 그 좌석 close_operation 한 잠금 안)로 간다. 칸 없는 호출 = 종전 그대로.
+            let if_quiet = params.get("if_quiet").and_then(|v| v.as_bool()) == Some(true);
+            let expected_created_at = params.get("expected_created_at").and_then(|v| v.as_f64());
+            if if_quiet && (expected_created_at.is_none() || params.get("only_if_empty").and_then(|v| v.as_bool()) == Some(true)) {
+                return Reply::Single(err_response(&id, "invalid_params", "surface.close if_quiet needs expected_created_at (number) and cannot combine with only_if_empty"));
+            }
             // ★1.1.9 2판 ③(master#9343f472 결정 A): 빈 좌석 회수 갈래 — 아래 소유 게이트와 **별개 계약**이다.
             if params.get("only_if_empty").and_then(|v| v.as_bool()) == Some(true) {
                 return Reply::Single(close_if_empty(daemon, &id, sid, caller_pid));
@@ -9707,6 +9718,36 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                         json!({"requested_surface": sid, "creator_surface": cs,
                                "caller_pid": caller_pid, "cause": "reap"}),
                     );
+                }
+            }
+            if let (true, Some(expected)) = (if_quiet, expected_created_at) {
+                match governance::close_surface_if_quiet(daemon, sid, cause, expected) {
+                    Ok(()) => {
+                        daemon.create_caller.lock().unwrap().remove(&sid);
+                        daemon.created_by.lock().unwrap().remove(&sid);
+                        return Reply::Single(ok_response(
+                            &id,
+                            json!({"surface_id": sid, "closed": true, "cause": format!("{cause:?}"), "if_quiet": true}),
+                        ));
+                    }
+                    Err(governance::CloseIfQuiet::NotFound) => {
+                        return Reply::Single(err_response(&id, "not_found", &format!("surface {sid} not found")));
+                    }
+                    Err(governance::CloseIfQuiet::Refused(why)) => {
+                        daemon.bus.publish(
+                            "surface.close_if_quiet_denied",
+                            "surface",
+                            Some(sid),
+                            json!({"requested_surface": sid, "caller_surface": caller_sid, "caller_pid": caller_pid, "reason": why}),
+                        );
+                        let mut r = err_response(&id, "close_refused", &format!("surface.close if_quiet refused: {why} · not closed"));
+                        r["error"]["reason"] = json!(why);
+                        return Reply::Single(r);
+                    }
+                    Err(governance::CloseIfQuiet::Failed(e)) => {
+                        let code = if daemon.get_surface(sid).is_none() { "not_found" } else { "close_failed" };
+                        return Reply::Single(err_response(&id, code, &e));
+                    }
                 }
             }
             match governance::close_surface(daemon, sid, cause) {
@@ -29602,6 +29643,103 @@ mod tests {
         unstamp_human_input(&s, other);
         assert_eq!(s.human_input_seq.load(Ordering::SeqCst), st.seq, "앞 찍기로 되돌림");
         assert_eq!(stamp_human_input(&s).seq, other.seq + 1, "되돌린 뒤 같은 번호를 다시 냈다(ABA)");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (1.1.16 · TICKET=cysr-1116-s5-1119 · master#565d7c18 P1) 조건부 닫기 `surface.close{if_quiet, expected_created_at}` —
+    /// ① 칸 없는 호출 = 종전 응답 바이트 같음(초안·최근 사람 입력이 있어도 닫음) ② 칸 꼴 오류 ③ 생성 시각 다름 · 사람 초안 · 붙여넣기 열림 · 30초 안 사람 입력 = 닫지 않고 사유
+    /// ④ 셋 다 맞으면 닫음 ⑤ 판정은 input_gate 안 — 게이트를 쥔 동안 사람이 찍으면 판정이 본다(거절) ⑥ 닫는다고 판정한 뒤 사람 쓰기 = 바이트 0(surface_closing).
+    #[test]
+    fn s5_1116_close_if_quiet_atomic_conditions() {
+        let _g = ACL_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (daemon, dir) = daemon_with_acl("s5-1116-ifq", r#"{"default":"allow","rules":[]}"#);
+        let mk = || {
+            let s = daemon.create_surface(None, Some("sleep 30".into()), None, None, 24, 80).expect("create surface");
+            daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+            s
+        };
+        let close = |n: u64, p: Value| {
+            let Reply::Single(resp) = dispatch(&daemon, Request { id: json!(n), method: "surface.close".into(), params: p }, None) else {
+                panic!("expected single reply");
+            };
+            resp
+        };
+        let alive = |sid: u64| daemon.get_surface(sid).is_some();
+        let stale = || Some(std::time::Instant::now() - std::time::Duration::from_secs(crate::governance::queue_human_quiet_secs() + 5));
+        // ① 하위 호환 — 칸 없는 호출은 초안·최근 사람 입력이 있어도 닫고, 응답은 종전 꼴 그대로(바이트 같음)
+        let a = mk();
+        a.pending_input.lock().unwrap().human = 3;
+        *a.last_human_input.lock().unwrap() = Some(std::time::Instant::now());
+        let r = close(1, json!({"surface_id": a.id}));
+        assert_eq!(
+            serde_json::to_string(&r).unwrap(),
+            serde_json::to_string(&json!({"id": 1, "ok": true, "result": {"surface_id": a.id, "closed": true, "cause": "OwnerClose"}})).unwrap(),
+            "칸 없는 호출의 응답이 바뀌었다"
+        );
+        assert!(!alive(a.id));
+        assert!(!a.close_decided.load(Ordering::SeqCst), "종전 닫기가 조건부 표식을 세웠다");
+        let a2 = mk();
+        let r = close(2, json!({"surface_id": a2.id, "if_quiet": false, "expected_created_at": 1.0}));
+        assert_eq!(r["result"]["closed"], json!(true), "if_quiet:false = 종전 닫기: {r}");
+        assert!(r["result"].get("if_quiet").is_none());
+        // ② 칸 꼴 오류 — 생성 시각 없음 · only_if_empty 와 겹침 = 닫지 않음
+        let b = mk();
+        let r = close(3, json!({"surface_id": b.id, "if_quiet": true}));
+        assert_eq!(r["error"]["code"], json!("invalid_params"), "{r}");
+        let r = close(4, json!({"surface_id": b.id, "if_quiet": true, "expected_created_at": b.created_at, "only_if_empty": true}));
+        assert_eq!(r["error"]["code"], json!("invalid_params"), "{r}");
+        assert!(alive(b.id));
+        // ③ 조건 하나라도 틀리면 닫지 않고 사유(코드 close_refused · reason)
+        let q = |n: u64, s: &Arc<crate::state::Surface>, at: f64| close(n, json!({"surface_id": s.id, "if_quiet": true, "expected_created_at": at}));
+        let r = q(5, &b, b.created_at + 1.0);
+        assert_eq!((r["error"]["code"].clone(), r["error"]["reason"].clone()), (json!("close_refused"), json!("created_at_mismatch")), "{r}");
+        b.pending_input.lock().unwrap().human = 2;
+        let r = q(6, &b, b.created_at);
+        assert_eq!(r["error"]["reason"], json!("input_line_has_human_draft"), "{r}");
+        b.pending_input.lock().unwrap().human = 0;
+        b.pending_input.lock().unwrap().in_paste = true;
+        let r = q(7, &b, b.created_at);
+        assert_eq!(r["error"]["reason"], json!("paste_open"), "{r}");
+        b.pending_input.lock().unwrap().in_paste = false;
+        *b.last_human_input.lock().unwrap() = Some(std::time::Instant::now());
+        let r = q(8, &b, b.created_at);
+        assert_eq!(r["error"]["reason"], json!("recent_human_input"), "{r}");
+        assert!(alive(b.id), "거절인데 닫혔다");
+        assert!(!b.close_decided.load(Ordering::SeqCst), "거절인데 닫기 표식이 섰다");
+        // ④ 셋 다 맞음(사람 입력이 문턱 밖) → 닫음 · JSON 왕복한 생성 시각(1ms 안)도 같은 좌석
+        *b.last_human_input.lock().unwrap() = stale();
+        let at: f64 = serde_json::from_str::<Value>(&serde_json::to_string(&json!(b.created_at)).unwrap()).unwrap().as_f64().unwrap();
+        let r = q(9, &b, at);
+        assert_eq!(r["result"]["closed"], json!(true), "{r}");
+        assert_eq!(r["result"]["if_quiet"], json!(true));
+        assert!(!alive(b.id));
+        let r = q(10, &b, at);
+        assert_eq!(r["error"]["code"], json!("not_found"), "이미 닫힌 좌석: {r}");
+        // ⑤ 판정은 input_gate 안 — 시험이 게이트를 쥔 동안 닫기는 판정에 못 들어가고, 그 사이 사람이 찍으면 판정이 그것을 본다
+        let c = mk();
+        *c.last_human_input.lock().unwrap() = stale();
+        let gate = c.input_gate.lock().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        {
+            let daemon = daemon.clone();
+            let (sid, at) = (c.id, c.created_at);
+            std::thread::spawn(move || {
+                let r = crate::governance::close_surface_if_quiet(&daemon, sid, crate::governance::CloseCause::OwnerClose, at);
+                let _ = tx.send(r);
+            });
+        }
+        assert!(rx.recv_timeout(std::time::Duration::from_millis(300)).is_err(), "닫기가 input_gate 밖에서 판정했다(게이트를 기다리지 않음)");
+        let _ = stamp_human_input(&c); // 사람 입력 길의 찍기(send_text 는 게이트 앞에서 찍고 게이트 안에서 쓴다)
+        drop(gate);
+        let got = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("닫기 결과");
+        assert_eq!(got, Err(crate::governance::CloseIfQuiet::Refused("recent_human_input")), "게이트 앞에서 찍힌 사람 입력을 판정이 못 봤다");
+        assert!(alive(c.id));
+        // ⑥ 닫는다고 판정한 뒤의 사람 쓰기 = 바이트 0(surface_closing) — 판정과 표식이 같은 게이트 안이라 그 사이에 끼는 쓰기는 없다
+        *c.last_human_input.lock().unwrap() = stale();
+        let r = q(11, &c, c.created_at);
+        assert_eq!(r["result"]["closed"], json!(true), "{r}");
+        let late = try_write(&c, crate::state::WriteReq::Data(b"x".to_vec()), &json!(12)).expect("닫는다고 판정한 좌석에 썼다");
+        assert_eq!(late["error"]["code"], json!("surface_closing"), "{late}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

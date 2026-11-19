@@ -2441,6 +2441,9 @@ pub struct Surface {
     /// Serializes close preparation through removal for this incarnation only.
     /// Acquire before daemon/queue locks; EOF queue cleanup does not take this gate.
     pub close_operation: Mutex<()>,
+    /// (1.1.16 · TICKET=cysr-1116-s5-1119 · master#565d7c18 P1) 조건부 닫기(`surface.close` `if_quiet`)가 `input_gate` 안에서 「닫는다」로 판정한 표식 — 그 뒤 직접 쓰기(`try_write`)는 바이트 0 거부.
+    /// 판정과 표식이 같은 `input_gate` 임계영역이고 사람 쓰기 길도 같은 게이트 안에서 이 표식을 본다 = 사람 바이트는 판정이 보거나 쓰이지 않거나 둘 중 하나. 닫기 실패면 내린다.
+    pub close_decided: AtomicBool,
     /// PTY 쓰기는 전용 writer 스레드만 수행 — async 경로는 유한 채널 try_send.
     /// 정체된 pane의 블로킹 write가 tokio 워커·watchdog을 멈추는 경로를 원천 차단한다.
     pub write_tx: crate::writer_gate::WriterSender,
@@ -8259,6 +8262,7 @@ impl Daemon {
             exited: AtomicBool::new(false),
             exited_at: Mutex::new(None),
             close_operation: Mutex::new(()),
+            close_decided: AtomicBool::new(false),
             write_tx,
             master: Mutex::new(spawned.master),
             child: Mutex::new(spawned.child),

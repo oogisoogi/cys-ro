@@ -365,11 +365,20 @@ export class ReviveBook {
         return;
       }
       if (plan.kind === "close_then_start") {
+        // (master#565d7c18 P1) 닫기 = 데몬 조건부 닫기 하나 — 입력줄 빈칸 ∧ 30초 안 사람 입력 없음 ∧ 생성 시각 일치를 데몬이 닫기와 같은 잠금 안에서 다시 판정(다시 받은 행과 닫기 사이 창 0)
+        const seat = seatIdOf(org, plan.sid);
+        if (seat === null) {
+          this.setPhase({ kind: "restartfail", why: "옛 마스터 창이 어느 창인지 확인하지 못해 닫지 않았어요" });
+          return;
+        }
         this.counts.close++;
         try {
-          await this.d.invoke("close_surface", { socket: null, surfaceId: plan.sid });
+          await this.d.invoke("close_surface_if_quiet", { socket: null, surfaceId: seat.sid, expectedCreatedAt: seat.created_at });
         } catch (e) {
-          this.setPhase({ kind: "restartfail", why: `옛 마스터 창을 닫지 못했어요: ${String(e).slice(0, 120)}` });
+          const msg = String(e);
+          // 데몬 거절 = 그 사이 사람이 그 창에 쓰기 시작함(초안 · 붙여넣기 · 30초 안 입력) → 쓰다 만 글 안내(닫지 않음 · start_master 0)
+          if (msg.includes("close_refused") && !msg.includes("created_at_mismatch")) this.setPhase({ kind: "draft_block", sid: seat.sid });
+          else this.setPhase({ kind: "restartfail", why: `옛 마스터 창을 닫지 못했어요: ${msg.slice(0, 120)}` });
           return;
         }
       }
@@ -430,11 +439,13 @@ export class ReviveBook {
   private onRestartOk(m: MasterRow): void {
     this.setPhase({ kind: "rest" });
     // vacant·never 정리: 옛 좌석이 역할 없는 빈 셸 ∧ 사람 입력 0 이면 닫는다(빈 셸 누적 방지 · F3·V-M5) — 아니면 그대로 둔다.
-    const old = leftoverShell(this.org, this.oldSeat, m.surface_id);
+    const seat = this.oldSeat;
+    const old = leftoverShell(this.org, seat, m.surface_id);
     this.oldSeat = null;
-    if (old !== null) {
+    if (old !== null && seat !== null) {
       this.counts.close++;
-      void this.d.invoke("close_surface", { socket: null, surfaceId: old }).catch(() => {});
+      // 같은 조건부 닫기 — 데몬이 거절하면(그 사이 사람 입력) 그대로 둔다
+      void this.d.invoke("close_surface_if_quiet", { socket: null, surfaceId: old, expectedCreatedAt: seat.created_at }).catch(() => {});
     }
   }
 

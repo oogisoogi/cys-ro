@@ -4,7 +4,7 @@
 // 길(§6-2 표):
 //   surface_gone · surface_exited            → start_master
 //   agent_dead · seat_vacant_no_meta · shell_proc_dead → start_master → 거절이면 seat_not_claimable ∧ 사람 입력 사유 아님일 때만 65초 1회 자동
-//   agent_never_started                       → 옛 좌석 사람 입력 0 확인 → close_surface → start_master (사람 입력 있으면 닫지 않고 안내)
+//   agent_never_started                       → 옛 좌석 사람 입력 0 확인 → close_surface_if_quiet(데몬 조건부 닫기) → start_master (사람 입력 있으면 닫지 않고 안내)
 //   vacant(회수 뒤 · 앱 새로 켬)              → start_master → 성공 뒤 옛 빈 셸 정리(Empty ∧ 사람 입력 0)
 //   거절 사유 = 사람 입력                      → 자동 재시도 0 · 「마스터 창에 방금 누가 글을 쓰고 있어 기다리고 있어요」
 // 성공(F4 · V-N2) = 목록의 role=master ∧ !exited 좌석 id 가 다시 켜기 전과 다름 ∧ 그 좌석 에이전트 살아 있음 ∧ 관문 없음.
@@ -115,7 +115,7 @@ export function restartPlan(sit: ReviveSit, old: MasterRow | null | undefined): 
   // (실물 실측 · real-daemon.txt ⑤) 같은 role+agent+cwd 기동 120초 안(CREATE_IDEM_TTL_SECS)이면 launch-agent 가 **같은 좌석을 멱등 재사용**해
   //   그 셸에 기동 줄을 clear_first 없이 친다 — 옛 마스터 창에 사람 초안이 있으면 그 뒤에 붙는다. 그래서 모든 축에서 초안이 있으면 켜지 않는다.
   // (codex 1R blocking 1 · 완화) 30초 안 사람 입력도 막는다 — 다시 받은 행과 닫기 사이(같은 누름 안 · 수 ms)에 사람이 새로 치기 시작하는 창을 좁힌다.
-  //   남는 창(조건부 닫기 원자화)은 데몬 요청 칸 변경이라 이 갈래 허용 범위 밖 → 📌(HANDOFF).
+  //   남는 창은 닫기 쪽에서 닫는다(master#565d7c18 P1) — 닫기 = 데몬 조건부 닫기(close_surface_if_quiet)가 같은 조건을 닫기와 같은 잠금 안에서 다시 판정.
   const draft = (r: MasterRow) =>
     r.pending_input_human_bytes !== 0 || r.input_paste_open !== false || r.human_idle_secs === undefined || (r.human_idle_secs !== null && r.human_idle_secs < HUMAN_QUIET_SECS);
   if (sit.down !== "never") return old && sit.sid !== null && old.surface_id === sit.sid && draft(old) ? { kind: "draft_block", sid: sit.sid } : { kind: "start" };

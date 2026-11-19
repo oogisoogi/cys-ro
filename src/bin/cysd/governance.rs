@@ -6569,6 +6569,89 @@ pub fn close_surface(daemon: &Arc<Daemon>, id: u64, cause: CloseCause) -> Result
     close_surface_effect(daemon, CloseOperation { surface: &surface, _guard: guard }, cause)
 }
 
+/// (1.1.16 · TICKET=cysr-1116-s5-1119 · master#565d7c18 P1) 조건부 닫기의 거절 — 무엇이 안 맞았나(응답 `error.reason`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CloseIfQuiet {
+    NotFound,
+    /// 조건 불충족 — 닫지 않았다(좌석 그대로).
+    Refused(&'static str),
+    Failed(String),
+}
+
+/// 조건 판정(순수) — 셋 다 맞아야 닫는다: 생성 시각 일치(같은 좌석 한 번 · 번호 재사용 대비) · 입력줄 사람 바이트 0 ∧ 붙여넣기 닫힘 · 최근 사람 입력 없음.
+/// `human_age_secs` = 마지막 사람 입력 뒤 지난 초(None = 사람 입력 없음). 생성 시각은 JSON 왕복(f64 파싱 1 ULP)을 견디게 1ms 안이면 같다.
+pub(crate) fn close_if_quiet_denial(
+    created_at: f64,
+    expected_created_at: f64,
+    pending_human: u64,
+    in_paste: bool,
+    human_age_secs: Option<u64>,
+    quiet_secs: u64,
+) -> Option<&'static str> {
+    if !(created_at.is_finite() && expected_created_at.is_finite() && (created_at - expected_created_at).abs() <= 1e-3) {
+        return Some("created_at_mismatch");
+    }
+    if pending_human > 0 {
+        return Some("input_line_has_human_draft");
+    }
+    if in_paste {
+        return Some("paste_open");
+    }
+    if human_age_secs.is_some_and(|a| a < quiet_secs) {
+        return Some("recent_human_input");
+    }
+    None
+}
+
+/// 조건부 닫기 — 판정과 닫기를 **이 좌석의 `close_operation` 한 잠금 안**에서 한다(그 안에서 `input_gate` 를 잡고 판정 → 표식 `close_decided` → 게이트 놓음 → 같은 잠금으로 닫기).
+/// 사람 쓰기 길(`send_text`·`send_key` 의 `try_write`)은 `input_gate` 안에서 표식을 본다 — 판정 앞의 사람 바이트는 판정이 보고(거절), 판정 뒤의 것은 쓰이지 않는다(바이트 0).
+/// 락 순서 = `close_operation` → `input_gate` → (`pending_input`·`last_human_input` leaf) · 닫기 본체(큐·맵 락)는 게이트를 놓은 뒤라 `pending_queue → input_gate` 계약과 교차하지 않는다.
+pub(crate) fn close_surface_if_quiet(
+    daemon: &Arc<Daemon>,
+    id: u64,
+    cause: CloseCause,
+    expected_created_at: f64,
+) -> Result<(), CloseIfQuiet> {
+    let surface = daemon.get_surface(id).ok_or(CloseIfQuiet::NotFound)?;
+    let guard = surface.close_operation.lock().map_err(|_| CloseIfQuiet::Failed("close_operation_poisoned".into()))?;
+    let current = daemon.get_surface(id).ok_or(CloseIfQuiet::NotFound)?;
+    if !Arc::ptr_eq(&current, &surface) {
+        return Err(CloseIfQuiet::NotFound);
+    }
+    {
+        // 뮤턴트 S5P1-NOGATE(게이트 밖 판정) — 시험 빌드에서만.
+        let _gate = (!(cfg!(test) && std::env::var("CYS_S5P1_MUTANT").as_deref() == Ok("NOGATE")))
+            .then(|| surface.input_gate.lock().unwrap_or_else(|e| e.into_inner()));
+        let (pending_human, in_paste) = {
+            let p = surface.pending_input.lock().unwrap_or_else(|e| e.into_inner());
+            (p.human, p.in_paste)
+        };
+        let human_age = surface.last_human_input.lock().unwrap_or_else(|e| e.into_inner()).map(|t| t.elapsed().as_secs());
+        // 뮤턴트 S5P1-NOCOND(조건 칸 무시) — 시험 빌드에서만.
+        let ignore = cfg!(test) && std::env::var("CYS_S5P1_MUTANT").as_deref() == Ok("NOCOND");
+        if let Some(why) = close_if_quiet_denial(
+            surface.created_at,
+            expected_created_at,
+            pending_human,
+            in_paste,
+            human_age,
+            queue_human_quiet_secs(),
+        )
+        .filter(|_| !ignore)
+        {
+            return Err(CloseIfQuiet::Refused(why));
+        }
+        // 뮤턴트 S5P1-NOFLAG(표식 안 세움 · 판정 뒤 사람 바이트가 쓰임) — 시험 빌드에서만.
+        if !(cfg!(test) && std::env::var("CYS_S5P1_MUTANT").as_deref() == Ok("NOFLAG")) {
+            surface.close_decided.store(true, Ordering::SeqCst);
+        }
+    }
+    close_surface_effect(daemon, CloseOperation { surface: &surface, _guard: guard }, cause).map_err(|e| {
+        surface.close_decided.store(false, Ordering::SeqCst);
+        CloseIfQuiet::Failed(e)
+    })
+}
+
 /// Constructed only with this exact Surface's operation guard. Keep the existing
 /// expiry-before-removal transaction; broad queue/map locks never span its I/O.
 struct CloseOperation<'a> {

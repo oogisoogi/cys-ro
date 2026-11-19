@@ -1,0 +1,37 @@
+# 조각 5 후임 실물 — 격리 HOME cysd(이 작업트리 빌드) · 가짜 claude · 2026-11-20 03:41
+데몬 pid 83568 · 소켓 /private/tmp/claude-501/s5e/s.sock
+① launch-agent master rc=0 stdout=surface:1
+   마스터 행: {'surface_id': 1, 'role': 'master', 'released_role': None, 'agent_alive': True, 'seat': 'occupied', 'pending_input_bytes': 0, 'pending_input_human_bytes': 0, 'input_paste_open': False, 'human_idle_secs': None, 'created_at': 1795113538.464466}
+② 에이전트 죽이기: 셸 87610 → 가짜 claude [87746]
+   행: {'surface_id': 1, 'role': 'master', 'released_role': None, 'agent_alive': False, 'seat': 'empty', 'pending_input_bytes': 0, 'pending_input_human_bytes': 0, 'input_paste_open': False, 'human_idle_secs': None, 'created_at': 1795113538.464466} · 경과 13.3 s
+③ 사람 초안 응답: {"human_input_stamp": "1795113536102:1", "sent": true, "surface_id": 1}
+   30초 안 다시 기동 rc=1 · stderr 끝="error: claim_denied: surface.create denied: privileged role 'master' is held by a live surface"
+   … 사람 입력 뒤 31초(초안은 줄에 남음)
+   전 행: {'surface_id': 1, 'role': 'master', 'released_role': None, 'agent_alive': False, 'seat': 'empty', 'pending_input_bytes': 16, 'pending_input_human_bytes': 16, 'input_paste_open': False, 'human_idle_secs': 31, 'created_at': 1795113538.464466} · 생성 뒤 44.5 s
+   다시 기동 rc=92 stdout='surface:1'
+   stderr 끝: '[launch-agent] surface:1 created (role=master)\n[launch-agent] surface:1 — 멱등 재반환된 자리(같은 역할·에이전트·폴더 120초 안 다시 기동)에 기동 줄을 치지 않았다: 입력줄에 사람이 쓰던 글이 있다 · 좌석 보존 — 그 창의 글을 지우거나 보낸 뒤 다시 기동'
+   뒤 행: {'surface_id': 1, 'role': 'master', 'released_role': None, 'agent_alive': False, 'seat': 'empty', 'pending_input_bytes': 16, 'pending_input_human_bytes': 16, 'input_paste_open': False, 'human_idle_secs': 31, 'created_at': 1795113538.464466}
+   같은 좌석 남음 = True · 입력줄 바이트 같음 = True · 화면 같음 = True · 화면 끝 줄 = ['                                                                                             %                                              oogisoogi@oogisoogiui-MacBookPro wk % echo DRAFT-OWNER']
+④ 사람 C-u 응답: {"human_input_stamp": "1795113536102:2", "sent": true, "surface_id": 1}
+   … 31초
+   전 행: {'surface_id': 1, 'role': None, 'released_role': None, 'agent_alive': False, 'seat': 'empty', 'pending_input_bytes': 0, 'pending_input_human_bytes': 0, 'input_paste_open': False, 'human_idle_secs': 31, 'created_at': 1795113538.464466} · 생성 뒤 75.6 s
+   다시 기동 rc=0 stdout='surface:1'
+   stderr 끝: 'ed (role=master)\n[launch-agent] claude starting… (polling readiness, max 60s)\n[launch-agent] ready(신규 출현분에 마커) — 주입 안전\n[launch-agent] directive 주입 검증 확정 — awakened_at 래치(set-status ack) (108760 bytes)'
+   뒤 행: {'surface_id': 1, 'role': None, 'released_role': None, 'agent_alive': True, 'seat': 'occupied', 'pending_input_bytes': 0, 'pending_input_human_bytes': 0, 'input_paste_open': False, 'human_idle_secs': 40, 'created_at': 1795113538.464466}
+   5초 뒤 좌석 수(마스터): 0 · 행 {'surface_id': 1, 'role': None, 'released_role': None, 'agent_alive': True, 'seat': 'occupied', 'pending_input_bytes': 0, 'pending_input_human_bytes': 0, 'input_paste_open': False, 'human_idle_secs': 45, 'created_at': 1795113538.464466} · 사건 role.claim_denied [True]
+   role·seat 사건: [["role.awakened", {"role": "master", "surface_id": null, "from": null, "to": null, "reason": null, "holder": null, "new_surface": null, "old_surface": null, "cause": null}], ["role.claim_denied", {"role": "master", "surface_id": null, "from": null, "to": null, "reason": "privileged role held by live surface", "holder": null, "new_surface": null, "old_surface": null, "cause": null}], ["role.released", {"role": "master", "surface_id": null, "from": null, "to": null, "reason": "agent_exited", "holder": null, "new_surface": null, "old_surface": null, "cause": null}]]
+⑤ 조건부 닫기 · 생성 시각 다름: {"code": "close_refused", "message": "surface.close if_quiet refused: created_at_mismatch · not closed", "reason": "created_at_mismatch"}
+   사람 초안: {"code": "close_refused", "message": "surface.close if_quiet refused: input_line_has_human_draft · not closed", "reason": "input_line_has_hu · 좌석 남음 = True
+   비운 직후(30초 안 사람 입력): {"code": "close_refused", "message": "surface.close if_quiet refused: recent_human_input · not closed", "reason": "recent_human_input"}
+   … 31초 조용히
+   조용함: {"cause": "OwnerClose", "closed": true, "if_quiet": true, "surface_id": 2} · 좌석 없음 = True
+   사건 surface.close_if_quiet_denied: ['created_at_mismatch', 'input_line_has_human_draft', 'recent_human_input']
+
+## 대조(role_probe.py · 사람 입력 0 · 죽인 뒤 N초 기다려 다시 기동) — ④ 의 「마스터 0」 이 이 고침 탓인가
+- 기준 dea2e1853 빌드 · 지연 0  : dead role=master → relaunch rc 0(멱등 재반환) → after role=master · masters [1]
+- 이 가지 빌드   · 지연 0  : 같음(role=master · masters [1])
+- 기준 dea2e1853 · 지연 55초: before relaunch role=master(사망 55초 < 유예 60) → after role=master · masters [1]
+- 이 가지        · 지연 55초: 같음
+- 기준 dea2e1853 · 지연 70초: before relaunch role=None(role.released agent_exited · ROLE_RELEASE_GRACE_SECS 60) → relaunch rc 0(멱등 재반환 · 같은 좌석 되살아남) → after role=None · masters []
+- 판정: ④ 의 마스터 0 = 기존 동작(60초 역할 회수 뒤 120초 멱등 재반환으로 되살리면 그 좌석이 역할을 다시 쥐지 않음) · 이 고침과 무관 → 📌
+- 잔재: 격리 폴더 s5e·s5f·s5g 프로세스 0 · lsof 0(03:4x)

@@ -28,7 +28,8 @@ ENV_KEYS = ("HOME", "CLAUDE_CONFIG_DIR", "CYS_ACCOUNT_DIR", "CYS_PACK_DIR", "JAV
 LINKED_DESC_CAP = 16000
 NEW_ASSET_DESC_MAX = 150   # 「무엇+언제」 2문장(1.1.12 skill-fold 와 같은 문체)
 NEW_ASSET_SKILLS = ["motion-graphics-prompt", "video-report-deck", "ppt-design-system",
-                    "ppt-styles", "portrait-cutout"]
+                    "ppt-styles", "portrait-cutout",
+                    "narrated-motion", "style-guide-ab", "notebook-source-pack"]
 OVERLAP_MAX = 0.5   # 두 설명의 낱말 겹침(Jaccard) 상한 — 같은 일을 두 스킬이 주장하면 실패
 
 

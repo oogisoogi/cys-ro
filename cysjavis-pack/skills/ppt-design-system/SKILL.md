@@ -9,6 +9,7 @@ description: 기존 PPT(.pptx)를 분석해 색·글꼴·크기 위계·배치�
 스킬 폴더: `SK="${CYS_PACK_DIR:-$HOME/.cys/pack}/skills/ppt-design-system"`
 - 25기준 원문 = `$SK/references/heidi-guideline.md`(지은이 헤이디 · 원문 동봉 · 출처 머리말)
 - 이야기 층 절차 = `$SK/references/story-first.md`
+- 다 만든 장·첫 화면 점검 = `$SK/references/glance-test-checklist.md`(3초 테스트 — 핵심 하나가 시선 1번이 될 때까지 주변을 낮춘다)
 - 근거표 도구 = `$SK/tools/pptx_design_extract.py`(python3 표준 라이브러리만)
 - 빈 공통 양식 = `$SK/templates/COMMON.md`
 

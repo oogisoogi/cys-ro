@@ -25,7 +25,8 @@ S="${CYS_PACK_DIR:-$HOME/.cys/pack}/skills/motion-graphics-prompt"
 ## 언제 쓰나
 
 - 행사·발표 시작 전에 화면에 한 번 트는 15~30초 영상, 키네틱 타이포·도형 변신 영상이 필요할 때.
-- 내레이션(음성 + SRT)에 맞춰 그림이 움직이는 설명·이야기 영상도 이 스킬이다 — 의뢰서 8칸 「내레이션 기반」을 채운다(길이 = 내레이션 + 1초 · 장면 시작 = SRT 시각).
+- 내레이션(음성 + SRT)이 이미 있고 그에 맞춰 그림이 움직이는 설명·이야기 영상도 이 스킬이다 — 의뢰서 8칸 「내레이션 기반」을 채운다(길이 = 내레이션 + 1초 · 장면 시작 = 문장 번호(CUE)).
+- 대본·주제만 받아 **목소리(내레이션)가 들어간 설명 영상**을 처음부터 만들 때는 이 스킬이 아니라 `narrated-motion`(무료 음성 · 문장 단위 싱크 검사)을 쓴다.
 - 이 스킬이 아닌 것:
   - 실사 사진·키비주얼 질감을 그대로 살려야 하는 영상 → `media-gen`(fal.ai 종량제 · `cost-preview-confirm` 로 비용 먼저). 이 스킬은 그림을 코드로 다시 그리므로 질감이 사라진다.
   - 아바타가 말하는 유튜브 영상 → `youtube-video-pipeline`.
@@ -78,6 +79,8 @@ S="${CYS_PACK_DIR:-$HOME/.cys/pack}/skills/motion-graphics-prompt"
 - 외부 결제·가입은 이 스킬에서 하지 않는다(필요하면 `media-gen` + `cost-preview-confirm`).
 - 웹 글꼴 주소만 쓰면 오프라인·샌드박스에서 대체 글꼴로 찍힌다 — 글꼴 파일을 페이지 옆에 두고 `@font-face` 로 연결한다.
 - `node_modules` 는 `~/.cys/deps/motion-graphics-prompt`(또는 `CYS_SKILL_DEPS`)에 둔다 — 스킬 폴더에 설치하면 다음 팩 갱신 때 사라진다.
+- 캔버스 2D 를 쓰면 seek(t) 첫머리에서 상태(`setTransform`·`globalAlpha`·`globalCompositeOperation`·`filter`·`lineDash`)를 기본값으로 되돌린다 · 셰이더는 음수 밑 `pow` 금지(`max(x,0.)` · NaN 한 점이 블러를 타고 번져 깜빡인다). (aimotion · MIT · 원리만)
+- 헤드리스 렌더에서 작은 도형 수천 개 + 캔버스 `filter`(blur)는 프레임당 수 초~수십 초가 걸릴 수 있다 — 스틸 한 장 시간을 먼저 재고(`time node seek_render.js … --stills`) 프레임 수를 곱해 영상 시간을 예측한다.
 - 영상 한 편 렌더는 길이·`--subframes` 에 비례해 오래 걸린다(4초 · 30fps · 서브프레임 3 = 프레임 360장). 그래서 스틸에서 먼저 고친다.
 
 ## 확인하는 방법

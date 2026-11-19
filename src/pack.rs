@@ -7893,11 +7893,11 @@ mod tests {
             let want = format!("skills/{skill}/SKILL.md");
             assert!(names.iter().any(|p| *p == want), "appbuild 스킬 임베드 누락: {skill}");
         }
-        // 산출물(문서·차트·영상·PPT) 스킬 18종(asset-skills-for-seats · preflight C84 OUTPUT_SKILLS와
-        // 동기) — 자산 승격 5 + 기존 산출물 13. 새 스킬 추가 시 양쪽과 예산 시험을 함께 갱신한다.
+        // 산출물(문서·차트·영상·PPT) 스킬 21종(asset-skills-for-seats · preflight C84 OUTPUT_SKILLS와
+        // 동기) — 자산 승격 5 + 1.1.16 승격 3(cysr-1116-asset-skills-1120) + 기존 산출물 13. 새 스킬 추가 시 양쪽과 예산 시험을 함께 갱신한다.
         for skill in [
             "motion-graphics-prompt", "video-report-deck", "ppt-design-system", "ppt-styles",
-            "portrait-cutout",
+            "portrait-cutout", "narrated-motion", "style-guide-ab", "notebook-source-pack",
             "hwp", "rhwp-edit", "korean-humanizer", "korean-spell-check", "korean-character-count",
             "design-token-system", "design-system-propagate",
             "transcription", "scene-cut", "caption-align", "caption-correct", "sfx-place", "voice-local",

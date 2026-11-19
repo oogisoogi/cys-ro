@@ -155,6 +155,20 @@ function scratchMake(dir) {
       console.log(`스틸 ${name} sha=${sha(first[i])} 결정론=${same ? "OK" : "FAIL(재촬영 sha=" + sha(again) + ")"}`);
       if (!same) fail++;
     }
+    // 새 페이지 검사: 불러올 때 한 번 쓰는 Math.random·Date 는 같은 페이지 재촬영으로는 안 잡힌다
+    // (스틸 실행과 영상 실행은 서로 다른 페이지 → 사람이 본 스틸과 영상이 달라진다). 새 페이지에서 역순으로 다시 찍어 비교.
+    const fresh = await browser.newPage({ viewport: { width: o.width, height: o.height } });
+    await fresh.goto("file://" + path.resolve(o.page));
+    await fresh.evaluate(() => document.fonts.ready);
+    for (let i = ts.length - 1; i >= 0; i--) {
+      await fresh.evaluate(t => window.seek(t), ts[i]);
+      await fresh.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))));
+      const again = await fresh.screenshot();
+      const same = Buffer.compare(first[i], again) === 0;
+      console.log(`스틸 ${ts[i]}s 새페이지=${same ? "OK" : "FAIL(새 페이지 sha=" + sha(again) + " — 불러올 때의 무작위·현재 시각을 시드 난수로)"}`);
+      if (!same) fail++;
+    }
+    await fresh.close();
   }
 
   if (o.duration) {

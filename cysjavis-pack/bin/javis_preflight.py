@@ -838,6 +838,8 @@ OUTPUT_SKILLS = [
     # ⓐ 자산 승격
     "motion-graphics-prompt", "video-report-deck", "ppt-design-system", "ppt-styles",
     "portrait-cutout",
+    # ⓐ' 1.1.16 자산 승격(TICKET=cysr-1116-asset-skills-1120 · 판정표 docs/ASSET-LEDGER.md)
+    "narrated-motion", "style-guide-ab", "notebook-source-pack",
     # ⓑ 기존 산출물 스킬(문서·한글 글쓰기)
     "hwp", "rhwp-edit", "korean-humanizer", "korean-spell-check", "korean-character-count",
     # ⓑ 기존 산출물 스킬(디자인·영상 갭)

@@ -143,6 +143,46 @@ class ExtraRef(unittest.TestCase):
         self.assertEqual((self.read(RS), self.read(LIST)), before)
         self.assertFalse(os.path.exists(os.path.join(self.root, RS + ".gen-tmp")), "첫 표 임시 파일이 남았다")
 
+    def load_gen(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("genx", os.path.join(self.root, "scripts", "gen_released_directive_hashes.py"))
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return m
+
+    def main_with_replace_failure(self, fail_on):
+        """생성기 main() 을 이 프로세스에서 부르되 os.replace 의 fail_on 번째 호출(1부터)을 실패시킨다."""
+        from unittest import mock
+        m = self.load_gen()
+        real, n = os.replace, [0]
+
+        def flaky(a, b):
+            n[0] += 1
+            if n[0] == fail_on:
+                raise OSError("주입: replace %d 실패" % fail_on)
+            return real(a, b)
+        old_env, old_argv = dict(os.environ), sys.argv
+        os.environ.update(self.env)
+        sys.argv = ["gen", "--extra-ref", self.b]
+        try:
+            with mock.patch.object(m.os, "replace", flaky):
+                rc = m.main()
+        finally:
+            os.environ.clear(); os.environ.update(old_env); sys.argv = old_argv
+        return rc
+
+    def test_second_table_replace_failure_rolls_back_first(self):
+        """두 표 중 첫 표를 바꾼 뒤 둘째 rename 이 실패해도 첫 표가 되돌아가 둘 다 원상(codex 2R #8)."""
+        self.assertEqual(self.run_gen()[0], 0)
+        before = (self.read(RS), self.read(LIST))
+        self.assertEqual(self.main_with_replace_failure(2), 2)
+        self.assertEqual((self.read(RS), self.read(LIST)), before)
+        left = [n for d, _, fs in os.walk(self.root) for n in fs if n.endswith((".gen-tmp", ".gen-bak"))]
+        self.assertEqual(left, [], "임시·사본 파일이 남았다")
+        self.assertEqual(self.main_with_replace_failure(99), 0)          # 대조: 실패 없으면 두 표 모두 새 판
+        self.assertIn(sha(b"master B\n"), self.read(LIST))
+        self.assertNotEqual(self.read(RS), before[0])
+
     def test_extra_ref_is_pinned_once_before_reading(self):
         """가지 이름을 줬을 때 시작에서 한 번 OID 로 고정한다 — 읽는 도중 가지가 움직여도 고정한 커밋을 읽는다."""
         import importlib.util

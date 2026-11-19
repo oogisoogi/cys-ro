@@ -186,8 +186,42 @@ def main():
                 pass
         sys.stderr.write("[gen_released_directive_hashes] 임시 파일 쓰기 실패 — 두 표 모두 그대로(%s · exit 2)\n" % e)
         return 2
-    for tmp, path in tmps:
-        os.replace(tmp, path)
+    # 바꿔 끼우기 — 원본을 같은 폴더 사본(.gen-bak)으로 떠 둔 뒤 차례로 rename · 하나라도 실패하면 이미 바꾼 표를 사본으로
+    #   되돌려 둘 다 원상(codex 2R #8). 두 rename 은 하나의 원자 동작이 아니다 — 프로세스가 그 사이에서 강제로 죽는 경우만
+    #   남고, 그때는 다음 실행의 --check 가 표류(exit 1)로 잡는다.
+    baks, done = [], []
+    try:
+        for _, path in tmps:
+            bak = None
+            if os.path.exists(path):
+                bak = path + ".gen-bak"
+                with open(path, "rb") as src, open(bak, "wb") as dst:
+                    dst.write(src.read())
+            baks.append((bak, path))
+        for tmp, path in tmps:
+            os.replace(tmp, path)
+            done.append(path)
+    except (OSError, KeyboardInterrupt) as e:
+        for bak, path in baks:
+            if path not in done:
+                continue
+            try:
+                if bak:
+                    os.replace(bak, path)
+                else:
+                    os.remove(path)
+            except OSError:
+                sys.stderr.write("[gen_released_directive_hashes] ✗ 되돌리기 실패 — %s 를 손으로 확인(--check)\n" % path)
+        for tmp, _ in tmps:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        sys.stderr.write("[gen_released_directive_hashes] 표 바꿔 끼우기 실패 — 바꾼 표를 되돌림 · 두 표 모두 그대로(%s · exit 2)\n" % e)
+        return 2
+    finally:
+        for bak, _ in baks:
+            if bak and os.path.exists(bak):
+                os.remove(bak)
+    for path in done:
         print("[gen_released_directive_hashes] wrote %s" % path)
     return 0
 

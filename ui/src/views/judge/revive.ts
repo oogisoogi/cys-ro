@@ -48,6 +48,8 @@ export interface ReviveFacts {
   dead: { sid: number; axis: DeadAxis } | null;
   /** 행 증거(등록 있음 ∧ 본 적 없음 ∧ 좌석 Empty)가 처음 보인 시각 · 끊기면 null */
   neverSince: number | null;
+  /** 지금 마스터 좌석이 이 기기에서 살아 있는 마스터로 본 바로 그 좌석인가(번호 + 생성 시각) — 등록 없는 빈 좌석 꺼짐의 근거 */
+  seenSame?: boolean;
   /** 마지막 master.idle(본부 · role master) — 새 출력이 있으면 공통층이 지운다 */
   idle: { sid: number; at: number } | null;
   now: number;
@@ -99,7 +101,8 @@ export function reviveSituation(f: ReviveFacts): ReviveSit {
   const sustained = f.neverSince !== null && f.now - f.neverSince >= NEVER_STARTED_MS;
   if (neverStartedEvidence(m) && sustained) return { kind: "down", down: "never", axis: "agent_never_started", sid };
   // (codex 1R major) 등록 없는 마스터 좌석이 빈 셸로 이어짐 + 이 기기에서 마스터를 본 적 있음 = 사건(seat_vacant_no_meta)을 못 받은 앱 새로 켬도 꺼짐으로
-  if (vacantNoMetaEvidence(m) && sustained && (f.seenBefore || f.goneMark)) return { kind: "down", down: "agent", axis: "seat_vacant_no_meta", sid };
+  //   (codex 2R minor) 근거 = 바로 이 좌석을 살아 있는 마스터로 본 적 있음 — 다른 좌석·옛 데몬 표식만으로는 「준비 중」(거짓 꺼짐 띠 0)
+  if (vacantNoMetaEvidence(m) && sustained && f.seenSame === true) return { kind: "down", down: "agent", axis: "seat_vacant_no_meta", sid };
   if (f.idle && f.idle.sid === sid && m.agent_alive === true) return { kind: "idle", sid };
   return { kind: "ok" };
 }

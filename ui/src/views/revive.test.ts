@@ -626,6 +626,38 @@ describe("codex 1R 고침", () => {
     b.observe();
     expect(b.book.view().sit.kind).toBe("ok");
   });
+  it("(2R M3) 복원 start 뒤 화면을 내려 done 을 놓쳐도 앱 수명 값이 false 면 잠그지 않음", async () => {
+    const e = new Env(dead);
+    (e.book as unknown as { d: { restoring: () => boolean } }).d.restoring = () => false;
+    e.observe();
+    e.book.onAppEvent("restore-progress", { phase: "start" }); // done 을 못 받은 걸쇠
+    await e.book.restart();
+    expect(e.count("start_master")).toBe(1);
+  });
+  it("(2R M5) 빈 좌석 증거 종류가 바뀌면 90초를 새로 셈 · (2R minor) 다른 좌석 신원이면 등록 없는 빈 좌석 = 준비 중", () => {
+    const e = new Env((x) => {
+      x.store.set(SEEN_KEY, JSON.stringify({ sid: 5, created_at: 1005 }));
+      x.rows = [row(5, "master", { agent: null, agent_alive: null, agent_seen: null, seat: "empty" })];
+    });
+    e.observe();
+    e.now += NEVER_STARTED_MS - 1_000;
+    Object.assign(e.rows[0], { agent: "claude", agent_seen: false }); // 등록됨 → never 증거로 바뀜
+    e.observe();
+    e.now += 2_000;
+    e.observe();
+    expect(e.book.view().sit.kind).toBe("ok"); // 합산이면 down 이었다
+    e.now += NEVER_STARTED_MS;
+    e.observe();
+    expect(pick(e.book.view().sit, { kind: "down", down: "never" })).toEqual({ kind: "down", down: "never" });
+    const f = new Env((x) => {
+      x.store.set(SEEN_KEY, JSON.stringify({ sid: 5, created_at: 1 })); // 옛 데몬의 같은 번호
+      x.rows = [row(5, "master", { agent: null, agent_alive: null, agent_seen: null, seat: "empty" })];
+    });
+    f.observe();
+    f.now += NEVER_STARTED_MS * 2;
+    f.observe();
+    expect(f.book.view().sit.kind).toBe("ok");
+  });
   it("옛 마스터 창에 30초 안 사람 입력 → 다시 켜지 않음(닫기·start 0) · 입력 시각 모름도 막음", async () => {
     for (const hi of [3, undefined]) {
       const e = new Env(dead);

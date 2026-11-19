@@ -7988,9 +7988,14 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             } else {
                 None
             };
+            // 가드 = 「사람 표지 ∧ 기계 표지 아님 ∧ refuse_on_approval」(앱 대화 화면 원자 제출 꼴)만 — 이 꼴은 에이전트 작업 길(direct_agent_intent)에
+            //   닿지 않아(`human && !machine_origin` → None) 쓰기 줄 인계 = try_write 하나다. 인계 뒤 결판이 따로 오는 갈래가 없다(codex 2R M1).
             let mut stamp_guard = HumanStampGuard {
                 s: surface.clone(),
-                st: human_stamp.filter(|_| params.get("refuse_on_approval").and_then(|v| v.as_bool()).unwrap_or(false)),
+                st: human_stamp.filter(|_| {
+                    params.get("refuse_on_approval").and_then(|v| v.as_bool()).unwrap_or(false)
+                        && !params.get("machine_origin").and_then(|v| v.as_bool()).unwrap_or(false)
+                }),
             };
             // T3-13 권위 전달(clear_first): 잔존 미제출 텍스트를 Ctrl-U로 지운 깨끗한 라인에
             // 명령을 원자적으로 꽂고 제출한다(아래 Inject 경로). 게이트를 데몬에서 집행한다.

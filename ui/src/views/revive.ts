@@ -13,7 +13,8 @@ import {
   BOOT_DEGRADED_WINDOW_MS,
   deadAxisOf,
   denialNext,
-  emptySeatEvidence,
+  neverStartedEvidence,
+  vacantNoMetaEvidence,
   seatIdOf,
   type SeatId,
   GATE_WORK_HINT,
@@ -87,6 +88,9 @@ export class ReviveBook {
   private dead: { sid: number; axis: DeadAxis } | null = null;
   private idle: { sid: number; at: number } | null = null;
   private neverSince: number | null = null;
+  /** 지금 이어지는 빈 좌석 증거 종류 — 바뀌면 90초를 새로 센다(codex 2R M5) */
+  private emptyKind: "never" | "vacant" | null = null;
+  private sameSeen = false;
   private phase: RevivePhase = { kind: "rest" };
   private restoring = false;
   /** 누름 잠금(진행 중 = 다른 누름 무시 · 클릭 1 → 호출 ≤ 1) */
@@ -143,7 +147,13 @@ export class ReviveBook {
       if (this.storeGet(GONE_KEY) !== null) this.storeSet(GONE_KEY, null);
       if (this.dead && this.dead.sid === master.surface_id) this.dead = null;
     }
-    this.neverSince = emptySeatEvidence(master) ? (this.neverSince ?? now) : null;
+    const kind = neverStartedEvidence(master) ? "never" : vacantNoMetaEvidence(master) ? "vacant" : null;
+    this.neverSince = kind !== null && kind === this.emptyKind ? (this.neverSince ?? now) : kind !== null ? now : null;
+    this.emptyKind = kind;
+    // 이 좌석이 저장된 신원(이 기기에서 살아 있는 마스터로 본 그 좌석)과 같은가 — 등록 없는 빈 좌석 꺼짐의 근거(codex 2R minor)
+    const st = this.storedSeat();
+    const cur = master && org !== undefined ? seatIdOf(org, master.surface_id) : null;
+    this.sameSeen = !!st && !!cur && st.sid === cur.sid && st.created_at === cur.created_at;
     // 조용함 사건 뒤 새 출력·일 시작 = 풀림
     if (this.idle && master && this.idle.sid === master.surface_id && wokeUp(master, this.idle.at, now)) this.idle = null;
     // 깨우는 중 → 깨어남
@@ -221,6 +231,7 @@ export class ReviveBook {
       goneMark: this.storeGet(GONE_KEY) !== null,
       dead: this.dead,
       neverSince: this.neverSince,
+      seenSame: this.sameSeen,
       idle: this.idle,
       now: this.d.now(),
     });
@@ -232,8 +243,9 @@ export class ReviveBook {
     return { sit, phase: this.phase, band: reviveBand(sit, this.phase, restoring, this.d.now()), restoring };
   }
 
+  /** 앱 수명 값(deps.restoring)이 있으면 그것이 권위 — 사건 걸쇠는 그 값이 없을 때만(start 뒤 화면을 내려 done 을 놓친 걸쇠가 영영 잠그지 않게 · codex 2R M3). */
   private isRestoring(): boolean {
-    return this.restoring || this.d.restoring?.() === true;
+    return this.d.restoring ? this.d.restoring() === true : this.restoring;
   }
 
   /** 저장소의 마지막 마스터 신원(번호 + 생성 시각이 둘 다 있을 때만 — 옛 꼴「번호만」은 정리 근거 아님). */

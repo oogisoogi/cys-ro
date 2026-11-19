@@ -7807,6 +7807,8 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                         // F-01 (0.14.52) display-only CLI activity behind the tab dot — the cached observer
                         //   record, re-validated and lease-checked here. Drives nothing operational.
                         "display_activity": crate::activity::wire(daemon, s),
+                        // ★(1.1.16 · 차용 ② ⒞) OSC 7501 진단(질의 응답·보고·버림·마지막 원문·지운 까닭) — 표시·진단 전용.
+                        "program_status_diag": crate::program_status::diag(s),
                     })
                 })
                 .collect();

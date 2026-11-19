@@ -989,6 +989,15 @@ enum DaemonAction {
         #[arg(long)]
         json: bool,
     },
+    /// ★(1.1.16) 좌석 상태 판정의 근거를 사람 말로 보인다(읽기 전용) — 상태 · 그 뜻 · 출처(프로그램 보고 OSC 7501 / 화면 판정) ·
+    /// 프로그램이 적은 한 줄 · 7501 질의 응답·보고·버림 계수. 예: `cys daemon explain-state --surface 12`
+    ExplainState {
+        #[arg(long)]
+        surface: String,
+        /// 데몬 원문(display_activity · program_status_diag) JSON 한 줄
+        #[arg(long)]
+        json: bool,
+    },
     /// ★조각 1 이 역할의 저장 목록을 믿을 수 있는가(읽기 전용) — 0 = 믿을 수 있음 · 93 = 멈춤. `javis_boot_node` 가 좌석 회수 전에 묻는다.
     #[command(hide = true)]
     ResumeCheck {
@@ -3647,7 +3656,7 @@ fn command_never_autostarts(command: &Command) -> bool {
         command,
         Command::Ping
             | Command::Daemon {
-                action: DaemonAction::Status | DaemonAction::ResumeCheck { .. }
+                action: DaemonAction::Status | DaemonAction::ResumeCheck { .. } | DaemonAction::ExplainState { .. }
             }
             // 완전 초기화는 데몬을 죽이는 명령 — 어떤 경로로도 자동 기동을 발화하면 안 된다.
             | Command::FactoryReset { .. }
@@ -21106,10 +21115,101 @@ fn daemon_answers_within(socket: &std::path::Path, budget: std::time::Duration) 
     }
 }
 
+/// ★(1.1.16 · 차용 ② ⒞) `cys daemon explain-state` — 데몬이 이미 가진 값만 읽어 푼다(새 판정 0 · 데몬 자동 기동은 `cys list` 와 같다).
+fn run_explain_state(surface: &str, as_json: bool) -> i32 {
+    let sid = match resolve_surface_arg(surface) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("explain-state: {e}");
+            return 2;
+        }
+    };
+    let r = match request("surface.list", json!({})) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("explain-state: surface.list 실패 — {e}");
+            return 1;
+        }
+    };
+    let Some(row) = r["surfaces"].as_array().and_then(|a| a.iter().find(|v| v["surface_id"].as_u64() == Some(sid))) else {
+        eprintln!("explain-state: surface:{sid} 없음");
+        return 1;
+    };
+    let da = &row["display_activity"];
+    let diag = &row["program_status_diag"];
+    if as_json {
+        println!("{}", json!({"surface_id": sid, "display_activity": da, "program_status_diag": diag}));
+        return 0;
+    }
+    for line in explain_state_lines(sid, da, diag) {
+        println!("{line}");
+    }
+    0
+}
+
+/// 순수 — 데몬 값 → 사람 말 줄. 없는 값은 「없음」으로 적는다(추측 0).
+fn explain_state_lines(sid: u64, da: &Value, diag: &Value) -> Vec<String> {
+    let s = |v: &Value| v.as_str().map(str::to_string);
+    let state = s(&da["state"]).unwrap_or_else(|| "없음(구버전 데몬)".into());
+    let mut out = vec![format!("surface:{sid} 상태 = {state}")];
+    match s(&da["meaning"]) {
+        Some(m) => out.push(format!("  뜻: {m}")),
+        None if state == "unknown" => out.push("  뜻: unknown = 분류 못 함 · 일이 성공했다는 뜻이 아님".into()),
+        None => {}
+    }
+    let source = match s(&da["source"]).as_deref() {
+        Some("program_status") => "프로그램이 스스로 알린 상태(OSC 7501)".to_string(),
+        Some("screen") => format!("화면 판정(문법 {})", s(&da["grammar_revision"]).unwrap_or_else(|| "없음".into())),
+        _ => "판정 근거 없음(관측 없음·무효화·종료·구버전 데몬)".to_string(),
+    };
+    out.push(format!("  출처: {source}"));
+    out.push(format!("  사유: {}", s(&da["reason"]).unwrap_or_else(|| "없음".into())));
+    let ps = &da["program_status"];
+    if ps.is_object() {
+        out.push(format!(
+            "  프로그램 보고: state={} kind={} app={} · {}초 전 · 사람이 봄={}",
+            s(&ps["state"]).unwrap_or_default(),
+            s(&ps["kind"]).unwrap_or_else(|| "-".into()),
+            s(&ps["app"]).unwrap_or_else(|| "-".into()),
+            ps["age_secs"],
+            ps["seen"].as_bool().unwrap_or(false),
+        ));
+        if let Some(m) = s(&ps["msg"]) {
+            out.push(format!("  프로그램이 적은 말: {m}"));
+        }
+    }
+    if diag.is_object() {
+        let n = |k: &str| diag[k].as_u64().unwrap_or(0);
+        out.push(format!(
+            "  7501: 질의 응답 {}회 · 받은 보고 {} · 버린 보고 {}{} · 지금 기록 {}",
+            n("answered_queries"),
+            n("reports"),
+            n("discarded"),
+            s(&diag["last_discard"]).map(|w| format!("(마지막 까닭: {w})")).unwrap_or_default(),
+            n("records"),
+        ));
+        if let Some(raw) = s(&diag["last_report"]) {
+            out.push(format!("  마지막 보고 원문: {raw} · {}초 전", diag["last_report_age_secs"]));
+        }
+        if let Some(w) = s(&diag["last_wipe"]) {
+            out.push(format!("  마지막으로 지운 까닭: {w} · {}초 전", diag["last_wipe_age_secs"]));
+        }
+        if n("answered_queries") == 0 {
+            out.push("  해석: 이 프로그램은 7501 을 묻지 않았다(Codex·옛 Claude·`CYS_PROGRAM_STATUS=0`) — 화면 판정만 쓴다.".into());
+        }
+    } else {
+        out.push("  7501: 진단 없음(1.1.16 이전 데몬)".into());
+    }
+    out
+}
+
 fn run_daemon_cmd(action: DaemonAction) -> i32 {
     // ★D5: OS 무관 읽기 전용 조회 — 아래 OS 별 등록 관리 분기 앞에서 끝낸다.
     if let DaemonAction::DeptStatus { name, json } = &action {
         return run_dept_status(name, *json);
+    }
+    if let DaemonAction::ExplainState { surface, json } = &action {
+        return run_explain_state(surface, *json);
     }
     if let DaemonAction::ResumeCheck { role, agent, cwd } = &action {
         let held = match agent {
@@ -21227,7 +21327,7 @@ fn run_daemon_cmd(action: DaemonAction) -> i32 {
                     println!("launchd 등록 해제 완료 (데몬 정지됨 — 세션도 함께 종료)");
                     Ok(())
                 }
-                DaemonAction::DeptStatus { .. } | DaemonAction::ResumeCheck { .. } => Ok(()), // 함수 머리에서 이미 처리(도달 불가)
+                DaemonAction::DeptStatus { .. } | DaemonAction::ResumeCheck { .. } | DaemonAction::ExplainState { .. } => Ok(()), // 함수 머리에서 이미 처리(도달 불가)
                 DaemonAction::Status => {
                     let path = cys::launchd::plist_path();
                     let registered = path.exists();
@@ -21306,7 +21406,7 @@ fn run_daemon_cmd(action: DaemonAction) -> i32 {
                     println!("작업 스케줄러 등록 해제 완료");
                     Ok(())
                 }
-                DaemonAction::DeptStatus { .. } | DaemonAction::ResumeCheck { .. } => Ok(()), // 함수 머리에서 이미 처리(도달 불가)
+                DaemonAction::DeptStatus { .. } | DaemonAction::ResumeCheck { .. } | DaemonAction::ExplainState { .. } => Ok(()), // 함수 머리에서 이미 처리(도달 불가)
                 DaemonAction::Status => {
                     let registered = cys::hidden_command("schtasks")
                         .args(["/Query", "/TN", TASK])
@@ -59431,5 +59531,42 @@ mod agy_door_wiring_tests {
         let rs = &src[src.find("\nfn run_scoped(").expect("run_scoped")..];
         let spawn = rs.find("std::process::Command::new(&command[0])").expect("스폰");
         assert!(rs[..spawn].contains("cys::agy_door::launch_refusal_argv(&command)"), "cys run 이 스폰 전에 문 판정을 거치지 않는다(codex 1R blocking)");
+    }
+}
+
+// ★(1.1.16 · TICKET=cysr-1116-borrow23-1119 · 차용 ② ⒞) `cys daemon explain-state` 의 순수 풀이 — 출처·뜻·근거가 줄에 나온다.
+#[cfg(test)]
+mod explain_state_tests {
+    use super::explain_state_lines;
+    use serde_json::json;
+
+    #[test]
+    fn program_status_source_is_named_with_its_evidence() {
+        let da = json!({"state": "done", "meaning": "done = 끝났지만 아직 안 봄(error 포함 · 사람이 입력하면 waiting)",
+            "source": "program_status", "reason": "program status: done (not seen yet)",
+            "program_status": {"state": "done", "kind": null, "app": "claude-code", "msg": "Writing probe.txt", "age_secs": 1.5, "seen": false}});
+        let diag = json!({"answered_queries": 1, "reports": 4, "discarded": 1, "last_discard": "bad msg",
+            "last_report": "state=done:app=claude-code", "last_report_age_secs": 1.5, "last_wipe": "clear report", "last_wipe_age_secs": 9.0, "records": 1});
+        let out = explain_state_lines(7, &da, &diag).join("\n");
+        assert!(out.contains("surface:7 상태 = done"), "{out}");
+        assert!(out.contains("끝났지만 아직 안 봄"), "{out}");
+        assert!(out.contains("프로그램이 스스로 알린 상태(OSC 7501)"), "{out}");
+        assert!(out.contains("프로그램이 적은 말: Writing probe.txt"), "{out}");
+        assert!(out.contains("질의 응답 1회 · 받은 보고 4 · 버린 보고 1(마지막 까닭: bad msg)"), "{out}");
+        assert!(out.contains("마지막 보고 원문: state=done:app=claude-code"), "{out}");
+        assert!(!out.contains("화면 판정만 쓴다"), "{out}");
+    }
+
+    #[test]
+    fn unknown_from_screen_says_not_success_and_no_query() {
+        let da = json!({"state": "unknown", "raw": "unknown", "reason": "no observation", "retained": false});
+        let diag = json!({"answered_queries": 0, "reports": 0, "discarded": 0, "records": 0});
+        let out = explain_state_lines(3, &da, &diag).join("\n");
+        assert!(out.contains("일이 성공했다는 뜻이 아님"), "{out}");
+        assert!(out.contains("판정 근거 없음"), "{out}");
+        assert!(out.contains("화면 판정만 쓴다"), "{out}");
+        // 1.1.15 데몬(진단 없음).
+        let old = explain_state_lines(3, &da, &serde_json::Value::Null).join("\n");
+        assert!(old.contains("진단 없음(1.1.16 이전 데몬)"), "{old}");
     }
 }

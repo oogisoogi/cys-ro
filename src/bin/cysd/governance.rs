@@ -1072,6 +1072,12 @@ fn check_agent_death_with_model(
         if s.agent_exit_notified.swap(true, Ordering::Relaxed) {
             continue; // 이미 통지
         }
+        // ★(1.1.16 · 차용 ② ⒟) 에이전트가 끝나 셸로 돌아왔다 — 그 프로그램이 남긴 7501 상태를 지운다(죽은 프로그램의
+        //   working·blocked·done 이 다음 에이전트 좌석 줄에 남지 않게 · 표시 전용 기록이라 다른 판정과 무관).
+        s.program_status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .wipe(true, "agent exited (shell returned)", std::time::Instant::now());
         // ★적대 R2(Fable F2 · 우리 1.1.7 ④ 회귀 봉합 — 1.1.8 병합: 원작자 상태기계 API 로 옮김): 입력줄의 주인(에이전트 TUI)이
         //   죽었다 — 그 초안도 함께 사라졌으므로 미제출 계수(사람 몫 포함)를 비운다. 비우지 않으면 소멸한 초안의 사람 계수가
         //   node-recover 의 C-u·기동 줄을 human_draft 로 영구 거부해(rc 79 매 부트) 원격 복구가 안 된다.

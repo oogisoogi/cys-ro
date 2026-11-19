@@ -55,6 +55,7 @@ mod office_bridge;
 mod native_publication;
 mod pending_requests;
 mod policy_loader;
+mod program_status;
 mod panetitle;
 mod rc_guard;
 mod recall;

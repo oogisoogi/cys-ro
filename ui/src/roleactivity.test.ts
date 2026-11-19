@@ -3,7 +3,7 @@
 //   ② CSS: 무조건 깜박임 제거 — 작업 중만 깜박인다 · 움직임 줄임에서도 작업 중은 구별된다
 //   ③ U-F06: main.ts 의 **실제** refreshPaneTitles·활동 패스 본문을 떼어 돌린다(가짜 DOM · 가짜 IPC · 가짜 단조 시계)
 import { describe, it, expect } from "bun:test";
-import { seatDot } from "./seatrows"; // (tabs-sidebar 1c) paintRoleDot 의 판정 함수
+import { seatDot, seatState, seatTag } from "./seatrows"; // (tabs-sidebar 1c) paintRoleDot 의 판정 함수
 import { readFileSync } from "node:fs";
 import {
   parseDisplayActivity,
@@ -13,6 +13,7 @@ import {
   HIDDEN_DOT,
   STALE_WORKING_MS,
   activityExpiryMs,
+  DOT_CLASS,
 } from "./roleactivity";
 import { SurfaceListTransport } from "./surfacelist";
 import { roleDotColor } from "./appearance";
@@ -33,6 +34,7 @@ describe("★F-01 parseDisplayActivity — 데몬 꼴만 믿는다(빠짐·형�
     expect(parseDisplayActivity(WIRE())).toEqual({
       kind: "observation", state: "working", raw: "active", reason: "active footer", family: "claude", grammarRevision: "claude-1",
       observedAgeSecs: 0.4, lastPositiveAgeSecs: 0.4, stableAgeSecs: 5, seq: 7, epoch: "ep-1", retained: false, consecutiveRejections: 0,
+      meaning: null, source: null, programStatus: null, // 1.1.15 데몬 꼴(뜻·출처·근거 없음)도 그대로 받는다
     });
   });
   it("missing key (old daemon), the degenerate unknown form and malformed values all project Unknown", () => {
@@ -520,7 +522,7 @@ describe("F-01 wire cross-pin — daemon display_activity keys and enums == UI p
 
   it("every key the daemon sends is read by the parser, and the parser reads no key the daemon does not send", () => {
     const daemon = jsonKeys(slice(RS, "pub(crate) fn wire_at("));
-    expect(daemon.length).toBe(12);
+    expect(daemon.length).toBe(15); // ★(1.1.16 · 차용 ②) + meaning · source · program_status
     expect(parserKeys()).toEqual(daemon);
   });
   it("the degenerate Unknown carries exactly the four keys the parser accepts without an identity", () => {
@@ -536,11 +538,65 @@ describe("F-01 wire cross-pin — daemon display_activity keys and enums == UI p
       state: "working", raw: "active", reason: "", family: "claude", grammar_revision: "claude-r1",
       observed_age_secs: 0.5, last_positive_age_secs: 0.5, stable_age_secs: 2, observation_seq: 7,
       display_epoch: "e1", retained: false, consecutive_rejections: 0,
+      meaning: "working = 지금 일하는 중", source: "screen", program_status: null,
     };
     const daemon = jsonKeys(slice(RS, "pub(crate) fn wire_at("));
     const obj = Object.fromEntries(daemon.map((k) => [k, vals[k]]));
     expect(Object.values(obj).includes(undefined)).toBe(false);
     const p = parseDisplayActivity(obj);
     expect(p.kind).toBe("observation");
+  });
+});
+
+// ★(1.1.16 · TICKET=cysr-1116-borrow23-1119 · 차용 ②) OSC 7501 프로그램 보고 — 데몬 wire_with 꼴 · done(끝났지만 안 봄) · 근거 문구.
+describe("program status (OSC 7501) overlay — parse · project · seat row", () => {
+  const PS = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    state: "done", kind: null, app: "claude-code", msg: null, title: null, progress: null, id: "", age_secs: 1.2, seen: false, records: 1, ...over,
+  });
+  const PW = (state: string, raw: string, ps: Record<string, unknown>, over: Record<string, unknown> = {}) =>
+    WIRE({ state, raw, reason: `program status: ${ps.state}`, meaning: "m", source: "program_status", program_status: ps, ...over });
+
+  it("parses the daemon overlay and keeps the evidence", () => {
+    const p = parseDisplayActivity(PW("done", "done", PS()));
+    expect(p.kind).toBe("observation");
+    if (p.kind !== "observation") return;
+    expect(p.state).toBe("done");
+    expect(p.source).toBe("program_status");
+    expect(p.programStatus).toEqual({ state: "done", kind: null, app: "claude-code", msg: null, ageSecs: 1.2, seen: false });
+  });
+  it("done projects to its own dot (not waiting, not unknown) and says 「아직 안 봄」", () => {
+    const store = new RoleActivityStore(31_000);
+    expect(store.accept("k", 1, 0, 10, PW("done", "done", PS()))).toBe("accepted");
+    const pr = projectActivity(store.get("k"), 20, 31_000);
+    expect(pr.view).toBe("done");
+    expect(pr.text).toContain("끝남 · 아직 안 봄");
+    expect(pr.text).toContain("프로그램 보고(claude-code)");
+    expect(DOT_CLASS.done).toBe("act-done");
+  });
+  it("input wait carries the program's own line (e.g. which tool waits for approval)", () => {
+    const store = new RoleActivityStore(31_000);
+    store.accept("k", 1, 0, 10, PW("waiting_for_input", "permission", PS({ state: "blocked", kind: "permission", msg: "approve Write: probe.txt" })));
+    const pr = projectActivity(store.get("k"), 20, 31_000);
+    expect(pr.view).toBe("input");
+    expect(pr.text).toContain("approve Write: probe.txt");
+  });
+  it("long program messages are clipped in the label", () => {
+    const p = parseDisplayActivity(PW("working", "active", PS({ state: "working", msg: "x".repeat(500) })));
+    expect(p.kind === "observation" && p.programStatus?.msg?.length).toBe(121);
+  });
+  it("malformed overlays are refused (Unknown), never painted", () => {
+    expect(parseDisplayActivity(PW("done", "done", PS(), { source: "elsewhere" })).kind).toBe("unknown");
+    expect(parseDisplayActivity(PW("done", "done", PS({ seen: "no" }))).kind).toBe("unknown");
+    expect(parseDisplayActivity(PW("done", "done", PS(), { program_status: null })).kind).toBe("unknown"); // 출처는 프로그램인데 근거 없음
+    expect(parseDisplayActivity(WIRE({ state: "done", raw: "done" })).kind).toBe("unknown"); // done 은 프로그램 보고에서만
+    expect(parseDisplayActivity(PW("done", "done", PS(), { meaning: 7 })).kind).toBe("unknown");
+  });
+  it("seat row: done = 대기 + 「확인」 꼬리표 · waiting = 대기(꼬리표 없음)", () => {
+    const base = { sid: 1, displayNo: 1, role: "worker", title: "t", cwd: "/a", exited: false, approvalPending: false, statusState: null, task: null, ctxPct: null, ctxSrc: "none" as const };
+    const d = { ...base, dot: "done" as const };
+    expect(seatState(d)).toBe("idle");
+    expect(seatTag(d, seatState(d))).toBe("확인");
+    const w = { ...base, dot: "waiting" as const };
+    expect(seatTag(w, seatState(w))).toBe(null);
   });
 });

@@ -2730,6 +2730,9 @@ pub struct Surface {
     /// (B2) OSC 9/99/777 알림 스캐너 carry — reader 스레드 전용(단일 스레드 접근이라 Mutex면 충분).
     /// strip 전 raw chunk를 누적해 완성 OSC 시퀀스만 추출한다(화면 렌더/strip 경로와 독립).
     pub osc_carry: Mutex<Vec<u8>>,
+    /// ★(1.1.16 · 차용 ②) OSC 7501 프로그램 상태 — 흐름 스캐너(reader 스레드 전용) + 좌석별 기록(표시 전용 · `program_status.rs`).
+    pub ps_scanner: Mutex<crate::program_status::Scanner>,
+    pub program_status: Mutex<crate::program_status::Store>,
     /// T4-4/T6-P3 능력 가드: 이 surface의 정규화된 권한 집합(write⊇read·deny-by-default).
     /// 역할 변경(claim_role)과 동기 갱신 — cysd-매개 변형 경로(send/scoped run)의 게이트 키.
     /// role과 함께 도출하되 self-declared role을 신뢰하지 않고 cysd-인증 발신 surface를 키로 쓴다.
@@ -8345,6 +8348,8 @@ impl Daemon {
             // 그 외 deny-by-default none). claim_role이 역할 전이 시 동기 재도출한다.
             caps: Mutex::new(crate::caps::Caps::for_role(role.as_deref())),
             osc_carry: Mutex::new(Vec::new()),
+            ps_scanner: Mutex::new(crate::program_status::Scanner::default()),
+            program_status: Mutex::new(crate::program_status::Store::default()),
             parser_panics: AtomicU64::new(0),
             activity_pending: AtomicU64::new(0),
             activity_identity_rev: AtomicU64::new(0),
@@ -8439,6 +8444,8 @@ impl Daemon {
         let debug = cys::env_compat("CYS_DEBUG")
             .map(|v| v == "1")
             .unwrap_or(false);
+        // ★(1.1.16 · 차용 ②) 좌석 기동 때 한 번 읽는다(`CYS_PROGRAM_STATUS=0` = 1.1.15 동작 · 질의 무응답).
+        let ps_enabled = crate::program_status::enabled();
         std::thread::spawn(move || {
             let mut reader = reader;
             let mut buf = [0u8; 16 * 1024];
@@ -8616,6 +8623,23 @@ impl Daemon {
                                 );
                             }
                         }
+                        // ★(1.1.16 · 차용 ②) OSC 7501 — 지원 질의에 답하고 상태 보고를 좌석 기록에 담는다(표시 전용).
+                        //   응답은 DSR 응답과 같은 데몬 쓰기(WriteReq::Data)다 — 사람 입력 계수·타이핑 가드·입력 원장을 지나지 않는다.
+                        if ps_enabled {
+                            let events = surf.ps_scanner.lock().unwrap_or_else(|e| e.into_inner()).feed(chunk);
+                            if !events.is_empty() {
+                                let res = crate::program_status::ingest(
+                                    &mut surf.program_status.lock().unwrap_or_else(|e| e.into_inner()),
+                                    events,
+                                    Instant::now(),
+                                );
+                                for reply in res.replies {
+                                    if !send_write_req_bounded(&surf.write_tx, WriteReq::Data(reply), DSR_SEND_DEADLINE) {
+                                        eprintln!("[cysd] surface {} OSC 7501 질의 응답 드롭 — write 채널 포화", surf.id);
+                                    }
+                                }
+                            }
+                        }
                         daemon.ingest_output(&surf, chunk);
                         // ★(리뷰 R1) 출력 세대 **짝수** = 이 청크의 발행(파서·스크롤백) 끝.
                         surf.output_gen.fetch_add(1, Ordering::AcqRel);
@@ -8623,6 +8647,11 @@ impl Daemon {
                 }
             }
             surf.exited.store(true, Ordering::Relaxed);
+            // ★(1.1.16 · 차용 ② ⒟) PTY 프로세스가 끝났다 — 7501 기록 전부 지움(표시 전용).
+            surf.program_status
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .wipe(true, "process exited", Instant::now());
             // 종료 시각 stamp — watchdog reap_exited_surfaces가 grace 경과를 이 시점 기준으로 잰다.
             *surf.exited_at.lock().unwrap() = Some(Instant::now());
             // writer 스레드 종료 신호 — 자력 종료(셸 EOF)는 close_surface를 거치지 않아

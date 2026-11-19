@@ -11,6 +11,6 @@
 - [x] 5 revive.ts(장부) — 깨우기(5분 거름·120초·R3 30초 뒤) · 다시 켜기(축별 길 · 65초 1회 · 복원 중 잠금 · 연타 잠금 · boot-degraded · vacant 정리)
 - [x] 6 띠 그리기(chat) + 작업 화면 관문 안내 + main.ts 배선 1줄(focusSeat·openHelp)
 - [x] 7 bun 시험(축 6 · vacant · never_started 닫기 · 사람 입력 사유 · 거절 3 → ≤1 · 좌석 수 · 사람 입력줄 바이트 0 · 앱 새로 켬) + 뮤턴트
-- [ ] 8 cargo 시험(바뀐 크레이트) + tsc + ui 게이트 + CI 팩 단계
-- [ ] 9 codex 1R
-- [ ] 10 HANDOFF.cysr-1116-s5-1119.md + 커밋 + 【확인요청】
+- [x] 8 cargo 시험(바뀐 크레이트) + tsc + ui 게이트 + CI 팩 단계
+- [x] 9 codex 1R(BLOCK → 처분) · 2R(ESCALATE → P1 master 결정)
+- [x] 10 HANDOFF.cysr-1116-s5-1119.md + 커밋 + 【확인요청】

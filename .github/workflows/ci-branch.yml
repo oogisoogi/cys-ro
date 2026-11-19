@@ -1779,6 +1779,20 @@ jobs:
           set -euo pipefail
           cargo test --test update_drainhold_e2e -- --test-threads=1 --nocapture
 
+      # ★1.1.16(cysr-1116-skt1-1119 · master#e08a16c0 ②): 대화 소유 임대(seatkeep-t1) 끝-끝 — 격리 HOME 의 실 cysd · 가짜 claude(`cc` 빌드 ·
+      #   좌석 안 등록 = 시험이 지은 cys 절대 경로 FAKE_CYS) 로 같은 대화 작성자 둘 차단(R1·R3·RN·IR·UW·RV·HP·HQ·두 데몬)과 codex r5c #1 재현
+      #   (FR 좌석 밖 가짜 등록 · SR 에이전트 교체 뒤 낡은 등록)을 잰다. 이 증거는 lib·bin 단위 시험이 못 잰다(실 데몬 org.status·topology·좌석 PTY).
+      #   맥 전용(`/bin/ps -E` · `cc` · `uuidgen`) · 시험이 env 를 비우고 상자(/tmp/cys-sle-<pid>-<tag>)를 스스로 세운다.
+      # 시한 근거(실측 2026-11-20 06:00 · 로컬 맥 · 부하 12~17): 기본 회차(SLE_ROUNDS 5)·스레드 2 = 시험 422s · 빌드 포함 472s(11/11).
+      #   CI 러너 실측 없음 → 첫 회차로 확보 · 그때까지 20분 = 걸린 데몬·가짜 claude 가 잡을 끝없이 붙잡지 않게 하는 상한(첫 green 시간으로 다시 잡는다).
+      #   릴리스 레인 승격은 위 drainhold 와 같은 A10 순서(1사이클 green 뒤 검토).
+      - name: cargo test --test session_lease_e2e (대화 소유 임대 끝-끝 · macOS)
+        shell: bash
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          cargo test --test session_lease_e2e -- --test-threads=2
+
       # ★W-CI2(2026-08-21 · Wave 2): `cargo test -p cys-app --bins` — GUI env 대칭 핀 편입.
       #   전수 실측(cargo test grep): cys-app(src-tauri) 크레이트 테스트를 돌리는 CI 레인이
       #   **0곳**이었다 — release.yml 은 루트 크레이트만(--bin cysd·--lib·--bin cys ×2잡),

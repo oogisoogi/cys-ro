@@ -138,7 +138,7 @@ eval $E CYS_PACK_DIR=/tmp/sk1h/pk cargo test -p cys-app --bins seatkeep -- --tes
 
 ## 10. 📌 덧붙임(브리프 밖 · master 판단)
 
-1. **노브 기본값**: `CYS_SESSION_LEASE` 는 **없으면 켬**(원 T1 그대로). 1.1.15 는 T1 을 「끔으로만」 싣기로 했었고(원 HANDOFF 매듭 절) 1.1.16 은 전 구성 탑재 방침 — 켬 그대로 낼지 끔 기본으로 낼지 master 결정. 끔이면 CLI 임대 길은 종전과 같고, 멱등 키 접미 1줄·앱 쪽 복원 알림 묶음은 노브와 무관(원 HANDOFF 「노브 끔 ≟ 1.1.14」 절).
-2. **`tests/session_lease_e2e.rs` 는 CI 레인에 없다**(ci-branch 의 cargo 레인 = --lib · --bin cys · --bin cysd · update_drainhold_e2e · cys-app). T1 의 실 데몬 증거(FR·SR·RV·UW·RN 등 11개)가 CI 에서 안 돈다 — 레인 편입은 CI 설계 결정이라 손대지 않음.
+1. **노브 기본값** → master#e08a16c0 ① = **켬 유지**(독립 검증의 거짓 거절 빈도 실측이 근거 · 나쁘면 다시 판단) · ③ rc 93 공유 = 유지. 옛 서술: `CYS_SESSION_LEASE` 는 **없으면 켬**(원 T1 그대로). 1.1.15 는 T1 을 「끔으로만」 싣기로 했었고(원 HANDOFF 매듭 절) 1.1.16 은 전 구성 탑재 방침 — 켬 그대로 낼지 끔 기본으로 낼지 master 결정. 끔이면 CLI 임대 길은 종전과 같고, 멱등 키 접미 1줄·앱 쪽 복원 알림 묶음은 노브와 무관(원 HANDOFF 「노브 끔 ≟ 1.1.14」 절).
+2. ~~`tests/session_lease_e2e.rs` 는 CI 레인에 없다~~ → **master#e08a16c0 ② = 등재함**(ci-branch 맥 레인 · 스텝 「cargo test --test session_lease_e2e」 · 스레드 2 · 시한 20분 · 근거 = 로컬 실측 시험 422s·빌드 포함 472s · 부하 12~17 · CI 러너 실측은 첫 회차) · 옛 서술:(ci-branch 의 cargo 레인 = --lib · --bin cys · --bin cysd · update_drainhold_e2e · cys-app). T1 의 실 데몬 증거(FR·SR·RV·UW·RN 등 11개)가 CI 에서 안 돈다 — 레인 편입은 CI 설계 결정이라 손대지 않음.
 3. **rc 93 공유**(§2): 조각 1 `EXIT_RESUME_HELD` 와 임대 `EXIT_SESSION_LIVENESS_UNKNOWN` 이 같은 값 — 소비자는 「멈춤 · 새 대화 0」 으로 같게 읽는다. 따로 가르려면 새 rc(94) 배정 = 계약 변경.
 4. 기존 e2e 의 「설치본 cys 로 등록」 사실(§7)은 원 T1 의 r5b RV 판정 근거를 약하게 만든다 — 이번 고침 뒤 RV 는 시험 cys 로 초록(결속 경로).

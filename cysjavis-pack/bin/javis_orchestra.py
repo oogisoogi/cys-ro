@@ -183,7 +183,11 @@ def boot_fleet(env=None, policy=None):
 
     env/policy 를 주면 그 값으로만 판정한다(순수 호출·self-test). None 이면 실제 env·파일을 읽는다."""
     def _norm(v):
-        v = (v or "").strip().lower() if isinstance(v, str) else ""
+        # Rust `boot_fleet_from` 과 바이트 동치: ASCII 공백·탭·줄바꿈만 벗기고 ASCII 만 소문자로(codex 1R MINOR).
+        if not isinstance(v, str):
+            return None
+        v = v.strip(" \t\r\n")
+        v = v.lower() if v.isascii() else v
         return v if v in ("full", "light") else None
     e = os.environ.get("CYS_BOOT_FLEET") if env is None else env
     if _norm(e):
@@ -195,8 +199,10 @@ def boot_fleet(env=None, policy=None):
         except Exception:
             policy = {}
     pv = policy.get("boot_fleet") if isinstance(policy, dict) else None
-    if _norm(pv):
-        return _norm(pv), "policy"
+    # ★(codex 1R BLOCKER) 이 파일은 좌석도 쓸 수 있다 — **되돌리는 값(full)만** 받는다(knobs.rs 와 같은 규칙).
+    #   light(함대를 줄이는 값)는 env 로만 켠다: 좌석 하나가 파일 한 줄로 다음 master 부트의 CSO·worker 를 영구히 지우지 못하게.
+    if _norm(pv) == "full":
+        return "full", "policy"
     return ("light" if BOOT_FLEET_DEFAULT == "light" else "full"), "default"
 
 
@@ -405,7 +411,7 @@ def team_roster_note(required=None):
       직전 세대가 감지를 끌어들인 이유(프로파일별로 숫자가 달라짐)가 정책 단일화로 소멸했다.
     ★required 를 명시로 주면 그것을 쓴다(순수 호출·테스트·소비자 지정).
     """
-    roles = ["master"] + list(REQUIRED_ROLES if required is None else required)
+    roles = ["master"] + list(effective_required_roles() if required is None else required)
     tail = ("리뷰어는 미감지 시 Claude 대체 슬롯으로 치환"
             if any(r.startswith("reviewer") for r in roles) else ONDEMAND_REVIEWER_NOTE)
     return ("%s (필수 역할 전원+master — 총 %d노드 · %s)"
@@ -828,6 +834,10 @@ def _shared_verdict_deficit(status, requery=None, tick_s=None, detect=None, agen
         return VerdictDeficit(None, "check_verdicts 소비 불가(%s: %s)"
                               % (type(e).__name__, e))
     if not verdicts:
+        # ★(1.1.16 · 차용 ③ · codex 1R MAJOR) 가벼운 시작은 **의도된** 빈 요구 집합이다 — 손상으로 읽어 구 cso·worker 구성으로
+        #   되돌아가면 master 만 띄운 부트마다 결손>0(자원 게이트·무스폰 boot 재호출 churn)이 된다. 요구 0 = 결손 0.
+        if not required and boot_fleet()[0] == "light":
+            return VerdictDeficit(False, "가벼운 시작(boot_fleet=light) — 의무 역할 0 · 결손 0")
         return VerdictDeficit(None, "check_verdicts 빈 판정(로스터 산출 실패)")
     axes = verdict_axes(verdicts)
     missing = [r for r, v in verdicts.items() if not v.get("satisfied")]
@@ -5672,7 +5682,18 @@ def cmd_self_test(args):
         assert boot_fleet(env="", policy={}) == ("full", "default")
         assert boot_fleet(env="light", policy={"boot_fleet": "full"}) == ("light", "env")
         assert boot_fleet(env=" LIGHT ", policy={}) == ("light", "env")
-        assert boot_fleet(env="bogus", policy={"boot_fleet": "light"}) == ("light", "policy")
+        assert boot_fleet(env="bogus", policy={"boot_fleet": "light"}) == ("full", "default"), "좌석도 쓰는 파일의 light 를 받았다"
+        assert boot_fleet(env="", policy={"boot_fleet": "FULL"}) == ("full", "policy")
+        assert boot_fleet(env="\x1clight\x1c", policy={}) == ("full", "default"), "Rust 와 정규화가 갈린다"
+        _bf_prev = os.environ.get("CYS_BOOT_FLEET")
+        os.environ["CYS_BOOT_FLEET"] = "light"
+        try:
+            assert effective_required_roles() == [], "light 인데 cso·worker 를 요구한다(영구 결손)"
+            assert team_roster_note().startswith("master") and "cso" not in team_roster_note(), team_roster_note()
+            _lt = _shared_verdict_deficit({"surfaces": []})
+            assert _lt[0] is False, "light 의 빈 요구 집합이 결손/판정불가로 읽힌다: %r" % (tuple(_lt),)
+        finally:
+            os.environ["CYS_BOOT_FLEET"] = _bf_prev if _bf_prev is not None else "full"
         assert boot_fleet(env="", policy={"boot_fleet": "tiny"}) == ("full", "default")
         assert boot_fleet(env="", policy=[]) == ("full", "default")
         assert plan_mandatory_roles() == ["cso", "worker"], \
@@ -6087,6 +6108,8 @@ def cmd_self_test(args):
 def main():
     # preflight 호환: `--self-test`는 subcommand 없이도 동작해야 한다(가로채기).
     if "--self-test" in sys.argv:
+        # ★(1.1.16 · 차용 ③) self-test 는 출하 기본 동작(full)을 잰다 — 운영 기계의 CYS_BOOT_FLEET 로 결과가 갈리지 않게 밀폐.
+        os.environ["CYS_BOOT_FLEET"] = "full"
         return cmd_self_test(None)
     # ★B18(H-DOC-2): 훅 note·문서가 인용할 팀 구성 1줄. subcommand 공간을 늘리지 않고
     #   `--self-test` 와 동일한 가로채기 관례를 쓴다(javis_budget --note-check-window 대칭).

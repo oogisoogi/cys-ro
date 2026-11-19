@@ -465,6 +465,8 @@ pub(crate) struct Store {
     pub version: u64,
     /// 이 좌석이 질의를 보냈고 우리가 답했다(= 답을 받은 프로그램은 화면 표지를 그리지 않는다).
     pub answered: u64,
+    /// 관측기가 돌지 않아 답하지 않은 질의 수.
+    pub unanswered: u64,
     pub reports: u64,
     pub discarded: u64,
     pub last_discard: Option<&'static str>,
@@ -552,16 +554,19 @@ pub(crate) struct Ingest {
     pub applied: usize,
 }
 
-/// 사건들을 저장소에 반영하고 낼 응답을 돌려준다(순수 — 시각 주입).
-pub(crate) fn ingest(store: &mut Store, events: Vec<Event>, now: Instant) -> Ingest {
+/// 사건들을 저장소에 반영하고 낼 응답을 돌려준다(순수 — 시각 주입). `answer` = 지금 질의에 답해도 되는가
+/// (화면 관측기가 **실제로 돌고 있을 때만** — 답하면 Claude 가 제목 표지를 지우는데, 관측기가 없으면 덧씌울 세대·순번도 없다).
+/// 답하지 않은 질의는 `unanswered` 로 센다(진단).
+pub(crate) fn ingest(store: &mut Store, events: Vec<Event>, now: Instant, answer: bool) -> Ingest {
     let mut out = Ingest::default();
     for ev in events {
         match ev {
             Event::Osc7501 { body, seq_len, bel } => match parse(&body, seq_len) {
-                Parsed::Query => {
+                Parsed::Query if answer => {
                     store.answered += 1;
                     out.replies.push(query_reply(bel));
                 }
+                Parsed::Query => store.unanswered += 1,
                 Parsed::Report(r) => {
                     store.apply(&r, &body, now);
                     out.applied += 1;
@@ -632,6 +637,7 @@ pub(crate) fn diag_wire(store: &Store, now: Instant) -> serde_json::Value {
     let age = |t: Instant| (now.saturating_duration_since(t).as_secs_f64() * 1000.0).round() / 1000.0;
     serde_json::json!({
         "answered_queries": store.answered,
+        "unanswered_queries": store.unanswered,
         "reports": store.reports,
         "discarded": store.discarded,
         "last_discard": store.last_discard,

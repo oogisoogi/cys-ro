@@ -169,7 +169,7 @@ fn scanner_aborts_and_bounds() {
 
 fn feed(store: &mut Store, bytes: &[u8], now: Instant) -> Ingest {
     let mut sc = Scanner::default();
-    ingest(store, sc.feed(bytes), now)
+    ingest(store, sc.feed(bytes), now, true)
 }
 
 #[test]
@@ -332,6 +332,7 @@ fn live_seat_answers_query_and_records_reports() {
     std::fs::write(dir.join("acl.json"), r#"{"default":"allow","rules":[]}"#).unwrap();
     std::env::set_var(cys::pack::ENV_PACK_DIR, &dir);
     let daemon = crate::state::Daemon::new(dir.join("cysd.sock"));
+    daemon.activity.running.store(true, std::sync::atomic::Ordering::SeqCst); // 관측기가 도는 데몬(응답 관문 열림)
     let script = dir.join("probe.py");
     std::fs::write(&script, PY_PROBE).unwrap();
     let cmd = format!("python3 {}", script.display());
@@ -427,4 +428,15 @@ fn version_moves_on_every_change_and_output_seq_is_monotonic() {
     assert_eq!(st.version, v + 1, "지움도 판을 올린다");
     st.wipe(false, "x", ms(10));
     assert_eq!(st.version, v + 1, "지울 것이 없으면 판 불변");
+}
+
+#[test]
+fn no_answer_when_the_observer_is_not_running() {
+    // codex 2R MAJOR: 관측기 스레드가 못 떴거나 죽었으면 답하지 않는다(답하면 Claude 가 제목 표지를 지워 영구 unknown).
+    let mut st = Store::default();
+    let mut sc = Scanner::default();
+    let r = ingest(&mut st, sc.feed(b"\x1b]7501;?\x07"), Instant::now(), false);
+    assert!(r.replies.is_empty());
+    assert_eq!((st.answered, st.unanswered), (0, 1));
+    assert_eq!(diag_wire(&st, Instant::now())["unanswered_queries"], 1);
 }

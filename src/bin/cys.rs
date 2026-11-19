@@ -12734,15 +12734,16 @@ const BOOT_PLAN: &[(&str, &str, bool)] = &[
 
 /// ★(1.1.16 · TICKET=cysr-1116-borrow23-1119 · 차용 ③) 가벼운 시작 손잡이 `boot_fleet` — `full`(기본 · 1.1.15 와 같다 = CSO·worker
 /// 를 부트 때 세운다) | `light`(부트가 master 말고는 아무것도 세우지 않는다 · CSO·worker 는 일이 생길 때 `cys launch-agent` 로,
-/// 전체 편성은 `CYS_BOOT_FLEET=full cys boot` 로). 읽는 순서 = 환경변수 `CYS_BOOT_FLEET` > `~/.cys/policy.json` 의 `boot_fleet` >
-/// 이 기본값. 모르는 값은 건너뛴다(다음 출처로). ★python 정본 `javis_orchestra.boot_fleet` 과 같은 규칙·같은 기본값이다
+/// 전체 편성은 `CYS_BOOT_FLEET=full cys boot` 로). 읽는 순서 = 환경변수 `CYS_BOOT_FLEET` > `~/.cys/policy.json` 의 `boot_fleet`
+/// (**full 만** — 좌석도 쓰는 파일이라 함대를 줄이는 값은 받지 않는다) > 이 기본값. 모르는 값은 건너뛴다(다음 출처로). ★python 정본 `javis_orchestra.boot_fleet` 과 같은 규칙·같은 기본값이다
 /// (검체 `boot_fleet_default_parity_with_python` 이 기본값 문자열을 대조한다) — 함께 옮긴다.
 /// ★기본값을 `light` 로 바꾸는 것은 기본 함대 정책(박사님 결정 2026-09-10)의 개정이라 이 손잡이의 기본값만 따로 결정한다.
 const BOOT_FLEET_DEFAULT: &str = "full";
 
 /// 순수 — (env 값, policy.json 내용) → (fleet, 출처). fleet ∈ {"full","light"} · 출처 ∈ {"env","policy","default"}.
 fn boot_fleet_from(env: Option<&str>, policy: Option<&Value>) -> (&'static str, &'static str) {
-    let norm = |v: &str| match v.trim().to_ascii_lowercase().as_str() {
+    // python `boot_fleet._norm` 과 바이트 동치: ASCII 공백·탭·줄바꿈만 벗기고 ASCII 만 소문자로(codex 1R MINOR).
+    let norm = |v: &str| match v.trim_matches(|c| matches!(c, ' ' | '\t' | '\r' | '\n')).to_ascii_lowercase().as_str() {
         "full" => Some("full"),
         "light" => Some("light"),
         _ => None,
@@ -12750,8 +12751,10 @@ fn boot_fleet_from(env: Option<&str>, policy: Option<&Value>) -> (&'static str, 
     if let Some(f) = env.and_then(norm) {
         return (f, "env");
     }
-    if let Some(f) = policy.and_then(|p| p.get("boot_fleet")).and_then(Value::as_str).and_then(norm) {
-        return (f, "policy");
+    // ★(codex 1R BLOCKER) policy.json 은 좌석도 쓸 수 있다 — **되돌리는 값(full)만** 받는다(cysd knobs.rs 와 같은 규칙).
+    //   light 는 env 로만: 좌석 하나가 파일 한 줄로 다음 master 부트의 CSO·worker 를 영구히 지우지 못하게.
+    if policy.and_then(|p| p.get("boot_fleet")).and_then(Value::as_str).and_then(norm) == Some("full") {
+        return ("full", "policy");
     }
     (if BOOT_FLEET_DEFAULT == "light" { "light" } else { "full" }, "default")
 }
@@ -21244,7 +21247,9 @@ fn explain_state_lines(sid: u64, da: &Value, diag: &Value) -> Vec<String> {
         if let Some(w) = s(&diag["last_wipe"]) {
             out.push(format!("  마지막으로 지운 까닭: {w} · {}초 전", diag["last_wipe_age_secs"]));
         }
-        if n("answered_queries") == 0 {
+        if n("unanswered_queries") > 0 {
+            out.push(format!("  주의: 화면 관측기가 돌지 않아 답하지 않은 질의 {}회(`CYS_DISPLAY_ACTIVITY=0` 또는 관측기 정지)", n("unanswered_queries")));
+        } else if n("answered_queries") == 0 {
             out.push("  해석: 이 프로그램은 7501 을 묻지 않았다(Codex·옛 Claude·`CYS_PROGRAM_STATUS=0`) — 화면 판정만 쓴다.".into());
         }
     } else {
@@ -59632,7 +59637,11 @@ mod boot_fleet_tests {
         assert_eq!(boot_fleet_from(None, None), ("full", "default"));
         assert_eq!(boot_fleet_from(Some("light"), Some(&json!({"boot_fleet": "full"}))), ("light", "env"));
         assert_eq!(boot_fleet_from(Some(" LIGHT "), None), ("light", "env"));
-        assert_eq!(boot_fleet_from(Some("bogus"), Some(&json!({"boot_fleet": "light"}))), ("light", "policy"));
+        // 좌석도 쓰는 파일의 light 는 받지 않는다(되돌리는 값 full 만).
+        assert_eq!(boot_fleet_from(Some("bogus"), Some(&json!({"boot_fleet": "light"}))), ("full", "default"));
+        assert_eq!(boot_fleet_from(None, Some(&json!({"boot_fleet": "FULL"}))), ("full", "policy"));
+        // 제어 구분자(U+001C)는 공백이 아니다 — python 과 같게 거부.
+        assert_eq!(boot_fleet_from(Some("\u{1c}light\u{1c}"), None), ("full", "default"));
         assert_eq!(boot_fleet_from(Some(""), Some(&json!({"boot_fleet": "tiny"}))), ("full", "default"));
         assert_eq!(boot_fleet_from(None, Some(&json!({"boot_fleet": 1}))), ("full", "default"));
         assert_eq!(boot_fleet_from(None, Some(&json!([]))), ("full", "default"));

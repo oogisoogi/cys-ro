@@ -1396,7 +1396,15 @@ pub(crate) fn spawn_observer(daemon: Arc<Daemon>) {
 }
 
 fn observer_loop(daemon: &Arc<Daemon>) {
+    // ★(1.1.16 · 차용 ② · codex 2R MAJOR) 관측기가 죽으면(패닉 등) `running` 을 내린다 — 7501 응답 관문이 이 값을 매번 본다.
+    struct Down<'a>(&'a AtomicBool);
+    impl Drop for Down<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
+        }
+    }
     daemon.activity.running.store(true, Ordering::SeqCst);
+    let _down = Down(&daemon.activity.running);
     let mut frame = Frame::new();
     let mut next = Instant::now();
     loop {
@@ -1532,8 +1540,9 @@ fn overlay_wire(o: &crate::program_status::Overlay) -> Value {
 /// [`wire_at`] + 7501 덧씌움. 신원·화면 재검증은 그대로 거친 뒤(같은 세대 — UI 의 세대 되돌림 거부와 충돌하지 않게)
 /// 상태·사유·안정 나이만 프로그램 보고로 바꾼다.
 /// ★순번(codex 1R MAJOR ②): UI 는 같은 세대에서 같은 순번의 비-Unknown 응답을 거부한다 — 7501 변화가 관측기 틱 사이에 오면
-///   막힌다. 그래서 **모든** 출력의 순번 = 관측기 순번 + 7501 판 계수 × 2 + (봄 ? 1 : 0) 이다. 세 항 모두 좌석 수명 동안 줄지 않고
-///   (판 계수는 적용·지움마다 +1 · 봄은 새 보고(판 +1 = 순번 +2) 없이는 false 로 돌아가지 않는다), 어느 하나가 바뀌면 순번이 는다.
+///   막힌다. 그래서 **모든** 출력의 순번 = 관측기 순번 + 7501 판 계수 × 2 + (봄 ? 1 : 0) 이다. **같은 세대 안에서** 세 항 모두 줄지
+///   않고(판 계수는 적용·지움마다 +1 · 봄은 새 보고(판 +1 = 순번 +2) 없이는 false 로 돌아가지 않는다), 어느 하나가 바뀌면 순번이 는다.
+///   세대가 바뀌면 관측기 순번이 0 부터 다시 시작한다 — 종전 계약 그대로다(UI 순번 대조는 세대 안에서만 · codex 2R 판정 = 설계대로).
 pub(crate) fn wire_with(store: &ActivityStore, s: &Surface, now: f64, p: &Params, ps_ver: u64, ps: Option<&crate::program_status::Overlay>) -> Value {
     let mut v = wire_at(store, s, now, p);
     // 퇴화형(신원 없는 Unknown — 관측 없음·무효화)은 그대로 둔다: 세대·순번이 없으면 UI 가 받을 근거가 없다.

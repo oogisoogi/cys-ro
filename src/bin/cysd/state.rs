@@ -8632,6 +8632,7 @@ impl Daemon {
                                     &mut surf.program_status.lock().unwrap_or_else(|e| e.into_inner()),
                                     events,
                                     Instant::now(),
+                                    daemon.activity.running.load(Ordering::SeqCst),
                                 );
                                 for reply in res.replies {
                                     if !send_write_req_bounded(&surf.write_tx, WriteReq::Data(reply), DSR_SEND_DEADLINE) {

@@ -559,7 +559,8 @@ mod imp {
                 st.exit_record_fail_since = None; // 보존할 미확인 기록이 없다 — 앞선 실패 시각을 다음 실패에 쓰지 않는다(codex 2R #5)
                 return;
             }
-            match registry::write_atomic(&self.paths.exit, &json!({"id": self.args.id, "seats": v})) {
+            // pid·출생 시각 = 이 종료 기록을 쓴 seatkeep 세대(T4 · codex 3R — 새 조종자가 기록·등록부와 대조해 남의 기록을 소비하지 않게).
+            match registry::write_atomic(&self.paths.exit, &json!({"id": self.args.id, "pid": std::process::id(), "start_us": self.start_us, "seats": v})) {
                 Ok(()) => {
                     st.exit_record_ok = true;
                     st.exit_record_fail_since = None;

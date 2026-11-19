@@ -796,12 +796,19 @@ mod seatkeep_mac {
 
         /// 처리 완료 오프셋 송신 스레드(T4 · codex 2R) — 최신값이 바뀔 때마다 그 값 하나만 보낸다(사이 값은 건너뜀 = 최댓값만 뜻이 있음).
         /// 소켓 쓰기가 막혀도 이 스레드만 막힌다. 연결이 끝나면(`demux` 끝) 끝난다.
+        /// (codex 3R) 공용 쓰기 잠금을 **기다리지 않고**(try_lock) · 소켓 송신 버퍼에 프레임 하나(17바이트)가 통째로 들어갈 자리가 있을 때만
+        /// 비차단으로 보낸다 — 못 보내면 50ms 뒤 최신값으로 다시. 이 송신이 입력·크기·종료 확인 프레임을 막는 일은 없다.
         fn processed_sender(self: Arc<Self>, start: u64) {
             let mut sent = start;
+            let mut retry = false;
             loop {
                 let v = {
                     let mut g = self.processed.lock().unwrap_or_else(|e| e.into_inner());
-                    while g.0 <= sent && !g.1 {
+                    while !g.1 && (g.0 <= sent || retry) {
+                        if retry {
+                            g = self.processed_cv.wait_timeout(g, Duration::from_millis(50)).unwrap_or_else(|e| e.into_inner()).0;
+                            break;
+                        }
                         g = self.processed_cv.wait(g).unwrap_or_else(|e| e.into_inner());
                     }
                     if g.1 {
@@ -809,11 +816,50 @@ mod seatkeep_mac {
                     }
                     g.0
                 };
-                if self.send(proto::PROCESSED, &v.to_le_bytes()).is_err() {
-                    return;
+                if v <= sent {
+                    retry = false;
+                    continue;
                 }
-                sent = v;
+                match self.try_send_small(proto::PROCESSED, &v.to_le_bytes()) {
+                    Ok(true) => {
+                        sent = v;
+                        retry = false;
+                    }
+                    Ok(false) => retry = true,
+                    Err(_) => return,
+                }
             }
+        }
+
+        /// 작은 제어 프레임 하나를 막힘 없이 보낸다 — Ok(true) 보냄 · Ok(false) 지금은 못 보냄(잠금 점유·송신 버퍼 자리 없음) · Err 연결 이상.
+        /// 송신 버퍼 남은 자리(SO_SNDBUF − SO_NWRITE) ≥ 프레임 길이를 쓰기 잠금 안에서 확인한 뒤 MSG_DONTWAIT — 잠금 안이라 다른 쓰기가 끼지
+        /// 않고 남은 자리는 줄지 않으므로(상대가 읽을수록 는다) 부분 쓰기가 나지 않는다. 그래도 부분 쓰기면 프레임 경계가 깨진 것 = 연결을 끊는다.
+        fn try_send_small(&self, kind: u8, payload: &[u8]) -> std::io::Result<bool> {
+            let frame = proto::frame(kind, SEAT, payload);
+            let Ok(w) = self.wr.try_lock() else { return Ok(false) };
+            let fd = w.as_raw_fd();
+            let opt = |name: libc::c_int| -> Option<libc::c_int> {
+                let mut v: libc::c_int = 0;
+                let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+                let rc = unsafe { libc::getsockopt(fd, libc::SOL_SOCKET, name, (&mut v as *mut libc::c_int).cast(), &mut len) };
+                (rc == 0).then_some(v)
+            };
+            let (Some(cap), Some(used)) = (opt(libc::SO_SNDBUF), opt(libc::SO_NWRITE)) else { return Ok(false) };
+            if (cap - used) < frame.len() as libc::c_int {
+                return Ok(false);
+            }
+            let n = unsafe { libc::send(fd, frame.as_ptr().cast(), frame.len(), libc::MSG_DONTWAIT) };
+            if n == frame.len() as isize {
+                return Ok(true);
+            }
+            if n < 0 {
+                let e = std::io::Error::last_os_error();
+                return if e.kind() == std::io::ErrorKind::WouldBlock { Ok(false) } else { Err(e) };
+            }
+            drop(w);
+            eprintln!("[cysd] seatkeep 좌석 pid {} 처리 오프셋 프레임 부분 쓰기({n}/{}) — 프레임 경계 손상 · 연결을 끊는다", self.child_pid, frame.len());
+            let _ = self.sd.shutdown(std::net::Shutdown::Both);
+            Err(std::io::Error::other("partial frame"))
         }
 
         fn send(&self, kind: u8, payload: &[u8]) -> std::io::Result<()> {
@@ -954,7 +1000,7 @@ mod seatkeep_mac {
                 }
             }
             self.cv.notify_all();
-            {
+            if self.report_processed {
                 let mut g = self.processed.lock().unwrap_or_else(|e| e.into_inner());
                 g.1 = true;
                 self.processed_cv.notify_all();

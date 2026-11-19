@@ -290,6 +290,16 @@ pub(crate) struct JudgeIn<'a> {
     pub exe_is_seatkeep: Option<bool>,
 }
 
+/// 등록부 pid 가 판정 대상 pid 와 다르고 · 살아 있고 · 지금 그 pid 가 cys-seatkeep 이 아니라는 증거가 없으면 그 pid(codex 3R).
+pub(crate) fn registry_other_live_pid(target: Option<u32>, reg: &RegRead) -> Option<u32> {
+    let RegRead::Ok(r) = reg else { return None };
+    let b = r["pid"].as_u64().filter(|p| *p > 0 && *p <= i32::MAX as u64)? as u32;
+    if Some(b) == target || !pid_alive(b) {
+        return None;
+    }
+    (crate::seat_proc::seatkeep_exe_matches(b) != Some(false)).then_some(b)
+}
+
 /// 판정 대상 pid(기록 우선 · 임시본이면 등록부).
 pub(crate) fn target_pid(rec: Option<(u32, Option<u64>, f64)>, reg: &RegRead) -> Option<u32> {
     match rec {
@@ -550,7 +560,7 @@ pub(crate) fn test_set_pending(p: Vec<Pending>) {
 /// 죽음이 확인된 좌석의 정리 — 남은 종료 기록(`.exit`)을 신원 확인 뒤 사건으로 발행하고(소비 · 표식 `.exit.consumed` 를 남긴 뒤) cysd 기록·
 /// 등록부·잠금·소켓·종료 기록을 지운다. 교체 기록(`.log`)은 사후 적발 장치라 남긴다. `.exit` 를 못 읽거나 id 가 다르면 **아무것도 지우지 않는다**
 /// (Err = 미결 · 다음 기동이 다시 본다 · codex T4 2R). 발행 뒤 표식 전 재시작 = 다음 기동에 한 번 더 발행될 수 있다(적어도 한 번 · 사건의 `skid` 가 멱등 키).
-fn consume_dead(daemon: &Daemon, dir: &Path, skid: &str, rec: Option<&SeatRecord>, why: &str) -> Result<(), &'static str> {
+fn consume_dead(daemon: &Daemon, dir: &Path, skid: &str, rec: Option<&SeatRecord>, keeper: Option<(u32, Option<u64>)>, why: &str) -> Result<(), &'static str> {
     let exit_path = dir.join(format!("{skid}.exit"));
     let marker = dir.join(format!("{skid}.exit.consumed"));
     match std::fs::read_to_string(&exit_path) {
@@ -559,7 +569,16 @@ fn consume_dead(daemon: &Daemon, dir: &Path, skid: &str, rec: Option<&SeatRecord
             if v["id"].as_str() != Some(skid) {
                 return Err("exit_id_mismatch");
             }
-            if !marker.exists() {
+            // (codex 3R) 종료 기록 = 그것을 쓴 seatkeep 세대(pid·출생 시각)에 결박 — 판정한 seatkeep 과 다르면 남의 기록(소비 안 함 · 무삭제).
+            let fp = format!("{}:{}", v["pid"].as_u64().unwrap_or(0), v["start_us"].as_u64().unwrap_or(0));
+            if let Some((kp, ks)) = keeper {
+                if v["pid"].as_u64() != Some(kp as u64) || (ks.is_some() && v["start_us"].as_u64() != ks) {
+                    return Err("exit_keeper_mismatch");
+                }
+            }
+            // 표식 = 소비한 종료 기록의 지문 — 지문이 다른 옛 표식은 이 기록을 소비했다는 뜻이 아니다.
+            let consumed = std::fs::read_to_string(&marker).map(|m| m.trim() == fp).unwrap_or(false);
+            if !consumed {
                 eprintln!("[cysd] 좌석 입양 {skid}: 데몬 없는 사이 끝난 좌석의 종료 기록 소비 — {}", v["seats"]);
                 daemon.bus.publish(
                     "seat.exited_while_away",
@@ -568,16 +587,36 @@ fn consume_dead(daemon: &Daemon, dir: &Path, skid: &str, rec: Option<&SeatRecord
                     json!({"skid": skid, "surface_ref": rec.map(|r| cys::surface_ref(r.surface_id)),
                            "role": rec.and_then(|r| r.role.clone()), "exit": v["seats"], "why": why}),
                 );
-                std::fs::write(&marker, b"1").map_err(|_| "exit_marker_write")?;
+                write_marker(&marker, &fp).map_err(|_| "exit_marker_write")?;
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(_) => return Err("exit_unreadable"),
     }
-    for ext in [RECORD_SUFFIX, ".json", ".lock", ".sock", ".exit", ".exit.consumed"] {
-        let _ = std::fs::remove_file(dir.join(format!("{skid}{ext}")));
+    // 표식은 맨 끝에 — 다른 파일 하나라도 못 지우면(없음은 성공) 표식을 남겨 다음 기동이 같은 종료를 다시 발행하지 않게 한다.
+    let mut all = true;
+    for ext in [RECORD_SUFFIX, ".json", ".lock", ".sock", ".exit"] {
+        match std::fs::remove_file(dir.join(format!("{skid}{ext}"))) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => all = false,
+        }
     }
+    if !all {
+        return Err("cleanup_partial");
+    }
+    let _ = std::fs::remove_file(&marker);
     Ok(())
+}
+
+/// 소비 표식 원자 쓰기(임시 파일 → fsync → rename).
+fn write_marker(path: &Path, fp: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let tmp = path.with_extension(format!("consumed.{}.tmp", std::process::id()));
+    let mut f = std::fs::File::create(&tmp)?;
+    f.write_all(fp.as_bytes())?;
+    f.sync_all()?;
+    std::fs::rename(&tmp, path)
 }
 
 /// 기동 입양 — 잠금 획득 뒤 · accept 전에 한 번(main.rs). 노브 끔 = 아무것도 안 함(요약도 `ran=false`).
@@ -595,7 +634,13 @@ pub(crate) fn adopt_on_boot(daemon: &Arc<Daemon>) {
                 .filter_map(|e| e.ok())
                 .filter_map(|e| e.file_name().into_string().ok())
                 .filter(|n| !n.starts_with('.'))
-                .filter_map(|n| n.strip_suffix(RECORD_SUFFIX).map(str::to_string).or_else(|| n.strip_suffix(".json").map(str::to_string)))
+                // 대상 = 기록 · 등록부 · 종료 기록(앞 기동이 정리를 다 못 해 종료 기록만 남은 id 도 다시 본다).
+                .filter_map(|n| {
+                    n.strip_suffix(RECORD_SUFFIX)
+                        .or_else(|| n.strip_suffix(".json"))
+                        .or_else(|| n.strip_suffix(".exit"))
+                        .map(str::to_string)
+                })
                 .filter(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
                 .collect(),
             Err(_) => Vec::new(),
@@ -643,7 +688,15 @@ fn adopt_one(daemon: &Arc<Daemon>, dir: &Path, skid: &str) -> (Outcome, Option<P
     let start_now = pid.and_then(process_start_us);
     let alive = pid.map(pid_alive).unwrap_or(false);
     let exe_is_seatkeep = if alive { pid.and_then(crate::seat_proc::seatkeep_exe_matches) } else { None };
-    let verdict = judge(&JudgeIn { rec: rec_in, reg: &reg, alive, start_now, exe_is_seatkeep });
+    let mut verdict = judge(&JudgeIn { rec: rec_in, reg: &reg, alive, start_now, exe_is_seatkeep });
+    // (codex 3R 차단) 기록의 pid 와 등록부의 pid 가 다르면 둘을 따로 본다 — 등록부 pid 가 살아 있고 cys-seatkeep 이 아니라는 증거가 없으면
+    // 그 seatkeep 세대가 이 id 의 파일을 쓰는 중일 수 있다 → 죽음 판정을 미결로 내린다(파일 무접촉).
+    if matches!(verdict, Liveness::Dead(_)) {
+        if let Some(bp) = registry_other_live_pid(pid, &reg) {
+            let _ = bp;
+            verdict = Liveness::Unknown("registry_pid_live");
+        }
+    }
     let rec_ref = rec.as_ref().ok().and_then(|r| r.as_ref());
     let surface_id = rec_ref.map(|r| r.surface_id);
     let role_of = |r: Option<&SeatRecord>| -> Option<String> {
@@ -668,7 +721,11 @@ fn adopt_one(daemon: &Arc<Daemon>, dir: &Path, skid: &str) -> (Outcome, Option<P
     match verdict {
         Liveness::Dead(why) => {
             let role = rec_ref.and_then(|r| r.role.clone());
-            return match consume_dead(daemon, dir, skid, rec_ref, why) {
+            let keeper = pid.map(|p| (p, rec_ref.and_then(|r| r.keeper_start_us).or(match &reg {
+                RegRead::Ok(r) => r["start_us"].as_u64(),
+                _ => None,
+            })));
+            return match consume_dead(daemon, dir, skid, rec_ref, keeper, why) {
                 Ok(()) => (mk("dead", why.into(), role), None),
                 // 종료 기록을 못 믿음 — 파일을 남기고 미결(seatkeep 은 이미 없으니 예약은 두지 않는다).
                 Err(e) => (mk("unresolved", format!("{why}+{e}"), role), None),

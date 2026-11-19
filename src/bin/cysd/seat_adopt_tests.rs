@@ -159,3 +159,15 @@ fn numbers_reopen_variants() {
     assert!(crate::recall::surface_numbers_reopen(&sock, 5, Some(5), 1.0).is_ok());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn registry_other_live_pid_guards_a_different_live_keeper() {
+    let me = std::process::id();
+    let reg = |pid: u32| RegRead::Ok(serde_json::json!({"phase": "committed", "pid": pid, "start_us": 1}));
+    // 등록부 pid = 산 프로세스(이 시험 프로세스 · 실행 파일 ≠ cys-seatkeep → Some(false))는 「seatkeep 이 아니라는 증거」가 있어 막지 않는다.
+    #[cfg(target_os = "macos")]
+    assert_eq!(registry_other_live_pid(Some(1), &reg(me)), None, "산 pid 라도 seatkeep 이 아니면 지켜 줄 세대가 아니다");
+    assert_eq!(registry_other_live_pid(Some(me), &reg(me)), None, "같은 pid = 따로 볼 것 없음");
+    assert_eq!(registry_other_live_pid(Some(1), &reg(0x7fff_fff0)), None, "죽은 pid");
+    assert_eq!(registry_other_live_pid(Some(1), &RegRead::Missing), None);
+}

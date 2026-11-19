@@ -20,10 +20,13 @@ import {
   reviveSituation,
   startOutcome,
   NEVER_STARTED_MS,
+  wokeUp,
   type ReviveFacts,
 } from "./judge/revive";
 
 type Row = Record<string, unknown> & { surface_id: number };
+/** 부분 대조(bun-env 매처 선언에 toMatchObject 없음 — tsc) — 기대 객체의 칸만 골라 toEqual. */
+const pick = (o: unknown, e: Record<string, unknown>) => Object.fromEntries(Object.keys(e).map((k) => [k, (o as Record<string, unknown> | null)?.[k]]));
 
 function row(sid: number, role: string | null, over: Partial<Row> = {}): Row {
   return {
@@ -40,6 +43,7 @@ function row(sid: number, role: string | null, over: Partial<Row> = {}): Row {
     input_paste_open: false,
     human_idle_secs: null,
     idle_secs: 5,
+    created_at: 1000 + sid,
     ...over,
   };
 }
@@ -192,18 +196,18 @@ describe("judge/revive — 축 6 + vacant + never_started 판정(순수)", () =>
       expect(s).toEqual({ kind: "down", down: "agent", axis, sid: 5 });
       expect(reviveBand(s, { kind: "rest" }, false, 0)?.title).toBe("마스터 프로그램이 멈췄어요.");
     }
-    expect(reviveSituation(mk({ master: live({ agent_alive: false }) }))).toMatchObject({ kind: "down", down: "agent" }); // 사건 없이 행만
+    expect(pick(reviveSituation(mk({ master: live({ agent_alive: false }) })), { kind: "down", down: "agent" })).toEqual({ kind: "down", down: "agent" }); // 사건 없이 행만
   });
   it("agent_never_started(사건) · 행 증거 90초 지속 → 「마스터가 아직 시작하지 못했어요」 · 90초 전 = ok", () => {
     const nev = live({ agent_alive: null, agent_seen: false, seat: "empty" });
-    expect(reviveSituation(mk({ master: nev, dead: { sid: 5, axis: "agent_never_started" } }))).toMatchObject({ kind: "down", down: "never", sid: 5 });
+    expect(pick(reviveSituation(mk({ master: nev, dead: { sid: 5, axis: "agent_never_started" } })), { kind: "down", down: "never", sid: 5 })).toEqual({ kind: "down", down: "never", sid: 5 });
     expect(reviveSituation(mk({ master: nev, neverSince: 0, now: NEVER_STARTED_MS - 1 })).kind).toBe("ok");
-    expect(reviveSituation(mk({ master: nev, neverSince: 0, now: NEVER_STARTED_MS }))).toMatchObject({ kind: "down", down: "never" });
+    expect(pick(reviveSituation(mk({ master: nev, neverSince: 0, now: NEVER_STARTED_MS })), { kind: "down", down: "never" })).toEqual({ kind: "down", down: "never" });
     expect(reviveSituation(mk({ master: live({ agent_alive: null, agent_seen: false, seat: "occupied" }), neverSince: 0, now: 1e9 })).kind).toBe("ok"); // 기동 중(Occupied) = 아님
   });
   it("vacant: 마스터 행 없음 ∧ (본 적 있음 ∨ 놓아짐 기록) → 「마스터가 멈춰 있어요」 · 새 설치 = none(꺼짐이라 하지 않음)", () => {
-    expect(reviveSituation(mk({ seenBefore: true }))).toMatchObject({ kind: "down", down: "vacant" });
-    expect(reviveSituation(mk({ goneMark: true }))).toMatchObject({ kind: "down", down: "vacant" });
+    expect(pick(reviveSituation(mk({ seenBefore: true })), { kind: "down", down: "vacant" })).toEqual({ kind: "down", down: "vacant" });
+    expect(pick(reviveSituation(mk({ goneMark: true })), { kind: "down", down: "vacant" })).toEqual({ kind: "down", down: "vacant" });
     expect(reviveSituation(mk({})).kind).toBe("none");
     expect(reviveSituation(mk({ master: undefined, seenBefore: true })).kind).toBe("unknown"); // 조회 실패 = 모름(꺼짐 아님)
   });
@@ -225,6 +229,10 @@ describe("judge/revive — 축 6 + vacant + never_started 판정(순수)", () =>
     expect(restartPlan(s, live({ pending_input_human_bytes: null }))).toEqual({ kind: "draft_block", sid: 5 });
     expect(restartPlan(s, live({ surface_id: 9 }))).toEqual({ kind: "none" }); // 다시 받은 행이 다른 좌석
     expect(restartPlan({ kind: "down", down: "agent", axis: "agent_dead", sid: 5 }, live())).toEqual({ kind: "start" });
+    // (실물 ⑤ 멱등 재사용) 다른 축도 옛 마스터 창에 사람 초안이 있으면 켜지 않음
+    expect(restartPlan({ kind: "down", down: "agent", axis: "agent_dead", sid: 5 }, live({ pending_input_human_bytes: 2 }))).toEqual({ kind: "draft_block", sid: 5 });
+    expect(restartPlan({ kind: "down", down: "agent", axis: "agent_dead", sid: 5 }, live({ input_paste_open: true }))).toEqual({ kind: "draft_block", sid: 5 });
+    expect(restartPlan({ kind: "down", down: "vacant", axis: "vacant", sid: null }, null)).toEqual({ kind: "start" });
   });
   it("거절 다음 걸음: 사람 입력(칸·사유 원문) = 기다림 · seat_not_claimable = 1회 · 그 밖·사건 없음 = 실패", () => {
     expect(denialNext({ seat_blocked: "seat_not_claimable", seat_human_recent: true }, false)).toBe("hold_human");
@@ -247,23 +255,28 @@ describe("judge/revive — 축 6 + vacant + never_started 판정(순수)", () =>
   });
   it("성공 판정 = 좌석 id 바뀜 ∧ 에이전트 생존 ∧ 관문 없음(고장 난 빈 셸·같은 좌석 = 아님)", () => {
     expect(restartSucceeded(5, live({ surface_id: 9 }))).toBe(true);
-    expect(restartSucceeded(5, live())).toBe(false);
+    expect(restartSucceeded(5, live(), true)).toBe(false); // 같은 좌석 · 전에도 생존 = 아님
     expect(restartSucceeded(5, live({ surface_id: 9, agent_alive: null }))).toBe(false);
     expect(restartSucceeded(5, live({ surface_id: 9, gate_pending: { gate: "x" } }))).toBe(false);
     expect(restartSucceeded(null, live({ surface_id: 9 }))).toBe(true);
+    // (실물 ⑤) 같은 좌석 되살림 = 전에 생존 아니었으면 성공 · 전에도 생존이었으면 아님
+    expect(restartSucceeded(5, live(), false)).toBe(true);
+    expect(restartSucceeded(5, live(), true)).toBe(false);
+    expect(restartSucceeded(5, live({ agent_alive: null }), false)).toBe(false);
   });
   it("옛 빈 셸 정리 대상 = 역할 없음 ∧ Empty ∧ 사람 입력 0 ∧ 최근 사람 입력 없음", () => {
     const org = (o: Partial<Row>) => ({ surfaces: [row(5, null, { seat: "empty", agent_alive: null, ...o })] });
-    expect(leftoverShell(org({}), 5, 9)).toBe(5);
-    expect(leftoverShell(org({ role: "master" }), 5, 9)).toBe(null);
-    expect(leftoverShell(org({ agent: null }), 5, 9)).toBe(null); // 사용자가 연 맨 셸(번호 재사용) = 닫지 않음
-    expect(leftoverShell(org({ seat: "occupied" }), 5, 9)).toBe(null);
-    expect(leftoverShell(org({ pending_input_human_bytes: 1 }), 5, 9)).toBe(null);
-    expect(leftoverShell(org({ human_idle_secs: 3 }), 5, 9)).toBe(null);
-    expect(leftoverShell(org({ human_idle_secs: 40 }), 5, 9)).toBe(5);
-    expect(leftoverShell(org({ exited: true }), 5, 9)).toBe(null);
-    expect(leftoverShell(org({}), 9, 9)).toBe(null);
+    expect(leftoverShell(org({}), { sid: 5, created_at: 1005 }, 9)).toBe(5);
+    expect(leftoverShell(org({ role: "master" }), { sid: 5, created_at: 1005 }, 9)).toBe(null);
+    expect(leftoverShell(org({ agent: null }), { sid: 5, created_at: 1005 }, 9)).toBe(null); // 사용자가 연 맨 셸(번호 재사용) = 닫지 않음
+    expect(leftoverShell(org({ seat: "occupied" }), { sid: 5, created_at: 1005 }, 9)).toBe(null);
+    expect(leftoverShell(org({ pending_input_human_bytes: 1 }), { sid: 5, created_at: 1005 }, 9)).toBe(null);
+    expect(leftoverShell(org({ human_idle_secs: 3 }), { sid: 5, created_at: 1005 }, 9)).toBe(null);
+    expect(leftoverShell(org({ human_idle_secs: 40 }), { sid: 5, created_at: 1005 }, 9)).toBe(5);
+    expect(leftoverShell(org({ exited: true }), { sid: 5, created_at: 1005 }, 9)).toBe(null);
+    expect(leftoverShell(org({}), { sid: 9, created_at: 1005 }, 9)).toBe(null);
     expect(leftoverShell(org({}), null, 9)).toBe(null);
+    expect(leftoverShell(org({}), { sid: 5, created_at: 1 }, 9)).toBe(null); // 같은 번호 · 다른 좌석(생성 시각 다름)
   });
 });
 
@@ -331,7 +344,7 @@ describe("다시 켜기 — 축별 길(대역 데몬)", () => {
   });
   it("vacant(회수 뒤 · 앱 새로 켬 · 저장소에 본 적 있음) → 꺼짐 띠 즉시 → start_master → 성공 뒤 옛 빈 셸 정리(사람 입력 0)", async () => {
     const e = new Env((x) => {
-      x.store.set(SEEN_KEY, "5");
+      x.store.set(SEEN_KEY, JSON.stringify({ sid: 5, created_at: 1005 }));
       x.rows = [row(5, null, { agent_alive: null, seat: "empty" }), row(6, "cso"), row(7, "worker")];
     });
     e.observe(); // 앱을 새로 켠 첫 조회 — 지난 deadman 은 못 받음
@@ -341,13 +354,27 @@ describe("다시 켜기 — 축별 길(대역 데몬)", () => {
     e.observe();
     await e.flush();
     expect(e.calls.filter((c) => c.cmd === "close_surface").map((c) => c.args?.surfaceId)).toEqual([5]);
-    expect(e.store.get(SEEN_KEY)).toBe("100");
+    expect(JSON.parse(e.store.get(SEEN_KEY) ?? "null")).toEqual({ sid: 100, created_at: 1100 });
     expect(e.roles("cso")).toBe(1);
     expect(e.seatWrites()).toBe(0);
   });
+  it("vacant 정리 — 저장 신원의 생성 시각이 다르면(데몬 다시 켜져 번호 재사용) · 옛 꼴(번호만)이면 닫지 않는다", async () => {
+    for (const seen of [JSON.stringify({ sid: 5, created_at: 999 }), "5"]) {
+      const e = new Env((x) => {
+        x.store.set(SEEN_KEY, seen);
+        x.rows = [row(5, null, { agent_alive: null, seat: "empty" }), row(6, "cso")];
+      });
+      e.observe();
+      expect(e.band()?.key).toBe("down_vacant");
+      await e.book.restart();
+      e.observe();
+      await e.flush();
+      expect(`${seen}:${e.count("close_surface")}`).toBe(`${seen}:0`);
+    }
+  });
   it("vacant 정리 — 옛 빈 셸에 사람 입력이 있으면 닫지 않는다", async () => {
     const e = new Env((x) => {
-      x.store.set(SEEN_KEY, "5");
+      x.store.set(SEEN_KEY, JSON.stringify({ sid: 5, created_at: 1005 }));
       x.rows = [row(5, null, { agent_alive: null, seat: "empty", pending_input_human_bytes: 4 }), row(6, "cso")];
     });
     e.observe();
@@ -549,6 +576,89 @@ describe("다시 켜기 — 거절·자동 재시도·잠금(4군 ①)", () => {
   });
 });
 
+describe("codex 1R 고침", () => {
+  const dead = (e: Env) => {
+    base(e);
+    e.rows[0].agent_alive = false;
+  };
+  it("관문 보류 뒤 관문 좌석이 보이기 전 다시 누름 → start_master 그대로 1(gate_wait 잠금) · 30초 뒤 풀림", async () => {
+    const e = new Env(dead);
+    e.startPlan = async () => {
+      throw GATE_ERR;
+    };
+    e.observe();
+    await e.book.restart();
+    expect(e.book.view().phase.kind).toBe("gate_wait");
+    expect(e.band()?.locked).toBe("restart");
+    await e.book.restart();
+    await e.book.restart();
+    expect(e.count("start_master")).toBe(1);
+    await e.advance(30_000);
+    expect(e.book.view().phase.kind).toBe("rest");
+  });
+  it("복원 진행 = 앱 수명 값(deps.restoring · 대화 화면을 끈 동안 온 start 도) → 호출 0 · 잠금", async () => {
+    let restoring = true;
+    const e = new Env(dead);
+    (e.book as unknown as { d: { restoring: () => boolean } }).d.restoring = () => restoring;
+    e.observe();
+    await e.book.restart();
+    expect(e.count("start_master") + e.count("org_status")).toBe(0);
+    expect(e.band()?.lockLabel).toBe("복원하는 중이에요");
+    restoring = false;
+    await e.book.restart();
+    expect(e.count("start_master")).toBe(1);
+  });
+  it("등록 없는 마스터 좌석이 빈 셸로 90초 + 본 적 있음 → 꺼짐(seat_vacant_no_meta · 사건 없이) · 본 적 없음 = 아님", async () => {
+    const mk = (seen: boolean) =>
+      new Env((x) => {
+        if (seen) x.store.set(SEEN_KEY, JSON.stringify({ sid: 5, created_at: 1005 }));
+        x.rows = [row(5, "master", { agent: null, agent_alive: null, agent_seen: null, seat: "empty" })];
+      });
+    const a = mk(true);
+    a.observe();
+    expect(a.book.view().sit.kind).toBe("ok");
+    a.now += NEVER_STARTED_MS;
+    a.observe();
+    expect(pick(a.book.view().sit, { kind: "down", down: "agent", axis: "seat_vacant_no_meta" })).toEqual({ kind: "down", down: "agent", axis: "seat_vacant_no_meta" });
+    const b = mk(false);
+    b.observe();
+    b.now += NEVER_STARTED_MS * 2;
+    b.observe();
+    expect(b.book.view().sit.kind).toBe("ok");
+  });
+  it("옛 마스터 창에 30초 안 사람 입력 → 다시 켜지 않음(닫기·start 0) · 입력 시각 모름도 막음", async () => {
+    for (const hi of [3, undefined]) {
+      const e = new Env(dead);
+      if (hi === undefined) delete e.rows[0].human_idle_secs;
+      else e.rows[0].human_idle_secs = hi;
+      e.observe();
+      await e.book.restart();
+      expect(`${hi}:${e.count("start_master")}:${e.book.view().phase.kind}`).toBe(`${hi}:0:draft_block`);
+    }
+  });
+  it("깨움 5분 거름 = 앱을 다시 켜도(새 장부 · 같은 저장소) 유지", async () => {
+    const e = new Env(base);
+    e.observe();
+    e.emit("master.idle", 5, { role: "master" });
+    await e.book.wake();
+    const store = e.store;
+    const f = new Env((x) => {
+      base(x);
+      x.store = store;
+      x.now = e.now + 60_000;
+    });
+    f.observe();
+    f.emit("master.idle", 5, { role: "master" });
+    await f.book.wake();
+    expect(e.count("chat_send") + f.count("chat_send")).toBe(1);
+  });
+  it("깨어남 판정 = 초 버림 보정(깨우기 직전 1초 안 옛 출력은 새 출력 아님)", () => {
+    const m = masterRowOf({ surfaces: [row(5, "master", { idle_secs: 3 })] }, () => false) as MasterRow;
+    expect(wokeUp(m, 0, 3_050)).toBe(false);
+    expect(wokeUp(m, 0, 4_100)).toBe(true);
+  });
+});
+
 describe("깨우기(§6-1)", () => {
   it("조용함 사건 → 깨우기 띠 → 깨움 말 1건(kind auto · 원문) + 추적 · 깨어나면(일 시작) 띠 없음", async () => {
     const e = new Env(base);
@@ -619,24 +729,25 @@ describe("깨우기(§6-1)", () => {
   });
 });
 
-describe("S1-5 — 내 보내기 짝짓기(human_input_seq)", () => {
-  const m = (o: Partial<MasterRow>): MasterRow => ({ surface_id: 5, exited: false, agent_alive: true, pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false, gate_pending: null, human_idle_secs: 3, working: false, human_input_seq: 7, ...o });
+describe("S1-5 — 내 보내기 짝짓기(human_input_stamp)", () => {
+  const m = (o: Partial<MasterRow>): MasterRow => ({ surface_id: 5, exited: false, agent_alive: true, pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false, gate_pending: null, human_idle_secs: 3, working: false, human_input_stamp: "1794:7", ...o });
   it("행의 차례 = 내 마지막 원자 제출 차례 → 30초 쉼 없음 · 다르면(다른 길 입력) 붙잡음 · 모름 = 붙잡음", () => {
-    expect(sendGate({ master: m({}), approvalSeats: [], ownHumanSeq: 7 })).toEqual({ ok: true });
-    expect(sendGate({ master: m({ human_input_seq: 8 }), approvalSeats: [], ownHumanSeq: 7 })).toMatchObject({ ok: false, code: "human_recent" });
-    expect(sendGate({ master: m({ human_input_seq: null }), approvalSeats: [], ownHumanSeq: 7 })).toMatchObject({ ok: false, code: "human_recent" });
-    expect(sendGate({ master: m({}), approvalSeats: [], ownHumanSeq: null })).toMatchObject({ ok: false, code: "human_recent" });
-    expect(sendGate({ master: m({}), approvalSeats: [] })).toMatchObject({ ok: false, code: "human_recent" });
-    expect(ownLastHumanInput(m({ human_input_seq: 0 }), 0)).toBe(false);
+    expect(sendGate({ master: m({}), approvalSeats: [], ownHumanStamp: "1794:7" })).toEqual({ ok: true });
+    expect(pick(sendGate({ master: m({ human_input_stamp: "1794:8" }), approvalSeats: [], ownHumanStamp: "1794:7" }), { ok: false, code: "human_recent" })).toEqual({ ok: false, code: "human_recent" });
+    expect(pick(sendGate({ master: m({ human_input_stamp: null }), approvalSeats: [], ownHumanStamp: "1794:7" }), { ok: false, code: "human_recent" })).toEqual({ ok: false, code: "human_recent" });
+    expect(pick(sendGate({ master: m({}), approvalSeats: [], ownHumanStamp: null }), { ok: false, code: "human_recent" })).toEqual({ ok: false, code: "human_recent" });
+    expect(pick(sendGate({ master: m({}), approvalSeats: [] }), { ok: false, code: "human_recent" })).toEqual({ ok: false, code: "human_recent" });
+    expect(ownLastHumanInput(m({ human_input_stamp: "" }), "")).toBe(false);
+    expect(ownLastHumanInput(m({ human_input_stamp: "1799:7" }), "1794:7")).toBe(false); // 데몬 다시 켜짐(세대 다름) = 아님
     // 짝짓기는 30초 쉼만 면제 — 입력줄 잔존·바쁨은 그대로 막는다
-    expect(sendGate({ master: m({ pending_input_human_bytes: 2 }), approvalSeats: [], ownHumanSeq: 7 })).toMatchObject({ ok: false, code: "draft" });
-    expect(sendGate({ master: m({ working: true }), approvalSeats: [], ownHumanSeq: 7 })).toMatchObject({ ok: false, code: "busy" });
+    expect(pick(sendGate({ master: m({ pending_input_human_bytes: 2 }), approvalSeats: [], ownHumanStamp: "1794:7" }), { ok: false, code: "draft" })).toEqual({ ok: false, code: "draft" });
+    expect(pick(sendGate({ master: m({ working: true }), approvalSeats: [], ownHumanStamp: "1794:7" }), { ok: false, code: "busy" })).toEqual({ ok: false, code: "busy" });
   });
-  it("masterRowOf 가 새 칸(human_input_seq · agent · agent_seen · seat)을 읽는다 · 옛 데몬(칸 없음) = null", () => {
-    const r = masterRowOf({ surfaces: [{ surface_id: 5, role: "master", human_input_seq: 3, agent: "claude", agent_seen: false, seat: "empty" }] }, () => false);
-    expect(r).toMatchObject({ human_input_seq: 3, agent: "claude", agent_seen: false, seat: "empty" });
+  it("masterRowOf 가 새 칸(human_input_stamp · agent · agent_seen · seat)을 읽는다 · 옛 데몬(칸 없음) = null", () => {
+    const r = masterRowOf({ surfaces: [{ surface_id: 5, role: "master", human_input_stamp: "1794:3", agent: "claude", agent_seen: false, seat: "empty" }] }, () => false);
+    expect(pick(r, { human_input_stamp: "1794:3", agent: "claude", agent_seen: false, seat: "empty" })).toEqual({ human_input_stamp: "1794:3", agent: "claude", agent_seen: false, seat: "empty" });
     const o = masterRowOf({ surfaces: [{ surface_id: 5, role: "master" }] }, () => false);
-    expect(o).toMatchObject({ human_input_seq: null, agent: null, agent_seen: null, seat: null });
+    expect(pick(o, { human_input_stamp: null, agent: null, agent_seen: null, seat: null })).toEqual({ human_input_stamp: null, agent: null, agent_seen: null, seat: null });
   });
 });
 

@@ -34,8 +34,8 @@ export interface MasterRow {
   working: boolean;
   /** (조각 3) 좌석 마지막 출력 뒤 초(org.status `idle_secs` · handlers.rs:12145) — 두 조회 사이 새 출력(짧은 답)을 알아채는 데만 씀 · 없으면 null */
   idle_secs?: number | null;
-  /** (조각 5 · S1-5) 지금 남은 사람 입력 시각을 찍은 차례 번호(org.status `human_input_seq` · 옛 데몬 = 없음 → null) */
-  human_input_seq?: number | null;
+  /** (조각 5 · S1-5) 지금 남은 사람 입력 시각의 찍기 표지(org.status `human_input_stamp` = `<데몬 기동 ms>:<번호>` · 찍기 없음·옛 데몬 = null) */
+  human_input_stamp?: string | null;
   /** (조각 5 · §6-2) 등록 에이전트 이름(meta) · 이 좌석에서 그 에이전트를 본 적 있는가 · 좌석 판정("empty"/"occupied"/"unknown") — 없으면 null */
   agent?: string | null;
   agent_seen?: boolean | null;
@@ -48,9 +48,9 @@ export interface GateInput {
   /** 이 데몬의 승인 대기(feed kind=approval status=pending) 항목이 걸린 좌석 번호들 · null = feed 조회 실패(모름) */
   approvalSeats: readonly number[] | null;
   busyPasteOk?: boolean;
-  /** (조각 5 · S1-5) 이 화면이 이 마스터 좌석에 낸 마지막 원자 제출의 사람 입력 차례(데몬 응답 `human_input_seq`) — 행의 값과 같으면
+  /** (조각 5 · S1-5) 이 화면이 이 마스터 좌석에 낸 마지막 원자 제출의 사람 입력 표지(데몬 응답 `human_input_stamp`) — 행의 값과 같으면
    *  「남은 사람 입력 = 내 보내기」라 30초 쉼을 걸지 않는다(다른 길 입력이 그 뒤에 찍히면 차례가 바뀐다 · 시각이 아니라 번호로 짝짓기). */
-  ownHumanSeq?: number | null;
+  ownHumanStamp?: string | null;
 }
 
 export type GateCode =
@@ -93,14 +93,15 @@ export function sendGate(g: GateInput): GateVerdict {
   if (g.approvalSeats.includes(m.surface_id)) return verdict("approval");
   if (m.pending_input_bytes === null || m.pending_input_human_bytes === null || m.input_paste_open === null || m.human_idle_secs === undefined) return verdict("input_unknown");
   if (m.pending_input_human_bytes > 0 || m.pending_input_bytes > 0 || m.input_paste_open) return verdict("draft");
-  if (m.human_idle_secs !== null && m.human_idle_secs < HUMAN_QUIET_SECS && !ownLastHumanInput(m, g.ownHumanSeq)) return verdict("human_recent");
+  if (m.human_idle_secs !== null && m.human_idle_secs < HUMAN_QUIET_SECS && !ownLastHumanInput(m, g.ownHumanStamp)) return verdict("human_recent");
   if (m.working && !(g.busyPasteOk ?? U25_BUSY_PASTE_OK)) return verdict("busy");
   return { ok: true };
 }
 
-/** (조각 5 · S1-5) 행의 사람 입력 차례가 내 마지막 원자 제출의 차례와 같은가 — 둘 다 양의 정수일 때만(모르면 아님 = 30초 쉼 그대로). */
-export function ownLastHumanInput(m: MasterRow, own: number | null | undefined): boolean {
-  return typeof own === "number" && own > 0 && typeof m.human_input_seq === "number" && m.human_input_seq === own;
+/** (조각 5 · S1-5) 행의 사람 입력 표지가 내 마지막 원자 제출의 표지와 같은가 — 둘 다 빈칸 아닌 글일 때만(모르면 아님 = 30초 쉼 그대로).
+ *  표지 = 데몬 기동 세대 + 줄지 않는 번호 → 데몬이 다시 켜지거나 되돌림이 있어도 남의 입력과 같아지지 않는다(codex 1R ABA). */
+export function ownLastHumanInput(m: MasterRow, own: string | null | undefined): boolean {
+  return typeof own === "string" && own !== "" && typeof m.human_input_stamp === "string" && m.human_input_stamp === own;
 }
 
 /** org.status 행(IPC 값 · 전부 의심) → MasterRow. 마스터 = role === "master" ∧ !exited(main.ts 와 같은 판정) · 둘 이상이면 번호가 작은 것. */
@@ -126,7 +127,7 @@ export function masterRowOf(org: unknown, working: (row: Record<string, unknown>
     human_idle_secs: "human_idle_secs" in r ? num(r.human_idle_secs) ?? (r.human_idle_secs === null ? null : undefined) : undefined,
     working: working(r),
     idle_secs: num(r.idle_secs),
-    human_input_seq: num(r.human_input_seq),
+    human_input_stamp: typeof r.human_input_stamp === "string" && r.human_input_stamp !== "" ? r.human_input_stamp : null,
     agent: typeof r.agent === "string" ? r.agent : null,
     agent_seen: bool(r.agent_seen),
     seat: typeof r.seat === "string" ? r.seat : null,

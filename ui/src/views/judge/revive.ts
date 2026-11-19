@@ -69,6 +69,16 @@ export function neverStartedEvidence(m: MasterRow | null | undefined): boolean {
   return !!m && typeof m.agent === "string" && m.agent_seen === false && m.seat === "empty";
 }
 
+/** 행이 「등록(meta) 없는 좌석이 비어 있다」인가(seat_vacant_no_meta 의 행 증거 · 옛 데몬 = 칸 없음 → 아님). */
+export function vacantNoMetaEvidence(m: MasterRow | null | undefined): boolean {
+  return !!m && m.agent === null && m.seat === "empty" && m.agent_alive === null;
+}
+
+/** 빈 좌석 증거(어느 쪽이든) — 공통층이 「처음 보인 시각」을 든다. */
+export function emptySeatEvidence(m: MasterRow | null | undefined): boolean {
+  return neverStartedEvidence(m) || vacantNoMetaEvidence(m);
+}
+
 /** 지금 마스터 사정 하나(순수). 조건마다 한 줄 = 뮤턴트 시험 단위. */
 export function reviveSituation(f: ReviveFacts): ReviveSit {
   const m = f.master;
@@ -86,7 +96,10 @@ export function reviveSituation(f: ReviveFacts): ReviveSit {
   if (d === "agent_never_started") return { kind: "down", down: "never", axis: d, sid };
   if (d === "agent_dead" || d === "seat_vacant_no_meta" || d === "shell_proc_dead") return { kind: "down", down: "agent", axis: d, sid };
   if (m.agent_alive === false) return { kind: "down", down: "agent", axis: "agent_dead", sid };
-  if (neverStartedEvidence(m) && f.neverSince !== null && f.now - f.neverSince >= NEVER_STARTED_MS) return { kind: "down", down: "never", axis: "agent_never_started", sid };
+  const sustained = f.neverSince !== null && f.now - f.neverSince >= NEVER_STARTED_MS;
+  if (neverStartedEvidence(m) && sustained) return { kind: "down", down: "never", axis: "agent_never_started", sid };
+  // (codex 1R major) 등록 없는 마스터 좌석이 빈 셸로 이어짐 + 이 기기에서 마스터를 본 적 있음 = 사건(seat_vacant_no_meta)을 못 받은 앱 새로 켬도 꺼짐으로
+  if (vacantNoMetaEvidence(m) && sustained && (f.seenBefore || f.goneMark)) return { kind: "down", down: "agent", axis: "seat_vacant_no_meta", sid };
   if (f.idle && f.idle.sid === sid && m.agent_alive === true) return { kind: "idle", sid };
   return { kind: "ok" };
 }
@@ -96,10 +109,16 @@ export type RestartPlan = { kind: "start" } | { kind: "close_then_start"; sid: n
 
 export function restartPlan(sit: ReviveSit, old: MasterRow | null | undefined): RestartPlan {
   if (sit.kind !== "down") return { kind: "none" };
-  if (sit.down !== "never") return { kind: "start" };
+  // (실물 실측 · real-daemon.txt ⑤) 같은 role+agent+cwd 기동 120초 안(CREATE_IDEM_TTL_SECS)이면 launch-agent 가 **같은 좌석을 멱등 재사용**해
+  //   그 셸에 기동 줄을 clear_first 없이 친다 — 옛 마스터 창에 사람 초안이 있으면 그 뒤에 붙는다. 그래서 모든 축에서 초안이 있으면 켜지 않는다.
+  // (codex 1R blocking 1 · 완화) 30초 안 사람 입력도 막는다 — 다시 받은 행과 닫기 사이(같은 누름 안 · 수 ms)에 사람이 새로 치기 시작하는 창을 좁힌다.
+  //   남는 창(조건부 닫기 원자화)은 데몬 요청 칸 변경이라 이 갈래 허용 범위 밖 → 📌(HANDOFF).
+  const draft = (r: MasterRow) =>
+    r.pending_input_human_bytes !== 0 || r.input_paste_open !== false || r.human_idle_secs === undefined || (r.human_idle_secs !== null && r.human_idle_secs < HUMAN_QUIET_SECS);
+  if (sit.down !== "never") return old && sit.sid !== null && old.surface_id === sit.sid && draft(old) ? { kind: "draft_block", sid: sit.sid } : { kind: "start" };
   // never_started 는 회수도 승계도 안 된다(§6-2 ②) — 옛 좌석을 닫아야 보유자가 사라진다. 닫기 = 사람 입력 없는 빈 셸일 때만(기계 판단 4-3).
   if (!old || sit.sid === null || old.surface_id !== sit.sid) return { kind: "none" }; // 다시 받은 행이 그 좌석이 아니면 아무것도 안 함
-  if (old.pending_input_human_bytes !== 0 || old.input_paste_open !== false) return { kind: "draft_block", sid: sit.sid };
+  if (draft(old)) return { kind: "draft_block", sid: sit.sid };
   return { kind: "close_then_start", sid: sit.sid };
 }
 
@@ -128,18 +147,36 @@ export function startOutcome(err: unknown): "ok" | "gate_pending" | "denied" | "
   return "failed";
 }
 
-/** 다시 켜기 성공(순수) — 목록 마스터 좌석 id 가 전과 다름 ∧ 에이전트 살아 있음 ∧ 관문 없음. */
-export function restartSucceeded(beforeSid: number | null, m: MasterRow | null | undefined): boolean {
-  return !!m && m.surface_id !== beforeSid && m.agent_alive === true && (m.gate_pending === null || m.gate_pending === undefined);
+/** 다시 켜기 성공(순수) — 에이전트 살아 있음 ∧ 관문 없음 ∧ (목록 마스터 좌석 id 가 전과 다름 ∨ 같은 좌석이 다시 켜기 전엔 살아 있지 않았음).
+ *  (실물 실측 ⑤) launch-agent 의 120초 멱등 재사용이면 같은 좌석에서 되살아난다 — id 만 보면 거짓 실패. 같은 좌석은 전에 생존(true)이 아니었을 때만
+ *  (깨우기 실패 뒤 살아 있는 좌석 위로 누른 경우 = 전에도 생존 → 같은 좌석 생존은 성공 아님). 고장 난 빈 셸 = agent_alive true 아님. */
+export function restartSucceeded(beforeSid: number | null, m: MasterRow | null | undefined, beforeAlive = false): boolean {
+  if (!m || m.agent_alive !== true || (m.gate_pending !== null && m.gate_pending !== undefined)) return false;
+  return m.surface_id !== beforeSid || !beforeAlive;
 }
 
 /** 성공 뒤 정리할 옛 빈 셸(순수) — 옛 좌석이 살아 있고 · 역할 없고(회수됨) · 등록 에이전트 좌석이었고 · 좌석 Empty · 사람 입력 0 · 최근 사람 입력 없음일 때만 그 번호. */
-export function leftoverShell(org: unknown, oldSid: number | null, newSid: number): number | null {
-  if (oldSid === null || oldSid === newSid) return null;
+/** 좌석 한 번의 신원 — 번호 + 데몬이 매긴 생성 시각(데몬이 다시 켜져 번호가 재사용돼도 생성 시각이 다르다 · codex 1R blocking 2). */
+export interface SeatId {
+  sid: number;
+  created_at: number;
+}
+
+export function seatIdOf(org: unknown, sid: number): SeatId | null {
+  const rows = (org as { surfaces?: unknown } | null)?.surfaces;
+  if (!Array.isArray(rows)) return null;
+  const r = rows.find((x) => !!x && typeof x === "object" && (x as { surface_id?: unknown }).surface_id === sid) as { created_at?: unknown } | undefined;
+  return r && typeof r.created_at === "number" && Number.isFinite(r.created_at) ? { sid, created_at: r.created_at } : null;
+}
+
+export function leftoverShell(org: unknown, old: SeatId | null, newSid: number): number | null {
+  if (old === null || old.sid === newSid) return null;
+  const oldSid = old.sid;
   const rows = (org as { surfaces?: unknown } | null)?.surfaces;
   if (!Array.isArray(rows)) return null;
   const r = rows.find((x) => !!x && typeof x === "object" && (x as { surface_id?: unknown }).surface_id === oldSid) as Record<string, unknown> | undefined;
   if (!r) return null;
+  if (r.created_at !== old.created_at) return null; // 같은 번호의 다른 좌석(데몬 다시 켜짐) = 닫지 않음
   if (r.exited === true) return null; // 이미 끝난 좌석은 데몬 회수 몫
   if (r.role !== null && r.role !== undefined) return null; // 아직 역할이 있으면 빈 셸이 아니다
   // 등록 에이전트 좌석(meta)이었던 것만 — 데몬이 다시 켜지면 좌석 번호가 다시 쓰여, 저장소의 옛 번호가 사용자가 연 맨 셸을 가리킬 수 있다(그 셸은 meta 없음).
@@ -155,7 +192,8 @@ export function leftoverShell(org: unknown, oldSid: number | null, newSid: numbe
 export function wokeUp(m: MasterRow | null | undefined, wakeAt: number, now: number): boolean {
   if (!m) return false;
   if (m.working) return true;
-  return typeof m.idle_secs === "number" && m.idle_secs * 1000 < now - wakeAt;
+  // idle_secs 는 초 아래를 버린 값 — 1초를 더해 「깨운 뒤 새 출력」만 인정(깨우기 직전 1초 안 옛 출력을 새 출력으로 보지 않음 · codex 1R minor)
+  return typeof m.idle_secs === "number" && (m.idle_secs + 1) * 1000 < now - wakeAt;
 }
 
 // ---------- 띠(그리기 재료 · 순수) ----------
@@ -166,12 +204,13 @@ export type RevivePhase =
   | { kind: "wake_wait"; until: number } // 사람 보내기 뒤 30초 묶임 동안 기다렸다 보냄
   | { kind: "waking"; at: number }
   | { kind: "wakefail" }
-  | { kind: "restarting"; at: number; before: number | null }
+  | { kind: "restarting"; at: number; before: number | null; beforeAlive: boolean }
   | { kind: "retry_wait"; at: number }
   | { kind: "hold_human" }
   | { kind: "draft_block"; sid: number }
   | { kind: "restartfail"; why: string }
-  | { kind: "boot_degraded" };
+  | { kind: "boot_degraded" }
+  | { kind: "gate_wait"; at: number }; // start_master 가 관문 보류로 끝남 — 관문 좌석이 목록에 보일 때까지 다시 켜기 잠금(codex 1R major)
 
 export type BandBtn = "wake" | "restart" | "help" | "work" | "gate_answer";
 
@@ -206,6 +245,9 @@ export function reviveBand(sit: ReviveSit, ph: RevivePhase, restoring: boolean, 
       return { key: "draft_block", tone: "err", title: "그 창에 쓰다 만 글이 있어요.", body: "쓰던 글을 지우지 않으려고 마스터 창을 닫지 않았어요. 작업 화면에서 그 글을 보내거나 지운 뒤 다시 눌러 주세요.", buttons: ["work", "restart"] };
     case "restartfail":
       return { key: "restartfail", tone: "err", title: "마스터를 다시 켜지 못했어요.", body: ph.why ? `운영팀에 도움을 요청할 수 있어요. (${ph.why})` : "운영팀에 도움을 요청할 수 있어요.", buttons: ["help", "restart"] };
+    case "gate_wait":
+      if (sit.kind === "gate") break; // 관문 좌석이 보이면 관문 띠
+      return { key: "gate_wait", tone: "wait", title: "마스터가 처음 켜지며 확인을 기다려요.", body: "마스터 창이 목록에 나타나는 중이에요.", buttons: ["restart"], locked: "restart", lockLabel: "기다리는 중…" };
     case "boot_degraded":
       return { key: "boot_degraded", tone: "wait", title: "마스터는 켜졌지만 팀 준비가 덜 됐어요.", body: "작업 화면에서 도우미 창들을 확인해 주세요.", buttons: ["work"] };
     case "wake_wait": {

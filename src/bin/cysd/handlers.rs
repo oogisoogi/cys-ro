@@ -387,23 +387,56 @@ fn caller_lineage_desc(pid: u32) -> String {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct HumanStamp {
     prev: Option<std::time::Instant>,
+    prev_seq: u64,
     seq: u64,
 }
 
+/// 번호는 발급기(`human_input_issued`)에서만 나온다 — 되돌림이 있어도 같은 번호가 두 번 나오지 않는다(codex 1R ABA).
 pub(crate) fn stamp_human_input(s: &crate::state::Surface) -> HumanStamp {
     let mut g = s.last_human_input.lock().unwrap();
     let prev = *g;
     *g = Some(std::time::Instant::now());
-    let seq = s.human_input_seq.fetch_add(1, Ordering::SeqCst) + 1;
-    HumanStamp { prev, seq }
+    let seq = s.human_input_issued.fetch_add(1, Ordering::SeqCst) + 1;
+    let prev_seq = s.human_input_seq.swap(seq, Ordering::SeqCst);
+    HumanStamp { prev, prev_seq, seq }
 }
 
-/// 쓰기 0 으로 끝난 원자 제출의 찍기를 되돌린다(S1-10) — 그 사이 다른 입력이 찍었으면(차례가 바뀜) 아무것도 안 한다.
+/// 쓰기 0 으로 끝난 원자 제출의 찍기를 되돌린다(S1-10) — 그 사이 다른 입력이 찍었으면(지금 번호가 내 번호가 아님) 아무것도 안 한다.
 pub(crate) fn unstamp_human_input(s: &crate::state::Surface, st: HumanStamp) {
     let mut g = s.last_human_input.lock().unwrap();
     if s.human_input_seq.load(Ordering::SeqCst) == st.seq {
         *g = st.prev;
-        s.human_input_seq.store(st.seq - 1, Ordering::SeqCst);
+        s.human_input_seq.store(st.prev_seq, Ordering::SeqCst);
+    }
+}
+
+/// 사람 입력 표지(앱이 짝짓는 불투명 값) — `<데몬 기동 ms>:<번호>` · 데몬이 다시 켜지면 번호가 1 부터라도 표지는 다르다 · 0 = 없음.
+pub(crate) fn human_input_stamp_label(daemon: &Daemon, seq: u64) -> Value {
+    if seq == 0 {
+        Value::Null
+    } else {
+        json!(format!("{}:{seq}", (daemon.started_at * 1000.0) as u64))
+    }
+}
+
+/// (S1-10) 「창이면 쓰지 마라」 원자 제출의 찍기 — 쓰기 줄에 넘기기 전에 이 요청이 어떤 갈래로 돌아가든(쓰기 0) 떨어질 때 되돌린다.
+/// 쓰기 줄에 넘긴 뒤(`commit`)에는 그대로 둔다. 갈래마다 되돌림을 적지 않는다(codex 1R major — 빠진 갈래가 생긴다).
+struct HumanStampGuard {
+    s: std::sync::Arc<crate::state::Surface>,
+    st: Option<HumanStamp>,
+}
+
+impl HumanStampGuard {
+    fn commit(&mut self) {
+        self.st = None;
+    }
+}
+
+impl Drop for HumanStampGuard {
+    fn drop(&mut self) {
+        if let Some(st) = self.st.take() {
+            unstamp_human_input(&self.s, st);
+        }
     }
 }
 
@@ -7955,8 +7988,10 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             } else {
                 None
             };
-            let unstamp_on_refusal = human_stamp
-                .filter(|_| params.get("refuse_on_approval").and_then(|v| v.as_bool()).unwrap_or(false));
+            let mut stamp_guard = HumanStampGuard {
+                s: surface.clone(),
+                st: human_stamp.filter(|_| params.get("refuse_on_approval").and_then(|v| v.as_bool()).unwrap_or(false)),
+            };
             // T3-13 권위 전달(clear_first): 잔존 미제출 텍스트를 Ctrl-U로 지운 깨끗한 라인에
             // 명령을 원자적으로 꽂고 제출한다(아래 Inject 경로). 게이트를 데몬에서 집행한다.
             let clear_first = params
@@ -7978,9 +8013,6 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                 }
                 // Ctrl-U 의미는 TUI별 상이 → launch-agent 등록 pane 한정(무차별 C-u 금지).
                 if surface.agent_meta.lock().unwrap().is_none() {
-                    if let Some(st) = unstamp_on_refusal {
-                        unstamp_human_input(&surface, st);
-                    }
                     return Reply::Single(err_response(
                         &id,
                         "clear_first_unsupported",
@@ -8110,9 +8142,6 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                 && params.get("refuse_on_approval").and_then(|v| v.as_bool()).unwrap_or(false)
                 && crate::governance::agent_seat_vacant_now(&surface)
             {
-                if let Some(st) = unstamp_on_refusal {
-                    unstamp_human_input(&surface, st);
-                }
                 return Reply::Single(err_response(
                     &id,
                     ERR_NO_AGENT,
@@ -8190,9 +8219,6 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                 && (crate::governance::seat_approval_pending(daemon, &surface)
                     || (clear_first && crate::governance::approval_or_gate_pending(daemon, surface.id)))
             {
-                if let Some(st) = unstamp_on_refusal {
-                    unstamp_human_input(&surface, st);
-                }
                 return Reply::Single(err_response(
                     &id,
                     cys::ERR_APPROVAL_SCREEN,
@@ -8631,12 +8657,11 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                     return Reply::Single(err);
                 }
             } else if let Some(err) = try_write(&surface, write_req, &id) {
-                // (조각 5 S1-8·S1-10) write_stalled·write_failed = 쓰기 줄에 넣지 못함(바이트 0) — 원자 제출이면 찍기도 되돌린다.
-                if let Some(st) = unstamp_on_refusal {
-                    unstamp_human_input(&surface, st);
-                }
+                // (조각 5 S1-8·S1-10) write_stalled·write_failed = 쓰기 줄에 넣지 못함(바이트 0) — 원자 제출이면 찍기도 되돌린다(가드가 떨어지며).
                 return Reply::Single(err);
             }
+            // 쓰기 줄에 넘겼다 — 여기부터는 바이트가 나갈 수 있으므로 찍기를 남긴다.
+            stamp_guard.commit();
             // ★B1(0.14.30): 미제출 입력 계수 — 큐 배달의 '입력줄 점유' 1차 축(화면 무의존).
             //   clear_first 주입은 Ctrl-U 선정리 + 본문 + CR 을 원자로 보내 **줄을 비우고 제출**
             //   하므로 계수는 0 이다. 그 외 본문(사람 키·프로그램 미제출 본문)은 누적한다 —
@@ -8781,7 +8806,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             }
             // (1.1.16 · cysr-1116-s5-1119 · 조각 5 S1-5) 이 요청이 찍은 사람 입력 차례(가산 키 · 찍지 않았으면 없음).
             if let Some(st) = human_stamp {
-                result["human_input_seq"] = json!(st.seq);
+                result["human_input_stamp"] = human_input_stamp_label(daemon, st.seq);
             }
             Reply::Single(ok_response(&id, result))
         }
@@ -12559,7 +12584,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                         //   자동 갱신 게이트 「사람이 쓰고 있다」의 좌석 쪽 계기(읽기 전용 가산 키).
                         "human_idle_secs": s.last_human_input.lock().unwrap().map(|t| t.elapsed().as_secs()),
                         // (1.1.16 · cysr-1116-s5-1119 · 조각 5 S1-5) 지금 남은 사람 입력 시각을 찍은 차례 번호(`surface.send_text` 응답과 같은 값 · 가산 키).
-                        "human_input_seq": s.human_input_seq.load(Ordering::SeqCst),
+                        "human_input_stamp": human_input_stamp_label(daemon, s.human_input_seq.load(Ordering::SeqCst)),
                         "queue_depth": s.pending_queue.lock().unwrap().len(),
                         "queue_paused": queue_paused,
                         // ★(0.14.43 · C5) 가산 키 3개(막힘 없으면 null) — 조치 코드는 아래 `remedy_todo` 가 가드 해제 뒤 채운다.
@@ -29524,7 +29549,8 @@ mod tests {
             };
             r["result"]["surfaces"].as_array().unwrap().iter().find(|x| x["surface_id"] == json!(s.id)).cloned().expect("row")
         };
-        assert_eq!(row()["human_input_seq"], json!(0));
+        let label = |n: u64| json!(format!("{}:{n}", (daemon.started_at * 1000.0) as u64));
+        assert_eq!(row()["human_input_stamp"], Value::Null, "찍기 없음 = null");
         assert_eq!(row()["agent_seen"], json!(false), "가산 키 agent_seen 이 없다");
         // ① 등록(meta) 없는 좌석에 원자 제출 → clear_first_unsupported(바이트 0) → 찍기 되돌림
         let r = send(1, json!({"surface_id": s.id, "text": "hi", "human": true, "quiet": true, "queued": false,
@@ -29535,14 +29561,15 @@ mod tests {
         // ② 옵션 없는 사람 입력(자판) = 찍힘 · 응답에 차례 · org.status 같은 값
         let r = send(2, json!({"surface_id": s.id, "text": "x", "human": true, "quiet": true}));
         assert_eq!(r["result"]["sent"], json!(true), "{r}");
-        assert_eq!(r["result"]["human_input_seq"], json!(1), "응답에 찍은 차례가 없다(S1-5): {r}");
-        assert_eq!(row()["human_input_seq"], json!(1));
+        // 번호 2 — 앞 ① 의 되돌린 찍기가 번호 1 을 썼다(발급기는 줄지 않는다 · 같은 번호 재사용 0)
+        assert_eq!(r["result"]["human_input_stamp"], label(2), "응답에 찍기 표지가 없다(S1-5): {r}");
+        assert_eq!(row()["human_input_stamp"], label(2), "행 표지 ≠ 응답 표지");
         assert!(s.last_human_input.lock().unwrap().is_some());
         // ③ 대조: 옵션 없는 거부 요청은 되돌리지 않는다(종전 동작) — refuse_on_approval 없는 clear_first
         let before = *s.last_human_input.lock().unwrap();
         let r = send(3, json!({"surface_id": s.id, "text": "hi", "human": true, "quiet": true, "clear_first": true}));
         assert_eq!(r["error"]["code"], json!("clear_first_unsupported"));
-        assert_eq!(s.human_input_seq.load(Ordering::SeqCst), 2, "옵션 없는 요청까지 되돌렸다");
+        assert_eq!(s.human_input_seq.load(Ordering::SeqCst), 3, "옵션 없는 요청까지 되돌렸다");
         assert_ne!(*s.last_human_input.lock().unwrap(), before);
         // ④ 되돌림은 그 사이 다른 찍기가 있으면 하지 않는다
         let st = stamp_human_input(&s);
@@ -29550,7 +29577,8 @@ mod tests {
         unstamp_human_input(&s, st);
         assert_eq!(s.human_input_seq.load(Ordering::SeqCst), other.seq, "다른 입력의 찍기를 지웠다");
         unstamp_human_input(&s, other);
-        assert_eq!(s.human_input_seq.load(Ordering::SeqCst), other.seq - 1);
+        assert_eq!(s.human_input_seq.load(Ordering::SeqCst), st.seq, "앞 찍기로 되돌림");
+        assert_eq!(stamp_human_input(&s).seq, other.seq + 1, "되돌린 뒤 같은 번호를 다시 냈다(ABA)");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -13,9 +13,11 @@ import {
   BOOT_DEGRADED_WINDOW_MS,
   deadAxisOf,
   denialNext,
+  emptySeatEvidence,
+  seatIdOf,
+  type SeatId,
   GATE_WORK_HINT,
   leftoverShell,
-  neverStartedEvidence,
   restartPlan,
   restartSucceeded,
   RESTART_TIMEOUT_MS,
@@ -40,6 +42,10 @@ export const SEEN_KEY = "cys-master-seen";
 export const GONE_KEY = "cys-master-gone";
 /** 거절 사건을 기다리는 짧은 창(start_master 가 끝난 뒤 · 사건이 늦게 올 수 있다 · 설계 목표값). */
 export const DENIAL_EVENT_WAIT_MS = 1_500;
+/** 마지막 깨움 시각(앱을 다시 켜도 5분 거름 유지 · codex 1R minor). */
+export const WAKE_AT_KEY = "cys-chat-wake-at";
+/** 관문 보류 뒤 관문 좌석을 기다리는 상한(설계 목표값). */
+export const GATE_WAIT_MS = 30_000;
 
 export interface ReviveDeps {
   invoke(cmd: string, args?: Record<string, unknown>): Promise<unknown>;
@@ -62,6 +68,8 @@ export interface ReviveDeps {
   openHelp?(): void;
   /** 바뀜 알림(다시 그리기) */
   changed(): void;
+  /** 앱 수명 전체의 복원 진행 중 여부(main.ts briefGate · 대화 화면을 끈 동안 온 restore-progress 도 · codex 1R major) */
+  restoring?(): boolean;
   /** 빨리 다시 조회(성공 신호 보조) */
   pollSoon?(): void;
 }
@@ -91,11 +99,15 @@ export class ReviveBook {
   private lastDenial: { at: number; ev: Denial } | null = null;
   private lastRestartAt: number | null = null;
   /** 다시 켜기 직전의 옛 마스터 좌석(vacant 면 저장소의 마지막 번호) — 성공 뒤 빈 셸 정리 대상 */
-  private oldSid: number | null = null;
+  private oldSeat: SeatId | null = null;
+  /** 이번 실행에서 살아 있는 마스터로 본 좌석 신원(정리 대상 근거 — 저장소 번호만으로는 닫지 않는다) */
+  private seenSeat: SeatId | null = null;
   /** 시험 계수 */
   readonly counts = { start: 0, close: 0, wake: 0, autoRetry: 0 };
 
-  constructor(private readonly d: ReviveDeps) {}
+  constructor(private readonly d: ReviveDeps) {
+    this.lastWakeAt = this.loadWakeAt();
+  }
 
   // ---------- 사실 ----------
 
@@ -121,18 +133,24 @@ export class ReviveBook {
     this.master = master;
     if (org !== undefined) this.org = org;
     if (master && master.agent_alive === true) {
-      // 살아 있는 cysr 마스터를 봄 — 「본 적 있음」(번호) 기록 · 놓아짐 기록 지움 · 그 좌석의 낡은 deadman 지움
-      if (this.storeGet(SEEN_KEY) !== String(master.surface_id)) this.storeSet(SEEN_KEY, String(master.surface_id));
+      // 살아 있는 cysr 마스터를 봄 — 「본 적 있음」(신원) 기록 · 놓아짐 기록 지움 · 그 좌석의 낡은 deadman 지움
+      const sidn = org === undefined ? null : seatIdOf(org, master.surface_id);
+      if (sidn) {
+        this.seenSeat = sidn;
+        const v = JSON.stringify(sidn);
+        if (this.storeGet(SEEN_KEY) !== v) this.storeSet(SEEN_KEY, v);
+      } else if (this.storeGet(SEEN_KEY) === null) this.storeSet(SEEN_KEY, JSON.stringify({ sid: master.surface_id }));
       if (this.storeGet(GONE_KEY) !== null) this.storeSet(GONE_KEY, null);
       if (this.dead && this.dead.sid === master.surface_id) this.dead = null;
     }
-    this.neverSince = neverStartedEvidence(master) ? (this.neverSince ?? now) : null;
+    this.neverSince = emptySeatEvidence(master) ? (this.neverSince ?? now) : null;
     // 조용함 사건 뒤 새 출력·일 시작 = 풀림
     if (this.idle && master && this.idle.sid === master.surface_id && wokeUp(master, this.idle.at, now)) this.idle = null;
     // 깨우는 중 → 깨어남
     if (this.phase.kind === "waking" && wokeUp(master, this.phase.at, now)) this.setPhase({ kind: "rest" });
     // 다시 켜는 중 → 성공 판정
-    if (this.phase.kind === "restarting" && restartSucceeded(this.phase.before, master)) this.onRestartOk(master as MasterRow);
+    if (this.phase.kind === "gate_wait" && (this.situation().kind === "gate" || this.situation().kind === "ok")) this.setPhase({ kind: "rest" });
+    if (this.phase.kind === "restarting" && restartSucceeded(this.phase.before, master, this.phase.beforeAlive)) this.onRestartOk(master as MasterRow);
     // 사람 입력 때문에 기다리던 것 · 쓰다 만 글 — 사정이 풀렸으면(꺼짐 아님) 띠를 거둔다
     if ((this.phase.kind === "hold_human" || this.phase.kind === "draft_block" || this.phase.kind === "restartfail" || this.phase.kind === "wakefail") && this.situation().kind === "ok")
       this.setPhase({ kind: "rest" });
@@ -183,7 +201,7 @@ export class ReviveBook {
     if (name === "restore-progress") {
       const ph = (payload as { phase?: unknown } | null)?.phase;
       if (ph === "start") this.restoring = true;
-      else if (ph === "done" || ph === "error") this.restoring = false;
+      else if (ph === "done" || ph === "error") this.restoring = false; // (앱 수명 값은 d.restoring 이 따로 준다)
       else return;
       this.d.changed();
       return;
@@ -209,7 +227,32 @@ export class ReviveBook {
 
   view(): ReviveView {
     const sit = this.situation();
-    return { sit, phase: this.phase, band: reviveBand(sit, this.phase, this.restoring, this.d.now()), restoring: this.restoring };
+    const restoring = this.isRestoring();
+    return { sit, phase: this.phase, band: reviveBand(sit, this.phase, restoring, this.d.now()), restoring };
+  }
+
+  private isRestoring(): boolean {
+    return this.restoring || this.d.restoring?.() === true;
+  }
+
+  /** 저장소의 마지막 마스터 신원(번호 + 생성 시각이 둘 다 있을 때만 — 옛 꼴「번호만」은 정리 근거 아님). */
+  private storedSeat(): SeatId | null {
+    try {
+      const o = JSON.parse(this.storeGet(SEEN_KEY) ?? "null") as { sid?: unknown; created_at?: unknown } | null;
+      return o && typeof o.sid === "number" && typeof o.created_at === "number" ? { sid: o.sid, created_at: o.created_at } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private loadWakeAt(): number | null {
+    const v = Number(this.storeGet(WAKE_AT_KEY));
+    return Number.isFinite(v) && v > 0 ? v : null;
+  }
+
+  private markWake(at: number): void {
+    this.lastWakeAt = at;
+    this.storeSet(WAKE_AT_KEY, String(at));
   }
 
   private setPhase(p: RevivePhase, timeoutMs?: number, onTimeout?: () => void): void {
@@ -239,7 +282,7 @@ export class ReviveBook {
       return;
     }
     const hold = this.d.holdRemainingMs();
-    this.lastWakeAt = now; // 누른 순간부터 거름(기다리는 동안 다시 눌러도 1건)
+    this.markWake(now); // 누른 순간부터 거름(기다리는 동안 다시 눌러도 1건)
     if (hold > 0) {
       // R3: 사람 보내기 뒤 데몬이 큐를 30초 묶는다 — 그 뒤에 보낸다(지금 넣으면 묶인 채 「차례 기다림」만 길어짐 · 같은 1건)
       this.setPhase({ kind: "wake_wait", until: now + hold }, hold, () => void this.sendWake());
@@ -256,7 +299,7 @@ export class ReviveBook {
     }
     this.busy = true;
     const at = this.d.now();
-    this.lastWakeAt = at;
+    this.markWake(at);
     this.setPhase({ kind: "waking", at }, WAKE_TIMEOUT_MS, () => this.wakeTimedOut());
     this.counts.wake++;
     try {
@@ -280,12 +323,12 @@ export class ReviveBook {
   /** 「마스터 다시 켜기」(신뢰 클릭 뒤 · 또는 거절 뒤 자동 1회). */
   async restart(auto = false): Promise<void> {
     if (this.busy) return; // 연타 = 호출 0
-    if (this.restoring) {
+    if (this.isRestoring()) {
       // 복원 중 = 호출 0(phoenix·두 번 생성 경합 F5). 자동 1회가 이때 걸리면 기다림 띠에 갇히지 않게 실패 안내로.
       if (auto && this.phase.kind === "retry_wait") this.setPhase({ kind: "restartfail", why: "직원 복귀(복원) 중이라 저절로 켜지 않았어요" });
       return;
     }
-    if (this.phase.kind === "restarting" || (this.phase.kind === "retry_wait" && !auto)) return;
+    if (this.phase.kind === "restarting" || this.phase.kind === "gate_wait" || (this.phase.kind === "retry_wait" && !auto)) return;
     this.busy = true;
     try {
       if (!auto) this.autoUsed = false; // 사람이 새로 누른 다시 켜기 = 새 차례
@@ -299,7 +342,9 @@ export class ReviveBook {
         return; // 이미 살아남(다른 길로 켜짐) — 아무것도 안 함
       }
       const before = this.master ? this.master.surface_id : null;
-      this.oldSid = before ?? this.lastSeenSid();
+      const beforeAlive = this.master ? this.master.agent_alive === true : false;
+      // 정리 대상 = 이번 실행에서 살아 있는 마스터로 본 좌석 신원(번호 + 생성 시각)뿐 — 저장소 번호만으로는 닫지 않는다(codex 1R blocking 2)
+      this.oldSeat = before !== null ? seatIdOf(org, before) : (this.seenSeat ?? this.storedSeat());
       const plan = sit.kind === "down" ? restartPlan(sit, this.master) : ({ kind: "start" } as const);
       if (plan.kind === "none") return;
       if (plan.kind === "draft_block") {
@@ -316,7 +361,7 @@ export class ReviveBook {
         }
       }
       this.lastRestartAt = this.d.now();
-      this.setPhase({ kind: "restarting", at: this.lastRestartAt, before: plan.kind === "close_then_start" ? plan.sid : before }, RESTART_TIMEOUT_MS, () => {
+      this.setPhase({ kind: "restarting", at: this.lastRestartAt, before: plan.kind === "close_then_start" ? plan.sid : before, beforeAlive: plan.kind === "close_then_start" ? false : beforeAlive }, RESTART_TIMEOUT_MS, () => {
         if (this.phase.kind === "restarting") this.setPhase({ kind: "restartfail", why: "시간 안에 마스터가 켜지지 않았어요" });
       });
       this.counts.start++;
@@ -333,7 +378,10 @@ export class ReviveBook {
         return; // 성공 판정은 조회 행으로(observe)
       }
       if (out === "gate_pending") {
-        this.setPhase({ kind: "rest" }); // 관문 띠는 행의 gate_pending 이 그린다(§6-3)
+        // 관문 띠는 행의 gate_pending 이 그린다(§6-3) — 그 좌석이 목록에 보일 때까지 다시 켜기를 잠근다(두 번째 start_master 0)
+        this.setPhase({ kind: "gate_wait", at: this.d.now() }, GATE_WAIT_MS, () => {
+          if (this.phase.kind === "gate_wait") this.setPhase({ kind: "rest" });
+        });
         this.d.pollSoon?.();
         return;
       }
@@ -366,16 +414,11 @@ export class ReviveBook {
     });
   }
 
-  private lastSeenSid(): number | null {
-    const v = Number(this.storeGet(SEEN_KEY));
-    return Number.isSafeInteger(v) && v > 0 ? v : null;
-  }
-
   private onRestartOk(m: MasterRow): void {
     this.setPhase({ kind: "rest" });
     // vacant·never 정리: 옛 좌석이 역할 없는 빈 셸 ∧ 사람 입력 0 이면 닫는다(빈 셸 누적 방지 · F3·V-M5) — 아니면 그대로 둔다.
-    const old = leftoverShell(this.org, this.oldSid, m.surface_id);
-    this.oldSid = null;
+    const old = leftoverShell(this.org, this.oldSeat, m.surface_id);
+    this.oldSeat = null;
     if (old !== null) {
       this.counts.close++;
       void this.d.invoke("close_surface", { socket: null, surfaceId: old }).catch(() => {});

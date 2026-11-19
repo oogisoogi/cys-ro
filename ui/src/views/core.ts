@@ -113,6 +113,8 @@ export interface Deps {
   openHelp?(): void;
   /** (조각 5) Tauri 앱 사건 구독(boot-degraded · restore-progress) — 대화 화면 attach~detach 동안만 · 없으면 그 사건 없이. */
   listenApp?(name: string, handler: (e: { payload: unknown }) => void): Promise<() => void>;
+  /** (조각 5 · codex 1R major) 앱 수명 전체의 복원 진행 중 여부(main.ts briefGate) */
+  restoring?(): boolean;
 }
 
 export type Health = "unknown" | "none" | "off" | "gate" | "busy" | "ready";
@@ -198,8 +200,8 @@ export class ChatCore {
   readonly revive: ReviveBook;
   /** (조각 5) 앱 사건(boot-degraded · restore-progress) 구독 해제 — 대화 화면 attach~detach 동안만. */
   private unlistenApp: Array<() => void> = [];
-  /** (조각 5 · S1-5) 이 화면이 마스터 좌석에 낸 마지막 원자 제출의 사람 입력 차례(데몬 응답 human_input_seq). */
-  private ownHuman: { seat: number; seq: number } | null = null;
+  /** (조각 5 · S1-5) 이 화면이 마스터 좌석에 낸 마지막 원자 제출의 사람 입력 표지(데몬 응답 human_input_stamp). */
+  private ownHuman: { seat: number; stamp: string } | null = null;
 
   constructor(private readonly d: Deps) {
     this.loadHold();
@@ -219,6 +221,7 @@ export class ChatCore {
       openHelp: () => this.d.openHelp?.(),
       changed: () => this.set({}),
       pollSoon: () => void this.poll(),
+      restoring: () => this.d.restoring?.() === true,
     });
   }
 
@@ -475,8 +478,8 @@ export class ChatCore {
   }
 
   private gateOf(f: { master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number }): GateVerdict {
-    const own = f.master && this.ownHuman && this.ownHuman.seat === f.master.surface_id ? this.ownHuman.seq : null;
-    return sendGate({ master: f.master, approvalSeats: f.approvals, ownHumanSeq: own });
+    const own = f.master && this.ownHuman && this.ownHuman.seat === f.master.surface_id ? this.ownHuman.stamp : null;
+    return sendGate({ master: f.master, approvalSeats: f.approvals, ownHumanStamp: own });
   }
 
   private applyFresh(f: { master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number; feed?: unknown; org?: unknown }): void {
@@ -653,11 +656,11 @@ export class ChatCore {
       } finally {
         this.d.clearTimeout(silent);
       }
-      const r = (res ?? {}) as { outcome?: unknown; code?: unknown; message?: unknown; result?: { human_input_seq?: unknown } };
+      const r = (res ?? {}) as { outcome?: unknown; code?: unknown; message?: unknown; result?: { human_input_stamp?: unknown } };
       const step = stepFromOutcome(r.outcome);
       // (조각 5 · S1-5) 데몬이 찍은 사람 입력 차례 — 다음 말의 30초 쉼을 「내 보내기」면 걸지 않는 짝짓기 열쇠
-      const hseq = r.result?.human_input_seq;
-      if (typeof hseq === "number" && Number.isSafeInteger(hseq) && hseq > 0) this.ownHuman = { seat: m.surface_id, seq: hseq };
+      const hst = r.result?.human_input_stamp;
+      if (typeof hst === "string" && hst !== "") this.ownHuman = { seat: m.surface_id, stamp: hst };
       const code = typeof r.code === "string" ? r.code : undefined;
       if (step !== "held" && step !== "failed" && step !== "queued_hold") this.lastHumanSentAt = sentAt; // 바이트가 나갔을 수 있음(R3)
       const cur = this.s.msgs.find((x) => x.id === id);

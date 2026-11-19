@@ -19,6 +19,8 @@ export interface BootDeps {
   focusSeat?(sid: number): void;
   /** (조각 5) 도움 요청 창(main.ts 기존 피드백 창) */
   openHelp?(): void;
+  /** (조각 5) 복원 진행 중(main.ts briefGate — 앱 수명 전체) */
+  restoring?(): boolean;
 }
 
 const MIN_CHAT = { confirms: "[data-min=confirms]", lastSendStep: "[data-min=lastSendStep]", masterHealth: "[data-min=masterHealth]", errors: "[data-min=errors]", switcher: "shared" } as const;
@@ -68,6 +70,7 @@ export function bootViews(deps: BootDeps): { core: ChatCore; registry: Registry<
     listenApp: (name, handler) => (window as unknown as { __TAURI__: { event: { listen(n: string, h: (e: { payload: unknown }) => void): Promise<() => void> } } }).__TAURI__.event.listen(name, handler),
     focusSeat: (sid) => deps.focusSeat?.(sid),
     openHelp: () => deps.openHelp?.(),
+    restoring: () => deps.restoring?.() === true,
     workHint: (text) => paintWorkHint(switchHost, text, () => void booted?.registry.choose("chat")),
   });
   const views: ViewDescriptor<ChatState, ChatCore>[] = [

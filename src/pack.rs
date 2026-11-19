@@ -13544,8 +13544,10 @@ mod tests {
             let b = &src[src.find(name).unwrap()..];
             b[..b.find("\n}\n").unwrap()].to_string()
         };
-        let iter = fn_body("pub fn install_from_iter<");
-        assert!(iter.find("recover_interrupted_swap(&dir)?").expect("데몬 부트 길") < iter.find("install_into(dir").unwrap());
+        // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V2-3) 본체 = install_from_iter_with(config 시드 시점 주입) — 공개 입구는 그쪽으로만 넘긴다.
+        assert!(fn_body("pub fn install_from_iter<").contains("install_from_iter_with(items, force, target_version, transactional, auth, ConfigSeed::Now)"));
+        let iter = fn_body("fn install_from_iter_with<");
+        assert!(iter.find("recover_interrupted_swap(&dir)?").expect("데몬 부트 길") < iter.find("install_into_with(dir").unwrap());
         let txn = fn_body("pub fn apply_pack_transactional<");
         assert!(txn.find("recover_interrupted_swap(&dir)?").expect("pack-update 길") < txn.find("write_journal(").unwrap());
         assert!(txn.find("authorize_pack_write(&dir, auth)?").unwrap() < txn.find("recover_interrupted_swap(&dir)?").unwrap());

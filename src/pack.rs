@@ -6753,6 +6753,17 @@ fn open_lock_file(lp: &Path) -> Result<std::fs::File, String> {
 /// ★1.1.16 F1: 쓰는 쪽(`cys pack-update` 의 with_apply_lock — 공용 잠금을 이미 쥔 채)이 이 레인의 적용 잠금을 **기다려** 잡고 `f` 를 실행한다.
 /// 잠금 순서 = 공용 → 레인(데몬 기동은 기다리지 않으므로 교착 없음).
 pub fn with_lane_apply_lock<T>(state_base: &Path, f: impl FnOnce() -> T) -> Result<T, String> {
+    with_lane_apply_lock_gated(state_base, &crate::factory_reset::reset_in_progress, f)
+}
+
+/// [`with_lane_apply_lock`] 의 판정자 주입판(시험이 「초기화 진행 중」 을 흉내 — 시험 바이너리는 cys 계열 이름이 아니라 라이브 판정자로는 못 켠다).
+/// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V6 · codex 1R blocking): 공장 초기화와의 양방향 규약 — 쓰는 이는 공용 잠금을 쥔 **뒤**(호출부)
+///   초기화 센티널을 본다 · 초기화는 센티널을 세운 **뒤** 잠금이 빈지 본다([`pack_apply_locks_quiet`]). 어느 순서로 끼어도 한쪽이 멈춘다
+///   (쓰는 이가 먼저 잠금 = 초기화가 「진행 중」 으로 거부 · 초기화가 먼저 센티널 = 쓰는 이가 여기서 거부). 잠금을 쥔 채 옮기지 않는다(윈도우 이동 실패 회피).
+pub(crate) fn with_lane_apply_lock_gated<T>(state_base: &Path, reset_now: &dyn Fn() -> bool, f: impl FnOnce() -> T) -> Result<T, String> {
+    if !crate::update::mutant("J1116-V6-NO-SENTINEL") && reset_now() {
+        return Err("완전 초기화가 진행 중이라 팩 업데이트를 하지 않습니다(초기화가 끝난 뒤 다시)".into());
+    }
     // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V9 · codex 2R minor): 1.1.16 쓰는 이 표식 — 공용 잠금을 쥔 채 이것도 쥔다(순서 = 공용 → 표식 → 레인).
     //   본부 데몬 기동이 「공용 잠금은 남이 쥐었는데 옛 공유 저널은 아직 없다」를 볼 때 그 주인이 이 판의 쓰는 이(표식 쥠 = 진행)인지
     //   1.1.15 쓰는 이(표식 없음 = 저널을 만들기 전 창일 수 있음 = Busy)인지 가른다([`with_apply_lock_nonblocking`]). 데몬은 이 표식을 쥐지 않는다.
@@ -6778,12 +6789,22 @@ pub fn writer_marker_lock_path(state_base: &Path) -> PathBuf {
 /// 계속 씀) 윈도우는 열린 파일 폴더 이동이 실패한다. 판독 오류(권한 등)도 Err(모르는 채 옮기지 않음).
 pub fn pack_apply_locks_quiet(state_base: &Path) -> Result<(), String> {
     let mut locks = vec![state_base.join(".pack-apply.lock"), writer_marker_lock_path(state_base)];
-    if let Ok(rd) = std::fs::read_dir(state_base.join(".pack-journal.d")) {
-        for e in rd.flatten() {
-            if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                locks.push(e.path().join(LANE_APPLY_LOCK));
+    // ★(codex 1R major · TICKET=cysr-1116-debt-d-1119): 레인 목록 판독 오류는 버리지 않는다 — 폴더 없음만 「레인 0」 · 그 밖(권한·I/O ·
+    //   항목·종류 판독 실패)은 Err(레인 잠금을 빠뜨린 채 「조용함」 이라 하지 않음).
+    let jd = state_base.join(".pack-journal.d");
+    let unread = |e: std::io::Error| format!("팩 레인 목록 {} 을 확인하지 못했다({e}) — 격리를 진행하지 않는다", jd.display());
+    match std::fs::read_dir(&jd) {
+        Ok(rd) => {
+            for e in rd {
+                let e = e.map_err(unread)?;
+                if e.file_type().map_err(unread)?.is_dir() {
+                    locks.push(e.path().join(LANE_APPLY_LOCK));
+                }
             }
         }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) if crate::update::mutant("J1116-V6-DIR-ERR-OPEN") => drop(e),
+        Err(e) => return Err(unread(e)),
     }
     for lp in locks {
         let f = match std::fs::OpenOptions::new().read(true).open(&lp) {
@@ -12085,6 +12106,50 @@ mod tests {
         assert_eq!(narrow, (Some(0o600), false), "F3: 적용이 넓힌 0644 가 남는다");
         assert_eq!(widen, (Some(0o644), true), "F3: 증거 없이 권한을 넓혔다");
         assert_eq!(user_chmod, (Some(0o664), true), "F3: 지금 권한이 놓인 권한과 다르면(사용자 chmod) 그대로");
+    }
+
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V6 · codex 1R blocking): 공장 초기화 센티널이 서 있으면 쓰는 이는 공용 잠금을 쥔 뒤 레인·표식 잠금을
+    /// 잡기 전에 멈춘다(f 실행 0 · 표식 파일도 안 만듦) · 센티널 없음 = 종전대로. 운영 판정자 배선 = 아래 소스 핀.
+    #[test]
+    fn j1116_v6_writer_refuses_while_a_factory_reset_is_in_progress() {
+        let _g = PACK_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let base = std::env::temp_dir().join(format!("cys-v6w-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        // (센티널 경로 env 는 바꾸지 않는다 — factory_reset 센티널 시험이 잠금 없이 같은 env 를 쓴다 · 판정자 주입으로만.)
+        let mut ran = false;
+        let held = with_lane_apply_lock_gated(&base, &|| true, || ran = true);
+        let marker_made = writer_marker_lock_path(&base).exists();
+        let mut ran_free = false;
+        let free = with_lane_apply_lock_gated(&base, &|| false, || ran_free = true);
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(held.as_ref().is_err_and(|e| e.contains("완전 초기화")), "{held:?}");
+        assert!(!ran && !marker_made, "초기화 중인데 쓰기 몸체를 돌렸거나 표식 잠금을 만들었다");
+        assert!(free.is_ok() && ran_free, "센티널이 없는데 막았다: {free:?}");
+        let src = include_str!("pack.rs");
+        let body = &src[src.find("pub fn with_lane_apply_lock<T>(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        assert!(body.contains("with_lane_apply_lock_gated(state_base, &crate::factory_reset::reset_in_progress, f)"), "운영 판정자 배선이 없다");
+    }
+
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V6 · codex 1R major): 레인 목록(.pack-journal.d)을 읽지 못하면 「조용함」 이 아니라 Err.
+    #[cfg(unix)]
+    #[test]
+    fn j1116_v6_unreadable_lane_list_is_not_quiet() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!("cys-v6r-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let jd = base.join(".pack-journal.d");
+        std::fs::create_dir_all(jd.join("lane-x")).unwrap();
+        let open = pack_apply_locks_quiet(&base);
+        std::fs::set_permissions(&jd, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let shut = pack_apply_locks_quiet(&base);
+        std::fs::set_permissions(&jd, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let none = pack_apply_locks_quiet(&base.join("absent"));
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(open.is_ok(), "{open:?}");
+        assert!(shut.as_ref().is_err_and(|e| e.contains("레인 목록")), "읽지 못한 레인 목록을 조용하다고 했다: {shut:?}");
+        assert!(none.is_ok(), "폴더 없음 = 레인 0: {none:?}");
     }
 
     /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V2-3 · codex 5R minor 3): 부트 자동 설치의 팩 밖 config 시드는 팩 적용 잠금을 **푼 뒤** 한다

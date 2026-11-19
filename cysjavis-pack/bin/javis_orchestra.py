@@ -5702,6 +5702,20 @@ def cmd_self_test(args):
         assert boot_fleet_resolve("light", None) == ("light", "daemon", False)
         assert boot_fleet_resolve(None, "light") == ("full", "no-daemon", True)
         assert boot_fleet_resolve(None, None) == ("full", "no-daemon", False)
+        # 배선: boot_fleet() 은 데몬 도장만 읽는다 — 내 env 의 CYS_BOOT_FLEET 로 내려가지 않는다(V-4 반쪽 light).
+        _w_prev = (os.environ.get("CYS_BOOT_FLEET_DAEMON"), os.environ.get("CYS_BOOT_FLEET"))
+        try:
+            os.environ["CYS_BOOT_FLEET_DAEMON"] = "full"
+            os.environ["CYS_BOOT_FLEET"] = "light"
+            assert boot_fleet() == ("full", "daemon"), "좌석 env 의 light 가 데몬 도장을 이겼다: %r" % (boot_fleet(),)
+            os.environ.pop("CYS_BOOT_FLEET_DAEMON")
+            assert boot_fleet() == ("full", "no-daemon"), "도장 없음인데 좌석 env 로 내려갔다: %r" % (boot_fleet(),)
+        finally:
+            for _k, _v in zip(("CYS_BOOT_FLEET_DAEMON", "CYS_BOOT_FLEET"), _w_prev):
+                if _v is None:
+                    os.environ.pop(_k, None)
+                else:
+                    os.environ[_k] = _v
         _bf_prev = os.environ.get("CYS_BOOT_FLEET_DAEMON")
         os.environ["CYS_BOOT_FLEET_DAEMON"] = "light"
         try:

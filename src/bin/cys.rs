@@ -12738,12 +12738,10 @@ const BOOT_PLAN: &[(&str, &str, bool)] = &[
 /// 자기 env 의 `CYS_BOOT_FLEET` 는 쓰지 않는다(다르면 경고 1줄 — 반쪽 light 차단).
 /// ★기본값을 `light` 로 바꾸는 것은 기본 함대 정책(박사님 결정 2026-09-10)의 개정이다.
 fn boot_fleet() -> (&'static str, &'static str) {
-    let daemon = request("system.boot_fleet", json!({}))
-        .ok()
-        .and_then(|v| v["fleet"].as_str().map(str::to_string))
-        .or_else(|| std::env::var(cys::ENV_BOOT_FLEET_DAEMON).ok());
+    let rpc = request("system.boot_fleet", json!({})).ok().and_then(|v| v["fleet"].as_str().map(str::to_string));
+    let stamp = std::env::var(cys::ENV_BOOT_FLEET_DAEMON).ok();
     let seat = std::env::var(cys::ENV_BOOT_FLEET).ok();
-    let (fleet, src, warn) = cys::boot_fleet_resolve(daemon.as_deref(), seat.as_deref());
+    let (fleet, src, warn) = boot_fleet_wire(rpc.as_deref(), stamp.as_deref(), seat.as_deref());
     if warn {
         eprintln!(
             "[boot] ⚠ 이 프로세스 env 의 CYS_BOOT_FLEET={} 는 무시한다 — 진실원 = 데몬({fleet} · {src}). 바꾸려면 데몬 기동 env 에 둔다.",
@@ -12751,6 +12749,11 @@ fn boot_fleet() -> (&'static str, &'static str) {
         );
     }
     (fleet, src)
+}
+
+/// 순수 배선 — (데몬 RPC 값, 좌석 도장, 내 env) → 해소. RPC 가 먼저 · 없으면 도장 · 내 env 는 판정에 안 쓴다(경고 재료만).
+fn boot_fleet_wire(rpc: Option<&str>, stamp: Option<&str>, seat: Option<&str>) -> (&'static str, &'static str, bool) {
+    cys::boot_fleet_resolve(rpc.or(stamp), seat)
 }
 
 /// 이번 부트가 세울 편성 — `light` 면 빈 표(master 는 원래 표 밖 = 선언한 자기 자신).
@@ -59648,6 +59651,15 @@ mod boot_fleet_tests {
         assert_eq!(boot_fleet_resolve(None, Some("light")), ("full", "no-daemon", true));
         assert_eq!(boot_fleet_resolve(None, None), ("full", "no-daemon", false));
         assert_eq!(boot_fleet_resolve(Some("weird"), Some("")), ("full", "no-daemon", false));
+    }
+
+    #[test]
+    fn wiring_uses_daemon_then_stamp_never_my_env() {
+        use super::boot_fleet_wire;
+        assert_eq!(boot_fleet_wire(Some("full"), Some("light"), Some("light")), ("full", "daemon", true));
+        assert_eq!(boot_fleet_wire(None, Some("light"), None), ("light", "daemon", false));
+        assert_eq!(boot_fleet_wire(None, None, Some("light")), ("full", "no-daemon", true));
+        assert_eq!(boot_fleet_wire(Some("light"), Some("full"), None), ("light", "daemon", false));
     }
 
     #[test]

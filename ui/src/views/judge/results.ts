@@ -102,10 +102,71 @@ const TAIL = /[.,;:!?。、，：；…~]+$/;
 /** 확장자 바로 뒤에 붙은 한글 조사·어미(「…/a.html에」·「…/주보.pdf를」) — 확장자가 앞에 있을 때만 깎는다(폴더 이름 「교회에」는 못 가림 · 그대로 둠) */
 const HANGUL_TAIL = /^(.*\.[A-Za-z0-9]{1,8})[가-힣]+$/;
 
-/** 「열기」가 곧 프로그램 실행인 꾸러미(맥 .app 등은 폴더라 Tauri open_path 의 실행형 파일 검사를 지나간다) — 열기 대신 폴더 보기만. 이름만 본다(폴더 여부 모름이어도 막음). */
-const LAUNCH_BUNDLE = /\.(app|appex|prefpane|action|workflow|saver|qlgenerator|plugin|bundle|kext|xpc|framework|mpkg|pkg|command|tool|terminal)$/i;
+/** 「열기」를 거절하는 확장자(대소문자 무시 · 양 OS 공통) — 실행 꾸러미(맥 .app 등은 폴더라 Tauri open_path 의 실행형 파일 검사 밖) · URL·바로가기(.webloc·.url·.lnk)
+ *  · 스크립트·설치기. 열기 대신 폴더 보기만. 이름만 본다(폴더 여부 모름이어도 막음). ★정본 = Rust `viewcore.rs` OPEN_REFUSED_EXT 와 **같은 목록**(bun 시험이 대조 · codex 2R). */
+export const OPEN_REFUSED_EXT: readonly string[] = [
+  "action",
+  "app",
+  "appex",
+  "applescript",
+  "application",
+  "appref-ms",
+  "bash",
+  "bat",
+  "bundle",
+  "cmd",
+  "com",
+  "command",
+  "cpl",
+  "csh",
+  "desktop",
+  "exe",
+  "framework",
+  "gadget",
+  "hta",
+  "inetloc",
+  "jar",
+  "js",
+  "jse",
+  "kext",
+  "lnk",
+  "mpkg",
+  "msc",
+  "msi",
+  "msp",
+  "mst",
+  "pif",
+  "pkg",
+  "plugin",
+  "prefpane",
+  "ps1",
+  "psm1",
+  "qlgenerator",
+  "reg",
+  "saver",
+  "scpt",
+  "scptd",
+  "scr",
+  "sh",
+  "terminal",
+  "tool",
+  "url",
+  "vb",
+  "vbe",
+  "vbs",
+  "webloc",
+  "website",
+  "workflow",
+  "ws",
+  "wsf",
+  "wsh",
+  "xpc",
+  "zsh",
+];
+const OPEN_REFUSED = new Set(OPEN_REFUSED_EXT);
 export function launchesProgram(name: string): boolean {
-  return LAUNCH_BUNDLE.test(name);
+  const i = name.lastIndexOf(".");
+  return i > 0 && OPEN_REFUSED.has(name.slice(i + 1).toLowerCase());
 }
 
 /** 마스터 답 글 → 홈 아래 경로들(나온 순서 · 겹침 0 · 상한 PATHS_PER_REPLY_MAX). 코드 울타리 안 줄 = 0(명령 예시). */
@@ -141,22 +202,31 @@ export function pathsInText(text: string, home: string): string[] {
       const at = m.index ?? 0;
       const prev = at > 0 ? line[at - 1] : "";
       if (prev && /[A-Za-z0-9_.\-:/\\~]/.test(prev)) continue; // 낱말·URL 한가운데(https://… 의 // 등)
-      // ② 맨글: 확장자 없이 띄어쓰기에서 끊겼고 뒤 낱말(3개까지)을 이으면 확장자로 끝나면 → 이은 것도 후보(둘 다 내고 실재 확인이 고른다 · 띄어쓰기 경로를 놓치지 않게)
-      const head = m[0].replace(TAIL, "");
-      if (!/\.[A-Za-z0-9]{1,8}$/.test(HANGUL_TAIL.exec(head)?.[1] ?? head) && line[at + m[0].length] === " ") {
-        const words = line.slice(at + m[0].length).split(" ").filter((w, i) => i > 0 || w === "").slice(1, 4);
+      // ② 맨글: 확장자 없이 띄어쓰기에서 끊겼고 뒤 낱말(3개까지)을 이으면 확장자로 끝나면 → **이은 것만** 후보(끊긴 앞 토막은 내지 않음 — 그 토막이 실재하면
+      //   엉뚱한 파일 카드가 된다 · codex 2R major · master#c48208b6 ④). 이은 전체 경로가 실재하지 않으면 카드 0.
+      //   낱말 4~8개 뒤에 확장자 낱말이 있으면 = 긴 띄어쓰기 경로로 보고 **아무것도 내지 않음**(놓침 = 알려진 한계 · 백틱으로 쓰면 받음 · 앞 토막 단독 금지).
+      //   확장자 낱말이 8개 안에 없으면 = 폴더를 말한 것으로 보고 그 토막(「…/교회 폴더를 보세요」).
+      const extEnd = (x: string) => {
+        const t = x.replace(TAIL, "");
+        return /\.[A-Za-z0-9]{1,8}$/.test(HANGUL_TAIL.exec(t)?.[1] ?? t);
+      };
+      let joined: string | null = null;
+      let longPath = false;
+      if (!extEnd(m[0]) && line[at + m[0].length] === " ") {
+        const words = line.slice(at + m[0].length + 1).split(" ").slice(0, 8);
         let acc = m[0];
-        for (const w of words) {
+        for (let k = 0; k < words.length; k++) {
+          const w = words[k];
           if (!w || /[`'"<>()\[\]{}「」『』《》“”‘’|*]/.test(w)) break;
           acc += ` ${w}`;
-          const t = acc.replace(TAIL, "");
-          if (/\.[A-Za-z0-9]{1,8}$/.test(HANGUL_TAIL.exec(t)?.[1] ?? t)) {
-            if (push(acc)) return out;
-            break;
-          }
+          if (!extEnd(w)) continue;
+          if (k < 3) joined = acc;
+          else longPath = true;
+          break;
         }
       }
-      if (push(m[0])) return out;
+      if (longPath) continue;
+      if (push(joined ?? m[0])) return out;
     }
   }
   return out;

@@ -1,11 +1,13 @@
 // (cysr-1116-s79 · TICKET=cysr-1116-s79-1119) 조각 7 결과 받기 · 조각 9 작업 화면 띠 · S4-7(F7 사람이 물음 내림 · F10 바뀌어 온 항목) — 순수 판정 + 장부 대역.
 import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
   addCandidates,
   baseName,
   candidatesOf,
   kindOf,
   launchesProgram,
+  OPEN_REFUSED_EXT,
   listErrorIsMissing,
   missingPrefix,
   normPath,
@@ -23,7 +25,7 @@ import {
   withPrefix,
   type Result,
 } from "./judge/results";
-import { MSG_EXEC, MSG_MISSING, MSG_OUTSIDE, MSG_UNKNOWN, ResultBook, RESULTS_KEY } from "./results";
+import { MSG_EXEC, MSG_MISSING, MSG_NETWORK, MSG_OUTSIDE, MSG_UNKNOWN, ResultBook, RESULTS_KEY } from "./results";
 import { pickWorkBand, WORK_ANSWER_HELPER, WORK_ANSWER_MASTER, WORK_DRAFT_TEXT } from "./judge/workband";
 import { bandOf, dismissKey, openQuestions, swapBlocked, SWAP_GUARD_MS, withoutDismissed, type Band, type FeedApproval, type StallInput } from "./judge/confirms";
 import { ConfirmBook } from "./confirm";
@@ -52,11 +54,17 @@ describe("조각 7 — 답 속 경로(홈 아래만)", () => {
   });
   it("「열기」가 곧 실행인 꾸러미(.app 등) = 막음 · 문서·그림·폴더는 아님", () => {
     for (const n of ["Evil.app", "x.APP", "a.pkg", "b.mpkg", "run.command", "p.prefPane", "w.workflow"]) expect(`${n}:${launchesProgram(n)}`).toBe(`${n}:true`);
+    // (codex 2R blocking · master#c48208b6 ②) URL·바로가기·스크립트 유형 — 양 OS 공통 · 대소문자 무시
+    for (const n of ["a.webloc", "a.URL", "a.inetloc", "a.lnk", "a.sh", "a.tool", "a.terminal", "a.scpt", "a.applescript", "a.ps1", "a.bat", "a.cmd", "a.vbs", "a.js", "a.jse", "a.wsf", "a.hta", "a.reg", "a.msi", "a.scr", "a.Exe"])
+      expect(`${n}:${launchesProgram(n)}`).toBe(`${n}:true`);
     for (const n of ["a.html", "주보.pdf", "out", "app", "a.application.md"]) expect(`${n}:${launchesProgram(n)}`).toBe(`${n}:false`);
   });
   it("띄어쓰기 있는 경로(codex 1R major): 백틱 안 통째 · 맨글은 확장자까지 이은 것도 후보", () => {
     expect(pathsInText("보고서는 `/Users/user/Report Final.pdf` 예요", H)).toEqual(["/Users/user/Report Final.pdf"]);
-    expect(pathsInText("보고서는 /Users/user/Report Final.pdf 예요", H)).toEqual(["/Users/user/Report Final.pdf", "/Users/user/Report"]);
+    // (codex 2R major · master#c48208b6 ④) 이은 전체 경로만 — 끊긴 앞 토막(/Users/user/Report) 단독 후보 금지
+    expect(pathsInText("보고서는 /Users/user/Report Final.pdf 예요", H)).toEqual(["/Users/user/Report Final.pdf"]);
+    expect(pathsInText("보고서는 /Users/user/Report Final Draft v2.pdf 예요", H)).toEqual(["/Users/user/Report Final Draft v2.pdf"]); // 낱말 3개까지 이음
+    expect(pathsInText("보고서는 /Users/user/a b c d e.pdf 예요", H)).toEqual([]); // 4개 넘게 = 놓침(알려진 한계 · 앞 토막도 안 냄)
     expect(pathsInText("결과 /Users/user/교회 폴더를 보세요", H)).toEqual(["/Users/user/교회"]); // 이어도 확장자가 안 나오면 그대로
     expect(pathsInText("`ls -la` 와 `/etc/a b.txt`", H)).toEqual([]);
   });
@@ -65,6 +73,15 @@ describe("조각 7 — 답 속 경로(홈 아래만)", () => {
     expect(presenceIn([{ name: nfd, is_dir: false }], "주보.pdf")?.exists).toBe(true);
     expect(presenceIn([{ name: "Report.PDF", is_dir: false }], "report.pdf")?.exists).toBe(false);
     expect(presenceIn([{ name: "Report.PDF", is_dir: false }], "report.pdf", true)?.exists).toBe(true);
+  });
+  it("열기 거절 확장자 = Rust viewcore OPEN_REFUSED_EXT 와 같은 목록(한 정의 · codex 2R)", () => {
+    const rs = readFileSync(new URL("../../../src-tauri/src/viewcore.rs", import.meta.url), "utf8");
+    const m = /pub\(crate\) const OPEN_REFUSED_EXT: &\[&str\] = &\[([\s\S]*?)\];/.exec(rs);
+    expect(m).not.toBeNull();
+    const rust = [...(m?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+    expect(rust.length).toBeGreaterThan(40);
+    expect(rust).toEqual([...OPEN_REFUSED_EXT]);
+    for (const e of rust) expect(e).toBe(e.toLowerCase());
   });
   it("URL·낱말 한가운데 슬래시 = 0", () => {
     expect(pathsInText("https://example.invalid/Users/user/a.html 와 and/or", H)).toEqual([]);
@@ -233,15 +250,15 @@ describe("조각 7 — 장부(대역)", () => {
     expect(t.calls.some((c) => c[0] === "open_path")).toBe(false);
   });
   it("실행형 파일 = Tauri 거절(executable_confirm) → force 로 다시 부르지 않음 + 폴더 보기 안내", async () => {
-    const t = fakeFs({ "/Users/user/x": [{ name: "run.sh", is_dir: false }] });
+    const t = fakeFs({ "/Users/user/x": [{ name: "runme", is_dir: false }] });
     await t.book.start();
-    t.book.onTail([rec("/Users/user/x/run.sh")]);
+    t.book.onTail([rec("/Users/user/x/runme")]);
     await t.book.tick();
     t.state.openErr = "executable_confirm";
-    await t.book.act("/Users/user/x/run.sh", "open");
+    await t.book.act("/Users/user/x/runme", "open");
     const opens = t.calls.filter((c) => c[0] === "open_path");
     expect(opens.length).toBe(1);
-    expect(opens[0][1]).toEqual({ path: "/Users/user/x/run.sh" }); // force 칸 없음
+    expect(opens[0][1]).toEqual({ path: "/Users/user/x/runme" }); // force 칸 없음
     expect(t.book.notice).toBe(MSG_EXEC);
     expect(t.book.items[0].seen).toBe(false);
   });
@@ -264,6 +281,9 @@ describe("조각 7 — 장부(대역)", () => {
     t.state.openErr = "outside_home";
     await t.book.act("/Users/user/Report", "open");
     expect(t.book.notice).toBe(MSG_OUTSIDE);
+    t.state.openErr = "network_path"; // (codex 2R · master#c48208b6 ③) 윈도 UNC
+    await t.book.act("/Users/user/Report", "open");
+    expect(t.book.notice).toBe(MSG_NETWORK);
     expect(t.book.items[0].seen).toBe(false);
   });
   it("skill.run_finished — 본부 slug 만 · 부서 slug·slug 모름 = 버림 · 확인 전에도 카드(확인 중)", async () => {
@@ -397,6 +417,14 @@ describe("조각 9 — 공통층: 대화 화면을 안 켰으면 작업 화면 �
 
 // ── S4-7 ──
 describe("S4-7 · F7 — 사람이 물음을 띠에서 내림(마스터에게 보냄 0)", () => {
+  it("(codex 2R minor) 같은 글로 다시 물으면 대화 자리(uuid)는 가장 최근 물음으로 · 번호는 그대로", () => {
+    const qs = openQuestions([
+      { kind: "ask", text: "A?", uuid: "old" },
+      { kind: "ask", text: "A?", uuid: "new" },
+      { kind: "ask", text: "A?", uuid: null }, // uuid 없는 다시 물음은 자리를 지우지 않음
+    ]);
+    expect(qs.map((q) => [q.id, q.uuid, q.last])).toEqual([["q1", "new", 3]]);
+  });
   it("withoutDismissed = 번호 + 글 열쇠 · 같은 번호 다른 글은 그대로", () => {
     const qs = openQuestions([
       { kind: "ask", text: "A?", uuid: null },

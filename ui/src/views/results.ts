@@ -36,6 +36,7 @@ export interface ResultDeps {
 export const MSG_MISSING = "파일을 찾을 수 없어요 — 「마스터에게 물어보기」로 어디 있는지 물어볼 수 있어요.";
 export const MSG_EXEC = "이 파일은 열면 프로그램이 실행될 수 있어 열지 않았어요 — 「폴더 보기」로 확인해 주세요.";
 export const MSG_UNKNOWN = "파일이 있는지 확인하지 못했어요 — 잠시 뒤 다시 눌러 주세요.";
+export const MSG_NETWORK = "이 결과는 네트워크 폴더에 있어 열지 않았어요 — 「폴더 보기」나 작업 화면에서 확인해 주세요.";
 export const MSG_OUTSIDE = "이 결과는 홈 폴더 밖(또는 숨은 폴더)으로 이어져 있어 열지 않았어요 — 마스터에게 물어봐 주세요.";
 
 export class ResultBook {
@@ -210,6 +211,7 @@ export class ResultBook {
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         if (msg.includes("executable_confirm")) this.notice = MSG_EXEC;
+        else if (msg.includes("network_path")) this.notice = MSG_NETWORK;
         else if (msg.includes("outside_home") || msg.includes("hidden_path")) this.notice = MSG_OUTSIDE;
         else if (/not a local path/.test(msg)) {
           this.patch(id, { exists: false });

@@ -90,6 +90,7 @@ export function openQuestions(events: readonly MarkerEvent[]): Question[] {
       const same = open.find((q) => q.text === e.text);
       if (same) {
         same.last = n; // (s79 · F7) 다시 물음 — 새 항목은 만들지 않되 「마지막으로 물은 때」는 올린다
+        if (e.uuid !== null) same.uuid = e.uuid; // (codex 2R minor) 「대화에서 답하기」가 가장 최근에 물은 자리로 가게
         continue;
       }
       open.push({ id: `q${n}`, text: e.text, uuid: e.uuid, last: n });

@@ -109,6 +109,22 @@
 - 이 가지가 팩 쪽에 낸 결함 = **H-SECRET-1 하나**(고침). 나머지 붉음은 전부 ① 환경(rustup) ② 내 실행의 작업트리 오염(health-full.json · 지움) ③ 시간 문턱 시험의 부하 흔들림(기준판 같은 사유 또는 HEAD 단독 초록)으로 갈림.
 - codex 판정 JSON(`.review-verdict-…json`)도 작업트리 밖(스크래치)으로 옮김 — 작업트리 git 무시 대상 밖 파일 0.
 
+## 6-2. codex 2R(412fdc32e = BLOCK · 원문 master/reports/verify/codex-1120/s79-r2.md) — master#c48208b6 처분대로
+
+| # | 지적 | 처분 | 시험 |
+|---|---|---|---|
+| 1 | TOCTOU(정규화 뒤 조상 경로를 링크로 바꿔치기) | **고치지 않음 · 문서**(같은 사용자 권한 로컬 프로세스 = 이미 무엇이든 열 수 있음) — 아래 「알려진 한계」 + `viewcore.rs result_open` 주석 | — |
+| 2 | URL·바로가기·스크립트 유형 열기 통과 | **고침** — 열기 거절 확장자 한 목록(Rust `OPEN_REFUSED_EXT` = TS `OPEN_REFUSED_EXT` · 57종 · 양 OS 공통 · 대소문자 무시) | bun 「열기 거절 확장자 = Rust viewcore OPEN_REFUSED_EXT 와 같은 목록」 · 「「열기」가 곧 실행인 꾸러미(.app 등) = 막음 …」 · cargo `result_target_confines_to_canonical_home`(webloc·url·lnk·sh·ps1 … 23종) |
+| 3 | 홈 아래 네트워크 · UNC 홈 | **윈도만 고침** — 정규 경로가 `\\?\UNC\`·`\\server` 꼴 = `network_path` 거절 · 맥 마운트 판별 = 한계 | cargo 같은 시험(is_network_path 4꼴) · bun 「Tauri 가 홈 밖·숨은 폴더로 이어짐을 거절 … → 안내」(network_path → MSG_NETWORK) |
+| 4 | 띄어쓰기 경로의 앞 토막까지 후보 | **고침** — 확장자까지 이은 전체 경로만(3낱말까지) · 4~8낱말 뒤 확장자 = 긴 경로로 보고 후보 0 · 앞 토막 단독 금지 | bun 「띄어쓰기 있는 경로 …」(기대값 고침 · 3낱말 · 4낱말+ = 0) |
+| 5 | 같은 글 다시 물음에 옛 uuid | **고침** — 다시 물을 때 uuid 를 새 것으로(없으면 그대로) | bun 「(codex 2R minor) 같은 글로 다시 물으면 대화 자리(uuid)는 가장 최근 물음으로」 |
+
+### 알려진 한계(이번 처분으로 남긴 것)
+- **TOCTOU**: `result_open` 은 정규 경로 **이름**을 기존 `open_path`/`reveal_path` 에 넘긴다 — 그 사이 같은 사용자 권한의 로컬 프로세스가 조상 폴더를 링크·정션으로 바꾸면 다른 대상이 열릴 수 있다. 그런 프로세스는 이미 사용자 권한으로 무엇이든 열 수 있어 새 권한을 주지 않는다(master#c48208b6 ①).
+- **맥 홈 아래 네트워크 마운트**: 판별하지 않음(드묾 · 윈도 UNC 만 거절).
+- **4낱말 넘는 띄어쓰기 맨글 경로**: 카드 0(놓침) — 마스터가 백틱으로 감싸 쓰면 받음.
+- 확장자 목록은 거절 목록(denylist)이라 목록 밖 새 실행형 유형은 지나갈 수 있다(기존 `open_path` 머리 주석과 같은 근본 한계).
+
 ## 7. 원작자 파일 변경 줄(NFR-F3)
 - `src-tauri/src/main.rs` +1: `viewcore::result_open, // (s79 조각 7) …`(generate_handler)
 - `ui/src/main.ts` ±1: 우리 `bootViews(...)` 줄에 `focusSeat: (sid) => jumpToSurface(sid)` 덧붙임

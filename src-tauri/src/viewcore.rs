@@ -457,9 +457,12 @@ pub(crate) fn next_newline_after(mut f: &std::fs::File, from: u64, size: u64) ->
 
 // ---------- (s79 · TICKET=cysr-1116-s79-1119 · 조각 7) 결과 열기·폴더 보기 ----------
 
-/// 「열기」가 곧 프로그램 실행인 꾸러미(맥 `.app` 등은 **폴더**라 `open_path` 의 실행형 **파일** 검사를 지나간다).
-const LAUNCH_BUNDLE_EXT: &[&str] = &[
-    "app", "appex", "prefpane", "action", "workflow", "saver", "qlgenerator", "plugin", "bundle", "kext", "xpc", "framework", "mpkg", "pkg",
+/// 「열기」를 거절하는 확장자(대소문자 무시 · 양 OS 공통) — 실행 꾸러미(맥 `.app` 등은 **폴더**라 `open_path` 의 실행형 **파일** 검사를 지나간다) ·
+/// URL·바로가기(`.webloc`·`.url`·`.lnk` 등 = 열면 OS 가 링크 대상을 엶) · 스크립트·설치기(연결 프로그램이 실행) — codex 2R blocking.
+/// ★목록 정본 = 이 배열과 `ui/src/views/judge/results.ts` 의 `OPEN_REFUSED_EXT` — 두 목록이 같아야 한다(bun 시험 「열기 거절 확장자 = Rust 와 같은 목록」이 이 소스를 읽어 대조).
+/// 폴더 보기(reveal)는 거절하지 않는다(파일 관리자에서 고르기만 · 실행 0).
+pub(crate) const OPEN_REFUSED_EXT: &[&str] = &[
+    "action", "app", "appex", "applescript", "application", "appref-ms", "bash", "bat", "bundle", "cmd", "com", "command", "cpl", "csh", "desktop", "exe", "framework", "gadget", "hta", "inetloc", "jar", "js", "jse", "kext", "lnk", "mpkg", "msc", "msi", "msp", "mst", "pif", "pkg", "plugin", "prefpane", "ps1", "psm1", "qlgenerator", "reg", "saver", "scpt", "scptd", "scr", "sh", "terminal", "tool", "url", "vb", "vbe", "vbs", "webloc", "website", "workflow", "ws", "wsf", "wsh", "xpc", "zsh",
 ];
 
 /// 결과 경로의 정규 대상(심볼릭 링크를 끝까지 풂) — 정규 홈 **아래**(홈 자신 아님) · 홈 아래 마디에 숨은 이름(`.` 시작) 0.
@@ -467,6 +470,9 @@ const LAUNCH_BUNDLE_EXT: &[&str] = &[
 pub(crate) fn result_target(path: &std::path::Path, home: &std::path::Path) -> Result<std::path::PathBuf, String> {
     let home_c = std::fs::canonicalize(home).map_err(|e| format!("not a local path: {e}"))?;
     let t = std::fs::canonicalize(path).map_err(|e| format!("not a local path: {e}"))?;
+    if is_network_path(&t.to_string_lossy()) {
+        return Err("network_path".into()); // (codex 2R) 윈도 UNC 홈·UNC 대상 = 로컬 아님 → 거절(맥 홈 아래 네트워크 마운트 판별은 안 함 = 알려진 한계)
+    }
     let rel = t.strip_prefix(&home_c).map_err(|_| "outside_home".to_string())?;
     if rel.as_os_str().is_empty() {
         return Err("outside_home".into());
@@ -481,9 +487,14 @@ pub(crate) fn result_target(path: &std::path::Path, home: &std::path::Path) -> R
     Ok(t)
 }
 
-/// 정규 대상이 실행 꾸러미인가(확장자 · 대소문자 무시).
+/// 정규 경로가 네트워크(UNC) 꼴인가 — `\\?\UNC\…` 또는 `\\server\…`(드라이브 꼴 `\\?\C:\` 은 아님). 맥·리눅스 경로는 늘 false.
+pub(crate) fn is_network_path(s: &str) -> bool {
+    s.starts_with(r"\\?\UNC\") || (s.starts_with(r"\\") && !s.starts_with(r"\\?\"))
+}
+
+/// 정규 대상이 열기 거절 확장자인가(대소문자 무시).
 pub(crate) fn is_launch_bundle(p: &std::path::Path) -> bool {
-    p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).is_some_and(|e| LAUNCH_BUNDLE_EXT.contains(&e.as_str()))
+    p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).is_some_and(|e| OPEN_REFUSED_EXT.contains(&e.as_str()))
 }
 
 /// 윈도 정규 경로의 `\\?\C:\` 머리를 벗긴다(탐색기·셸이 그 꼴을 못 받는 경우) — 드라이브 꼴일 때만.
@@ -501,6 +512,8 @@ fn plain_path(p: &std::path::Path) -> String {
 
 /// 결과 받기 카드의 「열기」·「폴더 보기」 — 마스터 글에서 온 경로라 정규 대상으로 다시 가둔다:
 /// 정규 홈 아래 · 숨은 마디 0 · 열기면 실행 꾸러미 거절(`executable_confirm` · 화면은 force 로 다시 부르지 않음) · 그 밖은 기존 `open_path`(실행형 파일 게이트 · force 없음)·`reveal_path`.
+/// ⚠알려진 한계(TOCTOU · master#c48208b6 처분 = 고치지 않고 문서): 정규화 뒤 경로 **이름**을 넘기므로, 그 사이 같은 사용자 권한의 로컬 프로세스가
+///   조상 폴더를 링크로 바꿔치기하면 다른 대상이 열릴 수 있다 — 그 프로세스는 이미 무엇이든 열 수 있어 새 권한을 주지 않는다(HANDOFF 「알려진 한계」).
 #[tauri::command]
 pub fn result_open(path: String, reveal: Option<bool>) -> Result<(), String> {
     let target = result_target(std::path::Path::new(&path), &cys::home_dir())?;
@@ -545,6 +558,17 @@ mod tests {
         assert!(is_launch_bundle(&out));
         assert!(is_launch_bundle(std::path::Path::new("/x/A.APP")));
         assert!(!is_launch_bundle(&ok));
+        // (codex 2R) URL·바로가기·스크립트도 열기 거절 · 대소문자 무시
+        for n in ["a.webloc", "a.URL", "a.inetloc", "a.lnk", "a.sh", "a.command", "a.tool", "a.terminal", "a.scpt", "a.applescript", "a.workflow", "a.ps1", "a.bat", "a.cmd", "a.vbs", "a.js", "a.jse", "a.wsf", "a.hta", "a.reg", "a.msi", "a.scr", "a.EXE"] {
+            assert!(is_launch_bundle(std::path::Path::new(n)), "{n}");
+        }
+        for n in ["a.html", "a.pdf", "a.png", "a.md", "a.hwp", "dir"] {
+            assert!(!is_launch_bundle(std::path::Path::new(n)), "{n}");
+        }
+        assert!(is_network_path(r"\\?\UNC\srv\share\a.pdf"));
+        assert!(is_network_path(r"\\srv\share\a.pdf"));
+        assert!(!is_network_path(r"\\?\C:\Users\x\a.pdf"));
+        assert!(!is_network_path("/Users/x/a.pdf"));
         let _ = std::fs::remove_dir_all(&base);
     }
 

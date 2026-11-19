@@ -796,7 +796,7 @@ pub fn park_queue_for_role(
     let mut map = daemon.parked_queues.lock().unwrap();
     // ⑴ 게으른 만기 회수 — **지우지 말고 꺼낸다**(호출부가 사유를 달아 발행한다).
     //    걷이 규칙은 워치독 스윕(`governance::sweep_parked_queues`)과 **같은 함수**를 지난다(사본 0).
-    let mut expired = drain_expired_parked_locked(&mut map, now);
+    let mut expired = drain_expired_parked_locked(&mut map, now, &daemon.teams);
     // ⑵ 이 역할의 기존 배치에 **뒤에 붙인다**(시간 순서 보존). 위 걷이가 만기 항목을 이미 빼 갔으므로
     //    남은 것은 전부 살아 있다 — 만기 분기가 여기 없는 것이 정상이다(r2 #5 죽은 코드 제거).
     //    ★시각 장부(base_at)가 사라졌다: 만기는 항목별 `enqueued_at` 으로 재므로 배치에 시각을 부여할
@@ -838,6 +838,7 @@ pub fn park_queue_for_role(
 pub fn drain_expired_parked_locked(
     map: &mut HashMap<String, ParkedQueue>,
     now: f64,
+    teams: &crate::team::TeamBook,
 ) -> Vec<(String, u64, Vec<QueueEntry>)> {
     let mut out: Vec<(String, u64, Vec<QueueEntry>)> = Vec::new();
     let mut emptied: Vec<String> = Vec::new();
@@ -847,7 +848,8 @@ pub fn drain_expired_parked_locked(
         let (alive, gone): (Vec<QueueEntry>, Vec<QueueEntry>) = pq
             .entries
             .drain(..)
-            .partition(|e| now - e.enqueued_at < PARKED_QUEUE_TTL_SECS);
+            // (조각 6b · codex 1R M5) 주차 중 팀 정지 크레딧을 뺀다(없으면 0 = 종전 식 그대로).
+            .partition(|e| crate::team::parked_alive(teams, e, now));
         pq.entries = alive;
         if !gone.is_empty() {
             out.push((role.clone(), pq.from_surface, gone));

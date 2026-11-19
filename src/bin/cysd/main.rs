@@ -8210,3 +8210,7 @@ mod team6b_tests;
 // (조각 6b · 검증 지적 고침 master#c4bc0244) 독립 검증 좌석 반례 V1~V8b + 고침 핀 — 시험 전용(파일 끝 규약).
 #[cfg(test)]
 mod team6b_verify_tests;
+
+// (조각 6b · codex 1R REJECT 처분 master#010efa14) B1·M1~M6 반례 — 시험 전용(파일 끝 규약).
+#[cfg(test)]
+mod team6b_codex_tests;

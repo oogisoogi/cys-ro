@@ -6330,7 +6330,7 @@ fn sweep_parked_queues(daemon: &Arc<Daemon>) {
     let now = crate::state::now_epoch();
     let expired = {
         let mut map = daemon.parked_queues.lock().unwrap();
-        crate::state::drain_expired_parked_locked(&mut map, now)
+        crate::state::drain_expired_parked_locked(&mut map, now, &daemon.teams)
     };
     for (role, from, entries) in expired {
         // ★(1.1.10 · cysr-1110-winqueue Q1-A ②) 주차 만기도 원장 묘비(같은 서식 · 본문 없이 sha256 · 최선 노력) — 종전엔 이벤트뿐이었다.
@@ -13145,10 +13145,8 @@ pub(crate) enum TeamPre {
     Freeze,
     Rotated,
 }
-pub(crate) fn team_pre_delivery(daemon: &Daemon, s: &crate::state::Surface, multi: bool) -> TeamPre {
-    let role = s.role.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let group = s.group.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    if crate::team::team_of(role.as_deref(), &group, &s.cwd).is_some_and(|t| daemon.teams.is_paused(&t)) {
+pub(crate) fn team_pre_delivery(daemon: &Daemon, s: &crate::state::Surface, dest_team: Option<&str>, multi: bool) -> TeamPre {
+    if dest_team.is_some_and(|t| daemon.teams.is_paused(t)) {
         return TeamPre::Freeze;
     }
     let rotated = {
@@ -13215,13 +13213,16 @@ pub(crate) fn deliver_head_locked(
     }
     // (조각 6b ⑨⑩) 팀 정지·【진행】 보류 — 운영자 강제 배달은 건너뜀(지목한 항목 1건이 그 명령의 계약). 팀 ≥ 2 판정은 잠금 밖에서 1회.
     let team_multi = !forced && crate::team::distinct_teams(&crate::team::snapshot(daemon)) >= 2;
+    // (codex 1R M1) 목적지 팀 = 잠금 밖 1회(좌석 말단 락) — 정지 여부는 임계영역 안·writer 탐침에서 **다시** 읽는다.
+    let dest_team = if forced { None } else { crate::team::seat_team(s) };
     if !forced {
-        match team_pre_delivery(daemon, s, team_multi) {
+        match team_pre_delivery(daemon, s, dest_team.as_deref(), team_multi) {
             TeamPre::Same => {}
             TeamPre::Freeze => return None,
             TeamPre::Rotated if expect_head_id.is_none() => return None,
             TeamPre::Rotated => {}
         }
+        crate::team::deliver_seam(&daemon.teams);
     }
     let now = now_epoch();
     let default_ttl = crate::state::queue_ttl_default_secs();
@@ -13370,6 +13371,12 @@ pub(crate) fn deliver_head_locked(
             None => render_queue_digest(entry.from.as_deref(), &texts),
         });
         let merged_ids: Vec<String> = merged.iter().map(|e| e.id.clone()).collect();
+        // (조각 6b · codex 1R M1) 인계 전 팀 정지 재확인 — 목적지 좌석 팀 ∨ 실린 항목의 꼬리표 팀. 잠금 밖 Freeze 판정은 그 순간 값이라,
+        //   그 뒤 `surface.group_pause` 가 정지를 세우고 돌아온 배달이 나가지 않게 한다(같은 잠금 안 · 원장 선기록·보류 표식 **앞** = 부작용 0).
+        //   예약이 이미 섰으면 정지 전환(`team::on_team_paused`)이 같은 잠금 아래서 취소하고, writer 탐침이 첫 바이트 앞에서 한 번 더 본다.
+        if !forced && crate::team::delivery_team_paused(&daemon.teams, dest_team.as_deref(), &merged_ids) {
+            break 'tx None;
+        }
         // ★1.1.8 U2 2판(codex 1R C4): 실제로 실리는 보류 재생 항목만 지금(원장 선기록 앞 · 주입 전) durable `delivering`.
         let hold_ids: Vec<String> =
             merged.iter().filter(|e| e.origin == cys::update::quiesce::ORIGIN).map(|e| e.id.clone()).collect();
@@ -13469,6 +13476,9 @@ pub(crate) fn deliver_head_locked(
             recheck.and_then(|r| r.marker.clone()),
             recheck.and_then(|r| r.placeholder.clone()),
         );
+        // (조각 6b · codex 1R M1) writer 첫 바이트 앞 팀 정지 축(강제 배달 = 팀 판정 밖 · 종전 탐침 그대로).
+        let safety_probe =
+            if forced { safety_probe } else { crate::team::with_team_pause_probe(daemon, s, merged_ids.clone(), safety_probe) };
         let guard = Some(std::sync::Arc::new(crate::state::InjectGuard::new(
             expect_output_gen,
             s.output_gen.clone(),
@@ -14324,11 +14334,12 @@ pub(crate) fn queue_expiry_pass(daemon: &Arc<Daemon>) -> bool {
             .map(|t| t > std::time::Instant::now())
             .unwrap_or(false);
         let paused = daemon_paused || surface_paused;
-        let seat_team_paused = !team_paused.is_empty() && {
-            let role = s.role.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            let group = s.group.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            crate::team::team_of(role.as_deref(), &group, &s.cwd).is_some_and(|t| team_paused.contains(&t))
+        let paused_seat_team = if team_paused.is_empty() {
+            None
+        } else {
+            crate::team::seat_team(s).filter(|t| team_paused.contains(t))
         };
+        let seat_team_paused = paused_seat_team.is_some();
         // ① pause 크레딧 + ② 만료 스윕 — **한 임계영역**(pending → expired 두 락 동시 보유).
         //
         // ★(0.14.31 · 리뷰 R1 · codex major) 종전에는 활성 큐에서 후보를 **복사**해 락을 놓고
@@ -14363,6 +14374,11 @@ pub(crate) fn queue_expiry_pass(daemon: &Arc<Daemon>) -> bool {
                         changed = true;
                     }
                 }
+            }
+            // (codex 1R M5) 정지 팀 좌석 큐 항목 = 목적지 팀 기록(정지 전환 뒤 새로 들어온 것 · ≤1틱) — 좌석이 죽어 주차·복원으로 가도 크레딧이 이어진다.
+            if let Some(t) = &paused_seat_team {
+                let ids: Vec<String> = q.iter().map(|e| e.id.clone()).collect();
+                daemon.teams.note_dest(&ids, t);
             }
             // ★(0.14.31 · 리뷰 R2 · codex blocking) 인계 중인 항목은 만료로 **옮기지 않는다** —
             //   취소에 성공하면 옮겨도 되고(주입 0), 실패하면 그 항목은 지금 배달 중이라 만료 큐로
@@ -14526,6 +14542,8 @@ pub(crate) fn queue_expiry_pass(daemon: &Arc<Daemon>) -> bool {
         }
         changed = true;
     }
+    // (조각 6b · codex 1R M5) 역할 주차 큐 = 주차 중 팀 정지 크레딧(주차 TTL 은 항목 enqueued_at 기준 · `team::parked_alive` 가 뺀다).
+    crate::team::credit_parked(daemon, &team_paused, now, delta);
     // (조각 6b · 검증 m3) 팀 꼬리표 청소 — 꼬리표는 항목 id 로 묶여 이관을 따라가므로, 어느 큐에도 없는 id 만 지운다(장부 메모리 전용 · 영속 무관).
     crate::team::sweep_daemon_tags(daemon, &surfaces);
     changed
@@ -14553,6 +14571,8 @@ fn restored_queue_lifecycle_pass(
     notices: &mut HashMap<(u64, u64), (String, Vec<String>)>,
 ) -> bool {
     let mut changed = false;
+    // (조각 6b · codex 1R M5) 팀 정지 크레딧 재료 — 락을 잡기 전에 1회(장부 = 말단 락).
+    let team_paused = daemon.teams.paused_set();
     let mut rq = daemon.restored_queue.lock().unwrap();
     let mut rx = daemon.restored_expired.lock().unwrap();
     if rq.is_empty() && rx.is_empty() {
@@ -14560,6 +14580,15 @@ fn restored_queue_lifecycle_pass(
     }
     let sid_of = |it: &Value| it.get("surface_id").and_then(|v| v.as_u64()).unwrap_or(0);
     let role_of = |it: &Value| it.get("role").and_then(|v| v.as_str()).map(str::to_string);
+    // (codex 1R M5) 활성 큐와 같은 식 — 데몬 정지가 이미 준 틱은 겹쳐 주지 않는다 · 팀 정지 = 그 행의 항목 id 가 장부에서
+    //   정지 팀 꼬리표(마스터 좌석 큐에 넣은 것) 또는 정지 팀 목적지(정지 팀 좌석 큐에서 옮겨 온 것)일 때.
+    let team_credit = |it: &Value| {
+        !daemon_paused
+            && delta > 0.0
+            && !team_paused.is_empty()
+            && it.get("id").and_then(|v| v.as_str()).is_some_and(|id| daemon.teams.entry_team_paused(id, &team_paused))
+    };
+    let mut team_credited: std::collections::HashSet<String> = std::collections::HashSet::new();
     // ① 크레딧 + ② 스윕 — 한 임계영역.
     let mut moved: Vec<Value> = Vec::new();
     rq.retain(|it| {
@@ -14569,6 +14598,11 @@ fn restored_queue_lifecycle_pass(
         if daemon_paused && delta > 0.0 {
             let alive_for = (now - e.order_at()).max(0.0);
             e.paused_total_secs += delta.min(alive_for);
+            changed = true;
+        } else if team_credit(it) {
+            let alive_for = (now - e.order_at()).max(0.0);
+            e.paused_total_secs += delta.min(alive_for);
+            team_credited.insert(e.id.clone());
             changed = true;
         }
         if crate::state::queue_entry_expired(&e, now, default_ttl) {
@@ -14581,6 +14615,19 @@ fn restored_queue_lifecycle_pass(
     // 크레딧이 붙은 행은 다시 써야 한다(retain 은 제자리 수정을 허용하지 않는다 · 값 산식 하나).
     if daemon_paused && delta > 0.0 {
         for it in rq.iter_mut() {
+            let sid = sid_of(it);
+            let role = role_of(it);
+            let mut e = crate::state::queue_entry_from_row(it);
+            let alive_for = (now - e.order_at()).max(0.0);
+            e.paused_total_secs += delta.min(alive_for);
+            *it = crate::state::queue_entry_row(sid, &role, &e);
+        }
+    } else if !team_credited.is_empty() {
+        // (codex 1R M5) 팀 정지 크레딧도 같은 산식으로 다시 쓴다(위 retain 에서 고른 행만).
+        for it in rq.iter_mut() {
+            if !it.get("id").and_then(|v| v.as_str()).is_some_and(|id| team_credited.contains(id)) {
+                continue;
+            }
             let sid = sid_of(it);
             let role = role_of(it);
             let mut e = crate::state::queue_entry_from_row(it);

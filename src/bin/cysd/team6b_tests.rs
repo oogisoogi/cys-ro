@@ -160,9 +160,10 @@ fn t8_team_worker_limit_denies_only_that_team() {
     assert_eq!(r["error"]["code"], json!("team_worker_limit_exceeded"), "같은 팀 2번째 = 거절: {r}");
     let r = create(&db);
     assert_ne!(r["error"]["code"], json!("team_worker_limit_exceeded"), "다른 팀은 상한 밖: {r}");
-    // 명시 group 파라미터가 폴더보다 먼저
+    // (codex 1R M3) group 파라미터는 판정 팀을 바꾸지 않는다 — 만든 좌석의 실제 팀 = cwd 폴더(teamB 도 이제 1/1 이라 거절 사유 = teamB).
     let r = rpc(&fx, Some(992_602), "surface.create", json!({"cmd": "sleep 30", "role": "worker", "cwd": db.to_string_lossy(), "group": "teamA"}));
-    assert_eq!(r["error"]["code"], json!("team_worker_limit_exceeded"), "group = teamA: {r}");
+    assert_eq!(r["error"]["code"], json!("team_worker_limit_exceeded"), "cwd = teamB(꽉 참): {r}");
+    assert!(r["error"]["message"].as_str().is_some_and(|m| m.contains("teamB")), "판정 팀 = cwd 폴더(teamB): {r}");
     crate::team::set_team_worker_limit_for_thread(Some(0));
     let r = create(&da);
     assert_ne!(r["error"]["code"], json!("team_worker_limit_exceeded"), "상한 0 = 무제한: {r}");

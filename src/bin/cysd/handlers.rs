@@ -537,6 +537,41 @@ fn ui_command_caller_ok(daemon: &Arc<Daemon>, caller_pid: Option<u32>) -> Result
     )
 }
 
+/// (조각 6b ⑨ · codex 1R B1) `surface.group_pause` 호출자 게이트 — `ui_command_caller_ok` 보다 **좁다**:
+///   ① 호출 좌석이 해석되면 그 좌석의 **지금** 역할이 `master` 여야 한다(워커·CSO·리뷰어 좌석 = 거절 · 토큰을 실어도 거절).
+///   ② 좌석이 해석되지 않으면 운영자 능력값(`operator_token` = 이 데몬이 발급한 operator.token)이 맞아야 한다.
+///      「조상을 끝까지 읽었더니 좌석이 없다」 를 사람으로 보지 않는다 — 워커 좌석이 setsid·이중 fork 로 떼어 낸 자식은 부모가
+///      launchd/init 로 바뀌어 그 판정을 통과했다(codex 1R B1 반례). CLI 는 `cys seat-group-pause --operator` 일 때만 토큰을 싣는다
+///      (`feed reply --operator`(D24ⓐ) 와 같은 명시 플래그 · 자동 첨부 0).
+///   ★정직한 경계: 같은 UID 로 0600 토큰 파일을 일부러 읽어 싣는 프로세스는 막지 못한다(operator_token 등급 전체의 경계 · `caller_is_owner` doc).
+///     닫는 것은 지침을 따르는 좌석·그 자식이 평시 동작으로 남의 팀을 멈추는 길이다.
+fn group_pause_caller_ok(daemon: &Arc<Daemon>, params: &Value, caller_pid: Option<u32>) -> Result<(), &'static str> {
+    group_pause_verdict(
+        caller_pid,
+        |pid| resolve_caller_surface(daemon, pid),
+        |sid| daemon.get_surface(sid).and_then(|s| s.role.lock().unwrap().clone()).as_deref() == Some("master"),
+        || operator_token_ok(daemon, params),
+    )
+}
+
+/// `group_pause_caller_ok` 의 순수 코어(판독기 주입).
+fn group_pause_verdict(
+    caller_pid: Option<u32>,
+    seat_of: impl Fn(u32) -> Option<u64>,
+    seat_is_master: impl Fn(u64) -> bool,
+    operator_ok: impl Fn() -> bool,
+) -> Result<(), &'static str> {
+    let Some(pid) = caller_pid else {
+        return Err("caller process could not be identified");
+    };
+    match seat_of(pid) {
+        Some(sid) if seat_is_master(sid) => Ok(()),
+        Some(_) => Err("caller seat must be the master seat"),
+        None if operator_ok() => Ok(()),
+        None => Err("outside a master seat the operator capability is required (cys seat-group-pause --operator)"),
+    }
+}
+
 /// (948 D4·D8) 호출자 판정 순수 코어 — 판독기를 주입받는다(단위 시험이 판독 실패·상한 초과를 직접 만든다).
 fn ui_caller_verdict(
     caller_pid: Option<u32>,
@@ -1101,7 +1136,8 @@ fn inherit_parked_queue(daemon: &Arc<Daemon>, next: &Arc<crate::state::Surface>,
     let (alive, gone): (Vec<crate::state::QueueEntry>, Vec<crate::state::QueueEntry>) = pq
         .entries
         .drain(..)
-        .partition(|e| now - e.enqueued_at < crate::state::PARKED_QUEUE_TTL_SECS);
+        // (조각 6b · codex 1R M5) 주차 중 팀 정지 크레딧을 뺀다(없으면 0 = 종전 식 그대로 · 스윕과 같은 함수).
+        .partition(|e| crate::team::parked_alive(&daemon.teams, e, now));
     if !gone.is_empty() {
         // ★(1.1.10 · cysr-1110-winqueue Q1-A ②) 주차 만기 원장 묘비 — 출처 좌석 번호로(같은 서식 · 최선 노력).
         crate::governance::record_active_drain(daemon, pq.from_surface, &gone, "parked_expired");
@@ -4818,6 +4854,10 @@ fn enqueue_bound_body(
         } else {
             let entry = daemon.next_queue_entry(body.text.clone(), entry_from, "send");
             q.push_back(entry.clone());
+            // (codex 1R M2) 꼬리표는 넣은 이 잠금 안에서 공개(잠금 밖이면 배달 틱·동시 넣기가 꼬리표 없는 항목을 본다).
+            if let Some(p) = &team_plan {
+                crate::team::tag_entry(&daemon.teams, &entry.id, p);
+            }
             Some((entry, q.len()))
         }
     };
@@ -4829,7 +4869,7 @@ fn enqueue_bound_body(
         return err_response(id, "queue_full", "pending queue cap (100) reached");
     };
     if let Some(p) = &team_plan {
-        crate::team::note_enqueued(&daemon.teams, &entry.id, entry.enqueued_at, p);
+        crate::team::note_enqueued(&daemon.teams, entry.enqueued_at, p);
     }
     daemon.bus.publish(
         "queue.enqueued",
@@ -7467,12 +7507,16 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                 }
             }
             // (조각 6b ⑧) 팀별 도우미 수 상한 — `CYS_MAX_TEAM_WORKERS`(기본 0 = 무제한 · 위 active-limit 과 같은 철학).
-            //   새 좌석의 팀 = 파라미터 group > cwd 폴더 > 홈 폴더(create_surface 기본 cwd 와 같은 규칙).
-            if param_str(&params, "role").as_deref() == Some("worker") {
-                if let Some(reply) = crate::team::team_worker_gate(daemon, &id, &params, caller_pid) {
-                    return Reply::Single(reply);
+            //   새 좌석의 팀 = create_surface 가 저장할 cwd 의 폴더 이름(codex 1R M3 · 파라미터 group 은 판정에 안 씀).
+            //   (codex 1R M4) 상한 > 0 이면 그 팀 생성 문을 잡아 이 갈래 끝(좌석 표 삽입 뒤)까지 쥔다 — drop = 반납.
+            let _team_admit = if param_str(&params, "role").as_deref() == Some("worker") {
+                match crate::team::team_worker_gate(daemon, &id, &params, caller_pid) {
+                    Ok(t) => t,
+                    Err(reply) => return Reply::Single(reply),
                 }
-            }
+            } else {
+                None
+            };
             // ── 워커 기동 게이트 ⑤ (최종 인증 전제 · U-18) ──
             // ★자리가 계약이다: ④ active-limit **뒤** · `create_surface_with_env` **앞**.
             //   앞으로 옮기면 좌석 승계(takeover_empty_seat)와 멱등 재사용까지 막혀 **살아 있는
@@ -8018,10 +8062,14 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                     };
                     let entry = daemon.next_queue_entry(text.clone(), entry_from, q_origin);
                     q.push_back(entry.clone());
+                    // (codex 1R M2) 꼬리표 = 같은 잠금 안에서 공개.
+                    if let Some(p) = &team_plan {
+                        crate::team::tag_entry(&daemon.teams, &entry.id, p);
+                    }
                     (entry, q.len())
                 };
                 if let Some(p) = &team_plan {
-                    crate::team::note_enqueued(&daemon.teams, &entry.id, entry.enqueued_at, p);
+                    crate::team::note_enqueued(&daemon.teams, entry.enqueued_at, p);
                 }
                 // ★G1(W2-B): payload는 enqueue 3경로 공용 빌더(기존 키 bytes/depth/from 불변
                 // + queue_entry_id/seq/enqueued_at additive).
@@ -9561,10 +9609,19 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             let Some(paused) = params.get("paused").and_then(|v| v.as_bool()) else {
                 return Reply::Single(err_response(&id, "invalid_params", "paused must be true or false"));
             };
-            if let Err(m) = ui_command_caller_ok(daemon, caller_pid) {
+            // (codex 1R B1) 호출자 = 지금 해석된 master 좌석 또는 운영자 능력값(`operator_token` · CLI `--operator` 가 읽어 실음)만.
+            //   좌석 밖 조상 추론(「깨끗한 조상 = 사람」)은 쓰지 않는다 — setsid·이중 fork 로 떨어진 워커 자식이 그 판정에 사람으로 통과했다.
+            if let Err(m) = group_pause_caller_ok(daemon, &params, caller_pid) {
                 return Reply::Single(err_response(&id, "forbidden", &format!("surface.group_pause: {m}")));
             }
-            let changed = daemon.teams.set_paused(&team, paused);
+            let changed = match daemon.teams.set_paused(&team, paused) {
+                Ok(c) => c,
+                Err(m) => return Reply::Single(err_response(&id, crate::team::TEAM_PAUSE_LIMIT, &format!("surface.group_pause: {m} — limit {}", crate::team::PAUSED_TEAMS_MAX))),
+            };
+            if changed && paused {
+                // (codex 1R M1) 정지 전환 순간 — 결판 대기 인계 취소 + 목적지 팀 기록(system.pause·건강 정지와 같은 꼴).
+                crate::team::on_team_paused(daemon, &team);
+            }
             if changed {
                 // (검증 m4) 이름 목록만 상태 폴더에 — 재시작 뒤 「정지가 풀렸어요」 사건 1건의 재료(정지 복원 아님).
                 crate::team::persist_paused(daemon);

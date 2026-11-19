@@ -3419,6 +3419,9 @@ struct SeatGroupArgs {
 struct SeatGroupPauseArgs {
     /// 팀(묶음) 이름 — 작업 화면 묶음 탭 이름과 같다(명시 묶음 또는 생성 폴더 이름)
     group: String,
+    /// (codex 1R B1) 좌석 밖 터미널(사람)에서 — 데몬 operator.token 을 읽어 싣는다. master 좌석 안에서는 필요 없다(워커 좌석 안에서는 무효).
+    #[arg(long)]
+    operator: bool,
 }
 
 /// ★1.1.11 편입 — 원작자 0.14.52 의 새 최상위 동사 2개(`Command` 에 평탄화 · 이름·도움말·숨김은 원작자 그대로).
@@ -3441,7 +3444,7 @@ enum VendorAuxCommand {
     ///   (실측: `aid_s5_reap_due_is_explicit_and_json_is_validated` 스택 넘침 · HEAD 판 통과 · RUST_MIN_STACK 8 MiB 통과). 최상위 동사 이름은 그대로다.
     #[command(name = "seat-group")]
     SeatGroup(SeatGroupArgs),
-    /// (조각 6b ⑨) 한 팀만 잠깐 멈춘다 — 그 팀 좌석으로 가는 큐 배달과 그 팀이 마스터에게 큐로 보낸 말을 보류(사람이 직접 치는 것은 통과 · 다른 팀은 그대로). master 좌석 또는 좌석 밖 터미널에서만.
+    /// (조각 6b ⑨) 한 팀만 잠깐 멈춘다 — 그 팀 좌석으로 가는 큐 배달과 그 팀이 마스터에게 큐로 보낸 말을 보류(사람이 직접 치는 것은 통과 · 다른 팀은 그대로). master 좌석에서, 또는 좌석 밖 터미널에서 `--operator` 로.
     #[command(name = "seat-group-pause")]
     SeatGroupPause(SeatGroupPauseArgs),
     /// (조각 6b ⑨) 멈춘 팀을 다시 움직인다(보류했던 말은 순서대로 배달).
@@ -3719,8 +3722,15 @@ fn parse_explicit_surface(surface: &Option<String>) -> Result<Option<u64>, Strin
 /// · `#` 로 시작하지만 문법 밖(`#0`·`#1000`·`#017`) → RPC 0회 거부.
 /// · 그 밖(`surface:31`·맨숫자 `31`) → 종전 그대로 내부 번호(맨숫자는 보이는 번호가 아니다).
 /// (조각 6b ⑨) 팀 정지·재개 — 데몬 `surface.group_pause` 1회.
-fn seat_group_pause(group: &str, paused: bool) -> Result<(), String> {
-    let r = request("surface.group_pause", json!({"group": group, "paused": paused}))?;
+fn seat_group_pause(group: &str, paused: bool, operator: bool) -> Result<(), String> {
+    let mut params = json!({"group": group, "paused": paused});
+    // (codex 1R B1) 명시 플래그일 때만 운영자 능력값을 싣는다(`feed reply --operator` 와 같은 규칙 · 자동 첨부 0).
+    if operator {
+        let t = owner_token_for_socket(&cys::socket_path())
+            .ok_or_else(|| "--operator — 데몬 operator.token 을 읽지 못했다(데몬 미기동 또는 다른 계정)".to_string())?;
+        params["operator_token"] = json!(t);
+    }
+    let r = request("surface.group_pause", params)?;
     let team = r["team"].as_str().unwrap_or(group);
     let what = if paused { "멈춤" } else { "다시 움직임" };
     if r["changed"].as_bool() == Some(true) {
@@ -6676,8 +6686,8 @@ fn run(command: Command) -> i32 {
             })
         }),
 
-        Command::VendorAux(VendorAuxCommand::SeatGroupPause(SeatGroupPauseArgs { group })) => seat_group_pause(&group, true),
-        Command::VendorAux(VendorAuxCommand::SeatGroupResume(SeatGroupPauseArgs { group })) => seat_group_pause(&group, false),
+        Command::VendorAux(VendorAuxCommand::SeatGroupPause(SeatGroupPauseArgs { group, operator })) => seat_group_pause(&group, true, operator),
+        Command::VendorAux(VendorAuxCommand::SeatGroupResume(SeatGroupPauseArgs { group, operator })) => seat_group_pause(&group, false, operator),
 
         Command::VendorAux(VendorAuxCommand::TeamStats) => request("team.stats", json!({})).map(|r| println!("{r}")),
 

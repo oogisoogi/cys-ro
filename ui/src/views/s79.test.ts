@@ -30,34 +30,34 @@ import { ConfirmBook } from "./confirm";
 import type { Rec } from "./judge/msgstep";
 import { Sim } from "./testkit";
 
-const H = "/Users/kim";
+const H = "/Users/user";
 const rec = (text: string, extra: Partial<Rec> = {}): Rec => ({ uuid: "u1", parent: null, role: "assistant", text, ts: null, ...extra });
 
 describe("조각 7 — 답 속 경로(홈 아래만)", () => {
   it("홈 아래 절대 경로 · ~/ 펼침 · 끝 문장 부호·괄호·백틱 깎음 · 나온 순서", () => {
-    const t = "다 만들었어요: /Users/kim/교회/행사안내.html. 그리고 `~/교회/주보.pdf`(인쇄용)도 있어요.";
-    expect(pathsInText(t, H)).toEqual(["/Users/kim/교회/행사안내.html", "/Users/kim/교회/주보.pdf"]);
+    const t = "다 만들었어요: /Users/user/교회/행사안내.html. 그리고 `~/교회/주보.pdf`(인쇄용)도 있어요.";
+    expect(pathsInText(t, H)).toEqual(["/Users/user/교회/행사안내.html", "/Users/user/교회/주보.pdf"]);
   });
   it("홈 밖 · 홈 자신 · 숨은 폴더 · .. 마디 = 0", () => {
-    const t = "/etc/hosts /Users/kim /Users/kim/.cys/pack/x.md /Users/kim/a/../b.txt /Users/kimchi/x.txt /tmp/a.html";
+    const t = `/etc/hosts /Users/user /Users/user/.cys/pack/x.md /Users/user/a/../b.txt ${H}chi/x.txt /tmp/a.html`; // 홈 이웃 이름(userchi)은 실행 시 조립(개인 경로 검사 오탐 방지)
     expect(pathsInText(t, H)).toEqual([]);
   });
   it("코드 울타리 안 줄 = 0(명령 예시) · 울타리 밖은 받음", () => {
-    const t = "```bash\nopen /Users/kim/교회/a.html\n```\n결과: /Users/kim/교회/b.html";
-    expect(pathsInText(t, H)).toEqual(["/Users/kim/교회/b.html"]);
+    const t = "```bash\nopen /Users/user/교회/a.html\n```\n결과: /Users/user/교회/b.html";
+    expect(pathsInText(t, H)).toEqual(["/Users/user/교회/b.html"]);
   });
   it("확장자 바로 뒤 한글 조사·어미는 깎음 · 확장자 없는 폴더 이름은 그대로", () => {
-    expect(pathsInText("파일은 /Users/kim/교회/행사안내.html에 있고 /Users/kim/교회/주보.pdf를 고쳤어요", H)).toEqual(["/Users/kim/교회/행사안내.html", "/Users/kim/교회/주보.pdf"]);
-    expect(pathsInText("폴더 /Users/kim/교회자료 를 보세요", H)).toEqual(["/Users/kim/교회자료"]);
+    expect(pathsInText("파일은 /Users/user/교회/행사안내.html에 있고 /Users/user/교회/주보.pdf를 고쳤어요", H)).toEqual(["/Users/user/교회/행사안내.html", "/Users/user/교회/주보.pdf"]);
+    expect(pathsInText("폴더 /Users/user/교회자료 를 보세요", H)).toEqual(["/Users/user/교회자료"]);
   });
   it("「열기」가 곧 실행인 꾸러미(.app 등) = 막음 · 문서·그림·폴더는 아님", () => {
     for (const n of ["Evil.app", "x.APP", "a.pkg", "b.mpkg", "run.command", "p.prefPane", "w.workflow"]) expect(`${n}:${launchesProgram(n)}`).toBe(`${n}:true`);
     for (const n of ["a.html", "주보.pdf", "out", "app", "a.application.md"]) expect(`${n}:${launchesProgram(n)}`).toBe(`${n}:false`);
   });
   it("띄어쓰기 있는 경로(codex 1R major): 백틱 안 통째 · 맨글은 확장자까지 이은 것도 후보", () => {
-    expect(pathsInText("보고서는 `/Users/kim/Report Final.pdf` 예요", H)).toEqual(["/Users/kim/Report Final.pdf"]);
-    expect(pathsInText("보고서는 /Users/kim/Report Final.pdf 예요", H)).toEqual(["/Users/kim/Report Final.pdf", "/Users/kim/Report"]);
-    expect(pathsInText("결과 /Users/kim/교회 폴더를 보세요", H)).toEqual(["/Users/kim/교회"]); // 이어도 확장자가 안 나오면 그대로
+    expect(pathsInText("보고서는 `/Users/user/Report Final.pdf` 예요", H)).toEqual(["/Users/user/Report Final.pdf"]);
+    expect(pathsInText("보고서는 /Users/user/Report Final.pdf 예요", H)).toEqual(["/Users/user/Report Final.pdf", "/Users/user/Report"]);
+    expect(pathsInText("결과 /Users/user/교회 폴더를 보세요", H)).toEqual(["/Users/user/교회"]); // 이어도 확장자가 안 나오면 그대로
     expect(pathsInText("`ls -la` 와 `/etc/a b.txt`", H)).toEqual([]);
   });
   it("실재 대조 = 유니코드 정규화 무시(NFD 이름) · 맥·윈 대소문자 무시(codex 1R minor)", () => {
@@ -67,29 +67,29 @@ describe("조각 7 — 답 속 경로(홈 아래만)", () => {
     expect(presenceIn([{ name: "Report.PDF", is_dir: false }], "report.pdf", true)?.exists).toBe(true);
   });
   it("URL·낱말 한가운데 슬래시 = 0", () => {
-    expect(pathsInText("https://example.invalid/Users/kim/a.html 와 and/or", H)).toEqual([]);
+    expect(pathsInText("https://example.invalid/Users/user/a.html 와 and/or", H)).toEqual([]);
   });
   it("같은 경로는 한 번 · 상한", () => {
-    const many = Array.from({ length: 9 }, (_, i) => `/Users/kim/r/${i}.md`).join(" ");
-    expect(pathsInText(`${many} /Users/kim/r/0.md`, H).length).toBe(PATHS_PER_REPLY_MAX);
-    expect(pathsInText("/Users/kim/a.md /Users/kim/a.md/", H)).toEqual(["/Users/kim/a.md"]);
+    const many = Array.from({ length: 9 }, (_, i) => `/Users/user/r/${i}.md`).join(" ");
+    expect(pathsInText(`${many} /Users/user/r/0.md`, H).length).toBe(PATHS_PER_REPLY_MAX);
+    expect(pathsInText("/Users/user/a.md /Users/user/a.md/", H)).toEqual(["/Users/user/a.md"]);
   });
   it("윈도우 홈: \\ · / 둘 다 · 대소문자 무시 · 구분자는 홈의 것으로", () => {
-    const W = "C:\\Users\\kim";
-    expect(pathsInText("결과 c:\\users\\kim\\Docs\\a.html 와 C:/Users/kim/b.pdf", W)).toEqual(["C:\\Users\\kim\\Docs\\a.html", "C:\\Users\\kim\\b.pdf"]);
-    expect(normPath("C:\\Users\\kimchi\\a.txt", W)).toBeNull();
-    expect(normPath("~\\x\\y.md", W)).toBe("C:\\Users\\kim\\x\\y.md");
+    const W = "C:\\Users\\user";
+    expect(pathsInText("결과 c:\\users\\user\\Docs\\a.html 와 C:/Users/user/b.pdf", W)).toEqual(["C:\\Users\\user\\Docs\\a.html", "C:\\Users\\user\\b.pdf"]);
+    expect(normPath(`${W}chi\\a.txt`, W)).toBeNull();
+    expect(normPath("~\\x\\y.md", W)).toBe("C:\\Users\\user\\x\\y.md");
   });
   it("user·곁가지·글 없는 레코드 = 후보 0 · assistant = 후보(uuid 실림)", () => {
-    expect(candidatesOf(rec("/Users/kim/a.html", { role: "user" }), H)).toEqual([]);
-    expect(candidatesOf(rec("/Users/kim/a.html", { sidechain: true }), H)).toEqual([]);
+    expect(candidatesOf(rec("/Users/user/a.html", { role: "user" }), H)).toEqual([]);
+    expect(candidatesOf(rec("/Users/user/a.html", { sidechain: true }), H)).toEqual([]);
     expect(candidatesOf(rec("", { text: null }), H)).toEqual([]);
-    expect(candidatesOf(rec("/Users/kim/a.html", { uuid: "m9" }), H)).toEqual([{ path: "/Users/kim/a.html", source: "reply", uuid: "m9", runId: null }]);
+    expect(candidatesOf(rec("/Users/user/a.html", { uuid: "m9" }), H)).toEqual([{ path: "/Users/user/a.html", source: "reply", uuid: "m9", runId: null }]);
   });
   it("이름·부모·종류", () => {
-    expect(baseName("/Users/kim/a/b.html")).toBe("b.html");
-    expect(parentOf("/Users/kim/a/b.html")).toBe("/Users/kim/a");
-    expect(parentOf("C:\\Users\\kim\\b.pdf")).toBe("C:\\Users\\kim");
+    expect(baseName("/Users/user/a/b.html")).toBe("b.html");
+    expect(parentOf("/Users/user/a/b.html")).toBe("/Users/user/a");
+    expect(parentOf("C:\\Users\\user\\b.pdf")).toBe("C:\\Users\\user");
     expect(kindOf("b.html", null)).toBe("page");
     expect(kindOf("b.PDF", false)).toBe("doc");
     expect(kindOf("b.png", null)).toBe("image");
@@ -101,8 +101,8 @@ describe("조각 7 — 답 속 경로(홈 아래만)", () => {
 
 describe("조각 7 — 스킬 산출 폴더(skill.run_finished)", () => {
   it("done + 홈 아래 폴더만", () => {
-    expect(skillCandidateOf({ run_id: "r1", status: "done", artifact_dir: "/Users/kim/cys-skill-runs/r1" }, H)).toEqual({ path: "/Users/kim/cys-skill-runs/r1", source: "skill", uuid: null, runId: "r1" });
-    expect(skillCandidateOf({ run_id: "r1", status: "failed", artifact_dir: "/Users/kim/x" }, H)).toBeNull();
+    expect(skillCandidateOf({ run_id: "r1", status: "done", artifact_dir: "/Users/user/cys-skill-runs/r1" }, H)).toEqual({ path: "/Users/user/cys-skill-runs/r1", source: "skill", uuid: null, runId: "r1" });
+    expect(skillCandidateOf({ run_id: "r1", status: "failed", artifact_dir: "/Users/user/x" }, H)).toBeNull();
     expect(skillCandidateOf({ run_id: "r1", status: "done", artifact_dir: null }, H)).toBeNull();
     expect(skillCandidateOf({ run_id: "r1", status: "done", artifact_dir: "/var/tmp/x" }, H)).toBeNull();
     expect(skillCandidateOf(null, H)).toBeNull();
@@ -112,44 +112,44 @@ describe("조각 7 — 스킬 산출 폴더(skill.run_finished)", () => {
 describe("조각 7 — 목록 · 보임 · 새 결과 · 저장(원문 0자)", () => {
   const c = (path: string, source: "skill" | "reply" = "reply") => ({ path, source, uuid: source === "reply" ? "u" : null, runId: source === "skill" ? "r" : null });
   it("같은 경로 한 카드 · 스킬 출처로 올림 · 최근 것부터 · 상한", () => {
-    let l = addCandidates([], [c("/Users/kim/a")], 1);
-    l = addCandidates(l, [c("/Users/kim/a", "skill"), c("/Users/kim/b")], 2);
+    let l = addCandidates([], [c("/Users/user/a")], 1);
+    l = addCandidates(l, [c("/Users/user/a", "skill"), c("/Users/user/b")], 2);
     expect(l.map((r) => [r.path, r.source])).toEqual([
-      ["/Users/kim/b", "reply"],
-      ["/Users/kim/a", "skill"],
+      ["/Users/user/b", "reply"],
+      ["/Users/user/a", "skill"],
     ]);
     let big: Result[] = [];
-    for (let i = 0; i < RESULTS_MAX + 5; i++) big = addCandidates(big, [c(`/Users/kim/${i}`)], i);
+    for (let i = 0; i < RESULTS_MAX + 5; i++) big = addCandidates(big, [c(`/Users/user/${i}`)], i);
     expect(big.length).toBe(RESULTS_MAX);
-    expect(big[0].path).toBe(`/Users/kim/${RESULTS_MAX + 4}`);
+    expect(big[0].path).toBe(`/Users/user/${RESULTS_MAX + 4}`);
   });
   it("답 속 경로 = 실재 확정만 보임 · 스킬 = 늘 · 「새 결과」 수", () => {
-    const l = addCandidates([], [c("/Users/kim/a"), c("/Users/kim/s", "skill")], 1);
-    expect(visibleResults(l).map((r) => r.path)).toEqual(["/Users/kim/s"]);
-    const l2 = l.map((r) => (r.path === "/Users/kim/a" ? { ...r, exists: true } : r));
+    const l = addCandidates([], [c("/Users/user/a"), c("/Users/user/s", "skill")], 1);
+    expect(visibleResults(l).map((r) => r.path)).toEqual(["/Users/user/s"]);
+    const l2 = l.map((r) => (r.path === "/Users/user/a" ? { ...r, exists: true } : r));
     expect(visibleResults(l2).length).toBe(2);
     expect(resultsLabel(l2)).toEqual({ text: "결과 2 · 새 결과 2", count: 2, fresh: 2 });
     expect(resultsLabel(l2.map((r) => ({ ...r, seen: true })))).toEqual({ text: "결과 2", count: 2, fresh: 0 });
     // 설명으로만 쓴 경로(없음 확정 · 본 적 없음) = 카드 0
-    expect(visibleResults(l.map((r) => ({ ...r, exists: false }))).map((r) => r.path)).toEqual(["/Users/kim/s"]);
+    expect(visibleResults(l.map((r) => ({ ...r, exists: false }))).map((r) => r.path)).toEqual(["/Users/user/s"]);
   });
   it("저장 = 경로·출처·시각·봤음만 · 실재는 다시 확인(null) · 설명으로 쓴 경로는 저장 0 · 깨진 꼴 버림", () => {
-    const l = addCandidates([], [c("/Users/kim/a"), c("/Users/kim/s", "skill"), c("/Users/kim/no")], 7).map((r) => (r.path === "/Users/kim/a" ? { ...r, exists: true, seen: true } : r));
+    const l = addCandidates([], [c("/Users/user/a"), c("/Users/user/s", "skill"), c("/Users/user/no")], 7).map((r) => (r.path === "/Users/user/a" ? { ...r, exists: true, seen: true } : r));
     const raw = persistable(l);
-    expect(raw).not.toContain("/Users/kim/no");
+    expect(raw).not.toContain("/Users/user/no");
     const back = restoreResults(raw);
     expect(back.map((r) => [r.path, r.source, r.seen, r.exists])).toEqual([
-      ["/Users/kim/s", "skill", false, null],
-      ["/Users/kim/a", "reply", true, null],
+      ["/Users/user/s", "skill", false, null],
+      ["/Users/user/a", "reply", true, null],
     ]);
     expect(restoreResults("{bad")).toEqual([]);
     expect(restoreResults(JSON.stringify({ v: 2, items: [] }))).toEqual([]);
-    expect(restoreResults(JSON.stringify({ v: 1, items: [{ path: 3 }, { path: "/Users/kim/z", source: "x", at: 1, seen: false }] }))).toEqual([]);
+    expect(restoreResults(JSON.stringify({ v: 1, items: [{ path: 3 }, { path: "/Users/user/z", source: "x", at: 1, seen: false }] }))).toEqual([]);
   });
   it("고쳐 달라고 하기 = 앞글 + 쓰던 글 그대로(지우지 않음) · 두 번 눌러도 한 번", () => {
-    const r = addCandidates([], [c("/Users/kim/교회/a.html")], 1)[0];
+    const r = addCandidates([], [c("/Users/user/교회/a.html")], 1)[0];
     const p = revisePrefix(r);
-    expect(p).toContain("/Users/kim/교회/a.html");
+    expect(p).toContain("/Users/user/교회/a.html");
     expect(withPrefix("", p)).toBe(p);
     expect(withPrefix("날짜 글씨 키워 줘", p)).toBe(`${p}날짜 글씨 키워 줘`);
     expect(withPrefix(withPrefix("x", p), p)).toBe(`${p}x`);
@@ -199,17 +199,17 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 
 describe("조각 7 — 장부(대역)", () => {
   it("홈을 알기 전 읽은 답은 모아 두었다가 판정 · 실재 확인 뒤에만 보임 · 열기 = open_path 1 · 새 결과 풀림", async () => {
-    const t = fakeFs({ "/Users/kim/교회": [{ name: "a.html", is_dir: false }] });
-    t.book.onTail([rec("다 됐어요 /Users/kim/교회/a.html 그리고 /Users/kim/교회/없음.pdf", { uuid: "m1" })]);
+    const t = fakeFs({ "/Users/user/교회": [{ name: "a.html", is_dir: false }] });
+    t.book.onTail([rec("다 됐어요 /Users/user/교회/a.html 그리고 /Users/user/교회/없음.pdf", { uuid: "m1" })]);
     expect(t.book.items.length).toBe(0);
     await t.book.start();
     await flush();
     await t.book.tick();
     const vis = visibleResults(t.book.items);
-    expect(vis.map((r) => [r.path, r.exists, r.seen])).toEqual([["/Users/kim/교회/a.html", true, false]]);
+    expect(vis.map((r) => [r.path, r.exists, r.seen])).toEqual([["/Users/user/교회/a.html", true, false]]);
     expect(t.book.items.find((r) => r.name === "없음.pdf")?.exists).toBe(false);
-    await t.book.act("/Users/kim/교회/a.html", "open");
-    expect(t.calls.filter((c) => c[0] === "open_path")).toEqual([["open_path", { path: "/Users/kim/교회/a.html" }]]);
+    await t.book.act("/Users/user/교회/a.html", "open");
+    expect(t.calls.filter((c) => c[0] === "open_path")).toEqual([["open_path", { path: "/Users/user/교회/a.html" }]]);
     expect(t.book.items.find((r) => r.name === "a.html")?.seen).toBe(true);
     const saved = t.mem.get(RESULTS_KEY) ?? "";
     expect(saved).toContain("a.html");
@@ -217,59 +217,59 @@ describe("조각 7 — 장부(대역)", () => {
     expect(saved).not.toContain("없음.pdf"); // 설명으로만 나온 경로 저장 0
   });
   it("누르기 직전 파일이 사라짐 → open 호출 0 + 「찾을 수 없어요」 · 모름 → 호출 0", async () => {
-    const t = fakeFs({ "/Users/kim/교회": [{ name: "a.html", is_dir: false }] });
+    const t = fakeFs({ "/Users/user/교회": [{ name: "a.html", is_dir: false }] });
     await t.book.start();
-    t.book.onTail([rec("/Users/kim/교회/a.html")]);
+    t.book.onTail([rec("/Users/user/교회/a.html")]);
     await t.book.tick();
-    t.files["/Users/kim/교회"] = [];
-    await t.book.act("/Users/kim/교회/a.html", "reveal");
+    t.files["/Users/user/교회"] = [];
+    await t.book.act("/Users/user/교회/a.html", "reveal");
     expect(t.calls.some((c) => c[0] === "reveal_path")).toBe(false);
     expect(t.book.notice).toBe(MSG_MISSING);
     expect(t.book.items[0].exists).toBe(false);
     expect(visibleResults(t.book.items).length).toBe(0); // 본 적 없는 답 속 경로 = 카드에서 빠짐
-    t.files["/Users/kim/교회"] = [{ name: 3 } as unknown as { name: string; is_dir: boolean }];
-    await t.book.act("/Users/kim/교회/a.html", "open");
+    t.files["/Users/user/교회"] = [{ name: 3 } as unknown as { name: string; is_dir: boolean }];
+    await t.book.act("/Users/user/교회/a.html", "open");
     expect(t.book.notice).toBe(MSG_UNKNOWN);
     expect(t.calls.some((c) => c[0] === "open_path")).toBe(false);
   });
   it("실행형 파일 = Tauri 거절(executable_confirm) → force 로 다시 부르지 않음 + 폴더 보기 안내", async () => {
-    const t = fakeFs({ "/Users/kim/x": [{ name: "run.sh", is_dir: false }] });
+    const t = fakeFs({ "/Users/user/x": [{ name: "run.sh", is_dir: false }] });
     await t.book.start();
-    t.book.onTail([rec("/Users/kim/x/run.sh")]);
+    t.book.onTail([rec("/Users/user/x/run.sh")]);
     await t.book.tick();
     t.state.openErr = "executable_confirm";
-    await t.book.act("/Users/kim/x/run.sh", "open");
+    await t.book.act("/Users/user/x/run.sh", "open");
     const opens = t.calls.filter((c) => c[0] === "open_path");
     expect(opens.length).toBe(1);
-    expect(opens[0][1]).toEqual({ path: "/Users/kim/x/run.sh" }); // force 칸 없음
+    expect(opens[0][1]).toEqual({ path: "/Users/user/x/run.sh" }); // force 칸 없음
     expect(t.book.notice).toBe(MSG_EXEC);
     expect(t.book.items[0].seen).toBe(false);
   });
   it("마스터 글 속 .app 꾸러미 = 열기 호출 0 + 안내 · 폴더 보기는 됨", async () => {
-    const t = fakeFs({ "/Users/kim/Downloads": [{ name: "Evil.app", is_dir: true }] });
+    const t = fakeFs({ "/Users/user/Downloads": [{ name: "Evil.app", is_dir: true }] });
     await t.book.start();
-    t.book.onTail([rec("받은 앱: /Users/kim/Downloads/Evil.app")]);
+    t.book.onTail([rec("받은 앱: /Users/user/Downloads/Evil.app")]);
     await t.book.tick();
-    await t.book.act("/Users/kim/Downloads/Evil.app", "open");
+    await t.book.act("/Users/user/Downloads/Evil.app", "open");
     expect(t.calls.some((c) => c[0] === "open_path")).toBe(false);
     expect(t.book.notice).toBe(MSG_EXEC);
-    await t.book.act("/Users/kim/Downloads/Evil.app", "reveal");
+    await t.book.act("/Users/user/Downloads/Evil.app", "reveal");
     expect(t.calls.filter((c) => c[0] === "reveal_path").length).toBe(1);
   });
   it("Tauri 가 홈 밖·숨은 폴더로 이어짐을 거절(outside_home·hidden_path) → 안내 · 새 결과 그대로", async () => {
-    const t = fakeFs({ "/Users/kim": [{ name: "Report", is_dir: false }] });
+    const t = fakeFs({ "/Users/user": [{ name: "Report", is_dir: false }] });
     await t.book.start();
-    t.book.onTail([rec("/Users/kim/Report")]);
+    t.book.onTail([rec("/Users/user/Report")]);
     await t.book.tick();
     t.state.openErr = "outside_home";
-    await t.book.act("/Users/kim/Report", "open");
+    await t.book.act("/Users/user/Report", "open");
     expect(t.book.notice).toBe(MSG_OUTSIDE);
     expect(t.book.items[0].seen).toBe(false);
   });
   it("skill.run_finished — 본부 slug 만 · 부서 slug·slug 모름 = 버림 · 확인 전에도 카드(확인 중)", async () => {
-    const t = fakeFs({ "/Users/kim/runs": [{ name: "r1", is_dir: true }] });
+    const t = fakeFs({ "/Users/user/runs": [{ name: "r1", is_dir: true }] });
     await t.book.start();
-    const ev = (slug: string | null) => ({ name: "skill.run_finished", socket_slug: slug, payload: { run_id: "r1", status: "done", artifact_dir: "/Users/kim/runs/r1" } });
+    const ev = (slug: string | null) => ({ name: "skill.run_finished", socket_slug: slug, payload: { run_id: "r1", status: "done", artifact_dir: "/Users/user/runs/r1" } });
     t.book.onEvent(ev("base"));
     expect(t.book.items.length).toBe(0); // slug 모름
     t.book.setHqSlug("base");
@@ -278,15 +278,15 @@ describe("조각 7 — 장부(대역)", () => {
     t.book.onEvent({ ...ev("base"), name: "skill.run_started" });
     expect(t.book.items.length).toBe(0);
     t.book.onEvent(ev("base"));
-    expect(visibleResults(t.book.items).map((r) => [r.path, r.source])).toEqual([["/Users/kim/runs/r1", "skill"]]);
+    expect(visibleResults(t.book.items).map((r) => [r.path, r.source])).toEqual([["/Users/user/runs/r1", "skill"]]);
     await flush();
     await t.book.tick();
     expect(t.book.items[0].exists).toBe(true);
   });
   it("홈 조회 실패 → 다음 켜짐에 다시(모은 답 잃지 않음) · 다시 켜면 저장된 결과 복원", async () => {
-    const t = fakeFs({ "/Users/kim": [{ name: "a.md", is_dir: false }] });
+    const t = fakeFs({ "/Users/user": [{ name: "a.md", is_dir: false }] });
     t.state.homeFails = true;
-    t.book.onTail([rec("/Users/kim/a.md")]);
+    t.book.onTail([rec("/Users/user/a.md")]);
     await t.book.start();
     expect(t.book.items.length).toBe(0);
     t.state.homeFails = false;
@@ -295,7 +295,7 @@ describe("조각 7 — 장부(대역)", () => {
     await t.book.tick();
     expect(visibleResults(t.book.items).length).toBe(1);
     const again = new ResultBook({ invoke: async () => H, now: () => 1, store: { get: (k) => t.mem.get(k) ?? null, set: () => {} } }, () => {});
-    expect(again.items.map((r) => [r.path, r.exists])).toEqual([["/Users/kim/a.md", null]]);
+    expect(again.items.map((r) => [r.path, r.exists])).toEqual([["/Users/user/a.md", null]]);
   });
 });
 

@@ -974,6 +974,13 @@ fn role_seat_verdict_truth_table() {
     let cw = &cli[cli.find("    fn seat_conversation(&self, surface_id: u64").unwrap()..];
     let cw = code_only(&cw[..cw.find("\n    }\n").unwrap()]);
     assert!(cw.contains("seat_conversation_now(surface_id,") && !cw.contains("org.status"), "풀림 판독 원천이 등록 문자열이다(r5c #1)");
+    // follow(결속을 만드는 유일한 자리)는 좌석 최상위 훅이 아니라고 증명된 등록을 거른 뒤에만 옮긴다(r5c #1-3 헬퍼 · 도구 셸).
+    let fo = &cli[cli.find("pub(crate) fn lease_follow_on_register(").unwrap()..];
+    let fo = code_only(&fo[..fo.find("\n}\n").unwrap()]);
+    let gate = fo.find("if follow_lineage_not_top(&chain, row[\"agent_bin\"].as_str().unwrap_or_default()) {").expect("follow 계통 거름 배선");
+    assert!(gate < fo.find("sl::follow(&store, &id, &writer,").expect("follow 호출"), "계통 거름이 follow 뒤에 있다");
+    let fl = &cli[cli.find("fn follow_lineage_not_top(").unwrap()..];
+    assert!(code_only(&fl[..fl.find("\n}\n").unwrap()]).contains("sl::lineage_proves_not_top_hook(&cmds, agent_bin) == Some(true)"), "판독 불가를 증명으로 셌다");
 }
 
 /// r5(codex r4 #3 소비부) — 복원 fresh 안쪽 거절(92·93)도 표준 거절 줄을 낸다(phoenix `_LEASE_REFUSAL_RE` 가 읽는 모양 ·

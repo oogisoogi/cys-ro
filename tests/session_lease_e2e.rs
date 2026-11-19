@@ -106,6 +106,9 @@ impl Box_ {
         if let Some(g) = &self.reg_gate {
             c.env("FAKE_REG_GATE", g);
         }
+        // 가짜 claude 의 등록 명령 = 이 시험이 지은 cys(절대 경로) — 좌석 셸은 로그인 셸이라 PATH 가 재정렬돼 맨 `cys` 가
+        //   설치본(/usr/local/bin/cys · T1 없음)으로 풀렸다(skt1 실측: 등록이 T1 follow 를 한 번도 안 거침).
+        c.env("FAKE_CYS", CYS);
         c
     }
 
@@ -624,7 +627,7 @@ fn a_seat_revealed_as_another_conversation_frees_the_saved_restore() {
     while b.fakes().is_empty() && t.elapsed() < Duration::from_secs(10) {
         std::thread::sleep(Duration::from_millis(200));
     }
-    // 가짜 claude 는 등록을 자식(같은 실행 파일)에 미뤄 둔다 → 프로세스 둘일 수 있다 · S 작성자는 0.
+    // 가짜 claude 는 등록을 자식 셸(이름 session-start.sh)에 미뤄 둔다 · S 작성자는 0.
     assert_eq!((b.fakes().is_empty(), b.writers().len(), registered_of(&b, w)), (false, 0, None), "전제: W 에 claude · 등록 전 {}", out(&o1));
     let cfg = b.base.join("home/.claude");
     let pin_s = || std::fs::write(b.base.join("run/topology.json"),
@@ -737,4 +740,110 @@ fn a_hookless_seat_pinned_by_heuristic_before_restore_is_still_unverified() {
     eprintln!("HQ rc={:?} W=surface:{w} pin={tid} W2={:?} seats={seats:?} writers={}", o2.status.code(), seat_of(&o2), writers.len());
     assert_eq!((o2.status.code(), seats, writers.len()), (Some(93), vec![w], 0), "휴리스틱 핀만 있는 훅 없는 좌석 옆에 S 를 띄웠다: {}", out(&o2));
     assert!(seat_of(&o2).is_none(), "거절인데 stdout 좌석 줄: {}", out(&o2));
+}
+
+/// 좌석 `w` 의 데몬 **등록** 칸(org.status `registered_session_id`) — topology `session_id`(휴리스틱 핀 포함)와 다르다.
+fn daemon_registered(b: &Box_, w: u64) -> Option<String> {
+    let st = b.rpc("org.status").unwrap_or(Value::Null);
+    st["surfaces"].as_array().into_iter().flatten()
+        .find(|e| e["surface_id"].as_u64() == Some(w)).and_then(|e| e["registered_session_id"].as_str().map(String::from))
+}
+
+/// 등록 전 W 옆 S 복원 = 93(임대 unknown@W)까지 — FR·SR 공통 앞부분. 돌려주는 값 = (W · 저장 핀 다시 쓰기).
+fn unknown_at_w(b: &Box_, proj: &str) -> u64 {
+    let o1 = b.cys(&["launch-agent", "--role", ROLE, "--agent", "claude", "--cwd", proj]);
+    let w = seat_of(&o1).unwrap_or_else(|| panic!("W 기동: {}", out(&o1)));
+    let t = Instant::now();
+    while b.fakes().is_empty() && t.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    pin_saved(b, proj);
+    let o2 = b.cys(&["launch-agent", "--role", ROLE, "--agent", "claude", "--resume-saved", "--cwd", proj]);
+    assert_eq!((o2.status.code(), b.role_seats(), b.writers().len()), (Some(93), vec![w], 0), "전제: 등록 전 W 옆 = 93 · 새 좌석 0: {}", out(&o2));
+    let l: Value = serde_json::from_str(&std::fs::read_to_string(b.lease_file()).expect("임대 파일")).unwrap();
+    assert_eq!((l["state"].as_str(), l["surface_id"].as_u64()), (Some("unknown"), Some(w)), "전제: 임대 unknown@W: {l}");
+    w
+}
+
+fn pin_saved(b: &Box_, proj: &str) {
+    let cfg = b.base.join("home/.claude");
+    std::fs::write(b.base.join("run/topology.json"),
+        json!({"entries": [{"role": ROLE, "agent": "claude", "cwd": proj, "session_id": b.sid, "claude_config_dir": cfg}]}).to_string()).unwrap();
+}
+
+/// skt1(codex r5c #1-2 · blocking) — 좌석 밖 사람·도구의 **가짜 등록**(`cys usage-register --surface W --transcript /…/T.jsonl` · 발신 좌석 없음 =
+/// 데몬 소유 게이트 통과)은 unknown@W 를 풀지 않는다 — W 의 작성자 신원과 묶이지 않은 등록 문자열이다. S 재시도 = 92 · 새 좌석 0 · 작성자 0.
+/// 고치기 전(7434ebfe): 풀림 조건 = 데몬 등록 문자열 ≠ S → 풀림 → #1 방어도 등록 T 를 보고 통과 → rc 0 · W2(작성자 둘 가능).
+#[test]
+fn an_outside_fake_registration_never_frees_the_saved_restore() {
+    if std::env::var("CYS_SESSION_LEASE").is_ok_and(|v| v == "off") {
+        return; // 임대 판정 시험
+    }
+    let mut b = Box_::new("fr");
+    b.reg_gate = Some(b.base.join("reg-gate-never")); // W 는 스스로 등록하지 않는다(그 파일은 만들지 않음)
+    b.up();
+    let proj = b.base.join("proj").to_string_lossy().into_owned();
+    let w = unknown_at_w(&b, &proj);
+    let fake_t = b.base.join("elsewhere/7f7f0000-0000-4000-8000-0000000000f1.jsonl"); // 존재하지 않는 파일 · 좌석과 무관한 폴더
+    let o = b.cys(&["usage-register", "--surface", &w.to_string(), "--transcript", &fake_t.to_string_lossy()]);
+    assert!(o.status.success(), "전제: 좌석 밖 가짜 등록이 데몬에 받아들여진다: {}", out(&o));
+    assert_eq!(daemon_registered(&b, w).as_deref(), Some("7f7f0000-0000-4000-8000-0000000000f1"), "전제: 데몬 등록 칸 = 가짜 T");
+    pin_saved(&b, &proj);
+    let o3 = b.cys(&["launch-agent", "--role", ROLE, "--agent", "claude", "--resume-saved", "--cwd", &proj]);
+    let writers = b.settle_writers(3);
+    let seats = b.role_seats();
+    eprintln!("FR rc={:?} W=surface:{w} W2={:?} seats={seats:?} writers={}", o3.status.code(), seat_of(&o3), writers.len());
+    assert_eq!((o3.status.code(), seats, writers.len()), (Some(92), vec![w], 0), "가짜 등록으로 unknown@W 를 풀었다(r5c #1-2): {}", out(&o3));
+}
+
+/// skt1(codex r5c #1-1 · blocking) — **낡은 등록**: unknown@W → W 의 최상위 claude 가 T 로 정상 등록(결속) → 그 claude 만 끝나고 같은 좌석에
+/// 훅 없는 claude 가 새로 뜸(좌석 안 `/resume S` 와 구별 불가 · 데몬 등록 칸엔 옛 T 가 남음) → S 재시도 = 92(옛 결속의 작성자 죽음 = 증거 소멸).
+/// 고치기 전(7434ebfe): 남은 등록 T 로 풀림 → #1 방어도 등록 T 로 통과 → rc 0 · W2.
+#[test]
+fn a_stale_registration_after_an_agent_swap_never_frees_the_saved_restore() {
+    if std::env::var("CYS_SESSION_LEASE").is_ok_and(|v| v == "off") {
+        return; // 임대 판정 시험
+    }
+    let mut b = Box_::new("sr");
+    let gate = b.base.join("reg-gate");
+    b.reg_gate = Some(gate.clone());
+    b.up();
+    let proj = b.base.join("proj").to_string_lossy().into_owned();
+    let w = unknown_at_w(&b, &proj);
+    std::fs::write(&gate, "").unwrap(); // W 의 최상위 claude 가 훅 길로 T 를 등록(임대 follow = 결속)
+    let t0 = Instant::now();
+    let reg_t = loop {
+        if let Some(r) = daemon_registered(&b, w) {
+            break r;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(30), "전제: W 등록이 안 보임");
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    std::thread::sleep(Duration::from_millis(500));
+    let old = b.fakes();
+    assert_eq!(old.len(), 1, "전제: W 의 claude 하나: {old:?}");
+    b.kill_writers();
+    // 같은 좌석에 훅 없는 claude(등록 0 · argv 에 S 없음)를 사람이 친 것처럼.
+    let exe = b.base.join("sbin/claude");
+    std::thread::sleep(Duration::from_millis(800)); // 셸 프롬프트가 돌아올 틈
+    // 사람 타이핑 길(human = 앱 키 입력과 같은 길 · 에이전트 쓰기 관문을 안 탐) — 줄 끝 CR 까지 한 번에.
+    let st = b.rpcp("surface.send_text", json!({"surface_id": w, "text": format!("FAKE_NO_REG=1 '{}'\r", exe.display()), "human": true}));
+    let sk = "human-cr";
+    let t1 = Instant::now();
+    while (b.fakes().is_empty() || b.fakes() == old) && t1.elapsed() < Duration::from_secs(20) {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let alive = || b.rpc("surface.list").ok().and_then(|l| l["surfaces"].as_array()?.iter().find(|s| s["surface_id"].as_u64() == Some(w))?["agent_alive"].as_bool());
+    let t2 = Instant::now();
+    while alive() != Some(true) && t2.elapsed() < Duration::from_secs(30) {
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    assert_eq!((b.fakes().len(), alive(), daemon_registered(&b, w).as_deref()), (1, Some(true), Some(reg_t.as_str())),
+        "전제: W 에 새 claude(등록 0) · 데몬 등록 칸 = 옛 T · send_text={st:?} send_key={sk} 화면={}", out(&b.cys(&["read-screen", "--surface", &w.to_string()])));
+    pin_saved(&b, &proj);
+    let o3 = b.cys(&["launch-agent", "--role", ROLE, "--agent", "claude", "--resume-saved", "--cwd", &proj]);
+    let writers = b.settle_writers(3);
+    let seats = b.role_seats();
+    eprintln!("SR rc={:?} W=surface:{w} oldT={reg_t} W2={:?} seats={seats:?} writers={}", o3.status.code(), seat_of(&o3), writers.len());
+    assert_eq!((o3.status.code(), seats, writers.len()), (Some(92), vec![w], 0), "에이전트 교체 뒤 낡은 등록으로 unknown@W 를 풀었다(r5c #1-1): {}", out(&o3));
 }

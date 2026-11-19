@@ -2,7 +2,7 @@
 // --resume/--continue 를 따르고 · SessionStart 등록(cys usage-register · 훅 이름 session-start.sh 셸 아래)을 --resume 일 때 FAKE_BOOT 초 뒤에 · set-status waiting · [DRAIN-VERIFY] 체크포인트 저장.
 // FAKE_NEW_SID = 재개해도 새 세션 id 로 등록(세션이 채워졌는데 다른 경우).
 // FAKE_NO_REG = 등록·대화 파일 0(훅 부재 좌석 · seatkeep-t1 r5 codex r4 #1 재현).
-// FAKE_REG_GATE = 화면은 띄우고 등록만 그 파일이 생길 때까지(최대 120초) 자식에서 미룬다(정상 기동 직후 SessionStart 등록 전 창 · seatkeep-t1 r5b).
+// FAKE_REG_GATE = 화면은 띄우고 등록만 그 파일이 생길 때까지(최대 120초) 자식 셸(이름 session-start.sh)에서 미룬다(정상 기동 직후 SessionStart 등록 전 창 · seatkeep-t1 r5b).
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,11 +25,14 @@ int main(int ac, char **av) {
   char lg[1200]; snprintf(lg, sizeof lg, "%s/fake.log", getenv("HOME")); FILE *l = fopen(lg, "a"); if (l) { fprintf(l, "sid=%s surface=%s role=%s argv:", sid, getenv("CYS_SURFACE_ID") ?: "", getenv("CYS_ROLE") ?: ""); for (int i = 1; i < ac; i++) fprintf(l, " %s", av[i]); fprintf(l, "\n"); fclose(l); }
   for (int i = 1; i < ac; i++) if (getenv("FAKE_NEW_SID") && !strcmp(av[i], "--resume")) { FILE *f = popen("/usr/bin/uuidgen | tr A-Z a-z", "r"); fgets(sid, sizeof sid, f); sid[strcspn(sid, "\n")] = 0; pclose(f); snprintf(tp, sizeof tp, "%s/%s.jsonl", pd, sid); FILE *n = fopen(tp, "a"); if (n) fclose(n); }
   const char *bt = getenv("FAKE_BOOT"); for (int i = 1; i < ac; i++) if (bt && !strcmp(av[i], "--resume")) usleep((useconds_t)(atof(bt) * 1000000));
-  if (noreg) snprintf(cmd, sizeof cmd, "cys set-status --state waiting >/dev/null 2>&1"); else
+  // FAKE_CYS = 시험이 지은 cys 절대 경로(좌석 로그인 셸의 PATH 재정렬이 맨 `cys` 를 설치본으로 풀지 않게 · skt1) · 없으면 종전 `cys`.
+  const char *cy = getenv("FAKE_CYS"); if (!cy || !*cy) cy = "cys";
+  if (noreg) snprintf(cmd, sizeof cmd, "'%s' set-status --state waiting >/dev/null 2>&1", cy); else
   // 진짜 claude 처럼 SessionStart 훅 스크립트(이름 session-start.sh) 아래에서 등록한다 — cys follow 의 계통 판정(skt1 · 헬퍼·도구 셸 거름)이 보는 모양.
-  snprintf(cmd, sizeof cmd, "exec /bin/sh -c 'cys usage-register --transcript \"$1\" >/dev/null 2>&1; cys set-status --state waiting >/dev/null 2>&1' session-start.sh '%s'", tp);
+  snprintf(cmd, sizeof cmd, "exec /bin/sh -c '\"$2\" usage-register --transcript \"$1\" >/dev/null 2>&1; \"$2\" set-status --state waiting >/dev/null 2>&1' session-start.sh '%s' '%s'", tp, cy);
   const char *gate = getenv("FAKE_REG_GATE");
-  if (gate && *gate && !noreg) { if (fork() == 0) { for (int k = 0; k < 1200 && access(gate, F_OK) != 0; k++) usleep(100000); system(cmd); _exit(0); } } else system(cmd);
+  // 미룬 등록도 훅 이름 셸에서(자식 = sh · claude 실행 파일 아님 — 같은 실행 파일 자식이면 계통이 「에이전트 2 = 헬퍼」로 보인다 · skt1).
+  if (gate && *gate && !noreg) { if (fork() == 0) { execl("/bin/sh", "sh", "-c", "i=0; while [ ! -e \"$3\" ] && [ $i -lt 1200 ]; do sleep 0.1; i=$((i+1)); done; \"$2\" usage-register --transcript \"$1\" >/dev/null 2>&1; \"$2\" set-status --state waiting >/dev/null 2>&1", "session-start.sh", tp, cy, gate, (char *)0); _exit(0); } } else system(cmd);
   printf("Claude Code fake\n\xe2\x9d\xaf \n"); fflush(stdout);
   struct termios ti; if (!tcgetattr(0, &ti)) { cfmakeraw(&ti); tcsetattr(0, TCSANOW, &ti); }
   static char buf[1 << 16]; size_t n = 0; ssize_t r; 

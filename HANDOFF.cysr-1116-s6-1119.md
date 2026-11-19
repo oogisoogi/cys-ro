@@ -60,7 +60,7 @@
 |---|---|---|---|
 | bun test(ui 전체) | 3747 · 88 skip · 0(dea2e1853 통합 값) | **3771 · 88 · 1** | +25 = 새 시험(judge/rail 18 · rail 7) · 붉음 1 = `tickrec.test.ts` 최악 장면 덤프 **5초 시한**(부하 35 · 5.57s) → 부하 5.3 단독 재실행 **21/0**(첫 전체 실행 2 붉음 = 부하 35 · 이름 미기록) |
 | `bun test ./src/views` | 287 · 0 | **312 · 0**(부하 낮을 때) | — |
-| tsc(typescript 7.0.2 · tsconfig.check) | rc 0 | **rc 0** | 음성 대조(일부러 넣은 TS2322 를 잡음) 확인 |
+| tsc(typescript 7.0.2 · tsconfig.check) | rc 0 | ~~rc 0~~ → **【정정】 e294b7c30 = rc 1(TS2339 3건 · 검증 B1)** · ab15c7d5b = rc 0 | 앞 「rc 0」 은 rail 시험 파일을 쓰기 **전** 실행값이었다(음성 대조만 맞음) · CI 같은 명령 `bunx -p typescript@7.0.2 tsc -p tsconfig.check.json` |
 | cargo `--bin cysd` | 3308 · 0 · 17 | **3348 · 3 · 17** | 붉음 3 = seatkeep `handshake_timeout`(부하 15~19) → 단독(부하 14.8) **5/0** · 이 가지 seat_proc 무접촉 · 통합 인계서 §4-1 과 같은 이름·사유 · 새 17 |
 | cargo `--bin cys` | 765 · 0 · 2 | **796 · 0 · 2** | 스택 시험(j3·aid_s5·cli_parse_*) 전부 ok |
 | cargo `--lib` | 1256 · 0 · 3 | **1268 · 0 · 3** | lib 무접촉(수 차이 = dea2e1853 까지 들어온 시험) |
@@ -121,3 +121,25 @@
 | P9 | 대화 화면 사건 구독이 이제 셋(조각 3 listen · 조각 4 listenDaemon(조각 6 메뉴바가 같이 씀)) — 통합 인계서 I3 과 같은 성격 | 1.1.17 |
 
 - 증류: 메모리 1건 후보 = 「★ 절(§14 뒤)은 주입 목차 밖 → 새 마스터에게 안 닿음 · CORE 요지로」 — 기존 메모리 pack-directive-rule-must-reach-core-summary 에 한 줄 덧붙임(이 좌석이 함).
+
+## 8. 검증 지적 고침 1회(master#c4bc0244 · 검증 원문 `~/axdev/workers/cysr-1116-s6-verify-1119/VERDICT.md` = REVISE)
+
+| # | 처분 | 고친 커밋 | 시험(이름) | 뮤턴트 |
+|---|---|---|---|---|
+| B1 tsc 3건 | 고침 | ab15c7d5b | CI 같은 명령 `bunx -p typescript@7.0.2 tsc -p tsconfig.check.json` **rc 1 → 0** · §4 표 tsc 줄 【정정】 | — |
+| M1 묶음 글자 상한 | 고침 | 054f71026 | `v2_bundle_respects_digest_char_cap` · `hold_rotate_and_bundle` | 붉음 확인 |
+| M2 팀 정지 TTL 크레딧 | 고침 | 054f71026 | `v8_team_pause_gets_ttl_credit` · 대조 `v8b_system_pause_control_keeps_entry`(유지) · `v8c_team_pause_credit_scope` | 붉음 확인 |
+| m3 승계·재기동 꼬리표 | 고침(열쇠 = 항목 id · 2회 연속 안 보일 때만 청소) | 054f71026 | `v7_master_succession_keeps_team_tags_and_pause` · `tags_follow_entry_id_and_sweep_needs_two_misses` | 붉음 확인(2종) |
+| m4 재시작 정지 소실 | 최소 고침: 정지 이름 목록만 `team-paused.json` · 재시작 때 사건 `team.pause_lost {teams, reason:"daemon_restart"}` 1건 뒤 지움 · 정지는 안 되살림(영속 = 1.1.17 · 근거: 사람이 건 정지가 조용히 풀리는 것이 문제의 핵심이라 「알림」이 최소 해법) | 054f71026 | `v9_restart_announces_lost_pause_once` | 붉음 확인 |
+| m5 묶음 FIFO | 고침(머리에서 이어진 구간만) | 054f71026 | `v6_bundle_keeps_other_team_fifo`(기대값 갱신) | 붉음 확인 |
+| m6 급한 머리표 몫 예외 | 고침(전체 100 그대로) | 054f71026 | `v10_urgent_item_exempt_from_team_share` · `share_counts_only_that_team` | 붉음 확인 |
+| i7 ceo | `ceo`·`ceo-*` = 마스터 계열 고정(근거 `alert_route.rs:105 CLEAR_SIGNAL_ROLES = ["master","ceo"]`) · 데몬 `team.rs is_fixed_role` + 앱 `seatrows.fixedRank`·`judge/rail fixedRole` 같은 규칙 | 054f71026 · ab15c7d5b | `v5_ceo_role_seat_is_fixed_not_frozen_by_team_pause` · seatrows.test 「ceo·ceo-* = 고정」 · judge/rail.test 「ceo 좌석 = 고정」 | 데몬·화면 둘 다 붉음 확인 |
+| X2 상태 줄 색 | 고침(`.cvr-line` 전용 클래스) | ab15c7d5b | rail_gate A 「(검증 X2) 일하는 중 = rgb(45,91,203)」 → rail_gate **26/0** · 캡처 = 이 좌석 스크래치 rail-shots2/a-1280.png | 고치기 전 값 rgb(74,83,97) = 검증 실측(단언이 그 값을 거름) |
+| i11 조사 | 고침(받침 판정) | ab15c7d5b | `test_decline_say_particles_follow_final_consonant` | — |
+| i8·i9·i10 · X3~X9 | 기록(처분 = 기록) | — | — | — |
+
+- 반례 시험 사본 = 정식 모듈 `src/bin/cysd/team6b_verify_tests.rs`(V1~V10 · 기대값·이름 갱신 목록 = DAEMON-6b.md §5).
+- 시험 숫자(고친 뒤): cargo `--bin cysd team` **62 / 0** · `--bin cysd` 전체 **3366 · 0 · 17**(앞 3348·3 의 seatkeep 흔들림 이번엔 초록) · cys.rs 무접촉(796·0·2 그대로) · bun ui 전체 **3774 · 88 · 0** · `bun test ./src/views ./src/seatrows.test.ts` 335/0 · tsc rc 0 · test_dept_request **121 · 0** · 화면 게이트 seatrows·seatgroup·tickrec(34 · 기준 sha 같음)·chat(59) PASS · rail 26/0.
+- 원작자 파일 바뀐 줄(고침분) = DAEMON-6b.md §5(governance·handlers·state·main).
+- 남은 위험 = DAEMON-6b.md §5-5(주차·복원 큐엔 팀 정지 크레딧 없음 · 꼬리표 청소 비용 미실측 · m4 최선 노력 · 머리표만 붙인 폭주는 몫 밖 = 결정대로).
+- codex 1R = master 대기열 ④(범위 dea2e1853..새 머리 · 질문지 docs/1116-s6/codex-r1-prompt.md · 깨끗한 작업트리 `~/axdev/.wt/cys-1116-s6-codex` = 이 커밋으로 옮겨 둠).

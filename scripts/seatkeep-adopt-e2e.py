@@ -36,7 +36,9 @@ OUT = sys.argv[4] if len(sys.argv) > 4 else None
 # precheck = rotate 사전 점검(T6a 2-2): 다른 폴더(bin2)의 cys 로 rotate = 그 옆 cysd 는 산 seatkeep 을 입양 못 함 → rc 27 · 옛 데몬·좌석 그대로 →
 #   같은 폴더(bin)의 cys 로 rotate = 점검 통과 → 교체 · 좌석 생존.
 # cap = holder 총수 상한(T6a 2-6): CYS_SEATKEEP_MAX_HOLDERS=1 → 둘째 좌석 = 직접 PTY(seatkeep 1개 · 사건 seat.seatkeep_capped) → 데몬 SIGKILL 뒤 첫 좌석만 산다.
-assert MODE in ("adopt", "bound", "direct", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap"), MODE
+# launchd = D4(master 허락 · F10): 시험 cysd 를 사용자 launchd 시험 작업(라벨 com.cysr.test.t6.<pid> · launchctl submit = 살려 두기)으로 띄워
+#   좌석 → launchctl remove(작업 내림 = launchd 가 작업 프로세스 그룹에 신호) → seatkeep·좌석 생존? → 새 cysd 가 입양 · finally 로 remove + list 0 확인.
+assert MODE in ("adopt", "bound", "direct", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap", "launchd"), MODE
 R = f"/private/tmp/ska-{MODE[:3]}-{os.getpid() % 10000}"
 shutil.rmtree(R, ignore_errors=True)
 for d in ("home", "tmp", "s", "packstate", "pack", "bin", "bin2", "logs"):
@@ -113,9 +115,9 @@ ENV = {"HOME": f"{R}/home", "USER": os.environ["USER"], "LOGNAME": os.environ["U
        "CYS_NO_OFFICE_BRIDGE": "1", "CYS_NO_AUTORESTORE": "1", "CYS_NO_AUTOSTART": "1", "PATH": f"{R}/bin:/usr/bin:/bin",
        "TERM": "xterm-256color", "LANG": "en_US.UTF-8"}
 DENV = dict(ENV)
-if MODE in ("adopt", "bound", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap"):
+if MODE in ("adopt", "bound", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap", "launchd"):
     DENV["CYS_SEATKEEP"] = "1"
-if MODE in ("adopt", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap"):
+if MODE in ("adopt", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap", "launchd"):
     if MODE == "cap":
         DENV["CYS_SEATKEEP_MAX_HOLDERS"] = "1"
     DENV["CYS_SEATKEEP_ADOPT"] = "1"
@@ -488,6 +490,61 @@ if MODE == "pending":
         stop_all()
     if alive(seat_pid):
         os.kill(seat_pid, signal.SIGKILL)
+    sys.exit(0)
+
+if MODE == "launchd":
+    label = f"com.cysr.test.t6.{os.getpid()}"
+    lc = lambda *a: subprocess.run(["/bin/launchctl", *a], capture_output=True, text=True, timeout=30)
+    res = {"label": label}
+    seat_pid = None
+    try:
+        envargs = [f"{k}={v}" for k, v in DENV.items()]
+        sub = lc("submit", "-l", label, "-o", f"{R}/logs/cysd-ld.err", "-e", f"{R}/logs/cysd-ld.err", "--", "/usr/bin/env", "-i", *envargs, f"{R}/bin/cysd")
+        res["submit_rc"] = sub.returncode
+        t = time.time()
+        ld_pid = None
+        while time.time() - t < 90:
+            z = cys("identify")
+            if z.returncode == 0:
+                ld_pid = json.loads(z.stdout).get("daemon_pid")
+                if json.loads(z.stdout).get("socket_path") != ENV["CYS_SOCKET"]:
+                    raise SystemExit("소켓 단언 실패")
+                break
+            time.sleep(0.2)
+        res["launchd_cysd_pid"] = ld_pid
+        log = f"{R}/logs/l0.log"
+        sid = cys("new-surface", "--cwd", "/private/tmp", "--role", "seatl", "--cmd", f"{SEAT} {log} 50").stdout.strip()
+        seat_pid = wait_start(log)
+        time.sleep(1.0)
+        kp = keepers()
+        res["pgid_cysd"] = os.getpgid(ld_pid) if ld_pid else None
+        res["pgid_keepers"] = [os.getpgid(k) for k in kp]
+        rm = lc("remove", label)
+        res["remove_rc"] = rm.returncode
+        t = time.time()
+        while ld_pid and alive(ld_pid) and time.time() - t < 15:
+            time.sleep(0.1)
+        res["cysd_gone"] = not (ld_pid and alive(ld_pid))
+        time.sleep(1.0)
+        res["keepers_after_remove"] = len(keepers())
+        res["seat_alive_after_remove"] = alive(seat_pid)
+        res["seat_end"] = [l for l in seat_lines(log) if l.startswith(("SIGNAL", "EOF"))][:2]
+        d, _ = start_daemon("1")
+        time.sleep(1.5)
+        res["listed_after"] = "seatl" in cys("list").stdout
+        cys("send", "--surface", sid, "PINGLD")
+        cys("send-key", "--surface", sid, "Return")
+        time.sleep(1.0)
+        res["io"] = any(l.startswith("IN PINGLD") for l in seat_lines(log))
+    finally:
+        lc("remove", label)
+        res["launchctl_list_test_labels"] = sum(1 for l in lc("list").stdout.splitlines() if "com.cysr.test" in l)
+        print(json.dumps(res, ensure_ascii=False), flush=True)
+        if OUT:
+            open(OUT, "a").write(json.dumps(res, ensure_ascii=False) + "\n")
+        stop_all()
+        if seat_pid and alive(seat_pid):
+            os.kill(seat_pid, signal.SIGKILL)
     sys.exit(0)
 
 if MODE == "cap":

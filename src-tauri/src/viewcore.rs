@@ -473,6 +473,10 @@ pub(crate) fn result_target(path: &std::path::Path, home: &std::path::Path) -> R
     if is_network_path(&t.to_string_lossy()) {
         return Err("network_path".into()); // (codex 2R) 윈도 UNC 홈·UNC 대상 = 로컬 아님 → 거절(맥 홈 아래 네트워크 마운트 판별은 안 함 = 알려진 한계)
     }
+    #[cfg(windows)]
+    if drive_root(&t.to_string_lossy()).is_some_and(|r| windrive::is_remote_drive(&r)) {
+        return Err("network_path".into()); // (codex 3R ④) 매핑 드라이브(SMB·WebDAV)는 정규 경로가 `\\?\H:\…` 꼴이라 UNC 검사를 지나간다 — 드라이브 뿌리 종류(GetDriveTypeW) = DRIVE_REMOTE 면 거절
+    }
     let rel = t.strip_prefix(&home_c).map_err(|_| "outside_home".to_string())?;
     if rel.as_os_str().is_empty() {
         return Err("outside_home".into());
@@ -526,6 +530,11 @@ pub(crate) fn open_verdict(t: &std::path::Path) -> Result<(), String> {
     }
     let meta = std::fs::metadata(t).map_err(|e| format!("not a local path: {e}"))?;
     if meta.is_dir() {
+        // (codex 3R ① · 이중) 앱 꾸러미의 정체는 이름이 아니라 `Contents/Info.plist`(+ 옛 `PkgInfo` · 실행 파일 자리 `MacOS`)다 — 이름을 바꾼 꾸러미(`Report.pdf` 등)는 확장자 검사를 지나간다.
+        //   그런 표지가 있는 폴더는 열지 않는다(폴더 보기만). 열기 자체도 파일 관리자로만 한다(folder_open_command).
+        if ["Info.plist", "PkgInfo", "MacOS"].iter().any(|n| std::fs::symlink_metadata(t.join("Contents").join(n)).is_ok()) {
+            return Err("executable_confirm".into());
+        }
         return Ok(());
     }
     if !meta.is_file() {
@@ -550,6 +559,36 @@ pub(crate) fn is_network_path(s: &str) -> bool {
     s.starts_with(r"\\?\UNC\") || (s.starts_with(r"\\") && !s.starts_with(r"\\?\"))
 }
 
+/// (codex 3R ④) 윈도 정규 경로의 드라이브 뿌리 `X:\` — `\\?\X:\…` 또는 `X:\…` 꼴만(그 밖 = None · 맥·리눅스 경로도 None). 순수 함수(모든 기판에서 시험).
+#[cfg_attr(not(windows), allow(dead_code))] // 운영 호출 = 윈도만(result_target) · 다른 기판은 시험만
+pub(crate) fn drive_root(s: &str) -> Option<String> {
+    let r = s.strip_prefix(r"\\?\").unwrap_or(s);
+    let b = r.as_bytes();
+    (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/')).then(|| format!("{}:\\", b[0] as char))
+}
+
+// ---- windrive 시작(std 만 · 교차 타입체크 = 이 표지 사이를 떼어 x86_64-pc-windows-msvc 로 rustc --emit=metadata) ----
+#[cfg(windows)]
+mod windrive {
+    /// `GetDriveTypeW` 의 DRIVE_REMOTE(네트워크 드라이브).
+    pub(super) const DRIVE_REMOTE: u32 = 4;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        /// `UINT GetDriveTypeW(LPCWSTR lpRootPathName)` — 뿌리(끝 `\`)를 받는다.
+        fn GetDriveTypeW(root: *const u16) -> u32;
+    }
+
+    /// 드라이브 뿌리(`H:\`)가 네트워크 드라이브인가.
+    pub(super) fn is_remote_drive(root: &str) -> bool {
+        use std::os::windows::ffi::OsStrExt;
+        let w: Vec<u16> = std::ffi::OsStr::new(root).encode_wide().chain(std::iter::once(0)).collect();
+        // SAFETY: w = NUL 로 끝나는 UTF-16 문자열 · 함수는 읽기만 한다.
+        unsafe { GetDriveTypeW(w.as_ptr()) == DRIVE_REMOTE }
+    }
+}
+// ---- windrive 끝 ----
+
 /// 정규 대상이 열기 거절 확장자인가(대소문자 무시).
 pub(crate) fn is_launch_bundle(p: &std::path::Path) -> bool {
     p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).is_some_and(|e| OPEN_REFUSED_EXT.contains(&e.as_str()))
@@ -568,18 +607,67 @@ fn plain_path(p: &std::path::Path) -> String {
     s
 }
 
+/// (codex 3R ①) 결과 행동 계획 — OS 에 넘기기 전 판정까지(실행 0 · 시험 대상).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum OpenPlan {
+    /// 파일 관리자에서 그 항목을 골라 보여 줌(기존 `reveal_path`)
+    Reveal(String),
+    /// 폴더 = 파일 관리자로만 엶(`folder_open_command`) — LaunchServices 기본 열기 0
+    Folder(String),
+    /// 허용 목록 종류의 보통 파일 = 기존 `open_path`(실행형 게이트 · force 없음)
+    File(String),
+}
+
+/// 정규 홈 아래 · 숨은 마디 0 · 열기면 `open_verdict`(허용 목록·가명·꾸러미 · 꾸러미 표지 폴더) — 그 밖 = 거절 글(`executable_confirm` 등 · 화면은 force 로 다시 부르지 않음).
+pub(crate) fn open_plan(path: &std::path::Path, reveal: bool, home: &std::path::Path) -> Result<OpenPlan, String> {
+    let target = result_target(path, home)?;
+    if reveal {
+        return Ok(OpenPlan::Reveal(plain_path(&target)));
+    }
+    open_verdict(&target)?; // (s79 · V1·V2) 허용 목록 · 가명 · 꾸러미 — 그 밖 = executable_confirm(화면 = 폴더 보기 안내)
+    let is_dir = std::fs::metadata(&target).map_err(|e| format!("not a local path: {e}"))?.is_dir();
+    Ok(if is_dir { OpenPlan::Folder(plain_path(&target)) } else { OpenPlan::File(plain_path(&target)) })
+}
+
+/// (codex 3R ①) 폴더를 **파일 관리자로만** 여는 명령 — 맥 `open -a Finder <폴더>` · 윈 `explorer <폴더>` · 그 밖 `xdg-open <폴더>`.
+/// 맥 기본 열기(`open <폴더>`)는 LaunchServices 가 폴더의 정체(꾸러미 표지·Info.plist)를 보고 앱처럼 띄울 수 있다 — 이름만으로는 못 가린다.
+pub(crate) fn folder_open_command(dir: &str) -> std::process::Command {
+    #[cfg(target_os = "macos")]
+    {
+        let mut c = std::process::Command::new("/usr/bin/open");
+        c.args(["-a", "Finder"]).arg(dir);
+        c
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let mut c = std::process::Command::new("explorer"); // 인자를 셸 파싱하지 않는다(open_path 와 같은 이유)
+        c.arg(dir);
+        c
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(dir);
+        c
+    }
+}
+
+/// 결과 행동 집행(`open_plan` 다음) — 시험이 임시 홈으로 부를 수 있게 홈을 받는다.
+pub(crate) fn result_open_in(path: &std::path::Path, reveal: bool, home: &std::path::Path) -> Result<(), String> {
+    match open_plan(path, reveal, home)? {
+        OpenPlan::Reveal(p) => crate::reveal_path(p),
+        OpenPlan::Folder(p) => folder_open_command(&p).spawn().map(|_| ()).map_err(|e| e.to_string()),
+        OpenPlan::File(p) => crate::open_path(p, None),
+    }
+}
+
 /// 결과 받기 카드의 「열기」·「폴더 보기」 — 마스터 글에서 온 경로라 정규 대상으로 다시 가둔다:
-/// 정규 홈 아래 · 숨은 마디 0 · 열기면 실행 꾸러미 거절(`executable_confirm` · 화면은 force 로 다시 부르지 않음) · 그 밖은 기존 `open_path`(실행형 파일 게이트 · force 없음)·`reveal_path`.
+/// 정규 홈 아래 · 숨은 마디 0 · 열기면 허용 목록·꾸러미 거절(`executable_confirm` · 화면은 force 로 다시 부르지 않음) · 폴더 = 파일 관리자로만 · 파일 = 기존 `open_path`(실행형 파일 게이트 · force 없음) · 폴더 보기 = `reveal_path`.
 /// ⚠알려진 한계(TOCTOU · master#c48208b6 처분 = 고치지 않고 문서): 정규화 뒤 경로 **이름**을 넘기므로, 그 사이 같은 사용자 권한의 로컬 프로세스가
 ///   조상 폴더를 링크로 바꿔치기하면 다른 대상이 열릴 수 있다 — 그 프로세스는 이미 무엇이든 열 수 있어 새 권한을 주지 않는다(HANDOFF 「알려진 한계」).
 #[tauri::command]
 pub fn result_open(path: String, reveal: Option<bool>) -> Result<(), String> {
-    let target = result_target(std::path::Path::new(&path), &cys::home_dir())?;
-    if reveal.unwrap_or(false) {
-        return crate::reveal_path(plain_path(&target));
-    }
-    open_verdict(&target)?; // (s79 · V1·V2) 허용 목록 · 가명 · 꾸러미 — 그 밖 = executable_confirm(화면 = 폴더 보기 안내)
-    crate::open_path(plain_path(&target), None)
+    result_open_in(std::path::Path::new(&path), reveal.unwrap_or(false), &cys::home_dir())
 }
 
 #[cfg(test)]
@@ -655,6 +743,102 @@ mod tests {
         assert!(!is_network_path(r"\\?\C:\Users\x\a.pdf"));
         assert!(!is_network_path("/Users/x/a.pdf"));
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// (codex 3R ①) 이름을 바꾼 앱 꾸러미(`Report.pdf` · Info.plist APPL · 실행 파일이 표식 파일을 만듦) — 열기 계획 = 거절 · 집행해도 실행 0 ·
+    /// 꾸러미 표지 없는 폴더 = 파일 관리자로만(`open -a Finder` · LaunchServices 기본 열기 0).
+    #[test]
+    fn renamed_app_bundle_folder_is_refused_and_folders_open_in_file_manager_only() {
+        let base = std::env::temp_dir().join(format!("vc-bnd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let home = base.join("home");
+        let marker = base.join("MARKER");
+        let b = home.join("교회").join("Report.pdf");
+        std::fs::create_dir_all(b.join("Contents").join("MacOS")).unwrap();
+        std::fs::write(
+            b.join("Contents").join("Info.plist"),
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleExecutable</key><string>run</string><key>CFBundleIdentifier</key><string>invalid.cys.vc-bnd</string><key>LSUIElement</key><true/></dict></plist>",
+        )
+        .unwrap();
+        let run = b.join("Contents").join("MacOS").join("run");
+        std::fs::write(&run, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        // 계획부터 단언(뮤턴트가 거절을 빼도 아래 집행이 OS 를 부르기 전에 여기서 멈춘다)
+        assert_eq!(open_plan(&b, false, &home).unwrap_err(), "executable_confirm");
+        assert_eq!(result_open_in(&b, false, &home).unwrap_err(), "executable_confirm");
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        assert!(!marker.exists(), "이름 바꾼 꾸러미가 실행됨(표식 파일 생김)");
+        // 표지 하나씩: PkgInfo 만 · MacOS 만도 거절
+        for n in ["PkgInfo", "MacOS"] {
+            let d = home.join("교회").join(format!("표지-{n}"));
+            std::fs::create_dir_all(d.join("Contents")).unwrap();
+            if n == "MacOS" {
+                std::fs::create_dir_all(d.join("Contents").join(n)).unwrap();
+            } else {
+                std::fs::write(d.join("Contents").join(n), b"APPL????").unwrap();
+            }
+            assert_eq!(open_plan(&d, false, &home).unwrap_err(), "executable_confirm", "{n}");
+        }
+        // 폴더 보기는 됨(파일 관리자에서 고르기만 · 실행 0)
+        assert!(matches!(open_plan(&b, true, &home), Ok(OpenPlan::Reveal(_))));
+        // 꾸러미 표지 없는 보통 폴더 = Folder(파일 관리자) · 보통 문서 = File(open_path)
+        let plain = home.join("교회").join("주보");
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::write(plain.join("a.pdf"), b"%PDF-1.4").unwrap();
+        let Ok(OpenPlan::Folder(fp)) = open_plan(&plain, false, &home) else { panic!("보통 폴더 = Folder 계획") };
+        assert!(matches!(open_plan(&plain.join("a.pdf"), false, &home), Ok(OpenPlan::File(_))));
+        let c = folder_open_command(&fp);
+        let args: Vec<String> = c.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(c.get_program(), "/usr/bin/open");
+            assert_eq!(args, vec!["-a".to_string(), "Finder".into(), fp.clone()], "맥 폴더 열기 = Finder 로만(LaunchServices 기본 열기 금지)");
+        }
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(c.get_program(), "explorer");
+            assert_eq!(args, vec![fp.clone()]);
+        }
+        // 집행 길도 폴더를 이 명령으로만 연다(소스 대조 — 실제 Finder 창은 띄우지 않음)
+        let src = include_str!("viewcore.rs");
+        let code: String = src.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        let body = &code[code.find("pub(crate) fn result_open_in(").expect("result_open_in")..];
+        let body = &body[..body.find("\n}\n").expect("끝")];
+        assert!(body.contains("OpenPlan::Folder(p) => folder_open_command(&p).spawn()"), "폴더 열기가 folder_open_command 를 안 지남");
+        assert_eq!(body.matches("crate::open_path(").count(), 1, "open_path 는 File 갈래 한 곳만");
+        assert!(body.contains("OpenPlan::File(p) => crate::open_path(p, None)"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// (codex 3R ④) 윈 매핑 네트워크 드라이브 — 드라이브 뿌리 뽑기(순수 · 모든 기판) + result_target 의 윈도 갈래가 GetDriveTypeW == DRIVE_REMOTE 로 거절하는지(소스 대조 · 윈 실기 0).
+    #[test]
+    fn windows_mapped_network_drive_is_refused_static() {
+        assert_eq!(drive_root(r"\\?\H:\Users\x\a.pdf").as_deref(), Some(r"H:\"));
+        assert_eq!(drive_root(r"C:\Users\x").as_deref(), Some(r"C:\"));
+        assert_eq!(drive_root("d:/x").as_deref(), Some(r"d:\"));
+        assert_eq!(drive_root(r"\\?\UNC\srv\share\a"), None);
+        assert_eq!(drive_root(r"\\srv\share\a"), None);
+        assert_eq!(drive_root("/Users/x/a.pdf"), None);
+        assert_eq!(drive_root("C:"), None);
+        let src = include_str!("viewcore.rs");
+        let code: String = src.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        let rt = &code[code.find("pub(crate) fn result_target(").expect("result_target")..];
+        let rt = &rt[..rt.find("\n}\n").expect("끝")];
+        let at = rt.find("windrive::is_remote_drive(&r)").expect("result_target 이 원격 드라이브를 안 봄");
+        assert!(rt[..at].trim_end().ends_with("if drive_root(&t.to_string_lossy()).is_some_and(|r|"), "검사 대상 = 정규 대상 t 의 드라이브 뿌리");
+        assert!(rt[..at].contains("#[cfg(windows)]\n    if drive_root("), "윈도 갈래");
+        assert!(rt[at..].starts_with("windrive::is_remote_drive(&r)) {\n        return Err(\"network_path\".into());"), "원격 = network_path 거절");
+        assert!(rt.find("windrive::is_remote_drive").unwrap() < rt.find("strip_prefix(&home_c)").unwrap(), "홈 가둠 전에 거절");
+        let w = &code[code.find("mod windrive {").expect("windrive")..];
+        let w = &w[..w.find("\n}\n").expect("끝")];
+        assert!(w.contains("pub(super) const DRIVE_REMOTE: u32 = 4;"));
+        assert!(w.contains("#[link(name = \"kernel32\")]") && w.contains("fn GetDriveTypeW(root: *const u16) -> u32;"));
+        assert!(w.contains("GetDriveTypeW(w.as_ptr()) == DRIVE_REMOTE"));
+        assert!(w.contains(".chain(std::iter::once(0))"), "NUL 끝");
     }
 
     #[test]

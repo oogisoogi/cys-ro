@@ -194,11 +194,14 @@ export class ChatCore {
   private everAttached = false;
   /** (s79 조각 9) 작업 화면에서 띠만 살피는 중 — 조회·세션 읽기만 하고 붙잡은 말은 보내지 않는다(사람이 마스터 창에 치는 중일 수 있음 · 4군 ②). */
   private watchOnly = false;
+  /** (s79 · codex 3R ②) await 뒤 화면 재판정 — **한 도우미**(deliver · ResultBook.act · ConfirmBook.decide 공용): 작업 화면 살핌 중(watchOnly)이면 false = 쓰기·OS 행동 0(붙잡음).
+   *  기다리는 사이(재조회·list_dir·feed/org) 사람이 작업 화면을 누를 수 있다 — 그때는 사람이 마스터 창에 직접 칠 수 있으므로 대화 화면의 행동을 이어 하지 않는다. */
+  readonly onChatScreen = (): boolean => !this.watchOnly;
 
   constructor(private readonly d: Deps) {
     this.loadHold();
-    this.confirm = new ConfirmBook({ invoke: d.invoke, now: d.now, store: d.store }, () => this.set({}));
-    this.results = new ResultBook({ invoke: d.invoke, now: d.now, store: d.store }, () => this.set({}));
+    this.confirm = new ConfirmBook({ invoke: d.invoke, now: d.now, store: d.store, onChat: this.onChatScreen }, () => this.set({}));
+    this.results = new ResultBook({ invoke: d.invoke, now: d.now, store: d.store, onChat: this.onChatScreen }, () => this.set({}));
   }
 
   get state(): ChatState {
@@ -228,16 +231,22 @@ export class ChatCore {
 
   /** 대화 화면이 켜짐 — 세션 기록 읽기 허용 · 시작 오프셋 잡기. */
   attach(): void {
+    this.attachAs(false);
+  }
+
+  /** (s79 · codex 3R ③) 켜기 한 곳 — ★살핌 표지(watchOnly·paused)를 **먼저** 세우고 구독·조회를 시작한다(옛 순서 = attach 뒤에 세움 → 전환 순간 대화 화면 몫 조회가 나갔다).
+   *  살핌(watch) = 작업 화면 띠 자료만: 사건 구독 · 세션 읽기(chat_transcript) · poll(feed_list·org_status) — default_socket_slug·home_dir_path 0(대화 화면에서 이미 받아 둔 값을 씀). */
+  private attachAs(watch: boolean): void {
+    this.watchOnly = watch;
+    this.results.paused = watch; // (s79 · V4) 작업 화면 살핌 중엔 list_dir 0
     this.attached = true;
-    this.everAttached = true;
-    this.watchOnly = false;
-    this.results.paused = false;
+    if (!watch) this.everAttached = true;
     if (!this.unlistenConfirm && this.d.listenDaemon)
       this.unlistenConfirm = this.d.listenDaemon((ev) => {
         this.confirm.onEvent(ev);
         this.results.onEvent(ev); // (s79 조각 7) skill.run_finished
       });
-    if (this.d.defaultSlug)
+    if (!watch && this.d.defaultSlug)
       void this.d
         .defaultSlug()
         .then((s) => {
@@ -246,7 +255,7 @@ export class ChatCore {
           this.results.setHqSlug(slug); // (s79 조각 7)
         })
         .catch(() => {});
-    void this.results.start(); // (s79 조각 7) 홈 1회
+    if (!watch) void this.results.start(); // (s79 조각 7) 홈 1회(살핌 중 = 다시 묻지 않음)
     void this.readTranscript();
     void this.startListening();
   }
@@ -255,9 +264,7 @@ export class ChatCore {
    *  붙잡은 말은 보내지 않는다(watchOnly) — 작업 화면에서는 사람이 마스터 창에 직접 칠 수 있다. */
   watchStart(): boolean {
     if (!this.everAttached) return false;
-    this.attach();
-    this.watchOnly = true;
-    this.results.paused = true; // (s79 · V4) 작업 화면 살핌 중엔 list_dir 0
+    this.attachAs(true);
     return true;
   }
 
@@ -298,6 +305,7 @@ export class ChatCore {
 
   private async startListening(): Promise<void> {
     if (!this.d.listen || this.unlisten) return;
+    if (this.defaultSlug === null && this.watchOnly) return; // (s79 · codex 3R ③) 살핌 중엔 default_socket_slug 0 — 소켓 이름을 모르면 사건을 하나도 받지 않으니 구독도 안 함(대화 화면에서 받음)
     const gen = ++this.listenGen;
     if (this.defaultSlug === null) {
       try {
@@ -612,7 +620,7 @@ export class ChatCore {
       }
       // (s79 · 독립 검증 V3) 재조회를 기다리는 사이 작업 화면으로 옮겼으면 쓰지 않는다 — 작업 화면에선 사람이 마스터 창에 직접 칠 수 있다(쓰기 0).
       //   대화 화면으로 돌아오면 poll 이 다시 문턱에 건다.
-      if (this.watchOnly) {
+      if (!this.onChatScreen()) {
         this.patchMsg(id, { step: "held", sentAt: null, code: "work_view", note: "작업 화면으로 옮겨서 아직 쓰지 않았어요 — 대화 화면으로 돌아오면 보낼게요." });
         return;
       }

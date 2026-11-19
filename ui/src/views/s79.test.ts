@@ -27,7 +27,8 @@ import {
   withPrefix,
   type Result,
 } from "./judge/results";
-import { MSG_EXEC, MSG_MISSING, MSG_NETWORK, MSG_OUTSIDE, MSG_UNKNOWN, ResultBook, RESULTS_KEY } from "./results";
+import { MSG_EXEC, MSG_MISSING, MSG_NETWORK, MSG_OUTSIDE, MSG_UNKNOWN, MSG_WORK_VIEW, ResultBook, RESULTS_KEY } from "./results";
+import { ChatCore } from "./core";
 import { pickWorkBand, WORK_ANSWER_HELPER, WORK_ANSWER_MASTER, WORK_DRAFT_TEXT } from "./judge/workband";
 import { bandOf, dismissKey, openQuestions, swapBlocked, SWAP_GUARD_MS, withoutDismissed, type Band, type FeedApproval, type StallInput } from "./judge/confirms";
 import { ConfirmBook } from "./confirm";
@@ -341,6 +342,80 @@ describe("조각 7 — 장부(대역)", () => {
     expect(visibleResults(t.book.items).length).toBe(1);
     const again = new ResultBook({ invoke: async () => H, now: () => 1, store: { get: (k) => t.mem.get(k) ?? null, set: () => {} } }, () => {});
     expect(again.items.map((r) => [r.path, r.exists])).toEqual([["/Users/user/a.md", null]]);
+  });
+});
+
+describe("(s79 · codex 3R ②) 결과 열기 — list_dir 를 기다리는 사이 작업 화면으로 옮기면 result_open 0", () => {
+  it("act 의 실재 재확인 대기 중 작업 화면 → OS 에 넘김 0 + 안내 · 대화 화면 돌아와 다시 누르면 1회(core 배선 그대로)", async () => {
+    const sim = new Sim();
+    const base = sim.deps.invoke;
+    let onList: null | (() => void) = null;
+    const opens: unknown[] = [];
+    const core = new ChatCore({
+      ...sim.deps,
+      invoke: async (cmd, a) => {
+        if (cmd === "home_dir_path") return H;
+        if (cmd === "list_dir") {
+          const f = onList;
+          onList = null;
+          f?.();
+          return [{ name: "a.html", is_dir: false }];
+        }
+        if (cmd === "result_open") {
+          opens.push(a);
+          return null;
+        }
+        return base(cmd, a);
+      },
+    });
+    core.attach();
+    await sim.flush();
+    core.results.onTail([rec("/Users/user/교회/a.html")]);
+    await sim.flush();
+    expect(core.results.items[0]?.exists).toBe(true);
+    onList = () => {
+      core.watchStart(); // registry 순서 = 새 화면(작업)을 먼저 띄우고 → 옛 화면(대화)을 내린다
+      core.detach();
+    };
+    await core.results.act("/Users/user/교회/a.html", "open");
+    expect(opens.length).toBe(0);
+    expect(core.results.notice).toBe(MSG_WORK_VIEW);
+    expect(core.results.items[0].seen).toBe(false);
+    core.attach();
+    core.watchStop();
+    await core.results.act("/Users/user/교회/a.html", "open");
+    expect(opens).toEqual([{ path: "/Users/user/교회/a.html", reveal: false }]);
+  });
+});
+
+describe("(s79 · codex 3R ③) 살핌 중 = default_socket_slug 0(소켓 이름을 대화 화면에서 못 받은 경우)", () => {
+  it("대화 화면에서 소켓 이름 조회 실패 → 다른 화면 → 작업 화면 = 조회 다시 0 · 사건 구독도 0(이름 모르면 하나도 못 받음) · 대화 화면 돌아오면 다시 물음", async () => {
+    const sim = new Sim();
+    const inv = sim.deps.invoke;
+    sim.deps.invoke = async (cmd, a) => {
+      if (cmd === "default_socket_slug") {
+        sim.calls.push({ cmd, args: a ?? {}, at: sim.now });
+        throw new Error("down");
+      }
+      return inv(cmd, a);
+    };
+    sim.core.attach();
+    await sim.flush();
+    const slugs = () => sim.calls.filter((c) => c.cmd === "default_socket_slug").length;
+    expect(slugs()).toBe(1);
+    sim.core.detach(); // 다른 화면
+    await sim.flush();
+    const l0 = sim.listens;
+    expect(sim.core.watchStart()).toBe(true);
+    await sim.flush();
+    await sim.core.poll();
+    await sim.flush();
+    expect(slugs()).toBe(1); // ★살핌 중 = 0
+    expect(sim.listens).toBe(l0);
+    sim.core.attach();
+    sim.core.watchStop();
+    await sim.flush();
+    expect(slugs()).toBe(2); // 대화 화면 = 다시 물음(옛 동작 그대로)
   });
 });
 

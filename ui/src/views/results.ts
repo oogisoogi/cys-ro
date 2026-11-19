@@ -4,7 +4,7 @@
 //  · 마스터 답 속 경로 = core 가 읽은 결속 세션 레코드(조각 1 chat_transcript · 시작 오프셋 뒤만) → judge/results.candidatesOf
 //  · 스킬 산출 폴더 = daemon-event `skill.run_finished`(본부 slug 일 때만 · ConfirmBook 과 같은 규칙)
 //  · 홈 = Tauri `home_dir_path`(대화 화면이 켜질 때 1회) · 실재 = Tauri `list_dir(부모)`(§5-1 「실재 확인은 Tauri 기존 list_dir」 · 작업 화면 살핌 중 = 0)
-// 행동: 열기·폴더 보기 = 우리 Tauri 명령 `result_open`(viewcore.rs — 정규 경로 가둠 · 열기 = 허용 목록 종류의 보통 파일·꾸러미 아닌 폴더만 · 가명 거절 ·
+// 행동(누르기 → 실재 재확인 await 뒤 화면 재판정 = 작업 화면 살핌 중이면 0 · codex 3R ②): 열기·폴더 보기 = 우리 Tauri 명령 `result_open`(viewcore.rs — 정규 경로 가둠 · 열기 = 허용 목록 종류의 보통 파일·꾸러미 아닌 폴더만 · 가명 거절 ·
 //       그 밖 `executable_confirm` → **force 로 다시 부르지 않음** · 폴더 보기로 안내) · 둘 다 누르기 직전 실재를 다시 확인(없으면 호출 0 + 「파일을 찾을 수 없어요」).
 // 저장 = 앱 저장소 `cys-chat-results`(경로·출처·시각·봤음 · 말 원문 0자 · 최근 50).
 
@@ -31,12 +31,15 @@ export interface ResultDeps {
   invoke(cmd: string, args?: Record<string, unknown>): Promise<unknown>;
   now(): number;
   store: { get(k: string): string | null; set(k: string, v: string): void };
+  /** (s79 · codex 3R ②) 지금 대화 화면인가 — core 의 한 도우미(onChatScreen · deliver 와 같은 판정) · 없으면 늘 대화 화면(시험·단독). */
+  onChat?(): boolean;
 }
 
 export const MSG_MISSING = "파일을 찾을 수 없어요 — 「마스터에게 물어보기」로 어디 있는지 물어볼 수 있어요.";
 export const MSG_EXEC = "이 파일은 열면 프로그램이 실행될 수 있어 열지 않았어요 — 「폴더 보기」로 확인해 주세요.";
 export const MSG_UNKNOWN = "파일이 있는지 확인하지 못했어요 — 잠시 뒤 다시 눌러 주세요.";
 export const MSG_NETWORK = "이 결과는 네트워크 폴더에 있어 열지 않았어요 — 「폴더 보기」나 작업 화면에서 확인해 주세요.";
+export const MSG_WORK_VIEW = "작업 화면으로 옮겨서 열지 않았어요 — 대화 화면에서 다시 눌러 주세요.";
 export const MSG_OUTSIDE = "이 결과는 홈 폴더 밖(또는 숨은 폴더)으로 이어져 있어 열지 않았어요 — 마스터에게 물어봐 주세요.";
 
 export class ResultBook {
@@ -192,6 +195,11 @@ export class ResultBook {
     this.changed();
     try {
       const ex = await this.check(id);
+      // (s79 · codex 3R ②) list_dir 를 기다리는 사이 작업 화면으로 옮겼으면 OS 에 넘기지 않는다(result_open 0) — deliver 와 같은 한 도우미로 다시 판정
+      if (this.paused || !(this.d.onChat?.() ?? true)) {
+        this.notice = MSG_WORK_VIEW;
+        return;
+      }
       if (ex === false) {
         this.notice = MSG_MISSING;
         return;

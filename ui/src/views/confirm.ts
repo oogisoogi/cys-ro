@@ -42,7 +42,12 @@ export interface ConfirmDeps {
   invoke(cmd: string, args?: Record<string, unknown>): Promise<unknown>;
   now(): number;
   store: { get(k: string): string | null; set(k: string, v: string): void };
+  /** (s79 · codex 3R ②) 지금 대화 화면인가 — core 의 한 도우미(onChatScreen · deliver 와 같은 판정) · 없으면 늘 대화 화면(시험·단독). */
+  onChat?(): boolean;
 }
+
+/** (s79 · codex 3R ②) feed·org 를 기다리는 사이 작업 화면으로 옮겨 처리하지 않았을 때의 안내. */
+export const WORK_VIEW_MSG = "작업 화면으로 옮겨서 처리하지 않았어요 — 대화 화면에서 다시 눌러 주세요.";
 
 export interface DecisionRecord {
   request_id: string;
@@ -297,6 +302,12 @@ export class ConfirmBook {
       if (!rc.ok) {
         outcome = rc.code;
         this.notice = rc.msg;
+        return;
+      }
+      // (s79 · codex 3R ②) feed·org 를 기다리는 사이 작업 화면으로 옮겼으면 상태를 바꾸는 confirm_reply 0 — deliver 와 같은 한 도우미로 다시 판정
+      if (!(this.d.onChat?.() ?? true)) {
+        outcome = "work_view";
+        this.notice = WORK_VIEW_MSG;
         return;
       }
       try {

@@ -205,14 +205,15 @@ def main() -> int:
         print("== E 전환 왕복 · 초안")
         pg.fill(".cv-input", "쓰다 만 말")
         writes_before_work = pg.evaluate("() => window.__CHAT.writes.length")
+        # (s79 · codex 3R ③) 계수 기준 = 전환 **전** — 전환 순간(작업 화면 켜기)의 호출도 센다(옛 = 전환 뒤 기준이라 그 순간 default_socket_slug 등을 놓쳤다)
+        c0 = pg.evaluate("() => window.__CHAT.calls.length")
+        org0 = pg.evaluate("() => window.__CHAT.org ?? 0")
+        ke0 = pg.evaluate("() => ({ ...(window.__CHAT.kinds ?? {}) })")
         pg.click("#view-switch button[data-view=work]")
         pg.clock.run_for(100)
         st = pg.evaluate("() => ({ host: document.getElementById('view-host').hidden, body: getComputedStyle(document.getElementById('body-row')).display, cvs: document.querySelectorAll('.cv').length, chatCalls: window.__CHAT.calls.length })")
         check(st["host"] is True and st["body"] != "none" and st["cvs"] == 0, f"작업 화면으로 — 대화 DOM 내림 {st}")
-        c0 = st["chatCalls"]
-        org0 = pg.evaluate("() => window.__CHAT.org ?? 0")
-        ke0 = pg.evaluate("() => ({ ...(window.__CHAT.kinds ?? {}) })")
-        pg.clock.run_for(30_000)
+        pg.clock.run_for(29_900)
         ke1 = pg.evaluate("() => ({ ...(window.__CHAT.kinds ?? {}) })")
         extra = {k: (ke1.get(k, 0) - ke0.get(k, 0)) - kinds_base.get(k, 0) for k in ke1}
         bad_kinds = {k: v for k, v in extra.items() if v > 0 and k not in ("feed_list", "org_status", "chat_transcript")}

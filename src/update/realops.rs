@@ -877,6 +877,11 @@ impl Ops for RealOps {
 
     fn start_new(&mut self, _j: &Journal) -> Step {
         super::win_install::release_installer_mutex(); // S9b 끝 = 뮤텍스 놓음(§3-7 ⑦)
+        // ★1.1.16 ⑤(TICKET=cysr-1116-debt-d-1119): 교체 직후 · 새 데몬 기동 전 — 새 cys·cysd·cysr 첫 실행(OS 검사)을 여기서 떠안는다(실패 무시 · 로그 1줄).
+        //   맥만 — 윈 교체(S9)는 NSIS 설치기 실행이고 그 POSTINSTALL 이 이미 `cys daemon prime` 1회를 돈다(두 번 돌지 않는다).
+        if let (Os::Mac, Some(dir)) = (self.env.os, self.new_cys().parent()) {
+            eprintln!("[update] {}", super::prime::prime_log_line(&super::prime::prime_binaries(dir)));
+        }
         self.rotate(&self.new_cys(), false)
     }
 

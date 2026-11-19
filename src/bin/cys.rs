@@ -1001,6 +1001,10 @@ enum DaemonAction {
         #[arg(long)]
         cwd: Option<String>,
     },
+    /// ★1.1.16 ⑤(TICKET=cysr-1116-debt-d-1119) 설치 끝 미리 데우기 — 이 cys 옆 cys·cysd·cysr 를 `--version` 으로 1회씩(실패 무시 · 로그 1줄 · 늘 exit 0).
+    /// 설치기(bootstrap.sh·bootstrap.ps1·NSIS)가 설치 끝에 1회 부른다 · 데몬 연결 0.
+    #[command(hide = true)]
+    Prime,
 }
 
 #[derive(Subcommand)]
@@ -3651,7 +3655,7 @@ fn command_never_autostarts(command: &Command) -> bool {
         command,
         Command::Ping
             | Command::Daemon {
-                action: DaemonAction::Status | DaemonAction::ResumeCheck { .. }
+                action: DaemonAction::Status | DaemonAction::ResumeCheck { .. } | DaemonAction::Prime
             }
             // 완전 초기화는 데몬을 죽이는 명령 — 어떤 경로로도 자동 기동을 발화하면 안 된다.
             | Command::FactoryReset { .. }
@@ -21267,6 +21271,13 @@ fn run_daemon_cmd(action: DaemonAction) -> i32 {
     if let DaemonAction::DeptStatus { name, json } = &action {
         return run_dept_status(name, *json);
     }
+    // ★1.1.16 ⑤: OS 무관 · 데몬 연결 0 · 늘 0(설치를 멈추지 않는다).
+    if let DaemonAction::Prime = &action {
+        if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
+            eprintln!("[daemon prime] {}", cys::update::prime::prime_log_line(&cys::update::prime::prime_binaries(&dir)));
+        }
+        return 0;
+    }
     if let DaemonAction::ResumeCheck { role, agent, cwd } = &action {
         let held = match agent {
             None => resume_saved_lookup(role).err(),
@@ -21383,7 +21394,7 @@ fn run_daemon_cmd(action: DaemonAction) -> i32 {
                     println!("launchd 등록 해제 완료 (데몬 정지됨 — 세션도 함께 종료)");
                     Ok(())
                 }
-                DaemonAction::DeptStatus { .. } | DaemonAction::ResumeCheck { .. } => Ok(()), // 함수 머리에서 이미 처리(도달 불가)
+                DaemonAction::DeptStatus { .. } | DaemonAction::ResumeCheck { .. } | DaemonAction::Prime => Ok(()), // 함수 머리에서 이미 처리(도달 불가)
                 DaemonAction::Status => {
                     let path = cys::launchd::plist_path();
                     let registered = path.exists();
@@ -21475,7 +21486,7 @@ fn run_daemon_cmd(action: DaemonAction) -> i32 {
                     println!("작업 스케줄러 등록 해제 완료");
                     Ok(())
                 }
-                DaemonAction::DeptStatus { .. } | DaemonAction::ResumeCheck { .. } => Ok(()), // 함수 머리에서 이미 처리(도달 불가)
+                DaemonAction::DeptStatus { .. } | DaemonAction::ResumeCheck { .. } | DaemonAction::Prime => Ok(()), // 함수 머리에서 이미 처리(도달 불가)
                 DaemonAction::Status => {
                     let registered = cys::hidden_command("schtasks")
                         .args(["/Query", "/TN", TASK])

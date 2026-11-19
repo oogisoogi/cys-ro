@@ -1013,6 +1013,13 @@ cys_post_nomarker:
 cys_post_alias_ok:
   ClearErrors
 
+  ; ★1.1.16 ⑤(TICKET=cysr-1116-debt-d-1119) 미리 데우기 — 방금 놓은 cys·cysd·cysr 를 `--version` 으로 1회씩(cys daemon prime ·
+  ;   데몬 연결 0 · 늘 exit 0). 새 실행 파일의 첫 실행 OS 검사(1.3~3.0s 실측)를 시한 있는 사용자 경로가 아니라 설치가 떠안는다.
+  ;   nsExec = 콘솔 창 없음 · 결과 1줄은 상세 로그 · 실패해도 설치 결과를 뒤집지 않는다.
+  nsExec::ExecToLog '"$INSTDIR\cys.exe" daemon prime'
+  Pop $R0
+  ClearErrors
+
   ; 바탕화면 바로가기 자동 생성(2026-07-05 오너 지시). Tauri NSIS 템플릿은 일반 GUI 설치에서
   ; 마침 페이지 체크박스(사용자 클릭)에만 의존해 자동 생성이 아니다 — 템플릿 내장 함수를 직접 호출해
   ; 설치 완료 시 항상 생성한다. 함수 내부 가드를 그대로 재사용: 업데이트(/UPDATE)·무바로가기(/NS)

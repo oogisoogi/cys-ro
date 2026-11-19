@@ -690,6 +690,10 @@ mod seatkeep_mac {
         sock: PathBuf,
         /// 처리 완료 오프셋 알림(T4 · PROCESSED)을 쓰는 연결인가 — 입양 노브 켬으로 띄운 좌석·입양 좌석만(노브 끔 = 프레임·잠금 0 · codex T4 2R).
         report_processed: bool,
+        /// seatkeep 이 `--adoptable`(입양 노브 켬으로 띄운 좌석·입양 좌석) — 끊겨도 스스로 끝나지 않는다(연결 끝 처리 = `demux` 끝).
+        adoptable: bool,
+        /// `detach`(입양 등록 실패)로 놓았다 — seatkeep 을 다음 조종자를 위해 살려 둔다(연결 끝에 끝내지 않음).
+        detached: AtomicBool,
         /// (알릴 최신 처리 완료 오프셋, 연결 끝남) — 읽기 얼굴은 값만 덮어쓰고, 따로 송신 스레드가 최신값만 보낸다(읽기 스레드는 소켓 쓰기에 막히지 않음).
         processed: Mutex<(u64, bool)>,
         processed_cv: Condvar,
@@ -746,6 +750,8 @@ mod seatkeep_mac {
             let disc_total = seat0["disc_total"].as_u64().map(|d| d.clamp(tail_start, total));
             let rd = stream.try_clone().map_err(|e| format!("seatkeep 연결 복제 실패: {e}"))?;
             let sd = stream.try_clone().map_err(|e| format!("seatkeep 연결 복제 실패: {e}"))?;
+            // 입양 좌석(keeper 없음) = 남이 `--adoptable` 로 띄운 것 · 새 좌석 = 입양 노브 켬이면 `--adoptable` 로 띄움(`SeatkeepPlan` 인자와 같은 판정).
+            let adoptable = keeper.is_none() || super::seatkeep_adopt_enabled();
             let link = Arc::new(SeatLink {
                 wr: Mutex::new(stream),
                 sd,
@@ -759,7 +765,9 @@ mod seatkeep_mac {
                 skid,
                 sock,
                 replay: keeper.is_none().then_some((tail_start, disc_total, total)),
-                report_processed: keeper.is_none() || super::seatkeep_adopt_enabled(),
+                report_processed: adoptable,
+                adoptable,
+                detached: AtomicBool::new(false),
                 processed: Mutex::new((tail_start, false)),
                 processed_cv: Condvar::new(),
                 next_input: AtomicU64::new(1),
@@ -991,9 +999,11 @@ mod seatkeep_mac {
                 }
             }
             self.close_output();
+            let exited_frame;
             {
                 let mut st = self.lock_st();
                 st.closed = true;
+                exited_frame = st.exit.is_some();
                 if st.exit.is_none() {
                     // seatkeep 이 사라지면 PTY 마스터의 마지막 사본이 닫혀 자식도 SIGHUP 으로 끝난다(DESIGN §1-2) — 끝난 것으로 접는다.
                     st.exit = Some(ExitStatus::with_signal("seatkeep_disconnected"));
@@ -1005,9 +1015,30 @@ mod seatkeep_mac {
                 g.1 = true;
                 self.processed_cv.notify_all();
             }
+            // 입양 모드: seatkeep 은 끊겨도 스스로 끝나지 않는다 — 이 cysd 가 살아서 연결을 잃었으면(입력 확인 상한 `abort_link` · 처리 오프셋
+            // 부분 쓰기 · seatkeep 쪽 끊김) 다시 붙을 길이 없고 위에서 이미 끝난 것으로 접었다 → seatkeep 을 끝내 그 접음을 참으로 만든다
+            // (PTY 마스터가 닫혀 좌석 SIGHUP = 조종자 종속 모드의 controller_lost 와 같은 끝 · 막힌 입력이 나중에 적용되지 않음 · 고아 없음).
+            // 끝내지 않는 경우 = 좌석 종료(EXITED)를 이미 받음(seatkeep 이 스스로 정리) · `detach`(다음 조종자를 위해 살려 둠).
+            if self.adoptable && !exited_frame && !self.detached.load(Ordering::SeqCst) {
+                self.end_adoptable_keeper();
+            }
             if let Some(mut k) = keeper {
                 let _ = k.wait();
             }
+        }
+
+        /// 입양 모드 seatkeep 을 끝낸다(SIGTERM · 처리기 없음 = 기본 동작 종료) — 그 pid 의 출생 시각이 이 연결의 seatkeep 과 같을 때만
+        /// (이미 죽었거나 pid 가 재사용됐으면 아무것도 안 함).
+        fn end_adoptable_keeper(&self) {
+            let Some(start) = self.keeper_start_us else { return };
+            if crate::seat_adopt::process_start_us(self.keeper_pid) != Some(start) {
+                return;
+            }
+            eprintln!(
+                "[cysd] 입양 모드 seatkeep pid {} 연결을 잃음(좌석 pid {} 종료로 접음) — seatkeep 을 끝낸다",
+                self.keeper_pid, self.child_pid
+            );
+            unsafe { libc::kill(self.keeper_pid as i32, libc::SIGTERM) };
         }
 
         /// 입력 한 조각 — INPUT 을 보내고 수신 확인(= PTY 에 다 씀)까지 기다린다. 끊김·종료 = 오류.
@@ -1051,10 +1082,11 @@ mod seatkeep_mac {
 
         /// ACK 상한 만료 처리 (나) — 연결을 양쪽 다 끊는다: seatkeep(조종자 종속)은 끊김을 보고 `controller_lost` 로 끝나 PTY 마스터가
         /// 닫히고(막힌 입력 쓰기도 프로세스와 함께 끝남 = 나중 적용 없음) 좌석은 SIGHUP. 연결 스레드는 닫는 중 표시로 막힘에서 풀려
-        /// 끊김을 읽고 종료로 접는다(seatkeep 회수까지).
+        /// 끊김을 읽고 종료로 접는다(seatkeep 회수까지). 입양 모드(`--adoptable` · 끊겨도 안 끝남)는 연결 스레드 끝이 seatkeep 을 끝낸다(`demux`).
         /// 입양(T4)이 등록 전에 실패했다 — 붙었던 연결을 끊는다(seatkeep 은 `--adoptable` 이라 좌석을 쥔 채 다음 조종자를 기다린다 ·
         /// 끊지 않으면 이 cysd 가 그 seatkeep 의 「살아 있는 조종자」로 남아 출력도 안 읽고 다른 조종자도 막는다).
         pub(crate) fn detach(&self) {
+            self.detached.store(true, Ordering::SeqCst);
             self.mark_closing();
             let _ = self.sd.shutdown(std::net::Shutdown::Both);
         }

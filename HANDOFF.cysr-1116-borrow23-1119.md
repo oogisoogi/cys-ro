@@ -93,3 +93,40 @@
 ## 7. 재현
 - 7501 실측: `python3 docs/evidence/borrow23-1119/probe7501.py reply <out>` (PROBE_EXTRA="--permission-mode default --no-chrome" 로 권한 창 갈래).
 - 시험: `cargo test --bin cysd program_status` · `cargo test --bin cys boot_fleet` · `cargo test --bin cys explain_state` · `cd ui && bun test src/roleactivity.test.ts` · `python3 cysjavis-pack/bin/javis_orchestra.py --self-test`.
+
+---
+
+## 8. 델타 — 독립 검증 REVISE 고침 1회(master#afc55645 · 2026-11-20)
+
+검증 원문 = `/Users/oogisoogi/axdev/workers/cysr-1116-borrow23-verify-1119/VERDICT.md`. 처분과 고침:
+
+| # | master 처분 | 고침 | 시험 |
+|---|---|---|---|
+| V-1 MAJOR | (가) 질의에 답한 생애의 보고만 | `Store.life_answered`(질의 응답 때 true · 전부 지움 = 에이전트 종료·PTY 종료·RIS 때 false) · 묻지 않은 보고 = `unsolicited` 계수만 · `program_status_diag.unsolicited_reports` · explain-state 「묻지 않고 스스로 보고(받지 않음 — 화면 판정 사용 · 예: codex)」 분기 · 「화면 판정만 쓴다」 줄은 응답 0 ∧ 무질의 0 일 때만 | `codex_unsolicited_reports_are_ignored_byte_for_byte`(검증 좌석 codex 0.167 실측 바이트 그대로 → 덧씌움 0 · unsolicited 4) · `answered_life_ends_on_total_wipe` |
+| V-2 | (가)로 닫힘 확인 | 위와 같음 | `shell_spoof_without_query_changes_nothing` · `live_shell_seat_printf_spoof_is_ignored`(실 PTY 셸 좌석 printf → 기록 0) |
+| V-3 | 지침 1~2줄 + CSO 여는 명령 | MASTER ④: light 때 빠지는 것(①순환 집행자 ②`cycle-agent --verifier worker` 검증자 ③데몬 경보 CSO 큐 적재 ④죽은 좌석 회수·원장 고아 정리) + `cys launch-agent --role cso --agent claude` · 진실원 = 데몬 · 틀린 안내 「`CYS_BOOT_FLEET=full cys boot`」 제거(V-4 뒤로는 cys boot 가 자기 env 를 안 씀) · 238 → 500 B · 상한 MASTER 86,955 · CEO 102,441 · CEO 재합성 · 해시 표 · CORE §0-B 해시 + 요지 | gen --check GREEN · 해시 --check OK · core_inject verify 둘 다 ok |
+| V-4 | 진실원 한 곳 = 데몬 | lib `boot_fleet_decide`(데몬 결정 · 순수) · `boot_fleet_resolve`(소비자 해소 · 순수 · 내 env 는 어떤 경우에도 안 씀 · 다르면 경고) · cysd `knobs::boot_fleet()` 기동 때 고정(로그 `[cysd] boot_fleet=…`) · RPC `system.boot_fleet` · 좌석 env 빌더가 호출자 env **뒤**에 `CYS_BOOT_FLEET`·`CYS_BOOT_FLEET_DAEMON` 도장 · 부트 감독자 자식도 도장 · `cys boot` = RPC(없으면 도장 → 기본 full) · python = 도장만 | Rust `half_light_seat_env_is_ignored_and_warned` · python self-test 반쪽 light 단언 · 실측: 좌석 env 만 light → `('full','no-daemon')` + 경고 · 요구 역할 cso·worker 유지 |
+| V-5 | 주석 고침 | explain-state 주석 = 자동 기동 안 함 | — |
+| V-6~V-9 | 기록 | 아래 | — |
+
+기록(V-6~V-9 · 미고침): V-6 Claude `clear` 직후 다음 보고까지 정직한 unknown 틈(실측 0.68s~7s) · V-7 done 의 「봄」은 사람 입력만(원격 운영 좌석엔 「확인」이 남을 수 있음) · V-8 윈 ConPTY 플래그에 PASSTHROUGH 없음 · conpty.dll 사이드로드 없음 → 실기 판별 대기 · V-9 질의 응답은 질의를 낸 어떤 좌석에도 간다(셸에서 질의 바이트를 먼저 내고 보고를 내면 받는다 — DSR 와 같은 계급 · 남는 위조 길 정직 고지). (다) 「화면 입력 대기가 7501 idle/working 을 이김」 = 1.1.17 기록. Claude 좌석 안 도구 출력 ESC 흐름 = 미측정.
+검증 좌석이 알린 부작용(codex 관리형 데몬이 0.170 을 스스로 받음) = master 판단 사안(이 좌석은 손대지 않음).
+
+### 8-1. 고침 회차 커밋 · 시험
+
+| 커밋 | 내용 |
+|---|---|
+| bde08cc76 | V-1·V-2·V-4·V-5 코드 |
+| 2784a586f | V-3 팩 지침(별도) |
+| (다음) | V-4 배선 시험 — python `boot_fleet()` 도장만 · Rust `boot_fleet_wire` 순수화 |
+| (다음) | V-3 후속 — ④ 문단 줄 수를 기준과 같게(§2 줄 번호 핀 · 상한 래칫 MASTER 86,949 · CEO 102,435) |
+
+| 대상 | 결과 |
+|---|---|
+| `cargo test --bin cysd` 전체(bde08cc76) | **3357 통과 · 0 실패 · 17 무시**(새 시험 23) |
+| `cargo test --bin cys` 전체(bde08cc76) | **802 통과 · 0 실패 · 2 무시** · 배선 시험 추가 뒤 `boot_fleet` 5/5 |
+| cysd `program_status` | 23/23 |
+| CI 팩 단계(본문 그대로 · CYS_* 제거) | CEO 재합성 rc0 · 격리군 rc0 · 수용 4종 rc0 · 자원 게이트 rc1 = `test_resource_gate_product_cpu`(`ps timeout 1.5 s` 시간 문턱) → 단독 rc0 · mac(멈추지 않는 사본) 151 중 149 rc0 · 2 rc1: ⑴ `test_event_inject` = **이 가지 원인**(④ 문단 4→5줄로 §2 줄 번호가 밀림) → 줄 수 복구 뒤 단독 rc0 ⑵ `test_hook_r34`(시한 1s 항목) = 같은 시각 기준 트리도 붉음(FAIL 4 대 3 · 부하 30 · hooks·시험 파일 무변경) — master 공지의 「새 실행 파일 첫 exec 검사」 계열 |
+| 지침 수정 뒤 단독 | `test_event_inject`·`test_cso_directive_rev`·`test_bootv2_doc_contract`·`test_core_inject`·`test_default_fleet_formation` rc0 · self-test 3종 OK · core_inject verify 둘 다 ok · gen --check GREEN · 해시 --check OK |
+| 뮤턴트(이번 회차) | python `boot_fleet()` 이 좌석 env 를 먼저 읽기 → 처음엔 **안 잡혔다**(순수 함수만 시험) → 배선 단언 추가 뒤 잡힘(self-test FAIL) · Rust 배선은 `boot_fleet_wire` 순수화 + 시험 |
+- codex 2R(②③ 고침분) = master 대기열(06:29 뒤 · 이 좌석은 호출 안 함).

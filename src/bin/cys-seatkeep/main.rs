@@ -520,7 +520,7 @@ mod imp {
         }
 
         fn entry(&self, phase: &str) -> Value {
-            json!({
+            let mut v = json!({
                 "phase": phase,
                 "id": self.args.id,
                 "pid": std::process::id(),
@@ -532,7 +532,12 @@ mod imp {
                 "seats": self.seats.iter().map(|s| json!({"seat": s.id, "pid": s.child_pid,
                          "start_us": registry::process_start_us(s.child_pid)})).collect::<Vec<_>>(),
                 "at": registry::now_epoch(),
-            })
+            });
+            // 조종자 잠금 칸은 입양 모드만(독립 검증 m1 — 같은 폴더의 남의 데몬이 이 등록부를 판정·정리하지 않게 · 그 밖 모드는 종전 바이트).
+            if self.args.adoptable {
+                v["lock"] = json!(self.args.lock.to_string_lossy());
+            }
+            v
         }
 
         /// 알린 종료들을 `<id>.exit` 에 영속한다(전부 확인되면 지운다). 결과를 상태에 남긴다 — 실패면
@@ -568,6 +573,7 @@ mod imp {
             if self.args.adoptable {
                 rec["pid"] = json!(std::process::id());
                 rec["start_us"] = json!(self.start_us);
+                rec["lock"] = json!(self.args.lock.to_string_lossy());
             }
             match registry::write_atomic(&self.paths.exit, &rec) {
                 Ok(()) => {
@@ -821,9 +827,12 @@ mod imp {
         }
 
         // ① 준비 — 자식보다 먼저 등록부에 「준비」를 쓴다(조종자가 이 사이에 죽어도 새 조종자가 찾을 수 있게).
-        let prepare = json!({"phase": "prepare", "id": args.id, "pid": std::process::id(), "start_us": start_us,
+        let mut prepare = json!({"phase": "prepare", "id": args.id, "pid": std::process::id(), "start_us": start_us,
                              "boot_id": boot_id, "sock": paths.sock.to_string_lossy(), "core": proto::CORE_VERSION,
                              "at": registry::now_epoch()});
+        if args.adoptable {
+            prepare["lock"] = json!(args.lock.to_string_lossy());
+        }
         if let Err(e) = registry::write_atomic(&paths.entry, &prepare) {
             warn!("cys-seatkeep: 등록부 준비 실패: {e}");
             return 3;
@@ -1847,6 +1856,15 @@ mod imp {
             assert_eq!(adopt_seat_token(&keep.args, || Some("g.tok".into())).as_deref(), Some("g.tok"));
             assert_eq!(adopt_seat_token(&keep.args, || Some(String::new())), None, "빈 값 = 없음");
             assert_eq!(adopt_seat_token(&keep.args, || None), None);
+        }
+
+        /// 독립 검증 m1: 등록부 `lock` 칸 = 입양 모드만(그 밖 모드 = 종전 바이트 · 칸 없음).
+        #[test]
+        fn registry_lock_field_only_in_adoptable_mode() {
+            let (mut keep, _d) = test_keep("lock-field", 1);
+            assert!(keep.entry("committed").get("lock").is_none(), "종속·기본 모드 = 칸 없음");
+            keep.args.adoptable = true;
+            assert_eq!(keep.entry("committed")["lock"], json!(keep.args.lock.to_string_lossy()));
         }
 
         /// T5: WELCOME 좌석 칸 — 토큰 없음 = 종전과 같은 바이트(칸 없음) · 있음 = `seat_token` 칸 하나만 더해짐.

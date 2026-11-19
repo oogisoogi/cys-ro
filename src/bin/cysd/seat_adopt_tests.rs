@@ -107,6 +107,68 @@ fn procargs_env_parse() {
 }
 
 #[test]
+fn procargs_flag_parse_stops_at_seat_command() {
+    let mut b = 6i32.to_ne_bytes().to_vec();
+    b.extend_from_slice(b"/x/cys-seatkeep\0\0\0cys-seatkeep\0--lock\0/s/d.lock\0--\0--lock\0/evil\0CYS_ROLE=w\0\0");
+    assert_eq!(parse_procargs_flag(&b, "--lock").as_deref(), Some("/s/d.lock"));
+    assert_eq!(parse_procargs_flag(&b, "--dir"), None);
+    // `--` 뒤(좌석 명령)의 같은 낱말은 seatkeep 인자가 아니다.
+    let mut c = 4i32.to_ne_bytes().to_vec();
+    c.extend_from_slice(b"/x/cys-seatkeep\0\0cys-seatkeep\0--\0--lock\0/evil\0\0");
+    assert_eq!(parse_procargs_flag(&c, "--lock"), None);
+    // 값 없는 끝 · 잘린 버퍼.
+    let mut d = 2i32.to_ne_bytes().to_vec();
+    d.extend_from_slice(b"/x\0\0a\0--lock\0\0");
+    assert_eq!(parse_procargs_flag(&d, "--lock"), None);
+    assert_eq!(parse_procargs_flag(&b[..3], "--lock"), None);
+}
+
+#[test]
+fn bind_from_same_other_unknown() {
+    let me = std::path::Path::new("/private/tmp/no-such-skb/d.lock");
+    assert_eq!(bind_from(me, Some("/private/tmp/no-such-skb/d.lock")), Bind::Mine);
+    assert_eq!(bind_from(me, Some("/private/tmp/no-such-skb/e.lock")), Bind::Other);
+    assert_eq!(bind_from(me, None), Bind::Unknown);
+    // 같은 파일의 다른 글자(심링크 /tmp → /private/tmp) = 같음.
+    let d = std::env::temp_dir().join(format!("skb-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    let real = std::fs::canonicalize(&d).unwrap().join("x.lock");
+    std::fs::write(&real, b"").unwrap();
+    let via = d.join("x.lock");
+    assert_eq!(bind_from(&real, via.to_str()), Bind::Mine);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// M1: 노브 끔 사용자 = seatkeep 폴더가 없다 → 즉시 반환 · 폴더를 만들지 않는다 · 사건 0(종전 바이트).
+#[test]
+fn end_orphans_without_folder_touches_nothing() {
+    let daemon = crate::state::Daemon::new(std::env::temp_dir().join(format!("sko-{}/d.sock", std::process::id())));
+    let mut rx = daemon.bus.subscribe();
+    let dir = std::env::temp_dir().join(format!("sko-none-{}", std::process::id())).join("seatkeep");
+    assert_eq!(end_orphans_in(&daemon, &dir, std::path::Path::new("/private/tmp/no-such-sko.lock")), 0);
+    assert!(!dir.exists() && !dir.parent().unwrap().exists(), "폴더를 만들지 않는다");
+    assert!(rx.try_recv().is_err(), "사건 0");
+    let _ = std::fs::remove_dir_all(daemon.socket_path.parent().unwrap());
+}
+
+/// M1·D2: 관리용 종료는 신원이 서지 않으면 신호를 보내지 않는다 — 대상 = 이 시험 프로세스 자신(cys-seatkeep 이 아님 · 살아 있어야 함).
+#[test]
+fn end_keeper_refuses_a_process_that_is_not_seatkeep() {
+    #[cfg(target_os = "macos")]
+    {
+        let me = std::process::id();
+        let dir = std::env::temp_dir().join(format!("ske-{me}"));
+        let lock = dir.join("d.lock");
+        let start = process_start_us(me);
+        assert_eq!(end_keeper(&dir, "x-1-0", me, start, &lock, &RegRead::Missing), Err("end_exe_not_seatkeep"));
+        assert_eq!(end_keeper(&dir, "x-1-0", me, start.map(|s| s + 1), &lock, &RegRead::Missing), Err("end_start_mismatch"));
+        assert_eq!(end_keeper(&dir, "x-1-0", me, None, &lock, &RegRead::Missing), Err("end_start_unknown"));
+        assert_eq!(end_keeper(&dir, "x-1-0", 0x7fff_fff0, Some(1), &lock, &RegRead::Missing), Err("end_keeper_gone"));
+        assert!(!dir.exists());
+    }
+}
+
+#[test]
 fn process_start_us_reads_self_and_none_for_no_pid() {
     #[cfg(target_os = "macos")]
     {

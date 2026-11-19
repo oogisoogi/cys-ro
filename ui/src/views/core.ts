@@ -11,7 +11,7 @@
 
 import { composeOutbound } from "./judge/outbound";
 import { approvalSeatsOf, masterRowOf, sendGate, type GateVerdict, type MasterRow } from "./judge/gate";
-import { applyRecords, applyRefusedAtWrite, canRetry, mergeOutcome, READ_AFTER_MS, rematchPending, SENDING_SILENT_MS, settleSteps, SLOW_MS, stepFromOutcome, type Msg, type PendingRec, type Rec, type Reply, type Step } from "./judge/msgstep";
+import { applyRecords, applyRefusedAtWrite, applyRefusedById, canRetry, mergeOutcome, READ_AFTER_MS, rematchPending, SENDING_SILENT_MS, settleSteps, SLOW_MS, stepFromOutcome, type Msg, type PendingRec, type Rec, type Reply, type Step } from "./judge/msgstep";
 import { applyQueueEvent, autoHoldRemainingMs, queueEventOf, type AutoMsg } from "./judge/autostep";
 import { ConfirmBook } from "./confirm";
 
@@ -82,6 +82,8 @@ const PENDING_USER_MAX = 50;
 export const HELD_REFUSED_BACKOFF_MS = 15_000;
 /** 세션 기록 한 번 읽기에서 이어 읽는 최대 횟수(2 MiB × 이 수). */
 const READ_CHAIN_MAX = 3;
+/** ★1.1.16(S3-1) 응답보다 먼저 온 거부 사건 번호를 기억하는 개수(쓰기는 한 번에 1건 — 여유분) */
+const REFUSED_EARLY_MAX = 16;
 
 export interface Store {
   get(k: string): string | null;
@@ -272,12 +274,30 @@ export class ChatCore {
     }
   }
 
+  /** ★1.1.16(S3-1) 응답보다 먼저 온 「쓰기 직전 거부」 사건의 요청 번호(최근 몇 개만). 응답이 그 번호를 실어 오면 그때 적용한다. */
+  private refusedEarly: string[] = [];
+  private applyEarlyRefusal(id: string): void {
+    const rid = this.s.msgs.find((x) => x.id === id)?.requestId;
+    if (!rid || !this.refusedEarly.includes(rid)) return;
+    this.refusedEarly = this.refusedEarly.filter((x) => x !== rid);
+    const [next] = applyRefusedById(this.s.msgs, rid);
+    if (next.some((m, i) => m !== this.s.msgs[i])) this.putMsgs(next);
+  }
+
   /** 데몬 사건 하나 — 기본 데몬(마스터가 사는 곳) 사건만 받는다(부서 데몬은 좌석 번호가 겹친다 · 소켓 이름을 모르면 아무것도 받지 않음). */
   onDaemonEvent(raw: unknown): void {
     const e = raw as { name?: unknown; socket_slug?: unknown; surface_id?: unknown } | null;
     if (!e || typeof e.name !== "string") return;
     if (this.defaultSlug === null || e.socket_slug !== this.defaultSlug) return;
     if (e.name === "input.refused_at_write") {
+      // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · S3-1): 요청 번호가 실린 사건(원자 제출 Enter 직전 거부) = 번호로만 짝짓는다 — 좌석·5초 창 0.
+      const rid = (raw as { payload?: { request_id?: unknown } }).payload?.request_id;
+      if (typeof rid === "string" && rid.length > 0) {
+        const [next, found] = applyRefusedById(this.s.msgs, rid);
+        if (!found) this.refusedEarly = [...this.refusedEarly.filter((x) => x !== rid), rid].slice(-REFUSED_EARLY_MAX); // 응답보다 먼저 옴
+        else if (next.some((m, i) => m !== this.s.msgs[i])) this.putMsgs(next);
+        return;
+      }
       if (typeof e.surface_id !== "number") return;
       // 사건 시각 = 데몬 timestamp(초) — 받은 시각을 쓰면 데몬 재연결 뒤 다시 흘러온 옛 사건이 방금 보낸 말에 붙는다(검토 지적 5).
       const ts = (raw as { timestamp?: unknown }).timestamp;
@@ -597,8 +617,11 @@ export class ChatCore {
       } finally {
         this.d.clearTimeout(silent);
       }
-      const r = (res ?? {}) as { outcome?: unknown; code?: unknown; message?: unknown };
+      const r = (res ?? {}) as { outcome?: unknown; code?: unknown; message?: unknown; result?: { request_id?: unknown } };
       const step = stepFromOutcome(r.outcome);
+      // ★1.1.16(S3-1): 데몬 요청 번호를 그 말에 붙인다(쓰기 직전 거부 사건과 번호로 짝짓기) · 먼저 온 사건이면 지금 적용한다(아래 patch 뒤).
+      const rid = typeof r.result?.request_id === "string" && r.result.request_id.length > 0 ? r.result.request_id : undefined;
+      if (rid) this.patchMsg(id, { requestId: rid });
       const code = typeof r.code === "string" ? r.code : undefined;
       if (step !== "held" && step !== "failed" && step !== "queued_hold") this.lastHumanSentAt = sentAt; // 바이트가 나갔을 수 있음(R3)
       const cur = this.s.msgs.find((x) => x.id === id);
@@ -620,6 +643,7 @@ export class ChatCore {
     } finally {
       this.writing = false;
     }
+    this.applyEarlyRefusal(id);
     // 이 말이 나갔으면(붙잡히지 않았으면) 다음 차례 1건 — 붙잡혔으면 멈춘다(뒤 말이 앞지르지 않게 · 다음은 poll 이 오래된 것부터).
     if (this.s.msgs.find((x) => x.id === id)?.step !== "held") await this.pump();
   }

@@ -31,6 +31,8 @@ export interface SimOpts {
   replyDelay?: (n: number) => number | null;
   /** 걸린 요청이 응답하기까지(ms) */
   hangMs?: number;
+  /** ★1.1.16(S3-1) 데몬이 요청 번호를 싣지 않는 옛 꼴(send_key 거부 모드 · 기준판) — 좌석·5초 창 짝짓기로 돌아간다 */
+  noRequestId?: boolean;
   /** M8: 세션 레코드에 uuid 가 없는 꼴 */
   noUuid?: boolean;
   slug?: string;
@@ -166,13 +168,13 @@ export class Sim {
         //   원자 제출은 Enter 직전 재판정이 없어 이 사건을 내지 않는다(검토 지적 1 · handlers.rs:3779~3785).
         this.later(500, () => {
           this.seat.pending_input_bytes = Math.max(this.seat.pending_input_bytes, 1);
-          this.emit("input.refused_at_write", this.seat.surface_id, { reason: "approval_screen" });
+          this.emit("input.refused_at_write", this.seat.surface_id, { reason: "approval_screen", ...(this.o.noRequestId ? {} : { request_id: `rq-${n}` }) });
         });
       } else {
         this.later(768, () => this.submitted(wi, n));
       }
     }
-    const resp = kind === "written" || kind === "hang_written" || kind === "refuse_at_write" ? { outcome: "written", result: { sent: true } } : kind === "failed" ? { outcome: "failed", code: "not_found" } : { outcome: "uncertain", code: "transport_uncertain" };
+    const resp = kind === "written" || kind === "hang_written" || kind === "refuse_at_write" ? { outcome: "written", result: { sent: true, ...(this.o.noRequestId ? {} : { request_id: `rq-${n}` }) } } : kind === "failed" ? { outcome: "failed", code: "not_found" } : { outcome: "uncertain", code: "transport_uncertain" };
     w.outcome = resp.outcome;
     if (kind === "hang_written" || kind === "hang_lost") {
       return new Promise((res) => this.later(this.o.hangMs ?? 6_000, () => res(resp)));

@@ -261,6 +261,36 @@ describe("core 조각 3 — 단계 길", () => {
     expect(sim.sends()).toBe(1);
     expect(sim.core.state.msgs[1].code).toBe("draft");
   });
+  it("(S3-1) 요청 번호가 실린 거부 사건 = 그 번호의 말만 · 다른 번호·늦게 온 옛 번호는 같은 좌석 5초 안이어도 무시", async () => {
+    const sim = new Sim({ plan: () => "written", recordDelay: () => null });
+    await ready(sim);
+    sim.core.submit("안녕");
+    await sim.advance(100);
+    expect(sim.core.state.msgs[0].requestId).toBe("rq-0");
+    sim.emit("input.refused_at_write", 5, { reason: "approval_screen", request_id: "rq-다른-호출자" }, 1);
+    expect(sim.core.state.msgs[0].step).toBe("injected"); // 좌석·창은 맞아도 번호가 다르면 이 말이 아니다
+    sim.emit("input.refused_at_write", 5, { reason: "approval_screen", request_id: "rq-0" }, 2);
+    expect(sim.core.state.msgs[0].step).toBe("checking");
+    expect(sim.core.state.msgs[0].code).toBe("refused_at_write");
+  });
+  it("(S3-1) 거부 사건이 응답보다 먼저 와도 번호로 그 말에 붙는다 · 번호 없는 옛 데몬 = 좌석·5초 창 그대로", async () => {
+    const sim = new Sim({ plan: () => "hang_written", hangMs: 2_000, recordDelay: () => null });
+    await ready(sim);
+    sim.core.submit("안녕");
+    await sim.advance(100);
+    sim.emit("input.refused_at_write", 5, { reason: "approval_screen", request_id: "rq-0" }, 1);
+    await sim.advance(2_500);
+    const m = sim.core.state.msgs[0];
+    expect(m.requestId).toBe("rq-0");
+    expect(m.step).toBe("checking");
+    expect(m.code).toBe("refused_at_write");
+    const old = new Sim({ plan: (n) => (n === 0 ? "refuse_at_write" : "written"), noRequestId: true });
+    await ready(old);
+    old.core.submit("안녕");
+    await old.advance(600);
+    expect(old.core.state.msgs[0].requestId).toBeUndefined();
+    expect(old.core.state.msgs[0].code).toBe("refused_at_write");
+  });
   it("쓰기 직전 거부 사건: 부서 데몬(다른 소켓)·소켓 이름 모름 = 무시", async () => {
     const sim = new Sim({ plan: () => "written", recordDelay: () => null });
     await ready(sim);

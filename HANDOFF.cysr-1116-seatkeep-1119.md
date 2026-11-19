@@ -175,3 +175,47 @@ T6 rotate·업데이터(계획 교체 = 화면 저장+이어받기 · 사전 실
 ### 남은 것(T4) · 다음 첫 행동
 0. codex 5R(master 대기열 · 06:29 뒤) — 범위 **e20850fae..ddae58a5f -- src/ scripts/seatkeep-adopt-e2e.py**(b953e900a 포함으로 넓힘 · 03:00 【경고】 보고함) · 판정 오면 master 처분 줄 대로.
 1. T5 = `docs/seatkeep/T5-DESIGN.md`(1단계 문서 · 코드 0) → 【중간보고】 → 구현.
+
+## T5 좌석 토큰 이음(후임 · master#f819c8f1 → 중간보고 04:23 → master#9e1379e9 = A안 승인 · 상한 4h · 04:24~05:1x)
+### 커밋
+| 커밋 | 내용 |
+|---|---|
+| 63c332520 | 설계 1단계 `docs/seatkeep/T5-DESIGN.md`(§6 = 구현 결과 · 이 커밋 뒤 보탬) |
+| 7487a7126 | 구현 — seatkeep WELCOME 칸 인계 · 세대 정합 · 입양 세대 집합 · 판정 넓힘 · 문구 지우기 · 소스 핀 · e2e token 모드 · test_set_pending 제거(master 허락) |
+| d2ca1de03 | 실패 갈래 새지 않음 — `adopted_token_or_skip` 사건 시험 · e2e 훑기에 난수·바꾼 토큰 |
+
+### 원작자 파일 변경 줄(T5)
+- state.rs: Daemon 필드 `adopted_token_gens`(+ 생성자 1줄) · `create_surface_core` 입양 분해에 `adopt_token` · 입양 갈래 토큰 줄(옛 토큰 + 세대 등록 · CYS_BOOT_GATES=0 = 무토큰) · `Daemon::seat_token_known_generation`(새 impl 블록 · `seat_token_same_generation` 무변).
+- handlers.rs: claim 불일치 갈래 판정 1줄(`seat_token_same_generation(&supplied, daemon.started_at)` → `daemon.seat_token_known_generation(&supplied)`) · 시험 2개.
+- (원작자 아닌 이 갈래 파일) seat_proc.rs(SeatLink `adopted_token` · `take_adopted_token` · `welcome_without_tokens` · 오류 문구 1줄) · seat_adopt.rs(`AdoptSeat.token` · `adopted_token_or_skip` · `check_adopted_token` · adopt_one 1줄) · cys-seatkeep/main.rs(Keep `seat_token` · `adopt_seat_token` · `welcome_seat`) · 시험 파일 · e2e.
+
+### 시험(격리 env -i · 기준선 dea2e1853 대비)
+| 묶음 | 기준선 | HEAD d2ca1de03 |
+|---|---|---|
+| cysd 전체(스레드 4 · load 7→5 · 1014초) | 3332 통과 · 2 실패(dbg_r12 ×2) · 17 무시 · 계 3351 | **3351 통과 · 0 실패 · 17 무시 · 계 3368**(+17 = T4 10 · M6 1 · T5 6) |
+| cys-seatkeep | 49 | 51(+2 T5) |
+| 노브 켬 스크립트 accounts::+seat_proc:: | — | 입양 켬 180/180 · 입양 끔 180/180 |
+| e2e token ×5(04:3x~05:1x) | — | own rc 0 · 토큰 없음 rc 6 · 난수만 바꿈 token_mismatch · 고아(ppid 1) · 누출 0 — 5/5 |
+| e2e 회귀(T5 빌드) | — | adopt · reserve · 위조 pid · exitaway · 터짐(1.02MB) 통과 · bound·direct = 좌석 죽음(대조군 그대로) |
+- 부하 공지(master#6e6d4069 · 04:34~04:49 load 20~27): 그 창 안의 판정 = e2e 회귀 9종(전부 기대대로 · 시간 문턱 붉음 0) · 뮤턴트 붉음은 아래처럼 전부 단언 패닉(0.00~0.06초) 또는 대상 칸 하나만 거짓 → 시한 탓 아님.
+
+### 뮤턴트(T5 · /private/tmp/skmut1119 = 7487a7126 · 러너 scratchpad `mut5.py` · 결과 `e2e/mut5.out`)
+| 뮤턴트 | 바꾼 곳 | 시험 | 결과 |
+|---|---|---|---|
+| T1(ⓜ1) | 세대 정합 비교 끔 | check_adopted_token_generation_and_shape | 붉음(단언) |
+| T2(ⓜ2) | 입양 세대 집합에 안 넣음 | e2e token `tamper_mismatch` | 붉음(그 칸만 거짓) |
+| T3(ⓜ3) | seatkeep 이 모드 무관 env 읽음 | seat_token_only_in_adoptable_mode | 붉음(단언) |
+| T4(ⓜ4) | Surface 에 안 붙임 | e2e token `own_rc0` | 붉음(그 칸만 거짓) |
+| T5 | 오류 문구 토큰 지우기 끔 | welcome_without_tokens_strips_only_the_token | 붉음 |
+| T6 | 재발급 대입 1줄 끼움 | seat_token_is_assigned_only_at_creation(소스 핀) | 붉음 |
+| T7 | 판정 = 현 세대만(넓힘 되돌림) | claim_role_adopted_generation_mismatch_is_rejected_loudly | 붉음 |
+
+### 지시 없이 내린 판단(T5)
+1. ⓓ′-1 은 단위 대신 e2e(Surface 토큰 불변 · Arc 공유라 시험에서 못 바꿔 끼움 — 일치 갈래 무변).
+2. 입양 세대는 좌석이 끝나도 집합에서 안 뺌(설계 2-2 ④).
+3. 거절 문구 「동세대 발급분」 안 바꿈(원작자 문구 · 소스 핀 위험) → 📌.
+4. `explain-state` 는 이 트리에 없음 → 진단 표면 = list · status --json · topology · 격리 폴더 전체로 훑음.
+
+### 남은 것 · 다음 첫 행동
+0. master: 독립 검증 좌석(인증·비밀값 = 고위험) + codex 1R(T5 · 범위 63c332520..d2ca1de03 -- src/ scripts/seatkeep-adopt-e2e.py) · codex T4 5R(e20850fae..ddae58a5f) = 대기열.
+1. 판정·처분 줄이 오면 그대로. 그다음 = HANDOFF 「다음 단계 목록」(T6 → T7 → D1 → 노브 기본 켬 판단).

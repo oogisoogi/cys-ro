@@ -42,10 +42,13 @@ def check(c: bool, m: str) -> None:
 REVIVE_SHIM = r"""
 (() => {
   const C = window.__CHAT;
-  C.starts = []; C.closes = []; C.order = []; C.startErr = null; C.onStart = null;
+  C.starts = []; C.closes = []; C.order = []; C.startErr = null; C.onStart = null; C.rowOver = null;
   const prev = window.__TAURI__.core.invoke;
   window.__TAURI__.core.invoke = (cmd, args) => {
     const a = args ?? {};
+    // CHAT_SHIM 은 agent_alive 를 `??` 로 합쳐 null 을 못 싣는다 — 마스터 행 칸을 그대로 덮는 자리(never_started 꼴: agent_alive null)
+    if (cmd === 'org_status' && (a.socket ?? null) === null && C.rowOver)
+      return prev(cmd, args).then((r) => ({ ...r, surfaces: (r.surfaces || []).map((x) => (x.role === 'master' ? { ...x, ...C.rowOver } : x)) }));
     if (cmd === 'start_master') { C.starts.push(Date.now()); C.order.push('start'); if (C.onStart) C.onStart(); return C.startErr ? Promise.reject(C.startErr) : Promise.resolve(null); }
     if (cmd === 'close_surface' && (a.socket ?? null) === null) { C.closes.push(a.surfaceId); C.order.push('close:' + a.surfaceId); }
     return prev(cmd, args);
@@ -111,7 +114,7 @@ def main() -> int:
         b = band(pg)
         check(C(pg, "starts.length") == 1 and b["key"] == "restarting" and b["btns"][0][1] == "켜는 중…" and b["btns"][0][2] == "true", f"호출 1 · 「켜는 중…」 잠금 {b}")
         for _ in range(20):
-            pg.click(".cvr-btn[data-act=restart]")
+            pg.click(".cvr-btn[data-act=restart]", force=True)  # 잠긴 단추(aria-disabled)도 진짜 마우스로 누름 — playwright 기본은 「누를 수 없음」이면 클릭 0
         pg.clock.run_for(300)
         check(C(pg, "starts.length") == 1, f"★연타 20(진짜 클릭) → start_master 그대로 1 ({C(pg, 'starts.length')})")
         pg.evaluate(f"() => {{ window.__SEATS.push({seat(BASE, 9, 'master')}); window.__CHAT.master.agent_alive = true; }}")
@@ -119,19 +122,20 @@ def main() -> int:
         b = band(pg)
         after = [r for r in roles(pg) if r != "master"]
         check(b["hidden"], f"새 마스터 좌석 생존 → 띠 닫힘 {b}")
-        check(after == [r for r in before if r is not None and r != "master"] and roles(pg).count("master") == 1, f"CSO·워커 수 그대로 · 마스터 1 {before} → {roles(pg)}")
+        check(after == [r for r in before if r != "master"] and roles(pg).count("master") == 1, f"CSO·워커 수 그대로 · 마스터 1 {before} → {roles(pg)}")
         check(C(pg, "writes.length") == 0, "★다시 켜기 동안 사람 말 쓰기(chat_send) 0")
         check(not errs, f"페이지 오류 0 {errs}")
         ctx.close()
 
         print("== C agent_never_started → close_surface(그 좌석) 뒤 start_master")
         nev = {"agent": "claude", "agent_alive": None, "agent_seen": False, "seat": "empty"}
-        ctx, pg, errs = page([seat(BASE, 1, "master"), seat(BASE, 2, "cso")], master=nev)
+        ctx, pg, errs = page([seat(BASE, 1, "master"), seat(BASE, 2, "cso")])
+        pg.evaluate(f"() => {{ window.__CHAT.rowOver = {json.dumps(nev)}; }}")
         pg.evaluate("() => window.__emit('daemon-event', { name: 'master.deadman', surface_id: 1, seq: 7001, socket_slug: 'base', timestamp: Date.now() / 1000, payload: { role: 'master', axis: 'agent_never_started' } })")
         pg.clock.run_for(3_200)
         b = band(pg)
         check(b["key"] == "down_never" and b["title"] == "마스터가 아직 시작하지 못했어요.", f"never 띠 {b}")
-        pg.evaluate(f"() => {{ window.__CHAT.onStart = () => {{ window.__SEATS.push({seat(BASE, 9, 'master')}); }}; }}")
+        pg.evaluate(f"() => {{ window.__CHAT.onStart = () => {{ window.__SEATS.push({seat(BASE, 9, 'master')}); }}; window.__CHAT.order = []; }}")  # 클릭 전 기록(앱 시작 때 작업 화면 쪽 닫기)은 대조 밖
         pg.click(".cvr-btn[data-act=restart]")
         pg.clock.run_for(500)
         check(C(pg, "order") == ["close:1", "start"], f"★순서 = 닫기(그 좌석) → start_master {C(pg, 'order')}")
@@ -139,9 +143,11 @@ def main() -> int:
         ctx.close()
 
         print("== C2 never + 옛 창에 사람 입력 → 닫지 않음")
-        ctx, pg, errs = page([seat(BASE, 1, "master")], master={**nev, "pending_input_human_bytes": 9})
+        ctx, pg, errs = page([seat(BASE, 1, "master")])
+        pg.evaluate(f"() => {{ window.__CHAT.rowOver = {json.dumps({**nev, 'pending_input_human_bytes': 9})}; }}")
         pg.evaluate("() => window.__emit('daemon-event', { name: 'master.deadman', surface_id: 1, seq: 7002, socket_slug: 'base', timestamp: Date.now() / 1000, payload: { role: 'master', axis: 'agent_never_started' } })")
         pg.clock.run_for(3_200)
+        pg.evaluate("() => { window.__CHAT.order = []; }")
         pg.click(".cvr-btn[data-act=restart]")
         pg.clock.run_for(500)
         b = band(pg)
@@ -157,7 +163,7 @@ def main() -> int:
         pg.click(".cvr-btn[data-act=wake]")
         pg.clock.run_for(300)
         for _ in range(5):
-            pg.click(".cvr-btn[data-act=wake]")
+            pg.click(".cvr-btn[data-act=wake]", force=True)
         pg.clock.run_for(300)
         w = pg.evaluate("() => window.__CHAT.writes.map((x) => [x.args.kind, x.args.text])")
         check(w == [["auto", WAKE_TEXT]], f"★깨움 말 1건(kind auto · 원문) · 연타에도 1 {w}")
@@ -184,7 +190,7 @@ def main() -> int:
         pg.clock.run_for(3_200)
         b = band(pg)
         check(b["btns"] and b["btns"][0][1] == "복원하는 중이에요" and b["btns"][0][2] == "true", f"「복원하는 중이에요」 잠금 {b}")
-        pg.click(".cvr-btn[data-act=restart]")
+        pg.click(".cvr-btn[data-act=restart]", force=True)
         pg.clock.run_for(500)
         check(C(pg, "starts.length") == 0, "★복원 중 진짜 클릭 → start_master 0")
         ctx.close()

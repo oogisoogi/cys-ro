@@ -219,3 +219,33 @@ T6 rotate·업데이터(계획 교체 = 화면 저장+이어받기 · 사전 실
 ### 남은 것 · 다음 첫 행동
 0. master: 독립 검증 좌석(인증·비밀값 = 고위험) + codex 1R(T5 · 범위 63c332520..d2ca1de03 -- src/ scripts/seatkeep-adopt-e2e.py) · codex T4 5R(e20850fae..ddae58a5f) = 대기열.
 1. 판정·처분 줄이 오면 그대로. 그다음 = HANDOFF 「다음 단계 목록」(T6 → T7 → D1 → 노브 기본 켬 판단).
+
+## 독립 검증(2286 · VERDICT = `~/axdev/workers/cysr-1116-seatkeep-verify-1120/VERDICT.md` · 증거 `evidence/`) 처분 — 후임 seatkeep2 매듭(11-20 06:0x · CTX 53%)
+- 최종 판정(master#a0097cf2): **T4 BLOCK · T5 ACCEPT · 노브 끔 ACCEPT**.
+| # | 처분 | 커밋 · 시험 |
+|---|---|---|
+| B1 claim-role 우회 · B2 dedup 우회 | **고침** — 예약 판정 한 곳 `seat_adopt::role_grant_blocked` 를 역할 부여 4입구(surface.create · system.claim_role · reclaim_commit · role.restore_released)가 부름 · worker 번호 배정 = `dedup_worker_role_avoiding(…, role_name_reserved)`(정확히 그 이름만 피함) | 282b1e568 · 검증 탐침 그대로 `scripts/seatkeep-reserve-probe.py`(claim rc 0 → rc 7 claim_denied · dedup worker-2 → worker-3) · 뮤턴트 R1·R2 붉음 |
+| 빈칸 2(reclaim · restore_released 반례) | **채움** — `seat_adopt::test_reserve_role`(시험 전용 · cfg!(test) 값 분기) · 단위 2(예약 = 거절·상태 불변 · 걷힘 = 성공 대조) | 80d66308b · 뮤턴트 R3·R4 붉음 |
+| **M1** 노브 없는 cysd 재기동 → 옛 seatkeep·좌석 영구 고아 + 같은 역할 새 좌석 | **남음(다음 첫 행동)** | — |
+| **M2** 미결 굳음 · 역할 모름 미결이 모든 역할 생성 막음 · 조회 표면 없음 | **남음** | — |
+| m1 같은 폴더 소켓 둘 = 남의 종료 기록 소비 | **남음**(고친다) | — |
+| m2 종속 모드 WELCOME `"disc_total": null` 칸 | **기록 처분(master)**: 「노브 끔 바이트 같음」의 예외 1건 — `CYS_SEATKEEP=1` 만(T3) 일 때 WELCOME 좌석 칸에 `disc_total: null` 이 붙는다 · cysd 는 `as_u64()` = None 으로 읽어 동작 같음 · 두 노브 다 끔 = seatkeep 미사용이라 해당 없음 | — |
+| m3 거절 문구 「동세대 발급분」 | **기록**(📌 · 원작자 문구 · 안 바꿈) | — |
+
+### 다음 첫 행동(후임) — M1 → M2 → m1 → T6a 나머지
+1. **M1**(master 처분 원문: 「노브 끔 기동에서도 seatkeep 등록부에 산 seatkeep 이 있으면 입양은 안 하되 관리용 종료(신원 확인 → SIGTERM → 확인) + 역할 phoenix 복원(D2 와 같은 길) · 노브 끔 사용자 = 등록부 비어 있어 바이트 같음 시험 유지 · 실측 20초 반례 그대로 붉음→초록」)
+   - 자리: `main.rs` 의 `adopt_on_boot` 호출(accept 전) 옆 — 노브 끔이면 `seat_adopt::end_orphans_on_boot`(새 함수): `seatkeep_base(daemon)/seatkeep/*.json` 등록부를 읽어 산 pid 마다 신원 확인(pid 생존 · 출생 시각 = 등록부 `start_us` · `seat_proc::seatkeep_exe_matches(pid) == Some(true)` · id 잠금 `<skid>.lock` 은 seatkeep 이 쥐므로 「못 잡음 = 산 seatkeep」 확인용) → SIGTERM → 5초 안 사라짐 확인(아니면 SIGKILL) → `consume_dead` 와 같은 정리(id 잠금 잡은 뒤 파일 삭제 · `.log` 남김) · 사건 `seat.adopt_skipped{knob_off_orphan_ended}`. 그 뒤 자동 복원(phoenix)이 그 역할을 topology 로 띄움(예약 안 남김).
+   - 함께: D2(기록 없는 산 seatkeep) = 같은 관리용 종료 함수를 노브 켬 `adopt_one` 의 `no_record_live_keeper` 갈래에서 부름(T6a 항목이었음 · 같은 길).
+   - 주의: 등록부 없는 dir = 즉시 반환(파일 0 · 노브 끔 바이트 같음) · T3 종속(`--controller-bound`) seatkeep 은 부모 상실로 스스로 끝나므로 대상이 사실상 `--adoptable` 뿐 — 그래도 신원 확인 통과한 산 seatkeep 은 모드 무관 끝냄(조종자 없는 좌석 = 고아).
+   - 반례 = `python3 -I scripts/seatkeep-reserve-probe.py <bin> knoboff <out>`(검증 원문 · 고치기 전 = `keepers_after_20s 1 · old_seat_alive_after_20s true · same_role_create_rc 0`) → 고친 뒤 = keepers 0 · 옛 좌석 죽음 · 파일 정리(.log 제외). 뮤턴트 = 노브 끔 정리 호출 끔 → 붉음.
+2. **M2**(원문: 「재시도(짧은 간격 N회) → 끝내 못 하면 관리용 종료 + 역할 해제/복원 · 역할 모름 미결이 모든 역할 생성을 막지 않게(그 좌석의 역할이 판명될 때까지만 · 상한 시간) · 조회 1줄(cys status 또는 explain)」)
+   - 자리: `adopt_on_boot` 끝 → 미결이 있으면 백그라운드 스레드가 `adopt_one` 을 짧은 간격(예 2초 × 5)으로 재시도(입양되면 예약 풀림) → 끝내 미결 = 1의 관리용 종료 + 예약 걷음 → 그 역할 복원(`cys restore` 와 같은 길 · 또는 자동 복원 재개) · 역할 모름 미결 = 상한 시간(예 60초) 뒤 같은 처리. 조회 = RPC `seat.adopt_status`(SUMMARY + PENDING 의 skid·역할·사유·나이 · 토큰 0) + `cys status --json` 1칸.
+   - 시험: 부하 3초 시한 실패 흉내 = 검증 탐침의 `registry_io` 고정물(등록부 권한 0 → 재시도 중에 권한 되돌림 → 입양됨) · 끝내 실패 → 끝남·복원 · 역할 모름 상한 뒤 역할 있는 생성 rc 0.
+3. **m1**: 판정 앞에 「그 seatkeep 의 `--lock`(등록부 또는 KERN_PROCARGS2 인자) = 이 cysd 의 시작 잠금 경로」 대조 · 다르면 무접촉(판정·소비·삭제 0) · 시험 = 같은 폴더 소켓 둘.
+4. 그다음 T6a 나머지(위 T6 절 · `docs/seatkeep/T6-DESIGN.md` · master#38e51f0e 결정 D1~D5): drain 분리 · 사전 점검 `cysd --adopt-check` · 상한 · A1 rotate 6회(e2e `rotate` 모드 · 2b741e0c6) · D4 launchd(허락됨 · 라벨 `com.cysr.test.t6.<pid>` · try/finally bootout+plist 삭제+`launchctl list | grep com.cysr.test` 0) · D5 claude 기억(허락됨 · 격리 프로필 계정2 `--setting-sources project`) · 뮤턴트 · 【확인요청】.
+- 검증 좌석 덧붙임 📌(기록): ⓐ 업데이터가 「옛 번들 지우기 → 새로 복사」 사이에 cysd 를 띄우면 `proc_pidpath` 실패 → 미결(T6b 순서 확인) ⓑ KERN_PROCARGS2 로 같은 사용자가 토큰 env 를 읽을 수 있음(T3 부터 · 경계 안) ⓒ 입양 기록 둘이 같은 비-worker 역할이면 latest-wins 로 앞 좌석 `surface.role` 칸이 남음(기록 쓰기 실패 전제 · 드묾).
+
+### 이 매듭의 시험·커밋 요약
+- 커밋: 2b741e0c6(T6a 폴백·e2e rotate) · 282b1e568(B1·B2) · 80d66308b(빈칸 2). 시험: 폴백 단위 1 · dedup 단위 1 · 관련 묶음 125/125 · 빈칸 단위 2 · 탐침 claim/dedup 붉음→초록 · 뮤턴트 R1~R4 붉음 · e2e rotate 2회+drain 1회 rc 0(좌석 생존·작성자 하나).
+- 전체 cysd 묶음은 282b1e568·80d66308b 뒤 **안 돌림**(마지막 전체 = d2ca1de03 3351/0) — 후임 첫 전체 실행 때 확인.
+- 실사용 cys list 시험 좌석 0(실좌석 2276·2286 만) · 시험 프로세스 잔존 0.

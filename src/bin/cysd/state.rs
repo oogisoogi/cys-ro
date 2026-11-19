@@ -5078,6 +5078,8 @@ pub struct Daemon {
     /// (밖에서 하면 id 5 와 id 1004 가 순서를 바꿔 할당돼 정상 경로에서 I1 보호가 오발한다).
     /// surfaces·roles 락을 쥔 채로 이 락을 잡지 않는다 · 이 락 안에서 DB·다른 락 0.
     pub display_alloc: Mutex<DisplayAlloc>,
+    /// (조각 6b · TICKET=cysr-1116-s6-1119) 팀별 기계 장치 장부(정지 팀 · 마스터 큐 꼬리표 · 보고 시각) — 메모리 전용 · 말단 락.
+    pub teams: crate::team::TeamBook,
 }
 
 /// (B3 · §3-3) 진행 중인 부트 런의 관측 표. **데몬 인메모리**다 — 영속 소유권은 스풀 인텐트
@@ -7137,6 +7139,7 @@ impl Daemon {
             boot_fenced: Mutex::new(Vec::new()),
             // ★(0.14.31 · WP-3 B) enabled 는 alert_route::spawn 이 실제로 태스크를 열 때만 true.
             alert_route: Mutex::new(Default::default()),
+            teams: Default::default(),
         });
         // ★조각 1: 시작 때 손상본을 옮겼으면 사람에게 알린다(저장 핀도 함께 빠졌을 수 있다).
         if let Some(name) = isolated_topology {

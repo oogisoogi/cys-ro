@@ -96,6 +96,9 @@ enum Command {
         /// 사람 초안(또는 미계수 화면 초안)이 있으면 typing_guard/draft_gate 로 거부되며 --queued 폴백은 없다(원자 주입은 큐와 결합 불가) — 기계 잔여만 지운다.
         #[arg(long)]
         clear_first: bool,
+        /// (조각 6b ⑩) 【진행】 보고 꼬리표 — 큐로 가는 말만 팀별 10분 창으로 묶어 마스터에게 1건으로 전달(급한 머리표가 있으면 즉시 원문 · 팀 1개면 묶지 않음)
+        #[arg(long)]
+        progress: bool,
         /// ★B3 #4 본문을 표준입력 전문으로 받는다 — quoted heredoc(`<<'EOF'`)이면 발신 셸이
         /// 백틱·$( )·$VAR 를 치환하지 않는다(argv 채널의 구조적 우회로).
         #[arg(long, conflicts_with = "file")]
@@ -3411,6 +3414,13 @@ struct SeatGroupArgs {
     group: String,
 }
 
+/// (조각 6b ⑨ · TICKET=cysr-1116-s6-1119) `cys seat-group-pause <팀>` · `cys seat-group-resume <팀>` 인자(Args 구조체 — 위 SeatGroupArgs 와 같은 까닭).
+#[derive(clap::Args)]
+struct SeatGroupPauseArgs {
+    /// 팀(묶음) 이름 — 작업 화면 묶음 탭 이름과 같다(명시 묶음 또는 생성 폴더 이름)
+    group: String,
+}
+
 /// ★1.1.11 편입 — 원작자 0.14.52 의 새 최상위 동사 2개(`Command` 에 평탄화 · 이름·도움말·숨김은 원작자 그대로).
 #[derive(Subcommand)]
 enum VendorAuxCommand {
@@ -3431,6 +3441,15 @@ enum VendorAuxCommand {
     ///   (실측: `aid_s5_reap_due_is_explicit_and_json_is_validated` 스택 넘침 · HEAD 판 통과 · RUST_MIN_STACK 8 MiB 통과). 최상위 동사 이름은 그대로다.
     #[command(name = "seat-group")]
     SeatGroup(SeatGroupArgs),
+    /// (조각 6b ⑨) 한 팀만 잠깐 멈춘다 — 그 팀 좌석으로 가는 큐 배달과 그 팀이 마스터에게 큐로 보낸 말을 보류(사람이 직접 치는 것은 통과 · 다른 팀은 그대로). master 좌석 또는 좌석 밖 터미널에서만.
+    #[command(name = "seat-group-pause")]
+    SeatGroupPause(SeatGroupPauseArgs),
+    /// (조각 6b ⑨) 멈춘 팀을 다시 움직인다(보류했던 말은 순서대로 배달).
+    #[command(name = "seat-group-resume")]
+    SeatGroupResume(SeatGroupPauseArgs),
+    /// (조각 6b · promote-check 재료) 팀별 계기 — 살아 있는 좌석·일하는 좌석·마스터 좌석 큐에 넣은 시각(지난 7일 · 데몬 메모리 전용). JSON 한 줄.
+    #[command(name = "team-stats")]
+    TeamStats,
     /// (tabs-sidebar 2d) 앱의 컨트롤 센터를 연다(말로 열기 통로) — master 좌석 또는 좌석 밖 터미널에서만.
     #[command(name = "open-control-center")]
     OpenControlCenter,
@@ -3699,6 +3718,19 @@ fn parse_explicit_surface(surface: &Option<String>) -> Result<Option<u64>, Strin
 ///   `#N → surface:M @<소켓>` 한 줄을 남긴다(사람이 어느 데몬의 좌석을 건드리는지 보게 · 설계 §5).
 /// · `#` 로 시작하지만 문법 밖(`#0`·`#1000`·`#017`) → RPC 0회 거부.
 /// · 그 밖(`surface:31`·맨숫자 `31`) → 종전 그대로 내부 번호(맨숫자는 보이는 번호가 아니다).
+/// (조각 6b ⑨) 팀 정지·재개 — 데몬 `surface.group_pause` 1회.
+fn seat_group_pause(group: &str, paused: bool) -> Result<(), String> {
+    let r = request("surface.group_pause", json!({"group": group, "paused": paused}))?;
+    let team = r["team"].as_str().unwrap_or(group);
+    let what = if paused { "멈춤" } else { "다시 움직임" };
+    if r["changed"].as_bool() == Some(true) {
+        println!("OK 팀 {team} {what}");
+    } else {
+        println!("OK 팀 {team} 이미 {what} (변화 없음)");
+    }
+    Ok(())
+}
+
 fn resolve_surface_arg(s: &str) -> Result<u64, String> {
     if let Some(n) = cys::parse_display_ref(s) {
         let r = request("surface.resolve_display", json!({"display_no": n}))?;
@@ -6394,7 +6426,7 @@ fn run(command: Command) -> i32 {
             }
         }),
 
-        Command::Send { surface, to, queued, clear_first, stdin, file, text } => {
+        Command::Send { surface, to, queued, clear_first, progress, stdin, file, text } => {
             resolve_targets(&surface, &to).and_then(|sids| {
                 // ★(0.14.43 · J3) pane 안(자기 surface id 있음)이면 종전 그대로 숫자 · pane 밖이면 표시용 라벨 문자열(`cli:send` — env
                 //   `CYS_SENDER_LABEL` 이 있으면 `cli:<살균값>`). 직접 요청·명시 `--queued`·아래 큐 전환 폴백이 같은 값을 쓴다. 라벨은 표시·원장용이다 —
@@ -6424,6 +6456,9 @@ fn run(command: Command) -> i32 {
                         //   재시도를 쓰지 않고 증명 없이 거부한다 → 아래 `--queued` 1회(= pause 동안 동결).
                         if settle_retry {
                             params["settle_retry"] = json!(true);
+                        }
+                        if progress {
+                            params["kind"] = json!("progress"); // (조각 6b ⑩) 큐 항목에만 쓰인다(직접 쓰기 = 무시)
                         }
                         request("surface.send_text", params)
                     };
@@ -6461,11 +6496,12 @@ fn run(command: Command) -> i32 {
                             // ★(0.14.42 · A2 C1) 자동 전환(이 폴백)만 `absorb_return:true` 를 싣는다 —
                             //   데몬이 이 발신자의 **뒤따르는 짝 Return 1회**(TTL 안)를 흡수해 맨 CR·빈 큐
                             //   항목·거짓 queue_full 을 없앤다. 명시 `--queued` 는 싣지 않는다(의도적 Return 보존).
-                            let r2 = request(
-                                "surface.send_text",
-                                json!({"surface_id": sid, "text": body, "from": from, "queued": true,
-                                       "absorb_return": true}),
-                            )?;
+                            let mut p2 = json!({"surface_id": sid, "text": body, "from": from, "queued": true,
+                                       "absorb_return": true});
+                            if progress {
+                                p2["kind"] = json!("progress");
+                            }
+                            let r2 = request("surface.send_text", p2)?;
                             let depth = r2["depth"].as_u64().unwrap_or(0);
                             // 구 데몬은 키가 없다(None) → 종전 안내만(보조 문구 없음 · 하위호환).
                             let absorb_secs = (r2["return_absorb"].as_bool() == Some(true))
@@ -6639,6 +6675,11 @@ fn run(command: Command) -> i32 {
                 }
             })
         }),
+
+        Command::VendorAux(VendorAuxCommand::SeatGroupPause(SeatGroupPauseArgs { group })) => seat_group_pause(&group, true),
+        Command::VendorAux(VendorAuxCommand::SeatGroupResume(SeatGroupPauseArgs { group })) => seat_group_pause(&group, false),
+
+        Command::VendorAux(VendorAuxCommand::TeamStats) => request("team.stats", json!({})).map(|r| println!("{r}")),
 
         Command::VendorAux(VendorAuxCommand::OpenControlCenter) => {
             request("ui.open_panel", json!({"panel": "control-center"})).map(|_| println!("OK 컨트롤 센터 열기 요청을 앱에 보냈습니다"))
@@ -38613,7 +38654,7 @@ mod tests {
     #[test]
     fn a2_explicit_queued_send_does_not_request_absorb() {
         let src = include_str!("cys.rs");
-        let arm = src.split("Command::Send { surface, to, queued, clear_first, stdin, file, text } => {")
+        let arm = src.split("Command::Send { surface, to, queued, clear_first, progress, stdin, file, text } => {")
             .nth(1)
             .expect("Command::Send arm");
         let first = arm
@@ -38707,7 +38748,7 @@ mod tests {
         assert_eq!(n, 0);
         // 배선: Command::Send 가 윈도우 한정으로 부른다
         let src = include_str!("cys.rs");
-        let arm = src.split("Command::Send { surface, to, queued, clear_first, stdin, file, text } => {").nth(1).unwrap();
+        let arm = src.split("Command::Send { surface, to, queued, clear_first, progress, stdin, file, text } => {").nth(1).unwrap();
         let first = arm.split("Err(e) if should_queue_fallback_send(queued, clear_first, &e) => {").next().unwrap();
         assert!(first.contains("send_guard_wait_retry(") && first.contains("cfg!(windows),"), "📌1 안전망 미배선");
     }
@@ -38779,7 +38820,7 @@ mod tests {
         // 배선 핀: 재시도 표식은 첫 직접 요청 클로저 안에서 `settle_retry` 인자로만 싣는다.
         let src = include_str!("cys.rs");
         let arm = src
-            .split("Command::Send { surface, to, queued, clear_first, stdin, file, text } => {")
+            .split("Command::Send { surface, to, queued, clear_first, progress, stdin, file, text } => {")
             .nth(1)
             .expect("Command::Send arm");
         let first = arm
@@ -38796,7 +38837,7 @@ mod tests {
     fn s21_send_settle_wired_on_first_direct_request_only() {
         let src = include_str!("cys.rs");
         let arm = src
-            .split("Command::Send { surface, to, queued, clear_first, stdin, file, text } => {")
+            .split("Command::Send { surface, to, queued, clear_first, progress, stdin, file, text } => {")
             .nth(1)
             .expect("Command::Send arm");
         let first = arm
@@ -45420,7 +45461,7 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
     fn j3_label_wiring_source_pin() {
         let src = include_str!("cys.rs");
         let arm = src
-            .split("Command::Send { surface, to, queued, clear_first, stdin, file, text } => {")
+            .split("Command::Send { surface, to, queued, clear_first, progress, stdin, file, text } => {")
             .nth(1)
             .expect("Command::Send arm");
         let arm = arm.split("Command::SendKey").next().unwrap();

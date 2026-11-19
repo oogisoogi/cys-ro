@@ -4805,9 +4805,15 @@ fn enqueue_bound_body(
     let entry_from = verified_from
         .map(cys::surface_ref)
         .or_else(|| params.get("from").and_then(|v| v.as_str()).map(str::to_string));
+    // (조각 6b ⑦) 마스터 좌석 큐 = 팀별 몫 · 꼬리표(잠금 밖에서 계획 · 몫 판정은 같은 큐 잠금 안).
+    let team_plan = crate::team::plan_for(daemon, surface, verified_from, params.get("kind").and_then(|v| v.as_str()), &body.text);
+    let mut team_full = false;
     let pushed = {
         let mut q = surface.pending_queue.lock().unwrap();
         if q.len() >= 100 {
+            None
+        } else if team_plan.as_ref().is_some_and(|p| crate::team::share_over(&daemon.teams, sid, &q, p)) {
+            team_full = true;
             None
         } else {
             let entry = daemon.next_queue_entry(body.text.clone(), entry_from, "send");
@@ -4817,8 +4823,14 @@ fn enqueue_bound_body(
     };
     let Some((entry, depth)) = pushed else {
         restore_held_body(daemon, surface, body);
+        if let (true, Some(p)) = (team_full, team_plan.as_ref()) {
+            return crate::team::queue_full_team_response(daemon, id, sid, p);
+        }
         return err_response(id, "queue_full", "pending queue cap (100) reached");
     };
+    if let Some(p) = &team_plan {
+        crate::team::note_enqueued(&daemon.teams, sid, &entry.id, entry.enqueued_at, p);
+    }
     daemon.bus.publish(
         "queue.enqueued",
         "queue",
@@ -7454,6 +7466,13 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                     }
                 }
             }
+            // (조각 6b ⑧) 팀별 도우미 수 상한 — `CYS_MAX_TEAM_WORKERS`(기본 0 = 무제한 · 위 active-limit 과 같은 철학).
+            //   새 좌석의 팀 = 파라미터 group > cwd 폴더 > 홈 폴더(create_surface 기본 cwd 와 같은 규칙).
+            if param_str(&params, "role").as_deref() == Some("worker") {
+                if let Some(reply) = crate::team::team_worker_gate(daemon, &id, &params, caller_pid) {
+                    return Reply::Single(reply);
+                }
+            }
             // ── 워커 기동 게이트 ⑤ (최종 인증 전제 · U-18) ──
             // ★자리가 계약이다: ④ active-limit **뒤** · `create_surface_with_env` **앞**.
             //   앞으로 옮기면 좌석 승계(takeover_empty_seat)와 멱등 재사용까지 막혀 **살아 있는
@@ -7973,6 +7992,8 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                 let entry_from = verified_from.map(cys::surface_ref).or_else(|| {
                     params.get("from").and_then(|v| v.as_str()).map(str::to_string)
                 });
+                // (조각 6b ⑦·⑩) 마스터 좌석 큐 = 팀별 몫 · 꼬리표(`kind:"progress"`) — 계획은 잠금 밖 · 몫 판정은 같은 큐 잠금 안.
+                let team_plan = crate::team::plan_for(daemon, &surface, verified_from, params.get("kind").and_then(|v| v.as_str()), &text);
                 let (entry, depth) = {
                     let mut q = surface.pending_queue.lock().unwrap();
                     if q.len() >= 100 {
@@ -7981,6 +8002,10 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                             "queue_full",
                             "pending queue cap (100) reached",
                         ));
+                    }
+                    if let Some(p) = team_plan.as_ref().filter(|p| crate::team::share_over(&daemon.teams, sid, &q, p)) {
+                        drop(q);
+                        return Reply::Single(crate::team::queue_full_team_response(daemon, &id, sid, p));
                     }
                     // ★agy 좌석 문(r6 2회차 · ChatGPT F1): 배달 시점 재판정이 갈래를 알 수 있게 출처를 적는다 —
                     //   사람 자판(통과 유지)·좌석 기동 줄(낱말 재판정) · 그 밖은 종전 "send".
@@ -7995,6 +8020,9 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                     q.push_back(entry.clone());
                     (entry, q.len())
                 };
+                if let Some(p) = &team_plan {
+                    crate::team::note_enqueued(&daemon.teams, sid, &entry.id, entry.enqueued_at, p);
+                }
                 // ★G1(W2-B): payload는 enqueue 3경로 공용 빌더(기존 키 bytes/depth/from 불변
                 // + queue_entry_id/seq/enqueued_at additive).
                 daemon.bus.publish(
@@ -9520,6 +9548,34 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                 json!({"surface_id": sid, "group": group, "previous": previous}),
             );
             Reply::Single(ok_response(&id, json!({"surface_id": sid, "group": group, "changed": true})))
+        }
+
+        // (조각 6b ⑨ · TICKET=cysr-1116-s6-1119) 팀 정지 스위치 — 그 팀 좌석으로 가는 큐 배달 동결 + 그 팀이 마스터 좌석 큐에 넣은 항목 보류
+        //   (직접 보내기 = 통과 · 다른 팀 = 그대로 · 메모리 전용). 호출자 = surface.set_group 과 같은 게이트(master 좌석 또는 좌석 밖).
+        "surface.group_pause" => {
+            let team = match parse_seat_group(params.get("group")) {
+                Ok(Some(g)) => g,
+                Ok(None) => return Reply::Single(err_response(&id, "invalid_params", "group must be a non-empty team name")),
+                Err(m) => return Reply::Single(err_response(&id, "invalid_params", m)),
+            };
+            let Some(paused) = params.get("paused").and_then(|v| v.as_bool()) else {
+                return Reply::Single(err_response(&id, "invalid_params", "paused must be true or false"));
+            };
+            if let Err(m) = ui_command_caller_ok(daemon, caller_pid) {
+                return Reply::Single(err_response(&id, "forbidden", &format!("surface.group_pause: {m}")));
+            }
+            let changed = daemon.teams.set_paused(&team, paused);
+            if changed {
+                let ev = if paused { crate::team::EV_PAUSED } else { crate::team::EV_RESUMED };
+                daemon.bus.publish(ev, "queue", None, json!({"team": team, "paused": paused}));
+            }
+            Reply::Single(ok_response(&id, json!({"team": team, "paused": paused, "changed": changed, "paused_teams": daemon.teams.paused_list()})))
+        }
+
+        // (조각 6b · promote-check 재료) 팀별 계기 읽기 — 살아 있는 좌석·일하는 좌석·마스터 좌석 큐에 넣은 시각(지난 7일 · 메모리 전용).
+        "team.stats" => {
+            let seats = crate::team::snapshot(daemon);
+            Reply::Single(ok_response(&id, crate::team::stats_json(&seats, &daemon.teams, crate::state::now_epoch())))
         }
 
         // (tabs-sidebar 2d · master#b1b8d7df) 말로 앱 패널 열기 — 상태 없음 · 이벤트 1건(앱이 받아 그 패널을 연다).

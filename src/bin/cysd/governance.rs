@@ -13136,6 +13136,52 @@ pub(crate) struct ScreenRecheck {
     pub(crate) approval_pending: bool,
 }
 
+/// (조각 6b ⑨⑩ · TICKET=cysr-1116-s6-1119) 배달 앞 팀 판정 — 정지된 팀 좌석이면 `Freeze`(이 좌석 큐 배달 동결) ·
+/// 머리가 보류 항목(정지된 팀이 넣은 것 · 아직 안 풀린 【진행】)이고 뒤에 보낼 항목이 있으면 보낼 것을 앞으로 **안정 재배치**(각 무리 안 순서 유지)하고
+/// `Rotated`(이번 틱은 거름 — 준비 판정이 옛 머리로 내려졌다 · drop_stale_launch_lines 와 같은 규칙). 인계 예약·반쯤 쓴 머리(queue_hold)가 있으면 손대지 않는다.
+/// 재배치는 큐 잠금 안 · 영속은 잠금 밖(persist 가 surfaces → pending_queue 를 잡는다). 꼬리표 없는 좌석 = 비용 0(빠른 길).
+pub(crate) enum TeamPre {
+    Same,
+    Freeze,
+    Rotated,
+}
+pub(crate) fn team_pre_delivery(daemon: &Daemon, s: &crate::state::Surface, multi: bool) -> TeamPre {
+    let role = s.role.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let group = s.group.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if crate::team::team_of(role.as_deref(), &group, &s.cwd).is_some_and(|t| daemon.teams.is_paused(&t)) {
+        return TeamPre::Freeze;
+    }
+    let rotated = {
+        let mut q = s.pending_queue.lock().unwrap();
+        if q.len() < 2 || s.inject_reserved() || s.queue_hold.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+            return TeamPre::Same;
+        }
+        let live: Vec<&str> = q.iter().map(|e| e.id.as_str()).collect();
+        let tags = daemon.teams.tags_for(s.id, &live);
+        if tags.is_empty() {
+            return TeamPre::Same;
+        }
+        let paused = daemon.teams.paused_set();
+        let view = crate::team::HoldView { tags: &tags, paused: &paused, multi, bundle_secs: crate::team::progress_bundle_secs(), now: now_epoch() };
+        let entries: Vec<(&str, f64)> = q.iter().map(|e| (e.id.as_str(), e.enqueued_at)).collect();
+        let held: Vec<bool> = entries.iter().map(|(id, _)| view.held(id, &entries)).collect();
+        match crate::team::rotate_order(&held) {
+            Some(order) => {
+                let old: Vec<crate::state::QueueEntry> = q.drain(..).collect();
+                q.extend(order.into_iter().map(|i| old[i].clone()));
+                true
+            }
+            None => false,
+        }
+    };
+    if rotated {
+        daemon.persist_queue_state();
+        TeamPre::Rotated
+    } else {
+        TeamPre::Same
+    }
+}
+
 pub(crate) fn deliver_head_locked(
     daemon: &Arc<Daemon>,
     s: &Arc<crate::state::Surface>,
@@ -13166,6 +13212,16 @@ pub(crate) fn deliver_head_locked(
     //   계속 들어올 때 머리를 영영 못 보낸다(기아). 강제 배달은 조준 항목을 아래 머리 대조가 지킨다.
     if dropped > 0 && expect_head_id.is_none() && head_id(s) != head_before {
         return None;
+    }
+    // (조각 6b ⑨⑩) 팀 정지·【진행】 보류 — 운영자 강제 배달은 건너뜀(지목한 항목 1건이 그 명령의 계약). 팀 ≥ 2 판정은 잠금 밖에서 1회.
+    let team_multi = !forced && crate::team::distinct_teams(&crate::team::snapshot(daemon)) >= 2;
+    if !forced {
+        match team_pre_delivery(daemon, s, team_multi) {
+            TeamPre::Same => {}
+            TeamPre::Freeze => return None,
+            TeamPre::Rotated if expect_head_id.is_none() => return None,
+            TeamPre::Rotated => {}
+        }
     }
     let now = now_epoch();
     let default_ttl = crate::state::queue_ttl_default_secs();
@@ -13248,11 +13304,27 @@ pub(crate) fn deliver_head_locked(
             expired_head = Some(e);
             break 'tx None;
         }
+        // (조각 6b ⑨⑩) 팀 꼬리표 — 머리가 보류면 이번 틱 0(재배치는 잠금 밖 team_pre_delivery 가 함) · 머리가 풀린 【진행】이면 그 팀 【진행】 묶음.
+        let team_tags = if forced {
+            std::collections::HashMap::new()
+        } else {
+            let live: Vec<&str> = q.iter().map(|e| e.id.as_str()).collect();
+            daemon.teams.tags_for(s.id, &live)
+        };
+        let team_paused = if team_tags.is_empty() { std::collections::HashSet::new() } else { daemon.teams.paused_set() };
+        let team_view = crate::team::HoldView { tags: &team_tags, paused: &team_paused, multi: team_multi, bundle_secs: crate::team::progress_bundle_secs(), now };
+        let team_entries: Vec<(&str, f64)> = if team_tags.is_empty() { Vec::new() } else { q.iter().map(|e| (e.id.as_str(), e.enqueued_at)).collect() };
+        if !team_tags.is_empty() && team_view.held(&entry.id, &team_entries) {
+            break 'tx None;
+        }
+        let team_bundle = if team_tags.is_empty() { None } else { crate::team::bundle_pick(&team_view, &team_entries, queue_digest_max_items()) };
         // ★B1(0.14.30) C3: 같은 발신자 대기분을 **한 턴으로** 병합한다(버스트 봉인).
         //   강제 배달(queue.deliver RPC)과 조준 배달은 **병합하지 않는다** — 운영자가 지목한
         //   항목 1건만 나가는 것이 그 명령의 계약이다.
         let merge_on = !forced && expect_head_id.is_none();
-        let mut picked: Vec<usize> = if merge_on && q.len() > 1 {
+        let mut picked: Vec<usize> = if let Some((_, idx)) = team_bundle.as_ref().filter(|_| merge_on) {
+            idx.clone()
+        } else if merge_on && q.len() > 1 {
             let froms: Vec<Option<String>> = q.iter().map(|e| e.from.clone()).collect();
             let origins: Vec<String> = q.iter().map(|e| e.origin.clone()).collect();
             let chars: Vec<usize> = q.iter().map(|e| e.text.chars().count()).collect();
@@ -13266,6 +13338,12 @@ pub(crate) fn deliver_head_locked(
         } else {
             vec![0]
         };
+        // (조각 6b) 같은 발신자 병합 후보 중 보류 항목(정지 팀 · 안 풀린 【진행】)이 나오면 거기서 끊는다(연속 구간 규칙 유지).
+        if !team_tags.is_empty() && team_bundle.is_none() {
+            if let Some(cut) = picked.iter().position(|&i| i != 0 && q.get(i).is_some_and(|e| team_view.held(&e.id, &team_entries))) {
+                picked.truncate(cut);
+            }
+        }
         // ★(0.14.31 · WP-5 M) 병합 후보 중 만료분은 이번 턴에 싣지 않는다(머리 0 은 위에서 확인).
         picked.retain(|&i| {
             i == 0
@@ -13280,7 +13358,11 @@ pub(crate) fn deliver_head_locked(
         //   머리의 발신 라벨(클라이언트 자기신고 from)까지 덮는다. 병합 판정(항목 수·글자 수)은 위에서 원문으로
         //   끝났다(무변경). `digest_parts[].sha256` 은 원문 항목 sha 그대로(유실 대조 축). O(n) — 아래 sha256 과
         //   같은 차수라 pending_queue·input_gate 락 보유 시간의 차수가 바뀌지 않는다. 표지 없는 본문은 복사 0.
-        let body = cys::paste_fence::sanitize_owned(render_queue_digest(entry.from.as_deref(), &texts));
+        let body = cys::paste_fence::sanitize_owned(match team_bundle.as_ref().filter(|_| merge_on) {
+            // (조각 6b ⑩) 【진행】 묶음 = 머리 1줄 + 항목마다 발신·원문(순서 그대로)
+            Some((team, _)) => crate::team::render_bundle(team, &merged.iter().map(|e| (e.from.clone(), e.text.clone())).collect::<Vec<_>>()),
+            None => render_queue_digest(entry.from.as_deref(), &texts),
+        });
         let merged_ids: Vec<String> = merged.iter().map(|e| e.id.clone()).collect();
         // ★1.1.8 U2 2판(codex 1R C4): 실제로 실리는 보류 재생 항목만 지금(원장 선기록 앞 · 주입 전) durable `delivering`.
         let hold_ids: Vec<String> =

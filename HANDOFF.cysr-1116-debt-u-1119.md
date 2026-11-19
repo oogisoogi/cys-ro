@@ -136,3 +136,15 @@
 - 게이트는 실행 중 셸 스크립트를 읽어 가며 돈다 → 돌고 있는 동안 gate-1116.sh 를 고치지 말 것.
 - r34 시한 측정은 부하에 민감 — 부하 낮을 때(uptime 1분 < 15) 단독 재실행으로 대조(11-20 운영 공지 ②).
 - 새 작업트리는 형제 target 을 `cp -c -R` 로 복제(101G · 92초).
+
+## 델타 — master#71ef3c5a 📌 처분 집행(11-20 03:2x~)
+
+| 📌 | 처분 | 결과 |
+|---|---|---|
+| #8 pubcand 허용 목록 | 고침 9ad430656 | C = (H∩B) ∪ PUB_ALLOW · 목록 밖 새 파일 = 공개 안 됨 + 보고 · 관문 1 = C 실제 트리로 ⑴ C⊆B∪ALLOW ⑵ C=공개 집합 ⑶ C↔H 차=withheld ⑷ 부모=B · 자기 검체 17 ok · 뮤턴트 3/3 붉음 · **재현: 11-19 제외 171 → --derive-allow 93 → C 트리 27045f27 = aebca3d9 와 같음 · withheld = 제외 171 정확히** · 허용 목록 원자료 = ~/axdev/workers/cysr-1116-debt-u-1119/public-allow-1116-from-1119.txt |
+| #5 게이트 도구 공개 여부 | 설계 안에서 정함 | 지킴 폴더 docs/integ-1116 의 경로는 허용 목록에 올 수 없음(rc 2) → ci_pack_steps.py·pubcand.sh·gate-1116.sh 는 공개 안 됨 · 지금 머리 withheld 176 = 171 + 이 가지 새 파일 5(내부 4 + **공개할 제품 시험 scripts/tests/test_gen_released_hashes_extra_ref.py 1 = 다음 후보 때 허용 목록에 더할 것**) |
+| #4 같은 꼴 주석·문자열 | 고침 f79d6cdac | 7줄(cys.rs 31486 주석·31564 assert 문구 · drainverify.test.ts 156·192 · main.ts 9314 · grouptabs.ts 149·test 297 · seatkeep-knob-on-tests.sh 2) · windows-health rqfix_f10 = 실제 시험 이름이라 그대로 · bun 67/0 · cys 시험 = 아래 · ⚠저장소 전반: master# 표식 420줄(이미 공개 B 에 328) · 「박사님」 146줄(B 에 137) = 일괄 정리는 별도 결정 |
+| #3 팩 지침·agents.json 기능 줄 | 그대로(1.1.17 기록) | 판정: 지적 6자리(agents.json:3·8 · MASTER_DIRECTIVE:462 · WORKER_DIRECTIVE:258 · appbuild-plan-debate SKILL:15 · computer-control SKILL:72)와 그 파일 전체에 이름(최윤식·oogisoogi)·기기 경로(~/axdev·/Users/·.claude-acct)·메일 0 · 「박사님」(호칭) 4줄은 B 에 같은 수로 이미 공개 |
+| #2 GNU coreutils 가정 훑기 | 찾음 1 · 고치지 않음 | 훑은 꼴 = coreutils 를 다른 이름 심링크·사본·exec -a·arg0 로 부르기(uutils 다중 호출이 거부하는 꼴). 결과: ① test_dept_name_guard:1581 = 이미 고침(맥 갈래) ② src/process_observation.rs:1006 `.arg0("")` = macOS 전용 시험 ③ src/bin/cysd/seat_proc_tests.rs:162 sleep 사본 = macOS 전용(가짜 .app) ④ **src/update/realops.rs:1798 fake_cysd_bin()(#[cfg(unix)]) = /bin/sleep 을 cysd 이름으로 복사 → ubuntu 26.04 에서 돌리면 같은 결함** · 우리 크레이트의 리눅스 cargo test 레인 0(우분투 잡 = vendor portable-pty 만) → 지금 붉을 일 없음 · 리눅스 대역 판정(hq_daemon_count 가 comm·exe 중 무엇을 보나)을 이 맥에서 못 재 고치지 않음(추측 고침 금지) |
+| #7 capgate·role_authority 간헐 | 손대지 않음 | 새 좌석(flaky) 몫 |
+| codex 2R | master 대기열 | 범위 = 1R 고침(b1b7024c7·a181e5217) + 9ad430656 허용 목록 + f79d6cdac |

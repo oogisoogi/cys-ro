@@ -656,6 +656,8 @@ def render_close_card(r):
             if os.name == "nt" else "대화 기록은 휴지통에 보관됩니다(저절로 지워지지 않습니다).")
     s = ("「%s」(%s)를 닫습니다. 꺼지는 것: 그 부서의 Claude 3개와 부서 프로그램. %s "
          "그대로 남는 것: 폴더(%s)의 파일 전부." % (r["display"], r["target"], keep, r.get("cwd") or "-"))
+    # (cysr-1116-s6 · P2-DESIGN §16-4 ① · master#e597149a 채택) 닫기 = 강제 종료(마무리 대기 없음 · cys-dept graceful_kill) — 카드가 그 사실을 말한다
+    s += " 하던 일이 있으면 그 자리에서 멈춰요."
     if last:
         s += " 마지막 부서라서 저는 다시 보통 마스터로 돌아옵니다."
     return s + " 닫을까요?\n"
@@ -2016,6 +2018,127 @@ def cmd_tick(a):
 
 
 # ── self-test ─────────────────────────────────────────────────────────────────
+# ── 부서 승격 판정(promote-check · TICKET=cysr-1116-s6-1119 · P2-DESIGN §16-3 · PRD FR-L5) ─────────────────────
+# 판정자 = 이 도구 하나(결정론 · LLM 재판정 금지). 마스터는 팀 일이 한 단락 끝난 때(티켓 경계)만 돌리고 ask=true 일 때만
+#   「⟪부서 제안: <팀>⟫」 을 낸다. 「지금은 아니요」 = promote-decline(같은 팀 14일 쉼).
+# 계기 3개(원장에서 셀 수 있는 것 · 데몬 `cys team-stats` = team.stats): R = 지난 60분 그 팀 좌석이 마스터 좌석 큐에 넣은 보고 수 ·
+#   C = 그 팀에서 지금 일하는(자기보고 state=working) 도우미 수 · D = 지난 7일 중 그 팀 보고가 1건 이상 있던 날 수.
+# 문턱 4/2/3 · 하루 1회(전체) · 14일 쉼 = 설계 목표값(실측 없음 · 첫 사용 실측으로 보정 · U30) — 값은 아래 상수 한 곳.
+# 데몬 재시작 = 보고 기록이 비어 R·D 가 적게 셈 → 덜 묻는 쪽(안전 쪽). D 는 이 도구가 본 날을 상태 파일에 더해 재시작 너머로 이어 간다.
+PROMOTE_R_MIN = 4
+PROMOTE_C_MIN = 2
+PROMOTE_D_MIN = 3
+PROMOTE_COOLDOWN_SECS = 14 * 86400
+PROMOTE_R_WINDOW_SECS = 3600
+PROMOTE_D_WINDOW_DAYS = 7
+
+
+def promote_state_path():
+    return os.path.join(root_dir(), "promote-cooldown.json")
+
+
+def _promote_state():
+    st = load_json(promote_state_path(), None)
+    if not isinstance(st, dict) or st.get("v") != 1 or not isinstance(st.get("teams"), dict):
+        st = {"v": 1, "teams": {}, "last_ask_day": None}
+    return st
+
+
+def _local_day(ts):
+    return time.strftime("%Y-%m-%d", time.localtime(ts))
+
+
+def _team_stats(stats_file=None):
+    """team.stats 응답 — 시험은 --stats-file 로 주입 · 실행은 `cys team-stats`(맥·윈 같은 길). 못 받으면 None(= 묻지 않음)."""
+    if stats_file:
+        return load_json(stats_file, None)
+    try:
+        p = subprocess.run([_cys_bin(), "team-stats"], capture_output=True, text=True, timeout=10,
+                           stdin=subprocess.DEVNULL, **NOWIN)
+    except Exception:
+        return None
+    if p.returncode != 0:
+        return None
+    try:
+        return json.loads(p.stdout)
+    except ValueError:
+        return None
+
+
+def promote_judge(team, stats, st, now):
+    """순수 판정 — (결과 dict, 새 상태). 결과 = {ask, R, C, D, cooldown_until, reason}."""
+    ent = None
+    for t in (stats or {}).get("teams") or []:
+        if isinstance(t, dict) and t.get("team") == team:
+            ent = t
+    tst = dict(st["teams"].get(team) or {})
+    days = set(d for d in (tst.get("days") or []) if isinstance(d, str))
+    ts = [x for x in ((ent or {}).get("report_ts") or []) if isinstance(x, (int, float)) and x <= now]
+    R = sum(1 for x in ts if now - x <= PROMOTE_R_WINDOW_SECS)
+    C = (ent or {}).get("working")
+    C = C if isinstance(C, int) and C >= 0 else 0
+    for x in ts:
+        if now - x <= PROMOTE_D_WINDOW_DAYS * 86400:
+            days.add(_local_day(x))
+    keep = sorted(d for d in days if d >= _local_day(now - (PROMOTE_D_WINDOW_DAYS - 1) * 86400))
+    D = len(keep)
+    tst["days"] = keep
+    new = {"v": 1, "teams": dict(st["teams"]), "last_ask_day": st.get("last_ask_day")}
+    new["teams"][team] = tst
+    cool = tst.get("declined_until")
+    cool = cool if isinstance(cool, (int, float)) else None
+    res = {"team": team, "ask": False, "R": R, "C": C, "D": D,
+           "cooldown_until": cool if cool and cool > now else None,
+           "thresholds": {"R": PROMOTE_R_MIN, "C": PROMOTE_C_MIN, "D": PROMOTE_D_MIN}}
+    if stats is None:
+        res["reason"] = "stats_unavailable"
+    elif ent is None:
+        res["reason"] = "no_such_team"
+    elif cool and cool > now:
+        res["reason"] = "cooldown"
+    elif new.get("last_ask_day") == _local_day(now):
+        res["reason"] = "asked_today"
+    elif R >= PROMOTE_R_MIN and C >= PROMOTE_C_MIN and D >= PROMOTE_D_MIN:
+        res["ask"] = True
+        res["reason"] = "threshold_met"
+        new["last_ask_day"] = _local_day(now)
+    else:
+        res["reason"] = "below_threshold"
+    return res, new
+
+
+def cmd_promote_check(a):
+    team = (a.team or "").strip()
+    if not team:
+        return _refuse("팀 이름이 필요합니다(--team).", code=2, reason="no_team")
+    now = time.time()
+    res, new = promote_judge(team, _team_stats(a.stats_file), _promote_state(), now)
+    try:
+        atomic_write_json(promote_state_path(), new)
+    except OSError as e:
+        # 상태를 못 쓰면 하루 1회 상한을 지킬 수 없다 — 묻지 않는 쪽으로(안전 쪽)
+        res["ask"] = False
+        res["reason"] = "state_unwritable"
+        res["error"] = type(e).__name__
+    out(res)
+    return 0
+
+
+def cmd_promote_decline(a):
+    team = (a.team or "").strip()
+    if not team:
+        return _refuse("팀 이름이 필요합니다(--team).", code=2, reason="no_team")
+    now = time.time()
+    st = _promote_state()
+    tst = dict(st["teams"].get(team) or {})
+    tst["declined_until"] = now + PROMOTE_COOLDOWN_SECS
+    st["teams"][team] = tst
+    atomic_write_json(promote_state_path(), st)
+    out({"team": team, "cooldown_until": tst["declined_until"],
+         "say": "알겠어요. %s은 지금처럼 제가 맡을게요. 2주 동안은 다시 묻지 않을게요. 필요하면 언제든 「%s을 부서로 올려 줘」라고 말해 주세요." % (team, team)})
+    return 0
+
+
 def self_test():
     fails = []
 
@@ -2425,6 +2548,11 @@ def main(argv=None):
     d.add_argument("request")
     sub.add_parser("self-test")
     sub.add_parser("hook-prompt")
+    pc = sub.add_parser("promote-check", help="팀 → 부서 승격을 물을지(결정론 · P2-DESIGN §16-3)")
+    pc.add_argument("--team", required=True)
+    pc.add_argument("--stats-file", dest="stats_file", help="시험용 team.stats 응답 파일(없으면 `cys team-stats`)")
+    pdl = sub.add_parser("promote-decline", help="「지금은 아니요」 — 같은 팀 14일 다시 묻지 않음")
+    pdl.add_argument("--team", required=True)
     a = ap.parse_args(argv)
     if a.cmd == "self-test":
         return self_test()
@@ -2445,7 +2573,8 @@ def _main_dispatch(a, ap):
             return _refuse("부서 목록을 읽지 못해 제안하지 않았습니다(%s). 잠시 뒤 다시 말씀해 주세요." % e,
                            code=2, reason="registry_unreadable")
     fn = {"confirm": cmd_confirm, "tick": cmd_tick, "status": cmd_status, "kickoff": cmd_kickoff,
-          "discard": cmd_discard, "suggest-folder": cmd_suggest_folder}.get(a.cmd)
+          "discard": cmd_discard, "suggest-folder": cmd_suggest_folder,
+          "promote-check": cmd_promote_check, "promote-decline": cmd_promote_decline}.get(a.cmd)
     if a.cmd == "hook-prompt":
         try:
             return cmd_hook_prompt(a)

@@ -2458,10 +2458,13 @@ class CsoDirectiveRevision(unittest.TestCase):
         #     표식 꼴 4줄은 화면 판정(confirms.ts)과 글자 그대로 맞아야 해 못 줄인다 · 더 줄이려면 다른 조항을 고쳐야 해 이 티켓 밖).
         #   ⑥ 2026-11-18 상향(1.1.16 · TICKET=cysr-no-hands-gui-1118 · master#30990c7b A 「줄이기 먼저 · 안 되면 상향」): MASTER 86,306 → 86,625 · CEO 101,792 → 102,111
         #     (+319 B 씩 = 「★ 사용자와 함께 쓰는 컴퓨터 — 손을 빌리지 않기」 절 1개 · 469 B 를 뜻 유지로 319 B 로 줄인 뒤 남는 몫 · 세부는 스킬 computer-control).
+        #   ⑦ 2026-11-19 상향(1.1.16 · TICKET=cysr-1116-s6-1119 · master#4a485888 조각 6 「팩 지침 문장 = 별도 커밋」): MASTER 86,625 → 87,810 · CEO 102,111 → 103,296
+        #     (+1,185 B 씩 = 「★ 대화 화면 표식」 절 안 표식 꼴 1줄(⟪부서 제안⟫·⟪부서로 올리는 중⟫ — 화면 judge/rail.ts 와 글자 그대로) + 팀 만들기·D7 먼저 제안·promote-check·닫은 뒤 1회 질문 1문단
+        #     · P2-DESIGN §5-4·§16-3·§16-4 가 「지침 문장」으로 정한 것 · 새 절 0 · 옛 조항을 줄여 맞추는 것은 이 티켓 밖).
         size = lambda name: os.path.getsize(os.path.join(REAL_DIRECTIVES_DIR, name))   # 실제 파일(전체 검체 재실행이 DIRECTIVES_DIR 을 임시 사본으로 바꿔도 영향 없다)
         self.assertLessEqual(size("CSO_DIRECTIVE.md"), 57687, "CSO_DIRECTIVE.md 바이트 예산(57,687) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다)")
-        self.assertLessEqual(size("MASTER_DIRECTIVE.md"), 86625, "MASTER_DIRECTIVE.md 바이트 예산(86,625) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다)")
-        self.assertLessEqual(size("CEO_TEMPLATE.md"), 102111, "CEO_TEMPLATE.md 바이트 예산(102,111) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다 · 생성물이라 MASTER 와 머리글 바이트가 함께 든다)")
+        self.assertLessEqual(size("MASTER_DIRECTIVE.md"), 87810, "MASTER_DIRECTIVE.md 바이트 예산(87,810) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다)")
+        self.assertLessEqual(size("CEO_TEMPLATE.md"), 103296, "CEO_TEMPLATE.md 바이트 예산(103,296) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다 · 생성물이라 MASTER 와 머리글 바이트가 함께 든다)")
 
     def test_utf8_and_lf(self):
         """세 지시문 모두 엄격 UTF-8 로 읽히고 CRLF 가 없어야 한다(Windows 체크아웃 회귀)."""

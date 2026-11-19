@@ -51,13 +51,17 @@
 - 전후: 옛 판 3회 = 붉음 2회(RCF-3 3.08 · DL-1/WIN-2 4.20/4.21) · 새 판 3회 초록(2.45~2.96s · done=False) · 1차 수정(8s/5.0)은 load 21 에서 RCF-4a 5.17 붉음 1회 → 구조 판정으로 바꾼 까닭.
 - 뮤턴트(런처): 맥 갈래 시한 ×10 = 5 FAIL(done=True · 10.4~10.8s) · ×6 = 5 FAIL · 윈 갈래 ×10 = WIN-2 FAIL(done=True) + WIN-0 핀.
 
-## D. 공개 후보 도구 `docs/integ-1116/pubcand.sh`
+## D. 공개 후보 도구 `docs/integ-1116/pubcand.sh`(허용 목록 판 · 9ad430656 + 독립 검증 고침 3cbd96ba4)
 
-- 사용: `PUB_EXCLUDE=<목록> PUB_MSG=<메시지> [PUB_BASE=origin/main] [PUB_REF=refs/heads/cand/1116-rc] bash docs/integ-1116/pubcand.sh <H>` → 끝 줄 `PUBCAND H= B= C= ref= gate1= recheck_rc= rc=`.
-- 막는 것(rc 2): 목록 줄이 H 트리에 없음(낡은 목록) · **지킴 폴더 docs/integ-1116 의 H 파일이 목록에 없음**(내부 게이트 도구가 공개 트리에 실림) · 못 찾는 H/B · 있는 ref(PUB_FORCE=1 없이) · 관문 1 불일치 · C 부모 ≠ B. recheck rc 0/1/3 그대로 전달.
-- `--self-test`: 임시 저장소 + 가짜 recheck · 양성 4 · 음성 5 · 집행 본문 push·tag·gh 명령 0 자기 검사(음성 대조 = 본문 끝에 push 한 줄 → BAD).
-- 실데이터 재현: H=c75e0714a · B=270e3e21e · 11-19 목록 171 → C 트리 `27045f27…` = 11-19 후보 aebca3d9 트리와 같음(재현 ref 만들고 지움 · recheck 는 PUB_NO_RECHECK=1 로 건너뜀 — 민감 폴더·보고 파일에 쓰므로).
-- 지금 머리로 돌리면: `docs/integ-1116/ci_pack_steps.py`(+ pubcand.sh) 가 목록에 없다고 rc 2 — **다음 공개 후보 때 목록에 docs/integ-1116 새 파일 2개를 더해야 한다**(도구가 정확히 그것을 잡는 것을 실측).
+- 사용: `PUB_ALLOW=<새 공개 허용 목록> PUB_MSG=<메시지> [PUB_BASE=origin/main] [PUB_REF=refs/heads/cand/1116-rc] bash docs/integ-1116/pubcand.sh <H>` → 끝 줄 `PUBCAND H= B= C= ref= public= new= withheld= gate1= recheck_rc= rc=`.
+- 규칙: C 트리 = (H∩B) ∪ PUB_ALLOW — H 의 새 파일이 목록에 없으면 공개 안 됨(withheld)으로 보고만 한다(목록을 잊으면 덜 공개될 뿐). 옛 제외 목록(PUB_EXCLUDE)은 폐기 · 옮김 도우미 `--derive-allow <H> <B> <제외목록>` = H−B−제외목록.
+- 막는 것(rc 2): 허용 줄이 H 트리에 없음(낡은 목록) · **지킴 폴더 docs/integ-1116 의 경로를 허용 목록에 올림**(내부 게이트 도구) · 허용 목록 파일 없음·읽기 실패 · 못 찾는 H/B · **B 가 refs/remotes/origin/* 어디에서도 안 닿음**(공개 안 된 판) · 있는 ref(PUB_FORCE=1 없이) · 관문 1 불일치(C 는 `<PUB_REF>-rejected` 에 · 정상 후보 ref 그대로) · `--derive-allow` 제외 목록 없음·읽기 불가·빈 파일 · 결과에 지킴 폴더 경로. recheck rc 0/1/3 그대로 전달 · PUB_NO_RECHECK=1 = rc 4(성공 아님).
+- 경로: git 은 `ls-tree -r -z`·`diff -z` 로만 읽는다(한글·탭·따옴표·줄바꿈 이름) · 목록 파일 = 한 줄에 경로 하나(날 바이트 · 이름 속 줄바꿈 = \001).
+- recheck 자식 push 차단: pushInsteadOf "" + 각 원격 pushurl 덧씌움 + 이미 적힌 pushurl 값마다 insteadOf + 가짜 gh(rc 97) · 한계 = 머리말(자식의 GIT_CONFIG_* 덮기 등).
+- 작업트리 전용(bare 저장소 = update-index rc 2).
+- `--self-test`: 임시 저장소 + 가짜 recheck · 24 ok · 집행 본문 push·tag·gh 명령 0 자기 검사.
+- 실데이터 재현: H=c75e0714a · B=270e3e21e · 11-19 제외 171 → --derive-allow 93 → C 트리 `27045f27…` = 11-19 후보 aebca3d9 트리와 같음(public 2013 · new 93 · withheld 171 · 스크래치 저장소 alternates · recheck 는 PUB_NO_RECHECK=1 로 건너뜀 — 민감 폴더·보고 파일에 쓰므로).
+- 지금 머리로 돌리면: 지킴 폴더 docs/integ-1116 의 새 파일은 허용 목록에 올 수 없으니 공개 안 됨 · 다음 후보 때 허용 목록에 더할 제품 시험 = scripts/tests/test_gen_released_hashes_extra_ref.py(델타 #5).
 
 ## E. codex 1R 범주 3 청소
 
@@ -143,8 +147,47 @@
 |---|---|---|
 | #8 pubcand 허용 목록 | 고침 9ad430656 | C = (H∩B) ∪ PUB_ALLOW · 목록 밖 새 파일 = 공개 안 됨 + 보고 · 관문 1 = C 실제 트리로 ⑴ C⊆B∪ALLOW ⑵ C=공개 집합 ⑶ C↔H 차=withheld ⑷ 부모=B · 자기 검체 17 ok · 뮤턴트 3/3 붉음 · **재현: 11-19 제외 171 → --derive-allow 93 → C 트리 27045f27 = aebca3d9 와 같음 · withheld = 제외 171 정확히** · 허용 목록 원자료 = ~/axdev/workers/cysr-1116-debt-u-1119/public-allow-1116-from-1119.txt |
 | #5 게이트 도구 공개 여부 | 설계 안에서 정함 | 지킴 폴더 docs/integ-1116 의 경로는 허용 목록에 올 수 없음(rc 2) → ci_pack_steps.py·pubcand.sh·gate-1116.sh 는 공개 안 됨 · 지금 머리 withheld 176 = 171 + 이 가지 새 파일 5(내부 4 + **공개할 제품 시험 scripts/tests/test_gen_released_hashes_extra_ref.py 1 = 다음 후보 때 허용 목록에 더할 것**) |
-| #4 같은 꼴 주석·문자열 | 고침 f79d6cdac | 7줄(cys.rs 31486 주석·31564 assert 문구 · drainverify.test.ts 156·192 · main.ts 9314 · grouptabs.ts 149·test 297 · seatkeep-knob-on-tests.sh 2) · windows-health rqfix_f10 = 실제 시험 이름이라 그대로 · bun 67/0 · cargo test --bin cys cli_stack_budget 1/0(바뀐 assert 문구 컴파일·시험) · ⚠저장소 전반: master# 표식 420줄(이미 공개 B 에 328) · 「박사님」 146줄(B 에 137) = 일괄 정리는 별도 결정 |
+| #4 같은 꼴 주석·문자열 | 고침 f79d6cdac | 8줄(cys.rs 31486 주석·31564 assert 문구 · drainverify.test.ts 156·192 · main.ts 9314 · grouptabs.ts 149·test 297 · seatkeep-knob-on-tests.sh 2 = 8줄 · 앞 판 「7줄」 은 잘못 셈 — 독립 검증 N1) · windows-health rqfix_f10 = 실제 시험 이름이라 그대로 · bun 67/0 · cargo test --bin cys cli_stack_budget 1/0(바뀐 assert 문구 컴파일·시험) · ⚠저장소 전반: master# 표식 420줄(이미 공개 B 에 328) · 「박사님」 146줄(B 에 137) = 일괄 정리는 별도 결정 |
 | #3 팩 지침·agents.json 기능 줄 | 그대로(1.1.17 기록) | 판정: 지적 6자리(agents.json:3·8 · MASTER_DIRECTIVE:462 · WORKER_DIRECTIVE:258 · appbuild-plan-debate SKILL:15 · computer-control SKILL:72)와 그 파일 전체에 이름(최윤식·oogisoogi)·기기 경로(~/axdev·/Users/·.claude-acct)·메일 0 · 「박사님」(호칭) 4줄은 B 에 같은 수로 이미 공개 |
 | #2 GNU coreutils 가정 훑기 | 찾음 1 · 고치지 않음 | 훑은 꼴 = coreutils 를 다른 이름 심링크·사본·exec -a·arg0 로 부르기(uutils 다중 호출이 거부하는 꼴). 결과: ① test_dept_name_guard:1581 = 이미 고침(맥 갈래) ② src/process_observation.rs:1006 `.arg0("")` = macOS 전용 시험 ③ src/bin/cysd/seat_proc_tests.rs:162 sleep 사본 = macOS 전용(가짜 .app) ④ **src/update/realops.rs:1798 fake_cysd_bin()(#[cfg(unix)]) = /bin/sleep 을 cysd 이름으로 복사 → ubuntu 26.04 에서 돌리면 같은 결함** · 우리 크레이트의 리눅스 cargo test 레인 0(우분투 잡 = vendor portable-pty 만) → 지금 붉을 일 없음 · 리눅스 대역 판정(hq_daemon_count 가 comm·exe 중 무엇을 보나)을 이 맥에서 못 재 고치지 않음(추측 고침 금지) |
 | #7 capgate·role_authority 간헐 | 손대지 않음 | 새 좌석(flaky) 몫 |
 | codex 2R | master 대기열 | 범위 = 1R 고침(b1b7024c7·a181e5217) + 9ad430656 허용 목록 + f79d6cdac |
+
+## 델타 2 — 독립 검증 REVISE 고침(debt-u2 · master#dcd1f79f · 11-20 04:0x~04:4x)
+
+판정 = `~/axdev/workers/cysr-1116-debt-u-verify-1120/VERDICT.md`(R1·R2·R2b·M1~M4·N1·N2). master 처분 = 전부 고침. ⚠위 §C(벽시계 안전선 7.0s)·§B(덮개 = 4잡)는 이 델타로 낡았다.
+
+| # | 커밋 | 고침 | 전 → 후(같은 재현) | 뮤턴트 |
+|---|---|---|---|---|
+| R1 | 3cbd96ba4 | `--derive-allow` 제외 목록 없음·읽기 불가·빈 파일(빈 줄만·/dev/null) = rc 2 · 결과에 지킴 폴더 경로 = rc 2(출력 0) · H/B 못 찾음 rc 2 · 본 경로도 허용 목록 읽기 실패(grep rc 2)를 빈 목록으로 삼키지 않음 | `/no/such/file`·`/dev/null`·지킴 폴더 섞임 = rc 0 → rc 2 | 빈 목록·읽기·grep rc·지킴 폴더·넷 다 끔 = 5/5 붉음(겹 검사마다 따로 잡히게 검체 보강) |
+| M1 | 3cbd96ba4 | git 경로 = `ls-tree -r -z`·`diff -z --no-renames` 만 · 목록 줄 = 날 바이트(이름 속 줄바꿈 = \001 · \001 든 이름 = rc 2) · 관문 1 실패 = C 를 `<PUB_REF>-rejected` 에(정상 후보 ref 그대로) | 한글·탭·줄바꿈·따옴표 새 파일: C 에 남고 gate1=1 rc 2 → withheld 6 · C 에서 빠짐 · gate1=0 | -z 끔 12 BAD · rejected 이름 끔 1 BAD |
+| M2 | 3cbd96ba4 | B 가 `refs/remotes/origin/*` 어디에서도 안 닿으면 rc 2 | `PUB_BASE=HEAD` rc 4(new 0 · withheld 0) → rc 2 | 단언 끔 붉음 |
+| M3 | 3cbd96ba4 | recheck 자식 = `url.pubcand-no-push://.pushInsteadOf=""`(빈 접두 = 모든 주소) + 각 원격 `remote.<이름>.pushurl=pubcand-no-push://` + 이미 적힌 pushurl 값마다 `url.pubcand-no-push://.insteadOf=<값>` | 상대 경로 원격·pushurl 명시·명령줄 상대 = 누출 3(b1 b2 b4) → 0 | 빈 접두·insteadOf·pushurl 덧씌움 각각 끔 = 3/3 붉음(덧씌움은 「사용자의 더 긴 pushInsteadOf」 원격 검체가 잡음) |
+| M4 | daf04f88e | PyYAML 있으면 잡마다 run 스텝 수·표지 스텝 수를 줄 파서와 대조(불일치 exit 3 · 없으면 표준 오류 「건너뜀」) · 덮개 = 모든 잡 · 게이트 = 전용 venv python(PyYAML 6.0.2)으로 부르고 결과 1줄을 요약에 | 검증 좌석 M3(새 잡 cd 꼴)·M6(4칸 들여쓰기) rc 0 → rc 3 | 덮개 4잡 한정·대조 끔 = 2/2 붉음 |
+| R2·R2b | 7b894549c | r34 시한 행 5 + NZ-1·2 = **시한 회계 구조 판정**(아래) · 벽시계 문턱 폐기 · 느린 자식 10→30s | 단독: 기준 판 NZ-1 2.06s FAIL(부하 4.3 · 검증 좌석 8회 중 5회 붉음) → 새 판 8/8 초록(부하 4.2~11.0) | 6/6 붉음(아래) |
+| N1 | 이 커밋 | §D 본문 = 허용 목록 판 · 델타 #4 「7줄」 → 8줄(`git show f79d6cdac` 8+/8−) | — | — |
+| N2 | 3cbd96ba4 | 머리말 = 작업트리 전용(bare = update-index rc 2) | — | — |
+
+### M3 — 브리프의 「pushurl 덧씌움」 만으로는 안 막혔다(실측 · git 2.50.1)
+- `remote.X.pushurl` 은 여러 값이면 **전부에 push** 한다 → 이미 pushurl 이 적힌 원격에 덧씌우면 원래 주소로도 나간다(덧씌움만 넣은 시험에서 b2·b5 누출). pushurl 에는 pushInsteadOf 가 안 걸리고 insteadOf 는 걸린다 → 기존 pushurl 값을 insteadOf 로 다시 써서 막았다.
+- 빈 접두 pushInsteadOf 는 git 의 최장 접두 규칙상 모든 주소에 걸린다(명령줄 상대 경로·scp 꼴 `host:path` 포함 · 실측 「remote helper 'pubcand-no-push' aborted」). 사용자 설정의 더 긴 pushInsteadOf 는 이것을 이기므로 원격별 pushurl 덧씌움을 같이 둔다.
+- 남은 한계(머리말): 자식이 GIT_CONFIG_*·`git -c` 를 스스로 덮기 · 명령줄 주소에 사용자의 더 긴 pushInsteadOf · 이 저장소 밖 다른 저장소의 pushurl 명시 원격. url = pushurl 인 원격은 읽기(ls-remote)도 막힌다(안전한 쪽 · 실측 rc 128).
+- 실사용 저장소 설정: pushurl·insteadOf 0(`git config --get-regexp` rc 1).
+
+### R2·R2b — 런처를 고치지 않고 시한 회계를 잰다
+- 브리프의 「시한 회계(누적 `_i`)를 기록으로 내보내」 를 **런처(배포되는 role-bootstrap.sh) 변경 없이** 집행했다: 런처는 맥·리눅스 갈래·Windows 갈래 모두 외부 `sleep` 을 부르므로, 시험이 이미 쓰던 sleep 기록 래퍼를 시한 행에 끼워 **런처가 실제로 부른 sleep 인자 순서**를 받고 ⑥ 루프의 회계를 그대로 따라 센 순서 `deadline_seq(시한)` 과 같은지 본다(맥 1s = 0.01·0.02·0.03·0.04 + 0.1×9 = 13회 · 윈 0.1×10 · 합 1.00). `_i` 를 내보내는 것과 같은 양이고, 런처가 회계를 믿는 값이 아니라 실제로 잔 값이라 「sleep 한 번이 길어진」 회귀까지 잡는다. 런처 무변경 → WIN-0 핀·배포물 영향 0.
+- NZ-1·2(즉시 끝나는 자식 · 시한 3s) = sleep 순서가 시한 회계의 엄격한 앞부분(시한까지 안 기다리고 빠져나옴). 실측 sleep 1회·명목 0.01s 인데 벽시계는 3.21s 가 나온 회차도 있다(런처 전체 + 래퍼 생성 비용) — 벽시계 문턱으로는 원리상 못 재는 행이었다.
+- 「기다리지 않음」 = 느린 자식이 끝나기 전에 돌아옴(slow_done). 시한 밖 다른 대기(자식 wait 등)도 이것이 잡는다(뮤턴트 wait → 31.36s done=True).
+- 느린 자식 30s 근거(WIN-2 상한 재측정 겸): 래퍼 낀 경과 실측 = 맥 시한 행 2.55~5.57s · WIN-2 2.95~7.45s(부하 4.2~11.0 · 11회) · 뮤턴트 병렬 실행 중 최대 11.92s(×3 시한 뮤턴트) → 7.45 의 4배 위 · 자식은 배경에서 끝나 시험 시간 불변(단독 1회 81~82s 전후 같음). 벽시계 상한은 판정에서 뺐다(①②가 각각 대신함 · 경과는 정보로 행에 적음) · 하한 0.9s(DL-1b)만 유지.
+- 뮤턴트(스크래치 사본 · 6개 병렬 · 부하 3.9~5.5): 맥 `_lim` ×2 · ×1.5 · `*) sleep 0.2` → RCF-3·RCF-4a·NZ-3·DL-1b FAIL(×2 = sleep 23회·명목 2.00s) · 윈 `_lim` ×2 → WIN-2 FAIL(20회·2.00s) + WIN-0 · `jobs` 줄 제거 → NZ-1·NZ-2 FAIL(33회·3.00s) · 루프 뒤 `wait "$_bg"` → 시한 행 4 + DL-1a FAIL. **×2 회귀 붉음 = 수용 기준 충족**(×3 문턱 수용 불필요).
+- 전후: 기준 판(fd9d0db99) 단독 1회 = 41 PASS · NZ-1 FAIL 2.06s(부하 4.3) · 새 판 단독 9회 = 42 PASS 전부.
+
+### 시험 숫자(이 델타)
+- pubcand `--self-test` 24 ok(전 17) · 뮤턴트 11/11 붉음 · 11-19 실데이터 재현 C 트리 27045f27 그대로(derive 93 = 허용 목록 원자료와 바이트 같음 · public 2013 · new 93 · withheld 171 = 11-19 제외 목록과 같음).
+- ci_pack_steps `--self-test` 음성 9(venv · PyYAML 대조 포함) / 8(/usr/bin/python3) · 실제 워크플로 PyYAML 대조 같음(잡 6 · run 47 · 표지 13) · emit 13 생성물·unregistered = 옛 판과 바이트 같음 · 184 그대로.
+- test_hook_r34 단독 8회 8/8(+1회) · 게이트 DRY rc 0(ci 13 + 추출 자기 검체 · unreg 22).
+- 격리: 시험 전부 스크래치 임시 저장소·bare · `env -i` · 실사용 원격 push·gh 쓰기·codex 0.
+
+### 남은 것·📌
+- codex 2R = master 대기열(범위에 3cbd96ba4·daf04f88e·7b894549c 추가).
+- 게이트 전체 실행(로컬 CI 단계)은 이번에 안 돌림(바뀐 것 = 게이트 도구 2개·r34 시험 1개 · 각각 단독 실측).

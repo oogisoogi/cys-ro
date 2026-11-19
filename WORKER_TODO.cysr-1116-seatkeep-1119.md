@@ -11,11 +11,11 @@
 
 ## 2단계 (master#7065425a = 범위 C 단계 매듭 · T4 → T5 · 상한 해제 · 노브 기본 끔 유지)
 ### T4 입양
-- [ ] 설계 메모 docs/seatkeep/T4-DESIGN.md(메타 영속 · 기동 순서 · 노브 · T1 대역 자리 한 곳)
-- [ ] 구현(노브 CYS_SEATKEEP_ADOPT · 기본 끔)
-- [ ] 격리 HOME 실물: cysd SIGKILL → 좌석 pid 생존 → 새 cysd 재부착 → read-screen/send
-- [ ] 기준선 대비 시험(cysd·seatkeep · 노브 켬 스크립트 · ci-branch 팩 단계) · 뮤턴트
-- [ ] codex 1R(T4) · 커밋 · 【확인요청】 T4
+- [x] 설계 메모 docs/seatkeep/T4-DESIGN.md(메타 영속 · 기동 순서 · 노브 · T1 대역 자리 한 곳)
+- [x] 구현(노브 CYS_SEATKEEP_ADOPT · 기본 끔)
+- [x] 격리 HOME 실물: cysd SIGKILL → 좌석 pid 생존 → 새 cysd 재부착 → read-screen/send
+- [~] 기준선 대비 시험(cysd·seatkeep 끝 · 노브 켬 스크립트·ci-branch 팩 단계 = 남음) · 뮤턴트(2R 전 코드 6종 끝 · 최종 코드 재실행 남음)
+- [~] codex T4 1R~4R BLOCK 처분 끝 · 5R = master 대기열 · 【확인요청】 T4(매듭)
 ### T5 좌석 토큰 이음
 - [ ] 설계(좌석 세대 · seatkeep 보관 · 인계)
 - [ ] 구현 · 토큰 왕복 시험(옛 토큰 재사용·탈취 거부)

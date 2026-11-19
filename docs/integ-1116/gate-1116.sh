@@ -29,8 +29,11 @@ FAILS=0
 ST0=$(git status --short)   # 게이트 시작 때 작업트리 상태 — ci_step WARN 은 이것과 달라졌을 때만
 # CI 팩 단계 생성물(DRY 에서도 만든다 — 단계 이름을 보여 주려고). 판정 불가(rc 3)면 게이트 전체를 멈춘다.
 CI_DIR="$T/ci"
-CI_IDS=$(/usr/bin/python3 docs/integ-1116/ci_pack_steps.py emit "$CI_DIR") || { say "ABORT ci_pack_steps emit 판정 불가 — 고르는 규칙과 워크플로가 어긋남(위 stderr)"; exit 2; }
-UNREG_IDS=$(/usr/bin/python3 docs/integ-1116/ci_pack_steps.py unregistered) || { say "ABORT ci_pack_steps unregistered 판정 불가"; exit 2; }
+#   PyYAML 이 있는 게이트 전용 venv 가 있으면 그 python 으로 부른다(줄 파서 ↔ PyYAML 스텝 수 대조가 돈다) · 없으면 /usr/bin/python3(대조 건너뜀 — 요약에 남김)
+CPS_PY=/usr/bin/python3; [ -x "$PW" ] && "$PW" -c 'import yaml' 2>/dev/null && CPS_PY=$PW
+CI_IDS=$("$CPS_PY" docs/integ-1116/ci_pack_steps.py emit "$CI_DIR" 2>"$OUT/ci_pack_steps.err") || { cat "$OUT/ci_pack_steps.err" >&2; say "ABORT ci_pack_steps emit 판정 불가 — 고르는 규칙과 워크플로가 어긋남(위 stderr)"; exit 2; }
+say "ci_pack_steps python=$CPS_PY · $(tail -1 "$OUT/ci_pack_steps.err")"
+UNREG_IDS=$("$CPS_PY" docs/integ-1116/ci_pack_steps.py unregistered 2>/dev/null) || { say "ABORT ci_pack_steps unregistered 판정 불가"; exit 2; }
 # 프로세스 그룹으로 띄우고, 시간 초과(rc 124) · 보호 계수 증가(rc 125)면 그 그룹만 끊는다. 정상 종료 뒤에도 그룹의 남은 자식을 정리한다.
 guarded() { /usr/bin/python3 -c '
 import os,signal,subprocess,sys,time
@@ -96,7 +99,7 @@ cargo_step portable-pty test --manifest-path vendor/portable-pty/Cargo.toml --li
 #    손 목록 21개 밖 151개가 CI 에서만 붉었다). 고르는 규칙·판정 불가 조건 = docs/integ-1116/ci_pack_steps.py 머리말.
 #    본문은 GitHub Actions bash 스텝과 같은 꼴(bash --noprofile --norc -eo pipefail)로 · 잡/스텝 env 는 생성물 머리 export.
 #    ⚠차이(정직): 파이썬 = 이 맥 /usr/bin/python3(CI = setup-python 3.12) · 우분투 잡 본문도 이 맥에서 돈다(리눅스 아님).
-step ci-pack-extract-selftest 60 "${ISO[@]}" /usr/bin/python3 docs/integ-1116/ci_pack_steps.py --self-test
+step ci-pack-extract-selftest 60 "${ISO[@]}" "$CPS_PY" docs/integ-1116/ci_pack_steps.py --self-test
 step pubcand-selftest 120 "${ISO[@]}" /bin/bash docs/integ-1116/pubcand.sh --self-test
 for id in $CI_IDS; do ci_step "$id"; done
 # ── CI 0회 팩 시험 = lane-parity-rehearsal.sh UNREGISTERED_OK ∩ 실재 파일 − 위 CI 단계가 부르는 것(같은 정의에서 읽음)

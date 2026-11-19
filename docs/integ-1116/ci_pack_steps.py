@@ -16,8 +16,11 @@ GitHub Actions 의 bash 스텝 = `bash --noprofile --norc -eo pipefail <파일>`
    · 고른 스텝에 `${{ … }}` 식 · `if:` · `working-directory:` · `shell:` 이 bash 아님 · 여러 줄 env 값
    · `run:` 이 `|`·`|-`·한 줄이 아닌 블록 스칼라(`>`·`>-`·`|+` 등 — 본문을 버리지 않게) · 워크플로/잡 `defaults:`(shell·폴더 재현 불가)
    CI 시한: 스텝 `timeout-minutes`(없으면 잡 `timeout-minutes`)를 생성물 머리 `# ci-timeout-secs: N` 으로 싣는다 — 게이트가 넘으면 붉힌다
-   · 덮개 검사: 그 잡의 **고르지 않은** 스텝 본문(주석 아닌 줄)에 실재 팩 시험 파일 이름이 나온다
-     = 고르는 규칙이 워크플로와 어긋남(새 꼴의 팩 스텝이 생김) → 규칙을 고칠 신호
+   · 덮개 검사: **모든 잡**의 **고르지 않은** 스텝 본문(주석 아닌 줄)에 실재 팩 시험 파일 이름이 나온다
+     = 고르는 규칙이 워크플로와 어긋남(새 꼴의 팩 스텝이 생김 · 4잡 밖 새 잡 포함) → 규칙을 고칠 신호
+   · PyYAML 대조(PyYAML 이 있을 때 · 게이트는 전용 venv 로 부른다): 잡마다 `run:` 스텝 수와 표지(위 두 낱말) 스텝 수를
+     PyYAML 로 따로 읽어 줄 파서와 맞춘다 — 다른 들여쓰기·꼴이라 줄 파서가 놓친 스텝이 있으면 불일치.
+     PyYAML 이 없으면 대조를 건너뛰고 표준 오류에 「건너뜀」 1줄(줄 파서만으로 판정)
 
 사용:
    python3 docs/integ-1116/ci_pack_steps.py list            # 고른 스텝 목록(이름 · 잡 · 줄 · 시험 수)
@@ -180,8 +183,50 @@ def indirect(run, root, real):
     return out
 
 
+def yaml_counts(text):
+    """PyYAML 로 따로 읽은 잡별 (run 스텝 수, 표지 스텝 수). PyYAML 이 없으면 None."""
+    try:
+        import yaml
+    except ImportError:
+        return None
+    try:
+        doc = yaml.safe_load(text)
+    except yaml.YAMLError as e:
+        raise Fail("PyYAML 대조: 워크플로를 못 읽음 — %s" % e)
+    out = {}
+    for jn, jb in ((doc or {}).get("jobs") or {}).items():
+        steps = (jb.get("steps") if isinstance(jb, dict) else None) or []
+        runs = [st["run"] for st in steps if isinstance(st, dict) and isinstance(st.get("run"), str)]
+        marked = sum(1 for r in runs if any(mk in l for l in code_lines(r.splitlines()) for mk in MARKS))
+        out[str(jn)] = (len(runs), marked)
+    return out
+
+
+def line_counts(jobs):
+    out = {}
+    for j in jobs:
+        runs = [st for st in j["steps"] if "run" in st["keys"]]
+        out[j["name"]] = (len(runs), sum(1 for st in runs if any(mk in l for l in code_lines(st["run"]) for mk in MARKS)))
+    return out
+
+
+YAML_NOTE = []   # 마지막 select 의 PyYAML 대조 결과 1줄(main 이 표준 오류로 낸다)
+
+
 def select(text, root):
     jobs = parse(text)
+    ya, li = yaml_counts(text), line_counts(jobs)
+    if ya is None:
+        YAML_NOTE[:] = ["PyYAML 대조 건너뜀(PyYAML 없음 — 줄 파서만으로 판정)"]
+    elif ya != li:
+        rows = ["%s: PyYAML run %s·표지 %s ↔ 줄 파서 run %s·표지 %s" % (
+            k, (ya.get(k) or ("없음", "없음"))[0], (ya.get(k) or ("없음", "없음"))[1],
+            (li.get(k) or ("없음", "없음"))[0], (li.get(k) or ("없음", "없음"))[1])
+            for k in sorted(set(ya) | set(li)) if ya.get(k) != li.get(k)]
+        raise Fail("PyYAML 대조 불일치(줄 파서가 놓친 꼴 — 다른 들여쓰기·새 꼴):\n  " + "\n  ".join(rows))
+    else:
+        YAML_NOTE[:] = ["PyYAML 대조 같음(잡 %d · run 스텝 %d · 표지 스텝 %d)"
+                        % (len(ya), sum(v[0] for v in ya.values()), sum(v[1] for v in ya.values()))]
     real = pack_test_names(root)
     chosen, per_job = [], {j: 0 for j in JOBS}
     problems = []
@@ -191,7 +236,7 @@ def select(text, root):
             hit = any(mk in l for l in body for mk in MARKS)
             if not hit:
                 stray = tokens(s["run"]) & real
-                if j["name"] in JOBS and stray and "uses" not in s["keys"]:
+                if stray and "uses" not in s["keys"]:
                     problems.append("덮개: %s 줄 %d(%s)이 팩 시험 %s 를 부르는데 고르는 규칙에 안 걸림"
                                     % (j["name"], s["line"], (s["keys"].get("name") or "")[:50], sorted(stray)[:5]))
                 continue
@@ -304,8 +349,22 @@ def self_test():
             "잡 boot-health-full": good.replace("cysjavis-pack/bin/tests/run_bootstrap_health.py", "x.py"),
             "shell=pwsh": good.replace("        shell: bash\n", "        shell: pwsh\n"),
             "블록 스칼라": good.replace("      - name: u\n        env:\n          FOO: 'b a r'\n        run: |", "      - name: u\n        env:\n          FOO: 'b a r'\n        run: >"),
+            "덮개: extra-job": good + """  extra-job:
+    runs-on: ubuntu-latest
+    steps:
+      - name: x
+        run: cd cysjavis-pack/bin && python3 tests/test_c.py
+""",
             "defaults": good.replace("  ubuntu-pack-suite:\n    runs-on: ubuntu-latest\n", "  ubuntu-pack-suite:\n    runs-on: ubuntu-latest\n    defaults:\n      run:\n        shell: sh\n"),
         }
+        yaml_ok = yaml_counts(good) is not None
+        if yaml_ok:   # 4칸 들여쓰기 스텝 목록(줄 파서가 통째로 놓치는 꼴) — PyYAML 대조만 잡는다
+            bad["PyYAML 대조 불일치"] = good + """  indent4-job:
+    runs-on: ubuntu-latest
+    steps:
+    - name: y
+      run: python3 cysjavis-pack/bin/tests/test_c.py
+"""
         for want, text in bad.items():
             try:
                 select(text, tmp)
@@ -313,7 +372,8 @@ def self_test():
                 assert want in str(e), (want, str(e))
             else:
                 raise AssertionError("음성 대조가 통과함: " + want)
-        print("[ci_pack_steps self-test] OK(양성 1 · 음성 %d)" % len(bad))
+        print("[ci_pack_steps self-test] OK(양성 1 · 음성 %d · PyYAML 대조 음성 %s)"
+              % (len(bad), "포함" if yaml_ok else "건너뜀 — PyYAML 없음"))
         return 0
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -327,6 +387,7 @@ def main(argv):
         return 2
     try:
         ch = select(open(YML, encoding="utf-8").read(), ROOT)
+        sys.stderr.write("[ci_pack_steps] %s\n" % YAML_NOTE[0])
         if argv[0] == "unregistered":
             covered = {t for c in ch for t in c["tests"]}
             print("\n".join(n for n in unregistered(ROOT) if n not in covered))

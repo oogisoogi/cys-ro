@@ -8,6 +8,7 @@ import { ReviveBook, GONE_KEY, SEEN_KEY, type ReviveDeps } from "./revive";
 import { masterRowOf, sendGate, ownLastHumanInput, type MasterRow } from "./judge/gate";
 import {
   DEAD_AXES,
+  RESTART_TIMEOUT_MS,
   RETRY_DELAY_MS,
   WAKE_DEDUPE_MS,
   WAKE_TEXT,
@@ -397,6 +398,36 @@ describe("다시 켜기 — 축별 길(대역 데몬)", () => {
     expect(JSON.parse(e.store.get(SEEN_KEY) ?? "null")).toEqual({ sid: 100, created_at: 1100 });
     expect(e.roles("cso")).toBe(1);
     expect(e.seatWrites()).toBe(0);
+  });
+  it("(master#fe289e63) vacant → 다시 켜기 → 같은 좌석 에이전트는 살아났는데 역할 없음(멱등 재반환 · 역할 회수 뒤) = 성공 아님 · 시간 지나 실패 안내 · 옛 셸 정리 0", async () => {
+    const e = new Env((x) => {
+      x.store.set(SEEN_KEY, JSON.stringify({ sid: 5, created_at: 1005 }));
+      x.rows = [row(5, null, { agent_alive: null, seat: "empty" }), row(6, "cso")];
+    });
+    e.startPlan = async (_n, env) => {
+      Object.assign(env.rows[0], { agent_alive: true, seat: "occupied", agent_seen: true }); // 역할 없이 되살아남(데몬 결함 꼴)
+    };
+    e.observe();
+    expect(e.band()?.key).toBe("down_vacant");
+    await e.book.restart();
+    e.observe();
+    expect(e.book.view().phase.kind).toBe("restarting"); // role=master 행이 없으면 성공 아님(좌석 id·생존만으로 판정하지 않는다)
+    await e.advance(RESTART_TIMEOUT_MS + 1000);
+    e.observe();
+    expect(e.book.view().phase.kind).toBe("restartfail");
+    expect(e.count("close_surface_if_quiet")).toBe(0);
+    // 역할을 다시 쥐면(데몬 고침 꼴) 그때 성공
+    const g = new Env((x) => {
+      x.store.set(SEEN_KEY, JSON.stringify({ sid: 5, created_at: 1005 }));
+      x.rows = [row(5, null, { agent_alive: null, seat: "empty" }), row(6, "cso")];
+    });
+    g.startPlan = async (_n, env) => {
+      Object.assign(env.rows[0], { role: "master", agent_alive: true, seat: "occupied", agent_seen: true });
+    };
+    g.observe();
+    await g.book.restart();
+    g.observe();
+    expect(g.book.view().phase.kind).toBe("rest");
   });
   it("vacant 정리 — 저장 신원의 생성 시각이 다르면(데몬 다시 켜져 번호 재사용) · 옛 꼴(번호만)이면 닫지 않는다", async () => {
     for (const seen of [JSON.stringify({ sid: 5, created_at: 999 }), "5"]) {

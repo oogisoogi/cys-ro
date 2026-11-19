@@ -7474,6 +7474,23 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                             }
                         })
                     };
+                    // (1.1.16 · cysr-1116-s5-1119 · master#fe289e63) 재반환 좌석의 역할 — 요청 역할이 있는데 그 좌석이 역할을 잃었으면(사망 유예 뒤 role.released)
+                    //   다시 단다(reattach_role_on_reuse). 다른 좌석에서 승계해 오는 중(seat_takeover_from = 다른 좌석)이면 재반환하지 않고 아래 새 생성으로 간다 —
+                    //   승계 마무리(옛 좌석 역할·큐 이관)는 성공 아크에만 있다. 재반환 좌석이 그 역할을 이미 쥐고 있으면 종전 그대로.
+                    let reuse_role = param_str(&params, "role").filter(|r| !r.is_empty());
+                    let reuse = reuse.filter(|_| {
+                        // 뮤턴트 S5R-NOFALLBACK(승계 중에도 재반환) — 시험 빌드에서만.
+                        let skip_fallback = cfg!(test) && std::env::var("CYS_S5R_MUTANT").as_deref() == Ok("NOFALLBACK");
+                        reuse_role.is_none() || skip_fallback || seat_takeover_from.is_none_or(|h| h == sid)
+                    });
+                    if let (Some(_), Some(role)) = (reuse, reuse_role.as_deref()) {
+                        if let Some(s) = daemon.get_surface(sid) {
+                            // 뮤턴트 S5R-NOREATTACH(재등록 끔) — 시험 빌드에서만.
+                            if !(cfg!(test) && std::env::var("CYS_S5R_MUTANT").as_deref() == Ok("NOREATTACH")) {
+                                let _ = daemon.reattach_role_on_reuse(&s, role);
+                            }
+                        }
+                    }
                     if let Some(pid) = reuse {
                         // ★T-0147-4 이음매 주의: 이 조기 반환은 성공 아크를 타지 않으므로 create_owner
                         // 원장을 **갱신하지 않는다**(의도). 같은 pane 재시도는 원 기록이 그대로 유효하고
@@ -29741,6 +29758,52 @@ mod tests {
         let late = try_write(&c, crate::state::WriteReq::Data(b"x".to_vec()), &json!(12)).expect("닫는다고 판정한 좌석에 썼다");
         assert_eq!(late["error"]["code"], json!("surface_closing"), "{late}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (1.1.16 · TICKET=cysr-1116-s5-1119 · master#fe289e63) 멱등 재반환 좌석의 역할 — ① 사망 유예 뒤 역할을 잃은 좌석을 같은 key 로 다시 만들면
+    /// 같은 좌석 + 역할 다시 닮(roles 맵·좌석 칸·role.reattached) ② 이미 쥐고 있으면 변화 0 ③ 다른 좌석이 그 역할을 쥐고 승계 대상이면 재반환하지 않고 새 좌석.
+    #[test]
+    fn s5_1116_idem_reuse_reattaches_released_role_or_creates_new() {
+        let daemon = claim_daemon();
+        let create = |n: u64| {
+            let Reply::Single(r) = dispatch(&daemon, Request { id: json!(n), method: "surface.create".into(),
+                params: json!({"cmd": "sleep 30", "role": "master", "idempotency_key": "s5r-k", "takeover_empty_seat": true}) }, Some(995_901_u32)) else {
+                panic!("expected single reply");
+            };
+            r
+        };
+        let master = || daemon.roles.lock().unwrap().get("master").copied();
+        let reattached = || daemon.bus.tail(400).iter().filter(|e| e["name"] == json!("role.reattached")).count();
+        let r1 = create(1);
+        let a = r1["result"]["surface_id"].as_u64().expect("1차 생성");
+        let sa = daemon.get_surface(a).unwrap();
+        assert_eq!(master(), Some(a));
+        // ① 사망 유예 뒤 역할 회수(watchdog 과 같은 함수) → 같은 key 다시 생성 = 같은 좌석 + 역할 다시
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &sa), "전제: 역할 회수");
+        assert_eq!((master(), sa.role.lock().unwrap().clone()), (None, None));
+        let r2 = create(2);
+        assert_eq!(r2["result"]["idempotent_reuse"], json!(true), "{r2}");
+        assert_eq!(r2["result"]["surface_id"], json!(a));
+        assert_eq!(sa.role.lock().unwrap().as_deref(), Some("master"), "재반환 좌석이 역할을 다시 쥐지 않았다(마스터 0)");
+        assert_eq!(master(), Some(a), "roles 맵에 마스터 없음");
+        assert!(!daemon.released_roles.lock().unwrap().contains_key("master"), "거둔 역할 장부가 남았다");
+        assert!(daemon.master_claimed_at.lock().unwrap().is_some(), "마스터 쿨다운 스탬프 없음");
+        assert_eq!(reattached(), 1);
+        // ② 이미 쥐고 있으면 변화 0
+        let r3 = create(3);
+        assert_eq!((r3["result"]["idempotent_reuse"].clone(), r3["result"]["surface_id"].clone()), (json!(true), json!(a)));
+        assert_eq!((master(), reattached()), (Some(a), 1), "이미 쥔 좌석에 다시 달았다");
+        // ③ 역할을 잃은 뒤 다른 좌석이 마스터를 쥠 → 같은 key = 승계 대상이 다른 좌석 → 재반환 0 · 새 좌석이 승계(옛 보유자 역할 내림)
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &sa));
+        let b = make_surface(&daemon, Some("master"));
+        assert_eq!(master(), Some(b));
+        let r4 = create(4);
+        assert_eq!(r4["ok"], json!(true), "{r4}");
+        let c = r4["result"]["surface_id"].as_u64().unwrap();
+        assert!(r4["result"].get("idempotent_reuse").is_none() && c != a, "다른 좌석 승계 중인데 역할 없는 옛 좌석을 재반환했다: {r4}");
+        assert_eq!(master(), Some(c));
+        assert_eq!(daemon.get_surface(b).unwrap().role.lock().unwrap().clone(), None, "옛 보유자 역할이 남음(이중 마스터)");
+        assert_eq!(sa.role.lock().unwrap().clone(), None);
     }
 
     // ───────── ★D7⑵(트랙 DAEMON): 역할 좌석의 미배달 큐는 폐기가 아니라 주차·상속된다 ─────────

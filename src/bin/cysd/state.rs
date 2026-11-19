@@ -6779,6 +6779,45 @@ impl Daemon {
         self.released_roles.lock().unwrap().retain(|r, s| r != role && *s != sid);
     }
 
+    /// (1.1.16 · TICKET=cysr-1116-s5-1119 · master#fe289e63) 멱등 재반환(`surface.create` idempotency_key)된 **역할 없는** 좌석에 요청 역할을 다시 단다 —
+    /// 에이전트 죽음 유예(60초) 뒤 `role.released` 로 딱지가 내려간 좌석을 120초 안 다시 기동하면 같은 좌석이 되살아나는데 종전엔 역할이 0 이었다(마스터 0).
+    /// 생성 경로(`create_surface_with_env` 의 역할 공개 블록)와 같은 규약 — 락 순서 surfaces → roles → surface.role · worker 는 고유 이름 · caps · 거둔 역할 장부 ·
+    /// 묘비 해제 · master 쿨다운 스탬프 · 위상 영속. 이미 역할이 있으면 아무것도 안 하고 None.
+    pub fn reattach_role_on_reuse(self: &Arc<Self>, surface: &Arc<Surface>, role: &str) -> Option<String> {
+        let final_role = {
+            let surfaces = self.surfaces.lock().unwrap();
+            let mut roles = self.roles.lock().unwrap();
+            let mut srole = surface.role.lock().unwrap();
+            if srole.is_some() {
+                return None;
+            }
+            let final_role = dedup_worker_role(
+                role,
+                &roles,
+                |h| surfaces.get(&h).map(|s| !s.exited.load(Ordering::Relaxed)).unwrap_or(false),
+                surface.id,
+            );
+            *srole = Some(final_role.clone());
+            *surface.caps.lock().unwrap() = crate::caps::Caps::for_role(Some(final_role.as_str()));
+            roles.insert(final_role.clone(), surface.id);
+            final_role
+        };
+        self.note_role_held(&final_role, surface.id);
+        self.caller_gen.fetch_add(1, Ordering::Relaxed);
+        self.remove_tombstone(&final_role);
+        if final_role == "master" {
+            *self.master_claimed_at.lock().unwrap() = Some(now_epoch());
+        }
+        crate::governance::persist_topology(self);
+        self.bus.publish(
+            "role.reattached",
+            "surface",
+            Some(surface.id),
+            json!({"role": final_role, "surface_ref": cys::surface_ref(surface.id), "path": "surface.create(idempotent_reuse)"}),
+        );
+        Some(final_role)
+    }
+
     pub fn remove_tombstone(&self, role: &str) {
         let mut tombstones = self.tombstones.lock().unwrap();
         tombstones.remove(role);

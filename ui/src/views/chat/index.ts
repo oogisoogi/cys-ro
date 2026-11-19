@@ -8,6 +8,7 @@ import { DUP, dupPending, errorCount, HEALTH_LABEL, lastSendStep, logOrder, need
 import { canRetry, STEP_LABEL, type Msg } from "../judge/msgstep";
 import { AUTO_STEP_LABEL, type AutoMsg } from "../judge/autostep";
 import { createBand } from "./band";
+import { createRail, guideCard, isWindowsUa, quickReplies } from "./rail";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -29,7 +30,14 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
     confirms.dataset.min = "confirms";
     const errors = el("div", "cv-errors");
     errors.dataset.min = "errors";
-    head.append(health, confirms, errors);
+    // (조각 6 · §16-6) 「부서 안내」 — 저장소와 무관하게 늘 열림(가이드 다시 보기)
+    const guideBtn = el("button", "cv-guide-btn", "부서 안내");
+    guideBtn.type = "button";
+    guideBtn.addEventListener("click", (e) => {
+      if (!e.isTrusted) return;
+      act.rail.toggleGuide();
+    });
+    head.append(health, confirms, errors, guideBtn);
 
     const log = el("ol", "cv-log");
     log.setAttribute("aria-label", "대화");
@@ -54,7 +62,12 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
     // (조각 4) 확인 대기 띠 = 화면 맨 위 · 「답하는 물음」 줄 = 입력칸 바로 위
     const band = createBand(act, { log, input });
     root.append(band.el, head, log, live, band.hint, form, notice);
-    host.append(root);
+    // (조각 6) 왼쪽 메뉴바(맡긴 일·팀·부서·결과 자리) + 가운데 대화 — 한 줄로(시안 rail)
+    const rail = createRail();
+    const wrap = el("div", "cv-wrap");
+    wrap.append(rail.el, root);
+    host.append(wrap);
+    const win = isWindowsUa(typeof navigator === "undefined" ? "" : navigator.userAgent);
 
     const submit = () => {
       const text = input.value;
@@ -120,10 +133,17 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
       li.dataset.step = a.step;
       return li;
     };
-    const masterBubble = (text: string, uuid: string | null = null): HTMLLIElement => {
+    const masterBubble = (text: string, uuid: string | null = null, last = false): HTMLLIElement => {
       const li = el("li", "cv-msg cv-master");
       if (uuid) li.dataset.uuid = uuid; // (조각 4) 「대화에서 답하기」가 그 물음 자리를 찾는 표지
       li.append(el("div", "cv-who", "마스터"), el("div", "cv-text", text));
+      // (조각 6 · §5-4 D7) ⟪팀 제안⟫·⟪부서 제안: 팀⟫ = 마지막 말일 때만 빠른 답 2개(누르면 그 글 그대로 보냄)
+      if (last) {
+        const q = quickReplies(text, (t) => {
+          if (act.submit(t)) input.focus();
+        });
+        if (q) li.append(q);
+      }
       return li;
     };
 
@@ -148,15 +168,20 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
       log.replaceChildren();
       if (s.msgs.length === 0 && s.stray.length === 0 && s.autos.length === 0) log.append(empty);
       // (조각 3 고침 · 검증 지적 B) 어느 말에도 안 묶인 마스터 글은 시각순으로 사람 말 사이에 끼운다(사람 말들 뒤에 몰리지 않게).
-      for (const it of logOrder(s.msgs, s.stray)) {
+      const order = logOrder(s.msgs, s.stray);
+      const lastItem = order[order.length - 1];
+      for (const it of order) {
         if (it.kind === "stray") {
-          log.append(masterBubble(it.r.text, it.r.uuid));
+          log.append(masterBubble(it.r.text, it.r.uuid, it === lastItem));
           continue;
         }
         log.append(bubble(it.m, s));
-        for (const r of it.m.replies) log.append(masterBubble(r.text, r.uuid));
+        it.m.replies.forEach((r, k) => log.append(masterBubble(r.text, r.uuid, it === lastItem && k === it.m.replies.length - 1)));
       }
       for (const a of s.autos) log.append(autoLine(a));
+      // (조각 6 · §16-6) 처음 부서가 생기면 한 번 · 「부서 안내」로 다시 보기
+      if (act.rail.guide) log.append(guideCard(act.rail.guide, win, { ack: () => act.rail.ackGuide(), close: () => act.rail.toggleGuide() }));
+      rail.paint(s, act.rail.model);
       band.paint(); // (조각 4) 말 목록을 다시 그린 뒤 — 답하는 물음 자리 표시를 다시 단다
       if (atBottom) log.scrollTop = log.scrollHeight;
     };
@@ -176,7 +201,7 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
         input.removeEventListener("input", onInput);
         input.removeEventListener("keydown", onKey);
         form.removeEventListener("submit", onSubmit);
-        root.remove();
+        wrap.remove();
       },
       snapshot: () => ({ scrollTop: log.scrollTop }),
       restore: (s: unknown) => {

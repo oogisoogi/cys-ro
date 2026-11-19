@@ -14,6 +14,7 @@ import { approvalSeatsOf, masterRowOf, sendGate, type GateVerdict, type MasterRo
 import { applyRecords, applyRefusedAtWrite, canRetry, mergeOutcome, READ_AFTER_MS, rematchPending, SENDING_SILENT_MS, settleSteps, SLOW_MS, stepFromOutcome, type Msg, type PendingRec, type Rec, type Reply, type Step } from "./judge/msgstep";
 import { applyQueueEvent, autoHoldRemainingMs, queueEventOf, type AutoMsg } from "./judge/autostep";
 import { ConfirmBook } from "./confirm";
+import { RailBook } from "./rail";
 
 export const HOLD_KEY = "cys-chat-hold";
 /** 붙잡은 말 상한(설계 §5-3 · 넘으면 새 말을 받지 않고 안내). */
@@ -187,10 +188,13 @@ export class ChatCore {
   readonly confirm: ConfirmBook;
   /** (조각 4 · 통합 1116) 장부용 사건 구독 해제 — 조각 3 구독(unlisten)과 따로 든다(두 구독 모두 대화 화면 attach~detach 동안만). */
   private unlistenConfirm: (() => void) | null = null;
+  /** (cysr-1116-s6 · 조각 6) 왼쪽 메뉴바 장부 — 맡긴 일·팀·부서(대화 화면이 켜져 있을 때만 조회). */
+  readonly rail: RailBook;
 
   constructor(private readonly d: Deps) {
     this.loadHold();
     this.confirm = new ConfirmBook({ invoke: d.invoke, now: d.now, store: d.store }, () => this.set({}));
+    this.rail = new RailBook({ invoke: d.invoke, now: d.now, setTimeout: d.setTimeout, clearTimeout: d.clearTimeout, store: d.store, working: d.working }, () => this.set({}));
   }
 
   get state(): ChatState {
@@ -221,11 +225,19 @@ export class ChatCore {
   /** 대화 화면이 켜짐 — 세션 기록 읽기 허용 · 시작 오프셋 잡기. */
   attach(): void {
     this.attached = true;
-    if (!this.unlistenConfirm && this.d.listenDaemon) this.unlistenConfirm = this.d.listenDaemon((ev) => this.confirm.onEvent(ev));
+    if (!this.unlistenConfirm && this.d.listenDaemon)
+      this.unlistenConfirm = this.d.listenDaemon((ev) => {
+        this.confirm.onEvent(ev);
+        this.rail.onEvent(ev); // (조각 6) 묶음 사건 surface.group.changed — 「팀 만드는 중 → 진행」
+      });
     if (this.d.defaultSlug)
       void this.d
         .defaultSlug()
-        .then((s) => this.confirm.setHqSlug(typeof s === "string" && s ? s : null))
+        .then((s) => {
+          const slug = typeof s === "string" && s ? s : null;
+          this.confirm.setHqSlug(slug);
+          this.rail.setHqSlug(slug);
+        })
         .catch(() => {});
     void this.readTranscript();
     void this.startListening();
@@ -636,6 +648,7 @@ export class ChatCore {
       const prevWorking = this.lastWorking;
       this.applyFresh(fresh);
       void this.confirm.scanStep(); // (조각 4) 대화 화면을 연 때보다 앞 기록의 표식을 한 토막씩
+      if (this.attached) void this.rail.refresh(fresh.org, fresh.approvals); // (조각 6) 왼쪽 메뉴바 — 이 조회 값 + 좌석 목록(쓰기 직전 재조회와 별개)
       this.lastWorking = fresh.master ? fresh.master.working : null;
       const awaiting = this.s.msgs.some((m) => ["injected", "checking", "slow", "delivered", "replying"].includes(m.step));
       // (조각 3 · 하네스 seed 370) 짧은 답(두 조회 사이 3초 안에 일 시작·끝)은 「활동 바뀜」으로 안 잡힌다 → 마스터 출력이 지난 조회 뒤에 있었으면(idle_secs) 그 틱도 읽는다.
@@ -744,6 +757,7 @@ export class ChatCore {
         const recs = Array.isArray(r.records) ? (r.records as Rec[]) : [];
         this.offset = r.next_offset;
         if (recs.length) this.confirm.onTail(recs);
+        if (recs.length) this.rail.onTail(recs); // (조각 6) 「팀 만드는 중」·「부서로 올리는 중」 표식
         if (recs.length) {
           const applied = applyRecords(this.s.msgs, recs, this.consumed);
           for (const u of applied.consumed) this.consumed.add(u);

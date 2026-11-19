@@ -12790,7 +12790,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                     "display_activity_observer": crate::activity::stats_wire(daemon),
                 });
             // ★T4 M2(독립 검증): 좌석 입양 조회 — 입양 노브 켬일 때만 칸이 생긴다(끔 = 종전 바이트).
-            if let Some(sa) = crate::seat_adopt::status_json() {
+            if let Some(sa) = crate::seat_adopt::status_json(daemon) {
                 body["daemon"]["seat_adopt"] = sa;
             }
             Reply::Single(ok_response(&id, body))

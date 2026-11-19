@@ -231,11 +231,36 @@ fn retry_keeps_first_since_and_block_deadline() {
     assert!(!blocks_all(&carry_pending(Some(&first), known), 0.0));
 }
 
+/// T6a 사전 점검 판정표: 입양 가능 = 산 seatkeep · 실행 파일 이 cysd 옆 · 핵심 판 같음 · 결박 Mine/Unknown. 남의 것·죽은 것 = 막힘 아님.
+#[test]
+fn adopt_check_block_reasons() {
+    let a = Liveness::Alive;
+    assert_eq!(check_block_reason(&a, Some(true), true, &Bind::Mine), None);
+    assert_eq!(check_block_reason(&a, Some(true), true, &Bind::Unknown), None);
+    assert_eq!(check_block_reason(&a, Some(false), true, &Bind::Mine).as_deref(), Some("exe_not_beside_this_cysd"));
+    assert_eq!(check_block_reason(&a, None, true, &Bind::Mine).as_deref(), Some("exe_unreadable"));
+    assert_eq!(check_block_reason(&a, Some(true), false, &Bind::Mine).as_deref(), Some("core_version_mismatch"));
+    assert_eq!(check_block_reason(&Liveness::Unknown("registry_io"), Some(true), true, &Bind::Mine).as_deref(), Some("registry_io"));
+    assert_eq!(check_block_reason(&Liveness::Dead("keeper_gone"), None, false, &Bind::Mine), None);
+    assert_eq!(check_block_reason(&Liveness::Unknown("registry_io"), Some(false), false, &Bind::Other), None);
+}
+
+/// 사전 점검 = 폴더 없음 → 빈 결과 · 폴더를 만들지 않는다(쓰기 0).
+#[test]
+fn adopt_check_without_folder_is_empty_and_writes_nothing() {
+    let dir = std::env::temp_dir().join(format!("skc-none-{}", std::process::id())).join("seatkeep");
+    let v = adopt_check_in(&dir, std::path::Path::new("/private/tmp/no-such-skc.lock"));
+    assert_eq!(v, serde_json::json!({"adoptable": 0, "blocked": [], "foreign": 0, "dead": 0}));
+    assert!(!dir.parent().unwrap().exists());
+}
+
 /// M2 조회: 노브 끔 = 칸 없음(None · `org.status` 종전 바이트).
 #[test]
 fn status_json_absent_when_knob_off() {
     if !enabled() {
-        assert!(status_json().is_none());
+        let daemon = crate::state::Daemon::new(std::env::temp_dir().join(format!("sks-{}/d.sock", std::process::id())));
+        assert!(status_json(&daemon).is_none());
+        let _ = std::fs::remove_dir_all(daemon.socket_path.parent().unwrap());
     }
 }
 

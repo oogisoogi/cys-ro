@@ -44,7 +44,14 @@ pub(crate) const FG_VIA_LINK: i32 = -2;
 pub(crate) fn open(daemon: &crate::state::Daemon, size: PtySize) -> Result<Opened, String> {
     if seatkeep_enabled() {
         #[cfg(target_os = "macos")]
-        return SeatkeepPlan::prepare(daemon, size).map(Opened::Seatkeep);
+        match holders_over_cap(daemon) {
+            None => return SeatkeepPlan::prepare(daemon, size).map(Opened::Seatkeep),
+            // T6a holder 총수 상한(T6-DESIGN 2-6): 이 좌석만 직접 PTY 로 강등(생성 실패 아님 · 경고 사건).
+            Some((live, cap)) => {
+                eprintln!("[cysd] seatkeep 좌석 {live}개 ≥ 상한 {cap} — 새 좌석은 직접 PTY(데몬이 죽으면 함께 끝남)");
+                daemon.bus.publish("seat.seatkeep_capped", "system", None, serde_json::json!({"live": live, "cap": cap}));
+            }
+        }
         #[cfg(not(target_os = "macos"))]
         return Err(format!("seatkeep 노브 켜짐({SEATKEEP_KNOB}=1) · 이 운영체제는 아직 지원하지 않음(맥 전용 · 리눅스·윈도우 = T7)"));
     }
@@ -54,6 +61,34 @@ pub(crate) fn open(daemon: &crate::state::Daemon, size: PtySize) -> Result<Opene
         .openpty(size)
         .map_err(|e| crate::state::map_pty_open_error(e.as_ref()))?;
     Ok(Opened::Direct(pair))
+}
+
+/// holder 총수 상한 env(기본 `HOLDER_CAP_DEFAULT` · 시험·운영 조정용 · 기동 1회 판독).
+pub(crate) const HOLDER_CAP_ENV: &str = "CYS_SEATKEEP_MAX_HOLDERS";
+/// 기본 상한 — 기존 좌석 상한 상수가 소스에 없어 둔 값(T6-DESIGN 2-6 · 실측 A13 뒤 master 가 정함 📌).
+pub(crate) const HOLDER_CAP_DEFAULT: usize = 64;
+
+/// 순수: env 값 → 상한(0·해석 실패 = 기본).
+pub(crate) fn holder_cap_from(env: Option<&str>) -> usize {
+    env.and_then(|v| v.trim().parse::<usize>().ok()).filter(|n| *n > 0).unwrap_or(HOLDER_CAP_DEFAULT)
+}
+
+/// 입양 모드에서 살아 있는 seatkeep 좌석 수가 상한 이상이면 (수, 상한) — 종속 모드(T3)·노브 끔 = None(종전).
+#[cfg(target_os = "macos")]
+fn holders_over_cap(daemon: &crate::state::Daemon) -> Option<(usize, usize)> {
+    if !seatkeep_adopt_enabled() {
+        return None;
+    }
+    static CAP: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let cap = *CAP.get_or_init(|| holder_cap_from(std::env::var(HOLDER_CAP_ENV).ok().as_deref()));
+    let live = daemon
+        .surfaces
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .values()
+        .filter(|s| s.seat_link.is_some() && !s.exited.load(std::sync::atomic::Ordering::SeqCst))
+        .count();
+    (live >= cap).then_some((live, cap))
 }
 
 impl Opened {
@@ -326,6 +361,10 @@ fn plist_bundle_executable(text: &str) -> Option<String> {
 #[allow(dead_code)]
 #[path = "../cys-seatkeep/proto.rs"]
 mod sk_proto;
+
+/// seatkeep 고정 핵심 판(T6a 사전 점검 `cysd --adopt-check` 가 등록부 `core` 와 대조).
+#[cfg(target_os = "macos")]
+pub(crate) const SEATKEEP_CORE_VERSION: u32 = sk_proto::CORE_VERSION;
 
 #[cfg(target_os = "macos")]
 pub(crate) use seatkeep_mac::{adopt_connect, controller_lock_path, seatkeep_dir, seatkeep_exe_matches, SeatkeepPlan, SeatLink};

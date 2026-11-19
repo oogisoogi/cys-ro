@@ -33,7 +33,10 @@ OUT = sys.argv[4] if len(sys.argv) > 4 else None
 # foreign = 같은 폴더에 소켓 이름만 다른 데몬 둘(독립 검증 m1) → 남의 seatkeep 을 판정·예약·종료 기록 소비하지 않는다 · 주인 데몬만 소비.
 # pending = 미결 재시도·해제(독립 검증 M2) · SKA_PENDING = recover(등록부 권한 0 → 재시도 중 되돌림 → 입양) · fail(끝내 못 읽음 → 관리용 종료 ·
 #   예약 풀림) · unknown(역할 없는 좌석 + 다른 경로 cysd = 신원이 안 서 끝낼 수 없는 역할 모름 미결 → 상한 60초 뒤 역할 있는 생성 rc 0).
-assert MODE in ("adopt", "bound", "direct", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending"), MODE
+# precheck = rotate 사전 점검(T6a 2-2): 다른 폴더(bin2)의 cys 로 rotate = 그 옆 cysd 는 산 seatkeep 을 입양 못 함 → rc 27 · 옛 데몬·좌석 그대로 →
+#   같은 폴더(bin)의 cys 로 rotate = 점검 통과 → 교체 · 좌석 생존.
+# cap = holder 총수 상한(T6a 2-6): CYS_SEATKEEP_MAX_HOLDERS=1 → 둘째 좌석 = 직접 PTY(seatkeep 1개 · 사건 seat.seatkeep_capped) → 데몬 SIGKILL 뒤 첫 좌석만 산다.
+assert MODE in ("adopt", "bound", "direct", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap"), MODE
 R = f"/private/tmp/ska-{MODE[:3]}-{os.getpid() % 10000}"
 shutil.rmtree(R, ignore_errors=True)
 for d in ("home", "tmp", "s", "packstate", "pack", "bin", "bin2", "logs"):
@@ -110,9 +113,11 @@ ENV = {"HOME": f"{R}/home", "USER": os.environ["USER"], "LOGNAME": os.environ["U
        "CYS_NO_OFFICE_BRIDGE": "1", "CYS_NO_AUTORESTORE": "1", "CYS_NO_AUTOSTART": "1", "PATH": f"{R}/bin:/usr/bin:/bin",
        "TERM": "xterm-256color", "LANG": "en_US.UTF-8"}
 DENV = dict(ENV)
-if MODE in ("adopt", "bound", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending"):
+if MODE in ("adopt", "bound", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap"):
     DENV["CYS_SEATKEEP"] = "1"
-if MODE in ("adopt", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending"):
+if MODE in ("adopt", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap"):
+    if MODE == "cap":
+        DENV["CYS_SEATKEEP_MAX_HOLDERS"] = "1"
     DENV["CYS_SEATKEEP_ADOPT"] = "1"
 
 
@@ -481,6 +486,75 @@ if MODE == "pending":
         cys("close-surface", sid)
         time.sleep(1.0)
         stop_all()
+    if alive(seat_pid):
+        os.kill(seat_pid, signal.SIGKILL)
+    sys.exit(0)
+
+if MODE == "cap":
+    d, _ = start_daemon("0")
+    l1, l2 = f"{R}/logs/k1.log", f"{R}/logs/k2.log"
+    cys("new-surface", "--cwd", "/private/tmp", "--role", "seatk1", "--cmd", f"{SEAT} {l1} 50")
+    p1 = wait_start(l1)
+    cys("new-surface", "--cwd", "/private/tmp", "--role", "seatk2", "--cmd", f"{SEAT} {l2} 50")
+    p2 = wait_start(l2)
+    time.sleep(1.0)
+    err = open(f"{R}/logs/cysd-0.err").read()
+    res = {"keepers": len(keepers()), "capped_log": [l for l in err.splitlines() if "상한" in l and "seatkeep" in l][:1]}
+    os.kill(d.pid, signal.SIGKILL)
+    d.wait()
+    t = time.time()
+    while alive(p2) and time.time() - t < 5:
+        time.sleep(0.1)
+    res["first_alive"], res["second_alive"] = alive(p1), alive(p2)
+    d, _ = start_daemon("1")
+    time.sleep(1.0)
+    lst = cys("list").stdout
+    res["first_listed"], res["second_listed"] = "seatk1" in lst, "seatk2" in lst
+    print(json.dumps(res, ensure_ascii=False), flush=True)
+    if OUT:
+        open(OUT, "a").write(json.dumps(res, ensure_ascii=False) + "\n")
+    stop_all()
+    for p in (p1, p2):
+        if alive(p):
+            os.kill(p, signal.SIGKILL)
+    sys.exit(0)
+
+if MODE == "precheck":
+    d, _ = start_daemon("0")
+    log = f"{R}/logs/c0.log"
+    cys("new-surface", "--cwd", "/private/tmp", "--role", "seatc", "--cmd", f"{SEAT} {log} 50")
+    seat_pid = wait_start(log)
+    time.sleep(1.0)
+    renv = dict(DENV)
+    renv.pop("CYS_NO_AUTOSTART", None)
+    res = {}
+    for tag, bd in (("bin2", "bin2"), ("bin", "bin")):
+        c = subprocess.run([f"{R}/{bd}/cysd", "--adopt-check", "--json"], env=DENV, capture_output=True, text=True, timeout=30)
+        res[f"check_{tag}"] = {"rc": c.returncode, "out": c.stdout.strip()[:200]}
+    old_pid = d.pid
+    rr = subprocess.run([f"{R}/bin2/cys", "rotate", "--skip-depts", "--skip-drain"], env=renv, capture_output=True, text=True, timeout=400)
+    res["blocked_rotate_rc"] = rr.returncode
+    res["blocked_msg"] = [l for l in (rr.stdout + rr.stderr).splitlines() if "사전 점검" in l][:1]
+    idn = cys("identify")
+    res["daemon_same_after_block"] = idn.returncode == 0 and json.loads(idn.stdout).get("daemon_pid") == old_pid
+    res["seat_alive_after_block"] = alive(seat_pid)
+    rr = subprocess.run([f"{R}/bin/cys", "rotate", "--skip-depts", "--skip-drain"], env=renv, capture_output=True, text=True, timeout=400)
+    res["rotate_rc"] = rr.returncode
+    open(f"{R}/logs/rotate-ok.txt", "w").write(rr.stdout + rr.stderr)
+    d.wait()
+    idn = cys("identify")
+    npid = json.loads(idn.stdout).get("daemon_pid") if idn.returncode == 0 else None
+    if npid:
+        daemons.append(PidDaemon(npid))
+    time.sleep(1.5)
+    res["new_daemon"] = bool(npid) and npid != old_pid
+    res["seat_alive_after_rotate"] = alive(seat_pid)
+    res["listed_after_rotate"] = "seatc" in cys("list").stdout
+    res["seat_end"] = [l for l in seat_lines(log) if l.startswith(("SIGNAL", "EOF"))][:2]
+    print(json.dumps(res, ensure_ascii=False), flush=True)
+    if OUT:
+        open(OUT, "a").write(json.dumps(res, ensure_ascii=False) + "\n")
+    stop_all()
     if alive(seat_pid):
         os.kill(seat_pid, signal.SIGKILL)
     sys.exit(0)

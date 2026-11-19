@@ -22813,6 +22813,8 @@ fn verify_one_node_tracked(
 /// | 24 | 새 팩 반영(init-pack) 실패 — 복귀 표식을 **남긴다**(앱 다음 기동이 재시도) | ④ |
 /// | 25 | 끝까지 진행 — 조직 복원(본부 또는 ⑥ 살아 있던 부서의 교체·복원)이 실패·보류(관문)를 보고했다 | 없음 |
 ///
+/// | 27 | 사전 점검 막힘 — 새 cysd 가 살아 있는 seatkeep 좌석을 입양하지 못한다(`cysd --adopt-check`) · 옛 데몬·좌석 무접촉(T6a) | ① 앞 |
+///
 /// 21 과 25 가 함께면 25(복원이 더 무겁다 — 사람이 볼 곳이 창 쪽이다).
 const ROTATE_RC_DRAIN_PARTIAL: i32 = 21;
 const ROTATE_RC_DAEMON: i32 = 22;
@@ -22821,6 +22823,8 @@ const ROTATE_RC_PACK: i32 = 24;
 const ROTATE_RC_RESTORE: i32 = cys::update::verify::ROTATE_RC_RESTORE_PARTIAL;
 /// ★1.1.8 U2: 자동 갱신 트랜잭션 잠금을 얻지 못함(다른 트랜잭션 진행 · 토큰 불일치) — 재시도 0.
 const ROTATE_RC_TXN_BUSY: i32 = 26;
+/// ★T6a(TICKET=cysr-1116-seatkeep-1119 · T6-DESIGN 2-2): 사전 점검 막힘 — 교체하지 않는다(강제 진행 옵션 없음).
+const ROTATE_RC_ADOPT_BLOCKED: i32 = 27;
 
 /// `rotate` 의 clap 밖 인자(★U2).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -23012,6 +23016,74 @@ fn rotate_stop_only(timeout: u64, skip_drain: bool, skip_depts: bool) -> i32 {
 }
 
 /// 끝까지 돈 rotate 의 종료코드(순수). `drain_ok` = None 이면 건너뛰었거나 살아 있는 자리가 없었다(확인할 것 없음).
+/// ★T6a drain 분리(TICKET=cysr-1116-seatkeep-1119 · T6-DESIGN 2-1): 교체를 넘겨 사는 입양 좌석(본부 데몬 `org.status`
+/// `daemon.seat_adopt.adoptable_surfaces` · 입양 노브 켬일 때만 있는 칸)의 저장 실패는 rc 를 낮추지 않는다 — 저장 지시 보내기는 그대로(재부팅 보험).
+/// 순수: (rc 판정용 drain_ok, 뺀 좌석 수). 뺄 좌석 = 부서 `main` 노드 중 목록에 있는 것. 목록이 비면 종전 판정(`all_saved`) 그대로.
+fn drain_ok_excluding_adoptable(report: &Value, adoptable: &[String]) -> (Option<bool>, usize) {
+    let total = report["total"].as_u64().unwrap_or(0);
+    let legacy = if total == 0 { None } else { Some(report["all_saved"].as_bool() == Some(true)) };
+    if adoptable.is_empty() {
+        return (legacy, 0);
+    }
+    let Some(nodes) = report["nodes"].as_array() else { return (legacy, 0) };
+    let exempt = |n: &Value| n["dept"].as_str() == Some("main") && n["surface"].as_str().is_some_and(|r| adoptable.iter().any(|a| a == r));
+    let mut kept = 0usize;
+    let mut kept_ok = true;
+    let mut excused = 0usize;
+    for n in nodes {
+        if exempt(n) {
+            if n["outcome"].as_str() != Some("saved") {
+                excused += 1;
+            }
+            continue;
+        }
+        kept += 1;
+        kept_ok &= n["outcome"].as_str() == Some("saved");
+    }
+    // 도달 불가 데몬(merge_unreachable) 등 노드 밖 실패가 all_saved 를 거짓으로 만들었으면 그대로 둔다.
+    let outside_fail = report["all_saved"].as_bool() != Some(true) && kept_ok && excused == 0;
+    if outside_fail {
+        return (legacy, 0);
+    }
+    (if kept == 0 && excused == 0 { legacy } else if kept == 0 { None } else { Some(kept_ok) }, excused)
+}
+
+/// 본부 데몬이 알려 주는 입양 좌석 목록(칸 없음 = 노브 끔 · 빈 목록).
+fn rotate_adoptable_surfaces() -> Vec<String> {
+    request("org.status", json!({}))
+        .ok()
+        .and_then(|v| v["daemon"]["seat_adopt"]["adoptable_surfaces"].as_array().cloned())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+        .unwrap_or_default()
+}
+
+/// 사전 점검 판정(순수): 점검 출력·rc → Ok = 진행 · Err = 막힘 사유. 출력이 JSON 이 아니면(옛 cysd = 인자 거절 rc 2 등) 막힘.
+fn adopt_precheck_verdict(rc: Option<i32>, stdout: &[u8]) -> Result<(), String> {
+    let v: Value = serde_json::from_slice(stdout).map_err(|_| format!("점검 출력 해석 실패(rc {rc:?}) — 다음 cysd 가 입양 점검을 모른다"))?;
+    let blocked = v["blocked"].as_array().cloned().unwrap_or_default();
+    if blocked.is_empty() && rc == Some(0) {
+        return Ok(());
+    }
+    let list: Vec<String> = blocked
+        .iter()
+        .map(|b| format!("{}:{}", b["skid"].as_str().unwrap_or("?"), b["reason"].as_str().unwrap_or("?")))
+        .collect();
+    Err(format!("입양 못 하는 seatkeep {}개 [{}] (rc {rc:?})", blocked.len(), list.join(", ")))
+}
+
+/// 입양 노브 켬 본부 데몬이면 이 cys 옆 cysd 로 `--adopt-check` — 노브 끔·데몬 없음 = 점검 없음(종전).
+fn rotate_adopt_precheck(exe: &std::path::Path) -> Result<(), String> {
+    let on = request("org.status", json!({})).ok().is_some_and(|v| v["daemon"]["seat_adopt"].is_object());
+    if !on {
+        return Ok(());
+    }
+    let cysd = exe.parent().map(|d| d.join(if cfg!(windows) { "cysd.exe" } else { "cysd" })).ok_or("cys 폴더를 모름")?;
+    let mut cmd = cys::hidden_command(&cysd);
+    cmd.args(["--adopt-check", "--json"]);
+    let out = output_via_file(cmd).ok_or_else(|| format!("점검 실행 실패: {}", cysd.display()))?;
+    adopt_precheck_verdict(out.status.code(), &out.stdout)
+}
+
 fn rotate_rc(drain_ok: Option<bool>, restore_ok: bool) -> i32 {
     if !restore_ok {
         ROTATE_RC_RESTORE
@@ -23204,6 +23276,12 @@ fn run_rotate(timeout: u64, skip_drain: bool, skip_depts: bool) -> i32 {
         cmd.args(args);
         output_via_file(cmd)
     };
+    // ★T6a 사전 점검(입양 노브 켬 데몬일 때만 — `org.status daemon.seat_adopt` 칸이 있을 때): 다음에 뜰 cysd(이 cys 옆)가 산 seatkeep 을
+    //   입양할 수 있는지 `cysd --adopt-check` 로 먼저 본다 — 막히면 저장 지시·교체 전에 멈추고 rc 27(교체가 좌석을 끊거나 미결로 굳히지 않게).
+    if let Err(why) = rotate_adopt_precheck(&exe) {
+        eprintln!("[rotate] 사전 점검 막힘 — 교체하지 않는다(옛 데몬·좌석 그대로): {why}");
+        return ROTATE_RC_ADOPT_BLOCKED;
+    }
     // ① 저장 검증 — 살아 있는 데몬이 있을 때만(없으면 저장할 자리도 없다).
     let mut drain_ok: Option<bool> = None;
     let mut drain_note = "건너뜀".to_string();
@@ -23224,8 +23302,12 @@ fn run_rotate(timeout: u64, skip_drain: bool, skip_depts: bool) -> i32 {
             Some(v) => {
                 let total = v["total"].as_u64().unwrap_or(0);
                 let saved = v["summary"]["saved"].as_u64().unwrap_or(0);
-                drain_ok = if total == 0 { None } else { Some(v["all_saved"].as_bool() == Some(true)) };
+                let (ok, excused) = drain_ok_excluding_adoptable(&v, &rotate_adoptable_surfaces());
+                drain_ok = ok;
                 drain_note = format!("저장 확인 {saved}/{total}");
+                if excused > 0 {
+                    drain_note.push_str(&format!(" · 입양 좌석 {excused}개는 교체를 넘겨 살아 저장 실패를 rc 에서 뺌"));
+                }
             }
             None => {
                 drain_ok = Some(false);
@@ -31807,6 +31889,37 @@ mod tests {
         let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계")];
         let code: String = prod.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
         assert!(!code.contains(r#"new("pkill")"#), "이름 일치 종료(pkill)가 운영 코드에 돌아왔다");
+    }
+
+    /// T6a drain 분리: 입양 좌석(main · 목록)의 저장 실패만 뺀다 · 다른 좌석·부서·노드 밖 실패는 그대로 · 목록 없음 = 종전.
+    #[test]
+    fn drain_ok_excludes_only_adoptable_main_seats() {
+        let n = |dept: &str, s: &str, o: &str| json!({"dept": dept, "surface": s, "outcome": o});
+        let rep = |nodes: Vec<Value>, all: bool| json!({"total": nodes.len(), "all_saved": all, "nodes": nodes});
+        let ad = vec!["surface:3".to_string()];
+        let r = rep(vec![n("main", "surface:3", "timeout"), n("main", "surface:4", "saved")], false);
+        assert_eq!(drain_ok_excluding_adoptable(&r, &ad), (Some(true), 1));
+        assert_eq!(drain_ok_excluding_adoptable(&r, &[]), (Some(false), 0), "목록 없음 = 종전");
+        let r = rep(vec![n("main", "surface:3", "timeout"), n("main", "surface:4", "timeout")], false);
+        assert_eq!(drain_ok_excluding_adoptable(&r, &ad), (Some(false), 1), "다른 좌석 실패는 그대로");
+        let r = rep(vec![n("sales", "surface:3", "timeout")], false);
+        assert_eq!(drain_ok_excluding_adoptable(&r, &ad), (Some(false), 0), "부서의 같은 번호는 빼지 않는다");
+        let r = rep(vec![n("main", "surface:3", "timeout")], false);
+        assert_eq!(drain_ok_excluding_adoptable(&r, &ad), (None, 1), "남는 노드 없음 = 판정 없음");
+        let r = rep(vec![n("main", "surface:4", "saved")], false);
+        assert_eq!(drain_ok_excluding_adoptable(&r, &ad), (Some(false), 0), "노드 밖 실패(도달 불가 데몬)는 그대로");
+        assert_eq!(drain_ok_excluding_adoptable(&json!({"total": 0, "all_saved": true, "nodes": []}), &ad), (None, 0));
+    }
+
+    /// T6a 사전 점검: 막힘 0 + rc 0 만 진행 · 막힘·해석 실패(옛 cysd)·rc ≠ 0 = 멈춤.
+    #[test]
+    fn adopt_precheck_verdict_table() {
+        assert!(adopt_precheck_verdict(Some(0), br#"{"adoptable":2,"blocked":[],"foreign":0,"dead":1}"#).is_ok());
+        let e = adopt_precheck_verdict(Some(1), br#"{"adoptable":0,"blocked":[{"skid":"a-1-0","reason":"core_version_mismatch"}]}"#).unwrap_err();
+        assert!(e.contains("a-1-0:core_version_mismatch"), "{e}");
+        assert!(adopt_precheck_verdict(Some(2), b"cysd: unknown argument '--adopt-check'").is_err(), "옛 cysd = 막힘");
+        assert!(adopt_precheck_verdict(Some(1), br#"{"blocked":[]}"#).is_err(), "rc 와 내용이 어긋나면 막힘");
+        assert_eq!(ROTATE_RC_ADOPT_BLOCKED, 27);
     }
 
     #[test]

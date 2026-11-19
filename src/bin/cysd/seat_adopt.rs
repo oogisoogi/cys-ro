@@ -990,6 +990,91 @@ pub(crate) fn end_orphans_in(daemon: &Daemon, dir: &Path, my_lock: &Path) -> usi
     ended
 }
 
+// ─────────────────────── ⑤ 사전 점검(T6a · `cysd --adopt-check`) ───────────────────────
+
+/// 사전 점검 한 좌석(순수 입력 = 판정 결과 + 실행 파일 · 핵심 판 · 결박) → None = 입양 가능 · Some(사유) = 막힘.
+pub(crate) fn check_block_reason(verdict: &Liveness, exe_ok: Option<bool>, core_ok: bool, bind: &Bind) -> Option<String> {
+    if *bind == Bind::Other {
+        return None; // 남의 데몬 몫 — 이 교체와 무관(호출자가 foreign 으로 센다)
+    }
+    match verdict {
+        Liveness::Alive => {}
+        Liveness::Dead(_) => return None,
+        Liveness::Unknown(why) => return Some((*why).to_string()),
+    }
+    if exe_ok != Some(true) {
+        return Some(if exe_ok.is_none() { "exe_unreadable".into() } else { "exe_not_beside_this_cysd".into() });
+    }
+    if !core_ok {
+        return Some("core_version_mismatch".into());
+    }
+    None
+}
+
+/// `cysd --adopt-check` 본문: 소켓(CYS_SOCKET · 기본)의 상태 폴더 seatkeep 등록부를 읽어 **이 실행 파일**이 산 seatkeep 을 입양할 수 있는지만
+/// 판정한다 — 시작 잠금·소켓·파일 쓰기·연결 0(옛 데몬 무접촉). 출력 = `{"adoptable","blocked":[{skid,reason}],"foreign","dead"}` · 막힘 있으면 1.
+pub(crate) fn adopt_check_main() -> i32 {
+    let socket = cys::socket_path();
+    let dir = crate::state::state_dir(&socket).join("seatkeep");
+    let v = adopt_check_in(&dir, &socket.with_extension("lock"));
+    println!("{}", serde_json::to_string(&v).unwrap_or_default());
+    if v["blocked"].as_array().is_some_and(|b| !b.is_empty()) {
+        1
+    } else {
+        0
+    }
+}
+
+pub(crate) fn adopt_check_in(dir: &Path, my_lock: &Path) -> serde_json::Value {
+    let (mut adoptable, mut foreign, mut dead) = (0u64, 0u64, 0u64);
+    let mut blocked = Vec::new();
+    #[cfg(target_os = "macos")]
+    for skid in scan_ids(dir) {
+        let reg = read_registry(&dir.join(format!("{skid}.json")));
+        let rec: Result<Option<SeatRecord>, ()> = match std::fs::read_to_string(record_path_in(dir, &skid)) {
+            Ok(t) => serde_json::from_str::<SeatRecord>(&t).ok().filter(|r| r.schema == RECORD_SCHEMA && r.skid == skid).map(Some).ok_or(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(_) => Err(()),
+        };
+        let now = crate::state::now_epoch();
+        let rec_in = match &rec {
+            Ok(Some(r)) => Some((r.keeper_pid, r.keeper_start_us, now - r.at)),
+            _ => None,
+        };
+        let pid = target_pid(rec_in, &reg);
+        let alive = pid.map(pid_alive).unwrap_or(false);
+        let bind = bind_from(my_lock, claimed_lock(dir, &skid, pid.filter(|_| alive), &reg).as_deref());
+        if bind == Bind::Other {
+            foreign += 1;
+            continue;
+        }
+        let start_now = pid.and_then(process_start_us);
+        let exe = if alive { pid.and_then(crate::seat_proc::seatkeep_exe_matches) } else { None };
+        let mut verdict = judge(&JudgeIn { rec: rec_in, reg: &reg, alive, start_now, exe_is_seatkeep: exe });
+        if matches!(verdict, Liveness::Dead(_)) && registry_other_live_pid(pid, &reg).is_some() {
+            verdict = Liveness::Unknown("registry_pid_live");
+        }
+        if rec.is_err() && !matches!(verdict, Liveness::Dead(_)) {
+            verdict = Liveness::Unknown("record_unreadable");
+        }
+        if matches!(verdict, Liveness::Alive) && matches!(rec, Ok(None)) {
+            verdict = Liveness::Unknown("no_record_live_keeper");
+        }
+        let core_ok = match &reg {
+            RegRead::Ok(r) => r["core"].as_u64() == Some(crate::seat_proc::SEATKEEP_CORE_VERSION as u64),
+            _ => false,
+        };
+        match check_block_reason(&verdict, exe, core_ok, &bind) {
+            None if matches!(verdict, Liveness::Dead(_)) => dead += 1,
+            None => adoptable += 1,
+            Some(why) => blocked.push(json!({"skid": skid, "reason": why})),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (dir, my_lock);
+    json!({"adoptable": adoptable, "blocked": blocked, "foreign": foreign, "dead": dead})
+}
+
 /// 기동 입양 — 잠금 획득 뒤 · accept 전에 한 번(main.rs). 노브 끔 = 아무것도 안 함(요약도 `ran=false`).
 pub(crate) fn adopt_on_boot(daemon: &Arc<Daemon>) {
     if !enabled() {
@@ -1166,10 +1251,29 @@ fn rerun_auto_restore(daemon: &Arc<Daemon>) {
 }
 
 /// M2 조회 — `org.status` `daemon.seat_adopt`(= `cys status --json`) · 노브 끔 = None(칸 없음 · 종전 바이트). 토큰·비밀 칸 없음.
-pub(crate) fn status_json() -> Option<serde_json::Value> {
+pub(crate) fn status_json(daemon: &Daemon) -> Option<serde_json::Value> {
     if !enabled() {
         return None;
     }
+    // T6a drain 분리: 이 데몬이 죽어도 사는(입양 모드 seatkeep 경유) 좌석 — `cys rotate` ① 이 이 좌석의 저장 실패를 rc 에서 뺀다.
+    #[cfg(target_os = "macos")]
+    let adoptable: Vec<String> = {
+        let mut v: Vec<(u64, String)> = daemon
+            .surfaces
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .filter(|s| s.seat_link.is_some() && !s.exited.load(Ordering::SeqCst))
+            .map(|s| (s.id, cys::surface_ref(s.id)))
+            .collect();
+        v.sort();
+        v.into_iter().map(|(_, r)| r).collect()
+    };
+    #[cfg(not(target_os = "macos"))]
+    let adoptable: Vec<String> = {
+        let _ = daemon;
+        Vec::new()
+    };
     let boot = SUMMARY.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|s| s.outcomes.clone()).unwrap_or_default();
     let pending: Vec<serde_json::Value> = with_live_pending(|g, now| {
         g.iter()
@@ -1184,7 +1288,7 @@ pub(crate) fn status_json() -> Option<serde_json::Value> {
         2 => "done",
         _ => "none",
     };
-    Some(json!({"boot": boot, "pending": pending, "retry": retry}))
+    Some(json!({"boot": boot, "pending": pending, "retry": retry, "adoptable_surfaces": adoptable}))
 }
 
 /// 좌석 하나 — 결과 + (미결이면) 예약.

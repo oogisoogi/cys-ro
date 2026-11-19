@@ -3,6 +3,17 @@
 
 use crate::seat_proc::*;
 
+/// T6a holder 상한 env 판정: 양의 정수만 · 그 밖 = 기본.
+#[test]
+fn holder_cap_env_parse() {
+    assert_eq!(holder_cap_from(None), HOLDER_CAP_DEFAULT);
+    assert_eq!(holder_cap_from(Some("1")), 1);
+    assert_eq!(holder_cap_from(Some(" 8 ")), 8);
+    assert_eq!(holder_cap_from(Some("0")), HOLDER_CAP_DEFAULT);
+    assert_eq!(holder_cap_from(Some("x")), HOLDER_CAP_DEFAULT);
+    assert_eq!(holder_cap_from(Some("-3")), HOLDER_CAP_DEFAULT);
+}
+
 #[test]
 fn knob_only_exact_one_turns_on() {
     for (v, want) in [(None, false), (Some(""), false), (Some("0"), false), (Some("true"), false), (Some("yes"), false),

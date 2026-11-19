@@ -1152,6 +1152,8 @@ enum CysdCli {
     Run,
     Version,
     Help,
+    /// T6a 사전 점검(TICKET=cysr-1116-seatkeep-1119): 데몬을 띄우지 않고 이 실행 파일이 seatkeep 폴더의 산 좌석을 입양할 수 있는지만 JSON 으로.
+    AdoptCheck,
     Unknown(String),
 }
 
@@ -1163,6 +1165,14 @@ fn parse_cysd_args<I: IntoIterator<Item = String>>(args: I) -> CysdCli {
     let command = match first.as_str() {
         "--version" | "-V" => CysdCli::Version,
         "--help" | "-h" => CysdCli::Help,
+        // `--json` 은 받아 넘긴다(출력은 언제나 JSON) — 그 밖 인자는 거절.
+        "--adopt-check" => {
+            return match (args.next().as_deref(), args.next()) {
+                (None, _) | (Some("--json"), None) => CysdCli::AdoptCheck,
+                (Some("--json"), Some(extra)) => CysdCli::Unknown(extra),
+                (Some(other), _) => CysdCli::Unknown(other.to_string()),
+            }
+        }
         _ => return CysdCli::Unknown(first),
     };
     match args.next() {
@@ -1181,6 +1191,7 @@ fn cysd_usage() -> String {
     concat!(
         "usage: cysd [--version|-V|--help|-h]\n",
         "  cysd            데몬을 기동한다(무인자만 기동 · 소켓은 CYS_SOCKET · 팩은 CYS_PACK_DIR)\n",
+        "  --adopt-check [--json]  데몬 없이 seatkeep 좌석 입양 가능 여부만 JSON(막힘 있으면 exit 1 · 잠금·소켓·쓰기 0)\n",
         "  --version, -V   버전과 빌드 ID 를 stdout 에 내고 exit 0\n",
         "  --help, -h      이 도움말 · exit 0\n",
         "  그 밖의 인자    usage 를 stderr 에 내고 exit 2 — 데몬은 기동하지 않는다\n",
@@ -1206,6 +1217,7 @@ fn main() {
             print!("{}", cysd_usage());
             std::process::exit(0);
         }
+        CysdCli::AdoptCheck => std::process::exit(seat_adopt::adopt_check_main()),
         CysdCli::Unknown(a) => {
             eprintln!("cysd: unknown argument '{a}'");
             eprint!("{}", cysd_usage());
@@ -8067,11 +8079,19 @@ mod cysd_args_tests {
     }
 
     #[test]
+    fn cysd_args_adopt_check() {
+        assert_eq!(parse_cysd_args(["--adopt-check".to_string()]), CysdCli::AdoptCheck);
+        assert_eq!(parse_cysd_args(["--adopt-check", "--json"].map(str::to_string)), CysdCli::AdoptCheck);
+    }
+
+    #[test]
     fn cysd_args_unknown_is_rejected() {
         for (args, unknown) in [
             (vec!["--socket", "x"], "--socket"),
             (vec!["foo"], "foo"),
             (vec!["--version", "extra"], "extra"),
+            (vec!["--adopt-check", "x"], "x"),
+            (vec!["--adopt-check", "--json", "y"], "y"),
         ] {
             assert_eq!(
                 parse_cysd_args(args.into_iter().map(str::to_string)),

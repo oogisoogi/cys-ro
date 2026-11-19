@@ -1,18 +1,18 @@
 // (cysr-1116-s79 · TICKET=cysr-1116-s79-1119) 결과 받기 장부 — 공통층 한 부분(대화 화면이 켜져 있을 때만 돈다 · ConfirmBook 과 같은 수명). P2-DESIGN §11 조각 7.
 //
-// 받는 것(전부 이미 있는 길 · 데몬 무변경 · 새 Tauri 명령 0):
+// 받는 것(데몬 무변경 · 새 Tauri 명령 = result_open 하나):
 //  · 마스터 답 속 경로 = core 가 읽은 결속 세션 레코드(조각 1 chat_transcript · 시작 오프셋 뒤만) → judge/results.candidatesOf
 //  · 스킬 산출 폴더 = daemon-event `skill.run_finished`(본부 slug 일 때만 · ConfirmBook 과 같은 규칙)
-//  · 홈 = Tauri `home_dir_path`(대화 화면이 켜질 때 1회) · 실재 = Tauri `list_dir(부모)`(§5-1 「실재 확인은 Tauri 기존 list_dir」)
-// 행동: 열기 = `open_path`(실행형 파일 = 데몬이 아니라 Tauri 가 `executable_confirm` 으로 거절 → **force 로 다시 부르지 않음** · 폴더 보기로 안내)
-//       폴더 보기 = `reveal_path` · 둘 다 누르기 직전 실재를 다시 확인(없으면 호출 0 + 「파일을 찾을 수 없어요」).
+//  · 홈 = Tauri `home_dir_path`(대화 화면이 켜질 때 1회) · 실재 = Tauri `list_dir(부모)`(§5-1 「실재 확인은 Tauri 기존 list_dir」 · 작업 화면 살핌 중 = 0)
+// 행동: 열기·폴더 보기 = 우리 Tauri 명령 `result_open`(viewcore.rs — 정규 경로 가둠 · 열기 = 허용 목록 종류의 보통 파일·꾸러미 아닌 폴더만 · 가명 거절 ·
+//       그 밖 `executable_confirm` → **force 로 다시 부르지 않음** · 폴더 보기로 안내) · 둘 다 누르기 직전 실재를 다시 확인(없으면 호출 0 + 「파일을 찾을 수 없어요」).
 // 저장 = 앱 저장소 `cys-chat-results`(경로·출처·시각·봤음 · 말 원문 0자 · 최근 50).
 
 import type { Rec } from "./judge/msgstep";
 import {
   addCandidates,
   candidatesOf,
-  launchesProgram,
+  openAllowedName,
   listErrorIsMissing,
   parentOf,
   persistable,
@@ -51,6 +51,8 @@ export class ResultBook {
   private acting = false;
   /** 마지막 행동 결과(결과 칸 아래 1줄) */
   notice: string | null = null;
+  /** (s79 · 독립 검증 V4) 작업 화면 살핌 중 — 실재 확인(list_dir) 0 · 후보는 모아 두었다가 대화 화면에서 확인 */
+  paused = false;
 
   constructor(
     private readonly d: ResultDeps,
@@ -175,7 +177,7 @@ export class ResultBook {
 
   /** poll 마다 — 아직 모르는 결과의 실재를 최대 CHECK_PER_TICK 개 확인(오래된 것 아닌 최근 것부터). */
   async tick(): Promise<void> {
-    if (this.home === null) return;
+    if (this.home === null || this.paused) return;
     const todo = this.list.filter((r) => r.exists === null && !this.checking.has(r.id)).slice(0, CHECK_PER_TICK);
     await Promise.all(todo.map((r) => this.check(r.id)));
   }
@@ -198,7 +200,7 @@ export class ResultBook {
         this.notice = MSG_UNKNOWN;
         return;
       }
-      if (how === "open" && launchesProgram(r.name)) {
+      if (how === "open" && !openAllowedName(r.name, r.isDir)) {
         // 앱 꾸러미(.app 등)는 폴더라 Tauri 실행형 검사(파일만)를 지나간다 — 마스터 글에서 온 경로로 프로그램을 띄우지 않는다(폴더 보기만)
         this.notice = MSG_EXEC;
         return;

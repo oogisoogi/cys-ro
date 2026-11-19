@@ -196,9 +196,9 @@ export async function runScenario(seed: number, t: Tally, dump = false, extra: P
               .map((x) => x.w.msgId);
             if (same.length > owners.length) bad("uuid 없는 꼴: 같은 글 기록 수보다 많은 말이 전달됨");
             else {
+              // (독립 검증 V5) 주석 그대로 정확히 — k 번째로 보낸 말 = 그 글의 k 번째로 기록된 쓰기의 주인(집합 소속이 아니라 자리 대조)
               const k = same.findIndex((x) => x.id === m.id);
-              const recordedOwners = new Set(owners.slice(0, same.length));
-              if (k >= 0 && !recordedOwners.has(m.id)) bad("uuid 없는 꼴: 다른 말의 레코드에 짝지음(글 순서 대조)");
+              if (k >= 0 && owners[k] !== m.id) bad("uuid 없는 꼴: 다른 말의 레코드에 짝지음(글 순서 대조)");
             }
           }
           if (m.step === "replied" && !inIdx.some((x) => sim.replied.has(x.i))) bad("답이 없는데 답함");

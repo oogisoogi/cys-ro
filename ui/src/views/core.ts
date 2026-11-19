@@ -231,6 +231,7 @@ export class ChatCore {
     this.attached = true;
     this.everAttached = true;
     this.watchOnly = false;
+    this.results.paused = false;
     if (!this.unlistenConfirm && this.d.listenDaemon)
       this.unlistenConfirm = this.d.listenDaemon((ev) => {
         this.confirm.onEvent(ev);
@@ -256,6 +257,7 @@ export class ChatCore {
     if (!this.everAttached) return false;
     this.attach();
     this.watchOnly = true;
+    this.results.paused = true; // (s79 · V4) 작업 화면 살핌 중엔 list_dir 0
     return true;
   }
 
@@ -608,6 +610,12 @@ export class ChatCore {
         this.patchMsg(id, { step: "held", code: g.code, note: g.msg });
         return;
       }
+      // (s79 · 독립 검증 V3) 재조회를 기다리는 사이 작업 화면으로 옮겼으면 쓰지 않는다 — 작업 화면에선 사람이 마스터 창에 직접 칠 수 있다(쓰기 0).
+      //   대화 화면으로 돌아오면 poll 이 다시 문턱에 건다.
+      if (this.watchOnly) {
+        this.patchMsg(id, { step: "held", sentAt: null, code: "work_view", note: "작업 화면으로 옮겨서 아직 쓰지 않았어요 — 대화 화면으로 돌아오면 보낼게요." });
+        return;
+      }
       const m = fresh.master as MasterRow;
       const msg = this.s.msgs.find((x) => x.id === id);
       if (!msg) return;
@@ -680,7 +688,7 @@ export class ChatCore {
       const prevWorking = this.lastWorking;
       this.applyFresh(fresh);
       void this.confirm.scanStep(); // (조각 4) 대화 화면을 연 때보다 앞 기록의 표식을 한 토막씩
-      void this.results.tick(); // (s79 조각 7) 아직 모르는 결과의 실재 확인(틱당 상한)
+      if (!this.watchOnly) void this.results.tick(); // (s79 조각 7) 아직 모르는 결과의 실재 확인(틱당 상한) · 작업 화면 살핌 중 = 0(V4 · 조회 3종만)
       this.lastWorking = fresh.master ? fresh.master.working : null;
       const awaiting = this.s.msgs.some((m) => ["injected", "checking", "slow", "delivered", "replying"].includes(m.step));
       // (조각 3 · 하네스 seed 370) 짧은 답(두 조회 사이 3초 안에 일 시작·끝)은 「활동 바뀜」으로 안 잡힌다 → 마스터 출력이 지난 조회 뒤에 있었으면(idle_secs) 그 틱도 읽는다.

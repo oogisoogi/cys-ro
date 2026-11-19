@@ -48,6 +48,7 @@ CHAT_SHIM = r"""
   const later = (v) => C.fetchLatency > 0 ? new Promise((r) => setTimeout(() => r(v()), C.fetchLatency)) : Promise.resolve(v());
   window.__TAURI__.core.invoke = (cmd, args) => {
     const a = args ?? {};
+    C.kinds = C.kinds ?? {}; C.kinds[cmd] = (C.kinds[cmd] ?? 0) + 1; // (s79 · 독립 검증 V4) 모든 invoke 종류 계수(main.ts 몫 포함 — 기준 창을 빼서 씀)
     if (cmd === 'org_status' && (a.socket ?? null) === null) C.org = (C.org ?? 0) + 1; // (s79) 조회 수 상한 단언용 계수(main.ts 몫 포함 — 기준 창을 빼서 씀)
     if (cmd === 'org_status' && (a.socket ?? null) === null)
       return orig(cmd, args).then((r) => later(() => ({ ...r, surfaces: (r.surfaces || []).map((s) => (s.role === 'master' ? { ...s, ...C.master, agent_alive: C.master.agent_alive ?? s.agent_alive } : s)) })));
@@ -124,8 +125,11 @@ def main() -> int:
         check(st["view"] is None and st["chatCalls"] == 0 and st["cvs"] == 0, f"대화 화면 명령 0 · cys-view 쓰기 0 · 대화 DOM 0 ({st['chatCalls']} · {st['view']})")
         # (s79 · master#cf75d4e2 ②) org_status 기준 창 — 대화 화면을 켜기 전 30초의 org_status(socket null) 수 = main.ts 몫(뒤 E 에서 빼서 공통층 몫만 셈)
         o0 = pg.evaluate("() => window.__CHAT.org ?? 0")
+        k0 = pg.evaluate("() => ({ ...(window.__CHAT.kinds ?? {}) })")
         pg.clock.run_for(30_000)
         org_base = pg.evaluate("() => window.__CHAT.org ?? 0") - o0
+        k1 = pg.evaluate("() => ({ ...(window.__CHAT.kinds ?? {}) })")
+        kinds_base = {k: k1.get(k, 0) - k0.get(k, 0) for k in k1}
         check(pg.evaluate("() => window.__CHAT.calls.length") == 0, f"대화 화면을 안 켠 30초 = 대화 화면 조회 0(그대로) · 기준 org_status {org_base}")
 
         print("== B 보내기 1 → 쓰기 1(원자) → 전달됨 → 마스터 답")
@@ -207,7 +211,12 @@ def main() -> int:
         check(st["host"] is True and st["body"] != "none" and st["cvs"] == 0, f"작업 화면으로 — 대화 DOM 내림 {st}")
         c0 = st["chatCalls"]
         org0 = pg.evaluate("() => window.__CHAT.org ?? 0")
+        ke0 = pg.evaluate("() => ({ ...(window.__CHAT.kinds ?? {}) })")
         pg.clock.run_for(30_000)
+        ke1 = pg.evaluate("() => ({ ...(window.__CHAT.kinds ?? {}) })")
+        extra = {k: (ke1.get(k, 0) - ke0.get(k, 0)) - kinds_base.get(k, 0) for k in ke1}
+        bad_kinds = {k: v for k, v in extra.items() if v > 0 and k not in ("feed_list", "org_status", "chat_transcript")}
+        check(not bad_kinds and all(v <= 11 for v in extra.values()), f"★작업 화면 30초 = 모든 invoke 종류 대조(기준 창 뺌) · 허용 3종 밖 증가 0 · 종류마다 ≤ 11 {dict((k, v) for k, v in extra.items() if v)} · 밖 {bad_kinds}")
         org_views = pg.evaluate("() => window.__CHAT.org ?? 0") - org0 - org_base
         check(org_views <= 11, f"작업 화면 30초 org_status(공통층 몫 = 전체 − 기준 창) ≤ 11 ({org_views})")
         c1 = pg.evaluate("() => window.__CHAT.calls.length")

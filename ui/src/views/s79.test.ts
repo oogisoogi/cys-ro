@@ -8,6 +8,8 @@ import {
   kindOf,
   launchesProgram,
   OPEN_REFUSED_EXT,
+  OPEN_ALLOWED_EXT,
+  openAllowedName,
   listErrorIsMissing,
   missingPrefix,
   normPath,
@@ -82,6 +84,16 @@ describe("조각 7 — 답 속 경로(홈 아래만)", () => {
     expect(rust.length).toBeGreaterThan(40);
     expect(rust).toEqual([...OPEN_REFUSED_EXT]);
     for (const e of rust) expect(e).toBe(e.toLowerCase());
+  });
+  it("열기 허용 목록 = Rust viewcore OPEN_ALLOWED_EXT 와 같은 목록(한 정의 · 독립 검증 V1·V2)", () => {
+    const rs = readFileSync(new URL("../../../src-tauri/src/viewcore.rs", import.meta.url), "utf8");
+    const m = /pub\(crate\) const OPEN_ALLOWED_EXT: &\[&str\] = &\[([\s\S]*?)\];/.exec(rs);
+    expect(m).not.toBeNull();
+    expect([...(m?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((x) => x[1])).toEqual([...OPEN_ALLOWED_EXT]);
+    for (const e of OPEN_ALLOWED_EXT) expect(OPEN_REFUSED_EXT.includes(e)).toBe(false); // 두 목록이 겹치지 않음
+    // 화면 쪽 미리 거르기: 허용 = 문서·그림·페이지·폴더 · 거절 = 위치 파일·윈 목록 밖·실행형 · 확장자 없고 폴더 여부 모름 = Tauri 에 맡김
+    for (const [n, d, want] of [["a.html", false, true], ["주보.PDF", null, true], ["out", true, true], ["X.app", true, false], ["p.fileloc", false, false], ["a.appref-ms", null, false], ["a.chm", false, false], ["a.py", false, false], ["주보 최종", null, true], ["주보 최종", false, false]] as const)
+      expect(`${n}/${d}:${openAllowedName(n, d)}`).toBe(`${n}/${d}:${want}`);
   });
   it("URL·낱말 한가운데 슬래시 = 0", () => {
     expect(pathsInText("https://example.invalid/Users/user/a.html 와 and/or", H)).toEqual([]);
@@ -250,15 +262,15 @@ describe("조각 7 — 장부(대역)", () => {
     expect(t.calls.some((c) => c[0] === "open_path")).toBe(false);
   });
   it("실행형 파일 = Tauri 거절(executable_confirm) → force 로 다시 부르지 않음 + 폴더 보기 안내", async () => {
-    const t = fakeFs({ "/Users/user/x": [{ name: "runme", is_dir: false }] });
+    const t = fakeFs({ "/Users/user/x": [{ name: "run.txt", is_dir: false }] });
     await t.book.start();
-    t.book.onTail([rec("/Users/user/x/runme")]);
+    t.book.onTail([rec("/Users/user/x/run.txt")]);
     await t.book.tick();
     t.state.openErr = "executable_confirm";
-    await t.book.act("/Users/user/x/runme", "open");
+    await t.book.act("/Users/user/x/run.txt", "open");
     const opens = t.calls.filter((c) => c[0] === "open_path");
     expect(opens.length).toBe(1);
-    expect(opens[0][1]).toEqual({ path: "/Users/user/x/runme" }); // force 칸 없음
+    expect(opens[0][1]).toEqual({ path: "/Users/user/x/run.txt" }); // force 칸 없음
     expect(t.book.notice).toBe(MSG_EXEC);
     expect(t.book.items[0].seen).toBe(false);
   });
@@ -274,17 +286,30 @@ describe("조각 7 — 장부(대역)", () => {
     expect(t.calls.filter((c) => c[0] === "reveal_path").length).toBe(1);
   });
   it("Tauri 가 홈 밖·숨은 폴더로 이어짐을 거절(outside_home·hidden_path) → 안내 · 새 결과 그대로", async () => {
-    const t = fakeFs({ "/Users/user": [{ name: "Report", is_dir: false }] });
+    const t = fakeFs({ "/Users/user": [{ name: "Report.pdf", is_dir: false }] });
     await t.book.start();
-    t.book.onTail([rec("/Users/user/Report")]);
+    t.book.onTail([rec("/Users/user/Report.pdf")]);
     await t.book.tick();
     t.state.openErr = "outside_home";
-    await t.book.act("/Users/user/Report", "open");
+    await t.book.act("/Users/user/Report.pdf", "open");
     expect(t.book.notice).toBe(MSG_OUTSIDE);
     t.state.openErr = "network_path"; // (codex 2R · master#c48208b6 ③) 윈도 UNC
-    await t.book.act("/Users/user/Report", "open");
+    await t.book.act("/Users/user/Report.pdf", "open");
     expect(t.book.notice).toBe(MSG_NETWORK);
     expect(t.book.items[0].seen).toBe(false);
+  });
+  it("(독립 검증 V4) 작업 화면 살핌 중(paused) = list_dir 0 · 후보는 모아 두었다가 대화 화면에서 확인", async () => {
+    const t = fakeFs({ "/Users/user/교회": [{ name: "a.html", is_dir: false }] });
+    await t.book.start();
+    t.book.paused = true;
+    t.book.onTail([rec("/Users/user/교회/a.html")]);
+    await t.book.tick();
+    await flush();
+    expect(t.calls.filter((c) => c[0] === "list_dir").length).toBe(0);
+    t.book.paused = false;
+    await t.book.tick();
+    expect(t.calls.filter((c) => c[0] === "list_dir").length).toBe(1);
+    expect(visibleResults(t.book.items).length).toBe(1);
   });
   it("skill.run_finished — 본부 slug 만 · 부서 slug·slug 모름 = 버림 · 확인 전에도 카드(확인 중)", async () => {
     const t = fakeFs({ "/Users/user/runs": [{ name: "r1", is_dir: true }] });
@@ -371,6 +396,39 @@ describe("조각 9 — 공통층: 대화 화면을 안 켰으면 작업 화면 �
     sim.core.watchStop();
     await sim.advance(60_000);
     expect(sim.sends()).toBe(2); // 대화 화면으로 돌아오면 나감
+  });
+  it("(독립 검증 V3) deliver 가 쓰기 직전 재조회를 기다리는 사이 작업 화면으로 → chat_send 0 · 붙잡음(work_view) → 대화 화면 돌아오면 1", async () => {
+    const sim = new Sim();
+    sim.approvals = [5];
+    sim.core.attach();
+    await sim.flush();
+    await sim.core.poll();
+    await sim.flush();
+    sim.core.submit("재조회 중 옮김");
+    await sim.advance(100);
+    expect(sim.core.state.msgs[0].step).toBe("held");
+    sim.approvals = [];
+    const inv = sim.deps.invoke;
+    let orgs = 0;
+    sim.deps.invoke = async (cmd, a) => {
+      const r = await inv(cmd, a);
+      if (cmd === "org_status" && ++orgs === 2) {
+        sim.core.watchStart(); // poll 의 org(1) 다음 = deliver 의 쓰기 직전 재조회(2) — 그 응답이 오기 전에 사람이 작업 화면을 누름
+        sim.core.detach();
+      }
+      return r;
+    };
+    await sim.core.poll();
+    await sim.advance(100);
+    expect(orgs).toBeGreaterThanOrEqual(2);
+    expect(sim.sends()).toBe(0);
+    expect(sim.core.state.msgs[0].code).toBe("work_view");
+    sim.deps.invoke = inv;
+    sim.core.attach();
+    sim.core.watchStop();
+    sim.startPolling();
+    await sim.advance(40_000);
+    expect(sim.sends()).toBe(1);
   });
   it("대화 화면 켠 적 없음 → watchStart = false · invoke 0", async () => {
     const sim = new Sim();

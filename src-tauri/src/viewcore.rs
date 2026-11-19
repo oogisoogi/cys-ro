@@ -487,6 +487,64 @@ pub(crate) fn result_target(path: &std::path::Path, home: &std::path::Path) -> R
     Ok(t)
 }
 
+/// (s79 · 독립 검증 V1·V2 · master#beb80154) 「열기」 **허용 목록** — 보통 파일은 이 확장자(웹 페이지·문서·그림)만 OS 에 넘긴다 · 그 밖 = `executable_confirm`(폴더 보기만).
+/// 거부 목록(OPEN_REFUSED_EXT)만으로는 목록 밖 처리기(`.fileloc`·`.webloc`·윈 `.url`·`.appref-ms`…)가 홈 밖 앱·URL 을 열었다(2272 실측).
+/// ★목록 정본 = 이 배열과 `ui/src/views/judge/results.ts` 의 `OPEN_ALLOWED_EXT`(= PAGE·DOC·IMAGE) — bun 시험이 이 소스를 읽어 대조.
+/// 거부 목록은 꾸러미 **폴더**(`.app` 등) 판정과 이중 방어로 남긴다(허용 목록은 파일만 덮음).
+pub(crate) const OPEN_ALLOWED_EXT: &[&str] = &[
+    "bmp", "csv", "doc", "docx", "gif", "heic", "htm", "html", "hwp", "hwpx", "jpeg", "jpg", "md", "odt", "pdf", "png", "ppt", "pptx", "rtf", "svg", "txt", "webp", "xls", "xlsx",
+];
+
+/// 맥 Finder 가명(bookmark) — 파일 머리 `book\0\0\0\0mark` 또는 `com.apple.FinderInfo` Finder flags kIsAlias(0x8000). 이름이 `행사안내.html` 이어도 LaunchServices 가 대상(홈 밖 앱)을 연다(2272 V1 실측).
+pub(crate) fn is_alias(p: &std::path::Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 16];
+    if let Ok(mut f) = std::fs::File::open(p) {
+        if f.read(&mut head).ok() == Some(16) && &head[..12] == b"book\0\0\0\0mark" {
+            return true;
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let Ok(path) = std::ffi::CString::new(p.as_os_str().as_bytes()) else { return true };
+        let name = c"com.apple.FinderInfo";
+        let mut buf = [0u8; 32];
+        // SAFETY: path·name 은 NUL 로 끝나는 C 문자열 · buf 는 32 바이트(FinderInfo 크기) · position 0 · options 0(링크 따라감 — 정규 경로라 링크 없음)
+        let n = unsafe { libc::getxattr(path.as_ptr(), name.as_ptr(), buf.as_mut_ptr().cast(), buf.len(), 0, 0) };
+        if n >= 10 && u16::from_be_bytes([buf[8], buf[9]]) & 0x8000 != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+/// 「열기」 판정(정규 대상 · OS 에 넘기기 전) — 꾸러미 확장자 = 거절 · 꾸러미 아닌 폴더 = 허용 · 보통 파일 = 허용 목록 확장자 ∧ 가명 아님 ∧(윈) 숨김·시스템 속성 아님.
+pub(crate) fn open_verdict(t: &std::path::Path) -> Result<(), String> {
+    if is_launch_bundle(t) {
+        return Err("executable_confirm".into());
+    }
+    let meta = std::fs::metadata(t).map_err(|e| format!("not a local path: {e}"))?;
+    if meta.is_dir() {
+        return Ok(());
+    }
+    if !meta.is_file() {
+        return Err("executable_confirm".into());
+    }
+    let ext = t.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    if !OPEN_ALLOWED_EXT.contains(&ext.as_str()) || is_alias(t) {
+        return Err("executable_confirm".into());
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if meta.file_attributes() & 0x6 != 0 {
+            return Err("executable_confirm".into()); // FILE_ATTRIBUTE_HIDDEN(0x2)·SYSTEM(0x4) — AppData 류 숨은 자리의 바로가기 막음(2272 V2 minor)
+        }
+    }
+    Ok(())
+}
+
 /// 정규 경로가 네트워크(UNC) 꼴인가 — `\\?\UNC\…` 또는 `\\server\…`(드라이브 꼴 `\\?\C:\` 은 아님). 맥·리눅스 경로는 늘 false.
 pub(crate) fn is_network_path(s: &str) -> bool {
     s.starts_with(r"\\?\UNC\") || (s.starts_with(r"\\") && !s.starts_with(r"\\?\"))
@@ -520,9 +578,7 @@ pub fn result_open(path: String, reveal: Option<bool>) -> Result<(), String> {
     if reveal.unwrap_or(false) {
         return crate::reveal_path(plain_path(&target));
     }
-    if is_launch_bundle(&target) {
-        return Err("executable_confirm".into());
-    }
+    open_verdict(&target)?; // (s79 · V1·V2) 허용 목록 · 가명 · 꾸러미 — 그 밖 = executable_confirm(화면 = 폴더 보기 안내)
     crate::open_path(plain_path(&target), None)
 }
 
@@ -564,6 +620,35 @@ mod tests {
         }
         for n in ["a.html", "a.pdf", "a.png", "a.md", "a.hwp", "dir"] {
             assert!(!is_launch_bundle(std::path::Path::new(n)), "{n}");
+        }
+        // (s79 · 독립 검증 V1·V2) 열기 판정 = 허용 목록 · 가명 · 꾸러미 — 2272 표본
+        let d = home.join("교회");
+        assert_eq!(open_verdict(&ok), Ok(()));
+        assert_eq!(open_verdict(&d), Ok(()));
+        let mut alias = b"book\0\0\0\0mark\0\0\0\0".to_vec();
+        alias.extend_from_slice(&[0u8; 64]);
+        std::fs::write(d.join("행사안내.html"), &alias).unwrap(); // 가명인데 이름은 문서
+        std::fs::write(d.join("주보 최종"), &alias).unwrap(); // 가명 · 확장자 없음
+        std::fs::write(d.join("p.fileloc"), b"<plist/>").unwrap();
+        std::fs::write(d.join("p.webloc"), b"<plist/>").unwrap();
+        for n in ["행사안내.html", "주보 최종", "p.fileloc", "p.webloc"] {
+            assert_eq!(open_verdict(&d.join(n)).unwrap_err(), "executable_confirm", "{n}");
+        }
+        for n in ["a.url", "a.appref-ms", "a.settingcontent-ms", "a.library-ms", "a.search-ms", "a.application", "a.appinstaller", "a.msix", "a.appx", "a.chm", "a.iso", "a.img", "a.vhd", "a.vhdx", "a.inf", "a.sct", "a.wsc", "a.ws", "a.msp", "a.psc1", "a.jnlp", "a.xll", "a.diagcab", "a.website", "a.theme", "a.exe", "a.py"] {
+            std::fs::write(d.join(n), b"x").unwrap();
+            assert_eq!(open_verdict(&d.join(n)).unwrap_err(), "executable_confirm", "{n}");
+        }
+        std::fs::create_dir_all(d.join("In.app")).unwrap();
+        assert_eq!(open_verdict(&d.join("In.app")).unwrap_err(), "executable_confirm");
+        #[cfg(target_os = "macos")]
+        {
+            // FinderInfo kIsAlias(0x8000) 만 선 옛 꼴 가명 — xattr 도구로 표지를 씀(도구가 없으면 건너뜀)
+            let f = d.join("옛가명.pdf");
+            std::fs::write(&f, b"%PDF-1.4").unwrap();
+            let hex = "0000000000000000800000000000000000000000000000000000000000000000";
+            if std::process::Command::new("/usr/bin/xattr").args(["-wx", "com.apple.FinderInfo", hex]).arg(&f).status().is_ok_and(|s| s.success()) {
+                assert_eq!(open_verdict(&f).unwrap_err(), "executable_confirm");
+            }
         }
         assert!(is_network_path(r"\\?\UNC\srv\share\a.pdf"));
         assert!(is_network_path(r"\\srv\share\a.pdf"));

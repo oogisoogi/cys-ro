@@ -119,11 +119,23 @@
 | 4 | 띄어쓰기 경로의 앞 토막까지 후보 | **고침** — 확장자까지 이은 전체 경로만(3낱말까지) · 4~8낱말 뒤 확장자 = 긴 경로로 보고 후보 0 · 앞 토막 단독 금지 | bun 「띄어쓰기 있는 경로 …」(기대값 고침 · 3낱말 · 4낱말+ = 0) |
 | 5 | 같은 글 다시 물음에 옛 uuid | **고침** — 다시 물을 때 uuid 를 새 것으로(없으면 그대로) | bun 「(codex 2R minor) 같은 글로 다시 물으면 대화 자리(uuid)는 가장 최근 물음으로」 |
 
+## 6-3. 독립 검증 2272 VERDICT(BLOCK 조건부 · 원문 ~/axdev/workers/cysr-1116-s79-verify-1119/VERDICT.md) — master#beb80154 처분대로
+
+| # | 지적 | 처분 | 시험 · 뮤턴트 |
+|---|---|---|---|
+| V1 | 맥 Finder 가명(이름 `행사안내.html` 이어도)·`.fileloc` → 홈 밖 앱 실행 · `.webloc` → URL | **고침 · 설계 뒤집기**: `result_open` 열기 = **허용 목록**(`viewcore::open_verdict` — 꾸러미 아닌 폴더 · 보통 파일 ∧ OPEN_ALLOWED_EXT(웹 페이지·문서·그림 24종) ∧ 가명 아님) · 그 밖 = `executable_confirm`(폴더 보기만) · 가명 = 파일 머리 `book\0\0\0\0mark` 또는 FinderInfo kIsAlias(0x8000) | cargo `viewcore::tests::result_target_confines_to_canonical_home`(가명 이름 행사안내.html · 가명 무확장자 · .fileloc · .webloc · FinderInfo 옛 가명) · 뮤턴트 허용 목록 끔 = 붉음 · 가명 검사 끔 = 붉음 |
+| V2 | 윈 거부 목록 밖 처리기(`.url`·`.appref-ms`·`.settingcontent-ms` …) | **고침**(같은 허용 목록이 덮음) · 윈 숨김·시스템 속성 파일 = 거절(cfg(windows) 1줄 · 윈 실기 0) | cargo 같은 시험(2272 윈 목록 27종 = 거절) |
+| — | 허용 목록 한 정의 | Rust `OPEN_ALLOWED_EXT` = TS `OPEN_ALLOWED_EXT`(= PAGE·DOC·IMAGE) · 화면 미리 거르기 `openAllowedName` · 거부 목록 57종은 **남김**(이유 = 꾸러미 **폴더**(.app 등) 판정에 필요 + 이중 방어) | bun 「열기 허용 목록 = Rust viewcore OPEN_ALLOWED_EXT 와 같은 목록(한 정의 · 독립 검증 V1·V2)」(두 목록 겹침 0 포함) |
+| V3 | 작업 화면 살핌 중 chat_send 1건(deliver 재조회 대기 중 전환) | **고침** — 재조회 await 뒤 · 쓰기 전 `watchOnly` 면 붙잡음(`work_view`) · 대화 화면 돌아오면 poll 이 보냄 | bun 「(독립 검증 V3) deliver 가 쓰기 직전 재조회를 기다리는 사이 작업 화면으로 → chat_send 0 …」 · 뮤턴트 막음 끔 = 붉음 |
+| V4 | 살핌 중 list_dir(넷째 조회 종류) · chat_gate 가 3종만 셈 | **고침** — `ResultBook.paused`(살핌 중 실재 확인 0 · 후보는 모아 둠) · chat_gate 대역 = **모든 invoke 종류** 계수 · 기준 창(대화 화면 켜기 전 30초)을 뺀 증가분 중 허용 3종 밖 = 붉음 | bun 「(독립 검증 V4) 작업 화면 살핌 중(paused) = list_dir 0 …」 · 뮤턴트 paused 끔 = 붉음 · chat_gate 「★작업 화면 30초 = 모든 invoke 종류 대조 …」 PASS(org_status 10 · feed_list 10 · 밖 0) |
+| V5 | S3-7 검사가 집합 소속만 | **고침** — k 번째 말 = k 번째 기록 주인(자리 대조) | msgharness 200 시나리오 wrong 0 |
+| V6 | results.ts 머리 주석 낡음 | **고침** | — |
+
 ### 알려진 한계(이번 처분으로 남긴 것)
 - **TOCTOU**: `result_open` 은 정규 경로 **이름**을 기존 `open_path`/`reveal_path` 에 넘긴다 — 그 사이 같은 사용자 권한의 로컬 프로세스가 조상 폴더를 링크·정션으로 바꾸면 다른 대상이 열릴 수 있다. 그런 프로세스는 이미 사용자 권한으로 무엇이든 열 수 있어 새 권한을 주지 않는다(master#c48208b6 ①).
 - **맥 홈 아래 네트워크 마운트**: 판별하지 않음(드묾 · 윈도 UNC 만 거절).
 - **4낱말 넘는 띄어쓰기 맨글 경로**: 카드 0(놓침) — 마스터가 백틱으로 감싸 쓰면 받음.
-- 확장자 목록은 거절 목록(denylist)이라 목록 밖 새 실행형 유형은 지나갈 수 있다(기존 `open_path` 머리 주석과 같은 근본 한계).
+- (6-3 뒤) 열기는 허용 목록이 정본 — 허용 목록 종류(예 `.html`·`.docx`)라도 그 파일 자체의 내용(스크립트·매크로)은 처리기 몫(브라우저·오피스의 보호에 기댐). 사람이 일부러 만든 가명 결과도 「폴더 보기」만 된다.
 
 ## 7. 원작자 파일 변경 줄(NFR-F3)
 - `src-tauri/src/main.rs` +1: `viewcore::result_open, // (s79 조각 7) …`(generate_handler)

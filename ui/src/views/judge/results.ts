@@ -164,6 +164,18 @@ export const OPEN_REFUSED_EXT: readonly string[] = [
   "zsh",
 ];
 const OPEN_REFUSED = new Set(OPEN_REFUSED_EXT);
+/** (s79 · 독립 검증 V1·V2 · master#beb80154) 「열기」 **허용 목록** = 화면 종류 표(웹 페이지·문서·그림)의 확장자 — 이 밖의 보통 파일은 열기 0(폴더 보기만).
+ *  ★정본 = Rust `viewcore.rs` OPEN_ALLOWED_EXT 와 **같은 목록**(bun 시험이 대조). 거절 목록(OPEN_REFUSED_EXT)은 꾸러미 **폴더** 판정과 이중 방어로 남긴다. */
+export const OPEN_ALLOWED_EXT: readonly string[] = [...PAGE, ...DOC, ...IMAGE].sort();
+const OPEN_ALLOWED = new Set(OPEN_ALLOWED_EXT);
+/** 화면 쪽 「열기」 미리 거르기 — 거절 목록이면 0 · 폴더면 허용 · 허용 목록 확장자면 허용 · 폴더 여부 모르고 확장자 없으면 Tauri 가 정함(정본 판정 = result_open). */
+export function openAllowedName(name: string, isDir: boolean | null): boolean {
+  if (launchesProgram(name)) return false;
+  if (isDir === true) return true;
+  const i = name.lastIndexOf(".");
+  if (i > 0) return OPEN_ALLOWED.has(name.slice(i + 1).toLowerCase());
+  return isDir === null;
+}
 export function launchesProgram(name: string): boolean {
   const i = name.lastIndexOf(".");
   return i > 0 && OPEN_REFUSED.has(name.slice(i + 1).toLowerCase());

@@ -14,6 +14,8 @@ GitHub Actions 의 bash 스텝 = `bash --noprofile --norc -eo pipefail <파일>`
 판정 불가 = exit 3(조용한 통과 금지):
    · 고른 스텝 0개 · 잡 4개(macos-rust-pack·ubuntu-pack-suite·phoenix-host-gate·boot-health-full) 중 고른 스텝 0개인 잡
    · 고른 스텝에 `${{ … }}` 식 · `if:` · `working-directory:` · `shell:` 이 bash 아님 · 여러 줄 env 값
+   · `run:` 이 `|`·`|-`·한 줄이 아닌 블록 스칼라(`>`·`>-`·`|+` 등 — 본문을 버리지 않게) · 워크플로/잡 `defaults:`(shell·폴더 재현 불가)
+   CI 시한: 스텝 `timeout-minutes`(없으면 잡 `timeout-minutes`)를 생성물 머리 `# ci-timeout-secs: N` 으로 싣는다 — 게이트가 넘으면 붉힌다
    · 덮개 검사: 그 잡의 **고르지 않은** 스텝 본문(주석 아닌 줄)에 실재 팩 시험 파일 이름이 나온다
      = 고르는 규칙이 워크플로와 어긋남(새 꼴의 팩 스텝이 생김) → 규칙을 고칠 신호
 
@@ -58,13 +60,21 @@ def parse(text):
             continue
         if not in_jobs:
             continue
+        if re.match(r"^defaults:", raw):
+            raise Fail("줄 %d: 워크플로 defaults: — 게이트가 shell·폴더 기본값을 재현하지 못함" % n)
         m = re.match(r"^  ([A-Za-z0-9_-]+):\s*(#.*)?$", raw)
         if m:
-            job = {"name": m.group(1), "env": {}, "steps": []}
+            job = {"name": m.group(1), "env": {}, "steps": [], "timeout": None}
             jobs.append(job)
             step, block = None, None
             continue
         if job is None:
+            continue
+        if re.match(r"^    defaults:", raw):
+            raise Fail("줄 %d: 잡 %s defaults: — 게이트가 shell·폴더 기본값을 재현하지 못함" % (n, job["name"]))
+        m = re.match(r"^    timeout-minutes:\s*(\d+)\s*(#.*)?$", raw)
+        if m:
+            job["timeout"] = int(m.group(1))
             continue
         if re.match(r"^    env:\s*(#.*)?$", raw):
             block = ("jobenv", None)
@@ -95,8 +105,11 @@ def parse(text):
             step["keys"][k] = v
             block = None
             if k == "run":
-                if v in ("|", "|-"):
+                vv = re.sub(r"\s+#.*$", "", v).strip()
+                if vv in ("|", "|-"):
                     block = ("run", None)
+                elif vv[:1] in (">", "|"):
+                    raise Fail("줄 %d: run: %s 블록 스칼라 — 지원하지 않음(본문을 버리지 않게 fail-closed)" % (n, vv))
                 elif v:
                     step["run"].append(v)
             elif k == "env":
@@ -195,7 +208,9 @@ def select(text, root):
             env = {}
             for k, v in list(j["env"].items()) + list(s["env"].items()):
                 env[k] = scalar(v, "%s env %s" % (where, k))
-            chosen.append({"job": j["name"], "line": s["line"], "name": name, "run": s["run"], "env": env,
+            tm = s["keys"].get("timeout-minutes", "").strip()
+            limit = int(tm) * 60 if tm.isdigit() else (j["timeout"] * 60 if j["timeout"] else None)
+            chosen.append({"job": j["name"], "line": s["line"], "name": name, "run": s["run"], "env": env, "timeout": limit,
                            "id": "ci-%s-L%d" % (slug(j["name"]), s["line"]),
                            "tests": sorted(indirect(s["run"], root, real))})
             if j["name"] in per_job:
@@ -213,7 +228,8 @@ def select(text, root):
 def render(s):
     out = ["# 생성물 — docs/integ-1116/ci_pack_steps.py · 원본 = .github/workflows/ci-branch.yml %s 줄 %d"
            % (s["job"], s["line"]),
-           "# 스텝 이름: %s" % s["name"]]
+           "# 스텝 이름: %s" % s["name"],
+           "# ci-timeout-secs: %s" % (s["timeout"] if s["timeout"] else "")]
     for k, v in s["env"].items():
         out.append("export %s=%s" % (k, "'" + v.replace("'", "'\\''") + "'"))
     out.extend(s["run"])
@@ -258,6 +274,7 @@ def self_test():
         run: |
           python3 cysjavis-pack/bin/tests/test_a.py
   phoenix-host-gate:
+    timeout-minutes: 30
     env:
       PYTHONUTF8: '1'   # note
     steps:
@@ -271,10 +288,12 @@ def self_test():
 """
         ch = select(good, tmp)
         assert [c["id"] for c in ch] == ["ci-macos-rust-pack-L6", "ci-ubuntu-pack-suite-L16",
-                                          "ci-phoenix-host-gate-L25", "ci-boot-health-full-L29"], [c["id"] for c in ch]
+                                          "ci-phoenix-host-gate-L26", "ci-boot-health-full-L30"], [c["id"] for c in ch]
         assert ch[0]["tests"] == ["test_a", "test_b"], ch[0]["tests"]
         assert ch[1]["env"] == {"FOO": "b a r"}, ch[1]["env"]
         assert ch[2]["env"] == {"PYTHONUTF8": "1"}, ch[2]["env"]
+        assert ch[2]["timeout"] == 1800 and ch[0]["timeout"] is None, (ch[2]["timeout"], ch[0]["timeout"])
+        assert "# ci-timeout-secs: 1800\n" in render(ch[2])
         r = render(ch[0])
         assert "for t in test_a test_b; do python3 cysjavis-pack/bin/tests/$t.py; done\n" in r
         assert "# test_c 주석은 세지 않는다" in r
@@ -284,6 +303,8 @@ def self_test():
             "`if:`": good.replace("      - name: u\n", "      - name: u\n        if: always()\n"),
             "잡 boot-health-full": good.replace("cysjavis-pack/bin/tests/run_bootstrap_health.py", "x.py"),
             "shell=pwsh": good.replace("        shell: bash\n", "        shell: pwsh\n"),
+            "블록 스칼라": good.replace("      - name: u\n        env:\n          FOO: 'b a r'\n        run: |", "      - name: u\n        env:\n          FOO: 'b a r'\n        run: >"),
+            "defaults": good.replace("  ubuntu-pack-suite:\n    runs-on: ubuntu-latest\n", "  ubuntu-pack-suite:\n    runs-on: ubuntu-latest\n    defaults:\n      run:\n        shell: sh\n"),
         }
         for want, text in bad.items():
             try:

@@ -68,11 +68,8 @@ def collect(rel, extra_refs=()):
         r = git("show", "%s:%s" % (t, rel))
         if r.returncode == 0 and r.stdout:
             hashes.add(hashlib.sha256(r.stdout).hexdigest())
-    for ref in extra_refs:
-        c = git("rev-parse", "--verify", "-q", "%s^{commit}" % ref)
-        if c.returncode != 0:
-            raise ExtraRefError("--extra-ref %s: 커밋을 못 찾음" % ref)
-        r = git("show", "%s:%s" % (c.stdout.decode().strip(), rel))
+    for ref, oid in extra_refs:   # (사람이 준 이름, main 이 한 번 고정한 커밋 OID) — 표 셋이 같은 커밋을 읽는다
+        r = git("show", "%s:%s" % (oid, rel))
         if r.returncode != 0 or not r.stdout:
             raise ExtraRefError("--extra-ref %s: 그 커밋에 %s 가 없음" % (ref, rel))
         hashes.add(hashlib.sha256(r.stdout).hexdigest())
@@ -109,6 +106,18 @@ def render(extra_refs=()):
     return "\n".join(lines)
 
 
+def pin_refs(refs):
+    """--extra-ref 를 시작에서 **한 번** 전체 OID 로 고정한다 — 생성 도중 가지가 움직여도 CEO·Rust MASTER·팩 MASTER 가
+    서로 다른 커밋을 읽어 섞인 표가 되지 않게(codex 1R #6)."""
+    out = []
+    for ref in refs:
+        c = git("rev-parse", "--verify", "-q", "%s^{commit}" % ref)
+        if c.returncode != 0:
+            raise ExtraRefError("--extra-ref %s: 커밋을 못 찾음" % ref)
+        out.append((ref, c.stdout.decode().strip()))
+    return out
+
+
 def parse_args(argv):
     check, extra = False, []
     i = 0
@@ -135,6 +144,7 @@ def parse_args(argv):
 def main():
     try:
         check, extra = parse_args(sys.argv[1:])
+        extra = pin_refs(extra)
     except ExtraRefError as e:
         sys.stderr.write("[gen_released_directive_hashes] %s (exit 2)\n" % e)
         return 2
@@ -160,9 +170,24 @@ def main():
         if not bad:
             print("[gen_released_directive_hashes] OK")
         return bad
-    for path, text in outs:
-        with open(path, "w", encoding="utf-8", newline="\n") as f:
-            f.write(text)
+    # 두 표를 먼저 임시 파일로 다 쓴 뒤 바꿔 끼운다 — 쓰기 도중 실패하면 둘 다 그대로(codex 1R #7 · 한 표만 바뀐 채 남지 않게).
+    tmps = []
+    try:
+        for path, text in outs:
+            tmp = path + ".gen-tmp"
+            with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+                f.write(text)
+            tmps.append((tmp, path))
+    except OSError as e:
+        for tmp, _ in tmps:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        sys.stderr.write("[gen_released_directive_hashes] 임시 파일 쓰기 실패 — 두 표 모두 그대로(%s · exit 2)\n" % e)
+        return 2
+    for tmp, path in tmps:
+        os.replace(tmp, path)
         print("[gen_released_directive_hashes] wrote %s" % path)
     return 0
 

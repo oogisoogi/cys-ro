@@ -11,6 +11,9 @@
 #             PUB_GUARD_DIRS(기본 docs/integ-1116 — 이 폴더의 H 파일은 전부 제외 목록에 있어야 한다 · 공백 구분)
 # 종료: 0 = C 생성 · 관문 1 통과 · recheck 깨끗 | 1 = recheck 가 읽을 항목 있음(공개 전 멈춤 · 사람 판정)
 #       2 = 입력·도구 실패 또는 관문 1 불일치(C 는 만들었으면 ref 에 둔다 · 판정 근거로) | 3 = recheck 가 이력 불일치 보고
+#       4 = PUB_NO_RECHECK=1 — C·관문 1 까지만(recheck 생략 = 공개 판정 미완 · 성공 코드 아님)
+# recheck 자식은 push 가 막힌 env 로 돈다: git pushInsteadOf(/ · file:// · https:// · git@ · ssh:// → 없는 전송기) + PATH 앞 가짜 gh(rc 97).
+#   읽기(fetch·ls-remote)는 그대로 · 자식이 GIT_CONFIG_* 를 스스로 덮으면 못 막는다(정직한 한계).
 # 출력 끝 줄: `PUBCAND H=<> B=<> C=<> ref=<> gate1=<0|1> recheck_rc=<n|skip> rc=<n>`
 set -u
 GIT=/usr/bin/git
@@ -29,6 +32,7 @@ self_test() {
     echo pub > a.txt; $GIT add a.txt; $GIT commit -qm base; $GIT tag base0
     mkdir -p docs/integ-1116 src; echo x > docs/integ-1116/gate.sh; echo s > src/m.rs; echo h > HANDOFF.x.md
     $GIT add -A; $GIT commit -qm head
+    $GIT init -q --bare "$T/remote.git"; $GIT remote add origin "$T/remote.git"
   ) >/dev/null 2>&1 || { echo "self-test: 임시 저장소 실패"; rm -rf "$T"; return 2; }
   printf 'docs/integ-1116/gate.sh\nHANDOFF.x.md\n' > "$T/L"; echo "cand 1" > "$T/M"
   printf '#!/bin/sh\necho "fake recheck $1 VERDICT=$VERDICT SRC=$SRC" > "%s/rc.log"\nexit "${FAKE_RC:-0}"\n' "$T" > "$T/rk.sh"
@@ -55,6 +59,14 @@ self_test() {
   [ $rc -eq 2 ] && echo "$out" | grep -q "no/such.md" && ok "H 에 없는 목록 줄 → rc 2" || bad "없는 줄 rc=$rc"
   out=$(run PUB_EXCLUDE="$T/L" PUB_FORCE=1 PUB_BASE=no-such 2>&1); rc=$?
   [ $rc -eq 2 ] && ok "못 찾는 B → rc 2" || bad "B rc=$rc"
+  : > "$T/L0"
+  out=$(run PUB_EXCLUDE="$T/L0" PUB_FORCE=1 2>&1); rc=$?
+  [ $rc -eq 2 ] && echo "$out" | grep -q "비었다" && ok "빈 제외 목록 → rc 2" || bad "빈 목록 rc=$rc"
+  out=$(run PUB_EXCLUDE="$T/L" PUB_FORCE=1 PUB_NO_RECHECK=1 2>&1); rc=$?
+  [ $rc -eq 4 ] && ok "recheck 생략 → rc 4(성공 아님)" || bad "recheck 생략 rc=$rc"
+  printf '#!/bin/sh\ngit push -q origin "$1:refs/heads/leak" 2>/dev/null; gh repo view >/dev/null 2>&1; echo "gh=$?" > "%s/gh.rc"; exit 0\n' "$T" > "$T/rk2.sh"
+  out=$(run PUB_EXCLUDE="$T/L" PUB_FORCE=1 PUB_RECHECK="$T/rk2.sh" 2>&1); rc=$?
+  if [ -z "$($GIT -C "$T/remote.git" for-each-ref)" ] && grep -q "gh=97" "$T/gh.rc" 2>/dev/null; then ok "recheck 안 push·gh 차단(원격 ref 0 · gh rc 97)"; else bad "recheck 안 push/gh 차단 실패: $($GIT -C "$T/remote.git" for-each-ref) $(cat "$T/gh.rc" 2>&1)"; fi
   # 자기 검사: 집행 본문(자기 검체 함수 뒤 · 주석 아닌 줄)에 push·tag 쓰기·gh 명령이 없다(검체 함수는 임시 저장소에 태그를 단다)
   if sed -n '/^\[ "\${1:-}" = --self-test \]/,$p' "$me" | grep -vE '^\s*#' | grep -nE '(^|[;&|( ]+)(\$GIT|git)( -C [^ ]+)? (push|tag)\b|(^|[;&|( ]+)gh ' >/dev/null; then bad "본문에 push/tag/gh 명령"; else ok "본문에 push·tag·gh 명령 0"; fi
   rm -rf "$T"
@@ -82,6 +94,7 @@ OLD=$($GIT rev-parse --verify -q "$REF" || true)
 W=$(mktemp -d "${TMPDIR:-/tmp}/pubcXXXX") || die "임시 폴더"
 trap 'rm -rf "$W"' EXIT
 grep -v '^[[:space:]]*$' "$L" | LC_ALL=C sort -u > "$W/list"
+[ -s "$W/list" ] || die "제외 목록이 비었다 — 빈 목록이면 H 전체가 공개 트리가 된다(거부)"
 $GIT ls-tree -r --name-only "$H" | LC_ALL=C sort > "$W/htree"
 # 목록 줄이 H 에 실재하는가(없는 줄 = 낡은 목록 · 조용히 무시하면 관문 1 이 뜻을 잃는다)
 LC_ALL=C comm -23 "$W/list" "$W/htree" > "$W/absent"
@@ -105,7 +118,11 @@ $GIT diff --name-only "$C" "$H" | LC_ALL=C sort > "$W/diff"
 if diff "$W/diff" "$W/list" > "$W/g1"; then G1=0; echo "✓ 관문 1: C↔H 차 = 제외 목록 $(wc -l < "$W/list" | tr -d ' ')건"; else G1=1; echo "✗ 관문 1 불일치:"; sed 's/^/    /' "$W/g1"; fin 2; fi
 [ "$($GIT rev-parse "$C^@")" = "$B" ] || { G1=1; echo "✗ C 의 부모가 B 하나가 아님"; fin 2; }
 
-[ "${PUB_NO_RECHECK:-0}" = 1 ] && fin 0
+[ "${PUB_NO_RECHECK:-0}" = 1 ] && { echo "⚠ recheck 생략(PUB_NO_RECHECK=1) — 공개 판정 미완"; fin 4; }
 [ -f "$RK" ] || die "recheck 스크립트 없음: $RK"
-SRC="$($GIT rev-parse --show-toplevel)" VERDICT="$B" bash "$RK" "$C"; RRC=$?
+mkdir -p "$W/nogh" && printf '#!/bin/sh\necho "pubcand: github CLI 차단(recheck 안)" >&2\nexit 97\n' > "$W/nogh/gh" && chmod +x "$W/nogh/gh"
+NP=url.pubcand-no-push://.pushInsteadOf
+env GIT_CONFIG_COUNT=5 GIT_CONFIG_KEY_0=$NP GIT_CONFIG_VALUE_0=/ GIT_CONFIG_KEY_1=$NP GIT_CONFIG_VALUE_1=file:// \
+    GIT_CONFIG_KEY_2=$NP GIT_CONFIG_VALUE_2=https:// GIT_CONFIG_KEY_3=$NP GIT_CONFIG_VALUE_3=git@ GIT_CONFIG_KEY_4=$NP GIT_CONFIG_VALUE_4=ssh:// \
+    PATH="$W/nogh:$PATH" SRC="$($GIT rev-parse --show-toplevel)" VERDICT="$B" bash "$RK" "$C"; RRC=$?
 case $RRC in 0) fin 0 ;; 1) fin 1 ;; 3) fin 3 ;; *) fin 2 ;; esac

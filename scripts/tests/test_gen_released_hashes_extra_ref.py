@@ -134,6 +134,33 @@ class ExtraRef(unittest.TestCase):
             self.assertIn(word, err, args)
             self.assertEqual((self.read(RS), self.read(LIST)), before, args)
 
+    def test_second_table_write_failure_leaves_both_tables_unchanged(self):
+        self.assertEqual(self.run_gen()[0], 0)
+        before = (self.read(RS), self.read(LIST))
+        os.makedirs(os.path.join(self.root, LIST + ".gen-tmp"))   # 둘째 표의 임시 파일 자리가 폴더 = 쓰기 실패 주입
+        rc, err = self.run_gen("--extra-ref", self.b)
+        self.assertEqual(rc, 2, err)
+        self.assertEqual((self.read(RS), self.read(LIST)), before)
+        self.assertFalse(os.path.exists(os.path.join(self.root, RS + ".gen-tmp")), "첫 표 임시 파일이 남았다")
+
+    def test_extra_ref_is_pinned_once_before_reading(self):
+        """가지 이름을 줬을 때 시작에서 한 번 OID 로 고정한다 — 읽는 도중 가지가 움직여도 고정한 커밋을 읽는다."""
+        import importlib.util
+        self.git("branch", "prev", self.b)
+        spec = importlib.util.spec_from_file_location("genx", os.path.join(self.root, "scripts", "gen_released_directive_hashes.py"))
+        old = dict(os.environ)
+        os.environ.update(self.env)
+        try:
+            m = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(m)
+            pinned = m.pin_refs(["prev"])
+            self.git("branch", "-f", "prev", "v1.0.0")         # 고정 뒤 가지가 움직임
+            got = m.collect(MASTER, pinned)
+        finally:
+            os.environ.clear(); os.environ.update(old)
+        self.assertEqual(pinned, [("prev", self.b)])
+        self.assertIn(sha(b"master B\n"), got)
+
     def test_no_tags_still_refused_with_extra_ref(self):
         self.git("tag", "-d", "v1.0.0")
         rc, err = self.run_gen("--extra-ref", self.b)

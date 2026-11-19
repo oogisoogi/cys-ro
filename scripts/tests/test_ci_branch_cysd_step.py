@@ -517,6 +517,20 @@ class S2WindowsCell(unittest.TestCase):
         pre_name = "A-ID S2 test binary prebuild (cysd · --no-run · S2 시한 밖 컴파일)"
         self.assertIn(pre_name, names)
         self.assertEqual(names.index(pre_name) + 1, names.index(self.NAME), "미리 빌드 스텝이 S2 바로 앞이 아니다")
+        # 같은 잡(같은 러너·같은 target 폴더)이어야 한다 — 이름 순서만 보면 앞 잡 끝/다음 잡 첫 스텝으로 갈라도 통과한다(codex 1R #5).
+        text_lines = read_text(self.windows).split("\n")
+        in_jobs, job_of, cur = False, {}, None
+        for line in text_lines:
+            if line.startswith("jobs:"):
+                in_jobs = True
+                continue
+            m = re.match(r"^  ([A-Za-z0-9_-]+):\s*(#.*)?$", line) if in_jobs else None
+            if m:
+                cur = m.group(1)
+            elif line.startswith("      - name: "):
+                job_of[line.strip()[len("- name: "):]] = cur
+        self.assertIsNotNone(job_of.get(self.NAME))
+        self.assertEqual(job_of.get(pre_name), job_of.get(self.NAME), "미리 빌드 스텝과 S2 가 다른 잡이다(러너·캐시 공유 안 됨)")
         pre = extract_step(self.windows, pre_name)
         self.assertNotIn("if", pre)
         self.assertNotIn("continue-on-error", pre)

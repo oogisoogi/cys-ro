@@ -147,3 +147,30 @@
 - 새 작업트리 target 은 형제에서 `cp -c` 로 복제했는데 `target/CACHEDIR.TAG` 를 빠뜨려 codex 개인정보 관문이 target 을 빌드 캐시로 못 보고 막음 → 표식 복사 또는 깨끗한 임시 worktree 에서 codex 호출.
 - bun-env.d.ts 매처 선언에 `toMatchObject` 없음 → bun 은 초록 · tsc 만 붉음(시험 파일 포함 검사).
 - 실물 스크립트가 중간에 죽으면 격리 데몬이 남고, 그 데몬의 phoenix 가 격리 HOME 안에서 좌석을 되살리며 데몬을 다시 띄울 수 있음 → try/finally 로 데몬 pid 종료 + 끝에 `ps | grep 격리경로` 0 확인.
+
+## 10. 델타 — master 결정(master#565d7c18 · 02:5x) · 이 좌석 CTX 59.3% 라 고치지 않고 매듭 → 후임이 이어 함(상한 3h)
+
+### 10-1. 할 일(후임 · 순서대로)
+
+| # | 결정 | 할 일 · 수용 기준 |
+|---|---|---|
+| 1 | **P1 원자 조건부 닫기 = 승인**(이 갈래에 데몬 **요청 칸** 허용 · 범위 확대) | cysd `surface.close` 에 조건 칸 — 입력줄 비어 있음(`pending_input` 사람 바이트 0 ∧ 붙여넣기 닫힘) ∧ 최근 사람 입력 없음(`last_human_input` 이 `queue_human_quiet_secs` 밖) ∧ `expected_created_at` 일치(B2 묶음) — 셋을 **닫기와 같은 임계영역**에서 판정 · 불충족 = 닫지 않고 사유 응답(코드 + 어느 조건) · **조건 칸 없는 기존 호출 = 지금 동작 바이트 같음**(하위 호환 시험) · viewcore 에 새 명령(owner 표지 · `close_surface_with` 처럼 Attachments 정리 — main.rs `generate_handler!` 등록 1줄) · 화면 `revive.ts` 의 never 닫기·옛 빈 셸 정리는 **이 명령만** 씀(`close_surface` 호출 0 정적 핀) · 바뀐 줄 보고 |
+| 2 | **§6-2 성공 판정 개정 = 승인** | 코드·시험은 이미 맞음(`restartSucceeded(before, m, beforeAlive)` · revive.test 「같은 좌석 되살림」). P2-DESIGN 개정 **문안만** 아래 10-2 에(설계 문서 고침 = master) |
+| 3 | **§8-3 launch-agent 멱등 재사용 = 고친다** | `cys launch-agent` 가 멱등 재사용(`idempotent_reuse:true`)으로 기존 좌석에 기동 줄을 칠 때: 그 좌석 입력줄에 사람 초안이 있으면 **치지 않고 거절 사유**(stderr + 종료 코드 · 좌석 보존) · 초안 없으면 **clear 뒤** 침(clear_first 원자 · 또는 Ctrl-U 선정리) · 자리 = `src/bin/cys.rs` run_launch_agent_opts → `launch_boot_skip`·`boot_agent_on_surface`(:17226 · 기동 줄 send = `request("surface.send_text", {… agent_launch: true, authoritative: true})` :17375 근처) · 빈 셸 가드(handlers.rs `agent_launch` 갈래)와 맞물림 확인 · **실물 시험 1**(격리 HOME · `docs/ui-p2/evidence/s5/real_s5.py` 의 ⑤ 를 「초안 넣고 2분 안 다시 기동」으로 변형) · cys 크레이트 cargo 시험 추가 |
+| 4 | §8-4·5 = 1.1.17 기록(조각 10 걷기 몫) | 할 일 없음(기록만) |
+| 5 | §8-6 = master 실기 | 할 일 없음 |
+| 6 | **§8-8 `test_phoenix_c6_reap`** | 기준 dea2e1853 worktree 에서 **부하 1분 < 10** 단독 1회 대조(이 좌석의 기준 worktree 는 지웠다 · `git worktree add --detach <스크래치>/base dea2e1853` + `target` 은 형제 `cp -c`(+ `CACHEDIR.TAG`) · 실행 = `env -i HOME TMPDIR PATH(+cargo) CARGO_HOME RUSTUP_HOME CARGO_BUILD_JOBS=4 CARGO_TARGET_DIR bash scripts/ci/phoenix-host-gate.sh cysjavis-pack/bin/tests/test_phoenix_c6_reap.py`) · 기준도 붉으면 = 기준선 같음(이 갈래 탓 아님) |
+| 7 | codex 3R | 위 1·3 고침까지 묶어 **한 번**(06:29 뒤 master 대기열) · 범위 = dea2e1853..새 머리 중 **2R 이후분**(7dcdba6c3 + 후임 고침) |
+
+### 10-2. P2-DESIGN §6-2 개정 문안(master 가 설계 문서에 넣을 글 · 이 좌석은 설계 문서를 고치지 않음)
+
+- 「**성공 판정(F4 · 국소 고침 V-N2)**」 문단의 「성공 = 3초 목록의 `role=master ∧ !exited` 좌석 id 가 다시 켜기 전과 다름 ∧ 그 좌석 에이전트 살아 있음 …」 을 →
+  「성공 = 3초 목록의 `role=master ∧ !exited` 좌석이 **(id 가 다시 켜기 전과 다름) ∨ (같은 좌석이고 다시 켜기 직전 관측에서 생존이 아니었음)** ∧ 그 좌석 에이전트 살아 있음(`agent_alive` true) ∧ `gate_pending` 없음. 같은 좌석 되살림은 실물로 두 길이 있다 — ① `cys launch-agent` 의 120초 멱등 재사용(`CREATE_IDEM_TTL_SECS`)이 같은 좌석에 기동 줄을 친다 ② phoenix `restore --auto` 가 먼저 같은 좌석을 살린다(그때 start_master 는 claim_denied `seat_not_claimable` 로 끝나므로, 자동 1회를 기다리는 중 살아 보이면 기다림을 거둔다). 다시 켜기 직전에도 생존이던 좌석(깨우기 실패 뒤 누름)은 같은 좌석 생존을 성공으로 보지 않는다(실물 증거 `docs/ui-p2/evidence/s5/real-daemon.txt` ⑤).」
+- 같은 절 표 「`agent_never_started`」 줄 「기존 `close_surface`(owner 표지 · main.rs:4918)」 → 「조건부 닫기(입력줄 빈칸 ∧ 최근 사람 입력 없음 ∧ 생성 시각 일치 · 데몬이 닫기와 같은 임계영역에서 판정 · master#565d7c18)」 · 「vacant」 줄의 옛 빈 셸 정리도 같은 명령.
+- 같은 절 끝에 「다시 켜기 = 모든 축에서 옛 마스터 창에 사람 초안 ∨ 30초 안 사람 입력 ∨ 입력 시각 모름이면 켜지 않음(「그 창에 쓰다 만 글이 있어요」 · 실물 ⑤ 멱등 재사용이 그 창에 기동 줄을 치기 때문)」 1줄.
+
+### 10-3. 후임 첫 행동 3줄
+
+1. 이 HANDOFF §0~§9 + 이 §10 읽기 → `git log --oneline dea2e1853..HEAD`(머리 = 이 커밋) · target 은 이 작업트리에 있음(`target/CACHEDIR.TAG` 포함)
+2. 10-1 #1(데몬 조건부 닫기 + viewcore + 화면 교체 · 하위 호환 시험) → #3(launch-agent 재사용 clear/거절 + 실물 1) → #6(c6_reap 기준 대조)
+3. 시험 = cysd·cys 바뀐 시험 + `bun test ./src/views` + tsc + e2e revive_gate · 뮤턴트(환경값 분기 1빌드) · `CARGO_BUILD_JOBS=4` · 끝나면 【확인요청】에 「codex 3R = master 대기열」 1줄

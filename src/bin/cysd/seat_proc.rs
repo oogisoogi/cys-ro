@@ -1,4 +1,4 @@
-//! 좌석 프로세스 손잡이(TICKET=cysr-seatkeep-t3 · 설계 = `docs/seatkeep/T3-DESIGN.md` · DESIGN.md §6 T3).
+//! 좌석 프로세스 손잡이(좌석 보유 장치 `src/bin/cys-seatkeep/main.rs` 와 맞물리는 cysd 쪽).
 //!
 //! cysd 가 좌석의 PTY 마스터·자식 프로세스에 닿는 자리를 **이 모듈 하나**로 모은다 — 생성 · 출력 읽기 · 입력 쓰기 · 크기 ·
 //! 신호 · 전경 그룹 질의 · 종료 감지·회수 · 닫기. 손잡이의 얼굴은 portable-pty 의 두 트레이트(`MasterPty` · `Child`)와

@@ -23,7 +23,7 @@ path = "src/bin/cysd/main.rs"
 name = "cys"
 path = "src/bin/cys.rs"
 
-# ★T2 시제품(TICKET=cysr-seatkeep-t2 · 설계 = master/reports/2026-11-11-cysr-holder-design/DESIGN.md): 좌석 보유 장치.
+# ★좌석 보유 장치 시제품(설계 요지 = src/bin/cys-seatkeep/main.rs 머리말).
 #   cysd 미연결 · 제품 경로에서 아직 아무도 띄우지 않는다. 이름에 MacOS/cysd 가 들어가지 않게 별도 실행 파일(master 결정 ⓐ).
 [[bin]]
 name = "cys-seatkeep"
@@ -136,7 +136,7 @@ winresource = "0.1"
 # ★TICKET=cysr-dev-opt1-stack-budget(1.1.15): 디버그(dev·test 프로필) 빌드에서 **이 패키지만** 최적화 1단.
 #   까닭: clap derive 가 만드는 `<Command as Subcommand>::augment_subcommands` 한 함수의 디버그 틀이 1,766,848 바이트라
 #   `Cli` 한 번 풀이가 스택 ≈2.10 MB 를 쓴다 — 기본 2 MiB 시험 스레드 여유 96~191 바이트 · 전체 시험 때 할당기 느린 경로로 넘침
-#   (근거 docs/1115/CLI-STACK-PROBE/REPORT.md). opt-level 1 이면 같은 풀이 ≈229 KB(−89%). 릴리스 프로필·의존 크레이트는 그대로다.
+#   (측정 = cys.rs `cli_stack_budget_tests`). opt-level 1 이면 같은 풀이 ≈229 KB(−89%). 릴리스 프로필·의존 크레이트는 그대로다.
 #   debug-assertions·overflow-checks 는 opt-level 과 따로 dev 기본값(켜짐) 그대로다. 예산 핀 = cys.rs `cli_stack_budget_tests`.
 #   이 줄을 지우거나 0 으로 내리면 그 시험이 붉어진다(필요 스택 > 1 MiB).
 [profile.dev.package.cys-terminal]

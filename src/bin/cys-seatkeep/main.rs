@@ -1,7 +1,7 @@
-//! cys-seatkeep — 좌석 보유 장치 T2 시제품(TICKET=cysr-seatkeep-t2 · 맥 · **cysd 미연결**).
+//! cys-seatkeep — 좌석 보유 장치 시제품(맥 · **cysd 미연결**).
 //!
-//! 설계 = `~/axdev/master/reports/2026-11-11-cysr-holder-design/DESIGN.md`(권고 (가2) 좌석당 보유 장치 ·
-//! 코드 이름 seatkeep · master 판단 11-11 · 정정 11-11) · 브리프 = 같은 폴더 `briefs-draft/T2.md`.
+//! 설계 요지 = 좌석마다 보유 장치 하나(코드 이름 seatkeep)가 PTY 와 자식 프로세스를 쥔다 · cysd 쪽 손잡이 =
+//! `src/bin/cysd/seat_proc.rs`.
 //!
 //! 하는 일(정책 0): PTY 열기·자식 기동(setsid+TIOCSCTTY — vendor portable-pty 그대로) · 항상 읽기 · 꼬리 ·
 //! 누적 출력 오프셋 · 입력 쓰기(입력 id + 수신 확인 + 중복 제거) · 크기 · 신호 · 전경 그룹 질의 · 자식 회수 ·

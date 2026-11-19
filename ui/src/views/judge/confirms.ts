@@ -112,7 +112,8 @@ export interface FeedApproval {
   /** 데몬이 좌석 화면에서 감지한 도구 허락 창(daemon_issued · 번호 접두 daemon-)인가 — 아니면 좌석이 직접 올린 항목(글은 올린 쪽이 씀 · 검증 F0) */
   screen: boolean;
   /** 데몬 승인 창 지문(feed 항목 `screen_fingerprint` · 비어 있지 않은 글) · 없으면 null.
-   *  ★이 칸이 있다 = 데몬이 「집행 직전 지금 창 지문 대조」를 지원한다는 표지(codex 1R blocking · 데몬 계약 = HANDOFF §13 📌).
+   *  ★이 칸이 있다 = 데몬이 「집행 직전 지금 창 지문 대조」를 지원한다는 표지(데몬 계약 = feed 항목의 이 칸 + 불일치 오류 코드
+   *  `FINGERPRINT_MISMATCH_CODE` · 데몬 쪽 미구현).
    *  지금 데몬에는 없다 → 늘 null → 직접 「허락」 0(거절 + 작업 화면에서 보기만). */
   fingerprint: string | null;
 }
@@ -274,7 +275,7 @@ export function boundOf(a: FeedApproval): Bound {
   return { request_id: a.request_id, created_at: a.created_at, body: a.body, surface_id: a.surface_id, fingerprint: a.fingerprint };
 }
 
-/** 데몬 지문 대조 불일치 오류 코드(데몬 계약 · HANDOFF §13 📌 — 지금 데몬에는 없음). */
+/** 데몬 지문 대조 불일치 오류 코드(데몬 계약 — 지금 데몬에는 없음 · 짝 = FeedApproval.fingerprint). */
 export const FINGERPRINT_MISMATCH_CODE = "approval_fingerprint_mismatch";
 
 /** 데몬 응답 결과(feed.reply result) → 실제로 창을 눌렀는가. `actuated` 가 비지 않은 글일 때만(null·없음 = 기록만 해소 · codex 1R major 5). */

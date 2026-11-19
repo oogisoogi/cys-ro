@@ -1,5 +1,5 @@
-// restartconfirm.test.ts — 「↻ 재시작」 단추 진입 확인 1회 복원 · TICKET=cysr-restart-confirm-1118.
-// 박사님 11-18 「한 번 더 묻자」(실수로 눌러 일하던 자리가 끊긴 뒤). 09-21 에 없앴던 진입 확인 모달을 **이 단추만** 되돌린다.
+// restartconfirm.test.ts — 「↻ 재시작」 단추 진입 확인 1회 복원.
+// 11-18 실수로 눌러 일하던 자리가 끊긴 사례 뒤, 09-21 에 없앴던 진입 확인 모달을 **이 단추만** 되돌린다.
 // 함수 본문을 main.ts 에서 **그대로** 떼어 실행한다(deptprogresswiring.test.ts 의 load 와 같은 방식) — 소스 모양이 아니라 행동을 잰다.
 import { describe, it, expect } from "bun:test";
 import { readFileSync } from "node:fs";

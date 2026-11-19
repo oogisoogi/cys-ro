@@ -13478,7 +13478,7 @@ pub(crate) fn deliver_head_locked(
         );
         // (조각 6b · codex 1R M1) writer 첫 바이트 앞 팀 정지 축(강제 배달 = 팀 판정 밖 · 종전 탐침 그대로).
         let safety_probe =
-            if forced { safety_probe } else { crate::team::with_team_pause_probe(daemon, s, merged_ids.clone(), safety_probe) };
+            if forced { safety_probe } else { crate::team::with_team_pause_probe(daemon, dest_team.clone(), merged_ids.clone(), safety_probe) };
         let guard = Some(std::sync::Arc::new(crate::state::InjectGuard::new(
             expect_output_gen,
             s.output_gen.clone(),

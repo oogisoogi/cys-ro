@@ -508,17 +508,17 @@ pub fn delivery_team_paused(book: &TeamBook, dest_team: Option<&str>, ids: &[Str
 }
 
 /// (codex 1R M1) writer 안전 탐침에 팀 정지 축을 얹는다 — 기존 탐침이 막으면 그대로 막고, 아니면 지금 팀 정지를 본다.
-///   writer 스레드에서 돈다: 데몬이 사라졌거나 패닉 = 막는다(기존 탐침과 같은 방향).
-pub fn with_team_pause_probe(daemon: &std::sync::Arc<crate::state::Daemon>, s: &std::sync::Arc<crate::state::Surface>, ids: Vec<String>, base: crate::state::SafetyProbe) -> crate::state::SafetyProbe {
+///   writer 스레드에서 돈다: 데몬이 사라졌거나 패닉 = 막는다(기존 탐침과 같은 방향). 목적지 팀은 인계 때 정한 값을 받는다 —
+///   탐침은 장부(말단 락)만 읽고 좌석 role·group 락은 잡지 않는다(탐침 락 규약: 리프만 · `inject_safety_probe` doc).
+pub fn with_team_pause_probe(daemon: &std::sync::Arc<crate::state::Daemon>, dest_team: Option<String>, ids: Vec<String>, base: crate::state::SafetyProbe) -> crate::state::SafetyProbe {
     let wd = std::sync::Arc::downgrade(daemon);
-    let ws = std::sync::Arc::downgrade(s);
     std::sync::Arc::new(move || {
         if base() {
             return true;
         }
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let (Some(d), Some(s)) = (wd.upgrade(), ws.upgrade()) else { return true };
-            delivery_team_paused(&d.teams, seat_team(&s).as_deref(), &ids)
+            let Some(d) = wd.upgrade() else { return true };
+            delivery_team_paused(&d.teams, dest_team.as_deref(), &ids)
         }))
         .unwrap_or(true)
     })

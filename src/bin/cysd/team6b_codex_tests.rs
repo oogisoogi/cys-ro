@@ -282,11 +282,11 @@ fn cm1_writer_probe_sees_team_pause() {
     let tagged: Vec<String> = m.pending_queue.lock().unwrap().iter().map(|e| e.id.clone()).collect();
     let open: crate::state::SafetyProbe = Arc::new(|| false);
     let shut: crate::state::SafetyProbe = Arc::new(|| true);
-    let p_dest = crate::team::with_team_pause_probe(&fx.daemon, &a, vec![], open.clone());
-    let p_tag = crate::team::with_team_pause_probe(&fx.daemon, &m, tagged.clone(), open.clone());
-    let p_other = crate::team::with_team_pause_probe(&fx.daemon, &m, vec!["q-none".into()], open.clone());
+    let p_dest = crate::team::with_team_pause_probe(&fx.daemon, crate::team::seat_team(&a), vec![], open.clone());
+    let p_tag = crate::team::with_team_pause_probe(&fx.daemon, crate::team::seat_team(&m), tagged.clone(), open.clone());
+    let p_other = crate::team::with_team_pause_probe(&fx.daemon, crate::team::seat_team(&m), vec!["q-none".into()], open.clone());
     assert!(!p_dest() && !p_tag() && !p_other(), "정지 전 = 막지 않음");
-    assert!(crate::team::with_team_pause_probe(&fx.daemon, &m, vec![], shut)(), "기존 탐침이 막으면 그대로");
+    assert!(crate::team::with_team_pause_probe(&fx.daemon, None, vec![], shut)(), "기존 탐침이 막으면 그대로");
     pause(&fx, P + 50, "a", true);
     assert!(p_dest(), "목적지 좌석 팀 정지 = 막음");
     assert!(p_tag(), "정지 팀 꼬리표 항목 = 막음");

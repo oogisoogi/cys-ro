@@ -16,7 +16,8 @@
     "strengths": ["orchestration", "deep-reasoning", "coding", "writing"],
     "approval_patterns": [
       {
-        "name": "tool-permission",
+        "name": "tool-permission-tail",
+        "scope": "prompt_tail",
         "pattern": "Do you want to (proceed|allow|make this edit|run)"
       },
       {

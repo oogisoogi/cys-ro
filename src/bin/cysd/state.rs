@@ -10405,7 +10405,7 @@ mod tests {
             *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
         }
         crate::governance::persist_topology(&daemon);
-        let entries = crate::governance::load_topology(&daemon);
+        let entries = crate::governance::load_saved_topology(&daemon).0;
         let get = |role: &str| {
             entries.as_array().unwrap().iter().find(|e| e["role"].as_str() == Some(role)).cloned()
                 .unwrap_or_else(|| panic!("{role} entry 영속"))
@@ -10481,7 +10481,7 @@ mod tests {
         );
         // 영속 → 재로드 라운드트립: 기록된 config_dir이 topology에 살아 있어야 restore가 인라인할 수 있다.
         crate::governance::persist_topology(&daemon);
-        let entries = crate::governance::load_topology(&daemon);
+        let entries = crate::governance::load_saved_topology(&daemon).0;
         let found = entries
             .as_array()
             .unwrap()
@@ -10499,7 +10499,7 @@ mod tests {
         let dir = state_dir(&sock);
         let old = r#"{"updated_at":1.0,"entries":[{"role":"worker-9","agent":"claude","cwd":"/x"}]}"#;
         std::fs::write(dir.join("topology.json"), old).unwrap();
-        let loaded = crate::governance::load_topology(&daemon);
+        let loaded = crate::governance::load_saved_topology(&daemon).0;
         let e9 = loaded
             .as_array()
             .unwrap()

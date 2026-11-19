@@ -4167,7 +4167,7 @@ mod tests {
         daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
         *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
         let sid_of = |d: &std::sync::Arc<crate::state::Daemon>| {
-            crate::governance::load_topology(d)
+            crate::governance::load_saved_topology(d).0
                 .as_array()
                 .and_then(|a| a.iter().find(|e| e["role"].as_str() == Some("cso")).cloned())
                 .map(|e| e["session_id"].as_str().unwrap_or("").to_string())

@@ -274,6 +274,17 @@ pub(crate) fn note_delivered(entry_ids: &[String]) {
     }
 }
 
+/// ★1.1.16(B7) 각성 Return 보류 판정(순수) — 문이 먼저(닫힌 문은 승인 여부와 무관하게 쓰지 않음).
+fn wake_return_withheld(door_closed: bool, approval_pending: bool) -> Option<&'static str> {
+    if door_closed {
+        Some("withheld_door_closed")
+    } else if approval_pending {
+        Some("withheld_approval")
+    } else {
+        None
+    }
+}
+
 /// watchdog 틱마다 — 배달된 줄의 제출을 실측한다. 미제출이면 Return 1회, 그래도면 원장에만.
 pub(crate) fn tick_probes(daemon: &Arc<Daemon>) {
     let now = crate::state::now_epoch();
@@ -309,6 +320,16 @@ pub(crate) fn tick_probes(daemon: &Arc<Daemon>) {
             cys::submit_probe::SubmitProbe::Submitted => done.push((p, "submitted")),
             cys::submit_probe::SubmitProbe::Unmeasured => done.push((p, "unmeasured")),
             cys::submit_probe::SubmitProbe::NotSubmitted if !p.retried => {
+                // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · B7): 이 Return 도 큐 Return 재전송(recheck_queue_submit_one)과 같은 문·승인 재판정을
+                //   지난다 — agy 문이 닫혔거나 master 좌석에 승인·관문 창이 떠 있으면 쓰지 않는다(그 Return 이 창의 기본 선택지를 누른다).
+                //   흔적 = watch_wakeup.submit verdict(withheld_*) · 다시 시도하지 않는다(재판정 결과가 바뀌면 다음 깨움이 새로 낸다).
+                if let Some(why) = wake_return_withheld(
+                    crate::governance::agy_door_refuses_machine_cr(&s, false),
+                    crate::governance::approval_or_gate_pending(daemon, s.id) || crate::governance::approval_screen_now(&s),
+                ) {
+                    done.push((p, why));
+                    continue;
+                }
                 // CR 만 보낸다(본문 재주입 금지 — 재주입은 입력줄에 같은 줄을 두 번 붙인다).
                 if s.write_tx.try_send(crate::state::WriteReq::Data(b"\r".to_vec())).is_ok() {
                     crate::governance::note_line_submitted(&s); // ★R3 — CR 제출 뒤 계수를 비운다
@@ -541,6 +562,26 @@ mod tests {
         let _ = master;
     }
 
+
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · B7) 각성 Return 재판정.
+    #[test]
+    fn debt_d_b7_wake_return_is_withheld_on_a_closed_door_or_a_pending_approval() {
+        assert_eq!(wake_return_withheld(false, false), None);
+        assert_eq!(wake_return_withheld(true, false), Some("withheld_door_closed"));
+        assert_eq!(wake_return_withheld(false, true), Some("withheld_approval"));
+        assert_eq!(wake_return_withheld(true, true), Some("withheld_door_closed"), "문이 먼저");
+        // 배선 핀: 미제출 갈래에서 Return(\r)을 쓰기 **전에** 두 재판정(문 · feed 승인/관문 ∨ 지금 화면 승인 창)을 본다.
+        let src = include_str!("watch_wake.rs");
+        let body = &src[src.find("pub(crate) fn tick_probes(").unwrap()..src.find("#[cfg(test)]\npub(crate) fn reset_for_test").unwrap()];
+        let arm = body.find("SubmitProbe::NotSubmitted if !p.retried => {").unwrap();
+        let gate = body[arm..].find("if let Some(why) = wake_return_withheld(").map(|i| i + arm).expect("재판정 배선");
+        let cr = body[arm..].find("WriteReq::Data(b\"\\r\".to_vec())").map(|i| i + arm).expect("Return 쓰기");
+        assert!(gate < cr, "재판정이 Return 쓰기 뒤에 있다");
+        let g = &body[gate..cr];
+        assert!(g.contains("agy_door_refuses_machine_cr(&s, false)"));
+        assert!(g.contains("approval_or_gate_pending(daemon, s.id) || crate::governance::approval_screen_now(&s)"));
+        assert!(g.contains("continue;"), "보류면 쓰지 않고 다음 항목으로");
+    }
 
     /// 배달자가 PTY 에 인계한 감시 줄은 추적 기록에 「배달됨」으로 찍혀야 제출 실측이 돈다
     /// (note_delivered 를 큐 락 밖으로 옮긴 뒤에도 — agy 1R H 수리의 회귀 그물).

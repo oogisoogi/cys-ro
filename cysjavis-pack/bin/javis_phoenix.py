@@ -2409,7 +2409,8 @@ def restore_stall_window_s():
 
 def restore_workload_units(topo, live_view, include_master=False):
     """`cys restore` 1회가 실제로 치를 **기동 단위** 수(★R3-2) — cys.rs run_restore 의 선별을 같은 재료로 센다.
-    재료: topology.json entries(= system.topology.saved 의 원천 · handlers.rs load_topology 가 이 파일을 읽는다)
+    재료: topology.json entries(= system.topology.saved 의 원천 · governance.rs load_saved_topology(read_persisted_entries)가 이 파일을 읽는다 ·
+    읽기 오류·손상 = 빈 목록 + saved_unreadable)
     + 현재 생존 관측(role → 좌석 행). 건너뜀(Rust 와 같은 판정): 묘비 · master(비 include) · 생존(비어 있지 않은
     좌석) · agent 미상. 남은 항목마다 1단위, 그 역할에 빈 좌석이 있으면 +1(좌석 내 재연결 실패 → fresh 폴백 =
     락·기동 2회). ★phoenix 의 target_roles 로 세지 않는 이유: `cys restore` 에는 --roles 필터가 없다(명시
@@ -2440,7 +2441,8 @@ def restore_workload_units(topo, live_view, include_master=False):
 
 def _restore_units_now(socket, live_view, include_master=False, roster=None, tombstones=None):
     """지금 `cys restore` 를 부르면 치를 단위 수. topology.json 판독이 예외로 실패하면 desired 로스터로 센다
-    (desired ⊇ saved 라 과대 방향). 부재·손상은 Rust 도 빈 목록으로 읽으므로 그대로 0 이다(= 하한 90)."""
+    (desired ⊇ saved 라 과대 방향). 부재·손상은 Rust 도 빈 목록으로 읽으므로 그대로 0 이다(= 하한 90) — 단 Rust 는 읽기 오류·손상을
+    `saved_unreadable=true` 로 따로 알리고 역할 좌석의 node-recover 는 rc 93 으로 멈춘다(load_saved_topology · 1.1.16 조각 1)."""
     topo = None
     try:
         topo = read_topology(socket)

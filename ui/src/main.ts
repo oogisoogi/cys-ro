@@ -8046,6 +8046,8 @@ interface FeedItem {
   //   표지·「확인」·「모두 확인」의 판정은 feedclass.ts 의 순수 함수가 한다(칸이 없으면 전부 '아니오' = 종전 화면).
   waiter?: boolean | null;
   publisher_alive?: boolean | null;
+  // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · S4-4): 대기 데몬 감지 승인 항목의 지금 창 지문(feed.list 가산 칸 · 옛 데몬은 없다) — Allow 가 그대로 싣는다.
+  screen_fingerprint?: string;
 }
 // ★0.14.44 C2 — 한 항목이 어느 데몬에서 왔는가. socket 이 없으면 본부(종전) · 있으면 그 부서 소켓(응답에도 이 소켓을 쓴다 — 열쇠 = (소켓, request_id)).
 interface FeedOrigin {
@@ -8964,7 +8966,9 @@ async function refreshFeed() {
               }
             } else {
               try {
-                await invoke("feed_reply", { requestId: item.request_id, decision, socket: sock }); // 부서 항목은 그 부서 소켓으로(C2)
+                // ★1.1.16(S4-4 · master#75867925): Allow = 본 창의 지문을 싣는다(데몬이 키 직전 대조 · 다르면 키 0) · 지문 없는 항목 = 종전.
+                const screenFingerprint = decision === "allow" && typeof item.screen_fingerprint === "string" && item.screen_fingerprint ? item.screen_fingerprint : undefined;
+                await invoke("feed_reply", { requestId: item.request_id, decision, socket: sock, screenFingerprint }); // 부서 항목은 그 부서 소켓으로(C2)
               } catch (e) {
                 toast("health", decision === "allow" ? "승인 실패" : "거부 실패", feedReplyErrorText(e));
               }

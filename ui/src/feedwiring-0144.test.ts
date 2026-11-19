@@ -50,7 +50,9 @@ describe("C2 — 목록을 그리는 한 곳만 새 명령 · 나머지 feed_lis
   it("부서 항목의 응답은 그 부서 소켓으로 — 치우기·Allow/Deny·모두 확인 모두 socket 을 넘긴다 · 열쇠는 (소켓, request_id) 로 클로저에 묶인다", () => {
     expect(code.includes('invoke("feed_reply", { requestId, decision: "dismissed", socket })')).toBe(true); // wireFeedDismiss
     const b = fnBody("refreshFeed");
-    expect(b.includes('invoke("feed_reply", { requestId: item.request_id, decision, socket: sock })')).toBe(true);
+    expect(b.includes('invoke("feed_reply", { requestId: item.request_id, decision, socket: sock, screenFingerprint })')).toBe(true);
+    // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · S4-4 · master#75867925): Allow 만 항목의 창 지문을 싣는다 · 지문 없는 항목은 undefined(= 종전 호출).
+    expect(b.includes('const screenFingerprint = decision === "allow" && typeof item.screen_fingerprint === "string" && item.screen_fingerprint ? item.screen_fingerprint : undefined;')).toBe(true);
     expect(fnBody("renderBulkConfirm").includes('invoke("feed_reply", { requestId: t.request_id, decision: "dismissed", socket })')).toBe(true);
     expect(b.includes("wireFeedDismiss(dismiss, item.request_id, sock)")).toBe(true);
     expect(b.includes("wireFeedDismiss(clear, item.request_id, sock)")).toBe(true);

@@ -5450,7 +5450,7 @@ async fn trash_delete(
 /// `socket` — 부서 항목에 응답할 때만(없으면 종전처럼 본부). 허용 소켓은 `feed_reply_socket_allowed` 가 가른다(본부 · 세 조건을 채우는 부서).
 /// 그 소켓의 조작자 토큰을 **매번 새로** 읽어 붙인다(데몬을 다시 띄우면 바뀐다). 토큰은 이 백엔드에서만 다루고 화면으로 내보내지 않는다.
 #[tauri::command]
-async fn feed_reply(request_id: String, decision: String, socket: Option<String>) -> Result<(), String> {
+async fn feed_reply(request_id: String, decision: String, socket: Option<String>, screen_fingerprint: Option<String>) -> Result<(), String> {
     let sock = resolve_socket(&socket);
     if socket.is_some() && !feed_reply_socket_allowed(&sock) {
         return Err("socket_not_allowed: 이 소켓의 항목은 앱에서 처리할 수 없습니다(부서 등록부에 없거나 토큰 폴더가 본부와 같습니다)".to_string());
@@ -5459,14 +5459,19 @@ async fn feed_reply(request_id: String, decision: String, socket: Option<String>
     // (부서 생성 체인 pgid 각인 + surface 미귀속 fail-closed)을 면제한다. 첨부 지점은 이 Tauri 백엔드
     // 단 한 곳 — 공용 cys CLI 무첨부는 워커의 **우발적** 면제만 차단한다(의도적 동일사용자
     // 프로세스는 토큰 파일을 읽어 raw RPC로 우회 가능 — M11 수준·사고 방지용).
-    async fn call(sock: &std::path::Path, request_id: &str, decision: &str) -> Result<Value, String> {
+    // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · S4-4 · master#75867925): 작업 화면 Allow = 사람이 본 항목의 창 지문을 싣는다(데몬이 키 직전 대조 ·
+    //   다르면 approval_fingerprint_mismatch · 키 0). 지문이 없는 항목(옛 데몬·데몬 감지 아님)은 종전 경로.
+    async fn call(sock: &std::path::Path, request_id: &str, decision: &str, fp: Option<&str>) -> Result<Value, String> {
         let mut params = json!({"request_id": request_id, "decision": decision});
+        if let Some(fp) = fp.filter(|f| !f.is_empty()) {
+            params["screen_fingerprint"] = json!(fp);
+        }
         if let Some(tok) = read_operator_token_for(sock) {
             params["operator_token"] = json!(tok);
         }
         rpc_full(sock, "feed.reply", params).await
     }
-    let mut resp = call(&sock, &request_id, &decision).await?;
+    let mut resp = call(&sock, &request_id, &decision, screen_fingerprint.as_deref()).await?;
     // ★REVIEW1 m4: `owner_gui_required` 도 같은 좁은 창(토큰 회전 경합)에서 난다 — 팀 제안
     // 해소는 operator token 전용(team_spec::reply_allowed)이라, 첫 호출의 파일 읽기와 데몬
     // 재시작(토큰 회전)이 겹치면 방금 읽은 토큰이 이미 낡아 이 코드로 떨어진다. 그대로 두면
@@ -5480,7 +5485,7 @@ async fn feed_reply(request_id: String, decision: String, socket: Option<String>
         )
     {
         // 첫 호출의 파일 읽기와 데몬 재시작(토큰 회전)이 겹친 좁은 창 — 신선 재독으로 1회만 재시도.
-        resp = call(&sock, &request_id, &decision).await?;
+        resp = call(&sock, &request_id, &decision, screen_fingerprint.as_deref()).await?;
     }
     if resp["ok"].as_bool() == Some(true) {
         Ok(())

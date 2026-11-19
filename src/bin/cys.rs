@@ -3397,6 +3397,10 @@ enum FeedAction {
         /// 데몬 감지 승인 창 항목이면 창이 아직 떠 있고 선택 줄이 「1. Yes」일 때 데몬이 그 창에 Return(allow)/Esc(deny)를 넣는다.
         #[arg(long)]
         operator: bool,
+        /// ★1.1.16(S4-4) 데몬 감지 승인 항목의 창 지문(`cys feed list --json` 의 screen_fingerprint) — 주면 데몬이 키 직전 같은 창인지
+        /// 대조한다(다르면 키 0 · approval_fingerprint_mismatch). 선택 — 없으면 종전 동작.
+        #[arg(long = "screen-fingerprint")]
+        screen_fingerprint: Option<String>,
     },
 }
 
@@ -7736,7 +7740,7 @@ fn run_feed(action: FeedAction) -> i32 {
             }
             0
         }),
-        FeedAction::Reply { request_id, decision, reason, team_token, operator } => {
+        FeedAction::Reply { request_id, decision, reason, team_token, operator, screen_fingerprint } => {
             // ★1.1.8 휴면: 토큰이 실린 결재는 팀 토큰 갈래가 켜졌을 때만 보낸다(꺼짐 = 보내지 않고 거부 · 인가 없음).
             if team_token.is_some() && !cys::dormant::team_flow_enabled() {
                 return team_flow_dormant_refusal("feed reply --team-token", 1);
@@ -7746,6 +7750,10 @@ fn run_feed(action: FeedAction) -> i32 {
             // ★0.14.42: 토큰은 준 경우에만 키를 싣는다 — 키 부재 = 토큰 경로 미시도(데몬 종전 판정 그대로).
             if let Some(t) = team_token {
                 params["team_token"] = json!(t);
+            }
+            // ★1.1.16(S4-4): 지문은 준 경우에만(키 부재 = 종전 바이트).
+            if let Some(fp) = screen_fingerprint.filter(|f| !f.is_empty()) {
+                params["screen_fingerprint"] = json!(fp);
             }
             // ★D24ⓐ: 명시 플래그일 때만 싣는다(종전 바이트 무변경 · 자동 첨부 0). 토큰 파일이 없으면 실패를 알린다.
             if operator {
@@ -22959,6 +22967,16 @@ const TXN_VERBS: &[&str] = &["rotate", "init-pack", "init-jarvis", "pack-update"
 
 /// argv 에서 참가 동사([`TXN_VERBS`]) 뒤의 `--txn <v>`·`--txn=<v>`(rotate 는 `--stop-only` 도)를 떼어 [`ROTATE_EXT`] 에 두고 나머지를
 /// 돌려준다(순수 + 1회 기록).
+/// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · B5): 순환 원자 clear 가 Enter 직전 승인 창 재판정으로 제출되지 않았다는 데몬 응답 → 오류 글(순수).
+/// 머리 = `approval_screen:` → 순환 본체가 not_cleared 로 접는다(쓰기 전 거부와 같은 접기).
+fn cycle_clear_refused_msg(r: &Value) -> String {
+    format!(
+        "{}: clear 원자 송신의 Enter 를 데몬이 승인 창 재판정으로 쓰지 않았다(stage={} · 본문은 입력줄에 남았을 수 있다) — 순환 = not_cleared",
+        cys::ERR_APPROVAL_SCREEN,
+        r.get("refused_stage").and_then(|v| v.as_str()).unwrap_or("?")
+    )
+}
+
 fn rotate_ext_strip(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
     let (out, ext) = rotate_ext_split(args);
     let _ = ROTATE_EXT.set(ext);
@@ -25376,7 +25394,13 @@ fn run_cycle_agent(
                 "surface.send_text",
                 json!({"surface_id": sid, "text": clear, "clear_first": true, "quiet": true, "refuse_on_approval": true}),
             ) {
-                Ok(_) => {
+                Ok(r) => {
+                    // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · B5): 데몬이 Enter 직전 재판정에서 승인 창을 보고 제출 키를 쓰지 않았다고 답하면
+                    //   (`submitted:false` · `refused_stage` · handlers.rs approval_enter_guard) 효과 확인(session_file 교체)을 기다리지 않고
+                    //   곧바로 not_cleared — 같은 접기(`approval_screen:` 머리 · 아래 clear_result). `submitted:null`(결판 못 봄)은 종전대로 효과 확인.
+                    if r.get("submitted") == Some(&json!(false)) {
+                        return Err(cycle_clear_refused_msg(&r));
+                    }
                     // autopilot KEYS_SENT_MARKERS는 성공 응답 뒤에만 찍는다(송신 0건 오기록 금지).
                     eprintln!("[cycle 5/7] 입력 버퍼 정리 + '{clear}' (원자 송신)");
                 }
@@ -53397,6 +53421,21 @@ mod team_token_cli_tests {
         }
     }
 
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · S4-4): `feed reply --screen-fingerprint` 선택 인자 — 주면 그 값 · 안 주면 None(종전).
+    #[test]
+    fn debt_d_s44_feed_reply_screen_fingerprint_is_optional() {
+        let c = Cli::try_parse_from(["cys", "feed", "reply", "daemon-1", "allow", "--operator", "--screen-fingerprint", "0123456789abcdef"]).unwrap();
+        match c.command {
+            Command::Feed { action: FeedAction::Reply { screen_fingerprint, operator, .. } } => {
+                assert_eq!(screen_fingerprint.as_deref(), Some("0123456789abcdef"));
+                assert!(operator);
+            }
+            _ => panic!("feed reply 로 읽지 않았다"),
+        }
+        let c = Cli::try_parse_from(["cys", "feed", "reply", "daemon-1", "allow"]).unwrap();
+        assert!(matches!(c.command, Command::Feed { action: FeedAction::Reply { screen_fingerprint: None, .. } }));
+    }
+
     #[test]
     fn team_token_subcommands_parse_and_stay_hidden() {
         for argv in [
@@ -54745,6 +54784,26 @@ mod b360_tests {
         assert_eq!(r2c_quiesce_outcome(&calls).as_deref(), Some("not_cleared"), "{error}");
         assert_eq!(rc, 1, "a refused clear stays a plain failure: {error}");
         assert_eq!(r2c_pastes_after_clear(&calls), 0, "nothing typed after a refused clear");
+    }
+
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · B5): 원자 clear 응답 `submitted:false`(Enter 직전 승인 창 재판정) = 효과 확인을 기다리지 않고 곧바로 not_cleared.
+    /// 기준선(dea2e1853)은 응답을 버리고 session_file 대기(clear_verify_secs) 뒤 「실효 미확인」으로 끝났다 — 사유가 승인 창이라는 것을 잃었다.
+    #[test]
+    fn debt_d_b5_cycle_clear_refused_at_enter_is_not_cleared_at_once() {
+        let t0 = std::time::Instant::now();
+        let (rc, error, calls) = r2c_cycle(R2cSeat {
+            clear: r2c_ok(json!({"sent": true, "submitted": false, "refused": "approval_screen", "refused_stage": "before_enter"})),
+            reinject: r2c_ok(json!({})),
+            swap: false,
+            usage: true,
+            busy_after_clear: false,
+        });
+        assert_eq!(r2c_quiesce_outcome(&calls).as_deref(), Some("not_cleared"), "{error}");
+        assert_eq!(rc, 1, "{error}");
+        assert!(error.contains("stage=before_enter") && error.contains("Enter 를 데몬이 승인 창 재판정으로 쓰지 않았다"), "{error}");
+        assert_eq!(r2c_pastes_after_clear(&calls), 0, "nothing typed after a refused clear");
+        assert!(t0.elapsed() < std::time::Duration::from_secs(clear_verify_secs()), "효과 확인 대기 없이 끝나야 한다: {:?}", t0.elapsed());
+        assert!(cycle_clear_refused_msg(&json!({"submitted": false})).starts_with("approval_screen: "));
     }
 
     /// Row 4, UNKNOWN, and the /clear lands: its session_file swap is observed. RED on d27e1066: the cycle returns 91 at

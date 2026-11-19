@@ -1966,7 +1966,11 @@ fn merged_approval_patterns(
             .cloned()
             .unwrap_or_default()
     };
-    let mut out = get(disk);
+    // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · B6): 종전 vendor `tool-permission`(scope 없음 = 화면 전량)은 답 본문에 인용된 「Do you want to …」에도
+    //   승인 스캔(feed 항목·master 각성)이 반응했다. vendor 는 새 이름 `tool-permission-tail`(scope prompt_tail)로 옮겼고, 디스크(사용자 소유 ·
+    //   임베드 갱신이 덮지 않음)에 남은 **옛 vendor 값 그대로**의 항목만 메모리에서 뺀다(D-04 merged_prompt_marker 와 같은 이관 · 파일 무접촉).
+    //   사용자가 고친 패턴(글자가 다르거나 scope 를 단 것)은 보존한다.
+    let mut out: Vec<serde_json::Value> = get(disk).into_iter().filter(|p| !is_legacy_vendor_tool_permission(p)).collect();
     let have: std::collections::HashSet<String> = out
         .iter()
         .filter_map(|p| p["name"].as_str().map(String::from))
@@ -1978,6 +1982,14 @@ fn merged_approval_patterns(
         }
     }
     out
+}
+
+/// ★1.1.16(B6) 종전 vendor 기본값 그대로의 `tool-permission`(이름·글자 일치 · scope 없음)인가 — 순수.
+pub(crate) const LEGACY_VENDOR_TOOL_PERMISSION: &str = "Do you want to (proceed|allow|make this edit|run)";
+fn is_legacy_vendor_tool_permission(p: &serde_json::Value) -> bool {
+    p["name"].as_str() == Some("tool-permission")
+        && p["pattern"].as_str() == Some(LEGACY_VENDOR_TOOL_PERMISSION)
+        && p.get("scope").is_none_or(|v| v.is_null())
 }
 
 /// ★(1.1.16 · cysr-1116-backlog-fix2-1118 · 재검 R2) 막기 전용 승인 패턴인가 — `"block_only": true`(계획 승인 창 `plan-approval`).
@@ -3594,15 +3606,6 @@ pub(crate) fn write_json_atomic(dir: &std::path::Path, name: &str, content: &str
             Err(e)
         }
     }
-}
-
-pub fn load_topology(daemon: &Arc<Daemon>) -> serde_json::Value {
-    let dir = crate::state::state_dir(&daemon.socket_path);
-    std::fs::read_to_string(dir.join("topology.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .map(|v| v["entries"].clone())
-        .unwrap_or_else(|| json!([]))
 }
 
 /// ★조각 1: `system.topology` 의 저장 목록 + 「읽지 못했다」 표시. 파일 부재는 정상 빈 목록이고, 읽기 오류·손상은
@@ -10054,7 +10057,7 @@ fn approval_regex_cached(pat: &str) -> Option<regex::Regex> {
 /// 같은 판정자(`approval_in_prompt_tail`)·같은 재료(어댑터 정의 디스크 우선 → 임베드)를 쓴다.
 /// 어댑터를 모르면(agent_meta 없음) `false` — 판정 재료가 없다(종전 동작). 준비 마커를 모르는 어댑터는
 /// 가로줄 꼬리만 본다(커서 행 = 없는 행으로 넘겨 번호 선택지 폴백을 끈다).
-fn approval_screen_now(s: &Arc<crate::state::Surface>) -> bool {
+pub(crate) fn approval_screen_now(s: &Arc<crate::state::Surface>) -> bool {
     let Some((agent, _)) = s.agent_meta.lock().unwrap().clone() else {
         return false;
     };
@@ -10145,6 +10148,67 @@ pub(crate) fn actuate_screen_approval(
     sid: u64,
     allow: bool,
 ) -> Result<&'static str, &'static str> {
+    actuate_screen_approval_checked(daemon, sid, allow, None)
+}
+
+/// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · S4-4 데몬 지문 계약 ②) 창 지문(순수) — 승인 창 판독 범위([`approval_prompt_region`] =
+/// 마지막 가로줄 아래 · 집행이 보는 것과 같은 범위)의 행을 정규화(상자 테두리 `│`·선택 표시 `❯` 를 지우고 공백을 접고 빈 행을 뺌)한
+/// sha256 앞 16자. 선택 표시를 빼는 까닭 = 화살표 이동은 「다른 창」이 아니다(선택 줄이 1. Yes 가 아니면 집행이 따로 막는다 · selected_not_yes).
+/// 범위가 없거나 비면 `None`(지문 없음 = 직접 허락 미지원으로 보인다).
+pub(crate) fn approval_screen_fingerprint(rows: &[String], cursor_row: usize, marker: &str) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let region = approval_prompt_region(rows, cursor_row, marker)?;
+    let norm: Vec<String> = region
+        .iter()
+        .map(|r| r.replace(['│', '❯'], " ").split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|l| !l.is_empty())
+        .collect();
+    if norm.is_empty() {
+        return None;
+    }
+    let h = Sha256::digest(norm.join("\n").as_bytes());
+    Some(h.iter().take(8).map(|b| format!("{b:02x}")).collect())
+}
+
+/// 좌석의 지금 승인 창 지문 — 어댑터 승인 창이 떠 있을 때만(관문·막기 전용 제외 = 집행 판독과 같은 조건). 없으면 `None`.
+pub(crate) fn approval_fingerprint_now(s: &Arc<crate::state::Surface>) -> Option<String> {
+    let (agent, _) = s.agent_meta.lock().unwrap().clone()?;
+    if !approval_screen_with(s, &agent, false, false) {
+        return None;
+    }
+    let marker = approval_marker_for(&agent);
+    let (rows, cursor_row) = surface_rows_and_cursor(s);
+    approval_screen_fingerprint(&rows, cursor_row, &marker)
+}
+
+fn approval_marker_for(agent: &str) -> String {
+    let disk = std::fs::read_to_string(cys::pack::pack_dir().join("agents.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let embed = cys::pack::PACK_ALL
+        .iter()
+        .find(|(r, _)| *r == "agents.json")
+        .and_then(|(_, c)| serde_json::from_str(c).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    merged_ready_marker(&disk, &embed, agent).unwrap_or_default()
+}
+
+fn surface_rows_and_cursor(s: &Arc<crate::state::Surface>) -> (Vec<String>, usize) {
+    let p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+    let screen = p.screen();
+    let (_, cols) = screen.size();
+    (screen.rows(0, cols).collect(), usize::from(screen.cursor_position().0))
+}
+
+/// [`actuate_screen_approval`] + 지문 대조(★1.1.16 S4-4 ②) — `want_fp` 가 있으면 키를 넣기 **직전** 같은 화면 판독에서 다시 계산한 지문과
+/// 비교하고, 다르면 `Err("fingerprint_mismatch")`(키 0). `None` = 종전 동작(지문 없는 옛 호출 · master#75867925 결정 A).
+pub(crate) fn actuate_screen_approval_checked(
+    daemon: &Arc<Daemon>,
+    sid: u64,
+    allow: bool,
+    want_fp: Option<&str>,
+) -> Result<&'static str, &'static str> {
     let Some(s) = daemon.get_surface(sid) else {
         return Err("gone");
     };
@@ -10164,12 +10228,12 @@ pub(crate) fn actuate_screen_approval(
         .and_then(|(_, c)| serde_json::from_str(c).ok())
         .unwrap_or_else(|| serde_json::json!({}));
     let marker = merged_ready_marker(&disk, &embed, &agent).unwrap_or_default();
-    let rows: Vec<String> = {
-        let p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
-        let screen = p.screen();
-        let (_, cols) = screen.size();
-        screen.rows(0, cols).collect()
-    };
+    let (rows, cursor_row) = surface_rows_and_cursor(&s);
+    if let Some(want) = want_fp {
+        if approval_screen_fingerprint(&rows, cursor_row, &marker).as_deref() != Some(want) {
+            return Err("fingerprint_mismatch");
+        }
+    }
     let bytes = approval_actuation_bytes(&rows, &marker, allow)?;
     s.write_tx
         .send(crate::state::WriteReq::Data(bytes.to_vec()))
@@ -18494,6 +18558,56 @@ mod tests {
         assert!(got.is_empty(), "계획 승인 창이 승인 스캔 항목이 됐다: {got:?}");
         assert!(daemon.pending_daemon_approvals(s.id).is_empty(), "계획 승인 창에 feed 승인 항목이 섰다");
         kill_pid(s.pid);
+    }
+
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · B6): 도구 허락 창 패턴 = 꼬리 범위 — 본문에 인용된 「Do you want to proceed」는 승인 항목이 아니다 ·
+    /// 실제 창(마지막 가로줄 아래)은 그대로 잡는다 · 디스크에 옛 vendor 값(scope 없음)이 남은 기존 설치에도 닿는다.
+    #[test]
+    fn debt_d_b6_tool_permission_scan_is_prompt_tail_even_on_a_legacy_disk() {
+        let _g = QUEUE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let embed = cys::pack::PACK_ALL.iter().find(|(r, _)| *r == "agents.json").map(|(_, c)| *c).expect("임베드 agents.json");
+        // 기존 설치 꼴 = 디스크에 옛 vendor `tool-permission`(scope 없음) 그대로.
+        let mut legacy: serde_json::Value = serde_json::from_str(embed).unwrap();
+        let pats = legacy["claude"]["approval_patterns"].as_array_mut().unwrap();
+        pats.retain(|p| p["name"] != "tool-permission-tail");
+        pats.insert(0, json!({"name": "tool-permission", "pattern": crate::governance::LEGACY_VENDOR_TOOL_PERMISSION}));
+        let rule = "────────────────────────────────────────";
+        for (tag, disk) in [("vendor", embed.to_string()), ("legacy", legacy.to_string())] {
+            let pack = empty_pack_dir(&format!("b6-{tag}"));
+            std::fs::write(pack.join("agents.json"), &disk).expect("팩 agents.json");
+            let _env = QueueEnvGuard::set(&[("CYS_PACK_DIR", pack.to_str().unwrap())]);
+            let (daemon, s) = wp5_seat(&format!("b6-{tag}"), "claude");
+            let scan = |screen: &str| -> Vec<String> {
+                for rid in daemon.pending_daemon_approvals(s.id) {
+                    daemon.resolve_feed_item(&rid, "test-reset");
+                }
+                let before = daemon.bus.tail(5000).len();
+                crate::governance::h_paint(&s, screen);
+                crate::governance::check_approvals(&daemon, &mut HashMap::new(), &mut crate::governance::ScanCaches::default());
+                daemon.bus.tail(5000).into_iter().skip(before)
+                    .filter(|e| e["name"] == "approval.request")
+                    .map(|e| e["payload"]["pattern"].as_str().unwrap_or("").to_string())
+                    .collect()
+            };
+            let quoted = format!("● 그 창은 이렇게 묻는다: Do you want to proceed?\n  ❯ 1. Yes\n{rule}\n❯ \n{rule}\n  ? for shortcuts");
+            let got = scan(&quoted);
+            assert!(got.is_empty(), "[{tag}] 본문 인용을 도구 허락 창으로 읽었다: {got:?}");
+            let real = format!("● 작업\n{rule}\n Bash command\n   rm -rf build\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n Esc to cancel");
+            let got = scan(&real);
+            assert_eq!(got, vec!["tool-permission-tail".to_string()], "[{tag}] 실제 도구 허락 창을 못 읽었다");
+            kill_pid(s.pid);
+        }
+        // 사용자가 고친 tool-permission 은 보존(글자가 다름 · scope 를 단 것).
+        let disk = json!({"claude": {"approval_patterns": [
+            {"name": "tool-permission", "pattern": "MY-REGEX"},
+        ]}});
+        let m = merged_approval_patterns(&disk, &serde_json::from_str(embed).unwrap(), "claude");
+        assert!(m.iter().any(|p| p["name"] == "tool-permission" && p["pattern"] == "MY-REGEX"));
+        let disk = json!({"claude": {"approval_patterns": [
+            {"name": "tool-permission", "pattern": crate::governance::LEGACY_VENDOR_TOOL_PERMISSION, "scope": "prompt_tail"},
+        ]}});
+        let m = merged_approval_patterns(&disk, &serde_json::from_str(embed).unwrap(), "claude");
+        assert!(m.iter().any(|p| p["name"] == "tool-permission"), "scope 를 단 사용자본은 보존");
     }
 
     /// ★W-B 보완 핀: agents.json user 동결이 vendor 신규 approval_patterns 를 못 받아 승인
@@ -37456,13 +37570,18 @@ mod h_machine_hold_tests {
 
     /// `guard: None` 을 담은 **생산 함수** 이름 집합(각 출현의 가장 가까운 앞 `fn 이름(`).
     fn guard_none_producers(file: &str, src: &str) -> std::collections::BTreeSet<String> {
+        token_producers(file, src, "guard: None")
+    }
+
+    /// 프로덕션 영역에서 TOKEN 이 나오는 자리마다 앞의 가장 가까운 `fn 이름` (★1.1.16 B7 — guard_none_producers 일반화).
+    fn token_producers(file: &str, src: &str, token: &str) -> std::collections::BTreeSet<String> {
         let code = strip_line_comments(&production(src));
         let mut out = std::collections::BTreeSet::new();
         let mut from = 0;
-        while let Some(i) = code[from..].find("guard: None") {
+        while let Some(i) = code[from..].find(token) {
             let at = from + i;
             let head = &code[..at];
-            let fn_at = head.rfind("fn ").expect("guard: None 앞에 fn 이 없다");
+            let fn_at = head.rfind("fn ").unwrap_or_else(|| panic!("{token:?} 앞에 fn 이 없다"));
             let name: String = head[fn_at + 3..]
                 .chars()
                 .take_while(|c| c.is_alphanumeric() || *c == '_')
@@ -37556,6 +37675,18 @@ mod h_machine_hold_tests {
             found, allow,
             "게이트 없는 기계 주입 생산자 집합이 바뀌었다 — 새 생산자는 설계 H 판정(machine_direct_hold)을 \
              거치거나 허용목록 사유를 적어야 한다"
+        );
+        // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · B7): `WriteReq::InjectRefusing`(쓰기 직전 거부 탐침이 붙은 사람 길 주입)은 `guard` 칸이
+        //   없어 위 검출기가 구조상 셀 수 없다 — 생산자(구조체 리터럴 = 줄 끝 `{`)를 따로 핀한다. 지금 = surface.send_text 팔 1곳.
+        //   (writer 의 매치 팔 `WriteReq::InjectRefusing { text, …` 은 같은 줄에 칸이 있어 걸리지 않는다.)
+        let mut refusing = std::collections::BTreeSet::new();
+        for (f, src) in daemon_sources() {
+            refusing.extend(token_producers(f, src, "WriteReq::InjectRefusing {\n"));
+        }
+        assert_eq!(
+            refusing,
+            ["handlers::dispatch_method".to_string()].into_iter().collect::<std::collections::BTreeSet<_>>(),
+            "InjectRefusing 생산자 집합이 바뀌었다 — 새 생산자는 approval_enter_guard 와 같은 문턱·거부 탐침 판정을 적어야 한다"
         );
         // 판정 → 주입 순서(설계 H2~H5 에서 켠다): (파일, 판정이 사는 함수, 판정 토큰, 주입 토큰).
         let order: Vec<(&str, &str, &str, &str, &str)> = vec![

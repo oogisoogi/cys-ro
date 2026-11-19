@@ -7843,8 +7843,9 @@ mod spawn_policy_tests {
             ("cys::hidden_command(\"tasklist\")", 1),
             // 1.1.16(TICKET=cysr-1116-debt-d-1119 · 추가2 fa789ffde) 4 → 7: 작업 RunLevel 조회(daemon install 보존) · 기본 소켓 작업 경유
             //   기동(schtasks /Run) · 등록자 상승 판정 — 셋 다 숨김 헬퍼 경유. → 6(0461f82aa · codex 1R): daemon install 의 작업 질의는
-            //   lib `update::win_task::query_task_xml`(crate::hidden_command 경유) 로 옮겼다.
-            ("cys::hidden_command(\"schtasks\")", 6),
+            //   lib `update::win_task::query_task_xml`(crate::hidden_command 경유) 로 옮겼다. → 5(debt-d3 ②): 작업 경유 기동(schtasks /Run)은
+            //   앱과 같이 쓰려고 lib `update::win_task::run_cysd_task`(crate::hidden_command 경유) 로 옮겼다.
+            ("cys::hidden_command(\"schtasks\")", 5),
             ("cys::hidden_command(prog)", 1),
         ] {
             assert_eq!(cli.matches(needle).count(), n, "cys.rs `{needle}` 편입 계수");

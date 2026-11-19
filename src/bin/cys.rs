@@ -5514,6 +5514,18 @@ fn spawn_detached_daemon(path: &std::path::Path) -> std::io::Result<()> {
     }
 }
 
+/// socket-ready 실측 폴링(`wait` 동안 100ms 간격) — 윈 작업 경유 기동 대기(★1.1.16 ② · 8·4·4초).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn poll_socket_ready_for(wait: std::time::Duration) -> Option<ConnStream> {
+    for _ in 0..(wait.as_millis() / 100).max(1) {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if let Ok(s) = connect_raw() {
+            return Some(s);
+        }
+    }
+    None
+}
+
 /// socket-ready 실측 폴링(최대 4초=40×100ms). launchd kickstart·sibling spawn 양 경로가 공유.
 fn poll_socket_ready() -> Option<ConnStream> {
     for _ in 0..40 {
@@ -5548,15 +5560,6 @@ fn win_autostart_route(base_lane: bool) -> WinAutostartRoute {
     }
 }
 
-/// 작업 스케줄러 cysd 작업을 실행(`schtasks /Run /TN cysd`) — 등록된 Principal(LeastPrivilege · 이 사용자)로 뜬다.
-#[cfg(windows)]
-fn win_run_cysd_task() -> bool {
-    cys::hidden_command("schtasks")
-        .args(["/Run", "/TN", "cysd"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
 
 /// 온보딩④: 연결 실패 시 형제 cysd를 자동 기동 후 재시도 — 신규 머신 zero-setup.
 /// 옵트아웃: CYS_NO_AUTOSTART=1. (데몬 중복 기동은 cysd 자체의 flock이 차단)
@@ -5639,23 +5642,38 @@ fn connect() -> Result<ConnStream, String> {
             let Some(daemon) = sibling_daemon_path() else {
                 return Err(format!("{first} (no sibling cysd to autostart)"));
             };
+            // ★1.1.16 ②(TICKET=cysr-1116-debt-d-1119 · [master#c0262f9c]): 작업 → 재시도 2회 → 형제 직접 기동 + 표식(doctor 경고) ·
+            //   다음 기회(rotate·재시작·자동 기동)는 다시 작업부터 = 성공하면 작업 RunLevel 로 복귀 · 표식 삭제(앱 ensure_daemon_on 과 같은 함수).
+            #[cfg(windows)]
+            let mut fallback: Option<cys::update::win_task::FallbackNote> = None;
             #[cfg(windows)]
             {
-                if win_autostart_route(lane == AutostartLane::Base) == WinAutostartRoute::TaskThenSibling && win_run_cysd_task() {
-                    eprintln!("[cys] cysd not running — 작업 스케줄러 cysd 작업으로 기동했다(무결성 = 작업 RunLevel)");
-                    // 작업 기동은 형제 기동보다 느릴 수 있다 — 4초 두 번까지 본다.
-                    if let Some(s) = poll_socket_ready().or_else(poll_socket_ready) {
-                        return Ok(s);
+                use cys::update::win_task as wt;
+                if win_autostart_route(lane == AutostartLane::Base) == WinAutostartRoute::TaskThenSibling && !wt::cysd_task_absent() {
+                    match wt::start_cysd_task_first(&cys::lane::state_dir(), wt::run_cysd_task, poll_socket_ready_for, std::thread::sleep, wt::now_unix()) {
+                        wt::TaskFirst::Served { value, attempt } => {
+                            eprintln!("[cys] cysd not running — 작업 스케줄러 cysd 작업으로 기동했다({attempt}번째 시도 · 무결성 = 작업 RunLevel)");
+                            return Ok(value);
+                        }
+                        wt::TaskFirst::Fallback(note) => {
+                            eprintln!("[cys] 작업 스케줄러 cysd 작업 기동 {}회 실패({}) — 형제 cysd 를 직접 띄운다(무결성이 작업과 갈릴 수 있다 · cys doctor · 다음 rotate·재시작 때 작업으로 복귀)", note.attempts, note.reason);
+                            fallback = Some(note);
+                        }
                     }
-                    eprintln!("[cys] 작업 스케줄러 cysd 작업이 8초 안에 답하지 않음 — 형제 cysd 를 직접 띄운다(무결성이 작업과 갈릴 수 있다 · cys doctor)");
                 }
             }
             eprintln!("[cys] cysd not running — autostarting {}", daemon.display());
             if spawn_detached_daemon(&daemon).is_err() {
                 return Err(first);
             }
-            poll_socket_ready()
-                .ok_or_else(|| format!("{first} (autostarted cysd did not come up within 4s)"))
+            let up = poll_socket_ready()
+                .ok_or_else(|| format!("{first} (autostarted cysd did not come up within 4s)"))?;
+            #[cfg(windows)]
+            if let Some(note) = fallback {
+                let pid = request_on(&socket, "system.identify", json!({})).ok().and_then(|v| v["daemon_pid"].as_u64()).map(|p| p as u32);
+                note.record(&cys::lane::state_dir(), pid);
+            }
+            Ok(up)
         }
     }
 }
@@ -11846,26 +11864,41 @@ fn run_doctor_diagnostics(ctx: &DoctorCtx, fix: bool) -> Vec<DiagItem> {
 
 /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · [master#1a7e7b90] ②): 돌고 있는 데몬의 토큰 상승 여부가 작업 스케줄러 cysd 작업 RunLevel 과
 /// 갈리면 경고 1줄(박사님 규칙 「cysr 은 항상 관리자 모드」 = 작업 Highest 인데 데몬 Medium · 또는 그 반대). 읽기 전용 · 순수 판정.
+/// ★1.1.16 ②(debt-d3 · [master#c0262f9c]): `fallback` = 지금 데몬이 작업 기동 실패로 형제 직접 기동됐다는 표식(이미 pid 대조를 마친 것)
+/// · 그 사유 = 같은 행 경고 1줄에 덧붙인다(권한이 같아도 경고 — 작업 밖에서 뜬 데몬이다).
 #[cfg_attr(not(windows), allow(dead_code))]
-fn daemon_integrity_item(task_xml: Option<&str>, daemon_elevated: Option<bool>) -> DiagItem {
+fn daemon_integrity_item(
+    task_xml: Option<&str>,
+    daemon_elevated: Option<bool>,
+    fallback: Option<&cys::update::win_task::FallbackNote>,
+    now_unix: u64,
+) -> DiagItem {
     let name = "daemon-integrity";
+    const ACTION: &str = "cysr 앱의 [재시작] 또는 `cys rotate` — 새 데몬은 작업 스케줄러 cysd 작업으로 뜬다";
     let item = |status, detail: String, action: &str| DiagItem { name, status, detail, action: action.into() };
     let Some(x) = task_xml else {
         return item(DiagStatus::Skip, "작업 스케줄러 cysd 작업 없음 또는 판독 불가 — 대조하지 않았다".into(), "");
     };
+    let fb = fallback.map(|n| cys::update::win_task::fallback_warning(n, now_unix));
     let Some(el) = daemon_elevated else {
+        if let Some(fb) = fb {
+            return item(DiagStatus::Warn, fb, ACTION);
+        }
         return item(DiagStatus::Skip, "데몬이 토큰 상승 여부를 답하지 않았다(꺼져 있거나 옛 데몬) — 대조하지 않았다".into(), "");
     };
     let task_high = task_run_level_to_keep(Some(x)) == TASK_RUN_LEVEL_HIGHEST;
     let (want, got) = (if task_high { "관리자(Highest)" } else { "사용자(Limited)" }, if el { "관리자" } else { "사용자" });
-    if task_high == el {
-        item(DiagStatus::Ok, format!("데몬 권한 = 작업 RunLevel 과 같음({want})"), "")
-    } else {
-        item(
+    match (task_high == el, fb) {
+        (true, None) => item(DiagStatus::Ok, format!("데몬 권한 = 작업 RunLevel 과 같음({want})"), ""),
+        (true, Some(fb)) => item(DiagStatus::Warn, format!("데몬 권한 = 작업 RunLevel 과 같음({want}) · {fb}"), ACTION),
+        (false, fb) => item(
             DiagStatus::Warn,
-            format!("데몬 권한이 작업 RunLevel 과 다름 — 작업 {want} · 데몬 {got}(데몬을 작업 밖에서 띄운 자국)"),
-            "cysr 앱의 [재시작] 또는 `cys rotate` — 새 데몬은 작업 스케줄러 cysd 작업으로 뜬다",
-        )
+            format!(
+                "데몬 권한이 작업 RunLevel 과 다름 — 작업 {want} · 데몬 {got}(데몬을 작업 밖에서 띄운 자국){}",
+                fb.map(|f| format!(" · {f}")).unwrap_or_default()
+            ),
+            ACTION,
+        ),
     }
 }
 
@@ -11878,10 +11911,12 @@ fn diag_daemon_integrity(ctx: &DoctorCtx) -> DiagItem {
         .filter(|o| o.status.success())
         .map(|o| decode_schtasks_xml(&o.stdout));
     // request_on = 그 소켓에만 연결(자동 기동 없음) · 못 붙으면 None(판정 못 함).
-    let elevated = request_on(&ctx.socket_path, "system.identify", json!({}))
-        .ok()
-        .and_then(|v| v["token_elevated"].as_bool());
-    daemon_integrity_item(task.as_deref(), elevated)
+    let ident = request_on(&ctx.socket_path, "system.identify", json!({})).ok();
+    let elevated = ident.as_ref().and_then(|v| v["token_elevated"].as_bool());
+    let pid = ident.as_ref().and_then(|v| v["daemon_pid"].as_u64()).map(|p| p as u32);
+    // ★1.1.16 ②: 형제 폴백 표식 — 지금 데몬 pid 의 것만(그 뒤 로그온 작업 등으로 바뀐 데몬 = 낡은 표식 · 읽기만).
+    let note = cys::update::win_task::read_fallback(&cys::lane::state_dir()).filter(|n| cys::update::win_task::fallback_applies(n, pid));
+    daemon_integrity_item(task.as_deref(), elevated, note.as_ref(), cys::update::win_task::now_unix())
 }
 
 fn run_doctor_diagnostics_common(ctx: &DoctorCtx, fix: bool) -> Vec<DiagItem> {
@@ -31918,9 +31953,13 @@ mod tests {
         let src = include_str!("cys.rs");
         let body = &src[src.find("fn connect() -> Result<ConnStream, String> {").unwrap()..];
         let body = &body[..body.find("\n#[cfg(unix)]\ntype ConnStream").unwrap()];
-        let route = body.find("win_autostart_route(lane == AutostartLane::Base) == WinAutostartRoute::TaskThenSibling && win_run_cysd_task()").expect("윈 갈래 배선");
+        let route = body.find("win_autostart_route(lane == AutostartLane::Base) == WinAutostartRoute::TaskThenSibling && !wt::cysd_task_absent()").expect("윈 갈래 배선");
+        // ★debt-d3 ②: 재시도·표식은 앱과 같은 lib 한 함수 · 형제 기동 뒤 표식 기록(pid 동봉) · 형제 기동 앞에서 작업부터.
+        let shared = body.find("wt::start_cysd_task_first(&cys::lane::state_dir(), wt::run_cysd_task, poll_socket_ready_for, std::thread::sleep, wt::now_unix())").expect("공유 함수");
         let spawn = body.find("spawn_detached_daemon(&daemon)").unwrap();
-        assert!(route < spawn);
+        let rec = body.find("note.record(&cys::lane::state_dir(), pid);").expect("표식 기록");
+        assert!(route < shared && shared < spawn && spawn < rec);
+        assert!(!src.contains(&["fn win_run_", "cysd_task() -> bool"].concat()), "옛 단발 실행기는 없다(재시도 없는 길)");
     }
 
     /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · [master#1a7e7b90] ①): daemon install 은 사용자가 정한 Highest 를 되돌리지 않는다.
@@ -31959,13 +31998,29 @@ mod tests {
     fn debt_d_doctor_warns_when_daemon_integrity_differs_from_the_task() {
         let hi = "<RunLevel>HighestAvailable</RunLevel>";
         let lo = "<RunLevel>LeastPrivilege</RunLevel>";
-        assert!(matches!(daemon_integrity_item(Some(hi), Some(true)).status, DiagStatus::Ok));
-        assert!(matches!(daemon_integrity_item(Some(lo), Some(false)).status, DiagStatus::Ok));
-        assert!(matches!(daemon_integrity_item(Some(hi), Some(false)).status, DiagStatus::Warn), "규칙 위반 꼴(11-09)");
-        assert!(matches!(daemon_integrity_item(Some(lo), Some(true)).status, DiagStatus::Warn), "11-19 23:28 꼴");
-        assert!(matches!(daemon_integrity_item(None, Some(true)).status, DiagStatus::Skip));
-        assert!(matches!(daemon_integrity_item(Some(hi), None).status, DiagStatus::Skip));
-        assert_eq!(daemon_integrity_item(Some(hi), Some(false)).name, "daemon-integrity");
+        let it = |x, e| daemon_integrity_item(x, e, None, 0);
+        assert!(matches!(it(Some(hi), Some(true)).status, DiagStatus::Ok));
+        assert!(matches!(it(Some(lo), Some(false)).status, DiagStatus::Ok));
+        assert!(matches!(it(Some(hi), Some(false)).status, DiagStatus::Warn), "규칙 위반 꼴(11-09)");
+        assert!(matches!(it(Some(lo), Some(true)).status, DiagStatus::Warn), "11-19 23:28 꼴");
+        assert!(matches!(it(None, Some(true)).status, DiagStatus::Skip));
+        assert!(matches!(it(Some(hi), None).status, DiagStatus::Skip));
+        assert_eq!(it(Some(hi), Some(false)).name, "daemon-integrity");
+        // ★debt-d3 ②: 형제 폴백 표식 = 권한이 같아도 경고 1줄(사유 · 자동 복귀 안내) · 갈림과 겹치면 한 줄에 합친다 · 작업 없음 = 종전대로 Skip.
+        let n = cys::update::win_task::FallbackNote { at_unix: 100, reason: "작업 실행(schtasks /Run /TN cysd) 실패".into(), attempts: 3, daemon_pid: Some(9) };
+        let same = daemon_integrity_item(Some(lo), Some(false), Some(&n), 160);
+        assert!(matches!(same.status, DiagStatus::Warn) && same.detail.contains("작업 기동 3회 실패") && same.detail.contains("자동 복귀"), "{}", same.detail);
+        assert_eq!(same.detail.lines().count(), 1, "경고 1줄");
+        let both = daemon_integrity_item(Some(hi), Some(false), Some(&n), 160);
+        assert!(matches!(both.status, DiagStatus::Warn) && both.detail.contains("다름") && both.detail.contains("3회 실패"));
+        assert!(matches!(daemon_integrity_item(Some(hi), None, Some(&n), 160).status, DiagStatus::Warn), "권한을 몰라도 폴백 사실은 경고");
+        assert!(matches!(daemon_integrity_item(None, Some(false), Some(&n), 160).status, DiagStatus::Skip));
+        // 배선 핀: doctor 가 표식을 지금 데몬 pid 로 걸러 넘긴다.
+        let src = include_str!("cys.rs");
+        let body = &src[src.find("fn diag_daemon_integrity(ctx: &DoctorCtx) -> DiagItem {").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        assert!(body.contains("read_fallback(&cys::lane::state_dir()).filter(|n| cys::update::win_task::fallback_applies(n, pid))"));
+        assert!(body.contains("daemon_integrity_item(task.as_deref(), elevated, note.as_ref(),"));
     }
 
     #[test]

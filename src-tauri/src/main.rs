@@ -6279,6 +6279,18 @@ async fn ensure_daemon_on(
             eprintln!("[cys-app] launchd 위임 실패({why}) — 형제 cysd spawn 폴백");
         }
     }
+    // ⟦win-task-first 시작⟧ ★1.1.16 ②(TICKET=cysr-1116-debt-d-1119 · [master#c9343dbb]): 윈 기본 소켓 = 작업 스케줄러 cysd 작업 먼저 →
+    //   재시도 2회 → 형제 직접 기동 + 표식(doctor 경고) · 다음 기회(앱 [재시작]·부팅·cys rotate)는 다시 작업부터 = 작업 RunLevel 로 복귀.
+    //   CLI connect() 와 같은 lib 한 함수(`cys::update::win_task::start_cysd_task_first`). 맥·리눅스 = 이 블록 없음(바이트 같음 핀).
+    #[cfg(windows)]
+    {
+        match win_task_first(socket).await {
+            WinTaskFirst::Served(r) => return r,
+            WinTaskFirst::Sibling(Some(note)) => win_record_fallback_when_up(socket, note),
+            WinTaskFirst::Sibling(None) => {}
+        }
+    }
+    // ⟦win-task-first 끝⟧
     spawn()?;
     // ★C (row 4): GUI readiness after a spawn = the daemon answers (same 4 s budget as before).
     match wait_for_readiness(socket, ROW4_ATTEMPTS).await {
@@ -6286,6 +6298,65 @@ async fn ensure_daemon_on(
         Readiness::NotAnswering(why) => Err(not_answering_error(&why, readiness_budget(ROW4_ATTEMPTS), true)),
         Readiness::Unreachable => Err("cysd did not come up within 4s".into()),
     }
+}
+
+/// ★1.1.16 ②(debt-d3): 윈 작업 경유 기동 결과 — `Served` = 작업으로 뜬 데몬이 소켓을 잡았다(답함 = Ok · 받고 답 없음 = 그 오류 · 형제를 띄우지 않는다) ·
+/// `Sibling(Some)` = 세 번 실패 → 형제 기동 + 표식 · `Sibling(None)` = 작업 경유 대상 아님(부서·격리 소켓 · 작업 파일 없음) = 종전대로.
+#[cfg(windows)]
+enum WinTaskFirst {
+    Served(Result<(), String>),
+    Sibling(Option<cys::update::win_task::FallbackNote>),
+}
+
+/// ★1.1.16 ②(debt-d3): 앱의 작업 경유 기동 — 대기는 기존 `wait_for_readiness`(시도별 8·4·4초) · 재시도·표식 판정은 lib 공유 함수.
+#[cfg(windows)]
+async fn win_task_first(socket: &std::path::Path) -> WinTaskFirst {
+    use cys::update::win_task as wt;
+    if !cys::lane::socket_is_base(&socket.to_string_lossy()) || wt::cysd_task_absent() {
+        return WinTaskFirst::Sibling(None);
+    }
+    let sock = socket.to_path_buf();
+    let rt = tokio::runtime::Handle::current();
+    let res = tokio::task::spawn_blocking(move || {
+        let wait = |w: std::time::Duration| match rt.block_on(wait_for_readiness(&sock, (w.as_millis() / 100) as u32)) {
+            Readiness::Unreachable => None,
+            seen => Some(seen),
+        };
+        wt::start_cysd_task_first(&cys::lane::state_dir(), wt::run_cysd_task, wait, std::thread::sleep, wt::now_unix())
+    })
+    .await;
+    match res {
+        Ok(wt::TaskFirst::Served { value: Readiness::NotAnswering(why), .. }) => {
+            WinTaskFirst::Served(Err(not_answering_error(&why, wt::CYSD_TASK_WAITS[0], true)))
+        }
+        Ok(wt::TaskFirst::Served { attempt, .. }) => {
+            eprintln!("[cys-app] 작업 스케줄러 cysd 작업으로 기동했다({attempt}번째 시도 · 무결성 = 작업 RunLevel)");
+            WinTaskFirst::Served(Ok(()))
+        }
+        Ok(wt::TaskFirst::Fallback(note)) => {
+            eprintln!(
+                "[cys-app] 작업 스케줄러 cysd 작업 기동 {}회 실패({}) — 형제 cysd 를 직접 띄운다(cys doctor · 다음 재시작 때 작업으로 복귀)",
+                note.attempts, note.reason
+            );
+            WinTaskFirst::Sibling(Some(note))
+        }
+        Err(e) => {
+            eprintln!("[cys-app] 작업 경유 기동 판정 실패({e}) — 형제 cysd 를 직접 띄운다");
+            WinTaskFirst::Sibling(None)
+        }
+    }
+}
+
+/// ★1.1.16 ②(debt-d3): 형제 데몬이 답하면 그 pid 로 폴백 표식을 남긴다(뒤에서 · 기동 경로를 늦추지 않는다 · 10초 안에 안 뜨면 남기지 않음).
+#[cfg(windows)]
+fn win_record_fallback_when_up(socket: &std::path::Path, note: cys::update::win_task::FallbackNote) {
+    let sock = socket.to_path_buf();
+    tauri::async_runtime::spawn(async move {
+        if wait_for_readiness(&sock, 100).await == Readiness::Answers {
+            let pid = identify_within(&sock, DAEMON_ANSWER_DEADLINE).await.ok().and_then(|v| v["daemon_pid"].as_u64()).map(|p| p as u32);
+            note.record(&cys::lane::state_dir(), pid);
+        }
+    });
 }
 
 /// Start the bundled/sibling cysd: the spawn half of `ensure_daemon`, moved unchanged (C-LOUD); no readiness wait here.
@@ -16213,6 +16284,11 @@ osascript 를 실행할 수 없어 건너뜁니다({e}) — macOS 가 아닌 환
 
         // base(v0.14.24)에 이미 있던 최상위 cfg 게이트 함수들. 늘리지 않는다.
         const ALLOWED: &[&str] = &[
+            // ★1.1.16 ②(debt-d3): 윈 작업 경유 기동 3 — 유일한 사용처가 ensure_daemon_on 의 `#[cfg(windows)]` 블록(⟦win-task-first⟧)과
+            //   서로(win_task_first → WinTaskFirst)뿐이라 짝이 맞는다(debt_d3_app_autostart_task_first_on_windows_and_mac_path_byte_same 가 블록을 핀).
+            "WinTaskFirst",
+            "win_task_first",
+            "win_record_fallback_when_up",
             "connect_to",
             "current_boot_verdict",
             "translocation_guidance",
@@ -16481,6 +16557,35 @@ osascript 를 실행할 수 없어 건너뜁니다({e}) — macOS 가 아닌 환
         assert_eq!(out, DelegateOutcome::NotLoaded);
         assert!(!kicked.load(Ordering::SeqCst), "미적재인데 kickstart 호출");
         assert!(!probed.load(Ordering::SeqCst), "미적재인데 소켓 대기");
+    }
+
+    /// ★1.1.16 ②(TICKET=cysr-1116-debt-d-1119 · [master#c9343dbb]): 앱 기동도 윈 = 작업 경유(lib 공유 함수) · **맥·리눅스 경로 바이트 같음** —
+    /// ensure_daemon_on 에서 윈 전용 블록(⟦win-task-first⟧)을 걷어낸 본문 = 기준점 dea2e1853 본문(FNV-1a 64 · 2521바이트).
+    #[test]
+    fn debt_d3_app_autostart_task_first_on_windows_and_mac_path_byte_same() {
+        let src = include_str!("main.rs");
+        let seg = |sig: &str| {
+            let start = src.find(sig).unwrap_or_else(|| panic!("`{sig}` 소실"));
+            &src[start..start + src[start..].find("\n}\n").expect("fn end")]
+        };
+        let body = seg("async fn ensure_daemon_on(");
+        let (b, e) = ("    // ⟦win-task-first 시작⟧", "// ⟦win-task-first 끝⟧\n");
+        let i = body.find(b).expect("윈 블록 시작 표");
+        let j = i + body[i..].find(e).expect("윈 블록 끝 표") + e.len();
+        let block = &body[i..j];
+        let rest = format!("{}{}", &body[..i], &body[j..]);
+        let fnv = rest.bytes().fold(0xcbf29ce484222325u64, |h, x| (h ^ u64::from(x)).wrapping_mul(0x100000001b3));
+        assert_eq!((rest.len(), fnv), (2521, 0x266f54791e1ed93e), "맥·리눅스 ensure_daemon_on 이 기준점과 달라졌다:\n{rest}");
+        // 윈 블록 = cfg(windows) 하나 · 형제 spawn 바로 앞 · 작업 경유 성공이면 형제를 띄우지 않고 돌아간다.
+        assert!(block.contains("    #[cfg(windows)]\n    {\n        match win_task_first(socket).await {"), "{block}");
+        assert!(block.contains("WinTaskFirst::Served(r) => return r,") && block.contains("win_record_fallback_when_up(socket, note)"));
+        assert!(body.find(b).unwrap() < body.find("spawn()?;").unwrap());
+        // 공유 함수 = CLI 와 같은 lib 함수 · 작업 대기 = 기존 wait_for_readiness · 표식 = 형제가 답한 뒤 그 pid.
+        let tf = seg("async fn win_task_first(");
+        assert!(tf.contains("wt::start_cysd_task_first(&cys::lane::state_dir(), wt::run_cysd_task, wait, std::thread::sleep, wt::now_unix())"));
+        assert!(tf.contains("wait_for_readiness(&sock,") && tf.contains("wt::cysd_task_absent()") && tf.contains("cys::lane::socket_is_base("));
+        let rec = seg("fn win_record_fallback_when_up(");
+        assert!(rec.find("== Readiness::Answers").unwrap() < rec.find("note.record(&cys::lane::state_dir(), pid);").unwrap());
     }
 
     /// X-1 배선 핀: ensure_daemon 이 (초기화 중 가드 뒤·형제 spawn 앞에서) 위임을 거친다.

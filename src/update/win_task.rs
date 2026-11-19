@@ -206,6 +206,126 @@ pub fn runner_run_level(cysd_task_xml: Option<&str>, registrar_elevated: Option<
     }
 }
 
+// ═══════════ ★1.1.16(TICKET=cysr-1116-debt-d-1119 ② · [master#c0262f9c]·[master#c9343dbb]) cysd 작업 경유 기동 — 재시도 · 형제 폴백 표식 ═══════════
+//
+// 윈 기본 소켓 데몬은 작업 스케줄러 cysd 작업으로 띄운다(무결성 = 작업 RunLevel · 박사님 「cysr 은 항상 관리자 모드」). 작업 기동이 실패하면
+// 첫 시도 + 재시도 2회 → 그래도 안 되면 호출부가 형제 cysd 를 직접 띄운다(가용성 · 「사용자 체감 0」) · 그 사실을 표식 파일에 남기고 doctor 가
+// 경고 1줄 · **다음 기회**(다음 `cys rotate`·앱 [재시작]·자동 기동)는 다시 작업부터 시도하므로 성공하는 순간 작업 RunLevel 로 돌아오고 표식이 지워진다.
+// 부르는 곳 = CLI `connect()` 자동 기동 · 앱 `ensure_daemon_on`(같은 이 함수 하나).
+
+/// cysd 작업 이름(`cys daemon install` 이 등록하는 이름).
+pub const CYSD_TASK: &str = "cysd";
+/// 작업 경유 기동 대기(시도별) — 첫 시도 8초(작업 기동은 형제보다 느릴 수 있다 · 종전 4초×2) · 재시도 2회 각 4초.
+pub const CYSD_TASK_WAITS: [std::time::Duration; 3] =
+    [std::time::Duration::from_secs(8), std::time::Duration::from_secs(4), std::time::Duration::from_secs(4)];
+/// `schtasks /Run` 자체가 실패한 뒤 다음 시도 전 쉼.
+pub const CYSD_TASK_RUN_FAIL_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
+/// 형제 폴백 표식 파일 이름(자리 = 레인 상태 폴더 `crate::lane::state_dir()`).
+pub const FALLBACK_MARKER: &str = "daemon-integrity-fallback.json";
+
+/// 작업 경유 기동 결과.
+#[derive(Debug, PartialEq)]
+pub enum TaskFirst<T> {
+    /// 작업으로 뜬 데몬이 소켓을 잡았다(`attempt` = 몇 번째 시도 · 1부터) — 표식은 지웠다.
+    Served { value: T, attempt: u32 },
+    /// 세 번 다 안 됐다 — 호출부가 형제를 직접 띄우고, 뜬 데몬 pid 와 함께 [`FallbackNote::record`] 한다.
+    Fallback(FallbackNote),
+}
+
+/// 형제 폴백 사유(표식 내용 · doctor 경고 줄).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FallbackNote {
+    /// 기록 시각(유닉스 초).
+    pub at_unix: u64,
+    /// 마지막 시도의 사유.
+    pub reason: String,
+    /// 시도 수.
+    pub attempts: u32,
+    /// 형제로 뜬 데몬 pid(모르면 None) — doctor 는 지금 데몬 pid 와 같을 때만 이 표식을 읽는다(그 뒤 로그온 작업 등으로 바뀐 데몬 = 낡은 표식).
+    #[serde(default)]
+    pub daemon_pid: Option<u32>,
+}
+
+impl FallbackNote {
+    /// 표식 쓰기(실패해도 기동은 막지 않는다 · 쓰기 오류는 무시).
+    pub fn record(mut self, state_dir: &Path, daemon_pid: Option<u32>) {
+        self.daemon_pid = daemon_pid;
+        let _ = std::fs::create_dir_all(state_dir);
+        if let Ok(body) = serde_json::to_vec(&self) {
+            let _ = std::fs::write(state_dir.join(FALLBACK_MARKER), body);
+        }
+    }
+}
+
+/// 표식 판독(순수 · 파일) — 없음·깨짐 = None.
+pub fn read_fallback(state_dir: &Path) -> Option<FallbackNote> {
+    serde_json::from_slice(&std::fs::read(state_dir.join(FALLBACK_MARKER)).ok()?).ok()
+}
+
+/// 표식이 **지금 데몬**의 것인가(순수) — 표식 pid 모름 = 그렇다고 본다 · 지금 pid 모름 = 판정 못 함(그렇다고 본다) · 둘 다 알고 다르면 낡음.
+pub fn fallback_applies(note: &FallbackNote, current_daemon_pid: Option<u32>) -> bool {
+    match (note.daemon_pid, current_daemon_pid) {
+        (Some(a), Some(b)) => a == b,
+        _ => true,
+    }
+}
+
+/// ★공유 한 함수: 작업 실행 → 대기를 [`CYSD_TASK_WAITS`] 대로 최대 3회. `run_task` = `schtasks /Run /TN cysd` 성공 여부 ·
+/// `wait_ready(대기)` = 그 시간 안에 소켓을 잡으면 Some · `pause` = 실행 실패 뒤 쉼. 성공 = 표식 삭제 · 실패 = 사유 노트(호출부가 형제 기동 뒤 기록).
+pub fn start_cysd_task_first<T>(
+    state_dir: &Path,
+    mut run_task: impl FnMut() -> bool,
+    mut wait_ready: impl FnMut(std::time::Duration) -> Option<T>,
+    mut pause: impl FnMut(std::time::Duration),
+    now_unix: u64,
+) -> TaskFirst<T> {
+    let mut reason = String::new();
+    for (i, wait) in CYSD_TASK_WAITS.iter().enumerate() {
+        let attempt = i as u32 + 1;
+        if run_task() {
+            if let Some(value) = wait_ready(*wait) {
+                let _ = std::fs::remove_file(state_dir.join(FALLBACK_MARKER));
+                return TaskFirst::Served { value, attempt };
+            }
+            reason = format!("작업은 실행됐으나 {}초 안에 데몬이 소켓을 잡지 않음", wait.as_secs());
+        } else {
+            reason = "작업 실행(schtasks /Run /TN cysd) 실패".to_string();
+            if attempt < CYSD_TASK_WAITS.len() as u32 {
+                pause(CYSD_TASK_RUN_FAIL_PAUSE);
+            }
+        }
+    }
+    TaskFirst::Fallback(FallbackNote { at_unix: now_unix, reason, attempts: CYSD_TASK_WAITS.len() as u32, daemon_pid: None })
+}
+
+/// doctor 경고 줄 꼬리(순수) — 표식이 지금 데몬 것일 때만.
+pub fn fallback_warning(note: &FallbackNote, now_unix: u64) -> String {
+    let ago = now_unix.saturating_sub(note.at_unix);
+    let when = if ago < 120 { format!("{ago}초 전") } else if ago < 7200 { format!("{}분 전", ago / 60) } else { format!("{}시간 전", ago / 3600) };
+    format!(
+        "작업 기동 {}회 실패로 데몬을 직접 띄웠다({when} · {}) — 다음 rotate·재시작 때 작업 경유로 자동 복귀",
+        note.attempts, note.reason
+    )
+}
+
+/// cysd 작업 실행(윈도우) — `schtasks /Run /TN cysd` 성공 여부.
+#[cfg(windows)]
+pub fn run_cysd_task() -> bool {
+    crate::hidden_command("schtasks").args(["/Run", "/TN", CYSD_TASK]).output().map(|o| o.status.success()).unwrap_or(false)
+}
+
+/// cysd 작업 파일이 확실히 없는가(윈도우) — 없으면 작업 경유를 건너뛰고 종전대로 형제 기동(표식 없음 · 개발·미설치 기기).
+#[cfg(windows)]
+pub fn cysd_task_absent() -> bool {
+    let root = std::env::var_os("SystemRoot").map(std::path::PathBuf::from);
+    task_file_absent_at(root.as_deref(), CYSD_TASK)
+}
+
+/// 지금 유닉스 초.
+pub fn now_unix() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
 /// 작업 정의 XML(순수). `logon_trigger` = 복구기(로그온 때 실행) · 아니면 트리거 없음(러너 = 등록 직후 Run).
 pub fn task_xml(command: &Path, args: &[&str], user_sid: &str, logon_trigger: bool) -> String {
     task_xml_at(command, args, user_sid, logon_trigger, RUN_LEVEL_LEAST)
@@ -896,6 +1016,63 @@ mod com {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn d3_dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("d3-taskfirst-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 ②): 작업 실패 대역 → 재시도 2회 → 형제 폴백 표식 → **다음 기회** 작업 성공 = 복귀 · 표식 삭제.
+    #[test]
+    fn d3_task_first_retries_twice_then_falls_back_and_returns_on_the_next_chance() {
+        use std::time::Duration;
+        let dir = d3_dir("cycle");
+        // ① 작업 실행 3번 다 실패 = 형제 폴백(대기 0 · 쉼 2 · 실행 3).
+        let (mut runs, mut waits, mut pauses) = (0, Vec::new(), Vec::new());
+        let r: TaskFirst<()> = start_cysd_task_first(&dir, || { runs += 1; false }, |w| { waits.push(w); None }, |p| pauses.push(p), 1000);
+        assert_eq!(runs, 3, "첫 시도 + 재시도 2회");
+        assert!(waits.is_empty());
+        assert_eq!(pauses, vec![CYSD_TASK_RUN_FAIL_PAUSE; 2], "마지막 실패 뒤에는 쉬지 않는다");
+        let TaskFirst::Fallback(note) = r else { panic!("폴백이어야") };
+        assert_eq!((note.attempts, note.at_unix, note.daemon_pid), (3, 1000, None));
+        assert!(note.reason.contains("schtasks /Run"), "{}", note.reason);
+        // 형제 기동 뒤 기록 = doctor 가 읽는 표식.
+        note.record(&dir, Some(77));
+        let back = read_fallback(&dir).expect("표식");
+        assert_eq!(back.daemon_pid, Some(77));
+        assert!(fallback_applies(&back, Some(77)) && !fallback_applies(&back, Some(78)));
+        assert!(fallback_warning(&back, 1030).contains("작업 기동 3회 실패") && fallback_warning(&back, 1030).contains("30초 전"));
+        // ② 다음 기회(rotate·재시작) — 작업이 돈다 = 작업 경유 복귀 · 표식 삭제.
+        let mut waits2 = Vec::new();
+        let r2 = start_cysd_task_first(&dir, || true, |w| { waits2.push(w); Some("sock") }, |_| panic!("쉼 없음"), 2000);
+        assert_eq!(r2, TaskFirst::Served { value: "sock", attempt: 1 });
+        assert_eq!(waits2, vec![Duration::from_secs(8)]);
+        assert!(read_fallback(&dir).is_none(), "복귀하면 표식이 지워진다");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 실행은 됐는데 늦는 작업 = 대기 8·4·4 · 세 번째에 잡으면 작업 경유(형제 안 띄움).
+    #[test]
+    fn d3_task_first_waits_eight_then_four_four() {
+        use std::time::Duration;
+        let dir = d3_dir("slow");
+        let mut waits = Vec::new();
+        let r = start_cysd_task_first(&dir, || true, |w| { waits.push(w); (waits.len() == 3).then_some(()) }, |_| panic!("실행 성공 = 쉼 없음"), 0);
+        assert_eq!(r, TaskFirst::Served { value: (), attempt: 3 });
+        assert_eq!(waits, vec![Duration::from_secs(8), Duration::from_secs(4), Duration::from_secs(4)]);
+        // 셋 다 늦으면 폴백 사유 = 무응답.
+        let r = start_cysd_task_first::<()>(&dir, || true, |_| None, |_| {}, 0);
+        let TaskFirst::Fallback(n) = r else { panic!() };
+        assert!(n.reason.contains("소켓을 잡지 않음"), "{}", n.reason);
+        // 깨진 표식 = 없음 · pid 모름 = 지금 데몬 것으로 본다.
+        std::fs::write(dir.join(FALLBACK_MARKER), b"{").unwrap();
+        assert!(read_fallback(&dir).is_none());
+        let n0 = FallbackNote { at_unix: 0, reason: String::new(), attempts: 3, daemon_pid: None };
+        assert!(fallback_applies(&n0, Some(5)) && fallback_applies(&FallbackNote { daemon_pid: Some(5), ..n0.clone() }, None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · codex 1R blocking) RunLevel 요소 판독 · 질의 실패 ≠ 작업 없음.
     #[test]

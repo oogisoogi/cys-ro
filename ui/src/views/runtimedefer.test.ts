@@ -18,9 +18,9 @@ function fnText(name: string): string {
   const a = (m as RegExpExecArray).index;
   return SRC.slice(a, SRC.indexOf("\n}\n", a) + 2);
 }
-const NAMES = ["collectSids", "seatAttached", "seatInModel", "deferSeatRuntime", "ensureSeatRuntime", "destroyPaneRuntime", "retryFailedRuntimes"];
+const NAMES = ["collectSids", "seatAttached", "seatInModel", "deferSeatRuntime", "ensureSeatRuntime", "destroyPaneRuntime", "retryFailedRuntimes", "writeSeatHistory"];
 
-function harness(opts: { fail?: number } = {}) {
+function harness(opts: { fail?: number; history?: string } = {}) {
   const paneKey = (sid: number, socket?: string): string => `${socket ?? ""}#${sid}`;
   const panes = new Map<string, { sid: number; disposed: boolean; observer: { disconnect(): void }; unlisten: (() => void)[]; term: { dispose(): void }; el: { remove(): void } }>();
   const workspaces: Record<string, unknown>[] = [
@@ -32,12 +32,27 @@ function harness(opts: { fail?: number } = {}) {
   const made: number[] = [];
   const disposed: number[] = [];
   const roleDots: [number, string][] = [];
+  const streams: number[] = [];
+  const writes: string[] = [];
+  const invokes: [string, Record<string, unknown>][] = [];
+  const view = { work: true };
   const deps: Record<string, unknown> = {
+    PANE_STREAM_UNWANTED: "pane_stream_unwanted", DEFERRED_TOTAL_MAX: 9, SEAT_HISTORY_MAX: 5000, T_LIST: 8000,
+    workRuntimeWanted: () => view.work,
+    rpcT: (p: Promise<unknown>) => p,
+    invoke: async (cmd: string, a: Record<string, unknown>) => {
+      invokes.push([cmd, a]);
+      if (cmd === "seat_history") return { text: opts.history ?? "" };
+      return null;
+    },
     paneKey, panes, workspaces, exitedPaneKeys: new Set<string>(), deferredRuntimes: new Map<string, unknown>(),
     setRoleDot: (rt: { sid: number }, role: string) => void roleDots.push([rt.sid, role]),
-    makePane: async (sid: number, _t: string, socket?: string) => {
+    makePane: async (sid: number, _t: string, socket?: string, o?: { beforeStream?: (term: unknown) => Promise<boolean> }) => {
       made.push(sid);
       await new Promise<void>((r) => (release = r));
+      // 실제 makePane 처럼: 듣기 등록 뒤 · 스트림 시작 직전에 beforeStream — false 면 스스로 치우고 던진다
+      if (o?.beforeStream && !(await o.beforeStream({ rows: 4, write: (x: string) => void writes.push(x) }))) throw new Error("pane_stream_unwanted");
+      streams.push(sid);
       // 실제 makePane 처럼 끝에서 등록(panes.set) — 실패는 등록 전(attach_surface 거부 꼴)
       if (fails > 0) {
         fails--;
@@ -57,8 +72,69 @@ function harness(opts: { fail?: number } = {}) {
   const tick = async () => {
     for (let i = 0; i < 5; i++) await Promise.resolve();
   };
-  return { fns, panes, workspaces, made, disposed, roleDots, ledger, go, tick };
+  return { fns, panes, workspaces, made, disposed, roleDots, ledger, go, tick, streams, writes, invokes, view };
 }
+
+describe("(codex 2R) 붙기 직전 재판정 · 실행 전체 상한 · 붙기 전 기록", () => {
+  it("② makePane 을 기다리는 사이 대화 화면으로 → 기록 조회 0 · 스트림 0 · 런타임 0 · 장부 유지 · 횟수 안 셈 → 다음 진입에 붙음", async () => {
+    const h = harness({ history: "a\nb" });
+    h.fns.deferSeatRuntime(5, undefined, "t", null, 10);
+    const p = h.fns.ensureSeatRuntime("#5");
+    await h.tick();
+    h.view.work = false; // 대화 화면으로 돌아감
+    h.go();
+    expect(await p).toBe(false);
+    expect(h.streams).toEqual([]);
+    expect(h.invokes).toEqual([]); // 대화 화면이면 기록도 묻지 않는다
+    expect(h.panes.has("#5")).toBe(false);
+    expect(h.ledger.size).toBe(1);
+    expect(h.fns.seatAttached(5, undefined)).toBe(true);
+    h.view.work = true;
+    const q = h.fns.ensureSeatRuntime("#5");
+    await h.tick();
+    h.go();
+    expect(await q).toBe(true);
+    expect(h.streams).toEqual([5]);
+  });
+  it("③ 재진입마다 3회 묶음은 되돌리지만 실행 전체 상한 9회 — 10번째 시도 0", async () => {
+    const h = harness({ fail: 100 });
+    h.fns.deferSeatRuntime(5, undefined, "t", null);
+    for (let round = 0; round < 5; round++) {
+      for (let i = 0; i < 3; i++) {
+        const p = h.fns.ensureSeatRuntime("#5");
+        await h.tick();
+        h.go();
+        await p;
+      }
+      h.fns.retryFailedRuntimes(); // 작업 화면 재진입
+    }
+    expect(h.made.length).toBe(9);
+    expect(h.ledger.size).toBe(1); // 좌석은 붙은 채(재입양 0) · 「(없음)」 칸 = 더 시도하지 않음
+  });
+  it("① 기록: 미룬 그때 커서 − 화면 행 수부터 받아, 지금 화면에 다시 그려질 마지막 행 수만큼 빼고 쓴 뒤 행 수만큼 밀어 올린다 · 제어 문자 제거", async () => {
+    const lines = Array.from({ length: 10 }, (_, i) => `줄${i}`);
+    lines[2] = "색\x1b[31m빨강";
+    const h = harness({ history: lines.join("\n") });
+    h.fns.deferSeatRuntime(5, undefined, "t", null, 100);
+    const p = h.fns.ensureSeatRuntime("#5");
+    await h.tick();
+    h.go();
+    expect(await p).toBe(true);
+    expect(h.invokes).toEqual([["seat_history", { socket: undefined, surfaceId: 5, sinceLine: 96, maxLines: 10000 }]]);
+    expect(h.writes).toEqual(["줄0\r\n줄1\r\n색[31m빨강\r\n줄3\r\n줄4\r\n줄5" + "\r\n".repeat(4)]);
+    expect(h.streams).toEqual([5]); // 기록을 쓴 **뒤** 스트림
+  });
+  it("① 커서 모름(null) = 기록 조회 0 · 기록 조회 실패 = 기록 없이 붙음", async () => {
+    const h = harness();
+    h.fns.deferSeatRuntime(5, undefined, "t", null);
+    const p = h.fns.ensureSeatRuntime("#5");
+    await h.tick();
+    h.go();
+    expect(await p).toBe(true);
+    expect(h.invokes).toEqual([]);
+    expect(h.writes).toEqual([]);
+  });
+});
 
 describe("미룬 런타임 장부(ensureSeatRuntime)", () => {
   it("① 만드는 동안에도 붙은 좌석 · 두 번째 호출 = 생성 0 · 끝나면 장부 비고 런타임 1 · 역할 점", async () => {

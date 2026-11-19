@@ -148,6 +148,12 @@ def main() -> int:
             check(len(rs) == len(set(rs)) and set(rs) == set(tree), f"③ resize_surface = 보이는 좌석 × 1 ({len(rs)}건 · 겹침 {len(rs) - len(set(rs))} · 좌석 일치 {set(rs) == set(tree)})")
             s2 = n(pg, "start_surface_stream")
             ss = pg.evaluate(SIDS_OF, "start_surface_stream")
+            # (codex 2R blocking) 미룬 좌석마다 스트림을 붙이기 **전에** 붙기 전 기록(seat_history)을 1회 묻는다
+            order = pg.evaluate("() => window.__INVOKES.filter((x) => x[1] === 'seat_history' || x[1] === 'start_surface_stream').map((x) => [x[1], JSON.parse(x[2]).surfaceId])")
+            hist = [sid for c, sid in order if c == "seat_history"]
+            first_hist = {sid: i for i, (c, sid) in reversed(list(enumerate(order))) if c == "seat_history"}
+            first_stream = {sid: i for i, (c, sid) in reversed(list(enumerate(order))) if c == "start_surface_stream"}
+            check(sorted(hist) == sorted(set(tree)) and all(first_hist[s] < first_stream[s] for s in tree), f"③ 기록 조회 = 미룬 좌석마다 1회 · 스트림보다 먼저({len(hist)}건)")
             check(s2 == len(tree) and len(set(ss)) == len(ss), f"③ 출력 흐름 = 보이는 좌석 수({s2} = {len(tree)}) · 같은 좌석 두 번 0")
 
             # ④ 전환 100회

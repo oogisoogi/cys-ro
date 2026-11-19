@@ -8460,6 +8460,7 @@ fn main() {
             viewcore::chat_send, // (cysr-ui-slice1)
             viewcore::chat_transcript, // (cysr-ui-slice1)
             viewcore::confirm_reply, // (cysr-ui-slice4) 대화 화면 직접 허락·거절 — 데몬 결과(actuated) 그대로
+            viewcore::seat_history, // (cysr-1116-s2) 미룬 좌석 첫 붙기 전 기록(데몬 surface.read_text 델타 · 데몬 변경 0)
             feedback::feedback_new_draft,
             feedback::feedback_stage_file,
             feedback::feedback_unstage,

@@ -54,3 +54,30 @@ describe("(codex 1R blocking) 자리표 닫기 직전 재판정", () => {
     expect(seg.indexOf("if (!fresh?.close) continue;")).toBeLessThan(seg.indexOf("placeholderSids.delete(sid);"));
   });
 });
+
+describe("(codex 2R major) makePane 부분 생성 정리", () => {
+  it("붙기 구간(attach·듣기 등록·붙기 직전 확인·스트림 시작)이 던지면 듣기·xterm·DOM 을 치우고 다시 던진다 · 성공 경로 순서 그대로", () => {
+    const at = MAIN.indexOf("async function makePane(sid: number, title: string, socket?: string, opts?: MakePaneOpts): Promise<PaneRuntime> {");
+    expect(at).toBeGreaterThan(0);
+    const body = MAIN.slice(at, MAIN.indexOf("\n}\n", at));
+    const drop = body.slice(body.indexOf("const dropPartial = () => {"), body.indexOf("// attach 먼저"));
+    for (const k of ["un1?.();", "un2?.();", "cancelSendFail();", "term.dispose();", "el.remove();"]) expect(drop).toContain(k);
+    expect(body).toContain('const ev = (await invoke("attach_surface", { socket, surfaceId: sid }).catch((e: unknown) => { dropPartial(); throw e; })) as {');
+    const tryAt = body.indexOf("  try {\n  un1 = await listen(ev.output_event");
+    const before = body.indexOf("if (opts?.beforeStream && !(await opts.beforeStream(term))) throw new Error(PANE_STREAM_UNWANTED);");
+    const start = body.indexOf('await invoke("start_surface_stream", { socket, surfaceId: sid });');
+    const catchAt = body.indexOf("  } catch (e) {\n    dropPartial();\n    throw e;\n  }");
+    const set = body.indexOf("panes.set(paneKey(sid, socket), rt);");
+    expect([tryAt > 0, tryAt < before, before < start, start < catchAt, catchAt < set]).toEqual([true, true, true, true, true]);
+  });
+});
+
+describe("(codex 2R minor) 첫 진입 포커스 = 보이는 보기 트리", () => {
+  it("ensureSeatRuntimes 의 포커스 회수는 wsViewTree(지금 탭) 좌석에서 고른다", () => {
+    const at = MAIN.indexOf("async function ensureSeatRuntimes(othersBudget: number): Promise<void> {");
+    const body = MAIN.slice(at, MAIN.indexOf("\n}\n", at));
+    expect(body).toContain("const aSids = collectSids(cw2 ? wsViewTree(cw2) : null);");
+    expect(body).not.toContain("collectSids(current()?.tree ?? null)");
+  });
+});
+

@@ -690,3 +690,30 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+
+/// (cysr-1116-s2 · codex 2R blocking) 런타임을 미룬 좌석의 「붙기 전 기록」 매개변수(순수) — 데몬 `surface.read_text` 의 기존 델타 경로
+/// (`since_line` = 단조 줄 커서 · 좌석 스크롤백 FIFO)를 그대로 쓴다(데몬 변경 0). `max_lines` 는 xterm 스크롤백(5,000줄)보다 넉넉히 · 데몬 상한 10,000.
+pub(crate) fn seat_history_params(surface_id: u64, since_line: u64, max_lines: u64) -> Value {
+    json!({"surface_id": surface_id, "since_line": since_line, "max_lines": max_lines.clamp(1, 10_000)})
+}
+
+/// `seat_history` — 대화 화면 동안 런타임을 미룬 좌석이 작업 화면에 처음 붙기 **직전**, 그사이 지나간 완성 줄(글자만)을 받는다.
+/// 응답 = 데몬 결과 그대로(`text` · `since` · `next_cursor` · `latest_cursor` · `truncated`). 실패 = Err(화면은 기록 없이 붙는다 = 종전).
+#[tauri::command]
+pub async fn seat_history(socket: Option<String>, surface_id: u64, since_line: u64, max_lines: Option<u64>) -> Result<Value, String> {
+    let sock = resolve_socket(&socket);
+    rpc_on(&sock, "surface.read_text", seat_history_params(surface_id, since_line, max_lines.unwrap_or(10_000))).await
+}
+
+#[cfg(test)]
+mod seat_history_tests {
+    use super::seat_history_params;
+    #[test]
+    fn params_use_existing_delta_path_and_clamp() {
+        let p = seat_history_params(7, 120, 999_999);
+        assert_eq!(p["surface_id"], 7);
+        assert_eq!(p["since_line"], 120);
+        assert_eq!(p["max_lines"], 10_000);
+        assert_eq!(seat_history_params(7, 0, 0)["max_lines"], 1);
+    }
+}

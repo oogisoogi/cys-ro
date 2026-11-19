@@ -236,3 +236,25 @@
 - 맨 셸 에이전트 좌석(에이전트 죽음)에 기계 send_text = `no_agent`(큐 보류) — 기계 찌꺼기로 C-u 효과를 재는 시험은 안 된다.
 - zsh 에서 `echo "x rc=$?"` 안에 `$(basename …)` 를 먼저 쓰면 `$?` 가 0 이 된다 — rc 는 따로 받아라(c6 2·3회 로그의 rc 줄은 이 때문에 0 · 판정은 하네스 JSON `result`).
 - 화면 시험 대역 행에는 `created_at` 이 없다(tickrec_gate seat()) — 조건부 닫기 갈래 e2e 는 rowOver 에 생성 시각을 넣어야 닫힌다.
+
+## 12. 델타 — master#fe289e63 「📌① 이 판에서 고친다」 집행(worker-1116s5b)
+
+### 12-0. 정정(인박스 04:24 append 와 같은 내용)
+- §11-8 ① 의 「화면 성공 판정은 이를 성공으로 봄」 = **틀림**. 화면 `masterRowOf`(ui/src/views/judge/gate.ts:112)는 `role === "master"` 행만 마스터로 집는다 → 역할 없이 되살아난 좌석은 마스터 행이 아니고 `restartSucceeded(m=null)` = false → 120초 뒤 「시간 안에 마스터가 켜지지 않았어요」. 결함(마스터 0 · 에이전트는 역할 없는 좌석에서 살아 있음)은 맞다.
+
+### 12-1. 고침(커밋 00bc7131d)
+- **데몬** `surface.create` 멱등 재반환 갈래(handlers.rs 캐시 적중 · `reuse` 판정 뒤): 요청 `role` 이 있으면
+  - `seat_takeover_from` 이 **다른 좌석**(= 그 역할을 다른 산 좌석이 쥐고 있고 승계 대상) → **재반환하지 않음** → 아래 새 생성(승계 마무리 = 옛 보유자 역할·caps 내림·큐 이관은 성공 아크에만 있다) = 「재등록 안 되면 재사용 대신 새 좌석」.
+  - 그 밖(역할 비어 있음 · 또는 재반환 좌석 자신이 승계 대상) → 재반환 + `Daemon::reattach_role_on_reuse`(state.rs 새 메서드): 좌석이 이미 역할을 쥐고 있으면 변화 0 · 없으면 생성 경로 역할 공개 블록과 같은 규약(락 순서 surfaces → roles → surface.role · `dedup_worker_role` · caps · `note_role_held` · `caller_gen` · 묘비 해제 · master 쿨다운 스탬프 · `persist_topology`) + 사건 `role.reattached{role, path:"surface.create(idempotent_reuse)"}`.
+  - 요청 role 없는 재반환 = 종전 그대로.
+- **화면**: 성공 조건 「role 보유자 = 그 좌석」 은 이미 `masterRowOf` 의 `role === "master"` 걸러내기로 들어 있다(코드 고침 0) → **핀 시험**만 추가: 역할 없이 되살아남 = `restarting` 유지 → 시한 뒤 `restartfail` · 옛 셸 정리 0 / 같은 꼴에 role master = `rest`(성공).
+
+### 12-2. 시험 · 뮤턴트 · 실물
+- cysd `s5_1116_idem_reuse_reattaches_released_role_or_creates_new`: ① `release_role_after_agent_death`(watchdog 과 같은 함수) 뒤 같은 key 생성 = 같은 좌석 · role master · roles 맵 · 거둔 역할 장부 비움 · 쿨다운 스탬프 · 사건 1 ② 이미 쥠 = 변화 0(사건 그대로 1) ③ 역할 잃은 뒤 다른 좌석 B 가 master → 같은 key = 새 좌석 C(재반환 0) · master = C · B 역할 내림(이중 마스터 0).
+- 뮤턴트(`CYS_S5R_MUTANT`): NOREATTACH(재등록 끔) → 「재반환 좌석이 역할을 다시 쥐지 않았다」 적 · NOFALLBACK(승계 중에도 재반환) → 「다른 좌석 승계 중인데 역할 없는 옛 좌석을 재반환했다」 적 = 2/2. 화면: masterRowOf 의 role 조건을 끄면 새 시험 포함 5건 적.
+- bun views **340 · 0**(339 + 1) · tsc rc 0.
+- cysd 전체(00bc7131d · 04:36~04:52 · `--test-threads=4`) = **3335 · 3 붉음 · 17** — 붉음 3 = `seat_proc::tests::seatkeep_input_ack_stall_ends_seat_when_consumer_never_resumes`·`seatkeep_input_ack_waits_while_consumer_runs_and_stdin_unread`·`seatkeep_stalled_consumer_does_not_block_close` 모두 seat_proc_tests.rs:384/307 「seatkeep 이 접속을 거절: handshake_timeout」(시한형) · master 공지 master#8dc440c3 = 04:34:45~04:49:15 다른 좌석 부하 주입(load 20~27)과 겹침 → 공지 뒤 단독 `seatkeep_` 재실행 2회(부하 10.1) **5/5 · 5/5 초록** → 3338 − 3 + 3 = 실패 0 상당(앞 판 3337 + 새 시험 1). seat_proc 파일 변경 0줄 · 앞 좌석 §5 에도 같은 시험 부하 붉음 기록.
+- 실물(격리 HOME · role_probe.py 지연 70초): 기준 dea2e1853 = after role None · masters [] → **고침 뒤 = after role master · masters [1](같은 좌석 surface:1)** · real_s5b.py 다시 돌림 ④ = 「5초 뒤 좌석 수(마스터) 1」 + role.reattached(증거 `real-daemon-s5b.txt` · 대조·c6 절 다시 덧붙임 — 스크립트가 파일을 새로 씀).
+
+### 12-3. 원작자 파일 바뀐 줄(이 델타)
+- state.rs +39(`reattach_role_on_reuse` 메서드 · 문서 4줄 포함) · handlers.rs +63 = 운영 +17(재반환 갈래 역할 판정·재등록 · 뮤턴트 분기 cfg!(test) 값 2) + 시험 +46 · revive.test.ts +31.

@@ -272,6 +272,15 @@ pub(crate) fn adopt_on_boot(daemon: &Arc<Daemon>) {
             Err(_) => Vec::new(),
         };
         names.sort();
+        // 기록 없는 산 seatkeep(생성 직후 기록 전에 cysd 가 죽음 · 기록 쓰기 실패) = 번호·역할을 몰라 입양 못 한다. 죽이지 않는다(산 좌석일 수
+        // 있음) — 미결로 올려 그 기동의 자동 복원을 보류한다(같은 대화를 새 좌석이 이어 쓰지 않게) · 경보 이벤트로 남긴다.
+        let recorded: std::collections::HashSet<String> = names.iter().map(|n| n.trim_end_matches(RECORD_SUFFIX).to_string()).collect();
+        for skid in unrecorded_live(&dir, &recorded) {
+            let out = Outcome { skid: skid.clone(), surface_id: None, result: "unresolved", reason: "no_record_live_keeper".into() };
+            eprintln!("[cysd] 좌석 입양 {skid}: 기록 없는 산 seatkeep — 입양 못 함(자동 복원 보류 · 좌석은 건드리지 않음)");
+            daemon.bus.publish("seat.adopt_skipped", "surface", None, json!({"skid": skid, "result": out.result, "reason": out.reason}));
+            summary.outcomes.push(out);
+        }
         for name in names {
             let skid = name.trim_end_matches(RECORD_SUFFIX).to_string();
             let out = adopt_one(daemon, &dir, &skid);
@@ -287,6 +296,44 @@ pub(crate) fn adopt_on_boot(daemon: &Arc<Daemon>) {
         }
     }
     *SUMMARY.lock().unwrap_or_else(|e| e.into_inner()) = Some(summary);
+}
+
+/// 기록(`.cysd.json`)이 없는데 등록부상 committed · 살아 있음 · 출생 시각 일치인 seatkeep id 들.
+#[cfg(target_os = "macos")]
+fn unrecorded_live(dir: &Path, recorded: &std::collections::HashSet<String>) -> Vec<String> {
+    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut out = Vec::new();
+    for e in rd.filter_map(|e| e.ok()) {
+        let Ok(name) = e.file_name().into_string() else { continue };
+        if !name.ends_with(".json") || name.ends_with(RECORD_SUFFIX) || name.starts_with('.') {
+            continue;
+        }
+        let skid = name.trim_end_matches(".json").to_string();
+        if recorded.contains(&skid) {
+            continue;
+        }
+        let Some(r) = std::fs::read_to_string(e.path()).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { continue };
+        let Some(pid) = r["pid"].as_u64().map(|p| p as u32) else { continue };
+        let probe = SeatRecord::probe(pid, &skid);
+        if judge(&probe, Some(&r), pid_alive(pid), process_start_us(pid)) == Liveness::Alive {
+            out.push(skid);
+        }
+    }
+    out.sort();
+    out
+}
+
+impl SeatRecord {
+    /// 판정(`judge`)용 껍데기 — pid·id 만 의미 있음.
+    fn probe(keeper_pid: u32, skid: &str) -> SeatRecord {
+        SeatRecord {
+            schema: RECORD_SCHEMA, skid: skid.into(), sock: String::new(), keeper_pid, surface_id: 0, display_no: None,
+            title: String::new(), role: None, cmd: String::new(), cwd: String::new(), created_at: 0.0, env_injected: false,
+            rows: 0, cols: 0, agent_meta: None, agent_session_id: None, claude_config_dir: None, config_dir_trusted: false,
+            registered_transcript: None, repin_anchor: None, agent_epoch: 0, conversation_epoch: 0, awakened_at: None,
+            directive_verified: None, pack_reinject: None, gate_pending: None, at: 0.0,
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]

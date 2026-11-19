@@ -69,3 +69,18 @@ fn process_start_us_reads_self_and_none_for_no_pid() {
         assert!(process_start_us(0x7fff_fff0).is_none());
     }
 }
+
+#[test]
+fn restore_hold_only_when_unresolved_present() {
+    let set = |outs: Vec<Outcome>| *SUMMARY.lock().unwrap() = Some(BootSummary { ran: true, outcomes: outs });
+    let o = |r: &'static str| Outcome { skid: format!("k-{r}"), surface_id: None, result: r, reason: String::new() };
+    set(vec![]);
+    assert!(restore_should_hold().is_none());
+    set(vec![o("adopted"), o("dead")]);
+    assert!(restore_should_hold().is_none(), "입양·죽음 확인만이면 보류하지 않는다(입양 역할은 roles 맵이 막는다)");
+    set(vec![o("adopted"), o("unresolved")]);
+    let why = restore_should_hold().expect("미결이 있으면 보류");
+    assert!(why.contains("k-unresolved"), "{why}");
+    *SUMMARY.lock().unwrap() = None;
+    assert!(restore_should_hold().is_none(), "입양이 안 돈 기동(노브 끔) = 보류 없음");
+}

@@ -81,6 +81,7 @@ def alive(pid):
 
 
 daemons = []
+first_rpc = []  # (cysd pid, 첫 RPC 성공 벽시계) — A16 「첫 RPC 수락 > 마지막 입양」 대조
 
 
 def start_daemon(tag):
@@ -93,6 +94,7 @@ def start_daemon(tag):
         if z.returncode == 0:
             idn = json.loads(z.stdout)
             if idn.get("daemon_pid") == p.pid:
+                first_rpc.append((p.pid, time.time()))
                 return p, round((time.time() - t0) * 1000)
         if p.poll() is not None:
             raise SystemExit(f"cysd {tag} 가 rc {p.returncode} 로 끝남 — {R}/logs/cysd-{tag}.err")
@@ -153,11 +155,16 @@ for rnd in range(ROUNDS):
             got_echo = f"ECHO {tag}" in cys("read-screen", "--surface", s_ref, "--lines", "60").stdout
             time.sleep(0.1)
         row = [l for l in lst.splitlines() if re.search(rf"\b{re.escape(s_ref)}\b", l)]
+        if os.environ.get("SKA_DUMP"):
+            open(f"{R}/logs/screen-{rnd}-{s_ref.split(':')[-1]}.txt", "w").write(r.stdout)
         rec["seats"].append({
             "surface": s_ref, "role": s_role, "pid": s_pid,
             "alive_in_gap": alive_gap[s_ref], "alive": alive(s_pid), "end": ends,
             "listed": bool(row), "role_listed": bool(row) and s_role in row[0],
             "read_rc": r.returncode, "screen_max_seq": max(seqs) if seqs else None,
+            # A5: 읽은 줄들의 순번이 이어지는가(빠짐 = 유실 · 겹침 = 재생 중복)
+            "seq_missing": len(set(range(min(seqs), max(seqs) + 1)) - set(seqs)) if seqs else None,
+            "seq_dups": len(seqs) - len(set(seqs)),
             "produced_before_kill": produced_before[s_ref], "produced_now": max(nums) if nums else 0,
             "send_rc": (snd.returncode, sk.returncode), "input_logged": got_in, "echo_on_screen": got_echo,
         })
@@ -168,10 +175,37 @@ for rnd in range(ROUNDS):
     line = {"round": rnd, "alive": [x["alive"] for x in rec["seats"]], "listed": [x["role_listed"] for x in rec["seats"]],
             "screen_gt_before": [(x["screen_max_seq"] or 0) > x["produced_before_kill"] for x in rec["seats"]],
             "io": [x["input_logged"] and x["echo_on_screen"] for x in rec["seats"]],
+            "seq_ok": [x["seq_missing"] == 0 and x["seq_dups"] == 0 for x in rec["seats"]],
             "keepers": rec["keepers"], "live_seats": rec["live_seats"], "back_ms": back_ms}
     print(json.dumps(line, ensure_ascii=False), flush=True)
     if OUT:
         open(OUT, "a").write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+# ── A16: seatkeep 교체 기록(append-only .log)에서 공백 길이·교체 줄 수 · 첫 RPC 대조 ──
+a16 = {"takeovers": 0, "expected_takeovers": 0, "gaps_ms": [], "rpc_before_adopt": 0, "per_seat": []}
+skdir = f"{R}/s/seatkeep"
+rpc_at = dict(first_rpc)
+for i, (s_ref, _, s_pid, _) in enumerate(seats):
+    a16["expected_takeovers"] += ROUNDS - i  # 좌석 i 는 회차 i..ROUNDS-1 의 강제 종료를 모두 겪었다
+for name in sorted(os.listdir(skdir)) if os.path.isdir(skdir) else []:
+    if not name.endswith(".log"):
+        continue
+    ev = [json.loads(l) for l in open(f"{skdir}/{name}") if l.strip()]
+    tk = [e for e in ev if e.get("event") == "accept" and e.get("reason") == "takeover_after_disconnect"]
+    a16["takeovers"] += len(tk)
+    for e in tk:
+        gap = (e["t"] - e["prev"]["disconnected_at"]) * 1000
+        a16["gaps_ms"].append(round(gap))
+        rpc = rpc_at.get(e["peer"]["pid"])
+        if rpc is not None and rpc <= e["t"]:
+            a16["rpc_before_adopt"] += 1
+    a16["per_seat"].append({"log": name, "takeovers": len(tk)})
+g = sorted(a16["gaps_ms"])
+a16["gap_median_ms"] = g[len(g) // 2] if g else None
+a16["gap_max_ms"] = g[-1] if g else None
+print(json.dumps({k: a16[k] for k in ("takeovers", "expected_takeovers", "rpc_before_adopt", "gap_median_ms", "gap_max_ms")}, ensure_ascii=False), flush=True)
+if OUT:
+    open(OUT, "a").write(json.dumps({"a16": a16}, ensure_ascii=False) + "\n")
 
 # ── 정리: 좌석 닫기 → seatkeep·좌석 0 ──
 for (s_ref, _, _, _) in seats:

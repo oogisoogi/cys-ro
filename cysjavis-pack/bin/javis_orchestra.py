@@ -173,7 +173,8 @@ BOOT_PLAN = [
 # ★(1.1.16 · TICKET=cysr-1116-borrow23-1119 · 차용 ③) 가벼운 시작 손잡이 `boot_fleet` — Rust 정본 `cys.rs::boot_fleet_from` 과
 #   같은 규칙·같은 기본값(문자열 대조 검체가 있다 — 함께 옮긴다). full(기본 · 1.1.15 와 같다) = 부트가 CSO·worker 를 세운다 ·
 #   light = master 말고는 미리 띄우지 않는다(일이 생기면 `cys launch-agent --role worker --agent claude` · 전체 편성 =
-#   `CYS_BOOT_FLEET=full cys boot`). 읽는 순서 = env `CYS_BOOT_FLEET` > `~/.cys/policy.json` 의 `boot_fleet` > 기본값 · 모르는 값은 건너뜀.
+#   `CYS_BOOT_FLEET=full cys boot`). 읽는 순서 = env `CYS_BOOT_FLEET`(full|light) > `~/.cys/policy.json` 의 `boot_fleet`(**full 만** — 좌석도
+#   쓰는 파일이라 함대를 줄이는 light 는 받지 않는다 · light 는 env 로만) > 기본값 · 모르는 값은 건너뜀.
 #   ★`BOOT_PLAN`·`REQUIRED_ROLES` 상수는 그대로다(행 단위 파리티 H-PRED-7) — 바뀌는 것은 「이번 부트가 요구·기동하는 집합」뿐이다.
 BOOT_FLEET_DEFAULT = "full"
 

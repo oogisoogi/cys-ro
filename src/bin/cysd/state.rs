@@ -2488,6 +2488,10 @@ pub struct Surface {
     pub agent_exit_notified: AtomicBool,
     /// T3-13 타이핑 가드: 사람(UI) 입력의 마지막 시각 — 원격 주입 충돌 보호
     pub last_human_input: Mutex<Option<Instant>>,
+    /// (1.1.16 · TICKET=cysr-1116-s5-1119 · 조각 5 S1-5) `last_human_input` 를 찍은 차례 번호 — 찍을 때마다 1 오른다(같은 락 안).
+    /// 앱 대화 화면이 「지금 남은 사람 입력 시각이 내 원자 제출의 것인가」를 짝짓는 열쇠(`surface.send_text` 응답 · `org.status` 행에 같은 값).
+    /// 쓰기 0 으로 끝난 원자 제출(승인 창 거부 등 · S1-10)은 찍은 시각과 함께 되돌린다 — 그 사이 다른 입력이 찍었으면 그대로 둔다.
+    pub human_input_seq: AtomicU64,
     /// ★B1(0.14.30): 이 pane 에 쓰였으나 **제출(CR)·선정리(Ctrl-U/Ctrl-C)를 아직 보지 못한**
     /// 입력 바이트 수. 큐 배달의 '입력줄 점유' 1차 축이다(화면 무의존 결정론 신호 —
     /// `governance::pending_input_step` 가 전이 규칙, `governance::input_line_state` 가 소비자).
@@ -8292,6 +8296,7 @@ impl Daemon {
             crash_notified: AtomicBool::new(false),
             last_cmd_ack: Mutex::new(None),
             last_human_input: Mutex::new(None),
+            human_input_seq: AtomicU64::new(0),
             pending_input_bytes: AtomicU64::new(0),
             pending_input: Mutex::new(Default::default()),
             // ★(0.14.43 · RQFIX B-1) 신생 좌석은 거짓(v2 = 종전 동작) — 첫 watchdog 틱의 생존·마커 판정이 확정한다.

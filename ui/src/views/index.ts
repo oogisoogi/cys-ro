@@ -15,6 +15,10 @@ import { Registry } from "./registry";
 export interface BootDeps {
   invoke(cmd: string, args?: Record<string, unknown>): Promise<unknown>;
   working(row: Record<string, unknown>): boolean;
+  /** (조각 5) 작업 화면에서 그 좌석 창에 포커스(main.ts jumpToSurface) — 관문 답하기 · 없으면 전환만 */
+  focusSeat?(sid: number): void;
+  /** (조각 5) 도움 요청 창(main.ts 기존 피드백 창) */
+  openHelp?(): void;
 }
 
 const MIN_CHAT = { confirms: "[data-min=confirms]", lastSendStep: "[data-min=lastSendStep]", masterHealth: "[data-min=masterHealth]", errors: "[data-min=errors]", switcher: "shared" } as const;
@@ -61,6 +65,10 @@ export function bootViews(deps: BootDeps): { core: ChatCore; registry: Registry<
     },
     goView: (id) => void booted?.registry.choose(id),
     defaultSlug: async () => String(await deps.invoke("default_socket_slug")),
+    listenApp: (name, handler) => (window as unknown as { __TAURI__: { event: { listen(n: string, h: (e: { payload: unknown }) => void): Promise<() => void> } } }).__TAURI__.event.listen(name, handler),
+    focusSeat: (sid) => deps.focusSeat?.(sid),
+    openHelp: () => deps.openHelp?.(),
+    workHint: (text) => paintWorkHint(switchHost, text, () => void booted?.registry.choose("chat")),
   });
   const views: ViewDescriptor<ChatState, ChatCore>[] = [
     {
@@ -110,6 +118,38 @@ export function bootViews(deps: BootDeps): { core: ChatCore; registry: Registry<
   paintSwitch(switchHost, registry);
   void registry.start(first);
   return booted;
+}
+
+/** (조각 5 · §6-3) 작업 화면 위 관문 안내 1줄 + 「대화 화면으로」 · 닫기. text=null 이면 숨김. 대화 화면으로 가면 닫힌다. textContent 만. */
+function paintWorkHint(host: HTMLElement, text: string | null, backToChat: () => void): void {
+  let h = host.querySelector<HTMLElement>(".vs-hint");
+  if (!h) {
+    h = document.createElement("div");
+    h.className = "vs-hint";
+    h.setAttribute("role", "status");
+    host.append(h);
+  }
+  h.replaceChildren();
+  if (text === null) {
+    h.hidden = true;
+    return;
+  }
+  const t = document.createElement("span");
+  t.textContent = text;
+  const back = document.createElement("button");
+  back.type = "button";
+  back.textContent = "대화 화면으로";
+  const close = document.createElement("button");
+  close.type = "button";
+  close.textContent = "닫기";
+  const hide = () => paintWorkHint(host, null, backToChat);
+  back.addEventListener("click", () => {
+    hide();
+    backToChat();
+  });
+  close.addEventListener("click", hide);
+  h.append(t, back, close);
+  h.hidden = false;
 }
 
 /** 전환 단추 「대화 화면 | 작업 화면」 + 띠 1줄(물러남·쓸 수 없음 까닭). textContent 만. */

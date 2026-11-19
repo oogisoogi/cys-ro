@@ -14,6 +14,7 @@ import { approvalSeatsOf, masterRowOf, sendGate, type GateVerdict, type MasterRo
 import { applyRecords, applyRefusedAtWrite, canRetry, mergeOutcome, READ_AFTER_MS, rematchPending, SENDING_SILENT_MS, settleSteps, SLOW_MS, stepFromOutcome, type Msg, type PendingRec, type Rec, type Reply, type Step } from "./judge/msgstep";
 import { applyQueueEvent, autoHoldRemainingMs, queueEventOf, type AutoMsg } from "./judge/autostep";
 import { ConfirmBook } from "./confirm";
+import { ReviveBook } from "./revive";
 
 export const HOLD_KEY = "cys-chat-hold";
 /** 붙잡은 말 상한(설계 §5-3 · 넘으면 새 말을 받지 않고 안내). */
@@ -106,6 +107,12 @@ export interface Deps {
   goView?(id: string): void;
   /** (조각 4 · 검증 F1) 본부 데몬 socket_slug(Tauri default_socket_slug) — 사건의 slug 대조용 · 대화 화면이 켜질 때 1회. */
   defaultSlug?(): Promise<string>;
+  /** (조각 5) 작업 화면에서 그 좌석 창에 포커스(main.ts jumpToSurface) · 작업 화면 위 안내 띠 · 도움 요청 창(기존 피드백 창). */
+  focusSeat?(sid: number): void;
+  workHint?(text: string | null): void;
+  openHelp?(): void;
+  /** (조각 5) Tauri 앱 사건 구독(boot-degraded · restore-progress) — 대화 화면 attach~detach 동안만 · 없으면 그 사건 없이. */
+  listenApp?(name: string, handler: (e: { payload: unknown }) => void): Promise<() => void>;
 }
 
 export type Health = "unknown" | "none" | "off" | "gate" | "busy" | "ready";
@@ -187,10 +194,32 @@ export class ChatCore {
   readonly confirm: ConfirmBook;
   /** (조각 4 · 통합 1116) 장부용 사건 구독 해제 — 조각 3 구독(unlisten)과 따로 든다(두 구독 모두 대화 화면 attach~detach 동안만). */
   private unlistenConfirm: (() => void) | null = null;
+  /** (조각 5) 멈춤·깨우기·다시 켜기 장부. */
+  readonly revive: ReviveBook;
+  /** (조각 5) 앱 사건(boot-degraded · restore-progress) 구독 해제 — 대화 화면 attach~detach 동안만. */
+  private unlistenApp: Array<() => void> = [];
+  /** (조각 5 · S1-5) 이 화면이 마스터 좌석에 낸 마지막 원자 제출의 사람 입력 차례(데몬 응답 human_input_seq). */
+  private ownHuman: { seat: number; seq: number } | null = null;
 
   constructor(private readonly d: Deps) {
     this.loadHold();
     this.confirm = new ConfirmBook({ invoke: d.invoke, now: d.now, store: d.store }, () => this.set({}));
+    this.revive = new ReviveBook({
+      invoke: d.invoke,
+      now: d.now,
+      setTimeout: d.setTimeout,
+      clearTimeout: d.clearTimeout,
+      store: d.store,
+      working: d.working,
+      trackAuto: (id, seat) => this.trackAuto(id, seat),
+      holdRemainingMs: () => this.autoHoldRemainingMs(),
+      goView: (id) => this.d.goView?.(id),
+      focusSeat: (sid) => this.d.focusSeat?.(sid),
+      workHint: (t) => this.d.workHint?.(t),
+      openHelp: () => this.d.openHelp?.(),
+      changed: () => this.set({}),
+      pollSoon: () => void this.poll(),
+    });
   }
 
   get state(): ChatState {
@@ -229,6 +258,23 @@ export class ChatCore {
         .catch(() => {});
     void this.readTranscript();
     void this.startListening();
+    void this.startAppListening();
+  }
+
+  /** (조각 5) 앱 사건 — boot-degraded(팀 준비 덜 됨) · restore-progress(복원 중 다시 켜기 잠금). */
+  private async startAppListening(): Promise<void> {
+    const listen = this.d.listenApp;
+    if (!listen || this.unlistenApp.length) return;
+    const gen = this.listenGen;
+    for (const name of ["boot-degraded", "restore-progress"]) {
+      try {
+        const un = await listen(name, (e) => this.revive.onAppEvent(name, e.payload));
+        if (!this.attached || gen !== this.listenGen) un();
+        else this.unlistenApp.push(un);
+      } catch {
+        /* 구독 실패 = 그 사건 없이 */
+      }
+    }
   }
 
   /** 대화 화면이 내려감 — 읽기 예약 해제(공통층 상태·붙잡은 말은 그대로 · §4-3). */
@@ -239,6 +285,13 @@ export class ChatCore {
     for (const h of this.readTimers) this.d.clearTimeout(h);
     this.readTimers.clear();
     this.listenGen++;
+    for (const un of this.unlistenApp.splice(0)) {
+      try {
+        un();
+      } catch {
+        /* 이미 풀림 */
+      }
+    }
     if (this.unlisten) {
       try {
         this.unlisten();
@@ -277,6 +330,7 @@ export class ChatCore {
     const e = raw as { name?: unknown; socket_slug?: unknown; surface_id?: unknown } | null;
     if (!e || typeof e.name !== "string") return;
     if (this.defaultSlug === null || e.socket_slug !== this.defaultSlug) return;
+    this.revive.onEvent(raw); // (조각 5) deadman·idle·released·claim_denied·takeover — 본부 데몬 것만
     if (e.name === "input.refused_at_write") {
       if (typeof e.surface_id !== "number") return;
       // 사건 시각 = 데몬 timestamp(초) — 받은 시각을 쓰면 데몬 재연결 뒤 다시 흘러온 옛 사건이 방금 보낸 말에 붙는다(검토 지적 5).
@@ -421,12 +475,14 @@ export class ChatCore {
   }
 
   private gateOf(f: { master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number }): GateVerdict {
-    return sendGate({ master: f.master, approvalSeats: f.approvals });
+    const own = f.master && this.ownHuman && this.ownHuman.seat === f.master.surface_id ? this.ownHuman.seq : null;
+    return sendGate({ master: f.master, approvalSeats: f.approvals, ownHumanSeq: own });
   }
 
   private applyFresh(f: { master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number; feed?: unknown; org?: unknown }): void {
     const m = f.master;
     this.confirm.observe(f.feed, f.org, m);
+    this.revive.observe(m, f.org); // (조각 5)
     const confirms = f.approvals === null || !m ? (f.approvals === null ? null : 0) : f.approvals.filter((x) => x === m.surface_id).length;
     const working = m ? m.working : null;
     const msgs = settleSteps(this.s.msgs, this.d.now(), working);
@@ -597,8 +653,11 @@ export class ChatCore {
       } finally {
         this.d.clearTimeout(silent);
       }
-      const r = (res ?? {}) as { outcome?: unknown; code?: unknown; message?: unknown };
+      const r = (res ?? {}) as { outcome?: unknown; code?: unknown; message?: unknown; result?: { human_input_seq?: unknown } };
       const step = stepFromOutcome(r.outcome);
+      // (조각 5 · S1-5) 데몬이 찍은 사람 입력 차례 — 다음 말의 30초 쉼을 「내 보내기」면 걸지 않는 짝짓기 열쇠
+      const hseq = r.result?.human_input_seq;
+      if (typeof hseq === "number" && Number.isSafeInteger(hseq) && hseq > 0) this.ownHuman = { seat: m.surface_id, seq: hseq };
       const code = typeof r.code === "string" ? r.code : undefined;
       if (step !== "held" && step !== "failed" && step !== "queued_hold") this.lastHumanSentAt = sentAt; // 바이트가 나갔을 수 있음(R3)
       const cur = this.s.msgs.find((x) => x.id === id);

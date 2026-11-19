@@ -27,7 +27,7 @@ const CODE_WRITE_OUTCOME_UNKNOWN: &str = cys::ERR_WRITE_OUTCOME_UNKNOWN;
 ///   쓰기 인계 = **`try_write` 직접(:8248)** · 넘기는 것 = `WriteReq::Inject{cr_delay_ms:400, clear_first:true, guard:None}`(:3773~3785).
 /// - 그래서 응답 `sent:true` 는 「썼다」가 아니라 **「writer 줄에 넣었다」**(:8248 뒤 :8370) — 바이트는 그 뒤 ≈0.74초에 걸쳐 나간다(VM 증거:
 ///   응답 2.95ms · 쓰기 737.8ms). writer 단계에서 생긴 일은 호출자에게 돌아오지 않는다 → 화면은 `written` 을 「전달 확인 중」으로만 칠한다.
-/// - 그 자리 오류 = `try_write`(:386~402) 의 `write_stalled`·`write_failed` 둘뿐(목록 밖 → `uncertain`).
+/// - 그 자리 오류 = `try_write`(:386~402) 의 `write_stalled`·`write_failed` 둘뿐 — (조각 5 · S1-8) 둘 다 쓰기 줄에 넣지 못함(바이트 0)이라 목록에 넣었다(→ `failed`).
 /// - 아래 목록 가운데 이 요청 꼴에서 **닿지 않는** 것(죽은 갈래 · 다른 요청 꼴 대비로 둠): `invalid_params` :8112(에이전트 작업 길) ·
 ///   `journal_unavailable` :8303(에이전트 작업 길) · `typing_guard` :7878(사람 아닌 쓰기). 분류의 `write_outcome_unknown` · `queued_hold`(정비 보류
 ///   :7608 `if !human` 전용)도 같다.
@@ -41,6 +41,11 @@ const PRE_WRITE_REFUSALS: &[&str] = &[
     cys::ERR_TYPING_GUARD,        // :7957~7962·:8207~8218 초안 게이트(draft_gate_denied_response :2983 → 이 코드 · 토큰을 못 읽은 좌석 안 앱일 때만 :7911~7912) · (:7878 = 사람 아닌 쓰기)
     cys::ERR_JOURNAL_UNAVAILABLE, // (:8303 에이전트 작업 길 · 이 요청 꼴은 안 닿음) 「zero bytes written … nothing was typed」(:4704~4706)
     "no_agent",                // (1.1.16 · cysr-1116-integ-1118) 빈 셸 좌석 — 사람 표지 + refuse_on_approval 요청은 cysd `surface.send_text` 빈 셸 가드 앞 갈래가 타이핑 0 · 큐 0 으로 거절(이 요청 꼴은 큐 보류 갈래 `!human` 에 안 닿음)
+    // (1.1.16 · TICKET=cysr-1116-s5-1119 · 통합 📌 S1-8 · master 판단 = 옮김) `try_write`(handlers.rs) 의 두 오류 = 쓰기 줄(`write_tx.try_send`)에
+    //   요청을 **넣지 못함** — 채널이 가득(Full) · 닫힘(Disconnected). 넣지 못한 요청은 writer 가 볼 수 없으므로 바이트 0 이 구조로 보장된다
+    //   (넣은 뒤의 결과는 이 응답에 오지 않는다 · `sent:true` 가 「넣었다」). 그래서 「확인 중」이 아니라 「못 보냄 + 다시 보내기」.
+    "write_stalled",
+    "write_failed",
 ];
 /// 세션 기록 한 번에 읽는 상한(바이트) — 넘으면 다음 호출이 `next_offset` 부터 잇는다(잘림 없음 · 레코드 경계까지만 소비).
 pub(crate) const TRANSCRIPT_READ_MAX: u64 = 2 * 1024 * 1024;
@@ -109,16 +114,65 @@ pub(crate) fn classify_send(r: Result<Value, (TransportClass, String)>) -> Value
     }
 }
 
-/// `chat_send` — 대화 화면 사람 말. `kind` 는 `"human"` 만 받는다(기계 문안 `"auto"` = 큐 경로는 조각 5·8 몫 · 지금은 거부).
+/// (조각 5 · §6-1) 기계 문안(깨움 말) 매개변수(순수) — 데몬 큐(`queued:true`) · `machine_origin:true` · `human:false`.
+/// 원작자 `send_input` 의 UI 조립 문안 규칙과 같다: `owner_token`(ACL 등급) 만 붙이고 `operator_token`(원장 무기록 = 오너 임무 근거)은 **붙이지 않는다** —
+/// 깨움 말은 사람 말이 아니므로 원장에 남아야 한다(임무 아님 · §2-8 ㉩). `clear_first` 없음(큐 배달자가 입력줄 빈칸·조용함을 기다린다).
+pub(crate) fn auto_send_params(surface_id: u64, text: &str, tok: Option<&str>) -> Value {
+    let mut p = json!({
+        "surface_id": surface_id,
+        "text": text,
+        "quiet": true,
+        "human": false,
+        "queued": true,
+        "clear_first": false,
+        "machine_origin": true,
+    });
+    if let Some(t) = tok {
+        p["owner_token"] = json!(t);
+    }
+    p
+}
+
+/// 큐 적재 응답(분류 보존) → 화면 결과(순수). `queued` = 데몬이 큐 항목 번호를 줌(그 뒤 단계는 큐 사건으로만) ·
+/// `failed` = 전송 전 끊김 · 데몬 거부(큐에 안 들어감 — 오류 응답은 적재 전 거부다) · `uncertain` = 전송 뒤 끊김·꼴 이상·번호 없음.
+pub(crate) fn classify_auto(r: Result<Value, (TransportClass, String)>) -> Value {
+    match r {
+        Err((TransportClass::Definite, e)) => json!({"outcome": "failed", "code": "transport_definite", "message": e}),
+        Err((TransportClass::Uncertain, e)) => json!({"outcome": "uncertain", "code": "transport_uncertain", "message": e}),
+        Ok(resp) => match resp["ok"].as_bool() {
+            Some(true) => match resp["result"]["queue_entry_id"].as_str() {
+                Some(qid) if resp["result"]["queued"].as_bool() == Some(true) && !qid.is_empty() => {
+                    json!({"outcome": "queued", "queue_entry_id": qid, "result": resp["result"].clone()})
+                }
+                _ => json!({"outcome": "uncertain", "code": "no_queue_entry_id", "result": resp["result"].clone()}),
+            },
+            Some(false) => json!({
+                "outcome": "failed",
+                "code": resp["error"]["code"].as_str().unwrap_or(""),
+                "message": resp["error"]["message"].as_str().unwrap_or("unknown error"),
+            }),
+            None => json!({"outcome": "uncertain", "code": "malformed_response"}),
+        },
+    }
+}
+
+/// `chat_send` — 대화 화면 말. `kind:"human"` = 사람 말 원자 제출 · `kind:"auto"` = 기계 문안(조각 5 깨움 말 · 데몬 큐 · 원장 기록).
 #[tauri::command]
 pub async fn chat_send(socket: Option<String>, surface_id: u64, text: String, kind: String) -> Result<Value, String> {
-    if kind != "human" {
-        return Err(format!("unsupported_kind: {kind}"));
-    }
     let sock = resolve_socket(&socket);
-    let tok = read_operator_token_for(&sock);
-    let params = human_send_params(surface_id, &text, tok.as_deref());
-    Ok(classify_send(rpc_full_classified(&sock, "surface.send_text", params).await))
+    match kind.as_str() {
+        "human" => {
+            let tok = read_operator_token_for(&sock);
+            let params = human_send_params(surface_id, &text, tok.as_deref());
+            Ok(classify_send(rpc_full_classified(&sock, "surface.send_text", params).await))
+        }
+        "auto" => {
+            let tok = read_operator_token_for(&sock);
+            let params = auto_send_params(surface_id, &text, tok.as_deref());
+            Ok(classify_auto(rpc_full_classified(&sock, "surface.send_text", params).await))
+        }
+        _ => Err(format!("unsupported_kind: {kind}")),
+    }
 }
 
 /// (조각 4 · codex 1R major 5 · blocking) `feed.reply` 매개변수(순수). `screen_fingerprint` = 화면이 펼쳐 본 판의 데몬 지문(있을 때만 싣는다 —
@@ -519,11 +573,45 @@ mod tests {
         assert_eq!(err("typing_guard")["outcome"], "failed");
         // (1.1.16 · cysr-1116-integ-1118 · master#f7e14a93) 빈 셸 좌석 = 사람 표지 + refuse_on_approval 요청은 쓰기 0 · 큐 0(cysd eca3b956) → 못 보냄 + 다시 보내기
         assert_eq!(err("no_agent")["outcome"], "failed");
+        // (조각 5 · S1-8) 쓰기 줄에 넣지 못함 = 바이트 0 → 못 보냄 + 다시 보내기
+        assert_eq!(err("write_stalled")["outcome"], "failed");
+        assert_eq!(err("write_failed")["outcome"], "failed");
         assert_eq!(err("")["outcome"], "uncertain", "코드 없음 = 쓰기 0 근거 아님");
         assert_eq!(err("something_new")["outcome"], "uncertain");
         assert_eq!(classify_send(Ok(json!({})))["outcome"], "uncertain", "ok 칸 없음");
         assert_eq!(classify_send(Err((TransportClass::Definite, "x".into())))["outcome"], "failed");
         assert_eq!(classify_send(Err((TransportClass::Uncertain, "x".into())))["outcome"], "uncertain");
+    }
+
+    /// (조각 5 · §6-1) 깨움 말 = 큐 · 기계 표지 · 사람 표지 0 · operator_token(원장 무기록) 0 · owner_token(ACL) 만.
+    #[test]
+    fn auto_params_are_queued_machine_text_without_operator_token() {
+        let p = auto_send_params(7, "[깨우기] x", Some("TOK"));
+        assert_eq!(p["queued"], true);
+        assert_eq!(p["machine_origin"], true);
+        assert_eq!(p["human"], false);
+        assert_eq!(p["clear_first"], false);
+        assert_eq!(p["surface_id"], 7);
+        assert!(p.get("operator_token").is_none(), "깨움 말이 오너 임무(원장 무기록)가 되면 안 된다");
+        assert!(p.get("refuse_on_approval").is_none());
+        assert_eq!(p["owner_token"], "TOK");
+        assert!(auto_send_params(7, "x", None).get("owner_token").is_none());
+    }
+
+    /// (조각 5) 큐 적재 응답 → queued(번호) · failed(거부·전송 전) · uncertain(번호 없음·꼴 이상·전송 뒤 끊김).
+    #[test]
+    fn classify_auto_needs_a_queue_entry_id() {
+        let ok = |r: Value| classify_auto(Ok(json!({"ok": true, "result": r})));
+        let q = ok(json!({"surface_id": 1, "queued": true, "depth": 1, "queue_entry_id": "q-9"}));
+        assert_eq!(q["outcome"], "queued");
+        assert_eq!(q["queue_entry_id"], "q-9");
+        assert_eq!(ok(json!({"queued": true, "depth": 1}))["outcome"], "uncertain");
+        assert_eq!(ok(json!({"queued": true, "queue_entry_id": ""}))["outcome"], "uncertain");
+        assert_eq!(ok(json!({"queued": false, "queue_entry_id": "q"}))["outcome"], "uncertain");
+        assert_eq!(classify_auto(Ok(json!({"ok": false, "error": {"code": "queue_full", "message": "m"}})))["outcome"], "failed");
+        assert_eq!(classify_auto(Ok(json!({})))["outcome"], "uncertain");
+        assert_eq!(classify_auto(Err((TransportClass::Definite, "x".into())))["outcome"], "failed");
+        assert_eq!(classify_auto(Err((TransportClass::Uncertain, "x".into())))["outcome"], "uncertain");
     }
 
     #[test]

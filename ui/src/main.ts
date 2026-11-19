@@ -3883,12 +3883,16 @@ async function ensureSeatRuntimes(othersBudget: number): Promise<void> {
   if (ensuringRuntimes || !workRuntimeWanted() || deferredRuntimes.size === 0) return;
   ensuringRuntimes = true;
   let visibleMade = 0;
+  const madeKeys = new Set<string>(); // 이번에 런타임을 만든 좌석(포커스 다시 주기 판정용)
   try {
     const cw = current();
     const vis = new Set((cw ? collectSids(wsViewTree(cw)) : []).map((sid) => paneKey(sid, cw?.socket)));
     for (const k of [...deferredRuntimes.keys()].filter((k) => vis.has(k))) {
       if (!workRuntimeWanted()) break;
-      if (await ensureSeatRuntime(k)) visibleMade++;
+      if (await ensureSeatRuntime(k)) {
+        visibleMade++;
+        madeKeys.add(k);
+      }
     }
     let budget = othersBudget;
     for (const k of [...deferredRuntimes.keys()]) {
@@ -3905,6 +3909,8 @@ async function ensureSeatRuntimes(othersBudget: number): Promise<void> {
     const cw2 = current();
     const aSids = collectSids(cw2 ? wsViewTree(cw2) : null); // (codex 2R minor) 보이는 보기 트리의 첫 좌석(묶음 탭·확대로 숨은 좌석 제외)
     if (aSids.length && (focusedSid == null || !aSids.includes(focusedSid))) setFocus(aSids[0]);
+    // (독립 검증 F1) 시작 복원 끝 setFocus 가 런타임 없던 좌석에 불려 번호만 잡힌 경우 — 그 좌석 런타임을 방금 만들었으면 다시 준다(표시·키보드 포커스)
+    else if (focusedSid != null && madeKeys.has(paneKey(focusedSid, cw2?.socket))) setFocus(focusedSid);
   }
 }
 

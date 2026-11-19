@@ -547,3 +547,40 @@ describe("F-01 wire cross-pin — daemon display_activity keys and enums == UI p
     expect(p.kind).toBe("observation");
   });
 });
+
+// ── (cysr-1116-s2 · 독립 검증 F2 · codex 1R B1) 자리표 닫기 직전 재판정 — 실제 refreshPaneTitles 본문 행동 시험 ──────────────────
+describe("(cysr-1116-s2) 자리표 회수 — 앞 자리 closePane 을 기다리는 사이 뒤 자리에 출력이 생기면 닫지 않는다", () => {
+  const scene = (outputDuringClose: boolean) => {
+    const h = harness();
+    const ws = h.workspaces[0] as { tree: unknown };
+    ws.tree = { type: "split", dir: "row", ratio: 0.5, a: { type: "split", dir: "col", ratio: 0.5, a: { type: "pane", sid: 1 }, b: { type: "pane", sid: 2 } }, b: { type: "pane", sid: 9 } };
+    const lines = new Map<number, number>([[1, 1], [2, 1]]);
+    for (const sid of [1, 2]) (h.rt(sid, "/a.sock") as unknown as { term: { sid: number } }).term = { sid };
+    h.panes.set("/a.sock#9", { ...h.rt(1, "/a.sock"), sid: 9 } as never);
+    const closed: number[] = [];
+    Object.assign(h.scope, {
+      IS_WINDOWS: false,
+      placeholderSids: new Set([1, 2]),
+      touchedPlaceholders: new Set<number>(),
+      placeholderScreenLines: (term?: { sid: number }) => (term ? lines.get(term.sid) ?? null : null),
+      closePane: async (sid: number) => {
+        closed.push(sid);
+        if (outputDuringClose && sid === 1) lines.set(2, 12); // 앞 자리를 닫는 사이 뒤 자리 화면에 프롬프트 밖 출력
+      },
+    });
+    h.reply("/a.sock", [{ ...h.row(1, "x"), role: null }, { ...h.row(2, "x"), role: null }, h.row(9, "master")]);
+    h.reply("/b.sock", [h.row(3, "cso")]);
+    return { h, closed };
+  };
+  it("대조군: 출력이 안 생기면 두 자리 모두 닫는다", async () => {
+    const { h, closed } = scene(false);
+    await h.tick();
+    expect(closed).toEqual([1, 2]);
+  });
+  it("앞 자리 닫기를 기다리는 사이 뒤 자리에 출력 → 뒤 자리는 닫지 않고 장부에 남긴다(다음 틱 재판정)", async () => {
+    const { h, closed } = scene(true);
+    await h.tick();
+    expect(closed).toEqual([1]);
+    expect([...(h.scope.placeholderSids as Set<number>)]).toEqual([2]);
+  });
+});

@@ -18,7 +18,7 @@ function fnText(name: string): string {
   const a = (m as RegExpExecArray).index;
   return SRC.slice(a, SRC.indexOf("\n}\n", a) + 2);
 }
-const NAMES = ["collectSids", "seatAttached", "seatInModel", "deferSeatRuntime", "ensureSeatRuntime", "destroyPaneRuntime", "retryFailedRuntimes", "writeSeatHistory"];
+const NAMES = ["collectSids", "seatAttached", "seatInModel", "deferSeatRuntime", "ensureSeatRuntime", "destroyPaneRuntime", "retryFailedRuntimes", "writeSeatHistory", "ensureSeatRuntimes"];
 
 function harness(opts: { fail?: number; history?: string } = {}) {
   const paneKey = (sid: number, socket?: string): string => `${socket ?? ""}#${sid}`;
@@ -36,9 +36,18 @@ function harness(opts: { fail?: number; history?: string } = {}) {
   const writes: string[] = [];
   const invokes: [string, Record<string, unknown>][] = [];
   const view = { work: true };
+  const focusCalls: number[] = [];
   const deps: Record<string, unknown> = {
     PANE_STREAM_UNWANTED: "pane_stream_unwanted", DEFERRED_TOTAL_MAX: 9, SEAT_HISTORY_MAX: 5000, T_LIST: 8000,
     workRuntimeWanted: () => view.work,
+    ensuringRuntimes: false, focusedSid: null as number | null, renders: 0,
+    current: () => workspaces[0],
+    wsViewTree: (w: { tree: unknown; view?: unknown }) => w.view ?? w.tree, // 묶음 탭·확대 = 보기 트리(시험이 view 로 준다)
+    render: () => void (scope.renders = (scope.renders as number) + 1),
+    setFocus: (sid: number) => {
+      focusCalls.push(sid);
+      scope.focusedSid = sid;
+    },
     rpcT: (p: Promise<unknown>) => p,
     invoke: async (cmd: string, a: Record<string, unknown>) => {
       invokes.push([cmd, a]);
@@ -72,7 +81,7 @@ function harness(opts: { fail?: number; history?: string } = {}) {
   const tick = async () => {
     for (let i = 0; i < 5; i++) await Promise.resolve();
   };
-  return { fns, panes, workspaces, made, disposed, roleDots, ledger, go, tick, streams, writes, invokes, view };
+  return { fns, panes, workspaces, made, disposed, roleDots, ledger, go, tick, streams, writes, invokes, view, focusCalls, scope };
 }
 
 describe("(codex 2R) 붙기 직전 재판정 · 실행 전체 상한 · 붙기 전 기록", () => {
@@ -133,6 +142,43 @@ describe("(codex 2R) 붙기 직전 재판정 · 실행 전체 상한 · 붙기 �
     expect(await p).toBe(true);
     expect(h.invokes).toEqual([]);
     expect(h.writes).toEqual([]);
+  });
+});
+
+describe("(독립 검증 F1 · codex 2R minor) 첫 진입 포커스", () => {
+  const pump = async (h: ReturnType<typeof harness>) => {
+    const p = h.fns.ensureSeatRuntimes(0);
+    for (let i = 0; i < 5; i++) {
+      await h.tick();
+      h.go();
+    }
+    await p;
+  };
+  it("F1: 시작 복원이 런타임 없던 좌석에 포커스 번호만 잡아 둔 경우 — 그 좌석 런타임을 만든 뒤 다시 setFocus", async () => {
+    const h = harness();
+    h.fns.deferSeatRuntime(5, undefined, "t", null);
+    h.scope.focusedSid = 5; // start() 끝 setFocus(first) 가 남긴 번호(그때는 런타임 없음 → 표시·키보드 포커스 0)
+    await pump(h);
+    expect(h.panes.has("#5")).toBe(true);
+    expect(h.focusCalls).toEqual([5]);
+    expect(h.scope.renders).toBe(1);
+  });
+  it("포커스 없음 + 묶음 탭으로 숨은 좌석이 트리 첫째 → 보이는 보기 트리 첫 좌석", async () => {
+    const h = harness();
+    (h.workspaces[0] as { tree: unknown; view?: unknown }).tree = { type: "split", dir: "row", ratio: 0.5, a: { type: "pane", sid: 6 }, b: { type: "pane", sid: 5 } };
+    (h.workspaces[0] as { view?: unknown }).view = { type: "pane", sid: 5 };
+    h.fns.deferSeatRuntime(5, undefined, "t", null);
+    await pump(h);
+    expect(h.focusCalls).toEqual([5]);
+  });
+  it("이미 런타임 있던 좌석에 포커스가 있으면 건드리지 않는다(탈취 0)", async () => {
+    const h = harness();
+    (h.workspaces[0] as { tree: unknown }).tree = { type: "split", dir: "row", ratio: 0.5, a: { type: "pane", sid: 4 }, b: { type: "pane", sid: 5 } };
+    h.panes.set("#4", { sid: 4, disposed: false, observer: { disconnect() {} }, unlisten: [], term: { dispose() {} }, el: { remove() {} } });
+    h.scope.focusedSid = 4;
+    h.fns.deferSeatRuntime(5, undefined, "t", null);
+    await pump(h);
+    expect(h.focusCalls).toEqual([]);
   });
 });
 

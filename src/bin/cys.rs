@@ -56969,7 +56969,39 @@ mod b360_tests {
         path.push(":");
         path.push(std::env::var_os("PATH").unwrap_or_default());
         envs.push(("PATH", path));
+        p1_lease_knob(&mut envs);
         envs
+    }
+
+    thread_local! {
+        /// 이 시험 스레드가 대화 임대(seatkeep-t1)를 켠 채 자식을 띄우는가 — 기본 거짓.
+        static P1_LEASE_ON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// ★1.1.16 편입(skt1): 조각 1 시험의 가짜 데몬은 저장 핀 판정만 답한다(`system.identify`·`surface.list` 는 빈 값) — 대화 임대(기본 켬)는
+    ///   그 데몬에서 「판정 불가(daemon:unreachable)」로 멈춘다. 핀 판정을 재는 시험은 노브를 끄고, 임대와의 겹침은
+    ///   `p1_lease_on_with_an_unanswering_daemon_holds_without_a_new_seat`(이 하네스) · 실 cysd e2e(tests/session_lease_e2e.rs)가 잰다.
+    fn p1_lease_knob(envs: &mut Vec<(&'static str, std::ffi::OsString)>) {
+        let on = P1_LEASE_ON.with(|c| c.get());
+        envs.push(("CYS_SESSION_LEASE", std::ffi::OsString::from(if on { "on" } else { "off" })));
+    }
+
+    /// skt1: 대화 임대 켬 + 임대 판정 조회에 답하지 않는 데몬 — 좌석 없는 boot 의 저장 핀 기동은 새 좌석·새 대화 없이 보류(resume_held ·
+    ///   치명 실패 0 · boot rc 0)다. 조각 1 의 「못 이으면 멈춤 · 파괴 회수로 올리지 않음」 계약을 임대 거절도 지킨다.
+    #[cfg(unix)]
+    #[test]
+    fn p1_lease_on_with_an_unanswering_daemon_holds_without_a_new_seat() {
+        let w = P1World::new();
+        P1_LEASE_ON.with(|c| c.set(true));
+        let (rc, report, text, calls) = p1_boot(&w, w.topology(json!([w.pin()])), None);
+        P1_LEASE_ON.with(|c| c.set(false));
+        let worker = r2c_role(&report, "worker");
+        assert_eq!(worker["outcome"], "resume_held", "{worker}\n{text}");
+        assert_eq!(r2c_count(&calls, "surface.create"), 0, "임대 판정 불가인데 새 좌석을 만들었다");
+        assert_eq!(report["summary"]["fatal_failed"], 0, "치명 실패로 셌다");
+        // 사유 낱말은 부하·순서에 따라 다를 수 있다(daemon:unreachable · lease:lock:timeout …) — 불변식 = 임대 거절 줄 + 비파괴 보류.
+        assert!(text.contains("작성자 생존 판정 불가("), "임대 거절 사유 줄이 없다:\n{text}");
+        assert_eq!(rc, 0, "{text}");
     }
 
     #[cfg(unix)]
@@ -57169,6 +57201,7 @@ mod b360_tests {
         path.push(":");
         path.push(std::env::var_os("PATH").unwrap_or_default());
         envs.push(("PATH", path));
+        p1_lease_knob(&mut envs);
         let (rc, out, err) = r2c_child("resume-saved", &daemon, &envs);
         (rc, format!("{out}\n{err}"), daemon.calls())
     }
@@ -57298,6 +57331,7 @@ mod b360_tests {
         });
         let mut envs = w.pack.envs();
         envs.push(("CYS_B360_CLI_ARGS", std::ffi::OsString::from(argv.to_string())));
+        p1_lease_knob(&mut envs);
         let (rc, out, err) = r2c_child("cli", &daemon, &envs);
         (rc, format!("{out}\n{err}"), daemon.calls())
     }

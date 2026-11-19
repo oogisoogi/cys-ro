@@ -99,6 +99,14 @@ const STOP = "\\s`'\"<>()\\[\\]{}「」『』《》“”‘’|*";
 const CAND = new RegExp(`(?:~[\\\\/]|[A-Za-z]:[\\\\/]|/)[^${STOP}]+`, "g");
 /** 끝에 붙은 문장 부호(경로 일부가 아님) */
 const TAIL = /[.,;:!?。、，：；…~]+$/;
+/** 확장자 바로 뒤에 붙은 한글 조사·어미(「…/a.html에」·「…/주보.pdf를」) — 확장자가 앞에 있을 때만 깎는다(폴더 이름 「교회에」는 못 가림 · 그대로 둠) */
+const HANGUL_TAIL = /^(.*\.[A-Za-z0-9]{1,8})[가-힣]+$/;
+
+/** 「열기」가 곧 프로그램 실행인 꾸러미(맥 .app 등은 폴더라 Tauri open_path 의 실행형 파일 검사를 지나간다) — 열기 대신 폴더 보기만. 이름만 본다(폴더 여부 모름이어도 막음). */
+const LAUNCH_BUNDLE = /\.(app|appex|prefpane|action|workflow|saver|qlgenerator|plugin|bundle|kext|xpc|framework|mpkg|pkg|command|tool|terminal)$/i;
+export function launchesProgram(name: string): boolean {
+  return LAUNCH_BUNDLE.test(name);
+}
 
 /** 마스터 답 글 → 홈 아래 경로들(나온 순서 · 겹침 0 · 상한 PATHS_PER_REPLY_MAX). 코드 울타리 안 줄 = 0(명령 예시). */
 export function pathsInText(text: string, home: string): string[] {
@@ -118,7 +126,8 @@ export function pathsInText(text: string, home: string): string[] {
       const at = m.index ?? 0;
       const prev = at > 0 ? raw[at - 1] : "";
       if (prev && /[A-Za-z0-9_.\-:/\\~]/.test(prev)) continue; // 낱말·URL 한가운데(https://… 의 // 등)
-      const p = normPath(m[0].replace(TAIL, ""), home);
+      const cut = m[0].replace(TAIL, "");
+      const p = normPath(HANGUL_TAIL.exec(cut)?.[1] ?? cut, home);
       if (p && !out.includes(p)) out.push(p);
       if (out.length >= PATHS_PER_REPLY_MAX) return out;
     }

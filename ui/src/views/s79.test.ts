@@ -5,6 +5,7 @@ import {
   baseName,
   candidatesOf,
   kindOf,
+  launchesProgram,
   listErrorIsMissing,
   missingPrefix,
   normPath,
@@ -44,6 +45,14 @@ describe("조각 7 — 답 속 경로(홈 아래만)", () => {
   it("코드 울타리 안 줄 = 0(명령 예시) · 울타리 밖은 받음", () => {
     const t = "```bash\nopen /Users/kim/교회/a.html\n```\n결과: /Users/kim/교회/b.html";
     expect(pathsInText(t, H)).toEqual(["/Users/kim/교회/b.html"]);
+  });
+  it("확장자 바로 뒤 한글 조사·어미는 깎음 · 확장자 없는 폴더 이름은 그대로", () => {
+    expect(pathsInText("파일은 /Users/kim/교회/행사안내.html에 있고 /Users/kim/교회/주보.pdf를 고쳤어요", H)).toEqual(["/Users/kim/교회/행사안내.html", "/Users/kim/교회/주보.pdf"]);
+    expect(pathsInText("폴더 /Users/kim/교회자료 를 보세요", H)).toEqual(["/Users/kim/교회자료"]);
+  });
+  it("「열기」가 곧 실행인 꾸러미(.app 등) = 막음 · 문서·그림·폴더는 아님", () => {
+    for (const n of ["Evil.app", "x.APP", "a.pkg", "b.mpkg", "run.command", "p.prefPane", "w.workflow"]) expect(`${n}:${launchesProgram(n)}`).toBe(`${n}:true`);
+    for (const n of ["a.html", "주보.pdf", "out", "app", "a.application.md"]) expect(`${n}:${launchesProgram(n)}`).toBe(`${n}:false`);
   });
   it("URL·낱말 한가운데 슬래시 = 0", () => {
     expect(pathsInText("https://example.invalid/Users/kim/a.html 와 and/or", H)).toEqual([]);
@@ -210,17 +219,28 @@ describe("조각 7 — 장부(대역)", () => {
     expect(t.calls.some((c) => c[0] === "open_path")).toBe(false);
   });
   it("실행형 파일 = Tauri 거절(executable_confirm) → force 로 다시 부르지 않음 + 폴더 보기 안내", async () => {
-    const t = fakeFs({ "/Users/kim/x": [{ name: "run.command", is_dir: false }] });
+    const t = fakeFs({ "/Users/kim/x": [{ name: "run.sh", is_dir: false }] });
     await t.book.start();
-    t.book.onTail([rec("/Users/kim/x/run.command")]);
+    t.book.onTail([rec("/Users/kim/x/run.sh")]);
     await t.book.tick();
     t.state.openErr = "executable_confirm";
-    await t.book.act("/Users/kim/x/run.command", "open");
+    await t.book.act("/Users/kim/x/run.sh", "open");
     const opens = t.calls.filter((c) => c[0] === "open_path");
     expect(opens.length).toBe(1);
-    expect(opens[0][1]).toEqual({ path: "/Users/kim/x/run.command" }); // force 칸 없음
+    expect(opens[0][1]).toEqual({ path: "/Users/kim/x/run.sh" }); // force 칸 없음
     expect(t.book.notice).toBe(MSG_EXEC);
     expect(t.book.items[0].seen).toBe(false);
+  });
+  it("마스터 글 속 .app 꾸러미 = 열기 호출 0 + 안내 · 폴더 보기는 됨", async () => {
+    const t = fakeFs({ "/Users/kim/Downloads": [{ name: "Evil.app", is_dir: true }] });
+    await t.book.start();
+    t.book.onTail([rec("받은 앱: /Users/kim/Downloads/Evil.app")]);
+    await t.book.tick();
+    await t.book.act("/Users/kim/Downloads/Evil.app", "open");
+    expect(t.calls.some((c) => c[0] === "open_path")).toBe(false);
+    expect(t.book.notice).toBe(MSG_EXEC);
+    await t.book.act("/Users/kim/Downloads/Evil.app", "reveal");
+    expect(t.calls.filter((c) => c[0] === "reveal_path").length).toBe(1);
   });
   it("skill.run_finished — 본부 slug 만 · 부서 slug·slug 모름 = 버림 · 확인 전에도 카드(확인 중)", async () => {
     const t = fakeFs({ "/Users/kim/runs": [{ name: "r1", is_dir: true }] });
@@ -305,8 +325,9 @@ describe("조각 9 — 공통층: 대화 화면을 안 켰으면 작업 화면 �
     await sim.advance(100);
     expect(sim.core.state.msgs[0].step).toBe("held");
     expect(sim.sends()).toBe(0);
-    sim.core.detach(); // 대화 화면 내림
+    // registry 순서 그대로: 새 화면(작업)을 먼저 띄우고 → 옛 화면(대화)을 내린다
     expect(sim.core.watchStart()).toBe(true); // 작업 화면 띠가 살핌
+    sim.core.detach(); // 대화 화면 내림 — 살피는 중이면 구독·세션 읽기를 끄지 않는다
     sim.approvals = [];
     await sim.advance(20_000);
     for (let i = 0; i < 5; i++) {
@@ -315,8 +336,14 @@ describe("조각 9 — 공통층: 대화 화면을 안 켰으면 작업 화면 �
     }
     expect(sim.sends()).toBe(0); // ★살피는 중엔 붙잡은 말을 보내지 않음(사람이 마스터 창에 칠 수 있음)
     expect(sim.calls.some((c) => c.cmd === "org_status")).toBe(true); // 띠 자료는 계속 받음
+    // ★작업 화면에 있는 동안 마스터가 새로 물음 → 세션 읽기가 살아 있어 띠 자료에 들어온다(대화 화면 내림이 구독을 끄지 않음)
+    sim.file.push({ uuid: "ask-w", parent: null, role: "assistant", text: "⟪확인 요청: 작업 화면에서 본 물음⟫", ts: null });
+    await sim.core.readTranscript();
+    await sim.advance(100);
+    const qs = sim.core.confirm.band().items.filter((i) => i.kind === "ask");
+    expect(qs.length).toBe(1);
+    sim.core.attach(); // 대화 화면 다시(registry = 새 화면을 먼저 띄운 뒤 옛 화면을 내림)
     sim.core.watchStop();
-    sim.core.attach(); // 대화 화면 다시
     await sim.core.poll();
     await sim.advance(100);
     expect(sim.sends()).toBe(1);

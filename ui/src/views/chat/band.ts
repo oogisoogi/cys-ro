@@ -142,13 +142,14 @@ export function createBand(act: ChatCore, ui: BandUi): BandHandle {
     const decide = (dec: "allow" | "deny") => (e: MouseEvent) => {
       if (!e.isTrusted) return; // 사람이 실제로 누른 클릭만(NFR-S5 ①② · 대본 클릭 무시 · 안내도 없음)
       if (act.confirm.busy) return;
-      if (swapped(it.key)) return; // (s79 · F10) 보던 것과 다른 요청에 들어가는 누름 = 처리 0
       const r = allowReady(it, expanded.has(it.key), dec);
       if (!r.ok) {
         localNote = r.msg;
         paint();
         return;
       }
+      // (s79 · F10) 보던 것과 다른 요청이 저절로 와 2초가 안 됐으면 처리 0 — 허락은 펼침(의도된 누름)이 먼저라 사실상 거절에 걸림
+      if (swapped(it.key)) return;
       localNote = null;
       void act.confirm.decide(bound, dec);
     };
@@ -164,6 +165,7 @@ export function createBand(act: ChatCore, ui: BandUi): BandHandle {
     box.append(el("div", "cvb-text", `도우미가 허락을 기다려요 — ${STALL_TEXT[it.stall]}. 직접 정할 수 있어요.`));
     const open = expanded.has(it.key);
     const tog = button(open ? "접기" : "무엇을 보기", "cvb-what", () => {
+      if (arrived?.key === it.key) arrived = null; // (s79 · F10) 펼침 = 사람이 이 요청을 들여다봄 — 저절로 온 표시를 거둠
       if (expanded.has(it.key)) expanded.delete(it.key);
       else expanded.add(it.key);
       localNote = null;

@@ -13,6 +13,7 @@ E 조각 9: 초안 → 작업 화면 띠 「대화 화면에 쓰다 만 말」 �
   · 작업 화면에서 살피는 중엔 붙잡은 말 쓰기 0 → 대화 화면으로 돌아오면 1
 F F7: 「이 물음은 끝났어요」(진짜 클릭) → 띠 내림 · 보낸 말 0 · 대본 클릭 = 0
 G F10: 보던 물음이 해결돼 다음 물음이 저절로 옴 → 2초 안 「끝났어요」 = 처리 0 + 안내 → 2초 뒤 = 처리
+H F10 거절: 마스터 멈춤 · 보던 도우미 요청이 처리돼 다른 요청이 저절로 옴 → 곧바로 거절 = confirm_reply 0 + 안내 → 2초 뒤 = 그 요청 1건
 실행: CHROME_PATH=<chrome-headless-shell> cys run -- <playwright python3> ui/e2e/s79_gate.py
 """
 import http.server
@@ -25,7 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tickrec_gate import BASE, CWD, SHIM, seat  # noqa: E402
 from chat_gate import CHAT_SHIM, T0  # noqa: E402
-from confirm_gate import CONFIRM_SHIM  # noqa: E402
+from confirm_gate import CONFIRM_SHIM, item_js  # noqa: E402
 
 UI = Path(__file__).resolve().parent.parent
 DIST = Path(os.environ["GATE_DIST"]) if os.environ.get("GATE_DIST") else UI / "dist"
@@ -157,14 +158,22 @@ def main() -> int:
         check(r["cards"][0]["id"] == f"{HOME}/cys-runs/r1" and r["cards"][0]["src"] == "skill" and r["cards"][0]["fresh"], f"본부 skill.run_finished → 폴더 카드(맨 위 · 새 결과) {r['cards'][:1]}")
 
         print("== D 실행형 파일 = force 재호출 0")
-        pg.evaluate(f"() => {{ window.__CHAT.fs['{HOME}/x'] = [{{ name: 'run.command', is_dir: false }}]; window.__CHAT.openErr = 'executable_confirm'; }}")
-        push_reply(pg, "m2", f"실행 파일은 {HOME}/x/run.command 예요")
+        pg.evaluate(f"() => {{ window.__CHAT.fs['{HOME}/x'] = [{{ name: 'run.sh', is_dir: false }}]; window.__CHAT.openErr = 'executable_confirm'; }}")
+        push_reply(pg, "m2", f"실행 파일은 {HOME}/x/run.sh 예요")
         pg.clock.run_for(3_100)
         n0 = pg.evaluate("() => window.__CHAT.opens.length")
-        pg.click(f".cv-results .cvr-card[data-result='{HOME}/x/run.command'] .cvr-open")
+        pg.click(f".cv-results .cvr-card[data-result='{HOME}/x/run.sh'] .cvr-open")
         pg.clock.run_for(200)
         o = pg.evaluate("() => window.__CHAT.opens")
         check(len(o) == n0 + 1 and "force" not in o[-1] and "폴더 보기" in rail(pg)["notice"], f"★실행형 → open_path 1회(force 없음) · 다시 묻지 않음 · 폴더 보기 안내 {o[-1:]} {rail(pg)['notice']}")
+        print("== D2 마스터 글 속 앱 꾸러미(.app = 폴더라 Tauri 실행형 검사 밖) → 열기 호출 0")
+        pg.evaluate(f"() => {{ window.__CHAT.openErr = null; window.__CHAT.fs['{HOME}/Downloads'] = [{{ name: 'Evil.app', is_dir: true }}]; }}")
+        push_reply(pg, "m3", f"받은 앱은 {HOME}/Downloads/Evil.app 이에요")
+        pg.clock.run_for(3_100)
+        n0 = pg.evaluate("() => window.__CHAT.opens.length")
+        pg.click(f".cv-results .cvr-card[data-result='{HOME}/Downloads/Evil.app'] .cvr-open")
+        pg.clock.run_for(200)
+        check(pg.evaluate("() => window.__CHAT.opens.length") == n0 and "열지 않았어요" in rail(pg)["notice"], f"★.app 열기 → open_path 0 · 안내 {rail(pg)['notice']}")
         check(not errs, f"페이지 오류 0 {errs[:2]}")
         ctx.close()
 
@@ -190,6 +199,13 @@ def main() -> int:
         pg.clock.run_for(300)
         foc = pg.evaluate("() => ({ focused: [...document.querySelectorAll('.pane.focused')].map((e) => e.dataset.sid), host: document.getElementById('view-host').hidden })")
         check(foc["focused"] == ["1"] and foc["host"] is True, f"★「마스터 창에서 답하기」 → 마스터 좌석 포커스 · 작업 화면 그대로(대화 화면으로 안 데려감) {foc}")
+        print("== E1 작업 화면에 있는 동안 새 물음 → 띠에 옴(대화 화면 내림이 살핌을 끄지 않음)")
+        pg.evaluate("() => { const C = window.__CHAT; C.file.push({ uuid: 'q9', parent: null, role: 'assistant', text: '⟪확인 해결: 주보를 금요일에 인쇄할까요?⟫\\n⟪확인 요청: 작업 화면에서 새로 온 물음⟫', ts: new Date(Date.now()).toISOString() }); C.master.idle_secs = 0; }")
+        pg.clock.run_for(3_100)
+        pg.evaluate("() => { window.__CHAT.master.idle_secs = 999; }")
+        pg.clock.run_for(6_200)
+        b = wband(pg)
+        check(b["kind"] == "confirm" and "작업 화면에서 새로 온 물음" in b["text"], f"★작업 화면에서 받은 새 물음 = 띠 {b}")
         print("== E2 작업 화면에서 살피는 중엔 붙잡은 말 쓰기 0")
         pg.click("#view-switch button[data-view=chat]")
         pg.clock.run_for(3_200)
@@ -242,6 +258,30 @@ def main() -> int:
         pg.click(".cvb-dismiss")
         pg.clock.run_for(50)
         check(band(pg)["head"] == "", f"2초 뒤 진짜 클릭 → 내림 {band(pg)}")
+        check(not errs, f"페이지 오류 0 {errs[:2]}")
+        ctx.close()
+
+        print("== H F10 거절 — 보던 도우미 요청이 처리돼 다른 요청이 저절로 옴 → 곧바로 거절 = 처리 0")
+        ctx, pg, errs = page()
+        pg.evaluate("() => { window.__CHAT.master.idle_secs = 120; window.__emit('daemon-event', { name: 'master.deadman', category: 'alert', surface_id: 1, socket_slug: 'base', payload: { role: 'master', axis: 'agent_dead' } }); }")
+        pg.evaluate(f"() => {{ window.__CHAT.feedItems = [{item_js('rA', 2, 'ls a', '1763373000', fp=None)}, {item_js('rB', 3, 'rm -rf b', '1763373001', fp=None)}]; }}")
+        pg.clock.run_for(3_100)
+        check(pg.evaluate("() => !!document.querySelector('.cvb-deny')") and "1 / 2" in pg.evaluate("() => document.querySelector('.cvb-pos')?.textContent ?? ''"), "멈춤 · 요청 2 · 보던 것 = 첫째(거절 단추 있음)")
+        pg.evaluate("() => { window.__CHAT.feedItems = window.__CHAT.feedItems.filter((x) => x.request_id !== 'rA'); }")
+        for _ in range(40):  # 그리기가 바뀌는 바로 그 틱까지(100ms 씩)
+            pg.clock.run_for(100)
+            if pg.evaluate("() => !!document.querySelector('.cv-band [data-swapped]')"):
+                break
+        check(pg.evaluate("() => !!document.querySelector('.cv-band [data-swapped]')"), "rA 처리됨 → rB 가 저절로 옴(표시)")
+        pg.click(".cvb-deny")
+        pg.clock.run_for(100)
+        rp = pg.evaluate("() => window.__CHAT.replies.map((r) => r.args)")
+        check(rp == [] and "다른 요청이 그 자리에 왔어요" in band(pg)["notice"], f"★저절로 온 rB 에 곧바로 거절 → confirm_reply 0 + 안내 {rp} · {band(pg)['notice']}")
+        pg.clock.run_for(2_100)
+        pg.click(".cvb-deny")
+        pg.clock.run_for(200)
+        rp = pg.evaluate("() => window.__CHAT.replies.map((r) => r.args)")
+        check(rp == [{"requestId": "rB", "decision": "deny", "screenFingerprint": None}], f"2초 뒤(사람이 봄) 거절 → rB 1건 {rp}")
         check(not errs, f"페이지 오류 0 {errs[:2]}")
         ctx.close()
     httpd.shutdown()

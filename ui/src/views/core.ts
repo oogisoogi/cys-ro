@@ -273,6 +273,9 @@ export class ChatCore {
 
   /** 대화 화면이 내려감 — 읽기 예약 해제(공통층 상태·붙잡은 말은 그대로 · §4-3). */
   detach(): void {
+    // (s79 조각 9) registry 는 새 화면을 먼저 띄우고 옛 화면을 내린다 — 대화 → 작업 전환이면 작업 화면이 이미 살피는 중(watchOnly)이다.
+    //   그때 대화 화면의 내리기가 구독·세션 읽기를 끄면 작업 화면 띠가 새 물음을 못 본다 → 살피는 중이면 끄지 않는다(끄는 것은 watchStop).
+    if (this.watchOnly) return;
     this.attached = false;
     this.unlistenConfirm?.();
     this.unlistenConfirm = null;

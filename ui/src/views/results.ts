@@ -12,6 +12,7 @@ import type { Rec } from "./judge/msgstep";
 import {
   addCandidates,
   candidatesOf,
+  launchesProgram,
   listErrorIsMissing,
   parentOf,
   persistable,
@@ -193,6 +194,11 @@ export class ResultBook {
       }
       if (ex === null) {
         this.notice = MSG_UNKNOWN;
+        return;
+      }
+      if (how === "open" && launchesProgram(r.name)) {
+        // 앱 꾸러미(.app 등)는 폴더라 Tauri 실행형 검사(파일만)를 지나간다 — 마스터 글에서 온 경로로 프로그램을 띄우지 않는다(폴더 보기만)
+        this.notice = MSG_EXEC;
         return;
       }
       try {

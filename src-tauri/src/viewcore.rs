@@ -691,29 +691,86 @@ mod tests {
     }
 }
 
-/// (cysr-1116-s2 · codex 2R blocking) 런타임을 미룬 좌석의 「붙기 전 기록」 매개변수(순수) — 데몬 `surface.read_text` 의 기존 델타 경로
-/// (`since_line` = 단조 줄 커서 · 좌석 스크롤백 FIFO)를 그대로 쓴다(데몬 변경 0). `max_lines` 는 xterm 스크롤백(5,000줄)보다 넉넉히 · 데몬 상한 10,000.
-pub(crate) fn seat_history_params(surface_id: u64, since_line: u64, max_lines: u64) -> Value {
-    json!({"surface_id": surface_id, "since_line": since_line, "max_lines": max_lines.clamp(1, 10_000)})
-}
-
-/// `seat_history` — 대화 화면 동안 런타임을 미룬 좌석이 작업 화면에 처음 붙기 **직전**, 그사이 지나간 완성 줄(글자만)을 받는다.
-/// 응답 = 데몬 결과 그대로(`text` · `since` · `next_cursor` · `latest_cursor` · `truncated`). 실패 = Err(화면은 기록 없이 붙는다 = 종전).
-#[tauri::command]
-pub async fn seat_history(socket: Option<String>, surface_id: u64, since_line: u64, max_lines: Option<u64>) -> Result<Value, String> {
-    let sock = resolve_socket(&socket);
-    rpc_on(&sock, "surface.read_text", seat_history_params(surface_id, since_line, max_lines.unwrap_or(10_000))).await
-}
-
-#[cfg(test)]
-mod seat_history_tests {
-    use super::seat_history_params;
-    #[test]
-    fn params_use_existing_delta_path_and_clamp() {
-        let p = seat_history_params(7, 120, 999_999);
-        assert_eq!(p["surface_id"], 7);
-        assert_eq!(p["since_line"], 120);
-        assert_eq!(p["max_lines"], 10_000);
-        assert_eq!(seat_history_params(7, 0, 0)["max_lines"], 1);
+/// (cysr-1116-s2 · codex 3R) 미룬 좌석 첫 붙기 손잡기 — 연결 → `surface.attach {history_since, history_rows}` → ack 를 [`ATTACH_HISTORY_DEADLINE`] 안에.
+/// 성공 = (ack 뒤에 선 읽기 끝, 데몬 history 칸). 그 뒤 바이트 = 밀려난 행 · 줄 내림 · 화면 스냅숏 · 실시간(데몬 한 락) — 그대로 흘리면 이음매 빠짐·겹침 0.
+/// 실패 = (None, {status: timeout|error|not_attached}) — 호출자는 종전 길로 붙고 화면은 안내 줄을 단다.
+/// 구 데몬(이 인자를 모름) = ack 에 history 칸 없음 → `{status:"unsupported"}`(기록 없이 붙은 것 = 화면이 안내).
+pub(crate) async fn attach_with_history(
+    sock: &std::path::Path,
+    surface_id: u64,
+    since: u64,
+    rows: u16,
+) -> (Option<tokio::io::BufReader<crate::Stream>>, Value) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let run = async {
+        let mut stream = crate::connect_to(sock).await.map_err(|_| "error")?;
+        let req = json!({"id": 1, "method": "surface.attach", "params": {"surface_id": surface_id, "history_since": since, "history_rows": rows}});
+        let mut line = serde_json::to_vec(&req).unwrap_or_default();
+        line.push(b'\n');
+        stream.write_all(&line).await.map_err(|_| "error")?;
+        let mut reader = tokio::io::BufReader::new(stream);
+        let mut ack = String::new();
+        if reader.read_line(&mut ack).await.unwrap_or(0) == 0 {
+            return Err("error");
+        }
+        let v: Value = serde_json::from_str(ack.trim()).unwrap_or(Value::Null);
+        if v["ok"].as_bool() != Some(true) {
+            return Err("not_attached");
+        }
+        let hist = match v["result"].get("history") {
+            Some(h) if h.is_object() => h.clone(),
+            _ => json!({"status": "unsupported"}),
+        };
+        Ok((reader, hist))
+    };
+    match tokio::time::timeout(ATTACH_HISTORY_DEADLINE, run).await {
+        Ok(Ok((r, h))) => (Some(r), h),
+        Ok(Err(code)) => (None, json!({"status": code})),
+        Err(_) => (None, json!({"status": "timeout"})),
     }
 }
+
+/// 손잡기 상한 — 데몬이 락 안에서 뜨는 기록은 최대 5,000행(cysd `ATTACH_HISTORY_MAX_ROWS`)이라 정상은 수십 ms.
+pub(crate) const ATTACH_HISTORY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// 손잡기를 마친 읽기 끝을 이벤트로 흘린다 — 종전 `start_surface_stream` 고리와 같은 꼴(8KiB · base64 · 끝나면 exited).
+pub(crate) async fn pump_surface_stream(
+    app: tauri::AppHandle,
+    mut reader: tokio::io::BufReader<crate::Stream>,
+    event_output: String,
+    event_exited: String,
+) {
+    use base64::Engine;
+    use tauri::Emitter;
+    use tokio::io::AsyncReadExt;
+    let mut buf = [0u8; 8192];
+    loop {
+        match reader.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
+                if app.emit(&event_output, b64).is_err() {
+                    break;
+                }
+            }
+        }
+    }
+    let _ = app.emit(&event_exited, ());
+}
+
+/// (cysr-1116-s2 · codex 3R major) 스트림 정지 — 붙기를 기다린 사이 대화 화면으로 돌아간 좌석(출력 흐름 0)·늦게 끝난 옛 시도 정리용.
+/// 그 (소켓, 좌석) 손잡이를 떼어 abort 한다(exited 사건은 안 쏜다 — 좌석이 죽은 것이 아니다). 없으면 할 일 없음.
+#[tauri::command]
+pub fn stop_surface_stream(state: tauri::State<'_, crate::Attachments>, socket: Option<String>, surface_id: u64) -> bool {
+    let sock = resolve_socket(&socket);
+    let key = (crate::sock_slug(&sock), surface_id);
+    let prev = state.0.lock().unwrap().remove(&key);
+    match prev {
+        Some(h) => {
+            h.abort();
+            true
+        }
+        None => false,
+    }
+}
+

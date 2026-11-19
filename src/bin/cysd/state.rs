@@ -2817,6 +2817,9 @@ pub struct Surface {
     /// 소비 = 직접 경로 울타리 판정(handlers `direct_fence_mode` 의 마지막 클로저) — 핸들러가 파서 락을 새로
     /// 잡지 않게 하는 원자 미러다. 파서 패닉 재초기화 시 fresh 파서의 false 가 들어가 원문(종전)으로 폴백한다.
     pub bracketed_paste: AtomicBool,
+    /// ★(1.1.16 · cysr-1116-s2) 화면 행 커서 미러 — [`pack_screen_cursor`](파서 세대 · 주 화면 위로 밀려난 물리 행 누적).
+    /// 단일 write path = [`mirror_screen_modes`](파서 락 임계영역 안). 소비 = surface.list `screen_cursor` → surface.attach `history_since`.
+    pub screen_cursor: AtomicU64,
     /// ★(U-10) **좌석 제4 등급** `gate_pending` — 프로세스는 살아 있으나 **첫기동 관문**
     /// (테마 → 로그인방식 → OAuth → 폴더신뢰 → 면책 → 새기능안내)에 갇혀 **입력을 받을 수
     /// 없는** 좌석. `None` = 이 축에 대해 말할 것이 없음(= 종전 판정) · `Some(_)` = 보류.
@@ -8363,6 +8366,7 @@ impl Daemon {
             // (W4 · D5) 신생 pane 은 primary screen 에서 출발 — 첫 청크 반영 시 reader 가 갱신.
             alt_screen: AtomicBool::new(false),
             bracketed_paste: AtomicBool::new(false),
+            screen_cursor: AtomicU64::new(0), // 아래 생성 직후 새 파서 값으로 미러(첫 출력 전 커서도 이 파서 세대)
             // ★(U-10) 관문 보류는 항상 None 으로 시작한다 — 생성 시점엔 관문 관측 자체가 없다.
             //   restore 하이드레이션도 하지 않는다(필드 doc 의 A1 라이브락 사유).
             gate_pending: Mutex::new(None),
@@ -8371,6 +8375,8 @@ impl Daemon {
             // ★(0.14.41 · U18) 생성 시 관측 1회의 결과(불변) — 위 관측 블록 참조.
             cwd_blocked,
         });
+        // (1.1.16 · cysr-1116-s2) 첫 출력 전에도 surface.list 의 화면 행 커서가 이 파서 세대를 가리키게
+        mirror_screen_modes(&surface, surface.parser.lock().unwrap_or_else(|e| e.into_inner()).screen());
 
         // ★W2a: 이 create가 실제 등록한(dedup 후) 역할 — 아래에서 묘비 해제에 쓴다.
         let mut registered_role: Option<String> = None;
@@ -9181,6 +9187,22 @@ pub(crate) fn cr_gap_delay_ms(
 pub(crate) fn mirror_screen_modes(surf: &Surface, screen: &vt100::Screen) {
     surf.alt_screen.store(screen.alternate_screen(), Ordering::Relaxed);
     surf.bracketed_paste.store(screen.bracketed_paste(), Ordering::Relaxed);
+    let (epoch, rows) = screen.scroll_cursor();
+    surf.screen_cursor.store(pack_screen_cursor(epoch, rows), Ordering::Relaxed); // (cysr-1116-s2)
+}
+
+/// ★(1.1.16 · cysr-1116-s2) 화면 행 커서 한 수 = 세대 하위 13비트 << 40 | 밀려난 행 하위 40비트 — JS 수(2^53) 안에서 정확하다.
+/// 세대가 8,192 번 바뀌어 같은 값으로 돌아오는 경우만 구별 못 한다(파서 교체 = 패닉 격리·RIS 로만 생긴다).
+pub(crate) const SCREEN_CURSOR_ROW_BITS: u32 = 40;
+pub(crate) fn pack_screen_cursor(epoch: u64, rows: u64) -> u64 {
+    ((epoch & 0x1FFF) << SCREEN_CURSOR_ROW_BITS) | (rows & ((1u64 << SCREEN_CURSOR_ROW_BITS) - 1))
+}
+/// 되풀기 = (세대 하위 13비트, 행). 2^53 이상(우리가 만들 수 없는 값) = None.
+pub(crate) fn unpack_screen_cursor(c: u64) -> Option<(u64, u64)> {
+    if c >> (SCREEN_CURSOR_ROW_BITS + 13) != 0 {
+        return None;
+    }
+    Some((c >> SCREEN_CURSOR_ROW_BITS, c & ((1u64 << SCREEN_CURSOR_ROW_BITS) - 1)))
 }
 
 /// `WriteReq::Inject` 의 바이트 시퀀스 — (선정리 Ctrl-U → settle) → bracketed paste → cr_delay →

@@ -5734,7 +5734,9 @@ async fn start_surface_stream(
     state: State<'_, Attachments>,
     socket: Option<String>,
     surface_id: u64,
-) -> Result<(), String> {
+    history_since: Option<u64>,
+    history_rows: Option<u16>,
+) -> Result<Value, String> {
     let sock = resolve_socket(&socket);
     let slug = sock_slug(&sock);
     let key = (slug.clone(), surface_id);
@@ -5743,6 +5745,19 @@ async fn start_surface_stream(
     }
     let event_name = format!("surface-output-{slug}-{surface_id}");
     let event_exited = format!("surface-exited-{slug}-{surface_id}");
+    // (cysr-1116-s2) 선택 인자 `history_since` = 런타임을 미룬 좌석의 첫 붙기 — 기록 + 스냅숏 + 실시간을 데몬이 한 락으로 이어 준다(viewcore.rs).
+    //   반환 = 데몬 ack 의 history 칸(ok·truncated·unknown_cursor) 또는 timeout·error. 손잡기가 실패하면 아래 종전 길로 붙는다(화면은 살린다).
+    //   인자 없음 = 종전 그대로(반환 null).
+    let mut history_result = Value::Null;
+    if let Some(since) = history_since {
+        let (reader, hist) = viewcore::attach_with_history(&sock, surface_id, since, history_rows.unwrap_or(0)).await;
+        if let Some(reader) = reader {
+            let handle = tauri::async_runtime::spawn(viewcore::pump_surface_stream(app, reader, event_name, event_exited));
+            state.0.lock().unwrap().insert(key, handle);
+            return Ok(json!({ "history": hist }));
+        }
+        history_result = json!({ "history": hist });
+    }
     let (en, ee) = (event_name.clone(), event_exited.clone());
     let handle = tauri::async_runtime::spawn(async move {
         let Ok(mut stream) = connect_to(&sock).await else {
@@ -5784,7 +5799,7 @@ async fn start_surface_stream(
         let _ = app.emit(&ee, ());
     });
     state.0.lock().unwrap().insert(key, handle);
-    Ok(())
+    Ok(history_result)
 }
 
 /// ★C (0.14.52 update repair, design rev9 section 0): the deadline of one readiness probe.
@@ -8460,7 +8475,6 @@ fn main() {
             viewcore::chat_send, // (cysr-ui-slice1)
             viewcore::chat_transcript, // (cysr-ui-slice1)
             viewcore::confirm_reply, // (cysr-ui-slice4) 대화 화면 직접 허락·거절 — 데몬 결과(actuated) 그대로
-            viewcore::seat_history, // (cysr-1116-s2) 미룬 좌석 첫 붙기 전 기록(데몬 surface.read_text 델타 · 데몬 변경 0)
             feedback::feedback_new_draft,
             feedback::feedback_stage_file,
             feedback::feedback_unstage,
@@ -8512,6 +8526,7 @@ fn main() {
             close_surface,
             attach_surface,
             start_surface_stream,
+            viewcore::stop_surface_stream, // (cysr-1116-s2)
             feed_list,
             feed_list_all,
             feed_reply,

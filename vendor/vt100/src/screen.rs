@@ -682,6 +682,48 @@ impl Screen {
         self.resets
     }
 
+    /// cys 패치(1.1.16 · cysr-1116-s2): 주 화면 격자의 (세대, 스크롤백으로 밀려난 물리 행 누적 수) — 대체 화면에 있어도 주 격자 값.
+    #[must_use]
+    pub fn scroll_cursor(&self) -> (u64, u64) {
+        self.grid.scroll_cursor()
+    }
+
+    /// cys 패치(1.1.16 · cysr-1116-s2): 행 커서 (`epoch`, `since`) 이후 주 격자 스크롤백으로 밀려난 행을 색 포함 바이트로 — 행마다
+    /// 글자·색(SGR)·같은 행 안 오른쪽 이동만 쓰고 행 사이를 `\r\n` 으로 잇는다(마지막 행 뒤엔 없음 · 절대 위치 이동 없음 · 끝에 색 초기화). 최대 `max` 행.
+    /// 반환 = (바이트, 첫 행 번호, 행 수, 잘림). 세대가 다르거나 `since` 가 누적 수보다 크면 None(모르는 커서).
+    /// 화면 바이트(`contents_formatted`)·비교에는 닿지 않는다. = `scrollback_snapshot_since(..)?.formatted()`.
+    #[must_use]
+    pub fn scrollback_formatted_since(
+        &self,
+        epoch: u64,
+        since: u64,
+        max: usize,
+    ) -> Option<(Vec<u8>, u64, u64, bool)> {
+        let snap = self.scrollback_snapshot_since(epoch, since, max)?;
+        Some((snap.formatted(), snap.start, snap.rows.len() as u64, snap.truncated))
+    }
+
+    /// cys 패치(1.1.16 · cysr-1116-s2): 위와 같은 구간의 행 **사본**만 뜬다(행 복사 = 칸 memcpy) — 파서 락 안에서는 이것만 하고
+    /// 서식(`ScrollbackSnapshot::formatted`)은 락 밖에서 한다(락 보유 시간 = 복사뿐).
+    #[must_use]
+    pub fn scrollback_snapshot_since(
+        &self,
+        epoch: u64,
+        since: u64,
+        max: usize,
+    ) -> Option<ScrollbackSnapshot> {
+        if epoch != self.grid.scroll_cursor().0 {
+            return None;
+        }
+        let (start, rows, truncated) =
+            self.grid.scrollback_rows_since(since, max)?;
+        Some(ScrollbackSnapshot {
+            rows: rows.into_iter().cloned().collect(),
+            start,
+            truncated,
+        })
+    }
+
     /// cys 패치(0.14.52 · F-01): whether a DECSET ?2026 synchronized-output block is open, i.e. the
     /// application has begun a frame update that it has not finished yet.
     #[must_use]
@@ -1809,4 +1851,68 @@ fn osc_param_str(params: &[&[u8]]) -> String {
         .map(|b| format!("\"{}\"", std::string::String::from_utf8_lossy(b)))
         .collect();
     strs.join(" ; ")
+}
+
+/// cys 패치(1.1.16 · cysr-1116-s2): 스크롤백으로 밀려난 행 사본(`Screen::scrollback_snapshot_since`) — 파서와 떨어져 서식한다.
+#[derive(Clone, Debug)]
+pub struct ScrollbackSnapshot {
+    rows: Vec<crate::row::Row>,
+    start: u64,
+    truncated: bool,
+}
+
+impl ScrollbackSnapshot {
+    /// 첫 행 번호.
+    #[must_use]
+    pub fn start(&self) -> u64 {
+        self.start
+    }
+
+    /// 행 수.
+    #[must_use]
+    pub fn len(&self) -> u64 {
+        self.rows.len() as u64
+    }
+
+    /// 비었는가.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// 요청 구간 앞부분이 FIFO 에서 빠졌거나 상한으로 잘렸는가.
+    #[must_use]
+    pub fn truncated(&self) -> bool {
+        self.truncated
+    }
+
+    /// 색 포함 바이트(행 사이 `\r\n` · 같은 행 안 오른쪽 이동만 · 끝에 색 초기화).
+    #[must_use]
+    pub fn formatted(&self) -> Vec<u8> {
+        let mut out = vec![];
+        let origin = crate::grid::Pos { row: 0, col: 0 };
+        let mut prev_attrs = crate::attrs::Attrs::default();
+        if !self.rows.is_empty() {
+            crate::term::ClearAttrs::default().write_buf(&mut out);
+        }
+        for (i, row) in self.rows.iter().enumerate() {
+            if i > 0 {
+                out.extend_from_slice(b"\r\n");
+            }
+            let (_, attrs) = row.write_contents_formatted(
+                &mut out,
+                0,
+                row.width(),
+                0,
+                false,
+                Some(origin),
+                Some(prev_attrs),
+            );
+            prev_attrs = attrs;
+        }
+        if !self.rows.is_empty() {
+            crate::term::ClearAttrs::default().write_buf(&mut out);
+        }
+        out
+    }
 }

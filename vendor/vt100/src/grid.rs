@@ -1,5 +1,9 @@
 use crate::term::BufWrite as _;
 
+/// cys 패치(1.1.16 · cysr-1116-s2): 격자마다 새 세대 번호 — 파서를 새로 만들면(패닉 격리·RIS) 행 커서가 0 부터 다시 세므로
+/// 옛 커서를 새 격자에 잘못 대지 않게 세대로 가른다. 프로세스 전역 단조.
+static NEXT_SCROLL_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 #[derive(Clone, Debug)]
 pub struct Grid {
     size: Size,
@@ -13,6 +17,9 @@ pub struct Grid {
     scrollback: std::collections::VecDeque<crate::row::Row>,
     scrollback_len: usize,
     scrollback_offset: usize,
+    // cys 패치(1.1.16 · cysr-1116-s2): 스크롤백으로 밀려난 물리 행의 단조 누적 수(FIFO 퇴출과 무관) + 격자 세대.
+    scroll_epoch: u64,
+    scrolled_rows: u64,
 }
 
 impl Grid {
@@ -29,6 +36,9 @@ impl Grid {
             scrollback: std::collections::VecDeque::new(),
             scrollback_len,
             scrollback_offset: 0,
+            scroll_epoch: NEXT_SCROLL_EPOCH
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            scrolled_rows: 0,
         }
     }
 
@@ -188,6 +198,34 @@ impl Grid {
 
     pub fn set_scrollback(&mut self, rows: usize) {
         self.scrollback_offset = rows.min(self.scrollback.len());
+    }
+
+    /// cys 패치(1.1.16 · cysr-1116-s2): (격자 세대, 스크롤백으로 밀려난 물리 행 누적 수).
+    pub fn scroll_cursor(&self) -> (u64, u64) {
+        (self.scroll_epoch, self.scrolled_rows)
+    }
+
+    /// cys 패치(1.1.16 · cysr-1116-s2): 행 커서 `since` 이후 스크롤백으로 밀려난 행을 오래된 것부터 — 최대 `max` 행(최근 쪽을 남긴다).
+    /// 반환 = (첫 행 번호, 행들, 잘림 = 요청 구간 앞부분이 FIFO 에서 이미 빠졌거나 `max` 로 잘림). `since` 가 누적 수보다 크면 None(모르는 커서).
+    pub fn scrollback_rows_since(
+        &self,
+        since: u64,
+        max: usize,
+    ) -> Option<(u64, Vec<&crate::row::Row>, bool)> {
+        if since > self.scrolled_rows {
+            return None;
+        }
+        let len = self.scrollback.len() as u64;
+        let oldest = self.scrolled_rows - len;
+        let mut start = since.max(oldest);
+        let mut truncated = since < oldest;
+        let avail = self.scrolled_rows - start;
+        if avail > max as u64 {
+            start = self.scrolled_rows - max as u64;
+            truncated = true;
+        }
+        let skip = (start - oldest) as usize;
+        Some((start, self.scrollback.iter().skip(skip).collect(), truncated))
     }
 
     pub fn write_contents(&self, contents: &mut String) {
@@ -557,6 +595,7 @@ impl Grid {
             let removed = self.rows.remove(usize::from(self.scroll_top));
             if self.scrollback_len > 0 && !self.scroll_region_active() {
                 self.scrollback.push_back(removed);
+                self.scrolled_rows += 1; // cys 패치(1.1.16 · cysr-1116-s2) 단조 행 커서
                 while self.scrollback.len() > self.scrollback_len {
                     self.scrollback.pop_front();
                 }

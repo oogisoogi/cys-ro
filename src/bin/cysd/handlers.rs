@@ -21,6 +21,8 @@ pub enum Reply {
     Attach {
         ack: Value,
         surface_id: u64,
+        /// (cysr-1116-s2) 선택 — (`history_since` 화면 행 커서, xterm 행 수). None = 종전(ack·바이트 같음).
+        history: Option<(u64, u16)>,
     },
     /// Block the connection until the feed item is resolved (or timeout).
     FeedWait {
@@ -7626,7 +7628,9 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                                "display_no": s.display_no, // ★v116-num
                                // (W1) 데몬이 기록한 권위 config_dir 반환 — 호출자(launch/restore)가
                                // resume 사전검증 게이트·restore 인라인 오버라이드의 결정론 소스로 쓴다.
-                               "claude_config_dir": s.claude_config_dir.lock().unwrap().clone()}),
+                               "claude_config_dir": s.claude_config_dir.lock().unwrap().clone(),
+                               // (1.1.16 · cysr-1116-s2) 생성 때 화면 행 커서 — 런타임을 미룬 새 좌석이 처음부터의 기록을 attach history_since 로 받는다(additive)
+                               "screen_cursor": s.screen_cursor.load(Ordering::Relaxed)}),
                     ))
                 }
                 Err(e) => {
@@ -7791,6 +7795,9 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                         // readiness/실패/주입검증 매칭을 '커서 이후 신규 출현분'으로 한정한다(잔존 ❯
                         // 오탐 차단). org.status 가 이미 같은 키를 노출하며, 여기 추가는 순수 additive.
                         "line_count": s.line_count.load(Ordering::Relaxed),
+                        // ★(1.1.16 · cysr-1116-s2) 화면 행 커서(파서 세대 + 화면 위로 밀려난 물리 행 누적 · 불투명 수) — `surface.attach`
+                        //   `history_since` 로 되돌려 주면 그 뒤 밀려난 행부터 다시 그린다. 순수 additive(파서 락 없이 원자 미러를 읽는다).
+                        "screen_cursor": s.screen_cursor.load(Ordering::Relaxed),
                         // ★0.14.43(B3) 세 곳(surface.list · org.status · control.dashboard)이 같은 도우미 하나 — 기존 직렬화 + 계산 키 가산.
                         "usage": s.observed_usage.lock().unwrap().as_ref().map(|u| {
                             crate::accounts::seat_usage_wire(
@@ -10479,9 +10486,15 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                     &format!("surface {sid} not found"),
                 ));
             }
+            // ★(1.1.16 · cysr-1116-s2) 선택 인자 `history_since`(surface.list 의 `screen_cursor`) — 데몬이 같은 파서 락 안에서 구독 ·
+            //   그 커서 뒤 화면 위로 밀려난 행 · 지금 화면 스냅숏을 한 번에 떠서 그 차례로 쓴다(이음매 빠짐·겹침 0). `history_rows` =
+            //   받는 xterm 의 행 수(밀려난 행을 그 화면 밖 스크롤백으로 올릴 빈 줄 수). 인자 없음 = 종전과 ack·바이트 같음.
+            let history = param_u64(&params, "history_since")
+                .map(|c| (c, param_u64(&params, "history_rows").unwrap_or(0).min(u16::MAX as u64) as u16));
             Reply::Attach {
                 ack: ok_response(&id, json!({"attached": sid})),
                 surface_id: sid,
+                history,
             }
         }
 

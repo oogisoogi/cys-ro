@@ -12,7 +12,9 @@
 #             제외 목록이 없음·읽을 수 없음·비었음(빈 줄만 포함) = rc 2 · 결과에 지킴 폴더 경로가 섞이면 rc 2(출력 없음)
 #       bash docs/integ-1116/pubcand.sh --self-test                     # 임시 저장소 + 가짜 recheck 로 양성·음성 대조
 # 환경(필수): PUB_ALLOW = 새 공개 허용 경로 목록(한 줄에 경로 하나 · B 에 없는 경로만 뜻이 있음 · 비어도 됨) · PUB_MSG = 커밋 메시지 파일
-# 환경(선택): PUB_BASE(기본 origin/main · refs/remotes/origin/* 어느 것에서 닿는 커밋이어야 한다 = 공개된 판 · 아니면 rc 2)
+# 환경(선택): PUB_BASE(기본 origin/main · 원격 origin 의 가지·태그 끝 하나에서 닿는 커밋이어야 한다 = 공개된 판 · 아니면 rc 2)
+#             ★공개판 확인 = `git ls-remote --heads --tags origin` 으로 원격을 직접 읽는다(읽기만 · 로컬 refs/remotes 는 손으로
+#               만들 수 있어 믿지 않는다) · 읽기 실패 = rc 2 · 원격 끝 커밋이 로컬에 없으면 그 끝은 셈하지 않는다(fetch 필요)
 #             PUB_REF(기본 refs/heads/cand/1116-rc · 관문 1 실패 때 C 는 <PUB_REF>-rejected 에 둔다) · PUB_FORCE=1(있는 ref 덮어쓰기)
 #             PUB_RECHECK(기본 ~/axdev/workers/cysr-public-check-1118/recheck.sh) · PUB_NO_RECHECK=1(관문 1까지만)
 #             PUB_GUARD_DIRS(기본 docs/integ-1116 — 이 폴더의 새 경로는 허용 목록에 올 수 없다 · 내부 게이트 도구 · 공백 구분)
@@ -47,11 +49,24 @@ listfile() {
   [ $rc -le 1 ] || return 2
   LC_ALL=C sort -u "$2.raw" > "$2"
 }
-# guardhits <목록> <출력> — 지킴 폴더 아래 경로
+# guardhits <목록> <출력> — 지킴 폴더 경로 **그 자체**(블롭·심볼릭·gitlink 로 바뀐 경우)와 그 아래 경로 · 글자 그대로 비교(정규식 아님)
+read -r -a GUARDS <<< "$GUARD"
 guardhits() {
-  : > "$2"; local g
-  for g in $GUARD; do LC_ALL=C grep -E "^${g%/}/" "$1" >> "$2"; done
+  : > "$2"; local g l
+  while IFS= read -r l; do
+    for g in "${GUARDS[@]}"; do g=${g%/}; case $l in "$g"|"$g"/*) printf '%s\n' "$l" >> "$2"; break ;; esac; done
+  done < "$1"
   return 0
+}
+# remote_has_b — B 가 원격 origin 의 가지·태그 끝에서 닿는가(ls-remote = 읽기만). rc 0 = 닿음 · 1 = 안 닿음 · 2 = 원격 읽기 실패
+remote_has_b() {
+  local tips t
+  tips=$(GIT_TERMINAL_PROMPT=0 $GIT ls-remote --heads --tags origin) || return 2
+  for t in $(printf '%s\n' "$tips" | awk 'NF{print $1}' | LC_ALL=C sort -u); do
+    $GIT cat-file -e "$t^{commit}" 2>/dev/null || continue
+    $GIT merge-base --is-ancestor "$B" "$t" 2>/dev/null && return 0
+  done
+  return 1
 }
 
 self_test() {
@@ -71,8 +86,13 @@ self_test() {
     # git 이 인용꼴로 내는 이름(한글·공백 · 탭 · 줄바꿈 · 큰따옴표) — 넷은 목록 밖 · 「공개 메모.md」 는 허용 목록에
     echo k > "비밀 노트.md"; echo t > "t${TB}ab.md"; echo l > "nl${NL}x.md"; echo q > 'q"uote.md'; echo p > "공개 메모.md"
     $GIT add -A; $GIT commit -qm head
-    $GIT update-ref refs/remotes/origin/main base0
-    $GIT init -q --bare "$T/remote.git"; $GIT remote add origin "$T/remote.git"
+    # 지킴 폴더 경로 자체를 블롭(h2)·심볼릭 링크(h3)로 바꾼 가지
+    $GIT checkout -q -b h2 base0; echo b > docs-blob; mkdir -p docs; mv docs-blob docs/integ-1116; $GIT add -A; $GIT commit -qm h2
+    $GIT checkout -q -b h3 base0; rm -rf docs; mkdir -p docs; ln -s ../src docs/integ-1116; $GIT add -A; $GIT commit -qm h3
+    $GIT checkout -q main
+    # 공개판 = 원격 origin 에 실재(B = base0 을 원격 main 으로) · 로컬 추적 ref 는 일부러 HEAD 로 「오염」(믿지 않음을 잰다)
+    $GIT init -q --bare "$T/remote.git"; $GIT remote add origin "$T/remote.git"; $GIT -C "$T/remote.git" fetch -q "$T/r" base0:refs/heads/main
+    $GIT update-ref refs/remotes/origin/main HEAD; $GIT update-ref refs/remotes/origin/fake HEAD
     # push 차단 대상: 상대 경로 원격 · pushurl 명시 원격(url 은 닿지 않는 주소) · 명령줄 상대 경로(remote4)
     $GIT init -q --bare "$T/remote2.git"; $GIT remote add orel ../remote2.git
     $GIT init -q --bare "$T/remote3.git"; $GIT remote add opu https://example.invalid/x.git; $GIT config remote.opu.pushurl "$T/remote3.git"
@@ -85,7 +105,7 @@ self_test() {
   local R="$T/r" out rc C C0 RUN_ME=""
   run() { ( cd "$R" && env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_AUTHOR_NAME=t GIT_COMMITTER_NAME=t \
       GIT_AUTHOR_EMAIL="t$(printf '\100')t.invalid" GIT_COMMITTER_EMAIL="t$(printf '\100')t.invalid" \
-      PUB_BASE=base0 PUB_MSG="$T/M" PUB_RECHECK="$T/rk.sh" "$@" bash "${RUN_ME:-$me}" HEAD ); }
+      PUB_BASE=base0 PUB_MSG="$T/M" PUB_RECHECK="$T/rk.sh" "$@" bash "${RUN_ME:-$me}" "${RUN_H:-HEAD}" ); }
   ctree() { $GIT -C "$R" ls-tree -r -z --name-only "$1" | tr '\0' ' '; }
   echo "[pubcand self-test]"
   out=$(run PUB_ALLOW="$T/A" PUB_WITHHELD_OUT="$T/W" 2>&1); rc=$?
@@ -110,7 +130,14 @@ self_test() {
   out=$(run PUB_ALLOW="$T/A" PUB_FORCE=1 PUB_BASE=no-such 2>&1); rc=$?
   [ $rc -eq 2 ] && ok "못 찾는 B → rc 2" || bad "B rc=$rc"
   out=$(run PUB_ALLOW="$T/A" PUB_FORCE=1 PUB_BASE=HEAD 2>&1); rc=$?
-  [ $rc -eq 2 ] && echo "$out" | grep -q "닿지 않는다" && ok "B 가 refs/remotes/origin/* 에서 안 닿음(PUB_BASE=HEAD) → rc 2" || bad "공개 안 된 B rc=$rc: $out"
+  [ $rc -eq 2 ] && echo "$out" | grep -q "닿지 않는다" && ok "B 가 원격 origin 에서 안 닿음(PUB_BASE=HEAD · 로컬 refs/remotes/origin/* 은 HEAD 로 오염) → rc 2" || bad "공개 안 된 B rc=$rc: $out"
+  $GIT -C "$R" remote set-url origin "$T/no-such.git"
+  out=$(run PUB_ALLOW="$T/A" PUB_FORCE=1 2>&1); rc=$?
+  $GIT -C "$R" remote set-url origin "$T/remote.git"
+  [ $rc -eq 2 ] && echo "$out" | grep -q "원격 origin 을 못 읽음" && ok "원격 읽기 실패(ls-remote) → rc 2" || bad "원격 읽기 실패 rc=$rc: $out"
+  printf 'docs/integ-1116\n' > "$T/A4"
+  out=$(RUN_H=h2 run PUB_ALLOW="$T/A4" PUB_FORCE=1 2>&1); rc=$?
+  [ $rc -eq 2 ] && echo "$out" | grep -q "지킴 폴더" && ok "지킴 폴더 경로 자체(블롭으로 바뀜)를 허용 목록에 올림 → rc 2" || bad "지킴 폴더 블롭 rc=$rc: $out"
   : > "$T/A0"
   out=$(run PUB_ALLOW="$T/A0" PUB_FORCE=1 2>&1); rc=$?
   C=$($GIT -C "$R" rev-parse -q --verify refs/heads/cand/1116-rc)
@@ -125,7 +152,7 @@ self_test() {
   printf '#!/bin/sh\nfor t in origin orel opu o5 ../remote4.git; do git push -q "$t" "$1:refs/heads/leak" 2>/dev/null; done; gh repo view >/dev/null 2>&1; echo "gh=$?" > "%s/gh.rc"; exit 0\n' "$T" > "$T/rk2.sh"
   out=$(run PUB_ALLOW="$T/A" PUB_FORCE=1 PUB_RECHECK="$T/rk2.sh" 2>&1); rc=$?
   local leaks="" b
-  for b in remote remote2 remote3 remote4 remote5; do [ -z "$($GIT -C "$T/$b.git" for-each-ref)" ] || leaks="$leaks $b"; done
+  for b in remote remote2 remote3 remote4 remote5; do [ -z "$($GIT -C "$T/$b.git" for-each-ref refs/heads/leak)" ] || leaks="$leaks $b"; done
   if [ -z "$leaks" ] && grep -q "gh=97" "$T/gh.rc" 2>/dev/null; then ok "recheck 안 push·gh 차단(절대 경로·상대 경로·pushurl 명시 원격·더 긴 사용자 pushInsteadOf·명령줄 상대 경로 = 원격 ref 0 · gh rc 97)"; else bad "recheck 안 push/gh 차단 실패: 샘 =$leaks · $(cat "$T/gh.rc" 2>&1)"; fi
   # 관문 1 실패 → C 는 <PUB_REF>-rejected 에(정상 후보 ref 는 그대로) — withheld 를 안 지우는 사본으로 실패를 만든다
   sed 's/| xargs -0 \$GIT update-index --force-remove --/| cat >\/dev\/null/' "$me" > "$T/mut.sh"
@@ -150,6 +177,8 @@ self_test() {
   printf 'HANDOFF.x.md\n' > "$T/X2"
   out=$(cd "$R" && bash "$me" --derive-allow HEAD base0 "$T/X2" 2>"$T/err"); rc=$?
   [ $rc -eq 2 ] && [ -z "$out" ] && grep -q "docs/integ-1116/gate.sh" "$T/err" && ok "--derive-allow 결과에 지킴 폴더 경로 → rc 2 · 출력 0" || bad "--derive-allow 지킴 폴더 rc=$rc: $out"
+  out=$(cd "$R" && bash "$me" --derive-allow h3 base0 "$T/X2" 2>"$T/err"); rc=$?
+  [ $rc -eq 2 ] && [ -z "$out" ] && grep -q "docs/integ-1116" "$T/err" && ok "--derive-allow 결과에 지킴 폴더 경로 자체(심볼릭 링크) → rc 2 · 출력 0" || bad "--derive-allow 지킴 폴더 심볼릭 rc=$rc: $out"
   # 자기 검사: 집행 본문(자기 검체 함수 뒤 · 주석 아닌 줄)에 push·tag 쓰기·gh 명령이 없다(검체 함수는 임시 저장소에 태그를 단다)
   if sed -n '/^\[ "\${1:-}" = --self-test \]/,$p' "$me" | grep -vE '^\s*#' | grep -nE '(^|[;&|( ]+)(\$GIT|git)( -C [^ ]+)? (push|tag)\b|(^|[;&|( ]+)gh ' >/dev/null; then bad "본문에 push/tag/gh 명령"; else ok "본문에 push·tag·gh 명령 0"; fi
   rm -rf "$T"
@@ -187,8 +216,11 @@ die() { echo "✗ $*" >&2; fin 2; }
 H=$($GIT rev-parse --verify -q "$H_IN^{commit}") || die "H($H_IN)를 못 찾음"
 B=$($GIT rev-parse --verify -q "$B_IN^{commit}") || die "B($B_IN)를 못 찾음 — fetch 했는가"
 # B 는 이미 공개된 판이어야 한다 — PUB_BASE=HEAD·내부 가지면 H 전체가 H∩B 가 되어 새 파일 검사가 통째로 빈다
-[ -n "$($GIT for-each-ref --contains "$B" --format='%(refname)' refs/remotes/origin/)" ] \
-  || die "B(${B:0:12})가 refs/remotes/origin/* 어디에서도 닿지 않는다 — 공개된 판이 아니다(PUB_BASE 확인 · fetch 했는가)"
+remote_has_b; case $? in
+  0) ;;
+  2) die "원격 origin 을 못 읽음(git ls-remote) — 공개판 확인 불가" ;;
+  *) die "B(${B:0:12})가 원격 origin 의 가지·태그 어디에서도 닿지 않는다 — 공개된 판이 아니다(PUB_BASE 확인 · fetch 했는가)" ;;
+esac
 OLD=$($GIT rev-parse --verify -q "$REF" || true)
 [ -z "$OLD" ] || [ "${PUB_FORCE:-0}" = 1 ] || die "$REF 이미 있음(${OLD:0:12}) — 덮어쓰려면 PUB_FORCE=1"
 

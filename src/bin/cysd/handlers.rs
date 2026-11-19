@@ -7464,6 +7464,17 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             if let Some(reply) = surface_create_auth_gate(daemon, &id, &params, caller_pid) {
                 return reply;
             }
+            // ★T4 좌석 입양 · T1 최소 대역(판정 = `seat_adopt::surface_create_blocked` 한 곳 · 노브 끔 = 늘 None): 살아 있으나 입양되지 않은
+            //   좌석의 역할은 그 seatkeep 이 끝날 때까지 새로 띄우지 않는다(같은 대화 작성자 둘 차단 · 자동 복원·cys restore·phoenix 모두 이 입구).
+            if let Some(why) = crate::seat_adopt::surface_create_blocked(param_str(&params, "role").as_deref()) {
+                daemon.bus.publish(
+                    "seat.adopt_reserved_denied",
+                    "system",
+                    None,
+                    json!({"role": param_str(&params, "role"), "caller_pid": caller_pid, "reason": why}),
+                );
+                return Reply::Single(err_response(&id, "forbidden", &why));
+            }
             // RC-3(B′): pane env 주입 — Windows launch-agent가 해소된 CLAUDE_CONFIG_DIR 등을 넘긴다
             // (순수 cmd send와 짝). params["env"] 객체(문자열 값만)를 (k,v) 벡터로. 부재 시 빈 벡터.
             // ★(P1 이중 방어 1층) 호출자 env 의 CYS_SEAT_TOKEN 키는 **버린다** — 좌석 토큰은

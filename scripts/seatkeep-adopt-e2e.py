@@ -18,16 +18,19 @@ BIN, MODE, ROUNDS = sys.argv[1], sys.argv[2], int(sys.argv[3])
 # 폭주 모드(A5 · 조종자 없는 동안 역압): SKA_PAD = 줄마다 덧붙일 바이트 · SKA_GAP_MS = 줄 사이 · SKA_LINES = read-screen 줄 수
 PAD, GAP_MS, LINES = int(os.environ.get("SKA_PAD", "0")), os.environ.get("SKA_GAP_MS", "50"), os.environ.get("SKA_LINES", "200")
 OUT = sys.argv[4] if len(sys.argv) > 4 else None
-assert MODE in ("adopt", "bound", "direct"), MODE
+# reserve = 입양 실패 좌석(미결)의 역할 예약 시험(codex T4 1R #1): 두 번째 cysd 를 다른 경로(bin2)에서 띄워 상호 확인을 일부러 실패시킨다.
+# exitaway = 데몬 없는 사이 좌석이 끝남 → seatkeep 이 .exit 를 남기고 끝남 → 새 cysd 가 그 기록을 소비(codex T4 1R #6 · A10).
+assert MODE in ("adopt", "bound", "direct", "reserve", "exitaway"), MODE
 R = f"/private/tmp/ska-{MODE[:3]}-{os.getpid() % 10000}"
 shutil.rmtree(R, ignore_errors=True)
-for d in ("home", "tmp", "s", "packstate", "pack", "bin", "logs"):
+for d in ("home", "tmp", "s", "packstate", "pack", "bin", "bin2", "logs"):
     os.makedirs(f"{R}/{d}")
 for b in ("cys", "cysd", "cys-seatkeep"):
     src = os.path.join(BIN, b)
     if os.path.exists(src):
         # APFS 복제(사본 실행 = 같은 바이트 · 원본 빌드 산출물은 건드리지 않는다)
         subprocess.run(["/bin/cp", "-c", src, f"{R}/bin/{b}"], check=True)
+        subprocess.run(["/bin/cp", "-c", src, f"{R}/bin2/{b}"], check=True)
 SEAT = f"{R}/bin/seat.py"
 open(SEAT, "w").write(r'''#!/usr/bin/python3 -I
 import os, select, signal, sys, time
@@ -62,17 +65,22 @@ while True:
 os.chmod(SEAT, 0o755)
 ENV = {"HOME": f"{R}/home", "USER": os.environ["USER"], "LOGNAME": os.environ["USER"], "TMPDIR": f"{R}/tmp",
        "CYS_SOCKET": f"{R}/s/d.sock", "CYS_STATE_DIR": f"{R}/packstate", "CYS_PACK_DIR": f"{R}/pack",
-       "CYS_NO_OFFICE_BRIDGE": "1", "CYS_NO_AUTORESTORE": "1", "PATH": f"{R}/bin:/usr/bin:/bin",
+       # CYS_NO_AUTOSTART: 데몬이 없는 틈에 `cys` 가 노브 없는 cysd 를 스스로 띄워 잠금을 먼저 잡는 경합 차단(시험 데몬은 이 스크립트만 띄운다)
+       "CYS_NO_OFFICE_BRIDGE": "1", "CYS_NO_AUTORESTORE": "1", "CYS_NO_AUTOSTART": "1", "PATH": f"{R}/bin:/usr/bin:/bin",
        "TERM": "xterm-256color", "LANG": "en_US.UTF-8"}
 DENV = dict(ENV)
-if MODE in ("adopt", "bound"):
+if MODE in ("adopt", "bound", "reserve", "exitaway"):
     DENV["CYS_SEATKEEP"] = "1"
-if MODE == "adopt":
+if MODE in ("adopt", "reserve", "exitaway"):
     DENV["CYS_SEATKEEP_ADOPT"] = "1"
 
 
 def cys(*a, timeout=30):
-    return subprocess.run([f"{R}/bin/cys", *a], env=ENV, capture_output=True, text=True, timeout=timeout)
+    try:
+        return subprocess.run([f"{R}/bin/cys", *a], env=ENV, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # 부하 속 첫 기동 직후 RPC 가 시한을 넘김(관측됨) — 실패 결과로 돌려 부르는 쪽이 판정·재시도한다.
+        return subprocess.CompletedProcess([*a], 124, "", f"timeout {timeout}s")
 
 
 def alive(pid):
@@ -87,12 +95,12 @@ daemons = []
 first_rpc = []  # (cysd pid, 첫 RPC 성공 벽시계) — A16 「첫 RPC 수락 > 마지막 입양」 대조
 
 
-def start_daemon(tag):
+def start_daemon(tag, bindir="bin"):
     err = open(f"{R}/logs/cysd-{tag}.err", "w")
-    p = subprocess.Popen([f"{R}/bin/cysd"], env=DENV, stdout=err, stderr=err, stdin=subprocess.DEVNULL, start_new_session=True)
+    p = subprocess.Popen([f"{R}/{bindir}/cysd"], env=DENV, stdout=err, stderr=err, stdin=subprocess.DEVNULL, start_new_session=True)
     daemons.append(p)
     t0 = time.time()
-    while time.time() - t0 < 30:
+    while time.time() - t0 < 90:  # 첫 기동은 팩 설치(약 500 파일)로 부하 속에서 30초를 넘길 수 있다
         z = cys("identify")
         if z.returncode == 0:
             idn = json.loads(z.stdout)
@@ -102,7 +110,7 @@ def start_daemon(tag):
         if p.poll() is not None:
             raise SystemExit(f"cysd {tag} 가 rc {p.returncode} 로 끝남 — {R}/logs/cysd-{tag}.err")
         time.sleep(0.05)
-    raise SystemExit(f"cysd {tag} 가 30초 안에 응답 없음")
+    raise SystemExit(f"cysd {tag} 가 90초 안에 응답 없음")
 
 
 def keepers():
@@ -114,6 +122,91 @@ def keepers():
 def seat_lines(log):
     return open(log, errors="replace").read().splitlines()
 
+
+if MODE == "exitaway":
+    d, _ = start_daemon("0")
+    log = f"{R}/logs/x0.log"
+    x = cys("new-surface", "--cwd", "/private/tmp", "--role", "seatx", "--cmd", f"{SEAT} {log} 50")
+    t = time.time()
+    while not (os.path.exists(log) and open(log).readline().startswith("START")) and time.time() - t < 10:
+        time.sleep(0.05)
+    seat_pid = int(re.search(r"pid=(\d+)", open(log).readline()).group(1))
+    time.sleep(1.0)
+    os.kill(d.pid, signal.SIGKILL)
+    d.wait()
+    os.kill(seat_pid, signal.SIGTERM)  # 데몬 없는 사이 좌석이 끝남(seat.py = rc 143)
+    t = time.time()
+    while keepers() and time.time() - t < 20:  # seatkeep: 조종자 없이 유예 뒤 .exit 를 남기고 끝남
+        time.sleep(0.2)
+    skdir = f"{R}/s/seatkeep"
+    res = {"keepers_left": len(keepers()), "exit_files_before": sorted(n for n in os.listdir(skdir) if n.endswith(".exit"))}
+    d, _ = start_daemon("1")
+    time.sleep(1.0)
+    errlog = open(f"{R}/logs/cysd-1.err").read()
+    res["exit_files_after"] = sorted(n for n in os.listdir(skdir) if n.endswith(".exit"))
+    res["record_files_after"] = sorted(n for n in os.listdir(skdir) if n.endswith(".cysd.json"))
+    res["consumed_log"] = [l for l in errlog.splitlines() if "종료 기록 소비" in l or "좌석 입양 " in l][:3]
+    res["listed"] = "seatx" in cys("list").stdout
+    again = cys("new-surface", "--cwd", "/private/tmp", "--role", "seatx", "--cmd", "sleep 30")
+    res["same_role_after_rc"] = again.returncode
+    print(json.dumps(res, ensure_ascii=False), flush=True)
+    if OUT:
+        open(OUT, "a").write(json.dumps(res, ensure_ascii=False) + "\n")
+    if again.stdout.strip():
+        cys("close-surface", again.stdout.strip())
+    d.send_signal(signal.SIGTERM)
+    try:
+        d.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        d.kill()
+    sys.exit(0)
+
+if MODE == "reserve":
+    d, _ = start_daemon("0")
+    log = f"{R}/logs/r0.log"
+    x = cys("new-surface", "--cwd", "/private/tmp", "--role", "seatr", "--cmd", f"{SEAT} {log} 50")
+    sid = x.stdout.strip()
+    t = time.time()
+    while not (os.path.exists(log) and open(log).readline().startswith("START")) and time.time() - t < 10:
+        time.sleep(0.05)
+    seat_pid = int(re.search(r"pid=(\d+)", open(log).readline()).group(1))
+    time.sleep(1.0)
+    os.kill(d.pid, signal.SIGKILL)
+    d.wait()
+    d, _ = start_daemon("1", bindir="bin2")  # 다른 경로의 cysd = seatkeep·cysd 상호 확인 실패 → 미결
+    time.sleep(1.0)
+    res = {"seat_alive_after_failed_adopt": alive(seat_pid), "listed": "seatr" in cys("list").stdout}
+    blocked = cys("new-surface", "--cwd", "/private/tmp", "--role", "seatr", "--cmd", "sleep 30")
+    res["same_role_create_rc"] = blocked.returncode
+    res["same_role_refused_reason"] = "seat_adopt_reserved" in (blocked.stdout + blocked.stderr)
+    other = cys("new-surface", "--cwd", "/private/tmp", "--role", "seatq", "--cmd", "sleep 30")
+    res["other_role_create_rc"] = other.returncode
+    # 미결 seatkeep 을 끝낸다(이 시험이 띄운 그 pid 만) → 예약이 풀려야 한다.
+    for k in keepers():
+        os.kill(k, signal.SIGKILL)
+    t = time.time()
+    while alive(seat_pid) and time.time() - t < 10:
+        time.sleep(0.1)
+    res["seat_alive_after_keeper_kill"] = alive(seat_pid)
+    again = cys("new-surface", "--cwd", "/private/tmp", "--role", "seatr", "--cmd", "sleep 30")
+    res["same_role_after_release_rc"] = again.returncode
+    errlog = open(f"{R}/logs/cysd-1.err").read()
+    res["adopt_log"] = [l for l in errlog.splitlines() if "좌석 입양" in l][:3]
+    print(json.dumps(res, ensure_ascii=False), flush=True)
+    if OUT:
+        open(OUT, "a").write(json.dumps(res, ensure_ascii=False) + "\n")
+    for x2 in (other, again):
+        ref = x2.stdout.strip()
+        if ref:
+            cys("close-surface", ref)
+    d.send_signal(signal.SIGTERM)
+    try:
+        d.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        d.kill()
+    if alive(seat_pid):
+        os.kill(seat_pid, signal.SIGKILL)
+    sys.exit(0)
 
 seats = []  # (surface ref, role, seat pid, log)
 results = []

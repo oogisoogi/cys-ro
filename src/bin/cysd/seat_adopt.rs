@@ -2,24 +2,26 @@
 //!
 //! 노브 `CYS_SEATKEEP_ADOPT=1`(+ `CYS_SEATKEEP=1`) 일 때만 일한다 — 끔이면 이 파일의 어떤 함수도 파일·소켓에 닿지 않는다.
 //!
-//! 하는 일 셋:
-//! ① **좌석 기록**(`record_surface`·`record_all`): seatkeep 경유 좌석마다 cysd 가 아는 신원·약속(T0 ⓑ — 번호·역할·명령·폴더·에이전트·
-//!    세션·계정 폴더·각성 시각 …)을 seatkeep 상태 폴더의 `<seatkeep id>.cysd.json` 에 원자 쓰기한다. 생성 직후 1회 + `persist_topology`
-//!    마다(역할 claim·메타·세션 등록이 모두 그 길을 지난다). 좌석 토큰은 **쓰지 않는다**(비편입 계약 · `governance.rs` P1 · T5 몫).
-//! ② **기동 입양**(`adopt_on_boot`): 데몬 시작 잠금을 잡은 뒤 · 소켓 accept 전(main.rs 호출 자리) — 기록마다 seatkeep 등록부를 대조하고
-//!    (단계 `committed` · pid 생존 · 출생 시각 일치) 그 소켓에 조종자로 붙어(`seat_proc::adopt_connect`) 같은 번호의 `Surface` 로 다시
-//!    등록한다(`Daemon::create_surface_core` 의 입양 갈래 — 생성과 같은 길 · 자식을 띄우지 않음). 결과 = 입양됨 · 죽음 확인(기록 정리) ·
-//!    미결(살아 있는데 붙지 못함).
-//! ③ **복원 막기(T1 최소 대역 · 이 파일 한 곳)**: 입양된 역할은 accept 전에 `roles` 맵에 들어가므로 phoenix·`cys restore` 가 「가동 중」으로
-//!    보고 건너뛴다(별도 장치 없음). 미결이 하나라도 있으면 그 기동의 자동 복원을 통째로 보류한다(`restore_should_hold`) — 살아 있는
-//!    좌석의 대화를 새 좌석이 이어 쓰는(작성자 둘) 길을 닫는 보수 처분. ★T1(작성자 하나 · 대화 소유 임대)이 들어오면 **`restore_should_hold`
-//!    한 함수만** 그 임대 판정으로 갈아끼운다(부르는 자리 = main.rs `spawn_auto_restore` 1곳).
+//! 하는 일 넷:
+//! ① **좌석 기록**: seatkeep 경유 좌석마다 cysd 가 아는 신원·약속(T0 ⓑ)을 seatkeep 상태 폴더의 `<seatkeep id>.cysd.json` 에 원자 쓰기한다.
+//!    자식 기동 **전** 임시본(`record_provisional` · seatkeep pid 없음 — 못 쓰면 좌석을 만들지 않는다) → 기동 직후 · `persist_topology` 마다 전체본.
+//!    쓰기는 한 잠금 안에서 「스냅샷 → 고유 임시 파일 → rename」(늦은 스냅샷이 새 값을 덮지 않음 · codex T4 1R #5). 좌석 토큰은 쓰지 않는다(비편입 계약 · T5 몫).
+//! ② **기동 입양**(`adopt_on_boot`): 시작 잠금 뒤 · watchdog·accept·자동 복원 전(main.rs). 판정(`judge`)은 **pid 생존 + 출생 시각**을 먼저 보고
+//!    (기록의 seatkeep 출생 시각에 결박), 등록부가 없거나 읽기 오류여도 산 pid 는 **미결**(지우지 않음 · codex T4 1R #3). 붙기 = 소켓 경로는 id 에서
+//!    도출 · 연결 뒤 상대 pid·출생 시각·실행 파일을 다시 확인(`seat_proc::adopt_connect` · codex T4 1R #2). 죽음 확인 = 남은 `.exit` 를 사건으로
+//!    발행한 뒤 파일 정리(codex T4 1R #6).
+//! ③ **미결 예약(T1 최소 대역 · 이 파일 한 곳)**: 살아 있으나 입양하지 못한 좌석의 역할을 데몬이 사는 동안 예약한다 —
+//!    `surface_create_blocked` 가 `surface.create` 입구에서 그 역할의 새 좌석을 거절한다(자동 복원·`cys restore`·phoenix 재시도 모두 그 입구를
+//!    지남 · codex T4 1R #1). 예약은 그 seatkeep 이 끝나면(pid 없음·출생 시각 다름) 풀린다. 역할을 모르는 미결(기록·env 모두 못 읽음)이 있으면
+//!    역할 있는 좌석 생성을 모두 거절하고 그 기동의 자동 복원을 보류한다(`restore_should_hold`). 입양된 역할은 accept 전에 `roles` 맵에 있어
+//!    따로 막지 않는다. ★T1(대화 소유 임대)이 오면 **`surface_create_blocked`·`restore_should_hold` 두 함수만** 갈아끼운다.
+//! ④ **좌석 끝**: 좌석이 끝나면 기록을 지운다(`forget_surface` · 읽기 스레드 EOF) — 정상 종료 좌석이 다음 기동에 「없는 사이 끝남」으로 보이지 않게.
 
 use crate::state::{Daemon, Surface};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// 좌석 기록 파일 꼬리(seatkeep 의 `<id>.json` 등록부와 구별 — seatkeep 은 이 이름을 보지 않는다).
@@ -28,14 +30,22 @@ pub(crate) const RECORD_SUFFIX: &str = ".cysd.json";
 const RECORD_SCHEMA: u32 = 1;
 /// 입양 직후 큐 배달을 멈추는 시간 — 꼬리 재생·크기 흔들기로 화면이 다시 그려진 뒤 초안 관문(화면 판정)이 판단하게(T0 §2-4).
 pub(crate) const ADOPT_QUEUE_PAUSE: std::time::Duration = std::time::Duration::from_secs(3);
+/// 임시본 기록(seatkeep pid 없음)만 있고 등록부도 없을 때 「아직 뜨는 중」으로 볼 상한 — seatkeep 의 첫 조종자 상한(15초)보다 넉넉히.
+/// 넘으면 그 seatkeep 은 스스로 끝났거나 뜨지 못했다(죽음 확인).
+const PROVISIONAL_MAX_SECS: f64 = 60.0;
 
 /// cysd 가 좌석마다 남기는 신원·약속(T0 ⓑ 중 입양에 쓰는 것). 모르는 칸은 None/기본값 — 추측으로 채우지 않는다.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct SeatRecord {
     pub schema: u32,
     pub skid: String,
+    /// 진단용(입양은 이 값을 쓰지 않고 `<상태 폴더>/<skid>.sock` 을 쓴다 · codex T4 1R #2).
     pub sock: String,
+    /// seatkeep pid — 0 = 임시본(자식 기동 전 기록 · 등록부의 pid 를 쓴다).
     pub keeper_pid: u32,
+    /// seatkeep 출생 시각(µs) — 기록을 그 seatkeep 한 개에 결박한다(pid 재사용·남의 프로세스 차단). 임시본 = None.
+    #[serde(default)]
+    pub keeper_start_us: Option<u64>,
     pub surface_id: u64,
     pub display_no: Option<u16>,
     pub title: String,
@@ -58,7 +68,7 @@ pub(crate) struct SeatRecord {
     pub directive_verified: Option<bool>,
     pub pack_reinject: Option<crate::state::PackReinject>,
     pub gate_pending: Option<crate::state::GatePending>,
-    /// 기록 시각(진단).
+    /// 기록 시각(진단 · 임시본 나이 판정).
     pub at: f64,
 }
 
@@ -73,12 +83,36 @@ pub(crate) fn enabled() -> bool {
     crate::seat_proc::seatkeep_adopt_enabled()
 }
 
-/// 좌석 하나의 기록 경로(seatkeep 소켓 옆).
-fn record_path(link: &crate::seat_proc::SeatLink) -> Option<PathBuf> {
-    link.sock().parent().map(|d| d.join(format!("{}{RECORD_SUFFIX}", link.skid())))
+// ─────────────────────────────── ① 좌석 기록 ───────────────────────────────
+
+/// 기록 쓰기 잠금(전 좌석 공용) — 스냅샷과 쓰기를 같은 잠금 안에서 해 늦은 스냅샷이 새 값을 덮지 않는다.
+static RECORD_LOCK: Mutex<()> = Mutex::new(());
+
+fn record_path_in(dir: &Path, skid: &str) -> PathBuf {
+    dir.join(format!("{skid}{RECORD_SUFFIX}"))
 }
 
-/// 살아 있는 seatkeep 좌석의 지금 신원·약속으로 기록을 만든다(순수 · 잠금은 필드마다 짧게).
+/// 고유 임시 파일 → fsync → rename(0600). 같은 이름 임시 파일을 두 쓰기가 나눠 쓰지 않는다.
+fn write_record_file(path: &Path, rec: &SeatRecord) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let text = serde_json::to_string(rec).map_err(std::io::Error::other)?;
+    let dir = path.parent().ok_or_else(|| std::io::Error::other("기록 경로에 폴더가 없음"))?;
+    let tmp = dir.join(format!(".{}.{}.{}.tmp", path.file_name().and_then(|n| n.to_str()).unwrap_or("rec"), std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)));
+    let res = (|| {
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
+        f.write_all(text.as_bytes())?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    res
+}
+
+/// 살아 있는 seatkeep 좌석의 지금 신원·약속으로 기록을 만든다(필드마다 짧게 잠근다).
 pub(crate) fn snapshot(s: &Surface, link: &crate::seat_proc::SeatLink) -> SeatRecord {
     let (rows, cols) = {
         let p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
@@ -89,6 +123,7 @@ pub(crate) fn snapshot(s: &Surface, link: &crate::seat_proc::SeatLink) -> SeatRe
         skid: link.skid().to_string(),
         sock: link.sock().to_string_lossy().into_owned(),
         keeper_pid: link.keeper_pid(),
+        keeper_start_us: link.keeper_start_us(),
         surface_id: s.id,
         display_no: s.display_no,
         title: s.title.lock().unwrap_or_else(|e| e.into_inner()).clone(),
@@ -115,26 +150,91 @@ pub(crate) fn snapshot(s: &Surface, link: &crate::seat_proc::SeatLink) -> SeatRe
     }
 }
 
+/// 자식 기동 전 임시본 — 생성 함수가 seatkeep 을 띄우기 바로 앞에서 부른다. 실패 = Err(호출자는 좌석을 만들지 않는다: 기록 없는 산 좌석을
+/// 만들지 않기 위해 · 노브 켬일 때만 불림).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn record_provisional(
+    dir: &Path,
+    skid: &str,
+    surface_id: u64,
+    display_no: Option<u16>,
+    title: &str,
+    role: Option<&str>,
+    cmd: &str,
+    cwd: &str,
+    env_injected: bool,
+    rows: u16,
+    cols: u16,
+    claude_config_dir: Option<&str>,
+    config_dir_trusted: bool,
+) -> Result<(), String> {
+    let now = crate::state::now_epoch();
+    let rec = SeatRecord {
+        schema: RECORD_SCHEMA,
+        skid: skid.into(),
+        sock: dir.join(format!("{skid}.sock")).to_string_lossy().into_owned(),
+        keeper_pid: 0,
+        keeper_start_us: None,
+        surface_id,
+        display_no,
+        title: title.into(),
+        role: role.map(str::to_string),
+        cmd: cmd.into(),
+        cwd: cwd.into(),
+        created_at: now,
+        env_injected,
+        rows,
+        cols,
+        agent_meta: None,
+        agent_session_id: None,
+        claude_config_dir: claude_config_dir.map(str::to_string),
+        config_dir_trusted,
+        registered_transcript: None,
+        repin_anchor: None,
+        agent_epoch: 0,
+        conversation_epoch: 0,
+        awakened_at: None,
+        directive_verified: None,
+        pack_reinject: None,
+        gate_pending: None,
+        at: now,
+    };
+    let _g = RECORD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    std::fs::create_dir_all(dir).map_err(|e| format!("좌석 기록 폴더 {}: {e}", dir.display()))?;
+    write_record_file(&record_path_in(dir, skid), &rec).map_err(|e| format!("좌석 기록 임시본 쓰기 실패 {}: {e}", dir.display()))
+}
+
 /// 좌석 하나를 기록한다(끝난 좌석 = 기록 삭제). 노브 끔·직접 PTY 좌석 = 아무것도 안 함.
 pub(crate) fn record_surface(s: &Surface) {
     if !enabled() {
         return;
     }
     let Some(link) = s.seat_link.as_deref() else { return };
-    let Some(path) = record_path(link) else { return };
+    let Some(dir) = link.sock().parent() else { return };
+    let path = record_path_in(dir, link.skid());
+    let _g = RECORD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if s.exited.load(Ordering::SeqCst) {
         let _ = std::fs::remove_file(&path);
         return;
     }
     let rec = snapshot(s, link);
-    let Ok(text) = serde_json::to_string(&rec) else { return };
-    let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else { return };
-    if let Err(e) = crate::governance::write_json_atomic(dir, name, &text) {
-        eprintln!("[cysd] 좌석 기록 쓰기 실패 surface:{} ({}): {e} — 이 좌석은 cysd 가 죽으면 입양되지 못할 수 있다", s.id, path.display());
+    if let Err(e) = write_record_file(&path, &rec) {
+        eprintln!("[cysd] 좌석 기록 쓰기 실패 surface:{} ({}): {e} — 이 좌석은 직전 기록으로 입양된다", s.id, path.display());
     }
 }
 
-/// 전 좌석 기록(`persist_topology` 가 부른다 — 신원·약속이 바뀌는 모든 자리가 그 길을 지난다).
+/// 좌석이 끝났다(읽기 스레드 EOF) — 기록을 지운다.
+pub(crate) fn forget_surface(s: &Surface) {
+    if !enabled() {
+        return;
+    }
+    let Some(link) = s.seat_link.as_deref() else { return };
+    let Some(dir) = link.sock().parent() else { return };
+    let _g = RECORD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _ = std::fs::remove_file(record_path_in(dir, link.skid()));
+}
+
+/// 전 좌석 기록(`persist_topology` 가 부른다 — 신원·약속이 바뀌는 자리가 모두 그 길을 지난다).
 pub(crate) fn record_all(daemon: &Daemon) {
     if !enabled() {
         return;
@@ -145,39 +245,103 @@ pub(crate) fn record_all(daemon: &Daemon) {
     }
 }
 
-// ─────────────────────────────── 기동 입양 ───────────────────────────────
+// ─────────────────────────────── ② 판정 ───────────────────────────────
 
-/// 등록부 대조 결과(순수 판정 — 시험 대상).
+/// seatkeep 등록부(`<id>.json`) 읽기 결과 — 「없음」과 「읽기 오류」를 가른다(codex T4 1R #3).
+#[derive(Debug)]
+pub(crate) enum RegRead {
+    Missing,
+    Error,
+    Unparsable,
+    Ok(serde_json::Value),
+}
+
+pub(crate) fn read_registry(path: &Path) -> RegRead {
+    match std::fs::read_to_string(path) {
+        Ok(t) => match serde_json::from_str::<serde_json::Value>(&t) {
+            Ok(v) if v.is_object() => RegRead::Ok(v),
+            _ => RegRead::Unparsable,
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => RegRead::Missing,
+        Err(_) => RegRead::Error,
+    }
+}
+
+/// 판정 결과.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Liveness {
-    /// 붙어 볼 만하다(단계 committed · pid 생존 · 출생 시각 일치).
+    /// 붙어 볼 만하다(pid 생존 · 출생 시각 = 기록·등록부 · 단계 committed/exited).
     Alive,
-    /// 확실히 끝났다(등록부 없음·끝난 단계·pid 없음·출생 시각 다름 = pid 재사용) — 기록 정리 대상.
+    /// 확실히 끝났다(pid 없음 · 출생 시각 다름 = pid 재사용 · 오래된 임시본) — 파일 정리 대상.
     Dead(&'static str),
-    /// 판정 불가(등록부 읽기·해석 실패 · 출생 시각 판독 불가) — 미결.
+    /// 판정 불가 또는 산 pid 인데 등록부가 어긋남 — 미결(파일을 지우지 않는다 · 역할 예약).
     Unknown(&'static str),
 }
 
-/// seatkeep 등록부(`<id>.json`) 값 + 지금 관측(그 pid 의 생존·출생 시각)으로 판정.
-pub(crate) fn judge(rec: &SeatRecord, registry: Option<&serde_json::Value>, alive: bool, start_us_now: Option<u64>) -> Liveness {
-    let Some(r) = registry else { return Liveness::Dead("registry_missing") };
-    let phase = r["phase"].as_str().unwrap_or("");
-    match phase {
-        "committed" => {}
-        "prepare" => return Liveness::Dead("never_committed"),
-        "" => return Liveness::Unknown("registry_unparsable"),
-        _ => return Liveness::Dead("ended"),
+/// 판정 입력(순수 · 시험 대상).
+pub(crate) struct JudgeIn<'a> {
+    /// 기록이 있으면 그 seatkeep pid(0 = 임시본)·출생 시각·나이(초).
+    pub rec: Option<(u32, Option<u64>, f64)>,
+    pub reg: &'a RegRead,
+    /// 판정 대상 pid 의 지금 관측(생존 · 출생 시각) — 대상 pid = 기록의 pid(0 이 아니면) 아니면 등록부 pid.
+    pub alive: bool,
+    pub start_now: Option<u64>,
+}
+
+/// 판정 대상 pid(기록 우선 · 임시본이면 등록부).
+pub(crate) fn target_pid(rec: Option<(u32, Option<u64>, f64)>, reg: &RegRead) -> Option<u32> {
+    match rec {
+        Some((p, _, _)) if p != 0 => Some(p),
+        _ => match reg {
+            RegRead::Ok(r) => r["pid"].as_u64().filter(|p| *p > 0 && *p <= i32::MAX as u64).map(|p| p as u32),
+            _ => None,
+        },
     }
-    if r["pid"].as_u64() != Some(rec.keeper_pid as u64) {
-        return Liveness::Dead("pid_mismatch");
+}
+
+pub(crate) fn judge(j: &JudgeIn) -> Liveness {
+    let reg_start = match j.reg {
+        RegRead::Ok(r) => r["start_us"].as_u64(),
+        _ => None,
+    };
+    if target_pid(j.rec, j.reg).is_none() {
+        // 임시본만 있고 등록부에 pid 도 없다 — 아직 뜨는 중이거나 뜨지 못했다.
+        return match j.rec {
+            Some((_, _, age)) if age < PROVISIONAL_MAX_SECS => Liveness::Unknown("provisional_starting"),
+            Some(_) => Liveness::Dead("never_started"),
+            None => Liveness::Unknown("no_pid"),
+        };
     }
-    if !alive {
+    if !j.alive {
         return Liveness::Dead("keeper_gone");
     }
-    match (r["start_us"].as_u64(), start_us_now) {
-        (Some(a), Some(b)) if a == b => Liveness::Alive,
-        (Some(_), Some(_)) => Liveness::Dead("pid_reused"),
-        _ => Liveness::Unknown("start_unreadable"),
+    let Some(now) = j.start_now else { return Liveness::Unknown("start_unreadable") };
+    let expected = j.rec.and_then(|(_, s, _)| s).or(reg_start);
+    match expected {
+        // 기록과 다르지만 등록부는 지금 그 프로세스와 같다 = 기록이 낡았거나 손댄 것 — 산 seatkeep 파일을 지우지 않는다(미결).
+        Some(e) if e != now && reg_start == Some(now) => return Liveness::Unknown("record_start_mismatch"),
+        Some(e) if e != now => return Liveness::Dead("pid_reused"),
+        Some(_) => {}
+        None => return Liveness::Unknown("start_unknown"),
+    }
+    match j.reg {
+        RegRead::Missing => Liveness::Unknown("registry_missing_live"),
+        RegRead::Error => Liveness::Unknown("registry_io"),
+        RegRead::Unparsable => Liveness::Unknown("registry_unparsable"),
+        RegRead::Ok(r) => {
+            let pid = target_pid(j.rec, j.reg).unwrap_or(0) as u64;
+            if r["pid"].as_u64() != Some(pid) {
+                return Liveness::Unknown("registry_pid_mismatch");
+            }
+            if reg_start != Some(now) {
+                return Liveness::Unknown("registry_start_mismatch");
+            }
+            match r["phase"].as_str().unwrap_or("") {
+                "committed" | "exited" => Liveness::Alive,
+                "prepare" => Liveness::Unknown("preparing"),
+                _ => Liveness::Unknown("ending"),
+            }
+        }
     }
 }
 
@@ -200,10 +364,12 @@ pub(crate) fn process_start_us(pid: u32) -> Option<u64> {
     }
 }
 
-fn pid_alive(pid: u32) -> bool {
+pub(crate) fn pid_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
-        pid > 0 && (unsafe { libc::kill(pid as i32, 0) } == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM))
+        pid > 0
+            && pid <= i32::MAX as u32
+            && (unsafe { libc::kill(pid as i32, 0) } == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM))
     }
     #[cfg(not(unix))]
     {
@@ -211,6 +377,71 @@ fn pid_alive(pid: u32) -> bool {
         false
     }
 }
+
+/// 같은 사용자 프로세스의 환경 변수 하나(맥 `KERN_PROCARGS2` · seatkeep 은 플랫폼 실행 파일이 아니라 읽힌다). 기록을 못 읽은 미결 좌석의
+/// 역할(`CYS_ROLE` — cysd 가 seatkeep 기동 env 에 실은 값)을 알아내 예약을 좁히는 데만 쓴다. 못 읽으면 None.
+pub(crate) fn process_env_var(pid: u32, key: &str) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut argmax: libc::c_int = 0;
+        let mut sz = std::mem::size_of::<libc::c_int>();
+        let mut mib = [libc::CTL_KERN, libc::KERN_ARGMAX];
+        if unsafe { libc::sysctl(mib.as_mut_ptr(), 2, (&mut argmax as *mut libc::c_int).cast(), &mut sz, std::ptr::null_mut(), 0) } != 0 || argmax <= 0 {
+            return None;
+        }
+        let mut buf = vec![0u8; argmax as usize];
+        let mut len = buf.len();
+        let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+        if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, buf.as_mut_ptr().cast(), &mut len, std::ptr::null_mut(), 0) } != 0 || len < 4 {
+            return None;
+        }
+        parse_procargs_env(&buf[..len], key)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (pid, key);
+        None
+    }
+}
+
+/// `KERN_PROCARGS2` 버퍼 = [argc i32][실행 경로\0][\0 채움…][argv\0 × argc][env\0 …][\0] — env 에서 `key=` 를 찾는다(순수 · 시험 대상).
+pub(crate) fn parse_procargs_env(buf: &[u8], key: &str) -> Option<String> {
+    let argc = i32::from_ne_bytes(buf.get(..4)?.try_into().ok()?);
+    if argc < 0 {
+        return None;
+    }
+    let mut i = 4;
+    while i < buf.len() && buf[i] != 0 {
+        i += 1; // 실행 경로
+    }
+    while i < buf.len() && buf[i] == 0 {
+        i += 1; // 채움
+    }
+    let mut seen = 0;
+    while i < buf.len() && seen < argc {
+        while i < buf.len() && buf[i] != 0 {
+            i += 1;
+        }
+        i += 1;
+        seen += 1;
+    }
+    let want = format!("{key}=");
+    while i < buf.len() {
+        let end = buf[i..].iter().position(|b| *b == 0).map(|p| i + p).unwrap_or(buf.len());
+        if end == i {
+            break; // 빈 문자열 = env 끝
+        }
+        if let Ok(s) = std::str::from_utf8(&buf[i..end]) {
+            if let Some(v) = s.strip_prefix(&want) {
+                return Some(v.to_string());
+            }
+        }
+        i = end + 1;
+    }
+    None
+}
+
+// ─────────────────────────────── ③ 미결 예약 ───────────────────────────────
 
 /// 한 좌석의 입양 결과.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -220,39 +451,112 @@ pub(crate) struct Outcome {
     /// adopted · dead · unresolved
     pub result: &'static str,
     pub reason: String,
+    pub role: Option<String>,
 }
 
-/// 이 기동의 입양 요약(복원 막기 판정 · `system` 조회용).
+/// 이 기동의 입양 요약.
 #[derive(Debug, Default, Clone, Serialize)]
 pub(crate) struct BootSummary {
     pub ran: bool,
     pub outcomes: Vec<Outcome>,
 }
 
+/// 마지막 기동 입양 요약(진단 · 결과마다 `seat.adopted`/`seat.adopt_skipped` 이벤트와 같은 내용).
 static SUMMARY: Mutex<Option<BootSummary>> = Mutex::new(None);
 
-/// 마지막 기동 입양 요약.
-pub(crate) fn summary() -> BootSummary {
-    SUMMARY.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_default()
+/// 미결 좌석 예약 — 그 seatkeep 이 살아 있는 동안(pid · 출생 시각) 유효.
+#[derive(Debug, Clone)]
+pub(crate) struct Pending {
+    pub skid: String,
+    /// None = 역할을 모름(기록·env 모두 못 읽음) → 역할 있는 좌석 생성을 모두 막는다.
+    pub role: Option<String>,
+    pub pid: Option<u32>,
+    pub start_us: Option<u64>,
+    /// 임시본(pid 없음)일 때 예약이 끝나는 벽시계.
+    pub until: Option<f64>,
 }
 
-/// ★T1 최소 대역(갈아끼울 자리 = 이 함수 하나): 이 기동에서 자동 복원을 통째로 보류할 까닭. 미결 좌석이 있으면 Some.
-/// 입양된 좌석은 여기서 막지 않는다 — accept 전에 `roles` 에 들어가 phoenix·`cys restore` 의 「가동 중」 판정이 건너뛴다.
+static PENDING: Mutex<Vec<Pending>> = Mutex::new(Vec::new());
+
+/// 예약이 아직 유효한가(관측 함수 주입 — 시험).
+pub(crate) fn pending_live(p: &Pending, alive: impl Fn(u32) -> bool, start: impl Fn(u32) -> Option<u64>, now: f64) -> bool {
+    match p.pid {
+        Some(pid) => alive(pid) && (p.start_us.is_none() || start(pid) == p.start_us),
+        None => p.until.map(|u| now < u).unwrap_or(true),
+    }
+}
+
+/// 순수 판정 — 이 역할의 새 좌석을 막아야 하나(예약 목록은 이미 살아 있는 것만).
+pub(crate) fn blocked_by(pending: &[Pending], role: Option<&str>) -> Option<String> {
+    let role = role?;
+    if let Some(p) = pending.iter().find(|p| p.role.as_deref() == Some(role)) {
+        return Some(format!(
+            "seat_adopt_reserved: 역할 {role} 의 좌석(seatkeep {})이 살아 있으나 입양되지 않았다 — 같은 대화를 새 좌석이 이어 쓰지 않게 \
+             그 seatkeep 이 끝날 때까지 이 역할의 새 좌석을 만들지 않는다(T4 · T1 전 대역)",
+            p.skid
+        ));
+    }
+    if let Some(p) = pending.iter().find(|p| p.role.is_none()) {
+        return Some(format!(
+            "seat_adopt_reserved: 역할을 알 수 없는 미입양 좌석(seatkeep {})이 살아 있다 — 그 좌석이 끝날 때까지 역할 있는 새 좌석을 만들지 않는다(T4 · T1 전 대역)",
+            p.skid
+        ));
+    }
+    None
+}
+
+/// ★T1 최소 대역 ①(갈아끼울 자리): `surface.create` 입구 — 이 역할의 새 좌석을 거절할 까닭(Some). 노브 끔 = 늘 None.
+pub(crate) fn surface_create_blocked(role: Option<&str>) -> Option<String> {
+    if !enabled() || role.is_none() {
+        return None;
+    }
+    let mut g = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+    let now = crate::state::now_epoch();
+    g.retain(|p| pending_live(p, pid_alive, process_start_us, now));
+    blocked_by(&g, role)
+}
+
+/// ★T1 최소 대역 ②(갈아끼울 자리): 기동 자동 복원을 통째로 보류할 까닭 — 역할을 모르는 미결이 있을 때만(역할을 아는 미결은 ① 이 그 역할만 막는다).
 pub(crate) fn restore_should_hold() -> Option<String> {
-    let s = summary();
-    let unresolved: Vec<&Outcome> = s.outcomes.iter().filter(|o| o.result == "unresolved").collect();
-    if unresolved.is_empty() {
+    if !enabled() {
+        return None;
+    }
+    let mut g = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+    let now = crate::state::now_epoch();
+    g.retain(|p| pending_live(p, pid_alive, process_start_us, now));
+    let unknown: Vec<&str> = g.iter().filter(|p| p.role.is_none()).map(|p| p.skid.as_str()).collect();
+    if unknown.is_empty() {
         return None;
     }
     Some(format!(
-        "seat_adopt_unresolved: 살아 있으나 입양하지 못한 좌석 {}개({}) — 그 대화를 새 좌석이 이어 쓰지 않게 자동 복원을 보류한다(T1 전 대역)",
-        unresolved.len(),
-        unresolved.iter().map(|o| o.skid.as_str()).collect::<Vec<_>>().join(",")
+        "seat_adopt_unresolved: 역할을 알 수 없는 미입양 좌석 {}개({}) — 그 대화를 새 좌석이 이어 쓰지 않게 자동 복원을 보류한다(T1 전 대역)",
+        unknown.len(),
+        unknown.join(",")
     ))
 }
 
-/// 죽음이 확인된 좌석의 파일 정리 — cysd 기록 + seatkeep 등록부·잠금·소켓·종료 기록. 교체 기록(`.log`)은 사후 적발 장치라 남긴다.
-fn cleanup_dead(dir: &Path, skid: &str) {
+#[cfg(test)]
+pub(crate) fn test_set_pending(p: Vec<Pending>) {
+    *PENDING.lock().unwrap_or_else(|e| e.into_inner()) = p;
+}
+
+// ─────────────────────────────── ② 기동 입양 ───────────────────────────────
+
+/// 죽음이 확인된 좌석의 정리 — 남은 종료 기록(`.exit`)을 사건으로 먼저 발행하고(소비) cysd 기록·등록부·잠금·소켓·종료 기록을 지운다.
+/// 교체 기록(`.log`)은 사후 적발 장치라 남긴다.
+fn consume_dead(daemon: &Daemon, dir: &Path, skid: &str, rec: Option<&SeatRecord>, why: &str) {
+    let exit_path = dir.join(format!("{skid}.exit"));
+    if let Ok(t) = std::fs::read_to_string(&exit_path) {
+        let v: serde_json::Value = serde_json::from_str(&t).unwrap_or(serde_json::Value::Null);
+        eprintln!("[cysd] 좌석 입양 {skid}: 데몬 없는 사이 끝난 좌석의 종료 기록 소비 — {}", v["seats"]);
+        daemon.bus.publish(
+            "seat.exited_while_away",
+            "surface",
+            rec.map(|r| r.surface_id),
+            json!({"skid": skid, "surface_ref": rec.map(|r| cys::surface_ref(r.surface_id)),
+                   "role": rec.and_then(|r| r.role.clone()), "exit": v["seats"], "why": why}),
+        );
+    }
     for ext in [RECORD_SUFFIX, ".json", ".lock", ".sock", ".exit"] {
         let _ = std::fs::remove_file(dir.join(format!("{skid}{ext}")));
     }
@@ -267,108 +571,112 @@ pub(crate) fn adopt_on_boot(daemon: &Arc<Daemon>) {
     #[cfg(target_os = "macos")]
     {
         let dir = crate::seat_proc::seatkeep_dir(daemon);
-        let mut names: Vec<String> = match std::fs::read_dir(&dir) {
-            Ok(rd) => rd.filter_map(|e| e.ok()).filter_map(|e| e.file_name().into_string().ok()).filter(|n| n.ends_with(RECORD_SUFFIX)).collect(),
+        // 대상 = 기록(.cysd.json)과 등록부(.json) 이름의 합집합(기록 없는 산 seatkeep 도 본다).
+        let mut ids: Vec<String> = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd
+                .filter_map(|e| e.ok())
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|n| !n.starts_with('.'))
+                .filter_map(|n| n.strip_suffix(RECORD_SUFFIX).map(str::to_string).or_else(|| n.strip_suffix(".json").map(str::to_string)))
+                .filter(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+                .collect(),
             Err(_) => Vec::new(),
         };
-        names.sort();
-        // 기록 없는 산 seatkeep(생성 직후 기록 전에 cysd 가 죽음 · 기록 쓰기 실패) = 번호·역할을 몰라 입양 못 한다. 죽이지 않는다(산 좌석일 수
-        // 있음) — 미결로 올려 그 기동의 자동 복원을 보류한다(같은 대화를 새 좌석이 이어 쓰지 않게) · 경보 이벤트로 남긴다.
-        let recorded: std::collections::HashSet<String> = names.iter().map(|n| n.trim_end_matches(RECORD_SUFFIX).to_string()).collect();
-        for skid in unrecorded_live(&dir, &recorded) {
-            let out = Outcome { skid: skid.clone(), surface_id: None, result: "unresolved", reason: "no_record_live_keeper".into() };
-            eprintln!("[cysd] 좌석 입양 {skid}: 기록 없는 산 seatkeep — 입양 못 함(자동 복원 보류 · 좌석은 건드리지 않음)");
-            daemon.bus.publish("seat.adopt_skipped", "surface", None, json!({"skid": skid, "result": out.result, "reason": out.reason}));
-            summary.outcomes.push(out);
-        }
-        for name in names {
-            let skid = name.trim_end_matches(RECORD_SUFFIX).to_string();
-            let out = adopt_one(daemon, &dir, &skid);
+        ids.sort();
+        ids.dedup();
+        let mut pending = Vec::new();
+        for skid in ids {
+            let (out, p) = adopt_one(daemon, &dir, &skid);
             eprintln!("[cysd] 좌석 입양 {skid}: {} ({})", out.result, out.reason);
             daemon.bus.publish(
                 if out.result == "adopted" { "seat.adopted" } else { "seat.adopt_skipped" },
                 "surface",
                 out.surface_id,
-                json!({"skid": out.skid, "result": out.result, "reason": out.reason,
+                json!({"skid": out.skid, "result": out.result, "reason": out.reason, "role": out.role,
                        "surface_ref": out.surface_id.map(cys::surface_ref)}),
             );
+            if let Some(p) = p {
+                pending.push(p);
+            }
             summary.outcomes.push(out);
         }
+        *PENDING.lock().unwrap_or_else(|e| e.into_inner()) = pending;
     }
     *SUMMARY.lock().unwrap_or_else(|e| e.into_inner()) = Some(summary);
 }
 
-/// 기록(`.cysd.json`)이 없는데 등록부상 committed · 살아 있음 · 출생 시각 일치인 seatkeep id 들.
+/// 좌석 하나 — 결과 + (미결이면) 예약.
 #[cfg(target_os = "macos")]
-fn unrecorded_live(dir: &Path, recorded: &std::collections::HashSet<String>) -> Vec<String> {
-    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
-    let mut out = Vec::new();
-    for e in rd.filter_map(|e| e.ok()) {
-        let Ok(name) = e.file_name().into_string() else { continue };
-        if !name.ends_with(".json") || name.ends_with(RECORD_SUFFIX) || name.starts_with('.') {
-            continue;
-        }
-        let skid = name.trim_end_matches(".json").to_string();
-        if recorded.contains(&skid) {
-            continue;
-        }
-        let Some(r) = std::fs::read_to_string(e.path()).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { continue };
-        let Some(pid) = r["pid"].as_u64().map(|p| p as u32) else { continue };
-        let probe = SeatRecord::probe(pid, &skid);
-        if judge(&probe, Some(&r), pid_alive(pid), process_start_us(pid)) == Liveness::Alive {
-            out.push(skid);
-        }
-    }
-    out.sort();
-    out
-}
-
-impl SeatRecord {
-    /// 판정(`judge`)용 껍데기 — pid·id 만 의미 있음.
-    fn probe(keeper_pid: u32, skid: &str) -> SeatRecord {
-        SeatRecord {
-            schema: RECORD_SCHEMA, skid: skid.into(), sock: String::new(), keeper_pid, surface_id: 0, display_no: None,
-            title: String::new(), role: None, cmd: String::new(), cwd: String::new(), created_at: 0.0, env_injected: false,
-            rows: 0, cols: 0, agent_meta: None, agent_session_id: None, claude_config_dir: None, config_dir_trusted: false,
-            registered_transcript: None, repin_anchor: None, agent_epoch: 0, conversation_epoch: 0, awakened_at: None,
-            directive_verified: None, pack_reinject: None, gate_pending: None, at: 0.0,
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn adopt_one(daemon: &Arc<Daemon>, dir: &Path, skid: &str) -> Outcome {
-    let mk = |surface_id: Option<u64>, result: &'static str, reason: String| Outcome { skid: skid.to_string(), surface_id, result, reason };
-    let rec_path = dir.join(format!("{skid}{RECORD_SUFFIX}"));
-    let rec: SeatRecord = match std::fs::read_to_string(&rec_path).ok().and_then(|t| serde_json::from_str(&t).ok()) {
-        Some(r) => r,
-        None => return mk(None, "unresolved", "record_unreadable".into()),
+fn adopt_one(daemon: &Arc<Daemon>, dir: &Path, skid: &str) -> (Outcome, Option<Pending>) {
+    let rec_path = record_path_in(dir, skid);
+    // 기록: 없음 / 못 읽음 / 있음.
+    let rec: Result<Option<SeatRecord>, ()> = match std::fs::read_to_string(&rec_path) {
+        Ok(t) => serde_json::from_str::<SeatRecord>(&t).ok().filter(|r| r.schema == RECORD_SCHEMA && r.skid == skid).map(Some).ok_or(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(()),
     };
-    if rec.schema != RECORD_SCHEMA || rec.skid != skid {
-        return mk(Some(rec.surface_id), "unresolved", format!("record_schema {} / skid {}", rec.schema, rec.skid));
-    }
-    let registry: Option<serde_json::Value> = match std::fs::read_to_string(dir.join(format!("{skid}.json"))) {
-        Ok(t) => Some(serde_json::from_str(&t).unwrap_or(serde_json::Value::Null)),
-        Err(_) => None,
+    let reg = read_registry(&dir.join(format!("{skid}.json")));
+    let now = crate::state::now_epoch();
+    let rec_in = match &rec {
+        Ok(Some(r)) => Some((r.keeper_pid, r.keeper_start_us, now - r.at)),
+        _ => None,
     };
-    let verdict = judge(&rec, registry.as_ref(), pid_alive(rec.keeper_pid), process_start_us(rec.keeper_pid));
+    let pid = target_pid(rec_in, &reg);
+    let start_now = pid.and_then(process_start_us);
+    let verdict = judge(&JudgeIn { rec: rec_in, reg: &reg, alive: pid.map(pid_alive).unwrap_or(false), start_now });
+    let rec_ref = rec.as_ref().ok().and_then(|r| r.as_ref());
+    let surface_id = rec_ref.map(|r| r.surface_id);
+    let role_of = |r: Option<&SeatRecord>| -> Option<String> {
+        r.and_then(|r| r.role.clone()).or_else(|| pid.and_then(|p| process_env_var(p, cys::ENV_ROLE)))
+    };
+    let mk = |result: &'static str, reason: String, role: Option<String>| Outcome { skid: skid.to_string(), surface_id, result, reason, role };
+    let pend = |role: Option<String>| Pending {
+        skid: skid.to_string(),
+        role,
+        pid,
+        start_us: start_now,
+        until: if pid.is_none() { Some(now + PROVISIONAL_MAX_SECS) } else { None },
+    };
+    // 기록을 못 읽음(권한·손상) — 지우지 않는다. 살아 있는 seatkeep 이면 역할(env)로 예약.
+    if rec.is_err() {
+        if pid.is_none() || matches!(verdict, Liveness::Dead(_)) {
+            return (mk("unresolved", "record_unreadable_keeper_dead".into(), None), None);
+        }
+        let role = role_of(None);
+        return (mk("unresolved", "record_unreadable".into(), role.clone()), Some(pend(role)));
+    }
     match verdict {
         Liveness::Dead(why) => {
-            cleanup_dead(dir, skid);
-            return mk(Some(rec.surface_id), "dead", why.into());
+            consume_dead(daemon, dir, skid, rec_ref, why);
+            return (mk("dead", why.into(), rec_ref.and_then(|r| r.role.clone())), None);
         }
-        Liveness::Unknown(why) => return mk(Some(rec.surface_id), "unresolved", why.into()),
+        Liveness::Unknown(why) => {
+            let role = role_of(rec_ref);
+            return (mk("unresolved", why.into(), role.clone()), Some(pend(role)));
+        }
         Liveness::Alive => {}
     }
+    let Some(rec) = rec.ok().flatten() else {
+        // 기록 없는 산 seatkeep(기록 쓰기 실패 등) — 번호를 몰라 입양 못 한다 · 좌석은 건드리지 않는다.
+        let role = role_of(None);
+        return (mk("unresolved", "no_record_live_keeper".into(), role.clone()), Some(pend(role)));
+    };
+    let role = rec.role.clone();
+    let (Some(pid), Some(start)) = (pid, start_now) else {
+        return (mk("unresolved", "no_pid".into(), role.clone()), Some(pend(role)));
+    };
     if daemon.surfaces.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&rec.surface_id) {
-        return mk(Some(rec.surface_id), "unresolved", "surface_id_taken".into());
+        return (mk("unresolved", "surface_id_taken".into(), role.clone()), Some(pend(role)));
     }
     let size = portable_pty::PtySize { rows: rec.rows.max(1), cols: rec.cols.max(1), pixel_width: 0, pixel_height: 0 };
-    let spawned = match crate::seat_proc::adopt_connect(Path::new(&rec.sock), rec.keeper_pid, size, skid) {
+    let sock = dir.join(format!("{skid}.sock"));
+    let spawned = match crate::seat_proc::adopt_connect(&sock, pid, start, size, skid) {
         Ok(s) => s,
-        Err(e) => return mk(Some(rec.surface_id), "unresolved", format!("connect: {e}")),
+        Err(e) => return (mk("unresolved", format!("connect: {e}"), role.clone()), Some(pend(role))),
     };
-    let id = rec.surface_id;
+    let mut rec = rec;
+    rec.keeper_pid = pid;
+    rec.keeper_start_us = Some(start);
     match daemon.create_surface_core(
         Some(rec.cwd.clone()),
         Some(rec.cmd.clone()),
@@ -381,8 +689,9 @@ fn adopt_one(daemon: &Arc<Daemon>, dir: &Path, skid: &str) -> Outcome {
         None,
         Some(AdoptSeat { rec, spawned }),
     ) {
-        Ok(s) => mk(Some(s.id), "adopted", "ok".into()),
-        Err(e) => mk(Some(id), "unresolved", format!("register: {e}")),
+        Ok(_) => (mk("adopted", "ok".into(), role), None),
+        // 등록 실패 — 붙었던 연결은 손잡이와 함께 닫혔다(seatkeep 은 --adoptable 이라 산다) → 예약.
+        Err(e) => (mk("unresolved", format!("register: {e}"), role.clone()), Some(pend(role))),
     }
 }
 
@@ -403,10 +712,10 @@ pub(crate) fn apply_record(s: &Surface, rec: &SeatRecord) {
     *s.queue_paused_until.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::time::Instant::now() + ADOPT_QUEUE_PAUSE);
 }
 
-/// 입양 직후 화면 다시 그리기 — 꼬리 재생이 끝나면 크기를 흔들어(SIGWINCH) 전체 화면 프로그램이 스스로 다시 그리게 한다(DESIGN §3-2 ⑤ 크래시 경로).
-pub(crate) fn nudge_after_replay(s: Arc<Surface>) {
+/// 입양 좌석 화면 다시 그리기 — 읽기 스레드가 첫 재생을 다 먹은 **직후**에 부른다(codex T4 1R #8 · 타이머 아님). 크기를 흔들어(SIGWINCH)
+/// 전체 화면 프로그램이 스스로 다시 그리게 한다(DESIGN §3-2 ⑤ 크래시 경로). 읽기 스레드를 막지 않게 따로 스레드.
+pub(crate) fn nudge_now(s: Arc<Surface>) {
     let _ = std::thread::Builder::new().name(format!("seat-adopt-nudge-{}", s.id)).spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(300));
         if !s.exited.load(Ordering::SeqCst) {
             if let Err(e) = crate::repaint::nudge_resize(&s, std::time::Duration::from_millis(200)) {
                 eprintln!("[cysd] 입양 좌석 surface:{} 크기 흔들기 실패: {e}", s.id);

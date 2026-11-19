@@ -3031,6 +3031,8 @@ struct DisplayGrant {
     row_owned: bool,
     /// 좌석이 surfaces 맵에 들어가면 해제 — 그 뒤엔 되돌리지 않는다.
     armed: bool,
+    /// 입양(T4) 번호 — 실패 되돌림 때 행을 `spawn_failed` 가 아니라 `boot_orphan` 으로 되돌린다(다음 기동이 다시 입양할 수 있게 · codex T4 1R #7).
+    adopt: bool,
 }
 
 /// ★v116-num: 좌석 생성이 surfaces 맵 등록 전에 실패(`?` 반환 · panic)하면 번호를 되돌린다(설계 §3-2 ③
@@ -3057,7 +3059,7 @@ impl Drop for DisplaySpawnGuard<'_> {
                 &self.daemon.socket_path,
                 g.id,
                 now_epoch(),
-                "spawn_failed",
+                if g.adopt { "boot_orphan" } else { "spawn_failed" },
             ) {
                 eprintln!("[cysd] surface_numbers spawn_failed 기록 실패 surface:{}: {e}", g.id);
             }
@@ -7212,7 +7214,7 @@ impl Daemon {
         if let Some(kind) = alarm {
             self.numbers_alarm(kind, Some(id), None);
         }
-        DisplayGrant { id, display_no, prev, row_owned: true, armed: true }
+        DisplayGrant { id, display_no, prev, row_owned: true, armed: true, adopt: false }
     }
 
     /// 입양(T4): 살아 있는 좌석의 내부 번호·보이는 번호를 그대로 되찾는다 — 내부 번호 할당기가 그 번호를 다시 주지 않게 올리고(시드는
@@ -7239,7 +7241,7 @@ impl Daemon {
         if taken {
             self.numbers_alarm("adopt_display_taken", Some(id), None);
         }
-        DisplayGrant { id, display_no: n, prev, row_owned: true, armed: true }
+        DisplayGrant { id, display_no: n, prev, row_owned: true, armed: true, adopt: true }
     }
 
     /// ★v116-num: 좌석 닫힘을 할당기·대응표에 반영(설계 §3-2 ③ 닫기 행) — surfaces 락을 푼 **뒤** 호출.
@@ -8036,7 +8038,7 @@ impl Daemon {
         let id = spawn_guard.grant.id;
         match match &adopt_rec {
             // 입양: 행은 이미 있다(부팅이 boot_orphan 으로 닫음) — 그 행을 다시 연다.
-            Some(_) => crate::recall::surface_numbers_reopen(&self.socket_path, id),
+            Some(r) => crate::recall::surface_numbers_reopen(&self.socket_path, id, spawn_guard.grant.display_no, r.created_at),
             None => crate::recall::surface_numbers_insert(
                 &self.socket_path,
                 id,
@@ -8246,6 +8248,27 @@ impl Daemon {
         };
 
         // 좌석 프로세스 손잡이(T3) — 자식 기동·Job 결박·slave 닫기는 `seat_proc::Opened::spawn`.
+        // T4(입양 노브 켬 · 새 seatkeep 좌석): 자식을 띄우기 **전** 임시본 기록 — 못 쓰면 좌석을 만들지 않는다(기록 없는 산 좌석 = 입양도 정리도
+        // 못 하는 좌석 · codex T4 1R #1). 노브 끔·직접 PTY·입양 갈래 = 이 블록 없음.
+        if adopt_rec.is_none() && crate::seat_adopt::enabled() {
+            if let Some((skid, dir)) = opened.as_ref().and_then(|o| o.seatkeep_ids()) {
+                crate::seat_adopt::record_provisional(
+                    &dir,
+                    &skid,
+                    id,
+                    spawn_guard.grant.display_no,
+                    &title.clone().unwrap_or_else(|| format!("surface {id}")),
+                    role.as_deref(),
+                    cmd.as_deref().unwrap_or(shell.as_str()),
+                    &cwd_str,
+                    !env.is_empty(),
+                    rows,
+                    cols,
+                    Some(resolved_config_dir.as_str()),
+                    config_dir_trusted,
+                )?;
+            }
+        }
         let adopted = adopt_spawned.is_some();
         let mut spawned = match (adopt_spawned, opened) {
             (Some(sp), _) => sp,
@@ -8532,13 +8555,17 @@ impl Daemon {
         );
         // T4: seatkeep 좌석 기록(입양 노브 끔 = 아무것도 안 함) · 입양 좌석 = 재생 뒤 크기 흔들기.
         crate::seat_adopt::record_surface(&surface);
-        // 입양 좌석의 첫 재생 중 「옛 cysd 가 이미 처리한」 앞부분 = 화면만 다시 그린다(전사·응답·알림·화면 송출 중복 0 · T4).
+        // 입양 좌석의 첫 재생 중 「옛 cysd 가 처리를 끝냈다고 알린」 앞부분 = 화면만 다시 그린다(전사·응답·알림·화면 송출 중복 0 · T4).
+        // 재생 전체(앞 + 뒤)를 다 먹은 직후 크기를 한 번 흔든다(codex T4 1R #8 — 타이머 아님).
         #[cfg(target_os = "macos")]
-        let mut screen_only_left: u64 = surface.seat_link.as_ref().map(|l| l.replay_split().0).unwrap_or(0);
+        let (mut screen_only_left, mut replay_left): (u64, u64) = match surface.seat_link.as_ref().map(|l| l.replay_split()) {
+            Some((a, b)) if adopted => (a, a + b),
+            _ => (0, 0),
+        };
         #[cfg(not(target_os = "macos"))]
-        let mut screen_only_left: u64 = 0;
-        if adopted {
-            crate::seat_adopt::nudge_after_replay(Arc::clone(&surface));
+        let (mut screen_only_left, mut replay_left): (u64, u64) = (0, 0);
+        if adopted && replay_left == 0 {
+            crate::seat_adopt::nudge_now(Arc::clone(&surface));
         }
 
         // Reader thread: PTY output → vt100 parser + scrollback + attach broadcast + health rules.
@@ -8578,16 +8605,26 @@ impl Daemon {
                             eprintln!("[debug] surface {} read {n} bytes", surf.id);
                         }
                         let mut start = 0usize;
+                        if replay_left > 0 {
+                            replay_left = replay_left.saturating_sub(n as u64);
+                            if replay_left == 0 {
+                                crate::seat_adopt::nudge_now(Arc::clone(&surf));
+                            }
+                        }
                         if screen_only_left > 0 {
                             let k = screen_only_left.min(n as u64) as usize;
                             replay_screen_only(&surf, &buf[..k]);
                             screen_only_left -= k as u64;
+                            // 경계에 걸친 DSR 질의를 잇는다(codex T4 1R #4) — 화면 전용 조각의 마지막 3바이트를 다음 판독의 꼬리로.
+                            dsr_tail = buf[k.saturating_sub(3)..k].to_vec();
                             if k == n {
                                 continue;
                             }
                             start = k;
                         }
-                        let chunk = &buf[start..n];
+                        let chunk = &buf[..n];
+                        // 입양 재생의 화면 전용 앞부분(위)을 뺀 나머지만 아래 정상 처리로(새 좌석·직접 PTY = start 0 = 그대로).
+                        let chunk = &chunk[start..];
                         // ★(0.14.31 · H-1 · 리뷰 R1) 출력 세대 **홀수** = 발행 시작. 스탬프(`last_output`)는
                         //   파서 반영·스크롤백 ingest 보다 **앞**에 찍는다 — `surface.read_text` 는 스냅샷 뒤에
                         //   스탬프를 읽고 세대가 이 창과 겹치면 관측을 버리므로, 스냅샷에 보이는 바이트는
@@ -8742,6 +8779,8 @@ impl Daemon {
                 }
             }
             surf.exited.store(true, Ordering::Relaxed);
+            // T4: 끝난 좌석의 입양 기록을 지운다(노브 끔·직접 PTY = 아무것도 안 함).
+            crate::seat_adopt::forget_surface(&surf);
             // 종료 시각 stamp — watchdog reap_exited_surfaces가 grace 경과를 이 시점 기준으로 잰다.
             *surf.exited_at.lock().unwrap() = Some(Instant::now());
             // writer 스레드 종료 신호 — 자력 종료(셸 EOF)는 close_surface를 거치지 않아

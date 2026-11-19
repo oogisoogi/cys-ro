@@ -31,8 +31,9 @@
 //!      멈춘 조종자 아래서 쌓일 길이 없고, 넘치면 규약 위반으로 보고 끊김과 같이 끝낸다.
 //! `--adoptable`(입양 모드 · T4 TICKET=cysr-1116-seatkeep-1119 · `--controller-bound` 와 함께 쓸 수 없다) = ⑵⑶ 은 종속 모드와 같고 ⑴ 만 뺀다:
 //!   조종자가 끊겨도(cysd 강제 종료·교체) 좌석을 쥔 채 다음 조종자(같은 실행 파일 · 데몬 잠금 보유자)를 기다린다 = 「데몬이 죽어도 좌석이 산다」.
-//!   조종자 없는 동안은 끊긴 뒤 출력이 꼬리(`--tail-bytes`)를 넘기 전까지만 PTY 를 읽는다 — 그 뒤로는 역압(자식이 멈춤) → 새 조종자가
-//!   붙어 꼬리를 재생받으면 끊긴 뒤 출력 유실 0(끊기기 전에 큐에 있던 ≤256KiB 는 꼬리 안이면 재생됨 · 꼬리 밖은 WELCOME `lost_bytes` 로 보고).
+//!   조종자 없는 동안은 **옛 조종자가 처리를 끝냈다고 알린 오프셋**(PROCESSED) 뒤 출력이 꼬리(`--tail-bytes`)를 넘기 전까지만 PTY 를 읽는다
+//!   — 그 뒤로는 역압(자식이 멈춤) → 새 조종자가 꼬리를 재생받으면 아무 조종자도 처리 못 한 출력의 유실 0. 끊길 때 이미 꼬리 밖으로 밀려난
+//!   미처리분(옛 조종자 쪽 대기열이 꼬리보다 컸던 경우)만 잃으며, 새 조종자가 `disc_total` < `tail_start` 로 그 크기를 안다.
 //!   첫 조종자가 `FIRST_CONTROLLER_MAX` 안에 안 붙으면 종속 모드처럼 끝낸다(cysd 가 기동~첫 인사 사이에 죽으면 아무도 이 좌석을 모른다).
 //!   부모 감시(kqueue)·기동 단계 부모 확인은 하지 않는다(부모가 사라지는 것이 정상 경로).
 //! 두 인자가 다 없으면 T2 동작 그대로(조종자 없이 좌석을 계속 쥔다 · 4MiB 큐 → 밀림 → 꼬리 따라잡기 · write_stalled 10초 — 입양은 T4).
@@ -424,8 +425,11 @@ mod imp {
         exit_acked: bool,
         reader_done: bool,
         input_pending: usize,
-        /// 입양 모드: 마지막 조종자가 끊긴 때의 누적 출력(`total`) — 조종자 없는 동안 읽기 상한의 기준. 조종자가 붙으면 None.
+        /// 입양 모드: 마지막 조종자가 끊긴 때 그 조종자가 **처리를 끝냈다고 알린** 누적 오프셋(`processed` · codex T4 1R #4) — 조종자 없는
+        /// 동안 읽기 상한의 기준 · 새 조종자의 재생 나눔. 조종자가 붙으면 None.
         disc_total: Option<u64>,
+        /// 조종자가 알린 처리 완료 오프셋(PROCESSED 최댓값 · ≤ total).
+        processed: u64,
     }
 
     impl SeatOut {
@@ -924,6 +928,7 @@ mod imp {
                         exit_acked: false,
                         reader_done: false,
                         disc_total: None,
+                        processed: 0,
                         input_pending: 0,
                     })
                     .collect(),
@@ -1493,7 +1498,7 @@ mod imp {
             st.no_controller_since = Some(Instant::now());
             // 입양 모드: 끊긴 때의 누적 출력을 좌석마다 적어 둔다(조종자 없는 동안 읽기 상한 = 이 뒤로 꼬리 크기까지 · `wait_for_room`).
             for o in st.out.iter_mut() {
-                o.disc_total = Some(o.total);
+                o.disc_total = Some(o.processed.min(o.total));
             }
             let _ = keep.log(json!({"event": "disconnect", "gen": gen, "peer": peer_json(&c.peer), "evicted": c.evicted}));
             if keep.args.controller_bound {
@@ -1620,6 +1625,14 @@ mod imp {
                     let mut st = lock_st(keep);
                     send_gen(keep, &mut st, gen, proto::json_frame(proto::FOREGROUND_IS, seat, &json!({"pgid": pg})));
                 }
+                proto::PROCESSED if payload.len() >= 8 => {
+                    let off = u64::from_le_bytes(payload[..8].try_into().unwrap_or([0; 8]));
+                    let mut st = lock_st(keep);
+                    for i in targets(keep, seat) {
+                        let o = &mut st.out[i];
+                        o.processed = o.processed.max(off.min(o.total));
+                    }
+                }
                 proto::EXIT_ACK => {
                     let mut st = lock_st(keep);
                     for i in targets(keep, seat) {
@@ -1737,7 +1750,7 @@ mod imp {
             let st = State {
                 out: (0..n)
                     .map(|_| SeatOut { tail: VecDeque::new(), total: 0, reaped: false, exit_status: None, exit: None,
-                                       exit_acked: false, reader_done: false, input_pending: 0, disc_total: None })
+                                       exit_acked: false, reader_done: false, input_pending: 0, disc_total: None, processed: 0 })
                     .collect(),
                 controller: None,
                 gen: 0,

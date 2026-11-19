@@ -19,6 +19,8 @@
 | 0ed8c5611 | codex T4 2R BLOCK 처분(차단 1·주요 5) — 아래 표 |
 | f3f5ca3e3 | HANDOFF 2R 반영 |
 | f5ad568cf | codex T4 3R BLOCK 처분(차단 1·주요 2·경미 1) — 아래 표 |
+| e20850fae | HANDOFF 3R 반영 |
+| dc5bbf00e | codex T4 4R BLOCK 처분(차단 2·주요 1·경미 1) — 아래 표 · **T4 마지막 코드** |
 
 ## codex T4 1R(판정 BLOCK · 4b3a9dccb · 판정문 `~/axdev/master/reviews/codex-1116-seatkeep/t4.r1.verdict.md` · 의뢰문 `t4.r1.prompt.md`) 처분
 | # | 지적 | 처분(01b2f57ae) | 시험 |
@@ -49,7 +51,15 @@
 | 주요: PROCESSED 송신이 공용 쓰기 잠금 안에서 무기한 write_all | try_lock + 송신 버퍼 남은 자리 ≥ 17바이트일 때만 MSG_DONTWAIT · 못 보내면 50ms 뒤 최신값 · 부분 쓰기 = 연결 끊기 |
 | 주요: .exit·표식이 skid 만 공유 | seatkeep 이 .exit 에 pid·start_us 기록 · cysd 가 판정한 세대와 대조(다르면 무삭제 미결) · 표식 = 지문 원자 쓰기 · 다른 파일 다 지운 뒤에만 표식 삭제 · .exit 만 남은 id 도 스캔 |
 | 경미: 노브 끔도 처리 상태 잠금 | report_processed 조건 안으로 |
-- codex 4R(3R 처분 확인 · 범위 0ed8c5611..HEAD) = 【측정 중】 · 판정문 `t4.r4.verdict.md`.
+## codex T4 4R(판정 BLOCK · e20850fae · 판정문 `t4.r4.verdict.md` · 3R 지적 닫힘 2(PROCESSED 잠금·경미) · 부분 7) 처분(dc5bbf00e)
+| 지적 | 처분 |
+|---|---|
+| 차단: A 죽음·B 산 → 미결로 바꾸되 예약이 A 를 가리켜 곧 풀림 | 예약·역할(env) = B 세대 · e2e `SKA_FORGE_PID=1 … reserve`(기록 pid 위조 → registry_pid_live · 같은 역할 rc 1 · 다른 역할 rc 0 · B 끝난 뒤 rc 0) |
+| 차단: 삭제 전 실제 잠금·소켓 보유자 확인 없음 | seatkeep id 잠금(`<skid>.lock` flock — seatkeep 이 사는 동안 쥔다)을 비차단으로 잡아 정리 끝까지 쥠 · 못 잡으면 무삭제 미결(id_lock_held) · 소켓 접속 확인은 안 함(접속 자체가 seatkeep 기록에 거절 줄을 남겨서 — 잠금이 더 강한 증거) |
+| 주요: 표식 = pid:start 뿐 · 부분 정리 뒤 스캔 앵커 소실 | 지문 = 세대 + 종료 기록 바이트 sha256 · 정리 순서 기록·등록부·소켓·잠금 → 종료 기록 → 표식 · 스캔 앵커에 .sock·.lock·.exit.consumed |
+| 경미: 노브 끔 종료 기록에도 세대 칸 | 입양 모드만 |
+- **codex 5R = master 대기열**(master#d111188d · codex 5h 한도 리셋 06:29 · 범위 = `git diff e20850fae..dc5bbf00e -- src/` · 의뢰문 = `t4.r4.prompt.md` 를 「4R 처분 확인」 으로 바꿔 쓰면 됨).
+- 수렴 관찰: 1R→4R 지적의 축이 「같은 사용자 파일 위조·pid 재사용 조합」 으로 깊어지는 중(신뢰 경계 = 같은 사용자 · master 11-11). 4R 처분의 id 잠금이 그 축의 가장 강한 증거라 5R 에서 닫힐 것으로 보나 **확신도 중**.
 
 ## 뮤턴트(분리 작업트리 `/private/tmp/skmut1119` · 한 줄씩 → 빌드 → e2e → git checkout · 러너 = scratchpad `mut.py` · 결과 `e2e/mutants*.out`)
 | 뮤턴트 | 바꾼 줄 | e2e | 결과 |
@@ -74,14 +84,16 @@
 - cysd 전체(노브 끔 · d32b1c7eb · 스레드 4 · load 20~38): 3330 통과 · 7 실패 · 17 무시 — 소스 핀 1(내 변경 · 01b2f57ae 에서 고침) · seatkeep 핸드셰이크 3초 시한 3 · 10초 시한 1 · PoisonError 2. 시한 계열 = 부하 낮을 때 단독 재실행 대조 필요(공지 a651807e).
 - cysd 전체(01b2f57ae · load 높음 · 2066초): 3327 통과 · 15 실패 · 17 무시 — boot_supervisor c6c·h5 5 · channels c6b·h3 6 · seatkeep 핸드셰이크 4 (전부 시한·전달 계수). **두 실행의 실패 22개 이름 + 같은 접두 = 37개를 부하 6 에서 단독 재실행 = 37/37 통과**(`tests/head2-rerun.out`).
 - **기준선 dea2e1853 전체**(load 10 → · 1014초): 3332 통과 · **2 실패**(`state::tests::dbg_r12_seat_profile_wired_before_agent_exec` · `state::tests::dbg_r12_update_lane_restore_seat_gets_link_before_exec`) · 17 무시 · 계 3351.
-- HEAD f5ad568cf 전체 = 【측정 중】(`tests/head4-cysd.out` · 앞 head3 실행은 3R 고치는 도중 컴파일이라 무효 처리 · 내 작업트리 cargo 1개만 pid 로 끝냄).
+- **HEAD f5ad568cf 전체**(load 10 · 1006초): 3341 통과 · 3 실패(seatkeep_input_ack ×2 · seatkeep_stalled_consumer_does_not_block_close — 핸드셰이크 3초 시한) · 17 무시 · 계 3361(= 기준선 3351 + 새 10). 기준선의 dbg_r12 2건은 여기선 통과. **3건 포함 seatkeep_ 5개를 load 4.8 · 스레드 1 단독 재실행(dc5bbf00e) = 5/5 통과**(`tests/r4-seatkeep-only.out`). (앞 head3 실행 = 3R 고치는 도중 컴파일이라 무효 · 내 작업트리 cargo 1개만 pid 로 끝냄.)
+- 4R 처분 뒤(dc5bbf00e): seat_adopt 10/10 · seatkeep 49/49 · e2e adopt 2(교체 3/3 · 전사 겹침 0) · reserve · reserve+위조 pid · exitaway 통과.
+- 기준선 대비 요약: 기준선 3332/2 실패 → HEAD 3341/3 실패(시한 계열 · 단독 재실행 초록). 내 변경이 새로 붉힌 시험 = 0(소스 핀 1건은 01b2f57ae 에서 고침).
 - 3R 처분 뒤(f5ad568cf): seat_adopt 10/10 · seatkeep 49/49 · e2e adopt 2(교체 3/3 · 전사 겹침 0) · reserve · exitaway · 큰 폭주(60KB 줄 · 출력 상한 OK) 통과.
 - 2R 처분 뒤(0ed8c5611): seat_adopt 9/9 · e2e adopt 2회(교체 3/3 · 전사 겹침 0 · 출력 상한 OK) · reserve · exitaway 통과.
 - 관측(기존 동작 추정 · 원인 미확인): cysd SIGKILL 마다 전사(transcripts.db)에서 좌석당 SEQ 약 3줄 빠짐(폭주 시험은 0) — PROCESSED 는 「파서·전사 대기열에 넣음」까지라 전사 쓰기 스레드가 디스크에 쓰기 전 줄은 잃는다고 봄(직접 PTY 의 SIGKILL 도 같은 대기열을 잃음).
 
 ## 남은 것(T4) · 다음 첫 행동
-0. codex 3R 판정 받기 → 닫힘이면 【확인요청】 T4 · 아니면 처분.
-1. 기준선·HEAD 전체 시험 결과 → 실패 이름을 기준선과 대조(사유 전문) · 시한 계열 단독 재실행.
+0. codex 5R(master 대기열) 판정 → 닫힘이면 T4 끝 · 아니면 처분(후임).
+1. (끝남) 기준선·HEAD 전체 대조 · 시한 계열 단독 재실행.
 2. 노브 켬 스크립트 `SEATKEEP_TEST_THREADS=1 scripts/seatkeep-knob-on-tests.sh accounts::` · `seat_proc::` · 입양 켬 상태 cysd 시험(CYS_SEATKEEP_ADOPT=1 붙인 같은 스크립트).
 3. CI 팩 단계(`.github/workflows/ci-branch.yml` · 떼어 둔 스크립트 `~/axdev/.wt/cys-1116-integ-cifix-evidence/step-mac.sh`) 1회.
 4. 뮤턴트 2R 처분 뒤 재실행(`python3 -I <scratchpad>/mut.py` · 작업트리 /private/tmp/skmut1119 를 HEAD 로 `git -C … checkout --detach <HEAD>` 뒤) · M6 시험대(가짜 소켓 서버) 작성.

@@ -17,6 +17,8 @@
 | 43eab104a | HANDOFF 첫판 |
 | df024d83b | e2e 전사 겹침(transcripts.db)·조종자 없는 동안 출력 상한 판정 — 뮤턴트 M3·M5·M7 을 잡게 |
 | 0ed8c5611 | codex T4 2R BLOCK 처분(차단 1·주요 5) — 아래 표 |
+| f3f5ca3e3 | HANDOFF 2R 반영 |
+| f5ad568cf | codex T4 3R BLOCK 처분(차단 1·주요 2·경미 1) — 아래 표 |
 
 ## codex T4 1R(판정 BLOCK · 4b3a9dccb · 판정문 `~/axdev/master/reviews/codex-1116-seatkeep/t4.r1.verdict.md` · 의뢰문 `t4.r1.prompt.md`) 처분
 | # | 지적 | 처분(01b2f57ae) | 시험 |
@@ -40,7 +42,14 @@
 | 주요: 흔들기가 마지막 재생 조각 처리보다 먼저 | 그 조각의 화면·파서·전사 뒤 |
 | 주요: .exit 미검증 삭제·중복 | id 확인 · 못 읽음/해석 실패/id 다름 = 무삭제 미결 · 발행 뒤 `.exit.consumed` 표식 → 정리(적어도 한 번 · skid 멱등 키) |
 | 주요: reopen PkConflict 뒤 입양 계속 | 입양 실패(예약) · 등록 실패 = 붙은 연결 끊기(`SeatLink::detach`) · 단위 `numbers_reopen_variants` |
-- codex 3R(2R 처분 확인 · 범위 df024d83b..HEAD) = 【측정 중】 · 판정문 `t4.r3.verdict.md`.
+## codex T4 3R(판정 BLOCK · 0ed8c5611 · 판정문 `t4.r3.verdict.md` · 앞 지적 닫힘 6 · 부분 5) 처분(f5ad568cf)
+| 지적 | 처분 |
+|---|---|
+| 차단: 기록 pid A ≠ 등록부 pid B · A 죽음 → B 의 산 파일 삭제 | 등록부 pid 가 살아 있고 cys-seatkeep 이 아니라는 증거가 없으면 미결(registry_pid_live) |
+| 주요: PROCESSED 송신이 공용 쓰기 잠금 안에서 무기한 write_all | try_lock + 송신 버퍼 남은 자리 ≥ 17바이트일 때만 MSG_DONTWAIT · 못 보내면 50ms 뒤 최신값 · 부분 쓰기 = 연결 끊기 |
+| 주요: .exit·표식이 skid 만 공유 | seatkeep 이 .exit 에 pid·start_us 기록 · cysd 가 판정한 세대와 대조(다르면 무삭제 미결) · 표식 = 지문 원자 쓰기 · 다른 파일 다 지운 뒤에만 표식 삭제 · .exit 만 남은 id 도 스캔 |
+| 경미: 노브 끔도 처리 상태 잠금 | report_processed 조건 안으로 |
+- codex 4R(3R 처분 확인 · 범위 0ed8c5611..HEAD) = 【측정 중】 · 판정문 `t4.r4.verdict.md`.
 
 ## 뮤턴트(분리 작업트리 `/private/tmp/skmut1119` · 한 줄씩 → 빌드 → e2e → git checkout · 러너 = scratchpad `mut.py` · 결과 `e2e/mutants*.out`)
 | 뮤턴트 | 바꾼 줄 | e2e | 결과 |
@@ -64,7 +73,9 @@
   - 처분 뒤(01b2f57ae 직전 빌드): adopt 3회 교체 6/6 · 폭주 2회 3/3 · reserve · exitaway 통과
 - cysd 전체(노브 끔 · d32b1c7eb · 스레드 4 · load 20~38): 3330 통과 · 7 실패 · 17 무시 — 소스 핀 1(내 변경 · 01b2f57ae 에서 고침) · seatkeep 핸드셰이크 3초 시한 3 · 10초 시한 1 · PoisonError 2. 시한 계열 = 부하 낮을 때 단독 재실행 대조 필요(공지 a651807e).
 - cysd 전체(01b2f57ae · load 높음 · 2066초): 3327 통과 · 15 실패 · 17 무시 — boot_supervisor c6c·h5 5 · channels c6b·h3 6 · seatkeep 핸드셰이크 4 (전부 시한·전달 계수). **두 실행의 실패 22개 이름 + 같은 접두 = 37개를 부하 6 에서 단독 재실행 = 37/37 통과**(`tests/head2-rerun.out`).
-- 기준선 dea2e1853 전체(분리 작업트리 `/private/tmp/skbase1119`) → 이어서 HEAD 전체(낮은 부하) = 【측정 중】(`tests/base-cysd.out` · `tests/head3-cysd.out`).
+- **기준선 dea2e1853 전체**(load 10 → · 1014초): 3332 통과 · **2 실패**(`state::tests::dbg_r12_seat_profile_wired_before_agent_exec` · `state::tests::dbg_r12_update_lane_restore_seat_gets_link_before_exec`) · 17 무시 · 계 3351.
+- HEAD f5ad568cf 전체 = 【측정 중】(`tests/head4-cysd.out` · 앞 head3 실행은 3R 고치는 도중 컴파일이라 무효 처리 · 내 작업트리 cargo 1개만 pid 로 끝냄).
+- 3R 처분 뒤(f5ad568cf): seat_adopt 10/10 · seatkeep 49/49 · e2e adopt 2(교체 3/3 · 전사 겹침 0) · reserve · exitaway · 큰 폭주(60KB 줄 · 출력 상한 OK) 통과.
 - 2R 처분 뒤(0ed8c5611): seat_adopt 9/9 · e2e adopt 2회(교체 3/3 · 전사 겹침 0 · 출력 상한 OK) · reserve · exitaway 통과.
 - 관측(기존 동작 추정 · 원인 미확인): cysd SIGKILL 마다 전사(transcripts.db)에서 좌석당 SEQ 약 3줄 빠짐(폭주 시험은 0) — PROCESSED 는 「파서·전사 대기열에 넣음」까지라 전사 쓰기 스레드가 디스크에 쓰기 전 줄은 잃는다고 봄(직접 PTY 의 SIGKILL 도 같은 대기열을 잃음).
 

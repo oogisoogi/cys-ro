@@ -5100,7 +5100,8 @@ def detach_session(argv=None, emit=None):
 def main(argv):
     # preflight/CI 호환: `--self-test`는 subcommand 없이도 동작(가로채기).
     if "--self-test" in argv:
-        os.environ["CYS_BOOT_FLEET"] = "full"   # ★(1.1.16 · 차용 ③) 출하 기본 동작(full)을 잰다 — 운영 env 밀폐
+        os.environ["CYS_BOOT_FLEET_DAEMON"] = "full"   # ★(1.1.16 · 차용 ③) 출하 기본 동작(full)을 잰다 — 운영 env 밀폐
+        os.environ.pop("CYS_BOOT_FLEET", None)
         return cmd_self_test()
     # ★A18: 발화부에서 넘긴 명시 요청이 있을 때만 세션을 분리한다(위 3중 가드 참조).
     #   subcommand 판정 **전에** 수행한다 — 분리는 프로세스 정체성의 문제이고, 어떤 서브커맨드든

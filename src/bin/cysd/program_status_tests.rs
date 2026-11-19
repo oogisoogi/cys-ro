@@ -167,7 +167,14 @@ fn scanner_aborts_and_bounds() {
 
 // ---- 저장소 · ingest ----
 
+/// 질의에 이미 답한 생애의 좌석(보고를 받는 조건)으로 먹인다.
 fn feed(store: &mut Store, bytes: &[u8], now: Instant) -> Ingest {
+    store.life_answered = true;
+    feed_raw(store, bytes, now)
+}
+
+/// 생애 표식을 건드리지 않고 먹인다(묻지 않은 보고 시험용).
+fn feed_raw(store: &mut Store, bytes: &[u8], now: Instant) -> Ingest {
     let mut sc = Scanner::default();
     ingest(store, sc.feed(bytes), now, true)
 }
@@ -439,4 +446,75 @@ fn no_answer_when_the_observer_is_not_running() {
     assert!(r.replies.is_empty());
     assert_eq!((st.answered, st.unanswered), (0, 1));
     assert_eq!(diag_wire(&st, Instant::now())["unanswered_queries"], 1);
+}
+
+// ---- 독립 검증 V-1·V-2 (master 처분 (가)): 질의에 답한 생애의 보고만 받는다 ----
+
+#[test]
+fn codex_unsolicited_reports_are_ignored_byte_for_byte() {
+    // 검증 좌석 실측(codex 0.167 · 질의 0 · ST 종결) 바이트 그대로.
+    let codex: &[u8] = b"\x1b]0;rp-_0xrijoi\x07\x1b]7501;state=idle:app=codex\x1b\\\x1b]0;\xe2\xa0\x8b rp-_0xrijoi\x07\x1b]7501;state=working:app=codex\x1b\\\x1b]0;rp-_0xrijoi\x07\x1b]7501;state=idle:app=codex\x1b\\\x1b]0;\x07\x1b]7501;state=clear\x1b\\";
+    let mut st = Store::default();
+    let r = feed_raw(&mut st, codex, Instant::now());
+    assert!(r.replies.is_empty());
+    assert_eq!((r.applied, st.unsolicited, st.reports, st.len()), (0, 4, 0, 0));
+    assert!(overlay(&st, None, Instant::now()).is_none(), "묻지 않은 codex 보고가 덧씌워졌다(1.1.15 화면 판정 회귀)");
+    assert_eq!(diag_wire(&st, Instant::now())["unsolicited_reports"], 4);
+}
+
+#[test]
+fn shell_spoof_without_query_changes_nothing() {
+    let mut st = Store::default();
+    feed_raw(&mut st, b"\x1b]7501;state=blocked:kind=permission:app=fake\x07", Instant::now());
+    assert!(overlay(&st, None, Instant::now()).is_none());
+    assert_eq!(st.unsolicited, 1);
+}
+
+#[test]
+fn answered_life_ends_on_total_wipe() {
+    let mut st = Store::default();
+    let t = Instant::now();
+    feed_raw(&mut st, b"\x1b]7501;?\x07\x1b]7501;state=working\x07", t);
+    assert_eq!(st.len(), 1, "같은 흐름에서 질의 응답 뒤의 보고는 받는다");
+    st.wipe(true, "agent exited (shell returned)", t);
+    feed_raw(&mut st, b"\x1b]7501;state=working:app=codex\x1b\\", t);
+    assert_eq!((st.len(), st.unsolicited), (0, 1), "다음 프로그램은 다시 물어야 받는다");
+    feed_raw(&mut st, b"\x1b]7501;?\x1b\\\x1b]7501;state=idle\x1b\\", t);
+    assert_eq!(st.len(), 1);
+    feed_raw(&mut st, b"\x1bc\x1b]7501;state=idle\x07", t); // RIS 도 생애를 끝낸다
+    assert_eq!(st.len(), 0);
+}
+
+#[test]
+fn live_shell_seat_printf_spoof_is_ignored() {
+    if std::env::var("CYS_PROGRAM_STATUS").as_deref() == Ok("0") {
+        return;
+    }
+    let g = crate::governance::PACK_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    crate::delivery::tests::isolate_state_dir_for_thread("ps7501spoof");
+    let dir = std::env::temp_dir().join(format!("cys-ps7501spoof-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    std::fs::write(dir.join("acl.json"), r#"{"default":"allow","rules":[]}"#).unwrap();
+    std::env::set_var(cys::pack::ENV_PACK_DIR, &dir);
+    let daemon = crate::state::Daemon::new(dir.join("cysd.sock"));
+    daemon.activity.running.store(true, std::sync::atomic::Ordering::SeqCst);
+    let cmd = r"printf '\033]7501;state=blocked:kind=permission:app=fake\007SPOOFED'; sleep 30".to_string();
+    let s = crate::pty_test_support::retry_on_pty_exhaustion("ps7501 spoof seat", || {
+        daemon.create_surface(None, Some(cmd.clone()), None, Some("worker".into()), 24, 80)
+    })
+    .expect("create surface");
+    daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline && !s.parser.lock().unwrap().screen().contents().contains("SPOOFED") {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    let st = s.program_status.lock().unwrap();
+    assert!(s.parser.lock().unwrap().screen().contents().contains("SPOOFED"), "위조 출력이 나오지 않았다(전제)");
+    assert_eq!((st.len(), st.unsolicited, st.answered), (0, 1, 0), "셸 printf 위조가 상태를 바꿨다");
+    drop(st);
+    if let Ok(mut c) = s.child.lock() {
+        let _ = c.kill();
+    }
+    drop(g);
 }

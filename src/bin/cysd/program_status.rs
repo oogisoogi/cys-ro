@@ -7,7 +7,12 @@
 //!
 //! 왜: 화면 판정기는 격리 시험 내내 `unknown` 이었다(11-01 허더 대조 0/25). 그리고 **답을 하면 Claude 가 제목 표지(◐◑✳)를
 //!   그리지 않는다**(11-19 격리 실측: 제목 OSC 6→3 · 제목이 대화 주제로 바뀌어 `ClaudeR1` 이 NoMatch) — 그래서 답하는 순간부터는
-//!   이 보고가 유일한 상태 출처다. 답하지 않은 좌석(Codex·옛 Claude·끈 기계)은 종전 화면 판정 그대로다.
+//!   이 보고가 유일한 상태 출처다.
+//! ★받는 범위(독립 검증 V-1 · master 처분 (가)): **이 프로그램 생애에 우리가 질의에 답한 좌석의 보고만** 적용한다.
+//!   codex 0.167 은 질의 없이 `state=idle/working:app=codex` 를 스스로 보낸다(검증 좌석 실측) — 묻지 않은 보고는 버리고
+//!   `unsolicited` 로만 센다 → codex·셸 좌석은 1.1.15 와 같은 화면 판정 그대로(셸 `printf` 위조 V-2 도 같이 닫힘).
+//!   생애 = 질의 응답 ~ 에이전트 종료·PTY 종료·RIS 지움(전부 지움 때 응답 표식도 0).
+//!   남는 길(정직 고지): 셸에서 질의 바이트를 먼저 내고 보고를 내면 받는다(단말 표준 동작 · V-9 와 같은 계급).
 //!
 //! 실측(11-19 · Claude Code 2.1.328 · 격리 PTY · 사용자 설정 미적재): 질의에 **답하지 않으면 보고 0건** · 답하면
 //!   `blocked:kind=permission:msg="trust this folder"` → `clear` → `idle` → `working` → (`working:msg="Writing probe.txt"`) →
@@ -467,6 +472,10 @@ pub(crate) struct Store {
     pub answered: u64,
     /// 관측기가 돌지 않아 답하지 않은 질의 수.
     pub unanswered: u64,
+    /// 이 프로그램 생애에 질의에 답했다(보고를 받는 조건 · 전부 지움 때 false).
+    pub life_answered: bool,
+    /// 질의 없이 온 보고(받지 않음 · 진단) — 예: codex 0.167.
+    pub unsolicited: u64,
     pub reports: u64,
     pub discarded: u64,
     pub last_discard: Option<&'static str>,
@@ -525,6 +534,7 @@ impl Store {
         let before = self.records.len();
         if all {
             self.records.clear();
+            self.life_answered = false; // 다음 프로그램은 다시 물어야 받는다
         } else {
             self.records.retain(|_, v| !matches!(v.state, PState::Working | PState::Blocked));
         }
@@ -564,9 +574,11 @@ pub(crate) fn ingest(store: &mut Store, events: Vec<Event>, now: Instant, answer
             Event::Osc7501 { body, seq_len, bel } => match parse(&body, seq_len) {
                 Parsed::Query if answer => {
                     store.answered += 1;
+                    store.life_answered = true;
                     out.replies.push(query_reply(bel));
                 }
                 Parsed::Query => store.unanswered += 1,
+                Parsed::Report(_) if !store.life_answered => store.unsolicited += 1,
                 Parsed::Report(r) => {
                     store.apply(&r, &body, now);
                     out.applied += 1;
@@ -638,6 +650,7 @@ pub(crate) fn diag_wire(store: &Store, now: Instant) -> serde_json::Value {
     serde_json::json!({
         "answered_queries": store.answered,
         "unanswered_queries": store.unanswered,
+        "unsolicited_reports": store.unsolicited,
         "reports": store.reports,
         "discarded": store.discarded,
         "last_discard": store.last_discard,

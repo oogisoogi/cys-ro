@@ -8107,6 +8107,10 @@ impl Daemon {
         for (k, v) in env {
             builder.env(k, v);
         }
+        // ★(1.1.16 · 차용 ③ · V-4) 가벼운 시작 손잡이 도장 — 호출자 env(agents.json env 맵 등) **뒤**에 덮어 좌석 값이 데몬 값과 갈리지 않게.
+        let (fleet, _) = crate::knobs::boot_fleet();
+        builder.env(cys::ENV_BOOT_FLEET, fleet);
+        builder.env(cys::ENV_BOOT_FLEET_DAEMON, fleet);
         // ★dbg-D2 R12: 좌석 프로세스 exec **전** 프로필 배선(스킬 심링크·appbuild 게이트 훅) — 이
         //   함수가 5경로(create RPC·launch-agent·boot·restore·schedule)의 단일 합류점이라 여기 한 번이면
         //   master 좌석(부모 = cysd 직접 · VM 실측)까지 전부 덮는다. 좌석 토큰 주입 **앞**이다(배선

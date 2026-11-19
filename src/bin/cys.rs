@@ -12732,39 +12732,25 @@ const BOOT_PLAN: &[(&str, &str, bool)] = &[
     ("worker", "claude", true),
 ];
 
-/// ★(1.1.16 · TICKET=cysr-1116-borrow23-1119 · 차용 ③) 가벼운 시작 손잡이 `boot_fleet` — `full`(기본 · 1.1.15 와 같다 = CSO·worker
-/// 를 부트 때 세운다) | `light`(부트가 master 말고는 아무것도 세우지 않는다 · CSO·worker 는 일이 생길 때 `cys launch-agent` 로,
-/// 전체 편성은 `CYS_BOOT_FLEET=full cys boot` 로). 읽는 순서 = 환경변수 `CYS_BOOT_FLEET` > `~/.cys/policy.json` 의 `boot_fleet`
-/// (**full 만** — 좌석도 쓰는 파일이라 함대를 줄이는 값은 받지 않는다) > 이 기본값. 모르는 값은 건너뛴다(다음 출처로). ★python 정본 `javis_orchestra.boot_fleet` 과 같은 규칙·같은 기본값이다
-/// (검체 `boot_fleet_default_parity_with_python` 이 기본값 문자열을 대조한다) — 함께 옮긴다.
-/// ★기본값을 `light` 로 바꾸는 것은 기본 함대 정책(박사님 결정 2026-09-10)의 개정이라 이 손잡이의 기본값만 따로 결정한다.
-const BOOT_FLEET_DEFAULT: &str = "full";
-
-/// 순수 — (env 값, policy.json 내용) → (fleet, 출처). fleet ∈ {"full","light"} · 출처 ∈ {"env","policy","default"}.
-fn boot_fleet_from(env: Option<&str>, policy: Option<&Value>) -> (&'static str, &'static str) {
-    // python `boot_fleet._norm` 과 바이트 동치: ASCII 공백·탭·줄바꿈만 벗기고 ASCII 만 소문자로(codex 1R MINOR).
-    let norm = |v: &str| match v.trim_matches(|c| matches!(c, ' ' | '\t' | '\r' | '\n')).to_ascii_lowercase().as_str() {
-        "full" => Some("full"),
-        "light" => Some("light"),
-        _ => None,
-    };
-    if let Some(f) = env.and_then(norm) {
-        return (f, "env");
-    }
-    // ★(codex 1R BLOCKER) policy.json 은 좌석도 쓸 수 있다 — **되돌리는 값(full)만** 받는다(cysd knobs.rs 와 같은 규칙).
-    //   light 는 env 로만: 좌석 하나가 파일 한 줄로 다음 master 부트의 CSO·worker 를 영구히 지우지 못하게.
-    if policy.and_then(|p| p.get("boot_fleet")).and_then(Value::as_str).and_then(norm) == Some("full") {
-        return ("full", "policy");
-    }
-    (if BOOT_FLEET_DEFAULT == "light" { "light" } else { "full" }, "default")
-}
-
+/// ★(1.1.16 · TICKET=cysr-1116-borrow23-1119 · 차용 ③) 가벼운 시작 손잡이 `boot_fleet` — `full`(기본 · 1.1.15 와 같다) | `light`(부트가 master
+/// 말고는 세우지 않는다 · CSO·worker 는 `cys launch-agent` 로 · 전체 편성 = 데몬을 `CYS_BOOT_FLEET=full` 로). ★진실원 = **데몬**(독립 검증 V-4):
+/// 규칙·기본값은 lib [`cys::boot_fleet_decide`] · 이 CLI 는 RPC `system.boot_fleet` 로 묻고(없으면 좌석 도장 `CYS_BOOT_FLEET_DAEMON` → 기본 full)
+/// 자기 env 의 `CYS_BOOT_FLEET` 는 쓰지 않는다(다르면 경고 1줄 — 반쪽 light 차단).
+/// ★기본값을 `light` 로 바꾸는 것은 기본 함대 정책(박사님 결정 2026-09-10)의 개정이다.
 fn boot_fleet() -> (&'static str, &'static str) {
-    let env = std::env::var("CYS_BOOT_FLEET").ok();
-    let policy = std::fs::read_to_string(cys::home_dir().join(".cys").join("policy.json"))
+    let daemon = request("system.boot_fleet", json!({}))
         .ok()
-        .and_then(|t| serde_json::from_str::<Value>(cys::strip_utf8_bom(&t)).ok());
-    boot_fleet_from(env.as_deref(), policy.as_ref())
+        .and_then(|v| v["fleet"].as_str().map(str::to_string))
+        .or_else(|| std::env::var(cys::ENV_BOOT_FLEET_DAEMON).ok());
+    let seat = std::env::var(cys::ENV_BOOT_FLEET).ok();
+    let (fleet, src, warn) = cys::boot_fleet_resolve(daemon.as_deref(), seat.as_deref());
+    if warn {
+        eprintln!(
+            "[boot] ⚠ 이 프로세스 env 의 CYS_BOOT_FLEET={} 는 무시한다 — 진실원 = 데몬({fleet} · {src}). 바꾸려면 데몬 기동 env 에 둔다.",
+            seat.as_deref().unwrap_or("")
+        );
+    }
+    (fleet, src)
 }
 
 /// 이번 부트가 세울 편성 — `light` 면 빈 표(master 는 원래 표 밖 = 선언한 자기 자신).
@@ -21168,7 +21154,8 @@ fn daemon_answers_within(socket: &std::path::Path, budget: std::time::Duration) 
     }
 }
 
-/// ★(1.1.16 · 차용 ② ⒞) `cys daemon explain-state` — 데몬이 이미 가진 값만 읽어 푼다(새 판정 0 · 데몬 자동 기동은 `cys list` 와 같다).
+/// ★(1.1.16 · 차용 ② ⒞) `cys daemon explain-state` — 데몬이 이미 가진 값만 읽어 푼다(새 판정 0 · **데몬을 자동 기동하지 않는다** —
+/// `command_never_autostarts` 등재 · 독립 검증 V-5).
 fn run_explain_state(surface: &str, as_json: bool) -> i32 {
     let sid = match resolve_surface_arg(surface) {
         Ok(v) => v,
@@ -21247,9 +21234,15 @@ fn explain_state_lines(sid: u64, da: &Value, diag: &Value) -> Vec<String> {
         if let Some(w) = s(&diag["last_wipe"]) {
             out.push(format!("  마지막으로 지운 까닭: {w} · {}초 전", diag["last_wipe_age_secs"]));
         }
+        if n("unsolicited_reports") > 0 {
+            out.push(format!(
+                "  해석: 이 프로그램은 묻지 않고 스스로 보고했다({}건 · 받지 않음 — 화면 판정 사용 · 예: codex)",
+                n("unsolicited_reports")
+            ));
+        }
         if n("unanswered_queries") > 0 {
             out.push(format!("  주의: 화면 관측기가 돌지 않아 답하지 않은 질의 {}회(`CYS_DISPLAY_ACTIVITY=0` 또는 관측기 정지)", n("unanswered_queries")));
-        } else if n("answered_queries") == 0 {
+        } else if n("answered_queries") == 0 && n("unsolicited_reports") == 0 {
             out.push("  해석: 이 프로그램은 7501 을 묻지 않았다(Codex·옛 Claude·`CYS_PROGRAM_STATUS=0`) — 화면 판정만 쓴다.".into());
         }
     } else {
@@ -59629,22 +59622,32 @@ mod explain_state_tests {
 // ★(1.1.16 · TICKET=cysr-1116-borrow23-1119 · 차용 ③) 가벼운 시작 손잡이 — 순수 판정 · 빈 편성 · python 정본과 기본값 문자열 대조.
 #[cfg(test)]
 mod boot_fleet_tests {
-    use super::{boot_fleet_from, effective_boot_plan, BOOT_FLEET_DEFAULT, BOOT_PLAN};
+    use super::{effective_boot_plan, BOOT_PLAN};
+    use cys::{boot_fleet_decide, boot_fleet_resolve, BOOT_FLEET_DEFAULT};
     use serde_json::json;
 
     #[test]
-    fn env_beats_policy_beats_default_and_unknown_values_fall_through() {
-        assert_eq!(boot_fleet_from(None, None), ("full", "default"));
-        assert_eq!(boot_fleet_from(Some("light"), Some(&json!({"boot_fleet": "full"}))), ("light", "env"));
-        assert_eq!(boot_fleet_from(Some(" LIGHT "), None), ("light", "env"));
+    fn daemon_decision_env_beats_policy_beats_default() {
+        assert_eq!(boot_fleet_decide(None, None), ("full", "default"));
+        assert_eq!(boot_fleet_decide(Some("light"), Some(&json!({"boot_fleet": "full"}))), ("light", "env"));
+        assert_eq!(boot_fleet_decide(Some(" LIGHT "), None), ("light", "env"));
         // 좌석도 쓰는 파일의 light 는 받지 않는다(되돌리는 값 full 만).
-        assert_eq!(boot_fleet_from(Some("bogus"), Some(&json!({"boot_fleet": "light"}))), ("full", "default"));
-        assert_eq!(boot_fleet_from(None, Some(&json!({"boot_fleet": "FULL"}))), ("full", "policy"));
-        // 제어 구분자(U+001C)는 공백이 아니다 — python 과 같게 거부.
-        assert_eq!(boot_fleet_from(Some("\u{1c}light\u{1c}"), None), ("full", "default"));
-        assert_eq!(boot_fleet_from(Some(""), Some(&json!({"boot_fleet": "tiny"}))), ("full", "default"));
-        assert_eq!(boot_fleet_from(None, Some(&json!({"boot_fleet": 1}))), ("full", "default"));
-        assert_eq!(boot_fleet_from(None, Some(&json!([]))), ("full", "default"));
+        assert_eq!(boot_fleet_decide(Some("bogus"), Some(&json!({"boot_fleet": "light"}))), ("full", "default"));
+        assert_eq!(boot_fleet_decide(None, Some(&json!({"boot_fleet": "FULL"}))), ("full", "policy"));
+        assert_eq!(boot_fleet_decide(Some("\u{1c}light\u{1c}"), None), ("full", "default"));
+        assert_eq!(boot_fleet_decide(None, Some(&json!({"boot_fleet": 1}))), ("full", "default"));
+    }
+
+    #[test]
+    fn half_light_seat_env_is_ignored_and_warned() {
+        // V-4: 좌석 env 에만 light → 데몬은 full → full 그대로 + 경고.
+        assert_eq!(boot_fleet_resolve(Some("full"), Some("light")), ("full", "daemon", true));
+        assert_eq!(boot_fleet_resolve(Some("light"), Some("light")), ("light", "daemon", false));
+        assert_eq!(boot_fleet_resolve(Some("light"), None), ("light", "daemon", false));
+        // 데몬이 없으면 기본 full — 내 env 의 light 로 내려가지 않는다.
+        assert_eq!(boot_fleet_resolve(None, Some("light")), ("full", "no-daemon", true));
+        assert_eq!(boot_fleet_resolve(None, None), ("full", "no-daemon", false));
+        assert_eq!(boot_fleet_resolve(Some("weird"), Some("")), ("full", "no-daemon", false));
     }
 
     #[test]
@@ -59656,10 +59659,9 @@ mod boot_fleet_tests {
 
     #[test]
     fn boot_fleet_default_parity_with_python() {
-        // 기본값은 기본 함대 정책(2026-09-10)의 일부 — 바꾸면 두 언어를 함께 바꾼다.
         assert_eq!(BOOT_FLEET_DEFAULT, "full");
         let py = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/cysjavis-pack/bin/javis_orchestra.py")).expect("orchestra");
         assert!(py.contains(&format!("BOOT_FLEET_DEFAULT = \"{BOOT_FLEET_DEFAULT}\"")), "python 기본값 불일치");
-        assert!(py.contains("os.environ.get(\"CYS_BOOT_FLEET\")") && py.contains("policy.get(\"boot_fleet\")"), "python 출처 이름 불일치");
+        assert!(py.contains("\"CYS_BOOT_FLEET_DAEMON\"") && py.contains("policy.get(\"boot_fleet\")"), "python 출처 이름 불일치");
     }
 }

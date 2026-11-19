@@ -1467,6 +1467,9 @@ async fn async_main() {
     // F-01 (0.14.52) display-only activity observer — its own OS thread; failure leaves dots Unknown.
     //   Rollback / OFF arm: CYS_DISPLAY_ACTIVITY=0.
     activity::spawn_observer(Arc::clone(&daemon));
+    // ★(1.1.16 · 차용 ③ · V-4) 가벼운 시작 손잡이를 기동 때 고정(진실원 = 이 데몬) — 로그 1줄.
+    let (fleet, fleet_src) = knobs::boot_fleet();
+    eprintln!("[cysd] boot_fleet={fleet} (출처 {fleet_src})");
     // CC v2 WS-A: 계정 발견(프로필 스캔)+스냅샷 예열 — 관측 전에도 전 계정이 CC에 보인다.
     // 전부 fail-open(파일 부재·파싱 실패=빈 뷰) — 부트체인 비치명.
     accounts::seed_known(&daemon);

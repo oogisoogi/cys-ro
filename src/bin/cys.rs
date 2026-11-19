@@ -31483,7 +31483,7 @@ extern "C" fn scoped_cleanup_handler(sig: libc::c_int) {
 /// 디버그 빌드의 `Cli::try_parse_from` 1회 필요 스택을 바이트로 재서 1 MiB 이하를 단언한다. 지금 실측 ≈229 KB(Cargo.toml
 /// `[profile.dev.package.cys-terminal] opt-level = 1`) · 그 줄이 없으면 ≈2.10 MB(clap derive 의 `Command::augment_subcommands` 틀
 /// 1,766,848 바이트) — 2 MiB 시험 스레드 여유가 수백 바이트라 전체 시험에서 가끔 SIGABRT 로 프로세스째 죽던 것을, 늘어난 **그 판에서**
-/// 이 시험 하나가 결정론적으로 붉어지게 바꾼다. 근거·측정법 = docs/1115/CLI-STACK-PROBE/REPORT.md.
+/// 이 시험 하나가 결정론적으로 붉어지게 바꾼다. 근거·측정법 = 이 시험 본문 + Cargo.toml [profile.dev.package.cys-terminal] 주석.
 /// 원리: 지금 틀 아래 PAINT 바이트를 표식으로 칠함 → 풀이 → 아래부터 훑어 처음 지워진 바이트 = 최저 수위. 큰 틀의 머리말 탐침
 /// (쪽마다 `str xzr, [sp]`)이 칠을 지우므로 스택 넘침 판정과 같은 지점을 잡는다. 재는 일은 16 MiB 스레드에서 한다 — 예산을 넘은 판에서도
 /// 넘침(SIGABRT)이 아니라 이 단언으로 실패하게(측정 계기일 뿐, 다른 시험의 스택을 키우지 않는다). 맥 전용 API 는 쓰지 않지만 측정값은
@@ -31561,7 +31561,7 @@ mod cli_stack_budget_tests {
         assert!(
             used <= BUDGET,
             "Cli 풀이 필요 스택 {used} 바이트 > 예산 {BUDGET} (최악 argv: {argv}) — 큰 clap 열거형(Command·*Action)에 변형·인자를 더했는가, \
-             Cargo.toml [profile.dev.package.cys-terminal] opt-level = 1 이 빠졌는가 · 근거 docs/1115/CLI-STACK-PROBE/REPORT.md"
+             Cargo.toml [profile.dev.package.cys-terminal] opt-level = 1 이 빠졌는가 · 근거 = Cargo.toml 그 줄 주석"
         );
     }
 }

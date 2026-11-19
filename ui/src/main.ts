@@ -9311,7 +9311,7 @@ async function restartContinuityToast(since: number) {
 // 대화 원문은 트랜스크립트 복원, 이 기능은 증류 체크포인트(SESSION_STATE·TODO) 최신성만 보증한다.
 // 복원 중 자리 재저장 대기 — 복원 가드는 이번 회차 복원 기록(verify)이 찍히면 풀린다(갱신 직후 ≈40s 창).
 const DRAIN_RESTORING_RETRY_MS = 30_000;
-// ↻ 단추 진입 확인 문구(박사님 11-18 「한 번 더 묻자」) — 왕초보 말투 · 겁주는 말 없음. 거절 쪽이 기본 초점이다.
+// ↻ 단추 진입 확인 문구(11-18 실수 클릭 사례 뒤 복원) — 왕초보 말투 · 겁주는 말 없음. 거절 쪽이 기본 초점이다.
 const RESTART_CONFIRM_TEXT = {
   title: "데몬을 다시 시작할까요?",
   body: "일하던 자리들이 잠깐 멈췄다가 대화 기억과 함께 다시 켜집니다.",

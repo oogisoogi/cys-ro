@@ -153,7 +153,7 @@ describe("manualRestartAllDaemons — 결과 알림은 실측에서 파생", () 
 // ★[V111-F5] 진입 확인 모달 폐기의 전용 축(master 판정 2026-09-21) — 「↻ 한 번 = 드레인 → 재시작」.
 // 위 describe 와 축을 나눠 둔다: 저장 미확인 창(뒤)과 진입 확인 창(앞)은 **다른 순간에 묻는** 다른 결함이라
 // 한 시험에 묶으면 하나가 되살아나도 다른 하나의 적색에 묻힌다.
-describe("manualRestartAllDaemons — 진입 확인 모달은 정확히 1회(11-18 박사님 「한 번 더 묻자」 로 복원)", () => {
+describe("manualRestartAllDaemons — 진입 확인 모달은 정확히 1회(11-18 실수 클릭 사례 뒤 복원)", () => {
   it("단추 진입부터 drain_verify 호출까지 묻는 단계가 진입 확인 1회뿐이고, rotatingDaemon 을 잡기 전에 묻는다", async () => {
     const src = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
     const i = src.indexOf("async function manualRestartAllDaemons()");
@@ -189,7 +189,7 @@ describe("manualRestartAllDaemons — 저장 미확인 확인 창이 없다", ()
     expect(body).not.toContain("그래도 재시작");
     // 대신 사후 알림을 부른다(빼면 사용자는 아무것도 못 듣는다).
     expect(body).toContain("drainVerifyNotice");
-    // ★[V111-F5→11-18] 진입 확인 모달은 박사님 「한 번 더 묻자」 로 **1개만** 복원됐다. 드레인 뒤에는 묻지 않는다.
+    // ★[V111-F5→11-18] 진입 확인 모달은 11-18 사례 뒤 **1개만** 복원됐다. 드레인 뒤에는 묻지 않는다.
     expect(body.match(/confirmModal\(/g)?.length).toBe(1);
     const afterDrain = body.slice(body.indexOf('invoke("drain_verify"'));
     expect(afterDrain).not.toContain("confirmModal");

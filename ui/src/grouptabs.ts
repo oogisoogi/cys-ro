@@ -146,7 +146,7 @@ export function fixedColumnSplit(tree: LayoutNode | null, fixedSids: readonly nu
 /** (2b-2 · master#fcbc46fb 결정 ① A안) 격자 칸 최소 폭(글자 열) · 최소 높이(줄 · 설계 §4). */
 export const GRID_MIN_COLS = 40;
 export const GRID_MIN_ROWS = 12;
-/** (2b-3 · 박사님 11-11 13:1x 「최소 폭을 낮추자 … 싱글/듀얼/노트북 모니터 상황에 맞추어 최적 비율」 · 지시서 2026-11-11-cysr-pillar-width-rule)
+/** (2b-3 · 11-11 기둥 폭 규칙 — 최소 폭을 낮추고 싱글/듀얼/노트북 모니터에 맞춘 최적 비율)
  *  탭 화면의 고정 기둥(master·cso) 열 수 = clamp(64, ⌊배치 영역 열 수 × 36%⌋, 96) — 옛 「최소 90열」(묶음 탭 노브 끔 = formation.defaultLeftShare)은 탭 화면에서 쓰지 않는다.
  *  비율은 정수 백분율로 계산한다(0.36 같은 소수 곱은 경계에서 ⌊⌋ 가 한 칸 어긋날 수 있다). */
 export const PILLAR_MIN_COLS = 64;

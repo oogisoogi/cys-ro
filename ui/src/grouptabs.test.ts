@@ -294,7 +294,7 @@ describe("(2b-2 · A안 → 2b-3 한 규칙) 격자 — 칸 최소 40열×12줄�
   });
 });
 
-describe("(2b-3 · 박사님 11-11 13:1x · 지시서 2026-11-11-cysr-pillar-width-rule) 탭 화면 고정 기둥 = clamp(64, 영역 열 × 36%, 96) · 한 줄 칸 수 = 40열 지키는 최대", async () => {
+describe("(2b-3 · 11-11 기둥 폭 규칙) 탭 화면 고정 기둥 = clamp(64, 영역 열 × 36%, 96) · 한 줄 칸 수 = 40열 지키는 최대", async () => {
   const { pillarCols, tabPillarShare, gridRowMax, GRID_MIN_COLS, PILLAR_MIN_COLS, PILLAR_MAX_COLS, PILLAR_PCT } = await import("./grouptabs");
   // 지시서 표 모형: 배치 영역 = 창 폭 − 왼쪽 막대 219px(2b-2 실측 1920 → 1701px) · 글자 칸 = 726px ÷ 90열 · 워커 칸 테두리 = 2열.
   //   기둥 열 수 = 기둥 px ÷ 글자 칸 · 오른쪽 = 영역 − 기둥 · 한 줄 칸 수 = ⌊오른쪽 ÷ (40+2)열⌋.

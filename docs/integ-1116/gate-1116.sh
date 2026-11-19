@@ -87,6 +87,7 @@ cargo_step portable-pty test --manifest-path vendor/portable-pty/Cargo.toml --li
 #    본문은 GitHub Actions bash 스텝과 같은 꼴(bash --noprofile --norc -eo pipefail)로 · 잡/스텝 env 는 생성물 머리 export.
 #    ⚠차이(정직): 파이썬 = 이 맥 /usr/bin/python3(CI = setup-python 3.12) · 우분투 잡 본문도 이 맥에서 돈다(리눅스 아님).
 step ci-pack-extract-selftest 60 "${ISO[@]}" /usr/bin/python3 docs/integ-1116/ci_pack_steps.py --self-test
+step pubcand-selftest 120 "${ISO[@]}" /bin/bash docs/integ-1116/pubcand.sh --self-test
 for id in $CI_IDS; do ci_step "$id"; done
 # ── CI 0회 팩 시험 = lane-parity-rehearsal.sh UNREGISTERED_OK ∩ 실재 파일 − 위 CI 단계가 부르는 것(같은 정의에서 읽음)
 #    격리 = CI 루프와 같은 CYS_PACK_DIR 임시 폴더 + 시험이 스스로 요구하는 JAVIS_ROOT·CYS_PROBE_RUNS(test_verify_gate·

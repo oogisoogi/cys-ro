@@ -652,6 +652,21 @@ describe("codex 1R 고침", () => {
     await f.book.wake();
     expect(e.count("chat_send") + f.count("chat_send")).toBe(1);
   });
+  it("(실물 ⑤) 자동 1회를 기다리는 동안 다른 길로 마스터가 살아남 → 기다림 거둠 · 자동 start_master 0", async () => {
+    const e = new Env(dead);
+    e.startPlan = async (_n, env) => {
+      env.emit("role.claim_denied", null, { role: "master", path: "surface.create", seat_blocked: "seat_not_claimable", seat_human_recent: false });
+      throw DENIED_ERR;
+    };
+    e.observe();
+    await e.book.restart();
+    expect(e.book.view().phase.kind).toBe("retry_wait");
+    e.rows[0].agent_alive = true; // 데몬 쪽 자동 회생(같은 좌석)
+    e.observe();
+    expect(e.book.view().phase.kind).toBe("rest");
+    await e.advance(RETRY_DELAY_MS * 3);
+    expect(e.count("start_master")).toBe(1);
+  });
   it("깨어남 판정 = 초 버림 보정(깨우기 직전 1초 안 옛 출력은 새 출력 아님)", () => {
     const m = masterRowOf({ surfaces: [row(5, "master", { idle_secs: 3 })] }, () => false) as MasterRow;
     expect(wokeUp(m, 0, 3_050)).toBe(false);

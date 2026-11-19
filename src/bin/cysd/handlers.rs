@@ -29571,6 +29571,24 @@ mod tests {
         assert_eq!(r["error"]["code"], json!("clear_first_unsupported"));
         assert_eq!(s.human_input_seq.load(Ordering::SeqCst), 3, "옵션 없는 요청까지 되돌렸다");
         assert_ne!(*s.last_human_input.lock().unwrap(), before);
+        // ⑤a 등록 좌석인데 ② 의 자판 글이 입력줄에 남음 → 초안 게이트 거부(typing_guard · 바이트 0) → 찍기 되돌림(codex 1R major: draft_gate 갈래)
+        *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        let atomic = |sid: u64| json!({"surface_id": sid, "text": "hi", "human": true, "quiet": true, "queued": false,
+                               "clear_first": true, "machine_origin": false, "refuse_on_approval": true});
+        let r = send(4, atomic(s.id));
+        assert_eq!(r["error"]["code"], json!("typing_guard"), "전제: 초안 게이트 거부 {r}");
+        assert_eq!(s.human_input_seq.load(Ordering::SeqCst), 3, "쓰기 0 초안 게이트 거부가 찍기를 남겼다");
+        // ⑤b 새 등록 좌석(입력줄 빈칸)에 원자 제출 성공 → 찍기 유지(가드 commit) · 응답 표지 = 그 좌석 행 표지
+        //   (뿌리 셸 아래 자손이 돌아야 빈 셸 가드에 안 걸린다 — 셸이 sleep 을 기다리는 꼴)
+        let s2 = daemon.create_surface(None, Some("/bin/sh -c 'sleep 31; :'".into()), None, None, 24, 80).expect("create surface 2");
+        daemon.surfaces.lock().unwrap().insert(s2.id, s2.clone());
+        *s2.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        crate::governance::test_wait_seat_runs(&s2, "sleep", &["31"]);
+        let r = send(5, atomic(s2.id));
+        assert_eq!(r["result"]["sent"], json!(true), "전제: 원자 제출 성공 {r}");
+        assert_eq!(r["result"]["human_input_stamp"], label(1), "{r}");
+        assert_eq!(s2.human_input_seq.load(Ordering::SeqCst), 1, "성공한 원자 제출의 찍기가 되돌려졌다(commit 누락)");
+        assert!(s2.last_human_input.lock().unwrap().is_some());
         // ④ 되돌림은 그 사이 다른 찍기가 있으면 하지 않는다
         let st = stamp_human_input(&s);
         let other = stamp_human_input(&s);

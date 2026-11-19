@@ -152,7 +152,8 @@ export class ReviveBook {
     if (this.phase.kind === "gate_wait" && (this.situation().kind === "gate" || this.situation().kind === "ok")) this.setPhase({ kind: "rest" });
     if (this.phase.kind === "restarting" && restartSucceeded(this.phase.before, master, this.phase.beforeAlive)) this.onRestartOk(master as MasterRow);
     // 사람 입력 때문에 기다리던 것 · 쓰다 만 글 — 사정이 풀렸으면(꺼짐 아님) 띠를 거둔다
-    if ((this.phase.kind === "hold_human" || this.phase.kind === "draft_block" || this.phase.kind === "restartfail" || this.phase.kind === "wakefail") && this.situation().kind === "ok")
+    // (실물 ⑤ 2회차) 자동 1회를 기다리는 동안 다른 길(데몬 자동 회생 등)로 마스터가 살아나면 기다림을 거둔다(예약도 함께 · start_master 0)
+    if ((this.phase.kind === "hold_human" || this.phase.kind === "draft_block" || this.phase.kind === "restartfail" || this.phase.kind === "wakefail" || this.phase.kind === "retry_wait") && this.situation().kind === "ok")
       this.setPhase({ kind: "rest" });
     // 다시 그리기는 부른 쪽(core.applyFresh → set)이 한다
   }

@@ -1,0 +1,22 @@
+# 조각 5 실물 — 격리 HOME cysd(이 작업트리 빌드) · 가짜 claude(tests/fixtures/fake_claude.c) · 좌석 죽이기 · 2026-11-20 00:32
+데몬 pid 82011 · 소켓 /private/tmp/claude-501/s5d/s.sock
+launch-agent master rc=0 stdout=surface:1
+launch-agent cso rc=0 stdout=surface:2
+launch-agent worker rc=0 stdout=surface:3
+① 마스터 행 가산 칸: {'surface_id': 1, 'agent': 'claude', 'agent_alive': True, 'agent_seen': True, 'seat': 'occupied', 'human_input_stamp': None, 'human_idle_secs': None}
+② 원자 제출 응답: {"human_input_stamp": "1795102181207:1", "request_id": "w1a1f46d8757-4", "sent": true, "surface_id": 1}
+   행 human_input_stamp = 1795102181207:1 · human_idle_secs = 0
+③ 좌석 수(다시 켜기 전): {'master': 1, 'cso': 1, 'worker': 1, None: 0}
+④ 좌석 죽이기: 셸 pid 87389 → 가짜 claude pid [87421]
+   행: {'agent_alive': False, 'agent_seen': True, 'seat': 'empty'}
+시간 초과: master.deadman
+   master.deadman: []
+⑤ launch-agent master(다시 켜기) rc=1 stdout= stderr끝="error: claim_denied: surface.create denied: privileged role 'master' is held by a live surface"
+   다시 켠 마스터: {'surface_id': 1, 'agent_alive': True, 'gate_pending': None, 'created_at': 1795102183.848352} · 같은 좌석 = True · 옛 좌석 행: {'exited': False, 'pending_input_bytes': 0, 'pending_input_human_bytes': 0, 'role': 'master', 'seat': 'occupied'}
+   좌석 수(뒤): {'master': 1, 'cso': 1, 'worker': 1, None: 0} · CSO·워커 같음 = True · 마스터 1 = True
+   role.takeover: 0 · role.claim_denied: 1
+⑥ 사람 자판 1글자 응답: {"human_input_stamp": "1795102181207:2", "sent": true, "surface_id": 1}
+   다시 켜기 rc=1 stderr끝="error: claim_denied: surface.create denied: privileged role 'master' is held by a live surface"
+   role.claim_denied: [{"seat_blocked": "seat_not_claimable", "seat_human_recent": true, "takeover_cancelled": null, "path": "surface.create"}]
+   좌석 수: {'master': 1, 'cso': 1, 'worker': 1, None: 0}
+⑦ 빈 셸 원자 제출: {"code": "no_agent", "message": "agent seat has no live agent (bare shell) — human send with refuse_on_approval: not typed; not queued"} · 표지 전/후 1795102181207:2 1795102181207:2

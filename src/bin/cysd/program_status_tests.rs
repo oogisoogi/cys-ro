@@ -366,3 +366,65 @@ fn live_seat_answers_query_and_records_reports() {
     }
     drop(g);
 }
+
+// ---- codex 1R 수리 고정 ----
+
+#[test]
+fn duplicate_key_cannot_launder_a_limit_violation() {
+    let long = "A".repeat(MAX_MSG_ENCODED + 1);
+    assert_eq!(discard(&format!("state=idle:msg={long}:msg=aGk=")), "bad msg");
+    assert_eq!(discard("state=idle:msg=G1sybQ==:msg=aGk="), "bad msg");
+    assert_eq!(discard(&format!("state=idle:app={}:app=ok", "a".repeat(33))), "app too long");
+    assert_eq!(discard("state=idle:id=a//b:id=ok"), "bad id");
+    assert_eq!(discard(&format!("state=idle:title={}:title=aGk=", "QUFB".repeat(65))), "bad title");
+}
+
+#[test]
+fn urgent_child_inherits_app_from_nearest_ancestor() {
+    let mut st = Store::default();
+    let t = Instant::now();
+    feed(&mut st, b"\x1b]7501;state=working:app=deploy\x07\x1b]7501;state=idle:id=eu:app=eu-app\x07\x1b]7501;state=blocked:id=eu/west\x07", t);
+    let o = overlay(&st, None, t).unwrap();
+    assert_eq!((o.state, o.id.as_str(), o.app.as_deref()), (PState::Blocked, "eu/west", Some("eu-app")));
+    feed(&mut st, b"\x1b]7501;state=clear:id=eu\x07\x1b]7501;state=blocked:id=us\x07", t);
+    let o = overlay(&st, None, t).unwrap();
+    assert_eq!((o.id.as_str(), o.app.as_deref()), ("us", Some("deploy")));
+    // 조상에 app 이 없으면 None(지어내지 않는다).
+    let mut st2 = Store::default();
+    feed(&mut st2, b"\x1b]7501;state=blocked:id=x/y\x07", t);
+    assert_eq!(overlay(&st2, None, t).unwrap().app, None);
+}
+
+#[test]
+fn version_moves_on_every_change_and_output_seq_is_monotonic() {
+    use crate::activity::overlay_seq;
+    let mut st = Store::default();
+    let t0 = Instant::now();
+    let mut last = 0u64;
+    let mut obs_seq = 5u64; // 관측기 순번이 멈춰 있어도(틱 사이·관측기 정지) 변화마다 순번이 늘어야 한다
+    let mut step = |st: &mut Store, bytes: &[u8], human: Option<Instant>, t: Instant, tick: bool| {
+        if tick {
+            obs_seq += 1;
+        }
+        if !bytes.is_empty() {
+            feed(st, bytes, t);
+        }
+        let seen = overlay(st, human, t).is_some_and(|o| o.seen);
+        let seq = overlay_seq(obs_seq, st.version, seen);
+        assert!(seq > last || (seq == last && bytes.is_empty() && !tick), "seq {seq} <= {last}");
+        last = seq;
+    };
+    let ms = |n| t0 + Duration::from_millis(n);
+    step(&mut st, b"\x1b]7501;state=working\x07", None, ms(1), false);
+    step(&mut st, b"\x1b]7501;state=blocked:kind=permission\x07", None, ms(2), false); // 틱 없이 상태 변화
+    step(&mut st, b"\x1b]7501;state=done\x07", None, ms(3), false);
+    step(&mut st, b"", Some(ms(4)), ms(5), false); // 사람이 봄 → done→waiting · 순번 +1
+    step(&mut st, b"\x1b]7501;state=clear\x07", Some(ms(4)), ms(6), false); // 덧씌움 사라짐(화면 판정으로) · 그래도 순번 증가
+    step(&mut st, b"", None, ms(7), true);
+    step(&mut st, b"\x1b]133;A\x07\x1b]7501;state=working\x07", None, ms(8), false);
+    let v = st.version;
+    st.wipe(false, "x", ms(9));
+    assert_eq!(st.version, v + 1, "지움도 판을 올린다");
+    st.wipe(false, "x", ms(10));
+    assert_eq!(st.version, v + 1, "지울 것이 없으면 판 불변");
+}

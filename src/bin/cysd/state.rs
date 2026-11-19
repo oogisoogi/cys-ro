@@ -8445,7 +8445,7 @@ impl Daemon {
             .map(|v| v == "1")
             .unwrap_or(false);
         // ★(1.1.16 · 차용 ②) 좌석 기동 때 한 번 읽는다(`CYS_PROGRAM_STATUS=0` = 1.1.15 동작 · 질의 무응답).
-        let ps_enabled = crate::program_status::enabled();
+        let ps_enabled = crate::program_status::enabled() && crate::activity::observer_enabled();
         std::thread::spawn(move || {
             let mut reader = reader;
             let mut buf = [0u8; 16 * 1024];

@@ -233,6 +233,14 @@ pub(crate) fn parse(body: &[u8], seq_len: usize) -> Parsed {
         if !value_ok(val) {
             continue; // 값에 허용 밖 바이트 = 그 쌍만 무시
         }
+        // ★(codex 1R MINOR ③) 한도는 **쌍마다** 본다 — 같은 키가 뒤에 또 와도 앞 쌍의 한도 위반은 보고 통째 폐기다.
+        match key {
+            b"id" if !id_ok(val) => return Parsed::Discard("bad id"),
+            b"app" if val.len() > MAX_APP => return Parsed::Discard("app too long"),
+            b"title" if decode_text(val, MAX_TITLE_ENCODED, MAX_TITLE_DECODED).is_none() => return Parsed::Discard("bad title"),
+            b"msg" if decode_text(val, MAX_MSG_ENCODED, MAX_MSG_DECODED).is_none() => return Parsed::Discard("bad msg"),
+            _ => {}
+        }
         // 같은 키가 또 오면 뒤의 것이 이긴다.
         pairs.retain(|(k, _)| *k != key);
         pairs.push((key, val));
@@ -453,6 +461,8 @@ pub(crate) struct Record {
 pub(crate) struct Store {
     records: BTreeMap<String, Record>,
     tick: u64,
+    /// 판 계수 — 기록이 바뀔 때마다(적용 · clear · 지움) +1 · 줄지 않는다(`activity::wire_with` 순번 재료).
+    pub version: u64,
     /// 이 좌석이 질의를 보냈고 우리가 답했다(= 답을 받은 프로그램은 화면 표지를 그리지 않는다).
     pub answered: u64,
     pub reports: u64,
@@ -468,6 +478,7 @@ impl Store {
     /// 보고 하나를 적용한다(통째 교체 · clear = 그 id 와 그 아래 전부 / id 없으면 전부).
     pub(crate) fn apply(&mut self, r: &Report, raw: &[u8], now: Instant) {
         self.reports += 1;
+        self.version += 1;
         let keep = &raw[..raw.len().min(RAW_KEEP)];
         self.last_raw = Some((String::from_utf8_lossy(keep).into_owned(), now));
         let Some(state) = r.state else {
@@ -517,6 +528,7 @@ impl Store {
         }
         if self.records.len() != before {
             self.last_wipe = Some((why, now));
+            self.version += 1;
         }
     }
 
@@ -582,11 +594,28 @@ pub(crate) struct Overlay {
 /// 저장소 + 사람 마지막 입력 시각 → 덧씌움(기록이 없으면 None = 화면 판정 그대로).
 pub(crate) fn overlay(store: &Store, last_human_input: Option<Instant>, now: Instant) -> Option<Overlay> {
     let (id, rec) = store.summary()?;
+    // ★(codex 1R MINOR ④) app 은 가장 가까운 조상 기록에서 물려받는다(규격 — 급한 자식 기록이 app 을 되풀이하지 않아도 이름이 남게).
+    let app = rec.app.clone().or_else(|| {
+        let mut cur = id;
+        loop {
+            cur = match cur.rfind('/') {
+                Some(i) => &cur[..i],
+                None if !cur.is_empty() => "",
+                None => return None,
+            };
+            if let Some(a) = store.records.get(cur).and_then(|r| r.app.clone()) {
+                return Some(a);
+            }
+            if cur.is_empty() {
+                return None;
+            }
+        }
+    });
     let seen = matches!(rec.state, PState::Done | PState::Error) && last_human_input.is_some_and(|h| h > rec.updated);
     Some(Overlay {
         state: rec.state,
         kind: rec.kind,
-        app: rec.app.clone(),
+        app,
         msg: rec.msg.clone(),
         title: rec.title.clone(),
         progress: rec.progress,

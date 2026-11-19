@@ -1377,8 +1377,14 @@ pub(crate) fn observe_seat(
 
 /// Spawns the observer on its own OS thread. Failure leaves every seat Unknown; there is NO fallback
 /// to a shared/blocking pool (R3-1).
+/// 화면 관측기 켬/끔 손잡이(`CYS_DISPLAY_ACTIVITY=0` = 끔). ★(1.1.16 · 차용 ②) 7501 응답도 이 값을 따른다 — 관측기가 없으면
+/// 덧씌울 세대·순번이 없어 7501 보고를 보일 수 없는데, 답하는 순간 Claude 는 제목 표지를 그리지 않는다(codex 1R MAJOR ①).
+pub(crate) fn observer_enabled() -> bool {
+    std::env::var("CYS_DISPLAY_ACTIVITY").as_deref() != Ok("0")
+}
+
 pub(crate) fn spawn_observer(daemon: Arc<Daemon>) {
-    if std::env::var("CYS_DISPLAY_ACTIVITY").as_deref() == Ok("0") {
+    if !observer_enabled() {
         return;
     }
     let spawned = std::thread::Builder::new()
@@ -1471,15 +1477,16 @@ pub(crate) fn wire(daemon: &Daemon, s: &Surface) -> Value {
     }
     let now = daemon.started_instant.elapsed().as_secs_f64();
     // ★(1.1.16 · 차용 ②) 프로그램이 스스로 알린 상태(OSC 7501)가 있으면 화면 판정 대신 그것을 싣는다.
-    let ps = program_overlay(s);
-    wire_with(store, s, now, &Params::LOCKED, ps.as_ref())
+    let (ver, ps) = program_overlay(s);
+    wire_with(store, s, now, &Params::LOCKED, ver, ps.as_ref())
 }
 
-/// 좌석의 7501 덧씌움(없으면 None). 사람 마지막 입력 = done → waiting 내림 판정 재료.
-pub(crate) fn program_overlay(s: &Surface) -> Option<crate::program_status::Overlay> {
+/// 좌석의 7501 (판 계수, 덧씌움). 사람 마지막 입력 = done → waiting 내림 판정 재료.
+pub(crate) fn program_overlay(s: &Surface) -> (u64, Option<crate::program_status::Overlay>) {
     let human = *s.last_human_input.lock().unwrap_or_else(|e| e.into_inner());
     let store = s.program_status.lock().unwrap_or_else(|e| e.into_inner());
-    crate::program_status::overlay(&store, human, std::time::Instant::now())
+    let o = crate::program_status::overlay(&store, human, std::time::Instant::now());
+    (store.version, o)
 }
 
 /// 7501 덧씌움 → (state, raw, reason). 순수.
@@ -1501,6 +1508,11 @@ pub(crate) fn overlay_state(o: &crate::program_status::Overlay) -> (Effective, R
     }
 }
 
+/// 순수 — 출력 순번 = 관측기 순번 + 7501 판 × 2 + 봄(0/1). [`wire_with`] 주석의 단조성 논증 그대로.
+pub(crate) fn overlay_seq(seq: u64, ps_ver: u64, seen: bool) -> u64 {
+    seq.saturating_add(ps_ver.saturating_mul(2)).saturating_add(u64::from(seen))
+}
+
 /// 덧씌움 근거(진단 · `display_activity.program_status`). 보고 원문의 msg/title 은 해독된 평문(제어 문자 0 · 검사 통과분).
 fn overlay_wire(o: &crate::program_status::Overlay) -> Value {
     json!({
@@ -1517,15 +1529,25 @@ fn overlay_wire(o: &crate::program_status::Overlay) -> Value {
     })
 }
 
-/// [`wire_at`] + 7501 덧씌움. 신원·화면 재검증은 그대로 거친 뒤(같은 세대·순번 공간 — UI 의 세대 되돌림 거부와 충돌하지 않게)
+/// [`wire_at`] + 7501 덧씌움. 신원·화면 재검증은 그대로 거친 뒤(같은 세대 — UI 의 세대 되돌림 거부와 충돌하지 않게)
 /// 상태·사유·안정 나이만 프로그램 보고로 바꾼다.
-pub(crate) fn wire_with(store: &ActivityStore, s: &Surface, now: f64, p: &Params, ps: Option<&crate::program_status::Overlay>) -> Value {
+/// ★순번(codex 1R MAJOR ②): UI 는 같은 세대에서 같은 순번의 비-Unknown 응답을 거부한다 — 7501 변화가 관측기 틱 사이에 오면
+///   막힌다. 그래서 **모든** 출력의 순번 = 관측기 순번 + 7501 판 계수 × 2 + (봄 ? 1 : 0) 이다. 세 항 모두 좌석 수명 동안 줄지 않고
+///   (판 계수는 적용·지움마다 +1 · 봄은 새 보고(판 +1 = 순번 +2) 없이는 false 로 돌아가지 않는다), 어느 하나가 바뀌면 순번이 는다.
+pub(crate) fn wire_with(store: &ActivityStore, s: &Surface, now: f64, p: &Params, ps_ver: u64, ps: Option<&crate::program_status::Overlay>) -> Value {
     let mut v = wire_at(store, s, now, p);
-    let Some(o) = ps else { return v };
     // 퇴화형(신원 없는 Unknown — 관측 없음·무효화)은 그대로 둔다: 세대·순번이 없으면 UI 가 받을 근거가 없다.
     if v.get("display_epoch").is_none() {
         return v;
     }
+    let seen = ps.is_some_and(|o| o.seen);
+    if let Some(seq) = v.get("observation_seq").and_then(Value::as_u64) {
+        let bumped = overlay_seq(seq, ps_ver, seen);
+        if let Some(m) = v.as_object_mut() {
+            m.insert("observation_seq".into(), json!(bumped));
+        }
+    }
+    let Some(o) = ps else { return v };
     let (state, raw, reason) = overlay_state(o);
     if let Some(m) = v.as_object_mut() {
         m.insert("state".into(), json!(state.as_str()));

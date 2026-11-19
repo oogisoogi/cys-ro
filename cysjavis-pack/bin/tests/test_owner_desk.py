@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """TICKET=cysr-owner-memory-todo-1118 — 오너 책상(한 번 시킨 것은 잊지 않고, 시킨 일은 밀리지 않게).
 
-워크숍 참가자 사용기(11-18): ① 한 번 시킨 것(깔끔한 화면 · 끝나면 알림)을 자꾸 까먹는다 ② 아침에 여러 일을 시키면
-쌓여 일주일째 밀린다. 수리 = bin/javis_owner.py + hooks/owner-desk.sh(+ javis_memory retire · preflight C28 등록).
+오너가 흔히 겪는 두 불편: ① 한 번 시킨 것(깔끔한 화면 · 끝나면 알림)을 자꾸 까먹는다 ② 아침에 여러 일을 시키면
+쌓여 계속 밀린다. 수리 = bin/javis_owner.py + hooks/owner-desk.sh(+ javis_memory retire · preflight C28 등록).
 
 재현 축(수리 전 = 도구·훅 부재로 전부 붉음 · 뒤 = 초록):
   R1 지속 지시 → 저장 → 대화 순환(/clear 흉내 = 새 SessionStart source=clear) 뒤 새 대화 주입에 그 규칙이 있다 ·

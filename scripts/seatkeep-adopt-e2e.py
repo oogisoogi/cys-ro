@@ -17,6 +17,10 @@ import json, os, re, shutil, signal, subprocess, sys, time
 BIN, MODE, ROUNDS = sys.argv[1], sys.argv[2], int(sys.argv[3])
 # 폭주 모드(A5 · 조종자 없는 동안 역압): SKA_PAD = 줄마다 덧붙일 바이트 · SKA_GAP_MS = 줄 사이 · SKA_LINES = read-screen 줄 수
 PAD, GAP_MS, LINES = int(os.environ.get("SKA_PAD", "0")), os.environ.get("SKA_GAP_MS", "50"), os.environ.get("SKA_LINES", "200")
+# 터짐(SKA_BURST=1 · M5 판별): 죽이기 전엔 짧은 줄(옛 cysd 가 따라잡아 seatkeep 읽기가 큐 자리 대기에 잠들지 않음) → SIGKILL 직후
+# 터짐 파일을 만들면 그때부터 SKA_PAD 줄 — 조종자 없는 동안 역압(꼬리 상한)만이 끊긴 동안 출력을 막는다. (폭주만으로는 죽는 순간
+# 읽기 스레드가 이미 큐 자리 대기라 그 줄에 닿지 않아 M5 를 못 가른다 — 11-20 실측.)
+BURST = os.environ.get("SKA_BURST") == "1"
 OUT = sys.argv[4] if len(sys.argv) > 4 else None
 # reserve = 입양 실패 좌석(미결)의 역할 예약 시험(codex T4 1R #1): 두 번째 cysd 를 다른 경로(bin2)에서 띄워 상호 확인을 일부러 실패시킨다.
 # exitaway = 데몬 없는 사이 좌석이 끝남 → seatkeep 이 .exit 를 남기고 끝남 → 새 cysd 가 그 기록을 소비(codex T4 1R #6 · A10).
@@ -37,6 +41,7 @@ import os, select, signal, sys, time
 log = open(sys.argv[1], "a", buffering=1)
 gap = float(sys.argv[2]) / 1000
 pad = "x" * int(sys.argv[3]) if len(sys.argv) > 3 else ""
+burst = sys.argv[4] if len(sys.argv) > 4 else None
 log.write(f"START pid={os.getpid()} ppid={os.getppid()} t={time.time():.3f}\n")
 def die(s, _):
     log.write(f"SIGNAL {s} t={time.time():.3f}\n"); os._exit(128 + s)
@@ -46,8 +51,9 @@ n = 0
 buf = b""
 while True:
     n += 1
-    os.write(1, f"SEQ {n:08d} {pad}\r\n".encode())
-    log.write(f"S {n} {time.time():.4f}\n")
+    out = f"SEQ {n:08d} {pad if burst is None or os.path.exists(burst) else ''}\r\n".encode()
+    os.write(1, out)
+    log.write(f"S {n} {time.time():.4f} {len(out)}\n")
     r, _, _ = select.select([0], [], [], gap)
     if r:
         b = os.read(0, 4096)
@@ -224,7 +230,7 @@ d, ms = start_daemon("0")
 for rnd in range(ROUNDS):
     log = f"{R}/logs/s{rnd}.log"
     role = f"seat{rnd}"
-    x = cys("new-surface", "--cwd", "/private/tmp", "--role", role, "--cmd", f"{SEAT} {log} {GAP_MS} {PAD}")
+    x = cys("new-surface", "--cwd", "/private/tmp", "--role", role, "--cmd", f"{SEAT} {log} {GAP_MS} {PAD}" + (f" {R}/burst" if BURST else ""))
     sid = x.stdout.strip()
     if x.returncode != 0 or not sid:
         raise SystemExit(f"new-surface 실패 rc {x.returncode}: {x.stderr[:300]}")
@@ -240,6 +246,8 @@ for rnd in range(ROUNDS):
     t_kill = time.time()
     os.kill(killed, signal.SIGKILL)
     d.wait()
+    if BURST:
+        open(f"{R}/burst", "w").close()
     time.sleep(1.0)  # 데몬 없는 1초 — 좌석은 계속 출력(입양 모드 = seatkeep 꼬리에 쌓임)
     alive_gap = {s[0]: alive(s[2]) for s in seats}
     t_restart = time.time()
@@ -253,7 +261,10 @@ for rnd in range(ROUNDS):
         nums = [int(l.split()[1]) for l in lines if l.startswith("S ")]
         r = cys("read-screen", "--surface", s_ref, "--lines", LINES)
         # 데몬 없는 동안 좌석이 낸 줄 수(입양 모드 + 폭주 = 꼬리 크기 근처에서 역압으로 멈춰야 한다)
-        gap_lines = sum(1 for l in lines if l.startswith("S ") and t_kill <= float(l.split()[2]) < t_restart)
+        gap_rows = [l.split() for l in lines if l.startswith("S ") and t_kill <= float(l.split()[2]) < t_restart]
+        gap_lines = len(gap_rows)
+        # 줄마다 좌석이 적은 실제 바이트(4번째 칸) — 터짐 모드는 끊긴 뒤 줄 길이가 바뀐다
+        gap_bytes = sum(int(r[3]) if len(r) > 3 else len(f"SEQ 00000000 {'x' * PAD}") + 2 for r in gap_rows)
         seqs = [int(v) for v in re.findall(r"SEQ (\d{8})", r.stdout)]
         tag = f"hi{rnd}x{s_ref.split(':')[-1]}"
         snd = cys("send", "--surface", s_ref, tag)
@@ -276,9 +287,9 @@ for rnd in range(ROUNDS):
             "seq_missing": len(set(range(min(seqs), max(seqs) + 1)) - set(seqs)) if seqs else None,
             "seq_dups": len(seqs) - len(set(seqs)),
             "produced_before_kill": produced_before[s_ref], "produced_now": max(nums) if nums else 0,
-            "gap_lines": gap_lines, "line_bytes": len(f"SEQ 00000000 {'x' * PAD}") + 2,
+            "gap_lines": gap_lines, "gap_bytes": gap_bytes, "line_bytes": len(f"SEQ 00000000 {'x' * PAD}") + 2,
             # 입양 모드 + 조종자 없음: 끊긴 뒤 자식 출력 ≤ 꼬리(1MiB) + PTY 커널 버퍼·읽기 조각 여유(256KiB) 여야 한다(역압 · M5 가 잡는다).
-            "gap_bytes_ok": gap_lines * (len(f"SEQ 00000000 {'x' * PAD}") + 2) <= (1 << 20) + (256 << 10),
+            "gap_bytes_ok": gap_bytes <= (1 << 20) + (256 << 10),
             "send_rc": (snd.returncode, sk.returncode), "input_logged": got_in, "echo_on_screen": got_echo,
         })
     ks = keepers()

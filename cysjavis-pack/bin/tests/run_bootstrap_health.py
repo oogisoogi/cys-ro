@@ -6763,6 +6763,11 @@ def _u15_sandbox(tmp, *, ostype="darwin24", clt_present=False, cys_role=None, pa
                     drop=("CYS_PY", "CYS_PY_ORIGIN", "DEVELOPER_DIR", "CYS_BIN"))
     if pack:
         env["CYS_PACK_DIR"] = pack
+    # ★1.1.16(TICKET=cysr-1116-debt-d-1119 · master#6f7634b4 ③) 프리루드의 고정 설치 위치(`/Applications/cys(r).app` · 2순위)도 가짜 뿌리로 —
+    #   종전엔 이 값이 없어 그 기계에 앱이 실제로 깔려 있으면 실설치 python 을 집어 H-CLT-1·2 가 붉었다(CI 러너엔 앱이 없어 초록). 빈 뿌리 =
+    #   2순위 후보 0 · 셔임 판정의 `/usr/bin` 도 이 뿌리 밑으로 옮겨지지만 이 샌드박스 PATH 에는 `/usr/bin` 이 없다(셔임 = CYS_DEVTOOLS_SHIM_DIR).
+    env["CYS_TEST_SYSROOT"] = os.path.join(tmp, "sysroot")
+    os.makedirs(env["CYS_TEST_SYSROOT"], exist_ok=True)
     env["PATH"] = os.pathsep.join(bins + [pydir])
     return {"env": env, "marker": marker, "shim": os.path.join(shimd, "python3"),
             "bundled": bundled, "pydir": pydir, "binp": binp, "home": home, "tmp": tmp}
@@ -6785,6 +6790,10 @@ def _u15_resolve(lib, env, preset=None):
     need(r.returncode == 0, "프리루드 source 실패 rc=%d: %r" % (r.returncode, r.stderr[-300:]))
     m = re.search(r"^CYS_PY=(.*)$", r.stderr, re.M)
     need(m, "해소값 회수 실패: %r" % r.stderr[-300:])
+    # ★(master#6f7634b4 ③) 이 기계 실설치(샌드박스 밖 고정 위치)를 집었으면 격리 실패 — 결함 판정과 섞지 않고 그 사유로 실패한다.
+    sr = e.get("CYS_TEST_SYSROOT", "")
+    need(not (m.group(1).startswith(("/Applications/", os.path.expanduser("~/Applications/"))) and not (sr and m.group(1).startswith(sr))),
+         "격리 실패: 샌드박스 밖 실설치 python(%r)을 집었다 — CYS_TEST_SYSROOT 가 고정 설치 위치를 가리지 못했다" % m.group(1))
     return m.group(1)
 
 
@@ -6945,6 +6954,10 @@ def h_clt_2():
     libp = lib.replace("\\", "/")
     # ⓐ 실기
     env = _base_env(drop=("CYS_PY", "CYS_PY_ORIGIN", "CYS_DEVTOOLS_ROOTS", "CYS_DEVTOOLS_SHIM_DIR"))
+    # ★1.1.16(TICKET=cysr-1116-debt-d-1119 · master#6f7634b4 ③) 실기 축도 고정 설치 위치(2순위 `/Applications/cys(r).app`)는 빈 뿌리로 가린다 —
+    #   그 기계에 앱이 깔려 있으면 실설치 python 을 집어 「종전 규칙과 다르다」 로 붉었다(CI 러너엔 앱이 없어 초록).
+    _clt2_root = tempfile.mkdtemp(prefix="clt2-sysroot-")
+    env["CYS_TEST_SYSROOT"] = _clt2_root
     r = _run(["sh", "-c",
               '. "$1" || exit 4; printf "NEW=%s\\n" "${CYS_PY:-}"; '
               'printf "OLD=%s\\n" "$(command -v python3 2>/dev/null || command -v python 2>/dev/null '
@@ -6963,8 +6976,17 @@ def h_clt_2():
              "비-darwin 호스트(OSTYPE=%s)에서 셔임 분류(%s)·폴백 제거 조건(%s)이 켜졌다 — 윈도우 훅 후보·"
              "폴백이 바뀐다" % (kv.get("OS"), kv.get("SHIM"), kv.get("RISK")))
         notes.append("실기 셔임 분류·폴백 제거 조건 = 거짓")
+    shutil.rmtree(_clt2_root, ignore_errors=True)
+    cys_cli = shutil.which("cys", path=env.get("PATH"))
+    cys_cli = os.path.realpath(cys_cli) if cys_cli else ""
+    bundle_by_cli = bool(cys_cli) and kv.get("NEW") in (
+        os.path.join(os.path.dirname(cys_cli), "..", "Resources", "runtime", "python", "bin", "python3"),
+        os.path.join(os.path.dirname(cys_cli), "runtime", "python", "bin", "python3"))
     if host_darwin and kv.get("CLT") == "0" and kv.get("OLD") in ("/usr/bin/python3", "/usr/bin/python"):
         notes.append("실기=적용 불가(이 mac 호스트는 CLT 가 없어 셔임을 피하는 것이 기대 동작)")
+    elif host_darwin and bundle_by_cli:
+        # 우리 판(1.0.x~) 맥 = 동봉 python 우선(1순위 = PATH 의 cys 실체가 든 번들 · `_cys_bundle_py`) — 원작자 「CLT 있으면 PATH 첫 python3」 와 다른 것이 의도.
+        notes.append("실기=적용 불가(PATH 의 cys 가 앱 번들 %s — 동봉 우선이 우리 기대 동작)" % cys_cli)
     else:
         need(kv.get("NEW") == kv.get("OLD"),
              "호스트(OSTYPE=%s)에서 해소값이 종전 규칙과 다르다: NEW=%r OLD=%r — 공유 훅의 새 논리가 "

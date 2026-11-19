@@ -50,6 +50,8 @@ export interface Tally {
   kinds: Record<string, number>;
   wrongWhy: string[];
   missingWhy: string[];
+  /** (s79 · S3-7) uuid 없는 꼴에서 「전달됨 이상」 말을 글 순서 대조로 검사한 표본 수(빈 검사 방지) */
+  noUuidChecked?: number;
 }
 
 export async function runScenario(seed: number, t: Tally, dump = false, extra: Partial<SimOpts> = {}): Promise<void> {
@@ -182,6 +184,23 @@ export async function runScenario(seed: number, t: Tally, dump = false, extra: P
           const rec = inIdx.filter((x) => sim.recorded.has(x.i));
           if (rec.length === 0) bad("세션 기록이 없는데 전달됨 이상");
           if (m.userUuid && sim.recordOf.has(m.userUuid) && sim.writes[sim.recordOf.get(m.userUuid) as number].msgId !== m.id) bad("다른 말의 레코드에 짝지음");
+          // (s79 · S3-7) uuid 없는 꼴 — 레코드 열쇠가 없으니 글 순서로 대조: 같은 글의 「전달됨 이상」 말은 보낸 순서대로 줄 세웠을 때
+          //   k 번째 말이 그 글의 k 번째로 기록된 쓰기의 주인이어야 한다(가장 오래된 기다림부터 짝 · 한 레코드 = 한 말).
+          if (noUuid && !m.userUuid) {
+            t.noUuidChecked = (t.noUuidChecked ?? 0) + 1;
+            const same = msgs.filter((x) => x.text === m.text && (x.step === "delivered" || x.step === "replying" || x.step === "replied") && x.sentAt !== null).sort((a, b) => (a.sentAt as number) - (b.sentAt as number));
+            const owners = sim.writes
+              .map((w, i) => ({ w, i, at: sim.recordedAt.get(i) }))
+              .filter((x) => x.w.text === m.text && x.at !== undefined)
+              .sort((a, b) => (a.at as number) - (b.at as number) || a.i - b.i)
+              .map((x) => x.w.msgId);
+            if (same.length > owners.length) bad("uuid 없는 꼴: 같은 글 기록 수보다 많은 말이 전달됨");
+            else {
+              const k = same.findIndex((x) => x.id === m.id);
+              const recordedOwners = new Set(owners.slice(0, same.length));
+              if (k >= 0 && !recordedOwners.has(m.id)) bad("uuid 없는 꼴: 다른 말의 레코드에 짝지음(글 순서 대조)");
+            }
+          }
           if (m.step === "replied" && !inIdx.some((x) => sim.replied.has(x.i))) bad("답이 없는데 답함");
           // 「답하는 중」인데 마스터가 7초 넘게 쉼 = 굳은 단계(검토 지적 2). 7초 = 조회 2박자(쉼을 본 조회가 답 글 읽기보다 먼저 돌면
           //   「답함」은 그다음 조회에서 칠해짐 · 최대 ≈6초 늦음 — seed 1 진단) + 여유.
@@ -233,6 +252,7 @@ describe("M2·M3 하네스 — 행방 불명 0 · 틀림 0 · 같은 말 두 번
       expect(t.multiWrite).toBe(0);
       // 하네스가 실제로 여러 갈래를 지났는지(빈 시험 방지)
       for (const s of ["held", "injected", "delivered", "replied", "failed", "checking", "slow"]) expect(t.steps[s] ?? 0).toBeGreaterThan(0);
+      expect(t.noUuidChecked ?? 0).toBeGreaterThan(0); // (s79 · S3-7) uuid 없는 꼴 글 순서 대조가 실제로 돌았다
     });
 });
 

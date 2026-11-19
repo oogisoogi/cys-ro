@@ -65,9 +65,13 @@ cargo_step() { local n=$1; shift; step "$n" 5400 "${ISO[@]}" cargo "$@"; [[ $n =
 # ci_step <id> — ci_pack_steps.py 가 뽑은 CI 스텝 1개. CI 본문이 cwd 에 남기는 health-full.json 은 결과 폴더로 옮기고,
 #   그 밖에 작업트리가 바뀌면 경고 1줄(CI 러너는 매번 새 checkout 이라 안 보이는 오염).
 ci_step() {
-  local id=$1
+  local id=$1 lim t0=$SECONDS
+  lim=$(sed -n 's/^# ci-timeout-secs: \([0-9][0-9]*\)$/\1/p' "$CI_DIR/$id.sh" | head -1)
   step "$id" 5400 "${CIISO[@]}" /bin/bash --noprofile --norc -eo pipefail "$CI_DIR/$id.sh"
   [[ $id =~ $ONLY ]] && [ "$DRY" = 0 ] || return 0
+  # CI 시한(스텝 timeout-minutes · 없으면 잡 timeout-minutes) 을 넘겼으면 CI 에서도 붉을 수 있다 — 로컬 초록으로 덮지 않는다(codex 1R #4).
+  #   잡 시한은 잡 전체(설치 포함) 상한이라 이 판정은 느슨한 쪽이다. 부하가 높을 때 넘었으면 부하 낮을 때 단독 재실행으로 대조할 것.
+  if [ -n "$lim" ] && [ $((SECONDS - t0)) -gt "$lim" ]; then say "FAIL-CI-TIMEOUT $id 경과 $((SECONDS - t0))s > CI 시한 ${lim}s"; FAILS=$((FAILS+1)); fi
   [ -f health-full.json ] && mv -f health-full.json "$OUT/$id.health-full.json"
   local d; d=$(git status --short)
   [ "$d" = "$ST0" ] || say "WARN $id 뒤 작업트리 변화: $(echo "$d" | head -5 | tr '\n' ' ')"

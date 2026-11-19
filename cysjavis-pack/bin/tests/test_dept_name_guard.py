@@ -1570,10 +1570,15 @@ else:
         # Mutation control may leave the newly spawned child running. Always reclaim that exact PID.
         self.addCleanup(self._cleanup_owned_daemon)
         if competing:
-            # 승자 신원 = sleep 을 cysd 라는 이름으로 실행(맥 ps comm=argv0 · 리눅스 comm=실행 경로 끝 이름)
+            # 승자 신원 = 이름이 cysd 인 산 프로세스. 맥 = sleep 을 cysd 이름 심링크로(맥 comm = 실행 경로) · 리눅스 = 이름이
+            #   cysd 인 셸 스크립트(리눅스 comm = 스크립트 이름) — uutils coreutils(ubuntu 26.04 기본 · 다중 호출)는 sleep 을
+            #   다른 argv0 로 부르면 거부한다(test_d1_dept_ready_probe 픽스처와 같은 까닭).
             wbin = os.path.join(self.tmp, "winner-bin", "cysd")
             os.makedirs(os.path.dirname(wbin), exist_ok=True)
-            os.symlink(shutil.which("sleep"), wbin)
+            if sys.platform.startswith("linux"):
+                _write_exec(wbin, "#!/bin/sh\nwhile :; do sleep 1; done\n")
+            else:
+                os.symlink(shutil.which("sleep"), wbin)
             self.winner_process = subprocess.Popen([wbin, "600"], stdout=subprocess.DEVNULL,
                                                    stderr=subprocess.DEVNULL)
             self.winner_coordinator = subprocess.Popen(

@@ -213,8 +213,52 @@ def boot_fleet_resolve(daemon, seat_env):
     return fleet, src, warn
 
 
+def _boot_fleet_socket_path():
+    """데몬 unix 소켓 경로 — Rust `cys::socket_path()`(env `CYS_SOCKET`·`JAVIS_SOCKET`·`AITERM_SOCKET` 비어 있지 않은 첫 값 > 기본) 와 같은 규칙.
+    좌석·부트 감독자 자식은 데몬이 `CYS_SOCKET` 을 넣어 주므로 기본 경로 계산은 그 밖(사람 셸)에서만 쓴다."""
+    for k in ("CYS_SOCKET", "JAVIS_SOCKET", "AITERM_SOCKET"):
+        v = os.environ.get(k)
+        if v:
+            return v
+    home = os.path.expanduser("~")
+    if sys.platform == "darwin":
+        base = home                                    # dirs::state_dir() = None → home_dir
+    else:
+        x = os.environ.get("XDG_STATE_HOME")
+        base = x if x and os.path.isabs(x) else os.path.join(home, ".local", "state")
+    d = os.path.join(base, "cys") if (base.endswith(".local/state") or "state" in base) else os.path.join(base, ".local", "state", "cys")
+    return os.path.join(d, "cys.sock")
+
+
 def _boot_fleet_query_daemon():
-    """데몬 RPC `system.boot_fleet` 1왕복(`cys daemon boot-fleet` · 자동 기동 없음) → 데몬 값 문자열 | None(데몬 없음 · 옛 cys/데몬 · 꼴 틀림)."""
+    """데몬 RPC `system.boot_fleet` 1왕복 → 데몬 값 문자열 | None(데몬 없음 · 옛 데몬 · 꼴 틀림 · 자동 기동 없음).
+    unix = 소켓 직접(하위 프로세스 0 — session-start 훅의 `--note-team-roster` 가 이 길을 탄다 · 「훅 발화 지연 0」 유지) ·
+    Windows(named pipe) = `cys daemon boot-fleet`."""
+    if os.name != "nt":
+        import socket as _socket
+        sock = None
+        try:
+            sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+            sock.settimeout(2.0)
+            sock.connect(_boot_fleet_socket_path())
+            sock.sendall(b'{"id":"orchestra-boot-fleet","method":"system.boot_fleet","params":{}}\n')
+            data = b""
+            while b"\n" not in data and len(data) < 65536:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+            v = json.loads(data.split(b"\n", 1)[0].decode("utf-8", "replace"))
+        except (OSError, ValueError):
+            return None
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+        res = v.get("result") if isinstance(v, dict) and v.get("ok") is True else None
+        return res.get("fleet") if isinstance(res, dict) and isinstance(res.get("fleet"), str) else None
     cys = shutil.which("cys")
     if not cys:
         return None
@@ -5763,24 +5807,53 @@ def cmd_self_test(args):
                 else:
                     os.environ[_k] = _v
             _BOOT_FLEET_QUERY = _w_prev[2]
-        # 실 질의 길: 판독기는 `cys daemon boot-fleet` 출력만 읽는다(가짜 cys 로 꼴 확인 — PATH 앞 임시 폴더 · 끝나면 되돌림).
-        import tempfile as _tf
-        _td = _tf.mkdtemp(prefix="bf-")
-        _path_prev = os.environ.get("PATH", "")
-        try:
-            if os.name != "nt":
-                _fake = os.path.join(_td, "cys")
-                with open(_fake, "w") as _f:
-                    _f.write('#!/bin/sh\n[ "$1 $2" = "daemon boot-fleet" ] || exit 2\nprintf \'{"fleet":"light","source":"env"}\\n\'\n')
-                os.chmod(_fake, 0o755)
+        # 실 질의 길(unix): 판독기는 데몬 소켓 1왕복의 result.fleet 만 읽는다 — 가짜 데몬(임시 소켓 · 스레드 1)으로 꼴 확인 · 끝나면 되돌림.
+        if os.name != "nt":
+            import socket as _sk, tempfile as _tf, threading as _th
+            _td = _tf.mkdtemp(prefix="bf-", dir="/tmp")
+            _sp = os.path.join(_td, "s")
+            _sock_prev = os.environ.get("CYS_SOCKET")
+            _srv = _sk.socket(_sk.AF_UNIX, _sk.SOCK_STREAM)
+            _seen = []
+            try:
+                _srv.bind(_sp)
+                _srv.listen(4)
+                _replies = [b'{"id":"x","ok":true,"result":{"fleet":"light","source":"env"}}\n',
+                            b'{"id":"x","ok":false,"error":{"message":"unknown method"}}\n']
+
+                def _serve():
+                    for _r in _replies:
+                        _c, _ = _srv.accept()
+                        _seen.append(_c.recv(4096))
+                        _c.sendall(_r)
+                        _c.close()
+                _t = _th.Thread(target=_serve, daemon=True)
+                _t.start()
+                os.environ["CYS_SOCKET"] = _sp
+                assert _boot_fleet_query_daemon() == "light", "데몬 소켓 응답 판독 실패"
+                assert _boot_fleet_query_daemon() is None, "옛 데몬(모르는 메서드)을 값으로 읽었다"
+                _t.join(5)
+                assert _seen and b'"method":"system.boot_fleet"' in _seen[0], _seen
+                os.environ["CYS_SOCKET"] = os.path.join(_td, "none")
+                # 데몬 없음 = None · 그리고 unix 는 `cys` 하위 프로세스를 띄우지 않는다(session-start 훅 `--note-team-roster` 지연 0).
+                _log = os.path.join(_td, "calls")
+                with open(os.path.join(_td, "cys"), "w") as _f:
+                    _f.write("#!/bin/sh\necho x >> '%s'\nprintf '{\"fleet\":\"light\"}\\n'\n" % _log)
+                os.chmod(os.path.join(_td, "cys"), 0o755)
+                _path_prev = os.environ.get("PATH", "")
                 os.environ["PATH"] = _td + os.pathsep + _path_prev
-                assert _boot_fleet_query_daemon() == "light", "cys daemon boot-fleet 출력 판독 실패"
-                with open(_fake, "w") as _f:
-                    _f.write("#!/bin/sh\nexit 1\n")
-                assert _boot_fleet_query_daemon() is None, "데몬 없음(rc 1)을 값으로 읽었다"
-        finally:
-            os.environ["PATH"] = _path_prev
-            shutil.rmtree(_td, ignore_errors=True)
+                try:
+                    assert _boot_fleet_query_daemon() is None, "데몬 없음을 값으로 읽었다"
+                finally:
+                    os.environ["PATH"] = _path_prev
+                assert not os.path.exists(_log), "unix 판독기가 cys 하위 프로세스를 띄웠다(훅 지연)"
+            finally:
+                _srv.close()
+                if _sock_prev is None:
+                    os.environ.pop("CYS_SOCKET", None)
+                else:
+                    os.environ["CYS_SOCKET"] = _sock_prev
+                shutil.rmtree(_td, ignore_errors=True)
         assert boot_fleet_decide("", {"boot_fleet": "tiny"}) == ("full", "default")
         assert boot_fleet_decide("", []) == ("full", "default")
         assert plan_mandatory_roles() == ["cso", "worker"], \

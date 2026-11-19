@@ -114,6 +114,37 @@
 
 고친 뒤(80747b11c) codex 재검토 = **안 함**(2R 은 master 판단 · 고친 4건의 시험은 위 표).
 
+## 3-3. codex 2R(master 편성 · 원문 `~/axdev/master/reports/verify/codex-1120/s2-r2.md` · BLOCK) 처분 — f49760ff0 · 고침 요청 [master#fc00501e]
+
+| # | 지적 | 처분 | 시험 · 뮤턴트 |
+|---|---|---|---|
+| 2R-B | 미룬 좌석은 첫 붙기 때 데몬의 「지금 화면」만 받아, 대화 화면 동안 스크롤로 넘어간 출력이 작업 화면 기록에서 사라짐 | **고침 · 우월안 = 데몬이 이미 가진 기록 재생**: 데몬은 좌석마다 완성 줄 FIFO(스크롤백 · `SCROLLBACK_LINES` 10,000)와 단조 줄 커서를 이미 갖고 `surface.read_text {since_line}` 델타로 내준다 → **데몬 변경 0**. 미룰 때 목록의 `line_count`(커서)를 장부에 적고, 런타임을 만들 때 스트림을 붙이기 **직전** 새 Tauri 명령 `seat_history`(우리 파일 viewcore.rs · main.rs 등록 1줄)로 「커서 − 화면 행 수」부터 받아 xterm 에 먼저 쓴다(지금 화면에 다시 그려질 마지막 화면 행 수만큼은 빼서 겹침 방지 · 화면 행 수만큼 빈 줄로 스크롤백에 밀어 올림 · 상한 5,000줄 = xterm 스크롤백) → 그다음 데몬 스냅숏. **§9-4 「대화 화면 출력 흐름 0」 그대로**(대화 화면 동안 스트림·버퍼 0 · 첫 진입 때 좌석당 조회 1). 한계(정직): FIFO = **완성 줄 글자만**(색·굵기 없음 · 제자리 다시 그리기(TUI) 화면은 줄로 안 남음 · 10,000줄 넘게 지나가면 앞부분 잘림 · 화면 행 수 빼기는 줄바꿈 접힘 때문에 근사) | runtimedefer.test ①(조회 인자·쓰는 꼴·스트림보다 먼저) · ①-b(커서 모름 = 조회 0) · runtime_defer_gate ③ 「기록 조회 = 미룬 좌석마다 1회 · 스트림보다 먼저」 · cargo viewcore `seat_history_tests` · 뮤턴트 MX3(겹침 빼기 제거 → ① 붉음) |
+| 2R-M1 | makePane 을 기다리는 사이 대화 화면으로 돌아가도 start_surface_stream 이 나감 | **고침**: makePane 선택 인자 `beforeStream`(듣기 등록 뒤 · 스트림 시작 직전) — `workRuntimeWanted()` 거짓이면 기록도 안 묻고 붙지 않음 → makePane 이 만든 것을 치우고 표지 오류 → 장부 유지 · 시도 횟수 안 셈 · 다음 작업 화면 진입 때 다시 | runtimedefer.test ② · 뮤턴트 MX1(첫 확인 뺌 → ② 붉음) · MX6(안 세기 뺌 → ② 붉음) |
+| 2R-M2 | 재진입마다 재시도 횟수 초기화 = makePane 부분 생성 누수 무한 증폭 | **둘 다 고침**: ① 누수 자체 — makePane 붙기 구간(attach_surface → 듣기 등록 → beforeStream → start_surface_stream)이 던지면 `dropPartial`(듣기 2·cancelSendFail·xterm dispose·DOM 제거) 뒤 다시 던짐(작업 화면 입양·새 창의 같은 실패도 이제 안 샘 · 성공 경로 호출 순서 그대로) ② 상한을 실행 전체 기준으로 — 좌석당 시도 9회(`DEFERRED_TOTAL_MAX` · 재진입이 되돌리는 것은 3회 묶음뿐) | ingest.test 「makePane 부분 생성 정리」 정적 핀(순서 try < beforeStream < start < catch < panes.set) · runtimedefer.test ③ · 뮤턴트 MX4(정리 뺌 → 핀 붉음) · MX2(전체 상한 뺌 → ③ 붉음) |
+| 2R-m | 첫 진입 포커스가 전체 트리 첫 좌석(묶음 탭·확대로 숨은 좌석일 수 있음) | **고침**: 보이는 보기 트리(`wsViewTree`) 첫 좌석 | ingest.test 정적 핀 · 뮤턴트 MX5 → 붉음 |
+
+원작자 파일 바뀐 줄(2R 몫): `ui/src/main.ts` makePane — 머리(선택 인자 1 · 앞에 타입·표지 정의) · `dropPartial` 정의 · attach_surface 줄에 `.catch(dropPartial)` · `un1`/`un2` const → let · 듣기 등록 앞 `try {` · start_surface_stream 앞 `beforeStream` 1줄 · 뒤 `catch` · `unlisten` 배열 타입 단언. `src-tauri/src/main.rs` generate_handler 이름 1줄(`viewcore::seat_history`). 데몬 0.
+
+## 3-4. 독립 검증 2270(REVISE 국소 1 · 원문 `~/axdev/workers/cysr-1116-s2-verify-1119/VERDICT.md`) 처분 — d56912914 · [master#2291dec4]
+
+| # | 지적 | 처분 | 시험 · 뮤턴트 |
+|---|---|---|---|
+| F1 | 대화 화면 시작 + 저장 배치 복원 → 작업 화면 첫 진입 포커스 좌석 0(start() 끝 setFocus 가 런타임 없는 좌석에 불려 번호만 잡힘 → 회수 조건 건너뜀) | **고침**(codex 2R minor 와 한 고침): ensureSeatRuntimes 가 이번에 만든 좌석을 기억하고, 포커스 번호가 그 좌석이면 런타임을 만든 뒤 `setFocus` 를 다시 부름(표시·키보드 포커스) · 포커스가 이미 런타임 있던 좌석이면 건드리지 않음(탈취 0) | runtimedefer.test 「첫 진입 포커스」 3건(F1 · 보기 트리 첫 좌석 · 탈취 0) · 뮤턴트 MF1(다시 주기 뺌 → F1 붉음) · MX5(전체 트리 → 보기 트리 시험·핀 붉음) |
+| F2 | B1(자리표 닫기 직전 재판정) 시험이 소스 핀뿐 | **행동 시험 추가**: roleactivity.test 하네스(실제 refreshPaneTitles 본문)로 자리표 2개 · 앞 자리 closePane 을 기다리는 사이 뒤 자리 화면 줄 1 → 12 → 뒤 자리 닫지 않고 장부에 남음 · 대조군(출력 없음) = 둘 다 닫음 | 뮤턴트 MF2(재판정 결과 무시) → 행동 시험·핀 둘 다 붉음 |
+| F3·F4·F6 | 관찰(설계대로) | 기록 — F3(대화 화면만 쓰면 빈 탭 자리표 셸이 회수 안 되고 남음) 은 📌 | — |
+| F5 · makePane 누수 | 검증 「진입 1회당 3건 상한」 · codex 「왕복마다 → 실행 전체 무한」 | **둘 다 닫음**(2R-M2): 누수 자체 정리 + 실행 전체 상한 9 | §3-3 |
+| test_capgate_hook_shell | 검증 판정 = 환경성(훅 2초 마감 · 기준선도 2/5 붉음) | 이 갈래 고칠 것 아님(master) | — |
+
+## 3-5. 2R·독립 검증 처분 뒤 시험(머리 d56912914 · 부하 4~16)
+
+| 대상 | 결과 |
+|---|---|
+| bun test(ui) | **3781 · 89 skip · 0 fail**(1R 처분 뒤 3770 → +11 새 시험) |
+| tsc | rc 0 |
+| `cargo test -p cys-app --bins`(CI 단계와 같은 준비 · `--test-threads=1` · CARGO_BUILD_JOBS=4) | **349 통과 · 0 실패 · 2 ignored**(새 `viewcore::seat_history_tests` 포함 · 기준선 수 미측정) |
+| 화면 게이트 14종(13 + runtime_defer) | **14종 PASS** · 통과 줄 수 기준선과 같음(race 109 · focus 73 · seatrows 76 · pillar 78 · seatgroup 9 · rolereuse 12 · nodept 17 · restart 7 · hidden_block 19 · tickrec 34 · chat 59 · confirm 37 · stty 8) · tickrec OFF 대조 = 기준 번들과 바이트 같음(invoke 1088 · sha `308dd2b91f9a`) · runtime_defer ③ 「기록 조회 = 미룬 좌석마다 1회 · 스트림보다 먼저(13건)」 |
+| 뮤턴트(2R·검증 몫) | MX1~MX6 · MF1 · MF2 · MX5 = 전부 해당 시험 붉음 |
+
 ## 4. 내가 내린 판단(지시에 없던 것 · master 확인 후보)
 
 1. **「작업 화면이 안 보임」 판정 = 작업 화면 어댑터의 mount/unmount** — 시작 값 = 고른 화면(pickView)이 작업 화면인가. 작업 화면으로 시작하는 기동(1.1.16 기본 = 모든 설치)은 처음부터 참이라 종전 흐름과 한 줄도 다르지 않다. 숨김 → 보임으로 바뀔 때만 main.ts `render()` 를 부른다(처음 판은 작업 화면 시작 때도 불러 render 가 한 번 더 돌았다 — 자기 검토에서 잡아 고침).
@@ -134,10 +165,12 @@
 
 ## 6. 📌 덧붙임(실행 안 함)
 
+- (독립 검증 F3) 대화 화면만 쓰는 동안 빈 탭 자리표(맨 셸 1개)가 데몬에 남는다(런타임 없음 = 화면 줄 수 모름 = 닫지 않음 규칙) — 데몬 쪽 출력 흔적(`line_count`)으로 판정할지 설계 판단.
+
 - (codex 1R M4 나머지) 본부 slug 를 main.ts 가 기동 때 못 받으면 대화 화면 두 처리기가 사건을 버린다 — main.ts 재조회 길(eventSock 해석 실패 때)에 기댄다. 확실히 하려면 viewsIngest 에서 slug null 이면 1회 재조회(작업 화면 invoke 가 늘어 tickrec OFF 대조가 바뀜 — 판단 필요).
 - (codex 1R m6) 입양 후보 선계산의 한 틱 지연 — 엄격 동치가 필요하면 await 뒤마다 다시 판정.
 
-- (codex 1R M2) F20 ①: `makePane` 이 중간(attach_surface 등)에서 던지면 그 전에 만든 xterm·리스너는 `panes.set` 전이라 파기 대상에 안 잡힌다(원작자 함수 본문 · 종전부터 같은 꼴). 고치려면 makePane 본문에 정리 목록 — 원작자 함수 본문 변경이라 별 티켓 권함.
+- ~~(codex 1R M2) F20 ①~~ → **2R 에서 고침(§3-3 2R-M2)** · 옛 기록: `makePane` 이 중간(attach_surface 등)에서 던지면 그 전에 만든 xterm·리스너는 `panes.set` 전이라 파기 대상에 안 잡힌다(원작자 함수 본문 · 종전부터 같은 꼴). 고치려면 makePane 본문에 정리 목록 — 원작자 함수 본문 변경이라 별 티켓 권함.
 - 설계 §5-3 persist.ts(판 번호 · 단일 작성자 모듈) — 조각 8 과 함께.
 - 숨은 화면에서 짠 좌열 몫(§4-6) — 작업 화면 첫 진입 때 한 번 다시 맞출지(사용자 배치 존중과 충돌 · 설계 판단).
 - 실물 측정 대기: 좌석 12개 대화 → 작업 첫 진입 시간(맥·윈) · 웹뷰 메모리(대화 1시간 vs 작업 1시간) · 웹뷰 멈춤 주입 → 데몬 자가치유(§2-2 게이트⑤) · Tauri 박동 `views_tick_beat`(§2-2 장치 — 이 조각에서 안 만듦 · 러스트 변경 = 브리프 「데몬 변경 없음」 밖은 아니나 범위 판단 필요).
@@ -160,3 +193,4 @@ CHROME_PATH=… BASE_DIST=<dea2e1853 번들> <python> e2e/tickrec_gate.py   # OF
 - 소스 핀이 고리 본문의 **식별자까지** 잡는다(`await closePane(sid, ws.socket);`) — 집행 줄은 종전 이름(`sid`)을 쓰게 맞췄다.
 - 이 작업트리엔 target/ 이 없어 stty 게이트(격리 cysd)가 기준선부터 못 돈다 — `cp -c -R ~/axdev/.wt/cys-1116-integ/target ./target` 뒤 `cargo build --bin cysd --bin cys`(3분 25초).
 - ci-branch 팩 단계는 단계마다 env 가 다르다(우분투 루프·맥 격리군 = `CYS_PACK_DIR` 만 · 맥 자원·수용 = + `CYS_STATE_DIR`·`JAVIS_ROOT`) — 한 env 로 몰면 test_bootstrap_chain 이 `boot-last.json` 을 못 찾아 붉다(관측).
+- **Tauri 빈 사이드카가 target/debug/cysd 를 덮는다**: CI 의 `cargo test -p cys-app` 준비(빈 `src-tauri/binaries/cysd-<triple>` touch)를 작업트리에서 그대로 하면 Tauri 빌드 스크립트가 그 빈 파일을 `target/debug/cysd`·`cys` 로 복사한다(0바이트 · 권한 없음) → 뒤이은 stty 게이트가 `Permission denied`(관측). cys-app 시험 뒤 빈 파일을 지우고 `cargo build --bin cysd --bin cys` 다시.

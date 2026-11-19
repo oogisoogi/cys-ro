@@ -4062,6 +4062,18 @@ pub fn dedup_worker_role(
     is_alive: impl Fn(u64) -> bool,
     my_id: u64,
 ) -> String {
+    dedup_worker_role_avoiding(requested, roles, is_alive, my_id, |_| false)
+}
+
+/// `dedup_worker_role` + 피할 이름(`reserved` 가 참인 번호는 점유로 본다 — T4 미결 좌석 예약 · `seat_adopt::role_name_reserved`).
+/// `reserved` 는 유한 개 이름에만 참이어야 한다(모든 이름이 참이면 끝나지 않음 — 호출자 계약).
+pub fn dedup_worker_role_avoiding(
+    requested: &str,
+    roles: &HashMap<String, u64>,
+    is_alive: impl Fn(u64) -> bool,
+    my_id: u64,
+    reserved: impl Fn(&str) -> bool,
+) -> String {
     if requested != "worker" {
         return requested.to_string();
     }
@@ -4072,6 +4084,10 @@ pub fn dedup_worker_role(
         } else {
             format!("worker-{n}")
         };
+        if reserved(&name) {
+            n += 1;
+            continue;
+        }
         match roles.get(&name) {
             None => return name,                        // 미점유 → 사용
             Some(&h) if h == my_id => return name,       // 이미 내 것(재진입)
@@ -4381,6 +4397,17 @@ mod dedup_tests {
         // 자기 자신이 이미 'worker'를 보유하면 같은 이름 반환(재진입 idempotent)
         let r = roles(&[("worker", 7)]);
         assert_eq!(dedup_worker_role("worker", &r, |_| true, 7), "worker");
+    }
+
+    #[test]
+    fn dedup_avoids_reserved_names() {
+        // T4 미결 좌석 예약(독립 검증 차단): 예약된 이름은 비어 있어도 점유로 본다 — worker 살아 있음 · worker-2 예약 → worker-3.
+        let r = roles(&[("worker", 1)]);
+        assert_eq!(crate::state::dedup_worker_role_avoiding("worker", &r, |_| true, 9, |n| n == "worker-2"), "worker-3");
+        // 첫 이름이 예약이어도 건너뜀 · 예약 없음 = 종전과 같음 · worker 아닌 요청 = 그대로
+        assert_eq!(crate::state::dedup_worker_role_avoiding("worker", &roles(&[]), |_| true, 9, |n| n == "worker"), "worker-2");
+        assert_eq!(crate::state::dedup_worker_role_avoiding("worker", &r, |_| true, 9, |_| false), dedup_worker_role("worker", &r, |_| true, 9));
+        assert_eq!(crate::state::dedup_worker_role_avoiding("seatr", &r, |_| true, 9, |_| true), "seatr");
     }
 
     // ---- (E-b) live_worker_count ----
@@ -8542,7 +8569,7 @@ impl Daemon {
                 let mut roles = self.roles.lock().unwrap();
                 // worker면 충돌 없는 고유 역할명 배정(worker-N) — 복수 워커 todo 충돌 방지.
                 // 비-worker는 기존 latest-wins(같은 역할 재등록=최신 승리).
-                let final_role = dedup_worker_role(
+                let final_role = dedup_worker_role_avoiding(
                     r,
                     &roles,
                     |h| {
@@ -8552,6 +8579,7 @@ impl Daemon {
                             .unwrap_or(false)
                     },
                     id,
+                    crate::seat_adopt::role_name_reserved,
                 );
                 *surface.role.lock().unwrap() = Some(final_role.clone());
                 roles.insert(final_role.clone(), id);

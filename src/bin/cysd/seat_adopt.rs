@@ -559,15 +559,33 @@ pub(crate) fn blocked_by(pending: &[Pending], role: Option<&str>) -> Option<Stri
     None
 }
 
-/// ★T1 최소 대역 ①(갈아끼울 자리): `surface.create` 입구 — 이 역할의 새 좌석을 거절할 까닭(Some). 노브 끔 = 늘 None.
-pub(crate) fn surface_create_blocked(role: Option<&str>) -> Option<String> {
-    if !enabled() || role.is_none() {
-        return None;
-    }
+/// 살아 있는 미결 목록(죽은 것은 걷어 냄) 안에서 `f` 를 부른다.
+fn with_live_pending<T>(f: impl FnOnce(&[Pending]) -> T) -> T {
     let mut g = PENDING.lock().unwrap_or_else(|e| e.into_inner());
     let now = crate::state::now_epoch();
     g.retain(|p| pending_live(p, pid_alive, process_start_us, now));
-    blocked_by(&g, role)
+    f(&g)
+}
+
+/// ★T1 최소 대역 ①(갈아끼울 자리 · **역할 부여 공통 판정 한 곳**): 이 역할을 지금 어느 좌석에든 주면 안 되는 까닭(Some).
+/// 부르는 입구 = `surface.create`(요청 역할) · `system.claim_role` · `reclaim_commit` · `role.restore_released` — 역할을 주는 길 전부
+/// (독립 검증 T4 차단: 입구가 surface.create 하나뿐이면 역할 없이 만든 좌석이 claim 으로 같은 역할을 받아 작성자가 둘). 노브 끔 = 늘 None.
+pub(crate) fn role_grant_blocked(role: &str) -> Option<String> {
+    if !enabled() {
+        return None;
+    }
+    with_live_pending(|g| blocked_by(g, Some(role)))
+}
+
+/// worker 번호 배정(`dedup_worker_role_avoiding`)이 피할 이름 — **정확히 그 이름**으로 예약된 미결만. 역할 모르는 미결(모든 역할 거절)은
+/// 위 입구 판정이 맡는다(여기 넣으면 모든 번호가 막혀 배정이 끝나지 않는다). 노브 끔 = 늘 거짓.
+pub(crate) fn role_name_reserved(name: &str) -> bool {
+    enabled() && with_live_pending(|g| g.iter().any(|p| p.role.as_deref() == Some(name)))
+}
+
+/// `surface.create` 입구 — 요청 역할에 대한 `role_grant_blocked`(역할 없는 생성 = None).
+pub(crate) fn surface_create_blocked(role: Option<&str>) -> Option<String> {
+    role.and_then(role_grant_blocked)
 }
 
 /// ★T1 최소 대역 ②(갈아끼울 자리): 기동 자동 복원을 통째로 보류할 까닭 — 역할을 모르는 미결이 있을 때만(역할을 아는 미결은 ① 이 그 역할만 막는다).

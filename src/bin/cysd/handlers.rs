@@ -1425,6 +1425,10 @@ fn reclaim_commit(
     //   `None` = 예산 미지정(구 CLI) → 종전대로 검사 없음.
     deadline_epoch: Option<f64>,
 ) -> Result<String, &'static str> {
+    // ★T4 좌석 입양 · T1 최소 대역: 미결 좌석이 쥔 역할은 승계로도 주지 않는다(역할 부여 공통 판정 = `seat_adopt::role_grant_blocked`).
+    if crate::seat_adopt::role_grant_blocked(role).is_some() {
+        return Err("seat_adopt_reserved");
+    }
     // ★만료 판정은 **두 시계의 OR** 다(적대검증 R2 · codex major): 벽시계 절대 데드라인은
     //   앞으로 점프한 시계를 잡고, 단조 예산은 **뒤로 점프한** 시계를 잡는다. 어느 하나라도
     //   지났으면 커밋하지 않는다 — 늦은 승계는 아무도 모르는 승계다.
@@ -1609,6 +1613,10 @@ fn restore_released_role(daemon: &Arc<Daemon>, params: &Value, id: &Value, calle
     }
     if daemon.tombstones.lock().unwrap().contains(&role) {
         return refuse("의도적으로 닫힌 역할이다");
+    }
+    // ★T4 좌석 입양 · T1 최소 대역(역할 부여 공통 판정 = `seat_adopt::role_grant_blocked`).
+    if let Some(why) = crate::seat_adopt::role_grant_blocked(&role) {
+        return refuse(&why);
     }
     // 좌석 닫기와 같은 락 순서(surfaces → roles → surface.role) — 닫기가 먼저면 좌석이 없고, 이쪽이 먼저면 닫기가 역할을 보고 묘비를 남긴다.
     let (s, master_changed) = {
@@ -10004,6 +10012,11 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             let Some(sid) = resolve_surface_id(&params) else {
                 return Reply::Single(err_response(&id, "invalid_params", "missing surface_id"));
             };
+            // ★T4 좌석 입양 · T1 최소 대역(판정 = `seat_adopt::role_grant_blocked` 한 곳 · 노브 끔 = 늘 None): 살아 있으나 입양되지 않은
+            //   좌석이 쥔 역할은 claim 으로도 주지 않는다(입구가 surface.create 하나뿐이면 역할 없이 만든 좌석이 같은 역할을 받아 작성자 둘 · 독립 검증 T4 차단).
+            if let Some(why) = crate::seat_adopt::role_grant_blocked(&role) {
+                return Reply::Single(err_response(&id, "claim_denied", &why));
+            }
             // ★(P1) 좌석 토큰 **1차 인가** — 이 게이트의 자리는 예약어 게이트(owner/creator)
             // **뒤**다: 토큰 분기를 예약어 게이트 앞으로 옮기면 토큰이 예약어를 우회해 부서
             // 자율성 보호가 무력화된다(couplings §security_boundary — 순서가 계약이다).
@@ -10346,7 +10359,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                 }
                 // worker면 충돌 없는 고유 역할명(worker-N) 배정 — 복수 워커 todo·주소 충돌 방지.
                 // 비-worker는 그대로(master/cso는 위 가드, reviewer-* 등은 latest-wins).
-                let final_role = crate::state::dedup_worker_role(
+                let final_role = crate::state::dedup_worker_role_avoiding(
                     &role,
                     &roles,
                     |h| {
@@ -10356,6 +10369,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                             .unwrap_or(false)
                     },
                     sid,
+                    crate::seat_adopt::role_name_reserved,
                 );
                 let mut srole = surface.role.lock().unwrap();
                 if let Some(old) = srole.clone() {

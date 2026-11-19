@@ -9,3 +9,12 @@
 - [x] 7. 시험(원 시험 + 새 e2e + 뮤턴트) · ci-branch 팩 단계
 - [ ] 8. codex 1R(고친 4건 재판정) · 처분 — ⏸ codex 한도 소진(master#5a93bd10 · 리셋 06:29) = master 대기열 · 질문지 CODEX-1R-PROMPT.cysr-1116-skt1-1119.md
 - [x] 9. HANDOFF.cysr-1116-skt1-1119.md(맨 앞 = T1 공개 함수 이름·시그니처) · 【확인요청】
+
+## codex 1R BLOCK(master#bea6fddc · 전부 고침 · 상한 3h) — 후임 몫(이 좌석 = 설계만 · HANDOFF §11)
+- [ ] R1-1 계통 3값 · follow = ProvenTop 만
+- [ ] R1-2 S 대화 파일 신선도 관문 + 기동 글 직전 재확인 + 검증된 S 등록 우선 승계
+- [ ] R1-3 데몬 session_source · caller None 등록 = 핀 입력 아님 · 비-Claude = lsof 만
+- [ ] R1-4 Tauri held 증거 fence·token·writer 재검증
+- [ ] R1-5 양성 S 신호 = anchor_session_id(최상위 훅)
+- [ ] R1-6 순서 주입 결정론 시험 + 뮤턴트 · codex 2R = master 대기열
+- [x] 판정 축 표(lease 없이도 작성자 둘인가) = HANDOFF §11-1

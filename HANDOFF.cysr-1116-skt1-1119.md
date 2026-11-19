@@ -142,3 +142,43 @@ eval $E CYS_PACK_DIR=/tmp/sk1h/pk cargo test -p cys-app --bins seatkeep -- --tes
 2. ~~`tests/session_lease_e2e.rs` 는 CI 레인에 없다~~ → **master#e08a16c0 ② = 등재함**(ci-branch 맥 레인 · 스텝 「cargo test --test session_lease_e2e」 · 스레드 2 · 시한 20분 · 근거 = 로컬 실측 시험 422s·빌드 포함 472s · 부하 12~17 · CI 러너 실측은 첫 회차) · 옛 서술:(ci-branch 의 cargo 레인 = --lib · --bin cys · --bin cysd · update_drainhold_e2e · cys-app). T1 의 실 데몬 증거(FR·SR·RV·UW·RN 등 11개)가 CI 에서 안 돈다 — 레인 편입은 CI 설계 결정이라 손대지 않음.
 3. **rc 93 공유**(§2): 조각 1 `EXIT_RESUME_HELD` 와 임대 `EXIT_SESSION_LIVENESS_UNKNOWN` 이 같은 값 — 소비자는 「멈춤 · 새 대화 0」 으로 같게 읽는다. 따로 가르려면 새 rc(94) 배정 = 계약 변경.
 4. 기존 e2e 의 「설치본 cys 로 등록」 사실(§7)은 원 T1 의 r5b RV 판정 근거를 약하게 만든다 — 이번 고침 뒤 RV 는 시험 cys 로 초록(결속 경로).
+
+---
+
+## 11. 【매듭 델타】 codex 1R(8114319c4) = BLOCK(blocking 4 · major 2) — master#bea6fddc 「전부 고친다」 · 이 좌석은 CTX 52%(07:0x)라 고치지 않고 설계·판정 축만 남김
+
+- 판정문 원문 = `~/axdev/master/reports/verify/codex-1120/skt1-r1.md`(표 (a)~(e) 포함) — 후임 첫 행동 = 이 절 + 그 원문 Read.
+- 상한 3h(master#bea6fddc) · CTX 60% 매듭 · codex 2R = master 대기열(직접 호출 금지).
+
+### 11-1. ★판정 축 표 — 「이 경로는 lease 없이(1.1.15)도 작성자 둘인가 / lease 가 새로 만든 것인가」(master 가 기본 켬 유지를 이 표로 다시 정함)
+
+근거 = 코드 대입(실행 실측 아님 · 확신도 중상). 1.1.15 = 임대 없음 → `cys restore`·`--resume-saved` 는 topology live 에 S 가 **보일 때만** 겹침을 막는다(`restore_claim_for_launch` live 집합 · 조각 1 `launch_pin_verdict` 「다른 좌석이 잇고 있다」). 좌석 W 가 좌석 안 `/resume S` 로 S 를 쓰는데 topology 가 T/없음이면 1.1.15 는 언제나 W2 를 만든다.
+
+| codex 1R # | 결과(판정문) | lease 없이(1.1.15)도? | lease 가 새로 만든 것? | 피해 종류 |
+|---|---|---|---|---|
+| 1 계통 None 에서 헬퍼 등록이 결속을 옮김 | rc 0 · 작성자 2 | **예** — 같은 장면(W 가 S · topology T/없음)에서 1.1.15 는 아무 검사 없이 W2 | 아니오(lease 가 대부분 순서를 막고 None 갈래만 남김) · 단 「같은 writer 의 held S 를 지움」은 lease 고유 동작 | 데이터 비가역(작성자 둘) |
+| 2A 방어 판독 뒤 정상 S 등록 도착(경합) | rc 0 · 작성자 2 | **예**(1.1.15 는 판독 자체가 없음) | 아니오 | 데이터 비가역 |
+| 2B 같은 프로세스 /resume S · 등록 실패 | rc 0 · 작성자 2 | **예** | 아니오(옛 T 결속이 「다른 대화」 증거가 되는 것은 lease 고유이나, 1.1.15 는 그 증거 없이도 W2) | 데이터 비가역 |
+| 3 비-Claude topology 가 좌석 밖 가짜 등록으로 덮임 | rc 0 · 작성자 2 | **예**(1.1.15 는 topology T 면 그냥 W2) | 아니오(같은 결함을 새 증거 원천이 물려받음) | 데이터 비가역 |
+| 4 Tauri held→topology TOCTOU 로 첫 93 지움 | 앱 성공 · S 작성자 0 | 결과 종류는 **예**(1.1.15 는 93 자체가 없고 역할 skip = 성공 표시 · r4 #3 원 결함) | 경합 자체는 **예**(새 다단계 증거) | 복원 누락 숨김(데이터 손실 아님) |
+| 5 헬퍼/낡은 등록 S 가 실제 결속 T 를 이김 | rc 93 반복 · 작성자 0 | 아니오(1.1.15 는 막지 않음) | **예** | 거짓 막힘(가용성) |
+| 6 시험이 위 순서를 안 잡음 | — | — | — | 증거 공백 |
+
+⇒ 요지(확신도 중상): **lease 켬은 1.1.15 대비 작성자 둘 경로를 새로 만들지 않는다**(1·2A·2B·3 은 1.1.15 에도 있고 lease 는 그중 대부분 순서를 막은 뒤 남은 것). lease 가 새로 만든 것 = **거짓 막힘(5)** · **앱 성공 오접힘의 새 경합(4 · 결과 종류는 1.1.15 와 같음)**. ⚠예외 후보 1줄: 1 의 「follow 가 같은 writer 의 기존 held S 를 지움」 은 lease 에만 있는 동작 — 다만 그 뒤 W2 가 생기는 것은 1.1.15 와 같은 귀결이라 「새 작성자 둘」은 아님.
+
+### 11-2. 고침 설계(후임 · master 처분 1~6 순서)
+
+1. **계통 3값**: leaf `lineage_proves_not_top_hook` → `enum Lineage { ProvenTop, NotTop, Unknown }`(argv 하나라도 못 읽음 = Unknown). `lease_follow_on_register` 는 **ProvenTop 에서만** follow(같은 writer 의 옛 임대 지우기도 그 안). 귀결 = 계통이 안 읽히는 좌석(윈도우 MSYS 등)은 결속이 안 생겨 같은 역할 S 복원 옆에서 93(거짓 막힘 · 안전 쪽) — HANDOFF·안내 문구에 적을 것. 시험 = leaf 표 Unknown 행 + 배선 핀 `== Lineage::ProvenTop` + 뮤턴트(Unknown 허용).
+2. **스냅샷 뒤 등록·등록 실패**(2A·2B):
+   - (권고) **S 대화 파일 신선도 관문**: #1 방어·unknown 풀림·재반환 판정 모두에서 저장 대화 S 의 jsonl(claude = `<cfg>/projects/<slug>/<S>.jsonl` · codex = rollout)의 mtime 이 「결속 at」 또는 「복원 시작 − N초」보다 새것이면 = 누군가 S 를 쓰는 중 → 92. 좌석 안 /resume S 가 실제로 쓰기 시작한 뒤의 2A·2B·1·3 을 모두 기계적으로 막는다(등록 경로 무관). 남는 창 = resume 직후 첫 쓰기 전 — 그것은 아래 재확인으로 좁힌다. 파일 경로는 조각 1 핀 판정(`launch_pin_verdict`)이 이미 쓰는 세션 파일 해소를 재사용.
+   - **생성 직후·기동 글 직전 재확인**: `run_launch_agent_opts` 에서 surface.create 뒤 `boot_agent_on_surface` 가 기동 글을 보내기 직전에 `lease_role_seat_verdict` + 임대 토큰 대조(`lease_resume_unheld` 자리)를 한 번 더 — 다르면 빈 좌석 닫고 93.
+   - **검증된 S 등록이 살아 있는 launching 복원보다 우선**(codex 방향): follow(S) 가 ProvenTop 이고 S 임대가 Launching(복원기 생존 · 기동 글 아직 안 보냄)이면 승계 → 복원기는 위 재확인에서 토큰 불일치로 멈춤. 복원기가 기동 글을 이미 보냈으면(LAUNCHED) 승계하지 않고 사건만(그때는 이미 둘 — 신선도 관문이 앞에서 막아야 함).
+3. **비-Claude topology**(데몬 변경 · 허용): cysd 가 세션 파일 결정 출처를 기록(`lsof` · `registered` · `heuristic`)하고 org.status/topology 에 `session_source` 로 노출 · `caller_sid=None` 의 타 좌석 등록은 사용량 귀속만 하고 **수집기 파일 선택·영속 핀 입력으로 쓰지 않음**(handlers usage.register · usage.rs 1494 근처). 클라이언트 `seat_conversation_now` 비-Claude 갈래는 `session_source == "lsof"` 일 때만 현재 대화 증거(그 밖 = Ok(None) → 93). 데몬 바뀐 줄 보고 의무.
+4. **Tauri TOCTOU**: `held_by_live_writer` 가 (좌석 · 세대 · fence · token · writer) 를 돌려주고, `run_sidecar_restore_judged` 는 topology 판독 **뒤** 같은 임대를 다시 읽어 다섯 값이 같고 writer 생존일 때만 「복원됨」. 가능하면 writer 가 그 좌석 뿌리(surface.list pid)의 자손인지도 확인(좌석의 현재 에이전트 = writer).
+5. **양성 S 신호의 출처**: #1 방어의 「등록 = S」 를 데몬 raw `registered_session_id` 대신 **최상위 훅 등록 기준**(데몬 기존 `repin_anchor` = 헬퍼로 증명된 등록은 안 옮김)으로 — org.status 에 `anchor_session_id` 노출(데몬 1~2줄). topology S(휴리스틱 1회 핀)는 양성 신호에서 빼고 신선도 관문(2)으로 대체할지 후임 판단(빼면 5 의 92 고착도 풀림).
+6. **순서 주입 결정론 시험 + 뮤턴트**: cys 에 시험 전용 정지점(env `CYS_TEST_LEASE_PAUSE=<지점>:<파일>` · `cfg!(debug_assertions)` 에서만 · 운영 빌드 무동작 핀) — 지점 = ①#1 방어 판독 뒤 surface.create 앞 ②Tauri 쪽은 순수 함수에 판독 순서 클로저 주입. e2e: (2A) 정지점에서 W 의 진짜 등록 S(가짜 claude 에 좌석 안 대화 전환 명령 추가 — 받은 줄이 `/resume <id>` 면 그 id 로 등록) → 재개 → rc ≠ 0 · W2 0 · (2B) 가짜 claude 가 전환하되 등록 실패(FAKE_CYS 를 없는 경로로) + S jsonl 에 1줄 쓰기 → 신선도 관문 92 · (1) 계통 Unknown = 단위(argv None 주입) · (3) 데몬 단위(caller None 등록이 핀을 안 바꿈) · (5) 헬퍼 등록(같은 좌석 자손 `claude` 이름 2단 + 훅 셸)으로 raw 등록만 S → 진행. 뮤턴트 = 각 고침 1개씩 되돌림 · 붉은 시험 이름까지.
+
+### 11-3. 지금 상태
+
+- HEAD = `8114319c4`(+ 이 HANDOFF 커밋) · push 0 · 작업트리 clean(이 커밋 뒤) · 기준선 작업트리 `~/axdev/.wt/cys-1116-skt1-base`(dea2e1853 · 측정용 · 지워도 됨).
+- 고친 것 0(이 절은 설계만). 시험 숫자 §4·§6 은 8114319c4 기준 그대로 유효.

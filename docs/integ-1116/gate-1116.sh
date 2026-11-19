@@ -29,8 +29,9 @@ FAILS=0
 ST0=$(git status --short)   # 게이트 시작 때 작업트리 상태 — ci_step WARN 은 이것과 달라졌을 때만
 # CI 팩 단계 생성물(DRY 에서도 만든다 — 단계 이름을 보여 주려고). 판정 불가(rc 3)면 게이트 전체를 멈춘다.
 CI_DIR="$T/ci"
-#   PyYAML 이 있는 게이트 전용 venv 가 있으면 그 python 으로 부른다(줄 파서 ↔ PyYAML 스텝 수 대조가 돈다) · 없으면 /usr/bin/python3(대조 건너뜀 — 요약에 남김)
-CPS_PY=/usr/bin/python3; [ -x "$PW" ] && "$PW" -c 'import yaml' 2>/dev/null && CPS_PY=$PW
+#   PyYAML 대조는 필수 — 게이트 전용 venv 의 python 으로 부른다 · venv·PyYAML 이 없으면 여기서 멈춘다(줄 파서만으로 돌지 않는다)
+CPS_PY=$PW; [ -x "$PW" ] && "$PW" -c 'import yaml' 2>/dev/null \
+  || { say "ABORT PyYAML 없는 게이트 venv($PW_VENV) — 준비: /usr/bin/python3 -m venv \"$PW_VENV\" && \"$PW_VENV/bin/pip\" install PyYAML==6.0.2 playwright==1.60.0"; exit 2; }
 CI_IDS=$("$CPS_PY" docs/integ-1116/ci_pack_steps.py emit "$CI_DIR" 2>"$OUT/ci_pack_steps.err") || { cat "$OUT/ci_pack_steps.err" >&2; say "ABORT ci_pack_steps emit 판정 불가 — 고르는 규칙과 워크플로가 어긋남(위 stderr)"; exit 2; }
 say "ci_pack_steps python=$CPS_PY · $(tail -1 "$OUT/ci_pack_steps.err")"
 UNREG_IDS=$("$CPS_PY" docs/integ-1116/ci_pack_steps.py unregistered 2>/dev/null) || { say "ABORT ci_pack_steps unregistered 판정 불가"; exit 2; }

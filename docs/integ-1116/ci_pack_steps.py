@@ -18,9 +18,9 @@ GitHub Actions 의 bash 스텝 = `bash --noprofile --norc -eo pipefail <파일>`
    CI 시한: 스텝 `timeout-minutes`(없으면 잡 `timeout-minutes`)를 생성물 머리 `# ci-timeout-secs: N` 으로 싣는다 — 게이트가 넘으면 붉힌다
    · 덮개 검사: **모든 잡**의 **고르지 않은** 스텝 본문(주석 아닌 줄)에 실재 팩 시험 파일 이름이 나온다
      = 고르는 규칙이 워크플로와 어긋남(새 꼴의 팩 스텝이 생김 · 4잡 밖 새 잡 포함) → 규칙을 고칠 신호
-   · PyYAML 대조(PyYAML 이 있을 때 · 게이트는 전용 venv 로 부른다): 잡마다 `run:` 스텝 수와 표지(위 두 낱말) 스텝 수를
+   · PyYAML 대조(**필수** · 게이트는 전용 venv 로 부른다): 잡마다 `run:` 스텝 수와 표지(위 두 낱말) 스텝 수를
      PyYAML 로 따로 읽어 줄 파서와 맞춘다 — 다른 들여쓰기·꼴이라 줄 파서가 놓친 스텝이 있으면 불일치.
-     PyYAML 이 없으면 대조를 건너뛰고 표준 오류에 「건너뜀」 1줄(줄 파서만으로 판정)
+     PyYAML 이 없으면 판정 불가 exit 3(줄 파서만으로는 판정하지 않는다 — 깨끗한 기계에서 조용히 빠지는 길을 막는다)
 
 사용:
    python3 docs/integ-1116/ci_pack_steps.py list            # 고른 스텝 목록(이름 · 잡 · 줄 · 시험 수)
@@ -217,8 +217,9 @@ def select(text, root):
     jobs = parse(text)
     ya, li = yaml_counts(text), line_counts(jobs)
     if ya is None:
-        YAML_NOTE[:] = ["PyYAML 대조 건너뜀(PyYAML 없음 — 줄 파서만으로 판정)"]
-    elif ya != li:
+        raise Fail("PyYAML 없음 — 대조는 필수다 · 준비: python3 -m venv <폴더> && <폴더>/bin/pip install PyYAML==6.0.2 → <폴더>/bin/python 으로 부른다"
+                   "(게이트 = PW_VENV)")
+    if ya != li:
         rows = ["%s: PyYAML run %s·표지 %s ↔ 줄 파서 run %s·표지 %s" % (
             k, (ya.get(k) or ("없음", "없음"))[0], (ya.get(k) or ("없음", "없음"))[1],
             (li.get(k) or ("없음", "없음"))[0], (li.get(k) or ("없음", "없음"))[1])
@@ -293,6 +294,11 @@ def unregistered(root):
 
 
 def self_test():
+    try:
+        import yaml  # noqa: F401 — 검체도 PyYAML 대조를 전제로 한다
+    except ImportError:
+        sys.stderr.write("[ci_pack_steps self-test] 판정 불가 — PyYAML 없음(준비: python3 -m venv <폴더> && <폴더>/bin/pip install PyYAML==6.0.2)\n")
+        return 3
     tmp = tempfile.mkdtemp(prefix="cps")
     try:
         os.makedirs(os.path.join(tmp, PACK_TESTS))
@@ -357,9 +363,8 @@ def self_test():
 """,
             "defaults": good.replace("  ubuntu-pack-suite:\n    runs-on: ubuntu-latest\n", "  ubuntu-pack-suite:\n    runs-on: ubuntu-latest\n    defaults:\n      run:\n        shell: sh\n"),
         }
-        yaml_ok = yaml_counts(good) is not None
-        if yaml_ok:   # 4칸 들여쓰기 스텝 목록(줄 파서가 통째로 놓치는 꼴) — PyYAML 대조만 잡는다
-            bad["PyYAML 대조 불일치"] = good + """  indent4-job:
+        # 4칸 들여쓰기 스텝 목록(줄 파서가 통째로 놓치는 꼴) — PyYAML 대조만 잡는다
+        bad["PyYAML 대조 불일치"] = good + """  indent4-job:
     runs-on: ubuntu-latest
     steps:
     - name: y
@@ -372,8 +377,21 @@ def self_test():
                 assert want in str(e), (want, str(e))
             else:
                 raise AssertionError("음성 대조가 통과함: " + want)
-        print("[ci_pack_steps self-test] OK(양성 1 · 음성 %d · PyYAML 대조 음성 %s)"
-              % (len(bad), "포함" if yaml_ok else "건너뜀 — PyYAML 없음"))
+        # PyYAML 이 없는 기계 모사 → 줄 파서만으로 통과하지 않고 판정 불가
+        saved = sys.modules.get("yaml")
+        sys.modules["yaml"] = None
+        try:
+            select(good, tmp)
+        except Fail as e:
+            assert "PyYAML 없음" in str(e), str(e)
+        else:
+            raise AssertionError("음성 대조가 통과함: PyYAML 없음")
+        finally:
+            if saved is None:
+                sys.modules.pop("yaml", None)
+            else:
+                sys.modules["yaml"] = saved
+        print("[ci_pack_steps self-test] OK(양성 1 · 음성 %d)" % (len(bad) + 1))
         return 0
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

@@ -1475,6 +1475,24 @@ jobs:
 
       # S2: shipped observer and Windows refusal mapping; native spawn evidence
       # remains separate. Full cysd is nonblocking, so this cell must be blocking.
+      # ★(1.1.16) S2 시험 바이너리 미리 빌드 — S2 의 6분 시한은 시험 실행 몫이다(시험 13개 ≈1초).
+      #   실측(익명 API 스텝 시각 · 같은 잡): S2 안 첫 cargo 호출이 cys-terminal 을 **다시 컴파일**했다 — 2026-11-19 첫 런 260초
+      #   (21:28:22 시작 → 21:32:42 컴파일 끝 · 바로 앞 S5 의 같은 --bin cysd 는 캐시 0.26초) · 둘째 런은 러너가 전 스텝
+      #   1.3~1.5배 느려 367초 = 6분 시한 초과(스텝 추이 137 → 261 → 367초). S2 의 두 번째 cargo 호출은 0.31초 = 오염은 S2 시작
+      #   **전**에 생긴다(유력 = build.rs `rerun-if-changed=cysjavis-pack` · 앞 스텝이 팩 폴더에 쓴 것 — 원인 확정 전이라 이름 붙이지 않음).
+      #   그래서 S2 **바로 앞**에서 S2 와 같은 env(CYS_PACK_DIR·CYS_STATE_DIR)로 같은 시험 바이너리를 만든다 — 원인이 무엇이든
+      #   S2 안 컴파일 0. 시한 12분 = 느린 러너 컴파일 실측 367초의 약 2배. `--no-run` 이라 C8 재고(selects_cysd)·레인 게이트
+      #   FILTER_RUN_RE(필터 뒤 `-- ` 필요)는 이 줄을 실행 줄로 세지 않는다. 차단 스텝(컴파일 실패 = S2 도 못 돈다).
+      - name: A-ID S2 test binary prebuild (cysd · --no-run · S2 시한 밖 컴파일)
+        timeout-minutes: 12
+        shell: bash
+        run: |
+          set -euo pipefail
+          s2_dir="$PWD/target/u-tmp/s2-registration-ci"
+          mkdir -p "$s2_dir/pack" "$s2_dir/state"
+          export CYS_PACK_DIR="$s2_dir/pack" CYS_STATE_DIR="$s2_dir/state"
+          cargo test --bin cysd --no-run
+
       - name: A-ID S2 root registration (Windows blocking)
         timeout-minutes: 6
         shell: bash

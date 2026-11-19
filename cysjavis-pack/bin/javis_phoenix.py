@@ -2000,9 +2000,32 @@ def _live_surfaces_raw(socket):
             #   오늘의 결함[빈 좌석을 생존으로 오인]이 다른 얼굴로 재발한다). 구 데몬은 이 키가 없어
             #   None → _alive() 가 종전(exited 만) 규칙으로 degrade 한다(하위호환·악화 0).
             "seat": s.get("seat"),
+            # (1.1.16 · cysr-1116-s5-1119 · master#c78fa28f F2) 사람 입력줄 사실 — 소비만(데몬 org.status 칸 그대로 · 구 데몬 = 키 없음 → None).
+            "pending_input_human_bytes": s.get("pending_input_human_bytes"),
+            "input_paste_open": s.get("input_paste_open"),
+            "human_idle_secs": s.get("human_idle_secs"),
         })
     _LAST_LIVENESS_KNOWN = True
     return out
+
+
+# (1.1.16 · cysr-1116-s5-1119 · master#c78fa28f F2) 사람 정숙 문턱 — 데몬 `queue_human_quiet_secs` 기본(30)·화면 조각 5 `HUMAN_QUIET_SECS` 와 같은 값.
+HUMAN_QUIET_SECS = 30
+
+
+def seat_human_input_hold(rec):
+    """좌석 행(live_role_surfaces 한 칸)에 사람이 쓰던 글이 있는가(순수) — 있으면 사유 글, 없으면 None.
+    사람 초안 바이트 > 0 · 붙여넣기 열림 · 30초 안 사람 입력. 칸이 없으면(구 데몬·list 폴백) None = 종전 동작."""
+    rec = rec or {}
+    h = rec.get("pending_input_human_bytes")
+    if isinstance(h, int) and not isinstance(h, bool) and h > 0:
+        return "human_draft(%d bytes)" % h
+    if rec.get("input_paste_open") is True:
+        return "paste_open"
+    idle = rec.get("human_idle_secs")
+    if isinstance(idle, (int, float)) and not isinstance(idle, bool) and idle < HUMAN_QUIET_SECS:
+        return "recent_human_input(%ss)" % idle
+    return None
 
 
 def live_role_surfaces(socket):
@@ -3841,14 +3864,33 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
                                 break
                     if all(_r in seat_adopt for _r in _empties):
                         break
+                # (master#c78fa28f F2) 회수 직전 좌석 사실을 다시 받는다 — 사람이 쓰던 글(초안·붙여넣기·30초 안 입력)이 든 옛 좌석은 닫지 않고
+                #   그 역할의 fresh 강등을 보류한다(새 좌석도 안 세움 · 사유 사건 · spawn 미완 = 사람 단계). 설계 §6-2 「옛 사람 입력줄 바이트 변화 0」 과 같은 가치.
+                _rows_now = {s.get("surface"): s for _v in live_role_surfaces(socket).values() for s in _v}
+                _held_human = {}
                 for _r, _refs in _empties.items():
                     if _r in seat_adopt and seat_adopt[_r][1]:
                         continue  # 그 좌석에 앉았다 — 회수할 빈 좌석 없음
                     for _ref in _refs:
+                        _why = seat_human_input_hold(_rows_now.get(_ref))
+                        if _why:
+                            _held_human.setdefault(_r, []).append("%s:%s" % (_ref, _why))
+                            jevent(j, _r, "spawn", "empty_seat_reap_held_human_input",
+                                   "빈 좌석 %s 에 사람 입력(%s) → 닫지 않음 · fresh 강등 보류(사람 단계)" % (_ref, _why))
+                            log("★F2 %s: 빈 좌석 %s 에 사람 입력(%s) → 회수·fresh 강등 보류" % (_r, _ref, _why))
+                            continue
                         _rr = cys("close-surface", _ref, "--reap", socket=socket, timeout=12)
                         jevent(j, _r, "spawn", "empty_seat_reaped" if getattr(_rr, "returncode", 1) == 0
                                else "empty_seat_reap_failed",
                                "빈 좌석 %s 재사용 불가 → Reap 회수(좌석 증식 방지)" % _ref)
+                for _r, _whys in _held_human.items():
+                    if _r in seat_adopt:
+                        continue  # 다른 좌석에 이미 떴다(채택) — 보류할 것 없음
+                    rr = j["roles"].setdefault(_r, {"stages": {}})
+                    rr["fresh_held"] = "human_input"
+                    mark_stage(j, _r, "spawn", False,
+                               "fresh 강등 보류 — 옛 좌석에 사람이 쓰던 글(%s) · 닫지 않음 · 사람 단계" % ", ".join(_whys))
+                need = [r for r in need if r not in _held_human or r in seat_adopt]
         for role in need:
             if not _drop_tombstoned([role], "fresh 강등"):
                 continue

@@ -695,12 +695,25 @@ pub fn role_release_due(dead_since: Option<f64>, now: f64, grace_secs: f64) -> b
 /// 락 순서는 claim_role 승계 마무리와 동일하다(roles → surface 리프 락). `surfaces` 맵은
 /// 잡지 않는다 — 호출부가 이미 Arc 를 들고 있다.
 pub(crate) fn release_role_after_agent_death(daemon: &Arc<Daemon>, s: &Arc<crate::state::Surface>) -> bool {
+    release_role_after_agent_death_if(daemon, s, || true)
+}
+
+/// (1.1.16 · master#c78fa28f F1) 회수 직전 재판정 — `still_due` 를 roles·surface.role 잠금 **안**에서 본다. watchdog 은 「회수 시계가 아직 만료」를 넘긴다:
+/// 멱등 재반환(`Daemon::reattach_role_on_reuse`)이 같은 잠금 안에서 시계를 비우므로, 틱이 시계를 읽은 뒤 재반환이 끼어들어도 역할을 거두지 않는다.
+pub(crate) fn release_role_after_agent_death_if(
+    daemon: &Arc<Daemon>,
+    s: &Arc<crate::state::Surface>,
+    still_due: impl FnOnce() -> bool,
+) -> bool {
     let released = {
         let mut roles = daemon.roles.lock().unwrap();
         let mut srole = s.role.lock().unwrap();
         let Some(role) = srole.clone() else {
             return false; // 이미 무역할 — 멱등
         };
+        if !still_due() {
+            return false; // 그 사이 되살리러 왔다(회수 시계 비워짐)
+        }
         // 다른 좌석이 그 역할을 승계한 뒤라면 roles 맵은 그쪽 것이다(내 것만 지운다).
         if roles.get(&role) == Some(&s.id) {
             roles.remove(&role);
@@ -1061,7 +1074,9 @@ fn check_agent_death_with_model(
         // role 회수는 **매 틱** 판정한다 — 아래 통지 래치(agent_exit_notified)는 1회성이라
         // 그 뒤에 두면 유예가 지난 시점에 영영 도달하지 못한다(통지와 회수는 다른 층위다).
         if role_release_due(Some(dead_since), now, role_release_grace_secs())
-            && release_role_after_agent_death(daemon, &s)
+            && release_role_after_agent_death_if(daemon, &s, || {
+                role_release_due(*s.agent_dead_since.lock().unwrap(), now, role_release_grace_secs())
+            })
         {
             eprintln!(
                 "[cysd] {} role 회수 — {agent} 가 {:.0}초 이상 사라져 있다(좌석 셸은 유지).",

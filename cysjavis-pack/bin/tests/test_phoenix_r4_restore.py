@@ -20,6 +20,7 @@ epoch 의 spawn 완료 마크가 생존 재확인 없이 skip 근거가 됐기 �
 import copy
 import importlib.util
 import io
+import json
 import os
 import shutil
 import sys
@@ -279,6 +280,34 @@ def axis_d(m, root, sink=None):
           calls2["close"], sink)
     check("D5 회수 뒤 fresh 1 · 좌석 수 불변(1)", calls2["fresh"] == 1 and n2 == 1, (calls2["fresh"], st2["live"]), sink)
 
+    # (1.1.16 · cysr-1116-s5-1119 · master#c78fa28f F2) 재사용 불가 + 그 빈 좌석에 사람이 쓰던 글 → 닫지 않음 · fresh 강등 보류(새 좌석 0) · 사유 사건
+    #   대조 = 위 D4·D5(사람 입력 칸 없음 = 종전 회수) · 실측 계기 = 검증 좌석 draft3(초안 23바이트 든 옛 마스터 좌석을 fresh 강등이 닫음)
+    for k, (label, extra) in enumerate([("초안 23바이트", {"pending_input_human_bytes": 23, "input_paste_open": False, "human_idle_secs": 40}),
+                                         ("붙여넣기 열림", {"pending_input_human_bytes": 0, "input_paste_open": True, "human_idle_secs": 40}),
+                                         ("30초 안 사람 입력", {"pending_input_human_bytes": 0, "input_paste_open": False, "human_idle_secs": 5})]):
+        row = seat("surface:7", "empty")
+        row.update(extra)
+        st3 = {"epoch": "EPOCH-SEAT3-%d" % k, "entries": copy.deepcopy(MASTER), "table": T_DEAD, "live": {"master": [row]}}
+
+        def fresh_new_seat3(st3=st3):
+            st3["live"].setdefault("master", []).append(seat("surface:15", "occupied", True))
+            st3["table"] = T_ALIVE
+        st3["on_fresh"] = fresh_new_seat3
+        sock3, calls3 = harness(m, os.path.join(root, "d3-%d" % k), st3)
+        run(m, sock3, include_master=True)
+        j3 = m.load_journal(sock3, "r4")
+        rr3 = j3["roles"].get("master") or {}
+        evs3 = [e for e in (j3.get("events") or []) if isinstance(e, dict)]
+        check("D6 %s → 옛 좌석 닫기 0 · fresh 0(새 좌석 0) · fresh_held=human_input" % label,
+              calls3["close"] == [] and calls3["fresh"] == 0 and rr3.get("fresh_held") == "human_input"
+              and [s_["surface"] for s_ in st3["live"]["master"]] == ["surface:7"],
+              (calls3["close"], calls3["fresh"], rr3.get("fresh_held"), st3["live"]), sink)
+        check("D7 %s → 사유 사건(empty_seat_reap_held_human_input) · spawn 미완(사람 단계)" % label,
+              any("empty_seat_reap_held_human_input" in json.dumps(e, ensure_ascii=False) for e in evs3) or
+              "empty_seat_reap_held_human_input" in json.dumps(j3, ensure_ascii=False),
+              [e for e in evs3][-3:], sink)
+    check("D8 seat_human_input_hold 칸 없음(구 데몬) = None(종전 회수)", m.seat_human_input_hold(seat("surface:7", "empty")) is None, "", sink)
+
 
 # ── H. I-4 ACK 핑 관문 ──
 def axis_h(m, root, sink=None):
@@ -336,6 +365,8 @@ try:
          '    _eligible = set(_acted)\n'),
         ("M4 재스폰 상한 제거", '    _capped = [r for r in target_roles if respawn_capped(_respawn_counts, r)]\n',
          '    _capped = []\n'),
+        ("M5 사람 입력 든 빈 좌석도 회수(F2 보류 끔)", '                        _why = seat_human_input_hold(_rows_now.get(_ref))\n',
+         '                        _why = None\n'),
     ]
     for i, (name, old, new) in enumerate(mutants):
         n = src.count(old)

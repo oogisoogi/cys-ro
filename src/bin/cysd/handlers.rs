@@ -29764,7 +29764,7 @@ mod tests {
     /// 같은 좌석 + 역할 다시 닮(roles 맵·좌석 칸·role.reattached) ② 이미 쥐고 있으면 변화 0 ③ 다른 좌석이 그 역할을 쥐고 승계 대상이면 재반환하지 않고 새 좌석.
     #[test]
     fn s5_1116_idem_reuse_reattaches_released_role_or_creates_new() {
-        let daemon = claim_daemon();
+        let daemon = { let d = std::env::temp_dir().join(format!("s5r-reattach-{}", std::process::id())); let _ = std::fs::remove_dir_all(&d); let _ = std::fs::create_dir_all(&d); Daemon::new(d.join("cysd.sock")) }; // claim_daemon 폴더 = pid+초 → 같은 초 병렬 시험이 폴더를 공유
         let create = |n: u64| {
             let Reply::Single(r) = dispatch(&daemon, Request { id: json!(n), method: "surface.create".into(),
                 params: json!({"cmd": "sleep 30", "role": "master", "idempotency_key": "s5r-k", "takeover_empty_seat": true}) }, Some(995_901_u32)) else {
@@ -29804,6 +29804,54 @@ mod tests {
         assert_eq!(master(), Some(c));
         assert_eq!(daemon.get_surface(b).unwrap().role.lock().unwrap().clone(), None, "옛 보유자 역할이 남음(이중 마스터)");
         assert_eq!(sa.role.lock().unwrap().clone(), None);
+    }
+
+    /// (1.1.16 · master#c78fa28f F1) 사망 유예 **안**에서 재반환(역할은 아직 있음) → 새 에이전트가 보이기 전 watchdog 틱이 와도 역할을 거두지 않는다 —
+    /// 재반환이 회수 시계(agent_dead_since)를 비우고, 틱의 회수는 roles·surface.role 잠금 안에서 시계를 다시 본다. 대조: 재반환 없으면 같은 틱이 거둔다.
+    #[test]
+    fn s5_1116_idem_reuse_rearms_release_clock() {
+        let daemon = { let d = std::env::temp_dir().join(format!("s5r-clock-{}", std::process::id())); let _ = std::fs::remove_dir_all(&d); let _ = std::fs::create_dir_all(&d); Daemon::new(d.join("cysd.sock")) }; // claim_daemon 폴더 = pid+초 → 같은 초 병렬 시험이 폴더를 공유
+        let create = |n: u64, key: &str| {
+            let Reply::Single(r) = dispatch(&daemon, Request { id: json!(n), method: "surface.create".into(),
+                params: json!({"cmd": "sleep 30", "role": "master", "idempotency_key": key, "takeover_empty_seat": true}) }, Some(995_911_u32)) else {
+                panic!("expected single reply");
+            };
+            r
+        };
+        let grace = 60.0;
+        let tick = |s: &Arc<crate::state::Surface>| {
+            // watchdog 의 회수 판정과 같은 꼴(release_role_after_agent_death_if + 잠금 안 재판정)
+            let now = crate::state::now_epoch();
+            let seen = *s.agent_dead_since.lock().unwrap();
+            crate::governance::role_release_due(seen, now, grace)
+                && crate::governance::release_role_after_agent_death_if(&daemon, s, || {
+                    crate::governance::role_release_due(*s.agent_dead_since.lock().unwrap(), now, grace)
+                })
+        };
+        // 대조: 유예를 넘겨 죽어 있는 좌석 = 틱이 거둔다
+        let r = create(1, "s5r-clock-ctl");
+        let ctl = daemon.get_surface(r["result"]["surface_id"].as_u64().unwrap()).unwrap();
+        *ctl.agent_dead_since.lock().unwrap() = Some(crate::state::now_epoch() - 61.0);
+        assert!(tick(&ctl), "전제: 재반환 없으면 틱이 역할을 거둔다");
+        // 본: 유예 끝 직전 재반환(역할 아직 있음) → 틱이 그 뒤 와도 역할 유지 · 시계 비워짐
+        let r = create(2, "s5r-clock");
+        let sid = r["result"]["surface_id"].as_u64().unwrap();
+        let sa = daemon.get_surface(sid).unwrap();
+        *sa.agent_dead_since.lock().unwrap() = Some(crate::state::now_epoch() - 61.0);
+        let r2 = create(3, "s5r-clock");
+        assert_eq!((r2["result"]["idempotent_reuse"].clone(), r2["result"]["surface_id"].clone()), (json!(true), json!(sid)), "{r2}");
+        assert_eq!(*sa.agent_dead_since.lock().unwrap(), None, "재반환이 회수 시계를 비우지 않았다");
+        assert!(!tick(&sa), "재반환 뒤(새 에이전트 보이기 전) 틱이 역할을 거뒀다 — 마스터 0");
+        assert_eq!(sa.role.lock().unwrap().as_deref(), Some("master"));
+        assert_eq!(daemon.roles.lock().unwrap().get("master").copied(), Some(sid));
+        // 잠금 안 재판정: 틱이 시계를 읽은 뒤(만료로 봄) 재반환이 시계를 비웠다면 회수하지 않는다
+        *sa.agent_dead_since.lock().unwrap() = Some(crate::state::now_epoch() - 61.0);
+        let read_then_reused = crate::governance::release_role_after_agent_death_if(&daemon, &sa, || {
+            *sa.agent_dead_since.lock().unwrap() = None; // 재반환이 끼어든 꼴(같은 잠금 안에서 본 값)
+            crate::governance::role_release_due(*sa.agent_dead_since.lock().unwrap(), crate::state::now_epoch(), grace)
+        });
+        assert!(!read_then_reused, "잠금 안 재판정이 없다(틱이 읽은 낡은 만료로 거뒀다)");
+        assert_eq!(sa.role.lock().unwrap().as_deref(), Some("master"));
     }
 
     // ───────── ★D7⑵(트랙 DAEMON): 역할 좌석의 미배달 큐는 폐기가 아니라 주차·상속된다 ─────────

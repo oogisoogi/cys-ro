@@ -6788,6 +6788,12 @@ impl Daemon {
             let surfaces = self.surfaces.lock().unwrap();
             let mut roles = self.roles.lock().unwrap();
             let mut srole = surface.role.lock().unwrap();
+            // (master#c78fa28f F1) 「되살리러 왔다」를 회수 시계에 알린다 — 역할이 아직 있어도(사망 유예 안 재반환) 시계를 비워, 새 에이전트가 보이기 전
+            //   watchdog 틱이 역할을 거두지 못하게 한다(다음 틱이 죽음을 다시 보면 유예를 새로 시작). roles·surface.role 잠금 안 = 회수 쪽 재판정과 직렬.
+            // 뮤턴트 S5R-NODEADRESET(시계 안 비움) — 시험 빌드에서만.
+            if !(cfg!(test) && std::env::var("CYS_S5R_MUTANT").as_deref() == Ok("NODEADRESET")) {
+                *surface.agent_dead_since.lock().unwrap() = None;
+            }
             if srole.is_some() {
                 return None;
             }

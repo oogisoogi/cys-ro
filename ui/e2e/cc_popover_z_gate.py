@@ -13,7 +13,7 @@ from pathlib import Path
 spec = importlib.util.spec_from_file_location("sbg", Path(__file__).with_name("statusboard_gate.py"))
 sbg = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sbg)
-SHOT = Path(sys.argv[1]) if len(sys.argv) > 1 else sbg.UI.parent / "docs" / "evidence-cc-popover-z" / "theme-pop-over-cc-1920.png"
+SHOT = Path(sys.argv[1]) if len(sys.argv) > 1 else sbg.evidence_dir("evidence-cc-popover-z", "theme-pop-over-cc-1920.png")
 
 
 def main() -> int:

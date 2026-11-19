@@ -22,7 +22,14 @@ from pathlib import Path
 
 UI = Path(__file__).resolve().parent.parent
 DIST = UI / "dist"
-OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else UI.parent / "docs" / "evidence-tabs-sidebar" / "1b"
+def _evidence_dir(*parts: str) -> Path:
+    """(s79 · I4) 캡처 기본 자리 = 작업트리 밖(statusboard_gate.evidence_dir 와 같은 규칙 · 이 파일은 그 모듈을 읽지 않아 따로 둠)."""
+    import tempfile
+
+    return Path(os.environ.get("GATE_EVIDENCE_DIR") or Path(tempfile.gettempdir()) / "cys-gate-evidence").joinpath(*parts)
+
+
+OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else _evidence_dir("evidence-tabs-sidebar", "1b")
 
 # 좌석 정의: (sid, display_no, role, cwd, activity_state, raw, approval, self_state, task, ctx)
 SCENARIOS = {

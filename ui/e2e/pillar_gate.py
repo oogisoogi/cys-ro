@@ -31,7 +31,7 @@ def _load(name: str, file: str):
 
 sbg = _load("sbg", "statusboard_gate.py")
 grid = _load("grid", "grid_gate.py")
-OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else sbg.UI.parent / "docs" / "evidence-tabs-sidebar" / "2b-3"
+OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else sbg.evidence_dir("evidence-tabs-sidebar", "2b-3")
 SIZES = ((1371, 860), (1920, 1080), (2786, 1600))
 
 # resize_surface 를 세는 덧씌움(SHIM 뒤에 실행) — sid 별 마지막 보낸 열·행도 남긴다.

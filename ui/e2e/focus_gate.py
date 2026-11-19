@@ -39,7 +39,7 @@ spec = importlib.util.spec_from_file_location("sbg", Path(__file__).with_name("s
 sbg = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sbg)
 DIST = Path(os.environ["GATE_DIST"]) if os.environ.get("GATE_DIST") else sbg.DIST
-OUT = sbg.UI.parent / "docs" / "evidence-tabs-sidebar" / "948-focus"
+OUT = sbg.evidence_dir("evidence-tabs-sidebar", "948-focus")
 
 SPY = r"""
 (() => {

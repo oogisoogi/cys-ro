@@ -17,7 +17,18 @@ from pathlib import Path
 
 UI = Path(__file__).resolve().parent.parent
 DIST = UI / "dist"
-OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else UI.parent / "docs" / "evidence-tabs-sidebar" / "1d"
+
+
+def evidence_dir(*parts: str) -> Path:
+    """(s79 · I4) 캡처 기본 자리 = 작업트리 밖(GATE_EVIDENCE_DIR 또는 TMPDIR/cys-gate-evidence) — 게이트를 돌려도 커밋된 증거·작업트리가 바뀌지 않는다.
+    커밋할 증거를 새로 찍을 때만 경로를 인자로 준다(예: docs/evidence-…)."""
+    import tempfile
+
+    base = Path(os.environ.get("GATE_EVIDENCE_DIR") or Path(tempfile.gettempdir()) / "cys-gate-evidence")
+    return base.joinpath(*parts)
+
+
+OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else evidence_dir("evidence-tabs-sidebar", "1d")
 BASE = "/sandbox/cys.sock"
 LMS = "/sandbox/cys-dept-lms/cys.sock"
 VID = "/sandbox/cys-dept-video/cys.sock"

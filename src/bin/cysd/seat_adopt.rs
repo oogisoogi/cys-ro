@@ -76,6 +76,32 @@ pub(crate) struct SeatRecord {
 pub(crate) struct AdoptSeat {
     pub rec: SeatRecord,
     pub spawned: crate::seat_proc::Spawned,
+    /// T5: seatkeep 이 WELCOME 칸으로 넘긴 그 좌석 토큰 — `check_adopted_token` 을 통과한 것만(그 밖 None = 무토큰 입양).
+    pub token: Option<String>,
+}
+
+/// T5 세대 정합 — 입양 토큰의 세대 접두가 그 seatkeep 을 띄운 cysd 세대(seatkeep id `{pid hex}-{시작 시각 hex}-{순번}` 의 앞 두 성분)와
+/// 정확히 같고 꼴이 `<접두>.<32 소문자 hex>` 일 때만 받는다. 거절 사유는 고정 낱말뿐(토큰 값을 어디에도 싣지 않는다 · 비편입 계약).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn check_adopted_token(skid: &str, token: &str) -> Result<(), &'static str> {
+    let mut it = skid.split('-');
+    let (Some(pid), Some(start), Some(seq), None) = (it.next(), it.next(), it.next(), it.next()) else {
+        return Err("skid_malformed");
+    };
+    let hex = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_hexdigit());
+    if !hex(pid) || !hex(start) || !seq.bytes().all(|b| b.is_ascii_digit()) || seq.is_empty() {
+        return Err("skid_malformed");
+    }
+    let Some((gen, rand)) = token.split_once('.') else {
+        return Err("token_malformed");
+    };
+    if rand.len() != 32 || !rand.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        return Err("token_malformed");
+    }
+    if gen != format!("{start}-{pid}") {
+        return Err("generation_mismatch");
+    }
+    Ok(())
 }
 
 /// 켜짐 판정(노브 둘 다).
@@ -550,11 +576,6 @@ pub(crate) fn restore_should_hold() -> Option<String> {
     ))
 }
 
-#[cfg(test)]
-pub(crate) fn test_set_pending(p: Vec<Pending>) {
-    *PENDING.lock().unwrap_or_else(|e| e.into_inner()) = p;
-}
-
 // ─────────────────────────────── ② 기동 입양 ───────────────────────────────
 
 /// 죽음이 확인된 좌석의 정리 — 남은 종료 기록(`.exit`)을 신원 확인 뒤 사건으로 발행하고(소비 · 표식 `.exit.consumed` 를 남긴 뒤) cysd 기록·
@@ -790,6 +811,18 @@ fn adopt_one(daemon: &Arc<Daemon>, dir: &Path, skid: &str) -> (Outcome, Option<P
         Err(e) => return (mk("unresolved", format!("connect: {e}"), role.clone()), Some(pend(role))),
     };
     let link = spawned.link();
+    // T5: 연결이 쥔 입양 토큰(WELCOME 칸)을 한 번 꺼내 세대 정합을 본다 — 실패 = 무토큰 입양 + 사건(사유 낱말만 · 값 0).
+    let token = match link.as_ref().and_then(|l| l.take_adopted_token()) {
+        None => None,
+        Some(t) => match check_adopted_token(skid, &t) {
+            Ok(()) => Some(t),
+            Err(why) => {
+                eprintln!("[cysd] 좌석 입양 {skid}: 좌석 토큰 안 이음({why}) — 무토큰 입양(claim = 체인 폴백)");
+                daemon.bus.publish("seat.adopt_token_skipped", "system", None, serde_json::json!({"skid": skid, "reason": why}));
+                None
+            }
+        },
+    };
     let mut rec = rec;
     rec.keeper_pid = pid;
     rec.keeper_start_us = Some(start);
@@ -803,7 +836,7 @@ fn adopt_one(daemon: &Arc<Daemon>, dir: &Path, skid: &str) -> (Outcome, Option<P
         &[],
         rec.claude_config_dir.clone(),
         None,
-        Some(AdoptSeat { rec, spawned }),
+        Some(AdoptSeat { rec, spawned, token }),
     ) {
         Ok(_) => (mk("adopted", "ok".into(), role), None),
         // 등록 실패 — 붙었던 연결을 끊는다(seatkeep 은 --adoptable 이라 산다 · 다음 조종자를 받을 수 있게) → 예약.

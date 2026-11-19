@@ -495,6 +495,9 @@ mod imp {
         exit_owner: AtomicBool,
         /// 같은 id 의 두 번째 seatkeep 을 막는 잠금 — 프로세스가 끝날 때까지 쥔다.
         _id_lock: File,
+        /// 입양 모드만(T5): 시작 때 자기 env 의 좌석 토큰(`CYS_SEAT_TOKEN` — cysd 가 자식과 같은 env 로 넘긴 값). 메모리에만 두고
+        /// 상호 확인을 통과한 조종자의 WELCOME 좌석 칸 하나로만 내보낸다(등록부·교체 기록·종료 기록·stderr 무접촉 · 비편입 계약).
+        seat_token: Option<String>,
     }
 
     fn lock_st(keep: &Keep) -> MutexGuard<'_, State> {
@@ -923,6 +926,7 @@ mod imp {
             }
         }
 
+        let seat_token = adopt_seat_token(&args, || std::env::var(SEAT_TOKEN_ENV).ok());
         let keep = Arc::new(Keep {
             st: Mutex::new(State {
                 out: (0..args.seats)
@@ -962,6 +966,7 @@ mod imp {
             parent_pid,
             exit_owner: AtomicBool::new(false),
             _id_lock: id_lock,
+            seat_token,
         });
         // 부모 감시가 이제부터 바로 끝낼 수 있게 둔다 — 두기 전에 상실을 봤으면(감시는 Keep 이 없어 기록만 함) 여기서 끝낸다.
         // 부모 상실 감시 = 「상실 표시 → Keep 확인」 · 여기 = 「Keep 두기 → 상실 확인」(+ supervise 100ms 폴링이 뒷받침) — 둘 다면 종료 소유자 1명.
@@ -1392,8 +1397,7 @@ mod imp {
                 .zip(st.out.iter())
                 // `disc_total`(T4 · 입양 모드만 값 · 그 밖 null) = 직전 조종자가 끊긴 때의 누적 출력 — 새 조종자는 그 앞 재생을 「옛 조종자가
                 // 이미 본 화면」(화면만 다시 그림)으로, 그 뒤를 「아무도 못 본 새 출력」(전사·응답까지)으로 나눈다.
-                .map(|(seat, o)| json!({"seat": seat.id, "child_pid": seat.child_pid, "total": o.total,
-                                         "tail_start": o.tail_start(), "exit": o.exit, "disc_total": o.disc_total}))
+                .map(|(seat, o)| welcome_seat(seat.id, seat.child_pid, o, keep.seat_token.as_deref()))
                 .collect();
             let welcome = json!({"core": proto::CORE_VERSION, "gen": gen, "pid": std::process::id(),
                                  "start_us": keep.start_us, "boot_id": keep.boot_id, "seats": seats});
@@ -1551,6 +1555,27 @@ mod imp {
     /// 기동 때 이미 부모가 1(launchd)이면 = 띄운 cysd 가 seatkeep 이 첫 줄을 돌기 전에 죽었다(조종자 종속 모드는 cysd 만 띄운다) → 잃음.
     fn parent_lost(keep: &Keep) -> bool {
         keep.args.controller_bound && (keep.parent_pid <= 1 || unsafe { libc::getppid() } != keep.parent_pid)
+    }
+
+    /// WELCOME 좌석 칸 하나. T5: 입양 모드 · 토큰 있음일 때만 `seat_token` 칸을 더한다(그 밖 = 칸 없음 · 종전 바이트 그대로).
+    fn welcome_seat(id: u32, child_pid: i32, o: &SeatOut, token: Option<&str>) -> Value {
+        let mut v = json!({"seat": id, "child_pid": child_pid, "total": o.total,
+                           "tail_start": o.tail_start(), "exit": o.exit, "disc_total": o.disc_total});
+        if let Some(t) = token {
+            v["seat_token"] = json!(t);
+        }
+        v
+    }
+
+    /// 좌석 토큰 env 이름(cysd `cys::ENV_SEAT_TOKEN` 과 같은 값 — seatkeep 은 cys 크레이트를 끌지 않는다).
+    const SEAT_TOKEN_ENV: &str = "CYS_SEAT_TOKEN";
+
+    /// T5: 입양 모드에서만 env 의 좌석 토큰을 쥔다(빈 값 = 없음). 그 밖 모드 = env 를 보지도 않는다(None).
+    fn adopt_seat_token(args: &Args, env: impl FnOnce() -> Option<String>) -> Option<String> {
+        if !args.adoptable {
+            return None;
+        }
+        env().filter(|t| !t.is_empty())
     }
 
     fn seat_index(keep: &Keep, seat: u32) -> Option<usize> {
@@ -1772,7 +1797,7 @@ mod imp {
             let keep = Keep { args, paths, policy, seats, st: Mutex::new(st), ledger: Mutex::new(ledger), boot_id: "b".into(),
                               start_us: Some(1), pending_hs: AtomicUsize::new(0), started: Instant::now(),
                               room: Condvar::new(), room_waiters: AtomicUsize::new(0), parent_pid: 0,
-                              exit_owner: AtomicBool::new(false), _id_lock: id_lock };
+                              exit_owner: AtomicBool::new(false), _id_lock: id_lock, seat_token: None };
             (keep, d)
         }
 
@@ -1808,6 +1833,36 @@ mod imp {
             theirs.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
             let mut b = [0u8; 1];
             matches!(theirs.read(&mut b), Ok(0))
+        }
+
+        /// T5: 좌석 토큰은 입양 모드에서만 env 에서 쥔다 — 그 밖 모드는 env 를 읽지도 않는다(읽으면 이 시험이 패닉) · 빈 값 = 없음.
+        #[test]
+        fn seat_token_only_in_adoptable_mode() {
+            let (mut keep, _d) = test_keep("tok-mode", 1);
+            assert_eq!(adopt_seat_token(&keep.args, || panic!("입양 모드가 아닌데 env 를 읽음")), None);
+            keep.args.controller_bound = true;
+            assert_eq!(adopt_seat_token(&keep.args, || panic!("종속 모드인데 env 를 읽음")), None);
+            keep.args.controller_bound = false;
+            keep.args.adoptable = true;
+            assert_eq!(adopt_seat_token(&keep.args, || Some("g.tok".into())).as_deref(), Some("g.tok"));
+            assert_eq!(adopt_seat_token(&keep.args, || Some(String::new())), None, "빈 값 = 없음");
+            assert_eq!(adopt_seat_token(&keep.args, || None), None);
+        }
+
+        /// T5: WELCOME 좌석 칸 — 토큰 없음 = 종전과 같은 바이트(칸 없음) · 있음 = `seat_token` 칸 하나만 더해짐.
+        #[test]
+        fn welcome_seat_token_field_only_when_held() {
+            let (keep, _d) = test_keep("tok-welcome", 1);
+            let st = lock_st(&keep);
+            let o = &st.out[0];
+            let old = json!({"seat": 0, "child_pid": 7, "total": o.total, "tail_start": o.tail_start(), "exit": o.exit, "disc_total": o.disc_total});
+            let none = welcome_seat(0, 7, o, None);
+            assert_eq!(serde_json::to_vec(&none).unwrap(), serde_json::to_vec(&old).unwrap(), "토큰 없음 = 종전 바이트");
+            let some = welcome_seat(0, 7, o, Some("g.tok"));
+            assert_eq!(some["seat_token"], "g.tok");
+            let mut stripped = some.clone();
+            stripped.as_object_mut().unwrap().remove("seat_token");
+            assert_eq!(stripped, old, "토큰 칸 말고는 같다");
         }
 
         #[test]

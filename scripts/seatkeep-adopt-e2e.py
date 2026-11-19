@@ -24,7 +24,9 @@ BURST = os.environ.get("SKA_BURST") == "1"
 OUT = sys.argv[4] if len(sys.argv) > 4 else None
 # reserve = 입양 실패 좌석(미결)의 역할 예약 시험(codex T4 1R #1): 두 번째 cysd 를 다른 경로(bin2)에서 띄워 상호 확인을 일부러 실패시킨다.
 # exitaway = 데몬 없는 사이 좌석이 끝남 → seatkeep 이 .exit 를 남기고 끝남 → 새 cysd 가 그 기록을 소비(codex T4 1R #6 · A10).
-assert MODE in ("adopt", "bound", "direct", "reserve", "exitaway"), MODE
+# token = 입양 + 좌석 토큰 이음(T5 · A8ⓓ′): 입양 뒤 좌석 안에서 「조상 체인이 끊긴」 고아 프로세스로 claim — 자기 토큰 = 성공 · 토큰 없음 = 실패
+#   (체인으로는 못 닿음 = 토큰 길이 실제로 쓰였다는 대조) · 같은 세대 난수만 바꾼 토큰 = token_mismatch 거절. 끝에 토큰 문자열 누출 훑기.
+assert MODE in ("adopt", "bound", "direct", "reserve", "exitaway", "token"), MODE
 R = f"/private/tmp/ska-{MODE[:3]}-{os.getpid() % 10000}"
 shutil.rmtree(R, ignore_errors=True)
 for d in ("home", "tmp", "s", "packstate", "pack", "bin", "bin2", "logs"):
@@ -47,6 +49,30 @@ def die(s, _):
     log.write(f"SIGNAL {s} t={time.time():.3f}\n"); os._exit(128 + s)
 for s in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
     signal.signal(s, die)
+root = os.path.dirname(os.path.dirname(os.path.abspath(sys.argv[1])))
+def orphan_claim(kind):
+    # 두 번 fork + setsid → 손자는 launchd 아래(조상 체인에 이 좌석이 없음) — claim 이 토큰으로만 인가될 수 있는 호출자.
+    import subprocess
+    if os.fork():
+        return
+    os.setsid()
+    if os.fork():
+        os._exit(0)
+    time.sleep(0.3)
+    env = {k: v for k, v in os.environ.items()}
+    tok = env.get("CYS_SEAT_TOKEN", "")
+    open(f"{root}/logs/tok.txt", "w").write(tok)  # 누출 훑기의 찾을 값(시험 산출물 · 훑기에서 뺀다)
+    if kind == "notoken":
+        env.pop("CYS_SEAT_TOKEN", None)
+    elif kind == "tamper" and "." in tok:
+        g, r = tok.split(".", 1)
+        env["CYS_SEAT_TOKEN"] = g + "." + ("f" * len(r) if r != "f" * len(r) else "e" * len(r))
+    env["CYS_SOCKET"] = f"{root}/s/d.sock"
+    role = env.get("CYS_ROLE", "")
+    r = subprocess.run([f"{root}/bin/cys", "claim-role", role], env=env, capture_output=True, text=True, timeout=30)
+    out = (r.stdout + r.stderr).replace("\n", " ")
+    log.write(f"CLAIMRES {kind} rc={r.returncode} ppid={os.getppid()} has_tok={'CYS_SEAT_TOKEN' in env} {out[:400]}\n")
+    os._exit(0)
 n = 0
 buf = b""
 while True:
@@ -67,6 +93,8 @@ while True:
             if line:
                 log.write(f"IN {line.decode('utf8','replace')} t={time.time():.4f}\n")
                 os.write(1, b"ECHO " + line + b"\r\n")
+                if line.startswith(b"CLAIM "):
+                    orphan_claim(line.decode().split()[1])
 ''')
 os.chmod(SEAT, 0o755)
 ENV = {"HOME": f"{R}/home", "USER": os.environ["USER"], "LOGNAME": os.environ["USER"], "TMPDIR": f"{R}/tmp",
@@ -75,9 +103,9 @@ ENV = {"HOME": f"{R}/home", "USER": os.environ["USER"], "LOGNAME": os.environ["U
        "CYS_NO_OFFICE_BRIDGE": "1", "CYS_NO_AUTORESTORE": "1", "CYS_NO_AUTOSTART": "1", "PATH": f"{R}/bin:/usr/bin:/bin",
        "TERM": "xterm-256color", "LANG": "en_US.UTF-8"}
 DENV = dict(ENV)
-if MODE in ("adopt", "bound", "reserve", "exitaway"):
+if MODE in ("adopt", "bound", "reserve", "exitaway", "token"):
     DENV["CYS_SEATKEEP"] = "1"
-if MODE in ("adopt", "reserve", "exitaway"):
+if MODE in ("adopt", "reserve", "exitaway", "token"):
     DENV["CYS_SEATKEEP_ADOPT"] = "1"
 
 
@@ -305,6 +333,59 @@ for rnd in range(ROUNDS):
     print(json.dumps(line, ensure_ascii=False), flush=True)
     if OUT:
         open(OUT, "a").write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+# ── T5 token: 입양 뒤 고아 claim 3종 + 누출 훑기 ──
+if MODE == "token":
+    tk = {"claims": {}, "leaks": []}
+    s_ref, s_role, s_pid, s_log = seats[0]
+    for kind in ("own", "notoken", "tamper"):
+        cys("send", "--surface", s_ref, f"CLAIM {kind}")
+        cys("send-key", "--surface", s_ref, "Return")
+        t = time.time()
+        got = None
+        while time.time() - t < 40 and got is None:
+            got = next((l for l in seat_lines(s_log) if l.startswith(f"CLAIMRES {kind} ")), None)
+            time.sleep(0.2)
+        tk["claims"][kind] = got
+    tok = open(f"{R}/logs/tok.txt").read().strip() if os.path.exists(f"{R}/logs/tok.txt") else ""
+    tk["token_seen"] = bool(tok)
+    # 진단 표면(목록·상태)도 훑기 대상에 넣는다
+    open(f"{R}/logs/diag-list.txt", "w").write(cys("list").stdout)
+    open(f"{R}/logs/diag-status.txt", "w").write(cys("status", "--json").stdout)
+    if tok:
+        skip = {f"{R}/logs/tok.txt"} | {sl for (_, _, _, sl) in seats}
+        for base, _dirs, files in os.walk(R):
+            if base.startswith(f"{R}/bin") or base.startswith(f"{R}/home"):
+                continue
+            for fn in files:
+                fp = os.path.join(base, fn)
+                if fp in skip or not os.path.isfile(fp):
+                    continue
+                try:
+                    if tok.encode() in open(fp, "rb").read():
+                        tk["leaks"].append(fp[len(R) + 1:])
+                except OSError:
+                    pass
+        # 홈(격리)은 팩 설치 파일이 많아 크기 상한 안의 글 파일만
+        for base, _dirs, files in os.walk(f"{R}/home"):
+            for fn in files:
+                fp = os.path.join(base, fn)
+                try:
+                    if os.path.getsize(fp) < (4 << 20) and tok.encode() in open(fp, "rb").read():
+                        tk["leaks"].append(fp[len(R) + 1:])
+                except OSError:
+                    pass
+    c = tk["claims"]
+    tk["ok"] = {
+        "own_rc0": bool(c.get("own")) and " rc=0 " in c["own"],
+        "notoken_refused": bool(c.get("notoken")) and " rc=0 " not in c["notoken"],
+        "tamper_mismatch": bool(c.get("tamper")) and " rc=0 " not in c["tamper"] and "token_mismatch" in c["tamper"],
+        "orphan": all(v and " ppid=1 " in v for v in c.values()),
+        "no_leak": tk["token_seen"] and not tk["leaks"],
+    }
+    print(json.dumps({"token": tk["ok"], "leaks": tk["leaks"]}, ensure_ascii=False), flush=True)
+    if OUT:
+        open(OUT, "a").write(json.dumps({"token": tk}, ensure_ascii=False) + "\n")
 
 # ── 전사(transcripts.db lines) 겹침: 입양 재생의 「옛 cysd 가 처리한」 앞부분이 다시 전사되면 같은 SEQ 가 두 번(M3·M7 이 잡는다) ──
 time.sleep(2.0)  # 전사 쓰기 스레드 비움 대기

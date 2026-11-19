@@ -4038,6 +4038,18 @@ pub fn seat_token_same_generation(token: &str, started_at: f64) -> bool {
     token.split('.').next() == Some(seat_token_generation(started_at).as_str())
 }
 
+impl Daemon {
+    /// ★T5: claim 「불일치」 갈래의 세대 판정 — 현 세대(`seat_token_same_generation` · 이 프로세스) ∨ 입양으로 이어받은 세대
+    /// (`adopted_token_gens` · 출처 = seatkeep 이 상호 확인 뒤 넘긴 토큰). 둘 다 아니면 전세대/형식 불명(조용한 체인 폴백).
+    pub fn seat_token_known_generation(&self, token: &str) -> bool {
+        seat_token_same_generation(token, self.started_at)
+            || token
+                .split('.')
+                .next()
+                .is_some_and(|g| self.adopted_token_gens.lock().unwrap_or_else(|e| e.into_inner()).contains(g))
+    }
+}
+
 /// 워커 인스턴스 dedup: 복수 워커가 같은 역할명(→같은 todo 파일)을 공유하지 않도록,
 /// "worker" 요청에 충돌 없는 고유 역할명(worker, worker-2, worker-3 …)을 배정한다.
 /// 슬롯은 roles에 없거나 점유자가 죽은(없거나 exited) 경우 '빈' 것으로 본다 →
@@ -4997,6 +5009,10 @@ pub struct Daemon {
     /// Requests an earlier daemon run left `writing` without a terminal (restore as PartialUnknown).
     pub writer_inconclusive: Mutex<Vec<crate::agent_write::Inconclusive>>,
     pub started_at: f64,
+    /// ★T5(좌석 토큰 이음 · TICKET=cysr-1116-seatkeep-1119): 입양으로 이어받은 좌석 토큰의 세대 접두(`{시작 시각 hex}-{cysd pid hex}`) 집합.
+    /// claim 의 「불일치」 갈래에서 현 세대와 같이 「알려진 세대」로 본다(같은 세대 남의 토큰 = 시끄러운 거절). 무영속 · 접두만(비밀 아님) ·
+    /// 좌석이 끝나도 빼지 않는다(그 세대의 다른 좌석이 살 수 있고, 빼면 같은 세대 위조가 조용한 폴백으로 바뀐다).
+    pub adopted_token_gens: Mutex<std::collections::HashSet<String>>,
     /// ★v116-pack(R-B1 P2-b): 이 데몬의 콜드부트 자동 복원 단계(`crate::AUTO_RESTORE_*` · writer = main.rs 단독).
     /// org.status `daemon.auto_restore` 로 노출 — 편성이 복원과 같은 순간 좌석을 세우지 않게 기다리는 근거.
     pub auto_restore_phase: AtomicU8,
@@ -7125,6 +7141,7 @@ impl Daemon {
             writer_journal: Mutex::new(None),
             writer_inconclusive: Mutex::new(Vec::new()),
             started_at: now_epoch(),
+            adopted_token_gens: Mutex::new(std::collections::HashSet::new()),
             auto_restore_phase: AtomicU8::new(crate::AUTO_RESTORE_OFF),
             started_instant: Instant::now(),
             consumption: Mutex::new(Consumption::default()),
@@ -8019,9 +8036,9 @@ impl Daemon {
         agent: Option<String>,
         adopt: Option<crate::seat_adopt::AdoptSeat>,
     ) -> Result<Arc<Surface>, String> {
-        let (adopt_rec, adopt_spawned) = match adopt {
-            Some(a) => (Some(a.rec), Some(a.spawned)),
-            None => (None, None),
+        let (adopt_rec, adopt_spawned, mut adopt_token) = match adopt {
+            Some(a) => (Some(a.rec), Some(a.spawned), a.token),
+            None => (None, None, None),
         };
         // ★v116-num: 내부 번호 + 보이는 번호(할당기 락 안 · 메모리만) → 대응표 행 INSERT(락 밖 · 동기 ·
         //   **PTY 를 열기 전** — 자식이 env 로 내부 번호를 받기 전에 기록이 있어야 X-10 이 닫힌다 · 설계 §3-2 ①②).
@@ -8232,9 +8249,18 @@ impl Daemon {
         //   벡터 차단, 치명위험 ④). 무토큰 pane 은 claim 시 체인 폴백으로 종전과 동일 동작.
         // · 롤백: CYS_BOOT_GATES=0(스폰 시 판독 — U-20 선례 lib.rs 와 동형) → 미주입 = 완전 레거시.
         let seat_token: Option<String> = if adopt_rec.is_some() {
-            // 입양(T4): 살아 있는 자식은 옛 데몬이 준 토큰을 env 로 쥐고 있고 그 값은 어디에도 없다(비편입 계약) — 무토큰 좌석으로
-            // 등록한다(claim = 체인 폴백 · 위 「실패 = 무토큰 스폰」과 같은 강등). 토큰 이음 = T5.
-            None
+            // 입양(T4·T5): 살아 있는 자식은 옛 데몬이 준 토큰을 env 로 쥐고 있다 — seatkeep 이 상호 확인 뒤 WELCOME 칸으로 넘긴 같은 값을
+            // (세대 정합 = `seat_adopt::check_adopted_token` 통과분만) 그대로 이 좌석 토큰으로 잇고 그 세대를 「입양 세대」로 등록한다.
+            // 없으면(옛 seatkeep · 정합 실패 · 롤백 스위치) 무토큰 좌석(claim = 체인 폴백 · 「실패 = 무토큰 스폰」과 같은 강등).
+            match adopt_token.take() {
+                Some(tok) if !cys::boot_gates_master_off_from(std::env::var(cys::ENV_BOOT_GATES).ok().as_deref()) => {
+                    if let Some(g) = tok.split('.').next() {
+                        self.adopted_token_gens.lock().unwrap_or_else(|e| e.into_inner()).insert(g.to_string());
+                    }
+                    Some(tok)
+                }
+                _ => None,
+            }
         } else if cys::boot_gates_master_off_from(
             std::env::var(cys::ENV_BOOT_GATES).ok().as_deref(),
         ) {

@@ -171,3 +171,58 @@ fn registry_other_live_pid_guards_a_different_live_keeper() {
     assert_eq!(registry_other_live_pid(Some(1), &reg(0x7fff_fff0)), None, "죽은 pid");
     assert_eq!(registry_other_live_pid(Some(1), &RegRead::Missing), None);
 }
+
+
+/// T5 세대 정합 — 입양 토큰 접두 = seatkeep id 의 (pid · 시작 시각)을 뒤집은 것일 때만 · 꼴 확인 · 사유 = 고정 낱말(값 0).
+#[test]
+fn check_adopted_token_generation_and_shape() {
+    let skid = "1f2e-6aff3a1f-0";
+    let rand = "0123456789abcdef0123456789abcdef";
+    assert_eq!(check_adopted_token(skid, &format!("6aff3a1f-1f2e.{rand}")), Ok(()));
+    // 시작 시각만 같고 pid 다른 위조 접두(A8ⓓ′-4) · pid 만 같고 시작 다름 · 순서 그대로(뒤집지 않음)
+    assert_eq!(check_adopted_token(skid, &format!("6aff3a1f-1f2f.{rand}")), Err("generation_mismatch"));
+    assert_eq!(check_adopted_token(skid, &format!("6aff3a20-1f2e.{rand}")), Err("generation_mismatch"));
+    assert_eq!(check_adopted_token(skid, &format!("1f2e-6aff3a1f.{rand}")), Err("generation_mismatch"));
+    // 꼴
+    assert_eq!(check_adopted_token(skid, "6aff3a1f-1f2e"), Err("token_malformed"));
+    assert_eq!(check_adopted_token(skid, "6aff3a1f-1f2e.0123"), Err("token_malformed"));
+    assert_eq!(check_adopted_token(skid, &format!("6aff3a1f-1f2e.{}", rand.to_uppercase())), Err("token_malformed"));
+    assert_eq!(check_adopted_token("1f2e-6aff3a1f", &format!("6aff3a1f-1f2e.{rand}")), Err("skid_malformed"));
+    assert_eq!(check_adopted_token("1f2e-6aff3a1f-0-9", &format!("6aff3a1f-1f2e.{rand}")), Err("skid_malformed"));
+    // 실제 발급기와 실제 seatkeep id 꼴이 맞물린다(같은 cysd 가 만든 둘)
+    let started_at = 1_795_000_000.4_f64;
+    let tok = crate::state::mint_seat_token(started_at).unwrap();
+    let real_skid = format!("{:x}-{:x}-{}", std::process::id(), started_at as u64, 3);
+    assert_eq!(check_adopted_token(&real_skid, &tok), Ok(()), "발급기 토큰과 seatkeep id 꼴이 어긋남");
+}
+
+/// T5 소스 핀(설계 ⑤): 좌석 토큰은 생성 때 한 곳(create_surface_core 의 `seat_token` 지역 값 → Surface 칸)에서만 정해진다.
+/// 재발급·갱신(`.seat_token = …` 대입)이 새로 생기면 seatkeep 이 쥔 값(입양 때 넘김)과 어긋난다 → seatkeep 갱신 프레임과 함께 들어와야 하므로 붉힌다.
+#[test]
+fn seat_token_is_assigned_only_at_creation() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/cysd");
+    let mut hits = Vec::new();
+    for e in std::fs::read_dir(&dir).unwrap() {
+        let p = e.unwrap().path();
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        if !name.ends_with(".rs") || name.ends_with("_tests.rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&p).unwrap();
+        // 운영 코드만(파일 안 `#[cfg(test)] mod tests` 앞까지 — 그 뒤 시험 본문은 보지 않는다).
+        let prod = text.split("#[cfg(test)]\nmod tests").next().unwrap_or(&text);
+        for (i, l) in prod.lines().enumerate() {
+            let t = l.trim_start();
+            if t.starts_with("//") {
+                continue;
+            }
+            if let Some(k) = t.find(".seat_token") {
+                let rest = t[k + ".seat_token".len()..].trim_start();
+                if rest.starts_with('=') && !rest.starts_with("==") {
+                    hits.push(format!("{name}:{}", i + 1));
+                }
+            }
+        }
+    }
+    assert!(hits.is_empty(), "좌석 토큰 대입이 생성 밖에 생겼다(재발급 = seatkeep 갱신 프레임 필요): {hits:?}");
+}

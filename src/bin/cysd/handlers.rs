@@ -10068,7 +10068,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                         }
                         _ => token_authorized = true,
                     }
-                } else if crate::state::seat_token_same_generation(&supplied, daemon.started_at) {
+                } else if daemon.seat_token_known_generation(&supplied) {
                     // ⓒ 동세대 불일치 — 등록층은 조직 사실을 쓰는 fail-closed 층위: 이상 신호를
                     // 침묵으로 접지 않는다(1차 성찰이 rc6 뿌리로 지목한 '발화 fail-open 이 이상을
                     // 삼킨다'의 등록층 재현 금지).
@@ -25072,6 +25072,43 @@ mod tests {
             "불일치 기각 문안이 정당거부/보유자 있음을 암시한다: {msg}"
         );
         assert!(daemon.roles.lock().unwrap().get("master").is_none());
+    }
+
+    /// [T5 핀 ⓓ′-2·3] 입양 세대(집합에 든 옛 세대)의 토큰인데 대상 좌석 값과 다르면 = 체인이 온전해도 시끄러운 거절(token_mismatch).
+    /// 대조: 같은 토큰이라도 그 세대가 입양 세대 집합에 없으면 = 종전 전세대 취급(조용한 체인 폴백 → 체인 온전이면 통과).
+    /// (ⓓ′-1 「그 좌석에서만 성공」 = 일치 갈래(무변) + 입양 갈래가 Surface 에 옛 토큰을 넣는 것 → e2e `token` 모드가 잰다.)
+    #[test]
+    fn claim_role_adopted_generation_mismatch_is_rejected_loudly() {
+        let _g = ACL_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _bg = BootGatesAmbientGuard::neutralize();
+        let gen = "1a2b3c-4d5e";
+        let forged = format!("{gen}.ffffffffffffffffffffffffffffffff");
+        let daemon = claim_daemon();
+        let a = make_surface(&daemon, None);
+        daemon.adopted_token_gens.lock().unwrap().insert(gen.to_string());
+        let resp = claim_with_token(&daemon, "master", a, Some(pane_pid_of(&daemon, a)), &forged);
+        assert_eq!(resp["ok"], json!(false), "입양 세대 남의 토큰이 통과했다 (응답: {resp})");
+        assert_eq!(resp["error"]["code"], json!("claim_caller_unresolved"));
+        assert!(resp["error"]["message"].as_str().unwrap_or_default().contains("token_mismatch"), "{resp}");
+        assert!(!resp.to_string().contains("ffffffffffffffffffffffffffffffff"), "거절 응답에 실려 온 토큰 값이 나왔다: {resp}");
+        assert!(daemon.roles.lock().unwrap().get("master").is_none());
+        let daemon2 = claim_daemon();
+        let b = make_surface(&daemon2, None);
+        let resp2 = claim_with_token(&daemon2, "master", b, Some(pane_pid_of(&daemon2, b)), &forged);
+        assert_eq!(resp2["ok"], json!(true), "등록 안 된 세대는 종전처럼 체인 폴백이어야 한다 (응답: {resp2})");
+    }
+
+    /// [T5 핀] 세대 판정 = 현 세대 ∨ 입양 세대(접두 전체 일치 — 시작 시각만 같고 pid 다른 접두는 아님).
+    #[test]
+    fn seat_token_known_generation_is_current_or_adopted() {
+        let daemon = claim_daemon();
+        let mine = crate::state::mint_seat_token(daemon.started_at).unwrap();
+        assert!(daemon.seat_token_known_generation(&mine));
+        assert!(!daemon.seat_token_known_generation("1a2b3c-4d5e.00"));
+        daemon.adopted_token_gens.lock().unwrap().insert("1a2b3c-4d5e".into());
+        assert!(daemon.seat_token_known_generation("1a2b3c-4d5e.00"));
+        assert!(!daemon.seat_token_known_generation("1a2b3c-4d5f.00"), "pid 성분이 다른 접두를 알려진 세대로 봄");
+        assert!(!daemon.seat_token_known_generation("1a2b3c.00"), "성분 하나짜리 접두를 알려진 세대로 봄");
     }
 
     /// [P5 핀] 무영속·무노출 — seat 토큰은 topology.json(persist_topology)에도 surface.list

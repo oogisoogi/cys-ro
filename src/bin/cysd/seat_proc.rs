@@ -694,6 +694,9 @@ mod seatkeep_mac {
         adoptable: bool,
         /// `detach`(입양 등록 실패)로 놓았다 — seatkeep 을 다음 조종자를 위해 살려 둔다(연결 끝에 끝내지 않음).
         detached: AtomicBool,
+        /// T5: 입양 연결의 첫 WELCOME 이 실은 좌석 토큰(seatkeep 이 상호 확인 뒤 넘김) — `take_adopted_token` 으로 한 번만 꺼낸다.
+        /// 새 좌석(내가 띄운 seatkeep)은 None(토큰은 이 cysd 가 만들었다). Debug·로그에 안 나온다.
+        adopted_token: Mutex<Option<String>>,
         /// (알릴 최신 처리 완료 오프셋, 연결 끝남) — 읽기 얼굴은 값만 덮어쓰고, 따로 송신 스레드가 최신값만 보낸다(읽기 스레드는 소켓 쓰기에 막히지 않음).
         processed: Mutex<(u64, bool)>,
         processed_cv: Condvar,
@@ -736,6 +739,19 @@ mod seatkeep_mac {
         }
     }
 
+    /// T5: 진단 문구용 WELCOME — 좌석 칸의 `seat_token` 을 지운 사본(토큰은 오류·로그 어디에도 0).
+    pub(super) fn welcome_without_tokens(welcome: &Value) -> Value {
+        let mut v = welcome.clone();
+        if let Some(seats) = v.get_mut("seats").and_then(Value::as_array_mut) {
+            for s in seats {
+                if let Some(o) = s.as_object_mut() {
+                    o.remove("seat_token");
+                }
+            }
+        }
+        v
+    }
+
     impl SeatLink {
         fn lock_st(&self) -> MutexGuard<'_, LinkState> {
             self.st.lock().unwrap_or_else(|e| e.into_inner())
@@ -744,7 +760,7 @@ mod seatkeep_mac {
         /// `keeper` = 내가 띄운 seatkeep(끊긴 뒤 회수) · 입양(T4)은 None(남이 띄운 프로세스 — 회수하지 않는다 · 부모가 이미 사라져 launchd 가 회수).
         fn start(stream: UnixStream, welcome: Value, keeper: Option<std::process::Child>, keeper_pid: u32, size: PtySize, skid: String, sock: PathBuf) -> Result<super::Spawned, String> {
             let seat0 = &welcome["seats"][0];
-            let child_pid = seat0["child_pid"].as_i64().filter(|p| *p > 0).ok_or_else(|| format!("seatkeep WELCOME 에 좌석 pid 없음: {welcome}"))? as u32;
+            let child_pid = seat0["child_pid"].as_i64().filter(|p| *p > 0).ok_or_else(|| format!("seatkeep WELCOME 에 좌석 pid 없음: {}", welcome_without_tokens(&welcome)))? as u32;
             let total = seat0["total"].as_u64().unwrap_or(0);
             let tail_start = seat0["tail_start"].as_u64().unwrap_or(0).min(total);
             let disc_total = seat0["disc_total"].as_u64().map(|d| d.clamp(tail_start, total));
@@ -768,6 +784,7 @@ mod seatkeep_mac {
                 report_processed: adoptable,
                 adoptable,
                 detached: AtomicBool::new(false),
+                adopted_token: Mutex::new(if keeper.is_none() { seat0["seat_token"].as_str().map(str::to_string) } else { None }),
                 processed: Mutex::new((tail_start, false)),
                 processed_cv: Condvar::new(),
                 next_input: AtomicU64::new(1),
@@ -1085,6 +1102,11 @@ mod seatkeep_mac {
         /// 끊김을 읽고 종료로 접는다(seatkeep 회수까지). 입양 모드(`--adoptable` · 끊겨도 안 끝남)는 연결 스레드 끝이 seatkeep 을 끝낸다(`demux`).
         /// 입양(T4)이 등록 전에 실패했다 — 붙었던 연결을 끊는다(seatkeep 은 `--adoptable` 이라 좌석을 쥔 채 다음 조종자를 기다린다 ·
         /// 끊지 않으면 이 cysd 가 그 seatkeep 의 「살아 있는 조종자」로 남아 출력도 안 읽고 다른 조종자도 막는다).
+        /// T5: 입양 WELCOME 의 좌석 토큰을 꺼낸다(한 번 · 뒤로는 None).
+        pub(crate) fn take_adopted_token(&self) -> Option<String> {
+            self.adopted_token.lock().unwrap_or_else(|e| e.into_inner()).take()
+        }
+
         pub(crate) fn detach(&self) {
             self.detached.store(true, Ordering::SeqCst);
             self.mark_closing();

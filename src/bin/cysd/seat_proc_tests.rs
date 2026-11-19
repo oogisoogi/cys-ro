@@ -521,3 +521,15 @@ fn seatkeep_input_ack_waits_while_consumer_runs_and_stdin_unread() {
     assert!(keeper_alive && child_alive, "확인 뒤 seatkeep·좌석이 살아 있어야 한다");
     assert!(n_out > 5 << 20, "출력 소비가 돌지 않음(판별력 없음): {n_out}");
 }
+
+/// T5: 진단 문구용 WELCOME 사본은 좌석 칸의 토큰을 지운다(실패 갈래 오류 문구에도 토큰 0) · 나머지 칸은 그대로.
+#[cfg(target_os = "macos")]
+#[test]
+fn welcome_without_tokens_strips_only_the_token() {
+    let w = serde_json::json!({"pid": 9, "seats": [{"seat": 0, "total": 5, "seat_token": "g-1.0123456789abcdef0123456789abcdef"}, {"seat": 1}]});
+    let r = super::seatkeep_mac::welcome_without_tokens(&w);
+    assert!(!r.to_string().contains("seat_token") && !r.to_string().contains("0123456789abcdef"), "{r}");
+    assert_eq!(r["seats"][0]["total"], 5);
+    assert_eq!(r["pid"], 9);
+    assert_eq!(w["seats"][0]["seat_token"], "g-1.0123456789abcdef0123456789abcdef", "원본은 건드리지 않는다");
+}

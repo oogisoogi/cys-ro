@@ -4812,7 +4812,7 @@ fn enqueue_bound_body(
         let mut q = surface.pending_queue.lock().unwrap();
         if q.len() >= 100 {
             None
-        } else if team_plan.as_ref().is_some_and(|p| crate::team::share_over(&daemon.teams, sid, &q, p)) {
+        } else if team_plan.as_ref().is_some_and(|p| crate::team::share_over(&daemon.teams, &q, p)) {
             team_full = true;
             None
         } else {
@@ -4829,7 +4829,7 @@ fn enqueue_bound_body(
         return err_response(id, "queue_full", "pending queue cap (100) reached");
     };
     if let Some(p) = &team_plan {
-        crate::team::note_enqueued(&daemon.teams, sid, &entry.id, entry.enqueued_at, p);
+        crate::team::note_enqueued(&daemon.teams, &entry.id, entry.enqueued_at, p);
     }
     daemon.bus.publish(
         "queue.enqueued",
@@ -8003,7 +8003,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                             "pending queue cap (100) reached",
                         ));
                     }
-                    if let Some(p) = team_plan.as_ref().filter(|p| crate::team::share_over(&daemon.teams, sid, &q, p)) {
+                    if let Some(p) = team_plan.as_ref().filter(|p| crate::team::share_over(&daemon.teams, &q, p)) {
                         drop(q);
                         return Reply::Single(crate::team::queue_full_team_response(daemon, &id, sid, p));
                     }
@@ -8021,7 +8021,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                     (entry, q.len())
                 };
                 if let Some(p) = &team_plan {
-                    crate::team::note_enqueued(&daemon.teams, sid, &entry.id, entry.enqueued_at, p);
+                    crate::team::note_enqueued(&daemon.teams, &entry.id, entry.enqueued_at, p);
                 }
                 // ★G1(W2-B): payload는 enqueue 3경로 공용 빌더(기존 키 bytes/depth/from 불변
                 // + queue_entry_id/seq/enqueued_at additive).
@@ -9566,6 +9566,8 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             }
             let changed = daemon.teams.set_paused(&team, paused);
             if changed {
+                // (검증 m4) 이름 목록만 상태 폴더에 — 재시작 뒤 「정지가 풀렸어요」 사건 1건의 재료(정지 복원 아님).
+                crate::team::persist_paused(daemon);
                 let ev = if paused { crate::team::EV_PAUSED } else { crate::team::EV_RESUMED };
                 daemon.bus.publish(ev, "queue", None, json!({"team": team, "paused": paused}));
             }

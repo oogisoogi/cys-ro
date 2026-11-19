@@ -7156,6 +7156,8 @@ impl Daemon {
         for (kind, error) in numbers_boot.alarms {
             daemon.numbers_alarm(kind, None, Some(&error));
         }
+        // (조각 6b · 검증 m4) 앞 실행의 팀 정지는 되살리지 않는다 — 있었으면 사건 `team.pause_lost` 1건(버스가 선 뒤).
+        crate::team::announce_lost_pauses(&daemon);
         daemon
     }
 

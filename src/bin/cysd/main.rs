@@ -8206,3 +8206,7 @@ mod receipt_framing_tests {
 // (조각 6b · TICKET=cysr-1116-s6-1119) 팀별 기계 장치 RPC·배달 핀 — 시험 전용(파일 끝 규약 = 위 시험 모듈들과 같다).
 #[cfg(test)]
 mod team6b_tests;
+
+// (조각 6b · 검증 지적 고침 master#c4bc0244) 독립 검증 좌석 반례 V1~V8b + 고침 핀 — 시험 전용(파일 끝 규약).
+#[cfg(test)]
+mod team6b_verify_tests;

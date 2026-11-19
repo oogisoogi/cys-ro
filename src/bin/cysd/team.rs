@@ -10,6 +10,8 @@
 //   ⑨ 팀 정지 스위치  — `surface.group_pause` · 그 팀 좌석으로 가는 큐 배달 동결 + 그 팀이 마스터로 넣은 큐 항목 보류(직접 보내기 통과).
 //   ⑩ 【진행】 묶음    — `kind:"progress"` 꼬리표를 단 기계 문안만 팀별 10분 창으로 묶어 1건 배달(원문 순서대로 보존 · 급한 머리표 = 즉시).
 // ⑦·⑩ 은 「팀이 2개 이상」일 때만 발효(팀 1개 사용자 = 지금 동작 그대로). 모든 상태는 데몬 메모리 전용(재시작 = 비움 · 안전 쪽).
+//   예외 1(검증 m4 · master#c4bc0244): 정지된 팀 **이름 목록만** 상태 폴더 `team-paused.json` 에 적어 두고, 데몬이 다시 켜질 때 그 목록이
+//   있으면 사건 `team.pause_lost` 1건(「팀 정지가 풀렸어요」)을 내고 파일을 지운다 — 정지를 되살리지는 않는다(영속 = 1.1.17).
 // 락 규약: TeamBook 의 세 Mutex 는 말단(leaf) — 잡은 채로 다른 락을 잡지 않는다. pending_queue → book 순서는 허용.
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
@@ -30,6 +32,9 @@ pub const QUEUE_FULL_TEAM: &str = "queue_full_team";
 pub const TEAM_WORKER_LIMIT: &str = "team_worker_limit_exceeded";
 pub const EV_PAUSED: &str = "team.paused";
 pub const EV_RESUMED: &str = "team.resumed";
+/// (검증 m4) 데몬 재시작으로 정지가 풀렸음을 알리는 사건 · 정지 이름 목록 파일(상태 폴더 안).
+pub const EV_PAUSE_LOST: &str = "team.pause_lost";
+pub const PAUSED_FILE: &str = "team-paused.json";
 
 /// 폴더 경로의 마지막 이름 — `/`·`\` 둘 다 자른다 · 드라이브 뿌리(`C:`) = "" (seatrows.ts folderKey 와 같은 규칙).
 pub fn folder_key(cwd: &str) -> String {
@@ -41,10 +46,11 @@ pub fn folder_key(cwd: &str) -> String {
     last.to_string()
 }
 
-/// master·cso 계열(고정 좌석) — 팀이 아니다(seatrows.ts fixedRank 와 같은 규칙).
+/// master·ceo·cso 계열(고정 좌석) — 팀이 아니다(seatrows.ts fixedRank 와 같은 규칙).
+/// (검증 i7) `ceo` = 마스터급 좌석(alert_route.rs CLEAR_SIGNAL_ROLES = ["master","ceo"]) — 팀 정지로 얼지 않는다.
 pub fn is_fixed_role(role: Option<&str>) -> bool {
     let r = role.unwrap_or("").trim();
-    r == "master" || r.starts_with("master-") || r == "cso" || r.starts_with("cso-")
+    r == "master" || r.starts_with("master-") || r == "ceo" || r.starts_with("ceo-") || r == "cso" || r.starts_with("cso-")
 }
 
 /// 좌석의 팀 — 명시 묶음 > 생성 폴더 이름 · 고정 좌석·빈 이름 = None.
@@ -95,13 +101,23 @@ pub struct EntryTag {
     pub progress: bool,
 }
 
+/// 꼬리표 한 칸 — `misses` = 어느 큐에도 안 보인 연속 청소 횟수(2번이면 지움 · 옮기는 도중 한 번 안 보이는 것은 살린다).
+#[derive(Clone, Debug)]
+struct TagSlot {
+    tag: EntryTag,
+    misses: u8,
+}
+
 /// 데몬 하나의 팀 장부.
 #[derive(Default)]
 pub struct TeamBook {
     paused: Mutex<HashSet<String>>,
-    /// 대상 좌석 → (항목 id → 꼬리표). 대상 큐 잠금 안에서 그 큐에 없는 id 를 지운다(상한 = 큐 상한).
-    tags: Mutex<HashMap<u64, HashMap<String, EntryTag>>>,
+    /// (검증 m3) 항목 id → 꼬리표. 항목 id 는 데몬 한 번 켜진 동안 유일하고(`q<시작 시각>.<번호>`) 좌석 승계·주차·rehome 이관에서
+    ///   그대로 따라가므로, 좌석 id 가 아니라 항목 id 로 묶는다(옮긴 뒤에도 정지 보류·【진행】 묶음이 이어짐). 청소 = `sweep_tags`.
+    tags: Mutex<HashMap<String, TagSlot>>,
     reports: Mutex<HashMap<String, VecDeque<f64>>>,
+    /// (검증 m4) 정지 목록 파일 쓰기 직렬화 — 이 잠금 안에서 **최신** 목록을 다시 읽어 쓴다(늦게 쓴 쪽이 낡은 목록을 덮지 않게).
+    persist_gate: Mutex<()>,
 }
 
 impl TeamBook {
@@ -125,16 +141,31 @@ impl TeamBook {
         v.sort();
         v
     }
-    /// 대상 좌석 큐의 꼬리표 — `live` = 지금 그 큐에 있는 id(잠금 안에서 넘김) · 없는 id 는 지운다.
-    pub fn tags_for(&self, target: u64, live: &[&str]) -> HashMap<String, EntryTag> {
-        let mut t = self.tags.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(m) = t.get_mut(&target) else { return HashMap::new() };
-        let keep: HashSet<&str> = live.iter().copied().collect();
-        m.retain(|id, _| keep.contains(id.as_str()));
-        m.clone()
+    /// 한 큐의 꼬리표 — `live` = 지금 그 큐에 있는 id(잠금 안에서 넘김) · 꼬리표가 있는 id 만 돌려준다(읽기 전용 · 청소는 `sweep_tags`).
+    pub fn tags_for(&self, live: &[&str]) -> HashMap<String, EntryTag> {
+        let t = self.tags.lock().unwrap_or_else(|e| e.into_inner());
+        if t.is_empty() {
+            return HashMap::new();
+        }
+        live.iter().filter_map(|id| t.get(*id).map(|s| (id.to_string(), s.tag.clone()))).collect()
     }
-    pub fn tag(&self, target: u64, entry_id: &str, tag: EntryTag) {
-        self.tags.lock().unwrap_or_else(|e| e.into_inner()).entry(target).or_default().insert(entry_id.to_string(), tag);
+    pub fn tag(&self, entry_id: &str, tag: EntryTag) {
+        self.tags.lock().unwrap_or_else(|e| e.into_inner()).insert(entry_id.to_string(), TagSlot { tag, misses: 0 });
+    }
+    pub fn tag_count(&self) -> usize {
+        self.tags.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+    /// 꼬리표 청소(큐 틱마다 1회) — `live` = 데몬의 모든 큐(활성·만료·주차·복원)에 있는 id. 연속 2번 안 보인 꼬리표만 지운다.
+    pub fn sweep_tags(&self, live: &HashSet<String>) {
+        let mut t = self.tags.lock().unwrap_or_else(|e| e.into_inner());
+        t.retain(|id, slot| {
+            if live.contains(id) {
+                slot.misses = 0;
+                return true;
+            }
+            slot.misses = slot.misses.saturating_add(1);
+            slot.misses < 2
+        });
     }
     /// team.stats 재료 — 그 팀 좌석이 마스터 좌석 큐에 넣은 시각.
     pub fn note_report(&self, team: &str, ts: f64) {
@@ -203,6 +234,8 @@ pub struct EnqueuePlan {
     /// 팀 ≥ 2 (⑦·⑩ 발효)
     pub multi: bool,
     pub progress: bool,
+    /// (검증 m6) 본문에 급한 머리표가 있다 — ⑦ 몫 밖(전체 100 상한만 받는다).
+    pub urgent: bool,
 }
 
 /// 넣기 전(잠금 밖) 계획: 대상이 마스터 ∧ 발신 좌석에 팀이 있을 때. progress = 꼬리표 ∧ 급한 머리표 없음 ∧ 팀 ≥ 2.
@@ -213,8 +246,9 @@ pub fn plan_enqueue(seats: &[SeatTeam], target: u64, from: Option<u64>, kind: Op
     }
     let team = seats.iter().find(|s| Some(s.sid) == from)?.team.clone()?;
     let multi = distinct_teams(seats) >= 2;
-    let progress = multi && kind == Some(PROGRESS_KIND) && !is_urgent(text) && !text.is_empty();
-    Some(EnqueuePlan { team, multi, progress })
+    let urgent = is_urgent(text);
+    let progress = multi && kind == Some(PROGRESS_KIND) && !urgent && !text.is_empty();
+    Some(EnqueuePlan { team, multi, progress, urgent })
 }
 
 /// 넣는 자리의 입구 — 대상 좌석이 마스터일 때만 좌석 표를 훑는다(그 밖 좌석 큐 = 비용 0 · 계획 없음).
@@ -227,23 +261,23 @@ pub fn plan_for(daemon: &crate::state::Daemon, target: &crate::state::Surface, f
 }
 
 /// 넣은 뒤 기록(대상 큐 잠금 밖·안 무관 · 말단 락만) — 꼬리표 + 보고 시각.
-pub fn note_enqueued(book: &TeamBook, target: u64, entry_id: &str, enqueued_at: f64, plan: &EnqueuePlan) {
-    book.tag(target, entry_id, EntryTag { team: plan.team.clone(), progress: plan.progress });
+pub fn note_enqueued(book: &TeamBook, entry_id: &str, enqueued_at: f64, plan: &EnqueuePlan) {
+    book.tag(entry_id, EntryTag { team: plan.team.clone(), progress: plan.progress });
     book.note_report(&plan.team, enqueued_at);
 }
 
-/// ⑦ 몫 판정(대상 큐 잠금 안에서) — 그 팀 항목 수 ≥ 몫이면 거절. 몫 0 = 끔 · 팀 1개 = 발효 0.
+/// ⑦ 몫 판정(대상 큐 잠금 안에서) — 그 팀 항목 수 ≥ 몫이면 거절. 몫 0 = 끔 · 팀 1개 = 발효 0 · 급한 머리표 = 몫 밖(검증 m6).
 pub fn share_exceeded(plan: &EnqueuePlan, tags: &HashMap<String, EntryTag>, share: usize) -> bool {
-    plan.multi && share > 0 && tags.values().filter(|t| t.team == plan.team).count() >= share
+    plan.multi && !plan.urgent && share > 0 && tags.values().filter(|t| t.team == plan.team).count() >= share
 }
 
-/// ⑦ 대상 큐(잠금 안 · `q` = 그 가드) 기준 몫 넘침인가 — 꼬리표 정리(큐에 없는 id 지움)도 여기서.
-pub fn share_over(book: &TeamBook, target: u64, q: &VecDeque<crate::state::QueueEntry>, plan: &EnqueuePlan) -> bool {
-    if !plan.multi {
+/// ⑦ 대상 큐(잠금 안 · `q` = 그 가드) 기준 몫 넘침인가.
+pub fn share_over(book: &TeamBook, q: &VecDeque<crate::state::QueueEntry>, plan: &EnqueuePlan) -> bool {
+    if !plan.multi || plan.urgent {
         return false;
     }
     let live: Vec<&str> = q.iter().map(|e| e.id.as_str()).collect();
-    share_exceeded(plan, &book.tags_for(target, &live), team_queue_share())
+    share_exceeded(plan, &book.tags_for(&live), team_queue_share())
 }
 
 /// ⑦ 거절 응답 + 사건 `team.queue_full`(그 팀 요청만 · 다른 팀·전체 100 무관).
@@ -336,21 +370,46 @@ pub fn rotate_order(held: &[bool]) -> Option<Vec<usize>> {
     Some(order)
 }
 
-/// ⑩ 머리가 풀린 【진행】 항목이면 함께 실을 같은 팀 【진행】 항목 위치(머리 포함 · 상한 max_items) · 아니면 None.
-pub fn bundle_pick(view: &HoldView<'_>, entries: &[(&str, f64)], max_items: usize) -> Option<(String, Vec<usize>)> {
+/// ⑩ 머리가 풀린 【진행】 항목이면 함께 실을 같은 팀 【진행】 항목 위치(머리 포함) · 아니면 None.
+/// 같은 발신자 병합(`plan_queue_merge`)과 같은 두 규칙을 따른다:
+///   · (검증 m5) **머리에서 이어진 구간만** — 다른 항목(다른 팀 · 꼬리표 없음)을 만나면 멈춘다(건너뛰어 당기면 들어온 순서가 깨진다 · codex R1-blocking-3).
+///   · (검증 M1) 상한 = 항목 수 `max_items` + **최종 렌더 글자 수** `max_chars` — 넘을 항목부터 다음 배달로 이월(자르지 않음 · 머리 1건은 늘 배달).
+/// `sizes[i]` = i번 항목의 (발신 라벨, 원문 글자 수) — `entries` 와 같은 순서.
+pub fn bundle_pick(
+    view: &HoldView<'_>,
+    entries: &[(&str, f64)],
+    sizes: &[(Option<String>, usize)],
+    max_items: usize,
+    max_chars: usize,
+) -> Option<(String, Vec<usize>)> {
     let (head, _) = entries.first()?;
     let t = view.tags.get(*head)?;
     if !t.progress || !view.multi || view.held(head, entries) {
         return None;
     }
     let team = t.team.clone();
-    let picked: Vec<usize> = entries
-        .iter()
-        .enumerate()
-        .filter(|(_, (id, _))| view.tags.get(*id).is_some_and(|x| x.progress && x.team == team))
-        .map(|(i, _)| i)
-        .take(max_items.max(1))
-        .collect();
+    let rendered_len = |idx: &[usize]| {
+        let parts: Vec<(Option<String>, String)> = idx
+            .iter()
+            .map(|&j| sizes.get(j).map(|(f, n)| (f.clone(), "x".repeat(*n))).unwrap_or((None, String::new())))
+            .collect();
+        render_bundle(&team, &parts).chars().count()
+    };
+    let mut picked = vec![0usize];
+    for (i, (id, _)) in entries.iter().enumerate().skip(1) {
+        if picked.len() >= max_items.max(1) {
+            break;
+        }
+        if !view.tags.get(*id).is_some_and(|x| x.progress && x.team == team) {
+            break; // 이어진 구간 끝(검증 m5)
+        }
+        let mut cand = picked.clone();
+        cand.push(i);
+        if rendered_len(&cand) > max_chars {
+            break; // 글자 상한 — 남은 것은 다음 배달(검증 M1)
+        }
+        picked = cand;
+    }
     Some((team, picked))
 }
 
@@ -361,6 +420,71 @@ pub fn render_bundle(team: &str, parts: &[(Option<String>, String)]) -> String {
         out.push_str(&format!("[{}/{} · {}] {}\n", i + 1, parts.len(), from.as_deref().unwrap_or("unknown"), text));
     }
     out
+}
+
+/// (검증 m3) 큐 틱마다 1회 — 데몬의 모든 큐(좌석 활성·만료 · 역할 주차 · 복원)에 있는 항목 id 를 모아 꼬리표를 청소한다.
+/// 각 잠금을 하나씩만 잡는다(겹쳐 쥐지 않음) · 꼬리표 0 = 비용 0. 옮기는 도중 한 번 빠진 id 는 `sweep_tags` 의 2회 규칙이 살린다.
+pub fn sweep_daemon_tags(daemon: &crate::state::Daemon, surfaces: &[std::sync::Arc<crate::state::Surface>]) {
+    if daemon.teams.tag_count() == 0 {
+        return;
+    }
+    let mut live: HashSet<String> = HashSet::new();
+    for s in surfaces {
+        live.extend(s.pending_queue.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|e| e.id.clone()));
+        live.extend(s.expired_queue.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|e| e.id.clone()));
+    }
+    for pq in daemon.parked_queues.lock().unwrap_or_else(|e| e.into_inner()).values() {
+        live.extend(pq.entries.iter().map(|e| e.id.clone()));
+    }
+    for row in daemon.restored_queue.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+        if let Some(id) = row.get("id").and_then(|v| v.as_str()) {
+            live.insert(id.to_string());
+        }
+    }
+    daemon.teams.sweep_tags(&live);
+}
+
+/// (검증 m4) 정지 목록 파일 경로 — 데몬 상태 폴더(소켓과 같은 곳).
+pub fn paused_file(daemon: &crate::state::Daemon) -> std::path::PathBuf {
+    crate::state::state_dir(&daemon.socket_path).join(PAUSED_FILE)
+}
+
+/// (검증 m4) 정지 목록이 바뀐 뒤 이름 목록만 원자 쓰기(빈 목록 = 파일 지움) · 실패 = 로그 1줄(배달 계약과 무관 · 최선 노력).
+pub fn persist_paused(daemon: &crate::state::Daemon) {
+    let _g = daemon.teams.persist_gate.lock().unwrap_or_else(|e| e.into_inner());
+    let path = paused_file(daemon);
+    let list = daemon.teams.paused_list();
+    let r = if list.is_empty() {
+        match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    } else {
+        cys::atomic_write_json(&path, &serde_json::json!({"paused": list, "note": "names only — a daemon restart does not restore the pause (team.pause_lost)"}))
+    };
+    if let Err(e) = r {
+        eprintln!("[cysd] team pause list write failed ({}): {e}", path.display());
+    }
+}
+
+/// (검증 m4) 데몬 시작 때 1회 — 앞 실행이 남긴 정지 목록이 있으면 사건 `team.pause_lost` 1건 + 파일 지움(정지는 되살리지 않는다).
+pub fn announce_lost_pauses(daemon: &crate::state::Daemon) {
+    let path = paused_file(daemon);
+    let Ok(raw) = std::fs::read_to_string(&path) else { return };
+    let _ = std::fs::remove_file(&path);
+    let teams: Vec<String> = serde_json::from_str::<serde_json::Value>(&raw)
+        .ok()
+        .and_then(|v| v.get("paused").and_then(|p| p.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()))
+        .unwrap_or_default();
+    if teams.is_empty() {
+        return;
+    }
+    daemon.bus.publish(
+        EV_PAUSE_LOST,
+        "queue",
+        None,
+        serde_json::json!({"teams": teams, "reason": "daemon_restart", "note": "팀 정지가 풀렸어요 — 데몬이 다시 켜져 정지 기록이 비었습니다. 계속 멈춰 두려면 다시 정지해 주세요."}),
+    );
 }
 
 /// team.stats 응답 조립.
@@ -419,6 +543,8 @@ mod tests {
         assert_eq!(team_of(Some("worker-1"), &None, "/x/site"), Some("site".into()));
         assert_eq!(team_of(Some("master"), &Some(Some("홍보".into())), "/x/site"), None);
         assert_eq!(team_of(Some("cso-2"), &None, "/x/site"), None);
+        assert_eq!(team_of(Some("ceo"), &Some(Some("홍보".into())), "/x/site"), None, "ceo = 마스터급 고정 좌석(검증 i7)");
+        assert_eq!(team_of(Some("ceo-2"), &None, "/x/site"), None);
         assert_eq!(team_of(None, &None, "C:\\"), None);
     }
 
@@ -443,12 +569,13 @@ mod tests {
             tags.insert(format!("a{i}"), EntryTag { team: "a".into(), progress: false });
         }
         tags.insert("b0".into(), EntryTag { team: "b".into(), progress: false });
-        let pa = EnqueuePlan { team: "a".into(), multi: true, progress: false };
-        let pb = EnqueuePlan { team: "b".into(), multi: true, progress: false };
+        let pa = EnqueuePlan { team: "a".into(), multi: true, progress: false, urgent: false };
+        let pb = EnqueuePlan { team: "b".into(), multi: true, progress: false, urgent: false };
         assert!(share_exceeded(&pa, &tags, 3));
         assert!(!share_exceeded(&pb, &tags, 3));
         assert!(!share_exceeded(&pa, &tags, 0), "0 = 끔");
         assert!(!share_exceeded(&EnqueuePlan { multi: false, ..pa.clone() }, &tags, 3), "팀 1개 = 발효 0");
+        assert!(!share_exceeded(&EnqueuePlan { urgent: true, ..pa.clone() }, &tags, 3), "급한 머리표 = 몫 밖(검증 m6)");
     }
 
     #[test]
@@ -463,10 +590,14 @@ mod tests {
         let held: Vec<bool> = entries.iter().map(|(id, _)| v.held(id, &entries)).collect();
         assert_eq!(held, vec![true, false, true]);
         assert_eq!(rotate_order(&held), Some(vec![1, 0, 2]));
-        assert!(bundle_pick(&v, &entries, 10).is_none(), "창 전 = 묶지 않음");
+        let sizes: Vec<(Option<String>, usize)> = vec![(None, 2); 3];
+        assert!(bundle_pick(&v, &entries, &sizes, 10, 4000).is_none(), "창 전 = 묶지 않음");
         let v2 = HoldView { now: 701.0, ..v };
         assert!(!v2.held("p1", &entries));
-        assert_eq!(bundle_pick(&v2, &entries, 10), Some(("a".into(), vec![0, 2])));
+        assert_eq!(bundle_pick(&v2, &entries, &sizes, 10, 4000), Some(("a".into(), vec![0])), "이어진 구간만 — n1(다른 팀)을 건너뛰지 않음(검증 m5)");
+        let joined = [("p1", 100.0), ("p2", 200.0), ("n1", 150.0)];
+        assert_eq!(bundle_pick(&v2, &joined, &sizes, 10, 4000), Some(("a".into(), vec![0, 1])));
+        assert_eq!(bundle_pick(&v2, &joined, &sizes, 10, 20), Some(("a".into(), vec![0])), "글자 상한 = 이월 · 머리는 늘 배달(검증 M1)");
         // 정지된 팀 — 꼬리표 없는 항목도 보류
         let mut ps = HashSet::new();
         ps.insert("b".to_string());
@@ -474,6 +605,22 @@ mod tests {
         assert!(v3.held("n1", &entries));
         assert_eq!(rotate_order(&[true, true]), None, "전부 보류 = 그대로");
         assert_eq!(rotate_order(&[false, true]), None, "머리가 보낼 것 = 그대로");
+    }
+
+    #[test]
+    fn tags_follow_entry_id_and_sweep_needs_two_misses() {
+        let b = TeamBook::default();
+        b.tag("q1.1", EntryTag { team: "a".into(), progress: true });
+        b.tag("q1.2", EntryTag { team: "b".into(), progress: false });
+        assert_eq!(b.tags_for(&["q1.1", "zz"]).len(), 1, "어느 큐에서 읽든 항목 id 로 찾는다(검증 m3)");
+        let live: HashSet<String> = ["q1.1".to_string()].into_iter().collect();
+        b.sweep_tags(&live);
+        assert_eq!(b.tag_count(), 2, "한 번 안 보임 = 살림(옮기는 도중)");
+        b.sweep_tags(&HashSet::new());
+        assert_eq!(b.tag_count(), 1, "q1.2 = 연속 2번 안 보임 → 지움 · q1.1 = 앞 청소에서 보였으므로 1번째");
+        b.sweep_tags(&live);
+        b.sweep_tags(&HashSet::new());
+        assert_eq!(b.tag_count(), 1, "보이면 횟수 0 으로");
     }
 
     #[test]

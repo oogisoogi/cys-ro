@@ -13157,7 +13157,7 @@ pub(crate) fn team_pre_delivery(daemon: &Daemon, s: &crate::state::Surface, mult
             return TeamPre::Same;
         }
         let live: Vec<&str> = q.iter().map(|e| e.id.as_str()).collect();
-        let tags = daemon.teams.tags_for(s.id, &live);
+        let tags = daemon.teams.tags_for(&live);
         if tags.is_empty() {
             return TeamPre::Same;
         }
@@ -13309,7 +13309,7 @@ pub(crate) fn deliver_head_locked(
             std::collections::HashMap::new()
         } else {
             let live: Vec<&str> = q.iter().map(|e| e.id.as_str()).collect();
-            daemon.teams.tags_for(s.id, &live)
+            daemon.teams.tags_for(&live)
         };
         let team_paused = if team_tags.is_empty() { std::collections::HashSet::new() } else { daemon.teams.paused_set() };
         let team_view = crate::team::HoldView { tags: &team_tags, paused: &team_paused, multi: team_multi, bundle_secs: crate::team::progress_bundle_secs(), now };
@@ -13317,7 +13317,13 @@ pub(crate) fn deliver_head_locked(
         if !team_tags.is_empty() && team_view.held(&entry.id, &team_entries) {
             break 'tx None;
         }
-        let team_bundle = if team_tags.is_empty() { None } else { crate::team::bundle_pick(&team_view, &team_entries, queue_digest_max_items()) };
+        // (검증 M1·m5) 묶음도 같은 발신자 병합과 같은 상한(항목 수 · 최종 렌더 글자 수)과 「이어진 구간만」 규칙.
+        let team_bundle = if team_tags.is_empty() {
+            None
+        } else {
+            let sizes: Vec<(Option<String>, usize)> = q.iter().map(|e| (e.from.clone(), e.text.chars().count())).collect();
+            crate::team::bundle_pick(&team_view, &team_entries, &sizes, queue_digest_max_items(), queue_digest_max_chars())
+        };
         // ★B1(0.14.30) C3: 같은 발신자 대기분을 **한 턴으로** 병합한다(버스트 봉인).
         //   강제 배달(queue.deliver RPC)과 조준 배달은 **병합하지 않는다** — 운영자가 지목한
         //   항목 1건만 나가는 것이 그 명령의 계약이다.
@@ -14268,6 +14274,8 @@ pub(crate) fn queue_expiry_pass(daemon: &Arc<Daemon>) -> bool {
     let daemon_paused = daemon.paused.load(Ordering::Relaxed);
     let surfaces: Vec<Arc<crate::state::Surface>> =
         daemon.surfaces.lock().unwrap().values().cloned().collect();
+    // (조각 6b ⑨ · 검증 M2) 팀 정지 = system.pause 의 팀판 — 같은 TTL 크레딧(정지된 팀 좌석 큐 전부 · 정지 팀이 넣은 꼬리표 항목).
+    let team_paused = daemon.teams.paused_set();
     let mut changed = false;
     // (발신 surface id, 대상 surface id) → (대상 ref, 만료 항목 id 들) — 락 밖 통지 조립용.
     // ★(0.14.31 · 리뷰 R1 · minor) 키가 발신자뿐이면 한 발신자가 **여러 대상**에 만료 항목을 가질 때
@@ -14316,6 +14324,11 @@ pub(crate) fn queue_expiry_pass(daemon: &Arc<Daemon>) -> bool {
             .map(|t| t > std::time::Instant::now())
             .unwrap_or(false);
         let paused = daemon_paused || surface_paused;
+        let seat_team_paused = !team_paused.is_empty() && {
+            let role = s.role.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let group = s.group.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            crate::team::team_of(role.as_deref(), &group, &s.cwd).is_some_and(|t| team_paused.contains(&t))
+        };
         // ① pause 크레딧 + ② 만료 스윕 — **한 임계영역**(pending → expired 두 락 동시 보유).
         //
         // ★(0.14.31 · 리뷰 R1 · codex major) 종전에는 활성 큐에서 후보를 **복사**해 락을 놓고
@@ -14335,6 +14348,21 @@ pub(crate) fn queue_expiry_pass(daemon: &Arc<Daemon>) -> bool {
                     e.paused_total_secs += delta.min(alive_for);
                 }
                 changed |= !q.is_empty();
+            } else if !team_paused.is_empty() && delta > 0.0 {
+                // (조각 6b ⑨ · 검증 M2) 위 크레딧과 같은 식 — 팀 정지로 묶인 항목만(꼬리표 장부 = 말단 락).
+                let tags = if seat_team_paused {
+                    HashMap::new()
+                } else {
+                    let live: Vec<&str> = q.iter().map(|e| e.id.as_str()).collect();
+                    daemon.teams.tags_for(&live)
+                };
+                for e in q.iter_mut() {
+                    if seat_team_paused || tags.get(&e.id).is_some_and(|t| team_paused.contains(&t.team)) {
+                        let alive_for = (now - e.order_at()).max(0.0);
+                        e.paused_total_secs += delta.min(alive_for);
+                        changed = true;
+                    }
+                }
             }
             // ★(0.14.31 · 리뷰 R2 · codex blocking) 인계 중인 항목은 만료로 **옮기지 않는다** —
             //   취소에 성공하면 옮겨도 되고(주입 0), 실패하면 그 항목은 지금 배달 중이라 만료 큐로
@@ -14498,6 +14526,8 @@ pub(crate) fn queue_expiry_pass(daemon: &Arc<Daemon>) -> bool {
         }
         changed = true;
     }
+    // (조각 6b · 검증 m3) 팀 꼬리표 청소 — 꼬리표는 항목 id 로 묶여 이관을 따라가므로, 어느 큐에도 없는 id 만 지운다(장부 메모리 전용 · 영속 무관).
+    crate::team::sweep_daemon_tags(daemon, &surfaces);
     changed
 }
 

@@ -12,15 +12,21 @@ DRY=${GATE_DRY:-0}; ONLY=${GATE_ONLY:-.}
 PW_VENV="$RH/axdev/.wt/.gate-pw-venv"; PW="$PW_VENV/bin/python"
 CHROME="$RH/Library/Caches/ms-playwright/chromium_headless_shell-1248/chrome-headless-shell-mac-arm64/chrome-headless-shell"
 BASE_DIST="$RH/axdev/.wt/cys-1116-base-1118/ui/dist"
-T=$(mktemp -d /tmp/i16XXXX); mkdir -p "$T/h" "$T/t"
+T=$(mktemp -d /tmp/i16XXXX); T=$(cd "$T" && pwd -P); mkdir -p "$T/h" "$T/t"   # 별칭 없는 실경로(/private/tmp) — phoenix 하네스가 별칭 뿌리를 거부(aliased_harness_root)
 BASEPATH="$RH/.cargo/bin:$RH/.bun/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-ISO=(env -i "HOME=$T/h" "TMPDIR=$T/t" "PATH=$BASEPATH" "CARGO_HOME=$RH/.cargo" "RUSTUP_HOME=$RH/.rustup" CARGO_BUILD_JOBS=6 "CARGO_TARGET_DIR=$ROOT/target")
+ISO=(env -i "HOME=$T/h" "TMPDIR=$T/t" "PATH=$BASEPATH" "CARGO_HOME=$RH/.cargo" "RUSTUP_HOME=$RH/.rustup" "CARGO_BUILD_JOBS=${GATE_CARGO_JOBS:-4}" "CARGO_TARGET_DIR=$ROOT/target")
+# CI 팩 단계·CI 0회 단계 = CI 러너처럼 PATH 첫 자리 python3 가 비 Apple 파이썬(CI = setup-python 3.12 · 여기 = brew python3 가 있으면 그것).
+#   Apple /usr/bin/python3 은 pycache 를 트리 밖(~/Library/Caches)에 써서 test_pyseal_negative_specimen ⓒ 음성 대조가 UNMEASURED(rc 2)로 선다
+#   — 11-20 첫 완주에서 맥·우분투 두 루프가 거기서 멈췄다(우분투 루프는 그 뒤 시험 미실행).
+CIPATH="$RH/.cargo/bin:$RH/.bun/bin:/usr/bin:/bin:/usr/sbin:/sbin"; [ -x /opt/homebrew/bin/python3 ] && CIPATH="$RH/.cargo/bin:$RH/.bun/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+CIISO=(env -i "HOME=$T/h" "TMPDIR=$T/t" "PATH=$CIPATH" "CARGO_HOME=$RH/.cargo" "RUSTUP_HOME=$RH/.rustup" "CARGO_BUILD_JOBS=${GATE_CARGO_JOBS:-4}" "CARGO_TARGET_DIR=$ROOT/target")
 REAL=(env -i "HOME=$RH" "PATH=$BASEPATH" "CHROME_PATH=$CHROME")
 say() { echo "$*" | tee -a "$SUM"; }
 read -r A B <<<"$("$G" count)"
 say "head=$(git rev-parse --short HEAD) pwd=$ROOT GUARD-BASE syspolicyd=$A fake=$B $(date +%T)"
 if [ "$DRY" = 0 ] && [ "$ONLY" = . ] && [ -n "$(git status --short)" ]; then say "ABORT 작업트리가 깨끗하지 않음"; exit 2; fi
 FAILS=0
+ST0=$(git status --short)   # 게이트 시작 때 작업트리 상태 — ci_step WARN 은 이것과 달라졌을 때만
 # CI 팩 단계 생성물(DRY 에서도 만든다 — 단계 이름을 보여 주려고). 판정 불가(rc 3)면 게이트 전체를 멈춘다.
 CI_DIR="$T/ci"
 CI_IDS=$(/usr/bin/python3 docs/integ-1116/ci_pack_steps.py emit "$CI_DIR") || { say "ABORT ci_pack_steps emit 판정 불가 — 고르는 규칙과 워크플로가 어긋남(위 stderr)"; exit 2; }
@@ -60,11 +66,11 @@ cargo_step() { local n=$1; shift; step "$n" 5400 "${ISO[@]}" cargo "$@"; [[ $n =
 #   그 밖에 작업트리가 바뀌면 경고 1줄(CI 러너는 매번 새 checkout 이라 안 보이는 오염).
 ci_step() {
   local id=$1
-  step "$id" 5400 "${ISO[@]}" /bin/bash --noprofile --norc -eo pipefail "$CI_DIR/$id.sh"
+  step "$id" 5400 "${CIISO[@]}" /bin/bash --noprofile --norc -eo pipefail "$CI_DIR/$id.sh"
   [[ $id =~ $ONLY ]] && [ "$DRY" = 0 ] || return 0
   [ -f health-full.json ] && mv -f health-full.json "$OUT/$id.health-full.json"
   local d; d=$(git status --short)
-  [ -z "$d" ] || say "WARN $id 뒤 작업트리 변화: $(echo "$d" | head -5 | tr '\n' ' ')"
+  [ "$d" = "$ST0" ] || say "WARN $id 뒤 작업트리 변화: $(echo "$d" | head -5 | tr '\n' ' ')"
   return 0
 }
 py_step() { local n=$1 f=$2; [ -f "$f" ] || { [[ $n =~ $ONLY ]] && say "$n 파일 없음(이 머리에 아직 안 들어옴) · 건너뜀"; return 0; }; step "$n" 1800 "${ISO[@]}" /usr/bin/python3 "$f"; }
@@ -95,7 +101,7 @@ for id in $CI_IDS; do ci_step "$id"; done
 #    (게시 zip 폴더 CYS_AGORA_ZIP_DIR 필요 · 없으면 FAIL 이 설계) — 그 env 가 이 게이트 env 에 있을 때만 돈다.
 for t in $UNREG_IDS; do
   if [ "$t" = test_agora_known_authentic ] && [ -z "${CYS_AGORA_ZIP_DIR:-}" ]; then [[ unreg-$t =~ $ONLY ]] && [ "$DRY" = 0 ] && say "unreg-$t 건너뜀(CYS_AGORA_ZIP_DIR 없음 · 제작 맥 전용)"; continue; fi
-  step "unreg-$t" 1800 "${ISO[@]}" "CYS_AGORA_ZIP_DIR=${CYS_AGORA_ZIP_DIR:-}" /bin/sh -c 'p=$(mktemp -d "$TMPDIR/p.XXXXXX") && j=$(mktemp -d "$TMPDIR/j.XXXXXX") && CYS_PACK_DIR="$p" JAVIS_ROOT="$j" CYS_PROBE_RUNS="$j/probe_runs.jsonl" exec /usr/bin/python3 "$0"' "cysjavis-pack/bin/tests/$t.py"
+  step "unreg-$t" 1800 "${CIISO[@]}" "CYS_AGORA_ZIP_DIR=${CYS_AGORA_ZIP_DIR:-}" /bin/sh -c 'p=$(mktemp -d "$TMPDIR/p.XXXXXX") && j=$(mktemp -d "$TMPDIR/j.XXXXXX") && CYS_PACK_DIR="$p" JAVIS_ROOT="$j" CYS_PROBE_RUNS="$j/probe_runs.jsonl" exec python3 "$0"' "cysjavis-pack/bin/tests/$t.py"
 done
 # ── scripts/tests(맥 제외 1건은 머리말 참조)
 #    test_release_trigger_split 은 PyYAML 이 필요해 게이트 전용 venv 로 아래에서 돌린다.

@@ -12,6 +12,7 @@
 | d7c14f67f | D · 공개 후보 | `docs/integ-1116/pubcand.sh`(새) — H → C · 관문 1 · recheck 호출 · push 없음 |
 | 484cc63ad | E · 범주 3 | codex 1R 범주 3 지적 13줄(주석·doc 주석·시험 describe 이름) |
 | dd08b345a | 추가 ① | d1·name_guard 경쟁 승자 픽스처 — 리눅스 = 이름이 cysd 인 셸 스크립트(ubuntu-26.04 uutils) |
+| 06e3990f6 | 추가 ③ 고침(master#1519072c) | windows-health: S2 바로 앞 미리 빌드 스텝(`cargo test --bin cysd --no-run` · S2 와 같은 env · 시한 12분) + 핀 시험 1 |
 
 원작자 파일(데몬 handlers.rs·state.rs 등) 변경 = 0. 바뀐 운영 코드 줄 = 0(E 의 .rs·.ts·Cargo.toml·config.toml 은 주석만 · main.ts 는 함수 안 주석 3줄).
 
@@ -76,6 +77,15 @@
 - ③ windows-health A-ID S2(시한 6분): aebca 런 S2 내부 = 21:28:22 시작 → 21:32:42 컴파일 끝(**260초 = cysd 시험 바이너리 컴파일** · 출력이 파일로 받아져 그동안 0줄) → 시험 13개 1초. rc2 런은 모든 스텝이 1.3~1.5배 느림(factory_reset 374→519 · U5 214→283 · D5 71→93 · win_std 92→125 · F10 77→100 · help 157→229) → 260×1.4 ≈ 365 > 360 = **시한 근접(걸림 아님)**. S2 추이 137(11-09) → 261 → 367초.
 - 「cargo test --bin cysd 감독자 축」 = 세 런 모두 1807~1808초(continue-on-error · 시한 30분 · 통과 런 포함) = 이번에 생긴 일 아님 · 늘 시한에서 잘리는 비차단 스텝.
 
+## 추가 ③ 고침 — S2 미리 빌드(master#1519072c · 워크플로 수정 허용)
+
+- 놓은 곳 = S5 와 S2 **사이**(바로 앞). 까닭: aebca 런에서 바로 앞 S5 의 같은 `--bin cysd` 는 캐시 0.26초였는데 S2 첫 호출이 재컴파일 260초 · S2 둘째 호출 0.31초 → 오염은 S5 끝 ~ S2 시작 사이에 생긴다. 더 앞(예: 감독자 축 뒤)에 두면 그 사이 스텝이 다시 오염시킬 수 있다.
+- env = S2 와 같은 `CYS_PACK_DIR`·`CYS_STATE_DIR`(env 가 원인인 경우까지 덮음). 원인 후보(build.rs `rerun-if-changed=cysjavis-pack`)는 이 맥에서 재현 못 함(로컬 팩 폴더에 `__pycache__` 없음) → 이름 안 붙임.
+- 시한: 미리 빌드 12분(느린 러너 실측 367초 × 약 2) · S2 6분 그대로(시험 실행 ≈1초 + 목록). 시한 상향은 안 함.
+- 대조 도구: C8 재고 `selects_cysd` 가 `--no-run` 을 실행으로 안 셈 · 레인 게이트 `FILTER_RUN_RE` 는 필터 뒤 `-- ` 가 있는 줄만 → 가드 불요. 「판정 결박 스텝 뒤 차단 스텝 금지」 시험 = S2 앞이라 통과.
+- 시험: test_ci_branch_cysd_step 39/39(새 핀 `test_prebuild_step_immediately_precedes_s2_with_the_same_env` · 뮤턴트 3/3 붉음 = 순서 · env 하나 뺌 · `--bin cys`) · test_c8_ci_consumer 19/19 · test_release_windows_help_gate 11/11 · test_release_trigger_split 17/17(게이트 venv) · test_phoenix_host_gate_lane 8/8 · lane-parity-rehearsal --strict rc 0 · 팩 시험 test_win_dept_spawn·test_hook_launcher_split·test_pyseal_census·test_runtime_manifest_parity 초록.
+- ⚠윈도 실측 없음 — 실제로 S2 안 컴파일 0 인지는 다음 windows-health 런의 S2 로그 「Finished … in 0.xs」 로 판정(해소 판정: S2 스텝 안 `Compiling cys-terminal` 0줄).
+
 ## 시험 숫자(전후)
 
 - 기준선(dea2e1853 계열): 11-19 cifix 증거 레인 = mac 팩 스텝 rc 0(1452s) · ubuntu 팩 스텝 rc 0(1432s) · 그 전 판에서 r34 시한 행 간헐 붉음(위 C).
@@ -83,7 +93,7 @@
 
 ## 📌 덧붙임(실행 안 함 · 판단 = master)
 
-1. 윈 S2 시한 6분 → 컴파일 포함 260초(빠른 러너)·365초(느린 러너) — 시한을 컴파일 몫만큼 올리거나(예 12분) 앞 스텝에서 `cargo test --bin cysd --no-run` 으로 미리 빌드. 워크플로 수정 = CI 레인 일이라 이 좌석에서 안 함.
+1. (처리됨 06e3990f6 · master#1519072c) 윈 S2 미리 빌드 — 위 「추가 ③ 고침」.
 2. 우분투 CI 이미지가 26.04 로 바뀐 것 자체 — 다른 시험·스크립트에 GNU coreutils 가정(argv0·옵션)이 더 있는지 훑기(이번엔 sleep 심링크 2곳만 찾음 · `exec -a` 는 src/agy_door.rs 견본 문자열뿐).
 3. 범주 3 에서 안 고친 것(기능 줄·팩 지침): cysjavis-pack/agents.json:3·8 · MASTER_DIRECTIVE.md:462 · WORKER_DIRECTIVE.md:258 · skills/appbuild-plan-debate·computer-control SKILL.md — 팩 지침은 별도 커밋 + 합성기 + doc-contract 규약 · 내용 공개 여부는 제품 판단.
 4. 같은 꼴 남은 자리(주석·문자열 · 처분표 밖이라 안 고침): src/bin/cys.rs:31486(주석)·31564(assert 문구) 의 docs/1115/CLI-STACK-PROBE 경로 · ui/src/drainverify.test.ts:156·192 의 운영자 서사 · ui/src/grouptabs.ts·grouptabs.test.ts 의 pillar-width-rule 지시서 이름 · windows-health.yml 의 rqfix_f10 · seatkeep-knob-on-tests.sh:2 의 master# 표식.

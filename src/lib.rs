@@ -54,6 +54,8 @@ pub mod paste_fence;
 /// 하나(`profile_gate::classify`)가 소유하고, `auth_class` 8값 중 `unknown` 은 **통과가 아니다**.
 pub mod profile_gate;
 pub mod process_observation;
+/// 대화 소유 임대(TICKET=cysr-seatkeep-t1) — 한 대화에 작성자 하나 · 시간으로 풀지 않음 · 판정 불가 = 안 띄움.
+pub mod session_lease;
 /// ready 술어 단일화(U-13) — `ready = 입력활성 증거 ∧ 관문 문면 부재`. 판정은 순수함수 하나가
 /// 소유하고(`readiness::judge`), 부트 폴링과 `adapter_ready` 두 소비처가 같은 술어를 경유한다.
 /// 종전엔 네 자리가 각자 ready 를 선언해 "마커 축만 고치면 아무것도 안 바뀌는" 상태였다.

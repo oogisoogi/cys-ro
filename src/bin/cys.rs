@@ -1735,7 +1735,8 @@ const EXIT_DIRECTIVE_REFUSED: i32 = 90;
 /// Family: the direct-write OUTCOME codes of B-360 - 90 (`EXIT_DIRECTIVE_REFUSED`, launch-agent: zero bytes, pane kept)
 /// and 91 (any command: outcome unknown); passed = 0 and refused = 1 elsewhere. It sits right after 90 because it is the
 /// third outcome of the same write path. Neighbours for a reader scanning 80..91: 80-81 clear verification, 82-83
-/// verifier, 84-89 cycle-agent, then this family. 92 and 94-99 unassigned (93 = `EXIT_RESUME_HELD`). Outside sysexits 64-78.
+/// verifier, 84-89 cycle-agent, then this family. 94-99 unassigned (92 = `EXIT_SESSION_WRITER_LIVE` · 93 = `EXIT_RESUME_HELD` =
+/// `EXIT_SESSION_LIVENESS_UNKNOWN` — both 「held, no new conversation」 · session_lease_cli). Outside sysexits 64-78.
 const EXIT_WRITE_OUTCOME_UNKNOWN: i32 = 91;
 
 /// ★조각 1(cysr-piece1-recover-1118): `cys node-recover` 가 저장 대화를 잇지 못해 **멈췄다**. 새 대화로 내려가지 않았다.
@@ -6646,11 +6647,15 @@ fn run(command: Command) -> i32 {
 
         Command::UsageRegister { transcript, surface, source } => {
             target_surface(&surface, &None).and_then(|sid| {
+                let tp = transcript.clone();
                 let mut params = json!({"surface_id": sid, "transcript": transcript});
                 if let Some(src) = source {
                     params["source"] = json!(src);
                 }
-                request("usage.register", params).map(|_| println!("OK"))
+                request("usage.register", params).map(|_| {
+                    lease_follow_on_register(sid, &tp); // ★seatkeep-t1 조건 ②: 대화가 바뀌면 임대가 따라간다(출력 0)
+                    println!("OK")
+                })
             })
         }
 
@@ -15286,6 +15291,14 @@ fn run_boot(cwd: Option<String>, as_json: bool) -> i32 {
         println!("· {agent}: 기동 시작 (role={role})…");
         // ★조각 1: 좌석 없는 기동도 저장 핀을 본다 — 새 대화 좌석이 저장되는 순간 옛 핀이 밀려 사라진다. 핀이 없으면 지금과 같은 새 기동이다.
         let launch_rc = run_launch_agent_resume_saved(role, agent, launch_cwd);
+        // ★seatkeep-t1: 대화 임대 거절 92(작성자 살아 있음)도 같은 보류다 — 93 은 조각 1 과 같은 값(생존 판정 불가 포함).
+        if launch_rc == EXIT_SESSION_WRITER_LIVE {
+            println!("· {agent}: 역할 '{role}' 저장 대화를 살아 있는 다른 프로세스가 쓰는 중 — 기동 보류 · 새 좌석·새 대화 0(사유는 위 '--resume-saved' 줄)");
+            outcomes.push(json!({"role": role, "agent": agent, "outcome": "resume_held", "mandatory": mandatory,
+                                 "reason": "저장 대화를 살아 있는 다른 프로세스가 쓰는 중(exit 92 · 대화 임대)",
+                                 "hint": "그 좌석을 확인(`cys status`) — 같은 대화 작성자 둘을 막으려고 띄우지 않았다 · 저장 대화는 그대로다"}));
+            continue;
+        }
         if launch_rc == EXIT_RESUME_HELD {
             println!("· {agent}: 역할 '{role}' 저장 대화를 잇지 못해 기동 보류 — 새 좌석·새 대화 0(사유는 위 '--resume-saved' 줄)");
             outcomes.push(json!({"role": role, "agent": agent, "outcome": "resume_held", "mandatory": mandatory,
@@ -15546,6 +15559,8 @@ fn boot_recover_disposition(rc: i32) -> RecoverDisposition {
         cys::EXIT_GATE_PENDING => RecoverDisposition::GatePending,
         EXIT_RECOVER_REFUSED => RecoverDisposition::Refused,
         EXIT_WRITE_OUTCOME_UNKNOWN => RecoverDisposition::Unknown,
+        // ★seatkeep-t1: 대화 작성자 살아 있음(92) · 생존 판정 불가(93) — 회수·기동 0(비파괴 거절과 같은 처분).
+        EXIT_SESSION_WRITER_LIVE | EXIT_SESSION_LIVENESS_UNKNOWN => RecoverDisposition::Refused,
         1 => RecoverDisposition::Escalate,
         other => RecoverDisposition::Unrecognised(other),
     }
@@ -17253,6 +17268,11 @@ fn boot_agent_on_surface(
     let requested_resume = resume;
     let mut effective_resume = false;
     if requested_resume {
+        // ★seatkeep-t1 불변식(DESIGN §4 「한 곳」): `--resume <id>` 를 붙이는 유일한 자리 — 이 프로세스가 그 대화의 임대를
+        //   쥐지 않았으면 기동하지 않는다(입구가 lease_gate 를 거치지 않은 것 = 배선 누락을 시끄럽게 드러냄).
+        if let Some(why) = lease_resume_unheld(session_id) {
+            return Err(why);
+        }
         if let Some(arg) = spec["resume_arg"].as_str() {
             // T2-6 resume 어댑터: 대화 기억 복원 플래그 (예: claude --resume <id>).
             // `resume_arg_fallback` 은 읽되 claude 에는 적용되지 않는다(`resolve_resume_suffix` doc).
@@ -17376,6 +17396,8 @@ fn boot_agent_on_surface(
         json!({"surface_id": sid, "text": send, "quiet": true, (cys::AGENT_LAUNCH_KEY): true, "authoritative": true}),
     )
     .map_err(tag_launch_write)?;
+    // ★seatkeep-t1(codex 6R · 독립 재검 m10): 기동 명령 글이 **받아들여진 뒤**부터의 오류 = 결과 불명(거절 = 0바이트 = 기동 전) · 접미 없음 = 새 대화.
+    lease_note_launch(sid, effective_resume);
     request(
         "surface.send_key",
         json!({"surface_id": sid, "key": "Return", "authoritative": true}),
@@ -20730,7 +20752,7 @@ fn sanitize_launch_cwd(cwd: String) -> String {
 }
 
 fn run_launch_agent(role: &str, agent: &str, cwd: Option<String>) -> i32 {
-    run_launch_agent_opts(role, agent, cwd, false, None, false, None, None)
+    run_launch_agent_opts(role, agent, cwd, false, None, false, None, None).0
 }
 
 /// ★조각 1: `--resume-saved` 가 믿을 수 있는 저장 목록(node-recover 와 같은 판정). 모르거나 핀이 충돌하면 Err = rc 93.
@@ -20773,7 +20795,19 @@ fn run_launch_agent_resume_saved(role: &str, agent: &str, cwd: Option<String>) -
         }
         RecoverPin::Resume { session, cwd, config_dir } => {
             eprintln!("[launch-agent] --resume-saved: {role} 저장 대화({session})를 이어서 기동");
-            run_launch_agent_opts(role, agent, Some(cwd), true, Some(session), true, config_dir, None)
+            // ★seatkeep-t1: 좌석을 만들기 **전에** 대화 임대(거절 = 92/93 · 좌석 0 · 새 대화 폴백 0).
+            let lease_g = match lease_gate(role, Some(&session), None, config_dir.as_deref(), restore_claims_dir().as_deref()) {
+                LeaseGate::Off => None,
+                LeaseGate::Proceed(g) => g,
+                LeaseGate::Refuse { rc, line } => {
+                    eprintln!("[launch-agent] --resume-saved: {}", line.trim_start_matches("· "));
+                    return rc;
+                }
+            };
+            let (rc, made) =
+                run_launch_agent_opts(role, agent, Some(cwd), true, Some(session.clone()), true, config_dir, None);
+            lease_finish_by_rc(lease_g, rc, made, &session); // 좌석 = 이 기동이 만든 좌석(역할 이름 조회 아님 · codex 2R #2)
+            rc
         }
     }
 }
@@ -20825,6 +20859,23 @@ fn workflow_title(role: &str, agent: &str, cwd: &Option<String>) -> String {
 /// 재반환 + 생존 미상(None)은 **기동**한다 — 멱등 재반환의 본래 용도(응답 유실 뒤 재시도: 첫 호출이
 /// 자리만 만들고 아무도 기동하지 않았다)를 막지 않기 위해서다. 그 경우의 이중 기동은 복원 경로라면
 /// 표식이 먼저 막는다.
+/// 기동 멱등 키(순수 · r4 A) — 종전 `la-{role}-{agent}-{cwd 해시}` · 잇는 기동(대화 있음)이면 꼬리 `-s{정규화 대화 id}`.
+fn launch_idem_key(role: &str, agent: &str, cwd: Option<&str>, resume_sess: Option<&str>) -> String {
+    let base = format!(
+        "la-{}-{}-{}",
+        role,
+        agent,
+        cwd.unwrap_or("")
+            .chars()
+            .map(|c| c as u32)
+            .fold(0u64, |a, c| a.wrapping_mul(31).wrapping_add(c as u64))
+    );
+    match resume_sess.and_then(cys::session_lease::norm_id) {
+        Some(id) => format!("{base}-s{id}"),
+        None => base,
+    }
+}
+
 fn launch_boot_skip(
     restore: bool,
     reused: bool,
@@ -20853,8 +20904,10 @@ fn run_launch_agent_opts(
     // ★D-mac-4(1.1.9): restore 가 저장된 옛 제목을 넘긴다 — 데몬 initial_title 의 「다른 번호로 시작 =
     //   낡은 번호」 갈래가 번호 칸만 새 번호로 바꾸고 특성(cwd 특성 등)을 보존한다. None = 종전(workflow_title).
     title_override: Option<String>,
-) -> i32 {
-    if let Some(rc) = agy_door_refuse_launch(agent) { return rc; } // ★agy 좌석 문(기본 닫힘 · cys::agy_door)
+) -> (i32, Option<u64>) {
+    // ★seatkeep-t1(codex 2R #2): 돌려주는 값 = (rc · 이 호출이 만든 좌석). 임대 마무리(0·78·90·91)는 이 좌석으로 한다 —
+    //   역할 이름(`system.resolve_role`)은 데몬이 `worker` 새 좌석을 `worker-N` 으로 바꿔 띄우면 남의 좌석을 가리킨다.
+    if let Some(rc) = agy_door_refuse_launch(agent) { return (rc, None); } // ★agy 좌석 문(기본 닫힘 · cys::agy_door)
     // ★(W2 · G12) LAUNCH 경로의 boot 락 참여 — 별도 프로세스로 도는 `cys launch-agent`
     //   (javis_boot_node → boot-reviewers 경로)를 GUI/훅 `cys boot` 와 직렬화한다.
     //   run_boot 이 이미 쥐고 있으면 None(재진입 방어). Drop 에서 flock 자동 해제.
@@ -20879,21 +20932,16 @@ fn run_launch_agent_opts(
         .map(sanitize_launch_cwd);
     // 기동 실패 시 정리용 — 만들어 둔 surface가 role을 점유한 채 남으면 재기동이 차단된다
     let mut created: Option<u64> = None;
+    // ★seatkeep-t1(r5): 새 좌석을 만들지 않은 판정 불가(같은 역할 좌석의 대화 모름)에서 임대가 가리키는 그 좌석(이 호출이 만든 좌석 아님 · 닫지 않는다).
+    let mut unverified: Option<u64> = None;
     let result = (|| -> Result<BootVerdict, String> {
         let spec = load_agent_spec(agent)?;
         // (E-f) 멱등 기동 키 — 같은 role+agent+cwd 재시도가 중복 surface를 만들지 않게
         // 데몬이 단기 캐시(create_idem)로 기존 surface를 재반환하도록. 단일 머신·단일
         // 사용자라 단순 해시로 충분(설계 §4.1.5).
-        let idem = format!(
-            "la-{}-{}-{}",
-            role,
-            agent,
-            cwd.as_deref()
-                .unwrap_or("")
-                .chars()
-                .map(|c| c as u32)
-                .fold(0u64, |a, c| a.wrapping_mul(31).wrapping_add(c as u64))
-        );
+        // ★seatkeep-t1(r4 A · codex 3R 뿌리 R1): 잇는 기동은 키에 정규화 대화 ID 를 싣는다 — 120초 안 같은 역할·폴더라도
+        //   다른 대화(T)의 좌석을 재반환받지 않는다. 같은 대화의 재시도(응답 유실)만 같은 좌석 = 멱등의 본래 뜻. 키는 데몬에 불투명 문자열.
+        let idem = launch_idem_key(role, agent, cwd.as_deref(), if resume { session_id.as_deref() } else { None });
         // RC-3(B′): Windows는 해소된 env(CLAUDE_CONFIG_DIR 등)를 surface.create로 넘겨 데몬이
         // PTY spawn 시 builder.env로 주입한다(순수 cmd send와 짝). unix는 빈 맵 — 셸 인라인 전개가
         // 진실원(무회귀). render_launch와 동일 규약이라 두 경로 결정론 일치.
@@ -20911,6 +20959,23 @@ fn run_launch_agent_opts(
         //   boot_agent_on_surface 는 env 를 폐기하고, Tauri GUI 의 create_surface 는 env 를 아예
         //   넘기지 않는다: src-tauri/src/main.rs 의 surface.create 페이로드 참조).
         //   그래서 이것은 '벨트'이고 본체는 UI 가드(ui/src/wheelgate.ts)다 — lib 헬퍼 주석 정본.
+        // ★seatkeep-t1(r5 · codex r4 #1): 같은 역할의 살아 있는 좌석이 어느 대화를 쓰는지 모르면(등록 없음) 새 좌석을 만들지 않는다 —
+        //   그 좌석이 좌석 안 `/resume` 으로 이 대화를 쓰고 있을 수 있다(작성자 둘). 판정 불가 rc 93 · 임대 = 그 좌석(결과 불명 유지).
+        if resume {
+            match lease_role_seat_unverified(role, session_id.as_deref()) {
+                Ok(None) => {}
+                Ok(Some(w)) => {
+                    if lease_note_surface(session_id.as_deref(), w).is_ok() {
+                        unverified = Some(w);
+                    }
+                    return Err(format!(
+                        "{ERR_REUSED_UNKNOWN}: 역할 {role} 의 좌석 {} 가 어느 대화를 잇는지 모름(등록 없음) — 이 대화를 쓰고 있을 수 있어 새 좌석을 만들지 않음",
+                        surface_ref(w)
+                    ));
+                }
+                Err(why) => return Err(format!("session_lease: 역할 {role} 좌석 대화 판정 불가({why}) — 새 좌석을 만들지 않음 · 확인: `cys status` 로 데몬이 응답하는지 본 뒤 다시 실행하세요")),
+            }
+        }
         let mut create_env_pairs = launch_create_env_pairs(&spec, agent);
         // ★chrome-preset: 크롬 도구는 master 좌석만 — 역할을 아는 자리라 여기서 싣는다(lib `chrome_allowed_for` doc).
         cys::inject_claude_chrome_off_env(
@@ -20949,15 +21014,25 @@ fn run_launch_agent_opts(
         let sid = r["surface_id"].as_u64().ok_or("create returned no id")?;
         created = Some(sid);
         eprintln!("[launch-agent] {} created (role={role})", surface_ref(sid));
+        lease_note_surface(session_id.as_deref(), sid)?; // ★seatkeep-t1: 기동 명령 전에 임대에 좌석을 적는다(못 적으면 기동 0 · rc 93)
         // ★(v112-restore) 기동 **전** 겹침 차단 — 판정 표는 `launch_boot_skip` doc.
         let reused = r["idempotent_reuse"].as_bool() == Some(true);
-        let claim_won = !restore || restore_inject_claim(sid);
+        let claim_won = !restore || inject_claim_or_lease(sid, session_id.as_deref());
         let alive = if reused { surface_agent_alive(sid) } else { None };
         if let Some(why) = launch_boot_skip(restore, reused, claim_won, alive) {
             eprintln!(
                 "[launch-agent] {} — {why} · 기동 명령 0 · 복원 글 0 · 좌석 보존",
                 surface_ref(sid)
             );
+            // ★seatkeep-t1(r4 A · codex 3R ①②③): 재반환 좌석은 「이 호출이 만든 좌석」이 아니다 — 이 대화를 잇는다고 확인될 때만 rc 0.
+            //   다른 대화 확인 · 판정 불가 = rc 93(복원이 commit·ok 로 세지 않음) · 등록 없음은 「다른 대화」가 아니라 판정 불가.
+            if reused && alive == Some(true) {
+                match lease_judge_reused_seat(sid, session_id.as_deref()) {
+                    ReusedSeat::NotLeased | ReusedSeat::Continues => {}
+                    ReusedSeat::Other(t) => return Err(format!("{ERR_REUSED_OTHER}: {} 이 다른 대화({t})를 잇는 중", surface_ref(sid))),
+                    ReusedSeat::Unknown(why) => return Err(format!("{ERR_REUSED_UNKNOWN}: {} 이 이 대화를 잇는지 판정 불가({why})", surface_ref(sid))),
+                }
+            }
             println!("{}", surface_ref(sid));
             return Ok(BootVerdict::Ready);
         }
@@ -20988,7 +21063,13 @@ fn run_launch_agent_opts(
         println!("{}", surface_ref(sid));
         Ok(verdict)
     })();
-    match result {
+    // ★seatkeep-t1(r4 A): rc 93 의 좌석 = 「이 대화를 쓰고 있을 수 있는 좌석」만(재반환 판정 불가) — 기동 전 임대 관문 93·재반환 다른 대화 93 은 좌석 없음(호출자가 임대를 되돌린다).
+    let seat_out = match &result {
+        Err(e) if e.starts_with("session_lease:") && !e.starts_with(ERR_REUSED_UNKNOWN) => None,
+        Err(e) if e.starts_with(ERR_REUSED_UNKNOWN) => created.or(unverified),
+        _ => created,
+    };
+    let rc = match result {
         Ok(BootVerdict::Ready) => 0,
         // ★관문 보류: close 0 · 좌석 보존 · 표식(데몬 기록은 판정 지점에서 이미 끝났다) · 처방.
         //   종료코드는 성공(0)도 실패(1)도 아닌 전용 값이다 — 0 이면 소비부가 '노드를 세웠다'로
@@ -20999,6 +21080,36 @@ fn run_launch_agent_opts(
                 print_gate_pending_prescription(sid, role, agent, &gate, &tail);
             }
             cys::EXIT_GATE_PENDING
+        }
+        // ★seatkeep-t1: 대화 임대 관문이 기동 명령 **전에** 멈춤(좌석 기록 실패 · `--resume` 직전 임대 불일치) — 아무것도 안 쳤다.
+        //   빈 좌석을 닫고 rc 93(판정 불가 · 띄우지 않음) — rc 1 이면 phoenix 가 재시도·새 대화로 폴백한다.
+        // ★seatkeep-t1(r4 A): 재반환 좌석이 이 대화를 잇지 않음(확인) · 잇는지 판정 불가 — 띄우지 않음 · 그 좌석은 남의 것일 수 있어 닫지 않는다 · stdout 좌석 줄 0(소비부가 그 좌석에 귀속하지 않게).
+        Err(e) if e.starts_with(ERR_REUSED_OTHER) || e.starts_with(ERR_REUSED_UNKNOWN) => {
+            eprintln!("error: {e}");
+            if let Some(sid) = created.or(unverified) {
+                if e.starts_with(ERR_REUSED_UNKNOWN) {
+                    // r5b(master#b444f7fa 채택): 흔한 경우 = 막 띄운 좌석(곧 SessionStart 등록) → 「잠시 뒤 다시」 먼저 · 풀림 = 등록 경로일 때만.
+                    eprintln!(
+                        "[launch-agent] 저장 대화를 띄우지 않음(rc 93) — 확인: 그 좌석을 막 띄웠다면 잠시 뒤 다시 실행하세요(그 좌석이 다른 대화로 등록되면 풀립니다) · 계속 막히면 `cys read-screen --surface {}` 로 보고, 이 대화가 아니면 그 좌석을 닫은 뒤 다시 실행하세요",
+                        surface_ref(sid)
+                    );
+                } else {
+                    eprintln!(
+                        "[launch-agent] 저장 대화를 띄우지 않음(rc 93) — 확인: `cys read-screen --surface {}` 로 그 좌석이 어느 대화를 잇는지 보고, 이 대화가 아니면 그 좌석을 닫은 뒤 다시 실행하세요",
+                        surface_ref(sid)
+                    );
+                }
+            }
+            EXIT_SESSION_LIVENESS_UNKNOWN
+        }
+        Err(e) if e.starts_with("session_lease:") => {
+            eprintln!("error: {e}");
+            if let Some(sid) = created {
+                if let Err(ce) = request("surface.close", json!({"surface_id": sid, "cause": "reap", "only_if_empty": true})) {
+                    eprintln!("[launch-agent] {} close 실패: {ce} — `cys close-surface {}` 로 정리", surface_ref(sid), surface_ref(sid));
+                }
+            }
+            EXIT_SESSION_LIVENESS_UNKNOWN
         }
         // ★(B-360) The directive was refused at the writer journal: zero bytes typed, the agent is running. Keep the
         //   pane (no close · no role release) and say so; stdout keeps its contract (last line = surface ref).
@@ -21056,6 +21167,10 @@ fn run_launch_agent_opts(
         //   (귀결이 갈리는 것은 `GatePending` 하나뿐이라는 사실이 이 구조에 그대로 드러난다.)
         Ok(BootVerdict::LaunchFailed { evidence: e }) | Err(e) => {
             eprintln!("error: {e}");
+            // ★seatkeep-t1(codex 6R): 임대를 쥐고 기동 명령을 보낸 뒤인데 좌석을 닫지 못했다 = 그 좌석이 대화를 잇고 있을 수 있다 →
+            //   rc 91(결과 불명) — 호출자(lease_finish_by_rc · 복원 fresh 갈래)가 임대를 풀지 않는다(keep_unknown).
+            let lease_sent = created.is_some_and(lease_launch_sent) && lease_mine(session_id.as_deref());
+            let mut close_failed = false;
             if let Some(sid) = created {
                 // close 결과를 정직히 보고한다 — 실패를 'closed'로 거짓 보고하면 role이
                 // 좀비 surface에 점유된 채 남아 재기동이 claim_denied로 막힌다(이번 회귀의 근원).
@@ -21066,17 +21181,29 @@ fn run_launch_agent_opts(
                         "[launch-agent] failed surface {} closed (role 점유 해제)",
                         surface_ref(sid)
                     ),
-                    Err(e) => eprintln!(
-                        "[launch-agent] failed surface {} close 실패: {e} — \
-                         `cys close-surface {}`로 수동 정리 필요(role 점유 잔존 가능)",
-                        surface_ref(sid),
-                        surface_ref(sid)
-                    ),
+                    Err(e) => {
+                        eprintln!(
+                            "[launch-agent] failed surface {} close 실패: {e} — \
+                             `cys close-surface {}`로 수동 정리 필요(role 점유 잔존 가능)",
+                            surface_ref(sid),
+                            surface_ref(sid)
+                        );
+                        close_failed = true;
+                    }
                 }
+            }
+            // ★seatkeep-t1(codex 6R · 독립 검증 F3): 임대를 쥐고 기동 명령을 보낸 뒤 좌석을 못 닫음 = 그 좌석이 대화를 잇고 있을 수 있다 → rc 91(임대 유지).
+            if let Some(rc) = close_failure_rc(lease_sent, close_failed) {
+                if let Some(sid) = created {
+                    eprintln!("[launch-agent] {} — 기동 명령을 보낸 좌석이 남음 · 대화 임대 유지(결과 불명 rc 91)", surface_ref(sid));
+                    println!("{}", surface_ref(sid)); // 다른 91 갈래와 같은 stdout 계약(마지막 줄 = 좌석 · 독립 재검 m11)
+                }
+                return (rc, created);
             }
             1
         }
-    }
+    };
+    (rc, seat_out)
 }
 
 // ---------- 온보딩③: 상시 가동 등록 (launchd / Task Scheduler) ----------
@@ -25638,6 +25765,10 @@ fn run_node_recover(surface: Option<String>, role: Option<String>) -> i32 {
     let mut seat: Option<(u64, String, String)> = None; // (sid, role, agent) once known — for the kept-pane record
     // ★조각 1: 저장 핀이 걸린 좌석 — 이후 일반 실패는 rc 93. 역할 이름을 받았으면 핀 유무를 알기 전까지 걸린 것으로 친다(rc 1 = boot 의 파괴적 회수).
     let mut resume_held = role.is_some();
+    // ★seatkeep-t1: 이 회복이 잡은 대화 임대 · 거절 rc(92/93).
+    let mut lease_g: Option<cys::session_lease::Guard> = None;
+    let mut lease_refused: Option<i32> = None;
+    let mut lease_sess: Option<String> = None;
     let result = (|| -> Result<BootVerdict, String> {
         let sid = match resolve_role_or_surface(&role, &surface) {
             Ok(sid) => sid,
@@ -25734,6 +25865,16 @@ fn run_node_recover(surface: Option<String>, role: Option<String>) -> i32 {
                 cys::restore_config_dir(&entry).map_err(|why| format!("node-recover {role_name}: {why}"))?,
             ),
         };
+        // ★seatkeep-t1: 같은 대화를 다른 프로세스가 쓰는 중이면(또는 판정 불가면) 이 좌석에 다시 띄우지 않는다.
+        match lease_gate(&role_name, sess.as_deref(), Some(sid), rec_cfg.as_deref(), restore_claims_dir().as_deref()) {
+            LeaseGate::Off => {}
+            LeaseGate::Proceed(g) => lease_g = g,
+            LeaseGate::Refuse { rc, line } => {
+                lease_refused = Some(rc);
+                return Err(format!("node-recover 대화 임대 거절 {line}"));
+            }
+        }
+        lease_sess = sess.clone();
         // 기동 send_text/Return 도 같은 접기 — C-u 는 지났는데 그 200ms 창에 사람이 치면 같은 코드로 거부된다.
         let verdict = boot_agent_on_surface(
             sid,
@@ -25778,6 +25919,12 @@ fn run_node_recover(surface: Option<String>, role: Option<String>) -> i32 {
         };
         Ok(verdict)
     })();
+    // ★seatkeep-t1: 기동 결과 → 임대 마무리(성공 = 작성자 기록 · 결과 불명·기동 명령 뒤 일반 오류 = 유지 · 그 밖 = 되돌림).
+    lease_settle_boot(&result, seat.as_ref().map(|s| s.0), lease_g.take(), lease_sess.as_deref());
+    if let (Some(rc), Err(e)) = (lease_refused, &result) {
+        eprintln!("{e}");
+        return rc;
+    }
     match result {
         Ok(BootVerdict::Ready) => 0,
         Ok(BootVerdict::GatePending { .. }) => cys::EXIT_GATE_PENDING,
@@ -26101,7 +26248,9 @@ fn restore_claim_file_name(id: &str) -> String {
 fn restore_claim_token() -> String {
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    format!("{}-{nanos}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    // ★seatkeep-t1: 임대를 아는 판이 쓴 claim 은 토큰 머리 `L` — 「옛 판 복원기의 claim」(동률 60초)과 가른다(형식·칸 수 무변경).
+    let lead = if cys::session_lease::enabled() { "L" } else { "" };
+    format!("{lead}{}-{nanos}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
 }
 
 /// 원자 claim 파일의 유효 시간 — 이보다 오래된 파일은 앞선 restore 가 죽고 남긴 것으로 본다.
@@ -26177,10 +26326,10 @@ trait RestoreLauncher {
     #[allow(clippy::too_many_arguments)]
     fn in_seat(&mut self, sid: u64, role: &str, agent: &str, resume: bool, sess: Option<&str>,
                cwd: Option<&str>, cfg: Option<&str>) -> Result<Result<BootVerdict, String>, String>;
-    /// fresh 기동(새 좌석) — rc 는 `run_launch_agent_opts` 계약.
+    /// fresh 기동(새 좌석) — (rc · 만든 좌석)은 `run_launch_agent_opts` 계약.
     #[allow(clippy::too_many_arguments)]
     fn fresh(&mut self, role: &str, agent: &str, cwd: Option<String>, resume: bool, sess: Option<String>,
-             cfg: Option<String>, title: Option<String>) -> i32;
+             cfg: Option<String>, title: Option<String>) -> (i32, Option<u64>);
 }
 
 struct ProdRestoreLauncher;
@@ -26192,7 +26341,7 @@ impl RestoreLauncher for ProdRestoreLauncher {
     }
 
     fn fresh(&mut self, role: &str, agent: &str, cwd: Option<String>, resume: bool, sess: Option<String>,
-             cfg: Option<String>, title: Option<String>) -> i32 {
+             cfg: Option<String>, title: Option<String>) -> (i32, Option<u64>) {
         run_launch_agent_opts(role, agent, cwd, resume, sess, true, cfg, title)
     }
 }
@@ -26246,6 +26395,8 @@ fn run_restore_with(cwd: Option<String>, include_master: bool, no_resume: bool, 
     // ★(B-360 R2) in-seat seats kept after a REFUSED (90) / UNKNOWN (91) write — never a fresh fallback
     // ★(B-360 R2 revise) and fresh launches that came back 90 / 91 (pane kept by launch-agent) — counted the same way
     let (mut refused, mut unknown) = (0usize, 0usize);
+    // ★seatkeep-t1: 대화 임대 거절 — 작성자 살아 있음(92) · 생존 판정 불가(93).
+    let (mut lease_live, mut lease_unknown) = (0usize, 0usize);
     let _kept_scope = KeptPaneScope::open("restore");
     let result = (|| -> Result<(usize, usize, usize), String> {
         let topo = request("system.topology", json!({}))?;
@@ -26301,6 +26452,8 @@ fn run_restore_with(cwd: Option<String>, include_master: bool, no_resume: bool, 
         //   '기동이 깨졌다'(재시도)와 '관문을 통과시켜라'(1회 조치)를 혼동하지 않게 한다.
         let (mut ok, mut fail, mut gated) = (0usize, 0usize, 0usize);
         for entry in saved {
+            // ★seatkeep-t1: 이 항목이 잡은 대화 임대(없음 = 노브 끔 · 대화 없음 · 바깥 갈래가 쥠).
+            let mut lease_g: Option<cys::session_lease::Guard> = None;
             let Some(role) = entry["role"].as_str() else {
                 continue;
             };
@@ -26364,14 +26517,33 @@ fn run_restore_with(cwd: Option<String>, include_master: bool, no_resume: bool, 
             // ★2판 ②④(codex 1R): claim = 기동 직전(여기 = in-seat·fresh 두 기동 모두 이 아래) · 프로세스 내 집합 +
             //   데몬 재조회(live 세션) + 상태 폴더 원자 파일(다른 `cys restore` 프로세스와의 경쟁) · 보류·실패 시 해제.
             let claim_dir = restore_claims_dir();
-            let (sess, resume_dup, claim) = restore_claim_for_launch(
-                sess,
-                &busy_sessions,
-                &restore_live_sessions,
-                claim_dir.as_deref(),
-                restore_now_secs(),
-                &restore_daemon_gen,
-            );
+            // ★seatkeep-t1(DESIGN §3·§6): 노브 켬 = 판정 정본은 대화 임대(시간으로 풀지 않음). 옛 claim 파일은 옛 판이 보도록
+            //   계속 만들되(성공할 때만) 판정에 쓰지 않는다 · 같은 회차 중복 · 옛 판 복원기의 60초 안 claim 만 동률로 존중.
+            let claim_only_busy = std::cell::RefCell::new(std::collections::HashSet::new());
+            // ★seatkeep-t1(codex 6R): `--no-resume` = 저장 대화를 잇지 않는다 → 그 대화의 임대를 잡지 않는다(종전 claim 경로).
+            let (sess, resume_dup, claim) = match restore_lease_pick(role, if no_resume { None } else { sess.as_deref() }, &busy_sessions,
+                                                                     empty_seats.get(role).map(|x| x.0), cfg.as_deref(),
+                                                                     claim_dir.as_deref()) {
+                LeasePick::Off => restore_claim_for_launch(
+                    sess,
+                    &busy_sessions,
+                    &restore_live_sessions,
+                    claim_dir.as_deref(),
+                    restore_now_secs(),
+                    &restore_daemon_gen,
+                ),
+                LeasePick::Go(g) => {
+                    lease_g = g;
+                    let c = restore_claim_for_launch(sess.clone(), &claim_only_busy, &std::collections::HashSet::new,
+                                                     claim_dir.as_deref(), restore_now_secs(), &restore_daemon_gen).2;
+                    (sess, false, c)
+                }
+                LeasePick::Refuse { rc, line } => {
+                    println!("{line}");
+                    if rc == EXIT_SESSION_WRITER_LIVE { lease_live += 1 } else { lease_unknown += 1 }
+                    continue;
+                }
+            };
             // ★3판 ⑥: 여기부터 `claim` 은 되돌림 가드다 — 기동 성공·관문 보류에서만 `commit()` · 그 밖의 모든 `continue`
             //   (spec 실패 · 주입 표식 겹침 · 개명 보류 · 기동 실패)는 가드가 버려지며 집합·파일을 되돌린다.
             if resume_dup {
@@ -26399,7 +26571,7 @@ fn run_restore_with(cwd: Option<String>, include_master: bool, no_resume: bool, 
                 //   보장한 것은 **좌석 중복 스폰 0** 까지였고 **주입 중복 0** 까지가 아니었다.
                 //   좌석 번호가 있는 이 경로에서만 표식을 claim 한다 — fresh 기동은 좌석이 새로
                 //   태어나므로(번호가 다르다) 겹칠 대상이 애초에 없다.
-                if !restore_inject_claim(sid) {
+                if !inject_claim_or_lease(sid, sess.as_deref()) {
                     println!(
                         "· {role}: 겹치는 복원 경로가 방금 이 좌석(surface:{sid})을 복원했다 \
                          — 건너뜀(주입 0 · 좌석 보존 · 스폰 0)"
@@ -26420,6 +26592,7 @@ fn run_restore_with(cwd: Option<String>, include_master: bool, no_resume: bool, 
                     Ok(BootVerdict::Ready) => {
                         ok += 1;
                         claim.commit();
+                        lease_finish_ready(lease_g.take(), Some(sid), sess.as_deref());
                         // ★(0.14.41 · U8 P0-M1) [RESTORE] 는 `boot_agent_on_surface` 가 디렉티브 뒤에 **한
                         //   제출**로 이미 넣었다(위 인자 `Some(restore_directive(role))` → `adoption_payload`).
                         //   종전의 두 번째 `inject_text(restore_directive)` 는 Claude 큐 선두에 끼어 감독자 지시를
@@ -26434,6 +26607,7 @@ fn run_restore_with(cwd: Option<String>, include_master: bool, no_resume: bool, 
                     Ok(BootVerdict::GatePending { gate, tail }) => {
                         gated += 1;
                         claim.commit(); // 좌석이 살아 있다(관문) — 대화를 쥔 채 둔다
+                        lease_finish_ready(lease_g.take(), Some(sid), sess.as_deref());
                         print_gate_pending_prescription(sid, role, agent, &gate, &tail);
                         println!(
                             "· {role}: 좌석 내 재연결 보류(관문 gate={gate}) — 좌석 보존 · 주입 0 · fresh 폴백 0"
@@ -26449,6 +26623,7 @@ fn run_restore_with(cwd: Option<String>, include_master: bool, no_resume: bool, 
                     //   second directive). Keep the seat, like launch-agent's 90/91.
                     Err(e) if is_journal_refusal(&e) => {
                         refused += 1;
+                        if let Some(g) = lease_g.take() { lease_settle_after_error(g, Some(sid), false) } // ⑪·codex 1R C2: 잇는 기동 글 수락 뒤(주입 거절)만 유지 · 기동 글 0바이트 거절·새 대화 = 되돌림
                         println!(
                             "· {role}: 좌석 내 재연결 — the writer journal refused a write (zero bytes, nothing typed) — seat \
                              surface:{sid} kept, no fresh launch. If the agent runs WITHOUT its directive, make the journal \
@@ -26459,6 +26634,7 @@ fn run_restore_with(cwd: Option<String>, include_master: bool, no_resume: bool, 
                     }
                     Err(e) if is_write_outcome_unknown(&e) => {
                         unknown += 1;
+                        if let Some(g) = lease_g.take() { lease_settle_after_error(g, Some(sid), true) } // ⑪: 결과 불명 = 풀지 않는다(새 대화 기동만 되돌림 · codex 1R C1)
                         // ★(B-360 R2 revise · minor) name the recovery: inspect first, re-inject only if it did not land
                         println!(
                             "· {role}: 좌석 내 재연결 — a write's outcome is unknown (it may still land) — seat surface:{sid} \
@@ -26467,6 +26643,16 @@ fn run_restore_with(cwd: Option<String>, include_master: bool, no_resume: bool, 
                              `cys reinject --role {role} --check`): {e}"
                         );
                         record_kept_pane(sid, role, agent, &e, KeptWrite::of(&e, KeptWrite::Directive), KeptOutcome::of_err(&e));
+                        continue;
+                    }
+                    // ★seatkeep-t1(codex 6R): 임대를 쥐고 기동 명령을 이미 보낸 뒤의 일반 오류 = 결과 불명 — fresh 폴백이면 같은 대화의 작성자가 둘.
+                    Err(e) if lease_g.is_some() && lease_launch_sent(sid) => {
+                        unknown += 1;
+                        if let Some(g) = lease_g.take() { lease_keep_unknown(g) }
+                        println!(
+                            "· {role}: 좌석 내 재연결 — 기동 명령을 보낸 뒤 오류({e}) — 대화가 이미 이어졌을 수 있어 새 기동 0 · 좌석 \
+                             surface:{sid} 유지: 먼저 `cys read-screen --surface surface:{sid}` 로 확인하고, 빈 셸이면 그 좌석을 닫은 뒤 `cys restore`"
+                        );
                         continue;
                     }
                     Err(e) => {
@@ -26496,9 +26682,24 @@ fn run_restore_with(cwd: Option<String>, include_master: bool, no_resume: bool, 
                 }
             }
             println!("· {role}: {agent} 재기동…");
-            let rc = launcher.fresh(role, agent, target_cwd, resume, sess, cfg, restore_title(&entry));
+            let (rc, made) = launcher.fresh(role, agent, target_cwd, resume, sess.clone(), cfg, restore_title(&entry));
             if rc == 0 || rc == cys::EXIT_GATE_PENDING {
                 claim.commit(); // 대화를 잇는 좌석이 섰다(관문 보류 포함) — 그 밖 = 가드 drop = 되돌림
+                lease_finish_ready(lease_g.take(), made, sess.as_deref()); // 좌석 = 이 기동이 만든 좌석(codex 2R #2)
+            } else if rc == EXIT_DIRECTIVE_REFUSED || rc == EXIT_WRITE_OUTCOME_UNKNOWN {
+                if let Some(g) = lease_g.take() {
+                    lease_settle_kept_rc(g, rc, made); // ⑪·codex 1R C1·C2
+                }
+            } else if rc == EXIT_SESSION_WRITER_LIVE || rc == EXIT_SESSION_LIVENESS_UNKNOWN {
+                // 안쪽 갈래가 거절(바깥이 임대를 못 쥔 경우 · r4 A 재반환 좌석 판정) — 새 대화 폴백 0 · commit 0 · 실패로 세지 않는다.
+                if rc == EXIT_SESSION_LIVENESS_UNKNOWN && made.is_some() {
+                    if let Some(g) = lease_g.take() {
+                        lease_keep_unknown(g); // r4 A: 재반환 좌석 판정 불가 = 그 좌석이 이 대화를 쓰고 있을 수 있다
+                    }
+                }
+                if rc == EXIT_SESSION_WRITER_LIVE { lease_live += 1 } else { lease_unknown += 1 }
+                println!("{}", restore_inner_refusal_line(role, sess.as_deref(), rc, made)); // r5(codex r4 #3): phoenix·Tauri 가 읽는 표준 거절 줄
+                continue;
             }
             if rc == cys::EXIT_GATE_PENDING {
                 // 새 pane 은 떴고 프로세스도 살아 있다 — 닫지 않고, 디렉티브도 넣지 않는다.
@@ -26559,12 +26760,13 @@ fn run_restore_with(cwd: Option<String>, include_master: bool, no_resume: bool, 
         Ok((ok, fail, gated)) => {
             println!(
                 "restore 완료: 재기동 {ok} · 실패 {fail} · 관문 보류 {gated} · journal refused {refused} · outcome unknown \
-                 {unknown} · 현황 `cys status`"
+                 {unknown} · 현황 `cys status`{}",
+                restore_lease_summary(lease_live, lease_unknown)
             );
             if refused > 0 || unknown > 0 {
                 println!("restore: 좌석 보존 — journal refused {refused} · outcome unknown {unknown} (fresh 폴백 0)");
             }
-            restore_exit_code(fail, gated, unknown, refused)
+            restore_exit_code_lease(restore_exit_code(fail, gated, unknown, refused), fail + gated, unknown, lease_live, lease_unknown)
         }
         Err(e) => {
             eprintln!("error: {e}");
@@ -33687,7 +33889,7 @@ mod tests {
         assert!(held_at < fail_at, "재실측이 실패 계수보다 뒤에 있다");
         let rs = &src[src.find("fn run_launch_agent_resume_saved(").unwrap()..];
         let rs = &rs[..rs.find("\n}\n").unwrap()];
-        assert!(rs.contains("run_launch_agent_opts(role, agent, Some(cwd), true, Some(session), true, config_dir, None)"));
+        assert!(rs.contains("run_launch_agent_opts(role, agent, Some(cwd), true, Some(session.clone()), true, config_dir, None)")); // ★seatkeep-t1: session 은 임대 마무리(lease_finish_by_rc)에도 쓴다
         assert!(rs.contains("launch_pin_verdict(role, agent, cwd.as_deref())"), "이을 수 있는지 미리 재지 않는다");
         assert_eq!(rs.matches("return run_launch_agent(role, agent, cwd);").count(), 2, "못 이을 때 종전 기동이 아니다");
     }
@@ -34028,12 +34230,14 @@ mod tests {
                 panic!("빈 좌석 없음");
             }
             fn fresh(&mut self, role: &str, _a: &str, _c: Option<String>, resume: bool, sess: Option<String>,
-                     _cfg: Option<String>, _t: Option<String>) -> i32 {
+                     _cfg: Option<String>, _t: Option<String>) -> (i32, Option<u64>) {
                 self.calls.push((role.into(), resume, sess));
-                0
+                (0, None)
             }
         }
-        let saved_env: Vec<_> = ["CYS_SOCKET", "CYS_NO_AUTOSTART"].into_iter().map(|k| (k, std::env::var_os(k))).collect();
+        let saved_env: Vec<_> = ["CYS_SOCKET", "CYS_NO_AUTOSTART", cys::session_lease::KNOB].into_iter().map(|k| (k, std::env::var_os(k))).collect();
+        // ★seatkeep-t1: 이 시험은 종전 600초 claim 경로(노브 끔)의 핀 — 임대 켬 경로는 session_lease_cli_tests 가 잰다(임대 켬이면 신선한 옛 형식 claim 은 60초 동률로 거절).
+        std::env::set_var(cys::session_lease::KNOB, "off");
         std::env::set_var("CYS_SOCKET", &socket);
         std::env::set_var("CYS_NO_AUTOSTART", "1");
         let mut rec = Rec::default();
@@ -34254,11 +34458,11 @@ mod tests {
             })
         }
         fn fresh(&mut self, role: &str, _a: &str, _c: Option<String>, resume: bool, sess: Option<String>,
-                 _cfg: Option<String>, _t: Option<String>) -> i32 {
+                 _cfg: Option<String>, _t: Option<String>) -> (i32, Option<u64>) {
             let n = self.cols(sess.as_deref());
             self.calls.push((role.into(), "fresh", resume, sess, n));
             self.launched.store(true, std::sync::atomic::Ordering::SeqCst);
-            if role == "w-gate" { cys::EXIT_GATE_PENDING } else { 0 }
+            (if role == "w-gate" { cys::EXIT_GATE_PENDING } else { 0 }, None)
         }
     }
 
@@ -34304,7 +34508,9 @@ mod tests {
                 let _ = writeln!(stream, "{}", json!({"id": req["id"], "ok": true, "result": result}));
             }
         });
-        let saved_env: Vec<_> = ["CYS_SOCKET", "CYS_NO_AUTOSTART"].into_iter().map(|k| (k, std::env::var_os(k))).collect();
+        let saved_env: Vec<_> = ["CYS_SOCKET", "CYS_NO_AUTOSTART", cys::session_lease::KNOB].into_iter().map(|k| (k, std::env::var_os(k))).collect();
+        // ★seatkeep-t1: 이 시험은 종전 600초 claim 경로(노브 끔)의 핀 — 임대 켬 경로는 session_lease_cli_tests 가 잰다(임대 켬이면 신선한 옛 형식 claim 은 60초 동률로 거절).
+        std::env::set_var(cys::session_lease::KNOB, "off");
         std::env::set_var("CYS_SOCKET", &socket);
         std::env::set_var("CYS_NO_AUTOSTART", "1");
         let mut rec = RestoreWiringRec { dir: dir.clone(), launched, calls: vec![] };
@@ -34442,12 +34648,14 @@ mod tests {
                 Ok(Ok(if sid == 50 { BootVerdict::Ready } else { BootVerdict::LaunchFailed { evidence: "stub".into() } }))
             }
             fn fresh(&mut self, role: &str, _a: &str, _c: Option<String>, resume: bool, sess: Option<String>,
-                     cfg: Option<String>, _t: Option<String>) -> i32 {
+                     cfg: Option<String>, _t: Option<String>) -> (i32, Option<u64>) {
                 self.calls.push((role.into(), "fresh", resume, sess, cfg));
-                if role == "w-fail" { 1 } else { 0 }
+                (if role == "w-fail" { 1 } else { 0 }, None)
             }
         }
-        let saved_env: Vec<_> = ["CYS_SOCKET", "CYS_NO_AUTOSTART"].into_iter().map(|k| (k, std::env::var_os(k))).collect();
+        let saved_env: Vec<_> = ["CYS_SOCKET", "CYS_NO_AUTOSTART", cys::session_lease::KNOB].into_iter().map(|k| (k, std::env::var_os(k))).collect();
+        // ★seatkeep-t1: 이 시험은 종전 600초 claim 경로(노브 끔)의 핀 — 임대 켬 경로는 session_lease_cli_tests 가 잰다(임대 켬이면 신선한 옛 형식 claim 은 60초 동률로 거절).
+        std::env::set_var(cys::session_lease::KNOB, "off");
         std::env::set_var("CYS_SOCKET", &socket);
         std::env::set_var("CYS_NO_AUTOSTART", "1");
         let mut rec = Rec::default();
@@ -59397,7 +59605,7 @@ mod agy_door_wiring_tests {
         let src = include_str!("cys.rs");
         let b = body(src, "\nfn run_launch_agent_opts(");
         assert!(
-            first_stmt(b).starts_with("if let Some(rc) = agy_door_refuse_launch(agent) { return rc; }"),
+            first_stmt(b).starts_with("if let Some(rc) = agy_door_refuse_launch(agent) { return (rc, None); }"),
             "launch-agent 첫 동작이 agy 좌석 문이 아니다: {}",
             first_stmt(b)
         );
@@ -59433,3 +59641,13 @@ mod agy_door_wiring_tests {
         assert!(rs[..spawn].contains("cys::agy_door::launch_refusal_argv(&command)"), "cys run 이 스폰 전에 문 판정을 거치지 않는다(codex 1R blocking)");
     }
 }
+
+// TICKET=cysr-seatkeep-t1: 대화 소유 임대 접착(별도 파일 — 기존 함수에는 호출 배선만).
+#[path = "../session_lease_cli.rs"]
+mod session_lease_cli;
+use session_lease_cli::*;
+
+// TICKET=cysr-seatkeep-t1: 대화 소유 임대 시험(별도 파일 — 기존 시험 모듈 무수정).
+#[cfg(test)]
+#[path = "../session_lease_cli_tests.rs"]
+mod session_lease_cli_tests;

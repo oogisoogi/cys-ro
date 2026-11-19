@@ -4215,14 +4215,37 @@ fn maybe_apply_pending_update(app: &AppHandle, hold: Option<cys::restore_hold::R
 
 /// 자동 복원이 끝나기를 기다린다(유계) — 끝나면 true · 상한까지 진행 중이면 false. 사이드카가 먼저 돌면 맨 restore 가 좌석을 세워 phoenix 의 폴더 보정이 빠진다(794 F2 · rotate ⑤ 와 같다).
 async fn wait_auto_restore_settled() -> bool {
-    for _ in 0..240 {
-        let phase = rpc("org.status", json!({})).await.ok().and_then(|v| v["daemon"]["auto_restore"].as_str().map(str::to_string));
-        if !matches!(phase.as_deref(), Some("held" | "running" | "retry_wait")) {
+    wait_auto_restore_settled_on(default_socket()).await
+}
+
+/// [`wait_auto_restore_settled`] 의 소켓 지정판 — 부서 데몬에도 같은 상한(120초 · codex 2R #1).
+/// 데몬은 소켓이 요청을 받기 전에 running(또는 held)을 찍으므로(cysd `post_listen_boot`) 막 띄운 데몬도 「아직 안 시작」을 끝으로 읽지 않는다.
+async fn wait_auto_restore_settled_on(socket: std::path::PathBuf) -> bool {
+    wait_auto_restore_settled_for(socket, std::time::Duration::from_secs(120), std::time::Duration::from_secs(2)).await
+}
+
+/// 자동 복원이 끝났다고 볼 답인가(순수 · codex 3R ②) — **명시적인 `done`·`off` 만**. RPC 오류·시한 초과·깨진 답·칸 없음(None)·running·held·retry_wait 은
+/// 끝이 아니다(끝으로 보면 사이드카가 자동 복원과 겹쳐 같은 역할이 하나 더 선다 · 794 r2). 끝내 못 받으면 상한에서 「확인 못 함」.
+fn auto_restore_settled(phase: Option<&str>) -> bool {
+    matches!(phase, Some("done" | "off"))
+}
+
+/// 대기 본체(codex 3R ⑤) — 전체 상한 = `total`(시각으로 잼) · 시도마다 일회성 연결 + `per_try` 시한(답을 멈춘 데몬에 묶이지 않는다).
+async fn wait_auto_restore_settled_for(socket: std::path::PathBuf, total: std::time::Duration, per_try: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + total;
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        let answer = tokio::time::timeout(left.min(per_try), rpc_oneshot(&socket, "org.status", json!({}))).await;
+        let phase = answer.ok().and_then(|r| r.ok()).and_then(|v| v["daemon"]["auto_restore"].as_str().map(str::to_string));
+        if auto_restore_settled(phase.as_deref()) {
             return true;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        tokio::time::sleep(left.min(std::time::Duration::from_millis(500))).await;
     }
-    false
 }
 
 /// (T2) `cys restore --include-master`를 사이드카로 돌리고 **판정 층**을 거친 결과를 낸다 — 본부·부서 한 규칙.
@@ -4235,20 +4258,77 @@ async fn wait_auto_restore_settled() -> bool {
 async fn run_sidecar_restore_judged(
     socket: Option<std::path::PathBuf>,
 ) -> (bool, Option<RestoreSummary>) {
-    let (ok, summary) = run_sidecar_restore_report(socket.clone()).await;
+    let (ok, summary, first93) = run_sidecar_restore_report(socket.clone()).await;
     if !restore_should_retry(ok, summary) {
         return (ok, summary);
     }
     tokio::time::sleep(RESTORE_RETRY_WAIT).await;
-    run_sidecar_restore_report(socket).await
+    let second = run_sidecar_restore_report(socket.clone()).await;
+    // ★seatkeep-t1(r5 · codex r4 #3): 재실측은 「역할이 살아 있다」로 첫 93 을 지우지 않는다 — 그 역할 좌석이 **그 대화로** 등록됐는지 본다.
+    let live = if first93.is_empty() { None } else { read_topology_live(socket).await };
+    restore_judge_two((ok, summary, first93), second, live.as_deref())
+}
+
+/// 데몬 topology 의 live 목록 1회(일회성 연결 + 2초 시한 · 판독 실패 = None = 확인 못 함).
+async fn read_topology_live(socket: Option<std::path::PathBuf>) -> Option<Vec<Value>> {
+    let s = socket.unwrap_or_else(cys::socket_path);
+    tokio::time::timeout(std::time::Duration::from_secs(2), rpc_oneshot(&s, "system.topology", json!({})))
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .and_then(|v| v["live"].as_array().cloned())
+}
+
+/// 사이드카 `cys restore` 출력의 판정 불가(93) 표준 거절 줄 → (역할, 대화 앞 8자)(순수 · r5). 모양의 정본 = cys `lease_gate`·
+/// `restore_inner_refusal_line`(`· {역할}: 대화 {앞 8자} 작성자 생존 판정 불가(…) — 띄우지 않음` · phoenix `_LEASE_REFUSAL_RE` 와 같은 줄).
+fn parse_restore_unknown_refusals(stdout: &str) -> Vec<(String, String)> {
+    stdout
+        .lines()
+        .filter_map(|l| {
+            let (role, rest) = l.strip_prefix("· ")?.split_once(": 대화 ")?;
+            let (sid8, rest) = rest.split_once(' ')?;
+            (rest.starts_with("작성자 생존 판정 불가(") && rest.contains(") — 띄우지 않음")).then(|| (role.to_string(), sid8.to_string()))
+        })
+        .collect()
+}
+
+/// 두 회차 판정(순수 · r5 · codex r4 #3) = [`restore_merge_retry`] + **풀리지 않은 첫 회차 93 유지**: 첫 회차가 판정 불가로 띄우지 않은
+/// (역할, 대화) 가운데 재실측이 다시 거절하지 않았고(그 수는 재실측 요약에 이미 있다) 지금 그 역할의 점유 좌석이 그 대화로 등록됐다고
+/// 확인되지 않는 것 = 여전히 판정 불가(재실측의 「이미 가동 중 — 건너뜀」은 역할이 살아 있다는 뜻일 뿐 · 그 대화가 복원됐다는 뜻이 아니다).
+/// `live` None(판독 실패) = 확인 못 함. 재실측 요약이 없으면 합치기가 이미 첫 요약(93 포함)을 낸다 — 더하지 않는다.
+fn restore_judge_two(
+    first: (bool, Option<RestoreSummary>, Vec<(String, String)>),
+    second: (bool, Option<RestoreSummary>, Vec<(String, String)>),
+    live: Option<&[Value]>,
+) -> (bool, Option<RestoreSummary>) {
+    let merged = restore_merge_retry(first.1, (second.0, second.1));
+    let restored = |role: &str, sid8: &str| {
+        let want = sid8.to_ascii_lowercase();
+        live.is_some_and(|l| {
+            l.iter().any(|e| {
+                e["role"].as_str() == Some(role)
+                    && e["seat"].as_str() != Some("empty")
+                    && e["session_id"].as_str().is_some_and(|x| x.trim().to_ascii_lowercase().starts_with(&want))
+            })
+        })
+    };
+    let held = first.2.iter().filter(|(r, s8)| !second.2.iter().any(|(r2, _)| r2 == r) && !restored(r, s8)).count() as u64;
+    match merged {
+        (_, Some(s)) if held > 0 && second.1.is_some() => (false, Some(RestoreSummary { unknown: s.unknown + held, ..s })),
+        m => m,
+    }
 }
 
 /// 사이드카 `cys restore` 의 성공 여부 + 요약 줄(`restore 완료: 재기동 N · 실패 N · 관문 보류 N`)의 수.
 /// 요약이 없으면(데몬 불통·실행 불가) `None`. TICKET=v113-restore 복원 정직 알림.
 async fn run_sidecar_restore_report(
     socket: Option<std::path::PathBuf>,
-) -> (bool, Option<RestoreSummary>) {
+) -> (bool, Option<RestoreSummary>, Vec<(String, String)>) {
+    // ★seatkeep-t1(r5 · codex r4 #4): 초기화 관문은 사이드카 **자식이 끝날 때까지** 닫는다 — 기다리는 쪽이 시한으로 포기해도
+    //   (후속 감시 판정 시한) 자식은 계속 돌 수 있다(spawn_blocking Future 를 버려도 자식은 안 끝난다) · 그 동안 초기화가 지운 것을 되살리지 않게.
+    let work = BootWorkGuard::enter();
     tokio::task::spawn_blocking(move || {
+        let _work = work;
         let mut cmd = std::process::Command::new(resolve_sidecar(if cfg!(windows) { "cys.exe" } else { "cys" }));
         cmd.arg("restore").arg("--include-master");
         cmd.env("CYS_NO_AUTOSTART", "1"); // 죽은 소켓에 빈 데몬 autostart 금지(사이드카 CLI 가드)
@@ -4268,12 +4348,18 @@ async fn run_sidecar_restore_report(
         }
         no_console(&mut cmd);
         match cmd.stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output() {
-            Ok(o) => (o.status.success(), parse_restore_summary(&String::from_utf8_lossy(&o.stdout))),
-            Err(_) => (false, None),
+            // ★seatkeep-t1(독립 검증 F2): rc 92(그 대화를 살아 있는 다른 프로세스가 씀)도 성공으로 치지 않는다 — 업데이트 직후 옛 작성자가
+            //   몇 초 늦게 끝나는 경우 그 역할이 빈 채 남는다. 판정 층(run_sidecar_restore_judged)이 대기 뒤 1회 다시 재고,
+            //   그래도 남으면 restore_note 가 그 사정을 알린다(요약 꼬리 `대화 작성자 살아 있음 N` → RestoreSummary.live).
+            Ok(o) => {
+                let out = String::from_utf8_lossy(&o.stdout);
+                (o.status.success(), parse_restore_summary(&out), parse_restore_unknown_refusals(&out))
+            }
+            Err(_) => (false, None, Vec::new()),
         }
     })
     .await
-    .unwrap_or((false, None))
+    .unwrap_or((false, None, Vec::new()))
 }
 
 /// `cys restore` 요약 줄의 수(순수). 형식의 정본 = `src/bin/cys.rs` `run_restore` 의 println.
@@ -4282,6 +4368,13 @@ struct RestoreSummary {
     ok: u64,
     fail: u64,
     gated: u64,
+    /// ★seatkeep-t1: 요약 꼬리 `대화 작성자 살아 있음 N`(없으면 0 — 옛 CLI · 0 이면 꼬리 생략).
+    live: u64,
+    /// ★seatkeep-t1: 요약 꼬리 `생존 판정 불가 N`(rc 93 · 사람이 그 자리를 확인해야 함).
+    unknown: u64,
+    /// ★seatkeep-t1(codex 2R #4): 판정 층 재실측(2회차) 요약을 못 읽어 위 수가 **첫 회차 측정**이다 — 문안이 지금 값처럼 말하지 않는다.
+    /// 요약 줄 판독(`parse_restore_summary`)은 언제나 false · [`restore_merge_retry`] 만 켠다.
+    remeasure_failed: bool,
 }
 
 fn parse_restore_summary(stdout: &str) -> Option<RestoreSummary> {
@@ -4290,33 +4383,88 @@ fn parse_restore_summary(stdout: &str) -> Option<RestoreSummary> {
         let i = line.find(key)? + key.len();
         line[i..].trim_start().split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
     };
-    Some(RestoreSummary { ok: num("재기동")?, fail: num("실패")?, gated: num("관문 보류")? })
+    Some(RestoreSummary { ok: num("재기동")?, fail: num("실패")?, gated: num("관문 보류")?, live: num("대화 작성자 살아 있음").unwrap_or(0), unknown: num("생존 판정 불가").unwrap_or(0), remeasure_failed: false })
 }
 
 /// 복원이 끝내 성공으로 끝나지 않았을 때 사용자에게 보일 **실제** 사정(순수) — `place` = 「본부」·부서 이름.
 /// 종전 문구 「본부 노드 복원 실행 실패」는 자리가 다 섰는데도(다른 복원 경로가 먼저 세움) 떴고,
 /// 관문 대기(사람 한 번 조치)와 실패를 구별하지 않았다(893 VM 실기 §7ⓐ). ★v115r5-t1: 부서도 같은 문안.
 fn restore_note(place: &str, summary: Option<RestoreSummary>) -> String {
-    match summary {
-        None => format!("{place} 복원을 실행하지 못했습니다(데몬 응답 없음) — 잠시 뒤 ↻ 재시작으로 다시 시도하세요."),
-        Some(s) if s.fail > 0 => format!(
-            "{place} 자리 {}곳을 세우지 못했습니다 — 그 창을 확인하거나 ↻ 재시작으로 다시 시도하세요.",
-            s.fail
-        ),
-        Some(s) if s.gated > 0 => format!(
-            "{place} 자리 {}곳이 첫 실행 확인을 기다립니다 — 그 창에서 확인을 한 번 눌러 주세요.",
-            s.gated
-        ),
-        Some(_) => format!("{place} 복원이 끝났지만 확인되지 않은 자리가 있습니다 — 상태를 점검하세요."),
+    let Some(s) = summary else {
+        return format!("{place} 복원을 실행하지 못했습니다(데몬 응답 없음) — 잠시 뒤 ↻ 재시작으로 다시 시도하세요.");
+    };
+    // ★seatkeep-t1(codex 2R #3): 실패 · 관문 보류 · 대화 임대(92 살아 있는 작성자 · 93 판정 불가)는 **서로 독립인 원인**이다 —
+    //   하나를 우선순위로 골라 나머지를 숨기지 않고 있는 것을 모두 덧붙인다(종전 = 실패가 있으면 관문 문안이 빠져 사람이 눌러야 할 관문을 못 알렸다).
+    let mut parts: Vec<String> = Vec::new();
+    if s.fail > 0 {
+        parts.push(format!("자리 {}곳을 세우지 못했습니다 — 그 창을 확인하거나 ↻ 재시작으로 다시 시도하세요.", s.fail));
     }
+    if s.gated > 0 {
+        parts.push(format!("자리 {}곳이 첫 실행 확인을 기다립니다 — 그 창에서 확인을 한 번 눌러 주세요.", s.gated));
+    }
+    if s.live > 0 {
+        parts.push(format!(
+            "자리 {}곳은 그 대화를 다른 프로세스(또는 같은 대화를 저장한 다른 역할)가 쓰는 중이라 띄우지 않았습니다 — 그 프로세스가 끝난 뒤 ↻ 재시작(또는 `cys restore`)으로 다시 시도하세요.",
+            s.live
+        ));
+    }
+    if s.unknown > 0 {
+        parts.push(format!(
+            "자리 {}곳은 그 대화를 쓰는 프로세스가 살아 있는지 판정하지 못해 띄우지 않았습니다 — `cys restore` 출력의 「확인:」 줄을 따라 그 자리를 확인하세요.",
+            s.unknown
+        ));
+    }
+    let body = if parts.is_empty() {
+        format!("{place} 복원이 끝났지만 확인되지 않은 자리가 있습니다 — 상태를 점검하세요.")
+    } else {
+        format!("{place} {}", parts.join(" "))
+    };
+    // ★seatkeep-t1(codex 2R #4): 재실측 실패 — 위 수는 처음 잰 값이다(오래된 수를 지금 값처럼 말하지 않는다).
+    if s.remeasure_failed {
+        return format!("{body} 다만 다시 확인하지 못해 위 내용은 처음 확인한 결과입니다 — 잠시 뒤 ↻ 재시작을 눌러 다시 확인하세요.");
+    }
+    body
+}
+
+/// ★seatkeep-t1(codex 1R C6 · 3R ③): 조직 복원 부서 순회의 사정 알림(순수) — 판정 층을 거쳐도 끝내 성공이 아니고
+/// 사람이 할 일이 있는 원인(관문 보류 = 그 창에서 확인 한 번 · 92 살아 있는 작성자 · 93 판정 불가)이 남았을 때 그 부서의 사정 문안(`restore_note` = 있는 원인 모두).
+/// 실패뿐인 부서는 종전대로 집계 알림만(「⚠ 직원 복귀 일부 실패」). ⚠3R ③: 종전엔 92·93 만 봐서, 재실측에서 92·93 이 풀리고 실패가 남으면 합친 관문이 숨었다.
+fn dept_restore_lease_note(place: &str, ok: bool, summary: Option<RestoreSummary>) -> Option<String> {
+    (!ok && matches!(summary, Some(s) if s.gated > 0 || s.live > 0 || s.unknown > 0)).then(|| restore_note(place, summary))
+}
+
+/// ★seatkeep-t1(codex 2R #1): 다시 띄운 부서의 자동 복원이 상한(120초) 안에 끝나지 않아 판정 층을 돌리지 못했을 때의 문안(순수) —
+/// 조용한 성공 대신 「무슨 일 + 무엇을 누르면 되는지」. (상한을 넘겨 사이드카를 돌리면 같은 역할이 하나 더 선다 — 794 r2 · 본부와 같은 규칙.)
+fn dept_relaunch_unconfirmed_note(place: &str) -> String {
+    format!("{place}: 다시 켰지만 직원 자리 복귀가 아직 끝나지 않아 결과를 확인하지 못했습니다 — 잠시 뒤 ↻ 재시작을 눌러 다시 확인하세요.")
 }
 
 /// 본부 복원을 한 번 더 돌릴 것인가(순수). ★Fable 1.1.3 M1: **관문 보류만** 남은 결과(실패 0 · 보류 ≥1)는
 /// 다시 돌리지 않는다 — 관문에 멈춘 자리는 좌석이 살아 있어 재실행이 「이미 가동 중 — 건너뜀」으로 접고
 /// rc 0 이 되어, 사람이 한 번 눌러야 풀리는 관문을 아무도 알리지 않았다(「확인을 한 번 눌러 주세요」 도달 불가).
 /// 재실행은 실패가 있거나 요약을 못 읽었을 때만(겹친 콜드부트 복원이 먼저 세운 자리를 실측하려는 본래 목적).
+/// ★seatkeep-t1(codex 1R C7): 관문 보류에 대화 임대 자리(92 살아 있는 작성자 · 93 판정 불가)가 섞이면 다시 잰다 —
+/// 업데이트 직후 늦게 끝나는 옛 작성자를 기다려 그 자리를 세우는 것이 F2 재실측의 목적이다. 관문 알림은 재실행이 접어도
+/// [`restore_merge_retry`] 가 첫 결과의 관문 수를 최종 결과에 합쳐 지킨다(M1 을 되살리지 않는다).
 fn restore_should_retry(ok: bool, summary: Option<RestoreSummary>) -> bool {
-    !ok && !matches!(summary, Some(s) if s.fail == 0 && s.gated > 0)
+    !ok && !matches!(summary, Some(s) if s.fail == 0 && s.gated > 0 && s.live == 0 && s.unknown == 0)
+}
+
+/// 재실행 결과에 첫 결과의 관문 보류를 합친다(순수 · codex 1R C7). 재실행은 관문에 멈춘 자리를 「이미 가동 중 — 건너뜀」으로
+/// 접어 rc 0·관문 0 을 내므로(Fable 1.1.3 M1), 첫 결과에 관문이 있었으면 최종도 성공이 아니고 관문 수는 둘 중 큰 쪽이다
+/// (두 회차의 관문 자리가 같은 자리일 수 있어 더하지 않는다 — 알림 유무는 잃지 않고 수는 아래 한계).
+/// 재실행 요약이 없으면(데몬 불통 · 실행 실패 · 판독 실패) 첫 결과의 관문(C7)·대화 임대 자리(92·93 · codex 2R #4)를 버리지 않고
+/// 첫 요약에 `remeasure_failed` 를 켜서 낸다(문안이 「처음 확인한 결과」라고 밝힌다). 그 밖(첫 결과도 실패뿐·요약 없음) = 종전(재실행 결과 그대로).
+fn restore_merge_retry(first: Option<RestoreSummary>, second: (bool, Option<RestoreSummary>)) -> (bool, Option<RestoreSummary>) {
+    let first_gated = first.map_or(0, |f| f.gated);
+    match second {
+        (ok, Some(s)) if first_gated == 0 => (ok, Some(s)),
+        (_, Some(s)) => (false, Some(RestoreSummary { gated: s.gated.max(first_gated), ..s })),
+        (ok, None) => match first {
+            Some(f) if f.gated > 0 || f.live > 0 || f.unknown > 0 => (false, Some(RestoreSummary { remeasure_failed: true, ..f })),
+            _ => (ok, None),
+        },
+    }
 }
 
 /// 사이드카 복원 재시도 대기(본부·부서 공용) — 콜드부트 auto-restore 가 같은 자리를 세우는 중이면 첫 실행이
@@ -4428,17 +4576,27 @@ fn dept_restore_action(
     }
 }
 
+/// ★seatkeep-t1(r5 · codex r4 #5): 조직 복원 회차 번호 — 새 회차가 시작되면 옛 회차의 후속 감시는 스스로 끝나고(아무것도 내지 않음)
+/// 화면은 `round` 가 지금 회차보다 작은 이벤트를 버린다(ui/src/restoredone.ts `restoreEventIsStale`).
+static RESTORE_ROUND: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn spawn_org_restore(app: AppHandle) {
     // ★W-2 (결정 A): 조직 복원이 도는 동안 초기화 관문을 닫는다 — 초기화가 방금 죽인 부서 데몬을 복원이
     // 되살리는 경합 차단(spawn 전에 무장 · 태스크가 끝나면 Drop).
     let boot_guard = BootWorkGuard::enter();
+    let round = RESTORE_ROUND.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     tauri::async_runtime::spawn(async move {
         let _boot_guard = boot_guard;
-        let _ = app.emit("restore-progress", json!({"phase": "start"}));
+        let _ = app.emit("restore-progress", json!({"phase": "start", "round": round}));
         // 본부(기본 소켓) — setup의 ensure_daemon으로 이미 가동 확정.
         // ★v113-restore: 첫 실행이 실패면 대기 후 1회 재실행 — 실패 알림은 재실행까지 실패일 때만.
         // 상한을 넘겨도 자동 복원이 돌면 사이드카를 돌리지 않는다 — 겹치면 같은 역할이 홈 폴더에 하나 더 선다(794 r2). 대기 초과는 복원 실패가 아니다.
         let hq_pending = !wait_auto_restore_settled().await;
+        // ★seatkeep-t1(r4 B · codex 3R #4·#5): 상한을 넘긴 끝점(본부·다시 켠 부서)은 done 뒤 후속 감시가 끝까지 본다.
+        let mut followup: Vec<PendingEnd> = Vec::new();
+        if hq_pending {
+            followup.push(PendingEnd { place: "본부".into(), socket: None });
+        }
         let (hq_ok, hq_summary) = if hq_pending { (true, None) } else { run_sidecar_restore_judged(None).await };
         let hq_note = (!hq_ok).then(|| restore_note("본부", hq_summary));
         // ★WP-3 리바이버 게이트: base 데몬 dept 묘비 — 삭제-의도 부서는 재기동에서 제외(+생존 시 reap).
@@ -4468,12 +4626,14 @@ fn spawn_org_restore(app: AppHandle) {
         if tombs.is_none() {
             let _ = app.emit(
                 "restore-progress",
-                json!({"phase": "skip", "detail": "삭제 기록을 읽지 못함 — 죽은 부서 재기동만 보류(살아 있는 부서는 그대로 복원 · 다음 기동 재시도)"}),
+                json!({"phase": "skip", "round": round, "detail": "삭제 기록을 읽지 못함 — 죽은 부서 재기동만 보류(살아 있는 부서는 그대로 복원 · 다음 기동 재시도)"}),
             );
         }
         // 부서 순회 — 등록 부서(depts.json)만 대상(유령 부서 재-launch 차단).
         let mut ok = 0usize;
         let mut fail = 0usize;
+        // ★seatkeep-t1(codex 3R ④): 다시 켠 부서의 자동 복원이 상한 안에 안 끝나 판정 층을 못 돌린 부서 — 성공도 실패도 아니다(done 의 `pending` · UI 가 「완료」 대신 「진행 중」).
+        let mut pending = 0usize;
         // ①(Fable R1 #3) + 원작자 D5-b(같은 결함 · 1.1.8 병합 합성): 부서 목록을 못 읽으면 부서 복원 전체를 건너뛴 사실을
         //   skip 이벤트로 알리고(종전: 조용히 ok=0·fail=0) 그 사유를 done/error 알림에도 싣는다(Fable R2 A — skip 은 UI 가 안 듣는다).
         //   판독 실패 = 무변경(원본 보존 · 다음 기동 재시도).
@@ -4483,7 +4643,7 @@ fn spawn_org_restore(app: AppHandle) {
             Err(e) => {
                 let _ = app.emit(
                     "restore-progress",
-                    json!({"phase": "skip", "detail": format!("부서 목록(depts.json)을 읽지 못해 부서 복원을 전건 보류(원본 보존 · 다음 기동 재시도) — {e}")}),
+                    json!({"phase": "skip", "round": round, "detail": format!("부서 목록(depts.json)을 읽지 못해 부서 복원을 전건 보류(원본 보존 · 다음 기동 재시도) — {e}")}),
                 );
                 depts_unreadable = Some(e);
                 json!({ "depts": {} })
@@ -4537,7 +4697,7 @@ fn spawn_org_restore(app: AppHandle) {
                         }
                         let _ = app.emit(
                             "restore-progress",
-                            json!({"phase": "skip", "dept": name, "detail": detail}),
+                            json!({"phase": "skip", "round": round, "dept": name, "detail": detail}),
                         );
                         continue;
                     }
@@ -4546,15 +4706,37 @@ fn spawn_org_restore(app: AppHandle) {
                     if action == DeptRestoreAction::HoldRelaunch {
                         let _ = app.emit(
                             "restore-progress",
-                            json!({"phase": "skip", "dept": name, "detail": "삭제 기록 미상 — 재기동 보류"}),
+                            json!({"phase": "skip", "round": round, "dept": name, "detail": "삭제 기록 미상 — 재기동 보류"}),
                         );
                         continue;
                     }
-                    let dept_ok = if action == DeptRestoreAction::SidecarRestore {
-                        run_sidecar_restore_judged(Some(sock.clone())).await.0
+                    // ★seatkeep-t1(codex 2R #1): 죽은 부서(Relaunch)도 살아 있던 부서와 **같은** 판정 층·알림을 지난다 —
+                    //   기존 launch 경로(콜드부트 auto-restore 가 노드 부활)로 띄운 뒤 그 자동 복원이 끝나기를 유계 대기하고 판정 층을 한 번 돌린다
+                    //   (종전 = launch 성공 bool 만 → 새 데몬 복원의 92·93 자리를 「완료」로 셌다). 상한 초과 = 「확인 못 함」 알림(사이드카 0).
+                    let judge = if action == DeptRestoreAction::SidecarRestore {
+                        Some(true)
+                    } else if launch_dept_daemon(app.clone(), name.clone()).await.is_ok() {
+                        let _ = app.emit("restore-progress", json!({"phase": "start", "round": round})); // r4 B(codex 3R #6): 끝점 대기마다 진행 sticky 수명 갱신(직렬 대기 합 > 3분이어도 꺼지지 않게)
+                        Some(wait_auto_restore_settled_on(sock.clone()).await)
                     } else {
-                        // 죽은 부서 → 기존 launch 경로 재사용(콜드부트 auto-restore가 노드 부활).
-                        launch_dept_daemon(app.clone(), name.clone()).await.is_ok()
+                        None
+                    };
+                    let dept_ok = if judge == Some(true) {
+                        let (dok, dsum) = run_sidecar_restore_judged(Some(sock.clone())).await;
+                        // ★seatkeep-t1(codex 1R C6): 부서에 남은 대화 임대 자리(92·93)를 알린다 — 종전엔 bool 만 받아 실패 1 로만 셌다.
+                        //   `dept` 키를 붙이지 않는다: UI 는 dept 없는 skip 만 토스트로 띄운다(ui/src/main.ts 무수정).
+                        if let Some(detail) = dept_restore_lease_note(&dept_display_name(name).unwrap_or_else(|| "부서".into()), dok, dsum) {
+                            let _ = app.emit("restore-progress", json!({"phase": "skip", "round": round, "detail": detail}));
+                        }
+                        dok
+                    } else if judge == Some(false) {
+                        let place = dept_display_name(name).unwrap_or_else(|| "부서".into());
+                        let _ = app.emit("restore-progress", json!({"phase": "skip", "round": round, "detail": dept_relaunch_unconfirmed_note(&place)}));
+                        pending += 1; // 데몬은 떴다 — 실패도 성공도 아니다(codex 3R ④ · 성공으로 세면 done 이 「완료」를 함께 말한다)
+                        followup.push(PendingEnd { place, socket: Some(sock.clone()) });
+                        continue;
+                    } else {
+                        false
                     };
                     if dept_ok {
                         ok += 1;
@@ -4564,11 +4746,11 @@ fn spawn_org_restore(app: AppHandle) {
                 }
             }
         }
-        if !hq_ok && ok == 0 && fail == 0 {
+        if !hq_ok && ok == 0 && fail == 0 && pending == 0 {
             // 본부 복원조차 못 돌고 부서도 없음 = 복원 경로 자체 실패 → 가시화(UI health 토스트).
             let _ = app.emit(
                 "restore-progress",
-                json!({"phase": "error", "detail": hq_note.clone().unwrap_or_default(),
+                json!({"phase": "error", "round": round, "detail": hq_note.clone().unwrap_or_default(),
                        "depts_unreadable": depts_unreadable}), // Fable R3: 이 경로도 부서 목록 판독 실패 사유를 싣는다
             );
             return;
@@ -4577,10 +4759,169 @@ fn spawn_org_restore(app: AppHandle) {
         // 이 작업의 목적). error 페이즈는 '본부 실패 + 부서 없음' 전면 실패만 담당(위).
         let _ = app.emit(
             "restore-progress",
-            json!({"phase": "done", "hq_ok": hq_ok, "hq_pending": hq_pending, "hq_note": hq_note, "ok": ok, "fail": fail,
-                   "depts_unreadable": depts_unreadable}),
+            json!({"phase": "done", "hq_ok": hq_ok, "hq_pending": hq_pending, "hq_note": hq_note, "ok": ok, "fail": fail, "pending": pending,
+                   "depts_unreadable": depts_unreadable, "round": round}),
         );
+        // ★seatkeep-t1(r4 B → r5 축소 · codex r4 #4·#5·#6·#8): pending 끝점마다 명시 done·off 뒤 판정 층 1회 — 알리는 것은 **끝점별 「확인됨 /
+        //   사정 / 아직 확인 못 함」뿐**이다. 조직 전체 「완료」·옛 자리 쓸기 무장은 위 done(이 회차의 첫 결과)만 정한다(늦은 성공이 첫 실패를 덮지 않음 · #6).
+        //   감시 동안은 초기화 관문을 닫지 않는다(판정 층의 사이드카 자식이 도는 동안만 닫음 · run_sidecar_restore_report).
+        if !followup.is_empty() {
+            drop(_boot_guard);
+            followup_restore_with(
+                followup,
+                FOLLOWUP_CAP,
+                FOLLOWUP_POLL,
+                FOLLOWUP_HEARTBEAT,
+                FOLLOWUP_JUDGE_CAP,
+                move || RESTORE_ROUND.load(std::sync::atomic::Ordering::SeqCst) == round,
+                probe_auto_restore_phase,
+                |sock| async move {
+                    let _g = BootWorkGuard::enter();
+                    run_sidecar_restore_judged(sock).await
+                },
+                |ev| emit_followup(&app, round, ev),
+            )
+            .await;
+        }
     });
+}
+
+/// 후속 감시 대상 끝점(r4 B) — `socket` None = 본부(기본 소켓).
+#[derive(Debug, Clone, PartialEq)]
+struct PendingEnd {
+    place: String,
+    socket: Option<std::path::PathBuf>,
+}
+
+/// 후속 감시가 화면에 내는 것(순수 · 시험이 모은다). ★r5 축소: 조직 전체 「완료」를 말하는 이벤트가 없다 — 끝점별로만.
+#[derive(Debug, Clone, PartialEq)]
+enum FollowupEvent {
+    /// 진행 sticky 갱신(「직원 복귀 확인 중」 · TTL 3분보다 짧은 주기 · 판정 자식을 기다리는 동안에도).
+    Heartbeat,
+    /// 그 끝점의 늦게 끝난 자동 복원을 판정 층이 성공으로 확인했다(그 끝점만 · 조직 전체 「완료」 아님).
+    Confirmed(String),
+    /// 늦게 끝난 끝점의 비성공 사정(restore_note = 실패·관문·92·93 모두 · 재확인 실패 꼬리).
+    Note(String),
+    /// 감시 끝 — `unconfirmed` = 상한(30분)까지 명시 done·off 를 못 받았거나 판정 자식이 시한 안에 안 끝나 **확인 못 한** 끝점 이름.
+    End { unconfirmed: Vec<String> },
+}
+
+const FOLLOWUP_CAP: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+const FOLLOWUP_POLL: std::time::Duration = std::time::Duration::from_secs(5);
+const FOLLOWUP_HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(60);
+/// 판정 층(사이드카 `cys restore` 두 회차 + 15초 대기) 기다림 상한(r5 · codex r4 #4) — 넘으면 그 끝점 = 「확인 못 함」(자식은 계속 돌 수 있다 · 관문은 자식이 끝날 때까지 닫힘).
+const FOLLOWUP_JUDGE_CAP: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// 끝점의 자동 복원 단계 1회 판독 — 일회성 연결 + 2초 시한(답 없음·오류 = None = 끝 아님).
+async fn probe_auto_restore_phase(socket: Option<std::path::PathBuf>) -> Option<String> {
+    let s = socket.unwrap_or_else(default_socket);
+    tokio::time::timeout(std::time::Duration::from_secs(2), rpc_oneshot(&s, "org.status", json!({})))
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .and_then(|v| v["daemon"]["auto_restore"].as_str().map(str::to_string))
+}
+
+/// 후속 감시 본체(r4 B → r5 축소 · 판독·판정·내보내기·회차 확인을 주입받아 시험이 직접 돈다) — 끝점마다 `poll` 간격으로 판독 →
+/// **명시 done·off**([`auto_restore_settled`])를 받은 끝점만 판정 층 1회(`judge_cap` 시한 · 기다리는 동안에도 `heartbeat`) → 끝점별
+/// 확인됨/사정 · 모두 끝나거나 `cap` 이 지나면 `End`(확인 못 한 끝점 이름). `current()` 가 거짓이 되면(새 복원 회차) 아무것도 내지 않고 끝난다(#5).
+#[allow(clippy::too_many_arguments)]
+async fn followup_restore_with<P, PF, J, JF>(
+    ends: Vec<PendingEnd>,
+    cap: std::time::Duration,
+    poll: std::time::Duration,
+    heartbeat: std::time::Duration,
+    judge_cap: std::time::Duration,
+    current: impl Fn() -> bool,
+    mut probe: P,
+    mut judge: J,
+    mut emit: impl FnMut(FollowupEvent),
+) where
+    P: FnMut(Option<std::path::PathBuf>) -> PF,
+    PF: std::future::Future<Output = Option<String>>,
+    J: FnMut(Option<std::path::PathBuf>) -> JF,
+    JF: std::future::Future<Output = (bool, Option<RestoreSummary>)>,
+{
+    let deadline = std::time::Instant::now() + cap;
+    let mut left = ends;
+    let mut unconfirmed: Vec<String> = Vec::new();
+    let mut last_beat: Option<std::time::Instant> = None;
+    while !left.is_empty() && std::time::Instant::now() < deadline {
+        if !current() {
+            return;
+        }
+        if last_beat.is_none_or(|t| t.elapsed() >= heartbeat) {
+            emit(FollowupEvent::Heartbeat);
+            last_beat = Some(std::time::Instant::now());
+        }
+        let mut i = 0;
+        while i < left.len() {
+            if !current() {
+                return;
+            }
+            if !auto_restore_settled(probe(left[i].socket.clone()).await.as_deref()) {
+                i += 1;
+                continue;
+            }
+            // r5b(master 의심 ⓓ): 판독(최대 2초) 사이 새 회차가 시작됐으면 옛 감시가 판정 층(사이드카 자식)을 새로 띄우지 않는다.
+            if !current() {
+                return;
+            }
+            let end = left.remove(i);
+            let fut = judge(end.socket.clone());
+            tokio::pin!(fut);
+            let judge_deadline = std::time::Instant::now() + judge_cap;
+            let verdict = loop {
+                let now = std::time::Instant::now();
+                let beat_in = last_beat.map_or(std::time::Duration::ZERO, |t| heartbeat.saturating_sub(t.elapsed()));
+                let wait = beat_in.min(judge_deadline.saturating_duration_since(now)).max(std::time::Duration::from_millis(1));
+                tokio::select! {
+                    r = &mut fut => break Some(r),
+                    _ = tokio::time::sleep(wait) => {
+                        if !current() {
+                            return;
+                        }
+                        if std::time::Instant::now() >= judge_deadline {
+                            break None;
+                        }
+                        if last_beat.is_none_or(|t| t.elapsed() >= heartbeat) {
+                            emit(FollowupEvent::Heartbeat);
+                            last_beat = Some(std::time::Instant::now());
+                        }
+                    }
+                }
+            };
+            if !current() {
+                return;
+            }
+            match verdict {
+                Some((true, _)) => emit(FollowupEvent::Confirmed(end.place)),
+                Some((false, summary)) => emit(FollowupEvent::Note(restore_note(&end.place, summary))),
+                None => unconfirmed.push(end.place),
+            }
+        }
+        if left.is_empty() {
+            break;
+        }
+        tokio::time::sleep(poll.min(deadline.saturating_duration_since(std::time::Instant::now()))).await;
+    }
+    if !current() {
+        return;
+    }
+    unconfirmed.extend(left.into_iter().map(|e| e.place));
+    emit(FollowupEvent::End { unconfirmed });
+}
+
+/// 후속 감시 이벤트 → 화면(`restore-progress` · 모두 `round` 동봉): Heartbeat = `followup`(sticky) · Confirmed = `followup-ok`(그 끝점) ·
+/// Note = `dept` 없는 `skip`(토스트) · End = `followup-end`(확인 못 한 끝점 = sticky · 쓸기 무장 0 · 「완료」 0).
+fn emit_followup(app: &AppHandle, round: u64, ev: FollowupEvent) {
+    let payload = match ev {
+        FollowupEvent::Heartbeat => json!({"phase": "followup", "round": round}),
+        FollowupEvent::Confirmed(place) => json!({"phase": "followup-ok", "place": place, "round": round}),
+        FollowupEvent::Note(detail) => json!({"phase": "skip", "detail": detail, "round": round}),
+        FollowupEvent::End { unconfirmed } => json!({"phase": "followup-end", "unconfirmed": unconfirmed, "round": round}),
+    };
+    let _ = app.emit("restore-progress", payload);
 }
 
 /// D5/P1: UI 발 키 전송 — surface.send_key RPC 래퍼. send_input(send_text)과 달리 Return 등 키 전송 가능.
@@ -8910,12 +9251,28 @@ mod tests {
         let out = "· master: claude 재기동…\nrestore 완료: 재기동 2 · 실패 1 · 관문 보류 3 · 현황 `cys status`\n";
         assert_eq!(
             super::parse_restore_summary(out),
-            Some(super::RestoreSummary { ok: 2, fail: 1, gated: 3 })
+            Some(super::RestoreSummary { ok: 2, fail: 1, gated: 3, live: 0, unknown: 0, remeasure_failed: false })
         );
         assert_eq!(super::parse_restore_summary("error: cannot connect"), None);
         // cysr 1.1.11: 원작자 0.14.52 가 요약 줄 뒤에 journal refused · outcome unknown 을 덧붙였다 — 앞 세 수는 그대로 읽힌다.
         let out = "restore 완료: 재기동 1 · 실패 0 · 관문 보류 0 · journal refused 2 · outcome unknown 1 · 현황 `cys status`\n";
-        assert_eq!(super::parse_restore_summary(out), Some(super::RestoreSummary { ok: 1, fail: 0, gated: 0 }));
+        assert_eq!(super::parse_restore_summary(out), Some(super::RestoreSummary { ok: 1, fail: 0, gated: 0, live: 0, unknown: 0, remeasure_failed: false }));
+        // ★seatkeep-t1: 새 꼬리(대화 임대)가 붙어도 세 칸은 그대로 읽히고 `live` 를 읽는다 · 꼬리 없으면 live 0.
+        let tail = "restore 완료: 재기동 0 · 실패 0 · 관문 보류 0 · journal refused 0 · outcome unknown 0 · 현황 `cys status` · 대화 작성자 살아 있음 1 · 생존 판정 불가 0";
+        let s = super::parse_restore_summary(tail);
+        assert_eq!(s, Some(super::RestoreSummary { ok: 0, fail: 0, gated: 0, live: 1, unknown: 0, remeasure_failed: false }));
+        // ★seatkeep-t1(독립 검증 F2): rc 92 만 난 회차는 성공이 아니다 → 판정 층이 대기 뒤 1회 다시 잰다(업데이트 직후 늦게 끝나는 옛 작성자).
+        assert!(super::restore_should_retry(false, s), "92 만 난 회차를 다시 재지 않는다(역할이 빈 채 남음)");
+        let src = include_str!("main.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").unwrap()];
+        let rep = &prod[prod.find("async fn run_sidecar_restore_report(").unwrap()..];
+        let rep = &rep[..rep.find("\n}\n").unwrap()];
+        assert!(rep.contains("(o.status.success(), parse_restore_summary(&out), parse_restore_unknown_refusals(&out))"), "사이드카 성공 판정이 종료 코드 0 외의 값을 성공으로 친다");
+        // 다시 재도 남으면 그 사정을 알린다(「확인되지 않은 자리」 뭉뚱그림 아님).
+        assert!(super::restore_note("행정부", s).contains("다른 프로세스(또는 같은 대화를 저장한 다른 역할)가 쓰는 중"), "92 잔여 문안");
+        // 독립 재검 M1·m3: 관문·실패와 섞여도 살아 있는 작성자·판정 불가 자리를 빠뜨리지 않는다.
+        let mix = super::restore_note("행정부", Some(super::RestoreSummary { ok: 1, fail: 0, gated: 1, live: 1, unknown: 2, remeasure_failed: false }));
+        assert!(mix.contains("첫 실행 확인") && mix.contains("쓰는 중이라 띄우지 않았습니다") && mix.contains("2곳은 그 대화를 쓰는 프로세스가 살아 있는지"), "{mix}");
         // 형식 정본(cys.rs) 드리프트 핀 — 요약 문장이 바뀌면 여기서 적색.
         let cli = include_str!("../../src/bin/cys.rs");
         assert!(cli.contains("\"restore 완료: 재기동 {ok} · 실패 {fail} · 관문 보류 {gated} · journal refused {refused} · outcome unknown \\\n"));
@@ -8926,8 +9283,8 @@ mod tests {
         use super::{restore_note, RestoreSummary as S};
         let hq_restore_note = |s| restore_note("본부", s);
         assert!(hq_restore_note(None).contains("실행하지 못했습니다"));
-        assert!(hq_restore_note(Some(S { ok: 0, fail: 2, gated: 1 })).contains("본부 자리 2곳을 세우지 못했습니다"));
-        let g = hq_restore_note(Some(S { ok: 1, fail: 0, gated: 1 }));
+        assert!(hq_restore_note(Some(S { ok: 0, fail: 2, gated: 1, live: 0, unknown: 0, remeasure_failed: false })).contains("본부 자리 2곳을 세우지 못했습니다"));
+        let g = hq_restore_note(Some(S { ok: 1, fail: 0, gated: 1, live: 0, unknown: 0, remeasure_failed: false }));
         assert!(g.contains("첫 실행 확인을 기다립니다") && !g.contains("못했습니다"), "관문 대기를 실패로 적었다: {g}");
     }
 
@@ -8942,7 +9299,7 @@ mod tests {
         let first = body.find("run_sidecar_restore_report(socket.clone())").expect("첫 복원 호출");
         let gate = body.find("if !restore_should_retry(ok, summary) {").expect("재실행 판정이 관문 보류를 거르지 않는다(M1)");
         let wait = body.find("RESTORE_RETRY_WAIT").expect("대기 없이 재실행한다");
-        let retry = body.find("run_sidecar_restore_report(socket).await").expect("재실행 부재");
+        let retry = body.find("let second = run_sidecar_restore_report(socket.clone()).await;").expect("재실행 부재");
         assert!(first < gate && gate < wait && wait < retry, "첫 실행 → 판정 → 대기 → 재실행 순서가 아니다");
         assert_eq!(body.matches("run_sidecar_restore_report(").count(), 2, "재실행은 1회 상한");
         let org = &prod[prod.find("fn spawn_org_restore(").unwrap()..];
@@ -8952,13 +9309,502 @@ mod tests {
     /// ★Fable 1.1.3 M1: 관문 보류만 남으면 재실행하지 않는다(재실행이 보류를 「이미 가동 중」으로 접어 알림 0).
     #[test]
     fn v113_hq_restore_gated_only_is_reported_not_retried() {
-        let s = |ok, fail, gated| Some(RestoreSummary { ok, fail, gated });
+        let s = |ok, fail, gated| Some(RestoreSummary { ok, fail, gated, live: 0, unknown: 0, remeasure_failed: false });
         assert!(!restore_should_retry(true, s(3, 0, 0)), "성공은 재실행 없음");
         assert!(!restore_should_retry(false, s(2, 0, 1)), "관문 보류만 = 재실행 금지(바로 알린다)");
         assert!(restore_should_retry(false, s(2, 1, 1)), "실패가 섞이면 재실행");
         assert!(restore_should_retry(false, s(2, 1, 0)), "실패면 재실행");
         assert!(restore_should_retry(false, None), "요약 없음(실행 불가) = 재실행");
         assert!(restore_note("본부", s(2, 0, 1)).contains("확인을 한 번 눌러 주세요"), "관문 문구");
+    }
+
+    /// ★seatkeep-t1(codex 1R C7): 관문 보류 + 대화 임대 자리(92·93) 섞임 진리표 — 다시 재고(92 가 풀릴 기회 · F2) ·
+    /// 관문 알림은 첫 결과의 관문 수를 합쳐 지킨다(재실행이 관문을 「이미 가동 중」으로 접는 M1 을 되살리지 않는다).
+    #[test]
+    fn seatkeep_c7_gate_mixed_with_lease_seats_retries_and_keeps_the_gate() {
+        let s = |ok, fail, gated, live, unknown| Some(RestoreSummary { ok, fail, gated, live, unknown, remeasure_failed: false });
+        // 재실행 여부 진리표(첫 결과).
+        assert!(!restore_should_retry(false, s(2, 0, 1, 0, 0)), "관문만 = 재실행 금지(M1)");
+        assert!(restore_should_retry(false, s(1, 0, 1, 1, 0)), "관문 + 92 = 다시 잰다(C7)");
+        assert!(restore_should_retry(false, s(1, 0, 1, 0, 1)), "관문 + 93 = 다시 잰다(C7)");
+        assert!(restore_should_retry(false, s(1, 0, 0, 1, 0)), "92 만 = 다시 잰다(F2)");
+        assert!(restore_should_retry(false, s(1, 1, 1, 1, 0)), "실패 섞임 = 다시 잰다");
+        assert!(!restore_should_retry(true, s(3, 0, 0, 0, 0)), "성공 = 재실행 없음");
+        // 합치기: 재실행이 관문을 접고 92 를 풀었다(rc 0 · 관문 0) → 최종 = 성공 아님 · 관문 1 → 관문 알림.
+        let (ok, sum) = restore_merge_retry(s(1, 0, 1, 1, 0), (true, s(1, 0, 0, 0, 0)));
+        assert!(!ok, "첫 회차 관문을 재실행 rc 0 이 덮었다(알림 0 · M1 재발)");
+        assert_eq!(sum.map(|x| (x.gated, x.live)), Some((1, 0)));
+        assert!(restore_note("본부", sum).contains("확인을 한 번 눌러 주세요"), "관문 문구");
+        // 재실행에도 92 가 남음 → 관문과 92 둘 다 알린다.
+        let (ok, sum) = restore_merge_retry(s(1, 0, 1, 1, 0), (false, s(0, 0, 0, 1, 0)));
+        let n = restore_note("본부", sum);
+        assert!(!ok && n.contains("확인을 한 번 눌러 주세요") && n.contains("쓰는 중이라 띄우지 않았습니다"), "{n}");
+        // 두 회차 관문 = 큰 쪽(같은 자리일 수 있어 더하지 않는다).
+        assert_eq!(restore_merge_retry(s(1, 0, 1, 1, 0), (false, s(0, 0, 2, 0, 0))).1.map(|x| x.gated), Some(2));
+        // 첫 결과 관문 0 = 재실행 결과 그대로(종전).
+        assert_eq!(restore_merge_retry(s(0, 1, 0, 0, 0), (true, s(2, 0, 0, 0, 0))), (true, s(2, 0, 0, 0, 0)));
+        assert_eq!(restore_merge_retry(s(0, 1, 0, 0, 0), (false, None)), (false, None));
+        // 재실행 요약 없음(데몬 불통) + 첫 관문 = 첫 요약(관문 알림 유지).
+        assert_eq!(restore_merge_retry(s(1, 0, 1, 1, 0), (false, None)), (false, Some(RestoreSummary { remeasure_failed: true, ..s(1, 0, 1, 1, 0).unwrap() })));
+        // 배선 핀: 판정 층의 재실행 결과가 합치기를 거친다.
+        let src = include_str!("main.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").unwrap()];
+        let a = prod.find("async fn run_sidecar_restore_judged(").unwrap();
+        let body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
+        assert!(body.lines().any(|l| l.trim_start() == "restore_judge_two((ok, summary, first93), second, live.as_deref())"), "재실행 결과가 관문 합치기를 거치지 않는다");
+        let two = &prod[prod.find("fn restore_judge_two(").unwrap()..];
+        assert!(two[..two.find("\n}\n").unwrap()].contains("let merged = restore_merge_retry(first.1, (second.0, second.1));"), "두 회차 판정이 관문 합치기를 거치지 않는다");
+    }
+
+    /// ★seatkeep-t1(codex 1R C6): 조직 복원 부서 순회가 남은 92·93 자리를 알린다(UI 무수정 — dept 없는 skip = 토스트).
+    #[test]
+    fn seatkeep_c6_org_restore_names_dept_lease_seats() {
+        let s = |fail, gated, live, unknown| Some(RestoreSummary { ok: 1, fail, gated, live, unknown, remeasure_failed: false });
+        let n = dept_restore_lease_note("행정부", false, s(0, 0, 1, 0)).expect("92 자리를 알리지 않는다");
+        assert!(n.starts_with("행정부") && n.contains("쓰는 중이라 띄우지 않았습니다"), "{n}");
+        let n = dept_restore_lease_note("행정부", false, s(1, 1, 0, 2)).expect("93 자리를 알리지 않는다");
+        assert!(n.contains("2곳은 그 대화를 쓰는 프로세스가 살아 있는지") && n.contains("세우지 못했습니다"), "{n}");
+        assert_eq!(dept_restore_lease_note("행정부", false, s(1, 0, 0, 0)), None, "임대 자리 없는 실패 = 종전(집계 알림만)");
+        assert_eq!(dept_restore_lease_note("행정부", true, s(0, 0, 1, 0)), None, "성공 = 알림 없음");
+        assert_eq!(dept_restore_lease_note("행정부", false, None), None, "요약 없음 = 종전");
+        // 배선: 부서 순회가 판정 층 요약을 버리지 않고 dept 키 없는 skip 으로 낸다.
+        let src = include_str!("main.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").unwrap()];
+        let org = &prod[prod.find("fn spawn_org_restore(app: AppHandle) {").unwrap()..];
+        let org = &org[..org.find("\n}\n").unwrap()];
+        assert!(!org.contains("run_sidecar_restore_judged(Some(sock.clone())).await.0"), "부서 요약을 버린다");
+        let at = org.find("if let Some(detail) = dept_restore_lease_note(").expect("부서 임대 알림 자리");
+        let line = &org[at..at + org[at..].find("\n                        }").unwrap()];
+        assert!(line.contains(r#"json!({"phase": "skip", "round": round, "detail": detail})"#), "dept 키 없는 skip 이 아니다(UI 가 버린다): {line}");
+        // UI 계약 핀: dept 없는 skip 은 토스트로 뜬다.
+        let ui = include_str!("../../ui/src/main.ts");
+        assert!(ui.contains(r#"} else if (p.phase === "skip" && p.detail && !p.dept) {"#), "UI 의 dept 없는 skip 토스트 갈래가 바뀌었다");
+    }
+
+    /// ★seatkeep-t1(codex 2R #3): 실패 × 관문 × 92 × 93 진리표(16칸) — 있는 원인은 모두 문안에 나오고 없는 원인은 안 나온다.
+    /// 판정문 재현: 첫 결과 {관문 1 · 92 1} → 재실측 {실패 1} → 합친 결과 {실패 1 · 관문 1} → 「세우지 못했습니다」와 「확인을 한 번 눌러 주세요」 둘 다.
+    #[test]
+    fn seatkeep_2r3_every_cause_is_named_truth_table() {
+        let (fail_w, gate_w, live_w, unk_w) = ("세우지 못했습니다", "확인을 한 번 눌러 주세요", "쓰는 중이라 띄우지 않았습니다", "살아 있는지 판정하지 못해");
+        for bits in 0u8..16 {
+            let (f, g, l, u) = ((bits & 1) as u64, (bits >> 1 & 1) as u64, (bits >> 2 & 1) as u64, (bits >> 3 & 1) as u64);
+            let n = restore_note("본부", Some(RestoreSummary { ok: 1, fail: f, gated: g, live: l, unknown: u, remeasure_failed: false }));
+            assert!(n.starts_with("본부 "), "{bits:04b}: {n}");
+            for (on, w) in [(f, fail_w), (g, gate_w), (l, live_w), (u, unk_w)] {
+                assert_eq!(n.contains(w), on == 1, "{bits:04b} (실패·관문·92·93 = {f}{g}{l}{u}) 「{w}」: {n}");
+            }
+            assert_eq!(n.contains("확인되지 않은 자리가 있습니다"), bits == 0, "{bits:04b}: {n}");
+        }
+        // 판정문 재현(C7 합치기 → 문안).
+        let first = Some(RestoreSummary { ok: 1, fail: 0, gated: 1, live: 1, unknown: 0, remeasure_failed: false });
+        let (ok, merged) = restore_merge_retry(first, (false, Some(RestoreSummary { ok: 0, fail: 1, gated: 0, live: 0, unknown: 0, remeasure_failed: false })));
+        let n = restore_note("본부", merged);
+        assert!(!ok && n.contains(fail_w) && n.contains(gate_w), "실패 + 관문 섞임에서 관문 알림이 빠졌다: {n}");
+    }
+
+    /// ★seatkeep-t1(codex 2R #4): 92·93 첫 측정 뒤 재실측 요약을 못 읽어도(데몬 불통·실행 실패·판독 실패 = `(false, None)`) 첫 측정을 버리지 않고
+    /// 「재확인 실패」를 따로 표시한다 — 본부 문안·부서 알림 둘 다. 오래된 수를 지금 값처럼 말하지 않는다.
+    #[test]
+    fn seatkeep_2r4_failed_remeasure_keeps_the_first_lease_measure() {
+        let s = |ok, fail, gated, live, unknown| Some(RestoreSummary { ok, fail, gated, live, unknown, remeasure_failed: false });
+        for (first, what) in [(s(1, 0, 0, 1, 0), "92"), (s(1, 0, 0, 0, 1), "93"), (s(0, 1, 0, 1, 1), "실패+92+93")] {
+            let (ok, sum) = restore_merge_retry(first, (false, None));
+            let f = first.unwrap();
+            assert!(!ok, "{what}: 재확인 실패를 성공으로");
+            let m = sum.unwrap_or_else(|| panic!("{what}: 첫 임대 측정을 버렸다"));
+            assert_eq!((m.live, m.unknown, m.fail, m.remeasure_failed), (f.live, f.unknown, f.fail, true), "{what}: {m:?}");
+            let note = restore_note("본부", sum);
+            assert!(note.contains("다시 확인하지 못해 위 내용은 처음 확인한 결과입니다") && note.contains("↻ 재시작"), "{what} 본부 문안: {note}");
+            let d = dept_restore_lease_note("행정부", ok, sum).unwrap_or_else(|| panic!("{what}: 부서 알림 0"));
+            assert!(d.contains("처음 확인한 결과"), "{what} 부서 문안: {d}");
+        }
+        // 재실측 성공 = 재확인 실패 표시 없음 · 그 결과가 정본.
+        let (ok, sum) = restore_merge_retry(s(1, 0, 0, 1, 0), (true, s(2, 0, 0, 0, 0)));
+        assert_eq!((ok, sum.map(|x| x.remeasure_failed)), (true, Some(false)));
+        assert!(!restore_note("본부", s(0, 0, 0, 1, 0)).contains("처음 확인한 결과"), "재실측 없이 낸 문안에 재확인 실패 꼬리");
+        // 임대 자리·관문 없는 첫 결과(실패뿐) + 재실측 요약 없음 = 종전(데몬 응답 없음 문안).
+        assert_eq!(restore_merge_retry(s(0, 1, 0, 0, 0), (false, None)), (false, None));
+        // 요약 줄 판독은 언제나 재확인 실패 아님.
+        assert_eq!(parse_restore_summary("restore 완료: 재기동 1 · 실패 0 · 관문 보류 0 · 대화 작성자 살아 있음 1 · 생존 판정 불가 0").map(|x| x.remeasure_failed), Some(false));
+    }
+
+    /// ★seatkeep-t1(r4 B → r5 축소 · codex 3R #4·#5·#6 · r4 #4·#5·#6·#8): pending 후속 감시 — 명시 done·off 를 받은 끝점만 판정 층 1회 ·
+    /// 알림은 끝점별(확인됨 · 사정 · 확인 못 함)뿐 · 조직 전체 「완료」 이벤트 없음 · 상한이면 확인 못 한 끝점 이름과 함께 반드시 End ·
+    /// 판정 자식이 멈추면 시한에서 「확인 못 함」(기다리는 동안 진행 sticky 갱신) · 새 회차가 시작되면 아무것도 내지 않고 끝난다.
+    /// r5b(master 의심 ⓓ·ⓔ): ⓓ 판독 await 사이 회차가 바뀌면 판정 층(사이드카 자식)을 띄우지 않고 아무것도 내지 않는다 ·
+    /// ⓔ 조직 복원 본체의 모든 `restore-progress` 이벤트에 `round`(화면이 옛 회차 skip·error 를 버리게).
+    #[test]
+    fn seatkeep_r5b2_round_change_during_probe_spawns_no_judge_and_every_org_event_has_round() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let live = Arc::new(AtomicBool::new(true));
+        let judged = Arc::new(AtomicUsize::new(0));
+        let mut events = Vec::new();
+        tauri::async_runtime::block_on(async {
+            let (lv, lp, jd) = (live.clone(), live.clone(), judged.clone());
+            followup_restore_with(
+                vec![PendingEnd { place: "본부".into(), socket: None }],
+                std::time::Duration::from_secs(5),
+                std::time::Duration::from_millis(10),
+                std::time::Duration::from_secs(3600),
+                std::time::Duration::from_secs(5),
+                move || lv.load(Ordering::SeqCst),
+                move |_| {
+                    let lp = lp.clone();
+                    async move {
+                        lp.store(false, Ordering::SeqCst); // 판독하는 사이 새 회차 시작
+                        Some("done".to_string())
+                    }
+                },
+                move |_| {
+                    let jd = jd.clone();
+                    async move {
+                        jd.fetch_add(1, Ordering::SeqCst);
+                        (true, None)
+                    }
+                },
+                |ev| events.push(ev),
+            )
+            .await;
+        });
+        assert_eq!(judged.load(Ordering::SeqCst), 0, "회차가 바뀐 뒤 옛 감시가 판정 층을 띄웠다");
+        assert_eq!(events, vec![FollowupEvent::Heartbeat], "회차가 바뀐 뒤 옛 감시가 이벤트를 냈다: {events:?}");
+        let src = include_str!("main.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").unwrap()];
+        let org = &prod[prod.find("fn spawn_org_restore(app: AppHandle) {").unwrap()..];
+        let org = &org[..org.find("\n}\n").unwrap()];
+        let mut n = 0;
+        for (at, _) in org.match_indices(r#"json!({"phase": ""#) {
+            let ev = &org[at..at + org[at..].find("})").unwrap()];
+            assert!(ev.contains(r#""round": round"#), "round 없는 조직 복원 이벤트(옛 회차 것을 화면이 못 버림): {ev}");
+            n += 1;
+        }
+        assert!(n >= 10, "조직 복원 이벤트 자리 수가 줄었다(핀 범위 확인): {n}");
+    }
+
+    #[test]
+    fn seatkeep_r5b_followup_reports_per_end_only_and_always_ends() {
+        use std::sync::{Arc, Mutex};
+        let hq = PendingEnd { place: "본부".into(), socket: None };
+        let dept = PendingEnd { place: "행정부".into(), socket: Some("/tmp/d.sock".into()) };
+        let script: Arc<Mutex<std::collections::HashMap<Option<std::path::PathBuf>, Vec<Option<&'static str>>>>> = Arc::new(Mutex::new(
+            [(None, vec![Some("running"), None, Some("done")]), (Some("/tmp/d.sock".into()), vec![None, Some("retry_wait"), Some("off")])].into_iter().collect(),
+        ));
+        let judged: Arc<Mutex<Vec<Option<std::path::PathBuf>>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut events = Vec::new();
+        tauri::async_runtime::block_on(async {
+            let (sc, jd) = (script.clone(), judged.clone());
+            followup_restore_with(
+                vec![hq.clone(), dept.clone()],
+                std::time::Duration::from_secs(5),
+                std::time::Duration::from_millis(10),
+                std::time::Duration::from_secs(3600),
+                std::time::Duration::from_secs(5),
+                || true,
+                move |sock| {
+                    let sc = sc.clone();
+                    async move {
+                        let mut m = sc.lock().unwrap();
+                        let q = m.get_mut(&sock).unwrap();
+                        if q.len() > 1 { q.remove(0) } else { q[0] }.map(str::to_string)
+                    }
+                },
+                move |sock| {
+                    let jd = jd.clone();
+                    async move {
+                        jd.lock().unwrap().push(sock.clone());
+                        if sock.is_none() {
+                            (false, Some(RestoreSummary { ok: 1, fail: 0, gated: 1, live: 1, unknown: 0, remeasure_failed: false }))
+                        } else {
+                            (true, None)
+                        }
+                    }
+                },
+                |ev| events.push(ev),
+            )
+            .await;
+        });
+        assert_eq!(judged.lock().unwrap().len(), 2, "끝점마다 판정 층 정확히 1회: {:?}", judged.lock().unwrap());
+        assert_eq!(events.first(), Some(&FollowupEvent::Heartbeat), "{events:?}");
+        let note = events.iter().find_map(|e| if let FollowupEvent::Note(n) = e { Some(n.clone()) } else { None }).expect("늦게 끝난 본부의 사람말 0(#5)");
+        assert!(note.starts_with("본부") && note.contains("확인을 한 번 눌러 주세요") && note.contains("쓰는 중이라 띄우지 않았습니다"), "{note}");
+        assert!(events.contains(&FollowupEvent::Confirmed("행정부".into())), "끝점 확인됨 0: {events:?}");
+        assert_eq!(events.last(), Some(&FollowupEvent::End { unconfirmed: vec![] }), "{events:?}");
+        // 상한: 끝 답을 못 받으면(오류·running) 판정 층 0 · 확인 못 한 끝점 이름과 함께 반드시 End(#4) · 진행 sticky 갱신이 여러 번(#6).
+        let judged2 = Arc::new(Mutex::new(0usize));
+        let mut ev2 = Vec::new();
+        tauri::async_runtime::block_on(async {
+            let j2 = judged2.clone();
+            let t = std::time::Instant::now();
+            followup_restore_with(
+                vec![hq.clone(), dept.clone()],
+                std::time::Duration::from_millis(300),
+                std::time::Duration::from_millis(20),
+                std::time::Duration::from_millis(50),
+                std::time::Duration::from_secs(5),
+                || true,
+                |sock| async move { if sock.is_none() { Some("running".to_string()) } else { None } },
+                move |_| {
+                    let j2 = j2.clone();
+                    async move {
+                        *j2.lock().unwrap() += 1;
+                        (true, None)
+                    }
+                },
+                |ev| ev2.push(ev),
+            )
+            .await;
+            assert!(t.elapsed() < std::time::Duration::from_secs(2), "상한을 넘겨 감시했다 {:?}", t.elapsed());
+        });
+        assert_eq!(*judged2.lock().unwrap(), 0, "끝 답 없이 판정 층을 돌렸다(794 r2)");
+        assert_eq!(ev2.last(), Some(&FollowupEvent::End { unconfirmed: vec!["본부".into(), "행정부".into()] }), "{ev2:?}");
+        assert!(ev2.iter().filter(|e| **e == FollowupEvent::Heartbeat).count() >= 3, "진행 sticky 갱신 부족: {ev2:?}");
+        // r4 #4: 본부 done → 판정 자식이 멈춤(끝나지 않는 Future) → 판정 시한(150ms)에서 본부 = 확인 못 함 · 그 사이 부서 판독·End 가 막히지 않음 ·
+        //   기다리는 동안에도 진행 sticky 갱신 · 전체 상한(30분 대역 = 5초)보다 훨씬 빨리 끝난다.
+        let mut ev3 = Vec::new();
+        tauri::async_runtime::block_on(async {
+            let t = std::time::Instant::now();
+            followup_restore_with(
+                vec![hq.clone(), dept.clone()],
+                std::time::Duration::from_secs(5),
+                std::time::Duration::from_millis(10),
+                std::time::Duration::from_millis(40),
+                std::time::Duration::from_millis(150),
+                || true,
+                |_| async move { Some("done".to_string()) },
+                |sock| async move {
+                    if sock.is_none() {
+                        std::future::pending::<()>().await;
+                    }
+                    (true, None)
+                },
+                |ev| ev3.push(ev),
+            )
+            .await;
+            assert!(t.elapsed() < std::time::Duration::from_secs(2), "판정 자식 정지에 감시가 묶였다 {:?}", t.elapsed());
+        });
+        assert_eq!(ev3.last(), Some(&FollowupEvent::End { unconfirmed: vec!["본부".into()] }), "{ev3:?}");
+        assert!(ev3.contains(&FollowupEvent::Confirmed("행정부".into())), "{ev3:?}");
+        assert!(ev3.iter().filter(|e| **e == FollowupEvent::Heartbeat).count() >= 3, "판정 대기 중 진행 sticky 갱신 0: {ev3:?}");
+        // r4 #5: 새 회차가 시작되면(current 거짓) 옛 감시는 아무것도 내지 않고 끝난다 — 판정 중 회차가 바뀌어도 그 결과를 내지 않는다.
+        let cur = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let mut ev4 = Vec::new();
+        tauri::async_runtime::block_on(async {
+            let (c1, c2) = (cur.clone(), cur.clone());
+            followup_restore_with(
+                vec![hq.clone(), dept.clone()],
+                std::time::Duration::from_secs(5),
+                std::time::Duration::from_millis(10),
+                std::time::Duration::from_secs(3600),
+                std::time::Duration::from_secs(5),
+                move || c1.load(std::sync::atomic::Ordering::SeqCst),
+                |_| async move { Some("done".to_string()) },
+                move |_| {
+                    c2.store(false, std::sync::atomic::Ordering::SeqCst); // 판정 도중 새 회차 시작
+                    async move { (true, None) }
+                },
+                |ev| ev4.push(ev),
+            )
+            .await;
+        });
+        assert_eq!(ev4, vec![FollowupEvent::Heartbeat], "옛 회차 감시가 새 회차 뒤에 냈다: {ev4:?}");
+        // 배선: 본부·부서 pending 이 감시 대상 · done 뒤 감시 · 감시 동안 초기화 관문 열림 · 판정 자식이 도는 동안 닫음 · 회차 확인 · 이벤트에 회차.
+        let src = include_str!("main.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").unwrap()];
+        let org = &prod[prod.find("fn spawn_org_restore(app: AppHandle) {").unwrap()..];
+        let org = &org[..org.find("\n}\n").unwrap()];
+        assert!(org.contains("if hq_pending {\n            followup.push(PendingEnd { place: \"본부\".into(), socket: None });"), "본부 pending 감시 0");
+        assert!(org.contains("pending += 1;") && org.contains("followup.push(PendingEnd { place, socket: Some(sock.clone()) });"), "부서 pending 감시 0");
+        let tail = &org[org.find(r#"json!({"phase": "done", "hq_ok""#).unwrap()..];
+        assert!(tail.contains("drop(_boot_guard);") && tail.contains("probe_auto_restore_phase,") && tail.contains("let _g = BootWorkGuard::enter();\n                    run_sidecar_restore_judged(sock).await"), "done 뒤 감시 배선: {tail}");
+        assert!(tail.contains("move || RESTORE_ROUND.load(std::sync::atomic::Ordering::SeqCst) == round,") && tail.contains("|ev| emit_followup(&app, round, ev),"), "회차 결속 배선: {tail}");
+        assert!(org.contains("let round = RESTORE_ROUND.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;") || prod.contains("let round = RESTORE_ROUND.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;"), "회차 번호 0");
+        let rep = &prod[prod.find("async fn run_sidecar_restore_report(").unwrap()..];
+        let rep = &rep[..rep.find("\n}\n").unwrap()];
+        assert!(rep.contains("let work = BootWorkGuard::enter();\n    tokio::task::spawn_blocking(move || {\n        let _work = work;"), "초기화 관문이 사이드카 자식 수명이 아니다(#4)");
+        let relaunch = &org[org.find("} else if launch_dept_daemon(app.clone(), name.clone()).await.is_ok() {").unwrap()..];
+        assert!(relaunch[..relaunch.find("Some(wait_auto_restore_settled_on(").unwrap()].contains(r#"json!({"phase": "start", "round": round})"#), "부서 대기 전 진행 sticky 갱신 0(#6)");
+        let em = &prod[prod.find("fn emit_followup(").unwrap()..];
+        let em = &em[..em.find("\n}\n").unwrap()];
+        assert!(!em.contains("settled") && em.matches("\"round\": round").count() == 4, "후속 감시 이벤트: {em}");
+        let pr = &prod[prod.find("async fn probe_auto_restore_phase(").unwrap()..];
+        assert!(pr[..pr.find("\n}\n").unwrap()].contains("tokio::time::timeout(std::time::Duration::from_secs(2), rpc_oneshot(&s, \"org.status\""), "감시 판독 시한");
+    }
+
+    /// ★seatkeep-t1(r5 · codex r4 #3): 첫 회차 93 이 재실측의 「이미 가동 중 — 건너뜀」(역할만 살아 있음)으로 지워지지 않는다 —
+    /// 그 역할 좌석이 **그 대화로** 등록됐다고 확인될 때만 풀린다. 판정문 재현: 첫 = 93 1(역할 w · 대화 5e55aaaa) · 재실측 = rc 0 · 건너뜀 ·
+    /// live = 역할 w 의 좌석이 다른 대화 T′ → 고치기 전(합치기만) = (true · unknown 0) = 성공.
+    #[test]
+    fn seatkeep_r5_3_first_unknown_is_kept_until_that_conversation_is_seen() {
+        let first_out = "· w: 대화 5e55aaaa 작성자 생존 판정 불가(seat-unverified) — 띄우지 않음 · 확인: `cys read-screen --surface surface:7` 로 그 좌석이 이 대화를 잇는지 보세요\n\
+                         · m: claude 재기동…\n\
+                         restore 완료: 재기동 1 · 실패 0 · 관문 보류 0 · 현황 `cys status` · 대화 작성자 살아 있음 0 · 생존 판정 불가 1\n";
+        let f93 = parse_restore_unknown_refusals(first_out);
+        assert_eq!(f93, vec![("w".to_string(), "5e55aaaa".to_string())]);
+        assert!(parse_restore_unknown_refusals("· w: 대화 5e55aaaa — pid 1 가 이 대화를 쓰는 중 — 띄우지 않음(…)\n").is_empty(), "92 줄은 93 이 아니다");
+        let s = |ok, unknown| Some(RestoreSummary { ok, fail: 0, gated: 0, live: 0, unknown, remeasure_failed: false });
+        let first = (false, s(1, 1), f93.clone());
+        let second_skip = (true, s(0, 0), Vec::new());
+        let other = vec![json!({"role": "w", "seat": "occupied", "session_id": "7e7e0000-0000-4000-8000-00000000000a"})];
+        let (ok, sum) = restore_judge_two(first.clone(), second_skip.clone(), Some(&other));
+        assert_eq!((ok, sum.map(|x| x.unknown)), (false, Some(1)), "재실측이 역할 생존만으로 첫 93 을 지웠다(판정문 #3)");
+        assert!(restore_note("본부", sum).contains("살아 있는지 판정하지 못해"), "사람말");
+        // live 판독 실패 = 확인 못 함 = 유지.
+        assert_eq!(restore_judge_two(first.clone(), second_skip.clone(), None).1.map(|x| x.unknown), Some(1));
+        // 그 역할 좌석이 그 대화로 등록 = 풀림(종전 = 재실측 결과 그대로).
+        let same = vec![json!({"role": "w", "seat": "occupied", "session_id": "5E55AAAA-0000-4000-8000-000000000001"})];
+        assert_eq!(restore_judge_two(first.clone(), second_skip.clone(), Some(&same)), (true, s(0, 0)));
+        // 빈 좌석이 그 대화를 들고 있는 것은 복원이 아니다.
+        let empty = vec![json!({"role": "w", "seat": "empty", "session_id": "5e55aaaa-0000-4000-8000-000000000001"})];
+        assert_eq!(restore_judge_two(first.clone(), second_skip.clone(), Some(&empty)).1.map(|x| x.unknown), Some(1));
+        // 재실측도 같은 역할을 93 으로 거절 = 재실측 수에 이미 있다(두 번 세지 않음).
+        assert_eq!(restore_judge_two(first.clone(), (false, s(0, 1), f93.clone()), Some(&other)).1.map(|x| x.unknown), Some(1));
+        // 재실측 요약 없음 = 합치기가 첫 요약(93 포함 · 재확인 실패 꼬리)을 낸다 — 더하지 않는다.
+        let (ok, sum) = restore_judge_two(first.clone(), (false, None, Vec::new()), Some(&other));
+        assert_eq!((ok, sum.map(|x| (x.unknown, x.remeasure_failed))), (false, Some((1, true))));
+        // 첫 회차 93 줄 없음 = 종전(합치기 그대로).
+        assert_eq!(restore_judge_two((false, s(0, 0), Vec::new()), second_skip, Some(&other)), (true, s(0, 0)));
+        // 문자열 정본(cys) 드리프트 핀 — 관문·안쪽 거절 줄 모두 이 판독기와 phoenix 가 읽는 모양.
+        let cli = include_str!("../../src/session_lease_cli.rs");
+        assert!(cli.contains("작성자 생존 판정 불가(seat-unverified) — 띄우지 않음 · 확인: {check}") && cli.contains("작성자 생존 판정 불가({reason}) — 띄우지 않음 · 확인: {next}"), "93 줄 모양이 바뀌었다");
+    }
+
+    /// ★seatkeep-t1(codex 3R ③): 부서 생산 경로(`dept_restore_lease_note` 선행 필터)를 지나서도 관문이 숨지 않는다 — 판정문 재현:
+    /// 부서 첫 결과 {관문 1 · 92 1} → 재실측 {실패 1} → 합친 결과 {실패 1 · 관문 1 · 92 0} → 부서 사정 알림에 관문 문안이 있어야 한다.
+    /// 진리표(성공 아님 × 실패·관문·92·93 16칸): 관문·92·93 중 하나라도 있으면 알림이 있고 그 원인 낱말이 모두 있다 · 실패뿐 = 종전(집계 알림만).
+    #[test]
+    fn seatkeep_3r3_dept_path_names_the_gate_even_when_the_lease_seats_resolved() {
+        let first = Some(RestoreSummary { ok: 1, fail: 0, gated: 1, live: 1, unknown: 0, remeasure_failed: false });
+        let (ok, merged) = restore_merge_retry(first, (false, Some(RestoreSummary { ok: 0, fail: 1, gated: 0, live: 0, unknown: 0, remeasure_failed: false })));
+        let n = dept_restore_lease_note("행정부", ok, merged).expect("부서 경로에서 관문 알림이 사라졌다(판정문 재현)");
+        assert!(n.contains("확인을 한 번 눌러 주세요") && n.contains("세우지 못했습니다"), "{n}");
+        let words = ["세우지 못했습니다", "확인을 한 번 눌러 주세요", "쓰는 중이라 띄우지 않았습니다", "살아 있는지 판정하지 못해"];
+        for bits in 0u8..16 {
+            let (f, g, l, u) = ((bits & 1) as u64, (bits >> 1 & 1) as u64, (bits >> 2 & 1) as u64, (bits >> 3 & 1) as u64);
+            let note = dept_restore_lease_note("행정부", false, Some(RestoreSummary { ok: 0, fail: f, gated: g, live: l, unknown: u, remeasure_failed: false }));
+            match note {
+                None => assert!(g == 0 && l == 0 && u == 0, "{bits:04b}: 관문·92·93 이 있는데 부서 알림 0"),
+                Some(n) => {
+                    assert!(g + l + u > 0, "{bits:04b}: 실패뿐인데 사정 알림(종전 = 집계만): {n}");
+                    for (on, w) in [(f, words[0]), (g, words[1]), (l, words[2]), (u, words[3])] {
+                        assert_eq!(n.contains(w), on == 1, "{bits:04b} 「{w}」: {n}");
+                    }
+                }
+            }
+        }
+        assert_eq!(dept_restore_lease_note("행정부", true, Some(RestoreSummary { ok: 1, fail: 0, gated: 1, live: 0, unknown: 0, remeasure_failed: false })), None, "성공 = 알림 없음");
+    }
+
+    /// ★seatkeep-t1(codex 3R ②⑤) 시험 도우미 — 가짜 데몬 소켓(유닉스): `mode` = "close"(연결 즉시 끊음) · "garbage"(깨진 줄) ·
+    /// "hang"(요청을 읽고 답하지 않음) · "nofield"(ok 이지만 auto_restore 칸 없음) · "running-then-done"(첫 2회 running 뒤 done) · "off".
+    #[cfg(unix)]
+    fn fake_org_status_daemon(mode: &'static str) -> (std::path::PathBuf, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        use std::io::{BufRead, BufReader, Write};
+        let dir = std::env::temp_dir().join(format!("cys-ar-{}-{mode}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() % 1_000_000_000));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("s.sock");
+        let l = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let st = stop.clone();
+        std::thread::spawn(move || {
+            let mut n = 0u32;
+            let mut held = Vec::new();
+            for c in l.incoming() {
+                if st.load(std::sync::atomic::Ordering::Relaxed) { break; }
+                let Ok(mut c) = c else { break };
+                n += 1;
+                if mode == "close" { continue; }
+                let mut line = String::new();
+                let _ = BufReader::new(&mut c).read_line(&mut line);
+                let phase = match mode {
+                    "hang" => { held.push(c); continue; }
+                    "garbage" => { let _ = c.write_all(b"{not json\n"); continue; }
+                    "nofield" => None,
+                    "running-then-done" => Some(if n <= 2 { "running" } else { "done" }),
+                    m => Some(m),
+                };
+                let daemon = match phase { Some(p) => json!({"auto_restore": p}), None => json!({}) };
+                let _ = writeln!(c, "{}", json!({"id": 1, "ok": true, "result": {"daemon": daemon}}));
+            }
+        });
+        (sock, stop)
+    }
+
+    /// ★seatkeep-t1(codex 3R ②⑤): 자동 복원 대기는 **명시적인 done·off 답에서만** 끝난다 — RPC 오류·깨진 답·칸 없음은 「끝남」이 아니다
+    /// (끝났다고 보면 사이드카가 자동 복원과 겹쳐 같은 역할이 하나 더 선다 · 794 r2). 답을 멈춘 데몬에도 대기는 상한 안에 끝난다(시도마다 짧은 시한).
+    #[cfg(unix)]
+    #[test]
+    fn seatkeep_3r25_auto_restore_wait_ends_only_on_an_explicit_answer_and_is_bounded() {
+        tauri::async_runtime::block_on(async {
+            // ② 운영 입구(상한 120초)로: 오류·깨진 답·칸 없음이 3초 안에 「끝남(true)」을 내면 붉다.
+            for mode in ["close", "garbage", "nofield"] {
+                let (sock, stop) = fake_org_status_daemon(mode);
+                let r = tokio::time::timeout(std::time::Duration::from_secs(3), wait_auto_restore_settled_on(sock)).await;
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                assert!(!matches!(r, Ok(true)), "{mode}: 데몬 답이 없는데 자동 복원이 끝났다고 봤다(794 r2 겹침)");
+            }
+            // ⑤ 답을 멈춘 데몬 · 오류 데몬: 짧은 상한(2초 · 시도 0.5초)으로 — 상한 안에 false 로 끝난다(영구 대기 0).
+            let short = |sock| wait_auto_restore_settled_for(sock, std::time::Duration::from_secs(2), std::time::Duration::from_millis(500));
+            for mode in ["hang", "close", "garbage", "nofield"] {
+                let (sock, stop) = fake_org_status_daemon(mode);
+                let t = std::time::Instant::now();
+                let r = tokio::time::timeout(std::time::Duration::from_secs(6), short(sock)).await;
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                assert_eq!(r, Ok(false), "{mode}: 상한(2초) 안에 「확인 못 함」으로 끝나지 않았다");
+                assert!(t.elapsed() < std::time::Duration::from_secs(4), "{mode}: 상한을 넘겨 기다렸다 {:?}", t.elapsed());
+            }
+            // 명시 답: running → done = 끝 · off = 끝.
+            for mode in ["running-then-done", "off", "done"] {
+                let (sock, stop) = fake_org_status_daemon(mode);
+                let r = tokio::time::timeout(std::time::Duration::from_secs(6), short(sock)).await;
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                assert_eq!(r, Ok(true), "{mode}: 명시적인 끝 답을 끝으로 보지 않았다");
+            }
+            assert!(!auto_restore_settled(None) && !auto_restore_settled(Some("running")) && !auto_restore_settled(Some("held")) && !auto_restore_settled(Some("retry_wait")));
+        });
+    }
+
+    /// ★seatkeep-t1(codex 2R #1): 죽은 부서를 다시 띄우는 갈래(Relaunch)도 살아 있던 부서와 같은 판정 층(`run_sidecar_restore_judged`)·
+    /// 임대 알림(`dept_restore_lease_note`)을 지난다 — 새 데몬 자동 복원 끝을 유계 대기한 뒤 한 번 · 상한 초과 = 「확인 못 함」 알림(조용한 성공 0).
+    #[test]
+    fn seatkeep_2r1_dead_dept_relaunch_goes_through_the_same_judgment() {
+        let n = dept_relaunch_unconfirmed_note("행정부");
+        // 조사 고르는 함수가 없다 → 이름 뒤 쌍점(조사 0 · master#6706603c 문구 결정 ①).
+        assert_eq!(n, "행정부: 다시 켰지만 직원 자리 복귀가 아직 끝나지 않아 결과를 확인하지 못했습니다 — 잠시 뒤 ↻ 재시작을 눌러 다시 확인하세요.");
+        let src = include_str!("main.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").unwrap()];
+        let code = |b: &str| b.lines().map(|l| l.split("//").next().unwrap_or("")).collect::<Vec<_>>().join("\n");
+        let org = &prod[prod.find("fn spawn_org_restore(app: AppHandle) {").unwrap()..];
+        let org = code(&org[..org.find("\n}\n").unwrap()]);
+        // ① 죽은 부서: launch 성공 → 그 부서 소켓의 자동 복원 끝을 유계 대기(판정 = Some(settled)).
+        let relaunch = org.find("} else if launch_dept_daemon(app.clone(), name.clone()).await.is_ok() {").expect("죽은 부서 launch 갈래");
+        let after = &org[relaunch..];
+        assert!(after[..after.find("} else {").unwrap()].contains("Some(wait_auto_restore_settled_on(sock.clone()).await)"), "launch 뒤 자동 복원 끝을 기다리지 않는다");
+        let fail_arm = &after[after.find("} else {").unwrap()..];
+        assert!(fail_arm[..fail_arm.find("};").unwrap()].split_whitespace().collect::<Vec<_>>() == ["}", "else", "{", "None"], "launch 실패가 판정 없음(None = 실패 1)이 아니다");
+        // ② 판정 = 살아 있던 부서와 같은 블록(판정 층 → 임대 알림)을 지난다.
+        let judged = org.find("let dept_ok = if judge == Some(true) {").expect("공용 판정 블록");
+        let block = &org[judged..judged + org[judged..].find("} else if judge == Some(false) {").expect("확인 못 함 갈래")];
+        assert!(block.contains("run_sidecar_restore_judged(Some(sock.clone())).await") && block.contains("dept_restore_lease_note("), "공용 판정·알림을 안 거친다: {block}");
+        assert!(org.contains("let judge = if action == DeptRestoreAction::SidecarRestore {\n                        Some(true)"), "살아 있던 부서의 판정 진입");
+        // ③ 상한 초과 = dept 키 없는 skip 알림(UI 토스트) · 「launch 성공 = 완료」 단독 판정 0.
+        let unconf = &org[org.find("} else if judge == Some(false) {").unwrap()..];
+        let unconf = &unconf[..unconf.find("} else {").unwrap()];
+        assert!(unconf.contains(r#"json!({"phase": "skip", "round": round, "detail": dept_relaunch_unconfirmed_note(&place)})"#), "확인 못 함을 알리지 않는다: {unconf}");
+        assert!(!org.contains("launch_dept_daemon(app.clone(), name.clone()).await.is_ok()\n"), "launch 성공 bool 을 그대로 부서 결과로 쓴다");
+        // codex 3R ④: 확인 못 함 = pending(성공 0 · 실패 0) · done 에 싣는다 · UI 가 「완료」 대신 「진행 중」(ui/src/restoredone.test.ts).
+        assert!(unconf.contains("pending += 1;") && unconf.contains("continue;") && !unconf.contains("true"), "확인 못 함을 성공으로 센다: {unconf}");
+        assert!(org.contains(r#""fail": fail, "pending": pending,"#), "done 이 pending 을 싣지 않는다");
+        let ui = include_str!("../../ui/src/restoredone.ts");
+        assert!(ui.contains("pending?: number;") && ui.contains("if (pending > 0)"), "UI 가 pending 을 읽지 않는다");
+        // ④ 대기 상한 = 본부와 같은 120초 · 시도마다 2초(codex 3R ⑤) · 대상 = 그 부서 소켓의 일회성 연결.
+        let w = &prod[prod.find("async fn wait_auto_restore_settled_on(").unwrap()..];
+        let w = &w[..w.find("\n}\n").unwrap()];
+        assert!(w.contains("wait_auto_restore_settled_for(socket, std::time::Duration::from_secs(120), std::time::Duration::from_secs(2))"), "부서 대기 상한: {w}");
+        let f = &prod[prod.find("async fn wait_auto_restore_settled_for(").unwrap()..];
+        let f = &f[..f.find("\n}\n").unwrap()];
+        assert!(f.contains("rpc_oneshot(&socket, \"org.status\"") && f.contains("tokio::time::timeout(left.min(per_try)"), "대상 소켓·시도 시한: {f}");
     }
 
     // ── TICKET=v115r5-t1 ↻ 결과 알림 참말화 ──
@@ -8973,7 +9819,7 @@ mod tests {
         assert!(body.contains("restore_note(&place, summary)"), "부서 실패 사정 문안이 없다");
         assert!(!prod.contains("async fn run_sidecar_restore(socket"), "종료 코드 단독 판정 함수가 남았다");
         assert_eq!(prod.matches("tokio::time::sleep(RESTORE_RETRY_WAIT)").count(), 1, "재실측 규칙이 두 벌이다");
-        assert!(restore_note("행정부", Some(RestoreSummary { ok: 0, fail: 1, gated: 0 }))
+        assert!(restore_note("행정부", Some(RestoreSummary { ok: 0, fail: 1, gated: 0, live: 0, unknown: 0, remeasure_failed: false }))
             .starts_with("행정부 자리 1곳을 세우지 못했습니다"));
     }
 

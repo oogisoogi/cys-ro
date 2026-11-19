@@ -5,6 +5,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { deptRegistryUnreadableNote, readDeptRegistry } from "./deptreg";
+import { RESTORE_UNCONFIRMED_TOAST_ID, followupConfirmedToast, followupEndToast, restoreDoneMaySweep, restoreDoneToast, restoreEventIsStale } from "./restoredone";
 import { imeStep, initialImeState, isHangulText, type ImeEvent } from "./ime";
 import { shellQuote } from "./shellquote";
 import { sanitizePaste } from "./pastesafe";
@@ -3744,6 +3745,8 @@ let ghostStrike = new Map<string, number>();
 // ★(v116-ui-close · D4 #17) 무장 = 「아직 쓸리지 않은 소켓 키 집합」 — 조회가 건너뛰어지거나 실패한 소켓은
 //   다음 틱이 다시 쓴다(판정·상한 = exitedsweep.ts armSweep/sweepArmedFor/settleSweep).
 let exitedSweepArm: SweepArm = null;
+// ★seatkeep-t1(r5 · codex r4 #5): 지금 조직 복원 회차 번호(restore-progress start 의 round) — 옛 회차 이벤트 버림의 기준.
+let restoreRound = 0;
 // ★A1-3 M7①: 이번 세션에 '본 적 있는' 부서 소켓. 시작 대조가 레지스트리를 읽으면 그때 심고,
 // 못 읽었으면 null 로 두어 첫 틱이 심는다(newlyRegisteredDepts 설명). 한 번 본 부서는 탭을 닫아도
 // 틱이 되살리지 않는다 — 닫은 탭이 3초마다 돌아오는 자가치유 과잉을 막는 것이 이 집합의 일이다.
@@ -11645,6 +11648,10 @@ async function start() {
       hq_note?: string | null;
       ok?: number;
       fail?: number;
+      pending?: number; // ★seatkeep-t1(codex 3R ④): 다시 켰지만 결과를 확인하지 못한 부서 수
+      round?: number; // ★seatkeep-t1(r5 · codex r4 #5): 복원 회차 번호 — 옛 회차 이벤트는 버린다
+      place?: string; // ★seatkeep-t1(r5): followup-ok — 확인된 끝점 이름
+      unconfirmed?: string[]; // ★seatkeep-t1(r5): followup-end — 확인 못 한 끝점 이름
       detail?: string;
       depts_unreadable?: string | null;
       dept?: string; // ★D5-b: 부서별 skip 이면 있다(전건 보류 skip 은 없음)
@@ -11652,6 +11659,12 @@ async function start() {
     // ★P1-3: 방금 조직을 지운 사용자에게 "직원 복귀 중"은 정반대 신호다. 리셋 진행/완료
     // 상태에서는 복원 토스트를 띄우지 않는다(복원 자체는 백엔드 판단이므로 표시만 억제).
     if (factoryResetting || resetCompleted) return;
+    // ★seatkeep-t1(r5 · codex r4 #5): 새 회차가 시작되면 옛 회차(옛 후속 감시 포함)의 이벤트는 sticky·알림·쓸기 무장을 건드리지 않는다.
+    if (p.phase === "start" && typeof p.round === "number" && p.round > restoreRound) {
+      restoreRound = p.round;
+      dismissToast(RESTORE_UNCONFIRMED_TOAST_ID); // 지난 회차의 「확인하지 못함」은 새 회차가 다시 확인한다
+    }
+    if (restoreEventIsStale(p.round, restoreRound)) return;
     if (p.phase === "start") briefGate.restoreStarted = true;
     if (p.phase === "done" || p.phase === "error") {
       briefGate.restoreFinished = true;
@@ -11661,17 +11674,9 @@ async function start() {
       stickyToast("restore", "feed", "👥 직원 복귀 중", "노드 세션 복원 중… (본부·부서)");
     } else if (p.phase === "done") {
       dismissToast("restore");
-      const ok = p.ok ?? 0;
-      const fail = p.fail ?? 0;
-      // 결함1: 부서가 있어도 본부(HQ) 복원 실패가 묻히지 않게 hq_ok===false를 health로 승격.
-      // ★v113-restore: 본부 쪽은 실제 사정(실패·관문 대기·실행 불가)을 백엔드가 hq_note 로 준다.
-      if (p.hq_ok === false)
-        toast("health", "⚠ 본부 복원 확인 필요", `${p.hq_note ?? "본부 복원이 끝나지 않았습니다."} (부서 성공 ${ok} · 실패 ${fail})`);
-      else if (fail > 0) toast("health", "⚠ 직원 복귀 일부 실패", `부서 복원 성공 ${ok} · 실패 ${fail} — 상태를 점검하세요.`);
-      // ①(Fable R2 A) 부서 목록을 못 읽어 부서 복원을 건너뛰었으면 「완료」 가 아니다.
-      else if (p.depts_unreadable) toast("health", "⚠ 부서 복원 건너뜀", deptRegistryUnreadableNote(p.depts_unreadable));
-      else if (p.hq_pending) toast("watchdog", "👥 직원 복귀 진행 중", "본부 좌석은 자동 복원이 이어서 세웁니다. 실패하면 알림으로 알려 드립니다.");
-      else toast("watchdog", "✅ 직원 복귀 완료", `노드 세션 복원 완료 (부서 ${ok}).`);
+      // ★seatkeep-t1(codex 3R ④): 알림 한 장 고르기 = restoredone.ts(순수 · 시험) — 부서 확인 못 함(pending)이면 「완료」 대신 「진행 중」.
+      const done = restoreDoneToast(p);
+      toast(done.category, done.name, done.detail);
       // ★(v112-restore ①) 카드는 앱 시작 직후 뜨고 복원 주입은 그 뒤 끝난다 — 미제출 실측 자리는
       //   복원이 끝난 이 시점에 알림 1줄로 정직하게 알린다(묻지 않는다 · 자동 조치는 이미 1회 했다).
       void (async () => {
@@ -11692,7 +11697,7 @@ async function start() {
       })();
       // ★B17: 복원이 끝난 지금이 옛 자리를 치울 유일한 시점이다(새 자리는 이미 섰다).
       //   다음 3초 틱이 한 번만 쓸고 스스로 무장을 내린다.
-      if (!p.hq_pending)
+      if (restoreDoneMaySweep(p))
         exitedSweepArm = armSweep(
           workspaces.map((w) => [w.socket ?? "", collectSids(w.tree)] as const),
           Date.now(),
@@ -11709,6 +11714,18 @@ async function start() {
       // ★D5-b(2026-09-17 4라운드): 전건 보류(부서 레지스트리 판독 실패 · 삭제 기록 미조회)는 부서별 skip(dept 필드 有 ·
       //   done 집계로 충분)과 달리 사용자가 알아야 한다 — 종전엔 Rust 가 emit 해도 여기서 버려 무음이었다. 복원 1회당 최대 2건.
       toast("watchdog", "직원 복귀 일부 보류", p.detail);
+    } else if (p.phase === "followup") {
+      // ★seatkeep-t1(r4 B): 상한을 넘긴 자동 복원을 앱이 끝까지 본다 — 백엔드가 1분마다 다시 보내 sticky 수명(3분)을 잇는다.
+      stickyToast("restore", "feed", "👥 직원 복귀 확인 중", "자동 복원이 끝나면 결과를 알려 드립니다(최대 30분).");
+    } else if (p.phase === "followup-ok" && p.place) {
+      // ★seatkeep-t1(r5 축소): 그 끝점만 확인됨 — 조직 전체 「완료」·쓸기 무장은 이 회차의 done 만 정한다(늦은 성공이 첫 실패를 덮지 않음 · #6).
+      const t = followupConfirmedToast(p.place);
+      toast(t.category, t.name, t.detail);
+    } else if (p.phase === "followup-end") {
+      dismissToast("restore");
+      // ★seatkeep-t1(r5 축소 · #8): 확인 못 한 끝점 = sticky(8초 알림 아님) · 쓸기 무장 0.
+      const t = followupEndToast(p);
+      if (t) stickyToast(RESTORE_UNCONFIRMED_TOAST_ID, t.category, t.name, t.detail);
     }
   });
 

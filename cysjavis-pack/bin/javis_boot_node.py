@@ -200,6 +200,16 @@ ROLE_DIRECTIVE = {
 # ───────────────────────── cys 호출 ─────────────────────────
 # ★조각 1: `cys launch-agent --resume-saved` 의 「저장 대화를 지키려고 멈춤」(cys EXIT_RESUME_HELD) — 이 도구도 같은 값으로 끝난다.
 EXIT_RESUME_HELD = 93
+# ★seatkeep-t1: cys 대화 임대 거절 줄(`· <역할>: 대화 <id> … 띄우지 않음`) — rc 93 이 조각 1 의 「잇지 못함」 과 같은 값이라
+#   줄 모양으로 가른다(javis_phoenix `_LEASE_REFUSAL_RE` 와 같은 꼴 · cys session_lease_cli 의 거절 줄).
+_LEASE_LINE_RE = re.compile(r"^\s*(?:\[launch-agent\] --resume-saved: )?·?\s*\S+: 대화 \S+ .*띄우지 않음")
+
+
+def _lease_refusal_line(err):
+    for ln in (err or "").splitlines():
+        if _LEASE_LINE_RE.search(ln):
+            return ln.strip()[:200]
+    return None
 
 
 def run(args, timeout=15):
@@ -1750,6 +1760,15 @@ def main():
             # 플래그를 모르는 옛 cys(인자 해석 거부 · 좌석 생성 전) — 종전 기동 그대로 1회.
             emit("launch", "cys 가 --resume-saved 를 모름 — 종전 기동으로 재시도")
             rc, _, err = run([c for c in cmd if c != "--resume-saved"], timeout=launch_cap)
+        lease_line = _lease_refusal_line(err) if rc in (92, EXIT_RESUME_HELD) else None
+        if rc == 92 or lease_line is not None:
+            # ★seatkeep-t1: 저장 대화를 다른 살아 있는 프로세스가 쓰는 중(92) · 생존 판정 불가(93 + 임대 거절 줄) — cys 가 좌석을
+            #   만들기 전에 거절했다(좌석 0 · 주입 0). 재조회·플래그 빼고 재시도(새 대화)를 하지 않는다 — 같은 역할 둘을 세우는 길이다.
+            #   끝 코드 = 조각 1 의 EXIT_RESUME_HELD(93 · 「저장 대화를 지키려고 멈춤」 · 호출자가 파괴적 회수로 올리지 않는 값).
+            why = "session_writer_live" if rc == 92 else "session_liveness_unknown"
+            emit("launch", "launch-agent rc=%d — 대화 임대 거절(%s) · 좌석 0 · 새 대화 폴백 0 · %s"
+                 % (rc, why, lease_line or ((err or "").strip().splitlines() or [""])[-1]))
+            return done("resume_refused", why, code=EXIT_RESUME_HELD)
         if rc == EXIT_RESUME_HELD:
             lines = [ln.strip() for ln in (err or "").splitlines() if ln.strip()]
             why = lines[-1][:200] if lines else "저장 대화 판정 보류"

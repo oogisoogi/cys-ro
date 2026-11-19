@@ -2776,6 +2776,63 @@ def current_tombstones(socket):
     return tombs
 
 
+AGY_POLICY_CODE = "agy_consumer_policy"   # 정본 = Rust cys::agy_door::REFUSE_CODE(같은 낱말)
+AGY_POLICY_RC = 76                        # 정본 = Rust cys::agy_door::EXIT_AGY_POLICY_REFUSED
+
+
+def agy_door_split(roles, entries, detect=None, status=None):
+    """★agy 좌석 문(TICKET=cysr-agy-policy-exposure) — 부활 대상에서 「문이 닫혀 띄우지 않을」 agy 역할을 가른다.
+    판정은 이 파일이 하지 않는다: `cys agent-detect --json` 오라클(Rust apply_agy_door)이 reason 머리에
+    `agy_consumer_policy` 를 낸 어댑터만 가른다(문 상태·agy 판정의 정본 = Rust 한 곳). 오라클을 못 부르면
+    가르지 않는다(종전 동작) — 그때도 launch-agent 가 76 으로 거부해 agy 프로세스는 생기지 않는다.
+    반환 (남길 역할, 가른 역할). detect 주입 = 시험 이음매(dict: agent → reason)."""
+    if not roles:
+        return list(roles), []
+    # claude 좌석만이면 오라클을 부르지 않는다(claude 는 agy 가 아니다 · CLI 호출 0 = 종전 프로토콜 그대로).
+    if all(str((entries.get(r) or {}).get("agent") or "claude") == "claude" for r in roles):
+        return list(roles), []
+    if detect is None:
+        detect = {}
+        try:
+            r = cys("agent-detect", "--json", timeout=15)
+            data = json.loads((r.stdout or "").strip() or "{}") if r.returncode == 0 else {}
+            for k, v in (data.get("agents") or {}).items():
+                if isinstance(v, dict):
+                    detect[k] = str(v.get("reason") or "")
+        except Exception:
+            detect = {}
+        if status is not None:
+            status["oracle_ok"] = bool(detect)
+    keep, skipped = [], []
+    for role in roles:
+        agent = str((entries.get(role) or {}).get("agent") or "")
+        if agent and detect.get(agent, "").startswith(AGY_POLICY_CODE):
+            skipped.append(role)
+        else:
+            keep.append(role)
+    return keep, skipped
+
+
+AGY_SKIP_LINE_RE = re.compile(r"· (\S+): 건너뜀\(" + AGY_POLICY_CODE + r"\)")   # 정본 = Rust agy_door::restore_skip_line_with
+
+
+def agy_policy_skipped_in(out):
+    """`cys restore` 출력에서 문 닫힘으로 건너뛴 역할(순수) — codex 2R major: 오라클이 못 가른 정책 좌석을 **첫 restore
+    결과에서 곧바로** 소비해 재시도·fresh 강등·재스폰 계수·차단기에 넣지 않는다."""
+    return set(AGY_SKIP_LINE_RE.findall(out or ""))
+
+
+def manual_seat_roles(live_end, policy_skipped=()):
+    """★SEAT 빈 좌석 잔존 역할 — 좌석은 있으나 에이전트가 앉지 않은 역할(정직 보고 · 사람 개입 필요).
+    ★agy 좌석 문(codex 1R minor): 문이 닫혀 **정책으로 건너뛴** 역할은 뺀다 — 같은 좌석을 「건너뜀(고장 아님)」과
+    「빈 좌석 · 사람이 그 pane 에서 실행해야」로 두 번, 서로 다른 말로 보고하지 않는다(정책 쪽은 agy_policy_skipped_roles)."""
+    skip = set(policy_skipped or ())
+    return sorted({
+        role for role, ss in live_end.items()
+        if role != "-" and role not in skip and any((not s["exited"]) and s.get("seat") == "empty" for s in ss)
+    })
+
+
 def spawn_fresh_production(socket, role, agent, cwd=None):
     """★Phase11 독약세션 fresh-fallback(prod): 무 resume 로 새 세션 기동(cys launch-agent).
     cys restore 는 topology 의 session_id 를 resume 하므로 독약 세션이면 계속 실패한다 → 세션핀을 버리고
@@ -3373,6 +3430,8 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
     _tomb_skipped = [r for r in _requested if r in _tombstones]
     # ★R4-4: 부활 대상 = 'dead' 만. 'unknown' 은 따로 모아 정직 보고한다(맹목 재스폰도 침묵 생존 취급도 아님).
     target_roles = [r for r in _requested if _role_liveness(r) == "dead" and r not in _tombstones]
+    _agy_oracle = {"oracle_ok": True}
+    target_roles, _agy_skipped = agy_door_split(target_roles, entries, status=_agy_oracle)  # ★agy 좌석 문(기본 닫힘) — 실패 아님
     liveness_unknown_roles = [r for r in _requested
                               if r not in _tombstones and _role_liveness(r) == "unknown"]
     for _r in liveness_unknown_roles:
@@ -3385,6 +3444,13 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
                       summary="role=%s 생존 확인 불가(ps 축 부재·데몬 미관측) — 자동 부활 보류, 사람 확인 필요" % _r)
     if liveness_unknown_roles:
         log("★R4-4 liveness unknown: %s — 부활 보류·정직 보고(생존 취급 아님)." % liveness_unknown_roles)
+        save_journal(socket, ticket, j)
+    if _agy_skipped:
+        log("★agy 좌석 문 닫힘: %s 은 부활 대상에서 제외(구글 개인 요금제 약관 · 실패 아님)." % _agy_skipped)
+        for _r in _agy_skipped:
+            jevent(j, _r, "target", "skip_agy_policy",
+                   "agy_consumer_policy — cysr 은 Antigravity(agy) 좌석을 다시 띄우지 않는다(문 기본 닫힘 · 고장 아님). "
+                   "여는 길 = 사람이 앱 명령 팔레트 「Antigravity(agy) 좌석 열기」.")
         save_journal(socket, ticket, j)
     if _tomb_skipped:
         log("★묘비 필터: 요청 역할 중 폐역(tombstone) %s 은 부활 대상에서 제외(의도삭제>강제부활). untomb 로만 재편입." % _tomb_skipped)
@@ -3429,11 +3495,18 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
     # ★M5/P1-3 회로차단기: '실제 부활 시도(죽은 역할 존재)'에만 기록한다. NOOP(대상 0)은 스폰 시도가
     #   아니므로 카운트하지 않고 오히려 창을 리셋한다 — NOOP 반복이 차단기를 OPEN 시켜 진짜 부활을 막는
     #   오검출(P1-3)을 차단. target 산출 이후로 이동해 "spawn 시도가 있을 때만 기록"(설계 축C4)을 만족.
-    if not target_roles:
+    if not target_roles and _agy_skipped:
+        # ★agy 좌석 문(codex 4R blocking 1): 대상이 비었으나 그 까닭이 **정책 건너뜀**이면 진짜 NOOP(전원 생존)이 아니다 —
+        #   부활을 시도하지도, 성공하지도 않았으므로 차단기 파일을 읽지도 쓰지도 않는다(기존 실패 이력 보존).
+        log("부활 대상 = 정책 건너뜀(%s)뿐 — 차단기 무접촉(기존 실패 이력 보존)." % _agy_skipped)
+    elif not target_roles:
         log("부활 대상 죽은 역할 0 — restore 무작업(멱등).")
         if not no_breaker:
             breaker_reset(socket)
-    elif not no_breaker:
+    elif not no_breaker and not (not _agy_oracle.get("oracle_ok", True)
+                                 and all(str((entries.get(r) or {}).get("agent") or "") == "gemini" for r in target_roles)):
+        # ★agy 좌석 문(codex 3R major): 오라클이 실패해 정책 여부를 모르는 gemini 좌석뿐이면 부활 시도로 기록하지 않는다 —
+        #   기록 뒤에 정책 건너뜀을 알게 되면 기존 실패 이력을 지우지 않고는 되돌릴 수 없다(종전 리셋 = 진짜 실패 이력 소실).
         opened, attempts = breaker_check_and_record(socket)
         if opened:
             log("★M5 회로차단기 OPEN — %ss 내 %d회 부활 시도(임계 %d). 자동 부활 정지." % (
@@ -3544,6 +3617,18 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
                 jevent(j, _r, "spawn", "respawn_count",
                        "같은 세대 재스폰 %d/%d회" % (_respawn_counts[_r] - 1, RESPAWN_CAP))
         save_respawn_counts(socket, _ACTIVE_EPOCH, _respawn_counts)
+
+    def _agy_policy_consume(role, why):
+        """★agy 좌석 문(codex 2R major): 정책 건너뜀 = 실패도 발주도 아니다 — 건너뜀 목록에 넣고 이번 사이클의 재스폰
+        계수를 되돌린다(같은 세대 반복 복원이 캡·차단기에 걸리지 않게)."""
+        if role not in _agy_skipped:
+            _agy_skipped.append(role)
+        jevent(j, role, "spawn", "skip_agy_policy",
+               "%s — 문 닫힘이라 띄우지 않음(고장 아님 · 재시도·fresh 강등·재스폰 계수·실패 계상 밖)" % why)
+        if role in _acted and _respawn_counts.get(role, 0) > 0:
+            _acted.remove(role)
+            _respawn_counts[role] -= 1
+            save_respawn_counts(socket, _ACTIVE_EPOCH, _respawn_counts)
     # ★1R#2(2026-09-10): 기준 폴더를 **1회** 해소한다 — 라이브 master → 영속 토폴로지 master 순.
     #   `restore_cwd` 는 정상 복원(cys restore)에 실을 override 이고(전원 홈일 때만 · 다중
     #   프로젝트 함대 보호는 `restore_cwd_override` 주석), `master_cwd` 는 fresh 폴백이 개별
@@ -3630,6 +3715,9 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
             #   ⓒ 좌석이 빈 셸(seat=="empty")이 아닌 좌석만 센다(ⓒ = 905 A2 의 빈 좌석 제외 조건 흡수 · 이 줄 단독 소유 = 906).
             #   agent_alive 는 데몬 관측 주기라 막 뜬 좌석이 잠깐 None 일 수 있다 — ⓐ를 통과한 역할만 짧게 재관측한다.
             _failed_now = set(re.findall(r"· (\S+): 기동 실패", res.get("out") or ""))
+            for _r in [r for r in need if r in agy_policy_skipped_in(res.get("out"))]:
+                _agy_policy_consume(_r, "cys restore 출력 「건너뜀(%s)」(attempt %d)" % (AGY_POLICY_CODE, attempt))
+            need = [r for r in need if r not in _agy_skipped]
 
             def _revived_seat(s):
                 return (not s["exited"]) and s.get("agent_alive") is True and s.get("seat") != "empty"
@@ -3784,6 +3872,9 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
                 fresh_cwd = seat_fresh_cwd(role, fresh_cwd, master_cwd, log_fn=log)
                 fresh_at = time.time()
                 res = spawn_fresh_production(socket, role, agent, cwd=fresh_cwd)
+                if res.get("rc") == AGY_POLICY_RC:   # ★agy 좌석 문 — 오라클이 못 가른 정책 좌석(codex 1R major): 실패 아님
+                    _agy_policy_consume(role, "launch-agent rc=76 %s(fresh)" % AGY_POLICY_CODE)
+                    continue
                 time.sleep(SPAWN_SETTLE)
                 alive = [s for s in live_role_surfaces(socket).get(role, []) if not s["exited"]]
                 ref = alive[0]["surface"] if alive else None
@@ -3814,6 +3905,10 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
         mark_stage(j, role, "spawn", False, "재시도 %d회 + fresh 강등 소진 후에도 surface 미발견" % SPAWN_RETRIES)
         jevent(j, role, "spawn", "fail", "재시도 %d회 + fresh 강등 소진 — 부활 실패(INCOMPLETE)" % SPAWN_RETRIES)
     save_journal(socket, ticket, j)
+    # ★agy 좌석 문: 정책으로 건너뛴 역할도 하위 단계·완결성에서 뺀다(부활 실패가 아니다).
+    if _agy_skipped:
+        pending = [r for r in pending if r not in _agy_skipped]
+        target_roles = [r for r in target_roles if r not in _agy_skipped]
     # ★v116-pack: 런 도중 묘비 역할은 하위 단계·완결성·최종 판정에서 뺀다(부활 실패가 아니라 의도 삭제).
     if _mid_tomb:
         pending = [r for r in pending if r not in _mid_tomb]
@@ -4025,10 +4120,7 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
     #   role=master 를 쥔 빈 셸이 있는데도 COMPLETE 가 선언됐다 — 시스템이 자기 실패를 몰랐다.
     #   이제 좌석 사실을 다시 읽어, 비어 있는 역할이 남았으면 그 사실을 verdict 에 싣는다.
     #   (구 데몬은 seat 키가 없어 항상 빈 목록 → 종전 동작과 동일하게 degrade.)
-    manual_seats = sorted({
-        role for role, ss in live_end.items()
-        if role != "-" and any((not s["exited"]) and s.get("seat") == "empty" for s in ss)
-    })
+    manual_seats = manual_seat_roles(live_end, _agy_skipped)
     if not target_roles:
         completeness = "NOOP"
     elif not incomplete_roles:
@@ -4052,6 +4144,10 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
                     "실행'해야 채워지는 상태이거나, agent 미상(claim-role 등록 pane)이라 무엇을 띄울지 "
                     "결정론으로 알 수 없는 상태다. 좌석 앞 큐 메시지는 배달 보류(보존)된다 — 침묵 성공 "
                     "아님." % manual_seats)
+    if _agy_skipped:
+        honesty += (" ★agy 좌석 문 닫힘=%s: 구글 개인 요금제 약관 때문에 cysr 은 Antigravity(agy) 좌석을 다시 띄우지 "
+                    "않았다 — 고장·부활 실패가 아니다(완결성·빈 좌석 집계에서 뺐다). 여는 길 = 사람이 앱 명령 팔레트 "
+                    "「Antigravity(agy) 좌석 열기」." % sorted(_agy_skipped))
     if _mid_tomb:
         honesty += (" ★런 도중 묘비=%s: 부활을 진행하는 사이 사람이 닫아(묘비) 스폰하지 않았다 — 부활 실패가 "
                     "아니라 의도 삭제이므로 완결성·판정 집계에서 뺐다(재편입 = untomb)." % _mid_tomb)
@@ -4087,7 +4183,8 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
         "incomplete_roles": incomplete_roles,  # ★Phase10: 미부활 역할 정직 명시(침묵 성공 금지)
         "manual_seats": manual_seats,          # ★SEAT: 좌석은 있으나 에이전트 부재(사람 개입 필요) — 정직 명시
         "liveness_unknown_roles": liveness_unknown_roles,  # ★R4-4: 생존·사망 확정 불가(부활 보류 · 생존 취급 아님)
-        "tombstoned_mid_run_roles": _mid_tomb,  # ★v116-pack: 런 도중 묘비 → 스폰 안 함(INCOMPLETE 미집계)
+        "tombstoned_mid_run_roles": _mid_tomb,
+        "agy_policy_skipped_roles": sorted(_agy_skipped),  # ★agy 좌석 문 닫힘 → 띄우지 않음(실패·빈 좌석 아님)  # ★v116-pack: 런 도중 묘비 → 스폰 안 함(INCOMPLETE 미집계)
         "fresh_fallback_roles": fresh_fallback_roles,  # ★Phase11: 독약 세션→fresh 강등 역할 정직 명시(독약만 · 리뷰 R2)
         # ★F-1(0.14.31): fresh 사유를 역할별로 공개(기존 enum 유지). `fresh_roles` = outcome fresh 전부(독약 ∪ F-1).
         "fresh_roles": fresh_roles,

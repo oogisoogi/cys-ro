@@ -3,6 +3,7 @@
 //   ② CSS: 무조건 깜박임 제거 — 작업 중만 깜박인다 · 움직임 줄임에서도 작업 중은 구별된다
 //   ③ U-F06: main.ts 의 **실제** refreshPaneTitles·활동 패스 본문을 떼어 돌린다(가짜 DOM · 가짜 IPC · 가짜 단조 시계)
 import { describe, it, expect } from "bun:test";
+import { seatDot } from "./seatrows"; // (tabs-sidebar 1c) paintRoleDot 의 판정 함수
 import { readFileSync } from "node:fs";
 import {
   parseDisplayActivity,
@@ -323,13 +324,17 @@ function harness() {
     //    (활동 패스·바쁨 가드·단일 렌더러)과 무관한 우리 배선(B17 옛 자리 스윕 · 새 부서 감지 M7① · 자동 정렬 · 빈 자리표 회수 · 표시 번호 · 본부 판정 ·
     //    사이드바 사용량 패널)은 무동작. 제목 문안은 원작자 대역(paneTitle)과 같은 항등(행 title 그대로)으로 둔다.
     //    ★surfaceWorking = false: 우리 판 paintRoleDot 의 자기보고 폴백(관측 '모름' → 자기보고 작업 중)은 끈다 — 이 검체는 데몬 관측 투영만 본다.
+    tickRec: null, // (cysr-ui-slice0) 3초 고리 특성 기록기 = 꺼짐(기본) — 배선은 전부 `tickRec?.` 라 무평가
     exitedSweepArm: null, sweepScopeFor: () => null, exitedSweepTargets: () => [], settleSweep: (a: unknown) => a,
     openNewlyRegisteredDepts: async () => false, rememberRoles: nothing, arrangeWs: nothing,
     displayNoByKey: new Map<string, unknown>(), exitedPaneKeys: new Set<string>(),
+    noteSeatSize: nothing, forgetEndedSeatGroup: nothing, lastSeatRow: new Map<string, unknown>(), // (948 D5·D3) 크기 기억 대조 · 끝난 좌석 묶음 기록 — 이 검체의 축 밖
     surfaceWorking: () => false, titleColorRole: false, paneTitleText: (_sid: number, t: string): string => String(t), ruleTitleOf: () => null,
     placeholderSids: new Set<number>(), touchedPlaceholders: new Set<number>(), shouldClosePlaceholder: () => false, placeholderScreenLines: () => null,
     hqMasterSids: null, renderWsTabs: nothing,
     lastSurfacesBySocket: new Map<string, unknown>(), refreshUsageAccounts: () => Promise.resolve(), refreshNamedReporters: () => Promise.resolve(), renderSidebarUsage: nothing,
+      seatListBySock: new Map<string, unknown>(), seatGroups: {}, syncSeatGroupsFromList: () => ({ changed: false }), saveSeatGroups: nothing, refreshSeatRows: nothing, seatDot, approvalSeats: new Set<string>(), // (tabs-sidebar 2d) 옮긴 묶음 동기 = 무관(무동작)
+      // 실제 판정 함수(seatrows.seatDot) — 대역 아님 // (tabs-sidebar 조각1) 좌석 줄 재료·그리기 — 이 검체의 축과 무관(무동작)
   };
   const loaded = loadWith(FNS, deps);
   fns = loaded.fns;

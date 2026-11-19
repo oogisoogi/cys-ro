@@ -14,6 +14,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 mod counsel;
 mod feedback;
 mod updnotice;
+mod viewcore; // (cysr-ui-slice1) 대화 화면 Tauri 명령 — 우리 새 파일(chat_send · chat_transcript)
 
 type Stream = Box<dyn AsyncReadWrite>;
 trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -3874,6 +3875,27 @@ fn privacy_settings_url(target: &str) -> Option<&'static str> {
         "login" => Some("x-apple.systempreferences:com.apple.LoginItems-Settings.extension"),
         _ => None,
     }
+}
+
+/// ★agy 좌석 문(TICKET=cysr-agy-policy-exposure) — 앱 화면이 문을 여닫는 **유일한** 입구다(`cys` CLI·데몬·팩에는 쓰기
+/// 길 0 · 시험 `cys::agy_door::tests::only_the_gui_writes_the_door`). 기본 = 닫힘(cysr 은 agy 좌석을 띄우지 않는다 —
+/// 구글 개인 요금제 약관). 여는 것은 UI 확인 창에서 [`cys::agy_door::OPEN_WARNING`] 을 사람이 읽고 [열기] 를 누른 뒤에만.
+#[tauri::command]
+fn agy_seat_door_get() -> bool {
+    cys::agy_door::door_open()
+}
+
+/// 확인 창 본문 — 문구의 정본은 Rust 상수 하나(UI 에 사본을 두지 않는다).
+#[tauri::command]
+fn agy_seat_door_warning() -> String {
+    cys::agy_door::OPEN_WARNING.to_string()
+}
+
+/// 문 여닫기 — 반환 = 쓴 뒤 **같은 임계 구역 안에서** 다시 읽은 실제 상태(쓰기가 조용히 안 먹은 경우를 화면이 알게 ·
+/// 열기/닫기 직렬화 = codex 4R minor 7).
+#[tauri::command]
+fn agy_seat_door_set(open: bool) -> Result<bool, String> {
+    cys::agy_door::write_door(open)
 }
 
 /// 시스템 설정의 해당 화면을 연다(macOS 전용 — 그 밖은 Err). `/usr/bin/open` 절대경로(PATH 무의존)
@@ -8358,12 +8380,8 @@ async fn plan_daemon_stop(socket: &std::path::Path) -> DaemonStopPlan {
 /// cys.lock). Read only, for the log. None when absent, unreadable, unparsable or 0 (Windows writes no lock file).
 #[cfg_attr(not(unix), allow(dead_code))]
 fn lock_file_pid(socket: &std::path::Path) -> Option<u32> {
-    std::fs::read_to_string(socket.with_extension("lock"))
-        .ok()?
-        .trim()
-        .parse::<u32>()
-        .ok()
-        .filter(|p| *p != 0)
+    // ★T3: 첫 칸만(cysd 가 노브 켬이면 `pid 출생시각` 두 칸을 적는다).
+    cys::startup_lock_holder_pid(&std::fs::read_to_string(socket.with_extension("lock")).ok()?)
 }
 
 /// 구 데몬 정상 종료: system.identify로 pid를 받아 SIGTERM(unix)/taskkill(win).
@@ -8439,6 +8457,9 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .manage(Attachments(Mutex::new(HashMap::new())))
         .invoke_handler(tauri::generate_handler![
+            viewcore::chat_send, // (cysr-ui-slice1)
+            viewcore::chat_transcript, // (cysr-ui-slice1)
+            viewcore::confirm_reply, // (cysr-ui-slice4) 대화 화면 직접 허락·거절 — 데몬 결과(actuated) 그대로
             feedback::feedback_new_draft,
             feedback::feedback_stage_file,
             feedback::feedback_unstage,
@@ -8554,6 +8575,9 @@ fn main() {
             onboard_notices,
             perm_warnings,
             open_privacy_settings,
+            agy_seat_door_get,
+            agy_seat_door_warning,
+            agy_seat_door_set,
             // INST-1(P4-4): claude CLI 미설치 온보딩 카드 pull(agent-detect 단일 오라클 소비).
             claude_missing_hint,
             // v116-app-firstrun(A-3): 새 설치 첫 실행의 폴더 권한 창 — 안내 먼저, 권한 창은 그 뒤.

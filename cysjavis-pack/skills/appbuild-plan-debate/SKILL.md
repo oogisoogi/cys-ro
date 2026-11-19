@@ -12,6 +12,9 @@ description: AI 2명(gemini·codex)이 10턴+ 스스로 토론해 웹/앱 기획
 
 1. **페인 준비** → 검증: cys 멀티페인에 리뷰어 2종(gemini·codex) 기동(`cys boot`/launch-agent).
    없으면 신설. (master가 라운드를 중재한다.)
+   ★cysr 기본(Antigravity(agy) 좌석 문 닫힘): gemini 자리는 `javis_orchestra.py boot-reviewers --spawn` 이 Claude 대체
+   검토자(reviewer-claude-1 · 반증 페르소나)로 채워 **codex·Claude 대체 둘이 토론**한다(벤더 다양성 약화는 리포트에 표기) —
+   agy 를 직접 띄우지 마라(구글 개인 요금제 약관 · 계정 정지 위험).
 2. **토론 라운드** → 검증: 주제(아이디어)를 두 AI에 던져 **10턴+ 토론**(시장 조사·핵심 기능·
    차별점·기술 합의). §6 라운드 루프(리뷰→반박→재반박→수용)로 운영. 산출 = 디베이트 리포트.
 3. **사용자 게이트** → 검증: 리포트를 사용자에게 제시. 사용자는 (a) 그대로 진행 (b) 리포트

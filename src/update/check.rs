@@ -474,10 +474,11 @@ pub fn gather_facts(dir: &Path, pack_dir: &Path, outcome: Option<&FeedOutcome>, 
     };
     let lock_held = if dir.join(super::lock::LOCK_FILE).exists() { super::lock::is_held(dir) } else { Some(false) };
     let pending_restore = pack_dir.parent().map(|p| p.join(".pending-restore").exists());
-    let pack_journal = pack_dir
-        .parent()
-        .map(|p| p.join(".pack-journal"))
-        .map(|j| std::fs::read_dir(&j).map(|mut r| r.next().is_some()).unwrap_or(false));
+    // ★1.1.16(U02): 이 레인의 진행 중 저널(`.pack-journal.d/<레인>/active`) 또는 1.1.15 이전 공유 저널(`.pack-journal`) 이 남아 있으면 다른 거래 진행 중.
+    let non_empty = |j: std::path::PathBuf| std::fs::read_dir(&j).map(|mut r| r.next().is_some()).unwrap_or(false);
+    let pack_journal = pack_dir.parent().map(|_| {
+        non_empty(crate::pack::pack_journal_dir_for(pack_dir)) || non_empty(crate::pack::legacy_pack_journal_dir_for(pack_dir))
+    });
     let other_txn = match (journal_open, lock_held, pending_restore, pack_journal) {
         (Some(a), Some(b), Some(c), Some(d)) => Some(a || b || c || d),
         _ => None,

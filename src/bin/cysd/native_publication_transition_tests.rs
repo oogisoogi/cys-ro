@@ -134,16 +134,7 @@ fn fixture_python(test: &'static str) -> Option<PathBuf> {
     None
 }
 impl Drop for Scratch { fn drop(&mut self) { let _=std::fs::remove_dir_all(&self.path); } }
-struct OwnedRoot {
-    child:Child, replies:mpsc::Receiver<serde_json::Value>,reader:Option<JoinHandle<()>>,
-}
-impl OwnedRoot {
-    fn spawn(scratch:&Scratch, python:&Path, compiler_override:Option<&std::ffi::OsStr>)->Self {
-        let a=scratch.path.join("np-agent-a");let b=scratch.path.join("np-agent-b");
-        // Own minimal native programs: relocated Apple system binaries were observed exiting
-        // with signal9 on this host. Do not alter signatures or live system executables.
-        let fixture_source=scratch.path.join("agent.c");
-        std::fs::write(&fixture_source,r#"#include <stdio.h>
+const NATIVE_AGENT_C: &str = r#"#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 int main(int argc, char **argv) {
@@ -156,15 +147,62 @@ int main(int argc, char **argv) {
     }
     return ferror(stdin) ? 1 : 0;
 }
-"#).unwrap();
-        let compiler=compiler_override.map(std::ffi::OsStr::to_owned)
-            .unwrap_or_else(||std::env::var_os("C8_NATIVE_FIXTURE_CC").unwrap_or_else(||"/usr/bin/cc".into()));
-        let built=Command::new(compiler).hide_console().arg("-std=c11").arg("-O0")
-            .arg(&fixture_source).arg("-o").arg(&a).env_clear().env("PATH","/usr/bin:/bin")
-            .env("PYTHONDONTWRITEBYTECODE","1")
-            .output().expect("fixture C compiler must be available");
-        assert!(built.status.success(),"owned native fixture compilation failed: {}",String::from_utf8_lossy(&built.stderr));
-        std::fs::copy(&a,&b).unwrap();
+"#;
+/// The ACTUAL fixture compiler call site (both the fixed build and the override observation use it).
+fn compile_native_agent(compiler:&std::ffi::OsStr, source:&Path, out:&Path) {
+    std::fs::write(source,NATIVE_AGENT_C).unwrap();
+    let built=Command::new(compiler).hide_console().arg("-std=c11").arg("-O0")
+        .arg(source).arg("-o").arg(out).env_clear().env("PATH","/usr/bin:/bin")
+        .env("PYTHONDONTWRITEBYTECODE","1")
+        .output().expect("fixture C compiler must be available");
+    assert!(built.status.success(),"owned native fixture compilation failed: {}",String::from_utf8_lossy(&built.stderr));
+}
+/// Fixed fixture folder `target/<profile>/cys-test-fixtures/c8-native/` (purpose-named, not content-hashed,
+/// so disk does not accumulate). Rebuilt only when the stored source differs from `NATIVE_AGENT_C`;
+/// new files are written under per-process temporary names and renamed into place (concurrent test
+/// processes never see half a file). Agents are never deleted by tests.
+fn fixed_native_agents()->(PathBuf,PathBuf) {
+    static AGENTS: std::sync::OnceLock<(PathBuf,PathBuf)> = std::sync::OnceLock::new();
+    AGENTS.get_or_init(||{
+        let exe=std::env::current_exe().expect("test executable path");
+        let deps=exe.parent().expect("deps");
+        let profile=if deps.file_name().map(|n|n=="deps").unwrap_or(false) { deps.parent().expect("profile") } else { deps };
+        let dir=profile.join("cys-test-fixtures/c8-native");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a,b,src)=(dir.join("np-agent-a"),dir.join("np-agent-b"),dir.join("agent.c"));
+        let fresh=a.is_file() && b.is_file() && std::fs::read_to_string(&src).map(|t|t==NATIVE_AGENT_C).unwrap_or(false);
+        if !fresh {
+            let tag=std::process::id();
+            let (ta,tb,ts)=(dir.join(format!("np-agent-a.part-{tag}")),dir.join(format!("np-agent-b.part-{tag}")),dir.join(format!("agent.part-{tag}.c")));
+            // The temporary source name must end in `.c`; otherwise cc treats it as a linker input (979d148b red run).
+            let compiler=std::env::var_os("C8_NATIVE_FIXTURE_CC").unwrap_or_else(||"/usr/bin/cc".into());
+            compile_native_agent(&compiler,&ts,&ta);
+            std::fs::copy(&ta,&tb).unwrap();
+            std::fs::rename(&ta,&a).unwrap();std::fs::rename(&tb,&b).unwrap();std::fs::rename(&ts,&src).unwrap();
+        }
+        (a,b)
+    }).clone()
+}
+struct OwnedRoot {
+    child:Child, replies:mpsc::Receiver<serde_json::Value>,reader:Option<JoinHandle<()>>,
+}
+impl OwnedRoot {
+    fn spawn(scratch:&Scratch, python:&Path, compiler_override:Option<&std::ffi::OsStr>)->Self {
+        // Own minimal native programs: relocated Apple system binaries were observed exiting
+        // with signal9 on this host. Do not alter signatures or live system executables.
+        // TICKET=cysr-test-gatekeeper-crash-1118: the default fixture is built ONCE into a fixed
+        // target-side folder and reused, never deleted -- a fresh Mach-O executed and then removed
+        // per test was a syspolicyd (Gatekeeper scan) crash candidate. Only the compiler-override
+        // observation builds into scratch, and that build is never executed.
+        let (a,b)=match compiler_override {
+            None=>fixed_native_agents(),
+            Some(compiler)=>{
+                let a=scratch.path.join("np-agent-a");let b=scratch.path.join("np-agent-b");
+                compile_native_agent(compiler,&scratch.path.join("agent.c"),&a);
+                std::fs::copy(&a,&b).unwrap();
+                (a,b)
+            }
+        };
         let script=scratch.path.join("supervisor.py");std::fs::write(&script,SUPERVISOR).unwrap();
         let mut child=Command::new(python)
             .hide_console()

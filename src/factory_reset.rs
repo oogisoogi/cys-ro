@@ -16,12 +16,13 @@ use std::path::{Path, PathBuf};
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// ~/.cys 직하에서 격리하는 정확 이름. (pack·조직 레지스트리·상태·마커·토글 전부)
-const CYS_BASE_EXACT: [&str; 30] = [
+const CYS_BASE_EXACT: [&str; 31] = [
     "pack",
     "pack.prev",
     "pack.swap",
     ".pack-download",
     ".pack-journal",
+    ".pack-journal.d", // ★1.1.16(U02 · 원작자 7c82a7a5 GX7): 레인마다 팩 업데이트 저널(crate::pack::PACK_JOURNAL_ROOT)
     ".pack-accepted.json",
     ".pack-apply.lock",
     ".pack-reinject-pending.json",
@@ -1505,8 +1506,9 @@ pub fn verify_roots_quiescent(
         let Ok(s) = std::fs::read_to_string(&lock) else {
             continue;
         };
-        if let Ok(pid) = s.trim().parse::<u32>() {
-            if pid != 0 && pid_alive_and_cysd(pid) {
+        // ★T3: 첫 칸만(노브 켬이면 `pid 출생시각` 두 칸) — 두 칸을 통째로 숫자로 읽으면 실패해 산 cysd 를 못 보고 넘어간다.
+        if let Some(pid) = crate::startup_lock_holder_pid(&s) {
+            if pid_alive_and_cysd(pid) {
                 return Err(format!(
                     "살아있는 cysd(pid {pid})가 {} 을 보유 중 — 정지 후 재시도",
                     lock.display()
@@ -2804,6 +2806,21 @@ mod tests {
         r
     }
 
+    /// ★1.1.16(U02 · 원작자 7c82a7a5 GX7 이식): 초기화가 레인 저널 폴더 `.pack-journal.d` 를 다른 알려진 이름처럼 격리한다.
+    #[test]
+    fn j1116_plan_quarantines_the_lane_journal_folder() {
+        let td = test_home("plan-journal-d");
+        let r = fake_roots(&td);
+        mk(&r.temp);
+        mk(&r.cys_base.join(".pack-journal.d/pack-dept-d1/active/files"));
+        let plan = build_plan(&r, &ResetOptions { purge_license: false, purge_local: false, purge_round: false });
+        let q: Vec<String> = plan.quarantine.iter().map(|i| norm(&i.path)).collect();
+        let k: Vec<String> = plan.keep.iter().map(|i| norm(&i.path)).collect();
+        let _ = std::fs::remove_dir_all(&td);
+        assert!(q.iter().any(|p| p.ends_with(".cys/.pack-journal.d")), "{q:?}");
+        assert!(!k.iter().any(|p| p.ends_with(".cys/.pack-journal.d")), "{k:?}");
+    }
+
     #[test]
     fn plan_quarantines_known_state_and_keeps_owner_files() {
         let td = test_home("plan-known");
@@ -3158,6 +3175,21 @@ mod tests {
         // 게이트 거부 시 부분 이동 0.
         assert!(r.cys_base.join("pack").exists());
         // 홀더 사망(또는 pid 재사용으로 cysd 아님) → 통과.
+        let dead = |_pid: u32| false;
+        assert!(verify_roots_quiescent(&r, &dead, &no_daemon).is_ok());
+    }
+
+    /// TICKET=cysr-seatkeep-t3 독립 검증 D5: 노브 켬 cysd 는 잠금에 `"<pid> <출생 시각 µs>"` 두 칸을 쓴다 — 관문이 첫 칸을 읽어
+    /// 산 cysd 를 막아야 한다(옛 판독기 `s.trim().parse::<u32>()` 로 되돌리면 통과시켜 붉어진다).
+    #[test]
+    fn quiescent_gate_blocks_live_cysd_holder_two_field_lock() {
+        let td = test_home("gate2");
+        let r = seed_practice_tree(&td);
+        touch(&r.state_root.join("cys/cys.lock"), "4242 1794420130692329");
+        let live = |pid: u32| pid == 4242;
+        let no_daemon = || false;
+        let e = verify_roots_quiescent(&r, &live, &no_daemon).expect_err("두 칸 잠금의 산 cysd 를 통과시킴");
+        assert!(e.contains("pid 4242"), "{e}");
         let dead = |_pid: u32| false;
         assert!(verify_roots_quiescent(&r, &dead, &no_daemon).is_ok());
     }
@@ -4341,6 +4373,7 @@ mod r2f_dm_factory_reset {
     fn r2f_dm_factory_reset_inventory_lists_carry_the_new_persistent_files() {
         assert_eq!(CYS_BASE_EXACT2.len(), 12, "~/.cys 직하 정확 이름 목록(2차)의 길이");
         assert!(CYS_BASE_EXACT.contains(&"pack.swap"), "끊긴 교체의 옛 팩 — 빠지면 초기화 뒤 다음 설치가 되살린다");
+        assert!(CYS_BASE_EXACT.contains(&".pack-journal") && CYS_BASE_EXACT.contains(&crate::pack::PACK_JOURNAL_ROOT), "레인 저널 폴더(1.1.16)와 옛 공유 저널이 기본 격리 목록에 없다");
         assert!(CYS_BASE_PREFIX.contains(&"pack.swap-"), "복구의 보존 폴더 — 빠지면 초기화 뒤에도 사용자 상태가 남는다");
         assert!(CYS_BASE_EXACT2.contains(&"claude-tui-written.json") && crate::claude_tui::LEDGER_FILE.ends_with("/claude-tui-written.json"), "claude tui 원장이 기본 격리 목록에 없다");
         assert!(CYS_BASE_EXACT2.contains(&".update-attempt.json"), "~/.cys/.update-attempt.json(인앱 업데이트 시도 기록)이 기본 격리 목록에 없다");

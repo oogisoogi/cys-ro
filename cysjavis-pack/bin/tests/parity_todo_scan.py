@@ -28,6 +28,7 @@ Python 소비자 C1(`javis_report.discover_todo_files`)과 Rust 소비자 C2(`cy
     python3 cysjavis-pack/bin/tests/parity_todo_scan.py --keep   # 임시 트리 보존(디버그)
 """
 import argparse
+import hashlib
 import os
 import shutil
 import subprocess
@@ -62,12 +63,34 @@ def build_dumper(workdir):
     for p in (RUST_SRC, DUMPER_SRC):
         if not os.path.isfile(p):
             die("Rust 소스가 없다: %s" % p)
-    binpath = os.path.join(workdir, "todo_scan_dump")
+    # TICKET=cysr-test-gatekeeper-crash-1118: 덤퍼(Mach-O)는 임시 폴더에 매번 빌드 → 실행 → 지우지 않는다(새 실행 파일이
+    # 맥 보안 검사 도중 사라지면 syspolicyd 가 죽는 사고 후보). 고정 자리 `target/cys-test-fixtures/todo_scan_dump/` 에 두고
+    # 원문(두 .rs) 해시가 같으면 재사용 · 다르면 임시 이름에 빌드 → os.replace 로 갈아 끼운다 · 지우지 않는다.
+    fixed = os.path.join(REPO, "target", "cys-test-fixtures", "todo_scan_dump")
+    os.makedirs(fixed, exist_ok=True)
+    binpath, stamp = os.path.join(fixed, "todo_scan_dump"), os.path.join(fixed, "todo_scan_dump.src-sha256")
+    h = hashlib.sha256()
+    for p in (RUST_SRC, DUMPER_SRC):
+        with open(p, "rb") as f:
+            h.update(f.read())
+    want = h.hexdigest()
+    try:
+        with open(stamp) as f:
+            have = f.read().strip()
+    except OSError:
+        have = ""
+    if have == want and os.path.isfile(binpath):
+        return binpath
+    final, binpath = binpath, "%s.part-%d" % (binpath, os.getpid())
     proc = subprocess.run([find_rustc(), "--edition", "2021", "-C", "debuginfo=0",
                            DUMPER_SRC, "-o", binpath], capture_output=True, text=True)
     if proc.returncode != 0:
         die("Rust 덤퍼 컴파일 실패:\n%s%s" % (proc.stdout, proc.stderr))
-    return binpath
+    os.replace(binpath, final)
+    with open(stamp + ".part", "w") as f:
+        f.write(want)
+    os.replace(stamp + ".part", stamp)
+    return final
 
 
 def build_tree(root):

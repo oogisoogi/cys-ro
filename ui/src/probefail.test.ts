@@ -449,7 +449,8 @@ describe("배선 핀 — main.ts · 승인 전환", () => {
     expect(block.includes(ns("setTimer: (fn, ms) => setTimeout(fn, ms),"))).toBe(true);
     expect(block.includes(ns('feedList: () => invoke("feed_list", { status: null }),'))).toBe(true);
     expect(block.includes(ns("ceoActive: ceoIsActivelyGenerating,"))).toBe(true);
-    expect(block.includes(ns("open: openFeed,"))).toBe(true);
+    // (cysr-1116-cc-autoopen) 유예 만료의 원인은 feed.grace — 원인 표(ccopen.ts)가 「알림만」이라 화면을 열지 않는다(ccopen.test.ts 가 잰다).
+    expect(block.includes(ns('open: () => openFeed("feed.grace"),'))).toBe(true);
   });
   test("scheduleFeedSwitchIfStillPending 는 위임 한 줄 — 자기 타이머·재예약·판정 0", () => {
     const body = sliceBody("function scheduleFeedSwitchIfStillPending(", "\n}\n");

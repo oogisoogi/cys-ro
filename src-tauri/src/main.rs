@@ -499,6 +499,31 @@ fn log_ime(line: String) {
     }
 }
 
+/// (TICKET=cysr-1116-cc-autoopen-1120) Control Center 열림 원인 앱 로그 — UI(ccopen.ts ccOpenLogLine)가 만든 한 줄을
+/// `~/.cys/cc-open.log` 에 append 한다(CC 가 열린 순간·열기를 막은 순간마다 1줄 · 「저절로 떴다」의 원인을 기계가 답하게).
+/// 상한 = 256KiB 를 넘으면 `.1` 로 한 번 밀고 새로 쓴다(무한 증가 0). 쓰기 실패는 삼킨다(로그가 화면 동작을 막지 않는다).
+#[tauri::command]
+fn log_cc_open(line: String) {
+    append_capped_log(&cys::home_dir().join(".cys").join("cc-open.log"), &line, CC_OPEN_LOG_MAX);
+}
+
+const CC_OPEN_LOG_MAX: u64 = 256 * 1024;
+
+/// 한 줄 append + 크기 상한 회전(순수 경로 인자 — 시험이 임시 폴더로 잰다). 줄 안의 개행은 공백으로 접는다(한 원인 = 한 줄).
+fn append_capped_log(path: &std::path::Path, line: &str, max: u64) {
+    use std::io::Write;
+    if std::fs::metadata(path).map(|m| m.len() >= max).unwrap_or(false) {
+        let _ = std::fs::rename(path, path.with_extension("log.1"));
+    }
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let one: String = line.chars().map(|c| if c == '\n' || c == '\r' { ' ' } else { c }).take(400).collect();
+        let _ = writeln!(f, "{one}");
+    }
+}
+
 /// IME 디버그 게이트(파일/환경변수): 릴리스 빌드엔 devtools가 없어 localStorage.cysImeDebug를
 /// 최종 사용자가 켤 수 없다 → ~/.cys/ime-debug 파일 존재 또는 CYS_IME_DEBUG=1이면 계측 활성.
 #[tauri::command]
@@ -8502,6 +8527,7 @@ fn main() {
             send_input,
             save_pasted_image,
             log_ime,
+            log_cc_open, // (cysr-1116-cc-autoopen) CC 열림 원인 앱 로그
             ime_debug_enabled,
             app_mouse_enabled,
             win_wheel_guard_disabled,
@@ -8840,6 +8866,24 @@ mod tests {
         let body = &prod[f..f + prod[f..].find("\n}\n").unwrap()];
         assert!(body.contains("rpc_full(&sock, \"surface.send_text\""), "send_input 이 코드를 버리는 경로로 돌아갔다");
         assert!(!body.contains("rpc_on(&sock, \"surface.send_text\""));
+    }
+
+    /// (TICKET=cysr-1116-cc-autoopen-1120) CC 열림 원인 로그 — 한 줄 append · 개행 접기 · 상한 넘으면 `.1` 로 회전 · 배선 등록.
+    #[test]
+    fn cc_open_log_appends_one_line_and_rotates_at_cap() {
+        let d = std::env::temp_dir().join(format!("cys-ccopenlog-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let p = d.join("sub").join("cc-open.log");
+        super::append_capped_log(&p, "a cc-open auto opened cause=approval.stalled", 48);
+        super::append_capped_log(&p, "b\nc", 48);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "a cc-open auto opened cause=approval.stalled\nb c\n", "append · 개행 접기");
+        super::append_capped_log(&p, "d", 48); // 이미 48B 이상 → 회전 후 새 파일
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "d\n", "상한 넘으면 새로 쓴다");
+        assert!(std::fs::read_to_string(d.join("sub").join("cc-open.log.1")).unwrap().starts_with("a cc-open"), "옛 줄은 .1 로");
+        let _ = std::fs::remove_dir_all(&d);
+        let src = include_str!("main.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").unwrap()];
+        assert_eq!(prod.matches("            log_cc_open,").count(), 1, "log_cc_open 이 invoke_handler 에 등록되지 않았다");
     }
 
     /// ①(TICKET=cysr-117-impl-lead) 부서 목록: 없음 = 빈 목록 · BOM = 읽음 · 읽기 오류·해석 실패 = Err.

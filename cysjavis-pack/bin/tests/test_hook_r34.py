@@ -7,7 +7,13 @@
 무엇을 막는지는 각 절 머리 주석이 적는다.
 밀폐: 임시 디렉터리 · 스텁 cys · 호출 기록 래퍼(sleep/ls/tail/sed/head/cat) · 라이브 데몬 무접촉.
 시계: 판정 행은 호출 **순서·횟수**(구조)로 잰다. 벽시계는 시한 행에만 쓰고, 그 lab 들은 래퍼를 끼우지 않으며
-  (exec 1회 추가가 부하에서 틱을 늘린다) 느린 자식을 시한의 4배로 두어 여유를 넓게 잡는다.
+  (exec 1회 추가가 부하에서 틱을 늘린다).
+  시한 행의 주 판정 = **구조**: 런처가 돌아온 순간 느린 자식(SLOW_CHILD_S)이 아직 안 끝났는가(slow_done · 자식이 끝나면
+  표지를 남긴다). 벽시계 상한(BOUND_S)은 「시한 값이 몇 배로 커진 회귀」를 잡는 느슨한 안전선이다.
+  근거(실측): 런처 시한은 벽시계가 아니라 `sleep` 명목 합(1/100초 회계)이라 외부 sleep ~14회의 생성 비용이 붙는다 —
+  시한 1s 의 경과 = 맥 2.38~3.12s · 부하(load 21) 아래 4.12·4.20·5.17s · 종전 상한 3.0s·자식 4s 로는 맥 CI·로컬 레인에서
+  간헐 적색(2026-11-19 레인 로그 RCF-3 3.12 · RCF-4a 3.07 · NZ-3 3.10 · DL-1b 3.11). 자식 10s · 상한 7.0s — 자식을 기다리는
+  회귀는 구조 판정이 부하와 무관하게 잡고(자식이 끝나야 돌아옴), 시한이 10배(기본 8s 포함)가 되는 회귀는 둘 다 잡는다.
 Windows: 실 Git Bash(cygpath 실재)에서는 맥·리눅스 갈래 행을 건너뛰고 WIN·(msys) 행만 돈다. 이 검체는 현재
   mac·ubuntu 레인에만 등재돼 있다 — (msys) 행은 가짜 cygpath 모사이지 플랫폼 증명이 아니다.
 출력: PASS/FAIL 행 · 실패 시 exit 1 · 전부 통과 시 HOOK-R34-OK.
@@ -56,7 +62,7 @@ STUB_BODY = '#!/bin/sh\necho BODY-RAN >> "$MARK"\n[ -n "${1:-}" ] && rm -f "$1"\
 
 # 가짜 cys — --help 는 STUB_HELP_INPUT=1 일 때만 --input 을 광고 · --input 은 STUB_PRE(사전 동작) 후 STUB_RC.
 #   STUB_PRE: emptyrc = 빈 RC 를 먼저 만들고 0.4s(런처 자식의 '열었으나 아직 안 씀' 창을 늘린 모형)
-#             slow    = STUB_SLOW 초 대기
+#             slow    = STUB_SLOW 초 대기 → 끝나면 $MARK.slow 에 SLOW-DONE(시한 행의 구조 판정 = 런처가 이 자식을 기다렸는가)
 #             diequiet = 부모(런처의 자식 서브셸)를 죽인다 — rc 를 못 남긴 자식
 #             dieempty = 빈 RC 를 만들고 부모를 죽인다 — 빈 rc 를 남긴 자식
 #   usage-event-stdin: STUB_USAGE=fail 이면 stdin 을 **읽지 않고** rc 1(기동 중 사망 모형)
@@ -70,7 +76,7 @@ if [ "$1" = hook ] && [ "$3" = --input ]; then
   if [ "${STUB_HELP_INPUT:-1}" != 1 ]; then echo "error: unexpected argument '--input' found" >&2; exit 2; fi
   case "${STUB_PRE:-}" in
     emptyrc) : > "$4.rc"; /bin/sleep 0.4 ;;
-    slow) /bin/sleep "${STUB_SLOW:-4}" ;;
+    slow) /bin/sleep "${STUB_SLOW:-4}"; echo SLOW-DONE >> "$MARK.slow" ;;
     diequiet) kill -9 "$PPID" ;;
     dieempty) : > "$4.rc"; kill -9 "$PPID" ;;
   esac
@@ -141,6 +147,11 @@ def sleeps(d):
     return [l.split(" ", 1)[1] for l in rd(os.path.join(d, "tool.log")).splitlines() if l.startswith("sleep ")]
 
 
+def slow_done(d):
+    """느린 자식(STUB_PRE=slow)이 끝났는가 — 런처가 돌아온 순간 True 면 런처가 자식을 기다린 것(시한 무시)."""
+    return "SLOW-DONE" in rd(os.path.join(d, "mark.slow"))
+
+
 def body_count(d):
     return rd(os.path.join(d, "mark")).count("BODY-RAN")
 
@@ -170,6 +181,8 @@ try:
         return r, time.monotonic() - t0
 
     NOTE = "백그라운드로 계속"
+    SLOW_CHILD_S = 10      # 시한(1s)을 넘기는 느린 자식 — 런처가 이 자식을 기다리면 돌아온 순간 slow_done 참 · 경과 ≥ 10s
+    BOUND_S = 7.0          # 시한 행 벽시계 안전선 — 부하 실측 최대 5.17s 위 · 자식 10s 아래(머리말 근거)
     SCHED = ["0.01", "0.02", "0.03", "0.04"]       # 잘게 보는 틱(누계 0.10s = 종전 한 칸) — 그 뒤는 종전 0.1s
 
     def is_sched_prefix(seq):
@@ -237,19 +250,19 @@ try:
         d, hooks, binp, state, env = lab(root, "rcf3", wrap=())
         os.makedirs(state, exist_ok=True)
         r, el = run_pre(hooks, env, 'printf 6 > "$CYS_STATE_DIR/hook-input-7-$$.json.rc"',
-                        STUB_RC=6, STUB_PRE="slow", STUB_SLOW=4, CYS_HOOK_INPUT_DEADLINE_S=1)
-        check("RCF-3 낡은 RCF + 느린 자식(4s) → 시한(1s)에 지연 고지 · 본체 0 · 무기한 대기 없음",
-              NOTE in r.stdout and el < 3.0 and body_count(d) == 0 and r.returncode == 0,
-              "%.2fs %r" % (el, r.stdout[:100]))
+                        STUB_RC=6, STUB_PRE="slow", STUB_SLOW=SLOW_CHILD_S, CYS_HOOK_INPUT_DEADLINE_S=1)
+        check("RCF-3 낡은 RCF + 느린 자식(%ds) → 시한(1s)에 지연 고지 · 본체 0 · 무기한 대기 없음" % SLOW_CHILD_S,
+              NOTE in r.stdout and not slow_done(d) and el < BOUND_S and body_count(d) == 0 and r.returncode == 0,
+              "%.2fs done=%s %r" % (el, slow_done(d), r.stdout[:100]))
 
         # ───────── RCF-4: **늦은 기록자**(선제거 뒤에 남의 6 이 도착) ─────────
         #   a) 이번 자식이 느리다 → 시한에 T2-2 로 닫힌다(무상한 wait 로 막히지 않는다 · 남의 6 을 소비하지 않는다).
         d, hooks, binp, state, env = lab(root, "rcf4a", wrap=())
-        r, el = run_pre(hooks, env, LATE_WRITER % "0.2", STUB_RC=6, STUB_PRE="slow", STUB_SLOW=4,
+        r, el = run_pre(hooks, env, LATE_WRITER % "0.2", STUB_RC=6, STUB_PRE="slow", STUB_SLOW=SLOW_CHILD_S,
                         CYS_HOOK_INPUT_DEADLINE_S=1)
-        check("RCF-4a 늦은 기록자 + 느린 자식(4s) → 시한(1s)에 지연 고지 · 본체 0 · 남의 값 무소비",
-              NOTE in r.stdout and el < 3.0 and body_count(d) == 0 and r.returncode == 0,
-              "%.2fs %r" % (el, r.stdout[:100]))
+        check("RCF-4a 늦은 기록자 + 느린 자식(%ds) → 시한(1s)에 지연 고지 · 본체 0 · 남의 값 무소비" % SLOW_CHILD_S,
+              NOTE in r.stdout and not slow_done(d) and el < BOUND_S and body_count(d) == 0 and r.returncode == 0,
+              "%.2fs done=%s %r" % (el, slow_done(d), r.stdout[:100]))
         #   b) 이번 자식이 시한 안에 rc0 으로 끝난다 → 이번 값(0)으로 본체 1회(남의 6 으로 프롬프트를 버리지 않는다).
         d, hooks, binp, state, env = lab(root, "rcf4b", wrap=())
         r, el = run_pre(hooks, env, LATE_WRITER % "0.2", STUB_RC=0, STUB_PRE="slow", STUB_SLOW="1.2")
@@ -314,19 +327,21 @@ try:
             check("NZ-2 비회수 셸 모형 · rc6 → 본문 0 · 고지 없음 · 시한 전 종료",
                   body_count(d) == 0 and NOTE not in r.stdout and r.returncode == 0 and el < 2.0,
                   "%.2fs body=%d %r" % (el, body_count(d), r.stdout[:100]))
-            d, r, el = run_nz("nz3", STUB_RC=6, STUB_PRE="slow", STUB_SLOW=4, CYS_HOOK_INPUT_DEADLINE_S=1)
-            check("NZ-3 비회수 셸 모형 · 느린 자식(4s) → 시한(1s)에 지연 고지 · 본문 0(회수 호출이 시한을 늘리지 않는다)",
-                  NOTE in r.stdout and body_count(d) == 0 and el < 3.0 and r.returncode == 0,
-                  "%.2fs %r" % (el, r.stdout[:100]))
+            d, r, el = run_nz("nz3", STUB_RC=6, STUB_PRE="slow", STUB_SLOW=SLOW_CHILD_S, CYS_HOOK_INPUT_DEADLINE_S=1)
+            check("NZ-3 비회수 셸 모형 · 느린 자식(%ds) → 시한(1s)에 지연 고지 · 본문 0(회수 호출이 시한을 늘리지 않는다)"
+                  % SLOW_CHILD_S,
+                  NOTE in r.stdout and not slow_done(d) and body_count(d) == 0 and el < BOUND_S and r.returncode == 0,
+                  "%.2fs done=%s %r" % (el, slow_done(d), r.stdout[:100]))
         else:
             print("SKIP NZ 비회수 셸 모형 — bash 부재(검사 수에 넣지 않음)")
 
         # ───────── DL-1: 데드라인 초과 = 비동기 계속(T2-2) — 1/100초 회계에서도 시한 유지 ─────────
         d, hooks, binp, state, env = lab(root, "dl1", wrap=())
-        r, el = run(hooks, env, STUB_PRE="slow", STUB_SLOW=4, STUB_RC=6, CYS_HOOK_INPUT_DEADLINE_S=1)
+        r, el = run(hooks, env, STUB_PRE="slow", STUB_SLOW=SLOW_CHILD_S, STUB_RC=6, CYS_HOOK_INPUT_DEADLINE_S=1)
         check("DL-1a 시한 1s 초과 → 지연 고지 1줄 · 본체 0회 · exit 0",
               r.returncode == 0 and body_count(d) == 0 and r.stdout.count(NOTE) == 1, repr((r.stdout[:160], body_count(d))))
-        check("DL-1b 시한을 지킨다(0.9s ≤ 경과 < 3.0s · 자식 4s)", 0.9 <= el < 3.0, "%.2fs" % el)
+        check("DL-1b 시한을 지킨다(자식이 끝나기 전에 돌아옴 · 0.9s ≤ 경과 < %.1fs · 자식 %ds)" % (BOUND_S, SLOW_CHILD_S),
+              not slow_done(d) and 0.9 <= el < BOUND_S, "%.2fs done=%s" % (el, slow_done(d)))
 
     # ───────── WIN-1·2: Windows 모사(가짜 cygpath) — 종전 ⑥ 거동 그대로 ─────────
     d, hooks, binp, state, env = lab(root, "win1", msys=True)
@@ -336,9 +351,10 @@ try:
           bool(seq) and seq[0] == "0.1" and "0.01" not in seq and body_count(d) == 0 and r.returncode == 0,
           repr((seq[:4], body_count(d))))
     d, hooks, binp, state, env = lab(root, "win2", wrap=(), msys=True)
-    r, el = run(hooks, env, STUB_PRE="slow", STUB_SLOW=4, STUB_RC=6, CYS_HOOK_INPUT_DEADLINE_S=1)
+    r, el = run(hooks, env, STUB_PRE="slow", STUB_SLOW=SLOW_CHILD_S, STUB_RC=6, CYS_HOOK_INPUT_DEADLINE_S=1)
     check("WIN-2 (msys) 시한 초과 → 종전처럼 지연 고지 · 본체 0",
-          NOTE in r.stdout and body_count(d) == 0 and el < 3.0 and r.returncode == 0, "%.2fs %r" % (el, r.stdout[:80]))
+          NOTE in r.stdout and not slow_done(d) and body_count(d) == 0 and el < BOUND_S and r.returncode == 0,
+          "%.2fs done=%s %r" % (el, slow_done(d), r.stdout[:80]))
 
     # ─── [C2 절 경계] ───
     # ═════════ [C2] 능력 프로브 양성 캐시 — 양성만 · 경로+mtime 키 · 낡은 양성은 rc2 → 본체(fail-safe) · Windows 무캐시 ═════════

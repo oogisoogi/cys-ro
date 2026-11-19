@@ -26,7 +26,10 @@ OUT = sys.argv[4] if len(sys.argv) > 4 else None
 # exitaway = 데몬 없는 사이 좌석이 끝남 → seatkeep 이 .exit 를 남기고 끝남 → 새 cysd 가 그 기록을 소비(codex T4 1R #6 · A10).
 # token = 입양 + 좌석 토큰 이음(T5 · A8ⓓ′): 입양 뒤 좌석 안에서 「조상 체인이 끊긴」 고아 프로세스로 claim — 자기 토큰 = 성공 · 토큰 없음 = 실패
 #   (체인으로는 못 닿음 = 토큰 길이 실제로 쓰였다는 대조) · 같은 세대 난수만 바꾼 토큰 = token_mismatch 거절. 끝에 토큰 문자열 누출 훑기.
-assert MODE in ("adopt", "bound", "direct", "reserve", "exitaway", "token"), MODE
+# rotate = 입양 + 실제 `cys rotate`(T6 A1): 격리(비기본 소켓) 레인 = 옛 cysd 에 kill -TERM → 다음 identify 가 형제 cysd 자동 기동(노브 env 그대로).
+#   SIGKILL 이 아니라 정상 종료 길(scoped 정리)도 좌석을 안 끝내는가 · ⑤ 복원이 같은 역할을 또 띄우지 않는가(좌석 START 줄 = 1).
+#   SKA_ROTATE_DRAIN=1 = --skip-drain 없이(① 저장 검증 포함).
+assert MODE in ("adopt", "bound", "direct", "reserve", "exitaway", "token", "rotate"), MODE
 R = f"/private/tmp/ska-{MODE[:3]}-{os.getpid() % 10000}"
 shutil.rmtree(R, ignore_errors=True)
 for d in ("home", "tmp", "s", "packstate", "pack", "bin", "bin2", "logs"):
@@ -103,9 +106,9 @@ ENV = {"HOME": f"{R}/home", "USER": os.environ["USER"], "LOGNAME": os.environ["U
        "CYS_NO_OFFICE_BRIDGE": "1", "CYS_NO_AUTORESTORE": "1", "CYS_NO_AUTOSTART": "1", "PATH": f"{R}/bin:/usr/bin:/bin",
        "TERM": "xterm-256color", "LANG": "en_US.UTF-8"}
 DENV = dict(ENV)
-if MODE in ("adopt", "bound", "reserve", "exitaway", "token"):
+if MODE in ("adopt", "bound", "reserve", "exitaway", "token", "rotate"):
     DENV["CYS_SEATKEEP"] = "1"
-if MODE in ("adopt", "reserve", "exitaway", "token"):
+if MODE in ("adopt", "reserve", "exitaway", "token", "rotate"):
     DENV["CYS_SEATKEEP_ADOPT"] = "1"
 
 
@@ -125,6 +128,29 @@ def alive(pid):
         return False
 
 
+class PidDaemon:
+    """rotate 가 띄운(이 시험의 자식이 아닌) cysd — Popen 과 같은 손잡이 몇 개만(pid 로만 신호 · 이름 일치 종료 없음)."""
+    def __init__(self, pid):
+        self.pid = pid
+    def poll(self):
+        return None if alive(self.pid) else 0
+    def send_signal(self, sig):
+        try:
+            os.kill(self.pid, sig)
+        except OSError:
+            pass
+    def wait(self, timeout=None):
+        t = time.time()
+        while alive(self.pid):
+            if timeout is not None and time.time() - t > timeout:
+                raise subprocess.TimeoutExpired("cysd", timeout)
+            time.sleep(0.05)
+        return 0
+    def kill(self):
+        self.send_signal(signal.SIGKILL)
+
+
+rotate_rc = []
 daemons = []
 first_rpc = []  # (cysd pid, 첫 RPC 성공 벽시계) — A16 「첫 RPC 수락 > 마지막 입양」 대조
 
@@ -269,17 +295,37 @@ for rnd in range(ROUNDS):
     seats.append((sid, role, pid, log))
     time.sleep(1.0)
     produced_before = {s[0]: sum(1 for l in seat_lines(s[3]) if l.startswith("S ")) for s in seats}
-    # ── 강제 종료 ──
+    # ── 강제 종료(rotate 모드 = 실제 cys rotate) ──
     killed = d.pid
     t_kill = time.time()
-    os.kill(killed, signal.SIGKILL)
-    d.wait()
-    if BURST:
-        open(f"{R}/burst", "w").close()
-    time.sleep(1.0)  # 데몬 없는 1초 — 좌석은 계속 출력(입양 모드 = seatkeep 꼬리에 쌓임)
-    alive_gap = {s[0]: alive(s[2]) for s in seats}
-    t_restart = time.time()
-    d, back_ms = start_daemon(str(rnd + 1))
+    if MODE == "rotate":
+        renv = dict(DENV)
+        renv.pop("CYS_NO_AUTOSTART", None)  # 새 데몬 = rotate 의 identify 가 자동 기동(노브 env 를 그대로 넘김)
+        args = ["rotate", "--skip-depts"] + ([] if os.environ.get("SKA_ROTATE_DRAIN") == "1" else ["--skip-drain"])
+        rr = subprocess.run([f"{R}/bin/cys", *args], env=renv, capture_output=True, text=True, timeout=400)
+        open(f"{R}/logs/rotate-{rnd}.txt", "w").write(rr.stdout + rr.stderr)
+        if isinstance(d, subprocess.Popen):
+            d.wait()
+        alive_gap = {s[0]: alive(s[2]) for s in seats}
+        t_restart = time.time()
+        idn = cys("identify")
+        npid = json.loads(idn.stdout).get("daemon_pid") if idn.returncode == 0 else None
+        if not npid:
+            raise SystemExit(f"rotate 뒤 새 데몬 없음 rc {rr.returncode}: {(rr.stdout + rr.stderr)[-400:]}")
+        d = PidDaemon(npid)
+        daemons.append(d)
+        first_rpc.append((npid, t_restart))
+        back_ms = round((t_restart - t_kill) * 1000)
+        rotate_rc.append(rr.returncode)
+    else:
+        os.kill(killed, signal.SIGKILL)
+        d.wait()
+        if BURST:
+            open(f"{R}/burst", "w").close()
+        time.sleep(1.0)  # 데몬 없는 1초 — 좌석은 계속 출력(입양 모드 = seatkeep 꼬리에 쌓임)
+        alive_gap = {s[0]: alive(s[2]) for s in seats}
+        t_restart = time.time()
+        d, back_ms = start_daemon(str(rnd + 1))
     time.sleep(1.5)
     rec = {"mode": MODE, "round": rnd, "killed_daemon": killed, "new_daemon": d.pid, "daemon_back_ms": back_ms, "seats": []}
     lst = cys("list").stdout
@@ -319,6 +365,9 @@ for rnd in range(ROUNDS):
             # 입양 모드 + 조종자 없음: 끊긴 뒤 자식 출력 ≤ 꼬리(1MiB) + PTY 커널 버퍼·읽기 조각 여유(256KiB) 여야 한다(역압 · M5 가 잡는다).
             "gap_bytes_ok": gap_bytes <= (1 << 20) + (256 << 10),
             "send_rc": (snd.returncode, sk.returncode), "input_logged": got_in, "echo_on_screen": got_echo,
+            # 작성자 하나(A6 의 좌석 판정): 같은 좌석 기록에 START 가 1줄(복원이 같은 역할을 또 띄우면 같은 기록에 START 가 더 생김)
+            "starts": sum(1 for l in lines if l.startswith("START")),
+            "role_rows": sum(1 for l in lst.splitlines() if re.search(rf"\b{re.escape(s_role)}\b", l)),
         })
     ks = keepers()
     rec["keepers"] = len(ks)
@@ -329,7 +378,9 @@ for rnd in range(ROUNDS):
             "io": [x["input_logged"] and x["echo_on_screen"] for x in rec["seats"]],
             "seq_ok": [x["seq_missing"] == 0 and x["seq_dups"] == 0 for x in rec["seats"]],
             "gap_bytes_ok": [x["gap_bytes_ok"] for x in rec["seats"]],
-            "keepers": rec["keepers"], "live_seats": rec["live_seats"], "back_ms": back_ms}
+            "keepers": rec["keepers"], "live_seats": rec["live_seats"], "back_ms": back_ms,
+            "one_writer": [x["starts"] == 1 and x["role_rows"] == 1 for x in rec["seats"]],
+            "rotate_rc": rotate_rc[-1] if rotate_rc else None}
     print(json.dumps(line, ensure_ascii=False), flush=True)
     if OUT:
         open(OUT, "a").write(json.dumps(rec, ensure_ascii=False) + "\n")

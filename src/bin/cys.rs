@@ -21169,10 +21169,14 @@ fn run_daemon_cmd(action: DaemonAction) -> i32 {
                                 .args(["-TERM", &pid.to_string()])
                                 .output();
                         } else {
-                            // 폴백: 전체 인자 경로 매칭(comm 절단 무관).
-                            let _ = std::process::Command::new("pkill")
-                                .args(["-TERM", "-f", "MacOS/cysd"])
-                                .output();
+                            // 폴백: 전체 인자 경로 매칭(comm 절단 무관)으로 후보만 모으고, **실행 파일이 `…/Contents/MacOS/cysd`
+                            // 인 pid 만** 끝낸다(T6 · seatkeep 은 인자에 `--controller-exe …/MacOS/cysd` 를 달아 옛 `pkill -f`
+                            // 에 같이 걸렸다 = 데몬 교체가 살아 있는 좌석을 끝냄 · 좌석 명령 인자 오탐도 같은 결함).
+                            for pid in takeover_fallback_targets(&takeover_fallback_candidates()) {
+                                let _ = std::process::Command::new("kill")
+                                    .args(["-TERM", &pid.to_string()])
+                                    .output();
+                            }
                         }
                         // 고정 sleep 대신 flock 해제(=소켓 연결 불가)까지 폴링(최대 5초).
                         let mut down = false;
@@ -23159,6 +23163,31 @@ fn wait_auto_restore_settled(wait: std::time::Duration) -> bool {
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
+}
+
+/// T6: takeover 폴백 후보 — `pgrep -f MacOS/cysd`(인자 문자열 일치)가 내놓은 pid 와 그 실행 파일 경로(못 읽으면 빈 값).
+fn takeover_fallback_candidates() -> Vec<(u32, Vec<u8>)> {
+    let out = std::process::Command::new("pgrep").args(["-f", "MacOS/cysd"]).output();
+    let Ok(out) = out else { return Vec::new() };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.trim().parse::<u32>().ok())
+        .map(|pid| {
+            let exe = cys::process_observation::observe(pid).map(|o| o.identity.executable).unwrap_or_default();
+            (pid, exe)
+        })
+        .collect()
+}
+
+/// T6: 후보 중 끝낼 pid — 실행 파일 경로가 정확히 `…/Contents/MacOS/cysd` 이고 이 프로세스가 아닌 것만(경로 못 읽음 = 안 끝냄).
+/// `cys-seatkeep`(인자에 `MacOS/cysd` 가 있음) · 인자에 그 문자열이 든 좌석 명령은 여기서 빠진다.
+fn takeover_fallback_targets(cands: &[(u32, Vec<u8>)]) -> Vec<u32> {
+    let me = std::process::id();
+    cands
+        .iter()
+        .filter(|(pid, exe)| *pid != me && exe.ends_with(b"/Contents/MacOS/cysd"))
+        .map(|(pid, _)| *pid)
+        .collect()
 }
 
 fn run_rotate(timeout: u64, skip_drain: bool, skip_depts: bool) -> i32 {
@@ -31759,6 +31788,27 @@ mod tests {
     }
 
     /// ④ rotate 종료코드 표 — 중단 코드가 아닌 둘(21 · 25)의 우선순위.
+    /// T6: takeover 폴백은 실행 파일이 `…/Contents/MacOS/cysd` 인 pid 만 — seatkeep(인자에 `MacOS/cysd`)·좌석 명령·경로 못 읽음·자기 자신은 빼고,
+    /// 소스에 옛 `pkill -f MacOS/cysd` 실행이 돌아오지 않는다(주석 밖 코드만 본다).
+    #[test]
+    fn takeover_fallback_spares_seatkeep() {
+        let me = std::process::id();
+        let cands = vec![
+            (11, b"/Applications/cys.app/Contents/MacOS/cysd".to_vec()),
+            (12, b"/Applications/cys.app/Contents/MacOS/cys-seatkeep".to_vec()),
+            (13, b"/usr/bin/python3".to_vec()),
+            (14, Vec::new()),
+            (me, b"/Applications/cys.app/Contents/MacOS/cysd".to_vec()),
+            (15, b"/Applications/.cysr.app.old-7/Contents/MacOS/cysd".to_vec()),
+            (16, b"/tmp/x/MacOS/cysd-old".to_vec()),
+        ];
+        assert_eq!(takeover_fallback_targets(&cands), vec![11, 15]);
+        let src = include_str!("cys.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests {").expect("테스트 모듈 경계")];
+        let code: String = prod.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        assert!(!code.contains(r#"new("pkill")"#), "이름 일치 종료(pkill)가 운영 코드에 돌아왔다");
+    }
+
     #[test]
     fn rotate_rc_table() {
         assert_eq!(rotate_rc(None, true), 0);

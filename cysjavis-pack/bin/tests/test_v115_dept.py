@@ -791,6 +791,21 @@ class V115r5T3BootNodeResumesSaved(A2B8BootNodeRun):
         self.assertEqual((rc, out["result"]), (93, "resume_held"), out)
         self.assertIn("저장 목록", out["reason"])
 
+    def test_lease_refusals_stop_as_held_without_a_plain_launch(self):
+        """seatkeep-t1(skt1 · 1.1.16 편입): cys 대화 임대 거절 — 92(작성자 살아 있음) · 93 + 임대 거절 줄(생존 판정 불가) — 은 조각 1 과
+        같이 플래그 없는 재시도(= 새 대화)를 하지 않고 끝 코드 93(EXIT_RESUME_HELD · 파괴 회수로 안 올림)으로 resume_refused 를 낸다."""
+        sid = "5e55aaaa-0000-4000-8000-000000000001"
+        for rc_c, err, why in (
+            (92, "[launch-agent] --resume-saved: master: 대화 %s — pid 12(출생 1.000002) 가 이 대화를 쓰는 중 — 띄우지 않음(같은 대화 작성자 둘 차단 · 새 대화로도 띄우지 않음)\n" % sid, "session_writer_live"),
+            (93, "[launch-agent] --resume-saved: master: 대화 %s 작성자 생존 판정 불가(lease:lock:timeout) — 띄우지 않음 · 확인: 잠시 뒤 다시\n" % sid, "session_liveness_unknown"),
+        ):
+            fake = _LaunchReplies([{"ref": "surface:1", "role": "master", "pid": 111, "seat": "empty", "agent": None,
+                                    "created": time.time() - 5}], rc_c, err)
+            rc, out, _ = self._run_with(fake)
+            launches = [c for c in fake.calls if c[1:2] == ["launch-agent"]]
+            self.assertEqual(len(launches), 1, fake.calls)
+            self.assertEqual((rc, out["result"], out["reason"]), (93, "resume_refused", why), out)
+
     def test_profile_refusal_rc_2_is_not_mistaken_for_an_old_cys(self):
         """조각 1: rc 2 라도 clap 의 「모르는 인자」 문구가 아니면 플래그를 빼고 다시 띄우지 않는다."""
         fake = _LaunchReplies([{"ref": "surface:1", "role": "master", "pid": 111, "seat": "empty", "agent": None,

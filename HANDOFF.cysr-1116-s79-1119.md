@@ -137,6 +137,37 @@
 - **4낱말 넘는 띄어쓰기 맨글 경로**: 카드 0(놓침) — 마스터가 백틱으로 감싸 쓰면 받음.
 - (6-3 뒤) 열기는 허용 목록이 정본 — 허용 목록 종류(예 `.html`·`.docx`)라도 그 파일 자체의 내용(스크립트·매크로)은 처리기 몫(브라우저·오피스의 보호에 기댐). 사람이 일부러 만든 가명 결과도 「폴더 보기」만 된다.
 
+## 6-4. codex 3R(8112be285 = BLOCK · 원문 master/reports/verify/codex-1120/s79-r3.md) — master#717eeef1 처분대로(후임 좌석 worker-1116s79b)
+
+| # | 지적 | 처분 | 시험 · 뮤턴트 |
+|---|---|---|---|
+| ① | 이름 바꾼 앱 꾸러미 폴더(`Report.pdf` · Info.plist APPL)를 `open` 이 실행 | **고침(이중)** — 폴더 「열기」 = **파일 관리자로만**(`viewcore::folder_open_command` = 맥 `/usr/bin/open -a Finder <폴더>` · 윈 `explorer <폴더>` · 그 밖 `xdg-open`) · LaunchServices 기본 열기 0 · 덧붙여 폴더 안 `Contents/Info.plist`·`Contents/PkgInfo`·`Contents/MacOS` 중 하나라도 있으면 `executable_confirm`(폴더 보기만) · `result_open` = `open_plan`(판정 · 실행 0) → `result_open_in`(집행) 으로 나눔 | cargo `renamed_app_bundle_folder_is_refused_and_folders_open_in_file_manager_only`(Report.pdf APPL 꾸러미 · 실행 파일 = 표식 파일 만듦 → 계획 거절 · 집행 거절 · 1.5초 뒤 표식 0 · 표지 하나씩 · 폴더 보기 됨 · 보통 폴더 = Folder · 맥 명령 = `-a Finder` · 집행 길 소스 대조) · 뮤턴트 RM1(표지 검사 뺌)·RM2(Info.plist 만)·RM3(맥 기본 open)·RM4(Folder 갈래 = open_path) = 전부 붉음 |
+| ② | `ResultBook.act`(list_dir await 뒤)·`ConfirmBook.decide`(feed/org await 뒤)가 화면을 다시 안 봄 | **고침** — 한 도우미 `ChatCore.onChatScreen`(= `!watchOnly`)을 deliver·두 장부가 함께 씀(장부 deps `onChat`) · act = 실재 재확인 뒤 살핌 중이면 `result_open` 0 + 「작업 화면으로 옮겨서 열지 않았어요」 · decide = recheck 뒤·`confirm_reply` 앞에서 살핌 중이면 0 · 기록 outcome `work_view` | bun 「(codex 3R ②) 결과 열기 — list_dir 대기 중 작업 화면 → result_open 0 …」(core 배선 그대로) · confirm.test 「(codex 3R ②) 직접 허락 — org 재조회 대기 중 작업 화면 → confirm_reply 0 …」 · 뮤턴트 TM1·TM2·TM7(deliver) 붉음 · **TM3(ResultBook 에 도우미 안 넘김) = 생존** — core 가 같은 자리에서 세우는 `paused` 가 같은 막음을 한다(이중 · 대상 누락 아님) |
+| ③ | watchStart 가 attach 뒤에 watchOnly/paused 를 세움 → 전환 순간 default_socket_slug·home_dir_path · 게이트는 전환 뒤를 기준으로 셈 | **고침** — 켜기 한 곳 `attachAs(watch)` = 표지를 **먼저** 세움 · 살핌(watch) = 사건 구독·세션 읽기·poll 만(default_socket_slug·home_dir_path 0 · 대화 화면에서 받아 둔 값) · `startListening` = 살핌 중 소켓 이름 모르면 조회·구독 0 · chat_gate E = 계수 기준을 **전환 전**으로(창 길이 30초 그대로 = 100ms + 29.9초) | confirm.test 「(codex 3R ③) … 대화 → 작업 · 대화 → 다른 화면 → 작업 둘 다 0」(harness 의 defaultSlug 도 앱처럼 default_socket_slug 로 셈) · s79.test 「(codex 3R ③) 살핌 중 = default_socket_slug 0(이름 못 받은 경우)」 · 뮤턴트 TM4·TM5·TM6·TM8(표지를 켜기 뒤로) 붉음 · **chat_gate 음성 대조**: 옛 core.ts 번들 = FAIL `{'default_socket_slug': 1}` → 새 번들 PASS |
+| ④ | 윈 매핑 네트워크 드라이브(`\\?\H:\…`)가 UNC 검사를 지나감 | **고침** — `result_target` 윈도 갈래: `drive_root(정규 대상)` → `windrive::is_remote_drive` = `GetDriveTypeW(뿌리) == DRIVE_REMOTE(4)` 면 `network_path` 거절(홈 가둠 전) · `extern "system"` 직접 선언(std 만 · 새 의존 0) | cargo `windows_mapped_network_drive_is_refused_static`(drive_root 7꼴 · result_target 소스 대조 · windrive 선언 대조) · **교차 타입체크** = `// ---- windrive 시작/끝` 표지 사이 + drive_root 를 떼어 `rustc --target x86_64-pc-windows-msvc --crate-type lib --emit=metadata` rc 0 · 음성 대조(`GetDriveTypeW(w)` 타입 틀림) rc 1 E0308 · 뮤턴트 RM5(검사 뺌)·RM6(값 3)·RM7(`\\?\` 안 벗김) 붉음 · 윈 실기 0 |
+| ⑤ | HTML·SVG 능동 내용(외부 요청·리다이렉트) | **고치지 않음 · 한계 문서**(아래 「알려진 한계」) · 결과 카드 안내 문구 덧붙이지 않음 | — |
+
+- **대조 탐침(① · 고치기 전 · 스크래치 · 표식 파일만 만드는 셸 실행 파일)**: 이 기기(macOS 26 · arm64)에서 ⒜ 이름만 바꾼 APPL 꾸러미 `Report.pdf`(번들 비트 없음)에 `/usr/bin/open` = **실행 0**(표식 0 · `kMDItemContentType = public.folder` · Finder 가 폴더로 엶) ⒝ 번들 비트(FinderInfo 0x2000)까지 켠 꼴 = **실행 0**(표식 0 · 콘텐츠 종류 dyn · LaunchServices 등록 0). ∴ codex ① 의 실행 경로는 이 기기에서 **재현되지 않았다**(다른 판·설정에서의 가능성은 열어 둠) — master 처분대로 방어는 그대로 넣음. 그래서 cargo 반례 시험의 「붉음」은 표식 파일이 아니라 계획·명령 단언에서 난다(옛 코드는 open_verdict = Ok · 기본 open).
+- 탐침 부작용: ⒜ 때 Finder 창 1개가 떴다(폴더를 지워 닫음). 미리보기(Preview)는 어제부터 떠 있던 것(pid 687 · 우리가 띄운 것 아님).
+
+### 6-4 시험 숫자(기준 8112be285 → 95224ec7f)
+
+| 무엇 | 기준 | 뒤 |
+|---|---|---|
+| bun test(ui) | 3787 pass · 88 skip · 0 fail · 124 파일 | **3791 · 88 · 0 · 124 파일**(+4 = s79.test 2 · confirm.test 2) |
+| tsc(`bun x --package typescript@7.0.2 tsc -p tsconfig.check.json`) | — | rc 0 · 음성 대조(타입 오류 1줄) rc 1 TS2322 |
+| cargo `-p cys-app --bins viewcore` | 12 | **14/0** |
+| cargo `-p cys-app --bins` 전체 | (기준 실행 안 함 · 바뀐 파일 = viewcore.rs 하나 · 그 시험 12→14) | **351/0 + 2 무시** |
+| 윈 교차 타입체크(windrive 토막) | — | rc 0 · 음성 대조 rc 1 |
+| 화면 게이트 4종(최종 번들) | tickrec 28 · chat 63 · confirm 37 · s79 46 | **tickrec 28 · chat 63 · confirm 37 · s79 46 = 전부 PASS** |
+| 작업 화면 회귀 게이트(최종 번들 · 06:59~07:21) | — | cc_popover_z · statusboard · focus · race · seatrows · seatgroup · nodept · restart · grid · pillar · cc_button · restart_confirm = **12개 전부 PASS**(rc 0) |
+| secret-scan `--all` | — | clean(2193 파일) |
+| 팩 | `git diff 8112be285.. -- cysjavis-pack` = 빈칸 | (팩 단계 재실행 안 함 · 팩 파일 변경 0) |
+
+### 알려진 한계(6-4 뒤 덧붙임)
+- **HTML·SVG 능동 내용**(master#717eeef1 ⑤): 허용 목록의 `.html`·`.htm`·`.svg` 결과를 열면 브라우저가 그 안의 스크립트·외부 요청·리다이렉트를 처리한다 — 그 파일은 사람이 맡긴 일의 산출물이고, Finder 에서 더블클릭하는 것과 같은 동작이며, 우리 화면이 더하는 바깥 유출은 0이다. 결과 카드에 「웹 페이지는 브라우저로 열려요」 같은 안내는 넣지 않았다.
+- 폴더 열기의 Finder 동작: `open -a Finder <꾸러미 표지 없는 폴더>` 는 탐침하지 않았다(실제 창이 뜸) — 꾸러미 표지가 있으면 그 전에 거절되므로 Finder 가 꾸러미를 받는 길은 없다.
+
 ## 7. 원작자 파일 변경 줄(NFR-F3)
 - `src-tauri/src/main.rs` +1: `viewcore::result_open, // (s79 조각 7) …`(generate_handler)
 - `ui/src/main.ts` ±1: 우리 `bootViews(...)` 줄에 `focusSeat: (sid) => jumpToSurface(sid)` 덧붙임
@@ -144,6 +175,7 @@
 
 ## 8. 통합 때 master 가 볼 것
 - rail(조각 6): `createResults(...).el` 을 rail 왼쪽 칸으로 · 지금 `chat/index.ts` 의 `root.insertBefore(results.el, log)` 한 줄을 rail 쪽으로 바꾸면 됨.
+- (6-4) `core.ts` attach 몸통이 `attachAs(watch)` 로 옮겨감(attach = attachAs(false) · watchStart = attachAs(true)) — 통합 때 attach 에 덧붙인 줄은 attachAs 안에 넣고 살핌 중에도 돌아야 하는지 갈라 둘 것. 장부 deps 에 `onChat` 칸(ConfirmBook·ResultBook).
 - 겹칠 자리: `core.ts` attach(구독 콜백·slug then 을 둘로 펼침) · `poll()` `scanStep` 다음 줄 · `readTranscript` onTail 다음 줄 · `chat/band.ts` itemNode·paint · `views.css` 끝 덧붙임 · `chat_gate.py` E 장면(별도 커밋 b83c60467).
 - `src-tauri/binaries`·`runtime`·`resources/pack*` 는 형제 작업트리에서 복제한 시험용(전부 git 무시 대상).
 

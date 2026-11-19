@@ -170,6 +170,36 @@ BOOT_PLAN = [
 ]
 
 
+# ★(1.1.16 · TICKET=cysr-1116-borrow23-1119 · 차용 ③) 가벼운 시작 손잡이 `boot_fleet` — Rust 정본 `cys.rs::boot_fleet_from` 과
+#   같은 규칙·같은 기본값(문자열 대조 검체가 있다 — 함께 옮긴다). full(기본 · 1.1.15 와 같다) = 부트가 CSO·worker 를 세운다 ·
+#   light = master 말고는 미리 띄우지 않는다(일이 생기면 `cys launch-agent --role worker --agent claude` · 전체 편성 =
+#   `CYS_BOOT_FLEET=full cys boot`). 읽는 순서 = env `CYS_BOOT_FLEET` > `~/.cys/policy.json` 의 `boot_fleet` > 기본값 · 모르는 값은 건너뜀.
+#   ★`BOOT_PLAN`·`REQUIRED_ROLES` 상수는 그대로다(행 단위 파리티 H-PRED-7) — 바뀌는 것은 「이번 부트가 요구·기동하는 집합」뿐이다.
+BOOT_FLEET_DEFAULT = "full"
+
+
+def boot_fleet(env=None, policy=None):
+    """→ (fleet, source) · fleet ∈ {"full","light"} · source ∈ {"env","policy","default"}.
+
+    env/policy 를 주면 그 값으로만 판정한다(순수 호출·self-test). None 이면 실제 env·파일을 읽는다."""
+    def _norm(v):
+        v = (v or "").strip().lower() if isinstance(v, str) else ""
+        return v if v in ("full", "light") else None
+    e = os.environ.get("CYS_BOOT_FLEET") if env is None else env
+    if _norm(e):
+        return _norm(e), "env"
+    if policy is None:
+        try:
+            with open(os.path.join(os.path.expanduser("~"), ".cys", "policy.json"), encoding="utf-8-sig") as f:
+                policy = json.load(f)
+        except Exception:
+            policy = {}
+    pv = policy.get("boot_fleet") if isinstance(policy, dict) else None
+    if _norm(pv):
+        return _norm(pv), "policy"
+    return ("light" if BOOT_FLEET_DEFAULT == "light" else "full"), "default"
+
+
 def plan_policy(role):
     """role → "Fatal"|"Degrade". PLAN 미등재 role 은 Degrade(보수 — 미지 역할이 부트를 죽이지 않게)."""
     for r, _agent, policy in BOOT_PLAN:
@@ -350,7 +380,11 @@ def effective_required_roles(detect=None, agents=None):
       소비자가 밀폐 주입 규약으로 호출한다: javis_bootstrap·건강성 러너·self-test). 감지가
       판정에 관여하지 않으므로 파일 간 감지 불일치(codex 1R HIGH ③)가 **구조적으로 불가능**하다.
     ★`REQUIRED_ROLES` 를 그대로 돌려주지 않고 사본을 만드는 이유: 호출부가 반환 리스트를
-      변형해도 모듈 상수가 오염되지 않게 한다(종전 동작 보존)."""
+      변형해도 모듈 상수가 오염되지 않게 한다(종전 동작 보존).
+    ★(1.1.16 · 차용 ③) `boot_fleet()` 이 light 면 빈 목록 — 부트가 세우지 않는 역할을 ⑤check·결손 산출이 요구하면 영구 결손
+      (재선언 churn)이 된다. 「부트가 세우는 집합 = 요구하는 집합」 이 한 손잡이에서 나온다."""
+    if boot_fleet()[0] == "light":
+        return []
     return list(REQUIRED_ROLES)
 
 
@@ -5633,6 +5667,14 @@ def cmd_self_test(args):
                 [r for r, _a, _p in BOOT_PLAN],)
         assert not any(r.startswith("reviewer") for r, _a, _p in BOOT_PLAN), \
             "BOOT_PLAN 에 리뷰어가 되살아났다(기본 스폰 0 정책 이탈)"
+        # ★(1.1.16 · 차용 ③) 가벼운 시작 손잡이 — 순수 판정(env > policy > 기본) · 모르는 값은 건너뜀 · 기본 = full(1.1.15 동작).
+        assert BOOT_FLEET_DEFAULT == "full", "boot_fleet 기본값이 바뀌었다(기본 함대 정책 개정 = 박사님 결정 사안)"
+        assert boot_fleet(env="", policy={}) == ("full", "default")
+        assert boot_fleet(env="light", policy={"boot_fleet": "full"}) == ("light", "env")
+        assert boot_fleet(env=" LIGHT ", policy={}) == ("light", "env")
+        assert boot_fleet(env="bogus", policy={"boot_fleet": "light"}) == ("light", "policy")
+        assert boot_fleet(env="", policy={"boot_fleet": "tiny"}) == ("full", "default")
+        assert boot_fleet(env="", policy=[]) == ("full", "default")
         assert plan_mandatory_roles() == ["cso", "worker"], \
             "Fatal 집합 변형 — 리뷰어가 Fatal 이면 리뷰어 1종 고장이 팀 전체 부트를 죽인다(B1 재발)"
         assert plan_policy("reviewer-gemini") == FAIL_DEGRADE, "네이티브 리뷰어가 Degrade 아님"

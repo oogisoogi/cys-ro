@@ -12732,6 +12732,47 @@ const BOOT_PLAN: &[(&str, &str, bool)] = &[
     ("worker", "claude", true),
 ];
 
+/// ★(1.1.16 · TICKET=cysr-1116-borrow23-1119 · 차용 ③) 가벼운 시작 손잡이 `boot_fleet` — `full`(기본 · 1.1.15 와 같다 = CSO·worker
+/// 를 부트 때 세운다) | `light`(부트가 master 말고는 아무것도 세우지 않는다 · CSO·worker 는 일이 생길 때 `cys launch-agent` 로,
+/// 전체 편성은 `CYS_BOOT_FLEET=full cys boot` 로). 읽는 순서 = 환경변수 `CYS_BOOT_FLEET` > `~/.cys/policy.json` 의 `boot_fleet` >
+/// 이 기본값. 모르는 값은 건너뛴다(다음 출처로). ★python 정본 `javis_orchestra.boot_fleet` 과 같은 규칙·같은 기본값이다
+/// (검체 `boot_fleet_default_parity_with_python` 이 기본값 문자열을 대조한다) — 함께 옮긴다.
+/// ★기본값을 `light` 로 바꾸는 것은 기본 함대 정책(박사님 결정 2026-09-10)의 개정이라 이 손잡이의 기본값만 따로 결정한다.
+const BOOT_FLEET_DEFAULT: &str = "full";
+
+/// 순수 — (env 값, policy.json 내용) → (fleet, 출처). fleet ∈ {"full","light"} · 출처 ∈ {"env","policy","default"}.
+fn boot_fleet_from(env: Option<&str>, policy: Option<&Value>) -> (&'static str, &'static str) {
+    let norm = |v: &str| match v.trim().to_ascii_lowercase().as_str() {
+        "full" => Some("full"),
+        "light" => Some("light"),
+        _ => None,
+    };
+    if let Some(f) = env.and_then(norm) {
+        return (f, "env");
+    }
+    if let Some(f) = policy.and_then(|p| p.get("boot_fleet")).and_then(Value::as_str).and_then(norm) {
+        return (f, "policy");
+    }
+    (if BOOT_FLEET_DEFAULT == "light" { "light" } else { "full" }, "default")
+}
+
+fn boot_fleet() -> (&'static str, &'static str) {
+    let env = std::env::var("CYS_BOOT_FLEET").ok();
+    let policy = std::fs::read_to_string(cys::home_dir().join(".cys").join("policy.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(cys::strip_utf8_bom(&t)).ok());
+    boot_fleet_from(env.as_deref(), policy.as_ref())
+}
+
+/// 이번 부트가 세울 편성 — `light` 면 빈 표(master 는 원래 표 밖 = 선언한 자기 자신).
+fn effective_boot_plan(fleet: &str) -> &'static [(&'static str, &'static str, bool)] {
+    if fleet == "light" {
+        &[]
+    } else {
+        BOOT_PLAN
+    }
+}
+
 /// ★(W2 · A1 클래스 · B3) `cys boot` 의 **스킵 술어** 3등급 — surface.list 한 행 → 판정.
 /// `node_liveness`(python 정본 `javis_boot_node.node_liveness`) 의 Rust 미러다.
 /// 종전 술어는 `!exited` 단독이었다: role 을 쥔 채 에이전트가 죽은 좌석(=빈 좌석)을 '가동 중'으로
@@ -14818,6 +14859,9 @@ fn run_boot(cwd: Option<String>, as_json: bool) -> i32 {
     // 무스폰 티켓 소각(1회성 티켓 ⟺ 실스폰 불변식 파괴)이 났다. 이제 `--json` 의 outcome=`busy` 로
     // 타입 구분하고, 소비부는 실스폰 확인 후에만 티켓을 태운다.
     // ★bare exit 의미는 구계약 유지(0) — 전환은 W4 GUI --json 소비와 원자(금지 방향 ⑧).
+    // ★(1.1.16 · 차용 ③) 가벼운 시작 — 손잡이를 한 번 읽어 이번 부트의 편성을 정한다.
+    let (fleet, fleet_src) = boot_fleet();
+    let plan = effective_boot_plan(fleet);
     let _boot_lock = match acquire_boot_lock() {
         BootLock::Acquired(g) => {
             // ★(W2 · G12) 락 보유를 프로세스 내부·자식 프로세스에 알린다 — 아래에서 in-process 로
@@ -14832,7 +14876,7 @@ fn run_boot(cwd: Option<String>, as_json: bool) -> i32 {
                  · exit {EXIT_BOOT_BUSY}(busy=무스폰)"
             );
             if as_json {
-                let roles: Vec<Value> = BOOT_PLAN
+                let roles: Vec<Value> = plan
                     .iter()
                     .map(|(role, agent, mandatory)| {
                         json!({"role": role, "agent": agent, "outcome": "busy",
@@ -14842,7 +14886,7 @@ fn run_boot(cwd: Option<String>, as_json: bool) -> i32 {
                 println!(
                     "{}",
                     json!({"roles": roles,
-                           "summary": {"launched": 0, "already_alive": 0, "busy": BOOT_PLAN.len(),
+                           "summary": {"launched": 0, "already_alive": 0, "busy": plan.len(),
                                        "missing": 0, "failed": 0, "recovered": 0,
                                        "fatal_failed": 0, "lock": "busy"}})
                 );
@@ -14880,7 +14924,13 @@ fn run_boot(cwd: Option<String>, as_json: bool) -> i32 {
     //   나온다면 그 기계에서는 각성 훅이 **아무도 읽지 않는 폴더**에 설치된다는 뜻이고,
     //   노드는 떠도 `/clear` 후 재주입·마스터 선언 부트 발화가 영구히 죽는다(팀 미기동).
     warn_if_config_target_mismatch();
-    for (role, agent, mandatory) in BOOT_PLAN {
+    if fleet == "light" {
+        println!(
+            "· 가벼운 시작(boot_fleet=light · 출처 {fleet_src}) — CSO·worker 를 미리 띄우지 않는다. 일이 생기면 \
+             `cys launch-agent --role worker --agent claude` · 전체 편성 = `CYS_BOOT_FLEET=full cys boot`"
+        );
+    }
+    for (role, agent, mandatory) in plan {
         // 침묵 창 상쇄(B9 방향 ③) — 진행 하트비트는 stderr(stdout 기계 계약 무오염).
         if last_hb.elapsed().as_secs() >= BUDGET_HEARTBEAT_INTERVAL_SECS {
             eprintln!(
@@ -59568,5 +59618,39 @@ mod explain_state_tests {
         // 1.1.15 데몬(진단 없음).
         let old = explain_state_lines(3, &da, &serde_json::Value::Null).join("\n");
         assert!(old.contains("진단 없음(1.1.16 이전 데몬)"), "{old}");
+    }
+}
+
+// ★(1.1.16 · TICKET=cysr-1116-borrow23-1119 · 차용 ③) 가벼운 시작 손잡이 — 순수 판정 · 빈 편성 · python 정본과 기본값 문자열 대조.
+#[cfg(test)]
+mod boot_fleet_tests {
+    use super::{boot_fleet_from, effective_boot_plan, BOOT_FLEET_DEFAULT, BOOT_PLAN};
+    use serde_json::json;
+
+    #[test]
+    fn env_beats_policy_beats_default_and_unknown_values_fall_through() {
+        assert_eq!(boot_fleet_from(None, None), ("full", "default"));
+        assert_eq!(boot_fleet_from(Some("light"), Some(&json!({"boot_fleet": "full"}))), ("light", "env"));
+        assert_eq!(boot_fleet_from(Some(" LIGHT "), None), ("light", "env"));
+        assert_eq!(boot_fleet_from(Some("bogus"), Some(&json!({"boot_fleet": "light"}))), ("light", "policy"));
+        assert_eq!(boot_fleet_from(Some(""), Some(&json!({"boot_fleet": "tiny"}))), ("full", "default"));
+        assert_eq!(boot_fleet_from(None, Some(&json!({"boot_fleet": 1}))), ("full", "default"));
+        assert_eq!(boot_fleet_from(None, Some(&json!([]))), ("full", "default"));
+    }
+
+    #[test]
+    fn light_plan_is_empty_full_plan_is_the_table() {
+        assert!(effective_boot_plan("light").is_empty());
+        assert_eq!(effective_boot_plan("full"), BOOT_PLAN);
+        assert_eq!(effective_boot_plan("anything"), BOOT_PLAN);
+    }
+
+    #[test]
+    fn boot_fleet_default_parity_with_python() {
+        // 기본값은 기본 함대 정책(2026-09-10)의 일부 — 바꾸면 두 언어를 함께 바꾼다.
+        assert_eq!(BOOT_FLEET_DEFAULT, "full");
+        let py = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/cysjavis-pack/bin/javis_orchestra.py")).expect("orchestra");
+        assert!(py.contains(&format!("BOOT_FLEET_DEFAULT = \"{BOOT_FLEET_DEFAULT}\"")), "python 기본값 불일치");
+        assert!(py.contains("os.environ.get(\"CYS_BOOT_FLEET\")") && py.contains("policy.get(\"boot_fleet\")"), "python 출처 이름 불일치");
     }
 }

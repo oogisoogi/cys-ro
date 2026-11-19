@@ -429,7 +429,23 @@ def effective_required_roles(external=None):
 
     external=None → env 조회(운영 기본) / external=() → 제외 없음(순수 호출·테스트용)."""
     ext = _external_roles() if external is None else set(external)
+    # ★(1.1.16 · 차용 ③) 가벼운 시작(boot_fleet=light) = master 만 편성한다 — 판정 정본은 javis_orchestra.boot_fleet
+    #   (cys boot·⑤check 와 같은 손잡이). 순수 호출(external=())은 손잡이를 보지 않는다(테스트 밀폐 · 종전 로스터 불변 핀).
+    if external is None and _boot_fleet_light():
+        ext = set(ext) | {r for r in REQUIRED_ROLES if r != "master"}
     return tuple(r for r in REQUIRED_ROLES if r not in ext)
+
+
+def _boot_fleet_light():
+    """javis_orchestra.boot_fleet() == light — 못 읽으면 False(종전 동작 = full)."""
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import javis_orchestra as _o
+        return _o.boot_fleet()[0] == "light"
+    except Exception:
+        return False
 
 
 def _external_note():

@@ -1,4 +1,7 @@
-# HANDOFF — TICKET=cysr-1116-skt1-1119 (seatkeep T1 · 대화 작성자 하나 → 1.1.16 위로 · codex r5c BLOCK 4 고침)
+# HANDOFF — TICKET=cysr-1116-skt1-1119
+
+> codex 1R = **master 대기열**(master#5a93bd10 · codex 5h 한도 소진 · 리셋 06:29 · 호출 0회) · 질문지 = `CODEX-1R-PROMPT.cysr-1116-skt1-1119.md`
+ (seatkeep T1 · 대화 작성자 하나 → 1.1.16 위로 · codex r5c BLOCK 4 고침)
 
 ## 0. 맨 앞 — T1 공개 함수(T4·T5 좌석 2267 이 갈아끼울 자리 · 같은 대화 작성자 하나 보장)
 
@@ -25,7 +28,9 @@
 | `51c556a1c` | 팩 검체 `test_phoenix_seatkeep_t1_lease_hold` 3완전 레인 5루프 등재(ci-branch 2 · release 2 · pack-release 1) |
 | `022af8b16` | r5c BLOCK 4 고침(§3) |
 | `be40d9036` | r5c #1 e2e 재현 2 + 픽스처 수리(가짜 claude 가 시험 cys 를 부름 · 훅 이름 셸 아래 등록) |
-| (다음) | boot_node 임대 거절 시험 · 뮤턴트 결과 · 이 HANDOFF |
+| `5eb2e306f` | boot_node 임대 거절 시험 + HANDOFF 초판 |
+| `78b90a2e8` | 조각 1 p1 하네스 = 임대 노브 끔(9 붉음 → 0) + 노브 켬·임대 조회 불통 = 비파괴 보류 시험 |
+| (이 커밋) | HANDOFF 시험 숫자 · 한계 · 📌 · codex 질문지 · TODO |
 
 ## 2. 옮기기(port)에서 1.1.16 쪽과 맞춘 것
 
@@ -77,9 +82,32 @@
 
 (M1 첫 실행은 cargo 필터 인자 2개 오류로 무효(rc 1 · 시험 0) → 필터 1개로 다시 돌린 결과다.)
 
-## 6. 전체 시험(기준선 dea2e1853 대비)
+## 6. 전체 시험(기준선 dea2e1853 대비 · 같은 조건 = env -i · 격리 HOME · CARGO_BUILD_JOBS=4 · 아래 스레드)
 
-(아래 채움)
+기준선 = 작업트리 `~/axdev/.wt/cys-1116-skt1-base`(detached dea2e1853 · target = 형제 복제). 두 판을 같은 시각대에 나란히 돌림(00:57~02:44 · 부하 12~38).
+
+| 묶음(CI ci-branch 맥 레인과 같은 명령) | 기준선 dea2e1853 | HEAD | 비고 |
+|---|---|---|---|
+| `cargo test --lib`(스레드 4) | 1268 ok · 0 붉음 | **1292 ok** · 0 | +24 = session_lease leaf 시험 |
+| `cargo test --bin cys`(스레드 4) | 796 ok · 0 | 1차 813 ok · **9 붉음**(조각 1 `b360_tests::p1_*`) → 고침 `78b90a2e8` 뒤 p1 묶음 33/33 ×2(1회 차 새 시험 1 붉음 · 로그 미포착 → 사유 단언 일반화) · 전체 재실행 = 아래 줄 | 붉음 원인 = p1 가짜 데몬이 임대 조회(`system.identify`)에 빈 값 → 임대 93(비파괴 보류) · 운영 결함 아님 · 하네스에서 노브 끔 + 노브 켬 비파괴 시험 1 |
+| `cargo test --bin cysd`(스레드 4 · CI 와 같은 skip) | 3330 ok · **3 붉음**(`seat_proc::tests::seatkeep_*` handshake_timeout) → 부하 8 단독 재실행 **5/5 초록** | **3333 ok** · 0 | 데몬 소스 변경 0줄(`git diff dea2e1853 -- src/bin/cysd` 빈 값) · 기준선 붉음 = 시간 문턱 · 부하성 |
+| `cargo test --test update_drainhold_e2e`(스레드 1) | 4 ok | 4 ok | 가짜 claude 픽스처 바뀜 → 회귀 없음 |
+| `cargo test --test rotate_autorestore_hold`(스레드 1) | 11 ok | 11 ok | 같음 |
+| `cargo test -p cys-app --bins`(스레드 1 · CI 자리표시) | 348 ok | **358 ok** · 0 | +10 = T1 앱 시험 |
+| `cd ui && bun test` | 3835 · 0 fail · 123 파일 | **3840 · 0 fail** · 124 파일 | +5 = restoredone.test.ts |
+| `bunx -p typescript@7.0.2 tsc -p tsconfig.check.json` | rc 0 | rc 0 | 음성 대조(일부러 TS2322) = rc 1 확인 |
+| 팩 단계(ci-branch 맥 레인 스텝 그대로 떼어 실행 · `set -e` 만 풀어 검체마다 rc 기록 · env -i · PATH=/usr/bin:/bin:/usr/sbin:/sbin · 격리 HOME) | 검체 152 · rc≠0 = 5(`test_hook_r34` · `test_pyseal_negative_specimen` 미측정 · `test_role_authority` · `test_v116_auto_restore_status` · `test_owner_desk`) | 검체 **153**(+T1 phoenix 검체 = OK) · rc≠0 = 4(`test_session_start_hook` · `test_hook_r34` · `test_pyseal_negative_specimen` 미측정 · `test_owner_desk`) | 판별 아래 ▼ |
+| `cargo test --test session_lease_e2e`(CI 레인 밖 · SLE_ROUNDS=3 · 스레드 4) | 해당 없음(T1 없음) | **11 ok** · 0(최종 HEAD 재실행 · 277s) | 📌 CI 레인에 없음 |
+| `cargo test --bin cys`(스레드 4) **전체 재실행**(78b90a2e8 뒤) | 796 ok | **823 ok · 0 붉음** | +27 = T1 CLI 시험 + p1 새 1 |
+
+▼ 팩 rc≠0 판별(공지 master#eff2a4ce·c75895ba: 시간 문턱 붉음 = 부하 낮을 때 단독 재실행 대조 · 새로 쓴 실행 파일 첫 exec 지연 의심):
+- `test_pyseal_negative_specimen` = **두 판 같은 사유 원문**: 「ⓒ 음성 대조 인터프리터 해소 — in-tree 로 쓰는 비번들 python 이 없다(Xcode·/usr/bin python3 = pycache_prefix 격리 HOME)」 = 러너 환경(UNMEASURED · rc 2) · CI 러너엔 비번들 python 있음.
+- `test_owner_desk` = 두 판 같은 사유(`R8Codex2R.test_app_flush_per_item_budget_and_request_id` · 예산 시간 문턱) · 단독 재실행도 두 판 붉음(부하 8~9).
+- `test_hook_r34` = 두 판 모두 시한 사례(HEAD = WIN-2 3.00s · 기준선 = RCF-3·RCF-4a 1s 시한) — 시한 축만 붉음 · 대상 훅 파일 이 좌석 변경 0.
+- `test_session_start_hook`(HEAD 만 팩 회차에서 붉음) → 단독 재실행 두 판 **초록** · 기준선도 첫 팩 회차(set -e)에서 11x-a~c 붉었음 = 흔들림.
+- `test_role_authority`(기준선만 팩 회차 붉음 · HEAD 단독 2회 붉음) → **번갈아 4회씩**: HEAD 초록·붉음·붉음·초록 / 기준선 초록·붉음(3건)·초록·… — 두 판 공통 흔들림 · 붉은 사례가 매번 다름(8a·8f·15e·8n·G10-7c · 모두 스텁 cys 첫 실행) · 대상 파일(javis_role·org·snapshot) 이 좌석 변경 0.
+- `test_v116_auto_restore_status`(기준선만) → 단독 재실행 기준선 붉음 2/2(PermissionError: 기준선 target/debug/cysd) · HEAD 초록 2/2 — 기준선 작업트리 환경 · HEAD 영향 아님.
+- 결론: HEAD 가 새로 붉힌 팩 검체 = **0**(측정 근거 위 · 「기준과 같다」 = 사유 원문·사례 대조).
 
 ## 7. 함정(이번에 새로 밝힌 것)
 
@@ -98,3 +126,19 @@ eval $E cargo test --bin cys session_lease_cli_tests -- --test-threads=4
 eval $E SLE_ROUNDS=3 cargo test --test session_lease_e2e -- --test-threads=4 --nocapture
 eval $E CYS_PACK_DIR=/tmp/sk1h/pk cargo test -p cys-app --bins seatkeep -- --test-threads=1   # ui/dist·src-tauri/binaries 자리표시(CI 와 같게)
 ```
+
+## 9. 남는 한계(숨기지 않음 · codex 1R 물음 2 에 같은 목록)
+
+1. **등록 실패 창**: 같은 claude 프로세스가 좌석 안 `/resume S` 를 했는데 그 SessionStart 훅의 `cys usage-register` 가 실패하면(데몬 불통 등) 결속이 옛 T 로 남아 「W = T」로 읽힌다 → S 새 좌석이 열릴 수 있다. 종전(데몬 등록 문자열)도 같은 창이었고, 데몬 등록이 실패하면 follow 도 안 돈다(둘 다 낡음). 막으려면 에이전트 자신의 현재 대화를 읽는 길(claude 세션 파일 열람 fd 등)이 필요 — 이번 범위 밖.
+2. **계통 판독 불가(None) = 옮김**: argv 를 못 읽은 사슬(윈도우 MSYS 조상 단절 등)은 헬퍼 증명이 아니라 종전처럼 follow 한다(데몬 재핀 기준과 같은 실패 방향). 그 경우 헬퍼 등록이 결속을 덮는 길이 남는다.
+3. **비-claude(codex 등) = 데몬 관측 기준**: 등록 경로가 없어 topology `session_id`(lsof 직독 · 실패 시 휴리스틱 폴백)를 「다른 대화」 증거로 쓴다 — 데몬 세션 파일 결정이 등록을 우선하는 길(usage.rs)로 좌석 밖 가짜 등록이 관측을 덮을 수 있다. claude 처럼 결속하려면 codex 쪽 신원 결속 장치가 따로 필요.
+4. **훅 없는 claude 좌석**: 결속이 생기지 않으므로 같은 역할 S 복원 옆에서 언제나 93(→ 그 좌석이 사는 동안 92). 수용된 보수 처분(r5c 질문 5(b)) 그대로 · 안내 문구는 「기다려도 안 풀림 → read-screen·닫기」로 고쳤다.
+5. 등록 직후·수집기 핀 전 창(r5c #2)의 **실 e2e 없음** — 시간 창이라 결정론 재현 못 함 · 진리표(순수)로만 잰다.
+6. 헬퍼(`claude -p`) 등록의 **실 e2e 없음** — 계통 판정 표(leaf 단위)·배선 핀·뮤턴트 M2 로만 잰다.
+
+## 10. 📌 덧붙임(브리프 밖 · master 판단)
+
+1. **노브 기본값**: `CYS_SESSION_LEASE` 는 **없으면 켬**(원 T1 그대로). 1.1.15 는 T1 을 「끔으로만」 싣기로 했었고(원 HANDOFF 매듭 절) 1.1.16 은 전 구성 탑재 방침 — 켬 그대로 낼지 끔 기본으로 낼지 master 결정. 끔이면 CLI 임대 길은 종전과 같고, 멱등 키 접미 1줄·앱 쪽 복원 알림 묶음은 노브와 무관(원 HANDOFF 「노브 끔 ≟ 1.1.14」 절).
+2. **`tests/session_lease_e2e.rs` 는 CI 레인에 없다**(ci-branch 의 cargo 레인 = --lib · --bin cys · --bin cysd · update_drainhold_e2e · cys-app). T1 의 실 데몬 증거(FR·SR·RV·UW·RN 등 11개)가 CI 에서 안 돈다 — 레인 편입은 CI 설계 결정이라 손대지 않음.
+3. **rc 93 공유**(§2): 조각 1 `EXIT_RESUME_HELD` 와 임대 `EXIT_SESSION_LIVENESS_UNKNOWN` 이 같은 값 — 소비자는 「멈춤 · 새 대화 0」 으로 같게 읽는다. 따로 가르려면 새 rc(94) 배정 = 계약 변경.
+4. 기존 e2e 의 「설치본 cys 로 등록」 사실(§7)은 원 T1 의 r5b RV 판정 근거를 약하게 만든다 — 이번 고침 뒤 RV 는 시험 cys 로 초록(결속 경로).

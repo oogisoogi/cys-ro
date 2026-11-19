@@ -1,0 +1,11 @@
+# WORKER TODO — TICKET=cysr-1116-skt1-1119 (T1 r5c BLOCK 4 고침 → 1.1.16 위로)
+- 브리프 = ~/axdev/master/briefs/1116-full/skt1.md (master#f7e5dd26) · 가지 feat/1116-skt1 ← dea2e1853
+- [x] 1. T1(270e3e21e..e2f2ae889) 을 dea2e1853 위로 옮김(충돌 = 1.1.16 쪽 동작 우선)
+- [x] 2. 옮긴 뒤 빌드·원 시험 초록(기준선 숫자 전후)
+- [x] 3. r5c #1 낡은·가짜·헬퍼 등록으로 unknown@W 풀림 고침
+- [x] 4. r5c #2 등록 S 읽고 #1 방어 통과 고침
+- [x] 5. r5c #3 Tauri restore_judge_two 휴리스틱 8자 접두 「복원됨」 고침
+- [x] 6. r5c #4 Codex 좌석 93→92 고착 고침
+- [x] 7. 시험(원 시험 + 새 e2e + 뮤턴트) · ci-branch 팩 단계
+- [ ] 8. codex 1R(고친 4건 재판정) · 처분 — ⏸ codex 한도 소진(master#5a93bd10 · 리셋 06:29) = master 대기열 · 질문지 CODEX-1R-PROMPT.cysr-1116-skt1-1119.md
+- [x] 9. HANDOFF.cysr-1116-skt1-1119.md(맨 앞 = T1 공개 함수 이름·시그니처) · 【확인요청】

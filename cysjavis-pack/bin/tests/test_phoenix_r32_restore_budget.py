@@ -361,10 +361,14 @@ def t_rust_pins():
           all(f in rr for f in filt))
     hsrc, gsrc = open(hd, encoding="utf-8").read(), open(gv, encoding="utf-8").read()
     topo_h = _slice(hsrc, '"system.topology" => {', "Reply::Single") or ""
-    ld = _slice(gsrc, "pub fn load_topology(", "\n}\n") or ""
+    # ★조각 1(59d755d9d): system.topology 가 load_saved_topology(→ read_persisted_entries)로 바뀌었다 — 같은 디스크
+    #   topology.json 의 entries 를 읽고 「못 읽음」 표시만 더한다. 핀은 지금 읽는 함수 사슬을 따라간다.
+    ld = _slice(gsrc, "pub fn load_saved_topology(", "\n}\n") or ""
+    rp = _slice(gsrc, "fn read_persisted_entries(", "\n}\n") or ""
     check("⑦ system.topology.saved = 디스크 topology.json(phoenix read_topology 와 같은 파일)",
-          "let saved = crate::governance::load_topology(daemon);" in topo_h
-          and 'dir.join("topology.json")' in ld and '["entries"]' in ld)
+          "let (saved, saved_unreadable) = crate::governance::load_saved_topology(daemon);" in topo_h
+          and "read_persisted_entries(&crate::state::state_dir(&daemon.socket_path))" in ld
+          and 'dir.join("topology.json")' in rp and 'v.get("entries")' in rp)
 
 
 # ── ⑨ 진행 기반 행 판정(리뷰 F1·W4) — 무출력 창이 상한을 넘으면 첫 회차라도 끊는다 ─────────────────

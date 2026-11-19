@@ -28,11 +28,14 @@ struct Box_ {
     reg_gate: Option<PathBuf>,
     /// 가짜 claude 가 이 파일이 생기면 좌석 안 `claude -p` 헬퍼를 띄워 새 대화로 등록한다(`FAKE_HELPER_GATE` · 독립 검증 V1).
     helper_gate: Option<PathBuf>,
+    /// 이 상자가 띄운 데몬 pid 들(내림 대조 · master#4199fa4f).
+    daemons: std::cell::RefCell<Vec<i32>>,
 }
 
 impl Box_ {
     /// 상자 + 가짜 claude + 저장 토폴로지(역할 1개 · 대화 `sid` · 그 jsonl 실재).
     fn new(tag: &str) -> Self {
+        warn_old_orphans();
         let base = PathBuf::from(format!("/tmp/cys-sle-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("home")).unwrap();
@@ -57,7 +60,7 @@ impl Box_ {
         let entries = vec![json!({"role": ROLE, "agent": "claude", "cwd": proj, "session_id": sid,
                                   "claude_config_dir": cfg})];
         std::fs::write(base.join("run/topology.json"), json!({"entries": entries}).to_string()).unwrap();
-        Self { sock: base.join("run/cysd.sock"), base, path, sid, role: ROLE.into(), owns_base: true, no_reg: false, reg_gate: None, helper_gate: None }
+        Self { sock: base.join("run/cysd.sock"), base, path, sid, role: ROLE.into(), owns_base: true, no_reg: false, reg_gate: None, helper_gate: None, daemons: Default::default() }
     }
 
     /// 같은 상자(같은 HOME = 같은 임대 폴더 · 같은 프로젝트 폴더)의 **두 번째 데몬**(소켓·상태 폴더 `run2`).
@@ -75,7 +78,7 @@ impl Box_ {
         }
         let entries = vec![json!({"role": role, "agent": "claude", "cwd": proj, "session_id": sid, "claude_config_dir": cfg})];
         std::fs::write(run.join("topology.json"), json!({"entries": entries}).to_string()).unwrap();
-        Self { sock: run.join("cysd.sock"), base: self.base.clone(), path: self.path.clone(), sid, role: role.into(), owns_base: false, no_reg: self.no_reg, reg_gate: self.reg_gate.clone(), helper_gate: self.helper_gate.clone() }
+        Self { sock: run.join("cysd.sock"), base: self.base.clone(), path: self.path.clone(), sid, role: role.into(), owns_base: false, no_reg: self.no_reg, reg_gate: self.reg_gate.clone(), helper_gate: self.helper_gate.clone(), daemons: Default::default() }
     }
 
     /// 이 대화의 임대 파일(상자 HOME 의 임대 폴더 · 키 = sha256("v1\0" + 소문자 id)).
@@ -147,9 +150,42 @@ impl Box_ {
     fn up(&self) {
         let o = self.cys(&["identify"]);
         let t = Instant::now();
-        while self.rpc("system.identify").ok().and_then(|v| v["daemon_pid"].as_u64()).is_none() {
+        let dpid = loop {
+            if let Some(p) = self.rpc("system.identify").ok().and_then(|v| v["daemon_pid"].as_u64()) {
+                break p as i32;
+            }
             assert!(t.elapsed() < Duration::from_secs(180), "identify: {}", String::from_utf8_lossy(&o.stderr));
             std::thread::sleep(Duration::from_millis(200));
+        };
+        self.arm_reaper(dpid);
+    }
+
+    /// 시험 프로세스가 어떻게 끝나든(성공·실패·중단·시한 초과 SIGKILL — Drop 이 안 도는 경우 포함) 이 상자의 데몬을 내린다(master#4199fa4f):
+    /// 시험과 따로 사는 감시 셸이 시험 pid 가 사라지면 그 데몬 pid(출생 시각 같을 때만 · pid 재사용 방지)를 그룹째 TERM → 3초 뒤 KILL.
+    fn arm_reaper(&self, dpid: i32) {
+        let lstart = |p: i32| Command::new("/bin/ps").args(["-p", &p.to_string(), "-o", "lstart="]).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+        let born = lstart(dpid);
+        if born.is_empty() {
+            return;
+        }
+        let script = r#"while kill -0 "$1" 2>/dev/null; do sleep 1; done; [ "$(ps -p "$2" -o lstart= 2>/dev/null | sed 's/^ *//;s/ *$//')" = "$3" ] || exit 0; kill -TERM -"$2" 2>/dev/null; kill -TERM "$2" 2>/dev/null; sleep 3; kill -KILL -"$2" 2>/dev/null; kill -KILL "$2" 2>/dev/null"#;
+        let _ = Command::new("/bin/sh")
+            .args(["-c", script, "cys-sle-reaper", &std::process::id().to_string(), &dpid.to_string(), &born])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        self.daemons.borrow_mut().push(dpid);
+    }
+
+    /// 이 상자 HOME 을 물려받은 남은 프로세스 전부(좌석 셸·대기 셸·늦게 뜬 데몬) — pid 로만 끈다(이름 일치 종료 아님 · `mine` = 환경 HOME 이 이 상자).
+    fn kill_box_leftovers(&self) {
+        let ps = Command::new("/bin/ps").args(["-axo", "pid="]).output().unwrap();
+        let me = std::process::id() as i32;
+        for p in String::from_utf8_lossy(&ps.stdout).lines().filter_map(|l| l.trim().parse::<i32>().ok()) {
+            if p != me && self.mine(p) {
+                unsafe { libc::kill(p, libc::SIGKILL) };
+            }
         }
     }
 
@@ -253,11 +289,26 @@ impl Box_ {
     }
 
     fn down(&self) {
-        let Some(pid) = self.rpc("system.identify").ok().and_then(|v| v["daemon_pid"].as_u64()) else { return };
-        unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+        // 응답하는 데몬 + up 때 적어 둔 데몬(응답이 없어도) — 내려가지 않으면 KILL(master#4199fa4f).
+        let mut pids = self.daemons.borrow().clone();
+        if let Some(p) = self.rpc("system.identify").ok().and_then(|v| v["daemon_pid"].as_u64()) {
+            pids.push(p as i32);
+        }
+        pids.sort();
+        pids.dedup();
+        for p in &pids {
+            unsafe { libc::kill(*p, libc::SIGTERM) };
+        }
         let t = Instant::now();
-        while UnixStream::connect(&self.sock).is_ok() && t.elapsed() < Duration::from_secs(10) {
+        while (UnixStream::connect(&self.sock).is_ok() || pids.iter().any(|p| unsafe { libc::kill(*p, 0) } == 0 && self.mine(*p)))
+            && t.elapsed() < Duration::from_secs(10)
+        {
             std::thread::sleep(Duration::from_millis(100));
+        }
+        for p in &pids {
+            if unsafe { libc::kill(*p, 0) } == 0 && self.mine(*p) {
+                unsafe { libc::kill(*p, libc::SIGKILL) };
+            }
         }
     }
 }
@@ -270,6 +321,7 @@ impl Drop for Box_ {
         }
         self.kill_writers();
         self.down();
+        self.kill_box_leftovers();
         for _ in 0..30 {
             let _ = std::fs::remove_dir_all(&self.base);
             std::thread::sleep(Duration::from_millis(100));
@@ -278,6 +330,24 @@ impl Drop for Box_ {
             }
         }
     }
+}
+
+/// 시험 시작 때 옛 회차가 남긴 상자 프로세스(환경 HOME = /tmp/cys-sle-<다른 pid>-…)가 있으면 경고만(끄지 않음 · 남의 회차일 수 있다 · master#4199fa4f).
+fn warn_old_orphans() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let me = format!("cys-sle-{}-", std::process::id());
+        let Ok(o) = Command::new("/bin/ps").args(["-E", "-axo", "pid=,ppid=,command="]).output() else { return };
+        let old: Vec<String> = String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .filter(|l| l.contains("HOME=/private/tmp/cys-sle-") || l.contains("HOME=/tmp/cys-sle-"))
+            .filter(|l| !l.contains(&me))
+            .map(|l| l.split_whitespace().take(3).collect::<Vec<_>>().join(" "))
+            .collect();
+        if !old.is_empty() {
+            eprintln!("⚠ session_lease_e2e: 옛 회차 상자 프로세스 {}개가 남아 있음(고아 의심 · pid ppid 명령): {old:?}", old.len());
+        }
+    });
 }
 
 fn out(o: &Output) -> String {

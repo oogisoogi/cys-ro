@@ -15,6 +15,9 @@ int main(int ac, char **av) {
   char sid[128] = "", cwd[900], sl[900], pd[2000], cmd[4000], tp[2200];
   int cont = 0;
   int helper = getenv("FAKE_HELPER") != NULL;
+  // 시험 고아 방지(master#4199fa4f): 이 대역이 부르는 cys 는 데몬을 새로 띄우지 않는다 — 시험이 끝나 데몬이 내려간 뒤 늦은 등록이
+  //   상자 HOME 에 cysd 를 autostart 해 고아(ppid 1 · 수 시간)로 남았다(FR 의 reg-gate-never 대기 셸 120초 뒤).
+  setenv("CYS_NO_AUTOSTART", "1", 1);
   for (int i = 1; i < ac; i++) { if (!strcmp(av[i], "--resume") && i + 1 < ac) snprintf(sid, sizeof sid, "%s", av[i + 1]); if (!strcmp(av[i], "--continue")) cont = 1; }
   getcwd(cwd, sizeof cwd); slug(cwd, sl);
   const char *cd = getenv("CLAUDE_CONFIG_DIR");
@@ -35,10 +38,10 @@ int main(int ac, char **av) {
   snprintf(cmd, sizeof cmd, "exec /bin/sh -c '\"$2\" usage-register --transcript \"$1\" >/dev/null 2>&1; \"$2\" set-status --state waiting >/dev/null 2>&1' session-start.sh '%s' '%s'", tp, cy);
   if (helper) { system(cmd); return 0; } // 헬퍼 = 등록하고 끝(화면·tty 0)
   const char *hg = getenv("FAKE_HELPER_GATE");
-  if (hg && *hg) { if (fork() == 0) { for (int i = 0; i < 1200 && access(hg, F_OK) != 0; i++) usleep(100000); setenv("FAKE_HELPER", "1", 1); unsetenv("FAKE_REG_GATE"); execlp(av[0], "claude", "-p", "hi", (char *)0); _exit(0); } }
+  if (hg && *hg) { if (fork() == 0) { for (int i = 0; i < 1200 && access(hg, F_OK) != 0; i++) usleep(100000); if (access(hg, F_OK) != 0) _exit(0); setenv("FAKE_HELPER", "1", 1); unsetenv("FAKE_REG_GATE"); execlp(av[0], "claude", "-p", "hi", (char *)0); _exit(0); } }
   const char *gate = getenv("FAKE_REG_GATE");
   // 미룬 등록도 훅 이름 셸에서(자식 = sh · claude 실행 파일 아님 — 같은 실행 파일 자식이면 계통이 「에이전트 2 = 헬퍼」로 보인다 · skt1).
-  if (gate && *gate && !noreg) { if (fork() == 0) { execl("/bin/sh", "sh", "-c", "i=0; while [ ! -e \"$3\" ] && [ $i -lt 1200 ]; do sleep 0.1; i=$((i+1)); done; \"$2\" usage-register --transcript \"$1\" >/dev/null 2>&1; \"$2\" set-status --state waiting >/dev/null 2>&1", "session-start.sh", tp, cy, gate, (char *)0); _exit(0); } } else system(cmd);
+  if (gate && *gate && !noreg) { if (fork() == 0) { execl("/bin/sh", "sh", "-c", "i=0; while [ ! -e \"$3\" ] && [ $i -lt 1200 ]; do sleep 0.1; i=$((i+1)); done; [ -e \"$3\" ] || exit 0; \"$2\" usage-register --transcript \"$1\" >/dev/null 2>&1; \"$2\" set-status --state waiting >/dev/null 2>&1", "session-start.sh", tp, cy, gate, (char *)0); _exit(0); } } else system(cmd);
   printf("Claude Code fake\n\xe2\x9d\xaf \n"); fflush(stdout);
   struct termios ti; if (!tcgetattr(0, &ti)) { cfmakeraw(&ti); tcsetattr(0, TCSANOW, &ti); }
   static char buf[1 << 16]; size_t n = 0; ssize_t r; 

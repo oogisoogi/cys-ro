@@ -1,0 +1,32 @@
+== A 앱 새로 켬 + 마스터 이미 꺼짐 → 꺼짐 띠 · 대본 클릭 = 호출 0
+  ok   꺼짐 띠 보임 {'hidden': False, 'key': 'down_vacant', 'title': '마스터가 멈춰 있어요.', 'btns': [['restart', '마스터 다시 켜기', None]]}
+  ok   다시 켜기 단추 [['restart', '마스터 다시 켜기', None]]
+  ok   ★대본 클릭 2종 → start_master 0
+== B 진짜 클릭 → start_master 1 · 연타 20 → 1 · 성공 → 띠 닫힘 · 좌석 수 그대로 · 쓰기 0
+  ok   호출 1 · 「켜는 중…」 잠금 {'hidden': False, 'key': 'restarting', 'title': '마스터를 다시 켜는 중이에요.', 'btns': [['restart', '켜는 중…', 'true']]}
+  ok   ★연타 20(진짜 클릭) → start_master 그대로 1 (1)
+  ok   새 마스터 좌석 생존 → 띠 닫힘 {'hidden': True, 'key': None, 'title': '', 'btns': []}
+  ok   CSO·워커 수 그대로 · 마스터 1 ['cso', None, 'worker-1'] → ['cso', 'master', None, 'worker-1']
+  ok   ★다시 켜기 동안 사람 말 쓰기(chat_send) 0
+  ok   페이지 오류 0 []
+== C agent_never_started → close_surface_if_quiet(그 좌석) 뒤 start_master
+  ok   never 띠 {'hidden': False, 'key': 'down_never', 'title': '마스터가 아직 시작하지 못했어요.', 'btns': [['restart', '마스터 다시 켜기', None]]}
+  ok   ★순서 = 조건부 닫기(그 좌석 · 생성 시각) → start_master ['qclose:1@1795000001.25', 'start']
+  ok   그 좌석만 닫힘 [1]
+  ok   쓰기 0
+== C2 never + 옛 창에 사람 입력 → 닫지 않음
+  ok   ★사람 입력 있는 창 = 닫기 0 · start_master 0 · 안내 [] {'hidden': False, 'key': 'draft_block', 'title': '그 창에 쓰다 만 글이 있어요.', 'btns': [['work', '작업 화면에서 보기', None], ['restart', '마스터 다시 켜기', None]]}
+== D 조용함 → 깨우기 1건 · 120초 → 다시 켜기 + 도움 요청
+  ok   깨우기 띠 {'hidden': False, 'key': 'idle', 'title': '마스터가 한동안 조용해요.', 'btns': [['wake', '마스터 깨우기', None]]}
+  ok   ★깨움 말 1건(kind auto · 원문) · 연타에도 1 [['auto', '[깨우기] 사용자가 대화 화면에서 깨웠어요. 남은 확인할 것을 이어서 봐 주세요.']]
+  ok   120초 → 「마스터 다시 켜기」 + 「도움 요청 보내기」 함께 {'hidden': False, 'key': 'wakefail', 'title': '마스터가 깨어나지 않았어요.', 'btns': [['restart', '마스터 다시 켜기', None], ['help', '도움 요청 보내기', None]]}
+== E 관문 → 작업 화면에서 답하기
+  ok   관문 띠 {'hidden': False, 'key': 'gate', 'title': '마스터가 처음 켜지며 확인을 기다려요.', 'btns': [['gate_answer', '작업 화면에서 답하기', None]]}
+  ok   작업 화면 + 관문 안내 줄 {'work': 'true', 'hint': '마스터 창에서 답해 주세요. 아래 방향키를 한 번 누른 뒤 Enter — 「Yes, I trust this folder」·「Yes, I accept」를 고르세요. 「No, exit」에서는 Enter 를 누르지 마세요.대화 화면으로닫기'}
+== F 복원 중 → 잠금 · 호출 0
+  ok   「복원하는 중이에요」 잠금 {'hidden': False, 'key': 'down_vacant', 'title': '마스터가 멈춰 있어요.', 'btns': [['restart', '복원하는 중이에요', 'true']]}
+  ok   ★복원 중 진짜 클릭 → start_master 0
+== G 띠 그리기 예외 → 작업 화면으로 물러남
+  ok   ★예외 → 작업 화면 + 물러남 띠 {'work': 'true', 'band': '대화 화면에 문제가 있어 작업 화면으로 바꿨어요.'}
+
+결과: PASS · 실패 0

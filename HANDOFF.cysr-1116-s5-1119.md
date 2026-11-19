@@ -174,3 +174,65 @@
 1. 이 HANDOFF §0~§9 + 이 §10 읽기 → `git log --oneline dea2e1853..HEAD`(머리 = 이 커밋) · target 은 이 작업트리에 있음(`target/CACHEDIR.TAG` 포함)
 2. 10-1 #1(데몬 조건부 닫기 + viewcore + 화면 교체 · 하위 호환 시험) → #3(launch-agent 재사용 clear/거절 + 실물 1) → #6(c6_reap 기준 대조)
 3. 시험 = cysd·cys 바뀐 시험 + `bun test ./src/views` + tsc + e2e revive_gate · 뮤턴트(환경값 분기 1빌드) · `CARGO_BUILD_JOBS=4` · 끝나면 【확인요청】에 「codex 3R = master 대기열」 1줄
+
+## 11. 후임 델타(worker-1116s5b · master#4eea6b5a · 브리프 s5b.md) — §10-1 #1·#3·#6 집행 결과
+
+### 11-1. 커밋
+| 커밋 | 내용 |
+|---|---|
+| 0442fe4e5 | P1 원자 조건부 닫기(데몬 + viewcore + 화면 교체) · launch-agent 멱등 재사용 초안 보류 · 시험 · 뮤턴트 · 실물 |
+| (이 HANDOFF 커밋) | e2e revive_gate 대역(조건부 닫기) · 증거 · 문서 |
+
+### 11-2. #1 P1 원자 조건부 닫기 — 설계와 「한 잠금」 증명
+- 요청 칸: `surface.close {surface_id, if_quiet:true, expected_created_at:<org.status 행 created_at>}` · 소유 게이트(자기·생성자·롤백·익명)는 종전 그대로 지난 뒤 닫기만 `governance::close_surface_if_quiet` 로.
+  - `if_quiet:true` 인데 `expected_created_at` 없음 · `only_if_empty` 와 겹침 = `invalid_params`(닫지 않음).
+  - 불충족 = `close_refused` + `error.reason` ∈ {`created_at_mismatch`(1ms 안 = 같음 · JSON f64 왕복 대비) · `input_line_has_human_draft`(`pending_input.human` > 0) · `paste_open`(`pending_input.in_paste`) · `recent_human_input`(`last_human_input` 이 `queue_human_quiet_secs`(30) 안)} + 사건 `surface.close_if_quiet_denied`.
+  - 성공 응답 = 종전 꼴 + `"if_quiet": true`. **칸 없는 호출 = 종전 응답 바이트 같음**(시험 ①: 초안·최근 입력이 있어도 닫고 JSON 문자열 전체 일치 · `if_quiet:false` 도 종전).
+- 한 잠금: `close_operation`(그 좌석 · 종전 닫기도 맵 제거까지 쥠) → 그 안에서 `input_gate` → (`pending_input`·`last_human_input` leaf) 판정 → `close_decided` 표식(state.rs 새 칸) → 게이트 놓음 → 같은 `close_operation` 가드로 `close_surface_effect`(맵 제거). 닫기 실패면 표식 내림.
+  - 사람 쓰기 길 = `send_text`(:8664)·`send_key`(:9343) 의 `try_write` — 둘 다 `input_gate` 안 · `try_write` 첫 줄이 표식을 보고 `surface_closing`(바이트 0). `human ∧ !machine_origin` 는 `direct_agent_intent` 첫 줄에서 None 이라 에이전트 작업 길(hand_off_direct_job)에 안 닿는다 → 사람 바이트는 「판정이 본다(거절)」 또는 「쓰이지 않는다」 둘 중 하나.
+  - 사람 찍기(`stamp_human_input` :7987)는 게이트 앞이다 — 게이트 앞에서 찍힌 입력은 판정이 본다(시험 ⑤: 시험이 `input_gate` 를 쥔 동안 닫기 스레드가 300ms 판정 못 함 → 그 사이 찍기 → 게이트 놓으면 `Refused(recent_human_input)`).
+  - 잠금 순서: 운영 코드에서 `close_operation` 을 잡는 곳 = `close_surface`·`reap_surface_due`(try_lock)·새 함수뿐 · 어느 `close_surface` 호출 자리도 `input_gate` 를 쥐고 있지 않음(훑기 · state.rs 12665·12705 는 시험 코드) · 닫기 본체(큐·맵 락)는 게이트를 놓은 뒤라 `pending_queue → input_gate` 계약과 교차 없음.
+- viewcore `close_surface_if_quiet(socket, surfaceId, expectedCreatedAt)` = 원작자 `close_surface_with` 재사용(owner_token · Attachments 정리 · 확인 판정 동일) + 요청 칸 둘(`if_quiet_close_params`) · main.rs `generate_handler!` 1줄.
+- 화면 `revive.ts`: never 닫기 = 다시 받은 행의 신원(`seatIdOf` · 생성 시각 없으면 닫지 않고 「어느 창인지 확인하지 못해」 실패 안내) → 조건부 닫기 · 데몬 거절(`close_refused` · 생성 시각 다름 제외) = 「그 창에 쓰다 만 글이 있어요」(draft_block · start_master 0) · 생성 시각 다름 = 실패 안내 · 옛 빈 셸 정리도 같은 명령(거절이면 그대로 둠). 정적 핀: `"close_surface"` 0 · `close_surface_if_quiet` 2곳 · `expectedCreatedAt: seat.created_at` 2곳.
+
+### 11-3. #3 launch-agent 멱등 재사용
+- `run_launch_agent_opts`: `idempotent_reuse:true` ∧ 건너뜀 아님 → `surface.list` 행으로 `reuse_draft_refusal`(사람 초안 바이트 > 0 · 붙여넣기 열림 · 칸 없음/모름 = 치지 않음) → 통과면 `surface.send_key {key:"C-u", authoritative:true}`(데몬이 권위 키라도 사람 초안을 `input_gate` 안에서 다시 보고 거부 — handlers.rs send_key `exempt_draft_kind` · 거부면 치지 않음) → 그 뒤 종전 `boot_agent_on_surface`.
+- 거절 = 오류 머리 `REUSE_DRAFT_REFUSED_TAG` → 전용 갈래(롤백 close 갈래보다 앞) · stderr 사유 · stdout 마지막 줄 = surface ref(계약 유지) · **rc 92 `EXIT_REUSE_DRAFT_HELD`**(1 = 롤백·닫힘이라 쓰지 않음 · 92 = 빈 번호 · 문서 줄 갱신) · close 0.
+- 빈 셸 가드와의 맞물림(실물): 사람 입력 30초 안 다시 기동은 데몬이 `surface.create` 에서 먼저 `claim_denied(seat_human_recent)` 로 막음(재사용 길까지 안 옴) · 30초 뒤 초안이 남은 경우가 이 고침의 자리(실물 ③) · 에이전트 죽음 통지 때 데몬이 입력줄 계수를 한 번 비우므로(governance.rs :1081) 죽은 **뒤** 친 초안만 남는다.
+
+### 11-4. 시험 숫자 전후(기준 = 앞 머리 2d2c3c6f4 · 그 전 기준 dea2e1853 은 §5)
+| 대상 | 앞 | 지금 | 차이 |
+|---|---|---|---|
+| bin cysd 전체(`--test-threads=4` · 격리 env · 부하 ~8~14) | 3336 · 0 · 17(4390f7a50) | **3337 · 0 · 17**(888.9초) | +1 `s5_1116_close_if_quiet_atomic_conditions` |
+| bin cys 전체 | (앞 좌석 실측 없음 · 796 추정 = 지금 − 1) | **797 · 0 · 2**(983.6초 · 부하 ~5~10) | +1 `s5_1116_reuse_draft_refusal_table_and_wiring` |
+| cys-app `--bin cys-app` 전체 | 350 · 0 · 2 | **351 · 0 · 2** | +1 `viewcore::tests::if_quiet_close_sends_conditions_and_refusal_is_not_closed` |
+| `bun test ./src/views` | 336 | **339 · 0** | +3(데몬 거절 3사유 · 생성 시각 다름 · 신원 모름) · 기존 never·vacant 시험은 새 명령·생성 시각으로 고침 |
+| tsc(typescript@7.0.2 · tsconfig.check.json) | rc 0 | **rc 0** · 음성 대조(일부러 틀린 파일) 적색 확인 | 1회차 붉음 = 시험 대역 `human_idle_secs` 타입 → typeof 로 |
+| e2e revive_gate | PASS 21/0 | **PASS 22/0**(`docs/ui-p2/evidence/s5/revive-gate-s5b.txt`) | C = `qclose:1@1795000001.25` → start · 「그 좌석만 닫힘 [1]」 1건 추가 · 대역에 조건부 닫기(생성 시각·초안 재판정) |
+| e2e tickrec_gate(기준 번들 = dea2e1853 빌드) | sha 308dd2b91f9a | **PASS · 새 = 기준 `308dd2b91f9a`**(꺼짐·켜짐) | 작업 화면 동작 변화 0 |
+| 팩 시험 | — | 안 돌림(팩 파일 변경 0) · c6_reap 만 대조(아래) | |
+
+### 11-5. 뮤턴트(바깥 증거)
+- 데몬(환경값 분기 1빌드 · `CYS_S5P1_MUTANT`): **NOCOND**(조건 칸 무시) → ③ 적색 · **NOFLAG**(표식 안 세움) → ⑥ `write_failed` ≠ `surface_closing` 적색 · **NOGATE**(게이트 밖 판정) → ⑤ 「닫기가 input_gate 밖에서 판정했다」 적색 = 3/3.
+- cys(`CYS_S5L_MUTANT=NODRAFT` · 초안 거절 끔) → 「사람 초안인데 친다」 적색 · 거절 갈래 머리를 안 맞게 바꿈 → 「거절 전용 갈래 없음」 적색 = 2/2.
+- TS(`docs/ui-p2/evidence/s5/mut_p1_ts.py`): M1 무조건 close_surface 3붉음 · M2 거절을 실패로만 1붉음 · M3 생성 시각 0 3붉음 · M4 신원 모름이어도 닫음 = **살아남음 → 동등 뮤턴트**(seat null 이면 `seat.sid` 가 try 안에서 TypeError → restartfail · invoke 0 — 결과 같음 · 가드는 읽기 쉬움 몫) = 3/3 + 동등 1.
+
+### 11-6. 실물(격리 HOME · `docs/ui-p2/evidence/s5/real-daemon-s5b.txt` · 스크립트 `real_s5b.py`)
+- ③ 죽은 마스터 셸에 사람 초안 `echo DRAFT-OWNER`(엔터 없음) → 30초 안 다시 기동 = 데몬 claim_denied · 31초 뒤 다시 기동 = **rc 92 · stdout surface:1 · 좌석 남음 · 입력줄 바이트 16 = 16 · 화면 같음 · 기동 줄 0**.
+- ④ 사람이 지움(\x15) → 31초 뒤 다시 기동 = rc 0 · C-u 뒤 기동 · 같은 좌석 `agent_alive:true`.
+- ⑤ 조건부 닫기(워커 좌석): 생성 시각 +5 = `created_at_mismatch` · 사람 초안 = `input_line_has_human_draft`(좌석 남음) · 지운 직후 = `recent_human_input` · 31초 조용 = 닫힘(`if_quiet:true`) · 사건 3건.
+- 잔재: 격리 폴더 s5e·s5f·s5g 프로세스 0 · lsof 0.
+
+### 11-7. #6 test_phoenix_c6_reap 기준 대조 = **기준선 같음**
+- 기준 dea2e1853 worktree(스크래치 · target `cp -c` + CACHEDIR.TAG) · 같은 틀(`env -i` 격리 HOME/TMPDIR · CARGO_BUILD_JOBS=4 · `scripts/ci/phoenix-host-gate.sh`): 기준 1회(부하 5.13) · 이 가지 1회(4.91) · 기준 2회(4.75) **셋 다 `result: failed` · AssertionError 「S5 bounded observation timed out」(test_phoenix_c6_reap.py:166)** · owned_residuals 0.
+
+### 11-8. 📌 덧붙임(실행 안 함 · 판단 = master)
+1. **기존 결함(기준판 재현)**: 에이전트 죽음 → 60초(`ROLE_RELEASE_GRACE_SECS`) 뒤 `role.released(agent_exited)` → 120초(`CREATE_IDEM_TTL_SECS`) 안 `launch-agent` 다시 기동 = 멱등 재반환으로 같은 좌석 에이전트는 되살아나나 **role 을 다시 쥐지 않음(마스터 0 · released_role 도 null)**. 기준 dea2e1853 · 지연 70초 role_probe.py 재현 · 지연 0·55초는 role 유지. 재사용 갈래가 role 재등록을 하지 않는 것(handlers.rs surface.create :7466 조기 반환은 승계 마무리·role 기록 0). 화면 다시 켜기 성공 판정(`agent_alive` 만)은 이것을 성공으로 본다 → 다시 켜기 뒤 좌석 수(수용 #7) 의 실물 사각. 고칠지·어디서(데몬 재반환 때 role 재기록 vs CLI 재사용 뒤 claim-role) = 범위 밖.
+2. launch-agent 재사용 거절의 「30초 안 사람 입력」 은 넣지 않음(브리프 = 초안만 · 30초 안이면 데몬 claim_denied 가 먼저 막음 — 실물 ③).
+3. codex 3R = **master 대기열**(범위 = 7dcdba6c3 + 0442fe4e5 + 이 HANDOFF 커밋 · 2R 이후분).
+
+### 11-9. 함정(다음 좌석에게)
+- 실물에서 사람 C-u 는 `surface.send_key {human:true}` 가 아니라 `surface.send_text {text:"\x15", human:true}` — send_key 는 사람 칸이 없어 타이핑 가드에 막힌다.
+- 맨 셸 에이전트 좌석(에이전트 죽음)에 기계 send_text = `no_agent`(큐 보류) — 기계 찌꺼기로 C-u 효과를 재는 시험은 안 된다.
+- zsh 에서 `echo "x rc=$?"` 안에 `$(basename …)` 를 먼저 쓰면 `$?` 가 0 이 된다 — rc 는 따로 받아라(c6 2·3회 로그의 rc 줄은 이 때문에 0 · 판정은 하네스 JSON `result`).
+- 화면 시험 대역 행에는 `created_at` 이 없다(tickrec_gate seat()) — 조건부 닫기 갈래 e2e 는 rowOver 에 생성 시각을 넣어야 닫힌다.

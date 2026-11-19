@@ -6,7 +6,7 @@
 
 A 앱 새로 켬 + 마스터 이미 꺼짐(저장소 cys-master-seen · 마스터 좌석 없음) → 꺼짐 띠 「마스터가 멈춰 있어요」 · 대본 클릭 → start_master 0
 B 진짜 클릭 → start_master 1 · 「켜는 중…」 잠금 · 연타 20(진짜 클릭) → 그대로 1 · 새 마스터 좌석 생존 → 띠 닫힘 · CSO·워커 좌석 수 그대로 · 사람 말 쓰기(chat_send) 0
-C agent_never_started(사건 + 행) → 「아직 시작하지 못했어요」 → 진짜 클릭 → close_surface(그 좌석) 뒤 start_master(순서) · 쓰기 0
+C agent_never_started(사건 + 행) → 「아직 시작하지 못했어요」 → 진짜 클릭 → close_surface_if_quiet(그 좌석 · 생성 시각) 뒤 start_master(순서) · 쓰기 0
 C2 같은 꼴 + 옛 창에 사람 입력 → 닫지 않음 · start_master 0 · 「그 창에 쓰다 만 글이 있어요」
 D 조용함(master.idle) → 「마스터 깨우기」 → 깨움 말 1건(kind auto · 원문) · 120초 무반응 → 「마스터 다시 켜기」 + 「도움 요청 보내기」 함께
 E 관문(gate_pending) → 「작업 화면에서 답하기」 → 작업 화면 + 안내 줄(「No, exit」 경고)
@@ -51,6 +51,15 @@ REVIVE_SHIM = r"""
       return prev(cmd, args).then((r) => ({ ...r, surfaces: (r.surfaces || []).map((x) => (x.role === 'master' ? { ...x, ...C.rowOver } : x)) }));
     if (cmd === 'start_master') { C.starts.push(Date.now()); C.order.push('start'); if (C.onStart) C.onStart(); return C.startErr ? Promise.reject(C.startErr) : Promise.resolve(null); }
     if (cmd === 'close_surface' && (a.socket ?? null) === null) { C.closes.push(a.surfaceId); C.order.push('close:' + a.surfaceId); }
+    // (master#565d7c18 P1) 조건부 닫기 — 데몬 대역: 생성 시각 · 사람 초안을 닫는 순간 다시 본다(맞으면 그 좌석을 닫음 · 아니면 close_refused)
+    if (cmd === 'close_surface_if_quiet' && (a.socket ?? null) === null) {
+      C.order.push('qclose:' + a.surfaceId + '@' + a.expectedCreatedAt);
+      const o = C.rowOver || {};
+      if (o.created_at !== a.expectedCreatedAt) return Promise.reject('close_refused: surface.close if_quiet refused: created_at_mismatch · not closed');
+      if (o.pending_input_human_bytes) return Promise.reject('close_refused: surface.close if_quiet refused: input_line_has_human_draft · not closed');
+      C.closes.push(a.surfaceId);
+      return prev('close_surface', { socket: null, surfaceId: a.surfaceId });
+    }
     return prev(cmd, args);
   };
 })();
@@ -127,18 +136,19 @@ def main() -> int:
         check(not errs, f"페이지 오류 0 {errs}")
         ctx.close()
 
-        print("== C agent_never_started → close_surface(그 좌석) 뒤 start_master")
-        nev = {"agent": "claude", "agent_alive": None, "agent_seen": False, "seat": "empty"}
+        print("== C agent_never_started → close_surface_if_quiet(그 좌석) 뒤 start_master")
+        nev = {"agent": "claude", "agent_alive": None, "agent_seen": False, "seat": "empty", "created_at": 1795000001.25}
         ctx, pg, errs = page([seat(BASE, 1, "master"), seat(BASE, 2, "cso")])
         pg.evaluate(f"() => {{ window.__CHAT.rowOver = {json.dumps(nev)}; }}")
         pg.evaluate("() => window.__emit('daemon-event', { name: 'master.deadman', surface_id: 1, seq: 7001, socket_slug: 'base', timestamp: Date.now() / 1000, payload: { role: 'master', axis: 'agent_never_started' } })")
         pg.clock.run_for(3_200)
         b = band(pg)
         check(b["key"] == "down_never" and b["title"] == "마스터가 아직 시작하지 못했어요.", f"never 띠 {b}")
-        pg.evaluate(f"() => {{ window.__CHAT.onStart = () => {{ window.__SEATS.push({seat(BASE, 9, 'master')}); }}; window.__CHAT.order = []; }}")  # 클릭 전 기록(앱 시작 때 작업 화면 쪽 닫기)은 대조 밖
+        pg.evaluate(f"() => {{ window.__CHAT.onStart = () => {{ window.__SEATS.push({seat(BASE, 9, 'master')}); }}; window.__CHAT.order = []; window.__CHAT.closes = []; }}")  # 클릭 전 기록(앱 시작 때 작업 화면 쪽 닫기)은 대조 밖
         pg.click(".cvr-btn[data-act=restart]")
         pg.clock.run_for(500)
-        check(C(pg, "order") == ["close:1", "start"], f"★순서 = 닫기(그 좌석) → start_master {C(pg, 'order')}")
+        check(C(pg, "order") == ["qclose:1@1795000001.25", "start"], f"★순서 = 조건부 닫기(그 좌석 · 생성 시각) → start_master {C(pg, 'order')}")
+        check(C(pg, "closes") == [1], f"그 좌석만 닫힘 {C(pg, 'closes')}")
         check(C(pg, "writes.length") == 0, "쓰기 0")
         ctx.close()
 

@@ -2460,8 +2460,9 @@ class CsoDirectiveRevision(unittest.TestCase):
         #     (+319 B 씩 = 「★ 사용자와 함께 쓰는 컴퓨터 — 손을 빌리지 않기」 절 1개 · 469 B 를 뜻 유지로 319 B 로 줄인 뒤 남는 몫 · 세부는 스킬 computer-control).
         size = lambda name: os.path.getsize(os.path.join(REAL_DIRECTIVES_DIR, name))   # 실제 파일(전체 검체 재실행이 DIRECTIVES_DIR 을 임시 사본으로 바꿔도 영향 없다)
         self.assertLessEqual(size("CSO_DIRECTIVE.md"), 57687, "CSO_DIRECTIVE.md 바이트 예산(57,687) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다)")
-        self.assertLessEqual(size("MASTER_DIRECTIVE.md"), 86625, "MASTER_DIRECTIVE.md 바이트 예산(86,625) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다)")
-        self.assertLessEqual(size("CEO_TEMPLATE.md"), 102111, "CEO_TEMPLATE.md 바이트 예산(102,111) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다 · 생성물이라 MASTER 와 머리글 바이트가 함께 든다)")
+        #   ⑥ 2026-11-20 상향(1.1.16 · TICKET=cysr-1116-borrow23-1119 · 차용 ③ 가벼운 시작 손잡이 1줄): ④ 문단을 433 → 501 B 로 줄여 쓴 뒤 남는 +68 B — MASTER 86,625 → 86,693 · CEO 102,111 → 102,179
+        self.assertLessEqual(size("MASTER_DIRECTIVE.md"), 86693, "MASTER_DIRECTIVE.md 바이트 예산(86,693) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다)")
+        self.assertLessEqual(size("CEO_TEMPLATE.md"), 102179, "CEO_TEMPLATE.md 바이트 예산(102,179) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다 · 생성물이라 MASTER 와 머리글 바이트가 함께 든다)")
 
     def test_utf8_and_lf(self):
         """세 지시문 모두 엄격 UTF-8 로 읽히고 CRLF 가 없어야 한다(Windows 체크아웃 회귀)."""

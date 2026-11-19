@@ -162,9 +162,7 @@ cys 코어가 직접 만들어 보낸 기계 통지**다. 사람이 손으로 �
 ④ **노드 자동 기동 (생략 금지·앵커4-1 의무)**: `cys boot` 를 실행한다 — 설치 CLI 감지·**기본 함대
    기동**·지침 주입·프롬프트 대기까지(미설치·가동 중 역할은 건너뜀). **"필요할 때 띄우겠다"로
    미루지 마라** — 기본 함대가 떠야 '실행 준비 완료'다. 단 데몬이 `CYS_BOOT_FLEET=light` 로 떴으면(진실원 =
-   데몬 · 좌석 env 무시) CSO·worker 미기동이 정상이다. 그때 빠지는 것: ①맥락 순환 집행자(clear 보류)
-   ②`cycle-agent --verifier worker` 검증자 ③데몬 경보의 CSO 큐 적재(보류) ④죽은 좌석 회수·원장 고아
-   정리 — 필요하면 `cys launch-agent --role cso --agent claude`(worker 도 같은 꼴).
+   데몬 · 좌석 env 무시) CSO·worker 미기동이 정상이다. 그때 빠지는 것: ①맥락 순환 집행자(clear 보류) ②`cycle-agent --verifier worker` 검증자 ③데몬 경보의 CSO 큐 적재(보류) ④죽은 좌석 회수·원장 고아 정리 — 필요하면 `cys launch-agent --role cso --agent claude`(worker 도 같은 꼴).
    ★**기본 함대 = master · CSO · worker 1기**(박사님 결정 2026-09-10 · 기계·구독과 무관한
    **보편 정책**). 주소: `--to cso` / `--to worker`.
    ★**리뷰어는 기본 함대가 아니다 — 필요할 때 연다**(온디맨드). 리뷰어 부재는 **결손이 아니라

@@ -49478,10 +49478,13 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
     fn d16_keys_sent_marker_only_after_cu_success() {
         // 원자 성공 팔·폴백 C-u 성공 뒤에만 마커를 찍어 송신 0건의 오기록을 막는다.
         let (atomic, body, refusal) = d16_clear_atomic_and_fallback_source();
-        let (before_success, success) = atomic.split_once("Ok(_) => {").expect("원자 성공 팔");
+        // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · B5) 성공 팔이 응답을 읽는다(`Ok(r)`) — `submitted:false`(Enter 직전 거부) 갈래는 마커 **앞**에서 돌아간다.
+        let (before_success, success) = atomic.split_once("Ok(r) => {").expect("원자 성공 팔");
         let marker_literal = "[cycle 5/7] 입력 버퍼 정리 + '";
         assert!(!before_success.contains(marker_literal));
         assert!(success.contains(marker_literal), "원자 성공 뒤 송신 마커 누락");
+        let refused_at = success.find("return Err(cycle_clear_refused_msg(&r));").expect("B5 거부 갈래");
+        assert!(refused_at < success.find(marker_literal).unwrap(), "제출 거부(submitted:false)인데 송신 마커를 먼저 찍는다");
         assert!(success.contains("원자"), "5단계가 원자 경로임을 명시해야 한다");
         for literal in ["C-u 1건은 선행 송신됨", marker_literal] {
             assert!(!refusal.contains(literal), "원자 거부에 송신 마커가 있다: {literal}");

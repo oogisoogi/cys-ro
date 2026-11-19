@@ -3786,11 +3786,10 @@ function tickWsModel(): TickWs[] {
  * 대화 화면에서 입양·시작 복원·빈 탭 충전한 좌석이 여기 든다. 작업 화면이 보이면 ensureSeatRuntimes 가 만든다(보이는 탭 = 즉시 · 나머지 = 한 틱 4개).
  * 지우는 곳 = 런타임을 만든 그 자리 · destroyPaneRuntime(떼기·탭 삭제·입양 포기 전부 이 함수를 지난다).
  */
-const deferredRuntimes = new Map<string, { sid: number; socket?: string; title: string; role: string | null; tries: number; making?: boolean; cursor: number | null; total: number }>();
-/** (codex 2R major) 한 좌석의 런타임 만들기 시도 상한 — 이 실행 전체 기준(작업 화면 재진입으로 되돌리는 것은 3회 묶음 tries 뿐 · total 은 안 되돌림). */
-const DEFERRED_TOTAL_MAX = 9;
-/** (codex 2R blocking) 붙기 전 기록을 xterm 에 넣는 상한(xterm 스크롤백 설정과 같은 5,000줄). */
-const SEAT_HISTORY_MAX = 5000;
+const deferredRuntimes = new Map<string, { sid: number; socket?: string; title: string; role: string | null; tries: number; making?: boolean; cursor: number | null }>();
+/** (codex 3R major) 한 좌석 런타임 만들기 자동 재시도 상한 — **작업 화면 진입당**(진입마다 retryFailedRuntimes 가 되돌린다 · 영구 차단 0).
+ *  부분 생성 누수는 makePane 정리 목록이 막으므로(첫 줄부터) 상한은 누수 방어가 아니라 실패 폭주 억제다. */
+const DEFERRED_TRIES_MAX = 3;
 const DEFERRED_PER_TICK = 4; // (설계 목표값 §2-3) 보이지 않는 탭의 미룬 런타임 — 한 틱에 최대 이만큼
 /** 그 좌석이 화면 모형에 붙어 있는가 = 런타임 있음 ∪ 런타임 미룸(입양 판정의 「이미 붙음」 · 종전 panes.has 와 같은 뜻 + 미룬 좌석). */
 function seatAttached(sid: number, socket?: string): boolean {
@@ -3801,33 +3800,75 @@ function seatAttached(sid: number, socket?: string): boolean {
 function seatInModel(sid: number, socket?: string): boolean {
   return workspaces.some((w) => !w.deleting && (w.socket ?? undefined) === (socket ?? undefined) && collectSids(w.tree).includes(sid));
 }
-/** cursor = 미룬 그때 그 좌석의 단조 줄 커서(목록의 line_count · 모르면 null = 기록 주입 없음). */
+/** cursor = 미룬 그때 그 좌석의 **화면 행 커서**(데몬 surface.list·surface.create 의 `screen_cursor` · 불투명 수 · 모르면 null = 기록을 이어 붙일 수 없음 → 안내 줄). */
 function deferSeatRuntime(sid: number, socket: string | undefined, title: string, role: string | null, cursor: number | null = null): void {
   const k = paneKey(sid, socket);
   if (panes.has(k)) return;
-  deferredRuntimes.set(k, { sid, socket, title, role, tries: 0, cursor: typeof cursor === "number" && cursor >= 0 ? cursor : null, total: 0 });
+  deferredRuntimes.set(k, { sid, socket, title, role, tries: 0, cursor: typeof cursor === "number" && cursor >= 0 ? cursor : null });
 }
 /**
- * (codex 2R blocking) 미룬 동안 지나간 출력을 xterm 스크롤백에 먼저 넣는다 — 데몬 `surface.read_text` 델타(좌석 스크롤백 FIFO · 완성 줄 글자만 · 색 없음)를
- * 미룬 그때 화면 한 장 앞부터 받아, 지금 화면에 다시 그려질 마지막 화면 행 수만큼은 빼고(스냅숏과 겹침 방지) 쓴 뒤 빈 줄로 밀어 올린다.
- * 그다음 스트림이 데몬의 지금 화면 스냅숏을 그린다. 실패·없음 = 기록 없이 붙는다(종전 동작).
+ * (codex 3R blocking · master#b4d5c092 승인) 미룬 동안 지나간 출력 = 데몬이 붙는 그 순간 **한 파서 락 안에서** 「커서 뒤 화면 위로 밀려난 물리 행 → 받는
+ * xterm 행 수만큼 줄 내림 → 지금 화면 스냅숏 → 실시간」 을 한 스트림으로 이어 준다(surface.attach history_since · 이음매 빠짐·겹침 0 = 데몬 시험).
+ * 여기서는 붙을 때 넘길 인자만 만든다 — 커서 모름 = 인자 없음(종전 붙기) + 안내 줄.
  */
-async function writeSeatHistory(term: Terminal, sid: number, socket: string | undefined, cursor: number | null): Promise<void> {
-  if (cursor === null) return;
-  try {
-    const r = (await rpcT(invoke("seat_history", { socket, surfaceId: sid, sinceLine: Math.max(0, cursor - term.rows), maxLines: 10000 }), T_LIST)) as { text?: unknown } | null;
-    const text = typeof r?.text === "string" ? r.text : "";
-    if (!text) return;
-    const lines = text.split("\n");
-    const keep = lines.slice(0, Math.max(0, lines.length - term.rows)).slice(-SEAT_HISTORY_MAX);
-    if (!keep.length) return;
-    // 글자만(제어 문자 제거 · 탭 유지) — 옛 줄의 이스케이프가 지금 화면·모드를 바꾸지 않게
-    term.write(keep.map((l) => l.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "")).join("\r\n") + "\r\n".repeat(term.rows));
-  } catch {
-    /* 기록 없이 붙는다 */
-  }
+function seatHistoryArgs(cursor: number | null, rows: number): { historySince?: number; historyRows?: number } {
+  return cursor === null ? {} : { historySince: cursor, historyRows: rows };
 }
-/** 미룬 좌석 하나의 런타임을 만든다 — 만들었으면 true. 실패(F20) = 등록된 것은 파기 · 같은 좌석 재시도 3회까지(그 뒤 「(없음)」 칸 그대로). */
+/** 붙기 결과(start_surface_stream 반환 · Tauri = 데몬 ack 의 history 칸 · 손잡기 실패 = timeout·error·not_attached) → 안내가 필요한가 · 다시 불러오기가 뜻이 있는가. */
+function seatHistoryVerdict(cursor: number | null, started: unknown): { status: string; notice: boolean; retry: boolean } {
+  if (cursor === null) return { status: "no_cursor", notice: true, retry: false };
+  const h = (started as { history?: { status?: unknown } } | null)?.history;
+  const status = typeof h?.status === "string" ? h.status : "unsupported"; // 반환 없음·꼴 이상 = 구 앱·구 데몬(기록 없이 붙었다)
+  if (status === "ok") return { status, notice: false, retry: false };
+  // 잘림(10,000행 밖) · 모르는 커서(파서 세대 바뀜) · 구 데몬 = 다시 해도 같다 → 안내만 · 손잡기 실패 = 일시적 → 다시 불러오기 + 다음 진입 자동
+  return { status, notice: true, retry: status === "timeout" || status === "error" || status === "not_attached" };
+}
+/** 기록 이어 붙이기 사건(조용한 손실 0 — 안내 줄과 함께 남긴다 · 상한 64 · 시험·진단이 읽는다). */
+const seatHistoryEvents: { at: number; key: string; status: string }[] = [];
+/** 다시 불러오기가 남은 좌석 — 키 → 미룬 그때 커서(작업 화면 다음 진입 때 자동 재시도 · destroyPaneRuntime 이 지운다). */
+const seatHistoryRetry = new Map<string, number>();
+const SEAT_HISTORY_TEXT = "이전 출력 일부를 불러오지 못했어요";
+/** 좌석 화면 맨 위(제목 줄 아래) 안내 한 줄 — 다시 불러오기 단추는 뜻이 있을 때만. ok 면 지운다. */
+function showSeatHistoryNotice(el: HTMLElement, key: string, sid: number, socket: string | undefined, cursor: number | null, v: { status: string; notice: boolean; retry: boolean }): void {
+  seatHistoryEvents.push({ at: Date.now(), key, status: v.status });
+  if (seatHistoryEvents.length > 64) seatHistoryEvents.shift();
+  el.querySelector(".pane-history-gap")?.remove();
+  if (v.retry && cursor !== null) seatHistoryRetry.set(key, cursor);
+  else seatHistoryRetry.delete(key);
+  if (!v.notice) return;
+  console.warn(`[cys] 좌석 ${sid} 이전 출력 이어 붙이기 실패: ${v.status}`);
+  const n = document.createElement("div");
+  n.className = "pane-history-gap";
+  n.dataset.status = v.status;
+  n.textContent = SEAT_HISTORY_TEXT;
+  if (v.retry && cursor !== null) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = "다시 불러오기";
+    b.addEventListener("mousedown", (e) => e.stopPropagation());
+    b.addEventListener("click", () => void retrySeatHistory(key));
+    n.append(" · ", b);
+  }
+  const head = el.querySelector(".pane-title");
+  if (head) head.after(n);
+  else el.prepend(n);
+}
+/** 다시 불러오기 — 화면을 비우고 같은 커서로 다시 붙는다(Tauri 가 옛 스트림 손잡이를 abort · 데몬이 기록 + 스냅숏을 다시 한 락으로). */
+async function retrySeatHistory(key: string): Promise<void> {
+  const cursor = seatHistoryRetry.get(key);
+  const rt = panes.get(key);
+  if (cursor === undefined || !rt) return;
+  let started: unknown = null;
+  rt.term.reset();
+  try {
+    started = await invoke("start_surface_stream", { socket: rt.socket, surfaceId: rt.sid, ...seatHistoryArgs(cursor, rt.term.rows) });
+  } catch {
+    started = { history: { status: "error" } };
+  }
+  if (panes.get(key) !== rt) return; // 기다린 사이 파기됨
+  showSeatHistoryNotice(rt.el, key, rt.sid, rt.socket, cursor, seatHistoryVerdict(cursor, started));
+}
+/** 미룬 좌석 하나의 런타임을 만든다 — 만들었으면 true. 실패(F20) = makePane 이 만든 것을 스스로 치운다(첫 줄부터 정리 목록) · 같은 좌석 자동 재시도 = 진입당 3회. */
 async function ensureSeatRuntime(key: string): Promise<boolean> {
   const d = deferredRuntimes.get(key);
   if (!d) return false;
@@ -3835,17 +3876,18 @@ async function ensureSeatRuntime(key: string): Promise<boolean> {
     deferredRuntimes.delete(key);
     return false;
   }
-  if (d.making || d.tries >= 3 || d.total >= DEFERRED_TOTAL_MAX || !seatInModel(d.sid, d.socket)) return false; // 만드는 중 · 아직 모형에 안 붙음(만드는 쪽이 붙이기 전) — 장부 유지(떼면 destroyPaneRuntime 이 지운다)
+  if (d.making || d.tries >= DEFERRED_TRIES_MAX || !seatInModel(d.sid, d.socket)) return false; // 만드는 중 · 아직 모형에 안 붙음(만드는 쪽이 붙이기 전) — 장부 유지(떼면 destroyPaneRuntime 이 지운다)
   // ★만드는 동안에도 장부에 남긴다 — 지우고 기다리면 그 사이 3초 틱이 「안 붙은 좌석」으로 보고 다시 입양할 틈이 생긴다(seatAttached = 런타임 ∪ 장부).
   d.making = true;
-  d.total++;
   try {
-    // (codex 2R major) 붙기 직전 다시 본다 — makePane 을 기다리는 사이 대화 화면으로 돌아갔으면 스트림을 열지 않고 만든 것을 치운다(장부 유지)
     const rt = await makePane(d.sid, d.title, d.socket, {
-      beforeStream: async (term) => {
+      // (codex 2R major) 붙기 직전 다시 본다 — 대화 화면이면 스트림을 열지 않는다 · 붙을 때 기록 이어 붙이기 인자(데몬 한 락)
+      beforeStream: async (term) => (workRuntimeWanted() ? seatHistoryArgs(d.cursor, term.rows) : false),
+      // (codex 3R major) 붙은 **뒤** 다시 본다 — start 를 기다린 사이 대화 화면으로 돌아갔으면 makePane 이 스트림을 멈추고 치운다(출력 흐름 0)
+      afterStream: (p, started) => {
         if (!workRuntimeWanted()) return false;
-        await writeSeatHistory(term, d.sid, d.socket, d.cursor);
-        return workRuntimeWanted();
+        showSeatHistoryNotice(p.el, key, d.sid, d.socket, d.cursor, seatHistoryVerdict(d.cursor, started));
+        return true;
       },
     });
     if (deferredRuntimes.get(key) === d) deferredRuntimes.delete(key); // 기다린 사이 떼였으면 destroyPaneRuntime 이 이미 지웠다
@@ -3857,22 +3899,23 @@ async function ensureSeatRuntime(key: string): Promise<boolean> {
     if (d.role) setRoleDot(rt, d.role);
     return true;
   } catch (e) {
+    // ★여기서 destroyPaneRuntime 을 부르지 않는다 — makePane 은 실패하면 스스로 치우고(등록 전), 기다린 사이 파기·재입양됐으면 그 키의 런타임·장부는
+    //   **새 시도**의 것이다(codex 3R major: 옛 시도의 catch 가 새 런타임을 부수던 자리).
     const kept = deferredRuntimes.get(key) === d; // 기다린 사이 떼이지 않았다
-    destroyPaneRuntime(d.sid, d.socket); // 등록됐으면 파기(F20) · 장부도 비운다 — 등록 전 부분 생성은 makePane 이 스스로 치웠다
-    if (e instanceof Error && e.message === PANE_STREAM_UNWANTED) {
-      // 실패가 아니다(대화 화면으로 돌아감) — 횟수 되돌리고 장부 유지 · 다음 작업 화면 진입 때 다시
-      if (kept && seatInModel(d.sid, d.socket)) deferredRuntimes.set(key, { ...d, total: d.total - 1, making: false });
-      return false;
-    }
+    if (!kept || !seatInModel(d.sid, d.socket)) return false;
+    const msg = e instanceof Error ? e.message : "";
+    // 실패가 아니다(대화 화면으로 돌아감) — 횟수 안 셈 · 장부 유지 · 다음 작업 화면 진입 때 다시
+    if (msg === PANE_STREAM_UNWANTED || msg === PANE_STALE) d.making = false;
     // (codex 1R major) 3회 실패해도 장부에서 빼지 않는다 — 빼면 트리에만 남아 「(없음)」 칸이 영구(3초 틱은 집 트리에 있는 좌석을 다시 입양하지 않는다).
-    //   장부에 남은 좌석 = 「붙은 좌석」(재입양 0) · 재시도 = 작업 화면에 다시 들어올 때(retryFailedRuntimes) · 그 사이 자동 재시도 0(누수 상한).
-    if (kept && seatInModel(d.sid, d.socket)) deferredRuntimes.set(key, { ...d, tries: d.tries + 1, making: false });
+    //   장부에 남은 좌석 = 「붙은 좌석」(재입양 0) · 재시도 = 작업 화면에 다시 들어올 때(retryFailedRuntimes · 진입마다 되돌림 = 영구 차단 0).
+    else deferredRuntimes.set(key, { ...d, tries: d.tries + 1, making: false });
     return false;
   }
 }
-/** 작업 화면에 다시 들어올 때(숨김 → 보임) — 3회 실패로 멈춘 좌석의 재시도 횟수를 되돌린다(사람이 화면을 다시 연 것 = 한 벌 더 시도할 계기). */
+/** 작업 화면에 다시 들어올 때(숨김 → 보임) — 실패로 멈춘 좌석의 재시도 횟수를 되돌리고(진입당 상한 · codex 3R major) · 기록 이어 붙이기가 일시 실패한 좌석은 다시 불러온다. */
 function retryFailedRuntimes(): void {
   for (const d of deferredRuntimes.values()) if (!d.making) d.tries = 0;
+  for (const k of [...seatHistoryRetry.keys()]) void retrySeatHistory(k);
 }
 let ensuringRuntimes = false;
 /**
@@ -3983,6 +4026,8 @@ async function refreshPaneTitles() {
           usage?: ObservedUsage | null;
           // surface.list 가 이미 싣는 단조 줄 커서 — ③ 자리표 무접촉 판정의 「출력」 축.
           line_count?: number | null;
+          // (cysr-1116-s2) 화면 행 커서(불투명 · 미룬 좌석 첫 붙기의 attach history_since · 구 데몬 = 없음)
+          screen_cursor?: number | null;
           // (948 D5) 지금 좌석 크기(구 데몬 = 없음) — fitPane 의 「마지막으로 보낸 크기」 기억과 대조한다.
           size?: { rows?: unknown; cols?: unknown } | null;
           // ★(0.14.41 · U18) 좌석 작업 폴더 막힘 관측(folderaccess.ts collectCwdBlocked 가 읽는다 · 구 데몬은 부재).
@@ -4082,7 +4127,7 @@ async function refreshPaneTitles() {
         //   작업 화면이 보일 때 ensureSeatRuntimes 가 만든다(한 번 만든 런타임은 대화 화면으로 가도 부수지 않는다).
         if (!workRuntimeWanted()) {
           arrangeWs(ws, { add: [{ sid: s.surface_id }] });
-          deferSeatRuntime(s.surface_id, sk, s.title, s.role, s.line_count ?? null);
+          deferSeatRuntime(s.surface_id, sk, s.title, s.role, s.screen_cursor ?? null);
           adopted = true;
           tickRec?.adopt(sk ?? "", s.surface_id, s.role);
           continue;
@@ -4306,18 +4351,36 @@ const TRASH_SVG =
   '<svg viewBox="0 0 24 24"><path d="M9 3h6l1 1h4v2H4V4h4l1-1zM6 8h12l-1 13a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L6 8z"/></svg>';
 
 /** (cysr-1116-s2) makePane 선택 인자 — 런타임을 미룬 좌석만 쓴다(작업 화면 입양·새 창 = 인자 없음 = 종전 그대로).
- *  beforeStream = 스트림을 붙이기 **직전**(이벤트 듣기 등록 뒤 · start_surface_stream 앞) 한 번 · false 면 붙지 않고 만든 것을 치운 뒤 던진다. */
+ *  beforeStream = 스트림을 붙이기 **직전**(이벤트 듣기 등록 뒤 · start_surface_stream 앞) 한 번 · false 면 붙지 않고 만든 것을 치운 뒤 던진다 ·
+ *    객체면 start_surface_stream 에 더 실을 인자(기록 이어 붙이기 history_since · history_rows).
+ *  afterStream = start_surface_stream 이 돌아온 **뒤** 한 번(그 반환값과) · false 면 스트림을 멈추고(stop_surface_stream) 치운 뒤 던진다. */
 interface MakePaneOpts {
-  beforeStream?: (term: Terminal) => Promise<boolean>;
+  beforeStream?: (term: Terminal) => Promise<false | { historySince?: number; historyRows?: number }>;
+  afterStream?: (p: { term: Terminal; el: HTMLElement }, started: unknown) => boolean;
 }
-/** beforeStream 이 「붙지 마라」고 답했을 때 makePane 이 던지는 표지(실패가 아니다 — 재시도 횟수에 안 셈). */
+/** beforeStream·afterStream 이 「붙지 마라」고 답했을 때 makePane 이 던지는 표지(실패가 아니다 — 재시도 횟수에 안 셈). */
 const PANE_STREAM_UNWANTED = "pane_stream_unwanted";
+/** 기다린 사이 그 좌석이 파기됐을 때(세대 바뀜) makePane 이 던지는 표지 — 옛 시도는 새 런타임을 덮지도 부수지도 않고 제 것만 치운다. */
+const PANE_STALE = "pane_stale";
+/** (cysr-1116-s2 · codex 3R major) 좌석(paneKey)별 세대 — destroyPaneRuntime 마다 올린다. makePane 은 시작 때 값을 쥐고 await 뒤마다 대조한다. */
+const paneGen = new Map<string, number>();
+function bumpPaneGen(key: string): void {
+  paneGen.set(key, (paneGen.get(key) ?? 0) + 1);
+}
 
 async function makePane(sid: number, title: string, socket?: string, opts?: MakePaneOpts): Promise<PaneRuntime> {
   // 멱등 보장 — 같은 (소켓,surface)에 pane 런타임·리스너가 이중 생성되지 않게
   const existing = panes.get(paneKey(sid, socket));
   if (existing) return existing;
+  // (cysr-1116-s2 · codex 3R major) 정리 보장은 **첫 줄부터** — 만든 것마다 되돌림을 목록에 얹고, 등록(panes.set) 전 어디서 던지든 거꾸로 되돌린다.
+  //   세대 = 시작 때 값 · await 뒤마다 대조(기다린 사이 파기 → 재입양이면 이 시도는 제 것만 치우고 PANE_STALE).
+  const undo: (() => void)[] = [];
+  const genKey = paneKey(sid, socket);
+  const gen = paneGen.get(genKey) ?? 0;
+  const stale = () => (paneGen.get(genKey) ?? 0) !== gen;
+  try {
   const el = document.createElement("div");
+  undo.push(() => el.remove());
   el.className = "pane";
   el.dataset.sid = String(sid); // 드래그 드롭존 탐색용
   const header = document.createElement("div");
@@ -4428,6 +4491,7 @@ async function makePane(sid: number, title: string, socket?: string, opts?: Make
     // 전역에서 비활성화한다 — 스크롤백 복사 복구가 커서 점프보다 우선한다(오너 버그 수정 지시).
     macOptionClickForcesSelection: true,
   });
+  undo.push(() => term.dispose());
   const fit = new FitAddon();
   term.loadAddon(fit);
   term.open(termHost);
@@ -4644,6 +4708,7 @@ async function makePane(sid: number, title: string, socket?: string, opts?: Make
     if (sendFailTimer !== undefined) clearTimeout(sendFailTimer);
     sendFailTimer = undefined;
   };
+  undo.push(cancelSendFail);
 
   // (codex 2R #1 · master 처분 — 불변식 정의) 탭 화면의 입력 불변식 = 「숨은 좌석에 **새로 시작되는** 입력 0」이다. 키를 누르거나 붙여 넣은
   //   그 순간 보이던 이 좌석에 묶인 글자는, 앞 글자 응답이 늦어 줄을 서 있다가 탭이 바뀌어 이 좌석이 숨어도 **이 좌석에 끝까지 · 순서대로** 간다
@@ -4860,26 +4925,14 @@ async function makePane(sid: number, title: string, socket?: string, opts?: Make
   el.addEventListener("mousedown", () => setFocus(sid));
   term.textarea?.addEventListener("focus", () => setFocus(sid));
 
-  // (cysr-1116-s2 · codex 2R major) 붙기 구간(attach → 듣기 등록 → 스트림 시작)이 던지면 이미 만든 듣기·xterm·DOM 을 여기서 치운다 —
-  //   panes 등록(맨 끝) 전이라 destroyPaneRuntime 이 못 거두던 부분 생성 누수(종전부터)를 막는다. 성공 경로는 종전과 같은 순서·같은 호출.
   let un1: (() => void) | undefined;
   let un2: (() => void) | undefined;
-  const dropPartial = () => {
-    try {
-      un1?.();
-      un2?.();
-      cancelSendFail();
-      term.dispose();
-      el.remove();
-    } catch {
-      /* 치우기 실패는 원 오류를 가리지 않는다 */
-    }
-  };
   // attach 먼저 — 백엔드가 (소켓 slug, surface_id) 이벤트명을 만들어 반환한다(단일 진실, UI 재계산 금지).
-  const ev = (await invoke("attach_surface", { socket, surfaceId: sid }).catch((e: unknown) => { dropPartial(); throw e; })) as {
+  const ev = (await invoke("attach_surface", { socket, surfaceId: sid })) as {
     output_event: string;
     exited_event: string;
   };
+  if (stale()) throw new Error(PANE_STALE);
   const outStamp = { t: 0 }; // 마지막 출력 시각 — rt.lastOutputAt(스트리밍 가드)의 원천
   // ★마우스 트래킹 스트리핑+정합기(스펙 D4 · trackfilter.ts 계약 주석 참조): 앱의 DECSET
   // 1003h/1006h 류가 xterm 에 닿지 않게 걷어내 휠 스크롤·일반 드래그 선택·복사를 기본 동작으로
@@ -4992,12 +5045,12 @@ async function makePane(sid: number, title: string, socket?: string, opts?: Make
       return false;
     });
   }
-  try {
   un1 = await listen(ev.output_event, (e) => {
     outStamp.t = Date.now();
     const raw = b64ToBytes(e.payload as string);
     term.write(allowAppMouse ? raw : trackFilter.feed(raw), snapToBottom);
   });
+  undo.push(un1);
   un2 = await listen(ev.exited_event, () => {
     // 순서 고정(스펙 D4 ③): ①필터 잔여 carry 방류(시퀀스 중간 사망 시에도 바이트 소실 0)
     // ②정합기 reset — 장부 소거 + 8종 상수 DECRST 를 **필터 우회 term.write 직접** 기록
@@ -5005,19 +5058,26 @@ async function makePane(sid: number, title: string, socket?: string, opts?: Make
     //   아니라 화면 **내용 맨 아래**(v116-exited-banner · 순서·위치 = exitbanner.ts).
     writeExitedBanner(term, trackFilter, snapToBottom);
   });
+  undo.push(un2);
   // listen 등록을 마친 뒤에 스트림을 시작해야 초기 화면 snapshot(프롬프트)이 유실되지 않는다
   // (런치 시 첫 pane 빈 화면 버그 — snapshot이 listen 전에 emit되던 race 차단).
-  if (opts?.beforeStream && !(await opts.beforeStream(term))) throw new Error(PANE_STREAM_UNWANTED); // (cysr-1116-s2) 붙기 직전 재판정 · 기록 주입
-  await invoke("start_surface_stream", { socket, surfaceId: sid });
-  } catch (e) {
-    dropPartial();
-    throw e;
-  }
+  const streamExtra = opts?.beforeStream ? await opts.beforeStream(term) : {}; // (cysr-1116-s2) 붙기 직전 재판정 · 기록 이어 붙이기 인자
+  if (streamExtra === false) throw new Error(PANE_STREAM_UNWANTED);
+  if (stale()) throw new Error(PANE_STALE);
+  const started = await invoke("start_surface_stream", { socket, surfaceId: sid, ...streamExtra });
+  // ★옛 시도(기다린 사이 파기 → 재입양)면 스트림을 멈추지 않는다 — 같은 (소켓, 좌석) 손잡이는 새 시도의 것일 수 있다. 제 듣기·xterm·DOM 만 치운다.
+  if (stale()) throw new Error(PANE_STALE);
+  undo.push(() => void invoke("stop_surface_stream", { socket, surfaceId: sid }).catch(() => {}));
+  if (opts?.afterStream && !opts.afterStream({ term, el }, started)) throw new Error(PANE_STREAM_UNWANTED); // (cysr-1116-s2 · codex 3R) 붙은 뒤 재판정
 
   let resizeTimer: number | undefined;
   const observer = new ResizeObserver(() => {
     clearTimeout(resizeTimer);
     resizeTimer = window.setTimeout(() => fitPane(rt), 60);
+  });
+  undo.push(() => {
+    observer.disconnect();
+    clearTimeout(resizeTimer);
   });
   observer.observe(termHost);
 
@@ -5029,6 +5089,17 @@ async function makePane(sid: number, title: string, socket?: string, opts?: Make
   const rt: PaneRuntime = { sid, socket, el, termHost, roleEl, titleEl, usageEl, term, fit, unlisten: [cancelSendFail, un1 as () => void, un2 as () => void], observer, snapToBottom, keepReadingLine, lastOutputAt: () => outStamp.t, imeBusy: () => imeState.pending !== "", trackFilter };
   panes.set(paneKey(sid, socket), rt);
   return rt;
+  } catch (e) {
+    // (cysr-1116-s2 · codex 3R major) 등록 전 어디서 던졌든 만든 것을 거꾸로 되돌린다 — 되돌리기 실패는 원 오류를 가리지 않는다
+    for (const u of undo.reverse()) {
+      try {
+        u();
+      } catch {
+        /* 다음 되돌림을 계속한다 */
+      }
+    }
+    throw e;
+  }
 }
 
 const lastSentSize = new WeakMap<PaneRuntime, string>(); // (tabs-sidebar 2c) 런타임 → 마지막으로 보낸 「열x행」
@@ -5076,6 +5147,8 @@ function resyncViewport(term: Terminal) {
 
 function destroyPaneRuntime(sid: number, socket?: string) {
   deferredRuntimes.delete(paneKey(sid, socket)); // (cysr-1116-s2) 런타임을 미룬 좌석도 여기서 장부를 비운다(떼기·탭 삭제·입양 포기)
+  bumpPaneGen(paneKey(sid, socket)); // (cysr-1116-s2 · codex 3R major) 진행 중인 makePane 을 무효화 — 늦게 끝나도 새 런타임을 덮거나 부수지 못한다
+  seatHistoryRetry.delete(paneKey(sid, socket));
   const rt = panes.get(paneKey(sid, socket));
   if (!rt) return;
   rt.observer.disconnect();
@@ -7986,10 +8059,11 @@ async function newSurface(cwd: string | null = null, socket?: string, timeoutMs?
   const call = invoke("create_surface", { socket, cwd, title: null, rows: 35, cols: 120 });
   const r = (await (timeoutMs ? rpcT(call, timeoutMs) : call)) as {
     surface_id: number;
+    screen_cursor?: number | null; // (cysr-1116-s2) 생성 때 화면 행 커서(구 데몬 = 없음)
   };
   // (cysr-1116-s2 · F19) 작업 화면이 안 보이면(대화 화면으로 시작한 기동의 빈 탭 충전 등) 런타임은 미룬다 — 좌석·배치는 그대로 · 작업 화면이 보이면 만든다
   if (workRuntimeWanted()) await makePane(r.surface_id, "", socket); // 자동 제목 — 곧 refreshPaneTitles가 현재 경로로 채움
-  else deferSeatRuntime(r.surface_id, socket, "", null, 0); // 새 셸 — 처음부터의 기록
+  else deferSeatRuntime(r.surface_id, socket, "", null, r.screen_cursor ?? null); // 새 셸 — 생성 때 커서부터의 기록
   refreshPaneTitles();
   // ★0.14.41(U4-A5① · 리뷰1 #6): 새 pane 은 다음 10초 폴링까지 신호가 없어 탭 점이 회색 '?미확인 1'로 깜빡인다 —
   //   생성 직후 1회 당겨 온다(소켓별 in-flight 가드가 겹친 조회를 막는다 · 결과를 기다리지 않는다 · 새 주기 0).
@@ -12414,7 +12488,7 @@ async function start() {
       const hadRuntime = panes.has(paneKey(s.surface_id, sk)); // (ChatGPT F6) 이미 있던 런타임은 그 주인(새 좌석 거두기 등)의 것 — 여기서 지우지 않는다
       // (cysr-1116-s2 · 1회 고침 F19) 대화 화면으로 시작하면 복원 입양도 모형만 — 런타임은 작업 화면이 보일 때(§9-4 「대화 화면만 쓴 새 설치 = 출력 흐름 0」)
       if (workRuntimeWanted()) await makePane(s.surface_id, s.title, sk);
-      else deferSeatRuntime(s.surface_id, sk, s.title, s.role, (s as { line_count?: number | null }).line_count ?? null);
+      else deferSeatRuntime(s.surface_id, sk, s.title, s.role, (s as { screen_cursor?: number | null }).screen_cursor ?? null);
       // (codex 3R 전수 표 · blocking 2 와 같은 모양) 기동 복원 중에도 탭은 이미 그려져(위 renderWsTabs) 사람이 지울 수 있다 — 붙이기를 기다린 사이
       //   그 작업공간이 지워졌거나 지워지는 중이면 같은 데몬의 살아 있는 작업공간에 · 없으면 런타임만 파기(데몬 좌석 = 닫지 않는다 · 다음 틱이 다시 입양 가능).
       if (ws && wsGoneOrGoing(ws)) ws = workspaces.find((w) => !w.pending && !w.deleting && (w.socket ?? undefined) === (sk ?? undefined));

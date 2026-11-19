@@ -55,20 +55,23 @@ describe("(codex 1R blocking) 자리표 닫기 직전 재판정", () => {
   });
 });
 
-describe("(codex 2R major) makePane 부분 생성 정리", () => {
-  it("붙기 구간(attach·듣기 등록·붙기 직전 확인·스트림 시작)이 던지면 듣기·xterm·DOM 을 치우고 다시 던진다 · 성공 경로 순서 그대로", () => {
+describe("(codex 2R·3R major) makePane 부분 생성 정리 — 첫 줄부터", () => {
+  // 행동 시험은 makepane.test.ts(실제 본문 · term.open 직후·스트림 뒤 ResizeObserver 실패 · 세대). 여기는 꼴 핀 — 정리 목록이 첫 생성보다 먼저 서고
+  //   try 가 첫 생성을 감싸며, 등록(panes.set) 뒤에 catch 가 거꾸로 되돌린다.
+  it("undo 목록 → try → 첫 createElement · 되돌림 등록(DOM·xterm·타이머·듣기 2·스트림 정지·관찰자) · panes.set < catch(역순)", () => {
     const at = MAIN.indexOf("async function makePane(sid: number, title: string, socket?: string, opts?: MakePaneOpts): Promise<PaneRuntime> {");
     expect(at).toBeGreaterThan(0);
     const body = MAIN.slice(at, MAIN.indexOf("\n}\n", at));
-    const drop = body.slice(body.indexOf("const dropPartial = () => {"), body.indexOf("// attach 먼저"));
-    for (const k of ["un1?.();", "un2?.();", "cancelSendFail();", "term.dispose();", "el.remove();"]) expect(drop).toContain(k);
-    expect(body).toContain('const ev = (await invoke("attach_surface", { socket, surfaceId: sid }).catch((e: unknown) => { dropPartial(); throw e; })) as {');
-    const tryAt = body.indexOf("  try {\n  un1 = await listen(ev.output_event");
-    const before = body.indexOf("if (opts?.beforeStream && !(await opts.beforeStream(term))) throw new Error(PANE_STREAM_UNWANTED);");
-    const start = body.indexOf('await invoke("start_surface_stream", { socket, surfaceId: sid });');
-    const catchAt = body.indexOf("  } catch (e) {\n    dropPartial();\n    throw e;\n  }");
+    const undoAt = body.indexOf("const undo: (() => void)[] = [];");
+    const tryAt = body.indexOf("  try {\n  const el = document.createElement(\"div\");");
+    const firstCreate = body.indexOf("document.createElement(");
+    expect([undoAt > 0, undoAt < tryAt, tryAt < firstCreate]).toEqual([true, true, true]);
+    for (const k of ["undo.push(() => el.remove());", "undo.push(() => term.dispose());", "undo.push(cancelSendFail);", "undo.push(un1);", "undo.push(un2);", 'undo.push(() => void invoke("stop_surface_stream", { socket, surfaceId: sid }).catch(() => {}));', "observer.disconnect();"]) expect(body).toContain(k);
+    expect(body.indexOf("undo.push(() => term.dispose());")).toBeLessThan(body.indexOf("term.open(termHost);"));
     const set = body.indexOf("panes.set(paneKey(sid, socket), rt);");
-    expect([tryAt > 0, tryAt < before, before < start, start < catchAt, catchAt < set]).toEqual([true, true, true, true, true]);
+    const catchAt = body.indexOf("  } catch (e) {\n    // (cysr-1116-s2 · codex 3R major) 등록 전 어디서 던졌든");
+    expect([set > 0, set < catchAt, body.slice(catchAt).includes("for (const u of undo.reverse())")]).toEqual([true, true, true]);
+    expect(body).not.toContain("dropPartial");
   });
 });
 

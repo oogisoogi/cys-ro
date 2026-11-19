@@ -7,6 +7,7 @@
      ① 좌석 12개(master·cso·worker-1..10) 도착 → 입양 = 모형만: start_surface_stream 0 · attach_surface 0 (§9-4 「출력 흐름 0」)
      ② 1시간(가짜 시계 1,200틱) → 틱이 이어짐(list_surfaces ≥ 1,150) · 겹친 틱 0 · 배치 저장(cys-layout-v2)에 12좌석 · 여전히 흐름 0 (4군 ③)
      ③ 작업 화면 첫 진입 → 보이는 탭 좌석 전부 xterm 이 섬 · 「(없음)」 칸 0 · resize_surface = 보이는 좌석 × 1 (§2-4 · 4군 ④)
+        · 붙기마다 기록 이어 붙이기 인자(화면 행 커서 · codex 3R) · 결과 ok = 안내 줄 0
         · 가짜 시계 1초 안에 끝남(설계 목표값 · 실물 측정 = 측정 대기) · 실시간 경과 보고
      ④ 전환 100회 → 런타임 다시 만들기 0(start_surface_stream 그대로 · 부수지 않음) · 그 뒤 30초 틱이 이어짐 · 페이지 오류 0
      ⑤ 분리 뒤 코드의 기록 덤프를 RUNTIME_DEFER_OUT 에 쓴다(bun 재생 = tick.test.ts ⑤ TICKREC_REPLAY)
@@ -148,12 +149,15 @@ def main() -> int:
             check(len(rs) == len(set(rs)) and set(rs) == set(tree), f"③ resize_surface = 보이는 좌석 × 1 ({len(rs)}건 · 겹침 {len(rs) - len(set(rs))} · 좌석 일치 {set(rs) == set(tree)})")
             s2 = n(pg, "start_surface_stream")
             ss = pg.evaluate(SIDS_OF, "start_surface_stream")
-            # (codex 2R blocking) 미룬 좌석마다 스트림을 붙이기 **전에** 붙기 전 기록(seat_history)을 1회 묻는다
-            order = pg.evaluate("() => window.__INVOKES.filter((x) => x[1] === 'seat_history' || x[1] === 'start_surface_stream').map((x) => [x[1], JSON.parse(x[2]).surfaceId])")
-            hist = [sid for c, sid in order if c == "seat_history"]
-            first_hist = {sid: i for i, (c, sid) in reversed(list(enumerate(order))) if c == "seat_history"}
-            first_stream = {sid: i for i, (c, sid) in reversed(list(enumerate(order))) if c == "start_surface_stream"}
-            check(sorted(hist) == sorted(set(tree)) and all(first_hist[s] < first_stream[s] for s in tree), f"③ 기록 조회 = 미룬 좌석마다 1회 · 스트림보다 먼저({len(hist)}건)")
+            # (codex 3R blocking) 미룬 좌석마다 붙을 때 기록 이어 붙이기 인자 = 미룬 그때 화면 행 커서(대역 목록 7 · 빈 탭 새 셸 = 생성 때 0) + xterm 행 수 ·
+            #   결과 ok = 안내 줄 0 · 데몬이 한 락으로 이어 주므로 따로 묻는 기록 조회 RPC 는 없다
+            starts = pg.evaluate("() => window.__INVOKES.filter((x) => x[1] === 'start_surface_stream').map((x) => JSON.parse(x[2]))")
+            with_hist = [a for a in starts if a.get("historySince") is not None]
+            check(len(with_hist) == len(tree) and all(isinstance(a.get("historyRows"), int) and a["historyRows"] > 0 for a in with_hist)
+                  and sorted({a["historySince"] for a in with_hist}) in ([7], [0, 7]), f"③ 붙기 = 미룬 좌석마다 화면 행 커서 인자({len(with_hist)}건 · 커서 {sorted({a['historySince'] for a in with_hist})})")
+            gaps = pg.evaluate("() => document.querySelectorAll('.pane-history-gap').length")
+            check(gaps == 0, f"③ 기록 이어 붙이기 ok = 안내 줄 0 ({gaps})")
+            check(n(pg, "seat_history") == 0, "③ 따로 묻는 기록 조회 0(데몬 한 락)")
             check(s2 == len(tree) and len(set(ss)) == len(ss), f"③ 출력 흐름 = 보이는 좌석 수({s2} = {len(tree)}) · 같은 좌석 두 번 0")
 
             # ④ 전환 100회

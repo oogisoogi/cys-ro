@@ -14,10 +14,11 @@
 - [x] 설계 메모 docs/seatkeep/T4-DESIGN.md(메타 영속 · 기동 순서 · 노브 · T1 대역 자리 한 곳)
 - [x] 구현(노브 CYS_SEATKEEP_ADOPT · 기본 끔)
 - [x] 격리 HOME 실물: cysd SIGKILL → 좌석 pid 생존 → 새 cysd 재부착 → read-screen/send
-- [~] 기준선 대비 시험(cysd·seatkeep 끝 · 노브 켬 스크립트·ci-branch 팩 단계 = 남음) · 뮤턴트(2R 전 코드 6종 끝 · 최종 코드 재실행 남음)
-- [~] codex T4 1R~4R BLOCK 처분 끝 · 5R = master 대기열 · 【확인요청】 T4(매듭)
+- [x] 기준선 대비 시험(cysd·seatkeep · 노브 켬 스크립트 = 입양 켬 실결함 1 → b953e900a 고침 · ci-branch 팩 단계 = HANDOFF 후임 델타) · 뮤턴트 최종 코드 8종 전부 붉음(M5 = 터짐 모드 ddae58a5f)
+- [x] 전사 SEQ 유실 대조군 = 기존 동작(recall.rs 1초 묶음) · 📌
+- [~] codex T4 1R~4R BLOCK 처분 끝 · 5R = master 대기열(범위 e20850fae..ddae58a5f) · 【확인요청】 T4(매듭)
 ### T5 좌석 토큰 이음
-- [ ] 설계(좌석 세대 · seatkeep 보관 · 인계)
+- [x] 설계 문서 docs/seatkeep/T5-DESIGN.md(1단계 · 코드 0) → 【중간보고】
 - [ ] 구현 · 토큰 왕복 시험(옛 토큰 재사용·탈취 거부)
 - [ ] codex 1R(T5) · 커밋 · 【확인요청】 T5
 ### 목록만(HANDOFF 순서)

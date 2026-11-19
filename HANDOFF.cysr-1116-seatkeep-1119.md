@@ -118,3 +118,60 @@ T6 rotate·업데이터(계획 교체 = 화면 저장+이어받기 · 사전 실
 - state.rs: create_surface_with_env 감싸개 + create_surface_core(입양 갈래 · 임시본 기록) · adopt_display · DisplayGrant.adopt · replay_screen_only · 읽기 스레드 재생 나눔·흔들기·DSR 잇기 · EOF forget_surface
 - handlers.rs: surface.create 예약 관문 1블록 · governance.rs: persist_topology 첫머리 record_all 1줄 · recall.rs: surface_numbers_reopen · main.rs: mod · adopt_on_boot 호출 · 자동 복원 보류 블록
 - (줄 번호 = `git diff dea2e1853..HEAD --stat` · 확인요청 때 표로)
+
+## 후임(worker-1116seatkeep2 · surface:2276 · 계정2 · master#25218fb5 · 브리프 `master/briefs/1116-full/seatkeep2.md`) 델타 — 11-20 02:43~
+### 커밋
+| 커밋 | 내용 |
+|---|---|
+| b953e900a | **T4 실결함 고침** — 입양 모드 연결 끝 = seatkeep 끝내기(seat_proc.rs `demux` 끝 · `end_adoptable_keeper` · `detached` 표시) + M6 시험대(`adopt_connect_refuses_fake_server_that_is_not_seatkeep_exe`) |
+| ddae58a5f | e2e 터짐 모드 `SKA_BURST=1` + 끊긴 동안 바이트 = 줄마다 실제 길이 — 뮤턴트 M5 판별 복구 |
+
+### 이월 ④ 전사 SEQ 유실 — 이 티켓 탓 아님(대조군 먼저 · 원인 이름은 그 뒤)
+- 계측 = scratchpad `txloss.py`(격리 HOME·격리 소켓 · 좌석 1개 50ms 마다 SEQ · 3초 → read-screen(죽기 전 화면) → cysd SIGKILL → transcripts.db 판독 · 빠진 SEQ 마다 좌석 기록 출력 시각 − SIGKILL 시각).
+- 결과(앞 좌석 5회 + 내 재현 2회 · 갈래마다): 기준선 dea2e1853 노브 끔 = 4·5·5·5·8 · 7·7줄 · HEAD 노브 끔 = 0·5·5·6·7 · 5·6줄 · HEAD 입양 = 5·5·5·6·6 · 1·5줄. 빠진 줄 **전부** 죽기 전 화면엔 있었음(옛 cysd 가 처리함) · 나이 전부 SIGKILL 직전 −1.0~0초 · 겹침 0.
+- 원인(코드 대조): 전사 쓰기 스레드가 첫 줄 뒤 **1초 또는 200건**을 메모리에 모아 한 번에 COMMIT(`src/bin/cysd/recall.rs:130-149`) → SIGKILL 이 그 묶음(채널+버퍼)을 잃음. 직접 PTY 도 같음. 입양은 PROCESSED(처리 완료 = 전사 대기열에 넣음)까지만 보장하므로 이 구간을 재생하지 않는다.
+- 폭주(60KB 줄)·터짐 e2e 의 「전사 누락」 15~29줄도 같은 계급(대조군·뮤턴트 같은 크기) → e2e 판정에서 「누락」 칸은 M 판별 근거로 쓰지 않음(겹침 칸만).
+- 📌 = 별도 항목 후보(D1 꼬리 유실 근처): 「SIGKILL 시 전사 최대 1초 유실」 — 고치는 길 = 입양 모드에서 PROCESSED 를 「전사 COMMIT 뒤」로 늦추기(재생이 그 구간을 다시 줌 · 화면 중복은 화면 전용 재생 경계로 처리) 또는 COMMIT 주기 단축. 이 티켓 범위 밖(기존 동작).
+
+### 이월 ① 노브 켬 스크립트 — 실결함 1건
+- `SEATKEEP_TEST_THREADS=1 scripts/seatkeep-knob-on-tests.sh accounts:: -- seat_proc::`(격리 env -i): 노브 켬(입양 끔) 178/178 · **입양 켬(CYS_SEATKEEP_ADOPT=1) 177/1** — `seat_proc::tests::seatkeep_input_ack_stall_ends_seat_when_consumer_never_resumes`(seatkeep 이 상한 만료 뒤 5초 안에 안 끝남).
+- 원인: `abort_link`(입력 확인 상한) · 처리 오프셋 부분 쓰기 차단(seat_proc.rs `processed` 송신) · seatkeep 쪽 끊김은 모두 「끊기면 seatkeep 이 controller_lost 로 끝난다」 전제 → `--adoptable` 은 끊겨도 안 끝남 → cysd 는 좌석을 `seatkeep_disconnected` 로 접었는데 seatkeep·좌석이 고아로 삶 · 막힌 입력이 나중에 적용될 수 있음 · 띄운 seatkeep 회수(`k.wait`) 영구 대기(연결 스레드 누수).
+- 고침(b953e900a · 데몬 변경 허용 범위 · seat_proc.rs): `demux` 끝에서 입양 모드 ∧ EXITED 못 받음 ∧ `detach` 아님 → 그 pid 출생 시각 = 연결의 seatkeep 출생 시각일 때만 SIGTERM(seatkeep 은 처리기 없음 = 종료 → PTY 마스터 닫힘 → 좌석 SIGHUP = controller_lost 와 같은 끝). `detach`(입양 등록 실패 — 다음 조종자용으로 살려 둠)는 표시(`detached`)로 제외.
+- 고친 뒤: 입양 켬 179/179 · 노브 켬 179/179 · 노브 끔 `seat_proc::` 21/21(+1 = M6 시험). ackstall 입양 켬 = 쓰기 TimedOut 10.09초 · seatkeep·좌석 생존 false · 종료 seatkeep_disconnected.
+- e2e(b953e900a 빌드): adopt(교체 1/1 · 겹침 0 · 정리 뒤 0) · reserve(같은 역할 rc 1 · 다른 역할 rc 0 · 풀린 뒤 rc 0) · reserve+위조 pid(registry_pid_live) · exitaway(rc 143 소비 · dead keeper_gone) 통과.
+
+### 이월 ③ 뮤턴트(작업트리 /private/tmp/skmut1119 = b953e900a · 러너 scratchpad `mut.py` · 결과 `e2e/mutants-b953.out`)
+| 뮤턴트 | 시험 | 결과 |
+|---|---|---|
+| M1 늘 --controller-bound | e2e adopt | 붉음(takeovers 0/1 · 좌석 죽음) |
+| M2 adopt_on_boot 늘 반환 | e2e adopt | 붉음(takeovers 0 · 정리 뒤 seatkeep·좌석 1) |
+| M3 화면 전용 재생 끔 | e2e adopt | 붉음(전사 겹침 7) |
+| M4 예약 관문 끔 | e2e reserve | 붉음(같은 역할 rc 0) |
+| M5 조종자 없는 동안 역압 끔 | e2e adopt 폭주 → **초록(판별 못 함)** → 터짐(SKA_BURST) | 붉음(끊긴 동안 9,482,370 바이트 · 대조군 1,020,270·1,020,255) |
+| M6 adopt_connect 실행 파일 검사 끔 | 단위 M6 시험대(새) | 붉음(rc 101 — 가짜 서버가 입양돼 연결 끝에서 「seatkeep」 = 시험 프로세스 자신에 SIGTERM · 고친 코드가 끝내기 전 출생 시각만 보므로 실행 파일 검사가 그 앞의 유일한 막이라는 뜻) |
+| M7 PROCESSED 안 보냄 | e2e adopt | 붉음(전사 겹침 9) |
+| M8 연결 끝 seatkeep 끝내기 끔(새 고침) | 입양 켬 ackstall 단위 | 붉음(seatkeep·좌석 생존 true) |
+- M5 폭주가 못 가른 이유: 옛 cysd 가 밀린 채 죽으면 seatkeep 읽기 스레드가 큐 자리 대기(`wait_for_room` · seatkeep main.rs 1058~)에 잠들고, 끊김은 그 대기를 깨우지 않는다(깨우는 곳 = 쓰기 스레드 `wake_readers` 1곳) → 끊긴 동안 출력 0 · 역압 줄에 닿지 않음. 결함 아님(유실 0 · 새 조종자가 붙으면 깨움). 앞 좌석의 「M5 붉음」은 2R 처분 전 코드 기준.
+
+### 이월 ② ci-branch 팩 단계(이 가지 yml 996행 스텝 원문을 다시 떼어 · 통합 트리 떼어 둔 것과 본문 같음 · env -i · python 3.12.13 = 앱 번들 런타임 · RUNNER_TEMP 짧은 폴더)
+- 원문 1회(뮤턴트 빌드와 겹침 · load 6~10): rc 1 · 382초 · `test_session_start_hook` 13a·13b·13c 3 FAIL 에서 멈춤(원문은 첫 실패에서 멈춘다). 이 가지의 `cysjavis-pack` 변경 = 0줄. 같은 env 단독 실행: HEAD 2/2 · 기준선 트리 2/2 통과 → 부하 흔들림.
+- 멈추지 않는 사본(같은 본문 185행에 `|| echo LANE-FAIL` 1줄 · 통합 좌석 step-mack 과 같은 차이) 전량: rc 0 · 2991초 · 검체 165개 · LANE-FAIL 6.
+  | 검체 | HEAD 단독 | 기준선 트리(dea2e1853) 단독 | 판정 |
+  |---|---|---|---|
+  | test_hook_r34 | rc 1(RCF-3·NZ-3·DL-1b·WIN-2 = 1초 시한 계열 3.1~3.9초) | rc 1(같은 계열) | 기준선 같음 · 시한(부하) · 통합 증거 lane3-mack 에도 LANE-FAIL |
+  | test_pyseal_negative_specimen | rc 2(ⓒ UNMEASURED — PATH 에 in-tree 비번들 python 없음) | rc 2(같음) | 내 실행 환경 탓(측정 불가) · 기준선 같음 |
+  | test_owner_desk | rc 1(R8Codex2R flush request_id 0≠1) | rc 1(같은 시험 + R9Codex3R) | 기준선 같음 |
+  | test_role_authority | rc 0 | rc 1 | 흔들림 |
+  | test_inject_context_role_seat | rc 0(177초) | rc 0(201초) | 흔들림 |
+  | test_refl_inject_context_role_canon | rc 0 | rc 0 | 흔들림 |
+  - 결론: 이 가지(팩 변경 0)가 새로 붉힌 팩 검체 = 0. 원문 「첫 실패에서 멈춤」 성질 때문에 로컬 원문 1회만으로는 초록을 못 본다(CI 러너 = 부하 낮음).
+
+### 지시 없이 내린 판단(후임)
+1. 입양 모드 연결 끝 = seatkeep SIGTERM(SIGKILL 아님) — seatkeep 은 처리기가 없어 같은 결과이고, 나중에 정리 처리기를 달면 그게 돈다. 대상 확인 = 출생 시각만(실행 파일 재확인 안 함 — 연결 때 이미 확인 · 출생 시각이 같으면 같은 프로세스).
+2. 끝내기 자리 = `abort_link` 가 아니라 `demux` 끝 한 곳 — 끊김 원인 셋(상한·부분 쓰기·seatkeep 쪽 끊김)을 모두 덮으려고.
+3. e2e 「전사 누락」 칸을 뮤턴트 판별에 쓰지 않음(기존 1초 묶음 유실이 섞여서).
+4. 쓰이지 않는 시험 보조 함수 `seat_adopt::test_set_pending`(01b2f57ae · 경고 1건) — 손대지 않음(외과적).
+
+### 남은 것(T4) · 다음 첫 행동
+0. codex 5R(master 대기열 · 06:29 뒤) — 범위 **e20850fae..ddae58a5f -- src/ scripts/seatkeep-adopt-e2e.py**(b953e900a 포함으로 넓힘 · 03:00 【경고】 보고함) · 판정 오면 master 처분 줄 대로.
+1. T5 = `docs/seatkeep/T5-DESIGN.md`(1단계 문서 · 코드 0) → 【중간보고】 → 구현.

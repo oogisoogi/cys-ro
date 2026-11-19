@@ -561,7 +561,7 @@ pub(crate) struct BootSummary {
 static SUMMARY: Mutex<Option<BootSummary>> = Mutex::new(None);
 
 /// 미결 좌석 예약 — 그 seatkeep 이 살아 있는 동안(pid · 출생 시각) 유효.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct Pending {
     pub skid: String,
     /// None = 역할을 모름(기록·env 모두 못 읽음) → 역할 있는 좌석 생성을 모두 막는다.
@@ -570,7 +570,20 @@ pub(crate) struct Pending {
     pub start_us: Option<u64>,
     /// 임시본(pid 없음)일 때 예약이 끝나는 벽시계.
     pub until: Option<f64>,
+    /// 미결 사유(조회용 · `status_json`).
+    pub reason: String,
+    /// 미결이 된 벽시계(조회용 나이).
+    pub since: f64,
+    /// 역할 모름 미결이 「역할 있는 생성 전부」·자동 복원을 막는 상한 벽시계(M2 · None = 상한 없음 = 시험 리터럴 종전 뜻).
+    pub blocks_all_until: Option<f64>,
 }
+
+/// M2: 기동 뒤 미결 재시도 간격·횟수 · 역할 모름 미결의 전면 차단 상한.
+const RETRY_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+const RETRY_ROUNDS: u32 = 5;
+const UNKNOWN_BLOCK_MAX_SECS: f64 = 60.0;
+/// 재시도 단계(조회용): 0 = 없음 · 1 = 재시도 중 · 2 = 끝남.
+static RETRY_PHASE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 static PENDING: Mutex<Vec<Pending>> = Mutex::new(Vec::new());
 
@@ -582,8 +595,19 @@ pub(crate) fn pending_live(p: &Pending, alive: impl Fn(u32) -> bool, start: impl
     }
 }
 
-/// 순수 판정 — 이 역할의 새 좌석을 막아야 하나(예약 목록은 이미 살아 있는 것만).
+/// 순수 판정 — 이 역할의 새 좌석을 막아야 하나(예약 목록은 이미 살아 있는 것만 · 전면 차단 상한 무시 = 단위 시험 감싸개).
+#[allow(dead_code)]
 pub(crate) fn blocked_by(pending: &[Pending], role: Option<&str>) -> Option<String> {
+    blocked_by_at(pending, role, f64::NEG_INFINITY)
+}
+
+/// 역할 모름 미결이 지금도 전면 차단 중인가(M2 상한 · 순수).
+pub(crate) fn blocks_all(p: &Pending, now: f64) -> bool {
+    p.role.is_none() && p.blocks_all_until.map_or(true, |u| now < u)
+}
+
+/// `blocked_by` + 지금 벽시계(역할 모름 미결의 전면 차단 상한을 본다 · M2).
+pub(crate) fn blocked_by_at(pending: &[Pending], role: Option<&str>, now: f64) -> Option<String> {
     let role = role?;
     if let Some(p) = pending.iter().find(|p| p.role.as_deref() == Some(role)) {
         return Some(format!(
@@ -592,7 +616,7 @@ pub(crate) fn blocked_by(pending: &[Pending], role: Option<&str>) -> Option<Stri
             p.skid
         ));
     }
-    if let Some(p) = pending.iter().find(|p| p.role.is_none()) {
+    if let Some(p) = pending.iter().find(|p| blocks_all(p, now)) {
         return Some(format!(
             "seat_adopt_reserved: 역할을 알 수 없는 미입양 좌석(seatkeep {})이 살아 있다 — 그 좌석이 끝날 때까지 역할 있는 새 좌석을 만들지 않는다(T4 · T1 전 대역)",
             p.skid
@@ -601,12 +625,12 @@ pub(crate) fn blocked_by(pending: &[Pending], role: Option<&str>) -> Option<Stri
     None
 }
 
-/// 살아 있는 미결 목록(죽은 것은 걷어 냄) 안에서 `f` 를 부른다.
-fn with_live_pending<T>(f: impl FnOnce(&[Pending]) -> T) -> T {
+/// 살아 있는 미결 목록(죽은 것은 걷어 냄) 안에서 `f` 를 부른다(지금 벽시계를 함께 준다).
+fn with_live_pending<T>(f: impl FnOnce(&[Pending], f64) -> T) -> T {
     let mut g = PENDING.lock().unwrap_or_else(|e| e.into_inner());
     let now = crate::state::now_epoch();
     g.retain(|p| pending_live(p, pid_alive, process_start_us, now));
-    f(&g)
+    f(&g, now)
 }
 
 /// ★T1 최소 대역 ①(갈아끼울 자리 · **역할 부여 공통 판정 한 곳**): 이 역할을 지금 어느 좌석에든 주면 안 되는 까닭(Some).
@@ -616,13 +640,13 @@ pub(crate) fn role_grant_blocked(role: &str) -> Option<String> {
     if !gate_on() {
         return None;
     }
-    with_live_pending(|g| blocked_by(g, Some(role)))
+    with_live_pending(|g, now| blocked_by_at(g, Some(role), now))
 }
 
 /// worker 번호 배정(`dedup_worker_role_avoiding`)이 피할 이름 — **정확히 그 이름**으로 예약된 미결만. 역할 모르는 미결(모든 역할 거절)은
 /// 위 입구 판정이 맡는다(여기 넣으면 모든 번호가 막혀 배정이 끝나지 않는다). 노브 끔 = 늘 거짓.
 pub(crate) fn role_name_reserved(name: &str) -> bool {
-    gate_on() && with_live_pending(|g| g.iter().any(|p| p.role.as_deref() == Some(name)))
+    gate_on() && with_live_pending(|g, _| g.iter().any(|p| p.role.as_deref() == Some(name)))
 }
 
 /// 예약 판정 켬 = 노브(프로세스 시작 때 한 번 읽음) ∨ 시험 전용 예약이 걸려 있음(운영 = `cfg!(test)` 거짓 → 안 봄 · 값 분기).
@@ -645,7 +669,7 @@ pub(crate) fn test_reserve_role(role: &str) -> TestReserve {
             role: Some(role.to_string()),
             pid: Some(me),
             start_us: process_start_us(me),
-            until: None,
+            ..Default::default()
         });
         TEST_RESERVES.fetch_add(1, Ordering::SeqCst);
     }
@@ -679,7 +703,7 @@ pub(crate) fn restore_should_hold() -> Option<String> {
     let mut g = PENDING.lock().unwrap_or_else(|e| e.into_inner());
     let now = crate::state::now_epoch();
     g.retain(|p| pending_live(p, pid_alive, process_start_us, now));
-    let unknown: Vec<&str> = g.iter().filter(|p| p.role.is_none()).map(|p| p.skid.as_str()).collect();
+    let unknown: Vec<&str> = g.iter().filter(|p| blocks_all(p, now)).map(|p| p.skid.as_str()).collect();
     if unknown.is_empty() {
         return None;
     }
@@ -995,9 +1019,172 @@ pub(crate) fn adopt_on_boot(daemon: &Arc<Daemon>) {
             }
             summary.outcomes.push(out);
         }
+        let any = !pending.is_empty();
         *PENDING.lock().unwrap_or_else(|e| e.into_inner()) = pending;
+        *SUMMARY.lock().unwrap_or_else(|e| e.into_inner()) = Some(summary);
+        // M2: 미결이 있으면 짧게 다시 시도하고 끝내 못 하면 관리용 종료 → 자동 복원 재실행(백그라운드 · accept 를 막지 않는다).
+        if any {
+            RETRY_PHASE.store(1, Ordering::SeqCst);
+            let d = daemon.clone();
+            let spawned = std::thread::Builder::new().name("seat-adopt-retry".into()).spawn(move || {
+                let released = resolve_pending(&d, &dir, RETRY_EVERY, RETRY_ROUNDS);
+                RETRY_PHASE.store(2, Ordering::SeqCst);
+                if released {
+                    rerun_auto_restore(&d);
+                }
+            });
+            if let Err(e) = spawned {
+                RETRY_PHASE.store(2, Ordering::SeqCst);
+                eprintln!("[cysd] 좌석 입양 미결 재시도 스레드 실패: {e} — 미결은 이 데몬 수명 동안 남는다");
+            }
+        }
     }
-    *SUMMARY.lock().unwrap_or_else(|e| e.into_inner()) = Some(summary);
+    #[cfg(not(target_os = "macos"))]
+    {
+        *SUMMARY.lock().unwrap_or_else(|e| e.into_inner()) = Some(summary);
+    }
+}
+
+/// 미결 목록에서 `skid` 를 걷고(있으면) 새 예약을 넣는다 — 같은 좌석의 재판정이면 처음 미결 시각·전면 차단 상한을 이어받는다
+/// (재시도마다 상한이 새로 시작되면 역할 모름 미결이 상한을 넘겨 막는다 · 실측 e2e pending unknown 62초 · 순수 = `carry_pending`).
+fn replace_pending(skid: &str, p: Option<Pending>) {
+    let mut g = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+    let old = g.iter().position(|x| x.skid == skid).map(|i| g.remove(i));
+    if let Some(p) = p {
+        g.push(carry_pending(old.as_ref(), p));
+    }
+}
+
+/// 순수: 새 예약에 옛 예약의 처음 시각·상한(더 이른 쪽)을 잇는다.
+pub(crate) fn carry_pending(old: Option<&Pending>, mut new: Pending) -> Pending {
+    if let Some(o) = old {
+        new.since = new.since.min(o.since);
+        new.blocks_all_until = match (o.blocks_all_until, new.blocks_all_until) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+    }
+    new
+}
+
+/// 기동 요약의 그 좌석 결과를 바꾼다(조회 · 같은 skid 한 줄).
+fn replace_outcome(out: Outcome) {
+    let mut g = SUMMARY.lock().unwrap_or_else(|e| e.into_inner());
+    let s = g.get_or_insert_with(|| BootSummary { ran: true, outcomes: Vec::new() });
+    s.outcomes.retain(|o| o.skid != out.skid);
+    s.outcomes.push(out);
+}
+
+/// ★M2(독립 검증 · master 처분): 기동 입양의 미결을 `every` 간격으로 `rounds` 번 다시 판정·입양한다(일시 실패 = 부하 속 3초 시한 등) →
+/// 끝내 미결인 산 seatkeep 은 관리용 종료(`end_keeper` · 신원이 전부 설 때만) + 정리 → 예약이 걷힌다. 신원이 안 서는 것은 그대로 남고
+/// (역할 모름이면 전면 차단은 `UNKNOWN_BLOCK_MAX_SECS` 상한) 조회(`status_json`)에 보인다. 반환 = 좌석을 끝내 역할이 풀렸는가(자동 복원 재실행 근거).
+#[cfg(target_os = "macos")]
+pub(crate) fn resolve_pending(daemon: &Arc<Daemon>, dir: &Path, every: std::time::Duration, rounds: u32) -> bool {
+    let mut released = false;
+    for _ in 0..rounds {
+        std::thread::sleep(every);
+        let skids: Vec<String> = with_live_pending(|g, _| g.iter().map(|p| p.skid.clone()).collect());
+        if skids.is_empty() {
+            break;
+        }
+        for skid in skids {
+            let (out, p) = adopt_one(daemon, dir, &skid);
+            if out.result != "unresolved" {
+                eprintln!("[cysd] 좌석 입양(재시도) {skid}: {} ({})", out.result, out.reason);
+                daemon.bus.publish(
+                    if out.result == "adopted" { "seat.adopted" } else { "seat.adopt_skipped" },
+                    "surface",
+                    out.surface_id,
+                    json!({"skid": out.skid, "result": out.result, "reason": out.reason, "role": out.role, "retry": true,
+                           "surface_ref": out.surface_id.map(cys::surface_ref)}),
+                );
+                released |= out.result == "dead";
+                replace_outcome(out);
+            }
+            replace_pending(&skid, p);
+        }
+    }
+    let my_lock = crate::seat_proc::controller_lock_path(daemon);
+    let left: Vec<Pending> = with_live_pending(|g, _| g.to_vec());
+    for p in left {
+        // 임시본(pid 없음) = `until` 에 스스로 걷힌다.
+        let (Some(pid), Some(st)) = (p.pid, p.start_us) else { continue };
+        let reg = read_registry(&dir.join(format!("{}.json", p.skid)));
+        let rec: Option<SeatRecord> = std::fs::read_to_string(record_path_in(dir, &p.skid))
+            .ok()
+            .and_then(|t| serde_json::from_str::<SeatRecord>(&t).ok())
+            .filter(|r| r.schema == RECORD_SCHEMA && r.skid == p.skid);
+        let out = match end_keeper(dir, &p.skid, pid, Some(st), &my_lock, &reg) {
+            Ok(()) => {
+                replace_pending(&p.skid, None);
+                released = true;
+                let why = format!("pending_ended({})", p.reason);
+                let reason = match consume_dead(daemon, dir, &p.skid, rec.as_ref(), Some((pid, Some(st))), "pending_ended") {
+                    Ok(()) => why,
+                    Err(e) => format!("{why}+{e}"),
+                };
+                Outcome { skid: p.skid.clone(), surface_id: rec.as_ref().map(|r| r.surface_id), result: "ended", reason, role: p.role.clone() }
+            }
+            Err(e) => {
+                let mut q = p.clone();
+                q.reason = format!("{}+{e}", p.reason);
+                replace_pending(&p.skid, Some(q.clone()));
+                Outcome { skid: p.skid.clone(), surface_id: rec.as_ref().map(|r| r.surface_id), result: "unresolved", reason: q.reason, role: p.role.clone() }
+            }
+        };
+        eprintln!("[cysd] 좌석 입양(재시도 끝) {}: {} ({})", out.skid, out.result, out.reason);
+        daemon.bus.publish(
+            "seat.adopt_skipped",
+            "surface",
+            out.surface_id,
+            json!({"skid": out.skid, "result": out.result, "reason": out.reason, "role": out.role, "retry": true,
+                   "surface_ref": out.surface_id.map(cys::surface_ref)}),
+        );
+        replace_outcome(out);
+    }
+    released
+}
+
+/// 관리용 종료로 역할이 풀린 뒤 자동 복원을 한 번 더 — 지금 도는 복원(running·retry_wait·held)이 끝나기를 기다린 뒤(두 복원이 같은 역할을
+/// 동시에 세우지 않게 · 상한 10분). 복원은 이미 가동 중인 역할을 건너뛰므로(F8) 풀린 역할만 다시 선다.
+#[cfg(target_os = "macos")]
+fn rerun_auto_restore(daemon: &Arc<Daemon>) {
+    let t0 = std::time::Instant::now();
+    loop {
+        let ph = daemon.auto_restore_phase.load(Ordering::Relaxed);
+        if !matches!(ph, crate::AUTO_RESTORE_RUNNING | crate::AUTO_RESTORE_RETRY_WAIT | crate::AUTO_RESTORE_HELD) {
+            break;
+        }
+        if t0.elapsed() > std::time::Duration::from_secs(600) {
+            eprintln!("[cysd] 좌석 입양: 자동 복원이 10분 넘게 진행 중 — 재실행하지 않는다(그 복원이 풀린 역할도 본다)");
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    eprintln!("[cysd] 좌석 입양: 미결 좌석을 끝내 역할이 풀림 — 자동 복원 재실행");
+    crate::spawn_auto_restore(&crate::state::state_dir(&daemon.socket_path), &daemon.socket_path, daemon);
+}
+
+/// M2 조회 — `org.status` `daemon.seat_adopt`(= `cys status --json`) · 노브 끔 = None(칸 없음 · 종전 바이트). 토큰·비밀 칸 없음.
+pub(crate) fn status_json() -> Option<serde_json::Value> {
+    if !enabled() {
+        return None;
+    }
+    let boot = SUMMARY.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|s| s.outcomes.clone()).unwrap_or_default();
+    let pending: Vec<serde_json::Value> = with_live_pending(|g, now| {
+        g.iter()
+            .map(|p| {
+                json!({"skid": p.skid, "role": p.role, "pid": p.pid, "reason": p.reason,
+                       "age_secs": ((now - p.since).max(0.0) * 10.0).round() / 10.0, "blocks_all": blocks_all(p, now)})
+            })
+            .collect()
+    });
+    let retry = match RETRY_PHASE.load(Ordering::SeqCst) {
+        1 => "running",
+        2 => "done",
+        _ => "none",
+    };
+    Some(json!({"boot": boot, "pending": pending, "retry": retry}))
 }
 
 /// 좌석 하나 — 결과 + (미결이면) 예약.
@@ -1045,12 +1232,19 @@ fn adopt_one(daemon: &Arc<Daemon>, dir: &Path, skid: &str) -> (Outcome, Option<P
         r.and_then(|r| r.role.clone()).or_else(|| pid.and_then(|p| process_env_var(p, cys::ENV_ROLE)))
     };
     let mk = |result: &'static str, reason: String, role: Option<String>| Outcome { skid: skid.to_string(), surface_id, result, reason, role };
-    let pend = |role: Option<String>| Pending {
+    let pend_why = |role: Option<String>, why: &str| Pending {
         skid: skid.to_string(),
+        blocks_all_until: role.is_none().then_some(now + UNKNOWN_BLOCK_MAX_SECS),
         role,
         pid,
         start_us: start_now,
         until: if pid.is_none() { Some(now + PROVISIONAL_MAX_SECS) } else { None },
+        reason: why.to_string(),
+        since: now,
+    };
+    let both = |reason: String, role: Option<String>| {
+        let p = pend_why(role.clone(), &reason);
+        (mk("unresolved", reason, role), Some(p))
     };
     // 기록을 못 읽음(권한·손상) — 지우지 않는다. 살아 있는 seatkeep 이면 역할(env)로 예약.
     if rec.is_err() {
@@ -1058,7 +1252,7 @@ fn adopt_one(daemon: &Arc<Daemon>, dir: &Path, skid: &str) -> (Outcome, Option<P
             return (mk("unresolved", "record_unreadable_keeper_dead".into(), None), None);
         }
         let role = role_of(None);
-        return (mk("unresolved", "record_unreadable".into(), role.clone()), Some(pend(role)));
+        return both("record_unreadable".into(), role);
     }
     match verdict {
         Liveness::Dead(why) => {
@@ -1075,7 +1269,7 @@ fn adopt_one(daemon: &Arc<Daemon>, dir: &Path, skid: &str) -> (Outcome, Option<P
         }
         Liveness::Unknown(why) => {
             let role = role_of(rec_ref);
-            return (mk("unresolved", why.into(), role.clone()), Some(pend(role)));
+            return both(why.into(), role);
         }
         Liveness::Alive => {}
     }
@@ -1092,20 +1286,20 @@ fn adopt_one(daemon: &Arc<Daemon>, dir: &Path, skid: &str) -> (Outcome, Option<P
                 };
             }
         }
-        return (mk("unresolved", "no_record_live_keeper".into(), role.clone()), Some(pend(role)));
+        return both("no_record_live_keeper".into(), role);
     };
     let role = rec.role.clone();
     let (Some(pid), Some(start)) = (pid, start_now) else {
-        return (mk("unresolved", "no_pid".into(), role.clone()), Some(pend(role)));
+        return both("no_pid".into(), role);
     };
     if daemon.surfaces.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&rec.surface_id) {
-        return (mk("unresolved", "surface_id_taken".into(), role.clone()), Some(pend(role)));
+        return both("surface_id_taken".into(), role);
     }
     let size = portable_pty::PtySize { rows: rec.rows.max(1), cols: rec.cols.max(1), pixel_width: 0, pixel_height: 0 };
     let sock = dir.join(format!("{skid}.sock"));
     let spawned = match crate::seat_proc::adopt_connect(&sock, pid, start, size, skid) {
         Ok(s) => s,
-        Err(e) => return (mk("unresolved", format!("connect: {e}"), role.clone()), Some(pend(role))),
+        Err(e) => return both(format!("connect: {e}"), role),
     };
     let link = spawned.link();
     // T5: 연결이 쥔 입양 토큰(WELCOME 칸)을 한 번 꺼내 세대 정합을 본다 — 실패 = 무토큰 입양 + 사건(사유 낱말만 · 값 0).
@@ -1131,7 +1325,7 @@ fn adopt_one(daemon: &Arc<Daemon>, dir: &Path, skid: &str) -> (Outcome, Option<P
             if let Some(l) = link {
                 l.detach();
             }
-            (mk("unresolved", format!("register: {e}"), role.clone()), Some(pend(role)))
+            both(format!("register: {e}"), role)
         }
     }
 }

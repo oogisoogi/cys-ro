@@ -2348,7 +2348,7 @@ fn spawn_deferred_agy_statusline_reconcile() {
 /// 데몬을 autostart하는 재귀를 차단). 대기 스레드가 자식을 reap해 좀비 잔존을 막는다.
 /// ★W1: PHOENIX_CYS·PATH 주입(§5-1 침묵사 근원 수리) · stdout/stderr 를 null 대신 phoenix-restore.log 로
 /// 캡처(P0-5 사후 진단 불가 수리) · exit 계약 처리(5·6=재시도 금지, 그 외 비0=60s 후 1회 재시도).
-fn spawn_auto_restore(
+pub(crate) fn spawn_auto_restore(
     state_dir: &std::path::Path,
     socket_path: &std::path::Path,
     daemon: &std::sync::Arc<Daemon>,

@@ -12739,9 +12739,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                     .collect();
                 json!({"threshold": threshold, "publishers": publishers})
             };
-            Reply::Single(ok_response(
-                &id,
-                json!({
+            let mut body = json!({
                     "paused": paused,
                     "pause_info": pause_info.map(|p| json!(p)),
                     "daemon": {"version": env!("CARGO_PKG_VERSION"),
@@ -12790,8 +12788,12 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                     "cycle_jobs": crate::cycle_jobs::status_json(daemon),
                     // F-01 (0.14.52) display activity observer counters — diagnostics/measurement only.
                     "display_activity_observer": crate::activity::stats_wire(daemon),
-                }),
-            ))
+                });
+            // ★T4 M2(독립 검증): 좌석 입양 조회 — 입양 노브 켬일 때만 칸이 생긴다(끔 = 종전 바이트).
+            if let Some(sa) = crate::seat_adopt::status_json() {
+                body["daemon"]["seat_adopt"] = sa;
+            }
+            Reply::Single(ok_response(&id, body))
         }
 
         // ─── T6 Control Center: 실시간 플릿/사용량/시스템 대시보드 (네이티브 단일 RPC) ───

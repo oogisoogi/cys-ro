@@ -180,7 +180,7 @@ fn process_start_us_reads_self_and_none_for_no_pid() {
 
 #[test]
 fn reservation_blocks_role_and_unknown_role_blocks_all_role_creates() {
-    let p = |skid: &str, role: Option<&str>| Pending { skid: skid.into(), role: role.map(str::to_string), pid: Some(1), start_us: None, until: None };
+    let p = |skid: &str, role: Option<&str>| Pending { skid: skid.into(), role: role.map(str::to_string), pid: Some(1), ..Default::default() };
     assert!(blocked_by(&[], Some("worker")).is_none());
     let one = [p("k1", Some("worker-2"))];
     assert!(blocked_by(&one, Some("worker-2")).unwrap().contains("k1"));
@@ -193,13 +193,50 @@ fn reservation_blocks_role_and_unknown_role_blocks_all_role_creates() {
 
 #[test]
 fn reservation_expires_with_keeper() {
-    let p = Pending { skid: "k".into(), role: Some("r".into()), pid: Some(5), start_us: Some(10), until: None };
+    let p = Pending { skid: "k".into(), role: Some("r".into()), pid: Some(5), start_us: Some(10), ..Default::default() };
     assert!(pending_live(&p, |_| true, |_| Some(10), 0.0));
     assert!(!pending_live(&p, |_| false, |_| Some(10), 0.0), "seatkeep 이 끝나면 예약이 풀린다");
     assert!(!pending_live(&p, |_| true, |_| Some(11), 0.0), "pid 재사용 = 다른 프로세스 → 예약 풀림");
-    let prov = Pending { skid: "k".into(), role: None, pid: None, start_us: None, until: Some(100.0) };
+    let prov = Pending { skid: "k".into(), until: Some(100.0), ..Default::default() };
     assert!(pending_live(&prov, |_| true, |_| None, 99.0));
     assert!(!pending_live(&prov, |_| true, |_| None, 101.0));
+}
+
+/// M2: 역할 모름 미결의 「역할 있는 생성 전부 거절」은 상한 벽시계까지만 — 역할 아는 미결은 상한 없이 그 역할만.
+#[test]
+fn unknown_role_block_all_expires_but_known_role_stays() {
+    let unk = Pending { skid: "u".into(), pid: Some(1), blocks_all_until: Some(100.0), ..Default::default() };
+    assert!(blocked_by_at(std::slice::from_ref(&unk), Some("cso"), 99.0).is_some());
+    assert!(blocked_by_at(std::slice::from_ref(&unk), Some("cso"), 100.5).is_none(), "상한 뒤 = 막지 않음");
+    assert!(blocks_all(&unk, 99.0) && !blocks_all(&unk, 101.0));
+    let known = Pending { skid: "k".into(), role: Some("seatr".into()), pid: Some(1), ..Default::default() };
+    assert!(blocked_by_at(std::slice::from_ref(&known), Some("seatr"), 1e12).is_some(), "역할 아는 예약은 상한 없음");
+    assert!(!blocks_all(&known, 0.0));
+    // 상한 칸 없는 옛 리터럴 = 종전(늘 막음).
+    let old = Pending { skid: "o".into(), pid: Some(1), ..Default::default() };
+    assert!(blocked_by_at(std::slice::from_ref(&old), Some("x"), 1e12).is_some());
+}
+
+/// M2: 재시도가 같은 좌석 예약을 바꿔도 처음 시각·상한은 그대로(상한이 재시도마다 새로 시작되지 않게).
+#[test]
+fn retry_keeps_first_since_and_block_deadline() {
+    let first = Pending { skid: "u".into(), since: 10.0, blocks_all_until: Some(70.0), ..Default::default() };
+    let again = Pending { skid: "u".into(), since: 20.0, blocks_all_until: Some(80.0), reason: "r2".into(), ..Default::default() };
+    let c = carry_pending(Some(&first), again.clone());
+    assert_eq!((c.since, c.blocks_all_until, c.reason.as_str()), (10.0, Some(70.0), "r2"));
+    let fresh = carry_pending(None, again);
+    assert_eq!((fresh.since, fresh.blocks_all_until), (20.0, Some(80.0)));
+    // 역할이 판명된 재판정(상한 없음)은 옛 상한을 남겨도 역할 아는 예약이라 전면 차단 아님.
+    let known = Pending { skid: "u".into(), role: Some("w".into()), since: 30.0, ..Default::default() };
+    assert!(!blocks_all(&carry_pending(Some(&first), known), 0.0));
+}
+
+/// M2 조회: 노브 끔 = 칸 없음(None · `org.status` 종전 바이트).
+#[test]
+fn status_json_absent_when_knob_off() {
+    if !enabled() {
+        assert!(status_json().is_none());
+    }
 }
 
 #[test]

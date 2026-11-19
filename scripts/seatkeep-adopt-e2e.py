@@ -31,7 +31,9 @@ OUT = sys.argv[4] if len(sys.argv) > 4 else None
 #   SKA_ROTATE_DRAIN=1 = --skip-drain 없이(① 저장 검증 포함).
 # norecord = 기록 없는 산 seatkeep(T6 D2 · 시험이 기록을 지움) → 새 cysd 가 관리용 종료·정리 · 예약 없음(같은 역할 rc 0).
 # foreign = 같은 폴더에 소켓 이름만 다른 데몬 둘(독립 검증 m1) → 남의 seatkeep 을 판정·예약·종료 기록 소비하지 않는다 · 주인 데몬만 소비.
-assert MODE in ("adopt", "bound", "direct", "reserve", "exitaway", "token", "rotate", "norecord", "foreign"), MODE
+# pending = 미결 재시도·해제(독립 검증 M2) · SKA_PENDING = recover(등록부 권한 0 → 재시도 중 되돌림 → 입양) · fail(끝내 못 읽음 → 관리용 종료 ·
+#   예약 풀림) · unknown(역할 없는 좌석 + 다른 경로 cysd = 신원이 안 서 끝낼 수 없는 역할 모름 미결 → 상한 60초 뒤 역할 있는 생성 rc 0).
+assert MODE in ("adopt", "bound", "direct", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending"), MODE
 R = f"/private/tmp/ska-{MODE[:3]}-{os.getpid() % 10000}"
 shutil.rmtree(R, ignore_errors=True)
 for d in ("home", "tmp", "s", "packstate", "pack", "bin", "bin2", "logs"):
@@ -108,9 +110,9 @@ ENV = {"HOME": f"{R}/home", "USER": os.environ["USER"], "LOGNAME": os.environ["U
        "CYS_NO_OFFICE_BRIDGE": "1", "CYS_NO_AUTORESTORE": "1", "CYS_NO_AUTOSTART": "1", "PATH": f"{R}/bin:/usr/bin:/bin",
        "TERM": "xterm-256color", "LANG": "en_US.UTF-8"}
 DENV = dict(ENV)
-if MODE in ("adopt", "bound", "reserve", "exitaway", "token", "rotate", "norecord", "foreign"):
+if MODE in ("adopt", "bound", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending"):
     DENV["CYS_SEATKEEP"] = "1"
-if MODE in ("adopt", "reserve", "exitaway", "token", "rotate", "norecord", "foreign"):
+if MODE in ("adopt", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending"):
     DENV["CYS_SEATKEEP_ADOPT"] = "1"
 
 
@@ -402,6 +404,83 @@ if MODE == "foreign":
     if OUT:
         open(OUT, "a").write(json.dumps(res, ensure_ascii=False) + "\n")
     stop_all()
+    if alive(seat_pid):
+        os.kill(seat_pid, signal.SIGKILL)
+    sys.exit(0)
+
+def adopt_status():
+    z = cys("status", "--json")
+    try:
+        return json.loads(z.stdout)["daemon"].get("seat_adopt")
+    except Exception:
+        return {"error": (z.stdout + z.stderr)[:200]}
+
+
+if MODE == "pending":
+    kind = os.environ.get("SKA_PENDING", "recover")
+    skdir = f"{R}/s/seatkeep"
+    d, _ = start_daemon("0")
+    log = f"{R}/logs/p0.log"
+    role = None if kind == "unknown" else "seatp"
+    args = ["new-surface", "--cwd", "/private/tmp", "--cmd", f"{SEAT} {log} 50"] + (["--role", role] if role else [])
+    sid = cys(*args).stdout.strip()
+    seat_pid = wait_start(log)
+    time.sleep(1.0)
+    os.kill(d.pid, signal.SIGKILL)
+    d.wait()
+    regs = [n for n in os.listdir(skdir) if n.endswith(".json") and not n.endswith(".cysd.json")]
+    res = {"kind": kind, "regs": len(regs)}
+    if kind in ("recover", "fail"):
+        for n in regs:
+            os.chmod(f"{skdir}/{n}", 0)  # 등록부 읽기 오류(registry_io) = 일시 실패 흉내(검증 탐침 고정물)
+        d, _ = start_daemon("1")
+    else:
+        d, _ = start_daemon("1", bindir="bin2")  # 다른 경로 cysd = 연결 거절 · 관리용 종료도 신원(실행 파일)이 안 섬
+    t1 = time.time()
+    time.sleep(0.5)
+    st0 = adopt_status()
+    res["pending0"] = [(p["role"], p["reason"][:40], p["blocks_all"]) for p in (st0 or {}).get("pending", [])]
+    probe = cys("new-surface", "--cwd", "/private/tmp", "--role", "seatp" if role else "seatz", "--cmd", "sleep 30")
+    res["blocked_rc0"] = probe.returncode
+    if probe.stdout.strip():
+        cys("close-surface", probe.stdout.strip())
+    if kind == "recover":
+        time.sleep(3.0)
+        for n in regs:
+            os.chmod(f"{skdir}/{n}", 0o600)
+    deadline = {"recover": 20, "fail": 40, "unknown": 75}[kind]
+    while time.time() - t1 < deadline:
+        st = adopt_status() or {}
+        if kind == "recover" and "seatp" in cys("list").stdout:
+            break
+        if kind == "fail" and not st.get("pending") and st.get("retry") == "done":
+            break
+        if kind == "unknown" and st.get("retry") == "done" and time.time() - t1 > 62:
+            break
+        time.sleep(1.0)
+    res["secs"] = round(time.time() - t1, 1)
+    st = adopt_status() or {}
+    res["retry"] = st.get("retry")
+    res["pending_end"] = [(p["role"], p["reason"][:60], p["blocks_all"]) for p in st.get("pending", [])]
+    res["boot_end"] = [(o["result"], o["reason"][:60]) for o in st.get("boot", [])]
+    res["listed"] = "seatp" in cys("list").stdout
+    res["seat_alive"] = alive(seat_pid)
+    res["seat_end"] = [l for l in seat_lines(log) if l.startswith(("SIGNAL", "EOF"))][:2]
+    again = cys("new-surface", "--cwd", "/private/tmp", "--role", "seatp" if role else "seatz", "--cmd", "sleep 30")
+    res["role_create_rc_end"] = again.returncode
+    if again.stdout.strip():
+        cys("close-surface", again.stdout.strip())
+    errlog = open(f"{R}/logs/cysd-1.err").read()
+    res["adopt_log"] = [l for l in errlog.splitlines() if "좌석 입양" in l and "노브 켜짐" not in l][:4]
+    print(json.dumps(res, ensure_ascii=False), flush=True)
+    if OUT:
+        open(OUT, "a").write(json.dumps(res, ensure_ascii=False) + "\n")
+    if kind != "recover" or not res["listed"]:
+        stop_all()
+    else:
+        cys("close-surface", sid)
+        time.sleep(1.0)
+        stop_all()
     if alive(seat_pid):
         os.kill(seat_pid, signal.SIGKILL)
     sys.exit(0)

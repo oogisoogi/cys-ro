@@ -40,8 +40,13 @@ export function workRuntimeWanted(): boolean {
 
 /** (cysr-1116-s2 · integ I3·S4-3) main.ts onDaemonEvent 머리 배선 1줄 — 공통층이 안 떴으면(옛 index.html) 아무것도 안 함. */
 export function viewsIngest(ev: unknown, hqSlug: string | null): void {
-  booted?.core.ingest(ev, hqSlug);
+  if (booted) return booted.core.ingest(ev, hqSlug);
+  // (codex 1R major) 공통층이 서기 전(앱 시작 ~ bootViews)에 온 사건은 상한 32 로 모았다가 bootViews 직후 한 번 흘린다(가장 오래된 것부터 버림).
+  preBoot.push([ev, hqSlug]);
+  if (preBoot.length > PRE_BOOT_MAX) preBoot.shift();
 }
+const PRE_BOOT_MAX = 32;
+const preBoot: [unknown, string | null][] = [];
 
 /** 이미 돈 적 있으면 같은 것을 돌려준다(시작 경로가 두 번 불려도 단추·고리 한 벌). */
 let booted: { core: ChatCore; registry: Registry<ChatState, ChatCore> } | null = null;
@@ -121,6 +126,7 @@ export function bootViews(deps: BootDeps): { core: ChatCore; registry: Registry<
   const first = pickView(raw, registry.ids());
   runtimeWanted = first === "work"; // 대화 화면이 시작 화면이면 시작 복원부터 런타임을 미룬다(작업 화면이 뜨면 mount 가 참으로)
   booted = { core, registry };
+  for (const [ev, slug] of preBoot.splice(0)) core.ingest(ev, slug); // 시작 구간 사건(위 viewsIngest) — 한 번만
   paintSwitch(switchHost, registry);
   void registry.start(first);
   return booted;

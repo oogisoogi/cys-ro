@@ -32,4 +32,25 @@ describe("데몬 사건 구독 = 하나(I3·S4-3)", () => {
     expect(body.split("this.confirm.onEvent(raw);").length - 1).toBe(1);
     expect(body).toContain("this.confirm.setHqSlug(hqSlug);");
   });
+  it("④ (codex 1R major) 공통층이 서기 전 사건 = 상한 32 버퍼 → bootViews 직후 한 번 흘림", () => {
+    expect(INDEX).toContain("preBoot.push([ev, hqSlug]);");
+    expect(INDEX).toContain("if (preBoot.length > PRE_BOOT_MAX) preBoot.shift();");
+    expect(INDEX).toContain("for (const [ev, slug] of preBoot.splice(0)) core.ingest(ev, slug);");
+    expect(INDEX).toContain("const PRE_BOOT_MAX = 32;");
+  });
+});
+
+describe("(codex 1R blocking) 자리표 닫기 직전 재판정", () => {
+  it("closePane 바로 앞에서 그 자리를 지금 화면 줄 수로 다시 판정하고, 닫기 판정이 아니면 닫지 않는다", () => {
+    const tick = MAIN.slice(MAIN.indexOf("async function refreshPaneTitles() {"));
+    const close = tick.indexOf("await closePane(sid, ws.socket);");
+    const fresh = tick.indexOf("const fresh = decidePlaceholders({");
+    expect(fresh).toBeGreaterThan(0);
+    expect(fresh).toBeLessThan(close);
+    const seg = tick.slice(fresh, close);
+    expect(seg).toContain("placeholders: new Set([sid]),");
+    expect(seg).toContain("lineCount: (_w, x) => placeholderScreenLines(panes.get(paneKey(x, ws.socket))?.term),");
+    expect(seg).toContain("if (!fresh?.close) continue;");
+    expect(seg.indexOf("if (!fresh?.close) continue;")).toBeLessThan(seg.indexOf("placeholderSids.delete(sid);"));
+  });
 });

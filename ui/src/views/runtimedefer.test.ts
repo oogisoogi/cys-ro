@@ -3,7 +3,7 @@
 //   `with (scope)` 안에서 돌린다(roleactivity.test.ts 와 같은 로더).
 //   ① 만드는 동안에도 「붙은 좌석」(3초 틱이 다시 입양할 틈 0) · 같은 좌석 두 번째 호출 = 생성 0
 //   ② 기다린 사이 떼이면(destroyPaneRuntime) 방금 만든 런타임만 파기 · 장부 0
-//   ③ makePane 실패 = 등록된 런타임 파기 · 재시도 3회 상한 · 기다린 사이 떼였으면 다시 넣지 않음
+//   ③ makePane 실패 = 등록된 런타임 파기 · 장부 유지 · 자동 재시도 3회 상한 · 작업 화면 재진입 때 다시 · 기다린 사이 떼였으면 다시 넣지 않음
 //   ④ 아직 모형에 없는 좌석 = 만들지 않고 장부 유지 · 삭제 중 탭 좌석 = 만들지 않음
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -18,7 +18,7 @@ function fnText(name: string): string {
   const a = (m as RegExpExecArray).index;
   return SRC.slice(a, SRC.indexOf("\n}\n", a) + 2);
 }
-const NAMES = ["collectSids", "seatAttached", "seatInModel", "deferSeatRuntime", "ensureSeatRuntime", "destroyPaneRuntime"];
+const NAMES = ["collectSids", "seatAttached", "seatInModel", "deferSeatRuntime", "ensureSeatRuntime", "destroyPaneRuntime", "retryFailedRuntimes"];
 
 function harness(opts: { fail?: number } = {}) {
   const paneKey = (sid: number, socket?: string): string => `${socket ?? ""}#${sid}`;
@@ -88,7 +88,7 @@ describe("미룬 런타임 장부(ensureSeatRuntime)", () => {
     expect(h.disposed).toEqual([5]);
     expect(h.ledger.size).toBe(0);
   });
-  it("③ 실패 = 장부에 다시(재시도 3회 상한) · 3번째 실패 뒤 장부 0", async () => {
+  it("③ 실패 = 장부 유지(재입양 0) · 3회 뒤 자동 재시도 0 · 작업 화면 재진입(retryFailedRuntimes) = 한 벌 더 (codex 1R major)", async () => {
     const h = harness({ fail: 5 });
     h.fns.deferSeatRuntime(5, undefined, "t", null);
     for (let i = 0; i < 3; i++) {
@@ -96,10 +96,16 @@ describe("미룬 런타임 장부(ensureSeatRuntime)", () => {
       await h.tick();
       h.go();
       expect(await p).toBe(false);
-      expect({ i, left: h.ledger.size }).toEqual({ i, left: i < 2 ? 1 : 0 });
+      expect({ i, left: h.ledger.size, attached: h.fns.seatAttached(5, undefined) }).toEqual({ i, left: 1, attached: true });
     }
-    expect(await h.fns.ensureSeatRuntime("#5")).toBe(false);
+    expect(await h.fns.ensureSeatRuntime("#5")).toBe(false); // 상한 — 생성 시도 0
     expect(h.made).toEqual([5, 5, 5]);
+    h.fns.retryFailedRuntimes();
+    const p = h.fns.ensureSeatRuntime("#5");
+    await h.tick();
+    h.go();
+    expect(await p).toBe(false); // 대역은 5번 실패하게 — 넷째 시도가 실제로 났는지만 본다
+    expect(h.made).toEqual([5, 5, 5, 5]);
   });
   it("③-b 실패를 기다린 사이 떼였으면 다시 넣지 않는다", async () => {
     const h = harness({ fail: 1 });

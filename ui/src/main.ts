@@ -3810,7 +3810,7 @@ async function ensureSeatRuntime(key: string): Promise<boolean> {
     deferredRuntimes.delete(key);
     return false;
   }
-  if (d.making || !seatInModel(d.sid, d.socket)) return false; // 만드는 중 · 아직 모형에 안 붙음(만드는 쪽이 붙이기 전) — 장부 유지(떼면 destroyPaneRuntime 이 지운다)
+  if (d.making || d.tries >= 3 || !seatInModel(d.sid, d.socket)) return false; // 만드는 중 · 아직 모형에 안 붙음(만드는 쪽이 붙이기 전) — 장부 유지(떼면 destroyPaneRuntime 이 지운다)
   // ★만드는 동안에도 장부에 남긴다 — 지우고 기다리면 그 사이 3초 틱이 「안 붙은 좌석」으로 보고 다시 입양할 틈이 생긴다(seatAttached = 런타임 ∪ 장부).
   d.making = true;
   try {
@@ -3826,9 +3826,15 @@ async function ensureSeatRuntime(key: string): Promise<boolean> {
   } catch {
     const kept = deferredRuntimes.get(key) === d; // 기다린 사이 떼이지 않았다
     destroyPaneRuntime(d.sid, d.socket); // 등록됐으면 파기(F20) · 장부도 비운다
-    if (kept && d.tries + 1 < 3 && seatInModel(d.sid, d.socket)) deferredRuntimes.set(key, { ...d, tries: d.tries + 1, making: false });
+    // (codex 1R major) 3회 실패해도 장부에서 빼지 않는다 — 빼면 트리에만 남아 「(없음)」 칸이 영구(3초 틱은 집 트리에 있는 좌석을 다시 입양하지 않는다).
+    //   장부에 남은 좌석 = 「붙은 좌석」(재입양 0) · 재시도 = 작업 화면에 다시 들어올 때(retryFailedRuntimes) · 그 사이 자동 재시도 0(누수 상한).
+    if (kept && seatInModel(d.sid, d.socket)) deferredRuntimes.set(key, { ...d, tries: d.tries + 1, making: false });
     return false;
   }
+}
+/** 작업 화면에 다시 들어올 때(숨김 → 보임) — 3회 실패로 멈춘 좌석의 재시도 횟수를 되돌린다(사람이 화면을 다시 연 것 = 한 벌 더 시도할 계기). */
+function retryFailedRuntimes(): void {
+  for (const d of deferredRuntimes.values()) if (!d.making) d.tries = 0;
 }
 let ensuringRuntimes = false;
 /**
@@ -3855,7 +3861,12 @@ async function ensureSeatRuntimes(othersBudget: number): Promise<void> {
   } finally {
     ensuringRuntimes = false;
   }
-  if (visibleMade > 0 && workRuntimeWanted()) render();
+  if (visibleMade > 0 && workRuntimeWanted()) {
+    render();
+    // (codex 1R minor) 미룬 좌석을 처음 보인 탭에 유효 포커스가 없으면 첫 좌석에 — 종전 3초 틱 입양 뒤 포커스 회수와 같은 규칙(탈취 아님)
+    const aSids = collectSids(current()?.tree ?? null);
+    if (aSids.length && (focusedSid == null || !aSids.includes(focusedSid))) setFocus(aSids[0]);
+  }
 }
 
 async function refreshPaneTitles() {
@@ -4078,6 +4089,18 @@ async function refreshPaneTitles() {
           const ws = workspaces.find((w) => w.id === v.wsId);
           // 낡은 판정 막이 — 앞 자리표의 closePane 을 기다린 사이 사람이 손댔거나(touched) 장부에서 빠졌거나 탭이 바뀌었으면 닫지 않는다(남의 페인 불가침 · 실패 방향 = 닫지 않음).
           if (!ws || !placeholderSids.has(sid) || touchedPlaceholders.has(sid) || !collectSids(ws.tree).includes(sid)) continue;
+          // ★(codex 1R blocking) 닫기 **직전** 그 자리를 지금 관측값(화면 줄 수 · 손댐 · 편성 · 트리)으로 다시 판정한다 — 앞 자리표의 closePane 을
+          //   기다리는 사이 이 자리에 출력이 생겼으면 닫지 않는다(종전 반복문은 자리마다 닫기 직전에 판정했다 · 같은 판정 함수 · 실패 방향 = 닫지 않음).
+          const fresh = decidePlaceholders({
+            sock: sk ?? "",
+            ws: tickWsModel().filter((w) => w.id === ws.id),
+            surfaces: r.surfaces,
+            placeholders: new Set([sid]),
+            touched: touchedPlaceholders,
+            lineCount: (_w, x) => placeholderScreenLines(panes.get(paneKey(x, ws.socket))?.term),
+            isWindows: IS_WINDOWS,
+          }).find((x) => x.sid === sid);
+          if (!fresh?.close) continue;
           tickRec?.placeholderClose(sk ?? "", sid);
           placeholderSids.delete(sid); // 한 번 판정한 자리는 장부에서 뺀다(반복 시도 0)
           // ★1.1.11 편입(원작자 0.14.52 공지 ⑤): 데몬이 닫힘을 확인한 뒤에만 뗀다(closePane → detachPane = 런타임·배치·캐시) —
@@ -11922,7 +11945,7 @@ async function start() {
   // 여기까지 왔으면 저장본을 읽어 본 것이다(내용이 없거나 손상이어도 '읽었다'는 사실은 같다) —
   // 이제부터의 저장은 사용자의 배치를 덮는 것이 아니라 그 배치를 갱신하는 것이다.
   layoutLoaded = true;
-  bootViews({ invoke, working: (n) => nodeWorking(n.status as Parameters<typeof nodeWorking>[0], n.idle_secs as number | null | undefined, n.exited === true), onWorkShown: () => render() }); // (cysr-ui-slice1) 전환 단추 + 고른 화면(기본 = 작업 화면 · 대화 화면을 안 고르면 invoke·저장소·타이머 0)
+  bootViews({ invoke, working: (n) => nodeWorking(n.status as Parameters<typeof nodeWorking>[0], n.idle_secs as number | null | undefined, n.exited === true), onWorkShown: () => { retryFailedRuntimes(); render(); } }); // (cysr-ui-slice1) 전환 단추 + 고른 화면(기본 = 작업 화면 · 대화 화면을 안 고르면 invoke·저장소·타이머 0)
   for (const ws of workspaces) ws.socket = ws.socket ?? undefined; // 하위호환 마이그레이션(기본 데몬)
   // socket 1:1 수렴 + id 중복 제거(중복 탭 증식 차단) — 복원 적재 직후 단일 게이트.
   workspaces = normalizeWorkspaces(workspaces);

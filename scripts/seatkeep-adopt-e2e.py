@@ -267,6 +267,8 @@ for rnd in range(ROUNDS):
             "seq_dups": len(seqs) - len(set(seqs)),
             "produced_before_kill": produced_before[s_ref], "produced_now": max(nums) if nums else 0,
             "gap_lines": gap_lines, "line_bytes": len(f"SEQ 00000000 {'x' * PAD}") + 2,
+            # 입양 모드 + 조종자 없음: 끊긴 뒤 자식 출력 ≤ 꼬리(1MiB) + PTY 커널 버퍼·읽기 조각 여유(256KiB) 여야 한다(역압 · M5 가 잡는다).
+            "gap_bytes_ok": gap_lines * (len(f"SEQ 00000000 {'x' * PAD}") + 2) <= (1 << 20) + (256 << 10),
             "send_rc": (snd.returncode, sk.returncode), "input_logged": got_in, "echo_on_screen": got_echo,
         })
     ks = keepers()
@@ -277,10 +279,31 @@ for rnd in range(ROUNDS):
             "screen_gt_before": [(x["screen_max_seq"] or 0) > x["produced_before_kill"] for x in rec["seats"]],
             "io": [x["input_logged"] and x["echo_on_screen"] for x in rec["seats"]],
             "seq_ok": [x["seq_missing"] == 0 and x["seq_dups"] == 0 for x in rec["seats"]],
+            "gap_bytes_ok": [x["gap_bytes_ok"] for x in rec["seats"]],
             "keepers": rec["keepers"], "live_seats": rec["live_seats"], "back_ms": back_ms}
     print(json.dumps(line, ensure_ascii=False), flush=True)
     if OUT:
         open(OUT, "a").write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+# ── 전사(transcripts.db lines) 겹침: 입양 재생의 「옛 cysd 가 처리한」 앞부분이 다시 전사되면 같은 SEQ 가 두 번(M3·M7 이 잡는다) ──
+time.sleep(2.0)  # 전사 쓰기 스레드 비움 대기
+import sqlite3
+tx = {"seats": []}
+try:
+    con = sqlite3.connect(f"file:{R}/s/transcripts.db?mode=ro", uri=True, timeout=10)
+    for (s_ref, _, _, _) in seats:
+        sid_n = int(s_ref.split(":")[-1])
+        rows = [r[0] for r in con.execute("SELECT line FROM lines WHERE surface_id = ?", (sid_n,))]
+        nums = [int(m) for l in rows for m in re.findall(r"SEQ (\d{8})", l)]
+        tx["seats"].append({"surface": s_ref, "seq_rows": len(nums), "dups": len(nums) - len(set(nums)),
+                            "missing": len(set(range(min(nums), max(nums) + 1)) - set(nums)) if nums else None})
+    con.close()
+except Exception as ex:
+    tx["error"] = str(ex)
+tx["dups_total"] = sum(x["dups"] for x in tx["seats"])
+print(json.dumps({"transcript_dups_total": tx["dups_total"], "transcript_missing": [x["missing"] for x in tx["seats"]], "error": tx.get("error")}, ensure_ascii=False), flush=True)
+if OUT:
+    open(OUT, "a").write(json.dumps({"transcript": tx}, ensure_ascii=False) + "\n")
 
 # ── A16: seatkeep 교체 기록(append-only .log)에서 공백 길이·교체 줄 수 · 첫 RPC 대조 ──
 a16 = {"takeovers": 0, "expected_takeovers": 0, "gaps_ms": [], "rpc_before_adopt": 0, "per_seat": []}

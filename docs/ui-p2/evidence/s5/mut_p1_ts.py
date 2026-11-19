@@ -1,5 +1,6 @@
 import subprocess, sys, os
-P='/Users/oogisoogi/axdev/.wt/cys-1116-s5/ui/src/views/revive.ts'
+UI=str(__import__('pathlib').Path(__file__).resolve().parents[3]/'ui')
+P=UI+'/src/views/revive.ts'
 orig=open(P).read()
 muts={
  'M1 never 닫기를 무조건 close_surface 로': ('invoke("close_surface_if_quiet", { socket: null, surfaceId: seat.sid, expectedCreatedAt: seat.created_at })','invoke("close_surface", { socket: null, surfaceId: seat.sid })'),
@@ -12,7 +13,7 @@ try:
   for k,(a,b) in muts.items():
     assert orig.count(a)>=1,k
     open(P,'w').write(orig.replace(a,b,1))
-    r=subprocess.run(['bun','test','./src/views/revive.test.ts'],cwd='/Users/oogisoogi/axdev/.wt/cys-1116-s5/ui',capture_output=True,text=True,env=env)
+    r=subprocess.run(['bun','test','./src/views/revive.test.ts'],cwd=UI,capture_output=True,text=True,env=env)
     out=r.stdout+r.stderr
     fails=[l for l in out.splitlines() if l.startswith('(fail)')]
     print(k,'rc',r.returncode,'fails',len(fails)); [print('   ',f[:150]) for f in fails[:3]]

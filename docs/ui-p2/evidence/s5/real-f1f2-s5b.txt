@@ -1,0 +1,13 @@
+# master#c78fa28f F1·F2 실물 — 격리 HOME cysd(58b3fbbd8 빌드) · 가짜 claude · 2026-11-20 06:2x~06:3x
+
+## F1 경계 재실측(검증 좌석 하네스 v5.py 그대로 · 출력 경로·격리 폴더 이름만 바꿈 · f1-boundary/res-*.json)
+- 유예 10초(CYS_ROLE_RELEASE_GRACE_SECS=10) · 사망 관측 뒤 9.7~10.0초 다시 기동 12회 → masters_after 전부 [[1, true]](마스터 1) · 마스터 0 = 0회
+  - 그중 5회(9.75·9.8·9.85·9.86·9.88)는 회수 틱이 재반환보다 먼저 와 role.released(10.0~10.85초) → role.reattached(0.03~0.06초 뒤) 로 회복
+- 기본 유예 60초 · 61.0~61.4초 6회 → 전부 마스터 1 · 마스터 0 = 0회 · 61.2초 1회 = released 61.30 → reattached 61.39
+- 합계 18회 · 마스터 0 = 0회(고침 전 검증 좌석 = 유예 10초 13회 중 1 · 60초 22회 중 1)
+
+## F2 phoenix fresh 강등 × 사람 초안(f2_real.py · 죽은 마스터 셸에 사람 초안 23바이트 → 31초 → javis_phoenix.py restore --include-master 직접)
+- 이 가지(58b3fbbd8): 좌석 내 재연결 = typing_guard(draft_gate:pending_input) → fresh 폴백 → 「★F2 master: 빈 좌석 surface:1 에 사람 입력(human_draft(23 bytes)) → 회수·fresh 강등 보류」 · phoenix_restore FAILED · completeness INCOMPLETE(사람 단계) · 옛 좌석 surface:1 남음 · 초안 23 → 23 · 새 좌석 0
+- 기준 dea2e1853(같은 스크립트 · 재현 시도 1회): 「★독약 세션 fresh 강등: role=master → surface:2」 · VERIFIED_FRESH · **옛 좌석 GONE(닫힘) · 초안 소실** · 새 좌석 2(master · 생존) = **pre_existing 확정**(재현 1/1)
+- 참고: v5.py draft 모드 3회(데몬 기동 직후 phoenix 만 돎 · 그때 죽은 역할 0)는 F2 갈래를 밟지 않음 — rc 92 · 초안 23→23 · 닫힘 0 · 마스터 0(사망 60초 뒤 회수 · 재기동이 초안 보류로 멈춤 = 사람 단계)
+- 잔재: w5-*·s5h·s5i 프로세스 0

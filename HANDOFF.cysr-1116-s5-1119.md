@@ -258,3 +258,29 @@
 
 ### 12-3. 원작자 파일 바뀐 줄(이 델타)
 - state.rs +39(`reattach_role_on_reuse` 메서드 · 문서 4줄 포함) · handlers.rs +63 = 운영 +17(재반환 갈래 역할 판정·재등록 · 뮤턴트 분기 cfg!(test) 값 2) + 시험 +46 · revive.test.ts +31.
+
+## 13. 델타 — master#c78fa28f 독립 검증 REVISE 처분(F1 ⓐ · F2 이 판에서) · worker-1116s5b
+
+### 13-1. F1(major · 지휘권) — 재반환이 회수 시계를 비운다(커밋 58b3fbbd8)
+- `Daemon::reattach_role_on_reuse`(state.rs): roles·surface.role 잠금을 잡은 **직후**(역할 보유 여부와 무관) `agent_dead_since = None` — 「되살리러 왔다」를 회수 시계에 알림. 다음 틱이 죽음을 다시 보면 유예를 새로 시작(새 에이전트가 보이면 alive 갈래가 None 유지).
+- 잠금 경합까지: watchdog 회수 = `release_role_after_agent_death_if(daemon, s, || role_release_due(*s.agent_dead_since, now, grace))` — 같은 roles·surface.role 잠금 **안**에서 시계를 다시 본다(틱이 시계를 읽은 뒤 재반환이 끼어들면 거두지 않음). 직접 부르는 `release_role_after_agent_death` 는 `|| true` 래퍼(기존 호출 22곳 그대로). 락 순서 = roles → surface.role → agent_dead_since(leaf) · 재반환도 surfaces → roles → surface.role → agent_dead_since.
+- 시험 `s5_1116_idem_reuse_rearms_release_clock`: 대조(재반환 없음 = 같은 틱 꼴이 거둠) · 재반환 뒤 시계 None · 틱 꼴 = 유지 · 잠금 안 재판정(시계를 읽은 뒤 비워진 꼴) = 유지. 뮤턴트 NODEADRESET 적 · 잠금 안 재판정 제거 적.
+- 덤: 내 데몬 시험 2건이 `claim_daemon()`(폴더 = pid+초)을 같은 초에 병렬로 써 topology 손상 줄이 났다 → 두 시험만 고유 폴더(`s5r-reattach-<pid>`·`s5r-clock-<pid>`).
+- 실물(검증 하네스 v5.py 그대로 · 증거 `real-f1f2-s5b.txt` · 하네스 `f1-boundary/v5.py`(결과 JSON 18개는 스크래치 — 경로·화면 줄이 들어 있어 커밋 안 함 · 요약은 증거 글)): 유예 10초 9.7~10.0초 12회 + 60초 61.0~61.4초 6회 = **18회 마스터 0 = 0회**(고침 전 = 10초 13회 중 1 · 60초 22회 중 1). 6회는 틱이 먼저 와 released → 0.03~0.09초 뒤 reattached(00bc7131d 재등록이 받음).
+
+### 13-2. F2(📌 → 이 판에서 · pre_existing 확정) — phoenix fresh 강등이 사람 입력 든 옛 좌석을 닫지 않음(커밋 58b3fbbd8)
+- 자리 = `javis_phoenix.py` R4-3 「빈 좌석 재사용 불가 → `close-surface --reap`」(fresh 강등 직전) — 검증 좌석 draft3 의 `surface.closed 1 → created 2` 가 이 회수.
+- 고침: 회수 직전 `live_role_surfaces` 를 다시 받아 `seat_human_input_hold(행)`(순수 · 사람 초안 바이트 > 0 · 붙여넣기 열림 · `human_idle_secs` < 30)이면 **닫지 않음** + 그 역할 **fresh 강등 보류**(새 좌석 0 · `fresh_held=human_input` · 사건 `empty_seat_reap_held_human_input` · spawn 미완 = INCOMPLETE = 사람 단계 · 로그 「★F2 …」). live 행에 입력줄 칸 3(`pending_input_human_bytes`·`input_paste_open`·`human_idle_secs`) 소비 — 구 데몬·list 폴백 = 키 없음 = None = 종전 회수.
+- 왜 「새 좌석만 세움」 대신 「보류」: 새 기동(launch-agent)이 120초 안이면 같은 좌석을 재반환해 rc 92 로 어차피 멈추고, 그 밖이면 승계가 옛 좌석 역할을 떼 「역할 없는 초안 좌석 + 새 마스터」 둘이 남는다 — 사람 글이 든 창을 사람이 정리할 때까지 결정을 미루는 쪽이 조각 5 화면(draft_block 「그 창에 쓰다 만 글이 있어요」)과 같은 규칙. ⚠귀결: 그 사이 마스터 0(사망 60초 뒤 회수) · 화면은 꺼짐 띠 + 다시 켜기 = 초안 막힘 안내 → 사람이 글을 지우거나 보내면 다음 복원·다시 켜기가 진행.
+- 시험(기존 파일 `test_phoenix_r4_restore.py` 에 덧붙임 — 새 파일 아님 · CI 레인 등재 변화 0): D6·D7 × 3꼴(초안 23 · 붙여넣기 · 5초 전 입력) = 닫기 0 · fresh 0 · 좌석 그대로 · 사건 · D8 칸 없음 = None · 뮤턴트 M5(보류 끔) 적.
+- 실물(`f2_real.py`): 이 가지 = 「★F2 … 보류」 · 옛 좌석 남음 · 초안 23 → 23 · INCOMPLETE / **기준 dea2e1853 = 옛 좌석 닫힘 · 초안 소실 · 새 좌석 2**(재현 1/1 → pre_existing).
+
+### 13-3. 시험(바뀐 것)
+- cysd `s5_1116_` 5/5 · 전체 = 13-4.
+- 팩: javis_phoenix 를 읽는 시험 15개(test_agy_door·test_awaken_enter·test_agy_door_phoenix_loop·test_default_fleet_formation·test_dept_teardown_atomicity·test_dept_b11_lock·test_dept_tick_stdin·test_import_guard·test_pyseal_census·test_sandbox_state_isolation·test_seat_folders·test_seat_revival·test_v116_phoenix_midrun_tomb·test_v115_dept·test_phoenix_r4_restore) **전부 rc 0**(격리 env) · run_bootstrap_health = 13-4.
+- 화면·tsc·e2e: 이 델타에서 ts 변경 0(앞 340·0 · rc 0 그대로).
+
+### 13-4. 전체 시험(대기 — 아래 채움)
+
+### 13-5. 원작자 파일 바뀐 줄(이 델타)
+- state.rs +6(시계 비움 · 뮤턴트 분기 cfg!(test) 값 1) · governance.rs +16/−1(`_if` 변형 · watchdog 호출 1곳) · handlers.rs +49/−1(시험 +47 · 내 시험 2건 고유 폴더) · javis_phoenix.py +42(행 칸 3 · `HUMAN_QUIET_SECS` · `seat_human_input_hold` · 회수 전 보류 · 보류 표기) · test_phoenix_r4_restore.py +31.

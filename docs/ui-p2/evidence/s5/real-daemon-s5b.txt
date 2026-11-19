@@ -11,7 +11,7 @@
    다시 기동 rc=92 stdout='surface:1'
    stderr 끝: '[launch-agent] surface:1 created (role=master)\n[launch-agent] surface:1 — 멱등 재반환된 자리(같은 역할·에이전트·폴더 120초 안 다시 기동)에 기동 줄을 치지 않았다: 입력줄에 사람이 쓰던 글이 있다 · 좌석 보존 — 그 창의 글을 지우거나 보낸 뒤 다시 기동'
    뒤 행: {'surface_id': 1, 'role': 'master', 'released_role': None, 'agent_alive': False, 'seat': 'empty', 'pending_input_bytes': 16, 'pending_input_human_bytes': 16, 'input_paste_open': False, 'human_idle_secs': 31, 'created_at': 1795116776.889798}
-   같은 좌석 남음 = True · 입력줄 바이트 같음 = True · 화면 같음 = True · 화면 끝 줄 = ['                                                                                             %                                              oogisoogi@oogisoogiui-MacBookPro wk % echo DRAFT-OWNER']
+   같은 좌석 남음 = True · 입력줄 바이트 같음 = True · 화면 같음 = True · 화면 끝 줄 = ['                                                                                             %                                              <사용자>@<호스트> wk % echo DRAFT-OWNER']
 ④ 사람 C-u 응답: {"human_input_stamp": "1795116774381:2", "sent": true, "surface_id": 1}
    … 31초
    전 행: {'surface_id': 1, 'role': None, 'released_role': None, 'agent_alive': False, 'seat': 'empty', 'pending_input_bytes': 0, 'pending_input_human_bytes': 0, 'input_paste_open': False, 'human_idle_secs': 31, 'created_at': 1795116776.889798} · 생성 뒤 76.1 s

@@ -5452,8 +5452,12 @@ mod auto_restore_tests {
         let f = pack.find("pub fn boot_recover_and_install(").expect("boot_recover_and_install");
         let fbody = &pack[f..pack[f..].find("\n}\n").expect("fn end") + f];
         let defer = fbody.find("defer_agy_statusline_probe();").expect("부트 설치 앞 미루기 표식 소실");
-        let install = fbody.find("install(false, Some(auth))").expect("부트 설치");
+        // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V2-3): 부트 설치 = 내장 팩 install_from_iter_with(config 시드 미룸) · 시드는 잠금 닫힌 뒤.
+        let install = fbody.find("install_from_iter_with(PACK_ALL.iter()").expect("부트 설치");
         assert!(defer < install, "미루기 표식은 부트 설치 호출 앞이어야 한다");
+        let unlocked = fbody.find("})?;").expect("잠금 닫힘");
+        let seed = fbody.find("setup_isolated_config_dir(true);").expect("잠금 밖 config 시드");
+        assert!(install < unlocked && unlocked < seed, "config 시드가 팩 적용 잠금 안에 있다");
         let plb = src.find("fn post_listen_boot(").expect("post_listen_boot");
         let body = &src[plb..src[plb..].find("\n}\n").expect("fn end") + plb];
         assert!(body.contains("spawn_deferred_agy_statusline_reconcile();"), "바인드 뒤 공통 부트에 소비 배선이 없다");

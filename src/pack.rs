@@ -1522,12 +1522,20 @@ fn lexical_normalize(p: &Path) -> PathBuf {
     out
 }
 
+// ★1.1.16(V2-3) 시험 전용 관측: config 시드 순간에 팩 적용 잠금이 모두 비었는가(부트 설치가 잠금을 푼 뒤 시드하는지).
+#[cfg(test)]
+thread_local! {
+    static CONFIG_SEED_LOCKS_QUIET: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
 /// 격리 config dir 셋업: cys 라우터(CLAUDE.md)와 SessionStart hook(settings.json)을 설치한다.
 /// ★보존 모드 — 기존 파일은 덮지 않는다(사용자 커스터마이즈 불가침). best-effort(실패해도
 /// pack 설치 자체는 유효). 사용자 ~/.claude 는 절대 건드리지 않는다(격리의 핵심).
 /// ★G3: `install_hooks=false` 면 라우터(CLAUDE.md — 훅이 아님) 시드는 유지하되 훅 병합·검증·
 /// 개인 프로필 병합을 전부 생략한다(--no-install-hook 의미론 통일 — 모든 계급의 훅 등록 억제).
 fn setup_isolated_config_dir(install_hooks: bool) {
+    #[cfg(test)]
+    CONFIG_SEED_LOCKS_QUIET.with(|p| p.set(pack_dir().parent().map(|b| pack_apply_locks_quiet(b).is_ok())));
     let Some(cfg) = config_dir() else {
         // ★G3 축1(확정 재설계): 부서 팩 스코프 + CYS_ACCOUNT_DIR 부재 = 실소비 SOT 없음 →
         //   **시드 생략**(fail-closed). 종전엔 config_dir 가 공용 ~/.cys/claude 로 접혀 부서 경로
@@ -4401,6 +4409,31 @@ pub fn install_into<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
     auth: Option<PackWriteAuth>,
     capture_ns: Option<&str>,
 ) -> Result<(usize, usize), String> {
+    let seed = if setup_config { ConfigSeed::Now } else { ConfigSeed::Skip };
+    install_into_with(dir, items, force, target_version, transactional, seed, scope, auth, capture_ns)
+}
+
+/// 격리 config 시드(setup_isolated_config_dir)를 언제 하는가 — `Defer` = 하지 않고 「했어야 했다」 만 표시한다(호출자가 잠금을 푼 뒤 한다 ·
+/// ★1.1.16 TICKET=cysr-1116-debt-d-1119 · V2-3 · codex 5R minor 3: 부트 설치가 팩 적용 잠금 안에서 팩 밖 settings 잠금까지 기다리던 것).
+#[derive(Clone, Copy)]
+enum ConfigSeed<'a> {
+    Now,
+    Skip,
+    Defer(&'a std::cell::Cell<bool>),
+}
+
+#[allow(clippy::too_many_arguments)]
+fn install_into_with<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
+    dir: PathBuf,
+    items: I,
+    force: bool,
+    target_version: &str,
+    transactional: bool,
+    seed: ConfigSeed<'_>,
+    scope: PackScope,
+    auth: Option<PackWriteAuth>,
+    capture_ns: Option<&str>,
+) -> Result<(usize, usize), String> {
     // ★W0-d 양성 인가 게이트(최후 방어) — 어떤 부수효과보다 먼저. 대상이 라이브 기본 경로면
     // 인가 없이는 하드 거부한다(테스트 재오염 벡터 구조적 봉인). 비라이브·인가 보유는 통과.
     authorize_pack_write(&dir, auth)?;
@@ -5126,10 +5159,12 @@ pub fn install_into<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
     // cys 마스터를 분리한다. best-effort·보존 모드라 깨끗한 환경에서도 회귀 0.
     // ★staging 경로(install_staged)는 setup_config=false로 여기서 건너뛰고, atomic swap 후 실
     // pack_dir에 대해 한 번 셋업한다(격리 config는 pack_dir 형제라 staging 대상이 아님).
-    if setup_config {
+    match seed {
         // 훅 등록 억제(--no-install-hook)는 staged 경로(install_staged)만의 관심사 — 이 인라인
         // 경로(cysd 자동설치·install_from_iter)는 항상 완전 시드다(거동 불변·설계 확정).
-        setup_isolated_config_dir(true);
+        ConfigSeed::Now => setup_isolated_config_dir(true),
+        ConfigSeed::Defer(due) => due.set(true),
+        ConfigSeed::Skip => {}
     }
     #[cfg(unix)]
     {
@@ -5165,13 +5200,24 @@ pub fn install_from_iter<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
     transactional: bool,
     auth: Option<PackWriteAuth>,
 ) -> Result<(usize, usize), String> {
+    install_from_iter_with(items, force, target_version, transactional, auth, ConfigSeed::Now)
+}
+
+fn install_from_iter_with<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(
+    items: I,
+    force: bool,
+    target_version: &str,
+    transactional: bool,
+    auth: Option<PackWriteAuth>,
+    seed: ConfigSeed<'_>,
+) -> Result<(usize, usize), String> {
     let dir = pack_dir();
     // 데몬 부트가 팩을 새로 깔기 전에 끊긴 교체를 되찾는다 — 먼저 깔면 hold 의 사용자 상태가 새 팩 뒤로 밀린다(atomic-swap 독립 검증 B1).
     authorize_pack_write(&dir, auth)?;
     recover_interrupted_swap(&dir)?;
     // ★G3 축2: 스코프는 실 pack_dir 에서 산출(부서 데몬 자동설치가 이 경로 — dept soul 승계·불가침).
     let scope = pack_scope_of(&dir);
-    install_into(dir, items, force, target_version, transactional, true, scope, auth, None)
+    install_into_with(dir, items, force, target_version, transactional, seed, scope, auth, None)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -6293,6 +6339,41 @@ fn undo_entry(target: &Path, backup: Option<&[u8]>, mode: Option<u32>) -> Result
 
 /// apply 전 backup journal 작성: backup_set의 각 파일 기존 bytes·권한을 저널에 복사(+fsync)하고
 /// 인덱스(목표 버전·existed 플래그·적용 id)를 기록(+fsync)한다. 잔존 저널은 먼저 비운다. 반환 = 적용 id.
+/// 이름을 **링크를 따라가지 않고** 한 핸들로 열어 그 핸들에서 종류·권한·바이트를 읽는다(V2-2). 없음·일반 파일 아님(폴더·FIFO 등) = `None`
+/// (종전 `is_file()` 거짓과 같은 갈래) · 링크 = 유닉스 ELOOP 오류. FIFO 는 `O_NONBLOCK` 로 열어 쓰는 쪽 없이도 멈추지 않는다.
+/// 유닉스 밖은 nofollow 열기가 없어 종전 꼴(검사 후 읽기) 그대로.
+fn read_regular_nofollow(p: &Path) -> std::io::Result<Option<(Vec<u8>, Option<u32>)>> {
+    use std::io::Read;
+    #[cfg(not(unix))]
+    if !p.is_file() {
+        return Ok(None);
+    }
+    let mut o = std::fs::OpenOptions::new();
+    o.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let nofollow = if crate::update::mutant("J1116-V22-FOLLOW") { 0 } else { libc::O_NOFOLLOW };
+        o.custom_flags(nofollow | libc::O_NONBLOCK);
+    }
+    let mut f = match o.open(p) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        // 열 수 없는 비정규 파일(소켓 = ENXIO 등)은 종전처럼 「파일 아님」 · 링크(ELOOP)·일반 파일의 열기 실패는 오류 그대로.
+        Err(e) => match std::fs::symlink_metadata(p) {
+            Ok(m) if !m.file_type().is_symlink() && !m.is_file() => return Ok(None),
+            _ => return Err(e),
+        },
+    };
+    let m = f.metadata()?;
+    if !m.is_file() {
+        return Ok(None);
+    }
+    let mut bytes = Vec::new();
+    f.read_to_end(&mut bytes)?;
+    Ok(Some((bytes, file_mode_of(&m))))
+}
+
 fn write_journal(
     target_version: &str,
     backup_set: &std::collections::BTreeSet<String>,
@@ -6324,10 +6405,12 @@ fn write_journal(
             entries.push(JournalEntry { rel: rel.clone(), existed: true, mode: None, link: Some(t.to_string()) });
             continue;
         }
-        if src.is_file() {
-            let bytes = std::fs::read(&src)
-                .map_err(|e| format!("journal 백업 읽기 실패 {}: {e}", src.display()))?;
-            let mode = std::fs::metadata(&src).ok().and_then(|m| file_mode_of(&m));
+        // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V2-2 · codex 5R minor 2): 종류 검사(위 symlink_metadata)와 읽기 사이에 이름이 링크로
+        //   바뀌면 종전(`is_file`·`read`·`metadata` = 따라감)은 링크 대상의 바이트·권한을 일반 파일로 기록했다 → 링크를 따라가지 않는
+        //   핸들 하나로 열고 그 핸들에서 종류·권한·바이트를 읽는다(사이에 링크가 되면 ELOOP = 적용 거부 · 아무것도 바꾸기 전).
+        if let Some((bytes, mode)) = read_regular_nofollow(&src)
+            .map_err(|e| format!("journal 백업 읽기 실패 {}(검사 뒤 바뀌었을 수 있다 — 적용하지 않습니다): {e}", src.display()))?
+        {
             let dst = files_dir.join(rel);
             if let Some(parent) = dst.parent() {
                 std::fs::create_dir_all(parent)
@@ -6792,18 +6875,25 @@ fn with_apply_lock_nonblocking<T>(f: impl FnOnce(bool) -> T) -> Result<Option<T>
 /// ★1.1.16(codex 3R major #1): 데몬 기동의 팩 준비 한 덩어리 — 적용 잠금을 **한 번** 잡은 채 ①저널 복구 ②판 게이트(`pack_current_for`) 재검사
 /// ③필요하면 자동 설치(install(false)). 복구가 잠금을 푼 뒤 설치하기 전 사이에 `cys pack-update` 가 끼어드는 틈을 없앤다.
 /// 반환 = (복구 결과 · 설치 결과(게이트가 닫혀 있으면 None)). Busy = 둘 다 안 함 · 복구 Err = 설치 안 함(Err 를 그대로 돌려준다).
+/// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V2-3 · codex 5R minor 3): 설치의 팩 밖 config 시드(settings 잠금을 기다릴 수 있음)는 잠금 **밖**에서
+/// 한다 — 설치가 시드 지점까지 갔을 때만(채널 가드·다운그레이드 차단·오류 = 종전처럼 시드 없음).
 pub fn boot_recover_and_install(
     binary_version: &str,
     auth: PackWriteAuth,
 ) -> Result<(JournalRecovery, Option<Result<(usize, usize), String>>), String> {
+    let seed_due = std::cell::Cell::new(false);
     let r = with_apply_lock_nonblocking(|adopt| -> Result<(JournalRecovery, Option<Result<(usize, usize), String>>), String> {
         let rec = if recover_pack_journal_with(adopt)? { JournalRecovery::Recovered } else { JournalRecovery::Nothing };
         if pack_current_for(binary_version) {
             return Ok((rec, None));
         }
         defer_agy_statusline_probe();
-        Ok((rec, Some(install(false, Some(auth)))))
+        let seed = if crate::update::mutant("J1116-V23-SEED-IN-LOCK") { ConfigSeed::Now } else { ConfigSeed::Defer(&seed_due) };
+        Ok((rec, Some(install_from_iter_with(PACK_ALL.iter().map(|(r, c)| (*r, *c)), false, env!("CARGO_PKG_VERSION"), false, Some(auth), seed))))
     })?;
+    if seed_due.get() {
+        setup_isolated_config_dir(true);
+    }
     r.unwrap_or(Ok((JournalRecovery::Busy, None)))
 }
 
@@ -11997,6 +12087,25 @@ mod tests {
         assert_eq!(user_chmod, (Some(0o664), true), "F3: 지금 권한이 놓인 권한과 다르면(사용자 chmod) 그대로");
     }
 
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V2-3 · codex 5R minor 3): 부트 자동 설치의 팩 밖 config 시드는 팩 적용 잠금을 **푼 뒤** 한다
+    /// (시드 순간 공용·쓰는 이 표식·레인 잠금 모두 빔) · 판이 최신이라 설치를 안 하면 시드도 없다(종전과 같음).
+    #[cfg(unix)]
+    #[test]
+    fn j1116_v23_boot_seeds_config_after_the_apply_lock_is_released() {
+        let _g = PACK_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (base, _pd, _env) = txn_prestate("j16-v23", &[("README.md", "BASE-SOUL")], "1.0.0");
+        CONFIG_SEED_LOCKS_QUIET.with(|p| p.set(None));
+        let res = boot_recover_and_install("9.9.9", PackWriteAuth::production()).map(|(r, i)| (r, i.map(|x| x.is_ok())));
+        let seeded_quiet = CONFIG_SEED_LOCKS_QUIET.with(|p| p.take());
+        let again = boot_recover_and_install(env!("CARGO_PKG_VERSION"), PackWriteAuth::production()).map(|(r, i)| (r, i.is_none()));
+        let seeded_again = CONFIG_SEED_LOCKS_QUIET.with(|p| p.take());
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(res, Ok((JournalRecovery::Nothing, Some(true))), "시험 전제: 판 게이트가 열려 설치했다");
+        assert_eq!(seeded_quiet, Some(true), "config 시드가 없었거나 팩 적용 잠금을 쥔 채 했다");
+        assert_eq!(again, Ok((JournalRecovery::Nothing, true)), "시험 전제: 최신 판 = 설치 안 함");
+        assert_eq!(seeded_again, None, "설치를 안 했는데 시드했다");
+    }
+
     /// F1 역방향(codex 1R major): **부서** 레인 `cys pack-update`(공용 + 부서 레인 잠금)가 도는 동안 본부 데몬이 뜨면, 옛 공유 저널이 없는 한
     /// 본부는 자기 레인 복구·자동 설치를 한다(옛 저널 이관 단계만 건너뜀).
     #[cfg(unix)]
@@ -12267,6 +12376,55 @@ mod tests {
         assert!(is_link, "링크가 일반 파일로 되돌아왔다");
         assert_eq!(to, Some(base.join("real.md")));
         assert_eq!(real, "REAL", "링크 대상은 무접촉");
+    }
+
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V2-2 · codex 5R minor 2): 저널 바이트 백업은 링크를 따라가지 않는 한 핸들로 읽는다 —
+    /// 검사 뒤 링크로 바뀐 이름 = 오류(대상 바이트를 일반 파일로 기록하지 않음) · 폴더·FIFO·없음 = 「파일 아님」(FIFO 에서 멈추지 않음).
+    #[cfg(unix)]
+    #[test]
+    fn j1116_v22_journal_backup_read_does_not_follow_a_link() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("cys-v22-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("dir")).unwrap();
+        std::fs::write(d.join("real.md"), "REAL").unwrap();
+        std::fs::set_permissions(d.join("real.md"), std::fs::Permissions::from_mode(0o640)).unwrap();
+        std::os::unix::fs::symlink(d.join("real.md"), d.join("link.md")).unwrap();
+        let fifo = std::ffi::CString::new(d.join("fifo").to_string_lossy().into_owned()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0, "시험 전제: FIFO");
+        let regular = read_regular_nofollow(&d.join("real.md"));
+        let link = read_regular_nofollow(&d.join("link.md"));
+        let dir = read_regular_nofollow(&d.join("dir"));
+        let fifo_r = read_regular_nofollow(&d.join("fifo"));
+        let absent = read_regular_nofollow(&d.join("absent.md"));
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(regular.unwrap(), Some((b"REAL".to_vec(), Some(0o640))));
+        assert!(link.is_err(), "링크를 따라가 대상 바이트를 읽었다: {link:?}");
+        assert_eq!(dir.unwrap(), None);
+        assert_eq!(fifo_r.unwrap(), None);
+        assert_eq!(absent.unwrap(), None);
+    }
+
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V2-4 · codex 5R minor 4): 백업 목록 안 링크의 대상이 UTF-8 이 아니면 적용을 거부한다 —
+    /// 아무것도 바꾸기 전(팩 파일·링크·판 그대로 · 안전한 실패).
+    #[cfg(unix)]
+    #[test]
+    fn j1116_v24_non_utf8_link_target_refuses_the_apply_before_any_change() {
+        use std::os::unix::ffi::OsStrExt;
+        let _g = PACK_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (base, pd, _env) = txn_prestate("j16-v24", &[("README.md", "OLD-SOUL")], "1.0.0");
+        let raw = std::ffi::OsStr::from_bytes(b"real-\xff\xfe.md");
+        std::os::unix::fs::symlink(raw, pd.join("linked.md")).unwrap();
+        let r = apply_pack_transactional(&[("README.md", "NEW-SOUL"), ("linked.md", "VENDOR")], "2.0.0", &test_free_state("2.0.0"), None, || Ok(()));
+        let readme = std::fs::read_to_string(pd.join("README.md")).unwrap();
+        let to = std::fs::read_link(pd.join("linked.md")).ok();
+        let ver = std::fs::read_to_string(pd.join(PACK_VERSION_FILE)).ok();
+        let _ = std::fs::remove_dir_all(&base);
+        let e = r.expect_err("비 UTF-8 링크 대상인데 적용했다");
+        assert!(e.contains("UTF-8"), "{e}");
+        assert_eq!(readme, "OLD-SOUL", "거부 전에 팩 파일을 바꿨다");
+        assert_eq!(to.as_deref(), Some(std::path::Path::new(raw)), "링크가 바뀌었다");
+        assert_eq!(ver.as_deref().map(str::trim), Some("1.0.0"), "판이 바뀌었다");
     }
 
     /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V2-1 · codex 5R minor 1): 첫 복구가 현재 것을 kept/ 로 옮긴 뒤 · 링크를 만들기 전에 다시 끊겼다 →

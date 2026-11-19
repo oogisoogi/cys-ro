@@ -109,15 +109,14 @@ impl World for CliWorld {
         }
     }
 
-    /// 좌석의 **등록** 대화(r5b · r5b-2) = 같은 데몬 세대의 `org.status` `registered_session_id`(usage.register 로만 채움 — topology `session_id` 의
-    /// 휴리스틱 1회 핀은 소유 증거가 아니다 · master#b444f7fa) — 세대 다름·없음·판독 실패·칸 없음(옛 데몬)·형식 이상 = Err(풀 근거 없음 = 막음).
+    /// 좌석의 **현재 대화 증거**(skt1 · codex r5c #1·#4) = [`seat_conversation_now`] — claude 좌석 = 작성자 신원으로 묶인 임대(등록 문자열 아님) ·
+    /// 등록 경로 없는 에이전트(codex 등) = 데몬 관측(topology). 세대 다름·없음·판독 실패 = Err(풀 근거 없음 = 막음).
     fn seat_conversation(&self, surface_id: u64, daemon_gen: Option<&str>) -> Result<Option<String>, String> {
         let same_gen = || current_gen().is_some_and(|g| daemon_gen == Some(g.as_str()));
         if !same_gen() {
             return Err("daemon:other-gen".into());
         }
-        let status = request("org.status", json!({})).map_err(|_| "daemon:unreachable".to_string())?;
-        let r = registered_session_in(&status, surface_id).map_err(String::from)?;
+        let r = seat_conversation_now(surface_id, daemon_gen.unwrap_or_default())?;
         // 판독 사이 데몬이 바뀌었으면 그 값은 이 임대의 좌석 것이 아니다.
         if !same_gen() {
             return Err("daemon:other-gen".into());
@@ -205,8 +204,10 @@ pub(crate) enum LeaseGate {
     Refuse { rc: i32, line: String },
 }
 
+/// 사람·판독기가 읽는 줄의 대화 표기 = **전체 id**(skt1 · codex r5c #3 「첫 거절의 전체 대화 ID 보존」 — 앱은 이 값으로 대화 임대를 찾는다 ·
+/// 종전 앞 8자는 다른 대화와 접두가 겹칠 수 있다). 이름은 호출 자리 변경을 줄이려 그대로 둔다.
 fn short(id: &str) -> String {
-    id.trim().chars().take(8).collect()
+    id.trim().to_string()
 }
 
 /// 대화 `sess` 를 이어도 되는가 — 좌석을 **만들기 전에** 부른다. 복원 입구 셋(restore · --resume-saved · node-recover) 공통.
@@ -414,52 +415,127 @@ pub(crate) fn registered_session_in(status: &Value, sid: u64) -> Result<Option<S
     }
 }
 
-/// 같은 역할의 살아 있는 좌석 중 **어느 대화를 쓰는지 모르는** 것(순수 · r5 · codex r4 #1) — 등록 대화 없음 ∧ 에이전트 살아 있음(관측 true).
-/// 그 좌석은 좌석 안 `/resume` 으로 이 대화를 쓰고 있을 수 있다(훅 부재 = 등록 0 · argv 에 대화 없음) → 새 좌석을 만들면 작성자 둘.
-/// 등록이 다른 대화(T)로 확인된 좌석은 여기 걸리지 않는다(「T 좌석 옆 S 새 좌석」 = 수용된 정상 흐름) · 생존 미상(null)은 종전대로 진행.
-/// ★r5b-2: 「등록」 = `registered`(org.status `registered_session_id`) — topology `session_id` 는 휴리스틱 1회 핀을 포함해 소유 증거가 아니다
-///   (훅 없는 좌석이 같은 폴더의 무관한 jsonl 로 핀되면 93 없이 새 좌석이 됐다). 등록 판독 불가(Err) = 모름 쪽(93).
-pub(crate) fn role_seat_unverified(
-    live: &[Value],
-    role: &str,
-    alive: impl Fn(u64) -> Option<bool>,
-    registered: impl Fn(u64) -> Result<Option<String>, &'static str>,
-) -> Option<u64> {
-    live.iter()
-        .filter(|e| e["role"].as_str() == Some(role))
-        .filter_map(|e| e["surface_id"].as_u64())
-        .filter(|&sid| alive(sid) == Some(true))
-        .find(|&sid| !matches!(registered(sid), Ok(Some(_))))
+/// 좌석 하나의 현재 대화 증거가 어디서 왔나(사람 안내 · 판정에는 안 씀).
+pub(crate) fn conversation_source(agent: Option<&str>) -> &'static str {
+    if agent == Some("claude") {
+        "작성자 결속(SessionStart 훅 등록 뒤 · 좌석 최상위 에이전트 신원)"
+    } else {
+        "데몬 관측(등록 경로 없는 에이전트)"
+    }
 }
 
-/// 운영 판정 — 이 프로세스가 대화 임대를 쥔 잇는 기동에서만. Ok(Some(좌석)) = 그 좌석이 어느 대화를 쓰는지 모름(새 좌석 0 · rc 93) ·
-/// Err = 판정 불가(topology 판독 실패·형식 이상) · 특권 역할(master·cso*)은 데몬이 점유 좌석 승계를 거절하므로(claim_denied) 보지 않는다.
-pub(crate) fn lease_role_seat_unverified(role: &str, sess: Option<&str>) -> Result<Option<u64>, &'static str> {
-    if !lease_mine(sess) || role == "master" || role.starts_with("cso") {
-        return Ok(None);
+/// 좌석 `sid`(지금 데몬 세대 `gen`)의 현재 대화(skt1 · codex r5c #1·#2·#4) — 에이전트별 증거 표:
+/// | 좌석 에이전트 | 증거 | 없음 |
+/// |---|---|---|
+/// | claude | 작성자 신원으로 묶인 작성 중 임대([`sl::seat_bound_conversation`] · `follow` 만 만든다 · 작성자 죽음 = 소멸) | Ok(None) |
+/// | 그 밖(codex …) | 데몬 topology `session_id`(rollout 관측 · 등록 경로 없음) | Ok(None) |
+/// | 모름(null) · 좌석 없음 · 판독 실패 | — | Err |
+/// 데몬 `registered_session_id`(등록 문자열)는 여기서 「다른 대화」 증거로 쓰지 않는다 — 가짜·헬퍼·낡은 등록이 덮는다(r5c #1).
+pub(crate) fn seat_conversation_now(sid: u64, gen: &str) -> Result<Option<String>, String> {
+    let list = request("surface.list", json!({})).map_err(|_| "daemon:unreachable".to_string())?;
+    let e = list["surfaces"].as_array().and_then(|a| a.iter().find(|s| s["surface_id"].as_u64() == Some(sid))).ok_or("seat-not-listed")?;
+    match e["agent"].as_str() {
+        Some("claude") => {
+            let store = lease_store()?;
+            sl::seat_bound_conversation(&store, sid, gen, &sl::probe_holder)
+        }
+        Some(_) => {
+            let topo = request("system.topology", json!({})).map_err(|_| "topology-unreadable".to_string())?;
+            let live = topo["live"].as_array().filter(|a| a.iter().all(live_entry_ok)).ok_or("topology-malformed")?;
+            let ent = live.iter().find(|x| x["surface_id"].as_u64() == Some(sid)).ok_or("seat-not-in-topology")?;
+            Ok(ent["session_id"].as_str().and_then(sl::norm_id))
+        }
+        None => Err("seat-agent-unknown".into()),
+    }
+}
+
+/// 같은 역할 살아 있는 좌석 하나에 대한 #1 방어 판정(순수 · skt1 · codex r5c #2·#4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RoleSeat {
+    /// 그 역할의 살아 있는 좌석이 모두 다른 대화로 확인됐거나 이 대화를 쓸 수 없는 좌석(다른 에이전트)뿐 — 새 좌석 진행.
+    Clear,
+    /// 그 좌석이 **이 대화**로 등록·관측·결속됨 — 새 좌석 0(작성자 둘 · r5c #2).
+    ThisConversation { seat: u64, by: &'static str },
+    /// 그 좌석이 어느 대화를 쓰는지 확인 못 함 — 새 좌석 0(판정 불가).
+    Unverified { seat: u64, why: String },
+}
+
+/// 같은 역할의 살아 있는 좌석이 이 대화(`sess`)를 쓰고 있을 수 있는가(순수 · r5 → skt1).
+/// - 이 대화 신호(하나라도) = 거절: topology `session_id` = 이 대화 · 데몬 등록 = 이 대화(등록 직후 수집기 핀 전 창 · r5c #2) · 현재 대화 증거 = 이 대화.
+/// - 「다른 대화」 확인 = [`seat_conversation_now`] 의 증거만(에이전트별) — 등록 문자열·휴리스틱 핀으로는 풀지 않는다(r5c #1).
+/// - 좌석 에이전트가 기동할 에이전트와 다르면(둘 다 앎) 그 좌석은 이 대화를 쓸 수 없다 — 건너뜀(r5c #4 의 다른 에이전트 좌석 고착).
+/// - 생존 미상(null)·죽음 = 종전대로 넘어감(작성자가 아니다 · 넓히지 않음).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn role_seat_verdict(
+    live: &[Value],
+    role: &str,
+    agent: &str,
+    sess: &str,
+    alive: impl Fn(u64) -> Option<bool>,
+    seat_agent: impl Fn(u64) -> Option<String>,
+    registered: impl Fn(u64) -> Result<Option<String>, &'static str>,
+    current: impl Fn(u64) -> Result<Option<String>, String>,
+) -> RoleSeat {
+    let me = sl::norm_id(sess);
+    for e in live.iter().filter(|e| e["role"].as_str() == Some(role)) {
+        let Some(sid) = e["surface_id"].as_u64() else { continue };
+        if alive(sid) != Some(true) {
+            continue;
+        }
+        let sa = seat_agent(sid);
+        if sa.as_deref().is_some_and(|a| a != agent) {
+            continue;
+        }
+        if me.is_some() && e["session_id"].as_str().and_then(sl::norm_id) == me {
+            return RoleSeat::ThisConversation { seat: sid, by: "topology" };
+        }
+        if me.is_some() && registered(sid).ok().flatten() == me {
+            return RoleSeat::ThisConversation { seat: sid, by: "registered" };
+        }
+        match current(sid) {
+            Ok(Some(c)) if Some(&c) == me.as_ref() => return RoleSeat::ThisConversation { seat: sid, by: "current" },
+            Ok(Some(_)) => continue,
+            Ok(None) if sa.as_deref() == Some("claude") => return RoleSeat::Unverified { seat: sid, why: "seat-unbound".into() },
+            Ok(None) => return RoleSeat::Unverified { seat: sid, why: "seat-unobserved".into() },
+            Err(r) => return RoleSeat::Unverified { seat: sid, why: r },
+        }
+    }
+    RoleSeat::Clear
+}
+
+/// 운영 판정 — 이 프로세스가 대화 임대를 쥔 잇는 기동에서만. Err = 판정 불가(topology·좌석 목록 판독 실패·형식 이상) ·
+/// 특권 역할(master·cso*)은 데몬이 점유 좌석 승계를 거절하므로(claim_denied) 보지 않는다.
+pub(crate) fn lease_role_seat_verdict(role: &str, agent: &str, sess: Option<&str>) -> Result<RoleSeat, &'static str> {
+    let Some(sess) = sess else { return Ok(RoleSeat::Clear) };
+    if !lease_mine(Some(sess)) || role == "master" || role.starts_with("cso") {
+        return Ok(RoleSeat::Clear);
     }
     let topo = request("system.topology", json!({})).map_err(|_| "topology-unreadable")?;
     let live = topo["live"].as_array().filter(|a| a.iter().all(live_entry_ok)).ok_or("topology-malformed")?;
     let surfaces = fetch_surfaces();
-    let alive = |sid: u64| surfaces.iter().find(|s| s["surface_id"].as_u64() == Some(sid)).and_then(|s| s["agent_alive"].as_bool());
-    // 등록 판독(org.status)은 같은 역할 살아 있는 좌석이 있을 때만(없으면 종전 비용 그대로).
-    if role_seat_unverified(live, role, alive, |_| Err("unread")).is_none() {
-        return Ok(None);
+    let row = |sid: u64| surfaces.iter().find(|s| s["surface_id"].as_u64() == Some(sid));
+    let alive = |sid: u64| row(sid).and_then(|s| s["agent_alive"].as_bool());
+    let seat_agent = |sid: u64| row(sid).and_then(|s| s["agent"].as_str().map(String::from));
+    // 같은 역할 · 살아 있음 · 같은(또는 모르는) 에이전트 좌석이 없으면 추가 판독 0(종전 비용 그대로).
+    let candidate = |e: &Value| {
+        e["role"].as_str() == Some(role)
+            && e["surface_id"].as_u64().is_some_and(|s| alive(s) == Some(true) && seat_agent(s).is_none_or(|a| a == agent))
+    };
+    if !live.iter().any(candidate) {
+        return Ok(RoleSeat::Clear);
     }
     let status = request("org.status", json!({})).map_err(|_| "org-status-unreadable")?;
-    Ok(role_seat_unverified(live, role, alive, |sid| registered_session_in(&status, sid)))
+    let gen = current_gen().ok_or("daemon-gen-unreadable")?;
+    Ok(role_seat_verdict(live, role, agent, sess, alive, seat_agent, |sid| registered_session_in(&status, sid), |sid| seat_conversation_now(sid, &gen)))
 }
 
-/// 운영 판정 — 좌석 `sid` 의 등록 대화(topology)와 argv 를 본다.
+/// 운영 판정 — 멱등 재반환 좌석 `sid` 의 현재 대화 증거([`seat_conversation_now`] · #1 방어와 같은 원천 · r5c #2)와 argv 를 본다.
 pub(crate) fn lease_judge_reused_seat(sid: u64, sess: Option<&str>) -> ReusedSeat {
     let Some(sess) = sess else { return ReusedSeat::NotLeased };
     if !lease_mine(Some(sess)) {
         return ReusedSeat::NotLeased;
     }
-    let registered = request("system.topology", json!({})).map_err(|_| ()).and_then(|t| {
-        let e = t["live"].as_array().ok_or(())?.iter().find(|e| e["surface_id"].as_u64() == Some(sid)).ok_or(())?;
-        Ok(e["session_id"].as_str().map(String::from))
-    });
+    let registered = current_gen().ok_or(()).and_then(|g| seat_conversation_now(sid, &g).map_err(|_| ()));
     let argv_writer = lease_find_writer(sid, sess).is_some();
     reused_seat_verdict(registered.as_ref().map(|r| r.as_deref()).map_err(|_| ()), argv_writer, sess)
 }
@@ -509,19 +585,38 @@ pub(crate) fn lease_finish_ready(g: Option<sl::Guard>, seat: Option<u64>, sess: 
 
 /// `cys usage-register` 성공 뒤(조건 ② — /clear · --continue · 새 대화 · 좌석 안 /resume): 그 좌석의 작성자 신원으로 임대를 옮긴다.
 /// 출력 0(SessionStart 훅 출력이 대화 문맥에 들어가는 길 차단) · 실패해도 등록은 성공.
+///
+/// ★skt1(codex r5c #1): 이 follow 가 만든 작성 중 임대 = 그 좌석의 **현재 대화 증거**(`sl::seat_bound_conversation`)다 — 그래서 좌석 최상위
+/// 에이전트의 SessionStart 훅이 아니라고 **증명된** 등록은 옮기지 않는다(데몬 `usage::lineage_proves_not_top_hook` 와 같은 판정):
+/// 좌석 안 `claude -p` 헬퍼(에이전트 실행 2개 이상 — 종전엔 최상위 작성자가 헬퍼의 대화로 옮겨지고 원 대화 임대가 풀렸다) ·
+/// 도구 셸의 직접 `cys usage-register`(에이전트 1개 · 훅 아래 아님). 좌석 밖 발신(뿌리에 닿지 않음 = 가짜 등록)은 종전대로 작성자 없음 = 무동작.
+/// 계통 판독 불가(argv 미관측 등)는 증명이 아니다 → 종전처럼 옮긴다(데몬 재핀 기준과 같은 실패 방향).
 pub(crate) fn lease_follow_on_register(surface_id: u64, transcript: &str) {
     if !sl::enabled() {
         return;
     }
-    let Some(id) = std::path::Path::new(transcript).file_stem().and_then(|s| s.to_str()).and_then(sl::norm_id) else { return };
-    let Some(root) = seat_root_pid(surface_id) else { return };
+    let tp = std::path::Path::new(transcript);
+    if tp.is_dir() {
+        return; // `.jsonl` 이름의 폴더 = 대화 파일이 아니다(r5c 2(v))
+    }
+    let Some(id) = tp.file_stem().and_then(|s| s.to_str()).and_then(sl::norm_id) else { return };
+    let Ok(list) = request("surface.list", json!({})) else { return };
+    let Some(row) = list["surfaces"].as_array().and_then(|a| a.iter().find(|s| s["surface_id"].as_u64() == Some(surface_id))).cloned() else { return };
+    let Some(root) = row["pid"].as_u64().map(|p| p as u32) else { return };
     // 이 프로세스의 조상 중 「좌석 뿌리 자신이거나 부모가 좌석 뿌리인 것」 = 작성자(에이전트 · 또는 exec 안 한 래퍼).
     let mut cur = std::process::id();
     let mut writer = None;
+    let mut chain: Vec<u32> = Vec::new(); // 발신의 부모 → 좌석 뿌리 순(계통 판정 재료)
     for _ in 0..64 {
         let Ok(i) = cys::process_observation::identity(cur) else { break };
+        if cur != std::process::id() {
+            chain.push(cur);
+        }
         if i.pid == root || i.parent == root {
             writer = Some(sl::holder_of(&i));
+            if i.pid != root {
+                chain.push(root);
+            }
             break;
         }
         if i.parent <= 1 {
@@ -534,8 +629,32 @@ pub(crate) fn lease_follow_on_register(surface_id: u64, transcript: &str) {
     if writer.pid == std::process::id() {
         return;
     }
+    if follow_lineage_not_top(&chain, row["agent_bin"].as_str().unwrap_or_default()) {
+        return;
+    }
     let Ok(store) = lease_store() else { return };
     let _ = sl::follow(&store, &id, &writer, Some(surface_id), current_gen(), &CliWorld::new());
+}
+
+/// 계통(발신의 부모 → 좌석 뿌리 pid 들)의 argv 로 「좌석 최상위 훅이 아님」 증명(판독 실패 = 거짓 = 증명 아님).
+fn follow_lineage_not_top(chain: &[u32], agent_bin: &str) -> bool {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    if agent_bin.is_empty() || chain.is_empty() {
+        return false;
+    }
+    let pids: Vec<Pid> = chain.iter().map(|p| Pid::from_u32(*p)).collect();
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&pids), true, ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always));
+    let cmds: Vec<Option<String>> = pids
+        .iter()
+        .map(|p| {
+            sys.process(*p).and_then(|pr| {
+                let v: Vec<String> = pr.cmd().iter().map(|a| a.to_string_lossy().into_owned()).collect();
+                (!v.is_empty()).then(|| v.join(" "))
+            })
+        })
+        .collect();
+    sl::lineage_proves_not_top_hook(&cmds, agent_bin) == Some(true)
 }
 
 /// 같은 좌석 재복원의 주입 표식(300초) — 임대를 **잡은** 회차(인수 포함)는 표식이 막아도 같은 표식을 새로 잡고 지나간다

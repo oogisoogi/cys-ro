@@ -459,7 +459,9 @@ fn resume_saved_into_a_renamed_worker_seat_records_the_seat_it_made() {
                 json!({"entries": [{"role": "worker", "agent": "claude", "cwd": proj, "session_id": a.sid, "claude_config_dir": cfg}]}).to_string()).unwrap();
             let o3 = b.cys(&["launch-agent", "--role", "worker", "--agent", "claude", "--resume-saved", "--cwd", &proj]);
             let w = b.writers();
-            assert_eq!((o3.status.code(), w.len()), (Some(92), 1), "#{i}.{j} 세 번째 좌석이 W2 가 잇는 대화를 잡았다(작성자 {w:?}): {}", out(&o3));
+            // ★1.1.16 편입(skt1): 조각 1 의 `launch_pin_verdict` 가 임대보다 먼저 「다른 좌석이 저장 대화를 잇고 있다」(rc 93 · 새 대화 0)로
+            //   멈출 수 있다 — 어느 관문이 막든 새 좌석 0 · 작성자 1 이 이 시험의 불변식이다(92 = 임대 · 93 = 조각 1 보류).
+            assert!(matches!(o3.status.code(), Some(92 | 93)) && w.len() == 1, "#{i}.{j} 세 번째 좌석이 W2 가 잇는 대화를 잡았다(작성자 {w:?}): rc={:?} {}", o3.status.code(), out(&o3));
             if let Some(w3) = seat_of(&o3) {
                 panic!("#{i}.{j} 거절했는데 좌석 surface:{w3} 이 생겼다: {}", out(&o3));
             }

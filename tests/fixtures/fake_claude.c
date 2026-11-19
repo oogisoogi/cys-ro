@@ -1,5 +1,5 @@
 // tests/update_drainhold_e2e.rs 의 좌석 대역: 이름이 claude 인 실행 파일(OS env 관측 · 자손 argv 일치를 받기 위해 스크립트가 아니다).
-// --resume/--continue 를 따르고 · SessionStart 등록(cys usage-register)을 --resume 일 때 FAKE_BOOT 초 뒤에 · set-status waiting · [DRAIN-VERIFY] 체크포인트 저장.
+// --resume/--continue 를 따르고 · SessionStart 등록(cys usage-register · 훅 이름 session-start.sh 셸 아래)을 --resume 일 때 FAKE_BOOT 초 뒤에 · set-status waiting · [DRAIN-VERIFY] 체크포인트 저장.
 // FAKE_NEW_SID = 재개해도 새 세션 id 로 등록(세션이 채워졌는데 다른 경우).
 // FAKE_NO_REG = 등록·대화 파일 0(훅 부재 좌석 · seatkeep-t1 r5 codex r4 #1 재현).
 // FAKE_REG_GATE = 화면은 띄우고 등록만 그 파일이 생길 때까지(최대 120초) 자식에서 미룬다(정상 기동 직후 SessionStart 등록 전 창 · seatkeep-t1 r5b).
@@ -26,7 +26,8 @@ int main(int ac, char **av) {
   for (int i = 1; i < ac; i++) if (getenv("FAKE_NEW_SID") && !strcmp(av[i], "--resume")) { FILE *f = popen("/usr/bin/uuidgen | tr A-Z a-z", "r"); fgets(sid, sizeof sid, f); sid[strcspn(sid, "\n")] = 0; pclose(f); snprintf(tp, sizeof tp, "%s/%s.jsonl", pd, sid); FILE *n = fopen(tp, "a"); if (n) fclose(n); }
   const char *bt = getenv("FAKE_BOOT"); for (int i = 1; i < ac; i++) if (bt && !strcmp(av[i], "--resume")) usleep((useconds_t)(atof(bt) * 1000000));
   if (noreg) snprintf(cmd, sizeof cmd, "cys set-status --state waiting >/dev/null 2>&1"); else
-  snprintf(cmd, sizeof cmd, "cys usage-register --transcript '%s' >/dev/null 2>&1; cys set-status --state waiting >/dev/null 2>&1", tp);
+  // 진짜 claude 처럼 SessionStart 훅 스크립트(이름 session-start.sh) 아래에서 등록한다 — cys follow 의 계통 판정(skt1 · 헬퍼·도구 셸 거름)이 보는 모양.
+  snprintf(cmd, sizeof cmd, "exec /bin/sh -c 'cys usage-register --transcript \"$1\" >/dev/null 2>&1; cys set-status --state waiting >/dev/null 2>&1' session-start.sh '%s'", tp);
   const char *gate = getenv("FAKE_REG_GATE");
   if (gate && *gate && !noreg) { if (fork() == 0) { for (int k = 0; k < 1200 && access(gate, F_OK) != 0; k++) usleep(100000); system(cmd); _exit(0); } } else system(cmd);
   printf("Claude Code fake\n\xe2\x9d\xaf \n"); fflush(stdout);

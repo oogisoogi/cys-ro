@@ -4264,9 +4264,37 @@ async fn run_sidecar_restore_judged(
     }
     tokio::time::sleep(RESTORE_RETRY_WAIT).await;
     let second = run_sidecar_restore_report(socket.clone()).await;
-    // ★seatkeep-t1(r5 · codex r4 #3): 재실측은 「역할이 살아 있다」로 첫 93 을 지우지 않는다 — 그 역할 좌석이 **그 대화로** 등록됐는지 본다.
-    let live = if first93.is_empty() { None } else { read_topology_live(socket).await };
-    restore_judge_two((ok, summary, first93), second, live.as_deref())
+    // ★seatkeep-t1(r5 · codex r4 #3 → skt1 · r5c #3): 재실측은 「역할이 살아 있다」로 첫 93 을 지우지 않는다 — 그 대화가 **산 작성자에게
+    //   결속돼**(대화 임대 · 작성 중 · 작성자 pid+출생 생존) 그 역할의 점유 좌석에 있는지 본다(휴리스틱 핀·8자 접두로 성공을 증명하지 않는다).
+    let (live, gen, held) = if first93.is_empty() {
+        (None, None, Vec::new())
+    } else {
+        let gen = read_daemon_gen(socket.clone()).await;
+        let ids: Vec<String> = first93.iter().map(|(_, sid)| sid.clone()).collect();
+        let held = tokio::task::spawn_blocking(move || restore_lease_held(&ids)).await.unwrap_or_default();
+        (read_topology_live(socket).await, gen, held)
+    };
+    let held_of = |sid: &str| held.iter().find(|(s, _)| s == sid).and_then(|(_, h)| h.clone());
+    restore_judge_two((ok, summary, first93), second, live.as_deref(), gen.as_deref(), &held_of)
+}
+
+/// 데몬 세대(`<pid>-<started_at>` · cys `restore_daemon_gen_of` 와 같은 꼴) 1회(2초 시한 · 실패 = None = 확인 못 함).
+async fn read_daemon_gen(socket: Option<std::path::PathBuf>) -> Option<String> {
+    let s = socket.unwrap_or_else(cys::socket_path);
+    let v = tokio::time::timeout(std::time::Duration::from_secs(2), rpc_oneshot(&s, "system.identify", json!({}))).await.ok()?.ok()?;
+    Some(format!("{}-{}", v["daemon_pid"].as_u64()?, v["started_at"].as_f64()?))
+}
+
+/// 대화마다 산 작성자 결속(좌석 · 데몬 세대) — 임대 폴더 판독(cys 와 같은 폴더) · 판독 불가 = None(확인 못 함 = 첫 93 유지).
+fn restore_lease_held(ids: &[String]) -> Vec<(String, Option<(u64, Option<String>)>)> {
+    let root = cys::session_lease::default_root(&cys::home_dir(), cfg!(windows), std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from));
+    let store = cys::session_lease::Store::open(&root).ok();
+    ids.iter()
+        .map(|id| {
+            let h = store.as_ref().and_then(|st| cys::session_lease::held_by_live_writer(st, id, &cys::session_lease::probe_holder).ok().flatten());
+            (id.clone(), h)
+        })
+        .collect()
 }
 
 /// 데몬 topology 의 live 목록 1회(일회성 연결 + 2초 시한 · 판독 실패 = None = 확인 못 함).
@@ -4279,42 +4307,45 @@ async fn read_topology_live(socket: Option<std::path::PathBuf>) -> Option<Vec<Va
         .and_then(|v| v["live"].as_array().cloned())
 }
 
-/// 사이드카 `cys restore` 출력의 판정 불가(93) 표준 거절 줄 → (역할, 대화 앞 8자)(순수 · r5). 모양의 정본 = cys `lease_gate`·
-/// `restore_inner_refusal_line`(`· {역할}: 대화 {앞 8자} 작성자 생존 판정 불가(…) — 띄우지 않음` · phoenix `_LEASE_REFUSAL_RE` 와 같은 줄).
+/// 사이드카 `cys restore` 출력의 판정 불가(93) 표준 거절 줄 → (역할, 대화 전체 id)(순수 · r5 → skt1 · r5c #3 「첫 거절의 전체 대화 ID 보존」).
+/// 모양의 정본 = cys `lease_gate`·`restore_inner_refusal_line`(`· {역할}: 대화 {전체 id} 작성자 생존 판정 불가(…) — 띄우지 않음` · phoenix
+/// `_LEASE_REFUSAL_RE` 와 같은 줄).
 fn parse_restore_unknown_refusals(stdout: &str) -> Vec<(String, String)> {
     stdout
         .lines()
         .filter_map(|l| {
             let (role, rest) = l.strip_prefix("· ")?.split_once(": 대화 ")?;
-            let (sid8, rest) = rest.split_once(' ')?;
-            (rest.starts_with("작성자 생존 판정 불가(") && rest.contains(") — 띄우지 않음")).then(|| (role.to_string(), sid8.to_string()))
+            let (sid, rest) = rest.split_once(' ')?;
+            (rest.starts_with("작성자 생존 판정 불가(") && rest.contains(") — 띄우지 않음")).then(|| (role.to_string(), sid.to_string()))
         })
         .collect()
 }
 
-/// 두 회차 판정(순수 · r5 · codex r4 #3) = [`restore_merge_retry`] + **풀리지 않은 첫 회차 93 유지**: 첫 회차가 판정 불가로 띄우지 않은
-/// (역할, 대화) 가운데 재실측이 다시 거절하지 않았고(그 수는 재실측 요약에 이미 있다) 지금 그 역할의 점유 좌석이 그 대화로 등록됐다고
-/// 확인되지 않는 것 = 여전히 판정 불가(재실측의 「이미 가동 중 — 건너뜀」은 역할이 살아 있다는 뜻일 뿐 · 그 대화가 복원됐다는 뜻이 아니다).
-/// `live` None(판독 실패) = 확인 못 함. 재실측 요약이 없으면 합치기가 이미 첫 요약(93 포함)을 낸다 — 더하지 않는다.
+/// 두 회차 판정(순수 · r5 · codex r4 #3 → skt1 · r5c #3) = [`restore_merge_retry`] + **풀리지 않은 첫 회차 93 유지**: 첫 회차가 판정 불가로
+/// 띄우지 않은 (역할, 대화) 가운데 재실측이 다시 거절하지 않았고(그 수는 재실측 요약에 이미 있다) 그 대화가 복원됐다고 **확인되지 않는** 것 =
+/// 여전히 판정 불가(재실측의 「이미 가동 중 — 건너뜀」은 역할이 살아 있다는 뜻일 뿐 · 그 대화가 복원됐다는 뜻이 아니다).
+/// 「복원됨」 확인 = 그 대화(전체 id)가 산 작성자에게 결속(`held` = 대화 임대 · 작성 중 · 작성자 생존)됐고 그 임대의 좌석이 **지금 데몬 세대**(`gen`)의
+/// 그 역할 점유 좌석(`live`)일 때만 — topology `session_id`(휴리스틱 1회 핀 포함)·8자 접두는 증거가 아니다(r5c #3).
+/// `live`·`gen` None(판독 실패) = 확인 못 함. 재실측 요약이 없으면 합치기가 이미 첫 요약(93 포함)을 낸다 — 더하지 않는다.
 fn restore_judge_two(
     first: (bool, Option<RestoreSummary>, Vec<(String, String)>),
     second: (bool, Option<RestoreSummary>, Vec<(String, String)>),
     live: Option<&[Value]>,
+    gen: Option<&str>,
+    held: &dyn Fn(&str) -> Option<(u64, Option<String>)>,
 ) -> (bool, Option<RestoreSummary>) {
     let merged = restore_merge_retry(first.1, (second.0, second.1));
-    let restored = |role: &str, sid8: &str| {
-        let want = sid8.to_ascii_lowercase();
-        live.is_some_and(|l| {
-            l.iter().any(|e| {
-                e["role"].as_str() == Some(role)
-                    && e["seat"].as_str() != Some("empty")
-                    && e["session_id"].as_str().is_some_and(|x| x.trim().to_ascii_lowercase().starts_with(&want))
+    let restored = |role: &str, sid: &str| {
+        let (Some(l), Some(g)) = (live, gen) else { return false };
+        let Some((seat, lg)) = held(sid) else { return false };
+        lg.as_deref() == Some(g)
+            && l.iter().any(|e| {
+                e["surface_id"].as_u64() == Some(seat) && e["role"].as_str() == Some(role) && e["seat"].as_str() == Some("occupied")
             })
-        })
     };
-    let held = first.2.iter().filter(|(r, s8)| !second.2.iter().any(|(r2, _)| r2 == r) && !restored(r, s8)).count() as u64;
+    let held_n = first.2.iter().filter(|(r, sid)| !second.2.iter().any(|(r2, _)| r2 == r) && !restored(r, sid)).count() as u64;
     match merged {
-        (_, Some(s)) if held > 0 && second.1.is_some() => (false, Some(RestoreSummary { unknown: s.unknown + held, ..s })),
+        (_, Some(s)) if held_n > 0 && second.1.is_some() => (false, Some(RestoreSummary { unknown: s.unknown + held_n, ..s })),
         m => m,
     }
 }
@@ -9351,7 +9382,7 @@ mod tests {
         let prod = &src[..src.find("#[cfg(test)]\nmod tests {").unwrap()];
         let a = prod.find("async fn run_sidecar_restore_judged(").unwrap();
         let body = &prod[a..a + prod[a..].find("\n}\n").unwrap()];
-        assert!(body.lines().any(|l| l.trim_start() == "restore_judge_two((ok, summary, first93), second, live.as_deref())"), "재실행 결과가 관문 합치기를 거치지 않는다");
+        assert!(body.lines().any(|l| l.trim_start() == "restore_judge_two((ok, summary, first93), second, live.as_deref(), gen.as_deref(), &held_of)"), "재실행 결과가 관문 합치기를 거치지 않는다");
         let two = &prod[prod.find("fn restore_judge_two(").unwrap()..];
         assert!(two[..two.find("\n}\n").unwrap()].contains("let merged = restore_merge_retry(first.1, (second.0, second.1));"), "두 회차 판정이 관문 합치기를 거치지 않는다");
     }
@@ -9631,42 +9662,59 @@ mod tests {
         assert!(pr[..pr.find("\n}\n").unwrap()].contains("tokio::time::timeout(std::time::Duration::from_secs(2), rpc_oneshot(&s, \"org.status\""), "감시 판독 시한");
     }
 
-    /// ★seatkeep-t1(r5 · codex r4 #3): 첫 회차 93 이 재실측의 「이미 가동 중 — 건너뜀」(역할만 살아 있음)으로 지워지지 않는다 —
-    /// 그 역할 좌석이 **그 대화로** 등록됐다고 확인될 때만 풀린다. 판정문 재현: 첫 = 93 1(역할 w · 대화 5e55aaaa) · 재실측 = rc 0 · 건너뜀 ·
-    /// live = 역할 w 의 좌석이 다른 대화 T′ → 고치기 전(합치기만) = (true · unknown 0) = 성공.
+    /// ★seatkeep-t1(r5 · codex r4 #3 → skt1 · r5c #3): 첫 회차 93 이 재실측의 「이미 가동 중 — 건너뜀」(역할만 살아 있음)으로 지워지지 않는다 —
+    /// 그 대화(전체 id)가 산 작성자에게 결속돼 지금 세대의 그 역할 점유 좌석에 있을 때만 풀린다. r5c #3 재현: 그 역할 좌석의 topology
+    /// `session_id` 가 그 대화로 **휴리스틱 핀**(결속 없음) = 고치기 전(8자 접두 일치) = (true · unknown 0) = 성공으로 접힘.
     #[test]
     fn seatkeep_r5_3_first_unknown_is_kept_until_that_conversation_is_seen() {
-        let first_out = "· w: 대화 5e55aaaa 작성자 생존 판정 불가(seat-unverified) — 띄우지 않음 · 확인: `cys read-screen --surface surface:7` 로 그 좌석이 이 대화를 잇는지 보세요\n\
+        const S: &str = "5e55aaaa-0000-4000-8000-000000000001";
+        let first_out = format!("· w: 대화 {S} 작성자 생존 판정 불가(seat-unverified) — 띄우지 않음 · 확인: `cys read-screen --surface surface:7` 로 그 좌석이 이 대화를 잇는지 보세요\n\
                          · m: claude 재기동…\n\
-                         restore 완료: 재기동 1 · 실패 0 · 관문 보류 0 · 현황 `cys status` · 대화 작성자 살아 있음 0 · 생존 판정 불가 1\n";
-        let f93 = parse_restore_unknown_refusals(first_out);
-        assert_eq!(f93, vec![("w".to_string(), "5e55aaaa".to_string())]);
-        assert!(parse_restore_unknown_refusals("· w: 대화 5e55aaaa — pid 1 가 이 대화를 쓰는 중 — 띄우지 않음(…)\n").is_empty(), "92 줄은 93 이 아니다");
+                         restore 완료: 재기동 1 · 실패 0 · 관문 보류 0 · 현황 `cys status` · 대화 작성자 살아 있음 0 · 생존 판정 불가 1\n");
+        let f93 = parse_restore_unknown_refusals(&first_out);
+        assert_eq!(f93, vec![("w".to_string(), S.to_string())], "첫 거절의 전체 대화 id 를 보존한다(r5c #3)");
+        assert!(parse_restore_unknown_refusals(&format!("· w: 대화 {S} — pid 1 가 이 대화를 쓰는 중 — 띄우지 않음(…)\n")).is_empty(), "92 줄은 93 이 아니다");
         let s = |ok, unknown| Some(RestoreSummary { ok, fail: 0, gated: 0, live: 0, unknown, remeasure_failed: false });
         let first = (false, s(1, 1), f93.clone());
         let second_skip = (true, s(0, 0), Vec::new());
-        let other = vec![json!({"role": "w", "seat": "occupied", "session_id": "7e7e0000-0000-4000-8000-00000000000a"})];
-        let (ok, sum) = restore_judge_two(first.clone(), second_skip.clone(), Some(&other));
+        let g = Some("100-1.5");
+        let none = |_: &str| None;
+        let bound7 = |sid: &str| (sid == S).then(|| (7u64, Some("100-1.5".to_string())));
+        let other = vec![json!({"surface_id": 7, "role": "w", "seat": "occupied", "session_id": "7e7e0000-0000-4000-8000-00000000000a"})];
+        let (ok, sum) = restore_judge_two(first.clone(), second_skip.clone(), Some(&other), g, &none);
         assert_eq!((ok, sum.map(|x| x.unknown)), (false, Some(1)), "재실측이 역할 생존만으로 첫 93 을 지웠다(판정문 #3)");
         assert!(restore_note("본부", sum).contains("살아 있는지 판정하지 못해"), "사람말");
-        // live 판독 실패 = 확인 못 함 = 유지.
-        assert_eq!(restore_judge_two(first.clone(), second_skip.clone(), None).1.map(|x| x.unknown), Some(1));
-        // 그 역할 좌석이 그 대화로 등록 = 풀림(종전 = 재실측 결과 그대로).
-        let same = vec![json!({"role": "w", "seat": "occupied", "session_id": "5E55AAAA-0000-4000-8000-000000000001"})];
-        assert_eq!(restore_judge_two(first.clone(), second_skip.clone(), Some(&same)), (true, s(0, 0)));
-        // 빈 좌석이 그 대화를 들고 있는 것은 복원이 아니다.
-        let empty = vec![json!({"role": "w", "seat": "empty", "session_id": "5e55aaaa-0000-4000-8000-000000000001"})];
-        assert_eq!(restore_judge_two(first.clone(), second_skip.clone(), Some(&empty)).1.map(|x| x.unknown), Some(1));
+        // ★r5c #3: 그 역할 좌석의 topology 가 그 대화(휴리스틱 핀 · 결속 없음) = 복원 증거 아님 = 유지.
+        let pinned = vec![json!({"surface_id": 7, "role": "w", "seat": "occupied", "session_id": S})];
+        assert_eq!(restore_judge_two(first.clone(), second_skip.clone(), Some(&pinned), g, &none).1.map(|x| x.unknown), Some(1), "휴리스틱 핀으로 첫 93 을 「복원됨」으로 접었다(r5c #3)");
+        // live·세대 판독 실패 = 확인 못 함 = 유지.
+        assert_eq!(restore_judge_two(first.clone(), second_skip.clone(), None, g, &bound7).1.map(|x| x.unknown), Some(1));
+        assert_eq!(restore_judge_two(first.clone(), second_skip.clone(), Some(&other), None, &bound7).1.map(|x| x.unknown), Some(1));
+        // 그 대화가 산 작성자에게 결속 · 그 좌석 = 지금 세대의 그 역할 점유 좌석 = 풀림(종전 = 재실측 결과 그대로).
+        assert_eq!(restore_judge_two(first.clone(), second_skip.clone(), Some(&other), g, &bound7), (true, s(0, 0)));
+        // 결속 좌석이 다른 세대(다른 데몬의 같은 번호) · 다른 역할 · 빈 좌석 = 복원 아님.
+        let old_gen = |sid: &str| (sid == S).then(|| (7u64, Some("99-1.0".to_string())));
+        assert_eq!(restore_judge_two(first.clone(), second_skip.clone(), Some(&other), g, &old_gen).1.map(|x| x.unknown), Some(1));
+        let other_role = vec![json!({"surface_id": 7, "role": "x", "seat": "occupied", "session_id": null})];
+        assert_eq!(restore_judge_two(first.clone(), second_skip.clone(), Some(&other_role), g, &bound7).1.map(|x| x.unknown), Some(1));
+        let empty = vec![json!({"surface_id": 7, "role": "w", "seat": "empty", "session_id": S})];
+        assert_eq!(restore_judge_two(first.clone(), second_skip.clone(), Some(&empty), g, &bound7).1.map(|x| x.unknown), Some(1));
         // 재실측도 같은 역할을 93 으로 거절 = 재실측 수에 이미 있다(두 번 세지 않음).
-        assert_eq!(restore_judge_two(first.clone(), (false, s(0, 1), f93.clone()), Some(&other)).1.map(|x| x.unknown), Some(1));
+        assert_eq!(restore_judge_two(first.clone(), (false, s(0, 1), f93.clone()), Some(&other), g, &none).1.map(|x| x.unknown), Some(1));
         // 재실측 요약 없음 = 합치기가 첫 요약(93 포함 · 재확인 실패 꼬리)을 낸다 — 더하지 않는다.
-        let (ok, sum) = restore_judge_two(first.clone(), (false, None, Vec::new()), Some(&other));
+        let (ok, sum) = restore_judge_two(first.clone(), (false, None, Vec::new()), Some(&other), g, &none);
         assert_eq!((ok, sum.map(|x| (x.unknown, x.remeasure_failed))), (false, Some((1, true))));
         // 첫 회차 93 줄 없음 = 종전(합치기 그대로).
-        assert_eq!(restore_judge_two((false, s(0, 0), Vec::new()), second_skip, Some(&other)), (true, s(0, 0)));
+        assert_eq!(restore_judge_two((false, s(0, 0), Vec::new()), second_skip, Some(&other), g, &none), (true, s(0, 0)));
         // 문자열 정본(cys) 드리프트 핀 — 관문·안쪽 거절 줄 모두 이 판독기와 phoenix 가 읽는 모양.
         let cli = include_str!("../../src/session_lease_cli.rs");
         assert!(cli.contains("작성자 생존 판정 불가(seat-unverified) — 띄우지 않음 · 확인: {check}") && cli.contains("작성자 생존 판정 불가({reason}) — 띄우지 않음 · 확인: {next}"), "93 줄 모양이 바뀌었다");
+        // 판정 층이 topology session_id 접두를 다시 읽지 않는다(r5c #3 회귀 핀).
+        let src = include_str!("main.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").unwrap()];
+        let two = &prod[prod.find("fn restore_judge_two(").unwrap()..];
+        let two = &two[..two.find("\n}\n").unwrap()];
+        assert!(!two.contains("session_id") && !two.contains("starts_with"), "두 회차 판정이 topology session_id·접두를 읽는다");
     }
 
     /// ★seatkeep-t1(codex 3R ③): 부서 생산 경로(`dept_restore_lease_note` 선행 필터)를 지나서도 관문이 숨지 않는다 — 판정문 재현:

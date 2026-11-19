@@ -134,11 +134,12 @@ def inner_refusal_axis(src, tmp, sink=None):
     restore_inner_refusals_print_the_standard_line(같은 글자) → phoenix 판독기가 두 역할을 사유와 함께 읽는다."""
     d = tempfile.mkdtemp(prefix="inner-", dir=tmp)
     m = load_src(src, "ph_inner", d)
-    out = ("· w1: 대화 5e55aaaa 작성자 생존 판정 불가(seat-unverified) — 띄우지 않음 · 확인: `cys read-screen --surface surface:7` 로 그 좌석이 이 대화를 잇는지 보세요\n"
-           "· w2: 대화 5e55aaaa — 그 대화를 잇는 좌석이 이미 있음 — 띄우지 않음 · 확인: 바로 위 [launch-agent] 줄의 좌석을 `cys read-screen` 으로 보세요\n")
+    # ★skt1(codex r5c #3): 대화 표기 = 전체 id(앱이 그 값으로 대화 임대를 찾는다).
+    out = ("· w1: 대화 5e55aaaa-0000-4000-8000-000000000001 작성자 생존 판정 불가(seat-unverified) — 띄우지 않음 · 확인: `cys read-screen --surface surface:7` 로 그 좌석이 이 대화를 잇는지 보세요\n"
+           "· w2: 대화 5e55aaaa-0000-4000-8000-000000000001 — 그 대화를 잇는 좌석이 이미 있음 — 띄우지 않음 · 확인: 바로 위 [launch-agent] 줄의 좌석을 `cys read-screen` 으로 보세요\n")
     got = m._lease_refusals(out)
     check("R5 안쪽 거절 줄(93·92)을 phoenix 가 읽음",
-          [r for r, _ in got] == ["w1", "w2"] and got[0][1].startswith("liveness_unknown:") and got[1][1].startswith("writer_live:"), got, sink)
+          [r for r, _ in got] == ["w1", "w2"] and got[0][1].startswith("liveness_unknown:5e55aaaa-0000-4000-8000-000000000001") and got[1][1].startswith("writer_live:5e55aaaa-0000-4000-8000-000000000001"), got, sink)
 
 
 def held_events(j):

@@ -20793,10 +20793,10 @@ fn run_launch_agent_resume_saved(role: &str, agent: &str, cwd: Option<String>) -
             eprintln!("[launch-agent] --resume-saved: {role} {why} — 새 대화로 기동");
             return run_launch_agent(role, agent, cwd);
         }
-        RecoverPin::Resume { session, cwd, config_dir } => {
-            eprintln!("[launch-agent] --resume-saved: {role} 저장 대화({session})를 이어서 기동");
+        RecoverPin::Resume { session: sid, cwd, config_dir } => {
+            eprintln!("[launch-agent] --resume-saved: {role} 저장 대화({sid})를 이어서 기동");
             // ★seatkeep-t1: 좌석을 만들기 **전에** 대화 임대(거절 = 92/93 · 좌석 0 · 새 대화 폴백 0).
-            let lease_g = match lease_gate(role, Some(&session), None, config_dir.as_deref(), restore_claims_dir().as_deref()) {
+            let lease_g = match lease_gate(role, Some(&sid), None, config_dir.as_deref(), restore_claims_dir().as_deref()) {
                 LeaseGate::Off => None,
                 LeaseGate::Proceed(g) => g,
                 LeaseGate::Refuse { rc, line } => {
@@ -20804,9 +20804,8 @@ fn run_launch_agent_resume_saved(role: &str, agent: &str, cwd: Option<String>) -
                     return rc;
                 }
             };
-            let (rc, made) =
-                run_launch_agent_opts(role, agent, Some(cwd), true, Some(session.clone()), true, config_dir, None);
-            lease_finish_by_rc(lease_g, rc, made, &session); // 좌석 = 이 기동이 만든 좌석(역할 이름 조회 아님 · codex 2R #2)
+            let (rc, made) = run_launch_agent_opts(role, agent, Some(cwd), true, Some(sid.clone()), true, config_dir, None);
+            lease_finish_by_rc(lease_g, rc, made, &sid); // 좌석 = 이 기동이 만든 좌석(역할 이름 조회 아님 · codex 2R #2)
             rc
         }
     }
@@ -20959,18 +20958,31 @@ fn run_launch_agent_opts(
         //   boot_agent_on_surface 는 env 를 폐기하고, Tauri GUI 의 create_surface 는 env 를 아예
         //   넘기지 않는다: src-tauri/src/main.rs 의 surface.create 페이로드 참조).
         //   그래서 이것은 '벨트'이고 본체는 UI 가드(ui/src/wheelgate.ts)다 — lib 헬퍼 주석 정본.
-        // ★seatkeep-t1(r5 · codex r4 #1): 같은 역할의 살아 있는 좌석이 어느 대화를 쓰는지 모르면(등록 없음) 새 좌석을 만들지 않는다 —
-        //   그 좌석이 좌석 안 `/resume` 으로 이 대화를 쓰고 있을 수 있다(작성자 둘). 판정 불가 rc 93 · 임대 = 그 좌석(결과 불명 유지).
+        // ★seatkeep-t1(r5 · codex r4 #1 → skt1 · r5c #2·#4): 같은 역할의 살아 있는 좌석이 이 대화를 쓰거나(등록·관측·결속 = 이 대화) 어느 대화를
+        //   쓰는지 확인 못 하면 새 좌석을 만들지 않는다 — 그 좌석이 좌석 안 `/resume` 으로 이 대화를 쓰고 있을 수 있다(작성자 둘).
+        //   「다른 대화」 확인 = 에이전트별 현재 대화 증거(claude = 작성자 결속 · 그 밖 = 데몬 관측)만 · 등록 문자열로 풀지 않는다.
+        //   판정 불가 rc 93 · 임대 = 그 좌석(결과 불명 유지).
         if resume {
-            match lease_role_seat_unverified(role, session_id.as_deref()) {
-                Ok(None) => {}
-                Ok(Some(w)) => {
+            match lease_role_seat_verdict(role, agent, session_id.as_deref()) {
+                Ok(RoleSeat::Clear) => {}
+                Ok(RoleSeat::ThisConversation { seat: w, by }) => {
                     if lease_note_surface(session_id.as_deref(), w).is_ok() {
                         unverified = Some(w);
                     }
                     return Err(format!(
-                        "{ERR_REUSED_UNKNOWN}: 역할 {role} 의 좌석 {} 가 어느 대화를 잇는지 모름(등록 없음) — 이 대화를 쓰고 있을 수 있어 새 좌석을 만들지 않음",
-                        surface_ref(w)
+                        "{ERR_REUSED_UNKNOWN}: 역할 {role} 의 좌석 {} 가 이 대화로 {}됨 — 그 좌석이 이 대화를 쓰는 중일 수 있어 새 좌석을 만들지 않음",
+                        surface_ref(w),
+                        match by { "registered" => "등록", "topology" => "관측", _ => "결속" }
+                    ));
+                }
+                Ok(RoleSeat::Unverified { seat: w, why }) => {
+                    if lease_note_surface(session_id.as_deref(), w).is_ok() {
+                        unverified = Some(w);
+                    }
+                    return Err(format!(
+                        "{ERR_REUSED_UNKNOWN}: 역할 {role} 의 좌석 {} 가 어느 대화를 잇는지 확인 못 함({why} · 증거 = {}) — 이 대화를 쓰고 있을 수 있어 새 좌석을 만들지 않음",
+                        surface_ref(w),
+                        conversation_source(Some(agent))
                     ));
                 }
                 Err(why) => return Err(format!("session_lease: 역할 {role} 좌석 대화 판정 불가({why}) — 새 좌석을 만들지 않음 · 확인: `cys status` 로 데몬이 응답하는지 본 뒤 다시 실행하세요")),
@@ -21088,11 +21100,19 @@ fn run_launch_agent_opts(
             eprintln!("error: {e}");
             if let Some(sid) = created.or(unverified) {
                 if e.starts_with(ERR_REUSED_UNKNOWN) {
-                    // r5b(master#b444f7fa 채택): 흔한 경우 = 막 띄운 좌석(곧 SessionStart 등록) → 「잠시 뒤 다시」 먼저 · 풀림 = 등록 경로일 때만.
-                    eprintln!(
-                        "[launch-agent] 저장 대화를 띄우지 않음(rc 93) — 확인: 그 좌석을 막 띄웠다면 잠시 뒤 다시 실행하세요(그 좌석이 다른 대화로 등록되면 풀립니다) · 계속 막히면 `cys read-screen --surface {}` 로 보고, 이 대화가 아니면 그 좌석을 닫은 뒤 다시 실행하세요",
-                        surface_ref(sid)
-                    );
+                    // r5b(master#b444f7fa 채택) → skt1(codex r5c 5 「공통 93 안내」): 무엇을 하면 풀리는지는 막은 사유·좌석 에이전트마다 다르다 —
+                    //   「기다리면 풀린다」는 등록 경로가 있고 아직 등록 전인 claude 좌석에서만 맞다.
+                    let check = format!("`cys read-screen --surface {}`", surface_ref(sid));
+                    let hint = if e.contains("가 이 대화로 ") {
+                        format!("그 좌석이 이 대화를 잇는 중이면 복원할 것이 없습니다(그대로 두세요) · 아니면 {check} 로 보고 그 좌석을 닫은 뒤 다시 실행하세요")
+                    } else if e.contains("어느 대화를 잇는지 확인 못 함") && agent == "claude" {
+                        format!("그 좌석을 막 띄웠다면 잠시 뒤 다시 실행하세요(그 좌석의 최상위 claude 가 SessionStart 훅으로 다른 대화를 등록하면 풀립니다) · 훅이 없는 좌석·등록 실패·에이전트를 바꾼 좌석은 기다려도 풀리지 않습니다 — {check} 로 보고, 이 대화가 아니면 그 좌석을 닫은 뒤 다시 실행하세요")
+                    } else if e.contains("어느 대화를 잇는지 확인 못 함") {
+                        format!("{agent} 좌석은 등록 경로가 없어 데몬이 그 좌석의 대화를 관측해야 풀립니다(관측이 생기지 않으면 기다려도 풀리지 않습니다) — {check} 로 보고, 이 대화가 아니면 그 좌석을 닫은 뒤 다시 실행하세요")
+                    } else {
+                        format!("그 좌석의 증거가 엇갈리거나 읽히지 않아 기다려도 풀리지 않을 수 있습니다 — {check} 로 그 좌석이 이 대화를 잇는지 보고, 아니면 그 좌석을 닫은 뒤 다시 실행하세요")
+                    };
+                    eprintln!("[launch-agent] 저장 대화를 띄우지 않음(rc 93) — 확인: {hint}");
                 } else {
                     eprintln!(
                         "[launch-agent] 저장 대화를 띄우지 않음(rc 93) — 확인: `cys read-screen --surface {}` 로 그 좌석이 어느 대화를 잇는지 보고, 이 대화가 아니면 그 좌석을 닫은 뒤 다시 실행하세요",
@@ -33889,7 +33909,7 @@ mod tests {
         assert!(held_at < fail_at, "재실측이 실패 계수보다 뒤에 있다");
         let rs = &src[src.find("fn run_launch_agent_resume_saved(").unwrap()..];
         let rs = &rs[..rs.find("\n}\n").unwrap()];
-        assert!(rs.contains("run_launch_agent_opts(role, agent, Some(cwd), true, Some(session.clone()), true, config_dir, None)")); // ★seatkeep-t1: session 은 임대 마무리(lease_finish_by_rc)에도 쓴다
+        assert!(rs.contains("run_launch_agent_opts(role, agent, Some(cwd), true, Some(sid.clone()), true, config_dir, None)")); // ★seatkeep-t1: sid 는 임대 마무리(lease_finish_by_rc)에도 쓴다
         assert!(rs.contains("launch_pin_verdict(role, agent, cwd.as_deref())"), "이을 수 있는지 미리 재지 않는다");
         assert_eq!(rs.matches("return run_launch_agent(role, agent, cwd);").count(), 2, "못 이을 때 종전 기동이 아니다");
     }

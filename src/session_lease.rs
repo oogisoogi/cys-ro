@@ -500,8 +500,10 @@ fn judge(existing: Option<&Lease>, me: &Holder, w: &dyn World) -> Result<u64, De
         //   정상 흐름에서는 마무리(hold)나 등록(follow)이 작성자를 적으므로, 작성자 없이 남은 임대는 이미 비정상 → 확정 종료만 죽음.
         // 여기 닿는 임대는 작성자가 없다(작성자 있으면 위에서 끝남) → 상태와 무관하게 엄격(codex 6R).
         Some(sid) => match w.seat(sid, l.daemon_gen.as_deref(), true) {
-            // ★r5b(master 재검증 ⓐ): 결과 불명 임대의 좌석이 살아 있어도 **등록으로 다른 대화임이 확인되면** 그 좌석은 이 대화를 쓰지 않는다 —
-            //   #1 방어(등록 전 같은 역할 좌석 = 93)가 남긴 임대가 그 좌석이 사는 동안 92 로 굳지 않게. 등록 없음·판독 불가 = 종전(살아 있음 = 막음).
+            // ★r5b(master 재검증 ⓐ) → skt1(codex r5c #1): 결과 불명 임대의 좌석이 살아 있어도 **그 좌석의 현재 대화 증거가 다른 대화**면 그 좌석은
+            //   이 대화를 쓰지 않는다 — #1 방어(같은 역할 좌석 확인 못 함 = 93)가 남긴 임대가 그 좌석이 사는 동안 92 로 굳지 않게.
+            //   증거 = `World::seat_conversation`(운영 = 작성자 신원으로 묶인 임대 · 등록 경로 없는 에이전트는 데몬 관측) — 등록 문자열이 아니다
+            //   (가짜·헬퍼·낡은 등록이 덮는다). 증거 없음·판독 불가 = 종전(살아 있음 = 막음).
             Liveness::Alive
                 if l.state == State::Unknown
                     && matches!(w.seat_conversation(sid, l.daemon_gen.as_deref()), Ok(Some(c)) if norm_id(&c).is_some_and(|c| c != l.id)) =>
@@ -514,7 +516,7 @@ fn judge(existing: Option<&Lease>, me: &Holder, w: &dyn World) -> Result<u64, De
                     "좌석 surface:{sid} 가 이 대화를 잇는 중일 수 있음({}){}",
                     state_word(l.state),
                     if l.state == State::Unknown {
-                        format!(" · 확인: 그 좌석이 막 뜬 것이면 잠시 뒤 다시 실행하세요(다른 대화로 등록되면 풀립니다) · 계속 막히면 `cys read-screen --surface surface:{sid}` 로 그 좌석이 이 대화를 잇는지 보고, 아니면 그 좌석을 닫은 뒤 다시 실행하세요")
+                        format!(" · 확인: 그 좌석이 막 뜬 것이면 잠시 뒤 다시 실행하세요(그 좌석의 최상위 에이전트가 다른 대화를 쓴다고 확인되면 풀립니다 — claude = SessionStart 훅 등록 · 그 밖 = 데몬 관측 · 훅 없는 좌석·등록 실패는 기다려도 안 풀림) · 계속 막히면 `cys read-screen --surface surface:{sid}` 로 그 좌석이 이 대화를 잇는지 보고, 아니면 그 좌석을 닫은 뒤 다시 실행하세요")
                     } else {
                         String::new()
                     }
@@ -867,6 +869,104 @@ pub fn follow(store: &Store, id: &str, writer: &Holder, surface_id: Option<u64>,
         }
     }
     out
+}
+
+// ───────────────────────── 좌석 대화의 신원 결속(skt1 · codex r5c #1~#4) ─────────────────────────
+
+/// 좌석 `surface_id`(데몬 세대 `daemon_gen`)에 **작성자 신원으로 묶인** 대화 — 작성 중(held) 임대 가운데 그 좌석·그 세대를 적었고
+/// 작성자(pid+출생)가 지금 살아 있는 것(순수에 가까움 · 판독만 · 잠금 없음 · `probe` = 작성자 생존 판정).
+///
+/// 왜 등록 문자열(데몬 `registered_session_id`)이 아닌가(codex r5c #1·#2): 그 칸은 발신자·최상위 에이전트·에이전트 교체를 보지 않는다 —
+/// 좌석 밖 `cys usage-register` 의 가짜 등록 · 좌석 안 `claude -p` 헬퍼 등록이 덮고, 에이전트를 바꿔도 옛 값이 남는다.
+/// 이 결속은 `follow`(SessionStart 등록 뒤 · 좌석 최상위 훅으로 증명된 것만 · cys `lease_follow_on_register`)만 만들고,
+/// 작성자가 죽으면(에이전트 교체 · pid 재사용 = 출생 다름) 저절로 사라진다.
+///
+/// Ok(Some(id)) = 그 좌석의 산 작성자가 쓰는 대화 하나 · Ok(None) = 결속 없음 · Err = 판정 불가(폴더·임대 판독 실패 · 생존 판정 불가 ·
+/// 산 결속이 둘 이상 = 모순). 다른 세대·세대 없는 임대는 이 좌석 것이 아니다(좌석 번호는 데몬마다 따로 매긴다).
+pub fn seat_bound_conversation(store: &Store, surface_id: u64, daemon_gen: &str, probe: &dyn Fn(&Holder) -> Liveness) -> Result<Option<String>, String> {
+    let rd = std::fs::read_dir(store.root()).map_err(|e| format!("lease:bound:readdir:{}", e.raw_os_error().unwrap_or(0)))?;
+    let mut found: Option<String> = None;
+    for e in rd {
+        let p = e.map_err(|_| "lease:bound:readdir-entry".to_string())?.path();
+        if p.extension().and_then(|x| x.to_str()) != Some("lease") {
+            continue;
+        }
+        let Some(l) = store.read(&p)? else { continue };
+        if l.state != State::Held || l.surface_id != Some(surface_id) || l.daemon_gen.as_deref() != Some(daemon_gen) {
+            continue;
+        }
+        let Some(w) = &l.writer else { continue };
+        match probe(w) {
+            Liveness::Alive => {}
+            Liveness::Dead => continue,
+            Liveness::Undecided(r) => return Err(r),
+        }
+        match &found {
+            Some(f) if *f != l.id => return Err(format!("lease:bound:ambiguous:{surface_id}")),
+            _ => found = Some(l.id.clone()),
+        }
+    }
+    Ok(found)
+}
+
+/// 대화 `id` 가 **산 작성자에게 결속돼** 있으면 (좌석 · 데몬 세대) — 앱의 「복원됨」 판정용(codex r5c #3 · 휴리스틱 핀·8자 접두 대신).
+/// Ok(None) = 결속 없음(임대 없음 · 작성 중 아님 · 작성자 죽음 · 좌석 없음) · Err = 판정 불가.
+pub fn held_by_live_writer(store: &Store, id: &str, probe: &dyn Fn(&Holder) -> Liveness) -> Result<Option<(u64, Option<String>)>, String> {
+    let Some(norm) = norm_id(id) else { return Ok(None) };
+    let Some(l) = store.read(&store.file_of(&norm))? else { return Ok(None) };
+    let (Some(w), Some(sid)) = (&l.writer, l.surface_id) else { return Ok(None) };
+    if l.state != State::Held {
+        return Ok(None);
+    }
+    match probe(w) {
+        Liveness::Alive => Ok(Some((sid, l.daemon_gen.clone()))),
+        Liveness::Dead => Ok(None),
+        Liveness::Undecided(r) => Err(r),
+    }
+}
+
+/// argv 한 줄이 에이전트 `bin_base` 의 실행인가(순수 · cysd `governance::cmdline_matches_agent_exec` 와 같은 규칙 — 토큰 basename 이
+/// 정확히 그 이름(윈 실행 확장자는 대소문자 무시) · `.js` 실행 스크립트면 확장자 뗀 이름 · 또는 `<bin>-cli`·`<bin>-code` 패키지 세그먼트의 `.js`).
+pub fn argv_is_agent_exec(cmdline: &str, bin_base: &str) -> bool {
+    fn strip_win(b: &str) -> (&str, bool) {
+        match b.rfind('.') {
+            Some(i) if i > 0 && ["cmd", "bat", "exe", "ps1", "com"].iter().any(|e| b[i + 1..].eq_ignore_ascii_case(e)) => (&b[..i], true),
+            _ => (b, false),
+        }
+    }
+    let bin_base = bin_base.rsplit(['/', '\\']).next().unwrap_or(bin_base);
+    let (want, want_win) = strip_win(bin_base);
+    if want.is_empty() {
+        return false;
+    }
+    let (pkg_cli, pkg_code) = (format!("{want}-cli"), format!("{want}-code"));
+    cmdline.split_whitespace().any(|tok| {
+        let base = tok.rsplit(['/', '\\']).next().unwrap_or(tok);
+        let (tb, tw) = strip_win(base);
+        let hit = if tw || want_win { tb.eq_ignore_ascii_case(want) } else { tb == want };
+        hit || base.strip_suffix(".js").is_some_and(|b| b == want)
+            || (base.ends_with(".js") && tok.contains(['/', '\\']) && tok.split(['/', '\\']).any(|seg| seg == pkg_cli || seg == pkg_code))
+    })
+}
+
+/// SessionStart 훅 스크립트 basename(cysd `governance::SESSION_START_HOOK_SCRIPT` 와 같은 글자).
+pub const SESSION_START_HOOK_SCRIPT: &str = "session-start.sh";
+
+/// 등록 발신의 계통(발신의 부모 → 좌석 뿌리 순 argv)이 **좌석 최상위 에이전트의 SessionStart 훅이 아니라고 증명**되는가(순수 · cysd
+/// `usage::lineage_proves_not_top_hook` 와 같은 판정) — 에이전트 실행 2개 이상(좌석 안 `claude -p` 헬퍼 · codex r5c #1-3) · 에이전트 1개인데
+/// 그 아래(발신 쪽)에 훅 스크립트 없음(도구 셸의 직접 `cys usage-register`). argv 를 하나라도 못 읽었으면 None(증명 아님 · 판정 불가).
+pub fn lineage_proves_not_top_hook(cmds: &[Option<String>], bin_base: &str) -> Option<bool> {
+    let mut agents = 0usize;
+    let mut hook_below_first_agent = false;
+    for c in cmds {
+        let c = c.as_deref()?;
+        if argv_is_agent_exec(c, bin_base) {
+            agents += 1;
+        } else if agents == 0 && c.split_whitespace().any(|t| t.rsplit(['/', '\\']).next() == Some(SESSION_START_HOOK_SCRIPT)) {
+            hook_below_first_agent = true;
+        }
+    }
+    Some(agents >= 2 || (agents == 1 && !hook_below_first_agent))
 }
 
 // ───────────────────────── 운영 세계(프로세스) ─────────────────────────
@@ -1419,6 +1519,73 @@ mod tests {
         // 그 상태에서 복원이 B 를 이으려 하면 거절.
         assert!(matches!(acquire(&s, "B", &cx(h(11), &w)), Decision::Live { .. }));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// skt1(codex r5c #1·#3) — 좌석의 현재 대화 증거 = 산 작성자에게 묶인 작성 중 임대만: 작성자 죽음(에이전트 교체 · 낡은 등록) = 소멸 ·
+    /// 다른 세대·다른 좌석 = 남의 것 · 산 결속 둘 = 모순(판정 불가) · 판독 불가 = Err. 앱의 「복원됨」 판독도 같은 결속(held_by_live_writer).
+    #[test]
+    fn seat_binding_is_the_live_writers_held_lease_only() {
+        let d = tmp("sb");
+        let s = Store::open(&d).unwrap();
+        let w = Fake::new();
+        let gen = "77-1.5";
+        let probe = |h: &Holder| w.holder(h);
+        assert_eq!(seat_bound_conversation(&s, 52, gen, &probe), Ok(None), "빈 폴더 = 결속 없음");
+        // 좌석 52 의 최상위 에이전트 50 이 등록(follow)으로 T 를 쥠.
+        assert_eq!(follow(&s, "T", &h(50), Some(52), Some(gen.into()), &w), Follow::Held);
+        assert_eq!(seat_bound_conversation(&s, 52, gen, &probe), Ok(None), "작성자 죽음(기본) = 결속 소멸 — 낡은 등록이 다른 대화 증거가 됐다");
+        w.set(50, Liveness::Alive);
+        assert_eq!(seat_bound_conversation(&s, 52, gen, &probe), Ok(Some("t".into())));
+        assert_eq!(seat_bound_conversation(&s, 53, gen, &probe), Ok(None), "다른 좌석");
+        assert_eq!(seat_bound_conversation(&s, 52, "88-2.0", &probe), Ok(None), "다른 데몬 세대의 같은 번호");
+        assert_eq!(held_by_live_writer(&s, "T", &probe), Ok(Some((52, Some(gen.into())))));
+        assert_eq!(held_by_live_writer(&s, " t ", &probe), Ok(Some((52, Some(gen.into())))), "정규화");
+        assert_eq!(held_by_live_writer(&s, "U", &probe), Ok(None));
+        // 기동 중·결과 불명(작성자 없음) 임대는 결속이 아니다.
+        let Decision::Granted(g) = acquire(&s, "S", &AcquireCtx { surface_id: Some(52), daemon_gen: Some(gen.into()), ..cx(h(10), &w) }) else { panic!() };
+        g.keep_unknown().unwrap();
+        assert_eq!(seat_bound_conversation(&s, 52, gen, &probe), Ok(Some("t".into())), "결과 불명 임대가 결속으로 셌다");
+        assert_eq!(held_by_live_writer(&s, "S", &probe), Ok(None), "작성자 없는 임대를 「복원됨」으로 셌다");
+        // 생존 판정 불가 = Err(풀 근거 없음).
+        w.set(50, Liveness::Undecided("probe:x".into()));
+        assert!(seat_bound_conversation(&s, 52, gen, &probe).is_err());
+        assert!(held_by_live_writer(&s, "T", &probe).is_err());
+        // 같은 좌석·세대에 산 작성자 결속 둘 = 모순.
+        w.set(50, Liveness::Alive);
+        w.set(51, Liveness::Alive);
+        assert_eq!(follow(&s, "U", &h(51), Some(52), Some(gen.into()), &w), Follow::Held);
+        assert!(seat_bound_conversation(&s, 52, gen, &probe).unwrap_err().starts_with("lease:bound:ambiguous"));
+        // 깨진 임대 파일 = 판정 불가.
+        std::fs::write(s.root().join("ff.lease"), "{").unwrap();
+        assert!(seat_bound_conversation(&s, 99, gen, &probe).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// skt1(codex r5c #1-3) — 등록 계통 판정(cysd `lineage_proves_not_top_hook` 와 같은 표): 최상위 에이전트의 훅 = 증명 아님(옮김) ·
+    /// 중첩 헬퍼(에이전트 2) · 도구 셸 직접 호출(에이전트 1 · 훅 아래 아님) = 증명(옮기지 않음) · argv 못 읽음 = None.
+    #[test]
+    fn registration_lineage_tells_top_hook_from_helpers() {
+        let c = |v: &[&str]| v.iter().map(|x| Some(x.to_string())).collect::<Vec<_>>();
+        let top = c(&["/bin/sh -c sh /p/hooks/session-start.sh", "sh /p/hooks/session-start.sh", "/opt/bin/claude --resume x", "-zsh"]);
+        assert_eq!(lineage_proves_not_top_hook(&top, "claude"), Some(false), "최상위 훅을 헬퍼로 봤다");
+        let helper = c(&["sh /p/hooks/session-start.sh", "/opt/bin/claude -p hi", "/bin/bash -c claude -p hi", "/opt/bin/claude", "-zsh"]);
+        assert_eq!(lineage_proves_not_top_hook(&helper, "claude"), Some(true), "중첩 claude -p 헬퍼 등록을 옮겼다(r5c #1-3)");
+        let tool = c(&["/bin/zsh -c cys usage-register --transcript /x/T.jsonl", "/opt/bin/claude", "-zsh"]);
+        assert_eq!(lineage_proves_not_top_hook(&tool, "claude"), Some(true), "도구 셸 직접 등록을 옮겼다");
+        // 훅이 에이전트보다 루트 쪽(위)에 있는 것은 그 에이전트의 훅이 아니다.
+        let above = c(&["/opt/bin/claude", "sh /p/hooks/session-start.sh", "-zsh"]);
+        assert_eq!(lineage_proves_not_top_hook(&above, "claude"), Some(true));
+        let mut unread = top.clone();
+        unread[1] = None;
+        assert_eq!(lineage_proves_not_top_hook(&unread, "claude"), None, "argv 미관측을 증명으로 셌다");
+        assert_eq!(lineage_proves_not_top_hook(&c(&["sh session-start.sh", "-zsh"]), "claude"), Some(false), "에이전트 0 = 증명 아님");
+        // 실행 판별(cysd cmdline_matches_agent_exec 와 같은 규칙).
+        assert!(argv_is_agent_exec("node /u/lib/node_modules/@anthropic-ai/claude-code/cli.js", "claude"));
+        assert!(argv_is_agent_exec("C:\\x\\CLAUDE.EXE --resume a", "claude.exe"));
+        assert!(argv_is_agent_exec("/opt/claude.cmd", "claude"));
+        assert!(!argv_is_agent_exec("cat /home/u/.claude/projects/claude.txt", "claude"));
+        assert!(!argv_is_agent_exec("vim claude-notes.md", "claude"));
+        assert!(!argv_is_agent_exec("anything", ""));
     }
 
     /// codex 1R B2 — 다른 데몬의 같은 좌석 번호는 승계가 아니다(살아 있는 복원기에게서 빼앗지 않음).

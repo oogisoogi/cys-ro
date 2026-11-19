@@ -835,7 +835,7 @@ fn reused_seat_verdict_and_idem_key() {
     let s2 = "abcdef01-0000-4000-8000-000000000002";
     // 판정(argv 증거 > 등록 대화): 같은 대화 = 잇는 중 · 다른 대화 = Other · 등록 없음·판독 실패 = 판정 불가(「다른 대화」로 단정 0).
     assert_eq!(reused_seat_verdict(Ok(Some(&s1.to_uppercase())), false, s1), ReusedSeat::Continues, "대소문자 정규화");
-    assert_eq!(reused_seat_verdict(Ok(Some(s2)), false, s1), ReusedSeat::Other("abcdef01".into()));
+    assert_eq!(reused_seat_verdict(Ok(Some(s2)), false, s1), ReusedSeat::Other("abcdef01-0000-4000-8000-000000000002".into()), "다른 대화 = 전체 id(skt1 · r5c #3)");
     assert_eq!(reused_seat_verdict(Ok(None), false, s1), ReusedSeat::Unknown("seat-unregistered"), "등록 없음 = 판정 불가(codex 3R ③)");
     assert_eq!(reused_seat_verdict(Err(()), false, s1), ReusedSeat::Unknown("topology-unreadable"), "판독 실패 = 판정 불가(codex 3R ①)");
     // r5(codex r4 #2): argv 는 「잇는 중일 수 있다」의 증거일 뿐(낡을 수 있다) — 등록이 같은 대화거나 등록이 없을 때만 잇는 중으로 올린다.
@@ -900,49 +900,80 @@ fn rc93_keeps_the_lease_only_when_a_seat_may_be_writing() {
     assert!(l.contains("\"state\":\"unknown\""), "복원 fresh 93(좌석 남음)에서 임대를 되돌렸다: {l:?}");
 }
 
-/// r5(codex r4 #1) — 같은 역할 좌석의 「대화 모름」 판정(순수): 등록 없음 ∧ 에이전트 살아 있음(true)만 · 등록 확인(T) = 정상 흐름(새 좌석) · 생존 미상·죽음 = 종전.
+/// r5(codex r4 #1) → skt1(codex r5c #2·#4) — 같은 역할 좌석의 #1 방어 판정(순수): 이 대화 신호(topology · 등록 · 현재 증거 = S) = 거절 ·
+/// 「다른 대화」 확인 = 에이전트별 현재 대화 증거(`current`)만(등록 문자열·휴리스틱 핀으로 풀지 않음) · 다른 에이전트 좌석 = 이 대화를 쓸 수 없음 ·
+/// 생존 미상·죽음 = 종전.
 #[test]
-fn role_seat_of_unknown_conversation_truth_table() {
-    // live = topology(역할·좌석) · 등록 = org.status `registered_session_id`(r5b-2 — topology `session_id` 는 휴리스틱 핀 포함 = 판정에 안 씀).
-    let live = json!([
-        {"role": "r", "surface_id": 1, "seat": "occupied", "session_id": null},
-        {"role": "r", "surface_id": 2, "seat": "occupied", "session_id": "7e7e0000-0000-4000-8000-00000000000a"},
-        {"role": "r", "surface_id": 3, "seat": "occupied", "session_id": "  "},
-        {"role": "q", "surface_id": 4, "seat": "occupied", "session_id": null},
-        {"role": "r", "surface_id": 5, "seat": "occupied", "session_id": "7a7a7a7a-0000-4000-8000-000000000001"},
-    ]);
-    let live = live.as_array().unwrap();
-    let status = json!({"surfaces": [
-        {"surface_id": 1, "registered_session_id": null},
-        {"surface_id": 2, "registered_session_id": "7e7e0000-0000-4000-8000-00000000000a"},
-        {"surface_id": 3, "registered_session_id": "  "},
-        {"surface_id": 4, "registered_session_id": null},
-        {"surface_id": 5, "registered_session_id": null},
-    ]});
-    let reg = |sid| registered_session_in(&status, sid);
-    assert_eq!(role_seat_unverified(live, "r", |_| Some(true), reg), Some(1), "등록 없음 + 살아 있음 = 대화 모름");
-    assert_eq!(role_seat_unverified(&live[1..2], "r", |_| Some(true), reg), None, "등록 T = 대화 앎(T 좌석 옆 S 새 좌석 = 정상)");
-    assert_eq!(role_seat_unverified(&live[2..3], "r", |_| Some(true), reg), Some(3), "빈 등록값 = 등록 없음");
-    assert_eq!(role_seat_unverified(live, "r", |s| (s != 1 && s != 3 && s != 5).then_some(true).or(Some(false)), reg), None, "죽은 좌석은 작성자가 아니다");
-    assert_eq!(role_seat_unverified(live, "r", |_| None, reg), None, "생존 미상 = 종전(넓히지 않음)");
-    assert_eq!(role_seat_unverified(&live[3..4], "r", |_| Some(true), reg), None, "다른 역할");
-    assert_eq!(role_seat_unverified(&live[4..], "r", |_| Some(true), reg), Some(5), "휴리스틱 핀만(topology session_id T · 등록 없음) = 대화 모름(r5b-2)");
-    assert_eq!(role_seat_unverified(&live[1..2], "r", |_| Some(true), |_| Err("unread")), Some(2), "등록 판독 불가 = 모름 쪽");
+fn role_seat_verdict_truth_table() {
+    const S: &str = "5e55aaaa-0000-4000-8000-000000000001";
+    const T: &str = "7e7e0000-0000-4000-8000-00000000000a";
+    let row = |sid: u64, role: &str, sess: Option<&str>| json!({"role": role, "surface_id": sid, "seat": "occupied", "session_id": sess});
+    let claude = |_: u64| Some("claude".to_string());
+    let codex = |_: u64| Some("codex".to_string());
+    let no_reg = |_: u64| -> Result<Option<String>, &'static str> { Ok(None) };
+    let reg_s = |_: u64| -> Result<Option<String>, &'static str> { Ok(cys::session_lease::norm_id(S)) };
+    let reg_t = |_: u64| -> Result<Option<String>, &'static str> { Ok(cys::session_lease::norm_id(T)) };
+    let cur_none = |_: u64| -> Result<Option<String>, String> { Ok(None) };
+    let cur_t = |_: u64| -> Result<Option<String>, String> { Ok(cys::session_lease::norm_id(T)) };
+    let cur_s = |_: u64| -> Result<Option<String>, String> { Ok(cys::session_lease::norm_id(S)) };
+    let cur_err = |_: u64| -> Result<Option<String>, String> { Err("lease:bound:readdir:13".into()) };
+    let on = |_: u64| Some(true);
+    let v = |live: &[Value], agent, sa: &dyn Fn(u64) -> Option<String>, reg: &dyn Fn(u64) -> Result<Option<String>, &'static str>, cur: &dyn Fn(u64) -> Result<Option<String>, String>| {
+        role_seat_verdict(live, "r", agent, S, on, sa, reg, cur)
+    };
+    let w1 = [row(1, "r", None)];
+    // claude 좌석: 결속 T = 다른 대화 확인 = 진행(T 좌석 옆 S 새 좌석 = 정상 흐름).
+    assert_eq!(v(&w1, "claude", &claude, &no_reg, &cur_t), RoleSeat::Clear);
+    // ★r5c #1: 등록 T(가짜·헬퍼·낡은 등록 가능) 만으로는 풀지 않는다 — 결속 없음 = 확인 못 함.
+    assert_eq!(v(&w1, "claude", &claude, &reg_t, &cur_none), RoleSeat::Unverified { seat: 1, why: "seat-unbound".into() }, "등록 문자열 T 로 풀었다(r5c #1)");
+    // ★r5c #2: 등록 S(수집기 핀 전 창) = 이 대화 = 거절(종전 = 등록 있음만 보고 통과 → W2).
+    assert_eq!(v(&w1, "claude", &claude, &reg_s, &cur_none), RoleSeat::ThisConversation { seat: 1, by: "registered" }, "등록 S 를 읽고도 통과(r5c #2)");
+    // 결속이 T 여도 등록이 S 면 거절(신호 하나라도 이 대화 = 막음).
+    assert_eq!(v(&w1, "claude", &claude, &reg_s, &cur_t), RoleSeat::ThisConversation { seat: 1, by: "registered" });
+    assert_eq!(v(&w1, "claude", &claude, &no_reg, &cur_s), RoleSeat::ThisConversation { seat: 1, by: "current" });
+    assert_eq!(v(&[row(1, "r", Some(S))], "claude", &claude, &no_reg, &cur_t), RoleSeat::ThisConversation { seat: 1, by: "topology" });
+    // 휴리스틱 핀 T(topology) 만 · 결속 없음 = 확인 못 함(r5b-2 유지).
+    assert_eq!(v(&[row(5, "r", Some(T))], "claude", &claude, &no_reg, &cur_none), RoleSeat::Unverified { seat: 5, why: "seat-unbound".into() });
+    // 증거 판독 불가 = 확인 못 함(그 사유).
+    assert_eq!(v(&w1, "claude", &claude, &no_reg, &cur_err), RoleSeat::Unverified { seat: 1, why: "lease:bound:readdir:13".into() });
+    // ★r5c #4: 등록 경로 없는 codex 좌석의 관측 T = 다른 대화 확인 = 진행(종전 r5b = 등록 null 만 보고 93 → 92 고착).
+    assert_eq!(v(&w1, "codex", &codex, &no_reg, &cur_t), RoleSeat::Clear, "codex 관측 T 좌석을 고착시켰다(r5c #4)");
+    assert_eq!(v(&w1, "codex", &codex, &no_reg, &cur_none), RoleSeat::Unverified { seat: 1, why: "seat-unobserved".into() });
+    // ★r5c #4: 다른 에이전트 좌석(claude 대화 복원 · 같은 역할 codex 좌석) = 이 대화를 쓸 수 없음 = 건너뜀.
+    assert_eq!(v(&w1, "claude", &codex, &no_reg, &cur_none), RoleSeat::Clear, "다른 에이전트 좌석을 후보로 막았다");
+    // 좌석 에이전트 모름 = 같은 에이전트로 본다(보수).
+    assert_eq!(v(&w1, "claude", &|_| None, &no_reg, &cur_none), RoleSeat::Unverified { seat: 1, why: "seat-unobserved".into() });
+    // 다른 역할 · 생존 미상 · 죽음 = 넘어감.
+    assert_eq!(v(&[row(4, "q", None)], "claude", &claude, &no_reg, &cur_none), RoleSeat::Clear);
+    assert_eq!(role_seat_verdict(&w1, "r", "claude", S, |_| None, claude, no_reg, cur_none), RoleSeat::Clear, "생존 미상 = 종전(넓히지 않음)");
+    assert_eq!(role_seat_verdict(&w1, "r", "claude", S, |_| Some(false), claude, no_reg, cur_none), RoleSeat::Clear, "죽은 좌석은 작성자가 아니다");
+    // 여러 좌석: 앞 좌석이 다른 대화 확인이어도 뒤 좌석이 확인 못 함이면 막는다(상쇄 없음 · r5c 5(c)).
+    let two = [row(1, "r", None), row(2, "r", None)];
+    let cur_mixed = |sid: u64| -> Result<Option<String>, String> { Ok((sid == 1).then(|| cys::session_lease::norm_id(T)).flatten()) };
+    assert_eq!(v(&two, "claude", &claude, &no_reg, &cur_mixed), RoleSeat::Unverified { seat: 2, why: "seat-unbound".into() });
     // 등록 칸 판독(순수): 칸 없음(옛 데몬)·형식 이상·좌석 없음 = Err · null·빈 값 = 등록 없음 · 값 = 정규화.
-    let st = json!({"surfaces": [{"surface_id": 1}, {"surface_id": 2, "registered_session_id": 7}, {"surface_id": 3, "registered_session_id": " AB "}]});
+    let st = json!({"surfaces": [{"surface_id": 1}, {"surface_id": 2, "registered_session_id": 7}, {"surface_id": 3, "registered_session_id": " AB "}, {"surface_id": 4, "registered_session_id": "  "}]});
     assert_eq!(registered_session_in(&st, 1), Err("registered-key-absent"));
     assert_eq!(registered_session_in(&st, 2), Err("registered-malformed"));
     assert_eq!(registered_session_in(&st, 3), Ok(Some("ab".into())));
+    assert_eq!(registered_session_in(&st, 4), Ok(None));
     assert_eq!(registered_session_in(&st, 9), Err("seat-not-in-org-status"));
     assert_eq!(registered_session_in(&json!({}), 1), Err("org-status-malformed"));
-    assert_eq!(registered_session_in(&status, 3), Ok(None));
     // 배선: 잇는 기동일 때 좌석을 만들기 전에 · 거절은 ERR_REUSED_UNKNOWN(좌석 = 그 좌석 · rc 93 · 임대 유지).
     let src = include_str!("bin/cys.rs");
     let la = &src[src.find("fn run_launch_agent_opts(").unwrap()..];
     let la = code_only(&la[..la.find("\n}\n").unwrap()]);
-    let guard = la.find("match lease_role_seat_unverified(role, session_id.as_deref()) {").expect("대화 모름 방어 배선");
+    let guard = la.find("match lease_role_seat_verdict(role, agent, session_id.as_deref()) {").expect("#1 방어 배선");
     assert!(guard < la.find("\"surface.create\"").unwrap(), "방어가 좌석 생성 뒤에 있다");
     assert!(la.contains("Err(e) if e.starts_with(ERR_REUSED_UNKNOWN) => created.or(unverified),"), "93 좌석 = 그 좌석(임대 유지)");
+    // 운영 「현재 대화 증거」 = claude 결속 · 그 밖 관측 — 등록 문자열(registered_session_in)은 「다른 대화」 쪽에 쓰지 않는다.
+    let cli = include_str!("session_lease_cli.rs");
+    let now = &cli[cli.find("pub(crate) fn seat_conversation_now(").unwrap()..];
+    let now = code_only(&now[..now.find("\n}\n").unwrap()]);
+    assert!(now.contains("sl::seat_bound_conversation(&store, sid, gen, &sl::probe_holder)") && !now.contains("registered_session_in"), "현재 대화 증거 원천");
+    let cw = &cli[cli.find("    fn seat_conversation(&self, surface_id: u64").unwrap()..];
+    let cw = code_only(&cw[..cw.find("\n    }\n").unwrap()]);
+    assert!(cw.contains("seat_conversation_now(surface_id,") && !cw.contains("org.status"), "풀림 판독 원천이 등록 문자열이다(r5c #1)");
 }
 
 /// r5(codex r4 #3 소비부) — 복원 fresh 안쪽 거절(92·93)도 표준 거절 줄을 낸다(phoenix `_LEASE_REFUSAL_RE` 가 읽는 모양 ·
@@ -951,9 +982,9 @@ fn role_seat_of_unknown_conversation_truth_table() {
 fn restore_inner_refusals_print_the_standard_line() {
     let s = "5e55aaaa-0000-4000-8000-000000000001";
     assert_eq!(restore_inner_refusal_line("w1", Some(s), EXIT_SESSION_LIVENESS_UNKNOWN, Some(7)),
-        "· w1: 대화 5e55aaaa 작성자 생존 판정 불가(seat-unverified) — 띄우지 않음 · 확인: `cys read-screen --surface surface:7` 로 그 좌석이 이 대화를 잇는지 보세요");
+        "· w1: 대화 5e55aaaa-0000-4000-8000-000000000001 작성자 생존 판정 불가(seat-unverified) — 띄우지 않음 · 확인: `cys read-screen --surface surface:7` 로 그 좌석이 이 대화를 잇는지 보세요");
     assert_eq!(restore_inner_refusal_line("w2", Some(s), EXIT_SESSION_WRITER_LIVE, None),
-        "· w2: 대화 5e55aaaa — 그 대화를 잇는 좌석이 이미 있음 — 띄우지 않음 · 확인: 바로 위 [launch-agent] 줄의 좌석을 `cys read-screen` 으로 보세요");
+        "· w2: 대화 5e55aaaa-0000-4000-8000-000000000001 — 그 대화를 잇는 좌석이 이미 있음 — 띄우지 않음 · 확인: 바로 위 [launch-agent] 줄의 좌석을 `cys read-screen` 으로 보세요");
     let src = include_str!("bin/cys.rs");
     let rr = &src[src.find("fn run_restore_with(").unwrap()..];
     let rr = code_only(&rr[..rr.find("\n}\n").unwrap()]);

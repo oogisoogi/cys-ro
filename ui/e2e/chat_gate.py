@@ -48,6 +48,7 @@ CHAT_SHIM = r"""
   const later = (v) => C.fetchLatency > 0 ? new Promise((r) => setTimeout(() => r(v()), C.fetchLatency)) : Promise.resolve(v());
   window.__TAURI__.core.invoke = (cmd, args) => {
     const a = args ?? {};
+    if (cmd === 'org_status' && (a.socket ?? null) === null) C.org = (C.org ?? 0) + 1; // (s79) 조회 수 상한 단언용 계수(main.ts 몫 포함 — 기준 창을 빼서 씀)
     if (cmd === 'org_status' && (a.socket ?? null) === null)
       return orig(cmd, args).then((r) => later(() => ({ ...r, surfaces: (r.surfaces || []).map((s) => (s.role === 'master' ? { ...s, ...C.master, agent_alive: C.master.agent_alive ?? s.agent_alive } : s)) })));
     if (cmd === 'feed_list') { C.calls.push([Date.now(), cmd]); return later(() => ({ items: C.approvals.map((sid) => ({ kind: 'approval', status: 'pending', surface_id: sid })) })); }
@@ -121,6 +122,11 @@ def main() -> int:
         check(st["host"] is True and st["body"] != "none", f"작업 화면 보임 · 대화 자리 숨김 {st['host']} {st['body']}")
         check(st["pressed"] == [["대화 화면", "false"], ["작업 화면", "true"]], f"전환 단추 「대화 화면 | 작업 화면」 · 눌림 = 작업 {st['pressed']}")
         check(st["view"] is None and st["chatCalls"] == 0 and st["cvs"] == 0, f"대화 화면 명령 0 · cys-view 쓰기 0 · 대화 DOM 0 ({st['chatCalls']} · {st['view']})")
+        # (s79 · master#cf75d4e2 ②) org_status 기준 창 — 대화 화면을 켜기 전 30초의 org_status(socket null) 수 = main.ts 몫(뒤 E 에서 빼서 공통층 몫만 셈)
+        o0 = pg.evaluate("() => window.__CHAT.org ?? 0")
+        pg.clock.run_for(30_000)
+        org_base = pg.evaluate("() => window.__CHAT.org ?? 0") - o0
+        check(pg.evaluate("() => window.__CHAT.calls.length") == 0, f"대화 화면을 안 켠 30초 = 대화 화면 조회 0(그대로) · 기준 org_status {org_base}")
 
         print("== B 보내기 1 → 쓰기 1(원자) → 전달됨 → 마스터 답")
         pg.click("#view-switch button[data-view=chat]")
@@ -194,14 +200,28 @@ def main() -> int:
 
         print("== E 전환 왕복 · 초안")
         pg.fill(".cv-input", "쓰다 만 말")
+        writes_before_work = pg.evaluate("() => window.__CHAT.writes.length")
         pg.click("#view-switch button[data-view=work]")
         pg.clock.run_for(100)
         st = pg.evaluate("() => ({ host: document.getElementById('view-host').hidden, body: getComputedStyle(document.getElementById('body-row')).display, cvs: document.querySelectorAll('.cv').length, chatCalls: window.__CHAT.calls.length })")
         check(st["host"] is True and st["body"] != "none" and st["cvs"] == 0, f"작업 화면으로 — 대화 DOM 내림 {st}")
         c0 = st["chatCalls"]
+        org0 = pg.evaluate("() => window.__CHAT.org ?? 0")
         pg.clock.run_for(30_000)
+        org_views = pg.evaluate("() => window.__CHAT.org ?? 0") - org0 - org_base
+        check(org_views <= 11, f"작업 화면 30초 org_status(공통층 몫 = 전체 − 기준 창) ≤ 11 ({org_views})")
         c1 = pg.evaluate("() => window.__CHAT.calls.length")
-        check(c1 == c0, f"작업 화면일 때 대화 화면 조회 0 (30초 · {c1 - c0})")
+        # (s79 · 조각 9 FR-C7 · master 질의 중 기본값 A) 대화 화면을 이번 실행에서 켠 적이 있으면 작업 화면 띠가 같은 자료를 받는다 —
+        #   조회는 feed_list·chat_transcript 만 · 쓰기 0. (대화 화면을 안 켠 실행의 「조회 0」 은 tickrec_gate · s79_gate A 가 지킨다.)
+        calls30 = pg.evaluate(f"() => window.__CHAT.calls.slice({c0})")
+        kinds = {c[1] for c in calls30}
+        w30 = pg.evaluate("() => window.__CHAT.writes.length")
+        check(kinds <= {"feed_list", "chat_transcript"} and w30 == writes_before_work, f"작업 화면일 때 = 쓰기 0 · 조회는 띠 자료 종류만 (30초 · {c1 - c0} · {sorted(kinds)} · 쓰기 {writes_before_work}→{w30})")
+        # (master#cf75d4e2 ②) 조회 수 상한 — 30초에 종류마다 ≤ 11(3초 주기 10회 + 경계 1) · feed_list 간격 ≥ 3초(주기 ≥3초)
+        per = {k: sum(1 for c in calls30 if c[1] == k) for k in kinds}
+        ts = [c[0] for c in calls30 if c[1] == "feed_list"]
+        gaps = [b - a for a, b in zip(ts, ts[1:])]
+        check(all(v <= 11 for v in per.values()) and all(g >= 2_999 for g in gaps), f"작업 화면 조회 상한 30초 종류마다 ≤ 11 · 주기 ≥ 3초 {per} · 최소 간격 {min(gaps) if gaps else None}ms")
         pg.click("#view-switch button[data-view=chat]")
         pg.clock.run_for(100)
         v = pg.evaluate("() => document.querySelector('.cv-input').value")

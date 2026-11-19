@@ -33371,6 +33371,26 @@ mod tests {
         assert_eq!(rr_released(&daemon, me), Value::Null);
     }
 
+    /// T4 예약(독립 검증 빈칸): 미입양 좌석이 쥔 역할은 「거둔 역할 되살림」으로도 주지 않는다 · 예약이 걷히면 같은 호출이 된다(대조).
+    #[test]
+    fn restore_released_refuses_role_reserved_by_unadopted_seat() {
+        let daemon = isolated_daemon();
+        let role = "t4res-restore";
+        let seat = rr_seat(&daemon, Some(role));
+        crate::governance::persist_topology(&daemon);
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &seat));
+        *seat.agent_dead_since.lock().unwrap() = Some(1.0);
+        let reserve = crate::seat_adopt::test_reserve_role(role);
+        let resp = rr_restore(&daemon, seat.id, role, None);
+        assert_eq!(resp["ok"], json!(false), "예약 역할을 되살렸다: {resp}");
+        assert_eq!(resp["error"]["code"], json!("role_not_restorable"));
+        assert!(resp["error"]["message"].as_str().unwrap_or_default().contains("seat_adopt_reserved"), "{resp}");
+        assert_eq!(seat.role.lock().unwrap().as_deref(), None);
+        drop(reserve);
+        let resp = rr_restore(&daemon, seat.id, role, None);
+        assert_eq!(resp["ok"], json!(true), "대조(예약 걷힘) 가 되살리지 못함: {resp}");
+    }
+
     /// 복구: 좌석이 역할을 되찾고, 저장 핀은 같은 대화로 남고, 또 죽으면 다시 거둔 상태가 된다.
     #[test]
     fn restore_released_gives_the_role_back_and_keeps_the_pin() {
@@ -35461,6 +35481,29 @@ mod tests {
     /// 지나지 않았고**(그 케이스는 후보 술어에 먼저 걸려 다른 사유로 끝났다) ②케이스 사이에
     /// 상태를 손으로 되돌렸으며 ③큐·caps·영속·이벤트를 아예 비교하지 않았다. 그래서 "부분 적용
     /// 0"이라는 주장이 실측된 적이 없었다 — 취소 직전에 큐를 옮기는 회귀를 넣어도 초록이었다.
+    /// T4 예약(독립 검증 빈칸): 미입양 좌석이 쥔 역할은 승계(reclaim)로도 주지 않는다 — 상태 불변 · 예약이 걷히면 같은 호출이 결합(대조).
+    #[test]
+    fn reclaim_commit_refuses_role_reserved_by_unadopted_seat() {
+        let _env = rc_env_lock();
+        let daemon = isolated_daemon();
+        let role = "t4res-reclaim";
+        let old = reclaim_seat(&daemon, role, RC_CWD, None, false);
+        let me = reclaim_caller(&daemon, RC_CWD, 970_131);
+        let reserve = crate::seat_adopt::test_reserve_role(role);
+        let base = reclaim_state(&daemon);
+        assert_eq!(
+            reclaim_commit(&daemon, me, role, old, &rc_axes(me), false, None, None, Some(crate::state::now_epoch() + 60.0)),
+            Err("seat_adopt_reserved")
+        );
+        assert_eq!(reclaim_state(&daemon), base, "예약 거절에서 상태가 바뀌었다");
+        drop(reserve);
+        assert_eq!(
+            reclaim_commit(&daemon, me, role, old, &rc_axes(me), false, None, None, Some(crate::state::now_epoch() + 60.0)),
+            Ok(role.to_string()),
+            "대조(예약 걷힘)가 결합하지 못함"
+        );
+    }
+
     #[test]
     fn reclaim_commit_aborts_on_every_race_without_partial_effect() {
         let _env = rc_env_lock();

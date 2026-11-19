@@ -21,7 +21,7 @@ use crate::state::{Daemon, Surface};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// 좌석 기록 파일 꼬리(seatkeep 의 `<id>.json` 등록부와 구별 — seatkeep 은 이 이름을 보지 않는다).
@@ -571,7 +571,7 @@ fn with_live_pending<T>(f: impl FnOnce(&[Pending]) -> T) -> T {
 /// 부르는 입구 = `surface.create`(요청 역할) · `system.claim_role` · `reclaim_commit` · `role.restore_released` — 역할을 주는 길 전부
 /// (독립 검증 T4 차단: 입구가 surface.create 하나뿐이면 역할 없이 만든 좌석이 claim 으로 같은 역할을 받아 작성자가 둘). 노브 끔 = 늘 None.
 pub(crate) fn role_grant_blocked(role: &str) -> Option<String> {
-    if !enabled() {
+    if !gate_on() {
         return None;
     }
     with_live_pending(|g| blocked_by(g, Some(role)))
@@ -580,7 +580,48 @@ pub(crate) fn role_grant_blocked(role: &str) -> Option<String> {
 /// worker 번호 배정(`dedup_worker_role_avoiding`)이 피할 이름 — **정확히 그 이름**으로 예약된 미결만. 역할 모르는 미결(모든 역할 거절)은
 /// 위 입구 판정이 맡는다(여기 넣으면 모든 번호가 막혀 배정이 끝나지 않는다). 노브 끔 = 늘 거짓.
 pub(crate) fn role_name_reserved(name: &str) -> bool {
-    enabled() && with_live_pending(|g| g.iter().any(|p| p.role.as_deref() == Some(name)))
+    gate_on() && with_live_pending(|g| g.iter().any(|p| p.role.as_deref() == Some(name)))
+}
+
+/// 예약 판정 켬 = 노브(프로세스 시작 때 한 번 읽음) ∨ 시험 전용 예약이 걸려 있음(운영 = `cfg!(test)` 거짓 → 안 봄 · 값 분기).
+fn gate_on() -> bool {
+    enabled() || (cfg!(test) && TEST_RESERVES.load(Ordering::SeqCst) > 0)
+}
+
+/// 시험 전용 예약 수(`test_reserve_role` 손잡이가 살아 있는 동안 > 0).
+static TEST_RESERVES: AtomicUsize = AtomicUsize::new(0);
+
+/// 시험 전용(운영 = 아무것도 안 함): 이 시험 프로세스 자신을 seatkeep 으로 하는 미결 1개로 `role` 을 예약한다 — 입구마다 「예약 역할에 닿는가」를
+/// 재는 단위 시험용. 다른 시험과 겹치지 않게 고유 역할 이름을 쓴다(역할을 아는 예약은 그 이름만 막는다). 손잡이가 떨어지면 걷는다.
+#[allow(dead_code)]
+pub(crate) fn test_reserve_role(role: &str) -> TestReserve {
+    let skid = format!("test-{}-{role}", std::process::id());
+    if cfg!(test) {
+        let me = std::process::id();
+        PENDING.lock().unwrap_or_else(|e| e.into_inner()).push(Pending {
+            skid: skid.clone(),
+            role: Some(role.to_string()),
+            pid: Some(me),
+            start_us: process_start_us(me),
+            until: None,
+        });
+        TEST_RESERVES.fetch_add(1, Ordering::SeqCst);
+    }
+    TestReserve { skid }
+}
+
+/// `test_reserve_role` 손잡이.
+pub(crate) struct TestReserve {
+    skid: String,
+}
+
+impl Drop for TestReserve {
+    fn drop(&mut self) {
+        if cfg!(test) {
+            PENDING.lock().unwrap_or_else(|e| e.into_inner()).retain(|p| p.skid != self.skid);
+            TEST_RESERVES.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
 }
 
 /// `surface.create` 입구 — 요청 역할에 대한 `role_grant_blocked`(역할 없는 생성 = None).

@@ -9,7 +9,9 @@ rc 93 생존 판정 불가)을 phoenix 가 재시도·독약 fresh(새 대화)�
   P  대조군: 임대 줄 없는 실패 = 독약 fresh 강등 유지(restore 4 · fresh 1)
   L1 「작성자 살아 있음」 줄 → restore 1(재시도 0) · fresh 0 · 저널 lease_held(writer_live) · spawn 미완
   L2 「생존 판정 불가」 줄 → fresh 0 · 사유 liveness_unknown
-  M  뮤턴트 1(임대 줄 읽기 제거 · 변이 적용 선-assert) → L1 적색
+  L3 「작성자 살아 있음」 + 그 역할 좌석이 이미 섬(다른 복원 경로) → spawn 완료 · 보류 아님 · fresh 0(독립 검증 V2)
+  L4 「생존 판정 불가」 + 그 역할 좌석이 섬 → 여전히 보류(93 은 사람 단계)
+  M  뮤턴트 1(임대 줄 읽기 제거 · 변이 적용 선-assert) → L1 적색 · 뮤턴트 2(V2 예외 제거) → L3 적색
 
 실행: python3 cysjavis-pack/bin/tests/test_phoenix_seatkeep_t1_lease_hold.py → 종료 토큰 PHOENIX-SEATKEEP-T1-LEASE-HOLD-OK
 """
@@ -49,7 +51,7 @@ UNK_OUT = ("· master: 대화 5e55aaaa 작성자 생존 판정 불가(probe:proc
            "restore 완료: 재기동 0 · 실패 0 · 관문 보류 0 · journal refused 0 · outcome unknown 0 · 현황 `cys status` · 대화 작성자 살아 있음 0 · 생존 판정 불가 1")
 
 
-def scenario(src, tmp, tag, extra_entry, out):
+def scenario(src, tmp, tag, extra_entry, out, live_after=None):
     """죽은 master 1명 부활 1사이클 — 반환 = (restore 호출 수, fresh 호출 수, 마지막 저널)."""
     d = tempfile.mkdtemp(prefix=tag + "-", dir=tmp)
     m = load_src(src, "ph_" + tag, d)
@@ -80,6 +82,8 @@ def scenario(src, tmp, tag, extra_entry, out):
 
     def _restore(s, roles, include_master=False, cwd=None, **_kw):
         calls["restore"] += 1          # Rust 가 그 역할을 띄우지 않았다(실패 또는 기동 중단) — 좌석 0
+        if live_after is not None:     # 겹친 다른 복원 경로가 그 역할을 살림(V2)
+            st["live"] = live_after
         return {"rc": 1, "out": out}
     m.spawn_production = _restore
     m.spawn_in_seat_production = lambda s, include_master=False, cwd=None, units=None: {"rc": 1, "out": "stub"}
@@ -160,6 +164,14 @@ def axes(src, tmp, tag, sink=None):
     ev = held_events(j)
     check("L2 생존 판정 불가 = fresh 0 · 사유 liveness_unknown",
           f == 0 and len(ev) >= 1 and "liveness_unknown" in ev[0].get("msg", ""), (f, ev), sink)
+    up = {"master": [{"surface": "surface:7", "pid": None, "exited": False, "agent_alive": True, "seat": "occupied"}]}
+    r, f, j = scenario(src, tmp, tag + "l3", {}, LIVE_OUT, live_after=up)
+    spawn = ((j or {}).get("roles", {}).get("master", {}).get("stages", {}).get("spawn") or {})
+    check("L3 작성자 살아 있음 + 그 역할 좌석이 섬 = 보류 아님(spawn 완료 · fresh 0 · 저널 lease_held 0)",
+          spawn.get("done") is True and f == 0 and not held_events(j), (spawn, f, held_events(j)), sink)
+    r, f, j = scenario(src, tmp, tag + "l4", {}, UNK_OUT, live_after=up)
+    spawn = ((j or {}).get("roles", {}).get("master", {}).get("stages", {}).get("spawn") or {})
+    check("L4 판정 불가 + 좌석이 섬 = 그대로 보류", spawn.get("done") is False and len(held_events(j)) >= 1, spawn, sink)
 
 
 def main():
@@ -177,6 +189,13 @@ def main():
         sink = []
         axes(src.replace(a, "            for _r, _why in []:\n"), tmp, "m1", sink=sink)
         check("M1 임대 줄 읽기 제거 → KILLED(L1 축 적색)", any(x.startswith("L1") for x in sink), "적색=%s" % sink)
+    b = '                if (role in session_lease_held and session_lease_held[role].startswith("writer_live")\n'
+    n2 = src.count(b)
+    check("M2 V2 예외 제거 변이 적용 선-assert(정확 1곳)", n2 == 1, "count=%d" % n2)
+    if n2 == 1:
+        sink = []
+        axes(src.replace(b, '                if (False and role in session_lease_held and session_lease_held[role].startswith("writer_live")\n'), tmp, "m2", sink=sink)
+        check("M2 V2 예외 제거 → KILLED(L3 축 적색)", any(x.startswith("L3") for x in sink), "적색=%s" % sink)
     if fails:
         print("FAIL 합계 %d: %s" % (len(fails), fails))
         sys.exit(1)

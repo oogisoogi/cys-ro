@@ -26,6 +26,8 @@ struct Box_ {
     no_reg: bool,
     /// 가짜 claude 가 이 파일이 생길 때까지 등록을 미룬다(`FAKE_REG_GATE` · 정상 기동 직후 등록 전 창 · r5b).
     reg_gate: Option<PathBuf>,
+    /// 가짜 claude 가 이 파일이 생기면 좌석 안 `claude -p` 헬퍼를 띄워 새 대화로 등록한다(`FAKE_HELPER_GATE` · 독립 검증 V1).
+    helper_gate: Option<PathBuf>,
 }
 
 impl Box_ {
@@ -55,7 +57,7 @@ impl Box_ {
         let entries = vec![json!({"role": ROLE, "agent": "claude", "cwd": proj, "session_id": sid,
                                   "claude_config_dir": cfg})];
         std::fs::write(base.join("run/topology.json"), json!({"entries": entries}).to_string()).unwrap();
-        Self { sock: base.join("run/cysd.sock"), base, path, sid, role: ROLE.into(), owns_base: true, no_reg: false, reg_gate: None }
+        Self { sock: base.join("run/cysd.sock"), base, path, sid, role: ROLE.into(), owns_base: true, no_reg: false, reg_gate: None, helper_gate: None }
     }
 
     /// 같은 상자(같은 HOME = 같은 임대 폴더 · 같은 프로젝트 폴더)의 **두 번째 데몬**(소켓·상태 폴더 `run2`).
@@ -73,7 +75,7 @@ impl Box_ {
         }
         let entries = vec![json!({"role": role, "agent": "claude", "cwd": proj, "session_id": sid, "claude_config_dir": cfg})];
         std::fs::write(run.join("topology.json"), json!({"entries": entries}).to_string()).unwrap();
-        Self { sock: run.join("cysd.sock"), base: self.base.clone(), path: self.path.clone(), sid, role: role.into(), owns_base: false, no_reg: self.no_reg, reg_gate: self.reg_gate.clone() }
+        Self { sock: run.join("cysd.sock"), base: self.base.clone(), path: self.path.clone(), sid, role: role.into(), owns_base: false, no_reg: self.no_reg, reg_gate: self.reg_gate.clone(), helper_gate: self.helper_gate.clone() }
     }
 
     /// 이 대화의 임대 파일(상자 HOME 의 임대 폴더 · 키 = sha256("v1\0" + 소문자 id)).
@@ -105,6 +107,9 @@ impl Box_ {
         }
         if let Some(g) = &self.reg_gate {
             c.env("FAKE_REG_GATE", g);
+        }
+        if let Some(g) = &self.helper_gate {
+            c.env("FAKE_HELPER_GATE", g);
         }
         // 가짜 claude 의 등록 명령 = 이 시험이 지은 cys(절대 경로) — 좌석 셸은 로그인 셸이라 PATH 가 재정렬돼 맨 `cys` 가
         //   설치본(/usr/local/bin/cys · T1 없음)으로 풀렸다(skt1 실측: 등록이 T1 follow 를 한 번도 안 거침).
@@ -846,4 +851,75 @@ fn a_stale_registration_after_an_agent_swap_never_frees_the_saved_restore() {
     let seats = b.role_seats();
     eprintln!("SR rc={:?} W=surface:{w} oldT={reg_t} W2={:?} seats={seats:?} writers={}", o3.status.code(), seat_of(&o3), writers.len());
     assert_eq!((o3.status.code(), seats, writers.len()), (Some(92), vec![w], 0), "에이전트 교체 뒤 낡은 등록으로 unknown@W 를 풀었다(r5c #1-1): {}", out(&o3));
+}
+
+/// 상자 임대 폴더에서 작성자 pid `pid` 가 쥔 작성 중(held) 임대의 대화 id 들.
+fn held_by(b: &Box_, pid: i32) -> Vec<String> {
+    let dir = b.base.join("home/.local/state/cys/session-leases");
+    let mut v: Vec<String> = std::fs::read_dir(&dir).into_iter().flatten().flatten()
+        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("lease"))
+        .filter_map(|e| serde_json::from_str::<Value>(std::fs::read_to_string(e.path()).ok()?.trim()).ok())
+        .filter(|l| l["state"] == "held" && l["writer"]["pid"].as_i64() == Some(pid as i64))
+        .filter_map(|l| l["id"].as_str().map(String::from))
+        .collect();
+    v.sort();
+    v
+}
+
+/// skt1(독립 검증 V1 · r5c #1-3 행동 시험) — 좌석 W 의 최상위 claude 가 T 로 결속된 뒤 **좌석 안 `claude -p` 헬퍼**가 자기 대화 H 를
+/// 훅 이름 셸에서 등록해도(데몬 등록 칸 = H) 결속은 T 그대로다 — 계통(에이전트 실행 2개)이 「좌석 최상위 훅 아님」이라 follow·등록 앞 결속 해제
+/// 둘 다 하지 않는다. 고치기 전(계통 거름 없음 · 또는 계통 수집 누락): 결속이 H 로 옮겨지고 T 임대가 지워짐(T 복원 = 작성자 둘 가능).
+#[test]
+fn a_helper_registration_inside_the_seat_never_moves_the_binding() {
+    if std::env::var("CYS_SESSION_LEASE").is_ok_and(|v| v == "off") {
+        return; // 임대 판정 시험
+    }
+    let mut b = Box_::new("hr");
+    let gate = b.base.join("reg-gate");
+    let hgate = b.base.join("helper-gate");
+    b.reg_gate = Some(gate.clone());
+    b.helper_gate = Some(hgate.clone());
+    b.up();
+    let proj = b.base.join("proj").to_string_lossy().into_owned();
+    let o1 = b.cys(&["launch-agent", "--role", ROLE, "--agent", "claude", "--cwd", &proj]);
+    let w = seat_of(&o1).unwrap_or_else(|| panic!("W 기동: {}", out(&o1)));
+    let t = Instant::now();
+    while b.fakes().is_empty() && t.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    std::fs::write(&gate, "").unwrap(); // 최상위 claude 의 SessionStart 등록(T) = 결속
+    let t0 = Instant::now();
+    let reg_t = loop {
+        if let Some(r) = daemon_registered(&b, w) {
+            break r;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(30), "전제: W 등록이 안 보임");
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    // 최상위 claude = 헬퍼 대기 자식(fork · 같은 argv)의 부모 — 결속 작성자는 그 하나다.
+    let t1 = Instant::now();
+    let top = loop {
+        let tops: Vec<i32> = b.fakes().into_iter().filter(|p| held_by(&b, *p) == vec![reg_t.clone()]).collect();
+        if tops.len() == 1 {
+            break tops[0];
+        }
+        assert!(t1.elapsed() < Duration::from_secs(20), "전제: 최상위 claude 의 T 결속이 안 생김 · fakes={:?} · {}", b.fakes(), b.fake_log());
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    std::fs::write(&hgate, "").unwrap(); // 좌석 안 헬퍼가 새 대화 H 를 등록
+    let t2 = Instant::now();
+    let reg_h = loop {
+        match daemon_registered(&b, w) {
+            Some(r) if r != reg_t => break r,
+            _ => {}
+        }
+        assert!(t2.elapsed() < Duration::from_secs(30), "전제: 헬퍼 등록이 데몬에 안 보임 · {}", b.fake_log());
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    std::thread::sleep(Duration::from_millis(800)); // 등록 명령의 임대 처리(출력 0)가 끝날 틈
+    let held = held_by(&b, top);
+    eprintln!("HR W=surface:{w} top={top} T={reg_t} H={reg_h} held={held:?}");
+    assert_eq!(held, vec![reg_t.clone()], "좌석 안 헬퍼 등록(H={reg_h})이 최상위 작성자의 결속 T 를 옮기거나 풀었다(r5c #1-3 · V1)");
+    let all_h: Vec<i32> = b.fakes().into_iter().filter(|p| held_by(&b, *p).contains(&reg_h)).collect();
+    assert!(all_h.is_empty(), "헬퍼 대화 H 가 누군가의 결속이 됐다: {all_h:?}");
 }

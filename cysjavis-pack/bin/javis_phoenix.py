@@ -3755,6 +3755,12 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
             _units_view = live2
             still = []
             for role in need:
+                # ★skt1(독립 검증 V2): 「작성자 살아 있음」(92) 인데 그 역할 좌석이 이미 섰다 = 겹친 다른 복원 경로(콜드부트 사이드카 등)가
+                #   그 대화로 살렸다 — 보류(INCOMPLETE)로 세지 않고 아래 생존 판정으로 간다. 판정 불가(93)는 그대로 보류(사람 단계).
+                if (role in session_lease_held and session_lease_held[role].startswith("writer_live")
+                        and role not in _failed_now and any(_revived_seat(s) for s in live2.get(role, []))):
+                    jevent(j, role, "spawn", "lease_live_elsewhere", "대화 임대 거절(작성자 살아 있음)이나 그 역할 좌석이 섰음 — 다른 경로가 복원")
+                    session_lease_held.pop(role)
                 if role in session_lease_held:
                     j["roles"].setdefault(role, {"stages": {}})["restore_held"] = session_lease_held[role]
                     mark_stage(j, role, "spawn", False, "복원 보류(대화 임대: %s) — 재시도·새 대화 폴백 안 함" % session_lease_held[role])

@@ -6652,6 +6652,8 @@ fn run(command: Command) -> i32 {
                 if let Some(src) = source {
                     params["source"] = json!(src);
                 }
+                // ★skt1(codex 1R #2B): 등록 **앞** — 좌석 최상위 훅이면 그 작성자의 다른 대화 결속을 결과 불명으로(등록이 실패해도 옛 결속이 남지 않게 · 출력 0).
+                lease_transition_before_register(sid, &tp);
                 request("usage.register", params).map(|_| {
                     lease_follow_on_register(sid, &tp); // ★seatkeep-t1 조건 ②: 대화가 바뀌면 임대가 따라간다(출력 0)
                     println!("OK")
@@ -17390,6 +17392,11 @@ fn boot_agent_on_surface(
     // ★(0.14.42 · 통합 minor 정리) node-recover 의 기존 좌석(에이전트 등록 유지)에 비권위 호출자가 기동 명령을 넣으면 제출
     //   정착 게이트를 지난다 — 정착 증명 거부는 `cys send` 와 같은 예산 안에서 다시 보낸다(권위 면제면 첫 요청 그대로).
     // ★(B-360 R2 revise · which write) a REFUSED / UNKNOWN of these two launch writes is tagged as the launch write
+    // ★skt1(codex 1R #2A): 저장 대화를 잇는 기동 글은 같은 잠금 안의 마지막 확인(임대가 아직 내 것 · 같은 역할 좌석 재판정) 뒤에만 친다 —
+    //   좌석을 만든 뒤 다른 좌석이 좌석 안 `/resume` 으로 이 대화에 들어갔으면 그 좌석의 검증된 등록이 임대를 가져가 여기서 멈춘다(기동 글 0).
+    if effective_resume {
+        lease_commit_launch(role, agent, session_id, sid)?;
+    }
     authoritative_paste_settled(
         |p| request("surface.send_text", p),
         // (1.1.8 병합: 우리 v116 표지를 한 줄 안·`authoritative` 앞에 둔다 — 원작자 소스 핀이 `"authoritative": true})` 줄을 센다.)
@@ -20963,7 +20970,7 @@ fn run_launch_agent_opts(
         //   「다른 대화」 확인 = 에이전트별 현재 대화 증거(claude = 작성자 결속 · 그 밖 = 데몬 관측)만 · 등록 문자열로 풀지 않는다.
         //   판정 불가 rc 93 · 임대 = 그 좌석(결과 불명 유지).
         if resume {
-            match lease_role_seat_verdict(role, agent, session_id.as_deref()) {
+            match lease_role_seat_verdict(role, agent, session_id.as_deref(), None) {
                 Ok(RoleSeat::Clear) => {}
                 Ok(RoleSeat::ThisConversation { seat: w, by }) => {
                     if lease_note_surface(session_id.as_deref(), w).is_ok() {
@@ -56984,6 +56991,15 @@ mod b360_tests {
     fn p1_lease_knob(envs: &mut Vec<(&'static str, std::ffi::OsString)>) {
         let on = P1_LEASE_ON.with(|c| c.get());
         envs.push(("CYS_SESSION_LEASE", std::ffi::OsString::from(if on { "on" } else { "off" })));
+        // ★skt1(독립 검증 V5): 켬이면 자식의 임대 폴더(`$HOME/.local/state/cys/session-leases`)를 이 시험 상자 안으로 — 공유 HOME 에 앞 회차가 남긴
+        //   임대에 기대어 초록이 되지 않게(새 폴더에서 보류 사유를 이 시험이 직접 만든다 = 가짜 데몬의 빈 `system.identify` → 세대 판독 불가 93).
+        if on {
+            let pack = envs.iter().find(|(k, _)| *k == "CYS_PACK_DIR").map(|(_, v)| std::path::PathBuf::from(v)).expect("CYS_PACK_DIR");
+            let home = pack.parent().expect("상자").join(format!("lease-home-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&home);
+            std::fs::create_dir_all(&home).unwrap();
+            envs.push(("HOME", home.into_os_string()));
+        }
     }
 
     /// skt1: 대화 임대 켬 + 임대 판정 조회에 답하지 않는 데몬 — 좌석 없는 boot 의 저장 핀 기동은 새 좌석·새 대화 없이 보류(resume_held ·
@@ -56999,8 +57015,8 @@ mod b360_tests {
         assert_eq!(worker["outcome"], "resume_held", "{worker}\n{text}");
         assert_eq!(r2c_count(&calls, "surface.create"), 0, "임대 판정 불가인데 새 좌석을 만들었다");
         assert_eq!(report["summary"]["fatal_failed"], 0, "치명 실패로 셌다");
-        // 사유 낱말은 부하·순서에 따라 다를 수 있다(daemon:unreachable · lease:lock:timeout …) — 불변식 = 임대 거절 줄 + 비파괴 보류.
-        assert!(text.contains("작성자 생존 판정 불가("), "임대 거절 사유 줄이 없다:\n{text}");
+        // 새 임대 폴더(독립 검증 V5) — 보류 사유 = 가짜 데몬이 세대(`system.identify`)를 안 줌 → 관문이 세대 없는 임대를 만들지 않고 멈춤(V6).
+        assert!(text.contains("작성자 생존 판정 불가(daemon:gen-unreadable)"), "임대 거절 사유 줄이 없다:\n{text}");
         assert_eq!(rc, 0, "{text}");
     }
 

@@ -4271,8 +4271,13 @@ async fn run_sidecar_restore_judged(
     } else {
         let gen = read_daemon_gen(socket.clone()).await;
         let ids: Vec<String> = first93.iter().map(|(_, sid)| sid.clone()).collect();
-        let held = tokio::task::spawn_blocking(move || restore_lease_held(&ids)).await.unwrap_or_default();
-        (read_topology_live(socket).await, gen, held)
+        let ids2 = ids.clone();
+        let before = tokio::task::spawn_blocking(move || restore_lease_held(&ids)).await.unwrap_or_default();
+        let live = read_topology_live(socket).await;
+        // ★skt1(codex 1R #4): topology 판독 **뒤** 같은 임대를 다시 읽는다 — 그 사이 `/clear`·에이전트 교체·follow 로 결속이 바뀌면
+        //   (fence·token·작성자 중 하나라도 다름 · 사라짐) 증거가 아니다(첫 93 유지).
+        let after = tokio::task::spawn_blocking(move || restore_lease_held(&ids2)).await.unwrap_or_default();
+        (live, gen, restore_held_stable(before, after))
     };
     let held_of = |sid: &str| held.iter().find(|(s, _)| s == sid).and_then(|(_, h)| h.clone());
     restore_judge_two((ok, summary, first93), second, live.as_deref(), gen.as_deref(), &held_of)
@@ -4285,14 +4290,29 @@ async fn read_daemon_gen(socket: Option<std::path::PathBuf>) -> Option<String> {
     Some(format!("{}-{}", v["daemon_pid"].as_u64()?, v["started_at"].as_f64()?))
 }
 
-/// 대화마다 산 작성자 결속(좌석 · 데몬 세대) — 임대 폴더 판독(cys 와 같은 폴더) · 판독 불가 = None(확인 못 함 = 첫 93 유지).
-fn restore_lease_held(ids: &[String]) -> Vec<(String, Option<(u64, Option<String>)>)> {
+/// 대화마다 산 작성자 결속의 신원 전체(좌석 · 데몬 세대 · fence · token · 작성자) — 임대 폴더 판독(cys 와 같은 폴더) · 판독 불가 = None(확인 못 함 = 첫 93 유지).
+fn restore_lease_held(ids: &[String]) -> Vec<(String, Option<cys::session_lease::HeldProof>)> {
     let root = cys::session_lease::default_root(&cys::home_dir(), cfg!(windows), std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from));
     let store = cys::session_lease::Store::open(&root).ok();
     ids.iter()
         .map(|id| {
-            let h = store.as_ref().and_then(|st| cys::session_lease::held_by_live_writer(st, id, &cys::session_lease::probe_holder).ok().flatten());
+            let h = store.as_ref().and_then(|st| cys::session_lease::held_proof(st, id, &cys::session_lease::probe_holder).ok().flatten());
             (id.clone(), h)
+        })
+        .collect()
+}
+
+/// topology 앞·뒤 두 판독 → 대화마다 둘이 같은 결속일 때만 (좌석 · 데몬 세대)(순수 · codex 1R #4).
+fn restore_held_stable(
+    before: Vec<(String, Option<cys::session_lease::HeldProof>)>,
+    after: Vec<(String, Option<cys::session_lease::HeldProof>)>,
+) -> Vec<(String, Option<(u64, Option<String>)>)> {
+    before
+        .into_iter()
+        .map(|(id, b)| {
+            let a = after.iter().find(|(i, _)| *i == id).and_then(|(_, h)| h.clone());
+            let st = cys::session_lease::held_proof_stable(b, a).map(|p| (p.surface_id, p.daemon_gen));
+            (id, st)
         })
         .collect()
 }
@@ -9715,6 +9735,36 @@ mod tests {
         let two = &prod[prod.find("fn restore_judge_two(").unwrap()..];
         let two = &two[..two.find("\n}\n").unwrap()];
         assert!(!two.contains("session_id") && !two.contains("starts_with"), "두 회차 판정이 topology session_id·접두를 읽는다");
+    }
+
+    /// skt1(codex 1R #4 · 순서 주입) — 「복원됨」 증거 = topology 판독 **앞뒤** 두 결속 판독이 같을 때만: 사이에 `/clear`(결속 소멸) ·
+    /// 작성자 교체 · 다시 잡힘(fence·token) 이면 첫 93 유지 · 배선 = 앞 판독 → topology → 뒤 판독 순.
+    #[test]
+    fn skt1_restored_proof_must_survive_the_topology_read() {
+        use cys::session_lease::{HeldProof, Holder};
+        const S: &str = "5e55aaaa-0000-4000-8000-000000000001";
+        let p = |fence: u64, tok: &str, pid: u32| HeldProof { surface_id: 7, daemon_gen: Some("100-1.5".into()), fence, token: tok.into(), writer: Holder { pid, birth_s: 1, birth_us: 0 } };
+        let first_out = format!("· w: 대화 {S} 작성자 생존 판정 불가(seat-unverified) — 띄우지 않음 · 확인: x\nrestore 완료: 재기동 1 · 실패 0 · 관문 보류 0 · 현황 `cys status` · 대화 작성자 살아 있음 0 · 생존 판정 불가 1\n");
+        let s = |ok, unknown| Some(RestoreSummary { ok, fail: 0, gated: 0, live: 0, unknown, remeasure_failed: false });
+        let first = (false, s(1, 1), parse_restore_unknown_refusals(&first_out));
+        let second = (true, s(0, 0), Vec::new());
+        let live = vec![json!({"surface_id": 7, "role": "w", "seat": "occupied", "session_id": null})];
+        let judge = |before: Option<HeldProof>, after: Option<HeldProof>| {
+            let held = restore_held_stable(vec![(S.to_string(), before)], vec![(S.to_string(), after)]);
+            let held_of = |sid: &str| held.iter().find(|(x, _)| x == sid).and_then(|(_, h)| h.clone());
+            restore_judge_two(first.clone(), second.clone(), Some(&live), Some("100-1.5"), &held_of).1.map(|x| x.unknown)
+        };
+        assert_eq!(judge(Some(p(3, "a", 50)), Some(p(3, "a", 50))), Some(0), "같은 결속(앞뒤)인데 풀지 않았다");
+        assert_eq!(judge(Some(p(3, "a", 50)), None), Some(1), "topology 판독 사이 결속이 사라졌는데(/clear) 「복원됨」(codex 1R #4)");
+        assert_eq!(judge(Some(p(3, "a", 50)), Some(p(3, "a", 51))), Some(1), "사이에 작성자가 바뀌었는데 「복원됨」");
+        assert_eq!(judge(Some(p(3, "a", 50)), Some(p(4, "b", 50))), Some(1), "사이에 다시 잡혔는데 「복원됨」");
+        // 배선: 앞 판독 → topology → 뒤 판독 → 안정 판정.
+        let src = include_str!("main.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").unwrap()];
+        let rj = &prod[prod.find("async fn run_sidecar_restore_judged(").unwrap()..];
+        let rj = &rj[..rj.find("\n}\n").unwrap()];
+        let (a, t, b, st) = (rj.find("let before = ").unwrap(), rj.find("read_topology_live(socket)").unwrap(), rj.find("let after = ").unwrap(), rj.find("restore_held_stable(before, after)").unwrap());
+        assert!(a < t && t < b && b < st, "결속 판독이 topology 앞뒤에 있지 않다");
     }
 
     /// ★seatkeep-t1(codex 3R ③): 부서 생산 경로(`dept_restore_lease_note` 선행 필터)를 지나서도 관문이 숨지 않는다 — 판정문 재현:

@@ -2,6 +2,8 @@
 // --resume/--continue 를 따르고 · SessionStart 등록(cys usage-register · 훅 이름 session-start.sh 셸 아래)을 --resume 일 때 FAKE_BOOT 초 뒤에 · set-status waiting · [DRAIN-VERIFY] 체크포인트 저장.
 // FAKE_NEW_SID = 재개해도 새 세션 id 로 등록(세션이 채워졌는데 다른 경우).
 // FAKE_NO_REG = 등록·대화 파일 0(훅 부재 좌석 · seatkeep-t1 r5 codex r4 #1 재현).
+// FAKE_HELPER_GATE = 그 파일이 생기면 자식이 이 실행 파일을 `claude -p` 헬퍼로 다시 띄운다(FAKE_HELPER=1 · 새 대화 id 로 훅 이름 셸에서 등록하고 끝남 ·
+//   좌석 안 헬퍼 등록 · skt1 독립 검증 V1 = 계통 거름의 행동 시험).
 // FAKE_REG_GATE = 화면은 띄우고 등록만 그 파일이 생길 때까지(최대 120초) 자식 셸(이름 session-start.sh)에서 미룬다(정상 기동 직후 SessionStart 등록 전 창 · seatkeep-t1 r5b).
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,6 +14,7 @@ static void slug(const char *c, char *o) { for (; *c; c++, o++) *o = ((*c >= 'a'
 int main(int ac, char **av) {
   char sid[128] = "", cwd[900], sl[900], pd[2000], cmd[4000], tp[2200];
   int cont = 0;
+  int helper = getenv("FAKE_HELPER") != NULL;
   for (int i = 1; i < ac; i++) { if (!strcmp(av[i], "--resume") && i + 1 < ac) snprintf(sid, sizeof sid, "%s", av[i + 1]); if (!strcmp(av[i], "--continue")) cont = 1; }
   getcwd(cwd, sizeof cwd); slug(cwd, sl);
   const char *cd = getenv("CLAUDE_CONFIG_DIR");
@@ -30,6 +33,9 @@ int main(int ac, char **av) {
   if (noreg) snprintf(cmd, sizeof cmd, "'%s' set-status --state waiting >/dev/null 2>&1", cy); else
   // 진짜 claude 처럼 SessionStart 훅 스크립트(이름 session-start.sh) 아래에서 등록한다 — cys follow 의 계통 판정(skt1 · 헬퍼·도구 셸 거름)이 보는 모양.
   snprintf(cmd, sizeof cmd, "exec /bin/sh -c '\"$2\" usage-register --transcript \"$1\" >/dev/null 2>&1; \"$2\" set-status --state waiting >/dev/null 2>&1' session-start.sh '%s' '%s'", tp, cy);
+  if (helper) { system(cmd); return 0; } // 헬퍼 = 등록하고 끝(화면·tty 0)
+  const char *hg = getenv("FAKE_HELPER_GATE");
+  if (hg && *hg) { if (fork() == 0) { for (int i = 0; i < 1200 && access(hg, F_OK) != 0; i++) usleep(100000); setenv("FAKE_HELPER", "1", 1); unsetenv("FAKE_REG_GATE"); execlp(av[0], "claude", "-p", "hi", (char *)0); _exit(0); } }
   const char *gate = getenv("FAKE_REG_GATE");
   // 미룬 등록도 훅 이름 셸에서(자식 = sh · claude 실행 파일 아님 — 같은 실행 파일 자식이면 계통이 「에이전트 2 = 헬퍼」로 보인다 · skt1).
   if (gate && *gate && !noreg) { if (fork() == 0) { execl("/bin/sh", "sh", "-c", "i=0; while [ ! -e \"$3\" ] && [ $i -lt 1200 ]; do sleep 0.1; i=$((i+1)); done; \"$2\" usage-register --transcript \"$1\" >/dev/null 2>&1; \"$2\" set-status --state waiting >/dev/null 2>&1", "session-start.sh", tp, cy, gate, (char *)0); _exit(0); } } else system(cmd);

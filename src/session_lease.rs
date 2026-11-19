@@ -93,6 +93,11 @@ pub struct Lease {
     pub daemon_gen: Option<String>,
     pub cfg: Option<String>,
     pub at: u64,
+    /// 복원기가 그 좌석에 **저장 대화를 잇는 기동 글을 치기로 확정**했다(skt1 · codex 1R #2 — [`mark_launch_sent`] 만 켠다 · 잠금 안).
+    /// 확정 전 기동 중 임대는 다른 좌석 최상위 훅의 검증된 등록([`follow`])이 이긴다(그 좌석이 이미 이 대화로 들어갔다 · 복원기는 확정에서 멈춘다).
+    /// 옛 기록(필드 없음) = false.
+    #[serde(default)]
+    pub launch_sent: bool,
 }
 
 /// 보유자 하나의 생존 판정.
@@ -191,6 +196,11 @@ pub fn next_action(reason: &str, norm: &str, file: &Path) -> String {
                 "이 대화의 임대는 다른 cys 데몬(pid {pid})의 좌석 surface:{sid} 에 있습니다 — 그 데몬 소켓으로 `cys list` 해 그 좌석이 이 대화를 잇는지 보고, 아니면 그 좌석을 닫은 뒤 다시 실행하세요"
             )
         }
+        // ★skt1(독립 검증 V6): 세대 기록이 없는 임대(옛 판이 데몬 세대를 못 읽은 채 남긴 것) = 기다려도 풀리지 않는다 — 파일을 가리킨다.
+        "daemon" if rest.starts_with("gen-unknown") => format!(
+            "이 대화의 임대 {} 에 데몬 세대 기록이 없어 자동으로 풀리지 않습니다 — `cys list` 로 이 대화를 잇는 좌석이 없음을 확인한 뒤 그 파일을 지우고 다시 실행하세요(급하면 `{KNOB}=off` 로 종전 방식)",
+            file.display()
+        ),
         "daemon" => "`cys status` 로 데몬이 응답하는지 확인한 뒤 다시 실행하세요".into(),
         "scan" => format!("`ps -axo pid,command | grep -i {short}` 로 이 대화를 쥔 프로세스를 확인한 뒤 다시 실행하세요"),
         _ => format!("`cys status` 와 `ps -axo pid,command | grep -i {short}` 로 확인한 뒤 다시 실행하세요"),
@@ -616,6 +626,7 @@ pub fn acquire(store: &Store, id: &str, cx: &AcquireCtx) -> Decision {
             daemon_gen: cx.daemon_gen.clone(),
             cfg: cx.cfg.clone(),
             at: now,
+            launch_sent: false,
         };
         if let Err(r) = store.write(&f, &l) {
             return fill_next(undecided(r), &norm, &f);
@@ -712,6 +723,8 @@ impl Guard {
     pub fn hold(mut self, writer: Option<Holder>) -> Result<(), String> {
         let w = writer.clone();
         let r = self.update(if w.is_some() { "commit" } else { "commit_seat" }, |l| {
+            // 기동 성공 마무리 = 기동 글을 이미 쳤다(skt1 · codex 1R #2) — 확정 뒤 임대는 다른 좌석 등록이 빼앗지 않는다.
+            l.launch_sent = true;
             if l.writer.is_none() {
                 l.writer = w;
             }
@@ -813,6 +826,11 @@ pub fn follow(store: &Store, id: &str, writer: &Holder, surface_id: Option<u64>,
         {
             Ok(l.fence)
         }
+        // ★skt1(codex 1R #2A): 다른 좌석 복원기의 기동 중 임대인데 **기동 글 확정 전** — 이 등록(좌석 최상위 훅으로 증명된 것만 follow 에 닿는다)의
+        //   좌석이 이미 이 대화로 들어갔다. 복원기를 기다리면 그 좌석과 복원기 좌석이 둘 다 쓴다 → 이 작성자가 이어받고, 복원기는
+        //   [`mark_launch_sent`] 에서 내 임대가 아님을 보고 기동 글을 치지 않는다(같은 잠금 = 둘 중 하나만 이긴다).
+        //   확정 뒤(launch_sent)면 빼앗지 않는다(그 복원기 좌석이 이미 이 대화로 뜨는 중 · 아래 일반 판정 = 충돌 사건).
+        Some(l) if l.writer.is_none() && l.state == State::Launching && !l.launch_sent => Ok(l.fence),
         Some(l) => match judge(Some(l), writer, w) {
             Ok(p) => Ok(p),
             Err(Decision::Live { who }) => Err(Follow::Conflict(who)),
@@ -834,6 +852,7 @@ pub fn follow(store: &Store, id: &str, writer: &Holder, surface_id: Option<u64>,
                 daemon_gen,
                 cfg: existing.as_ref().and_then(|l| l.cfg.clone()),
                 at: now,
+                launch_sent: false,
             };
             match store.write(&f, &l) {
                 Ok(()) => {
@@ -912,6 +931,22 @@ pub fn seat_bound_conversation(store: &Store, surface_id: u64, daemon_gen: &str,
 /// 대화 `id` 가 **산 작성자에게 결속돼** 있으면 (좌석 · 데몬 세대) — 앱의 「복원됨」 판정용(codex r5c #3 · 휴리스틱 핀·8자 접두 대신).
 /// Ok(None) = 결속 없음(임대 없음 · 작성 중 아님 · 작성자 죽음 · 좌석 없음) · Err = 판정 불가.
 pub fn held_by_live_writer(store: &Store, id: &str, probe: &dyn Fn(&Holder) -> Liveness) -> Result<Option<(u64, Option<String>)>, String> {
+    Ok(held_proof(store, id, probe)?.map(|p| (p.surface_id, p.daemon_gen)))
+}
+
+/// 앱 「복원됨」 증거(skt1 · codex 1R #4) — 결속 임대의 신원 전체. topology 판독 **앞뒤로** 두 번 읽어 같을 때만 증거다
+/// (사이에 `/clear`·에이전트 교체·follow 가 결속을 바꾸면 fence·token·writer 중 하나가 달라진다).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldProof {
+    pub surface_id: u64,
+    pub daemon_gen: Option<String>,
+    pub fence: u64,
+    pub token: String,
+    pub writer: Holder,
+}
+
+/// [`held_by_live_writer`] 의 신원 전체판 — Ok(None)·Err 의 뜻은 같다.
+pub fn held_proof(store: &Store, id: &str, probe: &dyn Fn(&Holder) -> Liveness) -> Result<Option<HeldProof>, String> {
     let Some(norm) = norm_id(id) else { return Ok(None) };
     let Some(l) = store.read(&store.file_of(&norm))? else { return Ok(None) };
     let (Some(w), Some(sid)) = (&l.writer, l.surface_id) else { return Ok(None) };
@@ -919,10 +954,112 @@ pub fn held_by_live_writer(store: &Store, id: &str, probe: &dyn Fn(&Holder) -> L
         return Ok(None);
     }
     match probe(w) {
-        Liveness::Alive => Ok(Some((sid, l.daemon_gen.clone()))),
+        Liveness::Alive => Ok(Some(HeldProof { surface_id: sid, daemon_gen: l.daemon_gen.clone(), fence: l.fence, token: l.token.clone(), writer: w.clone() })),
         Liveness::Dead => Ok(None),
         Liveness::Undecided(r) => Err(r),
     }
+}
+
+/// 두 판독(topology 앞 · 뒤)이 같은 결속일 때만 그 결속(순수 · codex 1R #4 TOCTOU).
+pub fn held_proof_stable(before: Option<HeldProof>, after: Option<HeldProof>) -> Option<HeldProof> {
+    match (before, after) {
+        (Some(a), Some(b)) if a == b => Some(a),
+        _ => None,
+    }
+}
+
+/// 복원기가 저장 대화를 잇는 기동 글을 **치기 직전** — 이 프로세스가 쥔 임대(내 fence·token)에 「확정」을 적는다(skt1 · codex 1R #2).
+/// `recheck` = 같은 잠금 안에서 부르는 마지막 확인(같은 역할 좌석 판정 등 · Err = 치지 않음). 잠금 안이라 [`follow`]·[`transition_unbind`] 와
+/// 직렬화된다 — 확정 전에 다른 좌석 최상위 훅이 이 대화를 등록했으면 그 follow 가 임대를 가져갔으므로 여기서 `lease:taken` 으로 멈춘다.
+/// Err = 치지 않음(호출자 = 빈 좌석 닫고 rc 93). 임대를 쥐지 않은 갈래(노브 끔·대화 없음)는 호출하지 않는다.
+pub fn mark_launch_sent(store: &Store, norm: &str, recheck: &mut dyn FnMut() -> Result<(), String>) -> Result<(), String> {
+    let Some((fence, token)) = mine_get(norm) else { return Err("lease:not-held".into()) };
+    let f = store.file_of(norm);
+    let _g = store.lock()?;
+    let mut l = store.read(&f)?.ok_or_else(|| "lease:gone".to_string())?;
+    if l.fence != fence || l.token != token {
+        store.event("launch_refused", Some(&l), norm, "lease:taken", now_secs());
+        return Err("lease:taken".into());
+    }
+    if let Err(r) = recheck() {
+        store.event("launch_refused", Some(&l), norm, &r, now_secs());
+        return Err(r);
+    }
+    l.launch_sent = true;
+    store.write(&f, &l)?;
+    store.event("launch_sent", Some(&l), norm, "", now_secs());
+    Ok(())
+}
+
+/// 좌석 최상위 에이전트가 대화를 바꾸려 한다(SessionStart 등록 **앞** · skt1 · codex 1R #2B) — 그 작성자(`is_my_writer` = 이 등록 발신의 조상 중
+/// 좌석 최상위 작성자)에게 결속된 **다른 대화**의 작성 중 임대를 「결과 불명 · 좌석 유지 · 작성자 없음」으로 바꾼다.
+/// 등록이 실패해도 옛 결속이 「이 좌석 = 옛 대화」 증거로 남지 않는다(그 좌석은 결속 없음 = 같은 역할 복원 93) · 등록·follow 가 성공하면
+/// 새 결속이 생기고, 옛 대화의 결과 불명 임대는 [`judge`] 가 「그 좌석의 현재 대화가 다르다」로 푼다. 바꾼 수.
+pub fn transition_unbind(store: &Store, new_id: &str, is_my_writer: &dyn Fn(&Holder) -> bool) -> usize {
+    let Some(new_norm) = norm_id(new_id) else { return 0 };
+    let Ok(_g) = store.lock() else { return 0 };
+    let Ok(rd) = std::fs::read_dir(store.root()) else { return 0 };
+    let mut n = 0;
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.extension().and_then(|x| x.to_str()) != Some("lease") {
+            continue;
+        }
+        let Ok(Some(mut l)) = store.read(&p) else { continue };
+        if l.state != State::Held || l.id == new_norm || !l.writer.as_ref().is_some_and(is_my_writer) {
+            continue;
+        }
+        l.state = State::Unknown;
+        l.writer = None;
+        l.restorer = None;
+        l.fence += 1;
+        l.token = new_token();
+        l.launch_sent = false;
+        l.at = now_secs();
+        if store.write(&p, &l).is_ok() {
+            store.event("transition_unknown", Some(&l), &l.id, "", now_secs());
+            n += 1;
+        }
+    }
+    n
+}
+
+/// 등록 발신 계통의 3값(skt1 · codex 1R #1) — 결속을 옮기는 것은 [`Lineage::ProvenTop`] 뿐이다(판독 불가 = 옮기지 않음).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lineage {
+    /// 에이전트 실행 정확히 1개(좌석 최상위) + 그 아래(발신 쪽)에 SessionStart 훅 스크립트.
+    ProvenTop,
+    /// 좌석 최상위 훅이 아니라고 증명(헬퍼 = 에이전트 2개 이상 · 도구 셸 직접 호출 = 훅 없음).
+    NotTop,
+    /// argv 하나라도 못 읽음 · 에이전트 0 · 에이전트 이름 모름 · 계통 없음.
+    Unknown,
+}
+
+/// 계통(발신의 부모 → 좌석 뿌리 순 argv)의 3값(순수).
+pub fn lineage_of(cmds: &[Option<String>], bin_base: &str) -> Lineage {
+    if cmds.is_empty() || bin_base.trim().is_empty() {
+        return Lineage::Unknown;
+    }
+    match lineage_counts(cmds, bin_base) {
+        None | Some((0, _)) => Lineage::Unknown,
+        Some((1, true)) => Lineage::ProvenTop,
+        Some(_) => Lineage::NotTop,
+    }
+}
+
+/// (에이전트 실행 수 · 첫 에이전트 아래 훅 스크립트 있음) — argv 하나라도 못 읽으면 None.
+fn lineage_counts(cmds: &[Option<String>], bin_base: &str) -> Option<(usize, bool)> {
+    let mut agents = 0usize;
+    let mut hook_below_first_agent = false;
+    for c in cmds {
+        let c = c.as_deref()?;
+        if argv_is_agent_exec(c, bin_base) {
+            agents += 1;
+        } else if agents == 0 && c.split_whitespace().any(|t| t.rsplit(['/', '\\']).next() == Some(SESSION_START_HOOK_SCRIPT)) {
+            hook_below_first_agent = true;
+        }
+    }
+    Some((agents, hook_below_first_agent))
 }
 
 /// argv 한 줄이 에이전트 `bin_base` 의 실행인가(순수 · cysd `governance::cmdline_matches_agent_exec` 와 같은 규칙 — 토큰 basename 이
@@ -956,16 +1093,7 @@ pub const SESSION_START_HOOK_SCRIPT: &str = "session-start.sh";
 /// `usage::lineage_proves_not_top_hook` 와 같은 판정) — 에이전트 실행 2개 이상(좌석 안 `claude -p` 헬퍼 · codex r5c #1-3) · 에이전트 1개인데
 /// 그 아래(발신 쪽)에 훅 스크립트 없음(도구 셸의 직접 `cys usage-register`). argv 를 하나라도 못 읽었으면 None(증명 아님 · 판정 불가).
 pub fn lineage_proves_not_top_hook(cmds: &[Option<String>], bin_base: &str) -> Option<bool> {
-    let mut agents = 0usize;
-    let mut hook_below_first_agent = false;
-    for c in cmds {
-        let c = c.as_deref()?;
-        if argv_is_agent_exec(c, bin_base) {
-            agents += 1;
-        } else if agents == 0 && c.split_whitespace().any(|t| t.rsplit(['/', '\\']).next() == Some(SESSION_START_HOOK_SCRIPT)) {
-            hook_below_first_agent = true;
-        }
-    }
+    let (agents, hook_below_first_agent) = lineage_counts(cmds, bin_base)?;
     Some(agents >= 2 || (agents == 1 && !hook_below_first_agent))
 }
 
@@ -1607,6 +1735,92 @@ mod tests {
         // 같은 세대 같은 좌석 = 승계.
         assert_eq!(follow(&s, "G", &h(62), Some(1), g_a, &w), Follow::Held);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// skt1(codex 1R #2A) — 다른 좌석 최상위 훅의 등록(follow)은 **기동 글 확정 전** 복원기 임대를 이긴다(그 좌석이 이미 이 대화로 들어갔다) ·
+    /// 복원기는 확정(`mark_launch_sent`)에서 임대가 넘어간 것을 보고 멈춘다 · 확정 뒤면 빼앗지 않는다(충돌) · 재확인 실패 = 확정 0.
+    #[test]
+    fn a_verified_registration_beats_an_uncommitted_restore_and_the_restorer_stops() {
+        let d = tmp("cm");
+        let s = Store::open(&d).unwrap();
+        let w = Fake::new();
+        let gen = Some("77-1.5".to_string());
+        w.set(10, Liveness::Alive); // 복원기 생존
+        let Decision::Granted(g) = acquire(&s, "CA", &AcquireCtx { surface_id: Some(52), daemon_gen: gen.clone(), ..cx(h(10), &w) }) else { panic!() };
+        // 확정 전: 다른 좌석 60 의 최상위 claude 가 좌석 안 /resume CA → 등록 → 이어받음.
+        assert_eq!(follow(&s, "CA", &h(50), Some(60), gen.clone(), &w), Follow::Held, "확정 전 복원기가 검증된 등록을 이겼다(작성자 둘 · codex 1R #2A)");
+        assert_eq!(mark_launch_sent(&s, "ca", &mut || Ok(())), Err("lease:taken".into()), "임대가 넘어갔는데 복원기가 기동 글을 쳤다");
+        assert_eq!(s.read(&s.file_of("ca")).unwrap().unwrap().writer, Some(h(50)));
+        drop(g);
+        assert_eq!(s.read(&s.file_of("ca")).unwrap().unwrap().writer, Some(h(50)), "늦은 가드가 넘어간 임대를 되돌렸다");
+        // 재확인 실패 = 확정 0(기동 글 0) · 임대는 그대로 내 것(가드 drop 이 되돌린다).
+        let Decision::Granted(g2) = acquire(&s, "CB", &AcquireCtx { surface_id: Some(53), daemon_gen: gen.clone(), ..cx(h(10), &w) }) else { panic!() };
+        assert_eq!(mark_launch_sent(&s, "cb", &mut || Err("recheck:unverified:7:seat-unbound".into())), Err("recheck:unverified:7:seat-unbound".into()));
+        assert!(!s.read(&s.file_of("cb")).unwrap().unwrap().launch_sent, "재확인이 실패했는데 확정을 적었다");
+        // 확정 뒤: 다른 좌석 등록은 빼앗지 않는다(그 복원기 좌석이 이미 이 대화로 뜨는 중).
+        assert_eq!(mark_launch_sent(&s, "cb", &mut || Ok(())), Ok(()));
+        assert!(matches!(follow(&s, "CB", &h(51), Some(61), gen.clone(), &w), Follow::Conflict(_)), "확정 뒤 임대를 빼앗았다");
+        g2.hold(None).unwrap();
+        // 마무리(hold) = 기동 글을 친 것 — 확정 표식이 남는다(확정 없이 hold 된 옛 흐름도 빼앗기지 않게).
+        assert!(s.read(&s.file_of("cb")).unwrap().unwrap().launch_sent);
+        // 쥐지 않은 대화의 확정 = 거절.
+        assert_eq!(mark_launch_sent(&s, "zz", &mut || Ok(())), Err("lease:not-held".into()));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// skt1(codex 1R #2B) — 등록 **앞** 결속 해제: 좌석 최상위 작성자가 대화를 바꾸려 하면 그 작성자의 다른 대화 결속은 결과 불명(좌석 유지)으로 —
+    /// 등록이 실패해도 「이 좌석 = 옛 대화」 증거가 남지 않고(결속 없음 = 같은 역할 복원 93), 새 결속이 생기면 옛 대화 임대는 judge 가 푼다.
+    #[test]
+    fn a_conversation_switch_unbinds_the_old_conversation_before_registering() {
+        let d = tmp("tu");
+        let s = Store::open(&d).unwrap();
+        let mut w = Fake::new();
+        let gen = "77-1.5";
+        w.set(50, Liveness::Alive);
+        assert_eq!(follow(&s, "TT", &h(50), Some(52), Some(gen.into()), &w), Follow::Held);
+        let probe = |x: &Holder| if *x == h(50) { Liveness::Alive } else { Liveness::Dead };
+        assert_eq!(seat_bound_conversation(&s, 52, gen, &probe), Ok(Some("tt".into())));
+        // 남의 작성자 · 같은 대화(compact) = 손대지 않음.
+        assert_eq!(transition_unbind(&s, "SS", &|x| *x == h(99)), 0);
+        assert_eq!(transition_unbind(&s, "TT", &|x| *x == h(50)), 0, "같은 대화 재등록에서 결속을 풀었다");
+        // 좌석 안 /resume SS(등록 전) → TT 결속 = 결과 불명.
+        assert_eq!(transition_unbind(&s, "SS", &|x| *x == h(50)), 1);
+        let l = s.read(&s.file_of("tt")).unwrap().unwrap();
+        assert_eq!((l.state, l.writer.clone(), l.surface_id), (State::Unknown, None, Some(52)), "옛 결속이 남았다(등록 실패 시 「다른 대화」 증거 · codex 1R #2B)");
+        assert_eq!(seat_bound_conversation(&s, 52, gen, &probe), Ok(None), "등록 전 좌석이 옛 대화로 읽힌다");
+        // TT 복원: 그 좌석이 살아 있고 현재 대화를 모름 = 막음 · 새 대화로 확인되면 풂.
+        w.seat = Liveness::Alive;
+        w.conv = Ok(None);
+        assert!(matches!(acquire(&s, "TT", &cx(h(11), &w)), Decision::Live { .. }));
+        w.conv = Ok(Some("ss".into()));
+        assert!(matches!(acquire(&s, "TT", &cx(h(11), &w)), Decision::Granted(_)), "새 결속 뒤에도 옛 대화가 막혔다");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// skt1(codex 1R #1) — 계통 3값: 결속을 옮기는 것은 ProvenTop(최상위 에이전트 1 + 그 아래 훅) 뿐 · 판독 불가·에이전트 0·이름 모름 = Unknown.
+    #[test]
+    fn lineage_moves_only_a_proven_top_hook() {
+        let c = |v: &[&str]| v.iter().map(|x| Some(x.to_string())).collect::<Vec<_>>();
+        assert_eq!(lineage_of(&c(&["sh /p/hooks/session-start.sh", "/u/bin/claude --resume x", "-zsh"]), "claude"), Lineage::ProvenTop);
+        assert_eq!(lineage_of(&c(&["sh /p/session-start.sh", "claude -p hi", "bash -c x", "claude", "-zsh"]), "claude"), Lineage::NotTop, "헬퍼");
+        assert_eq!(lineage_of(&c(&["bash -c cys", "claude", "-zsh"]), "claude"), Lineage::NotTop, "도구 셸");
+        let mut unread = c(&["sh /p/session-start.sh", "claude"]);
+        unread.insert(1, None);
+        assert_eq!(lineage_of(&unread, "claude"), Lineage::Unknown, "argv 미관측을 최상위로 셌다(codex 1R #1)");
+        assert_eq!(lineage_of(&c(&["sh session-start.sh", "-zsh"]), "claude"), Lineage::Unknown, "에이전트 0");
+        assert_eq!(lineage_of(&c(&["sh session-start.sh", "claude"]), ""), Lineage::Unknown, "이름 모름");
+        assert_eq!(lineage_of(&[], "claude"), Lineage::Unknown, "계통 없음");
+    }
+
+    /// skt1(codex 1R #4) — 앱 「복원됨」 증거 = topology 앞뒤 두 판독이 같은 결속(fence·token·작성자)일 때만.
+    #[test]
+    fn held_proof_must_be_the_same_on_both_sides_of_the_topology_read() {
+        let p = |fence: u64, tok: &str, pid: u32| HeldProof { surface_id: 5, daemon_gen: Some("g".into()), fence, token: tok.into(), writer: h(pid) };
+        assert_eq!(held_proof_stable(Some(p(2, "a", 50)), Some(p(2, "a", 50))), Some(p(2, "a", 50)));
+        assert_eq!(held_proof_stable(Some(p(2, "a", 50)), None), None, "사이에 결속이 사라졌다(/clear·작성자 죽음)");
+        assert_eq!(held_proof_stable(Some(p(2, "a", 50)), Some(p(3, "b", 50))), None, "사이에 다시 잡혔다");
+        assert_eq!(held_proof_stable(Some(p(2, "a", 50)), Some(p(2, "a", 51))), None, "작성자가 바뀌었다");
+        assert_eq!(held_proof_stable(None, Some(p(2, "a", 50))), None);
     }
 
     /// codex 1R M2 — follow 가 옛 대화 임대를 지운 뒤 같은 키를 다시 잡으면 fence 가 1 부터 다시 매겨진다.

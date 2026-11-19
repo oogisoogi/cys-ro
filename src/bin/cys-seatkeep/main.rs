@@ -17,7 +17,7 @@
 //!
 //! 쓰임: `cys-seatkeep --dir <상태폴더> --id <seatkeep id> --controller-exe <경로> --lock <잠금파일>
 //!        [--requirement <코드서명 요구사항>] [--seats N] [--tail-bytes N] [--rows R --cols C]
-//!        [--controller-bound] -- <명령> [인자…]`
+//!        [--controller-bound | --adoptable] -- <명령> [인자…]`
 //! `--rows/--cols` = 자식 PTY 첫 크기(기본 35×120 · T3 — cysd 가 좌석 크기로 띄운다).
 //! `--controller-bound`(조종자 종속 모드 · T3 master#77162b13 — 옛 `--end-on-controller-loss` 를 넓힘) = seatkeep 이 직접 PTY 처럼 투명하다:
 //!   ⑴ 조종자 연결이 끊기면(또는 기동 뒤 `FIRST_CONTROLLER_MAX` 안에 아무도 안 붙으면) 기록 1줄을 남기고 스스로 끝난다 → PTY 마스터가
@@ -29,7 +29,13 @@
 //!   ⑶ 쓰기 기한(CTL_WRITE_TIMEOUT)으로 내보내지 않는다(`write_stalled` 없음) — 연결이 살아 있는 한 기다린다(멈춘 조종자 아래서 자식도
 //!      멈춰 산다 = 직접 PTY 와 같음). 제어 큐 상한(CTL_QUEUE_BYTES · `control_queue_full`)은 그대로다 — 제어 프레임은 조종자 요청의 답이라
 //!      멈춘 조종자 아래서 쌓일 길이 없고, 넘치면 규약 위반으로 보고 끊김과 같이 끝낸다.
-//! 이 인자가 없으면 T2 동작 그대로(조종자 없이 좌석을 계속 쥔다 · 4MiB 큐 → 밀림 → 꼬리 따라잡기 · write_stalled 10초 — 입양은 T4).
+//! `--adoptable`(입양 모드 · T4 TICKET=cysr-1116-seatkeep-1119 · `--controller-bound` 와 함께 쓸 수 없다) = ⑵⑶ 은 종속 모드와 같고 ⑴ 만 뺀다:
+//!   조종자가 끊겨도(cysd 강제 종료·교체) 좌석을 쥔 채 다음 조종자(같은 실행 파일 · 데몬 잠금 보유자)를 기다린다 = 「데몬이 죽어도 좌석이 산다」.
+//!   조종자 없는 동안은 끊긴 뒤 출력이 꼬리(`--tail-bytes`)를 넘기 전까지만 PTY 를 읽는다 — 그 뒤로는 역압(자식이 멈춤) → 새 조종자가
+//!   붙어 꼬리를 재생받으면 끊긴 뒤 출력 유실 0(끊기기 전에 큐에 있던 ≤256KiB 는 꼬리 안이면 재생됨 · 꼬리 밖은 WELCOME `lost_bytes` 로 보고).
+//!   첫 조종자가 `FIRST_CONTROLLER_MAX` 안에 안 붙으면 종속 모드처럼 끝낸다(cysd 가 기동~첫 인사 사이에 죽으면 아무도 이 좌석을 모른다).
+//!   부모 감시(kqueue)·기동 단계 부모 확인은 하지 않는다(부모가 사라지는 것이 정상 경로).
+//! 두 인자가 다 없으면 T2 동작 그대로(조종자 없이 좌석을 계속 쥔다 · 4MiB 큐 → 밀림 → 꼬리 따라잡기 · write_stalled 10초 — 입양은 T4).
 //! `--seats N`(N>1) = 「판별 1개」 비교 변형(좌석 N개를 한 프로세스가 쥠) — 비용 비교 전용 · 제품 경로 아님.
 
 #[cfg(unix)]
@@ -314,6 +320,11 @@ mod imp {
         args.controller_bound && WATCH_LOST.load(Ordering::SeqCst)
     }
 
+    /// 역압 모드(⑵ PTY 읽기 멈춤 · ⑶ 쓰기 기한 없음) — 종속 모드와 입양 모드 공통.
+    fn backpressure(args: &Args) -> bool {
+        args.controller_bound || args.adoptable
+    }
+
     struct Args {
         dir: PathBuf,
         id: String,
@@ -326,6 +337,8 @@ mod imp {
         cols: u16,
         /// `--controller-bound` — 조종자 종속 모드(맨 위 설명 ⑴⑵⑶).
         controller_bound: bool,
+        /// `--adoptable` — 입양 모드(맨 위 설명 · ⑵⑶ 만 · T4).
+        adoptable: bool,
         cmd: Vec<String>,
     }
 
@@ -333,7 +346,7 @@ mod imp {
         let mut it = std::env::args().skip(1);
         let (mut dir, mut id, mut exe, mut lock, mut req) = (None, None, None, None, None);
         let (mut seats, mut tail_bytes) = (1u32, DEFAULT_TAIL);
-        let (mut rows, mut cols, mut controller_bound) = (35u16, 120u16, false);
+        let (mut rows, mut cols, mut controller_bound, mut adoptable) = (35u16, 120u16, false, false);
         let mut cmd = Vec::new();
         while let Some(a) = it.next() {
             match a.as_str() {
@@ -347,6 +360,7 @@ mod imp {
                 "--rows" => rows = it.next().and_then(|v| v.parse().ok()).filter(|v| (1..=1000).contains(v)).ok_or("--rows 1..=1000")?,
                 "--cols" => cols = it.next().and_then(|v| v.parse().ok()).filter(|v| (1..=1000).contains(v)).ok_or("--cols 1..=1000")?,
                 "--controller-bound" => controller_bound = true,
+                "--adoptable" => adoptable = true,
                 "--" => {
                     cmd = it.by_ref().collect();
                 }
@@ -366,6 +380,9 @@ mod imp {
         if tail_bytes == 0 || tail_bytes > MAX_TAIL {
             return Err(format!("--tail-bytes 1..={MAX_TAIL}"));
         }
+        if controller_bound && adoptable {
+            return Err("--controller-bound 와 --adoptable 은 함께 쓸 수 없다".into());
+        }
         Ok(Args {
             dir: dir.ok_or("--dir 필요")?,
             id,
@@ -377,6 +394,7 @@ mod imp {
             rows,
             cols,
             controller_bound,
+            adoptable,
             cmd,
         })
     }
@@ -406,6 +424,8 @@ mod imp {
         exit_acked: bool,
         reader_done: bool,
         input_pending: usize,
+        /// 입양 모드: 마지막 조종자가 끊긴 때의 누적 출력(`total`) — 조종자 없는 동안 읽기 상한의 기준. 조종자가 붙으면 None.
+        disc_total: Option<u64>,
     }
 
     impl SeatOut {
@@ -620,7 +640,7 @@ mod imp {
         }
         // 조종자 종속 모드(⑵) = 밀림이 없다 — 늘 큐에 넣고, 큐가 상한에 닿으면 읽기 스레드가 PTY 읽기를 멈춘다(`wait_for_room`).
         // 큐가 상한을 넘는 폭 = 읽기 스레드마다 읽기 버퍼 1개(READ_BUF)뿐이다.
-        if !keep.args.controller_bound && c.queued.load(Ordering::SeqCst) + bytes.len() > OUT_QUEUE_BYTES {
+        if !backpressure(&keep.args) && c.queued.load(Ordering::SeqCst) + bytes.len() > OUT_QUEUE_BYTES {
             c.behind[i] = Some(offset);
             c.behind_flag.store(true, Ordering::SeqCst);
             // 깨우기 유실 방지(codex 2R #1): 쓰기 스레드가 표시를 세우기 전에 큐를 다 비우고 잠들었으면 아무도 따라잡지 않는다.
@@ -903,6 +923,7 @@ mod imp {
                         exit: None,
                         exit_acked: false,
                         reader_done: false,
+                        disc_total: None,
                         input_pending: 0,
                     })
                     .collect(),
@@ -1031,6 +1052,12 @@ mod imp {
                 Some(c) if c.queued.load(Ordering::SeqCst) >= limit => 0,
                 Some(_) => READ_BUF,
                 None if st.gen == 0 => keep.args.tail_bytes.saturating_sub(st.out[i].tail.len()).min(READ_BUF),
+                // 입양 모드: 조종자를 잃은 뒤 출력이 꼬리를 넘기 전까지만 읽는다(넘으면 역압 — 다음 조종자가 붙을 때 깨운다).
+                None if keep.args.adoptable => {
+                    let o = &st.out[i];
+                    let since = o.total.saturating_sub(o.disc_total.unwrap_or(o.total));
+                    (keep.args.tail_bytes as u64).saturating_sub(since).min(READ_BUF as u64) as usize
+                }
                 None => READ_BUF, // 조종자를 잃었다 — 곧 끝난다(end_for_controller_loss)
             };
             if room > 0 {
@@ -1045,7 +1072,7 @@ mod imp {
 
     /// 쓰기 스레드가 프레임 1개를 쓴 뒤 — 조종자 종속 모드에서 기다리는 읽기 스레드가 있고 큐가 반 아래면 깨운다.
     fn wake_readers(keep: &Keep, queued: &AtomicUsize) {
-        if keep.args.controller_bound && keep.room_waiters.load(Ordering::SeqCst) > 0 && queued.load(Ordering::SeqCst) < BOUND_QUEUE_BYTES / 2 {
+        if backpressure(&keep.args) && keep.room_waiters.load(Ordering::SeqCst) > 0 && queued.load(Ordering::SeqCst) < BOUND_QUEUE_BYTES / 2 {
             let _st = lock_st(keep);
             keep.room.notify_all();
         }
@@ -1054,7 +1081,7 @@ mod imp {
     fn read_loop(keep: Arc<Keep>, i: usize, mut r: Box<dyn Read + Send>) {
         let mut buf = [0u8; READ_BUF];
         loop {
-            let room = if keep.args.controller_bound { wait_for_room(&keep, i) } else { READ_BUF };
+            let room = if backpressure(&keep.args) { wait_for_room(&keep, i) } else { READ_BUF };
             let n = match r.read(&mut buf[..room]) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => n,
@@ -1310,7 +1337,7 @@ mod imp {
         };
         // 안 읽는 조종자: 소켓 쓰기가 이 기한을 넘으면 쓰기 스레드가 끝나며 연결을 닫는다(codex 1R #1).
         // 조종자 종속 모드(⑶)는 기한이 없다 — 연결이 살아 있는 한 기다린다(멈춘 조종자 = 자식도 역압으로 멈춤 · write_stalled 없음).
-        if !keep.args.controller_bound {
+        if !backpressure(&keep.args) {
             let _ = write_half.set_write_timeout(Some(CTL_WRITE_TIMEOUT));
         }
         let rx;
@@ -1351,8 +1378,10 @@ mod imp {
                 .seats
                 .iter()
                 .zip(st.out.iter())
+                // `disc_total`(T4 · 입양 모드만 값 · 그 밖 null) = 직전 조종자가 끊긴 때의 누적 출력 — 새 조종자는 그 앞 재생을 「옛 조종자가
+                // 이미 본 화면」(화면만 다시 그림)으로, 그 뒤를 「아무도 못 본 새 출력」(전사·응답까지)으로 나눈다.
                 .map(|(seat, o)| json!({"seat": seat.id, "child_pid": seat.child_pid, "total": o.total,
-                                         "tail_start": o.tail_start(), "exit": o.exit}))
+                                         "tail_start": o.tail_start(), "exit": o.exit, "disc_total": o.disc_total}))
                 .collect();
             let welcome = json!({"core": proto::CORE_VERSION, "gen": gen, "pid": std::process::id(),
                                  "start_us": keep.start_us, "boot_id": keep.boot_id, "seats": seats});
@@ -1401,6 +1430,9 @@ mod imp {
             }
             st.gen = gen;
             st.no_controller_since = None;
+            for o in st.out.iter_mut() {
+                o.disc_total = None;
+            }
             let n = st.out.len();
             st.controller = Some(Controller {
                 gen,
@@ -1459,6 +1491,10 @@ mod imp {
             let now = registry::now_epoch();
             st.last_peer = Some((c.peer.clone(), now));
             st.no_controller_since = Some(Instant::now());
+            // 입양 모드: 끊긴 때의 누적 출력을 좌석마다 적어 둔다(조종자 없는 동안 읽기 상한 = 이 뒤로 꼬리 크기까지 · `wait_for_room`).
+            for o in st.out.iter_mut() {
+                o.disc_total = Some(o.total);
+            }
             let _ = keep.log(json!({"event": "disconnect", "gen": gen, "peer": peer_json(&c.peer), "evicted": c.evicted}));
             if keep.args.controller_bound {
                 drop(st);
@@ -1626,7 +1662,7 @@ mod imp {
             // 종료 기록을 EXIT_PERSIST_MAX 넘게 못 남기면(상태 폴더가 사라짐 등) stderr 에 기록을 남기고 rc 6 으로 끝낸다 —
             // 소켓도 사라졌을 수 있어 어떤 조종자도 확인해 줄 수 없는 영구 고아가 되지 않게(독립 검증 D9).
             // `--controller-bound`: 기동 뒤 아무 조종자도 붙지 않은 채 상한이 지나면 끝낸다(cysd 가 기동~HELLO 사이에 죽은 경우).
-            if keep.args.controller_bound && st.gen == 0 && st.controller.is_none() && keep.started.elapsed() >= FIRST_CONTROLLER_MAX {
+            if backpressure(&keep.args) && st.gen == 0 && st.controller.is_none() && keep.started.elapsed() >= FIRST_CONTROLLER_MAX {
                 drop(st);
                 end_for_controller_loss(&keep, "no_first_controller");
             }
@@ -1684,6 +1720,7 @@ mod imp {
                 rows: 10,
                 cols: 10,
                 controller_bound: false,
+                adoptable: false,
                 cmd: vec!["/bin/true".into()],
             };
             let paths = Paths::new(&d, "t");
@@ -1700,7 +1737,7 @@ mod imp {
             let st = State {
                 out: (0..n)
                     .map(|_| SeatOut { tail: VecDeque::new(), total: 0, reaped: false, exit_status: None, exit: None,
-                                       exit_acked: false, reader_done: false, input_pending: 0 })
+                                       exit_acked: false, reader_done: false, input_pending: 0, disc_total: None })
                     .collect(),
                 controller: None,
                 gen: 0,

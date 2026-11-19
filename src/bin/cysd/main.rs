@@ -66,6 +66,7 @@ mod repaint;
 mod root_registration;
 mod s5_escalation;
 mod schedule;
+mod seat_adopt;
 mod seat_proc;
 mod severity;
 mod skillrun;
@@ -1425,6 +1426,9 @@ async fn async_main() {
         Err(e) => eprintln!("[cysd] pack journal recovery task failed — pack auto-install skipped this boot: {e}"),
     }
     let daemon = Daemon::new(socket_path.clone());
+    // ★T4 좌석 입양(노브 `CYS_SEATKEEP_ADOPT=1` · 끔 = 아무것도 안 함) — 시작 잠금을 쥔 뒤 · watchdog·accept·자동 복원 **전**(T0 §3 순서):
+    //   살아 있는 seatkeep 좌석을 같은 번호·역할로 다시 등록해, 뒤의 자동 복원이 그 역할을 「가동 중」으로 보고 건너뛰게 한다.
+    seat_adopt::adopt_on_boot(&daemon);
     // ★(0.14.44 · A3) 승인 묶음 식별자를 부팅 때 한 번 만들어 둔다(상태 폴더의 `approval-lane` 파일 · 만들지 못하면 메모리 값 + 로그 한 줄 · 부팅을 막지 않는다).
     let _ = approval::lane_value(&socket_path, &crate::state::state_dir(&socket_path));
     // ★R1 배달 원장: 이 데몬 인스턴스 표식을 팩 계약 상태 디렉터리에 쓴다(best-effort).
@@ -2359,6 +2363,13 @@ fn spawn_auto_restore(
     let current_path = std::env::var("PATH").unwrap_or_default();
     let exe_dir_ref = exe_dir.as_deref().unwrap_or_else(|| std::path::Path::new("."));
     let socket = socket_path.to_string_lossy();
+    // ★T4 · T1 최소 대역(판정 = `seat_adopt::restore_should_hold` 한 곳): 살아 있으나 입양하지 못한 좌석이 있으면 이 기동의 자동 복원을
+    //   보류한다(그 대화를 새 좌석이 이어 쓰는 작성자 둘 차단 · 노브 끔 = 늘 None).
+    if let Some(why) = seat_adopt::restore_should_hold() {
+        eprintln!("[cysd] auto-restore skipped — {why}");
+        daemon.bus.publish("restore.held", "system", None, json!({"reason": why}));
+        return;
+    }
     match decide_auto_restore(&cys::pack::pack_dir(), opted_out, exe_dir_ref, &current_path, &socket) {
         AutoRestore::OptedOut => {
             eprintln!("[cysd] auto-restore skipped (CYS_NO_AUTORESTORE=1)");

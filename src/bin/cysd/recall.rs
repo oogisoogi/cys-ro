@@ -595,6 +595,20 @@ pub fn surface_numbers_close(
     .map_err(|e| e.to_string())
 }
 
+/// 입양(T4 · `seat_adopt`): 부팅이 `boot_orphan` 으로 닫은 그 좌석 행을 다시 연다(같은 내부 번호 · 같은 보이는 번호로 계속 산다).
+/// 행이 없거나(옛 판 DB) `boot_orphan` 이 아니면 아무것도 바꾸지 않고 Ok — 표가 없는 것과 같은 처분(관측 공백 · 좌석은 만든다).
+pub fn surface_numbers_reopen(socket_path: &std::path::Path, surface_id: u64) -> Result<(), NumbersWriteErr> {
+    let path = state_dir(socket_path).join("transcripts.db");
+    let conn = Connection::open(&path).map_err(|e| NumbersWriteErr::Io(e.to_string()))?;
+    conn.execute(
+        "UPDATE surface_numbers SET closed_at = NULL, close_kind = NULL
+         WHERE surface_id = ?1 AND close_kind = 'boot_orphan'",
+        rusqlite::params![surface_id as i64],
+    )
+    .map(|_| ())
+    .map_err(|e| NumbersWriteErr::Io(e.to_string()))
+}
+
 /// FTS 검색 (RPC recall.search). 쿼리는 phrase로 quoting해 FTS 구문 주입을 차단.
 /// trigram 토크나이저는 3자 미만에 항상 빈 결과 — 짧은 쿼리는 LIKE 스캔으로 폴백한다.
 pub fn search(

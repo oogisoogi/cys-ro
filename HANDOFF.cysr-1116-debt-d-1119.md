@@ -108,3 +108,59 @@ orchestra_todo_path 0s · org_audit 5s · pack_syntax_warnings 2s · preflight_n
 4. 작업 스케줄러 Highest + 다른 cysd 경로(판 이동) = daemon install 이 Highest 로 재등록 시도 → 일반 창이면 실패(rc 22) — 조용히 Limited 로 되돌리는 것보다 낫다고 판단.
 5. B6: claude 도구 허락 창이 늘 가로줄 아래인지 실화면 실측(가로줄 없고 커서가 번호 행도 아니면 감지 0).
 6. poison 원인 확인 = 윈 phoenix 로그의 「기동 실패」 줄 원문.
+
+## 7. 후임 좌석 델타(worker-1116debt-d2 · surface:2271 · 11-20 01:07 ~ · 브리프 debt-d2.md [master#668a596a])
+
+### 7-1. 커밋(이 좌석 · 모두 feat/1116-debt-d · push 0)
+
+| 커밋 | 무엇 | 시험 · 뮤턴트 |
+|---|---|---|
+| 60bc82c6a | B2: census 열 0 `#[cfg(test)]` 블록 끝 = 중괄호 짝(lexed.block_end_line) · 머리 = 코드 시작 줄만 · 짝이 열 0 `}` 아니면 실패 · schtasks 계수 4→7(fa789ffde 3곳) | 단언 4(가~라) · B2CS·B2END 붉음 |
+| 31e4d290c | V2-2 write_journal = O_NOFOLLOW·O_NONBLOCK 한 핸들 읽기 · V2-3 부트 config 시드 = 팩 적용 잠금 밖(ConfigSeed::Defer · 시드 지점 간 설치만) · V2-4 시험 · cysd main.rs 핀 갱신 | j1116_v22·v23·v24 · J1116-V22-FOLLOW·J1116-V23-SEED-IN-LOCK 붉음 |
+| 9aaafdf33 | B7 동작 시험(실 tick_probes · 실 PTY master · 승인 대기 = Return 0 · 대조군 Return 1) | 뮤턴트 B7 = 이 시험만 붉음(옛 글자 핀은 못 잡음) |
+| d94094a9c | V6 codex 1R: 쓰는 이 = 공용 잠금 뒤 초기화 센티널 확인(with_lane_apply_lock_gated) · 레인 목록 판독 오류 = Err | j1116_v6 2 · J1116-V6-NO-SENTINEL·DIR-ERR-OPEN 붉음 |
+| 667506fac | S4-4 codex 1R: Daemon.approval_fps(감지 때 지문) · 목록 = 그 값 · check_approvals 재결박(approval_rebind_stale) · 지문 실은 키 = SubmitAfterGap.refuse(쓰기 직전 재계산) · ActuationClaim | s44 새 3 + 기존 1 갱신 · S44-NO-REBIND·NO-WRITER-RECHECK·NO-CLAIM 붉음 |
+| 0461f82aa | 추가2 codex 1R: query_task_xml(질의 실패 ≠ 작업 없음 · 작업 파일 NotFound 만 없음) · run_level_of(요소 판독 · 모르는 값 = 덮지 않음) · runner_run_level → Result(관리자 모드 기기 + 일반 창 = 등록 거부 안내) · B5 시험 #[cfg(unix)](윈 타입체크 오류 6→0) | win_task 새 1 · 표 갱신 |
+| 4b5cb2133 | d16 글자 핀 `Ok(_)`→`Ok(r)`(e143ac859 B5 가 깸 · 전량에서만 보임) + 거부 return < 송신 마커 단언 | — |
+| ba20e3aae | 내 리팩터가 깬 핀 2: install_entries(→ install_from_iter_with) · schtasks 7→6 | — |
+
+원작자 파일 변경 줄(데몬 변경 허용 갈래): state.rs(Daemon.approval_fps 필드·초기화 · push_feed_notification 지문 결박 블록) · handlers.rs(ActuationClaim 구조체 · feed.reply 점유 블록 · feed.list 지문 출처 · 시험 4) · governance.rs(check_approvals 코얼레싱 3줄 · approval_rebind_stale · actuate_screen_approval_checked 쓰기 요청 · 시험 0) · main.rs(시험 핀 1) · watch_wake.rs(시험 1).
+
+### 7-2. codex
+- 1R(e81abb15c 기준 · S4-4·V6·V9·추가2) = **REVISE** blocking 6 · major 2 · minor 1 · V9 = ACCEPT. 원문 = 이 좌석 scratchpad `codex-r1-out.txt`(사본 폴더 `codex-r1/` · 개인정보 관문 위해 이메일·전화 꼴만 자리표시로 바꿈).
+- 처분: S4-4 ①②③ · V6 blocking·major · 추가2 질의 실패·러너 = 고침(위 3커밋). **안 고침 2**: ⓐ 추가2 「작업 기동 실패 → 형제 직접 기동(Medium)」 = 정정 지시 ② 가 「갈리면 doctor 경고」 로 예정한 갈림 · 거부로 바꾸면 작업이 망가진 기기에서 데몬이 안 뜸(📌 오너) ⓑ S4-4 minor(정규화가 명령 안 공백·│·❯ 차이를 지움) = 기록.
+- 2R = **codex 한도로 판정 없이 끊김**(「try again at 6:29 AM」) → master 공지 [master#822421fb] 대로 **codex 2R = master 대기열(debt-d 2R)**. 사본 폴더 `codex-r2/` · 질문지 `codex-r2-prompt.md` 그대로 다시 쓰면 된다.
+- 내 자체 재검(2R 대신 · 판정 아님): writer 의 refuse 탐침이 좌석 파서 잠금을 잡는 것 = 기존 승인 탐침(approval_screen_now)과 같은 꼴 · ActuationClaim 은 RAII 라 조기 return 전부 풀림 · 재결박은 다시 그리는 도중 화면에서 항목을 한 번 더 세울 수 있음(각성 줄은 같은 문구 300초 억제).
+
+### 7-3. 게이트(격리 env = env -i · HOME 빈 폴더 · PATH 에 실 cys 없음 · /tmp/d2ci · ci-branch.yml 단계 run 블록 그대로 떼어 · 원자료 /tmp/d2ci/logs)
+
+| 단계(ci-branch idx) | 결과 | 판정 |
+|---|---|---|
+| cargo `--bin cys` threads=1 (22) | 1차 800 ok · 1 FAIL(d16 핀 = e143ac859 가 깸) → 4b5cb2133 뒤 2차 **801 ok · 0 FAIL** · 2 ign | 초록 |
+| cargo `--bin cysd` threads=1 (25) | **3341 ok · 0 FAIL** · 17 ign · 1 filtered(hwmon) | 초록 |
+| cargo `--lib` threads=1 (35) | 1차 1278 ok · 2 FAIL(내 리팩터가 깬 핀 2) → ba20e3aae 뒤 2차 **1280 ok · 0 FAIL** · 3 ign | 초록 |
+| drainhold e2e (36) · cys-app --bins (37) · 윈 교차 타입체크 (38) | 4 ok · **350 ok** · 오류 0(경고 123) | 초록 |
+| PTY·C8·가짜 cargo 대조·IOReport (24·26~30·33·34) | 전부 rc 0 | 초록 |
+| UI bun (55) · tsc 7.0.2 (56) | **3749 pass · 0 fail**(3837 · 88 skip) · tsc 오류 0(버전 줄 실측) | 초록 |
+| phoenix-host-gate (44) · 팩 0·1·4·7·8·10~21·31·32 | 전부 rc 0 | 초록 |
+| boot-health 전량 (40) | 167 pass · **2 FAIL = H-CLT-1·2** · 1 skip | 환경성: 훅 프리루드 2순위가 이 기계 실설치 `/Applications/cys.app/.../python3` 를 집음(CI 러너엔 앱 없음) · 훅·검체 기준점 diff 0 · 📌 시험이 실 /Applications 를 읽는 격리 구멍 |
+| 팩 스위트 (9 · 계속 돌기 꼴 = evidence step-mack.sh 글자 일치) · 우분투 루프 (51 · 계속 돌기 = step-ubuntuk.sh 글자 일치) | 계속 돌기 900: LANE-FAIL 5 · 901: 6(합 7종 + r34) — **04:34~04:49 다른 좌석 부하 주입(load 20~27 · [master#f640c115]) + 내 cargo 줄기 겹침 시간대** | 단독 재실행(04:51~04:57 · load 7~11): capgate_hook_shell · inject_context_role_seat · refl_inject_context_role_canon = **초록** · 남은 5 = **판정 대기**(아래) |
+
+남은 5(단독 재실행에도 붉음 · 판정 대기 — 회귀로 부르지 않음):
+- test_v116_auto_restore_status: PermissionError `target/debug/cysd` — **그 파일이 0바이트·644(11-20 03:14 생성 · 출처 미상 · 지우지 않음)**. cargo 단계는 deps/ 실행 파일만 만든다. 누가 만들었는지(가짜 cargo 대조 단계 28~30 의심) 먼저.
+- test_hook_r34: 1초 시한 단언(RCF-3·NZ-3·DL-1b 3.2~3.5s) — 부하 7 이상에서 붉음 · 1차 단독 3회 = 초록 1 · 붉음 2. master 공지의 「새로 쓴 실행 파일 첫 exec 검사 0.3~3.6s」(feat/1116-flaky 55e7e7e99 prime_exec) 꼴 의심.
+- test_resource_gate_product_cpu 9c: 「ps timeout 1.5 s」 = 시한 · 부하성 의심.
+- test_role_authority: backoff.log FileNotFound(스텁 첫 실행 시한 의심) · test_owner_desk R8Codex2R app_flush 0≠1.
+- 다음 좌석: load<5 에서 단독 3회 + 기준점 dea2e1853 작업트리(target 복제)에서 같은 시험 → 「사유 전문 일치 + 티켓 이전 기준」 으로 가른다. 이 가지의 cysjavis-pack 변경 = 앞 좌석 6파일(agents.json · javis_phoenix.py · V7 3파일)뿐 — 위 5 시험이 그 파일을 쓰는지부터.
+
+- secret-scan --all: clean(2186 파일).
+
+### 7-4. 남은 일(다음 좌석)
+1. 위 「판정 대기 5」 가르기. 2. codex 2R = master 대기열(06:29 뒤) · 판정 뒤 고침. 3. B1(census proc-macro2) · 미등재 팩 시험 등재 = 앞 좌석 §4 그대로(손대지 않음).
+4. 설치기 가지(habitat-1116-debt-d) 는 이 좌석 무접촉.
+
+### 7-5. 📌 덧붙임(실행 안 함)
+1. 추가2 「작업 기동 실패 → 형제 직접 기동(Medium 데몬)」 유지 vs 거부(가용성 vs 무결성) = 오너 결정.
+2. boot-health H-CLT 시험이 실 `/Applications/cys.app` 을 읽음(CYS_TEST_SYSROOT 가 고정 설치 위치를 안 가림) — 시험 격리 결함 후보.
+3. S4-4 정규화 minor(명령 안 공백·│·❯ 차이) — 구조적 제거로 좁힐지.
+4. runner_run_level 이 관리자 모드 기기 + 질의 실패를 Err 로 = 갱신 등록이 일시 실패할 수 있음(종전 = 조용히 Limited) — 엄격 쪽을 택함.

@@ -256,6 +256,7 @@ describe("judge/revive — 축 6 + vacant + never_started 판정(순수)", () =>
     const org = (o: Partial<Row>) => ({ surfaces: [row(5, null, { seat: "empty", agent_alive: null, ...o })] });
     expect(leftoverShell(org({}), 5, 9)).toBe(5);
     expect(leftoverShell(org({ role: "master" }), 5, 9)).toBe(null);
+    expect(leftoverShell(org({ agent: null }), 5, 9)).toBe(null); // 사용자가 연 맨 셸(번호 재사용) = 닫지 않음
     expect(leftoverShell(org({ seat: "occupied" }), 5, 9)).toBe(null);
     expect(leftoverShell(org({ pending_input_human_bytes: 1 }), 5, 9)).toBe(null);
     expect(leftoverShell(org({ human_idle_secs: 3 }), 5, 9)).toBe(null);

@@ -133,7 +133,7 @@ export function restartSucceeded(beforeSid: number | null, m: MasterRow | null |
   return !!m && m.surface_id !== beforeSid && m.agent_alive === true && (m.gate_pending === null || m.gate_pending === undefined);
 }
 
-/** 성공 뒤 정리할 옛 빈 셸(순수) — 옛 좌석이 살아 있고 · 역할 없고(회수됨) · 좌석 Empty · 사람 입력 0 · 최근 사람 입력 없음일 때만 그 번호. */
+/** 성공 뒤 정리할 옛 빈 셸(순수) — 옛 좌석이 살아 있고 · 역할 없고(회수됨) · 등록 에이전트 좌석이었고 · 좌석 Empty · 사람 입력 0 · 최근 사람 입력 없음일 때만 그 번호. */
 export function leftoverShell(org: unknown, oldSid: number | null, newSid: number): number | null {
   if (oldSid === null || oldSid === newSid) return null;
   const rows = (org as { surfaces?: unknown } | null)?.surfaces;
@@ -142,6 +142,8 @@ export function leftoverShell(org: unknown, oldSid: number | null, newSid: numbe
   if (!r) return null;
   if (r.exited === true) return null; // 이미 끝난 좌석은 데몬 회수 몫
   if (r.role !== null && r.role !== undefined) return null; // 아직 역할이 있으면 빈 셸이 아니다
+  // 등록 에이전트 좌석(meta)이었던 것만 — 데몬이 다시 켜지면 좌석 번호가 다시 쓰여, 저장소의 옛 번호가 사용자가 연 맨 셸을 가리킬 수 있다(그 셸은 meta 없음).
+  if (typeof r.agent !== "string" || r.agent === "") return null;
   if (r.seat !== "empty") return null;
   if (r.pending_input_human_bytes !== 0 || r.input_paste_open !== false) return null;
   const hi = r.human_idle_secs;

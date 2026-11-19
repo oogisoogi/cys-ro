@@ -379,5 +379,73 @@ class PausedEvidenceUnknownState(_Patched):
         self.assertEqual(W.paused_evidence(), (True, [mark]))
 
 
+
+class V7SiblingPauseReaders(unittest.TestCase):
+    """★1.1.16(TICKET=cysr-1116-debt-d-1119 · V7) — U08 과 같은 꼴이 남아 있던 형제 정지 판독 3곳(javis_formation._paused_file_hit ·
+    javis_cycle_autopilot.kill_switch · javis_radio.paused_now 의 호출 시점 ROOT 경로): 표지를 못 읽으면(EACCES) 정지로 본다.
+    종전 os.path.exists 는 그 오류를 「없음」으로 접었다(그 뒤 except OSError = 죽은 코드)."""
+
+    def setUp(self):
+        import importlib.util
+        self.tmp = tempfile.mkdtemp(prefix="v7-pause-")
+        self._env = {k: os.environ.get(k) for k in ("CYS_PACK_DIR", "JAVIS_ROOT")}
+        os.environ["CYS_PACK_DIR"] = self.tmp
+        os.environ["JAVIS_ROOT"] = os.path.join(self.tmp, "root")
+        def load(name):
+            spec = importlib.util.spec_from_file_location(name + "_v7", os.path.join(BIN, name + ".py"))
+            m = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(m)
+            return m
+        self.load = load
+
+    def tearDown(self):
+        import shutil
+        for k, v in self._env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    @staticmethod
+    def _deny(real):
+        def call(path, *a, **kw):
+            if os.path.basename(os.fspath(path)) == W.PAUSED_BASENAME:
+                raise PermissionError(13, "Permission denied", os.fspath(path))
+            return real(path, *a, **kw)
+        return call
+
+    def _denied(self):
+        from unittest import mock
+        return mock.patch.object(os, "stat", self._deny(os.stat)), mock.patch.object(os, "lstat", self._deny(os.lstat))
+
+    def test_formation_unreadable_mark_is_a_pause(self):
+        m = self.load("javis_formation")
+        self.assertIsNone(m._paused_file_hit(), "표지 없음 = 정지 아님")
+        a, b = self._denied()
+        with a, b:
+            hit = m._paused_file_hit()
+        self.assertTrue(hit and "확인 불능" in hit, hit)
+
+    def test_autopilot_unreadable_mark_is_a_kill(self):
+        ap = self.load("javis_cycle_autopilot")
+        ok = lambda argv, **kw: (0, "", "")  # noqa: E731 — gate-check 통과 대역
+        self.assertEqual(ap.kill_switch(runner=ok)[0], False, "표지 없음 + gate 통과 = 정지 아님")
+        a, b = self._denied()
+        with a, b:
+            killed, why = ap.kill_switch(runner=ok)
+        self.assertTrue(killed and "확인 불능" in why, why)
+
+    def test_radio_live_root_unreadable_mark_is_a_pause(self):
+        from unittest import mock
+        R = self.load("javis_radio")
+        with mock.patch.object(R.javis_wakeup, "paused_evidence", lambda: (False, [])):
+            self.assertEqual(R.paused_now(), (False, []))
+            a, b = self._denied()
+            with a, b:
+                paused, hits = R.paused_now()
+        self.assertTrue(paused, hits)
+        self.assertTrue(len(hits) == 1 and hits[0].startswith(os.path.join(self.tmp, "root", "_round")) and "확인 불능" in hits[0], hits)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

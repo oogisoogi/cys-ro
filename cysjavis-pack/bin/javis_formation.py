@@ -202,12 +202,16 @@ def paused_paths():
 
 def _paused_file_hit():
     """PAUSED 파일 적중 경로(문자열) 또는 None. 확인 불능(OSError)도 적중으로 본다(fail-closed)."""
+    # ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V7 · U08 javis_wakeup.paused_evidence 와 같은 꼴): os.path.exists 는
+    #   권한 오류·깨진 링크를 예외 없이 「없음」으로 접어 정지 표지를 놓쳤다(아래 except 는 죽은 코드였다) → lstat 로 「없음」만 없음.
     for p in paused_paths():
         try:
-            if os.path.exists(p):
-                return p
-        except OSError as e:
+            os.lstat(p)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except Exception as e:  # 확인 불능 = 정지(fail-closed)
             return "%s (확인 불능: %s)" % (p, e)
+        return p
     return None
 
 

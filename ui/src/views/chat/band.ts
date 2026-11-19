@@ -106,7 +106,7 @@ export function createBand(act: ChatCore, ui: BandUi): BandHandle {
   const itemNode = (it: BandItem): HTMLElement => {
     const box = el("div", "cvb-item");
     box.dataset.kind = it.kind;
-    if (arrived?.key === it.key) {
+    if (arrived?.key === it.key && swapBlocked(arrived, it.key, Date.now())) {
       box.dataset.swapped = "1";
       box.append(el("div", "cvb-swapped", SWAP_LINE));
     }
@@ -222,7 +222,7 @@ export function createBand(act: ChatCore, ui: BandUi): BandHandle {
       nav.append(
         button("다음", "cvb-next", () => {
           curKey = items[(i + 1) % items.length].key;
-          arrived = null; // 사람이 넘긴 것 — 저절로 온 것이 아님
+          // 저절로 온 표시(arrived)는 그대로 — 「다음」으로 갔다 2초 안에 되돌아와도 보호가 남는다(codex 1R major)
           localNote = null;
           paint();
         }),

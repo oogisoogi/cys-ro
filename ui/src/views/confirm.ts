@@ -83,7 +83,7 @@ export class ConfirmBook {
   notice: string | null = null;
   readonly decisions: DecisionRecord[] = [];
   /** (s79 · S4-7 · 검증 F7) 사람이 내린 물음(세션이 바뀌면 비움 — 물음 번호가 다시 매겨진다) */
-  private dismissed = new Set<string>();
+  private dismissed = new Map<string, number>();
 
   constructor(
     private readonly d: ConfirmDeps,
@@ -253,8 +253,9 @@ export class ConfirmBook {
   /** (s79 · S4-7 · 검증 F7) 사람이 「이 물음은 끝났어요」 — 띠에서만 내린다(마스터에게 보내는 것 0 · 기록 남김). 신뢰 클릭에서만 불림. */
   dismiss(q: Question): void {
     const k = dismissKey(q);
-    if (this.dismissed.has(k)) return;
-    this.dismissed.add(k);
+    const last = q.last ?? 0;
+    if ((this.dismissed.get(k) ?? -1) >= last) return;
+    this.dismissed.set(k, last);
     this.notice = DISMISS_NOTE;
     this.record({ request_id: q.id, decision: "dismiss", at: this.d.now(), outcome: "dismissed" });
     this.changed();

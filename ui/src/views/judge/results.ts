@@ -122,14 +122,41 @@ export function pathsInText(text: string, home: string): string[] {
       continue;
     }
     if (fence) continue;
-    for (const m of raw.matchAll(CAND)) {
-      const at = m.index ?? 0;
-      const prev = at > 0 ? raw[at - 1] : "";
-      if (prev && /[A-Za-z0-9_.\-:/\\~]/.test(prev)) continue; // 낱말·URL 한가운데(https://… 의 // 등)
-      const cut = m[0].replace(TAIL, "");
+    const push = (raw0: string): boolean => {
+      const cut = raw0.replace(TAIL, "");
       const p = normPath(HANGUL_TAIL.exec(cut)?.[1] ?? cut, home);
       if (p && !out.includes(p)) out.push(p);
-      if (out.length >= PATHS_PER_REPLY_MAX) return out;
+      return out.length >= PATHS_PER_REPLY_MAX;
+    };
+    // (codex 1R major) 띄어쓰기 있는 경로 — ① 백틱 한 쌍 안이 통째로 경로면 그대로(띄어쓰기 포함 · 마스터가 경로를 적는 흔한 꼴) · 그 자리는 아래 훑기에서 뺌
+    let line = raw;
+    for (const c of raw.matchAll(/`([^`\n]+)`/g)) {
+      const body = c[1].trim();
+      if (/^(?:~[\\/]|[A-Za-z]:[\\/]|\/)/.test(body) && /\s/.test(body)) {
+        if (push(body)) return out;
+        line = line.replace(c[0], " ".repeat(c[0].length));
+      }
+    }
+    for (const m of line.matchAll(CAND)) {
+      const at = m.index ?? 0;
+      const prev = at > 0 ? line[at - 1] : "";
+      if (prev && /[A-Za-z0-9_.\-:/\\~]/.test(prev)) continue; // 낱말·URL 한가운데(https://… 의 // 등)
+      // ② 맨글: 확장자 없이 띄어쓰기에서 끊겼고 뒤 낱말(3개까지)을 이으면 확장자로 끝나면 → 이은 것도 후보(둘 다 내고 실재 확인이 고른다 · 띄어쓰기 경로를 놓치지 않게)
+      const head = m[0].replace(TAIL, "");
+      if (!/\.[A-Za-z0-9]{1,8}$/.test(HANGUL_TAIL.exec(head)?.[1] ?? head) && line[at + m[0].length] === " ") {
+        const words = line.slice(at + m[0].length).split(" ").filter((w, i) => i > 0 || w === "").slice(1, 4);
+        let acc = m[0];
+        for (const w of words) {
+          if (!w || /[`'"<>()\[\]{}「」『』《》“”‘’|*]/.test(w)) break;
+          acc += ` ${w}`;
+          const t = acc.replace(TAIL, "");
+          if (/\.[A-Za-z0-9]{1,8}$/.test(HANGUL_TAIL.exec(t)?.[1] ?? t)) {
+            if (push(acc)) return out;
+            break;
+          }
+        }
+      }
+      if (push(m[0])) return out;
     }
   }
   return out;
@@ -175,7 +202,10 @@ export function addCandidates(list: readonly Result[], cands: readonly Candidate
 /** 부모 폴더 목록(Tauri list_dir 응답) → 그 이름의 실재·폴더 여부 · 꼴이 틀리면 null(모름). */
 export function presenceIn(listing: unknown, name: string, caseless = false): { exists: boolean; isDir: boolean | null } | null {
   if (!Array.isArray(listing)) return null;
-  const eq = (a: string) => (caseless ? a.toLowerCase() === name.toLowerCase() : a === name);
+  // 유니코드 정규화 무시(맥 파일 이름은 NFD 로 돌아올 수 있음 · 마스터 글은 NFC) · caseless = 윈도·맥 기본 파일 시스템(codex 1R minor)
+  const norm = (x: string) => (caseless ? x.normalize("NFC").toLowerCase() : x.normalize("NFC"));
+  const want = norm(name);
+  const eq = (a: string) => norm(a) === want;
   for (const e of listing) {
     const x = e as { name?: unknown; is_dir?: unknown } | null;
     if (!x || typeof x.name !== "string") return null;

@@ -527,6 +527,7 @@ export class ChatCore {
   /** 자동으로 나갈 붙잡은 말 가운데 **가장 오래된 것 하나만** 문턱에 건다(그 말이 쉼 중이면 아무것도 안 함 — 뒤 말이 앞지르지 않게). */
   private async pump(): Promise<void> {
     if (this.writing) return;
+    if (this.watchOnly) return; // (s79 · codex 1R major) 앞 말 전달 중에 작업 화면으로 옮겼으면 다음 붙잡은 말은 대화 화면으로 돌아온 뒤에(사람이 마스터 창에 칠 수 있음)
     this.markStale();
     const first = this.s.msgs.find(autoHeld);
     if (!first || (first.notBefore !== undefined && this.d.now() < first.notBefore)) return;

@@ -455,9 +455,98 @@ pub(crate) fn next_newline_after(mut f: &std::fs::File, from: u64, size: u64) ->
     Ok(None)
 }
 
+// ---------- (s79 · TICKET=cysr-1116-s79-1119 · 조각 7) 결과 열기·폴더 보기 ----------
+
+/// 「열기」가 곧 프로그램 실행인 꾸러미(맥 `.app` 등은 **폴더**라 `open_path` 의 실행형 **파일** 검사를 지나간다).
+const LAUNCH_BUNDLE_EXT: &[&str] = &[
+    "app", "appex", "prefpane", "action", "workflow", "saver", "qlgenerator", "plugin", "bundle", "kext", "xpc", "framework", "mpkg", "pkg",
+];
+
+/// 결과 경로의 정규 대상(심볼릭 링크를 끝까지 풂) — 정규 홈 **아래**(홈 자신 아님) · 홈 아래 마디에 숨은 이름(`.` 시작) 0.
+/// 화면(judge/results)의 이름 검사는 글만 본다 — 홈 안 평범한 이름이 홈 밖(예 `/Applications/X.app`)을 가리키는 링크면 그 검사를 지나간다(codex 1R blocking).
+pub(crate) fn result_target(path: &std::path::Path, home: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let home_c = std::fs::canonicalize(home).map_err(|e| format!("not a local path: {e}"))?;
+    let t = std::fs::canonicalize(path).map_err(|e| format!("not a local path: {e}"))?;
+    let rel = t.strip_prefix(&home_c).map_err(|_| "outside_home".to_string())?;
+    if rel.as_os_str().is_empty() {
+        return Err("outside_home".into());
+    }
+    for c in rel.components() {
+        match c {
+            std::path::Component::Normal(seg) if !seg.to_string_lossy().starts_with('.') => {}
+            std::path::Component::Normal(_) => return Err("hidden_path".into()),
+            _ => return Err("outside_home".into()),
+        }
+    }
+    Ok(t)
+}
+
+/// 정규 대상이 실행 꾸러미인가(확장자 · 대소문자 무시).
+pub(crate) fn is_launch_bundle(p: &std::path::Path) -> bool {
+    p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).is_some_and(|e| LAUNCH_BUNDLE_EXT.contains(&e.as_str()))
+}
+
+/// 윈도 정규 경로의 `\\?\C:\` 머리를 벗긴다(탐색기·셸이 그 꼴을 못 받는 경우) — 드라이브 꼴일 때만.
+fn plain_path(p: &std::path::Path) -> String {
+    let s = p.to_string_lossy().into_owned();
+    #[cfg(windows)]
+    {
+        let b = s.as_bytes();
+        if s.starts_with(r"\\?\") && b.len() > 6 && b[5] == b':' && b[4].is_ascii_alphabetic() {
+            return s[4..].to_string();
+        }
+    }
+    s
+}
+
+/// 결과 받기 카드의 「열기」·「폴더 보기」 — 마스터 글에서 온 경로라 정규 대상으로 다시 가둔다:
+/// 정규 홈 아래 · 숨은 마디 0 · 열기면 실행 꾸러미 거절(`executable_confirm` · 화면은 force 로 다시 부르지 않음) · 그 밖은 기존 `open_path`(실행형 파일 게이트 · force 없음)·`reveal_path`.
+#[tauri::command]
+pub fn result_open(path: String, reveal: Option<bool>) -> Result<(), String> {
+    let target = result_target(std::path::Path::new(&path), &cys::home_dir())?;
+    if reveal.unwrap_or(false) {
+        return crate::reveal_path(plain_path(&target));
+    }
+    if is_launch_bundle(&target) {
+        return Err("executable_confirm".into());
+    }
+    crate::open_path(plain_path(&target), None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn result_target_confines_to_canonical_home() {
+        // (s79 · codex 1R blocking) 홈 안 링크가 홈 밖을 가리키면 거절 · 숨은 마디 거절 · 홈 자신 거절 · 정상 = 정규 대상
+        let base = std::env::temp_dir().join(format!("vc-res-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let home = base.join("home");
+        let out = base.join("Applications").join("Evil.app");
+        std::fs::create_dir_all(home.join("교회")).unwrap();
+        std::fs::create_dir_all(home.join(".cys")).unwrap();
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(home.join("교회").join("a.html"), b"x").unwrap();
+        std::fs::write(home.join(".cys").join("s.md"), b"x").unwrap();
+        let ok = result_target(&home.join("교회").join("a.html"), &home).unwrap();
+        assert!(ok.ends_with("교회/a.html") || ok.ends_with("교회\\a.html"));
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&out, home.join("Report")).unwrap();
+            assert_eq!(result_target(&home.join("Report"), &home).unwrap_err(), "outside_home");
+            std::os::unix::fs::symlink(home.join(".cys"), home.join("plain")).unwrap();
+            assert_eq!(result_target(&home.join("plain").join("s.md"), &home).unwrap_err(), "hidden_path");
+        }
+        assert_eq!(result_target(&home.join(".cys").join("s.md"), &home).unwrap_err(), "hidden_path");
+        assert_eq!(result_target(&home.join("교회").join("..").join("..").join("Applications"), &home).unwrap_err(), "outside_home");
+        assert_eq!(result_target(&home, &home).unwrap_err(), "outside_home");
+        assert!(result_target(&home.join("없음.pdf"), &home).unwrap_err().starts_with("not a local path"));
+        assert!(is_launch_bundle(&out));
+        assert!(is_launch_bundle(std::path::Path::new("/x/A.APP")));
+        assert!(!is_launch_bundle(&ok));
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn over_long_line_is_skipped_to_next_line_end_and_reported() {

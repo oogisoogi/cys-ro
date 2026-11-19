@@ -49,8 +49,10 @@ FS_SHIM = r"""
   window.__TAURI__.core.invoke = (cmd, args) => {
     const a = args ?? {};
     if (cmd === 'list_dir') { C.lists++; const l = C.fs[a.path]; return l ? Promise.resolve(l.map((x) => ({ ...x }))) : Promise.reject('No such file or directory (os error 2)'); }
-    if (cmd === 'open_path') { C.opens.push(a); return C.openErr ? Promise.reject(C.openErr) : Promise.resolve(null); }
-    if (cmd === 'reveal_path') { C.reveals.push(a); return Promise.resolve(null); }
+    if (cmd === 'open_path' || cmd === 'reveal_path') { C.legacyOpen = (C.legacyOpen ?? 0) + 1; return Promise.resolve(null); } // 화면은 우리 result_open 만 불러야 함
+    if (cmd === 'result_open') { // 우리 Tauri 명령(정규 경로 가둠 = cargo 시험 몫) — 열기·폴더 보기로 나눠 적음
+      if (a.reveal) { C.reveals.push({ path: a.path }); return Promise.resolve(null); }
+      C.opens.push({ path: a.path }); return C.openErr ? Promise.reject(C.openErr) : Promise.resolve(null); }
     return prev(cmd, args);
   };
 })();
@@ -175,6 +177,7 @@ def main() -> int:
         pg.clock.run_for(200)
         check(pg.evaluate("() => window.__CHAT.opens.length") == n0 and "열지 않았어요" in rail(pg)["notice"], f"★.app 열기 → open_path 0 · 안내 {rail(pg)['notice']}")
         check(not errs, f"페이지 오류 0 {errs[:2]}")
+        check(pg.evaluate("() => window.__CHAT.legacyOpen ?? 0") == 0, "원작자 open_path·reveal_path 직접 호출 0(화면은 result_open 만)")
         ctx.close()
 
         print("== E 조각 9 작업 화면 띠")
@@ -259,6 +262,31 @@ def main() -> int:
         pg.clock.run_for(50)
         check(band(pg)["head"] == "", f"2초 뒤 진짜 클릭 → 내림 {band(pg)}")
         check(not errs, f"페이지 오류 0 {errs[:2]}")
+        ctx.close()
+
+        print("== G2 F10 「다음」 왕복 — 저절로 온 항목에서 다음으로 갔다 2초 안 되돌아와도 보호 유지(codex 1R major)")
+        ctx, pg, errs = page()
+        push_reply(pg, "q4", "⟪확인 요청: 가 물음 보던 것⟫\n⟪확인 요청: 나 물음 저절로 옴⟫\n⟪확인 요청: 다 물음 셋째⟫")
+        pg.clock.run_for(2_100)
+        check("가 물음" in band(pg)["text"], f"보던 것 = 가 {band(pg)['text']}")
+        pg.evaluate("() => { const C = window.__CHAT; C.file.push({ uuid: 'q5', parent: null, role: 'assistant', text: '⟪확인 해결: 가 물음 보던 것⟫', ts: new Date(Date.now()).toISOString() }); C.master.idle_secs = 0; }")
+        pg.clock.run_for(3_100)
+        pg.evaluate("() => { window.__CHAT.master.idle_secs = 999; }")  # 쉬게 된 틱에 세션 읽기 → 그 틱에 나 가 옴
+        for _ in range(80):
+            pg.clock.run_for(100)
+            if "나 물음" in band(pg)["text"]:
+                break
+        check("나 물음" in band(pg)["text"], f"가 해결 → 나 가 저절로 옴 {band(pg)['text']}")
+        pg.click(".cvb-next")
+        pg.clock.run_for(50)
+        pg.click(".cvb-next")
+        pg.clock.run_for(50)
+        check("나 물음" in band(pg)["text"], "다음 → 다 → 다음 → 나(2초 안)")
+        pg.click(".cvb-dismiss")
+        pg.clock.run_for(50)
+        check("나 물음" in band(pg)["text"] and "다른 요청이 그 자리에 왔어요" in band(pg)["notice"], f"★되돌아온 나 에 곧바로 누름 → 처리 0 + 안내 {band(pg)}")
+        check(not errs, f"페이지 오류 0 {errs[:2]}")
+        check(pg.evaluate("() => window.__CHAT.legacyOpen ?? 0") == 0, "원작자 open_path·reveal_path 직접 호출 0(화면은 result_open 만)")
         ctx.close()
 
         print("== H F10 거절 — 보던 도우미 요청이 처리돼 다른 요청이 저절로 옴 → 곧바로 거절 = 처리 0")

@@ -36,6 +36,7 @@ export interface ResultDeps {
 export const MSG_MISSING = "파일을 찾을 수 없어요 — 「마스터에게 물어보기」로 어디 있는지 물어볼 수 있어요.";
 export const MSG_EXEC = "이 파일은 열면 프로그램이 실행될 수 있어 열지 않았어요 — 「폴더 보기」로 확인해 주세요.";
 export const MSG_UNKNOWN = "파일이 있는지 확인하지 못했어요 — 잠시 뒤 다시 눌러 주세요.";
+export const MSG_OUTSIDE = "이 결과는 홈 폴더 밖(또는 숨은 폴더)으로 이어져 있어 열지 않았어요 — 마스터에게 물어봐 주세요.";
 
 export class ResultBook {
   private list: Result[];
@@ -158,7 +159,7 @@ export class ResultBook {
       let v: { exists: boolean; isDir: boolean | null } | null;
       try {
         const listing = await this.d.invoke("list_dir", { path: parentOf(r.path) });
-        v = presenceIn(listing, r.name, /^[A-Za-z]:[\\/]/.test(r.path));
+        v = presenceIn(listing, r.name, /^[A-Za-z]:[\\/]/.test(r.path) || r.path.startsWith("/Users/")); // 윈도·맥 = 대소문자 무시
       } catch (e) {
         v = listErrorIsMissing(e instanceof Error ? e.message : String(e)) ? { exists: false, isDir: null } : null;
       }
@@ -202,12 +203,14 @@ export class ResultBook {
         return;
       }
       try {
-        // force 는 싣지 않는다 — 실행형 파일은 Tauri 가 거절하고, 우리는 다시 묻지 않는다(쉬운 화면에서 실행 0)
-        await this.d.invoke(how === "open" ? "open_path" : "reveal_path", { path: r.path });
+        // 우리 Tauri 명령 result_open(viewcore.rs) — 정규 경로(링크 풂)가 정규 홈 아래인지 다시 가두고 · 실행 꾸러미 거절 · 그 뒤 기존 open_path/reveal_path(force 없음).
+        //   실행형은 Tauri 가 거절하고, 우리는 force 로 다시 묻지 않는다(쉬운 화면에서 실행 0 · codex 1R blocking = 홈 안 링크 → 홈 밖 .app)
+        await this.d.invoke("result_open", { path: r.path, reveal: how === "reveal" });
         this.patch(id, { seen: true });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         if (msg.includes("executable_confirm")) this.notice = MSG_EXEC;
+        else if (msg.includes("outside_home") || msg.includes("hidden_path")) this.notice = MSG_OUTSIDE;
         else if (/not a local path/.test(msg)) {
           this.patch(id, { exists: false });
           this.notice = MSG_MISSING;

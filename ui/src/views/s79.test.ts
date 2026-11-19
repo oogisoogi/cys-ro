@@ -23,7 +23,7 @@ import {
   withPrefix,
   type Result,
 } from "./judge/results";
-import { MSG_EXEC, MSG_MISSING, MSG_UNKNOWN, ResultBook, RESULTS_KEY } from "./results";
+import { MSG_EXEC, MSG_MISSING, MSG_OUTSIDE, MSG_UNKNOWN, ResultBook, RESULTS_KEY } from "./results";
 import { pickWorkBand, WORK_ANSWER_HELPER, WORK_ANSWER_MASTER, WORK_DRAFT_TEXT } from "./judge/workband";
 import { bandOf, dismissKey, openQuestions, swapBlocked, SWAP_GUARD_MS, withoutDismissed, type Band, type FeedApproval, type StallInput } from "./judge/confirms";
 import { ConfirmBook } from "./confirm";
@@ -53,6 +53,18 @@ describe("조각 7 — 답 속 경로(홈 아래만)", () => {
   it("「열기」가 곧 실행인 꾸러미(.app 등) = 막음 · 문서·그림·폴더는 아님", () => {
     for (const n of ["Evil.app", "x.APP", "a.pkg", "b.mpkg", "run.command", "p.prefPane", "w.workflow"]) expect(`${n}:${launchesProgram(n)}`).toBe(`${n}:true`);
     for (const n of ["a.html", "주보.pdf", "out", "app", "a.application.md"]) expect(`${n}:${launchesProgram(n)}`).toBe(`${n}:false`);
+  });
+  it("띄어쓰기 있는 경로(codex 1R major): 백틱 안 통째 · 맨글은 확장자까지 이은 것도 후보", () => {
+    expect(pathsInText("보고서는 `/Users/kim/Report Final.pdf` 예요", H)).toEqual(["/Users/kim/Report Final.pdf"]);
+    expect(pathsInText("보고서는 /Users/kim/Report Final.pdf 예요", H)).toEqual(["/Users/kim/Report Final.pdf", "/Users/kim/Report"]);
+    expect(pathsInText("결과 /Users/kim/교회 폴더를 보세요", H)).toEqual(["/Users/kim/교회"]); // 이어도 확장자가 안 나오면 그대로
+    expect(pathsInText("`ls -la` 와 `/etc/a b.txt`", H)).toEqual([]);
+  });
+  it("실재 대조 = 유니코드 정규화 무시(NFD 이름) · 맥·윈 대소문자 무시(codex 1R minor)", () => {
+    const nfd = "주보.pdf".normalize("NFD");
+    expect(presenceIn([{ name: nfd, is_dir: false }], "주보.pdf")?.exists).toBe(true);
+    expect(presenceIn([{ name: "Report.PDF", is_dir: false }], "report.pdf")?.exists).toBe(false);
+    expect(presenceIn([{ name: "Report.PDF", is_dir: false }], "report.pdf", true)?.exists).toBe(true);
   });
   it("URL·낱말 한가운데 슬래시 = 0", () => {
     expect(pathsInText("https://example.invalid/Users/kim/a.html 와 and/or", H)).toEqual([]);
@@ -171,7 +183,9 @@ function fakeFs(files: Record<string, Array<{ name: string; is_dir: boolean }>>)
       if (!l) throw new Error("No such file or directory (os error 2)");
       return l;
     }
-    if (cmd === "open_path" || cmd === "reveal_path") {
+    if (cmd === "result_open") {
+      // 대역 = 우리 Tauri result_open(정규 경로 가둠은 cargo 시험 몫) — 열기·폴더 보기를 옛 이름으로 적어 둔다
+      calls.push([a?.reveal ? "reveal_path" : "open_path", { path: a?.path }]);
       if (state.openErr) throw new Error(state.openErr);
       return null;
     }
@@ -242,6 +256,16 @@ describe("조각 7 — 장부(대역)", () => {
     await t.book.act("/Users/kim/Downloads/Evil.app", "reveal");
     expect(t.calls.filter((c) => c[0] === "reveal_path").length).toBe(1);
   });
+  it("Tauri 가 홈 밖·숨은 폴더로 이어짐을 거절(outside_home·hidden_path) → 안내 · 새 결과 그대로", async () => {
+    const t = fakeFs({ "/Users/kim": [{ name: "Report", is_dir: false }] });
+    await t.book.start();
+    t.book.onTail([rec("/Users/kim/Report")]);
+    await t.book.tick();
+    t.state.openErr = "outside_home";
+    await t.book.act("/Users/kim/Report", "open");
+    expect(t.book.notice).toBe(MSG_OUTSIDE);
+    expect(t.book.items[0].seen).toBe(false);
+  });
   it("skill.run_finished — 본부 slug 만 · 부서 slug·slug 모름 = 버림 · 확인 전에도 카드(확인 중)", async () => {
     const t = fakeFs({ "/Users/kim/runs": [{ name: "r1", is_dir: true }] });
     await t.book.start();
@@ -307,6 +331,27 @@ describe("조각 9 — 작업 화면 띠(FR-C7 · 띠 하나)", () => {
 });
 
 describe("조각 9 — 공통층: 대화 화면을 안 켰으면 작업 화면 띠도 조회 0 · 살피는 중엔 보내지 않음", () => {
+  it("(codex 1R major) 앞 말 전달 중 작업 화면으로 → 그 전달이 끝나도 뒤 붙잡은 말은 안 나감(pump) → 대화 화면 돌아오면 나감", async () => {
+    const sim = new Sim({ plan: () => "hang_written", hangMs: 5_000 });
+    sim.core.attach();
+    await sim.flush();
+    await sim.core.poll();
+    await sim.flush();
+    sim.core.submit("첫 말");
+    await sim.advance(100);
+    sim.core.submit("둘째 말");
+    await sim.advance(100);
+    expect(sim.sends()).toBe(1); // 첫 말 쓰는 중 — 둘째는 차례 기다림
+    expect(sim.core.watchStart()).toBe(true);
+    sim.core.detach();
+    sim.startPolling(); // 작업 화면 띠도 3초마다 poll
+    await sim.advance(60_000); // 첫 말 응답 도착 → deliver 끝 → pump · 그 뒤 poll 20회
+    expect(sim.sends()).toBe(1); // ★살피는 중 = 둘째 말 쓰기 0(pump·poll 어느 길로도)
+    sim.core.attach();
+    sim.core.watchStop();
+    await sim.advance(60_000);
+    expect(sim.sends()).toBe(2); // 대화 화면으로 돌아오면 나감
+  });
   it("대화 화면 켠 적 없음 → watchStart = false · invoke 0", async () => {
     const sim = new Sim();
     expect(sim.core.warm).toBe(false);
@@ -357,8 +402,15 @@ describe("S4-7 · F7 — 사람이 물음을 띠에서 내림(마스터에게 �
       { kind: "ask", text: "A?", uuid: null },
       { kind: "ask", text: "B?", uuid: null },
     ]);
-    expect(withoutDismissed(qs, new Set([dismissKey(qs[0])])).map((q) => q.text)).toEqual(["B?"]);
-    expect(withoutDismissed(qs, new Set([dismissKey({ ...qs[0], text: "다른 글" })])).length).toBe(2);
+    expect(withoutDismissed(qs, new Map([[dismissKey(qs[0]), qs[0].last ?? 0]])).map((q) => q.text)).toEqual(["B?"]);
+    expect(withoutDismissed(qs, new Map([[dismissKey({ ...qs[0], text: "다른 글" }), 99]])).length).toBe(2);
+    // (codex 1R major) 내린 뒤 해결 없이 같은 글로 다시 물음 → 다시 보임
+    const again = openQuestions([
+      { kind: "ask", text: "A?", uuid: null },
+      { kind: "ask", text: "B?", uuid: null },
+      { kind: "ask", text: "A?", uuid: null },
+    ]);
+    expect(withoutDismissed(again, new Map([[dismissKey(qs[0]), qs[0].last ?? 0]])).map((q) => q.text)).toEqual(["A?", "B?"]);
   });
   it("ConfirmBook.dismiss → 띠에서 빠짐 · 기록(번호·dismiss · 글 0자) · invoke 0 · 세션 바뀌면 비움", async () => {
     const mem = new Map<string, string>();
@@ -379,7 +431,10 @@ describe("S4-7 · F7 — 사람이 물음을 띠에서 내림(마스터에게 �
     const log = mem.get("cys-chat-decisions") ?? "";
     expect(JSON.parse(log).items).toEqual([{ request_id: "q1", decision: "dismiss", at: 5, outcome: "dismissed" }]);
     expect(log).not.toContain("비밀 물음 글");
-    // 다시 묻기(새 표식 = 새 번호) → 다시 띠에
+    // 해결 없이 같은 글로 다시 물음 → 다시 띠에(codex 1R major)
+    b.onTail([rec("⟪확인 요청: 비밀 물음 글⟫")]);
+    expect(b.band().items.length).toBe(1);
+    // 해결 뒤 다시 묻기(새 표식 = 새 번호) → 띠에
     b.onTail([rec("⟪확인 해결: 비밀 물음 글⟫"), rec("⟪확인 요청: 비밀 물음 글⟫")]);
     expect(b.band().items.length).toBe(1);
     b.resetSession();

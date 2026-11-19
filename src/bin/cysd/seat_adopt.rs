@@ -286,6 +286,8 @@ pub(crate) struct JudgeIn<'a> {
     /// 판정 대상 pid 의 지금 관측(생존 · 출생 시각) — 대상 pid = 기록의 pid(0 이 아니면) 아니면 등록부 pid.
     pub alive: bool,
     pub start_now: Option<u64>,
+    /// 그 pid 의 지금 실행 파일이 cys-seatkeep 인가(None = 못 읽음) — 「pid 재사용」을 죽음으로 볼 양성 증거(codex T4 2R).
+    pub exe_is_seatkeep: Option<bool>,
 }
 
 /// 판정 대상 pid(기록 우선 · 임시본이면 등록부).
@@ -320,7 +322,10 @@ pub(crate) fn judge(j: &JudgeIn) -> Liveness {
     match expected {
         // 기록과 다르지만 등록부는 지금 그 프로세스와 같다 = 기록이 낡았거나 손댄 것 — 산 seatkeep 파일을 지우지 않는다(미결).
         Some(e) if e != now && reg_start == Some(now) => return Liveness::Unknown("record_start_mismatch"),
-        Some(e) if e != now => return Liveness::Dead("pid_reused"),
+        // pid 가 살아 있는데 출생 시각이 다르다 — 지금 그 pid 가 cys-seatkeep 이 **아니라는** 양성 증거가 있을 때만 죽음(pid 재사용) ·
+        // 그 밖(실행 파일 못 읽음 · 다른 seatkeep)은 파일을 지우지 않는다(미결 · codex T4 2R 차단).
+        Some(e) if e != now && j.exe_is_seatkeep == Some(false) => return Liveness::Dead("pid_reused"),
+        Some(e) if e != now => return Liveness::Unknown("start_mismatch_live"),
         Some(_) => {}
         None => return Liveness::Unknown("start_unknown"),
     }
@@ -542,24 +547,37 @@ pub(crate) fn test_set_pending(p: Vec<Pending>) {
 
 // ─────────────────────────────── ② 기동 입양 ───────────────────────────────
 
-/// 죽음이 확인된 좌석의 정리 — 남은 종료 기록(`.exit`)을 사건으로 먼저 발행하고(소비) cysd 기록·등록부·잠금·소켓·종료 기록을 지운다.
-/// 교체 기록(`.log`)은 사후 적발 장치라 남긴다.
-fn consume_dead(daemon: &Daemon, dir: &Path, skid: &str, rec: Option<&SeatRecord>, why: &str) {
+/// 죽음이 확인된 좌석의 정리 — 남은 종료 기록(`.exit`)을 신원 확인 뒤 사건으로 발행하고(소비 · 표식 `.exit.consumed` 를 남긴 뒤) cysd 기록·
+/// 등록부·잠금·소켓·종료 기록을 지운다. 교체 기록(`.log`)은 사후 적발 장치라 남긴다. `.exit` 를 못 읽거나 id 가 다르면 **아무것도 지우지 않는다**
+/// (Err = 미결 · 다음 기동이 다시 본다 · codex T4 2R). 발행 뒤 표식 전 재시작 = 다음 기동에 한 번 더 발행될 수 있다(적어도 한 번 · 사건의 `skid` 가 멱등 키).
+fn consume_dead(daemon: &Daemon, dir: &Path, skid: &str, rec: Option<&SeatRecord>, why: &str) -> Result<(), &'static str> {
     let exit_path = dir.join(format!("{skid}.exit"));
-    if let Ok(t) = std::fs::read_to_string(&exit_path) {
-        let v: serde_json::Value = serde_json::from_str(&t).unwrap_or(serde_json::Value::Null);
-        eprintln!("[cysd] 좌석 입양 {skid}: 데몬 없는 사이 끝난 좌석의 종료 기록 소비 — {}", v["seats"]);
-        daemon.bus.publish(
-            "seat.exited_while_away",
-            "surface",
-            rec.map(|r| r.surface_id),
-            json!({"skid": skid, "surface_ref": rec.map(|r| cys::surface_ref(r.surface_id)),
-                   "role": rec.and_then(|r| r.role.clone()), "exit": v["seats"], "why": why}),
-        );
+    let marker = dir.join(format!("{skid}.exit.consumed"));
+    match std::fs::read_to_string(&exit_path) {
+        Ok(t) => {
+            let v: serde_json::Value = serde_json::from_str(&t).map_err(|_| "exit_unparsable")?;
+            if v["id"].as_str() != Some(skid) {
+                return Err("exit_id_mismatch");
+            }
+            if !marker.exists() {
+                eprintln!("[cysd] 좌석 입양 {skid}: 데몬 없는 사이 끝난 좌석의 종료 기록 소비 — {}", v["seats"]);
+                daemon.bus.publish(
+                    "seat.exited_while_away",
+                    "surface",
+                    rec.map(|r| r.surface_id),
+                    json!({"skid": skid, "surface_ref": rec.map(|r| cys::surface_ref(r.surface_id)),
+                           "role": rec.and_then(|r| r.role.clone()), "exit": v["seats"], "why": why}),
+                );
+                std::fs::write(&marker, b"1").map_err(|_| "exit_marker_write")?;
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("exit_unreadable"),
     }
-    for ext in [RECORD_SUFFIX, ".json", ".lock", ".sock", ".exit"] {
+    for ext in [RECORD_SUFFIX, ".json", ".lock", ".sock", ".exit", ".exit.consumed"] {
         let _ = std::fs::remove_file(dir.join(format!("{skid}{ext}")));
     }
+    Ok(())
 }
 
 /// 기동 입양 — 잠금 획득 뒤 · accept 전에 한 번(main.rs). 노브 끔 = 아무것도 안 함(요약도 `ran=false`).
@@ -623,7 +641,9 @@ fn adopt_one(daemon: &Arc<Daemon>, dir: &Path, skid: &str) -> (Outcome, Option<P
     };
     let pid = target_pid(rec_in, &reg);
     let start_now = pid.and_then(process_start_us);
-    let verdict = judge(&JudgeIn { rec: rec_in, reg: &reg, alive: pid.map(pid_alive).unwrap_or(false), start_now });
+    let alive = pid.map(pid_alive).unwrap_or(false);
+    let exe_is_seatkeep = if alive { pid.and_then(crate::seat_proc::seatkeep_exe_matches) } else { None };
+    let verdict = judge(&JudgeIn { rec: rec_in, reg: &reg, alive, start_now, exe_is_seatkeep });
     let rec_ref = rec.as_ref().ok().and_then(|r| r.as_ref());
     let surface_id = rec_ref.map(|r| r.surface_id);
     let role_of = |r: Option<&SeatRecord>| -> Option<String> {
@@ -647,8 +667,12 @@ fn adopt_one(daemon: &Arc<Daemon>, dir: &Path, skid: &str) -> (Outcome, Option<P
     }
     match verdict {
         Liveness::Dead(why) => {
-            consume_dead(daemon, dir, skid, rec_ref, why);
-            return (mk("dead", why.into(), rec_ref.and_then(|r| r.role.clone())), None);
+            let role = rec_ref.and_then(|r| r.role.clone());
+            return match consume_dead(daemon, dir, skid, rec_ref, why) {
+                Ok(()) => (mk("dead", why.into(), role), None),
+                // 종료 기록을 못 믿음 — 파일을 남기고 미결(seatkeep 은 이미 없으니 예약은 두지 않는다).
+                Err(e) => (mk("unresolved", format!("{why}+{e}"), role), None),
+            };
         }
         Liveness::Unknown(why) => {
             let role = role_of(rec_ref);
@@ -674,6 +698,7 @@ fn adopt_one(daemon: &Arc<Daemon>, dir: &Path, skid: &str) -> (Outcome, Option<P
         Ok(s) => s,
         Err(e) => return (mk("unresolved", format!("connect: {e}"), role.clone()), Some(pend(role))),
     };
+    let link = spawned.link();
     let mut rec = rec;
     rec.keeper_pid = pid;
     rec.keeper_start_us = Some(start);
@@ -690,8 +715,13 @@ fn adopt_one(daemon: &Arc<Daemon>, dir: &Path, skid: &str) -> (Outcome, Option<P
         Some(AdoptSeat { rec, spawned }),
     ) {
         Ok(_) => (mk("adopted", "ok".into(), role), None),
-        // 등록 실패 — 붙었던 연결은 손잡이와 함께 닫혔다(seatkeep 은 --adoptable 이라 산다) → 예약.
-        Err(e) => (mk("unresolved", format!("register: {e}"), role.clone()), Some(pend(role))),
+        // 등록 실패 — 붙었던 연결을 끊는다(seatkeep 은 --adoptable 이라 산다 · 다음 조종자를 받을 수 있게) → 예약.
+        Err(e) => {
+            if let Some(l) = link {
+                l.detach();
+            }
+            (mk("unresolved", format!("register: {e}"), role.clone()), Some(pend(role)))
+        }
     }
 }
 

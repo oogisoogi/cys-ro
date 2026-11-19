@@ -8047,6 +8047,13 @@ impl Daemon {
             ),
         } {
             Ok(()) => {}
+            // 입양(T4 · codex 2R): 행이 boot_orphan 이 아니다(열린 행·다른 닫힘) = 이 번호를 지금 다른 무엇이 쥐고 있을 수 있다 — 입양하지 않는다
+            // (호출자 = 미결 예약 · 행은 건드리지 않음 · 번호는 guard 가 되돌림).
+            Err(crate::recall::NumbersWriteErr::PkConflict(e)) if adopt_rec.is_some() => {
+                spawn_guard.grant.row_owned = false;
+                self.numbers_alarm("pk_conflict", Some(id), Some(&e));
+                return Err(format!("입양: 대응표 행 충돌 — {e}"));
+            }
             Err(crate::recall::NumbersWriteErr::PkConflict(e)) => {
                 spawn_guard.grant.row_owned = false;
                 self.numbers_alarm("pk_conflict", Some(id), Some(&e));
@@ -8605,19 +8612,24 @@ impl Daemon {
                             eprintln!("[debug] surface {} read {n} bytes", surf.id);
                         }
                         let mut start = 0usize;
+                        // 이 조각에서 첫 재생이 끝나는가 — 끝나면 이 조각의 화면·파서·전사 처리가 **다 끝난 뒤** 크기를 흔든다(codex T4 2R).
+                        let mut nudge_after = false;
                         if replay_left > 0 {
                             replay_left = replay_left.saturating_sub(n as u64);
-                            if replay_left == 0 {
-                                crate::seat_adopt::nudge_now(Arc::clone(&surf));
-                            }
+                            nudge_after = replay_left == 0;
                         }
                         if screen_only_left > 0 {
                             let k = screen_only_left.min(n as u64) as usize;
                             replay_screen_only(&surf, &buf[..k]);
                             screen_only_left -= k as u64;
-                            // 경계에 걸친 DSR 질의를 잇는다(codex T4 1R #4) — 화면 전용 조각의 마지막 3바이트를 다음 판독의 꼬리로.
-                            dsr_tail = buf[k.saturating_sub(3)..k].to_vec();
+                            // 경계에 걸친 DSR 질의를 잇는다(codex T4 1R #4 · 2R) — 이전 꼬리 + 화면 전용 조각을 이어 마지막 3바이트를 남긴다.
+                            dsr_tail.extend_from_slice(&buf[..k]);
+                            let cut = dsr_tail.len().saturating_sub(3);
+                            dsr_tail.drain(..cut);
                             if k == n {
+                                if nudge_after {
+                                    crate::seat_adopt::nudge_now(Arc::clone(&surf));
+                                }
                                 continue;
                             }
                             start = k;
@@ -8775,6 +8787,9 @@ impl Daemon {
                         daemon.ingest_output(&surf, chunk);
                         // ★(리뷰 R1) 출력 세대 **짝수** = 이 청크의 발행(파서·스크롤백) 끝.
                         surf.output_gen.fetch_add(1, Ordering::AcqRel);
+                        if nudge_after {
+                            crate::seat_adopt::nudge_now(Arc::clone(&surf));
+                        }
                     }
                 }
             }

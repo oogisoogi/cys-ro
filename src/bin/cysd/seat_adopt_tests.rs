@@ -44,7 +44,11 @@ fn record_roundtrips_through_json_without_token() {
 }
 
 fn j(rec: Option<(u32, Option<u64>, f64)>, reg: &RegRead, alive: bool, start: Option<u64>) -> Liveness {
-    judge(&JudgeIn { rec, reg, alive, start_now: start })
+    judge(&JudgeIn { rec, reg, alive, start_now: start, exe_is_seatkeep: Some(false) })
+}
+
+fn jx(rec: Option<(u32, Option<u64>, f64)>, reg: &RegRead, alive: bool, start: Option<u64>, exe: Option<bool>) -> Liveness {
+    judge(&JudgeIn { rec, reg, alive, start_now: start, exe_is_seatkeep: exe })
 }
 
 #[test]
@@ -71,6 +75,12 @@ fn registry_missing_or_unreadable_never_kills_a_live_keeper() {
     assert_eq!(j(r, &RegRead::Missing, true, Some(1000)), Liveness::Unknown("registry_missing_live"));
     assert_eq!(j(r, &RegRead::Error, true, Some(1000)), Liveness::Unknown("registry_io"));
     assert_eq!(j(r, &RegRead::Unparsable, true, Some(1000)), Liveness::Unknown("registry_unparsable"));
+    // codex T4 2R 차단: 산 pid · 출생 시각이 기록과 다름 · 등록부 없음/오류 — 지금 그 pid 가 seatkeep 이 아니라는 양성 증거가 없으면 미결.
+    for reg in [RegRead::Missing, RegRead::Error, RegRead::Unparsable] {
+        assert_eq!(jx(r, &reg, true, Some(2000), None), Liveness::Unknown("start_mismatch_live"));
+        assert_eq!(jx(r, &reg, true, Some(2000), Some(true)), Liveness::Unknown("start_mismatch_live"), "다른 seatkeep 일 수 있다");
+        assert_eq!(jx(r, &reg, true, Some(2000), Some(false)), Liveness::Dead("pid_reused"), "seatkeep 이 아닌 프로세스 = 재사용 확정");
+    }
     // 산 pid 가 아니면(끝남) 등록부가 없어도 죽음 확인.
     assert_eq!(j(r, &RegRead::Missing, false, None), Liveness::Dead("keeper_gone"));
 }
@@ -128,4 +138,24 @@ fn reservation_expires_with_keeper() {
     let prov = Pending { skid: "k".into(), role: None, pid: None, start_us: None, until: Some(100.0) };
     assert!(pending_live(&prov, |_| true, |_| None, 99.0));
     assert!(!pending_live(&prov, |_| true, |_| None, 101.0));
+}
+
+#[test]
+fn numbers_reopen_variants() {
+    let dir = std::env::temp_dir().join(format!("cys_adopt_reopen_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let sock = dir.join("cys.sock");
+    let _ = crate::recall::surface_numbers_boot(&sock, 1.0); // 표 만들기
+    crate::recall::surface_numbers_insert(&sock, 5, Some(5), 1.0).unwrap();
+    let _ = crate::recall::surface_numbers_boot(&sock, 2.0); // 열린 행 → boot_orphan
+    assert!(crate::recall::surface_numbers_reopen(&sock, 5, Some(5), 1.0).is_ok(), "boot_orphan = 다시 연다");
+    assert!(matches!(crate::recall::surface_numbers_reopen(&sock, 5, Some(5), 1.0), Err(crate::recall::NumbersWriteErr::PkConflict(_))), "열린 행 = 충돌");
+    assert!(crate::recall::surface_numbers_reopen(&sock, 9, Some(9), 1.0).is_ok(), "행 없음 = 새로 쓴다");
+    crate::recall::surface_numbers_close(&sock, 9, 3.0, "spawn_failed").unwrap();
+    assert!(matches!(crate::recall::surface_numbers_reopen(&sock, 9, Some(9), 1.0), Err(crate::recall::NumbersWriteErr::PkConflict(_))), "다른 닫힘 = 충돌");
+    // 입양 실패 되돌림 = boot_orphan → 다시 열 수 있다.
+    crate::recall::surface_numbers_close(&sock, 5, 4.0, "boot_orphan").unwrap();
+    assert!(crate::recall::surface_numbers_reopen(&sock, 5, Some(5), 1.0).is_ok());
+    let _ = std::fs::remove_dir_all(&dir);
 }

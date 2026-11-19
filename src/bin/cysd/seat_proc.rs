@@ -328,7 +328,7 @@ fn plist_bundle_executable(text: &str) -> Option<String> {
 mod sk_proto;
 
 #[cfg(target_os = "macos")]
-pub(crate) use seatkeep_mac::{adopt_connect, seatkeep_dir, SeatkeepPlan, SeatLink};
+pub(crate) use seatkeep_mac::{adopt_connect, seatkeep_dir, seatkeep_exe_matches, SeatkeepPlan, SeatLink};
 
 #[cfg(target_os = "macos")]
 mod seatkeep_mac {
@@ -555,6 +555,15 @@ mod seatkeep_mac {
         SeatLink::start(stream, welcome, None, expected_pid, size, skid.to_string(), sock.to_path_buf())
     }
 
+    /// 그 pid 의 실행 파일이 이 cysd 옆의 cys-seatkeep 인가(T4 판정의 양성 증거 · 못 읽으면 None).
+    pub(crate) fn seatkeep_exe_matches(pid: u32) -> Option<bool> {
+        let me = std::env::current_exe().ok()?;
+        let want = super::seatkeep_exe_beside(&me)?;
+        let got = pid_path(pid)?;
+        let canon = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        Some(canon(&got) == canon(&want))
+    }
+
     /// 맥 `proc_pidpath`.
     fn pid_path(pid: u32) -> Option<PathBuf> {
         let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
@@ -679,6 +688,11 @@ mod seatkeep_mac {
         skid: String,
         /// seatkeep 소켓 경로(T4 좌석 기록).
         sock: PathBuf,
+        /// 처리 완료 오프셋 알림(T4 · PROCESSED)을 쓰는 연결인가 — 입양 노브 켬으로 띄운 좌석·입양 좌석만(노브 끔 = 프레임·잠금 0 · codex T4 2R).
+        report_processed: bool,
+        /// (알릴 최신 처리 완료 오프셋, 연결 끝남) — 읽기 얼굴은 값만 덮어쓰고, 따로 송신 스레드가 최신값만 보낸다(읽기 스레드는 소켓 쓰기에 막히지 않음).
+        processed: Mutex<(u64, bool)>,
+        processed_cv: Condvar,
         /// 입양(T4)만: 첫 WELCOME 의 재생 나눔 = (꼬리 시작, 직전 조종자 끊김 때 누적 = `disc_total` · 없으면 None, WELCOME 때 누적).
         /// 새 좌석 = None(첫 조종자 전 출력은 전부 새 출력 — 종전처럼 전부 처리).
         replay: Option<(u64, Option<u64>, u64)>,
@@ -745,6 +759,9 @@ mod seatkeep_mac {
                 skid,
                 sock,
                 replay: keeper.is_none().then_some((tail_start, disc_total, total)),
+                report_processed: keeper.is_none() || super::seatkeep_adopt_enabled(),
+                processed: Mutex::new((tail_start, false)),
+                processed_cv: Condvar::new(),
                 next_input: AtomicU64::new(1),
                 input_base: (crate::state::now_epoch() as u64) << 24,
                 gap_bytes: AtomicU64::new(0),
@@ -760,6 +777,13 @@ mod seatkeep_mac {
                     .spawn(move || l.demux(rd, keeper, tail_start))
                     .map_err(|e| format!("seatkeep 연결 스레드 기동 실패: {e}"))?;
             }
+            if link.report_processed {
+                let l = Arc::clone(&link);
+                std::thread::Builder::new()
+                    .name(format!("seatkeep-processed-{child_pid}"))
+                    .spawn(move || l.processed_sender(tail_start))
+                    .map_err(|e| format!("seatkeep 처리 오프셋 송신 스레드 기동 실패: {e}"))?;
+            }
             let spawned = super::Spawned {
                 master: Box::new(KeepMaster(Arc::clone(&link))),
                 child: Box::new(KeepChild(Arc::clone(&link))),
@@ -768,6 +792,28 @@ mod seatkeep_mac {
                 link: Some(Arc::clone(&link)),
             };
             Ok(spawned)
+        }
+
+        /// 처리 완료 오프셋 송신 스레드(T4 · codex 2R) — 최신값이 바뀔 때마다 그 값 하나만 보낸다(사이 값은 건너뜀 = 최댓값만 뜻이 있음).
+        /// 소켓 쓰기가 막혀도 이 스레드만 막힌다. 연결이 끝나면(`demux` 끝) 끝난다.
+        fn processed_sender(self: Arc<Self>, start: u64) {
+            let mut sent = start;
+            loop {
+                let v = {
+                    let mut g = self.processed.lock().unwrap_or_else(|e| e.into_inner());
+                    while g.0 <= sent && !g.1 {
+                        g = self.processed_cv.wait(g).unwrap_or_else(|e| e.into_inner());
+                    }
+                    if g.1 {
+                        return;
+                    }
+                    g.0
+                };
+                if self.send(proto::PROCESSED, &v.to_le_bytes()).is_err() {
+                    return;
+                }
+                sent = v;
+            }
         }
 
         fn send(&self, kind: u8, payload: &[u8]) -> std::io::Result<()> {
@@ -908,6 +954,11 @@ mod seatkeep_mac {
                 }
             }
             self.cv.notify_all();
+            {
+                let mut g = self.processed.lock().unwrap_or_else(|e| e.into_inner());
+                g.1 = true;
+                self.processed_cv.notify_all();
+            }
             if let Some(mut k) = keeper {
                 let _ = k.wait();
             }
@@ -955,6 +1006,13 @@ mod seatkeep_mac {
         /// ACK 상한 만료 처리 (나) — 연결을 양쪽 다 끊는다: seatkeep(조종자 종속)은 끊김을 보고 `controller_lost` 로 끝나 PTY 마스터가
         /// 닫히고(막힌 입력 쓰기도 프로세스와 함께 끝남 = 나중 적용 없음) 좌석은 SIGHUP. 연결 스레드는 닫는 중 표시로 막힘에서 풀려
         /// 끊김을 읽고 종료로 접는다(seatkeep 회수까지).
+        /// 입양(T4)이 등록 전에 실패했다 — 붙었던 연결을 끊는다(seatkeep 은 `--adoptable` 이라 좌석을 쥔 채 다음 조종자를 기다린다 ·
+        /// 끊지 않으면 이 cysd 가 그 seatkeep 의 「살아 있는 조종자」로 남아 출력도 안 읽고 다른 조종자도 막는다).
+        pub(crate) fn detach(&self) {
+            self.mark_closing();
+            let _ = self.sd.shutdown(std::net::Shutdown::Both);
+        }
+
         fn abort_link(&self, stalled: Duration) {
             eprintln!(
                 "[cysd] seatkeep 좌석 pid {} 입력 확인 상한 초과(출력 소비 정지 {stalled:?}) — 연결을 끊어 좌석을 끝낸다",
@@ -1163,10 +1221,17 @@ mod seatkeep_mac {
         /// 처리 완료 오프셋 알림(T4 · codex 1R #4) — `read()` 에 다시 들어왔다 = 앞서 돌려준 바이트를 읽기 스레드가 파서·전사까지 끝냈다
         /// (읽기 스레드는 한 조각을 동기로 처리한 뒤 다음 read 를 부른다). 실패해도 무시(연결이 끊기면 seatkeep 은 마지막 알린 값을 쓴다).
         fn ack_processed(&mut self) {
+            if !self.link.report_processed {
+                return;
+            }
             let done = self.end - (self.buf.len() - self.pos) as u64;
             if done > self.acked {
                 self.acked = done;
-                let _ = self.link.send(proto::PROCESSED, &done.to_le_bytes());
+                let mut g = self.link.processed.lock().unwrap_or_else(|e| e.into_inner());
+                if done > g.0 {
+                    g.0 = done;
+                    self.link.processed_cv.notify_all();
+                }
             }
         }
     }

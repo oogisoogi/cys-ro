@@ -2562,11 +2562,14 @@ fn check_approvals(
             // 아직 pending이면 같은 프롬프트 에피소드 — 이벤트·항목을 재발행하지 않는다.
             // (debounce는 rate-limit일 뿐이라 방치 시 분당 1건 무한 누적되던 구조를 차단.
             //  해소 경로 = reply 또는 아래 stale-clear.)
-            if daemon.has_pending_daemon_approval(s.id) {
+            // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · S4-4 · codex 1R blocking ①): 단 대기 항목의 감지 때 지문과 지금 창 지문이 다르면(패턴이
+            //   사라지는 주기 없이 같은 꼴의 다른 창으로 바뀜) 옛 항목은 stale 로 닫고 이 창으로 새 항목을 세운다(60초 억제 무시 — 새 창이다).
+            let rebound = daemon.has_pending_daemon_approval(s.id) && approval_rebind_stale(daemon, &s);
+            if !rebound && daemon.has_pending_daemon_approval(s.id) {
                 continue;
             }
             let key = (s.id, name.to_string());
-            if debounce.get(&key).map(|t| now - t < 60.0).unwrap_or(false) {
+            if !rebound && debounce.get(&key).map(|t| now - t < 60.0).unwrap_or(false) {
                 continue;
             }
             debounce.insert(key, now);
@@ -10171,6 +10174,29 @@ pub(crate) fn approval_screen_fingerprint(rows: &[String], cursor_row: usize, ma
 }
 
 /// 좌석의 지금 승인 창 지문 — 어댑터 승인 창이 떠 있을 때만(관문·막기 전용 제외 = 집행 판독과 같은 조건). 없으면 `None`.
+/// ★1.1.16(S4-4 · codex 1R blocking ①) 좌석의 대기 데몬 감지 승인 항목 중 감지 때 지문이 지금 창 지문과 다른 것을 stale 로 닫는다.
+/// 지금 지문을 못 구하거나(창 판독 불가) 감지 때 지문이 없는 항목(재시작 복원)은 건드리지 않는다. 닫은 뒤 대기 항목이 0 이면 참(새 항목을 세울 차례).
+pub(crate) fn approval_rebind_stale(daemon: &Arc<Daemon>, s: &Arc<crate::state::Surface>) -> bool {
+    if cfg!(test) && std::env::var("CYS_U1_MUTANT").as_deref() == Ok("S44-NO-REBIND") {
+        return false;
+    }
+    let Some(now_fp) = approval_fingerprint_now(s) else {
+        return false;
+    };
+    let stale: Vec<String> = {
+        let fps = daemon.approval_fps.lock().unwrap();
+        daemon
+            .pending_daemon_approvals(s.id)
+            .into_iter()
+            .filter(|rid| fps.get(rid).is_some_and(|fp| *fp != now_fp))
+            .collect()
+    };
+    for rid in &stale {
+        daemon.resolve_feed_item(rid, "stale-cleared");
+    }
+    !stale.is_empty() && !daemon.has_pending_daemon_approval(s.id)
+}
+
 pub(crate) fn approval_fingerprint_now(s: &Arc<crate::state::Surface>) -> Option<String> {
     let (agent, _) = s.agent_meta.lock().unwrap().clone()?;
     if !approval_screen_with(s, &agent, false, false) {
@@ -10235,9 +10261,37 @@ pub(crate) fn actuate_screen_approval_checked(
         }
     }
     let bytes = approval_actuation_bytes(&rows, &marker, allow)?;
-    s.write_tx
-        .send(crate::state::WriteReq::Data(bytes.to_vec()))
-        .map_err(|_| "writer_closed")?;
+    let req = match want_fp {
+        // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · S4-4 · codex 1R blocking ②): 지문을 실은 허락은 writer 가 키를 쓰기 **직전**에 지금 창 지문을 한 번 더
+        //   본다(SubmitAfterGap.refuse = 다르면 한 바이트도 안 씀 · 재제출 없음). 위 대조와 실제 쓰기 사이(writer 큐 대기)에 창이 바뀐 틈을 닫는다.
+        //   간격 0 · 보류 탐침 없음. CR 이면 제출 표식 계수를 함께 올린다(writer 가 소비하며 내린다 — 다른 길과 같은 짝).
+        Some(want) if !(cfg!(test) && std::env::var("CYS_U1_MUTANT").as_deref() == Ok("S44-NO-WRITER-RECHECK")) => {
+            let weak = Arc::downgrade(&s);
+            let (want, marker) = (want.to_string(), marker.clone());
+            let refuse: crate::state::SafetyProbe = Arc::new(move || match weak.upgrade() {
+                None => true,
+                Some(s) => {
+                    let (rows, cursor_row) = surface_rows_and_cursor(&s);
+                    let same = approval_screen_fingerprint(&rows, cursor_row, &marker).as_deref() == Some(want.as_str());
+                    if !same {
+                        eprintln!("cysd: 승인 키 쓰기 직전 창 지문이 바뀌어 키를 쓰지 않았다(surface:{})", s.id);
+                    }
+                    !same
+                }
+            });
+            if bytes.iter().any(|b| matches!(b, b'\r' | b'\n')) {
+                s.inject_track.submit_handed();
+            }
+            crate::state::WriteReq::SubmitAfterGap { bytes: bytes.to_vec(), min_gap_ms: 0, withhold: None, refuse: Some(refuse) }
+        }
+        _ => crate::state::WriteReq::Data(bytes.to_vec()),
+    };
+    if s.write_tx.send(req).is_err() {
+        if want_fp.is_some() && bytes.iter().any(|b| matches!(b, b'\r' | b'\n')) {
+            s.inject_track.submit_hand_failed();
+        }
+        return Err("writer_closed");
+    }
     Ok(if allow { "return" } else { "escape" })
 }
 

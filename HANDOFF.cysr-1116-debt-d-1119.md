@@ -60,6 +60,28 @@ orchestra_todo_path 0s · org_audit 5s · pack_syntax_warnings 2s · preflight_n
   **커밋 e143ac859·cb6544066·2a700cad4 의 시험은 이 결과로만 판정한다**(앞선 묶음 1회는 시험 모듈 상수 경로 누락 컴파일 오류 → 고친 뒤 이 묶음).
 - 다시 돌리는 법: `cd ~/axdev/.wt/cys-1116-debt-d; CARGO_BUILD_JOBS=4 cargo test --bin cysd debt_d_ -- --test-threads=4`(이하 같은 꼴).
 
+### 3-1. t-all1 결과(01:0x 끝 · exit 0 · 원문 scratchpad `t-all1.txt`) — 붉음 0 · 판정 불가 1
+
+| 묶음 | 통과 | 실패 | 무시 |
+|---|---|---|---|
+| lib(j1116 · quiescent · v6_ · win_task) | 40 | 0 | 1 |
+| cysd debt_d_ | 4 | 0 | 0 |
+| cysd d24_ | 4 | 0 | 0 |
+| cysd h7_ | 1 | 0 | 0 |
+| cysd b16fix_approval_scan | 1 | 0 | 0 |
+| cysd approval_patterns_union | 2 | 0 | 0 |
+| cysd watch_wake | 12 | 0 | 0 |
+| cysd feed_push_rejects_reserved | 1 | 0 | 0 |
+| cysd topology | 16 | 0 | 0 |
+| cysd b16fix2_ | 3 | 0 | 0 |
+| cys debt_d_ | 5 | 0 | 0 |
+| cys u16_cycle | 1 | 0 | 0 |
+| cys b360_r2c | 19 | 0 | 1 |
+| cys feed_reply | 3 | 0 | 0 |
+| cys-app(debt_d_ · feed_reply · confirm_reply · slug) | **판정 불가** — 빌드 스크립트 실패 `resource path binaries/cysd-aarch64-apple-darwin doesn't exist`(작업트리에 tauri 리소스 준비물 없음 · 코드 무관) → S3-2 debt_d_s32 2건·작업 화면 feed_reply 인자는 미실행 | — | — |
+
+- 붉은 이름 0. 이 묶음은 필터 묶음이다(전량 아님) — 전량·뮤턴트·codex 는 §4.
+
 ## 4. 남은 일(후임)
 
 1. §3 결과 판독 → 붉으면 고침(내 새 시험 · 소스 핀 · agents.json 이름 바뀜이 다른 핀을 깨는지).

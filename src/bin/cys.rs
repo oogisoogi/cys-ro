@@ -21394,13 +21394,14 @@ fn run_daemon_cmd(action: DaemonAction) -> i32 {
                     let user = current_user_id()
                         .ok_or("현재 사용자(whoami/USERNAME) 확인 실패 — 태스크 XML principal 생성 불가")?;
                     // ★1.1.16(TICKET=cysr-1116-debt-d-1119 ①): 기존 작업의 RunLevel 보존(task_run_level_to_keep 머리 주석).
-                    let existing = cys::hidden_command("schtasks")
-                        .args(["/Query", "/TN", TASK, "/XML"])
-                        .output()
-                        .ok()
-                        .filter(|o| o.status.success())
-                        .map(|o| decode_schtasks_xml(&o.stdout));
-                    let run_level = task_run_level_to_keep(existing.as_deref());
+                    //   ★codex 1R blocking: 질의 실패 ≠ 작업 없음(query_task_xml) · RunLevel 은 요소로 읽고 모르는 값이면 덮지 않는다.
+                    let existing = cys::update::win_task::query_task_xml(TASK)?;
+                    let run_level = match existing.as_deref() {
+                        None => cys::update::win_task::RUN_LEVEL_LEAST,
+                        Some(x) => cys::update::win_task::run_level_of(x).ok_or(
+                            "작업 스케줄러 cysd 작업의 RunLevel 을 알아보지 못했다 — 사용자가 정한 값일 수 있어 덮어 다시 등록하지 않는다(작업 스케줄러에서 확인)",
+                        )?,
+                    };
                     if !task_reregister_needed(existing.as_deref(), &xml_escape(&daemon.display().to_string())) {
                         println!("작업 스케줄러 cysd 작업이 이미 이 데몬을 가리킨다 — RunLevel {run_level} 그대로 둔다(다시 등록하지 않음).");
                         return Ok(());
@@ -31946,7 +31947,9 @@ mod tests {
         let tpl = &src[at..at + src[at..].find("\n}\n").unwrap()];
         assert!(tpl.contains("<RunLevel>{run_level}</RunLevel>") && !tpl.contains("<RunLevel>LeastPrivilege</RunLevel>"));
         let inst = &src[src.find("DaemonAction::Install { takeover: _ } => {\n                    let daemon = sibling_daemon_path()").unwrap()..];
-        let q = inst.find("let run_level = task_run_level_to_keep(existing.as_deref());").unwrap();
+        // ★codex 1R: 질의 = query_task_xml(실패 ≠ 없음) · RunLevel = 요소 판독(모르는 값 = 덮지 않음).
+        let q = inst.find("let existing = cys::update::win_task::query_task_xml(TASK)?;").unwrap();
+        assert!(inst[q..].find("cys::update::win_task::run_level_of(x).ok_or(").unwrap() < inst[q..].find("let xml = cysd_task_xml_at(").unwrap());
         let mk = inst.find("let xml = cysd_task_xml_at(&daemon, &user, run_level);").unwrap();
         assert!(q < mk);
     }
@@ -54788,6 +54791,7 @@ mod b360_tests {
 
     /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · B5): 원자 clear 응답 `submitted:false`(Enter 직전 승인 창 재판정) = 효과 확인을 기다리지 않고 곧바로 not_cleared.
     /// 기준선(dea2e1853)은 응답을 버리고 session_file 대기(clear_verify_secs) 뒤 「실효 미확인」으로 끝났다 — 사유가 승인 창이라는 것을 잃었다.
+    #[cfg(unix)] // r2c_* 하네스가 유닉스 전용(윈 교차 타입체크 E0422·E0425 6건 — 이 시험만 cfg 가 빠져 있었다)
     #[test]
     fn debt_d_b5_cycle_clear_refused_at_enter_is_not_cleared_at_once() {
         let t0 = std::time::Instant::now();

@@ -119,11 +119,63 @@ pub const RUN_LEVEL_LEAST: &str = "LeastPrivilege";
 pub const RUN_LEVEL_HIGHEST: &str = "HighestAvailable";
 
 /// 기존 작업 XML 이 HighestAvailable 이면 그 값 · 아니면 기본값(순수) — `cys daemon install` 이 사용자가 정해 둔 RunLevel 을 보존할 때 쓴다.
+/// (모르는 값까지 기본값으로 접는다 — 덮어쓰기 판단에는 [`run_level_of`] 를 쓴다.)
 pub fn run_level_to_keep(existing_xml: Option<&str>) -> &'static str {
-    match existing_xml {
-        Some(x) if x.contains("<RunLevel>HighestAvailable</RunLevel>") => RUN_LEVEL_HIGHEST,
+    match existing_xml.map(run_level_of) {
+        Some(Some(l)) => l,
         _ => RUN_LEVEL_LEAST,
     }
+}
+
+/// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · codex 1R blocking) 작업 XML 의 RunLevel **요소** 값(순수) — 글자 완전일치가 아니라 요소로 읽는다
+/// (속성·앞뒤 공백·줄바꿈 허용). 요소 없음 = LeastPrivilege(작업 스케줄러 기본) · 모르는 값·깨진 요소 = None(덮어쓰지 않을 근거).
+pub fn run_level_of(xml: &str) -> Option<&'static str> {
+    let mut from = 0;
+    let rest = loop {
+        let Some(i) = xml[from..].find("<RunLevel") else { return Some(RUN_LEVEL_LEAST) };
+        let r = &xml[from + i + "<RunLevel".len()..];
+        if r.starts_with(|c: char| c == '>' || c == '/' || c.is_whitespace()) {
+            break r;
+        }
+        from += i + 1;
+    };
+    let gt = rest.find('>')?;
+    if rest[..gt].ends_with('/') {
+        return None;
+    }
+    let body = &rest[gt + 1..];
+    match body[..body.find("</RunLevel>")?].trim() {
+        "HighestAvailable" => Some(RUN_LEVEL_HIGHEST),
+        "LeastPrivilege" => Some(RUN_LEVEL_LEAST),
+        _ => None,
+    }
+}
+
+/// ★1.1.16(codex 1R blocking) 작업 파일이 **확실히 없는가**(순수 판독) — `<SystemRoot>\System32\Tasks\<작업>` 이 NotFound 일 때만 참.
+/// 뿌리 모름·있음·판독 불가(권한 등)는 거짓(= 「없다」 고 단정하지 않음).
+pub fn task_file_absent_at(system_root: Option<&Path>, task: &str) -> bool {
+    let Some(root) = system_root else { return false };
+    matches!(std::fs::symlink_metadata(root.join("System32").join("Tasks").join(task)), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+}
+
+/// ★1.1.16(codex 1R blocking) `schtasks /Query /XML` 결과 판정(순수): 성공 = XML · 실패 ∧ 작업 파일 확실히 없음 = 작업 없음 ·
+/// 실패 ∧ 그 밖 = Err(질의 실패를 「작업 없음」 으로 접어 사용자가 정한 RunLevel 을 기본값으로 덮던 길).
+pub fn task_xml_query_outcome(task: &str, query_stdout: Option<&[u8]>, task_file_absent: bool) -> Result<Option<String>, String> {
+    match query_stdout {
+        Some(raw) => Ok(Some(decode_schtasks_xml(raw))),
+        None if task_file_absent => Ok(None),
+        None => Err(format!(
+            "작업 스케줄러 {task} 작업을 읽지 못했다(질의 실패 · 작업이 없다고 확인되지도 않음) — RunLevel 을 모른 채 다시 등록하지 않는다 · 잠시 뒤 다시"
+        )),
+    }
+}
+
+/// 작업 XML 질의(윈도우) — [`task_xml_query_outcome`] 의 실행판.
+#[cfg(windows)]
+pub fn query_task_xml(task: &str) -> Result<Option<String>, String> {
+    let out = crate::hidden_command("schtasks").args(["/Query", "/TN", task, "/XML"]).output().ok().filter(|o| o.status.success());
+    let root = std::env::var_os("SystemRoot").map(std::path::PathBuf::from);
+    task_xml_query_outcome(task, out.as_ref().map(|o| o.stdout.as_slice()), out.is_none() && task_file_absent_at(root.as_deref(), task))
 }
 
 /// `schtasks /Query /XML` 출력 해독(순수) — UTF-16LE(NUL 섞임 · BOM 있음·없음)이면 UTF-16, 아니면 UTF-8 손실 허용.
@@ -139,12 +191,18 @@ pub fn decode_schtasks_xml(raw: &[u8]) -> String {
 
 /// ★1.1.16(같은 티켓 ③ J-UPD-03): 갱신 러너 작업의 RunLevel(순수). 「관리자 모드 기기(cysd 작업 = Highest) = 갱신도 관리자로」 —
 /// 관리자로 만든 갱신 폴더(txn.owner.json · 소유자 BA)를 일반 권한 러너가 못 읽어 unsafe 로 멈추던 막다른 길(11-19 윈 W2)을 없앤다.
-/// Highest 작업 등록은 관리자 토큰이 필요하므로 **등록하는 쪽이 상승 토큰일 때만** Highest · 아니면 종전 LeastPrivilege.
-pub fn runner_run_level(cysd_task_xml: Option<&str>, registrar_elevated: Option<bool>) -> &'static str {
-    if registrar_elevated == Some(true) && run_level_to_keep(cysd_task_xml) == RUN_LEVEL_HIGHEST {
-        RUN_LEVEL_HIGHEST
-    } else {
-        RUN_LEVEL_LEAST
+/// Highest 작업 등록은 관리자 토큰이 필요하다 — ★codex 1R major: 관리자 모드 기기인데 등록하는 쪽이 상승 토큰이 아니면(또는 모르면) 종전처럼
+/// LeastPrivilege 러너를 만들지 않고 Err(그 러너는 관리자 소유 갱신 폴더를 못 읽어 같은 막다른 길로 간다) — 관리자 창에서 다시 실행하라는 안내.
+/// 관리자 모드가 아닌 기기 = 종전 LeastPrivilege.
+pub fn runner_run_level(cysd_task_xml: Option<&str>, registrar_elevated: Option<bool>) -> Result<&'static str, String> {
+    if cysd_task_xml.and_then(run_level_of) != Some(RUN_LEVEL_HIGHEST) {
+        return Ok(RUN_LEVEL_LEAST);
+    }
+    match registrar_elevated {
+        Some(true) => Ok(RUN_LEVEL_HIGHEST),
+        _ => Err("이 기기는 관리자 모드(cysd 작업 = 관리자 권한)인데 지금 창은 관리자 권한이 아니다 — 갱신 러너를 일반 권한으로 만들면 관리자 소유 갱신 폴더를 \
+                  못 읽어 멈춘다(J-UPD-03) · 관리자 창(관리자 권한으로 실행)에서 같은 명령을 다시 실행하라"
+            .into()),
     }
 }
 
@@ -818,13 +876,9 @@ mod com {
         let folder = our_folder(dir, &svc, true, &sddl)?;
         // ★codex R2: 옛 작업 지우기·등록·재독·복원 = [`install`](오류 종류 구분 · 유효한 옛 작업 복원 — 가짜 Sched 로 모든 기판에서 시험).
         // ★1.1.16(TICKET=cysr-1116-debt-d-1119 ③): 관리자 모드 기기(cysd 작업 Highest) + 상승 토큰 등록 = 러너도 Highest.
-        let cysd_xml = crate::hidden_command("schtasks")
-            .args(["/Query", "/TN", "cysd", "/XML"])
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| decode_schtasks_xml(&o.stdout));
-        let level = runner_run_level(cysd_xml.as_deref(), crate::process_token_elevated());
+        // ★codex 1R: 질의 실패를 「작업 없음」 으로 접지 않는다(query_task_xml) · 관리자 모드 기기 + 일반 토큰 = 등록 거부(안내).
+        let cysd_xml = query_task_xml("cysd")?;
+        let level = runner_run_level(cysd_xml.as_deref(), crate::process_token_elevated())?;
         install_at(&mut ComSched { dir, folder: &folder, runner, args, logon }, name, runner, args, &me, logon, level)?;
         if run_now {
             let task = get_task(&folder, name)?;
@@ -843,17 +897,43 @@ mod com {
 mod tests {
     use super::*;
 
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · codex 1R blocking) RunLevel 요소 판독 · 질의 실패 ≠ 작업 없음.
+    #[test]
+    fn debt_d_run_level_is_read_as_an_element_and_query_failure_is_not_absence() {
+        assert_eq!(run_level_of("<Principal><RunLevel>HighestAvailable</RunLevel></Principal>"), Some(RUN_LEVEL_HIGHEST));
+        assert_eq!(run_level_of("<Principal>\r\n  <RunLevel >\r\n    HighestAvailable\r\n  </RunLevel>"), Some(RUN_LEVEL_HIGHEST), "공백·줄바꿈");
+        assert_eq!(run_level_of("<RunLevelX>HighestAvailable</RunLevelX><RunLevel>LeastPrivilege</RunLevel>"), Some(RUN_LEVEL_LEAST), "다른 이름 요소");
+        assert_eq!(run_level_of("<Principal><UserId>S</UserId></Principal>"), Some(RUN_LEVEL_LEAST), "요소 없음 = 기본");
+        assert_eq!(run_level_of("<RunLevel>Elevated</RunLevel>"), None, "모르는 값");
+        assert_eq!(run_level_of("<RunLevel/>"), None);
+        assert_eq!(run_level_of("<RunLevel>HighestAvailable"), None, "깨진 요소");
+        assert_eq!(run_level_to_keep(Some("<RunLevel>\n HighestAvailable \n</RunLevel>")), RUN_LEVEL_HIGHEST);
+        let d = std::env::temp_dir().join(format!("cys-wt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("System32").join("Tasks")).unwrap();
+        std::fs::write(d.join("System32").join("Tasks").join("cysd"), "x").unwrap();
+        let absent = task_file_absent_at(Some(&d), "nope");
+        let present = task_file_absent_at(Some(&d), "cysd");
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(absent && !present && !task_file_absent_at(None, "cysd"));
+        assert_eq!(task_xml_query_outcome("cysd", Some(b"<Task/>"), false), Ok(Some("<Task/>".to_string())));
+        assert_eq!(task_xml_query_outcome("cysd", None, true), Ok(None), "확실히 없음 = 새 설치");
+        assert!(task_xml_query_outcome("cysd", None, false).is_err(), "질의 실패를 작업 없음으로 접었다");
+    }
+
     /// §7-1 「작업 정의 재독 구조 대조(인자 공백·따옴표·역슬래시 사례)」.
     /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · [master#1a7e7b90] ③): 관리자 모드 기기 = 갱신 러너도 Highest(등록자 상승일 때만).
     #[test]
     fn debt_d_runner_run_level_follows_the_admin_mode_cysd_task() {
         let hi = "<Principal><RunLevel>HighestAvailable</RunLevel></Principal>";
         let lo = "<Principal><RunLevel>LeastPrivilege</RunLevel></Principal>";
-        assert_eq!(runner_run_level(Some(hi), Some(true)), RUN_LEVEL_HIGHEST);
-        assert_eq!(runner_run_level(Some(hi), Some(false)), RUN_LEVEL_LEAST, "일반 토큰은 Highest 작업을 못 만든다 = 종전");
-        assert_eq!(runner_run_level(Some(hi), None), RUN_LEVEL_LEAST);
-        assert_eq!(runner_run_level(Some(lo), Some(true)), RUN_LEVEL_LEAST, "기본 설치 기기 = 종전");
-        assert_eq!(runner_run_level(None, Some(true)), RUN_LEVEL_LEAST);
+        assert_eq!(runner_run_level(Some(hi), Some(true)), Ok(RUN_LEVEL_HIGHEST));
+        // ★codex 1R major: 관리자 모드 기기 + 일반(또는 모르는) 토큰 = Limited 러너를 만들지 않고 안내 Err.
+        assert!(runner_run_level(Some(hi), Some(false)).is_err_and(|e| e.contains("관리자 창")), "일반 토큰이 Limited 러너를 만들었다");
+        assert!(runner_run_level(Some(hi), None).is_err());
+        assert_eq!(runner_run_level(Some(lo), Some(true)), Ok(RUN_LEVEL_LEAST), "기본 설치 기기 = 종전");
+        assert_eq!(runner_run_level(Some(lo), Some(false)), Ok(RUN_LEVEL_LEAST));
+        assert_eq!(runner_run_level(None, Some(true)), Ok(RUN_LEVEL_LEAST));
         let x = task_xml_at(Path::new("C:/r/cys.exe"), &["self-update"], "S-1-5-21-1", false, RUN_LEVEL_HIGHEST);
         assert!(x.contains("<RunLevel>HighestAvailable</RunLevel>"));
         assert!(task_xml(Path::new("C:/r/cys.exe"), &["self-update"], "S-1-5-21-1", false).contains("<RunLevel>LeastPrivilege</RunLevel>"));

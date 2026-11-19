@@ -24,6 +24,8 @@ BIN = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MOD_PATH = os.environ.get("CC_MODULE") or os.path.join(BIN, "javis_computer_control.py")
 REAL_STATE = os.path.join(os.path.expanduser("~"), ".cys", "computer-control")
 
+ONBOARDED = "hasCompletedClaudeInChromeOnboarding"
+APPLIED = {"key": True, "onboarding": True}             # 켜기가 끝났다는 기록
 EMAIL = "CC-TEST-EMAIL@example.com"
 NAME = "CC-TEST-NAME"
 ORG = "CC-TEST-ORG"
@@ -87,11 +89,13 @@ class Base(unittest.TestCase):
         os.environ["CYS_CC_FAKE_PROBES"] = json.dumps(self.probes)
 
     def write_cfg(self, plan="claude_max", cu=True, chrome_default=True, connectors=("claude.ai Gmail",),
-                  logged_in=True, extra_projects=None):
+                  logged_in=True, extra_projects=None, chrome_onboarded="absent"):
         d = {"claudeAiMcpEverConnected": list(connectors),
              "projects": {self.proj: {"enabledMcpServers": ["computer-use"] if cu else []}}}
         if chrome_default is not None:   # None = 키 없음(좌석 설정 폴더에 /chrome 을 한 번도 안 한 경우)
             d["claudeInChromeDefaultEnabled"] = chrome_default
+        if chrome_onboarded != "absent":
+            d[ONBOARDED] = chrome_onboarded
         if extra_projects:
             d["projects"].update(extra_projects)
         if logged_in:
@@ -776,6 +780,9 @@ OLD_DEBT = {"pending_seat_restart": True, "pending_chrome_restart": True, "pendi
             "seat_restart_scheduled_at": 5, "seat_restart_pid": 9, "seat_restart_start": "t", "nmh_created": {"path": "/x", "sha256": "y"}}
 
 
+ONBOARDED_ABSENT = {"present": False, "value": None}
+
+
 class TestChromeEnable(Base):
     """실제 크롬·좌석 무접촉: 이 동작은 프로세스를 띄우지 않는다(윈 연결 등록 읽기 1건 예외) — 띄우면 spawned 에 남고 실패한다."""
     def setUp(self):
@@ -816,6 +823,7 @@ class TestChromeEnable(Base):
         self.assertEqual(rc, 0, d)
         after = self.cfg()
         self.assertIs(after.pop("claudeInChromeDefaultEnabled"), True)
+        self.assertIs(after.pop(ONBOARDED), True)             # 없으면 다음 시작에서 첫 안내 창에 걸린다
         before.pop("claudeInChromeDefaultEnabled")
         self.assertEqual(after, before)                       # 다른 칸은 그대로
         if os.name != "nt":                                   # NTFS 는 유닉스 권한 비트가 없다(st_mode 0o666 고정)
@@ -827,6 +835,7 @@ class TestChromeEnable(Base):
 
     def test_enable_already_on_says_so_and_touches_nothing(self):
         self.make_chrome()
+        self.write_cfg(chrome_onboarded=True)
         p = os.path.join(self.ccd, ".claude.json")
         raw = rb(p)
         rc, d, _ = self.run_cli("chrome-enable")
@@ -877,6 +886,7 @@ class TestChromeEnable(Base):
 
     def test_old_debt_is_dropped_without_acting(self):
         self.make_chrome()
+        self.write_cfg(chrome_onboarded=True)
         self.write_state(prior_key={"present": False, "value": None}, **OLD_DEBT)
         rc, d, _ = self.run_cli("chrome-enable")
         self.assertEqual((rc, d["done"], d["pending"]), (0, [], []))
@@ -889,7 +899,8 @@ class TestChromeEnable(Base):
         self.write_state(**OLD_DEBT)
         rc, d, _ = self.run_cli("chrome-enable")
         self.assertEqual((rc, d["done"]), (0, ["default_on"]))
-        self.assertEqual(jload(self.sp), {"prior_key": {"present": True, "value": False}})
+        self.assertEqual(jload(self.sp), {"prior_key": {"present": True, "value": False}, "prior_onboarding": ONBOARDED_ABSENT,
+                                          "applied": APPLIED})
         self.assertEqual(self.spawned, [])
 
     def test_config_lock_respected(self):
@@ -1047,7 +1058,7 @@ class TestChromeEnable(Base):
         self.make_chrome()
         self.write_cfg(chrome_default=None)
 
-        def check_then_fail(_v):
+        def check_then_fail(_v, **_k):
             self.assertEqual(jload(self.sp)["prior_key"], {"present": False, "value": None})
             raise OSError("disk")
         self.m.write_chrome_key = check_then_fail
@@ -1084,6 +1095,380 @@ class TestChromeEnable(Base):
         self.assertNotIn("claudeInChromeDefaultEnabled", self.cfg())
         self.assertIn("처음 상태로 되돌렸습니다", d["say"])
         self.assertFalse(os.path.exists(self.sp))
+
+    # ── 첫 안내 창(TICKET=cysr-chrome-onboarding-seed-1119): 켜기 키만 있고 완료 표지가 없으면 다음 master 좌석이 창에서 멈춘다 ──
+    def test_enable_writes_both_keys_in_one_replace(self):
+        self.make_chrome()
+        self.write_cfg(chrome_default=False)
+        p = os.path.join(self.ccd, ".claude.json")
+        seen, replaced, real = [], [], self.m.os.replace
+
+        def hook():
+            d = jload(p)
+            seen.append((d["claudeInChromeDefaultEnabled"], ONBOARDED in d))
+
+        def counting(a, b):
+            replaced.append(b)
+            return real(a, b)
+        self.m._cas_hook = hook
+        with mock.patch.object(self.m.os, "replace", counting):
+            rc, d, _ = self.m_write_true()
+        self.assertTrue(rc)
+        self.assertEqual(seen, [(False, False)])              # 교체 직전까지 둘 다 옛 값
+        self.assertEqual(replaced, [p])                       # 교체는 한 번
+        after = self.cfg()
+        self.assertEqual((after["claudeInChromeDefaultEnabled"], after[ONBOARDED]), (True, True))
+
+    def m_write_true(self):
+        return self.m.write_chrome_key(True), None, None
+
+    def test_enable_fills_onboarding_when_key_is_already_on(self):
+        for tag, kw in (("없음", {}), ("거짓", {"chrome_onboarded": False}), ("null", {"chrome_onboarded": None})):
+            self.make_chrome()
+            self.write_cfg(**kw)
+            rc, d, _ = self.run_cli("chrome-enable")
+            self.assertEqual((rc, d["done"]), (0, []), tag)
+            self.assertIs(self.cfg()[ONBOARDED], True, tag)
+            self.assertIn("이미 켜져 있습니다", d["say"], tag)
+            self.assertFalse(os.path.exists(self.sp), tag)    # 키를 바꾼 것이 아니라 되돌릴 기록이 없다
+
+    def test_enable_makes_onboarding_exactly_true(self):
+        # codex 1R #3: 0·빈 문자열처럼 거짓으로 읽히는 값이 남으면 창이 뜬다 — 켜기 뒤 표지는 실제 true 하나뿐이다
+        for start in (False, True):
+            for val in (False, None, 0, "", 1, "yes", [], {}):
+                self.make_chrome()
+                self.write_cfg(chrome_default=start, chrome_onboarded=val)
+                rc, d, _ = self.run_cli("chrome-enable")
+                self.assertEqual(rc, 0, (start, val, d))
+                self.assertIs(self.cfg()[ONBOARDED], True, (start, val))
+                self.assertIs(self.cfg()["claudeInChromeDefaultEnabled"], True, (start, val))
+
+    def test_revert_restores_non_boolean_onboarding_exactly(self):
+        for val in (0, 1, "", "yes"):
+            self.make_chrome()
+            self.write_cfg(chrome_default=False, chrome_onboarded=val)
+            before = json.dumps(self.cfg(), sort_keys=True)
+            self.assertEqual(self.run_cli("chrome-enable")[0], 0, val)
+            self.assertEqual(self.run_cli("chrome-disable")[0], 0, val)
+            self.assertEqual(json.dumps(self.cfg(), sort_keys=True), before, val)     # 0 과 false 를 가른다
+
+    def test_enable_fails_when_onboarding_does_not_read_back(self):
+        self.make_chrome()
+        self.write_cfg(chrome_default=False)
+        for seen in ((False, None), (True, 1), (True, "yes")):
+            self.write_cfg(chrome_default=False)
+            self.m.read_chrome_onboarding = lambda: seen
+            rc, d, _ = self.run_cli("chrome-enable")
+            self.assertEqual((rc, d["reason"]), (1, "write_failed"), seen)
+
+    def test_onboarding_prior_saved_before_key_write(self):
+        self.make_chrome()
+        self.write_cfg(chrome_default=False)
+
+        seen = []
+
+        def record_then_fail(_v, **_k):
+            seen.append(jload(self.sp).get("prior_onboarding"))
+            return False
+        self.m.write_chrome_key = record_then_fail
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertEqual(rc, 1)
+        self.assertEqual(seen, [ONBOARDED_ABSENT])
+
+    def test_plain_disable_keeps_onboarding(self):
+        # 끄기는 키만 — 표지를 지우면 다시 켤 때 창이 또 뜬다
+        self.make_chrome()
+        self.write_cfg(chrome_onboarded=True)
+        rc, d, _ = self.run_cli("chrome-disable")
+        self.assertEqual(rc, 0, d)
+        after = self.cfg()
+        self.assertEqual((after["claudeInChromeDefaultEnabled"], after[ONBOARDED]), (False, True))
+
+    def test_reenable_after_plain_disable_stays_past_the_dialog(self):
+        self.make_chrome()
+        self.write_cfg(chrome_onboarded=True)
+        self.run_cli("chrome-disable")
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertEqual((rc, d["done"]), (0, ["default_on"]))
+        self.assertEqual((self.cfg()["claudeInChromeDefaultEnabled"], self.cfg()[ONBOARDED]), (True, True))
+        self.run_cli("chrome-disable")                        # 되돌려도 원래 있던 표지는 남는다
+        self.assertEqual((self.cfg()["claudeInChromeDefaultEnabled"], self.cfg()[ONBOARDED]), (False, True))
+
+    def test_revert_restores_the_exact_state_before_enable(self):
+        cases = (("키 false·표지 없음", {"chrome_default": False}),
+                 ("키 없음·표지 없음", {"chrome_default": None}),
+                 ("키 false·표지 false", {"chrome_default": False, "chrome_onboarded": False}),
+                 ("키 false·표지 null", {"chrome_default": False, "chrome_onboarded": None}),
+                 ("키 false·표지 true", {"chrome_default": False, "chrome_onboarded": True}),
+                 ("키 없음·표지 true", {"chrome_default": None, "chrome_onboarded": True}))
+        for tag, kw in cases:
+            self.make_chrome()
+            self.write_cfg(**kw)
+            before = self.cfg()
+            rc, d, _ = self.run_cli("chrome-enable")
+            self.assertEqual(rc, 0, tag)
+            self.assertIs(self.cfg()[ONBOARDED], True, tag)
+            rc, d, _ = self.run_cli("chrome-disable")
+            self.assertEqual(rc, 0, tag)
+            self.assertEqual(self.cfg(), before, tag)
+            self.assertFalse(os.path.exists(self.sp), tag)
+
+    def test_revert_to_key_on_never_recreates_the_stall(self):
+        # 되돌린 값이 「켜짐」이면 표지를 지우지 않는다 — 켜짐 + 표지 없음 = 멈춤 상태를 우리 손으로 만들지 않는다
+        self.make_chrome()
+        self.write_cfg(chrome_onboarded=True)
+        self.write_state(prior_key={"present": True, "value": True}, prior_onboarding=ONBOARDED_ABSENT, applied=APPLIED)
+        rc, d, _ = self.run_cli("chrome-disable")
+        self.assertEqual(rc, 0, d)
+        self.assertEqual((self.cfg()["claudeInChromeDefaultEnabled"], self.cfg()[ONBOARDED]), (True, True))
+
+    def test_old_record_without_onboarding_leaves_it_alone(self):
+        self.make_chrome()
+        self.write_cfg(chrome_onboarded=True)
+        self.write_state(prior_key={"present": False, "value": None})
+        rc, d, _ = self.run_cli("chrome-disable")
+        self.assertEqual(rc, 0, d)
+        self.assertNotIn("claudeInChromeDefaultEnabled", self.cfg())
+        self.assertIs(self.cfg()[ONBOARDED], True)
+
+    def test_old_record_gets_onboarding_state_on_next_enable(self):
+        self.make_chrome()
+        self.write_cfg(chrome_default=False)
+        self.write_state(prior_key={"present": False, "value": None})
+        self.run_cli("chrome-enable")
+        self.assertEqual(jload(self.sp)["prior_onboarding"], ONBOARDED_ABSENT)
+        self.run_cli("chrome-disable")
+        self.assertNotIn(ONBOARDED, self.cfg())
+
+    def test_key_on_fill_with_old_record_is_also_reverted(self):
+        self.make_chrome()
+        self.write_state(prior_key={"present": False, "value": None})
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertEqual((rc, d["done"]), (0, []))
+        self.assertEqual(jload(self.sp)["prior_onboarding"], ONBOARDED_ABSENT)
+        self.run_cli("chrome-disable")
+        self.assertNotIn("claudeInChromeDefaultEnabled", self.cfg())
+        self.assertNotIn(ONBOARDED, self.cfg())
+
+    def test_new_cycle_replaces_old_onboarding_record(self):
+        self.make_chrome()
+        self.write_cfg(chrome_default=False)
+        self.write_state(prior_key={"present": True, "value": True}, key_restored=True,
+                         prior_onboarding={"present": True, "value": True})
+        self.run_cli("chrome-enable")
+        self.assertEqual(jload(self.sp)["prior_onboarding"], ONBOARDED_ABSENT)
+
+    def test_revert_ignores_a_damaged_onboarding_record(self):
+        for bad in ("없음", {"present": True, "value": {"x": 1}}):
+            self.make_chrome()
+            self.write_cfg(chrome_onboarded=True)
+            self.write_state(prior_key={"present": False, "value": None}, prior_onboarding=bad, applied=APPLIED)
+            rc, d, _ = self.run_cli("chrome-disable")
+            self.assertEqual(rc, 0, d)
+            self.assertIs(self.cfg()[ONBOARDED], True)
+
+    def test_revert_blocked_by_lock_changes_nothing_and_keeps_the_record(self):
+        self.make_chrome()
+        self.write_cfg(chrome_default=False)
+        self.run_cli("chrome-enable")
+        p = os.path.join(self.ccd, ".claude.json")
+        raw = rb(p)
+        os.mkdir(p + ".lock")
+        self.m.LOCK_WAIT_SEC = 0.2
+        rc, d, _ = self.run_cli("chrome-disable")
+        os.rmdir(p + ".lock")
+        self.assertEqual((rc, d["reason"]), (1, "write_failed"))
+        self.assertEqual(rb(p), raw)
+        self.assertEqual(jload(self.sp)["prior_onboarding"], ONBOARDED_ABSENT)
+
+    def test_onboarding_fill_needs_the_ledger_and_the_lock(self):
+        self.make_chrome()
+        p = os.path.join(self.ccd, ".claude.json")
+        raw = rb(p)
+        os.mkdir(p + ".lock")
+        self.m.LOCK_WAIT_SEC = 0.2
+        rc, d, _ = self.run_cli("chrome-enable")
+        os.rmdir(p + ".lock")
+        self.assertEqual((rc, d["reason"]), (1, "write_failed"))
+        self.assertEqual(rb(p), raw)
+
+        def boom(_e):
+            raise OSError("ledger")
+        self.m._ledger = boom
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertEqual(rc, 1)
+        self.assertEqual(rb(p), raw)
+
+    # ── codex 1R(TICKET=cysr-chrome-onboarding-seed-1119): 판정과 잠금 사이 · 끝나지 않은 거래의 기록 ──
+    def set_cfg(self, **changes):
+        p = os.path.join(self.ccd, ".claude.json")
+        d = jload(p)
+        for k, v in changes.items():
+            d[{"key": "claudeInChromeDefaultEnabled", "ob": ONBOARDED}.get(k, k)] = v
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(d, f)
+
+    def before_lock(self, **changes):
+        """판정이 끝난 뒤 · 우리가 잠금을 잡기 직전에 Claude Code 가 같은 잠금을 쥐고 고쳐 쓰고 푸는 순서(한 번만)."""
+        p = os.path.join(self.ccd, ".claude.json")
+        real, fired = self.m._config_lock, []
+
+        def late(path):
+            if not fired:
+                fired.append(True)
+                os.mkdir(p + ".lock")
+                self.set_cfg(**changes)
+                os.rmdir(p + ".lock")
+            return real(path)
+        self.m._config_lock = late
+        return fired
+
+    def failed_enable(self):
+        """설정 파일을 쓰기 전에 끝난 켜기 — 감사 기록 실패."""
+        real = self.m._ledger
+
+        def boom(_e):
+            raise OSError("ledger")
+        self.m._ledger = boom
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.m._ledger = real
+        self.assertEqual(rc, 1)
+        self.assertIn("prior_key", jload(self.sp))            # 기록은 남아 있다 — 이것이 쓰이면 안 된다
+
+    def test_user_false_before_lock_is_not_overwritten(self):
+        self.make_chrome()
+        self.write_cfg(chrome_default=None)
+        fired = self.before_lock(key=False)
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertTrue(fired)
+        self.assertEqual((rc, d["reason"]), (1, "write_failed"))
+        self.assertIs(self.cfg()["claudeInChromeDefaultEnabled"], False)
+        self.assertNotIn(ONBOARDED, self.cfg())
+        rc, d, _ = self.run_cli("chrome-enable")              # 다시 켜면 그때의 값이 원래 값이다
+        self.assertEqual((rc, d["done"]), (0, ["default_on"]))
+        self.assertEqual(jload(self.sp)["prior_key"], {"present": True, "value": False})
+        self.run_cli("chrome-disable")
+        self.assertIs(self.cfg()["claudeInChromeDefaultEnabled"], False)
+        self.assertNotIn(ONBOARDED, self.cfg())
+
+    def test_onboarding_change_before_lock_stops_enable(self):
+        for was, now in ((None, True), (False, 0)):           # false → 0 은 파이썬 == 로는 같아 보인다
+            self.make_chrome()
+            self.write_cfg(chrome_default=False, **({} if was is None else {"chrome_onboarded": was}))
+            self.m = load_mod()
+            self.before_lock(ob=now)
+            rc, d, _ = self.run_cli("chrome-enable")
+            self.assertEqual((rc, d["reason"]), (1, "write_failed"), (was, now))
+            self.assertIs(self.cfg()["claudeInChromeDefaultEnabled"], False, (was, now))
+            self.assertEqual(json.dumps(self.cfg()[ONBOARDED]), json.dumps(now), (was, now))
+
+    def test_key_turned_off_before_onboarding_fill_is_kept(self):
+        self.make_chrome()
+        self.write_cfg()                                      # 키 true · 표지 없음
+        self.before_lock(key=False)
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertEqual((rc, d["reason"]), (1, "write_failed"))
+        self.assertIs(self.cfg()["claudeInChromeDefaultEnabled"], False)
+        self.assertNotIn(ONBOARDED, self.cfg())
+
+    def test_other_keys_changing_before_lock_do_not_block_enable(self):
+        self.make_chrome()
+        self.write_cfg(chrome_default=False)
+        self.before_lock(numStartups=9)
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertEqual(rc, 0, d)
+        after = self.cfg()
+        self.assertEqual((after["numStartups"], after["claudeInChromeDefaultEnabled"], after[ONBOARDED]), (9, True, True))
+
+    def test_revert_rechecks_under_the_lock(self):
+        self.make_chrome()
+        self.write_cfg(chrome_default=None)
+        self.assertEqual(self.run_cli("chrome-enable")[0], 0)
+        self.before_lock(key=False)
+        rc, d, _ = self.run_cli("chrome-disable")
+        self.assertEqual((rc, d["reason"]), (1, "write_failed"))
+        self.assertIs(self.cfg()["claudeInChromeDefaultEnabled"], False)      # 지우지 않았다
+        self.assertIs(self.cfg()[ONBOARDED], True)
+
+    def test_failed_enable_record_does_not_wipe_later_onboarding(self):
+        # codex 1R #2 재현 순서 그대로
+        self.make_chrome()
+        self.write_cfg(chrome_default=False)
+        self.failed_enable()
+        self.set_cfg(ob=True)
+        rc, d, _ = self.run_cli("chrome-disable")
+        self.assertEqual(rc, 0, d)
+        self.assertEqual((self.cfg()["claudeInChromeDefaultEnabled"], self.cfg()[ONBOARDED]), (False, True))
+        self.assertNotIn("처음 상태로", d["say"])
+        self.assertFalse(os.path.exists(self.sp))
+
+    def test_failed_enable_record_does_not_delete_a_later_false(self):
+        self.make_chrome()
+        self.write_cfg(chrome_default=None)
+        self.failed_enable()
+        self.set_cfg(key=False)
+        self.assertEqual(self.run_cli("chrome-disable")[0], 0)
+        self.assertIs(self.cfg()["claudeInChromeDefaultEnabled"], False)
+
+    def test_failed_enable_record_ignored_even_if_user_turns_chrome_on(self):
+        # 설정이 기대 상태와 우연히 같아도 우리가 끝낸 거래가 아니다 — /chrome 이 두 키를 함께 쓴 경우
+        self.make_chrome()
+        self.write_cfg(chrome_default=None)
+        self.failed_enable()
+        self.set_cfg(key=True, ob=True)
+        rc, d, _ = self.run_cli("chrome-disable")
+        self.assertEqual(rc, 0, d)
+        self.assertEqual((self.cfg()["claudeInChromeDefaultEnabled"], self.cfg()[ONBOARDED]), (False, True))
+        self.assertNotIn("처음 상태로", d["say"])
+
+    def test_onboarding_fill_does_not_bless_a_failed_record(self):
+        self.make_chrome()
+        self.write_cfg(chrome_default=None)
+        self.failed_enable()
+        self.set_cfg(key=True)                                # 사용자가 켰고 표지만 비었다
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertEqual((rc, d["done"]), (0, []))
+        self.run_cli("chrome-disable")
+        self.assertEqual((self.cfg()["claudeInChromeDefaultEnabled"], self.cfg()[ONBOARDED]), (False, True))
+
+    def test_settings_changed_after_enable_are_not_reverted(self):
+        for tag, change, want in (("끔", {"key": False}, (False, True)), ("표지 지움", {"ob": False}, (False, False))):
+            self.make_chrome()
+            self.write_cfg(chrome_default=None)
+            self.assertEqual(self.run_cli("chrome-enable")[0], 0, tag)
+            self.set_cfg(**change)
+            rc, d, _ = self.run_cli("chrome-disable")
+            self.assertEqual(rc, 0, tag)
+            self.assertEqual((self.cfg()["claudeInChromeDefaultEnabled"], self.cfg()[ONBOARDED]), want, tag)
+            self.assertNotIn("처음 상태로", d["say"], tag)
+            self.assertFalse(os.path.exists(self.sp), tag)
+
+    def test_enable_stays_on_when_finish_record_cannot_be_saved(self):
+        # 설정은 이미 바뀌었다 — 실패라고 답하면 거짓이다 · 되돌리기 정보가 없으니 끄기는 키만 끈다
+        self.make_chrome()
+        self.write_cfg(chrome_default=None)
+        real, calls = self.m._write_json, []
+
+        def second_fails(path, obj):
+            if path == self.sp:
+                calls.append(path)
+                if len(calls) == 2:
+                    raise OSError("disk")
+            return real(path, obj)
+        self.m._write_json = second_fails
+        rc, d, _ = self.run_cli("chrome-enable")
+        self.assertEqual((rc, d["done"]), (0, ["default_on"]))
+        self.assertEqual(len(calls), 2)
+        self.m._write_json = real
+        self.assertEqual(self.run_cli("chrome-disable")[0], 0)
+        self.assertEqual((self.cfg()["claudeInChromeDefaultEnabled"], self.cfg()[ONBOARDED]), (False, True))
+
+    def test_revoke_preset_chrome_keeps_onboarding(self):
+        self.make_chrome()
+        self.write_cfg(chrome_onboarded=True)
+        rc, d, _ = self.run_cli("revoke", "chrome")
+        self.assertEqual(rc, 0, d)
+        self.assertEqual((self.cfg()["claudeInChromeDefaultEnabled"], self.cfg()[ONBOARDED]), (False, True))
 
     def test_disable_never_touches_the_connection_file(self):
         self.make_chrome()
@@ -1140,6 +1525,42 @@ class TestPrecedent(Base):
         g = jload(os.path.join(self.state, "grants.json"))["items"]
         self.assertEqual(g["chrome"]["state"], "active")
         self.assertNotIn("screen", g)
+
+    # TICKET=cysr-1115-smalls ⑦: 조사는 낱말 끝 받침을 따른다(옛 출력 「Finder 자동화은 빼」).
+    #   시험 쪽 받침 판정은 모듈 함수를 쓰지 않고 따로 계산한다(같은 함수로 같은 함수를 재지 않는다).
+    @staticmethod
+    def _final(syl):
+        o = ord(syl)
+        return (o - 0xAC00) % 28 != 0
+
+    def test_josa_follows_final_consonant(self):
+        j = self.m._josa
+        self.assertEqual(j("로그인", "은는"), "로그인은")            # 받침 있음
+        self.assertEqual(j("Finder 자동화", "은는"), "Finder 자동화는")  # 받침 없음
+        self.assertEqual(j("로그인", "을를"), "로그인을")
+        self.assertEqual(j("Finder 자동화", "을를"), "Finder 자동화를")
+        self.assertEqual(j("결제", "이가"), "결제가")
+        self.assertEqual(j("크롬 연결", "과와"), "크롬 연결과")
+        self.assertEqual(j("「설정 바꾸기(크롬 켜기 등)」", "은는"), "「설정 바꾸기(크롬 켜기 등)」는")  # 괄호 앞 낱말 기준
+        self.assertEqual(j("Chrome", "은는"), "Chrome은(는)")       # 읽기가 갈리는 영문 끝 = 양형
+        self.assertEqual(j("CYSjavis", "을를"), "CYSjavis를")         # 영문 s 끝 = 스 → 받침 없음
+
+    def test_adopt_says_josa_matching_final(self):
+        import re as _re
+        self.set_probes(sc=False)
+        rc, d, _ = self.run_cli("adopt")
+        self.assertEqual(rc, 0, d)
+        say = d["say"]
+        m1 = _re.search(r"맡을 수 있는 (.+?)(을|를) 제가 맡았습니다", say)
+        m2 = _re.search(r"「(.+?)(은|는) 빼」", say)
+        self.assertTrue(m1 and m2, say)
+        checked = 0
+        for word, josa, final_form in ((m1.group(1), m1.group(2), "을"), (m2.group(1), m2.group(2), "은")):
+            if "\uac00" <= word[-1] <= "\ud7a3":       # 한글 끝 = 받침과 정확히 맞아야 한다
+                checked += 1
+                self.assertEqual(josa == final_form, self._final(word[-1]), "%r 뒤 조사 %r 가 받침과 어긋난다 — %s" % (word, josa, say))
+        self.assertGreaterEqual(checked, 1, "시험 전제: 한글 끝 낱말이 적어도 1개 — %s" % say)
+        self.assertNotIn("자동화은", say)                 # 옛 출력 그대로의 흠
 
     def test_adopt_idempotent(self):
         self.run_cli("adopt")

@@ -284,6 +284,25 @@ fn run_dept_tool_capped(tool: &std::path::Path, verb: &str, args: &[String], tim
     DeptRunResult { code, stdout: rd(&op), stderr: rd(&ep), timed_out }
 }
 
+/// ★agy 좌석 문 — 이 좌석이 「닫힌 문의 agy 좌석」인가. agent_meta = (어댑터 키, 해석된 실행 파일) — 좌석 cmd 는 로그인 셸일 수 있어
+/// (launch-agent 는 셸에 명령을 친다) 실행 파일로 잰다. ★codex 5R blocking 3: 좌석 cmd 는 기계가 만든 실행 기록이라 실행 자리 검사로 다시
+/// 읽지 않고 **생성 때 확정한 종류**(`Surface.agy_kind` · 낱말 검사)를 쓴다.
+pub(crate) fn agy_door_seat_closed(surface: &crate::state::Surface) -> bool {
+    let meta = surface.agent_meta.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let by_meta = meta.as_ref().is_some_and(|(k, bin)| cys::agy_door::program_refused(k, bin));
+    let by_kind = surface.agy_kind && !cys::agy_door::door_open();
+    by_meta || by_kind
+}
+
+/// ★agy 좌석 문 — 사람 자판이 아닌 `surface.send_text`(직접·`queued`)를 막을 것인가: 닫힌 문의 agy 좌석이거나, 좌석 기동 줄 표지
+/// (`agent_launch`)가 붙은 글이 기계 입구 낱말 검사(①)에 걸리면(그 글 자체가 실행될 명령 — 구판 CLI·원시 RPC 가 빈 셸에 agy 기동 줄을
+/// 치는 길 · codex 5R blocking 2 의 데몬 입구 전수).
+pub(crate) fn agy_door_blocks_auto_send(surface: &crate::state::Surface, params: &Value, text: &str) -> bool {
+    agy_door_seat_closed(surface)
+        || (params.get(cys::AGENT_LAUNCH_KEY).and_then(|v| v.as_bool()).unwrap_or(false)
+            && cys::agy_door::launch_refusal("", Some(text)).is_some())
+}
+
 fn reject_send(
     daemon: &Daemon,
     sid: u64,
@@ -502,6 +521,132 @@ pub fn privileged_role(r: &str) -> bool {
 fn revive_authority_role(r: &str) -> bool {
     r == "master"
 }
+
+/// (tabs-sidebar 2d) 앱 화면 명령(`surface.set_group` · `ui.open_panel`)의 호출자 게이트 — 좌석 안에서 부르면 그 좌석이
+/// master 역할이어야 한다(워커·CSO·리뷰어 좌석이 남의 화면 배치를 바꾸지 못하게). 좌석 밖(사람이 연 터미널의 CLI · 앱)은 통과.
+/// (948 D4) 「좌석 밖」 은 조상 체인을 홉 상한 안에서 끝(pid ≤ 1)까지 **모두 읽었을 때만** 믿는다 — 40단 중첩으로 상한을 넘기거나
+///   중간 조상을 못 읽으면 거부. ⚠알려진 한계(설계 §5): 좌석이 띄운 고아 자식(부모가 launchd 로 바뀐 프로세스)·다른 데몬 좌석에서
+///   이 소켓을 부르는 것은 「좌석 밖 터미널」 과 구별할 수 없다(영향 = 앱 배치·컨트롤 센터 열기뿐 · 같은 근거의 기존 RPC 점검은 별도 티켓).
+fn ui_command_caller_ok(daemon: &Arc<Daemon>, caller_pid: Option<u32>) -> Result<(), &'static str> {
+    ui_caller_verdict(
+        caller_pid,
+        |pid| crate::state::peer_start_time(pid).is_some(),
+        |pid| resolve_caller_surface(daemon, pid),
+        |sid| daemon.get_surface(sid).and_then(|s| s.role.lock().unwrap().clone()).as_deref().is_some_and(revive_authority_role),
+        parent_pid_of,
+    )
+}
+
+/// (948 D4·D8) 호출자 판정 순수 코어 — 판독기를 주입받는다(단위 시험이 판독 실패·상한 초과를 직접 만든다).
+fn ui_caller_verdict(
+    caller_pid: Option<u32>,
+    inspectable: impl Fn(u32) -> bool,
+    seat_of: impl Fn(u32) -> Option<u64>,
+    seat_is_master: impl Fn(u64) -> bool,
+    parent_of: impl FnMut(u32) -> Option<u32>,
+) -> Result<(), &'static str> {
+    // (codex 1R ①) 판독 실패는 통과가 아니다 — 피어 pid 를 못 읽었거나(None) 그 프로세스를 들여다볼 수 없으면(시작 시각 판독 불가)
+    //   「좌석 밖이 확인된 호출자」가 아니므로 거부한다.
+    let Some(pid) = caller_pid else {
+        return Err("caller process could not be identified");
+    };
+    if !inspectable(pid) {
+        return Err("caller process could not be inspected");
+    }
+    if let Some(cs) = seat_of(pid) {
+        return if seat_is_master(cs) { Ok(()) } else { Err("caller seat must be master (or run from a terminal outside cys seats)") };
+    }
+    match ancestry_end_with(pid, parent_of) {
+        AncestryEnd::Clean => Ok(()),
+        AncestryEnd::Overflow => Err("caller ancestry is deeper than the inspection limit"),
+        AncestryEnd::Unreadable => Err("caller ancestry could not be read to its root"),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum AncestryEnd {
+    /// 끝(부모 pid ≤ 1)까지 모두 읽었다.
+    Clean,
+    /// 조상 해석과 같은 홉 상한(32)을 넘었다 — 그 위에 좌석이 있을 수 있다.
+    Overflow,
+    /// 중간 조상을 못 읽었다(사라짐·남의 프로세스·자기 자신이 부모).
+    Unreadable,
+}
+
+/// (948 D4) 조상 체인을 홉 상한 안에서 끝까지 읽었는가 — 순수(판독기 주입). 상한 = walk_ancestry_with 와 같은 32.
+fn ancestry_end_with(caller_pid: u32, mut parent_of: impl FnMut(u32) -> Option<u32>) -> AncestryEnd {
+    let mut cur = caller_pid;
+    for _ in 0..32 {
+        match parent_of(cur) {
+            None => return AncestryEnd::Unreadable,
+            Some(p) if p <= 1 => return AncestryEnd::Clean,
+            Some(p) if p == cur => return AncestryEnd::Unreadable,
+            Some(p) => cur = p,
+        }
+    }
+    AncestryEnd::Overflow
+}
+
+/// 부모 pid 판독 — (948 D4-b · master#8258a495 · 950 caller-audit) macOS·Linux = parent_any_user(다른 사용자 프로세스도 읽힘 —
+///   사람 터미널 사슬의 root /usr/bin/login · launchd). 종전 proc_brief(PROC_PIDTBSDINFO)는 root 소유 조상에서 None 이라 사람 터미널의
+///   `cys seat-group` 을 거부했다(real_chain_through_root_owned_ancestors_reads_to_launchd 가 /usr/libexec/logd 로 재현).
+///   그 밖의 OS = sysinfo 단일 pid. 못 읽으면 None.
+fn parent_pid_of(pid: u32) -> Option<u32> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        crate::state::parent_any_user(pid) // libproc 직접 호출은 state.rs 에만(소스 핀 live_cwd_goes_through_single_helper)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let mut sys = sysinfo::System::new();
+        let p = sysinfo::Pid::from_u32(pid);
+        sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[p]), true);
+        sys.process(p).and_then(|x| x.parent()).map(|pp| pp.as_u32())
+    }
+}
+
+
+
+/// (codex 1R ④) 표시 방향을 바꾸는 문자(LRM·RLM·ALM · LRE~RLO · LRI~PDI) — `char::is_control` 이 잡지 않는다.
+fn is_bidi_control(c: char) -> bool {
+    matches!(c, '\u{200E}' | '\u{200F}' | '\u{061C}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+/// (948 D5) surface.list 의 「size」 칸 — 정식 크기(재동기 흔들기 중이면 흔들기 전 크기 · surface.resize 기준과 같은 값).
+fn surface_size_wire(s: &crate::state::Surface) -> Value {
+    let (r, c) = crate::repaint::current_size_for_resize(s);
+    json!({"rows": r, "cols": c})
+}
+
+/// (948 D7) 보이지 않거나 줄을 가르는 문자 — 일반 범주 Cc(제어)·Cf(서식: 폭 0 U+200B · BOM U+FEFF · 방향 표시 등)·Zl(U+2028)·Zp(U+2029).
+///   「﻿site」 와 「site」 처럼 똑같이 보이는 다른 묶음 이름(속임)을 막는다. 앱(ui/src/seatgroup.ts cleanGroupName)과 같은 범주.
+fn has_hidden_or_break_char(t: &str) -> bool {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    // (ChatGPT 1R #9) + Default_Ignorable_Code_Point — 범주 밖 보이지 않는 문자(CGJ · 이체 선택자 · 한글 채움 문자). 앱 cleanGroupName 과 같다.
+    RE.get_or_init(|| regex::Regex::new(r"[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]").expect("고정 정규식")).is_match(t)
+}
+
+/// (tabs-sidebar 2d) 묶음 이름 판독 — 빈 값·null = 옮김 해제(None) · 앞뒤 공백 제거 · 64자 이하 · 제어·서식·줄/문단 구분 문자 금지.
+///   (948 D7 · master#cb40d4a3 A안) 먼저 NFKC 정규화하고 그 결과로 판정·저장한다 — 전각 「ｓｉｔｅ」 = 「site」(앱 cleanGroupName 과 같은 규칙).
+fn parse_seat_group(v: Option<&Value>) -> Result<Option<String>, &'static str> {
+    use unicode_normalization::UnicodeNormalization;
+    match v {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(raw)) => {
+            let n: String = raw.nfkc().collect();
+            let t = n.trim();
+            if t.is_empty() {
+                Ok(None)
+            } else if t.chars().count() > 64 || t.chars().any(|c| c.is_control() || is_bidi_control(c)) || has_hidden_or_break_char(t) {
+                Err("group must be 1-64 chars without control, format (zero-width/BOM/bidi) or line/paragraph separator characters")
+            } else {
+                Ok(Some(t.to_string()))
+            }
+        }
+        _ => Err("group must be a string or null"),
+    }
+}
+
 
 /// ★(성찰 A5) 그 항목의 **발신 표기**(`QueueEntry::from`)를 소재에서 읽는다.
 ///
@@ -1064,7 +1209,10 @@ fn reclaim_live_snapshot(
                 env_injected: s.env_injected,
                 created_at: s.created_at,
                 // 단조 나이(§Surface.created_instant) — 벽시계 보정·절전 복귀에 면역인 축.
-                age_secs: Some(s.created_instant.elapsed().as_secs_f64()),
+                // ★조각 1: 역할을 되돌린 좌석은 재개가 뜨는 중이다 — 갓 만든 좌석과 같은 유예를 받는다.
+                age_secs: Some(
+                    s.role_restored_at.lock().unwrap().unwrap_or(s.created_instant).elapsed().as_secs_f64(),
+                ),
                 cwd: Some(s.cwd.clone()),
                 claude_config_dir: s.claude_config_dir.lock().unwrap().clone(),
                 exited: s.exited.load(Ordering::Relaxed),
@@ -1367,6 +1515,7 @@ fn reclaim_commit(
         // 역할명은 **후보의 그것 그대로** 쓴다(worker dedup 없음): 우리는 새 역할을 만드는 게
         // 아니라 기존 역할 **주소를 이사**시키는 것이고, 구 보유자는 같은 임계영역에서 내려간다.
         roles.insert(role.to_string(), caller_sid);
+        daemon.note_role_held(role, caller_sid);
         *caller.role.lock().unwrap() = Some(role.to_string());
         *caller.caps.lock().unwrap() = crate::caps::Caps::for_role(Some(role));
         *prev.role.lock().unwrap() = None;
@@ -1440,6 +1589,78 @@ fn reclaim_env_role_state(daemon: &Arc<Daemon>, caller_sid: Option<u64>, env_rol
             _ => "other_exited",
         },
     }
+}
+
+/// ★조각 1 `role.restore_released` — 유예로 거둔 역할을 **그 좌석에** 되돌린다. `node-recover` 가 저장 대화를 잇기 직전에 부른다.
+///
+/// 좌석이 그 대화를 그대로 들고 있어야 한다(`session_id`) — 역할이 돌아오는 순간의 저장이 핀을 그 좌석 값으로 덮기 때문이다.
+/// 사망 시각도 함께 지운다: 남겨 두면 다음 틱이 유예가 지났다고 보고 바로 다시 거둔다.
+fn restore_released_role(daemon: &Arc<Daemon>, params: &Value, id: &Value, caller_pid: Option<u32>) -> Reply {
+    let refuse = |why: &str| Reply::Single(err_response(id, "role_not_restorable", why));
+    let (Some(sid), Some(role), Some(session)) =
+        (resolve_surface_id(params), param_str(params, "role"), param_str(params, "session_id"))
+    else {
+        return Reply::Single(err_response(id, "invalid_params", "surface_id·role·session_id 가 필요하다"));
+    };
+    // 역할을 쥔 읽기 전용 좌석(리뷰어)은 부를 수 없다. 좌석 밖 호출(boot·watchdog 자식)과 역할 없는 사람 pane 은 통과한다(set_meta 와 같은 경계).
+    let caller = caller_pid.and_then(|p| resolve_caller_surface(daemon, p)).and_then(|c| daemon.get_surface(c));
+    if caller.is_some_and(|c| c.role.lock().unwrap().is_some() && !c.caps.lock().unwrap().allows(crate::caps::Cap::WriteShell)) {
+        return refuse("읽기 전용 좌석은 역할을 되돌릴 수 없다");
+    }
+    if daemon.tombstones.lock().unwrap().contains(&role) {
+        return refuse("의도적으로 닫힌 역할이다");
+    }
+    // 좌석 닫기와 같은 락 순서(surfaces → roles → surface.role) — 닫기가 먼저면 좌석이 없고, 이쪽이 먼저면 닫기가 역할을 보고 묘비를 남긴다.
+    let (s, master_changed) = {
+        let surfaces = daemon.surfaces.lock().unwrap();
+        let Some(s) = surfaces.get(&sid).cloned() else {
+            return Reply::Single(err_response(id, "not_found", &format!("surface {sid} not found")));
+        };
+        if s.exited.load(Ordering::Relaxed) {
+            return refuse("좌석 셸이 끝났다");
+        }
+        if s.agent_session_id.lock().unwrap().as_deref() != Some(session.as_str()) {
+            return refuse("좌석이 든 대화가 저장 핀과 다르다");
+        }
+        let mut roles = daemon.roles.lock().unwrap();
+        let mut srole = s.role.lock().unwrap();
+        let mut released = daemon.released_roles.lock().unwrap();
+        // 누가 역할을 쥐면 표시가 지워지므로(`note_role_held` · 같은 roles 락 아래) 표시가 곧 「아무도 쥐지 않았다」는 뜻이다.
+        if released.get(&role) != Some(&sid) {
+            return refuse("이 좌석이 거둔 역할이 아니거나 이미 다른 좌석이 쥐었다");
+        }
+        released.remove(&role);
+        roles.insert(role.clone(), sid);
+        *srole = Some(role.clone());
+        *s.caps.lock().unwrap() = crate::caps::Caps::for_role(Some(&role));
+        *s.agent_dead_since.lock().unwrap() = None;
+        *s.role_restored_at.lock().unwrap() = Some(std::time::Instant::now());
+        // 소유권과 쿨다운은 한 전이다(claim_role 과 같은 임계영역 규약).
+        let is_master = role == "master";
+        if is_master {
+            *daemon.master_claimed_at.lock().unwrap() = Some(crate::state::now_epoch());
+        }
+        drop(srole);
+        (s.clone(), is_master)
+    };
+    daemon.caller_gen.fetch_add(1, Ordering::Relaxed);
+    inherit_parked_queue(daemon, &s, &role);
+    if master_changed {
+        daemon.bus.publish(
+            "autopilot.master_changed",
+            "autopilot",
+            Some(sid),
+            json!({"from_sid": null, "to_sid": sid, "now": *daemon.master_claimed_at.lock().unwrap(), "via": "node_recover"}),
+        );
+    }
+    daemon.bus.publish(
+        "role.claimed",
+        "system",
+        Some(sid),
+        json!({"role": role, "surface_ref": surface_ref(sid), "via": "node_recover"}),
+    );
+    crate::governance::persist_topology(daemon);
+    Reply::Single(ok_response(id, json!({"role": role, "surface_id": sid})))
 }
 
 /// `role.reclaim_auto` 본체 — 판정(순수)과 커밋(임계영역)을 잇는다.
@@ -2817,6 +3038,113 @@ fn approval_write_guard(
     })
 }
 
+/// ★(1.1.16 · cysr-1116-backlog · master#4f5897d7) 원자 제출의 **Enter 직전** 재판정 탐침 — [`approval_write_guard`] 와 같은 처분(거부 흔적 ·
+/// 계수 복원)에 술어만 넓다: 쓰기 직전 화면 판정(`seat_approval_pending` = 승인 화면 ∨ 관문 항목) **∨ feed 승인 대기 항목**
+/// (`approval_or_gate_pending` — 데몬이 화면에서 세운 `daemon-…` 승인 항목). 조각 0.5 실측 M2-주: 두 술어가 다르다(가로줄 없는 화면은
+/// 쓰기 직전 판정이 거짓인데 승인 항목은 그 뒤 선다) → 둘 다 본다. `send_key` 의 거부 모드는 종전 술어 그대로(이 티켓 범위 밖).
+/// ⚠(검증 지적 3) feed 항목은 watchdog 15초 주기 스캔이 세우므로 쓰는 도중(≈0.6~0.85초) 뜬 창에는 거의 기여하지 못한다 — 효과는 화면 술어에 달렸다.
+///
+/// ★(1.1.16 · cysr-1116-backlog-fix-1118) 검증 지적 1·4·5:
+///   · `at` = 어느 쓰기 바로 앞인가(붙여넣기 앞 / Enter 앞) — 거부 흔적 `stage` 칸.
+///   · `human_line` = `Some(n)` 이면 **사람 길**(`InjectRefusing`): 남은 글을 사람 몫으로 복원한다(`restore_refused_line` — 사람 몫 ·
+///     마지막 기계 본문 지움). Enter 앞 = 붙여넣은 본문 `n` 바이트(최소 1)가 줄에 있다 · 붙여넣기 앞 = 본문은 안 썼다 → 보내기 전 줄의
+///     계수·사람 몫(`before`·`before_human` — 창이 Ctrl-U 보다 먼저 섰으면 그 글이 남았다)만 되살리고 없던 글은 만들지 않는다(codex 1R:
+///     빈 줄의 유령 사람 계수는 고스트 제안이 stale 리셋을 막아 무기한 남는다). `None` = 기계 길(`SubmitRefuse`): 종전대로 계수만
+///     (Enter 앞 ≥1 · 붙여넣기 앞은 보내기 전 계수 — 결판이 바이트대로 기계 잔여로 센다).
+///   · `request_id` = 거부 흔적의 요청 번호(사람 길 응답 `request_id` · 기계 길 작업 번호와 같은 값) — 화면이 어느 말인지 맞춘다.
+///   · `refused` = 거부한 단계를 핸들러 응답에 넘기는 칸(0 없음 · 1 붙여넣기 앞 · 2 Enter 앞 — codex 1R: 결판 사유 글자는 저널 실패가
+///     `journal_terminal:…` 로 덮을 수 있어 응답의 근거로 쓰지 않는다).
+/// ★(codex 2R) 「창이면 쓰지 마라」 원자 제출이 줄을 비우기(`clear_pending_input`) **직전**의 입력줄 계수·사람 몫 — 핸들러가 인계와 같은
+/// `input_gate` 임계영역 안에서 적는다(가드 생성 시점 값은 그 사이 사람 입력을 빠뜨린다 · 생성 시점 값은 인계 전 실패 때의 기본값일 뿐).
+pub(crate) struct PreClearLine {
+    count: std::sync::atomic::AtomicU64,
+    human: std::sync::atomic::AtomicU64,
+}
+
+impl PreClearLine {
+    fn now(surface: &crate::state::Surface) -> Arc<Self> {
+        let p = Arc::new(Self { count: Default::default(), human: Default::default() });
+        p.note(surface);
+        p
+    }
+    /// 지금 계수·사람 몫을 적는다 — 호출자는 `input_gate` 안(인계 임계영역)에서 부른다.
+    fn note(&self, surface: &crate::state::Surface) {
+        let count = surface.pending_input_bytes.load(Ordering::Relaxed);
+        let human = surface.pending_input.lock().unwrap_or_else(|e| e.into_inner()).human.min(count);
+        self.count.store(count, Ordering::Release);
+        self.human.store(human, Ordering::Release);
+    }
+    fn get(&self) -> (u64, u64) {
+        (self.count.load(Ordering::Acquire), self.human.load(Ordering::Acquire))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RefuseAt {
+    BeforePaste,
+    BeforeEnter,
+}
+
+impl RefuseAt {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::BeforePaste => "before_paste",
+            Self::BeforeEnter => "before_enter",
+        }
+    }
+}
+
+fn approval_enter_guard(
+    daemon: &Arc<Daemon>,
+    surface: &Arc<crate::state::Surface>,
+    at: RefuseAt,
+    human_line: Option<u64>,
+    request_id: &str,
+    refused: &Arc<std::sync::atomic::AtomicU8>,
+    pre_clear: &Arc<PreClearLine>,
+) -> crate::state::SafetyProbe {
+    let (wd, ws) = (Arc::downgrade(daemon), Arc::downgrade(surface));
+    let request_id = request_id.to_string();
+    let refused = refused.clone();
+    let pre_clear = pre_clear.clone();
+    Arc::new(move || {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (Some(d), Some(s)) = (wd.upgrade(), ws.upgrade()) else {
+                return true;
+            };
+            let hit = crate::governance::seat_approval_pending(&d, &s)
+                || crate::governance::approval_or_gate_pending(&d, s.id);
+            if hit {
+                // codex 3R: 핸들러는 input_gate 를 쥔 채 enqueue → 계수 0 기록을 한다 — 같은 잠금을 잡아야 그 0 뒤에 복원된다.
+                let _gate = s.input_gate.lock().unwrap_or_else(|e| e.into_inner());
+                let (before, before_human) = pre_clear.get();
+                match (at, human_line) {
+                    (RefuseAt::BeforeEnter, Some(n)) => s.restore_refused_line(n.max(1), n.max(1)),
+                    (RefuseAt::BeforePaste, Some(_)) => s.restore_refused_line(before, before_human),
+                    (RefuseAt::BeforeEnter, None) => {
+                        s.pending_input_bytes.fetch_max(before.max(1), Ordering::Relaxed);
+                    }
+                    (RefuseAt::BeforePaste, None) => {
+                        s.pending_input_bytes.fetch_max(before, Ordering::Relaxed);
+                    }
+                }
+                refused.store(if at == RefuseAt::BeforePaste { 1 } else { 2 }, Ordering::Release);
+                d.bus.publish(
+                    "input.refused_at_write",
+                    "surface",
+                    Some(s.id),
+                    json!({"reason": cys::ERR_APPROVAL_SCREEN,
+                           "stage": at.as_str(),
+                           "request_id": request_id,
+                           "note": "승인·질문 창이 쓰기 직전에 떠 제출 키를 쓰지 않았다(refuse_on_approval)"}),
+                );
+            }
+            hit
+        }))
+        .unwrap_or(true)
+    })
+}
+
 fn typing_guard_secs() -> u64 {
     std::env::var("CYS_TYPING_GUARD_SECS")
         .ok()
@@ -3863,24 +4191,8 @@ fn observe_submit_parent_with(
 // Do not reuse the general pid_alive or WinChild::try_wait semantics: both can treat
 // an unavailable query as alive. A busy/error query supplies no actor evidence.
 fn owned_submit_root_live(surface: &crate::state::Surface) -> bool {
-    if surface.exited.load(Ordering::Acquire) { return false; }
-    let mut child = match surface.child.try_lock() {
-        Ok(child) => child,
-        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
-        Err(std::sync::TryLockError::WouldBlock) => return false,
-    };
-    if child.process_id() != Some(surface.pid) { return false; }
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
-        use windows_sys::Win32::System::Threading::WaitForSingleObject;
-        let Some(handle) = child.as_raw_handle() else { return false; };
-        // WinChild::try_wait conflates GetExitCodeProcess failure with STILL_ACTIVE.
-        // Only a successful unsignalled observation of the retained handle is positive.
-        unsafe { WaitForSingleObject(handle as _, 0) == WAIT_TIMEOUT }
-    }
-    #[cfg(not(windows))]
-    { matches!(child.try_wait(), Ok(None)) }
+    // 본문 = 좌석 프로세스 손잡이(`seat_proc::owned_root_live` · 논리 그대로 옮김).
+    crate::seat_proc::owned_root_live(surface)
 }
 
 fn observe_submit_surface(daemon: &Daemon, caller_pid: Option<u32>) -> Option<Arc<crate::state::Surface>> {
@@ -4153,6 +4465,93 @@ impl crate::agent_write::Proof for SubmitWithhold {
             return Err(crate::receiver::ProofLoss::Unknown(SUBMIT_WITHHELD.into()));
         }
         Ok(())
+    }
+}
+
+/// ProofLoss reason of a Return **refused** right before it was written (`refuse_on_approval` atomic send · not resubmitted).
+const SUBMIT_REFUSED_APPROVAL: &str = "submit_refused:approval_screen";
+/// ★(1.1.16 · cysr-1116-backlog-fix-1118 · 검증 지적 4) ProofLoss reason of a paste **refused** right before its opening fence (after the
+/// Ctrl-U settle · nothing of the body written · not resubmitted).
+const PASTE_REFUSED_APPROVAL: &str = "paste_refused:approval_screen";
+
+/// ★(1.1.16 · cysr-1116-backlog · master#4f5897d7 · 조각 0.5 실측 M2-c) `clear_first + refuse_on_approval` 원자 제출의 **Enter 직전
+/// 승인 재판정**. 종전에는 쓰기 전 한 번만 봐서, 쓰는 도중(Ctrl-U→Enter ≈0.73~0.84초) 뜬 승인 창에 Enter 까지 들어갔다(3/3).
+/// writer 의 Submit 재검(대기 뒤 · CR 바로 앞)에서 [`approval_enter_guard`](쓰기 직전 화면 판정 ∨ feed 승인 대기 항목 — 실측 M2-주의
+/// 두 술어 둘 다 · 거부 흔적 `input.refused_at_write`)가 참이면 그 Return 을 쓰지 않는다. 보류(`SubmitWithhold`
+/// · 창이 닫히면 재제출)가 아니라 거부다 — 이 호출자는 「창이면 쓰지 마라」를 요구했다. 본문은 입력줄에 남고 결판이 바이트대로 센다
+/// (`surface.write_partial` · reason [`SUBMIT_REFUSED_APPROVAL`]).
+/// ★(1.1.16 · cysr-1116-backlog-fix-1118 · 검증 지적 4) 붙여넣기 바로 앞(Ctrl-U 정착 뒤 · 여는 울타리 첫 바이트 앞)에도 `probe_paste` 를
+/// 본다 — 참이면 본문·Return 0(reason [`PASTE_REFUSED_APPROVAL`]).
+pub(crate) struct SubmitRefuse {
+    pub(crate) inner: Arc<dyn crate::agent_write::Proof>,
+    pub(crate) probe_paste: crate::state::SafetyProbe,
+    pub(crate) probe: crate::state::SafetyProbe,
+}
+
+impl SubmitRefuse {
+    /// 이 단계(·단계 안 위치)에서 거부하는가 — 여는 울타리의 첫 바이트 앞 = 붙여넣기 탐침 · Return 앞 = Enter 탐침.
+    fn refused_at(&self, phase: crate::agent_write::Phase, offset: usize) -> Option<&'static str> {
+        match phase {
+            crate::agent_write::Phase::OpenFence if offset == 0 && (self.probe_paste)() => Some(PASTE_REFUSED_APPROVAL),
+            crate::agent_write::Phase::Submit if (self.probe)() => Some(SUBMIT_REFUSED_APPROVAL),
+            _ => None,
+        }
+    }
+}
+
+impl crate::agent_write::Proof for SubmitRefuse {
+    fn admit_context(&self, ctx: &crate::agent_write::ProofContext<'_>) -> Result<(), crate::receiver::ProofLoss> {
+        self.inner.admit_context(ctx)?;
+        if let Some(why) = ctx.next_phase.and_then(|p| self.refused_at(p, 0)) {
+            return Err(crate::receiver::ProofLoss::Unknown(why.into()));
+        }
+        Ok(())
+    }
+    fn recheck_context(&self, phase: crate::agent_write::Phase, ctx: &crate::agent_write::ProofContext<'_>) -> Result<(), crate::receiver::ProofLoss> {
+        self.inner.recheck_context(phase, ctx)?;
+        if let Some(why) = self.refused_at(phase, ctx.phase_offset) {
+            return Err(crate::receiver::ProofLoss::Unknown(why.into()));
+        }
+        Ok(())
+    }
+    fn admit(&self) -> Result<(), crate::receiver::ProofLoss> {
+        self.inner.admit()
+    }
+    fn recheck(&self, phase: crate::agent_write::Phase) -> Result<(), crate::receiver::ProofLoss> {
+        self.inner.recheck(phase)?;
+        if let Some(why) = self.refused_at(phase, 0) {
+            return Err(crate::receiver::ProofLoss::Unknown(why.into()));
+        }
+        Ok(())
+    }
+}
+
+/// ★(1.1.16 · cysr-1116-backlog-fix-1118 · 검증 지적 5) 「창이면 쓰지 마라」 에이전트 작업의 결판을 응답 전에 기다리는 상한 — 정착(0.15초) +
+/// 붙여넣기 + Return 대기(0.4초)가 부하 아래 0.6~0.87초(검증 실측)라 넉넉히. 넘기면 응답에 결판 칸을 싣지 않는다(종전 응답 그대로).
+const REFUSE_SETTLE_BUDGET_MS: u64 = 3_000;
+
+/// 결판(거부 여부)을 상한 안에서 기다린다 — 운영 빌드에서도(종전 응답은 저널 장벽까지만 기다렸다 · `test_wait_settled` 는 시험 전용).
+/// 거부 여부는 결판 사유 글자가 아니라 탐침이 적은 칸(`refused` — [`approval_enter_guard`])으로 본다(저널 실패가 사유를 덮어도 사실이
+/// 남는다 · codex 1R). `Some(Some(stage))` = 창 때문에 거부됨 · `Some(None)` = 끝남(거부 아님) · `None` = 상한 안에 결판이 안 났다.
+/// 잠금 없이 부른다(결판이 `input_gate` 를 잡는다).
+fn await_refuse_verdict(
+    h: &crate::agent_write::Request,
+    refused: &std::sync::atomic::AtomicU8,
+    budget: std::time::Duration,
+) -> Option<Option<&'static str>> {
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        if matches!(h.status(), crate::agent_write::Status::Terminal(_)) {
+            return Some(match refused.load(Ordering::Acquire) {
+                1 => Some(RefuseAt::BeforePaste.as_str()),
+                2 => Some(RefuseAt::BeforeEnter.as_str()),
+                _ => None,
+            });
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
     }
 }
 
@@ -6896,6 +7295,11 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                     }
                 },
             };
+            // ★agy 좌석 문(TICKET=cysr-agy-door-r6 · codex 5R blocking 2): 서버가 권위 — `cmd`·선언 `agent` 를 PTY 를 만들기 **전에**
+            //   기계 입구 낱말 검사로 판정한다(신 CLI 의 new-surface 판정은 그대로 · 구판 CLI·원시 RPC 도 여기서 막힌다).
+            if let Some(m) = cys::agy_door::create_refusal(declared_agent.as_deref(), param_str(&params, "cmd").as_deref()) {
+                return Reply::Single(err_response(&id, cys::agy_door::REFUSE_CODE, &m));
+            }
             // ★SEAT: 승계 대상(구 좌석)을 생성 성공 후 마무리(role 해제·큐 이관)하기 위해 상위 스코프에 둔다.
             let mut seat_takeover_from: Option<u64> = None;
             // (W2 · G14) announce 를 성공 아크로 미루므로 role 문자열도 상위 스코프에 보존한다.
@@ -7264,6 +7668,9 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             //   락이고 그 규약은 "surfaces/roles 를 쥔 채 잡지 않는다"이다(§creator_rollback_ok).
             //   락 순서 계약을 조회 편의로 어기지 않는다(AB-BA 는 한 번 생기면 무음으로 굳는다).
             let create_owners = daemon.create_owner.lock().unwrap().clone();
+            // ★조각 1: 거둔 역할(좌석 → 역할) — 같은 이유로 surfaces 락 앞에서 뜬다.
+            let released_by_seat: std::collections::HashMap<u64, String> =
+                daemon.released_roles.lock().unwrap().iter().map(|(r, sid)| (*sid, r.clone())).collect();
             // ★0.14.43(B3) 좌석 `usage` 의 계산 키(rate_observed_at·rate_age_secs·rate_in_use·rate[].alert_eligible)를 위한 좌석 신원 표 — 파일 IO 가 있으므로
             //   **surfaces 락을 잡기 전에** 만든다(락 순서: surfaces(복사만) → 해제 → 무락 판독 · 폴더별 60초 캐시라 status 폴링이 stat 을 늘리지 않는다).
             let usage_now = crate::state::now_epoch();
@@ -7303,6 +7710,15 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                         "display_no": s.display_no,
                         "title": s.title.lock().unwrap().clone(),
                         "role": s.role.lock().unwrap().clone(),
+                        // ★조각 1: 에이전트 사망으로 거둔 역할(아무도 다시 쥐지 않았을 때만) — node-recover·boot 가 저장 대화를 찾는 이름.
+                        "released_role": released_by_seat.get(&s.id),
+                        // (tabs-sidebar 2d) 옮긴 묶음(없으면 null = 앱 자동 규칙) — 앱이 시작 때 읽어 영속한다.
+                        "group": s.group.lock().unwrap().clone().flatten(),
+                        // (codex 1R ③) 이번 기동 중 사람이 정했는가(해제 포함) — false 면 group null 은 「모름」(데몬 재시작) · true 면 「해제」.
+                        "group_set": s.group.lock().unwrap().is_some(),
+                        // (tabs-sidebar 948 D5) 지금 좌석 크기(정식 크기 — 재동기 흔들기 중이면 흔들기 전 크기 · surface.resize 의 기준과 같은 값).
+                        //   앱은 「같은 크기 재전송 0」 기억과 이 값이 다르면(바깥 `cys resize` 등) 기억을 버리고 다시 맞춘다. 순수 additive.
+                        "size": surface_size_wire(s),
                         "cmd": s.cmd,
                         "cwd": s.cwd,
                         "live_cwd": live_cwd,
@@ -7538,6 +7954,20 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
             {
+                // ★agy 좌석 문(TICKET=cysr-agy-door-r6 · 데몬 입구 전수): 큐에 넣고 나면 배달(watchdog)에는 판정이 없다 — 넣기 전에 같은 판정.
+                //   사람 자판(human ∧ 기계 출처 아님)은 큐를 쓰지 않지만 쓰더라도 아래 직접 경로와 같이 통과시킨다.
+                let human_typed_q = human && !params.get("machine_origin").and_then(|v| v.as_bool()).unwrap_or(false);
+                if !human_typed_q && agy_door_blocks_auto_send(&surface, &params, &text) {
+                    return Reply::Single(reject_send(
+                        daemon,
+                        sid,
+                        "surface.send_text",
+                        cys::agy_door::REFUSE_CODE,
+                        "agy 좌석 문이 닫혀 있어 이 agy 좌석으로 자동 지시를 보내지 않는다(사람이 그 좌석에 직접 치는 것은 된다)",
+                        caller_pid,
+                        &id,
+                    ));
+                }
                 // ★G1(W2-A): from = 검증된 발신 surface_ref 우선, 부재 시 클라이언트 from 문자열
                 // (관측·폐기 통지용 — 신원 판정은 여전히 커널 peer 기반 verified_from이 한다).
                 let entry_from = verified_from.map(cys::surface_ref).or_else(|| {
@@ -7552,7 +7982,16 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                             "pending queue cap (100) reached",
                         ));
                     }
-                    let entry = daemon.next_queue_entry(text.clone(), entry_from, "send");
+                    // ★agy 좌석 문(r6 2회차 · ChatGPT F1): 배달 시점 재판정이 갈래를 알 수 있게 출처를 적는다 —
+                    //   사람 자판(통과 유지)·좌석 기동 줄(낱말 재판정) · 그 밖은 종전 "send".
+                    let q_origin = if human_typed_q {
+                        crate::governance::AGY_ORIGIN_HUMAN
+                    } else if params.get(cys::AGENT_LAUNCH_KEY).and_then(|v| v.as_bool()).unwrap_or(false) {
+                        crate::governance::AGY_ORIGIN_LAUNCH
+                    } else {
+                        "send"
+                    };
+                    let entry = daemon.next_queue_entry(text.clone(), entry_from, q_origin);
                     q.push_back(entry.clone());
                     (entry, q.len())
                 };
@@ -7619,6 +8058,20 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             //   본문은 큐로 돌린다(큐 배달은 프롬프트 경계 관측 전까지 prompt_unknown 으로 대기 · empty_seat
             //   게이트가 강제 배달도 막는다) · 호출자에겐 명시 에러로 즉시 알린다(저장 검증이 상한까지 기다리지 않게).
             //   사람 입력(human)은 대상이 아니다 — 빈 셸에 사람이 치는 것은 정상이다.
+            // ★(1.1.16 · cysr-1116-integ-1118 · 조각 1 검증 지적 10 / 통합 📌 S1-11) 단, 사람 표지여도 `refuse_on_approval` 을
+            //   실은 요청(앱 대화 화면의 원자 제출 = 「마스터에게 하는 말」)은 빈 셸이면 쓰지 않는다 — 화면 문턱과 쓰기 사이에
+            //   마스터가 죽으면 그 말이 셸 명령으로 실행된다. 큐에도 넣지 않는다(사람 말은 화면이 붙잡고 사람이 다시 보낸다 ·
+            //   큐에 두면 뒤에 뜬 에이전트에게 저절로 배달돼 두 번 갈 수 있다). 사람이 터미널에서 직접 치는 길(옵션 없음)은 그대로.
+            if human
+                && params.get("refuse_on_approval").and_then(|v| v.as_bool()).unwrap_or(false)
+                && crate::governance::agent_seat_vacant_now(&surface)
+            {
+                return Reply::Single(err_response(
+                    &id,
+                    ERR_NO_AGENT,
+                    "agent seat has no live agent (bare shell) — human send with refuse_on_approval: not typed; not queued",
+                ));
+            }
             if !human && crate::governance::agent_seat_vacant_now(&surface) {
                 // ★v116-seat X-4: 좌석 재기동 줄(`agent_launch` · cys 의 boot_agent_on_surface 가 붙인다)은
                 //   빈 셸에 쳐야 하는 명령 자체다 — 그 좌석에 등록된 에이전트의 한 줄 기동 명령이면 가드를
@@ -7679,8 +8132,17 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             //   배달됐다(승인 사유가 아니라 저장 검증 시간초과로 끝남).
             //   ★1.1.8 병합: 원작자 F1(일반 Return 쓰기 직전 보류+재제출)과 별개 축이다 — 이 옵션을 실은 호출자(순환·DRAIN·
             //   재주입)에게는 「보류 후 재제출」이 아니라 「쓰지 않음」이 맞다(JT-PART-DELIVERY §5-2 오버레이 1).
+            // ★(1.1.16 · cysr-1116-backlog-fix2-1118 · 재검 R1) 원자 제출(`clear_first`)은 쓰는 도중 탐침(`approval_enter_guard`)과
+            //   **같은 합집합**(화면 판정 ∨ 관문 항목 ∨ feed 승인 대기 항목)을 쓰기 전에도 본다. 종전엔 여기서 화면·관문만 봐서,
+            //   화면에 창이 없고 feed 항목만 남은 좌석(터미널에서 창에 답한 뒤 다음 15초 스캔 전 · 답 본문 인용으로 선 항목)은
+            //   통과 → 쓰는 도중 탐침이 Ctrl-U 만 쓰고 거부했다(사람 초안이 실제 입력줄에서 지워지고 응답은 `sent:true`).
+            //   지금은 바이트 0 · 오류 응답(호출자가 「안 보내졌다」 를 바로 안다). `clear_first` 가 없는 거부 요청은 쓰는 도중
+            //   탐침이 화면 술어뿐이라(feed 축 없음) 종전 술어 그대로 둔다.
             let refuse_on_approval = params.get("refuse_on_approval").and_then(|v| v.as_bool()).unwrap_or(false);
-            if refuse_on_approval && crate::governance::seat_approval_pending(daemon, &surface) {
+            if refuse_on_approval
+                && (crate::governance::seat_approval_pending(daemon, &surface)
+                    || (clear_first && crate::governance::approval_or_gate_pending(daemon, surface.id)))
+            {
                 return Reply::Single(err_response(
                     &id,
                     cys::ERR_APPROVAL_SCREEN,
@@ -7842,6 +8304,25 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             //   표식이 있으면 토큰이 유효해도 **기록**한다(origin=gui_auto 로 감사에서 구별).
             //   ★불변식 ② 는 그대로다 — 표식 없는 실키 입력(sendRaw)은 여전히 무기록이다.
             let human_verified = human && !machine_origin && operator_token_ok(daemon, &params);
+            // ★agy 좌석 문(독립 검증 M3 · codex 4R major 4): 문이 닫혀 있으면 agy 좌석으로 가는 **자동** 지시(send·queued·GUI 자동
+            //   문안)를 막는다 — 사람 자판(human ∧ 기계 출처 아님)은 운영자 토큰 판독이 실패해도 통과시키고(구 GUI·토큰 판독 실패에서
+            //   사람 입력을 거부하지 않는다) 원장에 「토큰 미확인 통과」를 남긴다. 같은 사용자 권한의 흉내(human 자기신고 위조)는
+            //   원리상 한계 — 토큰이 있어도 같다(같은 UID 는 토큰 파일도 읽는다 · 설명서 「알려진 한계」). 좌석을 끄지는 않는다.
+            let human_typed = human && !machine_origin;
+            let agy_token_unverified_pass = human_typed && !human_verified && agy_door_seat_closed(&surface);
+            if !human_typed {
+                if agy_door_blocks_auto_send(&surface, &params, &text) {
+                    return Reply::Single(reject_send(
+                        daemon,
+                        sid,
+                        "surface.send_text",
+                        cys::agy_door::REFUSE_CODE,
+                        "agy 좌석 문이 닫혀 있어 이 agy 좌석으로 자동 지시를 보내지 않는다(사람이 그 좌석에 직접 치는 것은 된다)",
+                        caller_pid,
+                        &id,
+                    ));
+                }
+            }
             if human_verified && verified_from.is_some() {
                 // 오퍼레이터 토큰이 **pane 에서** 왔다. GUI(Tauri)는 어떤 surface 의 자손도 아니므로
                 // 정상 경로에서는 나올 수 없는 조합이다 — 토큰 파일을 읽은 동일 UID 프로세스일
@@ -7871,20 +8352,18 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                 // ★(0.14.43 · J3) 검증 신원이 없고 요청의 `from` 이 좌석 표기가 아닌 문자열(pane 밖 CLI 의 표시용 라벨 `cli:…`)이면 원장에
                 //   가산 키 `from_label` 로 남긴다 — `from`(좌석)의 값·의미는 무변경이고 판정(ACL·게이트·짝 Return)은 이 값을 보지 않는다.
                 //   라벨이 없는 행은 종전 호출 그대로(키 추가 0 · 종전 바이트).
-                match direct_send_from_label(verified_from, &params) {
-                    Some(label) => {
-                        crate::delivery::record_audited_with(
-                            daemon,
-                            sid,
-                            &text,
-                            ledger_origin,
-                            from_sid,
-                            &json!({"from_label": label}),
-                        );
-                    }
-                    None => {
-                        crate::delivery::record_audited(daemon, sid, &text, ledger_origin, from_sid);
-                    }
+                // ★agy 좌석 문(codex 4R major 4): 토큰 판독이 실패한 사람 자판이 닫힌 문의 agy 좌석에 닿았으면 가산 키로 남긴다.
+                let mut extra = serde_json::Map::new();
+                if let Some(label) = direct_send_from_label(verified_from, &params) {
+                    extra.insert("from_label".into(), json!(label));
+                }
+                if agy_token_unverified_pass {
+                    extra.insert("agy_door".into(), json!("토큰 미확인 통과"));
+                }
+                if extra.is_empty() {
+                    crate::delivery::record_audited(daemon, sid, &text, ledger_origin, from_sid);
+                } else {
+                    crate::delivery::record_audited_with(daemon, sid, &text, ledger_origin, from_sid, &serde_json::Value::Object(extra));
                 }
             }
             // clear_first면 원자 Inject(Ctrl-U 선정리 → paste → CR 제출)로, 아니면 현행 Data(원시
@@ -7902,7 +8381,33 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                 || direct_fence_disabled(daemon),
                 || surface.bracketed_paste.load(Ordering::Relaxed),
             );
-            let write_req = send_text_write_req(&text, clear_first, human_verified, fence);
+            let mut write_req = send_text_write_req(&text, clear_first, human_verified, fence);
+            // ★(1.1.16 · cysr-1116-backlog-fix-1118 · 검증 지적 5) 「창이면 쓰지 마라」 원자 제출의 요청 번호 — 응답 `request_id` 와 거부 흔적
+            //   `input.refused_at_write.request_id` 가 같은 값이라 화면이 어느 말이 거부됐는지 맞춘다(사람 길은 응답이 쓰기 전에 나간다).
+            //   에이전트 작업 길은 같은 번호를 작업 번호로 쓴다(아래 Request::new).
+            let refuse_request_id = refuse_on_approval
+                .then(|| crate::agent_write::new_request_id((daemon.started_at * 1000.0) as u64));
+            let refused_stage = Arc::new(std::sync::atomic::AtomicU8::new(0));
+            let pre_clear = PreClearLine::now(&surface);
+            // ★(1.1.16 · master#4f5897d7 · 조각 0.5 M2-c) 「창이면 쓰지 마라」 원자 제출 = CR 바로 앞 승인 재판정(InjectRefusing doc ·
+            //   술어 = approval_enter_guard: 쓰기 직전 화면 판정 ∨ feed 승인 대기 항목 · 거부 흔적 input.refused_at_write).
+            //   에이전트 작업(OwnedClear) 길은 아래 SubmitRefuse 가 같은 일을 한다.
+            // ★(1.1.16 · cysr-1116-backlog-fix-1118) 붙여넣기 바로 앞에도 같은 탐침(검증 지적 4) · 거부되면 남은 글을 사람 몫으로(검증 지적 1).
+            let mut human_refuse_request: Option<String> = None;
+            if let Some(rid) = refuse_request_id.as_deref() {
+                // (send_text_write_req 의 clear_first Inject 는 인계 가드가 언제나 없다 — 종전 동작 그대로)
+                if let crate::state::WriteReq::Inject { text, cr_delay_ms, clear_first: true, .. } = write_req {
+                    let body_bytes = text.len() as u64;
+                    write_req = crate::state::WriteReq::InjectRefusing {
+                        text,
+                        cr_delay_ms,
+                        clear_first: true,
+                        refuse_paste: approval_enter_guard(daemon, &surface, RefuseAt::BeforePaste, Some(0), rid, &refused_stage, &pre_clear),
+                        refuse: approval_enter_guard(daemon, &surface, RefuseAt::BeforeEnter, Some(body_bytes), rid, &refused_stage, &pre_clear),
+                    };
+                    human_refuse_request = Some(rid.to_string());
+                }
+            }
             // ★(리뷰 RR1-F1-XSOCK · RV1-CS-F1-CLAIMED) 기계 잔여 소유자 등급 — 게이트 밖에서 미리 푼다(순수 · 토큰 비교뿐).
             let owner_if_residue = residue_owner(
                 verified_from,
@@ -7935,7 +8440,16 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                             crate::agent_write::Plan::paste(&text)
                                 .with_clear(crate::state::clear_settle_ms())
                                 .with_submit(400, 0),
-                            surface.agent_proof(),
+                            // ★(1.1.16 · master#4f5897d7) 「창이면 쓰지 마라」 원자 제출 = Enter 직전 승인 재판정(SubmitRefuse doc).
+                            if let Some(rid) = refuse_request_id.as_deref() {
+                                Arc::new(SubmitRefuse {
+                                    inner: surface.agent_proof(),
+                                    probe_paste: approval_enter_guard(daemon, &surface, RefuseAt::BeforePaste, None, rid, &refused_stage, &pre_clear),
+                                    probe: approval_enter_guard(daemon, &surface, RefuseAt::BeforeEnter, None, rid, &refused_stage, &pre_clear),
+                                })
+                            } else {
+                                surface.agent_proof()
+                            },
                             false,
                         ),
                         DirectAgentIntent::SelfSubmitting => {
@@ -7948,7 +8462,9 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                         ),
                     };
                     let request = crate::agent_write::Request::new(
-                        crate::agent_write::new_request_id((daemon.started_at * 1000.0) as u64),
+                        refuse_request_id
+                            .clone()
+                            .unwrap_or_else(|| crate::agent_write::new_request_id((daemon.started_at * 1000.0) as u64)),
                         sid,
                         "send",
                         crate::delivery::digest_text(&text),
@@ -8078,6 +8594,9 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             if agent_handle.is_none() {
                 // ★(0.14.31 · WP-5) 세대 동반 쓰기 — stale 리셋(governance)이 세대로 ABA 를 가른다.
                 if clear_first {
+                    if refuse_request_id.is_some() {
+                        pre_clear.note(&surface); // ★(codex 2R) 인계 임계영역 안 = 비우기 직전 값(그 뒤 탐침 거부의 복원 재료)
+                    }
                     surface.clear_pending_input();
                 } else {
                     // human 은 자기신고(타이핑 가드 :4224 와 같은 신뢰 등급) —
@@ -8189,6 +8708,22 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             let mut result = json!({"surface_id": sid, "sent": true});
             if let Some(h) = &agent_handle {
                 result["request_id"] = json!(h.id);
+                // ★(1.1.16 · cysr-1116-backlog-fix-1118 · 검증 지적 5) 「창이면 쓰지 마라」 작업은 결판을 기다려 거부 사실을 싣는다 —
+                //   `sent:true` 는 호환을 위해 둔다(본문 수락) · 거부면 `submitted:false` · `refused:"approval_screen"` · `refused_stage`.
+                if refuse_request_id.is_some() && agent_intent == Some(DirectAgentIntent::OwnedClear) {
+                    match await_refuse_verdict(h, &refused_stage, std::time::Duration::from_millis(REFUSE_SETTLE_BUDGET_MS)) {
+                        Some(Some(stage)) => {
+                            result["submitted"] = json!(false);
+                            result["refused"] = json!(cys::ERR_APPROVAL_SCREEN);
+                            result["refused_stage"] = json!(stage);
+                        }
+                        Some(None) => {}
+                        None => result["submitted"] = Value::Null, // 상한 안에 결판 없음 = 모름(제출됐다고 읽지 말 것)
+                    }
+                }
+            } else if let Some(rid) = &human_refuse_request {
+                // 사람 길은 응답이 쓰기 전에 나간다 — 거부는 같은 번호의 `input.refused_at_write` 로만 온다.
+                result["request_id"] = json!(rid);
             }
             Reply::Single(ok_response(&id, result))
         }
@@ -8949,6 +9484,58 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             Reply::Single(ok_response(&id, json!({"surface_id": sid, "title": title})))
         }
 
+        // (tabs-sidebar 2d · 설계 §5) 좌석 묶음 옮기기 — 메모리 필드 1개 + 이벤트 1건. 호출자 = master 좌석 또는 좌석 밖 사람 CLI.
+        //   치명 4군: 같은 값이면 이벤트 0(폭주 없음) · 입력·PTY·프로세스·영속·복원 무접촉.
+        "surface.set_group" => {
+            let Some(sid) = resolve_surface_id(&params) else {
+                return Reply::Single(err_response(&id, "invalid_params", "missing surface_id"));
+            };
+            let group = match parse_seat_group(params.get("group")) {
+                Ok(g) => g,
+                Err(m) => return Reply::Single(err_response(&id, "invalid_params", m)),
+            };
+            if let Err(m) = ui_command_caller_ok(daemon, caller_pid) {
+                return Reply::Single(err_response(&id, "forbidden", &format!("surface.set_group: {m}")));
+            }
+            let Some(surface) = daemon.get_surface(sid) else {
+                return Reply::Single(err_response(
+                    &id,
+                    "not_found",
+                    &format!("surface {sid} not found"),
+                ));
+            };
+            // 같은 「정한 값」이면 이벤트 0(폭주 없음). 아무도 안 정한 좌석(None)을 해제하면 Some(None) 으로 바뀌며 이벤트 1건 —
+            //   앱이 놓친 해제를 되살리는 길(codex 1R ③ · 해제를 다시 쳐도 막히지 않게).
+            let previous = {
+                let mut g = surface.group.lock().unwrap();
+                if *g == Some(group.clone()) {
+                    return Reply::Single(ok_response(&id, json!({"surface_id": sid, "group": group, "changed": false})));
+                }
+                std::mem::replace(&mut *g, Some(group.clone())).flatten()
+            };
+            daemon.bus.publish(
+                "surface.group.changed",
+                "surface",
+                Some(sid),
+                json!({"surface_id": sid, "group": group, "previous": previous}),
+            );
+            Reply::Single(ok_response(&id, json!({"surface_id": sid, "group": group, "changed": true})))
+        }
+
+        // (tabs-sidebar 2d · master#b1b8d7df) 말로 앱 패널 열기 — 상태 없음 · 이벤트 1건(앱이 받아 그 패널을 연다).
+        //   지금 여는 패널 = control-center 하나. 호출자 = master 좌석 또는 좌석 밖 사람 CLI(surface.set_group 과 같은 게이트).
+        "ui.open_panel" => {
+            let panel = param_str(&params, "panel").unwrap_or_default();
+            if panel != "control-center" {
+                return Reply::Single(err_response(&id, "invalid_params", "panel must be control-center"));
+            }
+            if let Err(m) = ui_command_caller_ok(daemon, caller_pid) {
+                return Reply::Single(err_response(&id, "forbidden", &format!("ui.open_panel: {m}")));
+            }
+            daemon.bus.publish("ui.open_panel", "ui", None, json!({"panel": panel}));
+            Reply::Single(ok_response(&id, json!({"panel": panel})))
+        }
+
         "surface.close" => {
             let Some(sid) = resolve_surface_id(&params) else {
                 return Reply::Single(err_response(&id, "invalid_params", "missing surface_id"));
@@ -9271,15 +9858,13 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                 return Reply::Single(err_response(&id, "invalid_params", "missing role"));
             };
             let remove = params.get("remove").and_then(|v| v.as_bool()).unwrap_or(false);
-            {
+            if remove {
+                daemon.remove_tombstone(&role);
+            } else {
                 let mut tombs = daemon.tombstones.lock().unwrap();
-                if remove {
-                    tombs.remove(&role);
-                } else {
-                    tombs.insert(role.clone());
-                    // 폐역이면 role-map 에서도 제외(살아있는 surface 는 close_surface 가 별도 처리 — 여기선 선언만).
-                    daemon.roles.lock().unwrap().remove(&role);
-                }
+                tombs.insert(role.clone());
+                // 폐역이면 role-map 에서도 제외(살아있는 surface 는 close_surface 가 별도 처리 — 여기선 선언만).
+                daemon.roles.lock().unwrap().remove(&role);
             }
             governance::persist_topology(daemon); // 엔트리+묘비+rev 단일 영속(단조 카운터 증가)
             let rev = daemon
@@ -9384,6 +9969,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
         // ★(0.14.31 · WP-4 · 계약 C) `cys reclaim-role --auto` 의 서버측 — 빈 좌석이 쥔 역할을
         // 이 pane 으로 재결합한다. 판정은 `reclaim.rs`(순수)·커밋은 `reclaim_commit`(임계영역).
         "role.reclaim_auto" => return reclaim_auto(daemon, &params, &id, caller_pid),
+        "role.restore_released" => return restore_released_role(daemon, &params, &id, caller_pid),
 
         "system.claim_role" => {
             let Some(role) = param_str(&params, "role") else {
@@ -9767,6 +10353,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                     }
                 }
                 roles.insert(final_role.clone(), sid);
+                daemon.note_role_held(&final_role, sid);
                 *srole = Some(final_role.clone());
                 // T4-4/T6-P3: 역할 전이와 동기로 능력 집합 재도출(reviewer-*=read/search,
                 // full=worker/master/cso, 그 외 deny-by-default). cysd-매개 변형 게이트의 키 갱신.
@@ -9829,7 +10416,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             }
             // ★W2a 해제 불변식: claim_role = 명시적 역할 (재)등록 = 부활 의도. 묘비에서 제거해
             // 이후 이 역할의 비정상 종료는 다시 정상 부활 대상이 되게 한다. tombstones는 리프 락.
-            daemon.tombstones.lock().unwrap().remove(&claimed_role);
+            daemon.remove_tombstone(&claimed_role);
             // ★agent 메타 확정 — `role.reclaim_auto` 와 **같은 함수**(사본 금지).
             //   근거·규칙·Windows 2표본 절차는 그 함수의 doc 이 정본이다.
             finalize_agent_meta_after_role_change(daemon, sid, &claimed_role, "claim_role");
@@ -13509,7 +14096,8 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
 
         // ─── T2-6 토폴로지: 영속 스냅샷 + 현재 라이브 역할 (cys restore의 데이터 소스) ───
         "system.topology" => {
-            let saved = crate::governance::load_topology(daemon);
+            // ★조각 1: 못 읽은 저장 목록을 빈 목록과 구별해 준다(`saved_unreadable`) — 빈 목록은 「핀 없음」으로 읽힌다.
+            let (saved, saved_unreadable) = crate::governance::load_saved_topology(daemon);
             let live: Vec<Value> = daemon
                 .surfaces
                 .lock()
@@ -13551,7 +14139,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             };
             Reply::Single(ok_response(
                 &id,
-                json!({"saved": saved, "live": live, "tombstones": tombstones}),
+                json!({"saved": saved, "saved_unreadable": saved_unreadable, "live": live, "tombstones": tombstones}),
             ))
         }
 
@@ -22029,8 +22617,10 @@ mod tests {
 
     fn make_surface(daemon: &Arc<Daemon>, role: Option<&str>) -> u64 {
         // ★v116-flake-pty ⑵: PTY 고갈(ENXIO)만 상한 재시도 · 넘기면 「PTY 고갈 — 결함 판정 보류」 문구로 실패.
+        // 작업 폴더를 명시한다(독립 검증 D7): 다른 시험이 프로세스 전역 HOME 을 임시 폴더로 바꾸고 지우므로 HOME 에 기대지 않는다.
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
         let s = crate::pty_test_support::retry_on_pty_exhaustion("make_surface", || {
-            daemon.create_surface(None, Some("sleep 30".into()), None, role.map(|r| r.into()), 24, 80)
+            daemon.create_surface(Some(cwd.clone()), Some("sleep 30".into()), None, role.map(|r| r.into()), 24, 80)
         })
         .expect("create surface");
         daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
@@ -22520,6 +23110,7 @@ mod tests {
             crate::state::WriteReq::DataAfter { .. } => "DataAfter",
             crate::state::WriteReq::SubmitAfterGap { .. } => "SubmitAfterGap",
             crate::state::WriteReq::Inject { .. } => "Inject",
+            crate::state::WriteReq::InjectRefusing { .. } => "InjectRefusing",
             crate::state::WriteReq::Agent(_) => "Agent",
         }
     }
@@ -23096,6 +23687,53 @@ mod tests {
                    "기동 줄을 쳤는데 사망 타이머가 남았다 — 재기동 직후 역할 회수 유예가 만료될 수 있다");
         let left: Vec<String> = s.pending_queue.lock().unwrap().iter().map(|e| e.text.clone()).collect();
         assert_eq!(left, vec!["true --x".to_string()], "기동 줄 통과 지점이 큐를 건드렸다(폐기 지점 이원화)");
+
+        std::env::remove_var(cys::pack::ENV_PACK_DIR);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★적색→녹색(1.1.16 · cysr-1116-integ-1118 · 📌 S1-11): 빈 셸 좌석(에이전트 메타는 남음 · 뿌리 = sh)에 **사람 표지 +
+    /// `refuse_on_approval`** 원자 제출(앱 대화 화면 꼴) → 쓰기 0 · `no_agent` · 큐 0. 종전 = 사람 표지라 빈 셸 가드를 지나
+    /// Ctrl-U·붙여넣기·Enter 로 셸에 그 말이 명령으로 들어갔다(`sent:true`). 대조: 옵션 없는 사람 입력은 종전대로 쓴다.
+    #[cfg(unix)]
+    #[test]
+    fn integ1116_human_refuse_send_not_typed_into_bare_shell() {
+        let _g = ACL_ENV_LOCK.lock().unwrap();
+        let (daemon, dir) = daemon_with_acl("integ1116-bare", r#"{"default":"allow","rules":[]}"#);
+        let s = daemon
+            .create_surface(None, Some("exec /bin/sh -i".into()), None, None, 24, 80)
+            .expect("create surface");
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        let caller = 990_320_u32;
+        bind_caller(&daemon, caller, s.id);
+        crate::governance::test_wait_seat_runs(&s, "sh", &["-i"]);
+        let t0 = std::time::Instant::now();
+        while !crate::governance::agent_seat_vacant_now(&s) {
+            assert!(t0.elapsed().as_secs() < 10, "전제: 10초 안에 빈 셸 좌석이 되지 않았다");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let send = |n: u64, p: Value| {
+            let req = Request { id: json!(n), method: "surface.send_text".into(), params: p };
+            let Reply::Single(resp) = dispatch(&daemon, req, Some(caller)) else {
+                panic!("expected single reply");
+            };
+            resp
+        };
+        let qlen = || s.pending_queue.lock().unwrap().len();
+        let w0 = s.inject_track.wrote();
+        let r = send(1, json!({
+            "surface_id": s.id, "text": "true --x", "human": true, "quiet": true, "queued": false,
+            "clear_first": true, "machine_origin": false, "refuse_on_approval": true,
+        }));
+        assert_eq!(r["error"]["code"], json!(ERR_NO_AGENT), "사람 표지 + refuse_on_approval 본문이 빈 셸로 갔다: {r}");
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        assert_eq!(s.inject_track.wrote(), w0, "거부했는데 PTY 쓰기가 있었다");
+        assert_eq!(qlen(), 0, "사람 말이 큐에 들어갔다(뒤에 뜬 에이전트에게 저절로 배달될 수 있음)");
+        // 대조: 옵션 없는 사람 입력(터미널에서 직접 치는 길)은 빈 셸이어도 종전대로 쓴다.
+        let r = send(2, json!({"surface_id": s.id, "text": "true --y", "human": true, "quiet": true}));
+        assert_eq!(r["result"]["sent"], json!(true), "옵션 없는 사람 입력까지 막았다(빈 셸에 사람이 치는 것은 정상): {r}");
+        assert_eq!(qlen(), 0);
 
         std::env::remove_var(cys::pack::ENV_PACK_DIR);
         let _ = std::fs::remove_dir_all(&dir);
@@ -32530,6 +33168,342 @@ mod tests {
         );
     }
 
+    /// ★조각 1: 디스크 묘비를 못 읽은 동안의 `tombstone.set remove` 는 해제 의도로 남는다.
+    #[cfg(unix)]
+    #[test]
+    fn tombstone_remove_rpc_records_the_intent_while_disk_is_unread() {
+        use std::os::unix::fs::PermissionsExt;
+        let daemon = isolated_daemon();
+        let path = crate::state::state_dir(&daemon.socket_path).join("topology.json");
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        *daemon.tombstones_unread.lock().unwrap() = Some(Default::default());
+        let req = Request { id: json!(1), method: "tombstone.set".into(), params: json!({"role": "freed", "remove": true}) };
+        let reply = dispatch(&daemon, req, None);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let Reply::Single(_) = reply else {
+            panic!("expected single reply");
+        };
+        let unread = daemon.tombstones_unread.lock().unwrap();
+        assert!(unread.as_ref().is_some_and(|r| r.contains("freed")), "해제 의도가 남지 않았다");
+    }
+
+    /// ★조각 1: claim_role 의 묘비 해제도 단일 입구를 지난다(직접 지우면 해제 의도가 사라진다).
+    #[test]
+    fn claim_role_releases_the_tombstone_through_the_single_entry() {
+        let src = include_str!("handlers.rs");
+        assert!(src.contains(concat!("daemon.remove_tombstone(", "&claimed_role);")), "claim_role 이 단일 입구를 쓰지 않는다");
+    }
+
+    // ── 조각 1 · 거둔 역할(VERIFY B1) ──
+
+    const RR_SESSION: &str = "11111111-2222-4333-8444-555555555555";
+
+    fn rr_seat(daemon: &Arc<Daemon>, role: Option<&str>) -> Arc<crate::state::Surface> {
+        let s = daemon
+            .create_surface(None, Some("sleep 30".into()), None, role.map(String::from), 24, 80)
+            .expect("create surface");
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        if let Some(role) = role {
+            daemon.roles.lock().unwrap().insert(role.into(), s.id);
+        }
+        *s.agent_session_id.lock().unwrap() = Some(RR_SESSION.into());
+        *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        s
+    }
+
+    fn rr_rpc(daemon: &Arc<Daemon>, method: &str, params: Value, pid: Option<u32>) -> Value {
+        let req = Request { id: json!(1), method: method.into(), params };
+        let Reply::Single(resp) = dispatch(daemon, req, pid) else {
+            panic!("expected single reply");
+        };
+        resp
+    }
+
+    fn rr_released(daemon: &Arc<Daemon>, sid: u64) -> Value {
+        let list = rr_rpc(daemon, "surface.list", json!({}), None);
+        let rows = list["result"]["surfaces"].as_array().expect("surfaces").clone();
+        rows.into_iter().find(|r| r["surface_id"] == json!(sid)).expect("row")["released_role"].clone()
+    }
+
+    fn rr_restore(daemon: &Arc<Daemon>, sid: u64, role: &str, pid: Option<u32>) -> Value {
+        rr_rpc(daemon, "role.restore_released", json!({"surface_id": sid, "role": role, "session_id": RR_SESSION}), pid)
+    }
+
+    fn rr_saved_session(daemon: &Arc<Daemon>, role: &str) -> Value {
+        let (saved, _) = crate::governance::load_saved_topology(daemon);
+        saved.as_array().unwrap().iter().find(|e| e["role"] == json!(role)).map_or(Value::Null, |e| e["session_id"].clone())
+    }
+
+    /// 거둔 역할은 회수된 좌석에만 보이고, 처음부터 역할이 없던 좌석에는 없다.
+    #[test]
+    fn released_role_is_listed_on_the_seat_it_was_taken_from() {
+        let daemon = isolated_daemon();
+        let (seat, plain) = (rr_seat(&daemon, Some("worker")), rr_seat(&daemon, None));
+        assert_eq!(rr_released(&daemon, seat.id), Value::Null, "역할을 쥔 좌석");
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &seat));
+        assert_eq!(rr_released(&daemon, seat.id), json!("worker"));
+        assert_eq!(rr_released(&daemon, plain.id), Value::Null, "역할이 없던 좌석");
+    }
+
+    /// 다른 좌석이 쥔 역할의 낡은 칸만 남은 좌석은 그 역할을 「거둔」 것이 아니다.
+    #[test]
+    fn a_seat_that_no_longer_held_the_role_does_not_record_it() {
+        let daemon = isolated_daemon();
+        let (stale, holder) = (rr_seat(&daemon, Some("reviewer-x")), rr_seat(&daemon, None));
+        daemon.roles.lock().unwrap().insert("reviewer-x".into(), holder.id);
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &stale));
+        assert_eq!(rr_released(&daemon, stale.id), Value::Null);
+    }
+
+    /// 그 역할을 누가 다시 쥐면(claim · 새 역할 좌석 · 다른 역할을 쥔 자기 좌석) 거둔 표시는 무효다.
+    #[test]
+    fn released_role_is_void_once_any_seat_holds_it_again() {
+        // ① 다른 좌석의 claim
+        let daemon = claim_daemon();
+        let seat = rr_seat(&daemon, Some("worker-7"));
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &seat));
+        let other = make_surface(&daemon, None);
+        bind_caller(&daemon, 990_711, other);
+        assert_eq!(claim(&daemon, "worker-7", other, Some(990_711))["ok"], json!(true));
+        assert_eq!(rr_released(&daemon, seat.id), Value::Null, "다른 좌석이 쥐었는데 남았다");
+        // 그 좌석이 역할을 잃어도 옛 표시는 되살아나지 않는다.
+        daemon.roles.lock().unwrap().remove("worker-7");
+        *daemon.get_surface(other).unwrap().role.lock().unwrap() = None;
+        assert_eq!(rr_released(&daemon, seat.id), Value::Null, "무효가 된 표시가 되살아났다");
+
+        // ② 같은 역할로 새 좌석 생성
+        let daemon = claim_daemon();
+        let seat = rr_seat(&daemon, Some("reviewer-y"));
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &seat));
+        let _new = daemon.create_surface(None, Some("sleep 30".into()), None, Some("reviewer-y".into()), 24, 80).expect("create");
+        assert_eq!(rr_released(&daemon, seat.id), Value::Null, "새 역할 좌석이 생겼는데 남았다");
+
+        // ③ 그 좌석이 다른 역할을 쥠
+        let daemon = claim_daemon();
+        let seat = rr_seat(&daemon, Some("worker-8"));
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &seat));
+        bind_caller(&daemon, 990_712, seat.id);
+        assert_eq!(claim(&daemon, "worker-9", seat.id, Some(990_712))["ok"], json!(true));
+        daemon.roles.lock().unwrap().remove("worker-9");
+        *seat.role.lock().unwrap() = None;
+        assert_eq!(rr_released(&daemon, seat.id), Value::Null, "다른 역할을 쥔 뒤에도 남았다");
+    }
+
+    /// 재결합(`role.reclaim_auto`)으로 역할을 받은 좌석의 옛 거둔 역할도 무효다.
+    #[test]
+    fn reclaim_auto_voids_the_callers_released_role() {
+        let _env = rc_env_lock();
+        let daemon = isolated_daemon();
+        let _old = reclaim_seat(&daemon, "worker-2", RC_CWD, None, false);
+        let pid = 990_713_u32;
+        let me = reclaim_caller(&daemon, RC_CWD, pid);
+        let me_seat = daemon.get_surface(me).unwrap();
+        *me_seat.role.lock().unwrap() = Some("worker-5".into());
+        daemon.roles.lock().unwrap().insert("worker-5".into(), me);
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &me_seat));
+        assert_eq!(rr_released(&daemon, me), json!("worker-5"), "전제");
+        assert_eq!(reclaim_ok(&daemon, pid)["result"]["role"], json!("worker-2"));
+        daemon.roles.lock().unwrap().remove("worker-2");
+        *me_seat.role.lock().unwrap() = None;
+        assert_eq!(rr_released(&daemon, me), Value::Null);
+    }
+
+    /// 복구: 좌석이 역할을 되찾고, 저장 핀은 같은 대화로 남고, 또 죽으면 다시 거둔 상태가 된다.
+    #[test]
+    fn restore_released_gives_the_role_back_and_keeps_the_pin() {
+        let daemon = isolated_daemon();
+        let seat = rr_seat(&daemon, Some("worker"));
+        crate::governance::persist_topology(&daemon);
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &seat));
+        assert_eq!(rr_saved_session(&daemon, "worker"), json!(RR_SESSION), "전제: 회수 뒤에도 핀이 있다");
+        *seat.agent_dead_since.lock().unwrap() = Some(1.0);
+        *seat.title.lock().unwrap() = "after-release".into();
+
+        let resp = rr_restore(&daemon, seat.id, "worker", None);
+        assert_eq!(resp["ok"], json!(true), "{resp}");
+        assert_eq!(seat.role.lock().unwrap().as_deref(), Some("worker"));
+        assert_eq!(daemon.roles.lock().unwrap().get("worker").copied(), Some(seat.id));
+        assert!(seat.caps.lock().unwrap().allows(crate::caps::Cap::Edit), "능력이 돌아오지 않았다");
+        assert_eq!(*seat.agent_dead_since.lock().unwrap(), None, "옛 사망 시각이 남으면 다음 틱에 다시 회수된다");
+        assert_eq!(rr_released(&daemon, seat.id), Value::Null);
+        assert_eq!(rr_saved_session(&daemon, "worker"), json!(RR_SESSION), "핀이 바뀌었다");
+        let (saved, _) = crate::governance::load_saved_topology(&daemon);
+        assert_eq!(saved[0]["title"], json!("after-release"), "되돌린 좌석이 저장되지 않았다");
+
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &seat), "또 죽으면 다시 회수");
+        assert_eq!(rr_released(&daemon, seat.id), json!("worker"));
+        assert_eq!(rr_restore(&daemon, seat.id, "worker", None)["ok"], json!(true), "두 번째 복구");
+    }
+
+    /// master 를 되돌리면 승계 쿨다운도 함께 다시 선다(claim 과 같은 규약).
+    #[test]
+    fn restore_released_rearms_the_master_cooldown() {
+        let daemon = isolated_daemon();
+        let seat = rr_seat(&daemon, Some("master"));
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &seat));
+        assert_eq!(*daemon.master_claimed_at.lock().unwrap(), None, "전제");
+        assert_eq!(rr_restore(&daemon, seat.id, "master", None)["ok"], json!(true));
+        assert!(daemon.master_claimed_at.lock().unwrap().is_some(), "쿨다운 기준이 비었다");
+    }
+
+    /// 되돌릴 수 없는 경우는 아무것도 바꾸지 않고 거절한다.
+    #[test]
+    fn restore_released_refuses_everything_else_and_changes_nothing() {
+        let check = |name: &str, daemon: &Arc<Daemon>, seat: &Arc<crate::state::Surface>, resp: Value| {
+            assert_eq!(resp["ok"], json!(false), "{name}: {resp}");
+            assert_eq!(*seat.role.lock().unwrap(), None, "{name}: 역할이 들어갔다");
+            assert_ne!(daemon.roles.lock().unwrap().get("worker").copied(), Some(seat.id), "{name}: 주소가 들어갔다");
+        };
+        let released = || {
+            let daemon = isolated_daemon();
+            let seat = rr_seat(&daemon, Some("worker"));
+            assert!(crate::governance::release_role_after_agent_death(&daemon, &seat));
+            (daemon, seat)
+        };
+
+        let (daemon, seat) = released();
+        check("다른 역할 이름", &daemon, &seat, rr_restore(&daemon, seat.id, "worker-2", None));
+
+        let (daemon, seat) = released();
+        let other = rr_seat(&daemon, None);
+        let resp = rr_restore(&daemon, other.id, "worker", None);
+        assert_eq!(resp["ok"], json!(false), "거둔 적 없는 좌석: {resp}");
+        assert_eq!(*other.role.lock().unwrap(), None);
+        assert_eq!(rr_released(&daemon, seat.id), json!("worker"), "거절이 표시를 지웠다");
+
+        let (daemon, seat) = released();
+        daemon.tombstones.lock().unwrap().insert("worker".into());
+        check("묘비", &daemon, &seat, rr_restore(&daemon, seat.id, "worker", None));
+
+        let (daemon, seat) = released();
+        *seat.agent_session_id.lock().unwrap() = Some("22222222-2222-4333-8444-555555555555".into());
+        check("다른 대화를 든 좌석", &daemon, &seat, rr_restore(&daemon, seat.id, "worker", None));
+
+        let (daemon, seat) = released();
+        seat.exited.store(true, Ordering::Relaxed);
+        check("끝난 좌석", &daemon, &seat, rr_restore(&daemon, seat.id, "worker", None));
+
+        // 읽기 전용 좌석(리뷰어)은 부를 수 없다 · 발신 좌석이 없는 호출(boot·watchdog 자식)은 위 성공 시험이 다룬다.
+        let (daemon, seat) = released();
+        let reviewer = rr_seat(&daemon, Some("reviewer-z"));
+        bind_caller(&daemon, 990_714, reviewer.id);
+        check("리뷰어 발신", &daemon, &seat, rr_restore(&daemon, seat.id, "worker", Some(990_714)));
+    }
+
+    /// 거둔 좌석을 사람이 닫으면 역할을 쥔 좌석을 닫을 때와 같다 — 묘비가 남고 저장 핀은 되살아나지 않는다. 자동 회수(reap)는 묘비를 남기지 않는다.
+    #[test]
+    fn closing_a_released_seat_follows_the_role_seat_rule() {
+        use crate::governance::{close_surface, persist_topology, CloseCause};
+        let released = || {
+            let daemon = isolated_daemon();
+            let seat = rr_seat(&daemon, Some("worker"));
+            persist_topology(&daemon);
+            assert!(crate::governance::release_role_after_agent_death(&daemon, &seat));
+            (daemon, seat)
+        };
+        let (daemon, seat) = released();
+        close_surface(&daemon, seat.id, CloseCause::OwnerClose).expect("close");
+        persist_topology(&daemon);
+        assert!(daemon.tombstones.lock().unwrap().contains("worker"), "사람이 닫았는데 묘비가 없다");
+        assert_eq!(rr_saved_session(&daemon, "worker"), Value::Null, "닫은 좌석의 핀이 남았다");
+        assert_eq!(rr_restore(&daemon, seat.id, "worker", None)["ok"], json!(false), "닫힌 좌석에 역할을 되돌렸다");
+
+        let (daemon, seat) = released();
+        close_surface(&daemon, seat.id, CloseCause::Reap).expect("reap");
+        persist_topology(&daemon);
+        assert!(!daemon.tombstones.lock().unwrap().contains("worker"), "자동 회수가 묘비를 남겼다");
+        assert_eq!(rr_saved_session(&daemon, "worker"), json!(RR_SESSION), "자동 회수가 핀을 지웠다");
+        assert!(daemon.released_roles.lock().unwrap().is_empty(), "사라진 좌석의 표시가 남았다");
+    }
+
+    /// 되돌리기와 좌석 닫기는 surfaces 락으로 순서가 갈린다 — 닫기가 먼저면 되돌리기 실패, 되돌리기가 먼저면 닫기가 역할을 보고 묘비를 남긴다.
+    #[test]
+    fn restore_released_and_close_are_ordered_by_the_surfaces_lock() {
+        use crate::governance::{close_surface, CloseCause};
+        let daemon = isolated_daemon();
+        let seat = rr_seat(&daemon, Some("worker"));
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &seat));
+        let sid = seat.id;
+        let roles_held = daemon.roles.lock().unwrap();
+        let racer = {
+            let daemon = daemon.clone();
+            std::thread::spawn(move || rr_restore(&daemon, sid, "worker", None))
+        };
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        // 되돌리기가 roles 락을 기다리는 동안의 닫기 — surfaces 락을 쥐고 있으면 닫기는 그 뒤로 밀린다.
+        let closed_first = daemon.surfaces.try_lock().map(|mut m| m.remove(&sid).is_some()).unwrap_or(false);
+        drop(roles_held);
+        let resp = racer.join().expect("restore thread");
+        if closed_first {
+            assert_eq!(resp["ok"], json!(false), "닫힌 좌석에 되돌리기가 성공했다: {resp}");
+            assert_eq!(daemon.roles.lock().unwrap().get("worker").copied(), None, "닫힌 좌석을 역할이 가리킨다");
+        } else {
+            assert_eq!(resp["ok"], json!(true), "{resp}");
+            close_surface(&daemon, sid, CloseCause::OwnerClose).expect("close");
+            assert!(daemon.tombstones.lock().unwrap().contains("worker"), "닫기가 되돌린 역할을 못 봤다");
+        }
+    }
+
+    /// 역할을 되돌린 좌석은 재결합 판정에서 갓 만든 좌석처럼 유예를 받는다 — 재개가 뜨기 전에 다른 좌석이 역할을 가져가지 못한다.
+    #[test]
+    fn a_just_restored_seat_counts_as_new_for_reclaim_auto() {
+        let daemon = isolated_daemon();
+        let seat = rr_seat(&daemon, Some("worker"));
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &seat));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let restored = std::time::Instant::now();
+        assert_eq!(rr_restore(&daemon, seat.id, "worker", None)["ok"], json!(true));
+        let live = reclaim_live_snapshot(&daemon.surfaces.lock().unwrap());
+        let entry = live.iter().find(|e| e.surface_id == seat.id).expect("snapshot");
+        let age = entry.age_secs.expect("age");
+        assert!(age <= restored.elapsed().as_secs_f64(), "되돌린 뒤의 나이가 아니다: {age}");
+    }
+
+    /// 복구된 좌석의 새 에이전트가 시작 훅에서 재결합을 불러도 역할·핀은 그대로다.
+    #[test]
+    fn reclaim_auto_from_the_recovered_seat_keeps_role_and_pin() {
+        let _env = rc_env_lock();
+        let daemon = isolated_daemon();
+        let seat = rr_seat(&daemon, Some("worker"));
+        crate::governance::persist_topology(&daemon);
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &seat));
+        assert_eq!(rr_restore(&daemon, seat.id, "worker", None)["ok"], json!(true));
+        bind_caller(&daemon, 990_715, seat.id);
+        let resp = reclaim_rpc(&daemon, Some(990_715), json!({"config": RC_CFG, "cwd": RC_CWD}));
+        assert_eq!(resp["result"]["role"], json!("worker"), "{resp}");
+        assert_eq!(rr_saved_session(&daemon, "worker"), json!(RR_SESSION), "핀이 덮였다");
+    }
+
+    /// ★조각 1: 저장 목록을 못 읽었으면 빈 목록과 구별되는 표시를 준다(「핀 없음」 오인 차단). 파일 부재는 표시 없음.
+    #[cfg(unix)]
+    #[test]
+    fn system_topology_marks_a_saved_list_it_could_not_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let daemon = isolated_daemon();
+        let path = crate::state::state_dir(&daemon.socket_path).join("topology.json");
+        let ask = || {
+            let req = Request { id: json!(1), method: "system.topology".into(), params: json!({}) };
+            let Reply::Single(resp) = dispatch(&daemon, req, None) else {
+                panic!("expected single reply");
+            };
+            resp["result"].clone()
+        };
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(ask()["saved_unreadable"], json!(false), "파일 부재는 못 읽은 것이 아니다");
+        std::fs::write(&path, json!({"entries": [{"role": "r"}], "tombstones": []}).to_string()).unwrap();
+        let ok = ask();
+        assert_eq!((ok["saved_unreadable"].clone(), ok["saved"][0]["role"].clone()), (json!(false), json!("r")));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let denied = ask();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!((denied["saved_unreadable"].clone(), denied["saved"].clone()), (json!(true), json!([])), "읽기 오류");
+        std::fs::write(&path, "{ not json").unwrap();
+        let broken = ask();
+        assert_eq!((broken["saved_unreadable"].clone(), broken["saved"].clone()), (json!(true), json!([])), "손상");
+        assert!(path.exists(), "조회가 파일을 옮겼다");
+    }
+
     // ─────────────────────────────────────────────────────────────────────────────
     // T6 restore-root allowlist 자기공격 실측 (R4 §3 전건 — 완료 게이트).
     // 위협모델: 비권위 노드(worker·reviewer)·외부 프로세스·surface.create 임의-cmd 자식이
@@ -36485,3 +37459,89 @@ mod v116_num_rpc_tests {
 #[cfg(test)]
 #[path = "pty_allocator_busy_tests.rs"]
 mod pty_allocator_busy_tests;
+
+// (tabs-sidebar 948 D7·D4·D8) 단위 시험 — 파일 끝에 둔다(여러 소스 핀 시험이 첫 #[cfg(test)] 앞을 운영 코드로 자른다).
+#[cfg(test)]
+mod seat_group_name_tests {
+    use super::*;
+    // (948 D7) NFKC 뒤 범주 Cc·Cf·Zl·Zp 거부 — 똑같이 보이는 다른 묶음 이름(속임) 0.
+    #[test]
+    fn group_name_rejects_zero_width_bom_and_line_separators_after_nfkc() {
+        for bad in ["\u{200B}site", "\u{FEFF}site", "si\u{2028}te", "si\u{2029}te", "si\u{0085}te", "si\u{200D}te", "si\u{00AD}te", "a\u{202E}b", "a\u{2066}b",
+                    // (ChatGPT 1R #9) Default_Ignorable_Code_Point — CGJ · 이체 선택자 · 한글 채움 문자
+                    "si\u{034F}te", "site\u{FE0F}", "site\u{FE0E}", "\u{3164}site", "si\u{115F}te"] {
+            assert!(parse_seat_group(Some(&json!(bad))).is_err(), "거부해야 함: {bad:?}");
+        }
+    }
+    #[test]
+    fn group_name_is_stored_nfkc_normalized_and_trimmed() {
+        assert_eq!(parse_seat_group(Some(&json!("ｓｉｔｅ"))), Ok(Some("site".to_string())));
+        assert_eq!(parse_seat_group(Some(&json!("  ﬁle  "))), Ok(Some("file".to_string())));
+        assert_eq!(parse_seat_group(Some(&json!("e\u{0301}"))), Ok(Some("\u{00E9}".to_string()))); // 결합 문자는 합쳐 저장(거부 아님)
+        assert_eq!(parse_seat_group(Some(&json!("교육 부서"))), Ok(Some("교육 부서".to_string())));
+        assert_eq!(parse_seat_group(Some(&json!("\u{2028}site\n"))), Ok(Some("site".to_string())), "앞뒤 White_Space 는 자른다 — 앱 cleanGroupName 과 같다");
+        assert_eq!(parse_seat_group(Some(&json!("  "))), Ok(None));
+        assert_eq!(parse_seat_group(Some(&Value::Null)), Ok(None));
+        assert!(parse_seat_group(Some(&json!(5))).is_err());
+        assert!(parse_seat_group(Some(&json!("x".repeat(65)))).is_err());
+    }
+}
+
+#[cfg(test)]
+mod ui_caller_tests {
+    use super::*;
+    const OK_START: fn(u32) -> bool = |_| true;
+    // 조상 사슬: 500 → 400 → 300 → 1(launchd)
+    fn chain(p: u32) -> Option<u32> {
+        match p { 500 => Some(400), 400 => Some(300), 300 => Some(1), _ => None }
+    }
+    #[test]
+    fn caller_without_pid_or_uninspectable_is_denied() {
+        // (948 D8 R2·R3) 판독 실패 = 거부 회귀 시험
+        assert!(ui_caller_verdict(None, OK_START, |_| None, |_| true, chain).is_err(), "pid 없음 = 거부");
+        assert!(ui_caller_verdict(Some(500), |_| false, |_| None, |_| true, chain).is_err(), "프로세스 판독 실패 = 거부");
+    }
+    #[test]
+    fn seat_caller_must_be_master() {
+        assert_eq!(ui_caller_verdict(Some(500), OK_START, |_| Some(7), |_| true, chain), Ok(()));
+        assert!(ui_caller_verdict(Some(500), OK_START, |_| Some(7), |_| false, chain).is_err());
+    }
+    #[test]
+    fn outside_caller_needs_a_clean_ancestry_to_root() {
+        assert_eq!(ui_caller_verdict(Some(500), OK_START, |_| None, |_| false, chain), Ok(()), "끝까지 읽힌 좌석 밖 = 통과");
+        // (948 D4 ②) 40단 중첩 = 홉 상한 초과 = 거부
+        let deep = |p: u32| if p > 1000 && p <= 1040 { Some(p - 1) } else if p == 1000 { Some(1) } else { None };
+        assert_eq!(ancestry_end_with(1040, deep), AncestryEnd::Overflow);
+        assert!(ui_caller_verdict(Some(1040), OK_START, |_| None, |_| false, deep).is_err());
+        assert_eq!(ancestry_end_with(1031, deep), AncestryEnd::Clean, "31단 + 끝 = 상한 안");
+        // 중간 조상 판독 실패 · 자기 자신이 부모 = 거부
+        let broken = |p: u32| if p == 500 { Some(400) } else { None };
+        assert_eq!(ancestry_end_with(500, broken), AncestryEnd::Unreadable);
+        assert!(ui_caller_verdict(Some(500), OK_START, |_| None, |_| false, broken).is_err());
+        assert_eq!(ancestry_end_with(5, |p| Some(p)), AncestryEnd::Unreadable);
+    }
+
+    /// (950 caller-audit 경고 · master#8258a495 · 948 D4-b) 실판독 — 사람 터미널 사슬에는 root 소유 조상(/usr/bin/login)이 끼고
+    ///   끝은 launchd(root)다. 이 기계에서 실제로 돌고 있는 root 소유 프로세스(부모 = launchd)와, 있으면 root login 아래 셸을
+    ///   판독기에 넣어 끝까지 읽히는지(Clean) 잰다. 합성 사슬 시험(위)은 이 경우를 타지 않는다. 읽기만 한다.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn real_chain_through_root_owned_ancestors_reads_to_launchd() {
+        let ps = std::process::Command::new("ps").args(["-axo", "pid=,ppid=,user=,comm="]).output().expect("ps");
+        let rows: Vec<(u32, u32, String, String)> = String::from_utf8_lossy(&ps.stdout)
+            .lines()
+            .filter_map(|l| {
+                let mut it = l.split_whitespace();
+                Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?, it.next()?.to_string(), it.collect::<Vec<_>>().join(" ")))
+            })
+            .collect();
+        let root_daemon = rows.iter().find(|r| r.0 > 1 && r.1 == 1 && r.2 == "root").expect("root 소유 · 부모 launchd 프로세스가 하나는 있다");
+        assert_eq!(ancestry_end_with(root_daemon.0, parent_pid_of), AncestryEnd::Clean, "root 소유 프로세스 {:?} → launchd 사슬이 끝까지 읽혀야 한다", root_daemon);
+        // 사람 터미널 사슬(셸 ← root /usr/bin/login ← 터미널 앱 ← launchd)이 이 기계에 있으면 그것도
+        let logins: Vec<u32> = rows.iter().filter(|r| r.2 == "root" && r.3.ends_with("/usr/bin/login")).map(|r| r.0).collect();
+        if let Some(shell) = rows.iter().find(|r| logins.contains(&r.1) && r.2 != "root") {
+            assert_eq!(ancestry_end_with(shell.0, parent_pid_of), AncestryEnd::Clean, "사람 셸 {:?} (root login 경유) 사슬이 끝까지 읽혀야 한다", shell);
+            assert_eq!(ui_caller_verdict(Some(shell.0), |_| true, |_| None, |_| false, parent_pid_of), Ok(()), "사람 터미널 = 좌석 밖 통과");
+        }
+    }
+}

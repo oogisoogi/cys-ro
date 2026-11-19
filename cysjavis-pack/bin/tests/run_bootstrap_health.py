@@ -6362,6 +6362,7 @@ _U5_PACK_CREATIONFLAGS = {
     "javis_hud_bridge.py":              1,   # NOWIN 원조 처방(0.12.44~)
     "javis_idempotency.py":             1,
     "javis_idle_audit.py":              1,
+    "javis_idle_gate.py":               1,   # 1.1.16(cysr-no-hands-gui-1118) — 캡처 스폰 1곳은 `**NOWIN` 전개라 토큰이 없고 NOWIN 정의 1곳만 센다
     "javis_intake.py":                  1,   # 0.14.52 편입 r2(3e7ae36c) — 원작자 새/변경 캡처 스폰 4곳에 우리 NOWIN 정본 정의(정의 1)
     "javis_learn.py":                   1,
     "javis_lock.py":                    1,
@@ -6370,6 +6371,7 @@ _U5_PACK_CREATIONFLAGS = {
     "javis_orchestra.py":               1,
     "javis_org.py":                     1,
     "javis_orient_log.py":              1,
+    "javis_owner.py":                   1,   # 1.1.16(cysr-owner-memory-todo-1118) — 캡처 스폰 2곳은 `**NOWIN` 전개라 토큰이 없고 NOWIN 정의 1곳만 센다
     "javis_phoenix.py":                 1,
     "javis_phoenix_encoding_smoke.py":  1,
     "javis_phoenix_harness.py":         1,
@@ -7813,8 +7815,11 @@ def h_seat_4axis():
     # ③ launch 호출부: 보류에서 close 에 **도달할 수 없다**(치명위험 ④ 차단의 본체).
     li2 = src.find("fn run_launch_agent_opts(")
     need(li2 > 0, "run_launch_agent_opts 를 못 찾았다")
-    lbody2 = src[li2:src.find("\n/// 온보딩③", li2) if src.find("\n/// 온보딩③", li2) > 0
-                 else li2 + 12000]
+    # ★(TICKET=cysr-agy-policy-exposure) 창 끝 = 다음 최상위 `fn`(실제 함수 경계). 종전 끝 표지 「/// 온보딩③」 은
+    #   이미 사라져 고정 12,000자 창으로 떨어졌고, 실패 분기 롤백 close 가 그 창 끝(11,965자)에 걸려 있어 함수 머리에
+    #   한 줄만 늘어도 이 검사가 「close 가 사라졌다」 로 거짓 적색이 됐다(검사 대상은 그대로 · 경계만 정확히).
+    _le2 = src.find("\nfn ", li2 + 1)
+    lbody2 = src[li2:_le2 if _le2 > 0 else li2 + 12000]
     gi2 = lbody2.find("Ok(BootVerdict::GatePending")
     # 실패 합류 지점 = `LaunchFailed | Err` or-패턴(롤백 close 를 한 벌로 유지하는 구조).
     ei2 = lbody2.find("Ok(BootVerdict::LaunchFailed { evidence: e }) | Err(e) => {",

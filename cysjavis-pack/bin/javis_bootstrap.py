@@ -2611,6 +2611,7 @@ _BOOT_OUTCOME_READINESS = {
     "directive_unknown": "withhold",
     "recover_unknown": "withhold",
     "recover_unrecognised": "withhold",
+    "resume_held": "withhold",               # 저장 대화를 지키려고 멈춤(새 좌석 0 · 치명 아님)
     "unbucketed": "withhold",
     "gate_pending": "other_column",          # the ⑤ / gate column (unchanged)
     "skipped_unconfirmed": "other_column",   # the ⑤ column (unchanged)

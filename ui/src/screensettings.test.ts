@@ -41,9 +41,9 @@ describe("이름·입구 — 「화면 설정」", () => {
     expect(pop).toContain('head.setAttribute("aria-expanded", String(!folded));');
   });
 
-  it("① 글자·배경 = 종전 항목 8개 그대로(배경색·폰트·제목 크기·제목 굵기·제목=역할색·본문 굵기·메뉴 굵기·메뉴 크기)", () => {
-    expect(pop).toContain("look.body.append(row, fontRow, titleSizeRow, titleWeightRow, titleColorRow, termWeightRow, menuWeightRow, menuSizeRow,");
-    for (const t of ['"배경색"', '"폰트"', '"제목 크기"', '"제목 굵기"', '"제목=역할색"', '"본문 굵기"', '"메뉴 굵기"', '"메뉴 크기(%)"']) expect(pop).toContain(t);
+  it("① 글자·배경 = 종전 항목 8개 + 묶음 탭 노브 1개(tabs-sidebar 조각2 · 기본 켜짐 · 끄면 전부 나란히)", () => {
+    expect(pop).toContain("look.body.append(ccOpenRow, row, fontRow, titleSizeRow, titleWeightRow, titleColorRow, groupTabsRow, boardPosRow, termWeightRow, menuWeightRow, menuSizeRow,");
+    for (const t of ['"배경색"', '"폰트"', '"제목 크기"', '"제목 굵기"', '"제목=역할색"', '"묶음 탭"', '"본문 굵기"', '"메뉴 굵기"', '"메뉴 크기(%)"']) expect(pop).toContain(t);
   });
 
   it("③ 기본값 복원 = 두 구획을 한 번에 · 각 구획에도 「이 구획만」", () => {
@@ -408,7 +408,7 @@ describe("사용 설명서", () => {
   const manual = read("../../USER-MANUAL.md");
   it("상단 단추 켬끔·순서 안내 · 단추 이름 = 화면 설정(옛 이름으로 누르라는 안내 0)", () => {
     expect(manual).toContain("상단 단추는 `화면 설정` → 「상단 단추」에서 하나씩 켜고 끄고, 순서를 바꿉니다");
-    expect(manual).toContain("처음에는 `+ New` · `Split →` · `Split ↓` · `창 닫기` · `완전 초기화` 가 꺼져 있습니다");
+    expect(manual).toContain("처음에는 `+ New` · `Split →` · `Split ↓` · `창 닫기` · `Control Center` · `완전 초기화` 가 꺼져 있습니다"); // 1.1.15 1e
     expect(manual.includes("`테마` 버튼")).toBe(false);
   });
 });

@@ -123,6 +123,13 @@ describe("B-230 ① render() — 다시 붙인 뒤 보이는 pane 마다 resyncV
         appendChild(node: { sids: number[] }) { for (const s of node.sids) rts.get(`k${s}`)!.el.isConnected = true; log.push(`root.append(${node.sids})`); },
       },
       current: () => ({ tree, socket: "sock" }),
+      wsViewTree: (w: { tree: unknown }) => w.tree, // (tabs-sidebar 조각2) 보기 트리 = 숨김 0 이면 ws.tree 그대로
+      mountTabBar: () => {}, // (tabs-sidebar 2b) 탭 머리 줄 — 이 검체의 축과 무관
+      repairHiddenFocus: () => {}, // (948 D1) 숨은 포커스 옮기기 — 이 검체의 축과 무관
+      paneHoldingKeyboard: () => null, // (codex 2R #4) 떼기 전 키보드 포커스 좌석 — 이 검체의 축과 무관
+      restoreKeyboardAfterRender: () => {}, // (codex 2R #4) 다시 붙인 뒤 포커스 되돌림 — 이 검체의 축과 무관
+      paneTitleEditing: () => false, renderHeld: "no", viewByUser: false, // (codex 3R blocking 1) 좌석 이름 편집 중 render 미룸 — 이 검체의 축과 무관
+      tabPillarMemo: null, gridCell: null, recomputeTabPillar: () => {}, // (2b-3) 기둥 몫 재측정 — 이 검체의 축과 무관
       nodeShown: () => true,
       holeShownFor: () => new Set(),
       // ★1.1.11 편입: 우리 판 render() 는 루트 직계의 인라인 flex 를 지운다(top.style.flex = "" · v116-ui-close X-1) — 대역 노드에 style 칸을 둔다.
@@ -212,7 +219,7 @@ describe("B-230 ③ fitPane — fit 은 keepReadingLine 안에서만 돈다", ()
       socket: "sock",
       sid: 1,
     };
-    const fitPane = loadWith(fnText("fitPane"), "fitPane", { invoke: () => ({ catch: () => {} }) });
+    const fitPane = loadWith(fnText("fitPane"), "fitPane", { invoke: () => ({ catch: () => {} }), lastSentSize: new WeakMap(), noteGridCell: () => {} }); // (tabs-sidebar 2c) 같은 크기 재전송 기억 · (2b-2) 격자 칸 기억 = 무관(무동작)
     fitPane(rt);
     expect(log).toEqual(["keep:start", "fit", "keep:end", "snap"]);
   });

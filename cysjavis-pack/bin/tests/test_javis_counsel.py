@@ -2125,6 +2125,88 @@ class HelpReport(Base):
         self.assertIn("‘상담소 끄기’", jc.HELP_NOTICE)
         self.assertIn(re.sub(r"\s+", "", jc.HELP_NOTICE), re.sub(r"\s+", "", jc.__doc__ or ""), "도움말(모듈 설명)에 같은 문장이 없다")
 
+    # ── 안내문 ↔ 실제로 보내는 칸(TICKET=cysr-counsel-notice · 박사님 11-12 「7번 권고대로」) ──
+    @staticmethod
+    def leaf_paths(doc, prefix=""):
+        """본문 → 잎 칸의 점 경로 집합(목록 = `[]` · 목록 안 dict 는 그 아래로 · 빈 목록도 칸 하나)."""
+        out = set()
+        if type(doc) is dict:
+            for k, v in doc.items():
+                out |= HelpReport.leaf_paths(v, prefix + ("." if prefix else "") + k)
+        elif type(doc) is list:
+            if not doc or not any(type(x) is dict for x in doc):
+                out.add(prefix + "[]")
+            for x in doc:
+                if type(x) is dict:
+                    out |= HelpReport.leaf_paths(x, prefix + "[]")
+        else:
+            out.add(prefix)
+        return out
+
+    def test_notice_covers_every_sent_field_and_nothing_else(self):
+        """보낸 본문의 칸 전부 = HELP_SENT_FIELDS 열쇠(하나 더 보내면 적) · 그 말이 안내문에 글자로 있다 ·
+        안내문 괄호 속 항목마다 실제 칸이 하나 이상 있다(안 보내는 것을 보낸다고 쓰지 않는다)."""
+        self.put_id()
+        self.put_facts()
+        self.put_signals(self.row("2026-10-22T00:10:00.000Z"), self.row("2026-10-22T00:20:00.000Z", op="ensure-client"))
+        self.assertEqual(self.run_help(), "ran")
+        self.assertEqual(self.kinds(), ["signal", "daily"], "칸 전부를 보려면 두 통 다 보내야 한다")
+        sent = set()
+        for _p, body in self.got:
+            sent |= self.leaf_paths(body)
+        self.assertEqual(sorted(sent), sorted(jc.HELP_SENT_FIELDS),
+                         "보낸 칸과 안내 대조표가 다르다 — 칸을 늘리거나 줄였으면 HELP_SENT_FIELDS 와 안내문(HELP_NOTICE·화면 REPORT_NOTICE)을 같이 고친다")
+        said = {v for v in jc.HELP_SENT_FIELDS.values() if v is not None}
+        for phrase in said:
+            self.assertIn(phrase, jc.HELP_NOTICE, "대조표의 말이 안내문에 없다")
+        listed = set()
+        for m in re.finditer(r"(?:기기 상태|오류 기록)\(([^)]*)\)", jc.HELP_NOTICE):
+            listed |= set(m.group(1).split("·"))
+        self.assertEqual(len(listed), 9, listed)
+        self.assertEqual(listed - said, set(), "안내문은 보낸다고 하는데 실제로는 안 보내는 항목")
+        self.assertNotIn("만 ", jc.HELP_NOTICE.replace("만큼", ""), "「…만」 한정어 = 대조표가 글자로 맞을 때만")
+
+    @unittest.skipIf(os.name == "nt", POSIX_FAKE_CYS)
+    def test_names_files_and_talk_never_reach_the_wire(self):
+        """「사람 이름·파일·대화 내용은 보내지 않습니다」 — 좌석 이름·점검 이름·신호 칸에 이름·경로·대화를 심어도
+        바깥으로 나간 본문에 그 글자가 0(범주 접기 · 닫힌 칸 정규식) · 보낸 판이 실제로 있어야 한다(공허한 통과 금지)."""
+        planted = ("홍길동", "hong-gildong", "/Users/", "secret.txt", "안녕하세요 대화")
+        fb = FakeCys.make_cys(self,
+                              "surface:1\trole=worker-홍길동\texited=false\tcwd=/Users" "/hong-gildong/secret.txt\n"
+                              "surface:2\trole=hong-gildong-imac\texited=false\n"
+                              "surface:3\trole=master\texited=false\ttitle=안녕하세요 대화\n",
+                              json.dumps({"summary": {"ok": 1, "warn": 2, "fail": 1, "skip": 0},
+                                          "items": [{"name": "hook", "status": "WARN"},
+                                                    {"name": "/Users" "/hong-gildong/secret.txt", "status": "WARN"},
+                                                    {"name": "홍길동", "status": "FAIL"}]}))
+        st = os.path.join(self.tmp, "state")
+        os.makedirs(st)
+        env = dict(os.environ, PATH=fb + os.pathsep + os.environ.get("PATH", ""), HOME=os.path.join(self.tmp, "home"),
+                   CYS_STATE_DIR=st, CYS_DEPT_REQUESTS=os.path.join(self.tmp, "req"),
+                   CYS_DEPTS_JSON=os.path.join(self.tmp, "depts.json"))
+        env.pop("CYS_CYS_BIN", None)
+        r = subprocess.run([sys.executable, SCRIPT, "facts"], capture_output=True, env=env, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        import datetime as _dt
+        now = _dt.datetime.now(_dt.timezone.utc)
+        ts = jc.ms_iso(now.timestamp() - 60)
+        self.assertIsNone(jc.make_row("worker", "/Users" "/hong-gildong/secret.txt", "e"), "경로 op 를 받았다")
+        self.assertIsNone(jc.make_row("worker", "op", "홍길동"), "한글 이름 오류 코드를 받았다")
+        good = self.row(ts, op="hook.session-start", code="hook.rc1")
+        self.put_signals(good, dict(good, op="/Users" "/hong-gildong/secret.txt"), dict(good, error_code="홍길동"),
+                         dict(good, source="hong-gildong"), dict(good, version="안녕하세요 대화"),
+                         dict(good, os="macos-/Users/x"))
+        self.put_id()
+        self.assertEqual(jc.help_report(self.cfg, now=now), "ran")
+        self.assertEqual(self.kinds(), ["signal", "daily"])
+        wire = json.dumps([b for _p, b in self.got], ensure_ascii=False)
+        for bad in planted:
+            self.assertNotIn(bad, wire, "보내지 않는다던 글자가 나갔다")
+        self.assertEqual([i["count"] for i in self.got[0][1]["payload"]["items"]], [1], "형식 안 줄 1개만")
+        daily = self.got[1][1]["payload"]
+        self.assertEqual(daily["seats"], {"count": 3, "roles": ["master", "pack", "worker"]})
+        self.assertEqual((daily["doctor"]["warn_ids"], daily["doctor"]["fail_ids"]), (["hook"], []))
+
     # ── _daily_due 수리 · tick 자리 ──
     def test_daily_due_unregistered_without_updater_id_measures_nothing(self):
         """fleet-report F9 — 가입 없는 기기의 사실 소비자는 help 하나뿐 · help 는 갱신기 id 가 없으면 보내지 않는다(no-id) →
@@ -2211,6 +2293,28 @@ class AutoSwitch(Base):
         doc = json.loads(rd(os.path.join(self.cfg, "counsel", jc.NOTICE_FILE), encoding="utf-8"))
         self.assertEqual(doc["notice"], jc.HELP_NOTICE)
         self.assertRegex(doc["shown"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$")
+        self.assertEqual(doc["notice_version"], jc.NOTICE_VERSION)
+
+    def test_old_notice_viewers_see_the_fixed_notice_once_without_pausing_sends(self):
+        """⑤(cysr-counsel-notice) — 옛 안내(판 칸 없는 1.1.10 표식)만 본 기기 = 고친 안내를 한 번 더(needs_notice) ·
+        그동안 help 게이트는 열려 있다(이미 보내던 것을 끊지 않는다) · 다시 본 뒤 = 더 묻지 않는다."""
+        old = {"shown": "2026-10-23T00:00:00.000Z", "notice": "cysr는 … 판번·운영체제·오류 횟수만 개발팀에 보냅니다 …"}
+        os.makedirs(os.path.join(self.cfg, "counsel"), exist_ok=True)
+        with open(os.path.join(self.cfg, "counsel", jc.NOTICE_FILE), "w", encoding="utf-8") as f:
+            json.dump(old, f, ensure_ascii=False)
+        self.assertEqual(jc.notice_seen_version(self.cfg), 1)
+        self.assertTrue(jc.notice_seen(self.cfg), "옛 표식도 「본 적 있음」 — 보내기를 멈추면 안 된다")
+        self.assertNotEqual(jc.help_report(self.cfg), "notice-pending", "다시 띄우기 전인데 보내기 게이트가 닫혔다")
+        self.assertEqual(jc.auto_status(self.cfg), {"auto": True, "notice_seen": True, "needs_notice": True})
+        self.assertTrue(jc.mark_notice_seen(self.cfg))
+        self.assertEqual(jc.notice_seen_version(self.cfg), jc.NOTICE_VERSION)
+        self.assertEqual(jc.auto_status(self.cfg), {"auto": True, "notice_seen": True, "needs_notice": False})
+        for bad in ({"shown": "x", "notice_version": "2"}, {"shown": "x", "notice_version": 0}):
+            with open(os.path.join(self.cfg, "counsel", jc.NOTICE_FILE), "w", encoding="utf-8") as f:
+                json.dump(bad, f)
+            self.assertEqual(jc.notice_seen_version(self.cfg), 1, "판 칸이 꼴 밖이면 옛 판(1)으로 본다 — 다시 띄우는 쪽")
+        self.config(json.dumps({"counsel": {"auto": False}}))
+        self.assertFalse(jc.auto_status(self.cfg)["needs_notice"], "끈 기기에는 다시 띄우지 않는다")
 
     def test_off_without_client_writes_agora_fields_and_stops_everything(self):
         self.config(json.dumps({"keep": 1, "counsel": {"other": "x"}}))

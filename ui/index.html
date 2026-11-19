@@ -5,6 +5,7 @@
   <title>cysr</title>
   <link rel="stylesheet" href="./xterm.css" />
   <link rel="stylesheet" href="./style.css" />
+  <link rel="stylesheet" href="./views.css" />
 </head>
 <body>
   <header id="topbar">
@@ -12,6 +13,8 @@
     <span id="app-ver" title="cysr 앱 판번"></span>
     <span id="daemon-info">엔진 연결 중…</span>
     <span class="spacer"></span>
+    <!-- (cysr-ui-slice1) 「대화 화면 | 작업 화면」 전환 단추 자리 — views/index.ts 가 그린다(단추는 div 안이라 상단 단추 켬끔 목록 :scope > button[id] 에 들지 않는다) -->
+    <div id="view-switch"></div>
     <!-- 피드백(TICKET=cys-feedback-menu 2026-09-15 · v116-feedback-top 박사님 09-26 00:2x 「상단 메뉴바 맨 처음에 넣자. 정렬 메뉴 왼쪽이다.」 ·
          00:3x 「"피드백"으로 변경한다.」 = 단추 글자만 · 여는 창의 제목·안내는 그대로):
          아쉬운 점·문제를 운영팀에 보내는 창을 연다. 사이드바(사용량 패널 아래)에서 옮겨 왔다 — 한 곳에만 둔다. -->
@@ -41,6 +44,8 @@
   </header>
   <!-- (1.1.8 U4 · 📌18) 좌석 0 상태 창 고정 안내 1줄 — 닫기 단추 없음 · 문구는 main.ts 가 textContent 로만 넣는다 -->
   <div id="update-hold-note" role="status" hidden></div>
+  <!-- (cysr-ui-slice1) 등록 화면(대화 화면 등)이 사는 자리 — 작업 화면(#body-row)과 한 번에 하나만 보인다 -->
+  <div id="view-host" hidden></div>
   <div id="body-row">
     <nav id="wsbar">
       <!-- 「워크스페이스」 라벨은 오너 지시 2026-08-11로 삭제했다 — 사이드바가 무엇인지는 내용이
@@ -56,7 +61,7 @@
              않고 기본값에서만 치운다」). 그래서 제거가 아니라 hidden 이다.
            · #ws-expert 는 CSS 에서 display:flex 라 **[hidden] 무효화 함정**이 있다 — style.css 에
              #ws-expert[hidden]{display:none} 를 반드시 함께 둔다(wsbar.test.ts 가 그 짝을 잰다). -->
-      <div id="ws-dept-row"><div id="ws-dept-hint">새 부서가 필요하면 마스터에게 말로 부탁하세요</div><div id="ws-expert" hidden><button id="btn-master-start" title="CEO 시작 — 본부(base)에 마스터 오브 마스터 노드를 기동합니다. 부서가 있으면 승인 후 CEO 규약으로 승격됩니다. 마스터는 조직(본부/부서) 단위 1명·부서장은 부서 탭의 ▶부서장으로.  대체 경로: pane 마스터 선언·cysr launch-agent 로도 기동할 수 있습니다.">▶CEO</button><button id="btn-dept-master" title="부서장 시작 — 지금 보고 있는 부서 탭의 데몬에 마스터(부서장) 노드를 기동합니다(부서마다 독립 1명).  대체 경로: pane 마스터 선언·cysr launch-agent 로도 기동할 수 있습니다.">▶부서장</button><button id="btn-ws-dept" title="새 부서 — 클릭하면 부서 선택(미사용 부서 + 레거시 dept-N)">＋부서</button><button id="btn-pane-create" title="창 만들기(가로/세로) — 누르면 「오른쪽에 새 창」·「아래에 새 창」을 고릅니다. 단축키 ⌘D · ⌘⇧D">창 만들기</button></div></div>
+      <div id="ws-dept-row"><div id="ws-dept-hint" class="dept-only">새 부서가 필요하면 마스터에게 말로 부탁하세요</div><div id="ws-expert" hidden><button id="btn-master-start" title="CEO 시작 — 본부(base)에 마스터 오브 마스터 노드를 기동합니다. 부서가 있으면 승인 후 CEO 규약으로 승격됩니다. 마스터는 조직(본부/부서) 단위 1명·부서장은 부서 탭의 ▶부서장으로.  대체 경로: pane 마스터 선언·cysr launch-agent 로도 기동할 수 있습니다.">▶CEO</button><button id="btn-dept-master" title="부서장 시작 — 지금 보고 있는 부서 탭의 데몬에 마스터(부서장) 노드를 기동합니다(부서마다 독립 1명).  대체 경로: pane 마스터 선언·cysr launch-agent 로도 기동할 수 있습니다.">▶부서장</button><button id="btn-ws-dept" title="새 부서 — 클릭하면 부서 선택(미사용 부서 + 레거시 dept-N)">＋부서</button><button id="btn-pane-create" title="창 만들기(가로/세로) — 누르면 「오른쪽에 새 창」·「아래에 새 창」을 고릅니다. 단축키 ⌘D · ⌘⇧D">창 만들기</button></div></div>
       <div id="ws-tabs"></div>
       <!-- 사용량 패널(오너 요청 2026-08-07): 주간 토큰 사용량 + 페인별 CTX를 한 곳에 모아 표시.
            워크스페이스 목록 아래 빈 공간에 상주한다. 데이터가 없으면 통째로 숨는다(hidden). -->
@@ -185,7 +190,7 @@
           <div class="cc-section"><div class="cc-h">산출물 회수 (<code>~/.cys/_round/skill-out</code>)</div><div id="cc-board-out"></div></div>
         </div>
         <div id="cc-view-tasks" hidden>
-          <div class="cc-board-note">모든 부서의 모든 노드가 지금 무슨 업무를 하는지 실시간 표시(관측 전용·입력 주입 없음). 📍자기보고 = 노드가 보고한 업무 · ⚙파생 = 활동 추론.</div>
+          <div class="cc-board-note"><span class="dept-only">모든 부서의 </span>모든 노드가 지금 무슨 업무를 하는지 실시간 표시(관측 전용·입력 주입 없음). 📍자기보고 = 노드가 보고한 업무 · ⚙파생 = 활동 추론.</div>
           <div id="cc-tasks-depts"></div>
         </div>
         <div id="cc-view-feed" hidden>

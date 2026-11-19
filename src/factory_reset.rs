@@ -1516,6 +1516,9 @@ pub fn verify_roots_quiescent(
             }
         }
     }
+    // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V6): 데몬은 위에서 멈춘 것을 확인했지만 팩 적용 잠금은 데몬 밖 `cys pack-update`(사람·러너)도 쥔다 —
+    //   그 잠금이 든 `.pack-journal.d`·`.pack-apply.lock` 을 쥔 채 옮기지 않는다(pack::pack_apply_locks_quiet 머리 주석).
+    crate::pack::pack_apply_locks_quiet(&roots.cys_base)?;
     Ok(())
 }
 
@@ -3177,6 +3180,33 @@ mod tests {
         // 홀더 사망(또는 pid 재사용으로 cysd 아님) → 통과.
         let dead = |_pid: u32| false;
         assert!(verify_roots_quiescent(&r, &dead, &no_daemon).is_ok());
+    }
+
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V6): 데몬이 멈췄어도 `cys pack-update` 가 팩 적용 잠금(공용 · 쓰는 이 표식 · 레인)을 쥐고 있으면
+    /// 격리를 시작하지 않는다(부분 이동 0) · 잠금 파일이 있어도 아무도 안 쥐면 통과 · 잠금 파일을 만들지 않는다.
+    #[test]
+    fn v6_quiescent_gate_blocks_a_live_pack_update_lock() {
+        let td = test_home("gate-pack");
+        let r = seed_practice_tree(&td);
+        let no_cysd = |_pid: u32| false;
+        let no_daemon = || false;
+        assert!(verify_roots_quiescent(&r, &no_cysd, &no_daemon).is_ok());
+        assert!(!r.cys_base.join(".pack-apply.lock").exists(), "확인이 잠금 파일을 만들었다");
+        let lane_lock = crate::pack::lane_apply_lock_path(&r.cys_base, &r.cys_base.join("pack"));
+        for lp in [r.cys_base.join(".pack-apply.lock"), crate::pack::writer_marker_lock_path(&r.cys_base), lane_lock] {
+            std::fs::create_dir_all(lp.parent().unwrap()).unwrap();
+            let held = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&lp).unwrap();
+            held.lock().unwrap();
+            let e = verify_roots_quiescent(&r, &no_cysd, &no_daemon).expect_err("쥔 팩 적용 잠금을 통과시켰다");
+            assert!(e.contains("팩 업데이트가 진행 중"), "{e}");
+            let plan = build_plan(&r, &ResetOptions { purge_license: false, purge_local: false, purge_round: false });
+            let mut noop = |_p: &str, _d: &str| {};
+            assert!(execute_quarantine(&plan, &r, &no_cysd, &no_daemon, &mut noop).is_err());
+            assert!(r.cys_base.join("pack").exists() && lp.exists(), "게이트 거부인데 옮겼다");
+            held.unlock().unwrap();
+            drop(held);
+            assert!(verify_roots_quiescent(&r, &no_cysd, &no_daemon).is_ok(), "놓은 잠금 파일({}) 은 통과", lp.display());
+        }
     }
 
     /// TICKET=cysr-seatkeep-t3 독립 검증 D5: 노브 켬 cysd 는 잠금에 `"<pid> <출생 시각 µs>"` 두 칸을 쓴다 — 관문이 첫 칸을 읽어

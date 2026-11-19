@@ -3867,6 +3867,7 @@ fn create_capture_segment(
 pub fn byte_backup_user(dir: &Path, rel: &str, src: &Path) -> Result<(), String> {
     let dst = dir.join(format!("{rel}.user"));
     let tmp = dir.join(format!("{rel}.user.tmp-{}", std::process::id()));
+    sweep_dead_user_tmp(&tmp);
     std::fs::copy(src, &tmp).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         format!("바이트 백업 복사 실패 {}: {e}", tmp.display())
@@ -3886,6 +3887,26 @@ pub fn byte_backup_user(dir: &Path, rel: &str, src: &Path) -> Result<(), String>
         let _ = std::fs::remove_file(&tmp);
         format!("바이트 백업 rename 실패 {}: {e}", dst.display())
     })
+}
+
+/// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V2-5 · codex 3R 기록): 끊긴 바이트 백업이 남긴 `<rel>.user.tmp-<pid>` 형제 — 그 pid 가 살아 있지 않으면 지운다.
+/// 내용은 원본(`src` = 지금 사용자 파일)을 복사하던 사본이라 잃는 것이 없고, 매니페스트·저널 밖 이름이다. 산 pid(재사용 포함)·다른 꼴 이름·
+/// 읽기 실패는 무접촉(다음 기회). `mine` = 이번에 쓸 내 임시 이름(같은 pid · 지우지 않음).
+fn sweep_dead_user_tmp(mine: &Path) {
+    let (Some(parent), Some(name)) = (mine.parent(), mine.file_name().and_then(|n| n.to_str())) else { return };
+    let Some(prefix) = name.rfind(".user.tmp-").map(|i| &name[..i + ".user.tmp-".len()]) else { return };
+    let Ok(rd) = std::fs::read_dir(parent) else { return };
+    for e in rd.flatten() {
+        let n = e.file_name();
+        let Some(n) = n.to_str() else { continue };
+        let Some(pid) = n.strip_prefix(prefix).and_then(|p| p.parse::<u32>().ok()) else { continue };
+        if n == name || pid == std::process::id() || crate::factory_reset::pid_alive(pid) || crate::update::mutant("J1116-V25-KEEP") {
+            continue;
+        }
+        if e.file_type().is_ok_and(|t| t.is_file()) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
 
 /// ★T3(D9 · v2 §2 원칙 3): 검증 base lazy 로드 — `.pristine/<rel>` 을 읽어
@@ -5579,6 +5600,13 @@ pub fn legacy_pack_journal_notice(pack: &Path) -> Option<String> {
              않습니다(본부 데몬 또는 본부 팩 업데이트가 옮겨 복구합니다).",
             p.display()
         )
+    } else if std::fs::symlink_metadata(&p).is_ok_and(|m| m.is_dir()) && !crate::update::mutant("J1116-V4-OFF") && legacy_journal_foreign(pack, &p) {
+        // ★1.1.16(V4): 본부 것이 아닌 기록 — 본부는 옮기지도 되돌리지도 않는다(본부 팩 무접촉).
+        format!(
+            "1.1.15 이전 판이 남긴 공유 팩 업데이트 복구 기록 {} 의 백업이 본부 팩과 한 건도 맞지 않아(부서 팩의 기록으로 보임) 본부는 옮기지도 \
+             되돌리지도 않았습니다 — 본부 팩은 그대로입니다. 그 부서 팩을 다시 맞추려면 그 부서에서 팩 업데이트를 다시 실행하십시오(기록 폴더는 지우지 않았습니다).",
+            p.display()
+        )
     } else {
         format!(
             "1.1.15 이전 판이 남긴 공유 팩 업데이트 복구 기록 {} 이 남아 있습니다(본부 레인에 진행 중 저널 {} 이 있거나 \
@@ -5635,6 +5663,54 @@ pub fn pack_journal_notice(pack: &Path) -> Option<(String, bool)> {
     })
 }
 
+/// ★1.1.16(V4) 옛 공유 저널(1.1.15 꼴 · `index.json` entries[{rel, existed}] + `files/<rel>`)이 본부 팩 것이 **아닌** 것으로 보이는가(순수 판독) —
+/// 있었던 이름(점 이름 = 매니페스트·상태 기록 제외)의 백업 해시가 본부(매니페스트 `.install-manifest.json` 의 rel → sha256 · 살아 있는 파일)와
+/// **한 건도** 같지 않고, **어느 부서 팩**(같은 부모의 부서 레인 폴더)과는 1건 이상 같을 때만 참(양성 증거 — 「본부 0건」 만으로 가르면 모든 이름이
+/// 바뀐 본부 자신의 저널도 남의 것으로 읽어 본부가 반쯤 적용된 채 멈춘다 · 검증 좌석 F4 우려). 판독 실패·대조 0건 = 거짓(종전대로 옮김).
+fn legacy_journal_foreign(pack: &Path, legacy: &Path) -> bool {
+    let depts: Vec<PathBuf> = pack
+        .parent()
+        .and_then(|b| std::fs::read_dir(b).ok())
+        .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_dir() && p != pack && dept_scope_of(p).is_some()).collect())
+        .unwrap_or_default();
+    if depts.is_empty() {
+        return false;
+    }
+    let matches_lane = |lane: &Path, rel: &str, h: &str| -> bool {
+        let man: std::collections::HashMap<String, String> = std::fs::read_to_string(lane.join(INSTALL_MANIFEST))
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default();
+        man.get(rel).map(String::as_str) == Some(h) || std::fs::read(lane.join(rel)).is_ok_and(|live| sha256_hex(&live) == h)
+    };
+    let mut dept_matched = 0usize;
+    let Ok(idx) = std::fs::read_to_string(legacy.join("index.json")) else { return false };
+    let Ok(idx) = serde_json::from_str::<serde_json::Value>(&idx) else { return false };
+    let manifest: std::collections::HashMap<String, String> = std::fs::read_to_string(pack.join(INSTALL_MANIFEST))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
+    let (mut compared, mut matched) = (0usize, 0usize);
+    for e in idx["entries"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+        let (Some(rel), Some(true)) = (e["rel"].as_str(), e["existed"].as_bool()) else { continue };
+        let safe = !rel.starts_with('.')
+            && Path::new(rel).components().all(|c| matches!(c, std::path::Component::Normal(_)));
+        if !safe {
+            continue;
+        }
+        let Ok(b) = std::fs::read(legacy.join("files").join(rel)) else { return false };
+        let h = sha256_hex(&b);
+        compared += 1;
+        if manifest.get(rel) == Some(&h) || std::fs::read(pack.join(rel)).is_ok_and(|live| sha256_hex(&live) == h) {
+            matched += 1;
+        }
+        if depts.iter().any(|d| matches_lane(d, rel, &h)) {
+            dept_matched += 1;
+        }
+    }
+    compared > 0 && matched == 0 && dept_matched > 0
+}
+
 /// 옛 공유 저널 안내는 프로세스마다 한 번(cysd 기동 · pack-update 의 복구 두 번).
 static LEGACY_JOURNAL_NAMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -5646,7 +5722,10 @@ fn adopt_legacy_pack_journal(pack: &Path) -> Result<(), String> {
     let Ok(meta) = std::fs::symlink_metadata(&legacy) else { return Ok(()) };
     let own = pack_journal_dir_for(pack);
     let base_lane = dept_scope_of(pack).is_none() && !crate::update::mutant("J1116-LEGACY-ANYLANE");
-    if base_lane && meta.is_dir() && std::fs::symlink_metadata(&own).is_err() {
+    // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V4 · F4 값싼 가름): 옛 저널의 백업이 본부 매니페스트·살아 있는 본부 파일과 **한 건도** 맞지 않으면
+    //   그 기록은 부서 팩(1.1.15 부서 수동 pack-update)의 것으로 보고 옮기지 않는다(옮겨 되돌리면 본부 팩이 부서의 옛 백업으로 바뀐다) · 안내만.
+    let foreign = base_lane && meta.is_dir() && !crate::update::mutant("J1116-V4-OFF") && legacy_journal_foreign(pack, &legacy);
+    if base_lane && meta.is_dir() && !foreign && std::fs::symlink_metadata(&own).is_err() {
         let lane = pack_journal_lane_dir_for(pack);
         std::fs::create_dir_all(&lane).map_err(|e| format!("레인 저널 폴더 생성 실패 {}: {e}", lane.display()))?;
         match std::fs::rename(&legacy, &own) {
@@ -6000,7 +6079,18 @@ struct KeptFolder {
     displaced: usize,
 }
 
+/// ★1.1.16(V2-1) kept.log 의도 줄 접두 — `link-restore-pending:<링크 대상>`.
+const LINK_RESTORE_PENDING: &str = "link-restore-pending:";
+
 impl KeptFolder {
+    /// ★1.1.16(V2-1) 이 이름을 그 대상의 링크로 되살리려던 의도 줄이 kept.log 에 확정돼 있는가(읽기 실패 = 아님).
+    fn has_pending_link(&self, rel: &str, link_to: &str) -> bool {
+        let want = format!("{LINK_RESTORE_PENDING}{link_to}");
+        std::fs::read_to_string(self.dir.join("kept.log")).is_ok_and(|t| {
+            t.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).any(|v| v["rel"] == rel && v["what"] == want.as_str())
+        })
+    }
+
     fn new(lane: &Path, id: &str) -> Self {
         KeptFolder { dir: lane.join(KEPT_DIR).join(id), left: 0, preserved: 0, displaced: 0 }
     }
@@ -6167,7 +6257,12 @@ fn rollback_mode_for(
     });
     let attributed = match last_confirmed {
         Some(Announced::Mode(m)) => *m == c,
-        Some(Announced::Sha(h, Some(m))) => *m == c && live_bytes.is_some_and(|b| sha256_hex(b) == *h),
+        // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V5 F3): 지금 권한 = 이 적용이 놓은 권한인데 끊긴 뒤 **내용만** 바뀐 경우(해시 불일치) — 되돌릴
+        //   권한이 지금 권한의 부분집합(좁히기만 · 0600 ← 0644)이면 되돌린다(비트를 더하지 않음 = 보안에 불리하지 않음 · 바이트 무접촉).
+        //   넓히기(더하기)는 종전대로 증거가 있을 때만.
+        Some(Announced::Sha(h, Some(m))) => {
+            *m == c && (live_bytes.is_some_and(|b| sha256_hex(b) == *h) || (!crate::update::mutant("J1116-F3-OFF") && r & !c == 0))
+        }
         _ => false,
     } || crate::update::mutant("J1116-MODE-ANY-TOUCH");
     if attributed {
@@ -6388,7 +6483,7 @@ fn rollback_link_entry(
                 _ => false,
             })
         }),
-    };
+    } || (matches!(live, Live::Absent) && !crate::update::mutant("J1116-V21-NO-PENDING") && kept.has_pending_link(rel, link_to));
     if !hit {
         std::fs::create_dir_all(&kept.dir).map_err(|e| format!("보관 폴더 생성 실패 {}: {e}", kept.dir.display()))?;
         kept.log(rel, &format!("left-was-link:{link_to}"), None)?;
@@ -6406,6 +6501,11 @@ fn rollback_link_entry(
         // ★codex 4R(경합): 지우지 않는다 — 지금 그 이름의 것(판정한 그것이든 그 사이 생긴 새것이든)을 보관소로 **원자 이름 바꾸기**로 옮기고,
         //   링크는 덮어쓰지 않는 생성(symlink · 이미 있으면 실패 = 저널을 남김)으로 만든다. 판정 뒤 바뀐 것도 보관소에 그대로 남는다(손실 0).
         if !matches!(live, Live::Absent) {
+            // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V2-1 · codex 5R minor 1): 옮기기 **전에** 「이 이름은 링크로 되살릴 차례」 의도 줄을 확정한다 —
+            //   옮긴 뒤·링크 만들기 전에 다시 끊기면 다음 복구는 그 이름이 비어 있어 배치 기록과 맞지 않는다(종전 = 링크를 되살리지 않고 저널 정리).
+            //   다음 복구는 이 줄을 보고 빈 자리를 「되살릴 차례」로 판정한다(위 hit · kept 폴더 = 같은 apply_id 라 같은 곳).
+            std::fs::create_dir_all(&kept.dir).map_err(|e| format!("보관 폴더 생성 실패 {}: {e}", kept.dir.display()))?;
+            kept.log(rel, &format!("{LINK_RESTORE_PENDING}{link_to}"), None)?;
             kept.displace(rel, target)?;
         }
         if let Some(parent) = target.parent() {
@@ -6570,12 +6670,60 @@ fn open_lock_file(lp: &Path) -> Result<std::fs::File, String> {
 /// ★1.1.16 F1: 쓰는 쪽(`cys pack-update` 의 with_apply_lock — 공용 잠금을 이미 쥔 채)이 이 레인의 적용 잠금을 **기다려** 잡고 `f` 를 실행한다.
 /// 잠금 순서 = 공용 → 레인(데몬 기동은 기다리지 않으므로 교착 없음).
 pub fn with_lane_apply_lock<T>(state_base: &Path, f: impl FnOnce() -> T) -> Result<T, String> {
+    // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V9 · codex 2R minor): 1.1.16 쓰는 이 표식 — 공용 잠금을 쥔 채 이것도 쥔다(순서 = 공용 → 표식 → 레인).
+    //   본부 데몬 기동이 「공용 잠금은 남이 쥐었는데 옛 공유 저널은 아직 없다」를 볼 때 그 주인이 이 판의 쓰는 이(표식 쥠 = 진행)인지
+    //   1.1.15 쓰는 이(표식 없음 = 저널을 만들기 전 창일 수 있음 = Busy)인지 가른다([`with_apply_lock_nonblocking`]). 데몬은 이 표식을 쥐지 않는다.
+    let marker = open_lock_file(&writer_marker_lock_path(state_base))?;
+    marker.lock().map_err(|e| format!("쓰는 이 표식 잠금 실패: {e}"))?;
     let lp = lane_apply_lock_path(state_base, &pack_dir());
     let file = open_lock_file(&lp)?;
     file.lock().map_err(|e| format!("레인 apply-lock 잠금 실패 {}: {e}", lp.display()))?;
     let out = f();
     let _ = file.unlock();
+    let _ = marker.unlock();
     Ok(out)
+}
+
+/// ★1.1.16(V9) 1.1.16 쓰는 이 표식 잠금 `<state_base>/.pack-journal.d/.writer.lock`(레인 폴더 밖 · 공장 초기화 목록 `.pack-journal.d` 안).
+pub fn writer_marker_lock_path(state_base: &Path) -> PathBuf {
+    state_base.join(".pack-journal.d").join(".writer.lock")
+}
+
+/// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V6 · codex 1R missing): 공장 초기화가 `.pack-journal.d`·`.pack-apply.lock` 을 옮기기 전에 —
+/// 살아 있는 `cys pack-update`(사람·러너 · 데몬은 이미 멈춤)가 팩 적용 잠금을 쥐고 있는가. 잠금 파일은 **만들지 않고** 있는 것만 열어
+/// 기다리지 않고 잡아 본다(잡히면 곧 놓음). 남이 쥐면 Err(그 경로) — 옮기면 유닉스는 잠금이 옮겨진 inode 를 따라 갈라지고(쓰는 이는 옮겨진 팩에
+/// 계속 씀) 윈도우는 열린 파일 폴더 이동이 실패한다. 판독 오류(권한 등)도 Err(모르는 채 옮기지 않음).
+pub fn pack_apply_locks_quiet(state_base: &Path) -> Result<(), String> {
+    let mut locks = vec![state_base.join(".pack-apply.lock"), writer_marker_lock_path(state_base)];
+    if let Ok(rd) = std::fs::read_dir(state_base.join(".pack-journal.d")) {
+        for e in rd.flatten() {
+            if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                locks.push(e.path().join(LANE_APPLY_LOCK));
+            }
+        }
+    }
+    for lp in locks {
+        let f = match std::fs::OpenOptions::new().read(true).open(&lp) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(format!("팩 적용 잠금 {} 을 확인하지 못했다({e}) — 격리를 진행하지 않는다", lp.display())),
+        };
+        match f.try_lock_shared() {
+            Ok(()) => {
+                let _ = f.unlock();
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(format!(
+                    "팩 업데이트가 진행 중이다(적용 잠금 {} 보유) — 격리를 진행하지 않는다(끝난 뒤 다시)",
+                    lp.display()
+                ))
+            }
+            Err(std::fs::TryLockError::Error(e)) => {
+                return Err(format!("팩 적용 잠금 {} 을 확인하지 못했다({e}) — 격리를 진행하지 않는다", lp.display()))
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 기다리지 않고 잡아 본다. Ok(None) = 남이 쥐고 있음.
@@ -6608,6 +6756,14 @@ fn with_apply_lock_nonblocking<T>(f: impl FnOnce(bool) -> T) -> Result<Option<T>
                 || std::fs::symlink_metadata(legacy_pack_journal_dir_for(&pd)).is_ok() =>
             {
                 busy();
+                return Ok(None);
+            }
+            // ★1.1.16(V9): 옛 저널이 아직 없어도 공용 잠금 주인이 1.1.16 쓰는 이 표식을 쥐지 않았으면 1.1.15 쓰는 이(저널을 만들기 전 창)일 수 있다 → Busy.
+            //   표식을 잡지 못함(WouldBlock) = 이 판의 쓰는 이 = 종전대로 이관만 빼고 진행. 표식 판독 오류 = Busy(모르는 채 설치하지 않음).
+            None if !crate::update::mutant("J1116-V9-NO-MARKER")
+                && !matches!(try_lock_file(&writer_marker_lock_path(base)), Ok(None)) =>
+            {
+                eprintln!("[pack] 공용 적용 잠금을 쥔 쓰는 이가 이 판의 쓰는 이 표식을 쥐지 않았다(1.1.15 쓰는 이일 수 있음) — 이번 기동은 복구·자동 설치를 하지 않습니다");
                 return Ok(None);
             }
             None => {
@@ -11787,8 +11943,13 @@ mod tests {
     /// `cys pack-update` 가 `pack` 레인 적용 내내 쥐는 잠금 전부(공용 `.pack-apply.lock` + 그 레인 잠금 — `src/bin/cys.rs` with_apply_lock ·
     /// [`with_lane_apply_lock`])를 쥔다. 놓기 = 돌려받은 것을 drop.
     #[cfg(unix)]
-    fn j1116_hold_writer_apply_lock(base: &Path, pack: &Path) -> (std::fs::File, std::fs::File) {
-        (j1116_flock_held(&base.join(".pack-apply.lock")), j1116_flock_held(&lane_apply_lock_path(base, pack)))
+    fn j1116_hold_writer_apply_lock(base: &Path, pack: &Path) -> (std::fs::File, std::fs::File, std::fs::File) {
+        // ★1.1.16(V9): 이 판의 쓰는 이 = 공용 + 표식 + 레인(with_lane_apply_lock 과 같은 순서).
+        (
+            j1116_flock_held(&base.join(".pack-apply.lock")),
+            j1116_flock_held(&writer_marker_lock_path(base)),
+            j1116_flock_held(&lane_apply_lock_path(base, pack)),
+        )
     }
 
     /// F1(독립 검증 1118 · 기준선에 없던 회귀): 본부 레인 팩 업데이트가 적용 잠금을 쥔 동안 **부서** 데몬이 뜨면, 부서는 자기 레인의
@@ -11825,6 +11986,15 @@ mod tests {
         assert_eq!(ga, (Some(0o775), false), "(가) 의도 줄이 앞의 확정 증거를 가려 적용 전 0775 가 0644 로 남는다");
         assert_eq!(na, (Some(0o755), true), "(나) 의도 줄만으로 지금 권한을 이 적용 것으로 보았다");
         assert_eq!(user, (Some(0o644), true), "끊긴 뒤 사용자가 내용을 고친 파일의 권한을 되돌렸다");
+        // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V5 F3): 0600 파일에 적용이 0644 를 놓았고 끊긴 뒤 내용만 바뀜 → 좁히기(0600)는 되돌린다 · 넓히기는 그대로.
+        let mut pl3 = std::collections::BTreeMap::new();
+        pl3.insert("notes.md".to_string(), vec![Announced::Sha(sha256_hex(b"vendor"), Some(0o644))]);
+        let narrow = rollback_mode_for("notes.md", Some(0o600), Some(0o644), Some(b"user edit"), Some(&pl3));
+        let widen = rollback_mode_for("notes.md", Some(0o755), Some(0o644), Some(b"user edit"), Some(&pl3));
+        let user_chmod = rollback_mode_for("notes.md", Some(0o600), Some(0o664), Some(b"user edit"), Some(&pl3));
+        assert_eq!(narrow, (Some(0o600), false), "F3: 적용이 넓힌 0644 가 남는다");
+        assert_eq!(widen, (Some(0o644), true), "F3: 증거 없이 권한을 넓혔다");
+        assert_eq!(user_chmod, (Some(0o664), true), "F3: 지금 권한이 놓인 권한과 다르면(사용자 chmod) 그대로");
     }
 
     /// F1 역방향(codex 1R major): **부서** 레인 `cys pack-update`(공용 + 부서 레인 잠금)가 도는 동안 본부 데몬이 뜨면, 옛 공유 저널이 없는 한
@@ -11844,6 +12014,32 @@ mod tests {
         assert!(gate_open, "시험 전제: 본부 팩이 이 판보다 낡아 설치가 필요하다");
         assert_eq!(res, Ok((JournalRecovery::Nothing, Some(true))), "부서 레인 팩 업데이트 때문에 본부 데몬이 자기 팩 설치를 건너뛰었다");
         assert_ne!(base_ver.trim(), "1.0.0", "본부 팩이 설치되지 않았다");
+    }
+
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V9 · codex 2R minor): 1.1.15 쓰는 이가 공용 잠금만 쥐고 **아직 옛 저널을 만들기 전**(잠금 → 몇 단계 → 저널)
+    /// 이면 본부 기동은 Busy(복구·설치 0) · 같은 꼴이어도 이 판의 쓰는 이(표식 쥠)면 종전대로 진행 · 부서 기동은 공용 잠금을 보지 않음(종전).
+    #[cfg(unix)]
+    #[test]
+    fn j1116_v9_shared_lock_without_journal_yet_is_busy_unless_a_116_writer() {
+        let _g = PACK_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (base, pd, _env) = txn_prestate("j16-v9", &[("README.md", "BASE-SOUL")], "1.0.0");
+        let dd = j1116_dept(&base);
+        let held = j1116_flock_held(&base.join(".pack-apply.lock"));
+        let old_writer = boot_recover_and_install("9.9.9", PackWriteAuth::production()).map(|(r, i)| (r, i.is_none()));
+        let readme_untouched = std::fs::read_to_string(pd.join("README.md")).ok();
+        let dept_boot = {
+            let _d = EnvGuard::set(ENV_PACK_DIR, &dd);
+            boot_recover_and_install("9.9.9", PackWriteAuth::production()).map(|(r, i)| (r, i.map(|x| x.is_ok())))
+        };
+        drop(held);
+        let held = j1116_hold_writer_apply_lock(&base, &dd); // 이 판의 부서 레인 쓰는 이(공용 + 표식 + 부서 레인)
+        let new_writer = boot_recover_and_install("9.9.9", PackWriteAuth::production()).map(|(r, i)| (r, i.map(|x| x.is_ok())));
+        drop(held);
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(old_writer, Ok((JournalRecovery::Busy, true)), "공용 잠금만 쥔 쓰는 이(옛 저널 아직 없음)인데 본부 기동이 복구·설치를 했다");
+        assert_eq!(readme_untouched.as_deref(), Some("BASE-SOUL"));
+        assert_eq!(dept_boot, Ok((JournalRecovery::Nothing, Some(true))), "부서 기동은 공용 잠금을 보지 않는다(종전)");
+        assert_eq!(new_writer, Ok((JournalRecovery::Nothing, Some(true))), "이 판의 쓰는 이(표식 쥠)인데 본부 기동이 건너뛰었다");
     }
 
     /// F1 고침이 1.1.15 쓰는 이를 놓치지 않는다: 공용 잠금 **만** 쥔 쓰는 이(1.1.15 `cys pack-update` · 옛 공유 저널을 쓴다)가 있으면 본부 레인
@@ -12071,6 +12267,108 @@ mod tests {
         assert!(is_link, "링크가 일반 파일로 되돌아왔다");
         assert_eq!(to, Some(base.join("real.md")));
         assert_eq!(real, "REAL", "링크 대상은 무접촉");
+    }
+
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V2-1 · codex 5R minor 1): 첫 복구가 현재 것을 kept/ 로 옮긴 뒤 · 링크를 만들기 전에 다시 끊겼다 →
+    /// 다음 복구는 빈 자리를 kept.log 의 「되살릴 차례」 의도 줄로 알아보고 링크를 되살린다(종전 = left-was-link 로 저널 정리 → 링크 소실).
+    #[cfg(unix)]
+    #[test]
+    fn j1116_v21_link_restore_survives_a_second_interruption() {
+        let _g = PACK_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (base, pd, _env) = txn_prestate("j16-link2", &[("README.md", "OLD-SOUL")], "1.0.0");
+        std::fs::write(base.join("real.md"), "REAL").unwrap();
+        std::os::unix::fs::symlink(base.join("real.md"), pd.join("linked.md")).unwrap();
+        PACK_TXN_KILL.with(|k| k.set(Some("install")));
+        let _ = apply_pack_transactional(&[("README.md", "NEW-SOUL"), ("linked.md", "VENDOR")], "2.0.0", &test_free_state("2.0.0"), None, || Ok(()));
+        PACK_TXN_KILL.with(|k| k.set(None));
+        // 첫 복구가 「의도 줄 → 비켜 두기」 까지 하고 링크를 만들기 전에 죽은 상태를 그대로 만든다(그 함수가 쓰는 같은 줄·같은 자리).
+        let jdir = pack_journal_dir_for(&pd);
+        let idx: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(jdir.join("index.json")).unwrap()).unwrap();
+        let id = idx["apply_id"].as_str().expect("apply_id").to_string();
+        let kept = KeptFolder::new(&pack_journal_lane_dir_for(&pd), &id);
+        std::fs::create_dir_all(&kept.dir).unwrap();
+        let link_to = base.join("real.md").to_string_lossy().into_owned();
+        kept.log("linked.md", &format!("{LINK_RESTORE_PENDING}{link_to}"), None).unwrap();
+        std::fs::create_dir_all(kept.dir.join("displaced")).unwrap();
+        std::fs::rename(pd.join("linked.md"), kept.dir.join("displaced/linked.md")).unwrap();
+        let rec = recover_pack_journal();
+        let to = std::fs::read_link(pd.join("linked.md")).ok();
+        let moved = std::fs::read_to_string(kept.dir.join("displaced/linked.md")).ok();
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(rec, Ok(true));
+        assert_eq!(to, Some(base.join("real.md")), "두 번째 끊김 뒤 링크가 되살아나지 않았다");
+        assert_eq!(moved.as_deref(), Some("VENDOR"), "비켜 둔 것은 보관소에 그대로");
+    }
+
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V2-5): 끊긴 바이트 백업의 `<rel>.user.tmp-<죽은 pid>` 잔여는 다음 백업이 치운다 · 산 pid 것·다른 이름은 그대로.
+    #[cfg(unix)]
+    #[test]
+    fn j1116_v25_dead_user_tmp_is_swept_by_the_next_byte_backup() {
+        let d = std::env::temp_dir().join(format!("cys-v25-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("skills/x")).unwrap();
+        let src = d.join("src.md");
+        std::fs::write(&src, "USER").unwrap();
+        let mut dead = std::process::Command::new("true").spawn().unwrap();
+        let dead_pid = dead.id();
+        let _ = dead.wait();
+        let live_pid = std::process::id() + 0; // 이 프로세스 = 산 pid(자기 것은 지우지 않음)
+        let parent_pid = std::os::unix::process::parent_id();
+        let stale = d.join(format!("skills/x/SKILL.md.user.tmp-{dead_pid}"));
+        let alive = d.join(format!("skills/x/SKILL.md.user.tmp-{parent_pid}"));
+        let other = d.join("skills/x/OTHER.md.user.tmp-1");
+        for f in [&stale, &alive, &other] {
+            std::fs::write(f, "PARTIAL").unwrap();
+        }
+        let r = byte_backup_user(&d, "skills/x/SKILL.md", &src);
+        let gone = !stale.exists();
+        let kept_alive = alive.exists();
+        let kept_other = other.exists();
+        let user = std::fs::read_to_string(d.join("skills/x/SKILL.md.user")).ok();
+        let mine_left = d.join(format!("skills/x/SKILL.md.user.tmp-{live_pid}")).exists();
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(r.is_ok(), "{r:?}");
+        assert!(gone, "죽은 pid 의 임시 잔여가 남았다");
+        assert!(kept_alive, "산 pid 의 임시 파일을 지웠다");
+        assert!(kept_other, "다른 이름의 임시 파일을 지웠다");
+        assert_eq!(user.as_deref(), Some("USER"));
+        assert!(!mine_left, "이번 백업의 임시 파일이 남았다");
+    }
+
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V4 · F4): 옛 공유 저널의 백업이 본부와 한 건도 안 맞고 부서 팩과는 맞으면(1.1.15 부서 수동 pack-update
+    /// 가 끊긴 기록) 본부는 옮기지도 되돌리지도 않는다(본부 팩 무접촉 · 안내) · 본부 자신의 저널(모든 이름이 바뀌어 본부와 0건 일치여도 부서와도
+    /// 0건)은 종전대로 옮겨 되돌린다(위 j1116_legacy_shared_journal_moves_to_base_lane_and_dept_leaves_it).
+    #[test]
+    fn j1116_v4_dept_legacy_journal_is_not_adopted_by_the_base_lane() {
+        let _g = PACK_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (base, pd, _env) = txn_prestate("j16-v4", &[("README.md", "BASE-SOUL")], "1.0.0");
+        let dd = j1116_dept(&base);
+        let before = fingerprint_dir(&pd);
+        let legacy = base.join(".pack-journal");
+        std::fs::create_dir_all(legacy.join("files/directives")).unwrap();
+        std::fs::write(legacy.join("files/README.md"), "DEPT-SOUL").unwrap(); // 부서 팩의 백업
+        std::fs::write(legacy.join("files/directives/W.md"), "DEPT-W").unwrap();
+        std::fs::write(
+            legacy.join("index.json"),
+            serde_json::json!({"target_version": "2.0.0", "explicit_commit": true, "entries": [
+                {"rel": "README.md", "existed": true}, {"rel": "directives/W.md", "existed": true}]})
+            .to_string(),
+        )
+        .unwrap();
+        let foreign = legacy_journal_foreign(&pd, &legacy);
+        let rec = recover_pack_journal();
+        let after = fingerprint_dir(&pd);
+        let legacy_left = legacy.join("index.json").is_file();
+        let notice = legacy_pack_journal_notice(&pd);
+        let _ = std::fs::remove_dir_all(&dd);
+        let foreign_without_dept = legacy_journal_foreign(&pd, &legacy);
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(foreign, "부서 팩과 맞는 기록을 본부 것으로 읽었다");
+        assert_eq!(rec, Ok(false), "본부가 부서 기록을 복구했다");
+        assert_eq!(before, after, "본부 팩이 바뀌었다");
+        assert!(legacy_left, "옛 기록을 옮기거나 지웠다");
+        assert!(notice.is_some_and(|n| n.contains("부서 팩의 기록으로 보임")), "안내 문장");
+        assert!(!foreign_without_dept, "부서 양성 증거가 없으면 종전대로(옮김)");
     }
 
     /// codex 2R(minor): 개행으로 끝나지 않은 꼬리는 JSON 으로 읽혀도 버린다 · 개행까지 쓰인 깨진 줄은 Err.

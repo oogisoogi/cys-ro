@@ -74,7 +74,7 @@ export function createRail(): RailView {
         c.dataset.status = t.status;
         if (b.team !== null) c.dataset.team = b.team;
         c.append(el("div", "cvr-t", t.title));
-        const line = el("div", "cvr-s");
+        const line = el("div", "cvr-s cvr-line"); // 상태 줄(색 = 상태별 · views.css .cvr-line)
         line.append(el("i", "cvr-mk", st.mark), document.createTextNode(t.status === "unknown" ? st.label : `${st.label} · ${agoText(t.newsSecs)}`));
         c.append(line);
         c.append(el("div", "cvr-s cvr-help", `도우미 ${t.helpers}명`));

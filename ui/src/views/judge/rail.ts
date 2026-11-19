@@ -164,7 +164,7 @@ const num = (v: unknown): number | null => (typeof v === "number" && Number.isFi
 
 function fixedRole(role: unknown): boolean {
   const r = typeof role === "string" ? role.trim() : "";
-  return r === "master" || r.startsWith("master-") || r === "cso" || r.startsWith("cso-");
+  return r === "master" || r.startsWith("master-") || r === "ceo" || r.startsWith("ceo-") || r === "cso" || r.startsWith("cso-"); // seatrows.fixedRank · 데몬 team.rs 와 같은 규칙(검증 i7)
 }
 
 /** 부서 등록부 → 부서 줄(표시명 우선). 꼴이 틀리면 null(모름). */

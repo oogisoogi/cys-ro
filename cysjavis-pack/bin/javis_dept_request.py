@@ -2124,6 +2124,14 @@ def cmd_promote_check(a):
     return 0
 
 
+def _josa(word, with_final, without_final):
+    """조사 고르기(검증 i11) — 끝 글자가 한글 음절이면 받침 유무로 · 아니면(영문·숫자 등) 「은(는)」 꼴 병기."""
+    last = word[-1:] if word else ""
+    if "\uac00" <= last <= "\ud7a3":
+        return with_final if (ord(last) - 0xAC00) % 28 else without_final
+    return "%s(%s)" % (with_final, without_final)
+
+
 def cmd_promote_decline(a):
     team = (a.team or "").strip()
     if not team:
@@ -2135,7 +2143,8 @@ def cmd_promote_decline(a):
     st["teams"][team] = tst
     atomic_write_json(promote_state_path(), st)
     out({"team": team, "cooldown_until": tst["declined_until"],
-         "say": "알겠어요. %s은 지금처럼 제가 맡을게요. 2주 동안은 다시 묻지 않을게요. 필요하면 언제든 「%s을 부서로 올려 줘」라고 말해 주세요." % (team, team)})
+         "say": "알겠어요. %s%s 지금처럼 제가 맡을게요. 2주 동안은 다시 묻지 않을게요. 필요하면 언제든 「%s%s 부서로 올려 줘」라고 말해 주세요."
+                % (team, _josa(team, "은", "는"), team, _josa(team, "을", "를"))})
     return 0
 
 

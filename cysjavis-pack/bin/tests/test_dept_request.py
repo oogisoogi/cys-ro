@@ -1838,6 +1838,16 @@ class TestPromoteCheck(Base):
         rc, o2 = self.check(p, "기획팀")
         self.assertEqual((o2["ask"], o2["reason"]), (True, "threshold_met"), o2)
 
+    def test_decline_say_particles_follow_final_consonant(self):
+        """(검증 i11) 받침 있음 = 은·을 · 없음 = 는·를 · 한글 아님 = 은(는)·을(를)."""
+        for team, want in (("홍보팀", ("홍보팀은 ", "홍보팀을 부서로")), ("카페", ("카페는 ", "카페를 부서로")),
+                           ("site", ("site은(는) ", "site을(를) 부서로"))):
+            with self.subTest(team=team):
+                rc, d = self.run_cmd("promote-decline", "--team", team)
+                self.assertEqual(rc, 0, d)
+                for w in want:
+                    self.assertIn(w, d["say"])
+
     def test_days_survive_daemon_restart_via_state_file(self):
         # 첫 실행: 지난 날들 기록을 본다 → 상태 파일에 날을 남긴다
         rc, o = self.check(self._stats([self._team(r60=1, days=3)]))

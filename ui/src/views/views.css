@@ -115,9 +115,9 @@
 .cvr-t { font-weight: 700; word-break: break-word; }
 .cvr-s { color: var(--cv-sub); }
 .cvr-mk { font-style: normal; margin-right: 4px; }
-.cvr-card.st-run .cvr-s:first-of-type { color: var(--cv-run); }
-.cvr-card.st-need .cvr-s:first-of-type { color: var(--cv-attn); }
-.cvr-card.st-wait .cvr-s:first-of-type { color: var(--cv-wait); }
+.cvr-card.st-run .cvr-line { color: var(--cv-run); }
+.cvr-card.st-need .cvr-line { color: var(--cv-attn); }
+.cvr-card.st-wait .cvr-line { color: var(--cv-wait); }
 .cvr-empty { color: var(--cv-sub); }
 .cvr-depts[hidden], .cvr-results[hidden] { display: none; }
 .cv-guide-btn { margin-left: auto; min-height: 44px; min-width: 44px; padding: 0 14px; font-size: 18px; border: 1px solid var(--cv-line); border-radius: 8px; background: var(--cv-bg); color: var(--cv-ink); cursor: pointer; }

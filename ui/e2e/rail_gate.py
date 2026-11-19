@@ -115,6 +115,9 @@ def main() -> int:
         check(r["head"] == "맡긴 일 1" and r["cards"] == [[None, "행사 안내 페이지", r["cards"][0][2], "도우미 2명"]], f"같은 일 두 좌석 = 카드 1 · 도우미 2명 · 팀 머리 0 {r['head']} {r['cards']}")
         check(r["who"] is not None and r["teams"] == [] and r["resultsHidden"] is True, f"마스터 카드 · 결과 자리 숨김 {r['who']} {r['resultsHidden']}")
         check("Opus" not in r["text"] and "surface" not in r["text"] and not any(t.strip() in ("1", "2", "3") for t in r["text"].split("\n")), f"좌석 번호·모델 이름 0(FR-P1) {r['text']!r}")
+        col = pg.evaluate("""() => { const c = document.querySelector('.cvr-card[data-status=run] .cvr-line'); const t = document.querySelector('.cvr-card[data-status=run] .cvr-help');
+          return c && t ? { line: getComputedStyle(c).color, help: getComputedStyle(t).color, run: getComputedStyle(document.documentElement).getPropertyValue('--cv-run').trim() } : null; }""")
+        check(col is not None and col["line"] != col["help"] and col["line"] == "rgb(45, 91, 203)", f"(검증 X2) 「일하는 중」 상태 줄 = 파랑(--cv-run) · 보조 줄 회색과 다름 {col}")
         pg.screenshot(path=str(OUT / "a-1280.png"))
 
         print("== B 팀 = 작업 화면 묶음 이름과 같음")

@@ -227,3 +227,14 @@ test("(master#ec9c8b30 ③) 좌석에 걸린 승인 요청 수(항목 단위) �
   expect(seatApprovalItems(all, new Set())).toBe(0);
   expect(seatApprovalItems(null, new Set(["undefined#6"]))).toBe(0);
 });
+
+test("(cysr-1116-s6 · 검증 i7) ceo·ceo-* = 마스터 계열 고정 좌석(묶음 밖 · 데몬 team.rs 와 같은 규칙)", () => {
+  const m = buildSeatRows([
+    base({ sid: 1, role: "worker", cwd: "/w/site" }),
+    base({ sid: 2, role: "ceo", cwd: "/w/hq" }),
+    base({ sid: 3, role: "ceo-2", cwd: "/w/hq2" }),
+    base({ sid: 4, role: "ceofoo", cwd: "/w/other" }),
+  ]);
+  expect(m.fixed.map((r) => r.sid)).toEqual([2, 3]);
+  expect(m.groups.map((g) => g.key)).toEqual(["site", "other"]);
+});

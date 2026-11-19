@@ -135,10 +135,12 @@ function lastTitleSegment(title: string): string {
   return segs[segs.length - 1] ?? "";
 }
 
-/** formation.ts family() 와 같은 규칙(그 함수는 export 되지 않아 같은 식을 둔다). */
+/** formation.ts family() 와 같은 규칙(그 함수는 export 되지 않아 같은 식을 둔다).
+ *  (cysr-1116-s6 · 검증 i7 · master#c4bc0244) + `ceo`·`ceo-*` = 마스터 계열 고정 좌석(데몬 alert_route CLEAR_SIGNAL_ROLES 가 master 와 같이 다룸) —
+ *  팀(묶음)이 아니다 · 데몬 team.rs is_fixed_role 과 같은 규칙(화면 팀 이름 = 데몬 팀 판정). formation.ts family() 는 배치 규칙이라 그대로. */
 function fixedRank(role: string | null): number {
   const r = (role ?? "").trim();
-  if (r === "master" || r.startsWith("master-")) return 0;
+  if (r === "master" || r.startsWith("master-") || r === "ceo" || r.startsWith("ceo-")) return 0;
   if (r === "cso" || r.startsWith("cso-")) return 1;
   return -1;
 }

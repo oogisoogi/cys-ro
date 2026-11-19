@@ -63,8 +63,13 @@ describe("팀 = 작업 화면 묶음 탭과 같은 모델(개정 E1 · bun 대�
   it("같은 팀 같은 일감 = 카드 하나 · 도우미 수(FR-P1)", () => {
     const site = m.blocks.find((b) => b.team === "site")!;
     expect(site.cards).toHaveLength(1);
-    expect(site.cards[0]).toMatchObject({ title: "사이트 고치기", helpers: 2 });
+    expect([site.cards[0].title, site.cards[0].helpers]).toEqual(["사이트 고치기", 2]); // toMatchObject 대신(bun-env.d.ts 최소 matcher 계약)
     expect(m.taskCount).toBe(4);
+  });
+  it("(검증 i7) ceo 좌석 = 고정(팀·카드 아님) — 작업 화면 묶음과 같은 판정", () => {
+    const m2 = railModel(input([seat(1, "/w/proj/site"), { ...seat(2, "/w/proj/hq"), role: "ceo" }], [org(1, { task: "가" }), org(2, { task: "본부 일" })]));
+    expect(m2.blocks.map((b) => b.team)).toEqual([null]);
+    expect(m2.blocks[0].cards.map((c) => c.title)).toEqual(["가"]);
   });
   it("마스터·운영 좌석은 맡긴 일 카드가 아니다", () => {
     expect(m.blocks.flatMap((b) => b.cards).some((c) => c.title.includes("master"))).toBe(false);

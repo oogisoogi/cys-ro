@@ -83,7 +83,8 @@ describe("공통층 배선 — 대화 화면이 켜져 있을 때만", () => {
     expect(count(h.calls, "list_depts")).toBe(2);
     const m = h.core.rail.model;
     expect(m.loading).toBe(false);
-    expect(m.blocks[0].cards[0]).toMatchObject({ title: "사이트 고치기", status: "wait", helpers: 1 });
+    const c0 = m.blocks[0].cards[0];
+    expect([c0.title, c0.status, c0.helpers]).toEqual(["사이트 고치기", "wait", 1]); // toMatchObject 대신(bun-env.d.ts 최소 matcher 계약)
   });
   it("좌석 목록이 멈춰도 조회 고리가 묶이지 않는다(상한 뒤 직전 값)", async () => {
     const h = harness({ listHang: true });
@@ -164,7 +165,7 @@ describe("부서 가이드(§16-5 ② · §16-6)", () => {
     expect(b.guide).toBe("first");
     b.ackGuide();
     expect(b.guide).toBeNull();
-    expect(JSON.parse(mem.get(DEPT_GUIDE_KEY)!)).toMatchObject({ v: 1 });
+    expect(JSON.parse(mem.get(DEPT_GUIDE_KEY)!).v).toBe(1);
     await b.refresh(undefined, null);
     expect(b.guide).toBeNull();
   });

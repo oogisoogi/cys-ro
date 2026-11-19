@@ -74,8 +74,8 @@ export function homeWsOf<W extends { pending?: boolean; deleting?: boolean }>(
 }
 
 /**
- * 한 소켓의 앞 판정. 집행 순서(퇴거 → 쓸기 → 입양)를 모형 사본 위에서 그대로 밟는다 — 입양 후보가 퇴거·쓸기 뒤의 트리를 보게.
- * known = 그 소켓에서 이미 화면 모형에 붙은 좌석(런타임 있음 ∪ 런타임 미룸) · 입력 ws·known 은 바꾸지 않는다.
+ * 한 소켓의 앞 판정(유령 퇴거 · 옛 자리 쓸기 · 입양 후보) — 입력은 바꾸지 않는다.
+ * known = 그 소켓에서 이미 화면 모형에 붙은 좌석(런타임 있음 ∪ 런타임 미룸).
  */
 export function decideSockPre(input: {
   sock: string;
@@ -90,33 +90,25 @@ export function decideSockPre(input: {
 }): SockPrePlan {
   const { sock } = input;
   const keyOf = input.keyOf ?? ((sid: number) => `${sock}#${sid}`);
-  const ws = input.ws.map((w) => ({ ...w, sids: [...w.sids] }));
-  const known = new Set(input.known);
   const same = (w: TickWs) => w.sock === sock;
   // ① 유령 — 그 소켓 전 작업공간 트리 합집합(대기·삭제 중 포함 · 종전 호출 계약 그대로)
   const tree: number[] = [];
-  for (const w of ws) if (same(w)) tree.push(...w.sids);
+  for (const w of input.ws) if (same(w)) tree.push(...w.sids);
   const knownIds = new Set(input.surfaces.map((s) => s.surface_id));
   const g = advanceGhostStrikes(input.ghostStrike, tree, knownIds, keyOf, `${sock}#`);
-  const detach = (sid: number) => {
-    known.delete(sid);
-    for (const w of ws) if (same(w) && w.sids.includes(sid)) w.sids = w.sids.filter((x) => x !== sid);
-  };
-  for (const sid of g.evict) detach(sid);
   // ② 옛 자리 쓸기 — 범위 = 퇴거 전 합집합 ∩ 무장 범위(종전 sockSids.filter 그대로)
   const sweepHere = input.sweepScope !== null;
   const scope = input.sweepScope;
   const sweepScope = scope ? tree.filter((sid) => scope.has(sid)) : [];
   const sweepTargets = exitedSweepTargets(sweepHere, sweepScope, input.surfaces);
-  for (const sid of sweepTargets) detach(sid);
-  // ③ 입양 후보 — 종전 반복문의 건너뛰기 조건 그대로(끝남 · 역할 없음 · 이미 붙음 · 집 없음 · 집 트리에 이미 있음)
+  // ③ 입양 후보 — 종전 반복문의 건너뛰기 조건 그대로(끝남 · 역할 없음 · 이미 붙음 · 집 없음 · 집 트리에 이미 있음).
+  //   퇴거·쓸기·앞선 입양을 모형에 반영하지 않아도 결과가 같다: 퇴거 대상 = 목록에 없는 번호 · 쓸기 대상 = 끝난 좌석(둘 다 후보가 될 수 없음) ·
+  //   같은 소켓 목록 안 번호는 겹치지 않는다(뮤턴트 M5·M7 = 같은 결과로 확인 → 사본 갱신을 걷음 · 단순성).
   const adopt: SockPrePlan["adopt"] = [];
+  const home = homeWsOf(input.ws, same);
   for (const s of [...input.surfaces].sort((a, b) => rolePri(a.role) - rolePri(b.role))) {
-    if (s.exited || !s.role || known.has(s.surface_id)) continue;
-    const home = homeWsOf(ws, same);
+    if (s.exited || !s.role || input.known.has(s.surface_id)) continue;
     if (!home || home.sids.includes(s.surface_id)) continue;
-    home.sids.push(s.surface_id);
-    known.add(s.surface_id);
     adopt.push({ sid: s.surface_id, role: s.role, wsId: home.id });
   }
   return { tree, evict: g.evict, ghostNext: g.next, sweepHere, sweepScope, sweepTargets, adopt };

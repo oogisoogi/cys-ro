@@ -1268,7 +1268,7 @@ describe("삭제 중 탭 — 입양 금지 + 진행 표시(G4)", () => {
     expect(h).toContain("!w.pending && !w.deleting");
     const i = TICK_SRC.indexOf("for (const s of [...input.surfaces].sort(");
     expect(i).toBeGreaterThan(0);
-    expect(TICK_SRC.slice(i, TICK_SRC.indexOf("adopt.push(", i))).toContain("const home = homeWsOf(ws, same);");
+    expect(TICK_SRC.slice(TICK_SRC.indexOf("export function decideSockPre"), i)).toContain("const home = homeWsOf(input.ws, same);");
     expect(code).toContain("const homeOf = () => homeWsOf(workspaces, (w) => (w.socket ?? undefined) === (sk ?? undefined));");
   });
 
@@ -1389,7 +1389,7 @@ describe("U2+U3 좌석 배치 배선 — (1.1.8 X1) 우리 균등 배치(formati
     expect(i).toBeGreaterThan(0);
     const seg = TICK_SRC.slice(i, TICK_SRC.indexOf("adopt.push(", i));
     expect(seg).toContain("rolePri(a.role) - rolePri(b.role)");
-    expect(seg).toContain("if (s.exited || !s.role || known.has(s.surface_id)) continue;");
+    expect(seg).toContain("if (s.exited || !s.role || input.known.has(s.surface_id)) continue;");
     expect(TICK_SRC).toContain("!w.pending && !w.deleting");
     const a = tickSeg().indexOf("for (const a of pre.adopt) {");
     expect(a).toBeGreaterThan(0);

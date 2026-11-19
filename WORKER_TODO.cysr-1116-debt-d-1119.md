@@ -36,6 +36,6 @@
 ## 매듭(00:5x · CTX 60%) — 남은 것 = HANDOFF.cysr-1116-debt-d-1119.md §4 (V2-2·V2-3·V2-4 시험·B1·B2·미등재 등재·시험 판독·뮤턴트·codex 1R)
 
 ## 후임 3(worker-1116debt-d3 · [master#c0262f9c] · 11-20)
-- [ ] ② 작업 기동 실패 → 재시도 2회 → 형제 직접 기동 + 표식 + doctor Warn 1줄 + 다음 기회(rotate·autostart) 작업 경유 Highest 복귀 · 순수 판정 함수 표 시험 + 대역 실행기 + 뮤턴트 · 윈 교차 타입체크
-- [ ] ⑤ prime_binaries 한 함수(cys·cysd·cysr --version 1회 · 실패 무시 · 로그 1줄) · 업데이터 교체 직후 · 설치기(bootstrap.sh·ps1·NSIS) · 대역 바이너리 「교체 직후 1회」 단언 + 뮤턴트
-- [ ] 게이트(바뀐 크레이트 cargo · 윈 교차 타입체크 · 해당 팩 단계) · HANDOFF §9 · 【확인요청】
+- [x] ② 작업 기동 실패 → 재시도 2회 → 형제 직접 기동 + 표식 + doctor Warn 1줄 + 다음 기회(rotate·autostart) 작업 경유 Highest 복귀 · 순수 판정 함수 표 시험 + 대역 실행기 + 뮤턴트 · 윈 교차 타입체크
+- [x] ⑤ prime_binaries 한 함수(cys·cysd·cysr --version 1회 · 실패 무시 · 로그 1줄) · 업데이터 교체 직후 · 설치기(bootstrap.sh·ps1·NSIS) · 대역 바이너리 「교체 직후 1회」 단언 + 뮤턴트
+- [x] 게이트(바뀐 크레이트 cargo · 윈 교차 타입체크 · 해당 팩 단계) · HANDOFF §9 · 【확인요청】

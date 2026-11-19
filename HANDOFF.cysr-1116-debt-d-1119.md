@@ -181,3 +181,41 @@ orchestra_todo_path 0s · org_audit 5s · pack_syntax_warnings 2s · preflight_n
 
 ### 8-2. codex 2R 범위(대기열 · 갱신)
 1R 고침 3(d94094a9c · 667506fac · 0461f82aa) + 31e4d290c(V2-2·3) + 60bc82c6a(B2) + e1d75b0bd(H-CLT 격리) · 질문지 = scratchpad `codex-r2-prompt.md`(H-CLT 1줄 덧붙일 것) · 사본 폴더는 HEAD 로 다시 떠야 함.
+
+## 9. 후임 3 좌석(worker-1116debt-d3 · surface:2287 · 11-20 05:2x ~ · 브리프 debt-d3.md [master#c0262f9c] · 범위 답 [master#c9343dbb])
+
+### 9-1. 커밋
+| 저장소 · 커밋 | 무엇 | 시험 · 뮤턴트 |
+|---|---|---|
+| cys c30a6e097 | ② 윈 cysd 작업 경유 기동 = 첫 8초 + 재시도 2회(각 4초) → 형제 직접 기동 + 폴백 표식(`~/.cys/state/daemon-integrity-fallback.json` · 사유·시각·시도 수·형제 데몬 pid) → doctor `daemon-integrity` 경고 1줄(지금 데몬 pid 의 표식만 · 권한이 같아도 경고 · 갈림과 한 줄) → 다음 기회(cys rotate·앱 [재시작]·앱 부팅·CLI 자동 기동)는 다시 작업부터 = 성공하면 표식 삭제. 공유 한 함수 = lib `update::win_task::start_cysd_task_first` · CLI `connect()` · 앱 `ensure_daemon_on`(윈 전용 블록 ⟦win-task-first⟧). 작업 파일이 확실히 없으면(개발·미설치) 종전대로 형제 직접(표식 0). | lib d3_task_first 2 · cys debt_d 3 갱신 · 앱 debt_d3 1(맥 본문 = dea2e1853 바이트 같음 FNV 0x266f54791e1ed93e · 2521B) · 뮤턴트 M1 표식 미삭제 · M2 재시도 없음 · M3 CLI 표식 기록 제거 · M4 앱 윈 블록 제거 · M5 doctor 표식 미전달 · M8 맥 본문 한 줄 = 전부 그 시험만 붉음 |
+| cys 4d6495204 | ⑤ 미리 데우기 = lib `update::prime::prime_binaries`(cys·cysd·cysr `--version` 1회씩 · 없으면 건너뜀 · 한 개 10초 상한(자기 자식만 kill) · 실패 무시 · 로그 1줄) · 업데이터 `realops::start_new`(교체 뒤 · 새 데몬 기동 전 · **맥만** — 윈 교체 = NSIS 실행이라 그 POSTINSTALL 이 1회) · 숨은 하위 동사 `cys daemon prime`(데몬 연결 0 · 자동 기동 0 · 늘 0) · NSIS POSTINSTALL cysr 별칭 뒤 `nsExec::ExecToLog '"$INSTDIR\cys.exe" daemon prime'` · nsis-hook-model 「모델 밖 · 불변식 중립」 기록 + GUARD_PIN 재핀 | lib d3_prime 4(대역 스크립트 = 「각 1회 · --version」 · 멈춤 상한 · 없음 건너뜀 · 배선 핀 = 교체 뒤 rotate 앞 1회 + NSIS 별칭 뒤 1회) · 뮤턴트 M6 업데이터 호출 제거 · M7 실행 안 함 = 붉음 · 실물 `target/debug/cys daemon prime` 격리 = 「cys 0.18s · cysd 0.14s · cysr 없음」 rc 0 · 상태 파일 0 · NSIS 모델 84011 종단 I1/I3/I4 · 컴파일 하네스 N1~N11 초록 |
+| habitat 07ec7ca(feat/1116-debt-d-installer) | ⑤ 맥 bootstrap.sh `cys_prime_binaries`(넣은 cysr.app 의 `cys daemon prime` 1회 · CYS_NO_AUTOSTART=1 · perl alarm 40초 · 늘 rc 0 · 기록 1줄 = rc·걸린 시간·결과) · 자리 = `cys_install_from_zip` 넣은 자리 실행 확인 뒤 · [6/10] 성공 줄 바로 앞 · 시험 `tests/debt-d-1116-prime.sh` | 9/9 · 뮤턴트 2(호출 줄 제거 · 실행 제거) 붉음 · 윈 bootstrap.ps1 = 무변경(NSIS 를 /S 로 돌림 → POSTINSTALL 1회가 덮음 · 따로 부르면 2회) |
+
+원작자 파일 변경 줄: src-tauri/src/main.rs = ensure_daemon_on 윈 전용 블록 12줄 · WinTaskFirst·win_task_first·win_record_fallback_when_up(전부 `#[cfg(windows)]`) · BLOCK-B ALLOWED 3이름 · 시험 1 / src-tauri/nsis-hooks.nsh = POSTINSTALL 6줄 / src/bin/cys.rs = connect() 윈 갈래 · win_run_cysd_task 삭제(lib 로) · poll_socket_ready_for · daemon_integrity_item 인자 2 · diag_daemon_integrity 표식 판독 · DaemonAction::Prime(+머리 처리 · 두 match 팔 · 자동 기동 0 목록) · 시험 2 갱신 / src/lib.rs census schtasks 6→5 / src/update/realops.rs start_new 4줄.
+
+### 9-2. 게이트(격리 env = env -i · HOME=/tmp/d3h · RUSTUP_HOME/CARGO_HOME 만 · ci-branch.yml 단계 run 줄 그대로 · 원자료 /tmp/d3h/gate)
+| 단계 | 전 좌석(§7-3) | 이 좌석 | 판정 |
+|---|---|---|---|
+| cargo `--lib` threads=1 | 1280 ok | **1286 ok · 0 FAIL**(+6 = d3 새 시험) · 3 ign | 초록 |
+| cargo `--bin cys` threads=1 | 801 ok | **801 ok · 0 FAIL** · 2 ign(시험 수 같음 = 기존 시험 갱신) | 초록 |
+| cargo `-p cys-app --bins` | 350 ok | **351 ok · 0 FAIL** · 2 ign(+1 debt_d3) — 첫 전량 시도에서 adv1·2·7·9 붉음(동시 부하) → 단독 6/6 초록 · 게이트 전량 351 초록 | 초록 |
+| `--test update_drainhold_e2e` | 4 ok | **4 ok** | 초록 |
+| cargo `--bin cysd` threads=1 | 3341 ok | 3338 ok · **3 FAIL**: seat_proc seatkeep_input_ack_stall·_waits(`handshake_timeout`) · send_settle fv1_paused(held 단언) | **부하성 · 회귀 아님**: 그 시각 load 30~41 → 167 · 세 시험 파일·seatkeep 기준점 dea2e1853 이후 diff 0 · 단독 6회 중 3회 셋 다 초록 · **직전 머리 1ac7017d1 작업트리(target 복제)와 교대 2회 = 기준도 같은 사유 문구 `handshake_timeout` 으로 붉음**(load 117~123) · fv1 은 그 4회에선 양쪽 다 재현 안 됨(기준 재현 미확인 — 정직 기록) |
+| 윈 교차 타입체크(scripts/win-typecheck.sh) | 오류 0 · 경고 123 | **오류 0 · 경고 123**(②·⑤ 각각 뒤 2회 · 바뀐 줄 경고 0) | 초록 |
+| NSIS 모델 · 컴파일 하네스 · 템플릿 | — | model OK(84011 종단 · 38/38 레인 · GUARD_PIN 재핀) · run.sh OK(N1~N11) · nsis-template OK | 초록 |
+| 설치기 checks.sh(habitat) | — | 통과 1087 · 실패 8 = **전부 기준선(HEAD 사본 실행 · 실패 10) 안** · 새 실패 0 | 초록(기준 대비) |
+| secret-scan --all | clean 2186 | **clean 2187** | 초록 |
+| 팩 | — | cysjavis-pack 변경 0 · 팩·스크립트 시험의 바뀐 글자 핀 = drainhold e2e·NSIS 모델 둘뿐(둘 다 초록) | 해당 없음 |
+
+### 9-3. 남은 일 · 함정
+- 윈 실기(master): ⓐ 작업 /Run 실패 대역(작업 끄기 `schtasks /Change /TN cysd /DISABLE`) → `cys ping` = 재시도 3회 로그 → 형제 기동 → `%USERPROFILE%\.cys\state\daemon-integrity-fallback.json` · `cys doctor` daemon-integrity 경고 1줄 ⓑ 작업 다시 켬 → `cys rotate`(또는 앱 [재시작]) → 작업 경유 · 표식 삭제 · doctor OK ⓒ NSIS 설치 로그에 `[daemon prime] 미리 데우기: …` 1줄.
+- 함정: zsh 는 `$F` 를 단어로 안 나눈다 → cargo 필터 여럿을 변수로 넘기면 0건 실행(메모 그대로 재발 · 이번 기준 대조 1회 헛돎).
+- 함정: 파이썬 len = 글자 수 · Rust str.len = 바이트(맥 본문 바이트 핀 첫 실행이 2066≠2521 로 붉었다 · 해시는 일치).
+- 함정: 설치기 주석의 `TICKET=` 는 공개 용어 목록 적중 → 이번 두 줄은 뺐다.
+
+### 9-4. 📌 덧붙임(실행 안 함)
+1. 설치기 가지 앞 좌석 줄(bootstrap.sh 243 · 4094 · bootstrap.ps1 해당 줄)에 `TICKET=` = 공개 용어 적중 — checks.sh `[공개] bootstrap.ps1 내부 용어 0건` FAIL 은 기준선부터 있음 · 발행 전 문구 정리 필요.
+2. ② 실패 갈래의 첫 응답 대기 = 최대 약 18초(8+4+4 + 실행 실패 쉼 1×2) → 그 뒤 형제 4초(종전 8초). 정상 갈래(작업 첫 시도 성공)는 종전과 같음.
+3. 로그온 작업 등 우리 코드 밖에서 작업 경유로 뜬 데몬이 오면 표식 파일은 남는다 — doctor 는 pid 대조로 무시(낡은 표식) · 다음 우리 경로의 작업 성공 때 지워짐.
+4. 앱 갈래에서 작업 데몬이 「받지만 답 없음」이면 형제를 띄우지 않고 그 오류(종전 C-LOUD 규칙과 같은 꼴).
+5. codex 2R 대기열에 덧붙일 것: c30a6e097(②) · 4d6495204(⑤) · habitat 07ec7ca(⑤).

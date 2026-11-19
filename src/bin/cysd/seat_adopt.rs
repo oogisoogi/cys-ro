@@ -561,6 +561,12 @@ pub(crate) fn test_set_pending(p: Vec<Pending>) {
 /// 등록부·잠금·소켓·종료 기록을 지운다. 교체 기록(`.log`)은 사후 적발 장치라 남긴다. `.exit` 를 못 읽거나 id 가 다르면 **아무것도 지우지 않는다**
 /// (Err = 미결 · 다음 기동이 다시 본다 · codex T4 2R). 발행 뒤 표식 전 재시작 = 다음 기동에 한 번 더 발행될 수 있다(적어도 한 번 · 사건의 `skid` 가 멱등 키).
 fn consume_dead(daemon: &Daemon, dir: &Path, skid: &str, rec: Option<&SeatRecord>, keeper: Option<(u32, Option<u64>)>, why: &str) -> Result<(), &'static str> {
+    // (codex 4R 차단) 삭제 전 양성 증거 = seatkeep 의 id 잠금(`<skid>.lock` · seatkeep 이 사는 동안 flock 을 쥔다)을 비차단으로 잡아 본다 —
+    // 못 잡으면 산 seatkeep 이 그 id 를 쥐고 있다(기록·등록부가 무엇을 말하든 무삭제 미결). 잡으면 정리가 끝날 때까지 쥔다.
+    let _id_lock = match hold_id_lock(&dir.join(format!("{skid}.lock"))) {
+        Ok(l) => l,
+        Err(e) => return Err(e),
+    };
     let exit_path = dir.join(format!("{skid}.exit"));
     let marker = dir.join(format!("{skid}.exit.consumed"));
     match std::fs::read_to_string(&exit_path) {
@@ -570,7 +576,13 @@ fn consume_dead(daemon: &Daemon, dir: &Path, skid: &str, rec: Option<&SeatRecord
                 return Err("exit_id_mismatch");
             }
             // (codex 3R) 종료 기록 = 그것을 쓴 seatkeep 세대(pid·출생 시각)에 결박 — 판정한 seatkeep 과 다르면 남의 기록(소비 안 함 · 무삭제).
-            let fp = format!("{}:{}", v["pid"].as_u64().unwrap_or(0), v["start_us"].as_u64().unwrap_or(0));
+            // 지문 = 세대(pid:start_us) + 종료 기록 바이트의 sha256(codex 4R — 미리 만든 표식이 뒤에 생긴 진짜 종료를 가리지 못하게).
+            let fp = {
+                use sha2::Digest;
+                let h = sha2::Sha256::digest(t.as_bytes());
+                let hex: String = h.iter().map(|b| format!("{b:02x}")).collect();
+                format!("{}:{}:{hex}", v["pid"].as_u64().unwrap_or(0), v["start_us"].as_u64().unwrap_or(0))
+            };
             if let Some((kp, ks)) = keeper {
                 if v["pid"].as_u64() != Some(kp as u64) || (ks.is_some() && v["start_us"].as_u64() != ks) {
                     return Err("exit_keeper_mismatch");
@@ -594,8 +606,9 @@ fn consume_dead(daemon: &Daemon, dir: &Path, skid: &str, rec: Option<&SeatRecord
         Err(_) => return Err("exit_unreadable"),
     }
     // 표식은 맨 끝에 — 다른 파일 하나라도 못 지우면(없음은 성공) 표식을 남겨 다음 기동이 같은 종료를 다시 발행하지 않게 한다.
+    // 정리 순서: 기록·등록부·소켓·잠금 → 마지막에 종료 기록(스캔 앵커) → 표식. 중간에 실패하면 남은 파일이 다음 기동의 스캔 앵커가 된다.
     let mut all = true;
-    for ext in [RECORD_SUFFIX, ".json", ".lock", ".sock", ".exit"] {
+    for ext in [RECORD_SUFFIX, ".json", ".sock", ".lock", ".exit"] {
         match std::fs::remove_file(dir.join(format!("{skid}{ext}"))) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -607,6 +620,20 @@ fn consume_dead(daemon: &Daemon, dir: &Path, skid: &str, rec: Option<&SeatRecord
     }
     let _ = std::fs::remove_file(&marker);
     Ok(())
+}
+
+/// id 잠금을 비차단으로 잡는다 — 파일이 없으면 Ok(None)(잡을 것 없음) · 산 seatkeep 이 쥐고 있으면 Err.
+fn hold_id_lock(path: &Path) -> Result<Option<std::fs::File>, &'static str> {
+    use std::os::unix::io::AsRawFd;
+    let f = match std::fs::OpenOptions::new().read(true).write(true).open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("id_lock_unreadable"),
+    };
+    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err("id_lock_held");
+    }
+    Ok(Some(f))
 }
 
 /// 소비 표식 원자 쓰기(임시 파일 → fsync → rename).
@@ -638,7 +665,10 @@ pub(crate) fn adopt_on_boot(daemon: &Arc<Daemon>) {
                 .filter_map(|n| {
                     n.strip_suffix(RECORD_SUFFIX)
                         .or_else(|| n.strip_suffix(".json"))
+                        .or_else(|| n.strip_suffix(".exit.consumed"))
                         .or_else(|| n.strip_suffix(".exit"))
+                        .or_else(|| n.strip_suffix(".sock"))
+                        .or_else(|| n.strip_suffix(".lock"))
                         .map(str::to_string)
                 })
                 .filter(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
@@ -691,10 +721,14 @@ fn adopt_one(daemon: &Arc<Daemon>, dir: &Path, skid: &str) -> (Outcome, Option<P
     let mut verdict = judge(&JudgeIn { rec: rec_in, reg: &reg, alive, start_now, exe_is_seatkeep });
     // (codex 3R 차단) 기록의 pid 와 등록부의 pid 가 다르면 둘을 따로 본다 — 등록부 pid 가 살아 있고 cys-seatkeep 이 아니라는 증거가 없으면
     // 그 seatkeep 세대가 이 id 의 파일을 쓰는 중일 수 있다 → 죽음 판정을 미결로 내린다(파일 무접촉).
+    let mut pid = pid;
+    let mut start_now = start_now;
     if matches!(verdict, Liveness::Dead(_)) {
         if let Some(bp) = registry_other_live_pid(pid, &reg) {
-            let _ = bp;
             verdict = Liveness::Unknown("registry_pid_live");
+            // (codex 4R 차단) 예약·역할(env)은 **살아 있는 쪽** 세대(B)를 가리켜야 한다 — 죽은 A 를 가리키면 첫 관문 검사에서 예약이 풀린다.
+            pid = Some(bp);
+            start_now = process_start_us(bp);
         }
     }
     let rec_ref = rec.as_ref().ok().and_then(|r| r.as_ref());

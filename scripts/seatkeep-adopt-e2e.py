@@ -173,7 +173,17 @@ if MODE == "reserve":
     time.sleep(1.0)
     os.kill(d.pid, signal.SIGKILL)
     d.wait()
-    d, _ = start_daemon("1", bindir="bin2")  # 다른 경로의 cysd = seatkeep·cysd 상호 확인 실패 → 미결
+    if os.environ.get("SKA_FORGE_PID"):
+        # codex 4R 차단 회귀: 기록의 seatkeep pid 를 죽은 값으로 바꾼다 → 기록 pid = 죽음 · 등록부 pid = 산 seatkeep → 미결 · 예약은 산 쪽 세대로.
+        skd = f"{R}/s/seatkeep"
+        for n in os.listdir(skd):
+            if n.endswith(".cysd.json"):
+                rj = json.load(open(f"{skd}/{n}"))
+                rj["keeper_pid"], rj["keeper_start_us"] = 999999, 1
+                json.dump(rj, open(f"{skd}/{n}", "w"))
+        d, _ = start_daemon("1")
+    else:
+        d, _ = start_daemon("1", bindir="bin2")  # 다른 경로의 cysd = seatkeep·cysd 상호 확인 실패 → 미결
     time.sleep(1.0)
     res = {"seat_alive_after_failed_adopt": alive(seat_pid), "listed": "seatr" in cys("list").stdout}
     blocked = cys("new-surface", "--cwd", "/private/tmp", "--role", "seatr", "--cmd", "sleep 30")

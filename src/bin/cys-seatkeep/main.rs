@@ -560,7 +560,13 @@ mod imp {
                 return;
             }
             // pid·출생 시각 = 이 종료 기록을 쓴 seatkeep 세대(T4 · codex 3R — 새 조종자가 기록·등록부와 대조해 남의 기록을 소비하지 않게).
-            match registry::write_atomic(&self.paths.exit, &json!({"id": self.args.id, "pid": std::process::id(), "start_us": self.start_us, "seats": v})) {
+            // 세대 칸은 입양 모드만(codex 4R 경미 — 그 밖 모드는 종전 바이트 그대로).
+            let mut rec = json!({"id": self.args.id, "seats": v});
+            if self.args.adoptable {
+                rec["pid"] = json!(std::process::id());
+                rec["start_us"] = json!(self.start_us);
+            }
+            match registry::write_atomic(&self.paths.exit, &rec) {
                 Ok(()) => {
                     st.exit_record_ok = true;
                     st.exit_record_fail_since = None;

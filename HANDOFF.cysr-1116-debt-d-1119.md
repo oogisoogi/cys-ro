@@ -164,3 +164,20 @@ orchestra_todo_path 0s · org_audit 5s · pack_syntax_warnings 2s · preflight_n
 2. boot-health H-CLT 시험이 실 `/Applications/cys.app` 을 읽음(CYS_TEST_SYSROOT 가 고정 설치 위치를 안 가림) — 시험 격리 결함 후보.
 3. S4-4 정규화 minor(명령 안 공백·│·❯ 차이) — 구조적 제거로 좁힐지.
 4. runner_run_level 이 관리자 모드 기기 + 질의 실패를 Err 로 = 갱신 등록이 일시 실패할 수 있음(종전 = 조용히 Limited) — 엄격 쪽을 택함.
+
+## 8. 같은 좌석 추가 회차([master#6f7634b4] ①~④ · [master#10a4cfa7] ⑤ · 05:00~05:2x · CTX 50.9% → 매듭)
+
+| 처분 | 결과 |
+|---|---|
+| ③ H-CLT 시험 격리 | **고침 e1d75b0bd**: _u15_sandbox CYS_TEST_SYSROOT(빈 뿌리) · _u15_resolve 「격리 실패」 가드 · H-CLT-2 실기 축 = 빈 뿌리 + PATH cys 가 앱 번들이면 적용 불가(우리 판 = 맥 동봉 우선 · `_lib.sh` cys_resolve_py 의 `_cys_bundle_py \|\|` 가 의도). 실 cys 없는/있는 PATH 둘 다 4/4 초록(이 기계 = 실설치 있음) · 음성 대조(빈 뿌리 제거) = H-CLT-1 「격리 실패」 붉음 |
+| ① 팩 붉음 5 | **v116_auto_restore_status** = 환경성: `target/debug/cysd`·`cys` 가 0바이트·644(둘 다 03:14 · 그 시각 cargo 줄기 = IOReport 단계 33·34 · 출처 단정 못 함) → 이 worktree 에서 `cargo build --bin cysd/cys` 뒤 **3/3 초록**. **resource_gate_product_cpu** 3/3 초록(load 5~10) · **role_authority** 3/3 초록 · **owner_desk** 0·0·1 → 55e7e7e99(feat/1116-flaky prime_exec) 시험 고침을 잠깐 얹으면 owner_desk·role_authority **3/3 초록**(얹은 것 원상복구) = 그 가지 통합으로 사라질 붉음. **hook_r34** 3/3 붉음(1초 시한 단언 RCF-3·RCF-4a·NZ-3·DL-1b·WIN-2 · 3.2~4.3s · load 9~12) · 55e7e7e99 범위 밖 · 훅·시험 파일 기준점 dea2e1853 diff 0 = 이 가지 회귀 아님 · 원인 후보 = 새 스텁 첫 exec 검사(시한 안 첫 실행) → feat/1116-flaky 쪽 같은 prime_exec 처방 후보(📌) |
+| ④ | 📌3 정규화 = 1.1.17 기록 · 📌4 엄격 Err 수용 — 재시도: `update/auto.rs:128` spawn_runner 실패 = `update.spawn_failed`(RC_SPAWN) 반환뿐 · 막는 표식 없음 → 다음 자동 확인이 같은 길로 다시 등록(정적 확인 · 윈 실기 미측정) |
+| ② 형제 직접 기동 유지 + 보강 | **안 함(후임)** — 착수 시 CTX 60% 전에 끝낼 수 없음(윈도우 기동 경로 + 대역 시험 + 뮤턴트) |
+| ⑤ 바이너리 미리 데우기(A안) | **안 함(후임)** — 같은 사유 · 설치기 가지(habitat) + cys 업데이터 두 저장소 |
+
+### 8-1. 후임 설계 메모(이 좌석 판단 · 실행 안 함)
+- **②** 자리 = `src/bin/cys.rs` 자동 기동(지금 `win_autostart_route(...) == TaskThenSibling && win_run_cysd_task()` → poll 2회 → 형제 spawn). 보강안: ⓐ `win_run_cysd_task()` 실패·8초 무응답이면 짧게 2회 재시도(각 /Run + poll 4초) ⓑ 그래도 실패 → 형제 직접 기동 + **표식 파일**(상태 폴더 `daemon-integrity-fallback` · 시각·사유) ⓒ doctor `daemon-integrity` 행이 표식을 보면 Warn 1줄(지금 행과 합침) ⓓ **다음 기회 자동 복귀** = 다음 `cys daemon rotate`·재시작(autostart) 진입 때 표식이 있고 작업이 Highest 면 데몬 정지 → 작업 경유 재기동 → 성공 시 표식 삭제. 순수 판정 함수로 떼면(입력 = 작업 존재·RunLevel·표식·토큰 상승) 맥에서 표 시험 + 뮤턴트 가능 · 실 schtasks 는 대역 실행기(함수 주입).
+- **⑤** 「한 함수」 = lib 에 `prime_binaries(dir) -> Vec<(이름, Duration, rc)>`(cys·cysd·cysr 있으면 `--version` 1회 · 실패 무시 · 로그 1줄) · 부르는 자리 = 업데이터 교체 직후(src/update — 교체 성공 뒤 · 재기동 전) · 설치기 = habitat `install-master/bootstrap.sh`·`bootstrap.ps1` 의 설치 끝(같은 일을 셸로 · 또는 설치된 `cys prime-binaries` 하위 동사 1회 — 메모 「최상위 Command 인자 = j3 스택 넘침」 → 하위 동사 enum 에) · NSIS = nsis-hooks.nsh 설치 끝 `cys prime-binaries` 1회. 시험 = 대역 바이너리(호출 기록 스크립트)로 「교체 직후 1회」 단언 + 뮤턴트(호출 줄 제거).
+
+### 8-2. codex 2R 범위(대기열 · 갱신)
+1R 고침 3(d94094a9c · 667506fac · 0461f82aa) + 31e4d290c(V2-2·3) + 60bc82c6a(B2) + e1d75b0bd(H-CLT 격리) · 질문지 = scratchpad `codex-r2-prompt.md`(H-CLT 1줄 덧붙일 것) · 사본 폴더는 HEAD 로 다시 떠야 함.

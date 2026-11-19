@@ -11,7 +11,11 @@
 //! ★받는 범위(독립 검증 V-1 · master 처분 (가)): **이 프로그램 생애에 우리가 질의에 답한 좌석의 보고만** 적용한다.
 //!   codex 0.167 은 질의 없이 `state=idle/working:app=codex` 를 스스로 보낸다(검증 좌석 실측) — 묻지 않은 보고는 버리고
 //!   `unsolicited` 로만 센다 → codex·셸 좌석은 1.1.15 와 같은 화면 판정 그대로(셸 `printf` 위조 V-2 도 같이 닫힘).
-//!   생애 = 질의 응답 ~ 에이전트 종료·PTY 종료·RIS 지움(전부 지움 때 응답 표식도 0).
+//!   생애 = 질의 응답 ~ 에이전트 종료·PTY 종료·RIS 지움(전부 지움 때 응답 표식도 0) · 셸 프롬프트(OSC 133;A) ·
+//!   **PTY 전경 프로세스 그룹이 바뀜**(codex 2R 3번 · master#bd64bac1 B안): 답할 때의 전경 그룹(`tcgetpgrp`)을 적어 두고, 보고가 올 때
+//!   전경 그룹이 다르면 그 생애는 끝났다(전부 지움 · 그 보고는 `unsolicited`) — 감시 틱 사이의 종료·재기동으로 다음 에이전트·셸 `printf` 에
+//!   넘어가지 않는다. ★Claude 의 `clear` 보고로는 생애를 끝내지 않는다: 2.1.328 은 신뢰 창을 닫을 때 `clear` 를 보내고 다시 묻지 않은 채
+//!   `idle`·`working` 을 이어 보낸다(11-19 원자료 갈래 B·C). 전경 그룹을 모르면(윈 · 시스템 콜 실패) 종전대로 = 한계.
 //!   남는 길(정직 고지): 셸에서 질의 바이트를 먼저 내고 보고를 내면 받는다(단말 표준 동작 · V-9 와 같은 계급).
 //!
 //! 실측(11-19 · Claude Code 2.1.328 · 격리 PTY · 사용자 설정 미적재): 질의에 **답하지 않으면 보고 0건** · 답하면
@@ -472,8 +476,12 @@ pub(crate) struct Store {
     pub answered: u64,
     /// 관측기가 돌지 않아 답하지 않은 질의 수.
     pub unanswered: u64,
-    /// 이 프로그램 생애에 질의에 답했다(보고를 받는 조건 · 전부 지움 때 false).
+    /// 이 프로그램 생애에 질의에 답했다(보고를 받는 조건 · 전부 지움·셸 프롬프트·전경 그룹 바뀜 때 false).
     pub life_answered: bool,
+    /// 질의에 답할 때의 PTY 전경 프로세스 그룹(unix `tcgetpgrp` · 모르면 None = 그룹 대조 없음).
+    pub life_pgid: Option<i32>,
+    /// 마지막으로 생애(응답 표식)가 끝난 까닭 + 시각(진단).
+    pub last_life_end: Option<(&'static str, Instant)>,
     /// 질의 없이 온 보고(받지 않음 · 진단) — 예: codex 0.167.
     pub unsolicited: u64,
     pub reports: u64,
@@ -534,7 +542,7 @@ impl Store {
         let before = self.records.len();
         if all {
             self.records.clear();
-            self.life_answered = false; // 다음 프로그램은 다시 물어야 받는다
+            self.end_life(why, now); // 다음 프로그램은 다시 물어야 받는다
         } else {
             self.records.retain(|_, v| !matches!(v.state, PState::Working | PState::Blocked));
         }
@@ -542,6 +550,15 @@ impl Store {
             self.last_wipe = Some((why, now));
             self.version += 1;
         }
+    }
+
+    /// 응답 표식을 끈다(다음 보고는 새 질의 응답 뒤에만 받는다).
+    pub(crate) fn end_life(&mut self, why: &'static str, now: Instant) {
+        if self.life_answered {
+            self.last_life_end = Some((why, now));
+        }
+        self.life_answered = false;
+        self.life_pgid = None;
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -567,7 +584,14 @@ pub(crate) struct Ingest {
 /// 사건들을 저장소에 반영하고 낼 응답을 돌려준다(순수 — 시각 주입). `answer` = 지금 질의에 답해도 되는가
 /// (화면 관측기가 **실제로 돌고 있을 때만** — 답하면 Claude 가 제목 표지를 지우는데, 관측기가 없으면 덧씌울 세대·순번도 없다).
 /// 답하지 않은 질의는 `unanswered` 로 센다(진단).
+#[cfg(test)]
 pub(crate) fn ingest(store: &mut Store, events: Vec<Event>, now: Instant, answer: bool) -> Ingest {
+    ingest_fg(store, events, now, answer, None)
+}
+
+/// [`ingest`] + 지금의 PTY 전경 프로세스 그룹 `fg`(unix `tcgetpgrp` · 모르면 None). 질의에 답할 때 `fg` 를 생애 그룹으로 적고,
+/// 보고가 올 때 둘 다 알고 서로 다르면 생애 끝(전부 지움 · 그 보고는 unsolicited). 어느 한쪽이라도 모르면 그룹 대조를 하지 않는다.
+pub(crate) fn ingest_fg(store: &mut Store, events: Vec<Event>, now: Instant, answer: bool, fg: Option<i32>) -> Ingest {
     let mut out = Ingest::default();
     for ev in events {
         match ev {
@@ -575,17 +599,27 @@ pub(crate) fn ingest(store: &mut Store, events: Vec<Event>, now: Instant, answer
                 Parsed::Query if answer => {
                     store.answered += 1;
                     store.life_answered = true;
+                    store.life_pgid = fg;
                     out.replies.push(query_reply(bel));
                 }
                 Parsed::Query => store.unanswered += 1,
-                Parsed::Report(_) if !store.life_answered => store.unsolicited += 1,
                 Parsed::Report(r) => {
-                    store.apply(&r, &body, now);
-                    out.applied += 1;
+                    if store.life_answered && matches!((store.life_pgid, fg), (Some(a), Some(b)) if a != b) {
+                        store.wipe(true, "foreground process group changed", now);
+                    }
+                    if store.life_answered {
+                        store.apply(&r, &body, now);
+                        out.applied += 1;
+                    } else {
+                        store.unsolicited += 1;
+                    }
                 }
                 Parsed::Discard(why) => store.discard(why),
             },
-            Event::PromptStart => store.wipe(false, "shell prompt (OSC 133;A)", now),
+            Event::PromptStart => {
+                store.wipe(false, "shell prompt (OSC 133;A)", now);
+                store.end_life("shell prompt (OSC 133;A)", now);
+            }
             Event::Reset => store.wipe(true, "terminal reset (RIS)", now),
         }
     }
@@ -658,6 +692,8 @@ pub(crate) fn diag_wire(store: &Store, now: Instant) -> serde_json::Value {
         "last_report_age_secs": store.last_raw.as_ref().map(|(_, t)| age(*t)),
         "last_wipe": store.last_wipe.map(|(w, _)| w),
         "last_wipe_age_secs": store.last_wipe.map(|(_, t)| age(t)),
+        "life_answered": store.life_answered,
+        "last_life_end": store.last_life_end.map(|(w, _)| w),
         "records": store.len(),
     })
 }

@@ -85,8 +85,9 @@ pub const ENV_SURFACE_ID: &str = "CYS_SURFACE_ID";
 
 // ★(1.1.16 · TICKET=cysr-1116-borrow23-1119 · 차용 ③ · 독립 검증 V-4) 가벼운 시작 손잡이 `boot_fleet` — **진실원 = 데몬 한 곳**.
 //   데몬이 기동 때 자기 env `CYS_BOOT_FLEET`(full|light) > `~/.cys/policy.json` `boot_fleet`(**full 만** — 좌석도 쓰는 파일) > 기본값으로
-//   한 번 정하고, RPC `system.boot_fleet` 와 좌석·부트 감독자 자식 env 도장 [`ENV_BOOT_FLEET_DAEMON`] 으로 내보낸다.
-//   `cys boot`·팩 python 은 그 값만 쓴다 — 좌석 env 의 `CYS_BOOT_FLEET`(agents.json env 맵 등)는 무시하고 다르면 경고 1줄(반쪽 light 차단).
+//   한 번 정하고, RPC `system.boot_fleet` 로 내보낸다(좌석·부트 감독자 자식 env 도장 [`ENV_BOOT_FLEET_DAEMON`] 은 진단 표지 — 판정 재료 아님).
+//   `cys boot`·팩 python(`cys daemon boot-fleet`)은 **RPC 값만** 쓰고 묻지 못하면 기본 full — 어떤 환경값(`CYS_BOOT_FLEET` · 도장)도
+//   판정에 쓰지 않는다(codex 2R 1번 · 명령 앞 export 로 반쪽 light 를 못 만든다). 내 env 의 `CYS_BOOT_FLEET` 가 다르면 경고 1줄.
 //   ★python 정본 `javis_orchestra.boot_fleet_decide`·`boot_fleet_resolve` 와 같은 규칙·같은 기본값(cys.rs 시험이 문자열 대조).
 pub const BOOT_FLEET_DEFAULT: &str = "full";
 pub const ENV_BOOT_FLEET: &str = "CYS_BOOT_FLEET";

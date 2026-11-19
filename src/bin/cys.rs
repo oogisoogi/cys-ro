@@ -998,6 +998,10 @@ enum DaemonAction {
         #[arg(long)]
         json: bool,
     },
+    /// ★(1.1.16 · 차용 ③ · codex 2R 1번) 가벼운 시작 손잡이의 데몬 값(읽기 전용 · 자동 기동 없음) — 팩 python 이 RPC `system.boot_fleet`
+    /// 대신 이 명령으로 묻는다(윈 named pipe 도 같은 길). 출력 = JSON 한 줄 `{"fleet":…,"source":…}` · 데몬 없음·옛 데몬 = rc 1.
+    #[command(hide = true)]
+    BootFleet,
     /// ★조각 1 이 역할의 저장 목록을 믿을 수 있는가(읽기 전용) — 0 = 믿을 수 있음 · 93 = 멈춤. `javis_boot_node` 가 좌석 회수 전에 묻는다.
     #[command(hide = true)]
     ResumeCheck {
@@ -3656,7 +3660,10 @@ fn command_never_autostarts(command: &Command) -> bool {
         command,
         Command::Ping
             | Command::Daemon {
-                action: DaemonAction::Status | DaemonAction::ResumeCheck { .. } | DaemonAction::ExplainState { .. }
+                action: DaemonAction::Status
+                    | DaemonAction::ResumeCheck { .. }
+                    | DaemonAction::ExplainState { .. }
+                    | DaemonAction::BootFleet
             }
             // 완전 초기화는 데몬을 죽이는 명령 — 어떤 경로로도 자동 기동을 발화하면 안 된다.
             | Command::FactoryReset { .. }
@@ -12732,16 +12739,16 @@ const BOOT_PLAN: &[(&str, &str, bool)] = &[
     ("worker", "claude", true),
 ];
 
-/// ★(1.1.16 · TICKET=cysr-1116-borrow23-1119 · 차용 ③) 가벼운 시작 손잡이 `boot_fleet` — `full`(기본 · 1.1.15 와 같다) | `light`(부트가 master
-/// 말고는 세우지 않는다 · CSO·worker 는 `cys launch-agent` 로 · 전체 편성 = 데몬을 `CYS_BOOT_FLEET=full` 로). ★진실원 = **데몬**(독립 검증 V-4):
-/// 규칙·기본값은 lib [`cys::boot_fleet_decide`] · 이 CLI 는 RPC `system.boot_fleet` 로 묻고(없으면 좌석 도장 `CYS_BOOT_FLEET_DAEMON` → 기본 full)
-/// 자기 env 의 `CYS_BOOT_FLEET` 는 쓰지 않는다(다르면 경고 1줄 — 반쪽 light 차단).
+/// ★(1.1.16 · TICKET=cysr-1116-borrow23-1119 · 차용 ③) 가벼운 시작 손잡이 `boot_fleet` — `full`(기본 · 1.1.15 와 **같은 함대 계획** — 바이트 동일은 아니다: 좌석·부트 감독자 자식 환경값 2개 · 데몬 기동 로그 1줄이 늘었다) | `light`(부트가 master
+/// 말고는 세우지 않는다 · CSO·worker 는 `cys launch-agent` 로). ★진실원 = **데몬 RPC 한 곳**(독립 검증 V-4 · codex 2R 1번):
+/// 규칙·기본값은 lib [`cys::boot_fleet_decide`] · 이 CLI 는 RPC `system.boot_fleet` 로만 묻고 **실패하면 기본 full** — 어떤 환경값
+/// (`CYS_BOOT_FLEET` · 좌석 도장 `CYS_BOOT_FLEET_DAEMON`)도 판정에 쓰지 않는다(명령 앞 export·셸 시작 파일·감싼 명령으로 반쪽 light 를 못 만든다).
+/// 내 env 의 `CYS_BOOT_FLEET` 가 데몬 값과 다르면 경고 1줄.
 /// ★기본값을 `light` 로 바꾸는 것은 기본 함대 정책(박사님 결정 2026-09-10)의 개정이다.
 fn boot_fleet() -> (&'static str, &'static str) {
-    let rpc = request("system.boot_fleet", json!({})).ok().and_then(|v| v["fleet"].as_str().map(str::to_string));
-    let stamp = std::env::var(cys::ENV_BOOT_FLEET_DAEMON).ok();
+    let rpc = boot_fleet_rpc().map(|(f, _)| f);
     let seat = std::env::var(cys::ENV_BOOT_FLEET).ok();
-    let (fleet, src, warn) = boot_fleet_wire(rpc.as_deref(), stamp.as_deref(), seat.as_deref());
+    let (fleet, src, warn) = boot_fleet_wire(rpc.as_deref(), seat.as_deref());
     if warn {
         eprintln!(
             "[boot] ⚠ 이 프로세스 env 의 CYS_BOOT_FLEET={} 는 무시한다 — 진실원 = 데몬({fleet} · {src}). 바꾸려면 데몬 기동 env 에 둔다.",
@@ -12751,9 +12758,33 @@ fn boot_fleet() -> (&'static str, &'static str) {
     (fleet, src)
 }
 
-/// 순수 배선 — (데몬 RPC 값, 좌석 도장, 내 env) → 해소. RPC 가 먼저 · 없으면 도장 · 내 env 는 판정에 안 쓴다(경고 재료만).
-fn boot_fleet_wire(rpc: Option<&str>, stamp: Option<&str>, seat: Option<&str>) -> (&'static str, &'static str, bool) {
-    cys::boot_fleet_resolve(rpc.or(stamp), seat)
+/// 데몬 RPC `system.boot_fleet` 1왕복 → (fleet, source). 실패·꼴 틀림 = None.
+fn boot_fleet_rpc() -> Option<(String, String)> {
+    let v = request("system.boot_fleet", json!({})).ok()?;
+    Some((v["fleet"].as_str()?.to_string(), v["source"].as_str().unwrap_or("").to_string()))
+}
+
+/// 순수 배선 — (데몬 RPC 값, 내 env) → 해소. RPC 만 판정 재료 · 없으면 기본 · 내 env 는 경고 재료만.
+fn boot_fleet_wire(rpc: Option<&str>, seat: Option<&str>) -> (&'static str, &'static str, bool) {
+    cys::boot_fleet_resolve(rpc, seat)
+}
+
+/// light 부트 안내(순수) — 지금 되는 길 2가지만 적는다(codex 2R 4번). ★`CYS_BOOT_FLEET=full cys boot` 는 안내하지 않는다 — 판정은 데몬 RPC
+/// 값이라 이 프로세스의 env 로는 바뀌지 않는다. 되돌리기 = 데몬 기동 env 에서 그 키를 빼고 데몬 재기동(macOS = launchd plist 사용자 키를
+/// 보존하며 다시 쓰고 재적재하는 `cys daemon install --takeover`).
+fn boot_fleet_light_notice(src: &str, plist: Option<&str>) -> String {
+    let back = match plist {
+        Some(p) => format!(
+            "launchd plist({p}) 의 EnvironmentVariables 에 `CYS_BOOT_FLEET` 가 있으면 지우고 `cys daemon install --takeover`"
+        ),
+        None => "데몬을 띄운 곳(작업 스케줄러 등록 · 데몬을 띄운 셸)의 환경에서 `CYS_BOOT_FLEET` 를 빼고 데몬을 다시 띄운다".to_string(),
+    };
+    format!(
+        "· 가벼운 시작(boot_fleet=light · 출처 {src}) — CSO·worker 를 미리 띄우지 않는다. 지금 필요하면(데몬 재기동 없음): \
+         `cys launch-agent --role cso --agent claude` · `cys launch-agent --role worker --agent claude`\n\
+         · 기본(full)으로 되돌리기 = 데몬이 기동 때 정한 값이라 이 셸의 환경값으로는 바뀌지 않는다 — {back} \
+         (데몬 재기동 = 열린 좌석이 닫힌다)"
+    )
 }
 
 /// 이번 부트가 세울 편성 — `light` 면 빈 표(master 는 원래 표 밖 = 선언한 자기 자신).
@@ -14917,10 +14948,11 @@ fn run_boot(cwd: Option<String>, as_json: bool) -> i32 {
     //   노드는 떠도 `/clear` 후 재주입·마스터 선언 부트 발화가 영구히 죽는다(팀 미기동).
     warn_if_config_target_mismatch();
     if fleet == "light" {
-        println!(
-            "· 가벼운 시작(boot_fleet=light · 출처 {fleet_src}) — CSO·worker 를 미리 띄우지 않는다. 일이 생기면 \
-             `cys launch-agent --role worker --agent claude` · 전체 편성 = `CYS_BOOT_FLEET=full cys boot`"
-        );
+        #[cfg(target_os = "macos")]
+        let plist = Some(cys::launchd::plist_path().display().to_string());
+        #[cfg(not(target_os = "macos"))]
+        let plist: Option<String> = None;
+        println!("{}", boot_fleet_light_notice(fleet_src, plist.as_deref()));
     }
     for (role, agent, mandatory) in plan {
         // 침묵 창 상쇄(B9 방향 ③) — 진행 하트비트는 stderr(stdout 기계 계약 무오염).
@@ -21262,6 +21294,18 @@ fn run_daemon_cmd(action: DaemonAction) -> i32 {
     if let DaemonAction::ExplainState { surface, json } = &action {
         return run_explain_state(surface, *json);
     }
+    if let DaemonAction::BootFleet = &action {
+        return match boot_fleet_rpc() {
+            Some((fleet, source)) => {
+                println!("{}", json!({"fleet": fleet, "source": source}));
+                0
+            }
+            None => {
+                eprintln!("[daemon boot-fleet] 데몬 값을 읽지 못했다(데몬 없음 · 옛 데몬) — 소비자는 기본 full 로 간다");
+                1
+            }
+        };
+    }
     if let DaemonAction::ResumeCheck { role, agent, cwd } = &action {
         let held = match agent {
             None => resume_saved_lookup(role).err(),
@@ -21378,7 +21422,10 @@ fn run_daemon_cmd(action: DaemonAction) -> i32 {
                     println!("launchd 등록 해제 완료 (데몬 정지됨 — 세션도 함께 종료)");
                     Ok(())
                 }
-                DaemonAction::DeptStatus { .. } | DaemonAction::ResumeCheck { .. } | DaemonAction::ExplainState { .. } => Ok(()), // 함수 머리에서 이미 처리(도달 불가)
+                DaemonAction::DeptStatus { .. }
+                | DaemonAction::ResumeCheck { .. }
+                | DaemonAction::ExplainState { .. }
+                | DaemonAction::BootFleet => Ok(()), // 함수 머리에서 이미 처리(도달 불가)
                 DaemonAction::Status => {
                     let path = cys::launchd::plist_path();
                     let registered = path.exists();
@@ -21457,7 +21504,10 @@ fn run_daemon_cmd(action: DaemonAction) -> i32 {
                     println!("작업 스케줄러 등록 해제 완료");
                     Ok(())
                 }
-                DaemonAction::DeptStatus { .. } | DaemonAction::ResumeCheck { .. } | DaemonAction::ExplainState { .. } => Ok(()), // 함수 머리에서 이미 처리(도달 불가)
+                DaemonAction::DeptStatus { .. }
+                | DaemonAction::ResumeCheck { .. }
+                | DaemonAction::ExplainState { .. }
+                | DaemonAction::BootFleet => Ok(()), // 함수 머리에서 이미 처리(도달 불가)
                 DaemonAction::Status => {
                     let registered = cys::hidden_command("schtasks")
                         .args(["/Query", "/TN", TASK])
@@ -59654,12 +59704,36 @@ mod boot_fleet_tests {
     }
 
     #[test]
-    fn wiring_uses_daemon_then_stamp_never_my_env() {
+    fn wiring_uses_daemon_rpc_only_never_any_env() {
         use super::boot_fleet_wire;
-        assert_eq!(boot_fleet_wire(Some("full"), Some("light"), Some("light")), ("full", "daemon", true));
-        assert_eq!(boot_fleet_wire(None, Some("light"), None), ("light", "daemon", false));
-        assert_eq!(boot_fleet_wire(None, None, Some("light")), ("full", "no-daemon", true));
-        assert_eq!(boot_fleet_wire(Some("light"), Some("full"), None), ("light", "daemon", false));
+        assert_eq!(boot_fleet_wire(Some("full"), Some("light")), ("full", "daemon", true));
+        assert_eq!(boot_fleet_wire(Some("light"), None), ("light", "daemon", false));
+        // RPC 실패 = 기본 full — 내 env 의 light 로 내려가지 않는다.
+        assert_eq!(boot_fleet_wire(None, Some("light")), ("full", "no-daemon", true));
+        // codex 2R 1번: 좌석 도장 `CYS_BOOT_FLEET_DAEMON` 도 판정 재료가 아니다(명령 앞 export 로 위조 가능) —
+        //   `boot_fleet()` 본문이 그 이름을 읽지 않는다(소스 핀 · 되살리면 붉다).
+        let src = include_str!("cys.rs");
+        let body_at = src.find("fn boot_fleet() -> (&'static str, &'static str) {").expect("boot_fleet 본문");
+        let body = &src[body_at..body_at + src[body_at..].find("\n}\n").expect("본문 끝")];
+        assert!(!body.contains("ENV_BOOT_FLEET_DAEMON"), "boot_fleet() 이 좌석 도장 환경값을 읽는다:\n{body}");
+        assert!(body.contains("boot_fleet_rpc()"), "boot_fleet() 이 데몬 RPC 를 묻지 않는다");
+    }
+
+    #[test]
+    fn light_notice_names_only_paths_that_work() {
+        // codex 2R 4번: 데몬 RPC 가 진실원인데 「`CYS_BOOT_FLEET=full cys boot`」 를 안내했다(이 프로세스 env 는 판정에 안 쓰여 아무것도 안 바뀐다).
+        use super::boot_fleet_light_notice;
+        for plist in [Some("/x/com.cysjavis.cysd.plist"), None] {
+            let n = boot_fleet_light_notice("env", plist);
+            assert!(!n.contains("CYS_BOOT_FLEET=full cys boot"), "안 되는 복구 명령을 안내한다:\n{n}");
+            assert!(n.contains("cys launch-agent --role cso --agent claude") && n.contains("--role worker"), "{n}");
+            assert!(n.contains("열린 좌석이 닫힌다"), "재기동 부작용 고지 빠짐:\n{n}");
+        }
+        assert!(boot_fleet_light_notice("env", Some("/x/p.plist")).contains("/x/p.plist") );
+        assert!(boot_fleet_light_notice("env", Some("/x/p.plist")).contains("cys daemon install --takeover"));
+        // 실제 출력 자리가 이 함수를 쓴다(소스 핀).
+        let src = include_str!("cys.rs");
+        assert!(src.contains("println!(\"{}\", boot_fleet_light_notice(fleet_src, plist.as_deref()));"));
     }
 
     #[test]
@@ -59674,6 +59748,10 @@ mod boot_fleet_tests {
         assert_eq!(BOOT_FLEET_DEFAULT, "full");
         let py = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/cysjavis-pack/bin/javis_orchestra.py")).expect("orchestra");
         assert!(py.contains(&format!("BOOT_FLEET_DEFAULT = \"{BOOT_FLEET_DEFAULT}\"")), "python 기본값 불일치");
-        assert!(py.contains("\"CYS_BOOT_FLEET_DAEMON\"") && py.contains("policy.get(\"boot_fleet\")"), "python 출처 이름 불일치");
+        assert!(py.contains("[cys, \"daemon\", \"boot-fleet\"]") && py.contains("policy.get(\"boot_fleet\")"), "python 출처 이름 불일치");
+        // codex 2R 1번: python 도 좌석 도장 환경값을 판정에 읽지 않는다.
+        let at = py.find("def _boot_fleet_query_daemon").expect("python 판독기");
+        let reader = &py[at..at + py[at..].find("\ndef plan_policy").expect("판독기 끝")];
+        assert!(reader.contains("def boot_fleet():") && !reader.contains("CYS_BOOT_FLEET_DAEMON"), "python 이 좌석 도장 환경값을 판정에 읽는다");
     }
 }

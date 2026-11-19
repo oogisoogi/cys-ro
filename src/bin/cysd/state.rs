@@ -8108,6 +8108,7 @@ impl Daemon {
             builder.env(k, v);
         }
         // ★(1.1.16 · 차용 ③ · V-4) 가벼운 시작 손잡이 도장 — 호출자 env(agents.json env 맵 등) **뒤**에 덮어 좌석 값이 데몬 값과 갈리지 않게.
+        //   ★진단 표지일 뿐 판정 재료가 아니다(codex 2R 1번 — 명령 앞 export 로 위조 가능) · 판정 = RPC `system.boot_fleet`. full 기본도 이 2개만큼 1.1.15 와 env 가 다르다.
         let (fleet, _) = crate::knobs::boot_fleet();
         builder.env(cys::ENV_BOOT_FLEET, fleet);
         builder.env(cys::ENV_BOOT_FLEET_DAEMON, fleet);
@@ -8632,11 +8633,17 @@ impl Daemon {
                         if ps_enabled {
                             let events = surf.ps_scanner.lock().unwrap_or_else(|e| e.into_inner()).feed(chunk);
                             if !events.is_empty() {
-                                let res = crate::program_status::ingest(
+                                // 생애 = 답할 때의 PTY 전경 프로세스 그룹(codex 2R 3번) — 사건이 있는 청크에서만 묻는다(락 없음 · 비-unix = 모름).
+                                #[cfg(unix)]
+                                let fg = surf.foreground_pgid_now();
+                                #[cfg(not(unix))]
+                                let fg: Option<i32> = None;
+                                let res = crate::program_status::ingest_fg(
                                     &mut surf.program_status.lock().unwrap_or_else(|e| e.into_inner()),
                                     events,
                                     Instant::now(),
                                     daemon.activity.running.load(Ordering::SeqCst),
+                                    fg,
                                 );
                                 for reply in res.replies {
                                     if !send_write_req_bounded(&surf.write_tx, WriteReq::Data(reply), DSR_SEND_DEADLINE) {

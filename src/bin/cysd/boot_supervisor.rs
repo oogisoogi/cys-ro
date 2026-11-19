@@ -1849,7 +1849,7 @@ fn run_ensure_team(
     cmd.env_remove("CYS_DECL_ORIGIN")
         .env_remove(cys::ENV_SEAT_TOKEN)
         .env(cys::ENV_ROLE, "master");
-    // ★(1.1.16 · 차용 ③ · V-4) 감독자가 낳는 bootstrap 도 같은 손잡이 도장(⑤check·결손 산출이 cys boot 와 같은 값).
+    // ★(1.1.16 · 차용 ③ · V-4) 감독자가 낳는 bootstrap 도 같은 손잡이 도장 — 진단 표지(판정 = RPC `system.boot_fleet` · codex 2R 1번).
     let (fleet, _) = crate::knobs::boot_fleet();
     cmd.env(cys::ENV_BOOT_FLEET, fleet).env(cys::ENV_BOOT_FLEET_DAEMON, fleet);
     // ── (P2 · R3-P2-5) provenance·claim 주입 — 위 재실측이 참일 때만 ─────────────────────

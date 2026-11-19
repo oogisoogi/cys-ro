@@ -17,3 +17,12 @@
 - [ ] HANDOFF.cysr-1116-borrow23-1119.md + 【확인요청】
 
 - [x] 최종 codex = CONVERGED(b97964353) · 시험·뮤턴트 9/9 · HANDOFF
+
+## 후임 b23b(master#42d9d9cd · codex 2R BLOCK 처분 · 마지막 회차)
+- [x] ① python boot_fleet = 데몬 RPC system.boot_fleet(환경값 무시 · RPC 실패 = full) — orchestra·bootstrap
+- [x] ② 셸 프롬프트 wipe·clear 보고 때 life_answered 끔
+- [x] ③ light 안내의 틀린 복구 명령 → 데몬 재기동 길
+- [x] ④ 「바이트 같음」 문구 → 「같은 함대 계획(환경값 2·로그 1줄 추가)」
+- [ ] 한계 문서: 같은 묶음 질의 뒤 보고(cat/printf) = 표시 전용 → HANDOFF 알려진 한계
+- [ ] 시험 붉음→초록 + 뮤턴트 · cysd·cys 묶음 · 팩 해당 시험
+- [ ] HANDOFF §9 델타 · 커밋 · 【확인요청】

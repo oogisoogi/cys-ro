@@ -171,14 +171,19 @@ BOOT_PLAN = [
 
 
 # ★(1.1.16 · TICKET=cysr-1116-borrow23-1119 · 차용 ③) 가벼운 시작 손잡이 `boot_fleet` — Rust 정본 lib `cys::boot_fleet_decide`·
-#   `boot_fleet_resolve` 와 같은 규칙·같은 기본값(cys.rs 시험이 문자열 대조 — 함께 옮긴다). full(기본 · 1.1.15 와 같다) = 부트가 CSO·worker 를
+#   `boot_fleet_resolve` 와 같은 규칙·같은 기본값(cys.rs 시험이 문자열 대조 — 함께 옮긴다). full(기본 · 1.1.15 와 같은 함대 계획 · 바이트 동일 아님 = 환경값 2·로그 1줄 추가) = 부트가 CSO·worker 를
 #   세운다 · light = master 말고는 미리 띄우지 않는다(일이 생기면 `cys launch-agent --role worker --agent claude`).
-#   ★진실원 = **데몬 한 곳**(독립 검증 V-4): 데몬이 기동 때 자기 env `CYS_BOOT_FLEET`(full|light) > `~/.cys/policy.json` 의 `boot_fleet`
-#   (**full 만** — 좌석도 쓰는 파일이라 light 는 받지 않는다) > 기본값으로 정하고, 좌석·부트 감독자 자식 env 에 `CYS_BOOT_FLEET_DAEMON`
-#   도장을 찍는다. 이 모듈은 그 도장만 쓴다 — 내 env 의 `CYS_BOOT_FLEET`(agents.json env 맵 등)는 무시하고 다르면 stderr 경고 1줄.
+#   ★진실원 = **데몬 한 곳**(독립 검증 V-4 · codex 2R 1번): 데몬이 기동 때 자기 env `CYS_BOOT_FLEET`(full|light) > `~/.cys/policy.json` 의
+#   `boot_fleet`(**full 만** — 좌석도 쓰는 파일이라 light 는 받지 않는다) > 기본값으로 정한다. 이 모듈은 그 값을 **데몬 RPC
+#   `system.boot_fleet`**(`cys daemon boot-fleet` — 윈 named pipe 도 같은 길 · 자동 기동 없음)로만 묻고, **묻지 못하면 기본 full**.
+#   어떤 환경값도 판정에 쓰지 않는다 — 내 env 의 `CYS_BOOT_FLEET`(agents.json env 맵 등)도, 좌석 도장 `CYS_BOOT_FLEET_DAEMON` 도
+#   (명령 앞 export·셸 시작 파일·감싼 명령으로 위조 가능). 내 env 의 `CYS_BOOT_FLEET` 가 데몬 값과 다르면 stderr 경고 1줄.
 #   ★`BOOT_PLAN`·`REQUIRED_ROLES` 상수는 그대로다(행 단위 파리티 H-PRED-7) — 바뀌는 것은 「이번 부트가 요구·기동하는 집합」뿐이다.
 BOOT_FLEET_DEFAULT = "full"
 _BOOT_FLEET_WARNED = []
+_BOOT_FLEET_CACHE = []          # [(monotonic, 데몬 값 | None)] — 한 프로세스 안 반복 질의(effective_required_roles 등) 비용 상한
+_BOOT_FLEET_CACHE_SECS = 60.0
+_BOOT_FLEET_QUERY = None        # 시험 주입점(프로세스 안 · 환경값 아님) — None 이면 `_boot_fleet_query_daemon`
 
 
 def _fleet_norm(v):
@@ -208,9 +213,39 @@ def boot_fleet_resolve(daemon, seat_env):
     return fleet, src, warn
 
 
+def _boot_fleet_query_daemon():
+    """데몬 RPC `system.boot_fleet` 1왕복(`cys daemon boot-fleet` · 자동 기동 없음) → 데몬 값 문자열 | None(데몬 없음 · 옛 cys/데몬 · 꼴 틀림)."""
+    cys = shutil.which("cys")
+    if not cys:
+        return None
+    try:
+        r = subprocess.run([cys, "daemon", "boot-fleet"], stdin=subprocess.DEVNULL, capture_output=True, timeout=5, **NOWIN)
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    try:
+        v = json.loads(r.stdout.decode("utf-8", "replace").strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return None
+    return v.get("fleet") if isinstance(v, dict) and isinstance(v.get("fleet"), str) else None
+
+
+def _boot_fleet_daemon_value():
+    q = _BOOT_FLEET_QUERY
+    if q is not None:
+        return q()
+    now = time.monotonic()
+    if _BOOT_FLEET_CACHE and now - _BOOT_FLEET_CACHE[0][0] < _BOOT_FLEET_CACHE_SECS:
+        return _BOOT_FLEET_CACHE[0][1]
+    v = _boot_fleet_query_daemon()
+    _BOOT_FLEET_CACHE[:] = [(now, v)]
+    return v
+
+
 def boot_fleet():
-    """→ (fleet, source) — 데몬 도장(`CYS_BOOT_FLEET_DAEMON`)만 쓴다. 도장이 없으면 기본(full)."""
-    fleet, src, warn = boot_fleet_resolve(os.environ.get("CYS_BOOT_FLEET_DAEMON"), os.environ.get("CYS_BOOT_FLEET"))
+    """→ (fleet, source) — 데몬 RPC 값만 쓴다. 묻지 못하면 기본(full) · 환경값은 판정에 안 쓴다."""
+    fleet, src, warn = boot_fleet_resolve(_boot_fleet_daemon_value(), os.environ.get("CYS_BOOT_FLEET"))
     if warn and not _BOOT_FLEET_WARNED:
         _BOOT_FLEET_WARNED.append(1)
         sys.stderr.write("[orchestra] ⚠ 이 프로세스 env 의 CYS_BOOT_FLEET=%s 는 무시한다 — 진실원 = 데몬(%s · %s)\n"
@@ -5689,7 +5724,7 @@ def cmd_self_test(args):
                 [r for r, _a, _p in BOOT_PLAN],)
         assert not any(r.startswith("reviewer") for r, _a, _p in BOOT_PLAN), \
             "BOOT_PLAN 에 리뷰어가 되살아났다(기본 스폰 0 정책 이탈)"
-        # ★(1.1.16 · 차용 ③) 가벼운 시작 손잡이 — 순수 판정(env > policy > 기본) · 모르는 값은 건너뜀 · 기본 = full(1.1.15 동작).
+        # ★(1.1.16 · 차용 ③) 가벼운 시작 손잡이 — 순수 판정(env > policy > 기본) · 모르는 값은 건너뜀 · 기본 = full(1.1.15 와 같은 함대 계획).
         assert BOOT_FLEET_DEFAULT == "full", "boot_fleet 기본값이 바뀌었다(기본 함대 정책 개정 = 박사님 결정 사안)"
         assert boot_fleet_decide("", {}) == ("full", "default")
         assert boot_fleet_decide("light", {"boot_fleet": "full"}) == ("light", "env")
@@ -5702,29 +5737,50 @@ def cmd_self_test(args):
         assert boot_fleet_resolve("light", None) == ("light", "daemon", False)
         assert boot_fleet_resolve(None, "light") == ("full", "no-daemon", True)
         assert boot_fleet_resolve(None, None) == ("full", "no-daemon", False)
-        # 배선: boot_fleet() 은 데몬 도장만 읽는다 — 내 env 의 CYS_BOOT_FLEET 로 내려가지 않는다(V-4 반쪽 light).
-        _w_prev = (os.environ.get("CYS_BOOT_FLEET_DAEMON"), os.environ.get("CYS_BOOT_FLEET"))
+        # 배선(codex 2R 1번): boot_fleet() 은 데몬 RPC 값만 쓴다 — 내 env 의 CYS_BOOT_FLEET 도, 좌석 도장 CYS_BOOT_FLEET_DAEMON 도
+        #   판정에 안 쓴다(명령 앞 export 로 위조 가능). 묻지 못하면 기본 full.
+        global _BOOT_FLEET_QUERY
+        _w_prev = (os.environ.get("CYS_BOOT_FLEET_DAEMON"), os.environ.get("CYS_BOOT_FLEET"), _BOOT_FLEET_QUERY)
         try:
-            os.environ["CYS_BOOT_FLEET_DAEMON"] = "full"
+            os.environ["CYS_BOOT_FLEET_DAEMON"] = "light"
             os.environ["CYS_BOOT_FLEET"] = "light"
-            assert boot_fleet() == ("full", "daemon"), "좌석 env 의 light 가 데몬 도장을 이겼다: %r" % (boot_fleet(),)
-            os.environ.pop("CYS_BOOT_FLEET_DAEMON")
-            assert boot_fleet() == ("full", "no-daemon"), "도장 없음인데 좌석 env 로 내려갔다: %r" % (boot_fleet(),)
-        finally:
-            for _k, _v in zip(("CYS_BOOT_FLEET_DAEMON", "CYS_BOOT_FLEET"), _w_prev):
-                if _v is None:
-                    os.environ.pop(_k, None)
-                else:
-                    os.environ[_k] = _v
-        _bf_prev = os.environ.get("CYS_BOOT_FLEET_DAEMON")
-        os.environ["CYS_BOOT_FLEET_DAEMON"] = "light"
-        try:
+            _BOOT_FLEET_QUERY = lambda: "full"
+            assert boot_fleet() == ("full", "daemon"), "환경값 light 가 데몬 RPC 값을 이겼다: %r" % (boot_fleet(),)
+            _BOOT_FLEET_QUERY = lambda: None
+            assert boot_fleet() == ("full", "no-daemon"), "RPC 실패인데 환경값(도장·좌석) light 로 내려갔다: %r" % (boot_fleet(),)
+            _BOOT_FLEET_QUERY = lambda: "light"
+            os.environ["CYS_BOOT_FLEET_DAEMON"] = "full"
+            os.environ.pop("CYS_BOOT_FLEET")
+            assert boot_fleet() == ("light", "daemon"), "도장 full 이 데몬 RPC light 를 이겼다: %r" % (boot_fleet(),)
             assert effective_required_roles() == [], "light 인데 cso·worker 를 요구한다(영구 결손)"
             assert team_roster_note().startswith("master") and "cso" not in team_roster_note(), team_roster_note()
             _lt = _shared_verdict_deficit({"surfaces": []})
             assert _lt[0] is False, "light 의 빈 요구 집합이 결손/판정불가로 읽힌다: %r" % (tuple(_lt),)
         finally:
-            os.environ["CYS_BOOT_FLEET_DAEMON"] = _bf_prev if _bf_prev is not None else "full"
+            for _k, _v in zip(("CYS_BOOT_FLEET_DAEMON", "CYS_BOOT_FLEET"), _w_prev[:2]):
+                if _v is None:
+                    os.environ.pop(_k, None)
+                else:
+                    os.environ[_k] = _v
+            _BOOT_FLEET_QUERY = _w_prev[2]
+        # 실 질의 길: 판독기는 `cys daemon boot-fleet` 출력만 읽는다(가짜 cys 로 꼴 확인 — PATH 앞 임시 폴더 · 끝나면 되돌림).
+        import tempfile as _tf
+        _td = _tf.mkdtemp(prefix="bf-")
+        _path_prev = os.environ.get("PATH", "")
+        try:
+            if os.name != "nt":
+                _fake = os.path.join(_td, "cys")
+                with open(_fake, "w") as _f:
+                    _f.write('#!/bin/sh\n[ "$1 $2" = "daemon boot-fleet" ] || exit 2\nprintf \'{"fleet":"light","source":"env"}\\n\'\n')
+                os.chmod(_fake, 0o755)
+                os.environ["PATH"] = _td + os.pathsep + _path_prev
+                assert _boot_fleet_query_daemon() == "light", "cys daemon boot-fleet 출력 판독 실패"
+                with open(_fake, "w") as _f:
+                    _f.write("#!/bin/sh\nexit 1\n")
+                assert _boot_fleet_query_daemon() is None, "데몬 없음(rc 1)을 값으로 읽었다"
+        finally:
+            os.environ["PATH"] = _path_prev
+            shutil.rmtree(_td, ignore_errors=True)
         assert boot_fleet_decide("", {"boot_fleet": "tiny"}) == ("full", "default")
         assert boot_fleet_decide("", []) == ("full", "default")
         assert plan_mandatory_roles() == ["cso", "worker"], \
@@ -6139,8 +6195,9 @@ def cmd_self_test(args):
 def main():
     # preflight 호환: `--self-test`는 subcommand 없이도 동작해야 한다(가로채기).
     if "--self-test" in sys.argv:
-        # ★(1.1.16 · 차용 ③) self-test 는 출하 기본 동작(full)을 잰다 — 운영 기계의 CYS_BOOT_FLEET 로 결과가 갈리지 않게 밀폐.
-        os.environ["CYS_BOOT_FLEET_DAEMON"] = "full"
+        # ★(1.1.16 · 차용 ③) self-test 는 출하 기본 동작(full)을 잰다 — 운영 기계의 데몬 값으로 결과가 갈리지 않게 밀폐(프로세스 안 주입).
+        global _BOOT_FLEET_QUERY
+        _BOOT_FLEET_QUERY = lambda: "full"
         os.environ.pop("CYS_BOOT_FLEET", None)
         return cmd_self_test(None)
     # ★B18(H-DOC-2): 훅 note·문서가 인용할 팀 구성 1줄. subcommand 공간을 늘리지 않고

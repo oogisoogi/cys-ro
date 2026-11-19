@@ -3786,7 +3786,7 @@ function tickWsModel(): TickWs[] {
  * 대화 화면에서 입양·시작 복원·빈 탭 충전한 좌석이 여기 든다. 작업 화면이 보이면 ensureSeatRuntimes 가 만든다(보이는 탭 = 즉시 · 나머지 = 한 틱 4개).
  * 지우는 곳 = 런타임을 만든 그 자리 · destroyPaneRuntime(떼기·탭 삭제·입양 포기 전부 이 함수를 지난다).
  */
-const deferredRuntimes = new Map<string, { sid: number; socket?: string; title: string; role: string | null; tries: number }>();
+const deferredRuntimes = new Map<string, { sid: number; socket?: string; title: string; role: string | null; tries: number; making?: boolean }>();
 const DEFERRED_PER_TICK = 4; // (설계 목표값 §2-3) 보이지 않는 탭의 미룬 런타임 — 한 틱에 최대 이만큼
 /** 그 좌석이 화면 모형에 붙어 있는가 = 런타임 있음 ∪ 런타임 미룸(입양 판정의 「이미 붙음」 · 종전 panes.has 와 같은 뜻 + 미룬 좌석). */
 function seatAttached(sid: number, socket?: string): boolean {
@@ -3810,10 +3810,12 @@ async function ensureSeatRuntime(key: string): Promise<boolean> {
     deferredRuntimes.delete(key);
     return false;
   }
-  if (!seatInModel(d.sid, d.socket)) return false; // 아직 모형에 안 붙음(만드는 쪽이 붙이기 전) — 장부 유지(떼면 destroyPaneRuntime 이 지운다)
-  deferredRuntimes.delete(key);
+  if (d.making || !seatInModel(d.sid, d.socket)) return false; // 만드는 중 · 아직 모형에 안 붙음(만드는 쪽이 붙이기 전) — 장부 유지(떼면 destroyPaneRuntime 이 지운다)
+  // ★만드는 동안에도 장부에 남긴다 — 지우고 기다리면 그 사이 3초 틱이 「안 붙은 좌석」으로 보고 다시 입양할 틈이 생긴다(seatAttached = 런타임 ∪ 장부).
+  d.making = true;
   try {
     const rt = await makePane(d.sid, d.title, d.socket);
+    if (deferredRuntimes.get(key) === d) deferredRuntimes.delete(key); // 기다린 사이 떼였으면 destroyPaneRuntime 이 이미 지웠다
     // 기다린 사이 그 좌석이 떼였거나 탭이 지워지는 중이면 방금 만든 **런타임만** 파기(데몬 좌석은 닫지 않는다 · 종전 입양 재확인과 같은 뜻)
     if (!seatInModel(d.sid, d.socket)) {
       destroyPaneRuntime(d.sid, d.socket);
@@ -3822,8 +3824,9 @@ async function ensureSeatRuntime(key: string): Promise<boolean> {
     if (d.role) setRoleDot(rt, d.role);
     return true;
   } catch {
-    destroyPaneRuntime(d.sid, d.socket);
-    if (d.tries + 1 < 3 && seatInModel(d.sid, d.socket)) deferredRuntimes.set(key, { ...d, tries: d.tries + 1 });
+    const kept = deferredRuntimes.get(key) === d; // 기다린 사이 떼이지 않았다
+    destroyPaneRuntime(d.sid, d.socket); // 등록됐으면 파기(F20) · 장부도 비운다
+    if (kept && d.tries + 1 < 3 && seatInModel(d.sid, d.socket)) deferredRuntimes.set(key, { ...d, tries: d.tries + 1, making: false });
     return false;
   }
 }

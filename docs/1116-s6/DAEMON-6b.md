@@ -212,3 +212,40 @@
 - M4: 같은 팀 생성은 줄을 선다(상한 > 0 일 때만 · 기본 0 = 문 없음). 앞 생성이 60초 넘게 안 끝나면 다음은 `team_worker_admission_busy`. 기존 전체 상한(`CYS_MAX_ACTIVE_WORKERS`)의 같은 경합은 원작자 코드 그대로(이 처분 범위 밖 · 📌).
 - M5: 목적지 팀 기록은 정지 **중**에만 생긴다 — 좌석이 먼저 죽어 주차·복원된 **뒤에** 정지를 걸면 그 항목은 목적지 팀을 모른다(정지 대상 좌석이 이미 없음 · 크레딧 없음). 정지 전환 뒤 새로 들어온 항목은 큐 틱(≤5초) 뒤에 기록. 주차 TTL 은 종전처럼 **데몬 정지** 크레딧은 받지 않는다(원작자 규칙) — 팀 정지만 받으므로 두 정지가 주차 큐에서 비대칭(📌).
 - M6: 팀 키 상한을 넘으면 가장 오래 조용한 팀의 7일 보고 시각이 버려진다(team.stats 가 그 팀을 덜 셈 = 덜 묻는 쪽).
+
+## 7. codex 2R 처분(master#15f7204f · 마지막 회차 · codex 3R 없음)
+
+근거 = `master/reports/verify/codex-1120/s6-r2.md`(BLOCK · B1 blocking · M1·M5 major · M2·M3·M4·M6 = 고쳐짐 확인). master 판정(보안 적정선 3문) = B1 고치지 않음(바깥 유출 0 · 되돌릴 수 있음 · 같은 사용자 경계) + 한계 1줄 + 감사 줄 · M1·M5 고침.
+
+| # | master 처분 | 바꾼 것 | 시험 |
+|---|---|---|---|
+| B1 | 고치지 않음 · 감사 줄 | `team.paused`/`team.resumed` 사건에 `via`(`master_seat` \| `operator_token`) · `caller_pid` · `caller_surface`(additive) — 게이트 `group_pause_caller_ok` 가 통과 자격을 돌려줌. **한계(그대로)**: 좌석에서 떨어져 나간 워커 자식도 같은 UID 로 `operator.token` 을 읽어(`cys seat-group-pause --operator` 가 그 파일을 읽는다) 팀을 멈출 수 있다 — 바깥 유출 0 · 재개로 되돌림 · 사건의 `via:"operator_token"` + pid 가 사후 감사 재료 | `cb1_detached_worker_child_cannot_pause_a_team`(고아 + 토큰 정지 → `via:"operator_token"` · `caller_pid` = 고아 · `caller_surface` = null · master 재개 → `via:"master_seat"` · 그 좌석) |
+| M1 | 고침 | ① 임계영역 인계 전 재확인이 목적지 팀을 **그 자리에서 다시 읽음**(`team::seat_team(s)` · 잠금 밖 스냅숏 재사용 0) ② writer 탐침도 첫 바이트 앞 그 순간 좌석 팀을 읽음(좌석 role·group = 말단 락 — 그 가드를 쥔 채 `pending_queue`·`input_gate` 를 잡는 곳 0 을 grep 으로 확인) ③ `surface.set_group` 이 좌석을 **이미 정지된** 팀으로 옮기면 그 좌석에 정지 전환과 같은 처리(`team::on_seat_regrouped` → 목적지 팀 기록 · 결판 대기 예약 취소 · 확정분 = `queue.inject_uncancellable {reason:"team_pause_regroup"}`) | `cm1_regroup_into_paused_team_during_delivery_holds`(배달 중 이음매에서 set_group 주입 → 배달 0 · inject_aborted 0) · `cm1_regroup_into_paused_team_cancels_reservation_and_probe_rereads` · `cm1_reread_destination_team_without_regroup_handler`(set_group 처리 없이 묶음만 바뀐 경우 — 「다시 읽기」 축 단독) |
+| M5 | 고침 | `inherit_parked_queue` — 주차 TTL 을 살아남은 항목의 주차 중 팀 정지 크레딧을 **꺼내** 항목 `paused_total_secs` 에 더함(`TeamBook::take_parked_credit` · 0 으로 = 다시 주차돼도 겹쳐 안 더함) → 활성 큐 TTL 이 그 값을 봄 | `cm5_inherited_parked_entry_keeps_its_pause_credit`(7시간 주차 + 7시간 팀 정지 → 새 master 좌석 `surface.create` 승계 → `paused_total_secs` ≈ 7h · 다음 틱 만료 0) |
+
+### 7-1. 뮤턴트(P1M 1빌드 · `cargo test --bin cysd team` · 끝나면 `git checkout` · p1m 0)
+
+| 뮤턴트 | 끄는 것 | 붉어진 시험 |
+|---|---|---|
+| 없음 | — | 80/0 → (반례 1건 더한 뒤) 81/0 |
+| r2lock | 임계영역 재확인 = 잠금 밖 스냅숏 | (1차 생존) → `cm1_reread_destination_team_without_regroup_handler` |
+| r2probe | writer 탐침 = 만든 때 스냅숏 | (1차 생존) → `cm1_reread_destination_team_without_regroup_handler` |
+| r2regroup | set_group 정지 팀 좌석 처리 | `cm1_regroup_into_paused_team_cancels_reservation_and_probe_rereads` |
+| r2m5 | 승계 때 크레딧 옮기기 | `cm5_inherited_parked_entry_keeps_its_pause_credit` |
+| r2audit | 감사 줄 필드 | `cb1_detached_worker_child_cannot_pause_a_team` |
+
+- 1차에서 r2lock·r2probe 가 살아남은 까닭(정직): 첫 두 반례는 `surface.set_group` 을 썼고, 그 처리(③)가 항목에 목적지 팀 b 를 적어 두어 스냅숏(a)으로 판정해도 「실린 항목 = 정지 팀」 축이 먼저 막았다(③이 ①②를 가림). 묶음을 직접 바꾸는 반례(`cm1_reread…`)를 더해 ①②를 따로 붙잡음 → 두 뮤턴트 붉음.
+
+### 7-2. 바뀐 원작자 파일 줄(`git diff -U0 150130c4e..HEAD`)
+| 파일 | 줄 | 무엇 |
+|---|---|---|
+| src/bin/cysd/governance.rs | 13377~13379 | 임계영역 재확인 = 목적지 팀 다시 읽기(M1) |
+| 〃 | 13483 | writer 탐침 호출 서명(좌석을 넘김 · M1) |
+| src/bin/cysd/handlers.rs | 548 · 563 · 568 · 570 | 게이트가 통과 자격(`via`)을 돌려줌(B1 감사) |
+| 〃 | 1155~1159 | `inherit_parked_queue` 크레딧 옮기기(M5) |
+| 〃 | 9603~9604 | `surface.set_group` → `on_seat_regrouped`(M1) |
+| 〃 | 9621~9624 · 9637~9640 | `surface.group_pause` — 자격 받기 · 사건 감사 필드(B1) |
+
+### 7-3. 남은 위험(추가분)
+- M1: writer 가 쓰기로 확정한 뒤의 재배정은 못 막는다(정지 전환과 같은 잔여 · 확정분 사건). 묶음이 `set_group` 밖 길로 바뀌면 예약 취소·목적지 기록은 안 돌지만 ①② 다시 읽기가 막는다.
+- M5: 승계 때 크레딧을 꺼낸 항목이 다시 주차되면 주차 TTL 은 새 주차 크레딧만 센다(옮긴 몫은 `paused_total_secs` 쪽 · 주차 규칙은 그 값을 안 봄 = 원작자 규칙).

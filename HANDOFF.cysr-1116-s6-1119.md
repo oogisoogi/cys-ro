@@ -167,3 +167,11 @@
 - 바뀐 동작(사람 쪽): 좌석 밖 터미널에서 팀 정지·재개 = `cys seat-group-pause <팀> --operator`(종전 플래그 없이 통과하던 것이 이제 `forbidden` · 오류문이 안내).
 - 📌 덧붙임(실행 안 함): ① 기존 전체 상한 `CYS_MAX_ACTIVE_WORKERS` 의 셈~삽입 경합(원작자 코드 · M4 와 같은 꼴). ② 역할 주차 TTL 은 데몬 정지 크레딧을 안 받고 이제 팀 정지 크레딧만 받는다(비대칭 · 브리프 「역할 주차 같은 처리」 그대로 따름).
 - codex 2R = master 대기열(이 좌석 codex 호출 0).
+
+## 10. codex 2R 처분(master#15f7204f · 마지막 회차 · 11-20 12:1x~13:0x)
+
+- 근거 = `master/reports/verify/codex-1120/s6-r2.md`(BLOCK) · master 판정 = B1 고치지 않음(한계 1줄 + 감사 줄) · M1·M5 고침 · M2·M3·M4·M6 = codex 가 고쳐짐 확인. 상세 = `docs/1116-s6/DAEMON-6b.md` §7.
+- 커밋: `c6d2587a0`(M1·M5·B1 감사 + 반례 3) · `7f2ec7ee4`(M1 「다시 읽기」 축 단독 반례) · 이 문서 커밋.
+- **B1 한계(그대로 둠)**: 좌석에서 떨어져 나간 워커 자식은 같은 UID 로 `operator.token` 을 읽어(`cys seat-group-pause --operator`) 팀을 멈출 수 있다 — 바깥 유출 0 · 재개로 되돌림 · 같은 사용자 경계. 감사 = `team.paused`/`team.resumed` 사건의 `via`(`master_seat`|`operator_token`) · `caller_pid` · `caller_surface`.
+- M1 = 임계영역 재확인·writer 탐침이 목적지 팀을 그 순간 다시 읽음 + `surface.set_group` 이 이미 정지된 팀으로 옮기면 좌석 처리(예약 취소 · 목적지 기록) · M5 = 승계 때 주차 크레딧 → `paused_total_secs`.
+- 시험: `cargo test --bin cysd team` **77/0 → 81/0**(새 4) · 2R 뮤턴트 5종 전부 붉음(r2lock·r2probe 는 1차 생존 → 단독 반례 추가 뒤 붉음 · 까닭 = DAEMON-6b §7-1) · `cargo test --bin cysd` 전체(12:41~12:58 · 부하 3~6) **3384 · 1 · 17** → 1건 = `seat_proc::tests::seatkeep_input_ack_stall_ends_seat_when_consumer_never_resumes`(사유 전문 `handshake_timeout` = §3 과 같음) · `seatkeep_` 5건 단독 재실행 **5/0**. cys.rs = 2R 무접촉(§9 의 796·0·2 그대로).

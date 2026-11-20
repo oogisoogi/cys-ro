@@ -546,6 +546,45 @@ impl_spawn_policy!(tokio::process::Command);
 /// ⚠대상이 아닌 것: 사용자 콘솔을 물려받아야 하는 전경 자식(`cys run` = `ConsoleScoped`)·
 /// 분리 자식(`Survivor`·`GroupScoped`)은 이 헬퍼가 아니라 `spawn_policy` 로 등급을 직접 적는다.
 /// 이 헬퍼 밖의 `Command::new` 는 `spawn_policy_tests::raw_command_new_census_is_frozen` 이 센다.
+/// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · [master#1a7e7b90] ②): 이 프로세스 토큰이 상승(UAC 관리자)인가 — 윈 `TokenElevation`.
+/// 데몬이 `system.identify` 에 싣고 `cys doctor` 가 작업 스케줄러 cysd 작업 RunLevel 과 대조한다. 윈 밖·판독 실패 = None.
+pub fn process_token_elevated() -> Option<bool> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+        use windows_sys::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+        let mut tok: HANDLE = std::ptr::null_mut();
+        // SAFETY: 의사 핸들 · tok 은 성공 시 닫아야 하는 토큰 핸들.
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut tok) } == 0 {
+            return None;
+        }
+        let mut e = TOKEN_ELEVATION { TokenIsElevated: 0 };
+        let mut need = 0u32;
+        // SAFETY: e 는 TOKEN_ELEVATION 크기의 쓰기 가능한 버퍼.
+        let ok = unsafe {
+            GetTokenInformation(
+                tok,
+                TokenElevation,
+                &mut e as *mut TOKEN_ELEVATION as _,
+                std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+                &mut need,
+            )
+        };
+        // SAFETY: OpenProcessToken 이 준 핸들.
+        unsafe { CloseHandle(tok) };
+        if ok == 0 {
+            None
+        } else {
+            Some(e.TokenIsElevated != 0)
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> std::process::Command {
     let mut cmd = std::process::Command::new(program);
     cmd.spawn_policy(ChildLifetime::Attached);
@@ -7100,7 +7139,9 @@ mod spawn_policy_tests {
                     continue;
                 }
             }
-            if lines[i] != "#[cfg(test)]" {
+            // ★(1.1.16 · TICKET=cysr-1116-debt-d-1119 · B2) 열 0 머리도 줄 시작이 코드일 때만 받는다 — 블록 주석·문자열·raw 문자열 속
+            //   `#[cfg(test)]` 줄을 머리로 읽으면 그 뒤 운영 코드를 걷는다(들여쓴 규칙과 같은 판정).
+            if lines[i] != "#[cfg(test)]" || !lexed.code_start[i] {
                 out.push_str(lines[i]);
                 out.push('\n');
                 i += 1;
@@ -7127,17 +7168,29 @@ mod spawn_policy_tests {
                 let t = lines[h].trim_end();
                 if t.ends_with('{') {
                     // 블록 항목 — 이 저장소 관례상 열 0 의 `}` 가 닫는다.
-                    let mut k = h + 1;
-                    while k < lines.len() && lines[k] != "}" {
-                        k += 1;
-                    }
-                    if k >= lines.len() {
+                    // ★(1.1.16 · TICKET=cysr-1116-debt-d-1119 · B2 · codex 5R major 1) 끝 = 머리 `{` 와 **중괄호 짝**인 줄(들여쓴 규칙과 같은
+                    //   어휘 분석). 종전 「다음 열 0 `}`」 는 비정형 꼴에서 틀렸다: 짝이 `});`·`};` 면 그 줄을 지나 뒤 운영 항목의 `}` 까지
+                    //   걷었고(조용한 소실), 시험 블록 안 raw 문자열의 열 0 `}` 에서 일찍 멈췄다. 짝이 열 0 `}` 한 줄이 아니면 모르는 꼴 = 실패.
+                    let k = match lexed.block_end_line(h) {
+                        Some(k) => k,
+                        None => {
+                            return Err(format!(
+                                "`#[cfg(test)]` 블록(`{}`)을 닫는 짝 `}}` 가 없다 — \
+                                 파일 끝까지 삼켰다",
+                                lines[j].trim()
+                            ))
+                        }
+                    };
+                    if lines[k] != "}" {
                         return Err(format!(
-                            "`#[cfg(test)]` 블록(`{}`)을 닫는 열 0 의 `}}` 가 없다 — \
-                             파일 끝까지 삼켰다",
-                            lines[j].trim()
+                            "`#[cfg(test)]` 블록(`{}`)의 닫힘 꼴(`{}`)을 모른다 — 열 0 `}}` 한 줄만 받는다",
+                            lines[j].trim(),
+                            lines[k]
                         ));
                     }
+                    //   (들여쓴 규칙의 「사이 줄은 더 깊이」 이중 장치는 열 0 에 두지 않는다 — 원작자 파일 pending_requests.rs 의 열 0 시험
+                    //   모듈은 안의 항목도 열 0 이다(`fn protocol_row_data()` · 실측). 종전 규칙은 그 fn 의 `}` 에서 끝을 잡아 뒤 시험 코드를
+                    //   운영으로 셌다.)
                     j = k + 1;
                     break;
                 }
@@ -7829,7 +7882,11 @@ mod spawn_policy_tests {
         for (needle, n) in [
             ("cys::hidden_command(\"whoami\")", 1),
             ("cys::hidden_command(\"tasklist\")", 1),
-            ("cys::hidden_command(\"schtasks\")", 4),
+            // 1.1.16(TICKET=cysr-1116-debt-d-1119 · 추가2 fa789ffde) 4 → 7: 작업 RunLevel 조회(daemon install 보존) · 기본 소켓 작업 경유
+            //   기동(schtasks /Run) · 등록자 상승 판정 — 셋 다 숨김 헬퍼 경유. → 6(0461f82aa · codex 1R): daemon install 의 작업 질의는
+            //   lib `update::win_task::query_task_xml`(crate::hidden_command 경유) 로 옮겼다. → 5(debt-d3 ②): 작업 경유 기동(schtasks /Run)은
+            //   앱과 같이 쓰려고 lib `update::win_task::run_cysd_task`(crate::hidden_command 경유) 로 옮겼다.
+            ("cys::hidden_command(\"schtasks\")", 5),
             ("cys::hidden_command(prog)", 1),
         ] {
             assert_eq!(cli.matches(needle).count(), n, "cys.rs `{needle}` 편입 계수");
@@ -8041,6 +8098,24 @@ mod spawn_policy_tests {
                 .is_err(),
             "닫히지 않은 테스트 블록이 파일 끝까지 삼켜도 통과한다"
         );
+        // ④(1.1.16 · TICKET=cysr-1116-debt-d-1119 · B2) 열 0 블록 끝 = 중괄호 짝 · 머리 = 줄 시작이 코드일 때만.
+        //   (가) 짝이 `});` 인 비정형 꼴 — 다음 열 0 `}`(뒤 운영 fn 의 끝)까지 걷으면 안 된다 = 실패.
+        assert!(
+            production_slice_checked(
+                "#[cfg(test)]\nstatic X: Lazy<u8> = Lazy::new(|| {\n    1\n});\nfn keep() {\n    std::process::Command::new(\"p\");\n}\n"
+            )
+            .is_err(),
+            "B2: 짝이 `}});` 인 시험 항목에서 뒤 운영 fn 까지 삼켰다"
+        );
+        //   (나) 시험 모듈 안 raw 문자열의 열 0 `}` 에서 멈추지 않는다(시험 코드가 운영으로 새지 않음 · 뒤 운영은 남음).
+        let raw = production_slice("#[cfg(test)]\nmod t {\n    const S: &str = r#\"\n}\n\"#;\n    fn drop_me() {}\n}\nfn keep() {}\n");
+        assert!(!raw.contains("drop_me") && raw.contains("fn keep"), "B2: raw 문자열 속 열 0 `}}` 에서 블록 끝을 잡았다: {raw}");
+        //   (다) 블록 주석 속 열 0 `#[cfg(test)]` 는 머리가 아니다 — 그 뒤 운영 fn 이 남아야 한다.
+        let cmt = production_slice("/*\n#[cfg(test)]\nmod t {\n*/\nfn keep() {\n    std::process::Command::new(\"p\");\n}\n");
+        assert!(cmt.contains("fn keep") && cmt.contains("Command::new"), "B2: 주석 속 열 0 가짜 머리로 운영 fn 을 걷었다: {cmt}");
+        //   (라) 안의 항목도 열 0 인 시험 모듈(pending_requests.rs 꼴) — 안쪽 fn 의 `}` 가 아니라 모듈의 짝에서 끝난다.
+        let flat = production_slice("#[cfg(test)]\nmod t {\nfn row() -> u8 {\n    1\n}\nfn drop_me() { Command::new(\"t\"); }\n}\nfn keep() {}\n");
+        assert!(!flat.contains("drop_me") && !flat.contains("Command::new") && flat.contains("fn keep"), "B2: 열 0 항목을 품은 시험 모듈의 끝을 잘못 잡았다: {flat}");
     }
 
     /// ★등급을 선언한 자식에 콘솔 은폐 별칭을 **이어 붙이지 않는다**(병용 금지).

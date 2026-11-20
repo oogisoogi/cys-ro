@@ -275,6 +275,23 @@ pub(crate) fn transcript_path(cfg: Option<&str>, cwd: Option<&str>, sid: Option<
     Ok(cfg_path.join("projects").join(transcript_slug(cwd)).join(format!("{sid}.jsonl")))
 }
 
+/// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · S3-2): 세션 기록 후보 경로(순수) — 데몬이 준 cwd 그대로의 슬러그가 먼저, 그 cwd 를 실제 경로로 푼
+/// 값(`canonical` · 심볼릭 링크 해소 · 맥 `/tmp` → `/private/tmp`)이 다르면 그 슬러그를 다음 후보로. Claude Code 는 프로세스 cwd(getcwd = 풀린 경로)로
+/// 프로젝트 폴더를 만들어, 링크 cwd 좌석에서는 첫 후보가 늘 없었다(조각 3 §11 실측 「전달 확인 중 → 오래 걸려요」). 열기는 두 후보 모두
+/// [`open_bound`](설정 폴더 뿌리 + 링크 안 따름)를 지나므로 슬러그 글자만 다르고 뿌리 밖으로는 못 간다.
+pub(crate) fn transcript_candidates(cfg: Option<&str>, cwd: Option<&str>, sid: Option<&str>, canonical: Option<&str>) -> Result<Vec<std::path::PathBuf>, &'static str> {
+    let first = transcript_path(cfg, cwd, sid)?;
+    let mut out = vec![first];
+    if let Some(c) = canonical.filter(|c| Some(*c) != cwd && std::path::Path::new(c).is_absolute()) {
+        if let Ok(p) = transcript_path(cfg, Some(c), sid) {
+            if p != out[0] {
+                out.push(p);
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// 결속 파일 열기(파일 IO) — 신뢰 뿌리(설정 폴더)를 연 **폴더 핸들**에서 상대 경로 요소를 하나씩 링크를 따르지 않고 연다(유닉스 `openat`
 /// + `O_NOFOLLOW`) — 중간 폴더·파일 어느 자리에 링크가 있거나 도중에 바뀌어도 뿌리 밖·다른 파일로 갈 수 없다(codex 2R·3R major).
 /// 경로 문자열로 다시 찾아 확인하는 단계가 없다(확인·열기 사이 바꿔치기 0). 뿌리 자체(설정 폴더)는 데몬이 준 값이라 링크여도 따른다.
@@ -350,14 +367,23 @@ pub async fn chat_transcript(socket: Option<String>, surface_id: u64, after_offs
         return Ok(json!({"status": "unknown", "why": "no_seat"}));
     };
     let sid = row_of(&org, surface_id).and_then(|r| r["registered_session_id"].as_str()).map(str::to_owned);
-    let path = match transcript_path(lrow["claude_config_dir"].as_str(), lrow["cwd"].as_str(), sid.as_deref()) {
+    // ★1.1.16(S3-2): cwd 를 실제 경로로 푼 값도 후보로(transcript_candidates 머리 주석) — 같은 세션 id 의 다른 프로젝트 폴더는 여전히 뒤지지 않는다.
+    let canonical = lrow["cwd"].as_str().and_then(|c| std::fs::canonicalize(c).ok()).and_then(|p| p.to_str().map(str::to_owned));
+    let paths = match transcript_candidates(lrow["claude_config_dir"].as_str(), lrow["cwd"].as_str(), sid.as_deref(), canonical.as_deref()) {
         Ok(p) => p,
         Err(why) => return Ok(json!({"status": "unknown", "why": why})),
     };
     let sid = sid.unwrap_or_default();
     // 다른 프로젝트 폴더는 뒤지지 않는다(codex 1R major — 같은 이름 파일이 다른 cwd 의 기록일 수 있음). 링크를 풀어 설정 폴더 안인지 확인.
     let cfg = lrow["claude_config_dir"].as_str().unwrap_or_default();
-    let file = match open_bound(std::path::Path::new(cfg), &path) {
+    let mut opened = Err("not_found");
+    for p in &paths {
+        opened = open_bound(std::path::Path::new(cfg), p);
+        if opened.is_ok() {
+            break;
+        }
+    }
+    let file = match opened {
         Ok(f) => f,
         Err(why) => return Ok(json!({"status": "unknown", "why": why, "session_id": sid})),
     };
@@ -545,6 +571,45 @@ mod tests {
         assert_eq!(transcript_path(Some("/h"), Some("/h"), None).unwrap_err(), "no_session");
         assert_eq!(transcript_path(Some("/h"), Some("/h"), Some("../../etc/pw")).unwrap_err(), "bad_session_id");
         assert_eq!(transcript_path(Some("/h"), Some("/h"), Some("short")).unwrap_err(), "bad_session_id");
+    }
+
+    /// ★1.1.16(S3-2) 링크 cwd = 풀린 경로의 슬러그가 둘째 후보 · 같으면 하나 · 상대 경로·잘못된 세션 id 는 후보를 만들지 않음.
+    #[test]
+    fn debt_d_s32_transcript_candidates_add_the_resolved_cwd() {
+        let id = Some("0a4b82d0-9e01-4b29-aaaa-bbbbbbbbbbbb");
+        let c = transcript_candidates(Some("/h/.cys/claude"), Some("/tmp/x"), id, Some("/private/tmp/x")).unwrap();
+        assert_eq!(c, vec![
+            std::path::PathBuf::from("/h/.cys/claude/projects/-tmp-x/0a4b82d0-9e01-4b29-aaaa-bbbbbbbbbbbb.jsonl"),
+            std::path::PathBuf::from("/h/.cys/claude/projects/-private-tmp-x/0a4b82d0-9e01-4b29-aaaa-bbbbbbbbbbbb.jsonl"),
+        ]);
+        assert_eq!(transcript_candidates(Some("/h/.cys/claude"), Some("/h/m1"), id, Some("/h/m1")).unwrap().len(), 1, "같은 경로 = 하나");
+        assert_eq!(transcript_candidates(Some("/h/.cys/claude"), Some("/h/m1"), id, None).unwrap().len(), 1);
+        assert_eq!(transcript_candidates(Some("/h/.cys/claude"), Some("/h/m1"), id, Some("rel/x")).unwrap().len(), 1, "상대 경로 후보 금지");
+        assert_eq!(transcript_candidates(Some("/h/.cys/claude"), Some("/h/m1"), Some("../x"), Some("/p")).unwrap_err(), "bad_session_id");
+    }
+
+    /// 링크 cwd 실물 — 풀린 경로 쪽 프로젝트 폴더의 세션 파일을 두 번째 후보로 연다(뿌리 안 · 첫 후보는 없음).
+    #[cfg(unix)]
+    #[test]
+    fn debt_d_s32_symlinked_cwd_opens_the_resolved_slug_file() {
+        let base = std::env::temp_dir().join(format!("cys-s32-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let real = base.join("real-work");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = base.join("link-work");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let cfg = base.join("cfg");
+        let id = "0a4b82d0-9e01-4b29-aaaa-bbbbbbbbbbbb";
+        let canon = std::fs::canonicalize(&link).unwrap();
+        let want = cfg.join("projects").join(transcript_slug(canon.to_str().unwrap()));
+        std::fs::create_dir_all(&want).unwrap();
+        std::fs::write(want.join(format!("{id}.jsonl")), "{}\n").unwrap();
+        let c = transcript_candidates(cfg.to_str(), link.to_str(), Some(id), canon.to_str()).unwrap();
+        let first = open_bound(&cfg, &c[0]);
+        let second = open_bound(&cfg, &c[1]);
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(first.is_err(), "링크 그대로의 슬러그에는 파일이 없다(전제)");
+        assert!(second.is_ok(), "풀린 경로 슬러그의 세션 파일을 못 열었다: {:?}", second.err());
     }
 
     #[test]

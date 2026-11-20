@@ -83,6 +83,27 @@ fn spawn_outside_job(params: &Value) -> Result<Value, String> {
     }
 }
 
+/// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · S4-4 · codex 1R blocking ③) 승인 집행 점유 — 같은 항목 번호에 키를 넣는 feed.reply 는 하나만(데몬 전역 ·
+/// 시험 데몬 여럿이 한 프로세스에 있어도 항목 번호가 달라 겹치지 않는다). Drop 에서 놓는다.
+struct ActuationClaim(String);
+
+fn actuation_claims() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static CLAIMS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+    CLAIMS.get_or_init(Default::default)
+}
+
+impl ActuationClaim {
+    fn take(request_id: &str) -> Option<Self> {
+        actuation_claims().lock().unwrap_or_else(|e| e.into_inner()).insert(request_id.to_string()).then(|| ActuationClaim(request_id.to_string()))
+    }
+}
+
+impl Drop for ActuationClaim {
+    fn drop(&mut self) {
+        actuation_claims().lock().unwrap_or_else(|e| e.into_inner()).remove(&self.0);
+    }
+}
+
 fn param_str(params: &Value, key: &str) -> Option<String> {
     params
         .get(key)
@@ -7190,6 +7211,8 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                     "version": env!("CARGO_PKG_VERSION"),
                     // ★1.1.8 U2 2판(codex 1R C9): 사후 검증 V1 이 **돌고 있는 데몬**의 빌드를 독립 관측한다(가산 키).
                     "build_id": cys::pack::build_id(),
+                    // ★1.1.16(TICKET=cysr-1116-debt-d-1119 ②): 데몬 토큰 상승 여부(윈 · 그 밖 null) — doctor 가 작업 RunLevel 과 대조(가산 키).
+                    "token_elevated": cys::process_token_elevated(),
                     "started_at": daemon.started_at,
                     "latest_seq": daemon.bus.latest_seq(),
                     "surface_count": daemon.surfaces.lock().unwrap().len(),
@@ -11123,12 +11146,34 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             //   자신은 제외 · allow/deny 만. 창이 아직 화면에 있고 선택 줄이 「1. Yes」일 때만 Return/Esc(아니면 키 0).
             //   창이 이미 사라졌으면 항목을 stale-cleared 로 닫고 그 사실을 돌려준다(누를 것이 없다 · 키 0).
             let mut actuated: Option<&'static str> = None;
+            // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · S4-4 · codex 1R blocking ③) 집행 점유 — 키를 넣는 응답은 항목 번호 하나에 한 번만. 점유는 해소
+            //   (아래 resolve)까지 쥐고 어느 갈래로 끝나든 놓는다(RAII). 점유 뒤 「아직 대기」 를 다시 본다(위 precheck 는 잠금을 놓았다 — 그 사이
+            //   먼저 끝난 응답이 해소했으면 키 0). 동시에 온 둘째 응답 = approval_actuation_in_progress(키 0).
+            let mut _actuation_claim: Option<ActuationClaim> = None;
             if let Some(item_sid) = screen_item_sid {
                 if matches!(decision.as_str(), "allow" | "deny")
                     && caller_sid != Some(item_sid)
                     && (operator_ok || seat_is_operator(daemon, caller_sid))
                 {
-                    match crate::governance::actuate_screen_approval(daemon, item_sid, decision == "allow") {
+                    let no_claim = cfg!(test) && std::env::var("CYS_U1_MUTANT").as_deref() == Ok("S44-NO-CLAIM");
+                    if !no_claim {
+                        let Some(claim) = ActuationClaim::take(&request_id) else {
+                            return Reply::Single(err_response(
+                                &id,
+                                "approval_actuation_in_progress",
+                                "같은 승인 항목에 다른 응답이 키를 넣는 중이다 — 키를 넣지 않았다",
+                            ));
+                        };
+                        _actuation_claim = Some(claim);
+                        let still = daemon.feed_items.lock().unwrap().iter().any(|i| i.request_id == request_id && i.status == "pending");
+                        if !still {
+                            return Reply::Single(err_response(&id, "invalid_params", "item already resolved"));
+                        }
+                    }
+                    // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · S4-4 ②): 지문을 실은 요청만 키 직전 지문 대조(다르면 키 0 · approval_fingerprint_mismatch ·
+                    //   항목은 대기 유지) · 지문 없는 옛 호출 = 종전(master#75867925 결정 A).
+                    let want_fp = param_str(&params, "screen_fingerprint").filter(|f| !f.is_empty());
+                    match crate::governance::actuate_screen_approval_checked(daemon, item_sid, decision == "allow", want_fp.as_deref()) {
                         Ok(key) => {
                             actuated = Some(key);
                             daemon.bus.publish(
@@ -11145,6 +11190,13 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                                 &id,
                                 "approval_screen_gone",
                                 "승인 창이 이미 화면에 없다 — 키를 넣지 않았고 항목은 stale-cleared 로 닫았다",
+                            ));
+                        }
+                        Err("fingerprint_mismatch") => {
+                            return Reply::Single(err_response(
+                                &id,
+                                "approval_fingerprint_mismatch",
+                                "허락하려던 창과 지금 좌석의 창이 다르다(지문 불일치) — 키를 넣지 않았고 항목은 대기 중이다 · 목록을 다시 받아 확인하라",
                             ));
                         }
                         Err(why) => {
@@ -11210,6 +11262,12 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             // ★(0.14.44 · C3) 파생 칸 둘의 재료 — **잠금을 하나씩** 쥐었다 놓는다(겹쳐 쥐지 않는다): 살아 있는 좌석 집합 → 지금 결정을 기다리는 연결 집합 → 항목 목록.
             let alive_seats = feed_list_alive_seats(daemon);
             let daemon_started_at = daemon.started_at;
+            // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · S4-4 데몬 지문 계약 ①): 대기 중인 데몬 감지 승인 항목의 **감지 때** 창 지문(Daemon.approval_fps) —
+            //   ★codex 1R blocking ①: 종전 = 좌석의 **지금** 창 지문을 그 좌석 모든 대기 항목에 붙여, 옛 항목 A 에 새 창 B 의 지문이 실렸다(A 를 보고
+            //   허락하면 B 에 Return). 감지 때 값을 실으면 창이 바뀐 뒤의 허락은 키 직전 대조에서 어긋난다(키 0). 감지 주기는 창이 바뀐 대기 항목을
+            //   stale 로 닫고 새 항목을 세운다(governance check_approvals). 칸이 있다 = 「집행 직전 지문 대조 지원」 표지.
+            //   항목 잠금을 쥐기 전에 사본을 뜬다(잠금 겹쳐 쥐지 않음).
+            let fingerprints: std::collections::HashMap<String, String> = daemon.approval_fps.lock().unwrap().clone();
             let items = daemon.feed_items.lock().unwrap();
             // ★대기 연결 집합은 **항목 잠금을 쥔 채**(기존 잠금 순서 feed_items → feed_waiters — `feed.push --wait` 와 같다) 뜬다: `--wait` 항목이 보이는 순간
             //   waiter 는 이미 있다는 push 쪽의 보장과 같은 시점에 맞춘다(그 사이에 끼면 방금 올라온 대기 항목이 `waiter:false` 로 나가 「확인」이 거부를 보낸다 — 리뷰 1 의 4번).
@@ -11223,7 +11281,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                         .unwrap_or(true)
                 })
                 .map(|i| {
-                    json!({
+                    let mut row = json!({
                         "request_id": i.request_id, "kind": i.kind, "title": i.title,
                         "body": i.body, "surface_id": i.surface_id, "status": i.status,
                         "decision": i.decision, "created_at": i.created_at,
@@ -11247,7 +11305,14 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                         //   "올린 좌석이 사라졌다"를 좌석 번호로 말할 수 없다).
                         "waiter": waiting.contains(&i.request_id),
                         "publisher_alive": feed_publisher_alive(i.publisher_surface, i.created_at, daemon_started_at, &alive_seats),
-                    })
+                    });
+                    // ★1.1.16(S4-4 ①) 가산 키 — 대기 중 데몬 감지 승인 항목 + 지금 창 지문이 있을 때만(없으면 칸 없음 = 직접 허락 미지원).
+                    if i.status == "pending" && i.kind == "approval" && crate::state::is_daemon_issued(&i.request_id) {
+                        if let Some(fp) = fingerprints.get(&i.request_id) {
+                            row["screen_fingerprint"] = json!(fp);
+                        }
+                    }
+                    row
                 })
                 .collect();
             Reply::Single(ok_response(&id, json!({"items": list})))
@@ -21276,6 +21341,155 @@ mod tests {
         assert!(self_bytes.is_empty(), "대상 좌석 자기 reply = 키 0");
     }
 
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · S4-4 데몬 지문 계약 ①②④ · master#75867925 결정 A): feed.list 의 대기 데몬 감지 승인 항목에
+    /// `screen_fingerprint`(지금 창) · 그 지문을 실은 allow 는 키 직전 재계산과 같을 때만 Return · 창이 바뀌었으면 키 0 +
+    /// `approval_fingerprint_mismatch`(항목 대기 유지) · 지문 없는 옛 호출 = 종전 · 창 없는 좌석 = 칸 없음.
+    #[test]
+    fn debt_d_s44_fingerprint_contract_list_then_reply() {
+        let _g = ACL_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (daemon, dir) = daemon_with_acl("d24-fp", r#"{"default":"allow","rules":[]}"#);
+        let pid = 999_880;
+        let _master = v7_pane(&daemon, "master", pid);
+        let fp_of = |rid: &str| -> Option<String> {
+            let l = d12_rpc(&daemon, pid, "feed.list", json!({"status": "pending"}));
+            l["result"]["items"].as_array().unwrap().iter()
+                .find(|i| i["request_id"] == rid)
+                .and_then(|i| i["screen_fingerprint"].as_str().map(String::from))
+        };
+        // ① 창이 있으면 지문 · 같은 창 = 같은 지문 · 창 없으면 칸 없음.
+        let (seat, sink) = d24_seat(&daemon, &dir, "fp-ok", pid + 1, true);
+        let rid = d24_item(&daemon, seat.id);
+        let fp = fp_of(&rid).expect("대기 데몬 감지 항목에 지문 칸이 없다");
+        assert_eq!(fp.len(), 16, "{fp}");
+        assert_eq!(fp_of(&rid).as_deref(), Some(fp.as_str()), "같은 창인데 지문이 바뀌었다");
+        let (bare, _bare_sink) = d24_seat(&daemon, &dir, "fp-bare", pid + 2, false);
+        let bare_rid = d24_item(&daemon, bare.id);
+        assert_eq!(fp_of(&bare_rid), None, "창이 없는 좌석 항목에 지문이 실렸다");
+        // ② 같은 지문 → Return.
+        let ok = d12_rpc(&daemon, pid, "feed.reply", json!({"request_id": rid, "decision": "allow", "screen_fingerprint": fp}));
+        assert_eq!(ok["result"]["actuated"], json!("return"), "{ok}");
+        assert_eq!(d24_sink_bytes(&sink, true), b"\r".to_vec());
+        // ② 창이 바뀜(같은 모양 · 다른 명령) → 옛 지문 allow = 키 0 · mismatch · 대기 유지.
+        let (seat2, sink2) = d24_seat(&daemon, &dir, "fp-swap", pid + 3, true);
+        let rid2 = d24_item(&daemon, seat2.id);
+        let old_fp = fp_of(&rid2).expect("지문");
+        {
+            let mut parser = seat2.parser.lock().unwrap();
+            parser.process(b"\x1b[2J\x1b[H");
+            let b = cys::first_run_gates::fixtures::LIVE_PERMISSION_PROMPT.replace("cargo test --lib", "rm -rf ~/work").replace('\n', "\r\n");
+            parser.process(b.as_bytes());
+            parser.process(b"\x1b[4;1H");
+        }
+        // ★codex 1R blocking ①: 목록은 **감지 때** 지문을 싣는다(옛 항목에 새 창 지문을 붙이지 않음) · 지금 창 지문은 다르다.
+        assert_eq!(fp_of(&rid2).as_deref(), Some(old_fp.as_str()), "목록이 옛 항목에 지금 창 지문을 붙였다");
+        let new_fp = crate::governance::approval_fingerprint_now(&seat2).expect("바뀐 창에도 지문");
+        assert_ne!(new_fp, old_fp, "창 내용이 바뀌었는데 지문이 같다");
+        let mm = d12_rpc(&daemon, pid, "feed.reply", json!({"request_id": rid2, "decision": "allow", "screen_fingerprint": old_fp}));
+        assert_eq!(mm["error"]["code"], json!("approval_fingerprint_mismatch"), "{mm}");
+        assert!(d24_sink_bytes(&sink2, false).is_empty(), "지문이 다른데 키가 들어갔다");
+        let st = daemon.feed_items.lock().unwrap().iter().find(|i| i.request_id == rid2).map(|i| i.status.clone());
+        assert_eq!(st.as_deref(), Some("pending"), "불일치 뒤 항목은 대기 유지");
+        // ④ 지문 없는 옛 호출 = 종전(지금 창에 Return).
+        let legacy = d12_rpc(&daemon, pid, "feed.reply", json!({"request_id": rid2, "decision": "allow"}));
+        assert_eq!(legacy["result"]["actuated"], json!("return"), "{legacy}");
+        assert_eq!(d24_sink_bytes(&sink2, true), b"\r".to_vec());
+        d12_cleanup(&daemon, &dir);
+    }
+
+    fn d2_paint(seat: &crate::state::Surface, cmd: &str) {
+        let mut parser = seat.parser.lock().unwrap();
+        parser.process(b"\x1b[2J\x1b[H");
+        let b = cys::first_run_gates::fixtures::LIVE_PERMISSION_PROMPT.replace("cargo test --lib", cmd).replace('\n', "\r\n");
+        parser.process(b.as_bytes());
+        parser.process(b"\x1b[4;1H");
+    }
+
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · S4-4 · codex 1R blocking ①) 감지 주기 재결박: 대기 항목의 감지 때 지문과 지금 창 지문이 다르면 옛 항목을
+    /// stale-cleared 로 닫는다(새 항목은 감지 주기가 세운다) · 같으면 그대로 · 배선 = check_approvals 의 코얼레싱 자리(글자 핀).
+    #[test]
+    fn debt_d_s44_stale_item_is_closed_when_the_seat_shows_a_different_prompt() {
+        let _g = ACL_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (daemon, dir) = daemon_with_acl("d2-rebind", r#"{"default":"allow","rules":[]}"#);
+        let (seat, _sink) = d24_seat(&daemon, &dir, "rebind", 999_870, true);
+        let rid = d24_item(&daemon, seat.id);
+        assert!(daemon.approval_fps.lock().unwrap().contains_key(&rid), "감지 때 지문을 묶지 않았다");
+        assert!(!crate::governance::approval_rebind_stale(&daemon, &seat), "같은 창인데 닫았다");
+        d2_paint(&seat, "rm -rf ~/other");
+        assert!(crate::governance::approval_rebind_stale(&daemon, &seat), "다른 창인데 옛 항목을 그대로 뒀다");
+        let st = daemon.feed_items.lock().unwrap().iter().find(|i| i.request_id == rid).map(|i| (i.status.clone(), i.decision.clone()));
+        assert_eq!(st, Some(("resolved".to_string(), Some("stale-cleared".to_string()))));
+        let src = include_str!("governance.rs");
+        let ca = &src[src.find("fn check_approvals(").unwrap()..];
+        assert!(ca[..ca.find("\n}\n").unwrap()].contains("approval_rebind_stale(daemon, &s)"), "감지 주기 배선이 없다");
+        d12_cleanup(&daemon, &dir);
+    }
+
+    /// ★1.1.16(S4-4 · codex 1R blocking ②) writer 쓰기 직전 재대조: 대조를 통과한 허락이 writer 큐에서 기다리는 동안 창이 바뀌면 키 0 ·
+    /// 대조군(창 그대로)은 같은 대기 뒤 Return 이 실제로 들어간다.
+    #[test]
+    fn debt_d_s44_writer_rechecks_the_fingerprint_right_before_the_key() {
+        let _g = ACL_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (daemon, dir) = daemon_with_acl("d2-wrecheck", r#"{"default":"allow","rules":[]}"#);
+        let pid = 999_860;
+        let _master = v7_pane(&daemon, "master", pid);
+        for (tag, swap) in [("wr-swap", true), ("wr-same", false)] {
+            let (seat, sink) = d24_seat(&daemon, &dir, tag, pid + if swap { 1 } else { 2 }, true);
+            let rid = d24_item(&daemon, seat.id);
+            let fp = daemon.approval_fps.lock().unwrap().get(&rid).cloned().expect("지문");
+            // writer 를 0.6초 붙잡아 둔다(앞 요청) — 그동안 대조를 통과한 키는 큐에서 기다린다.
+            seat.write_tx.send(crate::state::WriteReq::DataAfter { bytes: Vec::new(), delay_ms: 600 }).unwrap();
+            let r = d12_rpc(&daemon, pid, "feed.reply", json!({"request_id": rid, "decision": "allow", "screen_fingerprint": fp}));
+            assert_eq!(r["result"]["actuated"], json!("return"), "{r}");
+            if swap {
+                d2_paint(&seat, "rm -rf ~/late");
+                std::thread::sleep(std::time::Duration::from_millis(900));
+                assert!(d24_sink_bytes(&sink, false).is_empty(), "대조 뒤 창이 바뀌었는데 writer 가 키를 썼다");
+            } else {
+                assert_eq!(d24_sink_bytes(&sink, true), b"\r".to_vec(), "대조군: 창 그대로인데 키가 안 들어갔다");
+            }
+        }
+        d12_cleanup(&daemon, &dir);
+    }
+
+    /// ★1.1.16(S4-4 · codex 1R blocking ③) 집행 점유: 같은 항목에 키를 넣는 중인 응답이 있으면 둘째 응답 = approval_actuation_in_progress · 키 0 ·
+    /// 항목 대기 유지 · 점유가 풀리면 정상 집행.
+    #[test]
+    fn debt_d_s44_concurrent_reply_does_not_actuate_twice() {
+        let _g = ACL_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (daemon, dir) = daemon_with_acl("d2-claim", r#"{"default":"allow","rules":[]}"#);
+        let pid = 999_850;
+        let _master = v7_pane(&daemon, "master", pid);
+        let (seat, sink) = d24_seat(&daemon, &dir, "claim", pid + 1, true);
+        let rid = d24_item(&daemon, seat.id);
+        let held = ActuationClaim::take(&rid).expect("점유");
+        let busy = d12_rpc(&daemon, pid, "feed.reply", json!({"request_id": rid, "decision": "allow"}));
+        assert_eq!(busy["error"]["code"], json!("approval_actuation_in_progress"), "{busy}");
+        assert!(d24_sink_bytes(&sink, false).is_empty(), "점유 중인데 둘째 응답이 키를 넣었다");
+        let st = daemon.feed_items.lock().unwrap().iter().find(|i| i.request_id == rid).map(|i| i.status.clone());
+        assert_eq!(st.as_deref(), Some("pending"));
+        drop(held);
+        let ok = d12_rpc(&daemon, pid, "feed.reply", json!({"request_id": rid, "decision": "allow"}));
+        assert_eq!(ok["result"]["actuated"], json!("return"), "{ok}");
+        assert_eq!(d24_sink_bytes(&sink, true), b"\r".to_vec());
+        assert!(ActuationClaim::take(&rid).is_some(), "해소 뒤 점유가 남았다");
+        d12_cleanup(&daemon, &dir);
+    }
+
+    /// 지문 정규화(순수) — 상자 테두리·선택 표시·공백 차이는 같은 창 · 글자가 바뀌면 다른 창 · 판독 범위 없음 = None.
+    #[test]
+    fn debt_d_s44_fingerprint_normalization() {
+        let rows = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+        let rule = "────────────────────────────────────────";
+        let a = rows(&["위 출력", rule, " Bash command", "  │ rm -rf build │", " Do you want to proceed?", " ❯ 1. Yes", "   2. No"]);
+        let b = rows(&["다른 위 출력", rule, "Bash   command", "  rm -rf build", "Do you want to proceed?", "  1. Yes", " ❯ 2. No"]);
+        let c = rows(&["위 출력", rule, " Bash command", "  rm -rf build2", " Do you want to proceed?", " ❯ 1. Yes", "   2. No"]);
+        let fa = crate::governance::approval_screen_fingerprint(&a, 5, "❯").unwrap();
+        assert_eq!(Some(fa.clone()), crate::governance::approval_screen_fingerprint(&b, 6, "❯"), "가로줄 위·테두리·선택 표시·공백은 지문 밖");
+        assert_ne!(Some(fa), crate::governance::approval_screen_fingerprint(&c, 5, "❯"));
+        assert_eq!(crate::governance::approval_screen_fingerprint(&rows(&["그냥 글", "❯ "]), 0, "❯"), None, "판독 범위 없음");
+        assert_eq!(crate::governance::approval_screen_fingerprint(&rows(&["x", rule]), 0, "❯"), None, "범위가 비면 없음");
+    }
+
     /// ★D24ⓐ 창이 이미 사라진 뒤의 오퍼레이터 reply → 키 0 · `approval_screen_gone` · 항목 stale-cleared(master 결정 시험).
     /// 선택 줄이 「1. Yes」가 아니면(사람이 2번으로 옮김) allow 를 넣지 않는다(`approval_actuation_refused` · 항목 유지).
     #[test]
@@ -25433,7 +25647,7 @@ mod tests {
             directive_hash: "deadbeef".into(),
         });
         crate::governance::persist_topology(&daemon);
-        let saved = crate::governance::load_topology(&daemon);
+        let saved = crate::governance::load_saved_topology(&daemon).0;
         let entry = saved
             .as_array()
             .unwrap()
@@ -25456,7 +25670,7 @@ mod tests {
              "cwd":"/tmp","title":"t","session_id":null}
         ]});
         std::fs::write(dir.join("topology.json"), legacy.to_string()).unwrap();
-        let saved = crate::governance::load_topology(&daemon);
+        let saved = crate::governance::load_saved_topology(&daemon).0;
         let entry = &saved.as_array().unwrap()[0];
         assert!(
             entry["pack_reinject"].is_null(),

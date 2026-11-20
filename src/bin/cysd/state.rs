@@ -4874,6 +4874,10 @@ pub struct Daemon {
     /// 암호학적으로 완전 구분 불가 — 이건 윈도우 축소·탐지(방어심화)이지 암호보증이 아니다.
     pub master_claimed_at: Mutex<Option<f64>>,
     pub feed_items: Mutex<Vec<FeedItem>>,
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · S4-4 · codex 1R blocking ①) 데몬 감지 승인 항목의 **감지 때** 창 지문(request_id → 16자).
+    /// feed.list 가 이 값을 싣고 feed.reply 가 키 직전 지금 창과 대조한다 — 같은 좌석의 창이 바뀌면(옛 항목 · 새 창) 대조가 어긋나 키 0.
+    /// 대기가 아닌 항목 것은 새 항목을 묶을 때 걷는다. 데몬 재시작 뒤 복원된 옛 항목 = 칸 없음(지문 없음 = 직접 허락 표지 없음).
+    pub approval_fps: Mutex<HashMap<String, String>>,
     pub feed_waiters: Mutex<HashMap<String, tokio::sync::oneshot::Sender<String>>>,
     /// ★GUI 오퍼레이터 승인(오너 2026-07-15): 기동 시 재발급되는 오퍼레이터 토큰 —
     /// state_dir의 `operator.token`(unix 0600) 파일과 동일 값. feed.reply가 이 값과 일치하는
@@ -7087,6 +7091,7 @@ impl Daemon {
             // 벡터-9 방어심화: 기동 시 master 미승계 → None (첫 claim_role("master")에서 기록).
             master_claimed_at: Mutex::new(None),
             feed_items: Mutex::new(restored),
+            approval_fps: Mutex::new(HashMap::new()),
             feed_waiters: Mutex::new(HashMap::new()),
             operator_token,
             feed_persist_lock: Mutex::new(()),
@@ -7284,6 +7289,22 @@ impl Daemon {
             wait: false,
         };
         self.feed_items.lock().unwrap().push(item.clone());
+        // ★1.1.16(S4-4 · codex 1R blocking ①) 승인 감지 항목은 지금(감지 때) 창 지문을 묶는다(항목 잠금을 놓은 뒤 · 좌석 파서 잠금은 짧게).
+        if kind == "approval" {
+            if let Some(fp) = surface_id.and_then(|sid| self.get_surface(sid)).and_then(|s| crate::governance::approval_fingerprint_now(&s)) {
+                let pending: std::collections::HashSet<String> = self
+                    .feed_items
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|i| i.status == "pending")
+                    .map(|i| i.request_id.clone())
+                    .collect();
+                let mut fps = self.approval_fps.lock().unwrap();
+                fps.retain(|rid, _| pending.contains(rid));
+                fps.insert(request_id.clone(), fp);
+            }
+        }
         self.persist_feed_item(&item);
         self.bus.publish(
             "feed.item.created",
@@ -10446,7 +10467,7 @@ mod tests {
             *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
         }
         crate::governance::persist_topology(&daemon);
-        let entries = crate::governance::load_topology(&daemon);
+        let entries = crate::governance::load_saved_topology(&daemon).0;
         let get = |role: &str| {
             entries.as_array().unwrap().iter().find(|e| e["role"].as_str() == Some(role)).cloned()
                 .unwrap_or_else(|| panic!("{role} entry 영속"))
@@ -10522,7 +10543,7 @@ mod tests {
         );
         // 영속 → 재로드 라운드트립: 기록된 config_dir이 topology에 살아 있어야 restore가 인라인할 수 있다.
         crate::governance::persist_topology(&daemon);
-        let entries = crate::governance::load_topology(&daemon);
+        let entries = crate::governance::load_saved_topology(&daemon).0;
         let found = entries
             .as_array()
             .unwrap()
@@ -10540,7 +10561,7 @@ mod tests {
         let dir = state_dir(&sock);
         let old = r#"{"updated_at":1.0,"entries":[{"role":"worker-9","agent":"claude","cwd":"/x"}]}"#;
         std::fs::write(dir.join("topology.json"), old).unwrap();
-        let loaded = crate::governance::load_topology(&daemon);
+        let loaded = crate::governance::load_saved_topology(&daemon).0;
         let e9 = loaded
             .as_array()
             .unwrap()

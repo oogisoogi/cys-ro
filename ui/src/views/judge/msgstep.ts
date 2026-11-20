@@ -31,7 +31,8 @@ export const SENDING_SILENT_MS = 3_000;
  *  ⚠출처(검토 지적 1 · 코드 확인): 기준판 3a012bf4 에서는 이 사건을 `surface.send_key` 거부 모드(handlers.rs approval_write_guard)만 낸다 —
  *  대화 화면 원자 제출(Inject guard:None · handlers.rs:3779~3785)은 내지 않는다. 데몬 고침 integ/1116-backlog e4499d72 의
  *  `approval_enter_guard` 가 **원자 제출 Enter 직전 거부에 같은 이름·같은 칸**으로 낸다(통합 빌드에서 이 짝짓기가 뜻을 가짐).
- *  요청 번호가 없어 다른 호출자(send_key 거부)의 사건이 붙을 수 있다 → 단계는 「확인 중」(모름)만 · 세션 기록이 오면 전달됨으로 고쳐짐 · 다시 보내기 0.
+ *  ★1.1.16(S3-1): 원자 제출 거부 사건에는 데몬이 요청 번호(`request_id`)를 싣는다 → 번호로만 짝짓는다(applyRefusedById) · 이 창 규칙은 **번호 없는 사건**
+ *  (send_key 거부 모드 · 옛 데몬)에만 남는다 — 그때는 다른 호출자의 사건이 붙을 수 있어 단계는 「확인 중」(모름)만 · 세션 기록이 오면 전달됨으로 고쳐짐 · 다시 보내기 0.
  *  그 사건에는 요청 번호가 없다 → 같은 좌석 · 보낸 지 이 시간 안 · 아직 증거 없는 **가장 최근** 말 하나만(쓰기는 한 번에 1건이라 겹치지 않음).
  *  창 = 원자 제출 최대 0.84초(0.5 M1) + 사건 전달 여유. 설계 목표값. */
 export const REFUSED_AT_WRITE_WINDOW_MS = 5_000;
@@ -79,6 +80,8 @@ export interface Msg {
   notBefore?: number;
   /** 다시 보내기를 이미 썼는가(확정 실패 때 1회만 · NFR-R1) */
   retried?: boolean;
+  /** ★1.1.16(TICKET=cysr-1116-debt-d-1119 · S3-1): 원자 제출 응답의 데몬 요청 번호(`result.request_id`) — 쓰기 직전 거부 사건을 번호로 짝짓는다 */
+  requestId?: string;
   /** (조각 3) 원자 제출을 보낸 마스터 좌석 번호 — 좌석에 걸린 데몬 사건(쓰기 직전 거부)을 이 말에 잇는 데 씀 */
   seat?: number;
 }
@@ -282,8 +285,21 @@ export function applyRefusedAtWrite(msgs: readonly Msg[], seat: number, now: num
   }
   if (pick < 0) return [...msgs];
   return msgs.map((m, i) =>
-    i === pick ? { ...m, step: "checking" as Step, code: "refused_at_write", note: "마스터 창에 확인할 것이 떠서 이 말의 제출이 멈췄을 수 있어요 — 작업 화면에서 마스터 창을 살펴봐 주세요. 확인 창이 떠 있으면 그 창부터 답해 주세요(이 말은 다시 보내지 않아요)." } : m,
+    i === pick ? { ...m, step: "checking" as Step, code: "refused_at_write", note: REFUSED_AT_WRITE_NOTE } : m,
   );
+}
+
+const REFUSED_AT_WRITE_NOTE = "마스터 창에 확인할 것이 떠서 이 말의 제출이 멈췄을 수 있어요 — 작업 화면에서 마스터 창을 살펴봐 주세요. 확인 창이 떠 있으면 그 창부터 답해 주세요(이 말은 다시 보내지 않아요).";
+
+/** ★1.1.16(TICKET=cysr-1116-debt-d-1119 · S3-1) 데몬 `input.refused_at_write` 에 요청 번호가 실렸을 때(원자 제출 Enter 직전 거부 ·
+ *  handlers.rs approval_enter_guard) → **그 번호의 말 하나만** 「확인 중」으로(순수). 좌석·5초 창 짝짓기는 번호 없는 사건(send_key 거부 모드)에만 남는다.
+ *  돌려주는 것 = [새 목록, 짝 찾음] — 짝이 없으면(응답보다 사건이 먼저 옴) 부르는 쪽이 번호를 잠시 기억해 응답이 오면 다시 부른다. */
+export function applyRefusedById(msgs: readonly Msg[], requestId: string): [Msg[], boolean] {
+  const i = msgs.findIndex((m) => m.requestId === requestId);
+  if (i < 0) return [[...msgs], false];
+  const m = msgs[i];
+  if (m.step !== "sending" && m.step !== "injected" && m.step !== "checking") return [[...msgs], true]; // 전달됨 이상(근거 있음)·붙잡음 = 그대로
+  return [msgs.map((x, j) => (j === i ? { ...x, step: "checking" as Step, code: "refused_at_write", note: REFUSED_AT_WRITE_NOTE } : x)), true];
 }
 
 /** 다시 보내기 단추를 둘 수 있는가 — 확정 실패 + 아직 다시 보낸 적 없음만(불명·재시도 중·붙잡음 = 0 · 같은 말 두 번 방지). */

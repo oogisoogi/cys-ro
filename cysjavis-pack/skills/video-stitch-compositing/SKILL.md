@@ -1,9 +1,12 @@
 ---
 name: video-stitch-compositing
 description: 아바타를 모든 구간에 노출시키는 컴포지팅 하위 스킬 — 좌측 카드 슬라이드인 / 드롭섀도 둥근 크롭 모드, 전환·이징·페이싱을 사람 편집자 수준으로 적용한다. video-stitch 컴포지팅 관문. "아바타 컴포지팅 / 카드 슬라이드인 / 둥근 크롭 / 전환 페이싱" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # video-stitch-compositing
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 "아바타 항상 노출"(원본 사양)을 보장하고, 컷·전환·여백을 프로페셔널하게 만든다.
 
@@ -43,7 +46,7 @@ LLM은 `edit_decisions.json`(W0-2 정전 IR)에 **타입드 데이터**(`mode`·
 | `slide` | `xfade=transition=slideleft:duration=D:offset=O` |
 
 - 둥근 반경·그림자 오프셋·블러·카드 위치는 **전 구간 일관 상수**(절차 3) — IR이 아닌 프로젝트
-  상수로 두고, 수치는 `javis_params`(W1-2)로 coerce해 범위-밖 차단.
+  상수로 두고, 수치는 `javis_params`(팩 `bin/javis_params.py` · PATH 명령 아님 · W1-2)로 coerce해 범위-밖 차단.
 
 ## 출력 계약
 

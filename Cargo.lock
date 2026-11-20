@@ -756,7 +756,7 @@ checksum = "52560adf09603e58c9a7ee1fe1dcb95a16927b17c127f0ac02d6e768a0e25bc1"
 
 [[package]]
 name = "cys-app"
-version = "1.1.14"
+version = "1.1.16"
 dependencies = [
  "base64 0.22.1",
  "cys-terminal",
@@ -774,8 +774,9 @@ dependencies = [
 
 [[package]]
 name = "cys-terminal"
-version = "1.1.14"
+version = "1.1.16"
 dependencies = [
+ "anyhow",
  "base64 0.22.1",
  "chrono",
  "clap",
@@ -796,6 +797,7 @@ dependencies = [
  "sysinfo",
  "tar",
  "tokio",
+ "unicode-normalization",
  "vt100",
  "windows-sys 0.59.0",
  "winresource",
@@ -4573,6 +4575,15 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unicode-normalization"
+version = "0.1.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75cd3fb03d5288b3ba9a1ee103ac7e9cbb59f0b03d64f8ddfcc04dd42758a85d"
+dependencies = [
+ "tinyvec",
+]
 
 [[package]]
 name = "unicode-segmentation"

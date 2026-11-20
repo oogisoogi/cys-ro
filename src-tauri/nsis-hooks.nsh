@@ -1010,7 +1010,21 @@ cys_post_nomarker:
   CopyFiles /SILENT "$INSTDIR\cys.exe" "$INSTDIR\cysr.exe"
   IfErrors 0 cys_post_alias_ok
   DetailPrint "cys: WARNING - cysr.exe alias could not be refreshed (cys.exe still works)"
+  ; ★1.1.16 ⑤ + codex 3R blocking([master#fc79d3e6]): 별칭 갱신이 실패했다 = 그 자리 cysr.exe 는 이번 빌드라고 증명되지 않았다(낡은 것·
+  ;   심어 둔 것일 수 있다 · Highest 갱신이면 이 설치기는 관리자 토큰). 미리 데우기에서 cysr 를 뺀다(--skip-alias) — 아래 평소 갈래로 흘러가지 않는다.
+  nsExec::ExecToLog '"$INSTDIR\cys.exe" daemon prime --skip-alias'
+  Pop $R0
+  Goto cys_post_prime_done
 cys_post_alias_ok:
+  ClearErrors
+
+  ; ★1.1.16 ⑤(TICKET=cysr-1116-debt-d-1119) 미리 데우기 — 방금 놓은 cys·cysd·cysr 를 `--version` 으로 1회씩(cys daemon prime ·
+  ;   데몬 연결 0 · 늘 exit 0). 새 실행 파일의 첫 실행 OS 검사(1.3~3.0s 실측)를 시한 있는 사용자 경로가 아니라 설치가 떠안는다.
+  ;   cysr 는 별칭 복사가 방금 성공한 이 갈래에서만 · 그리고 cys 가 스스로 cysr = cys.exe 같은 바이트를 확인한 뒤(쓰기·삭제 금지 손잡이를 쥔 채) 실행한다.
+  ;   nsExec = 콘솔 창 없음 · 결과 1줄은 상세 로그 · 실패해도 설치 결과를 뒤집지 않는다.
+  nsExec::ExecToLog '"$INSTDIR\cys.exe" daemon prime'
+  Pop $R0
+cys_post_prime_done:
   ClearErrors
 
   ; 바탕화면 바로가기 자동 생성(2026-07-05 오너 지시). Tauri NSIS 템플릿은 일반 GUI 설치에서

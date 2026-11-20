@@ -26,19 +26,19 @@ describe("기본값 — 박사님 확정 A안(끔 5 · 보이는 8 = 종전 6 + 
     expect(ids(defaultTopbarLayout(DOM))).toEqual(DOM);
   });
 
-  it("처음 보이는 단추 = 피드백 · 상담소 · 아고라 · 정렬 · 파일 · Control Center · ↻ 재시작 · 화면 설정", () => {
-    expect(visibleTopbarIds(defaultTopbarLayout(DOM)).map(label)).toEqual(["피드백", "상담소", "아고라", "정렬", "파일", "Control Center", "↻ 재시작", "화면 설정"]);
+  it("처음 보이는 단추 = 피드백 · 상담소 · 아고라 · 정렬 · 파일 · ↻ 재시작 · 화면 설정(1.1.15 1e: Control Center 기본 끔)", () => {
+    expect(visibleTopbarIds(defaultTopbarLayout(DOM)).map(label)).toEqual(["피드백", "상담소", "아고라", "정렬", "파일", "↻ 재시작", "화면 설정"]);
   });
 
-  it("처음 꺼진 단추 = + New · Split → · Split ↓ · 창 닫기 · 완전 초기화(html 에 요소는 그대로 있다)", () => {
+  it("처음 꺼진 단추 = + New · Split → · Split ↓ · 창 닫기 · Control Center · 완전 초기화(html 에 요소는 그대로 있다)", () => {
     const off = defaultTopbarLayout(DOM).filter((x) => !x.on).map((x) => x.id);
-    expect(off.map(label)).toEqual(["+ New", "Split →", "Split ↓", "창 닫기", "완전 초기화"]);
+    expect(off.map(label)).toEqual(["+ New", "Split →", "Split ↓", "창 닫기", "Control Center", "완전 초기화"]);
     expect([...TOPBAR_DEFAULT_OFF].sort()).toEqual([...off].sort());
     for (const id of TOPBAR_DEFAULT_OFF) expect(html.split(`id="${id}"`).length - 1).toBe(1);
   });
 
-  it("고정 2 = 화면 설정 · Control Center — 기본 끔 목록에 들 수 없다", () => {
-    expect(TOPBAR_PINNED.map(label)).toEqual(["화면 설정", "Control Center"]);
+  it("고정 1 = 화면 설정(1.1.15 1e: Control Center 고정 해제) — 기본 끔 목록에 들 수 없다", () => {
+    expect(TOPBAR_PINNED.map(label)).toEqual(["화면 설정"]);
     for (const id of TOPBAR_PINNED) {
       expect(DOM).toContain(id);
       expect(TOPBAR_DEFAULT_OFF).not.toContain(id);
@@ -97,8 +97,8 @@ describe("손상·구판 저장 = 기본값(앱이 죽거나 단추가 통째로
   for (const [name, raw] of bad) {
     it(name, () => expect(parseTopbarLayout(raw, DOM)).toEqual(defaultTopbarLayout(DOM)));
   }
-  it("손상 폴백에서도 끔 5 는 꺼진 채다(전부 켬으로 새지 않는다)", () => {
-    expect(visibleTopbarIds(parseTopbarLayout("{{{", DOM)).length).toBe(8);
+  it("손상 폴백에서도 끔 6 은 꺼진 채다(전부 켬으로 새지 않는다 · 1.1.15 1e: Control Center 포함)", () => {
+    expect(visibleTopbarIds(parseTopbarLayout("{{{", DOM)).length).toBe(7);
   });
 });
 
@@ -211,7 +211,7 @@ describe("▲▼ — 한 칸 · 경계", () => {
   it("켬끔은 따라간다(꺼진 단추를 옮겨도 꺼진 채)", () => {
     const d = moveTopbarItem(l, "btn-new", -1);
     expect(d.find((x) => x.id === "btn-new")!.on).toBe(false);
-    expect(visibleTopbarIds(d).length).toBe(8);
+    expect(visibleTopbarIds(d).length).toBe(7); // 1.1.15 1e: Control Center 기본 끔
   });
 });
 
@@ -247,5 +247,18 @@ describe("끌어 놓기 결과 = 순서", () => {
     for (let i = 0; i < 40; i++) m = moveTopbarItem(m, DOM[(i * 7) % DOM.length], i % 3 ? 1 : -1);
     expect([...ids(m)].sort()).toEqual([...DOM].sort());
     expect(onOf(m)).toEqual(onOf(l));
+  });
+});
+
+describe("(1e) Control Center 단추 — 저장 배치에도 한 번만 끈다", async () => {
+  const { ccButtonOffOnce } = await import("./topbarlayout");
+  it("켜져 있고 표지 없음 = 끄고 changed · 표지 있음 = 그대로(사람이 다시 켠 것 존중) · 이미 끔 = 그대로", () => {
+    const on = DOM.map((id) => ({ id, on: true }));
+    const r = ccButtonOffOnce(on, false);
+    expect(r.changed).toBe(true);
+    expect(r.items.find((x) => x.id === "btn-cc")!.on).toBe(false);
+    expect(r.items.filter((x) => !x.on).map((x) => x.id)).toEqual(["btn-cc"]);
+    expect(ccButtonOffOnce(on, true).changed).toBe(false);
+    expect(ccButtonOffOnce(r.items, false).changed).toBe(false);
   });
 });

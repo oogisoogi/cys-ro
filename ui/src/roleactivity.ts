@@ -20,8 +20,21 @@ export const STALE_WORKING_MS = PRODUCER_LEASE_MS + ACTIVITY_P_MS;
 /** T = 3P + 2D + E (소켓 수 N 과 무관). D = 기존 T_LIST. */
 export const activityExpiryMs = (dMs: number): number => 3 * ACTIVITY_P_MS + 2 * dMs + ACTIVITY_E_MS;
 
-export type ActivityState = "working" | "waiting" | "waiting_for_input" | "unknown";
-export type ActivityRaw = "active" | "idle" | "permission" | "question" | "unknown";
+// ★(1.1.16 · 차용 ②) done = 끝났지만 아직 안 봄(프로그램 자신의 OSC 7501 보고에서만) · unknown = 분류 못 함(성공 아님).
+export type ActivityState = "working" | "waiting" | "waiting_for_input" | "done" | "unknown";
+export type ActivityRaw = "active" | "idle" | "permission" | "question" | "auth" | "blocked" | "done" | "error" | "unknown";
+/** 상태를 정한 출처 — 화면 판정(activity.rs 문법) 또는 프로그램 보고(OSC 7501 · program_status.rs). 구버전 데몬 = null. */
+export type ActivitySource = "screen" | "program_status";
+
+/** 프로그램 보고 근거(데몬이 검사·해독한 평문) — 접근 문구에 싣는다. */
+export interface ProgramStatusEvidence {
+  state: string;
+  kind: string | null;
+  app: string | null;
+  msg: string | null;
+  ageSecs: number | null;
+  seen: boolean;
+}
 export type ActivityFamily = "claude" | "codex" | "gemini";
 
 export interface ActivityObservation {
@@ -38,6 +51,10 @@ export interface ActivityObservation {
   epoch: string;
   retained: boolean;
   consecutiveRejections: number;
+  /** 상태 이름의 뜻(데몬 문구) — 구버전 데몬 = null. */
+  meaning: string | null;
+  source: ActivitySource | null;
+  programStatus: ProgramStatusEvidence | null;
 }
 /** 관측 없음·무효화·종료·관측기 꺼짐(데몬의 퇴화형) · 구버전 데몬(키 없음) · 형식 오류 — 셋 다 Unknown 이다. */
 export interface ActivityUnknown {
@@ -47,8 +64,10 @@ export interface ActivityUnknown {
 }
 export type ParsedActivity = ActivityObservation | ActivityUnknown;
 
-const STATES: readonly string[] = ["working", "waiting", "waiting_for_input", "unknown"];
-const RAWS: readonly string[] = ["active", "idle", "permission", "question", "unknown"];
+const STATES: readonly string[] = ["working", "waiting", "waiting_for_input", "done", "unknown"];
+const RAWS: readonly string[] = ["active", "idle", "permission", "question", "auth", "blocked", "done", "error", "unknown"];
+const SOURCES: readonly string[] = ["screen", "program_status"];
+const MSG_SHOW = 120; // 접근 문구에 싣는 프로그램 메시지 길이(데몬 상한 2048 — 문구는 짧게)
 const FAMILIES: readonly string[] = ["claude", "codex", "gemini"];
 const MAX_TEXT = 200; // 사유·세대 문자열 상한(IPC 데이터라 전부 의심한다)
 
@@ -58,6 +77,18 @@ const MALFORMED: ActivityUnknown = { kind: "unknown", reason: "활동 정보 형
 const isAge = (v: unknown): v is number | null => v === null || (typeof v === "number" && Number.isFinite(v) && v >= 0);
 const isCount = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 const isText = (v: unknown): v is string => typeof v === "string" && v.length <= MAX_TEXT;
+const clip = (v: string): string => (v.length > MSG_SHOW ? `${v.slice(0, MSG_SHOW)}…` : v);
+
+/** 데몬 `display_activity.program_status` → 근거(없음·null = null · 꼴이 어긋나면 undefined = 형식 오류). */
+function parseProgramStatus(v: unknown): ProgramStatusEvidence | null | undefined {
+  if (v === undefined || v === null) return null;
+  if (typeof v !== "object" || Array.isArray(v)) return undefined;
+  const o = v as Record<string, unknown>;
+  if (!isText(o.state) || typeof o.seen !== "boolean" || !isAge(o.age_secs)) return undefined;
+  if (!(o.kind === null || isText(o.kind)) || !(o.app === null || isText(o.app))) return undefined;
+  if (!(o.msg === null || typeof o.msg === "string")) return undefined;
+  return { state: o.state, kind: o.kind, app: o.app, msg: o.msg === null ? null : clip(o.msg), ageSecs: o.age_secs, seen: o.seen };
+}
 
 /** 데몬 `display_activity` 한 개 → 판정. 빠짐 = 구버전 데몬(Unknown) · 꼴이 하나라도 어긋나면 형식 오류(Unknown). */
 export function parseDisplayActivity(v: unknown): ParsedActivity {
@@ -77,6 +108,13 @@ export function parseDisplayActivity(v: unknown): ParsedActivity {
   if (!(o.grammar_revision === null || isText(o.grammar_revision))) return MALFORMED;
   if (!isCount(o.consecutive_rejections)) return MALFORMED;
   if (o.state === "working" && o.observed_age_secs === null) return MALFORMED; // 나이를 모르는 Working 은 보수적으로 늙힐 수 없다
+  // ★(1.1.16 · 차용 ②) 뜻·출처·프로그램 근거 — 1.1.15 이전 데몬은 셋 다 안 보낸다(없음 = null · 있는데 꼴이 틀리면 형식 오류).
+  if (!(o.meaning === undefined || o.meaning === null || isText(o.meaning))) return MALFORMED;
+  if (!(o.source === undefined || o.source === null || (typeof o.source === "string" && SOURCES.includes(o.source)))) return MALFORMED;
+  const programStatus = parseProgramStatus(o.program_status);
+  if (programStatus === undefined) return MALFORMED;
+  if (o.source === "program_status" && programStatus === null) return MALFORMED; // 프로그램 보고라면서 근거가 없다
+  if (o.state === "done" && o.source !== "program_status") return MALFORMED; // done 은 프로그램 보고에서만 나온다
   return {
     kind: "observation",
     state: o.state as ActivityState,
@@ -91,6 +129,9 @@ export function parseDisplayActivity(v: unknown): ParsedActivity {
     epoch: o.display_epoch,
     retained: o.retained,
     consecutiveRejections: o.consecutive_rejections,
+    meaning: typeof o.meaning === "string" ? o.meaning : null,
+    source: typeof o.source === "string" ? (o.source as ActivitySource) : null,
+    programStatus,
   };
 }
 
@@ -166,7 +207,7 @@ export class RoleActivityStore {
   }
 }
 
-export type DotView = "working" | "waiting" | "input" | "stale" | "unknown";
+export type DotView = "working" | "waiting" | "input" | "done" | "stale" | "unknown";
 export interface DotProjection {
   view: DotView;
   text: string;
@@ -184,7 +225,10 @@ export function projectActivity(rec: ActivityRecord | undefined, nowMs: number, 
   const p = rec.parsed;
   if (p.kind === "unknown") return { view: "unknown", text: `상태 모름 · ${p.reason}` };
   const seen = ageText(p.observedAgeSecs, elapsedMs);
-  const tail = seen === null ? "" : ` · 관측 ${seen}`;
+  // ★(1.1.16 · 차용 ② ⒞) 근거를 문구에 — 프로그램 보고면 그 사실과 프로그램이 적은 한 줄(msg)을 싣는다.
+  const ps = p.programStatus;
+  const src = p.source === "program_status" && ps ? ` · 프로그램 보고${ps.app ? `(${ps.app})` : ""}${ps.msg ? ` — ${ps.msg}` : ""}` : "";
+  const tail = `${src}${seen === null ? "" : ` · 관측 ${seen}`}`;
   switch (p.state) {
     case "working": {
       // U4-5: conservative response age = daemon-serialized observation age + elapsed since request start.
@@ -198,6 +242,8 @@ export function projectActivity(rec: ActivityRecord | undefined, nowMs: number, 
       return { view: "waiting", text: `대기 · ${p.reason}${tail}` };
     case "waiting_for_input":
       return { view: "input", text: `입력 대기 · ${p.reason}(${p.raw})${tail}` };
+    case "done":
+      return { view: "done", text: `끝남 · 아직 안 봄 · ${p.reason}${tail}` };
     default:
       return { view: "unknown", text: `상태 모름 · ${p.reason}${tail}` };
   }
@@ -208,6 +254,7 @@ export const DOT_CLASS: Readonly<Record<DotView, string>> = {
   working: "act-working",
   waiting: "act-waiting",
   input: "act-input",
+  done: "act-done",
   stale: "act-stale",
   unknown: "act-unknown",
 };

@@ -18,14 +18,24 @@ export interface TopbarItem {
 
 // 고정 단추 — 끌 수 없다(순서만 바꾼다). 「화면 설정」을 끄면 다시 켤 길이 사라지고,
 // 「Control Center」 는 승인 대기 배지·전문가 모드의 입구라 숨기면 승인 요청을 못 본다.
-export const TOPBAR_PINNED: readonly string[] = ["btn-theme", "btn-cc"];
+// ★(1.1.15 · tabs-sidebar 1e · 박사님 11-11 09:4x 「콘트롤 센터는 권고대로 하겠다」) Control Center 는 고정에서 풀고 기본 끔으로 옮겼다 —
+//   승인 대기 배지·좌석 상태는 왼쪽 막대 상황판이 넘겨받았고, 여는 길 = 「화면 설정」 「컨트롤 센터 열기」 + 말. 켜면 지금 그대로다.
+export const TOPBAR_PINNED: readonly string[] = ["btn-theme"];
 
 // 기본으로 꺼 두는 단추(처음 쓰는 사람·저장이 없거나 깨진 경우) — 박사님 확정 2026-10-12 09:1x 「최적안대로 한다」(A안 5개):
 // + New · Split → · Split ↓ · 창 닫기 · 완전 초기화. 켜진 채 남는 것 = 피드백 · 상담소 · 아고라(cysr-menu-top-row 2026-10-21 사이드바에서 옮김) ·
 // 정렬 · 파일 · Control Center · ↻ 재시작 · 화면 설정.
 // ⛔이 집합을 바꾸는 것은 박사님 결정 사항이다. 윈에서는 터미널에 초점이 있을 때 단축키를 xterm 이 먹으므로, 창 만들기 세 단추의
 //   보이는 길은 「화면 설정 → 상단 단추」 토글 하나다(index.html v116-recut-newsplit 주석) — 그 길(토글·「화면 설정」 고정)을 먼저 없애지 마라.
-export const TOPBAR_DEFAULT_OFF: readonly string[] = ["btn-new", "btn-split-h", "btn-split-v", "btn-close", "btn-factory-reset"];
+export const TOPBAR_DEFAULT_OFF: readonly string[] = ["btn-new", "btn-split-h", "btn-split-v", "btn-close", "btn-factory-reset", "btn-cc"];
+
+// (1e) 저장된 배치가 있는 사람(1.1.14 이하에서 순서를 고친 사람)에게도 Control Center 를 한 번 끈다 — 표지 열쇠로 1회만.
+//   그 뒤 사람이 다시 켜면 그대로 둔다(표지가 있으니 다시 끄지 않는다).
+export const CC_BTN_OFF_ONCE_KEY = "cys-cc-btn-off-115";
+export function ccButtonOffOnce(items: readonly TopbarItem[], done: boolean): { items: TopbarItem[]; changed: boolean } {
+  if (done || !items.some((it) => it.id === "btn-cc" && it.on)) return { items: items.map((it) => ({ ...it })), changed: false };
+  return { items: items.map((it) => (it.id === "btn-cc" ? { id: it.id, on: false } : { ...it })), changed: true };
+}
 
 export const isTopbarPinned = (id: string): boolean => TOPBAR_PINNED.includes(id);
 

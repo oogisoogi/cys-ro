@@ -1,0 +1,1111 @@
+"""Hermetic controls for scripts/check_macho_arch.py — the bundle architecture gate (0.15.0 · tracks T11, T11b ·
+RULINGS BQ1(b), CA1–CA2, DB4–DB5 · owner order addendum 11: the Intel installer must never carry an Apple-silicon-only
+python).
+
+Every case builds SYNTHETIC Mach-O / fat headers in a temp dir (no real binary needed, no lipo, no network): thin
+x86_64 / arm64, 32-bit (i386) and big-endian (ppc) thin headers, fat with both, fat without the target, fat64, the
+CPU-subtype rule (x86_64h-only and arm64e-only do not satisfy; capability bits are masked), a header cut short, load
+commands past the end, a fat slice outside the file, a Java class file that also starts with 0xCAFEBABE, plain text;
+minimum macOS from LC_BUILD_VERSION and LC_VERSION_MIN_MACOSX; a fake cys.app whose runtime/python/bin/python3 is a
+link to an arm64-only python3.12 (the owner's reported case); the same tree as a .tar.gz (the updater archive);
+required entry points that are missing, dangling, looping or not Mach-O; an unreadable directory and file; and a
+large archive whose single streaming pass is MEASURED (compressed bytes read ≤ archive size — any rewind of the
+gzip stream would read more; RULINGS CA1). T11b (RULINGS DB4): a universal file whose fat table disagrees with a
+slice's OWN header (CPU or subtype), a header / load commands that run past their slice, a load command past
+sizeofcmds, a table listed out of offset order inside a streamed archive; every load command checked, also after
+the version command and in a command area over 1 MiB (DI1); many small commands read with a bounded buffer, a bad last
+one still found, a 16 MiB+ command area the old code could read refused by the cap (DL2, DN5). RULINGS DN1–DN4 with
+DL1 (3)–(4) (the closed form): ONE spelling — `python3 -> python3.12/.` / `python3.12/`, member names with an inner
+`./` or `//`, absolute names, `..` in a member name, an absolute link target: not measurable; ONE member per name
+(a Mach-O then a text member of the same name: not measurable; a repeated directory is fine); EVERY tar hard-link
+member fails; symbolic links resolved as the kernel does — 32 expansions resolve and 33 do not, a deep chain is "too
+many links" (no crash), a real loop, `marker/../python3.12` with `marker` a file or absent does not resolve, a target
+through a directory link resolves; a required entry point that stops at a not-measurable member is not measurable,
+never a FAIL; the checker's own failure is exit 2. RULINGS DU1–DU2 (the plain shape): a member of an unknown type
+(`Z`, holding an arm64 Mach-O) or a fifo is not measurable, never skipped; a member below a symbolic-link member (the
+link before or after it) is not measurable and the stale result at its real destination is not used; a refused member
+still proves its parent directories (no directory members, a required `python3 -> /usr/bin/python3`: exit 2).
+RULINGS EB1–EB3 (raw records: sparse in every form, kinds outside the census, a non-directory parent, hard links
+first) and EI2 (four comparisons against the MEASURED shape, as raw bytes): a non-regular record of size 512 hiding an
+arm64 member (and a hard link behind it: still exit 1), a flipped header byte, three cut points, bytes after the end
+blocks, a size field '-0000001000', a second gzip member / trailing data / a plain tar. The fixtures are brought into
+the measured shape of the published archives (bsdtar: size field ending with a space, nothing after the two end
+blocks, one gzip member) by `bsdtar_shape`. A red case differs from its green control only in the planted
+fact.
+
+    python3 scripts/tests/test_check_macho_arch.py
+"""
+import contextlib
+import gzip
+import importlib.util
+import io
+import os
+import re
+import shutil
+import struct
+import subprocess
+import sys
+import tarfile
+import tempfile
+import unittest
+
+sys.dont_write_bytecode = True
+HERE = os.path.dirname(os.path.abspath(__file__))
+# Mutation testing: MACHO_ARCH_GATE_UNDER_TEST=<mutant path> runs the same cases against that script instead.
+SCRIPT = os.environ.get("MACHO_ARCH_GATE_UNDER_TEST") or os.path.normpath(os.path.join(HERE, "..", "check_macho_arch.py"))
+
+X86_64, ARM64, ARM64_32, I386, PPC = 0x01000007, 0x0100000C, 0x0200000C, 7, 18
+SUB = {X86_64: 3, ARM64: 0, ARM64_32: 1, I386: 3, PPC: 0}       # the ALL subtypes
+X86_64H, ARM64E = 8, 2
+LC_BUILD_VERSION, LC_VERSION_MIN_MACOSX = 0x32, 0x24
+RT = "Contents/Resources/runtime/"
+REQUIRE_APP = ["--require", RT + "python/bin/python3", "--require", RT + "node/bin/node",
+               "--require", RT + "git/bin/git", "--require", RT + "uv/uv"]
+
+
+def bsdtar_shape(path):
+    """Rewrite a tarfile-written .tar.gz into the MEASURED shape of the published archives (bsdtar, RULINGS EI2): the
+    size field ends with a space (tarfile writes NUL), the checksum is recomputed (six digits, NUL, space), nothing
+    follows the two end-of-archive blocks (tarfile pads to 10240 bytes), and it is one gzip member."""
+    with gzip.open(path, "rb") as f:
+        tar = bytearray(f.read())
+    pos, zeros = 0, 0
+    while pos + 512 <= len(tar):
+        h = tar[pos:pos + 512]
+        if h == bytearray(512):
+            zeros += 1
+            pos += 512
+            if zeros == 2:
+                break
+            continue
+        zeros = 0
+        size = int(bytes(h[124:135]).split(b"\0")[0].strip() or b"0", 8)
+        if h[135] == 0:
+            tar[pos + 135] = 0x20
+        tar[pos + 148:pos + 156] = b" " * 8
+        tar[pos + 148:pos + 156] = b"%06o\0 " % sum(tar[pos:pos + 512])
+        pos += 512 + (size + 511) // 512 * 512
+    with open(path, "wb") as f:
+        f.write(gzip.compress(bytes(tar[:pos]), mtime=0))
+
+
+@contextlib.contextmanager
+def ustar_archive(path, fmt=tarfile.USTAR_FORMAT):
+    """A tarfile writer whose result is brought into the measured shape on close (see bsdtar_shape)."""
+    with tarfile.open(path, "w:gz", format=fmt) as t:
+        yield t
+    bsdtar_shape(path)
+
+
+def raw_header(name, kind=b"0", size=0, link=b"", size_field=None, magic=b"ustar\x0000", checksum_form=b"%06o\0 "):
+    """One POSIX ustar header in the measured form (size: eleven octal digits and a space; checksum: six digits,
+    NUL, space) — SIZE_FIELD / MAGIC / CHECKSUM_FORM let a control plant one deviation."""
+    h = bytearray(512)
+    h[0:len(name)] = name
+    h[100:108], h[108:116], h[116:124] = b"0000755\0", b"0000000\0", b"0000000\0"
+    h[124:136] = size_field if size_field is not None else b"%011o " % size
+    h[136:148] = b"00000000000 "
+    h[156:157] = kind
+    h[157:157 + len(link)] = link
+    h[257:265] = magic
+    h[148:156] = b" " * 8
+    h[148:156] = checksum_form % sum(h)
+    return bytes(h)
+
+
+def raw_member(name, data, kind=b"0"):
+    return raw_header(name, kind, len(data)) + data + b"\0" * (-len(data) % 512)
+
+
+def load_gate():
+    spec = importlib.util.spec_from_file_location("check_macho_arch_under_test", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def ver(s):
+    p = [int(x) for x in s.split(".")] + [0, 0]
+    return (p[0] << 16) | (p[1] << 8) | p[2]
+
+
+def thin(cputype, minos=None, legacy=None, subtype=None, bits=64, endian="<"):
+    """A Mach-O executable header (64- or 32-bit, either byte order) with optional minimum-OS load commands."""
+    cmds, n = b"", 0
+    if minos:
+        cmds += struct.pack(endian + "IIIIII", LC_BUILD_VERSION, 24, 1, ver(minos), ver("15.0"), 0)
+        n += 1
+    if legacy:
+        cmds += struct.pack(endian + "IIII", LC_VERSION_MIN_MACOSX, 16, ver(legacy), ver("10.15"))
+        n += 1
+    sub = SUB.get(cputype, 0) if subtype is None else subtype
+    if bits == 64:
+        hdr = struct.pack(endian + "IIIIIIII", 0xFEEDFACF, cputype, sub, 2, n, len(cmds), 0, 0)
+    else:
+        hdr = struct.pack(endian + "IIIIIII", 0xFEEDFACE, cputype, sub, 2, n, len(cmds), 0)
+    return hdr + cmds + b"\0" * 64
+
+
+def fat(slices, fat64=False, reverse_table=False):
+    """A big-endian universal header; SLICES = [(cputype, thin bytes[, subtype])] at 4096-aligned offsets. The TABLE
+    entry carries SLICES' cputype / subtype — the thin bytes may say something else (the DB4 controls).
+    REVERSE_TABLE lists the entries in the opposite order of their offsets."""
+    entry_fmt = ">IIQQII" if fat64 else ">IIIII"
+    off, entries, body = 4096, [], b""
+    for s in slices:
+        cputype, data = s[0], s[1]
+        sub = s[2] if len(s) > 2 else SUB.get(cputype, 0)
+        pad = b"\0" * (-len(data) % 4096)
+        entries.append(struct.pack(entry_fmt, cputype, sub, off, len(data), 12, 0) if fat64 else
+                       struct.pack(entry_fmt, cputype, sub, off, len(data), 12))
+        body += data + pad
+        off += len(data) + len(pad)
+    table = b"".join(reversed(entries) if reverse_table else entries)
+    head = struct.pack(">II", 0xCAFEBABF if fat64 else 0xCAFEBABE, len(slices)) + table
+    return head + b"\0" * (4096 - len(head)) + body
+
+
+def with_slice_size(data, index, ssize):
+    """DATA (a 32-bit fat file) with the SIZE field of table entry INDEX set to SSIZE."""
+    b = bytearray(data)
+    struct.pack_into(">I", b, 8 + 20 * index + 12, ssize)
+    return bytes(b)
+
+
+JAVA_CLASS = b"\xca\xfe\xba\xbe\x00\x00\x00\x34" + b"\x00" * 40        # Java 8 class: version where nfat would be
+CUT_SHORT = b"\xcf\xfa\xed\xfe\x07\x00\x00\x01\x03\x00\x00\x00"           # thin magic + cputype, header cut after 12 bytes
+
+
+class Gate(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="macho-arch-")
+
+    def tearDown(self):
+        for dirpath, dirnames, _ in os.walk(self.tmp):
+            for d in dirnames:
+                try:
+                    os.chmod(os.path.join(dirpath, d), 0o755)
+                except OSError:
+                    pass
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def put(self, rel, data, mode=0o755):
+        p = os.path.join(self.tmp, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "wb") as f:
+            f.write(data)
+        os.chmod(p, mode)
+        return p
+
+    def link(self, rel, target):
+        p = os.path.join(self.tmp, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        os.symlink(target, p)
+
+    def app(self, python_cpu=X86_64, plist_min="10.13", python_sub=None):
+        """A fake cys.app laid out like the real one (sidecars, runtime entry points, a universal dylib)."""
+        a = "cys.app/Contents/"
+        self.put(a + "Info.plist", (
+            '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+            '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>'
+            "<key>LSMinimumSystemVersion</key><string>%s</string></dict></plist>\n" % plist_min).encode(), 0o644)
+        for exe in ("cys-app", "cys", "cysd"):
+            self.put(a + "MacOS/" + exe, thin(X86_64, minos="10.13"))
+        self.put(a + RT[len("Contents/"):] + "python/bin/python3.12", thin(python_cpu, minos="10.15", subtype=python_sub))
+        self.link(a + RT[len("Contents/"):] + "python/bin/python3", "python3.12")
+        self.put(a + RT[len("Contents/"):] + "python/lib/python3.12/os.py", b"import abc\n", 0o644)
+        self.put(a + RT[len("Contents/"):] + "python/lib/python3.12/__pycache__/os.cpython-312.pyc",
+                 b"\xcb\x0d\x0d\x0a" + b"\0" * 12, 0o644)
+        self.put(a + RT[len("Contents/"):] + "node/bin/node", thin(X86_64, minos="11.0"))
+        self.put(a + RT[len("Contents/"):] + "git/bin/git", thin(X86_64, legacy="10.13"))
+        self.put(a + RT[len("Contents/"):] + "git/libexec/git-core/libSkiaSharp.dylib",
+                 fat([(X86_64, thin(X86_64)), (ARM64, thin(ARM64))]))
+        self.put(a + RT[len("Contents/"):] + "uv/uv", thin(X86_64, minos="10.12"))
+        return os.path.join(self.tmp, "cys.app")
+
+    def gate(self, *args):
+        r = subprocess.run([sys.executable, SCRIPT] + list(args), capture_output=True, text=True, timeout=300)
+        return r.returncode, r.stdout + r.stderr
+
+    def one(self, data, target="x86_64-apple-darwin", name="f"):
+        return self.gate("--target", target, self.put(name, data))
+
+    # -- the owner's case and its green control --
+    def test_intel_app_with_x86_64_python_passes_and_prints_entry_points(self):
+        app = self.app()
+        rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, app)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("RESULT: PASS", out)
+        self.assertIn("x86_64 7", out)                 # count per architecture: 7 thin x86_64
+        self.assertIn("x86_64+arm64 1", out)           # and one universal dylib
+        self.assertRegex(out, r"runtime/python/bin/python3 -> python3\.12\s+x86_64\s+min 10\.15")
+        self.assertRegex(out, r"runtime/node/bin/node\s+x86_64\s+min 11\.0")
+        self.assertRegex(out, r"runtime/git/bin/git\s+x86_64\s+min 10\.13")      # from LC_VERSION_MIN_MACOSX
+        self.assertRegex(out, r"Contents/MacOS/cysd\s+x86_64\s+min 10\.13")
+
+    def test_intel_app_with_arm64_only_python_fails_naming_the_file(self):
+        app = self.app(python_cpu=ARM64)
+        rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, app)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL cys.app/Contents/Resources/runtime/python/bin/python3.12: arm64 (no slice that runs on every x86_64 Mac)", out)
+        self.assertEqual(out.count("\nFAIL "), 1, out)
+        self.assertIn("RESULT: FAIL", out)
+
+    def test_the_same_app_fails_for_the_other_target_naming_every_thin_x86_64_file(self):
+        rc, out = self.gate("--target", "aarch64-apple-darwin", self.app())
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(out.count("FAIL cys.app/"), 7, out)            # the universal dylib is not named
+        self.assertNotIn("FAIL cys.app/Contents/Resources/runtime/git/libexec/git-core/libSkiaSharp.dylib", out)
+
+    def test_min_os_newer_than_ls_minimum_is_reported_not_failed(self):
+        app = self.app(plist_min="10.13")
+        rc, out = self.gate("--target", "x86_64", app)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("LSMinimumSystemVersion = 10.13", out)
+        self.assertIn("WARN (informational", out)
+        self.assertIn("python3 10.15", out)
+        self.assertIn("node 11.0", out)
+        plist = os.path.join(self.tmp, "cys.app/Contents/Info.plist")
+        with open(plist, "rb") as f:
+            data = f.read()
+        with open(plist, "wb") as f:
+            f.write(data.replace(b">10.13<", b">11.0<"))
+        rc, out = self.gate("--target", "x86_64", app)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("WARN (informational", out)
+
+    # -- header shapes --
+    def test_fat_containing_the_target_passes_fat_without_it_fails(self):
+        both = fat([(X86_64, thin(X86_64)), (ARM64, thin(ARM64))])
+        self.assertEqual(self.one(both, "x86_64-apple-darwin")[0], 0)
+        self.assertEqual(self.one(both, "aarch64-apple-darwin")[0], 0)
+        rc, out = self.one(fat([(ARM64, thin(ARM64)), (ARM64_32, thin(ARM64_32))]))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("arm64+arm64_32 (no slice", out)
+
+    def test_fat64_header_is_read(self):
+        f64 = fat([(X86_64, thin(X86_64, minos="10.15")), (ARM64, thin(ARM64))], fat64=True)
+        self.assertEqual(self.one(f64, "x86_64-apple-darwin")[0], 0)
+        self.assertEqual(self.one(f64, "aarch64-apple-darwin")[0], 0)
+
+    def test_thin_of_the_other_architecture_fails(self):
+        self.put("d/x", thin(X86_64))
+        self.put("d/a", thin(ARM64))
+        rc, out = self.gate("--target", "x86_64-apple-darwin", os.path.join(self.tmp, "d"))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL a: arm64 (no slice", out)
+        self.assertNotIn("FAIL x:", out)
+
+    def test_32_bit_and_big_endian_headers_are_read(self):
+        rc, out = self.one(thin(I386, bits=32, legacy="10.6"))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL f: i386 (no slice", out)
+        rc, out = self.one(thin(PPC, bits=32, endian=">", legacy="10.4"), name="g")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL g: ppc (no slice", out)
+
+    # -- the CPU-subtype rule (RULINGS CA2(a)) --
+    def test_x86_64h_only_does_not_satisfy_x86_64_but_beside_x86_64_it_does(self):
+        rc, out = self.one(thin(X86_64, subtype=X86_64H))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL f: x86_64h (no slice", out)
+        # (the x86_64h slice's own header says x86_64h too — RULINGS DB4 compares the table with it)
+        rc, out = self.one(fat([(X86_64, thin(X86_64, subtype=X86_64H), X86_64H), (X86_64, thin(X86_64))]), name="g")
+        self.assertEqual(rc, 0, out)
+
+    def test_arm64e_only_does_not_satisfy_arm64_but_beside_arm64_it_does(self):
+        rc, out = self.one(thin(ARM64, subtype=ARM64E), "aarch64-apple-darwin")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL f: arm64e (no slice", out)
+        rc, out = self.one(fat([(ARM64, thin(ARM64, subtype=0x80000002), 0x80000002), (ARM64, thin(ARM64))]),
+                           "aarch64-apple-darwin", "g")
+        self.assertEqual(rc, 0, out)
+
+    def test_capability_bits_of_the_subtype_are_masked(self):
+        self.assertEqual(self.one(thin(X86_64, subtype=0x80000003))[0], 0)          # CPU_SUBTYPE_LIB64 | ALL
+        self.assertEqual(self.one(thin(ARM64, subtype=0x00000001), "aarch64-apple-darwin", "g")[0], 0)  # arm64 v8
+
+    # -- not measurable is not a pass (RULINGS CA2(c)) --
+    def test_a_cut_short_thin_header_cannot_be_judged(self):
+        self.put("d/ok", thin(X86_64))
+        self.put("d/cut", CUT_SHORT)
+        rc, out = self.gate("--target", "x86_64-apple-darwin", os.path.join(self.tmp, "d"))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("CANNOT JUDGE cut: Mach-O header cut short", out)
+
+    def test_load_commands_past_the_end_cannot_be_judged(self):
+        data = bytearray(thin(X86_64, minos="10.15"))
+        struct.pack_into("<I", data, 20, 1 << 16)                  # sizeofcmds far beyond the file
+        rc, out = self.one(bytes(data))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("run past the end of the file", out)
+
+    def test_a_fat_slice_outside_the_file_and_a_cut_short_table_cannot_be_judged(self):
+        data = fat([(X86_64, thin(X86_64)), (ARM64, thin(ARM64))])
+        rc, out = self.one(data[:5000])                            # the second slice now lies beyond the end
+        self.assertEqual(rc, 2, out)
+        self.assertIn("lies outside the file", out)
+        rc, out = self.one(struct.pack(">II", 0xCAFEBABE, 2) + b"\0" * 10, name="g")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("fat table cut short", out)
+
+    # -- T11b · RULINGS DB4: each slice's OWN header, within the slice's own bounds --
+    def test_a_fat_table_that_says_x86_64_over_an_arm64_slice_fails(self):
+        # the reviewer's M2: the table entry says x86_64/ALL, the bytes at its offset are a valid arm64 thin header
+        rc, out = self.one(fat([(X86_64, thin(ARM64))]))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL f: fat table entry 0 says x86_64 but the slice's own header is arm64", out)
+        self.assertIn("FAIL f: arm64 (no slice that runs on every x86_64 Mac)", out)
+        # beside a correct arm64 slice, for the arm64 target: still a mis-assembled file → FAIL
+        rc, out = self.one(fat([(X86_64, thin(ARM64)), (ARM64, thin(ARM64))]), "aarch64-apple-darwin", "g")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL g: fat table entry 0 says x86_64 but the slice's own header is arm64", out)
+        # green control: the same two slices, table == headers
+        self.assertEqual(self.one(fat([(X86_64, thin(X86_64)), (ARM64, thin(ARM64))]), name="h")[0], 0)
+
+    def test_a_fat_subtype_that_differs_from_the_slice_header_fails(self):
+        # table x86_64 (ALL), header x86_64h — the table would satisfy the target, the slice would not
+        rc, out = self.one(fat([(X86_64, thin(X86_64, subtype=X86_64H), 3)]))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL f: fat table entry 0 says x86_64 but the slice's own header is x86_64h", out)
+        # capability bits differ only (masked on both sides) → not a mismatch
+        self.assertEqual(self.one(fat([(X86_64, thin(X86_64, subtype=0x80000003), 3)]), name="g")[0], 0)
+
+    def test_a_slice_header_or_its_load_commands_past_the_slice_cannot_be_judged(self):
+        data = fat([(X86_64, thin(X86_64, minos="10.15")), (ARM64, thin(ARM64))])
+        rc, out = self.one(with_slice_size(data, 0, 16))           # the 32-byte header does not fit in 16 bytes
+        self.assertEqual(rc, 2, out)
+        self.assertIn("Mach-O header runs past the end of fat slice 0", out)
+        rc, out = self.one(with_slice_size(data, 0, 40), name="g")  # header fits, its 24 bytes of commands do not
+        self.assertEqual(rc, 2, out)
+        self.assertIn("load commands (24 bytes) run past the end of fat slice 0", out)
+        self.assertEqual(self.one(with_slice_size(data, 0, 56), name="h")[0], 0)   # exactly header + commands: fits
+
+    def test_a_load_command_past_sizeofcmds_cannot_be_judged(self):
+        data = bytearray(thin(X86_64, minos="10.15"))
+        struct.pack_into("<I", data, 32 + 4, 200)                  # LC_BUILD_VERSION claims 200 bytes of 24
+        rc, out = self.one(bytes(data))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("load command 0 (200 bytes) runs past sizeofcmds", out)
+
+    def test_every_slice_is_read_forward_in_a_streamed_archive_whatever_the_table_order(self):
+        # the table lists the arm64 slice (at the higher offset) first; the streamed member can only be read forward
+        self.put("t/cys.app/Contents/MacOS/cys", fat([(X86_64, thin(X86_64, minos="10.15")),
+                                                      (ARM64, thin(ARM64) + os.urandom(70000))], reverse_table=True))
+        arc = self.make_tar("rev.tar.gz", os.path.join(self.tmp, "t", "cys.app"))
+        for target in ("x86_64-apple-darwin", "aarch64-apple-darwin"):
+            rc, out = self.gate("--target", target, arc)
+            self.assertEqual(rc, 0, out)
+            self.assertIn("arm64+x86_64 1", out)                   # table order, each name from the slice's header
+        bad = fat([(X86_64, thin(ARM64) + os.urandom(70000)), (ARM64, thin(ARM64))], reverse_table=True)
+        self.put("u/cys.app/Contents/MacOS/cys", bad)
+        rc, out = self.gate("--target", "aarch64-apple-darwin", self.make_tar("rev-bad.tar.gz", os.path.join(self.tmp, "u", "cys.app")))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("fat table entry 1 says x86_64 but the slice's own header is arm64", out)
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root reads everything")
+    def test_an_unreadable_directory_or_file_cannot_be_judged(self):
+        self.put("d/ok", thin(X86_64))
+        self.put("d/locked/inner", thin(X86_64))
+        os.chmod(os.path.join(self.tmp, "d/locked"), 0)
+        rc, out = self.gate("--target", "x86_64-apple-darwin", os.path.join(self.tmp, "d"))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("unreadable directory", out)
+        os.chmod(os.path.join(self.tmp, "d/locked"), 0o755)
+        os.chmod(os.path.join(self.tmp, "d/locked/inner"), 0)
+        rc, out = self.gate("--target", "x86_64-apple-darwin", os.path.join(self.tmp, "d"))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("CANNOT JUDGE locked/inner: unreadable", out)
+
+    def test_java_class_and_text_are_not_mach_o(self):
+        self.put("d/ok", thin(X86_64))
+        self.put("d/Main.class", JAVA_CLASS, 0o644)
+        self.put("d/readme.txt", b"hello\n", 0o644)
+        rc, out = self.gate("--target", "x86_64-apple-darwin", os.path.join(self.tmp, "d"))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Mach-O files: 1 ", out + " ")
+        self.assertNotIn("Main.class", out)
+
+    # -- required entry points (RULINGS CA2(b)) --
+    def test_missing_dangling_looping_or_non_mach_o_required_entry_points_fail(self):
+        app = self.app()
+        os.remove(os.path.join(app, "Contents/Resources/runtime/python/bin/python3.12"))     # python3 now dangles
+        rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, app)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL required entry point cys.app/Contents/Resources/runtime/python/bin/python3: dangling link", out)
+        self.put("cys.app/Contents/Resources/runtime/python/bin/python3.12", b"#!/bin/sh\n")   # not Mach-O
+        rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, app)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("python3: not a Mach-O file", out)
+        os.remove(os.path.join(app, "Contents/Resources/runtime/python/bin/python3.12"))
+        os.symlink("python3", os.path.join(app, "Contents/Resources/runtime/python/bin/python3.12"))  # a loop
+        rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, app)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("python3: link loop", out)
+        os.remove(os.path.join(app, "Contents/Resources/runtime/uv/uv"))
+        rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, app)
+        self.assertIn("FAIL required entry point Contents/Resources/runtime/uv/uv: missing", out)
+
+    def test_require_entry_points_on_a_runtime_tree(self):
+        self.app()
+        rt = os.path.join(self.tmp, "cys.app/Contents/Resources/runtime")
+        req = ["--require", "python/bin/python3", "--require", "node/bin/node",
+               "--require", "git/bin/git", "--require", "uv/uv"]
+        rc, out = self.gate("--target", "x86_64-apple-darwin", "--quiet", *req, rt)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out.strip().splitlines()[-1][:13], "RESULT: PASS ")
+        self.assertNotIn("entry points", out)          # --quiet
+        os.remove(os.path.join(rt, "uv/uv"))
+        rc, out = self.gate("--target", "x86_64-apple-darwin", "--quiet", *req, rt)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("required entry point uv/uv: missing", out)
+
+    # -- the updater archive: one streaming pass (RULINGS CA1) --
+    def make_tar(self, name, src_dir, arcname="cys.app"):
+        arc = os.path.join(self.tmp, name)
+        with ustar_archive(arc) as t:
+            t.add(src_dir, arcname=arcname)
+        return arc
+
+    def test_tar_gz_archive_red_and_green(self):
+        self.app(python_cpu=ARM64)
+        arc = self.make_tar("red.tar.gz", os.path.join(self.tmp, "cys.app"))
+        rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, arc)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL cys.app/Contents/Resources/runtime/python/bin/python3.12: arm64", out)
+        shutil.rmtree(os.path.join(self.tmp, "cys.app"))
+        self.app()
+        arc = self.make_tar("green.tar.gz", os.path.join(self.tmp, "cys.app"))
+        rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, arc)
+        self.assertEqual(rc, 0, out)
+        self.assertRegex(out, r"runtime/python/bin/python3 -> python3\.12\s+x86_64\s+min 10\.15")
+
+    def test_a_large_archive_is_read_in_one_linear_pass(self):
+        # several thousand members; Mach-O files scattered so that archive order != sorted-name order, the python
+        # link added LAST (after its target), fat binaries whose target slice sits late in the member
+        arc = os.path.join(self.tmp, "big.tar.gz")
+        n_text, step, n_macho = 4000, 66, 0
+        with ustar_archive(arc) as t:
+            def add(rel, data, mode=0o644):
+                ti = tarfile.TarInfo("cys.app/" + rel)
+                ti.size, ti.mode = len(data), mode
+                t.addfile(ti, __import__("io").BytesIO(data))
+            for i in range(n_text):
+                add("Contents/Resources/runtime/python/lib/z%05d/m.py" % (n_text - i), (b"# %d\n" % i) * 40)
+                if i % step == 0:
+                    k = i // step
+                    data = thin(X86_64, minos="10.15") if k % 2 else \
+                        fat([(ARM64, thin(ARM64) + os.urandom(20000)), (X86_64, thin(X86_64, minos="10.15"))])
+                    add("Contents/Resources/runtime/lib/a%03d.dylib" % (1000 - k), data, 0o755)
+                    n_macho += 1
+            for rel in ("Contents/MacOS/cys", "Contents/Resources/runtime/python/bin/python3.12",
+                        "Contents/Resources/runtime/node/bin/node", "Contents/Resources/runtime/git/bin/git",
+                        "Contents/Resources/runtime/uv/uv"):
+                add(rel, thin(X86_64, minos="10.15"), 0o755)
+            ti = tarfile.TarInfo("cys.app/Contents/Resources/runtime/python/bin/python3")
+            ti.type, ti.linkname = tarfile.SYMTYPE, "python3.12"
+            t.addfile(ti)
+        self.assertGreater(n_macho, 50)
+        rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, arc)
+        self.assertEqual(rc, 0, out)
+        m = re.search(r"archive read in one pass: (\d+) members, (\d+) of (\d+) compressed bytes", out)
+        self.assertIsNotNone(m, out)
+        members, read, size = (int(x) for x in m.groups())
+        self.assertEqual(members, n_text + n_macho + 6, out)
+        self.assertLessEqual(read, size, "the compressed stream was read more than once (a rewind) — RULINGS CA1")
+        self.assertEqual(read, size, "every compressed byte must pass through the counting reader exactly once")
+        self.assertIn("x86_64 ", out)
+        self.assertRegex(out, r"python3 -> python3\.12\s+x86_64\s+min 10\.15")
+
+    # -- T11b · RULINGS DB5: tar HARD-LINK members --
+    def hard_tar(self, name, plan, python_cpu=X86_64, prefix=""):
+        """The fake app as a .tar.gz whose runtime/python/bin/python3 is packed by PLAN instead of a symbolic link:
+        PLAN = [("before"|"after", member rel, linkname rel)] — hard-link members written before or after the tree."""
+        self.app(python_cpu=python_cpu)
+        os.remove(os.path.join(self.tmp, "cys.app/Contents/Resources/runtime/python/bin/python3"))
+        arc = os.path.join(self.tmp, name)
+        py = "cys.app/Contents/Resources/runtime/python/bin/"
+
+        def hard(t, rel, target):
+            ti = tarfile.TarInfo(prefix + py + rel)
+            ti.type, ti.linkname, ti.mode = tarfile.LNKTYPE, prefix + py + target, 0o755
+            t.addfile(ti)
+        with ustar_archive(arc) as t:
+            for when, rel, target in plan:
+                if when == "before":
+                    hard(t, rel, target)
+            t.add(os.path.join(self.tmp, "cys.app"), arcname=prefix + "cys.app")
+            for when, rel, target in plan:
+                if when == "after":
+                    hard(t, rel, target)
+        return arc
+
+    def test_every_hard_link_member_fails_wherever_its_target_is(self):
+        # RULINGS DL1 (3): the updater (tauri-plugin-updater 2.10.1 updater.rs:1246) unpacks each member with the tar
+        # crate's Entry::unpack(file), which takes a hard link's stored name relative to the process's working
+        # directory (tar 0.4.46 entry.rs:203–204, 528–548) — the archive does not guarantee which file the link names
+        py = "cys.app/Contents/Resources/runtime/python/bin/"
+        for name, plan, prefix in (("after.tar.gz", [("after", "python3", "python3.12")], ""),
+                                   ("before.tar.gz", [("before", "python3", "python3.12")], ""),
+                                   ("dot.tar.gz", [("after", "python3", "python3.12")], "./"),
+                                   ("dangling.tar.gz", [("after", "python3", "python3.13")], "")):
+            arc = self.hard_tar(name, plan, prefix=prefix)
+            rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, arc)
+            self.assertEqual(rc, 1, name + "\n" + out)
+            self.assertIn("FAIL %spython3: a tar hard link (to %s%s) — the archive does not guarantee which file this "
+                          "link names" % (py, prefix + py, plan[0][2]), out)
+            self.assertNotIn("abandoned", out)
+            self.assertNotIn("python3: missing", out)
+            self.assertRegex(out, r"runtime/python/bin/python3\s+\(tar hard link\)")
+            shutil.rmtree(os.path.join(self.tmp, "cys.app"))
+
+    def test_every_member_of_a_hard_link_chain_is_named(self):
+        arc = self.hard_tar("chain.tar.gz", [("after", "python3.1", "python3.12"), ("after", "python3", "python3.1")])
+        rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, arc)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("python/bin/python3.1: a tar hard link", out)
+        self.assertIn("python/bin/python3: a tar hard link", out)
+
+    def test_a_hard_link_to_a_wrong_architecture_file_fails_both_ways(self):
+        arc = self.hard_tar("wrong.tar.gz", [("after", "python3", "python3.12")], python_cpu=ARM64)
+        rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, arc)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL cys.app/Contents/Resources/runtime/python/bin/python3.12: arm64 (no slice", out)
+        self.assertIn("python/bin/python3: a tar hard link", out)
+
+    # -- T11b · RULINGS DI1: every load command --
+    def test_a_load_command_after_the_version_command_is_checked(self):
+        # the reviewer's case: slice 64 bytes = header 32 + LC_BUILD_VERSION 24 + an 8-byte command claiming 200
+        hdr = struct.pack("<IIIIIIII", 0xFEEDFACF, X86_64, 3, 2, 2, 32, 0, 0)
+        cmds = struct.pack("<IIIIII", LC_BUILD_VERSION, 24, 1, ver("10.15"), ver("15.0"), 0) + struct.pack("<II", 0x2, 200)
+        rc, out = self.one(fat([(X86_64, hdr + cmds)]))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("load command 1 (200 bytes) runs past sizeofcmds (32 bytes) in fat slice 0", out)
+        good = struct.pack("<IIIIIIII", 0xFEEDFACF, X86_64, 3, 2, 2, 32, 0, 0) + cmds[:24] + struct.pack("<II", 0x2, 8)
+        self.assertEqual(self.one(fat([(X86_64, good)]), name="g")[0], 0)         # green: the second fits exactly
+
+    def test_a_command_area_over_one_mebibyte_is_read_not_skipped(self):
+        big = (3 << 19)                                                            # 1.5 MiB filler command
+        def thin_big(last_size):
+            cmds = struct.pack("<IIIIII", LC_BUILD_VERSION, 24, 1, ver("10.15"), ver("15.0"), 0)
+            cmds += struct.pack("<II", 0x7FFFFF00, big) + b"\0" * (big - 8)
+            cmds += struct.pack("<II", 0x2, last_size)
+            return struct.pack("<IIIIIIII", 0xFEEDFACF, X86_64, 3, 2, 3, len(cmds), 0, 0) + cmds
+        self.put("d/cys.app/Contents/MacOS/cys", thin_big(8))
+        rc, out = self.gate("--target", "x86_64-apple-darwin", os.path.join(self.tmp, "d", "cys.app"))
+        self.assertEqual(rc, 0, out)
+        self.assertRegex(out, r"Contents/MacOS/cys\s+x86_64\s+min 10\.15")
+        self.put("e/cys.app/Contents/MacOS/cys", thin_big(64))                    # the last command claims 64 of 8
+        rc, out = self.gate("--target", "x86_64-apple-darwin", os.path.join(self.tmp, "e", "cys.app"))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("load command 2 (64 bytes) runs past sizeofcmds", out)
+        arc = self.make_tar("big-cmds.tar.gz", os.path.join(self.tmp, "e", "cys.app"))   # the same, streamed
+        rc, out = self.gate("--target", "x86_64-apple-darwin", arc)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("load command 2 (64 bytes) runs past sizeofcmds", out)
+
+    # -- T11b · RULINGS DI3 / DI4: symbolic links as the file system resolves them --
+    def py_links(self, links):
+        """The fake app with runtime/python/bin/python3 replaced by the symbolic links LINKS [(rel under runtime/, target)]."""
+        app = self.app()
+        rt = os.path.join(app, "Contents/Resources/runtime/")
+        os.remove(rt + "python/bin/python3")
+        for rel, target in links:
+            os.symlink(target, rt + rel)
+        return app
+
+    def test_a_chain_of_twenty_symbolic_links_resolves_in_a_tree_and_in_an_archive(self):
+        chain = [("python/bin/l0", "python3.12")] + [("python/bin/l%d" % i, "l%d" % (i - 1)) for i in range(1, 20)]
+        app = self.py_links(chain + [("python/bin/python3", "l19")])
+        for arg in (app, self.make_tar("chain20.tar.gz", app)):
+            rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, arg)
+            self.assertEqual(rc, 0, out)
+            self.assertRegex(out, r"runtime/python/bin/python3 -> python3\.12\s+x86_64")
+
+    def test_a_real_loop_is_a_loop_also_a_growing_one(self):
+        app = self.py_links([("python/bin/python3", "la"), ("python/bin/la", "lb"), ("python/bin/lb", "la")])
+        rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, self.make_tar("loop.tar.gz", app))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("python/bin/python3: link loop", out)
+        shutil.rmtree(app)
+        app = self.py_links([("python/bin/python3", "lx/python3.12"), ("python/bin/lx", "lx/y")])   # lx → lx/y → …
+        rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, self.make_tar("grow.tar.gz", app))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("python/bin/python3: too many links: more than 32 link expansions", out)   # the kernel: ELOOP
+
+    def test_a_target_through_a_directory_link_resolves(self):
+        # a target through a symbolic-link DIRECTORY member (runtime/py → python), with `..` steps
+        app = self.py_links([("python/bin/python3", "../bin/python3.12"), ("py", "python"),
+                             ("node/bin/node2", "../../py/bin/python3.12")])
+        for arg in (app, self.make_tar("spell.tar.gz", app)):
+            rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, "--require", RT + "node/bin/node2", arg)
+            self.assertEqual(rc, 0, out)
+            self.assertNotIn("dangling", out)
+
+    def test_a_link_target_with_a_dot_or_an_empty_component_is_not_measurable(self):
+        # DN1: `python3.12/.` and `python3.12/` would need python3.12 to be a directory — not normalised away
+        for target in ("python3.12/.", "python3.12/", ".//python3.12"):
+            app = self.py_links([("python/bin/python3", target)])
+            for arg in (app, self.make_tar("odd-target.tar.gz", app)):
+                rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, arg)
+                self.assertEqual(rc, 2, target + "\n" + out)
+                self.assertIn("python/bin/python3: not measurable — link target %r has an empty or `.` component" % target, out)
+                self.assertNotIn("FAIL", out)
+            shutil.rmtree(app)
+
+    def test_a_target_climbing_above_the_root_fails_as_outside_the_archive(self):
+        app = self.py_links([("python/bin/python3", "../../../../../../../outside/python3.12")])
+        rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, self.make_tar("unsafe.tar.gz", app))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("python/bin/python3: outside the archive: `..` climbs above its root", out)
+        self.assertNotIn("dangling", out)
+
+    # -- T11b · RULINGS DL1 (2): the kernel's resolution --
+    def chain_app(self, n):
+        """python3 → l<n-1> → … → l0 → python3.12: N + 1 link expansions."""
+        return self.py_links([("python/bin/l0", "python3.12")] + [("python/bin/l%d" % i, "l%d" % (i - 1)) for i in range(1, n)]
+                             + [("python/bin/python3", "l%d" % (n - 1))])
+
+    def test_thirty_two_link_expansions_resolve_and_thirty_three_do_not(self):
+        app = self.chain_app(31)                                                   # 32 expansions
+        rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, self.make_tar("l32.tar.gz", app))
+        self.assertEqual(rc, 0, out)
+        shutil.rmtree(app)
+        app = self.chain_app(32)                                                   # 33 expansions
+        rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, self.make_tar("l33.tar.gz", app))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("python/bin/python3: too many links: more than 32 link expansions (the platform's MAXSYMLINKS)", out)
+
+    def test_a_deep_chain_is_too_many_links_not_a_crash(self):
+        app = self.chain_app(1500)                                                 # far past any recursion limit
+        rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, app)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("too many links", out)
+        self.assertNotIn("Traceback", out)
+
+    def test_an_intermediate_component_must_be_a_directory_of_the_archive(self):
+        # `marker/../python3.12`: the kernel needs `marker` to be a directory — a file or nothing does not resolve
+        app = self.py_links([("python/bin/python3", "marker/../python3.12")])
+        self.put("cys.app/Contents/Resources/runtime/python/bin/marker", b"just a file\n", 0o644)
+        for arg in (app, self.make_tar("marker-file.tar.gz", app)):
+            rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, arg)
+            self.assertEqual(rc, 1, out)
+            self.assertIn("python/bin/python3: not a directory: cys.app/Contents/Resources/runtime/python/bin/marker is a file", out)
+        os.remove(os.path.join(app, "Contents/Resources/runtime/python/bin/marker"))
+        rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, self.make_tar("marker-none.tar.gz", app))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("python/bin/python3: missing component: cys.app/Contents/Resources/runtime/python/bin/marker", out)
+
+    def odd_member_tar(self, name, data=None, keep_python=False):
+        """The fake app as a .tar.gz with one extra member NAME (python3.12 removed from the tree unless KEEP_PYTHON)."""
+        app = self.app()
+        if not keep_python:
+            os.remove(os.path.join(app, "Contents/Resources/runtime/python/bin/python3.12"))   # python3 still links to it
+        arc = os.path.join(self.tmp, "odd.tar.gz")
+        with ustar_archive(arc) as t:
+            t.add(app, arcname="cys.app")
+            data = thin(X86_64, minos="10.15") if data is None else data
+            ti = tarfile.TarInfo(name)
+            ti.size, ti.mode = len(data), 0o755
+            t.addfile(ti, io.BytesIO(data))
+        return app, arc
+
+    def test_member_names_with_an_inner_dot_or_a_double_slash_are_not_measurable(self):
+        # DN1: ONE spelling — the required python3 stops at a not-measurable place: exit 2, never a FAIL (DN4)
+        for name in ("cys.app/Contents/Resources/runtime/python/bin/./python3.12",
+                     "cys.app/Contents/Resources/runtime//python/bin/python3.12"):
+            app, arc = self.odd_member_tar(name)
+            rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, arc)
+            self.assertEqual(rc, 2, name + "\n" + out)
+            self.assertIn("%s: not measurable — member name %r has an empty or `.` component" % (name, name), out)
+            self.assertIn("CANNOT JUDGE required entry point cys.app/Contents/Resources/runtime/python/bin/python3: not measurable", out)
+            self.assertNotIn("FAIL", out)
+            shutil.rmtree(app)
+
+    def test_one_member_per_name(self):
+        # DN2 (the reviewer's sequence): a Mach-O python3.12, then a TEXT member of the same name — the gate does not
+        # model which one the extractor leaves: not measurable, the stale Mach-O result is not used
+        app, arc = self.odd_member_tar("cys.app/Contents/Resources/runtime/python/bin/python3.12", b"#!/bin/sh\n", keep_python=True)
+        rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, arc)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("occurs more than once in the archive (one of them not a directory)", out)
+        self.assertNotIn("FAIL", out)
+        self.assertNotRegex(out, r"python3 -> python3\.12\s+x86_64")
+        shutil.rmtree(app)
+        # green control: a directory member repeated is fine
+        app = self.app()
+        arc = os.path.join(self.tmp, "dirs.tar.gz")
+        with ustar_archive(arc) as t:
+            t.add(app, arcname="cys.app")
+            ti = tarfile.TarInfo("cys.app/Contents/Resources")
+            ti.type = tarfile.DIRTYPE
+            t.addfile(ti)
+        self.assertEqual(self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, arc)[0], 0)
+
+    def test_a_required_link_to_an_absolute_path_is_not_measurable_never_a_fail(self):
+        # DN4 (the reviewer's sequence): the required python3 → /usr/bin/python3 — exit 2, not added to the failures
+        app = self.py_links([("python/bin/python3", "/usr/bin/python3")])
+        for arg in (app, self.make_tar("abs.tar.gz", app)):
+            rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, arg)
+            self.assertEqual(rc, 2, out)
+            self.assertIn("CANNOT JUDGE required entry point cys.app/Contents/Resources/runtime/python/bin/python3: not measurable", out)
+            self.assertNotIn("FAIL", out)
+
+    # -- T11b · RULINGS DU1–DU2: the plain shape --
+    def test_a_member_of_another_type_is_not_measurable_never_skipped(self):
+        # DU1 (a), the reviewer's case: type flag `Z` holding an arm64 Mach-O (the tar crate writes it as a file)
+        for flag in (b"Z", tarfile.FIFOTYPE):
+            app = self.app()
+            arc = os.path.join(self.tmp, "type.tar.gz")
+            with ustar_archive(arc) as t:
+                t.add(app, arcname="cys.app")
+                data = thin(ARM64, minos="11.0")
+                ti = tarfile.TarInfo("cys.app/Contents/Resources/runtime/extra")
+                ti.type, ti.size, ti.mode = flag, len(data), 0o755
+                t.addfile(ti, io.BytesIO(data))
+            rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, arc)
+            self.assertEqual(rc, 2, flag.decode() + "\n" + out)
+            self.assertIn("the archive is not in the plain shape (RULINGS DU1) — record ", out)
+            self.assertIn("cys.app/Contents/Resources/runtime/extra: not measurable — its record kind %r is not in the "
+                          "allow-list" % flag.decode(), out)
+            self.assertNotIn("RESULT: PASS", out)
+            shutil.rmtree(app)
+
+    def test_a_member_below_a_symbolic_link_member_is_not_measurable(self):
+        # DU1 (d), the reviewer's sequence: python3.12 (x86_64), python3 -> python3.12, runtime/py -> python, then a TEXT
+        # member runtime/py/bin/python3.12 — the extractor follows the link and replaces python3.12 — and the link LATER
+        for link_first in (True, False):
+            app = self.py_links([("python/bin/python3", "python3.12"), ("py", "python")])
+            arc = os.path.join(self.tmp, "below.tar.gz")
+            with ustar_archive(arc) as t:
+                def below():
+                    ti = tarfile.TarInfo("cys.app/Contents/Resources/runtime/py/bin/python3.12")
+                    ti.size, ti.mode = 10, 0o755
+                    t.addfile(ti, io.BytesIO(b"#!/bin/sh\n"))
+                if not link_first:
+                    below()
+                t.add(app, arcname="cys.app")
+                if link_first:
+                    below()
+            rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, arc)
+            self.assertEqual(rc, 2, out)
+            self.assertIn("cys.app/Contents/Resources/runtime/py/bin/python3.12: not measurable — its parent "
+                          "cys.app/Contents/Resources/runtime/py is a member that is a symbolic link", out)
+            self.assertNotIn("FAIL", out)
+            self.assertNotRegex(out, r"python3 -> python3\.12\s+x86_64")     # the stale Mach-O result is not used
+            shutil.rmtree(app)
+
+    def test_a_refused_member_still_proves_its_parent_directories(self):
+        # DU2, the reviewer's case: NO directory members; cys.app/Contents/MacOS/cys and a required python3 ->
+        # /usr/bin/python3 — not measurable (exit 2), no "missing component" proven failure
+        arc = os.path.join(self.tmp, "nodirs.tar.gz")
+        with ustar_archive(arc) as t:
+            data = thin(X86_64, minos="10.13")
+            ti = tarfile.TarInfo("cys.app/Contents/MacOS/cys")
+            ti.size, ti.mode = len(data), 0o755
+            t.addfile(ti, io.BytesIO(data))
+            ti = tarfile.TarInfo("cys.app/Contents/Resources/runtime/python/bin/python3")
+            ti.type, ti.linkname = tarfile.SYMTYPE, "/usr/bin/python3"
+            t.addfile(ti)
+        rc, out = self.gate("--target", "x86_64-apple-darwin", "--require", RT + "python/bin/python3", arc)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("CANNOT JUDGE required entry point cys.app/Contents/Resources/runtime/python/bin/python3: not measurable", out)
+        self.assertNotIn("missing component", out)
+        self.assertNotIn("FAIL", out)
+
+    # -- T11b · RULINGS EB1–EB3: the raw records, every parent a directory, hard links first --
+    def test_sparse_records_in_every_form_are_not_measurable(self):
+        # EB1, the reviewer's I1: a PAX local header GNU.sparse.map=4096,96 + GNU.sparse.size=4192 before a type-'0'
+        # member whose 96 stored bytes are an arm64 Mach-O — tarfile applies the map (zeros), the updater's tar crate
+        # writes the stored bytes; and the 0.0 / 1.0 forms and the old GNU type 'S'
+        arm = thin(ARM64, minos="11.0")[:96].ljust(96, b"\0")
+        for label, fmt, pax, kind in (
+                ("PAX 0.1", tarfile.PAX_FORMAT, {"GNU.sparse.map": "4096,96", "GNU.sparse.size": "4192"}, tarfile.REGTYPE),
+                ("PAX 0.0", tarfile.PAX_FORMAT, {"GNU.sparse.numblocks": "1", "GNU.sparse.offset": "4096",
+                                                  "GNU.sparse.numbytes": "96", "GNU.sparse.size": "4192"}, tarfile.REGTYPE),
+                ("PAX 1.0", tarfile.PAX_FORMAT, {"GNU.sparse.major": "1", "GNU.sparse.minor": "0",
+                                                  "GNU.sparse.name": "cys.app/Contents/Resources/runtime/extra",
+                                                  "GNU.sparse.realsize": "4192"}, tarfile.REGTYPE),
+                ("old GNU 'S'", tarfile.GNU_FORMAT, {}, tarfile.GNUTYPE_SPARSE)):
+            app = self.app()
+            arc = os.path.join(self.tmp, "sparse.tar.gz")
+            with ustar_archive(arc) as t:
+                t.add(app, arcname="cys.app")
+            with tarfile.open(arc, "r:gz") as src, ustar_archive(arc + ".2", fmt) as t:
+                for m in src:                                      # copy the ustar members, then the planted record
+                    t.addfile(m, src.extractfile(m) if m.isfile() else None)
+                ti = tarfile.TarInfo("cys.app/Contents/Resources/runtime/extra")
+                ti.type, ti.size, ti.mode, ti.pax_headers = kind, len(arm), 0o755, dict(pax)
+                t.addfile(ti, io.BytesIO(arm))
+            rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, arc + ".2")
+            self.assertEqual(rc, 2, label + "\n" + out)
+            self.assertIn("(RULINGS EB1, EI2)", out)
+            self.assertNotIn("RESULT: PASS", out)
+            shutil.rmtree(app)
+
+    def test_a_long_name_in_the_ustar_prefix_is_measured_normally(self):
+        # EB4: the real archives carry names up to 162 bytes through the ustar prefix field (4,812 records each)
+        app = self.app()
+        deep = "cys.app/Contents/Resources/runtime/python/lib/python3.12/site-packages/a-very-long-package-name/" \
+               "and/a/deeper/folder/libdeep.dylib"
+        self.assertGreater(len(deep), 100)
+        self.put(deep, thin(X86_64, minos="10.15"))
+        rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, self.make_tar("long.tar.gz", app))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Mach-O files: 9 ", out)                    # the 8 of the fake app + the deep dylib
+
+    def test_a_parent_that_is_not_a_directory_member_is_not_measurable(self):
+        # EB2, the reviewer's I2: `extra` a regular (text) member and `extra/python3` a Mach-O, in both orders
+        for file_first in (True, False):
+            app = self.app()
+            arc = os.path.join(self.tmp, "parent.tar.gz")
+            with ustar_archive(arc) as t:
+                t.add(app, arcname="cys.app")
+                def add(name, data):
+                    ti = tarfile.TarInfo(name)
+                    ti.size, ti.mode = len(data), 0o755
+                    t.addfile(ti, io.BytesIO(data))
+                members = [("cys.app/Contents/Resources/runtime/extra", b"text\n"),
+                           ("cys.app/Contents/Resources/runtime/extra/python3", thin(X86_64))]
+                for name, data in (members if file_first else members[::-1]):
+                    add(name, data)
+            rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, arc)
+            self.assertEqual(rc, 2, out)
+            self.assertIn("cys.app/Contents/Resources/runtime/extra/python3: not measurable — its parent "
+                          "cys.app/Contents/Resources/runtime/extra is a member that is not a directory", out)
+            self.assertNotIn("RESULT: PASS", out)
+            shutil.rmtree(app)
+
+    def test_a_hard_link_with_a_repeated_name_is_proven_wrong_in_both_orders(self):
+        # EB3: the hard link is recorded before any name handling — exit 1 with its own diagnosis
+        for link_first in (True, False):
+            app = self.app()
+            arc = os.path.join(self.tmp, "hard-dup.tar.gz")
+            with ustar_archive(arc) as t:
+                t.add(app, arcname="cys.app")
+                def regular():
+                    ti = tarfile.TarInfo("cys.app/Contents/Resources/runtime/extra")
+                    ti.size = 5
+                    t.addfile(ti, io.BytesIO(b"text\n"))
+                def hard():
+                    ti = tarfile.TarInfo("cys.app/Contents/Resources/runtime/extra")
+                    ti.type, ti.linkname = tarfile.LNKTYPE, "cys.app/Contents/MacOS/cys"
+                    t.addfile(ti)
+                for f in ((hard, regular) if link_first else (regular, hard)):
+                    f()
+            rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, arc)
+            self.assertEqual(rc, 1, out)
+            self.assertIn("FAIL cys.app/Contents/Resources/runtime/extra: a tar hard link (to cys.app/Contents/MacOS/cys) "
+                          "— the archive does not guarantee which file this link names", out)
+            shutil.rmtree(app)
+
+    # -- T11b · RULINGS EI2: four comparisons against the MEASURED shape (raw bytes) --
+    def raw_app(self, *extra, end=b"\0" * 1024):
+        """A raw ustar stream of a minimal x86_64 app (four entry points, measured form) + EXTRA records + END."""
+        parts = [raw_header(b"cys.app/", b"5"), raw_header(b"cys.app/Contents/", b"5"),
+                 raw_header(b"cys.app/Contents/MacOS/", b"5"),
+                 raw_member(b"cys.app/Contents/MacOS/cys", thin(X86_64, minos="10.15"))]
+        for d in ("Resources/", "Resources/runtime/", "Resources/runtime/python/", "Resources/runtime/python/bin/",
+                  "Resources/runtime/node/", "Resources/runtime/node/bin/", "Resources/runtime/git/",
+                  "Resources/runtime/git/bin/", "Resources/runtime/uv/"):
+            parts.append(raw_header(b"cys.app/Contents/" + d.encode(), b"5"))
+        for rel in ("python/bin/python3", "node/bin/node", "git/bin/git", "uv/uv"):
+            parts.append(raw_member(("cys.app/Contents/Resources/runtime/" + rel).encode(), thin(X86_64, minos="10.15")))
+        return b"".join(parts) + b"".join(extra) + end
+
+    def raw_gate(self, tar_bytes, gz=None, name="raw.tar.gz"):
+        p = os.path.join(self.tmp, name)
+        with open(p, "wb") as f:
+            f.write(gz if gz is not None else gzip.compress(tar_bytes, mtime=0))
+        return self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, p)
+
+    def test_the_raw_app_in_the_measured_shape_passes(self):
+        rc, out = self.raw_gate(self.raw_app())
+        self.assertEqual(rc, 0, out)
+
+    def test_a_record_that_is_not_a_regular_file_has_size_zero(self):
+        # EI2 I1, codex's case: a directory header with size 512 + 512 zero bytes (tarfile takes them as the end, the
+        # Rust crate skips them) and an arm64 member behind it — and EB3 for a hard link placed behind such a record
+        trap = raw_header(b"cys.app/Contents/Resources/x/", b"5", 512) + b"\0" * 512
+        rc, out = self.raw_gate(self.raw_app(trap, raw_member(b"cys.app/Contents/Resources/x/arm", thin(ARM64))))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("a '5' record with size 512 — every record that is not a regular file has size 0", out)
+        self.assertNotIn("RESULT: PASS", out)
+        rc, out = self.raw_gate(self.raw_app(trap, raw_header(b"cys.app/Contents/Resources/x/h", b"1",
+                                                              link=b"cys.app/Contents/MacOS/cys")))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL cys.app/Contents/Resources/x/h: a tar hard link (to cys.app/Contents/MacOS/cys)", out)
+
+    def test_a_corrupted_or_truncated_archive_is_not_measurable(self):
+        # EI2 I2: a flipped header byte, three cut points, bytes after the end blocks
+        good = self.raw_app()
+        flipped = bytearray(good)
+        flipped[512 * 3 + 10] ^= 1                                     # inside the name of cys.app/Contents/MacOS/cys
+        rc, out = self.raw_gate(bytes(flipped))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("its header checksum does not match — the header is corrupted", out)
+        member_at = good.index(b"cys.app/Contents/Resources/runtime/node/bin/node")
+        for label, cut in (("inside a header", member_at + 100), ("inside a payload", member_at + 512 + 20),
+                           ("before the end blocks", len(good) - 1024)):
+            rc, out = self.raw_gate(good[:cut])
+            self.assertEqual(rc, 2, label + "\n" + out)
+            self.assertIn("ends before its end-of-archive blocks — it is truncated", out)
+        for tail in (b"\0" * 512, b"garbage"):
+            rc, out = self.raw_gate(good + tail)
+            self.assertEqual(rc, 2, out)
+            self.assertIn("bytes follow the end-of-archive blocks", out)
+
+    def test_a_size_field_that_is_not_digits_ends_the_census(self):
+        # EI2 I3, codex's case: size '-0000001000' (int(..., 8) = -512 would revisit the same header for ever)
+        bad = raw_header(b"cys.app/Contents/Resources/loop", b"0", size_field=b"-0000001000 ")
+        rc, out = self.raw_gate(self.raw_app(bad))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("its size field b'-0000001000 ' is not eleven octal digits and a space", out)
+
+    def test_exactly_one_gzip_member(self):
+        # EI2 I4, codex's case: gzip(A) + gzip(B) — the product's GzDecoder reads only A; trailing data; a plain tar
+        good = self.raw_app()
+        extra = raw_member(b"cys.app/Contents/Resources/b", thin(ARM64)) + b"\0" * 1024
+        rc, out = self.raw_gate(None, gz=gzip.compress(good, mtime=0) + gzip.compress(extra, mtime=0))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("bytes follow the gzip member — a second member or trailing data", out)
+        rc, out = self.raw_gate(None, gz=gzip.compress(good, mtime=0) + b"trailing")
+        self.assertEqual(rc, 2, out)
+        rc, out = self.raw_gate(None, gz=good, name="plain.tar.gz")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("it is not a gzip file", out)
+        self.assertNotIn("truncated", out)                         # nothing unmeasured is called truncated
+
+    def test_a_zero_block_ends_the_archive(self):
+        # ET1, codex's case (an honest storage / copy fault): a size-0 directory header zero-filled, members behind it
+        # — tarfile stops there, so they would go unchecked; the END is two zero blocks and nothing after
+        zeroed = b"\0" * 512                                       # was raw_header(b"cys.app/Contents/Resources/x/", b"5")
+        rc, out = self.raw_gate(self.raw_app(zeroed, raw_member(b"cys.app/Contents/Resources/x/arm", thin(ARM64))))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("a zero block is followed by further records", out)
+        self.assertNotIn("RESULT: PASS", out)
+
+    def first_reason(self, out):
+        m = re.search(r"the archive is not in the plain shape \(RULINGS DU1\) — (.*)", out)
+        self.assertIsNotNone(m, out)
+        return m.group(1)
+
+    def test_every_refusal_condition_has_its_own_control_and_names_the_true_cause(self):
+        # ET2: one deviation each, and the FIRST reason named is that deviation
+        app = self.raw_app
+        hdr = raw_header
+        cases = (
+            ("checksum field form", app(hdr(b"cys.app/Contents/Resources/c1", checksum_form=b"%07o\0")),
+             None, "its checksum field"),
+            ("checksum mismatch", None, None, "its header checksum does not match"),
+            ("size field form", app(hdr(b"cys.app/Contents/Resources/c3", size_field=b"00000000000\0")),
+             None, "its size field b'00000000000\\x00' is not eleven octal digits and a space"),
+            ("non-regular size", app(hdr(b"cys.app/Contents/Resources/c4", b"2", 512, link=b"x") + b"\0" * 512),
+             None, "a '2' record with size 512"),
+            ("unknown kind", app(hdr(b"cys.app/Contents/Resources/c5", b"Z")), None, "its record kind 'Z' is not in"),
+            ("PAX header", app(hdr(b"PaxHeader/c6", b"x", 20) + b"20 path=cys.app/c6\n".ljust(512, b"\0")),
+             None, "PAX local extended header"),
+            ("GNU magic", app(hdr(b"cys.app/Contents/Resources/c7", magic=b"ustar  \0")), None, "is not POSIX ustar"),
+            ("truncated", app()[:-1024], None, "it is truncated"),
+            ("after the end", app() + b"\0" * 512, None, "512 bytes follow the end-of-archive blocks"),
+            ("zero block then records", app(b"\0" * 512, hdr(b"cys.app/Contents/Resources/c10", b"5")), None,
+             "a zero block is followed by further records"),
+            ("not gzip", None, app(), "it is not a gzip file"),
+            ("gzip truncated", None, gzip.compress(app(), mtime=0)[:-40], "the gzip stream ends before its end"),
+            ("two gzip members", None, gzip.compress(app(), mtime=0) + gzip.compress(b"\0" * 1024, mtime=0),
+             "bytes follow the gzip member"))
+        for label, tar_bytes, gz, expect in cases:
+            if label == "checksum mismatch":
+                flipped = bytearray(app())
+                flipped[512 * 3 + 10] ^= 1
+                tar_bytes = bytes(flipped)
+            rc, out = self.raw_gate(tar_bytes, gz=gz)
+            self.assertEqual(rc, 2, label + "\n" + out)
+            self.assertIn(expect, self.first_reason(out), label + "\n" + out)
+
+    def test_absolute_names_dotdot_and_odd_components_in_member_names_are_not_measurable(self):
+        for name in ("cys.app/../evil", "/abs/evil", "cys.app//evil", "cys.app/./evil"):
+            app, arc = self.odd_member_tar(name, b"text", keep_python=True)
+            rc, out = self.gate("--target", "x86_64-apple-darwin", *REQUIRE_APP, arc)
+            self.assertEqual(rc, 2, name + "\n" + out)
+            self.assertIn("not measurable — member name", out)
+            self.assertNotIn("FAIL", out)
+            shutil.rmtree(app)
+
+    def test_the_checkers_own_failure_is_exit_2_never_1(self):
+        # DL1 (4): recursion, memory, any unexpected exception — "cannot judge", never "FAIL"
+        app = self.app()
+        for exc in (RecursionError, MemoryError, KeyError):
+            g = load_gate()
+            def boom(*a, **k):
+                raise exc("planted")
+            g.resolve = boom
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = g.main(["--target", "x86_64-apple-darwin", *REQUIRE_APP, app])
+            self.assertEqual(rc, 2, buf.getvalue())
+            self.assertIn("CANNOT JUDGE: the checker itself failed (%s" % exc.__name__, buf.getvalue())
+
+    # -- T11b · RULINGS DL2: bounded memory --
+    def many_small(self, n, last):
+        cmds = struct.pack("<IIIIII", LC_BUILD_VERSION, 24, 1, ver("10.15"), ver("15.0"), 0)
+        cmds += struct.pack("<II", 0x2, 8) * (n - 2) + struct.pack("<II", 0x2, last)
+        return struct.pack("<IIIIIIII", 0xFEEDFACF, X86_64, 3, 2, n, len(cmds), 0, 0) + cmds
+
+    def test_many_small_commands_keep_the_buffer_bounded_and_a_bad_last_one_is_found(self):
+        g = load_gate()
+        n = 120000                                                                  # ~940 KiB of 8-byte commands
+        for last, bad in ((8, False), (16, True)):
+            data = self.many_small(n, last)
+            reader = g.ForwardReader(io.BytesIO(data))
+            if bad:
+                with self.assertRaises(g.Unjudgeable) as cm:
+                    g.inspect(reader.read, len(data), "x86_64")
+                self.assertIn("load command %d (16 bytes) runs past sizeofcmds" % (n - 1), str(cm.exception))
+            else:
+                self.assertEqual(g.inspect(reader.read, len(data), "x86_64")["minos"], "10.15")
+            self.assertLessEqual(reader.peak, 2 * g.ForwardReader.CHUNK + 64, "the reader kept %d bytes" % reader.peak)
+        self.put("t/cys.app/Contents/MacOS/cys", self.many_small(n, 16))           # the same, streamed from an archive
+        rc, out = self.gate("--target", "x86_64-apple-darwin", self.make_tar("small.tar.gz", os.path.join(self.tmp, "t", "cys.app")))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("load command %d (16 bytes) runs past sizeofcmds" % (n - 1), out)
+
+    def test_a_command_area_over_the_cap_is_not_measurable(self):
+        # DN5: a VALID 16 MiB + 8 command area that the code without the cap reads to the end and passes — only the
+        # cap makes it exit 2
+        filler = (16 << 20) - 16
+        cmds = struct.pack("<IIIIII", LC_BUILD_VERSION, 24, 1, ver("10.15"), ver("15.0"), 0)
+        cmds += struct.pack("<II", 0x7FFFFF00, filler) + b"\0" * (filler - 8)
+        rc, out = self.one(struct.pack("<IIIIIIII", 0xFEEDFACF, X86_64, 3, 2, 2, len(cmds), 0, 0) + cmds)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("a load-command area of 16777224 bytes exceeds the checker's resource cap of 16777216 bytes — not measurable", out)
+
+    # -- cannot judge is never a pass --
+    def test_cannot_judge_cases_exit_2(self):
+        empty = os.path.join(self.tmp, "empty")
+        os.makedirs(empty)
+        self.assertEqual(self.gate("--target", "x86_64-apple-darwin", empty)[0], 2)
+        self.assertEqual(self.gate("--target", "x86_64-apple-darwin", os.path.join(self.tmp, "nope"))[0], 2)
+        self.put("x", thin(X86_64))
+        self.assertEqual(self.gate("--target", "powerpc", os.path.join(self.tmp, "x"))[0], 2)
+        bad = self.put("broken.tar.gz", b"\x1f\x8b\x08\x00garbage", 0o644)
+        self.assertEqual(self.gate("--target", "x86_64-apple-darwin", bad)[0], 2)
+
+    def test_a_failure_wins_over_cannot_judge_across_inputs(self):
+        self.put("bad/a", thin(ARM64))
+        rc, out = self.gate("--target", "x86_64-apple-darwin", os.path.join(self.tmp, "bad"), os.path.join(self.tmp, "nope"))
+        self.assertEqual(rc, 1, out)
+
+    @unittest.skipUnless(sys.platform == "darwin", "a real universal system binary exists on macOS only")
+    def test_a_real_system_binary_shows_the_subtype_rule(self):
+        # /bin/echo = x86_64 (ALL) + arm64e (Apple's pointer-authentication ABI): it satisfies x86_64 but, by the
+        # rule, not a third-party arm64 target (macOS loads arm64e only for Apple's own code)
+        rc, out = self.gate("--target", "x86_64-apple-darwin", "/bin/echo")
+        self.assertEqual(rc, 0, out)
+        rc, out = self.gate("--target", "aarch64-apple-darwin", "/bin/echo")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("arm64e", out)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -16,8 +16,8 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, TryLockError};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 
 use portable_pty::Child;
 
@@ -84,21 +84,8 @@ impl ChildProbe {
 /// mapped here to `Unreadable`; existing poison panics are still caught. Other vendor clone/wait paths
 /// and the `GetExitCodeProcess` failure result remain unchanged.
 pub(crate) fn probe_child(exited: &AtomicBool, child: &Mutex<Box<dyn Child + Send + Sync>>) -> ChildProbe {
-    if exited.load(Ordering::Relaxed) {
-        return ChildProbe::SurfaceExited;
-    }
-    let mut guard = match child.try_lock() {
-        Ok(g) => g,
-        Err(TryLockError::WouldBlock) => return ChildProbe::Contended,
-        Err(TryLockError::Poisoned(_)) => return ChildProbe::Unreadable,
-    };
-    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| guard.try_wait()));
-    drop(guard);
-    match caught {
-        Ok(Ok(None)) => ChildProbe::Running,
-        Ok(Ok(Some(_))) => ChildProbe::Ended,
-        Ok(Err(_)) | Err(_) => ChildProbe::Unreadable,
-    }
+    // 본문 = 좌석 프로세스 손잡이(`seat_proc::probe_child` · 논리 그대로 옮김).
+    crate::seat_proc::probe_child(exited, child)
 }
 
 /// Thin wrapper: probe a live `Surface`.

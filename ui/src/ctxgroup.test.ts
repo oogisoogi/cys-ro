@@ -23,9 +23,11 @@ describe("D4 #10 ctxLines — 부서마다 머리줄 1개 · 행 라벨은 번�
 describe("D4 #10 배선", () => {
   const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
   it("행 라벨에 소켓 태그(「dept-3:12」)를 붙이지 않는다 · 머리줄은 부서 탭 이름", () => {
-    expect(main).toContain("sid.textContent = c.name ? c.name : String(c.surfaceId);");
+    // (tabs-sidebar 조각1 · 설계 ④) 「페인 CTX」 칸은 부서 카드 아래 좌석 줄로 합쳐졌다 — 부서 구분은 카드가, 번호는 좌석 줄이 진다.
+    //   여기서는 옛 칸이 다시 살아나지 않음 + 소켓 태그 꼴이 어디에도 없음 + 부서 이름 판정(ctxGroupLabel)이 남아 있음을 고정한다.
+    expect(main.includes('head.textContent = "페인 CTX";')).toBe(false);
     expect(main.includes("`${tag}:${c.surfaceId}`")).toBe(false);
-    expect(main).toContain("for (const line of ctxLines(ctxRows, showSocket, ctxGroupLabel)) {");
+    expect(main).toContain("bar.append(buildTab(ws), seatHost(String(ws.id)));");
     const f = main.slice(main.indexOf("function ctxGroupLabel("), main.indexOf("function wsLabel("));
     expect(f.includes('if (!socket) return "본부";')).toBe(true);
     expect(f.includes("return ws ? wsLabel(ws) :")).toBe(true);

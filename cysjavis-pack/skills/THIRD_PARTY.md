@@ -147,3 +147,38 @@ Unless required by applicable law or agreed to in writing, software distributed
 under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
 CONDITIONS OF ANY KIND, either express or implied. See the License for the
 specific language governing permissions and limitations under the License.
+
+## 산출물 스킬 외부 유래 고지 (asset-skills-for-seats · 2026-11-06)
+
+- `ppt-design-system/references/heidi-guideline.md` — 헤이디 「나만의 디자인 시스템 만들기 프로젝트 지침」의
+  분석 기준(1-1 ~ 5-5)과 키비주얼 요구를 **우리 말로 다시 쓴 요약**. 원문은 싣지 않는다.
+  출처 = 지은이 헤이디 · 공개 영상 https://www.youtube.com/watch?v=nbs8JtlY27s
+  「[지침 공유] PPT 8년차가 만든 AI PPT 디자인 시스템 (노션×클로드)」(2026-10-12).
+- `motion-graphics-prompt/references/heidi-motion-prompt.summary.md` — 헤이디 「모션 그래픽 제작 프롬프트」의
+  칸 구성을 우리 말로 적은 설명. 원문은 싣지 않는다. 출처 = 지은이 헤이디 · 공개 영상
+  https://www.youtube.com/watch?v=7xOcIYWGG0A.
+- `ppt-styles/vendor/anthropics-theme-factory/` — anthropics/skills `skills/theme-factory`
+  (Apache License 2.0 · 동봉 `LICENSE.txt` · 원 파일명 SKILL.md 를 `theme-factory-SKILL.md` 로만 바꿈 —
+  하위 폴더가 별도 스킬로 잡히지 않게. 변경 고지 = `ppt-styles/vendor/README.md`, Apache-2.0 §4(b)).
+- `ppt-styles/vendor/frontend-slides/STYLE_PRESETS.md` — zarazhangrui/frontend-slides (MIT · 동봉 `LICENSE`).
+- 그 밖의 산출물 스킬(motion-graphics-prompt · video-report-deck · portrait-cutout · ppt-styles 스타일 코드)은
+  우리가 쓴 절차·코드다. 참고한 영상·사이트(Prompt Motion · 헤이디 모션 프롬프트 · 커리어해커 등)는 원문을 싣지
+  않고 우리 말 요약과 출처 주소만 둔다. 글꼴(Pretendard 등 · SIL OFL 1.1)은 동봉하지 않고 받는 곳만 안내한다.
+
+## 산출물 스킬 외부 유래 고지 (1.1.16 · cysr-1116-asset-skills-1120 · 2026-11-20)
+
+- `narrated-motion` — 규칙·관문(처음 듣는 사람 5문 · 이음매 쿠션 · text/say 분리 · 큐 = 문장 · 0.4초 dead air ·
+  역순·새 실행 결정론 검사 등)을 kstost/script-to-motion(MIT License · https://github.com/kstost/script-to-motion ·
+  b791213)에서 빌렸다. 도구·틀 코드는 우리가 새로 썼고 원작 파일은 싣지 않았다. 무엇을 가져오고 안 가져왔는지는
+  그 SKILL.md 「원작과의 관계」 절.
+- `motion-graphics-prompt` 의 캔버스 상태 초기화·셰이더 `pow` 주의 줄과 seek_render 새 페이지 검사 착상 =
+  aimotion(MIT · 원리만 · 코드 미동봉).
+- `ppt-design-system/references/glance-test-checklist.md` — Duarte 글랜스 테스트(원문 미동봉 · 기준만)와
+  unslop(CC-BY-4.0 · 「고칠 양을 먼저 정한다」 방법만 · 문장 미동봉)을 출처로 밝히고 우리 말로 쓴 점검표.
+- `appbuild-screen-spec/references/ui-terms-24.md` — 코드깎는노인 「바이브코더가 반드시 알아야 할 필수 용어
+  24가지」(https://youtu.be/mlhKEy-2bgI) 를 우리 표로 다시 정리한 용어 사전. 영상 화면·자막은 싣지 않았다.
+- `style-guide-ab` — 오빠두엑셀 영상(https://youtu.be/J46UyJDT5kw)의 방법(A/B 고르기로 가이드 만들기)만 빌렸다.
+  문항 원문은 싣지 않았다.
+- `notebook-source-pack` — notebooklm-mcp-cli(`nlm` · MIT · 비공식 도구) 위의 우리 절차·도구다. 그 도구는 팩
+  preflight 가 버전 고정으로 설치하며 팩에 싣지 않는다. 명령 정본 스킬 nlm-skill 은 그 도구의
+  `nlm skill install` 로 깐다(동봉하지 않음).

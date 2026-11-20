@@ -1,6 +1,6 @@
 ---
 name: self-correction-loops
-description: 코드·난제를 객관 성공기준까지 자율로 끌어올리는 적대적 자기교정 루프 — eval LOCK 후 implement→독립채점→적대적검증 반복. "self-correction loop / 자가 교정 루프 / 코드 자율 디버깅 / 자율 디버깅" 트리거로 발동
+description: 코드·난제를 잠근 객관 기준까지 구현→독립채점→적대검증으로 반복 교정한다. 「자가 교정 루프 / 자율 디버깅 / self-correction loop」 요청 때.
 ---
 
 # self-correction-loops
@@ -28,3 +28,7 @@ reward hacking을 기계로 차단한다. (Fable 챌린지 2라운드 완성으�
 - eval이 baseline red → 완성 시 전부 green → 무변조 OK 인가
 - adversarial verify가 변조 실험으로 정당성 증명(findings 0) 했는가
 - bug-ledger에 라운드 교훈이 쌓여 다음 실행이 빨라지는가
+
+## 원 설명 (목록 상주 설명 축소 전 원문 · 1.1.12 cysr-1112-skill-fold)
+
+코드·난제를 객관 성공기준까지 자율로 끌어올리는 적대적 자기교정 루프 — eval LOCK 후 implement→독립채점→적대적검증 반복. "self-correction loop / 자가 교정 루프 / 코드 자율 디버깅 / 자율 디버깅" 트리거로 발동

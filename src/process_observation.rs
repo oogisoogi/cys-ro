@@ -175,6 +175,30 @@ pub fn observe(pid: u32) -> Result<ProcessObservation, Failure> {
     }
 }
 
+/// Birth identity only (pid · parent · group · birth time · executable) — no argv read, so a
+/// process whose arguments cannot be read (zombie, exiting) is still answered. Dead = gone (ESRCH).
+pub fn identity(pid: u32) -> Result<Identity, Failure> {
+    if pid == 0 || pid > i32::MAX as u32 {
+        return Err(Failure::InvalidPid);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        darwin::identity(pid)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        linux_backend::identity(pid)
+    }
+    #[cfg(windows)]
+    {
+        windows_backend::observe(pid).map(|o| o.identity)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    {
+        Err(Failure::UnsupportedPlatform)
+    }
+}
+
 /// Compare with a fresh targeted observation, including executable and argv.
 pub fn recheck(expected: &ProcessObservation) -> Result<(), Failure> {
     if observe(expected.identity.pid)? == *expected {

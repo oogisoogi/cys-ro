@@ -62,7 +62,7 @@ class T(unittest.TestCase):
         ln = self.lines()
         self.assertEqual(len(ln), 1, ln)
         self.assertRegex(ln[0], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ session-start role=cso surface=44 rc=127 "
-                                r"why=core_inject:해석기 미해소 py=\S+ cys=(yes|no) cat=yes path=")
+                                r"took=(\d+s|-) dstart=\S+ why=core_inject:해석기 미해소 py=\S+ cys=(yes|no) cat=yes path=")
 
     def test_broken_path_still_records(self):
         # D10 재현: PATH 에 아무것도 없다(cat·date·wc·mkdir 전부 command not found) — 셸 내장만으로 한 줄이 남아야 한다.
@@ -124,7 +124,7 @@ class T(unittest.TestCase):
             self.assertIn("조립기 파일 없음(실행 안 함)", r.stdout)
             ln = [l for l in self.lines() if " session-start " in l]
             self.assertEqual(len(ln), 1, self.lines())
-            self.assertIn("rc=127 why=core_inject:조립기 파일 없음(실행 안 함)", ln[0])
+            self.assertRegex(ln[0], r"rc=127 took=(\d+s|-) dstart=\S+ why=core_inject:조립기 파일 없음\(실행 안 함\)")
             self.assertIn("role=master surface=7", ln[0])
             self.assertFalse(os.path.exists(os.path.join(pack, "hooks")), "시험 팩에 hooks/ 가 깔렸다(실 cys·cysd 가 탔다)")
             self.assertIn("cys claim-role master", open(os.path.join(stub, "calls.log")).read(), "목 cys 가 안 탔다")

@@ -396,6 +396,12 @@ pub(crate) struct PendingStore {
     published:RwLock<Arc<ReadSnapshot>>, disk:Arc<dyn Disk>, _process_lock:File,
     registry_limits:Option<RegistryLimits>,identity:Arc<RuntimeIdentity>,
 }
+// ★(1.1.16 · cysr-1116-integ-1118 · master#c3198344) 닫을 때 프로세스 잠금을 **명시적으로 푼다**. flock 은 open file description 에 붙는데,
+//   같은 프로세스의 다른 스레드가 fork 하면(pre_exec = fork+exec 길 · 좌석 스폰) 자식이 exec 전까지 그 description 을 복제해 쥔다 →
+//   close 만으로는 잠금이 남아 곧바로 다시 여는 쪽이 `Locked`(측정: fork 스레드 4개 · 15,000 주기 중 147). unlock 은 모든 복제본에 대해 푼다.
+impl Drop for PendingStore {
+    fn drop(&mut self) { let _=self._process_lock.unlock(); }
+}
 impl PendingStore {
     pub fn open(root:&Path, instance:u64, limits:Limits)->Result<Self,StoreError> {
         Self::open_with(root,instance,limits,Arc::new(RealDisk))
@@ -1721,6 +1727,21 @@ mod tests {
         assert_eq!(store.inspect_terminal(&id).unwrap(),Some(t));
         let printed=format!("{:?} {:?} {:?}",store.inventory().unwrap(),store.inspect_terminal(&id).unwrap(),store.inspect_settlement(&id).unwrap());
         assert!(!printed.contains("opaque private") && !printed.contains("private body"));
+    }
+    /// ★적색→녹색(1.1.16 · cysr-1116-integ-1118 · master#c3198344): 닫은 store 의 잠금 fd 복제본이 남아 있어도(같은 프로세스의 다른 스레드가
+    /// fork 한 자식은 exec 전까지 잠금 fd 를 복제해 쥔다 — flock 은 open file description 에 붙어 close 만으로는 안 풀린다) 곧바로 다시 열린다.
+    /// 종전: 부하 때 같은 scratch 재open 이 `Err(Locked)`(측정: fork 스레드 4개 · 15,000 주기 중 147). 복제본 = `try_clone`(같은 description).
+    #[test]
+    fn reopen_succeeds_while_a_duplicate_of_the_closed_lock_fd_is_alive() {
+        let scratch=Scratch::new("lock-dup");
+        let store=PendingStore::open(&scratch.0,11,limits()).unwrap();
+        let forked_child_copy=store._process_lock.try_clone().unwrap();
+        drop(store);
+        let reopened=PendingStore::open(&scratch.0,11,limits());
+        assert!(reopened.is_ok(),"닫은 store 의 잠금이 fd 복제본 때문에 안 풀림: {:?}",reopened.err());
+        // 배타는 그대로: 다시 연 store 가 살아 있는 동안 두 번째 open 은 Locked.
+        assert!(matches!(PendingStore::open(&scratch.0,11,limits()),Err(StoreError::Locked)));
+        drop(forked_child_copy);
     }
     #[test]
     fn persisted_sequence_survives_eviction_and_same_instance_reopen() {

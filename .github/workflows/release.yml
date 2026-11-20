@@ -685,7 +685,7 @@ jobs:
                    test_dept_create_progress test_dept_chat_inject_timeout \
                    test_default_fleet_formation test_formation test_nowin_periodic_spawns test_hud_bridge_unwatched_no_spawn test_nowin_captured_spawns test_awaken_enter test_resource_gate_notify_rule test_phoenix_a3_ps_axis test_dept_request test_d1_dept_ready_probe test_dbg_d3_dept_path_precedence test_dbg_d3_d11_shared_profile_hooks test_dbg_d3_f4_answer_classifier test_dbg_d3_f5_dept_intent test_d1_4_orphan_reap test_v116_rb1_formation test_v116_auto_restore_status test_v116_phoenix_midrun_tomb test_v116_num_cys_list_compat test_win_dept_spawn \
                    test_awaken_seat_fold test_awaken_status_lane test_boot_preflight_degraded test_c82_win_isolation test_dept_tick_stdin test_dept_tombstone_no_autostart test_dept_win_python_resolve test_hook_fail_log test_mission_anomaly_provenance test_preflight_fresh_full_json test_report_gate_win_na test_resource_gate_win_roster test_session_state_canon test_inject_context_home_ancestor test_javis_counsel \
-                   test_hud_bridge_0144_bootjs test_hud_bridge_0144_specimen test_hud_bridge_0144_unit test_intake_exit_contract test_mission_anomaly_emit test_resource_gate_bg_class test_computer_use_audit test_computer_control test_idle_gate test_agents_notes_personal_hooks test_hook_fail_timing test_owner_desk; do
+                   test_hud_bridge_0144_bootjs test_hud_bridge_0144_specimen test_hud_bridge_0144_unit test_intake_exit_contract test_mission_anomaly_emit test_resource_gate_bg_class test_computer_use_audit test_computer_control test_idle_gate test_agents_notes_personal_hooks test_hook_fail_timing test_owner_desk test_output_skills; do
             f="cysjavis-pack/bin/tests/$t.py"
             [ -f "$f" ] || { echo "선언·유령집계 테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
             echo "== declared-state test: $t =="
@@ -980,6 +980,17 @@ jobs:
         run: |
           set -euo pipefail
           f="scripts/tests/test_check_macho_arch.py"
+          [ -f "$f" ] || { echo "::error::테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
+          python3 "$f"
+
+      # (cysr 1.1.16 · TICKET=cysr-1116-lanereg-1121) 자산 빠짐 방지 게이트 시험 — ci-branch 와 같은 커밋 편입 · pack-release 미편입 사유 = ci-branch 레인 대조 ALLOWED.
+      #   타깃 무관 파이썬 시험이라 맥 두 레그 중 aarch64 1회만(위 4종 스텝과 같은 관례).
+      - name: 자산 빠짐 방지 게이트 (test_asset_ledger_check · macOS 전용)
+        if: matrix.target == 'aarch64-apple-darwin'
+        shell: bash
+        run: |
+          set -euo pipefail
+          f="scripts/tests/test_asset_ledger_check.py"
           [ -f "$f" ] || { echo "::error::테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
           python3 "$f"
 
@@ -1804,7 +1815,7 @@ jobs:
                    test_dept_create_progress test_dept_chat_inject_timeout \
                    test_default_fleet_formation test_formation test_nowin_periodic_spawns test_hud_bridge_unwatched_no_spawn test_nowin_captured_spawns test_awaken_enter test_resource_gate_notify_rule test_phoenix_a3_ps_axis test_dept_request test_d1_dept_ready_probe test_dbg_d3_dept_path_precedence test_dbg_d3_d11_shared_profile_hooks test_dbg_d3_f4_answer_classifier test_dbg_d3_f5_dept_intent test_d1_4_orphan_reap test_v116_rb1_formation test_v116_auto_restore_status test_v116_phoenix_midrun_tomb test_v116_num_cys_list_compat test_win_dept_spawn \
                    test_awaken_seat_fold test_awaken_status_lane test_boot_preflight_degraded test_c82_win_isolation test_dept_tick_stdin test_dept_tombstone_no_autostart test_dept_win_python_resolve test_hook_fail_log test_mission_anomaly_provenance test_preflight_fresh_full_json test_report_gate_win_na test_resource_gate_win_roster test_session_state_canon test_inject_context_home_ancestor test_javis_counsel \
-                   test_hud_bridge_0144_bootjs test_hud_bridge_0144_specimen test_hud_bridge_0144_unit test_intake_exit_contract test_mission_anomaly_emit test_resource_gate_bg_class test_computer_use_audit test_computer_control test_idle_gate test_agents_notes_personal_hooks test_hook_fail_timing test_owner_desk; do
+                   test_hud_bridge_0144_bootjs test_hud_bridge_0144_specimen test_hud_bridge_0144_unit test_intake_exit_contract test_mission_anomaly_emit test_resource_gate_bg_class test_computer_use_audit test_computer_control test_idle_gate test_agents_notes_personal_hooks test_hook_fail_timing test_owner_desk test_output_skills; do
             f="cysjavis-pack/bin/tests/$t.py"
             [ -f "$f" ] || { echo "선언·유령집계 테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
             echo "== [pack] declared-state test: $t =="

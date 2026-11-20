@@ -446,6 +446,13 @@ jobs:
               "scripts/tests/ 스위트(팩 스위트 아님) · 대상 check_macho_arch.py 는 맥 앱 번들 빌드 게이트이고 팩 tar 에 실리지 않는다 — "
               "pack-release 는 맥 번들을 만들지 않아 실행할 일이 없다.",
           )
+          # (cysr 1.1.16 · TICKET=cysr-1116-lanereg-1121) 0레인이던 자산 빠짐 방지 게이트 시험의 2레인 편입(140291006 · 5f163155f).
+          ALLOWED["test_asset_ledger_check"] = (
+              {"ci-branch", "release"},
+              "scripts/tests/ 스위트(팩 스위트 아님) · 대상 asset_ledger_check.py 는 저장소 판정표(docs/ASSET-LEDGER.md) 게이트이고 팩 tar 에 "
+              "실리지 않는다 — 그 게이트를 부르는 H-ASSET-1 은 전체 건강성 런(ci-branch boot-health-full · release)에서만 돌고 "
+              "pack-release 는 run_bootstrap_health.py --only H-SECRET-1 만 돌려 실행할 일이 없다(편입하면 근거 없는 목록).",
+          )
           # (2026-08-12 편입 완료: test_bootstrap_chain 을 3레인 전부에 배선 — 위계 폴백의 유일
           #  회귀 핀 세트가 CI 0회 실행이던 격차를 봉합. ALLOWED 예외도 함께 제거 — 대칭이 정본.)
 
@@ -1179,7 +1186,7 @@ jobs:
                    test_dept_create_progress test_dept_chat_inject_timeout \
                    test_default_fleet_formation test_formation test_nowin_periodic_spawns test_hud_bridge_unwatched_no_spawn test_nowin_captured_spawns test_awaken_enter test_resource_gate_notify_rule test_phoenix_a3_ps_axis test_dept_request test_d1_dept_ready_probe test_dbg_d3_dept_path_precedence test_dbg_d3_d11_shared_profile_hooks test_dbg_d3_f4_answer_classifier test_dbg_d3_f5_dept_intent test_d1_4_orphan_reap test_v116_rb1_formation test_v116_auto_restore_status test_v116_phoenix_midrun_tomb test_v116_num_cys_list_compat test_win_dept_spawn \
                    test_awaken_seat_fold test_awaken_status_lane test_boot_preflight_degraded test_c82_win_isolation test_dept_tick_stdin test_dept_tombstone_no_autostart test_dept_win_python_resolve test_hook_fail_log test_mission_anomaly_provenance test_preflight_fresh_full_json test_report_gate_win_na test_resource_gate_win_roster test_session_state_canon test_inject_context_home_ancestor test_javis_counsel \
-                   test_hud_bridge_0144_bootjs test_hud_bridge_0144_specimen test_hud_bridge_0144_unit test_intake_exit_contract test_mission_anomaly_emit test_resource_gate_bg_class test_computer_use_audit test_computer_control test_idle_gate test_agents_notes_personal_hooks test_hook_fail_timing test_owner_desk; do
+                   test_hud_bridge_0144_bootjs test_hud_bridge_0144_specimen test_hud_bridge_0144_unit test_intake_exit_contract test_mission_anomaly_emit test_resource_gate_bg_class test_computer_use_audit test_computer_control test_idle_gate test_agents_notes_personal_hooks test_hook_fail_timing test_owner_desk test_output_skills; do
             f="cysjavis-pack/bin/tests/$t.py"
             [ -f "$f" ] || { echo "테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
             echo "== $t (mac) =="
@@ -1421,6 +1428,16 @@ jobs:
         run: |
           set -euo pipefail
           f="scripts/tests/test_check_macho_arch.py"
+          [ -f "$f" ] || { echo "::error::테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
+          python3 "$f"
+
+      # (cysr 1.1.16 · TICKET=cysr-1116-lanereg-1121) 자산 빠짐 방지 게이트 시험 — 격리 HOME(임시 폴더)·저장소 공개 판정표만 쓰는 밀폐 시험 · 그 전 0레인 실행.
+      #   본부 판정표(.hq.md · 공개 트리 제외)가 없어도 돈다(그때 「본부 판정표 없음」 경로) · release 와 같은 커밋 편입 · pack-release 미편입 사유 = 위 레인 대조 ALLOWED.
+      - name: 자산 빠짐 방지 게이트 (test_asset_ledger_check · macOS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          f="scripts/tests/test_asset_ledger_check.py"
           [ -f "$f" ] || { echo "::error::테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
           python3 "$f"
 
@@ -2171,7 +2188,7 @@ jobs:
                    test_dept_create_progress test_dept_chat_inject_timeout \
                    test_default_fleet_formation test_formation test_nowin_periodic_spawns test_hud_bridge_unwatched_no_spawn test_nowin_captured_spawns test_awaken_enter test_resource_gate_notify_rule test_phoenix_a3_ps_axis test_dept_request test_d1_dept_ready_probe test_dbg_d3_dept_path_precedence test_dbg_d3_d11_shared_profile_hooks test_dbg_d3_f4_answer_classifier test_dbg_d3_f5_dept_intent test_d1_4_orphan_reap test_v116_rb1_formation test_v116_auto_restore_status test_v116_phoenix_midrun_tomb test_v116_num_cys_list_compat test_win_dept_spawn \
                    test_awaken_seat_fold test_awaken_status_lane test_boot_preflight_degraded test_c82_win_isolation test_dept_tick_stdin test_dept_tombstone_no_autostart test_dept_win_python_resolve test_hook_fail_log test_mission_anomaly_provenance test_preflight_fresh_full_json test_report_gate_win_na test_resource_gate_win_roster test_session_state_canon test_inject_context_home_ancestor test_javis_counsel \
-                   test_hud_bridge_0144_bootjs test_hud_bridge_0144_specimen test_hud_bridge_0144_unit test_intake_exit_contract test_mission_anomaly_emit test_resource_gate_bg_class test_computer_use_audit test_computer_control test_idle_gate test_agents_notes_personal_hooks test_hook_fail_timing test_owner_desk; do
+                   test_hud_bridge_0144_bootjs test_hud_bridge_0144_specimen test_hud_bridge_0144_unit test_intake_exit_contract test_mission_anomaly_emit test_resource_gate_bg_class test_computer_use_audit test_computer_control test_idle_gate test_agents_notes_personal_hooks test_hook_fail_timing test_owner_desk test_output_skills; do
             f="cysjavis-pack/bin/tests/$t.py"
             [ -f "$f" ] || { echo "선언·유령집계 테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
             echo "== [pack] declared-state test: $t =="

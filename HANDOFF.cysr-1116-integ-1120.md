@@ -5,6 +5,35 @@
 - 통합 머리 = **bfb52cbd2(게이트 대상) + 이 HANDOFF 커밋** · 게이트 결과 폴더 = `~/axdev/.wt/cys-1116-integ-1120-gate/`
 - master 판정 받음: 14:5x master#1e80c983 — 의미 충돌 ①~⑥ 처리 수용(④ = listenApp 유지 · defaultSlug 제거 · s2 시험 ① 좁힘)
 
+## 0. 후임 b(worker-2 · surface:2331 · 11-20 18:43~21:4x · 브리프 = master/briefs/2026-11-20-successor-integ-1120b.md · 상한 3h 도달로 매듭)
+
+머리 = 932188962 + 이 문서 커밋. 이 좌석 커밋 6: 231159d5e(secret-scan·이름 정리) · aaac932e7(스킬 **NOWIN) · 0017bbc91(핀·검사 4종 + e2e-chat 허용 폭) · 88082ede2(seatkeep f244fc34d 병합 · master#4f490f50) · 932188962(스킬 stdin=DEVNULL) · 이 문서.
+
+### 0-1. g1 붉음 분류(대조 기준 = 기준선 dea2e1853 · 갈래 머리 · 병합 직전·직후 — main 4b398dfd9 은 기준선의 조상이고 붉은 시험·핀이 아예 없어 대조 불가)
+| 붉음 | 분류 | 근거 | 처분 |
+|---|---|---|---|
+| secret-scan 6 · H-SECRET-1 | 갈래 탓(b23·flaky·seatkeep 문서 · s6 team.rs) | 해당 줄 기준선에 없음 · team.rs 2줄 = s6 머리에서 처음 | 231159d5e · --all clean 2402파일 |
+| ci nowin ×6(L999·L2108) | 갈래 탓 asset-skills | 머리 1ff82d08a FAILED 6 · 기준선 OK(실측) | aaac932e7 |
+| lib d3_prime 「자동 기동 0」 | 병합 탓 debt-d × b23 | debt-d 머리 핀 문자열 1 · b23 이 같은 match 를 여러 줄로 | 0017bbc91 — Daemon 갈래 안 Prime 존재로 |
+| cys-app c2 조작자 토큰 | 갈래 탓 s6(codex 1R B1 seat-group-pause --operator) | s6 머리 계수 2 · 핀 1 | 0017bbc91 — 정확히 두 자리 · 각 자리 if operator 안 |
+| H-CONC-2 | 갈래 탓 b23 | 머리 33a72a906 정적 재현(루프 = in plan) | 0017bbc91 — plan 출처 BOOT_PLAN 확인 · 음성 대조 FAIL |
+| H-SEAT-4AXIS | 갈래 탓 skt1 | 머리 b03d1cd70 정적 재현(session_lease 갈래 close 오독) | 0017bbc91 — 보류 갈래 끝 = 다음 match 갈래 · 음성 대조 FAIL |
+| e2e-chat resize_surface 2 | 병합 탓 s2 × s79 | s79 머리·0e2aabefa PASS · e246dde26·HEAD FAIL(가짜 시계 재현) · 원인 = onWorkShown→render() 가 복귀 순간 좌석 한 바퀴 맞춤(크기 그대로) → 30초 창에 한 바퀴 더 | 0017bbc91 — 허용 폭 = 전환 순간 한 바퀴(그려진 좌석 수)까지 · ★지시 없이 내린 판단(제품 코드 무변경) |
+| (g2a 에서 드러남) test_dept_tick_stdin 14 | 갈래 탓 asset-skills | 머리 1ff82d08a·f9ed0fcac FAILED · 기준선 OK · g1 은 L999 루프가 nowin 에서 멈춰 못 감 | 932188962 |
+기준선 탓 0 · 부하·환경 0.
+
+### 0-2. seatkeep 덧붙임(master#4f490f50) — 글자 충돌 1 = src/lib.rs 동결표 cys.rs 칸 주석(값 양쪽 16) → 갈래 주석 + 통합 사실 1줄. 의미 충돌 0(lib spawn_policy_tests·update::prime·update::realops 64 ok). census raw_command_new_census_is_frozen = g1 붉음 목록에 없었음(bfb52cbd2 가 이미 16) · 병합 뒤 초록.
+
+### 0-3. 게이트 g2(머리 932188962 · 19:33~21:39 · 결과 = gate/g2/summary.txt · GATE_ONLY = 붉던 단계 + bin-cys·bin-seatkeep·it-*) — 30단계 중 29 초록
+초록: secret-scan · lib 1324/0/5 · bin-cys 843/0/2 · bin-seatkeep 52/0 · it 6종 · health 170/0/1 · L2108 · cys-app 375/0/2 · e2e 15종 전부(g1 에서 못 돈 stty·nodept·restart·hidden_block 포함).
+붉음 1: ci-macos-rust-pack-L999 = javis_cycle_autopilot self-test PASS 342 / FAIL 1 「javis_cycle_verifier.py 와 바이트 동일」(계약 블록 두 파일 동일성). ★원인 미확정 — 범위(dea2e1853..HEAD) 안에서 javis_cycle_autopilot.py 를 바꾼 커밋 = debt-d e132ea232(형제 정지 표지 판독 3곳 U08 꼴) 하나 · verifier 는 무변경 → 후보 = debt-d 갈래 탓(머리 e5c0d229f 단독 self-test 미실행). L2108 은 같은 시험이 초록이라 우분투 쪽 다른 경로인지도 미확인.
+g2a-premerge = 병합 전 머리 부분 판(19:31 멈춤 · 보존).
+
+### 0-4. 다음 첫 행동
+1. L999 붉음: `cd cysjavis-pack/bin && python3 javis_cycle_autopilot.py` self-test 진입 방법 확인(--self-test 로는 출력 0) → e5c0d229f·dea2e1853 에서 같은 self-test 대조 → 계약 블록 diff(autopilot ↔ verifier) → 갈래 탓이면 verifier 쪽 동기화 1커밋 → L999 단독 재실행.
+2. 부하성 단독 3회(§8 · load<15) = **안 함**(상한) — test_resource_gate_product_cpu test_9b · test_dept_name_guard · test_phoenix_c6_reap · cysd seatkeep_input_ack_stall · k17. 단 g2 의 L999·L2108·bin 묶음 안에서는 이번에 초록이었다.
+3. 【확인요청】 뒤 master 독립 검증.
+
 ## 1. 병합 커밋 13(브리프 표 순서 그대로 · --no-ff · 스쿼시 0 · 모든 머리 = 브리프 커밋과 일치 확인)
 
 | # | 갈래 | 수용 머리 | 병합 커밋 | 글자 충돌 |

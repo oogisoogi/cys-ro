@@ -26,9 +26,9 @@
 - [x] 13 seatkeep 9b591371b
 
 ## 게이트·점검
-- [ ] 전체 게이트 — g1 붉음 판독·재실행 남음(HANDOFF §5)
+- [x] 전체 게이트 — g1 붉음 판독·고침 · g2 29/30 초록(후임 b · HANDOFF §0) · L999 autopilot 1건 남음
 - [ ] 부하성 시험 load<15 단독 3회(test_9b · dept_name_guard · c6_reap · seatkeep_input_ack_stall · k17)
 - [ ] 시험 숫자 전후 표
-- [ ] git grep -c oogisoogi = s5 예외 목록 대조
+- [x] 계정 이름 줄 = s5 예외 목록 대조(152 → 149 · 후임 b)
 - [x] 의미 충돌 점검(병합 중 6건 고침 · 아래 HANDOFF)(입력 게이트 s5↔seatkeep↔s6 · 업데이터 debt-d↔skt1↔seatkeep)
 - [ ] HANDOFF.cysr-1116-integ-1120.md · 【확인요청】

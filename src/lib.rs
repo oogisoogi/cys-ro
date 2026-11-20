@@ -7789,8 +7789,8 @@ mod spawn_policy_tests {
         // src/bin/cys-seatkeep/main.rs = 0(칸 없음) — 1.1.15 의 10 은 전부 `#[cfg(unix)] mod imp` 안 **들여쓴** `#[cfg(test)] mod tests`
         //   (1662~2697행)의 시험 자식이었다(제품 스폰 0). 1.1.16(cysr-1116-backlog · §12-2 B) production_slice 가 들여쓴 시험 모듈을
         //   걷어 내 운영 코드만 센다 — 이 파일에 새 칸이 생기면 그것은 운영 스폰이다.
-        // 1.1.16 통합(cysr-1116-integ-1120 · seatkeep 2b741e0c6 T6): takeover 폴백 옛 `pkill -f MacOS/cysd` 1곳 → `pgrep -f` 후보 + 실행 파일이
-        //   …/Contents/MacOS/cysd 인 pid 만 `kill -TERM` 2곳(+1) — ⓐ윈에서 안 돈다(#[cfg(target_os = "macos")] 갈래) · 갈래 머리에서 이 칸 갱신이 빠져 있었다.
+        // seatkeep T6a(2b741e0c6 · cysr-1116-seatkeep-1119): takeover 폴백 후보 `takeover_fallback_candidates` 의 `pgrep -f MacOS/cysd` +1 — launchd 경로 = 맥 전용 · 윈 도달 0.
+        //   (통합 cysr-1116-integ-1120 bfb52cbd2 가 갈래 머리 9b591371b 기준으로 같은 값 16 을 먼저 넣었다 — 이 병합으로 주석만 갈래 정본으로 합침 · 값 무변경)
         ("src/bin/cys.rs", 16),
         ("src/bin/cysd/accounts.rs", 2),
         // 1.1.11 편입(원작자 0.14.52 시험 파일 3개 · 전부 #[cfg(test)] 격리 고정물 — 제품 스폰 0): F-01 U4-3 계측 하네스 2 ·

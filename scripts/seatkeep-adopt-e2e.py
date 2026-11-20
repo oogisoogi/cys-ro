@@ -12,6 +12,7 @@ TICKET=cysr-1116-seatkeep-1119 · 설계 = docs/seatkeep/T4-DESIGN.md · 합격 
   (send → 좌석 기록 IN · 화면 ECHO) ⑸ seatkeep 프로세스 수 = 산 좌석 수(고아 0).
 끝: 마지막 cysd 를 SIGTERM · 좌석을 하나씩 close → seatkeep·좌석 0 확인.
 """
+import atexit
 import json, os, re, shutil, signal, subprocess, sys, time
 
 BIN, MODE, ROUNDS = sys.argv[1], sys.argv[2], int(sys.argv[3])
@@ -45,7 +46,11 @@ OUT = sys.argv[4] if len(sys.argv) > 4 else None
 #   새 cysd = 입양 · 그다음 옛 번들 삭제 + 재기동 = 실행 파일 못 읽음 → 미결(ⓒ · 좌석은 건드리지 않음).
 # symlink · ustuck = 독립 검증 skt6(surface:2317 · evidence/e2e-v.py) 재현 모드 그대로 옮김(ustuck 은 rotate 1회로 줄임):
 #   symlink = PATH 의 링크 cys 로 rotate(주요 3) · ustuck = 옛 번들이 지워진(SKA_USTUCK_MOVE=1 = 옮겨진) 뒤의 끝낼 수 없는 미결(주요 1).
-assert MODE in ("adopt", "bound", "direct", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap", "launchd", "claude", "cost", "update", "symlink", "ustuck"), MODE
+# rbprep = codex skt6a-r1 격리 실물(업데이터 되감기 모의): 진짜 RealOps::rb_prepare(시험 바이너리 SKA_RB_TESTBIN 의 무시 시험 rb_prepare_live ·
+#   갱신 잠금을 실제로 쥠)가 진짜 cys rotate --txn · cysd --end-keepers 를 산 좌석 앞에서 부른다. 정식 = R/apps/cysr.app · 옛 번들 = 입양 모르는
+#   가짜 cysd(.cysr.app.old-1). ① snapbad = 스냅숏 망가뜨림 → 데몬·좌석 무접촉 · ② ekfail = 끝낼 수 없는 seatkeep(다른 폴더 bin 의 seatkeep) →
+#   되감기 안 함 + 새 판 데몬 복원 · 좌석 생존 · ok = 끝남 확인 → 데몬 내려감 · seatkeep 0.
+assert MODE in ("adopt", "bound", "direct", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap", "launchd", "claude", "cost", "update", "symlink", "ustuck", "rbprep"), MODE
 R = f"/private/tmp/ska-{MODE[:3]}-{os.getpid() % 10000}"
 shutil.rmtree(R, ignore_errors=True)
 for d in ("home", "tmp", "s", "packstate", "pack", "bin", "bin2", "logs"):
@@ -122,9 +127,9 @@ ENV = {"HOME": f"{R}/home", "USER": os.environ["USER"], "LOGNAME": os.environ["U
        "CYS_NO_OFFICE_BRIDGE": "1", "CYS_NO_AUTORESTORE": "1", "CYS_NO_AUTOSTART": "1", "PATH": f"{R}/bin:/usr/bin:/bin",
        "TERM": "xterm-256color", "LANG": "en_US.UTF-8"}
 DENV = dict(ENV)
-if MODE in ("adopt", "bound", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap", "launchd", "claude", "cost", "update", "symlink", "ustuck"):
+if MODE in ("adopt", "bound", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap", "launchd", "claude", "cost", "update", "symlink", "ustuck", "rbprep"):
     DENV["CYS_SEATKEEP"] = "1"
-if MODE in ("adopt", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap", "launchd", "claude", "cost", "update", "symlink", "ustuck"):
+if MODE in ("adopt", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap", "launchd", "claude", "cost", "update", "symlink", "ustuck", "rbprep"):
     if MODE == "cap":
         DENV["CYS_SEATKEEP_MAX_HOLDERS"] = "1"
     DENV["CYS_SEATKEEP_ADOPT"] = "1"
@@ -331,6 +336,35 @@ def stop_all():
                 p.kill()
     for k in keepers():
         os.kill(k, signal.SIGKILL)
+
+
+def _guard_cleanup():
+    """codex skt6a-r1 #7: 전역 정리 장치 — 단언·시한·SystemExit·SIGTERM 으로 끝나도 이 시험이 띄운 프로세스를 남기지 않는다.
+    대상 = 추적한 데몬(Popen·PidDaemon) + 인자에 이 시험 폴더(R)가 있는 프로세스(rotate 가 띄운 cysd·seatkeep·좌석) — pid 로만 신호."""
+    for p in daemons:
+        try:
+            if p.poll() is None:
+                p.kill()
+        except Exception:
+            pass
+    # 인자에 이 시험 폴더(R · pid 로 유일)가 있는 프로세스 = 이 시험 것(cysd·seatkeep·좌석 셸·좌석 스크립트 — 파이썬 실행 파일 이름은 기계마다
+    # 다르다: python3 · Xcode 의 Python). 정리 중 새로 뜨는 것(죽기 직전 데몬이 띄운 seatkeep)까지 잡게 빌 때까지 다시 훑는다(상한 5회).
+    me = os.getpid()
+    for _ in range(5):
+        out = subprocess.run(["/bin/ps", "-axo", "pid=,command="], capture_output=True, text=True).stdout
+        mine = [int(l.split()[0]) for l in out.splitlines() if (R + "/") in l and l.split() and int(l.split()[0]) != me]
+        if not mine:
+            break
+        for pid in mine:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+        time.sleep(0.3)
+
+
+atexit.register(_guard_cleanup)
+signal.signal(signal.SIGTERM, lambda s, _: sys.exit(128 + s))
 
 
 if MODE == "norecord":
@@ -673,6 +707,84 @@ if MODE == "update":
         if alive(p):
             os.kill(p, signal.SIGKILL)
     sys.exit(0)
+
+if MODE == "rbprep":
+    TB = os.environ["SKA_RB_TESTBIN"]
+    apps = f"{R}/apps"
+    canon_app = f"{apps}/cysr.app"
+    old_app = f"{apps}/.cysr.app.old-1"
+    os.makedirs(f"{canon_app}/Contents/MacOS")
+    for b in ("cys", "cysd", "cys-seatkeep"):
+        subprocess.run(["/bin/cp", "-c", f"{R}/bin/{b}", f"{canon_app}/Contents/MacOS/{b}"], check=True)
+    os.makedirs(f"{old_app}/Contents/MacOS")
+    open(f"{old_app}/Contents/MacOS/cysd", "w").write("#!/bin/sh\necho 'error: unexpected argument --adopt-check' >&2\nexit 2\n")
+    os.chmod(f"{old_app}/Contents/MacOS/cysd", 0o755)
+    mb = "apps/cysr.app/Contents/MacOS"
+
+    def live(case):
+        env = dict(DENV, SKA_RB_ROOT=R, SKA_RB_CASE=case, CYS_UPDATE_STATE_DIR=f"{R}/upd")
+        env.pop("CYS_NO_AUTOSTART", None)  # 복원 rotate 의 identify 가 형제 cysd 를 띄운다(노브 env 그대로 · rotate 모드와 같음)
+        c = subprocess.run([TB, "--ignored", "--exact", "update::realops::tests::rb_prepare_live", "--nocapture", "--test-threads", "1"],
+                           env=env, capture_output=True, text=True, timeout=400)
+        line = [l[l.index("RBLIVE ") + 7:] for l in c.stdout.splitlines() if "RBLIVE " in l]  # --nocapture = 시험 이름 줄 뒤에 붙어 나옴
+        return json.loads(line[0]) if line else {"rc": c.returncode, "tail": (c.stdout + c.stderr)[-800:]}
+
+    def cysd_pids():
+        out = subprocess.run(["/bin/ps", "-axo", "pid=,command="], capture_output=True, text=True).stdout
+        return {int(l.split()[0]): l.split()[1] for l in out.splitlines() if len(l.split()) > 1 and l.split()[1].startswith(R + "/") and l.split()[1].endswith("/cysd")}
+
+    def all_keepers():
+        # bin·정식 번들 어느 쪽 seatkeep 이든(실행 파일이 R 아래) — all_keepers() 는 bin 만 센다.
+        out = subprocess.run(["/bin/ps", "-axo", "pid=,command="], capture_output=True, text=True).stdout
+        return sorted(int(l.split()[0]) for l in out.splitlines() if len(l.split()) > 1 and l.split()[1].startswith(R + "/") and l.split()[1].endswith("/cys-seatkeep"))
+
+    def ended(log):
+        return [l for l in seat_lines(log) if l.startswith(("SIGNAL", "EOF"))][:1]
+
+    res = {}
+    # ① snapbad: 정식 번들 데몬 + 좌석 → 스냅숏 망가뜨림 → rb_prepare 실패 · 데몬 같은 pid · 좌석 생존 · seatkeep 그대로.
+    d, _ = start_daemon("0", bindir=mb)
+    log = f"{R}/logs/r0.log"
+    cys("new-surface", "--cwd", "/private/tmp", "--role", "seatr", "--cmd", f"{SEAT} {log} 50")
+    seat0 = wait_start(log)
+    time.sleep(1.0)
+    k0 = all_keepers()
+    r = live("snapbad")
+    res["snapbad"] = {"live": r, "daemon_same": d.poll() is None and d.pid in cysd_pids(), "seat_alive": alive(seat0),
+                      "seat_end": ended(log), "keepers_same": all_keepers() == k0}
+    res["snapbad"]["pass"] = (r.get("ok") is False and (r.get("err") or {}).get("step") == "RB_PREPARED" and res["snapbad"]["daemon_same"]
+                              and res["snapbad"]["seat_alive"] and not res["snapbad"]["seat_end"] and res["snapbad"]["keepers_same"])
+    print(json.dumps({"snapbad": res["snapbad"]}, ensure_ascii=False), flush=True)
+    # ok: 같은 데몬·좌석 → 끝남 확인 → 데몬 내려감 · seatkeep 0 · 좌석 신호로 끝남.
+    r = live("ok")
+    time.sleep(0.5)
+    res["ok"] = {"live": r, "cysd_left": len(cysd_pids()), "keepers": len(all_keepers()), "seat_alive": alive(seat0), "seat_end": ended(log)}
+    res["ok"]["pass"] = r.get("ok") is True and res["ok"]["cysd_left"] == 0 and res["ok"]["keepers"] == 0 and not res["ok"]["seat_alive"]
+    print(json.dumps({"ok": res["ok"]}, ensure_ascii=False), flush=True)
+    # ② ekfail: 다른 폴더(bin)의 cysd 가 띄운 좌석 = 정식 번들 cysd 가 끝낼 수 없다(실행 파일 신원 불성립) → rb_prepare 실패 · 새 판 데몬 복원 ·
+    #   좌석·seatkeep 생존(고아 종료·되감기 없음).
+    d1, _ = start_daemon("1")
+    log1 = f"{R}/logs/r1.log"
+    cys("new-surface", "--cwd", "/private/tmp", "--role", "seatr1", "--cmd", f"{SEAT} {log1} 50")
+    seat1 = wait_start(log1)
+    time.sleep(1.0)
+    k1 = all_keepers()
+    r = live("ok")
+    time.sleep(1.0)
+    pids = cysd_pids()
+    for pid in pids:
+        daemons.append(PidDaemon(pid))
+    res["ekfail"] = {"live": r, "old_daemon_gone": d1.poll() is not None, "bundle_daemon_up": any(v.startswith(canon_app) for v in pids.values()),
+                     "seat_alive": alive(seat1), "seat_end": ended(log1), "keepers_same": all_keepers() == k1}
+    det = (r.get("err") or {}).get("detail", "")
+    res["ekfail"]["pass"] = (r.get("ok") is False and "되감기 안 함" in det and "새 판 데몬 복원됨" in det and res["ekfail"]["bundle_daemon_up"]
+                             and res["ekfail"]["seat_alive"] and not res["ekfail"]["seat_end"] and res["ekfail"]["keepers_same"])
+    res["pass"] = all(res[k]["pass"] for k in ("snapbad", "ok", "ekfail"))
+    print(json.dumps(res, ensure_ascii=False), flush=True)
+    if OUT:
+        open(OUT, "a").write(json.dumps({"rbprep": res}, ensure_ascii=False) + "\n")
+    stop_all()
+    sys.exit(0 if res["pass"] else 1)
 
 if MODE == "cost":
     d, _ = start_daemon("0")

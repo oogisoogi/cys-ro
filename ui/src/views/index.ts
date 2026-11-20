@@ -5,9 +5,10 @@
 //   (대화 화면 가용 판정·마스터 조회·세션 읽기는 전부 대화 화면을 누른 뒤에만 돈다.)
 
 import type { ViewDescriptor } from "./contract";
-import { ChatCore, type ChatState, type Store } from "./core";
+import { ChatCore, POLL_MS, type ChatState, type Store } from "./core";
 import { chatView } from "./chat/index";
-import { workView } from "./work/adapter";
+import { workView, type WorkExtra } from "./work/adapter";
+import { createWorkBand } from "./work/band"; // (s79 조각 9) 작업 화면 띠
 import { chatAvailability, pickView, VIEW_KEY } from "./judge/viewpick";
 import { masterRowOf } from "./judge/gate";
 import { Registry } from "./registry";
@@ -15,6 +16,8 @@ import { Registry } from "./registry";
 export interface BootDeps {
   invoke(cmd: string, args?: Record<string, unknown>): Promise<unknown>;
   working(row: Record<string, unknown>): boolean;
+  /** (s79 조각 9) 작업 화면 띠 「마스터 창에서 답하기」 — 그 좌석으로 포커스(main.ts jumpToSurface). 없으면 띠가 안내만. */
+  focusSeat?(sid: number): void;
 }
 
 const MIN_CHAT = { confirms: "[data-min=confirms]", lastSendStep: "[data-min=lastSendStep]", masterHealth: "[data-min=masterHealth]", errors: "[data-min=errors]", switcher: "shared" } as const;
@@ -62,6 +65,23 @@ export function bootViews(deps: BootDeps): { core: ChatCore; registry: Registry<
     goView: (id) => void booted?.registry.choose(id),
     defaultSlug: async () => String(await deps.invoke("default_socket_slug")),
   });
+  // (s79 조각 9 · FR-C7) 작업 화면이 켜져 있는 동안만 붙는 띠 — 대화 화면을 이번 실행에서 켠 적이 없으면 조회 0·띠 0(watchStart = false).
+  const workExtra: WorkExtra<ChatState, ChatCore> = {
+    mount(ctx) {
+      const band = createWorkBand(ctx.act, { focusSeat: deps.focusSeat });
+      bodyRow.before(band.el);
+      ctx.subscribe(() => band.paint());
+      band.paint();
+      if (ctx.act.watchStart()) {
+        void ctx.act.poll();
+        ctx.timers.every(POLL_MS, () => void ctx.act.poll());
+      }
+      return () => {
+        ctx.act.watchStop();
+        band.el.remove();
+      };
+    },
+  };
   const views: ViewDescriptor<ChatState, ChatCore>[] = [
     {
       id: "chat",
@@ -80,7 +100,7 @@ export function bootViews(deps: BootDeps): { core: ChatCore; registry: Registry<
       },
       load: async () => chatView,
     },
-    { id: "work", label: "작업 화면", order: 2, minimum: MIN_WORK, available: async () => ({ ok: true }), load: async () => workView<ChatState, ChatCore>(bodyRow, host), outsideHost: true },
+    { id: "work", label: "작업 화면", order: 2, minimum: MIN_WORK, available: async () => ({ ok: true }), load: async () => workView<ChatState, ChatCore>(bodyRow, host, workExtra), outsideHost: true },
   ];
   const registry: Registry<ChatState, ChatCore> = new Registry<ChatState, ChatCore>(views, {
     host,

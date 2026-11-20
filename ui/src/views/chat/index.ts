@@ -8,6 +8,7 @@ import { DUP, dupPending, errorCount, HEALTH_LABEL, lastSendStep, logOrder, need
 import { canRetry, STEP_LABEL, type Msg } from "../judge/msgstep";
 import { AUTO_STEP_LABEL, type AutoMsg } from "../judge/autostep";
 import { createBand } from "./band";
+import { createResults } from "./results"; // (s79 조각 7) 결과 받기 칸·카드
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -55,6 +56,9 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
     const band = createBand(act, { log, input });
     root.append(band.el, head, log, live, band.hint, form, notice);
     host.append(root);
+    // (s79 조각 7) 「결과 N」 칸 — rail 틀(조각 6)이 들어오면 그 왼쪽 칸으로 옮긴다(통합 때 master 조정) · 지금은 대화 위
+    const results = createResults(act, { log, input });
+    root.insertBefore(results.el, log);
 
     const submit = () => {
       const text = input.value;
@@ -158,6 +162,7 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
       }
       for (const a of s.autos) log.append(autoLine(a));
       band.paint(); // (조각 4) 말 목록을 다시 그린 뒤 — 답하는 물음 자리 표시를 다시 단다
+      results.paint(); // (s79 조각 7) 결과 칸 + 대화 안 카드(그 경로를 말한 마스터 답 뒤)
       if (atBottom) log.scrollTop = log.scrollHeight;
     };
     ctx.subscribe(paint);

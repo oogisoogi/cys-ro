@@ -8956,6 +8956,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             viewcore::chat_send, // (cysr-ui-slice1)
             viewcore::chat_transcript, // (cysr-ui-slice1)
+            viewcore::result_open, // (s79 조각 7) 결과 열기·폴더 보기 — 정규 경로 가둠
             viewcore::confirm_reply, // (cysr-ui-slice4) 대화 화면 직접 허락·거절 — 데몬 결과(actuated) 그대로
             feedback::feedback_new_draft,
             feedback::feedback_stage_file,

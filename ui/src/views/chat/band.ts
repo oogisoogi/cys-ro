@@ -6,7 +6,7 @@
 // 글은 전부 textContent(명령 원문·마스터 글에 HTML 해석 0).
 
 import type { ChatCore } from "../core";
-import { ALLOW_AT_WORK_MSG, allowReady, bandLabel, boundOf, canAllowDirect, type BandItem, type StallWhy } from "../judge/confirms";
+import { ALLOW_AT_WORK_MSG, allowReady, bandLabel, boundOf, canAllowDirect, swapBlocked, SWAP_LINE, SWAP_NOTE, type BandItem, type StallWhy } from "../judge/confirms";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -58,6 +58,14 @@ export function createBand(act: ChatCore, ui: BandUi): BandHandle {
   let localNote: string | null = null;
   let answering: { id: string; text: string; uuid: string | null; msgs: number } | null = null;
   const defaultPlaceholder = ui.input.placeholder;
+  /** (s79 · S4-7 · 검증 F10) 보던 항목이 사라져 저절로 온 항목(열쇠·온 시각) — 온 지 잠깐은 거절·내림을 받지 않는다 */
+  let arrived: { key: string; at: number } | null = null;
+  const swapped = (key: string): boolean => {
+    if (!swapBlocked(arrived, key, Date.now())) return false;
+    localNote = SWAP_NOTE;
+    paint();
+    return true;
+  };
 
   const setAnswering = (a: typeof answering) => {
     answering = a;
@@ -98,10 +106,24 @@ export function createBand(act: ChatCore, ui: BandUi): BandHandle {
   const itemNode = (it: BandItem): HTMLElement => {
     const box = el("div", "cvb-item");
     box.dataset.kind = it.kind;
+    if (arrived?.key === it.key && swapBlocked(arrived, it.key, Date.now())) {
+      box.dataset.swapped = "1";
+      box.append(el("div", "cvb-swapped", SWAP_LINE));
+    }
     if (it.kind === "ask") {
       box.append(el("div", "cvb-text", `마스터가 물어요: ${it.q.text}`));
       const waking = act.state.health !== "ready" && act.state.health !== "busy";
       box.append(button(waking ? "대화에서 답하기 · 깨어나면 전달" : "대화에서 답하기", "cvb-answer", () => goTo(it.q)));
+      // (s79 · S4-7 · 검증 F7) 마스터가 해결 표식을 안 내도 사람이 띠에서 내릴 길 — 마스터에게 보내는 것 0
+      box.append(
+        button("이 물음은 끝났어요", "cvb-dismiss", (e) => {
+          if (!e.isTrusted) return;
+          if (swapped(it.key)) return;
+          arrived = null;
+          localNote = null;
+          act.confirm.dismiss(it.q);
+        }),
+      );
       return box;
     }
     if (it.kind === "master_screen") {
@@ -126,6 +148,8 @@ export function createBand(act: ChatCore, ui: BandUi): BandHandle {
         paint();
         return;
       }
+      // (s79 · F10) 보던 것과 다른 요청이 저절로 와 2초가 안 됐으면 처리 0 — 허락은 펼침(의도된 누름)이 먼저라 사실상 거절에 걸림
+      if (swapped(it.key)) return;
       localNote = null;
       void act.confirm.decide(bound, dec);
     };
@@ -141,6 +165,7 @@ export function createBand(act: ChatCore, ui: BandUi): BandHandle {
     box.append(el("div", "cvb-text", `도우미가 허락을 기다려요 — ${STALL_TEXT[it.stall]}. 직접 정할 수 있어요.`));
     const open = expanded.has(it.key);
     const tog = button(open ? "접기" : "무엇을 보기", "cvb-what", () => {
+      if (arrived?.key === it.key) arrived = null; // (s79 · F10) 펼침 = 사람이 이 요청을 들여다봄 — 저절로 온 표시를 거둠
       if (expanded.has(it.key)) expanded.delete(it.key);
       else expanded.add(it.key);
       localNote = null;
@@ -182,7 +207,12 @@ export function createBand(act: ChatCore, ui: BandUi): BandHandle {
     if (answering && (act.state.msgs.length > answering.msgs || !items.some((x) => x.kind === "ask" && x.key === answering?.id))) setAnswering(null);
     if (answering?.uuid) ui.log.querySelector(`.cv-master[data-uuid="${CSS.escape(answering.uuid)}"]`)?.classList.add("cv-asked");
     let i = items.findIndex((x) => x.key === curKey);
-    if (i < 0) i = 0;
+    if (i < 0) {
+      i = 0;
+      // (s79 · F10) 보던 항목이 사라져 다른 항목이 같은 자리에 옴(「다음」을 누른 것이 아님) — 온 시각을 적어 잠깐 누름을 받지 않는다
+      if (curKey !== null && items[0] && items[0].key !== arrived?.key) arrived = { key: items[0].key, at: Date.now() };
+    }
+    if (arrived && !items.some((x) => x.key === arrived?.key)) arrived = null;
     curKey = items[i]?.key ?? null;
     head.textContent = label ?? "";
     body.replaceChildren(...(items[i] ? [itemNode(items[i])] : []));
@@ -192,6 +222,7 @@ export function createBand(act: ChatCore, ui: BandUi): BandHandle {
       nav.append(
         button("다음", "cvb-next", () => {
           curKey = items[(i + 1) % items.length].key;
+          // 저절로 온 표시(arrived)는 그대로 — 「다음」으로 갔다 2초 안에 되돌아와도 보호가 남는다(codex 1R major)
           localNote = null;
           paint();
         }),

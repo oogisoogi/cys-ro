@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Control Center 위 팝오버 층서 게이트 — TICKET=cysr-cc-popover-z-1118(수동 실행 · CI 미배선).
+"""Control Center 위 팝오버 층서 게이트 — TICKET=cysr-cc-popover-z-1118(CI 배선 = ci-branch ui-check · TICKET=cysr-1116-s79-1119).
 결함: Control Center(#cc-panel z 1500)를 연 채 상단바 「화면 설정」(#btn-theme)을 누르면 #theme-pop(z 1000)이 패널 뒤에 열려 안 보였다.
 캡처: CC 연 상태 + 화면 설정 팝오버 1장. 단언: 팝오버 존재 · 팝오버 중앙점의 최상위 요소가 팝오버 자신 · 콘솔 오류 0.
 실행: CHROME_PATH=<chrome-headless-shell> <playwright python3> ui/e2e/cc_popover_z_gate.py [캡처 파일.png]
@@ -13,7 +13,7 @@ from pathlib import Path
 spec = importlib.util.spec_from_file_location("sbg", Path(__file__).with_name("statusboard_gate.py"))
 sbg = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sbg)
-SHOT = Path(sys.argv[1]) if len(sys.argv) > 1 else sbg.UI.parent / "docs" / "evidence-cc-popover-z" / "theme-pop-over-cc-1920.png"
+SHOT = Path(sys.argv[1]) if len(sys.argv) > 1 else sbg.evidence_dir("evidence-cc-popover-z", "theme-pop-over-cc-1920.png")
 
 
 def main() -> int:

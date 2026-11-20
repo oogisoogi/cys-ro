@@ -93,3 +93,38 @@
 .cv-answering[hidden] { display: none; }
 .cva-text { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--cv-ink); }
 .cv-asked { outline: 3px solid var(--cv-attn); outline-offset: 2px; }
+
+/* (s79 조각 7) 결과 받기 — 「결과 N」 칸(rail 자리 · 지금은 대화 위) · 대화 안 카드 · 글자 18px 이상 · 누를 면 44px(§9-2) */
+.cv-results { border: 1px solid var(--cv-line); border-radius: 10px; padding: 8px 12px; margin-bottom: 10px; max-height: 40%; overflow-y: auto; }
+.cvr-head { font-size: 20px; margin: 0 0 6px; color: var(--cv-ink); }
+.cv-results[data-fresh]:not([data-fresh="0"]) .cvr-head { color: var(--cv-accent); }
+.cvr-empty { font-size: 18px; color: var(--cv-sub); }
+.cvr-empty[hidden] { display: none; }
+.cvr-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.cvr-card { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border: 1px solid var(--cv-line); border-radius: 8px; background: var(--cv-bg); }
+.cvr-logrow { align-self: flex-start; max-width: 80%; list-style: none; }
+.cvr-top { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.cvr-kind { font-size: 18px; color: var(--cv-sub); }
+.cvr-name { font-size: 20px; color: var(--cv-ink); word-break: break-all; }
+.cvr-new { font-size: 18px; font-weight: 700; color: var(--cv-accent); }
+.cvr-path { font-size: 18px; color: var(--cv-sub); word-break: break-all; }
+.cvr-missing { font-size: 18px; color: var(--cv-err); }
+.cvr-checking { font-size: 18px; color: var(--cv-wait); }
+.cvr-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.cvr-actions button { min-height: 44px; min-width: 44px; padding: 0 14px; font-size: 18px; border-radius: 8px; border: 1px solid var(--cv-line); background: var(--cv-bg); color: var(--cv-ink); cursor: pointer; }
+.cvr-actions .cvr-open { border-color: var(--cv-accent); }
+.cvr-actions button[aria-disabled="true"] { opacity: 0.45; cursor: progress; }
+.cvr-notice { font-size: 18px; color: var(--cv-attn); margin-top: 6px; }
+.cvr-notice[hidden] { display: none; }
+
+/* (s79 조각 9 · FR-C7) 작업 화면 띠 — #body-row 바로 위 한 줄(높이 고정) · 띠가 보이면 #body-row 를 그만큼 줄인다(원작자 style.css 무변경) */
+:root { --wv-band-h: 48px; }
+.wv-band { display: flex; align-items: center; gap: 12px; height: var(--wv-band-h); box-sizing: border-box; padding: 0 12px; border-bottom: 2px solid var(--cv-attn); background: #fff8f3; color: #1c2330; font-size: 18px; overflow: hidden; }
+.wv-band[hidden] { display: none; }
+.wv-band[data-kind="draft"] { border-bottom-color: var(--cv-accent); background: #eef3ff; }
+.wv-band .wvb-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wv-band .wvb-act { min-height: 40px; padding: 0 14px; font-size: 18px; border-radius: 8px; border: 1px solid var(--cv-attn); background: #fff; color: #1c2330; cursor: pointer; flex: none; }
+.wv-band .wvb-note { font-size: 18px; color: var(--cv-err); flex: none; }
+.wv-band:not([hidden]) + #body-row { height: calc(100% - var(--topbar-h) - var(--wv-band-h)); }
+/* (s79 · S4-7) 사람이 물음 내리기 · 저절로 바뀌어 온 항목 표시 */
+.cvb-swapped { font-size: 18px; color: var(--cv-wait); }

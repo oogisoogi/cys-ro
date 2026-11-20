@@ -62,6 +62,8 @@ export class Sim {
   readonly recordOf = new Map<string, number>();
   /** 쓰기 번호 → user 레코드 uuid / 답 uuid */
   readonly recorded = new Map<number, string>();
+  /** (s79 · S3-7) 쓰기 번호 → user 레코드가 생긴 시각(uuid 없는 꼴의 글 순서 대조) */
+  readonly recordedAt = new Map<number, number>();
   readonly replied = new Map<number, string>();
   private handler: ((e: { payload: unknown }) => void) | null = null;
   listens = 0;
@@ -204,6 +206,7 @@ export class Sim {
         }
       }
       this.recorded.set(wi, uuid ?? `nouuid-${wi}`);
+      this.recordedAt.set(wi, this.now);
       const rp = this.o.replyDelay ? this.o.replyDelay(n) : 1_500;
       if (rp === null) return; // 답이 없으면 일하지도 않는 것으로 둔다
       this.workStart();

@@ -181,6 +181,9 @@ jobs:
           #   실행 줄 1개만 지우는 모양으로 고쳤다(release 변이 ⑤ 와 같은 형태).
           MUST_RUN_TOKENS = {
               "ci-branch": {
+                  # ★TICKET=cysr-1116-s79-1119: 토큰은 실행 줄에만 있다(스텝 이름엔 파일 이름·캡처 경로 없음 — 위 MAJOR-1 교훈).
+                  'ui/e2e/cc_popover_z_gate.py "$RUNNER_TEMP/cc-popover-z.png"':
+                      "화면 층서 게이트(Control Center 위 팝오버) — 지워지거나 `if: false` 가 달리면 z-index 회귀(팝오버가 패널 뒤에 깔림)가 다시 어느 레인에서도 안 잡힌다.",
                   "cargo test --bin cysd":
                       "데몬 단위 검체(alert_route·governance·state·delivery)의 브랜치 조기 경보. 태그 push "
                       "에서 처음 붉어지면 pack-artifacts 미실행 → 팩 자산 0 → 발행 0 이다.",
@@ -2240,7 +2243,7 @@ jobs:
   #   보류). 이 줄이 없는 것은 사람이 지키는 불변식이지, 게이트가 강제하는 불변식이 아니다.
   ui-check:
     runs-on: macos-latest
-    timeout-minutes: 15
+    timeout-minutes: 25  # (s79) 화면 층서 게이트 = 번들 빌드 + headless shell 받기(수 분) 몫
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 
@@ -2261,3 +2264,22 @@ jobs:
           bun install --frozen-lockfile
           bunx -p typescript@7.0.2 tsc -v
           bunx -p typescript@7.0.2 tsc -p tsconfig.check.json
+
+      # ★TICKET=cysr-1116-s79-1119(master#0fd97c53 · 1.1.16 통합 HANDOFF §6-7 📌): cc_popover_z_gate CI 배선. 결함 = Control Center(z 1500)를 연 채
+      #   「화면 설정」을 누르면 팝오버(z 1000)가 패널 뒤에 열려 안 보였다(cysr-cc-popover-z-1118 에서 고침). 게이트는 그동안 「수동 실행 · CI 미배선」이라
+      #   층서(z-index)를 누가 되돌려도 어느 레인에서도 붉어지지 않았다. 실제 번들(ui/dist) + __TAURI__ 대역 + headless chromium — 데몬·앱 기동 0.
+      #   캡처는 러너 임시 폴더로(작업트리·커밋된 docs/evidence-* 를 덮지 않음 · I4). playwright 는 고정판(로컬 게이트 venv 와 같은 1.60.0).
+      - name: Setup Python 3.12 (화면 게이트용)
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: '3.12'
+
+      - name: 화면 층서 게이트 — Control Center 위 화면 설정 팝오버 (실제 번들 + 대역 · headless chromium · macOS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd ui && sh build.sh)
+          python -m venv "$RUNNER_TEMP/pw"
+          "$RUNNER_TEMP/pw/bin/python" -m pip install --quiet playwright==1.60.0
+          "$RUNNER_TEMP/pw/bin/python" -m playwright install --only-shell chromium
+          "$RUNNER_TEMP/pw/bin/python" ui/e2e/cc_popover_z_gate.py "$RUNNER_TEMP/cc-popover-z.png"

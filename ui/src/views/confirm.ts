@@ -22,6 +22,10 @@ import {
   RECORDED_ONLY_MSG,
   replyErrorMsg,
   ALLOW_AT_WORK_MSG,
+  DISMISS_NOTE,
+  dismissKey,
+  withoutDismissed,
+  type Question,
   type Band,
   type Bound,
   type FeedApproval,
@@ -38,11 +42,17 @@ export interface ConfirmDeps {
   invoke(cmd: string, args?: Record<string, unknown>): Promise<unknown>;
   now(): number;
   store: { get(k: string): string | null; set(k: string, v: string): void };
+  /** (s79 · codex 3R ②) 지금 대화 화면인가 — core 의 한 도우미(onChatScreen · deliver 와 같은 판정) · 없으면 늘 대화 화면(시험·단독). */
+  onChat?(): boolean;
 }
+
+/** (s79 · codex 3R ②) feed·org 를 기다리는 사이 작업 화면으로 옮겨 처리하지 않았을 때의 안내. */
+export const WORK_VIEW_MSG = "작업 화면으로 옮겨서 처리하지 않았어요 — 대화 화면에서 다시 눌러 주세요.";
 
 export interface DecisionRecord {
   request_id: string;
-  decision: "allow" | "deny";
+  /** (s79 · F7) "dismiss" = 사람이 물음을 띠에서 내림(request_id 칸 = 물음 번호) */
+  decision: "allow" | "deny" | "dismiss";
   at: number;
   /** "replied" | recheck 코드 | feed_reply 오류 코드 */
   outcome: string;
@@ -77,6 +87,8 @@ export class ConfirmBook {
   /** 마지막 허락·거절 결과(띠 아래 1줄) */
   notice: string | null = null;
   readonly decisions: DecisionRecord[] = [];
+  /** (s79 · S4-7 · 검증 F7) 사람이 내린 물음(세션이 바뀌면 비움 — 물음 번호가 다시 매겨진다) */
+  private dismissed = new Map<string, number>();
 
   constructor(
     private readonly d: ConfirmDeps,
@@ -106,6 +118,7 @@ export class ConfirmBook {
     this.prior = [];
     this.tail = [];
     this.lossy = false;
+    this.dismissed.clear();
   }
 
   /** 긴 줄을 건너뜀(뒤 읽기 쪽에서도 · core 가 알림). */
@@ -229,7 +242,7 @@ export class ConfirmBook {
   /** 지금의 띠(그리기용). 표식은 앞 훑기가 끝나야 「안다」. */
   band(): Band {
     // 앞 훑기가 끝나야 물음을 보인다 · 긴 줄을 건너뛰었으면 보이되 「모름」(더 살펴보는 중)
-    const qs = this.scan !== null && this.priorDone ? openQuestions([...this.prior, ...this.tail]) : null;
+    const qs = this.scan !== null && this.priorDone ? withoutDismissed(openQuestions([...this.prior, ...this.tail]), this.dismissed) : null; // (s79 · F7) 사람이 내린 물음 뺌
     return bandOf(qs, this.approvals, this.stallInput(), qs !== null && !this.lossy);
   }
 
@@ -240,6 +253,17 @@ export class ConfirmBook {
 
   get busy(): boolean {
     return this.deciding;
+  }
+
+  /** (s79 · S4-7 · 검증 F7) 사람이 「이 물음은 끝났어요」 — 띠에서만 내린다(마스터에게 보내는 것 0 · 기록 남김). 신뢰 클릭에서만 불림. */
+  dismiss(q: Question): void {
+    const k = dismissKey(q);
+    const last = q.last ?? 0;
+    if ((this.dismissed.get(k) ?? -1) >= last) return;
+    this.dismissed.set(k, last);
+    this.notice = DISMISS_NOTE;
+    this.record({ request_id: q.id, decision: "dismiss", at: this.d.now(), outcome: "dismissed" });
+    this.changed();
   }
 
   // ---------- 직접 허락·거절(FR-C5 · 신뢰 클릭에서만 불림) ----------
@@ -278,6 +302,12 @@ export class ConfirmBook {
       if (!rc.ok) {
         outcome = rc.code;
         this.notice = rc.msg;
+        return;
+      }
+      // (s79 · codex 3R ②) feed·org 를 기다리는 사이 작업 화면으로 옮겼으면 상태를 바꾸는 confirm_reply 0 — deliver 와 같은 한 도우미로 다시 판정
+      if (!(this.d.onChat?.() ?? true)) {
+        outcome = "work_view";
+        this.notice = WORK_VIEW_MSG;
         return;
       }
       try {

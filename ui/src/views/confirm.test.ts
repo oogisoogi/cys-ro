@@ -2,7 +2,7 @@
 // 판정 단위 = 「허락 집행 = confirm_reply 호출 수」(데몬 feed.reply · 처리 직전 재확인에 걸리면 0).
 import { describe, it, expect } from "bun:test";
 import { ChatCore, type Deps } from "./core";
-import { DECISION_LOG_KEY, masterOf } from "./confirm";
+import { DECISION_LOG_KEY, masterOf, WORK_VIEW_MSG } from "./confirm";
 import { ALLOW_AT_WORK_MSG, boundOf, CONFIRM_STALL_MS, RECORDED_ONLY_MSG, type FeedApproval } from "./judge/confirms";
 
 const body = (cmd: string) => `Do you want to proceed?\n— 명령 원문:\n${cmd}\n— 읽기 전용 판정(기계 추정 · 근거 아님): 쓰기·삭제 가능`;
@@ -27,10 +27,13 @@ function harness(o: { prior?: Array<Record<string, unknown>>; chunk?: number } =
     /** org.status 응답을 바꿔 끼움(꼴 깨짐 재현) */
     orgOverride: undefined as unknown,
     beforeRecheck: null as null | (() => void),
+    /** (s79 · codex 3R ②) org.status 응답 직전에 부름(기다리는 사이 화면 전환 재현) */
+    onOrg: null as null | (() => void),
   };
   const deps: Deps = {
     invoke: async (cmd, args) => {
       calls.push({ cmd, args });
+      if (cmd === "org_status") st.onOrg?.();
       if (cmd === "org_status") return st.orgOverride !== undefined ? st.orgOverride : { surfaces: [st.master] };
       if (cmd === "feed_list") {
         if (st.feedFail) throw new Error("down");
@@ -57,7 +60,10 @@ function harness(o: { prior?: Array<Record<string, unknown>>; chunk?: number } =
     clearTimeout: () => {},
     store: { get: (k) => mem.get(k) ?? null, set: (k, v) => void mem.set(k, v), remove: (k) => void mem.delete(k) },
     working: (r) => r.working === true,
-    defaultSlug: async () => "hq-slug-0001",
+    defaultSlug: async () => {
+      calls.push({ cmd: "default_socket_slug" }); // 앱 배선(views/index.ts)은 invoke("default_socket_slug") — 같은 계수로 둔다(s79 · codex 3R ③)
+      return "hq-slug-0001";
+    },
     listenDaemon: (fn) => {
       listenCalls++;
       listeners.push(fn);
@@ -618,5 +624,60 @@ describe("구독 수명 — 대화 화면이 켜져 있을 때만(작업 화면 
     expect(h.listenCalls()).toBe(1);
     h.core.detach();
     expect(h.listenersCount()).toBe(0);
+  });
+});
+
+describe("(s79 · codex 3R ②) 직접 허락 — feed/org 를 기다리는 사이 작업 화면으로 옮기면 confirm_reply 0", () => {
+  it("decide 의 org 재조회 대기 중 작업 화면 → 상태 바꾸는 호출 0 · 기록 work_view · 대화 화면 돌아와 다시 누르면 1회", async () => {
+    const h = harness();
+    h.st.feed = [h.helper()];
+    h.st.master.idle_secs = 120;
+    await h.open(2);
+    h.emit("master.deadman", { role: "master", axis: "agent_dead", reason: "agent process dead" });
+    const it0 = h.core.confirm.band().items[0] as { a: FeedApproval };
+    h.st.onOrg = () => {
+      h.st.onOrg = null;
+      h.core.watchStart(); // registry 순서 = 새 화면(작업)을 먼저 띄우고 → 옛 화면(대화)을 내린다
+      h.core.detach();
+    };
+    await h.core.confirm.decide(boundOf(it0.a), "allow");
+    expect(h.replies().length).toBe(0);
+    expect(h.core.confirm.decisions.at(-1)?.outcome).toBe("work_view");
+    expect(h.core.confirm.notice).toBe(WORK_VIEW_MSG);
+    h.core.attach();
+    h.core.watchStop();
+    await h.core.confirm.decide(boundOf(it0.a), "allow");
+    expect(h.replies().map((c) => c.args)).toEqual([{ requestId: "r1", decision: "allow", screenFingerprint: "fp-1" }]);
+  });
+});
+
+describe("(s79 · codex 3R ③) 작업 화면 켜기 = 살핌 표지 먼저 · 전환 순간 default_socket_slug·home_dir_path 0", () => {
+  it("대화 → 작업(구독 살아 있음) · 대화 → 다른 화면 → 작업(구독 꺼짐) 둘 다 전환 중 그 두 종류 0 · 띠 자료(feed·org·세션)는 받음", async () => {
+    const h = harness();
+    await h.open(1);
+    const kinds = (from: number) => h.calls.slice(from).map((c) => c.cmd);
+    // ① 대화 → 작업
+    let c0 = h.calls.length;
+    expect(h.core.watchStart()).toBe(true);
+    h.core.detach();
+    await h.flush();
+    await h.core.poll();
+    await h.flush();
+    expect(kinds(c0).filter((k) => k === "default_socket_slug" || k === "home_dir_path")).toEqual([]);
+    expect(kinds(c0).every((k) => ["feed_list", "org_status", "chat_transcript"].includes(k))).toBe(true);
+    // ② 작업 → 대화 → 다른 화면(구독·세션 읽기 끔) → 작업
+    h.core.attach();
+    h.core.watchStop();
+    await h.flush();
+    h.core.detach();
+    await h.flush();
+    c0 = h.calls.length;
+    const lc = h.listenCalls();
+    expect(h.core.watchStart()).toBe(true);
+    await h.flush();
+    await h.core.poll();
+    await h.flush();
+    expect(kinds(c0).filter((k) => !["feed_list", "org_status", "chat_transcript"].includes(k))).toEqual([]);
+    expect(h.listenCalls()).toBe(lc + 1); // 띠 자료용 사건 구독은 다시 건다(호출 종류 밖 · invoke 0)
   });
 });

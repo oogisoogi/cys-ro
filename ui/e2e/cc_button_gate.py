@@ -12,7 +12,7 @@ from pathlib import Path
 spec = importlib.util.spec_from_file_location("sbg", Path(__file__).with_name("statusboard_gate.py"))
 sbg = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sbg)
-OUT = sbg.UI.parent / "docs" / "evidence-tabs-sidebar" / "1e"
+OUT = sbg.evidence_dir("evidence-tabs-sidebar", "1e")
 ON_LAYOUT = json.dumps({"version": 1, "items": [{"id": i, "on": i not in ("btn-new", "btn-split-h", "btn-split-v", "btn-close", "btn-factory-reset")} for i in
   ["btn-feedback", "btn-counsel", "btn-agora", "btn-equalize", "btn-new", "btn-split-h", "btn-split-v", "btn-close", "btn-files", "btn-cc", "btn-restart-daemon", "btn-factory-reset", "btn-theme"]]})
 

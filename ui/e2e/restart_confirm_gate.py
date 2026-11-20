@@ -17,7 +17,7 @@ from pathlib import Path
 spec = importlib.util.spec_from_file_location("sbg", Path(__file__).with_name("statusboard_gate.py"))
 sbg = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sbg)
-OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else sbg.UI.parent / "docs" / "evidence-restart-confirm"
+OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else sbg.evidence_dir("evidence-restart-confirm")
 
 # SHIM 위에 invoke 기록을 덧씌운다 — 어떤 명령이 나갔는지 직접 센다.
 RECORD = r"""

@@ -75,6 +75,8 @@ export interface Question {
   text: string;
   /** 그 물음을 담은 마스터 답 레코드(대화 자리로 데려갈 때) */
   uuid: string | null;
+  /** (s79 · F7) 이 물음을 마지막으로 물은 표식 사건 순번(같은 글로 다시 물으면 커짐 — 사람이 내린 뒤 다시 물으면 다시 보이게) */
+  last?: number;
 }
 
 /** 표식 사건을 차례로 다시 놀아 열린 물음을 낸다. 해결 = 앞 20자가 같은 열린 물음 가운데 **가장 오래된 하나만** 닫음(한 표식 = 한 물음).
@@ -85,8 +87,13 @@ export function openQuestions(events: readonly MarkerEvent[]): Question[] {
   for (const e of events) {
     n++;
     if (e.kind === "ask") {
-      if (open.some((q) => q.text === e.text)) continue;
-      open.push({ id: `q${n}`, text: e.text, uuid: e.uuid });
+      const same = open.find((q) => q.text === e.text);
+      if (same) {
+        same.last = n; // (s79 · F7) 다시 물음 — 새 항목은 만들지 않되 「마지막으로 물은 때」는 올린다
+        if (e.uuid !== null) same.uuid = e.uuid; // (codex 2R minor) 「대화에서 답하기」가 가장 최근에 물은 자리로 가게
+        continue;
+      }
+      open.push({ id: `q${n}`, text: e.text, uuid: e.uuid, last: n });
     } else {
       const i = open.findIndex((q) => resolves(q.text, e.key));
       if (i >= 0) open.splice(i, 1);
@@ -316,3 +323,34 @@ export function replyErrorMsg(err: string): string {
   if (code === FINGERPRINT_MISMATCH_CODE) return "도우미 창이 펼쳐 본 것과 달라져 누르지 않았어요 — 작업 화면에서 확인해 주세요.";
   return `처리하지 못했어요${code ? ` (${code})` : ""} — 작업 화면에서 확인해 주세요.`;
 }
+
+// ---------- (s79 · S4-7 · 검증 F7) 사람이 닫는 물음 ----------
+
+/** 사람이 「이 물음은 끝났어요」로 내린 물음의 열쇠(번호 + 글 — 같은 번호에 다른 글이 오면 다른 물음). */
+export function dismissKey(q: Question): string {
+  return `${q.id}\u0000${q.text}`;
+}
+
+/** 사람이 내린 물음을 뺀 열린 물음(마스터에게는 아무것도 보내지 않음 · 화면 쪽 내림만).
+ *  dismissed = 열쇠 → 내릴 때의 「마지막으로 물은 때」 — 그 뒤에 마스터가 같은 글로 다시 물었으면 다시 보인다(codex 1R major). */
+export function withoutDismissed(qs: readonly Question[], dismissed: ReadonlyMap<string, number>): Question[] {
+  return qs.filter((q) => {
+    const upTo = dismissed.get(dismissKey(q));
+    return upTo === undefined || (q.last ?? 0) > upTo;
+  });
+}
+
+export const DISMISS_NOTE = "이 물음을 띠에서 내렸어요 — 마스터에게는 아무것도 보내지 않았어요.";
+
+// ---------- (s79 · S4-7 · 검증 F10) 보던 항목이 사라져 다른 항목이 같은 자리에 왔을 때 ----------
+
+/** 저절로 바뀌어 온 항목에 누름을 받지 않는 시간(사람이 보던 것과 다른 요청에 거절·내림이 들어가지 않게 · 설계 목표값). */
+export const SWAP_GUARD_MS = 2_000;
+
+/** 그 항목이 「보던 항목이 사라져 저절로 온 것」이고 온 지 SWAP_GUARD_MS 안인가 — 그러면 누름 = 처리 0 + 안내. */
+export function swapBlocked(arrived: { key: string; at: number } | null, key: string, now: number): boolean {
+  return arrived !== null && arrived.key === key && now - arrived.at < SWAP_GUARD_MS;
+}
+
+export const SWAP_NOTE = "보던 항목이 처리되어 다른 요청이 그 자리에 왔어요 — 내용을 확인하고 다시 눌러 주세요.";
+export const SWAP_LINE = "앞 항목이 처리되어 다음 요청을 보여요.";

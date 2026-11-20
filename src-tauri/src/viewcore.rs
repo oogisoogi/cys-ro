@@ -481,9 +481,585 @@ pub(crate) fn next_newline_after(mut f: &std::fs::File, from: u64, size: u64) ->
     Ok(None)
 }
 
+// ---------- (s79 · TICKET=cysr-1116-s79-1119 · 조각 7) 결과 열기·폴더 보기 ----------
+
+/// 「열기」를 거절하는 확장자(대소문자 무시 · 양 OS 공통) — 실행 꾸러미(맥 `.app` 등은 **폴더**라 `open_path` 의 실행형 **파일** 검사를 지나간다) ·
+/// URL·바로가기(`.webloc`·`.url`·`.lnk` 등 = 열면 OS 가 링크 대상을 엶) · 스크립트·설치기(연결 프로그램이 실행) — codex 2R blocking.
+/// ★목록 정본 = 이 배열과 `ui/src/views/judge/results.ts` 의 `OPEN_REFUSED_EXT` — 두 목록이 같아야 한다(bun 시험 「열기 거절 확장자 = Rust 와 같은 목록」이 이 소스를 읽어 대조).
+/// 폴더 보기(reveal)는 거절하지 않는다(파일 관리자에서 고르기만 · 실행 0).
+pub(crate) const OPEN_REFUSED_EXT: &[&str] = &[
+    "action", "app", "appex", "applescript", "application", "appref-ms", "bash", "bat", "bundle", "cmd", "com", "command", "cpl", "csh", "desktop", "exe", "framework", "gadget", "hta", "inetloc", "jar", "js", "jse", "kext", "lnk", "mpkg", "msc", "msi", "msp", "mst", "pif", "pkg", "plugin", "prefpane", "ps1", "psm1", "qlgenerator", "reg", "saver", "scpt", "scptd", "scr", "sh", "terminal", "tool", "url", "vb", "vbe", "vbs", "webloc", "website", "workflow", "ws", "wsf", "wsh", "xpc", "zsh",
+];
+
+/// 결과 경로의 정규 대상(심볼릭 링크를 끝까지 풂) — 정규 홈 **아래**(홈 자신 아님) · 홈 아래 마디에 숨은 이름(`.` 시작) 0.
+/// 화면(judge/results)의 이름 검사는 글만 본다 — 홈 안 평범한 이름이 홈 밖(예 `/Applications/X.app`)을 가리키는 링크면 그 검사를 지나간다(codex 1R blocking).
+pub(crate) fn result_target(path: &std::path::Path, home: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let home_c = std::fs::canonicalize(home).map_err(|e| format!("not a local path: {e}"))?;
+    let t = std::fs::canonicalize(path).map_err(|e| format!("not a local path: {e}"))?;
+    if is_network_path(&t.to_string_lossy()) {
+        return Err("network_path".into()); // (codex 2R) 윈도 UNC 홈·UNC 대상 = 로컬 아님 → 거절(맥 홈 아래 네트워크 마운트 판별은 안 함 = 알려진 한계)
+    }
+    #[cfg(windows)]
+    if drive_root(&t.to_string_lossy()).is_some_and(|r| windrive::is_remote_drive(&r)) {
+        return Err("network_path".into()); // (codex 3R ④) 매핑 드라이브(SMB·WebDAV)는 정규 경로가 `\\?\H:\…` 꼴이라 UNC 검사를 지나간다 — 드라이브 뿌리 종류(GetDriveTypeW) = DRIVE_REMOTE 면 거절
+    }
+    let rel = t.strip_prefix(&home_c).map_err(|_| "outside_home".to_string())?;
+    if rel.as_os_str().is_empty() {
+        return Err("outside_home".into());
+    }
+    for c in rel.components() {
+        match c {
+            std::path::Component::Normal(seg) if !seg.to_string_lossy().starts_with('.') => {}
+            std::path::Component::Normal(_) => return Err("hidden_path".into()),
+            _ => return Err("outside_home".into()),
+        }
+    }
+    Ok(t)
+}
+
+/// (s79 · 독립 검증 V1·V2 · master#beb80154) 「열기」 **허용 목록** — 보통 파일은 이 확장자(웹 페이지·문서·그림)만 OS 에 넘긴다 · 그 밖 = `executable_confirm`(폴더 보기만).
+/// 거부 목록(OPEN_REFUSED_EXT)만으로는 목록 밖 처리기(`.fileloc`·`.webloc`·윈 `.url`·`.appref-ms`…)가 홈 밖 앱·URL 을 열었다(2272 실측).
+/// ★목록 정본 = 이 배열과 `ui/src/views/judge/results.ts` 의 `OPEN_ALLOWED_EXT`(= PAGE·DOC·IMAGE) — bun 시험이 이 소스를 읽어 대조.
+/// 거부 목록은 꾸러미 **폴더**(`.app` 등) 판정과 이중 방어로 남긴다(허용 목록은 파일만 덮음).
+pub(crate) const OPEN_ALLOWED_EXT: &[&str] = &[
+    "bmp", "csv", "doc", "docx", "gif", "heic", "htm", "html", "hwp", "hwpx", "jpeg", "jpg", "md", "odt", "pdf", "png", "ppt", "pptx", "rtf", "svg", "txt", "webp", "xls", "xlsx",
+];
+
+/// 맥 Finder 가명(bookmark) — 파일 머리 `book\0\0\0\0mark` 또는 `com.apple.FinderInfo` Finder flags kIsAlias(0x8000). 이름이 `행사안내.html` 이어도 LaunchServices 가 대상(홈 밖 앱)을 연다(2272 V1 실측).
+pub(crate) fn is_alias(p: &std::path::Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 16];
+    if let Ok(mut f) = std::fs::File::open(p) {
+        if f.read(&mut head).ok() == Some(16) && &head[..12] == b"book\0\0\0\0mark" {
+            return true;
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let Ok(path) = std::ffi::CString::new(p.as_os_str().as_bytes()) else { return true };
+        let name = c"com.apple.FinderInfo";
+        let mut buf = [0u8; 32];
+        // SAFETY: path·name 은 NUL 로 끝나는 C 문자열 · buf 는 32 바이트(FinderInfo 크기) · position 0 · options 0(링크 따라감 — 정규 경로라 링크 없음)
+        let n = unsafe { libc::getxattr(path.as_ptr(), name.as_ptr(), buf.as_mut_ptr().cast(), buf.len(), 0, 0) };
+        if n >= 10 && u16::from_be_bytes([buf[8], buf[9]]) & 0x8000 != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+/// 「열기」 판정(정규 대상 · OS 에 넘기기 전) — 꾸러미 확장자 = 거절 · 꾸러미 아닌 폴더 = 허용 · 보통 파일 = 허용 목록 확장자 ∧ 가명 아님 ∧(윈) 숨김·시스템 속성 아님.
+pub(crate) fn open_verdict(t: &std::path::Path) -> Result<(), String> {
+    if is_launch_bundle(t) {
+        return Err("executable_confirm".into());
+    }
+    let meta = std::fs::metadata(t).map_err(|e| format!("not a local path: {e}"))?;
+    if meta.is_dir() {
+        // (codex 3R ① · 이중) 앱 꾸러미의 정체는 이름이 아니라 `Contents/Info.plist`(+ 옛 `PkgInfo` · 실행 파일 자리 `MacOS`)다 — 이름을 바꾼 꾸러미(`Report.pdf` 등)는 확장자 검사를 지나간다.
+        //   그런 표지가 있는 폴더는 열지 않는다(폴더 보기만). 열기 자체도 파일 관리자로만 한다(folder_open_command).
+        if ["Info.plist", "PkgInfo", "MacOS"].iter().any(|n| std::fs::symlink_metadata(t.join("Contents").join(n)).is_ok()) {
+            return Err("executable_confirm".into());
+        }
+        return Ok(());
+    }
+    if !meta.is_file() {
+        return Err("executable_confirm".into());
+    }
+    let ext = t.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    if !OPEN_ALLOWED_EXT.contains(&ext.as_str()) || is_alias(t) {
+        return Err("executable_confirm".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if meta.permissions().mode() & 0o111 != 0 {
+            return Err("executable_confirm".into()); // (codex 4R ①) 기존 open_path 의 실행 비트 게이트 — 이제 open_path 를 거치지 않으므로 여기로 옮김
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if meta.file_attributes() & 0x6 != 0 {
+            return Err("executable_confirm".into()); // FILE_ATTRIBUTE_HIDDEN(0x2)·SYSTEM(0x4) — AppData 류 숨은 자리의 바로가기 막음(2272 V2 minor)
+        }
+    }
+    Ok(())
+}
+
+/// 정규 경로가 네트워크(UNC) 꼴인가 — `\\?\UNC\…` 또는 `\\server\…`(드라이브 꼴 `\\?\C:\` 은 아님). 맥·리눅스 경로는 늘 false.
+pub(crate) fn is_network_path(s: &str) -> bool {
+    s.starts_with(r"\\?\UNC\") || (s.starts_with(r"\\") && !s.starts_with(r"\\?\"))
+}
+
+/// (codex 3R ④) 윈도 정규 경로의 드라이브 뿌리 `X:\` — `\\?\X:\…` 또는 `X:\…` 꼴만(그 밖 = None · 맥·리눅스 경로도 None). 순수 함수(모든 기판에서 시험).
+#[cfg_attr(not(windows), allow(dead_code))] // 운영 호출 = 윈도만(result_target) · 다른 기판은 시험만
+pub(crate) fn drive_root(s: &str) -> Option<String> {
+    let r = s.strip_prefix(r"\\?\").unwrap_or(s);
+    let b = r.as_bytes();
+    (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/')).then(|| format!("{}:\\", b[0] as char))
+}
+
+// ---- windrive 시작(std 만 · 교차 타입체크 = 이 표지 사이를 떼어 x86_64-pc-windows-msvc 로 rustc --emit=metadata) ----
+#[cfg(windows)]
+mod windrive {
+    /// `GetDriveTypeW` 의 DRIVE_REMOTE(네트워크 드라이브).
+    pub(super) const DRIVE_REMOTE: u32 = 4;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        /// `UINT GetDriveTypeW(LPCWSTR lpRootPathName)` — 뿌리(끝 `\`)를 받는다.
+        fn GetDriveTypeW(root: *const u16) -> u32;
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        /// `UINT GetWindowsDirectoryW(LPWSTR lpBuffer, UINT uSize)` — 성공 = 글자 수(NUL 뺌) · 버퍼가 작으면 필요한 크기 · 실패 = 0.
+        fn GetWindowsDirectoryW(buf: *mut u16, size: u32) -> u32;
+    }
+
+    /// (codex 4R ①) 윈도 폴더(보통 `C:\Windows`) — 못 얻으면 None.
+    pub(super) fn windows_dir() -> Option<String> {
+        let mut buf = [0u16; 512];
+        // SAFETY: buf 는 512 글자 쓰기 가능 · 크기를 그대로 넘긴다.
+        let n = unsafe { GetWindowsDirectoryW(buf.as_mut_ptr(), buf.len() as u32) } as usize;
+        (n > 0 && n < buf.len()).then(|| String::from_utf16_lossy(&buf[..n]))
+    }
+
+    /// 드라이브 뿌리(`H:\`)가 네트워크 드라이브인가.
+    pub(super) fn is_remote_drive(root: &str) -> bool {
+        use std::os::windows::ffi::OsStrExt;
+        let w: Vec<u16> = std::ffi::OsStr::new(root).encode_wide().chain(std::iter::once(0)).collect();
+        // SAFETY: w = NUL 로 끝나는 UTF-16 문자열 · 함수는 읽기만 한다.
+        unsafe { GetDriveTypeW(w.as_ptr()) == DRIVE_REMOTE }
+    }
+}
+// ---- windrive 끝 ----
+
+/// 정규 대상이 열기 거절 확장자인가(대소문자 무시).
+pub(crate) fn is_launch_bundle(p: &std::path::Path) -> bool {
+    p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).is_some_and(|e| OPEN_REFUSED_EXT.contains(&e.as_str()))
+}
+
+/// 윈도 정규 경로의 `\\?\C:\` 머리를 벗긴다(탐색기·셸이 그 꼴을 못 받는 경우) — 드라이브 꼴일 때만.
+fn plain_path(p: &std::path::Path) -> String {
+    let s = p.to_string_lossy().into_owned();
+    #[cfg(windows)]
+    {
+        let b = s.as_bytes();
+        if s.starts_with(r"\\?\") && b.len() > 6 && b[5] == b':' && b[4].is_ascii_alphabetic() {
+            return s[4..].to_string();
+        }
+    }
+    s
+}
+
+/// (codex 3R ①) 결과 행동 계획 — OS 에 넘기기 전 판정까지(실행 0 · 시험 대상).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum OpenPlan {
+    /// 파일 관리자에서 그 항목을 골라 보여 줌(맥 `open -R` · 윈 `explorer.exe /select,`)
+    Reveal(String),
+    /// 폴더 = 파일 관리자로만 — 맥 `open -a Finder <폴더>` · 윈 = 들어가지 않고 상위 폴더에서 골라 보여 줌(codex 4R ②) · LaunchServices 기본 열기 0
+    Folder(String),
+    /// 허용 목록 종류의 보통 파일(실행 비트 없음) = 기본 처리기로 엶
+    File(String),
+}
+
+/// 정규 홈 아래 · 숨은 마디 0 · (윈) 셸 정션 폴더 거절 · 열기면 `open_verdict`(허용 목록·가명·꾸러미·실행 비트 · 꾸러미 표지 폴더) — 그 밖 = 거절 글(`executable_confirm` 등 · 화면은 force 로 다시 부르지 않음).
+pub(crate) fn open_plan(path: &std::path::Path, reveal: bool, home: &std::path::Path) -> Result<OpenPlan, String> {
+    let target = result_target(path, home)?;
+    #[cfg(windows)]
+    {
+        let home_c = std::fs::canonicalize(home).map_err(|e| format!("not a local path: {e}"))?;
+        if shell_junction_on_path(&target, &home_c) {
+            return Err("executable_confirm".into()); // (codex 4R ②) `이름.{CLSID}` 폴더 · desktop.ini CLSID= 폴더 = 탐색기가 COM 이름공간·네트워크로 엮음 — 열기·폴더 보기 둘 다 0
+        }
+    }
+    if reveal {
+        return Ok(OpenPlan::Reveal(plain_path(&target)));
+    }
+    open_verdict(&target)?; // (s79 · V1·V2) 허용 목록 · 가명 · 꾸러미 — 그 밖 = executable_confirm(화면 = 폴더 보기 안내)
+    let is_dir = std::fs::metadata(&target).map_err(|e| format!("not a local path: {e}"))?.is_dir();
+    Ok(if is_dir { OpenPlan::Folder(plain_path(&target)) } else { OpenPlan::File(plain_path(&target)) })
+}
+
+/// (codex 4R ②) 이름이 셸 정션 꼴(`이름.{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}` · 대소문자 무시)인가 — 순수 함수(모든 기판에서 시험).
+pub(crate) fn is_clsid_name(name: &str) -> bool {
+    let Some(i) = name.rfind(".{") else { return false };
+    let g = &name[i + 1..];
+    let b = g.as_bytes();
+    b.len() == 38
+        && b[0] == b'{'
+        && b[37] == b'}'
+        && b[1..37].iter().enumerate().all(|(k, c)| if [8, 13, 18, 23].contains(&k) { *c == b'-' } else { c.is_ascii_hexdigit() })
+}
+
+/// (codex 4R ②) 폴더 안 `desktop.ini` 에 `CLSID=`·`CLSID2=` 줄이 있는가(읽기만 · 앞 64KB · UTF-8 또는 UTF-16LE BOM) — 탐색기가 그 폴더를 COM 이름공간으로 엮는 꼴.
+pub(crate) fn desktop_ini_has_clsid(dir: &std::path::Path) -> bool {
+    use std::io::Read;
+    let Ok(f) = std::fs::File::open(dir.join("desktop.ini")) else { return false };
+    let mut buf = Vec::new();
+    if f.take(65_536).read_to_end(&mut buf).is_err() {
+        return true; // 있는데 못 읽음 = 모름 → 거절 쪽
+    }
+    let text = if buf.starts_with(&[0xFF, 0xFE]) {
+        let u: Vec<u16> = buf[2..].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        String::from_utf16_lossy(&u)
+    } else {
+        String::from_utf8_lossy(&buf).into_owned()
+    };
+    text.lines().any(|l| l.split_once('=').is_some_and(|(k, _)| matches!(k.trim().to_ascii_lowercase().as_str(), "clsid" | "clsid2")))
+}
+
+/// (codex 4R ②) 정규 대상과 그 조상(정규 홈 **아래**만) 중 셸 정션 폴더(CLSID 이름 · desktop.ini CLSID)가 있는가 — 운영 호출 = 윈도만(맥 동작 불변) · 판정은 모든 기판에서 시험.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn shell_junction_on_path(target: &std::path::Path, home_c: &std::path::Path) -> bool {
+    target.ancestors().take_while(|a| *a != home_c && a.starts_with(home_c)).any(|a| {
+        a.file_name().is_some_and(|n| is_clsid_name(&n.to_string_lossy())) || (a.is_dir() && desktop_ini_has_clsid(a))
+    })
+}
+
+/// (codex 4R ①) 윈도 탐색기 절대 경로 고르기(순수) — GetWindowsDirectoryW 값 → `SystemRoot` 환경값 → `C:\Windows` 순 · 드라이브 절대 꼴(`X:\…`)만 받음(상대·빈 값은 건너뜀).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn explorer_path_from(win_dir: Option<&str>, system_root: Option<&str>) -> String {
+    let dir = [win_dir, system_root].into_iter().flatten().map(str::trim).find(|d| drive_root(d).is_some()).unwrap_or(r"C:\Windows");
+    format!(r"{}\explorer.exe", dir.trim_end_matches(['\\', '/']))
+}
+
+/// (codex 4R ①) 신뢰 실행기 = **절대 경로**(맨 이름 0) — 맥 `/usr/bin/open` · 윈 `%SystemRoot%\explorer.exe` · 그 밖 `/usr/bin/xdg-open`.
+/// 맨 이름(`open`·`explorer`)은 맥 = 물려받은 PATH 를 뒤지고 · 윈 = 실행 파일 폴더를 시스템 폴더보다 먼저 뒤진다 — 같은 이름 가짜가 끼면 PDF 누름이 그것을 띄운다.
+pub(crate) fn launcher() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        "/usr/bin/open".into()
+    }
+    #[cfg(windows)]
+    {
+        explorer_path_from(windrive::windows_dir().as_deref(), std::env::var("SystemRoot").ok().as_deref())
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        "/usr/bin/xdg-open".into()
+    }
+}
+
+/// (codex 3R ① · 4R ①②) 계획 → 실행 명령(절대 경로 실행기 · 인자는 셸 파싱 없음).
+/// 맥: 파일 `open <파일>` · 폴더 `open -a Finder <폴더>` · 보기 `open -R <항목>` / 윈: 파일 `explorer.exe <파일>` · 폴더·보기 = `explorer.exe /select,<항목>`(폴더에 들어가지 않음) / 그 밖: xdg-open(보기 = 부모 폴더).
+pub(crate) fn launch_command(plan: &OpenPlan) -> std::process::Command {
+    let mut c = std::process::Command::new(launcher());
+    match plan {
+        #[cfg(target_os = "macos")]
+        OpenPlan::Reveal(p) => {
+            c.arg("-R").arg(p);
+        }
+        #[cfg(target_os = "macos")]
+        OpenPlan::Folder(p) => {
+            c.args(["-a", "Finder"]).arg(p);
+        }
+        #[cfg(windows)]
+        OpenPlan::Reveal(p) | OpenPlan::Folder(p) => {
+            c.arg(format!("/select,{p}"));
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
+        OpenPlan::Reveal(p) => {
+            c.arg(std::path::Path::new(p).parent().map(|x| x.to_string_lossy().into_owned()).unwrap_or_else(|| p.clone()));
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
+        OpenPlan::Folder(p) => {
+            c.arg(p);
+        }
+        OpenPlan::File(p) => {
+            c.arg(p);
+        }
+    }
+    c
+}
+
+/// 결과 행동 집행(`open_plan` 다음) — 시험이 임시 홈으로 부를 수 있게 홈을 받는다.
+pub(crate) fn result_open_in(path: &std::path::Path, reveal: bool, home: &std::path::Path) -> Result<(), String> {
+    let plan = open_plan(path, reveal, home)?;
+    launch_command(&plan).spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// 결과 받기 카드의 「열기」·「폴더 보기」 — 마스터 글에서 온 경로라 정규 대상으로 다시 가둔다:
+/// 정규 홈 아래 · 숨은 마디 0 · (윈) 셸 정션 0 · 열기면 허용 목록·꾸러미·실행 비트 거절(`executable_confirm` · 화면은 force 로 다시 부르지 않음) · 실행기 = 절대 경로(`launch_command`).
+/// ⚠알려진 한계(TOCTOU · master#c48208b6 처분 = 고치지 않고 문서): 정규화 뒤 경로 **이름**을 넘기므로, 그 사이 같은 사용자 권한의 로컬 프로세스가
+///   조상 폴더를 링크로 바꿔치기하면 다른 대상이 열릴 수 있다 — 그 프로세스는 이미 무엇이든 열 수 있어 새 권한을 주지 않는다(HANDOFF 「알려진 한계」).
+#[tauri::command]
+pub fn result_open(path: String, reveal: Option<bool>) -> Result<(), String> {
+    result_open_in(std::path::Path::new(&path), reveal.unwrap_or(false), &cys::home_dir())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn result_target_confines_to_canonical_home() {
+        // (s79 · codex 1R blocking) 홈 안 링크가 홈 밖을 가리키면 거절 · 숨은 마디 거절 · 홈 자신 거절 · 정상 = 정규 대상
+        let base = std::env::temp_dir().join(format!("vc-res-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let home = base.join("home");
+        let out = base.join("Applications").join("Evil.app");
+        std::fs::create_dir_all(home.join("교회")).unwrap();
+        std::fs::create_dir_all(home.join(".cys")).unwrap();
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(home.join("교회").join("a.html"), b"x").unwrap();
+        std::fs::write(home.join(".cys").join("s.md"), b"x").unwrap();
+        let ok = result_target(&home.join("교회").join("a.html"), &home).unwrap();
+        assert!(ok.ends_with("교회/a.html") || ok.ends_with("교회\\a.html"));
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&out, home.join("Report")).unwrap();
+            assert_eq!(result_target(&home.join("Report"), &home).unwrap_err(), "outside_home");
+            std::os::unix::fs::symlink(home.join(".cys"), home.join("plain")).unwrap();
+            assert_eq!(result_target(&home.join("plain").join("s.md"), &home).unwrap_err(), "hidden_path");
+        }
+        assert_eq!(result_target(&home.join(".cys").join("s.md"), &home).unwrap_err(), "hidden_path");
+        assert_eq!(result_target(&home.join("교회").join("..").join("..").join("Applications"), &home).unwrap_err(), "outside_home");
+        assert_eq!(result_target(&home, &home).unwrap_err(), "outside_home");
+        assert!(result_target(&home.join("없음.pdf"), &home).unwrap_err().starts_with("not a local path"));
+        assert!(is_launch_bundle(&out));
+        assert!(is_launch_bundle(std::path::Path::new("/x/A.APP")));
+        assert!(!is_launch_bundle(&ok));
+        // (codex 2R) URL·바로가기·스크립트도 열기 거절 · 대소문자 무시
+        for n in ["a.webloc", "a.URL", "a.inetloc", "a.lnk", "a.sh", "a.command", "a.tool", "a.terminal", "a.scpt", "a.applescript", "a.workflow", "a.ps1", "a.bat", "a.cmd", "a.vbs", "a.js", "a.jse", "a.wsf", "a.hta", "a.reg", "a.msi", "a.scr", "a.EXE"] {
+            assert!(is_launch_bundle(std::path::Path::new(n)), "{n}");
+        }
+        for n in ["a.html", "a.pdf", "a.png", "a.md", "a.hwp", "dir"] {
+            assert!(!is_launch_bundle(std::path::Path::new(n)), "{n}");
+        }
+        // (s79 · 독립 검증 V1·V2) 열기 판정 = 허용 목록 · 가명 · 꾸러미 — 2272 표본
+        let d = home.join("교회");
+        assert_eq!(open_verdict(&ok), Ok(()));
+        assert_eq!(open_verdict(&d), Ok(()));
+        let mut alias = b"book\0\0\0\0mark\0\0\0\0".to_vec();
+        alias.extend_from_slice(&[0u8; 64]);
+        std::fs::write(d.join("행사안내.html"), &alias).unwrap(); // 가명인데 이름은 문서
+        std::fs::write(d.join("주보 최종"), &alias).unwrap(); // 가명 · 확장자 없음
+        std::fs::write(d.join("p.fileloc"), b"<plist/>").unwrap();
+        std::fs::write(d.join("p.webloc"), b"<plist/>").unwrap();
+        for n in ["행사안내.html", "주보 최종", "p.fileloc", "p.webloc"] {
+            assert_eq!(open_verdict(&d.join(n)).unwrap_err(), "executable_confirm", "{n}");
+        }
+        for n in ["a.url", "a.appref-ms", "a.settingcontent-ms", "a.library-ms", "a.search-ms", "a.application", "a.appinstaller", "a.msix", "a.appx", "a.chm", "a.iso", "a.img", "a.vhd", "a.vhdx", "a.inf", "a.sct", "a.wsc", "a.ws", "a.msp", "a.psc1", "a.jnlp", "a.xll", "a.diagcab", "a.website", "a.theme", "a.exe", "a.py"] {
+            std::fs::write(d.join(n), b"x").unwrap();
+            assert_eq!(open_verdict(&d.join(n)).unwrap_err(), "executable_confirm", "{n}");
+        }
+        std::fs::create_dir_all(d.join("In.app")).unwrap();
+        assert_eq!(open_verdict(&d.join("In.app")).unwrap_err(), "executable_confirm");
+        #[cfg(unix)]
+        {
+            // (codex 4R ①) 옛 open_path 의 실행 비트 게이트를 옮겨 옴 — 허용 목록 이름이어도 실행 비트면 거절
+            use std::os::unix::fs::PermissionsExt;
+            let x = d.join("실행.html");
+            std::fs::write(&x, b"#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&x, std::fs::Permissions::from_mode(0o744)).unwrap();
+            assert_eq!(open_verdict(&x).unwrap_err(), "executable_confirm");
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // FinderInfo kIsAlias(0x8000) 만 선 옛 꼴 가명 — xattr 도구로 표지를 씀(도구가 없으면 건너뜀)
+            let f = d.join("옛가명.pdf");
+            std::fs::write(&f, b"%PDF-1.4").unwrap();
+            let hex = "0000000000000000800000000000000000000000000000000000000000000000";
+            if std::process::Command::new("/usr/bin/xattr").args(["-wx", "com.apple.FinderInfo", hex]).arg(&f).status().is_ok_and(|s| s.success()) {
+                assert_eq!(open_verdict(&f).unwrap_err(), "executable_confirm");
+            }
+        }
+        assert!(is_network_path(r"\\?\UNC\srv\share\a.pdf"));
+        assert!(is_network_path(r"\\srv\share\a.pdf"));
+        assert!(!is_network_path(r"\\?\C:\Users\x\a.pdf"));
+        assert!(!is_network_path("/Users/x/a.pdf"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// (codex 3R ①) 이름을 바꾼 앱 꾸러미(`Report.pdf` · Info.plist APPL · 실행 파일이 표식 파일을 만듦) — 열기 계획 = 거절 · 집행해도 실행 0 ·
+    /// 꾸러미 표지 없는 폴더 = 파일 관리자로만(`open -a Finder` · LaunchServices 기본 열기 0).
+    #[test]
+    fn renamed_app_bundle_folder_is_refused_and_folders_open_in_file_manager_only() {
+        let base = std::env::temp_dir().join(format!("vc-bnd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let home = base.join("home");
+        let marker = base.join("MARKER");
+        let b = home.join("교회").join("Report.pdf");
+        std::fs::create_dir_all(b.join("Contents").join("MacOS")).unwrap();
+        std::fs::write(
+            b.join("Contents").join("Info.plist"),
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleExecutable</key><string>run</string><key>CFBundleIdentifier</key><string>invalid.cys.vc-bnd</string><key>LSUIElement</key><true/></dict></plist>",
+        )
+        .unwrap();
+        let run = b.join("Contents").join("MacOS").join("run");
+        std::fs::write(&run, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        // 계획부터 단언(뮤턴트가 거절을 빼도 아래 집행이 OS 를 부르기 전에 여기서 멈춘다)
+        assert_eq!(open_plan(&b, false, &home).unwrap_err(), "executable_confirm");
+        assert_eq!(result_open_in(&b, false, &home).unwrap_err(), "executable_confirm");
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        assert!(!marker.exists(), "이름 바꾼 꾸러미가 실행됨(표식 파일 생김)");
+        // 표지 하나씩: PkgInfo 만 · MacOS 만도 거절
+        for n in ["PkgInfo", "MacOS"] {
+            let d = home.join("교회").join(format!("표지-{n}"));
+            std::fs::create_dir_all(d.join("Contents")).unwrap();
+            if n == "MacOS" {
+                std::fs::create_dir_all(d.join("Contents").join(n)).unwrap();
+            } else {
+                std::fs::write(d.join("Contents").join(n), b"APPL????").unwrap();
+            }
+            assert_eq!(open_plan(&d, false, &home).unwrap_err(), "executable_confirm", "{n}");
+        }
+        // 폴더 보기는 됨(파일 관리자에서 고르기만 · 실행 0)
+        assert!(matches!(open_plan(&b, true, &home), Ok(OpenPlan::Reveal(_))));
+        // 꾸러미 표지 없는 보통 폴더 = Folder(파일 관리자) · 보통 문서 = File(open_path)
+        let plain = home.join("교회").join("주보");
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::write(plain.join("a.pdf"), b"%PDF-1.4").unwrap();
+        let Ok(OpenPlan::Folder(fp)) = open_plan(&plain, false, &home) else { panic!("보통 폴더 = Folder 계획") };
+        assert!(matches!(open_plan(&plain.join("a.pdf"), false, &home), Ok(OpenPlan::File(_))));
+        let c = launch_command(&OpenPlan::Folder(fp.clone()));
+        let args: Vec<String> = c.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(c.get_program(), "/usr/bin/open");
+            assert_eq!(args, vec!["-a".to_string(), "Finder".into(), fp.clone()], "맥 폴더 열기 = Finder 로만(LaunchServices 기본 열기 금지)");
+        }
+        #[cfg(windows)]
+        {
+            assert!(c.get_program().to_string_lossy().ends_with(r"\explorer.exe"));
+            assert_eq!(args, vec![format!("/select,{fp}")], "윈 폴더 = 들어가지 않고 상위 폴더에서 골라 보여 줌");
+        }
+        // 집행 길 = 계획 → launch_command 한 길(소스 대조 — 실제 Finder 창은 띄우지 않음)
+        let src = include_str!("viewcore.rs");
+        let code: String = src.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        let body = &code[code.find("pub(crate) fn result_open_in(").expect("result_open_in")..];
+        let body = &body[..body.find("\n}\n").expect("끝")];
+        assert!(body.contains("let plan = open_plan(path, reveal, home)?;") && body.contains("launch_command(&plan).spawn()"), "집행이 계획·절대 경로 명령을 안 지남");
+        assert!(!body.contains("crate::open_path") && !body.contains("crate::reveal_path"), "맨 이름 실행기를 쓰는 옛 open_path/reveal_path 를 다시 부름");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// (codex 4R ①) 실행기 = 절대 경로 — 세 계획 모두 같은 실행기 · 맨 이름 spawn 0(이 파일 운영 코드 전체 grep) · 윈 탐색기 경로 고르기(순수) · 맥 인자 불변.
+    #[test]
+    fn launchers_are_absolute_paths_and_no_bare_name_spawn() {
+        for plan in [OpenPlan::File("/h/a.pdf".into()), OpenPlan::Reveal("/h/a.pdf".into()), OpenPlan::Folder("/h/d".into())] {
+            let c = launch_command(&plan);
+            let prog = c.get_program().to_string_lossy().into_owned();
+            assert_eq!(prog, launcher(), "{plan:?}");
+            assert!(prog.starts_with('/') || drive_root(&prog).is_some(), "실행기가 절대 경로가 아님: {prog}");
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(launcher(), "/usr/bin/open");
+            let a = |p: OpenPlan| launch_command(&p).get_args().map(|x| x.to_string_lossy().into_owned()).collect::<Vec<_>>();
+            assert_eq!(a(OpenPlan::File("/h/a.pdf".into())), vec!["/h/a.pdf"]); // 맥 동작 불변(옛 open_path = open <파일>)
+            assert_eq!(a(OpenPlan::Reveal("/h/a.pdf".into())), vec!["-R", "/h/a.pdf"]); // 옛 reveal_path = open -R <항목>
+        }
+        assert_eq!(explorer_path_from(Some(r"C:\WINDOWS"), Some(r"D:\Win")), r"C:\WINDOWS\explorer.exe");
+        assert_eq!(explorer_path_from(None, Some(r"D:\Win\")), r"D:\Win\explorer.exe");
+        assert_eq!(explorer_path_from(Some(""), Some("evil")), r"C:\Windows\explorer.exe"); // 빈 값·상대 값 = 건너뜀
+        assert_eq!(explorer_path_from(None, None), r"C:\Windows\explorer.exe");
+        // 운영 코드 전체에서 Command::new 의 인자 = launcher() 하나뿐(맨 이름 문자열 0)
+        let src = include_str!("viewcore.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").expect("시험 경계")];
+        let code: String = prod.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        let news: Vec<&str> = code.match_indices("Command::new(").map(|(i, _)| &code[i..i + code[i..].find(')').unwrap() + 1]).collect();
+        assert_eq!(news, vec!["Command::new(launcher()"], "맨 이름 또는 다른 실행기: {news:?}");
+        for bare in ["\"open\"", "\"explorer\"", "\"explorer.exe\"", "\"xdg-open\""] {
+            assert!(!code.contains(bare), "맨 이름 {bare}");
+        }
+        let w = &code[code.find("mod windrive {").expect("windrive")..];
+        assert!(w.contains("fn GetWindowsDirectoryW(buf: *mut u16, size: u32) -> u32;"));
+        let l = &code[code.find("pub(crate) fn launcher()").expect("launcher")..];
+        let l = &l[..l.find("\n}\n").unwrap()];
+        assert!(l.contains("explorer_path_from(windrive::windows_dir().as_deref(), std::env::var(\"SystemRoot\").ok().as_deref())"), "윈 = GetWindowsDirectoryW → SystemRoot → C:\\Windows");
+    }
+
+    /// (codex 4R ②) 윈 셸 정션 폴더 — CLSID 이름 · desktop.ini CLSID= 판정(모든 기판 · 실제 파일) + open_plan 의 윈도 갈래가 열기·보기 둘 다 거절(소스 대조 · 윈 실기 0).
+    #[test]
+    fn windows_shell_junction_folders_are_refused() {
+        let g = "{208D2C60-3AEA-1069-A2D7-08002B30309D}";
+        assert!(is_clsid_name(&format!("자료.{g}")));
+        assert!(is_clsid_name(&format!("x.{}", g.to_ascii_lowercase())));
+        for n in ["자료", "a.pdf", "{208D2C60-3AEA-1069-A2D7-08002B30309D}", "x.{208D2C60-3AEA-1069-A2D7-08002B30309}", "x.{208D2C60_3AEA-1069-A2D7-08002B30309D}", "x.{208D2C60-3AEA-1069-A2D7-08002B30309D}.pdf"] {
+            assert!(!is_clsid_name(n), "{n}");
+        }
+        let base = std::env::temp_dir().join(format!("vc-jnc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let home = base.join("home");
+        let plain = home.join("교회").join("주보");
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::write(plain.join("a.pdf"), b"%PDF").unwrap();
+        let home_c = std::fs::canonicalize(&home).unwrap();
+        let canon = |p: &std::path::Path| std::fs::canonicalize(p).unwrap();
+        assert!(!shell_junction_on_path(&canon(&plain.join("a.pdf")), &home_c));
+        // CLSID 이름 폴더 = 그 자신 · 그 안 파일(조상) 둘 다
+        let j = home.join("교회").join(format!("네트워크.{g}"));
+        std::fs::create_dir_all(&j).unwrap();
+        std::fs::write(j.join("b.pdf"), b"%PDF").unwrap();
+        assert!(shell_junction_on_path(&canon(&j), &home_c));
+        assert!(shell_junction_on_path(&canon(&j.join("b.pdf")), &home_c));
+        // desktop.ini CLSID= (UTF-8 · UTF-16LE BOM · CLSID2 · 앞 공백·대소문자) = 거절 · 다른 줄만 = 통과
+        let cases: [(&str, Vec<u8>, bool); 5] = [
+            ("d1", b"[.ShellClassInfo]\r\nCLSID={208D2C60-3AEA-1069-A2D7-08002B30309D}\r\n".to_vec(), true),
+            ("d2", { let mut v = vec![0xFF, 0xFE]; v.extend("[.ShellClassInfo]\r\n  clsid2={0}\r\n".encode_utf16().flat_map(|u| u.to_le_bytes())); v }, true),
+            ("d3", b"[.ShellClassInfo]\r\nIconResource=x.ico,0\r\nLocalizedResourceName=@x\r\n".to_vec(), false),
+            ("d4", b"[.ShellClassInfo]\r\nCLSID ={0}\r\n".to_vec(), true),
+            ("d5", b"; CLSID mention in comment only\r\n".to_vec(), false),
+        ];
+        for (n, body, want) in cases {
+            let d = home.join("교회").join(n);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("desktop.ini"), body).unwrap();
+            std::fs::write(d.join("c.pdf"), b"%PDF").unwrap();
+            assert_eq!(desktop_ini_has_clsid(&d), want, "{n}");
+            assert_eq!(shell_junction_on_path(&canon(&d.join("c.pdf")), &home_c), want, "{n} 조상");
+        }
+        // 홈 자신·홈 밖 조상은 보지 않음(홈 아래만)
+        std::fs::write(home.join("desktop.ini"), b"CLSID={0}\r\n").unwrap();
+        assert!(!shell_junction_on_path(&canon(&plain.join("a.pdf")), &home_c));
+        // 맥 동작 불변: 이 기판(맥·리눅스)에서는 open_plan 이 정션 판정을 부르지 않는다
+        #[cfg(not(windows))]
+        assert!(matches!(open_plan(&j, false, &home), Ok(OpenPlan::Folder(_))));
+        let src = include_str!("viewcore.rs");
+        let code: String = src.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        let op = &code[code.find("pub(crate) fn open_plan(").expect("open_plan")..];
+        let op = &op[..op.find("\n}\n").unwrap()];
+        let at = op.find("if shell_junction_on_path(&target, &home_c) {\n            return Err(\"executable_confirm\".into());").expect("open_plan 이 정션을 거절 안 함");
+        assert!(op[..at].contains("#[cfg(windows)]\n    {"), "윈도 갈래");
+        assert!(at < op.find("if reveal {").unwrap(), "폴더 보기(reveal)보다 먼저 = 둘 다 거절");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// (codex 3R ④) 윈 매핑 네트워크 드라이브 — 드라이브 뿌리 뽑기(순수 · 모든 기판) + result_target 의 윈도 갈래가 GetDriveTypeW == DRIVE_REMOTE 로 거절하는지(소스 대조 · 윈 실기 0).
+    #[test]
+    fn windows_mapped_network_drive_is_refused_static() {
+        assert_eq!(drive_root(r"\\?\H:\Users\x\a.pdf").as_deref(), Some(r"H:\"));
+        assert_eq!(drive_root(r"C:\Users\x").as_deref(), Some(r"C:\"));
+        assert_eq!(drive_root("d:/x").as_deref(), Some(r"d:\"));
+        assert_eq!(drive_root(r"\\?\UNC\srv\share\a"), None);
+        assert_eq!(drive_root(r"\\srv\share\a"), None);
+        assert_eq!(drive_root("/Users/x/a.pdf"), None);
+        assert_eq!(drive_root("C:"), None);
+        let src = include_str!("viewcore.rs");
+        let code: String = src.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        let rt = &code[code.find("pub(crate) fn result_target(").expect("result_target")..];
+        let rt = &rt[..rt.find("\n}\n").expect("끝")];
+        let at = rt.find("windrive::is_remote_drive(&r)").expect("result_target 이 원격 드라이브를 안 봄");
+        assert!(rt[..at].trim_end().ends_with("if drive_root(&t.to_string_lossy()).is_some_and(|r|"), "검사 대상 = 정규 대상 t 의 드라이브 뿌리");
+        assert!(rt[..at].contains("#[cfg(windows)]\n    if drive_root("), "윈도 갈래");
+        assert!(rt[at..].starts_with("windrive::is_remote_drive(&r)) {\n        return Err(\"network_path\".into());"), "원격 = network_path 거절");
+        assert!(rt.find("windrive::is_remote_drive").unwrap() < rt.find("strip_prefix(&home_c)").unwrap(), "홈 가둠 전에 거절");
+        let w = &code[code.find("mod windrive {").expect("windrive")..];
+        let w = &w[..w.find("\n}\n").expect("끝")];
+        assert!(w.contains("pub(super) const DRIVE_REMOTE: u32 = 4;"));
+        assert!(w.contains("#[link(name = \"kernel32\")]") && w.contains("fn GetDriveTypeW(root: *const u16) -> u32;"));
+        assert!(w.contains("GetDriveTypeW(w.as_ptr()) == DRIVE_REMOTE"));
+        assert!(w.contains(".chain(std::iter::once(0))"), "NUL 끝");
+    }
 
     #[test]
     fn over_long_line_is_skipped_to_next_line_end_and_reported() {

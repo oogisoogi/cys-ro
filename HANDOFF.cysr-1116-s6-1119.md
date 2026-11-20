@@ -143,3 +143,27 @@
 - 원작자 파일 바뀐 줄(고침분) = DAEMON-6b.md §5(governance·handlers·state·main).
 - 남은 위험 = DAEMON-6b.md §5-5(주차·복원 큐엔 팀 정지 크레딧 없음 · 꼬리표 청소 비용 미실측 · m4 최선 노력 · 머리표만 붙인 폭주는 몫 밖 = 결정대로).
 - codex 1R = master 대기열 ④(범위 dea2e1853..새 머리 · 질문지 docs/1116-s6/codex-r1-prompt.md · 깨끗한 작업트리 `~/axdev/.wt/cys-1116-s6-codex` = 이 커밋으로 옮겨 둠).
+
+## 9. codex 1R REJECT 처분(master#010efa14 · 후임 좌석 worker-1116s6b · 11-20 07:0x~09:5x)
+
+- 근거 = codex 1R 원문 `master/reports/verify/codex-1120/s6-r1.md`(REJECT · blocking 1 · major 6) · master 처분 = 7건 전부 고침. 상세(항목·시험·뮤턴트·바뀐 원작자 줄·남은 위험) = `docs/1116-s6/DAEMON-6b.md` §6.
+- 커밋: `c5a1e84db`(7건 고침 + 반례 15건) · `57ea1d225`(M1 writer 탐침 = 장부 말단 락만) · 이 문서 커밋.
+
+| # | 처분 | 시험(이름) |
+|---|---|---|
+| B1 | 정지 권한 = 지금 해석된 master 좌석 또는 운영자 능력값(`operator_token` · CLI `--operator` 명시 때만 실음) · 조상 추론 사람 판정 폐기 · 정지 집합 상한 64 · 재시작 파일 읽기 상한 64KiB·64 이름 | `cb1_detached_worker_child_cannot_pause_a_team`(실제 고아 프로세스 · 부모 1 확인) · `cb1_paused_team_set_is_bounded` · `cb1_restart_pause_file_read_is_bounded` |
+| M1 | 임계영역 인계 전 재확인(원장 선기록 앞) + writer 탐침 팀 축 + 정지 전환 때 예약 취소(확정분 = `queue.inject_uncancellable {reason:"team_pause"}`) | `cm1_pause_after_pre_check_freezes_destination_seat` · `cm1_pause_transition_cancels_pending_reservations` · `cm1_claimed_reservation_is_reported_uncancellable` · `cm1_writer_probe_sees_team_pause` |
+| M2 | 꼬리표 = 넣은 그 `pending_queue` 잠금 안(두 경로) | `cm2_tick_in_enqueue_window_sees_the_tag` · `cm2_concurrent_enqueue_cannot_exceed_the_share` |
+| M3 | 판정에서 group 제거(만든 좌석이 갖는 cwd 팀 그대로) · `t8` 단언 바꿈 | `cm3_group_param_does_not_change_the_admission_team` · `t8_team_worker_limit_denies_only_that_team` |
+| M4 | 팀별 생성 문(셈~좌석 표 삽입 · drop 반납 · 60초 상한) | `cm4_concurrent_same_team_creates_respect_the_cap` |
+| M5 | 보존소 팀 크레딧(꼬리표·목적지) · 목적지 팀 기록 · 역할 주차 크레딧(`parked_alive` 한 곳) | `cm5_restored_row_tagged_by_paused_team_keeps_ttl_credit` · `cm5_restored_row_from_paused_team_seat_keeps_ttl_credit` · `cm5_parked_entry_of_paused_team_gets_parking_credit` |
+| M6 | 읽을 때 실제 청소 + 팀 키 상한 256 | `cm6_report_ring_prunes_and_bounds_team_keys` |
+
+- 뮤턴트 14종(P1M 1빌드) = 전부 겨냥 시험 붉음 · b1 만 픽스처 정지 호출까지 붉혀 10건(같은 원인 · DAEMON-6b §6-2 주).
+- 시험 숫자(격리 `env -i HOME=/tmp/s6bh TMPDIR=/tmp/s6bt` · `CARGO_BUILD_JOBS=4` · `--test-threads=4`):
+  - `cargo test --bin cysd team` **62/0 → 77/0**(새 15).
+  - `cargo test --bin cysd` 전체 **3375 · 6 · 17**(08:18~08:50 · 부하 89~132) → 6건 = `seat_proc::…seatkeep_stalled_consumer_does_not_block_close`·`…_input_ack`(사유 전문 `handshake_timeout` = §3 과 같음) · `send_settle_tests::{fv1_paused_daemon_gives_no_settle_proof_but_keeps_hold, settle_hold_denies_text_while_submit_cr_inflight_then_admits, settle_proven_denial_events_are_rate_limited_per_sender}` · `trash::tests::the_frontier_release_rate_stays_within_the_declared_envelope`. 단독 재실행(부하 37~42): seatkeep 2/0 · trash 1/0 · `settle_hold…` 단독 2회 초록(83건 묶음 1회 붉음) → 부하 15~33 에서 send_settle 83건 묶음 **기준판 90b2160c7 = 83/0 · 이 판 = 83/0**. 판정 = 부하 흔들림(이 처분은 직접 보내기·seatkeep·trash 경로 무접촉) — 숫자는 붉음 그대로 적는다.
+  - `cargo test --bin cys` 전체 **796 · 0 · 2**(스택 예산 시험 포함 · `--operator` 필드 1 추가 뒤).
+- 바뀐 동작(사람 쪽): 좌석 밖 터미널에서 팀 정지·재개 = `cys seat-group-pause <팀> --operator`(종전 플래그 없이 통과하던 것이 이제 `forbidden` · 오류문이 안내).
+- 📌 덧붙임(실행 안 함): ① 기존 전체 상한 `CYS_MAX_ACTIVE_WORKERS` 의 셈~삽입 경합(원작자 코드 · M4 와 같은 꼴). ② 역할 주차 TTL 은 데몬 정지 크레딧을 안 받고 이제 팀 정지 크레딧만 받는다(비대칭 · 브리프 「역할 주차 같은 처리」 그대로 따름).
+- codex 2R = master 대기열(이 좌석 codex 호출 0).

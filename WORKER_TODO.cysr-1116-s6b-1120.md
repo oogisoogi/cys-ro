@@ -1,11 +1,11 @@
 # worker-1116s6b TODO — TICKET=cysr-1116-s6-1119 (조각 6b 후임 · codex 1R REJECT 처분 7건)
-- [ ] B1 group_pause 권한(master 좌석 또는 --operator 능력값) + 정지 팀 상한 + 파일 상한 + setsid 반례 시험
-- [ ] M1 쓰기 직전 팀 정지 재확인(탐침·임계영역) + 정지 전환 때 예약 취소 + 반례 시험
-- [ ] M2 꼬리표 = 같은 pending_queue 잠금 안 공개(두 경로) + 몫 31 반례 시험
-- [ ] M3 surface.create 판정에서 group 제거(cwd = create_surface 가 쓰는 값) + 반례 시험
-- [ ] M4 팀별 생성 문(판정·삽입 원자) + 동시 생성 반례 시험
-- [ ] M5 복원 보존소·역할 주차 팀 정지 크레딧(꼬리표·목적지 팀) + 반례 시험
-- [ ] M6 보고 링 = 만료분·빈 키 실제 삭제 + 팀 키 상한 + 시험
-- [ ] 뮤턴트(P1M 1빌드) 전 항목
-- [ ] cargo cysd team · cysd 전체 · cys 전체(CLI 바뀜)
-- [ ] DAEMON-6b §6 · HANDOFF §9 · 커밋 · 【확인요청】
+- [x] B1 group_pause 권한(master 좌석 또는 --operator 능력값) + 정지 팀 상한 + 파일 상한 + setsid 반례 시험
+- [x] M1 쓰기 직전 팀 정지 재확인(탐침·임계영역) + 정지 전환 때 예약 취소 + 반례 시험
+- [x] M2 꼬리표 = 같은 pending_queue 잠금 안 공개(두 경로) + 몫 31 반례 시험
+- [x] M3 surface.create 판정에서 group 제거(cwd = create_surface 가 쓰는 값) + 반례 시험
+- [x] M4 팀별 생성 문(판정·삽입 원자) + 동시 생성 반례 시험
+- [x] M5 복원 보존소·역할 주차 팀 정지 크레딧(꼬리표·목적지 팀) + 반례 시험
+- [x] M6 보고 링 = 만료분·빈 키 실제 삭제 + 팀 키 상한 + 시험
+- [x] 뮤턴트(P1M 1빌드) 전 항목
+- [x] cargo cysd team · cysd 전체 · cys 전체(CLI 바뀜)
+- [x] DAEMON-6b §6 · HANDOFF §9 · 커밋 · 【확인요청】

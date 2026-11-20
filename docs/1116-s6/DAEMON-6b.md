@@ -142,3 +142,73 @@
 | `cargo test --bin cysd team` | 47 / 0(검증 V 시험 미편입) | **62 / 0** | + V1~V8b 11 · 새 V8c·V9·V10 3 · 새 단위 1 |
 | `cargo test --bin cysd`(전체) | 3348 · 3(seatkeep `handshake_timeout` 흔들림 · 단독 초록) · 17 ign | **3366 · 0 · 17 ign**(960초 · 끝 부하 18.7) | + 새 시험 15 · 이번엔 seatkeep 3건도 초록 |
 | `cargo test --bin cys` | 796 · 0 · 2 | 안 돌림 | cys.rs 무접촉 |
+
+## 6. codex 1R REJECT 처분(master#010efa14 · 후임 좌석 worker-1116s6b)
+
+근거 = codex 1R 원문 `master/reports/verify/codex-1120/s6-r1.md`(blocking 1 · major 6). master 처분 = 7건 전부 고침. 반례 시험 = 새 모듈 `src/bin/cysd/team6b_codex_tests.rs`(15건 · main.rs 끝 `mod team6b_codex_tests;`). 동시성 반례는 잠·장벽 대신 **시험 이음매**(`TeamBook.{enqueue,admit,deliver}_seam` · `cfg!(test)` 일 때만 부름 · 운영 경로 비용 0)로 순서를 고정했다 — 고치기 전 꼴(뮤턴트)에서 결정론으로 붉고 고친 꼴에서 결정론으로 초록.
+
+### 6-1. 항목별
+
+| # | 결함(codex) | 바꾼 것 | 시험 |
+|---|---|---|---|
+| B1 권한 | setsid·이중 fork 로 떨어진 워커 자식이 「조상 끝 = 좌석 밖 사람」 판정으로 남의 팀을 멈춤 · 정지 이름 집합·파일 무한 | 새 게이트 `handlers::group_pause_caller_ok`(순수 코어 `group_pause_verdict`): ① 호출 좌석이 해석되면 **지금 역할 = master** 만(워커 좌석 + 토큰 = 거절) ② 좌석이 안 잡히면 **운영자 능력값** `operator_token`(데몬 발급 operator.token) 일치만 · 조상 추론으로 사람 판정 0. CLI `cys seat-group-pause|resume <팀> --operator`(명시 플래그일 때만 토큰을 읽어 실음 · `feed reply --operator` D24ⓐ 와 같은 규칙 · 자동 첨부 0). 정지 집합 상한 `PAUSED_TEAMS_MAX = 64`(넘는 **새** 이름 = `team_pause_limit` · 재개·이미 정지된 이름은 받음) → 파일도 그 집합만 씀. 재시작 때 읽는 파일 상한 64 KiB(넘으면 이름을 읽지 않고 `team.pause_lost {list_unreadable:true}` 1건 + 지움) · 이름 수 64 까지 | `cb1_detached_worker_child_cannot_pause_a_team`(실제 고아 프로세스 — 좌석 명령 `(sleep 37 & echo $! > f); exec sleep 30` · 부모 = 1 확인 → 거절 · 같은 고아 + 토큰 = 통과(경계 기록) · 워커 좌석 + 토큰 = 거절 · 틀린 토큰·호출자 불명 = 거절 · master 좌석 = 통과) · `cb1_paused_team_set_is_bounded` · `cb1_restart_pause_file_read_is_bounded` |
+| M1 쓰기 직전 | 배달이 `team_pre_delivery` 를 지난 뒤 정지가 서면 인계·writer 가 시스템·건강 정지만 다시 봐서 정지 응답 뒤 배달 · 정지 전환이 대기 예약을 안 끊음 | ① 임계영역 안 **인계 전 재확인** `team::delivery_team_paused(목적지 좌석 팀, 실린 항목 id)` — 원장 선기록·보류 표식 **앞**(부작용 0) ② writer 안전 탐침에 팀 정지 축 `team::with_team_pause_probe`(기존 탐침이 막으면 그대로 · 데몬 소멸·패닉 = 막음 · 장부 말단 락만 · 목적지 팀은 인계 때 정한 값) ③ 정지 **전환**(`surface.group_pause` paused 쪽 · 바뀌었을 때) `team::on_team_paused` = 좌석마다 같은 `pending_queue` 잠금 아래서 그 팀에 걸린 결판 대기 예약 취소(목적지 좌석 = 그 팀 ∨ 실린 항목 꼬리표 = 그 팀) · 이미 writer 가 확정한 것은 사건 `queue.inject_uncancellable {reason:"team_pause", team, entries}`(건강 정지와 같은 사건). 강제 배달(`forced`) = 팀 판정 밖 그대로 | `cm1_pause_after_pre_check_freezes_destination_seat`(이음매로 판정 뒤 정지 → 배달 0 · `queue.inject_aborted` 0 = writer 까지 안 감) · `cm1_pause_transition_cancels_pending_reservations`(정지 팀 좌석·정지 팀 꼬리표 실은 마스터 예약 = 취소 · 다른 팀 = 그대로) · `cm1_claimed_reservation_is_reported_uncancellable` · `cm1_writer_probe_sees_team_pause` |
+| M2 꼬리표 공개 | 큐 잠금을 놓은 뒤 꼬리표를 달아 그 창에 배달 틱이 꼬리표 없는 머리를 보고 · 동시 넣기가 29 를 세어 31 | 꼬리표 = **넣은 그 `pending_queue` 잠금 안**(push_back 직후 `team::tag_entry`) — `enqueue_bound_body` · `surface.send_text queued` 두 경로. 보고 시각(`note_enqueued`)만 잠금 밖 | `cm2_tick_in_enqueue_window_sees_the_tag`(창 안 틱 = 배달 0) · `cm2_concurrent_enqueue_cannot_exceed_the_share`(29 + 창 안 끼워 넣기 = 둘째 `queue_full_team` · 큐 30) |
+| M3 group 인자 | 판정은 `group` 으로 세고 만든 좌석은 cwd 팀 → 상한 우회·거짓 거절 | 판정에서 group 제거 — `team::create_team(params)` = `create_surface_with_env` 가 저장할 cwd(파라미터 · 없으면 홈 · 홈도 없으면 ".") 그대로의 폴더 이름(만든 좌석 `Surface.group` 은 늘 None 으로 시작 · state.rs). `t8` 의 「group 이 폴더보다 먼저」 단언은 이 결정으로 바꿈(거절 사유 팀 = cwd 폴더) | `cm3_group_param_does_not_change_the_admission_team`(cwd=A(꽉 참)+group=B = 거절 · cwd=C+group=B(꽉 참) = 통과 · 만든 좌석 팀 = teamC) · `t8`(바꿈) |
+| M4 원자화 | 셈과 삽입 사이 경합 → 상한 1 에 둘 | **팀별 생성 문** `TeamBook::admit`(Condvar · 같은 팀만 줄 · 다른 팀은 안 막음 · 대기 상한 `ADMIT_WAIT_SECS = 60` → `team_worker_admission_busy`) — `team_worker_gate` 가 문을 잡은 채 세고 토큰(`AdmitToken`)을 돌려주면 `surface.create` 갈래가 좌석 표 삽입(`create_surface_with_env` 반환) 뒤 갈래 끝까지 쥐었다 drop(성공·실패·뒤 게이트 거절 모두 반납). 상한 0(기본) = 문 없음 · 종전 바이트 | `cm4_concurrent_same_team_creates_respect_the_cap`(두 스레드 · 첫째가 센 직후 이음매에서 둘째가 닿기를 1.5초까지 기다림 → 고친 꼴 = 둘째가 문에서 기다려 1 을 세고 거절 · 하나만 생성) |
+| M5 보존소·주차 | 마스터 부재로 보존소에 간 정지 팀 항목이 6시간 뒤 만료 · 주차·복원 길 무처리 | ① `restored_queue_lifecycle_pass` = 활성 큐와 같은 식(`delta.min(alive_for)` · 데몬 정지가 준 틱은 겹쳐 안 줌)으로 팀 정지 크레딧 — 행의 항목 id 가 장부에서 정지 팀 **꼬리표**이거나 정지 팀 **목적지** ② 목적지 팀 기록 `TeamBook::note_dest` = 정지 전환 순간(`on_team_paused` — 그 팀 좌석 큐 항목 전부) + 큐 틱(정지 팀 좌석 큐 · 그 뒤 들어온 것 · ≤1틱) — 좌석이 죽어 항목이 옮겨져도 id 로 따라감 ③ 역할 주차 큐 = 틱마다 `team::credit_parked`(정지 팀에 묶인 항목에 주차 중 크레딧 적립) · 주차 TTL 판정 3곳(`drain_expired_parked_locked` · `inherit_parked_queue`)을 `team::parked_alive` 하나로(`now − enqueued_at − 주차 중 팀 크레딧 < 600`) — 크레딧 0 이면 종전 식 그대로. 장부 칸 = 꼬리표·목적지·주차 크레딧 한 칸(항목 id) · 청소 = 종전 2회 규칙 | `cm5_restored_row_tagged_by_paused_team_keeps_ttl_credit`(정지 팀 행 생존 · 대조 = 다른 팀 행 만료) · `cm5_restored_row_from_paused_team_seat_keeps_ttl_credit` · `cm5_parked_entry_of_paused_team_gets_parking_credit`(700초 된 주차 항목 · 정지 300초 → 정지 팀 = 생존 · 대조 = 만기) |
+| M6 보고 링 | `reports()` 가 사본만 걸러 버린 팀이 영원히 남음 | `reports()` = 가변 잠금으로 만료 시각·빈 팀 키를 **실제로** 지움 · 팀 키 상한 `REPORT_TEAMS_MAX = 256`(새 키가 상한이면 먼저 전체 청소 · 그래도 차면 마지막 보고가 가장 오래된 팀부터 버림) | `cm6_report_ring_prunes_and_bounds_team_keys` |
+
+### 6-2. 뮤턴트(환경값 분기 1빌드 · `P1M=<이름>` · `cargo test --bin cysd team` 77건 · 끝나면 `git checkout` · `grep P1M` 0)
+
+| 뮤턴트 | 끄는 것 | 붉어진 시험(이름까지) |
+|---|---|---|
+| 없음 | — | 77 / 0 |
+| b1 | 새 게이트 → 옛 `ui_command_caller_ok` | `cb1_detached_worker_child_cannot_pause_a_team` + 9건(아래 주) |
+| b1cap | 정지 집합 상한 | `cb1_paused_team_set_is_bounded` |
+| b1file | 파일 읽기 상한(크기·이름 수) | `cb1_restart_pause_file_read_is_bounded` |
+| m1lock | 임계영역 인계 전 재확인 | `cm1_pause_after_pre_check_freezes_destination_seat` |
+| m1cancel | 정지 전환 처리(`on_team_paused`) | `cm1_pause_transition_cancels_pending_reservations` · `cm1_claimed_reservation_is_reported_uncancellable` · `cm5_restored_row_from_paused_team_seat_keeps_ttl_credit`(전환 때 목적지 기록도 이 함수) |
+| m1probe | writer 탐침 팀 축 | `cm1_writer_probe_sees_team_pause` |
+| m2 | 꼬리표를 잠금 밖(이음매 뒤)으로 = 옛 순서 | `cm2_tick_in_enqueue_window_sees_the_tag` · `cm2_concurrent_enqueue_cannot_exceed_the_share` |
+| m3 | 판정에 group 다시 씀 | `cm3_group_param_does_not_change_the_admission_team` · `team6b_tests::t8_team_worker_limit_denies_only_that_team` |
+| m4 | 팀 생성 문 없음 | `cm4_concurrent_same_team_creates_respect_the_cap` |
+| m5rest | 보존소 팀 크레딧 | `cm5_restored_row_tagged_by_paused_team_keeps_ttl_credit` · `cm5_restored_row_from_paused_team_seat_keeps_ttl_credit` |
+| m5dest | 목적지 팀 기록 | `cm5_restored_row_from_paused_team_seat_keeps_ttl_credit` |
+| m5park | 주차 크레딧 적립 | `cm5_parked_entry_of_paused_team_gets_parking_credit` |
+| m6prune | 읽을 때 청소(옛 사본 거르기) | `cm6_report_ring_prunes_and_bounds_team_keys` |
+| m6cap | 팀 키 상한 | `cm6_report_ring_prunes_and_bounds_team_keys` |
+
+- 주(b1 의 붉음 10건): 겨냥 시험은 `cb1_detached…`. 나머지 9건(cb1 상한 · cm1 4 · cm2 tick · cm5 3)은 시험 픽스처가 정지를 **합성 pid 를 master 좌석에 묶어** 부르는데, 옛 게이트는 그 pid 가 살아 있는 프로세스인지(`peer_start_time`)부터 보므로 정지 호출 자체가 `forbidden` 이 된 것 — 엉뚱한 대상이 아니라 「옛 게이트로는 픽스처 정지가 안 걸림」의 같은 원인. 그 밖 뮤턴트 13종 = 겨냥 시험만 붉음.
+- 결과 원문 = `/tmp/s6bo/mut-summary.txt` · `/tmp/s6bo/mut-<이름>.txt`(이 좌석 · 07:28~07:51 KST).
+
+### 6-3. 바뀐 원작자 파일 줄(이 처분 · `git diff -U0 90b2160c7..57ea1d225` 새 판 줄)
+
+| 파일 | 줄 | 무엇 |
+|---|---|---|
+| src/bin/cysd/governance.rs | 6333 | 주차 스윕 `drain_expired_parked_locked(…, &daemon.teams)`(M5) |
+| 〃 | 13148~13149 | `team_pre_delivery` 서명 — 목적지 팀을 받음(M1) |
+| 〃 | 13216~13225 | `deliver_head_locked` — 목적지 팀 1회 계산 · 시험 이음매 호출(M1) |
+| 〃 | 13374~13379 | 임계영역 인계 전 팀 정지 재확인(원장 선기록 앞 · M1) |
+| 〃 | 13479~13481 | writer 안전 탐침에 팀 정지 축(`with_team_pause_probe` · M1) |
+| 〃 | 14337~14342 · 14378~14382 | `queue_expiry_pass` — 정지 팀 좌석 판정 `seat_team` · 목적지 팀 기록(M5) |
+| 〃 | 14545~14546 | `queue_expiry_pass` 끝 주차 크레딧 `credit_parked`(M5) |
+| 〃 | 14574~14637(5곳) | `restored_queue_lifecycle_pass` 팀 정지 크레딧(M5) |
+| src/bin/cysd/handlers.rs | 540~574 | 새 게이트 `group_pause_caller_ok` · 순수 코어 `group_pause_verdict`(B1) |
+| 〃 | 1139~1140 | `inherit_parked_queue` 주차 TTL = `team::parked_alive`(M5) |
+| 〃 | 4857~4860 · 4872 | `enqueue_bound_body` — 꼬리표 잠금 안 · 보고 시각 잠금 밖(M2) |
+| 〃 | 7510~7519 | `surface.create` — 팀 생성 문 토큰을 갈래 끝까지 쥠(M3·M4) |
+| 〃 | 8065~8068 · 8072 | `surface.send_text queued` — 꼬리표 잠금 안(M2) |
+| 〃 | 9612~9624 | `surface.group_pause` — 새 게이트 · 상한 거절 · 정지 전환 처리(B1·M1) |
+| src/bin/cysd/state.rs | 799 · 841 · 851~852 | `drain_expired_parked_locked` 서명(장부) · TTL = `team::parked_alive`(M5) |
+| src/bin/cysd/main.rs | 8213~8216 | `mod team6b_codex_tests;`(파일 끝 규약) |
+| src/bin/cys.rs | 3422~3424 · 3447 · 3725~3733 · 6689~6690 | `SeatGroupPauseArgs.operator`(`--operator`) · 도움말 · `seat_group_pause` 토큰 실기 · 분기(B1) |
+
+- 새 파일(원작자 아님): `team6b_codex_tests.rs`. `team.rs` 는 이 갈래 파일(장부 칸 통합 `Slot{tag,dest,parked_credit,misses}` · 상한 상수 · 생성 문 · 이음매 · 전환·탐침·주차 도우미).
+
+### 6-4. 정직한 남은 위험
+- B1: 같은 UID 로 0600 `operator.token` 을 **일부러** 읽어 싣는 프로세스는 막지 못한다(operator_token 등급 전체의 경계 · `handlers::caller_is_owner` doc). 시험이 그 경계를 단언으로 기록한다. 좌석 밖 사람이 CLI 로 정지하려면 이제 `--operator` 가 필요하다(동작 변경 · 오류문이 안내).
+- M1: 정지 전환 때 writer 가 이미 쓰기로 확정한 배달 1건은 나간다(건강 정지·system.pause 와 같은 잔여 · 사건으로 알림). 탐침의 목적지 팀은 인계 때 값 — 인계~첫 바이트 사이에 좌석을 다른 팀으로 옮긴 경우는 옛 팀 기준.
+- M4: 같은 팀 생성은 줄을 선다(상한 > 0 일 때만 · 기본 0 = 문 없음). 앞 생성이 60초 넘게 안 끝나면 다음은 `team_worker_admission_busy`. 기존 전체 상한(`CYS_MAX_ACTIVE_WORKERS`)의 같은 경합은 원작자 코드 그대로(이 처분 범위 밖 · 📌).
+- M5: 목적지 팀 기록은 정지 **중**에만 생긴다 — 좌석이 먼저 죽어 주차·복원된 **뒤에** 정지를 걸면 그 항목은 목적지 팀을 모른다(정지 대상 좌석이 이미 없음 · 크레딧 없음). 정지 전환 뒤 새로 들어온 항목은 큐 틱(≤5초) 뒤에 기록. 주차 TTL 은 종전처럼 **데몬 정지** 크레딧은 받지 않는다(원작자 규칙) — 팀 정지만 받으므로 두 정지가 주차 큐에서 비대칭(📌).
+- M6: 팀 키 상한을 넘으면 가장 오래 조용한 팀의 7일 보고 시각이 버려진다(team.stats 가 그 팀을 덜 셈 = 덜 묻는 쪽).

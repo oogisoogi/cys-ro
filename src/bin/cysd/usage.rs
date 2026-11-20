@@ -1491,7 +1491,10 @@ fn collect_for(
     tails: &mut HashMap<u64, TailState>,
     attempts: &mut HashMap<u64, f64>,
 ) {
-    let registered = s.registered_transcript.lock().unwrap().clone();
+    // ★skt1(codex 1R #3): 등록 경로(`usage.register`)를 쓰는 에이전트는 claude 뿐이다(SessionStart 훅 = 팩 session-start.sh 하나) —
+    //   그 밖 에이전트(codex …) 좌석의 등록은 좌석 밖·도구 셸이 만든 것뿐이라 세션 파일 결정·대화 핀(topology 영속)의 입력으로 쓰지 않는다
+    //   (lsof·휴리스틱 발견만). 종전 = 좌석 밖 가짜 등록 T 가 codex 좌석의 핀을 T 로 바꿔 영속했다.
+    let registered = s.registered_transcript.lock().unwrap().clone().filter(|_| agent == "claude");
     let now = now_epoch();
 
     // T5 Phase 2-A 우선순위 병합 — claude는 statusline 보고(rate limit + 서버 진실 ctx)가
@@ -4038,6 +4041,47 @@ mod tests {
     /// 그 핀이 topology `session_id` 로 영속되고(`governance.rs persist_topology`) 재시작 복원이
     /// `--resume <옛 id>` 로 **순환 전 대화**를 되살린다. 기대 = 등록(소유자 명시) 경로가 바뀌면
     /// 핀도 그 세션으로 전진한다. 휴리스틱 발견은 종전 1회 핀 그대로(동일 cwd 오핀 방어 유지).
+    /// skt1(codex 1R #3) — 등록 경로가 없는 에이전트(codex) 좌석의 `usage.register`(좌석 밖·도구 셸이 만든 것뿐)는 세션 파일 결정·대화 핀의
+    /// 입력이 아니다 — 실제 rollout T 를 가리켜도 핀(topology 영속 = 복원 대상)이 T 가 되지 않는다. 대조 = 같은 등록이 claude 좌석에선 핀을 잡는다.
+    #[test]
+    fn skt1_codex_seat_registration_never_pins_the_conversation() {
+        use std::sync::atomic::AtomicU64;
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("cys-skt1-cx-{}-{}", std::process::id(), n));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sessions")).unwrap();
+        let daemon = crate::state::Daemon::new(dir.join("cysd.sock"));
+        let mk = |role: &str| {
+            let s = crate::pty_test_support::retry_on_pty_exhaustion("worker seat", || {
+                daemon.create_surface(None, Some("sleep 30".into()), None, Some(role.into()), 24, 80)
+            })
+            .expect("create surface");
+            daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+            s
+        };
+        let t = dir.join("sessions/rollout-2026-11-20T07-00-00-7e7e0000-0000-4000-8000-00000000000a.jsonl");
+        std::fs::write(&t, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"7e7e0000-0000-4000-8000-00000000000a\"}}\n").unwrap();
+        let cx = mk("worker");
+        *cx.agent_meta.lock().unwrap() = Some(("codex".into(), "codex".into()));
+        *cx.registered_transcript.lock().unwrap() = Some(t.to_string_lossy().into_owned());
+        let (mut tails, mut attempts) = (std::collections::HashMap::new(), std::collections::HashMap::new());
+        super::collect_for(&daemon, &cx, "codex", "codex", &mut tails, &mut attempts);
+        let codex_pin = cx.agent_session_id.lock().unwrap().clone();
+        // 대조: claude 좌석의 등록(SessionStart 훅 경로) = 핀을 잡는다(이게 안 서면 위 판정은 대상 미접촉).
+        let cl = mk("worker-2");
+        *cl.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        let c = dir.join("aaaaaaaa-0000-4000-8000-000000000001.jsonl");
+        std::fs::write(&c, "").unwrap();
+        *cl.registered_transcript.lock().unwrap() = Some(c.to_string_lossy().into_owned());
+        super::collect_for(&daemon, &cl, "claude", "claude", &mut tails, &mut attempts);
+        let claude_pin = cl.agent_session_id.lock().unwrap().clone();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(claude_pin.as_deref(), Some("aaaaaaaa-0000-4000-8000-000000000001"), "대조: claude 등록 핀이 안 잡혔다 — 측정 실패");
+        // (발견 경로 = 이 좌석엔 codex 프로세스가 없어 lsof 0 · 휴리스틱은 HOME 의 ~/.codex 를 볼 수 있어 「None」 대신 「T 아님」을 단언)
+        assert_ne!(codex_pin.as_deref(), Some("7e7e0000-0000-4000-8000-00000000000a"), "codex 좌석의 등록(좌석 밖 가짜 가능)이 대화 핀을 바꿨다(codex 1R #3)");
+    }
+
     #[test]
     fn dbg_d2_registered_transcript_change_moves_resume_pin() {
         use std::sync::atomic::AtomicU64;

@@ -2504,6 +2504,23 @@ def log_restore_output(r):
             log("cys restore %s| %s" % (name, line))
 
 
+_LEASE_REFUSAL_RE = re.compile(
+    r"^· (\S+): 대화 (\S+) (?:— (.+?) — 띄우지 않음|작성자 생존 판정 불가\((.+?)\) — 띄우지 않음)", re.M)
+
+
+def _lease_refusals(out):
+    """★seatkeep-t1: `cys restore` 출력에서 대화 임대가 띄우지 않은 역할 → [(역할, 사유)].
+    사유 접두 = writer_live(rc 92 · 같은 대화를 살아 있는 다른 프로세스가 씀) · liveness_unknown(rc 93 · 판정 불가)."""
+    found = []
+    for m in _LEASE_REFUSAL_RE.finditer(out or ""):
+        role, sid8, who, why = m.group(1), m.group(2), m.group(3), m.group(4)
+        if who is not None:
+            found.append((role, "writer_live:%s · %s" % (sid8, who)))
+        else:
+            found.append((role, "liveness_unknown:%s · %s" % (sid8, why)))
+    return found
+
+
 def spawn_production(socket, pending_roles, include_master=False, cwd=None, units=None, hang_suspected=False):
     """실 프리미티브 재사용: cys restore 로 죽은 역할 일괄 재기동(세션핀 resume 경로).
     ★R3-2: `units` = 이 `cys restore` 가 치를 기동 단위 수(호출부가 restore_workload_units 로 센다 · None 이면
@@ -2548,7 +2565,9 @@ def spawn_production(socket, pending_roles, include_master=False, cwd=None, unit
     return {"backend": "production(cys restore)", "rc": r.returncode,
             "timeout_s": budget, "units": n, "stall_s": stall, "stalled": stalled,
             "out": (r.stdout or r.stderr or "").strip()[:800],
-            "fresh_observed": sorted(cli_fresh_roles(streams))}
+            "fresh_observed": sorted(cli_fresh_roles(streams)),
+            # ★seatkeep-t1(codex 1R M1): 대화 임대 거절 줄도 `out` 800자 절단 **전** 전량에서 뽑는다.
+            "lease_refused": _lease_refusals(streams)}
 
 
 def master_seat_cwd_from_status(obj):
@@ -3649,6 +3668,7 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
     # ★cysr-102 A3: 직전 verify 가 ps 축으로 「에이전트 부재」를 본 역할은 resume(cys restore) 재시도를
     #   반복하지 않고 곧장 fresh 재기동 경로로 보낸다(세션핀 resume 이 같은 죽은 좌석을 다시 가리키므로).
     forced_fresh = [r for r in need if (j["roles"].get(r) or {}).get("force_fresh")]
+    session_lease_held = {}  # ★seatkeep-t1: 역할 → 대화 임대 거절 사유(재시도·fresh 폴백 제외)
     need = [r for r in need if r not in forced_fresh]
     attempt = 0
     # ★R3-2: `cys restore` 상한의 재료 — 회차마다 직전 생존 관측으로 단위 수를 다시 센다(재시도 회차는 침식된
@@ -3717,6 +3737,10 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
             #   ⓒ 좌석이 빈 셸(seat=="empty")이 아닌 좌석만 센다(ⓒ = 905 A2 의 빈 좌석 제외 조건 흡수 · 이 줄 단독 소유 = 906).
             #   agent_alive 는 데몬 관측 주기라 막 뜬 좌석이 잠깐 None 일 수 있다 — ⓐ를 통과한 역할만 짧게 재관측한다.
             _failed_now = set(re.findall(r"· (\S+): 기동 실패", res.get("out") or ""))
+            # ★seatkeep-t1: `cys restore` 가 대화 임대로 띄우지 않은 역할(작성자 살아 있음 rc92 · 판정 불가 rc93) —
+            #   재시도·새 대화 폴백 대상이 아니다(살아 있는 작성자 옆에 새 대화를 세우면 같은 역할 둘 · 판정 불가는 사람 단계).
+            for _r, _why in (res.get("lease_refused") if "lease_refused" in res else _lease_refusals(res.get("out") or "")):
+                session_lease_held[_r] = _why
             for _r in [r for r in need if r in agy_policy_skipped_in(res.get("out"))]:
                 _agy_policy_consume(_r, "cys restore 출력 「건너뜀(%s)」(attempt %d)" % (AGY_POLICY_CODE, attempt))
             need = [r for r in need if r not in _agy_skipped]
@@ -3733,6 +3757,18 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
             _units_view = live2
             still = []
             for role in need:
+                # ★skt1(독립 검증 V2): 「작성자 살아 있음」(92) 인데 그 역할 좌석이 이미 섰다 = 겹친 다른 복원 경로(콜드부트 사이드카 등)가
+                #   그 대화로 살렸다 — 보류(INCOMPLETE)로 세지 않고 아래 생존 판정으로 간다. 판정 불가(93)는 그대로 보류(사람 단계).
+                if (role in session_lease_held and session_lease_held[role].startswith("writer_live")
+                        and role not in _failed_now and any(_revived_seat(s) for s in live2.get(role, []))):
+                    jevent(j, role, "spawn", "lease_live_elsewhere", "대화 임대 거절(작성자 살아 있음)이나 그 역할 좌석이 섰음 — 다른 경로가 복원")
+                    session_lease_held.pop(role)
+                if role in session_lease_held:
+                    j["roles"].setdefault(role, {"stages": {}})["restore_held"] = session_lease_held[role]
+                    mark_stage(j, role, "spawn", False, "복원 보류(대화 임대: %s) — 재시도·새 대화 폴백 안 함" % session_lease_held[role])
+                    jevent(j, role, "spawn", "lease_held", "대화 임대 거절 — %s" % session_lease_held[role])
+                    log("★seatkeep-t1 %s: 대화 임대 거절(%s) → 복원 보류" % (role, session_lease_held[role]))
+                    continue
                 alive = [] if role in _failed_now else [s for s in live2.get(role, []) if _revived_seat(s)]
                 if alive:
                     ref = alive[0]["surface"]
@@ -3774,7 +3810,7 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
     #    roster 를 막지 않고, 세션핀을 버리고 fresh(무 resume) 재기동으로 '강등'해 부활을 마무리한다.
     #    fresh 는 원 세션 보존이 아니라 새 세션 + 디렉티브/원장 재주입이다(정직: resumed→fresh 전환을 저널에 명시).
     #    fresh 는 최후수단 — resume 성공/재시도 회복은 이 지점에 오지 않는다.
-    need = need + [r for r in forced_fresh if r not in need]
+    need = need + [r for r in forced_fresh if r not in need and r not in session_lease_held]
 
     def _hold_profile_refused(roles):
         """★dbg-119 ①(master#7a176ca4): Rust `cys restore` 가 계정 프로필 거부(unobserved · seat_profile 검증 실패)로

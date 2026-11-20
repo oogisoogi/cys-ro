@@ -1,0 +1,220 @@
+# HANDOFF — TICKET=cysr-1116-debt-u-1119 (role worker-1116debt-u · 가지 feat/1116-debt-u · 기준 dea2e1853)
+
+브리프 = master/briefs/1116-full/debt-u.md(master#b005ef0a) + 추가 항목(master#df87f946 · rc2 CI 판독). push·태그·CI·발행 0.
+
+## 커밋
+
+| 커밋 | 갈래 | 내용 |
+|---|---|---|
+| 31e81924c | A · I2 | `scripts/gen_released_directive_hashes.py --extra-ref <커밋>`(반복) + 시험 6 + 레인 예행 UNREGISTERED_OK 사유 |
+| 58673e9f8 | B · 게이트 | `docs/integ-1116/ci_pack_steps.py`(새) · gate-1116.sh 팩 손 목록 21 → ci-branch 팩 스텝 13개 본문 그대로 + CI 0회 22개 |
+| 609c45ec0 | C · r34 | test_hook_r34 시한 행 = 구조 판정(느린 자식이 끝나기 전에 돌아왔나) + 벽시계 안전선 7.0s |
+| d7c14f67f | D · 공개 후보 | `docs/integ-1116/pubcand.sh`(새) — H → C · 관문 1 · recheck 호출 · push 없음 |
+| 484cc63ad | E · 범주 3 | codex 1R 범주 3 지적 13줄(주석·doc 주석·시험 describe 이름) |
+| dd08b345a | 추가 ① | d1·name_guard 경쟁 승자 픽스처 — 리눅스 = 이름이 cysd 인 셸 스크립트(ubuntu-26.04 uutils) |
+| 06e3990f6 | 추가 ③ 고침(master#1519072c) | windows-health: S2 바로 앞 미리 빌드 스텝(`cargo test --bin cysd --no-run` · S2 와 같은 env · 시한 12분) + 핀 시험 1 |
+| 575ced14f | 게이트 env | 임시 뿌리 실경로(pwd -P) · CI 단계 PATH 첫 python3 = brew · cargo jobs 기본 4 · WARN 기준 = 시작 상태 |
+| b1b7024c7 | codex 1R 처분 | BLOCK 1 · MAJOR 6 → 고침 6 · 좁힘 1(아래 표) |
+| a181e5217 | codex 1R #4 배선 | ci_step 이 CI 시한(스텝·잡 timeout-minutes)을 넘기면 FAIL-CI-TIMEOUT |
+
+원작자 파일(데몬 handlers.rs·state.rs 등) 변경 = 0. 바뀐 운영 코드 줄 = 0(E 의 .rs·.ts·Cargo.toml·config.toml 은 주석만 · main.ts 는 함수 안 주석 3줄).
+
+## A. I2 — 해시 생성기 `--extra-ref`
+
+- 쓰임: 직전 판이 기계에 나갔는데 그 판 태그가 아직 없을 때(태그 전 통합 가지) `--extra-ref <그 판 커밋>` → Rust 표 + 팩 sha256 목록에 그 커밋의 CEO_TEMPLATE·MASTER_DIRECTIVE 바이트가 듦.
+- 규칙: 못 찾는 ref · 그 커밋에 지침 없음 · 값 빠짐 · **모르는 인자** = exit 2 + 표 무변경(⚠전에는 모르는 인자를 무시하고 *생성*으로 갔다 — 오타가 표를 덮어쓸 수 있었음) · 태그 0개 거부 exit 3 그대로 · `--check` 도 같은 `--extra-ref` 를 받아야 같은 표(같은 바이트 태그가 생기면 extra-ref 없이도 표류 0 — 시험 `test_tag_on_same_bytes_absorbs_extra_ref`).
+- 실측: 이 트리 `--check` = OK · `--check --extra-ref v1.1.14` = OK(이미 태그) · `--check --extra-ref 3a095c4ee`(1.1.15 후보) = 표류 rc 1(그 바이트가 표에 없음 = 1.1.15 를 건너뛰었으니 넣지 않는 것이 맞음 · 재생성 안 함).
+- 시험 `scripts/tests/test_gen_released_hashes_extra_ref.py` 6/6 · 뮤턴트 5/5 붉음(extra 무시 4 FAIL · 못 찾는 ref 건너뜀 1 · 파일 없는 커밋 건너뜀 1 · 팩 목록에 안 넘김 2 · 모르는 인자 무시 1).
+- 레인: 생성기를 부르는 워크플로가 없어(소비 = 로컬 게이트 gen-hashes 뿐) CI 등재 대신 `lane-parity-rehearsal.sh` UNREGISTERED_OK 사유 등재 · `--strict`·`--self-test` 통과.
+
+## B. 로컬 게이트 = ci-branch 팩 단계
+
+- `ci_pack_steps.py`: ci-branch.yml 의 run 본문(주석 아닌 줄)이 `cysjavis-pack/bin/` 또는 `scripts/ci/phoenix-host-gate.sh` 를 부르는 스텝을 골라 **본문 그대로** 셸 파일로 뽑는다(잡/스텝 env 만 머리 export · `bash --noprofile --norc -eo pipefail`).
+  - 판정 불가 exit 3: 고른 스텝 0 · 4잡(macos-rust-pack·ubuntu-pack-suite·phoenix-host-gate·boot-health-full) 중 0인 잡 · `${{ }}` · `if:` · `working-directory:` · bash 아닌 shell · **덮개**(안 고른 스텝이 실재 팩 시험 이름을 부름 = 규칙 낡음).
+  - 실측: 고른 스텝 13 · 부르는 팩 시험 184(이름 토큰 + `test_phoenix_*.py` 글롭 + run_bootstrap_health.py 가 부르는 것) = 팩 시험 207 − 어디에도 없는 23 · 11-19 차집합 표와 **집합 정확히 같음**(빠짐 0 · 더함 0) · 옛 손 목록 19개 전부 포함.
+  - `--self-test` 양성 1 · 음성 5.
+- gate-1116.sh: `pack-*` 손 목록 → `ci_step` 13개 · 옛 `health` 단계 → CI boot-health 스텝 결과 JSON 재판독(같은 러너 · 두 번 안 돎) · CI 0회 22개 = `unreg-*` · CI 본문이 cwd 에 남기는 health-full.json 은 결과 폴더로 옮김 · 그 밖 작업트리 변화는 WARN 1줄.
+- 무등재 23개 처분(격리 env 실측 · 이 맥):
+
+| 처분 | 시험 | 근거 |
+|---|---|---|
+| 게이트 unreg-* 로 돎(20) | cli_probe · completion_guard_notice · contracts_ct · dept_creds_seed · dept_list_unregistered · dept_ticket_deficit_zero · dept_ticket_request · distill_fx · hud_bridge_master_idle · memory_desc_drift · mission_boot_command_filter · mission_harness_filter · orchestra_ticket_snapshot · orchestra_todo_path · org_audit · pack_syntax_warnings · preflight_nlm_pin · seat_revival · vibecheck · viberoute | CI 루프와 같은 격리(빈 HOME · CYS_PACK_DIR 임시)로 rc 0 |
+| 게이트 unreg-* 로 돎 · env 필요(2) | preflight_phase1_checks(26) · verify_gate(9) | JAVIS_ROOT·CYS_PROBE_RUNS 없으면 시험 스스로 REFUSE rc 2(설계) · 주면 rc 0 → 게이트가 임시값을 준다 |
+| 조건부(1) | agora_known_authentic | 제작 맥 전용(게시 zip 폴더 CYS_AGORA_ZIP_DIR · 없으면 FAIL 이 설계) → 그 env 가 있을 때만 돎 |
+
+- ⚠차이(정직): 파이썬 = 이 맥 /usr/bin/python3 3.9(CI = 3.12) · 우분투 잡 본문도 이 맥에서 돈다(리눅스 아님 — 추가 ① 이 그 사각의 실례).
+
+## C. test_hook_r34 시한 행
+
+- 원인 실측: 런처 시한은 벽시계가 아니라 `sleep` 명목 합(1/100초 회계 · role-bootstrap.sh 343·262) → 맥은 외부 sleep ~14회 생성 비용이 붙어 시한 1s → 경과 2.38~3.12s · 부하(load 21~) 아래 4.12·4.20·5.17s. 11-19 레인 로그: RCF-3 3.12 · RCF-4a 3.07 · NZ-3 3.10 · DL-1b 3.11 붉음(문턱 3.0). 우분투 CI 는 1.03s(rc2 로그).
+- 고침: 가짜 cys 의 slow 갈래가 끝나면 표지 → 시한 행 5개 주 판정 = `not slow_done`(런처가 돌아온 순간 자식이 아직 안 끝남 = 기다리지 않았음 · 부하 무관) · 자식 4→10s · 벽시계 상한 3.0→7.0s(시한 값이 몇 배 커진 회귀용 안전선 · 부하 최대 실측 5.17 위) · 하한 0.9s 그대로.
+- 전후: 옛 판 3회 = 붉음 2회(RCF-3 3.08 · DL-1/WIN-2 4.20/4.21) · 새 판 3회 초록(2.45~2.96s · done=False) · 1차 수정(8s/5.0)은 load 21 에서 RCF-4a 5.17 붉음 1회 → 구조 판정으로 바꾼 까닭.
+- 뮤턴트(런처): 맥 갈래 시한 ×10 = 5 FAIL(done=True · 10.4~10.8s) · ×6 = 5 FAIL · 윈 갈래 ×10 = WIN-2 FAIL(done=True) + WIN-0 핀.
+
+## D. 공개 후보 도구 `docs/integ-1116/pubcand.sh`(허용 목록 판 · 9ad430656 + 독립 검증 고침 3cbd96ba4)
+
+- 사용: `PUB_ALLOW=<새 공개 허용 목록> PUB_MSG=<메시지> [PUB_BASE=origin/main] [PUB_REF=refs/heads/cand/1116-rc] bash docs/integ-1116/pubcand.sh <H>` → 끝 줄 `PUBCAND H= B= C= ref= public= new= withheld= gate1= recheck_rc= rc=`.
+- 규칙: C 트리 = (H∩B) ∪ PUB_ALLOW — H 의 새 파일이 목록에 없으면 공개 안 됨(withheld)으로 보고만 한다(목록을 잊으면 덜 공개될 뿐). 옛 제외 목록(PUB_EXCLUDE)은 폐기 · 옮김 도우미 `--derive-allow <H> <B> <제외목록>` = H−B−제외목록.
+- 막는 것(rc 2): 허용 줄이 H 트리에 없음(낡은 목록) · **지킴 폴더 docs/integ-1116 의 경로를 허용 목록에 올림**(내부 게이트 도구) · 허용 목록 파일 없음·읽기 실패 · 못 찾는 H/B · **B 가 refs/remotes/origin/* 어디에서도 안 닿음**(공개 안 된 판) · 있는 ref(PUB_FORCE=1 없이) · 관문 1 불일치(C 는 `<PUB_REF>-rejected` 에 · 정상 후보 ref 그대로) · `--derive-allow` 제외 목록 없음·읽기 불가·빈 파일 · 결과에 지킴 폴더 경로. recheck rc 0/1/3 그대로 전달 · PUB_NO_RECHECK=1 = rc 4(성공 아님).
+- 경로: git 은 `ls-tree -r -z`·`diff -z` 로만 읽는다(한글·탭·따옴표·줄바꿈 이름) · 목록 파일 = 한 줄에 경로 하나(날 바이트 · 이름 속 줄바꿈 = \001).
+- recheck 자식 push 차단: pushInsteadOf "" + 각 원격 pushurl 덧씌움 + 이미 적힌 pushurl 값마다 insteadOf + 가짜 gh(rc 97) · 한계 = 머리말(자식의 GIT_CONFIG_* 덮기 등).
+- 작업트리 전용(bare 저장소 = update-index rc 2).
+- `--self-test`: 임시 저장소 + 가짜 recheck · 24 ok · 집행 본문 push·tag·gh 명령 0 자기 검사.
+- 실데이터 재현: H=c75e0714a · B=270e3e21e · 11-19 제외 171 → --derive-allow 93 → C 트리 `27045f27…` = 11-19 후보 aebca3d9 트리와 같음(public 2013 · new 93 · withheld 171 · 스크래치 저장소 alternates · recheck 는 PUB_NO_RECHECK=1 로 건너뜀 — 민감 폴더·보고 파일에 쓰므로).
+- 지금 머리로 돌리면: 지킴 폴더 docs/integ-1116 의 새 파일은 허용 목록에 올 수 없으니 공개 안 됨 · 다음 후보 때 허용 목록에 더할 제품 시험 = scripts/tests/test_gen_released_hashes_extra_ref.py(델타 #5).
+
+## E. codex 1R 범주 3 청소
+
+- 고친 줄(처분표 BLOCK/SHOULD-FIX 중 주석·시험 머리): seatkeep main.rs:1-4 · Cargo.toml:26·139 · seat_proc.rs:1 · seatkeep-knob-on-tests.sh:5 · pillar_gate.py:2·5 · confirms.ts:115·277 · main.ts:9326-9327 · restartconfirm.test.ts:1-2 · .cargo/config.toml:13-14 · confirm.test.ts:407 · slice3fix.test.ts:400·455.
+- 공개 문서 링크로 바꿀 대상이 공개 트리에 없어(설계·탐침 보고·HANDOFF 전부 제외 목록) **공개 파일·공개 시험 이름을 가리키거나 내용을 그 자리에 적는** 꼴로 바꿨다.
+- 시험: bun 5파일 142/0 · secret-scan staged clean · 소스 핀 대조(include_str seat_proc.rs·Cargo.toml = 코드 본문만 읽음 · 영향 0).
+
+## 추가 ① — rc2 ubuntu-pack-suite `test_d1_dept_ready_probe` 2건
+
+- 대조군: 실패 런 2개(aebca 11-19 20:38 · rc2 22:42) 러너 이미지 = **ubuntu-26.04**(20261103.629 · 20261111.635) · 마지막 통과 런(11-09 · 247d571cc) = **ubuntu-24.04**(20261028.624). aebca 런은 r32 에서 먼저 멈춰 d1 까지 안 갔다.
+- 구조 증거: 15개 중 붉은 2개(lost_win · lost_never) = 정확히 `sleep` 을 `cysd` 이름 심링크로 부르는 갈래. 심링크 없이 sleep 을 쓰는 lost_reused · lost_dead 는 초록.
+- 바깥 근거: Ubuntu 26.04 기본 coreutils = uutils 다중 호출 실행 파일(유틸리티 = 하드 링크) · `sleep` 을 다른 argv0 로 부르면 「Security violation」 거부(Launchpad bug 2126689 · uutils/coreutils #10135).
+- 판정: 산 승자가 즉사 → `boot_lock_winner` 가 산 cysd 를 못 봄 → 「기동 중 종료」. **픽스처의 러너 의존 · 제품(cys-dept·실 cysd) 결함 아님**(실 cysd 는 제 이름의 실행 파일). vendor F1 계열 아님. 러너에서 직접 재현은 못 함(이 맥 tart = macOS 이미지뿐) → 확신도 중상 · 확정은 다음 CI 우분투.
+- 고침: 리눅스 = `#!/bin/sh` while-sleep 스크립트(리눅스 comm = 스크립트 이름) · 맥 = 종전 심링크(맥 실측: 스크립트 comm = `/bin/sh` 라 안 됨 · 심링크 comm = 경로). 같은 꼴 test_dept_name_guard.py:1576(맥 레인 전용 · 지금은 안 붉음)도 같이.
+- 시험(맥): d1 15/15(128s) · name_guard 75/75(247s) · ⚠리눅스 갈래는 이 맥에서 실행 검증 불가(가짜 uname 음성 대조는 시험이 PATH 를 고정해 불성립).
+
+## 추가 ② ③ — 판독만(고침 없음)
+
+- ② macos-rust-pack·phoenix-host-gate·ui-check = runner not acquired(master 판독 그대로 · 판정 제외).
+- ③ windows-health A-ID S2(시한 6분): aebca 런 S2 내부 = 21:28:22 시작 → 21:32:42 컴파일 끝(**260초 = cysd 시험 바이너리 컴파일** · 출력이 파일로 받아져 그동안 0줄) → 시험 13개 1초. rc2 런은 모든 스텝이 1.3~1.5배 느림(factory_reset 374→519 · U5 214→283 · D5 71→93 · win_std 92→125 · F10 77→100 · help 157→229) → 260×1.4 ≈ 365 > 360 = **시한 근접(걸림 아님)**. S2 추이 137(11-09) → 261 → 367초.
+- 「cargo test --bin cysd 감독자 축」 = 세 런 모두 1807~1808초(continue-on-error · 시한 30분 · 통과 런 포함) = 이번에 생긴 일 아님 · 늘 시한에서 잘리는 비차단 스텝.
+
+## 추가 ③ 고침 — S2 미리 빌드(master#1519072c · 워크플로 수정 허용)
+
+- 놓은 곳 = S5 와 S2 **사이**(바로 앞). 까닭: aebca 런에서 바로 앞 S5 의 같은 `--bin cysd` 는 캐시 0.26초였는데 S2 첫 호출이 재컴파일 260초 · S2 둘째 호출 0.31초 → 오염은 S5 끝 ~ S2 시작 사이에 생긴다. 더 앞(예: 감독자 축 뒤)에 두면 그 사이 스텝이 다시 오염시킬 수 있다.
+- env = S2 와 같은 `CYS_PACK_DIR`·`CYS_STATE_DIR`(env 가 원인인 경우까지 덮음). 원인 후보(build.rs `rerun-if-changed=cysjavis-pack`)는 이 맥에서 재현 못 함(로컬 팩 폴더에 `__pycache__` 없음) → 이름 안 붙임.
+- 시한: 미리 빌드 12분(느린 러너 실측 367초 × 약 2) · S2 6분 그대로(시험 실행 ≈1초 + 목록). 시한 상향은 안 함.
+- 대조 도구: C8 재고 `selects_cysd` 가 `--no-run` 을 실행으로 안 셈 · 레인 게이트 `FILTER_RUN_RE` 는 필터 뒤 `-- ` 가 있는 줄만 → 가드 불요. 「판정 결박 스텝 뒤 차단 스텝 금지」 시험 = S2 앞이라 통과.
+- 시험: test_ci_branch_cysd_step 39/39(새 핀 `test_prebuild_step_immediately_precedes_s2_with_the_same_env` · 뮤턴트 3/3 붉음 = 순서 · env 하나 뺌 · `--bin cys`) · test_c8_ci_consumer 19/19 · test_release_windows_help_gate 11/11 · test_release_trigger_split 17/17(게이트 venv) · test_phoenix_host_gate_lane 8/8 · lane-parity-rehearsal --strict rc 0 · 팩 시험 test_win_dept_spawn·test_hook_launcher_split·test_pyseal_census·test_runtime_manifest_parity 초록.
+- ⚠윈도 실측 없음 — 실제로 S2 안 컴파일 0 인지는 다음 windows-health 런의 S2 로그 「Finished … in 0.xs」 로 판정(해소 판정: S2 스텝 안 `Compiling cys-terminal` 0줄).
+
+## codex 1R(01:3x · effort high · 판정문 = 스크래치 codex-r1.md · VERDICT: BLOCK) 처분
+
+| # | 심각도 | 지적 | 처분 | 근거 |
+|---|---|---|---|---|
+| 1 | BLOCK | pubcand.sh 빈 제외 목록 = H 전체 공개 · PUB_NO_RECHECK rc 0 | 고침 | 빈 목록 rc 2 · 생략 rc 4 · 자기 검체 2줄 |
+| 2 | MAJOR | 외부 recheck 가 push·gh 를 부를 수 있음 | 좁힘 | recheck 자식 env = git pushInsteadOf 5갈래(→ 없는 전송기) + PATH 앞 가짜 gh rc 97 · 실측: 로컬 경로·https 원격 push 「aborted」 · 읽기 정상 · 검체 = 원격 ref 0 · 뮤턴트(env 제거) = leak ref 생김 → BAD · 한계: 자식이 GIT_CONFIG_* 를 덮으면 못 막음 |
+| 3 | MAJOR | ci_pack_steps `run: >` 조용히 누락 | 고침 | `|`·`|-`·한 줄 밖 블록 스칼라 = exit 3 · 음성 대조 |
+| 4 | MAJOR | CI timeout-minutes·defaults 미보존 | 고침 | defaults: = exit 3 · 생성물 `# ci-timeout-secs:` → 게이트 FAIL-CI-TIMEOUT(잡 시한은 느슨한 쪽 · 현재 스텝 시한 0 · 잡 시한 4개 1800/2400) |
+| 5 | MAJOR | S2 미리 빌드가 같은 러너임을 고정 안 함 · Compiling 0 미측정 | 고침 + 📌 | 핀에 같은 잡 단언 · 뮤턴트(S2 를 새 잡으로) 붉음 · Compiling 0 = 다음 windows-health 로그 |
+| 6 | MAJOR | 움직이는 --extra-ref 로 섞인 표 | 고침 | pin_refs = 시작에서 전체 OID 고정 · 시험 + 뮤턴트 붉음 |
+| 7 | MAJOR | 두 표 비원자 쓰기 | 고침 | 임시 파일 둘 다 쓴 뒤 os.replace · 둘째 쓰기 실패 주입 시험 + 뮤턴트 붉음 |
+| — | (논쟁점) | 리눅스 승자 픽스처 | 지적 없음 | codex: d1·name_guard 가 양성(산 cysd)·음성(산 sleep) 둘 다 잰다 |
+
+- 「올리지 않은 것」 없음(7건 전부 위 표). codex 2R(수렴 확인) = **master 대기열**(11-20 공지 master#dbc57581 · 06:29 리셋 전 호출 금지).
+
+## 게이트 결과(이 맥 · 로컬 · CI 아님)
+
+| 회차 | 범위 | 결과 | 붉은 것 판독 |
+|---|---|---|---|
+| g1 23:51~01:28(load 20~37) | gen·build·ci 13·unreg 22·scripts 26·ui-test | 붉음 7 | 게이트 결손 2(Apple python → pyseal UNMEASURED 로 맥·우분투 루프 정지 · /tmp 별칭 → seat_revival aliased_harness_root) → 575ced14f · 시간 문턱 4(L1295 ps 1.5s · L1337 · phoenix c6_reap S5 · health H-LIFE-1·2·H-OBS-3) · 기준선 2(H-CLT-1·2) |
+| g2 01:30~02:25(load 5~10) | ci 13·unreg 22 | 붉음 3 | L1295·L1337·phoenix·H-LIFE·H-OBS = **부하 낮을 때 초록**(운영 공지 ② 대조) · health 붉음 = H-CLT-1·2 뿐(기준선) · L996·L2091 = test_capgate_hook_shell 간헐로 루프 정지(아래) · unreg 21/21 초록 + agora 건너뜀 |
+| g3 02:30~03:16(load 6~7) | L996·L2091 재실행 | L996 **초록**(맥 루프 151 시험 끝까지 · capgate 통과) · L2091 붉음 1 | 우분투 루프가 test_role_authority_shell 「A env master / rc2」 에서 정지 — 단독 6회 중 1회 붉음(다른 갈래 「30-second backoff expires」) · 이 가지 변경 0 = 기준선 간헐 · 그 뒤 미실행 시험은 전부 맥 루프에도 있고 g3 L996 에서 초록 |
+
+- scripts/tests 26 전부 초록(g1) · ui bun 3835/0(g1) · build rc 0 · gen-ceo·gen-hashes OK · pubcand·ci_pack_steps 자기 검체 OK.
+- ⚠**test_capgate_hook_shell 간헐(기준선 · 이 가지 변경 0)**: 단독 파일 실행 6회 중 2회 붉음(Apple 3.9 1/3 · brew 3.14 1/3) · 매번 다른 시험(stale_cache_is_requeried · role_query_never_spawns_a_daemon · colliding_socket_slugs… · cache_lives_in_the_shared_0700_directory) · 같은 훅·시험 파일 dea2e1853 대비 diff 0 · CI(rc2 우분투)에서는 초록. 맥·우분투 두 루프 모두 이 시험에서 멈추면 뒤 시험이 안 돈다 → 📌 별도 티켓.
+
+## 시험 숫자(전후)
+
+- 기준선(dea2e1853 계열): 11-19 cifix 증거 레인 = mac 팩 스텝 rc 0(1452s) · ubuntu 팩 스텝 rc 0(1432s) · 그 전 판에서 r34 시한 행 간헐 붉음(위 C).
+- 이 가지: 위 「게이트 결과」 표(g1·g2·g3) · 새 붉음 0(붉음은 전부 게이트 env 결손 → 고침 · 부하 시간 문턱 → 부하 낮을 때 초록 · 기준선 H-CLT-1·2 · 기준선 간헐 2개) · 화면 bun 3835/0 · scripts 26/26 · 생성기·도구 자기 검체 OK.
+
+## 📌 덧붙임(실행 안 함 · 판단 = master)
+
+1. (처리됨 06e3990f6 · master#1519072c) 윈 S2 미리 빌드 — 위 「추가 ③ 고침」.
+2. 우분투 CI 이미지가 26.04 로 바뀐 것 자체 — 다른 시험·스크립트에 GNU coreutils 가정(argv0·옵션)이 더 있는지 훑기(이번엔 sleep 심링크 2곳만 찾음 · `exec -a` 는 src/agy_door.rs 견본 문자열뿐).
+3. 범주 3 에서 안 고친 것(기능 줄·팩 지침): cysjavis-pack/agents.json:3·8 · MASTER_DIRECTIVE.md:462 · WORKER_DIRECTIVE.md:258 · skills/appbuild-plan-debate·computer-control SKILL.md — 팩 지침은 별도 커밋 + 합성기 + doc-contract 규약 · 내용 공개 여부는 제품 판단.
+4. 같은 꼴 남은 자리(주석·문자열 · 처분표 밖이라 안 고침): src/bin/cys.rs:31486(주석)·31564(assert 문구) 의 docs/1115/CLI-STACK-PROBE 경로 · ui/src/drainverify.test.ts:156·192 의 운영자 서사 · ui/src/grouptabs.ts·grouptabs.test.ts 의 pillar-width-rule 지시서 이름 · windows-health.yml 의 rqfix_f10 · seatkeep-knob-on-tests.sh:2 의 master# 표식.
+5. 다음 공개 후보 목록에 docs/integ-1116/ci_pack_steps.py · pubcand.sh 추가(pubcand.sh 가 rc 2 로 요구함).
+6. (처리됨 575ced14f) ci_step WARN 기준 = 게이트 시작 상태.
+7. test_capgate_hook_shell · test_role_authority_shell 로컬 간헐(위 · 각 단독 6회 중 2·1회 붉음 · 이 가지 변경 0) — 시간 의존 원인 규명 티켓. 루프가 첫 붉음에서 멈춰 뒤 시험이 가려지는 것은 CI 루프 설계 그대로다.
+8. pubcand 를 제외 목록(blocklist) 대신 B 기반 공개 허용 목록으로(codex 1R 조언 · 설계 변경 = 제품 판단).
+
+## 함정·재현
+
+- 게이트는 실행 중 셸 스크립트를 읽어 가며 돈다 → 돌고 있는 동안 gate-1116.sh 를 고치지 말 것.
+- r34 시한 측정은 부하에 민감 — 부하 낮을 때(uptime 1분 < 15) 단독 재실행으로 대조(11-20 운영 공지 ②).
+- 새 작업트리는 형제 target 을 `cp -c -R` 로 복제(101G · 92초).
+
+## 델타 — master#71ef3c5a 📌 처분 집행(11-20 03:2x~)
+
+| 📌 | 처분 | 결과 |
+|---|---|---|
+| #8 pubcand 허용 목록 | 고침 9ad430656 | C = (H∩B) ∪ PUB_ALLOW · 목록 밖 새 파일 = 공개 안 됨 + 보고 · 관문 1 = C 실제 트리로 ⑴ C⊆B∪ALLOW ⑵ C=공개 집합 ⑶ C↔H 차=withheld ⑷ 부모=B · 자기 검체 17 ok · 뮤턴트 3/3 붉음 · **재현: 11-19 제외 171 → --derive-allow 93 → C 트리 27045f27 = aebca3d9 와 같음 · withheld = 제외 171 정확히** · 허용 목록 원자료 = ~/axdev/workers/cysr-1116-debt-u-1119/public-allow-1116-from-1119.txt |
+| #5 게이트 도구 공개 여부 | 설계 안에서 정함 | 지킴 폴더 docs/integ-1116 의 경로는 허용 목록에 올 수 없음(rc 2) → ci_pack_steps.py·pubcand.sh·gate-1116.sh 는 공개 안 됨 · 지금 머리 withheld 176 = 171 + 이 가지 새 파일 5(내부 4 + **공개할 제품 시험 scripts/tests/test_gen_released_hashes_extra_ref.py 1 = 다음 후보 때 허용 목록에 더할 것**) |
+| #4 같은 꼴 주석·문자열 | 고침 f79d6cdac | 8줄(cys.rs 31486 주석·31564 assert 문구 · drainverify.test.ts 156·192 · main.ts 9314 · grouptabs.ts 149·test 297 · seatkeep-knob-on-tests.sh 2 = 8줄 · 앞 판 「7줄」 은 잘못 셈 — 독립 검증 N1) · windows-health rqfix_f10 = 실제 시험 이름이라 그대로 · bun 67/0 · cargo test --bin cys cli_stack_budget 1/0(바뀐 assert 문구 컴파일·시험) · ⚠저장소 전반: master# 표식 420줄(이미 공개 B 에 328) · 「박사님」 146줄(B 에 137) = 일괄 정리는 별도 결정 |
+| #3 팩 지침·agents.json 기능 줄 | 그대로(1.1.17 기록) | 판정: 지적 6자리(agents.json:3·8 · MASTER_DIRECTIVE:462 · WORKER_DIRECTIVE:258 · appbuild-plan-debate SKILL:15 · computer-control SKILL:72)와 그 파일 전체에 이름(최윤식·oogisoogi)·기기 경로(~/axdev·/Users/·.claude-acct)·메일 0 · 「박사님」(호칭) 4줄은 B 에 같은 수로 이미 공개 |
+| #2 GNU coreutils 가정 훑기 | 찾음 1 · 고치지 않음 | 훑은 꼴 = coreutils 를 다른 이름 심링크·사본·exec -a·arg0 로 부르기(uutils 다중 호출이 거부하는 꼴). 결과: ① test_dept_name_guard:1581 = 이미 고침(맥 갈래) ② src/process_observation.rs:1006 `.arg0("")` = macOS 전용 시험 ③ src/bin/cysd/seat_proc_tests.rs:162 sleep 사본 = macOS 전용(가짜 .app) ④ **src/update/realops.rs:1798 fake_cysd_bin()(#[cfg(unix)]) = /bin/sleep 을 cysd 이름으로 복사 → ubuntu 26.04 에서 돌리면 같은 결함** · 우리 크레이트의 리눅스 cargo test 레인 0(우분투 잡 = vendor portable-pty 만) → 지금 붉을 일 없음 · 리눅스 대역 판정(hq_daemon_count 가 comm·exe 중 무엇을 보나)을 이 맥에서 못 재 고치지 않음(추측 고침 금지) |
+| #7 capgate·role_authority 간헐 | 손대지 않음 | 새 좌석(flaky) 몫 |
+| codex 2R | master 대기열 | 범위 = 1R 고침(b1b7024c7·a181e5217) + 9ad430656 허용 목록 + f79d6cdac |
+
+## 델타 2 — 독립 검증 REVISE 고침(debt-u2 · master#dcd1f79f · 11-20 04:0x~04:4x)
+
+판정 = `~/axdev/workers/cysr-1116-debt-u-verify-1120/VERDICT.md`(R1·R2·R2b·M1~M4·N1·N2). master 처분 = 전부 고침. ⚠위 §C(벽시계 안전선 7.0s)·§B(덮개 = 4잡)는 이 델타로 낡았다.
+
+| # | 커밋 | 고침 | 전 → 후(같은 재현) | 뮤턴트 |
+|---|---|---|---|---|
+| R1 | 3cbd96ba4 | `--derive-allow` 제외 목록 없음·읽기 불가·빈 파일(빈 줄만·/dev/null) = rc 2 · 결과에 지킴 폴더 경로 = rc 2(출력 0) · H/B 못 찾음 rc 2 · 본 경로도 허용 목록 읽기 실패(grep rc 2)를 빈 목록으로 삼키지 않음 | `/no/such/file`·`/dev/null`·지킴 폴더 섞임 = rc 0 → rc 2 | 빈 목록·읽기·grep rc·지킴 폴더·넷 다 끔 = 5/5 붉음(겹 검사마다 따로 잡히게 검체 보강) |
+| M1 | 3cbd96ba4 | git 경로 = `ls-tree -r -z`·`diff -z --no-renames` 만 · 목록 줄 = 날 바이트(이름 속 줄바꿈 = \001 · \001 든 이름 = rc 2) · 관문 1 실패 = C 를 `<PUB_REF>-rejected` 에(정상 후보 ref 그대로) | 한글·탭·줄바꿈·따옴표 새 파일: C 에 남고 gate1=1 rc 2 → withheld 6 · C 에서 빠짐 · gate1=0 | -z 끔 12 BAD · rejected 이름 끔 1 BAD |
+| M2 | 3cbd96ba4 | B 가 `refs/remotes/origin/*` 어디에서도 안 닿으면 rc 2 | `PUB_BASE=HEAD` rc 4(new 0 · withheld 0) → rc 2 | 단언 끔 붉음 |
+| M3 | 3cbd96ba4 | recheck 자식 = `url.pubcand-no-push://.pushInsteadOf=""`(빈 접두 = 모든 주소) + 각 원격 `remote.<이름>.pushurl=pubcand-no-push://` + 이미 적힌 pushurl 값마다 `url.pubcand-no-push://.insteadOf=<값>` | 상대 경로 원격·pushurl 명시·명령줄 상대 = 누출 3(b1 b2 b4) → 0 | 빈 접두·insteadOf·pushurl 덧씌움 각각 끔 = 3/3 붉음(덧씌움은 「사용자의 더 긴 pushInsteadOf」 원격 검체가 잡음) |
+| M4 | daf04f88e | PyYAML 있으면 잡마다 run 스텝 수·표지 스텝 수를 줄 파서와 대조(불일치 exit 3 · 없으면 표준 오류 「건너뜀」) · 덮개 = 모든 잡 · 게이트 = 전용 venv python(PyYAML 6.0.2)으로 부르고 결과 1줄을 요약에 | 검증 좌석 M3(새 잡 cd 꼴)·M6(4칸 들여쓰기) rc 0 → rc 3 | 덮개 4잡 한정·대조 끔 = 2/2 붉음 |
+| R2·R2b | 7b894549c | r34 시한 행 5 + NZ-1·2 = **시한 회계 구조 판정**(아래) · 벽시계 문턱 폐기 · 느린 자식 10→30s | 단독: 기준 판 NZ-1 2.06s FAIL(부하 4.3 · 검증 좌석 8회 중 5회 붉음) → 새 판 8/8 초록(부하 4.2~11.0) | 6/6 붉음(아래) |
+| N1 | 이 커밋 | §D 본문 = 허용 목록 판 · 델타 #4 「7줄」 → 8줄(`git show f79d6cdac` 8+/8−) | — | — |
+| N2 | 3cbd96ba4 | 머리말 = 작업트리 전용(bare = update-index rc 2) | — | — |
+
+### M3 — 브리프의 「pushurl 덧씌움」 만으로는 안 막혔다(실측 · git 2.50.1)
+- `remote.X.pushurl` 은 여러 값이면 **전부에 push** 한다 → 이미 pushurl 이 적힌 원격에 덧씌우면 원래 주소로도 나간다(덧씌움만 넣은 시험에서 b2·b5 누출). pushurl 에는 pushInsteadOf 가 안 걸리고 insteadOf 는 걸린다 → 기존 pushurl 값을 insteadOf 로 다시 써서 막았다.
+- 빈 접두 pushInsteadOf 는 git 의 최장 접두 규칙상 모든 주소에 걸린다(명령줄 상대 경로·scp 꼴 `host:path` 포함 · 실측 「remote helper 'pubcand-no-push' aborted」). 사용자 설정의 더 긴 pushInsteadOf 는 이것을 이기므로 원격별 pushurl 덧씌움을 같이 둔다.
+- 남은 한계(머리말): 자식이 GIT_CONFIG_*·`git -c` 를 스스로 덮기 · 명령줄 주소에 사용자의 더 긴 pushInsteadOf · 이 저장소 밖 다른 저장소의 pushurl 명시 원격. url = pushurl 인 원격은 읽기(ls-remote)도 막힌다(안전한 쪽 · 실측 rc 128).
+- 실사용 저장소 설정: pushurl·insteadOf 0(`git config --get-regexp` rc 1).
+
+### R2·R2b — 런처를 고치지 않고 시한 회계를 잰다
+- 브리프의 「시한 회계(누적 `_i`)를 기록으로 내보내」 를 **런처(배포되는 role-bootstrap.sh) 변경 없이** 집행했다: 런처는 맥·리눅스 갈래·Windows 갈래 모두 외부 `sleep` 을 부르므로, 시험이 이미 쓰던 sleep 기록 래퍼를 시한 행에 끼워 **런처가 실제로 부른 sleep 인자 순서**를 받고 ⑥ 루프의 회계를 그대로 따라 센 순서 `deadline_seq(시한)` 과 같은지 본다(맥 1s = 0.01·0.02·0.03·0.04 + 0.1×9 = 13회 · 윈 0.1×10 · 합 1.00). `_i` 를 내보내는 것과 같은 양이고, 런처가 회계를 믿는 값이 아니라 실제로 잔 값이라 「sleep 한 번이 길어진」 회귀까지 잡는다. 런처 무변경 → WIN-0 핀·배포물 영향 0.
+- NZ-1·2(즉시 끝나는 자식 · 시한 3s) = sleep 순서가 시한 회계의 엄격한 앞부분(시한까지 안 기다리고 빠져나옴). 실측 sleep 1회·명목 0.01s 인데 벽시계는 3.21s 가 나온 회차도 있다(런처 전체 + 래퍼 생성 비용) — 벽시계 문턱으로는 원리상 못 재는 행이었다.
+- 「기다리지 않음」 = 느린 자식이 끝나기 전에 돌아옴(slow_done). 시한 밖 다른 대기(자식 wait 등)도 이것이 잡는다(뮤턴트 wait → 31.36s done=True).
+- 느린 자식 30s 근거(WIN-2 상한 재측정 겸): 래퍼 낀 경과 실측 = 맥 시한 행 2.55~5.57s · WIN-2 2.95~7.45s(부하 4.2~11.0 · 11회) · 뮤턴트 병렬 실행 중 최대 11.92s(×3 시한 뮤턴트) → 7.45 의 4배 위 · 자식은 배경에서 끝나 시험 시간 불변(단독 1회 81~82s 전후 같음). 벽시계 상한은 판정에서 뺐다(①②가 각각 대신함 · 경과는 정보로 행에 적음) · 하한 0.9s(DL-1b)만 유지.
+- 뮤턴트(스크래치 사본 · 6개 병렬 · 부하 3.9~5.5): 맥 `_lim` ×2 · ×1.5 · `*) sleep 0.2` → RCF-3·RCF-4a·NZ-3·DL-1b FAIL(×2 = sleep 23회·명목 2.00s) · 윈 `_lim` ×2 → WIN-2 FAIL(20회·2.00s) + WIN-0 · `jobs` 줄 제거 → NZ-1·NZ-2 FAIL(33회·3.00s) · 루프 뒤 `wait "$_bg"` → 시한 행 4 + DL-1a FAIL. **×2 회귀 붉음 = 수용 기준 충족**(×3 문턱 수용 불필요).
+- 전후: 기준 판(fd9d0db99) 단독 1회 = 41 PASS · NZ-1 FAIL 2.06s(부하 4.3) · 새 판 단독 9회 = 42 PASS 전부.
+
+### 시험 숫자(이 델타)
+- pubcand `--self-test` 24 ok(전 17) · 뮤턴트 11/11 붉음 · 11-19 실데이터 재현 C 트리 27045f27 그대로(derive 93 = 허용 목록 원자료와 바이트 같음 · public 2013 · new 93 · withheld 171 = 11-19 제외 목록과 같음).
+- ci_pack_steps `--self-test` 음성 9(venv · PyYAML 대조 포함) / 8(/usr/bin/python3) · 실제 워크플로 PyYAML 대조 같음(잡 6 · run 47 · 표지 13) · emit 13 생성물·unregistered = 옛 판과 바이트 같음 · 184 그대로.
+- test_hook_r34 단독 8회 8/8(+1회) · 게이트 DRY rc 0(ci 13 + 추출 자기 검체 · unreg 22).
+- 격리: 시험 전부 스크래치 임시 저장소·bare · `env -i` · 실사용 원격 push·gh 쓰기·codex 0.
+
+### 남은 것·📌
+- codex 2R = master 대기열(범위에 3cbd96ba4·daf04f88e·7b894549c 추가).
+- 게이트 전체 실행(로컬 CI 단계)은 이번에 안 돌림(바뀐 것 = 게이트 도구 2개·r34 시험 1개 · 각각 단독 실측).
+
+## 델타 3 — codex 2R(0172b7138 · BLOCK) master 처분 집행(master#2384546d · 11-20 07:1x~07:2x)
+
+판정문 = `~/axdev/master/reports/verify/codex-1120/debtu-r2.md`(blocking 2 · major 6). master 처분 = 보안 적정선 세 물음(실제 입력인가 · 바깥으로 가는가 · 못 되돌리는가) · 검토 왕복은 이번으로 끝(codex 3R 없음).
+
+| codex # | 처분 | 커밋 | 내용 | 시험 |
+|---|---|---|---|---|
+| blocking 2(B2) 공개판 = 로컬 추적 ref | 고침 | d57e312b6 | B 확인 = `git ls-remote --heads --tags origin`(읽기만) 끝 중 하나에서 닿는가 · 로컬 refs/remotes 불신 · 원격 읽기 실패 rc 2 | 검체: 로컬 refs/remotes/origin/* 를 HEAD 로 오염 + PUB_BASE=HEAD → rc 2 · 원격 주소 깨짐 → rc 2 · 뮤턴트 2/2(로컬 ref 판정 복원 = rc 0 붉음 · ls-remote 실패 삼킴 붉음) · 실데이터(원격 = 공개 저장소 실제 읽기): B=270e3e21e → C 트리 27045f27 그대로 · B=c75e0714a(내부) → rc 2 |
+| major 4(M2) 지킴 폴더 경로 자체 | 고침 | d57e312b6 | `docs/integ-1116` 이 블롭·심볼릭·gitlink 로 바뀐 경우도 잡음 · 글자 그대로 비교(정규식 아님) | 검체: 블롭(본 경로) · 심볼릭(--derive-allow) → rc 2 · 뮤턴트(접두만) 2 BAD |
+| major 5(M3) PyYAML 대조 선택 | 고침 | 09ff211ea | PyYAML 없음 = exit 3 + 준비 안내 1줄 · 게이트는 venv 없으면 /usr/bin/python3 로 내려가지 않고 ABORT + 준비 명령 | 검체 음성 10(PyYAML 없는 기계 모사 +1) · /usr/bin/python3 = rc 3 · 게이트 DRY(venv 없음 모사) = ABORT · 뮤턴트 붉음 |
+| major 8(M5) 두 표 비원자 | 고침 | a59a55faf | 원본 .gen-bak 사본 → 차례로 rename → 실패 시 바꾼 표 되돌림(둘 다 원상 · exit 2) | 둘째 os.replace 실패 주입 시험 +1 · 9/9 · 옛 생성기 ERROR(붉음) |
+| blocking 1(B1) 최장 접두 우회 | 한계 문서 | — | 아래 「알려진 한계」 ① | — |
+| major 3(M1) PUB_WITHHELD_OUT 쓰기 | 한계 문서 | — | ② | — |
+| major 6(M4) 잡 수준 env 표류 | 한계 문서 | — | ③ | — |
+| major 7 r34 오라클 완전성 | 한계 문서 | — | ④ | — |
+
+### 알려진 한계(고치지 않음 · master 처분)
+1. **push 차단의 최장 접두 우회(codex B1)**: 기계 설정에 `url.<실제 주소>.pushInsteadOf=pubcand-no-push://` 꼴이나, 명령줄 주소에 걸리는 더 긴 사용자 pushInsteadOf 가 있으면 recheck 자식의 push 가 실제 원격에 닿을 수 있다. 실제 입력 아님 — 이 기계 `git config --show-origin --get-regexp '^url\.|pushurl'`(local·global·system) = 0건(11-20 07:22 실측). 그런 설정을 둔 기계에서 쓰기 전에 같은 명령으로 확인할 것.
+2. **PUB_WITHHELD_OUT(codex M1)**: 운영자가 주는 환경값 경로에 그대로 쓴다(관문 1 전). 운영자 자신이 고르는 값이라 바깥 입력이 아니다 — 저장소 안(`.git/` 등)을 가리키지 말 것.
+3. **ci_pack_steps 잡 수준 env 표류(codex M4)**: 줄 파서가 못 읽는 꼴의 잡 env(흐름 꼴 `env: {K: v}` 등)는 PyYAML 대조(스텝 수·표지 수)에 비치지 않는다 → 생성물이 CI 와 다른 env 로 돌 수 있다. 다음 판에서 env·시한 의미까지 PyYAML 로 대조.
+4. **r34 시한 오라클 완전성(codex major 7)**: 판정 = sleep 인자 순서 + 30s 자식이 끝나기 전에 돌아옴. sleep 밖의 30s 미만 대기(`/bin/sleep 5` 절대 경로 · 파일 시스템 막힘 · CPU)는 잡지 못하고, 부하로 런처가 30s 넘게 걸리면 거짓 붉음. 수용 기준(×2 회귀 붉음) 충족으로 갈음(master 처분).
+
+### 정정
+- 델타 2 의 pubcand 자기 검체 「24 ok(전 17)」 → 실제 **23 ok**(0172b7138 에서 다시 셈) · 이번 판 26 ok.
+
+### 시험(이 델타)
+- pubcand --self-test 26 ok · ci_pack_steps --self-test(venv) 음성 10 · test_gen_released_hashes_extra_ref 9/9 · 생성기 --check OK · 게이트 DRY rc 0 · 뮤턴트 6/6 붉음(B2 2 · M2 1 · M3 1 · M5 = 옛 생성기 1 · 위 표).

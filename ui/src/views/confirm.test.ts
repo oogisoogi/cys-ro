@@ -404,7 +404,7 @@ describe("독립 검증(2160) 지적 고정", () => {
   });
 });
 
-describe("codex 1R(02:51 · e62e1fb0) 지적 고정", () => {
+describe("검토 지적 고정 — 지문·slug·org 응답·좌석 번호가 깨졌을 때 호출 0", () => {
   const N = (text: string, ts: string | null = null) => ({ uuid: null, parent: null, role: "assistant", text, ts });
   const stalledH = async (o: Partial<Record<string, unknown>> = {}) => {
     const h = harness();

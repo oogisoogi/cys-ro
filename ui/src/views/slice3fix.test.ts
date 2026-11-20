@@ -397,7 +397,7 @@ describe("H — 같은 글의 다른 말이 「전달됨」 이상이면 확정 
   });
 });
 
-describe("codex 1R(e8ddaf65 BLOCK) 지적 고침 — 빠졌던 시험 3", () => {
+describe("검토 지적 고침 — 시각 없는 같은 글 · 늦은 시작점 조회 · 안 묶인 답 시각순", () => {
   it("blocking — 다른 길에서 온 시각 없는 같은 글 레코드를 먼저 읽어 둔 뒤 60초 뒤 그 글을 보냄 · 쓰기 불명(안 씀) → 전달됨 0", async () => {
     const sim = new Sim({ plan: () => "uncertain_lost", recordDelay: () => null, replyDelay: () => null });
     await ready(sim);
@@ -452,7 +452,7 @@ describe("codex 1R(e8ddaf65 BLOCK) 지적 고침 — 빠졌던 시험 3", () => 
   });
 });
 
-describe("codex 2R(60185fe2 BLOCK) 지적 고침", () => {
+describe("검토 지적 고침 — 같은 밀리초 · 감싼 꼴 비교 · 겹친 시작점 조회", () => {
   it("blocking ① — 다른 길 시각 없는 X 를 읽은 **같은 밀리초**에 X 를 보냄 · 쓰기 안 됨 → 전달됨 0", async () => {
     const sim = new Sim({ plan: () => "uncertain_lost", recordDelay: () => null, replyDelay: () => null });
     await ready(sim);

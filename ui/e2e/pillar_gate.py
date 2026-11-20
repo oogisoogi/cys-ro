@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""고정 기둥 폭 규칙 게이트 — TICKET=cysr-tabs-sidebar-impl 조각 2b-3(지시서 ~/axdev/master/briefs/2026-11-11-cysr-pillar-width-rule.md · 수동 실행 — CI 미배선).
+"""고정 기둥 폭 규칙 게이트 — 탭·옆 막대 조각 2b-3(수동 실행 — CI 미배선 · 규칙 = ui/src/grouptabs.ts pillarCols).
 
 실제 번들 + __TAURI__ 대역(statusboard_gate SHIM 재사용 · grid_gate 장면 재사용). 장면 = 고정 master·cso + site 묶음 좌석 3·4·7 + lms 1(탭이 생기게).
-폭 = 1371(박사님 노트북 프로필 창) · 1920(싱글) · 2786(박사님 4K 프로필 창).
+폭 = 1371(노트북 창) · 1920(싱글) · 2786(4K 창).
 단언(site 탭):
   ① 기둥 열 수(master 칸이 실제로 보낸 PTY 열) = clamp(64, ⌊배치 영역 열 수 × 36%⌋, 96) ±1(여백 근사) · 글자 칸 = 글자 화면 폭 ÷ PTY 열
   ② 한 줄 칸 수 = grouptabs.gridColumns 를 실측 재료(오른쪽 px · 높이 · 40열 px · 12줄 px)로 다시 계산한 값 · 줄 = ⌈n÷한 줄⌉

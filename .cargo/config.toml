@@ -10,8 +10,8 @@
 # pack_dir() 은 종전대로 CYS_PACK_DIR 미설정 시 ~/.cys/pack 으로 폴백한다.
 [env]
 CYS_PACK_DIR = { value = "target/test-pack-sandbox", relative = true, force = false }
-# (TICKET=cysr-tabs-sidebar-impl · master#9278e6ab) 시험 스레드 스택 4MiB — 거대 clap `Command` 의 debug 파싱 프레임이 libtest 기본 2MiB 에
-# 닿아 시험 프로세스가 통째로 죽는 사고가 4회(rqfix_f10 · j3 · aid_s5 · a3 · 실측 문턱 2040~2044KiB). 실제 CLI 는 8MB 메인 스레드에서
+# 시험 스레드 스택 4MiB — 거대 clap `Command` 의 debug 파싱 프레임이 libtest 기본 2MiB 에
+# 닿아 시험 프로세스가 통째로 죽는 사고가 4회(실측 문턱 2040~2044KiB). 실제 CLI 는 8MB 메인 스레드에서
 # 파싱하므로 영향 0. force=false = 사람이 준 값이 있으면 그것. 프레임이 더 커지는 것은 cys.rs 감시 시험
 # `cli_parse_fits_2mib_plus_64kib_stack_guard_because_cargo_config_raises_test_stack` 이 따로 붉게 알린다.
 RUST_MIN_STACK = { value = "4194304", force = false }

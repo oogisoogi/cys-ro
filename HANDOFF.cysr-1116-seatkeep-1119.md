@@ -290,3 +290,46 @@ pid 생존 · 출생 시각 = 기록/등록부 값 · 실행 파일 = 이 cysd �
 
 ### 다음 첫 행동
 1. master 【확인요청】 T4 처분 매듭 회신 대기 중 → T6a 나머지(아래) 착수: drain 분리(입양 좌석 = `org.status daemon.seat_adopt` 에 입양 좌석 목록 칸 → rotate ① 이 그 좌석의 저장 실패를 rc 에서 뺌) · `cysd --adopt-check --json`(잠금·소켓·쓰기 0 · 판정 = judge + 실행 파일 + 핵심 판 + 결박) + rotate ② 앞 점검 · holder 총수 상한(기존 좌석 상한 상수 없음 → 기본값 📌) · A1 rotate 6회 · D4 launchd · D5 claude 5회 · 뮤턴트.
+
+## 후임 3 — T6a 나머지(11-20 07:3x~10:0x)
+### 커밋
+| 커밋 | 내용 |
+|---|---|
+| 2656d91e2 | drain 분리(`adoptable_surfaces` · `drain_ok_excluding_adoptable`) · `cysd --adopt-check [--json]` + rotate ① 앞 점검(rc 27 `ROTATE_RC_ADOPT_BLOCKED`) · holder 총수 상한(`CYS_SEATKEEP_MAX_HOLDERS` 기본 64 → 직접 PTY + `seat.seatkeep_capped`) |
+| 052bcb18d | e2e `launchd`(D4) |
+| e2eda303d | e2e `claude`(A4/D5) · `cost`(A13) · T6-DESIGN §6 결과 표 |
+- 앞 좌석 2b741e0c6(폴백 거르개 · rotate 모드) + 후임 3 277c2df57(D2) 포함 = T6a 설계 항목 전부(2-1·2-2·2-5·2-6 · A1 · D4 · D5 · A13).
+
+### 시험(격리 env -i)
+| 묶음 | 앞(ead22aa8d) | HEAD e2eda303d |
+|---|---|---|
+| cysd 전체(스레드 4 · 09:30~09:47 · load 43→20) | 3358/3/17 · 계 3378 | 3360 통과 · 5 실패 · 17 무시 · 계 3382(+4) — 실패 = seatkeep_* 3(`handshake_timeout`) · `settle_hold_denies_…` 1 · `ingest_drain_throughput_bench` 1(941 vs 466ms) → **load 5 단독 재실행 7/7 통과** |
+| cys 전체(10:03) | — | **799 통과 · 0 실패 · 2 무시**(+ drain·precheck 단위 2) |
+| 입양 켬 accounts::+seat_proc:: | 180/180 | 181/181(+ holder_cap) |
+| e2e | — | precheck(rc 27 → rc 0) · cap · rotate 6(A1) · launchd(D4) · claude 5/5(D5) · cost(A13) |
+| 뮤턴트 | — | H 사전 점검 끔 · K 점검 실행 파일 검사 끔 · I 상한 끔 — 3/3 붉음(`e2e/mut-t6a.jsonl`) · drain 분리 = 순수 함수 단위 시험이 직접 잡음(뮤턴트 생략) |
+- A13 숫자 = T6-DESIGN §6(디버그 빌드 · load 40~50 · 판정선 master).
+
+### 원작자 파일 변경 줄(T6a 나머지)
+- cys.rs(원작자): rotate ① 앞 점검 6줄 · ① 결과 판정을 `drain_ok_excluding_adoptable` 로(+4줄) · rc 표 1줄 + `ROTATE_RC_ADOPT_BLOCKED` · 새 함수 4(`drain_ok_excluding_adoptable`·`rotate_adoptable_surfaces`·`adopt_precheck_verdict`·`rotate_adopt_precheck`) · 시험 2.
+- main.rs: `CysdCli::AdoptCheck`(+ 파서 7줄 · usage 1줄 · main 분기 1줄 · 시험 1 + 거절 표 2줄).
+- handlers.rs: `status_json(daemon)` 인자 1곳.
+- (이 갈래) seat_proc.rs(`open` 상한 갈래 · `holder_cap_from`·`holders_over_cap` · `SEATKEEP_CORE_VERSION`) · seat_adopt.rs(`status_json` 입양 좌석 목록 · `check_block_reason`·`adopt_check_main`·`adopt_check_in`) · 시험 · e2e.
+
+### 함정(후임 3)
+- zsh 루프 `set -- $x` 는 단어를 안 쪼갬 → 뮤턴트 스위치가 안 켜진 무효 실행 1회(기억 그대로) — 뮤턴트·묶음 실행은 bash 스크립트 파일로.
+- claude 신뢰 질문 기본값 = 「No, exit」(Return 만 보내면 rc 1 로 끝남) → Down + Return.
+- 화면 전체 낱말 개수 판정 = 읽기 창(400줄)에서 앞 줄이 밀리면 안 늘어남 → 「이번 질문(회차 번호로 유일) 뒤」 판정.
+- D5 1회차 실행(중단) 뒤 rotate 가 자동 기동한 시험 cysd 2개가 ppid 1 로 남았음(21202 · 80778 — pid 로 끝냄) → 실물 시험 뒤 `ps | grep /private/tmp/ska-` 0 확인 필수.
+- 기계 load 가 이 매듭 중 165 까지(다른 좌석) — 시한 계열 붉음은 단독 재실행으로 가름.
+
+### 지시 없이 내린 판단(T6a)
+1. 사전 점검 위치 = rotate ① 저장 지시 **앞**(설계 = ② 앞) — 막힐 거면 좌석에 [DRAIN] 을 보내기 전에 멈추는 편이 부작용 0.
+2. 사전 점검 대상 cysd = 이 cys 옆 cysd(비업데이트 rotate 의 다음 데몬). 업데이터 S7 앞 점검(새 번들 cysd) = T6b.
+3. 옛 cysd(`--adopt-check` 모름 = 인자 거절 rc 2) = 막힘(rc 27) — 입양을 모르는 판으로의 교체는 2-4 의 관리용 종료 경로(T6b) 전까지 멈춤.
+4. holder 상한 = 입양 모드만 · 기본 64(기존 좌석 상한 상수 없음) · 산 좌석 수 = 이 데몬의 seatkeep 좌석(미결 고아 제외).
+5. A13 은 디버그 빌드 숫자(릴리스 빌드 측정 = 측정 대기).
+
+### 다음 첫 행동
+1. master 회신(T4 처분 · T6a) 대기 — codex 1R(T6a = 업데이터 아닌 rotate·CLI 축) 여부는 master 대기열.
+2. T6b: 2-3 업데이트 뒤 신원(D1 = 옛 번들 `.cysr.app.old-<seq>` 자리 허용 + 같은 팀 서명) · 2-4 되감기·판 내림 관리용 종료(`end_keeper` 재사용) · 업데이터 S7 앞 점검 · e2e `update`(격리 번들 두 벌 rename 흉내) · 검증 좌석 📌ⓐ(옛 번들 지우기→복사 사이 기동 = proc_pidpath 실패 → 미결 → M2 가 신원 불성립으로 끝내지 못함).

@@ -64,9 +64,10 @@ python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/skills/transcription/bin/transcribe_ch
   격상한다 — caption-align garbage-in 차단.
 - 실 whisperx ASR 실행은 이 글루가 아니라 위 ASR 레시피(별 노드/사람)가 수행한다 —
   producer≠evaluator(자가채점 금지). 품질 검증은 `video-verify-audio-sync`.
-- ⚠ 자막이 없는 URL·로컬 파일은 이 글루가 전사하지 않는다 — whisperx 가 배선돼 있지 않아 안내
-  (NotImplementedError 문구)를 찍고 코드 1로 끝난다(`bin/transcribe_channel.py` 159~162줄). 그때는 아래
-  레시피(또는 whisper-cli)를 직접 돌린다.
+- ⚠ 자막이 없는 URL·로컬 파일은 이 글루가 전사하지 않는다 — whisperx 가 **없으면**
+  `"error": "channel exhausted (no available provider)"`, **있으면** `whisperx ASR not wired here`
+  (NotImplementedError · `bin/transcribe_channel.py` 159~162줄)를 찍고 **둘 다 코드 1**로 끝난다(2026-11 실측).
+  그때는 아래 레시피(또는 whisper-cli)를 직접 돌린다.
 
 ## 온디바이스 ASR 레시피 (whisperx 바닥 — 종량제 0·로컬 결정론)
 

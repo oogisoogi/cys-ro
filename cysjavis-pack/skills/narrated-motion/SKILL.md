@@ -40,7 +40,7 @@ python3 <정본>/tools/s2m_cues.py <프로젝트>      # audio/cues/*.wav · aud
 ```
 - 시각은 **합성된 파일의 샘플 수**로만 정한다(LLM 이 듣고 적은 시각 금지 · 전사 불필요). 앞뒤 무음은 −45 dBFS 기준으로 잘라 「문장 시작 = 말 시작」.
 - 목소리 = **macOS say(기기 밖으로 안 나감 · 무료)** 기본 · `Yuna (Premium)`/`Jian (Premium)` 등 한국어 Premium 목소리. `edge` 엔진은 설치돼 있을 때만(무료지만 문장이 외부 서버로 감 → 개인정보 대본 금지).
-- ⚠ **say 목소리는 공개본에 쓰지 않는다(사용권)**: macOS 사용권 계약 §2F 는 시스템 음성을 「개인적·비상업적」 작품에만 허락한다(`/Library/Documentation/License.lpdf/Contents/Resources/English.lproj/License.html` 67줄 「for your personal, non-commercial use」 · 「No other creation or use of the System Voices … is permitted」). → 유튜브 게시·행사 상영 같은 공개본은 사람 녹음이나 사용권을 확인한 목소리로 바꾼다. say 는 만드는 사람의 작업 시안까지.
+- ⚠ **say 목소리는 공개본에 쓰지 않는다(사용권)**: macOS 사용권 계약 §2F 는 시스템 음성을 「개인적·비상업적」 작품에만 허락한다(`/Library/Documentation/License.lpdf/Contents/Resources/English.lproj/License.html` 의 §2 「F. Voices; Live Captions」 항 「for your personal, non-commercial use」 · 「No other creation or use of the System Voices … is permitted」). → 유튜브 게시·행사 상영 같은 공개본은 사람 녹음이나 사용권을 확인한 목소리로 바꾼다. say 는 만드는 사람의 작업 시안까지.
 - ⛔ 유료 TTS(ElevenLabs·Fish Audio)는 이 도구가 부르지 않는다 — 사용자 목소리 복제가 필요하면 `voice-clone-elevenlabs` + `cost-preview-confirm`(사용자가 비용을 먼저 확인) 후 그 wav 들을 같은 큐 id 로 `audio/.cache` 대신 넣는 확장(초안 범위 밖).
 - 문장 하나만 고치면 그 문장만 다시 합성된다(캐시 = 엔진·목소리·빠르기·발음 문자열의 해시).
 

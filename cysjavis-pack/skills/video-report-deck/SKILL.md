@@ -38,7 +38,7 @@ S="${CYS_PACK_DIR:-$HOME/.cys/pack}/skills/video-report-deck"
 4. 목소리(둘 중 하나):
    - ElevenLabs: `export ELEVENLABS_API_KEY=<당신의 키> ELEVENLABS_VOICE_ID=<목소리 id>`(선택 `ELEVENLABS_MODEL_ID` · 기본 `eleven_multilingual_v2`). 키는 환경변수로만 받는다 — 팩 규약 `suite-runtime-keys`.
    - 맥의 `say`(한국어 Yuna · 속도 190): **맥 전용 대체 수단**이다. 윈도·리눅스에서는 ElevenLabs 키가 있어야 한다.
-   - ⚠ 사용권: say 목소리는 macOS 사용권 §2F 상 「개인적·비상업적」 사용만 허락된다(기기의 `License.html` 67줄) → say 로 만든 영상은 만든 사람의 확인용까지. 발표장 상영·유튜브 게시 같은 공개본은 다른 목소리로 바꾼다. ElevenLabs 도 **무료 등급 결과물은 비상업 전용 + 출처 표기**다(ElevenLabs 도움말) → 공개본은 상업 사용이 허락된 유료 등급 키일 때만.
+   - ⚠ 사용권: say 목소리는 macOS 사용권 §2F 상 「개인적·비상업적」 사용만 허락된다(기기의 `License.html` §2 「F. Voices; Live Captions」 항) → say 로 만든 영상은 만든 사람의 확인용까지. 발표장 상영·유튜브 게시 같은 공개본은 다른 목소리로 바꾼다. ElevenLabs 도 **무료 등급 결과물은 비상업 전용 + 제목에 출처(`elevenlabs.io` 또는 `11.ai`) 표기**이고, 유료 구독 밖(그 전이나 뒤)에서 만든 결과물은 나중에 유료로 바꿔도 상업 사용이 안 된다(ElevenLabs 도움말 「Can I publish the content I generate」) → 공개본은 상업 사용이 허락된 유료 등급 키일 때만.
 5. 무엇이 없으면 빌더가 「없음 … — 설치 방법」을 찍고 코드 4로 끝난다. 그 안내를 사용자에게 그대로 전한다(자동 설치하지 않는다).
 
 ### 1. 장면 JSON 만들기

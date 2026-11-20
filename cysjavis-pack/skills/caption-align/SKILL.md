@@ -31,7 +31,10 @@ python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_select.py" rank --catalog "$
 
 - **무료·로컬 바닥**: `align_whisperx`(WhisperX forced-alignment·무키·로컬·`transcription`의 whisperx
   모델 재사용). 키는 필요 없지만 파이썬 `whisperx` 가 설치돼 있을 때만 가용(없으면 javis_select 가 미가용으로 건너뛴다).
-- 문장 단위·다국어 정렬엔 `align_aeneas`(로컬·무키). `--free-first`로 무료 바닥 우선.
+- 문장 단위·다국어 정렬엔 `align_aeneas`(로컬·무키 · 파이썬 `aeneas` 가 설치돼 있을 때만). `--free-first`로 무료 바닥 우선.
+- ⚠ whisperx·aeneas 둘 다 없으면 rank 가 「가용 후보 없음」으로 끝난다(2026-11 실측). 그때는 whisper.cpp(`whisper-cli`)
+  등으로 단어 시각이 든 전사를 먼저 만들어 `transcription` 산출 계약(`transcript.json`) 모양으로 옮긴 뒤 아래
+  `caption_shape.py` 로 큐를 만든다(단어 시각 출력 여부는 따로 확인).
 
 ## 입력·산출물 계약
 

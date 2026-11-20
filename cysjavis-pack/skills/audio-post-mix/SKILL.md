@@ -31,6 +31,8 @@ disable-model-invocation: true
      `ffmpeg -i mix.wav -af loudnorm=I=-14:TP=-1:LRA=11:print_format=json -f null -`
      → 출력 JSON 의 `input_i`·`input_tp`·`input_lra`·`input_thresh` 를 2회째의
      `measured_I`·`measured_TP`·`measured_LRA`·`measured_thresh` 에 넣고 `linear=true` 를 붙여 실제로 바꾼다.
+     ⚠ 조건이 안 맞으면 ffmpeg 가 **말없이 동적(Dynamic) 모드로 바꾸고 결과를 192 kHz 로 낸다**(실측) →
+     2회째에 `print_format=summary` 를 붙여 `Normalization Type` 줄을 확인·기록하고, 출력에 `-ar 48000` 을 준다.
      (zsh 에서는 변수 뒤에 `:` 가 오면 `${변수}` 로 감싼다 — `$th:linear` 는 `:l` 수식어로 깨진다.)
    - 확인 = 결과를 `ffmpeg -i out.wav -af ebur128=peak=true -f null -` 로 다시 재서 요약의 `I:`(통합 LUFS)·
      `Peak:`(실제 최고점)가 목표 안인지 **숫자로** 기록한다.

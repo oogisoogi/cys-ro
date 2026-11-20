@@ -104,6 +104,24 @@
 | 스킬 문구를 고정한 시험 | 고친 문구(「항상 가용」·「≤60초」·「유튜브 타깃」 등)를 잡는 시험 0건(`grep -rnE` · py/rs/sh) |
 | 개인 정보 | 추가 줄에 `axdev`·`박사님`·`oogisoogi`·`교회`·`예배` 0건 |
 
+## 독립 검증 뒤 1회 고침 (master#bea58169 · VERDICT REVISE · 2026-11-20)
+
+검증 = `~/axdev/workers/skill-revisions-verify-1120/VERDICT.md`(반영 23건 중 맞음 21 · 일부 틀림 2). 아래만 고쳤다(본문만 · 설명 변경 0 유지).
+
+| 지적 | 스킬 | 고친 것 | 이 좌석 재확인 |
+|---|---|---|---|
+| M1 | cost-preview-confirm | 규약 6번 상한 = `run-cost.json` 의 `budget` 칸 → **별도 파일 `run-budget.json`**(안 ⓑ · 출력 계약 그대로 · 없으면 사용자에게 상한을 묻는다) | 출력 계약 :41 배열 그대로 확인 |
+| M2 | transcription | 오류 안내 = whisperx **없음** → `channel exhausted (no available provider)` · **있음** → `whisperx ASR not wired here`(NotImplementedError) · 둘 다 코드 1 | 로컬 wav 로 실행 → `"error": "channel exhausted (no available provider)"` · rc=1 |
+| R1 | audio-post-mix | `linear=true` 여도 조건이 안 맞으면 말없이 Dynamic · 192 kHz → `print_format=summary` 로 `Normalization Type` 확인 · `-ar 48000` | 사인파·분홍 잡음 둘 다 `Normalization Type: Dynamic` · 192000 Hz · `-ar 48000` 주면 48000 |
+| R2 | narrated-motion · video-report-deck | License.html 「67줄」 → 조항 제목 「§2 『F. Voices; Live Captions』 항」(판마다 줄 번호가 달라질 수 있음) | — |
+| R3 | video-report-deck · voice-clone-elevenlabs | 무료 = **제목에** `elevenlabs.io`/`11.ai` 출처 · 유료 구독 밖(전·후)에서 만든 결과물은 나중에 유료로 바꿔도 상업 불가 | ElevenLabs 도움말 「Can I publish the content I generate on the platform?」 원문 확인 |
+| R4 | voice-clone-elevenlabs | ④(앞 처분에서 원문 미확인으로 뺌) 넣음 → ③으로: 본인 목소리 복제 내레이션·더빙 = 유튜브 공개 불필요(14328491 「Cloning one's own voice to create voice overs or dubs」) · 남의 목소리처럼·하지 않은 말 = 공개 대상 | 도움말 14328491 확인 |
+| R5 | caption-align | whisperx·aeneas 둘 다 없으면 「가용 후보 없음」 → whisper-cli 등으로 단어 시각 전사 → `transcript.json` 모양 → `caption_shape.py` 1줄 · aeneas 「설치돼 있을 때만」 | rank 실행 → 「select caption-align: 가용 후보 없음」 |
+| R6 | audio-post-mix 설명 | 안 함(master 결정 = 다음 설명 손질 때) | — |
+| R7~R10 | — | 이번 지시 범위 밖(안 함) | — |
+
+시험(고침 뒤 다시): asset_ledger 초록 139/140 · test_asset_ledger_check OK · H-ASSET-1 GREEN · test_output_skills OK · cargo 3 passed · javis_registry --root verify OK 124 · 설명 변경 0 · 추가 줄 개인 낱말 0.
+
 ## 고치기 전/뒤 (스킬별 · `git diff -U0 1ff82d08a 1d11445d5` 에서 기계 추출)
 
 

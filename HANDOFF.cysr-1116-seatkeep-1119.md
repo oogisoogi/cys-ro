@@ -333,3 +333,40 @@ pid 생존 · 출생 시각 = 기록/등록부 값 · 실행 파일 = 이 cysd �
 ### 다음 첫 행동
 1. master 회신(T4 처분 · T6a) 대기 — codex 1R(T6a = 업데이터 아닌 rotate·CLI 축) 여부는 master 대기열.
 2. T6b: 2-3 업데이트 뒤 신원(D1 = 옛 번들 `.cysr.app.old-<seq>` 자리 허용 + 같은 팀 서명) · 2-4 되감기·판 내림 관리용 종료(`end_keeper` 재사용) · 업데이터 S7 앞 점검 · e2e `update`(격리 번들 두 벌 rename 흉내) · 검증 좌석 📌ⓐ(옛 번들 지우기→복사 사이 기동 = proc_pidpath 실패 → 미결 → M2 가 신원 불성립으로 끝내지 못함).
+
+## 후임 3 — T6b(11-20 10:0x~10:3x · master#ade86189 「T6b 설계 대조부터 · 커밋 T6a 와 따로」 · master#c5b4ebfc D1 = A)
+### 커밋(T6a 와 분리)
+| 커밋 | 내용 |
+|---|---|
+| f138da04e | D1 ⓐ 옛 번들 자리 신원(`seatkeep_exe_ok` · adopt_connect·seatkeep_exe_matches 공용) · e2e `update` |
+| e3afb8a67 | `cysd --adopt-check --as-bundle` · `cysd --end-keepers` · realops S7 앞 점검(`seat_adopt_precheck`) · rb_prepare 되감기 전 관리용 종료(`end_keepers_if_old_unaware`) · T6-DESIGN §7 |
+- 결정: D1 = **ⓐ 만**(ⓑ 팀 서명 대조 뺌 — 설치본 `codesign -dv` TeamIdentifier=not set · 실효 0 · 같은 사용자 = 신뢰 경계 안).
+- 📌 서명 기반 대조 = 경계 밖 위협 모델이 생기면 B(지정 요구사항·리프 인증서 해시 같음)로.
+- 조사: 업데이터 S11 commit 은 옛 번들을 지우지 않음(「다음 성공 갱신 때 지운다」 주석 · 코드 no-op) → ⓒ(지워진 실행 파일 = 미결·관리용 종료 불가)는 지금 업데이터 길에서 안 생김 — 나중에 옛 번들 정리를 넣으면 「산 seatkeep 이 그 번들을 쓰는 동안 지우지 않기」 가 같이 필요(📌).
+- S7 앞 점검을 스테이지 cysd 로 그냥 돌리면 늘 막힘(산 seatkeep = 정식 자리 · 스테이지 옆 ≠) → `--as-bundle <정식>` 으로 교체 뒤 신원 판정.
+
+### 시험(격리 env -i)
+| 묶음 | 앞(e2eda303d) | HEAD e3afb8a67 |
+|---|---|---|
+| cysd 전체(10:18~10:31 · load 6→20) | 3360/5/17 · 계 3382 | **3364 통과 · 2 실패 · 17 무시 · 계 3383**(+1 `seatkeep_exe_ok_…`) — 실패 = `seatkeep_input_ack_*` 2(handshake_timeout) |
+| lib update:: | — | 269 통과 · 0 실패 · 1 무시(+ `seat_adopt_precheck_verdict_table`) |
+| 입양 켬 accounts::+seat_proc:: | 181/181 | 181 통과 · 1 실패(`seatkeep_stalled_consumer_does_not_block_close` handshake_timeout) |
+| 단독 재실행(load 18~19) | — | `seat_proc::tests::seatkeep_` 6/6(노브 끔) · 6/6(입양 켬) |
+| e2e update | — | rename 교체 = adopted · 스테이지 그대로 = 막힘 · `--as-bundle` = 통과 · `--end-keepers` 데몬 있음 rc 3 · 없음 = 정식 번들 seatkeep 끝냄(SIGNAL 1) · 지워진 옛 번들 seatkeep = `end_exe_not_seatkeep` 실패 보고 |
+| 뮤턴트 | — | L(ⓐ 끔) 붉음 · S7·rb_prepare 배선 = 순수 판정 단위만(실 업데이터 e2e 없음) |
+- 측정 대기: 실 업데이터 S7→S9→S10 · 되감기(RB_PREPARED → start_old) 길에서의 점검·관리용 종료 = VM 실기(이 좌석은 업데이터를 실제로 돌리지 않음 · 비가역 목록 밖이지만 실 번들·서명 필요).
+
+### 원작자 파일 변경 줄(T6b)
+- update/realops.rs: `stop()` 첫머리 맥 갈래 4줄 · `rb_prepare` 맥 갈래 4줄 · 새 메서드 2(`seat_adopt_precheck` · `end_keepers_if_old_unaware`) · 모듈 함수 `seat_adopt_precheck_verdict` · 시험 1. (`stop(&mut self, _j)` → `j` 이름만.)
+- main.rs: `CysdCli::AdoptCheck(Option<String>)` · `EndKeepers` · 파서(--as-bundle · --end-keepers) · usage 1줄 · main 분기 1줄 · 시험 표 4줄.
+- (이 갈래) seat_proc.rs(`seatkeep_exe_ok` · `seatkeep_exe_matches_want`) · seat_adopt.rs(`adopt_check_in_want` · `end_keepers_main` · `end_keepers_in`) · 시험 · e2e.
+
+### 지시 없이 내린 판단(T6b)
+1. S7 점검 실패 = S7 단계 Err(런너 기존 「옛 바이너리 재기동 + 보류」 · 새 ErrCode 안 만듦 · `RotateFailed` + 사유 `seat_adopt_precheck_*`).
+2. 옛 판 「입양 앎」 판정 = 옛 번들 cysd 가 `--adopt-check --json` 에 JSON 객체를 내는가(판 번호 비교 안 함) · 옛 번들 못 찾음 = 모름으로(끝내는 쪽).
+3. `--end-keepers` 는 파일 정리를 안 함(다음 입양 앎 판 기동이 죽은 seatkeep 으로 정리).
+4. 되감기 관리용 종료 실패는 되감기를 막지 않음(복구 길 · stderr 기록).
+
+### 다음 첫 행동
+1. master: codex 1R(T6a = q/09-skt6a-r1 대기열 · T6b = 업데이터 축 고위험 → 독립 검증 좌석 + codex 1R 권고 · 범위 `f138da04e^..e3afb8a67 -- src/ scripts/seatkeep-adopt-e2e.py`).
+2. 남은 T6 밖: T7 윈도우 → D1 꼬리 ≤1KiB 유실 · 슬레이브 보유 탐침 → 노브 기본 켬 판단(T1·T5·D1 닫힌 뒤 숫자) · 📌 전사 SIGKILL 1초 유실(이월 ④) · A13 릴리스 빌드 숫자.

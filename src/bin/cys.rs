@@ -23082,7 +23082,8 @@ fn rotate_adopt_precheck(exe: &std::path::Path) -> Result<(), String> {
     if connect_raw().is_err() {
         return Ok(());
     }
-    let Some(sa) = request("org.status", json!({})).ok().map(|v| v["daemon"]["seat_adopt"].clone()).filter(|v| v.is_object()) else {
+    // ★codex skt6a-r1 #3: 응답 실패·모양 다름 = 막힘(rc 27) — 「입양 칸 없음」(노브 끔·옛 판)만 점검 없음(종전).
+    let Some(sa) = cys::update::realops::seat_adopt_status(request("org.status", json!({})))? else {
         return Ok(());
     };
     let pending: Vec<String> = sa["pending"].as_array().map(|a| a.iter().filter_map(|p| p["skid"].as_str().map(str::to_string)).collect()).unwrap_or_default();
@@ -23321,7 +23322,10 @@ fn run_rotate(timeout: u64, skip_drain: bool, skip_depts: bool) -> i32 {
                 drain_ok = ok;
                 drain_note = format!("저장 확인 {saved}/{total}");
                 if excused > 0 {
-                    drain_note.push_str(&format!(" · 입양 좌석 {excused}개는 교체를 넘겨 살아 저장 실패를 rc 에서 뺌"));
+                    // ★codex skt6a-r1 #5: 사전 점검은 정적 호환만 본다 — 교체 뒤 입양이 실패하면 저장 안 된 대화를 잃을 수 있으니 경고 줄은 남긴다.
+                    drain_note.push_str(&format!(
+                        " · ⚠ 입양 좌석 {excused}개 저장 실패 — 교체를 넘겨 산다고 보고 rc 에서 뺌(교체 뒤 입양 실패면 미저장 대화 유실 가능 · `cys status --json` daemon.seat_adopt 확인)"
+                    ));
                 }
             }
             None => {
@@ -23330,6 +23334,12 @@ fn run_rotate(timeout: u64, skip_drain: bool, skip_depts: bool) -> i32 {
             }
         }
         eprintln!("[rotate] ① {drain_note}");
+    }
+    // ★codex skt6a-r1 #4: 사전 점검과 교체 사이(① 저장 대기 최대 수십 초)에 생긴 좌석은 점검을 안 받았다 — 교체 직전에 한 번 더 본다
+    //   (생성 관문은 아님 · 남는 창 = 이 재점검과 ② 사이 · HANDOFF 한계).
+    if let Err(why) = rotate_adopt_precheck(&exe) {
+        eprintln!("[rotate] 교체 직전 재점검 막힘 — 교체하지 않는다(옛 데몬·좌석 그대로): {why}");
+        return ROTATE_RC_ADOPT_BLOCKED;
     }
     // ② 데몬 교체 — OS 상시 가동 등록(launchd·작업 스케줄러)이 소유하는 것은 **기본 소켓 데몬뿐**이다.
     //   부서·격리 데몬(비-기본 소켓)에 launchd 이관을 걸면 라이브 기본 데몬을 건드린다 → 정지+자동 기동 경로.
@@ -31927,6 +31937,26 @@ mod tests {
     }
 
     /// T6a 사전 점검: 막힘 0 + rc 0 만 진행 · 막힘·해석 실패(옛 cysd)·rc ≠ 0 = 멈춤.
+    #[test]
+    fn rotate_adopt_precheck_wiring_pins() {
+        // ★codex skt6a-r1 #3·#4 배선 핀(주석 줄 뺌): 점검의 org.status 판정 = 실패 닫힘 공용 함수 · run_rotate = 저장 전 + 교체 직전 두 번.
+        let src = include_str!("cys.rs");
+        let body = |head: &str| -> String {
+            let i = src.find(head).unwrap_or_else(|| panic!("{head} 없음"));
+            let rest = &src[i..];
+            let end = rest[1..].find("\nfn ").map(|e| e + 1).unwrap_or(rest.len());
+            rest[..end].lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n")
+        };
+        let pre = body("fn rotate_adopt_precheck(");
+        assert!(pre.contains("seat_adopt_status(request(\"org.status\""), "org.status 판정이 실패 닫힘 함수를 거치지 않는다");
+        assert!(!pre.contains(".ok().map(|v| v[\"daemon\"]"), "fail-open 판정이 되살아났다");
+        let rot = body("fn run_rotate(");
+        let calls: Vec<usize> = rot.match_indices("rotate_adopt_precheck(&exe)").map(|(i, _)| i).collect();
+        assert_eq!(calls.len(), 2, "사전 점검 + 교체 직전 재점검");
+        let takeover = rot.find("\"daemon\", \"install\", \"--takeover\"").expect("② 교체");
+        assert!(calls[0] < rot.find("drain_ok_excluding_adoptable").unwrap() && calls[1] > rot.find("drain_ok_excluding_adoptable").unwrap() && calls[1] < takeover, "순서 = 점검 → ① 저장 → 재점검 → ② 교체");
+    }
+
     #[test]
     fn adopt_precheck_verdict_table() {
         assert_eq!(adopt_precheck_verdict(Some(0), br#"{"adoptable":2,"blocked":[],"foreign":0,"dead":1}"#, &[]), Ok(vec![]));

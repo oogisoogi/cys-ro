@@ -1,0 +1,11 @@
+# TODO — 후임 4 · codex skt6a-r1 처분 (TICKET=cysr-1116-seatkeep-1119 · 브리프 seatkeep4.md · 원장 surface:2326 spawn 16:44)
+- [x] ① blocking: 롤백 전제 검증을 --end-keepers 앞으로 / rb_prepare 실패 시 새 데몬 재기동 + 실패 주입 시험 + 뮤턴트
+- [x] ② major: --end-keepers 실패 시 롤백 진행 금지(상한 뒤 정직한 상태) + 시험 + 뮤턴트
+- [x] ③ major: org.status 실패/모양 다름 = 막힘(필드 없음만 입양 꺼짐) — rotate·업데이터 + 시험 + 뮤턴트
+- [x] ④ major: rotate 사전 점검↔넘겨받기 좌석 생성 창 — 값싸면 고침, 아니면 HANDOFF 한계
+- [x] ⑦ minor: e2e 전역 정리 장치
+- [x] ⑤ minor: 드레인 실패 경고 줄 남김(값싸면) / 한계 1줄
+- [x] ⑥ minor: RENAME_SWAP 중간 크래시 한계 1줄
+- [ ] 묶음 시험(lib update:: · cys · cysd) · 팩 영향 확인 · 격리 실물 업데이터 롤백 모의 1회
+- [ ] 커밋 + HANDOFF 델타 + 【확인요청】
+- (17:09 재부팅 매듭 master#61571c0a — 전체 묶음·e2e 회귀 = 미실행 · HANDOFF 「다음 첫 행동」)

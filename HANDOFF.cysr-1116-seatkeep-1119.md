@@ -399,3 +399,42 @@ pid 생존 · 출생 시각 = 기록/등록부 값 · 실행 파일 = 이 cysd �
 - 이 좌석 커밋 전체(9fe952959 뒤): 277c2df57 · ead22aa8d · cb3bdea57 · 2656d91e2 · 052bcb18d · e2eda303d · b7475232c · f138da04e · e3afb8a67 · 589edf87e · b562e8c07 · 7158237a2 · e7253d6c9 · (이 매듭 문서 커밋). push 0.
 - 남은 것 = 위 「다음 첫 행동(후임 4 또는 이 좌석)」 그대로: ① codex q/09(16:37 · T6a+T6b · e7253d6c9 까지 포함될지 master 확인) 판정 처분 1회 ② 측정 대기(실 업데이터 S6 점검·되감기 종료 VM · drain 분리 실물 · A13 릴리스 빌드 · 자동 복원 재실행 실물).
 - 시험 프로세스 0 · launchctl 시험 라벨 0 · 실사용 좌석 무접촉 · 뮤턴트 작업트리 /private/tmp/skmut1119 = 원복(작업트리 깨끗).
+
+## 후임 4(worker-1116seatkeep4 · surface:2326 · 브리프 `master/briefs/1116-full/seatkeep4.md` · 원장 spawn 16:44 · sha 대조) — codex skt6a-r1(BLOCK · 판정문 `~/axdev/master/reports/verify/codex-1120/skt6a-r1.md`) 처분 · 마지막 회차
+### 처분표
+| # | codex | 처분 | 시험 · 뮤턴트 |
+|---|---|---|---|
+| 1 | **blocking** 되감기가 새 데몬 정지·keeper 종료 **뒤** 스냅숏 검증 → 실패면 데몬 0·좌석 소실 | **고침** — `rb_prepare` 순서 = ① 스냅숏 2뿌리 검증(백업 사본만 읽음) → ② 옛 판 입양 앎 판정(`old_unaware_for_rollback` · 무접촉) → ③ drain · stop-only → ④ `--end-keepers`. 옛 번들 판정은 `rb_swap` 과 같은 「유일한 옛 판」(`rb_old_bundle` = `pick_unique_old`) — 못 고르면 끝내지 않음 | 단위 `rb_prepare_checks_snapshots_before_stopping_or_ending_keepers`(sha ≠ · 백업 손상 · sha 없음 = 호출 0 · 데몬 산 채) · 뮤턴트 M1(검증을 뒤로) 붉음 · **격리 실물** rbprep snapbad = 데몬 같은 pid · 좌석·seatkeep 그대로 / **M1 빌드로 실물 = 데몬 사라짐 · 좌석 SIGNAL 1 · seatkeep 바뀜(codex 시나리오 재현)** |
+| 2 | major `--end-keepers` 실패가 로그 한 줄 → 되감기 진행 | **고침** — `end_keepers_confirmed`: 끝남 확인 = rc 0 + JSON `failed` 빈 배열 · rc 3 = 200ms×3초 상한 재시도 · 그 밖(rc 1 · rc 3 상한 초과 · 해석 불가 · 실행 실패) = Err → `rb_prepare` 가 **새 판 데몬 재기동(rotate)** 후 `RollbackBlocked`@RB_PREPARED(사유 = 종료 결과 + 「되감기 안 함 · 새 판 데몬 복원됨/복원 실패(..)」) → 런너 RB_FAILED(종결 · 사람 필요) · 무한 대기 아님 | 단위 `rb_prepare_refuses_rollback_and_restores_daemon_when_end_keepers_unconfirmed`(4갈래 + 복원 실패 정직 기록) · `rb_prepare_end_keepers_rc3_is_bounded` · `rb_prepare_ends_keepers_after_stop_only_when_old_unaware`(순서 · 입양 앎 = 종료 0) · 뮤턴트 M2(실패 무시) · M3(복원 끔) 붉음 · **격리 실물** rbprep ekfail(다른 폴더 seatkeep = `end_exe_not_seatkeep` rc 1) = 되감기 안 함 · 정식 번들 데몬 복원 · 좌석·seatkeep 생존 / ok = 데몬 0 · seatkeep 0 · 좌석 SIGNAL |
+| 3 | major rotate·업데이터 점검이 `org.status` 실패를 「입양 꺼짐」으로(fail-open) | **고침** — 공용 순수 함수 `realops::seat_adopt_status`: 칸 없음/null = 꺼짐 · 객체 = 켬 · 응답 실패 · 객체 아님 · `daemon` 객체 없음(초판부터 있는 칸 · 22b8f5404) · 칸 비객체 = Err. 업데이터 S6 = `RotateFailed`@S6(보류 · 데몬 무접촉) · rotate = rc 27. (rotate 의 「데몬 없음(connect_raw 실패) = 점검 없음」은 skt6 경미 4 처분 그대로) | 단위 `seat_adopt_status_fails_closed_on_error_or_shape` · `s6_precheck_blocks_when_org_status_fails`(점검 cysd 실행 0) · cys 배선 핀 `rotate_adopt_precheck_wiring_pins` · 뮤턴트 M4(fail-open 되살림) 붉음 |
+| 4 | major rotate 점검↔넘겨받기 사이 좌석 생성 창 | **부분 고침 + 한계** — ② 교체 직전 재점검(`rotate_adopt_precheck` 두 번째 호출 · 막힘 = rc 27 · ① 저장 대기 수십 초 창 → 재점검~② 사이 ms 창). 생성 관문(데몬 RPC 로 좌석 생성 동결) = 새 RPC·해제 경로 필요 → 다음 판 | 배선 핀(순서 = 점검 → ① → 재점검 → ②) · 뮤턴트 M5(재점검 끔) 붉음 |
+| 5 | minor 입양 좌석 drain 실패를 rc 에서 뺌 = 유일 신호 억제 | **고침(경고 줄)** — ① 줄·최종 요약(drain_note) 문구 = 「⚠ 입양 좌석 N개 저장 실패 — … 교체 뒤 입양 실패면 미저장 대화 유실 가능 · `cys status --json` daemon.seat_adopt 확인」. rc 정책은 그대로(T6a 2-1 설계) | 기존 단위 `drain_ok_excludes_only_adoptable_main_seats` 그대로 통과(문구만) |
+| 6 | minor RENAME_SWAP 직후 이름 바꾸기 전 크래시 = 옛 번들이 `.cysr.app.new-<seq>` → 신원 불성립 | **한계(아래)** | — |
+| 7 | minor e2e 스크립트 전역 정리 없음 | **고침** — `_guard_cleanup`(atexit + SIGTERM → sys.exit): 추적 데몬 kill + 인자에 이 시험 폴더(R)가 있는 프로세스 SIGKILL(파이썬 실행 파일 이름은 기계마다 다름 = 이 기계 Xcode `Python`) · 빌 때까지 다시 훑기(상한 5) | 실패 주입 `guard.sh`(adopt 모드 · 데몬·seatkeep·좌석 다 뜬 순간 SIGTERM): **고침 2/2 = 남은 프로세스 0** · 뮤턴트(atexit 등록 끔) = 3개 남음(붉음) · 첫 판(python3 이름 일치·1회 훑기) = 2개 남음 → 고침 |
+
+### 한계(HANDOFF · 다음 판)
+- ④ 남는 창: 교체 직전 재점검과 ② `daemon install --takeover`/옛 데몬 종료 사이(ms)에 생긴 좌석은 점검을 안 받음 — 막으려면 좌석 생성 동결 RPC(업데이터 `update.quiesce` 같은 관문)를 rotate 에도 · 다음 판.
+- ⑤ 입양 좌석 drain 실패는 여전히 rc 를 낮추지 않음(경고 줄만) — 교체 뒤 입양 실패 좌석의 rc 신호 = 다음 판(교체 뒤 `daemon.seat_adopt` 대조).
+- ⑥ RENAME_SWAP 직후·이름 바꾸기 전 크래시: 옛 번들 + 산 seatkeep 이 `.cysr.app.new-<seq>` 에 남아 신원 규칙(`.old-<n>` 만) 밖 → 새 데몬 거절 · 앞 복구 생략 · 되감기 필요(되감기도 실패하면 미결) — 같은 사용자 경계 안 · 드묾 · skt6 경미 7 과 같은 자리(주요 1 처분으로 rotate·업데이트는 안 막힘).
+- ② 「끝남 확인」 = 도구 보고(rc 0 + failed []) 기준 — `end_keepers_in` 은 기록·등록부로 pid 를 못 정하는 산 seatkeep 을 조용히 건너뜀(종전) · 프로세스 표 대조는 안 함.
+- ① 옛 번들을 못 고르면(`pick_unique_old` None) 종전대로 rb_prepare 는 데몬을 내리고 rb_swap 이 실패(RecoverAnomaly · 데몬 0 · seatkeep 은 산 채 → 다음 cys 가 새 판 데몬 = 입양) — 좌석 소실은 아님 · 그 전제도 정지 전으로 옮길지 = 📌(실패 단계 이름이 RB_SWAPPED → RB_PREPARED 로 바뀜).
+
+### 시험(후임 4 · 격리 env -i · 맥 업데이트 재부팅 지시 master#61571c0a 로 17:09 매듭)
+| 묶음 | 결과 |
+|---|---|
+| 새 단위 8(realops 7 + cys 핀 1) | 8/8 통과 · cys 묶음 `drain_ok_excludes_…`·`adopt_precheck_verdict_table` 통과 |
+| 뮤턴트(scratchpad `mut4/mut.py`) | M1 스냅숏 검증 뒤로 · M2 종료 실패 무시 · M3 복원 끔 · M4 org.status fail-open · M5 교체 직전 재점검 끔 = **5/5 붉음** · 원복 확인 |
+| e2e 정리 장치(⑦ · `guard.sh`) | 고침 2/2 남은 프로세스 0 · 뮤턴트 3 남음 |
+| **격리 실물 rbprep**(새 모드 · 무시 시험 `rb_prepare_live` 를 e2e 가 부름 · 진짜 갱신 잠금·rotate --txn·--end-keepers) | snapbad · ok · ekfail **3/3 통과 · 2회**(17:02 · 17:0x) · M1 빌드 = snapbad 붉음(데몬 사라짐·좌석 SIGNAL 1) |
+| lib 전체 · cys 전체 · cysd 전체 · e2e 회귀(precheck·rotate·update·symlink·ustuck) | **미실행 — 재부팅 매듭으로 중단**(lib 17:04~17:09 도중 정지 · 결과 없음) = **측정 대기** |
+| 팩 | 영향 없음(팩·CI 파일 무변 · 바뀐 문구를 참조하는 팩·yml 0 · grep) → ci-branch 팩 단계 생략 |
+
+### 원작자 파일 변경 줄(후임 4)
+- update/realops.rs: `rb_prepare` 순서 재배치(스냅숏 검증 맨 앞 · 판정 → 정지 → 종료 확인 · 실패 = 재기동 + Err) · `end_keepers_if_old_unaware` → `rb_old_bundle`·`old_unaware_for_rollback`·`end_keepers_confirmed` 3개로 · `seat_adopt_precheck` 의 org.status = `seat_adopt_status` · 새 pub fn `seat_adopt_status` · 시험 전용 필드 `old_bundle_override` · 시험 7 + 배선 핀 1줄 갱신.
+- cys.rs: `rotate_adopt_precheck` 의 org.status 1줄 → `seat_adopt_status` · `run_rotate` ② 앞 재점검 5줄 · drain 경고 문구 · 시험 1(핀).
+- scripts/seatkeep-adopt-e2e.py: `_guard_cleanup`(atexit·SIGTERM) · `rbprep` 모드.
+
+### 다음 첫 행동(재부팅 뒤 · 후임/본인)
+1. `bash /private/tmp/claude-501/-Users-oogisoogi-axdev--wt-cys-1116-seatkeep/8a2a3335-7bd3-4153-85d8-c1fdb2f7ab3f/scratchpad/full.sh <같은 scratchpad>` — 재부팅으로 /private/tmp 가 지워졌으면 이 절 「시험」 표의 묶음을 env -i(HOME·TMPDIR=/private/tmp/sk4f · PATH 에 ~/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin)로 `cargo test --lib -- --test-threads 4` → `--bin cys` → `--bin cysd` 순서로 다시(기준선 = 앞 표: cys 799/0/2 · cysd 3364/2/17 · lib update:: 269/0/1 → 새 시험 +7 lib · +1 cys).
+2. e2e 회귀: `for m in precheck rotate update symlink ustuck rbprep; do env -i HOME=/private/tmp/sk4t PATH=/usr/bin:/bin TMPDIR=/private/tmp/sk4t LANG=en_US.UTF-8 USER=$USER LOGNAME=$USER SKA_RB_TESTBIN=$PWD/<cargo test --lib --no-run 이 알려 주는 target/debug/deps/cys-…> /usr/bin/python3 -I scripts/seatkeep-adopt-e2e.py $PWD/target/debug $m 1; done` → 끝에 `ps -axo command= | grep -c '^/private/tmp/ska-'` = 0.
+3. 숫자를 이 절 표에 채우고 커밋 → master 【확인요청】(처분표 1~7 · 위 한계 5줄 · 커밋). codex 추가 회차 없음(마지막 회차).

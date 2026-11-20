@@ -1,9 +1,12 @@
 ---
 name: vibecoding-tdd
 description: 바이브코딩 TDD 전담 스킬 — 위치론(spec 후·plan 전 3대 논리)·문서 체인 5종(test-e2e→test-report→test-setup-orchestrator→tdd.md 법전→test.md→test-plan.md)·Red-Green-Refactor·FIRST·AAA·Test Pyramid 70/20/10·Smoke Test·integrity gate 연동. "TDD 설계 / 테스트 우선 / test.md 작성 / test-plan / 테스트 문서 체인 / 테스트 피라미드" 트리거, 또는 바이브코딩 파이프라인 layer 8~9(spec 직후) 단계로 발동.
+disable-model-invocation: true
 ---
 
 # vibecoding-tdd
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 바이브코딩 파이프라인의 **layer 8~9 — TDD 설계 단계**. 코드가 존재하기 **전에** "무엇이
 올바른 동작인가(=테스트 조건)"를 먼저 문서화한다. 테스트는 검사가 아니라 **설계의 일부

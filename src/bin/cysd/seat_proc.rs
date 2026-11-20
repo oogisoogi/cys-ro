@@ -1,0 +1,1458 @@
+//! 좌석 프로세스 손잡이(좌석 보유 장치 `src/bin/cys-seatkeep/main.rs` 와 맞물리는 cysd 쪽).
+//!
+//! cysd 가 좌석의 PTY 마스터·자식 프로세스에 닿는 자리를 **이 모듈 하나**로 모은다 — 생성 · 출력 읽기 · 입력 쓰기 · 크기 ·
+//! 신호 · 전경 그룹 질의 · 종료 감지·회수 · 닫기. 손잡이의 얼굴은 portable-pty 의 두 트레이트(`MasterPty` · `Child`)와
+//! 읽기·쓰기 스트림이다 — `Surface` 의 `master`·`child` 필드 타입은 그대로라서 그 얼굴을 부르는 곳(시험 구역 포함)은 바뀌지 않는다.
+//!
+//! 구현은 둘이다: **직접 PTY**(지금 동작 — 아래 코드는 옛 자리에서 논리 변경 없이 옮긴 것) / seatkeep 경유(노브 · 이 파일 뒤쪽).
+//! 이 모듈 밖의 운영 코드가 PTY·자식에 직접 닿으면 `seat_proc_gate_tests` 의 grep 게이트가 붉어진다.
+
+use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtyPair, PtySize};
+use std::io::{Read, Write};
+use std::sync::atomic::AtomicBool;
+#[cfg(unix)]
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::{Mutex, TryLockError};
+
+/// 열린 좌석 PTY(자식 기동 전). 옛 순서(`openpty` → 명령 조립 → `spawn_command`)를 그대로 지키려고 생성을 두 단계로 나눈다.
+pub(crate) enum Opened {
+    /// 직접 PTY — 열린 PTY 쌍.
+    Direct(PtyPair),
+    /// seatkeep 경유 — 열기 단계에서 실행 파일·잠금·경로를 확인해 둔 기동 계획(맥).
+    #[cfg(target_os = "macos")]
+    Seatkeep(SeatkeepPlan),
+}
+
+/// 기동된 좌석 — 손잡이의 얼굴들. `take_io` 로 읽기·쓰기를 꺼낸 뒤 `master`·`child` 를 `Surface` 에 넣는다.
+pub(crate) struct Spawned {
+    pub(crate) master: Box<dyn MasterPty + Send>,
+    pub(crate) child: Box<dyn Child + Send + Sync>,
+    pub(crate) pid: u32,
+    /// seatkeep 경유: 생성 때 만든 읽기·쓰기 얼굴(직접 PTY 는 None — `take_io` 가 master 에서 꺼낸다).
+    io: Option<(Box<dyn Read + Send>, Box<dyn Write + Send>)>,
+    /// seatkeep 경유: 전경 질의용 연결(직접 PTY 는 None).
+    #[cfg(target_os = "macos")]
+    link: Option<std::sync::Arc<SeatLink>>,
+}
+
+/// 전경 질의 fd 칸의 「seatkeep 연결로 물음」 표식(직접 PTY 의 −1 = 모름과 구별 — 시험이 −1 을 넣어 「모름」을 흉내 내는 경로 유지).
+#[cfg(unix)]
+pub(crate) const FG_VIA_LINK: i32 = -2;
+
+/// ① PTY 를 연다(옛 `state.rs` `native_pty_system().openpty(..)` 자리). 노브(`CYS_SEATKEEP=1`)가 켜져 있으면 seatkeep 기동 계획을
+/// 세운다 — 쓸 수 없으면(실행 파일 없음·실행 불가·잠금 없음·맥 밖 등) 이유와 함께 실패(직접 PTY 로 내려가지 않는다).
+pub(crate) fn open(daemon: &crate::state::Daemon, size: PtySize) -> Result<Opened, String> {
+    if seatkeep_enabled() {
+        #[cfg(target_os = "macos")]
+        match holders_over_cap(daemon) {
+            None => return SeatkeepPlan::prepare(daemon, size).map(Opened::Seatkeep),
+            // T6a holder 총수 상한(T6-DESIGN 2-6): 이 좌석만 직접 PTY 로 강등(생성 실패 아님 · 경고 사건).
+            Some((live, cap)) => {
+                eprintln!("[cysd] seatkeep 좌석 {live}개 ≥ 상한 {cap} — 새 좌석은 직접 PTY(데몬이 죽으면 함께 끝남)");
+                daemon.bus.publish("seat.seatkeep_capped", "system", None, serde_json::json!({"live": live, "cap": cap}));
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        return Err(format!("seatkeep 노브 켜짐({SEATKEEP_KNOB}=1) · 이 운영체제는 아직 지원하지 않음(맥 전용 · 리눅스·윈도우 = T7)"));
+    }
+    let _ = daemon;
+    let pty = native_pty_system();
+    let pair = pty
+        .openpty(size)
+        .map_err(|e| crate::state::map_pty_open_error(e.as_ref()))?;
+    Ok(Opened::Direct(pair))
+}
+
+/// ★T6b 업데이트 뒤 신원(T6-DESIGN 2-3 · master 결정 D1 ⓐ): seatkeep 실행 파일이 ⑴ 지금 cysd 옆 cys-seatkeep 이거나 ⑵ 지금 cysd 번들의
+/// 형제 옛 번들(업데이터 S9 가 rename 한 `.cysr.app.old-<숫자>`) 안 `Contents/MacOS/cys-seatkeep` 일 때만 참(정확한 꼴 · 부모 폴더 실경로 같음).
+/// 번들 밖(개발 빌드) = ⑴ 만. 지워진 파일(proc_pidpath 실패) = 호출자가 None(미결 · ⓒ).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn seatkeep_exe_ok(got: &std::path::Path, want: &std::path::Path) -> bool {
+    let canon = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    if canon(got) == canon(want) {
+        return true;
+    }
+    // want = <P>/<이름>.app/Contents/MacOS/cys-seatkeep · got = <P>/.cysr.app.old-<숫자>/Contents/MacOS/cys-seatkeep
+    let tail = |p: &std::path::Path| -> Option<(std::path::PathBuf, String)> {
+        let macos = p.parent()?;
+        let contents = macos.parent()?;
+        let bundle = contents.parent()?;
+        if p.file_name()? != "cys-seatkeep" || macos.file_name()? != "MacOS" || contents.file_name()? != "Contents" {
+            return None;
+        }
+        Some((canon(bundle.parent()?), bundle.file_name()?.to_str()?.to_string()))
+    };
+    let (Some((gp, gname)), Some((wp, wname))) = (tail(got), tail(want)) else { return false };
+    let old_ok = gname.strip_prefix(".cysr.app.old-").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    gp == wp && wname.ends_with(".app") && old_ok
+}
+
+/// holder 총수 상한 env(기본 `HOLDER_CAP_DEFAULT` · 시험·운영 조정용 · 기동 1회 판독).
+pub(crate) const HOLDER_CAP_ENV: &str = "CYS_SEATKEEP_MAX_HOLDERS";
+/// 기본 상한 — 기존 좌석 상한 상수가 소스에 없어 둔 값(T6-DESIGN 2-6 · 실측 A13 뒤 master 가 정함 📌).
+pub(crate) const HOLDER_CAP_DEFAULT: usize = 64;
+
+/// 순수: env 값 → 상한(0·해석 실패 = 기본).
+pub(crate) fn holder_cap_from(env: Option<&str>) -> usize {
+    env.and_then(|v| v.trim().parse::<usize>().ok()).filter(|n| *n > 0).unwrap_or(HOLDER_CAP_DEFAULT)
+}
+
+/// 입양 모드에서 살아 있는 seatkeep 좌석 수가 상한 이상이면 (수, 상한) — 종속 모드(T3)·노브 끔 = None(종전).
+#[cfg(target_os = "macos")]
+fn holders_over_cap(daemon: &crate::state::Daemon) -> Option<(usize, usize)> {
+    if !seatkeep_adopt_enabled() {
+        return None;
+    }
+    static CAP: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let cap = *CAP.get_or_init(|| holder_cap_from(std::env::var(HOLDER_CAP_ENV).ok().as_deref()));
+    let live = daemon
+        .surfaces
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .values()
+        .filter(|s| s.seat_link.is_some() && !s.exited.load(std::sync::atomic::Ordering::SeqCst))
+        .count();
+    (live >= cap).then_some((live, cap))
+}
+
+impl Opened {
+    /// seatkeep 경유면 (seatkeep id, 상태 폴더 `…/seatkeep`) — T4 임시본 기록 자리. 직접 PTY = None.
+    pub(crate) fn seatkeep_ids(&self) -> Option<(String, std::path::PathBuf)> {
+        match self {
+            #[cfg(target_os = "macos")]
+            Opened::Seatkeep(plan) => Some(plan.ids()),
+            _ => None,
+        }
+    }
+
+    /// ② 자식을 띄운다(옛 `pair.slave.spawn_command(builder)` · Job 결박 · slave 닫기 자리).
+    pub(crate) fn spawn(self, builder: CommandBuilder) -> Result<Spawned, String> {
+        let pair = match self {
+            Opened::Direct(pair) => pair,
+            #[cfg(target_os = "macos")]
+            Opened::Seatkeep(plan) => return plan.spawn(builder),
+        };
+        let child = pair
+            .slave
+            .spawn_command(builder)
+            .map_err(|e| format!("spawn failed: {e}"))?;
+        let pid = child.process_id().unwrap_or(0);
+        // ★D3(W5): 자식을 데몬 소유 Job 에 결박 — 데몬 사후 동반사망(Windows P2-9). unix 는 no-op.
+        //   ★(1R#4) 자기 편입(bind_self)이 성립한 정상 경로에서는 **상속으로 이미 결박**돼 있어
+        //   이 호출은 Ok 로 즉시 끝난다(경쟁 창 0). 강등 모드에서만 실제 편입을 시도하고,
+        //   실패는 **조용히 넘어가지 않는다**(종전엔 반환값이 없어 실패가 보이지 않았다).
+        #[cfg(windows)]
+        if let Err(e) = crate::state::winjob::assign_child(pid) {
+            eprintln!("[cysd] ⚠ PTY 자식 pid={pid} Job 결박 실패: {e} — 데몬 사후 고아 가능");
+        }
+        drop(pair.slave);
+        Ok(Spawned {
+            master: pair.master,
+            child,
+            pid,
+            io: None,
+            #[cfg(target_os = "macos")]
+            link: None,
+        })
+    }
+}
+
+impl Spawned {
+    /// ③ 출력 읽기 얼굴과 입력 쓰기 얼굴(옛 `try_clone_reader` · `take_writer` 자리 · 오류 문구 그대로).
+    pub(crate) fn take_io(&mut self) -> Result<(Box<dyn Read + Send>, Box<dyn Write + Send>), String> {
+        if let Some(io) = self.io.take() {
+            return Ok(io);
+        }
+        let reader = self
+            .master
+            .try_clone_reader()
+            .map_err(|e| format!("clone reader failed: {e}"))?;
+        let writer = self
+            .master
+            .take_writer()
+            .map_err(|e| format!("take writer failed: {e}"))?;
+        Ok((reader, writer))
+    }
+
+    /// ④ 전경 질의용 master raw fd(unix · 옛 `pair.master.as_raw_fd().unwrap_or(-1)` 자리). 모르면 −1(= 전경 판정 불능 → V2).
+    #[cfg(unix)]
+    pub(crate) fn foreground_fd(&self) -> i32 {
+        #[cfg(target_os = "macos")]
+        if self.link.is_some() {
+            return FG_VIA_LINK;
+        }
+        self.master.as_raw_fd().unwrap_or(-1)
+    }
+
+    /// 전경 질의용 seatkeep 연결(직접 PTY = None) — `Surface::seat_link` 에 넣는다.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn link(&self) -> Option<std::sync::Arc<SeatLink>> {
+        self.link.clone()
+    }
+}
+
+/// 전경 프로세스 그룹(unix · 옛 `Surface::foreground_pgid_now` 본문) — `tcgetpgrp(캐시한 master fd)`. fd 가 없거나(< 0)·
+/// 시스템 콜이 실패하면(반환 ≤ 0) `None`. 락 없음 · `master` Mutex 를 잡지 않는다.
+/// seatkeep 경유(fd 칸 = [`FG_VIA_LINK`])는 연결로 FOREGROUND 를 묻는다(왕복 상한 200ms · 모르면 `None`).
+#[cfg(unix)]
+pub(crate) fn foreground_pgid(fd: &AtomicI32, link: Option<&SeatLinkRef>) -> Option<i32> {
+    let fd = fd.load(Ordering::Relaxed);
+    #[cfg(target_os = "macos")]
+    if fd == FG_VIA_LINK {
+        return link.and_then(|l| l.foreground());
+    }
+    let _ = link;
+    (fd >= 0).then(|| unsafe { libc::tcgetpgrp(fd) }).filter(|p| *p > 0)
+}
+
+/// `Surface::seat_link` 의 타입(맥 = seatkeep 연결 · 그 밖 유닉스 = 비어 있는 자리).
+#[cfg(target_os = "macos")]
+pub(crate) type SeatLinkRef = SeatLink;
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) enum SeatLinkRef {}
+
+/// 읽기 스레드가 EOF 를 본 뒤의 회수(옛 `state.rs` 읽기 스레드 끝 자리).
+/// 좀비 회수: 자력 종료(셸 exit)는 close_surface를 거치지 않으므로 여기서 reap.
+/// EOF 시점엔 거의 항상 이미 종료 — 즉시 회수, 아니면 1초 후 한 번 더.
+pub(crate) fn reap_after_eof(child: &Mutex<Box<dyn Child + Send + Sync>>) {
+    let mut child = child.lock().unwrap();
+    if child.try_wait().ok().flatten().is_none() {
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+        let _ = child.try_wait();
+    }
+}
+
+/// 닫기의 자식 처치(옛 `governance::close_surface` 자리) — kill 후 reap · 좀비 잔존 차단
+/// (reader 스레드의 try_wait와는 같은 Mutex로 직렬화).
+pub(crate) fn kill_and_reap(child: &Mutex<Box<dyn Child + Send + Sync>>) {
+    let mut child = child.lock().unwrap();
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// 크기 변경(옛 `repaint::resize_pty` 본문).
+pub(crate) fn resize(master: &Mutex<Box<dyn MasterPty + Send>>, rows: u16, cols: u16) -> Result<(), String> {
+    master
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .map_err(|e| format!("PTY 크기 변경 실패({rows}x{cols}): {e}"))
+}
+
+/// 닫기 인가 탐침(옛 `close_auth::probe_child` 본문 · 주석은 그 자리에 남김).
+pub(crate) fn probe_child(exited: &AtomicBool, child: &Mutex<Box<dyn Child + Send + Sync>>) -> crate::close_auth::ChildProbe {
+    use crate::close_auth::ChildProbe;
+    if exited.load(std::sync::atomic::Ordering::Relaxed) {
+        return ChildProbe::SurfaceExited;
+    }
+    let mut guard = match child.try_lock() {
+        Ok(g) => g,
+        Err(TryLockError::WouldBlock) => return ChildProbe::Contended,
+        Err(TryLockError::Poisoned(_)) => return ChildProbe::Unreadable,
+    };
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| guard.try_wait()));
+    drop(guard);
+    match caught {
+        Ok(Ok(None)) => ChildProbe::Running,
+        Ok(Ok(Some(_))) => ChildProbe::Ended,
+        Ok(Err(_)) | Err(_) => ChildProbe::Unreadable,
+    }
+}
+
+/// 제출 뿌리 생존(옛 `handlers::owned_submit_root_live` 본문 · 주석은 그 자리에 남김).
+pub(crate) fn owned_root_live(surface: &crate::state::Surface) -> bool {
+    if surface.exited.load(std::sync::atomic::Ordering::Acquire) { return false; }
+    let mut child = match surface.child.try_lock() {
+        Ok(child) => child,
+        Err(TryLockError::Poisoned(e)) => e.into_inner(),
+        Err(TryLockError::WouldBlock) => return false,
+    };
+    if child.process_id() != Some(surface.pid) { return false; }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        let Some(handle) = child.as_raw_handle() else { return false; };
+        // WinChild::try_wait conflates GetExitCodeProcess failure with STILL_ACTIVE.
+        // Only a successful unsignalled observation of the retained handle is positive.
+        unsafe { WaitForSingleObject(handle as _, 0) == WAIT_TIMEOUT }
+    }
+    #[cfg(not(windows))]
+    { matches!(child.try_wait(), Ok(None)) }
+}
+
+// ─────────────────────────────── seatkeep 경유(노브 · 맥) ───────────────────────────────
+//
+// 노브 = 환경변수 `CYS_SEATKEEP=1`(그 밖 = 끔 · 정책 파일에서는 켜지 않는다 — `knobs.rs` 머리 규칙). **데몬 단위**: 처음 읽은 값을
+// 프로세스 끝까지 쓴다(좌석마다 갈리지 않음). 켜졌는데 seatkeep 을 쓸 수 없으면 좌석 생성이 **이유와 함께 실패**한다 — 직접 PTY 로
+// 조용히 내려가지 않는다(브리프 §1-2 · 「켰는데 안 켜진」 상태를 숨기지 않게).
+//
+// 프레임 정의는 seatkeep 쪽 파일(`src/bin/cys-seatkeep/proto.rs`)을 그대로 끌어 쓴다 — 두 실행 파일이 같은 정의를 본다.
+
+/// 노브 이름.
+pub(crate) const SEATKEEP_KNOB: &str = "CYS_SEATKEEP";
+
+/// 노브 판정(순수) — `"1"`(앞뒤 공백 무시)만 켬.
+pub(crate) fn seatkeep_enabled_from(env: Option<&str>) -> bool {
+    env.map(|v| v.trim() == "1").unwrap_or(false)
+}
+
+/// 노브(데몬 단위 · 첫 읽기 고정).
+pub(crate) fn seatkeep_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = seatkeep_enabled_from(std::env::var(SEATKEEP_KNOB).ok().as_deref());
+        if on {
+            eprintln!("[cysd] 좌석 보유 장치(seatkeep) 노브 켜짐({SEATKEEP_KNOB}=1) — 새 좌석은 cys-seatkeep 아래에서 뜬다(입양 없음 · T4 전)");
+        }
+        on
+    })
+}
+
+/// 입양 노브 이름(T4 · TICKET=cysr-1116-seatkeep-1119) — `CYS_SEATKEEP=1` 위에서만 뜻이 있다.
+pub(crate) const SEATKEEP_ADOPT_KNOB: &str = "CYS_SEATKEEP_ADOPT";
+
+/// 입양 노브(데몬 단위 · 첫 읽기 고정) — 켜지면 ⑴ 새 좌석의 seatkeep 을 `--controller-bound` 대신 `--adoptable` 로 띄운다(cysd 가 죽어도
+/// 좌석이 산다) ⑵ 기동 때 살아 있는 seatkeep 좌석을 입양한다(`seat_adopt`). `CYS_SEATKEEP` 이 꺼져 있으면 늘 끔(입양할 seatkeep 이 없다).
+/// 판정 규칙 = `seatkeep_enabled_from` 과 같다(`"1"` 만 켬 · 기본 끔 · 정책 파일로 켜지지 않음).
+pub(crate) fn seatkeep_adopt_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        let want = seatkeep_enabled_from(std::env::var(SEATKEEP_ADOPT_KNOB).ok().as_deref());
+        let on = want && seatkeep_enabled();
+        if on {
+            eprintln!("[cysd] 좌석 입양 노브 켜짐({SEATKEEP_ADOPT_KNOB}=1) — 새 좌석은 cysd 가 죽어도 살고(--adoptable), 기동 때 살아 있는 좌석을 입양한다");
+        } else if want {
+            eprintln!("[cysd] {SEATKEEP_ADOPT_KNOB}=1 이지만 {SEATKEEP_KNOB} 가 꺼져 있어 입양은 끔");
+        }
+        on
+    })
+}
+
+/// 실행 파일 이름(브리프 §1-1 · DESIGN §7-2 ⓐ).
+pub(crate) const SEATKEEP_EXE: &str = "cys-seatkeep";
+
+/// seatkeep 실행 파일 = 지금 도는 cysd 실행 파일과 같은 폴더(개발 = `target/<profile>/` · 제품 = 앱 번들 `Contents/MacOS/`).
+/// 시험 빌드는 cysd 시험 실행 파일이 `target/<profile>/deps/` 에 있으므로 한 단계 위를 본다.
+pub(crate) fn seatkeep_exe_beside(cysd_exe: &std::path::Path) -> Option<std::path::PathBuf> {
+    let dir = cysd_exe.parent()?;
+    #[cfg(test)]
+    let dir = if dir.file_name().map(|n| n == "deps").unwrap_or(false) { dir.parent()? } else { dir };
+    Some(dir.join(SEATKEEP_EXE))
+}
+
+/// seatkeep 이 감사 토큰으로 이 프로세스를 볼 때의 코드 경로(인계 4 · T2 실측 = 번들 주 실행 파일이면 번들 경로).
+/// 규칙: `<X>.app/Contents/MacOS/<이름>` 이고 `<X>.app/Contents/Info.plist` 의 `CFBundleExecutable` 이 `<이름>` 이면 `<X>.app`,
+/// 아니면 실행 파일 경로 그대로. Info.plist 를 못 읽거나(이진 plist 포함) 키가 없으면 실행 파일 경로(= 번들 아님으로 본다).
+pub(crate) fn audit_code_path(exe: &std::path::Path) -> std::path::PathBuf {
+    let name = match exe.file_name().and_then(|n| n.to_str()) {
+        Some(n) => n,
+        None => return exe.to_path_buf(),
+    };
+    let macos = match exe.parent() {
+        Some(d) if d.file_name().map(|n| n == "MacOS").unwrap_or(false) => d,
+        _ => return exe.to_path_buf(),
+    };
+    let contents = match macos.parent() {
+        Some(d) if d.file_name().map(|n| n == "Contents").unwrap_or(false) => d,
+        _ => return exe.to_path_buf(),
+    };
+    let bundle = match contents.parent() {
+        Some(d) if d.extension().map(|e| e == "app").unwrap_or(false) => d,
+        _ => return exe.to_path_buf(),
+    };
+    match std::fs::read_to_string(contents.join("Info.plist")) {
+        Ok(text) if plist_bundle_executable(&text).as_deref() == Some(name) => bundle.to_path_buf(),
+        _ => exe.to_path_buf(),
+    }
+}
+
+/// XML plist 에서 `CFBundleExecutable` 문자열 값(없으면 None). 이진 plist 는 `read_to_string` 단계에서 걸러진다.
+fn plist_bundle_executable(text: &str) -> Option<String> {
+    let k = text.find("<key>CFBundleExecutable</key>")?;
+    let rest = &text[k + "<key>CFBundleExecutable</key>".len()..];
+    let s = rest.find("<string>")?;
+    // 키와 값 사이에는 공백만 있어야 한다(다른 키의 값을 집지 않게).
+    if !rest[..s].trim().is_empty() {
+        return None;
+    }
+    let v = &rest[s + "<string>".len()..];
+    let e = v.find("</string>")?;
+    Some(v[..e].trim().to_string())
+}
+
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+#[path = "../cys-seatkeep/proto.rs"]
+mod sk_proto;
+
+/// seatkeep 고정 핵심 판(T6a 사전 점검 `cysd --adopt-check` 가 등록부 `core` 와 대조).
+#[cfg(target_os = "macos")]
+pub(crate) const SEATKEEP_CORE_VERSION: u32 = sk_proto::CORE_VERSION;
+
+#[cfg(target_os = "macos")]
+pub(crate) use seatkeep_mac::{adopt_connect, controller_lock_path, seatkeep_dir, seatkeep_exe_matches, seatkeep_exe_matches_want, SeatkeepPlan, SeatLink};
+
+#[cfg(target_os = "macos")]
+mod seatkeep_mac {
+    use super::sk_proto as proto;
+    use portable_pty::{Child, ChildKiller, CommandBuilder, ExitStatus, MasterPty, PtySize};
+    use serde_json::{json, Value};
+    use std::collections::VecDeque;
+    use std::io::{Read, Write};
+    use std::os::unix::io::AsRawFd;
+    use std::os::unix::net::UnixStream;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
+    use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+    use std::time::{Duration, Instant};
+
+    /// seatkeep 좌석 번호(좌석당 방식 = 늘 0).
+    const SEAT: u32 = 0;
+    /// 입력 한 조각 상한 — seatkeep 의 입력 대기 상한(1MiB · `INPUT_QUEUE_BYTES`)을 넘지 않게. 한 번에 한 조각만 확인을 기다린다.
+    const INPUT_CHUNK: usize = 256 << 10;
+    /// 전경 질의 왕복 상한 — 넘으면 「모름」(None = 전경 판정 불능 → V2 종전 경로).
+    const FG_TIMEOUT: Duration = Duration::from_millis(200);
+    /// 기동 ~ WELCOME 상한.
+    const START_TIMEOUT: Duration = Duration::from_secs(10);
+    /// 연결 스레드 → 읽기 얼굴 출력 대기열의 평소 바이트 상한(codex 1R #2 · 옛 64조각 채널 ≈ 64×16KiB 자리). 차면 연결 스레드가 소켓을
+    /// 안 읽는다 = 역압(seatkeep 조종자 종속 모드가 PTY 읽기를 멈춰 자식도 멈춘다 · 유실 0). 상한 없는 큐를 두지 않는다(master#c125bc97 ③).
+    const OUT_SOFT_BYTES: usize = 1 << 20;
+    /// 제어 답(INPUT_ACK · FOREGROUND_IS)을 기다리는 동안 또는 닫는 중(kill·wait)의 상한 — 그동안은 평소 상한을 넘어서도 소켓을 읽어
+    /// 출력 뒤에 줄 선 제어 프레임에 닿는다(codex 1R #2). 근거: 조종자 종속 seatkeep 은 출력·제어를 한 줄(FIFO)로 보내고 그 큐를
+    /// 256KiB(+읽기 16KiB · 첫 재생 조각 ≤ 1MiB)에서 멈추므로 제어 프레임 앞의 출력은 그 이하 + 소켓 버퍼다 → 4MiB 여유면 닿는다.
+    /// 메모리 상한 = 좌석당 이 값 + 프레임 1개.
+    const OUT_HARD_BYTES: usize = OUT_SOFT_BYTES + (4 << 20);
+    /// 입력 확인(INPUT_ACK) 기다림의 조건부 상한(codex 3R #2 · master 결정 A안) — 시계는 「ACK 를 기다리는 중 연결 스레드가 HARD 에서
+    /// 막힌 순간」부터 잰다(= 출력 소비 정지 · 그 뒤에 줄 선 ACK 에 닿을 길이 없음). 그 밖(소비는 도는데 자식이 stdin 만 안 읽음)은 직접
+    /// PTY 처럼 기다린다. 넘으면 (나): 연결을 끊어 seatkeep 을 controller_lost 로 끝낸다(PTY 닫힘 = 입력이 나중에 적용되지 않음) · 호출자 TimedOut.
+    const ACK_STALL_LIMIT: Duration = Duration::from_secs(10);
+    /// 입력 확인 기다림 중 위 시계를 다시 보는 주기(연결 스레드는 확인 쪽 조건변수를 깨우지 않는다 — 허용 오차 = 이 값).
+    const ACK_STALL_POLL: Duration = Duration::from_millis(250);
+    /// 맥 소켓 경로 한도(sun_path 104 · NUL 포함).
+    const SUN_PATH_MAX: usize = 104;
+
+    /// 열기 단계에서 정해 둔 seatkeep 기동 계획(생성 2단계의 앞 절반 — 직접 PTY 의 `openpty` 자리에서 실패할 것은 여기서 실패한다).
+    pub(crate) struct SeatkeepPlan {
+        exe: PathBuf,
+        dir: PathBuf,
+        id: String,
+        controller_exe: PathBuf,
+        lock: PathBuf,
+        /// 코드서명 요구사항(브리프 §1-4 — 자리만 둔다 · 제품 필수 여부는 T6).
+        requirement: Option<String>,
+        size: PtySize,
+    }
+
+    fn io_err(msg: impl Into<String>) -> std::io::Error {
+        std::io::Error::new(std::io::ErrorKind::Other, msg.into())
+    }
+
+    impl SeatkeepPlan {
+        /// (seatkeep id, 상태 폴더 `…/seatkeep`).
+        pub(crate) fn ids(&self) -> (String, PathBuf) {
+            (self.id.clone(), self.dir.join("seatkeep"))
+        }
+
+        /// 실행 파일 · 잠금 · 상태 폴더 · 소켓 경로 길이를 미리 본다. 어느 하나라도 안 되면 이유와 함께 실패.
+        pub(crate) fn prepare(daemon: &crate::state::Daemon, size: PtySize) -> Result<SeatkeepPlan, String> {
+            let me = std::env::current_exe().map_err(|e| format!("seatkeep: cysd 실행 파일 경로를 모름: {e}"))?;
+            let exe = super::seatkeep_exe_beside(&me).ok_or_else(|| format!("seatkeep: {} 옆 폴더를 모름", me.display()))?;
+            match std::fs::metadata(&exe) {
+                Ok(m) if m.is_file() && std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o111 != 0 => {}
+                Ok(_) => return Err(format!("seatkeep 노브 켜짐({}=1) · 실행 파일이 실행 가능한 파일이 아니다: {}", super::SEATKEEP_KNOB, exe.display())),
+                Err(e) => return Err(format!("seatkeep 노브 켜짐({}=1) · 실행 파일 없음: {} ({e})", super::SEATKEEP_KNOB, exe.display())),
+            }
+            let lock = controller_lock(daemon)?;
+            static SEQ: AtomicU64 = AtomicU64::new(0);
+            let id = format!("{:x}-{:x}-{}", std::process::id(), daemon.started_at as u64, SEQ.fetch_add(1, Ordering::Relaxed));
+            let dir = seatkeep_base(daemon);
+            let sock = dir.join("seatkeep").join(format!("{id}.sock"));
+            if sock.as_os_str().len() >= SUN_PATH_MAX {
+                return Err(format!("seatkeep: 소켓 경로가 너무 길다({}바이트 ≥ {SUN_PATH_MAX}): {}", sock.as_os_str().len(), sock.display()));
+            }
+            Ok(SeatkeepPlan { exe, dir, id, controller_exe: super::audit_code_path(&me), lock, requirement: None, size })
+        }
+
+        /// 기동 → 붙기 → WELCOME. 실패하면 띄운 seatkeep 을 정리하고 이유를 돌려준다.
+        pub(crate) fn spawn(self, builder: CommandBuilder) -> Result<super::Spawned, String> {
+            let argv: Vec<String> = builder
+                .get_argv()
+                .iter()
+                .map(|a| a.to_str().map(str::to_string).ok_or_else(|| "seatkeep: 명령 인자가 UTF-8 이 아니다".to_string()))
+                .collect::<Result<_, _>>()?;
+            if argv.is_empty() {
+                return Err("seatkeep: 빈 명령(기본 셸 좌석은 seatkeep 경유에서 지원하지 않음)".into());
+            }
+            // 작업 폴더 규칙 = portable-pty `as_command`(폴더가 아니면 HOME).
+            let home = builder.get_env("HOME").map(PathBuf::from).or_else(dirs::home_dir).unwrap_or_else(|| PathBuf::from("/"));
+            let cwd = builder
+                .get_cwd()
+                .map(PathBuf::from)
+                .filter(|d| d.is_dir())
+                .unwrap_or(home);
+            let mut cmd = std::process::Command::new(&self.exe);
+            cmd.arg("--dir").arg(&self.dir)
+                .arg("--id").arg(&self.id)
+                .arg("--controller-exe").arg(&self.controller_exe)
+                .arg("--lock").arg(&self.lock)
+                .arg("--rows").arg(self.size.rows.to_string())
+                .arg("--cols").arg(self.size.cols.to_string())
+                // ★T3 = 조종자 종속 모드(master#77162b13 · 옛 --end-on-controller-loss 를 넓힘) — 좌석이 직접 PTY 와 같다:
+                //   cysd(조종자)가 끊기면 seatkeep 이 끝나 커널이 좌석에 SIGHUP(master#c125bc97 ②) · cysd 가 밀리면 seatkeep 이 PTY 읽기를
+                //   멈춰 자식이 cysd 속도에 맞춰 멈춤(출력 유실 0) · 멈춘 cysd 를 내보내지 않음(write_stalled 없음).
+                //   ★T4(입양 노브 `CYS_SEATKEEP_ADOPT=1`)면 대신 `--adoptable` — ⑵ 역압 ⑶ 쓰기 기한 없음은 그대로, ⑴ 끊김 종료만 뺀다
+                //   (seatkeep 머리 설명 · 「데몬이 죽어도 좌석이 산다」). 노브 끔 = 종전 그대로.
+                .arg(if super::seatkeep_adopt_enabled() { "--adoptable" } else { "--controller-bound" });
+            if let Some(req) = &self.requirement {
+                cmd.arg("--requirement").arg(req);
+            }
+            cmd.arg("--").args(&argv)
+                .env_clear()
+                .envs(builder.iter_full_env_as_str())
+                .current_dir(&cwd)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::inherit());
+            let mut keeper = cmd.spawn().map_err(|e| format!("seatkeep 기동 실패({}): {e}", self.exe.display()))?;
+            let keeper_pid = keeper.id();
+            match self.attach(&mut keeper) {
+                Ok((stream, welcome)) => {
+                    let sock = self.dir.join("seatkeep").join(format!("{}.sock", self.id));
+                    SeatLink::start(stream, welcome, Some(keeper), keeper_pid, self.size, self.id.clone(), sock)
+                }
+                Err(e) => {
+                    // 붙지 못한 seatkeep — 내가 띄운 것만 정리한다(그룹 = seatkeep 이 setsid 로 만든 새 세션의 그룹).
+                    unsafe { libc::kill(keeper_pid as i32, libc::SIGTERM) };
+                    let t = Instant::now();
+                    while t.elapsed() < Duration::from_secs(2) {
+                        if matches!(keeper.try_wait(), Ok(Some(_))) {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    if !matches!(keeper.try_wait(), Ok(Some(_))) {
+                        let _ = keeper.kill();
+                        let _ = keeper.wait();
+                    }
+                    Err(e)
+                }
+            }
+        }
+
+        fn attach(&self, keeper: &mut std::process::Child) -> Result<(UnixStream, Value), String> {
+            let sock = self.dir.join("seatkeep").join(format!("{}.sock", self.id));
+            let deadline = Instant::now() + START_TIMEOUT;
+            let mut stream = loop {
+                if let Ok(Some(st)) = keeper.try_wait() {
+                    return Err(format!(
+                        "seatkeep 이 붙기 전에 끝남(rc {:?} · 2=인자/경로 3=신원·상태폴더·등록부 4=같은 id·미소비 종료 기록 5=PTY·자식 기동 7=작업 폴더가 사라짐 8=띄운 cysd 가 기동 중에 사라짐 9=부모 감시를 세우지 못함·기동 중 잃음) — 사유는 cysd 로그의 cys-seatkeep 줄",
+                        st.code()
+                    ));
+                }
+                if let Ok(s) = UnixStream::connect(&sock) {
+                    break s;
+                }
+                if Instant::now() >= deadline {
+                    return Err(format!("seatkeep 소켓에 {}초 안에 못 붙음: {}", START_TIMEOUT.as_secs(), sock.display()));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            greet(stream, keeper.id(), deadline)
+        }
+    }
+
+    /// 붙은 소켓의 확인과 첫 인사(독립 검증 D3 — 시험이 이 함수를 직접 부른다): ⑴ 소켓 상대 pid = 내가 띄운 seatkeep
+    /// ⑵ HELLO → WELCOME 의 pid = 같은 seatkeep. 둘 중 하나라도 다르면 이유와 함께 생성 실패.
+    pub(super) fn greet(mut stream: UnixStream, keeper_pid: u32, deadline: Instant) -> Result<(UnixStream, Value), String> {
+        // 반대 방향 확인(DESIGN §3-2 ②): 이 소켓의 상대 = 내가 띄운 seatkeep 이어야 한다(가짜 소켓이 가짜 화면을 먹이는 것 차단).
+        let peer = peer_pid(&stream).ok_or_else(|| "seatkeep 소켓 상대 pid 를 못 읽음".to_string())?;
+        if peer != keeper_pid as i32 {
+            return Err(format!("seatkeep 소켓 상대 pid {peer} ≠ 띄운 seatkeep {}", keeper_pid));
+        }
+        let left = deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(100));
+        let _ = stream.set_read_timeout(Some(left));
+        proto::write_all(&mut stream, &proto::json_frame(proto::HELLO, SEAT, &json!({"core": proto::CORE_VERSION, "resume": {}})))
+            .map_err(|e| format!("seatkeep HELLO 보내기 실패: {e}"))?;
+        match proto::read_frame(&mut stream) {
+            Ok(Some((proto::WELCOME, _, p))) => {
+                let v: Value = serde_json::from_slice(&p).map_err(|e| format!("seatkeep WELCOME 해석 실패: {e}"))?;
+                if v["pid"].as_i64() != Some(keeper_pid as i64) {
+                    return Err(format!("seatkeep WELCOME pid {} ≠ 띄운 seatkeep {}", v["pid"], keeper_pid));
+                }
+                let _ = stream.set_read_timeout(None);
+                Ok((stream, v))
+            }
+            Ok(Some((proto::REJECT, _, p))) => Err(format!("seatkeep 이 접속을 거절: {}", String::from_utf8_lossy(&p))),
+            Ok(Some((k, _, _))) => Err(format!("seatkeep 첫 프레임이 WELCOME 이 아님(kind {k})")),
+            Ok(None) => Err("seatkeep 이 HELLO 뒤 연결을 닫음".into()),
+            Err(e) => Err(format!("seatkeep WELCOME 읽기 실패: {e}")),
+        }
+    }
+
+    /// 입양(T4) — 살아 있는 seatkeep 소켓에 조종자로 붙는다. `expected_pid` = 등록부의 seatkeep pid(출생 시각은 호출자가 이미 대조).
+    /// 확인은 새 좌석과 같은 `greet`(소켓 상대 pid · WELCOME pid 둘 다 = 등록부 pid — 가짜 소켓이 가짜 화면을 먹이는 것 차단 · DESIGN §3-2 ②).
+    /// HELLO `resume` 은 비운다 → seatkeep 이 꼬리 전체를 재생한다(나눔 = `SeatLink::replay_split`). seatkeep 쪽 확인(실행 파일 = 같은
+    /// cysd · 데몬 잠금 보유자 = 이 프로세스 · 살아 있는 조종자 없음)을 못 넘으면 REJECT → 이유와 함께 실패.
+    /// (codex T4 1R #2) 연결 **뒤** 상대를 다시 본다 — 소켓 상대 pid = 등록부 pid · 그 pid 의 출생 시각 = 판정 때 본 값(연결된 상대는 소켓을
+    /// 쥔 채 살아 있으므로 pid 재사용 창이 닫힌다) · 실행 파일 = 이 cysd 옆의 cys-seatkeep(가짜 서버가 등록부 pid 만 흉내 내는 것 차단).
+    pub(crate) fn adopt_connect(sock: &std::path::Path, expected_pid: u32, expected_start_us: u64, size: PtySize, skid: &str) -> Result<super::Spawned, String> {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let stream = UnixStream::connect(sock).map_err(|e| format!("seatkeep 소켓 연결 실패 {}: {e}", sock.display()))?;
+        let peer = peer_pid(&stream).ok_or_else(|| "seatkeep 소켓 상대 pid 를 못 읽음".to_string())?;
+        if peer != expected_pid as i32 {
+            return Err(format!("seatkeep 소켓 상대 pid {peer} ≠ 등록부 pid {expected_pid}"));
+        }
+        if crate::seat_adopt::process_start_us(expected_pid) != Some(expected_start_us) {
+            return Err(format!("seatkeep pid {expected_pid} 출생 시각이 판정 때와 다르다(pid 재사용)"));
+        }
+        let me = std::env::current_exe().map_err(|e| format!("cysd 실행 파일 경로를 모름: {e}"))?;
+        let want = super::seatkeep_exe_beside(&me).ok_or_else(|| "cys-seatkeep 경로를 모름".to_string())?;
+        let got = pid_path(expected_pid).ok_or_else(|| format!("seatkeep pid {expected_pid} 실행 파일 경로를 못 읽음"))?;
+        if !super::seatkeep_exe_ok(&got, &want) {
+            return Err(format!("seatkeep pid {expected_pid} 실행 파일 {} ≠ {}", got.display(), want.display()));
+        }
+        let (stream, welcome) = greet(stream, expected_pid, deadline)?;
+        SeatLink::start(stream, welcome, None, expected_pid, size, skid.to_string(), sock.to_path_buf())
+    }
+
+    /// 그 pid 의 실행 파일이 이 cysd 옆의 cys-seatkeep 인가(T4 판정의 양성 증거 · 못 읽으면 None).
+    pub(crate) fn seatkeep_exe_matches(pid: u32) -> Option<bool> {
+        let me = std::env::current_exe().ok()?;
+        let want = super::seatkeep_exe_beside(&me)?;
+        seatkeep_exe_matches_want(pid, &want)
+    }
+
+    /// 기대 경로를 주는 판(T6b `--adopt-check --as-bundle` = 교체 뒤 정식 자리의 cys-seatkeep).
+    pub(crate) fn seatkeep_exe_matches_want(pid: u32, want: &std::path::Path) -> Option<bool> {
+        let got = pid_path(pid)?;
+        Some(super::seatkeep_exe_ok(&got, want))
+    }
+
+    /// 맥 `proc_pidpath`.
+    fn pid_path(pid: u32) -> Option<PathBuf> {
+        let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+        let n = unsafe { libc::proc_pidpath(pid as i32, buf.as_mut_ptr().cast(), buf.len() as u32) };
+        if n <= 0 {
+            return None;
+        }
+        buf.truncate(n as usize);
+        Some(PathBuf::from(<std::ffi::OsString as std::os::unix::ffi::OsStringExt>::from_vec(buf)))
+    }
+
+    /// 맥 `LOCAL_PEERPID`.
+    fn peer_pid(s: &UnixStream) -> Option<i32> {
+        let mut pid: libc::pid_t = 0;
+        let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+        let rc = unsafe {
+            libc::getsockopt(s.as_raw_fd(), libc::SOL_LOCAL, libc::LOCAL_PEERPID, (&mut pid as *mut libc::pid_t).cast(), &mut len)
+        };
+        (rc == 0 && pid > 0).then_some(pid)
+    }
+
+    /// seatkeep 상태 폴더의 바탕(그 아래 `seatkeep/` 를 seatkeep 이 만든다) = 데몬 상태 폴더.
+    /// 시험 빌드: 시험 데몬의 임시 폴더는 길어 맥 소켓 경로 한도(104)를 넘기 쉽다 → 짧은 임시 폴더(프로세스마다 하나).
+    fn seatkeep_base(daemon: &crate::state::Daemon) -> PathBuf {
+        #[cfg(test)]
+        {
+            let _ = daemon;
+            std::env::temp_dir().join(format!("cskt-{:x}", std::process::id()))
+        }
+        #[cfg(not(test))]
+        {
+            crate::state::state_dir(&daemon.socket_path)
+        }
+    }
+
+    /// seatkeep 상태 폴더(등록부·소켓·T4 좌석 기록이 있는 곳 = 바탕 아래 `seatkeep/`).
+    pub(crate) fn seatkeep_dir(daemon: &crate::state::Daemon) -> PathBuf {
+        seatkeep_base(daemon).join("seatkeep")
+    }
+
+    /// 조종자 잠금 경로만(만들기·잡기 0) — seatkeep 의 `--lock` 인자와 같은 값. 독립 검증 m1: 이 경로가 다른 seatkeep(같은 폴더의 남의 데몬)은
+    /// 판정·소비·삭제·종료하지 않는다(`seat_adopt::bind_of`).
+    pub(crate) fn controller_lock_path(daemon: &crate::state::Daemon) -> PathBuf {
+        #[cfg(not(test))]
+        {
+            daemon.socket_path.with_extension("lock")
+        }
+        // 시험 빌드: 시험 데몬 폴더는 일부러 쓰기를 막는 시험이 있다 — 시험용 잠금은 짧은 시험 폴더에 데몬마다 하나(같은 형식).
+        #[cfg(test)]
+        {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            daemon.socket_path.hash(&mut h);
+            seatkeep_base(daemon).join("locks").join(format!("{:x}.lock", h.finish()))
+        }
+    }
+
+    /// 조종자 잠금 = 데몬 시작 잠금(`socket_path.with_extension("lock")` · main 이 쥐고 `pid 출생시각` 을 적는다).
+    /// 시험 빌드: 시험 데몬은 시작 잠금을 잡지 않는다 → 이 프로세스가 그 경로를 잡아 데몬이 끝날 때까지 쥔다(같은 형식으로 적음).
+    fn controller_lock(daemon: &crate::state::Daemon) -> Result<PathBuf, String> {
+        let lock = controller_lock_path(daemon);
+        #[cfg(test)]
+        if let Some(d) = lock.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        #[cfg(test)]
+        {
+            use std::collections::HashMap;
+            static HELD: Mutex<Option<HashMap<PathBuf, std::fs::File>>> = Mutex::new(None);
+            let mut g = HELD.lock().unwrap_or_else(|e| e.into_inner());
+            let map = g.get_or_insert_with(HashMap::new);
+            if !map.contains_key(&lock) {
+                let mut f = std::fs::OpenOptions::new().create(true).read(true).write(true).open(&lock)
+                    .map_err(|e| format!("seatkeep(시험): 잠금 파일 열기 실패 {}: {e}", lock.display()))?;
+                if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+                    return Err(format!("seatkeep(시험): 잠금을 못 잡음 {}", lock.display()));
+                }
+                let _ = f.set_len(0);
+                let _ = write!(f, "{}", crate::deadman::lock_record(std::process::id(), true));
+                let _ = f.flush();
+                map.insert(lock.clone(), f);
+            }
+        }
+        if !lock.exists() {
+            return Err(format!("seatkeep: 데몬 시작 잠금 파일이 없다: {}", lock.display()));
+        }
+        Ok(lock)
+    }
+
+    #[derive(Default)]
+    struct LinkState {
+        /// 받은 입력 확인 id.
+        acked: std::collections::HashSet<u64>,
+        fg_sent: u64,
+        fg_recv: u64,
+        fg_answers: VecDeque<(u64, Option<i32>)>,
+        exit: Option<ExitStatus>,
+        closed: bool,
+    }
+
+    /// 연결 스레드 → 읽기 얼굴 출력 대기열(codex 1R #2). 순서 = 넣은 순서 그대로(FIFO) · 바이트 상한 = OUT_SOFT/HARD_BYTES.
+    #[derive(Default)]
+    struct OutSpool {
+        /// (조각, 그 조각 끝의 누적 오프셋) — 읽기 얼굴이 처리 완료 오프셋(PROCESSED)을 알리는 데 쓴다(codex T4 1R #4).
+        q: VecDeque<(Vec<u8>, u64)>,
+        bytes: usize,
+        /// 더 올 출력이 없다(EXITED·끊김) — 남은 조각을 다 돌려준 뒤 EOF.
+        eof: bool,
+        /// 읽기 얼굴이 사라졌다(좌석이 닫히는 중) — 이후 출력은 버린다(옛 채널 송신 실패와 같은 처분).
+        reader_gone: bool,
+        /// 닫는 중 상한(OUT_HARD_BYTES)을 넘어 버린 출력 바이트(관측용).
+        dropped_closing: u64,
+        /// 연결 스레드가 제어 답을 기다리는 중 HARD 에서 막혀 기다리기 시작한 시각(막힘이 풀리거나 답 기다림이 끝나면 None · ACK_STALL_LIMIT 시계).
+        hard_stall_since: Option<Instant>,
+    }
+
+    /// seatkeep 1개와의 연결(조종자 쪽). 손잡이의 얼굴(`MasterPty`·`Child`·읽기·쓰기)이 이것을 함께 쥔다.
+    pub(crate) struct SeatLink {
+        wr: Mutex<UnixStream>,
+        /// 연결을 끊는 손잡이(쓰기 잠금과 무관하게 shutdown — ACK 상한 만료 처리).
+        sd: UnixStream,
+        st: Mutex<LinkState>,
+        cv: Condvar,
+        /// 전경 질의를 한 번에 하나씩(답 번호 대조는 `fg_sent`/`fg_recv`).
+        fg_gate: Mutex<()>,
+        size: Mutex<PtySize>,
+        child_pid: u32,
+        keeper_pid: u32,
+        /// seatkeep 출생 시각(µs · T4 좌석 기록을 이 seatkeep 한 개에 결박).
+        keeper_start_us: Option<u64>,
+        /// seatkeep id(등록부·소켓 이름 · T4 좌석 기록의 열쇠).
+        skid: String,
+        /// seatkeep 소켓 경로(T4 좌석 기록).
+        sock: PathBuf,
+        /// 처리 완료 오프셋 알림(T4 · PROCESSED)을 쓰는 연결인가 — 입양 노브 켬으로 띄운 좌석·입양 좌석만(노브 끔 = 프레임·잠금 0 · codex T4 2R).
+        report_processed: bool,
+        /// seatkeep 이 `--adoptable`(입양 노브 켬으로 띄운 좌석·입양 좌석) — 끊겨도 스스로 끝나지 않는다(연결 끝 처리 = `demux` 끝).
+        adoptable: bool,
+        /// `detach`(입양 등록 실패)로 놓았다 — seatkeep 을 다음 조종자를 위해 살려 둔다(연결 끝에 끝내지 않음).
+        detached: AtomicBool,
+        /// T5: 입양 연결의 첫 WELCOME 이 실은 좌석 토큰(seatkeep 이 상호 확인 뒤 넘김) — `take_adopted_token` 으로 한 번만 꺼낸다.
+        /// 새 좌석(내가 띄운 seatkeep)은 None(토큰은 이 cysd 가 만들었다). Debug·로그에 안 나온다.
+        adopted_token: Mutex<Option<String>>,
+        /// (알릴 최신 처리 완료 오프셋, 연결 끝남) — 읽기 얼굴은 값만 덮어쓰고, 따로 송신 스레드가 최신값만 보낸다(읽기 스레드는 소켓 쓰기에 막히지 않음).
+        processed: Mutex<(u64, bool)>,
+        processed_cv: Condvar,
+        /// 입양(T4)만: 첫 WELCOME 의 재생 나눔 = (꼬리 시작, 직전 조종자 끊김 때 누적 = `disc_total` · 없으면 None, WELCOME 때 누적).
+        /// 새 좌석 = None(첫 조종자 전 출력은 전부 새 출력 — 종전처럼 전부 처리).
+        replay: Option<(u64, Option<u64>, u64)>,
+        next_input: AtomicU64,
+        input_base: u64,
+        /// 받은 출력에서 건너뛴 바이트 합(seatkeep 꼬리에서 이미 밀려나 못 받은 구간 = 유실).
+        gap_bytes: AtomicU64,
+        /// 출력 대기열(연결 스레드 → 읽기 얼굴) · 그 깨우기(넣음·뺌·급함 바뀜).
+        out: Mutex<OutSpool>,
+        out_cv: Condvar,
+        /// 지금 기다리는 제어 답 수(입력 수신 확인 · 전경 답) — 0 보다 크면 연결 스레드가 평소 상한을 넘어 읽는다.
+        awaiting: AtomicUsize,
+        /// 닫는 중(kill·wait 를 불렀다) — 연결 스레드는 어떤 경우에도 막히지 않는다(넘치는 출력은 버림).
+        closing: AtomicBool,
+    }
+
+    /// 제어 답 기다림 표시(만들 때 +1 · 버릴 때 −1 · 둘 다 연결 스레드를 깨운다).
+    struct Awaiting<'a>(&'a SeatLink);
+    impl<'a> Awaiting<'a> {
+        fn new(l: &'a SeatLink) -> Self {
+            l.awaiting.fetch_add(1, Ordering::SeqCst);
+            l.poke_out();
+            Awaiting(l)
+        }
+    }
+    impl Drop for Awaiting<'_> {
+        fn drop(&mut self) {
+            self.0.awaiting.fetch_sub(1, Ordering::SeqCst);
+            // 답 기다림이 끝나면 HARD 막힘 시각을 거두게 연결 스레드를 깨운다(다음 기다림이 옛 시각으로 재지 않게).
+            self.0.poke_out();
+        }
+    }
+
+    impl std::fmt::Debug for SeatLink {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "SeatLink(seatkeep pid {} · 좌석 pid {})", self.keeper_pid, self.child_pid)
+        }
+    }
+
+    /// T5: 진단 문구용 WELCOME — 좌석 칸의 `seat_token` 을 지운 사본(토큰은 오류·로그 어디에도 0).
+    pub(super) fn welcome_without_tokens(welcome: &Value) -> Value {
+        let mut v = welcome.clone();
+        if let Some(seats) = v.get_mut("seats").and_then(Value::as_array_mut) {
+            for s in seats {
+                if let Some(o) = s.as_object_mut() {
+                    o.remove("seat_token");
+                }
+            }
+        }
+        v
+    }
+
+    impl SeatLink {
+        fn lock_st(&self) -> MutexGuard<'_, LinkState> {
+            self.st.lock().unwrap_or_else(|e| e.into_inner())
+        }
+
+        /// `keeper` = 내가 띄운 seatkeep(끊긴 뒤 회수) · 입양(T4)은 None(남이 띄운 프로세스 — 회수하지 않는다 · 부모가 이미 사라져 launchd 가 회수).
+        fn start(stream: UnixStream, welcome: Value, keeper: Option<std::process::Child>, keeper_pid: u32, size: PtySize, skid: String, sock: PathBuf) -> Result<super::Spawned, String> {
+            let seat0 = &welcome["seats"][0];
+            let child_pid = seat0["child_pid"].as_i64().filter(|p| *p > 0).ok_or_else(|| format!("seatkeep WELCOME 에 좌석 pid 없음: {}", welcome_without_tokens(&welcome)))? as u32;
+            let total = seat0["total"].as_u64().unwrap_or(0);
+            let tail_start = seat0["tail_start"].as_u64().unwrap_or(0).min(total);
+            let disc_total = seat0["disc_total"].as_u64().map(|d| d.clamp(tail_start, total));
+            let rd = stream.try_clone().map_err(|e| format!("seatkeep 연결 복제 실패: {e}"))?;
+            let sd = stream.try_clone().map_err(|e| format!("seatkeep 연결 복제 실패: {e}"))?;
+            // 입양 좌석(keeper 없음) = 남이 `--adoptable` 로 띄운 것 · 새 좌석 = 입양 노브 켬이면 `--adoptable` 로 띄움(`SeatkeepPlan` 인자와 같은 판정).
+            let adoptable = keeper.is_none() || super::seatkeep_adopt_enabled();
+            let link = Arc::new(SeatLink {
+                wr: Mutex::new(stream),
+                sd,
+                st: Mutex::new(LinkState::default()),
+                cv: Condvar::new(),
+                fg_gate: Mutex::new(()),
+                size: Mutex::new(size),
+                child_pid,
+                keeper_pid,
+                keeper_start_us: crate::seat_adopt::process_start_us(keeper_pid),
+                skid,
+                sock,
+                replay: keeper.is_none().then_some((tail_start, disc_total, total)),
+                report_processed: adoptable,
+                adoptable,
+                detached: AtomicBool::new(false),
+                adopted_token: Mutex::new(if keeper.is_none() { seat0["seat_token"].as_str().map(str::to_string) } else { None }),
+                processed: Mutex::new((tail_start, false)),
+                processed_cv: Condvar::new(),
+                next_input: AtomicU64::new(1),
+                input_base: (crate::state::now_epoch() as u64) << 24,
+                gap_bytes: AtomicU64::new(0),
+                out: Mutex::new(OutSpool::default()),
+                out_cv: Condvar::new(),
+                awaiting: AtomicUsize::new(0),
+                closing: AtomicBool::new(false),
+            });
+            {
+                let l = Arc::clone(&link);
+                std::thread::Builder::new()
+                    .name(format!("seatkeep-link-{child_pid}"))
+                    .spawn(move || l.demux(rd, keeper, tail_start))
+                    .map_err(|e| format!("seatkeep 연결 스레드 기동 실패: {e}"))?;
+            }
+            if link.report_processed {
+                let l = Arc::clone(&link);
+                std::thread::Builder::new()
+                    .name(format!("seatkeep-processed-{child_pid}"))
+                    .spawn(move || l.processed_sender(tail_start))
+                    .map_err(|e| format!("seatkeep 처리 오프셋 송신 스레드 기동 실패: {e}"))?;
+            }
+            let spawned = super::Spawned {
+                master: Box::new(KeepMaster(Arc::clone(&link))),
+                child: Box::new(KeepChild(Arc::clone(&link))),
+                pid: child_pid,
+                io: Some((Box::new(SpoolReader { link: Arc::clone(&link), buf: Vec::new(), pos: 0, end: tail_start, acked: tail_start }), Box::new(KeepWriter(Arc::clone(&link))))),
+                link: Some(Arc::clone(&link)),
+            };
+            Ok(spawned)
+        }
+
+        /// 처리 완료 오프셋 송신 스레드(T4 · codex 2R) — 최신값이 바뀔 때마다 그 값 하나만 보낸다(사이 값은 건너뜀 = 최댓값만 뜻이 있음).
+        /// 소켓 쓰기가 막혀도 이 스레드만 막힌다. 연결이 끝나면(`demux` 끝) 끝난다.
+        /// (codex 3R) 공용 쓰기 잠금을 **기다리지 않고**(try_lock) · 소켓 송신 버퍼에 프레임 하나(17바이트)가 통째로 들어갈 자리가 있을 때만
+        /// 비차단으로 보낸다 — 못 보내면 50ms 뒤 최신값으로 다시. 이 송신이 입력·크기·종료 확인 프레임을 막는 일은 없다.
+        fn processed_sender(self: Arc<Self>, start: u64) {
+            let mut sent = start;
+            let mut retry = false;
+            loop {
+                let v = {
+                    let mut g = self.processed.lock().unwrap_or_else(|e| e.into_inner());
+                    while !g.1 && (g.0 <= sent || retry) {
+                        if retry {
+                            g = self.processed_cv.wait_timeout(g, Duration::from_millis(50)).unwrap_or_else(|e| e.into_inner()).0;
+                            break;
+                        }
+                        g = self.processed_cv.wait(g).unwrap_or_else(|e| e.into_inner());
+                    }
+                    if g.1 {
+                        return;
+                    }
+                    g.0
+                };
+                if v <= sent {
+                    retry = false;
+                    continue;
+                }
+                match self.try_send_small(proto::PROCESSED, &v.to_le_bytes()) {
+                    Ok(true) => {
+                        sent = v;
+                        retry = false;
+                    }
+                    Ok(false) => retry = true,
+                    Err(_) => return,
+                }
+            }
+        }
+
+        /// 작은 제어 프레임 하나를 막힘 없이 보낸다 — Ok(true) 보냄 · Ok(false) 지금은 못 보냄(잠금 점유·송신 버퍼 자리 없음) · Err 연결 이상.
+        /// 송신 버퍼 남은 자리(SO_SNDBUF − SO_NWRITE) ≥ 프레임 길이를 쓰기 잠금 안에서 확인한 뒤 MSG_DONTWAIT — 잠금 안이라 다른 쓰기가 끼지
+        /// 않고 남은 자리는 줄지 않으므로(상대가 읽을수록 는다) 부분 쓰기가 나지 않는다. 그래도 부분 쓰기면 프레임 경계가 깨진 것 = 연결을 끊는다.
+        fn try_send_small(&self, kind: u8, payload: &[u8]) -> std::io::Result<bool> {
+            let frame = proto::frame(kind, SEAT, payload);
+            let Ok(w) = self.wr.try_lock() else { return Ok(false) };
+            let fd = w.as_raw_fd();
+            let opt = |name: libc::c_int| -> Option<libc::c_int> {
+                let mut v: libc::c_int = 0;
+                let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+                let rc = unsafe { libc::getsockopt(fd, libc::SOL_SOCKET, name, (&mut v as *mut libc::c_int).cast(), &mut len) };
+                (rc == 0).then_some(v)
+            };
+            let (Some(cap), Some(used)) = (opt(libc::SO_SNDBUF), opt(libc::SO_NWRITE)) else { return Ok(false) };
+            if (cap - used) < frame.len() as libc::c_int {
+                return Ok(false);
+            }
+            let n = unsafe { libc::send(fd, frame.as_ptr().cast(), frame.len(), libc::MSG_DONTWAIT) };
+            if n == frame.len() as isize {
+                return Ok(true);
+            }
+            if n < 0 {
+                let e = std::io::Error::last_os_error();
+                return if e.kind() == std::io::ErrorKind::WouldBlock { Ok(false) } else { Err(e) };
+            }
+            drop(w);
+            eprintln!("[cysd] seatkeep 좌석 pid {} 처리 오프셋 프레임 부분 쓰기({n}/{}) — 프레임 경계 손상 · 연결을 끊는다", self.child_pid, frame.len());
+            let _ = self.sd.shutdown(std::net::Shutdown::Both);
+            Err(std::io::Error::other("partial frame"))
+        }
+
+        fn send(&self, kind: u8, payload: &[u8]) -> std::io::Result<()> {
+            let mut w = self.wr.lock().unwrap_or_else(|e| e.into_inner());
+            proto::write_all(&mut *w, &proto::frame(kind, SEAT, payload))
+        }
+
+        fn lock_out(&self) -> MutexGuard<'_, OutSpool> {
+            self.out.lock().unwrap_or_else(|e| e.into_inner())
+        }
+
+        /// 급함(기다리는 답 · 닫는 중)이 바뀌었다 — 대기열 잠금을 잡고 깨운다(연결 스레드가 바뀐 값을 보기 전에 잠들지 않게).
+        fn poke_out(&self) {
+            let _g = self.lock_out();
+            self.out_cv.notify_all();
+        }
+
+        /// 닫는 중 표시(kill·wait) — 이후 연결 스레드는 막히지 않는다.
+        fn mark_closing(&self) {
+            if !self.closing.swap(true, Ordering::SeqCst) {
+                self.poke_out();
+            }
+        }
+
+        /// 출력 1조각을 대기열에 넣는다(연결 스레드만 부름 · codex 1R #2).
+        /// 평소 = OUT_SOFT_BYTES 에 닿으면 읽기 얼굴이 뺄 때까지 기다린다(역압 · 유실 0 · 순서 보존).
+        /// 제어 답을 기다리는 중 = OUT_HARD_BYTES 까지 넣는다(출력 뒤에 줄 선 답에 닿게). 닫는 중 = HARD 를 넘는 것은 버린다(막히지 않음
+        /// — 직접 PTY 를 닫으면 안 읽은 출력이 마스터와 함께 사라지는 것과 같다).
+        fn push_output(&self, chunk: Vec<u8>, end: u64) {
+            let mut sp = self.lock_out();
+            loop {
+                if sp.reader_gone || sp.eof {
+                    return;
+                }
+                let closing = self.closing.load(Ordering::SeqCst);
+                let cap = if closing || self.awaiting.load(Ordering::SeqCst) > 0 { OUT_HARD_BYTES } else { OUT_SOFT_BYTES };
+                if sp.bytes < cap {
+                    sp.bytes += chunk.len();
+                    sp.q.push_back((chunk, end));
+                    sp.hard_stall_since = None;
+                    self.out_cv.notify_all();
+                    return;
+                }
+                if closing {
+                    sp.dropped_closing += chunk.len() as u64;
+                    sp.hard_stall_since = None;
+                    return;
+                }
+                // 막힌다 — 답을 기다리는 중의 HARD 막힘이면 그 시작 시각(ACK_STALL_LIMIT 시계) · 평소 상한 막힘이면 시계 없음.
+                if cap == OUT_HARD_BYTES {
+                    sp.hard_stall_since.get_or_insert_with(Instant::now);
+                } else {
+                    sp.hard_stall_since = None;
+                }
+                sp = self.out_cv.wait(sp).unwrap_or_else(|e| e.into_inner());
+            }
+        }
+
+        /// 더 올 출력이 없다(EXITED·끊김) — 읽기 얼굴은 남은 조각 뒤 EOF.
+        fn close_output(&self) {
+            let mut sp = self.lock_out();
+            sp.eof = true;
+            self.out_cv.notify_all();
+        }
+
+        /// 연결 스레드 — 프레임을 나눈다. 끝나면(끊김) 종료로 접고 seatkeep 프로세스를 회수한다.
+        /// 출력은 대기열(`push_output`)로만 넘기고 제어 프레임은 그 자리에서 상태에 반영한다 — 소비자가 멈춰도 답을 기다리는 동안·닫는
+        /// 중에는 소켓을 계속 읽는다(codex 1R #2: 옛 64조각 채널의 막히는 송신 뒤에 EXITED 가 묶여 닫기가 영구 대기).
+        fn demux(self: Arc<Self>, mut rd: UnixStream, keeper: Option<std::process::Child>, first_offset: u64) {
+            // 첫 재생은 꼬리 시작부터 온다(새 좌석 = 0 · 입양 = 꼬리 시작) — 그 앞은 구멍이 아니라 이 조종자가 요청하지 않은 구간.
+            let mut expect: u64 = first_offset;
+            loop {
+                let (kind, _seat, payload) = match proto::read_frame(&mut rd) {
+                    Ok(Some(f)) => f,
+                    _ => break,
+                };
+                match kind {
+                    proto::OUTPUT if payload.len() >= 8 => {
+                        let off = u64::from_le_bytes(payload[..8].try_into().unwrap_or([0; 8]));
+                        let bytes = &payload[8..];
+                        let end = off + bytes.len() as u64;
+                        if off > expect {
+                            self.gap_bytes.fetch_add(off - expect, Ordering::Relaxed);
+                            eprintln!("[cysd] seatkeep 좌석 pid {} 출력 구멍 {}바이트(오프셋 {expect}→{off})", self.child_pid, off - expect);
+                        }
+                        if end <= expect {
+                            continue; // 이미 받은 구간(재생 겹침)
+                        }
+                        let skip = expect.saturating_sub(off) as usize;
+                        expect = end;
+                        self.push_output(bytes[skip..].to_vec(), end);
+                    }
+                    proto::INPUT_ACK if payload.len() >= 8 => {
+                        let id = u64::from_le_bytes(payload[..8].try_into().unwrap_or([0; 8]));
+                        self.lock_st().acked.insert(id);
+                        self.cv.notify_all();
+                    }
+                    proto::FOREGROUND_IS => {
+                        let v: Value = serde_json::from_slice(&payload).unwrap_or(Value::Null);
+                        let pg = v["pgid"].as_i64().filter(|p| *p > 0).map(|p| p as i32);
+                        let mut st = self.lock_st();
+                        st.fg_recv += 1;
+                        let n = st.fg_recv;
+                        st.fg_answers.push_back((n, pg));
+                        while st.fg_answers.len() > 16 {
+                            st.fg_answers.pop_front();
+                        }
+                        drop(st);
+                        self.cv.notify_all();
+                    }
+                    proto::EXITED => {
+                        let v: Value = serde_json::from_slice(&payload).unwrap_or(Value::Null);
+                        let status = match v["signal"].as_str() {
+                            Some(sig) => ExitStatus::with_signal(sig),
+                            None => ExitStatus::with_exit_code(v["code"].as_u64().unwrap_or(0) as u32),
+                        };
+                        // 마지막 출력 뒤에 온다(seatkeep 순서 보장) — 읽기 얼굴을 닫아 EOF 로, 종료를 기록, 바로 확인.
+                        self.close_output();
+                        {
+                            let mut st = self.lock_st();
+                            if st.exit.is_none() {
+                                st.exit = Some(status);
+                            }
+                        }
+                        self.cv.notify_all();
+                        let _ = self.send(proto::EXIT_ACK, b"");
+                    }
+                    _ => {}
+                }
+            }
+            self.close_output();
+            let exited_frame;
+            {
+                let mut st = self.lock_st();
+                st.closed = true;
+                exited_frame = st.exit.is_some();
+                if st.exit.is_none() {
+                    // seatkeep 이 사라지면 PTY 마스터의 마지막 사본이 닫혀 자식도 SIGHUP 으로 끝난다(DESIGN §1-2) — 끝난 것으로 접는다.
+                    st.exit = Some(ExitStatus::with_signal("seatkeep_disconnected"));
+                }
+            }
+            self.cv.notify_all();
+            if self.report_processed {
+                let mut g = self.processed.lock().unwrap_or_else(|e| e.into_inner());
+                g.1 = true;
+                self.processed_cv.notify_all();
+            }
+            // 입양 모드: seatkeep 은 끊겨도 스스로 끝나지 않는다 — 이 cysd 가 살아서 연결을 잃었으면(입력 확인 상한 `abort_link` · 처리 오프셋
+            // 부분 쓰기 · seatkeep 쪽 끊김) 다시 붙을 길이 없고 위에서 이미 끝난 것으로 접었다 → seatkeep 을 끝내 그 접음을 참으로 만든다
+            // (PTY 마스터가 닫혀 좌석 SIGHUP = 조종자 종속 모드의 controller_lost 와 같은 끝 · 막힌 입력이 나중에 적용되지 않음 · 고아 없음).
+            // 끝내지 않는 경우 = 좌석 종료(EXITED)를 이미 받음(seatkeep 이 스스로 정리) · `detach`(다음 조종자를 위해 살려 둠).
+            if self.adoptable && !exited_frame && !self.detached.load(Ordering::SeqCst) {
+                self.end_adoptable_keeper();
+            }
+            if let Some(mut k) = keeper {
+                let _ = k.wait();
+            }
+        }
+
+        /// 입양 모드 seatkeep 을 끝낸다(SIGTERM · 처리기 없음 = 기본 동작 종료) — 그 pid 의 출생 시각이 이 연결의 seatkeep 과 같을 때만
+        /// (이미 죽었거나 pid 가 재사용됐으면 아무것도 안 함).
+        fn end_adoptable_keeper(&self) {
+            let Some(start) = self.keeper_start_us else { return };
+            if crate::seat_adopt::process_start_us(self.keeper_pid) != Some(start) {
+                return;
+            }
+            eprintln!(
+                "[cysd] 입양 모드 seatkeep pid {} 연결을 잃음(좌석 pid {} 종료로 접음) — seatkeep 을 끝낸다",
+                self.keeper_pid, self.child_pid
+            );
+            unsafe { libc::kill(self.keeper_pid as i32, libc::SIGTERM) };
+        }
+
+        /// 입력 한 조각 — INPUT 을 보내고 수신 확인(= PTY 에 다 씀)까지 기다린다. 끊김·종료 = 오류.
+        /// 상한(codex 3R #2 · A안): 이 기다림 중 연결 스레드가 HARD 에서 ACK_STALL_LIMIT 동안 내리 막히면(출력 소비 정지 = ACK 에 닿을 길 없음)
+        /// 연결을 끊어 좌석을 끝내고(`abort_link`) TimedOut. 소비가 도는 한(자식이 stdin 을 오래 안 읽어도) 직접 PTY 처럼 기다린다.
+        fn write_chunk(&self, bytes: &[u8]) -> std::io::Result<()> {
+            let id = self.input_base | self.next_input.fetch_add(1, Ordering::Relaxed);
+            let mut p = id.to_le_bytes().to_vec();
+            p.extend_from_slice(bytes);
+            let _aw = Awaiting::new(self);
+            let begun = Instant::now();
+            self.send(proto::INPUT, &p)?;
+            let mut st = self.lock_st();
+            loop {
+                if st.acked.remove(&id) {
+                    return Ok(());
+                }
+                if st.closed || st.exit.is_some() {
+                    return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "seatkeep: 좌석이 끝났거나 연결이 끊김"));
+                }
+                // 이 조각을 기다리기 전의 막힘(다른 답 기다림)은 세지 않는다 — 시계 = max(막힌 시각, 보낸 시각).
+                let stall = self.lock_out().hard_stall_since.map(|t| t.max(begun));
+                let nap = match stall {
+                    Some(t) => {
+                        let el = t.elapsed();
+                        if el >= ACK_STALL_LIMIT {
+                            drop(st);
+                            self.abort_link(el);
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "seatkeep: 출력 소비가 멈춰 입력 확인에 닿지 못함(상한 초과) — 연결을 끊어 좌석을 끝냄",
+                            ));
+                        }
+                        (ACK_STALL_LIMIT - el).min(ACK_STALL_POLL)
+                    }
+                    None => ACK_STALL_POLL,
+                };
+                st = self.cv.wait_timeout(st, nap).unwrap_or_else(|e| e.into_inner()).0;
+            }
+        }
+
+        /// ACK 상한 만료 처리 (나) — 연결을 양쪽 다 끊는다: seatkeep(조종자 종속)은 끊김을 보고 `controller_lost` 로 끝나 PTY 마스터가
+        /// 닫히고(막힌 입력 쓰기도 프로세스와 함께 끝남 = 나중 적용 없음) 좌석은 SIGHUP. 연결 스레드는 닫는 중 표시로 막힘에서 풀려
+        /// 끊김을 읽고 종료로 접는다(seatkeep 회수까지). 입양 모드(`--adoptable` · 끊겨도 안 끝남)는 연결 스레드 끝이 seatkeep 을 끝낸다(`demux`).
+        /// 입양(T4)이 등록 전에 실패했다 — 붙었던 연결을 끊는다(seatkeep 은 `--adoptable` 이라 좌석을 쥔 채 다음 조종자를 기다린다 ·
+        /// 끊지 않으면 이 cysd 가 그 seatkeep 의 「살아 있는 조종자」로 남아 출력도 안 읽고 다른 조종자도 막는다).
+        /// T5: 입양 WELCOME 의 좌석 토큰을 꺼낸다(한 번 · 뒤로는 None).
+        pub(crate) fn take_adopted_token(&self) -> Option<String> {
+            self.adopted_token.lock().unwrap_or_else(|e| e.into_inner()).take()
+        }
+
+        pub(crate) fn detach(&self) {
+            self.detached.store(true, Ordering::SeqCst);
+            self.mark_closing();
+            let _ = self.sd.shutdown(std::net::Shutdown::Both);
+        }
+
+        fn abort_link(&self, stalled: Duration) {
+            eprintln!(
+                "[cysd] seatkeep 좌석 pid {} 입력 확인 상한 초과(출력 소비 정지 {stalled:?}) — 연결을 끊어 좌석을 끝낸다",
+                self.child_pid
+            );
+            let _ = self.sd.shutdown(std::net::Shutdown::Both);
+            self.mark_closing();
+        }
+
+        /// 전경 그룹 질의(락 없는 경로에서 부름 · 상한 FG_TIMEOUT · 모르면 None).
+        pub(crate) fn foreground(&self) -> Option<i32> {
+            let _g = self.fg_gate.lock().unwrap_or_else(|e| e.into_inner());
+            let my = {
+                let mut st = self.lock_st();
+                if st.closed || st.exit.is_some() {
+                    return None;
+                }
+                st.fg_sent += 1;
+                st.fg_sent
+            };
+            let _aw = Awaiting::new(self);
+            if self.send(proto::FOREGROUND, b"").is_err() {
+                return None;
+            }
+            let deadline = Instant::now() + FG_TIMEOUT;
+            let mut st = self.lock_st();
+            loop {
+                if let Some(&(_, pg)) = st.fg_answers.iter().find(|(n, _)| *n == my) {
+                    return pg;
+                }
+                if st.closed {
+                    return None;
+                }
+                let now = Instant::now();
+                if now >= deadline {
+                    return None;
+                }
+                st = self.cv.wait_timeout(st, deadline - now).unwrap_or_else(|e| e.into_inner()).0;
+            }
+        }
+
+        /// seatkeep 출생 시각(T4 좌석 기록).
+        pub(crate) fn keeper_start_us(&self) -> Option<u64> {
+            self.keeper_start_us
+        }
+
+        /// seatkeep id(T4 좌석 기록).
+        pub(crate) fn skid(&self) -> &str {
+            &self.skid
+        }
+
+        /// seatkeep 소켓 경로(T4 좌석 기록).
+        pub(crate) fn sock(&self) -> &std::path::Path {
+            &self.sock
+        }
+
+        /// 첫 재생 나눔(T4 · 입양 좌석만): (화면만 다시 그릴 바이트 수, 그 뒤 「아무도 못 본」 재생 바이트 수). 새 좌석 = (0, 0).
+        /// 앞 = 꼬리 시작 ~ 직전 조종자 끊김(옛 cysd 가 이미 처리 — 전사·응답 중복 방지) · 뒤 = 끊김 ~ WELCOME(조종자 없는 동안 나온 출력).
+        /// `disc_total` 이 없으면(끊김 기록 없음 · 종속 모드 등) 재생 전체를 앞으로 본다(보수 = 전사 중복 0 · 응답 0).
+        pub(crate) fn replay_split(&self) -> (u64, u64) {
+            let Some((tail_start, disc, total)) = self.replay else { return (0, 0) };
+            let d = disc.unwrap_or(total);
+            (d - tail_start, total - d)
+        }
+
+        /// seatkeep 프로세스 pid(관측·시험용).
+        #[cfg_attr(not(test), allow(dead_code))]
+        pub(crate) fn keeper_pid(&self) -> u32 {
+            self.keeper_pid
+        }
+
+        /// 지금까지 보낸 전경 질의 수(관측·시험용 — 입력마다 소켓 왕복이 끼는지 잰다).
+        #[cfg_attr(not(test), allow(dead_code))]
+        pub(crate) fn fg_queries(&self) -> u64 {
+            self.lock_st().fg_sent
+        }
+
+        /// 지금까지의 출력 유실 바이트(관측·시험용).
+        #[cfg_attr(not(test), allow(dead_code))]
+        pub(crate) fn gap_bytes(&self) -> u64 {
+            self.gap_bytes.load(Ordering::Relaxed)
+        }
+
+        /// 좌석 **리더 pid 에만** 신호(D7 결정 B · master#fe07cc6a — 직접 PTY `Child::kill` 과 같은 대상). seatkeep 이 회수 표시
+        /// 잠금 안에서 보내고, 이미 회수됐으면 보내지 않고 SIGNAL_RESULT 로 답한다(그 답은 연결 스레드가 받아 버린다 — 회수 사실은
+        /// 곧 EXITED 로도 온다).
+        fn signal_leader(&self, sig: i32) -> std::io::Result<()> {
+            self.send(proto::SIGNAL, json!({"sig": sig, "target": "leader"}).to_string().as_bytes())
+        }
+
+        fn exit_status(&self) -> Option<ExitStatus> {
+            self.lock_st().exit.clone()
+        }
+
+        /// 직접 PTY `Child::kill` 과 같은 모양·같은 대상: 리더에 SIGHUP → 회수 확인(즉시 + 50ms × 4) → 리더에 SIGKILL.
+        /// (RELEASE 는 그룹 SIGHUP 이라 D7 결정 B 와 어긋나 T3 에서 쓰지 않는다 — 판 내림(T6) 몫.)
+        fn kill(&self) -> std::io::Result<()> {
+            self.mark_closing();
+            if self.exit_status().is_some() {
+                return Ok(());
+            }
+            self.signal_leader(libc::SIGHUP)?;
+            for attempt in 0..5 {
+                if attempt > 0 {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                if self.exit_status().is_some() {
+                    return Ok(());
+                }
+            }
+            self.signal_leader(libc::SIGKILL)
+        }
+    }
+
+    // ── 손잡이의 얼굴 ──
+
+    struct KeepMaster(Arc<SeatLink>);
+    impl std::fmt::Debug for KeepMaster {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "KeepMaster({:?})", self.0)
+        }
+    }
+    impl MasterPty for KeepMaster {
+        fn resize(&self, size: PtySize) -> Result<(), anyhow::Error> {
+            self.0
+                .send(proto::RESIZE, json!({"rows": size.rows, "cols": size.cols}).to_string().as_bytes())
+                .map_err(anyhow::Error::from)?;
+            *self.0.size.lock().unwrap_or_else(|e| e.into_inner()) = size;
+            Ok(())
+        }
+        fn get_size(&self) -> Result<PtySize, anyhow::Error> {
+            Ok(*self.0.size.lock().unwrap_or_else(|e| e.into_inner()))
+        }
+        fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
+            Err(anyhow::Error::from(io_err("seatkeep: 읽기 얼굴은 생성 때 한 번만 꺼낸다")))
+        }
+        fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> {
+            Err(anyhow::Error::from(io_err("seatkeep: 쓰기 얼굴은 생성 때 한 번만 꺼낸다")))
+        }
+        fn process_group_leader(&self) -> Option<libc::pid_t> {
+            self.0.foreground()
+        }
+        fn as_raw_fd(&self) -> Option<std::os::unix::io::RawFd> {
+            None
+        }
+        fn tty_name(&self) -> Option<PathBuf> {
+            None
+        }
+    }
+
+    #[derive(Debug)]
+    struct KeepChild(Arc<SeatLink>);
+    impl ChildKiller for KeepChild {
+        fn kill(&mut self) -> std::io::Result<()> {
+            self.0.kill()
+        }
+        fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+            Box::new(KeepChild(Arc::clone(&self.0)))
+        }
+    }
+    impl Child for KeepChild {
+        fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+            Ok(self.0.exit_status())
+        }
+        fn wait(&mut self) -> std::io::Result<ExitStatus> {
+            self.0.mark_closing();
+            let mut st = self.0.lock_st();
+            loop {
+                if let Some(s) = st.exit.clone() {
+                    return Ok(s);
+                }
+                st = self.0.cv.wait(st).unwrap_or_else(|e| e.into_inner());
+            }
+        }
+        fn process_id(&self) -> Option<u32> {
+            Some(self.0.child_pid)
+        }
+    }
+
+    struct KeepWriter(Arc<SeatLink>);
+    impl Write for KeepWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if buf.is_empty() {
+                return Ok(0);
+            }
+            let n = buf.len().min(INPUT_CHUNK);
+            self.0.write_chunk(&buf[..n])?;
+            Ok(n)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// 출력 읽기 얼굴 — 연결 스레드가 대기열에 넣은 조각을 차례로 돌려준다. 더 올 것이 없으면(EXITED·끊김) 남은 조각 뒤 EOF.
+    struct SpoolReader {
+        link: Arc<SeatLink>,
+        buf: Vec<u8>,
+        pos: usize,
+        /// 지금 조각 끝의 누적 오프셋.
+        end: u64,
+        /// 마지막으로 알린 처리 완료 오프셋.
+        acked: u64,
+    }
+    impl SpoolReader {
+        /// 처리 완료 오프셋 알림(T4 · codex 1R #4) — `read()` 에 다시 들어왔다 = 앞서 돌려준 바이트를 읽기 스레드가 파서·전사까지 끝냈다
+        /// (읽기 스레드는 한 조각을 동기로 처리한 뒤 다음 read 를 부른다). 실패해도 무시(연결이 끊기면 seatkeep 은 마지막 알린 값을 쓴다).
+        fn ack_processed(&mut self) {
+            if !self.link.report_processed {
+                return;
+            }
+            let done = self.end - (self.buf.len() - self.pos) as u64;
+            if done > self.acked {
+                self.acked = done;
+                let mut g = self.link.processed.lock().unwrap_or_else(|e| e.into_inner());
+                if done > g.0 {
+                    g.0 = done;
+                    self.link.processed_cv.notify_all();
+                }
+            }
+        }
+    }
+    impl Read for SpoolReader {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            self.ack_processed();
+            if self.pos >= self.buf.len() {
+                let mut sp = self.link.lock_out();
+                loop {
+                    if let Some((b, end)) = sp.q.pop_front() {
+                        sp.bytes -= b.len();
+                        self.link.out_cv.notify_all();
+                        self.buf = b;
+                        self.pos = 0;
+                        self.end = end;
+                        break;
+                    }
+                    if sp.eof {
+                        return Ok(0);
+                    }
+                    sp = self.link.out_cv.wait(sp).unwrap_or_else(|e| e.into_inner());
+                }
+            }
+            let n = out.len().min(self.buf.len() - self.pos);
+            out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
+            self.pos += n;
+            Ok(n)
+        }
+    }
+    /// 읽기 얼굴이 사라지면(좌석이 닫힘) 대기열을 비우고 이후 출력을 버린다 — 연결 스레드가 막혀 있었다면 깨운다.
+    impl Drop for SpoolReader {
+        fn drop(&mut self) {
+            let mut sp = self.link.lock_out();
+            sp.reader_gone = true;
+            sp.q.clear();
+            sp.bytes = 0;
+            self.link.out_cv.notify_all();
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "seat_proc_tests.rs"]
+mod tests;
+
+#[cfg(test)]
+#[path = "seat_proc_gate_tests.rs"]
+mod gate_tests;

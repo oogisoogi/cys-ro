@@ -1,9 +1,11 @@
 ---
 name: video-stitch
-description: 아바타 클립·HyperFrames 모션그래픽·생성형 B-roll·자막·배경음악을 하나의 완성 영상으로 합성하는 대표 편집 스킬 — 컴포지팅(아바타 항상 노출)·B-roll 배치·자막 번인을 하위 스킬로 오케스트레이션하고 FFmpeg로 마스터 렌더한다. "영상 합성 / 편집 / 클립 결합 / 컴포지팅 / 자막" 트리거, 또는 youtube-video-pipeline 합성 단계로 발동.
+description: 아바타·B-roll·모션그래픽·자막·음악을 한 영상으로 합성·편집한다. 「영상 합치기 / 편집 / 자막 번인 / 컴포지팅」 요청 때.
 ---
 
 # video-stitch
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 여러 트랙(아바타·모션그래픽·B-roll·자막·음악)을 사람 편집자처럼 하나로 합친다. 모션그래픽
 *제작*은 **HyperFrames 공식 `/hyperframes` 스킬**(HTML), B-roll *생성*은 `[[media-gen]]`,
@@ -24,7 +26,7 @@ description: 아바타 클립·HyperFrames 모션그래픽·생성형 B-roll·�
    저작한다 — `schema_version:1` · `render_runtime` 명시 고정(무음 swap=위반·SF-RENDER-RUNTIME-SWAP)
    · `fps` · `tracks`(kind별 element의 `in_ticks`/`out_ticks`/`intended_ticks`는 **정수 틱**, `mode`·
    `transition`). 시간은 초가 아니라 **정수 틱이 진실**(TICKS_PER_SECOND=120000). FFmpeg가 오늘
-   실행 가능한 필드만 — GPU 전용(blend_mode·mask·shader uniform) 금지. `python3 check_timeline.py
+   실행 가능한 필드만 — GPU 전용(blend_mode·mask·shader uniform) 금지. `python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/check_timeline.py"
    validate edit_decisions.json`로 스키마 검증(exit 0 아니면 렌더 금지). 이후 렌더 단계는 이 IR을
    순회한다(출력 로그가 아니라 **에이전트가 저작하는 입력**).
 1. **아바타 트랙 결합** → 검증: `avatar/clip-NN.mp4`를 순서대로 concat. 경계가 오디오
@@ -41,9 +43,13 @@ description: 아바타 클립·HyperFrames 모션그래픽·생성형 B-roll·�
 
 ## 출력 계약
 
-**정전 입력** `edit_decisions.json`(에이전트 저작 IR — `schemas/edit_decisions.schema.json` 준수)을
+**정전 입력** `edit_decisions.json`(에이전트 저작 IR — `${CYS_PACK_DIR:-$HOME/.cys/pack}/schemas/edit_decisions.schema.json` 준수)을
 렌더해 **`final/video.mp4`** + **`final/timeline.json`**(이 IR의 *파생 렌더-리포트* — 동일 스키마로
 실제 렌더된 in/out·모드를 기록, 검증 대조 기준)을 낸다. 두 문서 모두 `check_timeline.py validate`
 통과해야 한다(이름 정전화: `edit_decisions.json`=정전 저작 입력 · `final/timeline.json`=그 파생
 렌더-리포트 — 동일 IR 스키마). 상위 `[[youtube-video-pipeline]]`로 반환 → `[[video-verify]]` 입력
 (타이밍 게이트=`check_timeline.py check`).
+
+## 원 설명 (목록 상주 설명 축소 전 원문 · 1.1.12 cysr-1112-skill-fold)
+
+아바타 클립·HyperFrames 모션그래픽·생성형 B-roll·자막·배경음악을 하나의 완성 영상으로 합성하는 대표 편집 스킬 — 컴포지팅(아바타 항상 노출)·B-roll 배치·자막 번인을 하위 스킬로 오케스트레이션하고 FFmpeg로 마스터 렌더한다. "영상 합성 / 편집 / 클립 결합 / 컴포지팅 / 자막" 트리거, 또는 youtube-video-pipeline 합성 단계로 발동.

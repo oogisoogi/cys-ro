@@ -202,7 +202,9 @@ fn c8_in_angle_list(out: &[&str]) -> bool {
 /// (file, statement after the token) for every production receiver_proof token, following modules from main.rs.
 fn c8_receiver_proof_shapes(read: &dyn Fn(&str) -> Result<String, String>) -> Result<Vec<(String, String)>, String> {
     // Production #[path] modules present today: (parent file, module, file). Anything else fails closed.
-    const PATHED: &[(&str, &str, &str)] = &[("pending_requests.rs", "attempts", "pending_attempts.rs")];
+    // ★T3(cysr-seatkeep-t3): seat_proc.rs 는 seatkeep 프레임 정의를 그 실행 파일의 proto.rs 에서 끌어 쓴다(맥 · 같은 정의 공유).
+    const PATHED: &[(&str, &str, &str)] = &[("pending_requests.rs", "attempts", "pending_attempts.rs"),
+                                           ("seat_proc.rs", "sk_proto", "../cys-seatkeep/proto.rs")];
     let (mut queue, mut seen, mut shapes) = (vec!["main.rs".to_string()], std::collections::BTreeSet::new(), Vec::new());
     while let Some(file) = queue.pop() {
         if !seen.insert(file.clone()) { continue; }

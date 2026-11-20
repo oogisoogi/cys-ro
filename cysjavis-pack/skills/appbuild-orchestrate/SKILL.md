@@ -1,9 +1,12 @@
 ---
 name: appbuild-orchestrate
 description: 완료 게이트를 통과할 때까지 멀티페인으로 자율 빌드하는 대표 스킬 — master가 백/프론트 페인에 위임하고 다른 페인이 E2E 증거 검증, 메인은 절대 직접 수정 않고 문제를 해당 모듈로 라우팅하는 루프. appbuild 5단계. "자율 빌드 / 게이트까지 빌드 / 멀티페인 오케스트레이션 / auto orchestrate" 트리거, 또는 appbuild 파이프라인 5단계로 발동.
+disable-model-invocation: true
 ---
 
 # appbuild-orchestrate
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 `05-gate.md`를 **통과(증거 채움)할 때까지** 빌드한다. cysjavis 엔진을 배선한다 — master 위임·
 producer≠evaluator·autopilot. 재구현이 아니다.

@@ -1,12 +1,6 @@
 ---
 name: timesfm-forecasting
-description: >
-  Zero-shot 시계열 예측 — Google TimesFM 2.5(200M) foundation model로 학습 없이
-  단변량 시계열(매출·수요·센서·바이탈·가격·에너지·기상·과학측정 등)의 점예측 + 분위수
-  예측구간을 산출한다. 모델 로드 전 반드시 결정론 preflight(check_timesfm.py)로 RAM·디스크·
-  Python·아키텍처를 검증하고, 데이터셋 메모리 fit을 추정한다. cysjavis 규약: 수치는 스크립트
-  출력(결정론)이며 해석·문장화만 LLM이 담당한다. 분위수는 '시계열 모델 분위수'이지 이벤트
-  확률이 아니며(두 불확실성 합산 금지), 모든 정확도 주장은 hold-out 실측 전까지 '미검증'이다.
+description: TimesFM으로 학습 없이 시계열(매출·수요·센서 등)의 점예측과 예측구간을 낸다. 「시계열 예측 / 다음 N개월 매출 예측 / 수요 예측」 요청 때.
 license: Apache-2.0
 metadata:
   upstream: google-research/timesfm
@@ -209,3 +203,7 @@ python3 scripts/timesfm_forecast.py --input /dev/null --horizon 4; echo "exit=$?
 - Paper: A Decoder-Only Foundation Model for Time-Series Forecasting (ICML 2024, arXiv:2310.10688)
 - HuggingFace: google/timesfm-2.5-200m-pytorch
 - upstream: google-research/timesfm (Apache-2.0)
+
+## 원 설명 (목록 상주 설명 축소 전 원문 · 1.1.12 cysr-1112-skill-fold)
+
+Zero-shot 시계열 예측 — Google TimesFM 2.5(200M) foundation model로 학습 없이 단변량 시계열(매출·수요·센서·바이탈·가격·에너지·기상·과학측정 등)의 점예측 + 분위수 예측구간을 산출한다. 모델 로드 전 반드시 결정론 preflight(check_timesfm.py)로 RAM·디스크· Python·아키텍처를 검증하고, 데이터셋 메모리 fit을 추정한다. cysjavis 규약: 수치는 스크립트 출력(결정론)이며 해석·문장화만 LLM이 담당한다. 분위수는 '시계열 모델 분위수'이지 이벤트 확률이 아니며(두 불확실성 합산 금지), 모든 정확도 주장은 hold-out 실측 전까지 '미검증'이다.

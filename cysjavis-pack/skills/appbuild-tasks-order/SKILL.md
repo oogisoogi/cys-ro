@@ -1,9 +1,12 @@
 ---
 name: appbuild-tasks-order
 description: 작업을 의존 순서로 정렬하고 INVEST 기준으로 크기·테스트 가능성을 다듬는 하위 스킬 — 각 작업에 수용 기준을 달아 검증 가능하게 만든다. appbuild-tasks 순서 관문. "작업 순서 / 의존 정렬 / INVEST / 수용 기준" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # appbuild-tasks-order
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 슬라이스에 순서와 크기를 부여하고, 각 작업을 **검증 가능**하게 만든다.
 

@@ -1,6 +1,7 @@
 ---
 name: video-verify-timing
 description: 모션그래픽의 진입·퇴장 타이밍이 나레이션·타임라인과 정확히 맞는지 검증하는 하위 스킬 — 그래픽이 해당 발화 지점에 맞춰 들어오고 나가는지, 너무 이르거나 늦지 않은지 판정한다. video-verify 2관문. "타이밍 검증 / 모션 싱크 / 그래픽 진입 점검" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # video-verify-timing
@@ -19,7 +20,7 @@ description: 모션그래픽의 진입·퇴장 타이밍이 나레이션·타임
 
 1. **결정론 타이밍 게이트(권위)** → 검증: 팩 동봉 `bin/check_timeline.py`로 각 그래픽의
    intended↔실제 in 드리프트를 **정수-틱 프레임 격자**(TICKS_PER_SECOND=120000)에서 판정한다.
-   `python3 check_timeline.py check final/timeline.json --probe final/video.mp4 [--fps N] --json`.
+   `python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/check_timeline.py" check final/timeline.json --probe final/video.mp4 [--fps N] --json`.
    exit 0=GO · 1=NO_GO(드리프트 초과 그래픽 + 틱/프레임 단위 차이) · 2=입력오류(표현 불가
    프레임레이트·timeline 계약 미준수 등 — **fail-loud**, 조용한 통과 없음). 타이밍 합/불은 이
    게이트가 **권위**를 갖는다(LLM 부동소수 ±0.3초 눈대중 대체). 허용 오차 기본 ±0.3초 보존
@@ -38,7 +39,7 @@ description: 모션그래픽의 진입·퇴장 타이밍이 나레이션·타임
 ```bash
 ffprobe -v error -select_streams v -show_packets -show_entries packet=pts_time,flags \
   -of json final/video.mp4   # keyframe(flags=K) PTS를 measured_seconds로
-python3 check_timeline.py boundaries --input boundaries.json --fps <N> --tolerance-frames 1
+python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/check_timeline.py" boundaries --input boundaries.json --fps <N> --tolerance-frames 1
 # boundaries.json = {"fps":N,"declared_ticks":[IR 컷 경계],"measured_seconds":[측정 keyframe PTS]}
 ```
 

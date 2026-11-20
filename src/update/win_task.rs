@@ -114,13 +114,229 @@ fn xml_unescape(s: &str) -> String {
     s.replace("&quot;", "\"").replace("&apos;", "'").replace("&gt;", ">").replace("&lt;", "<").replace("&amp;", "&")
 }
 
+/// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · [master#1a7e7b90]): 작업 RunLevel 두 값 — 새 설치 기본 = LeastPrivilege(그대로 · 바꾸는 것은 박사님 결정).
+pub const RUN_LEVEL_LEAST: &str = "LeastPrivilege";
+pub const RUN_LEVEL_HIGHEST: &str = "HighestAvailable";
+
+/// 기존 작업 XML 이 HighestAvailable 이면 그 값 · 아니면 기본값(순수) — `cys daemon install` 이 사용자가 정해 둔 RunLevel 을 보존할 때 쓴다.
+/// (모르는 값까지 기본값으로 접는다 — 덮어쓰기 판단에는 [`run_level_of`] 를 쓴다.)
+pub fn run_level_to_keep(existing_xml: Option<&str>) -> &'static str {
+    match existing_xml.map(run_level_of) {
+        Some(Some(l)) => l,
+        _ => RUN_LEVEL_LEAST,
+    }
+}
+
+/// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · codex 1R blocking) 작업 XML 의 RunLevel **요소** 값(순수) — 글자 완전일치가 아니라 요소로 읽는다
+/// (속성·앞뒤 공백·줄바꿈 허용). 요소 없음 = LeastPrivilege(작업 스케줄러 기본) · 모르는 값·깨진 요소 = None(덮어쓰지 않을 근거).
+pub fn run_level_of(xml: &str) -> Option<&'static str> {
+    let mut from = 0;
+    let rest = loop {
+        let Some(i) = xml[from..].find("<RunLevel") else { return Some(RUN_LEVEL_LEAST) };
+        let r = &xml[from + i + "<RunLevel".len()..];
+        if r.starts_with(|c: char| c == '>' || c == '/' || c.is_whitespace()) {
+            break r;
+        }
+        from += i + 1;
+    };
+    let gt = rest.find('>')?;
+    if rest[..gt].ends_with('/') {
+        return None;
+    }
+    let body = &rest[gt + 1..];
+    match body[..body.find("</RunLevel>")?].trim() {
+        "HighestAvailable" => Some(RUN_LEVEL_HIGHEST),
+        "LeastPrivilege" => Some(RUN_LEVEL_LEAST),
+        _ => None,
+    }
+}
+
+/// ★1.1.16(codex 1R blocking) 작업 파일이 **확실히 없는가**(순수 판독) — `<SystemRoot>\System32\Tasks\<작업>` 이 NotFound 일 때만 참.
+/// 뿌리 모름·있음·판독 불가(권한 등)는 거짓(= 「없다」 고 단정하지 않음).
+pub fn task_file_absent_at(system_root: Option<&Path>, task: &str) -> bool {
+    let Some(root) = system_root else { return false };
+    matches!(std::fs::symlink_metadata(root.join("System32").join("Tasks").join(task)), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+}
+
+/// ★1.1.16(codex 1R blocking) `schtasks /Query /XML` 결과 판정(순수): 성공 = XML · 실패 ∧ 작업 파일 확실히 없음 = 작업 없음 ·
+/// 실패 ∧ 그 밖 = Err(질의 실패를 「작업 없음」 으로 접어 사용자가 정한 RunLevel 을 기본값으로 덮던 길).
+pub fn task_xml_query_outcome(task: &str, query_stdout: Option<&[u8]>, task_file_absent: bool) -> Result<Option<String>, String> {
+    match query_stdout {
+        Some(raw) => Ok(Some(decode_schtasks_xml(raw))),
+        None if task_file_absent => Ok(None),
+        None => Err(format!(
+            "작업 스케줄러 {task} 작업을 읽지 못했다(질의 실패 · 작업이 없다고 확인되지도 않음) — RunLevel 을 모른 채 다시 등록하지 않는다 · 잠시 뒤 다시"
+        )),
+    }
+}
+
+/// 작업 XML 질의(윈도우) — [`task_xml_query_outcome`] 의 실행판.
+#[cfg(windows)]
+pub fn query_task_xml(task: &str) -> Result<Option<String>, String> {
+    let out = crate::hidden_command("schtasks").args(["/Query", "/TN", task, "/XML"]).output().ok().filter(|o| o.status.success());
+    let root = std::env::var_os("SystemRoot").map(std::path::PathBuf::from);
+    task_xml_query_outcome(task, out.as_ref().map(|o| o.stdout.as_slice()), out.is_none() && task_file_absent_at(root.as_deref(), task))
+}
+
+/// `schtasks /Query /XML` 출력 해독(순수) — UTF-16LE(NUL 섞임 · BOM 있음·없음)이면 UTF-16, 아니면 UTF-8 손실 허용.
+pub fn decode_schtasks_xml(raw: &[u8]) -> String {
+    let body = raw.strip_prefix(&[0xFF, 0xFE][..]).unwrap_or(raw);
+    if body.len() >= 2 && body.iter().skip(1).step_by(2).take(64).all(|&b| b == 0) {
+        let u: Vec<u16> = body.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        String::from_utf16_lossy(&u)
+    } else {
+        String::from_utf8_lossy(raw).into_owned()
+    }
+}
+
+/// ★1.1.16(같은 티켓 ③ J-UPD-03): 갱신 러너 작업의 RunLevel(순수). 「관리자 모드 기기(cysd 작업 = Highest) = 갱신도 관리자로」 —
+/// 관리자로 만든 갱신 폴더(txn.owner.json · 소유자 BA)를 일반 권한 러너가 못 읽어 unsafe 로 멈추던 막다른 길(11-19 윈 W2)을 없앤다.
+/// Highest 작업 등록은 관리자 토큰이 필요하다 — ★codex 1R major: 관리자 모드 기기인데 등록하는 쪽이 상승 토큰이 아니면(또는 모르면) 종전처럼
+/// LeastPrivilege 러너를 만들지 않고 Err(그 러너는 관리자 소유 갱신 폴더를 못 읽어 같은 막다른 길로 간다) — 관리자 창에서 다시 실행하라는 안내.
+/// 관리자 모드가 아닌 기기 = 종전 LeastPrivilege.
+pub fn runner_run_level(cysd_task_xml: Option<&str>, registrar_elevated: Option<bool>) -> Result<&'static str, String> {
+    if cysd_task_xml.and_then(run_level_of) != Some(RUN_LEVEL_HIGHEST) {
+        return Ok(RUN_LEVEL_LEAST);
+    }
+    match registrar_elevated {
+        Some(true) => Ok(RUN_LEVEL_HIGHEST),
+        _ => Err("이 기기는 관리자 모드(cysd 작업 = 관리자 권한)인데 지금 창은 관리자 권한이 아니다 — 갱신 러너를 일반 권한으로 만들면 관리자 소유 갱신 폴더를 \
+                  못 읽어 멈춘다(J-UPD-03) · 관리자 창(관리자 권한으로 실행)에서 같은 명령을 다시 실행하라"
+            .into()),
+    }
+}
+
+// ═══════════ ★1.1.16(TICKET=cysr-1116-debt-d-1119 ② · [master#c0262f9c]·[master#c9343dbb]) cysd 작업 경유 기동 — 재시도 · 형제 폴백 표식 ═══════════
+//
+// 윈 기본 소켓 데몬은 작업 스케줄러 cysd 작업으로 띄운다(무결성 = 작업 RunLevel · 박사님 「cysr 은 항상 관리자 모드」). 작업 기동이 실패하면
+// 첫 시도 + 재시도 2회 → 그래도 안 되면 호출부가 형제 cysd 를 직접 띄운다(가용성 · 「사용자 체감 0」) · 그 사실을 표식 파일에 남기고 doctor 가
+// 경고 1줄 · **다음 기회**(다음 `cys rotate`·앱 [재시작]·자동 기동)는 다시 작업부터 시도하므로 성공하는 순간 작업 RunLevel 로 돌아오고 표식이 지워진다.
+// 부르는 곳 = CLI `connect()` 자동 기동 · 앱 `ensure_daemon_on`(같은 이 함수 하나).
+
+/// cysd 작업 이름(`cys daemon install` 이 등록하는 이름).
+pub const CYSD_TASK: &str = "cysd";
+/// 작업 경유 기동 대기(시도별) — 첫 시도 8초(작업 기동은 형제보다 느릴 수 있다 · 종전 4초×2) · 재시도 2회 각 4초.
+pub const CYSD_TASK_WAITS: [std::time::Duration; 3] =
+    [std::time::Duration::from_secs(8), std::time::Duration::from_secs(4), std::time::Duration::from_secs(4)];
+/// `schtasks /Run` 자체가 실패한 뒤 다음 시도 전 쉼.
+pub const CYSD_TASK_RUN_FAIL_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
+/// 형제 폴백 표식 파일 이름(자리 = 레인 상태 폴더 `crate::lane::state_dir()`).
+pub const FALLBACK_MARKER: &str = "daemon-integrity-fallback.json";
+
+/// 작업 경유 기동 결과.
+#[derive(Debug, PartialEq)]
+pub enum TaskFirst<T> {
+    /// 작업으로 뜬 데몬이 소켓을 잡았다(`attempt` = 몇 번째 시도 · 1부터) — 표식은 지웠다.
+    Served { value: T, attempt: u32 },
+    /// 세 번 다 안 됐다 — 호출부가 형제를 직접 띄우고, 뜬 데몬 pid 와 함께 [`FallbackNote::record`] 한다.
+    Fallback(FallbackNote),
+}
+
+/// 형제 폴백 사유(표식 내용 · doctor 경고 줄).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FallbackNote {
+    /// 기록 시각(유닉스 초).
+    pub at_unix: u64,
+    /// 마지막 시도의 사유.
+    pub reason: String,
+    /// 시도 수.
+    pub attempts: u32,
+    /// 형제로 뜬 데몬 pid(모르면 None) — doctor 는 지금 데몬 pid 와 같을 때만 이 표식을 읽는다(그 뒤 로그온 작업 등으로 바뀐 데몬 = 낡은 표식).
+    #[serde(default)]
+    pub daemon_pid: Option<u32>,
+}
+
+impl FallbackNote {
+    /// 표식 쓰기(실패해도 기동은 막지 않는다 · 쓰기 오류는 무시).
+    pub fn record(mut self, state_dir: &Path, daemon_pid: Option<u32>) {
+        self.daemon_pid = daemon_pid;
+        let _ = std::fs::create_dir_all(state_dir);
+        if let Ok(body) = serde_json::to_vec(&self) {
+            let _ = std::fs::write(state_dir.join(FALLBACK_MARKER), body);
+        }
+    }
+}
+
+/// 표식 판독(순수 · 파일) — 없음·깨짐 = None.
+pub fn read_fallback(state_dir: &Path) -> Option<FallbackNote> {
+    serde_json::from_slice(&std::fs::read(state_dir.join(FALLBACK_MARKER)).ok()?).ok()
+}
+
+/// 표식이 **지금 데몬**의 것인가(순수) — ★codex 3R minor([master#fc79d3e6]): 둘 다 알고 **같을 때만** 참 · 표식 pid 없음(기록 때 pid 를 못 얻음 ·
+/// 손으로 쓴 표식)·지금 pid 모름 = 버린다(작업으로 뜬 데몬에 거짓 경고를 붙이지 않는다 · 권한 갈림 경고는 따로 그대로 난다).
+pub fn fallback_applies(note: &FallbackNote, current_daemon_pid: Option<u32>) -> bool {
+    matches!((note.daemon_pid, current_daemon_pid), (Some(a), Some(b)) if a == b)
+}
+
+/// ★공유 한 함수: 작업 실행 → 대기를 [`CYSD_TASK_WAITS`] 대로 최대 3회. `run_task` = `schtasks /Run /TN cysd` 성공 여부 ·
+/// `wait_ready(대기)` = 그 시간 안에 소켓을 잡으면 Some · `pause` = 실행 실패 뒤 쉼. 성공 = 표식 삭제 · 실패 = 사유 노트(호출부가 형제 기동 뒤 기록).
+pub fn start_cysd_task_first<T>(
+    state_dir: &Path,
+    mut run_task: impl FnMut() -> bool,
+    mut wait_ready: impl FnMut(std::time::Duration) -> Option<T>,
+    mut pause: impl FnMut(std::time::Duration),
+    now_unix: u64,
+) -> TaskFirst<T> {
+    let mut reason = String::new();
+    for (i, wait) in CYSD_TASK_WAITS.iter().enumerate() {
+        let attempt = i as u32 + 1;
+        if run_task() {
+            if let Some(value) = wait_ready(*wait) {
+                let _ = std::fs::remove_file(state_dir.join(FALLBACK_MARKER));
+                return TaskFirst::Served { value, attempt };
+            }
+            reason = format!("작업은 실행됐으나 {}초 안에 데몬이 소켓을 잡지 않음", wait.as_secs());
+        } else {
+            reason = "작업 실행(schtasks /Run /TN cysd) 실패".to_string();
+            if attempt < CYSD_TASK_WAITS.len() as u32 {
+                pause(CYSD_TASK_RUN_FAIL_PAUSE);
+            }
+        }
+    }
+    TaskFirst::Fallback(FallbackNote { at_unix: now_unix, reason, attempts: CYSD_TASK_WAITS.len() as u32, daemon_pid: None })
+}
+
+/// doctor 경고 줄 꼬리(순수) — 표식이 지금 데몬 것일 때만.
+pub fn fallback_warning(note: &FallbackNote, now_unix: u64) -> String {
+    let ago = now_unix.saturating_sub(note.at_unix);
+    let when = if ago < 120 { format!("{ago}초 전") } else if ago < 7200 { format!("{}분 전", ago / 60) } else { format!("{}시간 전", ago / 3600) };
+    format!(
+        "작업 기동 {}회 실패로 데몬을 직접 띄웠다({when} · {}) — 다음 rotate·재시작 때 작업 경유로 자동 복귀",
+        note.attempts, note.reason
+    )
+}
+
+/// cysd 작업 실행(윈도우) — `schtasks /Run /TN cysd` 성공 여부.
+#[cfg(windows)]
+pub fn run_cysd_task() -> bool {
+    crate::hidden_command("schtasks").args(["/Run", "/TN", CYSD_TASK]).output().map(|o| o.status.success()).unwrap_or(false)
+}
+
+/// cysd 작업 파일이 확실히 없는가(윈도우) — 없으면 작업 경유를 건너뛰고 종전대로 형제 기동(표식 없음 · 개발·미설치 기기).
+#[cfg(windows)]
+pub fn cysd_task_absent() -> bool {
+    let root = std::env::var_os("SystemRoot").map(std::path::PathBuf::from);
+    task_file_absent_at(root.as_deref(), CYSD_TASK)
+}
+
+/// 지금 유닉스 초.
+pub fn now_unix() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
 /// 작업 정의 XML(순수). `logon_trigger` = 복구기(로그온 때 실행) · 아니면 트리거 없음(러너 = 등록 직후 Run).
 pub fn task_xml(command: &Path, args: &[&str], user_sid: &str, logon_trigger: bool) -> String {
+    task_xml_at(command, args, user_sid, logon_trigger, RUN_LEVEL_LEAST)
+}
+
+/// [`task_xml`] + RunLevel 지정(순수 · ★1.1.16 ③).
+pub fn task_xml_at(command: &Path, args: &[&str], user_sid: &str, logon_trigger: bool, run_level: &str) -> String {
+    let run_level = if run_level == RUN_LEVEL_HIGHEST { RUN_LEVEL_HIGHEST } else { RUN_LEVEL_LEAST };
     let trig = if logon_trigger { format!("<Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{}</UserId></LogonTrigger></Triggers>", xml_escape(user_sid)) } else { String::new() };
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\n<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\
 <RegistrationInfo><Description>cysr auto-update</Description></RegistrationInfo>{trig}\
-<Principals><Principal id=\"Author\"><UserId>{sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>\
+<Principals><Principal id=\"Author\"><UserId>{sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>{run_level}</RunLevel></Principal></Principals>\
 <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\
 <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT2H</ExecutionTimeLimit><Hidden>true</Hidden><Enabled>true</Enabled></Settings>\
 <Actions Context=\"Author\"><Exec><Command>{cmd}</Command><Arguments>{a}</Arguments></Exec></Actions></Task>",
@@ -391,6 +607,11 @@ pub enum Prior {
 /// ⑤ 뒤 거부 작업 지우기가 실패해도 복원은 시도한다(codex R3-01 — 지우기 실패가 복원 등록 불가를 뜻하지 않는다 · 복원 결과는 재독이 판정).
 /// 뮤턴트 `WT4` = 그때 복원 빼기.
 pub fn install<S: Sched>(s: &mut S, name: &str, runner: &Path, args: &[&str], me: &str, logon: bool) -> Result<(), String> {
+    install_at(s, name, runner, args, me, logon, RUN_LEVEL_LEAST)
+}
+
+/// [`install`] + RunLevel 지정(★1.1.16 ③ · [`runner_run_level`]).
+pub fn install_at<S: Sched>(s: &mut S, name: &str, runner: &Path, args: &[&str], me: &str, logon: bool, run_level: &str) -> Result<(), String> {
     let sddl = sddl_for(me);
     let prior = match s.read_task(name) {
         Err(e) if e.absent() => Prior::Absent,
@@ -410,7 +631,7 @@ pub fn install<S: Sched>(s: &mut S, name: &str, runner: &Path, args: &[&str], me
             Err(e) => return Err(format!("[{name}] 옛 작업 지우기 실패 — 옛 작업 그대로 · 등록 안 함: {e}")),
         }
     }
-    if let Err(e) = s.register(name, &task_xml(runner, args, me, logon), &sddl) {
+    if let Err(e) = s.register(name, &task_xml_at(runner, args, me, logon, run_level), &sddl) {
         return Err(format!("{e}{}", restore(s, name, &prior, &sddl)));
     }
     if let Err(r) = s.verify(name) {
@@ -772,7 +993,11 @@ mod com {
         let svc = service()?;
         let folder = our_folder(dir, &svc, true, &sddl)?;
         // ★codex R2: 옛 작업 지우기·등록·재독·복원 = [`install`](오류 종류 구분 · 유효한 옛 작업 복원 — 가짜 Sched 로 모든 기판에서 시험).
-        install(&mut ComSched { dir, folder: &folder, runner, args, logon }, name, runner, args, &me, logon)?;
+        // ★1.1.16(TICKET=cysr-1116-debt-d-1119 ③): 관리자 모드 기기(cysd 작업 Highest) + 상승 토큰 등록 = 러너도 Highest.
+        // ★codex 1R: 질의 실패를 「작업 없음」 으로 접지 않는다(query_task_xml) · 관리자 모드 기기 + 일반 토큰 = 등록 거부(안내).
+        let cysd_xml = query_task_xml("cysd")?;
+        let level = runner_run_level(cysd_xml.as_deref(), crate::process_token_elevated())?;
+        install_at(&mut ComSched { dir, folder: &folder, runner, args, logon }, name, runner, args, &me, logon, level)?;
         if run_now {
             let task = get_task(&folder, name)?;
             let mut rt: Raw = std::ptr::null_mut();
@@ -790,7 +1015,110 @@ mod com {
 mod tests {
     use super::*;
 
+    fn d3_dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("d3-taskfirst-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 ②): 작업 실패 대역 → 재시도 2회 → 형제 폴백 표식 → **다음 기회** 작업 성공 = 복귀 · 표식 삭제.
+    #[test]
+    fn d3_task_first_retries_twice_then_falls_back_and_returns_on_the_next_chance() {
+        use std::time::Duration;
+        let dir = d3_dir("cycle");
+        // ① 작업 실행 3번 다 실패 = 형제 폴백(대기 0 · 쉼 2 · 실행 3).
+        let (mut runs, mut waits, mut pauses) = (0, Vec::new(), Vec::new());
+        let r: TaskFirst<()> = start_cysd_task_first(&dir, || { runs += 1; false }, |w| { waits.push(w); None }, |p| pauses.push(p), 1000);
+        assert_eq!(runs, 3, "첫 시도 + 재시도 2회");
+        assert!(waits.is_empty());
+        assert_eq!(pauses, vec![CYSD_TASK_RUN_FAIL_PAUSE; 2], "마지막 실패 뒤에는 쉬지 않는다");
+        let TaskFirst::Fallback(note) = r else { panic!("폴백이어야") };
+        assert_eq!((note.attempts, note.at_unix, note.daemon_pid), (3, 1000, None));
+        assert!(note.reason.contains("schtasks /Run"), "{}", note.reason);
+        // 형제 기동 뒤 기록 = doctor 가 읽는 표식.
+        note.record(&dir, Some(77));
+        let back = read_fallback(&dir).expect("표식");
+        assert_eq!(back.daemon_pid, Some(77));
+        assert!(fallback_applies(&back, Some(77)) && !fallback_applies(&back, Some(78)));
+        assert!(fallback_warning(&back, 1030).contains("작업 기동 3회 실패") && fallback_warning(&back, 1030).contains("30초 전"));
+        // ② 다음 기회(rotate·재시작) — 작업이 돈다 = 작업 경유 복귀 · 표식 삭제.
+        let mut waits2 = Vec::new();
+        let r2 = start_cysd_task_first(&dir, || true, |w| { waits2.push(w); Some("sock") }, |_| panic!("쉼 없음"), 2000);
+        assert_eq!(r2, TaskFirst::Served { value: "sock", attempt: 1 });
+        assert_eq!(waits2, vec![Duration::from_secs(8)]);
+        assert!(read_fallback(&dir).is_none(), "복귀하면 표식이 지워진다");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 실행은 됐는데 늦는 작업 = 대기 8·4·4 · 세 번째에 잡으면 작업 경유(형제 안 띄움).
+    #[test]
+    fn d3_task_first_waits_eight_then_four_four() {
+        use std::time::Duration;
+        let dir = d3_dir("slow");
+        let mut waits = Vec::new();
+        let r = start_cysd_task_first(&dir, || true, |w| { waits.push(w); (waits.len() == 3).then_some(()) }, |_| panic!("실행 성공 = 쉼 없음"), 0);
+        assert_eq!(r, TaskFirst::Served { value: (), attempt: 3 });
+        assert_eq!(waits, vec![Duration::from_secs(8), Duration::from_secs(4), Duration::from_secs(4)]);
+        // 셋 다 늦으면 폴백 사유 = 무응답.
+        let r = start_cysd_task_first::<()>(&dir, || true, |_| None, |_| {}, 0);
+        let TaskFirst::Fallback(n) = r else { panic!() };
+        assert!(n.reason.contains("소켓을 잡지 않음"), "{}", n.reason);
+        // 깨진 표식 = 없음 · pid 모름 = 지금 데몬 것으로 본다.
+        std::fs::write(dir.join(FALLBACK_MARKER), b"{").unwrap();
+        assert!(read_fallback(&dir).is_none());
+        // ★codex 3R minor: pid 없는 표식·지금 pid 모름 = 버림(같은 pid 가 확인될 때만).
+        let n0 = FallbackNote { at_unix: 0, reason: String::new(), attempts: 3, daemon_pid: None };
+        assert!(!fallback_applies(&n0, Some(5)) && !fallback_applies(&n0, None));
+        assert!(!fallback_applies(&FallbackNote { daemon_pid: Some(5), ..n0.clone() }, None));
+        assert!(fallback_applies(&FallbackNote { daemon_pid: Some(5), ..n0.clone() }, Some(5)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · codex 1R blocking) RunLevel 요소 판독 · 질의 실패 ≠ 작업 없음.
+    #[test]
+    fn debt_d_run_level_is_read_as_an_element_and_query_failure_is_not_absence() {
+        assert_eq!(run_level_of("<Principal><RunLevel>HighestAvailable</RunLevel></Principal>"), Some(RUN_LEVEL_HIGHEST));
+        assert_eq!(run_level_of("<Principal>\r\n  <RunLevel >\r\n    HighestAvailable\r\n  </RunLevel>"), Some(RUN_LEVEL_HIGHEST), "공백·줄바꿈");
+        assert_eq!(run_level_of("<RunLevelX>HighestAvailable</RunLevelX><RunLevel>LeastPrivilege</RunLevel>"), Some(RUN_LEVEL_LEAST), "다른 이름 요소");
+        assert_eq!(run_level_of("<Principal><UserId>S</UserId></Principal>"), Some(RUN_LEVEL_LEAST), "요소 없음 = 기본");
+        assert_eq!(run_level_of("<RunLevel>Elevated</RunLevel>"), None, "모르는 값");
+        assert_eq!(run_level_of("<RunLevel/>"), None);
+        assert_eq!(run_level_of("<RunLevel>HighestAvailable"), None, "깨진 요소");
+        assert_eq!(run_level_to_keep(Some("<RunLevel>\n HighestAvailable \n</RunLevel>")), RUN_LEVEL_HIGHEST);
+        let d = std::env::temp_dir().join(format!("cys-wt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("System32").join("Tasks")).unwrap();
+        std::fs::write(d.join("System32").join("Tasks").join("cysd"), "x").unwrap();
+        let absent = task_file_absent_at(Some(&d), "nope");
+        let present = task_file_absent_at(Some(&d), "cysd");
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(absent && !present && !task_file_absent_at(None, "cysd"));
+        assert_eq!(task_xml_query_outcome("cysd", Some(b"<Task/>"), false), Ok(Some("<Task/>".to_string())));
+        assert_eq!(task_xml_query_outcome("cysd", None, true), Ok(None), "확실히 없음 = 새 설치");
+        assert!(task_xml_query_outcome("cysd", None, false).is_err(), "질의 실패를 작업 없음으로 접었다");
+    }
+
     /// §7-1 「작업 정의 재독 구조 대조(인자 공백·따옴표·역슬래시 사례)」.
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · [master#1a7e7b90] ③): 관리자 모드 기기 = 갱신 러너도 Highest(등록자 상승일 때만).
+    #[test]
+    fn debt_d_runner_run_level_follows_the_admin_mode_cysd_task() {
+        let hi = "<Principal><RunLevel>HighestAvailable</RunLevel></Principal>";
+        let lo = "<Principal><RunLevel>LeastPrivilege</RunLevel></Principal>";
+        assert_eq!(runner_run_level(Some(hi), Some(true)), Ok(RUN_LEVEL_HIGHEST));
+        // ★codex 1R major: 관리자 모드 기기 + 일반(또는 모르는) 토큰 = Limited 러너를 만들지 않고 안내 Err.
+        assert!(runner_run_level(Some(hi), Some(false)).is_err_and(|e| e.contains("관리자 창")), "일반 토큰이 Limited 러너를 만들었다");
+        assert!(runner_run_level(Some(hi), None).is_err());
+        assert_eq!(runner_run_level(Some(lo), Some(true)), Ok(RUN_LEVEL_LEAST), "기본 설치 기기 = 종전");
+        assert_eq!(runner_run_level(Some(lo), Some(false)), Ok(RUN_LEVEL_LEAST));
+        assert_eq!(runner_run_level(None, Some(true)), Ok(RUN_LEVEL_LEAST));
+        let x = task_xml_at(Path::new("C:/r/cys.exe"), &["self-update"], "S-1-5-21-1", false, RUN_LEVEL_HIGHEST);
+        assert!(x.contains("<RunLevel>HighestAvailable</RunLevel>"));
+        assert!(task_xml(Path::new("C:/r/cys.exe"), &["self-update"], "S-1-5-21-1", false).contains("<RunLevel>LeastPrivilege</RunLevel>"));
+        assert!(task_xml_at(Path::new("C:/r/cys.exe"), &[], "S", false, "<x>").contains("<RunLevel>LeastPrivilege</RunLevel>"), "모르는 값 = 기본");
+        assert_eq!(parse_task_xml(&x).map(|d| d.logon_type), Some("InteractiveToken".to_string()));
+    }
+
     #[test]
     fn args_roundtrip_through_windows_rules() {
         let cases: Vec<Vec<&str>> = vec![
@@ -982,7 +1310,8 @@ mod tests {
         assert!(com.find("TASK_CREATE_OR_UPDATE, empty()").is_none(), "RegisterTask 에 상수 6 직접 전달 금지");
         com.find("hr_e(f(folder.0, bn.0, bx.0, register_flags(), empty(), empty(), TASK_LOGON_INTERACTIVE_TOKEN").expect("RegisterTask 인자 = register_flags()");
         let rv = &com[com.find("pub fn register_and_verify(").unwrap()..];
-        let inst = rv.find("install(&mut ComSched {").expect("윈 등록 = install 경유");
+        // ★1.1.16(TICKET=cysr-1116-debt-d-1119 ③): RunLevel 을 넘기는 install_at 경유(install = install_at(.., LeastPrivilege)).
+        let inst = rv.find("install_at(&mut ComSched {").expect("윈 등록 = install(_at) 경유");
         assert!(inst < rv.find("if run_now").unwrap(), "install 뒤에만 Run");
         assert!(!rv[..inst].contains("register_in(") && !rv[..inst].contains("delete"), "install 앞에서 직접 지우기·등록 금지");
         assert!(!com.contains("let _ = delete(dir, name)"), "지우기 결과 버리기 금지(R2-01)");

@@ -55,8 +55,11 @@ TAR="$OUT_ABS/cysr_${ARCH}.app.tar.gz"
 #   구판 플러그인은 그 쓰레기를 번들 자리에 함께 푼다. tauri 번들러는 Rust `tar` 크레이트라 애초에
 #   AppleDouble 을 안 만든다 — 그 산출물과 같은 모양으로 맞춘다.
 #   (이 줄이 없으면 실제로 `._cysr.app` 이 생기는 것을 scripts/tests/test_darwin_updater_tarball.py 가 잡았다.)
+# ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V10 실측): COPYFILE_DISABLE 만으로는 bsdtar 가 확장 속성(com.apple.provenance 등)을 **PAX 머리('x')**
+#   로 넣는다 — 칩 검사기(아래)의 「평이한 꼴」(RULINGS EB1 · 확장 머리 0 · 순수 ustar = tauri 번들러의 Rust tar 산출과 같은 꼴)을 벗어나
+#   판정 불가(rc 2)가 된다. ⇒ 확장 속성·맥 메타데이터·ACL·플래그를 끄고 ustar 로 쓴다(255바이트 넘는 이름은 tar 가 거부 = 시끄러운 실패).
 rm -f "$TAR"
-COPYFILE_DISABLE=1 tar czf "$TAR" -C "$APP_PARENT" "$APP_NAME"
+COPYFILE_DISABLE=1 tar --format ustar --no-xattrs --no-mac-metadata --no-acls --no-fflags -czf "$TAR" -C "$APP_PARENT" "$APP_NAME"
 
 TOPS="$(tar tzf "$TAR" | awk -F/ '{print $1}' | sort -u | wc -l | tr -d ' ')"
 [ "$TOPS" = "1" ] || { echo "error: tar 최상위 구성요소가 $TOPS 개다(1 이어야 한다)" >&2; tar tzf "$TAR" | awk -F/ '{print $1}' | sort -u >&2; rm -f "$TAR"; exit 1; }
@@ -65,6 +68,23 @@ if tar tzf "$TAR" | grep -q '/\._\|^\._'; then
   echo "error: AppleDouble(._*) 항목이 들어갔다 — COPYFILE_DISABLE 이 먹지 않았다" >&2; rm -f "$TAR"; exit 1
 fi
 echo "✓ tar 생성: $TAR ($(tar tzf "$TAR" | awk -F/ '{print $1}' | sort -u) · $(wc -c < "$TAR") B)"
+
+# ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V10 · U05 배선 남은 곳): 올릴 **바이트 그대로**(tar.gz)의 칩 검사 — 서명 전에.
+#   build-macos-local.sh 는 .app 을 zip 전에 검사하지만 이 구판 플러그인 자산은 따로 만들어 검사가 없었다(교차 빌드 x64 에
+#   arm64 런타임이 섞이면 서명돼 나간다). 원작자 v0.15.1 build-macos-signed.sh 306-308 과 같은 자리(tar 직후 · 서명 직전)·같은 필수 4개.
+#   python = 번들 밖(GATE_PY · 기본 /usr/bin/python3) — .app 안 바이너리 exec 금지(build-macos-local.sh SEAL_PY 와 같은 규칙).
+GATE_PY="${GATE_PY:-/usr/bin/python3}"
+GATE_RC=0
+"$GATE_PY" "$(dirname "$0")/check_macho_arch.py" --target "$ARCH" --quiet \
+  --require Contents/Resources/runtime/python/bin/python3 --require Contents/Resources/runtime/node/bin/node \
+  --require Contents/Resources/runtime/git/bin/git --require Contents/Resources/runtime/uv/uv \
+  "$TAR" || GATE_RC=$?
+if [ "$GATE_RC" -ne 0 ]; then
+  echo "error: 칩 검사 실패(rc $GATE_RC · check_macho_arch --target $ARCH) — 서명하지 않고 tar 를 지운다" >&2
+  rm -f "$TAR"
+  exit "$GATE_RC"
+fi
+echo "✓ 칩 검사: $TAR (--target $ARCH · 필수 런타임 4)"
 
 if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
   cat > "$TAR.sig.MISSING" <<'NOTE'

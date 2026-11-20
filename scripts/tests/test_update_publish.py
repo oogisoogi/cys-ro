@@ -1747,8 +1747,10 @@ sys.stdout.write(json.dumps(j)); sys.exit(p.returncode)
         self.assertIn("U1 재검증 거부", r.stderr)
 
 
-@unittest.skipUnless(sys.platform == "darwin" and shutil.which("codesign") and VERIFY_BIN,
-                     "맥 재료 수집기 = codesign + build-info 가진 cys(CYS_UPDATE_VERIFY_BIN) 필요")
+# ★CI 전용(TICKET=cysr-test-gatekeeper-crash-1118): collect-inputs.sh 가 갓 서명한 번들을 임시 폴더에 풀어 그 안의 cys 를 실행한 뒤
+# 지운다(새 Mach-O 실행 → 삭제 = 사람 맥 syspolicyd 충돌 후보 · 수집기는 제품 스크립트라 여기서 못 바꾼다) → 사람 맥 기본 실행에서는 건너뛴다.
+@unittest.skipUnless(sys.platform == "darwin" and shutil.which("codesign") and VERIFY_BIN and os.environ.get("CI"),
+                     "맥 재료 수집기 = CI 전용 · codesign + build-info 가진 cys(CYS_UPDATE_VERIFY_BIN) 필요")
 class TestCollectMac(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="u3c-")

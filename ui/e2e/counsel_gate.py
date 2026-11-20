@@ -22,7 +22,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 DIST = ROOT / "ui" / "dist"
-SHOTS = ROOT / "docs" / "design" / "shots-119-t4"
+# (s79 · I4) 캡처 기본 자리 = 작업트리 밖(GATE_EVIDENCE_DIR 또는 TMPDIR/cys-gate-evidence) — 커밋된 shots-119-t4 를 덮지 않는다(새로 찍을 땐 GATE_EVIDENCE_DIR 로)
+SHOTS = Path(__import__("os").environ.get("GATE_EVIDENCE_DIR") or Path(__import__("tempfile").gettempdir()) / "cys-gate-evidence") / "shots-119-t4"
 ROOM = "2a3c1932d7eccf316cc4a0b312e558c7"
 MK = "AGORA-DATA-0123456789abcdef"
 ME = "jarvis-me00000001"

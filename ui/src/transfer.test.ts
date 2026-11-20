@@ -370,6 +370,6 @@ describe("transferCrossDept wiring (source pin)", () => {
     expect(count(ack, 'state: "in-progress"')).toBe(1);
     expect(count(ack, 'state: "awaiting-ack"')).toBe(1); // holdForRetry 안의 한 자리뿐
     expect(ack).toContain("const holdForRetry = ("); // 단일 출구의 정의
-    expect(count(ack, "holdForRetry(")).toBe(3); // 출구 셋: 관측 예외 · 종료 실패 · 정상 보류
+    expect(count(ack, "holdForRetry(")).toBe(4); // 출구 넷: 관측 예외 · (codex 3R #3) 원본 닫기 직전 작업공간 지워짐 · 종료 실패 · 정상 보류
   });
 });

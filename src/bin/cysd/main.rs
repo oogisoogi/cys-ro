@@ -55,6 +55,7 @@ mod office_bridge;
 mod native_publication;
 mod pending_requests;
 mod policy_loader;
+mod program_status;
 mod panetitle;
 mod rc_guard;
 mod recall;
@@ -66,10 +67,14 @@ mod repaint;
 mod root_registration;
 mod s5_escalation;
 mod schedule;
+mod seat_adopt;
+mod seat_proc;
 mod severity;
 mod skillrun;
 mod state;
 mod submit_assoc;
+// (조각 6b · TICKET=cysr-1116-s6-1119) 팀별 기계 장치 — 대기열 몫·도우미 상한·정지 스위치·【진행】 묶음(P2-DESIGN §16-2).
+mod team;
 mod teamtoken;
 mod trash;
 mod undo;
@@ -1150,6 +1155,11 @@ enum CysdCli {
     Run,
     Version,
     Help,
+    /// T6a 사전 점검(TICKET=cysr-1116-seatkeep-1119): 데몬을 띄우지 않고 이 실행 파일이 seatkeep 폴더의 산 좌석을 입양할 수 있는지만 JSON 으로.
+    /// `--as-bundle <정식 앱 번들>` = 업데이터 S7 앞(스테이지 번들의 cysd 가 「교체 뒤 정식 자리에 섰을 때」의 신원 규칙으로 판정 · T6b).
+    AdoptCheck(Option<String>),
+    /// T6b 되감기 전 관리용 종료: 데몬이 없을 때만(시작 잠금을 비차단으로 잡음) 이 cysd 의 산 seatkeep 을 신원 확인 뒤 끝낸다.
+    EndKeepers,
     Unknown(String),
 }
 
@@ -1161,6 +1171,22 @@ fn parse_cysd_args<I: IntoIterator<Item = String>>(args: I) -> CysdCli {
     let command = match first.as_str() {
         "--version" | "-V" => CysdCli::Version,
         "--help" | "-h" => CysdCli::Help,
+        // `--json` 은 받아 넘긴다(출력은 언제나 JSON) — 그 밖 인자는 거절.
+        "--adopt-check" | "--end-keepers" => {
+            let end = first == "--end-keepers";
+            let mut bundle = None;
+            while let Some(a) = args.next() {
+                match a.as_str() {
+                    "--json" => {}
+                    "--as-bundle" if !end && bundle.is_none() => match args.next() {
+                        Some(b) => bundle = Some(b),
+                        None => return CysdCli::Unknown(a),
+                    },
+                    _ => return CysdCli::Unknown(a),
+                }
+            }
+            return if end { CysdCli::EndKeepers } else { CysdCli::AdoptCheck(bundle) };
+        }
         _ => return CysdCli::Unknown(first),
     };
     match args.next() {
@@ -1179,6 +1205,8 @@ fn cysd_usage() -> String {
     concat!(
         "usage: cysd [--version|-V|--help|-h]\n",
         "  cysd            데몬을 기동한다(무인자만 기동 · 소켓은 CYS_SOCKET · 팩은 CYS_PACK_DIR)\n",
+        "  --adopt-check [--json] [--as-bundle <앱>]  데몬 없이 seatkeep 좌석 입양 가능 여부만 JSON(막힘 있으면 exit 1 · 잠금·소켓·쓰기 0)\n",
+        "  --end-keepers [--json]  데몬이 없을 때만 이 데몬의 산 seatkeep 을 신원 확인 뒤 끝낸다(되감기 전 · 데몬 있음 = exit 3)\n",
         "  --version, -V   버전과 빌드 ID 를 stdout 에 내고 exit 0\n",
         "  --help, -h      이 도움말 · exit 0\n",
         "  그 밖의 인자    usage 를 stderr 에 내고 exit 2 — 데몬은 기동하지 않는다\n",
@@ -1204,6 +1232,8 @@ fn main() {
             print!("{}", cysd_usage());
             std::process::exit(0);
         }
+        CysdCli::AdoptCheck(bundle) => std::process::exit(seat_adopt::adopt_check_main(bundle.as_deref())),
+        CysdCli::EndKeepers => std::process::exit(seat_adopt::end_keepers_main()),
         CysdCli::Unknown(a) => {
             eprintln!("cysd: unknown argument '{a}'");
             eprint!("{}", cysd_usage());
@@ -1382,12 +1412,9 @@ async fn async_main() {
     // 통째로 포함하게 됐다 — 단일 워커(1코어)에서 이 블로킹이 tokio 워커를 45초(HEARTBEAT_STALE_THRESHOLD)+
     // 굶기면 heartbeat interval 태스크가 못 돌아 stale → 경합자 데드맨이 정당한 승자를 Dead 오판·SIGKILL 할
     // 수 있다. spawn_blocking 으로 별도 블로킹 풀에 태워 main 태스크가 yield 해도 interval 이 계속 돌게 한다.
-    match tokio::task::spawn_blocking(cys::pack::recover_pack_journal).await {
-        Ok(Ok(true)) => eprintln!("[cysd] pack-update orphan journal recovered (self-heal)"),
-        Ok(Ok(false)) => {}
-        Ok(Err(e)) => eprintln!("[cysd] pack journal recovery skipped: {e}"),
-        Err(e) => eprintln!("[cysd] pack journal recovery task failed: {e}"),
-    }
+    // ★1.1.16(U02 · codex 1R·3R): 이 데몬 레인의 저널만 복구(부서 데몬 = 부서 저널) · 팩 적용 잠금을 **한 번** 잡은 채 복구 → 판 게이트 재검사 →
+    //   필요하면 자동 설치(install(false))까지 한 덩어리(cys::pack::boot_recover_and_install). 진행 중 적용(Busy)·복구 실패(Err)면 이번 기동은
+    //   설치하지 않는다 — 반쯤 적용된 팩 위에 설치하지 않고, 복구와 설치 사이에 pack-update 가 끼어들 틈도 없다.
     // 온보딩②: 팩이 이 바이너리 버전으로 미커밋일 때만 자동 설치 — 신규 머신·바이너리 업그레이드·
     // 팩 소실(.pack-version/매니페스트 부재 = 게이트 개방)이 실행 조건. launch-agent·디렉티브·acl이
     // "init-pack을 아는 사람"에게만 동작하는 것을 없앤다는 원목적은 유지된다(보존 모드·사용자 파일 불가침).
@@ -1395,28 +1422,41 @@ async fn async_main() {
     // 재기동·로그온 자동기동마다 전량 스윕(320파일 read+해시)이 돌던 비용 제거(2026-07-12 Win11 이슈 실측).
     // 손상+마커 무결 상태의 치유는 cys init-pack/pack-update/doctor --fix 명시 경로가 담당한다
     // (매 부트 전량 치유는 seed-once 원복 사고(7-12)의 원인 기전 — 의도적 축소).
-    if !cys::pack::pack_current_for(env!("CARGO_PKG_VERSION")) {
-        // ★리뷰어1 F1: install(false)도 동기 블로킹(최대 320파일 read+해시+write)이라 위 heartbeat 굶김
-        // 위험이 동일 — spawn_blocking 으로 분리한다. (pack_current_for 게이트는 stat 2회라 동기 유지.)
-        // W0-d: cysd 부팅 자동설치는 라이브 팩 쓰기 프로덕션 진입점 — 인가 부여.
-        // ★(0.14.45 · B1 · 치명위험 ④) 설치 경로의 agy 상태줄 조정(윈도우 실연 검사 ≤5.2초)은 **소켓 바인드 뒤**로 미룬다 —
-        //   바인드 앞에서 돌면 CLI 자동기동의 4초 폴링이 데몬을 못 본다. 소비는 post_listen_boot(별도 스레드 · 락 0 · 로그만).
-        cys::pack::defer_agy_statusline_probe();
-        match tokio::task::spawn_blocking(|| {
-            cys::pack::install(false, Some(cys::pack::PackWriteAuth::production()))
-        })
-        .await
-        {
-            Ok(Ok((written, _))) if written > 0 => eprintln!(
-                "[cysd] CYSJavis Pack: {written} file(s) installed at {}",
-                cys::pack::pack_dir().display()
-            ),
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => eprintln!("[cysd] pack auto-install skipped: {e}"),
-            Err(e) => eprintln!("[cysd] pack auto-install task failed: {e}"),
+    // ★리뷰어1 F1: 복구·install(false) 는 동기 블로킹(최대 320파일 read+해시+write)이라 heartbeat 굶김 위험 — spawn_blocking 으로 분리한다.
+    // W0-d: cysd 부팅 자동설치는 라이브 팩 쓰기 프로덕션 진입점 — 인가 부여.
+    // ★(0.14.45 · B1 · 치명위험 ④) 설치 경로의 agy 상태줄 조정은 소켓 바인드 뒤로 미룬다(defer_agy_statusline_probe 는 설치할 때만 boot_recover_and_install 안에서).
+    match tokio::task::spawn_blocking(|| {
+        cys::pack::boot_recover_and_install(env!("CARGO_PKG_VERSION"), cys::pack::PackWriteAuth::production())
+    })
+    .await
+    {
+        Ok(Ok((rec, installed))) => {
+            match rec {
+                cys::pack::JournalRecovery::Recovered => eprintln!("[cysd] pack-update orphan journal recovered (self-heal)"),
+                cys::pack::JournalRecovery::Busy => {
+                    eprintln!("[cysd] pack update in progress (apply-lock held) — journal and pack auto-install left to it")
+                }
+                cys::pack::JournalRecovery::Nothing => {}
+            }
+            match installed {
+                Some(Ok((written, _))) if written > 0 => eprintln!(
+                    "[cysd] CYSJavis Pack: {written} file(s) installed at {}",
+                    cys::pack::pack_dir().display()
+                ),
+                Some(Ok(_)) | None => {}
+                Some(Err(e)) => eprintln!("[cysd] pack auto-install skipped: {e}"),
+            }
         }
+        // ★1.1.16 F5(독립 검증 1118): 이 상태는 다음 기동·팩 업데이트·자동 갱신도 같은 Err 로 막는다 — 사람이 볼 자리(doctor pack-state 줄)를 가리킨다.
+        Ok(Err(e)) => eprintln!(
+            "[cysd] pack journal recovery failed — pack auto-install skipped this boot (the journal stays; see `cys doctor` pack-state): {e}"
+        ),
+        Err(e) => eprintln!("[cysd] pack journal recovery task failed — pack auto-install skipped this boot: {e}"),
     }
     let daemon = Daemon::new(socket_path.clone());
+    // ★T4 좌석 입양(노브 `CYS_SEATKEEP_ADOPT=1` · 끔 = 아무것도 안 함) — 시작 잠금을 쥔 뒤 · watchdog·accept·자동 복원 **전**(T0 §3 순서):
+    //   살아 있는 seatkeep 좌석을 같은 번호·역할로 다시 등록해, 뒤의 자동 복원이 그 역할을 「가동 중」으로 보고 건너뛰게 한다.
+    seat_adopt::adopt_on_boot(&daemon);
     // ★(0.14.44 · A3) 승인 묶음 식별자를 부팅 때 한 번 만들어 둔다(상태 폴더의 `approval-lane` 파일 · 만들지 못하면 메모리 값 + 로그 한 줄 · 부팅을 막지 않는다).
     let _ = approval::lane_value(&socket_path, &crate::state::state_dir(&socket_path));
     // ★R1 배달 원장: 이 데몬 인스턴스 표식을 팩 계약 상태 디렉터리에 쓴다(best-effort).
@@ -1458,6 +1498,9 @@ async fn async_main() {
     // F-01 (0.14.52) display-only activity observer — its own OS thread; failure leaves dots Unknown.
     //   Rollback / OFF arm: CYS_DISPLAY_ACTIVITY=0.
     activity::spawn_observer(Arc::clone(&daemon));
+    // ★(1.1.16 · 차용 ③ · V-4) 가벼운 시작 손잡이를 기동 때 고정(진실원 = 이 데몬) — 로그 1줄.
+    let (fleet, fleet_src) = knobs::boot_fleet();
+    eprintln!("[cysd] boot_fleet={fleet} (출처 {fleet_src})");
     // CC v2 WS-A: 계정 발견(프로필 스캔)+스냅샷 예열 — 관측 전에도 전 계정이 CC에 보인다.
     // 전부 fail-open(파일 부재·파싱 실패=빈 뷰) — 부트체인 비치명.
     accounts::seed_known(&daemon);
@@ -1539,6 +1582,8 @@ async fn async_main() {
 /// 소켓 파일을 제거한다. unix·windows 양쪽 종료 핸들러가 공유한다 (크로스플랫폼 대칭).
 /// (windows named pipe엔 제거할 파일이 없어 remove_file은 무해한 no-op이 된다.)
 fn shutdown_cleanup(daemon: &Arc<Daemon>, reason: &str) {
+    // ★조각 1: 읽기 오류로 건너뛴 topology 저장의 마지막 기회 — 좌석 회수보다 먼저 한다.
+    governance::persist_topology_if_dirty(daemon);
     let scoped = governance::collect_scoped_for_shutdown(&daemon.ledger.lock().unwrap());
     for (pid, pgid) in scoped {
         governance::kill_group_or_pid(pid, pgid);
@@ -2334,7 +2379,7 @@ fn spawn_deferred_agy_statusline_reconcile() {
 /// 데몬을 autostart하는 재귀를 차단). 대기 스레드가 자식을 reap해 좀비 잔존을 막는다.
 /// ★W1: PHOENIX_CYS·PATH 주입(§5-1 침묵사 근원 수리) · stdout/stderr 를 null 대신 phoenix-restore.log 로
 /// 캡처(P0-5 사후 진단 불가 수리) · exit 계약 처리(5·6=재시도 금지, 그 외 비0=60s 후 1회 재시도).
-fn spawn_auto_restore(
+pub(crate) fn spawn_auto_restore(
     state_dir: &std::path::Path,
     socket_path: &std::path::Path,
     daemon: &std::sync::Arc<Daemon>,
@@ -2349,6 +2394,13 @@ fn spawn_auto_restore(
     let current_path = std::env::var("PATH").unwrap_or_default();
     let exe_dir_ref = exe_dir.as_deref().unwrap_or_else(|| std::path::Path::new("."));
     let socket = socket_path.to_string_lossy();
+    // ★T4 · T1 최소 대역(판정 = `seat_adopt::restore_should_hold` 한 곳): 살아 있으나 입양하지 못한 좌석이 있으면 이 기동의 자동 복원을
+    //   보류한다(그 대화를 새 좌석이 이어 쓰는 작성자 둘 차단 · 노브 끔 = 늘 None).
+    if let Some(why) = seat_adopt::restore_should_hold() {
+        eprintln!("[cysd] auto-restore skipped — {why}");
+        daemon.bus.publish("restore.held", "system", None, json!({"reason": why}));
+        return;
+    }
     match decide_auto_restore(&cys::pack::pack_dir(), opted_out, exe_dir_ref, &current_path, &socket) {
         AutoRestore::OptedOut => {
             eprintln!("[cysd] auto-restore skipped (CYS_NO_AUTORESTORE=1)");
@@ -3586,8 +3638,8 @@ async fn handle_connection_capped(
                 run_event_stream(&daemon, &mut write_half, ack, after_seq, names, categories).await;
                 return;
             }
-            Reply::Attach { ack, surface_id } => {
-                run_attach(&daemon, &mut write_half, ack, surface_id).await;
+            Reply::Attach { ack, surface_id, history } => {
+                run_attach(&daemon, &mut write_half, ack, surface_id, history).await;
                 return;
             }
             Reply::FeedWait {
@@ -4064,8 +4116,9 @@ async fn run_event_stream<W: AsyncWrite + Unpin>(
 async fn run_attach<W: AsyncWrite + Unpin>(
     daemon: &Arc<Daemon>,
     w: &mut W,
-    ack: serde_json::Value,
+    mut ack: serde_json::Value,
     surface_id: u64,
+    history: Option<(u64, u16)>,
 ) {
     let Some(surface) = daemon.get_surface(surface_id) else {
         // dispatch 검사와 재조회 사이에 surface가 닫힌 경우 — 무응답 종료 대신 에러를 알린다
@@ -4076,12 +4129,38 @@ async fn run_attach<W: AsyncWrite + Unpin>(
     };
     // parser 락 아래에서 구독+스냅샷 — 그 사이 도착한 청크가 스냅샷과 live 양쪽에
     // 중복 배달되는 창을 닫는다 (reader 스레드는 parser 락에서 직렬화됨)
-    let (mut rx, snapshot) = {
+    // ★(1.1.16 · cysr-1116-s2) `history` 가 있으면 같은 락 안에서 그 커서 뒤 화면 위로 밀려난 행도 뜬다 — 구독 · 밀려난 행 · 스냅숏이
+    //   한 관측이라 그 사이 청크가 끼지 않는다(이음매 빠짐·겹침 0). 락 안 작업 = 사본뿐 — 밀려난 행 최대 ATTACH_HISTORY_MAX_ROWS 행 ·
+    //   칸 합 ATTACH_HISTORY_MAX_CELLS(codex 4R · 폭 4,000 칸 좌석도 상한) + 스크롤백 뺀 화면 사본(visible_clone) · 서식·쓰기는 락 밖
+    //   (이 좌석 파서 락만 · 다른 좌석 배달과 무관). 화면 사본을 못 뜨는 경우(스크롤백 보기 위치 ≠ 0)만 종전처럼 락 안에서 서식.
+    let (mut rx, screen_copy, hist, hist_rows_fallback) = {
         let parser = surface.parser.lock().unwrap_or_else(|e| e.into_inner());
         let rx = surface.out_tx.subscribe();
-        (rx, parser.screen().contents_formatted())
+        let hist = history.map(|(cursor, _)| attach_history_snapshot(parser.screen(), cursor));
+        let copy = parser.screen().visible_clone().ok_or_else(|| parser.screen().contents_formatted());
+        (rx, copy, hist, parser.screen().size().0)
     };
+    let snapshot = match screen_copy {
+        Ok(screen) => screen.contents_formatted(),
+        Err(bytes) => bytes,
+    };
+    let mut hist_bytes: Vec<u8> = Vec::new();
+    if let Some((info, bytes)) = hist.map(attach_history_format) {
+        if let Some(r) = ack.get_mut("result").and_then(|r| r.as_object_mut()) {
+            r.insert("history".into(), info);
+        }
+        if !bytes.is_empty() {
+            hist_bytes = bytes;
+            // 받는 xterm 화면 행 수만큼 줄을 내려 밀려난 행을 전부 그 스크롤백으로 올린다(다음 스냅숏은 화면을 지우고 그린다 · 지움은 스크롤백에 안 닿는다)
+            //   (H 행을 H−1 개 줄바꿈으로 이은 뒤 화면 행 수 R 만큼 더 내리면 정확히 H 행이 스크롤백으로 간다 · 빈 줄 끼어듦 0)
+            let push = history.map(|(_, r)| r).filter(|r| *r > 0).unwrap_or(hist_rows_fallback) as usize;
+            hist_bytes.extend(b"\r\n".repeat(push));
+        }
+    }
     if write_line(w, &ack).await.is_err() {
+        return;
+    }
+    if !hist_bytes.is_empty() && w.write_all(&hist_bytes).await.is_err() {
         return;
     }
     // Send a formatted (color/cursor-accurate) redraw of the current screen first.
@@ -4098,6 +4177,13 @@ async fn run_attach<W: AsyncWrite + Unpin>(
                         return;
                     }
                 }
+                // ★(1.1.16 · cysr-1116-s2 · codex 4R blocking) 기록 연결(history_since)은 놓친 청크를 조용히 넘기지 않는다 — 표지(OSC)를 쓰고 닫는다:
+                //   받는 쪽(Tauri)이 화면을 비우고 같은 커서로 다시 붙어 전체를 다시 그린다(데몬 스크롤백에 다 있다). 인자 없는 연결 = 종전 그대로.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) if history.is_some() => {
+                    let _ = w.write_all(ATTACH_LAGGED_MARKER).await;
+                    let _ = w.flush().await;
+                    return;
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(_) => return,
             },
@@ -4108,6 +4194,50 @@ async fn run_attach<W: AsyncWrite + Unpin>(
             }
         }
     }
+}
+
+/// (1.1.16 · cysr-1116-s2 · codex 4R) 기록 연결이 청크를 놓쳤다는 표지 — 연결 마지막 바이트(그 뒤 닫음) · 알 수 없는 OSC 라 터미널은 무시한다.
+/// 정의처 = 이 상수 · 받는 쪽 = src-tauri viewcore `ATTACH_LAGGED_MARKER`(같은 바이트 · 시험이 대조).
+const ATTACH_LAGGED_MARKER: &[u8] = b"\x1b]7799;cys-attach-lagged\x07";
+
+/// (1.1.16 · cysr-1116-s2) 한 번에 다시 그리는 밀려난 행 상한 — UI xterm 스크롤백(5,000)과 같다. 락 안 작업 상한의 근거이기도 하다.
+const ATTACH_HISTORY_MAX_ROWS: usize = 5_000;
+/// (codex 4R) 락 안에서 복사하는 밀려난 행의 칸 합 상한(= 5,000행 × 200칸) — 폭이 넓은 좌석(최대 4,000칸)도 락 안 작업·메모리가 이 이상 늘지 않는다.
+const ATTACH_HISTORY_MAX_CELLS: usize = 1_000_000;
+
+/// (1.1.16 · cysr-1116-s2) attach `history_since` — **파서 락 안**에서는 행 사본만 뜬다(`attach_history_snapshot`) · 서식은 락 밖(`attach_history_format`).
+/// `status` = `ok`(커서 뒤 밀려난 행 전부) · `truncated`(앞부분이 파서 스크롤백 10,000행 밖이거나 상한으로 잘림 — 남은 것은 씀) ·
+/// `unknown_cursor`(파서 세대가 다름 = 파서 교체·데몬 재기동 · 또는 커서가 지금보다 앞 — 아무것도 안 씀).
+struct AttachHistory {
+    cursor: u64,
+    screen_cursor: u64,
+    snap: Option<(u64, vt100::ScrollbackSnapshot)>,
+}
+
+fn attach_history_snapshot(screen: &vt100::Screen, cursor: u64) -> AttachHistory {
+    let (epoch, rows_now) = screen.scroll_cursor();
+    let screen_cursor = crate::state::pack_screen_cursor(epoch, rows_now);
+    let snap = crate::state::unpack_screen_cursor(cursor)
+        .filter(|(ep13, _)| *ep13 == epoch & 0x1FFF)
+        .and_then(|(_, since)| screen.scrollback_snapshot_since(epoch, since, ATTACH_HISTORY_MAX_ROWS, ATTACH_HISTORY_MAX_CELLS).map(|s| (since, s)));
+    AttachHistory { cursor, screen_cursor, snap }
+}
+
+fn attach_history_format(h: AttachHistory) -> (serde_json::Value, Vec<u8>) {
+    match h.snap {
+        None => (json!({"status": "unknown_cursor", "rows": 0, "cursor": h.cursor, "screen_cursor": h.screen_cursor}), Vec::new()),
+        Some((since, s)) => (
+            json!({"status": if s.truncated() { "truncated" } else { "ok" }, "rows": s.len(), "since": since, "start": s.start(),
+                   "screen_cursor": h.screen_cursor}),
+            s.formatted(),
+        ),
+    }
+}
+
+/// 시험·측정용 한 번에(락 안 사본 + 락 밖 서식).
+#[cfg(test)]
+fn attach_history(screen: &vt100::Screen, cursor: u64) -> (serde_json::Value, Vec<u8>) {
+    attach_history_format(attach_history_snapshot(screen, cursor))
 }
 
 #[cfg(all(test, unix))]
@@ -4213,6 +4343,14 @@ mod startup_lock_retry_tests {
 //   파일 머리 모듈 목록에 두면 제품 부분이 잘려 H-TICK-ALIVE 가 붉는다(09-24 실측) — 시험 모듈 구역에 둔다.
 #[cfg(test)]
 mod pty_test_support;
+#[cfg(test)]
+mod seat_d7_tests;
+#[cfg(test)]
+mod seat_flood_tests;
+#[cfg(test)]
+mod seat_latency_tests;
+#[cfg(test)]
+mod seat_tail_tests;
 
 #[cfg(test)]
 mod env_scrub_tests {
@@ -4615,6 +4753,8 @@ mod eprintln_guard_tests {
     }
 }
 
+#[cfg(test)]
+mod attach_history_tests; // (1.1.16 · cysr-1116-s2) 화면 행 커서 · attach history_since
 #[cfg(test)]
 mod attach_race_tests {
     use crate::state::Daemon;
@@ -5428,9 +5568,18 @@ mod auto_restore_tests {
     #[test]
     fn agy_statusline_probe_is_deferred_until_after_bind() {
         let src = include_str!("main.rs");
-        let defer = src.find("cys::pack::defer_agy_statusline_probe();").expect("부트 설치 앞 미루기 표식 소실");
-        let install = src.find("cys::pack::install(false, Some(cys::pack::PackWriteAuth::production()))").expect("부트 설치");
+        // ★1.1.16(codex 3R #1): 부트 설치는 팩 적용 잠금 안 한 덩어리(cys::pack::boot_recover_and_install)로 옮겼다 — 미루기 표식 → 설치 순서는 그 함수 안에서 본다.
+        assert!(src.contains("cys::pack::boot_recover_and_install(env!(\"CARGO_PKG_VERSION\"), cys::pack::PackWriteAuth::production())"), "부트 설치 진입점");
+        let pack = include_str!("../../pack.rs");
+        let f = pack.find("pub fn boot_recover_and_install(").expect("boot_recover_and_install");
+        let fbody = &pack[f..pack[f..].find("\n}\n").expect("fn end") + f];
+        let defer = fbody.find("defer_agy_statusline_probe();").expect("부트 설치 앞 미루기 표식 소실");
+        // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V2-3): 부트 설치 = 내장 팩 install_from_iter_with(config 시드 미룸) · 시드는 잠금 닫힌 뒤.
+        let install = fbody.find("install_from_iter_with(PACK_ALL.iter()").expect("부트 설치");
         assert!(defer < install, "미루기 표식은 부트 설치 호출 앞이어야 한다");
+        let unlocked = fbody.find("})?;").expect("잠금 닫힘");
+        let seed = fbody.find("setup_isolated_config_dir(true);").expect("잠금 밖 config 시드");
+        assert!(install < unlocked && unlocked < seed, "config 시드가 팩 적용 잠금 안에 있다");
         let plb = src.find("fn post_listen_boot(").expect("post_listen_boot");
         let body = &src[plb..src[plb..].find("\n}\n").expect("fn end") + plb];
         assert!(body.contains("spawn_deferred_agy_statusline_reconcile();"), "바인드 뒤 공통 부트에 소비 배선이 없다");
@@ -8033,11 +8182,23 @@ mod cysd_args_tests {
     }
 
     #[test]
+    fn cysd_args_adopt_check() {
+        assert_eq!(parse_cysd_args(["--adopt-check".to_string()]), CysdCli::AdoptCheck(None));
+        assert_eq!(parse_cysd_args(["--adopt-check", "--json"].map(str::to_string)), CysdCli::AdoptCheck(None));
+        assert_eq!(parse_cysd_args(["--adopt-check", "--json", "--as-bundle", "/A/x.app"].map(str::to_string)), CysdCli::AdoptCheck(Some("/A/x.app".into())));
+        assert_eq!(parse_cysd_args(["--end-keepers", "--json"].map(str::to_string)), CysdCli::EndKeepers);
+        assert_eq!(parse_cysd_args(["--adopt-check", "--as-bundle"].map(str::to_string)), CysdCli::Unknown("--as-bundle".into()));
+        assert_eq!(parse_cysd_args(["--end-keepers", "--as-bundle", "/A"].map(str::to_string)), CysdCli::Unknown("--as-bundle".into()));
+    }
+
+    #[test]
     fn cysd_args_unknown_is_rejected() {
         for (args, unknown) in [
             (vec!["--socket", "x"], "--socket"),
             (vec!["foo"], "foo"),
             (vec!["--version", "extra"], "extra"),
+            (vec!["--adopt-check", "x"], "x"),
+            (vec!["--adopt-check", "--json", "y"], "y"),
         ] {
             assert_eq!(
                 parse_cysd_args(args.into_iter().map(str::to_string)),
@@ -8096,7 +8257,8 @@ mod cysd_args_tests {
         let body = &after[..after.find("\n}\n").expect("async_main 끝")];
         let raise = body.find("fdlimit::raise()").expect("fd 한도 상향 배선 누락");
         let lock = body.find("acquire_startup_lock(").expect("시작 락 앵커");
-        let journal = body.find("recover_pack_journal").expect("pack 저널 복구 앵커");
+        // ★1.1.16: 저널 복구 = boot_recover_and_install(복구 + 판 게이트 + 자동 설치 한 덩어리 · 팩 적용 잠금 안).
+        let journal = body.find("boot_recover_and_install").expect("pack 저널 복구 앵커");
         let daemon = body.find("Daemon::new(").expect("Daemon::new 앵커");
         assert!(lock < raise, "fd 한도 상향이 시작 락보다 앞이다 — 락 패자에게 부수효과가 생긴다");
         assert!(raise < journal && raise < daemon, "fd 한도 상향이 부트 부수효과보다 늦다");
@@ -8176,3 +8338,15 @@ mod direct_agent_tests;
 mod receipt_framing_tests {
     include!("receipt_framing_tests.rs");
 }
+
+// (조각 6b · TICKET=cysr-1116-s6-1119) 팀별 기계 장치 RPC·배달 핀 — 시험 전용(파일 끝 규약 = 위 시험 모듈들과 같다).
+#[cfg(test)]
+mod team6b_tests;
+
+// (조각 6b · 검증 지적 고침 master#c4bc0244) 독립 검증 좌석 반례 V1~V8b + 고침 핀 — 시험 전용(파일 끝 규약).
+#[cfg(test)]
+mod team6b_verify_tests;
+
+// (조각 6b · codex 1R REJECT 처분 master#010efa14) B1·M1~M6 반례 — 시험 전용(파일 끝 규약).
+#[cfg(test)]
+mod team6b_codex_tests;

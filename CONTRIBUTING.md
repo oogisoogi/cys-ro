@@ -20,6 +20,14 @@ bash scripts/secret-scan.sh --all  # secret/PII gate (fail-closed)
 sh scripts/version-check.sh      # version SOT consistency (release PRs only)
 ```
 
+**Do not run `cargo test --bin cysd` (or any test binary) in a repeat loop on a person's Mac.** Reproduce flaky
+tests in a VM or with a module filter (`cargo test --bin cysd <module>::`). Why (2026-11-18): a test that copied
+`/bin/sleep`, ran it and deleted the folder crashed `syspolicyd` mid-scan; WindowServer waited on it and the Mac froze.
+Test executables (cc/rustc builds, binary copies) live in fixed `target/…/cys-test-fixtures/<purpose>/` folders and are
+never deleted by tests. `scripts/tests/installer-atomic-demo.sh` (`spctl -a`) and
+`scripts/tests/test_release_postprocess_gate.py` (`test_30…` runs `gktool scan` on any Mac) hand freshly made bundles
+to syspolicyd — run them manually or in a VM only, never in a loop on a person's Mac.
+
 **Before any push to the public remote — work branches included, not only releases** — run
 `bash scripts/secret-scan.sh --all` and require **exit code 0**. Exit 1 means findings: **stop, fix,
 do not push** (the gate is fail-closed; its output redacts the offending value). Exit 2 means

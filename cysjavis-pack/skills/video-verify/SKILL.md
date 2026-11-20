@@ -1,9 +1,11 @@
 ---
 name: video-verify
-description: 완성 영상을 업로드 전 시각적으로 검증·승인하는 대표 스킬 — 프레임 추출 후 비전 검수로 시각 품질·모션그래픽 타이밍·오디오 싱크·대본 사실성 4관문을 돌려 전부 GO일 때만 출고한다. "영상 검증 / 시각 검수 / 영상 QA / 업로드 전 확인 / verify video" 트리거, 또는 youtube-video-pipeline 5단계로 발동.
+description: 완성 영상을 업로드 전에 화면·모션 타이밍·립싱크·사실성 4관문으로 검수한다. 「영상 검수 / 업로드 전 확인 / 영상 QA」 요청 때.
 ---
 
 # video-verify
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 "내가 검토조차 안 해도 된다"는 목표(800k 채널 평판)를 **단계별 기계 게이트**로 환원한다.
 영상을 프레임으로 펼쳐 비전으로 검수하고, 4관문이 전부 GO여야 출고한다. 한 관문이라도
@@ -38,3 +40,7 @@ NO_GO면 원인 단계로 되돌린다(다듬기로 덮지 않는다).
 `경로.mp4#t=MM:SS-MM:SS`(영상 경로 + 타임코드 구간 융합), 프레임 캡처는 별도 evidence 항목
 (`ref`=`frames/f_MMSS.png`). 결함을 지적하는 verdict(NO_GO→REVISE/BLOCK)는 실행가능한 `fix`를
 동반해야 한다(미동반 시 자동 강등). 상세·예시 JSON = `${CYS_PACK_DIR:-$HOME/.cys/pack}/round/EVIDENCE_CONVENTION.md`(§1 영상/음성).
+
+## 원 설명 (목록 상주 설명 축소 전 원문 · 1.1.12 cysr-1112-skill-fold)
+
+완성 영상을 업로드 전 시각적으로 검증·승인하는 대표 스킬 — 프레임 추출 후 비전 검수로 시각 품질·모션그래픽 타이밍·오디오 싱크·대본 사실성 4관문을 돌려 전부 GO일 때만 출고한다. "영상 검증 / 시각 검수 / 영상 QA / 업로드 전 확인 / verify video" 트리거, 또는 youtube-video-pipeline 5단계로 발동.

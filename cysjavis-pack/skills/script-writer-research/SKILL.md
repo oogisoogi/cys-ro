@@ -1,9 +1,12 @@
 ---
 name: script-writer-research
 description: 영상 대본의 사실 토대를 수집하는 하위 스킬 — 주제에 대해 검색·교차검증으로 검증된 사실과 출처를 모은다. 학습지식 단독 단정 금지. script-writer 1단계. "대본 리서치 / 주제 사실 수집 / 출처 조사" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # script-writer-research
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 대본에 들어갈 모든 사실의 출처 대장을 만든다. 특히 제품 출시·성능 주장(예: "Fable 5가
 무엇에 강한가")은 **반드시 1차 출처(공식 발표·문서)로 확인**한다 — 틀리면 평판이 손상된다.

@@ -1,9 +1,11 @@
 ---
 name: voice-local
-description: 텍스트를 100% 온디바이스 로컬 TTS로 합성하는 대표 스킬 — 종량제 API 0(기본 제약 "구독제만·종량제 금지" 부합). 엔진을 필요(한국어·클로닝·CPU·표현)별로 선택, 무제한 길이 문장경계 청킹+크로스페이드, TTS 아티팩트 trim, 경계 음질 QC, 후처리는 audio-post로 위임. voice-clone-elevenlabs(종량제 API)의 로컬 대체. "로컬 음성 합성 / 온디바이스 tts / 종량제 없이 나레이션 / 한국어 음성 / 로컬 보이스 클론 / voice-local" 트리거. ★기본 음성 라우팅 절체는 오너 결정(ESCALATE).
+description: 종량제 API 없이 내 컴퓨터의 로컬 TTS로 나레이션을 합성한다. 「로컬 음성 합성 / 온디바이스 TTS / 종량제 없이 한국어 음성」 요청 때.
 ---
 
 # voice-local
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 텍스트를 **클라우드 없이, 사용량 과금 없이** 음성으로 합성한다. 기본 제약(구독제만·종량제
 API 금지)을 음성 영역에서 충족하는 유일한 길 — 모델·음성·텍스트가 기기를 떠나지 않는다. 설계 DNA는
@@ -75,3 +77,7 @@ Voicebox(MIT, github.com/jamiepine/voicebox)의 검증된 로컬 음성 스택�
 - **한국어 품질 정량 측정**(오너 실제 음성으로 Sohee/Chatterbox 클론 품질)은 후속 PoC(연구보고서
   이니셔티브1). 측정 전 '검증됨' 보고 금지.
 - voice-clone-elevenlabs는 폐기하지 않고 **공존**한다(부활조건=로컬 품질 미달 시 폴백, retention gate).
+
+## 원 설명 (목록 상주 설명 축소 전 원문 · 1.1.12 cysr-1112-skill-fold)
+
+텍스트를 100% 온디바이스 로컬 TTS로 합성하는 대표 스킬 — 종량제 API 0(기본 제약 "구독제만·종량제 금지" 부합). 엔진을 필요(한국어·클로닝·CPU·표현)별로 선택, 무제한 길이 문장경계 청킹+크로스페이드, TTS 아티팩트 trim, 경계 음질 QC, 후처리는 audio-post로 위임. voice-clone-elevenlabs(종량제 API)의 로컬 대체. "로컬 음성 합성 / 온디바이스 tts / 종량제 없이 나레이션 / 한국어 음성 / 로컬 보이스 클론 / voice-local" 트리거. ★기본 음성 라우팅 절체는 오너 결정(ESCALATE).

@@ -1,9 +1,12 @@
 ---
 name: appbuild-supervisor
 description: 이미 만든 기획 문서(01~04)를 다시 읽고 검증하는 대표 감독관 스킬 — 수집→13항목 검증→반자동 수정(승인 후·빠진 곳만·최대 3회)→완료 게이트 파생을 하위 스킬로 굴린다. 문서를 만드는 게 아니라 검증한다. appbuild 4단계·빌드 전 게이트. "기획 검증 / 감독관 / 일관성 추적성 검증 / 완료 게이트 파생 / planning supervisor" 트리거.
+disable-model-invocation: true
 ---
 
 # appbuild-supervisor
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 ★ appbuild의 주인공 — **감독관**. PRD·화면·아키텍처·작업(01~04)을 *만들지 않고* **다시 읽어
 검증**한다. 기존 파이프라인 위에 한 겹 얹는 계층이다(spec-kit `/analyze`·Kiro 분석 게이트와

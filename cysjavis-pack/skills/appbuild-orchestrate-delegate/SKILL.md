@@ -1,9 +1,12 @@
 ---
 name: appbuild-orchestrate-delegate
 description: master가 빌드 작업을 백엔드·프론트엔드 페인에 위임하는 하위 스킬 — 04-tasks 슬라이스를 적합한 페인·모델에 분배하고 메인은 모니터링·조정만 한다. appbuild-orchestrate 위임 관문. "작업 위임 / 멀티페인 분배 / 백엔드 프론트엔드 위임" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # appbuild-orchestrate-delegate
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 master가 작업을 페인에 나눠 준다. cysjavis 위임 규약(master 직접 코딩 아님·워커 위임·관리감독)을
 그대로 쓴다.

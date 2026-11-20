@@ -1,9 +1,12 @@
 ---
 name: appbuild-plan
 description: 웹/앱 기획 산출물(01-prd·03-architecture)을 만드는 대표 스킬 — 인터뷰/디베이트/퀵 3모드로 요구·스택·데이터모델을 도출한다. appbuild 1단계(소크라테스 기획). "앱 기획 / PRD 작성 / 요구 도출 / 기획 모드" 트리거, 또는 appbuild 파이프라인 1단계로 발동.
+disable-model-invocation: true
 ---
 
 # appbuild-plan
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 빌드 전에 "무엇을·왜·어떻게"를 문서로 못박는다. 산출물 `.appbuild/01-prd.md`(제품 요구)
 + `.appbuild/03-architecture.md`(스택·데이터모델·구조). 깊이는 3모드로 사용자가 고른다.

@@ -1,9 +1,12 @@
 ---
 name: heygen-avatar-render-api
 description: HeyGen v3 API로 오디오 구동 아바타 영상을 생성하는 하위 스킬 — 오디오 자산 업로드, POST /v3/videos(engine avatar_v + audio_asset_id), 상태 폴링, 결과 다운로드의 canonical 호출 절차. heygen-avatar-render 실행 코어. "heygen v3 호출 / 아바타 영상 생성 / audio_asset_id" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # heygen-avatar-render-api
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 HeyGen v3의 오디오 구동 생성 호출을 수행한다. 검증된 canonical 형태(2026):
 

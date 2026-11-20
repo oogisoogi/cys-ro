@@ -1,9 +1,11 @@
 ---
 name: vibecoding
-description: 자연어 코딩(NLC)을 헌법·복잡도 라우팅·결정론 게이트로 굴리는 대표 오케스트레이터 스킬. 요청을 Level 판정(javis_viberoute)→Level별 문서 세트(vibecoding-docs 위임)→계획 리뷰 게이트(ACE-FCA)→구현 위임(구현자≠검증자)→vibecheck 증거로 완료 판정(javis_task 단일 게이트)→에러·리뷰 증류(javis_distill)까지 순서대로 굴린다. "바이브코딩 / 자연어 코딩 / vibecoding / 스펙 기반으로 만들어 / 이 요청 Level 판정해줘 / 코드부터 짜지 말고 헌법부터", 또는 워커가 신규 웹/앱·기능 구현을 시작할 때 발동(신규 웹/앱 구축의 단일 진입점 — appbuild는 이 안에서 호출).
+description: 자연어 코딩을 Level 판정→문서 세트→구현 위임→검증 게이트로 굴린다. 「바이브코딩 / Level 판정 / 상태관리·TDD·외부연동 경계 설계 / 변경 런북」 요청 때.
 ---
 
 # vibecoding
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 NLC(자연어 코딩)의 **헌법·문서 파이프라인(무엇을)** 을, 자비스의 **멀티에이전트·결정론
 게이트(어떻게)** 위에, **Level 라우팅(언제 얼마나)** 으로 얹고, 매 작업이 규칙을 증류하는
@@ -131,3 +133,7 @@ orchestrate)는 vibecoding 파이프라인 **안에서 호출**된다. 트리거
 Level 판정 기록(route-log) + 인스턴스화된 문서 세트 + 계획 리뷰 verdict + 구현 산출물 +
 vibecheck 증거 + `javis_task done` 전이 + (에러·리뷰 시) 증류 rule_id. 종료 보고: Level·통과한
 게이트 증거·미해결 0. 게이트 미통과면 종료하지 말고 루프를 유지한다.
+
+## 원 설명 (목록 상주 설명 축소 전 원문 · 1.1.12 cysr-1112-skill-fold)
+
+자연어 코딩(NLC)을 헌법·복잡도 라우팅·결정론 게이트로 굴리는 대표 오케스트레이터 스킬. 요청을 Level 판정(javis_viberoute)→Level별 문서 세트(vibecoding-docs 위임)→계획 리뷰 게이트(ACE-FCA)→구현 위임(구현자≠검증자)→vibecheck 증거로 완료 판정(javis_task 단일 게이트)→에러·리뷰 증류(javis_distill)까지 순서대로 굴린다. "바이브코딩 / 자연어 코딩 / vibecoding / 스펙 기반으로 만들어 / 이 요청 Level 판정해줘 / 코드부터 짜지 말고 헌법부터", 또는 워커가 신규 웹/앱·기능 구현을 시작할 때 발동(신규 웹/앱 구축의 단일 진입점 — appbuild는 이 안에서 호출).

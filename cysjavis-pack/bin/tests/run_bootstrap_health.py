@@ -947,6 +947,46 @@ def h_secret_2():
     return " · ".join(notes)
 
 
+@specimen("H-ASSET-1", "W0",
+          "우리 자산 빠짐 방지 — 본부 스킬·자산 원천에 있는데 판정표(docs/ASSET-LEDGER.md)에 없는 항목 = 적색"
+          " · 판정 값 오타·「넣음」 스킬 팩 부재 = 적색 · 원천 없는 기계는 「원천 없음」(초록 아님)",
+          ["cysr-1116-asset-skills-1120", "판 누락(feat/asset-skills 미병합 실증)", "CI-only-게이트"])
+def h_asset_1():
+    """1.1.13 묶음 대상으로 수용된 가지(feat/asset-skills)가 어느 판에도 병합되지 않고 두 판이 지나갔다(11-20 실측).
+    새 스킬이 판에서 조용히 빠지는 일을 판정표 대조로 막는다.
+
+      ⓐ 산 판정 — 이 기계 HOME 원천으로 `scripts/asset_ledger_check.py` rc 0(본부 기계는 「초록」 · CI 는 「원천 없음」).
+      ⓑ 양성 대조 — 격리 HOME 에 판정표에 없는 스킬 하나를 두면 rc 1 이고 그 이름이 나온다(게이트가 대상을 때린다).
+      ⓒ 측정 불능 대조 — 원천 없는 HOME 에서 「초록」 문구를 내지 않는다(못 본 것 ≠ 깨끗하다)."""
+    chk = os.path.join(REPO_DIR, "scripts", "asset_ledger_check.py")
+    if not os.path.isfile(chk):
+        if _is_git_checkout():
+            raise Fail("레포 체크아웃인데 자산 판정표 검사기가 없다: %s" % chk)
+        raise Skip("레포 체크아웃이 아니다(배포 팩 실행) — 자산 판정표 검사기 부재")
+    notes = []
+    r = _run([sys.executable, chk], timeout=120)
+    need(r.returncode == 0, "ⓐ 산 판정 적색(exit=%d)\n%s%s" % (r.returncode, r.stdout[-2500:], r.stderr[-800:]))
+    notes.append("ⓐ " + (r.stdout.strip().splitlines() or [""])[-1][:120])
+    tmp = tempfile.mkdtemp(prefix="cys-asset-ledger-")
+    try:
+        empty = os.path.join(tmp, "empty-home")
+        os.makedirs(empty)
+        r = _run([sys.executable, chk, "--home", empty], timeout=120)
+        need(r.returncode == 0 and "원천 없음" in r.stdout and "초록" not in r.stdout,
+             "ⓒ 원천 없는 HOME 판정이 계약과 다르다(exit=%d): %s" % (r.returncode, r.stdout[-400:]))
+        notes.append("ⓒ 원천 없음 OK")
+        home = os.path.join(tmp, "home")
+        _w(os.path.join(home, ".claude", "skills", "zz-unledgered-probe", "SKILL.md"),
+           "---\nname: zz-unledgered-probe\n---\n", 0o644)
+        r = _run([sys.executable, chk, "--home", home], timeout=120)
+        need(r.returncode == 1 and "skill:zz-unledgered-probe" in r.stdout,
+             "ⓑ 판정표에 없는 새 스킬을 못 잡았다(exit=%d): %s" % (r.returncode, r.stdout[-400:]))
+        notes.append("ⓑ 새 스킬 적발 OK")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return " · ".join(notes)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 0. 베이스라인 (결정론 회귀 — 재감사 부채 V3)
 # ═══════════════════════════════════════════════════════════════════════════

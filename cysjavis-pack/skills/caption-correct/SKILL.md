@@ -1,6 +1,6 @@
 ---
 name: caption-correct
-description: ASR 전사 텍스트를 검증된 원본 대본(ground-truth)에 맞춰 정정하는 대표 스킬 — 타임스탬프는 절대 불변, 오인식 단어만 대본 철자로 교정한다. provider는 하드코딩하지 않고 javis_select로 결정론 선택(무키 로컬 시퀀스 정렬 바닥부터, deny-by-default). transcription이 들은 대로 받아적었다면 이 스킬은 대본대로 고쳐쓴다 — caption-align(타이밍 부여) *이전* 단계. "자막 교정 / SRT 정정 / 전사 오인식 수정 / 대본 대조 / ASR correction / transcript correction / 동음이의 교정" 트리거, 또는 검증된 대본이 있는 아키타입(talking-head·screen-demo 등 대본→나레이션→전사 체인)의 transcription과 caption-align 사이로 발동.
+description: ASR 전사의 오인식 단어를 원본 대본 기준으로 고친다(타임스탬프는 그대로). 「자막 교정 / 전사 오인식 수정 / 대본 대조」 요청 때.
 cys:
   capability: caption-correct
   stability: beta
@@ -84,3 +84,7 @@ javis_select rank --catalog "${CYS_PACK_DIR:-$HOME/.cys/pack}/round/video_provid
   `{"kind":"min_items","value":{"field":"segments","min":1}}`. 타임스탬프 불변은 video-verify가 확인.
 - cost_class=light: 로컬 결정론 정렬·LLM 무호출이 기본 — 토큰 한도 보존(기본 제약 "구독제만·
   종량제 금지" 정합).
+
+## 원 설명 (목록 상주 설명 축소 전 원문 · 1.1.12 cysr-1112-skill-fold)
+
+ASR 전사 텍스트를 검증된 원본 대본(ground-truth)에 맞춰 정정하는 대표 스킬 — 타임스탬프는 절대 불변, 오인식 단어만 대본 철자로 교정한다. provider는 하드코딩하지 않고 javis_select로 결정론 선택(무키 로컬 시퀀스 정렬 바닥부터, deny-by-default). transcription이 들은 대로 받아적었다면 이 스킬은 대본대로 고쳐쓴다 — caption-align(타이밍 부여) *이전* 단계. "자막 교정 / SRT 정정 / 전사 오인식 수정 / 대본 대조 / ASR correction / transcript correction / 동음이의 교정" 트리거, 또는 검증된 대본이 있는 아키타입(talking-head·screen-demo 등 대본→나레이션→전사 체인)의 transcription과 caption-align 사이로 발동.

@@ -1,6 +1,6 @@
 ---
 name: transcription
-description: 음성·영상을 단어 단위 타임스탬프가 붙은 텍스트로 전사(ASR)하는 대표 스킬 — provider는 하드코딩하지 않고 javis_select로 결정론 선택(무료·로컬 whisperx 바닥부터, deny-by-default). 자막·번역·클립 추출·점프컷의 공통 전처리. "전사 / 받아쓰기 / 자막 텍스트 / 타임스탬프 / transcribe / ASR / whisper" 트리거, 또는 clip-factory·localization-dub·podcast-repurpose·screen-demo·talking-head·hybrid 아키타입의 script 단계로 발동.
+description: 음성·영상을 단어 타임스탬프가 붙은 텍스트로 전사한다(로컬 whisperx 우선). 「받아쓰기 / 전사 / transcribe / 자막 텍스트」 요청 때.
 cys:
   capability: transcription
   stability: beta
@@ -127,3 +127,7 @@ device:"auto")`)가 입증한 *서버·API 0* 온디바이스 ASR을 우리 로�
 - 아키타입 매니페스트(D4) script 단계의 success_criteria 예: `{"kind":"json_valid"}`(transcript.json
   파싱) + 다운스트림이 `words[]` 존재를 확인.
 - cost_class=wall-heavy: 긴 미디어는 작업 직후 임시파일 정리(자원 거버넌스).
+
+## 원 설명 (목록 상주 설명 축소 전 원문 · 1.1.12 cysr-1112-skill-fold)
+
+음성·영상을 단어 단위 타임스탬프가 붙은 텍스트로 전사(ASR)하는 대표 스킬 — provider는 하드코딩하지 않고 javis_select로 결정론 선택(무료·로컬 whisperx 바닥부터, deny-by-default). 자막·번역·클립 추출·점프컷의 공통 전처리. "전사 / 받아쓰기 / 자막 텍스트 / 타임스탬프 / transcribe / ASR / whisper" 트리거, 또는 clip-factory·localization-dub·podcast-repurpose·screen-demo·talking-head·hybrid 아키타입의 script 단계로 발동.

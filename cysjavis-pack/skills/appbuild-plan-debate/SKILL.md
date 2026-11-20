@@ -1,9 +1,12 @@
 ---
 name: appbuild-plan-debate
 description: AI 2명(gemini·codex)이 10턴+ 스스로 토론해 웹/앱 기획을 좁히는 기획 모드 하위 스킬 — 인간 개입 없이 시장·차별점·기술 합의를 도출한다(§6 LLM 라운드 배선). appbuild-plan 모드 2. "기획 디베이트 / AI 토론 기획 / 자동 기획" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # appbuild-plan-debate
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 인간이 답을 주지 않고 **AI 둘이 토론해** 기획을 만든다. cysjavis의 §6 LLM 오케스트레이션
 (gemini·codex 라운드 루프)을 그대로 쓴다 — 재구현이 아니라 배선.

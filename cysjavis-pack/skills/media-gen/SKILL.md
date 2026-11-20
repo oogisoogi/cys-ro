@@ -1,9 +1,11 @@
 ---
 name: media-gen
-description: fal.ai 애그리게이터로 생성형 비주얼을 만드는 대표 스킬 — 텍스트→이미지·참조 편집·이미지→영상(시네마틱 B-roll)·업스케일·썸네일을 하위 스킬로 오케스트레이션한다. 모델을 경로로 지정해 새 모델도 코드 변경 없이 채택. "이미지 생성 / B-roll 생성 / 영상 생성 / 업스케일 / 썸네일 / fal" 트리거, 또는 youtube-video-pipeline B-roll 단계로 발동.
+description: fal.ai로 이미지 생성·참조 편집·이미지→영상(B-roll)·업스케일·썸네일을 만든다. 「이미지·썸네일·B-roll 만들어 / 화질 올려 / 사진 움직이게」 요청 때.
 ---
 
 # media-gen
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 아바타·HTML 모션그래픽으론 못 만드는 **생성형 비주얼**(포토리얼 장면·시네마틱 B-roll·생성
 이미지·썸네일)을 만든다. 단일 게이트웨이는 **fal.ai** — 이미지·영상 모델 애그리게이터다.
@@ -55,3 +57,7 @@ description: fal.ai 애그리게이터로 생성형 비주얼을 만드는 대�
 (append-only 원장: 작업·모델경로·프롬프트 해시·seed·실비용 — 구 `gen-manifest.json` 명명을
 이 원장으로 통일). 상위 `[[youtube-video-pipeline]]`로 반환 →
 B-roll은 `[[video-stitch-broll]]`이 배치, 썸네일은 별도 업로드 산출물.
+
+## 원 설명 (목록 상주 설명 축소 전 원문 · 1.1.12 cysr-1112-skill-fold)
+
+fal.ai 애그리게이터로 생성형 비주얼을 만드는 대표 스킬 — 텍스트→이미지·참조 편집·이미지→영상(시네마틱 B-roll)·업스케일·썸네일을 하위 스킬로 오케스트레이션한다. 모델을 경로로 지정해 새 모델도 코드 변경 없이 채택. "이미지 생성 / B-roll 생성 / 영상 생성 / 업스케일 / 썸네일 / fal" 트리거, 또는 youtube-video-pipeline B-roll 단계로 발동.

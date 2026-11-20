@@ -1,6 +1,6 @@
 ---
 name: caption-align
-description: 전사 텍스트를 음성에 단어 단위로 정렬해 자막 타이밍(큐)을 생성하는 대표 스킬 — provider는 하드코딩하지 않고 javis_select로 결정론 선택(무키 whisperx forced-alignment 바닥부터, deny-by-default). 현 video-stitch-captions의 audio-sync가 *검사*만 한다면 이 스킬은 타이밍을 *생성*한다. "자막 정렬 / 캡션 타이밍 / forced alignment / 단어 싱크 / 자막 큐 / subtitle timing / SRT 타임코드" 트리거, 또는 localization-dub·podcast-repurpose 아키타입의 assets 단계로 발동.
+description: 전사 텍스트를 음성에 단어 단위로 정렬해 자막 타이밍(SRT 큐)을 만든다. 「자막 타이밍 / 자막 싱크 맞춰 / forced alignment」 요청 때.
 cys:
   capability: caption-align
   stability: beta
@@ -86,3 +86,7 @@ python3 caption_shape.py shape --input transcript.json --out captions.json \
   `{"kind":"json_valid"}` + `{"kind":"field_present","value":"cues"}` +
   `{"kind":"min_items","value":{"field":"cues","min":1}}`.
 - cost_class=wall-heavy: 긴 미디어는 정렬 후 임시파일 정리(자원 거버넌스).
+
+## 원 설명 (목록 상주 설명 축소 전 원문 · 1.1.12 cysr-1112-skill-fold)
+
+전사 텍스트를 음성에 단어 단위로 정렬해 자막 타이밍(큐)을 생성하는 대표 스킬 — provider는 하드코딩하지 않고 javis_select로 결정론 선택(무키 whisperx forced-alignment 바닥부터, deny-by-default). 현 video-stitch-captions의 audio-sync가 *검사*만 한다면 이 스킬은 타이밍을 *생성*한다. "자막 정렬 / 캡션 타이밍 / forced alignment / 단어 싱크 / 자막 큐 / subtitle timing / SRT 타임코드" 트리거, 또는 localization-dub·podcast-repurpose 아키타입의 assets 단계로 발동.

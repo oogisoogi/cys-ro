@@ -27,12 +27,14 @@ cys:
 provider 목록을 손으로 고르지 마라. 카탈로그를 javis_select로 랭킹해 **설명가능하게** 고른다:
 
 ```bash
-javis_select rank --catalog "${CYS_PACK_DIR:-$HOME/.cys/pack}/round/video_provider_catalog.json" \
+python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_select.py" rank --catalog "${CYS_PACK_DIR:-$HOME/.cys/pack}/round/video_provider_catalog.json" \
   --capability transcription --intent "<용도: 자막/번역/클립/점프컷>" --free-first
 ```
 
 - **무료·로컬 바닥**: `transcriber_whisperx`(faster-whisper/WhisperX·로컬·무키·단어 타임스탬프).
-  키가 없어도 항상 가용(deny-by-default 통과) — 그래서 전사는 키 없이도 동작한다.
+  키는 필요 없지만 **파이썬 `whisperx` 가 설치돼 있을 때만 가용**이다 — 없으면 javis_select 가
+  「[미가용] … 'whisperx' 미설치」로 건너뛴다(2026-11 확인). 그때 기기에 whisper.cpp(`whisper-cli` +
+  ggml 모델)가 있으면 그것을 직접 돌려 전사할 수 있다(카탈로그 미등록 · 수동 · 단어 시각 출력은 따로 확인).
 - **URL 자막 우선(무컴퓨트)**: `ytdlp_subs`(yt-dlp 자막·무키 free·`probe: yt-dlp`). 유튜브가
   publisher/auto 자막을 이미 제공하면 GPU 전사 없이 회수한다. 단 자막은 **세그먼트 단위**라
   `words[]`(단어 타임스탬프)가 **없다**(`supports.word_timestamps: false`) — 단어가 필수인 용도
@@ -50,7 +52,7 @@ AR(Agent Reach) 계약(순서 있는 후보 리스트·성공성×종결성 분�
 재구현(AR 소스 복붙 0).
 
 ```bash
-python3 "$(dirname "$0")/transcribe_channel.py" run \
+python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/skills/transcription/bin/transcribe_channel.py" run \
   --source "<URL 또는 로컬 미디어 경로>" --intent "<용도>" [--want-words] \
   [--prefer <id>] [--langs ko,en] [--out transcript.json]
 ```
@@ -62,6 +64,9 @@ python3 "$(dirname "$0")/transcribe_channel.py" run \
   격상한다 — caption-align garbage-in 차단.
 - 실 whisperx ASR 실행은 이 글루가 아니라 위 ASR 레시피(별 노드/사람)가 수행한다 —
   producer≠evaluator(자가채점 금지). 품질 검증은 `video-verify-audio-sync`.
+- ⚠ 자막이 없는 URL·로컬 파일은 이 글루가 전사하지 않는다 — whisperx 가 배선돼 있지 않아 안내
+  (NotImplementedError 문구)를 찍고 코드 1로 끝난다(`bin/transcribe_channel.py` 159~162줄). 그때는 아래
+  레시피(또는 whisper-cli)를 직접 돌린다.
 
 ## 온디바이스 ASR 레시피 (whisperx 바닥 — 종량제 0·로컬 결정론)
 

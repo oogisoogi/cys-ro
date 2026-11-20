@@ -22,6 +22,9 @@ description: 대본을 ElevenLabs 클론 음성으로 일관되게 합성한다(
   `setup-api-key`)과 MCP(`elevenlabs/elevenlabs-mcp`)를 제공한다 — **raw API 호출 기계는 공식
   스킬/MCP에 위임**하고, 이 스킬은 그 위에 *파이프라인 정책*(올바른 청킹·stitching·설정 잠금·
   타임스탬프)을 강제한다. preflight C26이 공식 스킬 설치를 검증한다.
+- ⚠ 사용 조건(쓰기 전에 확인):
+  ① 무료 등급 결과물 = 비상업 전용 + 출처 표기(ElevenLabs 도움말 「Can I publish the content I generate」) → 공개·상업 게시본은 유료 등급에서만.
+  ② 클론은 **목소리 주인의 동의를 받은 기록**이 있을 때만(ElevenLabs 금지 사용 정책 — 남의 목소리를 동의 없이 복제 금지).
 
 ## 하위 스킬 오케스트레이션
 

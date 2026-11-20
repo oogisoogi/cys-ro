@@ -10,7 +10,7 @@ description: 종량제 API 없이 내 컴퓨터의 로컬 TTS로 나레이션을
 텍스트를 **클라우드 없이, 사용량 과금 없이** 음성으로 합성한다. 기본 제약(구독제만·종량제
 API 금지)을 음성 영역에서 충족하는 유일한 길 — 모델·음성·텍스트가 기기를 떠나지 않는다. 설계 DNA는
 Voicebox(MIT, github.com/jamiepine/voicebox)의 검증된 로컬 음성 스택에서 채택했다(전수조사
-[[voicebox-upgrade-research]], 보고서 `_research/Voicebox_박사급_연구보고서.md`).
+보고서는 팩에 없다 — 원 작업 폴더 문서 · 아래 근거 줄 번호는 Voicebox 저장소 코드 기준).
 
 > ★근거(실측): 아래 엔진→언어/능력 매핑은 Voicebox 실코드에서 직접 확인했다
 > (`backend/backends/__init__.py`, `backend/backends/qwen_custom_voice_backend.py`). 단,

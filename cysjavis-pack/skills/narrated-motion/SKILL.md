@@ -40,6 +40,7 @@ python3 <정본>/tools/s2m_cues.py <프로젝트>      # audio/cues/*.wav · aud
 ```
 - 시각은 **합성된 파일의 샘플 수**로만 정한다(LLM 이 듣고 적은 시각 금지 · 전사 불필요). 앞뒤 무음은 −45 dBFS 기준으로 잘라 「문장 시작 = 말 시작」.
 - 목소리 = **macOS say(기기 밖으로 안 나감 · 무료)** 기본 · `Yuna (Premium)`/`Jian (Premium)` 등 한국어 Premium 목소리. `edge` 엔진은 설치돼 있을 때만(무료지만 문장이 외부 서버로 감 → 개인정보 대본 금지).
+- ⚠ **say 목소리는 공개본에 쓰지 않는다(사용권)**: macOS 사용권 계약 §2F 는 시스템 음성을 「개인적·비상업적」 작품에만 허락한다(`/Library/Documentation/License.lpdf/Contents/Resources/English.lproj/License.html` 67줄 「for your personal, non-commercial use」 · 「No other creation or use of the System Voices … is permitted」). → 유튜브 게시·행사 상영 같은 공개본은 사람 녹음이나 사용권을 확인한 목소리로 바꾼다. say 는 만드는 사람의 작업 시안까지.
 - ⛔ 유료 TTS(ElevenLabs·Fish Audio)는 이 도구가 부르지 않는다 — 사용자 목소리 복제가 필요하면 `voice-clone-elevenlabs` + `cost-preview-confirm`(사용자가 비용을 먼저 확인) 후 그 wav 들을 같은 큐 id 로 `audio/.cache` 대신 넣는 확장(초안 범위 밖).
 - 문장 하나만 고치면 그 문장만 다시 합성된다(캐시 = 엔진·목소리·빠르기·발음 문자열의 해시).
 
@@ -87,7 +88,7 @@ mp4 경로 · 길이·해상도·오디오(ffprobe) · 결정론(스틸·두 번
 ## 주의
 - 렌더 도구(`<M>/tools/seek_render.js`)는 Playwright·헤드리스 크롬을 의존 폴더 `~/.cys/deps/motion-graphics-prompt`(또는 `CYS_SKILL_DEPS`)에서 찾는다 — 없으면 설치 명령 1줄을 보이고 코드 4로 멈춘다. node 실행 전 `unset NODE_OPTIONS`. say 는 macOS 전용이다.
 - 실존 인물의 이름·사진·목소리가 들어가는 영상은 당사자 동의를 받고, 공개(유튜브 게시 등)는 사용자가 정한다. 외부 결제·가입 0.
-- say 목소리는 「초안·내부용」 품질이다 — 대외 게시용 목소리(사용자 목소리 복제 등)는 비용 게이트를 거친 별도 결정.
+- say 목소리는 「초안·내부용」이다(품질 + 사용권 §2F 두 가지 이유 · 위 「음성」 절) — 대외 게시용 목소리(사람 녹음 · 사용자 목소리 복제 등)는 비용 게이트를 거친 별도 결정.
 
 ## 확인하는 방법
 - 견본 재현(2026-11-11 실측): `script.json` 만 새 폴더에 두고 `python3 tools/s2m_cues.py <폴더>` → 큐 5 · 전체 32.803s · narration_sha256 `6b9ba12980e814d6…`(캐시 없이 두 번 합성해 같음 · `js/cues.js` 바이트 동일) → 스틸 5장 `결정론=OK`·`새페이지=OK` → 렌더 984프레임(5분 56초 · 프레임당 약 0.36초) → `s2m_sync_check` FAIL 0/5 · 최대 오차 0.031초.

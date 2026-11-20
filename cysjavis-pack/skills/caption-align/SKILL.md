@@ -25,12 +25,12 @@ cys:
 ## provider 선택 (하드코딩 금지 — javis_select 위임)
 
 ```bash
-javis_select rank --catalog "${CYS_PACK_DIR:-$HOME/.cys/pack}/round/video_provider_catalog.json" \
+python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_select.py" rank --catalog "${CYS_PACK_DIR:-$HOME/.cys/pack}/round/video_provider_catalog.json" \
   --capability caption-align --intent "<용도: 자막/더빙싱크>" --free-first
 ```
 
 - **무료·로컬 바닥**: `align_whisperx`(WhisperX forced-alignment·무키·로컬·`transcription`의 whisperx
-  모델 재사용). 키가 없어도 항상 가용 — 자막 정렬은 키 없이 동작한다.
+  모델 재사용). 키는 필요 없지만 파이썬 `whisperx` 가 설치돼 있을 때만 가용(없으면 javis_select 가 미가용으로 건너뛴다).
 - 문장 단위·다국어 정렬엔 `align_aeneas`(로컬·무키). `--free-first`로 무료 바닥 우선.
 
 ## 입력·산출물 계약
@@ -62,14 +62,14 @@ forced-alignment가 단어별 start/end를 주면, 단어→큐 그룹핑은 **L
 `bin/caption_shape.py`로 규칙 셰이핑한다(OpenCut 결정론 자막 셰이핑 발상):
 
 ```bash
-python3 caption_shape.py shape --input transcript.json --out captions.json \
+python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/caption_shape.py" shape --input transcript.json --out captions.json \
   --max-words 7 --max-chars 42 --gap-split 0.8 --min-duration 1.0
 ```
 
 - 규칙: **N-words/큐**(가독성) + **max-chars**(한 줄 과밀 방지) + **gap-split**(자연 휴지서 분할) +
   **min-duration**(짧은 큐 표시시간 보장) + **비중첩**(다음 큐 start 침범 금지). 출력 `cues[]`는
   위 산출 계약과 동일 형식.
-- 파라미터는 frontmatter `cys.params`(ParamDefinition)로 선언 — 호출 전 `javis_params coerce`로
+- 파라미터는 frontmatter `cys.params`(ParamDefinition)로 선언 — 호출 전 `python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_params.py" coerce`로
   범위-밖 값을 거부한다(가치 게이트). 손튜닝 수치를 산문에 박지 마라.
 
 ## 환각0·producer≠evaluator (불가침)

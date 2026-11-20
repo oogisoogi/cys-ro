@@ -27,13 +27,18 @@ cys:
 도구를 손으로 고르지 마라. 카탈로그를 javis_select로 랭킹해 **설명가능하게** 고른다:
 
 ```bash
-javis_select rank --catalog "${CYS_PACK_DIR:-$HOME/.cys/pack}/round/video_provider_catalog.json" \
+python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_select.py" rank --catalog "${CYS_PACK_DIR:-$HOME/.cys/pack}/round/video_provider_catalog.json" \
   --capability scene-cut --intent "<용도: 점프컷/클립경계/몽타주>" --free-first
 ```
 
 - **무료·로컬 바닥**: `scenecut_ffmpeg`(ffmpeg `silencedetect`+장면 전환·무키·로컬). 키가 없어도
   항상 가용(deny-by-default 통과) — 그래서 컷 편집은 키 없이도 동작한다.
-- 콘텐츠 인지 shot-detect가 필요하면 `scenecut_pyscenedetect`(threshold/adaptive·로컬·무키).
+- 콘텐츠 인지 shot-detect가 필요하면 `scenecut_pyscenedetect`(threshold/adaptive·로컬·무키 · 파이썬
+  `scenedetect` 가 설치돼 있을 때만 가용).
+- ⚠ 함정: 배경이 대부분 검은 영상(모션그래픽 등)은 ffmpeg 장면 점수(`select='gt(scene,0.3)'`)가 작아
+  전환을 0건 잡는다(실측 2026-11: 검은 배경 위 작은 흰 상자 위치가 바뀌는 컷 = 최고 0.09 · 빨강→파랑
+  전체 색 컷 = 0.40). 이때는 160×90 회색 프레임의 이웃 차이가 문턱을 처음 넘는 프레임을 전환으로 본다
+  (같은 방식 = `narrated-motion/tools/s2m_sync_check.py`).
 - `--free-first`로 무료 바닥 우선. 특정 도구를 원하면 `--prefer <id>`.
 
 ## 산출물 계약 (다운스트림 아키타입이 소비)

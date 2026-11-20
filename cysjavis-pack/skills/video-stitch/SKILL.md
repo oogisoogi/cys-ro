@@ -26,7 +26,7 @@ description: 아바타·B-roll·모션그래픽·자막·음악을 한 영상으
    저작한다 — `schema_version:1` · `render_runtime` 명시 고정(무음 swap=위반·SF-RENDER-RUNTIME-SWAP)
    · `fps` · `tracks`(kind별 element의 `in_ticks`/`out_ticks`/`intended_ticks`는 **정수 틱**, `mode`·
    `transition`). 시간은 초가 아니라 **정수 틱이 진실**(TICKS_PER_SECOND=120000). FFmpeg가 오늘
-   실행 가능한 필드만 — GPU 전용(blend_mode·mask·shader uniform) 금지. `python3 check_timeline.py
+   실행 가능한 필드만 — GPU 전용(blend_mode·mask·shader uniform) 금지. `python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/check_timeline.py"
    validate edit_decisions.json`로 스키마 검증(exit 0 아니면 렌더 금지). 이후 렌더 단계는 이 IR을
    순회한다(출력 로그가 아니라 **에이전트가 저작하는 입력**).
 1. **아바타 트랙 결합** → 검증: `avatar/clip-NN.mp4`를 순서대로 concat. 경계가 오디오
@@ -43,7 +43,7 @@ description: 아바타·B-roll·모션그래픽·자막·음악을 한 영상으
 
 ## 출력 계약
 
-**정전 입력** `edit_decisions.json`(에이전트 저작 IR — `schemas/edit_decisions.schema.json` 준수)을
+**정전 입력** `edit_decisions.json`(에이전트 저작 IR — `${CYS_PACK_DIR:-$HOME/.cys/pack}/schemas/edit_decisions.schema.json` 준수)을
 렌더해 **`final/video.mp4`** + **`final/timeline.json`**(이 IR의 *파생 렌더-리포트* — 동일 스키마로
 실제 렌더된 in/out·모드를 기록, 검증 대조 기준)을 낸다. 두 문서 모두 `check_timeline.py validate`
 통과해야 한다(이름 정전화: `edit_decisions.json`=정전 저작 입력 · `final/timeline.json`=그 파생

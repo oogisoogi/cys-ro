@@ -43,6 +43,11 @@ description: fal.ai로 이미지 생성·참조 편집·이미지→영상(B-rol
 - **자기교정**: API 제한 감지 시 자동 교정 후 재시도(예: 입력 이미지 용량 초과 → 압축 →
   재실행. Seedance 입력 30MB 한도 등 모델별 제약을 응답에서 읽고 대응).
 - **로컬 저장**: 산출물을 `media/` 하위에 파일경로로 저장(이미지·B-roll·썸네일 분류).
+- **AI 공개(유튜브)**: 실제 사람·장소·사건처럼 보이는 생성 장면을 유튜브에 올리면 업로드 때 「변경되거나
+  합성된 콘텐츠」 질문에 『예』로 답한다(유튜브 도움말 14328491 · 공개만으로 시청자층·수익 창출 자격에
+  영향 없음). 만화·완전한 애니메이션처럼 실제 같지 않은 그림과 대본·아이디어 같은 제작 보조는 대상이 아니다.
+  파일에 C2PA(출처 표시) 정보가 있으면 유튜브가 라벨을 자동으로 붙일 수 있다. `media/manifest.jsonl`
+  기록에 `realistic: true/false` 를 남겨 업로드 판단에 쓴다.
 - **체크포인트·비용 원장**: 유료 호출 직전 `media/manifest.jsonl` 대조 —
   `python3 ${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/check_manifest.py check` exit 0(산출물 실존 ∧
   동일 입력해시 ok 레코드)이면 생략(RESULT=skipped). 생성 결과는 `record`로 append(append-only

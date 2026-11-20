@@ -11,6 +11,7 @@
 // 그래서 배선을 기계가 센다. 여기 실패는 "고쳐 두었다고 믿는 것이 코드에 없다"는 뜻이다.
 import { describe, it, expect } from "bun:test";
 import { readFileSync } from "node:fs";
+const TICK_SRC = readFileSync(new URL("./views/judge/tick.ts", import.meta.url), "utf8"); // (cysr-1116-s2) 3초 고리 판정이 옮겨 간 곳
 // (1.1.8 병합) 양쪽이 같은 이름으로 따로 더한 파일(추가·추가)을 합쳤다 — 우리 판(A2-2 재구현·M7·ⓒ·ⓑ′·자리표) 핀이 먼저,
 //   원작자 판(0.14.43 · K2-05·C1·D1~D4·E3·F2·F3·G1~G5·U2/U3)에만 있는 핀이 뒤. 같은 제목·같은 본문은 한 번만 두고,
 //   같은 제목·다른 본문은 원작자 쪽 제목에 「(원작자 0.14.43 판)」을 붙여 둘 다 남겼다.
@@ -73,7 +74,10 @@ describe("복원 배선 — 판정 모듈이 실제로 꽂혀 있다", () => {
   });
 
   it("3초 틱의 유령 수렴이 advanceGhostStrikes 를 쓴다(2연속 게이트 인라인 복제 금지)", () => {
-    expect(src.includes("advanceGhostStrikes(")).toBe(true);
+    // (cysr-1116-s2) 판정이 views/judge/tick.ts 로 옮겨 갔다 — 3초 틱은 decideSockPre 를 부르고, 그 안이 advanceGhostStrikes 를 쓴다.
+    expect(TICK_SRC.includes("advanceGhostStrikes(")).toBe(true);
+    expect(src.includes("decideSockPre(")).toBe(true);
+    expect(src.includes("advanceGhostStrikes(")).toBe(false); // main.ts 에 두 벌 0
   });
 });
 
@@ -563,7 +567,10 @@ describe("빈 자리표 회수 — 배선", () => {
     expect(/const sid = await newSurface\(null, ws\.socket, T_NEW\);[\s\S]{0,200}?placeholderSids\.add\(sid\)/.test(src)).toBe(true);
   });
   it("★ⓐ 회수 루프는 장부에 없는 번호를 **먼저** 걸러낸다(남의 페인 불가침)", () => {
-    expect(src.includes("if (!placeholderSids.has(sid)) continue;")).toBe(true);
+    // (cysr-1116-s2) 판정 = tick.ts decidePlaceholders(장부 사본 left · 장부 밖 번호는 판정 입력조차 안 만든다) · 집행 = main.ts(판정 뒤 장부·손댐을 다시 본다)
+    expect(TICK_SRC.includes("if (!left.has(sid)) continue; // ⓐ 남의 페인은 여기서 이미 걸러진다")).toBe(true);
+    expect(src.includes("placeholders: placeholderSids,")).toBe(true);
+    expect(src.includes("if (!ws || !placeholderSids.has(sid) || touchedPlaceholders.has(sid) || !collectSids(ws.tree).includes(sid)) continue;")).toBe(true);
   });
   it("ⓑ pane 입력 단일 경로(sendRaw)가 손댐을 표시한다", () => {
     expect(/const sendRaw = \(data: string\) => \{[\s\S]{0,300}?notePlaceholderTouched\(sid\)/.test(src)).toBe(true);
@@ -571,14 +578,18 @@ describe("빈 자리표 회수 — 배선", () => {
     expect(src.includes("if (placeholderSids.has(sid)) touchedPlaceholders.add(sid);")).toBe(true);
   });
   it("★판정은 placeholderclose 가 단독으로 쥔다 — 조건을 배선부에 두 벌로 쓰지 않는다", () => {
-    expect(src.includes('import { shouldClosePlaceholder } from "./placeholderclose";')).toBe(true);
-    expect((src.match(/shouldClosePlaceholder\(/g) ?? []).length).toBe(1);
+    // (cysr-1116-s2) 부르는 곳이 main.ts → views/judge/tick.ts decidePlaceholders 하나로 옮겼다(main.ts 는 결과 v.close 만 읽는다).
+    expect(TICK_SRC.includes('import { shouldClosePlaceholder } from "../../placeholderclose";')).toBe(true);
+    expect((TICK_SRC.match(/shouldClosePlaceholder\(/g) ?? []).length).toBe(1);
+    expect((src.match(/shouldClosePlaceholder\(/g) ?? []).length).toBe(0);
+    expect(src.includes("decidePlaceholders(")).toBe(true);
   });
   it("★(1.1.10) 줄 수 입력은 그 pane 화면에서 센다 — 데몬 line_count(출력 개행 누적 커서)를 쓰지 않는다", () => {
     const a = src.indexOf("// ── ③ 빈 자리표 회수");
     const b = src.indexOf("const masterSids = new Set(", a);
     const slice = src.slice(a, b);
-    expect(slice.includes("lineCount: placeholderScreenLines(panes.get(paneKey(sid, ws.socket))?.term),")).toBe(true);
+    // (cysr-1116-s2 · F18) 화면 줄 수 = 모으기 단계 관측값 → decidePlaceholders 의 lineCount(그 탭 소켓의 pane 화면 · 런타임 없으면 null = 보류)
+    expect(slice.includes("lineCount: (wsId, sid) => placeholderScreenLines(panes.get(paneKey(sid, workspaces.find((w) => w.id === wsId)?.socket))?.term),")).toBe(true);
     expect(/lineCount:\s*su\?\.line_count/.test(slice)).toBe(false);
     expect(slice.includes("isWindows: IS_WINDOWS,")).toBe(true);
   });
@@ -1252,10 +1263,13 @@ describe("묘비 기록 — 소켓 파서가 아니라 해소된 이름을 넘�
 // ────────────────────────────────────────────────────────────────────────────
 describe("삭제 중 탭 — 입양 금지 + 진행 표시(G4)", () => {
   it("★3초 입양 틱의 가드에 `!w.deleting` 이 있다(가드를 빼면 red)", () => {
-    const i = code.indexOf("for (const s of [...r.surfaces].sort(");
+    // (cysr-1116-s2) 입양 후보 판정 = tick.ts decideSockPre → homeWsOf · 집행(main.ts)도 같은 homeWsOf 로 다시 본다(await 사이 재확인)
+    const h = TICK_SRC.slice(TICK_SRC.indexOf("export function homeWsOf"), TICK_SRC.indexOf("export function decideSockPre"));
+    expect(h).toContain("!w.pending && !w.deleting");
+    const i = TICK_SRC.indexOf("for (const s of [...input.surfaces].sort(");
     expect(i).toBeGreaterThan(0);
-    const seg = code.slice(i, code.indexOf("adopted = true;", i));
-    expect(seg).toContain("!w.pending && !w.deleting");
+    expect(TICK_SRC.slice(TICK_SRC.indexOf("export function decideSockPre"), i)).toContain("const home = homeWsOf(input.ws, same);");
+    expect(code).toContain("const homeOf = () => homeWsOf(workspaces, (w) => (w.socket ?? undefined) === (sk ?? undefined));");
   });
 
   // ★I2(2026-09-17 13라운드 · opus 11R minor m1) — 가드는 **확인 직후**에 선다. 10라운드 판은 stop
@@ -1370,20 +1384,24 @@ describe("U2+U3 좌석 배치 배선 — (1.1.8 X1) 우리 균등 배치(formati
   });
 
   it("3초 입양 틱: 종료 좌석은 입양하지 않는다 · 역할 우선 순서 · 입양 가드(!w.pending && !w.deleting) · 붙이는 자리에서 arrangeWs", () => {
-    const i = code.indexOf("for (const s of [...r.surfaces].sort(");
+    // (cysr-1116-s2) 후보 고르기(순서·건너뛰기·집) = tick.ts decideSockPre · 붙이기(arrangeWs)·런타임 = main.ts 3초 틱(pre.adopt 순서대로)
+    const i = TICK_SRC.indexOf("for (const s of [...input.surfaces].sort(");
     expect(i).toBeGreaterThan(0);
-    const seg = code.slice(i, code.indexOf("adopted = true;", i));
+    const seg = TICK_SRC.slice(i, TICK_SRC.indexOf("adopt.push(", i));
     expect(seg).toContain("rolePri(a.role) - rolePri(b.role)");
-    expect(seg).toContain("if (s.exited || !s.role || panes.has(paneKey(s.surface_id, sk))) continue;");
-    expect(seg).toContain("!w.pending && !w.deleting");
-    expect(seg).toContain("arrangeWs(ws, { add: [{ sid: s.surface_id }] });");
-    expect(tickSeg().indexOf("rememberRoles(sk, r.surfaces);")).toBeLessThan(tickSeg().indexOf("for (const s of [...r.surfaces].sort("));
+    expect(seg).toContain("if (s.exited || !s.role || input.known.has(s.surface_id)) continue;");
+    expect(TICK_SRC).toContain("!w.pending && !w.deleting");
+    const a = tickSeg().indexOf("for (const a of pre.adopt) {");
+    expect(a).toBeGreaterThan(0);
+    expect(tickSeg().slice(a, tickSeg().indexOf("adopted = true;", a))).toContain("arrangeWs(ws, { add: [{ sid: s.surface_id }] });");
+    expect(tickSeg()).toContain("known: new Set(r.surfaces.map((s) => s.surface_id).filter((sid) => seatAttached(sid, sk))),"); // 이미 붙음 = 런타임 있음 ∪ 미룸
+    expect(tickSeg().indexOf("rememberRoles(sk, r.surfaces);")).toBeLessThan(tickSeg().indexOf("const pre = decideSockPre({"));
   });
 
   it("3초 틱: 역할 표는 매 틱 rememberRoles(배치가 쓰는 표) · 유령 집행은 칸을 떼고 재배치(detachPane) · 구멍 장치는 없다", () => {
     const seg = tickSeg();
     expect(seg).toContain("rememberRoles(sk, r.surfaces);");
-    expect(seg).toContain("for (const sid of step.evict) {\n        detachPane(sid, sk);");
+    expect(seg).toContain("for (const sid of pre.evict) {\n        detachPane(sid, sk);"); // (cysr-1116-s2) 판정 = tick.ts · 집행 그대로
     for (const k of ["annotateRoles(", "holdRolePane(", "tidyHoles(", "holeUntil"]) expect({ 장치: k, 있음: seg.includes(k) }).toEqual({ 장치: k, 있음: false });
   });
 
@@ -1457,7 +1475,8 @@ describe("U2+U3 좌석 배치 배선 — (1.1.8 X1) 우리 균등 배치(formati
 
   it("(W23) 3초 입양 순서는 역할 우선(rolePri: master 0 · cso 1 · worker 2 · reviewer 3)", () => {
     const seg = tickSeg();
-    expect(seg).toContain('role === "master" ? 0 : role === "cso" ? 1 : role?.startsWith("worker") ? 2 : role?.startsWith("reviewer") ? 3 : 4;');
+    expect(TICK_SRC).toContain('return role === "master" ? 0 : role === "cso" ? 1 : role?.startsWith("worker") ? 2 : role?.startsWith("reviewer") ? 3 : 4;'); // (cysr-1116-s2) tick.ts rolePri
+    expect(seg).toContain("for (const a of pre.adopt) {");
   });
 
   it("(W24) +New 도 같은 배치 함수를 거친다(arrangeWs add — 화면 절반 부착 금지)", () => {
@@ -1503,13 +1522,15 @@ describe("U2+U3 좌석 배치 배선 — (1.1.8 X1) 우리 균등 배치(formati
 
   it("(W16·W18·W19·W22) 3초 틱의 유령 퇴거는 보류 없이 떼고(재배치 포함) · 세대 잊기·기한부 보류 장치는 없다", () => {
     const seg = tickSeg();
-    expect(seg).toContain("const step = advanceGhostStrikes(ghostStrike, sockSids, knownIds, (sid) => paneKey(sid, sk), `${sk ?? \"\"}#`);");
+    // (cysr-1116-s2) 유령 판정 = tick.ts(그 소켓 트리 합집합 · 열쇠 = paneKey · 접두 = `${sock}#`) · main.ts 는 열쇠 함수를 paneKey 로 넘긴다
+    expect(TICK_SRC).toContain("const g = advanceGhostStrikes(input.ghostStrike, tree, knownIds, keyOf, `${sock}#`);");
+    expect(seg).toContain("keyOf: (sid) => paneKey(sid, sk),");
     for (const k of ["forgetDaemonEpoch(", "holdRolePane(", "reanchorAuto("]) expect({ 장치: k, 있음: seg.includes(k) }).toEqual({ 장치: k, 있음: false });
   });
 
   it("(W21) 복원 직후 옛 자리 정리(B17 스윕)도 닫기 + 재배치 한 동작(detachPane) — 보류 만료 재정렬 장치는 없다", () => {
     const seg = tickSeg();
-    expect(seg).toContain("for (const sid of exitedSweepTargets(sweepHere, sweepSids, r.surfaces)) {\n        detachPane(sid, sk);");
+    expect(seg).toContain("for (const sid of pre.sweepTargets) {\n        detachPane(sid, sk);"); // (cysr-1116-s2) 판정 = tick.ts exitedSweepTargets · 집행 그대로
     expect(code.includes("reanchorAuto(")).toBe(false);
   });
 
@@ -1530,7 +1551,8 @@ describe("U2+U3 좌석 배치 배선 — (1.1.8 X1) 우리 균등 배치(formati
     expect(code).not.toContain("function evenComb(");
     expect(code).not.toContain("function firstWithRole(");
     expect(code).not.toContain("function autoArrange(");
-    expect(code.split("const rolePri =").length - 1).toBe(1); // 입양 **순서**용 하나(배치 규칙 아님) — refreshPaneTitles 안
+    expect(code.split("const rolePri =").length - 1).toBe(0); // (cysr-1116-s2) 입양 **순서**용 하나(배치 규칙 아님)는 tick.ts rolePri 로 옮겼다
+    expect(TICK_SRC.split("export function rolePri(").length - 1).toBe(1);
   });
 
   it("종료 이벤트: exited·closed·reaped 는 같은 분기에서 같은 방식으로 뗀다(보류 구분 없음)", () => {

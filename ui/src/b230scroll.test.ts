@@ -136,7 +136,7 @@ describe("B-230 ① render() — 다시 붙인 뒤 보이는 pane 마다 resyncV
       renderNode: (t: typeof tree) => ({ sids: t.sids, style: {} as Record<string, string> }),
       renderDeptPending: () => { throw new Error("not expected"); },
       renderIdleWorkspace: () => { throw new Error("not expected"); },
-      renderWsTabs: () => log.push("renderWsTabs"),
+      renderWsTabs: () => log.push("renderWsTabs"), deferredRuntimes: new Map<string, unknown>(), workRuntimeWanted: () => true, ensureSeatRuntimes: async () => {}, // (cysr-1116-s2) render 의 미룬 런타임 줄 — 빈 장부 = 무동작
       collectSids: (t: typeof tree | null) => (t ? t.sids : []),
       paneKey: (sid: number) => `k${sid}`,
       resyncViewport: (term: { id: number }) => log.push(`resync(${term.id},connected=${rts.get(`k${term.id}`)!.el.isConnected})`),

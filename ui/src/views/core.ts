@@ -337,6 +337,24 @@ export class ChatCore {
     if (next.some((m, i) => m !== this.s.msgs[i])) this.putMsgs(next);
   }
 
+  /**
+   * (cysr-1116-s2 · integ I3·S4-3) 데몬 사건 단일 입구 — main.ts onDaemonEvent 머리 배선 1줄이 앱의 **하나뿐인** daemon-event 구독에서
+   * 사건마다 부른다(종전 = 대화 화면이 켜질 때 조각 3·조각 4 가 같은 사건을 따로 두 번 구독 · default_socket_slug 도 두 번 조회).
+   * hqSlug = main.ts 가 이미 받아 둔 본부 데몬 slug(모르면 null — 그때는 두 처리기 모두 종전처럼 버린다 · 새 조회 0).
+   * 대화 화면이 꺼져 있는 동안 온 사건(예 master.deadman)도 장부가 받는다 — 상태만 바뀌고 그리기는 켜진 화면이 한다(작업 화면 = 그리기 0).
+   */
+  ingest(raw: unknown, hqSlug: string | null): void {
+    if (typeof hqSlug === "string" && hqSlug.length > 0) {
+      if (this.defaultSlug === null) this.defaultSlug = hqSlug;
+      this.confirm.setHqSlug(hqSlug);
+      this.results.setHqSlug(hqSlug); // (통합 cysr-1116-integ-1120) s79 결과 장부도 같은 본부 slug — 종전 defaultSlug 조회 자리(s2 가 걷음)
+    }
+    this.onDaemonEvent(raw);
+    this.confirm.onEvent(raw);
+    // (통합 cysr-1116-integ-1120) s79 조각 7 skill.run_finished — 종전 listenDaemon 구독(s2 가 걷음)은 붙어 있는 동안(대화 화면 · 작업 화면 살핌)만 살았다 → 그 뜻 그대로.
+    if (this.attached) this.results.onEvent(raw);
+  }
+
   /** 데몬 사건 하나 — 기본 데몬(마스터가 사는 곳) 사건만 받는다(부서 데몬은 좌석 번호가 겹친다 · 소켓 이름을 모르면 아무것도 받지 않음). */
   onDaemonEvent(raw: unknown): void {
     const e = raw as { name?: unknown; socket_slug?: unknown; surface_id?: unknown } | null;

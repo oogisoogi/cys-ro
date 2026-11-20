@@ -3600,8 +3600,8 @@ async fn handle_connection_capped(
                 run_event_stream(&daemon, &mut write_half, ack, after_seq, names, categories).await;
                 return;
             }
-            Reply::Attach { ack, surface_id } => {
-                run_attach(&daemon, &mut write_half, ack, surface_id).await;
+            Reply::Attach { ack, surface_id, history } => {
+                run_attach(&daemon, &mut write_half, ack, surface_id, history).await;
                 return;
             }
             Reply::FeedWait {
@@ -4078,8 +4078,9 @@ async fn run_event_stream<W: AsyncWrite + Unpin>(
 async fn run_attach<W: AsyncWrite + Unpin>(
     daemon: &Arc<Daemon>,
     w: &mut W,
-    ack: serde_json::Value,
+    mut ack: serde_json::Value,
     surface_id: u64,
+    history: Option<(u64, u16)>,
 ) {
     let Some(surface) = daemon.get_surface(surface_id) else {
         // dispatch 검사와 재조회 사이에 surface가 닫힌 경우 — 무응답 종료 대신 에러를 알린다
@@ -4090,12 +4091,38 @@ async fn run_attach<W: AsyncWrite + Unpin>(
     };
     // parser 락 아래에서 구독+스냅샷 — 그 사이 도착한 청크가 스냅샷과 live 양쪽에
     // 중복 배달되는 창을 닫는다 (reader 스레드는 parser 락에서 직렬화됨)
-    let (mut rx, snapshot) = {
+    // ★(1.1.16 · cysr-1116-s2) `history` 가 있으면 같은 락 안에서 그 커서 뒤 화면 위로 밀려난 행도 뜬다 — 구독 · 밀려난 행 · 스냅숏이
+    //   한 관측이라 그 사이 청크가 끼지 않는다(이음매 빠짐·겹침 0). 락 안 작업 = 사본뿐 — 밀려난 행 최대 ATTACH_HISTORY_MAX_ROWS 행 ·
+    //   칸 합 ATTACH_HISTORY_MAX_CELLS(codex 4R · 폭 4,000 칸 좌석도 상한) + 스크롤백 뺀 화면 사본(visible_clone) · 서식·쓰기는 락 밖
+    //   (이 좌석 파서 락만 · 다른 좌석 배달과 무관). 화면 사본을 못 뜨는 경우(스크롤백 보기 위치 ≠ 0)만 종전처럼 락 안에서 서식.
+    let (mut rx, screen_copy, hist, hist_rows_fallback) = {
         let parser = surface.parser.lock().unwrap_or_else(|e| e.into_inner());
         let rx = surface.out_tx.subscribe();
-        (rx, parser.screen().contents_formatted())
+        let hist = history.map(|(cursor, _)| attach_history_snapshot(parser.screen(), cursor));
+        let copy = parser.screen().visible_clone().ok_or_else(|| parser.screen().contents_formatted());
+        (rx, copy, hist, parser.screen().size().0)
     };
+    let snapshot = match screen_copy {
+        Ok(screen) => screen.contents_formatted(),
+        Err(bytes) => bytes,
+    };
+    let mut hist_bytes: Vec<u8> = Vec::new();
+    if let Some((info, bytes)) = hist.map(attach_history_format) {
+        if let Some(r) = ack.get_mut("result").and_then(|r| r.as_object_mut()) {
+            r.insert("history".into(), info);
+        }
+        if !bytes.is_empty() {
+            hist_bytes = bytes;
+            // 받는 xterm 화면 행 수만큼 줄을 내려 밀려난 행을 전부 그 스크롤백으로 올린다(다음 스냅숏은 화면을 지우고 그린다 · 지움은 스크롤백에 안 닿는다)
+            //   (H 행을 H−1 개 줄바꿈으로 이은 뒤 화면 행 수 R 만큼 더 내리면 정확히 H 행이 스크롤백으로 간다 · 빈 줄 끼어듦 0)
+            let push = history.map(|(_, r)| r).filter(|r| *r > 0).unwrap_or(hist_rows_fallback) as usize;
+            hist_bytes.extend(b"\r\n".repeat(push));
+        }
+    }
     if write_line(w, &ack).await.is_err() {
+        return;
+    }
+    if !hist_bytes.is_empty() && w.write_all(&hist_bytes).await.is_err() {
         return;
     }
     // Send a formatted (color/cursor-accurate) redraw of the current screen first.
@@ -4112,6 +4139,13 @@ async fn run_attach<W: AsyncWrite + Unpin>(
                         return;
                     }
                 }
+                // ★(1.1.16 · cysr-1116-s2 · codex 4R blocking) 기록 연결(history_since)은 놓친 청크를 조용히 넘기지 않는다 — 표지(OSC)를 쓰고 닫는다:
+                //   받는 쪽(Tauri)이 화면을 비우고 같은 커서로 다시 붙어 전체를 다시 그린다(데몬 스크롤백에 다 있다). 인자 없는 연결 = 종전 그대로.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) if history.is_some() => {
+                    let _ = w.write_all(ATTACH_LAGGED_MARKER).await;
+                    let _ = w.flush().await;
+                    return;
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(_) => return,
             },
@@ -4122,6 +4156,50 @@ async fn run_attach<W: AsyncWrite + Unpin>(
             }
         }
     }
+}
+
+/// (1.1.16 · cysr-1116-s2 · codex 4R) 기록 연결이 청크를 놓쳤다는 표지 — 연결 마지막 바이트(그 뒤 닫음) · 알 수 없는 OSC 라 터미널은 무시한다.
+/// 정의처 = 이 상수 · 받는 쪽 = src-tauri viewcore `ATTACH_LAGGED_MARKER`(같은 바이트 · 시험이 대조).
+const ATTACH_LAGGED_MARKER: &[u8] = b"\x1b]7799;cys-attach-lagged\x07";
+
+/// (1.1.16 · cysr-1116-s2) 한 번에 다시 그리는 밀려난 행 상한 — UI xterm 스크롤백(5,000)과 같다. 락 안 작업 상한의 근거이기도 하다.
+const ATTACH_HISTORY_MAX_ROWS: usize = 5_000;
+/// (codex 4R) 락 안에서 복사하는 밀려난 행의 칸 합 상한(= 5,000행 × 200칸) — 폭이 넓은 좌석(최대 4,000칸)도 락 안 작업·메모리가 이 이상 늘지 않는다.
+const ATTACH_HISTORY_MAX_CELLS: usize = 1_000_000;
+
+/// (1.1.16 · cysr-1116-s2) attach `history_since` — **파서 락 안**에서는 행 사본만 뜬다(`attach_history_snapshot`) · 서식은 락 밖(`attach_history_format`).
+/// `status` = `ok`(커서 뒤 밀려난 행 전부) · `truncated`(앞부분이 파서 스크롤백 10,000행 밖이거나 상한으로 잘림 — 남은 것은 씀) ·
+/// `unknown_cursor`(파서 세대가 다름 = 파서 교체·데몬 재기동 · 또는 커서가 지금보다 앞 — 아무것도 안 씀).
+struct AttachHistory {
+    cursor: u64,
+    screen_cursor: u64,
+    snap: Option<(u64, vt100::ScrollbackSnapshot)>,
+}
+
+fn attach_history_snapshot(screen: &vt100::Screen, cursor: u64) -> AttachHistory {
+    let (epoch, rows_now) = screen.scroll_cursor();
+    let screen_cursor = crate::state::pack_screen_cursor(epoch, rows_now);
+    let snap = crate::state::unpack_screen_cursor(cursor)
+        .filter(|(ep13, _)| *ep13 == epoch & 0x1FFF)
+        .and_then(|(_, since)| screen.scrollback_snapshot_since(epoch, since, ATTACH_HISTORY_MAX_ROWS, ATTACH_HISTORY_MAX_CELLS).map(|s| (since, s)));
+    AttachHistory { cursor, screen_cursor, snap }
+}
+
+fn attach_history_format(h: AttachHistory) -> (serde_json::Value, Vec<u8>) {
+    match h.snap {
+        None => (json!({"status": "unknown_cursor", "rows": 0, "cursor": h.cursor, "screen_cursor": h.screen_cursor}), Vec::new()),
+        Some((since, s)) => (
+            json!({"status": if s.truncated() { "truncated" } else { "ok" }, "rows": s.len(), "since": since, "start": s.start(),
+                   "screen_cursor": h.screen_cursor}),
+            s.formatted(),
+        ),
+    }
+}
+
+/// 시험·측정용 한 번에(락 안 사본 + 락 밖 서식).
+#[cfg(test)]
+fn attach_history(screen: &vt100::Screen, cursor: u64) -> (serde_json::Value, Vec<u8>) {
+    attach_history_format(attach_history_snapshot(screen, cursor))
 }
 
 #[cfg(all(test, unix))]
@@ -4637,6 +4715,8 @@ mod eprintln_guard_tests {
     }
 }
 
+#[cfg(test)]
+mod attach_history_tests; // (1.1.16 · cysr-1116-s2) 화면 행 커서 · attach history_since
 #[cfg(test)]
 mod attach_race_tests {
     use crate::state::Daemon;

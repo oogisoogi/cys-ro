@@ -19,6 +19,7 @@ import { SurfaceListTransport } from "./surfacelist";
 import { roleDotColor } from "./appearance";
 import { seatPriority, annotateRoles, tidyHoles } from "./seatlayout";
 import { advanceGhostStrikes } from "./wsreconcile";
+import { decideSockPre, decidePlaceholders, homeWsOf } from "./views/judge/tick"; // (cysr-1116-s2) 3초 고리 판정(실제 순수 함수)
 import { deptLiveRoles } from "./deptprogress";
 
 declare const Bun: { Transpiler: new (o: { loader: "ts" }) => { transformSync(code: string): string } };
@@ -266,7 +267,7 @@ interface FakeRt {
   termHost: { scrollTop: number };
   el: Record<string, never>;
 }
-const FNS = ["collectSids", "setRoleDot", "paintRoleDot", "paintUnknownSafely", "sweepRoleDots", "projectListArrival", "pumpRoleActivity", "onVisibilityReturn", "refreshPaneTitles"];
+const FNS = ["collectSids", "setRoleDot", "paintRoleDot", "paintUnknownSafely", "sweepRoleDots", "projectListArrival", "pumpRoleActivity", "onVisibilityReturn", "tickWsModel", "seatAttached", "refreshPaneTitles"];
 
 function harness() {
   const mono = { t: 50_000 };
@@ -326,6 +327,8 @@ function harness() {
     //    (활동 패스·바쁨 가드·단일 렌더러)과 무관한 우리 배선(B17 옛 자리 스윕 · 새 부서 감지 M7① · 자동 정렬 · 빈 자리표 회수 · 표시 번호 · 본부 판정 ·
     //    사이드바 사용량 패널)은 무동작. 제목 문안은 원작자 대역(paneTitle)과 같은 항등(행 title 그대로)으로 둔다.
     //    ★surfaceWorking = false: 우리 판 paintRoleDot 의 자기보고 폴백(관측 '모름' → 자기보고 작업 중)은 끈다 — 이 검체는 데몬 관측 투영만 본다.
+    // (cysr-1116-s2) 고리 분리 — 판정 = 실제 views/judge/tick.ts 순수 함수 · 미룬 런타임 = 없음(늘 작업 화면 = 종전 흐름 그대로) · tickWsModel·seatAttached = 실제 main.ts 함수(같은 범위에서 연다)
+    decideSockPre, decidePlaceholders, homeWsOf, workRuntimeWanted: () => true, deferSeatRuntime: nothing, deferredRuntimes: new Map<string, unknown>(), ensureSeatRuntimes: async () => {}, DEFERRED_PER_TICK: 4,
     tickRec: null, // (cysr-ui-slice0) 3초 고리 특성 기록기 = 꺼짐(기본) — 배선은 전부 `tickRec?.` 라 무평가
     exitedSweepArm: null, sweepScopeFor: () => null, exitedSweepTargets: () => [], settleSweep: (a: unknown) => a,
     openNewlyRegisteredDepts: async () => false, rememberRoles: nothing, arrangeWs: nothing,
@@ -598,5 +601,42 @@ describe("program status (OSC 7501) overlay — parse · project · seat row", (
     expect(seatTag(d, seatState(d))).toBe("확인");
     const w = { ...base, dot: "waiting" as const };
     expect(seatTag(w, seatState(w))).toBe(null);
+  });
+});
+
+// ── (cysr-1116-s2 · 독립 검증 F2 · codex 1R B1) 자리표 닫기 직전 재판정 — 실제 refreshPaneTitles 본문 행동 시험 ──────────────────
+describe("(cysr-1116-s2) 자리표 회수 — 앞 자리 closePane 을 기다리는 사이 뒤 자리에 출력이 생기면 닫지 않는다", () => {
+  const scene = (outputDuringClose: boolean) => {
+    const h = harness();
+    const ws = h.workspaces[0] as { tree: unknown };
+    ws.tree = { type: "split", dir: "row", ratio: 0.5, a: { type: "split", dir: "col", ratio: 0.5, a: { type: "pane", sid: 1 }, b: { type: "pane", sid: 2 } }, b: { type: "pane", sid: 9 } };
+    const lines = new Map<number, number>([[1, 1], [2, 1]]);
+    for (const sid of [1, 2]) (h.rt(sid, "/a.sock") as unknown as { term: { sid: number } }).term = { sid };
+    h.panes.set("/a.sock#9", { ...h.rt(1, "/a.sock"), sid: 9 } as never);
+    const closed: number[] = [];
+    Object.assign(h.scope, {
+      IS_WINDOWS: false,
+      placeholderSids: new Set([1, 2]),
+      touchedPlaceholders: new Set<number>(),
+      placeholderScreenLines: (term?: { sid: number }) => (term ? lines.get(term.sid) ?? null : null),
+      closePane: async (sid: number) => {
+        closed.push(sid);
+        if (outputDuringClose && sid === 1) lines.set(2, 12); // 앞 자리를 닫는 사이 뒤 자리 화면에 프롬프트 밖 출력
+      },
+    });
+    h.reply("/a.sock", [{ ...h.row(1, "x"), role: null }, { ...h.row(2, "x"), role: null }, h.row(9, "master")]);
+    h.reply("/b.sock", [h.row(3, "cso")]);
+    return { h, closed };
+  };
+  it("대조군: 출력이 안 생기면 두 자리 모두 닫는다", async () => {
+    const { h, closed } = scene(false);
+    await h.tick();
+    expect(closed).toEqual([1, 2]);
+  });
+  it("앞 자리 닫기를 기다리는 사이 뒤 자리에 출력 → 뒤 자리는 닫지 않고 장부에 남긴다(다음 틱 재판정)", async () => {
+    const { h, closed } = scene(true);
+    await h.tick();
+    expect(closed).toEqual([1]);
+    expect([...(h.scope.placeholderSids as Set<number>)]).toEqual([2]);
   });
 });

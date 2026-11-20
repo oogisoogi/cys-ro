@@ -1331,3 +1331,302 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+
+/// (cysr-1116-s2 · codex 3R) 미룬 좌석 첫 붙기 손잡기 — 연결 → `surface.attach {history_since, history_rows}` → ack 를 [`ATTACH_HISTORY_DEADLINE`] 안에.
+/// 성공 = (ack 뒤에 선 읽기 끝, 데몬 history 칸). 그 뒤 바이트 = 밀려난 행 · 줄 내림 · 화면 스냅숏 · 실시간(데몬 한 락) — 그대로 흘리면 이음매 빠짐·겹침 0.
+/// 실패 = (None, {status: timeout|error|not_attached}) — 호출자는 종전 길로 붙고 화면은 안내 줄을 단다.
+/// 구 데몬(이 인자를 모름) = ack 에 history 칸 없음 → `{status:"unsupported"}`(기록 없이 붙은 것 = 화면이 안내).
+pub(crate) async fn attach_with_history(
+    sock: &std::path::Path,
+    surface_id: u64,
+    since: u64,
+    rows: u16,
+) -> (Option<tokio::io::BufReader<crate::Stream>>, Value) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let run = async {
+        let mut stream = crate::connect_to(sock).await.map_err(|_| "error")?;
+        let req = json!({"id": 1, "method": "surface.attach", "params": {"surface_id": surface_id, "history_since": since, "history_rows": rows}});
+        let mut line = serde_json::to_vec(&req).unwrap_or_default();
+        line.push(b'\n');
+        stream.write_all(&line).await.map_err(|_| "error")?;
+        let mut reader = tokio::io::BufReader::new(stream);
+        let mut ack = String::new();
+        if reader.read_line(&mut ack).await.unwrap_or(0) == 0 {
+            return Err("error");
+        }
+        let v: Value = serde_json::from_str(ack.trim()).unwrap_or(Value::Null);
+        if v["ok"].as_bool() != Some(true) {
+            return Err("not_attached");
+        }
+        let hist = match v["result"].get("history") {
+            Some(h) if h.is_object() => h.clone(),
+            _ => json!({"status": "unsupported"}),
+        };
+        Ok((reader, hist))
+    };
+    match tokio::time::timeout(ATTACH_HISTORY_DEADLINE, run).await {
+        Ok(Ok((r, h))) => (Some(r), h),
+        Ok(Err(code)) => (None, json!({"status": code})),
+        Err(_) => (None, json!({"status": "timeout"})),
+    }
+}
+
+/// 손잡기 상한 — 데몬이 락 안에서 뜨는 기록은 최대 5,000행(cysd `ATTACH_HISTORY_MAX_ROWS`)이라 정상은 수십 ms.
+pub(crate) const ATTACH_HISTORY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// (cysr-1116-s2 · codex 4R major) 좌석 스트림 세대 — (소켓 slug, 좌석)마다 마지막 `start_surface_stream` 의 번호. 손잡기를 기다린 사이 더 새
+/// 호출이 오면 옛 호출은 펌프를 세우지 않는다 · stop 은 자기 세대만 멈춘다.
+#[derive(Default)]
+pub(crate) struct StreamGens(std::sync::Mutex<std::collections::HashMap<(String, u64), u64>>);
+static NEXT_STREAM_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+impl StreamGens {
+    /// 새 세대를 시작하고 그 번호를 돌려준다(그 키의 「지금」 = 이 번호).
+    pub(crate) fn begin(&self, key: &(String, u64)) -> u64 {
+        let g = NEXT_STREAM_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.0.lock().unwrap().insert(key.clone(), g);
+        g
+    }
+    pub(crate) fn is_current(&self, key: &(String, u64), gen: u64) -> bool {
+        self.0.lock().unwrap().get(key) == Some(&gen)
+    }
+}
+
+/// 손잡이 끊기 꼴 — 시험이 가짜 손잡이로 abort 를 센다.
+pub(crate) trait AbortHandle {
+    fn abort_now(&self);
+}
+impl AbortHandle for tauri::async_runtime::JoinHandle<()> {
+    fn abort_now(&self) {
+        self.abort();
+    }
+}
+
+/// 세대가 아직 「지금」이면 손잡이를 넣고(같은 키 옛 손잡이 = abort) true · 더 새 호출이 있으면 이 손잡이를 abort 하고 false.
+/// 세대 잠금을 쥔 채 판정·넣기를 한 번에(그 사이 begin 이 끼지 않게).
+pub(crate) fn commit_stream_into<H: AbortHandle>(
+    gens: &StreamGens,
+    map: &std::sync::Mutex<std::collections::HashMap<(String, u64), H>>,
+    key: &(String, u64),
+    gen: u64,
+    handle: H,
+) -> bool {
+    let g = gens.0.lock().unwrap();
+    if g.get(key) != Some(&gen) {
+        handle.abort_now();
+        return false;
+    }
+    if let Some(old) = map.lock().unwrap().insert(key.clone(), handle) {
+        old.abort_now();
+    }
+    true
+}
+pub(crate) fn commit_stream(gens: &StreamGens, att: &crate::Attachments, key: &(String, u64), gen: u64, handle: tauri::async_runtime::JoinHandle<()>) -> bool {
+    commit_stream_into(gens, &att.0, key, gen, handle)
+}
+/// stop — `gen` 을 주면 그 세대가 지금일 때만 멈춘다(옛 시도가 새 스트림을 멈추지 못하게).
+pub(crate) fn stop_stream_in<H: AbortHandle>(
+    gens: &StreamGens,
+    map: &std::sync::Mutex<std::collections::HashMap<(String, u64), H>>,
+    key: &(String, u64),
+    gen: Option<u64>,
+) -> bool {
+    let g = gens.0.lock().unwrap();
+    if let Some(gen) = gen {
+        if g.get(key) != Some(&gen) {
+            return false;
+        }
+    }
+    match map.lock().unwrap().remove(key) {
+        Some(h) => {
+            h.abort_now();
+            true
+        }
+        None => false,
+    }
+}
+
+/// (cysr-1116-s2 · codex 4R blocking) 데몬이 기록 연결에서 청크를 놓쳤을 때 마지막에 쓰는 표지 — cysd `ATTACH_LAGGED_MARKER` 와 같은 바이트.
+pub(crate) const ATTACH_LAGGED_MARKER: &[u8] = b"\x1b]7799;cys-attach-lagged\x07";
+/// 놓침 복구 다시 손잡기 상한 — 넘으면 종전 스냅숏 길(기록 없이)로 붙고 화면에 안내 사건.
+pub(crate) const LAG_RECOVER_MAX: u32 = 3;
+/// 스트림 끝(최근 바이트 꼬리)이 놓침 표지로 끝나는가.
+pub(crate) fn ends_with_lag_marker(tail: &[u8]) -> bool {
+    tail.ends_with(ATTACH_LAGGED_MARKER)
+}
+/// 놓침 복구 재료 — 같은 커서로 다시 붙는다.
+pub(crate) struct Recover {
+    pub(crate) sock: std::path::PathBuf,
+    pub(crate) socket: Option<String>,
+    pub(crate) surface_id: u64,
+    pub(crate) since: u64,
+    pub(crate) rows: u16,
+}
+
+/// 기록 없이(종전 스냅숏 길) 손잡기 — 놓침 복구가 상한을 넘었을 때.
+async fn attach_plain(sock: &std::path::Path, surface_id: u64) -> Option<tokio::io::BufReader<crate::Stream>> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let run = async {
+        let mut stream = crate::connect_to(sock).await.ok()?;
+        let req = json!({"id": 1, "method": "surface.attach", "params": {"surface_id": surface_id}});
+        let mut line = serde_json::to_vec(&req).unwrap_or_default();
+        line.push(b'\n');
+        stream.write_all(&line).await.ok()?;
+        let mut reader = tokio::io::BufReader::new(stream);
+        let mut ack = String::new();
+        if reader.read_line(&mut ack).await.unwrap_or(0) == 0 {
+            return None;
+        }
+        let v: Value = serde_json::from_str(ack.trim()).unwrap_or(Value::Null);
+        (v["ok"].as_bool() == Some(true)).then_some(reader)
+    };
+    tokio::time::timeout(ATTACH_HISTORY_DEADLINE, run).await.ok().flatten()
+}
+
+/// 손잡기를 마친 읽기 끝을 이벤트로 흘린다 — 종전 `start_surface_stream` 고리와 같은 꼴(8KiB · base64 · 끝나면 exited).
+/// `recover` 가 있으면(기록 연결) 데몬 놓침 표지로 끝난 연결 = xterm 전체 초기화(ESC c) 뒤 같은 커서로 다시 손잡기(최대 [`LAG_RECOVER_MAX`]) ·
+/// 넘으면 기록 없이 붙고 `seat-history-status {socket, surface_id, status:"lagged"}` 사건(화면 안내 줄). 다시 손잡기 결과가 ok 가 아니어도 같은 사건.
+pub(crate) async fn pump_surface_stream(
+    app: tauri::AppHandle,
+    mut reader: tokio::io::BufReader<crate::Stream>,
+    event_output: String,
+    event_exited: String,
+    recover: Option<Recover>,
+) {
+    use base64::Engine;
+    use tauri::Emitter;
+    use tokio::io::AsyncReadExt;
+    let emit_bytes = |app: &tauri::AppHandle, b: &[u8]| app.emit(&event_output, base64::engine::general_purpose::STANDARD.encode(b)).is_ok();
+    let status = |app: &tauri::AppHandle, r: &Recover, st: &str| {
+        let _ = app.emit("seat-history-status", json!({"socket": r.socket, "surface_id": r.surface_id, "status": st}));
+    };
+    let mut buf = [0u8; 8192];
+    let mut tail: Vec<u8> = Vec::with_capacity(64);
+    let mut tries = 0u32;
+    'outer: loop {
+        loop {
+            match reader.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    tail.extend_from_slice(&buf[..n]);
+                    if tail.len() > 64 {
+                        tail.drain(..tail.len() - 64);
+                    }
+                    if !emit_bytes(&app, &buf[..n]) {
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        let Some(r) = recover.as_ref() else { break };
+        if !ends_with_lag_marker(&tail) {
+            break;
+        }
+        tail.clear();
+        // 놓침 — 화면을 통째로 비우고(ESC c = xterm 전체 초기화 · 스크롤백 포함) 같은 커서로 다시 그린다
+        let _ = emit_bytes(&app, b"\x1bc");
+        if tries < LAG_RECOVER_MAX {
+            tries += 1;
+            let (again, hist) = attach_with_history(&r.sock, r.surface_id, r.since, r.rows).await;
+            if let Some(rd) = again {
+                if hist["status"] != json!("ok") {
+                    status(&app, r, hist["status"].as_str().unwrap_or("unsupported"));
+                }
+                reader = rd;
+                continue;
+            }
+        }
+        // 상한·손잡기 실패 = 종전 스냅숏 길(기록 없이) + 안내 — 기록 없는 연결은 놓침 표지를 쓰지 않으므로 다음 끝 = 종료
+        status(&app, r, "lagged");
+        match attach_plain(&r.sock, r.surface_id).await {
+            Some(rd) => reader = rd,
+            None => break,
+        }
+    }
+    let _ = app.emit(&event_exited, ());
+}
+
+/// (cysr-1116-s2 · codex 3R major · 4R) 스트림 정지 — 붙기를 기다린 사이 대화 화면으로 돌아간 좌석(출력 흐름 0)·늦게 끝난 옛 시도 정리용.
+/// `stream_gen` 을 주면 그 세대가 지금일 때만 멈춘다(옛 시도가 새 스트림을 멈추지 못하게 · codex 4R). exited 사건은 안 쏜다.
+#[tauri::command]
+pub fn stop_surface_stream(
+    state: tauri::State<'_, crate::Attachments>,
+    gens: tauri::State<'_, StreamGens>,
+    socket: Option<String>,
+    surface_id: u64,
+    stream_gen: Option<u64>,
+) -> bool {
+    let sock = resolve_socket(&socket);
+    let key = (crate::sock_slug(&sock), surface_id);
+    stop_stream_in(&gens, &state.0, &key, stream_gen)
+}
+
+#[cfg(test)]
+mod stream_owner_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    struct Fake(Arc<AtomicUsize>);
+    impl AbortHandle for Fake {
+        fn abort_now(&self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    fn key() -> (String, u64) {
+        ("s".into(), 7)
+    }
+    /// 겹친 두 호출 — A 시작 → B 시작 → A 손잡기 끝(넣기) → B 넣기: 펌프 = B 하나 · A 는 스스로 abort.
+    #[test]
+    fn overlapping_starts_leave_exactly_one_pump() {
+        let gens = StreamGens::default();
+        let map = std::sync::Mutex::new(std::collections::HashMap::<(String, u64), Fake>::new());
+        let (a_ab, b_ab) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let ga = gens.begin(&key());
+        let gb = gens.begin(&key());
+        assert!(!commit_stream_into(&gens, &map, &key(), ga, Fake(a_ab.clone())), "옛 호출은 넣지 않는다");
+        assert!(commit_stream_into(&gens, &map, &key(), gb, Fake(b_ab.clone())));
+        assert_eq!((a_ab.load(Ordering::SeqCst), b_ab.load(Ordering::SeqCst), map.lock().unwrap().len()), (1, 0, 1));
+        // 순서가 거꾸로(B 넣고 A 늦게)여도 같다
+        let c_ab = Arc::new(AtomicUsize::new(0));
+        assert!(!commit_stream_into(&gens, &map, &key(), ga, Fake(c_ab.clone())));
+        assert_eq!((c_ab.load(Ordering::SeqCst), b_ab.load(Ordering::SeqCst)), (1, 0));
+    }
+    /// 같은 세대 안에서 덮어쓰면 옛 손잡이를 abort(두 펌프 0).
+    #[test]
+    fn overwrite_aborts_previous_handle() {
+        let gens = StreamGens::default();
+        let map = std::sync::Mutex::new(std::collections::HashMap::<(String, u64), Fake>::new());
+        let g = gens.begin(&key());
+        let (x, y) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        assert!(commit_stream_into(&gens, &map, &key(), g, Fake(x.clone())));
+        assert!(commit_stream_into(&gens, &map, &key(), g, Fake(y.clone())));
+        assert_eq!((x.load(Ordering::SeqCst), y.load(Ordering::SeqCst), map.lock().unwrap().len()), (1, 0, 1));
+    }
+    /// stop = 자기 세대만 · 세대 없음 = 종전(무엇이든 멈춤).
+    #[test]
+    fn stop_only_own_generation() {
+        let gens = StreamGens::default();
+        let map = std::sync::Mutex::new(std::collections::HashMap::<(String, u64), Fake>::new());
+        let old = gens.begin(&key());
+        let new = gens.begin(&key());
+        let n = Arc::new(AtomicUsize::new(0));
+        assert!(commit_stream_into(&gens, &map, &key(), new, Fake(n.clone())));
+        assert!(!stop_stream_in(&gens, &map, &key(), Some(old)), "옛 세대 stop 은 새 스트림을 못 멈춘다");
+        assert_eq!(n.load(Ordering::SeqCst), 0);
+        assert!(stop_stream_in(&gens, &map, &key(), Some(new)));
+        assert_eq!(n.load(Ordering::SeqCst), 1);
+        assert!(!stop_stream_in(&gens, &map, &key(), None), "이미 비었다");
+    }
+    /// 놓침 표지 = cysd 와 같은 바이트 · 꼬리 판정.
+    #[test]
+    fn lag_marker_matches_daemon_and_tail_check() {
+        let src = include_str!("../../src/bin/cysd/main.rs");
+        assert!(src.contains(r#"const ATTACH_LAGGED_MARKER: &[u8] = b"\x1b]7799;cys-attach-lagged\x07";"#));
+        assert_eq!(ATTACH_LAGGED_MARKER, b"\x1b]7799;cys-attach-lagged\x07");
+        let mut t = b"some output".to_vec();
+        assert!(!ends_with_lag_marker(&t));
+        t.extend_from_slice(ATTACH_LAGGED_MARKER);
+        assert!(ends_with_lag_marker(&t));
+        t.push(b'x');
+        assert!(!ends_with_lag_marker(&t));
+    }
+}

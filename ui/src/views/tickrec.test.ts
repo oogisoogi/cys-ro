@@ -252,7 +252,7 @@ describe("main.ts 배선 정적 핀 — 꺼짐 = 무평가", () => {
     const uses = all.length - decl.length;
     expect(all.filter((s) => s === "tickRec?.").length).toBe(uses); // 선언 말고는 전부 선택적 호출
     expect([...tick.matchAll(/\btickRec\?\./g)].length).toBe(uses); // 그 호출은 전부 고리 본문 안
-    expect(uses).toBe(17); // 배선 자리 수 — 늘리거나 줄이면 이 수와 tickrec_gate.py 를 함께 본다
+    expect(uses).toBe(18); // 배선 자리 수 — 늘리거나 줄이면 이 수와 tickrec_gate.py 를 함께 본다 · (cysr-1116-s2) 17 → 18 = 입양 기록이 두 갈래(런타임 지금 · 미룸)에 하나씩
   });
 
   it("배선 줄은 대입·await·return 을 품지 않는다(고리 흐름을 바꾸지 않는 단독 문장)", () => {
@@ -263,13 +263,12 @@ describe("main.ts 배선 정적 핀 — 꺼짐 = 무평가", () => {
     }
   });
 
-  it("자리표 판정 입력 기록 = shouldClosePlaceholder 인자와 같은 식(두 벌이 갈리면 붉음)", () => {
-    const rec = tick.match(/tickRec\?\.placeholderIn\(sk \?\? "", sid, \{([^}]*)\}\);/);
-    const real = tick.match(/!shouldClosePlaceholder\(\{([\s\S]*?)\}\)\s*\)/);
-    expect(rec).not.toBeNull();
-    expect(real).not.toBeNull();
-    const norm = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean).sort();
-    expect(norm(rec![1])).toEqual(norm(real![1]));
+  it("자리표 판정 입력 기록 = 판정이 실제로 쓴 입력 그대로(두 벌 → 한 벌로 접음 · cysr-1116-s2)", () => {
+    // 조각 0 은 기록 줄과 판정 인자를 같은 식 두 벌로 썼다. 조각 2 는 판정(tick.ts decidePlaceholders)이 만든 입력 v.in 을 기록기에 그대로 넘긴다 —
+    //   식이 하나뿐이라 갈릴 수 없다. main.ts 고리에 판정 인자 식(shouldClosePlaceholder 호출)이 다시 생기면 붉음.
+    expect(tick).toContain('tickRec?.placeholderIn(sk ?? "", sid, v.in);');
+    expect(/shouldClosePlaceholder\(/.test(tick)).toBe(false);
+    expect(tick).toContain("const verdicts = decidePlaceholders({");
   });
 
   it("스위치 읽기는 localStorage 읽기 1회뿐(쓰기 0) · 손잡이 이름 = __cysTickRec", () => {

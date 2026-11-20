@@ -229,6 +229,22 @@ describe("도우미 허락 — 평소 「마스터가 확인하는 중」(FR-C6)
     expect(log.includes("rm -rf")).toBe(false);
     expect(label(h).n).toBe(0); // 처리 뒤 바로 다시 받음
   });
+  it("(cysr-1116-s2 · integ S4-3) 대화 화면을 열기 **전**에 온 master.deadman 도 단일 입구(core.ingest)로 장부가 받는다 · slug 다름·모름 = 버림", async () => {
+    const h = harness();
+    h.st.feed = [h.helper()];
+    h.st.master.idle_secs = 120;
+    const ev = { name: "master.deadman", payload: { role: "master" }, surface_id: 5, socket_slug: "hq-slug-0001" };
+    h.core.ingest(ev, null); // 본부 slug 모름(main.ts 가 아직 못 받음) = 버림(종전과 같은 쪽) — 먼저(뒤 호출이 slug 를 넣으면 이 경우를 못 본다)
+    h.core.ingest({ ...ev, socket_slug: "dept-1" }, "hq-slug-0001"); // 부서 데몬 사건 = 버림
+    await h.open(2);
+    expect((h.core.confirm.band().items[0] as { stall: unknown }).stall).toBeNull();
+    const g = harness();
+    g.st.feed = [g.helper()];
+    g.st.master.idle_secs = 120;
+    g.core.ingest(ev, "hq-slug-0001"); // 대화 화면 꺼짐(attach 전) — 종전 구독은 이때 없었다
+    await g.open(2);
+    expect((g.core.confirm.band().items[0] as { stall: unknown }).stall).toBe("deadman");
+  });
   it("부서 데몬 사건·다른 역할 deadman = 무시", async () => {
     const h = harness();
     h.st.feed = [h.helper()];

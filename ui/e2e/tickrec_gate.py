@@ -47,7 +47,7 @@ SHIM = r"""
   const listeners = {}; let nextSid = 900;
   const mine = (sock) => window.__SEATS.filter((s) => s.sock === (sock ?? BASE));
   const row = (s) => ({ surface_id: s.sid, display_no: s.sid, title: `${s.sid} · Opus · ${s.cwd.split('/').pop()}`, role: s.role, cwd: s.cwd, live_cwd: s.cwd,
-    exited: !!s.ex, agent: s.role ? 'claude' : null, agent_alive: !s.ex, line_count: 3, size: { rows: 35, cols: 120 },
+    exited: !!s.ex, agent: s.role ? 'claude' : null, agent_alive: !s.ex, line_count: 3, screen_cursor: 7, size: { rows: 35, cols: 120 },
     usage: s.role ? { ctx_pct: 10, source: 'statusline', updated_at: Date.now() / 1000 } : null,
     display_activity: { state: 'unknown', raw: 'unknown', reason: 'no observation', retained: false } });
   const respond = (cmd, a) => {
@@ -64,13 +64,15 @@ SHIM = r"""
         if (window.__HANG[a.socket ?? BASE]) throw new Error('rpc timeout');
         return { surfaces: mine(a.socket).map(row) };
       }
-      case 'create_surface': { const sid = nextSid++; window.__SEATS.push({ sock: a.socket ?? BASE, sid, role: null, cwd: CWD_, ex: false }); return { surface_id: sid }; }
+      case 'create_surface': { const sid = nextSid++; window.__SEATS.push({ sock: a.socket ?? BASE, sid, role: null, cwd: CWD_, ex: false }); return { surface_id: sid, screen_cursor: 0 }; }
       case 'close_surface': { const i = window.__SEATS.findIndex((s) => s.sid === a.surfaceId && s.sock === (a.socket ?? BASE)); if (i >= 0) window.__SEATS.splice(i, 1); return true; }
       case 'org_status': return { surfaces: mine(a.socket).map((s) => ({ surface_id: s.sid, role: s.role, exited: !!s.ex, idle_secs: 1, agent_alive: !s.ex, usage: row(s).usage, status: null })), feed: { pending: 0 } };
       case 'feed_list_all': return { sockets: [{ socket: BASE, dept: null, ok: true, items: [] }] };
       case 'usage_named_reporters': return { named: [] };
       case 'usage_accounts_all': return { accounts: [] };
       case 'attach_surface': return { output_event: 'sim-out-' + a.surfaceId, exited_event: 'sim-exit-' + a.surfaceId };
+      // (cysr-1116-s2) 미룬 좌석 첫 붙기 = 기록 이어 붙이기 결과(데몬 ack history 칸) · 인자 없는 붙기 = 종전 null(기준 번들은 인자를 안 싣는다)
+      case 'start_surface_stream': return a.historySince !== undefined ? { history: { status: window.__HIST_STATUS ?? 'ok', rows: 0 } } : null;
       default: return null;
     }
   };

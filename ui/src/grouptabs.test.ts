@@ -222,11 +222,15 @@ describe("(2c) 같은 크기 재전송 0 — fitPane 배선", () => {
   // (codex 1R 논쟁 · 재부착) 크기 기억은 런타임 객체에 묶인 WeakMap 이다. 붙기(start_surface_stream)는 makePane 안 한 곳뿐이고
   //   그 직후 새 런타임을 만들므로 새 PTY 에 붙을 때마다 기억은 비어 시작한다 = 첫 맞춤은 반드시 보낸다.
   //   같은 런타임을 새 PTY 에 다시 붙이는 길이 생기면 이 시험이 깨진다 — 그때 그 길에서 lastSentSize.delete(rt) 를 넣어라.
+  // (cysr-1116-s2 · codex 3R) 둘째 자리 = retrySeatHistory(기록 이어 붙이기 「다시 불러오기」) — **같은 런타임을 같은 좌석·같은 PTY 에** 다시 붙인다(xterm 만 비움 ·
+  //   PTY 크기 불변) → 크기 기억을 지울 까닭이 없다. 새 PTY 에 붙는 길은 여전히 makePane 한 곳뿐이다.
   test("붙기는 makePane 안 한 곳뿐 · 붙은 뒤 새 런타임 = 크기 기억 빈 채 시작", () => {
-    expect(main.split('invoke("start_surface_stream"').length - 1).toBe(1);
+    expect(main.split('invoke("start_surface_stream"').length - 1).toBe(2);
+    const r = main.indexOf("async function retrySeatHistory(");
+    expect(main.slice(r, main.indexOf("\n}\n", r))).toContain('invoke("start_surface_stream", { socket: rt.socket, surfaceId: rt.sid, ...seatHistoryArgs(cursor, rt.term.rows) })');
     const i = main.indexOf("async function makePane(");
     const f = main.slice(i, main.indexOf("\n}\n", i));
-    expect(f).toContain('await invoke("start_surface_stream", { socket, surfaceId: sid });');
+    expect(f).toContain('await invoke("start_surface_stream", { socket, surfaceId: sid, ...streamExtra });');
     expect(f.indexOf('invoke("start_surface_stream"') < f.indexOf("const rt: PaneRuntime = {")).toBe(true);
     expect(main).toContain("const lastSentSize = new WeakMap<PaneRuntime, string>();");
   });

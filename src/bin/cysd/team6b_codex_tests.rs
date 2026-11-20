@@ -354,6 +354,40 @@ fn cm1_regroup_into_paused_team_cancels_reservation_and_probe_rereads() {
     assert!(probe(), "탐침 = 첫 바이트 앞 그 순간 팀(b · 정지)");
 }
 
+/// (codex 2R M1) 「다시 읽기」 축만 따로 — 좌석 묶음이 `set_group` 처리(목적지 기록·예약 취소)를 거치지 않고 바뀌어도(다른 길로 바뀐 경우)
+///   ① 임계영역 재확인이 그 순간 팀을 읽어 writer 에 넘기기 전에 멈추고 ② writer 탐침도 그 순간 팀을 읽는다.
+///   스냅숏을 재사용하면 ① = writer 탐침까지 가서 `queue.inject_aborted` 가 남고 ② = 옛 팀 기준으로 통과한다.
+#[test]
+fn cm1_reread_destination_team_without_regroup_handler() {
+    let fx = fx("cm1reread");
+    let m = pane(&fx, "master", None, P + 140);
+    let a = pane(&fx, "worker-1", Some("a"), P + 141);
+    let c = pane(&fx, "worker-3", Some("c"), P + 143);
+    let _b = pane(&fx, "worker-2", Some("b"), P + 142);
+    pause(&fx, P + 140, "b", true);
+    assert_eq!(queued_on(&fx.daemon, P + 140, a.id, "to-a")["ok"], json!(true));
+    let a2 = a.clone();
+    let fired = Arc::new(AtomicBool::new(false));
+    let f2 = fired.clone();
+    *fx.daemon.teams.deliver_seam.lock().unwrap() = Some(Arc::new(move || {
+        if !f2.swap(true, Ordering::SeqCst) {
+            *a2.group.lock().unwrap() = Some(Some("b".into()));
+        }
+    }));
+    let got = tick_on(&fx.daemon, &a);
+    *fx.daemon.teams.deliver_seam.lock().unwrap() = None;
+    assert!(fired.load(Ordering::SeqCst), "전제: 이음매가 돌았다");
+    assert_eq!(got, None, "① 배달 0");
+    assert!(events(&fx.daemon, "queue.inject_aborted").is_empty(), "① 임계영역에서 멈춤(스냅숏이면 writer 탐침까지 감)");
+    assert_eq!(texts(&a), vec!["to-a"]);
+    let open: crate::state::SafetyProbe = Arc::new(|| false);
+    let probe = crate::team::with_team_pause_probe(&fx.daemon, &c, vec![], open);
+    assert!(!probe(), "② 만든 때(팀 c) = 막지 않음");
+    *c.group.lock().unwrap() = Some(Some("b".into()));
+    assert!(probe(), "② 첫 바이트 앞 그 순간 팀(b · 정지) = 막음");
+    drop(m);
+}
+
 // ─────────────────────────── M2 · 꼬리표 공개 = 같은 잠금 ───────────────────────────
 
 /// M2 반례 — 넣기 잠금을 놓은 직후(꼬리표를 달기 전 창)에 배달 틱이 돌아도 정지 팀 항목은 보류.

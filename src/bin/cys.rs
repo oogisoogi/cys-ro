@@ -5060,11 +5060,11 @@ static AUTOSTART_TRIED: std::sync::atomic::AtomicBool =
 
 fn sibling_daemon_path() -> Option<std::path::PathBuf> {
     let name = if cfg!(windows) { "cysd.exe" } else { "cysd" };
-    std::env::current_exe()
-        .ok()?
-        .parent()
-        .map(|d| d.join(name))
-        .filter(|p| p.exists())
+    let exe = std::env::current_exe().ok()?;
+    // ★(TICKET=cysr-1116-seatkeep-1119 · master#40dd9016) 맥 current_exe 는 링크를 풀지 않는다 — PATH 의 링크 cys(`/usr/local/bin/cys` →
+    //   번들)면 링크 폴더에 cysd 가 없어 자동 기동을 못 하고 rotate 가 rc 23 이었다(격리 실측). 실경로의 형제 먼저 · 없으면 종전 자리.
+    let real = std::fs::canonicalize(&exe).unwrap_or_else(|_| exe.clone());
+    [real, exe].iter().filter_map(|e| e.parent().map(|d| d.join(name))).find(|p| p.exists())
 }
 
 // ── Windows 진짜 KeepAlive 패리티(작업 스케줄러 RestartOnFailure) 헬퍼 (mac launchd KeepAlive 대응) ──

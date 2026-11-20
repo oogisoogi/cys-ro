@@ -244,6 +244,7 @@ import { buildAcctIndex, buildWsAccountGroups, parseSeatAccount, type SeatAcctSi
 import { planOfficeTab, repairOutcomeOf, type OfficeCtx } from "./officetab"; // 0.14.44 B5·B6 오피스 탭 안내(순수 판정)
 import { starvedNotice, starvedShouldPop, starvedKeyHasHead, starvedPopAgeMs, starvedDismissId, surfaceIdOfRef, locateStarvedSeat } from "./starvednotice"; // 0.14.43 UI2 큐 기아 경보 → 토스트·배너(순수 문구·좌석 확정)
 import { latestOnly, parseResultNotice, seatsBlockedText, SEATS_NOTE_POLL_MS } from "./updateresult"; // 1.1.8 U4 자동 갱신 결과 알림(응답 해석만 · 갱신 결정·집행 0)
+import { ccOpenVerdict, ccOpenLogLine, type CcOpenCause } from "./ccopen"; // (cysr-1116-cc-autoopen) CC 를 여는 원인의 단일 정의처 — 저절로 열기 = approval.stalled 만
 import { alertsQuiet, waitBannerReplacesToast } from "./alertquiet"; // 0.14.51 TOAST 축 — 데몬 이벤트 출처의 사람 싱크를 끄는 단일 판정(순수)
 import {
   deptPendingText,
@@ -1211,7 +1212,16 @@ async function refreshCliInstallState(opts: { notice?: boolean; force?: boolean 
   if (notice) showCliToast(notice);
 }
 
-function setCcOpen(open: boolean) {
+// (cysr-1116-cc-autoopen) CC 가 열린 순간(닫힘→열림)·열기를 막은 순간마다 원인 1줄을 앱 로그(~/.cys/cc-open.log)에 남긴다 —
+//   다음에 또 「저절로 떴다」 하면 기계가 답한다(원인 표 = ccopen.ts). 실패는 삼킨다(로그가 화면 동작을 막지 않는다).
+function logCcOpen(wasOpen: boolean, cause: CcOpenCause | "unknown", opened: boolean, detail?: string) {
+  const line = ccOpenLogLine({ wasOpen, cause, opened, detail }, new Date());
+  if (line) void invoke("log_cc_open", { line }).catch(() => {});
+}
+
+// ★(cysr-1116-cc-autoopen) 여는 호출은 원인을 반드시 싣는다(ccopen.test.ts 가 main.ts 의 모든 열기 호출을 원인 표와 대조한다) · 닫기는 원인 없음.
+function setCcOpen(open: boolean, cause?: CcOpenCause) {
+  if (open) logCcOpen(ccOpen, cause ?? "unknown", true);
   ccOpen = open;
   document.getElementById("cc-panel")!.hidden = !open;
   if (open) {
@@ -6180,7 +6190,7 @@ function paintStatusBoard(): void {
   //   목록을 못 읽었으면(approvalFeedAll = null) 전체를 그대로 보인다(요청을 숨기는 쪽으로 틀리지 않게) · 누르면 승인 목록.
   const shownSeats = new Set(live.flatMap((w) => { const m = seatModels.get(w.id); return m ? [...m.fixed, ...m.groups.flatMap((g) => g.rows)].filter((r) => !r.named).map((r) => `${w.socket}#${r.sid}`) : []; }));
   const offSeatApprovals = Math.max(0, pendingApprovals - (approvalFeedAll === null ? 0 : seatApprovalItems(approvalFeedAll, shownSeats)));
-  const onApprovals = () => openFeed();
+  const onApprovals = () => openFeed("user.board_approvals");
   // (1g · master#17b20312) 사용량 통합 — 둘째 줄 = 한도 한 줄(막대) · 펼치면 종전 사용량 칸(#ws-usage) 그 요소를 상황판 안에 그대로 담는다
   //   (그리기 = renderSidebarUsage 무변경 · 같은 정보 두 곳 0). 위치 = 위(목록 맨 위) / 아래(막대 맨 아래 고정 · 좌석 줄이 스크롤).
   const board = seatHost("board");
@@ -7318,7 +7328,7 @@ function openThemePopover(anchor: HTMLElement) {
   // (1e) 컨트롤 센터 여는 길 — 상단 단추를 기본으로 내렸으므로 여기 한 줄(+ 말).
   const ccOpenRow = document.createElement("div"); ccOpenRow.className = "theme-pop-row";
   const ccOpenBtn = document.createElement("button"); ccOpenBtn.type = "button"; ccOpenBtn.textContent = "컨트롤 센터 열기";
-  ccOpenBtn.addEventListener("click", () => setCcOpen(true)); ccOpenRow.appendChild(ccOpenBtn);
+  ccOpenBtn.addEventListener("click", () => setCcOpen(true, "user.theme_pop")); ccOpenRow.appendChild(ccOpenBtn);
   const boardPosRow = document.createElement("label"); boardPosRow.className = "theme-pop-row"; boardPosRow.textContent = "상황판 위치";
   const bpSel = document.createElement("select");
   for (const [v, t] of [["top", "위"], ["bottom", "아래"]]) { const o = document.createElement("option"); o.value = v; o.textContent = t; bpSel.appendChild(o); }
@@ -8084,8 +8094,13 @@ function isDaemonDetectedApproval(i: FeedItem): boolean {
 
 // 승인 Feed는 Control Center의 '승인 Feed' 탭으로 편입됨(독립 패널 폐기).
 // 여는 동작 = CC 패널 오픈 + 탭 활성(setCcTab이 refreshFeed 호출).
-function openFeed() {
-  if (!ccOpen) setCcOpen(true);
+// ★(cysr-1116-cc-autoopen) 원인 표(ccopen.ts)가 「알림만」으로 정한 원인(feed.grace)은 패널을 열지도 탭을 바꾸지도 않는다 — 로그 1줄만.
+function openFeed(cause: CcOpenCause) {
+  if (ccOpenVerdict(cause) !== "open") {
+    logCcOpen(ccOpen, cause, false);
+    return;
+  }
+  if (!ccOpen) setCcOpen(true, cause);
   setCcTab("feed");
 }
 
@@ -8113,7 +8128,7 @@ const feedSwitchScheduler = makeFeedSwitchScheduler({
   setTimer: (fn, ms) => setTimeout(fn, ms),
   feedList: () => invoke("feed_list", { status: null }),
   ceoActive: ceoIsActivelyGenerating,
-  open: openFeed,
+  open: () => openFeed("feed.grace"), // (cysr-1116-cc-autoopen) 유예 만료 = 알림만(원인 표) — 화면 전환 0 · 로그 1줄
 });
 function scheduleFeedSwitchIfStillPending(requestId: string, autoRoute = false): void {
   feedSwitchScheduler(requestId, autoRoute);
@@ -9836,8 +9851,8 @@ async function buildPaletteItems(): Promise<PaletteItem[]> {
     { id: "act:split-col", title: "세로 분할", keywords: "split col 분할", action: () => actionSplit("col") },
     { id: "act:close", title: "패널 닫기", keywords: "close 닫기", action: () => actionClose() },
     { id: "act:equalize", title: "패널 균등화", keywords: "equalize 균등", action: () => actionEqualize() },
-    { id: "act:cc", title: "Control Center 토글", keywords: "control center dashboard 대시보드", action: () => setCcOpen(!ccOpen) },
-    { id: "act:feed-panel", title: "승인 Feed 탭 열기", keywords: "feed panel 피드 패널 승인 control center", action: () => openFeed() },
+    { id: "act:cc", title: "Control Center 토글", keywords: "control center dashboard 대시보드", action: () => setCcOpen(!ccOpen, "user.palette") },
+    { id: "act:feed-panel", title: "승인 Feed 탭 열기", keywords: "feed panel 피드 패널 승인 control center", action: () => openFeed("user.palette") },
   );
   // (tabs-sidebar 1h · master#edd9d8a8) 부서 0개 기기 = 팔레트에도 「부서」 항목을 내지 않는다 — 부서가 있거나 전문가 모드(직접 조작 단추를 켠 사람)면 그대로.
   if (deptsPresent() || expertModeOn(localStorage.getItem(EXPERT_KEY)))
@@ -10953,7 +10968,7 @@ function onDaemonEvent(event: Record<string, unknown>) {
   }
   // (tabs-sidebar 2d · master#b1b8d7df) 말로 열기 — `cys open-control-center` → 데몬 이벤트 → 컨트롤 센터 열기(단추가 숨어 있어도).
   if (name === "ui.open_panel") {
-    if (payload.panel === "control-center") setCcOpen(true);
+    if (payload.panel === "control-center") setCcOpen(true, "ui.open_panel");
     return;
   }
   if (name === "approval.stalled") {
@@ -10963,7 +10978,7 @@ function onDaemonEvent(event: Record<string, unknown>) {
     const c = approvalStalledCopy(shown(seatNo(null, payload.surface_ref)), ap);
     toast("approval", c.title, c.body);
     osBanner(c.title, c.body);
-    openFeed();
+    openFeed("approval.stalled");
     refreshFeed();
     refreshSidebarStatus();
     return;
@@ -12362,7 +12377,7 @@ document.getElementById("btn-equalize")!.addEventListener("click", actionEqualiz
 document.getElementById("btn-close")!.addEventListener("click", actionClose);
 document.getElementById("btn-files")!.addEventListener("click", () => setFtOpen(!ftOpen));
 document.getElementById("btn-ft-close")!.addEventListener("click", () => setFtOpen(false));
-document.getElementById("btn-cc")!.addEventListener("click", () => setCcOpen(!ccOpen));
+document.getElementById("btn-cc")!.addEventListener("click", () => setCcOpen(!ccOpen, "user.button"));
 document.getElementById("btn-cc-close")!.addEventListener("click", () => setCcOpen(false));
 document.getElementById("btn-cc-density")!.addEventListener("click", () =>
   applyCcDensity(ccDensity === "glance" ? "ops" : "glance"),

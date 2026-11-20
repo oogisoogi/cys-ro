@@ -947,7 +947,8 @@ describe("TOAST 축 — 출처 핀 · 통짜 가드 금지 · 커버리지", () 
   });
 
   test("feed 스케줄러 배선은 openFeed 그대로(가드는 호출부 인라인) / 팔레트 수동 열기도 openFeed 그대로", () => {
-    expect(/^\s*open: openFeed,/m.test(SRC)).toBe(true); // 스케줄러 배선은 그대로(probefail 핀) — 가드는 호출부 daemonScheduleFeedSwitch
+    // (cysr-1116-cc-autoopen) 스케줄러 배선은 openFeed 하나 · 원인 feed.grace 를 싣는다(원인 표 = 알림만 · probefail 핀) — 가드는 호출부 인라인 그대로
+    expect(/^\s*open: \(\) => openFeed\("feed\.grace"\),/m.test(SRC)).toBe(true);
     expect(/^\s*open: daemonOpenFeed,/m.test(SRC)).toBe(false);
   });
 

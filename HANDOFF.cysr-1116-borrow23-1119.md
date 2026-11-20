@@ -130,3 +130,41 @@
 | 지침 수정 뒤 단독 | `test_event_inject`·`test_cso_directive_rev`·`test_bootv2_doc_contract`·`test_core_inject`·`test_default_fleet_formation` rc0 · self-test 3종 OK · core_inject verify 둘 다 ok · gen --check GREEN · 해시 --check OK |
 | 뮤턴트(이번 회차) | python `boot_fleet()` 이 좌석 env 를 먼저 읽기 → 처음엔 **안 잡혔다**(순수 함수만 시험) → 배선 단언 추가 뒤 잡힘(self-test FAIL) · Rust 배선은 `boot_fleet_wire` 순수화 + 시험 |
 - codex 2R(②③ 고침분) = master 대기열(06:29 뒤 · 이 좌석은 호출 안 함).
+
+---
+
+## 9. 델타 — codex 2R BLOCK 처분(마지막 회차 · 좌석 b23b · master#42d9d9cd · 2026-11-20)
+
+codex 2R 원문 = `/Users/oogisoogi/axdev/master/reports/verify/codex-1120/b23-r2.md`(대상 72fb2ce4c · VERDICT BLOCK). master 처분 = 고침 4 + 한계 문서 1 · 이 고침 뒤 codex 없음(master 수용 판정).
+
+| codex | master 처분 | 고침 | 시험 |
+|---|---|---|---|
+| 1 blocking — `CYS_BOOT_FLEET_DAEMON` 은 호출자가 바꿀 수 있는 환경값(명령 앞 export 로 반쪽 light) | ① python 도 데몬 RPC `system.boot_fleet` 로 · 환경값 무시 · RPC 실패 = full | 새 숨김 하위 동사 `cys daemon boot-fleet`(JSON 한 줄 · 자동 기동 금지 목록 등재 · 데몬 없음·옛 데몬 = rc 1) — python `javis_orchestra.boot_fleet()` 은 같은 RPC 를 **unix = 데몬 소켓 직접 1왕복**(하위 프로세스 0 — session-start 훅의 `--note-team-roster` 가 이 길이라 「훅 발화 지연 0」 설계 유지 · 경로 규칙 = Rust `socket_path` · 좌석은 데몬이 넣은 `CYS_SOCKET`) · **Windows = `cys daemon boot-fleet`**(named pipe)로 묻는다(한 프로세스 60초 캐시 · 시험 주입점 `_BOOT_FLEET_QUERY` = 프로세스 안 · 환경값 아님). Rust `cys boot` 도 RPC 만(종전 「RPC 없으면 도장」 갈래 삭제 = 같은 결함의 남은 자리). 좌석·부트 감독자 자식의 도장 2개는 **진단 표지로만 남김**(판정 재료 아님 · 주석 명기). bootstrap self-test 밀폐도 환경값 → 프로세스 안 주입 | orchestra self-test: 도장·좌석 env light + RPC full → full · RPC 실패 + env light → full · 도장 full + RPC light → light · 가짜 데몬 소켓(스레드)으로 판독기 꼴 · 옛 데몬(모르는 메서드) = None · 데몬 없음 = None + 가짜 `cys` 호출 기록 0(unix 하위 프로세스 0 핀) · `--note-team-roster` 기준판 대조(같은 시각 번갈아 3회: 새 0.81/1.01/0.83 s · 기준 0.74/0.95/0.97 s · 부하 161 · cys 호출 0) · Rust `wiring_uses_daemon_rpc_only_never_any_env`(소스 핀: `boot_fleet()` 본문에 도장 이름 없음) · parity 핀(python 판독기 구간에 도장 이름 없음) · **격리 실물** `docs/evidence/borrow23-1119/boot-fleet-rpc-isolated-1120.txt`(데몬 full + `CYS_BOOT_FLEET_DAEMON=light CYS_BOOT_FLEET=light` → python `('full','daemon') ['cso','worker']` · 데몬 light + 위조 full → `('light','daemon') []` · 데몬 없음 → rc 1 · 자동 기동 0) |
+| 3 major — 셸 프롬프트·clear 가 응답 표식을 안 끔 → 틱 사이 종료·재기동으로 다음 에이전트·셸 printf 에 넘어감 | ② 셸 프롬프트 때 끔 + (【질문】 → master#bd64bac1 **B안 승인**) clear 는 유지 + 생애를 PTY 전경 프로세스 그룹에 묶음 | `Store.life_pgid`(질의에 답할 때의 `Surface::foreground_pgid_now` = tcgetpgrp · 사건 있는 청크에서만 1회 · 락 없음) · 보고 때 전경 그룹이 다르면 생애 끝(전부 지움 · 그 보고는 unsolicited) · 133;A = `end_life` · `last_life_end`·`life_answered` 진단 2키 · 비-unix·시스템 콜 실패 = 그룹 대조 없음(종전). ★clear 로 끄지 않은 근거 = 원자료 갈래 B·C: Claude 2.1.328 은 신뢰 창을 닫을 때 `state=clear` 를 보내고 다시 묻지 않고 idle·working 을 이어 보냄 | `raw_probe_b_c_replay_keeps_reports_after_trust_clear`(원자료 jsonl include · B·C 순서 재생 · clear 뒤 첫 보고 idle 적용 · unsolicited 0) · `foreground_group_change_ends_the_life`(100→200 바뀜 = 끝 · 옛 그룹 복귀로 안 되살아남 · 새 질의 = 새 생애 · 모름 = 종전) · `shell_prompt_ends_the_life` · 실 PTY `live_seat_foreground_handoff_ends_the_life`(python 좌석이 질의·보고 뒤 자식에 `tcsetpgrp` → 자식 보고 거부) · 기존 `version_moves…` 의 133;A 단계는 「다시 묻고 보고」로 고침(설계상 바뀐 동작) |
+| 4 major — light 안내 「`CYS_BOOT_FLEET=full cys boot`」 는 안 되는 명령 | ③ 되는 길 | 순수 함수 `boot_fleet_light_notice` 2줄: 지금 필요하면(재기동 없음) `cys launch-agent --role cso|worker --agent claude` · 되돌리기 = 데몬 기동 env 에서 키를 빼고 데몬 재기동 — macOS = launchd plist(실경로 표시) 의 EnvironmentVariables 에서 지운 뒤 `cys daemon install --takeover`(사용자 키 보존 재기록 + 기존 데몬 종료 + 재적재 — 코드 확인 cys.rs install 갈래) · 그 밖 = 띄운 곳의 환경에서 빼고 재기동 · 「열린 좌석이 닫힌다」 고지 | `light_notice_names_only_paths_that_work`(옛 문구 없음 · 두 명령 · 부작용 고지 · 출력 자리 소스 핀) |
+| 5 minor — full 기본이 바이트 동일은 아님 | ④ 문구 정정 | cys.rs·orchestra 주석 「1.1.15 와 같다」 → 「같은 함대 계획 · 바이트 동일 아님(환경값 2·로그 1줄 추가)」 · state.rs·boot_supervisor 도장 주석 = 진단 표지 · lib.rs 진실원 주석 | — |
+| 2 blocking — 같은 청크 안 질의 뒤 보고가 답 제출 전에 적용(cat/printf) | 한계 문서(고치지 않음) | 아래 「알려진 한계」 | — |
+
+### 9-1. 알려진 한계(정직 고지 · 이번 회차 갱신)
+- **같은 묶음 질의 뒤 보고(codex 2R 2번)**: 응답 표식은 출력을 읽을 때 서고, 응답 바이트는 그 청크를 다 읽은 뒤 쓰기 채널로 간다 → 한 청크에 `7501;?` 와 보고가 함께 오면(예: `cat` 으로 파일을 찍거나 셸 `printf` 한 줄) 답이 실제로 전달되기 전(또는 쓰기 채널 포화로 응답이 드롭돼도) 그 보고가 적용된다. 영향 = **표시 전용**(배달·승인·큐·순환 판정 무변경) · 바깥 유출 0 · 다음 셸 프롬프트·전경 그룹 바뀜·에이전트 종료·RIS 에 지워짐(되돌릴 수 있음). V-9(질의를 먼저 내는 위조 = 단말 표준 동작)와 같은 계급.
+- **전경 그룹을 모를 때**(Windows ConPTY — `foreground_pgid_now` 가 unix 전용 · 또는 tcgetpgrp 실패): 생애 묶음이 빠져 codex 2R 3번 중 「틱 사이 종료→재기동」 갈래가 남는다(셸 프롬프트·에이전트 종료 래치·PTY 종료·RIS 지움은 그대로).
+- **전경 그룹 묶음의 경계**: 같은 프로세스 그룹 안에서 프로그램이 바뀌는 경우(예: 에이전트가 `exec` 로 다른 프로그램이 됨 · 비대화형 `sh -c` 안의 연속 실행)는 그룹이 같아 생애가 이어진다. Claude 가 자식 프로세스에 터미널 전경을 넘기면(`tcsetpgrp`) 그 사이 Claude 보고는 생애 끝으로 처리된다 — 11-19 실측 흐름(신뢰 창·도구·권한 창·/exit)에서는 일어나지 않았다(재생 시험 근거 · 진짜 Claude 전경 넘김은 미측정).
+- **환경값 위조 차단의 범위**: 판정은 RPC 값만 쓰지만 전송은 PATH 의 `cys` 와 `CYS_SOCKET` 를 따른다 — 가짜 `cys` 실행 파일·가짜 데몬 소켓을 일부러 세우면 여전히 속일 수 있다(키 이름 하나로 반쪽 light 가 되는 사고는 닫힘 · 의도적 위장은 다른 계급).
+- 옛 `cys`(1.1.15 설치본 — `daemon boot-fleet` 없음)와 새 팩이 섞이면 python 은 full 로 간다(실측: 이 기계 설치본 → `('full','no-daemon')`) — light 데몬 + 옛 cys 조합이면 python 이 cso·worker 를 요구 = 1.1.15 와 같은 결손 보고(퇴보 아님 · 판 맞춤으로 사라짐).
+
+### 9-2. 이번 회차 커밋 · 시험
+| 커밋 | 내용 |
+|---|---|
+| 9160579bb | ①②③④ 코드(cys `daemon boot-fleet` · RPC 전용 · 7501 생애 = 셸 프롬프트 + 전경 그룹 · light 안내 · 문구) + 격리 실측 원자료 |
+| c2680fbfd | ① 후속 — python unix 판독 = 소켓 직접(하위 프로세스 0) · self-test 가짜 데몬·하위 프로세스 0 핀 |
+| (이 커밋) | HANDOFF §9 |
+
+| 대상 | 결과 |
+|---|---|
+| `cargo test --bin cysd` 전체(c2680fbfd · threads 4 · 부하 평균 ≈60~100) | **3355 통과 · 6 실패 · 17 무시**(새 시험 4 → 3378 중 무시 17) · 6 = `seat_proc::seatkeep_*` 4(좌석 생성 `expect("seatkeep 좌석")` 실패) · `send_settle_tests` 2(분리 보류 시점) — **이 가지가 바꾸지 않은 파일**(`git diff dea2e1853` 0줄) · 같은 빌드(변이 문자열 0 확인) 단독 재실행 **6/6 통과**(부하 19.6) |
+| `cargo test --bin cys` 전체(c2680fbfd) | **804 통과 · 0 실패 · 2 무시**(종전 802 + 새 2) |
+| cysd `program_status` | 27/27(새 4) · cys `boot_fleet` 6/6(새 1 · 고친 1) |
+| python self-test | orchestra · bootstrap · formation OK |
+| 팩 시험(orchestra·bootstrap·formation·훅 note 를 쓰는 35종 · CI 꼴 `CYS_PACK_DIR` 임시 · `env -i`) | **35/35 rc 0** · `run_bootstrap_health --only H-PRED-7` GREEN · ⚠ ci-branch.yml mac 본 단계 151묶음 전량은 이번 회차 미실행(지난 회차 149/151 · 부하 100+ · 상한 2h) — 바뀐 팩 파일 = `javis_orchestra.py`·`javis_bootstrap.py`(self-test 밀폐 3줄) 뿐 |
+| 뮤턴트 | **8/8 잡힘** — cysd(P1M 1빌드): M4 셸 프롬프트 끔 제거 → `shell_prompt_ends_the_life` · M5 전경 그룹 대조 제거 → `foreground_group_change…`·`live_seat_foreground_handoff…` · M6 clear 로 끔(A안) → `raw_probe_b_c_replay…`(+`urgent_child…`) · M7 reader 가 None 전달 → `live_seat_foreground_handoff…` · cys(정적 1빌드 · 서로 다른 시험): M2 도장 갈래 되살림 → `wiring_uses_daemon_rpc_only…` · M3 옛 안내 → `light_notice…` · python(팩 전체 사본): M1 도장 먼저 → 「환경값 light 가 데몬 RPC 값을 이겼다」 · M8 unix 도 하위 프로세스 → 「데몬 소켓 응답 판독 실패」 · 전부 되돌림 확인(`P1M` 0건) |
+| 격리 실물 | `docs/evidence/borrow23-1119/boot-fleet-rpc-isolated-1120.txt` · 끝에 격리 pid 종료 · 실사용 데몬 무접촉(`CYS_SOCKET` 격리 단언 · `CYS_NO_AUTOSTART=1`) |

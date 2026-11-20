@@ -5,7 +5,38 @@
 - 통합 머리 = **bfb52cbd2(게이트 대상) + 이 HANDOFF 커밋** · 게이트 결과 폴더 = `~/axdev/.wt/cys-1116-integ-1120-gate/`
 - master 판정 받음: 14:5x master#1e80c983 — 의미 충돌 ①~⑥ 처리 수용(④ = listenApp 유지 · defaultSlug 제거 · s2 시험 ① 좁힘)
 
-## 0. 후임 b(worker-2 · surface:2331 · 11-20 18:43~21:4x · 브리프 = master/briefs/2026-11-20-successor-integ-1120b.md · 상한 3h 도달로 매듭)
+## 0. 후임 c(worker-2 · surface:2336 · 11-20 21:42~22:2x · 브리프 = master/briefs/2026-11-20-successor-integ-1120c.md · 원장 spawn 21:41:53)
+
+머리 = 1fc650bd4 + 이 문서 커밋. 이 좌석 커밋 2: 1fc650bd4(verifier 계약 블록 동기화) · 이 문서.
+
+### 0c-1. g2 남은 붉음 1(L999 autopilot self-test 「javis_cycle_verifier.py 와 바이트 동일」) = **갈래 탓 debt-d** · 고침 완료
+| 대조 | autopilot self-test |
+|---|---|
+| 기준선 dea2e1853 | PASS 343 / FAIL 0 |
+| debt-d 머리 e5c0d229f | PASS 342 / FAIL 1(같은 검사) |
+| 통합 ce52f5d8d | PASS 342 / FAIL 1(같은 검사) |
+| 고친 뒤 1fc650bd4 | PASS 343 / FAIL 0 · verifier self-test 73/0 · test_wakeup_liveness 23 OK |
+- 원인: debt-d e132ea232(V7 · U08 꼴)가 계약 블록 안 `kill_switch` 를 autopilot 쪽만 `exists → lstat(판독 불가 = 정지)` 로 바꿈 · verifier 는 그대로 → 두 블록 diff = 그 9줄뿐(scratch 추출 diff 실측). 범위 dea2e1853..HEAD 에서 두 파일을 바꾼 커밋 = e132ea232 하나.
+- 고침 방향 = verifier 를 autopilot 문면으로 맞춤(V7 고침을 살림 · 되돌림 0).
+- 우분투 L2108 이 초록이던 까닭: 이 self-test 는 ci-branch.yml 의 macos-rust-pack 잡에만 있음(ubuntu-pack-suite 잡 2074~2244 행에 cycle_autopilot·self-test 0건 · g2 L2108 로그에도 「self-test (」 0건). 맥 전용 도구 차이 아님.
+- L999 묶음 단독 재실행 = `gate/g3-L999/` rc=0 · 1425s · 실패 단계 0.
+
+### 0c-2. 부하성 단독 3회(§8 5종 · 머리 1fc650bd4 · load 2.2~5.0 · 결과 = `gate/flaky3{,b}.summary.txt` · 로그 `gate/flaky3{,b}/`)
+| 시험 | 3회 |
+|---|---|
+| test_resource_gate_product_cpu T09TextCheckBounded.test_9b_hung_lookup | OK ×3(3.4~3.6s) · 파일 전체 43건 OK ×3 |
+| test_dept_name_guard(전체 75건 · create_spawn_loser 포함) | OK ×3(84s 안팎) |
+| test_phoenix_c6_reap | rc=0 · result passed · owned_residuals 0 ×3 |
+| cysd seatkeep_input_ack_stall_ends_seat_when_consumer_never_resumes | ok ×3(10.6~11.5s) |
+| cysd k17_refuse_mode_return_raises_settle_marker_but_cancel_key_does_not | ok ×3(0.9~1.1s) |
+- 덧: c6_reap 를 TMPDIR=/var/folders(별칭 → /private/var)로 돌리면 통과 뒤 atexit teardown 에서 `_HarnessError: aliased_harness_root` 추적이 찍힘(rc 0 그대로) — 하네스가 모듈 적재 때 `tempfile.mkdtemp` 로 집을 잡기 때문. TMPDIR 정규 경로 1회 = 추적 0(`flaky3b/test_phoenix_c6_reap.tmpdir-canon.log`). 게이트는 TMPDIR 을 따로 주므로 g2·g3 로그엔 0건. 실행 환경 탓 · 고치지 않음.
+- 첫 실행(flaky3)의 cysd 2종 rc=127 = 내 스크립트 PATH 에 cargo 없음(시험 미실행) → flaky3b 로 다시 돎.
+
+### 0c-3. 손대지 않음
+- 앞 좌석의 e2e-chat 허용 폭 판단(0017bbc91 · 제품 코드 무변경) = master 가 받음 · 그대로.
+- push·태그·배포·공개 후보 확정 0.
+
+## 0b. 후임 b(worker-2 · surface:2331 · 11-20 18:43~21:4x · 브리프 = master/briefs/2026-11-20-successor-integ-1120b.md · 상한 3h 도달로 매듭)
 
 머리 = 932188962 + 이 문서 커밋. 이 좌석 커밋 6: 231159d5e(secret-scan·이름 정리) · aaac932e7(스킬 **NOWIN) · 0017bbc91(핀·검사 4종 + e2e-chat 허용 폭) · 88082ede2(seatkeep f244fc34d 병합 · master#4f490f50) · 932188962(스킬 stdin=DEVNULL) · 이 문서.
 

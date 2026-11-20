@@ -58,6 +58,31 @@ _tmproot = tempfile.mkdtemp(prefix="role-authority-")
 _n = [0]
 
 
+def prime_exec(path):
+    """새 실행 파일의 macOS **첫 exec 검사**를 데드라인 밖에서 미리 치른다(자리표시 본문으로).
+
+    ★TICKET=cysr-1116-flaky-1120: macOS 는 새 실행 파일(vnode)의 첫 exec 에 정책 검사(syspolicyd)를
+      붙인다. 이 맥 실측(2026-11-20 · macOS 26.6.2): 새 셸 스텁 첫 실행 중앙값 1.6s · 상위 10% 2.1s ·
+      최대 3.3s(load 9.7 에서도) · 재실행 0.005s. 같은 경로에 본문을 다시 써도 검사는 다시 붙지 않는다
+      (50회 최대 0.23s) · 다른 파일은 다시 느리다 · `xattr -c` 무효 · 그동안 syspolicyd CPU 가 는다.
+      스텁을 부르는 쪽(`cys_timeout_run 2`·`QUERY_TIMEOUT_S` 2s·발송 시간 상한)은 그 첫 실행을
+      데드라인 안에서 치르게 되어 스텁이 기록 전에 죽고, 검체가 「조회 없음」으로 붉었다(매번 다른
+      케이스). 데드라인은 제품 계약이라 시험이 늘리지 않는다 — 비용을 창 밖으로 옮길 뿐이다.
+    사용: **진짜 본문을 쓰기 전에** 부른다. 자리표시(`exit 0`)만 실행되므로 스텁 본문의 부작용
+    (호출 기록·파일 삭제)은 일어나지 않는다. 실패는 삼킨다 — 예열은 판정이 아니다(실행 불가
+    환경이면 본 시험이 종전대로 잰다).
+    """
+    path = str(path)
+    try:
+        with open(path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("#!/bin/sh\nexit 0\n")
+        os.chmod(path, 0o700)
+        subprocess.run([path], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=60, env={"PATH": "/usr/bin:/bin"})
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def check(name, cond, detail=""):
     print("%s %s%s" % ("PASS" if cond else "FAIL", name, (" — " + detail) if detail else ""))
     if not cond:
@@ -70,6 +95,7 @@ def stub_dir(rc=0, out="", log=None):
     d = os.path.join(_tmproot, "stub%d" % _n[0])
     os.makedirs(d, exist_ok=True)
     p = os.path.join(d, "cys")
+    prime_exec(p)  # 첫 exec 검사를 데드라인 밖에서(prime_exec)
     body = ["#!/bin/sh"]
     if log:
         body.append('printf "%%s\\n" "${CYS_NO_AUTOSTART:-<unset>}" >> "%s"' % log)
@@ -593,6 +619,7 @@ def _destroy_rig(name, down_rc):
         json.dump({"depts": {name: {"cwd": work, "workdir_owned": True,
                                     "socket": "/dev/null", "mission_key": None}}}, f)
     dept_bin = os.path.join(root, "cys-dept-stub")
+    prime_exec(dept_bin)  # 첫 exec 검사를 데드라인 밖에서(prime_exec)
     with open(dept_bin, "w", encoding="utf-8", newline="\n") as f:
         f.write("#!/bin/sh\necho '[stub] refused' >&2\nexit %d\n" % down_rc)
     os.chmod(dept_bin, 0o755)

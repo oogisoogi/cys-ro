@@ -1,9 +1,12 @@
 ---
 name: appbuild-supervisor-verify
 description: 기획 문서 세트를 13항목(일관성·추적성·갭·품질)으로 기계 검증하는 하위 스킬 — spec-kit analyze·RTM·INVEST·EARS 근거의 체크리스트로 교차정합·고아·누락·테스트가능성을 심각도 태깅한다. appbuild-supervisor 검증 관문. "13항목 검증 / 일관성 추적성 갭 품질 / 교차 검증 / analyze" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # appbuild-supervisor-verify
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 01~04를 **13항목**으로 기계적으로 검증한다. 근거: GitHub spec-kit `/analyze`(중복·모호·
 미명세·정합·커버리지·불일치 6패스)·Kiro EARS·BMad PRD 체크리스트·RTM 추적성·INVEST. 각

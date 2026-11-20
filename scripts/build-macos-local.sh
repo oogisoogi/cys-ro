@@ -81,6 +81,18 @@ for T in "${TARGETS[@]}"; do
   codesign --verify --deep --strict "$APP" || { echo "  ✗ 자체서명 검증 실패" >&2; exit 1; }
   echo "  ✓ codesign --verify --deep --strict 통과"
 
+  # ── 번들 아키텍처 게이트 (원작자 0.15.0 T11 편입 · scripts/check_macho_arch.py) — zip **직전** ──
+  #   인텔 zip 은 arm64 맥의 크로스 빌드이고 동봉 runtime 은 타깃별로 내려받는다 — 출하될 Mach-O 의
+  #   아키텍처를 보는 장치가 없으면 인텔용 zip 에 M칩 전용 python 이 실려도 손 업로드까지 아무것도 붉어지지 않는다.
+  #   서명 뒤 · ditto 앞 = zip 에 들어갈 바이트 그대로를 본다. 진입점 넷(python·node·git·uv)은 있고·링크가 풀리고·
+  #   타깃을 담아야 한다. exit 1(다른 칩) · 2(판정 불가 — 통과 아님) 모두 set -e 로 여기서 멈춘다(zip 미생성).
+  #   실행 python = mac_emit_runtime_manifest 가 고른 **번들 밖** SEAL_PY(.app 안 바이너리 exec 금지 · 같은 규칙).
+  echo "== 번들 아키텍처 게이트: $APP ($T · zip 전) =="
+  "${SEAL_PY:?번들 밖 python 미선택}" scripts/check_macho_arch.py --target "$T" \
+    --require Contents/Resources/runtime/python/bin/python3 --require Contents/Resources/runtime/node/bin/node \
+    --require Contents/Resources/runtime/git/bin/git --require Contents/Resources/runtime/uv/uv \
+    "$APP"
+
   # ── 배포 zip (설치기가 받는 바로 그 형태) ──
   #   ★ditto -c -k --keepParent — 심볼릭링크·확장속성·서명을 보존한다. zip(1) 로 묶으면 dedup 링크가
   #     실복사본이 되거나 서명이 깨진다(설치기는 푼 뒤 codesign --verify 를 한다).

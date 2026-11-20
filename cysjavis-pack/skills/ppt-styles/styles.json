@@ -1,0 +1,906 @@
+[
+ {
+  "id": "church-navy-gold",
+  "no": 1,
+  "name": "교회 강의 · 남색+금",
+  "mood": [
+   "차분한",
+   "격조",
+   "교회",
+   "강의",
+   "고전",
+   "신뢰",
+   "단정",
+   "정돈된",
+   "성경공부",
+   "연속 강좌"
+  ],
+  "palette": [
+   [
+    "남색",
+    "1B2A49"
+   ],
+   [
+    "금",
+    "C9A227"
+   ],
+   [
+    "옅은 청회",
+    "EEF1F7"
+   ],
+   [
+    "청",
+    "2F6FAE"
+   ],
+   [
+    "회청(보조 글자)",
+    "5A6478"
+   ]
+  ],
+  "fonts": {
+   "head": "Apple SD Gothic Neo Bold",
+   "body": "Apple SD Gothic Neo",
+   "license": "macOS 기본 탑재(Apple 시스템 글꼴 · 글꼴 파일 재배포 불가 · 윈도·리눅스에는 없어 열면 대체 글꼴로 보인다)"
+  },
+  "motifs": [
+   "어두운 표지 + 밝은 본문(샌드위치)",
+   "옅은 청회 둥근 카드",
+   "금색 화살표·아이콘(Phosphor)",
+   "금색 큰 물음표 + 질문 24pt",
+   "숫자 콜아웃·시간선·표"
+  ],
+  "good": [
+   "성경 강의·연속 강좌",
+   "교리·성경공부·사내 교육 연속 강좌",
+   "줌 PPT 배경 모드(오른쪽 아래 비움)"
+  ],
+  "avoid": [
+   "어린이 대상",
+   "홍보·행사 포스터처럼 눈길을 끌어야 하는 자리"
+  ],
+  "origin": "우리가 실제 연속 강의 덱에 쓴 구성. 남색+금 조합은 Anthropic pptx 스킬이 권하는 Midnight Executive 팔레트와 같은 방향",
+  "file": "styles/01-church-navy-gold.js",
+  "theme": {
+   "name": "LectureNavyGold",
+   "headFontFace": "Apple SD Gothic Neo",
+   "bodyFontFace": "Apple SD Gothic Neo",
+   "colors": {
+    "dk1": "1B2A49",
+    "lt1": "FFFFFF",
+    "dk2": "3A4A6B",
+    "lt2": "EEF1F7",
+    "accent1": "C9A227",
+    "accent2": "2F6FAE",
+    "accent3": "7A5C3E",
+    "accent4": "4F7A5A",
+    "accent5": "8E4B3A",
+    "accent6": "6B6B6B",
+    "hlink": "2F6FAE",
+    "folHlink": "6B6B6B"
+   }
+  }
+ },
+ {
+  "id": "warm-family",
+  "no": 2,
+  "name": "따뜻한 가족 · 테라코타+살구",
+  "mood": [
+   "따뜻한",
+   "가족적",
+   "포근한",
+   "친근한",
+   "부드러운",
+   "환대",
+   "교회학교",
+   "학부모",
+   "정겨운",
+   "다정한"
+  ],
+  "palette": [
+   [
+    "테라코타",
+    "B85042"
+   ],
+   [
+    "살구",
+    "F6D5B8"
+   ],
+   [
+    "따뜻한 흰색",
+    "FFF8F1"
+   ],
+   [
+    "올리브",
+    "6B7A4F"
+   ],
+   [
+    "짙은 갈색(글자)",
+    "3D2B24"
+   ]
+  ],
+  "fonts": {
+   "head": "나눔스퀘어라운드 Bold",
+   "body": "나눔스퀘어라운드",
+   "license": "네이버 나눔글꼴 · SIL OFL 1.1"
+  },
+  "motifs": [
+   "큰 살구색 원 + 집 아이콘 표지",
+   "모서리가 크게 둥근 흰 카드 + 색 원 아이콘",
+   "테라코타 바탕 위 흰 말풍선 질문(번호 원)"
+  ],
+  "good": [
+   "교회학교·학부모 발표",
+   "가정 예배·구역 모임 안내",
+   "새가족 환영·소개"
+  ],
+  "avoid": [
+   "공식 보고·재정",
+   "추모·엄숙한 예식",
+   "데이터가 많은 발표"
+  ],
+  "origin": "색 = pptx 스킬 Warm Terracotta(B85042) + anthropics theme-factory golden-hour 계열을 한글 둥근 글꼴에 맞춰 재구성",
+  "file": "styles/02-warm-family.js",
+  "theme": {
+   "name": "WarmFamily",
+   "headFontFace": "NanumSquareRound",
+   "bodyFontFace": "NanumSquareRound",
+   "colors": {
+    "dk1": "3D2B24",
+    "lt1": "FFFFFF",
+    "dk2": "6B4A3F",
+    "lt2": "FFF8F1",
+    "accent1": "B85042",
+    "accent2": "6B7A4F",
+    "accent3": "D9903D",
+    "accent4": "F6D5B8",
+    "accent5": "8E4B3A",
+    "accent6": "8A7F78",
+    "hlink": "B85042",
+    "folHlink": "8A7F78"
+   }
+  }
+ },
+ {
+  "id": "solemn-ink",
+  "no": 3,
+  "name": "엄숙한 보고 · 먹색+백",
+  "mood": [
+   "엄숙한",
+   "공식적",
+   "보고",
+   "당회",
+   "절제된",
+   "무게 있는",
+   "행정",
+   "회의",
+   "단정",
+   "격식"
+  ],
+  "palette": [
+   [
+    "먹색",
+    "1F2328"
+   ],
+   [
+    "회색(보조 글자)",
+    "5B616A"
+   ],
+   [
+    "옅은 회(판)",
+    "F3F4F6"
+   ],
+   [
+    "진홍(한 곳만)",
+    "8C1D2B"
+   ],
+   [
+    "번호 회색",
+    "A8AEB7"
+   ]
+  ],
+  "fonts": {
+   "head": "Apple SD Gothic Neo Bold",
+   "body": "Apple SD Gothic Neo",
+   "license": "macOS 기본 탑재(Apple 시스템 글꼴 · 파일 재배포 불가)"
+  },
+  "motifs": [
+   "문서 머리 같은 표지(구분 라벨 + 일자·보고자·구분 칸)",
+   "01·02·03 큰 번호 + 안건 줄(줄 사이 가는 구분선)",
+   "결의 체크 상자 + 질문 24pt",
+   "표·수치가 들어갈 넓은 흰 여백"
+  ],
+  "good": [
+   "당회·제직회·공동의회 보고",
+   "재정·감사·행정 보고",
+   "규정·절차 안내"
+  ],
+  "avoid": [
+   "어린이·청년 행사",
+   "환영·축하 자리",
+   "감성적 메시지"
+  ],
+  "origin": "pptx 스킬 Charcoal Minimal(36454F·F2F2F2·212121) 방향 + 포인트 색을 한 곳(라벨)에만 쓰는 보고서 관례",
+  "file": "styles/03-solemn-ink.js",
+  "theme": {
+   "name": "SolemnInk",
+   "headFontFace": "Apple SD Gothic Neo",
+   "bodyFontFace": "Apple SD Gothic Neo",
+   "colors": {
+    "dk1": "1F2328",
+    "lt1": "FFFFFF",
+    "dk2": "5B616A",
+    "lt2": "F3F4F6",
+    "accent1": "8C1D2B",
+    "accent2": "3F4752",
+    "accent3": "A8AEB7",
+    "accent4": "D0D4DA",
+    "accent5": "6E7681",
+    "accent6": "2D333B",
+    "hlink": "8C1D2B",
+    "folHlink": "5B616A"
+   }
+  }
+ },
+ {
+  "id": "youth-vivid",
+  "no": 4,
+  "name": "젊은 수련회 · 검정+주황+노랑",
+  "mood": [
+   "젊은",
+   "역동적",
+   "에너지",
+   "강렬한",
+   "트렌디",
+   "청년",
+   "수련회",
+   "홍보",
+   "뜨거운",
+   "힙한"
+  ],
+  "palette": [
+   [
+    "검정",
+    "121212"
+   ],
+   [
+    "주황",
+    "FF5A1F"
+   ],
+   [
+    "노랑",
+    "FFD60A"
+   ],
+   [
+    "흰색",
+    "FFFFFF"
+   ],
+   [
+    "짙은 회",
+    "2B2B2B"
+   ]
+  ],
+  "fonts": {
+   "head": "나눔스퀘어 네오 Heavy",
+   "body": "나눔스퀘어 네오",
+   "license": "네이버 나눔글꼴 · SIL OFL 1.1"
+  },
+  "motifs": [
+   "검정 바탕 + 기울어진 주황 블록(화면 밖까지)",
+   "54pt 이상 초대형 제목",
+   "노란 알약 스티커(일시·장소)",
+   "DAY 1·2·3 통짜 색 블록",
+   "주황 전면 + 검정 블록 질문"
+  ],
+  "good": [
+   "청년·청소년 수련회 홍보",
+   "행사 오프닝·카운트다운",
+   "SNS 카드로 잘라 쓸 장면"
+  ],
+  "avoid": [
+   "당회·재정 보고",
+   "추모 예배",
+   "글이 많은 강의(본문이 길면 금방 답답해진다)"
+  ],
+  "origin": "zarazhangrui/frontend-slides 의 「Bold Signal」(1a1a1a + FF5722 · 큰 번호 · 색 카드)을 pptxgenjs 도형으로 옮김(MIT)",
+  "file": "styles/04-youth-vivid.js",
+  "theme": {
+   "name": "YouthVivid",
+   "headFontFace": "NanumSquare Neo",
+   "bodyFontFace": "NanumSquare Neo",
+   "colors": {
+    "dk1": "121212",
+    "lt1": "FFFFFF",
+    "dk2": "2B2B2B",
+    "lt2": "F4F4F4",
+    "accent1": "FF5A1F",
+    "accent2": "FFD60A",
+    "accent3": "FF8A5C",
+    "accent4": "FFE566",
+    "accent5": "6B6B6B",
+    "accent6": "B3B3B3",
+    "hlink": "FF5A1F",
+    "folHlink": "6B6B6B"
+   }
+  }
+ },
+ {
+  "id": "research-data",
+  "no": 5,
+  "name": "연구 발표 · 잉크+청록",
+  "mood": [
+   "연구",
+   "데이터",
+   "분석적",
+   "객관적",
+   "학술",
+   "명료한",
+   "수치",
+   "차트",
+   "논문",
+   "통계"
+  ],
+  "palette": [
+   [
+    "잉크",
+    "0F172A"
+   ],
+   [
+    "청록",
+    "0E7490"
+   ],
+   [
+    "주황(강조 한 곳)",
+    "EA580C"
+   ],
+   [
+    "슬레이트(보조 글자)",
+    "64748B"
+   ],
+   [
+    "옅은 청회(판)",
+    "F1F5F9"
+   ]
+  ],
+  "fonts": {
+   "head": "나눔스퀘어 네오 Bold",
+   "body": "나눔바른고딕",
+   "license": "네이버 나눔글꼴 · SIL OFL 1.1"
+  },
+  "motifs": [
+   "왼쪽 잉크 패널 표지 + 오른쪽 조사 개요 칸",
+   "40pt 숫자 콜아웃 3개",
+   "네이티브 막대 차트(파워포인트에서 값 수정 가능) + 해석 글머리",
+   "RQ1·RQ2 꼬리표 질문",
+   "출처·표본 각주 줄"
+  ],
+  "good": [
+   "연구·설문 결과 발표",
+   "학회·세미나",
+   "현황 분석·통계 보고"
+  ],
+  "avoid": [
+   "어린이·가족 행사",
+   "감성·묵상 중심 자리",
+   "숫자가 없는 이야기 발표"
+  ],
+  "origin": "색 = Tailwind CSS 색 체계(slate-900 · cyan-700 · orange-600 · slate-500 · slate-100 · MIT) · 구성 = pptx 스킬의 「stat callout · chart + commentary」 권고",
+  "file": "styles/05-research-data.js",
+  "theme": {
+   "name": "ResearchData",
+   "headFontFace": "NanumSquare Neo",
+   "bodyFontFace": "NanumBarunGothic",
+   "colors": {
+    "dk1": "0F172A",
+    "lt1": "FFFFFF",
+    "dk2": "334155",
+    "lt2": "F1F5F9",
+    "accent1": "0E7490",
+    "accent2": "EA580C",
+    "accent3": "0891B2",
+    "accent4": "64748B",
+    "accent5": "94A3B8",
+    "accent6": "155E75",
+    "hlink": "0E7490",
+    "folHlink": "64748B"
+   }
+  }
+ },
+ {
+  "id": "memorial-quiet",
+  "no": 6,
+  "name": "추모 예배 · 회청+은회",
+  "mood": [
+   "추모",
+   "고요한",
+   "위로",
+   "잔잔한",
+   "엄숙한",
+   "절제된",
+   "장례",
+   "묵상",
+   "경건한",
+   "애도"
+  ],
+  "palette": [
+   [
+    "회청",
+    "2E3440"
+   ],
+   [
+    "안개 흰색",
+    "ECEFF4"
+   ],
+   [
+    "은회",
+    "D8DEE9"
+   ],
+   [
+    "세이지",
+    "8FA39B"
+   ],
+   [
+    "먹회(글자)",
+    "3B4252"
+   ]
+  ],
+  "fonts": {
+   "head": "나눔명조 Bold",
+   "body": "나눔명조",
+   "license": "네이버 나눔글꼴 · SIL OFL 1.1"
+  },
+  "motifs": [
+   "어두운 표지 한가운데 가는 원 + 비둘기",
+   "명조 가운데 정렬(성구·순서·질문 전부)",
+   "가는 테두리 흰 칸(예배 순서)",
+   "질문 사이 작은 잎 하나",
+   "장식 색 없음 · 넓은 여백"
+  ],
+  "good": [
+   "추모·장례·위로 예배",
+   "성금요일·고난주간 묵상",
+   "임종·기일 예배 순서지"
+  ],
+  "avoid": [
+   "행사 홍보",
+   "어린이 대상",
+   "수치·도표 보고"
+  ],
+  "origin": "색 = Nord 팔레트(Polar Night 2E3440·3B4252 · Snow Storm D8DEE9·ECEFF4 · MIT) + 세이지 한 색",
+  "file": "styles/06-memorial-quiet.js",
+  "theme": {
+   "name": "MemorialQuiet",
+   "headFontFace": "NanumMyeongjo",
+   "bodyFontFace": "NanumMyeongjo",
+   "colors": {
+    "dk1": "2E3440",
+    "lt1": "FFFFFF",
+    "dk2": "3B4252",
+    "lt2": "ECEFF4",
+    "accent1": "8FA39B",
+    "accent2": "D8DEE9",
+    "accent3": "5E726A",
+    "accent4": "4C566A",
+    "accent5": "A3ADBD",
+    "accent6": "7B8794",
+    "hlink": "5E726A",
+    "folHlink": "7B8794"
+   }
+  }
+ },
+ {
+  "id": "kids-bright",
+  "no": 7,
+  "name": "어린이 성경학교 · 하늘+노랑+산호",
+  "mood": [
+   "아이들",
+   "어린이",
+   "밝은",
+   "신나는",
+   "알록달록",
+   "귀여운",
+   "성경학교",
+   "즐거운",
+   "명랑한",
+   "놀이"
+  ],
+  "palette": [
+   [
+    "하늘",
+    "4CC9F0"
+   ],
+   [
+    "노랑",
+    "FFD166"
+   ],
+   [
+    "산호",
+    "EF476F"
+   ],
+   [
+    "초록",
+    "06D6A0"
+   ],
+   [
+    "짙은 청록(글자)",
+    "073B4C"
+   ]
+  ],
+  "fonts": {
+   "head": "나눔스퀘어라운드 ExtraBold",
+   "body": "나눔스퀘어라운드 Bold",
+   "license": "네이버 나눔글꼴 · SIL OFL 1.1"
+  },
+  "motifs": [
+   "하늘 바탕 + 노란 해 + 흰 구름 + 별",
+   "산호색 알약 부제",
+   "색이 다른 큰 둥근 카드 + 흰 원 아이콘",
+   "큰 물음표 원 + 흰 질문 카드",
+   "본문도 굵게 · 60pt 제목"
+  ],
+  "good": [
+   "여름·겨울 성경학교",
+   "유치부·유년부 설교 보조",
+   "어린이 주일 순서·게임 안내"
+  ],
+  "avoid": [
+   "당회·재정 보고",
+   "추모 예배",
+   "성인 학술 강의"
+  ],
+  "origin": "원색 다섯을 고르게 쓰는 아동용 배색(4CC9F0·FFD166·EF476F·06D6A0·073B4C) · 구성 = frontend-slides 「Pastel Geometry」의 큰 도형 반복(MIT)",
+  "file": "styles/07-kids-bright.js",
+  "theme": {
+   "name": "KidsBright",
+   "headFontFace": "NanumSquareRound",
+   "bodyFontFace": "NanumSquareRound",
+   "colors": {
+    "dk1": "073B4C",
+    "lt1": "FFFFFF",
+    "dk2": "0B5C75",
+    "lt2": "E8F8FD",
+    "accent1": "4CC9F0",
+    "accent2": "FFD166",
+    "accent3": "EF476F",
+    "accent4": "06D6A0",
+    "accent5": "118AB2",
+    "accent6": "F78C6B",
+    "hlink": "118AB2",
+    "folHlink": "0B5C75"
+   }
+  }
+ },
+ {
+  "id": "editorial-serif",
+  "no": 8,
+  "name": "인문 서재 · 종이+버건디",
+  "mood": [
+   "인문",
+   "서재",
+   "문학적",
+   "사색",
+   "깊이",
+   "품격",
+   "책",
+   "고전",
+   "지적인",
+   "에세이"
+  ],
+  "palette": [
+   [
+    "종이",
+    "F7F4EC"
+   ],
+   [
+    "먹",
+    "22201C"
+   ],
+   [
+    "버건디",
+    "6D2E46"
+   ],
+   [
+    "황토",
+    "A67C52"
+   ],
+   [
+    "돌회색(보조 글자)",
+    "6F6A60"
+   ]
+  ],
+  "fonts": {
+   "head": "마루 부리 Bold",
+   "body": "나눔바른고딕(본문) · 마루 부리(인용)",
+   "license": "네이버 마루 부리·나눔글꼴 · SIL OFL 1.1"
+  },
+  "motifs": [
+   "오른쪽 버건디 세로 블록 + 큰 회차 숫자",
+   "부리 글꼴 48pt 제목",
+   "상자 없는 잡지식 3단(큰 숫자 → 제목 → 글)",
+   "200pt 따옴표 + 부리 질문",
+   "종이색 바탕"
+  ],
+  "good": [
+   "인문·성서 강좌",
+   "독서 모임·북토크",
+   "설교 묵상 나눔·에세이 발표"
+  ],
+  "avoid": [
+   "어린이 대상",
+   "수치 보고",
+   "빠르게 훑는 행사 안내"
+  ],
+  "origin": "색 = pptx 스킬 Berry & Cream(6D2E46·ECE2D0) · 구성 = frontend-slides 「Vintage Editorial」·「Paper & Ink」의 세리프 + 종이 바탕(MIT)",
+  "file": "styles/08-editorial-serif.js",
+  "theme": {
+   "name": "EditorialSerif",
+   "headFontFace": "MaruBuriOTF",
+   "bodyFontFace": "NanumBarunGothic",
+   "colors": {
+    "dk1": "22201C",
+    "lt1": "FFFFFF",
+    "dk2": "6F6A60",
+    "lt2": "F7F4EC",
+    "accent1": "6D2E46",
+    "accent2": "A67C52",
+    "accent3": "9A5873",
+    "accent4": "4A4640",
+    "accent5": "C9B79C",
+    "accent6": "8C857A",
+    "hlink": "6D2E46",
+    "folHlink": "6F6A60"
+   }
+  }
+ },
+ {
+  "id": "nature-green",
+  "no": 9,
+  "name": "자연과 쉼 · 숲+아이보리",
+  "mood": [
+   "자연",
+   "쉼",
+   "평안한",
+   "초록",
+   "싱그러운",
+   "회복",
+   "숲",
+   "묵상",
+   "산책",
+   "편안한"
+  ],
+  "palette": [
+   [
+    "숲 초록",
+    "2D4A2B"
+   ],
+   [
+    "세이지",
+    "7D8471"
+   ],
+   [
+    "올리브",
+    "A4AC86"
+   ],
+   [
+    "아이보리",
+    "FAF9F6"
+   ],
+   [
+    "이끼(어두운 바탕 글자)",
+    "D5DBC0"
+   ]
+  ],
+  "fonts": {
+   "head": "나눔바른고딕 Bold",
+   "body": "나눔바른고딕",
+   "license": "네이버 나눔글꼴 · SIL OFL 1.1"
+  },
+  "motifs": [
+   "숲색 표지 + 겹친 큰 원(화면 밖까지) + 잎",
+   "하루 흐름 = 선 위의 점 세 개(아침·오후·저녁)",
+   "왼쪽 숲색 패널 + 오른쪽 질문",
+   "초록 한 계열만 · 다른 색 없음"
+  ],
+  "good": [
+   "가족·장년 수련회, 피정 안내",
+   "환경 주일·창조절",
+   "큐티·묵상 나눔, 걷기 모임"
+  ],
+  "avoid": [
+   "긴급 공지·홍보",
+   "재정 보고",
+   "어린이 대상(색이 차분해 눈길을 못 끈다)"
+  ],
+  "origin": "색 = anthropics/skills theme-factory 의 forest-canopy(2d4a2b·7d8471·a4ac86·faf9f6 · Apache-2.0) 그대로 · 구성 = pptx 스킬의 timeline/half-bleed 권고",
+  "file": "styles/09-nature-green.js",
+  "theme": {
+   "name": "NatureGreen",
+   "headFontFace": "NanumBarunGothic",
+   "bodyFontFace": "NanumBarunGothic",
+   "colors": {
+    "dk1": "263225",
+    "lt1": "FFFFFF",
+    "dk2": "2D4A2B",
+    "lt2": "FAF9F6",
+    "accent1": "2D4A2B",
+    "accent2": "A4AC86",
+    "accent3": "7D8471",
+    "accent4": "D5DBC0",
+    "accent5": "5C6B4E",
+    "accent6": "8A6F4D",
+    "hlink": "2D4A2B",
+    "folHlink": "7D8471"
+   }
+  }
+ },
+ {
+  "id": "modern-minimal",
+  "no": 10,
+  "name": "모던 미니멀 · 흑백+빨강 한 점",
+  "mood": [
+   "깔끔한",
+   "미니멀",
+   "현대적",
+   "세련된",
+   "단순한",
+   "여백",
+   "프로페셔널",
+   "기술",
+   "선명한",
+   "군더더기 없는"
+  ],
+  "palette": [
+   [
+    "검정",
+    "111111"
+   ],
+   [
+    "흰색",
+    "FFFFFF"
+   ],
+   [
+    "빨강(한 점)",
+    "E63946"
+   ],
+   [
+    "회색(보조 글자)",
+    "6B7280"
+   ],
+   [
+    "옅은 회",
+    "F3F4F6"
+   ]
+  ],
+  "fonts": {
+   "head": "Apple SD Gothic Neo Bold",
+   "body": "Apple SD Gothic Neo",
+   "license": "macOS 기본 탑재(Apple 시스템 글꼴 · 파일 재배포 불가)"
+  },
+  "motifs": [
+   "흰 바탕 + 56pt 검정 제목 + 빨간 정사각형 하나",
+   "번호 정사각형 3단(상자·그림자 없음)",
+   "검정 전면 + 흰 큰 질문",
+   "아이콘 없음 · 왼쪽 정렬만"
+  ],
+  "good": [
+   "AI·기술 세미나",
+   "사업·기획 제안",
+   "외부 기관 대상 소개 자료"
+  ],
+  "avoid": [
+   "어린이·가족 행사(차갑게 보인다)",
+   "추모 예배",
+   "따뜻한 환영 자리"
+  ],
+  "origin": "frontend-slides 「Swiss Modern」(흑백 + 빨강 · 격자 · MIT) + pptx 스킬 Charcoal Minimal",
+  "file": "styles/10-modern-minimal.js",
+  "theme": {
+   "name": "ModernMinimal",
+   "headFontFace": "Apple SD Gothic Neo",
+   "bodyFontFace": "Apple SD Gothic Neo",
+   "colors": {
+    "dk1": "111111",
+    "lt1": "FFFFFF",
+    "dk2": "374151",
+    "lt2": "F3F4F6",
+    "accent1": "E63946",
+    "accent2": "111111",
+    "accent3": "6B7280",
+    "accent4": "9CA3AF",
+    "accent5": "D1D5DB",
+    "accent6": "4B5563",
+    "hlink": "E63946",
+    "folHlink": "6B7280"
+   }
+  }
+ },
+ {
+  "id": "lime-dark",
+  "no": 11,
+  "name": "다크 라임 해설 · 먹+라임 한 점",
+  "mood": [
+   "다크",
+   "어두운",
+   "라임",
+   "테크",
+   "개발자",
+   "해설",
+   "강의 영상",
+   "유튜브",
+   "모던",
+   "선명한"
+  ],
+  "palette": [
+   [
+    "먹(바탕)",
+    "040606"
+   ],
+   [
+    "짙은 면(카드)",
+    "121414"
+   ],
+   [
+    "칩 회색",
+    "444444"
+   ],
+   [
+    "흰 글자",
+    "F5F6F5"
+   ],
+   [
+    "회색 보조 글자",
+    "A6A8A8"
+   ],
+   [
+    "흐린 글자",
+    "646462"
+   ],
+   [
+    "라임(강조 · 화면의 1~3%)",
+    "D8F629"
+   ]
+  ],
+  "fonts": {
+   "head": "Apple SD Gothic Neo Bold(Pretendard 가 있으면 바꿔 써도 된다)",
+   "body": "Apple SD Gothic Neo · 눈썹·번호 = JetBrains Mono",
+   "license": "Apple SD Gothic Neo = macOS 기본(재배포 불가 · 윈도·리눅스에는 없음) · JetBrains Mono = OFL 1.1(설치돼 있으면 쓰고 없으면 대체 글꼴로 보인다)"
+  },
+  "motifs": [
+   "먹 바탕 + 흰 54pt 굵은 제목 + 마지막 낱말만 라임 글자",
+   "「| 라벨」 → 굵은 제목(낱말 하나 라임 형광) → 「한마디로:」 회색 풀이 3단",
+   "번호 칩 목록 — 지금 말하는 항목만 라임 칩·검정 글자, 나머지는 회색 칩",
+   "라임 외곽선 상자 하나로 도식",
+   "아이콘 없음 · 그림자 없음"
+  ],
+  "good": [
+   "AI·기술 해설 강의(영상·PPT)",
+   "유튜브 설명 화면·라이브 자료",
+   "개발·자동화 사례 발표"
+  ],
+  "avoid": [
+   "어린이·가족 행사",
+   "추모 예배",
+   "인쇄물(먹 바탕은 잉크·가독성 손해)"
+  ],
+  "origin": "어두운 기술 해설 영상 화면 4편의 화소를 우리가 실측한 색값(2026-10-30)으로 다시 짠 조합 — 그림·글꼴·문구는 가져오지 않았다",
+  "file": "styles/11-lime-dark.js",
+  "theme": {
+   "name": "LimeDark",
+   "headFontFace": "Apple SD Gothic Neo",
+   "bodyFontFace": "Apple SD Gothic Neo",
+   "colors": {
+    "dk1": "040606",
+    "lt1": "F5F6F5",
+    "dk2": "121414",
+    "lt2": "F6F4F0",
+    "accent1": "D8F629",
+    "accent2": "444444",
+    "accent3": "A6A8A8",
+    "accent4": "646462",
+    "accent5": "1E1E1C",
+    "accent6": "555D02",
+    "hlink": "D8F629",
+    "folHlink": "A6A8A8"
+   }
+  }
+ }
+]

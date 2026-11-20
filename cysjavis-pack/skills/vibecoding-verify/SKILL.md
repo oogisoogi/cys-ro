@@ -1,9 +1,12 @@
 ---
 name: vibecoding-verify
 description: 구현 검증 전담 스킬 — 6단계 검증 체크리스트(UX·Test·App·Stress·Code·Implementation)·fresh verifier 서브에이전트(구현자≠검증자·blackbox)·시각 self-loop 6단계(수정→실행→스크린샷→디자인문서 대조→불일치·콘솔에러→재검증)·design-reviewer 에이전트·mutation 검산(operator 5종 N=5, vacuous pass 시 검증기 수리). "검증 / verify / 시각 검증 / 디자인 리뷰 / mutation 테스트 / 검증기 무결성 / 회귀 검증" 트리거, 또는 구현 done 전 검증 게이트로 발동.
+disable-model-invocation: true
 ---
 
 # vibecoding-verify
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 구현이 "실제로 요구대로 동작하는가"를 **구현자와 분리된 검증자**가 확인하는 게이트. 코드가
 초록불이어도 검증기 자체가 공허 통과(vacuous pass)하면 모든 게이트가 false-green이 된다 —

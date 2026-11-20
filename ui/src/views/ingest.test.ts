@@ -13,7 +13,12 @@ const MAIN = readFileSync(new URL("../main.ts", import.meta.url), "utf8");
 
 describe("데몬 사건 구독 = 하나(I3·S4-3)", () => {
   it("① views/index.ts: listen·listenDaemon·defaultSlug·default_socket_slug 0", () => {
-    for (const w of ["listen", "listenDaemon", "defaultSlug", "default_socket_slug", "__TAURI__"]) expect(`${w}:${INDEX.includes(w)}`).toBe(`${w}:false`);
+    // ★통합(cysr-1116-integ-1120): s5 조각 5 의 listenApp(앱 사건 boot-degraded · restore-progress — daemon-event 아님)은 허용한다 —
+    //   그 한 줄을 지운 나머지에서 종전 금지어 전부 0(daemon-event 구독 · 조각 3 listen · 본부 slug 재조회 · 다른 __TAURI__ 접근).
+    const APP = 'listenApp: (name, handler) => (window as unknown as { __TAURI__: { event: { listen(n: string, h: (e: { payload: unknown }) => void): Promise<() => void> } } }).__TAURI__.event.listen(name, handler),';
+    expect(INDEX.split(APP).length - 1).toBe(1);
+    const rest = INDEX.split(APP).join("");
+    for (const w of ["listen", "listenDaemon", "defaultSlug", "default_socket_slug", "__TAURI__", "daemon-event"]) expect(`${w}:${rest.includes(w)}`).toBe(`${w}:false`);
   });
   it("② main.ts: daemon-event 구독 1 · viewsIngest 배선 1줄 = onDaemonEvent 머리(첫 문장 const name 바로 뒤)", () => {
     expect(MAIN.split('listen("daemon-event"').length - 1).toBe(1);

@@ -134,13 +134,18 @@ fn record_path_in(dir: &Path, skid: &str) -> PathBuf {
 /// 고유 임시 파일 → fsync → rename(0600). 같은 이름 임시 파일을 두 쓰기가 나눠 쓰지 않는다.
 fn write_record_file(path: &Path, rec: &SeatRecord) -> std::io::Result<()> {
     use std::io::Write;
+    #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt;
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let text = serde_json::to_string(rec).map_err(std::io::Error::other)?;
     let dir = path.parent().ok_or_else(|| std::io::Error::other("기록 경로에 폴더가 없음"))?;
     let tmp = dir.join(format!(".{}.{}.{}.tmp", path.file_name().and_then(|n| n.to_str()).unwrap_or("rec"), std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)));
     let res = (|| {
-        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
+        let mut oo = std::fs::OpenOptions::new();
+        oo.write(true).create_new(true);
+        #[cfg(unix)]
+        oo.mode(0o600);
+        let mut f = oo.open(&tmp)?;
         f.write_all(text.as_bytes())?;
         f.sync_all()?;
         std::fs::rename(&tmp, path)
@@ -152,6 +157,7 @@ fn write_record_file(path: &Path, rec: &SeatRecord) -> std::io::Result<()> {
 }
 
 /// 살아 있는 seatkeep 좌석의 지금 신원·약속으로 기록을 만든다(필드마다 짧게 잠근다).
+#[cfg(target_os = "macos")]
 pub(crate) fn snapshot(s: &Surface, link: &crate::seat_proc::SeatLink) -> SeatRecord {
     let (rows, cols) = {
         let p = s.parser.lock().unwrap_or_else(|e| e.into_inner());
@@ -244,6 +250,7 @@ pub(crate) fn record_provisional(
 }
 
 /// 좌석 하나를 기록한다(끝난 좌석 = 기록 삭제). 노브 끔·직접 PTY 좌석 = 아무것도 안 함.
+#[cfg(target_os = "macos")]
 pub(crate) fn record_surface(s: &Surface) {
     if !enabled() {
         return;
@@ -262,7 +269,12 @@ pub(crate) fn record_surface(s: &Surface) {
     }
 }
 
+/// 비-맥 = seatkeep 좌석이 없다(`Surface.seat_link` 는 맥 전용 칸) — 기록할 것 없음(rc2 거동 · TICKET=cysr-1116-wincompile-1121).
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn record_surface(_s: &Surface) {}
+
 /// 좌석이 끝났다(읽기 스레드 EOF) — 기록을 지운다.
+#[cfg(target_os = "macos")]
 pub(crate) fn forget_surface(s: &Surface) {
     if !enabled() {
         return;
@@ -272,6 +284,10 @@ pub(crate) fn forget_surface(s: &Surface) {
     let _g = RECORD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _ = std::fs::remove_file(record_path_in(dir, link.skid()));
 }
+
+/// 비-맥 = seatkeep 좌석 없음 — 지울 기록 없음(rc2 거동).
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn forget_surface(_s: &Surface) {}
 
 /// 전 좌석 기록(`persist_topology` 가 부른다 — 신원·약속이 바뀌는 자리가 모두 그 길을 지난다).
 pub(crate) fn record_all(daemon: &Daemon) {
@@ -330,6 +346,7 @@ pub(crate) struct JudgeIn<'a> {
 }
 
 /// 등록부 pid 가 판정 대상 pid 와 다르고 · 살아 있고 · 지금 그 pid 가 cys-seatkeep 이 아니라는 증거가 없으면 그 pid(codex 3R).
+#[cfg(target_os = "macos")]
 pub(crate) fn registry_other_live_pid(target: Option<u32>, reg: &RegRead) -> Option<u32> {
     let RegRead::Ok(r) = reg else { return None };
     let b = r["pid"].as_u64().filter(|p| *p > 0 && *p <= i32::MAX as u64)? as u32;
@@ -719,6 +736,7 @@ pub(crate) fn restore_should_hold() -> Option<String> {
 /// 죽음이 확인된 좌석의 정리 — 남은 종료 기록(`.exit`)을 신원 확인 뒤 사건으로 발행하고(소비 · 표식 `.exit.consumed` 를 남긴 뒤) cysd 기록·
 /// 등록부·잠금·소켓·종료 기록을 지운다. 교체 기록(`.log`)은 사후 적발 장치라 남긴다. `.exit` 를 못 읽거나 id 가 다르면 **아무것도 지우지 않는다**
 /// (Err = 미결 · 다음 기동이 다시 본다 · codex T4 2R). 발행 뒤 표식 전 재시작 = 다음 기동에 한 번 더 발행될 수 있다(적어도 한 번 · 사건의 `skid` 가 멱등 키).
+#[cfg(target_os = "macos")]
 fn consume_dead(daemon: &Daemon, dir: &Path, skid: &str, rec: Option<&SeatRecord>, keeper: Option<(u32, Option<u64>)>, why: &str) -> Result<(), &'static str> {
     // (codex 4R 차단) 삭제 전 양성 증거 = seatkeep 의 id 잠금(`<skid>.lock` · seatkeep 이 사는 동안 flock 을 쥔다)을 비차단으로 잡아 본다 —
     // 못 잡으면 산 seatkeep 이 그 id 를 쥐고 있다(기록·등록부가 무엇을 말하든 무삭제 미결). 잡으면 정리가 끝날 때까지 쥔다.
@@ -782,6 +800,7 @@ fn consume_dead(daemon: &Daemon, dir: &Path, skid: &str, rec: Option<&SeatRecord
 }
 
 /// id 잠금을 비차단으로 잡는다 — 파일이 없으면 Ok(None)(잡을 것 없음) · 산 seatkeep 이 쥐고 있으면 Err.
+#[cfg(target_os = "macos")]
 fn hold_id_lock(path: &Path) -> Result<Option<std::fs::File>, &'static str> {
     use std::os::unix::io::AsRawFd;
     let f = match std::fs::OpenOptions::new().read(true).write(true).open(path) {
@@ -843,11 +862,15 @@ pub(crate) fn claimed_lock(dir: &Path, skid: &str, live_pid: Option<u32>, reg: &
 }
 
 /// 관리용 종료 상한 — seatkeep 은 신호 처리기가 없어 SIGTERM 에 곧 끝난다(F11) · 좌석 자식은 PTY 마스터가 닫히면 SIGHUP 을 받는다.
+#[cfg(target_os = "macos")]
 const END_TERM_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+#[cfg(target_os = "macos")]
 const END_KILL_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+#[cfg(target_os = "macos")]
 const END_CHILD_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// (pid, 출생 시각) 이 끝날 때까지 기다린다(사라짐 = pid 없음 또는 출생 시각 다름). 끝났으면 참.
+#[cfg(target_os = "macos")]
 fn wait_gone(pid: u32, start: u64, limit: std::time::Duration) -> bool {
     let t0 = std::time::Instant::now();
     loop {
@@ -862,6 +885,7 @@ fn wait_gone(pid: u32, start: u64, limit: std::time::Duration) -> bool {
 }
 
 /// 신원이 확인된 (pid, 출생 시각) 에만 신호(확인과 신호 사이 재사용 창은 같은 사용자 경계 안 · 브리프).
+#[cfg(target_os = "macos")]
 fn signal_if_same(pid: u32, start: u64, sig: libc::c_int) {
     if pid_alive(pid) && process_start_us(pid) == Some(start) {
         unsafe {
@@ -874,6 +898,7 @@ fn signal_if_same(pid: u32, start: u64, sig: libc::c_int) {
 /// `expected_start` · 실행 파일 = 이 cysd 옆 cys-seatkeep · 인자 `--lock` = 이 cysd 시작 잠금 · id 잠금을 그 seatkeep 이 쥐고 있음) 이 **전부**
 /// 서야 SIGTERM → 끝남 확인(상한 뒤 SIGKILL) → 좌석 자식(등록부의 pid·출생 시각)도 끝남 확인(상한 뒤 SIGKILL). 하나라도 안 서면 Err(무접촉).
 /// 파일 정리는 호출자가 `consume_dead` 로(id 잠금이 풀린 뒤).
+#[cfg(target_os = "macos")]
 pub(crate) fn end_keeper(dir: &Path, skid: &str, pid: u32, expected_start: Option<u64>, my_lock: &Path, reg: &RegRead) -> Result<(), &'static str> {
     let Some(start) = expected_start else { return Err("end_start_unknown") };
     if !pid_alive(pid) {
@@ -949,6 +974,7 @@ fn scan_ids(dir: &Path) -> Vec<String> {
 /// ★M1(독립 검증 · master 처분): **입양 노브가 꺼진 기동**에서도 seatkeep 폴더의 산 seatkeep(조종자 없는 고아 — 앞 데몬이 입양 켬으로 띄움)을
 /// 관리용 종료하고 정리한다 — 입양은 하지 않는다. 끝난 좌석의 역할은 뒤의 자동 복원(phoenix)이 topology 로 띄운다(예약을 남기지 않는다).
 /// 노브 끔 사용자 = 폴더가 없어 즉시 반환(파일·사건 0 · 종전 바이트). 반환 = 끝낸 seatkeep 수.
+#[cfg(target_os = "macos")]
 pub(crate) fn end_orphans_in(daemon: &Daemon, dir: &Path, my_lock: &Path) -> usize {
     let mut ended = 0;
     for skid in scan_ids(dir) {
@@ -1033,7 +1059,7 @@ pub(crate) fn adopt_check_in(dir: &Path, my_lock: &Path) -> serde_json::Value {
 
 pub(crate) fn adopt_check_in_want(dir: &Path, my_lock: &Path, want: Option<&Path>) -> serde_json::Value {
     let (mut adoptable, mut foreign, mut dead) = (0u64, 0u64, 0u64);
-    let mut blocked = Vec::new();
+    let mut blocked: Vec<serde_json::Value> = Vec::new();
     #[cfg(target_os = "macos")]
     for skid in scan_ids(dir) {
         let reg = read_registry(&dir.join(format!("{skid}.json")));
@@ -1091,10 +1117,12 @@ pub(crate) fn adopt_check_in_want(dir: &Path, my_lock: &Path, want: Option<&Path
 /// cysd 로 산 seatkeep 을 모두 끝낸다(`end_keeper` 신원 전부 · 남의 잠금 = 무접촉) — 옛 판은 seatkeep 폴더를 보지 않아 고아·작성자 둘이 되므로.
 /// 데몬이 살아 있으면(시작 잠금을 못 잡음) 아무것도 안 하고 3 · 끝내지 못한 것이 있으면 1 · 파일 정리는 다음 입양 앎 판 기동 몫(죽은 seatkeep 정리).
 pub(crate) fn end_keepers_main() -> i32 {
+    #[cfg(unix)]
     use std::os::unix::io::AsRawFd;
     let socket = cys::socket_path();
     let lock = socket.with_extension("lock");
     let held = std::fs::OpenOptions::new().read(true).write(true).open(&lock).ok();
+    #[cfg(unix)]
     if let Some(f) = &held {
         if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
             println!("{}", json!({"ended": 0, "failed": [], "foreign": 0, "refused": "daemon_running"}));
@@ -1113,7 +1141,7 @@ pub(crate) fn end_keepers_main() -> i32 {
 
 pub(crate) fn end_keepers_in(dir: &Path, my_lock: &Path) -> serde_json::Value {
     let (mut ended, mut foreign) = (0u64, 0u64);
-    let mut failed = Vec::new();
+    let mut failed: Vec<serde_json::Value> = Vec::new();
     #[cfg(target_os = "macos")]
     for skid in scan_ids(dir) {
         let reg = read_registry(&dir.join(format!("{skid}.json")));

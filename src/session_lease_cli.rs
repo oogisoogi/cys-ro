@@ -26,7 +26,11 @@ pub(crate) fn test_real_home() -> Option<std::path::PathBuf> {
     if let Some(v) = std::env::var_os("CYS_TEST_REAL_HOME") {
         return Some(v.into());
     }
+    // 비-유닉스 = passwd 없음 → None(= 가드가 「실제 홈 모름 → 실패(안전 쪽)」로 처리 · TICKET=cysr-1116-wincompile-1121).
+    #[cfg(not(unix))]
+    return None;
     // SAFETY: getpwuid 는 정적 버퍼를 돌려준다 — 시험 전용 · 곧바로 복사.
+    #[cfg(unix)]
     unsafe {
         let pw = libc::getpwuid(libc::getuid());
         if pw.is_null() || (*pw).pw_dir.is_null() {

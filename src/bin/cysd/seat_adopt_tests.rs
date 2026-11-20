@@ -140,6 +140,7 @@ fn bind_from_same_other_unknown() {
 }
 
 /// M1: 노브 끔 사용자 = seatkeep 폴더가 없다 → 즉시 반환 · 폴더를 만들지 않는다 · 사건 0(종전 바이트).
+#[cfg(target_os = "macos")] // end_orphans_in = 맥 전용(seatkeep) · TICKET=cysr-1116-wincompile-1121
 #[test]
 fn end_orphans_without_folder_touches_nothing() {
     let daemon = crate::state::Daemon::new(std::env::temp_dir().join(format!("sko-{}/d.sock", std::process::id())));
@@ -284,6 +285,7 @@ fn numbers_reopen_variants() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(target_os = "macos")] // registry_other_live_pid = 맥 전용(seatkeep_exe_matches) · TICKET=cysr-1116-wincompile-1121
 #[test]
 fn registry_other_live_pid_guards_a_different_live_keeper() {
     let me = std::process::id();

@@ -370,3 +370,21 @@ pid 생존 · 출생 시각 = 기록/등록부 값 · 실행 파일 = 이 cysd �
 ### 다음 첫 행동
 1. master: codex 1R(T6a = q/09-skt6a-r1 대기열 · T6b = 업데이터 축 고위험 → 독립 검증 좌석 + codex 1R 권고 · 범위 `f138da04e^..e3afb8a67 -- src/ scripts/seatkeep-adopt-e2e.py`).
 2. 남은 T6 밖: T7 윈도우 → D1 꼬리 ≤1KiB 유실 · 슬레이브 보유 탐침 → 노브 기본 켬 판단(T1·T5·D1 닫힌 뒤 숫자) · 📌 전사 SIGKILL 1초 유실(이월 ④) · A13 릴리스 빌드 숫자.
+
+## 후임 3 — T6 독립 검증(skt6 · surface:2317 · REVISE 주요 3·경미 7·기록 1 · VERDICT = `~/axdev/workers/cysr-1116-skt6-verify-1120/VERDICT.md`) 처분(master#61594005)
+| # | 처분 | 시험·뮤턴트 |
+|---|---|---|
+| **주요 1** 끝낼 수 없는 미결이 rotate·업데이트 무기한 막음 | **고침** — 호출자(cys rotate · 업데이터 S6)가 `daemon.seat_adopt.pending[].skid`(지금 데몬도 못 다루는 미결)를 막힘에서 빼고 보고만(stderr 1줄) · 새로 생기는 막힘만 rc 27 / 보류 | e2e `ustuck`(검증 모드 이식): rotate rc 27 → **rc 0** · 「지금 데몬도 못 다루는 미결 1개 — 막힘으로 세지 않음」 · 데몬 교체 · 좌석 무접촉 · `SKA_USTUCK_MOVE=1` 같음 · precheck 회귀(진짜 막힘 rc 27) 그대로 · 뮤턴트 N1(제외 끔) = rc 27 붉음 · 단위 표 2(cys·realops) |
+| **주요 2** S7 점검 막힘 = 옛 데몬 재기동 | **고침** — 점검을 S7 `stop()` → S6 `confirm()` 끝(reconfirm 뒤 · 맥만): 실패 = 런너 S1~S6 길 `defer`(정비 모드 해제·스테이지 삭제 · **데몬 무접촉** · start_old 안 탐) · 런너·트레잇 무변 | 배선 핀 `seat_adopt_wiring_pins`(confirm 안 있음 · stop 안 없음 · rb_prepare 안 있음 · 주석 줄 뺌) · 뮤턴트 N2(점검을 stop 으로) = 핀 붉음 · 실 업데이터 = 측정 대기(VM) |
+| **주요 3** PATH 링크 cys = 늘 rc 27 | **고침** — 점검 cysd = `canonicalize(current_exe)` 의 형제 | e2e `symlink`(검증 모드 이식): 점검 줄 0(막힘 아님) · 뮤턴트 N3(canonicalize 끔) = rc 27 붉음. ⚠ 링크 경로 rotate 는 그래도 **rc 23**(새 데몬 응답 없음) — **T6 이전 빌드(검증 좌석 기준선 cb3bdea57 사본)도 2/2 rc 23** = 기존 동작(격리 PATH 에서 `sibling_daemon_path`(cys.rs:5061~) 가 링크 폴더에서 cysd 를 못 찾음 · 같은 꼴 결함) → 📌【질문】 |
+| 경미 4 점검의 org.status 가 자동 기동 | **고침** — `connect_raw()` 실패면 점검 없음 | (코드 · 맥 기본 레인 = 실사용 영역이라 격리 실측 불가) |
+| 경미 5 되감기 종료가 정상 흐름에선 거의 안 돎 | **기록(결론 범위 좁힘)** — 이 코드는 「새 판 바이너리가 되감기를 이끌 때(복구기)」만 돈다 · 1.1.16→1.1.15 되감기(1.1.15 러너)는 덮지 않음 · A9ⓑ 는 「부분 해결」 | — |
+| 경미 6 옛 번들 못 찾음 = 전부 끝냄 | **고침** — 못 찾음·서명 핀 실패 = 끝내지 않음(rb_swap 도 같은 판정으로 실패 → 산 채 사람 필요 = 종전) | (코드) |
+| 경미 7 `.cysr.app.new-<seq>` 에 남은 옛 번들 | **기록(한계)** — 교환 직후 이름 바꾸기 전 죽음 = 끝낼 수 없는 미결 → 주요 1 처분으로 rotate·업데이트는 안 막힘 · 신원 규칙 넓힘 = master 결정 사안 | — |
+| 경미 8 `--end-keepers` 경합 rc 3 | **고침** — rc 3 이면 200ms 간격 3초까지 재시도 | (코드) |
+| 경미 9 배선 2곳 시험 공백 | **고침** — 배선 핀(위) | 뮤턴트 N2 붉음 |
+| 경미 10 drain 면제 = 교체 전 목록 | **기록** — 교체 뒤 입양 실패로 끝난 좌석은 rc 신호 없음(좌석 손실 자체는 종전 rotate 도 같음) | — |
+| 기록 11 holder 상한 느슨 · ⓐ = 형제 안 아무 cys-seatkeep | **기록** | — |
+
+### 커밋 · 원작자 파일(이 처분)
+- 커밋 = 이 절을 담은 커밋(아래 HEAD). cys.rs: `adopt_precheck_verdict(…, current_pending)` · `rotate_adopt_precheck` 의 connect_raw·pending·canonicalize·보고 줄 · 시험 표. update/realops.rs: `confirm` 에 점검 · `stop` 에서 뺌 · `seat_adopt_precheck` pending · `seat_adopt_precheck_verdict(…, current_pending)` · `end_keepers_if_old_unaware` 못 찾음 = 종료 안 함 · rc 3 재시도 · 시험 2(표 · 배선 핀). scripts: symlink·ustuck 모드(검증 좌석 출처).

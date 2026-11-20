@@ -43,7 +43,9 @@ OUT = sys.argv[4] if len(sys.argv) > 4 else None
 # cost = A13 비용 숫자(판정선 없음 · 보고만): 좌석 SKA_COST_N(기본 "1,5,20")개를 차례로 채우며 seatkeep RSS 합·평균 · cysd RSS · 10초 CPU% (좌석 = 50ms 마다 한 줄).
 # update = T6b D1 ⓐ: 격리 번들 R/apps/cysr.app 의 cysd 로 좌석 → SIGKILL → 업데이터 S9 흉내(정식 → .cysr.app.old-1 rename · 새 번들 복사) → 정식 자리
 #   새 cysd = 입양 · 그다음 옛 번들 삭제 + 재기동 = 실행 파일 못 읽음 → 미결(ⓒ · 좌석은 건드리지 않음).
-assert MODE in ("adopt", "bound", "direct", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap", "launchd", "claude", "cost", "update"), MODE
+# symlink · ustuck = 독립 검증 skt6(surface:2317 · evidence/e2e-v.py) 재현 모드 그대로 옮김(ustuck 은 rotate 1회로 줄임):
+#   symlink = PATH 의 링크 cys 로 rotate(주요 3) · ustuck = 옛 번들이 지워진(SKA_USTUCK_MOVE=1 = 옮겨진) 뒤의 끝낼 수 없는 미결(주요 1).
+assert MODE in ("adopt", "bound", "direct", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap", "launchd", "claude", "cost", "update", "symlink", "ustuck"), MODE
 R = f"/private/tmp/ska-{MODE[:3]}-{os.getpid() % 10000}"
 shutil.rmtree(R, ignore_errors=True)
 for d in ("home", "tmp", "s", "packstate", "pack", "bin", "bin2", "logs"):
@@ -120,9 +122,9 @@ ENV = {"HOME": f"{R}/home", "USER": os.environ["USER"], "LOGNAME": os.environ["U
        "CYS_NO_OFFICE_BRIDGE": "1", "CYS_NO_AUTORESTORE": "1", "CYS_NO_AUTOSTART": "1", "PATH": f"{R}/bin:/usr/bin:/bin",
        "TERM": "xterm-256color", "LANG": "en_US.UTF-8"}
 DENV = dict(ENV)
-if MODE in ("adopt", "bound", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap", "launchd", "claude", "cost", "update"):
+if MODE in ("adopt", "bound", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap", "launchd", "claude", "cost", "update", "symlink", "ustuck"):
     DENV["CYS_SEATKEEP"] = "1"
-if MODE in ("adopt", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap", "launchd", "claude", "cost", "update"):
+if MODE in ("adopt", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap", "launchd", "claude", "cost", "update", "symlink", "ustuck"):
     if MODE == "cap":
         DENV["CYS_SEATKEEP_MAX_HOLDERS"] = "1"
     DENV["CYS_SEATKEEP_ADOPT"] = "1"
@@ -493,6 +495,109 @@ if MODE == "pending":
         cys("close-surface", sid)
         time.sleep(1.0)
         stop_all()
+    if alive(seat_pid):
+        os.kill(seat_pid, signal.SIGKILL)
+    sys.exit(0)
+
+if MODE == "symlink":
+    # 검증 좌석: PATH 의 cys 가 번들 cys 를 가리키는 심볼릭 링크(이 기계 /usr/local/bin/cys 와 같은 꼴)일 때 rotate 사전 점검.
+    d, _ = start_daemon("0")
+    log = f"{R}/logs/l0.log"
+    cys("new-surface", "--cwd", "/private/tmp", "--role", "seatl", "--cmd", f"{SEAT} {log} 50")
+    seat_pid = wait_start(log)
+    time.sleep(1.0)
+    os.makedirs(f"{R}/link"); os.symlink(f"{R}/bin/cys", f"{R}/link/cys")
+    renv = dict(DENV); renv.pop("CYS_NO_AUTOSTART", None)
+    z = cys("identify"); assert json.loads(z.stdout).get("socket_path") == f"{R}/s/d.sock", z.stdout
+    old_pid = d.pid
+    res = {}
+    rr = subprocess.run([f"{R}/link/cys", "rotate", "--skip-depts", "--skip-drain"], env=renv, capture_output=True, text=True, timeout=400)
+    res["via_symlink_rc"] = rr.returncode
+    res["via_symlink_msg"] = [l[:240] for l in (rr.stdout + rr.stderr).splitlines() if "사전 점검" in l][:1]
+    idn = cys("identify")
+    res["daemon_same_after"] = idn.returncode == 0 and json.loads(idn.stdout).get("daemon_pid") == old_pid
+    rr = subprocess.run([f"{R}/bin/cys", "rotate", "--skip-depts", "--skip-drain"], env=renv, capture_output=True, text=True, timeout=400)
+    res["direct_rc"] = rr.returncode
+    d.wait()
+    idn = cys("identify")
+    npid = json.loads(idn.stdout).get("daemon_pid") if idn.returncode == 0 else None
+    if npid:
+        daemons.append(PidDaemon(npid))
+    time.sleep(1.0)
+    res["seat_alive"] = alive(seat_pid)
+    print(json.dumps(res, ensure_ascii=False), flush=True)
+    if OUT:
+        open(OUT, "a").write(json.dumps(res, ensure_ascii=False) + "\n")
+    stop_all()
+    if alive(seat_pid):
+        os.kill(seat_pid, signal.SIGKILL)
+    sys.exit(0)
+
+if MODE == "ustuck":
+    # 검증 좌석(skt6-verify) 재현: 옛 번들(.cysr.app.old-1)이 지워진 뒤 그 번들의 seatkeep = 끝낼 수 없는 미결 → rotate·S7 점검이 계속 막히나.
+    apps = f"{R}/apps"
+    canon_app = f"{apps}/cysr.app"
+    def make_bundle(dst):
+        os.makedirs(f"{dst}/Contents/MacOS")
+        for b in ("cys", "cysd", "cys-seatkeep"):
+            subprocess.run(["/bin/cp", "-c", f"{R}/bin/{b}", f"{dst}/Contents/MacOS/{b}"], check=True)
+    make_bundle(canon_app)
+    mb = "apps/cysr.app/Contents/MacOS"
+    res = {}
+    d, _ = start_daemon("0", bindir=mb)
+    log = f"{R}/logs/u0.log"
+    sid = cys("new-surface", "--cwd", "/private/tmp", "--role", "seatu", "--cmd", f"{SEAT} {log} 50").stdout.strip()
+    seat_pid = wait_start(log)
+    time.sleep(1.0)
+    os.kill(d.pid, signal.SIGKILL); d.wait()
+    os.rename(canon_app, f"{apps}/.cysr.app.old-1"); make_bundle(canon_app)
+    d, _ = start_daemon("1", bindir=mb)
+    time.sleep(1.5)
+    res["listed_after_swap"] = "seatu" in cys("list").stdout
+    os.kill(d.pid, signal.SIGKILL); d.wait()
+    if os.environ.get("SKA_USTUCK_MOVE") == "1":
+        os.makedirs(f"{R}/trash"); os.rename(f"{apps}/.cysr.app.old-1", f"{R}/trash/cysr.app")
+    else:
+        shutil.rmtree(f"{apps}/.cysr.app.old-1")
+    d, _ = start_daemon("2", bindir=mb)
+    time.sleep(16.0)  # M2 재시도 2초×5 + 끝내기 시도
+    err = open(f"{R}/logs/cysd-2.err").read()
+    res["d2_adopt_log"] = [l[:200] for l in err.splitlines() if "입양" in l and "노브" not in l][:6]
+    st = cys("status", "--json")
+    try:
+        sa = json.loads(st.stdout)
+        res["status_seat_adopt"] = json.dumps(sa.get("daemon", {}).get("seat_adopt") or sa.get("seat_adopt"), ensure_ascii=False)[:400]
+    except Exception as e:
+        res["status_seat_adopt"] = f"parse fail {e} {st.stdout[:200]}"
+    res["seat_alive_d2"] = alive(seat_pid)
+    renv = dict(DENV); renv.pop("CYS_NO_AUTOSTART", None)
+    z = cys("identify"); assert json.loads(z.stdout).get("socket_path") == f"{R}/s/d.sock", z.stdout
+    old_pid = d.pid
+    res["rotates"] = []
+    rr = subprocess.run([f"{R}/{mb}/cys", "rotate", "--skip-depts", "--skip-drain"], env=renv, capture_output=True, text=True, timeout=400)
+    res["rotates"].append({"rc": rr.returncode, "msg": [l[:220] for l in (rr.stdout + rr.stderr).splitlines() if "사전 점검" in l][:1]})
+    if rr.returncode == 0:
+        d.wait() if isinstance(d, subprocess.Popen) else None
+    idn = cys("identify")
+    npid = json.loads(idn.stdout).get("daemon_pid") if idn.returncode == 0 else None
+    if npid and npid != old_pid:
+        daemons.append(PidDaemon(npid))
+    res["daemon_same"] = npid == old_pid
+    make_bundle(f"{apps}/.cysr.app.new-2")
+    c = subprocess.run([f"{apps}/.cysr.app.new-2/Contents/MacOS/cysd", "--adopt-check", "--json", "--as-bundle", canon_app], env=DENV, capture_output=True, text=True, timeout=30)
+    res["s7_precheck"] = {"rc": c.returncode, "out": c.stdout.strip()[:200]}
+    c = subprocess.run([f"{R}/{mb}/cysd", "--adopt-check", "--json"], env=DENV, capture_output=True, text=True, timeout=30)
+    res["old_cysd_precheck(start_old rotate 가 볼 것)"] = {"rc": c.returncode, "out": c.stdout.strip()[:200]}
+    res["seat_alive_end"] = alive(seat_pid)
+    res["seat_end"] = [l for l in seat_lines(log) if l.startswith(("SIGNAL", "EOF"))][:1]
+    print(json.dumps(res, ensure_ascii=False), flush=True)
+    if OUT:
+        open(OUT, "a").write(json.dumps(res, ensure_ascii=False) + "\n")
+    stop_all()
+    out = subprocess.run(["/bin/ps", "-axo", "pid=,command="], capture_output=True, text=True).stdout
+    for l in out.splitlines():
+        if f"{R}/apps/" in l and "cys-seatkeep" in l:
+            os.kill(int(l.split()[0]), signal.SIGKILL)
     if alive(seat_pid):
         os.kill(seat_pid, signal.SIGKILL)
     sys.exit(0)

@@ -23057,31 +23057,46 @@ fn rotate_adoptable_surfaces() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// 사전 점검 판정(순수): 점검 출력·rc → Ok = 진행 · Err = 막힘 사유. 출력이 JSON 이 아니면(옛 cysd = 인자 거절 rc 2 등) 막힘.
-fn adopt_precheck_verdict(rc: Option<i32>, stdout: &[u8]) -> Result<(), String> {
+/// 사전 점검 판정(순수): 점검 출력·rc + **지금 데몬의 미결 목록**(`daemon.seat_adopt.pending[].skid`) → Ok(막힘에서 뺀 skid · 보고용) = 진행 ·
+/// Err = 막힘 사유. 지금 데몬도 이미 못 다루는 미결 좌석은 다음 판 탓이 아니므로 막힘으로 세지 않는다(독립 검증 skt6 주요 1 · 세면 rotate 가
+/// 영영 막힌다). 출력이 JSON 이 아니면(옛 cysd = 인자 거절 rc 2 등) 막힘.
+fn adopt_precheck_verdict(rc: Option<i32>, stdout: &[u8], current_pending: &[String]) -> Result<Vec<String>, String> {
     let v: Value = serde_json::from_slice(stdout).map_err(|_| format!("점검 출력 해석 실패(rc {rc:?}) — 다음 cysd 가 입양 점검을 모른다"))?;
     let blocked = v["blocked"].as_array().cloned().unwrap_or_default();
-    if blocked.is_empty() && rc == Some(0) {
-        return Ok(());
+    if blocked.is_empty() && rc != Some(0) {
+        return Err(format!("점검 rc {rc:?} 와 내용(막힘 0)이 어긋남"));
     }
-    let list: Vec<String> = blocked
-        .iter()
-        .map(|b| format!("{}:{}", b["skid"].as_str().unwrap_or("?"), b["reason"].as_str().unwrap_or("?")))
-        .collect();
-    Err(format!("입양 못 하는 seatkeep {}개 [{}] (rc {rc:?})", blocked.len(), list.join(", ")))
+    let (already, new): (Vec<&Value>, Vec<&Value>) =
+        blocked.iter().partition(|b| b["skid"].as_str().is_some_and(|k| current_pending.iter().any(|p| p == k)));
+    if new.is_empty() {
+        return Ok(already.iter().filter_map(|b| b["skid"].as_str().map(str::to_string)).collect());
+    }
+    let list: Vec<String> =
+        new.iter().map(|b| format!("{}:{}", b["skid"].as_str().unwrap_or("?"), b["reason"].as_str().unwrap_or("?"))).collect();
+    Err(format!("입양 못 하는 seatkeep {}개 [{}] (rc {rc:?})", new.len(), list.join(", ")))
 }
 
 /// 입양 노브 켬 본부 데몬이면 이 cys 옆 cysd 로 `--adopt-check` — 노브 끔·데몬 없음 = 점검 없음(종전).
 fn rotate_adopt_precheck(exe: &std::path::Path) -> Result<(), String> {
-    let on = request("org.status", json!({})).ok().is_some_and(|v| v["daemon"]["seat_adopt"].is_object());
-    if !on {
+    // 데몬이 없으면 점검 없음 — `request` 가 자동 기동을 부르지 않게(독립 검증 skt6 경미 4).
+    if connect_raw().is_err() {
         return Ok(());
     }
-    let cysd = exe.parent().map(|d| d.join(if cfg!(windows) { "cysd.exe" } else { "cysd" })).ok_or("cys 폴더를 모름")?;
+    let Some(sa) = request("org.status", json!({})).ok().map(|v| v["daemon"]["seat_adopt"].clone()).filter(|v| v.is_object()) else {
+        return Ok(());
+    };
+    let pending: Vec<String> = sa["pending"].as_array().map(|a| a.iter().filter_map(|p| p["skid"].as_str().map(str::to_string)).collect()).unwrap_or_default();
+    // 점검 대상 = 실경로로 푼 이 cys 의 형제 cysd(PATH 의 링크 cys = /usr/local/bin/cys → 번들 · 독립 검증 skt6 주요 3).
+    let real = std::fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
+    let cysd = real.parent().map(|d| d.join(if cfg!(windows) { "cysd.exe" } else { "cysd" })).ok_or("cys 폴더를 모름")?;
     let mut cmd = cys::hidden_command(&cysd);
     cmd.args(["--adopt-check", "--json"]);
     let out = output_via_file(cmd).ok_or_else(|| format!("점검 실행 실패: {}", cysd.display()))?;
-    adopt_precheck_verdict(out.status.code(), &out.stdout)
+    let already = adopt_precheck_verdict(out.status.code(), &out.stdout, &pending)?;
+    if !already.is_empty() {
+        eprintln!("[rotate] 사전 점검: 지금 데몬도 못 다루는 미결 seatkeep {}개({}) — 다음 판 탓이 아니라 막힘으로 세지 않음", already.len(), already.join(", "));
+    }
+    Ok(())
 }
 
 fn rotate_rc(drain_ok: Option<bool>, restore_ok: bool) -> i32 {
@@ -31914,11 +31929,16 @@ mod tests {
     /// T6a 사전 점검: 막힘 0 + rc 0 만 진행 · 막힘·해석 실패(옛 cysd)·rc ≠ 0 = 멈춤.
     #[test]
     fn adopt_precheck_verdict_table() {
-        assert!(adopt_precheck_verdict(Some(0), br#"{"adoptable":2,"blocked":[],"foreign":0,"dead":1}"#).is_ok());
-        let e = adopt_precheck_verdict(Some(1), br#"{"adoptable":0,"blocked":[{"skid":"a-1-0","reason":"core_version_mismatch"}]}"#).unwrap_err();
+        assert_eq!(adopt_precheck_verdict(Some(0), br#"{"adoptable":2,"blocked":[],"foreign":0,"dead":1}"#, &[]), Ok(vec![]));
+        let one = br#"{"adoptable":0,"blocked":[{"skid":"a-1-0","reason":"core_version_mismatch"}]}"#;
+        let e = adopt_precheck_verdict(Some(1), one, &[]).unwrap_err();
         assert!(e.contains("a-1-0:core_version_mismatch"), "{e}");
-        assert!(adopt_precheck_verdict(Some(2), b"cysd: unknown argument '--adopt-check'").is_err(), "옛 cysd = 막힘");
-        assert!(adopt_precheck_verdict(Some(1), br#"{"blocked":[]}"#).is_err(), "rc 와 내용이 어긋나면 막힘");
+        // 지금 데몬도 못 다루는 미결(그 데몬의 pending) = 막힘에서 뺌 · 보고만(skt6 주요 1).
+        assert_eq!(adopt_precheck_verdict(Some(1), one, &["a-1-0".to_string()]), Ok(vec!["a-1-0".to_string()]));
+        let two = br#"{"blocked":[{"skid":"a-1-0","reason":"exe_unreadable"},{"skid":"b-1-0","reason":"core_version_mismatch"}]}"#;
+        assert!(adopt_precheck_verdict(Some(1), two, &["a-1-0".to_string()]).unwrap_err().contains("b-1-0"), "새 막힘은 그대로");
+        assert!(adopt_precheck_verdict(Some(2), b"cysd: unknown argument '--adopt-check'", &[]).is_err(), "옛 cysd = 막힘");
+        assert!(adopt_precheck_verdict(Some(1), br#"{"blocked":[]}"#, &[]).is_err(), "rc 와 내용이 어긋나면 막힘");
         assert_eq!(ROTATE_RC_ADOPT_BLOCKED, 27);
     }
 

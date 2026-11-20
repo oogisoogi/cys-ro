@@ -4,6 +4,7 @@
 격리 HOME(임시 폴더)에 가짜 원천을 만들어 게이트가 대상을 실제로 때리는지 잰다 —
 새 스킬·새 자산이 판정표에 없으면 붉음, 판정 값 오타면 붉음, 「넣음」 인데 팩에 없으면 붉음,
 원천이 없는 기계면 초록이 아니라 「원천 없음」(rc 0 · 표지 문구), 표가 깨지면 rc 2.
+본부 판정표(옆 .hq.md)가 있으면 합쳐 읽고, 그때만 본부 전용 원천(영상 검토 산출물)을 훑는다(TICKET=cysr-1116-pubcand-1120 D1).
 쓰임: python3 scripts/tests/test_asset_ledger_check.py
 """
 import os
@@ -39,6 +40,7 @@ class T(unittest.TestCase):
         (self.pack / "alpha").mkdir(parents=True)
         (self.pack / "alpha" / "SKILL.md").write_text("---\nname: alpha\n---\n", encoding="utf-8")
         self.ledger = self.tmp / "LEDGER.md"
+        self.hq = self.tmp / "LEDGER.hq.md"
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -81,6 +83,7 @@ class T(unittest.TestCase):
         r = self.home / "axdev/master/reports/video-reviews/assets"
         r.mkdir(parents=True)
         (r / "new-checklist.md").write_text("x", encoding="utf-8")
+        self.hq.write_text(HEAD, encoding="utf-8")  # 본부 판정표가 있어야 본부 전용 원천을 훑는다
         rc, out = self.run_check(HEAD + row("asset:video-production/tools", "전용"))
         self.assertEqual(rc, 1, out)
         self.assertIn("asset:new-tool-bundle", out)
@@ -126,6 +129,43 @@ class T(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn("✓ asset-ledger: 초록", out)
 
+    # ── 본부 판정표(.hq.md) ──
+    def _review_item(self, name="new-checklist.md"):
+        r = self.home / "axdev/master/reports/video-reviews/assets"
+        r.mkdir(parents=True)
+        (r / name).write_text("x", encoding="utf-8")
+        self.mkskill(".claude/skills", "alpha")
+        return f"path:~/axdev/master/reports/video-reviews/assets/{name}"
+
+    def test_review_source_scanned_only_with_hq_ledger(self):
+        key = self._review_item()
+        rc, out = self.run_check(HEAD + row("skill:alpha", "넣음"))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("본부 판정표 없음", out)
+        self.assertNotIn(key, out)
+        self.hq.write_text(HEAD, encoding="utf-8")
+        rc, out = self.run_check(HEAD + row("skill:alpha", "넣음"))
+        self.assertEqual(rc, 1, out)
+        self.assertIn(key, out)
+
+    def test_hq_rows_cover_keys_and_are_verdict_checked(self):
+        key = self._review_item()
+        self.hq.write_text(HEAD + row(key, "전용"), encoding="utf-8")
+        rc, out = self.run_check(HEAD + row("skill:alpha", "넣음"))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("초록", out)
+        self.assertNotIn("본부 판정표 없음", out)
+        self.hq.write_text(HEAD + row(key, "아마"), encoding="utf-8")
+        rc, out = self.run_check(HEAD + row("skill:alpha", "넣음"))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("판정 값 틀림", out)
+
+    def test_same_key_in_public_and_hq_is_red(self):
+        self.hq.write_text(HEAD + row("skill:alpha", "전용"), encoding="utf-8")
+        rc, out = self.run_check(HEAD + row("skill:alpha", "넣음"))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("같은 키 두 줄", out)
+
     # ── 판정 값·팩 실재 ──
     def test_bad_verdict_is_red(self):
         self.mkskill(".claude/skills", "alpha")
@@ -170,6 +210,17 @@ class T(unittest.TestCase):
         self.assertIn("원천 없음", p.stdout)
         n = sum(1 for l in LEDGER.read_text(encoding="utf-8").splitlines() if l.startswith("| `"))
         self.assertGreaterEqual(n, 100)
+
+    def test_repo_public_ledger_alone_and_no_hq_only_lines(self):
+        """공개 판정표만으로(본부 판정표 없이) 통과 · 공개 본문에 본부 전용 표기(다계정 폴더·본부 운영 경로) 0."""
+        p = subprocess.run([sys.executable, str(CHECK), "--home", str(self.home),
+                            "--ledger-hq", str(self.tmp / "absent.hq.md")],
+                           capture_output=True, text=True, encoding="utf-8", timeout=60)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("본부 판정표 없음", p.stdout)
+        body = LEDGER.read_text(encoding="utf-8")
+        for bad in ("계정2", "acct2", "~/axdev"):
+            self.assertNotIn(bad, body)
 
 
 if __name__ == "__main__":

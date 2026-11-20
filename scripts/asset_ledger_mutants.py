@@ -49,6 +49,12 @@ MUTANTS = [
     ("M11 백업 사본 제외를 끈다",
      ' and ".bak-" not in n)',
      ")"),
+    ("M12 본부 판정표 줄을 합치지 않는다",
+     "            rows += read_ledger(hq_path)",
+     "            pass"),
+    ("M13 본부 판정표가 없어도 본부 전용 원천을 훑는다",
+     "    if hq and review.is_dir():",
+     "    if review.is_dir():"),
 ]
 
 

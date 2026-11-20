@@ -7,7 +7,7 @@ description: 기존 PPT(.pptx)를 분석해 색·글꼴·크기 위계·배치�
 
 잘 만든 기존 덱 여러 개를 **25개 기준**(컬러 7 · 폰트 7 · 레이아웃 9 · 구조 3 · 특이점 5)으로 분석하고, 여러 덱에 **반복되는 것만** 「디자인 공통 요소」(COMMON.md) 한 장에 모은다. 새 덱은 이야기 층을 먼저 짠 뒤 그 기준으로 만들고, 고친 점은 일반화·검수해 「지침」으로 쌓는다(한 번 한 수정은 두 번 말하지 않는다).
 스킬 폴더: `SK="${CYS_PACK_DIR:-$HOME/.cys/pack}/skills/ppt-design-system"`
-- 25기준 원문 = `$SK/references/heidi-guideline.md`(지은이 헤이디 · 원문 동봉 · 출처 머리말)
+- 25기준 요약 = `$SK/references/heidi-guideline.md`(지은이 헤이디 · 우리 말 요약 · 출처 머리말)
 - 이야기 층 절차 = `$SK/references/story-first.md`
 - 다 만든 장·첫 화면 점검 = `$SK/references/glance-test-checklist.md`(3초 테스트 — 핵심 하나가 시선 1번이 될 때까지 주변을 낮춘다)
 - 근거표 도구 = `$SK/tools/pptx_design_extract.py`(python3 표준 라이브러리만)
@@ -64,4 +64,4 @@ description: 기존 PPT(.pptx)를 분석해 색·글꼴·크기 위계·배치�
 - 새 덱: ① 기계 — `python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/skills/ppt-styles/tools/check_pptx.py" <덱.pptx> --slides N --pdf`(PASS · 경고 처리) · 화면 숫자·인용 원천 대조와 노트 빠짐 0(story-first.md 「기계 점검」). ② 눈 — 장별 PNG 를 전부 본다: 화면 밖으로 나감 · 글 넘침 · 글끼리 겹침 · 대비 부족(작은 글 4.5:1 · 18pt 이상 3:1) · 받침 없이 복잡한 그림 위 글 · 깨지거나 일그러진 그림 · STORY.md 에 있는데 화면에 없는 요소 · 표지와 끝 장의 쪽 번호·총 장 수. ③ 정렬·간격처럼 취향이 섞인 것은 눈에 띄게 나쁠 때만 고친다. ④ 검수 단계에서 내용·문구·장 순서·색·글꼴은 바꾸지 않는다 — 바꿀 일이면 §0·C 로 돌아간다. 같은 대비 문제가 여러 장에 나면 색을 한 번에 정한다.
 - 시험 입력 결과(2026-11-06): ppt-styles 로 만든 덱 3벌에 근거표 도구를 돌림 — ① 보통 덱(modern-minimal 4장) → OK 4장 · 글꼴 Apple SD Gothic Neo 193자. ② 지저분한 덱(150자 영한 혼합 제목 · 빈 목록 · 숫자 칸 · 6장) → OK 6장 · 크기 위계 7단계(17pt 38.7% · 44pt 24.7% …) · 글꼴은 테마에서 물려받아 「상속(테마/마스터)」 486자로 정직하게 나옴. ③ 차트 덱(research-data 3장) → OK 3장 · NanumBarunGothic 159 · NanumSquare Neo 56. `.key` 파일 → 변환 안내 + 코드 2 · 없는 파일 → 코드 2. 그룹 도형 시험(2R 수정): 중첩 그룹(바깥 off 10/10pt ⊃ 안쪽 off 90/190pt·2배 확대 ⊃ 로컬 0/0·100×50pt 도형) → 1장 여백 좌/상 100/200pt · 상자 면적 20000pt²(고치기 전 0/0 · 5000) · 위 3벌 근거표는 고치기 전 판과 글자까지 같음. 실제 사람이 만든 덱으로 25기준 분석 전체를 끝까지 해 보는 시험과 스킬 없이 대조는 하지 않았다.
 
-출처: 25기준·키비주얼 4줄 = 헤이디 지침 원문(references/heidi-guideline.md). 키비주얼 「공통 앞말·비울 자리」 2줄 = 유튜브 「성공지식백과」 FIH_ZAxtQtU(08:10 화면)을 우리 말로 요약. §0·C 「앞 5장」·검수 구분 = hugohe3/ppt-master(MIT)를 우리 말로 다시 씀(story-first.md 끝).
+출처: 25기준·키비주얼 4줄 = 헤이디 지침을 우리 말로 요약(references/heidi-guideline.md · 원문 미동봉). 키비주얼 「공통 앞말·비울 자리」 2줄 = 유튜브 「성공지식백과」 FIH_ZAxtQtU(08:10 화면)을 우리 말로 요약. §0·C 「앞 5장」·검수 구분 = hugohe3/ppt-master(MIT)를 우리 말로 다시 씀(story-first.md 끝).

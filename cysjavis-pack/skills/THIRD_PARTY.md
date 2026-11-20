@@ -150,11 +150,13 @@ specific language governing permissions and limitations under the License.
 
 ## 산출물 스킬 외부 유래 고지 (asset-skills-for-seats · 2026-11-06)
 
-- `ppt-design-system/references/heidi-guideline.md` — 헤이디 「나만의 디자인 시스템 만들기 프로젝트 지침」 원문.
-  원문 주소 https://app.notion.com/p/3f671a693e5480b2afeee6776d6ec9e2 (공개 노션 · 2026-11-06 수신본).
-  동봉 근거 = 지은이가 소개 영상(https://www.youtube.com/watch?v=nbs8JtlY27s)에서 「이 지침은 제가 다 드릴
-  겁니다 … 직접 작성하실 필요 없이 제가 공유드릴테니까 그냥 복사 붙여 넣기만 진행하시면 됩니다」라고
-  누구나 복사해 쓰도록 내놓은 것. 출처(지은이·주소)를 지워 재배포하지 않는다.
+- `ppt-design-system/references/heidi-guideline.md` — 헤이디 「나만의 디자인 시스템 만들기 프로젝트 지침」의
+  분석 기준(1-1 ~ 5-5)과 키비주얼 요구를 **우리 말로 다시 쓴 요약**. 원문은 싣지 않는다.
+  출처 = 지은이 헤이디 · 공개 영상 https://www.youtube.com/watch?v=nbs8JtlY27s
+  「[지침 공유] PPT 8년차가 만든 AI PPT 디자인 시스템 (노션×클로드)」(2026-10-12).
+- `motion-graphics-prompt/references/heidi-motion-prompt.summary.md` — 헤이디 「모션 그래픽 제작 프롬프트」의
+  칸 구성을 우리 말로 적은 설명. 원문은 싣지 않는다. 출처 = 지은이 헤이디 · 공개 영상
+  https://www.youtube.com/watch?v=7xOcIYWGG0A.
 - `ppt-styles/vendor/anthropics-theme-factory/` — anthropics/skills `skills/theme-factory`
   (Apache License 2.0 · 동봉 `LICENSE.txt` · 원 파일명 SKILL.md 를 `theme-factory-SKILL.md` 로만 바꿈 —
   하위 폴더가 별도 스킬로 잡히지 않게. 변경 고지 = `ppt-styles/vendor/README.md`, Apache-2.0 §4(b)).

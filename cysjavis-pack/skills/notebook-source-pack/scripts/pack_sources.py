@@ -35,7 +35,7 @@ def run_nlm(nlm, args, profile):
     cmd = [nlm, *args, "--json"]
     if profile:
         cmd += ["--profile", profile]
-    p = subprocess.run(cmd, capture_output=True, text=True, **NOWIN)
+    p = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL, **NOWIN)
     if p.returncode != 0:
         raise RuntimeError(f"{' '.join(cmd)} 실패(rc={p.returncode}): {(p.stderr.strip() or p.stdout.strip())[:300]}")
     try:

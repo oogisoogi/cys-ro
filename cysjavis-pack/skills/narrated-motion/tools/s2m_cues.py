@@ -39,7 +39,7 @@ TRIM_KEEP = 0.03       # 잘라 낸 뒤 앞뒤로 남겨 두는 여유(초) — 
 
 
 def sh(cmd):
-    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, **NOWIN)
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, **NOWIN)
 
 
 def synth(engine, voice, rate, text, out_wav):

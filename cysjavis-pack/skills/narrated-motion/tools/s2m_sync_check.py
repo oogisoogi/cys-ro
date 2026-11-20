@@ -38,13 +38,13 @@ def main():
     tol, dead = opt("--tol", 0.2), opt("--dead", 0.4)
     cues = json.load(open(cj, encoding="utf-8"))["cues"]
     fps_s = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate",
-                            "-of", "csv=p=0", mp4], capture_output=True, text=True, check=True, **NOWIN).stdout.strip()
+                            "-of", "csv=p=0", mp4], capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL, **NOWIN).stdout.strip()
     n, d = fps_s.split("/")
     fps = float(n) / float(d)
 
     raw = subprocess.run(["ffmpeg", "-v", "error", "-i", mp4, "-vn", "-af", "aresample=async=1:first_pts=0",
                           "-ac", "1", "-ar", str(AR), "-f", "s16le", "-"],
-                         capture_output=True, check=True, **NOWIN).stdout
+                         capture_output=True, check=True, stdin=subprocess.DEVNULL, **NOWIN).stdout
     a = array.array("h")
     a.frombytes(raw)
     if not len(a):
@@ -58,7 +58,7 @@ def main():
     thr = -40.0
 
     vraw = subprocess.run(["ffmpeg", "-v", "error", "-i", mp4, "-an", "-vf", f"fps={fps_s},scale={VW}:{VH},format=gray",
-                           "-f", "rawvideo", "-"], capture_output=True, check=True, **NOWIN).stdout
+                           "-f", "rawvideo", "-"], capture_output=True, check=True, stdin=subprocess.DEVNULL, **NOWIN).stdout
     fsz = VW * VH
     nf = len(vraw) // fsz
     diff = [0.0]

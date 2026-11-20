@@ -426,7 +426,11 @@ pid 생존 · 출생 시각 = 기록/등록부 값 · 실행 파일 = 이 cysd �
 | 뮤턴트(scratchpad `mut4/mut.py`) | M1 스냅숏 검증 뒤로 · M2 종료 실패 무시 · M3 복원 끔 · M4 org.status fail-open · M5 교체 직전 재점검 끔 = **5/5 붉음** · 원복 확인 |
 | e2e 정리 장치(⑦ · `guard.sh`) | 고침 2/2 남은 프로세스 0 · 뮤턴트 3 남음 |
 | **격리 실물 rbprep**(새 모드 · 무시 시험 `rb_prepare_live` 를 e2e 가 부름 · 진짜 갱신 잠금·rotate --txn·--end-keepers) | snapbad · ok · ekfail **3/3 통과 · 2회**(17:02 · 17:0x) · M1 빌드 = snapbad 붉음(데몬 사라짐·좌석 SIGNAL 1) |
-| lib 전체 · cys 전체 · cysd 전체 · e2e 회귀(precheck·rotate·update·symlink·ustuck) | **미실행 — 재부팅 매듭으로 중단**(lib 17:04~17:09 도중 정지 · 결과 없음) = **측정 대기** |
+| lib 전체 · cys 전체 · cysd 전체 · e2e 회귀(precheck·rotate·update·symlink·ustuck) | ~~미실행 — 재부팅 매듭으로 중단~~ → **후임 4b 가 채움(아래 4줄 · macOS 27.2.1 26B131 · 머리 c161178d7 · 격리 env -i · TMPDIR=/private/tmp/sk4f · 스레드 4)** |
+| lib 전체(18:43~18:51 · load 6~12) | **1275 통과 · 1 실패 · 4 무시**(update:: 포함 · 새 시험 +7 들어 있음) — 실패 = `spawn_policy_tests::raw_command_new_census_is_frozen`(`src/bin/cys.rs` 실측 16 ↔ 동결 15). **대조**: 9fe952959(c161178d7 이전) 같은 시험 1개 = **같은 차이로 붉음**(16 ↔ 15) → OS·이 처분 탓 아님. 원인 = 2b741e0c6(T6a · 05:34)이 운영 코드 `takeover_fallback_candidates`(cys.rs:23258)에 `Command::new("pgrep")` 를 새로 넣고 동결표(lib.rs:7692)를 안 고침(가지 integ/1116..HEAD 에서 cys.rs `Command::new` 를 바꾼 커밋 = 이것 하나 · `git log -G`). 고치지 않음(범위 = 숫자 채우기) → 📌 |
+| cys 전체(18:52~19:10) | **800 통과 · 0 실패 · 2 무시**(= 기준선 799 + 핀 1) |
+| cysd 전체(19:10~19:25 · load 5) | **3366 통과 · 0 실패 · 17 무시 · 계 3383**(기준선 3364/2/17 의 `seatkeep_input_ack_*` 시한 초과 2개 = 이번엔 통과) |
+| e2e 회귀 6모드(19:25~19:28 · `cargo build --bins` 19:25 새 빌드 · SKA_RB_TESTBIN = deps/cys-434816d981c135cf) | **6/6 rc 0** — precheck(막힘 rc 27 · 데몬·좌석 그대로 → 같은 폴더 rc 0 · 좌석 생존) · rotate(교체 1/1 · 좌석 생존 · 겹침 0 · 공백 547ms · 닫은 뒤 keepers 0 · 관측 `transcript_missing [1]` = 판정 밖 · 앞 검증 좌석 증거에도 `[3, 1]`) · update(rename 교체 adopted · 스테이지 rc 1/`--as-bundle` rc 0 · `--end-keepers` 데몬 있음 rc 3 · 없음 = 정식 좌석 SIGNAL 1 · 옛 번들 = `end_exe_not_seatkeep`) · symlink(rc 0 · 점검 줄 0 · 교체됨) · ustuck(rotate rc 0 · 「막힘으로 세지 않음」 · 좌석 생존) · rbprep(snapbad · ok · ekfail **3/3 pass**) · 끝에 `/private/tmp/ska-` 프로세스 **0** |
 | 팩 | 영향 없음(팩·CI 파일 무변 · 바뀐 문구를 참조하는 팩·yml 0 · grep) → ci-branch 팩 단계 생략 |
 
 ### 원작자 파일 변경 줄(후임 4)
@@ -438,3 +442,9 @@ pid 생존 · 출생 시각 = 기록/등록부 값 · 실행 파일 = 이 cysd �
 1. `bash /private/tmp/claude-501/-Users-oogisoogi-axdev--wt-cys-1116-seatkeep/8a2a3335-7bd3-4153-85d8-c1fdb2f7ab3f/scratchpad/full.sh <같은 scratchpad>` — 재부팅으로 /private/tmp 가 지워졌으면 이 절 「시험」 표의 묶음을 env -i(HOME·TMPDIR=/private/tmp/sk4f · PATH 에 ~/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin)로 `cargo test --lib -- --test-threads 4` → `--bin cys` → `--bin cysd` 순서로 다시(기준선 = 앞 표: cys 799/0/2 · cysd 3364/2/17 · lib update:: 269/0/1 → 새 시험 +7 lib · +1 cys).
 2. e2e 회귀: `for m in precheck rotate update symlink ustuck rbprep; do env -i HOME=/private/tmp/sk4t PATH=/usr/bin:/bin TMPDIR=/private/tmp/sk4t LANG=en_US.UTF-8 USER=$USER LOGNAME=$USER SKA_RB_TESTBIN=$PWD/<cargo test --lib --no-run 이 알려 주는 target/debug/deps/cys-…> /usr/bin/python3 -I scripts/seatkeep-adopt-e2e.py $PWD/target/debug $m 1; done` → 끝에 `ps -axo command= | grep -c '^/private/tmp/ska-'` = 0.
 3. 숫자를 이 절 표에 채우고 커밋 → master 【확인요청】(처분표 1~7 · 위 한계 5줄 · 커밋). codex 추가 회차 없음(마지막 회차).
+
+## 후임 4b(surface:2330 · 브리프 `master/briefs/2026-11-20-successor-seatkeep4b.md` · 원장 spawn 18:43:00 · sha 대조) — 재부팅 뒤 시험 숫자 채우기 · 마지막 회차
+- 숫자 = 위 「시험(후임 4 …)」 표에 채움. 코드 무변경(이 매듭 = HANDOFF 만).
+- 붉음 1 = lib census(`raw_command_new_census_is_frozen` · cys.rs 16 ↔ 15) — 9fe952959 대조 같은 붉음 · 원인 2b741e0c6 의 `pgrep` 스폰. 📌 처분안: 동결표 cys.rs 15 → 16 + 주석 1줄(T6a takeover 폴백 후보 `pgrep -f MacOS/cysd` · 맥 전용 경로) — 또는 `cys::hidden_command` 로 바꿔 계수 15 유지. 어느 쪽이든 master 결정 뒤 1줄 고침.
+- 지시 없이 내린 판단: ① census 붉음을 고치지 않음(범위 밖 · 처분 2갈래가 설계 선택) ② rotate 의 `transcript_missing` 는 스크립트가 판정하지 않는 관측값이라 붉음으로 세지 않음(앞 검증 증거에도 있음).
+- 함정: zsh 에서 `git show $c:src/...` 는 `:s` 가 치환 수식어로 먹힌다 → `"${c}:src/..."`.

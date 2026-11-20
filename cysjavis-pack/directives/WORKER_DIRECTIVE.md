@@ -255,6 +255,8 @@ master가 모든 위임 티켓에 이 4규칙을 자동 주입한다(`javis_orch
 ## 11. 리뷰어 협력 (앵커4 — 중요 포인트 의무)
 - **검증·반박·토론이 필요한 중요 포인트에는 agy·codex 리뷰어를 의무적으로 사용한다**
   (master가 심판·촉진하는 라운드 루프). 혼자 결론내고 넘어가지 마라.
+  ★cysr: Antigravity(agy) 좌석 문이 닫힌 기본 설치에서 「agy」 자리는 Claude 대체 검토자가 맡는다(구글 개인 요금제 약관 —
+  다른 프로그램이 agy 를 부리면 사용자 계정 정지 위험). ⛔agy 좌석을 띄우거나 agy 창에 쓰거나 좌석 문을 열지 마라.
 - reviewer 노드(agy/codex/grok)에 검토·생성을 직접 의뢰할 수 있다. **의뢰 프롬프트는
   `python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_orchestra.py" review-prompt --task "<T>"
   --scope "<지정 파일/범위>"` 로 생성**해 제약("지정 파일/범위만, 무관 배회 금지")을 항상

@@ -1,9 +1,12 @@
 ---
 name: script-writer-voice-prep
 description: 검증된 대본을 음성 합성용 청크로 분절하는 하위 스킬 — 자연스러운 문장·절 경계에서 쪼개고 연속성 메타(prev/next 텍스트)와 시각 큐를 보존한다. script-writer 6단계, voice-clone-elevenlabs의 입력 생성. "대본 청크 분절 / 음성 준비 / 나레이션 분할" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # script-writer-voice-prep
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 긴 대본을 통째로 합성하면 청크 간 프로소디가 튄다. 그래서 짧게 나눠 합성하되 — **중요:
 "60초"는 구식 기준이다.** 검증된 현재 베스트프랙티스(ElevenLabs request stitching, 2024+)는:

@@ -1,0 +1,59 @@
+{"osc": "7501", "body": "?", "term": "BEL", "t": 0.145, "run": "A"}
+{"act": "send", "what": "down", "t": 8.039, "run": "A"}
+{"act": "send", "what": "enter(trust-yes)", "t": 9.222, "run": "A"}
+{"act": "send", "what": "prompt1", "t": 15.389, "run": "A"}
+{"act": "send", "what": "enter", "t": 16.427, "run": "A"}
+{"act": "send", "what": "prompt2-permission", "t": 41.554, "run": "A"}
+{"act": "send", "what": "enter", "t": 42.615, "run": "A"}
+{"act": "send", "what": "esc", "t": 67.643, "run": "A"}
+{"act": "send", "what": "exit", "t": 73.725, "run": "A"}
+{"act": "send", "what": "enter", "t": 74.76, "run": "A"}
+{"act": "eof", "t": 75.395, "run": "A"}
+{"act": "wait", "status": 0, "t": 75.395, "run": "A"}
+{"act": "done", "cwd": "<tmp>", "bytes": 8199, "t": 75.395, "run": "A"}
+{"osc": "7501", "body": "?", "term": "BEL", "t": 0.144, "run": "B"}
+{"act": "answered-query", "t": 0.144, "run": "B"}
+{"osc": "7501", "body": "state=blocked:app=claude-code:kind=permission:msg=dHJ1c3QgdGhpcyBmb2xkZXI=", "term": "BEL", "t": 0.145, "msg_decoded": "trust this folder", "run": "B"}
+{"act": "send", "what": "down", "t": 8.136, "run": "B"}
+{"act": "send", "what": "enter(trust-yes)", "t": 9.144, "run": "B"}
+{"osc": "7501", "body": "state=clear", "term": "BEL", "t": 9.146, "run": "B"}
+{"act": "send", "what": "prompt1", "t": 15.212, "run": "B"}
+{"act": "send", "what": "enter", "t": 16.233, "run": "B"}
+{"osc": "7501", "body": "state=idle:app=claude-code", "term": "BEL", "t": 16.314, "run": "B"}
+{"act": "send", "what": "prompt2-permission", "t": 41.367, "run": "B"}
+{"act": "send", "what": "enter", "t": 42.442, "run": "B"}
+{"osc": "7501", "body": "state=working:app=claude-code", "term": "BEL", "t": 42.512, "run": "B"}
+{"osc": "7501", "body": "state=working:app=claude-code:msg=V3JpdGluZyBwcm9iZS50eHQ=", "term": "BEL", "t": 44.064, "msg_decoded": "Writing probe.txt", "run": "B"}
+{"osc": "7501", "body": "state=done:app=claude-code", "term": "BEL", "t": 45.02, "run": "B"}
+{"act": "send", "what": "esc", "t": 67.582, "run": "B"}
+{"act": "send", "what": "exit", "t": 73.605, "run": "B"}
+{"act": "send", "what": "enter", "t": 74.628, "run": "B"}
+{"osc": "7501", "body": "state=clear", "term": "BEL", "t": 74.668, "run": "B"}
+{"osc": "7501", "body": "state=clear", "term": "BEL", "t": 74.925, "run": "B"}
+{"act": "eof", "t": 75.283, "run": "B"}
+{"act": "wait", "status": 0, "t": 75.283, "run": "B"}
+{"act": "done", "cwd": "<tmp>", "bytes": 9754, "t": 75.283, "run": "B"}
+{"osc": "7501", "body": "?", "term": "BEL", "t": 0.372, "run": "C"}
+{"act": "answered-query", "t": 0.372, "run": "C"}
+{"osc": "7501", "body": "state=blocked:app=claude-code:kind=permission:msg=dHJ1c3QgdGhpcyBmb2xkZXI=", "term": "BEL", "t": 0.374, "msg_decoded": "trust this folder", "run": "C"}
+{"act": "send", "what": "down", "t": 8.025, "run": "C"}
+{"act": "send", "what": "enter(trust-yes)", "t": 9.03, "run": "C"}
+{"osc": "7501", "body": "state=clear", "term": "BEL", "t": 9.037, "run": "C"}
+{"osc": "7501", "body": "state=idle:app=claude-code", "term": "BEL", "t": 9.457, "run": "C"}
+{"act": "send", "what": "prompt1", "t": 15.038, "run": "C"}
+{"act": "send", "what": "enter", "t": 16.222, "run": "C"}
+{"osc": "7501", "body": "state=working:app=claude-code", "term": "BEL", "t": 16.429, "run": "C"}
+{"osc": "7501", "body": "state=done:app=claude-code", "term": "BEL", "t": 17.258, "run": "C"}
+{"act": "send", "what": "prompt2-permission", "t": 41.254, "run": "C"}
+{"act": "send", "what": "enter", "t": 42.441, "run": "C"}
+{"osc": "7501", "body": "state=working:app=claude-code", "term": "BEL", "t": 42.49, "run": "C"}
+{"osc": "7501", "body": "state=blocked:app=claude-code:kind=permission:msg=<redacted-path>", "term": "BEL", "t": 43.942, "msg_decoded": "p7501-1aw033i5/probe.txt", "run": "C"}
+{"act": "send", "what": "esc", "t": 67.591, "run": "C"}
+{"osc": "7501", "body": "state=idle:app=claude-code", "term": "BEL", "t": 67.688, "run": "C"}
+{"act": "send", "what": "exit", "t": 73.658, "run": "C"}
+{"act": "send", "what": "enter", "t": 74.732, "run": "C"}
+{"osc": "7501", "body": "state=clear", "term": "BEL", "t": 74.765, "run": "C"}
+{"osc": "7501", "body": "state=clear", "term": "BEL", "t": 75.067, "run": "C"}
+{"act": "eof", "t": 75.544, "run": "C"}
+{"act": "wait", "status": 0, "t": 75.544, "run": "C"}
+{"act": "done", "cwd": "<tmp>", "bytes": 10207, "t": 75.545, "run": "C"}

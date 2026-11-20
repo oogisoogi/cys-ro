@@ -22,6 +22,16 @@ impl Row {
             .unwrap()
     }
 
+    /// cys 패치(1.1.16 · cysr-1116-s2): 이 행의 칸 수(크기 변경 전에 밀려난 스크롤백 행은 옛 폭) — 스크롤백 행 재생용.
+    pub(crate) fn width(&self) -> u16 {
+        self.cols()
+    }
+
+    /// cys 패치(1.1.16 · cysr-1116-s2 · codex 4R): 글자가 하나라도 있는가(높이 줄임 때 버리는 행 판정).
+    pub(crate) fn has_any_contents(&self) -> bool {
+        self.cells.iter().any(crate::cell::Cell::has_contents)
+    }
+
     pub fn clear(&mut self, attrs: crate::attrs::Attrs) {
         for cell in &mut self.cells {
             cell.clear(attrs);

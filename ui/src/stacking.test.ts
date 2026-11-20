@@ -109,14 +109,37 @@ describe("층서 계약 — Control Center 위에 확인 창·토스트", () => 
   });
 });
 
+// ── 팝오버·컨텍스트 메뉴(TICKET=cysr-cc-popover-z-1118 · 2026-11-18) ──
+// 사건: Control Center 를 연 채 상단바 「화면 설정」을 누르면 #theme-pop(z 1000)이 #cc-panel(1500 · 상단바 아래 전체 덮개)
+// 뒤에 열려 안 보였다(단추는 눌리는데 무반응). #ctx-menu(오른쪽 클릭 메뉴)도 같은 토큰이라 같은 결함이었다.
+describe("팝오버·컨텍스트 메뉴 층서 — Control Center 위 · 팔레트·확인 창 아래", () => {
+  test("#ctx-menu · #theme-pop 은 둘 다 --z-ctx-menu 를 참조한다(한 층)", () => {
+    for (const sel of ["#ctx-menu", "#theme-pop"]) {
+      let v: string | null = null;
+      for (const r of RULES) if (r.sels.includes(sel)) v = declOf(r.body, "z-index") ?? v;
+      expect(v).toBe("var(--z-ctx-menu)");
+    }
+  });
+  test("팝오버는 Control Center 패널보다 위다 — 아니면 CC 를 연 채 누른 「화면 설정」이 무반응으로 보인다", () => {
+    expect(TOKENS.get("--z-ctx-menu")!).toBeGreaterThan(TOKENS.get("--z-cc-panel")!);
+    expect(zOf("#theme-pop")!).toBeGreaterThan(zOf("#cc-panel")!);
+    expect(zOf("#ctx-menu")!).toBeGreaterThan(zOf("#cc-panel")!);
+  });
+  test("팝오버는 팔레트·확인 창·토스트 아래다 — 모달이 팝오버에 가리지 않는다", () => {
+    expect(zOf(".modal-overlay")!).toBeGreaterThan(zOf("#theme-pop")!);
+    expect(zOf(".palette-overlay")!).toBeGreaterThan(zOf("#theme-pop")!);
+    expect(zOf("#toasts")!).toBeGreaterThan(zOf("#theme-pop")!);
+  });
+});
+
 // ── §5-1 층서 토큰 표 — 층은 한 곳에서 **이름으로** 정하고, 다음 사람은 관계를 보고 새 층을 끼운다 ──
 describe("층서 토큰 표(§5-1) — :root 한 곳 정의 · 선택자는 토큰 참조", () => {
   // 표의 순서(아래 → 위). §5-1 의 일곱 층 + 원래 값이 표 사이에 있던 드래그 표시 두 층.
   const ORDER = [
     "--z-pane-overlay",
-    "--z-ctx-menu",
     "--z-drop-indicator",
     "--z-cc-panel",
+    "--z-ctx-menu",
     "--z-palette",
     "--z-toast-under-modal",
     "--z-modal",

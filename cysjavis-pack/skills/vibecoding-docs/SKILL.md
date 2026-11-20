@@ -1,6 +1,7 @@
 ---
 name: vibecoding-docs
 description: NLC "Spec/Doc driven 10단계" 28문서를 프로젝트에 인스턴스화하는 문서 파이프라인 스킬. assets/templates의 헌법(rules)~실행(implement) 28템플릿을 Level별 필수 세트로 깔고, 각 문서 생성 후 doc-critic(20년차 시니어 기준 확대해석·스코프크립 감사)을 거쳐, CLAUDE.md 브릿지 부트스트랩 설치와 세션 sanity check까지 수행한다. "문서 세트 만들어 / 헌법 문서 깔아줘 / spec 문서 생성 / 28문서 템플릿 / rules·root-sot 인스턴스화", 또는 [[vibecoding]] 2단계로 발동.
+disable-model-invocation: true
 ---
 
 # vibecoding-docs

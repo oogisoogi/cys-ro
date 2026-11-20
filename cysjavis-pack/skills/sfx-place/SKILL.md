@@ -1,6 +1,6 @@
 ---
 name: sfx-place
-description: 효과음(SFX)을 영상 타임라인의 적절한 지점에 배치하는 대표 스킬 — provider는 하드코딩하지 않고 javis_select로 결정론 선택(무키 로컬 SFX 라이브러리 바닥부터, deny-by-default). 현 audio-post가 BGM(배경음악)만 다룬다면 이 스킬은 *효과음 배치*를 담당한다. "효과음 / SFX / 사운드이펙트 / 효과음 배치 / 휙 효과음 / whoosh / foley / freesound" 트리거, 또는 cinematic·screen-demo 아키타입의 assets 단계로 발동.
+description: 효과음(SFX)을 영상 타임라인의 알맞은 지점에 배치한다. 「효과음 / 휙 소리 / SFX 넣어」 요청 때.
 cys:
   capability: sfx-place
   stability: beta
@@ -20,12 +20,14 @@ cys:
 ## provider 선택 (하드코딩 금지 — javis_select 위임)
 
 ```bash
-javis_select rank --catalog "${CYS_PACK_DIR:-$HOME/.cys/pack}/round/video_provider_catalog.json" \
+python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_select.py" rank --catalog "${CYS_PACK_DIR:-$HOME/.cys/pack}/round/video_provider_catalog.json" \
   --capability sfx-place --intent "<용도: 트레일러임팩트/데모콜아웃>" --free-first
 ```
 
-- **무료·로컬 바닥**: `sfx_local`(로컬 SFX 라이브러리·무키·결정론). 키가 없어도 항상 가용 —
-  효과음 배치는 키 없이 동작한다.
+- **무료·로컬 바닥**: `sfx_local`(로컬 SFX 라이브러리·무키·결정론). 키는 필요 없다.
+  ⚠ 단 팩에는 효과음 음원 폴더가 없다(카탈로그 항목뿐 · 경로·검사 없음 · 2026-11 확인) → 쓰기 전에 권리를
+  가진 음원 폴더를 지정하거나, ffmpeg 로 직접 합성한 효과음(`sine`·`anoisesrc` + `afade` 등)을 쓴다 —
+  남의 저작물이 0 이라 사용권 문제는 없다(Content ID 자동 대조가 잘못 걸리는 일까지 없다는 보증은 아님).
 - 더 넓은 라이브러리가 필요하면 `sfx_freesound`(Freesound CC·`FREESOUND_API_KEY` 설정 시 setup_offer로
   안내). `--free-first`로 무료 바닥 우선.
 
@@ -60,3 +62,7 @@ javis_select rank --catalog "${CYS_PACK_DIR:-$HOME/.cys/pack}/round/video_provid
 - 아키타입 매니페스트(D4) assets 단계 success_criteria 예:
   `{"kind":"json_valid"}` + `{"kind":"field_present","value":"placements"}`.
 - cost_class=light: 배치 계획은 가벼움(실제 오디오 처리는 audio-post 소관).
+
+## 원 설명 (목록 상주 설명 축소 전 원문 · 1.1.12 cysr-1112-skill-fold)
+
+효과음(SFX)을 영상 타임라인의 적절한 지점에 배치하는 대표 스킬 — provider는 하드코딩하지 않고 javis_select로 결정론 선택(무키 로컬 SFX 라이브러리 바닥부터, deny-by-default). 현 audio-post가 BGM(배경음악)만 다룬다면 이 스킬은 *효과음 배치*를 담당한다. "효과음 / SFX / 사운드이펙트 / 효과음 배치 / 휙 효과음 / whoosh / foley / freesound" 트리거, 또는 cinematic·screen-demo 아키타입의 assets 단계로 발동.

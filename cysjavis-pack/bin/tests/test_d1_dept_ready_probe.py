@@ -58,7 +58,16 @@ if [ -n "${D10_MODE:-}" ]; then
   #   ★cysr-1111-adv-fixes #1: 승자는 이름이 cysd 인 프로세스다(sleep 을 cysd 라는 이름으로 실행 — 맥 ps comm=argv0 ·
   #   리눅스 comm=실행 경로 끝 이름) · lost_reused = 락의 낡은 pid 를 관계없는 산 프로세스(sleep)가 재사용.
   #   ★#6: 락은 실물(deadman::claim_lock `write!(file,"{pid}")`)처럼 **줄바꿈 없이** 쓴다(printf %s).
-  mkdir -p "$T/w" && ln -sf "$(command -v sleep)" "$T/w/cysd"
+  #   ★cysr-1116(러너 ubuntu-26.04): 리눅스는 이름이 cysd 인 **셸 스크립트**(리눅스 comm = 스크립트 이름 · 안에서 sleep 을 제
+  #   이름으로 부름). sleep 을 cysd 이름 심링크로 부르면 uutils coreutils(26.04 기본 · 다중 호출 실행 파일)가 argv0 불일치로
+  #   즉시 거부해 승자가 바로 죽는다(Launchpad 2126689 · uutils #10135). 맥은 그대로 심링크(맥 comm = 실행 경로 · 스크립트면
+  #   comm = /bin/sh 라 안 됨 · 실측 2026-11-20).
+  mkdir -p "$T/w"
+  if [ "$(uname -s)" = Linux ]; then
+    printf '#!/bin/sh\nwhile :; do sleep 1; done\n' > "$T/w/cysd" && chmod +x "$T/w/cysd"
+  else
+    ln -sf "$(command -v sleep)" "$T/w/cysd"
+  fi
   case "$D10_MODE" in
     lost_dead) ( exit 0 ) & dp=$!; wait "$dp"; printf %s "$dp" > "${CYS_SOCKET%.sock}.lock"; exit 3 ;;
     lost_win) "$T/w/cysd" 600 & printf %s "$!" > "${CYS_SOCKET%.sock}.lock"; ( sleep "${D10_WIN_UP_S:-2}"; : > "$T/up" ) & exit 3 ;;

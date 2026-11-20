@@ -16,12 +16,13 @@ use std::path::{Path, PathBuf};
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// ~/.cys 직하에서 격리하는 정확 이름. (pack·조직 레지스트리·상태·마커·토글 전부)
-const CYS_BASE_EXACT: [&str; 30] = [
+const CYS_BASE_EXACT: [&str; 31] = [
     "pack",
     "pack.prev",
     "pack.swap",
     ".pack-download",
     ".pack-journal",
+    ".pack-journal.d", // ★1.1.16(U02 · 원작자 7c82a7a5 GX7): 레인마다 팩 업데이트 저널(crate::pack::PACK_JOURNAL_ROOT)
     ".pack-accepted.json",
     ".pack-apply.lock",
     ".pack-reinject-pending.json",
@@ -1505,8 +1506,9 @@ pub fn verify_roots_quiescent(
         let Ok(s) = std::fs::read_to_string(&lock) else {
             continue;
         };
-        if let Ok(pid) = s.trim().parse::<u32>() {
-            if pid != 0 && pid_alive_and_cysd(pid) {
+        // ★T3: 첫 칸만(노브 켬이면 `pid 출생시각` 두 칸) — 두 칸을 통째로 숫자로 읽으면 실패해 산 cysd 를 못 보고 넘어간다.
+        if let Some(pid) = crate::startup_lock_holder_pid(&s) {
+            if pid_alive_and_cysd(pid) {
                 return Err(format!(
                     "살아있는 cysd(pid {pid})가 {} 을 보유 중 — 정지 후 재시도",
                     lock.display()
@@ -1514,6 +1516,9 @@ pub fn verify_roots_quiescent(
             }
         }
     }
+    // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V6): 데몬은 위에서 멈춘 것을 확인했지만 팩 적용 잠금은 데몬 밖 `cys pack-update`(사람·러너)도 쥔다 —
+    //   그 잠금이 든 `.pack-journal.d`·`.pack-apply.lock` 을 쥔 채 옮기지 않는다(pack::pack_apply_locks_quiet 머리 주석).
+    crate::pack::pack_apply_locks_quiet(&roots.cys_base)?;
     Ok(())
 }
 
@@ -1954,6 +1959,12 @@ pub fn execute_quarantine(
         let n = remove_pack_skill_links(dir, &roots.cys_base);
         if n > 0 {
             stripped.push(format!("{}: pack 스킬 심링크 {n}개 제거", dir.display()));
+        }
+        if plan.purge_local {
+            let n = remove_local_skill_links(dir, &roots.cys_base);
+            if n > 0 {
+                stripped.push(format!("{}: 로컬 스킬 심링크 {n}개 제거(--purge-local)", dir.display()));
+            }
         }
     }
     // defaults 도메인은 cfprefsd 캐시가 있어 파일 격리만으론 안 지워진다 — 병행 삭제.
@@ -2635,6 +2646,84 @@ fn strip_settings_matching(
 /// 실디렉토리·타 대상 링크 불가침(preflight 심링크 파밍의 역연산). 반환: 제거 수.
 pub fn remove_pack_skill_links(skills_dir: &Path, cys_base: &Path) -> usize {
     let needle = format!("{}/pack", cys_base.to_string_lossy().replace('\\', "/"));
+    remove_skill_links_containing(skills_dir, &needle)
+}
+
+/// `--purge-local` 전용: 대상이 사용자 오버레이 스킬(`~/.cys/local/skills/…`)인 심링크만 제거한다.
+/// preflight C84 가 좌석 프로필에 거는 로컬 스킬 링크의 역연산 — 오버레이를 지우면 끊길 링크라
+/// 남겨 두면 프로필 스킬 목록에 깨진 항목이 남는다(asset-skills-for-seats). 오버레이를 보존하는
+/// 기본 초기화에서는 부르지 않는다(링크가 그대로 유효).
+pub fn remove_local_skill_links(skills_dir: &Path, cys_base: &Path) -> usize {
+    // ★codex 1R: 부분 문자열 비교는 `/backup/<home>/.cys/local/skills/x`·`…/local/skills/../../y` 같은
+    //   남의 링크까지 지운다 — 대상을 링크 폴더 기준으로 풀고 `..` 를 어휘적으로 정리한 뒤 경로 구성요소로 잰다.
+    let root = lexical_normalize(&cys_base.join(LOCAL_OVERLAY).join("skills"));
+    let mut n = 0usize;
+    let Ok(rd) = std::fs::read_dir(skills_dir) else {
+        return 0;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        let is_link = std::fs::symlink_metadata(&p).map(|m| m.file_type().is_symlink()).unwrap_or(false);
+        if !is_link {
+            continue;
+        }
+        let Ok(t) = std::fs::read_link(&p) else {
+            continue;
+        };
+        let t_str = t.to_string_lossy();
+        // Windows 확장 접두: `\\?\UNC\srv\share` → `\\srv\share` · `\\?\C:\…` → `C:\…`(codex 2R)
+        let t = if let Some(rest) = t_str.strip_prefix(r"\\?\UNC\") {
+            PathBuf::from(format!(r"\\{rest}"))
+        } else {
+            PathBuf::from(t_str.strip_prefix(r"\\?\").unwrap_or(&t_str))
+        };
+        let abs = if t.is_absolute() { t } else { skills_dir.join(t) };
+        let abs = lexical_normalize(&abs);
+        if !same_path(&abs, &root)
+            && path_starts_with(&abs, &root)
+            && (std::fs::remove_file(&p).is_ok() || std::fs::remove_dir(&p).is_ok())
+        {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Windows 는 경로 대소문자를 구분하지 않는다 — 구성요소를 소문자로 맞춰 비교한다(codex 2R).
+fn path_key(p: &Path) -> Vec<String> {
+    p.components()
+        .map(|c| {
+            let s = c.as_os_str().to_string_lossy().into_owned();
+            if cfg!(windows) { s.to_lowercase() } else { s }
+        })
+        .collect()
+}
+
+fn same_path(a: &Path, b: &Path) -> bool {
+    path_key(a) == path_key(b)
+}
+
+fn path_starts_with(p: &Path, root: &Path) -> bool {
+    let (p, r) = (path_key(p), path_key(root));
+    p.len() >= r.len() && p[..r.len()] == r[..]
+}
+
+/// 파일 시스템을 보지 않고 `.`·`..` 를 정리한다(끊긴 링크 대상도 판정할 수 있게).
+fn lexical_normalize(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+fn remove_skill_links_containing(skills_dir: &Path, needle: &str) -> usize {
     let mut n = 0usize;
     if let Ok(rd) = std::fs::read_dir(skills_dir) {
         for e in rd.flatten() {
@@ -2646,7 +2735,7 @@ pub fn remove_pack_skill_links(skills_dir: &Path, cys_base: &Path) -> usize {
                 continue;
             }
             let target_hits = std::fs::read_link(&p)
-                .map(|t| t.to_string_lossy().replace('\\', "/").contains(&needle))
+                .map(|t| t.to_string_lossy().replace('\\', "/").contains(needle))
                 .unwrap_or(false);
             // ★W2(성찰 확정): Windows 는 **디렉토리 심링크**를 remove_file 로 지울 수 없다
             // (RemoveDirectory 필요). unix 는 unlink 라 첫 시도에서 성공하므로 무영향.
@@ -2802,6 +2891,21 @@ mod tests {
         );
         touch(&home.join("proj-a/_round/tasks/t.json"), "{}");
         r
+    }
+
+    /// ★1.1.16(U02 · 원작자 7c82a7a5 GX7 이식): 초기화가 레인 저널 폴더 `.pack-journal.d` 를 다른 알려진 이름처럼 격리한다.
+    #[test]
+    fn j1116_plan_quarantines_the_lane_journal_folder() {
+        let td = test_home("plan-journal-d");
+        let r = fake_roots(&td);
+        mk(&r.temp);
+        mk(&r.cys_base.join(".pack-journal.d/pack-dept-d1/active/files"));
+        let plan = build_plan(&r, &ResetOptions { purge_license: false, purge_local: false, purge_round: false });
+        let q: Vec<String> = plan.quarantine.iter().map(|i| norm(&i.path)).collect();
+        let k: Vec<String> = plan.keep.iter().map(|i| norm(&i.path)).collect();
+        let _ = std::fs::remove_dir_all(&td);
+        assert!(q.iter().any(|p| p.ends_with(".cys/.pack-journal.d")), "{q:?}");
+        assert!(!k.iter().any(|p| p.ends_with(".cys/.pack-journal.d")), "{k:?}");
     }
 
     #[test]
@@ -3162,6 +3266,48 @@ mod tests {
         assert!(verify_roots_quiescent(&r, &dead, &no_daemon).is_ok());
     }
 
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V6): 데몬이 멈췄어도 `cys pack-update` 가 팩 적용 잠금(공용 · 쓰는 이 표식 · 레인)을 쥐고 있으면
+    /// 격리를 시작하지 않는다(부분 이동 0) · 잠금 파일이 있어도 아무도 안 쥐면 통과 · 잠금 파일을 만들지 않는다.
+    #[test]
+    fn v6_quiescent_gate_blocks_a_live_pack_update_lock() {
+        let td = test_home("gate-pack");
+        let r = seed_practice_tree(&td);
+        let no_cysd = |_pid: u32| false;
+        let no_daemon = || false;
+        assert!(verify_roots_quiescent(&r, &no_cysd, &no_daemon).is_ok());
+        assert!(!r.cys_base.join(".pack-apply.lock").exists(), "확인이 잠금 파일을 만들었다");
+        let lane_lock = crate::pack::lane_apply_lock_path(&r.cys_base, &r.cys_base.join("pack"));
+        for lp in [r.cys_base.join(".pack-apply.lock"), crate::pack::writer_marker_lock_path(&r.cys_base), lane_lock] {
+            std::fs::create_dir_all(lp.parent().unwrap()).unwrap();
+            let held = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&lp).unwrap();
+            held.lock().unwrap();
+            let e = verify_roots_quiescent(&r, &no_cysd, &no_daemon).expect_err("쥔 팩 적용 잠금을 통과시켰다");
+            assert!(e.contains("팩 업데이트가 진행 중"), "{e}");
+            let plan = build_plan(&r, &ResetOptions { purge_license: false, purge_local: false, purge_round: false });
+            let mut noop = |_p: &str, _d: &str| {};
+            assert!(execute_quarantine(&plan, &r, &no_cysd, &no_daemon, &mut noop).is_err());
+            assert!(r.cys_base.join("pack").exists() && lp.exists(), "게이트 거부인데 옮겼다");
+            held.unlock().unwrap();
+            drop(held);
+            assert!(verify_roots_quiescent(&r, &no_cysd, &no_daemon).is_ok(), "놓은 잠금 파일({}) 은 통과", lp.display());
+        }
+    }
+
+    /// TICKET=cysr-seatkeep-t3 독립 검증 D5: 노브 켬 cysd 는 잠금에 `"<pid> <출생 시각 µs>"` 두 칸을 쓴다 — 관문이 첫 칸을 읽어
+    /// 산 cysd 를 막아야 한다(옛 판독기 `s.trim().parse::<u32>()` 로 되돌리면 통과시켜 붉어진다).
+    #[test]
+    fn quiescent_gate_blocks_live_cysd_holder_two_field_lock() {
+        let td = test_home("gate2");
+        let r = seed_practice_tree(&td);
+        touch(&r.state_root.join("cys/cys.lock"), "4242 1794420130692329");
+        let live = |pid: u32| pid == 4242;
+        let no_daemon = || false;
+        let e = verify_roots_quiescent(&r, &live, &no_daemon).expect_err("두 칸 잠금의 산 cysd 를 통과시킴");
+        assert!(e.contains("pid 4242"), "{e}");
+        let dead = |_pid: u32| false;
+        assert!(verify_roots_quiescent(&r, &dead, &no_daemon).is_ok());
+    }
+
     #[test]
     fn strip_removes_only_cys_hooks_and_restores_prev_statusline() {
         let td = test_home("strip");
@@ -3305,6 +3451,24 @@ mod tests {
         assert!(!skills.join("appbuild").exists());
         assert!(skills.join("mine").exists(), "user symlink must survive");
         assert!(skills.join("real-dir").exists(), "real dir must survive");
+        // asset-skills-for-seats: 로컬 오버레이 스킬 링크는 --purge-local 때만(별도 함수) 지운다.
+        mk(&cys_base.join("local/skills/mine-local"));
+        std::os::unix::fs::symlink(cys_base.join("local/skills/mine-local"), skills.join("mine-local"))
+            .unwrap();
+        assert_eq!(remove_pack_skill_links(&skills, &cys_base), 0, "pack 제거는 로컬 링크 불가침");
+        // 남의 경로(접두만 닮은 백업 · `..` 탈출)는 로컬 정리 대상이 아니다(codex 1R).
+        let backup = td.join("backup").join(cys_base.strip_prefix("/").unwrap_or(&cys_base)).join("local/skills/bk");
+        mk(&backup);
+        std::os::unix::fs::symlink(&backup, skills.join("bk")).unwrap();
+        std::os::unix::fs::symlink(cys_base.join("local/skills/../../../esc"), skills.join("esc")).unwrap();
+        std::os::unix::fs::symlink("../../.cys/local/skills/rel-gone", skills.join("rel-gone")).unwrap();
+        // 지워지는 것 = 절대 대상 mine-local + 상대 대상 rel-gone(home/.claude/skills 기준 → home/.cys/local/skills)
+        assert_eq!(remove_local_skill_links(&skills, &cys_base), 2);
+        assert!(!skills.join("mine-local").exists());
+        assert!(std::fs::symlink_metadata(skills.join("rel-gone")).is_err(), "끊긴 상대 로컬 링크 제거");
+        assert!(std::fs::symlink_metadata(skills.join("bk")).is_ok(), "백업 경로 링크 보존");
+        assert!(std::fs::symlink_metadata(skills.join("esc")).is_ok(), "`..` 탈출 링크 보존");
+        assert!(skills.join("mine").exists(), "user symlink must survive local purge");
     }
 
     /// ★W1 회귀: Windows 훅 형식(`bash "C:/…"`)에서도 이전 statusLine 이 원복된다.
@@ -4341,6 +4505,7 @@ mod r2f_dm_factory_reset {
     fn r2f_dm_factory_reset_inventory_lists_carry_the_new_persistent_files() {
         assert_eq!(CYS_BASE_EXACT2.len(), 12, "~/.cys 직하 정확 이름 목록(2차)의 길이");
         assert!(CYS_BASE_EXACT.contains(&"pack.swap"), "끊긴 교체의 옛 팩 — 빠지면 초기화 뒤 다음 설치가 되살린다");
+        assert!(CYS_BASE_EXACT.contains(&".pack-journal") && CYS_BASE_EXACT.contains(&crate::pack::PACK_JOURNAL_ROOT), "레인 저널 폴더(1.1.16)와 옛 공유 저널이 기본 격리 목록에 없다");
         assert!(CYS_BASE_PREFIX.contains(&"pack.swap-"), "복구의 보존 폴더 — 빠지면 초기화 뒤에도 사용자 상태가 남는다");
         assert!(CYS_BASE_EXACT2.contains(&"claude-tui-written.json") && crate::claude_tui::LEDGER_FILE.ends_with("/claude-tui-written.json"), "claude tui 원장이 기본 격리 목록에 없다");
         assert!(CYS_BASE_EXACT2.contains(&".update-attempt.json"), "~/.cys/.update-attempt.json(인앱 업데이트 시도 기록)이 기본 격리 목록에 없다");

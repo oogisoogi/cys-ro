@@ -505,6 +505,10 @@ fn spawn_bridge(
     token: &str,
 ) -> Result<(u32, i32), String> {
     use cys::SpawnPolicy;
+    // ★agy 좌석 문(독립 검증 B3): 새로 등록한 cmd 든 기록된 cmd 재사용이든 스폰 직전에 판정.
+    if let Some(m) = cys::agy_door::launch_refusal("", Some(bridge_cmd)) {
+        return Err(m);
+    }
     #[cfg(unix)]
     let mut cmd = {
         let mut c = std::process::Command::new("sh");

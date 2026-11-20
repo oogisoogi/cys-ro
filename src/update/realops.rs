@@ -880,7 +880,8 @@ impl Ops for RealOps {
         // ★1.1.16 ⑤(TICKET=cysr-1116-debt-d-1119): 교체 직후 · 새 데몬 기동 전 — 새 cys·cysd·cysr 첫 실행(OS 검사)을 여기서 떠안는다(실패 무시 · 로그 1줄).
         //   맥만 — 윈 교체(S9)는 NSIS 설치기 실행이고 그 POSTINSTALL 이 이미 `cys daemon prime` 1회를 돈다(두 번 돌지 않는다).
         if let (Os::Mac, Some(dir)) = (self.env.os, self.new_cys().parent()) {
-            eprintln!("[update] {}", super::prime::prime_log_line(&super::prime::prime_binaries(dir)));
+            // 맥 cysr = 서명된 새 번들 안의 별칭(cys 를 가리키는 심링크) — 배치는 번들 교체가 증명 · 같은 바이트는 prime 이 다시 확인.
+            eprintln!("[update] {}", super::prime::prime_log_line(&super::prime::prime_binaries(dir, true)));
         }
         self.rotate(&self.new_cys(), false)
     }

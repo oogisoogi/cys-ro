@@ -262,12 +262,10 @@ pub fn read_fallback(state_dir: &Path) -> Option<FallbackNote> {
     serde_json::from_slice(&std::fs::read(state_dir.join(FALLBACK_MARKER)).ok()?).ok()
 }
 
-/// 표식이 **지금 데몬**의 것인가(순수) — 표식 pid 모름 = 그렇다고 본다 · 지금 pid 모름 = 판정 못 함(그렇다고 본다) · 둘 다 알고 다르면 낡음.
+/// 표식이 **지금 데몬**의 것인가(순수) — ★codex 3R minor([master#fc79d3e6]): 둘 다 알고 **같을 때만** 참 · 표식 pid 없음(기록 때 pid 를 못 얻음 ·
+/// 손으로 쓴 표식)·지금 pid 모름 = 버린다(작업으로 뜬 데몬에 거짓 경고를 붙이지 않는다 · 권한 갈림 경고는 따로 그대로 난다).
 pub fn fallback_applies(note: &FallbackNote, current_daemon_pid: Option<u32>) -> bool {
-    match (note.daemon_pid, current_daemon_pid) {
-        (Some(a), Some(b)) => a == b,
-        _ => true,
-    }
+    matches!((note.daemon_pid, current_daemon_pid), (Some(a), Some(b)) if a == b)
 }
 
 /// ★공유 한 함수: 작업 실행 → 대기를 [`CYSD_TASK_WAITS`] 대로 최대 3회. `run_task` = `schtasks /Run /TN cysd` 성공 여부 ·
@@ -1069,8 +1067,11 @@ mod tests {
         // 깨진 표식 = 없음 · pid 모름 = 지금 데몬 것으로 본다.
         std::fs::write(dir.join(FALLBACK_MARKER), b"{").unwrap();
         assert!(read_fallback(&dir).is_none());
+        // ★codex 3R minor: pid 없는 표식·지금 pid 모름 = 버림(같은 pid 가 확인될 때만).
         let n0 = FallbackNote { at_unix: 0, reason: String::new(), attempts: 3, daemon_pid: None };
-        assert!(fallback_applies(&n0, Some(5)) && fallback_applies(&FallbackNote { daemon_pid: Some(5), ..n0.clone() }, None));
+        assert!(!fallback_applies(&n0, Some(5)) && !fallback_applies(&n0, None));
+        assert!(!fallback_applies(&FallbackNote { daemon_pid: Some(5), ..n0.clone() }, None));
+        assert!(fallback_applies(&FallbackNote { daemon_pid: Some(5), ..n0.clone() }, Some(5)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

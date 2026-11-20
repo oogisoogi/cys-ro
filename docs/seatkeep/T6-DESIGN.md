@@ -92,3 +92,18 @@
 
 ## 5. 하지 않는 것
 - T1(대화 임대)·강제 진행 rotate · 윈도우(T7) · 노브 기본 켬 판단(T8 숫자 뒤).
+
+## 6. T6a 구현 결과(후임 3 · 11-20 · 커밋 277c2df57 · 2656d91e2 · 052bcb18d · 다음 커밋)
+
+| 항목 | 결과 | 근거 |
+|---|---|---|
+| 폴백 거르개(F2) | (2b741e0c6 · 앞 좌석) | 단위 `takeover_fallback_spares_seatkeep` |
+| D2 기록 없는 산 seatkeep | 관리용 종료 → dead · 예약 없음 | e2e `norecord` · 뮤턴트 C |
+| drain 분리(2-1) | `org.status daemon.seat_adopt.adoptable_surfaces` · rotate ① 이 그 좌석(main) 저장 실패를 rc 에서 뺌 | 단위 `drain_ok_excludes_only_adoptable_main_seats`(실물 = e2e 좌석이 에이전트가 아니라 drain 대상 0 → 측정 대기) |
+| 사전 점검(2-2) | `cysd --adopt-check [--json]`(잠금·소켓·쓰기·연결 0) · rotate ① 앞 · 막힘·옛 cysd = rc 27 | e2e `precheck`(bin2 cys = rc 27 · 데몬 pid 같음 · 좌석 생존 → bin cys = rc 0) · 뮤턴트 H·K |
+| holder 상한(2-6) | 입양 모드 산 seatkeep 좌석 ≥ `CYS_SEATKEEP_MAX_HOLDERS`(기본 64 📌) → 직접 PTY + `seat.seatkeep_capped` | e2e `cap`(상한 1 · seatkeep 1 · 둘째 직접 PTY · SIGKILL 뒤 첫 좌석만 산다) · 뮤턴트 I |
+| A1 rotate 6회 | rc 0 × 6 · 전 좌석 생존·목록·입력 왕복 · 작성자 하나 · 교체 21/21 · 전사 겹침 0 | e2e `rotate 6` |
+| F9 SIGTERM 정상 종료 | seatkeep·좌석 생존(rotate = 비기본 레인 kill -TERM) | 위 A1 |
+| F10 / D4 launchd | `launchctl submit` 시험 작업(com.cysr.test.t6.<pid>) remove → cysd 끝 · seatkeep pgid ≠ cysd pgid · seatkeep·좌석 생존 · 새 cysd 입양·입력 왕복 · 시험 라벨 0 | e2e `launchd` · 남은 차이 = 실제 plist(KeepAlive·ThrottleInterval 10)는 `daemon install --takeover` 길 — VM/실기 몫 |
+| A4 / D5 진짜 claude | 계정2 프로필 · `--setting-sources project` · haiku · rotate 5회 = 5/5 암호어 답 · claude pid 같음 · 새 데몬 5/5 | e2e `claude`(최종 화면 scratchpad `e2e/t6a-d5d-final-screen.txt`) |
+| A13 비용(디버그 빌드 · load 40~50) | seatkeep RSS 1좌석 36.7MB · 5좌석 합 82.5MB(평균 16.5) · 20좌석 합 247MB(평균 12.4) · seatkeep CPU 합 0.9·2.5·6.5% (좌석 50ms 마다 한 줄) · cysd RSS ≈ 9MB(압축 메모리 의심 · 참고값) | e2e `cost` · 판정선 = master |

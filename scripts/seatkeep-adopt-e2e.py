@@ -38,7 +38,10 @@ OUT = sys.argv[4] if len(sys.argv) > 4 else None
 # cap = holder 총수 상한(T6a 2-6): CYS_SEATKEEP_MAX_HOLDERS=1 → 둘째 좌석 = 직접 PTY(seatkeep 1개 · 사건 seat.seatkeep_capped) → 데몬 SIGKILL 뒤 첫 좌석만 산다.
 # launchd = D4(master 허락 · F10): 시험 cysd 를 사용자 launchd 시험 작업(라벨 com.cysr.test.t6.<pid> · launchctl submit = 살려 두기)으로 띄워
 #   좌석 → launchctl remove(작업 내림 = launchd 가 작업 프로세스 그룹에 신호) → seatkeep·좌석 생존? → 새 cysd 가 입양 · finally 로 remove + list 0 확인.
-assert MODE in ("adopt", "bound", "direct", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap", "launchd"), MODE
+# claude = A4/D5(master 허락 · 토큰 소량): 진짜 claude 좌석(SKA_CLAUDE_CONFIG = 프로필 · --setting-sources project · --model haiku)에 암호어를 말한 뒤
+#   실제 cys rotate 를 SKA_ROUNDS(기본 5)번 · 매 회 「암호어가 뭐였지?」(질문엔 암호어 없음) → 화면의 암호어 수가 늘어야 · claude pid 같음.
+# cost = A13 비용 숫자(판정선 없음 · 보고만): 좌석 SKA_COST_N(기본 "1,5,20")개를 차례로 채우며 seatkeep RSS 합·평균 · cysd RSS · 10초 CPU% (좌석 = 50ms 마다 한 줄).
+assert MODE in ("adopt", "bound", "direct", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap", "launchd", "claude", "cost"), MODE
 R = f"/private/tmp/ska-{MODE[:3]}-{os.getpid() % 10000}"
 shutil.rmtree(R, ignore_errors=True)
 for d in ("home", "tmp", "s", "packstate", "pack", "bin", "bin2", "logs"):
@@ -115,9 +118,9 @@ ENV = {"HOME": f"{R}/home", "USER": os.environ["USER"], "LOGNAME": os.environ["U
        "CYS_NO_OFFICE_BRIDGE": "1", "CYS_NO_AUTORESTORE": "1", "CYS_NO_AUTOSTART": "1", "PATH": f"{R}/bin:/usr/bin:/bin",
        "TERM": "xterm-256color", "LANG": "en_US.UTF-8"}
 DENV = dict(ENV)
-if MODE in ("adopt", "bound", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap", "launchd"):
+if MODE in ("adopt", "bound", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap", "launchd", "claude", "cost"):
     DENV["CYS_SEATKEEP"] = "1"
-if MODE in ("adopt", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap", "launchd"):
+if MODE in ("adopt", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap", "launchd", "claude", "cost"):
     if MODE == "cap":
         DENV["CYS_SEATKEEP_MAX_HOLDERS"] = "1"
     DENV["CYS_SEATKEEP_ADOPT"] = "1"
@@ -490,6 +493,112 @@ if MODE == "pending":
         stop_all()
     if alive(seat_pid):
         os.kill(seat_pid, signal.SIGKILL)
+    sys.exit(0)
+
+if MODE == "cost":
+    d, _ = start_daemon("0")
+    def ps_of(pids):
+        if not pids:
+            return []
+        out = subprocess.run(["/bin/ps", "-o", "rss=,time=", "-p", ",".join(map(str, pids))], capture_output=True, text=True).stdout
+        return [l.split() for l in out.splitlines() if l.strip()]
+    def cpu_secs(t):
+        parts = t.split(":")
+        return float(parts[-1]) + 60 * float(parts[-2]) + (3600 * float(parts[-3]) if len(parts) > 2 else 0)
+    made = 0
+    rows = []
+    for n in [int(x) for x in os.environ.get("SKA_COST_N", "1,5,20").split(",")]:
+        while made < n:
+            log = f"{R}/logs/c{made}.log"
+            cys("new-surface", "--cwd", "/private/tmp", "--role", f"cost{made}", "--cmd", f"{SEAT} {log} 50")
+            wait_start(log)
+            made += 1
+        time.sleep(2.0)
+        kp = keepers()
+        a = ps_of(kp + [d.pid])
+        time.sleep(10.0)
+        b = ps_of(kp + [d.pid])
+        rss = [int(x[0]) for x in b[:-1]]
+        cpu = [(cpu_secs(y[1]) - cpu_secs(x[1])) / 10.0 * 100 for x, y in zip(a, b)]
+        rows.append({"seats": n, "keepers": len(kp), "keeper_rss_kb_sum": sum(rss), "keeper_rss_kb_avg": round(sum(rss) / max(1, len(rss))),
+                     "keeper_cpu_pct_sum": round(sum(cpu[:-1]), 2), "cysd_rss_kb": int(b[-1][0]), "cysd_cpu_pct": round(cpu[-1], 2)})
+        print(json.dumps(rows[-1], ensure_ascii=False), flush=True)
+    if OUT:
+        open(OUT, "a").write(json.dumps({"cost": rows}, ensure_ascii=False) + "\n")
+    stop_all()
+    sys.exit(0)
+
+if MODE == "claude":
+    word = "보라고래73"
+    cfg = os.environ["SKA_CLAUDE_CONFIG"]
+    real_home = os.environ["SKA_REAL_HOME"]
+    claude = os.environ.get("SKA_CLAUDE_BIN", f"{real_home}/.local/bin/claude")
+    cwd = f"{R}/proj"
+    os.makedirs(cwd)
+    d, _ = start_daemon("0")
+    cmd = f"/usr/bin/env HOME={real_home} CLAUDE_CONFIG_DIR={cfg} {claude} --setting-sources project --model haiku"
+    sid = cys("new-surface", "--cwd", cwd, "--role", "seatc5", "--cmd", cmd).stdout.strip()
+    screen = lambda: cys("read-screen", "--surface", sid, "--lines", "400").stdout
+    def wait_for(pred, secs):
+        t = time.time()
+        while time.time() - t < secs:
+            sc = screen()
+            if pred(sc):
+                return sc
+            time.sleep(1.0)
+        return None
+    def say(text):
+        cys("send", "--surface", sid, text)
+        time.sleep(0.5)
+        cys("send-key", "--surface", sid, "Return")
+    res = {"rounds": []}
+    sc = wait_for(lambda x: "trust" in x.lower() or "❯" in x, 60)
+    open(f"{R}/logs/claude-screen-0.txt", "w").write(sc or screen())
+    if sc and "trust" in sc.lower():
+        # 기본 선택 = 「No, exit」 — 아래로 한 칸(「Yes, I trust this folder」) 뒤 확정.
+        cys("send-key", "--surface", sid, "Down")
+        time.sleep(0.5)
+        cys("send-key", "--surface", sid, "Return")
+        wait_for(lambda x: "trust" not in x.lower(), 30)
+    time.sleep(3.0)
+    open(f"{R}/logs/claude-screen-1.txt", "w").write(screen())
+    def pid_of():
+        rows = [l for l in cys("list").stdout.splitlines() if "seatc5" in l]
+        m = re.search(r"pid=(\d+)", rows[0]) if rows else None
+        return m.group(1) if m else None
+    res["claude_pid"] = pid_of()
+    say(f"이 대화의 암호어는 {word} 이다. 기억해 둬. 지금은 OK 한 낱말로만 답해.")
+    base = wait_for(lambda x: x.count(word) >= 1 and "OK" in x.split(word, 1)[-1], 120)
+    res["told"] = base is not None
+    count = (base or "").count(word)
+    renv = dict(DENV)
+    renv.pop("CYS_NO_AUTOSTART", None)
+    for rnd in range(int(os.environ.get("SKA_ROUNDS", "5"))):
+        old = json.loads(cys("identify").stdout).get("daemon_pid")
+        rr = subprocess.run([f"{R}/bin/cys", "rotate", "--skip-depts", "--skip-drain"], env=renv, capture_output=True, text=True, timeout=400)
+        t = time.time()
+        while alive(old) and time.time() - t < 30:
+            time.sleep(0.2)
+        idn = cys("identify")
+        npid = json.loads(idn.stdout).get("daemon_pid") if idn.returncode == 0 else None
+        if npid:
+            daemons.append(PidDaemon(npid))
+        time.sleep(4.0)  # 입양 직후 큐 멈춤(3초) 뒤
+        q = f"암호어가 뭐였지? 그 낱말 하나만 답해. ({rnd + 1}번째)"
+        say(q)
+        # 판정 = 이번 질문(회차 번호로 유일) 뒤에 암호어가 나왔는가 — 화면 전체 개수는 읽기 창에서 앞 줄이 밀려나면 안 늘어난다(11-20 실측).
+        sc = wait_for(lambda x: q in x and word in x.rsplit(q, 1)[-1], 120)
+        now = (sc or screen()).count(word)
+        res["rounds"].append({"rotate_rc": rr.returncode, "new_daemon": bool(npid) and npid != old, "recalled": sc is not None,
+                              "word_count": now, "same_pid": pid_of() == res["claude_pid"]})
+        count = now
+    print(json.dumps(res, ensure_ascii=False), flush=True)
+    if OUT:
+        open(OUT, "a").write(json.dumps(res, ensure_ascii=False) + "\n")
+    open(f"{R}/logs/claude-screen.txt", "w").write(screen())
+    cys("close-surface", sid)
+    time.sleep(2.0)
+    stop_all()
     sys.exit(0)
 
 if MODE == "launchd":

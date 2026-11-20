@@ -219,3 +219,10 @@ orchestra_todo_path 0s · org_audit 5s · pack_syntax_warnings 2s · preflight_n
 3. 로그온 작업 등 우리 코드 밖에서 작업 경유로 뜬 데몬이 오면 표식 파일은 남는다 — doctor 는 pid 대조로 무시(낡은 표식) · 다음 우리 경로의 작업 성공 때 지워짐.
 4. 앱 갈래에서 작업 데몬이 「받지만 답 없음」이면 형제를 띄우지 않고 그 오류(종전 C-LOUD 규칙과 같은 꼴).
 5. codex 2R 대기열에 덧붙일 것: c30a6e097(②) · 4d6495204(⑤) · habitat 07ec7ca(⑤).
+
+### 9-5. codex 3R 처분([master#fc79d3e6] · 결과 = master/reports/verify/codex-1120/debtd-r3.md BLOCK) — 고침 31ae4b724
+- ① blocking(같은 사용자 → 관리자 권한 상승): NSIS 별칭 복사 실패 갈래 = `daemon prime --skip-alias` 뒤 `Goto cys_post_prime_done`(평소 호출로 안 흐름) · 성공 갈래(cys_post_alias_ok)만 평소 호출. `prime_binaries(dir, alias_placed)` = cysr 는 배치 신호 ∧ cys 와 바이트 대조 통과일 때만 · 대조~실행 동안 별칭 손잡이를 쥔다(윈 share_mode = FILE_SHARE_READ 만 → 쓰기·삭제·이름 바꾸기 0 · 맥 = 열어 둔 손잡이뿐 — 맥 경로엔 권한 상승이 없음). model.py 「not modeled」 문단의 「세 실행 파일 다 검증됨」 가정을 바로잡고 GUARD_PIN 재핀(43be0ed0…).
+- 시험: d3_prime_runs_the_cysr_alias_only_when_placed_and_byte_same(실패 주입 = 배치 실패면 진짜 사본이어도 cysr 실행 0 · 심은 별칭·같은 길이 다른 바이트 = 0 · 같은 바이트 사본 = 1 · 맥 꼴 심링크 = 1 · 다른 곳 심링크 = 0) · 배선 핀 = NSIS 두 갈래(실패 갈래에 평소 호출 0 · Goto 앞 --skip-alias · 각 1회) · CLI `Prime { skip_alias }`.
+- ② minor: fallback_applies = 표식 pid·지금 pid 둘 다 알고 같을 때만(pid 없는 표식·지금 pid 모름 = 버림).
+- 뮤턴트 5 붉음: 배치 신호 무시 · 바이트 대조 생략 · NSIS 실패 갈래 평소 호출 · Goto 제거 · pid 느슨.
+- 게이트: lib **1287 ok · 0 FAIL**(+1) · cys **801 ok** · drainhold 4 ok · 윈 교차 타입체크 오류 0·경고 123 · NSIS 모델 84011 종단 I1/I3/I4 · 하네스·템플릿 초록 · 설치기 tests/debt-d-1116-prime.sh 9/9(맥 별칭 = 심링크 → 게이트 통과) · 실물 `cys daemon prime` = cysr 0.03s / `--skip-alias` = 「cysr 건너뜀(별칭 배치가 확인되지 않음)」 둘 다 rc 0 · 상태 파일 0.

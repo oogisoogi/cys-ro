@@ -388,3 +388,8 @@ pid 생존 · 출생 시각 = 기록/등록부 값 · 실행 파일 = 이 cysd �
 
 ### 커밋 · 원작자 파일(이 처분)
 - 커밋 = 이 절을 담은 커밋(아래 HEAD). cys.rs: `adopt_precheck_verdict(…, current_pending)` · `rotate_adopt_precheck` 의 connect_raw·pending·canonicalize·보고 줄 · 시험 표. update/realops.rs: `confirm` 에 점검 · `stop` 에서 뺌 · `seat_adopt_precheck` pending · `seat_adopt_precheck_verdict(…, current_pending)` · `end_keepers_if_old_unaware` 못 찾음 = 종료 안 함 · rc 3 재시도 · 시험 2(표 · 배선 핀). scripts: symlink·ustuck 모드(검증 좌석 출처).
+
+### 다음 첫 행동(후임 4 또는 이 좌석)
+1. codex q/09(T6a+T6b · master#eac76ac7 = 16:37 에 b562e8c07 이후 머리를 봄) 판정 → master 처분 줄대로 마지막 1회 고침.
+2. master 회신 대기: 📌 `sibling_daemon_path`(cys.rs:5061~) 링크 미해석 = 기존 결함 · 고칠지.
+3. 측정 대기: 실 업데이터 S6 점검·되감기 종료(VM) · drain 분리 실물 · A13 릴리스 빌드 · 자동 복원 재실행 실물.

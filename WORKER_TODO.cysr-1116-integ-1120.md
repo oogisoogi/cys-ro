@@ -26,7 +26,7 @@
 - [x] 13 seatkeep 9b591371b
 
 ## 게이트·점검
-- [ ] 전체 게이트(docs/integ-1116/gate-1116.sh)
+- [ ] 전체 게이트 — g1 붉음 판독·재실행 남음(HANDOFF §5)
 - [ ] 부하성 시험 load<15 단독 3회(test_9b · dept_name_guard · c6_reap · seatkeep_input_ack_stall · k17)
 - [ ] 시험 숫자 전후 표
 - [ ] git grep -c oogisoogi = s5 예외 목록 대조

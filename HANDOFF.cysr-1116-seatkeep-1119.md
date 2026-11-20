@@ -448,3 +448,4 @@ pid 생존 · 출생 시각 = 기록/등록부 값 · 실행 파일 = 이 cysd �
 - 붉음 1 = lib census(`raw_command_new_census_is_frozen` · cys.rs 16 ↔ 15) — 9fe952959 대조 같은 붉음 · 원인 2b741e0c6 의 `pgrep` 스폰. 📌 처분안: 동결표 cys.rs 15 → 16 + 주석 1줄(T6a takeover 폴백 후보 `pgrep -f MacOS/cysd` · 맥 전용 경로) — 또는 `cys::hidden_command` 로 바꿔 계수 15 유지. 어느 쪽이든 master 결정 뒤 1줄 고침.
 - 지시 없이 내린 판단: ① census 붉음을 고치지 않음(범위 밖 · 처분 2갈래가 설계 선택) ② rotate 의 `transcript_missing` 는 스크립트가 판정하지 않는 관측값이라 붉음으로 세지 않음(앞 검증 증거에도 있음).
 - 함정: zsh 에서 `git show $c:src/...` 는 `:s` 가 치환 수식어로 먹힌다 → `"${c}:src/..."`.
+- 매듭(master#cdf9bf4c · census 결정 A): lib.rs 동결표 `src/bin/cys.rs` 15 → 16 + 주석 1줄 → `cargo test --lib spawn_policy_tests`(격리 env -i) **19 통과 · 0 실패** · 새 작업 없음 = 이 좌석 매듭.

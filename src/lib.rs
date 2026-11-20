@@ -7689,7 +7689,8 @@ mod spawn_policy_tests {
         // src/bin/cys-seatkeep/main.rs = 0(칸 없음) — 1.1.15 의 10 은 전부 `#[cfg(unix)] mod imp` 안 **들여쓴** `#[cfg(test)] mod tests`
         //   (1662~2697행)의 시험 자식이었다(제품 스폰 0). 1.1.16(cysr-1116-backlog · §12-2 B) production_slice 가 들여쓴 시험 모듈을
         //   걷어 내 운영 코드만 센다 — 이 파일에 새 칸이 생기면 그것은 운영 스폰이다.
-        ("src/bin/cys.rs", 15),
+        // seatkeep T6a(2b741e0c6 · cysr-1116-seatkeep-1119): takeover 폴백 후보 `takeover_fallback_candidates` 의 `pgrep -f MacOS/cysd` +1 — launchd 경로 = 맥 전용 · 윈 도달 0.
+        ("src/bin/cys.rs", 16),
         ("src/bin/cysd/accounts.rs", 2),
         // 1.1.11 편입(원작자 0.14.52 시험 파일 3개 · 전부 #[cfg(test)] 격리 고정물 — 제품 스폰 0): F-01 U4-3 계측 하네스 2 ·
         //   native publication 격리 감독자 2 · PTY 할당 입장 검체 1. 새 제품 스폰이 아니라 원작자 시험의 자식 프로세스다.

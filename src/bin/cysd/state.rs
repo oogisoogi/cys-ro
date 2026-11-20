@@ -3048,6 +3048,8 @@ struct DisplayGrant {
     row_owned: bool,
     /// 좌석이 surfaces 맵에 들어가면 해제 — 그 뒤엔 되돌리지 않는다.
     armed: bool,
+    /// 입양(T4) 번호 — 실패 되돌림 때 행을 `spawn_failed` 가 아니라 `boot_orphan` 으로 되돌린다(다음 기동이 다시 입양할 수 있게 · codex T4 1R #7).
+    adopt: bool,
 }
 
 /// ★v116-num: 좌석 생성이 surfaces 맵 등록 전에 실패(`?` 반환 · panic)하면 번호를 되돌린다(설계 §3-2 ③
@@ -3074,7 +3076,7 @@ impl Drop for DisplaySpawnGuard<'_> {
                 &self.daemon.socket_path,
                 g.id,
                 now_epoch(),
-                "spawn_failed",
+                if g.adopt { "boot_orphan" } else { "spawn_failed" },
             ) {
                 eprintln!("[cysd] surface_numbers spawn_failed 기록 실패 surface:{}: {e}", g.id);
             }
@@ -4053,6 +4055,18 @@ pub fn seat_token_same_generation(token: &str, started_at: f64) -> bool {
     token.split('.').next() == Some(seat_token_generation(started_at).as_str())
 }
 
+impl Daemon {
+    /// ★T5: claim 「불일치」 갈래의 세대 판정 — 현 세대(`seat_token_same_generation` · 이 프로세스) ∨ 입양으로 이어받은 세대
+    /// (`adopted_token_gens` · 출처 = seatkeep 이 상호 확인 뒤 넘긴 토큰). 둘 다 아니면 전세대/형식 불명(조용한 체인 폴백).
+    pub fn seat_token_known_generation(&self, token: &str) -> bool {
+        seat_token_same_generation(token, self.started_at)
+            || token
+                .split('.')
+                .next()
+                .is_some_and(|g| self.adopted_token_gens.lock().unwrap_or_else(|e| e.into_inner()).contains(g))
+    }
+}
+
 /// 워커 인스턴스 dedup: 복수 워커가 같은 역할명(→같은 todo 파일)을 공유하지 않도록,
 /// "worker" 요청에 충돌 없는 고유 역할명(worker, worker-2, worker-3 …)을 배정한다.
 /// 슬롯은 roles에 없거나 점유자가 죽은(없거나 exited) 경우 '빈' 것으로 본다 →
@@ -4065,6 +4079,18 @@ pub fn dedup_worker_role(
     is_alive: impl Fn(u64) -> bool,
     my_id: u64,
 ) -> String {
+    dedup_worker_role_avoiding(requested, roles, is_alive, my_id, |_| false)
+}
+
+/// `dedup_worker_role` + 피할 이름(`reserved` 가 참인 번호는 점유로 본다 — T4 미결 좌석 예약 · `seat_adopt::role_name_reserved`).
+/// `reserved` 는 유한 개 이름에만 참이어야 한다(모든 이름이 참이면 끝나지 않음 — 호출자 계약).
+pub fn dedup_worker_role_avoiding(
+    requested: &str,
+    roles: &HashMap<String, u64>,
+    is_alive: impl Fn(u64) -> bool,
+    my_id: u64,
+    reserved: impl Fn(&str) -> bool,
+) -> String {
     if requested != "worker" {
         return requested.to_string();
     }
@@ -4075,6 +4101,10 @@ pub fn dedup_worker_role(
         } else {
             format!("worker-{n}")
         };
+        if reserved(&name) {
+            n += 1;
+            continue;
+        }
         match roles.get(&name) {
             None => return name,                        // 미점유 → 사용
             Some(&h) if h == my_id => return name,       // 이미 내 것(재진입)
@@ -4157,6 +4187,18 @@ thread_local! {
 #[cfg(test)]
 pub(crate) fn force_parser_panic_once() {
     FORCE_PARSER_PANIC.with(|f| f.set(true));
+}
+
+/// 입양(T4) 첫 재생 중 「옛 cysd 가 이미 처리한」 앞부분 — 파서·화면 모드만 갱신한다. DSR 응답(옛 질의에 다시 답하지 않음)·화면
+/// 송출·OSC 알림·전사(중복)는 하지 않는다. 출력 시각·세대는 올리지 않는다(새 출력이 아니다).
+fn replay_screen_only(surf: &Surface, bytes: &[u8]) {
+    let mut parser = surf.parser.lock().unwrap_or_else(|e| e.into_inner());
+    let (_resp, panicked) = process_chunk_isolated(&mut parser, bytes, 0);
+    if panicked {
+        surf.parser_panics.fetch_add(1, Ordering::Relaxed);
+        eprintln!("[cysd] surface {} 입양 재생 중 vt100 파서 패닉 격리 — 화면 스냅샷 소실(이어지는 출력은 계속)", surf.id);
+    }
+    mirror_screen_modes(surf, parser.screen());
 }
 
 /// (W4) PTY 청크를 vt100 파서에 반영하되, 파서 내부 인덱스 패닉을 격리한다.
@@ -4372,6 +4414,17 @@ mod dedup_tests {
         // 자기 자신이 이미 'worker'를 보유하면 같은 이름 반환(재진입 idempotent)
         let r = roles(&[("worker", 7)]);
         assert_eq!(dedup_worker_role("worker", &r, |_| true, 7), "worker");
+    }
+
+    #[test]
+    fn dedup_avoids_reserved_names() {
+        // T4 미결 좌석 예약(독립 검증 차단): 예약된 이름은 비어 있어도 점유로 본다 — worker 살아 있음 · worker-2 예약 → worker-3.
+        let r = roles(&[("worker", 1)]);
+        assert_eq!(crate::state::dedup_worker_role_avoiding("worker", &r, |_| true, 9, |n| n == "worker-2"), "worker-3");
+        // 첫 이름이 예약이어도 건너뜀 · 예약 없음 = 종전과 같음 · worker 아닌 요청 = 그대로
+        assert_eq!(crate::state::dedup_worker_role_avoiding("worker", &roles(&[]), |_| true, 9, |n| n == "worker"), "worker-2");
+        assert_eq!(crate::state::dedup_worker_role_avoiding("worker", &r, |_| true, 9, |_| false), dedup_worker_role("worker", &r, |_| true, 9));
+        assert_eq!(crate::state::dedup_worker_role_avoiding("seatr", &r, |_| true, 9, |_| true), "seatr");
     }
 
     // ---- (E-b) live_worker_count ----
@@ -5004,6 +5057,10 @@ pub struct Daemon {
     /// Requests an earlier daemon run left `writing` without a terminal (restore as PartialUnknown).
     pub writer_inconclusive: Mutex<Vec<crate::agent_write::Inconclusive>>,
     pub started_at: f64,
+    /// ★T5(좌석 토큰 이음 · TICKET=cysr-1116-seatkeep-1119): 입양으로 이어받은 좌석 토큰의 세대 접두(`{시작 시각 hex}-{cysd pid hex}`) 집합.
+    /// claim 의 「불일치」 갈래에서 현 세대와 같이 「알려진 세대」로 본다(같은 세대 남의 토큰 = 시끄러운 거절). 무영속 · 접두만(비밀 아님) ·
+    /// 좌석이 끝나도 빼지 않는다(그 세대의 다른 좌석이 살 수 있고, 빼면 같은 세대 위조가 조용한 폴백으로 바뀐다).
+    pub adopted_token_gens: Mutex<std::collections::HashSet<String>>,
     /// ★v116-pack(R-B1 P2-b): 이 데몬의 콜드부트 자동 복원 단계(`crate::AUTO_RESTORE_*` · writer = main.rs 단독).
     /// org.status `daemon.auto_restore` 로 노출 — 편성이 복원과 같은 순간 좌석을 세우지 않게 기다리는 근거.
     pub auto_restore_phase: AtomicU8,
@@ -7180,6 +7237,7 @@ impl Daemon {
             writer_journal: Mutex::new(None),
             writer_inconclusive: Mutex::new(Vec::new()),
             started_at: now_epoch(),
+            adopted_token_gens: Mutex::new(std::collections::HashSet::new()),
             auto_restore_phase: AtomicU8::new(crate::AUTO_RESTORE_OFF),
             started_instant: Instant::now(),
             consumption: Mutex::new(Consumption::default()),
@@ -7272,7 +7330,34 @@ impl Daemon {
         if let Some(kind) = alarm {
             self.numbers_alarm(kind, Some(id), None);
         }
-        DisplayGrant { id, display_no, prev, row_owned: true, armed: true }
+        DisplayGrant { id, display_no, prev, row_owned: true, armed: true, adopt: false }
+    }
+
+    /// 입양(T4): 살아 있는 좌석의 내부 번호·보이는 번호를 그대로 되찾는다 — 내부 번호 할당기가 그 번호를 다시 주지 않게 올리고(시드는
+    /// 대응표 최대값이라 보통 이미 위), 보이는 번호는 그 칸이 이 좌석이었거나(부팅이 Closed 로 둠) 비어 있을 때만 Live 로 되찾는다.
+    /// 다른 좌석이 그 사이 가져갔으면 번호 없음(「—」) + 경보 — 같은 번호 두 좌석을 만들지 않는다.
+    fn adopt_display(&self, id: u64, display_no: Option<u16>) -> DisplayGrant {
+        let mut a = self.display_alloc.lock().unwrap_or_else(|p| p.into_inner());
+        self.next_id.fetch_max(id + 1, Ordering::SeqCst);
+        let mut taken = false;
+        let (n, prev) = match display_no.filter(|n| (*n as usize) < a.holders.len()) {
+            Some(n) => {
+                let slot = &mut a.holders[n as usize];
+                match slot {
+                    Some(h) if h.surface_id != id && h.state == HolderState::Live => {
+                        taken = true;
+                        (None, None)
+                    }
+                    _ => (Some(n), std::mem::replace(slot, Some(Holder { surface_id: id, state: HolderState::Live }))),
+                }
+            }
+            None => (None, None),
+        };
+        drop(a);
+        if taken {
+            self.numbers_alarm("adopt_display_taken", Some(id), None);
+        }
+        DisplayGrant { id, display_no: n, prev, row_owned: true, armed: true, adopt: true }
     }
 
     /// ★v116-num: 좌석 닫힘을 할당기·대응표에 반영(설계 §3-2 ③ 닫기 행) — surfaces 락을 푼 **뒤** 호출.
@@ -8046,20 +8131,61 @@ impl Daemon {
         //   (= 이 티켓이 고치는 결함 그 자체의 축소판).
         agent: Option<String>,
     ) -> Result<Arc<Surface>, String> {
+        self.create_surface_core(cwd, cmd, title, role, rows, cols, env, claude_config_dir_override, agent, None)
+    }
+
+    /// 좌석 생성 본체. `adopt` = None 이면 위 `create_surface_with_env` 와 같다(새 자식 기동). Some 이면 **입양**(T4 · `seat_adopt`):
+    /// 살아 있는 seatkeep 에 이미 붙은 손잡이로 같은 번호의 좌석을 다시 등록한다 — 번호·약속은 좌석 기록에서, 자식은 띄우지 않고,
+    /// 좌석 토큰은 없음(T5 전 · 무토큰 좌석과 같은 체인 폴백) · 그 밖(쓰기 스레드·맵·역할·이벤트·읽기 스레드)은 새 좌석과 같은 길.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn create_surface_core(
+        self: &Arc<Self>,
+        cwd: Option<String>,
+        cmd: Option<String>,
+        title: Option<String>,
+        role: Option<String>,
+        rows: u16,
+        cols: u16,
+        env: &[(String, String)],
+        claude_config_dir_override: Option<String>,
+        agent: Option<String>,
+        adopt: Option<crate::seat_adopt::AdoptSeat>,
+    ) -> Result<Arc<Surface>, String> {
+        let (adopt_rec, adopt_spawned, mut adopt_token) = match adopt {
+            Some(a) => (Some(a.rec), Some(a.spawned), a.token),
+            None => (None, None, None),
+        };
         // ★v116-num: 내부 번호 + 보이는 번호(할당기 락 안 · 메모리만) → 대응표 행 INSERT(락 밖 · 동기 ·
         //   **PTY 를 열기 전** — 자식이 env 로 내부 번호를 받기 전에 기록이 있어야 X-10 이 닫힌다 · 설계 §3-2 ①②).
         //   쓰기가 실패해도 좌석은 만든다(4군 ③) — 경보만.
         // 아래 `?` 반환(PTY 열기·spawn 실패)·panic 이면 번호를 이전 주인으로 되돌리고 행을 spawn_failed 로
         // 닫는다 — guard 는 INSERT **전에** 세운다(INSERT 안의 panic 도 덮게 · Fable code-1R LOW-3).
-        let mut spawn_guard = DisplaySpawnGuard { daemon: self, grant: self.allocate_display() };
+        let mut spawn_guard = DisplaySpawnGuard {
+            daemon: self,
+            grant: match &adopt_rec {
+                Some(r) => self.adopt_display(r.surface_id, r.display_no),
+                None => self.allocate_display(),
+            },
+        };
         let id = spawn_guard.grant.id;
-        match crate::recall::surface_numbers_insert(
-            &self.socket_path,
-            id,
-            spawn_guard.grant.display_no,
-            now_epoch(),
-        ) {
+        match match &adopt_rec {
+            // 입양: 행은 이미 있다(부팅이 boot_orphan 으로 닫음) — 그 행을 다시 연다.
+            Some(r) => crate::recall::surface_numbers_reopen(&self.socket_path, id, spawn_guard.grant.display_no, r.created_at),
+            None => crate::recall::surface_numbers_insert(
+                &self.socket_path,
+                id,
+                spawn_guard.grant.display_no,
+                now_epoch(),
+            ),
+        } {
             Ok(()) => {}
+            // 입양(T4 · codex 2R): 행이 boot_orphan 이 아니다(열린 행·다른 닫힘) = 이 번호를 지금 다른 무엇이 쥐고 있을 수 있다 — 입양하지 않는다
+            // (호출자 = 미결 예약 · 행은 건드리지 않음 · 번호는 guard 가 되돌림).
+            Err(crate::recall::NumbersWriteErr::PkConflict(e)) if adopt_rec.is_some() => {
+                spawn_guard.grant.row_owned = false;
+                self.numbers_alarm("pk_conflict", Some(id), Some(&e));
+                return Err(format!("입양: 대응표 행 충돌 — {e}"));
+            }
             Err(crate::recall::NumbersWriteErr::PkConflict(e)) => {
                 spawn_guard.grant.row_owned = false;
                 self.numbers_alarm("pk_conflict", Some(id), Some(&e));
@@ -8076,15 +8202,20 @@ impl Daemon {
         let resolved_config_dir = claude_config_dir_override
             .clone()
             .unwrap_or_else(|| daemon_resolved.clone());
-        let config_dir_trusted =
-            claude_config_dir_override.is_none() && caller_env_keeps_config_dir(env, &daemon_resolved);
-        // 좌석 프로세스 손잡이(T3) — PTY 열기는 `seat_proc` 한 곳에서.
-        let opened = crate::seat_proc::open(self, PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })?;
+        let config_dir_trusted = match &adopt_rec {
+            Some(r) => r.config_dir_trusted,
+            None => claude_config_dir_override.is_none() && caller_env_keeps_config_dir(env, &daemon_resolved),
+        };
+        // 좌석 프로세스 손잡이(T3) — PTY 열기는 `seat_proc` 한 곳에서. 입양 = 이미 붙은 손잡이(열지 않음).
+        let opened = match adopt_spawned {
+            Some(_) => None,
+            None => Some(crate::seat_proc::open(self, PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })?),
+        };
 
         let shell = default_shell();
         let mut builder = CommandBuilder::new(&shell);
@@ -8201,7 +8332,9 @@ impl Daemon {
         //   함수가 5경로(create RPC·launch-agent·boot·restore·schedule)의 단일 합류점이라 여기 한 번이면
         //   master 좌석(부모 = cysd 직접 · VM 실측)까지 전부 덮는다. 좌석 토큰 주입 **앞**이다(배선
         //   자식에 비밀을 넘기지 않는다). 실패해도 기동은 계속된다(이벤트 1줄).
-        wire_seat_profile_before_exec(self, &builder, id, env);
+        if adopt_rec.is_none() {
+            wire_seat_profile_before_exec(self, &builder, id, env);
+        }
         // ★(0.14.41 · U18) 작업 폴더 읽기 관측 — **맥 한정 · 역할 좌석만 · 스폰 동작 불변**.
         // · 자리: 호출자 env 오버레이 **뒤**(호출자·상속 env 가 이 키를 위조·잔존시키지 못하게 먼저
         //   걷는다 — 부서 데몬이 막힌 좌석 안에서 떴다면 그 env 를 물려받았을 수 있다), 스폰 **앞**
@@ -8235,7 +8368,20 @@ impl Daemon {
         // · 실패 = 무토큰 스폰 + 경고(operator_token 선례 — 스폰 중단 금지: 전 좌석 생성 사망
         //   벡터 차단, 치명위험 ④). 무토큰 pane 은 claim 시 체인 폴백으로 종전과 동일 동작.
         // · 롤백: CYS_BOOT_GATES=0(스폰 시 판독 — U-20 선례 lib.rs 와 동형) → 미주입 = 완전 레거시.
-        let seat_token: Option<String> = if cys::boot_gates_master_off_from(
+        let seat_token: Option<String> = if adopt_rec.is_some() {
+            // 입양(T4·T5): 살아 있는 자식은 옛 데몬이 준 토큰을 env 로 쥐고 있다 — seatkeep 이 상호 확인 뒤 WELCOME 칸으로 넘긴 같은 값을
+            // (세대 정합 = `seat_adopt::check_adopted_token` 통과분만) 그대로 이 좌석 토큰으로 잇고 그 세대를 「입양 세대」로 등록한다.
+            // 없으면(옛 seatkeep · 정합 실패 · 롤백 스위치) 무토큰 좌석(claim = 체인 폴백 · 「실패 = 무토큰 스폰」과 같은 강등).
+            match adopt_token.take() {
+                Some(tok) if !cys::boot_gates_master_off_from(std::env::var(cys::ENV_BOOT_GATES).ok().as_deref()) => {
+                    if let Some(g) = tok.split('.').next() {
+                        self.adopted_token_gens.lock().unwrap_or_else(|e| e.into_inner()).insert(g.to_string());
+                    }
+                    Some(tok)
+                }
+                _ => None,
+            }
+        } else if cys::boot_gates_master_off_from(
             std::env::var(cys::ENV_BOOT_GATES).ok().as_deref(),
         ) {
             None
@@ -8255,12 +8401,43 @@ impl Daemon {
         };
 
         // 좌석 프로세스 손잡이(T3) — 자식 기동·Job 결박·slave 닫기는 `seat_proc::Opened::spawn`.
-        let mut spawned = opened.spawn(builder)?;
+        // T4(입양 노브 켬 · 새 seatkeep 좌석): 자식을 띄우기 **전** 임시본 기록 — 못 쓰면 좌석을 만들지 않는다(기록 없는 산 좌석 = 입양도 정리도
+        // 못 하는 좌석 · codex T4 1R #1). 노브 끔·직접 PTY·입양 갈래 = 이 블록 없음.
+        if adopt_rec.is_none() && crate::seat_adopt::enabled() {
+            if let Some((skid, dir)) = opened.as_ref().and_then(|o| o.seatkeep_ids()) {
+                crate::seat_adopt::record_provisional(
+                    &dir,
+                    &skid,
+                    id,
+                    spawn_guard.grant.display_no,
+                    &title.clone().unwrap_or_else(|| format!("surface {id}")),
+                    role.as_deref(),
+                    cmd.as_deref().unwrap_or(shell.as_str()),
+                    &cwd_str,
+                    !env.is_empty(),
+                    rows,
+                    cols,
+                    Some(resolved_config_dir.as_str()),
+                    config_dir_trusted,
+                )?;
+            }
+        }
+        let adopted = adopt_spawned.is_some();
+        let mut spawned = match (adopt_spawned, opened) {
+            (Some(sp), _) => sp,
+            (None, Some(o)) => o.spawn(builder)?,
+            (None, None) => return Err("좌석 생성: 열린 PTY 도 입양 손잡이도 없음".into()),
+        };
         let pid = spawned.pid;
 
         // Observation failure only leaves R absent. The original child stays owned
         // here and is transferred unchanged into Surface.child below.
-        let root_registration = crate::root_registration::observe(spawned.child.as_mut(), pid);
+        // 입양(T4 · T0 §2-9 권고 ⓑ): 이 cysd 가 띄운 자식이 아니다 — 「관측 없음」으로 둔다(발행 전 1회 · 소급 금지 계약 그대로).
+        let root_registration = if adopted {
+            crate::root_registration::RootRegistration::default()
+        } else {
+            crate::root_registration::observe(spawned.child.as_mut(), pid)
+        };
 
         let (reader, writer) = spawned.take_io()?;
 
@@ -8300,7 +8477,8 @@ impl Daemon {
             cwd: cwd_str,
             pid,
             root_registration,
-            created_at: now_epoch(),
+            // 입양(T4) = 처음 만든 때 그대로(기록값).
+            created_at: adopt_rec.as_ref().map(|r| r.created_at).unwrap_or_else(now_epoch),
             // 경과 측정 전용(§Surface.created_instant) — 벽시계 보정과 절전/복귀에 면역이다.
             created_instant: std::time::Instant::now(),
             // (B5 · §2-8) 부트 논스·ack — arm 전에는 둘 다 None 이고, arm 은 explicit RPC 로만
@@ -8338,7 +8516,7 @@ impl Daemon {
             //   ∴ 지금 고치면 얻는 안전은 0 이고 Windows 부트 경로의 판정만 흔든다. 정본 수리는
             //     '격리 키가 pane 에 실렸는가'를 별도 bool 로 기록하는 것이며, 그때 이 주석과
             //     아래 회귀 핀(create_surface_with_env_records_env_injected_flag)을 함께 고쳐라.
-            env_injected: !env.is_empty(),
+            env_injected: adopt_rec.as_ref().map(|r| r.env_injected).unwrap_or(!env.is_empty()),
             // ★(P1) 인메모리 저장이 전부다 — persist_topology(governance.rs)는 필드를 손으로
             // 골라 조립하므로 이 값이 topology.json 으로 샐 구조적 경로가 없다(명시 제외 불요·
             // '조립 지점에 추가하지 않는 한' 영속 금지가 기본값). 회귀 핀 P5 가 봉인한다.
@@ -8472,6 +8650,10 @@ impl Daemon {
         });
         // (1.1.16 · cysr-1116-s2) 첫 출력 전에도 surface.list 의 화면 행 커서가 이 파서 세대를 가리키게
         mirror_screen_modes(&surface, surface.parser.lock().unwrap_or_else(|e| e.into_inner()).screen());
+        // 입양(T4): 맵에 넣기 전에 기록의 약속 칸을 되살린다(맵에 들어간 순간부터 RPC·watchdog 이 읽는다).
+        if let Some(r) = &adopt_rec {
+            crate::seat_adopt::apply_record(&surface, r);
+        }
 
         // ★W2a: 이 create가 실제 등록한(dedup 후) 역할 — 아래에서 묘비 해제에 쓴다.
         let mut registered_role: Option<String> = None;
@@ -8488,7 +8670,7 @@ impl Daemon {
                 let mut roles = self.roles.lock().unwrap();
                 // worker면 충돌 없는 고유 역할명 배정(worker-N) — 복수 워커 todo 충돌 방지.
                 // 비-worker는 기존 latest-wins(같은 역할 재등록=최신 승리).
-                let final_role = dedup_worker_role(
+                let final_role = dedup_worker_role_avoiding(
                     r,
                     &roles,
                     |h| {
@@ -8498,6 +8680,7 @@ impl Daemon {
                             .unwrap_or(false)
                     },
                     id,
+                    crate::seat_adopt::role_name_reserved,
                 );
                 *surface.role.lock().unwrap() = Some(final_role.clone());
                 roles.insert(final_role.clone(), id);
@@ -8532,6 +8715,20 @@ impl Daemon {
             json!({"surface_ref": cys::surface_ref(id), "pid": pid, "cwd": surface.cwd,
                    "cmd": surface.cmd, "role": role, "display_no": surface.display_no}),
         );
+        // T4: seatkeep 좌석 기록(입양 노브 끔 = 아무것도 안 함) · 입양 좌석 = 재생 뒤 크기 흔들기.
+        crate::seat_adopt::record_surface(&surface);
+        // 입양 좌석의 첫 재생 중 「옛 cysd 가 처리를 끝냈다고 알린」 앞부분 = 화면만 다시 그린다(전사·응답·알림·화면 송출 중복 0 · T4).
+        // 재생 전체(앞 + 뒤)를 다 먹은 직후 크기를 한 번 흔든다(codex T4 1R #8 — 타이머 아님).
+        #[cfg(target_os = "macos")]
+        let (mut screen_only_left, mut replay_left): (u64, u64) = match surface.seat_link.as_ref().map(|l| l.replay_split()) {
+            Some((a, b)) if adopted => (a, a + b),
+            _ => (0, 0),
+        };
+        #[cfg(not(target_os = "macos"))]
+        let (mut screen_only_left, mut replay_left): (u64, u64) = (0, 0);
+        if adopted && replay_left == 0 {
+            crate::seat_adopt::nudge_now(Arc::clone(&surface));
+        }
 
         // Reader thread: PTY output → vt100 parser + scrollback + attach broadcast + health rules.
         let daemon = Arc::clone(self);
@@ -8571,7 +8768,32 @@ impl Daemon {
                         if debug {
                             eprintln!("[debug] surface {} read {n} bytes", surf.id);
                         }
+                        let mut start = 0usize;
+                        // 이 조각에서 첫 재생이 끝나는가 — 끝나면 이 조각의 화면·파서·전사 처리가 **다 끝난 뒤** 크기를 흔든다(codex T4 2R).
+                        let mut nudge_after = false;
+                        if replay_left > 0 {
+                            replay_left = replay_left.saturating_sub(n as u64);
+                            nudge_after = replay_left == 0;
+                        }
+                        if screen_only_left > 0 {
+                            let k = screen_only_left.min(n as u64) as usize;
+                            replay_screen_only(&surf, &buf[..k]);
+                            screen_only_left -= k as u64;
+                            // 경계에 걸친 DSR 질의를 잇는다(codex T4 1R #4 · 2R) — 이전 꼬리 + 화면 전용 조각을 이어 마지막 3바이트를 남긴다.
+                            dsr_tail.extend_from_slice(&buf[..k]);
+                            let cut = dsr_tail.len().saturating_sub(3);
+                            dsr_tail.drain(..cut);
+                            if k == n {
+                                if nudge_after {
+                                    crate::seat_adopt::nudge_now(Arc::clone(&surf));
+                                }
+                                continue;
+                            }
+                            start = k;
+                        }
                         let chunk = &buf[..n];
+                        // 입양 재생의 화면 전용 앞부분(위)을 뺀 나머지만 아래 정상 처리로(새 좌석·직접 PTY = start 0 = 그대로).
+                        let chunk = &chunk[start..];
                         // ★(0.14.31 · H-1 · 리뷰 R1) 출력 세대 **홀수** = 발행 시작. 스탬프(`last_output`)는
                         //   파서 반영·스크롤백 ingest 보다 **앞**에 찍는다 — `surface.read_text` 는 스냅샷 뒤에
                         //   스탬프를 읽고 세대가 이 창과 겹치면 관측을 버리므로, 스냅샷에 보이는 바이트는
@@ -8746,6 +8968,9 @@ impl Daemon {
                         daemon.ingest_output(&surf, chunk);
                         // ★(리뷰 R1) 출력 세대 **짝수** = 이 청크의 발행(파서·스크롤백) 끝.
                         surf.output_gen.fetch_add(1, Ordering::AcqRel);
+                        if nudge_after {
+                            crate::seat_adopt::nudge_now(Arc::clone(&surf));
+                        }
                     }
                 }
             }
@@ -8755,6 +8980,8 @@ impl Daemon {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .wipe(true, "process exited", Instant::now());
+            // T4: 끝난 좌석의 입양 기록을 지운다(노브 끔·직접 PTY = 아무것도 안 함).
+            crate::seat_adopt::forget_surface(&surf);
             // 종료 시각 stamp — watchdog reap_exited_surfaces가 grace 경과를 이 시점 기준으로 잰다.
             *surf.exited_at.lock().unwrap() = Some(Instant::now());
             // writer 스레드 종료 신호 — 자력 종료(셸 EOF)는 close_surface를 거치지 않아

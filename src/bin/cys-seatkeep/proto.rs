@@ -28,6 +28,9 @@ pub const SIGNAL: u8 = 5;
 pub const RELEASE: u8 = 6;
 pub const FOREGROUND: u8 = 8;
 pub const EXIT_ACK: u8 = 10;
+/// 처리 완료 오프셋(T4 확장 · 핵심 판 그대로) — 본문 = u64 LE 누적 오프셋. 조종자가 그 앞 출력을 파서·전사까지 끝냈다는 뜻.
+/// seatkeep 은 좌석마다 최댓값을 쥐고, 끊길 때 그 값을 `disc_total` 로 삼는다(새 조종자의 재생 나눔 · 조종자 없는 동안 읽기 상한의 기준).
+pub const PROCESSED: u8 = 11;
 
 // seatkeep → 조종자
 pub const WELCOME: u8 = 101;

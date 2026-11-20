@@ -3394,6 +3394,8 @@ pub fn persist_topology(daemon: &Arc<Daemon>) {
     //   rename 되어 새 상태를 덮음)도 같은 락이 닫는다. 락은 **데몬 소유 필드**(`Daemon::topology_write`).
     //   호출자는 이 함수 안에서 잡는 락(surfaces·좌석 필드·묘비)을 쥔 채 부르지 않는다(쥐면 이미 자기 교착) —
     //   맨 바깥 락 하나를 더해도 새 교착 순환이 생기지 않는다. poison 은 무시한다(쓰기 누락 대신 계속 쓴다).
+    // T4 좌석 기록(입양 노브 끔 = 아무것도 안 함) — 신원·약속이 바뀌는 자리가 모두 여기를 지난다 · topology 락 밖(좌석 필드만 짧게 잡음).
+    crate::seat_adopt::record_all(daemon);
     let _topology_write = daemon.topology_write.lock().unwrap_or_else(|e| e.into_inner());
     // ★조각 1: 직전 파일을 **못 읽은 것**은 손상이 아니다. 무엇이 있었는지 모르는 채 쓰면 살아 있지 않은 역할의 핀이
     //   사라지므로(격리 재현 R1) 파일을 그대로 두고 이번 저장만 건너뛴다. 묘비 rev 계산보다 앞이라 rev 만 오르지 않는다.

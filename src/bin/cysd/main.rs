@@ -67,6 +67,7 @@ mod repaint;
 mod root_registration;
 mod s5_escalation;
 mod schedule;
+mod seat_adopt;
 mod seat_proc;
 mod severity;
 mod skillrun;
@@ -1154,6 +1155,11 @@ enum CysdCli {
     Run,
     Version,
     Help,
+    /// T6a 사전 점검(TICKET=cysr-1116-seatkeep-1119): 데몬을 띄우지 않고 이 실행 파일이 seatkeep 폴더의 산 좌석을 입양할 수 있는지만 JSON 으로.
+    /// `--as-bundle <정식 앱 번들>` = 업데이터 S7 앞(스테이지 번들의 cysd 가 「교체 뒤 정식 자리에 섰을 때」의 신원 규칙으로 판정 · T6b).
+    AdoptCheck(Option<String>),
+    /// T6b 되감기 전 관리용 종료: 데몬이 없을 때만(시작 잠금을 비차단으로 잡음) 이 cysd 의 산 seatkeep 을 신원 확인 뒤 끝낸다.
+    EndKeepers,
     Unknown(String),
 }
 
@@ -1165,6 +1171,22 @@ fn parse_cysd_args<I: IntoIterator<Item = String>>(args: I) -> CysdCli {
     let command = match first.as_str() {
         "--version" | "-V" => CysdCli::Version,
         "--help" | "-h" => CysdCli::Help,
+        // `--json` 은 받아 넘긴다(출력은 언제나 JSON) — 그 밖 인자는 거절.
+        "--adopt-check" | "--end-keepers" => {
+            let end = first == "--end-keepers";
+            let mut bundle = None;
+            while let Some(a) = args.next() {
+                match a.as_str() {
+                    "--json" => {}
+                    "--as-bundle" if !end && bundle.is_none() => match args.next() {
+                        Some(b) => bundle = Some(b),
+                        None => return CysdCli::Unknown(a),
+                    },
+                    _ => return CysdCli::Unknown(a),
+                }
+            }
+            return if end { CysdCli::EndKeepers } else { CysdCli::AdoptCheck(bundle) };
+        }
         _ => return CysdCli::Unknown(first),
     };
     match args.next() {
@@ -1183,6 +1205,8 @@ fn cysd_usage() -> String {
     concat!(
         "usage: cysd [--version|-V|--help|-h]\n",
         "  cysd            데몬을 기동한다(무인자만 기동 · 소켓은 CYS_SOCKET · 팩은 CYS_PACK_DIR)\n",
+        "  --adopt-check [--json] [--as-bundle <앱>]  데몬 없이 seatkeep 좌석 입양 가능 여부만 JSON(막힘 있으면 exit 1 · 잠금·소켓·쓰기 0)\n",
+        "  --end-keepers [--json]  데몬이 없을 때만 이 데몬의 산 seatkeep 을 신원 확인 뒤 끝낸다(되감기 전 · 데몬 있음 = exit 3)\n",
         "  --version, -V   버전과 빌드 ID 를 stdout 에 내고 exit 0\n",
         "  --help, -h      이 도움말 · exit 0\n",
         "  그 밖의 인자    usage 를 stderr 에 내고 exit 2 — 데몬은 기동하지 않는다\n",
@@ -1208,6 +1232,8 @@ fn main() {
             print!("{}", cysd_usage());
             std::process::exit(0);
         }
+        CysdCli::AdoptCheck(bundle) => std::process::exit(seat_adopt::adopt_check_main(bundle.as_deref())),
+        CysdCli::EndKeepers => std::process::exit(seat_adopt::end_keepers_main()),
         CysdCli::Unknown(a) => {
             eprintln!("cysd: unknown argument '{a}'");
             eprint!("{}", cysd_usage());
@@ -1428,6 +1454,9 @@ async fn async_main() {
         Err(e) => eprintln!("[cysd] pack journal recovery task failed — pack auto-install skipped this boot: {e}"),
     }
     let daemon = Daemon::new(socket_path.clone());
+    // ★T4 좌석 입양(노브 `CYS_SEATKEEP_ADOPT=1` · 끔 = 아무것도 안 함) — 시작 잠금을 쥔 뒤 · watchdog·accept·자동 복원 **전**(T0 §3 순서):
+    //   살아 있는 seatkeep 좌석을 같은 번호·역할로 다시 등록해, 뒤의 자동 복원이 그 역할을 「가동 중」으로 보고 건너뛰게 한다.
+    seat_adopt::adopt_on_boot(&daemon);
     // ★(0.14.44 · A3) 승인 묶음 식별자를 부팅 때 한 번 만들어 둔다(상태 폴더의 `approval-lane` 파일 · 만들지 못하면 메모리 값 + 로그 한 줄 · 부팅을 막지 않는다).
     let _ = approval::lane_value(&socket_path, &crate::state::state_dir(&socket_path));
     // ★R1 배달 원장: 이 데몬 인스턴스 표식을 팩 계약 상태 디렉터리에 쓴다(best-effort).
@@ -2350,7 +2379,7 @@ fn spawn_deferred_agy_statusline_reconcile() {
 /// 데몬을 autostart하는 재귀를 차단). 대기 스레드가 자식을 reap해 좀비 잔존을 막는다.
 /// ★W1: PHOENIX_CYS·PATH 주입(§5-1 침묵사 근원 수리) · stdout/stderr 를 null 대신 phoenix-restore.log 로
 /// 캡처(P0-5 사후 진단 불가 수리) · exit 계약 처리(5·6=재시도 금지, 그 외 비0=60s 후 1회 재시도).
-fn spawn_auto_restore(
+pub(crate) fn spawn_auto_restore(
     state_dir: &std::path::Path,
     socket_path: &std::path::Path,
     daemon: &std::sync::Arc<Daemon>,
@@ -2365,6 +2394,13 @@ fn spawn_auto_restore(
     let current_path = std::env::var("PATH").unwrap_or_default();
     let exe_dir_ref = exe_dir.as_deref().unwrap_or_else(|| std::path::Path::new("."));
     let socket = socket_path.to_string_lossy();
+    // ★T4 · T1 최소 대역(판정 = `seat_adopt::restore_should_hold` 한 곳): 살아 있으나 입양하지 못한 좌석이 있으면 이 기동의 자동 복원을
+    //   보류한다(그 대화를 새 좌석이 이어 쓰는 작성자 둘 차단 · 노브 끔 = 늘 None).
+    if let Some(why) = seat_adopt::restore_should_hold() {
+        eprintln!("[cysd] auto-restore skipped — {why}");
+        daemon.bus.publish("restore.held", "system", None, json!({"reason": why}));
+        return;
+    }
     match decide_auto_restore(&cys::pack::pack_dir(), opted_out, exe_dir_ref, &current_path, &socket) {
         AutoRestore::OptedOut => {
             eprintln!("[cysd] auto-restore skipped (CYS_NO_AUTORESTORE=1)");
@@ -8146,11 +8182,23 @@ mod cysd_args_tests {
     }
 
     #[test]
+    fn cysd_args_adopt_check() {
+        assert_eq!(parse_cysd_args(["--adopt-check".to_string()]), CysdCli::AdoptCheck(None));
+        assert_eq!(parse_cysd_args(["--adopt-check", "--json"].map(str::to_string)), CysdCli::AdoptCheck(None));
+        assert_eq!(parse_cysd_args(["--adopt-check", "--json", "--as-bundle", "/A/x.app"].map(str::to_string)), CysdCli::AdoptCheck(Some("/A/x.app".into())));
+        assert_eq!(parse_cysd_args(["--end-keepers", "--json"].map(str::to_string)), CysdCli::EndKeepers);
+        assert_eq!(parse_cysd_args(["--adopt-check", "--as-bundle"].map(str::to_string)), CysdCli::Unknown("--as-bundle".into()));
+        assert_eq!(parse_cysd_args(["--end-keepers", "--as-bundle", "/A"].map(str::to_string)), CysdCli::Unknown("--as-bundle".into()));
+    }
+
+    #[test]
     fn cysd_args_unknown_is_rejected() {
         for (args, unknown) in [
             (vec!["--socket", "x"], "--socket"),
             (vec!["foo"], "foo"),
             (vec!["--version", "extra"], "extra"),
+            (vec!["--adopt-check", "x"], "x"),
+            (vec!["--adopt-check", "--json", "y"], "y"),
         ] {
             assert_eq!(
                 parse_cysd_args(args.into_iter().map(str::to_string)),

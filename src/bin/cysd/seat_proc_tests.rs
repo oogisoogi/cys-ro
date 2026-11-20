@@ -3,6 +3,40 @@
 
 use crate::seat_proc::*;
 
+/// T6b D1 ⓐ: 업데이트 뒤 옛 번들 자리의 seatkeep 만 같은 신원 — 꼴이 정확해야 하고 부모 폴더가 같아야 한다.
+#[test]
+fn seatkeep_exe_ok_allows_only_sibling_old_bundle() {
+    let p = |s: &str| std::path::PathBuf::from(s);
+    let want = p("/Applications/cysr.app/Contents/MacOS/cys-seatkeep");
+    assert!(seatkeep_exe_ok(&want, &want));
+    assert!(seatkeep_exe_ok(&p("/Applications/.cysr.app.old-12/Contents/MacOS/cys-seatkeep"), &want));
+    for bad in [
+        "/Applications/.cysr.app.old-/Contents/MacOS/cys-seatkeep",
+        "/Applications/.cysr.app.old-1x/Contents/MacOS/cys-seatkeep",
+        "/Applications/.cysr.app.new-12/Contents/MacOS/cys-seatkeep",
+        "/Users/x/.cysr.app.old-12/Contents/MacOS/cys-seatkeep",
+        "/Applications/.cysr.app.old-12/Contents/MacOS/cysd",
+        "/Applications/.cysr.app.old-12/Contents/Resources/cys-seatkeep",
+        "/Applications/other.app/Contents/MacOS/cys-seatkeep",
+    ] {
+        assert!(!seatkeep_exe_ok(&p(bad), &want), "{bad}");
+    }
+    // 개발 빌드(번들 밖) = 정확히 같은 경로만.
+    let dev = p("/w/target/debug/cys-seatkeep");
+    assert!(!seatkeep_exe_ok(&p("/w/.cysr.app.old-1/Contents/MacOS/cys-seatkeep"), &dev));
+}
+
+/// T6a holder 상한 env 판정: 양의 정수만 · 그 밖 = 기본.
+#[test]
+fn holder_cap_env_parse() {
+    assert_eq!(holder_cap_from(None), HOLDER_CAP_DEFAULT);
+    assert_eq!(holder_cap_from(Some("1")), 1);
+    assert_eq!(holder_cap_from(Some(" 8 ")), 8);
+    assert_eq!(holder_cap_from(Some("0")), HOLDER_CAP_DEFAULT);
+    assert_eq!(holder_cap_from(Some("x")), HOLDER_CAP_DEFAULT);
+    assert_eq!(holder_cap_from(Some("-3")), HOLDER_CAP_DEFAULT);
+}
+
 #[test]
 fn knob_only_exact_one_turns_on() {
     for (v, want) in [(None, false), (Some(""), false), (Some("0"), false), (Some("true"), false), (Some("yes"), false),
@@ -292,6 +326,46 @@ fn greet_refuses_welcome_from_other_pid() {
     let _ = t.join();
 }
 
+/// 입양(T4) 뮤턴트 M6 시험대 — 등록부 pid·출생 시각까지 맞춘 가짜 서버(cys-seatkeep 이 아닌 실행 파일)는 HELLO 를 받기 전에 거절된다.
+/// 가짜 = 이 시험 프로세스 자신이 듣는 소켓 → 소켓 상대 pid·출생 시각은 「판정 값」과 같다 · 남는 축 = 실행 파일(= 시험 바이너리 ≠ cysd 옆 cys-seatkeep).
+/// 가짜는 HELLO 를 받으면 그럴듯한 WELCOME(pid = 자기 · 좌석 1개)으로 답한다 — 실행 파일 검사가 빠지면 입양이 성공해 붉어진다.
+#[cfg(target_os = "macos")]
+#[test]
+fn adopt_connect_refuses_fake_server_that_is_not_seatkeep_exe() {
+    use std::io::Write as _;
+    let me = std::process::id();
+    let dir = std::env::temp_dir().join(format!("cskm6-{me}-{}", crate::state::now_epoch().to_bits() % 1_000_000));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sock = dir.join("f.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    let t = std::thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(4)));
+        let got_hello = matches!(super::sk_proto::read_frame(&mut s), Ok(Some((super::sk_proto::HELLO, _, _))));
+        if got_hello {
+            let w = super::sk_proto::json_frame(
+                super::sk_proto::WELCOME,
+                u32::MAX,
+                &serde_json::json!({"pid": me, "seats": [{"child_pid": me, "total": 0, "tail_start": 0, "disc_total": 0}]}),
+            );
+            let _ = s.write_all(&w);
+        }
+        (got_hello, s)
+    });
+    let start = crate::seat_adopt::process_start_us(me).expect("이 시험 프로세스 출생 시각");
+    let size = portable_pty::PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 };
+    let r = super::seatkeep_mac::adopt_connect(&sock, me, start, size, "m6fake");
+    let e = match r {
+        Ok(_) => String::new(),
+        Err(e) => e,
+    };
+    let (got_hello, s) = t.join().unwrap();
+    drop(s);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(e.contains("실행 파일") && e.contains('≠'), "cys-seatkeep 이 아닌 가짜 서버를 실행 파일 대조로 거절해야 한다(입양됨 = 빈 문자열): {e:?}");
+    assert!(!got_hello, "실행 파일 대조는 HELLO 를 보내기 전이어야 한다(가짜에게 조종자 인사를 건넴)");
+}
+
 /// codex 1R #2 시험대: 출력 소비자(읽기 얼굴)가 멈춘 seatkeep 좌석. 노브와 무관하게 seatkeep 경로를 직접 띄운다(`SeatkeepPlan` · 실제
 /// seatkeep 실행 파일 = `cargo build --bin cys-seatkeep` 뒤). 좌석 = 4MB 를 쏟은 뒤 입력을 되읽는 셸. 1.5초 쉬어 대기열이 차게 한다.
 #[cfg(target_os = "macos")]
@@ -480,4 +554,16 @@ fn seatkeep_input_ack_waits_while_consumer_runs_and_stdin_unread() {
     assert!(took >= Duration::from_secs(11), "입력 쓰기가 실제로 상한보다 오래 막히지 않음(시험이 판별력 없음): {took:?}");
     assert!(keeper_alive && child_alive, "확인 뒤 seatkeep·좌석이 살아 있어야 한다");
     assert!(n_out > 5 << 20, "출력 소비가 돌지 않음(판별력 없음): {n_out}");
+}
+
+/// T5: 진단 문구용 WELCOME 사본은 좌석 칸의 토큰을 지운다(실패 갈래 오류 문구에도 토큰 0) · 나머지 칸은 그대로.
+#[cfg(target_os = "macos")]
+#[test]
+fn welcome_without_tokens_strips_only_the_token() {
+    let w = serde_json::json!({"pid": 9, "seats": [{"seat": 0, "total": 5, "seat_token": "g-1.0123456789abcdef0123456789abcdef"}, {"seat": 1}]});
+    let r = super::seatkeep_mac::welcome_without_tokens(&w);
+    assert!(!r.to_string().contains("seat_token") && !r.to_string().contains("0123456789abcdef"), "{r}");
+    assert_eq!(r["seats"][0]["total"], 5);
+    assert_eq!(r["pid"], 9);
+    assert_eq!(w["seats"][0]["seat_token"], "g-1.0123456789abcdef0123456789abcdef", "원본은 건드리지 않는다");
 }

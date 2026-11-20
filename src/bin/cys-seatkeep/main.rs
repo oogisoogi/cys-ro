@@ -17,7 +17,7 @@
 //!
 //! 쓰임: `cys-seatkeep --dir <상태폴더> --id <seatkeep id> --controller-exe <경로> --lock <잠금파일>
 //!        [--requirement <코드서명 요구사항>] [--seats N] [--tail-bytes N] [--rows R --cols C]
-//!        [--controller-bound] -- <명령> [인자…]`
+//!        [--controller-bound | --adoptable] -- <명령> [인자…]`
 //! `--rows/--cols` = 자식 PTY 첫 크기(기본 35×120 · T3 — cysd 가 좌석 크기로 띄운다).
 //! `--controller-bound`(조종자 종속 모드 · T3 master#77162b13 — 옛 `--end-on-controller-loss` 를 넓힘) = seatkeep 이 직접 PTY 처럼 투명하다:
 //!   ⑴ 조종자 연결이 끊기면(또는 기동 뒤 `FIRST_CONTROLLER_MAX` 안에 아무도 안 붙으면) 기록 1줄을 남기고 스스로 끝난다 → PTY 마스터가
@@ -29,7 +29,14 @@
 //!   ⑶ 쓰기 기한(CTL_WRITE_TIMEOUT)으로 내보내지 않는다(`write_stalled` 없음) — 연결이 살아 있는 한 기다린다(멈춘 조종자 아래서 자식도
 //!      멈춰 산다 = 직접 PTY 와 같음). 제어 큐 상한(CTL_QUEUE_BYTES · `control_queue_full`)은 그대로다 — 제어 프레임은 조종자 요청의 답이라
 //!      멈춘 조종자 아래서 쌓일 길이 없고, 넘치면 규약 위반으로 보고 끊김과 같이 끝낸다.
-//! 이 인자가 없으면 T2 동작 그대로(조종자 없이 좌석을 계속 쥔다 · 4MiB 큐 → 밀림 → 꼬리 따라잡기 · write_stalled 10초 — 입양은 T4).
+//! `--adoptable`(입양 모드 · T4 TICKET=cysr-1116-seatkeep-1119 · `--controller-bound` 와 함께 쓸 수 없다) = ⑵⑶ 은 종속 모드와 같고 ⑴ 만 뺀다:
+//!   조종자가 끊겨도(cysd 강제 종료·교체) 좌석을 쥔 채 다음 조종자(같은 실행 파일 · 데몬 잠금 보유자)를 기다린다 = 「데몬이 죽어도 좌석이 산다」.
+//!   조종자 없는 동안은 **옛 조종자가 처리를 끝냈다고 알린 오프셋**(PROCESSED) 뒤 출력이 꼬리(`--tail-bytes`)를 넘기 전까지만 PTY 를 읽는다
+//!   — 그 뒤로는 역압(자식이 멈춤) → 새 조종자가 꼬리를 재생받으면 아무 조종자도 처리 못 한 출력의 유실 0. 끊길 때 이미 꼬리 밖으로 밀려난
+//!   미처리분(옛 조종자 쪽 대기열이 꼬리보다 컸던 경우)만 잃으며, 새 조종자가 `disc_total` < `tail_start` 로 그 크기를 안다.
+//!   첫 조종자가 `FIRST_CONTROLLER_MAX` 안에 안 붙으면 종속 모드처럼 끝낸다(cysd 가 기동~첫 인사 사이에 죽으면 아무도 이 좌석을 모른다).
+//!   부모 감시(kqueue)·기동 단계 부모 확인은 하지 않는다(부모가 사라지는 것이 정상 경로).
+//! 두 인자가 다 없으면 T2 동작 그대로(조종자 없이 좌석을 계속 쥔다 · 4MiB 큐 → 밀림 → 꼬리 따라잡기 · write_stalled 10초 — 입양은 T4).
 //! `--seats N`(N>1) = 「판별 1개」 비교 변형(좌석 N개를 한 프로세스가 쥠) — 비용 비교 전용 · 제품 경로 아님.
 
 #[cfg(unix)]
@@ -314,6 +321,11 @@ mod imp {
         args.controller_bound && WATCH_LOST.load(Ordering::SeqCst)
     }
 
+    /// 역압 모드(⑵ PTY 읽기 멈춤 · ⑶ 쓰기 기한 없음) — 종속 모드와 입양 모드 공통.
+    fn backpressure(args: &Args) -> bool {
+        args.controller_bound || args.adoptable
+    }
+
     struct Args {
         dir: PathBuf,
         id: String,
@@ -326,6 +338,8 @@ mod imp {
         cols: u16,
         /// `--controller-bound` — 조종자 종속 모드(맨 위 설명 ⑴⑵⑶).
         controller_bound: bool,
+        /// `--adoptable` — 입양 모드(맨 위 설명 · ⑵⑶ 만 · T4).
+        adoptable: bool,
         cmd: Vec<String>,
     }
 
@@ -333,7 +347,7 @@ mod imp {
         let mut it = std::env::args().skip(1);
         let (mut dir, mut id, mut exe, mut lock, mut req) = (None, None, None, None, None);
         let (mut seats, mut tail_bytes) = (1u32, DEFAULT_TAIL);
-        let (mut rows, mut cols, mut controller_bound) = (35u16, 120u16, false);
+        let (mut rows, mut cols, mut controller_bound, mut adoptable) = (35u16, 120u16, false, false);
         let mut cmd = Vec::new();
         while let Some(a) = it.next() {
             match a.as_str() {
@@ -347,6 +361,7 @@ mod imp {
                 "--rows" => rows = it.next().and_then(|v| v.parse().ok()).filter(|v| (1..=1000).contains(v)).ok_or("--rows 1..=1000")?,
                 "--cols" => cols = it.next().and_then(|v| v.parse().ok()).filter(|v| (1..=1000).contains(v)).ok_or("--cols 1..=1000")?,
                 "--controller-bound" => controller_bound = true,
+                "--adoptable" => adoptable = true,
                 "--" => {
                     cmd = it.by_ref().collect();
                 }
@@ -366,6 +381,9 @@ mod imp {
         if tail_bytes == 0 || tail_bytes > MAX_TAIL {
             return Err(format!("--tail-bytes 1..={MAX_TAIL}"));
         }
+        if controller_bound && adoptable {
+            return Err("--controller-bound 와 --adoptable 은 함께 쓸 수 없다".into());
+        }
         Ok(Args {
             dir: dir.ok_or("--dir 필요")?,
             id,
@@ -377,6 +395,7 @@ mod imp {
             rows,
             cols,
             controller_bound,
+            adoptable,
             cmd,
         })
     }
@@ -406,6 +425,11 @@ mod imp {
         exit_acked: bool,
         reader_done: bool,
         input_pending: usize,
+        /// 입양 모드: 마지막 조종자가 끊긴 때 그 조종자가 **처리를 끝냈다고 알린** 누적 오프셋(`processed` · codex T4 1R #4) — 조종자 없는
+        /// 동안 읽기 상한의 기준 · 새 조종자의 재생 나눔. 조종자가 붙으면 None.
+        disc_total: Option<u64>,
+        /// 조종자가 알린 처리 완료 오프셋(PROCESSED 최댓값 · ≤ total).
+        processed: u64,
     }
 
     impl SeatOut {
@@ -471,6 +495,9 @@ mod imp {
         exit_owner: AtomicBool,
         /// 같은 id 의 두 번째 seatkeep 을 막는 잠금 — 프로세스가 끝날 때까지 쥔다.
         _id_lock: File,
+        /// 입양 모드만(T5): 시작 때 자기 env 의 좌석 토큰(`CYS_SEAT_TOKEN` — cysd 가 자식과 같은 env 로 넘긴 값). 메모리에만 두고
+        /// 상호 확인을 통과한 조종자의 WELCOME 좌석 칸 하나로만 내보낸다(등록부·교체 기록·종료 기록·stderr 무접촉 · 비편입 계약).
+        seat_token: Option<String>,
     }
 
     fn lock_st(keep: &Keep) -> MutexGuard<'_, State> {
@@ -493,7 +520,7 @@ mod imp {
         }
 
         fn entry(&self, phase: &str) -> Value {
-            json!({
+            let mut v = json!({
                 "phase": phase,
                 "id": self.args.id,
                 "pid": std::process::id(),
@@ -505,7 +532,12 @@ mod imp {
                 "seats": self.seats.iter().map(|s| json!({"seat": s.id, "pid": s.child_pid,
                          "start_us": registry::process_start_us(s.child_pid)})).collect::<Vec<_>>(),
                 "at": registry::now_epoch(),
-            })
+            });
+            // 조종자 잠금 칸은 입양 모드만(독립 검증 m1 — 같은 폴더의 남의 데몬이 이 등록부를 판정·정리하지 않게 · 그 밖 모드는 종전 바이트).
+            if self.args.adoptable {
+                v["lock"] = json!(self.args.lock.to_string_lossy());
+            }
+            v
         }
 
         /// 알린 종료들을 `<id>.exit` 에 영속한다(전부 확인되면 지운다). 결과를 상태에 남긴다 — 실패면
@@ -535,7 +567,15 @@ mod imp {
                 st.exit_record_fail_since = None; // 보존할 미확인 기록이 없다 — 앞선 실패 시각을 다음 실패에 쓰지 않는다(codex 2R #5)
                 return;
             }
-            match registry::write_atomic(&self.paths.exit, &json!({"id": self.args.id, "seats": v})) {
+            // pid·출생 시각 = 이 종료 기록을 쓴 seatkeep 세대(T4 · codex 3R — 새 조종자가 기록·등록부와 대조해 남의 기록을 소비하지 않게).
+            // 세대 칸은 입양 모드만(codex 4R 경미 — 그 밖 모드는 종전 바이트 그대로).
+            let mut rec = json!({"id": self.args.id, "seats": v});
+            if self.args.adoptable {
+                rec["pid"] = json!(std::process::id());
+                rec["start_us"] = json!(self.start_us);
+                rec["lock"] = json!(self.args.lock.to_string_lossy());
+            }
+            match registry::write_atomic(&self.paths.exit, &rec) {
                 Ok(()) => {
                     st.exit_record_ok = true;
                     st.exit_record_fail_since = None;
@@ -620,7 +660,7 @@ mod imp {
         }
         // 조종자 종속 모드(⑵) = 밀림이 없다 — 늘 큐에 넣고, 큐가 상한에 닿으면 읽기 스레드가 PTY 읽기를 멈춘다(`wait_for_room`).
         // 큐가 상한을 넘는 폭 = 읽기 스레드마다 읽기 버퍼 1개(READ_BUF)뿐이다.
-        if !keep.args.controller_bound && c.queued.load(Ordering::SeqCst) + bytes.len() > OUT_QUEUE_BYTES {
+        if !backpressure(&keep.args) && c.queued.load(Ordering::SeqCst) + bytes.len() > OUT_QUEUE_BYTES {
             c.behind[i] = Some(offset);
             c.behind_flag.store(true, Ordering::SeqCst);
             // 깨우기 유실 방지(codex 2R #1): 쓰기 스레드가 표시를 세우기 전에 큐를 다 비우고 잠들었으면 아무도 따라잡지 않는다.
@@ -787,9 +827,12 @@ mod imp {
         }
 
         // ① 준비 — 자식보다 먼저 등록부에 「준비」를 쓴다(조종자가 이 사이에 죽어도 새 조종자가 찾을 수 있게).
-        let prepare = json!({"phase": "prepare", "id": args.id, "pid": std::process::id(), "start_us": start_us,
+        let mut prepare = json!({"phase": "prepare", "id": args.id, "pid": std::process::id(), "start_us": start_us,
                              "boot_id": boot_id, "sock": paths.sock.to_string_lossy(), "core": proto::CORE_VERSION,
                              "at": registry::now_epoch()});
+        if args.adoptable {
+            prepare["lock"] = json!(args.lock.to_string_lossy());
+        }
         if let Err(e) = registry::write_atomic(&paths.entry, &prepare) {
             warn!("cys-seatkeep: 등록부 준비 실패: {e}");
             return 3;
@@ -892,6 +935,7 @@ mod imp {
             }
         }
 
+        let seat_token = adopt_seat_token(&args, || std::env::var(SEAT_TOKEN_ENV).ok());
         let keep = Arc::new(Keep {
             st: Mutex::new(State {
                 out: (0..args.seats)
@@ -903,6 +947,8 @@ mod imp {
                         exit: None,
                         exit_acked: false,
                         reader_done: false,
+                        disc_total: None,
+                        processed: 0,
                         input_pending: 0,
                     })
                     .collect(),
@@ -929,6 +975,7 @@ mod imp {
             parent_pid,
             exit_owner: AtomicBool::new(false),
             _id_lock: id_lock,
+            seat_token,
         });
         // 부모 감시가 이제부터 바로 끝낼 수 있게 둔다 — 두기 전에 상실을 봤으면(감시는 Keep 이 없어 기록만 함) 여기서 끝낸다.
         // 부모 상실 감시 = 「상실 표시 → Keep 확인」 · 여기 = 「Keep 두기 → 상실 확인」(+ supervise 100ms 폴링이 뒷받침) — 둘 다면 종료 소유자 1명.
@@ -1031,6 +1078,12 @@ mod imp {
                 Some(c) if c.queued.load(Ordering::SeqCst) >= limit => 0,
                 Some(_) => READ_BUF,
                 None if st.gen == 0 => keep.args.tail_bytes.saturating_sub(st.out[i].tail.len()).min(READ_BUF),
+                // 입양 모드: 조종자를 잃은 뒤 출력이 꼬리를 넘기 전까지만 읽는다(넘으면 역압 — 다음 조종자가 붙을 때 깨운다).
+                None if keep.args.adoptable => {
+                    let o = &st.out[i];
+                    let since = o.total.saturating_sub(o.disc_total.unwrap_or(o.total));
+                    (keep.args.tail_bytes as u64).saturating_sub(since).min(READ_BUF as u64) as usize
+                }
                 None => READ_BUF, // 조종자를 잃었다 — 곧 끝난다(end_for_controller_loss)
             };
             if room > 0 {
@@ -1045,7 +1098,7 @@ mod imp {
 
     /// 쓰기 스레드가 프레임 1개를 쓴 뒤 — 조종자 종속 모드에서 기다리는 읽기 스레드가 있고 큐가 반 아래면 깨운다.
     fn wake_readers(keep: &Keep, queued: &AtomicUsize) {
-        if keep.args.controller_bound && keep.room_waiters.load(Ordering::SeqCst) > 0 && queued.load(Ordering::SeqCst) < BOUND_QUEUE_BYTES / 2 {
+        if backpressure(&keep.args) && keep.room_waiters.load(Ordering::SeqCst) > 0 && queued.load(Ordering::SeqCst) < BOUND_QUEUE_BYTES / 2 {
             let _st = lock_st(keep);
             keep.room.notify_all();
         }
@@ -1054,7 +1107,7 @@ mod imp {
     fn read_loop(keep: Arc<Keep>, i: usize, mut r: Box<dyn Read + Send>) {
         let mut buf = [0u8; READ_BUF];
         loop {
-            let room = if keep.args.controller_bound { wait_for_room(&keep, i) } else { READ_BUF };
+            let room = if backpressure(&keep.args) { wait_for_room(&keep, i) } else { READ_BUF };
             let n = match r.read(&mut buf[..room]) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => n,
@@ -1310,7 +1363,7 @@ mod imp {
         };
         // 안 읽는 조종자: 소켓 쓰기가 이 기한을 넘으면 쓰기 스레드가 끝나며 연결을 닫는다(codex 1R #1).
         // 조종자 종속 모드(⑶)는 기한이 없다 — 연결이 살아 있는 한 기다린다(멈춘 조종자 = 자식도 역압으로 멈춤 · write_stalled 없음).
-        if !keep.args.controller_bound {
+        if !backpressure(&keep.args) {
             let _ = write_half.set_write_timeout(Some(CTL_WRITE_TIMEOUT));
         }
         let rx;
@@ -1351,8 +1404,9 @@ mod imp {
                 .seats
                 .iter()
                 .zip(st.out.iter())
-                .map(|(seat, o)| json!({"seat": seat.id, "child_pid": seat.child_pid, "total": o.total,
-                                         "tail_start": o.tail_start(), "exit": o.exit}))
+                // `disc_total`(T4 · 입양 모드만 값 · 그 밖 null) = 직전 조종자가 끊긴 때의 누적 출력 — 새 조종자는 그 앞 재생을 「옛 조종자가
+                // 이미 본 화면」(화면만 다시 그림)으로, 그 뒤를 「아무도 못 본 새 출력」(전사·응답까지)으로 나눈다.
+                .map(|(seat, o)| welcome_seat(seat.id, seat.child_pid, o, keep.seat_token.as_deref()))
                 .collect();
             let welcome = json!({"core": proto::CORE_VERSION, "gen": gen, "pid": std::process::id(),
                                  "start_us": keep.start_us, "boot_id": keep.boot_id, "seats": seats});
@@ -1401,6 +1455,9 @@ mod imp {
             }
             st.gen = gen;
             st.no_controller_since = None;
+            for o in st.out.iter_mut() {
+                o.disc_total = None;
+            }
             let n = st.out.len();
             st.controller = Some(Controller {
                 gen,
@@ -1459,6 +1516,10 @@ mod imp {
             let now = registry::now_epoch();
             st.last_peer = Some((c.peer.clone(), now));
             st.no_controller_since = Some(Instant::now());
+            // 입양 모드: 끊긴 때의 누적 출력을 좌석마다 적어 둔다(조종자 없는 동안 읽기 상한 = 이 뒤로 꼬리 크기까지 · `wait_for_room`).
+            for o in st.out.iter_mut() {
+                o.disc_total = Some(o.processed.min(o.total));
+            }
             let _ = keep.log(json!({"event": "disconnect", "gen": gen, "peer": peer_json(&c.peer), "evicted": c.evicted}));
             if keep.args.controller_bound {
                 drop(st);
@@ -1503,6 +1564,27 @@ mod imp {
     /// 기동 때 이미 부모가 1(launchd)이면 = 띄운 cysd 가 seatkeep 이 첫 줄을 돌기 전에 죽었다(조종자 종속 모드는 cysd 만 띄운다) → 잃음.
     fn parent_lost(keep: &Keep) -> bool {
         keep.args.controller_bound && (keep.parent_pid <= 1 || unsafe { libc::getppid() } != keep.parent_pid)
+    }
+
+    /// WELCOME 좌석 칸 하나. T5: 입양 모드 · 토큰 있음일 때만 `seat_token` 칸을 더한다(그 밖 = 칸 없음 · 종전 바이트 그대로).
+    fn welcome_seat(id: u32, child_pid: i32, o: &SeatOut, token: Option<&str>) -> Value {
+        let mut v = json!({"seat": id, "child_pid": child_pid, "total": o.total,
+                           "tail_start": o.tail_start(), "exit": o.exit, "disc_total": o.disc_total});
+        if let Some(t) = token {
+            v["seat_token"] = json!(t);
+        }
+        v
+    }
+
+    /// 좌석 토큰 env 이름(cysd `cys::ENV_SEAT_TOKEN` 과 같은 값 — seatkeep 은 cys 크레이트를 끌지 않는다).
+    const SEAT_TOKEN_ENV: &str = "CYS_SEAT_TOKEN";
+
+    /// T5: 입양 모드에서만 env 의 좌석 토큰을 쥔다(빈 값 = 없음). 그 밖 모드 = env 를 보지도 않는다(None).
+    fn adopt_seat_token(args: &Args, env: impl FnOnce() -> Option<String>) -> Option<String> {
+        if !args.adoptable {
+            return None;
+        }
+        env().filter(|t| !t.is_empty())
     }
 
     fn seat_index(keep: &Keep, seat: u32) -> Option<usize> {
@@ -1584,6 +1666,14 @@ mod imp {
                     let mut st = lock_st(keep);
                     send_gen(keep, &mut st, gen, proto::json_frame(proto::FOREGROUND_IS, seat, &json!({"pgid": pg})));
                 }
+                proto::PROCESSED if payload.len() >= 8 => {
+                    let off = u64::from_le_bytes(payload[..8].try_into().unwrap_or([0; 8]));
+                    let mut st = lock_st(keep);
+                    for i in targets(keep, seat) {
+                        let o = &mut st.out[i];
+                        o.processed = o.processed.max(off.min(o.total));
+                    }
+                }
                 proto::EXIT_ACK => {
                     let mut st = lock_st(keep);
                     for i in targets(keep, seat) {
@@ -1626,7 +1716,7 @@ mod imp {
             // 종료 기록을 EXIT_PERSIST_MAX 넘게 못 남기면(상태 폴더가 사라짐 등) stderr 에 기록을 남기고 rc 6 으로 끝낸다 —
             // 소켓도 사라졌을 수 있어 어떤 조종자도 확인해 줄 수 없는 영구 고아가 되지 않게(독립 검증 D9).
             // `--controller-bound`: 기동 뒤 아무 조종자도 붙지 않은 채 상한이 지나면 끝낸다(cysd 가 기동~HELLO 사이에 죽은 경우).
-            if keep.args.controller_bound && st.gen == 0 && st.controller.is_none() && keep.started.elapsed() >= FIRST_CONTROLLER_MAX {
+            if backpressure(&keep.args) && st.gen == 0 && st.controller.is_none() && keep.started.elapsed() >= FIRST_CONTROLLER_MAX {
                 drop(st);
                 end_for_controller_loss(&keep, "no_first_controller");
             }
@@ -1684,6 +1774,7 @@ mod imp {
                 rows: 10,
                 cols: 10,
                 controller_bound: false,
+                adoptable: false,
                 cmd: vec!["/bin/true".into()],
             };
             let paths = Paths::new(&d, "t");
@@ -1700,7 +1791,7 @@ mod imp {
             let st = State {
                 out: (0..n)
                     .map(|_| SeatOut { tail: VecDeque::new(), total: 0, reaped: false, exit_status: None, exit: None,
-                                       exit_acked: false, reader_done: false, input_pending: 0 })
+                                       exit_acked: false, reader_done: false, input_pending: 0, disc_total: None, processed: 0 })
                     .collect(),
                 controller: None,
                 gen: 0,
@@ -1715,7 +1806,7 @@ mod imp {
             let keep = Keep { args, paths, policy, seats, st: Mutex::new(st), ledger: Mutex::new(ledger), boot_id: "b".into(),
                               start_us: Some(1), pending_hs: AtomicUsize::new(0), started: Instant::now(),
                               room: Condvar::new(), room_waiters: AtomicUsize::new(0), parent_pid: 0,
-                              exit_owner: AtomicBool::new(false), _id_lock: id_lock };
+                              exit_owner: AtomicBool::new(false), _id_lock: id_lock, seat_token: None };
             (keep, d)
         }
 
@@ -1751,6 +1842,45 @@ mod imp {
             theirs.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
             let mut b = [0u8; 1];
             matches!(theirs.read(&mut b), Ok(0))
+        }
+
+        /// T5: 좌석 토큰은 입양 모드에서만 env 에서 쥔다 — 그 밖 모드는 env 를 읽지도 않는다(읽으면 이 시험이 패닉) · 빈 값 = 없음.
+        #[test]
+        fn seat_token_only_in_adoptable_mode() {
+            let (mut keep, _d) = test_keep("tok-mode", 1);
+            assert_eq!(adopt_seat_token(&keep.args, || panic!("입양 모드가 아닌데 env 를 읽음")), None);
+            keep.args.controller_bound = true;
+            assert_eq!(adopt_seat_token(&keep.args, || panic!("종속 모드인데 env 를 읽음")), None);
+            keep.args.controller_bound = false;
+            keep.args.adoptable = true;
+            assert_eq!(adopt_seat_token(&keep.args, || Some("g.tok".into())).as_deref(), Some("g.tok"));
+            assert_eq!(adopt_seat_token(&keep.args, || Some(String::new())), None, "빈 값 = 없음");
+            assert_eq!(adopt_seat_token(&keep.args, || None), None);
+        }
+
+        /// 독립 검증 m1: 등록부 `lock` 칸 = 입양 모드만(그 밖 모드 = 종전 바이트 · 칸 없음).
+        #[test]
+        fn registry_lock_field_only_in_adoptable_mode() {
+            let (mut keep, _d) = test_keep("lock-field", 1);
+            assert!(keep.entry("committed").get("lock").is_none(), "종속·기본 모드 = 칸 없음");
+            keep.args.adoptable = true;
+            assert_eq!(keep.entry("committed")["lock"], json!(keep.args.lock.to_string_lossy()));
+        }
+
+        /// T5: WELCOME 좌석 칸 — 토큰 없음 = 종전과 같은 바이트(칸 없음) · 있음 = `seat_token` 칸 하나만 더해짐.
+        #[test]
+        fn welcome_seat_token_field_only_when_held() {
+            let (keep, _d) = test_keep("tok-welcome", 1);
+            let st = lock_st(&keep);
+            let o = &st.out[0];
+            let old = json!({"seat": 0, "child_pid": 7, "total": o.total, "tail_start": o.tail_start(), "exit": o.exit, "disc_total": o.disc_total});
+            let none = welcome_seat(0, 7, o, None);
+            assert_eq!(serde_json::to_vec(&none).unwrap(), serde_json::to_vec(&old).unwrap(), "토큰 없음 = 종전 바이트");
+            let some = welcome_seat(0, 7, o, Some("g.tok"));
+            assert_eq!(some["seat_token"], "g.tok");
+            let mut stripped = some.clone();
+            stripped.as_object_mut().unwrap().remove("seat_token");
+            assert_eq!(stripped, old, "토큰 칸 말고는 같다");
         }
 
         #[test]

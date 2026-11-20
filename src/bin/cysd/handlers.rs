@@ -1550,6 +1550,10 @@ fn reclaim_commit(
     //   `None` = 예산 미지정(구 CLI) → 종전대로 검사 없음.
     deadline_epoch: Option<f64>,
 ) -> Result<String, &'static str> {
+    // ★T4 좌석 입양 · T1 최소 대역: 미결 좌석이 쥔 역할은 승계로도 주지 않는다(역할 부여 공통 판정 = `seat_adopt::role_grant_blocked`).
+    if crate::seat_adopt::role_grant_blocked(role).is_some() {
+        return Err("seat_adopt_reserved");
+    }
     // ★만료 판정은 **두 시계의 OR** 다(적대검증 R2 · codex major): 벽시계 절대 데드라인은
     //   앞으로 점프한 시계를 잡고, 단조 예산은 **뒤로 점프한** 시계를 잡는다. 어느 하나라도
     //   지났으면 커밋하지 않는다 — 늦은 승계는 아무도 모르는 승계다.
@@ -1734,6 +1738,10 @@ fn restore_released_role(daemon: &Arc<Daemon>, params: &Value, id: &Value, calle
     }
     if daemon.tombstones.lock().unwrap().contains(&role) {
         return refuse("의도적으로 닫힌 역할이다");
+    }
+    // ★T4 좌석 입양 · T1 최소 대역(역할 부여 공통 판정 = `seat_adopt::role_grant_blocked`).
+    if let Some(why) = crate::seat_adopt::role_grant_blocked(&role) {
+        return refuse(&why);
     }
     // 좌석 닫기와 같은 락 순서(surfaces → roles → surface.role) — 닫기가 먼저면 좌석이 없고, 이쪽이 먼저면 닫기가 역할을 보고 묘비를 남긴다.
     let (s, master_changed) = {
@@ -7650,6 +7658,17 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             if let Some(reply) = surface_create_auth_gate(daemon, &id, &params, caller_pid) {
                 return reply;
             }
+            // ★T4 좌석 입양 · T1 최소 대역(판정 = `seat_adopt::surface_create_blocked` 한 곳 · 노브 끔 = 늘 None): 살아 있으나 입양되지 않은
+            //   좌석의 역할은 그 seatkeep 이 끝날 때까지 새로 띄우지 않는다(같은 대화 작성자 둘 차단 · 자동 복원·cys restore·phoenix 모두 이 입구).
+            if let Some(why) = crate::seat_adopt::surface_create_blocked(param_str(&params, "role").as_deref()) {
+                daemon.bus.publish(
+                    "seat.adopt_reserved_denied",
+                    "system",
+                    None,
+                    json!({"role": param_str(&params, "role"), "caller_pid": caller_pid, "reason": why}),
+                );
+                return Reply::Single(err_response(&id, "forbidden", &why));
+            }
             // RC-3(B′): pane env 주입 — Windows launch-agent가 해소된 CLAUDE_CONFIG_DIR 등을 넘긴다
             // (순수 cmd send와 짝). params["env"] 객체(문자열 값만)를 (k,v) 벡터로. 부재 시 빈 벡터.
             // ★(P1 이중 방어 1층) 호출자 env 의 CYS_SEAT_TOKEN 키는 **버린다** — 좌석 토큰은
@@ -10305,6 +10324,11 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             let Some(sid) = resolve_surface_id(&params) else {
                 return Reply::Single(err_response(&id, "invalid_params", "missing surface_id"));
             };
+            // ★T4 좌석 입양 · T1 최소 대역(판정 = `seat_adopt::role_grant_blocked` 한 곳 · 노브 끔 = 늘 None): 살아 있으나 입양되지 않은
+            //   좌석이 쥔 역할은 claim 으로도 주지 않는다(입구가 surface.create 하나뿐이면 역할 없이 만든 좌석이 같은 역할을 받아 작성자 둘 · 독립 검증 T4 차단).
+            if let Some(why) = crate::seat_adopt::role_grant_blocked(&role) {
+                return Reply::Single(err_response(&id, "claim_denied", &why));
+            }
             // ★(P1) 좌석 토큰 **1차 인가** — 이 게이트의 자리는 예약어 게이트(owner/creator)
             // **뒤**다: 토큰 분기를 예약어 게이트 앞으로 옮기면 토큰이 예약어를 우회해 부서
             // 자율성 보호가 무력화된다(couplings §security_boundary — 순서가 계약이다).
@@ -10369,7 +10393,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                         }
                         _ => token_authorized = true,
                     }
-                } else if crate::state::seat_token_same_generation(&supplied, daemon.started_at) {
+                } else if daemon.seat_token_known_generation(&supplied) {
                     // ⓒ 동세대 불일치 — 등록층은 조직 사실을 쓰는 fail-closed 층위: 이상 신호를
                     // 침묵으로 접지 않는다(1차 성찰이 rc6 뿌리로 지목한 '발화 fail-open 이 이상을
                     // 삼킨다'의 등록층 재현 금지).
@@ -10647,7 +10671,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                 }
                 // worker면 충돌 없는 고유 역할명(worker-N) 배정 — 복수 워커 todo·주소 충돌 방지.
                 // 비-worker는 그대로(master/cso는 위 가드, reviewer-* 등은 latest-wins).
-                let final_role = crate::state::dedup_worker_role(
+                let final_role = crate::state::dedup_worker_role_avoiding(
                     &role,
                     &roles,
                     |h| {
@@ -10657,6 +10681,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                             .unwrap_or(false)
                     },
                     sid,
+                    crate::seat_adopt::role_name_reserved,
                 );
                 let mut srole = surface.role.lock().unwrap();
                 if let Some(old) = srole.clone() {
@@ -13079,9 +13104,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                     .collect();
                 json!({"threshold": threshold, "publishers": publishers})
             };
-            Reply::Single(ok_response(
-                &id,
-                json!({
+            let mut body = json!({
                     "paused": paused,
                     "pause_info": pause_info.map(|p| json!(p)),
                     "daemon": {"version": env!("CARGO_PKG_VERSION"),
@@ -13130,8 +13153,12 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                     "cycle_jobs": crate::cycle_jobs::status_json(daemon),
                     // F-01 (0.14.52) display activity observer counters — diagnostics/measurement only.
                     "display_activity_observer": crate::activity::stats_wire(daemon),
-                }),
-            ))
+                });
+            // ★T4 M2(독립 검증): 좌석 입양 조회 — 입양 노브 켬일 때만 칸이 생긴다(끔 = 종전 바이트).
+            if let Some(sa) = crate::seat_adopt::status_json(daemon) {
+                body["daemon"]["seat_adopt"] = sa;
+            }
+            Reply::Single(ok_response(&id, body))
         }
 
         // ─── T6 Control Center: 실시간 플릿/사용량/시스템 대시보드 (네이티브 단일 RPC) ───
@@ -25577,6 +25604,43 @@ mod tests {
         assert!(daemon.roles.lock().unwrap().get("master").is_none());
     }
 
+    /// [T5 핀 ⓓ′-2·3] 입양 세대(집합에 든 옛 세대)의 토큰인데 대상 좌석 값과 다르면 = 체인이 온전해도 시끄러운 거절(token_mismatch).
+    /// 대조: 같은 토큰이라도 그 세대가 입양 세대 집합에 없으면 = 종전 전세대 취급(조용한 체인 폴백 → 체인 온전이면 통과).
+    /// (ⓓ′-1 「그 좌석에서만 성공」 = 일치 갈래(무변) + 입양 갈래가 Surface 에 옛 토큰을 넣는 것 → e2e `token` 모드가 잰다.)
+    #[test]
+    fn claim_role_adopted_generation_mismatch_is_rejected_loudly() {
+        let _g = ACL_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _bg = BootGatesAmbientGuard::neutralize();
+        let gen = "1a2b3c-4d5e";
+        let forged = format!("{gen}.ffffffffffffffffffffffffffffffff");
+        let daemon = claim_daemon();
+        let a = make_surface(&daemon, None);
+        daemon.adopted_token_gens.lock().unwrap().insert(gen.to_string());
+        let resp = claim_with_token(&daemon, "master", a, Some(pane_pid_of(&daemon, a)), &forged);
+        assert_eq!(resp["ok"], json!(false), "입양 세대 남의 토큰이 통과했다 (응답: {resp})");
+        assert_eq!(resp["error"]["code"], json!("claim_caller_unresolved"));
+        assert!(resp["error"]["message"].as_str().unwrap_or_default().contains("token_mismatch"), "{resp}");
+        assert!(!resp.to_string().contains("ffffffffffffffffffffffffffffffff"), "거절 응답에 실려 온 토큰 값이 나왔다: {resp}");
+        assert!(daemon.roles.lock().unwrap().get("master").is_none());
+        let daemon2 = claim_daemon();
+        let b = make_surface(&daemon2, None);
+        let resp2 = claim_with_token(&daemon2, "master", b, Some(pane_pid_of(&daemon2, b)), &forged);
+        assert_eq!(resp2["ok"], json!(true), "등록 안 된 세대는 종전처럼 체인 폴백이어야 한다 (응답: {resp2})");
+    }
+
+    /// [T5 핀] 세대 판정 = 현 세대 ∨ 입양 세대(접두 전체 일치 — 시작 시각만 같고 pid 다른 접두는 아님).
+    #[test]
+    fn seat_token_known_generation_is_current_or_adopted() {
+        let daemon = claim_daemon();
+        let mine = crate::state::mint_seat_token(daemon.started_at).unwrap();
+        assert!(daemon.seat_token_known_generation(&mine));
+        assert!(!daemon.seat_token_known_generation("1a2b3c-4d5e.00"));
+        daemon.adopted_token_gens.lock().unwrap().insert("1a2b3c-4d5e".into());
+        assert!(daemon.seat_token_known_generation("1a2b3c-4d5e.00"));
+        assert!(!daemon.seat_token_known_generation("1a2b3c-4d5f.00"), "pid 성분이 다른 접두를 알려진 세대로 봄");
+        assert!(!daemon.seat_token_known_generation("1a2b3c.00"), "성분 하나짜리 접두를 알려진 세대로 봄");
+    }
+
     /// [P5 핀] 무영속·무노출 — seat 토큰은 topology.json(persist_topology)에도 surface.list
     /// 응답에도 나타나지 않는다. persist_topology·surface.list 는 필드를 손으로 골라 조립하므로
     /// '조립 지점에 추가하지 않는 한' 배제가 기본값인데, 이 핀은 그 기본값을 **영원히 안전**으로
@@ -34154,6 +34218,26 @@ mod tests {
         assert_eq!(rr_released(&daemon, me), Value::Null);
     }
 
+    /// T4 예약(독립 검증 빈칸): 미입양 좌석이 쥔 역할은 「거둔 역할 되살림」으로도 주지 않는다 · 예약이 걷히면 같은 호출이 된다(대조).
+    #[test]
+    fn restore_released_refuses_role_reserved_by_unadopted_seat() {
+        let daemon = isolated_daemon();
+        let role = "t4res-restore";
+        let seat = rr_seat(&daemon, Some(role));
+        crate::governance::persist_topology(&daemon);
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &seat));
+        *seat.agent_dead_since.lock().unwrap() = Some(1.0);
+        let reserve = crate::seat_adopt::test_reserve_role(role);
+        let resp = rr_restore(&daemon, seat.id, role, None);
+        assert_eq!(resp["ok"], json!(false), "예약 역할을 되살렸다: {resp}");
+        assert_eq!(resp["error"]["code"], json!("role_not_restorable"));
+        assert!(resp["error"]["message"].as_str().unwrap_or_default().contains("seat_adopt_reserved"), "{resp}");
+        assert_eq!(seat.role.lock().unwrap().as_deref(), None);
+        drop(reserve);
+        let resp = rr_restore(&daemon, seat.id, role, None);
+        assert_eq!(resp["ok"], json!(true), "대조(예약 걷힘) 가 되살리지 못함: {resp}");
+    }
+
     /// 복구: 좌석이 역할을 되찾고, 저장 핀은 같은 대화로 남고, 또 죽으면 다시 거둔 상태가 된다.
     #[test]
     fn restore_released_gives_the_role_back_and_keeps_the_pin() {
@@ -36246,6 +36330,29 @@ mod tests {
     /// 지나지 않았고**(그 케이스는 후보 술어에 먼저 걸려 다른 사유로 끝났다) ②케이스 사이에
     /// 상태를 손으로 되돌렸으며 ③큐·caps·영속·이벤트를 아예 비교하지 않았다. 그래서 "부분 적용
     /// 0"이라는 주장이 실측된 적이 없었다 — 취소 직전에 큐를 옮기는 회귀를 넣어도 초록이었다.
+    /// T4 예약(독립 검증 빈칸): 미입양 좌석이 쥔 역할은 승계(reclaim)로도 주지 않는다 — 상태 불변 · 예약이 걷히면 같은 호출이 결합(대조).
+    #[test]
+    fn reclaim_commit_refuses_role_reserved_by_unadopted_seat() {
+        let _env = rc_env_lock();
+        let daemon = isolated_daemon();
+        let role = "t4res-reclaim";
+        let old = reclaim_seat(&daemon, role, RC_CWD, None, false);
+        let me = reclaim_caller(&daemon, RC_CWD, 970_131);
+        let reserve = crate::seat_adopt::test_reserve_role(role);
+        let base = reclaim_state(&daemon);
+        assert_eq!(
+            reclaim_commit(&daemon, me, role, old, &rc_axes(me), false, None, None, Some(crate::state::now_epoch() + 60.0)),
+            Err("seat_adopt_reserved")
+        );
+        assert_eq!(reclaim_state(&daemon), base, "예약 거절에서 상태가 바뀌었다");
+        drop(reserve);
+        assert_eq!(
+            reclaim_commit(&daemon, me, role, old, &rc_axes(me), false, None, None, Some(crate::state::now_epoch() + 60.0)),
+            Ok(role.to_string()),
+            "대조(예약 걷힘)가 결합하지 못함"
+        );
+    }
+
     #[test]
     fn reclaim_commit_aborts_on_every_race_without_partial_effect() {
         let _env = rc_env_lock();

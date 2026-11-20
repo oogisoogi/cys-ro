@@ -7579,7 +7579,17 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                         reuse_role.is_none() || skip_fallback || seat_takeover_from.is_none_or(|h| h == sid)
                     });
                     if let (Some(_), Some(role)) = (reuse, reuse_role.as_deref()) {
-                        if let Some(s) = daemon.get_surface(sid) {
+                        // ★통합(cysr-1116-integ-1120): 재부착도 역할을 주는 길이다 — seatkeep T4 의 역할 부여 공통 판정(role_grant_blocked ·
+                        //   노브 끔 = 늘 None)을 아래 새 생성 관문(surface_create_blocked)보다 먼저 여기서 건다. 막히면 재부착만 하지 않는다
+                        //   (재반환 자체는 기준선 그대로 — 역할 없는 좌석 · 거절 사건 1건).
+                        if let Some(why) = crate::seat_adopt::role_grant_blocked(role) {
+                            daemon.bus.publish(
+                                "seat.adopt_reserved_denied",
+                                "system",
+                                None,
+                                json!({"role": role, "caller_pid": caller_pid, "reason": why, "path": "reuse_reattach"}),
+                            );
+                        } else if let Some(s) = daemon.get_surface(sid) {
                             // 뮤턴트 S5R-NOREATTACH(재등록 끔) — 시험 빌드에서만.
                             if !(cfg!(test) && std::env::var("CYS_S5R_MUTANT").as_deref() == Ok("NOREATTACH")) {
                                 let _ = daemon.reattach_role_on_reuse(&s, role);
@@ -30202,6 +30212,38 @@ mod tests {
         let late = try_write(&c, crate::state::WriteReq::Data(b"x".to_vec()), &json!(12)).expect("닫는다고 판정한 좌석에 썼다");
         assert_eq!(late["error"]["code"], json!("surface_closing"), "{late}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (통합 cysr-1116-integ-1120) s5 재반환 재부착 × seatkeep T4 예약 — 미입양 좌석이 쥔 역할은 재반환 재부착으로도 주지 않는다 ·
+    /// 거절 사건(path = reuse_reattach) · 예약이 걷히면 같은 호출이 다시 단다(대조).
+    #[test]
+    fn integ1120_reuse_reattach_respects_seat_adopt_reserve() {
+        let daemon = { let d = std::env::temp_dir().join(format!("i1120-reuse-{}", std::process::id())); let _ = std::fs::remove_dir_all(&d); let _ = std::fs::create_dir_all(&d); Daemon::new(d.join("cysd.sock")) };
+        let role = "i1120-reuse-res";
+        let create = |n: u64| {
+            let Reply::Single(r) = dispatch(&daemon, Request { id: json!(n), method: "surface.create".into(),
+                params: json!({"cmd": "sleep 30", "role": role, "idempotency_key": "i1120-k"}) }, Some(995_931_u32)) else {
+                panic!("expected single reply");
+            };
+            r
+        };
+        let held = || daemon.roles.lock().unwrap().get(role).copied();
+        let denied = || daemon.bus.tail(400).iter().filter(|e| e["name"] == json!("seat.adopt_reserved_denied") && e["payload"]["path"] == json!("reuse_reattach")).count();
+        let r1 = create(1);
+        let a = r1["result"]["surface_id"].as_u64().expect("1차 생성");
+        let sa = daemon.get_surface(a).unwrap();
+        assert_eq!(held(), Some(a), "전제: 역할 쥠");
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &sa), "전제: 역할 회수");
+        assert_eq!(held(), None);
+        let reserve = crate::seat_adopt::test_reserve_role(role);
+        let r2 = create(2);
+        assert_eq!((r2["result"]["idempotent_reuse"].clone(), r2["result"]["surface_id"].clone()), (json!(true), json!(a)), "재반환 자체는 그대로: {r2}");
+        assert_eq!((held(), sa.role.lock().unwrap().clone()), (None, None), "예약 역할을 재반환 재부착으로 줬다");
+        assert_eq!(denied(), 1, "거절 사건 없음");
+        drop(reserve);
+        let r3 = create(3);
+        assert_eq!(r3["result"]["surface_id"], json!(a), "{r3}");
+        assert_eq!(held(), Some(a), "대조(예약 걷힘)가 다시 달지 못함");
     }
 
     /// (1.1.16 · TICKET=cysr-1116-s5-1119 · master#fe289e63) 멱등 재반환 좌석의 역할 — ① 사망 유예 뒤 역할을 잃은 좌석을 같은 key 로 다시 만들면

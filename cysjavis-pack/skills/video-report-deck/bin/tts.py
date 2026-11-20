@@ -13,6 +13,9 @@ import sys
 import urllib.error
 import urllib.request
 
+# 윈도에서 출력 캡처 자식의 콘솔 창을 숨긴다(test_nowin_captured_spawns 규칙)
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 EL_KEY_URL = "https://elevenlabs.io/app/settings/api-keys"
 SAY_VOICE = "Yuna"
 SAY_RATE = 190
@@ -29,7 +32,7 @@ class Missing(SystemExit):
 
 def duration(path):
     r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
-                       capture_output=True, text=True, check=True)
+                       capture_output=True, text=True, check=True, **NOWIN)
     return float(r.stdout.strip())
 
 
@@ -40,7 +43,7 @@ def _say_ready():
                 "  export ELEVENLABS_API_KEY=<당신의 키> ELEVENLABS_VOICE_ID=<목소리 id>  (발급: %s)" % EL_KEY_URL]
     if not shutil.which("say"):
         return ["없음 say(macOS 내장 음성 명령) — 맥 기본 명령이 PATH 에 없다. /usr/bin 이 PATH 에 있는지 확인한다."]
-    r = subprocess.run(["say", "-v", "?"], capture_output=True, text=True)
+    r = subprocess.run(["say", "-v", "?"], capture_output=True, text=True, **NOWIN)
     if not any(line.split()[:1] == [SAY_VOICE] for line in r.stdout.splitlines()):
         return ["없음 한국어 목소리 %s — 시스템 설정 → 손쉬운 사용 → 읽기 및 말하기 → 시스템 목소리 → 목소리 관리에서 한국어 %s 를 받는다." % (SAY_VOICE, SAY_VOICE)]
     return None

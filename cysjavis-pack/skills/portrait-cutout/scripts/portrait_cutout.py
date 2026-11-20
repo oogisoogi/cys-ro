@@ -24,6 +24,9 @@
 import argparse, json, os, platform, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
+# 윈도에서 출력 캡처 자식의 콘솔 창을 숨긴다(test_nowin_captured_spawns 규칙)
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 MIN_MACOS = 14  # VNGenerateForegroundInstanceMaskRequest 도입 = macOS 14.0 (Apple 개발자 문서)
 HERE = Path(__file__).resolve().parent
 SWIFT_SCRIPT = HERE / 'vision_mask.swift'
@@ -56,7 +59,7 @@ if not a.green:
             '초록(#00FF00) 바탕 그림이라면 --green 을 붙이면 어느 기기에서나 됩니다.')
     ver = ''
     try:
-        ver = subprocess.run(['/usr/bin/sw_vers', '-productVersion'], capture_output=True, text=True, timeout=10).stdout.strip()
+        ver = subprocess.run(['/usr/bin/sw_vers', '-productVersion'], capture_output=True, text=True, timeout=10, **NOWIN).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         ver = platform.mac_ver()[0]
     try:
@@ -72,7 +75,7 @@ if not a.green:
     devtools_ok = False
     if swift:
         try:
-            devtools_ok = subprocess.run(['/usr/bin/xcode-select', '-p'], capture_output=True, timeout=10).returncode == 0
+            devtools_ok = subprocess.run(['/usr/bin/xcode-select', '-p'], capture_output=True, timeout=10, **NOWIN).returncode == 0
         except (OSError, subprocess.SubprocessError):
             devtools_ok = False
     if not swift or not devtools_ok:
@@ -133,7 +136,7 @@ tmp = tempfile.mkdtemp(prefix='portrait-cutout-')
 try:
     sp = os.path.join(tmp, 'src.png'); mp = os.path.join(tmp, 'mask.png'); src.save(sp)
     res = subprocess.run([swift, str(SWIFT_SCRIPT), sp, mp, 'foreground'], capture_output=True, text=True,
-                         env={**os.environ, 'TMPDIR': tmp})   # swift 자체 임시 폴더도 같은 곳에 → 함께 지워진다
+                         env={**os.environ, 'TMPDIR': tmp}, **NOWIN)   # swift 자체 임시 폴더도 같은 곳에 → 함께 지워진다
     if res.returncode != 0 or not os.path.isfile(mp):
         msg = (res.stdout + res.stderr).strip().splitlines()
         die(1, 'Apple Vision 가림 뽑기에 실패했습니다' + (f': {msg[-1]}' if msg else '') + '.',

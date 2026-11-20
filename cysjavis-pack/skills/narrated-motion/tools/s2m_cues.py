@@ -30,13 +30,16 @@ import subprocess
 import sys
 import wave
 
+# 윈도에서 출력 캡처 자식의 콘솔 창을 숨긴다(test_nowin_captured_spawns 규칙)
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 SR = 48000
 TRIM_DBFS = -45.0      # 이보다 작은 소리는 앞뒤 무음으로 보고 잘라 낸다
 TRIM_KEEP = 0.03       # 잘라 낸 뒤 앞뒤로 남겨 두는 여유(초) — 자음 첫소리 보호
 
 
 def sh(cmd):
-    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, **NOWIN)
 
 
 def synth(engine, voice, rate, text, out_wav):

@@ -16,6 +16,10 @@ import json
 import math
 import subprocess
 import sys
+import os  # NOWIN(윈도 콘솔 창 숨김) 정의용
+
+# 윈도에서 출력 캡처 자식의 콘솔 창을 숨긴다(test_nowin_captured_spawns 규칙)
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
 
 AR, WIN = 16000, 160          # 10 ms
 QUIET = 8                     # 말 시작 앞에 있어야 하는 무음 창 수(80 ms)
@@ -34,13 +38,13 @@ def main():
     tol, dead = opt("--tol", 0.2), opt("--dead", 0.4)
     cues = json.load(open(cj, encoding="utf-8"))["cues"]
     fps_s = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate",
-                            "-of", "csv=p=0", mp4], capture_output=True, text=True, check=True).stdout.strip()
+                            "-of", "csv=p=0", mp4], capture_output=True, text=True, check=True, **NOWIN).stdout.strip()
     n, d = fps_s.split("/")
     fps = float(n) / float(d)
 
     raw = subprocess.run(["ffmpeg", "-v", "error", "-i", mp4, "-vn", "-af", "aresample=async=1:first_pts=0",
                           "-ac", "1", "-ar", str(AR), "-f", "s16le", "-"],
-                         capture_output=True, check=True).stdout
+                         capture_output=True, check=True, **NOWIN).stdout
     a = array.array("h")
     a.frombytes(raw)
     if not len(a):
@@ -54,7 +58,7 @@ def main():
     thr = -40.0
 
     vraw = subprocess.run(["ffmpeg", "-v", "error", "-i", mp4, "-an", "-vf", f"fps={fps_s},scale={VW}:{VH},format=gray",
-                           "-f", "rawvideo", "-"], capture_output=True, check=True).stdout
+                           "-f", "rawvideo", "-"], capture_output=True, check=True, **NOWIN).stdout
     fsz = VW * VH
     nf = len(vraw) // fsz
     diff = [0.0]

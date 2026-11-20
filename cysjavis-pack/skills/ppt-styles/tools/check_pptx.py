@@ -25,6 +25,9 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
+# 윈도에서 출력 캡처 자식의 콘솔 창을 숨긴다(test_nowin_captured_spawns 규칙)
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 NS = {
     "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
     "p": "http://schemas.openxmlformats.org/presentationml/2006/main",
@@ -79,7 +82,7 @@ def installed_families():
     fams = set()
     if shutil.which("fc-list"):
         try:
-            r = subprocess.run(["fc-list", ":", "family"], capture_output=True, text=True, timeout=30)
+            r = subprocess.run(["fc-list", ":", "family"], capture_output=True, text=True, timeout=30, **NOWIN)
             for line in r.stdout.splitlines():
                 for f in line.split(","):
                     if f.strip():
@@ -305,20 +308,20 @@ def pdf_check(path, n, faces, errs):
                     pass
     out = Path(tempfile.mkdtemp(prefix="ppt-styles-pdf-"))
     r = subprocess.run([so, f"-env:UserInstallation={prof.as_uri()}", "--headless", "--convert-to", "pdf", "--outdir", str(out), str(path)],
-                       capture_output=True, text=True, timeout=300)
+                       capture_output=True, text=True, timeout=300, **NOWIN)
     pdf = out / (Path(path).stem + ".pdf")
     if not pdf.exists():
         errs.append(f"LibreOffice PDF 변환 실패: {r.stderr.strip()[:200]}")
         return 1
     pages = None
     if shutil.which("pdfinfo"):
-        m = re.search(r"^Pages:\s+(\d+)", subprocess.run(["pdfinfo", str(pdf)], capture_output=True, text=True).stdout, re.M)
+        m = re.search(r"^Pages:\s+(\d+)", subprocess.run(["pdfinfo", str(pdf)], capture_output=True, text=True, **NOWIN).stdout, re.M)
         pages = int(m.group(1)) if m else None
     if pages is None:
         pages = len(re.findall(rb"/Type\s*/Page(?![s\w])", pdf.read_bytes()))
     print(f"[pdf] {pdf} 쪽 {pages}")
     if shutil.which("pdffonts"):
-        fl = subprocess.run(["pdffonts", str(pdf)], capture_output=True, text=True).stdout.splitlines()[2:]
+        fl = subprocess.run(["pdffonts", str(pdf)], capture_output=True, text=True, **NOWIN).stdout.splitlines()[2:]
         print("[pdf 글꼴] " + " ".join(sorted({re.sub(r"^[A-Z]{6}\+", "", l.split()[0]) for l in fl if l.split()})))
     if pages != n:
         errs.append(f"PDF 쪽 수 {pages} ≠ 장 수 {n}")

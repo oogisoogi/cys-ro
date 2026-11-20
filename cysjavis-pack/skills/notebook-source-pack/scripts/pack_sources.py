@@ -19,6 +19,10 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+import os  # NOWIN(윈도 콘솔 창 숨김) 정의용
+
+# 윈도에서 출력 캡처 자식의 콘솔 창을 숨긴다(test_nowin_captured_spawns 규칙)
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}
 
 STATUS_READY = 2
 STATUS_ERROR = 3
@@ -31,7 +35,7 @@ def run_nlm(nlm, args, profile):
     cmd = [nlm, *args, "--json"]
     if profile:
         cmd += ["--profile", profile]
-    p = subprocess.run(cmd, capture_output=True, text=True)
+    p = subprocess.run(cmd, capture_output=True, text=True, **NOWIN)
     if p.returncode != 0:
         raise RuntimeError(f"{' '.join(cmd)} 실패(rc={p.returncode}): {(p.stderr.strip() or p.stdout.strip())[:300]}")
     try:

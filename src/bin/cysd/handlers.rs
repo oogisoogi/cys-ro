@@ -545,7 +545,7 @@ fn ui_command_caller_ok(daemon: &Arc<Daemon>, caller_pid: Option<u32>) -> Result
 ///      (`feed reply --operator`(D24ⓐ) 와 같은 명시 플래그 · 자동 첨부 0).
 ///   ★정직한 경계: 같은 UID 로 0600 토큰 파일을 일부러 읽어 싣는 프로세스는 막지 못한다(operator_token 등급 전체의 경계 · `caller_is_owner` doc).
 ///     닫는 것은 지침을 따르는 좌석·그 자식이 평시 동작으로 남의 팀을 멈추는 길이다.
-fn group_pause_caller_ok(daemon: &Arc<Daemon>, params: &Value, caller_pid: Option<u32>) -> Result<(), &'static str> {
+fn group_pause_caller_ok(daemon: &Arc<Daemon>, params: &Value, caller_pid: Option<u32>) -> Result<&'static str, &'static str> {
     group_pause_verdict(
         caller_pid,
         |pid| resolve_caller_surface(daemon, pid),
@@ -560,14 +560,14 @@ fn group_pause_verdict(
     seat_of: impl Fn(u32) -> Option<u64>,
     seat_is_master: impl Fn(u64) -> bool,
     operator_ok: impl Fn() -> bool,
-) -> Result<(), &'static str> {
+) -> Result<&'static str, &'static str> {
     let Some(pid) = caller_pid else {
         return Err("caller process could not be identified");
     };
     match seat_of(pid) {
-        Some(sid) if seat_is_master(sid) => Ok(()),
+        Some(sid) if seat_is_master(sid) => Ok("master_seat"),
         Some(_) => Err("caller seat must be the master seat"),
-        None if operator_ok() => Ok(()),
+        None if operator_ok() => Ok("operator_token"),
         None => Err("outside a master seat the operator capability is required (cys seat-group-pause --operator)"),
     }
 }
@@ -1151,6 +1151,11 @@ fn inherit_parked_queue(daemon: &Arc<Daemon>, next: &Arc<crate::state::Surface>,
     pq.entries = alive;
     if pq.entries.is_empty() {
         return;
+    }
+    // (조각 6b · codex 2R M5) 주차 중 받은 팀 정지 크레딧을 항목 `paused_total_secs` 로 옮긴다 — 활성 큐 TTL 은 그 값만 보므로,
+    //   안 옮기면 주차를 살아남은 항목이 승계 직후 다음 틱에 만료된다. 꺼내며 0 으로(다시 주차돼도 겹쳐 더하지 않음).
+    for e in pq.entries.iter_mut() {
+        e.paused_total_secs += daemon.teams.take_parked_credit(&e.id);
     }
     {
         let mut nq = next.pending_queue.lock().unwrap();
@@ -9595,6 +9600,8 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                 Some(sid),
                 json!({"surface_id": sid, "group": group, "previous": previous}),
             );
+            // (조각 6b · codex 2R M1) 이미 정지된 팀으로 옮겼으면 그 좌석에 정지 전환과 같은 처리(예약 취소 · 목적지 팀 기록).
+            crate::team::on_seat_regrouped(daemon, &surface);
             Reply::Single(ok_response(&id, json!({"surface_id": sid, "group": group, "changed": true})))
         }
 
@@ -9611,9 +9618,10 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             };
             // (codex 1R B1) 호출자 = 지금 해석된 master 좌석 또는 운영자 능력값(`operator_token` · CLI `--operator` 가 읽어 실음)만.
             //   좌석 밖 조상 추론(「깨끗한 조상 = 사람」)은 쓰지 않는다 — setsid·이중 fork 로 떨어진 워커 자식이 그 판정에 사람으로 통과했다.
-            if let Err(m) = group_pause_caller_ok(daemon, &params, caller_pid) {
-                return Reply::Single(err_response(&id, "forbidden", &format!("surface.group_pause: {m}")));
-            }
+            let via = match group_pause_caller_ok(daemon, &params, caller_pid) {
+                Ok(v) => v,
+                Err(m) => return Reply::Single(err_response(&id, "forbidden", &format!("surface.group_pause: {m}"))),
+            };
             let changed = match daemon.teams.set_paused(&team, paused) {
                 Ok(c) => c,
                 Err(m) => return Reply::Single(err_response(&id, crate::team::TEAM_PAUSE_LIMIT, &format!("surface.group_pause: {m} — limit {}", crate::team::PAUSED_TEAMS_MAX))),
@@ -9626,7 +9634,10 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                 // (검증 m4) 이름 목록만 상태 폴더에 — 재시작 뒤 「정지가 풀렸어요」 사건 1건의 재료(정지 복원 아님).
                 crate::team::persist_paused(daemon);
                 let ev = if paused { crate::team::EV_PAUSED } else { crate::team::EV_RESUMED };
-                daemon.bus.publish(ev, "queue", None, json!({"team": team, "paused": paused}));
+                // (codex 2R B1 · master 처분 = 감사 줄) 누가 어떤 자격으로 멈췄나 — 자격(master_seat | operator_token) · 호출 pid · 좌석.
+                //   operator_token 길은 같은 UID 로 토큰 파일을 읽은 좌석 밖 프로세스도 지날 수 있다(정직한 경계 · DAEMON-6b §6-4) → 사후 감사 재료.
+                let caller_surface = caller_pid.and_then(|p| resolve_caller_surface(daemon, p));
+                daemon.bus.publish(ev, "queue", None, json!({"team": team, "paused": paused, "via": via, "caller_pid": caller_pid, "caller_surface": caller_surface}));
             }
             Reply::Single(ok_response(&id, json!({"team": team, "paused": paused, "changed": changed, "paused_teams": daemon.teams.paused_list()})))
         }

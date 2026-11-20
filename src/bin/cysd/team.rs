@@ -242,6 +242,10 @@ impl TeamBook {
             s.parked_credit += secs;
         }
     }
+    /// (codex 2R M5) 주차 크레딧을 **꺼낸다**(0 으로) — 승계 때 항목 `paused_total_secs` 로 옮기는 자리(활성 TTL 이 그 값만 보므로).
+    pub fn take_parked_credit(&self, entry_id: &str) -> f64 {
+        self.tags.lock().unwrap_or_else(|e| e.into_inner()).get_mut(entry_id).map_or(0.0, |s| std::mem::take(&mut s.parked_credit))
+    }
     pub fn parked_credit(&self, entry_id: &str) -> f64 {
         self.tags.lock().unwrap_or_else(|e| e.into_inner()).get(entry_id).map_or(0.0, |s| s.parked_credit)
     }
@@ -508,17 +512,19 @@ pub fn delivery_team_paused(book: &TeamBook, dest_team: Option<&str>, ids: &[Str
 }
 
 /// (codex 1R M1) writer 안전 탐침에 팀 정지 축을 얹는다 — 기존 탐침이 막으면 그대로 막고, 아니면 지금 팀 정지를 본다.
-///   writer 스레드에서 돈다: 데몬이 사라졌거나 패닉 = 막는다(기존 탐침과 같은 방향). 목적지 팀은 인계 때 정한 값을 받는다 —
-///   탐침은 장부(말단 락)만 읽고 좌석 role·group 락은 잡지 않는다(탐침 락 규약: 리프만 · `inject_safety_probe` doc).
-pub fn with_team_pause_probe(daemon: &std::sync::Arc<crate::state::Daemon>, dest_team: Option<String>, ids: Vec<String>, base: crate::state::SafetyProbe) -> crate::state::SafetyProbe {
+///   writer 스레드에서 돈다: 데몬이 사라졌거나 패닉 = 막는다(기존 탐침과 같은 방향).
+///   (codex 2R M1) 목적지 팀은 **첫 바이트 앞 그 순간** 좌석에서 다시 읽는다(인계 때 스냅숏 재사용 금지 — 그 사이 `surface.set_group` 으로
+///   이미 정지된 팀에 옮겨지면 옛 팀 기준으로 통과했다). 좌석 role·group 락은 말단이다(쥔 채 큐·입력 락을 잡는 곳 0 — 탐침 락 규약 유지).
+pub fn with_team_pause_probe(daemon: &std::sync::Arc<crate::state::Daemon>, s: &std::sync::Arc<crate::state::Surface>, ids: Vec<String>, base: crate::state::SafetyProbe) -> crate::state::SafetyProbe {
     let wd = std::sync::Arc::downgrade(daemon);
+    let ws = std::sync::Arc::downgrade(s);
     std::sync::Arc::new(move || {
         if base() {
             return true;
         }
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let Some(d) = wd.upgrade() else { return true };
-            delivery_team_paused(&d.teams, dest_team.as_deref(), &ids)
+            let (Some(d), Some(s)) = (wd.upgrade(), ws.upgrade()) else { return true };
+            delivery_team_paused(&d.teams, seat_team(&s).as_deref(), &ids)
         }))
         .unwrap_or(true)
     })
@@ -533,9 +539,23 @@ pub fn with_team_pause_probe(daemon: &std::sync::Arc<crate::state::Daemon>, dest
 pub fn on_team_paused(daemon: &crate::state::Daemon, team: &str) {
     let surfaces: Vec<std::sync::Arc<crate::state::Surface>> =
         daemon.surfaces.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
-    let one: HashSet<String> = [team.to_string()].into_iter().collect();
     for s in surfaces {
-        let dest_hit = seat_team(&s).as_deref() == Some(team);
+        pause_seat_for_team(daemon, &s, team, "team_pause");
+    }
+}
+
+/// (codex 2R M1) 좌석이 `surface.set_group` 으로 **이미 정지된** 팀에 들어왔을 때 — 정지 전환과 같은 좌석 처리(목적지 팀 기록 ·
+///   결판 대기 예약 취소 · 확정분 사건). 정지 전환이 다시 돌지 않으므로 여기서 한다. 정지 안 된 팀이면 아무것도 안 함.
+pub fn on_seat_regrouped(daemon: &crate::state::Daemon, s: &std::sync::Arc<crate::state::Surface>) {
+    if let Some(t) = seat_team(s).filter(|t| daemon.teams.is_paused(t)) {
+        pause_seat_for_team(daemon, s, &t, "team_pause_regroup");
+    }
+}
+
+fn pause_seat_for_team(daemon: &crate::state::Daemon, s: &std::sync::Arc<crate::state::Surface>, team: &str, reason: &str) {
+    let one: HashSet<String> = [team.to_string()].into_iter().collect();
+    {
+        let dest_hit = seat_team(s).as_deref() == Some(team);
         let q = s.pending_queue.lock().unwrap_or_else(|e| e.into_inner());
         if dest_hit {
             let ids: Vec<String> = q.iter().map(|e| e.id.clone()).collect();
@@ -544,7 +564,7 @@ pub fn on_team_paused(daemon: &crate::state::Daemon, team: &str) {
         let reserved: Vec<String> =
             s.inject_reservation.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|r| r.ids.clone()).unwrap_or_default();
         if reserved.is_empty() || !(dest_hit || reserved.iter().any(|id| daemon.teams.entry_team_paused(id, &one))) {
-            continue;
+            return;
         }
         let still = s.cancel_inject_reservation();
         drop(q);
@@ -553,7 +573,7 @@ pub fn on_team_paused(daemon: &crate::state::Daemon, team: &str) {
                 "queue.inject_uncancellable",
                 "queue",
                 Some(s.id),
-                serde_json::json!({"reason": "team_pause", "team": team, "entries": still.len(),
+                serde_json::json!({"reason": reason, "team": team, "entries": still.len(),
                        "hint": "팀 정지 전이 시점에 writer 가 이미 쓰기로 확정한 배달이 있다 — 그 항목은 나간다(다음 배달부터 정지)"}),
             );
         }

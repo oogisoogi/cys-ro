@@ -146,6 +146,12 @@ fn cb1_detached_worker_child_cannot_pause_a_team() {
     assert_eq!(r["error"]["code"], json!("forbidden"), "떼어 낸 워커 자식 = 거절: {r}");
     assert_eq!(r_tok["result"]["changed"], json!(true), "좌석 밖 + 운영자 능력값 = 통과(경계 기록): {r_tok}");
     assert!(fx.daemon.teams.is_paused("b"));
+    // (codex 2R B1 · 감사 줄) 그 정지가 누구·어떤 자격이었는지 사건에 남는다.
+    let ev = events(&fx.daemon, crate::team::EV_PAUSED);
+    let last = ev.last().expect("team.paused 사건");
+    assert_eq!(last["payload"]["via"], json!("operator_token"), "{last}");
+    assert_eq!(last["payload"]["caller_pid"], json!(orphan), "{last}");
+    assert_eq!(last["payload"]["caller_surface"], json!(null), "좌석 밖 = 좌석 없음: {last}");
     // 워커 좌석 자신 — 능력값을 실어도 거절.
     bind(&fx, P, w.id);
     let tok = fx.daemon.operator_token.clone().unwrap();
@@ -156,11 +162,14 @@ fn cb1_detached_worker_child_cannot_pause_a_team() {
     assert_eq!(r["error"]["code"], json!("forbidden"), "{r}");
     let r = rpc(&fx, None, "surface.group_pause", json!({"group": "b", "paused": false}));
     assert_eq!(r["error"]["code"], json!("forbidden"), "{r}");
-    // master 좌석 = 능력값 없이 통과.
+    // master 좌석 = 능력값 없이 통과 · 감사 줄 = master_seat + 그 좌석.
     let m = pane(&fx, "master", None, P + 1);
     let r = rpc(&fx, Some(P + 1), "surface.group_pause", json!({"group": "b", "paused": false}));
     assert_eq!(r["result"]["changed"], json!(true), "{r}");
-    drop(m);
+    let ev = events(&fx.daemon, crate::team::EV_RESUMED);
+    let last = ev.last().expect("team.resumed 사건");
+    assert_eq!(last["payload"]["via"], json!("master_seat"), "{last}");
+    assert_eq!(last["payload"]["caller_surface"], json!(m.id), "{last}");
 }
 
 /// B1 — 정지 팀 이름 집합 상한(64) · 넘는 **새** 이름만 `team_pause_limit` · 이미 정지된 이름·재개는 받음 · 영속 파일 = 상한 안.
@@ -282,15 +291,67 @@ fn cm1_writer_probe_sees_team_pause() {
     let tagged: Vec<String> = m.pending_queue.lock().unwrap().iter().map(|e| e.id.clone()).collect();
     let open: crate::state::SafetyProbe = Arc::new(|| false);
     let shut: crate::state::SafetyProbe = Arc::new(|| true);
-    let p_dest = crate::team::with_team_pause_probe(&fx.daemon, crate::team::seat_team(&a), vec![], open.clone());
-    let p_tag = crate::team::with_team_pause_probe(&fx.daemon, crate::team::seat_team(&m), tagged.clone(), open.clone());
-    let p_other = crate::team::with_team_pause_probe(&fx.daemon, crate::team::seat_team(&m), vec!["q-none".into()], open.clone());
+    let p_dest = crate::team::with_team_pause_probe(&fx.daemon, &a, vec![], open.clone());
+    let p_tag = crate::team::with_team_pause_probe(&fx.daemon, &m, tagged.clone(), open.clone());
+    let p_other = crate::team::with_team_pause_probe(&fx.daemon, &m, vec!["q-none".into()], open.clone());
     assert!(!p_dest() && !p_tag() && !p_other(), "정지 전 = 막지 않음");
-    assert!(crate::team::with_team_pause_probe(&fx.daemon, None, vec![], shut)(), "기존 탐침이 막으면 그대로");
+    assert!(crate::team::with_team_pause_probe(&fx.daemon, &m, vec![], shut)(), "기존 탐침이 막으면 그대로");
     pause(&fx, P + 50, "a", true);
     assert!(p_dest(), "목적지 좌석 팀 정지 = 막음");
     assert!(p_tag(), "정지 팀 꼬리표 항목 = 막음");
     assert!(!p_other(), "꼬리표 없는 항목 = 그대로");
+}
+
+/// (codex 2R M1) 반례 — 배달이 목적지 팀(a)을 스냅숏한 뒤 그 좌석이 `surface.set_group` 으로 **이미 정지된** 팀 b 로 옮겨지면 배달 0.
+///   고치기 전: 임계영역 재확인·writer 탐침이 스냅숏(a)을 다시 써서 통과 · 정지 전환도 다시 안 돌아 그대로 배달.
+#[test]
+fn cm1_regroup_into_paused_team_during_delivery_holds() {
+    let fx = fx("cm1regroup");
+    let m = pane(&fx, "master", None, P + 110);
+    let me = std::process::id();
+    bind(&fx, me, m.id); // set_group 게이트 = 살아 있는 호출자 pid(master 좌석)
+    let a = pane(&fx, "worker-1", Some("a"), P + 111);
+    let _b = pane(&fx, "worker-2", Some("b"), P + 112);
+    assert_eq!(pause(&fx, P + 110, "b", true)["result"]["changed"], json!(true));
+    assert_eq!(queued_on(&fx.daemon, P + 110, a.id, "to-a")["ok"], json!(true));
+    let d = fx.daemon.clone();
+    let aid = a.id;
+    let fired = Arc::new(AtomicBool::new(false));
+    let f2 = fired.clone();
+    *fx.daemon.teams.deliver_seam.lock().unwrap() = Some(Arc::new(move || {
+        if !f2.swap(true, Ordering::SeqCst) {
+            let r = rpc_on(&d, Some(me), "surface.set_group", json!({"surface_id": aid, "group": "b"}));
+            assert_eq!(r["result"]["changed"], json!(true), "{r}");
+        }
+    }));
+    let got = tick_on(&fx.daemon, &a);
+    *fx.daemon.teams.deliver_seam.lock().unwrap() = None;
+    assert!(fired.load(Ordering::SeqCst), "전제: 이음매가 돌았다");
+    assert_eq!(got, None, "스냅숏 뒤 정지 팀으로 옮겨짐 = 배달 0");
+    assert_eq!(texts(&a), vec!["to-a"], "항목 보존");
+    assert!(events(&fx.daemon, "queue.inject_aborted").is_empty(), "임계영역에서 멈춤(writer 까지 안 감)");
+}
+
+/// (codex 2R M1) 이미 정지된 팀으로 옮긴 순간 — 그 좌석의 결판 대기 예약 취소 · writer 탐침도 그 순간 팀을 다시 읽어 막음.
+#[test]
+fn cm1_regroup_into_paused_team_cancels_reservation_and_probe_rereads() {
+    let fx = fx("cm1regroup2");
+    let m = pane(&fx, "master", None, P + 120);
+    let me = std::process::id();
+    bind(&fx, me, m.id);
+    let a = pane(&fx, "worker-1", Some("a"), P + 121);
+    let _b = pane(&fx, "worker-2", Some("b"), P + 122);
+    pause(&fx, P + 120, "b", true);
+    assert_eq!(queued_on(&fx.daemon, P + 120, a.id, "to-a")["ok"], json!(true));
+    let ids: Vec<String> = a.pending_queue.lock().unwrap().iter().map(|e| e.id.clone()).collect();
+    let g = pending_guard(&a, &ids, false);
+    let open: crate::state::SafetyProbe = Arc::new(|| false);
+    let probe = crate::team::with_team_pause_probe(&fx.daemon, &a, ids.clone(), open);
+    assert!(!probe(), "옮기기 전(팀 a · 정지 아님) = 막지 않음");
+    let r = rpc(&fx, Some(me), "surface.set_group", json!({"surface_id": a.id, "group": "b"}));
+    assert_eq!(r["result"]["changed"], json!(true), "{r}");
+    assert!(!g.claim_for_write(), "정지 팀으로 옮김 = 대기 예약 취소");
+    assert!(probe(), "탐침 = 첫 바이트 앞 그 순간 팀(b · 정지)");
 }
 
 // ─────────────────────────── M2 · 꼬리표 공개 = 같은 잠금 ───────────────────────────
@@ -506,6 +567,41 @@ fn cm5_parked_entry_of_paused_team_gets_parking_credit() {
     assert_eq!(gone_ids, vec![idb.clone()], "정지 안 된 팀 항목만 만기");
     let left: Vec<String> = fx.daemon.parked_queues.lock().unwrap().get("master").map(|p| p.entries.iter().map(|e| e.id.clone()).collect()).unwrap_or_default();
     assert_eq!(left, vec![ida], "정지 팀 항목 = 주차 생존");
+}
+
+/// (codex 2R M5) 반례 — 주차 중 팀 정지 크레딧으로 주차를 살아남은 항목이 새 마스터 좌석에 승계되면, 그 크레딧이 항목
+///   `paused_total_secs` 로 옮겨져 활성 큐 TTL(6시간)에서도 산다. 고치기 전: 크레딧이 장부에만 남아 승계 직후 다음 틱에 만료.
+#[test]
+fn cm5_inherited_parked_entry_keeps_its_pause_credit() {
+    let fx = fx("cm5inherit");
+    let m = pane(&fx, "master", None, P + 130);
+    let _a = pane(&fx, "worker-1", Some("a"), P + 131);
+    let _b = pane(&fx, "worker-2", Some("b"), P + 132);
+    assert_eq!(queued_on(&fx.daemon, P + 131, m.id, "A 보고")["ok"], json!(true));
+    pause(&fx, P + 130, "a", true);
+    let seven_h = 7.0 * 3600.0;
+    let mut taken: Vec<crate::state::QueueEntry> = m.pending_queue.lock().unwrap().drain(..).collect();
+    taken[0].enqueued_at -= seven_h;
+    let id = taken[0].id.clone();
+    drop_seat(&fx, &m);
+    fx.daemon.parked_queues.lock().unwrap().insert(
+        "master".into(),
+        crate::state::ParkedQueue { entries: taken, parked_at: crate::state::now_epoch() - seven_h, from_surface: m.id },
+    );
+    // 주차된 7시간 내내 팀 a 정지 — 틱 1회(delta 7h)로 주차 크레딧 적립.
+    *fx.daemon.queue_tick_at.lock().unwrap() = Some(crate::state::now_epoch() - seven_h);
+    crate::governance::queue_expiry_pass(&fx.daemon);
+    assert!(fx.daemon.teams.parked_credit(&id) > seven_h - 60.0, "전제: 주차 크레딧 ≈ 7시간");
+    // 새 마스터 좌석 — 생성 경로가 주차분을 승계한다.
+    let r = rpc(&fx, Some(992_901), "surface.create", json!({"cmd": "sleep 30", "role": "master"}));
+    assert_eq!(r["ok"], json!(true), "{r}");
+    let nm = fx.daemon.get_surface(r["result"]["surface_id"].as_u64().unwrap()).unwrap();
+    let got = nm.pending_queue.lock().unwrap().iter().find(|e| e.id == id).cloned().expect("승계됨(주차 TTL 생존)");
+    assert!(got.paused_total_secs > seven_h - 60.0, "크레딧이 항목으로 옮겨짐: {}", got.paused_total_secs);
+    assert_eq!(fx.daemon.teams.parked_credit(&id), 0.0, "장부 크레딧은 꺼냄(겹쳐 더하지 않음)");
+    crate::governance::queue_expiry_pass(&fx.daemon);
+    assert!(nm.pending_queue.lock().unwrap().iter().any(|e| e.id == id), "승계 뒤 활성 TTL 에서도 생존(만료 0)");
+    assert!(!nm.expired_queue.lock().unwrap().iter().any(|e| e.id == id));
 }
 
 // ─────────────────────────── M6 · 보고 링 ───────────────────────────

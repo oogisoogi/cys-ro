@@ -122,6 +122,24 @@
 
 시험(고침 뒤 다시): asset_ledger 초록 139/140 · test_asset_ledger_check OK · H-ASSET-1 GREEN · test_output_skills OK · cargo 3 passed · javis_registry --root verify OK 124 · 설명 변경 0 · 추가 줄 개인 낱말 0.
 
+## codex 1R 뒤 1회 고침 (master#bbb3485a · `skillrev-r1.md` REVISE major 1 · minor 4 · 2026-11-20)
+
+| 지적 | 스킬 | 고친 것 | 이 좌석 재확인 |
+|---|---|---|---|
+| major | video-report-deck · voice-clone-elevenlabs · video-verify-final-gate | ElevenLabs 무료 등급을 「공개본 전부 불가」로 적은 오류 → **비상업 공개는 제목 출처 표기 시 가능 · 상업 게시본만 유료 등급** | ElevenLabs 도움말 「Can I publish the content I generate on the platform?」(무료 = 상업 불가 · 게시 시 제목에 elevenlabs.io/11.ai) |
+| minor | audio-post-mix | 2회째 명령이 없던 레시피 → `J=… · v(){…} · ffmpeg … -ar 48000 out.wav` 3줄 완성(Normalization Type 출력 포함) | 본문에서 그대로 떼어 bash·zsh 각각 실행 → rc 0 · 48000 Hz · **−14.0 LUFS** · `Normalization Type: Dynamic` 출력 |
+| minor | scene-cut | `narrated-motion/tools/s2m_sync_check.py`(작업 폴더 기준 상대 경로) → `${CYS_PACK_DIR:-$HOME/.cys/pack}/skills/narrated-motion/tools/s2m_sync_check.py` | 저장소 팩에 실재 |
+| minor | media-gen-edit | 「올린 사진이 서비스 쪽에 남는다」에 근거 → fal CDN 저장 · 기본 공개(URL 아는 누구나) · 보관 기간 설정 따름(fal 문서 「Media expiration」·「fal CDN」) | 두 문서 열람(하위 조회 에이전트 · 2026-11-20) |
+| minor | motion-graphics-prompt · sfx-place | 「코드로 만든 소리 = Content ID 걱정 없음」 단정 → 「사용권 문제는 없다 · 자동 대조 오탐까지 없다는 보증은 아님」 | 도움말 3367684 는 보증 문장을 두지 않음 |
+| 2312 R7 | media-gen | 업로드 질문 이름 고정 → 「AI·합성 콘텐츠 공개 질문(화면 문구는 바뀔 수 있음)」 | — |
+| 2312 R8 | video-verify-final-gate | (d) 「AI 음악」 → 「영상의 주된 초점인 AI 음악」 | 14328491 원문 한정어 |
+| 2312 R9 | scene-cut | 대안 방법 문턱 기준 1줄(s2m 은 큐 ±0.5초 창 최대 변화의 절반 · 큐 없으면 값을 찍어 보고 정해 기록) | s2m_sync_check.py 9줄 |
+| 2312 R10 | scene-cut | `scenecut_ffmpeg` 「항상 가용」 → 「ffmpeg 가 설치돼 있을 때 가용(probe = ffmpeg)」 | 카탈로그 probe `{"bin":"ffmpeg"}` |
+| B3(master 처분 · A안) | media-gen | 「구독 크레딧 창구(선택)」 = Adobe Firefly(Creative Cloud · 생성마다 크레딧 차감) · cost-preview-confirm 6번 · 사람 얼굴·아이 그림→영상 거부 가능 · 등급 약관 확인. 우리 계정 사정은 팩에 안 씀 | — |
+| 2312 R6 | audio-post-mix 설명 | 안 함(master 결정 = 다음 설명 손질 때) | — |
+
+시험(고침 뒤): asset_ledger 초록 139/140 · test_asset_ledger_check OK · H-ASSET-1 GREEN · test_output_skills OK · javis_registry --root verify OK 124 · 설명 변경 0 · 추가 줄 개인 낱말 0.
+
 ## 고치기 전/뒤 (스킬별 · `git diff -U0 1ff82d08a 1d11445d5` 에서 기계 추출)
 
 

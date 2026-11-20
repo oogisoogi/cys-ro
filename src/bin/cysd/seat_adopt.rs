@@ -1013,10 +1013,12 @@ pub(crate) fn check_block_reason(verdict: &Liveness, exe_ok: Option<bool>, core_
 
 /// `cysd --adopt-check` 본문: 소켓(CYS_SOCKET · 기본)의 상태 폴더 seatkeep 등록부를 읽어 **이 실행 파일**이 산 seatkeep 을 입양할 수 있는지만
 /// 판정한다 — 시작 잠금·소켓·파일 쓰기·연결 0(옛 데몬 무접촉). 출력 = `{"adoptable","blocked":[{skid,reason}],"foreign","dead"}` · 막힘 있으면 1.
-pub(crate) fn adopt_check_main() -> i32 {
+pub(crate) fn adopt_check_main(as_bundle: Option<&str>) -> i32 {
     let socket = cys::socket_path();
     let dir = crate::state::state_dir(&socket).join("seatkeep");
-    let v = adopt_check_in(&dir, &socket.with_extension("lock"));
+    // `--as-bundle <앱>`: 기대 실행 파일 = 그 번들의 Contents/MacOS/cys-seatkeep(교체 뒤 정식 자리 · ⓐ 옛 번들 형제 규칙도 그 번들 기준).
+    let want = as_bundle.map(|b| Path::new(b).join("Contents/MacOS/cys-seatkeep"));
+    let v = adopt_check_in_want(&dir, &socket.with_extension("lock"), want.as_deref());
     println!("{}", serde_json::to_string(&v).unwrap_or_default());
     if v["blocked"].as_array().is_some_and(|b| !b.is_empty()) {
         1
@@ -1026,6 +1028,10 @@ pub(crate) fn adopt_check_main() -> i32 {
 }
 
 pub(crate) fn adopt_check_in(dir: &Path, my_lock: &Path) -> serde_json::Value {
+    adopt_check_in_want(dir, my_lock, None)
+}
+
+pub(crate) fn adopt_check_in_want(dir: &Path, my_lock: &Path, want: Option<&Path>) -> serde_json::Value {
     let (mut adoptable, mut foreign, mut dead) = (0u64, 0u64, 0u64);
     let mut blocked = Vec::new();
     #[cfg(target_os = "macos")]
@@ -1049,7 +1055,13 @@ pub(crate) fn adopt_check_in(dir: &Path, my_lock: &Path) -> serde_json::Value {
             continue;
         }
         let start_now = pid.and_then(process_start_us);
-        let exe = if alive { pid.and_then(crate::seat_proc::seatkeep_exe_matches) } else { None };
+        let exe = if !alive {
+            None
+        } else if let Some(w) = want {
+            pid.and_then(|p| crate::seat_proc::seatkeep_exe_matches_want(p, w))
+        } else {
+            pid.and_then(crate::seat_proc::seatkeep_exe_matches)
+        };
         let mut verdict = judge(&JudgeIn { rec: rec_in, reg: &reg, alive, start_now, exe_is_seatkeep: exe });
         if matches!(verdict, Liveness::Dead(_)) && registry_other_live_pid(pid, &reg).is_some() {
             verdict = Liveness::Unknown("registry_pid_live");
@@ -1071,8 +1083,65 @@ pub(crate) fn adopt_check_in(dir: &Path, my_lock: &Path) -> serde_json::Value {
         }
     }
     #[cfg(not(target_os = "macos"))]
-    let _ = (dir, my_lock);
+    let _ = (dir, my_lock, want);
     json!({"adoptable": adoptable, "blocked": blocked, "foreign": foreign, "dead": dead})
+}
+
+/// ★T6b 되감기 전 관리용 종료(T6-DESIGN 2-4 · `cysd --end-keepers`): 업데이터가 입양을 모르는 판으로 되돌아가기 전에, 지금 판(입양 앎)의
+/// cysd 로 산 seatkeep 을 모두 끝낸다(`end_keeper` 신원 전부 · 남의 잠금 = 무접촉) — 옛 판은 seatkeep 폴더를 보지 않아 고아·작성자 둘이 되므로.
+/// 데몬이 살아 있으면(시작 잠금을 못 잡음) 아무것도 안 하고 3 · 끝내지 못한 것이 있으면 1 · 파일 정리는 다음 입양 앎 판 기동 몫(죽은 seatkeep 정리).
+pub(crate) fn end_keepers_main() -> i32 {
+    use std::os::unix::io::AsRawFd;
+    let socket = cys::socket_path();
+    let lock = socket.with_extension("lock");
+    let held = std::fs::OpenOptions::new().read(true).write(true).open(&lock).ok();
+    if let Some(f) = &held {
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            println!("{}", json!({"ended": 0, "failed": [], "foreign": 0, "refused": "daemon_running"}));
+            return 3;
+        }
+    }
+    let v = end_keepers_in(&crate::state::state_dir(&socket).join("seatkeep"), &lock);
+    println!("{}", serde_json::to_string(&v).unwrap_or_default());
+    drop(held);
+    if v["failed"].as_array().is_some_and(|f| !f.is_empty()) {
+        1
+    } else {
+        0
+    }
+}
+
+pub(crate) fn end_keepers_in(dir: &Path, my_lock: &Path) -> serde_json::Value {
+    let (mut ended, mut foreign) = (0u64, 0u64);
+    let mut failed = Vec::new();
+    #[cfg(target_os = "macos")]
+    for skid in scan_ids(dir) {
+        let reg = read_registry(&dir.join(format!("{skid}.json")));
+        let rec: Option<SeatRecord> = std::fs::read_to_string(record_path_in(dir, &skid))
+            .ok()
+            .and_then(|t| serde_json::from_str::<SeatRecord>(&t).ok())
+            .filter(|r| r.schema == RECORD_SCHEMA && r.skid == skid);
+        let rec_in = rec.as_ref().map(|r| (r.keeper_pid, r.keeper_start_us, 0.0));
+        let Some(pid) = target_pid(rec_in, &reg) else { continue };
+        if !pid_alive(pid) {
+            continue;
+        }
+        if bind_from(my_lock, claimed_lock(dir, &skid, Some(pid), &reg).as_deref()) == Bind::Other {
+            foreign += 1;
+            continue;
+        }
+        let expected = rec.as_ref().and_then(|r| r.keeper_start_us).or(match &reg {
+            RegRead::Ok(r) => r["start_us"].as_u64(),
+            _ => None,
+        });
+        match end_keeper(dir, &skid, pid, expected, my_lock, &reg) {
+            Ok(()) => ended += 1,
+            Err(e) => failed.push(json!({"skid": skid, "reason": e})),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (dir, my_lock);
+    json!({"ended": ended, "failed": failed, "foreign": foreign})
 }
 
 /// 기동 입양 — 잠금 획득 뒤 · accept 전에 한 번(main.rs). 노브 끔 = 아무것도 안 함(요약도 `ran=false`).

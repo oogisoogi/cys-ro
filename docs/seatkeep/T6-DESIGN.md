@@ -107,3 +107,13 @@
 | F10 / D4 launchd | `launchctl submit` 시험 작업(com.cysr.test.t6.<pid>) remove → cysd 끝 · seatkeep pgid ≠ cysd pgid · seatkeep·좌석 생존 · 새 cysd 입양·입력 왕복 · 시험 라벨 0 | e2e `launchd` · 남은 차이 = 실제 plist(KeepAlive·ThrottleInterval 10)는 `daemon install --takeover` 길 — VM/실기 몫 |
 | A4 / D5 진짜 claude | 계정2 프로필 · `--setting-sources project` · haiku · rotate 5회 = 5/5 암호어 답 · claude pid 같음 · 새 데몬 5/5 | e2e `claude`(최종 화면 scratchpad `e2e/t6a-d5d-final-screen.txt`) |
 | A13 비용(디버그 빌드 · load 40~50) | seatkeep RSS 1좌석 36.7MB · 5좌석 합 82.5MB(평균 16.5) · 20좌석 합 247MB(평균 12.4) · seatkeep CPU 합 0.9·2.5·6.5% (좌석 50ms 마다 한 줄) · cysd RSS ≈ 9MB(압축 메모리 의심 · 참고값) | e2e `cost` · 판정선 = master |
+
+## 7. T6b 구현 결과(후임 3 · 11-20 · master#ade86189 · #c5b4ebfc)
+
+| 항목 | 결과 | 근거 |
+|---|---|---|
+| D1 업데이트 뒤 신원 | **ⓐ 만**(master#c5b4ebfc = A 채택 · ⓑ 팀 서명 대조 뺌 — 설치본 TeamIdentifier=not set · 실효 0 · 같은 사용자 = 신뢰 경계 안) · `seat_proc::seatkeep_exe_ok` = 지금 cysd 옆 ∨ 지금 번들의 형제 `.cysr.app.old-<숫자>` 안 `Contents/MacOS/cys-seatkeep` · 📌 서명 기반 대조 = 경계 밖 위협 모델이 생기면 B(지정 요구사항·리프 인증서 해시 같음) | 단위 `seatkeep_exe_ok_allows_only_sibling_old_bundle` · e2e `update`(rename 교체 = adopted · 목록·입력 왕복) · 뮤턴트 L |
+| ⓒ 지워진 옛 번들 | 미결(실행 파일 못 읽음 · 좌석 무접촉) · 관리용 종료도 신원 불성립으로 못 함 | e2e `update` 뒷부분 · 업데이터 S11 은 옛 번들을 지우지 않음(코드 no-op) = 지금 길에선 안 생김 |
+| S7 앞 점검(2-2) | 옛 데몬 org.status 에 입양 칸이 있을 때만 · 스테이지 번들 서명 핀 확인 → 그 cysd `--adopt-check --json --as-bundle <정식>`(교체 뒤 신원) · 막힘·해석 실패 = S7 실패(옛 바이너리 재기동 + 보류 · 런너 기존 길) | 단위 `seat_adopt_precheck_verdict_table` · e2e `update`(스테이지 그대로 = 막힘 · `--as-bundle` = 통과) · **실 업데이터 배선 = 측정 대기(VM)** |
+| 되감기 전 관리용 종료(2-4) | `rb_prepare`(새 데몬 stop-only 뒤): 정식 자리 = 새 판 ∧ 옛 번들 cysd 가 `--adopt-check` 를 모름(JSON 아님) 또는 옛 번들 못 찾음 → 새 판 cysd `--end-keepers`(시작 잠금을 못 잡으면 rc 3 거절 · `end_keeper` 신원 전부) · 실패해도 되감기 계속(기록만) | e2e `update`(데몬 있음 rc 3 · 없음 = 정식 번들 seatkeep 끝냄 · 지워진 번들 seatkeep = 실패 보고) · **실 되감기 배선 = 측정 대기(VM)** |
+| 같은 판끼리 되감기 | 옛 판이 점검을 알면 끝내지 않음(옛 cysd 가 ⓐ 로 입양) | 코드 |

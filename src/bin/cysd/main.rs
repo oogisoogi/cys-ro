@@ -1153,7 +1153,10 @@ enum CysdCli {
     Version,
     Help,
     /// T6a 사전 점검(TICKET=cysr-1116-seatkeep-1119): 데몬을 띄우지 않고 이 실행 파일이 seatkeep 폴더의 산 좌석을 입양할 수 있는지만 JSON 으로.
-    AdoptCheck,
+    /// `--as-bundle <정식 앱 번들>` = 업데이터 S7 앞(스테이지 번들의 cysd 가 「교체 뒤 정식 자리에 섰을 때」의 신원 규칙으로 판정 · T6b).
+    AdoptCheck(Option<String>),
+    /// T6b 되감기 전 관리용 종료: 데몬이 없을 때만(시작 잠금을 비차단으로 잡음) 이 cysd 의 산 seatkeep 을 신원 확인 뒤 끝낸다.
+    EndKeepers,
     Unknown(String),
 }
 
@@ -1166,12 +1169,20 @@ fn parse_cysd_args<I: IntoIterator<Item = String>>(args: I) -> CysdCli {
         "--version" | "-V" => CysdCli::Version,
         "--help" | "-h" => CysdCli::Help,
         // `--json` 은 받아 넘긴다(출력은 언제나 JSON) — 그 밖 인자는 거절.
-        "--adopt-check" => {
-            return match (args.next().as_deref(), args.next()) {
-                (None, _) | (Some("--json"), None) => CysdCli::AdoptCheck,
-                (Some("--json"), Some(extra)) => CysdCli::Unknown(extra),
-                (Some(other), _) => CysdCli::Unknown(other.to_string()),
+        "--adopt-check" | "--end-keepers" => {
+            let end = first == "--end-keepers";
+            let mut bundle = None;
+            while let Some(a) = args.next() {
+                match a.as_str() {
+                    "--json" => {}
+                    "--as-bundle" if !end && bundle.is_none() => match args.next() {
+                        Some(b) => bundle = Some(b),
+                        None => return CysdCli::Unknown(a),
+                    },
+                    _ => return CysdCli::Unknown(a),
+                }
             }
+            return if end { CysdCli::EndKeepers } else { CysdCli::AdoptCheck(bundle) };
         }
         _ => return CysdCli::Unknown(first),
     };
@@ -1191,7 +1202,8 @@ fn cysd_usage() -> String {
     concat!(
         "usage: cysd [--version|-V|--help|-h]\n",
         "  cysd            데몬을 기동한다(무인자만 기동 · 소켓은 CYS_SOCKET · 팩은 CYS_PACK_DIR)\n",
-        "  --adopt-check [--json]  데몬 없이 seatkeep 좌석 입양 가능 여부만 JSON(막힘 있으면 exit 1 · 잠금·소켓·쓰기 0)\n",
+        "  --adopt-check [--json] [--as-bundle <앱>]  데몬 없이 seatkeep 좌석 입양 가능 여부만 JSON(막힘 있으면 exit 1 · 잠금·소켓·쓰기 0)\n",
+        "  --end-keepers [--json]  데몬이 없을 때만 이 데몬의 산 seatkeep 을 신원 확인 뒤 끝낸다(되감기 전 · 데몬 있음 = exit 3)\n",
         "  --version, -V   버전과 빌드 ID 를 stdout 에 내고 exit 0\n",
         "  --help, -h      이 도움말 · exit 0\n",
         "  그 밖의 인자    usage 를 stderr 에 내고 exit 2 — 데몬은 기동하지 않는다\n",
@@ -1217,7 +1229,8 @@ fn main() {
             print!("{}", cysd_usage());
             std::process::exit(0);
         }
-        CysdCli::AdoptCheck => std::process::exit(seat_adopt::adopt_check_main()),
+        CysdCli::AdoptCheck(bundle) => std::process::exit(seat_adopt::adopt_check_main(bundle.as_deref())),
+        CysdCli::EndKeepers => std::process::exit(seat_adopt::end_keepers_main()),
         CysdCli::Unknown(a) => {
             eprintln!("cysd: unknown argument '{a}'");
             eprint!("{}", cysd_usage());
@@ -8080,8 +8093,12 @@ mod cysd_args_tests {
 
     #[test]
     fn cysd_args_adopt_check() {
-        assert_eq!(parse_cysd_args(["--adopt-check".to_string()]), CysdCli::AdoptCheck);
-        assert_eq!(parse_cysd_args(["--adopt-check", "--json"].map(str::to_string)), CysdCli::AdoptCheck);
+        assert_eq!(parse_cysd_args(["--adopt-check".to_string()]), CysdCli::AdoptCheck(None));
+        assert_eq!(parse_cysd_args(["--adopt-check", "--json"].map(str::to_string)), CysdCli::AdoptCheck(None));
+        assert_eq!(parse_cysd_args(["--adopt-check", "--json", "--as-bundle", "/A/x.app"].map(str::to_string)), CysdCli::AdoptCheck(Some("/A/x.app".into())));
+        assert_eq!(parse_cysd_args(["--end-keepers", "--json"].map(str::to_string)), CysdCli::EndKeepers);
+        assert_eq!(parse_cysd_args(["--adopt-check", "--as-bundle"].map(str::to_string)), CysdCli::Unknown("--as-bundle".into()));
+        assert_eq!(parse_cysd_args(["--end-keepers", "--as-bundle", "/A"].map(str::to_string)), CysdCli::Unknown("--as-bundle".into()));
     }
 
     #[test]

@@ -526,6 +526,18 @@ if MODE == "update":
     time.sleep(1.0)
     res["io_after_swap"] = any(l.startswith("IN PINGUPD") for l in seat_lines(log))
     res["seat_alive_after_swap"] = alive(seat_pid)
+    # S7 앞 점검 흉내: 다음 판 스테이지 번들(.cysr.app.new-2)의 cysd — 그대로면 막힘(스테이지 옆 ≠) · --as-bundle 정식 = 통과.
+    make_bundle(f"{apps}/.cysr.app.new-2")
+    for tag, extra in (("staged_plain", []), ("staged_as_bundle", ["--as-bundle", canon_app])):
+        c = subprocess.run([f"{apps}/.cysr.app.new-2/Contents/MacOS/cysd", "--adopt-check", "--json", *extra], env=DENV, capture_output=True, text=True, timeout=30)
+        res[tag] = {"rc": c.returncode, "out": c.stdout.strip()[:160]}
+    # 되감기 전 관리용 종료: 데몬이 살아 있으면 거절(rc 3).
+    c = subprocess.run([f"{R}/{mb}/cysd", "--end-keepers", "--json"], env=DENV, capture_output=True, text=True, timeout=30)
+    res["end_keepers_while_daemon"] = {"rc": c.returncode, "out": c.stdout.strip()[:120]}
+    log2 = f"{R}/logs/u1.log"
+    cys("new-surface", "--cwd", "/private/tmp", "--role", "seatu2", "--cmd", f"{SEAT} {log2} 50")
+    seat2 = wait_start(log2)
+    time.sleep(1.0)
     # ⓒ 옛 번들 삭제 뒤(지금 업데이터는 지우지 않음 — 다음 갱신 때 지운다는 주석뿐) = 실행 파일 못 읽음 → 미결 · 좌석 무접촉.
     os.kill(d.pid, signal.SIGKILL)
     d.wait()
@@ -535,6 +547,15 @@ if MODE == "update":
     err = open(f"{R}/logs/cysd-2.err").read()
     res["adopt_log_after_delete"] = [l for l in err.splitlines() if "좌석 입양 " in l and "노브" not in l][:2]
     res["seat_alive_after_delete"] = alive(seat_pid)
+    # 데몬을 내린 뒤 --end-keepers: 정식 번들 seatkeep(seat2) = 끝냄 · 지워진 옛 번들 seatkeep(seat1) = 신원 불성립(ⓒ) 실패로 보고.
+    d.send_signal(signal.SIGTERM)
+    d.wait()
+    c = subprocess.run([f"{R}/{mb}/cysd", "--end-keepers", "--json"], env=DENV, capture_output=True, text=True, timeout=60)
+    res["end_keepers_no_daemon"] = {"rc": c.returncode, "out": c.stdout.strip()[:240]}
+    time.sleep(0.5)
+    res["seat2_alive_after_end"] = alive(seat2)
+    res["seat2_end"] = [l for l in seat_lines(log2) if l.startswith(("SIGNAL", "EOF"))][:1]
+    res["seat1_alive_after_end"] = alive(seat_pid)
     print(json.dumps(res, ensure_ascii=False), flush=True)
     if OUT:
         open(OUT, "a").write(json.dumps(res, ensure_ascii=False) + "\n")
@@ -543,8 +564,9 @@ if MODE == "update":
     for l in out.splitlines():
         if f"{R}/apps/" in l and "cys-seatkeep" in l:
             os.kill(int(l.split()[0]), signal.SIGKILL)
-    if alive(seat_pid):
-        os.kill(seat_pid, signal.SIGKILL)
+    for p in (seat_pid, seat2):
+        if alive(p):
+            os.kill(p, signal.SIGKILL)
     sys.exit(0)
 
 if MODE == "cost":

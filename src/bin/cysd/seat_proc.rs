@@ -391,7 +391,7 @@ mod sk_proto;
 pub(crate) const SEATKEEP_CORE_VERSION: u32 = sk_proto::CORE_VERSION;
 
 #[cfg(target_os = "macos")]
-pub(crate) use seatkeep_mac::{adopt_connect, controller_lock_path, seatkeep_dir, seatkeep_exe_matches, SeatkeepPlan, SeatLink};
+pub(crate) use seatkeep_mac::{adopt_connect, controller_lock_path, seatkeep_dir, seatkeep_exe_matches, seatkeep_exe_matches_want, SeatkeepPlan, SeatLink};
 
 #[cfg(target_os = "macos")]
 mod seatkeep_mac {
@@ -621,8 +621,13 @@ mod seatkeep_mac {
     pub(crate) fn seatkeep_exe_matches(pid: u32) -> Option<bool> {
         let me = std::env::current_exe().ok()?;
         let want = super::seatkeep_exe_beside(&me)?;
+        seatkeep_exe_matches_want(pid, &want)
+    }
+
+    /// 기대 경로를 주는 판(T6b `--adopt-check --as-bundle` = 교체 뒤 정식 자리의 cys-seatkeep).
+    pub(crate) fn seatkeep_exe_matches_want(pid: u32, want: &std::path::Path) -> Option<bool> {
         let got = pid_path(pid)?;
-        Some(super::seatkeep_exe_ok(&got, &want))
+        Some(super::seatkeep_exe_ok(&got, want))
     }
 
     /// 맥 `proc_pidpath`.

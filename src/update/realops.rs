@@ -316,6 +316,45 @@ impl RealOps {
         }
     }
 
+    /// T6b S7 앞 점검: 옛 데몬(org.status)에 입양 칸이 있을 때만 스테이지 번들의 cysd 로 `--adopt-check --as-bundle <정식>`
+    /// (교체 뒤 정식 자리 기준 신원) — 막힘·해석 실패(새 판이 점검을 모름) = Err(S7).
+    fn seat_adopt_precheck(&self, j: &Journal) -> Step {
+        let on = (self.env.rpc)("org.status", json!({})).ok().is_some_and(|v| v["daemon"]["seat_adopt"].is_object());
+        if !on {
+            return Ok(());
+        }
+        let staged = super::mac::staged_path(&self.env.canonical_app, j.release_seq);
+        super::mac::verify_signature_pin(&staged)?;
+        let canon = self.env.canonical_app.to_string_lossy().into_owned();
+        let o = self.child(&staged.join("Contents/MacOS/cysd"), &["--adopt-check", "--json", "--as-bundle", &canon])?;
+        seat_adopt_precheck_verdict(o.status.code(), &o.stdout).map_err(|d| fail(ErrCode::RotateFailed, "S7", d))
+    }
+
+    /// T6b 되감기 전: 정식 자리가 새 판이고 옛 번들의 cysd 가 `--adopt-check` 를 모르면(JSON 아님) 새 판 cysd `--end-keepers`.
+    fn end_keepers_if_old_unaware(&mut self, j: &Journal) {
+        if self.canonical(j) != Canon::New {
+            return;
+        }
+        let recorded = j.prev_bundle.as_ref().map(|p| PathBuf::from(&p.path));
+        let old = super::mac::prev_candidates(&self.env.canonical_app, Path::new(&j.stage_path), j.from_release_seq, recorded.as_deref())
+            .into_iter()
+            .find(|c| c.join("Contents/MacOS/cysd").is_file() && super::mac::verify_signature_pin(c).is_ok());
+        let aware = old.as_ref().is_some_and(|b| {
+            self.child(&b.join("Contents/MacOS/cysd"), &["--adopt-check", "--json"])
+                .ok()
+                .is_some_and(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).is_ok_and(|v| v.is_object()))
+        });
+        if aware {
+            return;
+        }
+        // 옛 번들을 못 찾음 = 모름으로 본다(끝내는 쪽이 작성자 둘보다 안전).
+        let new_cysd = self.env.canonical_app.join("Contents/MacOS/cysd");
+        match self.child(&new_cysd, &["--end-keepers", "--json"]) {
+            Ok(o) => eprintln!("[update] RB_PREPARED: 입양 모르는 옛 판으로 되감기 — seatkeep 관리용 종료 rc {:?} {}", o.status.code(), String::from_utf8_lossy(&o.stdout).trim()),
+            Err(f) => eprintln!("[update] RB_PREPARED: seatkeep 관리용 종료 실행 실패: {f:?}"),
+        }
+    }
+
     /// 새 판 `cys` 경로.
     fn new_cys(&self) -> PathBuf {
         match self.env.os {
@@ -720,7 +759,12 @@ impl Ops for RealOps {
         reconfirm(&self.env.update_dir, &self.env.channel, &self.cand)
     }
 
-    fn stop(&mut self, _j: &Journal) -> Step {
+    fn stop(&mut self, j: &Journal) -> Step {
+        if self.env.os == Os::Mac {
+            // ★T6b(TICKET=cysr-1116-seatkeep-1119 · T6-DESIGN 2-2): 옛 데몬을 내리기 **전**에 새 판이 산 seatkeep 을 입양할 수 있나 —
+            //   막히면 S7 실패 = 옛 바이너리 재기동 + 보류(좌석 무변경 · 입양 노브 끔 데몬 = 점검 없음 · 종전).
+            self.seat_adopt_precheck(j)?;
+        }
         if self.env.os == Os::Win {
             // S7~S9b 동안 Global\cys-installer 를 쥔다(옛 설치기 ⓪ = exit 5 · 우리 1.1.8+ 설치기는 ⓪-a 토큰으로 위임 수용)
             super::win_install::hold_installer_mutex().map_err(|e| fail(ErrCode::WinLaunchBlocked, "S7", e))?;
@@ -1029,6 +1073,11 @@ impl Ops for RealOps {
     fn rb_prepare(&mut self, j: &Journal) -> Step {
         let _ = self.child(&self.new_cys(), &["drain", "--verify", "--timeout", "60"]);
         let _ = self.rotate(&self.new_cys(), true);
+        if self.env.os == Os::Mac {
+            // ★T6b(T6-DESIGN 2-4): 되돌아갈 옛 판이 입양을 모르면 지금 판 cysd 로 산 seatkeep 을 먼저 끝낸다(옛 판 = 고아·작성자 둘 방지).
+            //   되감기는 복구 길이라 실패해도 막지 않는다(기록만).
+            self.end_keepers_if_old_unaware(j);
+        }
         let root = PathBuf::from(&j.snapshot_dir);
         for (name, _) in self.snapshot_roots() {
             let got = super::snapshot::verify(&root.join(name)).map_err(|e| fail(ErrCode::RollbackBlocked, "RB_PREPARED", e))?;
@@ -1694,8 +1743,30 @@ pub fn tree_sha(root: &Path) -> Result<String, String> {
     Ok(format!("{:x}", h.finalize()))
 }
 
+/// T6b S7 앞 점검 판정(순수): 점검 rc 0 + 막힘 0 만 진행 · JSON 아님(새 판이 점검 모름) = 막힘.
+pub(crate) fn seat_adopt_precheck_verdict(rc: Option<i32>, stdout: &[u8]) -> Result<(), String> {
+    let v: serde_json::Value =
+        serde_json::from_slice(stdout).map_err(|_| format!("seat_adopt_precheck_unreadable: 새 판 cysd 가 입양 점검을 모름(rc {rc:?})"))?;
+    let blocked = v["blocked"].as_array().cloned().unwrap_or_default();
+    if blocked.is_empty() && rc == Some(0) {
+        return Ok(());
+    }
+    let list: Vec<String> = blocked.iter().map(|b| format!("{}:{}", b["skid"].as_str().unwrap_or("?"), b["reason"].as_str().unwrap_or("?"))).collect();
+    Err(format!("seat_adopt_precheck_blocked: 새 판이 입양 못 하는 seatkeep {}개 [{}] (rc {rc:?})", blocked.len(), list.join(", ")))
+}
+
 #[cfg(test)]
 mod tests {
+    /// T6b S7 앞 점검: 막힘 0 + rc 0 만 진행 · 막힘·옛 판(JSON 아님)·rc 어긋남 = S7 실패(옛 바이너리 재기동 + 보류).
+    #[test]
+    fn seat_adopt_precheck_verdict_table() {
+        assert!(super::seat_adopt_precheck_verdict(Some(0), br#"{"adoptable":1,"blocked":[],"foreign":0,"dead":0}"#).is_ok());
+        let e = super::seat_adopt_precheck_verdict(Some(1), br#"{"blocked":[{"skid":"a-1-0","reason":"core_version_mismatch"}]}"#).unwrap_err();
+        assert!(e.starts_with("seat_adopt_precheck_blocked") && e.contains("a-1-0:core_version_mismatch"), "{e}");
+        assert!(super::seat_adopt_precheck_verdict(Some(2), b"cysd: unknown argument").unwrap_err().starts_with("seat_adopt_precheck_unreadable"));
+        assert!(super::seat_adopt_precheck_verdict(Some(1), br#"{"blocked":[]}"#).is_err());
+    }
+
     use super::*;
 
     #[test]

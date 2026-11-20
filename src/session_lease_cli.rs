@@ -472,7 +472,7 @@ pub(crate) fn seat_agent_open_rollout(root: u32, bin: &str) -> Result<Option<Str
         }
         false
     };
-    let agents: Vec<u32> = sys
+    let all: Vec<u32> = sys
         .processes()
         .iter()
         .filter(|(_, p)| {
@@ -482,6 +482,8 @@ pub(crate) fn seat_agent_open_rollout(root: u32, bin: &str) -> Result<Option<Str
         .map(|(pid, _)| pid.as_u32())
         .filter(|p| *p != root && under_root(*p))
         .collect();
+    let parent = |p: u32| sys.process(sysinfo::Pid::from_u32(p)).and_then(|x| x.parent()).map(|x| x.as_u32());
+    let agents = top_agents(&all, root, parent);
     if agents.is_empty() {
         return Err("seat-agent-process-not-found".into());
     }
@@ -503,6 +505,26 @@ pub(crate) fn seat_agent_open_rollout(root: u32, bin: &str) -> Result<Option<Str
         }
     }
     Ok(found)
+}
+
+/// 좌석 최상위 에이전트만(순수 · skt1 · codex 2R #3 오인 줄이기): 자기와 좌석 뿌리 사이에 다른 에이전트 실행이 있는 프로세스(그 에이전트의 자손 ·
+/// argv 에 같은 이름 토큰을 가진 도구·헬퍼)는 그 좌석의 대화 증거가 아니다.
+pub(crate) fn top_agents(all: &[u32], root: u32, parent: impl Fn(u32) -> Option<u32>) -> Vec<u32> {
+    all.iter()
+        .copied()
+        .filter(|&p| {
+            let mut cur = parent(p);
+            for _ in 0..64 {
+                match cur {
+                    Some(c) if c == root || c <= 1 => return true,
+                    Some(c) if all.contains(&c) => return false,
+                    Some(c) => cur = parent(c),
+                    None => return true,
+                }
+            }
+            true
+        })
+        .collect()
 }
 
 /// codex rollout 첫 줄 `payload.id`(정규화 · 데몬 `extract_session_id("codex")` 와 같은 칸).
@@ -741,18 +763,17 @@ pub(crate) fn lease_transition_before_register(surface_id: u64, transcript: &str
     let Some(id) = tp.file_stem().and_then(|s| s.to_str()).and_then(sl::norm_id) else { return };
     let mut anc: Vec<(Holder, u32)> = Vec::new(); // 발신의 부모 → 위
     let mut cur = std::process::id();
+    let mut complete = false; // 조상 사슬을 init 까지 읽었나(중간 판독 실패 = 작성자를 가릴 수 없다)
     for _ in 0..64 {
         let Ok(i) = cys::process_observation::identity(cur) else { break };
         if cur != std::process::id() {
             anc.push((sl::holder_of(&i), i.pid));
         }
         if i.parent <= 1 {
+            complete = true;
             break;
         }
         cur = i.parent;
-    }
-    if anc.is_empty() {
-        return;
     }
     let bin = request("surface.list", json!({}))
         .ok()
@@ -763,7 +784,35 @@ pub(crate) fn lease_transition_before_register(surface_id: u64, transcript: &str
     let cmds = chain_argv(&pids);
     let bin = bin.rsplit(['/', '\\']).next().unwrap_or(&bin).to_string();
     let Ok(store) = lease_store() else { return };
-    sl::transition_unbind(&store, &id, &|w| anc.iter().position(|(h, _)| h == w).is_some_and(|k| sl::lineage_of(&cmds[..=k], &bin) == sl::Lineage::ProvenTop));
+    sl::transition_unbind(&store, &id, &|w, seat| transition_targets(&anc, &cmds, &bin, complete, surface_id, w, seat));
+}
+
+/// 등록 앞 결속 해제 대상인가(순수 · skt1 · codex 2R #1 = 모르면 닫힌 쪽): 그 결속의 작성자가 이 발신의 조상이면 계통이 **헬퍼·도구 셸로 증명**(NotTop)
+/// 된 때만 남기고 그 밖(ProvenTop · 판독 불가 Unknown)은 해제 — 해제의 귀결은 「이 좌석 결속 없음 = 같은 역할 복원 93」(거짓 막힘 쪽)이고,
+/// 남기면 대화를 바꾼 좌석이 옛 대화로 읽혀 새 좌석이 열린다(작성자 둘). 조상 사슬을 끝까지 못 읽었으면(작성자를 못 가림) 이 좌석 번호의 결속을 해제.
+pub(crate) fn transition_targets(anc: &[(Holder, u32)], cmds: &[Option<String>], bin: &str, complete: bool, surface_id: u64, w: &Holder, seat: Option<u64>) -> bool {
+    match anc.iter().position(|(h, _)| h == w) {
+        Some(k) => sl::lineage_of(&cmds[..=k], bin) != sl::Lineage::NotTop,
+        None => !complete && seat == Some(surface_id),
+    }
+}
+
+/// Return 직전 마지막 확인(skt1 · codex 2R #2) — [`sl::confirm_launch`] + 같은 역할 좌석 재판정(이 좌석 제외). Err = Return 0(`session_lease:` 머리).
+pub(crate) fn lease_confirm_enter(role: &str, agent: &str, sess: Option<&str>, seat: u64) -> Result<(), String> {
+    let Some(n) = sess.and_then(sl::norm_id) else { return Ok(()) };
+    if !sl::enabled() || !sl::is_mine(&n) {
+        return Ok(());
+    }
+    let store = lease_store().map_err(|r| format!("session_lease: 대화 {} Return 직전 확인 못 함({r}) — Return 0", short(&n)))?;
+    let mut recheck = || match lease_role_seat_verdict(role, agent, sess, Some(seat)) {
+        Ok(RoleSeat::Clear) => Ok(()),
+        Ok(RoleSeat::ThisConversation { seat: w, .. }) => Err(format!("recheck:this-conversation:{w}")),
+        Ok(RoleSeat::Unverified { seat: w, why }) => Err(format!("recheck:unverified:{w}:{why}")),
+        Err(why) => Err(format!("recheck:{why}")),
+    };
+    sl::confirm_launch(&store, &n, &mut recheck).map_err(|r| {
+        format!("session_lease: 대화 {} Return 직전 확인에서 멈춤({r}) — 기동 글은 붙였으나 실행 안 함 · 그 사이 다른 좌석이 이 대화로 들어왔거나 같은 역할 좌석의 대화를 확인 못 함", short(&n))
+    })
 }
 
 /// 저장 대화를 잇는 기동 글을 치기 **직전**(`boot_agent_on_surface` · skt1 · codex 1R #2A): 같은 잠금 안에서 ① 임대가 아직 내 것(다른 좌석 최상위 훅의

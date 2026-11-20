@@ -98,6 +98,9 @@ pub struct Lease {
     /// 옛 기록(필드 없음) = false.
     #[serde(default)]
     pub launch_sent: bool,
+    /// 확정 **뒤** 다른 좌석 최상위 훅의 등록이 이 대화로 들어왔다(skt1 · codex 2R #2) — 복원기는 Return 직전 [`confirm_launch`] 에서 보고 멈춘다.
+    #[serde(default)]
+    pub contested: bool,
 }
 
 /// 보유자 하나의 생존 판정.
@@ -627,6 +630,7 @@ pub fn acquire(store: &Store, id: &str, cx: &AcquireCtx) -> Decision {
             cfg: cx.cfg.clone(),
             at: now,
             launch_sent: false,
+            contested: false,
         };
         if let Err(r) = store.write(&f, &l) {
             return fill_next(undecided(r), &norm, &f);
@@ -853,6 +857,7 @@ pub fn follow(store: &Store, id: &str, writer: &Holder, surface_id: Option<u64>,
                 cfg: existing.as_ref().and_then(|l| l.cfg.clone()),
                 at: now,
                 launch_sent: false,
+                contested: false,
             };
             match store.write(&f, &l) {
                 Ok(()) => {
@@ -869,6 +874,13 @@ pub fn follow(store: &Store, id: &str, writer: &Holder, surface_id: Option<u64>,
                 Follow::Held => String::new(),
             };
             store.event(if matches!(o, Follow::Conflict(_)) { "conflict_live" } else { "follow_unknown" }, existing.as_ref(), &norm, &why, now);
+            // ★skt1(codex 2R #2): 확정 뒤 기동 중 임대 = 복원기가 아직 Return 을 안 쳤을 수 있다 — 표식을 남겨 Return 직전 확인에서 멈추게 한다.
+            if let Some(mut l) = existing.clone().filter(|l| matches!(o, Follow::Conflict(_)) && l.writer.is_none() && l.state == State::Launching && l.launch_sent) {
+                l.contested = true;
+                if store.write(&f, &l).is_ok() {
+                    store.event("contested", Some(&l), &norm, &why, now);
+                }
+            }
             o
         }
     };
@@ -991,11 +1003,35 @@ pub fn mark_launch_sent(store: &Store, norm: &str, recheck: &mut dyn FnMut() -> 
     Ok(())
 }
 
+/// 기동 글을 붙인 뒤 **Return 직전**(skt1 · codex 2R #2) — 같은 잠금 안에서 ① 임대가 아직 내 것 ② 확정 표식 있음 ③ 확정 뒤 들어온 등록 충돌
+/// (`contested`) 없음 ④ `recheck`(같은 역할 좌석 재판정) Ok 일 때만 Ok. Err = Return 을 치지 않음(붙인 글은 실행되지 않는다 · 호출자 = 빈 좌석 닫고 93).
+pub fn confirm_launch(store: &Store, norm: &str, recheck: &mut dyn FnMut() -> Result<(), String>) -> Result<(), String> {
+    let Some((fence, token)) = mine_get(norm) else { return Err("lease:not-held".into()) };
+    let f = store.file_of(norm);
+    let _g = store.lock()?;
+    let l = store.read(&f)?.ok_or_else(|| "lease:gone".to_string())?;
+    let why = if l.fence != fence || l.token != token {
+        Some("lease:taken".to_string())
+    } else if !l.launch_sent {
+        Some("lease:not-committed".to_string())
+    } else if l.contested {
+        Some("lease:contested".to_string())
+    } else {
+        recheck().err()
+    };
+    if let Some(r) = why {
+        store.event("enter_refused", Some(&l), norm, &r, now_secs());
+        return Err(r);
+    }
+    store.event("enter", Some(&l), norm, "", now_secs());
+    Ok(())
+}
+
 /// 좌석 최상위 에이전트가 대화를 바꾸려 한다(SessionStart 등록 **앞** · skt1 · codex 1R #2B) — 그 작성자(`is_my_writer` = 이 등록 발신의 조상 중
 /// 좌석 최상위 작성자)에게 결속된 **다른 대화**의 작성 중 임대를 「결과 불명 · 좌석 유지 · 작성자 없음」으로 바꾼다.
 /// 등록이 실패해도 옛 결속이 「이 좌석 = 옛 대화」 증거로 남지 않는다(그 좌석은 결속 없음 = 같은 역할 복원 93) · 등록·follow 가 성공하면
 /// 새 결속이 생기고, 옛 대화의 결과 불명 임대는 [`judge`] 가 「그 좌석의 현재 대화가 다르다」로 푼다. 바꾼 수.
-pub fn transition_unbind(store: &Store, new_id: &str, is_my_writer: &dyn Fn(&Holder) -> bool) -> usize {
+pub fn transition_unbind(store: &Store, new_id: &str, is_my_writer: &dyn Fn(&Holder, Option<u64>) -> bool) -> usize {
     let Some(new_norm) = norm_id(new_id) else { return 0 };
     let Ok(_g) = store.lock() else { return 0 };
     let Ok(rd) = std::fs::read_dir(store.root()) else { return 0 };
@@ -1006,7 +1042,7 @@ pub fn transition_unbind(store: &Store, new_id: &str, is_my_writer: &dyn Fn(&Hol
             continue;
         }
         let Ok(Some(mut l)) = store.read(&p) else { continue };
-        if l.state != State::Held || l.id == new_norm || !l.writer.as_ref().is_some_and(is_my_writer) {
+        if l.state != State::Held || l.id == new_norm || !l.writer.as_ref().is_some_and(|w| is_my_writer(w, l.surface_id)) {
             continue;
         }
         l.state = State::Unknown;
@@ -1015,6 +1051,7 @@ pub fn transition_unbind(store: &Store, new_id: &str, is_my_writer: &dyn Fn(&Hol
         l.fence += 1;
         l.token = new_token();
         l.launch_sent = false;
+        l.contested = false;
         l.at = now_secs();
         if store.write(&p, &l).is_ok() {
             store.event("transition_unknown", Some(&l), &l.id, "", now_secs());
@@ -1768,6 +1805,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// skt1(codex 2R #2 · 순서 주입) — 확정(mark) 뒤 · Return 전에 다른 좌석 최상위 훅의 등록이 들어오면 follow 는 빼앗지 않되(충돌) 표식을 남기고,
+    /// 복원기는 Return 직전 확인(`confirm_launch`)에서 멈춘다(붙인 기동 글은 실행되지 않음) · 표식 없으면 통과 · 재확인 실패도 멈춤.
+    #[test]
+    fn a_registration_between_commit_and_enter_stops_the_restorer_before_enter() {
+        let d = tmp("ce");
+        let s = Store::open(&d).unwrap();
+        let w = Fake::new();
+        let gen = Some("77-1.5".to_string());
+        w.set(10, Liveness::Alive);
+        let Decision::Granted(g) = acquire(&s, "CE", &AcquireCtx { surface_id: Some(52), daemon_gen: gen.clone(), ..cx(h(10), &w) }) else { panic!() };
+        assert_eq!(mark_launch_sent(&s, "ce", &mut || Ok(())), Ok(()));
+        assert_eq!(confirm_launch(&s, "ce", &mut || Ok(())), Ok(()), "아무 일 없는데 Return 을 막았다");
+        // 확정 뒤 · Return 전: 좌석 60 의 최상위 claude 가 좌석 안 /resume CE → 등록 → 충돌 + 표식.
+        assert!(matches!(follow(&s, "CE", &h(50), Some(60), gen.clone(), &w), Follow::Conflict(_)));
+        assert!(s.read(&s.file_of("ce")).unwrap().unwrap().contested, "확정 뒤 등록을 흔적 없이 넘겼다(codex 2R #2)");
+        assert_eq!(confirm_launch(&s, "ce", &mut || Ok(())), Err("lease:contested".into()), "확정 뒤 등록이 들어왔는데 Return 을 쳤다(작성자 둘)");
+        drop(g);
+        // 재확인 실패 = Return 0.
+        let Decision::Granted(g2) = acquire(&s, "CF", &AcquireCtx { surface_id: Some(53), daemon_gen: gen.clone(), ..cx(h(10), &w) }) else { panic!() };
+        assert_eq!(confirm_launch(&s, "cf", &mut || Ok(())), Err("lease:not-committed".into()), "확정 없이 Return 을 허락했다");
+        assert_eq!(mark_launch_sent(&s, "cf", &mut || Ok(())), Ok(()));
+        assert_eq!(confirm_launch(&s, "cf", &mut || Err("recheck:unverified:7:seat-unbound".into())), Err("recheck:unverified:7:seat-unbound".into()));
+        drop(g2);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// skt1(codex 1R #2B) — 등록 **앞** 결속 해제: 좌석 최상위 작성자가 대화를 바꾸려 하면 그 작성자의 다른 대화 결속은 결과 불명(좌석 유지)으로 —
     /// 등록이 실패해도 「이 좌석 = 옛 대화」 증거가 남지 않고(결속 없음 = 같은 역할 복원 93), 새 결속이 생기면 옛 대화 임대는 judge 가 푼다.
     #[test]
@@ -1781,10 +1844,10 @@ mod tests {
         let probe = |x: &Holder| if *x == h(50) { Liveness::Alive } else { Liveness::Dead };
         assert_eq!(seat_bound_conversation(&s, 52, gen, &probe), Ok(Some("tt".into())));
         // 남의 작성자 · 같은 대화(compact) = 손대지 않음.
-        assert_eq!(transition_unbind(&s, "SS", &|x| *x == h(99)), 0);
-        assert_eq!(transition_unbind(&s, "TT", &|x| *x == h(50)), 0, "같은 대화 재등록에서 결속을 풀었다");
+        assert_eq!(transition_unbind(&s, "SS", &|x, _| *x == h(99)), 0);
+        assert_eq!(transition_unbind(&s, "TT", &|x, _| *x == h(50)), 0, "같은 대화 재등록에서 결속을 풀었다");
         // 좌석 안 /resume SS(등록 전) → TT 결속 = 결과 불명.
-        assert_eq!(transition_unbind(&s, "SS", &|x| *x == h(50)), 1);
+        assert_eq!(transition_unbind(&s, "SS", &|x, _| *x == h(50)), 1);
         let l = s.read(&s.file_of("tt")).unwrap().unwrap();
         assert_eq!((l.state, l.writer.clone(), l.surface_id), (State::Unknown, None, Some(52)), "옛 결속이 남았다(등록 실패 시 「다른 대화」 증거 · codex 1R #2B)");
         assert_eq!(seat_bound_conversation(&s, 52, gen, &probe), Ok(None), "등록 전 좌석이 옛 대화로 읽힌다");

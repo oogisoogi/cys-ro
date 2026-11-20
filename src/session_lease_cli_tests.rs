@@ -412,7 +412,7 @@ fn stale_argv_stays_evidence_even_if_recorded_as_writing_elsewhere() {
             let id = cys::process_observation::identity(child.id()).unwrap();
             let store = lease_store().unwrap();
             let l = Lease { v: sl::LEASE_VERSION, id: "sess-m4-b".into(), fence: 1, token: "t".into(), state: State::Held,
-                writer: Some(sl::holder_of(&id)), restorer: None, surface_id: Some(3), daemon_gen: None, cfg: None, at: 1, launch_sent: false };
+                writer: Some(sl::holder_of(&id)), restorer: None, surface_id: Some(3), daemon_gen: None, cfg: None, at: 1, launch_sent: false, contested: false };
             std::fs::write(store.file_of("sess-m4-b"), serde_json::to_string(&l).unwrap()).unwrap();
             assert!(matches!(w.evidence("sess-m4-a"), Evidence::Seen(_)), "다른 대화 작성자 기록으로 argv 증거를 지웠다(작성자 둘의 창)");
             let _ = child.kill();
@@ -465,7 +465,7 @@ fn old_claim_tie_holds_over_an_existing_lease_and_claim_errors_are_undecided() {
             let store = lease_store().unwrap();
             let dead = cys::session_lease::Holder { pid: 0x7fff_fff0, birth_s: 1, birth_us: 0 };
             let l = cys::session_lease::Lease { v: cys::session_lease::LEASE_VERSION, id: id.into(), fence: 3, token: "t".into(),
-                state: cys::session_lease::State::Held, writer: Some(dead), restorer: None, surface_id: None, daemon_gen: None, cfg: None, at: 1, launch_sent: false };
+                state: cys::session_lease::State::Held, writer: Some(dead), restorer: None, surface_id: None, daemon_gen: None, cfg: None, at: 1, launch_sent: false, contested: false };
             std::fs::write(store.file_of(id), serde_json::to_string(&l).unwrap()).unwrap();
             std::fs::write(claims.join(restore_claim_file_name(id)), format!("123-456-0 {} 9-1.5\n", restore_now_secs())).unwrap();
             assert!(matches!(lease_gate("w", Some(id), None, None, Some(&claims)), LeaseGate::Refuse { rc: EXIT_SESSION_WRITER_LIVE, .. }),
@@ -556,7 +556,7 @@ fn crashed_restorer_launching_lease_is_not_released_by_an_empty_looking_seat() {
         |_| {
             let store = lease_store().unwrap();
             let l = Lease { v: sl::LEASE_VERSION, id: "sess-crash".into(), fence: 1, token: "t".into(), state: State::Launching, writer: None,
-                restorer: Some(Holder { pid: 0x7fff_fff0, birth_s: 1, birth_us: 0 }), surface_id: Some(61), daemon_gen: Some("77-1.5".into()), cfg: None, at: 1, launch_sent: false };
+                restorer: Some(Holder { pid: 0x7fff_fff0, birth_s: 1, birth_us: 0 }), surface_id: Some(61), daemon_gen: Some("77-1.5".into()), cfg: None, at: 1, launch_sent: false, contested: false };
             std::fs::write(store.file_of("sess-crash"), serde_json::to_string(&l).unwrap()).unwrap();
             match lease_gate("w", Some("sess-crash"), None, None, None) {
                 LeaseGate::Refuse { rc, line } => {
@@ -997,4 +997,44 @@ fn restore_inner_refusals_print_the_standard_line() {
     let rr = code_only(&rr[..rr.find("\n}\n").unwrap()]);
     assert!(rr.contains("if rc == EXIT_SESSION_WRITER_LIVE { lease_live += 1 } else { lease_unknown += 1 }\n                println!(\"{}\", restore_inner_refusal_line(role, sess.as_deref(), rc, made));"),
         "복원 fresh 안쪽 거절 갈래가 표준 거절 줄을 내지 않는다");
+}
+
+/// skt1(codex 2R #1 · 모르면 닫힌 쪽) — 등록 앞 결속 해제 대상: 작성자가 이 발신의 조상이면 계통이 헬퍼·도구 셸로 **증명**된 때만 남김 ·
+/// 판독 불가(Unknown)·최상위 = 해제(남기면 대화를 바꾼 좌석이 옛 대화로 읽혀 새 좌석이 열린다) · 조상 사슬을 끝까지 못 읽음 = 이 좌석 결속 해제.
+#[test]
+fn transition_unbinds_unless_the_registration_is_proven_a_helper() {
+    use cys::session_lease::Holder;
+    let wr = Holder { pid: 50, birth_s: 1, birth_us: 0 };
+    let other = Holder { pid: 77, birth_s: 1, birth_us: 0 };
+    let anc = vec![(Holder { pid: 40, birth_s: 1, birth_us: 0 }, 40), (wr.clone(), 50)];
+    let c = |v: &[Option<&str>]| v.iter().map(|x| x.map(String::from)).collect::<Vec<_>>();
+    let top = c(&[Some("sh /p/session-start.sh"), Some("claude --resume t")]);
+    let unread = c(&[None, Some("claude")]);
+    let helper = c(&[Some("sh /p/session-start.sh"), Some("claude -p x")]);
+    let helper_anc = vec![(Holder { pid: 40, birth_s: 1, birth_us: 0 }, 40), (Holder { pid: 45, birth_s: 1, birth_us: 0 }, 45), (wr.clone(), 50)];
+    let helper3 = c(&[Some("sh /p/session-start.sh"), Some("claude -p x"), Some("claude")]);
+    assert!(transition_targets(&anc, &top, "claude", true, 9, &wr, Some(9)), "최상위 훅 전환에서 옛 결속을 남겼다");
+    assert!(transition_targets(&anc, &unread, "claude", true, 9, &wr, Some(9)), "계통 판독 불가에서 옛 결속을 남겼다(codex 2R #1 · 작성자 둘)");
+    assert!(!transition_targets(&helper_anc, &helper3, "claude", true, 9, &wr, Some(9)), "증명된 헬퍼 등록이 최상위 결속을 풀었다");
+    let _ = helper;
+    // 조상이 아닌 작성자: 사슬 완전 = 남의 것(손대지 않음) · 사슬 끊김 = 같은 좌석 번호 결속만 해제.
+    assert!(!transition_targets(&anc, &top, "claude", true, 9, &other, Some(9)));
+    assert!(transition_targets(&anc, &top, "claude", false, 9, &other, Some(9)), "조상 사슬이 끊겼는데 이 좌석 결속을 남겼다");
+    assert!(!transition_targets(&anc, &top, "claude", false, 9, &other, Some(8)), "다른 좌석 결속을 풀었다");
+    // 배선: Return 직전 확인이 기동 글 뒤 · Return 앞.
+    let src = include_str!("bin/cys.rs");
+    let bo = &src[src.find("\nfn boot_agent_on_surface(").unwrap()..];
+    let bo = code_only(&bo[..bo.find("\n}\n").unwrap()]);
+    let (paste, conf, ret) = (bo.find("authoritative_paste_settled(").unwrap(), bo.find("lease_confirm_enter(role, agent, session_id, sid)?;").expect("Return 직전 확인 배선"), bo.find("\"key\": \"Return\"").unwrap());
+    assert!(paste < conf && conf < ret, "Return 직전 확인이 기동 글과 Return 사이에 있지 않다(codex 2R #2)");
+}
+
+/// skt1(codex 2R #3 · 오인 줄이기) — 연 rollout 을 읽을 프로세스 = 좌석 최상위 에이전트뿐(다른 에이전트 실행의 자손 = 제외).
+#[test]
+fn only_the_top_agent_of_the_seat_speaks_for_its_conversation() {
+    // 뿌리 1000 → 에이전트 10 → 셸 11 → 이름이 같은 자손 12 · 뿌리 → 다른 갈래 에이전트 20.
+    let parent = |p: u32| match p { 10 | 20 => Some(1000), 11 => Some(10), 12 => Some(11), _ => None };
+    assert_eq!(top_agents(&[10, 12], 1000, parent), vec![10], "에이전트의 자손(도구·헬퍼)을 현재 대화 증거로 셌다(codex 2R #3)");
+    assert_eq!(top_agents(&[10, 20], 1000, parent), vec![10, 20], "형제 최상위를 뺐다");
+    assert_eq!(top_agents(&[12], 1000, parent), vec![12], "위 에이전트가 목록에 없으면 그 자손이 최상위");
 }

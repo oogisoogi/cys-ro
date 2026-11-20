@@ -4277,7 +4277,10 @@ async fn run_sidecar_restore_judged(
         // ★skt1(codex 1R #4): topology 판독 **뒤** 같은 임대를 다시 읽는다 — 그 사이 `/clear`·에이전트 교체·follow 로 결속이 바뀌면
         //   (fence·token·작성자 중 하나라도 다름 · 사라짐) 증거가 아니다(첫 93 유지).
         let after = tokio::task::spawn_blocking(move || restore_lease_held(&ids2)).await.unwrap_or_default();
-        (live, gen, restore_held_stable(before, after))
+        // ★skt1(codex 2R #4): 판정 직전 마지막 판독 — 두 번째 판독 뒤 전환도 잡는다(그 뒤의 틈 = HANDOFF 한계).
+        let ids3: Vec<String> = first93.iter().map(|(_, sid)| sid.clone()).collect();
+        let last = tokio::task::spawn_blocking(move || restore_lease_held(&ids3)).await.unwrap_or_default();
+        (live, gen, restore_held_stable(vec![before, after, last]))
     };
     let held_of = |sid: &str| held.iter().find(|(s, _)| s == sid).and_then(|(_, h)| h.clone());
     restore_judge_two((ok, summary, first93), second, live.as_deref(), gen.as_deref(), &held_of)
@@ -4302,17 +4305,18 @@ fn restore_lease_held(ids: &[String]) -> Vec<(String, Option<cys::session_lease:
         .collect()
 }
 
-/// topology 앞·뒤 두 판독 → 대화마다 둘이 같은 결속일 때만 (좌석 · 데몬 세대)(순수 · codex 1R #4).
+/// 결속 판독 여러 회(topology 앞 · 뒤 · 판정 직전) → 대화마다 모든 회차가 같은 결속일 때만 (좌석 · 데몬 세대)(순수 · codex 1R #4 · 2R #4).
 fn restore_held_stable(
-    before: Vec<(String, Option<cys::session_lease::HeldProof>)>,
-    after: Vec<(String, Option<cys::session_lease::HeldProof>)>,
+    reads: Vec<Vec<(String, Option<cys::session_lease::HeldProof>)>>,
 ) -> Vec<(String, Option<(u64, Option<String>)>)> {
-    before
-        .into_iter()
+    let Some(first) = reads.first() else { return Vec::new() };
+    first
+        .iter()
         .map(|(id, b)| {
-            let a = after.iter().find(|(i, _)| *i == id).and_then(|(_, h)| h.clone());
-            let st = cys::session_lease::held_proof_stable(b, a).map(|p| (p.surface_id, p.daemon_gen));
-            (id, st)
+            let st = reads[1..].iter().fold(b.clone(), |acc, r| {
+                cys::session_lease::held_proof_stable(acc, r.iter().find(|(i, _)| i == id).and_then(|(_, h)| h.clone()))
+            });
+            (id.clone(), st.map(|p| (p.surface_id, p.daemon_gen)))
         })
         .collect()
 }
@@ -9749,11 +9753,15 @@ mod tests {
         let first = (false, s(1, 1), parse_restore_unknown_refusals(&first_out));
         let second = (true, s(0, 0), Vec::new());
         let live = vec![json!({"surface_id": 7, "role": "w", "seat": "occupied", "session_id": null})];
-        let judge = |before: Option<HeldProof>, after: Option<HeldProof>| {
-            let held = restore_held_stable(vec![(S.to_string(), before)], vec![(S.to_string(), after)]);
+        let judge3 = |before: Option<HeldProof>, after: Option<HeldProof>, last: Option<HeldProof>| {
+            let held = restore_held_stable(vec![vec![(S.to_string(), before)], vec![(S.to_string(), after)], vec![(S.to_string(), last)]]);
             let held_of = |sid: &str| held.iter().find(|(x, _)| x == sid).and_then(|(_, h)| h.clone());
             restore_judge_two(first.clone(), second.clone(), Some(&live), Some("100-1.5"), &held_of).1.map(|x| x.unknown)
         };
+        let judge = |b: Option<HeldProof>, a: Option<HeldProof>| judge3(b, a.clone(), a);
+        // ★codex 2R #4: 두 번째 판독 뒤(판정 직전) 전환 = 마지막 판독이 잡는다.
+        assert_eq!(judge3(Some(p(3, "a", 50)), Some(p(3, "a", 50)), None), Some(1), "두 번째 판독 뒤 결속이 사라졌는데 「복원됨」(codex 2R #4)");
+        assert_eq!(judge3(Some(p(3, "a", 50)), Some(p(3, "a", 50)), Some(p(4, "c", 50))), Some(1));
         assert_eq!(judge(Some(p(3, "a", 50)), Some(p(3, "a", 50))), Some(0), "같은 결속(앞뒤)인데 풀지 않았다");
         assert_eq!(judge(Some(p(3, "a", 50)), None), Some(1), "topology 판독 사이 결속이 사라졌는데(/clear) 「복원됨」(codex 1R #4)");
         assert_eq!(judge(Some(p(3, "a", 50)), Some(p(3, "a", 51))), Some(1), "사이에 작성자가 바뀌었는데 「복원됨」");
@@ -9763,8 +9771,8 @@ mod tests {
         let prod = &src[..src.find("#[cfg(test)]\nmod tests {").unwrap()];
         let rj = &prod[prod.find("async fn run_sidecar_restore_judged(").unwrap()..];
         let rj = &rj[..rj.find("\n}\n").unwrap()];
-        let (a, t, b, st) = (rj.find("let before = ").unwrap(), rj.find("read_topology_live(socket)").unwrap(), rj.find("let after = ").unwrap(), rj.find("restore_held_stable(before, after)").unwrap());
-        assert!(a < t && t < b && b < st, "결속 판독이 topology 앞뒤에 있지 않다");
+        let (a, t, b, l, st) = (rj.find("let before = ").unwrap(), rj.find("read_topology_live(socket)").unwrap(), rj.find("let after = ").unwrap(), rj.find("let last = ").unwrap(), rj.find("restore_held_stable(vec![before, after, last])").unwrap());
+        assert!(a < t && t < b && b < l && l < st, "결속 판독이 topology 앞뒤·판정 직전에 있지 않다");
     }
 
     /// ★seatkeep-t1(codex 3R ③): 부서 생산 경로(`dept_restore_lease_note` 선행 필터)를 지나서도 관문이 숨지 않는다 — 판정문 재현:

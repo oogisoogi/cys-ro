@@ -17405,6 +17405,10 @@ fn boot_agent_on_surface(
     .map_err(tag_launch_write)?;
     // ★seatkeep-t1(codex 6R · 독립 재검 m10): 기동 명령 글이 **받아들여진 뒤**부터의 오류 = 결과 불명(거절 = 0바이트 = 기동 전) · 접미 없음 = 새 대화.
     lease_note_launch(sid, effective_resume);
+    // ★skt1(codex 2R #2): 확정 뒤 · Return 전에 다른 좌석이 이 대화로 들어왔으면(follow 충돌 표식) 또는 같은 역할 좌석을 다시 확인 못 하면 Return 0.
+    if effective_resume {
+        lease_confirm_enter(role, agent, session_id, sid)?;
+    }
     request(
         "surface.send_key",
         json!({"surface_id": sid, "key": "Return", "authoritative": true}),

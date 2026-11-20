@@ -239,6 +239,8 @@ eval $E CYS_PACK_DIR=/tmp/sk1h/pk cargo test -p cys-app --bins seatkeep -- --tes
 | 4 Tauri TOCTOU | 결과 종류 예(1.1.15 는 93 자체가 없음) | 경합은 예 | 앞뒤 판독 같을 때만 「복원됨」 | 두 번째 판독 뒤 바뀜(그 뒤 일은 다음 복원이 다시 잰다 · 데이터 손실 아님) |
 | 5 헬퍼/낡은 등록 S 가 결속 T 를 이김 | 아니오 | 예(거짓 막힘) | 등록 문자열·topology 핀 신호 삭제 → 결속 T = 진행 | 없음 |
 
+⚠**정정(§13 · codex 2R #1 반증)**: 아래 「lease 가 새로 만든 것 = 거짓 막힘뿐 · 계통 못 읽는 기계 = 93」 은 9fdf1990e 기준으로 **틀렸다** — 계통 Unknown 이면 옛 결속이 남아 거짓 통과(작성자 둘)가 가능했다. 9aac07fd5 에서 「모르면 해제」로 고쳤다(§13-1 ①).
+
 ⇒ 요지(확신도 중상): **고친 뒤 lease 켬이 1.1.15 보다 작성자 둘을 늘리는 경로는 없다**(§11-1 결론 유지). 1.1.15 에도 있던 작성자 둘 경로 1·2A·2B·3 은 「훅의 cys 가 아예 안 돈 경우」와 「확정 뒤 진짜 동시」만 남았다. lease 가 새로 만든 것 = 거짓 막힘뿐: ⓐ 계통 argv 를 못 읽는 기계(윈 MSYS 등 · 결속이 안 생겨 같은 역할 S 복원 93) ⓑ 윈 codex 좌석(lsof 없음) ⓒ 훅 없는 claude(종전) — 모두 93 · 사유 줄 · 끔 안내(USER-MANUAL) 있음. 독립 검증 실측(정상 복원 ≈70회 거짓 거절 0 · 39e35832e 기준)은 ⓐⓑ 를 지나지 않는 맥 상자라 이번 변경 뒤 맥 수치는 아래 §12-4 e2e 로만 다시 잰다.
 
 ### 12-4. 시험(2026-11-20 · env -i · 격리 HOME=/tmp/sk1b · CARGO_BUILD_JOBS=4 · 공유 기계 부하 100~143 = 다른 좌석 빌드 · 이 좌석 부하 주입 0)
@@ -292,3 +294,52 @@ eval $E CYS_PACK_DIR=/tmp/sk1h/pk cargo test -p cys-app --bins seatkeep -- --tes
 1. 기본 켬: 위 §12-3 = 1.1.15 대비 작성자 둘 경로를 늘리지 않음 · 새 것은 거짓 막힘(93)뿐 → 켬 유지 쪽(확신도 중상) · 단점 = 부하 큰 기계에서 판독 시한 93 이 늘 수 있음(1회 관측 · 사유 미확정) → 독립 검증의 「정상 복원 ≈70회」 재측을 같은 조건으로 붙이면 판단 근거가 된다.
 2. 현장 끔 스위치 = 여전히 환경변수뿐(USER-MANUAL 1줄 추가) — 파일 스위치(앱·phoenix 일괄)는 기능 추가라 📌.
 3. codex 2R 질문 후보: 확정(`mark_launch_sent`)과 follow 승계의 같은 잠금 직렬화 · 등록 앞 결속 해제의 계통 판정(데몬 없이) · 비-claude lsof 증거 · Tauri 앞뒤 판독.
+
+
+---
+
+## 13. 【codex 2R 처분 · 마지막 회차】(master#3210536c · 판정문 `~/axdev/master/reports/verify/codex-1120/skt1-r2.md` = BLOCK blocking 3 · major 2 · 커밋 9aac07fd5)
+
+### 13-1. 처분(master 방향 = 모르면 닫힌 쪽 · 거짓 93 감수)
+
+| master # | 판정문 | 고침 | 시험 |
+|---|---|---|---|
+| ① | #1 계통 Unknown → transition·follow 둘 다 안 함 → 옛 T 결속 = 「다른 대화」 → W2(작성자 둘) | `transition_targets`(CLI 순수): 결속 작성자가 이 발신의 조상이면 계통이 **NotTop 으로 증명**된 때만 남기고 ProvenTop·**Unknown = 해제** · 조상 사슬을 init 까지 못 읽었으면 이 좌석 번호의 결속 해제 · follow 는 그대로 ProvenTop 만 → 결과 = 그 좌석 결속 없음 = 같은 역할 S 복원 93. 등록 실패·데몬 불통은 해제가 데몬 없이 등록 **앞**에 돌아 같은 규칙 | CLI `transition_unbinds_unless_the_registration_is_proven_a_helper`(Unknown·사슬 끊김 행) |
+| ② | #2 확정과 실제 기동 글 사이 등록 | `Lease.contested`(serde default) · follow 가 **확정된** 기동 중 임대와 충돌하면 표식 · `boot_agent_on_surface` = 기동 글 붙임 → `lease_confirm_enter` → leaf `confirm_launch`(같은 잠금: 내 fence·token · 확정 있음 · contested 없음 · 같은 역할 좌석 재판정 Clear) → 그때만 Return · 실패 = Return 0(붙인 글 실행 안 됨 · `session_lease:` = 빈 좌석 닫고 93) | leaf `a_registration_between_commit_and_enter_stops_the_restorer_before_enter`(mark → follow 주입 → confirm `lease:contested`) · CLI 배선 핀(붙임 < 확인 < Return) |
+| ③ | #3 lsof 오인·위조 | 같은 사용자 위조 = 보안 경계(고치지 않음 · master 판정) · 오인 줄이기 = `top_agents`: 자기와 좌석 뿌리 사이에 다른 에이전트 실행이 있는 프로세스(그 에이전트의 자손 · 같은 이름 토큰 도구·헬퍼)는 증거에서 뺌 | CLI `only_the_top_agent_of_the_seat_speaks_for_its_conversation` |
+| ④ | #4 두 번째 판독 뒤 전환 | 결속 판독 3회(topology 앞 · 뒤 · 판정 직전) 모두 같을 때만 「복원됨」(`restore_held_stable(vec![before, after, last])`) | cys-app `skt1_restored_proof_must_survive_the_topology_read`(세 번째 판독 소멸·교체 행 · 배선 순서 핀) |
+| ⑤ | #5 시험 공백 | 위 4 순서 시험 + 뮤턴트 §13-2 | — |
+
+### 13-2. 시험·뮤턴트(12:03~ · 부하 9~22 · env -i · 격리 HOME)
+
+| 묶음 | 9fdf1990e | 9aac07fd5 |
+|---|---|---|
+| `--lib session_lease` | 28 | **29 ok**(새 1) |
+| `--bin cys session_lease_cli_tests` | 26 | **28 ok**(새 2) |
+| `--bin cys b360_tests::p1_`(임대 폴더 지운 새 상태) | 33 | **33 ok** |
+| `-p cys-app --bins seatkeep` / `skt1_` | 10 / 1 | **10 / 1 ok** |
+| `--test session_lease_e2e`(SLE_ROUNDS=3 · 스레드 4 · 12:08~12:13 · 부하 9~22) | 12 | **12 ok · 0** · 시험 뒤 상자 HOME 프로세스 **0** |
+
+| # | 변이 | 결과 | 붉은 시험 |
+|---|---|---|---|
+| N1 | 해제 대상 = ProvenTop 만(Unknown 남김 · 2R 전 꼴) | KILLED | CLI `transition_unbinds_unless_the_registration_is_proven_a_helper` |
+| N2 | follow 의 contested 표식 삭제 | KILLED | lib `a_registration_between_commit_and_enter_stops_the_restorer_before_enter` |
+| N3 | confirm 의 contested 검사 삭제 | KILLED | 같은 lib 시험 |
+| N4 | Return 직전 확인 배선 삭제 | KILLED | CLI `transition_unbinds_…`(배선 순서 핀) |
+| N5 | 최상위 에이전트 거름 삭제 | KILLED | CLI `only_the_top_agent_of_the_seat_speaks_for_its_conversation` |
+| N6 | Tauri 마지막 판독 무시(앞·뒤만) | KILLED | cys-app `skt1_restored_proof_must_survive_the_topology_read`(배선 핀) · 첫 시도는 원문 2곳(운영 줄 + 핀 문자열)이라 건너뜀 → 운영 줄로 좁혀 다시 |
+| (뮤턴트 뒤) | `cargo build --bin cys --bin cysd` 다시(변이판 바이너리 잔존 방지) | 12:28 | — |
+
+### 13-3. 남는 한계(2R 뒤 · 숨기지 않음)
+
+1. **같은 사용자 위조**: 같은 사용자 권한의 프로세스가 좌석 안에서 에이전트 이름으로 rollout 을 열거나 훅 모양 계통을 꾸미면 증거를 속일 수 있다 — 보안 경계 밖(master 판정 · 고치지 않음).
+2. **lsof 오인**: 최상위 에이전트만 보지만, 최상위 codex 가 판독 순간 S 를 안 열고 T 만 열고 있으면 「T」 로 읽힌다(그 에이전트 자신의 fd 라 오인이 아니라 관측 시점의 사실 · 윈 = 93).
+3. **Return 뒤 틈**: Return 직전 확인 뒤 · Return 이 쳐지는 사이(수 ms)에 들어온 등록 = 진짜 동시(1.1.15 와 같음 · 임대엔 conflict_live·contested 사건).
+4. **확인 실패 뒤 붙인 글**: Return 0 으로 멈춘 좌석에는 기동 글이 붙은 채 남는다 — 빈 좌석 닫기(`only_if_empty`)가 거절하면 그 좌석이 남는다(누가 Return 을 치면 실행 · 안내 줄 출력 · 측정 없음).
+5. **Tauri 판정 뒤 틈**: 세 번째 판독 뒤의 전환은 잡지 못한다(그 뒤는 다음 복원이 다시 잼 · 데이터 손실 아님).
+6. **거짓 93 이 늘어난 곳**(감수 · master ①): 계통 argv 를 못 읽는 기계의 모든 대화 전환 · 조상 사슬이 끊긴 등록 = 그 좌석 결속이 풀려 같은 역할 복원 93 · 헬퍼 등록인데 argv 를 못 읽은 경우도 최상위 결속이 풀림.
+7. §12-5 의 1(훅의 cys 가 아예 안 돈 경우) · 4(옛 판 cys) · 6(claude 좌석 밖 등록 핀) 은 그대로.
+
+### 13-4. 판정 축(§12-3 정정본)
+
+2R 판정문 「1.1.15 대비 작성자 둘 경로 증가 반례 없음」 + 위 고침 → **lease 켬이 1.1.15 보다 작성자 둘을 늘리는 경로는 찾지 못했다**(확신도 중상) · 2R 이 반증한 「계통·lsof 실패는 모두 거짓 93」 은 9aac07fd5 에서 계통 쪽은 「모르면 해제 = 93」 으로 맞췄고, lsof 쪽은 위 한계 1·2 가 남는다(거짓 통과 가능 · 같은 사용자 위조 또는 관측 시점).

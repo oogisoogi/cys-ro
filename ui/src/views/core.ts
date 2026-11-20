@@ -16,6 +16,7 @@ import { applyQueueEvent, autoHoldRemainingMs, queueEventOf, type AutoMsg } from
 import { ConfirmBook } from "./confirm";
 import { ResultBook } from "./results"; // (s79 조각 7) 결과 받기 장부
 import { ReviveBook } from "./revive";
+import { RailBook } from "./rail";
 
 export const HOLD_KEY = "cys-chat-hold";
 /** 붙잡은 말 상한(설계 §5-3 · 넘으면 새 말을 받지 않고 안내). */
@@ -216,9 +217,13 @@ export class ChatCore {
   /** (조각 5 · S1-5) 이 화면이 마스터 좌석에 낸 마지막 원자 제출의 사람 입력 표지(데몬 응답 human_input_stamp). */
   private ownHuman: { seat: number; stamp: string } | null = null;
 
+  /** (cysr-1116-s6 · 조각 6) 왼쪽 메뉴바 장부 — 맡긴 일·팀·부서(대화 화면이 켜져 있을 때만 조회). */
+  readonly rail: RailBook;
+
   constructor(private readonly d: Deps) {
     this.loadHold();
     this.confirm = new ConfirmBook({ invoke: d.invoke, now: d.now, store: d.store, onChat: this.onChatScreen }, () => this.set({}));
+    this.rail = new RailBook({ invoke: d.invoke, now: d.now, setTimeout: d.setTimeout, clearTimeout: d.clearTimeout, store: d.store, working: d.working }, () => this.set({}));
     this.results = new ResultBook({ invoke: d.invoke, now: d.now, store: d.store, onChat: this.onChatScreen }, () => this.set({}));
     this.revive = new ReviveBook({
       invoke: d.invoke,
@@ -280,6 +285,7 @@ export class ChatCore {
       this.unlistenConfirm = this.d.listenDaemon((ev) => {
         this.confirm.onEvent(ev);
         this.results.onEvent(ev); // (s79 조각 7) skill.run_finished
+        this.rail.onEvent(ev); // (조각 6) 묶음 사건 surface.group.changed — 「팀 만드는 중 → 진행」
       });
     if (!watch && this.d.defaultSlug)
       void this.d
@@ -288,6 +294,7 @@ export class ChatCore {
           const slug = typeof s === "string" && s ? s : null;
           this.confirm.setHqSlug(slug);
           this.results.setHqSlug(slug); // (s79 조각 7)
+          this.rail.setHqSlug(slug);
         })
         .catch(() => {});
     if (!watch) void this.results.start(); // (s79 조각 7) 홈 1회(살핌 중 = 다시 묻지 않음)
@@ -405,11 +412,14 @@ export class ChatCore {
       if (this.defaultSlug === null) this.defaultSlug = hqSlug;
       this.confirm.setHqSlug(hqSlug);
       this.results.setHqSlug(hqSlug); // (통합 cysr-1116-integ-1120) s79 결과 장부도 같은 본부 slug — 종전 defaultSlug 조회 자리(s2 가 걷음)
+      this.rail.setHqSlug(hqSlug); // (통합) s6 메뉴바 장부도 같은 본부 slug
     }
     this.onDaemonEvent(raw);
     this.confirm.onEvent(raw);
     // (통합 cysr-1116-integ-1120) s79 조각 7 skill.run_finished — 종전 listenDaemon 구독(s2 가 걷음)은 붙어 있는 동안(대화 화면 · 작업 화면 살핌)만 살았다 → 그 뜻 그대로.
     if (this.attached) this.results.onEvent(raw);
+    // (통합 cysr-1116-integ-1120) s6 조각 6 surface.group.changed — 같은 까닭(s2 가 listenDaemon·defaultSlug 를 걷음)으로 ingest 에서 · 붙어 있을 때만(s6 구독 수명).
+    if (this.attached) this.rail.onEvent(raw);
   }
 
   /** 데몬 사건 하나 — 기본 데몬(마스터가 사는 곳) 사건만 받는다(부서 데몬은 좌석 번호가 겹친다 · 소켓 이름을 모르면 아무것도 받지 않음). */
@@ -802,6 +812,8 @@ export class ChatCore {
       this.applyFresh(fresh);
       void this.confirm.scanStep(); // (조각 4) 대화 화면을 연 때보다 앞 기록의 표식을 한 토막씩
       if (!this.watchOnly) void this.results.tick(); // (s79 조각 7) 아직 모르는 결과의 실재 확인(틱당 상한) · 작업 화면 살핌 중 = 0(V4 · 조회 3종만)
+      // ★통합(cysr-1116-integ-1120): 작업 화면 살핌 중(watchOnly)은 s79 V4(조회 3종만) — rail 의 list_surfaces·list_depts 를 부르지 않는다.
+      if (this.attached && !this.watchOnly) void this.rail.refresh(fresh.org, fresh.approvals); // (조각 6) 왼쪽 메뉴바 — 이 조회 값 + 좌석 목록(쓰기 직전 재조회와 별개)
       this.lastWorking = fresh.master ? fresh.master.working : null;
       const awaiting = this.s.msgs.some((m) => ["injected", "checking", "slow", "delivered", "replying"].includes(m.step));
       // (조각 3 · 하네스 seed 370) 짧은 답(두 조회 사이 3초 안에 일 시작·끝)은 「활동 바뀜」으로 안 잡힌다 → 마스터 출력이 지난 조회 뒤에 있었으면(idle_secs) 그 틱도 읽는다.
@@ -911,6 +923,7 @@ export class ChatCore {
         this.offset = r.next_offset;
         if (recs.length) this.confirm.onTail(recs);
         if (recs.length) this.results.onTail(recs); // (s79 조각 7) 답 속 경로
+        if (recs.length) this.rail.onTail(recs); // (조각 6) 「팀 만드는 중」·「부서로 올리는 중」 표식
         if (recs.length) {
           const applied = applyRecords(this.s.msgs, recs, this.consumed);
           for (const u of applied.consumed) this.consumed.add(u);

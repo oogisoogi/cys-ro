@@ -796,7 +796,7 @@ pub fn park_queue_for_role(
     let mut map = daemon.parked_queues.lock().unwrap();
     // ⑴ 게으른 만기 회수 — **지우지 말고 꺼낸다**(호출부가 사유를 달아 발행한다).
     //    걷이 규칙은 워치독 스윕(`governance::sweep_parked_queues`)과 **같은 함수**를 지난다(사본 0).
-    let mut expired = drain_expired_parked_locked(&mut map, now);
+    let mut expired = drain_expired_parked_locked(&mut map, now, &daemon.teams);
     // ⑵ 이 역할의 기존 배치에 **뒤에 붙인다**(시간 순서 보존). 위 걷이가 만기 항목을 이미 빼 갔으므로
     //    남은 것은 전부 살아 있다 — 만기 분기가 여기 없는 것이 정상이다(r2 #5 죽은 코드 제거).
     //    ★시각 장부(base_at)가 사라졌다: 만기는 항목별 `enqueued_at` 으로 재므로 배치에 시각을 부여할
@@ -838,6 +838,7 @@ pub fn park_queue_for_role(
 pub fn drain_expired_parked_locked(
     map: &mut HashMap<String, ParkedQueue>,
     now: f64,
+    teams: &crate::team::TeamBook,
 ) -> Vec<(String, u64, Vec<QueueEntry>)> {
     let mut out: Vec<(String, u64, Vec<QueueEntry>)> = Vec::new();
     let mut emptied: Vec<String> = Vec::new();
@@ -847,7 +848,8 @@ pub fn drain_expired_parked_locked(
         let (alive, gone): (Vec<QueueEntry>, Vec<QueueEntry>) = pq
             .entries
             .drain(..)
-            .partition(|e| now - e.enqueued_at < PARKED_QUEUE_TTL_SECS);
+            // (조각 6b · codex 1R M5) 주차 중 팀 정지 크레딧을 뺀다(없으면 0 = 종전 식 그대로).
+            .partition(|e| crate::team::parked_alive(teams, e, now));
         pq.entries = alive;
         if !gone.is_empty() {
             out.push((role.clone(), pq.from_surface, gone));
@@ -5097,6 +5099,8 @@ pub struct Daemon {
     /// (밖에서 하면 id 5 와 id 1004 가 순서를 바꿔 할당돼 정상 경로에서 I1 보호가 오발한다).
     /// surfaces·roles 락을 쥔 채로 이 락을 잡지 않는다 · 이 락 안에서 DB·다른 락 0.
     pub display_alloc: Mutex<DisplayAlloc>,
+    /// (조각 6b · TICKET=cysr-1116-s6-1119) 팀별 기계 장치 장부(정지 팀 · 마스터 큐 꼬리표 · 보고 시각) — 메모리 전용 · 말단 락.
+    pub teams: crate::team::TeamBook,
 }
 
 /// (B3 · §3-3) 진행 중인 부트 런의 관측 표. **데몬 인메모리**다 — 영속 소유권은 스풀 인텐트
@@ -7202,6 +7206,7 @@ impl Daemon {
             boot_fenced: Mutex::new(Vec::new()),
             // ★(0.14.31 · WP-3 B) enabled 는 alert_route::spawn 이 실제로 태스크를 열 때만 true.
             alert_route: Mutex::new(Default::default()),
+            teams: Default::default(),
         });
         // ★조각 1: 시작 때 손상본을 옮겼으면 사람에게 알린다(저장 핀도 함께 빠졌을 수 있다).
         if let Some(name) = isolated_topology {
@@ -7218,6 +7223,8 @@ impl Daemon {
         for (kind, error) in numbers_boot.alarms {
             daemon.numbers_alarm(kind, None, Some(&error));
         }
+        // (조각 6b · 검증 m4) 앞 실행의 팀 정지는 되살리지 않는다 — 있었으면 사건 `team.pause_lost` 1건(버스가 선 뒤).
+        crate::team::announce_lost_pauses(&daemon);
         daemon
     }
 

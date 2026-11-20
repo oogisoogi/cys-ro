@@ -72,6 +72,8 @@ mod severity;
 mod skillrun;
 mod state;
 mod submit_assoc;
+// (조각 6b · TICKET=cysr-1116-s6-1119) 팀별 기계 장치 — 대기열 몫·도우미 상한·정지 스위치·【진행】 묶음(P2-DESIGN §16-2).
+mod team;
 mod teamtoken;
 mod trash;
 mod undo;
@@ -8288,3 +8290,15 @@ mod direct_agent_tests;
 mod receipt_framing_tests {
     include!("receipt_framing_tests.rs");
 }
+
+// (조각 6b · TICKET=cysr-1116-s6-1119) 팀별 기계 장치 RPC·배달 핀 — 시험 전용(파일 끝 규약 = 위 시험 모듈들과 같다).
+#[cfg(test)]
+mod team6b_tests;
+
+// (조각 6b · 검증 지적 고침 master#c4bc0244) 독립 검증 좌석 반례 V1~V8b + 고침 핀 — 시험 전용(파일 끝 규약).
+#[cfg(test)]
+mod team6b_verify_tests;
+
+// (조각 6b · codex 1R REJECT 처분 master#010efa14) B1·M1~M6 반례 — 시험 전용(파일 끝 규약).
+#[cfg(test)]
+mod team6b_codex_tests;

@@ -291,3 +291,24 @@
 
 ### 13-5. 원작자 파일 바뀐 줄(이 델타)
 - state.rs +6(시계 비움 · 뮤턴트 분기 cfg!(test) 값 1) · governance.rs +16/−1(`_if` 변형 · watchdog 호출 1곳) · handlers.rs +49/−1(시험 +47 · 내 시험 2건 고유 폴더) · javis_phoenix.py +42(행 칸 3 · `HUMAN_QUIET_SECS` · `seat_human_input_hold` · 회수 전 보류 · 보류 표기) · test_phoenix_r4_restore.py +31.
+
+## 14. 델타 — master#26ff3e1f codex 3R(BLOCK · blocking 1 · major 3) 처분 · 커밋 5b8abd7c6
+
+| # | codex 지적 | 고침 | 시험 · 뮤턴트 |
+|---|---|---|---|
+| ① blocking | F2 TOCTOU — phoenix 가 스냅샷 뒤 무조건 `close-surface --reap` | CLI `close-surface --if-quiet <created_at> [--if-quiet-stamp <표지>]`(빈 글 = null) → `surface.close{if_quiet, expected_created_at, expected_human_input_stamp}` · `close_surface_if_quiet` 가 `input_gate` 안에서 지금 표지 ≠ 스냅샷이면 `human_input_since_snapshot` 거절(기존 4조건에 더함) · phoenix `reap_if_quiet_args(행)`(행에 created_at 있으면 스냅샷 인자 · 없으면 [] = 종전) · 거절(rc≠0) = 닫기 0 + 그 역할 이번 회차 fresh 보류(다음 회차 재판정) | 데몬 ⑤-b(스냅샷 뒤 찍기 주입 · 30초 문턱 밖으로 시각 조작 → 거절 · 지금 표지 = 닫힘) · phoenix D9(인자 꼴 고정)·D10(데몬 거절 → 좌석 남음 · fresh 0 · fresh_held) · 뮤턴트 NOSTAMP 적 · M6(인자 끔) 적 · 실물 `toctou_real.py`: 스냅샷 표지로 회수 = rc 1 `human_input_since_snapshot` 좌석 남음 / 지금 표지 = 닫힘 |
+| ② major | 붙여넣기 OPEN 만 = 영구 열림(만료는 다음 조각이 와야 셈 · 죽음 정리 조건 = 바이트 > 0) | `PendingInputState::paste_open_now(now)`(TTL 5초 반영) — 행 `input_paste_open` 3곳(org.status·surface.list·진단)과 조건부 닫기가 이 값 · 죽음 정리 = `bytes > 0 ∨ in_paste` · phoenix 부활 성공 시 `fresh_held` 지움 | 데몬 `s5_1116_dead_seat_open_paste_cleared_and_ttl_reported`(OPEN 만 죽음 → 비움 · TTL 뒤 3회 틱 = 닫힘 보고) · 조건부 닫기 ③-b(TTL 지난 OPEN = paste 사유 아님) · phoenix D11(1회차 보류 → 2·3회차 부활 fresh 1 · 표식 지움) · 뮤턴트 만료 무시 적 · 죽음 정리 종전 조건 적 · M7(표식 남김) 적 |
+| ③ major | node-recover 의 `agent_dead_since` 풀기가 잠금 밖 | `governance::rearm_release_clock`(roles → surface.role 잠금 안에서 풀기) · handlers.rs agent_launch 갈래가 이것을 씀 | rearm 시험 덧붙임: 시험이 roles 를 쥔 동안 풀기 스레드가 300ms 못 풂 → 놓으면 풂 + 자리 핀 · 뮤턴트 CLOCKNOLOCK 적 |
+| ④ major | 머리 트리 사용자 경로 | `-Users-oogisoogi-` → `-Users-<사용자>-`(HANDOFF.cysr-1115-integ-r2.md 2 · HANDOFF.cysr-1116-integ.md 1 · HANDOFF.cysr-1116-vendor-import.md 2 · javis_computer_control.py:1464 주석 · docs/DESIGN-cu-1111.md · docs/integ-1116/codex-r1-prompt.md) · 시험 픽스처 `worker-oogisoogi-mbp` → `worker-host-mbp`(test_javis_counsel rc 0) · 사용자 이름 언급 2(verdict 문서 홈 폴더 예 · v116 e2e 계정 이름) | `git grep oogisoogi` 남은 143줄 = **예외(공개 식별자 · 바꾸면 발행·시험이 깨짐)**: 공개 저장소 `oogisoogi/cys-ro`·`oogisoogi/jarvis-install`(워크플로 SRC_REPO·릴리스 주소·README) · 공개 연락 메일(README·SECURITY · secret-scan 허용 목록) · 공개 크레딧 문장 「oogisoogi가 원작(MIT)을…」(release notes · publicdocs.test 고정) · `oogisoogi.github.io` · `make-update-manifest.sh … oogisoogi cys-ro` · 로컬 경로·호스트·계정 꼴 = 0 |
+
+- 팩 시험: javis_phoenix·javis_computer_control 를 읽는 시험 + test_javis_counsel = 44개 → 43 rc 0 · 1 = `test_phoenix_c6_reap`(「S5 bounded observation timed out」 = §11-7 기준판 같은 사유) · ⚠1회차 루프는 zsh 무분리로 0개 돈 것(헛돔) → bash 로 다시 돌린 값이 위.
+- 한계(1줄): 실물 phoenix 는 초안 없는 빈 좌석을 좌석 내 재연결로 살려 회수 갈래까지 가지 않았다 — phoenix 가 만드는 조건부 회수 인자 꼴은 D9 로, 그 CLI 명령의 데몬 판정은 `toctou_real.py` 직접 호출로만 실물 확인.
+- 전체 시험 = 14-1(채움).
+
+### 14-1. 전체 시험
+- cys 전체 = **797 · 0 · 2**(1011.6초) — close-surface 칸 2개 추가 뒤에도 j3 스택·파서 시험 초록.
+- cysd 전체(5b8abd7c6 · 13:0x~13:25 · 부하 4~7) = 3338 · **2 붉음** · 17:
+  ① `handlers::tests::wp5_queue_list_hides_expired_unless_requested`(원작자 시험) = **이 델타 ② 의 의도된 의미 변화** — 픽스처가 `in_paste=true` 만 세우고(열린 시각 없음) 행 `input_paste_open=true` 를 기대 · 행은 이제 만료 반영 값 → 픽스처에 `paste_opened_at = 지금` 1줄(단언 무변경 · 「지금 열린 봉투」의 실제 꼴) → 통과(커밋 이 HANDOFF 커밋)
+  ② `send_settle_tests::k17_refuse_mode_return_raises_settle_marker_but_cancel_key_does_not` = 단독 3/3 초록 · 파일 변경 0 = 시한형
+  ⇒ 실패 0 상당(3340 = 3339 + 새 시험 1).
+- 화면(ts) 변경 0 — 앞 bun views 340 · tsc rc 0 그대로.

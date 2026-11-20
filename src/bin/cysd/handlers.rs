@@ -34731,6 +34731,8 @@ mod tests {
         let active = daemon.next_queue_entry("활성".into(), None, "send");
         s.apply_pending_input(b"abc", crate::governance::InputOrigin::Human);
         s.pending_input.lock().unwrap().in_paste = true;
+        // (1.1.16 · master#26ff3e1f ②) 행 input_paste_open = 만료 반영 값(paste_open_now) — 「지금 열린」 봉투는 열린 시각이 있다(OPEN 바이트가 찍는 값)
+        s.pending_input.lock().unwrap().paste_opened_at = Some(std::time::Instant::now());
         let mut expired = daemon.next_queue_entry("만료".into(), None, "send");
         expired.expired_at = Some(crate::state::now_epoch());
         expired.ttl_secs = Some(10);

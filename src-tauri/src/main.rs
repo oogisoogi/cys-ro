@@ -18216,8 +18216,21 @@ osascript 를 실행할 수 없어 건너뜁니다({e}) — macOS 가 아닌 환
         }
         // 에이전트 CLI 불변 — operator_token 0건(원작자) → ★1.1.10 편입: cysr 은 1.1.8 W D24ⓐⓑ(59a8268a)로 오퍼레이터 좌석(master·cso)의
         //   `cys feed reply --operator` 한 갈래에만 조작자 토큰을 싣는다(우리 결정 유지). 핀 = 그 한 자리 밖으로 번지지 않는다.
+        //   ★1.1.16(s6 codex 1R B1 · integ-1120): 팀 정지·재개 `cys seat-group-pause --operator` 가 같은 규칙(명시 플래그일 때만 · 자동 첨부 0)으로 둘째 자리가 됐다.
+        //   핀 = 정확히 그 두 자리 · 각 자리가 `if operator {` 갈래 안이다(그 밖으로 번지면 붉음).
         let cys_rs = include_str!("../../src/bin/cys.rs");
-        assert_eq!(cys_rs.matches("params[\"operator_token\"]").count(), 1, "cys CLI 의 조작자 토큰 싣기가 --operator 한 갈래 밖으로 번졌다");
+        assert_eq!(cys_rs.matches("params[\"operator_token\"]").count(), 2, "cys CLI 의 조작자 토큰 싣기가 --operator 두 갈래(feed reply · seat-group-pause) 밖으로 번졌다");
+        let fn_seg = |start: &str| -> &str {
+            let s = cys_rs.find(start).unwrap_or_else(|| panic!("`{start}` 소실"));
+            &cys_rs[s..s + cys_rs[s..].find("\n}\n").expect("fn 끝")]
+        };
+        let pause = fn_seg("fn seat_group_pause(");
+        let p_op = pause.find("if operator {").expect("팀 정지 --operator 갈래");
+        assert!(pause[p_op..].find("params[\"operator_token\"]").is_some_and(|i| i < pause[p_op..].find("\n    }").unwrap()), "팀 정지의 토큰 싣기가 --operator 갈래 밖이다");
+        let reply_at = cys_rs.find("// ★D24ⓐ: 명시 플래그일 때만 싣는다").expect("feed reply --operator 갈래 표지");
+        let reply = &cys_rs[reply_at..];
+        let r_op = reply.find("if operator {").expect("feed reply --operator 갈래");
+        assert!(r_op < reply.find("params[\"operator_token\"]").unwrap() && reply.find("params[\"operator_token\"]").unwrap() < reply.find("request(\"feed.reply\"").unwrap(), "feed reply 의 토큰 싣기가 --operator 갈래 밖이다");
     }
     /// ★S8 12.G — 휴지통 명령의 등재와 **토큰을 붙이는 명령의 목록**을 잠근다.
     ///

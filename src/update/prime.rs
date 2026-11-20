@@ -282,7 +282,12 @@ mod tests {
         let at = head.find("if let DaemonAction::Prime { skip_alias } = &action {").expect("하위 동사 머리 처리");
         let arm = &head[at..at + head[at..].find("return 0;").expect("늘 0")];
         assert!(arm.contains("cys::update::prime::prime_binaries(&dir, !*skip_alias)") && !arm.contains("request("), "데몬 연결 0 · --skip-alias = 별칭 배치 미확인");
-        assert!(cli.contains("action: DaemonAction::Status | DaemonAction::ResumeCheck { .. } | DaemonAction::Prime { .. }"), "자동 기동 0");
+        // (integ-1120) 자동 기동 금지 목록 = borrow23 이 여러 줄 꼴(ExplainState·BootFleet 추가)로 바꿔 한 줄 문면 핀이 깨졌다 — 문면 대신 그 함수의 Daemon 갈래 안에 Prime 이 있는지 본다.
+        let nev = &cli[cli.find("fn command_never_autostarts(command: &Command) -> bool {").expect("자동 기동 금지 판정")..];
+        let nev = &nev[..nev.find("\n}\n").unwrap()];
+        let dmn = &nev[nev.find("| Command::Daemon {").expect("Daemon 갈래")..];
+        let dmn = &dmn[..dmn.find("\n            }").unwrap()];
+        assert!(dmn.contains("| DaemonAction::Prime { .. }") && dmn.contains("action: DaemonAction::Status"), "자동 기동 0");
     }
 
     #[test]

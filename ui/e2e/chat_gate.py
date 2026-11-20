@@ -216,8 +216,11 @@ def main() -> int:
         pg.clock.run_for(29_900)
         ke1 = pg.evaluate("() => ({ ...(window.__CHAT.kinds ?? {}) })")
         extra = {k: (ke1.get(k, 0) - ke0.get(k, 0)) - kinds_base.get(k, 0) for k in ke1}
-        bad_kinds = {k: v for k, v in extra.items() if v > 0 and k not in ("feed_list", "org_status", "chat_transcript")}
-        check(not bad_kinds and all(v <= 11 for v in extra.values()), f"★작업 화면 30초 = 모든 invoke 종류 대조(기준 창 뺌) · 허용 3종 밖 증가 0 · 종류마다 ≤ 11 {dict((k, v) for k, v in extra.items() if v)} · 밖 {bad_kinds}")
+        # (integ-1120 · s2 × s79 의미 충돌) 작업 화면으로 돌아온 순간 s2 의 onWorkShown → render() 가 좌석을 한 번 맞춘다(resize_surface · 크기 그대로 · 좌석당 1회).
+        #   그 한 바퀴 때문에 주기 맞춤의 위상이 밀려 30초 창에 한 바퀴가 더 든다 → 허용 폭 = 「전환 순간 한 바퀴 = 그려진 좌석 수」 만큼만(그 밖 증가는 그대로 붉음).
+        n_panes = pg.evaluate("() => document.querySelectorAll('.pane').length")
+        bad_kinds = {k: v for k, v in extra.items() if v > 0 and k not in ("feed_list", "org_status", "chat_transcript") and not (k == "resize_surface" and v <= n_panes)}
+        check(not bad_kinds and all(v <= 11 for v in extra.values()), f"★작업 화면 30초 = 모든 invoke 종류 대조(기준 창 뺌) · 허용 3종 밖 증가 0(resize_surface = 전환 순간 좌석 {n_panes} 한 바퀴까지) · 종류마다 ≤ 11 {dict((k, v) for k, v in extra.items() if v)} · 밖 {bad_kinds}")
         org_views = pg.evaluate("() => window.__CHAT.org ?? 0") - org0 - org_base
         check(org_views <= 11, f"작업 화면 30초 org_status(공통층 몫 = 전체 − 기준 창) ≤ 11 ({org_views})")
         c1 = pg.evaluate("() => window.__CHAT.calls.length")

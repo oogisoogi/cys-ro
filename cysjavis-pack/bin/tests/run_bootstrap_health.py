@@ -2981,6 +2981,13 @@ def h_conc_2():
     need(bi > 0, "run_boot 를 못 찾았다")
     body = src[bi:src.find("\n}\n", bi)]
     li = body.find("for (role, agent, mandatory) in BOOT_PLAN")
+    if li < 0:
+        # ★(borrow23 · boot_fleet · integ-1120) 루프 대상 = `plan`(= effective_boot_plan(fleet) — full = BOOT_PLAN · light = 빈 목록).
+        #   PLAN 출처가 BOOT_PLAN 그대로인지까지 본다(다른 목록으로 바뀌면 여전히 적색).
+        li = body.find("for (role, agent, mandatory) in plan {")
+        need(li < 0 or "let plan = effective_boot_plan(" in body[:li], "run_boot 의 plan 이 effective_boot_plan 출처가 아니다")
+        ei = src.find("fn effective_boot_plan(")
+        need(li < 0 or (ei > 0 and "BOOT_PLAN" in src[ei:src.find("\n}\n", ei)]), "effective_boot_plan 이 BOOT_PLAN 을 내지 않는다")
     need(li > 0, "run_boot 의 PLAN 루프를 못 찾았다")
     need("fetch_surfaces()" in body[li:],
          "루프 안 role 생존 재조회가 없다(G12: 락 밖 변화에 stale 판정 → 중복 스폰)")
@@ -7887,7 +7894,11 @@ def h_seat_4axis():
     ei2 = lbody2.find("Ok(BootVerdict::LaunchFailed { evidence: e }) | Err(e) => {",
                       gi2 if gi2 > 0 else 0)
     need(0 < gi2 < ei2, "launch 호출부에 보류 분기가 없거나 실패 분기보다 뒤다")
-    need('"surface.close"' not in lbody2[gi2:ei2],
+    # ★(skt1 · integ-1120) 보류 갈래의 끝 = 그 다음 match 갈래 머리(`Err(e) if …` 등)다 — 실패 합류 지점까지 통째로 보면 사이에 든
+    #   다른 갈래(skt1 `Err(e) if e.starts_with("session_lease:")` 의 빈 좌석 회수 close)를 보류 갈래의 close 로 오독한다.
+    _arm = re.search(r"\n {8}(?:Ok\(|Err\()", lbody2[gi2 + 1:ei2])
+    gend2 = gi2 + 1 + _arm.start() if _arm else ei2
+    need('"surface.close"' not in lbody2[gi2:gend2],
          "보류 분기가 좌석을 닫는다 — 살아 있는 에이전트를 파괴(치명위험 ④ 재발)")
     need('"surface.close"' in lbody2[ei2:],
          "실패 분기의 롤백 close 가 사라졌다 — 진짜 실패 좌석이 역할을 쥔 채 쌓인다(완화 금지)")

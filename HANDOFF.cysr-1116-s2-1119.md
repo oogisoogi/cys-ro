@@ -198,6 +198,34 @@
 | runtime_defer ③ | 붙기 = 미룬 좌석마다 화면 행 커서 인자(13건 · 커서 {0 새 셸, 7 대역}) · 안내 줄 0 · 따로 묻는 기록 조회 0 · 흐름 13 · ① 대화 화면 = start 0 · attach 0 그대로 |
 | UI 뮤턴트 UM1~UM9 | 전부 해당 시험 붉음(§ 위 표) |
 
+## 3-7. codex 4R(BLOCK · 원문 `~/axdev/master/reports/verify/codex-1120/s2-r4.md`) 처분 — [master#9af88457] · 마지막 회차(5R 없음)
+
+master 원칙 = 사용자 화면에 「빠짐·두 번 나옴」 0 · 고치는 방식 = 고장 나면 정직하게 전체 다시 그리기로 떨어짐 우선.
+
+| # | 지적(4R) | 처분 | 시험 · 뮤턴트 |
+|---|---|---|---|
+| ① blocking | 원자 절단 뒤 기록 서식·쓰기 동안 rx 를 안 비워 broadcast 큐(256) 넘침 → `Lagged` 를 조용히 넘김 = 이음매 손실 | **고침** — 기록 연결(history_since)만 `Lagged` 때 표지 `ESC]7799;cys-attach-lagged BEL` 를 마지막에 쓰고 닫음(인자 없는 연결 = 종전 `continue`) · Tauri 펌프가 끝 꼬리에서 표지를 보면 xterm 전체 초기화(`ESC c`) 뒤 같은 커서로 다시 손잡기(데몬 스크롤백에 다 있어 전체 다시 그리기) · 상한 3 넘거나 실패 = 종전 스냅숏 길(기록 없이 붙기) + `seat-history-status {status:"lagged"}` 사건 → UI 좌석 맨 위 안내 줄 + 다시 불러오기 | cysd `lagged_history_connection_ends_with_marker_plain_does_not`(1 KiB 관 · 4,000줄 홍수 → 기록 연결 = 표지로 끝 + 닫힘 · 인자 없는 연결 = 표지 0) · cys-app `lag_marker_matches_daemon_and_tail_check`(두 상수 바이트 같음 · 꼬리 판정) · runtimedefer ①(4R) · 뮤턴트 RM6 |
+| ② blocking | 높이 줄임이 아래 행을 버리고(스크롤백 아님) 커서는 그대로 → 손실인데 ok | **고침(무효 쪽)** — vt100 `set_size` 가 글자 있는 행을 버리면 세대를 바꿈 → 옛 커서 = 모르는 커서 → 스냅숏 + 안내 · 빈 행만 버리면 그대로(거짓 안내 0). 행을 스크롤백으로 옮기는 쪽은 파서 화면 동작이 바뀌어(승인 감지 등 다른 소비자) 택하지 않음 | cysd `shrink_dropping_content_invalidates_cursor_blank_shrink_keeps_it` · 뮤턴트 RM7 |
+| ③ major | ED 3(스크롤백 지우기) 미처리 → 지운 행이 재생에 되살아남(📌 ED3) | **고침** — vt100 `ed(3)` = 지금 격자 스크롤백 비우기 + 그때 커서 기록(`scrollback_cleared_at`) · 그 앞 행은 「지움」(잘림 아님 · 다시 그리지 않음) · 그 뒤 밀려난 행만. ★master 지시 「그 이전 커서는 무효」와 다른 점: 무효로 하면 `clear`(대부분 ESC[3J 포함)를 친 좌석마다 「불러오지 못했어요」 거짓 안내가 뜬다 → 살아 있는 터미널과 같은 결과(지운 것은 안 나옴 · 그 뒤 것은 다 나옴)를 잘림 없이 내는 쪽을 택함 — 확인 요청 | cysd `ed3_clears_daemon_scrollback_and_replay_matches_live_terminal`(처음부터 붙은 터미널의 스크롤백과 표지 열 같음) · 뮤턴트 RM8 |
+| ④ major | 락 상한이 행 수뿐(폭 4,000칸 = 2천만 칸 복사 가능) · `contents_formatted` 가 락 안 | **고침** — 칸 합 상한 `ATTACH_HISTORY_MAX_CELLS` 1,000,000(최근 행부터 · 넘치면 앞을 버리고 잘림) · 화면 = `Screen::visible_clone()`(스크롤백 뺀 사본 · 락 안은 보이는 행 복사뿐) → 락 밖 `contents_formatted()`(바이트 같음 · 스크롤백 보기 위치 ≠ 0 이면 종전대로 락 안) | cysd `cell_cap_and_visible_clone_formats_identically`(폭 1,000칸 → 1,000행 · 잘림 · 사본 서식 = 원본 서식 바이트 같음 4꼴) · `attach_without_history_is_byte_identical_to_before` 그대로 초록 · 뮤턴트 RM9 |
+| ⑤ major | 겹친 두 `start_surface_stream` = 펌프 2개(덮어쓴 JoinHandle 미abort) · 주인 없는 stop 이 새 스트림을 멈춤 | **고침** — `viewcore::StreamGens`(키별 마지막 호출 번호 · `.manage` 1줄) · 넣기 = 세대 잠금 안에서 「지금」이면 넣고 옛 손잡이 abort · 아니면 제 손잡이 abort(`commit_stream`) · 기록 손잡기 뒤 세대가 바뀌었으면 펌프 0(`superseded`) · stop = `stream_gen` 주면 자기 세대만 · 반환에 `stream_gen`(인자 없는 길 = `{stream_gen}`) · UI makePane 되돌림의 stop 이 자기 `streamGen` 을 실음 | cys-app `overlapping_starts_leave_exactly_one_pump` · `overwrite_aborts_previous_handle` · `stop_only_own_generation` · makepane.test ①③(stop 인자 = 그 호출의 stream_gen) · 뮤턴트 TM1~TM3 · UM10 |
+| ⑥ minor | 밀려난 행을 하드 CRLF 로 이어 접힘(wrapped) 무시 | **고치지 않음**(master) — 한계 1줄: 같은 폭에서는 보이는 꼴 같음 · 나중에 폭을 바꾸면 그 행들은 원래처럼 다시 접히지 않는다 | — |
+
+**4R 처분 뒤 시험**(부하 6~23)
+
+| 대상 | 결과 |
+|---|---|
+| bun test(ui) | **3790 · 89 skip · 0 fail**(3R 3789 → +1 · runtimedefer ①(4R)) |
+| tsc `--package typescript@7.0.2` | rc 0 |
+| cargo cysd 전체(`--test-threads=3`) | **3346 통과 · 0 실패 · 17 ignored**(3R 때 부하 붉음 6건 = 이번 초록 · 새 시험 4 · attach_history_tests 12) |
+| cargo `-p cys-app --bins` | **352 통과 · 0 실패 · 2 ignored**(+4 stream_owner_tests) |
+| 화면 게이트 14종 | 전부 PASS · [PASS] 줄 수 3R 과 같음(race 108 · focus 72 · seatrows 75 · pillar 77 · seatgroup 8 · rolereuse 11 · nodept 16 · restart 6 · hidden_block 18 · stty 7 · tickrec 34 · chat 59 · confirm 37 · runtime_defer 23) |
+| tickrec OFF 대조 | 기준 번들(dea2e1853) = 새 번들 바이트 같음 · sha `308dd2b91f9a` |
+| 뮤턴트(4R) | TM1·TM2·TM3(cys-app 세대·덮기·stop) · RM6(표지) · RM7(높이 줄임) · RM8(ED3) · RM9(칸 상한) · UM10(stop 세대) = 전부 해당 시험 붉음 |
+| secret-scan `--all` | clean 2193 |
+
+원작자·데몬 파일 바뀐 줄(4R 몫): `vendor/vt100/src/grid.rs`(`scrollback_cleared_at` 필드·초기값 · `set_size` 머리 세대 바꿈 6줄 · `scrollback_rows_since` 에 칸 상한·지움 반영 · `clear_scrollback` · `clone_visible`) · `row.rs`(`has_any_contents`) · `screen.rs`(`ed` 의 3 팔 1줄 · `visible_clone` · `scrollback_snapshot_since` 칸 인자) · `src/bin/cysd/main.rs`(run_attach 화면 사본 → 락 밖 서식 · Lagged 기록 연결 팔 · `ATTACH_LAGGED_MARKER` · `ATTACH_HISTORY_MAX_CELLS`) · `src-tauri/src/main.rs`(start_surface_stream `gens` 상태·세대 시작·손잡기 뒤 세대 확인·`commit_stream` 2자리·반환 `stream_gen` · `.manage(StreamGens)` 1줄) · `src-tauri/src/viewcore.rs`(우리 · `StreamGens`·`commit_stream`·`stop_stream_in`·놓침 복구 펌프·`attach_plain`·시험 4) · `ui/src/main.ts`(stop 에 streamGen · lagged = 다시 불러오기 · `ensureSeatHistoryListener`·`seatHistoryCursor`). ★vendor/vt100 은 이번 회차부터 **더하기만이 아니다** — ED 3 처리(상류 「unhandled」 → 스크롤백 지움)와 높이 줄임 세대 바꿈은 파서 동작 변경(master 지시 ②③) · 화면 서식 바이트(`contents_formatted`·`contents_diff`)는 그대로(시험).
+
 ## 4. 내가 내린 판단(지시에 없던 것 · master 확인 후보)
 
 1. **「작업 화면이 안 보임」 판정 = 작업 화면 어댑터의 mount/unmount** — 시작 값 = 고른 화면(pickView)이 작업 화면인가. 작업 화면으로 시작하는 기동(1.1.16 기본 = 모든 설치)은 처음부터 참이라 종전 흐름과 한 줄도 다르지 않다. 숨김 → 보임으로 바뀔 때만 main.ts `render()` 를 부른다(처음 판은 작업 화면 시작 때도 불러 render 가 한 번 더 돌았다 — 자기 검토에서 잡아 고침).
@@ -228,7 +256,8 @@
 - 숨은 화면에서 짠 좌열 몫(§4-6) — 작업 화면 첫 진입 때 한 번 다시 맞출지(사용자 배치 존중과 충돌 · 설계 판단).
 - 실물 측정 대기: 좌석 12개 대화 → 작업 첫 진입 시간(맥·윈) · 웹뷰 메모리(대화 1시간 vs 작업 1시간) · 웹뷰 멈춤 주입 → 데몬 자가치유(§2-2 게이트⑤) · Tauri 박동 `views_tick_beat`(§2-2 장치 — 이 조각에서 안 만듦 · 러스트 변경 = 브리프 「데몬 변경 없음」 밖은 아니나 범위 판단 필요).
 
-- **(3R 회차 · 한계 정직)** ① 파서 세대는 하위 13비트만 커서에 담는다 — 미룬 사이 파서가 정확히 8,192의 배수 번 갈리면(패닉 격리·RIS) 모르는 커서를 못 알아챈다(현실 0에 가까움 · 더 줄이려면 커서를 문자열로). ② 데몬 vt100 은 ED 3(`ESC[3J` = 스크롤백 지우기)을 처리하지 않는다(상류 그대로 · `screen.rs ed` 의 「unhandled」) → 대화 화면 동안 좌석이 스크롤백을 지웠어도 다시 그리기에는 지운 행이 나온다(실시간 xterm 은 지웠을 것). 고치려면 vt100 에 ED 3 = 스크롤백 비움(행 커서는 유지 → 「잘림」) — 파서 동작 변경이라 더하기만 조건 밖 → 판단 필요. ③ 밀려난 행은 행마다 `\r\n` 으로 이어 쓰므로 접힌 줄의 「이어짐」 표지가 xterm 에 안 남는다 — 같은 폭이면 보이는 꼴 같음 · 폭을 바꾸면 그 행들은 다시 접히지 않는다. ④ 다시 불러오기 = xterm 비우고 다시 붙기 — abort 된 옛 스트림이 이미 내보낸 사건이 웹뷰 큐에 남아 있으면 그 몇 바이트가 비운 화면 맨 앞에 끼일 수 있다(스트림 세대 표지가 없음 · 드묾). ⑤ 진입당 3회를 다 쓰면 그 진입 동안은 「(없음)」 칸 그대로 — 다음 진입 때 다시(느린 자동 재시도를 둘지 판단). ⑥ 「사건 기록」 = UI 안 고리(`seatHistoryEvents` · 64) + console.warn 뿐 — 영속 UI 사건 원장이 없다. ⑦ 윈 ConPTY = 같은 reader·파서(정적) · 실기 측정 대기.
+- **(4R 회차)** 접힘(wrapped) 무시 = 고치지 않음(master ⑥) · 놓침 복구는 같은 커서로 다시 그리기라 그 사이 사람이 스크롤해 읽던 위치는 바닥으로 돌아간다 · 놓침 복구 상한 3 = 연속 홍수 좌석은 기록 없이 붙고 안내 · ED3 은 §3-7 ③ 대로 「지움 = 잘림 아님」(master 지시와 다름 · 확인 요청).
+- **(3R 회차 · 한계 정직)** ① 파서 세대는 하위 13비트만 커서에 담는다 — 미룬 사이 파서가 정확히 8,192의 배수 번 갈리면(패닉 격리·RIS) 모르는 커서를 못 알아챈다(현실 0에 가까움 · 더 줄이려면 커서를 문자열로). ② ~~ED 3 미처리~~ → 4R 에서 고침(§3-7 ③). ③ 밀려난 행은 행마다 `\r\n` 으로 이어 쓰므로 접힌 줄의 「이어짐」 표지가 xterm 에 안 남는다 — 같은 폭이면 보이는 꼴 같음 · 폭을 바꾸면 그 행들은 다시 접히지 않는다. ④ 다시 불러오기 = xterm 비우고 다시 붙기 — abort 된 옛 스트림이 이미 내보낸 사건이 웹뷰 큐에 남아 있으면 그 몇 바이트가 비운 화면 맨 앞에 끼일 수 있다(스트림 세대 표지가 없음 · 드묾). ⑤ 진입당 3회를 다 쓰면 그 진입 동안은 「(없음)」 칸 그대로 — 다음 진입 때 다시(느린 자동 재시도를 둘지 판단). ⑥ 「사건 기록」 = UI 안 고리(`seatHistoryEvents` · 64) + console.warn 뿐 — 영속 UI 사건 원장이 없다. ⑦ 윈 ConPTY = 같은 reader·파서(정적) · 실기 측정 대기.
 
 ## 7. 재현 명령
 

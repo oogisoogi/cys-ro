@@ -291,3 +291,103 @@ fn attach_history_under_lock_is_capped_at_max_rows() {
     assert_eq!(info["rows"], json!(crate::ATTACH_HISTORY_MAX_ROWS as u64));
     println!("[measure] 5,000행×200칸(색) — 락 안 사본 {in_lock:?} · 락 밖 서식 {outside:?} · {} 바이트", out.len());
 }
+
+// ── codex 4R(master#9af88457) ─────────────────────────────────────────────────────────────
+
+/// ② 높이 줄임으로 글자 있는 아래 행을 버리면 세대가 바뀐다 → 옛 커서 = 모르는 커서(조용한 손실 0) · 빈 행만 버리면 그대로.
+#[test]
+fn shrink_dropping_content_invalidates_cursor_blank_shrink_keeps_it() {
+    let mut s = vt100::Parser::new(10, 40, 100);
+    feed(&mut s, b"top\r\n");
+    let before = s.screen().scroll_cursor();
+    s.set_size(6, 40); // 아래 4행 = 빈 행
+    assert_eq!(s.screen().scroll_cursor(), before, "빈 행만 버림 = 커서 유효");
+    feed(&mut s, b"\x1b[6;1Hbottom-line");
+    let c = s.screen().scroll_cursor();
+    s.set_size(4, 40); // 글자 있는 6번째 행을 버림
+    let after = s.screen().scroll_cursor();
+    assert_ne!(after.0, c.0, "글자 있는 행을 버림 = 새 세대");
+    let (info, bytes) = crate::attach_history(s.screen(), pack_screen_cursor(c.0, c.1));
+    assert_eq!((info["status"].clone(), bytes.len()), (json!("unknown_cursor"), 0));
+}
+
+/// ③ ED 3(스크롤백 지우기) = 데몬 스크롤백도 지운다 — 지운 앞부분은 다시 그리지 않고(살아 있는 터미널과 같음) 잘림도 아니다 · 그 뒤 밀려난 행만.
+#[test]
+fn ed3_clears_daemon_scrollback_and_replay_matches_live_terminal() {
+    let mut s = vt100::Parser::new(5, 40, crate::state::SCROLLBACK_LINES);
+    let (epoch, c0) = s.screen().scroll_cursor();
+    feed(&mut s, &lines(0, 50));
+    feed(&mut s, b"\x1b[3J");
+    feed(&mut s, &lines(50, 80));
+    let (info, bytes) = crate::attach_history(s.screen(), pack_screen_cursor(epoch, c0));
+    assert_eq!(info["status"], json!("ok"), "{info}");
+    let all = markers(&strip(&bytes));
+    // 지울 때 스크롤백에 있던 0..46 은 되살아나지 않는다 · 그때 화면에 있던 46..50(5행 화면)은 지워지지 않고 뒤에 밀려 올라간다
+    assert_eq!(all.first(), Some(&46), "지운 행이 되살아났다: {all:?}");
+    // 살아 있는 터미널 대조 — 처음부터 붙어 같은 바이트를 받은 터미널의 스크롤백 = 다시 그린 행
+    let mut live = vt100::Parser::new(5, 40, crate::state::SCROLLBACK_LINES);
+    feed(&mut live, &lines(0, 50));
+    feed(&mut live, b"\x1b[3J");
+    feed(&mut live, &lines(50, 80));
+    let (lsb, _) = client_text(&live);
+    assert_eq!(markers(&strip(&lsb)), all);
+}
+
+/// ④ 락 안 상한 = 칸 수 — 폭 1,000칸 좌석은 1,000,000칸 / 1,000 = 1,000행까지만 복사(잘림) · 화면 사본 서식 = 원본 서식과 바이트 같음.
+#[test]
+fn cell_cap_and_visible_clone_formats_identically() {
+    let mut s = vt100::Parser::new(20, 1000, crate::state::SCROLLBACK_LINES);
+    let (epoch, c0) = s.screen().scroll_cursor();
+    let mut b = Vec::new();
+    for i in 0..3000 {
+        b.extend(format!("\x1b[3{}mL{i}.\x1b[0m{}\r\n", i % 8, "x".repeat(900)).as_bytes());
+    }
+    feed(&mut s, &b);
+    let (info, _) = crate::attach_history(s.screen(), pack_screen_cursor(epoch, c0));
+    assert_eq!((info["status"].clone(), info["rows"].clone()), (json!("truncated"), json!(crate::ATTACH_HISTORY_MAX_CELLS as u64 / 1000)));
+    // 화면 사본 = 원본과 같은 바이트(주 화면 · 색 · 커서 숨김 · 대체 화면)
+    for extra in [&b"\x1b[?25l"[..], b"\x1b[1;31mred\x1b[0m", b"\x1b[?1049hALT\x1b[2;3Hzz", b"\x1b[?1049l\x1b]0;title\x07"] {
+        feed(&mut s, extra);
+        assert_eq!(s.screen().visible_clone().unwrap().contents_formatted(), s.screen().contents_formatted());
+    }
+}
+
+/// ① 기록 연결이 broadcast 큐(256)를 넘기면 놓침 표지를 마지막에 쓰고 닫는다 · 인자 없는 연결은 표지 없음(종전).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lagged_history_connection_ends_with_marker_plain_does_not() {
+    for with_history in [true, false] {
+        let d = iso(if with_history { "lag-h" } else { "lag-p" });
+        let s = d
+            .create_surface(None, Some("sleep 0.6; i=0; while [ $i -lt 4000 ]; do printf '%0200d\\n' $i; i=$((i+1)); done; sleep 30".into()), None, None, 24, 80)
+            .expect("create");
+        let cursor = s.screen_cursor.load(Ordering::Relaxed);
+        // 작은 관(1 KiB) — 받는 쪽이 읽지 않는 동안 run_attach 가 쓰기에서 막혀 rx 를 못 비운다 → 큐 256 넘침
+        let (mut srv, cli) = tokio::io::duplex(1024);
+        let ack = cys::ok_response(&json!(1), json!({"attached": s.id}));
+        let d2 = Arc::clone(&d);
+        let sid = s.id;
+        let hist = with_history.then_some((cursor, 24u16));
+        let task = tokio::spawn(async move { crate::run_attach(&d2, &mut srv, ack, sid, hist).await });
+        let s2 = Arc::clone(&s);
+        tokio::task::spawn_blocking(move || wait_until(|| s2.line_count.load(Ordering::Relaxed) >= 4000)).await.unwrap();
+        let mut r = BufReader::new(cli);
+        let mut all = Vec::new();
+        let mut buf = vec![0u8; 1 << 16];
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_millis(1500), r.read(&mut buf)).await {
+                Ok(Ok(n)) if n > 0 => all.extend_from_slice(&buf[..n]),
+                Ok(_) => break,  // EOF = 데몬이 닫음
+                Err(_) => break, // 조용함
+            }
+        }
+        let ended = task.is_finished();
+        task.abort();
+        kill(&s);
+        let marker = all.ends_with(crate::ATTACH_LAGGED_MARKER);
+        if with_history {
+            assert!(marker && ended, "기록 연결: 놓침 표지로 끝나고 닫힘 (표지 {marker} · 닫힘 {ended} · {} 바이트)", all.len());
+        } else {
+            assert!(!all.windows(crate::ATTACH_LAGGED_MARKER.len()).any(|w| w == crate::ATTACH_LAGGED_MARKER), "인자 없는 연결에 표지");
+        }
+    }
+}

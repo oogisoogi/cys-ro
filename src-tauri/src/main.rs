@@ -5732,6 +5732,7 @@ async fn attach_surface(socket: Option<String>, surface_id: u64) -> Result<Value
 async fn start_surface_stream(
     app: AppHandle,
     state: State<'_, Attachments>,
+    gens: State<'_, viewcore::StreamGens>,
     socket: Option<String>,
     surface_id: u64,
     history_since: Option<u64>,
@@ -5740,6 +5741,8 @@ async fn start_surface_stream(
     let sock = resolve_socket(&socket);
     let slug = sock_slug(&sock);
     let key = (slug.clone(), surface_id);
+    // (cysr-1116-s2 · codex 4R major) 스트림 세대 — 같은 (소켓, 좌석)의 마지막 호출만 산다(겹친 두 호출 = 펌프 1개 · stop 은 자기 세대만).
+    let stream_gen = gens.begin(&key);
     if let Some(prev) = state.0.lock().unwrap().remove(&key) {
         prev.abort();
     }
@@ -5748,15 +5751,21 @@ async fn start_surface_stream(
     // (cysr-1116-s2) 선택 인자 `history_since` = 런타임을 미룬 좌석의 첫 붙기 — 기록 + 스냅숏 + 실시간을 데몬이 한 락으로 이어 준다(viewcore.rs).
     //   반환 = 데몬 ack 의 history 칸(ok·truncated·unknown_cursor) 또는 timeout·error. 손잡기가 실패하면 아래 종전 길로 붙는다(화면은 살린다).
     //   인자 없음 = 종전 그대로(반환 null).
-    let mut history_result = Value::Null;
+    let mut history_result = json!({ "stream_gen": stream_gen });
     if let Some(since) = history_since {
-        let (reader, hist) = viewcore::attach_with_history(&sock, surface_id, since, history_rows.unwrap_or(0)).await;
-        if let Some(reader) = reader {
-            let handle = tauri::async_runtime::spawn(viewcore::pump_surface_stream(app, reader, event_name, event_exited));
-            state.0.lock().unwrap().insert(key, handle);
-            return Ok(json!({ "history": hist }));
+        let rows = history_rows.unwrap_or(0);
+        let (reader, hist) = viewcore::attach_with_history(&sock, surface_id, since, rows).await;
+        if !gens.is_current(&key, stream_gen) {
+            // 손잡기를 기다린 사이 더 새 호출이 왔다 — 이 연결은 버린다(펌프 0)
+            return Ok(json!({ "stream_gen": stream_gen, "history": { "status": "superseded" } }));
         }
-        history_result = json!({ "history": hist });
+        if let Some(reader) = reader {
+            let recover = viewcore::Recover { sock: sock.clone(), socket: socket.clone(), surface_id, since, rows };
+            let handle = tauri::async_runtime::spawn(viewcore::pump_surface_stream(app, reader, event_name, event_exited, Some(recover)));
+            viewcore::commit_stream(&gens, &state, &key, stream_gen, handle);
+            return Ok(json!({ "stream_gen": stream_gen, "history": hist }));
+        }
+        history_result = json!({ "stream_gen": stream_gen, "history": hist });
     }
     let (en, ee) = (event_name.clone(), event_exited.clone());
     let handle = tauri::async_runtime::spawn(async move {
@@ -5798,7 +5807,7 @@ async fn start_surface_stream(
         }
         let _ = app.emit(&ee, ());
     });
-    state.0.lock().unwrap().insert(key, handle);
+    viewcore::commit_stream(&gens, &state, &key, stream_gen, handle); // (cysr-1116-s2 · codex 4R) 덮을 때 옛 손잡이 abort · 더 새 호출이 있으면 이 손잡이를 abort
     Ok(history_result)
 }
 
@@ -8471,6 +8480,7 @@ fn main() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
         .manage(Attachments(Mutex::new(HashMap::new())))
+        .manage(viewcore::StreamGens::default()) // (cysr-1116-s2 · codex 4R) 좌석 스트림 세대
         .invoke_handler(tauri::generate_handler![
             viewcore::chat_send, // (cysr-ui-slice1)
             viewcore::chat_transcript, // (cysr-ui-slice1)

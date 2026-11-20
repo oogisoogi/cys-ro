@@ -699,8 +699,33 @@ impl Screen {
         since: u64,
         max: usize,
     ) -> Option<(Vec<u8>, u64, u64, bool)> {
-        let snap = self.scrollback_snapshot_since(epoch, since, max)?;
+        let snap = self.scrollback_snapshot_since(epoch, since, max, usize::MAX)?;
         Some((snap.formatted(), snap.start, snap.rows.len() as u64, snap.truncated))
+    }
+
+    /// cys 패치(1.1.16 · cysr-1116-s2 · codex 4R): 스크롤백을 뺀 화면 사본 — 파서 락 안에서는 이것만(보이는 행 복사) 하고 `contents_formatted()` 는
+    /// 락 밖에서 이 사본에 부른다(바이트 = 원본과 같음 · 스크롤백 보기 위치가 0 일 때 · 아니면 None = 호출자가 락 안에서 원본으로).
+    #[must_use]
+    pub fn visible_clone(&self) -> Option<Self> {
+        if self.grid.scrollback() != 0 || self.alternate_grid.scrollback() != 0 {
+            return None;
+        }
+        Some(Self {
+            grid: self.grid.clone_visible(),
+            alternate_grid: self.alternate_grid.clone_visible(),
+            attrs: self.attrs,
+            saved_attrs: self.saved_attrs,
+            title: self.title.clone(),
+            icon_name: self.icon_name.clone(),
+            modes: self.modes,
+            mouse_protocol_mode: self.mouse_protocol_mode,
+            mouse_protocol_encoding: self.mouse_protocol_encoding,
+            audible_bell_count: self.audible_bell_count,
+            visual_bell_count: self.visual_bell_count,
+            errors: self.errors,
+            resets: self.resets,
+            sync_update: self.sync_update,
+        })
     }
 
     /// cys 패치(1.1.16 · cysr-1116-s2): 위와 같은 구간의 행 **사본**만 뜬다(행 복사 = 칸 memcpy) — 파서 락 안에서는 이것만 하고
@@ -711,12 +736,13 @@ impl Screen {
         epoch: u64,
         since: u64,
         max: usize,
+        max_cells: usize,
     ) -> Option<ScrollbackSnapshot> {
         if epoch != self.grid.scroll_cursor().0 {
             return None;
         }
         let (start, rows, truncated) =
-            self.grid.scrollback_rows_since(since, max)?;
+            self.grid.scrollback_rows_since(since, max, max_cells)?;
         Some(ScrollbackSnapshot {
             rows: rows.into_iter().cloned().collect(),
             start,
@@ -1236,6 +1262,8 @@ impl Screen {
             0 => self.grid_mut().erase_all_forward(attrs),
             1 => self.grid_mut().erase_all_backward(attrs),
             2 => self.grid_mut().erase_all(attrs),
+            // cys 패치(1.1.16 · cysr-1116-s2 · codex 4R): ED 3 = 스크롤백 지우기(xterm 과 같이 지금 쓰는 격자 · 대체 화면은 스크롤백 없음)
+            3 => self.grid_mut().clear_scrollback(),
             n => {
                 log::debug!("unhandled ED mode: {n}");
             }

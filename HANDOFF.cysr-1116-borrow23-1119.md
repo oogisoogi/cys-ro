@@ -98,7 +98,7 @@
 
 ## 8. 델타 — 독립 검증 REVISE 고침 1회(master#afc55645 · 2026-11-20)
 
-검증 원문 = `/Users/oogisoogi/axdev/workers/cysr-1116-borrow23-verify-1119/VERDICT.md`. 처분과 고침:
+검증 원문 = `~/axdev/workers/cysr-1116-borrow23-verify-1119/VERDICT.md`. 처분과 고침:
 
 | # | master 처분 | 고침 | 시험 |
 |---|---|---|---|
@@ -135,7 +135,7 @@
 
 ## 9. 델타 — codex 2R BLOCK 처분(마지막 회차 · 좌석 b23b · master#42d9d9cd · 2026-11-20)
 
-codex 2R 원문 = `/Users/oogisoogi/axdev/master/reports/verify/codex-1120/b23-r2.md`(대상 72fb2ce4c · VERDICT BLOCK). master 처분 = 고침 4 + 한계 문서 1 · 이 고침 뒤 codex 없음(master 수용 판정).
+codex 2R 원문 = `~/axdev/master/reports/verify/codex-1120/b23-r2.md`(대상 72fb2ce4c · VERDICT BLOCK). master 처분 = 고침 4 + 한계 문서 1 · 이 고침 뒤 codex 없음(master 수용 판정).
 
 | codex | master 처분 | 고침 | 시험 |
 |---|---|---|---|

@@ -1,6 +1,6 @@
 # HANDOFF — TICKET=cysr-1116-flaky-1120 (팩 시험 간헐 붉음 원인 규명·결정론 고침)
 
-- 가지 `feat/1116-flaky` ← dea2e1853 · cwd `/Users/oogisoogi/axdev/.wt/cys-1116-flaky` · 커밋 55e7e7e99(시험) + 이 문서 커밋
+- 가지 `feat/1116-flaky` ← dea2e1853 · cwd `~/axdev/.wt/cys-1116-flaky` · 커밋 55e7e7e99(시험) + 이 문서 커밋
 - 바뀐 것 = **시험 파일 5개만**(+135줄 · 제품 코드·훅·데몬·워크플로·팩 지침 변경 0) · push·태그·CI·발행 0 · codex 호출 0(브리프: 시험 전용)
 
 ## 1. 원인

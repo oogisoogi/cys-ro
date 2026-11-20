@@ -807,8 +807,8 @@ mod tests {
 
     #[test]
     fn folder_key_matches_app_rule() {
-        assert_eq!(folder_key("/Users/a/site"), "site");
-        assert_eq!(folder_key("/Users/a/site/"), "site");
+        assert_eq!(folder_key("/Users/x/site"), "site");
+        assert_eq!(folder_key("/Users/x/site/"), "site");
         assert_eq!(folder_key("C:\\work\\lms"), "lms");
         assert_eq!(folder_key("C:\\"), "");
         assert_eq!(folder_key(""), "");

@@ -85,7 +85,7 @@
 붉음(★원인 미확정 — 판독 안 함 · 「갈래 탓/통합 탓」 미분리):
 | 단계 | 실패 | 첫 짐작(검증 안 함) |
 |---|---|---|
-| secret-scan | 6건: HANDOFF.cysr-1116-borrow23-1119.md:101·138 · HANDOFF.cysr-1116-flaky-1120.md:3 · HANDOFF.cysr-1116-seatkeep-1119.md:3(로컬 경로) · src/bin/cysd/team.rs:810·811(`/Users/a/site` 시험 값) | 갈래 파일 그대로(b23·flaky·seatkeep·s6) — 경로를 `~/…`·`/home/a/site` 꼴로 |
+| secret-scan | 6건: HANDOFF.cysr-1116-borrow23-1119.md:101·138 · HANDOFF.cysr-1116-flaky-1120.md:3 · HANDOFF.cysr-1116-seatkeep-1119.md:3(로컬 경로) · src/bin/cysd/team.rs:810·811(시험 값의 사용자 이름 `a` — 더미 목록 밖) | 갈래 파일 그대로(b23·flaky·seatkeep·s6) — 경로를 `~/…`·`/home/a/site` 꼴로 |
 | health(boot-health L1907) | H-SECRET-1 · H-CONC-2 · H-SEAT-4AXIS(pass 167 · fail 3 · skip 1) | H-SECRET-1 = 위 secret-scan 과 같은 뿌리 추정 · 나머지 둘 미판독 |
 | lib | update::prime::tests::d3_prime_is_wired_right_after_the_swap_and_as_a_daemon_subverb(1317/1/4) | debt-d 핀 × seatkeep realops rotate 변경(의미 충돌 X2 후보) |
 | cys-app | tests::c2_feed_reply_and_list_all_wiring(374/1/2) | debt-d 배선 핀 × 다른 갈래 main.rs 변경 |

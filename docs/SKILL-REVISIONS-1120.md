@@ -102,7 +102,7 @@
 | 앞머리 YAML | 고친 26개 전부 정상. (korean-humanizer 1개가 `yaml.safe_load` 실패 — 이 가지가 안 건드린 기존 상태 · `git diff --quiet` 확인) |
 | 고친 명령 실행 | scene-cut·sfx-place 의 rank 명령을 본문에서 그대로 떼어 실행 → 정상 출력 · `check_timeline.py --help` 정상 |
 | 스킬 문구를 고정한 시험 | 고친 문구(「항상 가용」·「≤60초」·「유튜브 타깃」 등)를 잡는 시험 0건(`grep -rnE` · py/rs/sh) |
-| 개인 정보 | 추가 줄에 `axdev`·`박사님`·`oogisoogi`·`교회`·`예배` 0건 |
+| 개인 정보 | 추가 줄에 `axdev`·`박사님`·계정 이름·`교회`·`예배` 0건 |
 
 ## 독립 검증 뒤 1회 고침 (master#bea58169 · VERDICT REVISE · 2026-11-20)
 

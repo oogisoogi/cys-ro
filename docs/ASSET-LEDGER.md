@@ -156,7 +156,7 @@
 | `asset:ppt-design-system/COMMON.md` | 문서 | 본부 자산 | 본부 누적 디자인 공통 요소(교회 덱 근거) | — | 전용 | — | 팩 판은 빈 양식(templates)으로 대체(11-06) |
 | `asset:careerhacker-alex-style` | 참고+도구 | 본부 자산 | 바깥 유튜버 프레임·motion-kit(라이선스 없음 · 「외부 게시 금지」) | — | 전용 | 하 | README 가 외부 게시·배포 금지 명시 |
 | `asset:design-default-slots` | 지침 초안+도구 | 본부 자산 | 우리 제작(11-18) · 코드깎는노인 영상 근거 | — | 전용 | 중 | README 스스로 「초안·적용 전 · 도구는 필수 아님」 — 확신도 상 미달 · 적용 확정 뒤 넣음 후보 |
-| `asset:ui-terms-24` | 용어 사전 | 본부 자산 | 우리 표(⑶ 재작성) · 영상 화면·원본 = 재배포 금지 | — | 넣음-자료 | 상 | 왕초보의 UI 용어 장벽을 바로 낮춤 · README 표만(캡처·영상·교인 줄 0) → appbuild-screen-spec/references 로 동봉 제안 |
+| `asset:ui-terms-24` | 용어 사전 | 본부 자산 | 우리 표(⑶ 재작성) · 영상 화면·원본 = 재배포 금지 | — | 넣음-자료 | 상 | 왕초보의 UI 용어 장벽을 바로 낮춤 · README 표만(캡처·영상·교인 줄 0) → appbuild-screen-spec/references/ui-terms-24.md 로 동봉(master#fda41d2f D1) |
 | `asset:video-knowledge` | 지식 카드 60+INDEX | 본부 자산 | 바깥 영상 파생(⑶) · 일부 개인 언급 | — | 전용 | 하 | master 영상 검토 지식 — 재배포 근거 없음 · 말로 시키면 되는 지식 |
 | `asset:video-production/tools` | 도구 6+README | 본부 자산 | 우리 제작(11-14 · 1회 실행) | — | 전용 | 하 | 확신도 상 미달 — screening_master 기본값이 납품 기준과 다름·screening_qc 검은 화면 미판정(SR:132 미해소) · 옮길 자리 미정(SR B7) · 결함 고친 뒤 넣음 후보 |
 | `asset:video-production/quality-standard` | 기준+측정기 | 본부 자산 | 우리 제작(11-15) · 바깥 출처 S1~S21 인용 원문 | — | 전용 | 하 | 11-20 개정 진행 중(STANDARD.md.bak-20261120) · sources 바깥 원문 · .venv 104MB |
@@ -173,7 +173,7 @@
 | `asset:video-production/next-to-review.md` | 문서 | 본부 자산 | 우리 제작 · 교회 영상 제작 운영 | — | 전용 | — | master 영상 제작 운영 문서 |
 | `asset:video-production/workflow-checklist.md` | 문서 | 본부 자산 | 우리 제작 · 교회 영상 제작 운영 | — | 전용 | — | master 영상 제작 운영 문서 · 납품 기준(-14 LUFS)은 skill-revisions 제안으로 스킬 반영 대기 |
 | `asset:REFERENCE-*` | 장부 | 본부 자산 | 운영 장부(.bak 포함) | — | 전용 | — | master 운영 장부 |
-| `path:~/axdev/master/reports/video-reviews/assets/glance-test-checklist.md` | 점검표 | 검토 반영(IDX:41·86) | 우리 제작 · Duarte(원문 0)·unslop(CC-BY-4.0 · 방법만) | — | 넣음-자료 | 상 | PPT·문서가 3초에 읽히는가 — 초보도 표 그대로 씀 · 교회 양식 줄 일반화 → ppt-design-system/references 동봉 제안 |
+| `path:~/axdev/master/reports/video-reviews/assets/glance-test-checklist.md` | 점검표 | 검토 반영(IDX:41·86) | 우리 제작 · Duarte(원문 0)·unslop(CC-BY-4.0 · 방법만) | — | 넣음-자료 | 상 | PPT·문서가 3초에 읽히는가 — 초보도 표 그대로 씀 · 교회 양식 줄 일반화 → ppt-design-system/references/glance-test-checklist.md 로 동봉(master#fda41d2f D1) |
 | `path:~/axdev/master/reports/video-reviews/assets/rea-*` | 지침·스킬 초안 | 검토 반영(IDX:39) | REA(MIT) · 원 영상 유료 거래 | — | 전용 | — | 미설치 초안 · 원 영상 비공개 거래 |
 | `path:~/axdev/master/reports/video-reviews/2026-11-06-asset-refs` | 표 | 검토 반영(IDX:74) | ztd-charts(라이선스 미기재) | — | 전용 | — | 바깥 라이선스 불명 |
 | `path:~/.cys/pack/hooks/inject-context.sh` | 훅 수정 | 검토 반영(IDX:51) | 팩 정본 | — | 팩에있음 | — | 설치본 = 저장소 판 바이트 동일(cmp) |

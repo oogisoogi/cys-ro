@@ -82,6 +82,47 @@ pub mod launchd;
 
 pub const ENV_SOCKET: &str = "CYS_SOCKET";
 pub const ENV_SURFACE_ID: &str = "CYS_SURFACE_ID";
+
+// ★(1.1.16 · TICKET=cysr-1116-borrow23-1119 · 차용 ③ · 독립 검증 V-4) 가벼운 시작 손잡이 `boot_fleet` — **진실원 = 데몬 한 곳**.
+//   데몬이 기동 때 자기 env `CYS_BOOT_FLEET`(full|light) > `~/.cys/policy.json` `boot_fleet`(**full 만** — 좌석도 쓰는 파일) > 기본값으로
+//   한 번 정하고, RPC `system.boot_fleet` 로 내보낸다(좌석·부트 감독자 자식 env 도장 [`ENV_BOOT_FLEET_DAEMON`] 은 진단 표지 — 판정 재료 아님).
+//   `cys boot`·팩 python(`cys daemon boot-fleet`)은 **RPC 값만** 쓰고 묻지 못하면 기본 full — 어떤 환경값(`CYS_BOOT_FLEET` · 도장)도
+//   판정에 쓰지 않는다(codex 2R 1번 · 명령 앞 export 로 반쪽 light 를 못 만든다). 내 env 의 `CYS_BOOT_FLEET` 가 다르면 경고 1줄.
+//   ★python 정본 `javis_orchestra.boot_fleet_decide`·`boot_fleet_resolve` 와 같은 규칙·같은 기본값(cys.rs 시험이 문자열 대조).
+pub const BOOT_FLEET_DEFAULT: &str = "full";
+pub const ENV_BOOT_FLEET: &str = "CYS_BOOT_FLEET";
+pub const ENV_BOOT_FLEET_DAEMON: &str = "CYS_BOOT_FLEET_DAEMON";
+
+fn boot_fleet_norm(v: &str) -> Option<&'static str> {
+    // python `_norm` 과 바이트 동치: ASCII 공백·탭·줄바꿈만 벗기고 ASCII 만 소문자로.
+    match v.trim_matches(|c| matches!(c, ' ' | '\t' | '\r' | '\n')).to_ascii_lowercase().as_str() {
+        "full" => Some("full"),
+        "light" => Some("light"),
+        _ => None,
+    }
+}
+
+/// 데몬 쪽 결정(순수) — (데몬 env 값, policy.json) → (fleet, 출처 "env"|"policy"|"default"). policy 는 full 만 받는다.
+pub fn boot_fleet_decide(env: Option<&str>, policy: Option<&Value>) -> (&'static str, &'static str) {
+    if let Some(f) = env.and_then(boot_fleet_norm) {
+        return (f, "env");
+    }
+    if policy.and_then(|p| p.get("boot_fleet")).and_then(Value::as_str).and_then(boot_fleet_norm) == Some("full") {
+        return ("full", "policy");
+    }
+    (if BOOT_FLEET_DEFAULT == "light" { "light" } else { "full" }, "default")
+}
+
+/// 소비자 쪽 해소(순수) — (데몬이 준 값, 내 프로세스 env 의 `CYS_BOOT_FLEET`) → (fleet, 출처 "daemon"|"no-daemon", 경고?).
+/// 데몬 값이 없으면 기본(full) — 내 env 는 **어느 경우에도 쓰지 않는다**(반쪽 light 차단 · 다르면 경고만).
+pub fn boot_fleet_resolve(daemon: Option<&str>, seat_env: Option<&str>) -> (&'static str, &'static str, bool) {
+    let (fleet, src) = match daemon.and_then(boot_fleet_norm) {
+        Some(f) => (f, "daemon"),
+        None => (if BOOT_FLEET_DEFAULT == "light" { "light" } else { "full" }, "no-daemon"),
+    };
+    let warn = seat_env.is_some_and(|e| !e.trim().is_empty() && boot_fleet_norm(e) != Some(fleet));
+    (fleet, src, warn)
+}
 /// ★(P1) 좌석 토큰 env 키 — 데몬이 pane 스폰 시 PTY env 로**만** 배달하는 세대 각인 비밀
 /// (`"{daemon.started_at:x}-{pid:x}.{128bit hex}"` — 발급·대조·수명은 데몬 소유: cysd/state.rs
 /// `mint_seat_token` · cysd/handlers.rs claim_role/hook.decide). CLI 는 값을 해석하지 않고

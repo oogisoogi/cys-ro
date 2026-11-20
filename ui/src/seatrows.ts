@@ -104,7 +104,7 @@ export function seatState(i: SeatInput): SeatState {
   if (i.exited) return "exited";
   if (i.approvalPending || i.dot === "input") return "blocked";
   if (i.dot === "working") return "working";
-  if (i.dot === "waiting") return "idle";
+  if (i.dot === "waiting" || i.dot === "done") return "idle"; // ★(1.1.16 · 차용 ②) done = 끝났지만 안 봄 → 대기 + 「확인」 꼬리표
   return "unknown"; // unknown · stale · 관측 없음
 }
 
@@ -112,6 +112,8 @@ export function seatTag(i: SeatInput, state: SeatState): SeatTag {
   if (state === "blocked") return "승인 창";
   // 「확인」 = 좌석이 스스로 waiting/done 을 신고했고 화면이 일하는 중이 아닐 때만(일하는 중이면 낡은 신고다).
   if ((state === "idle" || state === "unknown") && (i.statusState === "waiting" || i.statusState === "done")) return "확인";
+  // ★(1.1.16 · 차용 ②) 프로그램이 스스로 「끝남」을 알렸고 사람이 아직 안 봤다(OSC 7501 done · 사람이 입력하면 데몬이 대기로 내린다).
+  if (state === "idle" && i.dot === "done") return "확인";
   return null;
 }
 

@@ -690,6 +690,9 @@ body.ws-reordering { cursor: grabbing; -webkit-user-select: none; user-select: n
 /* input wait (permission/question): a steady attention shape in the SAME role colour (design R3-5) — a solid diamond, distinct from the
    blinking circle (working), solid circle (waiting), hollow circle (unknown/stale) and the reduced-motion double ring. Never the warn colour. */
 .pane .pane-role-dot.act-input { border-radius: 1px; transform: rotate(45deg) scale(0.8); box-shadow: none; }
+/* ★(1.1.16 · 차용 ②) done = 끝났지만 아직 안 봄(프로그램 7501 보고) — 채운 원 안에 막대색 고리(과녁 · 깜박임 없음 · 같은 역할색).
+   대기(채운 원)·모름(빈 원)·움직임 줄임 작업 중(바깥 이중 고리)과 모양이 다르다. */
+.pane .pane-role-dot.act-done { box-shadow: inset 0 0 0 2px var(--role-color, #64748b), inset 0 0 0 3.5px var(--bar); }
 .pane .pane-role-dot.act-unknown, .pane .pane-role-dot.act-stale { background: transparent; box-shadow: inset 0 0 0 1.5px var(--role-color, #64748b); }
 @media (prefers-reduced-motion: reduce) {
   .pane .pane-role-dot.act-working { animation: none; box-shadow: 0 0 0 1.5px var(--bar), 0 0 0 3px var(--role-color, #64748b); }

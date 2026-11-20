@@ -6746,6 +6746,11 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
     }
     match req.method.as_str() {
         "system.ping" => Reply::Single(ok_response(&id, json!("pong"))),
+        // ★(1.1.16 · 차용 ③ · V-4) 가벼운 시작 손잡이의 진실원 — `cys boot` 가 묻는다(읽기 전용).
+        "system.boot_fleet" => {
+            let (fleet, source) = crate::knobs::boot_fleet();
+            Reply::Single(ok_response(&id, json!({"fleet": fleet, "source": source})))
+        }
 
         // ─── ★(U-22) 훅 결정 프런트도어 — **인메모리 즉답 전용** ──────────────────────────
         //
@@ -7807,6 +7812,8 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                         // F-01 (0.14.52) display-only CLI activity behind the tab dot — the cached observer
                         //   record, re-validated and lease-checked here. Drives nothing operational.
                         "display_activity": crate::activity::wire(daemon, s),
+                        // ★(1.1.16 · 차용 ② ⒞) OSC 7501 진단(질의 응답·보고·버림·마지막 원문·지운 까닭) — 표시·진단 전용.
+                        "program_status_diag": crate::program_status::diag(s),
                     })
                 })
                 .collect();

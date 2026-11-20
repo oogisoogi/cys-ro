@@ -1,0 +1,29 @@
+# codex 2R 1번 고침 격리 실측(2026-11-20 07:5x · b23b) — 진실원 = 데몬 RPC · 환경값 위조 무효
+# 하네스: env -i(HOME·PATH·TMPDIR·LANG) 새 zsh · HOME/CYS_SOCKET = 격리 임시 폴더 · CYS_NO_AUTOSTART=1 · PATH 앞 = 이 트리 target/debug/cys
+# cysd = 이 트리 target/debug/cysd 를 CYS_BOOT_FLEET=light / full 로 각각 기동 · 끝에 격리 pid 종료 확인(gone)
+== 데몬 없음
+[daemon boot-fleet] 데몬 값을 읽지 못했다(데몬 없음 · 옛 데몬) — 소비자는 기본 full 로 간다
+rc=1
+자동 기동 0
+== 격리 소켓 단언
+ok
+[cysd] boot_fleet=light (출처 env)
+== 데몬 light
+{"fleet":"light","source":"env"}
+rc=0
+== python 평 env
+('light', 'daemon') []
+== python 위조 env(도장·좌석 full)
+[orchestra] ⚠ 이 프로세스 env 의 CYS_BOOT_FLEET=full 는 무시한다 — 진실원 = 데몬(light · daemon)
+('light', 'daemon') []
+== 데몬 full
+{"fleet":"full","source":"env"}
+== python 위조 env(도장·좌석 light)   ← codex 2R 1번 공격(CYS_BOOT_FLEET_DAEMON=light 명령 앞 export)
+[orchestra] ⚠ 이 프로세스 env 의 CYS_BOOT_FLEET=light 는 무시한다 — 진실원 = 데몬(full · daemon)
+('full', 'daemon') ['cso', 'worker']
+== 끝 pid 생존
+gone
+# 재측(08:10 · python unix 판독기 = 데몬 소켓 직접 1왕복으로 바꾼 뒤 · 같은 하네스) — 위 7구간 출력 동일 + 아래 1구간 추가
+== --note-team-roster 시간(하위 프로세스 0 확인)
+master (필수 역할 전원+master — 총 1노드 · 리뷰어 = 필요할 때 연다(온디맨드 · 기본 스폰 0))
+real 4.58      ← 부하 평균 176 아래 · 같은 시각 기준판 대조와 하위 프로세스 0 은 HANDOFF §9 표

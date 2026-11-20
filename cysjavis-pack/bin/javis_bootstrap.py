@@ -2184,6 +2184,13 @@ def _required_roles_from_orchestra():
         roles = list(_orch.effective_required_roles())
     except Exception as e:
         return None, "orchestra 소비 불가(%s: %s)" % (type(e).__name__, e)
+    if not roles:
+        # ★(1.1.16 · 차용 ③) 가벼운 시작 = 의도된 빈 요구 집합(결손 0) — 손상으로 읽어 구 구성으로 되돌아가지 않는다.
+        try:
+            if _orch.boot_fleet()[0] == "light":
+                return [], None
+        except Exception:
+            pass
     if not roles or not all(isinstance(r, str) and r for r in roles):
         return None, "orchestra effective_required_roles 반환 이상(%r)" % (roles,)
     return roles, None
@@ -5093,6 +5100,13 @@ def detach_session(argv=None, emit=None):
 def main(argv):
     # preflight/CI 호환: `--self-test`는 subcommand 없이도 동작(가로채기).
     if "--self-test" in argv:
+        # ★(1.1.16 · 차용 ③) 출하 기본 동작(full)을 잰다 — 운영 데몬 값 밀폐(프로세스 안 주입 · 환경값은 판정 재료가 아니다).
+        try:
+            import javis_orchestra as _o
+            _o._BOOT_FLEET_QUERY = lambda: "full"
+        except Exception:
+            pass
+        os.environ.pop("CYS_BOOT_FLEET", None)
         return cmd_self_test()
     # ★A18: 발화부에서 넘긴 명시 요청이 있을 때만 세션을 분리한다(위 3중 가드 참조).
     #   subcommand 판정 **전에** 수행한다 — 분리는 프로세스 정체성의 문제이고, 어떤 서브커맨드든

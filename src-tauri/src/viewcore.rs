@@ -778,7 +778,10 @@ pub(crate) fn launch_command(plan: &OpenPlan) -> std::process::Command {
 /// 결과 행동 집행(`open_plan` 다음) — 시험이 임시 홈으로 부를 수 있게 홈을 받는다.
 pub(crate) fn result_open_in(path: &std::path::Path, reveal: bool, home: &std::path::Path) -> Result<(), String> {
     let plan = open_plan(path, reveal, home)?;
-    launch_command(&plan).spawn().map(|_| ()).map_err(|e| e.to_string())
+    // (통합 cysr-1116-integ-1120) GUI(cys-app) 자식 창 정책 = main.rs no_console 과 같은 등급(Attached = 윈 CREATE_NO_WINDOW · 맥·유닉스 무동작) —
+    //   lib.rs consoleless_spawns_carry_window_policy 가 요구(체인에 등급 · 다른 파일의 래퍼는 census 가 인정하지 않는다).
+    use cys::SpawnPolicy as _;
+    launch_command(&plan).spawn_policy(cys::ChildLifetime::Attached).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
 /// 결과 받기 카드의 「열기」·「폴더 보기」 — 마스터 글에서 온 경로라 정규 대상으로 다시 가둔다:
@@ -937,7 +940,7 @@ mod tests {
         let code: String = src.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
         let body = &code[code.find("pub(crate) fn result_open_in(").expect("result_open_in")..];
         let body = &body[..body.find("\n}\n").expect("끝")];
-        assert!(body.contains("let plan = open_plan(path, reveal, home)?;") && body.contains("launch_command(&plan).spawn()"), "집행이 계획·절대 경로 명령을 안 지남");
+        assert!(body.contains("let plan = open_plan(path, reveal, home)?;") && body.contains("launch_command(&plan).spawn_policy(cys::ChildLifetime::Attached).spawn()"), "집행이 계획·절대 경로 명령을 안 지남");
         assert!(!body.contains("crate::open_path") && !body.contains("crate::reveal_path"), "맨 이름 실행기를 쓰는 옛 open_path/reveal_path 를 다시 부름");
         let _ = std::fs::remove_dir_all(&base);
     }

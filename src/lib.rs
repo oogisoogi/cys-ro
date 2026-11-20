@@ -7778,6 +7778,10 @@ mod spawn_policy_tests {
         // 1.1.8 U4(설계 §5-2 · 앱 updater 경로 삭제) −4 = same_version_rebuild_check `curl`(latest.json) · check_pack_update `curl`(pack-manifest) ·
         //   install_pack_update 사이드카 `cys pack-update` · smart_app_control_state `reg.exe` — 지점째 지웠다(옮긴 것 0 · 새 스폰 0).
         ("src-tauri/src/main.rs", 34),
+        // 1.1.16 통합(cysr-1116-integ-1120 · s79 f51261ee0): 결과 카드 열기 launch_command 1곳 — 실행기 = 절대 경로(맥 /usr/bin/open ·
+        //   윈 explorer.exe · 그 밖 xdg-open). ⓐ윈에서 돈다 → ⓑ호출 자리 result_open_in 체인에 `spawn_policy(ChildLifetime::Attached)`
+        //   (= main.rs no_console 과 같은 등급) — 갈래 머리에서 이 칸과 등급이 둘 다 빠져 있었다(통합에서 채움).
+        ("src-tauri/src/viewcore.rs", 1),
         // 1.1.10 편입(원작자 0.14.45 · agy 윈 자동 연결): 쓰기 전 실연 검사 자식 + 상한 초과 시 taskkill 트리 종료 = +2 — 둘 다 체인에
         //   `spawn_policy(ChildLifetime::Attached)` 등급(원작자 b9151464 · 3a728d10).
         ("src/agy_statusline.rs", 2),
@@ -7818,6 +7822,9 @@ mod spawn_policy_tests {
         ("src/factory_reset.rs", 7),
         ("src/launchd.rs", 4),
         ("src/lib.rs", 6),
+        // 1.1.16 통합(cysr-1116-integ-1120 · skt1 b03d1cd70): 좌석 에이전트 rollout 찾기 `lsof -p` 1곳 — ⓐ윈에서 안 돈다
+        //   (seat_agent_open_rollout 머리 `cfg!(windows)` → Err 조기 반환) — 갈래 머리에서 이 칸이 빠져 있었다.
+        ("src/session_lease_cli.rs", 1),
         // 1.1.8 U2(AUTO-UPDATE-118 §3-1): 러너 분리 기동 1곳 — 체인에 `spawn_policy(ChildLifetime::Survivor)` 등급을 단다(cys→cysd 와 같은 꼴).
         ("src/update/launch.rs", 1),
     ];

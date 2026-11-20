@@ -3821,12 +3821,31 @@ function seatHistoryVerdict(cursor: number | null, started: unknown): { status: 
   const status = typeof h?.status === "string" ? h.status : "unsupported"; // 반환 없음·꼴 이상 = 구 앱·구 데몬(기록 없이 붙었다)
   if (status === "ok") return { status, notice: false, retry: false };
   // 잘림(10,000행 밖) · 모르는 커서(파서 세대 바뀜) · 구 데몬 = 다시 해도 같다 → 안내만 · 손잡기 실패 = 일시적 → 다시 불러오기 + 다음 진입 자동
-  return { status, notice: true, retry: status === "timeout" || status === "error" || status === "not_attached" };
+  return { status, notice: true, retry: status === "timeout" || status === "error" || status === "not_attached" || status === "lagged" };
 }
 /** 기록 이어 붙이기 사건(조용한 손실 0 — 안내 줄과 함께 남긴다 · 상한 64 · 시험·진단이 읽는다). */
 const seatHistoryEvents: { at: number; key: string; status: string }[] = [];
 /** 다시 불러오기가 남은 좌석 — 키 → 미룬 그때 커서(작업 화면 다음 진입 때 자동 재시도 · destroyPaneRuntime 이 지운다). */
 const seatHistoryRetry = new Map<string, number>();
+/** 기록을 이어 붙여 붙은 좌석의 미룬 그때 커서 — 붙은 뒤 Tauri 가 알리는 놓침 복구 결과(seat-history-status)를 안내 줄로 옮길 때 쓴다. */
+const seatHistoryCursor = new Map<string, number | null>();
+let seatHistoryListening = false;
+/** (codex 4R) Tauri 의 놓침 복구 결과 사건 — 데몬이 청크를 놓친 기록 연결은 Tauri 가 화면을 비우고 같은 커서로 다시 붙는다(상한 3). 결과가 ok 아니면
+ *  (상한 넘음 = lagged · 다시 붙은 기록이 잘림·모르는 커서) 그 좌석 맨 위 안내 줄. 한 번만 듣는다(첫 미룬 좌석 런타임 때 · 대화 화면만 쓰면 0). */
+function ensureSeatHistoryListener(): void {
+  if (seatHistoryListening) return;
+  seatHistoryListening = true;
+  void listen("seat-history-status", (e) => {
+    const p = e.payload as { socket?: string | null; surface_id?: unknown; status?: unknown } | null;
+    if (!p || typeof p.surface_id !== "number" || typeof p.status !== "string") return;
+    const socket = p.socket ?? undefined;
+    const key = paneKey(p.surface_id, socket);
+    const rt = panes.get(key);
+    if (!rt) return;
+    const cursor = seatHistoryCursor.get(key) ?? null;
+    showSeatHistoryNotice(rt.el, key, p.surface_id, socket, cursor, seatHistoryVerdict(cursor, { history: { status: p.status } }));
+  }).catch(() => void (seatHistoryListening = false));
+}
 const SEAT_HISTORY_TEXT = "이전 출력 일부를 불러오지 못했어요";
 /** 좌석 화면 맨 위(제목 줄 아래) 안내 한 줄 — 다시 불러오기 단추는 뜻이 있을 때만. ok 면 지운다. */
 function showSeatHistoryNotice(el: HTMLElement, key: string, sid: number, socket: string | undefined, cursor: number | null, v: { status: string; notice: boolean; retry: boolean }): void {
@@ -3879,6 +3898,7 @@ async function ensureSeatRuntime(key: string): Promise<boolean> {
   if (d.making || d.tries >= DEFERRED_TRIES_MAX || !seatInModel(d.sid, d.socket)) return false; // 만드는 중 · 아직 모형에 안 붙음(만드는 쪽이 붙이기 전) — 장부 유지(떼면 destroyPaneRuntime 이 지운다)
   // ★만드는 동안에도 장부에 남긴다 — 지우고 기다리면 그 사이 3초 틱이 「안 붙은 좌석」으로 보고 다시 입양할 틈이 생긴다(seatAttached = 런타임 ∪ 장부).
   d.making = true;
+  ensureSeatHistoryListener();
   try {
     const rt = await makePane(d.sid, d.title, d.socket, {
       // (codex 2R major) 붙기 직전 다시 본다 — 대화 화면이면 스트림을 열지 않는다 · 붙을 때 기록 이어 붙이기 인자(데몬 한 락)
@@ -3886,6 +3906,7 @@ async function ensureSeatRuntime(key: string): Promise<boolean> {
       // (codex 3R major) 붙은 **뒤** 다시 본다 — start 를 기다린 사이 대화 화면으로 돌아갔으면 makePane 이 스트림을 멈추고 치운다(출력 흐름 0)
       afterStream: (p, started) => {
         if (!workRuntimeWanted()) return false;
+        seatHistoryCursor.set(key, d.cursor);
         showSeatHistoryNotice(p.el, key, d.sid, d.socket, d.cursor, seatHistoryVerdict(d.cursor, started));
         return true;
       },
@@ -5067,7 +5088,8 @@ async function makePane(sid: number, title: string, socket?: string, opts?: Make
   const started = await invoke("start_surface_stream", { socket, surfaceId: sid, ...streamExtra });
   // ★옛 시도(기다린 사이 파기 → 재입양)면 스트림을 멈추지 않는다 — 같은 (소켓, 좌석) 손잡이는 새 시도의 것일 수 있다. 제 듣기·xterm·DOM 만 치운다.
   if (stale()) throw new Error(PANE_STALE);
-  undo.push(() => void invoke("stop_surface_stream", { socket, surfaceId: sid }).catch(() => {}));
+  const streamGen = (started as { stream_gen?: unknown } | null)?.stream_gen; // (codex 4R) 이 호출의 스트림 세대 — stop 은 자기 세대만 멈춘다
+  undo.push(() => void invoke("stop_surface_stream", { socket, surfaceId: sid, streamGen: typeof streamGen === "number" ? streamGen : undefined }).catch(() => {}));
   if (opts?.afterStream && !opts.afterStream({ term, el }, started)) throw new Error(PANE_STREAM_UNWANTED); // (cysr-1116-s2 · codex 3R) 붙은 뒤 재판정
 
   let resizeTimer: number | undefined;
@@ -5149,6 +5171,7 @@ function destroyPaneRuntime(sid: number, socket?: string) {
   deferredRuntimes.delete(paneKey(sid, socket)); // (cysr-1116-s2) 런타임을 미룬 좌석도 여기서 장부를 비운다(떼기·탭 삭제·입양 포기)
   bumpPaneGen(paneKey(sid, socket)); // (cysr-1116-s2 · codex 3R major) 진행 중인 makePane 을 무효화 — 늦게 끝나도 새 런타임을 덮거나 부수지 못한다
   seatHistoryRetry.delete(paneKey(sid, socket));
+  seatHistoryCursor.delete(paneKey(sid, socket));
   const rt = panes.get(paneKey(sid, socket));
   if (!rt) return;
   rt.observer.disconnect();

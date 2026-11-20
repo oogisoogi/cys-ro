@@ -19,7 +19,7 @@ function fnText(name: string): string {
   const a = (m as RegExpExecArray).index;
   return SRC.slice(a, SRC.indexOf("\n}\n", a) + 2);
 }
-const NAMES = ["collectSids", "seatAttached", "seatInModel", "deferSeatRuntime", "ensureSeatRuntime", "destroyPaneRuntime", "retryFailedRuntimes", "seatHistoryArgs", "seatHistoryVerdict", "showSeatHistoryNotice", "retrySeatHistory", "bumpPaneGen", "ensureSeatRuntimes"];
+const NAMES = ["collectSids", "seatAttached", "seatInModel", "deferSeatRuntime", "ensureSeatRuntime", "destroyPaneRuntime", "retryFailedRuntimes", "seatHistoryArgs", "seatHistoryVerdict", "showSeatHistoryNotice", "retrySeatHistory", "bumpPaneGen", "ensureSeatHistoryListener", "ensureSeatRuntimes"];
 
 type FakeEl = { remove(): void; querySelector(sel: string): FakeEl | null; prepend(n: FakeEl): void; after(n: FakeEl): void; append(...n: unknown[]): void; addEventListener(t: string, f: () => void): void; className: string; textContent: string; dataset: Record<string, string>; type?: string; kids: FakeEl[]; click?: () => void };
 function fakeEl(): FakeEl {
@@ -66,10 +66,15 @@ function harness(opts: { fail?: number; started?: unknown } = {}) {
   const view = { work: true };
   const focusCalls: number[] = [];
   const paneGen = new Map<string, number>();
+  const listeners: Record<string, ((e: { payload: unknown }) => void)[]> = {};
   let started: unknown = opts.started === undefined ? { history: { status: "ok", rows: 3 } } : opts.started;
   const deps: Record<string, unknown> = {
     PANE_STREAM_UNWANTED: "pane_stream_unwanted", PANE_STALE: "pane_stale", DEFERRED_TRIES_MAX: 3, SEAT_HISTORY_TEXT: "이전 출력 일부를 불러오지 못했어요",
-    seatHistoryEvents: [] as unknown[], seatHistoryRetry: new Map<string, number>(), paneGen,
+    seatHistoryEvents: [] as unknown[], seatHistoryRetry: new Map<string, number>(), seatHistoryCursor: new Map<string, number | null>(), seatHistoryListening: false, paneGen,
+    listen: async (name: string, h: (e: { payload: unknown }) => void) => {
+      (listeners[name] ??= []).push(h);
+      return () => {};
+    },
     document: { createElement: () => fakeEl() },
     console: { warn() {} },
     workRuntimeWanted: () => view.work,
@@ -124,7 +129,8 @@ function harness(opts: { fail?: number; started?: unknown } = {}) {
   };
   const setStarted = (v: unknown) => void (started = v);
   const notice = (key: string) => ((panes.get(key)?.el as FakeEl | undefined)?.kids ?? []).find((k) => k.className === "pane-history-gap") ?? null;
-  return { fns, panes, workspaces, made, disposed, roleDots, ledger, go, tick, streams, invokes, view, focusCalls, scope, resets, setStarted, notice, releases };
+  const emit = (name: string, payload: unknown) => (listeners[name] ?? []).forEach((h) => h({ payload }));
+  return { fns, panes, workspaces, made, disposed, roleDots, ledger, go, tick, streams, invokes, view, focusCalls, scope, resets, setStarted, notice, releases, emit, listeners };
 }
 
 const once = async (h: ReturnType<typeof harness>, key = "#5") => {
@@ -231,6 +237,22 @@ describe("(codex 2R·3R) 붙기 직전·직후 재판정 · 진입당 상한 · 
     void h.fns.retrySeatHistory("#5");
     h.fns.destroyPaneRuntime(5, undefined);
     expect((h.scope.seatHistoryRetry as Map<string, number>).size).toBe(0);
+  });
+  it("①(4R blocking) 붙은 뒤 Tauri 놓침 복구가 상한을 넘으면(seat-history-status lagged) 그 좌석 안내 줄 + 다시 불러오기 · 듣기 = 한 번 · 모르는 좌석 사건 = 무시", async () => {
+    const h = harness();
+    h.fns.deferSeatRuntime(5, undefined, "t", null, 100);
+    expect(await once(h)).toBe(true);
+    expect(h.notice("#5")).toBe(null);
+    expect(h.listeners["seat-history-status"]?.length).toBe(1);
+    h.emit("seat-history-status", { socket: null, surface_id: 9, status: "lagged" }); // 런타임 없는 좌석 = 무시
+    h.emit("seat-history-status", { socket: null, surface_id: 5, status: "lagged" });
+    const n = h.notice("#5") as FakeEl;
+    expect({ status: n.dataset.status, button: n.kids[0]?.textContent }).toEqual({ status: "lagged", button: "다시 불러오기" });
+    expect((h.scope.seatHistoryRetry as Map<string, number>).get("#5")).toBe(100);
+    h.fns.deferSeatRuntime(6, undefined, "t", null, 1);
+    (h.workspaces[0] as { tree: unknown }).tree = { type: "split", dir: "row", ratio: 0.5, a: { type: "pane", sid: 5 }, b: { type: "pane", sid: 6 } };
+    expect(await once(h, "#6")).toBe(true);
+    expect(h.listeners["seat-history-status"]?.length).toBe(1); // 두 번째 좌석도 듣기 1
   });
   it("⑤(3R major) 파기 → 같은 좌석 재입양 → 옛 시도 늦게 끝남: 새 런타임·새 장부 무사 · 옛 시도 = 횟수·장부 무접촉", async () => {
     const h = harness();

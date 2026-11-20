@@ -104,7 +104,7 @@ function harness(o: { throwAt?: string; hold?: Record<string, Gate> } = {}) {
         await g.wait;
       }
       if (cmd === "attach_surface") return { output_event: `out-${a.surfaceId}`, exited_event: `exit-${a.surfaceId}` };
-      if (cmd === "start_surface_stream") return a.historySince !== undefined ? { history: { status: "ok", rows: 3 } } : null;
+      if (cmd === "start_surface_stream") return a.historySince !== undefined ? { stream_gen: 42, history: { status: "ok", rows: 3 } } : { stream_gen: 41 };
       return null;
     },
   };
@@ -165,7 +165,7 @@ describe("실제 makePane — 정리 보장(첫 줄부터) · 세대 · 붙은 �
     const h = harness({ throwAt: "observer" });
     expect(await errOf(h.makePane(5, "t"))).toBe("boom-observer");
     expect(h.panes.size).toBe(0);
-    expect(h.invokes.map((x) => x[0])).toContain("stop_surface_stream");
+    expect(h.invokes.find((x) => x[0] === "stop_surface_stream")).toEqual(["stop_surface_stream", { socket: undefined, surfaceId: 5, streamGen: 41 }]);
     for (const k of ["unlisten:out-5", "unlisten:exit-5", "term1.dispose", "div1.remove"]) expect(h.log).toContain(k);
     // 거꾸로 — 스트림 정지가 듣기 해제보다 먼저(되돌림 목록 역순)
     const order = h.invokes.findIndex((x) => x[0] === "stop_surface_stream");
@@ -188,8 +188,9 @@ describe("실제 makePane — 정리 보장(첫 줄부터) · 세대 · 붙은 �
       ),
     ).toBe("pane_stream_unwanted");
     expect(h.invokes.find((x) => x[0] === "start_surface_stream")).toEqual(["start_surface_stream", { socket: undefined, surfaceId: 5, historySince: 77, historyRows: 35 }]);
-    expect(seen).toEqual([{ history: { status: "ok", rows: 3 } }]);
-    expect(h.invokes.map((x) => x[0])).toContain("stop_surface_stream");
+    expect(seen).toEqual([{ stream_gen: 42, history: { status: "ok", rows: 3 } }]);
+    // (codex 4R major) stop 은 자기 세대만 — 이 호출의 stream_gen 을 싣는다(옛 시도가 새 스트림을 멈추지 못하게)
+    expect(h.invokes.find((x) => x[0] === "stop_surface_stream")).toEqual(["stop_surface_stream", { socket: undefined, surfaceId: 5, streamGen: 42 }]);
     expect(h.panes.size).toBe(0);
     expect(h.log).toContain("term1.dispose");
   });

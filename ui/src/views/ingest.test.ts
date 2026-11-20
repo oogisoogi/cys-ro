@@ -66,7 +66,7 @@ describe("(codex 2R·3R major) makePane 부분 생성 정리 — 첫 줄부터",
     const tryAt = body.indexOf("  try {\n  const el = document.createElement(\"div\");");
     const firstCreate = body.indexOf("document.createElement(");
     expect([undoAt > 0, undoAt < tryAt, tryAt < firstCreate]).toEqual([true, true, true]);
-    for (const k of ["undo.push(() => el.remove());", "undo.push(() => term.dispose());", "undo.push(cancelSendFail);", "undo.push(un1);", "undo.push(un2);", 'undo.push(() => void invoke("stop_surface_stream", { socket, surfaceId: sid }).catch(() => {}));', "observer.disconnect();"]) expect(body).toContain(k);
+    for (const k of ["undo.push(() => el.remove());", "undo.push(() => term.dispose());", "undo.push(cancelSendFail);", "undo.push(un1);", "undo.push(un2);", 'undo.push(() => void invoke("stop_surface_stream", { socket, surfaceId: sid, streamGen: typeof streamGen === "number" ? streamGen : undefined }).catch(() => {}));', "observer.disconnect();"]) expect(body).toContain(k);
     expect(body.indexOf("undo.push(() => term.dispose());")).toBeLessThan(body.indexOf("term.open(termHost);"));
     const set = body.indexOf("panes.set(paneKey(sid, socket), rt);");
     const catchAt = body.indexOf("  } catch (e) {\n    // (cysr-1116-s2 · codex 3R major) 등록 전 어디서 던졌든");

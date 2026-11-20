@@ -1,6 +1,7 @@
 # HANDOFF — TICKET=cysr-1116-s2-1119 (화면 조각 2 · 3초 고리 분리 + 런타임 미룸 · 워커 worker-1116s2 · 2026-11-19~20)
 
 - 브리프 [master#5340bbd4] `~/axdev/master/briefs/1116-full/s2.md` · 가지 `feat/1116-s2` ← `integ/1116` dea2e1853 · 데몬 변경 0 · 러스트 변경 0 · 팩 변경 0
+- ★후임 회차(worker-1116s2b · codex 3R 처분 · §3-6): **데몬 변경 있음**(vendor/vt100 더하기 + cysd attach history_since · master#b4d5c092 승인) · Tauri 변경 있음 · 팩 변경 0
 - 설계 = `~/axdev/cysr-ui-research/P2-DESIGN.md` §11 조각 2 행 · §2-1 ㉠ · §2-3 ㉢(F19·F20) · §2-4 ㉣ · §9-4 · §7 4군 ③④ · integ 인계 I3·S4-3(·S1-2 일부)
 
 ## 0. 한눈 요약
@@ -145,6 +146,58 @@
 | 화면 게이트 14종(13 + runtime_defer) | **14종 PASS** · 통과 줄 수 기준선과 같음(race 109 · focus 73 · seatrows 76 · pillar 78 · seatgroup 9 · rolereuse 12 · nodept 17 · restart 7 · hidden_block 19 · tickrec 34 · chat 59 · confirm 37 · stty 8) · tickrec OFF 대조 = 기준 번들과 바이트 같음(invoke 1088 · sha `308dd2b91f9a`) · runtime_defer ③ 「기록 조회 = 미룬 좌석마다 1회 · 스트림보다 먼저(13건)」 |
 | 뮤턴트(2R·검증 몫) | MX1~MX6 · MF1 · MF2 · MX5 = 전부 해당 시험 붉음 |
 
+## 3-6. codex 3R(BLOCK · 원문 `~/axdev/master/reports/verify/codex-1120/s2-r3.md` 두 판) 처분 — 후임 worker-1116s2b · [master#cca94b88] · 덧붙임 [master#edc48c75] · 이음매 설계 승인 [master#b4d5c092]
+
+**이음매를 결정론 커서로 — 단위를 화면 쪽으로 맞춤(데몬 변경 허용 범위 · master 승인).** 조사 결과 데몬 스트림 = 날 PTY 바이트 + attach 때 화면 스냅숏(물리 행) · `read_text` 커서 = 줄바꿈으로 자른 글자 FIFO(논리 줄) — 두 단위가 달라 순번을 달아도 FIFO 끝과 스냅숏 사이를 결정론으로 못 뺀다. 그래서 데몬 vt100 파서가 이미 갖고 있던 「화면 위로 밀려난 물리 행」(파서 스크롤백 10,000행)에 단조 행 커서를 달고, **같은 파서 락 안에서** 구독 · 커서 뒤 밀려난 행(색 포함) · 지금 화면 스냅숏을 한 번에 떠 한 스트림으로 차례로 쓴다. UI 쪽 버퍼·겹침 제거가 필요 없다(데몬 락이 이음매를 보장).
+
+| # | 지적(3R) | 처분 | 시험 · 뮤턴트 |
+|---|---|---|---|
+| B1 | 기록 조회와 붙기가 원자 절단이 아님(그 사이 출력 손실) · `term.rows` 와 데몬 화면 높이 차로 빠짐·겹침 | **고침** — `surface.attach {history_since, history_rows}`: 데몬 한 락 = 구독 + 밀려난 행 + 스냅숏 · 받는 쪽 행 수만큼 줄 내림(H 행을 H−1 줄바꿈으로 잇고 R 줄 내림 = 정확히 H 행이 스크롤백으로 · 빈 줄 0) · 옛 `seat_history`(FIFO 글자 · 화면 행 수 빼기) 걷음 | cysd `attach_history_tests` ① 이음매(받는 쪽 행 수 24·35·60 · 색 · 접힘 · 커서 뒤 300줄 → 스크롤백 바이트 = 서버 밀려난 행 · 표지 빠짐·겹침 0) · ⑤ 실제 좌석(reader 스레드 · run_attach · 목록 커서 → 0..300 한 번씩) · 뮤턴트 RM1 행 커서 증가 뺌 · RM2 줄 내림 뺌 |
+| B2 | 기록 실패·시한·빈·모르는 커서 = 조용히 넘어감 | **고침** — 결과 칸(ok · truncated · unknown_cursor · timeout · error · not_attached · unsupported · 커서 모름)으로 판정 → ok 아니면 좌석 화면 맨 위(제목 줄 아래) 「이전 출력 일부를 불러오지 못했어요」 + 사건 기록(`seatHistoryEvents` · console.warn). 일시 실패(timeout·error·not_attached)만 「다시 불러오기」(누르면 xterm 비우고 같은 커서로 다시 붙음 = Tauri 가 옛 손잡이 abort · 데몬이 다시 한 락으로) + 다음 작업 화면 진입 때 자동 재시도. 잘림·모르는 커서·구 데몬 = 다시 해도 같으므로 안내만 | runtimedefer.test ②(3R blocking) 2건 · 뮤턴트 UM4(다음 진입 재시도 뺌) · UM7(잘림 안내 0) · cysd ② 잘림(10,000 밖 · 상한) · ③ 모르는 커서(새 파서 · RIS · 앞선 커서) |
+| M1(old) | start_surface_stream 을 기다린 **뒤** 화면 재판정 없음 | **고침** — makePane `afterStream`(start 반환 뒤 1회) · 거짓이면 `stop_surface_stream`(새 Tauri 명령 · 우리 파일 viewcore.rs) + 치움 + PANE_STREAM_UNWANTED(횟수 안 셈 · 장부 유지) | makepane.test ③ · runtimedefer.test ③ · 뮤턴트 UM3 |
+| M2 | 9회 실패 뒤 total 영구 차단 · 장부 「붙음」 고착 | **고침** — 실행 전체 상한(total) 걷음 · 자동 재시도 = **작업 화면 진입당 3회** · 진입마다 retryFailedRuntimes 가 되돌림(영구 차단 0). 부분 생성 누수는 아래 M3 가 막으므로 상한은 누수 방어가 아니라 실패 폭주 억제 | runtimedefer.test ④(5번 진입 = 15번 시도 · 장부 유지) · 뮤턴트 UM6 |
+| M3(new) | dropPartial 이 term.open 뒤 설정 끝에서야 설치 · 스트림 시작 뒤 panes.set 전(ResizeObserver) 실패 누수 | **고침** — makePane 첫 줄부터 되돌림 목록(`undo`) + 본문 전체 try/catch(역순 되돌림): DOM(첫 createElement 직후) · xterm(new Terminal 직후 · open 전) · 보내기 실패 타이머 · 듣기 2 · 스트림 정지(start 뒤 · 옛 시도면 안 얹음) · 관찰자+타이머 | makepane.test ①(실제 makePane 본문 · term.open 직후 던짐 · 스트림 뒤 ResizeObserver 던짐) · ingest.test 꼴 핀 · 뮤턴트 UM1 · UM9 |
+| M4(old) | 좌석 파괴가 진행 중 makePane 을 못 막음 → 늦게 끝난 옛 시도가 새 런타임 덮기 · catch 가 새 런타임 파괴 | **고침** — 좌석별 세대(`paneGen` · destroyPaneRuntime 마다 올림) · makePane 은 시작 값을 쥐고 attach·스트림 전·스트림 뒤마다 대조 → 바뀌면 제 것만 치우고 PANE_STALE(같은 (소켓, 좌석) 스트림 손잡이는 새 시도의 것일 수 있어 멈추지 않음) · ensureSeatRuntime catch 에서 destroyPaneRuntime 걷음(makePane 이 스스로 치움) | makepane.test ②(attach·start 두 자리에서 멈춘 옛 시도) · runtimedefer.test ⑤(파괴 → 재입양 → 옛 시도 늦게 끝남) · 뮤턴트 UM2 · UM5 · UM8 |
+
+**master 승인 조건(b4d5c092) 대조**
+
+| 조건 | 결과 | 근거 |
+|---|---|---|
+| ① 인자 없는 소비자 ack·바이트 같음 시험 | 통과 | cysd `attach_without_history_is_byte_identical_to_before`(ack 본문 = `{id,ok,result:{attached}}` · 첫 바이트 = 스냅숏만) · `dispatch_parses_history_params_only_when_given`(인자 없음 = history None) · 뮤턴트 RM3 |
+| ② vendor/vt100 = 더하기만 · 패치 장부 1줄 | 통과 | `git diff --numstat` vendor = +94/−0(장부 1줄 포함) · `vendor/vt100/CYS-PATCHES.md` 표 1행 |
+| ③ 10,000줄 넘게 밀려남 = 잘림 → 안내 | 통과 | cysd ② · UI 잘림 = 안내 줄(다시 불러오기 없음) · 뮤턴트 RM5 · UM7 |
+| ④ 파서 세대 바뀜 = 모르는 커서 → 안내 + 붙기 | 통과 | 세대 = 격자 생성마다 새 번호(파서 교체·RIS) · 데몬 재기동 = 프로세스 전역 번호 1부터 → 하위 13비트 일치 확률만 남음(아래 한계) · 모르는 커서 = 기록 없이 스냅숏으로 붙고 안내 · 뮤턴트 RM4 |
+| ⑤ 락 안 작업 상한 · 윈 ConPTY 같은 파서인가 | 통과(측정값 아래) | 락 안 = 이 좌석 파서 락만(좌석마다 파서) · 락 안 작업 = 행 **사본**뿐(최대 `ATTACH_HISTORY_MAX_ROWS` 5,000행 = UI xterm 스크롤백) · 서식·쓰기는 락 밖(첫 판은 락 안 서식 = 디버그·부하 40 에서 5,000행×200칸 1.25초 실측 → 사본/서식 분리) · 시험 `attach_history_under_lock_is_capped_at_max_rows`(12,000행 → 5,000 · 잘림) · ConPTY = 같은 reader 스레드(`state.rs` reader 는 플랫폼 cfg 없음 · `process_chunk_isolated` + `mirror_screen_modes` 한 자리) — 정적 확인만(윈 실기 = 측정 대기) |
+
+**원작자·데몬 파일 바뀐 줄**(데몬 변경 = 이 갈래 범위 확대 · 브리프 「데몬 변경 허용」)
+
+| 파일 | 바뀐 것 |
+|---|---|
+| `vendor/vt100/src/grid.rs` | `NEXT_SCROLL_EPOCH` 전역 · 필드 `scroll_epoch`·`scrolled_rows` · `new` 에 두 값 · `scroll_cursor()` · `scrollback_rows_since()` · `scroll_up` 스크롤백 push 뒤 `self.scrolled_rows += 1;` 1줄 |
+| `vendor/vt100/src/row.rs` | `width()`(pub(crate) · 기존 `cols()` 감쌈) |
+| `vendor/vt100/src/screen.rs` · `lib.rs` | `scroll_cursor()` · `scrollback_snapshot_since()`(행 사본) · `scrollback_formatted_since()` · `ScrollbackSnapshot`(start·len·truncated·formatted) · lib.rs `pub use` 1줄 |
+| `src/bin/cysd/state.rs` | `Surface.screen_cursor: AtomicU64` + 생성자 1줄 · 생성 직후 `mirror_screen_modes` 1회 · `mirror_screen_modes` 에 커서 미러 2줄 · `pack_screen_cursor`/`unpack_screen_cursor`(세대 하위 13비트 << 40 \| 행 40비트 · JS 정확 범위 안) |
+| `src/bin/cysd/handlers.rs` | `Reply::Attach` 에 `history: Option<(u64,u16)>` · `surface.attach` 팔 = `history_since`·`history_rows` 선택 읽기 · `surface.list` 줄 `screen_cursor` 1칸 · `surface.create` 응답 `screen_cursor` 1칸 |
+| `src/bin/cysd/main.rs` | `Reply::Attach` 분기 인자 1개 · `run_attach(.., history)` — 락 안에서 `attach_history_snapshot`(행 사본만) · 락 밖 `attach_history_format`(서식) · ack `result.history` 칸 · 기록 바이트 + 줄 내림을 스냅숏 앞에 · `ATTACH_HISTORY_MAX_ROWS` · `AttachHistory` · `attach_history_snapshot()`·`attach_history_format()` · 시험용 `attach_history()` · 시험 모듈 등록 1줄 |
+| `src-tauri/src/main.rs` | `start_surface_stream` 선택 인자 `history_since`·`history_rows` · 반환 `Result<Value>`(인자 없음 = null = 종전 JSON 같음) · 인자 있으면 `viewcore::attach_with_history` 손잡기 → 성공 = `pump_surface_stream` · 실패 = 종전 길로 붙고 결과 칸 반환 · generate_handler `viewcore::stop_surface_stream` 1줄(옛 `viewcore::seat_history` 1줄 걷음) |
+| `src-tauri/src/viewcore.rs`(우리) | `attach_with_history`(5초 시한) · `pump_surface_stream` · `stop_surface_stream` · 옛 `seat_history`·`seat_history_params`·그 시험 걷음 |
+| `ui/src/main.ts` | 장부 꼴(total 걷음 · cursor = `screen_cursor`) · `DEFERRED_TRIES_MAX` · `seatHistoryArgs`·`seatHistoryVerdict`·`showSeatHistoryNotice`·`retrySeatHistory`·`seatHistoryEvents`·`seatHistoryRetry` · ensureSeatRuntime(afterStream · catch 에서 destroy 걷음) · retryFailedRuntimes(기록 재시도) · `PANE_STALE`·`paneGen`·`bumpPaneGen` · makePane(첫 줄 undo + try/catch · 세대 대조 3자리 · afterStream · start 인자 펼침) · destroyPaneRuntime 2줄 · 미룸 3자리 커서 = `screen_cursor` |
+| `ui/src/style.css` | `.pane-history-gap` 2규칙 |
+
+**시험(머리 = ac6d05d16·f2b3530a8 · 부하 7~179 · 다른 좌석 동시 빌드)**
+
+| 대상 | 결과 |
+|---|---|
+| bun test(ui) | **3789 · 89 skip · 0 fail**(3R 전 3781 → +8 · 새 makepane.test 5 · runtimedefer 재작성 15) |
+| tsc `--package typescript@7.0.2` | rc 0(음성 대조: 고치기 전 `rejects`·`expect.any` 타입 오류 5건 rc 1 로 잡힘) |
+| cargo cysd `attach_history_tests` | **8 통과 · 0 실패** · 측정(디버그 · 부하 179): 5,000행×200칸 색 = **락 안 사본 40.5 ms** · 락 밖 서식 1.36 s · 985,004 바이트 · 뮤턴트 RM1~RM5 = 해당 시험 붉음 |
+| cargo cysd 전체(`--test-threads=3` · nice 15 · 부하 80~179 · 30분) | **3336 통과 · 6 붉음 · 17 ignored** — 6건(`a_spawned_pty_child_does_not_inherit_the_lock_fd` · `reclaim_commit_aborts_on_every_race_without_partial_effect` · `v116_send_text_agent_launch_passes_vacant_seat_guard_only_for_seat_bin` · `seatkeep_input_ack_stall_ends_seat_when_consumer_never_resumes` · `seatkeep_input_ack_waits_while_consumer_runs_and_stdin_unread` · `k17_refuse_mode_return_raises_settle_marker_but_cancel_key_does_not`) **전부 단독(`--exact --test-threads=1` · 부하 53) 초록**. 6건 모두 시한·경합 성격(seat_proc 입력 확인 대기 · 락 fd 병렬 fork · 재입양 경합) · 바뀐 코드(attach 팔·list 1칸·create 1칸·mirror 2줄·vt100 더하기)와 경로가 닿지 않음 — 단 **기준선 전체 실행 대조는 안 함**(부하) → 「환경성 확정」 이라 쓰지 않는다 · 독립 검증·CI 에서 확인 권함 |
+| cargo `-p cys-app --bins`(CI 준비 그대로) | **348 통과 · 0 실패 · 2 ignored**(옛 seat_history 시험 1 걷음 = 349 → 348) |
+| 화면 게이트 14종 | **14종 PASS** · [PASS] 줄 수 기준선과 같음(race 108 · focus 72 · seatrows 75 · pillar 77 · seatgroup 8 · rolereuse 11 · nodept 16 · restart 6 · hidden_block 18 · stty 7 · RESULT 줄 제외 셈 = §3-5 의 수 − 1) · tickrec 34 · chat 59 · confirm 37 · runtime_defer 23 |
+| tickrec OFF 대조(작업 화면 회귀 0) | 기준 번들(dea2e1853 을 이 회차에 다시 빌드) = 새 번들 바이트 같음 · invoke 1088 · sha `308dd2b91f9a`(§3-5 와 같은 값) · 대조군 같음 · 음성 대조 다름 |
+| runtime_defer ③ | 붙기 = 미룬 좌석마다 화면 행 커서 인자(13건 · 커서 {0 새 셸, 7 대역}) · 안내 줄 0 · 따로 묻는 기록 조회 0 · 흐름 13 · ① 대화 화면 = start 0 · attach 0 그대로 |
+| UI 뮤턴트 UM1~UM9 | 전부 해당 시험 붉음(§ 위 표) |
+
 ## 4. 내가 내린 판단(지시에 없던 것 · master 확인 후보)
 
 1. **「작업 화면이 안 보임」 판정 = 작업 화면 어댑터의 mount/unmount** — 시작 값 = 고른 화면(pickView)이 작업 화면인가. 작업 화면으로 시작하는 기동(1.1.16 기본 = 모든 설치)은 처음부터 참이라 종전 흐름과 한 줄도 다르지 않다. 숨김 → 보임으로 바뀔 때만 main.ts `render()` 를 부른다(처음 판은 작업 화면 시작 때도 불러 render 가 한 번 더 돌았다 — 자기 검토에서 잡아 고침).
@@ -175,7 +228,11 @@
 - 숨은 화면에서 짠 좌열 몫(§4-6) — 작업 화면 첫 진입 때 한 번 다시 맞출지(사용자 배치 존중과 충돌 · 설계 판단).
 - 실물 측정 대기: 좌석 12개 대화 → 작업 첫 진입 시간(맥·윈) · 웹뷰 메모리(대화 1시간 vs 작업 1시간) · 웹뷰 멈춤 주입 → 데몬 자가치유(§2-2 게이트⑤) · Tauri 박동 `views_tick_beat`(§2-2 장치 — 이 조각에서 안 만듦 · 러스트 변경 = 브리프 「데몬 변경 없음」 밖은 아니나 범위 판단 필요).
 
+- **(3R 회차 · 한계 정직)** ① 파서 세대는 하위 13비트만 커서에 담는다 — 미룬 사이 파서가 정확히 8,192의 배수 번 갈리면(패닉 격리·RIS) 모르는 커서를 못 알아챈다(현실 0에 가까움 · 더 줄이려면 커서를 문자열로). ② 데몬 vt100 은 ED 3(`ESC[3J` = 스크롤백 지우기)을 처리하지 않는다(상류 그대로 · `screen.rs ed` 의 「unhandled」) → 대화 화면 동안 좌석이 스크롤백을 지웠어도 다시 그리기에는 지운 행이 나온다(실시간 xterm 은 지웠을 것). 고치려면 vt100 에 ED 3 = 스크롤백 비움(행 커서는 유지 → 「잘림」) — 파서 동작 변경이라 더하기만 조건 밖 → 판단 필요. ③ 밀려난 행은 행마다 `\r\n` 으로 이어 쓰므로 접힌 줄의 「이어짐」 표지가 xterm 에 안 남는다 — 같은 폭이면 보이는 꼴 같음 · 폭을 바꾸면 그 행들은 다시 접히지 않는다. ④ 다시 불러오기 = xterm 비우고 다시 붙기 — abort 된 옛 스트림이 이미 내보낸 사건이 웹뷰 큐에 남아 있으면 그 몇 바이트가 비운 화면 맨 앞에 끼일 수 있다(스트림 세대 표지가 없음 · 드묾). ⑤ 진입당 3회를 다 쓰면 그 진입 동안은 「(없음)」 칸 그대로 — 다음 진입 때 다시(느린 자동 재시도를 둘지 판단). ⑥ 「사건 기록」 = UI 안 고리(`seatHistoryEvents` · 64) + console.warn 뿐 — 영속 UI 사건 원장이 없다. ⑦ 윈 ConPTY = 같은 reader·파서(정적) · 실기 측정 대기.
+
 ## 7. 재현 명령
+
+(3R 회차 더함) `cargo test --bin cysd attach_history -- --nocapture`(측정 줄) · `bun test src/views/makepane.test.ts src/views/runtimedefer.test.ts` · 게이트 파이썬 = `~/axdev/.wt/.gate-pw-venv/bin/python3` · 기준 번들 = `git archive dea2e1853 ui | tar -x` 뒤 `ui/node_modules` 심링크 + `sh build.sh` → `BASE_DIST=… tickrec_gate.py`
 
 ```sh
 W=~/axdev/.wt/cys-1116-s2; cd $W/ui
@@ -188,6 +245,10 @@ CHROME_PATH=… BASE_DIST=<dea2e1853 번들> <python> e2e/tickrec_gate.py   # OF
 ```
 
 ## 8. 함정
+
+- (3R 회차) `cargo check -p cys-app` 도 빌드 스크립트를 돌린다 → 빈 사이드카 스텁이 `target/debug/cysd`·`cys` 를 0바이트로 덮음(check 만 해도) · 끝나면 스텁 폴더 지우고 `cargo build --bin cysd --bin cys`.
+- (3R 회차) 화면 게이트가 `docs/evidence-tabs-sidebar/` 에 사진을 남긴다(추적 밖) — 커밋 전 지움.
+- (3R 회차) bun-env 타입에 `expect(..).rejects` · `expect.any` 없음 — tsc 붉음(bun test 는 초록) · 던진 글은 손으로 받는다(`errOf`).
 
 - `with(scope)` 하네스(roleactivity·deptprogresswiring·closecallbacks·kbrestore·b230scroll)는 고리·render·destroyPaneRuntime 본문을 떼어 돌린다 — 그 함수에 새 자유 변수를 넣으면 대역 목록에도(관측: 넣기 전 51건 붉음).
 - 소스 핀이 고리 본문의 **식별자까지** 잡는다(`await closePane(sid, ws.socket);`) — 집행 줄은 종전 이름(`sid`)을 쓰게 맞췄다.

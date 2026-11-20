@@ -18,6 +18,12 @@ disable-model-invocation: true
 2. **로열티프리 라이브러리** — 보유/구독 라이브러리. 라이선스 증빙 보관.
 3. **사용자 제공** — 오너가 권리를 가진 트랙.
 
+⚠ **사용권이 있어도 막힐 수 있다**: 유튜브 실시간 방송(라이브)은 Content ID 에 등록된 곡이면
+사용권을 가졌어도, 권리자가 그 채널을 허용 목록(allowlist)에 올리지 않았을 때 방송이 중단될 수 있다
+(유튜브 도움말 3367684 「Copyright issues with live streams」). 올린 영상도 자동 클레임이 걸릴 수 있다.
+→ 곡마다 Content ID 등록 여부를 확인해 기록한다. 생성 음악·음성 서비스는 등급마다 상업 사용 허락이
+다르다(예: ElevenLabs 무료 등급 = 비상업 · 출처 표기) → 쓰는 등급의 약관을 확인해 기록한다.
+
 ## 절차
 
 1. **무드→프롬프트** → 검증: 톤(장르·BPM·에너지·악기)을 음악 프롬프트로 변환.
@@ -27,5 +33,6 @@ disable-model-invocation: true
 
 ## 출력 계약
 
-`audio/music-bed.mp3` + `audio/music-license.json`(소스·라이선스·프롬프트). 상위
+`audio/music-bed.mp3` + `audio/music-license.json`(소스·라이선스·프롬프트·`content_id_registered`(예/아니오/모름)·
+`ai_generated`). 상위
 `[[audio-post]]`로 반환 → `[[audio-post-mix]]`. 라이선스 불명이면 채택하지 말고 보고.

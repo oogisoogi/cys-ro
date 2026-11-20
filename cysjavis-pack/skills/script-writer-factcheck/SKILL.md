@@ -9,7 +9,7 @@ disable-model-invocation: true
 대본 출고 전 마지막 사실 게이트. 800k 구독자 채널에 무근거·오류 단정이 나가면 평판이
 손상된다 — 그래서 이 관문은 통과 못 하면 **출고를 막는다.**
 
-전담 검증 엔진은 `[[hallucination-guard]]`다. 이 스킬은 그 4문을 대본 문장 단위로 돌린다.
+전담 검증 엔진은 `[[hallucination-guard]]`다(팩 스킬이라 Skill 목록에 없을 수 있다 — 없으면 `cys skill show hallucination-guard` 로 본문을 연다). 이 스킬은 그 4문을 대본 문장 단위로 돌린다.
 
 ## 절차
 

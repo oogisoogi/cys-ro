@@ -46,7 +46,7 @@ LLM은 `edit_decisions.json`(W0-2 정전 IR)에 **타입드 데이터**(`mode`·
 | `slide` | `xfade=transition=slideleft:duration=D:offset=O` |
 
 - 둥근 반경·그림자 오프셋·블러·카드 위치는 **전 구간 일관 상수**(절차 3) — IR이 아닌 프로젝트
-  상수로 두고, 수치는 `javis_params`(W1-2)로 coerce해 범위-밖 차단.
+  상수로 두고, 수치는 `javis_params`(팩 `bin/javis_params.py` · PATH 명령 아님 · W1-2)로 coerce해 범위-밖 차단.
 
 ## 출력 계약
 

@@ -16,14 +16,31 @@ disable-model-invocation: true
   말 없는 구간(인트로·전환)에선 음악을 올려 호흡을 준다.
 - **레벨**: 나레이션이 항상 명료하게 위. 음악 베드는 보통 나레이션 대비 -12~-18 dB 영역.
 - **페이드**: 시작·끝·구간 전환에 페이드 인/아웃(갑작스런 컷 금지).
-- **라우드니스**: 최종 통합 라우드니스를 유튜브 타깃(약 -14 LUFS, true peak ≤ -1 dBTP)으로
+- **라우드니스**: 최종 통합 라우드니스를 약 -14 LUFS, 실제 최고점(true peak) ≤ -1 dBTP 로
   정규화. 과압축·클리핑 방지.
+  - -14 LUFS 는 유튜브 등 스트리밍의 **업계 관행값**이다 — 유튜브 공식 도움말에는 LUFS 숫자가 없다
+    (「안정적인 볼륨」 설명뿐 · 2026-11 확인). 최고점 -1 dBTP 는 EBU R128 의 공식 상한이다.
+    납품처가 다른 값을 정해 주면 그 값을 따른다.
 
 ## 절차
 
 1. **타임라인 정렬** → 검증: 나레이션 타임스탬프로 발화/비발화 구간을 만들어 덕킹 곡선 산출.
 2. **덕킹·레벨** → 검증: 음악을 구간별로 덕킹, 나레이션 명료도 확인(말이 음악에 묻히지 않게).
 3. **페이드·정규화** → 검증: 페이드 적용, 통합 라우드니스·트루피크를 타깃으로 정규화.
+   - 실행 = ffmpeg `loudnorm` 2회. 1회째는 재기만 하고, 그 JSON 의 `input_i`·`input_tp`·`input_lra`·`input_thresh` 를
+     2회째의 `measured_I`·`measured_TP`·`measured_LRA`·`measured_thresh` 에 넣어 `out.wav` 를 만든다(bash·zsh 그대로):
+     ```bash
+     J=$(ffmpeg -hide_banner -i mix.wav -af loudnorm=I=-14:TP=-1:LRA=11:print_format=json -f null - 2>&1 | sed -n '/^{/,/^}/p')
+     v(){ printf '%s' "$J" | python3 -c "import json,sys;print(json.load(sys.stdin)['$1'])"; }
+     ffmpeg -hide_banner -y -i mix.wav -af "loudnorm=I=-14:TP=-1:LRA=11:measured_I=$(v input_i):measured_TP=$(v input_tp):measured_LRA=$(v input_lra):measured_thresh=$(v input_thresh):linear=true:print_format=summary" -ar 48000 out.wav 2>&1 | grep 'Normalization Type'
+     ```
+     ⚠ `linear=true` 여도 조건이 안 맞으면 ffmpeg 가 **말없이 동적(Dynamic) 모드로 바꾸고 결과를 192 kHz 로 낸다**(실측) →
+     위 마지막 줄이 찍는 `Normalization Type` 을 기록하고, 출력에는 늘 `-ar 48000` 을 준다.
+     (변수를 직접 쓸 때 zsh 에서는 `${변수}` 로 감싼다 — `$th:linear` 는 `:l` 수식어로 깨진다.)
+   - 확인 = 결과를 `ffmpeg -i out.wav -af ebur128=peak=true -f null -` 로 다시 재서 요약의 `I:`(통합 LUFS)·
+     `Peak:`(실제 최고점)가 목표 안인지 **숫자로** 기록한다.
+   - 덕킹(사이드체인) 예: `ffmpeg -i bgm.wav -i narr.wav -filter_complex "[1]asplit[n1][n2];[0][n1]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=300[d];[d][n2]amix=inputs=2:normalize=0[m]" -map "[m]" mix.wav`
+     (motion-graphics-prompt 와 같은 명령).
 
 ## 출력 계약
 

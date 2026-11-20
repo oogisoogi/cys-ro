@@ -24,6 +24,8 @@ description: 나레이션 오디오를 HeyGen 아바타가 말하는 영상으�
 - 공식 스킬 참고: `github.com/heygen-com/skills`의 `heygen-video`는 **스크립트 구동**(Video
   Agent)이라 오디오 구동 경로가 없다 — 우리는 `POST /v3/videos` + `audio_asset_id`를 직접
   쓴다. `heygen-avatar`(디지털 트윈 생성)는 아바타·음성 셋업 시 참고.
+- ⚠ 실제 사람의 디지털 트윈(얼굴·목소리)은 **그 사람의 동의 기록이 있을 때만** 만든다. 실존 인물이 하지 않은
+  말을 하는 것처럼 보이는 영상은 유튜브 AI 공개 대상이다(도움말 14328491 「real person … say or do」).
 
 ## 하위 스킬 오케스트레이션
 

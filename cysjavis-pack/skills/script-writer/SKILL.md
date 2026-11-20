@@ -15,8 +15,9 @@ description: 영상 주제로 사실 검증된 2~4분 나레이션 대본을 쓴
 
 1. `[[script-writer-research]]` — 주제의 검증된 사실·출처를 수집한다(학습지식 단독 금지).
 2. `[[script-writer-structure]]` — 훅·본론·CTA로 2~4분 리텐션 구조를 설계한다.
-3. `[[script-writer-factcheck]]` — 모든 단정 문장을 출처 대조로 검증한다(`hallucination-guard` 연결).
-4. `[[script-writer-voice-prep]]` — 대본을 ≤60초 음성 청크 경계로 분절한다.
+3. `[[script-writer-factcheck]]` — 모든 단정 문장을 출처 대조로 검증한다(`hallucination-guard` 연결 — `cys skill show hallucination-guard`).
+4. `[[script-writer-voice-prep]]` — 대본을 문장 경계 음성 청크로 분절한다(시간 상한 없음 — 「60초」는
+   구식 기준 · 글자수 한도는 음성 단계가 본다).
 
 각 하위 스킬은 자체 검증 게이트를 가진다. 한 관문이라도 실패하면 그 관문에서 멈추고
 고친 뒤 진행한다.
@@ -32,7 +33,7 @@ description: 영상 주제로 사실 검증된 2~4분 나레이션 대본을 쓴
 5. **사실 검증** → 검증: `[[script-writer-factcheck]]` — 단정 문장 전수 통과. 미검증 문장은
    삭제하거나 출처를 단다. **이 관문 미통과 시 출고 금지.**
 6. **음성 준비** → 검증: `[[script-writer-voice-prep]]` 산출 `script.chunks.json`의 각 청크가
-   ≤60초이고 자연스러운 경계(문장·구)에서 끊기는가.
+   자연스러운 경계(문장·구)에서 끊기고 연속성 메타(prev/next)를 갖는가(시간 상한 없음 · voice-prep 기준).
 7. **[서사 모드] 엔티티 명세 추출(조건부)** → 검증: 대본이 서사형(동일 인물이 2개 이상
    장면에 재등장)이고 사용자가 서사 영상화를 명시 확인한 경우에만 — 인물별 static(불변:
    얼굴·체형·나이대)/dynamic(가변: 의상·소품) 분리 명세와 공간 slugline을 추출해 프로젝트

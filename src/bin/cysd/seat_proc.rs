@@ -63,6 +63,30 @@ pub(crate) fn open(daemon: &crate::state::Daemon, size: PtySize) -> Result<Opene
     Ok(Opened::Direct(pair))
 }
 
+/// ★T6b 업데이트 뒤 신원(T6-DESIGN 2-3 · master 결정 D1 ⓐ): seatkeep 실행 파일이 ⑴ 지금 cysd 옆 cys-seatkeep 이거나 ⑵ 지금 cysd 번들의
+/// 형제 옛 번들(업데이터 S9 가 rename 한 `.cysr.app.old-<숫자>`) 안 `Contents/MacOS/cys-seatkeep` 일 때만 참(정확한 꼴 · 부모 폴더 실경로 같음).
+/// 번들 밖(개발 빌드) = ⑴ 만. 지워진 파일(proc_pidpath 실패) = 호출자가 None(미결 · ⓒ).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn seatkeep_exe_ok(got: &std::path::Path, want: &std::path::Path) -> bool {
+    let canon = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    if canon(got) == canon(want) {
+        return true;
+    }
+    // want = <P>/<이름>.app/Contents/MacOS/cys-seatkeep · got = <P>/.cysr.app.old-<숫자>/Contents/MacOS/cys-seatkeep
+    let tail = |p: &std::path::Path| -> Option<(std::path::PathBuf, String)> {
+        let macos = p.parent()?;
+        let contents = macos.parent()?;
+        let bundle = contents.parent()?;
+        if p.file_name()? != "cys-seatkeep" || macos.file_name()? != "MacOS" || contents.file_name()? != "Contents" {
+            return None;
+        }
+        Some((canon(bundle.parent()?), bundle.file_name()?.to_str()?.to_string()))
+    };
+    let (Some((gp, gname)), Some((wp, wname))) = (tail(got), tail(want)) else { return false };
+    let old_ok = gname.strip_prefix(".cysr.app.old-").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    gp == wp && wname.ends_with(".app") && old_ok
+}
+
 /// holder 총수 상한 env(기본 `HOLDER_CAP_DEFAULT` · 시험·운영 조정용 · 기동 1회 판독).
 pub(crate) const HOLDER_CAP_ENV: &str = "CYS_SEATKEEP_MAX_HOLDERS";
 /// 기본 상한 — 기존 좌석 상한 상수가 소스에 없어 둔 값(T6-DESIGN 2-6 · 실측 A13 뒤 master 가 정함 📌).
@@ -586,8 +610,7 @@ mod seatkeep_mac {
         let me = std::env::current_exe().map_err(|e| format!("cysd 실행 파일 경로를 모름: {e}"))?;
         let want = super::seatkeep_exe_beside(&me).ok_or_else(|| "cys-seatkeep 경로를 모름".to_string())?;
         let got = pid_path(expected_pid).ok_or_else(|| format!("seatkeep pid {expected_pid} 실행 파일 경로를 못 읽음"))?;
-        let canon = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-        if canon(&got) != canon(&want) {
+        if !super::seatkeep_exe_ok(&got, &want) {
             return Err(format!("seatkeep pid {expected_pid} 실행 파일 {} ≠ {}", got.display(), want.display()));
         }
         let (stream, welcome) = greet(stream, expected_pid, deadline)?;
@@ -599,8 +622,7 @@ mod seatkeep_mac {
         let me = std::env::current_exe().ok()?;
         let want = super::seatkeep_exe_beside(&me)?;
         let got = pid_path(pid)?;
-        let canon = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-        Some(canon(&got) == canon(&want))
+        Some(super::seatkeep_exe_ok(&got, &want))
     }
 
     /// 맥 `proc_pidpath`.

@@ -3,6 +3,29 @@
 
 use crate::seat_proc::*;
 
+/// T6b D1 ⓐ: 업데이트 뒤 옛 번들 자리의 seatkeep 만 같은 신원 — 꼴이 정확해야 하고 부모 폴더가 같아야 한다.
+#[test]
+fn seatkeep_exe_ok_allows_only_sibling_old_bundle() {
+    let p = |s: &str| std::path::PathBuf::from(s);
+    let want = p("/Applications/cysr.app/Contents/MacOS/cys-seatkeep");
+    assert!(seatkeep_exe_ok(&want, &want));
+    assert!(seatkeep_exe_ok(&p("/Applications/.cysr.app.old-12/Contents/MacOS/cys-seatkeep"), &want));
+    for bad in [
+        "/Applications/.cysr.app.old-/Contents/MacOS/cys-seatkeep",
+        "/Applications/.cysr.app.old-1x/Contents/MacOS/cys-seatkeep",
+        "/Applications/.cysr.app.new-12/Contents/MacOS/cys-seatkeep",
+        "/Users/x/.cysr.app.old-12/Contents/MacOS/cys-seatkeep",
+        "/Applications/.cysr.app.old-12/Contents/MacOS/cysd",
+        "/Applications/.cysr.app.old-12/Contents/Resources/cys-seatkeep",
+        "/Applications/other.app/Contents/MacOS/cys-seatkeep",
+    ] {
+        assert!(!seatkeep_exe_ok(&p(bad), &want), "{bad}");
+    }
+    // 개발 빌드(번들 밖) = 정확히 같은 경로만.
+    let dev = p("/w/target/debug/cys-seatkeep");
+    assert!(!seatkeep_exe_ok(&p("/w/.cysr.app.old-1/Contents/MacOS/cys-seatkeep"), &dev));
+}
+
 /// T6a holder 상한 env 판정: 양의 정수만 · 그 밖 = 기본.
 #[test]
 fn holder_cap_env_parse() {

@@ -41,7 +41,9 @@ OUT = sys.argv[4] if len(sys.argv) > 4 else None
 # claude = A4/D5(master 허락 · 토큰 소량): 진짜 claude 좌석(SKA_CLAUDE_CONFIG = 프로필 · --setting-sources project · --model haiku)에 암호어를 말한 뒤
 #   실제 cys rotate 를 SKA_ROUNDS(기본 5)번 · 매 회 「암호어가 뭐였지?」(질문엔 암호어 없음) → 화면의 암호어 수가 늘어야 · claude pid 같음.
 # cost = A13 비용 숫자(판정선 없음 · 보고만): 좌석 SKA_COST_N(기본 "1,5,20")개를 차례로 채우며 seatkeep RSS 합·평균 · cysd RSS · 10초 CPU% (좌석 = 50ms 마다 한 줄).
-assert MODE in ("adopt", "bound", "direct", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap", "launchd", "claude", "cost"), MODE
+# update = T6b D1 ⓐ: 격리 번들 R/apps/cysr.app 의 cysd 로 좌석 → SIGKILL → 업데이터 S9 흉내(정식 → .cysr.app.old-1 rename · 새 번들 복사) → 정식 자리
+#   새 cysd = 입양 · 그다음 옛 번들 삭제 + 재기동 = 실행 파일 못 읽음 → 미결(ⓒ · 좌석은 건드리지 않음).
+assert MODE in ("adopt", "bound", "direct", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap", "launchd", "claude", "cost", "update"), MODE
 R = f"/private/tmp/ska-{MODE[:3]}-{os.getpid() % 10000}"
 shutil.rmtree(R, ignore_errors=True)
 for d in ("home", "tmp", "s", "packstate", "pack", "bin", "bin2", "logs"):
@@ -118,9 +120,9 @@ ENV = {"HOME": f"{R}/home", "USER": os.environ["USER"], "LOGNAME": os.environ["U
        "CYS_NO_OFFICE_BRIDGE": "1", "CYS_NO_AUTORESTORE": "1", "CYS_NO_AUTOSTART": "1", "PATH": f"{R}/bin:/usr/bin:/bin",
        "TERM": "xterm-256color", "LANG": "en_US.UTF-8"}
 DENV = dict(ENV)
-if MODE in ("adopt", "bound", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap", "launchd", "claude", "cost"):
+if MODE in ("adopt", "bound", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap", "launchd", "claude", "cost", "update"):
     DENV["CYS_SEATKEEP"] = "1"
-if MODE in ("adopt", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap", "launchd", "claude", "cost"):
+if MODE in ("adopt", "reserve", "exitaway", "token", "rotate", "norecord", "foreign", "pending", "precheck", "cap", "launchd", "claude", "cost", "update"):
     if MODE == "cap":
         DENV["CYS_SEATKEEP_MAX_HOLDERS"] = "1"
     DENV["CYS_SEATKEEP_ADOPT"] = "1"
@@ -491,6 +493,56 @@ if MODE == "pending":
         cys("close-surface", sid)
         time.sleep(1.0)
         stop_all()
+    if alive(seat_pid):
+        os.kill(seat_pid, signal.SIGKILL)
+    sys.exit(0)
+
+if MODE == "update":
+    apps = f"{R}/apps"
+    canon_app = f"{apps}/cysr.app"
+    def make_bundle(dst):
+        os.makedirs(f"{dst}/Contents/MacOS")
+        for b in ("cys", "cysd", "cys-seatkeep"):
+            subprocess.run(["/bin/cp", "-c", f"{R}/bin/{b}", f"{dst}/Contents/MacOS/{b}"], check=True)
+    make_bundle(canon_app)
+    mb = "apps/cysr.app/Contents/MacOS"
+    d, _ = start_daemon("0", bindir=mb)
+    log = f"{R}/logs/u0.log"
+    sid = cys("new-surface", "--cwd", "/private/tmp", "--role", "seatu", "--cmd", f"{SEAT} {log} 50").stdout.strip()
+    seat_pid = wait_start(log)
+    time.sleep(1.0)
+    res = {}
+    os.kill(d.pid, signal.SIGKILL)
+    d.wait()
+    os.rename(canon_app, f"{apps}/.cysr.app.old-1")  # S9: 옛 번들 = 형제 .cysr.app.old-<seq>
+    make_bundle(canon_app)                         # 새 판(같은 바이트 사본) = 정식 자리
+    d, _ = start_daemon("1", bindir=mb)
+    time.sleep(1.5)
+    err = open(f"{R}/logs/cysd-1.err").read()
+    res["adopt_log_after_swap"] = [l for l in err.splitlines() if "좌석 입양 " in l and "노브" not in l][:2]
+    res["listed_after_swap"] = "seatu" in cys("list").stdout
+    cys("send", "--surface", sid, "PINGUPD")
+    cys("send-key", "--surface", sid, "Return")
+    time.sleep(1.0)
+    res["io_after_swap"] = any(l.startswith("IN PINGUPD") for l in seat_lines(log))
+    res["seat_alive_after_swap"] = alive(seat_pid)
+    # ⓒ 옛 번들 삭제 뒤(지금 업데이터는 지우지 않음 — 다음 갱신 때 지운다는 주석뿐) = 실행 파일 못 읽음 → 미결 · 좌석 무접촉.
+    os.kill(d.pid, signal.SIGKILL)
+    d.wait()
+    shutil.rmtree(f"{apps}/.cysr.app.old-1")
+    d, _ = start_daemon("2", bindir=mb)
+    time.sleep(1.5)
+    err = open(f"{R}/logs/cysd-2.err").read()
+    res["adopt_log_after_delete"] = [l for l in err.splitlines() if "좌석 입양 " in l and "노브" not in l][:2]
+    res["seat_alive_after_delete"] = alive(seat_pid)
+    print(json.dumps(res, ensure_ascii=False), flush=True)
+    if OUT:
+        open(OUT, "a").write(json.dumps(res, ensure_ascii=False) + "\n")
+    stop_all()
+    out = subprocess.run(["/bin/ps", "-axo", "pid=,command="], capture_output=True, text=True).stdout
+    for l in out.splitlines():
+        if f"{R}/apps/" in l and "cys-seatkeep" in l:
+            os.kill(int(l.split()[0]), signal.SIGKILL)
     if alive(seat_pid):
         os.kill(seat_pid, signal.SIGKILL)
     sys.exit(0)

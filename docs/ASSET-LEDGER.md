@@ -103,7 +103,7 @@
 | `skill:narrated-motion` | 스킬 | 본부·로컬↗·좌석↗ | 우리 제작(11-11) · 원작 kstost/script-to-motion(MIT · 원리만 · 코드 우리 재작성) | 없음 | 넣음 | 상 | 대본·주제 한 줄 → 무료 음성 설명 영상 · 유료 API 0 · 개인 경로·호칭 일반화 + seek_render 경로 수정(SR A12) 필요 |
 | `skill:nlm-skill` | 스킬 | 본부 | 바깥 · notebooklm-mcp-cli(MIT · jacob-bd) 가 `nlm skill install` 로 배포 | 없음 | 링크 | 중 | 상류 도구가 자기 판에 맞춰 설치·갱신 — 동봉하면 nlm 판과 어긋남 · notebook-source-pack 팩 판에 「없으면 `nlm skill install claude-code`」 1줄 |
 | `skill:notebook-source-pack` | 스킬 | 본부 | 우리 제작(11-20) · nlm CLI(notebooklm-mcp-cli MIT · 비공식) 위 절차 | 없음 | 넣음 | 중 | 자료 모아 분석에 결정적 · nlm 로그인(사람 1회)·구글 업로드 개인정보 장벽(스킬이 경고 내장) · nlm 은 팩 preflight C20 이 이미 설치·핀(0.10.0) |
-| `skill:ppt-design-system` | 스킬 | 본부·로컬↗·좌석↗ | 우리 제작(10-27 · 11-01) · 헤이디 PPT 지침 = ⑴ 동봉(「그냥 복사 붙여 넣기만 진행하시면 됩니다」) | 없음 | 넣음 | 중 | 기존 PPT 몇 개가 있어야 제 몫 · 도구는 표준 라이브러리만 · 교회 덱·견본 0 반입(11-06 수용분 그대로) |
+| `skill:ppt-design-system` | 스킬 | 본부·로컬↗·좌석↗ | 우리 제작(10-27 · 11-01) · 헤이디 PPT 지침 = 우리 말 요약 동봉(원문 미동봉 · 출처 = 지은이·제목·공개 영상 · THIRD_PARTY) | 없음 | 넣음 | 중 | 기존 PPT 몇 개가 있어야 제 몫 · 도구는 표준 라이브러리만 · 교회 덱·견본 0 반입(11-06 수용분 그대로) |
 | `skill:rhwp-edit` | 스킬 | 본부↗·좌석↗ | 바깥 · NomaDamas/k-skill(MIT · THIRD_PARTY.md) | 있음 | 팩에있음 | 상 | 판 대조: 본부 링크 = 설치 팩 1.1.14 · 파일 블롭 전부 저장소 이력에 있음(본부 쪽 신판 0) → 갱신 대상 0 · 한글 문서 고치기 — 국내 사용자 필수 |
 | `skill:sandbox-sdk` | 스킬 | 본부 | 바깥 · cloudflare/skills(Apache-2.0 · github.com/cloudflare/skills · 상류 11-17 갱신 · 이 맥 사본 08-03) | 없음 | 링크 | 하 | 바깥 원본 링크만 — 라이선스상 재배포는 가능하나 상류가 수시로 바뀌어(이름 바뀜·스킬 추가) 동봉하면 곧 낡음 · 산출물 스킬 아님 · 설치 = `npx skills add cloudflare/skills` · Cloudflare 계정·개발 용어 장벽 |
 | `skill:scene-cut` | 스킬 | 본부↗·좌석↗ | 우리 제작(팩 정본) | 있음 | 팩에있음 | 중 | 판 대조: 본부 링크 = 설치 팩 1.1.14 · 파일 블롭 전부 저장소 이력에 있음(본부 쪽 신판 0) → 갱신 대상 0 · 「무음 잘라 줘」로 쓰임 · ffmpeg 무료 |

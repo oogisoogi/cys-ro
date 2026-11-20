@@ -192,3 +192,5 @@ s5 목록 밖 새 줄 8: HANDOFF.cysr-1116-borrow23-1119.md:101·138 · HANDOFF.
 - (master 판정 ④) main.ts 가 앱 사건(boot-degraded·restore-progress)도 ingest 로 넘기고 views 의 listenApp 을 걷기.
 - s79 결과 칸을 s6 rail 의 결과 자리로 옮기기(s79 주석 「통합 때 master 조정」) — 이 판 = 대화 위 그대로.
 - ③ rail.refresh 살핌 중 차단의 행동 시험.
+- (공개 후보 검증 N1 · master#a95eaa65) 자산 판정표 검사기·뮤턴트·시험(`scripts/asset_ledger_check.py:22-25` · `scripts/asset_ledger_mutants.py:22-23` · `scripts/tests/test_asset_ledger_check.py` 여러 줄)에 남은 두 번째 계정 폴더·「계정2」·본부 폴더 경로를 본부 판정표(.hq.md) 쪽 설정으로 옮기기 — main 에 같은 종류가 있어 1.1.16 차단 아님.
+- (공개 후보 검증 N6 · master#a95eaa65) 제외 파일을 파일 이름만으로 가리키는 주석 4곳(`src/agy_door.rs:138` · `src/bin/cys.rs:21402` · `ui/src/views/judge/revive.ts:115` · `src/bin/cysd/send_settle_tests.rs:1895`)을 공개 트리에서 따라갈 수 있는 설명으로 바꾸기 — 주석이라 깨지는 것 0.

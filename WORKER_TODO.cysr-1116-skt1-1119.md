@@ -11,10 +11,18 @@
 - [x] 9. HANDOFF.cysr-1116-skt1-1119.md(맨 앞 = T1 공개 함수 이름·시그니처) · 【확인요청】
 
 ## codex 1R BLOCK(master#bea6fddc · 전부 고침 · 상한 3h) — 후임 몫(이 좌석 = 설계만 · HANDOFF §11)
-- [ ] R1-1 계통 3값 · follow = ProvenTop 만
-- [ ] R1-2 S 대화 파일 신선도 관문 + 기동 글 직전 재확인 + 검증된 S 등록 우선 승계
-- [ ] R1-3 데몬 session_source · caller None 등록 = 핀 입력 아님 · 비-Claude = lsof 만
-- [ ] R1-4 Tauri held 증거 fence·token·writer 재검증
-- [ ] R1-5 양성 S 신호 = anchor_session_id(최상위 훅)
-- [ ] R1-6 순서 주입 결정론 시험 + 뮤턴트 · codex 2R = master 대기열
+- [x] R1-1 계통 3값 · follow = ProvenTop 만
+- [x] R1-2 S 대화 파일 신선도 관문 + 기동 글 직전 재확인 + 검증된 S 등록 우선 승계
+- [x] R1-3 데몬 session_source · caller None 등록 = 핀 입력 아님 · 비-Claude = lsof 만
+- [x] R1-4 Tauri held 증거 fence·token·writer 재검증
+- [x] R1-5 양성 S 신호 = anchor_session_id(최상위 훅)
+- [x] R1-6 순서 주입 결정론 시험 + 뮤턴트 · codex 2R = master 대기열
 - [x] 판정 축 표(lease 없이도 작성자 둘인가) = HANDOFF §11-1
+
+## 후임(worker-1116skt1b · master#f7698dc5 · #8daa09dd · #4199fa4f) — HANDOFF §12
+- [x] codex 1R 6건 고침(222206218) · R1-3 은 session_source 노출 대신 클라이언트 lsof + 데몬 비-claude 등록 거름(§12-1)
+- [x] 독립 검증 V1(HR e2e) · V2(phoenix) · V3(표기) · V5(p1 HOME) · V6(관문 세대) · 끔 안내 1줄
+- [x] e2e 고아 0(9fdf1990e · 원인 = 늦은 등록 autostart)
+- [x] 시험 묶음 · e2e 12/12 · 뮤턴트 10 KILLED(MB 변이 불량 → MB2)
+- [ ] CI 팩 단계 전체 재실행(시간 상한으로 미실행 · phoenix 관련 31 검체만)
+- [ ] codex 2R = master 대기열

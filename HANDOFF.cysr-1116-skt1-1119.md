@@ -1,5 +1,6 @@
 # HANDOFF — TICKET=cysr-1116-skt1-1119
 
+> ★후임(worker-1116skt1b) 델타 = **§12**(codex 1R BLOCK 6 + 독립 검증 V1·V2·V3·V5·V6 + 고아 0 · 공개 함수 바뀐 것 §12-0) · 아래 §0~§11 은 앞 좌석 기록(§11-2 설계는 §12 로 집행됨)
 > codex 1R = **master 대기열**(master#5a93bd10 · codex 5h 한도 소진 · 리셋 06:29 · 호출 0회) · 질문지 = `CODEX-1R-PROMPT.cysr-1116-skt1-1119.md`
  (seatkeep T1 · 대화 작성자 하나 → 1.1.16 위로 · codex r5c BLOCK 4 고침)
 
@@ -92,7 +93,7 @@
 | `cargo test --bin cys`(스레드 4) | 796 ok · 0 | 1차 813 ok · **9 붉음**(조각 1 `b360_tests::p1_*`) → 고침 `78b90a2e8` 뒤 p1 묶음 33/33 ×2(1회 차 새 시험 1 붉음 · 로그 미포착 → 사유 단언 일반화) · 전체 재실행 = 아래 줄 | 붉음 원인 = p1 가짜 데몬이 임대 조회(`system.identify`)에 빈 값 → 임대 93(비파괴 보류) · 운영 결함 아님 · 하네스에서 노브 끔 + 노브 켬 비파괴 시험 1 |
 | `cargo test --bin cysd`(스레드 4 · CI 와 같은 skip) | 3330 ok · **3 붉음**(`seat_proc::tests::seatkeep_*` handshake_timeout) → 부하 8 단독 재실행 **5/5 초록** | **3333 ok** · 0 | 데몬 소스 변경 0줄(`git diff dea2e1853 -- src/bin/cysd` 빈 값) · 기준선 붉음 = 시간 문턱 · 부하성 |
 | `cargo test --test update_drainhold_e2e`(스레드 1) | 4 ok | 4 ok | 가짜 claude 픽스처 바뀜 → 회귀 없음 |
-| `cargo test --test rotate_autorestore_hold`(스레드 1) | 11 ok | 11 ok | 같음 |
+| `cargo test --test rotate_autorestore_hold`(스레드 1 · ⚠CI 레인 밖 = 로컬 추가 측정 · §12-2 V3 정정) | 11 ok | 11 ok | 같음 |
 | `cargo test -p cys-app --bins`(스레드 1 · CI 자리표시) | 348 ok | **358 ok** · 0 | +10 = T1 앱 시험 |
 | `cd ui && bun test` | 3835 · 0 fail · 123 파일 | **3840 · 0 fail** · 124 파일 | +5 = restoredone.test.ts |
 | `bunx -p typescript@7.0.2 tsc -p tsconfig.check.json` | rc 0 | rc 0 | 음성 대조(일부러 TS2322) = rc 1 확인 |
@@ -182,3 +183,112 @@ eval $E CYS_PACK_DIR=/tmp/sk1h/pk cargo test -p cys-app --bins seatkeep -- --tes
 
 - HEAD = `8114319c4`(+ 이 HANDOFF 커밋) · push 0 · 작업트리 clean(이 커밋 뒤) · 기준선 작업트리 `~/axdev/.wt/cys-1116-skt1-base`(dea2e1853 · 측정용 · 지워도 됨).
 - 고친 것 0(이 절은 설계만). 시험 숫자 §4·§6 은 8114319c4 기준 그대로 유효.
+
+---
+
+## 12. 【후임 델타 · worker-1116skt1b】 codex 1R BLOCK 6 + 독립 검증(2288) V1~V6 고침 (master#f7698dc5 · master#8daa09dd)
+
+### 12-0. T1 공개 함수 표(§0) 바뀐 것 — T4·T5 좌석(2267)이 알아야 할 것
+
+| 쓰임 | 이름·시그니처 | 바뀐 뜻 |
+|---|---|---|
+| 계통 3값(신설) | `pub enum Lineage { ProvenTop, NotTop, Unknown }` · `pub fn lineage_of(cmds: &[Option<String>], bin_base: &str) -> Lineage` | 결속을 옮기는 것 = ProvenTop(최상위 에이전트 1 + 그 아래 SessionStart 훅)뿐 · argv 판독 불가·에이전트 0 = Unknown = 옮기지 않음 |
+| 기동 글 직전 확정(신설) | `pub fn mark_launch_sent(store: &Store, norm: &str, recheck: &mut dyn FnMut() -> Result<(), String>) -> Result<(), String>` · CLI `pub(crate) fn lease_commit_launch(role, agent, sess: Option<&str>, seat: u64) -> Result<(), String>` | 잠금 안 = 임대가 아직 내 것 + 재확인 Clear 일 때만 `Lease.launch_sent = true` · Err(`lease:taken` 등) = 기동 글 0 · **T4 입양이 저장 대화를 잇는 기동 글을 직접 친다면 이 확정을 먼저 부를 것** |
+| 등록 앞 결속 해제(신설) | `pub fn transition_unbind(store, new_id: &str, is_my_writer: &dyn Fn(&Holder) -> bool) -> usize` · CLI `pub(crate) fn lease_transition_before_register(surface_id: u64, transcript: &str)` | `cys usage-register` 가 데몬 등록 **앞**에 부름 — 최상위 작성자의 다른 대화 결속 = 결과 불명(좌석 유지 · 작성자 없음) |
+| 앱 「복원됨」 증거(신설) | `pub struct HeldProof { surface_id, daemon_gen, fence, token, writer }` · `pub fn held_proof(store, id, probe) -> Result<Option<HeldProof>, String>` · `pub fn held_proof_stable(before, after) -> Option<HeldProof>` | `held_by_live_writer` 는 그대로(이것의 얇은 껍질) |
+| 임대 기록 칸(신설) | `Lease.launch_sent: bool`(`#[serde(default)]` = 옛 기록 false) | 확정 전 기동 중 임대 = 다른 좌석 최상위 훅의 검증된 follow 가 이어받음 · `Guard::hold` 도 true 로 적음 |
+| #1 방어 | `role_seat_verdict(live, role, agent, sess, exclude: Option<u64>, alive, seat_agent, current)` · `lease_role_seat_verdict(role, agent, sess, exclude)` | `registered` 인자 삭제 · topology 핀·등록 문자열 신호 삭제 · 원천 = 현재 대화 증거 하나 |
+| 비-Claude 현재 대화 | `pub(crate) fn seat_agent_open_rollout(root: u32, bin: &str) -> Result<Option<String>, String>` | 좌석 뿌리 자손 에이전트가 **연** rollout(lsof) · 윈 = Err(93) |
+| 삭제 | `registered_session_in` · `follow_lineage_not_top` | — |
+
+### 12-1. codex 1R 처분(판정문 `~/axdev/master/reports/verify/codex-1120/skt1-r1.md`)
+
+| # | 판정문 요지 | 고침(파일) | 시험 |
+|---|---|---|---|
+| 1 blocking | 계통 `None` 이면 헬퍼 등록이 결속을 옮김 → rc 0 · 작성자 2 | leaf `Lineage`·`lineage_of`(에이전트 정확히 1 + 그 아래 훅 = ProvenTop · 판독 불가·에이전트 0·이름 모름 = Unknown) · CLI `lease_follow_on_register` = `!= ProvenTop` 이면 return(같은 작성자의 옛 임대 지우기도 그 안이라 함께 막힘) | leaf `lineage_moves_only_a_proven_top_hook`(Unknown 행) · CLI 배선 핀 · e2e HR(헬퍼) |
+| 2A blocking | #1 방어 판독 뒤 좌석 안 `/resume S` 등록 도착 → W2 | ① `Lease.launch_sent`(확정 표식 · serde default) ② `boot_agent_on_surface` 가 저장 대화 잇는 기동 글 **직전** `lease_commit_launch` → leaf `mark_launch_sent`(잠금 안: fence·token 가 아직 내 것 + #1 방어 재확인(기동 좌석 제외) Clear 일 때만 확정 · 아니면 기동 글 0 → 빈 좌석 닫고 93) ③ `follow`: 작성자 없는 기동 중 임대가 **확정 전**이면 다른 좌석 최상위 훅의 검증된 등록이 이어받음(같은 잠금 = 둘 중 하나만 이김) · 확정 뒤면 종전(충돌 사건) · `Guard::hold` 도 확정 적음 | leaf `a_verified_registration_beats_an_uncommitted_restore_and_the_restorer_stops`(순서 주입: 확정 전 follow → 확정 `lease:taken` · 재확인 실패 → 확정 0 · 확정 뒤 follow = 충돌) · CLI 배선 핀(확정이 기동 글 앞) |
+| 2B blocking | 같은 프로세스 `/resume S` · 등록 실패 → 옛 T 결속이 「다른 대화」 증거 | `cys usage-register` 가 데몬 요청 **앞**에 `lease_transition_before_register` → leaf `transition_unbind`: 이 발신의 조상 중 결속 임대의 작성자이고 계통(발신 부모→그 작성자)이 ProvenTop 이면 그 작성자의 **다른 대화** 작성 중 임대 = 결과 불명(좌석 유지 · 작성자 없음 · fence+1·새 token) · 데몬 없이 판정(에이전트 이름 = 좌석 목록 · 못 읽으면 claude) · 등록 성공 → follow 가 새 결속 · 옛 대화 임대는 judge 가 「그 좌석 현재 대화 다름」으로 풂 | leaf `a_conversation_switch_unbinds_the_old_conversation_before_registering` · CLI 배선 핀(해제가 등록 앞) |
+| 3 blocking | 비-Claude topology 가 좌석 밖 가짜 등록으로 덮임 | ① 클라이언트 `seat_conversation_now` 비-claude = `seat_agent_open_rollout`(좌석 뿌리 자손 에이전트 프로세스가 **지금 연** rollout · `/usr/sbin/lsof -p -Fn` · 첫 줄 payload.id · 둘 이상 다름 = Err · 윈 = Err) ② **데몬** `usage.rs collect_for` 1줄: 비-claude 좌석의 `registered_transcript` 는 세션 파일 결정·대화 핀(topology 영속) 입력 아님(등록 경로 = claude SessionStart 훅뿐 · git grep 확인) | cysd `skt1_codex_seat_registration_never_pins_the_conversation`(대조 = claude 핀 잡음) · CLI 진리표(codex topology T 핀 < 연 파일 S) |
+| 4 blocking | Tauri held→topology TOCTOU 로 첫 93 지움 | `run_sidecar_restore_judged`: 결속 판독(앞) → topology → 결속 판독(뒤) → `restore_held_stable`(leaf `held_proof_stable` = 좌석·세대·fence·token·작성자 전부 같을 때만) | cys-app `skt1_restored_proof_must_survive_the_topology_read`(사이에 소멸·작성자 교체·다시 잡힘 = 유지 · 배선 순서 핀) · leaf `held_proof_must_be_the_same_on_both_sides_of_the_topology_read` |
+| 5 major | 헬퍼/낡은 등록 S 가 실제 결속 T 를 이김(거짓 막힘) | `role_seat_verdict` 원천 = 현재 대화 증거 하나 — topology 핀·데몬 등록 문자열 신호 삭제(`registered` 인자·`registered_session_in` 삭제 · `lease_role_seat_verdict` 의 org.status 조회 삭제) · r5c #2(등록 직후 결속 전 창)는 2B 의 등록 앞 결속 해제가 맡음(그 사이 좌석 = 결속 없음 = 93) | CLI 진리표(topology S + 결속 T = Clear) · 배선 핀(org.status 0) |
+| 6 major | 시험이 순서를 안 잡음 | 위 순서 주입 시험(leaf 2 · Tauri 1) + e2e HR + 뮤턴트 §12-4 | — |
+
+(c)(d) 판정문 「문제없음/직접 피해 미확인」 = 손대지 않음. (d) 「follow 가 새 결속을 쓴 뒤 옛 결속 삭제 전 죽으면 둘」 은 2B 로 순서가 바뀌어(옛 결속 해제 → 등록 → 새 결속) 창이 줄었다(측정 없음).
+
+### 12-2. 독립 검증(2288 · `~/axdev/workers/cysr-1116-skt1-verify-1120/VERDICT.md`) 처분
+
+| # | 처분 |
+|---|---|
+| V1 헬퍼 거름 행동 시험 0(MV5 생존) | e2e **HR** `a_helper_registration_inside_the_seat_never_moves_the_binding` 신설(가짜 claude `FAKE_HELPER_GATE` = 좌석 안에서 자기를 `claude -p` 헬퍼로 다시 띄워 새 대화 H 를 훅 이름 셸에서 등록 · 결속 = T 그대로 단언) · MV5(계통 수집 줄 제거)는 새 코드에서 계통 = Unknown = follow 0 → RV·HR 붉음 방향(아래 뮤턴트 MI 는 「계통 관문 삭제」로 HR 을 잰다) · session_lease_e2e 는 이미 ci-branch 맥 레인 등재(8114319c4) |
+| V5 p1 시험 공유 HOME | `p1_lease_knob` = 켬이면 자식 HOME = 상자 안 고유 폴더 · 단언 = `작성자 생존 판정 불가(daemon:gen-unreadable)`(V6 고침이 만드는 결정론 사유) · 새 임대 폴더(`rm -rf` 뒤)에서 p1 묶음 33/33 초록 |
+| V6 세대 없는 임대 = 영구 93 | `lease_gate` 가 `current_gen()` None 이면 임대를 만들지 않고 93(`daemon:gen-unreadable` · 다음 회차 그대로 풀림) · 이미 남은 세대 없는 임대 = `next_action` 「그 임대 파일 확인 후 삭제 · 급하면 노브 off」 |
+| V2 phoenix 거짓 보류 | 92(writer_live) 인데 그 역할 좌석이 섰으면(`_revived_seat` · 이번 회차 기동 실패 줄 없음) 보류로 세지 않고 생존 판정으로 · 93 은 그대로 보류 · 팩 검체 L3·L4 + 뮤턴트 M2 KILLED |
+| V3 HANDOFF 표기 | **정정**: §6 표의 `cargo test --test rotate_autorestore_hold` 는 ci-branch 레인에 **없다**(CI `cargo test --test` = update_drainhold_e2e·win_job_exit·win_pack_swap + session_lease_e2e(8114319c4)) — 「CI 와 같은 명령」 묶음이 아니라 로컬 추가 측정이었다 |
+| 📌 끔 안내 | USER-MANUAL 1줄: `CYS_SESSION_LEASE=off cys restore`(그 명령 환경에만 걸림 · 앱 자동 복원엔 안 걸림 · 끄면 작성자 둘 못 막음) · 파일 스위치(앱·phoenix 일괄)는 기능 추가라 📌 그대로 |
+
+### 12-3. ★판정 축 표(갱신 · master 의 기본 켬 재판정용) — 고친 뒤 각 경로
+
+근거 = 코드 대입 + 위 시험(확신도 중상 · 실 claude 의 좌석 안 `/resume` 타이밍은 실측 없음).
+
+| 경로 | lease 없이(1.1.15)도 작성자 둘? | lease 가 새로 만든 것? | 고친 뒤 결과 | 남는 창 |
+|---|---|---|---|---|
+| 1 계통 None 헬퍼 등록 | 예 | 아니오 | follow 0(Unknown) → 결속 없음 → 같은 역할 S 복원 93 | 없음(대신 계통 못 읽는 기계 = 거짓 93 · 아래 ⓐ) |
+| 2A 판독 뒤 좌석 안 `/resume S` 등록 | 예 | 아니오 | 등록이 **확정 전**: follow 가 이어받고 복원기 확정 `lease:taken` = 기동 글 0 · 93 / 결속 해제가 재확인 전: 재확인 Unverified = 기동 글 0 | 등록(훅의 cys 실행)이 **확정 뒤**에 닿는 경우 = 두 쪽이 정말 동시에 S 를 잇기로 한 것(1.1.15 와 같음 · 충돌 사건만 남음) |
+| 2B 같은 프로세스 `/resume S` · 등록 실패 | 예 | 아니오 | 등록 앞 결속 해제 → 좌석 결속 없음 → 93 | 훅의 `cys` 자체가 안 돈 경우(CYS_PY 없음·cys 실행 파일 못 찾음 등) = 옛 결속 T 가 남음(1.1.15 와 같음) |
+| 3 비-Claude 가짜 등록 | 예 | 아니오(새 증거 원천이 물려받았던 것) | 현재 대화 = 연 rollout(lsof) · 데몬 핀은 비-claude 등록을 안 받음 → 가짜 T 무력 | 윈도우 codex 좌석 = lsof 없음 = 같은 역할 S 복원 93(거짓 막힘 · 안전 쪽) |
+| 4 Tauri TOCTOU | 결과 종류 예(1.1.15 는 93 자체가 없음) | 경합은 예 | 앞뒤 판독 같을 때만 「복원됨」 | 두 번째 판독 뒤 바뀜(그 뒤 일은 다음 복원이 다시 잰다 · 데이터 손실 아님) |
+| 5 헬퍼/낡은 등록 S 가 결속 T 를 이김 | 아니오 | 예(거짓 막힘) | 등록 문자열·topology 핀 신호 삭제 → 결속 T = 진행 | 없음 |
+
+⇒ 요지(확신도 중상): **고친 뒤 lease 켬이 1.1.15 보다 작성자 둘을 늘리는 경로는 없다**(§11-1 결론 유지). 1.1.15 에도 있던 작성자 둘 경로 1·2A·2B·3 은 「훅의 cys 가 아예 안 돈 경우」와 「확정 뒤 진짜 동시」만 남았다. lease 가 새로 만든 것 = 거짓 막힘뿐: ⓐ 계통 argv 를 못 읽는 기계(윈 MSYS 등 · 결속이 안 생겨 같은 역할 S 복원 93) ⓑ 윈 codex 좌석(lsof 없음) ⓒ 훅 없는 claude(종전) — 모두 93 · 사유 줄 · 끔 안내(USER-MANUAL) 있음. 독립 검증 실측(정상 복원 ≈70회 거짓 거절 0 · 39e35832e 기준)은 ⓐⓑ 를 지나지 않는 맥 상자라 이번 변경 뒤 맥 수치는 아래 §12-4 e2e 로만 다시 잰다.
+
+### 12-4. 시험(2026-11-20 · env -i · 격리 HOME=/tmp/sk1b · CARGO_BUILD_JOBS=4 · 공유 기계 부하 100~143 = 다른 좌석 빌드 · 이 좌석 부하 주입 0)
+
+| 묶음 | 전(8114319c4 · §4·§6 · 독립 검증 재측) | 후(9fdf1990e) |
+|---|---|---|
+| `cargo test --lib session_lease` | 24 ok | **28 ok**(새 4: 확정·승계 순서 · 전환 해제 · 계통 3값 · 앞뒤 판독) |
+| `cargo test --bin cys session_lease_cli_tests` | 26 ok | **26 ok**(진리표·배선 핀 고쳐 씀) |
+| `cargo test --bin cys b360_tests::p1_`(임대 폴더 지운 새 상태) | 독립 검증: 새 폴더 2/2 붉음(V5) | **33 ok** |
+| `cargo test --bin cysd usage::tests` | — | **55 ok**(새 1 skt1_codex…) |
+| `cargo test -p cys-app --bins seatkeep` / `skt1_` | 10 ok / — | **10 ok / 1 ok** |
+| `cargo test --test session_lease_e2e`(SLE_ROUNDS=3 · 스레드 4) | 11 ok | 1회차(옛 하네스 · 07:56~08:11 · 부하 118~143) **10 ok · 2 붉음**(R1·DD 의 「정상 조건 rc 93 = 0」 단언 · 사유 줄 미포착) → 같은 두 시험 단독 재실행 **2/2 초록** → 하네스 고친 뒤 전체 재실행(08:16~08:25 · 부하 104~142) **12 ok · 0**(새 HR 포함) |
+| 팩 `test_phoenix_seatkeep_t1_lease_hold.py` | OK | OK(L3·L4 새 · M1·M2 KILLED) |
+| e2e 고아(시험 뒤 `ps -E` 로 HOME=/tmp/cys-sle-* 프로세스 수) | 1회차 뒤 **1**(cysd · ppid 1 · FR 대기 셸의 늦은 autostart · 실측 08:11 · 내 pid 로 정리) | 하네스 고친 뒤 **0**(08:25 · 09:12 뮤턴트 뒤도 0) |
+
+⚠1회차 R1·DD 붉음(93) 은 사유 줄을 못 잡았다 — 후보 = 이번에 늘어난 판독(관문의 세대 판독 V6 · 기동 글 직전 재확인의 topology·surface.list·결속 판독)이 부하 118~143 에서 시한을 넘긴 것(rc 93 = 안전 쪽 · 다음 회차에 풀림) · 확정 아님. 독립 검증의 「정상 복원 거짓 거절 0/70」(부하 ≤32)과 같은 조건 재측은 하지 않았다 — 📌.
+
+뮤턴트(소스 변이 → 시험 → git checkout · 붉은 시험 이름):
+
+| # | 변이 | 결과 | 붉은 시험 |
+|---|---|---|---|
+| MA | follow 의 「확정 전 기동 중 임대 승계」 갈래 삭제 | KILLED | lib `a_verified_registration_beats_an_uncommitted_restore_and_the_restorer_stops` |
+| MB | 확정의 소유 검사 `false && fence ≠ … \|\| token ≠ …` | 생존 = **변이 불량**(우선순위로 token 검사가 남음 · token 은 획득마다 새 값이라 그것만으로도 가른다) → MB2 로 다시 |
+| MB2 | 확정의 소유 검사 전체 끔(`false && (…)`) | KILLED | lib `a_verified_registration_beats_an_uncommitted_restore_and_the_restorer_stops` |
+| MC | 계통 Unknown(에이전트 0·판독 불가) = ProvenTop | KILLED | lib `lineage_moves_only_a_proven_top_hook` |
+| MD | 전환 해제가 같은 대화(compact)도 풂 | KILLED | lib `a_conversation_switch_unbinds_the_old_conversation_before_registering` |
+| ME | #1 방어 topology 신호 복원 | KILLED | CLI `role_seat_verdict_truth_table` |
+| MF | 관문 세대 검사 무력화(V6) | KILLED | cys `b360_tests::p1_lease_on_with_an_unanswering_daemon_holds_without_a_new_seat` |
+| MG | Tauri 뒤 판독 무시(앞 판독만) | KILLED | cys-app `skt1_restored_proof_must_survive_the_topology_read` |
+| MH | 데몬 비-claude 등록 거름 삭제 | KILLED | cysd `usage::tests::skt1_codex_seat_registration_never_pins_the_conversation` |
+| MI | follow 계통 관문 삭제(헬퍼 등록도 옮김) | KILLED | e2e `a_helper_registration_inside_the_seat_never_moves_the_binding`(V1) |
+| M2(팩) | phoenix V2 예외 삭제 | KILLED | 팩 L3 |
+
+팩 phoenix 관련 검체(직접 실행 · env -i · 격리 HOME · 09:13~09:16): `test_phoenix_*` 28 + `test_agy_door_phoenix_loop` + `test_awaken_enter` = 31 중 rc 0 = 28 · rc≠0 = 3 → `test_phoenix_w2_untomb_fullcycle`·`test_phoenix_e2e_replacement` = 사유 `aliased_harness_root`(TMPDIR=/tmp 가 /private/tmp 별칭 = 러너 환경) → 별칭 없는 TMPDIR 로 다시 = **8/8 · 7/7 PASS** · `test_phoenix_c6_reap` = `S5 bounded observation timed out` **3/3 붉음**(09:16·09:19·09:28 · 마지막은 MI 뮤턴트가 남긴 target/debug/cys 를 깨끗이 다시 빌드한 뒤 · 부하 32~50 · cysd 큐 주차·exited 관측 8초 시한 · 코드 읽기로는 임대·phoenix 복원 갈래와 만나지 않음 = **관계 미확정 · 측정 대기**) · 기준선(dea2e1853 작업트리)은 `target/debug/cysd` PermissionError 로 실행 불가(앞 좌석 §6 과 같은 사유) — 세 검체 모두 ci-branch 팩 단계 목록 밖. ⚠CI 팩 단계 전체(검체 153)는 이번 회차에 다시 돌리지 않았다(시간 상한) — 이번 팩 변경 = javis_phoenix.py 1곳(V2) + 그 검체뿐.
+
+### 12-5. 남는 한계(숨기지 않음)
+
+1. 훅의 `cys` 가 **아예 안 돈** 좌석 안 대화 전환(CYS_PY·cys 실행 파일 못 찾음 · 훅 JSON 깨짐) = 옛 결속이 남아 「이 좌석 = 옛 대화」 → 같은 역할 그 대화 복원이 새 좌석을 열 수 있다(1.1.15 와 같음).
+2. 좌석 안 `/resume S` 의 등록이 복원기 **확정 뒤**에 닿는 진짜 동시 = 둘 다 S(1.1.15 와 같음 · 임대엔 conflict_live 사건).
+3. 거짓 막힘(93 · 안전 쪽): 계통 argv 를 못 읽는 기계 · 윈 codex 좌석(lsof 없음) · 훅 없는 claude(종전) · 부하 큰 기계의 판독 시한(1회차 R1·DD 후보 · 미확정).
+4. 옛 판 cys(launch_sent 칸을 모름)가 같은 임대 폴더를 쓰면 그 판의 기동 중 임대는 확정 표식이 없어 다른 좌석 등록이 이어받을 수 있다(1.1.16 안에서는 모든 cys 가 같은 판).
+5. Tauri 「복원됨」 증거는 결속 작성자가 그 좌석 뿌리의 자손인지까지는 보지 않는다(codex 판정문 「가능하면」 · 좌석·세대·역할 점유 + 앞뒤 같음까지).
+6. 데몬: claude 좌석의 좌석 밖 등록(caller 없음)은 종전대로 핀을 움직인다(윈 호출자 해소 실패와 가를 수 없어 손대지 않음 · 결속은 claude 쪽에서 등록 문자열을 안 쓰므로 작성자 둘로는 안 이어짐 · 복원 대상 핀만 영향).
+
+### 12-6. 데몬(원작자 파일) 바뀐 줄
+
+- `src/bin/cysd/usage.rs` `collect_for` 첫 줄: `let registered = s.registered_transcript.lock().unwrap().clone();` → `….clone().filter(|_| agent == "claude");`(+ 주석 3줄) · 시험 모듈에 `skt1_codex_seat_registration_never_pins_the_conversation` 1개. handlers.rs·state.rs 변경 0.
+
+### 12-7. 📌 덧붙임(master 판단)
+
+1. 기본 켬: 위 §12-3 = 1.1.15 대비 작성자 둘 경로를 늘리지 않음 · 새 것은 거짓 막힘(93)뿐 → 켬 유지 쪽(확신도 중상) · 단점 = 부하 큰 기계에서 판독 시한 93 이 늘 수 있음(1회 관측 · 사유 미확정) → 독립 검증의 「정상 복원 ≈70회」 재측을 같은 조건으로 붙이면 판단 근거가 된다.
+2. 현장 끔 스위치 = 여전히 환경변수뿐(USER-MANUAL 1줄 추가) — 파일 스위치(앱·phoenix 일괄)는 기능 추가라 📌.
+3. codex 2R 질문 후보: 확정(`mark_launch_sent`)과 follow 승계의 같은 잠금 직렬화 · 등록 앞 결속 해제의 계통 판정(데몬 없이) · 비-claude lsof 증거 · Tauri 앞뒤 판독.

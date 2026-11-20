@@ -96,6 +96,8 @@ def harness(m, root, st):
     def _cys(*args, socket=None, timeout=25):
         if args and args[0] == "close-surface":
             calls["close"].append(list(args))
+            if st.get("close_refuse") and "--if-quiet" in args:  # (master#26ff3e1f ①) 데몬 조건부 회수 거절 대역
+                return _R(1, "", "error: close_refused: surface.close if_quiet refused: human_input_since_snapshot · not closed")
             st["live"] = {r: [s for s in ss if s["surface"] != args[1]] for r, ss in st["live"].items()}
             return _R(0, "closed")
         return _R(1, "", "stub cys")
@@ -308,6 +310,47 @@ def axis_d(m, root, sink=None):
               [e for e in evs3][-3:], sink)
     check("D8 seat_human_input_hold 칸 없음(구 데몬) = None(종전 회수)", m.seat_human_input_hold(seat("surface:7", "empty")) is None, "", sink)
 
+    # (master#26ff3e1f ①) 질의~닫기 사이 사람 입력(TOCTOU): 스냅샷은 조용했는데 데몬이 닫는 순간 거절 → 닫힘 0 · fresh 0 · 보류 · 인자 = 스냅샷(생성 시각·표지)
+    row = seat("surface:7", "empty")
+    row.update({"pending_input_human_bytes": 0, "input_paste_open": False, "human_idle_secs": 40,
+                "created_at": 1795000001.25, "human_input_stamp": "1795000000000:4"})
+    st4 = {"epoch": "EPOCH-SEAT4", "entries": copy.deepcopy(MASTER), "table": T_DEAD, "live": {"master": [row]}, "close_refuse": True}
+
+    def fresh_new_seat4():
+        st4["live"].setdefault("master", []).append(seat("surface:16", "occupied", True))
+        st4["table"] = T_ALIVE
+    st4["on_fresh"] = fresh_new_seat4
+    sock4, calls4 = harness(m, os.path.join(root, "d4"), st4)
+    run(m, sock4, include_master=True)
+    j4 = m.load_journal(sock4, "r4")
+    check("D9 조건부 회수 인자 = --reap --if-quiet <생성 시각> --if-quiet-stamp <표지>",
+          calls4["close"] == [["close-surface", "surface:7", "--reap", "--if-quiet", "1795000001.25", "--if-quiet-stamp", "1795000000000:4"]],
+          calls4["close"], sink)
+    check("D10 데몬 거절(그 사이 사람 입력) → 좌석 남음 · fresh 0 · fresh_held",
+          calls4["fresh"] == 0 and [x["surface"] for x in st4["live"]["master"]] == ["surface:7"]
+          and (j4["roles"].get("master") or {}).get("fresh_held") == "human_input",
+          (calls4["fresh"], st4["live"], (j4["roles"].get("master") or {}).get("fresh_held")), sink)
+    # (master#26ff3e1f ②) 여러 회차: 1회차 = 붙여넣기 열림(보류) · 2회차부터 데몬이 TTL 반영으로 닫힘 보고 → 영구 보류 0(3회차 안에 부활 · 보류 표식 지움)
+    row5 = seat("surface:7", "empty")
+    row5.update({"pending_input_human_bytes": 0, "input_paste_open": True, "human_idle_secs": 40})
+    st5 = {"epoch": "EPOCH-SEAT5", "entries": copy.deepcopy(MASTER), "table": T_DEAD, "live": {"master": [row5]}}
+
+    def fresh_new_seat5():
+        st5["live"].setdefault("master", []).append(seat("surface:17", "occupied", True))
+        st5["table"] = T_ALIVE
+    st5["on_fresh"] = fresh_new_seat5
+    sock5, calls5 = harness(m, os.path.join(root, "d5"), st5)
+    fresh_by = []
+    for cyc in range(3):
+        run(m, sock5, include_master=True)
+        fresh_by.append(calls5["fresh"])
+        for x in st5["live"].get("master", []):
+            x["input_paste_open"] = False  # 데몬 = paste_open_now(TTL) — 다음 조각 없이도 5초 뒤 닫힘
+    j5 = m.load_journal(sock5, "r4")
+    check("D11 붙여넣기 열림 1회차 보류 → 3회차 안 부활(fresh 1) · 영구 보류 0 · 보류 표식 지움",
+          fresh_by[0] == 0 and fresh_by[-1] == 1 and "fresh_held" not in (j5["roles"].get("master") or {}),
+          (fresh_by, (j5["roles"].get("master") or {}).get("fresh_held")), sink)
+
 
 # ── H. I-4 ACK 핑 관문 ──
 def axis_h(m, root, sink=None):
@@ -367,6 +410,10 @@ try:
          '    _capped = []\n'),
         ("M5 사람 입력 든 빈 좌석도 회수(F2 보류 끔)", '                        _why = seat_human_input_hold(_rows_now.get(_ref))\n',
          '                        _why = None\n'),
+        ("M6 조건부 회수 인자 끔(종전 무조건 회수)", '                        _args = reap_if_quiet_args(_rows_now.get(_ref))\n',
+         '                        _args = []\n'),
+        ("M7 보류 표식이 성공 뒤에도 남음", '                rr.pop("fresh_held", None)          # (master#26ff3e1f ②) 부활했다 — 지난 회차 보류 표식을 지운다\n',
+         '\n'),
     ]
     for i, (name, old, new) in enumerate(mutants):
         n = src.count(old)

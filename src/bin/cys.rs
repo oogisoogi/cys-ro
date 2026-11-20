@@ -384,6 +384,13 @@ enum Command {
         /// 기본(플래그 없음)=OwnerClose(묘비 생성·의도적 폐역).
         #[arg(long)]
         reap: bool,
+        /// (1.1.16 · master#26ff3e1f ①) 조건부 닫기 — 그 좌석의 생성 시각(org.status `created_at`). 데몬이 닫기와 같은 잠금 안에서 입력줄 사람 바이트 0 ·
+        /// 붙여넣기 닫힘 · 30초 안 사람 입력 없음 · 생성 시각 일치 · (아래 표지를 주면) 그 뒤 사람 입력 없음을 다시 보고, 아니면 닫지 않는다(close_refused · rc 1).
+        #[arg(long = "if-quiet", value_name = "CREATED_AT")]
+        if_quiet: Option<f64>,
+        /// 판정 때 본 사람 입력 표지(org.status `human_input_stamp` · 빈 글 = 그때 없음) — `--if-quiet` 와 함께만.
+        #[arg(long = "if-quiet-stamp", value_name = "STAMP", requires = "if_quiet")]
+        if_quiet_stamp: Option<String>,
     },
     /// ★G4(W4-C): 죽은(exited) 좌석 수동 회수 — surface.reap RPC(권위 role 전용·7조건 게이트)
     ///
@@ -7388,14 +7395,22 @@ fn run(command: Command) -> i32 {
                 .map(|_| println!("OK"))
         }),
 
-        Command::CloseSurface { surface, reap } => resolve_surface_arg(&surface)
+        Command::CloseSurface { surface, reap, if_quiet, if_quiet_stamp } => resolve_surface_arg(&surface)
             .and_then(|sid| {
                 // ★W2/C6: --reap → cause="reap"(묘비 미생성). 기본=OwnerClose(묘비).
-                let params = if reap {
+                let mut params = if reap {
                     json!({"surface_id": sid, "cause": "reap"})
                 } else {
                     json!({"surface_id": sid})
                 };
+                // (master#26ff3e1f ①) 조건부 닫기 칸 — 없으면 종전 요청 그대로.
+                if let Some(at) = if_quiet {
+                    params["if_quiet"] = json!(true);
+                    params["expected_created_at"] = json!(at);
+                    if let Some(st) = if_quiet_stamp.as_deref() {
+                        params["expected_human_input_stamp"] = if st.is_empty() { Value::Null } else { json!(st) };
+                    }
+                }
                 request("surface.close", params).map(|r| {
                     println!("closed {} (descendants killed{})", surface,
                              if reap { ", reap" } else { "" });

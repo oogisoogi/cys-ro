@@ -7789,7 +7789,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                     // ★(0.14.39 · WP-C-input · D-01 v2 6항) 종전엔 reset 이벤트 stale_bytes 로만 관측 가능했다 · 소비자(팩·GUI)는 부재(null)를 '모름' 으로 접는다.
                     let (pending_input_human_bytes, input_paste_open) = {
                         let input = s.pending_input.lock().unwrap_or_else(|e| e.into_inner());
-                        (input.human, input.in_paste)
+                        (input.human, input.paste_open_now(std::time::Instant::now())) // (master#26ff3e1f ②) 만료 반영 값
                     };
                     json!({
                         "surface_id": s.id,
@@ -8203,7 +8203,8 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                     //   남아, 재기동 직후 새 프로세스가 표에 오르기 전 틱에 역할 회수 유예(60초)가 만료될 수 있었다.
                     //   기동 줄이 실제로 쳐지는 여기서 사망 타이머를 풀어 유예를 기동 시점부터 다시 센다(래치 해제만 ·
                     //   생존 판정·통지 래치는 그대로 — 되살아나면 check_agent_death 가 agent.recovered 로 재무장).
-                    *surface.agent_dead_since.lock().unwrap() = None;
+                    // (master#26ff3e1f ③) 풀기는 roles·surface.role 잠금 안(watchdog 회수 재판정과 직렬) — governance::rearm_release_clock.
+                    crate::governance::rearm_release_clock(daemon, &surface);
                 } else {
                     let entry_from = verified_from.map(cys::surface_ref).or_else(|| {
                         params.get("from").and_then(|v| v.as_str()).map(str::to_string)
@@ -9653,6 +9654,8 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             //   소유 게이트는 아래 그대로 지나고, 닫기만 governance::close_surface_if_quiet(판정과 닫기가 그 좌석 close_operation 한 잠금 안)로 간다. 칸 없는 호출 = 종전 그대로.
             let if_quiet = params.get("if_quiet").and_then(|v| v.as_bool()) == Some(true);
             let expected_created_at = params.get("expected_created_at").and_then(|v| v.as_f64());
+            // (master#26ff3e1f ①) 판정 때 본 사람 입력 표지(키가 있을 때만 대조 · null = 그때 없음).
+            let expected_stamp = params.get("expected_human_input_stamp").cloned();
             if if_quiet && (expected_created_at.is_none() || params.get("only_if_empty").and_then(|v| v.as_bool()) == Some(true)) {
                 return Reply::Single(err_response(&id, "invalid_params", "surface.close if_quiet needs expected_created_at (number) and cannot combine with only_if_empty"));
             }
@@ -9738,7 +9741,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                 }
             }
             if let (true, Some(expected)) = (if_quiet, expected_created_at) {
-                match governance::close_surface_if_quiet(daemon, sid, cause, expected) {
+                match governance::close_surface_if_quiet(daemon, sid, cause, expected, expected_stamp.as_ref()) {
                     Ok(()) => {
                         daemon.create_caller.lock().unwrap().remove(&sid);
                         daemon.created_by.lock().unwrap().remove(&sid);
@@ -12630,7 +12633,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                     // ★(0.14.39 · WP-C-input · D-01 v2 6항) 종전엔 reset 이벤트 stale_bytes 로만 관측 가능했다 · 소비자(팩·GUI)는 부재(null)를 '모름' 으로 접는다.
                     let (pending_input_human_bytes, input_paste_open) = {
                         let input = s.pending_input.lock().unwrap_or_else(|e| e.into_inner());
-                        (input.human, input.in_paste)
+                        (input.human, input.paste_open_now(std::time::Instant::now())) // (master#26ff3e1f ②) 만료 반영 값
                     };
                     json!({
                         "surface_id": s.id,
@@ -13753,7 +13756,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                 // ★(0.14.39 · WP-C-input · D-01 v2 6항) 종전엔 reset 이벤트 stale_bytes 로만 관측 가능했다 · 소비자(팩·GUI)는 부재(null)를 '모름' 으로 접는다.
                 let (pending_input_human_bytes, input_paste_open) = {
                     let input = s.pending_input.lock().unwrap_or_else(|e| e.into_inner());
-                    (input.human, input.in_paste)
+                    (input.human, input.paste_open_now(std::time::Instant::now())) // (master#26ff3e1f ②) 만료 반영 값
                 };
                 let q = s.pending_queue.lock().unwrap();
                 for (i, e) in q.iter().enumerate() {
@@ -29715,18 +29718,35 @@ mod tests {
         assert_eq!(r["error"]["reason"], json!("input_line_has_human_draft"), "{r}");
         b.pending_input.lock().unwrap().human = 0;
         b.pending_input.lock().unwrap().in_paste = true;
+        b.pending_input.lock().unwrap().paste_opened_at = Some(std::time::Instant::now());
         let r = q(7, &b, b.created_at);
         assert_eq!(r["error"]["reason"], json!("paste_open"), "{r}");
+        // (master#26ff3e1f ②) TTL 지난 OPEN 은 열림 아님(다음 조각 없이도) — 붙여넣기 사유로 거절하지 않는다(아래 30초 사유로 거절되는지 대조)
+        b.pending_input.lock().unwrap().paste_opened_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(crate::governance::PASTE_OPEN_TTL_SECS + 1));
+        *b.last_human_input.lock().unwrap() = Some(std::time::Instant::now());
+        let r = q(70, &b, b.created_at);
+        assert_eq!(r["error"]["reason"], json!("recent_human_input"), "TTL 지난 붙여넣기가 아직 열림으로 판정됐다: {r}");
+        *b.last_human_input.lock().unwrap() = None;
         b.pending_input.lock().unwrap().in_paste = false;
         *b.last_human_input.lock().unwrap() = Some(std::time::Instant::now());
         let r = q(8, &b, b.created_at);
         assert_eq!(r["error"]["reason"], json!("recent_human_input"), "{r}");
         assert!(alive(b.id), "거절인데 닫혔다");
         assert!(!b.close_decided.load(Ordering::SeqCst), "거절인데 닫기 표식이 섰다");
-        // ④ 셋 다 맞음(사람 입력이 문턱 밖) → 닫음 · JSON 왕복한 생성 시각(1ms 안)도 같은 좌석
+        // (master#26ff3e1f ①) 스냅샷 표지 대조 — 호출자가 본 표지 뒤에 사람 입력이 찍혔으면(조용해 보여도) 닫지 않음 · 같으면 다른 조건대로
+        *b.last_human_input.lock().unwrap() = stale();
+        let snap = human_input_stamp_label(&daemon, b.human_input_seq.load(Ordering::SeqCst));
+        let _ = stamp_human_input(&b); // 질의(스냅샷)와 닫기 사이 사람 입력 주입
+        *b.last_human_input.lock().unwrap() = stale(); // 30초 문턱으로는 못 잡는 꼴(시각만 오래된 것으로)
+        b.pending_input.lock().unwrap().human = 0;
+        let r = close(80, json!({"surface_id": b.id, "if_quiet": true, "expected_created_at": b.created_at, "expected_human_input_stamp": snap}));
+        assert_eq!(r["error"]["reason"], json!("human_input_since_snapshot"), "질의와 닫기 사이 사람 입력을 못 봤다: {r}");
+        assert!(alive(b.id));
+        let now_label = human_input_stamp_label(&daemon, b.human_input_seq.load(Ordering::SeqCst));
+        // ④ 셋 다 맞음(사람 입력이 문턱 밖 · 표지 = 지금) → 닫음 · JSON 왕복한 생성 시각(1ms 안)도 같은 좌석
         *b.last_human_input.lock().unwrap() = stale();
         let at: f64 = serde_json::from_str::<Value>(&serde_json::to_string(&json!(b.created_at)).unwrap()).unwrap().as_f64().unwrap();
-        let r = q(9, &b, at);
+        let r = close(9, json!({"surface_id": b.id, "if_quiet": true, "expected_created_at": at, "expected_human_input_stamp": now_label}));
         assert_eq!(r["result"]["closed"], json!(true), "{r}");
         assert_eq!(r["result"]["if_quiet"], json!(true));
         assert!(!alive(b.id));
@@ -29741,7 +29761,7 @@ mod tests {
             let daemon = daemon.clone();
             let (sid, at) = (c.id, c.created_at);
             std::thread::spawn(move || {
-                let r = crate::governance::close_surface_if_quiet(&daemon, sid, crate::governance::CloseCause::OwnerClose, at);
+                let r = crate::governance::close_surface_if_quiet(&daemon, sid, crate::governance::CloseCause::OwnerClose, at, None);
                 let _ = tx.send(r);
             });
         }
@@ -29852,6 +29872,26 @@ mod tests {
         });
         assert!(!read_then_reused, "잠금 안 재판정이 없다(틱이 읽은 낡은 만료로 거뒀다)");
         assert_eq!(sa.role.lock().unwrap().as_deref(), Some("master"));
+        // (master#26ff3e1f ③) node-recover 의 시계 풀기(rearm_release_clock)도 roles 잠금 안 — 틱이 roles 를 쥔 동안(재판정~제거 사이)은 풀지 못한다
+        *sa.agent_dead_since.lock().unwrap() = Some(crate::state::now_epoch() - 61.0);
+        let held = daemon.roles.lock().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        {
+            let (d2, s2) = (daemon.clone(), sa.clone());
+            std::thread::spawn(move || {
+                crate::governance::rearm_release_clock(&d2, &s2);
+                let _ = tx.send(());
+            });
+        }
+        assert!(rx.recv_timeout(std::time::Duration::from_millis(300)).is_err(), "시계 풀기가 roles 잠금 밖에서 일어났다(재판정 뒤·제거 전 사이에 끼어듦)");
+        assert!(sa.agent_dead_since.lock().unwrap().is_some());
+        drop(held);
+        rx.recv_timeout(std::time::Duration::from_secs(5)).expect("잠금 놓은 뒤 풀림");
+        assert_eq!(*sa.agent_dead_since.lock().unwrap(), None);
+        let src = include_str!("handlers.rs");
+        let rec = src.find("빈 좌석 재기동 줄 타이핑 — agent_launch").expect("node-recover 자리");
+        let tail = &src[rec..rec + 2500];
+        assert!(tail.contains("crate::governance::rearm_release_clock(daemon, &surface);"), "node-recover 가 공용 잠금 풀기를 쓰지 않는다");
     }
 
     // ───────── ★D7⑵(트랙 DAEMON): 역할 좌석의 미배달 큐는 폐기가 아니라 주차·상속된다 ─────────

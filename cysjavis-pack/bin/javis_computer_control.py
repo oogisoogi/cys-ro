@@ -1461,7 +1461,7 @@ def cmd_chrome_disable(a):
 #   (같은 항목 재질문 금지) · each = 그 건마다 사람(결제·서명 제출·새 가입·비밀번호 입력 — 상시 기록 불가) · never = 안 함(사유).
 DO, ASK, EACH, NEVER = "do", "ask", "each", "never"
 CHECK = "check"     # 조건부 상시 허락 — 이번 건이 그 조건에 맞는지 마스터가 확인하고 --condition-met 으로 다시 부른다
-PRECEDENT_SRC = {   # 선례 = 박사님 맥 운영 판례(원문은 각 파일 · 경로 = ~/.claude/projects/-Users-oogisoogi-axdev/memory/)
+PRECEDENT_SRC = {   # 선례 = 박사님 맥 운영 판례(원문은 각 파일 · 경로 = ~/.claude/projects/-Users-<사용자>-axdev/memory/)
     "login": "test-login-approval-master-does(10-01·10-02 「필요에 의한 로그인, 권한 인증 … 마스터가 알아서 진행하라」)",
     "exception1": "~/axdev/CLAUDE.md 예외 1(결제·서명 제출·새 서비스 가입 = 건마다 허락)",
     "expand": "domain-management-master-delegated(10-20 「필요성이 확인되는대로 계속 권한을 확대」) · release-work-fully-autonomous(10-11)",

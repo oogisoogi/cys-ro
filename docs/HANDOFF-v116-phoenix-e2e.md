@@ -1,7 +1,7 @@
 # HANDOFF — 태그 레인 phoenix 거짓 적색 2종: ① test_phoenix_e2e_replacement ② test_phoenix_w2_untomb_fullcycle · TICKET=v116-phoenix-e2e
 
 - 브리프 = `~/axdev/master/reports/v116-phoenix-e2e-2026-09-24/brief-v116-phoenix-e2e.md`(master#61752476 · 18:5x)
-- 좌석 = worker-52(surface:1101) · 계정2(oogisoogi2) · 모델 claude-opus-5-5(세션 jsonl model 필드 287건 전부) · 착수 18:44 KST
+- 좌석 = worker-52(surface:1101) · 계정2 · 모델 claude-opus-5-5(세션 jsonl model 필드 287건 전부) · 착수 18:44 KST
 - worktree `~/axdev/.wt/v116-phoenix-e2e` · 브랜치 `fix/v116-phoenix-e2e` ← 9f62f1a4(v116-flake-pty ACCEPT) · ⛔ git push · 태그 · dispatch · 릴리스 · 라이브 `~/.cys` = 0 · **제품 코드 변경 0**(`git diff 9f62f1a4.. -- src .github` 빈 출력)
 - 측정 산출·도구(저장소 밖) = `~/axdev/.wt/v116-phoenix-e2e-runs/`
   - `run_phx.sh` / `run_phx2.sh`: 회차마다 격리 HOME·TMPDIR·빈 PACK(= release.yml 스텝의 시험별 새 mktemp 재현) · daemon.log·phoenix-restore.log 새 줄에 시각(epoch)을 붙이는 관측자(시험 무접촉) · run_phx2 = 소켓 경로 길이 가드(§9-1) 추가판

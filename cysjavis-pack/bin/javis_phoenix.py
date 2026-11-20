@@ -2004,6 +2004,9 @@ def _live_surfaces_raw(socket):
             "pending_input_human_bytes": s.get("pending_input_human_bytes"),
             "input_paste_open": s.get("input_paste_open"),
             "human_idle_secs": s.get("human_idle_secs"),
+            # (master#26ff3e1f ①) 조건부 회수 스냅샷 — 데몬이 닫기 순간 「이 뒤 사람 입력 없음」을 대조한다(구 데몬 = None = 종전 회수).
+            "created_at": s.get("created_at"),
+            "human_input_stamp": s.get("human_input_stamp"),
         })
     _LAST_LIVENESS_KNOWN = True
     return out
@@ -2011,6 +2014,16 @@ def _live_surfaces_raw(socket):
 
 # (1.1.16 · cysr-1116-s5-1119 · master#c78fa28f F2) 사람 정숙 문턱 — 데몬 `queue_human_quiet_secs` 기본(30)·화면 조각 5 `HUMAN_QUIET_SECS` 와 같은 값.
 HUMAN_QUIET_SECS = 30
+
+
+def reap_if_quiet_args(rec):
+    """조건부 회수 인자(순수) — 행에 생성 시각이 있으면(신 데몬) `--if-quiet <created_at> --if-quiet-stamp <표지|빈 글>` · 없으면 [](종전 무조건 회수)."""
+    rec = rec or {}
+    at = rec.get("created_at")
+    if not isinstance(at, (int, float)) or isinstance(at, bool):
+        return []
+    st = rec.get("human_input_stamp")
+    return ["--if-quiet", repr(float(at)), "--if-quiet-stamp", st if isinstance(st, str) else ""]
 
 
 def seat_human_input_hold(rec):
@@ -3879,7 +3892,17 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
                                    "빈 좌석 %s 에 사람 입력(%s) → 닫지 않음 · fresh 강등 보류(사람 단계)" % (_ref, _why))
                             log("★F2 %s: 빈 좌석 %s 에 사람 입력(%s) → 회수·fresh 강등 보류" % (_r, _ref, _why))
                             continue
-                        _rr = cys("close-surface", _ref, "--reap", socket=socket, timeout=12)
+                        # (master#26ff3e1f ①) 질의(위 스냅샷)와 닫기 사이 사람 입력 = TOCTOU — 스냅샷을 실어 데몬이 닫기와 같은 잠금 안에서 다시 판정한다.
+                        #   거절(그 뒤 사람 입력 · 초안 · 붙여넣기 · 30초 안 입력) = 닫지 않음 → 그 역할 fresh 강등을 이번 회차 보류(다음 회차가 다시 본다).
+                        _args = reap_if_quiet_args(_rows_now.get(_ref))
+                        _rr = cys("close-surface", _ref, "--reap", *_args, socket=socket, timeout=12)
+                        if _args and getattr(_rr, "returncode", 1) != 0:
+                            _held_human.setdefault(_r, []).append("%s:daemon_refused" % _ref)
+                            jevent(j, _r, "spawn", "empty_seat_reap_held_human_input",
+                                   "빈 좌석 %s 조건부 회수를 데몬이 거절(%s) → 닫지 않음 · fresh 강등 이번 회차 보류"
+                                   % (_ref, ((getattr(_rr, "stderr", "") or "").strip()[-160:])))
+                            log("★F2 %s: 빈 좌석 %s 조건부 회수 거절(그 사이 사람 입력) → 보류" % (_r, _ref))
+                            continue
                         jevent(j, _r, "spawn", "empty_seat_reaped" if getattr(_rr, "returncode", 1) == 0
                                else "empty_seat_reap_failed",
                                "빈 좌석 %s 재사용 불가 → Reap 회수(좌석 증식 방지)" % _ref)
@@ -3931,6 +3954,7 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
                 rr["expected_sid"] = exp            # 원 세션핀(독약) 보존 기록 — verify 에서 '보존 실패'로 정직 대조
                 rr["fresh_fallback"] = True          # ★정직: resumed→fresh 강등(세션 보존 포기·의도적 전환)
                 rr.pop("force_fresh", None)          # ★A3: fresh 경로를 탔다 — 다음 verify 가 다시 잰다
+                rr.pop("fresh_held", None)          # (master#26ff3e1f ②) 부활했다 — 지난 회차 보류 표식을 지운다
                 # ★F-1(0.14.31): 세션 부재 예상과 독약 강등을 구분한다.
                 rr["fresh_reason"] = "poison"
                 mark_stage(j, role, "spawn", True, "★fresh 강등(독약 세션): " + msg)

@@ -30246,14 +30246,40 @@ mod tests {
         assert_eq!(held(), Some(a), "대조(예약 걷힘)가 다시 달지 못함");
     }
 
+    /// (TICKET=cysr-1116-maccysd-1121) s5_1116_idem_reuse_* 의 좌석 명령. 좌석은 `$SHELL -lc '<PATH 앞줄>; <cmd>'` 로 뜨는데 맥 bash 3.2 는
+    /// 목록의 마지막 명령을 exec 하지 않고 fork 한다 → 자손 1 = Occupied → 승계 불가 → claim_denied(C6 CI 런 44787231417 · 러너 SHELL=bash ·
+    /// zsh 는 exec 라 로컬 통과). `exec` 로 셸 무관 뿌리 = sleep · 자손 0. c3_close_if_empty_daemon_rechecks_and_audits ★5판 ① 과 같은 원인·같은 처방.
+    /// 윈도 = 종전 그대로(PowerShell 에는 exec 가 없다).
+    const S5R_SEAT_CMD: &str = if cfg!(windows) { "sleep 30" } else { "exec sleep 30" };
+
+    /// 승계 판정 전에 좌석이 자손 0(Empty)인지 **확인**한다 — 로그인 셸 프로파일이 잠깐 남기는 자식도 기다린다(상한 10초 · 못 맞추면 전제 실패).
+    /// c3_close_if_empty_daemon_rechecks_and_audits 의 settle_empty 와 같은 꼴. 윈도 = 확인 없음(종전 그대로).
+    fn s5r_settle_empty(s: &crate::state::Surface) {
+        if cfg!(windows) {
+            return;
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let mut sys = sysinfo::System::new();
+            sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+            let alive = sys.process(sysinfo::Pid::from_u32(s.pid)).is_some();
+            if alive && governance::collect_descendants(&sys, s.pid).is_empty() {
+                return;
+            }
+            assert!(std::time::Instant::now() < deadline, "전제 실패: surface:{} 가 10초 안에 자손 0 이 안 됐다", s.id);
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+
     /// (1.1.16 · TICKET=cysr-1116-s5-1119 · master#fe289e63) 멱등 재반환 좌석의 역할 — ① 사망 유예 뒤 역할을 잃은 좌석을 같은 key 로 다시 만들면
     /// 같은 좌석 + 역할 다시 닮(roles 맵·좌석 칸·role.reattached) ② 이미 쥐고 있으면 변화 0 ③ 다른 좌석이 그 역할을 쥐고 승계 대상이면 재반환하지 않고 새 좌석.
     #[test]
     fn s5_1116_idem_reuse_reattaches_released_role_or_creates_new() {
         let daemon = { let d = std::env::temp_dir().join(format!("s5r-reattach-{}", std::process::id())); let _ = std::fs::remove_dir_all(&d); let _ = std::fs::create_dir_all(&d); Daemon::new(d.join("cysd.sock")) }; // claim_daemon 폴더 = pid+초 → 같은 초 병렬 시험이 폴더를 공유
+        // 좌석 = S5R_SEAT_CMD + 승계가 필요한 생성 앞 s5r_settle_empty(위 도우미 머리 주석 · TICKET=cysr-1116-maccysd-1121).
         let create = |n: u64| {
             let Reply::Single(r) = dispatch(&daemon, Request { id: json!(n), method: "surface.create".into(),
-                params: json!({"cmd": "sleep 30", "role": "master", "idempotency_key": "s5r-k", "takeover_empty_seat": true}) }, Some(995_901_u32)) else {
+                params: json!({"cmd": S5R_SEAT_CMD, "role": "master", "idempotency_key": "s5r-k", "takeover_empty_seat": true}) }, Some(995_901_u32)) else {
                 panic!("expected single reply");
             };
             r
@@ -30276,12 +30302,23 @@ mod tests {
         assert!(daemon.master_claimed_at.lock().unwrap().is_some(), "마스터 쿨다운 스탬프 없음");
         assert_eq!(reattached(), 1);
         // ② 이미 쥐고 있으면 변화 0
+        s5r_settle_empty(&sa);
         let r3 = create(3);
         assert_eq!((r3["result"]["idempotent_reuse"].clone(), r3["result"]["surface_id"].clone()), (json!(true), json!(a)));
         assert_eq!((master(), reattached()), (Some(a), 1), "이미 쥔 좌석에 다시 달았다");
         // ③ 역할을 잃은 뒤 다른 좌석이 마스터를 쥠 → 같은 key = 승계 대상이 다른 좌석 → 재반환 0 · 새 좌석이 승계(옛 보유자 역할 내림)
         assert!(crate::governance::release_role_after_agent_death(&daemon, &sa));
-        let b = make_surface(&daemon, Some("master"));
+        // b 도 승계 가능(Empty)해야 r4 가 넘는다 — make_surface(`sleep 30` 고정)와 같은 꼴을 S5R_SEAT_CMD 로 연다.
+        let b = {
+            let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+            let s = crate::pty_test_support::retry_on_pty_exhaustion("s5r-b", || {
+                daemon.create_surface(Some(cwd.clone()), Some(S5R_SEAT_CMD.into()), None, Some("master".into()), 24, 80)
+            })
+            .expect("create surface");
+            daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+            s5r_settle_empty(&s);
+            s.id
+        };
         assert_eq!(master(), Some(b));
         let r4 = create(4);
         assert_eq!(r4["ok"], json!(true), "{r4}");
@@ -30297,9 +30334,10 @@ mod tests {
     #[test]
     fn s5_1116_idem_reuse_rearms_release_clock() {
         let daemon = { let d = std::env::temp_dir().join(format!("s5r-clock-{}", std::process::id())); let _ = std::fs::remove_dir_all(&d); let _ = std::fs::create_dir_all(&d); Daemon::new(d.join("cysd.sock")) }; // claim_daemon 폴더 = pid+초 → 같은 초 병렬 시험이 폴더를 공유
+        // 좌석 = S5R_SEAT_CMD + 승계가 필요한 생성 앞 s5r_settle_empty(TICKET=cysr-1116-maccysd-1121).
         let create = |n: u64, key: &str| {
             let Reply::Single(r) = dispatch(&daemon, Request { id: json!(n), method: "surface.create".into(),
-                params: json!({"cmd": "sleep 30", "role": "master", "idempotency_key": key, "takeover_empty_seat": true}) }, Some(995_911_u32)) else {
+                params: json!({"cmd": S5R_SEAT_CMD, "role": "master", "idempotency_key": key, "takeover_empty_seat": true}) }, Some(995_911_u32)) else {
                 panic!("expected single reply");
             };
             r
@@ -30324,6 +30362,7 @@ mod tests {
         let sid = r["result"]["surface_id"].as_u64().unwrap();
         let sa = daemon.get_surface(sid).unwrap();
         *sa.agent_dead_since.lock().unwrap() = Some(crate::state::now_epoch() - 61.0);
+        s5r_settle_empty(&sa);
         let r2 = create(3, "s5r-clock");
         assert_eq!((r2["result"]["idempotent_reuse"].clone(), r2["result"]["surface_id"].clone()), (json!(true), json!(sid)), "{r2}");
         assert_eq!(*sa.agent_dead_since.lock().unwrap(), None, "재반환이 회수 시계를 비우지 않았다");

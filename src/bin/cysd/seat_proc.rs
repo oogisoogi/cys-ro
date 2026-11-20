@@ -333,12 +333,31 @@ pub(crate) fn seatkeep_adopt_enabled() -> bool {
 pub(crate) const SEATKEEP_EXE: &str = "cys-seatkeep";
 
 /// seatkeep 실행 파일 = 지금 도는 cysd 실행 파일과 같은 폴더(개발 = `target/<profile>/` · 제품 = 앱 번들 `Contents/MacOS/`).
-/// 시험 빌드는 cysd 시험 실행 파일이 `target/<profile>/deps/` 에 있으므로 한 단계 위를 본다.
+/// 시험 빌드는 cysd 시험 실행 파일이 `target/<profile>/` 아래 중간 폴더에 있으므로 그 프로필 폴더를 본다(`test_profile_dir`).
 pub(crate) fn seatkeep_exe_beside(cysd_exe: &std::path::Path) -> Option<std::path::PathBuf> {
     let dir = cysd_exe.parent()?;
     #[cfg(test)]
-    let dir = if dir.file_name().map(|n| n == "deps").unwrap_or(false) { dir.parent()? } else { dir };
+    let dir = test_profile_dir(dir);
     Some(dir.join(SEATKEEP_EXE))
+}
+
+/// 시험 실행 파일 폴더 → 프로필 폴더(`cargo build --bin cys-seatkeep` 산출 자리). 구 배치 = `<profile>/deps/`(cargo 1.97 실측) ·
+/// 새 배치 = `<profile>/build/<패키지>/<해시>/out/`(cargo 1.100 실측 · CI 런 44787231417 · TICKET=cysr-1116-maccysd-1121). 그 밖 = 그대로.
+#[cfg(test)]
+fn test_profile_dir(dir: &std::path::Path) -> &std::path::Path {
+    let named = |p: Option<&std::path::Path>, n: &str| p.and_then(|p| p.file_name()).is_some_and(|f| f == n);
+    if named(Some(dir), "deps") {
+        if let Some(p) = dir.parent() {
+            return p;
+        }
+    }
+    let build = dir.parent().and_then(|h| h.parent()).and_then(|k| k.parent());
+    if named(Some(dir), "out") && named(build, "build") {
+        if let Some(p) = build.and_then(|b| b.parent()) {
+            return p;
+        }
+    }
+    dir
 }
 
 /// seatkeep 이 감사 토큰으로 이 프로세스를 볼 때의 코드 경로(인계 4 · T2 실측 = 번들 주 실행 파일이면 번들 경로).

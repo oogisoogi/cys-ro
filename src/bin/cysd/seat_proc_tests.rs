@@ -107,6 +107,12 @@ fn seatkeep_exe_is_beside_cysd() {
     // 시험 빌드: 시험 실행 파일은 deps/ 안 → 한 단계 위
     let p = seatkeep_exe_beside(std::path::Path::new("/w/target/debug/deps/cysd-0123abcd")).unwrap();
     assert_eq!(p, std::path::PathBuf::from("/w/target/debug/cys-seatkeep"));
+    // 새 배치(cargo 1.100 · TICKET=cysr-1116-maccysd-1121): 시험 실행 파일은 build/<패키지>/<해시>/out/ 안 → 프로필 폴더
+    let p = seatkeep_exe_beside(std::path::Path::new("/w/target/debug/build/cys-terminal/17a9bf680c75da2b/out/cysd-17a9bf680c75da2b")).unwrap();
+    assert_eq!(p, std::path::PathBuf::from("/w/target/debug/cys-seatkeep"));
+    // 이름만 닮은 자리는 그대로(out 위가 build/<x>/<y> 꼴이 아님)
+    let p = seatkeep_exe_beside(std::path::Path::new("/w/x/out/cysd")).unwrap();
+    assert_eq!(p, std::path::PathBuf::from("/w/x/out/cys-seatkeep"));
 }
 
 fn fake_bundle(root: &std::path::Path, app: &str, exe: &str, plist_exe: Option<&str>) -> std::path::PathBuf {

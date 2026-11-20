@@ -1632,6 +1632,13 @@ jobs:
           if [ "${pipeline_status[1]}" -ne 0 ]; then exit "${pipeline_status[1]}"; fi
           exit "$gate_status"
 
+      # ★(TICKET=cysr-1116-maccysd-1121) 다음 cysd 스텝의 seatkeep 좌석 시험 4건은 target/debug 의 cys-seatkeep 을 띄운다 — `cargo test --bin cysd` 는
+      #   그 실행 파일을 만들지 않는다(C6 런 44787231417 = 「실행 파일 없음」 4건 · 로컬 게이트는 `cargo build --bins --tests` 선행으로 가려졌다).
+      #   별도 스텝인 까닭 = cysd 스텝 본문의 「cargo 정확히 1회」 밀폐 검체(scripts/tests/test_ci_branch_cysd_step.py). release 레인은 phoenix-host-gate.sh 의 빌드 줄이 같은 일을 한다.
+      - name: cys-seatkeep 빌드 (cysd 좌석 시험 전제 · macOS)
+        shell: bash
+        run: cargo build --bin cys-seatkeep
+
       - name: cargo test --bin cysd (데몬 단위 검체 · 브랜치 레인 편입 · macOS)
         shell: bash
         run: |
